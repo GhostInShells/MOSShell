@@ -670,6 +670,7 @@ class LLMFuncs(ABC):
             effort: Effort | None = None,
             export_anchor: str | Path | None = None,
             anchor_description: str = "",
+            input_anchor: Anchor | None = None,
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用: instruction + prompt -> 结构化 result_type 结果.
 
@@ -681,6 +682,13 @@ class LLMFuncs(ABC):
         (``call-<uid[:8]>``); 其它 = 稳定地址 (重跑覆盖, 版本由 git 治理)。
         锚经 ``LLMFuncResult.anchor`` 携带出来。``anchor_description`` 是锚的
         一句说明 (meta.description)。
+        ``input_anchor`` — 消费的锚 (Anchor 对象, 抽象层只约束锚本身)。从锚还原
+        上次调用的 turn 链 ([request/response], 含 thinking) 作为 message_history
+        拼在本次调用之前做内观; 产出锚的 turns 自动延续被消费的链条。仅支持
+        CallAnchor payload — 由强类型校验 (``CallAnchor.from_anchor``) 判定,
+        不匹配抛 NotImplementedError。文件 → Anchor 的读取由调用方经
+        ``Anchor.from_file`` 完成 (数据结构对协议自解释), 引擎不接触路径。
+        None = 冷启动。
         """
 
     @abstractmethod

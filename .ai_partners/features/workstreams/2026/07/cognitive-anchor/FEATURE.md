@@ -15,8 +15,9 @@ description: >-
 status_note: >-
   2026-08-11 deepseek-v4-flash. v4 llm func dogfooding: LLMFuncs.call 生产锚
   (CallAnchor payload, export_anchor 落盘, LLMFuncResult.anchor 携带), CLI
-  moss llms call --export-anchor, 真实调用验证 call→.anchor.yml→from_anchor
-  还原闭环. 见文末 v4 追加.
+  moss llms call --export-anchor; 消费锚 (input_anchor 注入 history 做内观,
+  Anchor.from_file 读侧, 强类型判定 NotImplementedError), CLI --input-anchor.
+  call→.anchor.yml→from_anchor 还原 + 消费回灌闭环. 见文末 v4 追加.
   --
   2026-08-10 作者 + deepseek-v4-flash. v3 协议落地: Anchor 数据结构定稿
   (meta + payload), meta 顶层极简字段 uid(ULID)/name/description/ref/created/
@@ -470,13 +471,47 @@ request/response, 含 thinking/text/tool)。三种模式实测:
 `--export-anchor my-call` → `my-call.anchor.yml`; 重跑覆盖同一文件
 (name 不变, meta.uid 新生成); `--export-anchor ""` → `call-<uid8>.anchor.yml`。
 文件 → `CallAnchor.from_anchor` round-trip 还原调用 (turns 全保真,
-thinking 可回读)。测试 `tests/.../llms/test_call_anchor.py` 5 个用例
-覆盖产出、auto 命名、无锚、还原、失败保留请求帧。
+thinking 可回读)。测试 `tests/.../llms/test_call_anchor.py` 覆盖产出、
+auto 命名、无锚、还原、失败保留请求帧。
+
+## v4.1 追加: 消费锚 — call 读锚回灌内观 (2026-08-11)
+
+生产锚那一半落地后, 做消费这一半 — "使用 anchor" 的关键命题: 模型读锚
+还原上次调用的 turn 链, 拼在本次调用之前做内观 (把思考作为自己的既有
+立场, 而非需要回复的用户输入 — 见 内观 vs 外观).
+
+### 实现
+
+- **`LLMFuncs.call` 增 `input_anchor: Anchor | None`** — 抽象层只约束
+  Anchor 本身, 不收路径/字符串。`_load_history` 用 `CallAnchor.from_anchor`
+  结构化校验还原 turn 链 → `_deserialize_messages`
+  (`ModelMessagesTypeAdapter.validate_python`, 标准序列化反向) →
+  `message_history` 传给 `agent.run`。产出锚的 `all_messages()` 含被注入的
+  history, turns 自动链条延续。
+- **`Anchor.from_file`** — anchor 模块读侧参考实现 (SPEC §3/§4):
+  `yaml.safe_load_all` 处理 `---` 分隔符, 与 `dump_to_dir` 对称。数据
+  结构对协议自解释 (参考 cell.py NodeManifest 范式)。
+- **CLI `moss llms call --input-anchor <path>`** — 调用方用 `Anchor.from_file`
+  读文件转 Anchor, 再传引擎; 结构化调用专属 (与 export_anchor 一致)。
+
+### 决策
+
+- **抽象层给 Anchor 约束, 不给 str/path**: 文件→Anchor 的读取由调用方经
+  `Anchor.from_file` 完成 (数据结构自解释), 引擎不接触路径 — 参考
+  cell.py NodeManifest 把读写放数据结构的范式。
+- **判断交给强类型, 不手工比较 ref 字符串**: 初版在 `_load_history` 手工
+  `anchor.meta.ref != CallAnchor.ref()`, 脆 (ref 可被 pin 成 commit URL,
+  精确比较误拒), 且是魔法约定。改为 `from_anchor` 结构化校验, 不匹配 →
+  NotImplementedError (LLMFunc 支持的锚类型有限, 不支持就显式拒绝) —
+  参考 topic.py `from_topic`/`from_json` 的强类型判别。
+- **测试用强类型构造锚, 不手写 payload dict**: 请求帧等测试锚一律
+  `CallAnchor(...).to_anchor()` — 避免魔法字段 (turns 是标准序列化的
+  ModelMessage dict, 不是 list[str])。
 
 ### 未做 (后续切片)
 
-- **消费锚**: `call` 接受输入锚 (`instruction + (anchor) + prompt`),
-  覆盖数据后调用 — "使用 anchor" 那一半。
-- **ground 进 instruction**: ground 渲染结果追加在 instruction 后。
+- **`--thinking`**: 人工插入 thinking block (内观 A/B 实验工具), 与消费
+  锚共享 history 注入基建。
+- **ground 进 instruction**: ground 渲染结果追加在 instruction 后 (CLI 层,
+  不进 interface)。
 - **`@` 文件路径 / 二进制 (Base64Image) 语法** — prompt 协议扩充。
-- **`anchor/` 模块增加读 API**: 目前读是消费方自己实现 (协议 §8)。

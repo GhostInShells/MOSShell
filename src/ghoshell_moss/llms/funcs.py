@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Type
 
+from pydantic import ValidationError
+
 from ghoshell_moss.anchor import Anchor
 from ghoshell_moss.contracts.llms import (
     RESULT_MODEL,
@@ -54,6 +56,7 @@ class PydanticAIFuncs(LLMFuncs):
         effort: Effort | None = None,
         export_anchor: str | Path | None = None,
         anchor_description: str = "",
+        input_anchor: Anchor | None = None,
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用 — build_agent + agent.run(output_type, instructions).
 
@@ -64,11 +67,16 @@ class PydanticAIFuncs(LLMFuncs):
         调用前后各落一次锚: 调用前写请求帧 (调用失败也保留请求锚), 成功后
         覆写为完整帧 (instruction + turns — 标准序列化的 request/response,
         含 thinking), 锚经 ``LLMFuncResult.anchor`` 携带出来。
+        ``input_anchor`` — 消费的锚 (Anchor 对象). 从锚还原 turn 链作为
+        message_history 拼在本次调用之前做内观 (仅支持 CallAnchor payload,
+        其它类型抛 NotImplementedError — 由强类型校验判定); 产出锚的 turns
+        自动延续被消费的链条.
         """
         from ghoshell_moss.llms.client import build_agent
 
         anchor_dir, base_name = _resolve_anchor_target(export_anchor)
         agent = build_agent(model, effort=effort)
+        history = _load_history(input_anchor)
 
         anchor = None
         if anchor_dir is not None:
@@ -83,6 +91,7 @@ class PydanticAIFuncs(LLMFuncs):
             prompt,
             output_type=result_type,
             instructions=instruction or None,
+            message_history=history,
         )
         elapsed = time.perf_counter() - start
         output = result.output
@@ -237,6 +246,36 @@ def _serialize_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
     from pydantic_ai.messages import ModelMessagesTypeAdapter
 
     return ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+
+
+def _deserialize_messages(turns: list[dict[str, Any]]) -> list[ModelMessage]:
+    """pydantic-ai 标准序列化反向 — dict 列表还原为 ModelMessage (消费锚)."""
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    return ModelMessagesTypeAdapter.validate_python(turns)
+
+
+def _load_history(anchor: Anchor | None) -> list[ModelMessage] | None:
+    """从输入锚还原 turn 链作为 message_history — 消费侧 (内观回灌).
+
+    ``anchor`` 抽象层只约束 Anchor; 引擎只消费 CallAnchor payload。判断交给
+    强类型 — ``CallAnchor.from_anchor`` 的结构化校验 (而非手工比较 ref 字符串):
+    载荷不匹配 CallAnchor 即 NotImplementedError — LLMFunc 支持的锚类型有限,
+    不支持的显式拒绝。空 turns (失败保留的请求帧) 返回 None — 无响应可内观,
+    冷启动。
+    """
+    if anchor is None:
+        return None
+    try:
+        rebuilt = CallAnchor.from_anchor(anchor)
+    except ValidationError as e:
+        raise NotImplementedError(
+            f"unsupported input anchor (ref={anchor.meta.ref!r}) — "
+            f"payload does not validate as CallAnchor: {e}"
+        ) from e
+    if not rebuilt.turns:
+        return None
+    return _deserialize_messages(rebuilt.turns)
 
 
 def _extract_text(result: AgentRunResult[Any]) -> str:

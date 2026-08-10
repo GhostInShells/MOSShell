@@ -8,13 +8,13 @@
 """
 
 import asyncio
-import importlib.util
 import os
 from pathlib import Path
 
 import typer
 
 from ghoshell_moss.contracts.llms import Effort, LLMConfig, LLMFuncs, ModelRef, ResolvedModel
+from ghoshell_moss.depends import available
 
 from .utils import (
     print_simple_table,
@@ -178,6 +178,7 @@ def _call_structured(
         repeat: int,
         effort: Effort | None = None,
         export_anchor: str | None = None,
+        input_anchor: str | None = None,
 ) -> None:
     """Structured call via model-func engine (PydanticAIFuncs).
 
@@ -186,14 +187,20 @@ def _call_structured(
     ``export_anchor`` — anchor target filename (no .anchor.yml suffix, may
     embed a path); '' = auto-generate a uid-based name. Produced anchor file
     paths are printed after the results.
+    ``input_anchor`` — anchor file to consume: its turns are injected as
+    message_history (introspection). Read via ``Anchor.from_file`` — the
+    data structure self-explains the protocol, the engine sees only the
+    Anchor constraint.
     """
     import json as _json
 
     from ghoshell_common.helpers import import_from_path
+    from ghoshell_moss.anchor import Anchor
     from ghoshell_moss.llms.funcs import PydanticAIFuncs
 
     result_type = import_from_path(response_model)
     inst = _read_instruction(instruction)
+    anchor = Anchor.from_file(input_anchor) if input_anchor else None
     funcs = PydanticAIFuncs()
 
     async def _run() -> tuple[list[dict], list[str]]:
@@ -207,6 +214,7 @@ def _call_structured(
                 model=resolved,
                 effort=effort,
                 export_anchor=export_anchor,
+                input_anchor=anchor,
             )
             if r.anchor is not None:
                 if export_anchor:
@@ -265,25 +273,9 @@ def _fmt_usage(usage: dict | None) -> str:
     return f"in={inp} out={out}"
 
 
-_GHOST_EXTRA_AVAILABLE: bool | None = None
-
-
-def _ghost_extra_available() -> bool:
-    """[ghost] extra 是否安装 — find_spec 轻量检查, 不 import (避免拖进 pydantic-ai + anthropic 全套).
-
-    进程内缓存 (模块私有 flag), 重入无副作用, 只查一次.
-    """
-    global _GHOST_EXTRA_AVAILABLE
-    if _GHOST_EXTRA_AVAILABLE is None:
-        _GHOST_EXTRA_AVAILABLE = (
-            importlib.util.find_spec("pydantic_ai") is not None
-            and importlib.util.find_spec("anthropic") is not None
-        )
-    return _GHOST_EXTRA_AVAILABLE
-
-
 # ── call / test — require the `ghost` extra (pydantic-ai). No dependency → hidden. ──
-if _ghost_extra_available():
+# available() 走 depends 的 find_spec 门, 不 import (避免拖进 pydantic-ai + anthropic 全套).
+if available("pydantic_ai", "anthropic"):
 
     def _read_instruction(value: str | None) -> str:
         """If value is a file path that exists, read it; otherwise return as-is."""
@@ -343,6 +335,14 @@ if _ghost_extra_available():
                     "'' = auto-generate a uid-based name. Structured calls only."
                 ),
             ),
+            input_anchor: str = typer.Option(
+                None, "--input-anchor",
+                help=(
+                    "Anchor file to consume — its turns are injected as "
+                    "message_history before this call (introspection). "
+                    "CallAnchor refs only. Structured calls only."
+                ),
+            ),
     ) -> None:
         """One-shot LLM call. Prompt + optional instruction and structured output.
 
@@ -353,6 +353,8 @@ if _ghost_extra_available():
         openai_reasoning_effort). ``--export-anchor`` freezes each call as a
         cognitive anchor file — name it for a stable address (re-run overwrites,
         versions live in git), or pass ``''`` for an auto uid-based name.
+        ``--input-anchor`` consumes an anchor file: its turn chain becomes the
+        message history of this call — the new anchor chains onto the old.
         """
         conf = _load_config()
         resolved = _resolve_for_call(
@@ -371,6 +373,7 @@ if _ghost_extra_available():
                     repeat=repeat,
                     effort=effort,
                     export_anchor=export_anchor,
+                    input_anchor=input_anchor,
                 )
             else:
                 output = _call(

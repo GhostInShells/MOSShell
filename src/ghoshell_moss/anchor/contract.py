@@ -119,6 +119,24 @@ class Anchor(BaseModel):
         path.write_text(section1 + "---\n" + section2, encoding="utf-8")
         return path
 
+    @classmethod
+    def from_file(cls, path: Path | str) -> Anchor:
+        """Read an anchor from a file — SPEC §3 two-section YAML.
+
+        Reference implementation of the read side (SPEC §8): the ``---``
+        separator splits the file into two YAML documents (meta, payload).
+        ``safe_load_all`` handles the separator correctly even if a value
+        contains a ``---`` string. Unknown meta keys are preserved (pydantic
+        ignores extras); payload is opaque, structure defined by ``meta.ref``.
+        """
+        text = Path(path).read_text(encoding="utf-8")
+        docs = list(yaml.safe_load_all(text))
+        if len(docs) < 1 or docs[0] is None:
+            raise ValueError(f"anchor file has no meta section: {path}")
+        meta = AnchorMeta(**docs[0])
+        payload = docs[1] if len(docs) > 1 else None
+        return cls(meta=meta, payload=payload)
+
 
 class AnchorModel(BaseModel, ABC):
     """Self-explaining anchor payload convention — code-as-prompt.

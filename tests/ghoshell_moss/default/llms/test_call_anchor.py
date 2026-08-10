@@ -25,6 +25,7 @@ from pydantic_ai.messages import (
 from ghoshell_moss.anchor import Anchor, AnchorMeta
 from ghoshell_moss.contracts.llms import (
     ModelConfig,
+    ModelRef,
     ResolvedModel,
     ServiceConfig,
 )
@@ -227,6 +228,152 @@ async def test_anchor_reconstructs_call(tmp_path: Path):
     assert len(rebuilt.turns) == 2
     assert [p["part_kind"] for p in rebuilt.turns[1]["parts"]] == ["thinking", "text"]
     assert rebuilt.turns[1]["parts"][0]["content"] == "i reasoned carefully"
+
+
+# ── consume ────────────────────────────────────────────────────────────
+
+
+def test_anchor_from_file_round_trip(tmp_path: Path):
+    """dump_to_dir then from_file restores meta + payload (SPEC §3/§4)."""
+    anchor = Anchor(
+        meta=AnchorMeta(name="trip", description="d", ref="https://example.com/x"),
+        payload={"a": 1, "b": ["x", "y"]},
+    )
+    path = anchor.dump_to_dir(tmp_path, "trip")
+    rebuilt = Anchor.from_file(path)
+    assert rebuilt.meta.uid == anchor.meta.uid
+    assert rebuilt.meta.name == "trip"
+    assert rebuilt.meta.ref == "https://example.com/x"
+    assert rebuilt.payload == {"a": 1, "b": ["x", "y"]}
+
+
+@pytest.mark.asyncio
+async def test_call_consumes_anchor(tmp_path: Path):
+    """input_anchor (Anchor object) re-injects turns as message_history.
+
+    The history passed to agent.run is the deserialized turn chain — request
+    and response incl thinking preserved (内观). The anchor object is the
+    constraint the interface takes; no paths at this layer.
+    """
+    funcs = PydanticAIFuncs()
+    producer = _make_mock_agent(
+        output=Score(value=8),
+        instruction="base instruction",
+        prompt="first call",
+        thinking="i reasoned carefully",
+        text_parts=["ok"],
+    )
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=producer):
+        produced = await funcs.call(
+            instruction="base instruction",
+            prompt="first call",
+            result_type=Score,
+            model=_make_resolved(),
+            export_anchor=tmp_path / "base",
+        )
+    assert produced.anchor is not None
+
+    consumer = _make_mock_agent(output=Score(value=9), text_parts=["done"])
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=consumer):
+        await funcs.call(
+            instruction="continue",
+            prompt="follow up",
+            result_type=Score,
+            model=_make_resolved(),
+            input_anchor=produced.anchor,
+        )
+
+    history = consumer.run.await_args.kwargs["message_history"]
+    assert history is not None
+    assert len(history) == 2
+    assert [p.part_kind for p in history[0].parts] == ["system-prompt", "user-prompt"]
+    assert [p.part_kind for p in history[1].parts] == ["thinking", "text"]
+    assert history[1].parts[0].content == "i reasoned carefully"
+
+
+@pytest.mark.asyncio
+async def test_call_consumes_anchor_from_file(tmp_path: Path):
+    """Path → Anchor.from_file (data-structure self-explaining) → consume."""
+    funcs = PydanticAIFuncs()
+    producer = _make_mock_agent(
+        output=Score(value=8),
+        instruction="base instruction",
+        prompt="first call",
+        thinking="i reasoned carefully",
+        text_parts=["ok"],
+    )
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=producer):
+        produced = await funcs.call(
+            instruction="base instruction",
+            prompt="first call",
+            result_type=Score,
+            model=_make_resolved(),
+            export_anchor=tmp_path / "base",
+        )
+    path = _anchor_files(tmp_path)[0]
+
+    consumer = _make_mock_agent(output=Score(value=9), text_parts=["done"])
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=consumer):
+        await funcs.call(
+            instruction="continue",
+            prompt="follow up",
+            result_type=Score,
+            model=_make_resolved(),
+            input_anchor=Anchor.from_file(path),
+        )
+
+    history = consumer.run.await_args.kwargs["message_history"]
+    assert history is not None
+    assert len(history) == 2
+    assert history[1].parts[0].content == "i reasoned carefully"
+
+
+@pytest.mark.asyncio
+async def test_call_unsupported_anchor_ref(tmp_path: Path):
+    """A non-CallAnchor payload is rejected with NotImplementedError.
+
+    LLMFunc supports a narrow set of anchors; unsupported ones fail loudly.
+    The strong type (from_anchor structural validation) is the judge — no
+    manual ref-string comparison.
+    """
+    funcs = PydanticAIFuncs()
+    agent = _make_mock_agent(output=Score(value=1))
+    foreign = Anchor(
+        meta=AnchorMeta(name="foreign", ref="https://example.com/other-payload"),
+        payload={"foo": "bar"},
+    )
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+        with pytest.raises(NotImplementedError, match="unsupported input anchor"):
+            await funcs.call(
+                instruction="",
+                prompt="hi",
+                result_type=Score,
+                model=_make_resolved(),
+                input_anchor=foreign,
+            )
+    agent.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_call_request_frame_anchor_cold_start(tmp_path: Path):
+    """An anchor with empty turns (failed-call request frame) → cold start."""
+    funcs = PydanticAIFuncs()
+    agent = _make_mock_agent(output=Score(value=1))
+    request_frame = CallAnchor(
+        instruction="x",
+        model=ModelRef(service="test", protocol="openai", model="test-model"),
+        result_type=_type_path(Score),
+        turns=[],
+    ).to_anchor(name="req")
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+        await funcs.call(
+            instruction="",
+            prompt="hi",
+            result_type=Score,
+            model=_make_resolved(),
+            input_anchor=request_frame,
+        )
+    assert agent.run.await_args.kwargs["message_history"] is None
 
 
 # ── failure ────────────────────────────────────────────────────────────
