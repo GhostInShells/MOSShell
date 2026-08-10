@@ -426,16 +426,21 @@ v3 协议落地后, 用 `LLMFuncs` 做第一次 dogfooding: 让模型调用本�
 ### 实现: 生产锚这一半
 
 - **`CallAnchor(AnchorModel)`** — `src/ghoshell_moss/llms/call_anchor.py`。
-  一次调用的锚 payload: `instruction` / `prompt` / `model`(ModelRef,
-  无密钥) / `result_type`(module:attr, 即调用方视角的"工具调用 json
-  schema") / `effort` + 调用后填入的 `result`(结构化输出 dict) /
-  `content`(原始文本)。`ref()` 指向本文件 GitHub URL — 模型 curl 它
-  学 payload 形状。
+  一次调用的锚 payload = **`instruction` + `turns`**: turns 是
+  `result.all_messages()` 的 **pydantic-ai 标准序列化**
+  (`ModelMessagesTypeAdapter.dump_python`), 完整保留 request/response 的
+  所有 part — thinking / text / tool calls。`model`(ModelRef, 无密钥) /
+  `result_type`(module:attr, 调用方视角的"工具调用 json schema") /
+  `effort` 是索引元数据; `result`(结构化输出 dict) 是便捷摘要。
+  `ref()` 指向本文件 GitHub URL — 模型 curl 它学 payload 形状。
+- **修正 (2026-08-11)**: 首版用手工字段抽取 (`_extract_text` 拼 TextPart
+  + `typed.model_dump()`), 丢了 thinking 和 tool calls。改为标准序列化
+  后, 锚就是完整的 turn 保真记录 — 这是消费锚回灌内观的必要前提。
 - **`LLMFuncs.call` 增 `export_anchor`(目标文件名, 无后缀可含路径) /
   `anchor_description`** — 契约层, 进入基础 API。None = 不产锚; `""` =
   自动生成带 uid 的名字; 其它 = 稳定地址。调用前先落请求帧 (调用失败
-  也保留请求锚), 成功后覆写为完整帧 (请求 + 结果), 锚经
-  `LLMFuncResult.anchor` 携带出来。
+  也保留请求锚, turns 为空), 成功后覆写为完整帧 (instruction + turns),
+  锚经 `LLMFuncResult.anchor` 携带出来。
 - **CLI `moss llms call --export-anchor <name>`** — 值必填; auto 用
   `--export-anchor ""` (Typer 不支持裸 flag 可选值)。结构化调用后打印
   锚文件路径。
@@ -447,6 +452,9 @@ v3 协议落地后, 用 `LLMFuncs` 做第一次 dogfooding: 让模型调用本�
 - **name 是稳定地址, uid 是每次生成的版本戳**: `export_anchor` 即
   name, 重跑覆盖同一文件 (新 uid), 版本迭代由 git log 治理 — 生产者侧
   语义, 与 v3 "name 不是 key / uid 解决碰撞" (存储发现侧) 不冲突。
+- **锚存完整 turn (标准序列化), 不是语义字段**: 手工字段是外观摘要,
+  会丢 thinking/tool calls; 标准序列化是保真记录。消费锚要还原
+  `[request/response]` 拼 history 做内观, 必须有 thinking。
 - **锚携带完整 `Anchor` 对象 (非仅 ref)**: 调用方可立即
   `CallAnchor.from_anchor(result.anchor)` 进入消费闭环。
 - **`result_type` 存 module:attr 指针**: 不内嵌完整 JSON schema — 指向
@@ -457,12 +465,13 @@ v3 协议落地后, 用 `LLMFuncs` 做第一次 dogfooding: 让模型调用本�
 ### 验证
 
 真实调用产出标准两节 yaml, meta 平铺 (uid/name/ref/created), payload
-承载 instruction/prompt/model/result_type/result。三种模式实测:
+承载 instruction/model/result_type/effort + `turns` (标准序列化的
+request/response, 含 thinking/text/tool)。三种模式实测:
 `--export-anchor my-call` → `my-call.anchor.yml`; 重跑覆盖同一文件
 (name 不变, meta.uid 新生成); `--export-anchor ""` → `call-<uid8>.anchor.yml`。
-文件 → `CallAnchor.from_anchor` round-trip 还原调用 (prompt/model/
-result_type/result 一致)。测试 `tests/.../llms/test_call_anchor.py`
-5 个用例覆盖产出、auto 命名、无锚、还原、失败保留请求帧。
+文件 → `CallAnchor.from_anchor` round-trip 还原调用 (turns 全保真,
+thinking 可回读)。测试 `tests/.../llms/test_call_anchor.py` 5 个用例
+覆盖产出、auto 命名、无锚、还原、失败保留请求帧。
 
 ### 未做 (后续切片)
 

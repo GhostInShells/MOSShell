@@ -1,10 +1,10 @@
 """Call anchor — the anchor payload for a single LLMFuncs call.
 
-The key frame of a model call: the request (instruction + prompt + model +
-output schema) and, after the call completes, the observed result. A model
-that reads an anchor file curls ``CallAnchor.ref()`` to learn how the payload
-is shaped and how the call is reconstructed — code-as-prompt at the protocol
-layer (anchor SPECIFICATION §5).
+The key frame of a model call: ``instruction`` + ``turns`` — the message
+history (request/response pairs) in pydantic-ai's standard serialization.
+A model that reads an anchor file curls ``CallAnchor.ref()`` to learn how the
+payload is shaped and how the call is reconstructed — code-as-prompt at the
+protocol layer (anchor SPECIFICATION §5).
 """
 
 from __future__ import annotations
@@ -28,23 +28,21 @@ _CALL_ANCHOR_REF = (
 
 
 class CallAnchor(AnchorModel):
-    """Anchor payload of one model call — request frame + observed result.
+    """Anchor payload of one model call — instruction + turns[request/response].
 
-    ``model`` is a ``ModelRef`` (no secrets — api_key/base_url stripped at
-    projection). ``result_type`` is a ``module:attr`` pointer to the output
-    schema — the "tool call json schema" of the call; a model resolves it to
-    learn the result shape. ``result`` / ``content`` are the observed output,
-    filled after the call; before that they are None and dropped from the
-    serialized request frame.
+    ``turns`` is the full message history serialized with pydantic-ai's
+    standard protocol (``ModelMessagesTypeAdapter``) — every part survives
+    (system/user prompts, thinking, text, tool calls). This is the fidelity
+    record a consumer needs to reconstruct the call and re-inject the model's
+    own reasoning (introspection) as history. ``model`` is a ``ModelRef``
+    (no secrets — api_key/base_url stripped at projection). ``result_type``
+    is the ``module:attr`` output-schema pointer. ``result`` is the typed
+    output dict — a convenience summary, also present in the turns.
     """
 
     instruction: str = Field(
         default="",
-        description="system prompt sent to the model",
-    )
-    prompt: str = Field(
-        default="",
-        description="user message sent to the model",
+        description="system prompt — also the first turn's system-prompt part",
     )
     model: ModelRef = Field(
         description="model reference — no secrets",
@@ -57,13 +55,16 @@ class CallAnchor(AnchorModel):
         default=None,
         description="thinking effort (none..max)",
     )
+    turns: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "message history in pydantic-ai standard serialization — "
+            "request/response parts incl thinking, text, tool calls"
+        ),
+    )
     result: dict[str, Any] | None = Field(
         default=None,
-        description="structured output dict — filled after the call",
-    )
-    content: str | None = Field(
-        default=None,
-        description="raw text output — filled after the call",
+        description="typed output dict — convenience summary; also present in turns",
     )
 
     @classmethod

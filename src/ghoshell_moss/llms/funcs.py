@@ -10,7 +10,7 @@ import dataclasses
 import json
 import time
 from pathlib import Path
-from typing import Type
+from typing import TYPE_CHECKING, Any, Type
 
 from ghoshell_moss.anchor import Anchor
 from ghoshell_moss.contracts.llms import (
@@ -28,6 +28,10 @@ from ghoshell_moss.contracts.llms import (
     TokenCount,
 )
 from ghoshell_moss.llms.call_anchor import CallAnchor
+
+if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelMessage
+    from pydantic_ai.run import AgentRunResult
 
 __all__ = ["PydanticAIFuncs"]
 
@@ -58,7 +62,8 @@ class PydanticAIFuncs(LLMFuncs):
         ``export_anchor`` — 锚的目标文件名 (无 .anchor.yml 后缀, 可含路径).
         None = 不产锚; ``""`` = 自动生成带 uid 的名字; 其它 = 稳定地址.
         调用前后各落一次锚: 调用前写请求帧 (调用失败也保留请求锚), 成功后
-        覆写为完整帧 (请求 + 结果), 锚经 ``LLMFuncResult.anchor`` 携带出来。
+        覆写为完整帧 (instruction + turns — 标准序列化的 request/response,
+        含 thinking), 锚经 ``LLMFuncResult.anchor`` 携带出来。
         """
         from ghoshell_moss.llms.client import build_agent
 
@@ -68,7 +73,7 @@ class PydanticAIFuncs(LLMFuncs):
         anchor = None
         if anchor_dir is not None:
             anchor = _build_call_anchor(
-                instruction, prompt, result_type, model, effort,
+                instruction, result_type, model, effort,
                 name=base_name, description=anchor_description,
             )
             anchor.dump_to_dir(anchor_dir, anchor.meta.name)
@@ -93,12 +98,11 @@ class PydanticAIFuncs(LLMFuncs):
         if anchor is not None:
             frame = CallAnchor(
                 instruction=instruction,
-                prompt=prompt,
                 model=ModelRef.from_resolved(model),
                 result_type=_type_path(result_type),
                 effort=effort,
+                turns=_serialize_messages(result.all_messages()),
                 result=typed.model_dump() if typed is not None else None,
-                content=llm_result.content,
             )
             anchor.payload = frame.model_dump(exclude_none=True, exclude={"meta"})
             anchor.dump_to_dir(anchor_dir, anchor.meta.name)
@@ -208,7 +212,6 @@ def _resolve_anchor_target(export_anchor: str | Path | None) -> tuple[Path | Non
 
 def _build_call_anchor(
         instruction: str,
-        prompt: str,
         result_type: Type[RESULT_MODEL],
         model: ResolvedModel,
         effort: Effort | None,
@@ -216,10 +219,9 @@ def _build_call_anchor(
         name: str,
         description: str,
 ) -> Anchor:
-    """组装请求帧 CallAnchor → 转弱 Anchor. name 空则按 uid 自动命名."""
+    """组装请求帧 CallAnchor (无 turns) → 转弱 Anchor. name 空则按 uid 自动命名."""
     request = CallAnchor(
         instruction=instruction,
-        prompt=prompt,
         model=ModelRef.from_resolved(model),
         result_type=_type_path(result_type),
         effort=effort,
@@ -230,7 +232,14 @@ def _build_call_anchor(
     return anchor
 
 
-def _extract_text(result) -> str:
+def _serialize_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+    """pydantic-ai 标准序列化 message history — 保住 thinking/text/tool 所有 part."""
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    return ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+
+
+def _extract_text(result: AgentRunResult[Any]) -> str:
     """从 pydantic-ai 结果提取原始文本 (TextPart 拼接).
 
     结构化模式下模型可能仅在 tool call 返回内容, 此值可能为空。
@@ -245,7 +254,7 @@ def _extract_text(result) -> str:
     return "".join(parts)
 
 
-def _dataclass_asdict(obj) -> dict:
+def _dataclass_asdict(obj: Any) -> dict[str, Any]:
     """dataclass 转 dict (RunUsage 等). 非 dataclass 返回空 dict。"""
     if dataclasses.is_dataclass(obj):
         return dataclasses.asdict(obj)

@@ -2,9 +2,9 @@
 
 Uses mock Agent (no real API calls). Validates: anchor file written with the
 two-section yaml, meta + payload fields, ref points to the payload
-definition, file -> CallAnchor round-trip reconstructs the call, and the
-request frame survives a failed call. export_anchor is a target filename
-(no suffix); '' auto-generates a uid-based name.
+definition, the turns capture the full request/response (incl thinking) in
+pydantic-ai standard serialization, file -> CallAnchor round-trip
+reconstructs the call, and the request frame survives a failed call.
 """
 
 from pathlib import Path
@@ -13,6 +13,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 from pydantic import BaseModel
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    SystemPromptPart,
+    TextPart,
+    ThinkingPart,
+    UserPromptPart,
+)
 
 from ghoshell_moss.anchor import Anchor, AnchorMeta
 from ghoshell_moss.contracts.llms import (
@@ -38,10 +46,21 @@ def _make_resolved() -> ResolvedModel:
     )
 
 
-def _make_mock_agent(output, *, text_parts=None, exc=None):
-    """Mock Agent: run() -> AgentRunResult, or raises ``exc``."""
-    from pydantic_ai.messages import ModelResponse, TextPart
+def _make_mock_agent(
+        output: BaseModel | None,
+        *,
+        instruction: str = "",
+        prompt: str = "",
+        thinking: str | None = None,
+        text_parts: list[str] | None = None,
+        exc: Exception | None = None,
+) -> MagicMock:
+    """Mock Agent: run() -> AgentRunResult with a real request/response pair.
 
+    all_messages() returns [ModelRequest(system+user), ModelResponse(thinking?,
+    text...)] so the anchor's turns carry the full turn in standard
+    serialization — exactly what the real engine produces.
+    """
     agent = MagicMock()
     if exc is not None:
         agent.run = AsyncMock(side_effect=exc)
@@ -49,12 +68,16 @@ def _make_mock_agent(output, *, text_parts=None, exc=None):
     result = MagicMock()
     result.output = output
     result.usage = None
-    messages = []
-    if text_parts:
-        msg = MagicMock(spec=ModelResponse)
-        msg.parts = [MagicMock(spec=TextPart, content=t) for t in text_parts]
-        messages.append(msg)
-    result.all_messages.return_value = messages
+    request = ModelRequest(parts=[
+        SystemPromptPart(content=instruction),
+        UserPromptPart(content=prompt),
+    ])
+    resp_parts: list[ThinkingPart | TextPart] = []
+    if thinking:
+        resp_parts.append(ThinkingPart(content=thinking))
+    for t in (text_parts or []):
+        resp_parts.append(TextPart(content=t))
+    result.all_messages.return_value = [request, ModelResponse(parts=resp_parts)]
     agent.run = AsyncMock(return_value=result)
     return agent
 
@@ -76,7 +99,13 @@ def _anchor_files(dir: Path) -> list[Path]:
 async def test_call_produces_named_anchor(tmp_path: Path):
     """export_anchor=filename writes a two-section anchor; result carries it."""
     funcs = PydanticAIFuncs()
-    agent = _make_mock_agent(output=Score(value=8), text_parts=["thinking..."])
+    agent = _make_mock_agent(
+        output=Score(value=8),
+        instruction="you are helpful",
+        prompt="rate this",
+        thinking="i reasoned carefully",
+        text_parts=["thinking..."],
+    )
 
     with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
         result = await funcs.call(
@@ -99,12 +128,20 @@ async def test_call_produces_named_anchor(tmp_path: Path):
     assert meta["ref"] == CallAnchor.ref()
     assert meta["created"]
     assert payload["instruction"] == "you are helpful"
-    assert payload["prompt"] == "rate this"
     assert payload["model"]["service"] == "test"
     assert payload["model"]["model"] == "test-model"
     assert payload["result_type"] == _type_path(Score)
     assert payload["result"] == {"value": 8}
-    assert payload["content"] == "thinking..."
+
+    # turns = full request/response in standard serialization, thinking preserved
+    turns = payload["turns"]
+    assert len(turns) == 2
+    assert [p["part_kind"] for p in turns[0]["parts"]] == ["system-prompt", "user-prompt"]
+    assert turns[0]["parts"][0]["content"] == "you are helpful"
+    assert turns[0]["parts"][1]["content"] == "rate this"
+    assert [p["part_kind"] for p in turns[1]["parts"]] == ["thinking", "text"]
+    assert turns[1]["parts"][0]["content"] == "i reasoned carefully"
+    assert turns[1]["parts"][1]["content"] == "thinking..."
 
 
 @pytest.mark.asyncio
@@ -158,9 +195,16 @@ async def test_anchor_reconstructs_call(tmp_path: Path):
 
     A model curls meta.ref to learn the payload shape, then from_anchor
     rebuilds the typed request — the protocol's single key proposition.
+    turns round-trips the full request/response incl thinking.
     """
     funcs = PydanticAIFuncs()
-    agent = _make_mock_agent(output=Score(value=8), text_parts=["thinking..."])
+    agent = _make_mock_agent(
+        output=Score(value=8),
+        instruction="you are helpful",
+        prompt="rate this",
+        thinking="i reasoned carefully",
+        text_parts=["thinking..."],
+    )
 
     with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
         result = await funcs.call(
@@ -176,12 +220,13 @@ async def test_anchor_reconstructs_call(tmp_path: Path):
         Anchor(meta=AnchorMeta(**meta), payload=payload)
     )
     assert rebuilt.instruction == "you are helpful"
-    assert rebuilt.prompt == "rate this"
     assert rebuilt.model.service == "test"
     assert rebuilt.model.model == "test-model"
     assert rebuilt.result_type == _type_path(Score)
     assert rebuilt.result == {"value": 8}
-    assert rebuilt.content == "thinking..."
+    assert len(rebuilt.turns) == 2
+    assert [p["part_kind"] for p in rebuilt.turns[1]["parts"]] == ["thinking", "text"]
+    assert rebuilt.turns[1]["parts"][0]["content"] == "i reasoned carefully"
 
 
 # ── failure ────────────────────────────────────────────────────────────
@@ -208,7 +253,7 @@ async def test_request_frame_survives_failed_call(tmp_path: Path):
     meta, payload = _read_anchor(files[0])
     assert meta["ref"] == CallAnchor.ref()
     assert payload["instruction"] == "you are helpful"
-    assert payload["prompt"] == "rate this"
     assert payload["model"]["service"] == "test"
+    assert payload["result_type"] == _type_path(Score)
+    assert payload["turns"] == []  # request frame: no history yet
     assert "result" not in payload
-    assert "content" not in payload
