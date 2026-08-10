@@ -12,7 +12,7 @@ from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, howto_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    ground_cli, memento_cli, llms_cli, audio_cli,
+    ground_cli, memento_cli, llms_cli, audio,
 )
 from ghoshell_moss.depends import depend_matrix
 from typer.main import get_command
@@ -54,7 +54,7 @@ else:
     app.add_typer(nodes_cli.nodes_app, name="nodes", short_help="Discover, create, launch, and maintain node cells")
     app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
     app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
-    app.add_typer(audio_cli.audio_app, name="audio", short_help="Audio capability probing — capture, playback, TTS, ASR")
+    app.add_typer(audio.audio_app, name="audio", short_help="Audio capability probing — capture, playback, TTS, ASR")
 
 
 @app.callback(invoke_without_command=True)
