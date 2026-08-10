@@ -177,11 +177,15 @@ def _call_structured(
         verbose: bool,
         repeat: int,
         effort: Effort | None = None,
+        export_anchor: str | None = None,
 ) -> None:
     """Structured call via model-func engine (PydanticAIFuncs).
 
     ``response_model`` is module:attr pointing to a BaseModel subclass.
     ``instruction`` is auto-read from file if it is an existing path.
+    ``export_anchor`` — anchor target filename (no .anchor.yml suffix, may
+    embed a path); '' = auto-generate a uid-based name. Produced anchor file
+    paths are printed after the results.
     """
     import json as _json
 
@@ -192,8 +196,9 @@ def _call_structured(
     inst = _read_instruction(instruction)
     funcs = PydanticAIFuncs()
 
-    async def _run() -> list[dict]:
+    async def _run() -> tuple[list[dict], list[str]]:
         results = []
+        anchor_paths: list[str] = []
         for _ in range(repeat):
             r = await funcs.call(
                 instruction=inst,
@@ -201,11 +206,19 @@ def _call_structured(
                 result_type=result_type,
                 model=resolved,
                 effort=effort,
+                export_anchor=export_anchor,
             )
-            results.append(r.model_dump(exclude_none=True))
-        return results
+            if r.anchor is not None:
+                if export_anchor:
+                    anchor_paths.append(f"{export_anchor}.anchor.yml")
+                else:
+                    anchor_paths.append(f"{r.anchor.meta.name}.anchor.yml")
+            item = r.model_dump(exclude_none=True)
+            item.pop("anchor", None)
+            results.append(item)
+        return results, anchor_paths
 
-    items = asyncio.run(_run())
+    items, anchor_paths = asyncio.run(_run())
     if repeat == 1 and not json_output:
         _print_single_result(items[0], verbose)
     elif repeat == 1 and json_output:
@@ -219,6 +232,8 @@ def _call_structured(
     else:
         for item in items:
             echo(item.get("content", "") or str(item["result"]))
+    for p in anchor_paths:
+        print_success(f"anchor: {p}")
 
 
 def _print_single_result(item: dict, verbose: bool) -> None:
@@ -321,6 +336,13 @@ if _ghost_extra_available():
                 None, "--effort",
                 help="Thinking effort: none/minimal/low/medium/high/xhigh/max.",
             ),
+            export_anchor: str = typer.Option(
+                None, "--export-anchor",
+                help=(
+                    "Anchor target filename (no .anchor.yml suffix, may embed a path). "
+                    "'' = auto-generate a uid-based name. Structured calls only."
+                ),
+            ),
     ) -> None:
         """One-shot LLM call. Prompt + optional instruction and structured output.
 
@@ -328,7 +350,9 @@ if _ghost_extra_available():
         call via model-func engine — instruction + prompt -> BaseModel result.
         ``-n`` > 1 repeats in-process. ``-i`` auto-reads a file if the value
         is an existing path. ``--effort`` maps per protocol (anthropic_effort /
-        openai_reasoning_effort).
+        openai_reasoning_effort). ``--export-anchor`` freezes each call as a
+        cognitive anchor file — name it for a stable address (re-run overwrites,
+        versions live in git), or pass ``''`` for an auto uid-based name.
         """
         conf = _load_config()
         resolved = _resolve_for_call(
@@ -346,6 +370,7 @@ if _ghost_extra_available():
                     verbose=verbose,
                     repeat=repeat,
                     effort=effort,
+                    export_anchor=export_anchor,
                 )
             else:
                 output = _call(

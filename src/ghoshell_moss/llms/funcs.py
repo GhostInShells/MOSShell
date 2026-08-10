@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Type
 
+from ghoshell_moss.anchor import Anchor
 from ghoshell_moss.contracts.llms import (
     RESULT_MODEL,
     BenchmarkCase,
@@ -26,6 +27,7 @@ from ghoshell_moss.contracts.llms import (
     ResolvedModel,
     TokenCount,
 )
+from ghoshell_moss.llms.call_anchor import CallAnchor
 
 __all__ = ["PydanticAIFuncs"]
 
@@ -46,15 +48,31 @@ class PydanticAIFuncs(LLMFuncs):
         result_type: Type[RESULT_MODEL],
         model: ResolvedModel,
         effort: Effort | None = None,
+        export_anchor: str | Path | None = None,
+        anchor_description: str = "",
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用 — build_agent + agent.run(output_type, instructions).
 
         ``model`` 必须是已 resolve 的 ResolvedModel (api_key 已解密, 仅内存).
         ``effort`` 透传给 build_agent, 由它按协议映射到 effort 字段.
+        ``export_anchor`` — 锚的目标文件名 (无 .anchor.yml 后缀, 可含路径).
+        None = 不产锚; ``""`` = 自动生成带 uid 的名字; 其它 = 稳定地址.
+        调用前后各落一次锚: 调用前写请求帧 (调用失败也保留请求锚), 成功后
+        覆写为完整帧 (请求 + 结果), 锚经 ``LLMFuncResult.anchor`` 携带出来。
         """
         from ghoshell_moss.llms.client import build_agent
 
+        anchor_dir, base_name = _resolve_anchor_target(export_anchor)
         agent = build_agent(model, effort=effort)
+
+        anchor = None
+        if anchor_dir is not None:
+            anchor = _build_call_anchor(
+                instruction, prompt, result_type, model, effort,
+                name=base_name, description=anchor_description,
+            )
+            anchor.dump_to_dir(anchor_dir, anchor.meta.name)
+
         start = time.perf_counter()
         result = await agent.run(
             prompt,
@@ -63,13 +81,29 @@ class PydanticAIFuncs(LLMFuncs):
         )
         elapsed = time.perf_counter() - start
         output = result.output
-        return LLMFuncResult[result_type](
-            result=output if isinstance(output, result_type) else None,
+        typed = output if isinstance(output, result_type) else None
+
+        llm_result = LLMFuncResult[result_type](
+            result=typed,
             content=_extract_text(result),
             usage=_dataclass_asdict(result.usage) if result.usage else {},
             cast=elapsed,
             retries=0,
         )
+        if anchor is not None:
+            frame = CallAnchor(
+                instruction=instruction,
+                prompt=prompt,
+                model=ModelRef.from_resolved(model),
+                result_type=_type_path(result_type),
+                effort=effort,
+                result=typed.model_dump() if typed is not None else None,
+                content=llm_result.content,
+            )
+            anchor.payload = frame.model_dump(exclude_none=True, exclude={"meta"})
+            anchor.dump_to_dir(anchor_dir, anchor.meta.name)
+            llm_result.anchor = anchor
+        return llm_result
 
     async def run_benchmark(
         self,
@@ -151,6 +185,49 @@ class PydanticAIFuncs(LLMFuncs):
 
 
 # ── helpers ────────────────────────────────────────────────────────────
+
+
+def _type_path(cls: Type) -> str:
+    """module:attr 路径 — 指向输出 schema, 可经 import_from_path 还原."""
+    return f"{cls.__module__}:{cls.__qualname__}"
+
+
+def _resolve_anchor_target(export_anchor: str | Path | None) -> tuple[Path | None, str]:
+    """把 export_anchor 解析为 (目标目录, 文件名 stem).
+
+    None → (None, "") 不产锚; ``""`` → (cwd, "") 自动生成 uid 名字;
+    其它 → 文件名/路径 (无后缀), 目录取所在路径的父目录.
+    """
+    if export_anchor is None:
+        return None, ""
+    if export_anchor == "":
+        return Path("."), ""
+    target = Path(export_anchor)
+    return target.parent, target.stem
+
+
+def _build_call_anchor(
+        instruction: str,
+        prompt: str,
+        result_type: Type[RESULT_MODEL],
+        model: ResolvedModel,
+        effort: Effort | None,
+        *,
+        name: str,
+        description: str,
+) -> Anchor:
+    """组装请求帧 CallAnchor → 转弱 Anchor. name 空则按 uid 自动命名."""
+    request = CallAnchor(
+        instruction=instruction,
+        prompt=prompt,
+        model=ModelRef.from_resolved(model),
+        result_type=_type_path(result_type),
+        effort=effort,
+    )
+    anchor = request.to_anchor(name=name, description=description)
+    if not anchor.meta.name:
+        anchor.meta.name = f"call-{anchor.meta.uid[:8]}"
+    return anchor
 
 
 def _extract_text(result) -> str:

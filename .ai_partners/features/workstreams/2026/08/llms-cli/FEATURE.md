@@ -6,10 +6,11 @@ description: Make llms config genuinely usable — Project.configs() single-sour
 milestone: null
 priority: P1
 status: in-progress
-status_note: 'Round 2 (2026-08-09): TokenCount count_tokens, effort as call param,
-  LLMFuncs project provider, CLI reads via project container force_fetch.'
+status_note: 'Round 3 (2026-08-11): LLMFuncs.call produces cognitive anchors
+  (export_anchor + LLMFuncResult.anchor, CallAnchor payload, CLI --export-anchor).
+  Collision with cognitive-anchor v4.'
 title: Llms Cli
-updated: '2026-08-09'
+updated: '2026-08-11'
 ---
 
 # Llms Cli

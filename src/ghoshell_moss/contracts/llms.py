@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, AwareDatetime
 from .configs import ConfigType
+from ghoshell_moss.anchor import Anchor
 from ghoshell_moss.message import Message, Content
 from ghoshell_common.helpers import import_from_path
 from ghoshell_container import IoCContainer
@@ -497,9 +498,16 @@ class LLMFuncResult(BaseModel, Generic[RESULT_MODEL]):
         default=0,
         description="本轮调用内部的模型重试次数",
     )
+    anchor: Anchor | None = Field(
+        default=None,
+        description=(
+            "本次调用的认知锚 (Anchor) — call(export_anchor=...) 给定文件名时产出。"
+            "锚是独立持久化路径 (.anchor.yml), 不随 to_record() 进入弱数据 record。"
+        ),
+    )
 
     def to_record(self) -> LLMFuncResultRecord:
-        """转为弱数据 record, 用于持久化。result 展平为 dict。"""
+        """转为弱数据 record, 用于持久化。result 展平为 dict。锚不携带。"""
         result_dict = self.result.model_dump() if self.result is not None else None
         return LLMFuncResultRecord(
             result=result_dict,
@@ -660,12 +668,19 @@ class LLMFuncs(ABC):
             result_type: Type[RESULT_MODEL],
             model: ResolvedModel,
             effort: Effort | None = None,
+            export_anchor: str | Path | None = None,
+            anchor_description: str = "",
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用: instruction + prompt -> 结构化 result_type 结果.
 
         ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
         ``effort`` — thinking effort 刻度 (none..max), 不进 config, 引擎按协议
         映射到 pydantic-ai 的 effort 字段 (anthropic_effort / openai_reasoning_effort)。
+        ``export_anchor`` — 锚的目标文件名 (无 ``.anchor.yml`` 后缀, 可含路径如
+        ``.anchors/my-call``)。None = 不产锚; ``""`` = 自动生成带 uid 的名字
+        (``call-<uid[:8]>``); 其它 = 稳定地址 (重跑覆盖, 版本由 git 治理)。
+        锚经 ``LLMFuncResult.anchor`` 携带出来。``anchor_description`` 是锚的
+        一句说明 (meta.description)。
         """
 
     @abstractmethod
