@@ -157,7 +157,7 @@ def _call(
         max_output_tokens: int | None = None,
         effort: Effort | None = None,
 ) -> str:
-    from ghoshell_moss.llms.client import build_agent
+    from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
     agent = build_agent(
         resolved,
         temperature=temperature,
@@ -199,7 +199,7 @@ def _call_structured(
 
     from ghoshell_common.helpers import import_from_path
     from ghoshell_moss.anchor import Anchor
-    from ghoshell_moss.llms.funcs import PydanticAIFuncs
+    from ghoshell_moss.llms.pydantic_ai_adapter.funcs import PydanticAIFuncs
 
     result_type = import_from_path(response_model)
     inst = _read_instruction(instruction)

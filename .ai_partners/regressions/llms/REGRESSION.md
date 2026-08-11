@@ -21,7 +21,7 @@ description: >-
 ```
 moss --ai all-commands --group llms
 moss codex get-interface ghoshell_moss.contracts.llms:LLMFuncs
-moss codex get-interface ghoshell_moss.llms.funcs:PydanticAIFuncs
+moss codex get-interface ghoshell_moss.llms.pydantic_ai_adapter.funcs:PydanticAIFuncs
 git log --oneline -5 -- src/ghoshell_moss/contracts/llms.py src/ghoshell_moss/llms/funcs.py
 ```
 

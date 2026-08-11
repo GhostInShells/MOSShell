@@ -78,11 +78,11 @@ import ghoshell_moss.cli as cli
 
 # ============================================================================
 # LLMs — 模型配置与调用引擎 (model func)
-# ghoshell_moss.llms
+# ghoshell_moss.llms.pydantic_ai_adapter
 # ============================================================================
 
-import ghoshell_moss.llms.client as llms_client
-import ghoshell_moss.llms.funcs as llms_funcs
+import ghoshell_moss.llms.pydantic_ai_adapter.client as llms_client
+import ghoshell_moss.llms.pydantic_ai_adapter.funcs as llms_funcs
 
 # ============================================================================
 # Protocol — 系统协议

@@ -34,7 +34,7 @@ def _resolve_model() -> "ResolvedModel":
 
 
 async def main(dir_: Path) -> None:
-    from ghoshell_moss.llms.funcs import PydanticAIFuncs
+    from ghoshell_moss.llms.pydantic_ai_adapter.funcs import PydanticAIFuncs
 
     sys.path.insert(0, str(dir_))  # make models.py importable
     meta = _parse_bench_md(dir_)

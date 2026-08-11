@@ -25,5 +25,5 @@ class ProjectLLMFuncsProvider(Provider[LLMFuncs]):
         return LLMFuncs
 
     def factory(self, con: IoCContainer) -> LLMFuncs:
-        from ghoshell_moss.llms.funcs import PydanticAIFuncs
+        from ghoshell_moss.llms.pydantic_ai_adapter.funcs import PydanticAIFuncs
         return PydanticAIFuncs()

@@ -23,7 +23,7 @@ __all__ = ["CallAnchor"]
 # (SPEC §5: stable-or-versioned is a consumer decision).
 _CALL_ANCHOR_REF = (
     "https://github.com/GhostInShells/MOSShell/blob/main/"
-    "src/ghoshell_moss/llms/call_anchor.py"
+    "src/ghoshell_moss/llms/pydantic_ai_adapter/call_anchor.py"
 )
 
 

@@ -24,7 +24,7 @@ from ghoshell_moss.contracts.llms import (
     ServiceConfig,
     ModelConfig,
 )
-from ghoshell_moss.llms.funcs import (
+from ghoshell_moss.llms.pydantic_ai_adapter.funcs import (
     PydanticAIFuncs,
     _extract_text,
     _resolve_file_value,
@@ -160,7 +160,7 @@ async def test_call_structured_output():
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=Score(value=8), text_parts=["thinking..."])
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         result = await funcs.call(
             instruction="you are helpful",
             prompt="rate this",
@@ -182,7 +182,7 @@ async def test_call_null_result():
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output="plain string", text_parts=["hello"])
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         result = await funcs.call(
             instruction="",
             prompt="hi",
@@ -200,7 +200,7 @@ async def test_call_to_record():
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=Tag(label="greeting", confidence=0.95))
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         result = await funcs.call(
             instruction="",
             prompt="classify",
@@ -237,7 +237,7 @@ async def test_run_benchmark_basic(tmp_path: Path):
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=Tag(label="ok", confidence=0.5))
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         record = await funcs.run_benchmark(
             meta, resolved, cwd=tmp_path,
         )
@@ -267,7 +267,7 @@ async def test_run_benchmark_output_file(tmp_path: Path):
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=Score(value=1))
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         await funcs.run_benchmark(meta, _make_resolved(), cwd=tmp_path, output_file=output)
 
     assert output.is_file()

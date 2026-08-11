@@ -1,7 +1,7 @@
 """Tests for build_agent — pydantic-ai model construction with effort mapping."""
 
 from ghoshell_moss.contracts.llms import ResolvedModel, ServiceConfig, ModelConfig
-from ghoshell_moss.llms.client import build_agent
+from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
 
 
 def _resolved(protocol: str, model: str) -> ResolvedModel:

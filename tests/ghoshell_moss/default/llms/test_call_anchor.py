@@ -29,8 +29,8 @@ from ghoshell_moss.contracts.llms import (
     ResolvedModel,
     ServiceConfig,
 )
-from ghoshell_moss.llms.call_anchor import CallAnchor
-from ghoshell_moss.llms.funcs import PydanticAIFuncs, _type_path
+from ghoshell_moss.llms.pydantic_ai_adapter.call_anchor import CallAnchor
+from ghoshell_moss.llms.pydantic_ai_adapter.funcs import PydanticAIFuncs, _type_path
 
 
 class Score(BaseModel):
@@ -108,7 +108,7 @@ async def test_call_produces_named_anchor(tmp_path: Path):
         text_parts=["thinking..."],
     )
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         result = await funcs.call(
             instruction="you are helpful",
             prompt="rate this",
@@ -152,7 +152,7 @@ async def test_call_auto_uid_name(tmp_path: Path, monkeypatch):
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=Score(value=1), text_parts=["ok"])
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         result = await funcs.call(
             instruction="",
             prompt="hi",
@@ -175,7 +175,7 @@ async def test_no_export_no_anchor(tmp_path: Path):
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=Score(value=3))
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         result = await funcs.call(
             instruction="",
             prompt="hi",
@@ -207,7 +207,7 @@ async def test_anchor_reconstructs_call(tmp_path: Path):
         text_parts=["thinking..."],
     )
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         result = await funcs.call(
             instruction="you are helpful",
             prompt="rate this",
@@ -263,7 +263,7 @@ async def test_call_consumes_anchor(tmp_path: Path):
         thinking="i reasoned carefully",
         text_parts=["ok"],
     )
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=producer):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=producer):
         produced = await funcs.call(
             instruction="base instruction",
             prompt="first call",
@@ -274,7 +274,7 @@ async def test_call_consumes_anchor(tmp_path: Path):
     assert produced.anchor is not None
 
     consumer = _make_mock_agent(output=Score(value=9), text_parts=["done"])
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=consumer):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=consumer):
         await funcs.call(
             instruction="continue",
             prompt="follow up",
@@ -302,7 +302,7 @@ async def test_call_consumes_anchor_from_file(tmp_path: Path):
         thinking="i reasoned carefully",
         text_parts=["ok"],
     )
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=producer):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=producer):
         produced = await funcs.call(
             instruction="base instruction",
             prompt="first call",
@@ -313,7 +313,7 @@ async def test_call_consumes_anchor_from_file(tmp_path: Path):
     path = _anchor_files(tmp_path)[0]
 
     consumer = _make_mock_agent(output=Score(value=9), text_parts=["done"])
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=consumer):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=consumer):
         await funcs.call(
             instruction="continue",
             prompt="follow up",
@@ -342,7 +342,7 @@ async def test_call_unsupported_anchor_ref(tmp_path: Path):
         meta=AnchorMeta(name="foreign", ref="https://example.com/other-payload"),
         payload={"foo": "bar"},
     )
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         with pytest.raises(NotImplementedError, match="unsupported input anchor"):
             await funcs.call(
                 instruction="",
@@ -365,7 +365,7 @@ async def test_call_request_frame_anchor_cold_start(tmp_path: Path):
         result_type=_type_path(Score),
         turns=[],
     ).to_anchor(name="req")
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         await funcs.call(
             instruction="",
             prompt="hi",
@@ -388,7 +388,7 @@ async def test_call_thinking_injects_introspection(tmp_path: Path):
     """
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=Score(value=5), text_parts=["ok"])
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         await funcs.call(
             instruction="",
             prompt="question",
@@ -420,7 +420,7 @@ async def test_call_thinking_chains_into_anchor(tmp_path: Path):
     ]
     agent = MagicMock()
     agent.run = AsyncMock(return_value=result)
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         await funcs.call(
             instruction="sys",
             prompt="question",
@@ -449,7 +449,7 @@ async def test_call_thinking_after_anchor_history(tmp_path: Path):
         thinking="prior reasoning",
         text_parts=["ok"],
     )
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=producer):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=producer):
         produced = await funcs.call(
             instruction="base instruction",
             prompt="first call",
@@ -460,7 +460,7 @@ async def test_call_thinking_after_anchor_history(tmp_path: Path):
     assert produced.anchor is not None
 
     consumer = _make_mock_agent(output=Score(value=9), text_parts=["done"])
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=consumer):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=consumer):
         await funcs.call(
             instruction="continue",
             prompt="follow up",
@@ -486,7 +486,7 @@ async def test_request_frame_survives_failed_call(tmp_path: Path):
     funcs = PydanticAIFuncs()
     agent = _make_mock_agent(output=None, exc=RuntimeError("boom"))
 
-    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         with pytest.raises(RuntimeError, match="boom"):
             await funcs.call(
                 instruction="you are helpful",

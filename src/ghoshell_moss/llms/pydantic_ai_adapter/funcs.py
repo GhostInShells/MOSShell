@@ -29,7 +29,7 @@ from ghoshell_moss.contracts.llms import (
     ResolvedModel,
     TokenCount,
 )
-from ghoshell_moss.llms.call_anchor import CallAnchor
+from ghoshell_moss.llms.pydantic_ai_adapter.call_anchor import CallAnchor
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -77,7 +77,7 @@ class PydanticAIFuncs(LLMFuncs):
         让模型把它当作自己的既有立场而非需回复的用户输入. 以 ThinkingPart
         进入 turns, 不进锚的语义字段.
         """
-        from ghoshell_moss.llms.client import build_agent
+        from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
 
         anchor_dir, base_name = _resolve_anchor_target(export_anchor)
         agent = build_agent(model, effort=effort)
