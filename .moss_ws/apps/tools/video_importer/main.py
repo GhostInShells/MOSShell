@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.resources.local_video import (
+from ghoshell_moss.resources.local_video import (
     _VIDEO_EXTENSIONS,
     LocalVideoInfo,
     LocalVideoItem,

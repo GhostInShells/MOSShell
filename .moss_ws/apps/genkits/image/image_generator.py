@@ -19,7 +19,7 @@ import aiohttp
 from pydantic import BaseModel
 
 from ghoshell_container import Provider, IoCContainer
-from ghoshell_moss.core.resources.local_image import (
+from ghoshell_moss.resources.local_image import (
     LocalImageStorage,
     LocalImageItem,
     LocalImageInfo,

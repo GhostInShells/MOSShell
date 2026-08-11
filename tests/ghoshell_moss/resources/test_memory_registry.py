@@ -5,12 +5,12 @@ InMemoryRegistry 单元测试.
 import pytest
 from PIL import Image as PILImage
 
-from ghoshell_moss.core.resources.local_image import (
+from ghoshell_moss.resources.local_image import (
     LocalImageInfo,
     LocalImageItem,
     LocalImageStorage,
 )
-from ghoshell_moss.core.resources.memory_registry import InMemoryResourcesRegistry
+from ghoshell_moss.resources.memory_registry import InMemoryResourcesRegistry
 
 
 class _InMemoryImageItem(LocalImageItem):

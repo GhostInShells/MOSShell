@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.resources.local_image import (
+from ghoshell_moss.resources.local_image import (
     LocalImageInfo,
     LocalImageItem,
     LocalImageStorage,

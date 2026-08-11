@@ -104,7 +104,7 @@ class LocalProject(Project):
         from ghoshell_moss.project.providers.subprocesses_provider import ProjectSubprocessesProvider
         from ghoshell_moss.project.providers.job_supervisor_provider import ProjectJobSupervisorProvider
         from ghoshell_moss.project.providers.llms_provider import ProjectLLMFuncsProvider
-        from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
+        from ghoshell_moss.resources.memory_registry import InMemoryResourceRegistryProvider
 
         yield ProjectSubprocessesProvider()
         yield ProjectJobSupervisorProvider()

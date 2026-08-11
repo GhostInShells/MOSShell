@@ -1,15 +1,15 @@
 ---
-title: Moss Skills — skills CLI 与 howtos 迁移
-status: in-progress
-priority: P1
 created: 2026-08-11
-updated: 2026-08-11
 depends: []
-milestone:
-description: >-
-  howtos 机制正规化为 skills — 路径迁移 (a.md → a/SKILL.md), MarkdownKnowledgeBase
-  正规化为 glob+frontmatter 的轻量 resource 壳 (目标: recall / matrix-resources /
-  身份位置), 以 moss skills CLI (discover/recall) 取代 moss howtos.
+description: 'howtos 机制正规化为 skills — 路径迁移 (a.md → a/SKILL.md), MarkdownKnowledgeBase
+  正规化为 glob+frontmatter 的轻量 resource 壳 (目标: recall / matrix-resources / 身份位置), 以 moss
+  skills CLI (discover/recall) 取代 moss howtos.'
+milestone: null
+priority: P1
+status: in-progress
+status_note: 'K6 定案: resources 顶层包; 2026-08-12 完成 core/resources → resources 迁移, 注册面验证通过'
+title: Moss Skills — skills CLI 与 howtos 迁移
+updated: '2026-08-12'
 ---
 
 # Moss Skills
@@ -45,7 +45,7 @@ description: >-
 ## Design Index
 
 - `src/ghoshell_moss/contracts/resource.py` — resource 契约 (ResourceStorage / recall / Recollection)
-- `src/ghoshell_moss/core/resources/markdown_kb/_markdown_kb.py` — 现 MarkdownKnowledgeBase
+- `src/ghoshell_moss/resources/markdown_kb/_markdown_kb.py` — 现 MarkdownKnowledgeBase
 - `src/ghoshell_moss/ground/` — glob+frontmatter 机制的成熟参照 (FrontmatterPin / glob_limited)
 - `.grounds/skill-ground.md` — skills 目录 ground 模板 (frontmatter pin 索引 `*/SKILL.md` description)
 - `src/ghoshell_moss/cli/howto_cli.py` — 现 howtos CLI (list/read)
@@ -126,12 +126,14 @@ list` 动态发现或直接移除)。活引用面 (机制名) 同步更新; 历�
 - 漂移症状: `recall` 命令已在 CLI 删除, 但 `how_tos/README.md` / `glossary.md:178` /
   `cli/CLAUDE.md:127` 仍在引用。
 
-### K6. resource 身份位置: `core/` 下可能是错的
+### K6. resource 身份位置: 顶层 `resources/` 子包 (已定)
 
 参照 ground 先例 (K49/K50: ground 从 contracts/core 独立为顶层子包 `ghoshell_moss.ground`)。
-resources 是比具体领域更基础的机制层 (契约在 `contracts/resource.py`, 实现在
-`core/resources/`), 候选位置 = 顶层 `resources/` 子包。确切落点待 plan 时定,
-feature 记录方向不锁死。
+resources 是比具体领域更基础的机制层 (契约在 `contracts/resource.py`), 落位
+顶层 `ghoshell_moss.resources` 子包。**2026-08-12 迁移完成**: `core/resources/` →
+`resources/`, 同步源码 import (howto_cli/docs_cli/local_project)、stubs 模板 +
+`.moss`/`.moss_ws` manifests 注册、测试目录镜像。验证: import 解析 / 45 测试 /
+`moss manifests resources|providers` 注册面全过。
 
 ## Implementation Notes
 
@@ -148,7 +150,7 @@ feature 记录方向不锁死。
 
 ## 下一步 (plan 候选)
 
-1. 包结构落位 (K6) — 决定 resources 顶层包 vs 就地
+1. ~~包结构落位 (K6)~~ — ✅ 2026-08-12 已定顶层 `resources/`, 迁移完成
 2. MarkdownKnowledgeBase 正规化 (K3) — glob+frontmatter, __init__ 参数化
 3. skills CLI (K4) — list 先落地, recall/hint 接 LLMFuncs
 4. howtos 迁移 (K1) + 引用清理 (K5)

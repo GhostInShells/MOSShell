@@ -15,7 +15,7 @@ DOCS_HOST = "moss-docs"
 
 
 def _load_kb(root: Path):
-    from ghoshell_moss.core.resources.markdown_kb import MarkdownKnowledgeBase
+    from ghoshell_moss.resources.markdown_kb import MarkdownKnowledgeBase
     kb = MarkdownKnowledgeBase(host=DOCS_HOST, root=root)
     kb.scan()
     return kb

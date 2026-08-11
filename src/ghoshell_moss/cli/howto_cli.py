@@ -23,7 +23,7 @@ def load_markdown_knowledge_base(_path: Path):
     Initialize and scan the knowledge base (sync, fast).
     :return: MarkdownKnowledgeBase
     """
-    from ghoshell_moss.core.resources.markdown_kb import MarkdownKnowledgeBase
+    from ghoshell_moss.resources.markdown_kb import MarkdownKnowledgeBase
     _path = _path
     _kb = MarkdownKnowledgeBase(host="moss-howto", root=_path)
     _kb.scan()

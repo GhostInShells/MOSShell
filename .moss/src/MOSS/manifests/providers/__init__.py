@@ -22,7 +22,7 @@ from ghoshell_moss.project.providers import (
     ProjectJobSupervisorProvider,
 )
 
-from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
+from ghoshell_moss.resources.memory_registry import InMemoryResourceRegistryProvider
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
 from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
 from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerProvider

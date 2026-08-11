@@ -6,7 +6,7 @@ import pytest
 from PIL import Image as PILImage
 
 from ghoshell_moss.contracts.resource import ClarifyError
-from ghoshell_moss.core.resources.local_image import (
+from ghoshell_moss.resources.local_image import (
     LocalImageInfo,
     LocalImageItem,
     LocalImageStorage,

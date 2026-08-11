@@ -4,5 +4,5 @@
 # 显式继承全局 resources，然后追加 mode 专属的：
 from MOSS.manifests.resources import *  # noqa: F403
 
-from ghoshell_moss.core.resources.local_video import LocalWebmResourceMeta
+from ghoshell_moss.resources.local_video import LocalWebmResourceMeta
 local_webm_storage_meta = LocalWebmResourceMeta()

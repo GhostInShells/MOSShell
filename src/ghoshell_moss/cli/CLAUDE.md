@@ -121,7 +121,7 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 
 `howto_cli.py` + `how_tos/` 目录组成一个反身性知识库:
 
-- **存储**: `how_tos/` 目录下的 markdown 文件, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.core.resources.markdown_kb`) 做资源管理
+- **存储**: `how_tos/` 目录下的 markdown 文件, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.resources.markdown_kb`) 做资源管理
 - **结构**: 扁平——`how_tos/README.md` (元规则 + help text) + `how_tos/*.md` (howto 文档)
 - **命令**:
   - `moss howtos list [-q keyword] [--json]`: 列出所有文档
