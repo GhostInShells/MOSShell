@@ -1,7 +1,7 @@
-"""Response model for utterance end detection benchmark.
+"""Response model for utterance end detection benchmark — single-token score.
 
-Usage:
-    moss llms call "I think tomorrow" -r <this_module>:UtteranceEndScore -j
+The model outputs ONE 0-9 digit, no reason sentence. Scoring rubric lives in
+`rubric.txt` (a strategy variable — placed in instruction or thinking).
 """
 
 from pydantic import BaseModel, Field
@@ -16,4 +16,3 @@ class UtteranceEndScore(BaseModel):
     """
 
     score: int = Field(ge=0, le=9, description="completeness rating")
-    reason: str = Field(default="", description="brief justification")

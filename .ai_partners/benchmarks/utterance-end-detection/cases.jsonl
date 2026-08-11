@@ -5,3 +5,20 @@
 {"label": "u5-ambiguous", "prompt": "maybe we could", "expected": "ambiguous, could go either way"}
 {"label": "u6-fragment", "prompt": "so the thing is", "expected": "incomplete, discourse marker only"}
 {"label": "u7-greeting", "prompt": "hello", "expected": "complete greeting"}
+{"label": "u8-incomplete-trailing-say", "prompt": "I was going to say", "expected": "incomplete, trailing verb"}
+{"label": "u9-mid-phrase", "prompt": "can you pass the", "expected": "incomplete, mid-phrase"}
+{"label": "u10-complete-short", "prompt": "no", "expected": "complete, short answer"}
+{"label": "u11-discourse-markers", "prompt": "well, um, I think, you know,", "expected": "incomplete, discourse markers only"}
+{"label": "u12-complete-statement2", "prompt": "the cat sat on the mat", "expected": "complete statement"}
+{"label": "u13-causal-trailing", "prompt": "because the weather", "expected": "incomplete, dangling because"}
+{"label": "u14-complete-question2", "prompt": "really?", "expected": "complete question"}
+{"label": "u15-conditional-trailing", "prompt": "if only I could have said", "expected": "incomplete, dangling condition"}
+{"label": "u16-complete-short2", "prompt": "yes", "expected": "complete, short answer"}
+{"label": "u17-narrative-lead", "prompt": "and then she was like", "expected": "incomplete, narrative lead-in"}
+{"label": "u18-ambiguous-short", "prompt": "maybe", "expected": "ambiguous"}
+{"label": "u19-complete-statement3", "prompt": "let me think about it", "expected": "complete statement"}
+{"label": "u20-hard-cut", "prompt": "wh", "expected": "incomplete, mid-word hard cut"}
+{"label": "u21-cache-cold", "prompt": "so as I was explaining earlier, the whole point of this project is to give an intelligent model a persistent body in the real world, and I think we should schedule a meeting next week to align on the roadmap and also review the recent benchmark results", "expected": "complete statement"}
+{"label": "u22-cache-warm", "prompt": "so as I was explaining earlier, the whole point of this project is to give an intelligent model a persistent body in the real world, and I think we should schedule a meeting next week to align on the roadmap and also review the recent benchmark results", "expected": "complete statement (identical to u21 — cache hit)"}
+{"label": "u23-matrix-thinking", "prompt": "I was just about to tell you about the plan we discussed, which was mainly about", "thinking": "rubric-thinking.txt", "expected": "incomplete, trailing"}
+{"label": "u24-matrix-instruction", "prompt": "I was just about to tell you about the plan we discussed, which was mainly about", "instruction": "rubric.txt", "expected": "incomplete, trailing"}

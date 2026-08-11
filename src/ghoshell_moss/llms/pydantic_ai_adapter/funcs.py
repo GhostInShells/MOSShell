@@ -24,12 +24,13 @@ from ghoshell_moss.contracts.llms import (
     Effort,
     LLMFuncResult,
     LLMFuncResultRecord,
-    LLMFuncs,
+    MossLLMFuncs,
     ModelRef,
     ResolvedModel,
     TokenCount,
 )
 from ghoshell_moss.llms.pydantic_ai_adapter.call_anchor import CallAnchor
+from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -38,12 +39,15 @@ if TYPE_CHECKING:
 __all__ = ["PydanticAIFuncs"]
 
 
-class PydanticAIFuncs(LLMFuncs):
+class PydanticAIFuncs(MossLLMFuncs):
     """LLMFuncs 的 pydantic-ai 引擎实现.
 
     依赖 ``build_agent(resolved)`` 构造 pydantic-ai Agent, 再通过 ``run`` (async)
-    执行单轮调用。call() 填充 LLMFuncResult (result/content/usage/cast/retries);
-    run_benchmark() 在此基础上加 case 循环与结果持久化。
+    执行单轮调用。三个入口共享私有 ``_call_impl`` (build_agent + history +
+    anchor + run): ``call(prompt: str)`` 是 moss-free 字符串入口,
+    ``call_messages(prompt: list[Message])`` 是 moss 块入口 (经转换协议),
+    ``call_prompt(text: str)`` 继承 ``MossLLMFuncs`` 默认 (@ 文件协议 →
+    call_messages)。run_benchmark() 在 call 之上加 case 循环与结果持久化。
     """
 
     async def call(
@@ -59,8 +63,69 @@ class PydanticAIFuncs(LLMFuncs):
         input_anchor: Anchor | None = None,
         thinking: str | None = None,
     ) -> LLMFuncResult[RESULT_MODEL]:
-        """单轮模型调用 — build_agent + agent.run(output_type, instructions).
+        """moss-free 字符串入口 — prompt 原样传给 agent.run."""
+        return await self._call_impl(
+            instruction=instruction,
+            user_prompt=prompt,
+            result_type=result_type,
+            model=model,
+            effort=effort,
+            export_anchor=export_anchor,
+            anchor_description=anchor_description,
+            input_anchor=input_anchor,
+            thinking=thinking,
+        )
 
+    async def call_messages(
+        self,
+        *,
+        instruction: str,
+        prompt: list[Message],
+        result_type: Type[RESULT_MODEL],
+        model: ResolvedModel,
+        effort: Effort | None = None,
+        export_anchor: str | Path | None = None,
+        anchor_description: str = "",
+        input_anchor: Anchor | None = None,
+        thinking: str | None = None,
+    ) -> LLMFuncResult[RESULT_MODEL]:
+        """moss Message 块入口 — 经消息转换协议映射为 pydantic-ai parts.
+
+        ``with_meta=True`` 渲染 Message 携带的 meta 层 (如 @ 文件协议
+        expose_file_meta 设的 tag="file" + path/type/size); 无 tag 的纯文本
+        块不受影响。
+        """
+        from ghoshell_moss.llms.pydantic_ai_adapter.conversion import messages_to_parts
+
+        return await self._call_impl(
+            instruction=instruction,
+            user_prompt=messages_to_parts(prompt, with_meta=True),
+            result_type=result_type,
+            model=model,
+            effort=effort,
+            export_anchor=export_anchor,
+            anchor_description=anchor_description,
+            input_anchor=input_anchor,
+            thinking=thinking,
+        )
+
+    async def _call_impl(
+        self,
+        *,
+        instruction: str,
+        user_prompt: str | list[Any],
+        result_type: Type[RESULT_MODEL],
+        model: ResolvedModel,
+        effort: Effort | None,
+        export_anchor: str | Path | None,
+        anchor_description: str,
+        input_anchor: Anchor | None,
+        thinking: str | None,
+    ) -> LLMFuncResult[RESULT_MODEL]:
+        """build_agent + history + anchor + agent.run — 两个入口共享的单点.
+
+        ``user_prompt`` 是已就绪的 pydantic-ai prompt (str 或 UserContent parts),
+        由 call / call_messages 各自完成转换后传入。
         ``model`` 必须是已 resolve 的 ResolvedModel (api_key 已解密, 仅内存).
         ``effort`` 透传给 build_agent, 由它按协议映射到 effort 字段.
         ``export_anchor`` — 锚的目标文件名 (无 .anchor.yml 后缀, 可含路径).
@@ -93,7 +158,7 @@ class PydanticAIFuncs(LLMFuncs):
 
         start = time.perf_counter()
         result = await agent.run(
-            prompt,
+            user_prompt,
             output_type=result_type,
             instructions=instruction or None,
             message_history=history,
@@ -130,11 +195,15 @@ class PydanticAIFuncs(LLMFuncs):
         *,
         cwd: Path | None = None,
         output_file: Path | None = None,
+        effort: Effort | None = None,
+        thinking: str | None = None,
     ) -> BenchmarkRecord:
         """逐 case 跑 benchmark, 汇总为 BenchmarkRecord.
 
         ``meta.result_type`` (module:attr) 解析为 BaseModel 类型后用于所有 case;
         case 的 prompt / instruction 可能是相对 cwd 的文件路径, 自动解析.
+        ``effort`` / ``thinking`` 逐 case 透传给 call (策略 A/B: hint 放
+        instruction / thinking / 省略).
         """
         from ghoshell_common.helpers import import_from_path
 
@@ -153,11 +222,18 @@ class PydanticAIFuncs(LLMFuncs):
             for _ in range(case.times):
                 inst = _resolve_instruction(case, meta, cwd)
                 prompt_str = _resolve_file_value(case.prompt, cwd)
+                case_thinking = (
+                    _resolve_file_value(case.thinking, cwd)
+                    if case.thinking is not None else thinking
+                )
+                case_effort = case.effort if case.effort is not None else effort
                 res = await self.call(
                     instruction=inst,
                     prompt=prompt_str,
                     result_type=result_type,
                     model=model,
+                    effort=case_effort,
+                    thinking=case_thinking,
                 )
                 results.append(res.to_record())
 

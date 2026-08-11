@@ -1,15 +1,15 @@
 ---
-title: Model Func
-status: draft
-priority: P1
 created: 2026-08-06
-updated: 2026-08-06
 depends:
-  - llms-cli
+- llms-cli
+description: 函数化大模型单轮请求——单一字符串 prompt 协议 + 结构化响应。激活 LLMConfig 死配置， 把 moss llms call
+  协议化，作为 ghost 运行时可 scale 的模型调用资产。
 milestone: null
-description: >-
-  函数化大模型单轮请求——单一字符串 prompt 协议 + 结构化响应。激活 LLMConfig 死配置，
-  把 moss llms call 协议化，作为 ghost 运行时可 scale 的模型调用资产。
+priority: P1
+status: completed
+status_note: 引擎/锚/@ 文件协议/MossLLMFuncs 分层/run_benchmark 参数范围全部落地。讨论结论见 FEATURE 脚注。
+title: Model Func
+updated: '2026-08-11'
 ---
 
 # Model Func
@@ -146,12 +146,36 @@ CLI 是 ghost 的接口，不是开发者便利——CLI 化等于给 ghost 上�
 - [x] benchmarks 体系 — `.ai_partners/benchmarks/` 约定, utterance-end-detection 首发
 - [x] 依赖升级 — pydantic-ai-slim[anthropic,openai] + mcp 2.0.0, 消除 fastmcp-slim 传递冲突
 
-## Next
+## Next — done (2026-08-11)
 
 **Prompt protocol** — 扩充 model func 的入参从纯字符串到结构化 content block:
 
-- ``@ 文件路径`` — instruction/prompt 从文件读取 → content block 协议
-- 二进制理解 — 图片 base64 化、文件内容 → model-native content types
-- 描述文件 — 文件元信息注入 prompt（filename, mime, size）
+- [x] ``@ 文件路径`` — 行首 `@` 文件引用 → `message.prompt.message_from_prompt` → `list[Message]`
+- [x] 二进制理解 — Base64Image content, 经 `llms/pydantic_ai_adapter/conversion` 转 pydantic-ai parts
+- [x] 描述文件 — file meta 弱容器 (tag="file" + path/type/size), `expose_file_meta` flag 开关
 
-这一层做好后, model func 可以独立拆为 moss 的 skill / 开源衍生项目 — 它已经是一个完整的"模型结构化调用 + benchmark"工具链。
+契约分层落地: `LLMFuncs.call(prompt: str)` moss-free 抽象, `MossLLMFuncs` 开始 moss
+耦合 (`call_prompt` / `call_messages`), `PydanticAIFuncs(MossLLMFuncs)` 引擎共享私有
+`_call_impl`。run_benchmark 支持 effort/thinking + per-case 配置 (BenchmarkCase.thinking/
+effort)。见 cognitive-anchor FEATURE v4.3 与 benchmark Findings。
+
+## 讨论脚注 (2026-08-11)
+
+utterance-end-detection 单 token 改造 + 策略 A/B 的讨论结论 — llmsfuncs 体系与
+mindflow 架构的关联:
+
+- **flash 分句级单 token 判断足够快** — ~1s (含手机热点网络) 在
+  "ASR 尾包 + VAD 1.5s + 链路开销 + 模型首包" 的反应预算内可接受。粒度是
+  clause 级, 不是逐词 — 决策按分句边界摊销。
+- **分层判断**: benchmark 证明 0/9 两端 (硬切/完整句) 可靠, 真正吃不准的是
+  歧义中间带 (u5)。所以端侧廉价手段 (尾句 embedding 匹配 / 规则) 抓清晰端,
+  模型只在歧义句上跑 — 把 ~1s 从每个 utterance 摊到只有歧义才付。
+- **缓存阴性**: 相同 case 无缓存提速 — 1s 是推理 + 网络本征, 不是可缓存前缀。
+  优化杠杆在分层与粒度, 不在缓存。
+- **mindflow 进模型推理内部 = 内观的自然延伸**: `--thinking` 已让模型"持有
+  既有立场"; mindflow-in-inference 是把立场结构化 — 感知→仲裁→行动 压缩进
+  生成本身。clause 级单 token 判断正是"冲动→决策"压成一个 token 的形态,
+  是 mindflow 推理内部化的最小样例。
+- **云端全双工不可控, 根因是智力没解耦** — 工程层在模型外做编排, 模型内部
+  是黑盒。MOSS 的 channels (主动传感器) + mindflow (仲裁) + CTML (控制) 是
+  把解耦显式化的尝试, benchmark 给这个解耦供可测结论。

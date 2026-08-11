@@ -1,0 +1,5 @@
+Rate how complete each utterance is on a 0-9 scale.
+0 = clearly incomplete (mid-word, cut off mid-thought).
+5 = ambiguous (could go either way).
+9 = clearly a complete thought, question, or statement.
+Output a single digit 0-9, nothing else.

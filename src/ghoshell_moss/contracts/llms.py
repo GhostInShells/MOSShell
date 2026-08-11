@@ -1,16 +1,20 @@
 """LLM provider contract — model configuration, client protocols, and provider resolution."""
 
-from typing import Literal, Iterable, Type, Callable, Generic, TypeVar, Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal, Iterable, Type, Callable, Generic, TypeVar, Any
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, AwareDatetime
 from .configs import ConfigType
 from ghoshell_moss.anchor import Anchor
-from ghoshell_moss.message import Message, Content
 from ghoshell_common.helpers import import_from_path
 from ghoshell_container import IoCContainer
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from ghoshell_moss.message import Content, Message
 
 __all__ = [
     "ClientProtocol",
@@ -119,6 +123,8 @@ class ModelConfig(BaseModel):
 
     def convert(self, container: IoCContainer, message: Message) -> Message:
         """转义 message：原生支持 → converter 适配 → 文本退化。"""
+        from ghoshell_moss.message import Content, Message
+
         new_message = Message(meta=message.meta)
         for content in message.contents:
             if self.accepts(content):
@@ -593,6 +599,18 @@ class BenchmarkCase(BaseModel):
         default="",
         description="期望输出, 打分标准参考",
     )
+    thinking: str | None = Field(
+        default=None,
+        description=(
+            "本用例的 thinking block (字符串或相对 cwd 的文件路径) — 内观 hint。"
+            "空则回退到 run 级 thinking。策略变量: 评分 hint 可 per-case 混排"
+            "(放 instruction / thinking / 省略)。"
+        ),
+    )
+    effort: Effort | None = Field(
+        default=None,
+        description="本用例 thinking effort (none..max); 空则回退到 run 级 effort",
+    )
 
 
 class BenchmarkRun(BaseModel):
@@ -675,6 +693,8 @@ class LLMFuncs(ABC):
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用: instruction + prompt -> 结构化 result_type 结果.
 
+        ``prompt`` — 纯字符串, moss-free。moss 协议 (Message / @ 文件) 的
+        prompt 走 ``MossLLMFuncs`` (``call_prompt`` / ``call_messages``)。
         ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
         ``effort`` — thinking effort 刻度 (none..max), 不进 config, 引擎按协议
         映射到 pydantic-ai 的 effort 字段 (anthropic_effort / openai_reasoning_effort)。
@@ -724,10 +744,84 @@ class LLMFuncs(ABC):
             *,
             cwd: Path | None = None,
             output_file: Path | None = None,
+            effort: Effort | None = None,
+            thinking: str | None = None,
     ) -> BenchmarkRecord:
         """运行一个 benchmark: 用 ``model`` 逐条跑 ``meta.cases_file`` 的用例, 汇总.
 
         ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
         ``cwd`` 默认当前进程工作目录 — case 的 prompt/instruction 文件路径相对它解析。
         ``output_file`` 给定则结果写为 jsonl。
+        ``effort`` / ``thinking`` — 透传给每个 case 的调用 (策略变量: 评分 hint
+        可放 instruction / thinking / 省略, 供 A/B 对比)。
+        """
+
+
+class MossLLMFuncs(LLMFuncs):
+    """LLMFuncs + moss prompt protocol — moss 耦合从这里开始.
+
+    在 moss-free 的 ``call(prompt: str)`` 之上加两个 moss 接口:
+    - ``call_prompt(text)`` — prompt 文本经 @ 文件协议
+      (``message_from_prompt``) 生成 Message 块, 委派给 ``call_messages``。
+    - ``call_messages(prompt)`` — 直接收 moss Message 块, 引擎转换为其
+      模型 parts 后调用。抽象, 引擎实现。
+    """
+
+    async def call_prompt(
+            self,
+            *,
+            text: str,
+            instruction: str,
+            result_type: Type[RESULT_MODEL],
+            model: ResolvedModel,
+            base_dir: str | Path | None = None,
+            expose_file_meta: bool = False,
+            effort: Effort | None = None,
+            export_anchor: str | Path | None = None,
+            anchor_description: str = "",
+            input_anchor: Anchor | None = None,
+            thinking: str | None = None,
+    ) -> LLMFuncResult[RESULT_MODEL]:
+        """Prompt 文本 → @ 文件协议生成 Message 块 → call_messages.
+
+        ``text`` 是 Prompt 源 (支持 @ 文件引用), 不是裸字符串。
+        ``base_dir`` — 相对 @ref 的解析基准 (默认 cwd)。
+        ``expose_file_meta`` — 文件 meta 暴露 flag (可丢弃/可使用层)。
+        其余参数同 ``call``。
+        """
+        from ghoshell_moss.message import message_from_prompt
+
+        blocks = message_from_prompt(
+            text, base_dir=base_dir, expose_file_meta=expose_file_meta,
+        )
+        return await self.call_messages(
+            instruction=instruction,
+            prompt=blocks,
+            result_type=result_type,
+            model=model,
+            effort=effort,
+            export_anchor=export_anchor,
+            anchor_description=anchor_description,
+            input_anchor=input_anchor,
+            thinking=thinking,
+        )
+
+    @abstractmethod
+    async def call_messages(
+            self,
+            *,
+            instruction: str,
+            prompt: list[Message],
+            result_type: Type[RESULT_MODEL],
+            model: ResolvedModel,
+            effort: Effort | None = None,
+            export_anchor: str | Path | None = None,
+            anchor_description: str = "",
+            input_anchor: Anchor | None = None,
+            thinking: str | None = None,
+    ) -> LLMFuncResult[RESULT_MODEL]:
+        """直接收 moss Message 块 (list[Message]) → 引擎转换为模型 parts 后调用.
+
+        ``prompt`` 是 @ 生成 (``message_from_prompt``) 或手建的 Message 块。
+        其余参数同 ``call``。
         """

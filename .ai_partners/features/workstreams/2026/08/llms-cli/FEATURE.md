@@ -5,10 +5,9 @@ description: Make llms config genuinely usable — Project.configs() single-sour
   construction, then a `moss llms` CLI backed by pydantic-ai. Prep for dolores.
 milestone: null
 priority: P1
-status: in-progress
-status_note: 'Round 3 (2026-08-11): LLMFuncs.call produces cognitive anchors
-  (export_anchor + LLMFuncResult.anchor, CallAnchor payload, CLI --export-anchor).
-  Collision with cognitive-anchor v4.'
+status: completed
+status_note: 'llms CLI 完成: call/test/count + --export-anchor/--input-anchor/--thinking/--expose-file-meta
+  + benchmark (effort/thinking/per-case)。ground 进 instruction 由 ground feature 承接。'
 title: Llms Cli
 updated: '2026-08-11'
 ---

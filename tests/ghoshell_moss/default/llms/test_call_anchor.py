@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 from pydantic import BaseModel
+from pydantic_ai import TextContent
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -505,3 +506,43 @@ async def test_request_frame_survives_failed_call(tmp_path: Path):
     assert payload["result_type"] == _type_path(Score)
     assert payload["turns"] == []  # request frame: no history yet
     assert "result" not in payload
+
+
+# ── moss prompt protocol (call_prompt / call_messages) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_call_prompt_resolves_at_files(tmp_path: Path):
+    """call_prompt runs the @ protocol — file content reaches agent.run."""
+    (tmp_path / "notes.md").write_text("file body here", encoding="utf-8")
+    funcs = PydanticAIFuncs()
+    agent = _make_mock_agent(output=Score(value=1), text_parts=["ok"])
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
+        await funcs.call_prompt(
+            text="read this:\n@notes.md",
+            instruction="",
+            result_type=Score,
+            model=_make_resolved(),
+            base_dir=tmp_path,
+        )
+    prompt = agent.run.await_args.args[0]
+    assert [p.content for p in prompt] == ["read this:\n", "file body here"]
+
+
+@pytest.mark.asyncio
+async def test_call_messages_converts_blocks(tmp_path: Path):
+    """call_messages maps moss Message blocks to pydantic-ai parts."""
+    from ghoshell_moss.message import Message
+
+    funcs = PydanticAIFuncs()
+    agent = _make_mock_agent(output=Score(value=1), text_parts=["ok"])
+    msg = Message.new().with_content("hello")
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
+        await funcs.call_messages(
+            instruction="",
+            prompt=[msg],
+            result_type=Score,
+            model=_make_resolved(),
+        )
+    prompt = agent.run.await_args.args[0]
+    assert [p.content for p in prompt] == ["hello"]

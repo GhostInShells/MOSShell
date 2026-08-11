@@ -1,37 +1,16 @@
 ---
-title: Cognitive Anchor — 认知锚
-status: draft
-priority: P2
 created: 2026-07-27
-updated: 2026-08-11
 depends:
-  - momento-mori
-  - ghost-ground
-milestone:
-description: >-
-  认知锚 — 框架无关的 Anchor Protocol + MOSS 实现. 保存模型在思维极值时刻的
-  完整认知条件 (协议级快照), 使之在将来被重新激活, 与新问题碰撞产生新判断.
-  不是 checkpoint (restore 到原点), 是 reference frame (供河流流动时观测变化).
-status_note: >-
-  2026-08-11 deepseek-v4-flash. v4 llm func dogfooding: LLMFuncs.call 生产锚
-  (CallAnchor payload, export_anchor 落盘, LLMFuncResult.anchor 携带), CLI
-  moss llms call --export-anchor; 消费锚 (input_anchor 注入 history 做内观,
-  Anchor.from_file 读侧, 强类型判定 NotImplementedError), CLI --input-anchor;
-  thinking (内观 A/B 工具, ModelResponse(ThinkingPart) 注入 history), CLI
-  --thinking. call→.anchor.yml→from_anchor 还原 + 消费/内观回灌闭环.
-  见文末 v4/v4.1/v4.2 追加.
-  --
-  2026-08-10 作者 + deepseek-v4-flash. v3 协议落地: Anchor 数据结构定稿
-  (meta + payload), meta 顶层极简字段 uid(ULID)/name/description/ref/created/
-  metadata, ref 唯一约定=http 地址 (curl 可还原调用), yaml --- 分节,
-  ghoshell_moss.anchor 独立成模块 (与 ground 平级). 见文末 v3 追加.
-  --
-  2026-07-28 claude-fable-5 / opus-4-7. v2 协议优先重构: 锚提升为框架无关的
-  通用协议 (存储/发现/读取/使用四机制), MOSS 降为实现方. channel 是载体而非
-  边界. v1 的三条核心命题不变.
-  --
-  2026-07-27 v1 首版, 收敛于三条核心命题: productivity-not-fidelity,
-  决策外围疑问结构, 命名作为语义强制. v0 及碰撞轨迹在同目录 discuss 文件.
+- momento-mori
+- ghost-ground
+description: 认知锚 — 框架无关的 Anchor Protocol + MOSS 实现. 保存模型在思维极值时刻的 完整认知条件 (协议级快照), 使之在将来被重新激活,
+  与新问题碰撞产生新判断. 不是 checkpoint (restore 到原点), 是 reference frame (供河流流动时观测变化).
+milestone: null
+priority: P2
+status: completed
+status_note: 生产/消费/thinking/@ 四机制 dogfooding 闭环。见 v4/v4.1/v4.2/v4.3 追加。
+title: Cognitive Anchor — 认知锚
+updated: '2026-08-11'
 ---
 
 # Cognitive Anchor — 认知锚
@@ -538,8 +517,44 @@ auto 命名、无锚、还原、失败保留请求帧。
   anchor 之后、新 prompt 之前 — "消费上下文后, 带着自己的立场回应"。
   与 @ 文件协议 (item 3) 的"顺序很重要"不同: thinking 是直接参数, 不经 @。
 
+## v4.3 追加: @ 文件协议 + MossLLMFuncs 分层 (2026-08-11)
+
+@ 文件协议 — prompt 里行首 `@path` 是文件引用 (到行尾), 非 inline。
+moss Message 是 anthropic 兼容 content + 可丢弃/可使用的 meta 弱容器。
+
+### 实现
+
+- **`message.prompt.message_from_prompt(text, *, base_dir, expose_file_meta)
+  -> list[Message]`** — 按行解析 @ 引用 → `message_from_file(path)`。文本
+  文件 → Text content, 图片 → Base64Image, 解析不到 → 内联字符串, 不支持
+  类型 → 隐藏。行首 `@` 无 email/@mention 误伤。
+- **`message_from_file(path, *, base_dir, expose_file_meta)`** — 文件 →
+  Message。`expose_file_meta` (外部 flag) on → Message 携带 meta 层
+  (tag="file" + path/type/size), off → 裸 content。
+- **`llms.pydantic_ai_adapter.conversion`** — moss Message → pydantic-ai
+  parts (Text→TextContent, Base64Image→ImageUrl, 未知→文本降级), 保序
+  (join_text=False), 惰性 import。正式化 `ghosts/atom/_adapter.py`。
+- **契约分层** — `LLMFuncs.call(prompt: str)` moss-free 抽象; 新
+  `MossLLMFuncs(LLMFuncs)` 开始 moss 耦合: `call_prompt(text)` (@ 生成 →
+  call_messages) + `call_messages(list[Message])` (抽象, 引擎实现)。
+  `PydanticAIFuncs(MossLLMFuncs)`: call + call_messages 共享私有 `_call_impl`,
+  call_prompt 继承默认。契约 message 依赖全走 TYPE_CHECKING + 字符串注解
+  (`from __future__ import annotations`), 运行时惰性 import。
+- **CLI `moss llms call --expose-file-meta`** — 结构化调用走 call_prompt,
+  prompt 含 `@path` 自动解析。
+
+### 决策
+
+- **不搞多态参数** (拒绝 `str | Message | list[Message]`): 三种来源是显式
+  接口而非联合类型 — call (裸 str) / call_prompt (str + @ 生成) /
+  call_messages (moss 块)。str 不是裸字符串, 是 Prompt 生成逻辑的输入。
+- **单 Message 砍掉**: `[msg]` 即它, 不留冗余第三种。
+- **expose_file_meta 是外部 flag**: 决定文件是否可暴露 (Message 是否携带
+  meta 层); 转换侧 with_meta=True 渲染已携带的 meta。纯文本 (tag="") 不受
+  影响。
+- **三级别 = meta 层的有无**: 纯文本 (无 tag) / file tag / file meta。
+
 ### 未做 (后续切片)
 
 - **ground 进 instruction**: ground 渲染结果追加在 instruction 后 (CLI 层,
   不进 interface)。
-- **`@` 文件路径 / 二进制 (Base64Image) 语法** — prompt 协议扩充。

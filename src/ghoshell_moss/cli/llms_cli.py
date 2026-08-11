@@ -180,6 +180,7 @@ def _call_structured(
         export_anchor: str | None = None,
         input_anchor: str | None = None,
         thinking: str | None = None,
+        expose_file_meta: bool = False,
 ) -> None:
     """Structured call via model-func engine (PydanticAIFuncs).
 
@@ -194,6 +195,8 @@ def _call_structured(
     Anchor constraint.
     ``thinking`` — manual thinking block (string or file, auto-read),
     injected as a ModelResponse(ThinkingPart) — introspection (内观).
+    ``expose_file_meta`` — @ file references render with the file meta layer
+    (path/type/size), off by default (bare content).
     """
     import json as _json
 
@@ -211,15 +214,16 @@ def _call_structured(
         results = []
         anchor_paths: list[str] = []
         for _ in range(repeat):
-            r = await funcs.call(
+            r = await funcs.call_prompt(
+                text=prompt,
                 instruction=inst,
-                prompt=prompt,
                 result_type=result_type,
                 model=resolved,
                 effort=effort,
                 export_anchor=export_anchor,
                 input_anchor=anchor,
                 thinking=thinking_text,
+                expose_file_meta=expose_file_meta,
             )
             if r.anchor is not None:
                 if export_anchor:
@@ -356,6 +360,13 @@ if available("pydantic_ai", "anthropic"):
                     "A/B vs putting the position in the prompt (外观). Structured calls only."
                 ),
             ),
+            expose_file_meta: bool = typer.Option(
+                False, "--expose-file-meta",
+                help=(
+                    "@ file references render with the file meta layer "
+                    "(path/type/size). Off by default — bare content only."
+                ),
+            ),
     ) -> None:
         """One-shot LLM call. Prompt + optional instruction and structured output.
 
@@ -371,6 +382,9 @@ if available("pydantic_ai", "anthropic"):
         ``--thinking`` injects a thinking block as the model's own prior
         reasoning (introspection) — compare against the same position fed as
         a user prompt (external) to A/B 内观 vs 外观.
+        Prompt lines starting with ``@`` are file references (the @ file
+        protocol) — text files splice their content, images become image
+        blocks. ``--expose-file-meta`` adds the file meta layer.
         """
         conf = _load_config()
         resolved = _resolve_for_call(
@@ -391,6 +405,7 @@ if available("pydantic_ai", "anthropic"):
                     export_anchor=export_anchor,
                     input_anchor=input_anchor,
                     thinking=thinking,
+                    expose_file_meta=expose_file_meta,
                 )
             else:
                 output = _call(
