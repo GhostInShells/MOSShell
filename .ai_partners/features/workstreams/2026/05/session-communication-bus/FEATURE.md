@@ -7,10 +7,12 @@ description: Session 通讯总线从纯 ephemeral 向 stateful 演进——补 K
   六种跨进程原语，统一文件存储治理，为 Ghost 和应用开发提供开箱通讯基线。
 milestone: null
 priority: P0
-status: in-progress
-status_note: "Parameter + Journal 完成。KVCache/ObservableStorage 移除。2026-06-07 决策：Zenoh queryable 暂不引入，ActorQueue 简化为 cell 级 declare (学 ROS2)，FutureManager 设计收敛 (单 Zenoh 路径 + sqlite3 真相源 + issuer/receiver 双视图)。待实现。" 
+status: completed
+status_note: ParameterStore+Journal 交付 (33 测试); KVCache/ObservableStorage 移除; ActorQueue
+  移出至 cell 声明体系; queryable 暂不引入; 遗留 FutureManager 设计收敛后由 qa-exchange + matrix-operator
+  承接 (正确化解). 2026-08-11 清理改 completed
 title: Session Communication Bus — 跨进程通讯基线演进
-updated: '2026-06-07'
+updated: '2026-08-11'
 ---
 
 # Session Communication Bus

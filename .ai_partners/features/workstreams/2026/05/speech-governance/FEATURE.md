@@ -1,14 +1,16 @@
 ---
-title: Speech Governance — 解耦、多后端、容错降级
-status: in-progress
-priority: P2
 created: 2026-05-25
-updated: 2026-05-29
 depends: []
-milestone:
-description: >-
-  Speech 体系治理：解耦 commands 权责泄漏，player 多后端轻量化，TTS 国际化多 provider，
-  自动容错降级，session logos stream 可选的跨进程流式。
+description: Speech 体系治理：解耦 commands 权责泄漏，player 多后端轻量化，TTS 国际化多 provider， 自动容错降级，session
+  logos stream 可选的跨进程流式。
+milestone: null
+priority: P2
+status: dropped
+status_note: Phase 1 解耦+Phase 2 player 轻量化+Phase 5 大半已实装; 后半 (多 provider/降级) 未完成.
+  说侧治理由 speech-protocol-alignment 承接, 输入侧见 voice-input-state-machine. D1-D9 决策保留可复用.
+  2026-08-11 清理改 dropped
+title: Speech Governance — 解耦、多后端、容错降级
+updated: '2026-08-11'
 ---
 
 # Speech Governance
