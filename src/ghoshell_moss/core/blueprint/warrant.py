@@ -1,65 +1,92 @@
+"""Warrant — Matrix 级通用授权机制抽象.
+
+三层职责分离: qa 是交互协议, warrant 是存储 + 装线, permission 是业务逻辑.
+设计见 `.ai_partners/features/workstreams/2026/08/warrant/FEATURE.md`.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
 from typing_extensions import Self
+
 from pydantic import BaseModel
-from ghoshell_container import IoCContainer
-from ghoshell_moss.core.concepts.qa import Question, Answer
+
+from ghoshell_moss.core.concepts.qa import Answer, Question
 
 
-class ItemMeta(BaseModel):
-    """model 可列表化的元数据. """
-    data: dict[str, Any]
+PermissionState = TypeVar("PermissionState", bound=BaseModel)
 
 
-class ItemModel(BaseModel, ABC):
-    """一种类型的授权数据. """
-    def to_meta(self) -> ItemMeta:
-        ...
+class AuthorizationResult(BaseModel):
+    """授权结果. 最小对象, 只有拒绝的自然语言描述.
 
-ITEM_MODEL = TypeVar("ITEM_MODEL", bound=ItemModel)
+    reason = None 表示通过 (放行); str 表示拒绝理由.
+    """
 
-class Item(Generic[ITEM_MODEL], ABC):
-    """一个授权检查的场景. """
+    reason: str | None = None
 
-    @classmethod
-    def factory(cls, container: IoCContainer) -> Self:
-        """实例化自身."""
-        ...
+
+class Permission(ABC, Generic[PermissionState]):
+    """授权场景的业务逻辑. 纯逻辑, 无 IO.
+
+    静态授权参数在 __init__ 里配置; state 是 warrant 读回的动态授权状态.
+    permission 只决定逻辑, 不做持久化.
+    """
 
     @property
     @abstractmethod
-    def default(self) -> ITEM_MODEL:
-        """默认的授权状态"""
+    def namespace(self) -> str:
+        """审批问题发往的 qa namespace."""
         ...
 
     @abstractmethod
-    def check(self, config: ItemMeta) -> Question | None:
-        """检查存储的授权状态, 返回 question 表示需要授权; 否则返回 None"""
+    def default(self) -> PermissionState:
+        """无存储时的初始授权状态."""
         ...
 
     @abstractmethod
-    async def replied(self, answer: Answer) -> tuple[ItemModel, bool, str | None]:
-        """基于返回的 answer, 判断后续的配置变更, 和是否通过. 不通过返回报错."""
+    def check(self, state: PermissionState) -> Question | None:
+        """根据当前 state 判断是否需要授权.
+
+        None = 无需授权; Question = 构造好的完整审批问题 (由 warrant 接线发出).
+        """
         ...
 
+    @abstractmethod
+    def replied(self, answer: Answer) -> tuple[PermissionState, AuthorizationResult, bool]:
+        """解释应答, 返回 (新 state, 结果, 是否更新存储).
+
+        save 标志由 permission 的业务判断决定 (如 grant 持久化, deny 不持久化).
+        """
+        ...
 
 
 class Warrant(ABC):
+    """执行门: 存储 + 装线. 唯一 IO 面.
 
-    @abstractmethod
-    async def check(self, item: Item) -> str | None:
-        """返回是否授权成功. """
-        # 1. 对应 session-scope 里的 storage 找到配置文件.
-        # 2. 如果没有 item 的配置文件. 使用默认的配置文件.
-        # 3. 检查配置文件, 判断是否要发起申请. 申请的条件参数应该在 __init__ 里构建.
-        # 4. 如果产生 question, 通过 qa 发送.
-        # 5. 拿到 qa 的结果, 用 item 校验, 返回新的配置文件, 是否成功, 拒绝理由等等.
-        ...
+    可选能力, 从 IoC 取; 拿不到视为放行 (fail-open).
+    """
 
     @abstractmethod
     async def __aenter__(self) -> Self:
+        """创建生命周期对象 (存储/QA 协调), 存储动作在其异步 task 里执行."""
         ...
 
     @abstractmethod
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> None:
+        """协调/取消生命周期; 取消随调用方 scope 传播 (cancel question 同路径)."""
+        ...
+
+    @abstractmethod
+    async def require(self, permission: Permission[Any]) -> AuthorizationResult | None:
+        """要求一项授权通过, 返回 None 或拒绝结果.
+
+        闭环: 读 state → permission.check → 无 Question 放行; 有则自 issuer 发到
+        permission.namespace → 等待应答 (取消随 scope) → permission.replied →
+        按 save flag 落盘 → 返回结果.
+        """
         ...
