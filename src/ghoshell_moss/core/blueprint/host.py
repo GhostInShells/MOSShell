@@ -272,6 +272,49 @@ class MossRuntime(ABC):
         """异步阻塞等待关闭完成 (closed)."""
         ...
 
+    def run_until_closed(self) -> None:
+        """同步阻塞入口: 管理完整 MossRuntime 生命周期直到 close() 被调用.
+
+        对标 Matrix.run — code as prompt: 调用者无需手写 loop / AsyncExitStack /
+        cancel+gather. 内部 = uvloop + runtime.__aenter__ → wait_close → runtime.__aexit__
+        + graceful teardown.
+
+        注册 SIGINT handler → self.close() → _closing_event → wait_close() 自然唤醒
+        → async with 退出 → __aexit__ teardown. 不走 asyncio.run 的暴力取消,
+        __aexit__ 保证跑完.
+
+        适用场景: 命令行无交互运行 (moss-shell log 等).
+        """
+        import asyncio
+        import signal
+        import sys
+
+        try:
+            import uvloop
+        except ImportError:
+            uvloop = None
+
+        if sys.platform == 'win32':
+            loop = asyncio.new_event_loop()
+        elif uvloop is not None:
+            loop = uvloop.new_event_loop()
+        else:
+            loop = asyncio.new_event_loop()
+
+        async def _run() -> None:
+            async with self:
+                await self.wait_close()
+
+        prev_handler = signal.signal(
+            signal.SIGINT,
+            lambda signum, frame: self.close(),
+        )
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            signal.signal(signal.SIGINT, prev_handler)
+            loop.close()
+
     @abstractmethod
     async def __aenter__(self) -> Self:
         """正式启动."""

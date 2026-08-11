@@ -85,8 +85,8 @@ Three commands are built for human interaction:
 | Command | What it does |
 |---------|-------------|
 | `moss-shell` | Shell runtime debugger — test CTML and inspect channels before a Ghost runs |
+| `moss-shell mcp` | Expose MOSS runtime as an MCP server for AI coding tools |
 | `moss-ghost <name>` | Launch a Ghost interactive terminal — logos stream, SafeMode gate |
-| `moss-mcp` | Expose MOSS runtime as an MCP server for AI coding tools |
 
 The best practice: give your coding agent `moss start` and let the model
 self-drive exploration. The agent reads this document, discovers commands,
@@ -277,7 +277,7 @@ moss project where
 ```
 
 Add MOSS to an existing project. Full Host + Matrix + Environment discovery.
-Expose capabilities via MCP (`moss-mcp`) or instantiate Host directly:
+Expose capabilities via MCP (`moss-shell mcp`) or instantiate Host directly:
 
 ```python
 from ghoshell_moss import MossHost
@@ -410,7 +410,7 @@ See `moss --ai all-commands` for the full surface.
 For every specific development task, use `moss howtos list` or
 `moss docs list` to find the minimum necessary knowledge entry point.
 
-**Typical development flow:** Launch MOSS via `moss-mcp` with a specific
+**Typical development flow:** Launch MOSS via `moss-shell mcp` with a specific
 mode, connect a coding agent (Claude Code, etc.) to the MCP server, and let
 the model develop cells within the workspace — providing channels for its own
 use and debugging through the MCP loop. The result can be experienced via

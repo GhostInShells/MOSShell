@@ -7,7 +7,7 @@ description: 在 MOSS 生态中开发 App、Channel、Ghost 时，通过 MCP 接
 
 ## 背景
 
-MCP (Model Context Protocol) 是开发 MOSS App 和 Channel 时的辅助调试手段。通过 `moss-mcp` 启动 MCP server，coding agent 可以直接调用 MOSS tools（CTML 执行、动态信息获取、指令查询）——输出 CTML → 观察执行结果 → 修正 → 再试。
+MCP (Model Context Protocol) 是开发 MOSS App 和 Channel 时的辅助调试手段。通过 `moss-shell mcp` 启动 MCP server，coding agent 可以直接调用 MOSS tools（CTML 执行、动态信息获取、指令查询）——输出 CTML → 观察执行结果 → 修正 → 再试。
 
 **MCP 不是运行时方案，也不用于 Ghost 开发调试。** Ghost 在运行时通过 Mindflow → Shell → Matrix 的完整链路自主运行。MCP 只服务于 App/Channel 开发阶段的快速验证。
 
@@ -23,22 +23,22 @@ MCP (Model Context Protocol) 是开发 MOSS App 和 Channel 时的辅助调试�
 
 ```bash
 # 默认 mode，SSE transport（端口 20773）
-.venv/bin/moss-mcp
+.venv/bin/moss-shell mcp
 
 # 指定 mode
-.venv/bin/moss-mcp --mode reachymini
+.venv/bin/moss-shell mcp --mode reachymini
 
 # stdio transport（适用于 Claude Code 等直接 spawn 的 agent）
-.venv/bin/moss-mcp --transport std
+.venv/bin/moss-shell mcp --transport std
 
 # 自定义端口
-.venv/bin/moss-mcp --port 20774
+.venv/bin/moss-shell mcp --port 20774
 ```
 
 `--help` 看完整参数：
 
 ```bash
-.venv/bin/moss-mcp --help
+.venv/bin/moss-shell mcp --help
 ```
 
 三种 transport：
@@ -57,8 +57,8 @@ MCP (Model Context Protocol) 是开发 MOSS App 和 Channel 时的辅助调试�
 {
   "mcpServers": {
     "moss": {
-      "command": ".venv/bin/moss-mcp",
-      "args": ["--mode", "reachymini", "--transport", "std"]
+      "command": ".venv/bin/moss-shell",
+      "args": ["mcp", "--mode", "reachymini", "--transport", "std"]
     }
   }
 }
@@ -83,7 +83,7 @@ MCP (Model Context Protocol) 是开发 MOSS App 和 Channel 时的辅助调试�
 ```bash
 # 开发时常用的并行操作
 # 终端 1: MCP server
-.venv/bin/moss-mcp --mode default
+.venv/bin/moss-shell mcp --mode default
 
 # 终端 2 (可选): 前台跑 node 看日志
 .venv/bin/moss nodes run <path>
@@ -94,7 +94,7 @@ MCP (Model Context Protocol) 是开发 MOSS App 和 Channel 时的辅助调试�
 ```
 App/Channel 开发阶段 (你现在在这里)
   │
-  └─ moss-mcp ──→ coding agent 通过 MCP 调试 App/Channel
+  └─ moss-shell mcp ──→ coding agent 通过 MCP 调试 App/Channel
                       改代码 → 重启 App → CTML 验证 → 再试
 
 Ghost 运行阶段

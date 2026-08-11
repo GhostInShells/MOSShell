@@ -1,3 +1,11 @@
+"""MOSS runtime exposed as an MCP server — internal module for ``moss-shell mcp``.
+
+Formerly the standalone ``moss-mcp`` binary entry. Since 2026-08 the script
+entry is gone; ``moss-shell mcp`` lazily imports ``main_entry`` here after the
+``depend_mcp()`` gate. The top-level ``mcp`` import is intentional — this module
+is only imported inside the mcp mode handler.
+"""
+
 from typing import Literal, Iterable, Optional
 import asyncio
 from mcp.server.mcpserver import MCPServer

@@ -113,7 +113,7 @@ moss-shell                          # 完整 TUI，选择 mode 和 ghost 后启�
 ### 3.3 通过 MCP 连接
 
 ```bash
-moss-mcp                        # 启动 MCP server（默认端口 20773）
+moss-shell mcp                  # 启动 MCP server（默认端口 20773）
 ```
 
 配置 Claude Code 或其他 agent 连接后，agent 可以通过 MCP tools 与 Ghost 交互。

@@ -57,12 +57,12 @@ ghost = [
 # Bridges — optional transport backends
 zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
 redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
+mcp = ["mcp>=2.0.0", "uvicorn>=0.37.0"]
 
 [project.scripts]
 moss = "ghoshell_moss.cli:main_entry"
 moss-shell = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
 moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
-moss-mcp = 'ghoshell_moss.cli.moss_as_mcp:main'
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -333,7 +333,7 @@ PyChannel ──→ ZMQChannelProvider ──→ ChannelProxy ──→ 能力�
 moss-shell --connect tcp://robot:9527
 
 # 作为 MCP 提供给 Claude Code
-moss-mcp --connect tcp://robot:9527
+moss-shell mcp --connect tcp://robot:9527
 ```
 
 在 workspace 里，将机器人 Channel 注册为 App 后自动 bringup：
@@ -462,8 +462,8 @@ moss --mode robot_mode manifests channels | grep robot
 moss-shell --connect tcp://robot:9527
 # > robot:run_joints '{"joint_names": ["joint1"], "positions": [1.57], "duration": 2.0}'
 
-# 4. 用 moss-mcp 提供给 Claude Code（在 .claude/settings.json 配置 MCP）
-moss-mcp --connect tcp://robot:9527
+# 4. 用 moss-shell mcp 提供给 Claude Code（在 .claude/settings.json 配置 MCP）
+moss-shell mcp --connect tcp://robot:9527
 ```
 
 ## 常见问题
@@ -507,7 +507,7 @@ moss-mcp --connect tcp://robot:9527
 - [ ] 高频 context_messages 做节流（5-10Hz）+ changed only
 - [ ] 大跨度和连续动作加过渡时间，避免瞬间到位
 - [ ] 提供 MockController 实现，支持无硬件开发
-- [ ] 用 moss-shell 做人类调试，用 moss-mcp 提供给 AI 平台
+- [ ] 用 moss-shell 做人类调试，用 moss-shell mcp 提供给 AI 平台
 - [ ] Channel 通过 StateBaseModel 暴露结构化状态，AI 无需主动查询
 - [ ] 错误通过 CommandUtil.raise_observe() 中断当前命令并通知 AI
 - [ ] 跨设备协调用 Channel TopicService，不用 ROS2 topic
@@ -521,4 +521,4 @@ moss-mcp --connect tcp://robot:9527
 3. 用 context_messages 将 ROS2 subscription 转为 AI 自动感知
 4. 用 lifecycle hooks 管理机器人的启动/空闲/看门狗/关闭
 5. 用 CommandUtil.send_signal 将机器人事件上行通知 AI
-6. 通过 moss-shell 或 moss-mcp 连接并调试机器人 Channel
+6. 通过 moss-shell 或 moss-shell mcp 连接并调试机器人 Channel
