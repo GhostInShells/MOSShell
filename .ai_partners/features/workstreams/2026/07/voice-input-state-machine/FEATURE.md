@@ -874,6 +874,62 @@ CLI 的 asr 子命令尚未实现。本轮补齐这两块，使 `moss audio cont
   (5s patience) 结束 turn，新 turn 若无语音则快速过。
 
 ---
+
+## 2026-08-12 会话决策 — audio 架构讨论清单（整理）
+
+> 人类工程师 + deepseek-v4-flash 对 audio 架构的收敛讨论。议题太具体，不落 `.design/`，只在此表列备忘。
+> 状态：✅ 定案 / 🔶 待定 / 🔴 开放。
+
+### 议题清单
+
+| # | 议题 | 结论 / 方向 | 状态 |
+|---|---|---|---|
+| 1 | **player 单例** | `AudioPlayerProvider` 改 `singleton=True`，对齐 capture（拥有输出设备）。speech 为单例锚点持有 player | ✅ 定案 |
+| 2 | **speech 开放观测接口** | speech 不直接耦合 topic——开放观测接口，topic 接线放外侧。speech stream 可持有父层传入的 callback。speech 拥有 player 回调并决定怎么用（折算/广播） | 🔶 待定（接口形态） |
+| 3 | **conversation / dialog topic** | 统一"听/说"双侧的话语 topic，全网可用数据结构，`TopicWindow` 可 buffer，对 ASR 特别重要。与现存 `SpeechTopic` 是演进/吸收关系（吸收范围待定） | 🔶 待定（吸收范围） |
+| 4 | **ASR 开放词表 + 上下文 getter** | 是否开放词表（hotword）与上下文 getter 两个接口 | 🔴 开放 |
+| 5 | **signal / topic 迁移 types** | 迁移到统一 types 目录合理（纯数据结构），迁移成本低。先记下，后移 | ✅ 方向认同（迁移后置） |
+| 6 | **AudioSignal 数据结构化** | 无 messages、纯结构化 SignalMeta。命名 `AudioSignalMeta`（可能直接 asr signal meta）。可扩展优先：未来声纹/用户识别/音频事件检测 | ✅ 定案（方向），实现后置 |
+| 7 | **listener 状态机** | 优先级最高，但先想通 3/4/5/6 再动手 | ✅ 排序 |
+
+### 补充议题（检查遗漏时补入）
+
+| # | 议题 | 说明 | 状态 |
+|---|---|---|---|
+| 8 | **中断折算语义** | 观测接口设计须包含：`clear()` 折算已播半句、被打断句带 interrupted 标记发布、cancelled task resolve。实现时别丢 | 🔴 待并入 #2 |
+| 9 | **说侧运行时状态 is_speaking** | 回声抑制/barge-in 依赖。conversation topic 是事件流，is_speaking 是状态快照——确认 #3 不吸收状态需求 | 🔴 待定 |
+| 10 | **AudioRuntimeTopic 双发布者拆解 + AudioPlaybackTopic 去留** | capture heartbeat 与 speaker gate 同 schema 压扁；AudioPlaybackTopic 目前 CLI-only、未导出。与 #3 一起定 | 🔴 待定 |
+| 11 | **分句器位置** | speech FEATURE 遗留开放问题，决定说侧进 conversation topic 的分句粒度 | 🔴 待定 |
+
+### 说侧四层对齐与基建盘点（自 speech-protocol-alignment 吸收, 2026-08-12）
+
+说侧 (output) 对齐骨架——与听侧四层分层状态机正交：
+
+```
+L1 interpreter 级    一轮 logos = 一个 Interpretation, 含 0..n speech command
+L2 command-stream 级 一个 say/__content__ = 一个 SpeechStream (batch_id = task.cid)
+L3 tts 分段级        句子 = TTSItem{text, audio, duration}, 携带 (cid, seq)
+L4 play 分段级       player chunk + 播放游标, observe/on_play 逐片回调
+```
+
+对齐本质：每层持上层引用，中断折算沿链向上折（L4 游标 → L3 已播句 → L2 已播文本 → L1 本轮真实 logos）。
+
+分层广播频率原则：
+
+| 层 | 频率 | 载体 |
+|---|---|---|
+| 帧级 (10~50ms) | 高频 | stream 协议，不进 Topic |
+| 句级 | 秒级 | TopicService |
+| 状态快照 | 持续覆盖 | TopicWindow(max_size=1) |
+| 轮次级 | 每轮 | Interpretation 记账 |
+
+说侧基建盘点（已核实，折算 #8 的实现依赖）：
+
+- `contracts/speech.py`：TTSItem 已是文本-音频对齐单元；`StreamAudioPlayer.add()` 返回播放结束时间戳；`observe(PlaybackSample)` 逐片回调（真正写入时刻）；`SpeechStream.feed` 写回 cmd_task.tokens——**"喂了什么"，不是"播了什么"**。
+- `Interpretation` 五本账 (compiled/pending/success/cancelled/failed)；`executed_inputs` 只累计成功 task；**`on_done_task` 的 result 合并对 cancelled task 同样生效**——被打断的 say task 可经 result messages 送进观察上下文，折算回报通道现成。
+- SpeechStream 生命周期四元门控 commit/synthesis/play/close 可乱序；新 stream 的 start_play 关闭上一个 stream。
+
+---
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*
 *基础调研: audio-capture FEATURE.md (DeepSeek V4 + Claude Opus 4.7) — 已完成的音频感知全链路*
 *碰撞记录: 本会话对话 — 分层拓扑推演、交互模式收敛、安全边界讨论*

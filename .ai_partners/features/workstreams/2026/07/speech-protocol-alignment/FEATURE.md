@@ -1,20 +1,23 @@
 ---
-title: Speech Protocol Alignment — 说侧四层对齐、分层广播与真实话语记账
-status: draft
-priority: P1
 created: 2026-07-30
-updated: 2026-07-30
 depends: []
-milestone: v0.1.0
-description: >-
-  为 speech（moss shell 第一公民）补全说侧协议：分句对齐、播放游标折算、
-  双侧共享的句级广播、状态快照与音频持久化。使"实际说出的话"成为
+description: 为 speech（moss shell 第一公民）补全说侧协议：分句对齐、播放游标折算、 双侧共享的句级广播、状态快照与音频持久化。使"实际说出的话"成为
   可记账、可观察、可回放的 ground truth。
+milestone: v0.1.0
+priority: P1
+status: dropped
+status_note: 设计已吸收进 voice-input-state-machine (2026-08-12 audio 架构清单); 说侧四层对齐+基建盘点已迁入其
+  2026-08-12 会话决策一节
+title: Speech Protocol Alignment — 说侧四层对齐、分层广播与真实话语记账
+updated: '2026-08-12'
 ---
 
 # Speech Protocol Alignment
 
 > Use `moss features set-status speech-protocol-alignment <status> -m "note"` to update state.
+
+> **2026-08-12 — 本 workstream 已吸收进 voice-input-state-machine（说侧对齐、折算、conversation topic 均并入其「2026-08-12 会话决策 — audio 架构讨论清单」），状态 → dropped。**
+> 唯一设计资产（四层对齐模型 + 说侧基建盘点：Interpretation 记账、contracts/speech 生命周期）已压缩迁入该 FEATURE 的「2026-08-12 会话决策」一节。完整原始内容留在 git 历史。
 
 ## Motivation
 
@@ -154,6 +157,16 @@ contracts 层签名变更预计只有一处：`Speech.clear()` 增加返回值�
    （保留分层结构）？
 4. 持久化 sink 归属 — 进本 feature，还是拆给 matrix-resources？
 5. priority 待定 — 本文暂标 P1，人类可改。
+
+### 2026-08-12 会话补充（说侧架构方向）
+
+说侧相关决策已并入 voice-input-state-machine FEATURE 的「2026-08-12 会话决策 — audio 架构讨论清单」，
+本 feature 涉及其中 #1 player 单例、#2 speech 开放观测接口、#3 conversation topic、#8 中断折算、#11 分句器。要点：
+
+- **player 单例化**（`AudioPlayerProvider` → singleton=True），speech 为持有者，外部不直接 fetch player。
+- **speech 不直接耦合 topic**——开放观测接口，topic 接线放外侧；stream 可持有父层 callback。接口形态未定。
+- **句级广播可能演进为 conversation/dialog topic**，吸收听/说双侧——本 feature 的 `SpeechTopic(role=ghost)` 发布是其中一侧。
+- **中断折算语义必须保留**：`clear()` 折算已播半句、interrupted 标记、cancelled task resolve。
 
 ## 与其他 workstream 的关系
 
