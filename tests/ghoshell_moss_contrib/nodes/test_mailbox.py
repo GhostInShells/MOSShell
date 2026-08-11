@@ -1,18 +1,18 @@
-"""Tests for ghoshell_moss_contrib.nodes.mailbox — MailboxBridge + MCP integration."""
+"""Tests for ghoshell_moss.mcp.ghost_bridge — GhostBridge + MCP integration."""
 import asyncio
 
 import pytest
 
-from ghoshell_moss_contrib.nodes.mailbox import MailboxBridge, _Envelope
+from ghoshell_moss.mcp.ghost_bridge import GhostBridge, _Envelope
 
 
 # ---------------------------------------------------------------------------
-# MailboxBridge unit tests
+# GhostBridge unit tests
 # ---------------------------------------------------------------------------
 
-class TestMailboxBridge:
+class TestGhostBridge:
     def test_create_envelope(self):
-        bridge = MailboxBridge()
+        bridge = GhostBridge()
         env = bridge.create("hello")
         assert isinstance(env, _Envelope)
         assert len(env.task_id) == 12
@@ -20,25 +20,25 @@ class TestMailboxBridge:
         assert env.reply is None
 
     def test_check_before_reply(self):
-        bridge = MailboxBridge()
+        bridge = GhostBridge()
         env = bridge.create("msg")
         assert bridge.check(env.task_id) is None
 
     def test_post_and_check(self):
-        bridge = MailboxBridge()
+        bridge = GhostBridge()
         env = bridge.create("msg")
         assert bridge.post(env.task_id, "response") is True
         assert bridge.check(env.task_id) == "response"
 
     def test_post_unknown_id(self):
-        assert MailboxBridge().post("nonexistent", "x") is False
+        assert GhostBridge().post("nonexistent", "x") is False
 
     def test_check_unknown_id(self):
-        assert MailboxBridge().check("nonexistent") is None
+        assert GhostBridge().check("nonexistent") is None
 
     @pytest.mark.asyncio
     async def test_wait_immediate(self):
-        bridge = MailboxBridge()
+        bridge = GhostBridge()
         env = bridge.create("msg")
         bridge.post(env.task_id, "instant")
         reply = await bridge.wait(env.task_id, timeout=5.0)
@@ -46,7 +46,7 @@ class TestMailboxBridge:
 
     @pytest.mark.asyncio
     async def test_wait_delayed(self):
-        bridge = MailboxBridge()
+        bridge = GhostBridge()
         env = bridge.create("msg")
 
         async def delay():
@@ -59,18 +59,18 @@ class TestMailboxBridge:
 
     @pytest.mark.asyncio
     async def test_wait_timeout(self):
-        bridge = MailboxBridge()
+        bridge = GhostBridge()
         env = bridge.create("msg")
         reply = await bridge.wait(env.task_id, timeout=0.01)
         assert reply is None
 
     @pytest.mark.asyncio
     async def test_wait_unknown_id(self):
-        reply = await MailboxBridge().wait("nonexistent", timeout=1.0)
+        reply = await GhostBridge().wait("nonexistent", timeout=1.0)
         assert reply is None
 
     def test_post_already_replied_overwrites(self):
-        bridge = MailboxBridge()
+        bridge = GhostBridge()
         env = bridge.create("msg")
         bridge.post(env.task_id, "first")
         bridge.post(env.task_id, "second")
@@ -78,7 +78,7 @@ class TestMailboxBridge:
 
     @pytest.mark.asyncio
     async def test_gc_removes_stale(self):
-        bridge = MailboxBridge(ttl=0.01)
+        bridge = GhostBridge(ttl=0.01)
         env = bridge.create("msg")
         bridge.post(env.task_id, "done")
         await asyncio.sleep(0.05)
@@ -86,7 +86,7 @@ class TestMailboxBridge:
         assert env.task_id not in bridge._envelopes
 
     def test_gc_keeps_unreplied(self):
-        bridge = MailboxBridge(ttl=0.01)
+        bridge = GhostBridge(ttl=0.01)
         env = bridge.create("msg")
         bridge.create("trigger gc")
         assert env.task_id in bridge._envelopes
@@ -102,8 +102,8 @@ async def test_mcp_send_pull_cycle():
     from mcp.server.mcpserver import MCPServer
     from mcp.client.session_group import ClientSessionGroup, StreamableHttpParameters
 
-    bridge = MailboxBridge()
-    mcp = MCPServer("test-mailbox")
+    bridge = GhostBridge()
+    mcp = MCPServer("test-ghost-bridge")
     _PORT = 20779
 
     @mcp.tool()
@@ -171,8 +171,8 @@ async def test_send_blocking_wait():
     from mcp.server.mcpserver import MCPServer
     from mcp.client.session_group import ClientSessionGroup, StreamableHttpParameters
 
-    bridge = MailboxBridge()
-    mcp = MCPServer("test-wait-mailbox")
+    bridge = GhostBridge()
+    mcp = MCPServer("test-wait-ghost-bridge")
     _PORT = 20780
 
     @mcp.tool()

@@ -12,9 +12,9 @@ from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, howto_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    ground_cli, memento_cli, llms_cli, audio,
+    ground_cli, memento_cli, llms_cli, audio, mcp_cli,
 )
-from ghoshell_moss.depends import depend_matrix
+from ghoshell_moss.depends import depend_matrix, depend_mcp
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
 
@@ -55,6 +55,14 @@ else:
     app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
     app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
     app.add_typer(audio.audio_app, name="audio", short_help="Audio capability probing — capture, playback, TTS, ASR")
+
+# MCP-dependent groups: only register when mcp is installed ([mcp] extra).
+try:
+    depend_mcp()
+except ImportError:
+    pass
+else:
+    app.add_typer(mcp_cli.mcp_app, name="mcp", short_help="MCP client/server management")
 
 
 @app.callback(invoke_without_command=True)

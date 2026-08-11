@@ -570,6 +570,10 @@ matrix = [
     { name = "rich" },
     { name = "typer" },
 ]
+mcp = [
+    { name = "mcp" },
+    { name = "uvicorn" },
+]
 redis = [
     { name = "fakeredis" },
     { name = "redis" },
@@ -607,6 +611,7 @@ requires-dist = [
     { name = "janus", specifier = ">=2.0.0" },
     { name = "jsonargparse", specifier = ">=4.48.0" },
     { name = "loadenv", marker = "extra == 'host'", specifier = ">=0.1.1" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.0.0" },
     { name = "miniaudio", marker = "extra == 'host'", specifier = ">=0.67" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "orjson", specifier = ">=3.11.8" },
@@ -630,11 +635,12 @@ requires-dist = [
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.24.1" },
     { name = "typer", marker = "extra == 'host'", specifier = ">=0.24.1" },
     { name = "typer", marker = "extra == 'matrix'", specifier = ">=0.24.1" },
+    { name = "uvicorn", marker = "extra == 'mcp'", specifier = ">=0.37.0" },
     { name = "uvloop", marker = "extra == 'host'", specifier = ">=0.22.1" },
     { name = "websockets", marker = "extra == 'host'", specifier = ">=15.0.1" },
     { name = "zmq", marker = "extra == 'zmq'", specifier = ">=0.0.0" },
 ]
-provides-extras = ["cli", "matrix", "host", "ghost", "zmq", "redis"]
+provides-extras = ["cli", "matrix", "host", "ghost", "zmq", "redis", "mcp"]
 
 [package.metadata.requires-dev]
 dev = [

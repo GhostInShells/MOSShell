@@ -3,7 +3,7 @@ title: MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
 status: converging
 priority: P1
 created: 2026-07-31
-updated: 2026-08-10
+updated: 2026-08-11
 depends:
   - mcp-hub-channel
   - speech-protocol-alignment
@@ -12,15 +12,18 @@ description: >-
   MCP（尤其 2026-07-28 stateless 版）与 MOSS channel 基于高度类似的愿景设计。
   本 workstream 的正式目标是找到两者的合适融合点——先定位 MCP 在 MOSS 架构中
   的身份，再连带回答是否以 MCP 作为 cell 间 RPC 协议的底座。
+
+  决策 1-10 已锁定。CLI 化与命名已完成（ghoshell_moss.mcp + moss mcp CLI）；
+  新 bridge 实机闭环走通。残留：signal 优先级 + ghost runtime 异常处理缺口。
 ---
 
 # MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
 
-> 状态：draft → converging。RPC 底座裁决与 MCP 位置已收敛，node run as mcp server 机制
-> 敲定，mailbox bridge 验证用例已实现并于 2026-08-10 首次实机闭环（external agent ↔
-> echo ghost 双向对话走通）。CLI 体系（`moss mcp`）与协议翻译层方向已明确，待实现。
-> 实机发现 6 个 bug 已修复、暴露 MCP poll vs MOSS push 不对称，后续三点方向见决策 10。
-> 讨论轨迹见 `discuss/` + `design/`。
+> 状态：converging。RPC 底座裁决与 MCP 位置已收敛，node run as mcp server 机制
+> 敲定，mailbox bridge 验证用例已实现并于 2026-08-10 首次实机闭环。CLI 体系
+> （`moss mcp`）已落地（2026-08-11：`ghoshell_moss.mcp` 包 + `moss mcp
+> serve-ghost-bridge` + `Matrix.serve_mcp`）。实机发现 6 个 bug 已修复 + 3 个
+> ghost runtime 异常处理缺口已定位待修。讨论轨迹见 `discuss/` + `design/`。
 > 用 `moss features set-status mcp-fusion-point <status> -m "note"` 更新状态。
 
 ## Motivation
@@ -179,12 +182,52 @@ external agent (Claude Code) ↔ echo ghost 跨宿主双向 request-reply 首次
 echo 能"看到" agent 的消息，agent 看不到 echo 主动说话。`wait_reply` 是伪造
 共享"现在"的补丁——印证"MCP 传达不了时间流"的判断。
 
-**后续三点（未完成）**：
+**后续三点（2026-08-11 更新）**：
 
-1. **CLI 化**：mailbox 机制整体从 `ghoshell_moss_contrib` 嵌入 `ghoshell_moss.mcp`
-   做系统级实现（`matrix.serve_mcp` 原语 + `moss mcp serve-mailbox`），不再作为
-   独立 contrib node。
-2. **mcp channel 名字自解释**：当前 `ghost-mailbox` / `matrix.mesh.mailbox_01KZKQ`
-   不够直观，需命名规范。
-3. **signal 优先级**：send 的 signal 实机中持续打断 echo 说一半的话，优先级可能
-   过高，需调整打断策略。
+1. **CLI 化** — 已完成。`ghoshell_moss.mcp` 包（`GhostBridge` + `serve_ghost_bridge`），
+   `moss mcp serve-ghost-bridge` CLI，`Matrix.new` 轻量 cell 入网。
+2. **mcp channel 命名** — 已完成。统一用 `ghost_bridge`（channel / CTML / cell 名）。
+3. **signal 优先级** — 待修。NOTICE + notify 不应打断 ghost speaking，但实机中打断
+   了，根因在 mindflow challenge 仲裁逻辑。
+
+### 11. 新 bridge 实机闭环 + 暴露的 ghost runtime 异常处理缺口（2026-08-11）
+
+新 `moss mcp serve-ghost-bridge` 与 echo ghost 三轮对话实机走通两轮，第三轮
+暴露三个底层问题（未修，留现场）：
+
+**a. Signal 打断 streaming 导致 Anthropic stream 异常**
+
+```
+httpx._transports.default → anthropic._streaming → pydantic_ai.result
+→ Unhandled exception in event loop
+```
+
+signal → mindflow challenge → attention abort → articulator 的 pydantic_ai
+stream 被取消，异常沿 httpx → anthropic → pydantic_ai 链路上抛，无任何层
+捕获。表现为 event loop 里的 Unhandled exception。
+
+**b. pydantic_graph cancel scope 跨 task 错误**
+
+```
+anyio CancelScope: Attempted to exit cancel scope in a different task
+than it was entered in
+```
+
+pydantic_ai 内部用 anyio cancel scope 管理流式响应生命周期。当 mindflow
+从另一个 task 取消 attention 时，cancel scope 的 enter/exit 发生在不同
+task，anyio 报错。这是 pydantic_ai + anyio + mindflow 三方 task 模型
+不一致的冲突。
+
+**c. GhostRuntime 异常处理缺口**（调研结论）
+
+- `asyncio.CancelledError` 在整个 runtime loop 体系里无处理——它是
+  BaseException，不被 `except Exception` 捕获，shutdown 时沿 task 链
+  泄漏
+- `AttentionAbortedError`（attention 层视为正常关闭信号）被
+  `_run_articulator` 的 catch-all 当作 error 日志 + `session.output('error')`
+  广播——attention 层和 runtime 层对同一事件的语义不一致
+- 流式响应无异常隔离——anthropic/httpx 层的异常穿透所有层到达 event loop
+
+三条根因指向同一个问题：**ghost runtime 缺少分层异常隔离**。signal 打断
+是正常事件，但从 mindflow → attention → articulator → pydantic_ai →
+anthropic → httpx 的取消传播链上，每一层都假设下一层会处理，最终无人兜底。

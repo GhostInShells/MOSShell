@@ -11,9 +11,12 @@ cell 经由它持有身份、暴露膜、观察网络、拉起并治理新的进
 客户端 — mesh 只是它投影的来源之一.
 """
 import dataclasses
-from typing import Literal, Callable, Awaitable, Any, Coroutine, Protocol, TypeAlias, Type
+from typing import Literal, Callable, Awaitable, Any, Coroutine, Protocol, TypeAlias, Type, TYPE_CHECKING
 from typing_extensions import Self
 from abc import ABC, abstractmethod
+
+if TYPE_CHECKING:
+    from mcp.server.mcpserver import MCPServer
 
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.session import Session
@@ -530,6 +533,8 @@ class Matrix(ABC):
                     if task in done:
                         return await task
                     raise asyncio.CancelledError("Matrix is closing")
+                except asyncio.CancelledError:
+                    pass  # 外部取消 (KeyboardInterrupt → asyncio.run 取消 task) 或内部关闭, 静默退出
                 finally:
                     for t in [task, exit_signal]:
                         if not t.done():
@@ -554,6 +559,72 @@ class Matrix(ABC):
             return asyncio.run(self.arun(main_coro))
         except KeyboardInterrupt:
             pass  # arun 已处理清理
+
+    # -- serve_mcp: code-as-prompt 糖, 在 matrix 生命周期内 serve MCP server -- #
+
+    async def aserve_mcp(
+        self,
+        mcp: 'MCPServer',
+        *,
+        host: str = '127.0.0.1',
+        port: int = 0,
+    ) -> None:
+        """
+        在已运行的 Matrix 内 serve 一个 MCP server.
+
+        调用前 matrix 必须已进入上下文 (``async with matrix`` 内 或
+        ``matrix.run()`` 回调内). 只负责 transport, 不管理 matrix 生命周期.
+
+        serve 用 ``run_streamable_http_async`` (async), 绝不 ``mcp.run()``
+        (后者内部 ``anyio.run()`` 开新 event loop, 跟 matrix 的 loop 打架).
+        mcp 实例的 tools 在调用前已注册完毕, 本方法不重新注册.
+        """
+        if not self.is_running():
+            raise RuntimeError('Matrix not running.  Use serve_mcp() or enter matrix context first.')
+
+        self.logger.info(
+            'MCP server serving on %s:%s (stateless streamable-http)',
+            host, port,
+        )
+        await mcp.run_streamable_http_async(
+            host=host, port=port, stateless_http=True,
+        )
+
+    def serve_mcp(
+        self,
+        mcp: 'MCPServer',
+        *,
+        host: str = '127.0.0.1',
+        port: int = 0,
+    ) -> None:
+        """
+        同步阻塞入口: 在 Matrix 生命周期内 serve 一个 MCP server.
+
+        code-as-prompt 糖, 对标 :meth:`run`. 内部自动拉起事件循环、进入 matrix
+        上下文、serve、退出清理. mcp 实例的 tools 在调用前已注册完毕, 本方法只
+        负责 transport 生命周期, 不重新注册 tool::
+
+            mcp = MCPServer("my-node")
+
+            @mcp.tool()
+            async def hello(name: str) -> str:
+                return f"hi {name}"
+
+            matrix.serve_mcp(mcp, port=8080)
+        """
+        try:
+            import uvloop
+        except ImportError:
+            uvloop = None
+
+        if uvloop is not None:
+            asyncio.set_event_loop(uvloop.new_event_loop())
+
+        async def _run():
+            async with self:
+                await self.aserve_mcp(mcp, host=host, port=port)
+
+        return asyncio.run(_run())
 
     @abstractmethod
     async def __aenter__(self) -> Self:
