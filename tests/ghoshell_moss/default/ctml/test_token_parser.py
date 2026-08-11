@@ -6,7 +6,12 @@ import pytest
 
 from ghoshell_moss.core.concepts.command import CommandToken, CommandTokenSeq
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, ctml_default_parsers, AttrPrefixParser
+from ghoshell_moss.core.ctml.token_parser import (
+    CTML2CommandTokenParser,
+    AttrWithTypeSuffixParser,
+    ctml_default_parsers,
+    AttrPrefixParser,
+)
 from ast import literal_eval
 
 
@@ -270,14 +275,37 @@ def test_token_parser_with_json():
 
 def test_token_parser_with_attr_suffix():
     # CTML 1.0.0 隐藏使用三元命名法, chan:command:call_id.
+    # lambda 后缀默认关闭, 此处显式开启以保留其能力测试.
     content = "<a:foo:3 a:list='[1, 2]' b:lambda='2*3' c:dict='{\"foo\": 123}' />"
     q: list[CommandToken] = []
-    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
+    parsers = [AttrWithTypeSuffixParser(enable_lambda=True)]
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=parsers)
     q = q[1:-1]
     for token in q:
         if token.seq == "start":
             assert token.call_id == '3'
             assert token.kwargs == {"a": [1, 2], "b": 6, "c": {"foo": 123}}
+
+
+def test_token_parser_lambda_disabled_by_default():
+    # 安全边界: lambda 后缀默认不可用 — 不 eval, 属性名与值原样保留.
+    content = "<a:foo b:lambda='2*3' />"
+    q: list[CommandToken] = []
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
+    q = q[1:-1]
+    for token in q:
+        if token.seq == "start":
+            assert token.kwargs["b:lambda"] == "2*3"
+
+    # 即使注入可执行载荷也不触发解释.
+    payload = '__import__("os").system("echo pwned")'
+    content = f"<a:foo b:lambda='{payload}' />"
+    q: list[CommandToken] = []
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
+    q = q[1:-1]
+    for token in q:
+        if token.seq == "start":
+            assert token.kwargs["b:lambda"] == payload
 
 
 def test_ctml_with_suffix_idx():

@@ -206,7 +206,14 @@ class AttrWithTypeSuffixParser(AttrParser):
             self,
             description: str = "允许属性跟随后缀, 形如 a:str",
             parser_map: dict[str, Callable[[str], Any]] | None = None,
+            *,
+            enable_lambda: bool = False,
     ):
+        """
+        :param enable_lambda: 默认关闭. lambda 后缀经 ``eval`` 执行任意表达式,
+            是解释层的一段任意代码执行面, 唯一的审查边界只有上层 SafeMode.
+            默认不注册, 仅在显式开启时可用.
+        """
         self.description = description
         self._parser_map = parser_map or {
             "str": str,
@@ -218,8 +225,9 @@ class AttrWithTypeSuffixParser(AttrParser):
             "None": lambda v: None,
             "none": lambda v: None,
             "literal": literal_eval,
-            "lambda": lambda v: eval(f"lambda: {v}")(),
         }
+        if enable_lambda:
+            self._parser_map["lambda"] = lambda v: eval(f"lambda: {v}")()
 
     def parse(self, name: str, value: str) -> Optional[tuple[str, Any]]:
         parts = name.split(":", 1)
