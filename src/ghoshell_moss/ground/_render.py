@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
 from ghoshell_moss.ground._chain import collect_law_files
-from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, glob_limited, observe, parse_range
+from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, glob_limited, observe, parse_range
 from ghoshell_moss.ground.contract import (
     ExecPin,
     FilePin,
@@ -44,7 +44,6 @@ __all__ = ["render_context", "render_meta", "render_walk", "render_items"]
 async def render_context(
     body: str,
     pins: list[Pin],
-    shadows: dict[str, PinShadow],
     anchor: Anchor,
     *,
     ignore: PathSpec | None = None,
@@ -78,21 +77,9 @@ async def render_context(
     # ---- pin items -----------------------------------------------------
     for p in pins:
         obs = observations.get(p.label)
-        shadow = shadows.get(p.label, PinShadow())
-
-        # 位置依赖 pin (law) 不做 stale 对账
-        stale = (
-            not p.is_cwd_anchored
-            and shadow.hash is not None
-            and obs is not None
-            and obs.exists
-            and obs.hash != shadow.hash
-        )
         missing = obs is not None and not obs.exists
 
         content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
-        if stale:
-            content = content + "\n[changed on disk]"
         if missing:
             content = "[missing]"
 
@@ -174,7 +161,6 @@ async def render_walk(
     ground_root: Path,
     doc_path: Path,
     pins: list[Pin],
-    shadows: dict[str, PinShadow],
     *,
     label: str | None = None,
     ignore: PathSpec | None = None,
@@ -249,19 +235,9 @@ async def render_walk(
             observations = dict(zip(tasks.keys(), results))
             for p in full_pins:
                 obs = observations.get(p.label)
-                shadow = shadows.get(p.label, PinShadow())
-                stale = (
-                    not p.is_cwd_anchored
-                    and shadow.hash is not None
-                    and obs is not None
-                    and obs.exists
-                    and obs.hash != shadow.hash
-                )
                 missing = obs is not None and not obs.exists
 
                 content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
-                if stale:
-                    content = content + "\n[changed on disk]"
                 if missing:
                     content = "[missing]"
 

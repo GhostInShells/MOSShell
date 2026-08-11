@@ -1,5 +1,5 @@
 ---
-label: skill-ground
+name: skill-ground
 description: Skills 集合目录 ground — 标记认知场类型, 索引子目录 SKILL.md, 不改 skill 文件.
 pins:
 - label: skills

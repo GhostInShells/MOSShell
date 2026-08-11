@@ -1,10 +1,10 @@
-"""Pin observation — per-class mtime + hash 对账.
+"""Pin observation — per-class mtime + size 快照.
 
 每种子类自带观察逻辑:
-- FilePin: 读文件全文 (可选 range 切片) → sha256. binary 文件跳过内容渲染, 仅 hash raw bytes.
-- GlobPin: 展开 + hash 命中路径列表 (不读内容). 过 GLOB_IGNORE 过滤噪声目录.
-- FrontmatterPin: 读文件 frontmatter → sha256
-- LsPin: 展开目录树 + hash 条目列表 (不读内容). 过 GLOB_IGNORE 过滤.
+- FilePin: 读文件全文 (可选 range 切片). binary 文件跳过内容渲染.
+- GlobPin: 展开命中路径列表 (不读内容). 过 GLOB_IGNORE 过滤噪声目录.
+- FrontmatterPin: 读文件 frontmatter
+- LsPin: 展开目录树 + 条目列表 (不读内容). 过 GLOB_IGNORE 过滤.
 
 文件不存在 → Observation(exists=False).
 
@@ -15,15 +15,17 @@ ignore 规则 (.gitignore 语义), 与 GLOB_IGNORE 叠层过滤.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-from dataclasses import dataclass, field
+import os
+import re
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathspec import PathSpec
 
-from ghoshell_moss.ground._addr import Anchor, resolve_path, is_glob_pattern
+from ghoshell_moss.ground._addr import Anchor, resolve_path
 from ghoshell_moss.ground._chain import collect_law_files
 from ghoshell_moss.ground.contract import (
     ExecPin,
@@ -33,20 +35,16 @@ from ghoshell_moss.ground.contract import (
     LawPin,
     LsPin,
     Pin,
-    PathOutsideRootError,
 )
 
 __all__ = [
     "Observation",
-    "PinShadow",
     "observe",
     "observe_sync",
     "glob_limited",
     "GLOB_IGNORE",
     "parse_range",
 ]
-
-_EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
 # basename 精确匹配, 不解析 .gitignore. glob 展开时每层目录遇到这些就跳过.
 # ground root 不一定是 git root, pathspec 从 git root 读会错位.
@@ -73,7 +71,6 @@ class Observation:
 
     exists: bool
     mtime: float | None = None
-    hash: str | None = None
     is_binary: bool = False
     payload: str | None = None
     """观察即产出内容的 verb (exec) 把结果存这里, 渲染层直接消费 —
@@ -86,18 +83,6 @@ class Observation:
     """size 的显示单位: 'B' / 'entries' / 'chars'."""
 
 
-@dataclass
-class PinShadow:
-    """运行时观察影子 — 不进 GROUND.md.
-
-    每 pin 一个, 存上次承认时的观察状态. context() 时与当前 Observation
-    对比: hash 相同 → 不标; hash 不同 → [changed on disk].
-    """
-
-    mtime: float | None = None
-    hash: str | None = None
-
-
 # -- async entry (context() 并发调用) ---------------------------------------
 
 
@@ -108,7 +93,7 @@ async def observe(
     return await asyncio.to_thread(observe_sync, pin, anchor, ignore=ignore)
 
 
-# -- sync entry (pin() / update() 内置观察) ---------------------------------
+# -- sync entry ---------------------------------------------------------------
 
 
 def observe_sync(
@@ -149,26 +134,21 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
         try:
             start, end = parse_range(pin.arguments.range, len(text.splitlines()))
         except ValueError:
-            start, end = 0, 0  # invalid range → 空切片 hash, 确定性可对账
+            start, end = 0, 0
         sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
-        digest = hashlib.sha256(sliced.encode("utf-8")).hexdigest()
         return Observation(
-            exists=True, mtime=mtime, hash=digest, is_binary=binary,
+            exists=True, mtime=mtime, is_binary=binary,
             size=len(sliced.encode("utf-8")), unit="B",
         )
 
     if binary:
-        content = target.read_bytes()
-        digest = hashlib.sha256(content).hexdigest()
         return Observation(
-            exists=True, mtime=mtime, hash=digest, is_binary=True,
+            exists=True, mtime=mtime, is_binary=True,
             size=size, unit="B",
         )
 
-    text = target.read_text(encoding="utf-8", errors="replace")
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return Observation(
-        exists=True, mtime=mtime, hash=digest, is_binary=False,
+        exists=True, mtime=mtime, is_binary=False,
         size=size, unit="B",
     )
 
@@ -179,7 +159,6 @@ def _observe_glob(
     root = anchor.ground
     pattern = pin.arguments.path
 
-    # 锚点语法解析后做 glob
     if pattern.startswith("$"):
         resolved = resolve_path(pattern, anchor)
         pattern = str(resolved.relative_to(root)) if resolved.is_relative_to(root) else str(resolved)
@@ -193,10 +172,7 @@ def _observe_glob(
         matches.append(hit)
 
     if not matches:
-        return Observation(
-            exists=True, mtime=None, hash=_EMPTY_HASH,
-            size=0, unit="entries",
-        )
+        return Observation(exists=True, mtime=None, size=0, unit="entries")
 
     mtimes: list[float] = []
     for m in matches:
@@ -206,12 +182,7 @@ def _observe_glob(
             continue
     latest = max(mtimes) if mtimes else None
 
-    rels = sorted(str(m.relative_to(root)) for m in matches)
-    digest = hashlib.sha256("\n".join(rels).encode("utf-8")).hexdigest()
-    return Observation(
-        exists=True, mtime=latest, hash=digest,
-        size=len(matches), unit="entries",
-    )
+    return Observation(exists=True, mtime=latest, size=len(matches), unit="entries")
 
 
 def _observe_frontmatter(
@@ -231,16 +202,9 @@ def _observe_frontmatter(
     except FileNotFoundError:
         return Observation(exists=False)
 
-    # 提取 frontmatter 块: ---\n...\n---. 无 frontmatter → 空 payload:
-    # hash 稳定 (不跟踪 body), 与渲染层的 "no frontmatter found" 对齐.
-    import re
     fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
-    payload = fm_match.group(1) if fm_match else ""
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return Observation(
-        exists=True, mtime=mtime, hash=digest,
-        size=1, unit="entries",
-    )
+    _payload = fm_match.group(1) if fm_match else ""
+    return Observation(exists=True, mtime=mtime, size=1, unit="entries")
 
 
 def _observe_frontmatter_pattern(
@@ -255,12 +219,8 @@ def _observe_frontmatter_pattern(
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
 
     if not files:
-        return Observation(
-            exists=True, mtime=None, hash=_EMPTY_HASH,
-            size=0, unit="entries",
-        )
+        return Observation(exists=True, mtime=None, size=0, unit="entries")
 
-    import re
     parts: list[str] = []
     latest_mtime: float | None = None
     for f in files:
@@ -277,16 +237,9 @@ def _observe_frontmatter_pattern(
         parts.append(f"-- {rel}\n{payload}")
 
     if not parts:
-        return Observation(
-            exists=True, mtime=None, hash=_EMPTY_HASH,
-            size=0, unit="entries",
-        )
+        return Observation(exists=True, mtime=None, size=0, unit="entries")
 
-    digest = hashlib.sha256("\n\n".join(parts).encode("utf-8")).hexdigest()
-    return Observation(
-        exists=True, mtime=latest_mtime, hash=digest,
-        size=len(parts), unit="entries",
-    )
+    return Observation(exists=True, mtime=latest_mtime, size=len(parts), unit="entries")
 
 
 def _observe_ls(
@@ -305,20 +258,13 @@ def _observe_ls(
              ignore=ignore, ground_root=anchor.ground)
 
     if not entries:
-        return Observation(
-            exists=True, mtime=None, hash=_EMPTY_HASH,
-            size=0, unit="entries",
-        )
+        return Observation(exists=True, mtime=None, size=0, unit="entries")
 
-    digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
-    return Observation(
-        exists=True, mtime=None, hash=digest,
-        size=len(entries), unit="entries",
-    )
+    return Observation(exists=True, mtime=None, size=len(entries), unit="entries")
 
 
 def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
-    """observe 即执行. payload = 渲染就绪的结果文本, hash = sha256(payload).
+    """observe 即执行. payload = 渲染就绪的结果文本.
 
     授权模型 = Makefile 级信任: ref 必须是场根子树内的可执行文件.
     - 相对路径, 不允许 ../ 跨场
@@ -328,13 +274,10 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
 
     失败可见: 非零退出附 [exit N] + stderr 尾部; 超时附 [timeout] 标记.
     """
-    import os
-    import subprocess
-
     args = pin.arguments
     ref = args.ref
 
-    # 授权检查: 拒绝绝对路径 / 跨场跳出 (安全拒绝, 非文件缺失)
+    # 授权检查: 拒绝绝对路径 / 跨场跳出
     if Path(ref).is_absolute() or ".." in Path(ref).parts:
         return _exec_rejected("[outside ground]")
 
@@ -368,18 +311,10 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
         partial = e.stdout if isinstance(e.stdout, str) else ""
         payload = (partial.rstrip() + "\n" if partial.strip() else "") + \
             f"[timeout after {args.timeout:g}s]"
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        return Observation(
-            exists=True, hash=digest, payload=payload,
-            size=len(payload), unit="chars",
-        )
+        return Observation(exists=True, payload=payload, size=len(payload), unit="chars")
     except OSError as e:
         payload = f"error: cannot execute: {e}"
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        return Observation(
-            exists=True, hash=digest, payload=payload,
-            size=len(payload), unit="chars",
-        )
+        return Observation(exists=True, payload=payload, size=len(payload), unit="chars")
 
     parts: list[str] = []
     if proc.stdout.strip():
@@ -391,30 +326,20 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
             parts.append(stderr_tail)
 
     payload = "\n".join(parts) if parts else "(no output)"
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return Observation(
-        exists=True, hash=digest, payload=payload,
-        size=len(payload), unit="chars",
-    )
+    return Observation(exists=True, payload=payload, size=len(payload), unit="chars")
 
 
 def _observe_law(pin: LawPin, anchor: Anchor) -> Observation:
     """law pin 观察 — 收集 cwd 向上到 ground root 的约定文件清单.
 
-    内容由渲染层读取 (render-time, 与 file/glob 同构). 观察只对
-    文件集合做 hash — 位置依赖, 不参与 stale 对账 (tracks_changes=False).
+    内容由渲染层读取 (render-time, 与 file/glob 同构).
     """
     files = collect_law_files(anchor, pin.arguments.filename)
     if not files:
-        return Observation(
-            exists=True, mtime=None, hash=_EMPTY_HASH,
-            size=0, unit="entries",
-        )
+        return Observation(exists=True, mtime=None, size=0, unit="entries")
 
-    rels: list[str] = []
     latest: float | None = None
     for f in files:
-        rels.append(str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f))
         try:
             st = f.stat()
         except OSError:
@@ -422,19 +347,12 @@ def _observe_law(pin: LawPin, anchor: Anchor) -> Observation:
         if latest is None or st.st_mtime > latest:
             latest = st.st_mtime
 
-    digest = hashlib.sha256("\n".join(rels).encode("utf-8")).hexdigest()
-    return Observation(
-        exists=True, mtime=latest, hash=digest,
-        size=len(files), unit="entries",
-    )
+    return Observation(exists=True, mtime=latest, size=len(files), unit="entries")
 
 
 def _exec_rejected(message: str) -> Observation:
     """exec 授权拒绝 — 不是文件缺失, 是安全策略拒绝."""
-    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
-    return Observation(
-        exists=True, hash=digest, payload=message, size=0, unit="",
-    )
+    return Observation(exists=True, payload=message, size=0, unit="")
 
 
 # -- helpers ----------------------------------------------------------------
@@ -486,7 +404,6 @@ def glob_limited(
     if not base.is_dir():
         return []
     if not rel:
-        # all parts are static — concrete path, no glob
         return [base]
     matches = sorted(base.glob(rel))
     if max_depth is None and ignore is None:
@@ -519,8 +436,7 @@ def _spec_match(spec: PathSpec, path: Path, root: Path) -> bool:
 def parse_range(raw: str, total_lines: int) -> tuple[int, int]:
     """'N' or 'N-M' → (start, end) 1-indexed inclusive, clamped to [1, total_lines].
 
-    clamp 后区间为空 (start 越过文件末尾或 descending range) 抛 ValueError —
-    render 与 hash 共用同一实现, 避免两份 _parse_range 行为漂移.
+    clamp 后区间为空 (start 越过文件末尾或 descending range) 抛 ValueError.
     """
     if "-" in raw:
         a, b = raw.split("-", 1)

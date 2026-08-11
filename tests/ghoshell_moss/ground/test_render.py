@@ -19,7 +19,7 @@ from ghoshell_moss.ground._render import (
     render_context,
     render_walk,
 )
-from ghoshell_moss.ground._hash import Observation, PinShadow
+from ghoshell_moss.ground._hash import Observation
 from ghoshell_moss.ground.contract import (
     FileArguments,
     FilePin,
@@ -254,7 +254,7 @@ class TestLawPinRender:
         anchor = Anchor(ground=root, cwd=root)
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", lines=2))
         items = run(render_context(
-            body="", pins=[pin], shadows={}, anchor=anchor,
+            body="", pins=[pin], anchor=anchor,
         ))
         assert len(items) == 1
         assert items[0].truncated
@@ -266,7 +266,7 @@ class TestLawPinRender:
         anchor = Anchor(ground=root, cwd=root)
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", budget=30))
         items = run(render_context(
-            body="", pins=[pin], shadows={}, anchor=anchor,
+            body="", pins=[pin], anchor=anchor,
         ))
         assert items[0].truncated
         assert "[truncated at 30 chars]" in items[0].content
@@ -283,7 +283,6 @@ class TestLawPinRender:
             ground_root=root,
             doc_path=root / "GROUND.md",
             pins=[pin],
-            shadows={},
         ))
         # law pin 在 walk 时只列路径, 不展开内容 — 根部已展示过
         pin_items = [i for i in items if i.kind == "law"]
@@ -310,7 +309,6 @@ class TestLawPinRender:
             ground_root=root,
             doc_path=root / "GROUND.md",
             pins=[pin],
-            shadows={},
         ))
         pin_items = [i for i in items if i.kind == "law"]
         assert len(pin_items) == 1
@@ -333,7 +331,7 @@ class TestFrameBudget:
             arguments=FileArguments(path="readme.md", budget=50),
         )
         items = run(render_context(
-            body="", pins=[pin], shadows={}, anchor=anchor,
+            body="", pins=[pin], anchor=anchor,
         ))
         assert items[0].truncated
         assert "[truncated at 50 chars]" in items[0].content

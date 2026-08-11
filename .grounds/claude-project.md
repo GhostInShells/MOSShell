@@ -1,5 +1,5 @@
 ---
-label: claude-project
+name: claude-project
 description: Claude Code 项目 ground — 兼容 CLAUDE.md 约定, 不修改项目文件.
 pins:
 - label: claude

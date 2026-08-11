@@ -1,54 +1,21 @@
 ---
-title: Ghost Ground — Ghost 的认知场
-status: in-progress
-priority: P0
 created: 2026-06-10
-updated: 2026-08-11
-renamed_from: Project Manager
 depends:
-  - momento-mori
+- momento-mori
+description: 'Ground 是 Ghost 的认知场 — context_messages 上可 pin 的表面 + 场 (目录) 的开合管理. 以
+  frontmatter+body 的 L0 文件 (GROUND.md) 为载体, pins 作为 frontmatter 的一部分; frontmatter
+  = 机器域, body = 人/模型叙事域. 三层落地按预训练迁移量排序: CTML channel (主), bash CLI (`moss ground`),
+  module_eval (小概率). CLI 层已完成: spec / init / frame / meta / observe / validate 六命令,
+  contract + concrete 全部落地, 154 测试通过, 两轮 dogfood 验收. CTML channel 落点见 ground-channel
+  workstream (薄 channel 设计).'
 milestone: 0.1.0
-description: >-
-  Ground 是 Ghost 的认知场 — context_messages 上可 pin 的表面 + 场 (目录)
-  的开合管理. 以 frontmatter+body 的 L0 文件 (GROUND.md) 为载体, pins
-  作为 frontmatter 的一部分; frontmatter = 机器域, body = 人/模型叙事域.
-  三层落地按预训练迁移量排序: CTML channel (主), bash CLI (`moss ground`),
-  module_eval (小概率). CLI 层已完成: spec / init / frame / meta / observe /
-  validate 六命令, contract + concrete 全部落地, 154 测试通过, 两轮 dogfood
-  验收. CTML channel 落点见 ground-channel workstream (薄 channel 设计).
-status_note: >-
-  2026-08-11 deepseek-v4-flash. 动机追认: ground 的数据模型 (body + pins + dir/cwd
-  锚定 + frame 渲染) 本身就可以作为一个 compact 工具. Body = compact 叙事文本,
-  pins = 对账锚点 (指向被改动文件, hash 验证). Frame 天然是双层表面: body 回答
-  "当时发生了什么", pins 回答 "现在这些文件还在那个状态吗". 不需要额外的时间轴
-  原语 — compact 自己的时序也是靠叙事顺序表达的. 这个洞察是 ground 的动机之一,
-  在基本做完了才记录.
-  --
-  2026-08-10 claude-opus-4-7. SPEC 对齐实现大修: frame 格式从 HTML comment 改写为
-  ``---`` / ``>`` 区块, @-expansion 降为单层, 删除三层 + 24k 预算声明 (未实现).
-  exec 拒绝信息分开声明 [missing]/[not executable]/[outside ground].
-  max_depth 实现落地 (SPEC §4.1): 递归深度上限 + 场边界停止, glob/frontmatter
-  pattern 模式 + ls observe 均生效. always_show / override 参数补入 SPEC.
-  walk 模式独立章节. verbs 命令补入 CLI 表. GLOB_IGNORE vs .gitignore 纠正.
-  dead code (_render_result_block / _content_law / AT_BUDGET / AT_MAX_DEPTH) 删除.
-  172 测试通过.
-  --
-  2026-08-06 deepseek-v4-flash. CLI P1 修复落地: init --template 不存在报错
-  (open 抛 KeyError) / range "0-N" 统一 parse_range (validate 拒绝非法, frame 明确
-  报错) / ExecPin+ExecArguments 导出补齐. 154 测试通过. 基线判断: 协议 + CLI 层可建
-  应用. channel 实现转 ground-channel workstream.
-  --
-  2026-07-23 deepseek-v4-pro. K62~K66: 裸目录场删除, .grounds/ 模板发现,
-  frontmatter 动词扩展为渐进式披露, per-pin budget/limit/max_depth.
-  下一轮: SPEC 重写 + 实现对齐.
-  --
-  2026-07-21 deepseek-v4-pro. K55~K58 实现落地 + K59~K61 frame/pins/CLI
-  修订. 两轮 dogfood 验证通过: 零调研即可完成 ground 的初步使用.
-  CTML channel 装配留待后续.
-  --
-  2026-07-20 kimi-k3 [1m]. 新一轮抽象推演 (K55~K58).
-  --
-  历史轨迹: 摘要保留在 §Key Decisions.
+priority: P0
+renamed_from: Project Manager
+status: completed
+status_note: |
+    CLI layer complete. Pending: ground-channel (CTML runtime), moss-project-ground.
+title: Ghost Ground — Ghost 的认知场
+updated: '2026-08-11'
 ---
 
 # Ground — Ghost 的认知场
@@ -578,25 +545,12 @@ L2 之间的互相发现使 L3 不存在.
 - **CLI**: spec / init / frame / meta / observe / validate — positional path args
 - **Tests**: 105 tests across contract/addr/hash/l0/chain/ground_set
 
-## 已知未决 (给下一个实例)
+## 已知未决
 
-- **K23 (L2 模板库引导地址)** — 已由 K63 回答: `.grounds/**/*.md` 约定.
-  残余: ghost 携带模板与项目属地模板的合成优先级 (K63 已定 "项目属地优先").
-- **K24 (目光运行时侧影载体)** — .cache 级 gitignore 目录的具体约定. K36
-  已定 seen_* 不入 GROUND.md; 侧影落盘位置未定.
-- **K25 (向下探索的场声明)** — 已由 K64 回答: `frontmatter` pin 的 pattern
-  匹配 + K57 glob pin. 残余: L1 marker 文件名 (已不需要 — `.grounds/`
-  约定解决了注册问题).
-- **K40 (K35 合成语义与 K28 幂等的冲突; ghost 默认场)** — dogfooding 讨债.
-- **K41 (pin 类型扩展 path#field, path## heading)** — K65 arguments 契约
-  天然容纳同族扩展. 具体实现按 dogfooding 需求推进.
-- **K43 (.grands/ 分支)** — K63 已用 `.grounds/` 替代.
-- **多认知方法** — 未证明需求, 靠 dogfooding 讨债, 不预建机制.
-- **Ghost 认知场初始化** — 等 K62~K65 实现落定后启动.
-- **frontmatter keys 筛选** — K64 提及, 具体 key 语义事后 dogfooding 定.
-- **pin bash** — 本轮讨论过, 设计面大 (安全/超时/输出预算), 单独立项.
-- **file exists verb** — 轻量 stat 检查, K65 budget 实现后评估是否需要.
-- **hash/stale 机制删除** — 2026-08-11 确认过期. Ground 收敛为静态上下文后, hash 对比 + stale 标记 (`[changed on disk]`) 无意义. Observation.hash / PinShadow / _EMPTY_HASH 待删; UpdateResult 的 changed/old_hash/new_hash 需重定义. 不要和 ignore 机制混在同一 commit.
+全部清空。K23/K24/K25 已被后续设计决策覆盖 (K63/K64)。hash/stale 机制已删除。
+剩余方向 (pin bash, Ghost 初始化, frontmatter keys) 归属其他 workstream 或未来 dogfooding。
+下一阶段入口: ground-channel (CTML 运行时), moss-project-ground (MOSS 项目自身 ground 化)。
+历史细节见 `git log -- .ai_partners/features/workstreams/2026/06/ghost-ground/FEATURE.md`。
 
 ## 与关联基建的交叉
 
@@ -700,3 +654,25 @@ K67-K71 全部落地, 152 测试通过:
 - **K71** 删除 stale _instruction.pyc + models.pyc
 
 额外: SPECIFICATION.md 净化 — 状态头/设计理由/哲学叙述移出, 保留纯契约语言
+
+## 复盘 (2026-08-11, 人类作者)
+
+ghost-ground 复活了 2024 年的历史设计，起源于 ghostos 项目。起点是：行业没有找到合适的实现达到预期，决定重做。
+
+早期设计蓝本来自 ghostos 的 project manager 老代码。与模型沟通的核心障碍是：模型携带预训练偏见，不理解这个设计"不一样"在哪，无法正确讨论利弊。沟通重点被迫放在 why 上 — 包括 L0（发现）→ L1（发现发现）→ L2（构建发现）的认知逻辑，以及 ground 作为模型可构建的认知场（类似人类的书桌、书柜、厨房）的隐喻。
+
+一个棘手的问题是：模型的开发思想面向过去，而非未来。模型花大量精力讨论"如何证明它有用"，但还没有做出来，不可能证明。行业方案（skills、bash、harness）大量结合后训练，开发早就不按"对当前模型非常有用"推进。这个尾巴主义问题不能靠模型主观解决。
+
+进入 how 阶段后，从 fable5 以降的模型实例都理解不全，讨论无法收敛。由于人类带宽有限，采取了一种"旁路开发"策略：模型按人类最小要求独立迭代，零上下文 dogfooding，反复打磨到关键概念成型，然后人类再大规模调整细节。
+
+过程中没有遇到隐式 todo 之类的问题，模型每一轮都能完成优化和重构。真正的痛点是：模型的开发思路拆得过细，关键需求一直被推到后面 — max_depth 和 .moss/ 防穿透从最初就反复提及，直到最后一轮才真正写入模板。
+
+解决思路是：最终做 moss-project-ground 时，拿真实场景倒过来解释设计动机，让模型理解关键点。不到这一步，沟通非常低效。基本判断：模型不能同时把行业视角、未来视角、模型使用者视角、模型开发者视角、人类视角等多个视角放在一个平面做递归比较并产生综合决策。但在人类完成这个链条的沟通后可以。
+
+ghost-ground 的开发周期对人类大脑带宽的占用超过预期，一些技术细节不得不一直记住，等着被实现。
+
+模型倾向于认为 FEATURE.md 等物料是人类创作的，相关 prompt 效果不足。判断是行业对模型与人类协作开发的做法和 MOSS 不同，简单 prompt 对抗不了行业重力。
+
+人类作者认为：开发过程中，人类和模型都意识到新的最佳实践，在迭代周期中修改是合理的。这是正确的做法 — 不同于传统软件工程这么做代价太大，现在人机结对编程这么做代价很小，不这么做代价才大。
+
+ground 的价值要在未来应用中证明，这是一开始的初衷。

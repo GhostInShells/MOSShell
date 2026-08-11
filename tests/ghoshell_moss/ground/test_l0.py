@@ -124,13 +124,13 @@ class TestLoadL0:
         (tmp_path / DEFAULT_L0_FILENAME).write_text(
             "---\n"
             '$id: "moss:ghost"\n'
-            "label: myground\n"
+            "name: myground\n"
             "---\n"
             "\nbody\n"
         )
         c = load_l0(tmp_path)
         assert c.convention.id == "moss:ghost"
-        assert c.convention.label == "myground"
+        assert c.convention.name == "myground"
 
 
 # -- dump ------------------------------------------------------------------

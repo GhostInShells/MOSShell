@@ -14,7 +14,6 @@ from pathspec import PathSpec
 
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._chain import collect_chain
-from ghoshell_moss.ground._hash import PinShadow, observe_sync
 from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
 from ghoshell_moss.ground._render import render_context, render_items
 from ghoshell_moss.ground.contract import (
@@ -23,7 +22,6 @@ from ghoshell_moss.ground.contract import (
     GroundConvention,
     GlobPin,
     Pin,
-    UpdateResult,
 )
 
 __all__ = ["DefaultGround"]
@@ -33,8 +31,7 @@ class DefaultGround(Ground):
     """Ground ABC 的默认实现.
 
     Internal state:
-    - _pins: OrderedDict[label, Pin] — 最新 pin/update 在前
-    - _shadows: dict[label, PinShadow] — 运行时观察影子, 不进盘
+    - _pins: OrderedDict[label, Pin] — 最新 pin 在前
     - _body: GROUND.md body, 每次 load 时更新
     """
 
@@ -53,7 +50,6 @@ class DefaultGround(Ground):
         self._convention = convention
         self._workspace_root = workspace_root
         self._pins: OrderedDict[str, Pin] = OrderedDict()
-        self._shadows: dict[str, PinShadow] = {}
         self._body: str = ""
         self._dirty: bool = False
         self._ignore_spec: PathSpec | None = self._make_ignore_spec()
@@ -85,39 +81,11 @@ class DefaultGround(Ground):
         self._pins[pin.label] = pin
         self._pins.move_to_end(pin.label, last=False)
         self._dirty = True
-
-        # 初始观察 — 建立 shadow 基线
-        anchor = self._make_anchor()
-        obs = observe_sync(pin, anchor, ignore=self._ignore_spec)
-        self._shadows[pin.label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
         return pin
 
     def unpin(self, label: str) -> None:
         del self._pins[label]
-        self._shadows.pop(label, None)
         self._dirty = True
-
-    # -- 对账 -------------------------------------------------------------
-
-    async def update(self, label: str) -> UpdateResult:
-        pin = self._pins[label]  # KeyError if missing
-        old_shadow = self._shadows.get(label, PinShadow())
-
-        anchor = self._make_anchor()
-        obs = await asyncio.to_thread(observe_sync, pin, anchor, ignore=self._ignore_spec)
-
-        changed = old_shadow.hash != obs.hash
-        self._shadows[label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
-        self._pins.move_to_end(label, last=False)
-        self._dirty = True
-
-        return UpdateResult(
-            label=label,
-            changed=changed,
-            old_hash=old_shadow.hash,
-            new_hash=obs.hash,
-            summary=_summary(pin, obs, changed),
-        )
 
     # -- 渲染 -------------------------------------------------------------
 
@@ -130,7 +98,6 @@ class DefaultGround(Ground):
         return await render_context(
             body=self._body,
             pins=list(self._pins.values()),
-            shadows=dict(self._shadows),
             anchor=self._make_anchor(),
             ignore=self._ignore_spec,
         )
@@ -160,7 +127,6 @@ class DefaultGround(Ground):
             (p.label, p) for p in contents.pins
         )
         self._ignore_spec = self._make_ignore_spec()
-        self._shadows.clear()
         self._dirty = False
 
     async def sediment(self) -> None:
@@ -213,16 +179,3 @@ class DefaultGround(Ground):
         if not patterns:
             return None
         return PathSpec.from_lines("gitignore", patterns)
-
-
-# -- helpers --------------------------------------------------------------
-
-
-def _summary(pin: Pin, obs, changed: bool) -> str:
-    if not changed:
-        return "no change"
-    if not obs.exists:
-        return "target removed"
-    if isinstance(pin, GlobPin):
-        return "glob hit set changed"
-    return "content changed"

@@ -1,6 +1,6 @@
 ---
 $id: moss-project
-label: MOSS
+name: MOSS
 pins:
 - verb: frontmatter
   label: fields
@@ -8,7 +8,7 @@ pins:
     path: $GROUND/**/GROUND.md
     keys:
     - $id
-    - label
+    - name
   description: 项目中的认知场索引 — 每加一个 GROUND.md 自动出现
 ---
 

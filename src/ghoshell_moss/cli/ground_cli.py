@@ -18,7 +18,7 @@ import typer
 
 from ghoshell_moss.cli.utils import echo, print_error, print_info, print_simple_table, print_success
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet, GroundSet
-from ghoshell_moss.ground._hash import PinShadow, observe_sync
+from ghoshell_moss.ground._hash import observe_sync
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
 from ghoshell_moss.ground._render import render_meta
 from ghoshell_moss.ground.contract import Ground, GroundSet
@@ -172,8 +172,7 @@ async def _template_preview(root: Path, template: str) -> None:
             ground_root=ground_root,
             doc_path=ground_root / DEFAULT_L0_FILENAME,
             pins=ground.pins(),
-            shadows={},
-            label=ground.convention.label,
+            label=ground.convention.name,
             ignore=ground.ignore_spec,
         )
         text = render_items(items, ground_path=str(ground_root))
@@ -375,8 +374,7 @@ def cmd_frame(
                 ground_root=ground_root,
                 doc_path=doc_path,
                 pins=ground.pins(),
-                shadows={},
-                label=ground.convention.label,
+                label=ground.convention.name,
                 ignore=ground.ignore_spec,
             )
             echo(render_items(items, ground_path=str(ground_root)))

@@ -182,7 +182,8 @@ class TestGroundConvention:
     def test_defaults(self):
         c = GroundConvention()
         assert c.id is None
-        assert c.label is None
+        assert c.name is None
+        assert c.description is None
 
     def test_with_id(self):
         c = GroundConvention(**{"$id": "moss:features"})

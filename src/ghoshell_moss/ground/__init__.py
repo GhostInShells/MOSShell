@@ -36,7 +36,6 @@ from ghoshell_moss.ground.contract import (
     PathOutsideRootError,
     Pin,
     TemplateInfo,
-    UpdateResult,
 )
 from ghoshell_moss.ground._grounds import DefaultGroundSet
 from ghoshell_moss.ground._ground import DefaultGround
@@ -60,7 +59,6 @@ __all__ = [
     "LawPin",
     "LawArguments",
     "GroundConvention",
-    "UpdateResult",
     "TemplateInfo",
     "FrameItem",
     "GroundError",

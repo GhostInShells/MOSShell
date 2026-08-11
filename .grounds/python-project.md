@@ -1,5 +1,5 @@
 ---
-label: python-project
+name: python-project
 description: Python project ground — readme, source tree, tests, and pyproject.
 pins:
 - label: readme

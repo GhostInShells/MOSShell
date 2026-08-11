@@ -1,5 +1,5 @@
 ---
-label: claude-memory
+name: claude-memory
 description: Claude Code memory 系统 ground — MEMORY.md 索引 + 磁盘真实状态对账.
 pins:
 - label: memories

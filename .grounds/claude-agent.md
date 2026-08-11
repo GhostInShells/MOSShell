@@ -1,5 +1,5 @@
 ---
-label: claude-agent
+name: claude-agent
 description: Claude Code agent 集合 ground — 发现 agent 定义, 索引能力面.
 pins:
 - label: agents

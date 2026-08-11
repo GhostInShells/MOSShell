@@ -1,5 +1,5 @@
 ---
-label: index-ground
+name: index-ground
 description: 认知场索引 — 扫描项目中所有 GROUND.md, 展示每个场的 description.
 ignore:
   - ".moss/"
@@ -9,6 +9,7 @@ pins:
   arguments:
     path: "**/GROUND.md"
     keys: ["description"]
+    max_depth: 3
     limit: 50
   description: 项目中的认知场索引 — 每加一个 GROUND.md 自动出现
 ---

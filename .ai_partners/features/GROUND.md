@@ -1,6 +1,6 @@
 ---
 $id: moss-project/features
-label: features
+name: features
 pins:
 - verb: ls
   label: here

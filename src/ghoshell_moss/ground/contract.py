@@ -40,7 +40,6 @@ __all__ = [
     "ExecArguments",
     "LawArguments",
     "GroundConvention",
-    "UpdateResult",
     "TemplateInfo",
     "GroundError",
     "PathOutsideRootError",
@@ -70,7 +69,8 @@ class GroundConvention(BaseModel):
     """
 
     id: str | None = Field(default=None, alias="$id")
-    label: str | None = None
+    name: str | None = None
+    description: str | None = None
     pins: list[dict] = Field(default_factory=list)
     ignore: list[str] | None = Field(
         default=None,
@@ -310,22 +310,6 @@ class PathOutsideRootError(GroundError):
     """路径逃逸出锚点子树. SPEC §8 per-anchor confinement."""
 
 
-# -- update result -----------------------------------------------------------
-
-
-class UpdateResult(BaseModel):
-    """update(label) 的返回 — 变更摘要.
-
-    通过 CTML ``<result>`` 机制入对话历史. diff_preview 有界, 避免历史洪泛.
-    """
-
-    label: str = Field(description="被 update 的 pin label.")
-    changed: bool = Field(description="内容是否变化 (hash 判定).")
-    old_hash: str | None = Field(default=None, description="update 前的 seen_hash.")
-    new_hash: str | None = Field(default=None, description="update 后的 seen_hash.")
-    summary: str = Field(default="", description="变更摘要, 有界: 'lines +N -M', 'glob: +2 -1', etc.")
-
-
 # -- template info -----------------------------------------------------------
 
 
@@ -387,16 +371,6 @@ class Ground(ABC):
     @abstractmethod
     def unpin(self, label: str) -> None:
         """撤掉一枚 pin. label 不存在抛 KeyError."""
-
-    # -- 对账 -----------------------------------------------------------------
-
-    @abstractmethod
-    async def update(self, label: str) -> UpdateResult:
-        """承认这枚 pin 的当前世界状态 — 重新观察, 推进 seen_* 基线.
-
-        update 不是"检查变更" (每帧 context() 自动做), 是 "我承认了" 的
-        第一人称动词. 承认后下一帧不再标 stale.
-        """
 
     # -- 渲染 -----------------------------------------------------------------
 
@@ -509,9 +483,6 @@ class GroundSet(ABC):
 
     def unpin(self, ground: str, label: str) -> None:
         self._must_get(ground).unpin(label)
-
-    async def update(self, ground: str, label: str) -> UpdateResult:
-        return await self._must_get(ground).update(label)
 
     async def frame(self, ground: str) -> str:
         return await self._must_get(ground).context()

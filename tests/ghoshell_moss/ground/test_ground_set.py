@@ -211,33 +211,6 @@ class TestPins:
 
         run(scenario())
 
-    def test_update_detects_change(self, tmp_path):
-        target = tmp_path / "a.md"
-        target.write_text("v1")
-
-        async def scenario():
-            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
-                target.write_text("v2")
-                result = await g.update("f")
-                assert result.changed is True
-                assert result.old_hash != result.new_hash
-
-        run(scenario())
-
-    def test_update_no_change(self, tmp_path):
-        target = tmp_path / "a.md"
-        target.write_text("v1")
-
-        async def scenario():
-            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
-                result = await g.update("f")
-                assert result.changed is False
-
-        run(scenario())
 
 
 # -- frame / context -------------------------------------------------------
@@ -255,20 +228,6 @@ class TestFrame:
                 assert "line1" in frame
                 assert "> file:greeting" in frame
                 assert "> file:greeting end" in frame
-
-        run(scenario())
-
-    def test_frame_marks_changed_on_disk(self, tmp_path):
-        target = tmp_path / "shift.md"
-        target.write_text("before")
-
-        async def scenario():
-            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="s", arguments=FileArguments(path="shift.md")))
-                target.write_text("after — different")
-                frame = await g.context()
-                assert "changed on disk" in frame
 
         run(scenario())
 
@@ -410,19 +369,6 @@ class TestGroundSetForwarding:
 
         run(scenario())
 
-    def test_update_forwards(self, tmp_path):
-        target = tmp_path / "a.md"
-        target.write_text("v1")
-
-        async def scenario():
-            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
-                target.write_text("v2")
-                result = await gs.update(g.label, "f")
-                assert result.changed
-
-        run(scenario())
 
 
 # -- template open ----------------------------------------------------------

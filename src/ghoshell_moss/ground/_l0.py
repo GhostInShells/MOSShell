@@ -7,7 +7,6 @@
     <body markdown — 纯粹的人/模型叙事, 无机器段>
 
 pins 是 frontmatter 的一部分, 不是独立的 markdown section.
-seen_* (PinShadow) 不进盘 — SPEC §7.2 的铁律.
 """
 
 from __future__ import annotations

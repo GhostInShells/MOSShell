@@ -1,12 +1,12 @@
 """Tests for _hash.py — per-class pin observation."""
 
-import asyncio, hashlib
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from ghoshell_moss.ground._addr import Anchor
-from ghoshell_moss.ground._hash import Observation, PinShadow, glob_limited, observe, observe_sync, parse_range
+from ghoshell_moss.ground._hash import Observation, glob_limited, observe, observe_sync, parse_range
 from ghoshell_moss.ground.contract import (
     ExecArguments,
     ExecPin,
@@ -27,10 +27,6 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _sha256_text(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
 class TestFilePinObservation:
     def test_observes_full_content(self, tmp_path):
         (tmp_path / "a.py").write_text("hello world\n")
@@ -38,7 +34,8 @@ class TestFilePinObservation:
         pin = FilePin(label="f", arguments=FileArguments(path="a.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.hash == _sha256_text("hello world\n")
+        assert obs.size == 12
+        assert obs.unit == "B"
 
     def test_observes_range(self, tmp_path):
         (tmp_path / "a.py").write_text("L1\nL2\nL3\nL4\n")
@@ -46,7 +43,8 @@ class TestFilePinObservation:
         pin = FilePin(label="f", arguments=FileArguments(path="a.py", range="2-3"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.hash == _sha256_text("L2\nL3\n")
+        assert obs.size == 6  # "L2\nL3\n" = 6 bytes
+        assert obs.unit == "B"
 
     def test_observes_single_line_range(self, tmp_path):
         (tmp_path / "a.py").write_text("L1\nL2\nL3\n")
@@ -54,7 +52,8 @@ class TestFilePinObservation:
         pin = FilePin(label="f", arguments=FileArguments(path="a.py", range="2"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.hash == _sha256_text("L2\n")
+        assert obs.size == 3  # "L2\n" = 3 bytes
+        assert obs.unit == "B"
 
     def test_missing_file(self, tmp_path):
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
@@ -62,7 +61,6 @@ class TestFilePinObservation:
         obs = observe_sync(pin, anchor)
         assert obs.exists is False
         assert obs.mtime is None
-        assert obs.hash is None
 
     def test_async_observe(self, tmp_path):
         (tmp_path / "a.py").write_text("x\n")
@@ -80,7 +78,8 @@ class TestGlobPinObservation:
         pin = GlobPin(label="g", arguments=GlobArguments(path="*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.hash == _sha256_text("a.py\nb.py")
+        assert obs.size == 2
+        assert obs.unit == "entries"
 
     def test_empty_hit_is_still_exists(self, tmp_path):
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
@@ -88,6 +87,7 @@ class TestGlobPinObservation:
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.mtime is None
+        assert obs.size == 0
 
 
 class TestFrontmatterPinObservation:
@@ -97,16 +97,16 @@ class TestFrontmatterPinObservation:
         pin = FrontmatterPin(label="fm", arguments=FrontmatterArguments(path="f.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.hash == _sha256_text("title: test")
+        assert obs.size == 1
+        assert obs.unit == "entries"
 
-    def test_no_frontmatter_hashes_empty(self, tmp_path):
+    def test_no_frontmatter_still_observes(self, tmp_path):
         (tmp_path / "f.md").write_text("just body, no frontmatter")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
         pin = FrontmatterPin(label="fm", arguments=FrontmatterArguments(path="f.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        # 无 frontmatter → 空 payload hash, 与 render 的 "no frontmatter found" 对齐
-        assert obs.hash == hashlib.sha256(b"").hexdigest()
+        assert obs.size == 1
 
 
 class TestLsPinObservation:
@@ -118,6 +118,8 @@ class TestLsPinObservation:
         pin = LsPin(label="ls", arguments=LsArguments(path=".", depth=2))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
+        assert obs.size == 3  # a.py + sub/ + sub/b.py
+        assert obs.unit == "entries"
 
     def test_not_a_directory(self, tmp_path):
         (tmp_path / "f.py").write_text("x")
@@ -135,7 +137,7 @@ class TestBinaryDetection:
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.is_binary is True
-        assert obs.hash is not None
+        assert obs.size == 1024
 
     def test_text_file_not_binary(self, tmp_path):
         (tmp_path / "a.py").write_text("hello world\n")
@@ -181,7 +183,7 @@ class TestGlobLimited:
         paths = {str(m.relative_to(root)) for m in matches}
         assert "GROUND.md" in paths              # 根场自身
         assert "features/GROUND.md" in paths     # 子场, depth 2 ≤ 3
-        # features/deep/GROUND.md: depth 3 ≤ 3, 但 features 是场边界 → 不下钻 → 不在列表中
+        # features/deep/GROUND.md: depth 3 ≤ 3, 但 features 是场边界 → 不下钻
         assert "features/deep/GROUND.md" not in paths
         # a/b/GROUND.md: depth 3 ≤ 3, a 不是场边界 → 保留
         assert "a/b/GROUND.md" in paths
@@ -206,8 +208,8 @@ class TestGlobIgnore:
         pin = GlobPin(label="py", arguments=GlobArguments(path="**/*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        # only a.py, __pycache__/cached.py excluded
-        assert "a.py" in obs.hash or obs.hash is not None
+        # only a.py, __pycache__/cached.py excluded by GLOB_IGNORE
+        assert obs.size == 1
 
     def test_ls_ignores_noise_dirs(self, tmp_path):
         (tmp_path / "a.py").write_text("a")
@@ -219,21 +221,9 @@ class TestGlobIgnore:
         assert obs.exists is True
 
 
-class TestPinShadow:
-    def test_defaults(self):
-        s = PinShadow()
-        assert s.mtime is None
-        assert s.hash is None
-
-    def test_populated(self):
-        s = PinShadow(mtime=100.0, hash="abc123")
-        assert s.mtime == 100.0
-        assert s.hash == "abc123"
-
-
 class TestObservation:
     def test_frozen(self):
-        o = Observation(exists=True, mtime=1.0, hash="abc")
+        o = Observation(exists=True, mtime=1.0)
         with pytest.raises(Exception):
             o.exists = False  # type: ignore[misc]
 
@@ -305,7 +295,6 @@ class TestExecPinObservation:
     def test_no_exec_bit_is_missing(self, tmp_path):
         script = tmp_path / "no-x.sh"
         script.write_text("#!/bin/sh\necho hi\n")
-        # 无 +x — 安全拒绝, 非文件缺失
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
         pin = ExecPin(label="x", arguments=ExecArguments(ref="no-x.sh"))
         obs = observe_sync(pin, anchor)
@@ -349,7 +338,7 @@ class TestExecPinObservation:
 
 
 class TestLawPinObservation:
-    """law pin — 从 cwd 向上收集约定文件, 观察只对文件集合做 hash."""
+    """law pin — 从 cwd 向上收集约定文件."""
 
     def _make_tree(self, tmp_path) -> Path:
         (tmp_path / "CLAUDE.md").write_text("# root\n")
@@ -365,7 +354,6 @@ class TestLawPinObservation:
         assert obs.exists is True
         assert obs.size == 1
         assert obs.unit == "entries"
-        assert obs.hash == _sha256_text("CLAUDE.md")
 
     def test_from_subdir_collects_root_first(self, tmp_path):
         root = self._make_tree(tmp_path)
@@ -374,8 +362,6 @@ class TestLawPinObservation:
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.size == 2
-        # root-first: 场根在前, cwd 在后
-        assert obs.hash == _sha256_text("CLAUDE.md\nsub/CLAUDE.md")
 
     def test_no_matching_file_renders_empty(self, tmp_path):
         root = self._make_tree(tmp_path)
@@ -384,7 +370,6 @@ class TestLawPinObservation:
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.size == 0
-        assert obs.hash == hashlib.sha256(b"").hexdigest()
 
 
 class TestGroundIgnore:
@@ -425,7 +410,6 @@ class TestGroundIgnore:
         obs = observe_sync(pin, anchor, ignore=spec)
         assert obs.exists is True
         assert obs.size == 1  # only a.py — .moss/ tree excluded
-        assert obs.hash == _sha256_text("a.py")
 
     def test_frontmatter_pattern_ignore(self, tmp_path):
         (tmp_path / "a.md").write_text("---\nid: a\n---\nbody\n")
@@ -437,8 +421,6 @@ class TestGroundIgnore:
         obs = observe_sync(pin, anchor, ignore=spec)
         assert obs.exists is True
         assert obs.size == 1  # only a.md, .moss/b.md excluded
-        # hash = sha256("-- a.md\nid: a")
-        assert obs.hash == _sha256_text("-- a.md\nid: a")
 
     def test_ls_ignore_skips_ignored_dirs(self, tmp_path):
         (tmp_path / "a.py").write_text("a")
@@ -450,8 +432,6 @@ class TestGroundIgnore:
         obs = observe_sync(pin, anchor, ignore=spec)
         assert obs.exists is True
         assert obs.size == 1  # only a.py — .moss/ tree excluded
-        # hash = sha256("└── a.py")
-        assert obs.hash == _sha256_text("└── a.py")
 
     def test_ignore_file_merged(self, tmp_path):
         (tmp_path / "keep.py").write_text("a")
@@ -482,8 +462,6 @@ class TestGroundIgnore:
         deeper = deep / "deeper"
         deeper.mkdir()
         (deeper / "c.py").write_text("c")
-        # max_depth=1: 只有根层 .py
-        # ignore=deep/: 排除 deep 目录
         spec = self._spec(["deep/"])
         matches = glob_limited(tmp_path, "**/*.py", max_depth=1, ignore=spec)
         rels = {str(m.relative_to(tmp_path)) for m in matches}

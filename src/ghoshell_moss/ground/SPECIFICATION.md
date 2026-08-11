@@ -40,7 +40,8 @@ Template discovery and usage rules are defined in §11.
 ```
 ---
 $id: <optional URI-shaped identity>
-label: <optional display label>
+name: <optional display name>
+description: <optional one-line about this ground>
 pins:
 - label: <id>
   verb: <verb>
@@ -52,7 +53,7 @@ pins:
 ```
 
 1. **frontmatter** — YAML between the `---` fences. Reserved keys:
-   `$id`, `label`, `pins`. Unknown keys are preserved on write but not
+   `$id`, `name`, `description`, `pins`. Unknown keys are preserved on write but not
    interpreted by MOSS.
 2. **body** — everything after the closing frontmatter fence. Open set.
 
@@ -67,7 +68,8 @@ returns an empty ground; calling `sediment` on it creates `GROUND.md`.
 | Key | Type | Semantics |
 |-----|------|-----------|
 | `$id` | string | Identity claim, URI-shaped. The ground *claims* an identity; resolution is upper-layer's job. Optional; any string accepted. |
-| `label` | string | Display label. Defaults to the directory basename. Collisions get `-2`, `-3` suffixes at `open` time. |
+| `name` | string | Display name. Defaults to the directory basename. |
+| `description` | string | One-line description of this ground. Optional. |
 | `pins` | list | Pin declarations per §4. Each entry has the fixed envelope: `label`, `verb`, `arguments`, `description`. |
 | `ignore` | list of strings | Field-level ignore patterns — `.gitignore` semantics, relative to ground root. All discovery pins (glob, frontmatter pattern, ls) automatically respect these rules. Optional. |
 | `ignore_file` | string | Path to a file (relative to ground root) containing additional ignore patterns, one per line. Merged with `ignore` inline list. `.gitignore` or `.groundignore` are expected names. Optional. |
@@ -201,7 +203,7 @@ without opening each one.
 
 **keys** filtering: when specified, only the named frontmatter keys
 are rendered. Unknown keys are preserved. This further reduces token
-cost for identity-only queries (`keys: ["$id", "label"]`).
+cost for identity-only queries (`keys: ["$id", "name"]`).
 
 **Expansion**: frontmatter block(s) verbatim. Naturally bounded —
 no truncation needed for single files. Pattern mode subject to
@@ -301,7 +303,7 @@ files are never modified or renamed.
 
 **Positional view**: `law` depends on `$CWD`. Walking into a
 subdirectory re-collects the chain from the new position. It does
-not participate in stale marking — its content is a standing-position
+view, not a disk-tracked target.
 view, not a disk-tracked target.
 
 **`@`-reference expansion**: each collected file's body may contain
@@ -331,7 +333,7 @@ The frame covers:
 
 The frame is a **derived view** — `GROUND.md` is authoritative.
 
-**Meta information** (ground label, absolute path, `$id`, law chain)
+**Meta information** (ground name, absolute path, `$id`, law chain)
 is available through a separate `meta` command, keeping the frame
 focused on content for consumers that don't need ground protocol.
 
@@ -393,7 +395,7 @@ $GROUND: <ground root>
 > body:walk
 ---
 
-ground: <label>  (law: <ground root>/GROUND.md)
+ground: <name>  (law: <ground root>/GROUND.md)
 cwd: <current directory>
 
 ---
@@ -465,20 +467,7 @@ Quoted form for paths with special characters: `@"path with spaces.md"`.
 `sediment` (writes pins back to `GROUND.md`) and removes the
 ground from the active collection.
 
-### 7.2 observe / stale
-
-Before each frame, all pins observe their targets: read `mtime` and
-content `hash`, compare against the in-memory **shadow**. A hash
-difference marks the pin `changed on disk`.
-
-The shadow is never persisted to `GROUND.md`. On first observation,
-the current state becomes the baseline (nothing stale).
-
-CLI invocations are stateless `open → render → close` cycles — stale
-marks never appear in CLI output. Stale marking is a session-level
-capability for long-lived CTML channel sessions.
-
-### 7.3 Pin Content Budget
+### 7.2 Pin Content Budget
 
 Every pin that emits content or lists entries is subject to optional
 per-pin budget parameters per §4.1. When a pin exceeds its budget or
@@ -486,7 +475,7 @@ limit, the result is truncated with a visible marker. These are safety
 mechanisms, not correctness guarantees — models are expected to manage
 pin granularity.
 
-### 7.4 Nested Grounds
+### 7.3 Nested Grounds
 
 Subdirectories with their own `GROUND.md` are **peer grounds** —
 independent instances with their own pins, body, and frame. They are
@@ -593,7 +582,6 @@ A compliant implementation must:
 - Expand `@`-references per §6.2 (single-level, no recursion)
 - Resolve paths per §8 with per-anchor subtree confinement
 - Implement the law chain per §7.5
-- Never persist observation shadow to `GROUND.md`
 
 ## 11. Template Discovery (`.grounds/`)
 
@@ -626,7 +614,8 @@ A template file uses the same two-segment structure as `GROUND.md`:
 ```
 ---
 $id: <optional>
-label: <optional>
+name: <optional>
+description: <optional>
 pins:
 - label: <id>
   verb: <verb>
@@ -637,7 +626,7 @@ pins:
 <body — free-form markdown>
 ```
 
-The `$id` and `label` in the template are **template metadata**.
+The `$id`, `name`, and `description` in the template are **template metadata**.
 When a ground is created from a template, these are carried over
 as initial values; the instance's own `GROUND.md` can override them.
 
