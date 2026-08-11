@@ -1,5 +1,6 @@
-# CodeGraph data files
-# These are local to each machine and should not be committed
+# CodeGraph data files — CodeGraph (https://github.com/colbymchenry/codegraph)
+# is a local-first code-index tool for AI agents. These are local to each
+# machine and should not be committed
 
 # Database
 *.db
