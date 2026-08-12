@@ -253,23 +253,21 @@ class TestLawPinRender:
         (root / "CLAUDE.md").write_text("l1\nl2\nl3\nl4\n")
         anchor = Anchor(ground=root, cwd=root)
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", lines=2))
-        items = run(render_context(
+        view = run(render_context(
             body="", pins=[pin], anchor=anchor,
         ))
-        assert len(items) == 1
-        assert items[0].truncated
-        assert "[truncated at 2 lines]" in items[0].content
+        assert len(view.blocks) == 1
+        assert "[truncated at 2 lines]" in view.blocks[0].content
 
     def test_budget_cap(self, tmp_path):
         root = tmp_path.resolve()
         (root / "CLAUDE.md").write_text("a" * 100)
         anchor = Anchor(ground=root, cwd=root)
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", budget=30))
-        items = run(render_context(
+        view = run(render_context(
             body="", pins=[pin], anchor=anchor,
         ))
-        assert items[0].truncated
-        assert "[truncated at 30 chars]" in items[0].content
+        assert "[truncated at 30 chars]" in view.blocks[0].content
 
     def test_walk_shows_law_paths_not_content(self, tmp_path):
         root = tmp_path.resolve()
@@ -278,19 +276,19 @@ class TestLawPinRender:
         (root / "sub").mkdir()
         (root / "sub" / "CLAUDE.md").write_text("# sub law\n")
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
-        items = run(render_walk(
+        view = run(render_walk(
             cwd=root / "sub",
             ground_root=root,
             doc_path=root / "GROUND.md",
             pins=[pin],
         ))
         # law pin 在 walk 时只列路径, 不展开内容 — 根部已展示过
-        pin_items = [i for i in items if i.kind == "law"]
-        assert len(pin_items) == 1
+        law_blocks = [b for b in view.blocks if b.verb == "law"]
+        assert len(law_blocks) == 1
         # 内容只是文件路径, 不含文件内文
-        assert pin_items[0].content == "CLAUDE.md\nsub/CLAUDE.md"
-        assert "# sub law" not in pin_items[0].content
-        assert "# root law" not in pin_items[0].content
+        assert law_blocks[0].content == "CLAUDE.md\nsub/CLAUDE.md"
+        assert "# sub law" not in law_blocks[0].content
+        assert "# root law" not in law_blocks[0].content
 
     def test_walk_law_always_show_expands_content(self, tmp_path):
         """always_show=True 的 law pin 在 walk 时仍然展开完整内容."""
@@ -304,16 +302,16 @@ class TestLawPinRender:
             arguments=LawArguments(filename="CLAUDE.md"),
             always_show=True,
         )
-        items = run(render_walk(
+        view = run(render_walk(
             cwd=root / "sub",
             ground_root=root,
             doc_path=root / "GROUND.md",
             pins=[pin],
         ))
-        pin_items = [i for i in items if i.kind == "law"]
-        assert len(pin_items) == 1
-        assert "sub law" in pin_items[0].content
-        assert "root law" in pin_items[0].content
+        law_blocks = [b for b in view.blocks if b.verb == "law"]
+        assert len(law_blocks) == 1
+        assert "sub law" in law_blocks[0].content
+        assert "root law" in law_blocks[0].content
 
 
 # -- frame rendering (integration) -----------------------------------------
@@ -330,8 +328,7 @@ class TestFrameBudget:
             label="readme",
             arguments=FileArguments(path="readme.md", budget=50),
         )
-        items = run(render_context(
+        view = run(render_context(
             body="", pins=[pin], anchor=anchor,
         ))
-        assert items[0].truncated
-        assert "[truncated at 50 chars]" in items[0].content
+        assert "[truncated at 50 chars]" in view.blocks[0].content

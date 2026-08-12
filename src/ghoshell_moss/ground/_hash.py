@@ -380,13 +380,13 @@ def glob_limited(
     - boundary stop: a directory that directly contains a match is a
       boundary — its subdirectories are excluded.
 
-    For field-marker patterns this makes a field a discovery boundary:
-    ground discovery does not penetrate fields.
+    For ground-marker patterns this makes a ground a discovery boundary:
+    ground discovery does not penetrate child grounds.
 
     When ``max_depth`` is None, recursion is unbounded (plain glob).
 
     ``ignore`` is an optional PathSpec — matches against the path
-    relative to ``base`` are excluded (field-level ignore, .gitignore semantics).
+    relative to ``base`` are excluded (ground-level ignore, .gitignore semantics).
     Applied as post-filter after max_depth pruning.
     """
     parts = pattern.split("/")

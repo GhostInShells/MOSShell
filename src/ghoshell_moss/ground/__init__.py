@@ -26,7 +26,6 @@ from ghoshell_moss.ground.contract import (
     GlobPin,
     Ground,
     GroundConvention,
-    FrameItem,
     GroundError,
     GroundSet,
     LawArguments,
@@ -35,7 +34,10 @@ from ghoshell_moss.ground.contract import (
     LsPin,
     PathOutsideRootError,
     Pin,
+    RenderedView,
     TemplateInfo,
+    ViewBlock,
+    ViewHeader,
 )
 from ghoshell_moss.ground._grounds import DefaultGroundSet
 from ghoshell_moss.ground._ground import DefaultGround
@@ -60,7 +62,9 @@ __all__ = [
     "LawArguments",
     "GroundConvention",
     "TemplateInfo",
-    "FrameItem",
+    "ViewHeader",
+    "ViewBlock",
+    "RenderedView",
     "GroundError",
     "PathOutsideRootError",
     # constants

@@ -16,6 +16,8 @@
 
 **核心抽象速览**: `moss --ai codex architecture` — MOSS 关键包与模块的策展地图，可替代 search/grep 做开发域导航。地图在 `src/ghoshell_moss/architecture.py` 手动维护，发现值得索引的路径时加一条 import。
 
+**项目认知场**: 根目录 `GROUND.md` 可读 (`moss ground render`)，子场通过 `fields` 索引自发现——每个 `GROUND.md` 自动出现（nodes/tutorials/.ai_partners 等）。
+
 ## 环境准备
 
 环境安装与配置见 `moss start`。所有 `moss` 命令支持全局 `--ai` 参数，调用时必须始终带上——该参数剥离 rich 视觉排版，输出纯文本，节省 token。
@@ -56,6 +58,7 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 - `moss features` 是模型意识轨迹——每个 FEATURE.md 是过去模型实例写给下一个的留言。必须维护：开始 create，决策时编辑，完成时 `set-status <name> completed` 并随代码 commit。
 - `moss skills` — 发现/召回技能。
 - `moss-shell` 是人类 Shell 调试入口，别自己用。
+- 测试在 `tests/` — `tests/ghoshell_moss` 镜像 `src/ghoshell_moss` 结构，是协议承诺的行为证据（不只是概念）。风格见 `tests/CLAUDE.md`。
 
 ## Git 提交规范
 

@@ -43,7 +43,9 @@ __all__ = [
     "TemplateInfo",
     "GroundError",
     "PathOutsideRootError",
-    "FrameItem",
+    "ViewHeader",
+    "ViewBlock",
+    "RenderedView",
 ]
 
 # -- constants ----------------------------------------------------------------
@@ -375,12 +377,19 @@ class Ground(ABC):
     # -- 渲染 -----------------------------------------------------------------
 
     @abstractmethod
+    async def render(self, *, cwd: Path | None = None) -> RenderedView:
+        """渲染场 — 返回结构化 RenderedView.
+
+        ``str(view)`` = self-explanatory markdown; ``view.model_dump_json()`` = JSON.
+        cwd=None 时用场根 (field-root 模式), 否则 walk 模式.
+        """
+
     async def context(self) -> str:
         """渲染当前帧 — 消费给 virtual channel 的 context_messages.
 
-        SPEC §6: body verbatim + pin result blocks delimited by HTML comments.
-        async: 并行观察所有 pin + 读文件内容.
+        向后兼容委托到 ``render()``. 新调用方建议直接用 ``render()``.
         """
+        return str(await self.render())
 
     # -- 生命周期 -------------------------------------------------------------
 
@@ -506,33 +515,103 @@ class GroundSet(ABC):
 
 # -- FrameItem (渲染数据模型) ------------------------------------------------
 
+FrameItem = None  # 已废弃 — 仅供旧代码兼容过渡，新代码用 RenderedView
+
 
 @dataclass
-class FrameItem:
-    """一帧里的一个渲染区块 — pin / body / @-reference.
-
-    Frame 生产者 (render_context / render_walk) 产出 ``list[FrameItem]``,
-    渲染器 (render_items) 消费并序列化为文本. 中间格式让 --json / 定制
-    渲染 / 截断策略等都在同一个数据结构上操作, 不碰文本.
-    """
+class _LegacyFrameItem:  # noqa: F811 — 保留旧类型使现存调用不崩溃，逐步迁移
+    """旧版渲染区块 — 由 RenderedView / ViewBlock 取代."""
 
     kind: str
-    """区块类型: "body" | pin verb ("file"/"law"/...) | "@"."""
-
     label: str
-    """区块标识: pin label | "@<path>" | "body"."""
-
     content: str
-    """已截断的文本. @-ref 保留原文不展开, 展开结果在 children."""
-
     brief: str = ""
-    """一行摘要: "3 files, 8.2K, 250 lines" — debug / TOC / --json 用."""
-
     truncated: bool = False
-    """内容是否因 budget/lines 截断."""
-
     meta: dict = field(default_factory=dict)
-    """附加上下文: {"from": "CLAUDE.md", "files": 3, ...}."""
+    children: list[_LegacyFrameItem] = field(default_factory=list)
 
-    children: list[FrameItem] = field(default_factory=list)
-    """@-reference 展开子块, 嵌套在父块的开闭区间内."""
+
+# -- RenderedView (新渲染数据模型) -------------------------------------------
+
+
+class ViewHeader(BaseModel):
+    """渲染视图的头部 — GROUND.md 身份 + 站立位置."""
+
+    name: str | None = Field(default=None, description="场名, 来自 GROUND.md name 或目录 basename.")
+    description: str | None = Field(default=None, description="场描述, 来自 GROUND.md description.")
+    ground_path: str = Field(description="$GROUND — 场根绝对路径.")
+    cwd: str | None = Field(default=None, description="$CWD — walk 时的站立位置, field-root 时不出现.")
+
+
+class ViewBlock(BaseModel):
+    """渲染视图里的一个内容块 — body / pin / @-reference."""
+
+    kind: Literal["body", "pin", "at", "folded"] = Field(
+        description="块类型: body=场正文, pin=注视结果, at=@-引用展开, folded=walk 时折叠的 pin TOC."
+    )
+    label: str = Field(description="块标识: body / pin label / @文件名.")
+    verb: str | None = Field(
+        default=None,
+        description="pin 动词 (file|glob|frontmatter|ls|exec|law). kind=pin 时必选, 其余为 None.",
+    )
+    description: str | None = Field(
+        default=None,
+        description="pin 的一句话说明, 来自 GROUND.md pin description. 渲染为 markdown 注释的一部分.",
+    )
+    content: str = Field(default="", description="块内容. body 是 GROUND.md body 原文, pin 是观察结果.")
+    meta: dict | None = Field(default=None, description="附加上下文 (files count, budget 等).")
+
+
+class RenderedView(BaseModel):
+    """Ground.render() 的返回值 — header + blocks.
+
+    既可序列化 (``-j`` / ``--json``) 供程序消费, 也可 ``str()`` →
+    ``to_markdown()`` 供模型 / 人类直接阅读.
+    """
+
+    header: ViewHeader
+    blocks: list[ViewBlock] = Field(default_factory=list, description="渲染内容块, 按出现顺序.")
+
+    def to_markdown(self) -> str:
+        """序列化为自解释 markdown — HTML 注释承载语义标记, 纯文本可读.
+
+        头部是 YAML frontmatter, 正文直接承接, pin 结果用
+        ``<!-- verb-label: description -->`` 标记分隔.
+        """
+        lines: list[str] = []
+
+        # --- header (YAML frontmatter) ---
+        lines.append("---")
+        if self.header.name:
+            lines.append(f"name: {self.header.name}")
+        if self.header.description:
+            lines.append(f"description: {self.header.description}")
+        lines.append(f"$GROUND: {self.header.ground_path}")
+        if self.header.cwd:
+            lines.append(f"$CWD: {self.header.cwd}")
+        lines.append("---")
+
+        # --- blocks ---
+        for block in self.blocks:
+            lines.append("")
+            if block.kind == "body":
+                lines.append(block.content.rstrip())
+            elif block.kind == "at":
+                lines.append("---")
+                lines.append(f"<!-- at: {block.label} -->")
+                lines.append(block.content.rstrip())
+            elif block.kind == "folded":
+                desc = f" — {block.description}" if block.description else ""
+                lines.append("---")
+                lines.append(f"<!-- pins{desc} -->")
+                lines.append(block.content.rstrip())
+            elif block.kind == "pin":
+                desc = f": {block.description}" if block.description else ""
+                lines.append("---")
+                lines.append(f"<!-- {block.verb}-{block.label}{desc} -->")
+                lines.append(block.content.rstrip())
+
+        return "\n".join(lines) + "\n"
+
+    def __str__(self) -> str:
+        return self.to_markdown()

@@ -1,4 +1,4 @@
-"""Ground command group — spec / init / frame / meta / observe / validate.
+"""Ground command group — spec / init / render / meta / observe / validate.
 
 Every invocation is stateless: open → act → sediment (via __aexit__) → exit.
 GROUND.md is the single source of truth across invocations.
@@ -29,7 +29,7 @@ ground_app = typer.Typer(
     short_help="Cognitive ground — pin addresses to a directory.",
     help=(
         "Cognitive ground: pin addresses (file/glob/frontmatter/ls) to a "
-        "directory, get a per-frame view of pinned content with change tracking. "
+        "directory, get a rendered view of pinned content with change tracking. "
         "State persists in GROUND.md per directory."
     ),
     no_args_is_help=True,
@@ -116,8 +116,8 @@ async def _run_one_with_template(root: Path, coro_fn, template: str):
         await coro_fn(gs, ground)
 
 
-async def _template_preview(root: Path, template: str) -> None:
-    """只读模板预览 — 用模板的 body + pins 渲染 frame, 不写 GROUND.md.
+async def _template_preview(root: Path, template: str, *, json_flag: bool = False) -> None:
+    """只读模板预览 — 用模板的 body + pins 渲染, 不写 GROUND.md.
 
     兼容场景: 一个只有 CLAUDE.md 的 Claude 项目, 看它作为
     claude-project 场会长什么样, 而不落任何盘.
@@ -125,7 +125,7 @@ async def _template_preview(root: Path, template: str) -> None:
     从子目录预览时, 先向上搜寻模板的约定文件 (law pin 的 filename),
     找到祖先场根, 再 walk 进去 — 保证 law 链不会因 boundary 太窄而空.
     """
-    from ghoshell_moss.ground._render import render_items, render_walk
+    from ghoshell_moss.ground._render import render_walk
     from ghoshell_moss.ground._l0 import load_l0
 
     workspace = _probe_workspace(root)
@@ -164,10 +164,10 @@ async def _template_preview(root: Path, template: str) -> None:
     ground = await gs.open(ground_root, template=template, override=True)
 
     if root.resolve() == ground_root:
-        text = await ground.context()
+        view = await ground.render()
     else:
         # 子目录预览: walk 从 root 在场根内
-        items = await render_walk(
+        view = await render_walk(
             cwd=root,
             ground_root=ground_root,
             doc_path=ground_root / DEFAULT_L0_FILENAME,
@@ -175,9 +175,11 @@ async def _template_preview(root: Path, template: str) -> None:
             label=ground.convention.name,
             ignore=ground.ignore_spec,
         )
-        text = render_items(items, ground_path=str(ground_root))
 
-    echo(text)
+    if json_flag:
+        echo(view.model_dump_json(indent=2, exclude_none=True))
+    else:
+        echo(str(view))
     # 只读: 不 close → 不触发 sediment → GROUND.md 不落盘
 
 
@@ -317,11 +319,11 @@ def cmd_verbs() -> None:
         print_simple_table(rows, headers=["argument", "description"])
 
 
-# -- frame ----------------------------------------------------------------
+# -- render ---------------------------------------------------------------
 
 
-@ground_app.command("frame", short_help="Render the current frame.")
-def cmd_frame(
+@ground_app.command("render", short_help="Render the ground view.")
+def cmd_render(
     path: Path | None = typer.Argument(
         None, help="Directory to view from (defaults to cwd)."
     ),
@@ -329,28 +331,35 @@ def cmd_frame(
         None, "--template", "-t",
         help="Read-only preview using a template's body + pins (no GROUND.md written).",
     ),
+    json_flag: bool = typer.Option(
+        False, "-j", "--json",
+        help="Output as JSON (RenderedView schema) instead of markdown.",
+    ),
 ) -> None:
     """Render the ground view for a directory.
 
-    - Directory has GROUND.md: field-root mode — body + all pins expanded.
-    - No GROUND.md but an ancestor has one: walk mode — law pointer,
-      cwd listing, $CWD-anchored pins expanded, other pins folded to TOC.
+    - Directory has GROUND.md: ground-root mode — body + all pins expanded.
+    - No GROUND.md but an ancestor has one: walk mode — cwd listing,
+      $CWD-anchored pins expanded, other pins folded to TOC.
     - No ground up to $HOME: hint to init.
     - --template <name>: read-only preview — open with the template's body
-      and pins, render, and do NOT write GROUND.md. Useful to see what a
-      convention ground (e.g. claude-project) would show in this directory.
+      and pins, render, and do NOT write GROUND.md.
+    - -j / --json: output RenderedView as JSON instead of markdown.
     """
     root = _resolve_root(path)
 
     if template is not None:
-        asyncio.run(_template_preview(root, template))
+        asyncio.run(_template_preview(root, template, json_flag=json_flag))
         return
 
     if (root / DEFAULT_L0_FILENAME).is_file():
-        # 场根模式
+        # ground-root mode
         async def _op(gs: GroundSet, ground: Ground) -> None:
-            text = await ground.context()
-            echo(text)
+            view = await ground.render()
+            if json_flag:
+                echo(view.model_dump_json(indent=2, exclude_none=True))
+            else:
+                echo(str(view))
 
         _run_async(_run_one(root, _op))
         return
@@ -361,23 +370,17 @@ def cmd_frame(
         print_info("run 'moss ground init' to create one here")
         raise typer.Exit(code=1)
 
-    # 场内移动模式 — 法来自祖先场根, 编辑权留在场根, 这里只有视角
+    # walk mode — render from ancestor ground, cwd = root
     async def _walk_op() -> None:
-        from ghoshell_moss.ground._render import render_walk, render_items
-
         doc_path = ground_root / DEFAULT_L0_FILENAME
         workspace = _probe_workspace(root)
         async with DefaultGroundSet(workspace_root=workspace) as gs:
             ground = await gs.open(root, doc=doc_path)
-            items = await render_walk(
-                cwd=root,
-                ground_root=ground_root,
-                doc_path=doc_path,
-                pins=ground.pins(),
-                label=ground.convention.name,
-                ignore=ground.ignore_spec,
-            )
-            echo(render_items(items, ground_path=str(ground_root)))
+            view = await ground.render(cwd=root)
+            if json_flag:
+                echo(view.model_dump_json(indent=2, exclude_none=True))
+            else:
+                echo(str(view))
 
     asyncio.run(_walk_op())
 
@@ -393,8 +396,8 @@ def cmd_meta(
 ) -> None:
     """Show ground location, law chain, $id, and pin table of contents.
 
-    Separated from ``frame`` so consumers who don't need ground protocol
-    get a clean content-only frame.
+    Separated from ``render`` so consumers who don't need ground protocol
+    get a clean content-only view.
     """
     root = _resolve_root(path)
 
@@ -428,8 +431,8 @@ def cmd_observe(
     """Per-pin diagnostics — one line each: label, verb, status, resolved
     target, result size.  No raw mtime or hash values (shell domain, §6.1).
 
-    Runs in field-root mode when GROUND.md is present, walk mode otherwise
-    (same resolution as ``frame``).  Missing targets show the resolved
+    Runs in ground-root mode when GROUND.md is present, walk mode otherwise
+    (same resolution as ``render``).  Missing targets show the resolved
     absolute path so the failure is self-explanatory.
     """
     from ghoshell_moss.ground._addr import Anchor

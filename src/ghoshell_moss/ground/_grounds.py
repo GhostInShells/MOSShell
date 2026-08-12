@@ -130,7 +130,7 @@ class DefaultGroundSet(GroundSet):
         if label not in self._active:
             raise KeyError(label)
         ground = self._active[label]
-        # 只在内存有未落盘变更时写盘 — 只读消费 (frame/meta/observe)
+        # 只在内存有未落盘变更时写盘 — 只读消费 (render/meta/observe)
         # 永不改写 GROUND.md.
         if ground.dirty:
             await ground.sediment()

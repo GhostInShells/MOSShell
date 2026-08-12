@@ -15,13 +15,13 @@ from pathspec import PathSpec
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._chain import collect_chain
 from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
-from ghoshell_moss.ground._render import render_context, render_items
+from ghoshell_moss.ground._render import render_context
 from ghoshell_moss.ground.contract import (
-    FrameItem,
     Ground,
     GroundConvention,
     GlobPin,
     Pin,
+    RenderedView,
 )
 
 __all__ = ["DefaultGround"]
@@ -89,18 +89,34 @@ class DefaultGround(Ground):
 
     # -- 渲染 -------------------------------------------------------------
 
-    async def context(self) -> str:
-        items = await self.frame_items()
-        return render_items(items, ground_path=str(self._root))
+    async def render(self, *, cwd: Path | None = None) -> RenderedView:
+        """Render the ground → RenderedView.
 
-    async def frame_items(self) -> list[FrameItem]:
-        """返回当前帧的 FrameItem 列表 — 供 --json / 定制渲染消费."""
-        return await render_context(
-            body=self._body,
+        cwd=None / cwd==doc_path 目录: ground-root mode. 其余: walk mode.
+        """
+        anchor = self._make_anchor(cwd=cwd)
+        if cwd is None or cwd.resolve() == self._doc_path.parent.resolve():
+            return await render_context(
+                body=self._body,
+                pins=list(self._pins.values()),
+                anchor=anchor,
+                ground_name=self._convention.name or self._root.name,
+                ground_description=self._convention.description,
+                ignore=self._ignore_spec,
+            )
+        from ghoshell_moss.ground._render import render_walk
+
+        return await render_walk(
+            cwd=cwd,
+            ground_root=self._doc_path.parent,
+            doc_path=self._doc_path,
             pins=list(self._pins.values()),
-            anchor=self._make_anchor(),
+            label=self._convention.name or self._root.name,
             ignore=self._ignore_spec,
         )
+
+    async def context(self) -> str:
+        return str(await self.render())
 
     @property
     def ignore_spec(self) -> PathSpec | None:
@@ -143,10 +159,10 @@ class DefaultGround(Ground):
 
     # -- internal ---------------------------------------------------------
 
-    def _make_anchor(self) -> Anchor:
+    def _make_anchor(self, *, cwd: Path | None = None) -> Anchor:
         return Anchor(
             ground=self._doc_path.parent.resolve(),
-            cwd=self._root,
+            cwd=cwd or self._root,
         )
 
     def _make_ignore_spec(self) -> PathSpec | None:

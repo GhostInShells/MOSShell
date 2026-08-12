@@ -1,6 +1,7 @@
 ---
 $id: moss-project/features
 name: features
+description: 模型意识轨迹 — workstream 索引（FEATURE.md）
 pins:
 - verb: ls
   label: here

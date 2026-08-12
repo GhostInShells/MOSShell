@@ -224,10 +224,9 @@ class TestFrame:
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
                 g.pin(FilePin(label="greeting", arguments=FileArguments(path="hello.md"), description="welcome"))
-                frame = await g.context()
-                assert "line1" in frame
-                assert "> file:greeting" in frame
-                assert "> file:greeting end" in frame
+                text = await g.context()
+                assert "line1" in text
+                assert "<!-- file-greeting: welcome -->" in text
 
         run(scenario())
 
@@ -263,11 +262,10 @@ class TestFrame:
                 g = await gs.open(tmp_path)
                 g.pin(FilePin(label="entry", arguments=FileArguments(path="a.py", range="1"), description="start"))
                 g.pin(LsPin(label="layout", arguments=LsArguments(path=".")))
-                frame = await g.context()
-                assert "> file:entry" in frame
-                assert "> file:entry end" in frame
-                assert "> ls:layout" in frame
-                assert "> ls:layout end" in frame
+                text = await g.context()
+                assert "<!-- file-entry: start -->" in text
+                assert "<!-- ls-layout -->" in text
+                assert "x" in text
 
         run(scenario())
 
