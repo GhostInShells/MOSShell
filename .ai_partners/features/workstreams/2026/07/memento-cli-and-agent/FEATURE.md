@@ -1534,3 +1534,43 @@ branch ≈ task（§9.3）的彻底兑现：
   是愿景，不在当前 workstream。但 memento agent 的 **memento 从外部传入**（不自己
   构造）这个接口纪律已立，不会堵未来的路。
 - 所有面向未来的设计讨论，人类要求优先**做记录**——记录到位后，执行都是小工作。
+
+## 16. Node-harness demo：talker（2026-08-12，deepseek-v4-flash）
+
+补一个 node 形态的参考 demo，落在 `.moss/system_test_nodes/talker/`。它是
+memento-agent 下一阶段（node 承载 harness）要做的例子之一。
+
+### 16.1 它验证什么
+
+核心命题：**agent 不自己长器官，它是 node（harness 载体）里的一个 importable
+器官。** node 的 `main.py` 持有全部 harness 维度——session / 分支 / loop / 记忆
+存储——agent 只暴露 `invoke` 一个可被驱动的点。
+
+```
+main.py:
+  memento = new_filesystem_memento(matrix.home / "memento", "talker")  # session 由 node 建
+  agent   = factory(agent_path, cwd=node_dir)                          # agent 由 node 建
+  talk()  = agent.invoke(user_prompt, memento, line_name="main", cwd)  # 四维全部外部传入
+```
+
+### 16.2 已跑通的链路（MCP 真实运行）
+
+```
+moss nodes create  →  node 骨架
+写 talker.agent.py  →  纯对话 agent 定义 (docstring = 任务简报)
+写 main.py         →  node harness 代码
+moss nodes run     →  子进程 cell 入网
+mesh accept        →  channel proxy 挂载, talk() 接口自动反射
+talk() 两次调用    →  agent 被驱动, 第二轮记得第一轮
+落盘检查          →  两个 moment 在 staging.jsonl, 未 commit (符合 v1 staging 累积)
+```
+
+连续性不靠进程内存（两次 talk 是同一进程内两次 invoke），靠 `compose_instruction`
+从 memento window 重新渲染折叠文本注入 instruction。进程可死，store 落盘，
+下一个进程读同一份 store 即恢复。
+
+### 16.3 提交形态
+
+`.moss/system_test_nodes/talker/` 下 6 个源文件（.gitignore / NODE.md / README.md /
+main.py / runtime/.gitignore / talker.agent.py）。`memento/`（运行时轨迹）与
+`runtime/*`（日志）由 .gitignore 排除。
