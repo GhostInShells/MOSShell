@@ -80,6 +80,27 @@ class TestQuestion:
         with pytest.raises(ValueError, match='not confirm'):
             q.confirm(result=True)
 
+    def test_confirm_roundtrip_match_question(self):
+        """confirm(answer with choices) must pass match_question validation."""
+        q = self._confirm_q()
+        a = q.confirm(result=True, content='sure')
+        a.match_question(q)  # should not raise
+
+    def test_confirm_answer_rejected_skips_match(self):
+        """rejected confirm answer bypasses match_question."""
+        q = self._confirm_q()
+        a = q.reject(reason='no')
+        a.match_question(q)  # should not raise
+
+    def test_confirm_wrong_max_selection_raises(self):
+        """confirm with max_selection=0 rejects answer with choices=["yes"]."""
+        q = Question(content='bad confirm', kind='confirm',
+                     options={'yes': 'ok', 'no': 'nah'},
+                     max_selection=0)
+        a = q.confirm(result=True)
+        with pytest.raises(ValueError, match='too large'):
+            a.match_question(q)
+
     def test_approve(self):
         q = self._apply_q()
         a = q.approve(content='approved')

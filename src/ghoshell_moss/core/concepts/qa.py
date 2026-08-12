@@ -339,6 +339,7 @@ class Asker(ABC):
                 'no': no,
             },
             max_selection=1,
+            min_selection=1,
             default_choices=['yes' if default else 'no'],
             kind='confirm',
             markdown=markdown,
