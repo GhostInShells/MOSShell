@@ -3,7 +3,7 @@ title: MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
 status: converging
 priority: P1
 created: 2026-07-31
-updated: 2026-08-11
+updated: 2026-08-12
 depends:
   - mcp-hub-channel
   - speech-protocol-alignment
@@ -14,7 +14,8 @@ description: >-
   的身份，再连带回答是否以 MCP 作为 cell 间 RPC 协议的底座。
 
   决策 1-10 已锁定。CLI 化与命名已完成（ghoshell_moss.mcp + moss mcp CLI）；
-  新 bridge 实机闭环走通。残留：signal 优先级 + ghost runtime 异常处理缺口。
+  ghost bridge 实机闭环走通；client 侧细节于 2026-08-12 讨论收敛。残留：signal
+  优先级 + ghost runtime 异常处理缺口 + client 侧实现。
 ---
 
 # MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
@@ -64,7 +65,7 @@ description: >-
 
 - Key design documents:
   - `design/mcp-node-server.md` — 子任务 1：node run as mcp server（朝外），机制已敲定
-  - `design/mcp-node-client.md` — 子任务 2：node run mcp client（朝内），部分敲定，细节待讨论
+  - `design/mcp-node-client.md` — 子任务 2：node run mcp client（朝内），细节已收敛
   - `src/ghoshell_moss_contrib/nodes/mailbox.py` — mailbox bridge 验证实现
 - Key discussion records: `discuss/2026-07-31_mcp_position_and_fusion.md`
 - 前置讨论：`.discuss/2026-07-30_mcp_duplex_convergence_and_memento_branch.md`
@@ -90,10 +91,13 @@ MCP 在 mesh 边界双向存在：node run as mcp server（朝外）/ node run m
 channel EVENT（非 signal）、endpoint 双写 cell presence。详见
 `design/mcp-node-server.md`。
 
-### 4. node run mcp client 极简（部分敲定）
+### 4. node run mcp client 极简（2026-08-12 细节收敛）
 
-薄 channel（list/read/exec，不 command 化）+ `moss mcp connect` CLI。mcp_hub 瘦身。
-授权 / 声明发现 / debug 细节待讨论。详见 `design/mcp-node-client.md`。
+薄 channel（list/read/exec，不 command 化）+ interface 化（`MCPToolSurface` Protocol）
++ `moss mcp connect` topic 广播机制 + 渐进式披露（未连接不进 context）+ SafeMode
+审批闸口（ghost 主动 connect）+ 惰性校验 tool 变更。mcp_hub 瘦身（留
+MCPServerSession，砍 lifecycle/register）。Resources/Prompts 暂不用。Tasks 兼容
+等协议稳定后做。详见 `design/mcp-node-client.md`。
 
 ### 5. `matrix.serve_mcp(mcp)` — Matrix 级原语（2026-08-09）
 
@@ -120,23 +124,20 @@ ghost 通信，ghost 通过 CTML `mailbox:reply(task_id, text__)` 显式回复�
 mailbox 不走 `session.on_output` 监听——ghost 必须显式调用 `mailbox:reply`。
 这是 request-reply 模式，不是 ghost monitor。
 
-### 7. CLI 体系方向（2026-08-09 讨论，待实现）
-
-当前命令命名需要厘清：
+### 7. CLI 体系方向（2026-08-09 讨论，2026-08-12 细节收敛）
 
 | 命令 | 定位 | 状态 |
 |------|------|------|
-| `moss-mcp` (原 `moss_as_mcp.py`) | MOSS 运行时控制面暴露给 AI coding agent | 已实现 |
-| `moss mcp` (新 CLI 组) | MCP 客户端/服务端管理入口 | 待实现 |
+| `moss-shell mcp` (原 `moss-mcp`) | MOSS 运行时控制面暴露给 AI coding agent | 已实现 |
+| `moss mcp serve-ghost-bridge` | ghost bridge 服务端入口 | 已实现 |
+| `moss mcp connect <url>` | topic 广播连接事件，hub 自动接入 | 已设计 |
+| `moss mcp disconnect <name>` | topic 广播断开事件 | 已设计 |
+| `moss mcp list` | 已配置 + 已连接 server 状态 | 已设计 |
+| `moss mcp refresh <name>` | 手动刷新 tools 列表 | 已设计 |
 
-`moss mcp` 子命令方向：
-- `moss mcp connect <url>` — 轻量 cell 入网（`Matrix.new`，无膜），获得 session 能力
-- `moss mcp disconnect/remove/list` — 连接生命周期管理
-- `moss mcp serve-mailbox` — 开箱即用的 mailbox，比独立 node 更轻
-- node 模板脚手架（`moss node init-mcp-server`）如果 `serve_mcp` 足够好就不需要
-
-连接信息进 scoped storage → `mcp_hub` 感知 → hub 的 connect 退化为授权动作。
-这是个独立于 mailbox 的后续任务。
+`connect`/`disconnect` 走 topic 广播而非直接操作 session——CLI 只发事件，
+mcp_hub channel 收到后执行实际的 connect/disconnect。连接信息进 scoped storage
++ ConfigStore 持久化。详见 `design/mcp-node-client.md`。
 
 ### 8. MCP 协议翻译层（2026-08-09 方向确认，待实现）
 
@@ -231,3 +232,45 @@ task，anyio 报错。这是 pydantic_ai + anyio + mindflow 三方 task 模型
 三条根因指向同一个问题：**ghost runtime 缺少分层异常隔离**。signal 打断
 是正常事件，但从 mindflow → attention → articulator → pydantic_ai →
 anthropic → httpx 的取消传播链上，每一层都假设下一层会处理，最终无人兜底。
+
+### 12. Mindflow Fusion — mindflow 上提到 MossRuntime + MCP Task 协议暴露（2026-08-12 方向确认，待设计）
+
+**动机**：mindflow 当前只在 GhostRuntime 装线，但 nucleus 的创建、注册、
+启动（步骤 1-3）完全依赖 Matrix/project/mode 层，不依赖 ghost。ghost 专属
+的只有步骤 4——三个消费循环（main/articulate/action）。将 mindflow 上提到
+MossRuntime，让没有 ghost 的运行时（`moss-shell mcp` / `moss-shell tui`）
+也能拥有 mindflow 实例，通过 MCP task 协议暴露给外部 agent。
+
+**上提方案**：
+
+- MossRuntime 新增 `_wire_mindflow(paused=True)`：创建 mindflow +
+  收集 project/mode nuclei + 注册 + enter lifecycle。默认 pause——
+  signal/impulse 被丢弃，不产生 attention，不泄漏。
+- GhostRuntime 的 `_wire_mindflow` 退化为：追加 ghost 层 nuclei +
+  `pause(False)` 激活消费循环。
+- 没有 ghost 时 mindflow 活着但不消费——`pause()` 已实现 `_clear()` +
+  abort attention，pause 期间安全。
+
+**MCP task 协议映射方向**（待设计，多个开放问题）：
+
+| MCP Task 原语 | Mindflow 对应 | 开放问题 |
+|---|---|---|
+| `tasks/list` | 活跃 nucleus 列表（facilities 接口） | nucleus name 是否可直接作为 task_id？MCP task 用 UID |
+| `tasks/get` | 指定 nucleus 的 peek（只读状态） | Task 模型的 meta 字段如何映射 nucleus 状态 |
+| `tasks/result` | 指定 nucleus 的 impulse 快照 | Impulse → GetTaskPayloadResult.meta 的协议设计 |
+| `notification` | nucleus impulse_notify 回调 | notification 只带 status，不含内容；pull 由 client 决定 |
+
+**待澄清的接口**：
+
+- `fetch_impulse(*nucleus_names) → Impulse | None` — 一次拉一个或多个
+  nucleus 的当前 impulse
+- `on_impulse_raised` — 回调/事件，可能需要判断 `completed=False`（排除
+  已被消费的 impulse）
+- Nucleus ↔ Task 对齐：MCP task 用 UID 定义，nucleus name 是否可以复用为
+  task_id？Task 的 `meta` / `status` / `poll_interval` 如何映射
+- Impulse 的 MCP 协议对齐：`priority` / `description` / `hint` / `messages`
+  哪些进入 task meta，哪些需要额外结构
+- moss runtime 的 mindflow 是否需要一个 `mindflow=True` flag 按需启用
+
+**优先级**：mcp-fusion-point 中排在 signal 优先级 + ghost runtime 异常处理
+之后。先落方向，接口细节下次设计会话继续。
