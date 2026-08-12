@@ -4,8 +4,9 @@ import time
 import pytest
 
 from ghoshell_moss.core.concepts.channel import ChannelCtx
-from ghoshell_moss.core.concepts.command import CommandTask, PyCommand
+from ghoshell_moss.core.concepts.command import Command, CommandTask, PyCommand
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
+from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.py_channel import PyChannel, PyChannelBuilder
 from ghoshell_moss.message import Message, Text
 
@@ -1287,3 +1288,108 @@ async def test_failed_refresh_exits_quickly_and_metas_show_failure():
         assert child_meta.failure != ""
 
     hang.set()
+
+
+# --- help ---
+
+
+@pytest.mark.asyncio
+async def test_help_default_is_empty():
+    """Channel without help registration has empty help in meta."""
+    main = PyChannel(name="main")
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert meta.help == ""
+
+
+@pytest.mark.asyncio
+async def test_help_static_string():
+    """Static help string appears in ChannelMeta.help."""
+    main = PyChannel(name="main")
+
+    @main.build.help
+    def hlp() -> str:
+        return "available: foo, bar"
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert "foo" in meta.help
+        assert "bar" in meta.help
+
+
+@pytest.mark.asyncio
+async def test_help_async_function():
+    """Async help function result appears in ChannelMeta.help."""
+    main = PyChannel(name="main")
+
+    @main.build.help
+    async def hlp() -> str:
+        return "async help"
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert meta.help == "async help"
+
+
+@pytest.mark.asyncio
+async def test_help_dynamic_refresh():
+    """Help value updates when the registered function returns new values after refresh."""
+    main = PyChannel(name="main")
+
+    state = {"v": "initial"}
+
+    @main.build.help
+    def hlp() -> str:
+        return state["v"]
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().help == "initial"
+
+        state["v"] = "updated"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().help == "updated"
+
+
+@pytest.mark.asyncio
+async def test_help_appears_in_child_meta():
+    """Help registered on a child channel appears in child meta, not parent."""
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    @child.build.help
+    def hlp() -> str:
+        return "child help"
+
+    async with main.bootstrap() as runtime:
+        metas = runtime.metas()
+        assert metas[""].help == ""
+        assert metas["child"].help == "child help"
+
+
+@pytest.mark.asyncio
+async def test_help_via_module_aggregates():
+    """Help from modules is aggregated with main state help."""
+    main = PyChannel(name="main")
+
+    class Mod(ChannelModule):
+        def name(self) -> str:
+            return "mod"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        async def get_help(self) -> str:
+            return "mod help"
+
+    main.with_module(Mod())
+
+    @main.build.help
+    def hlp() -> str:
+        return "main help"
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert "main help" in meta.help
+        assert "mod help" in meta.help

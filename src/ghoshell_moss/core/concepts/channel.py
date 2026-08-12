@@ -96,6 +96,7 @@ class ChannelMeta(BaseModel):
 
     instruction: str = Field(default='', description="the channel instruction messages")
     context: list[Message] = Field(default_factory=list, description="The channel context messages")
+    help: str = Field(default="", description="Warm data — what this channel currently exposes. Rendered with command interfaces.")
     memory: list[Message] = Field(default_factory=list, description="The channel memory messages")
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")

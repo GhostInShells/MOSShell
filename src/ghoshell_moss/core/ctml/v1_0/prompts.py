@@ -195,10 +195,15 @@ class ChannelMetaPrompter:
         return Message.new(tag="description", timestamp=False).with_content(self.meta.description)
 
     def interface_message(self, dynamic: bool, sustain: bool) -> Message | None:
+        parts = []
+        if self.meta.help:
+            parts.append(f"<help>\n{self.meta.help}\n</help>")
         interface = make_interfaces(self.meta, dynamic=dynamic, sustain=sustain)
-        if not interface:
+        if interface:
+            parts.append(interface)
+        if not parts:
             return None
-        return Message.new(tag="interface", timestamp=False).with_content(interface)
+        return Message.new(tag="interface", timestamp=False).with_content('\n'.join(parts))
 
 
 def make_dynamic_messages(metas: dict[ChannelFullPath, ChannelMeta]) -> list[Message]:

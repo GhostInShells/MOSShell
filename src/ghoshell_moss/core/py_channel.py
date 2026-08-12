@@ -58,6 +58,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
 
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
+        self._help_fn: StringType | None = None
         self._sustain_children: dict[str, Channel | ChannelFactory] = {}
         self._sustain_children_factories: list[Callable] = []
         self._virtual_children: dict[str, Channel] = {}
@@ -173,6 +174,21 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         if inspect.iscoroutinefunction(self._instruction_functions):
             return await self._instruction_functions()
         return self._instruction_functions()
+
+    def help(self, func: StringType) -> StringType:
+        self._help_fn = func
+        if callable(func):
+            self._dynamic = True
+        return func
+
+    async def get_help(self) -> str:
+        if self._help_fn is None:
+            return ''
+        if isinstance(self._help_fn, str):
+            return self._help_fn
+        if inspect.iscoroutinefunction(self._help_fn):
+            return await self._help_fn()
+        return self._help_fn()
 
     def add_command(
             self,
@@ -674,8 +690,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                     dynamic = True
                 command_metas.append(cmd_meta.model_copy())
 
-            context_message_task = asyncio.create_task(self._get_context_messages())
-            new_context_messages = await context_message_task
+            new_context_messages, help_text = await asyncio.gather(
+                self._get_context_messages(),
+                self._get_help(),
+            )
 
             meta = ChannelMeta(
                 name=name,
@@ -687,6 +705,7 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 modules=list(self._modules.keys()),
                 context=new_context_messages,
                 instruction=self._on_startup_instruction,
+                help=help_text,
             )
             meta.dynamic = dynamic
             meta.commands = command_metas
@@ -724,6 +743,23 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             else:
                 self.logger.error("%r get context messages receive invalid result %r", self, t)
         return list(self._wrap_messages(result))
+
+    async def _get_help(self) -> str:
+        funcs = [self._main_state.get_help()]
+        if len(self._modules) > 0:
+            for module in self._modules.values():
+                if hasattr(module, 'get_help'):
+                    funcs.append(module.get_help())
+        if current_state := self._get_current_state():
+            funcs.append(current_state.get_help())
+        parts = []
+        done = await asyncio.gather(*funcs, return_exceptions=True)
+        for t in done:
+            if isinstance(t, str) and t:
+                parts.append(t)
+            elif isinstance(t, Exception):
+                self.logger.error("%r get help receive error: %s", self, t)
+        return '\n'.join(parts)
 
     def _wrap_messages(self, messages: Iterable[Message | str | Image]) -> Iterable[Message]:
         for msg in messages:

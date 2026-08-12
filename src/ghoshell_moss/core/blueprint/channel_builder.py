@@ -12,7 +12,7 @@ Channel 与模型 (大脑) 之间有三个数据方向, 构建 channel 时先分
   command 主动推给大脑, 构成自驱循环 (由 Mindflow 仲裁).
 
 模型看到什么, 以 ChannelMeta 为唯一权威契约 (ghoshell_moss.core.concepts.channel:ChannelMeta):
-interface (命令签名自动反射) / instruction / context / memory / states.
+interface (命令签名自动反射) / help (warm 能力描述) / instruction / context / memory / states.
 本模块是动词 (怎么构建), ChannelMeta 是名词 (暴露成什么), 此处不重复枚举那份契约.
 
 CTML 如何调用 channel: `moss ctml read`.
@@ -386,6 +386,20 @@ class Builder(ABC):
         >>>             Message.new().with_content("dynamic information")
         >>>         ]
         >>>     chan.build.context_messages(context)
+        """
+        pass
+
+    @abstractmethod
+    def help(self, func: StringType) -> StringType:
+        """
+        decorator
+        注册一个函数, 用来生成 channel 的 warm help 描述.
+
+        help 描述此 channel 当前暴露了什么能力面 — 区别于 description (静态身份) 和
+        context_messages (hot 状态数据). 每次 meta refresh 时动态求值, 渲染在
+        command interface 之前.
+
+        红线: help 回答 "能做什么", context 回答 "现在是什么".
         """
         pass
 
