@@ -6,11 +6,12 @@ description: 'Matrix 层 cell 级服务化通讯接线层. ServiceOperator 封�
   各自定义自己的 service kind 与元数据, operator 永不装线. 关键词: "统一无聊层, 特别化有趣层".'
 milestone: v0.1.0
 priority: P0
-status: completed
-status_note: operator-level counter unit tests all pass; janus.Queue bridge for all
-  callbacks; webview badge design deferred to screen-node
+status: in-progress
+status_note: 'REOPENED 2026-08-13 kernel review: 单消费串行 hang-即死 / 队满静默丢弃 /
+  shutdown 无防阻塞 / 无错误隔离与异常回复日志 / 无 sync+async 双支持 — 全部致命, 待逐个修复.
+  counter 单测全绿不足以支撑内核层质量关.'
 title: Matrix Service — cell 级服务化通讯接线层
-updated: '2026-08-09'
+updated: '2026-08-13'
 ---
 
 # Matrix Service
@@ -295,3 +296,52 @@ Two-usage badge split (discussed 2026-08-09):
 
 **理论最小实现**: 本期不做 webview 服务实现，交给 screen-node 完善。本期交付：
 operator 级 counter 单测（证明 operator 正确）+ 上述 bug 修复。
+
+## Kernel Review 2026-08-13 — REOPENED
+
+operator 从 completed 重开为 in-progress。counter 单测全绿不构成内核层质量关的证据——
+单测只证明 happy path 传输正确，没压任何故障路径。以下是逐条致命问题（解决顺序即列表顺序）。
+
+### 致命问题清单
+
+| # | 问题 | 位置 | 症状 |
+|---|---|---|---|
+| 1 | **单消费串行 + hang 即死** | `_consume_queries` 单 consumer 串行 `await handler(q)` | head-of-line blocking：一个慢 handler 卡住该 cell 全部后续 query；一个挂起 handler 永久冻结 consumer，**无 per-task 超时可救** |
+| 2 | **队满静默丢弃** | `_on_query` `put_nowait` 失败即丢 | 只 log error，query 被吞。内核层不允许静默丢请求 |
+| 3 | **shutdown 无防阻塞** | `__aexit__` 只 cancel consumer task | 挂起的 handler 在停机时不能被掐掉；没有 in-flight 治理 |
+| 4 | **无错误隔离** | 整条桥 | 没有 per-query 故障边界；一个 handler 的异常路径可以污染 consumer |
+| 5 | **无异常回复 / 异常日志纪律** | while 循环内 | 调用方可能挂到超时；异常不 log 则不可诊断 |
+| 6 | **无 sync/async 双支持** | ABC 强制 `Awaitable[bytes]` | 若不做足背压/线程卸载/防阻塞 shutdown，就必须同时支持 sync + async 两条路，否则 bridge 是半吊子 |
+| 7 | **handler 锁约定未定义** | — | shared-state handler 的并发正确性归谁？内核不串行后，锁是 handler 自己的责任，必须写明 |
+
+### 实证：zenoh 回调模型（2026-08-13 实测）
+
+zenoh-python 的回调跑在 `pyo3-closure` 线程上（不是主线程，不是 asyncio loop）：
+
+- 同一 closure（同一 subscriber/queryable）串行在一条专属线程；
+- 不同 closure → 不同线程 → **跨 closure 并行**；
+- 回调内联同步执行，阻塞回调即阻塞该线程；zenoh 不暴露队列，无背压控制。
+
+结论：operator 的 janus 队列是 **pyo3 线程 → asyncio loop 的适配器**，不是模拟 zenoh 的
+内部队列。handler 可能被并发调用 → 可重入性归 implementer。FastAPI 参照：`async def`
+endpoint = loop 上 create_task，per-request 故障隔离——operator 的 create_task-per-query
+设计是主流正确形状。
+
+### 已对齐的修复形状
+
+- `_consume_queries`：只 dequeue + `asyncio.create_task(self._dispatch_query(...))`，
+  追踪 in-flight set（剪枝 done）。
+- `_dispatch_query` 全容错：无 handler → error reply；handler 异常 → log + error reply；
+  reply 失败 → 包裹；CancelledError → 尽力 error reply 后 re-raise（防 "Task exception was
+  never retrieved"）。
+- shutdown：cancel consumer → cancel 全部 in-flight → `await asyncio.gather(*inflight,
+  return_exceptions=True)`。
+- 背压保留：janus 有界队列；create_task 数量上界 = 队列 maxsize（1000）。
+- **契约变化**：handler 会被并发调用。有 await 点 + 共享状态的 handler 必须自己加锁；
+  counter 的 `_on_inc` 无 await 点仍原子（不炸）。
+
+### 金丝雀（修复后必跑）
+
+双 ZenohOperator 单 session（仿 `test_counter.py`）：两个并发慢 query 验证并行完成 +
+一个 handler 抛异常不影响另一个；handler 内 `await asyncio.sleep` + 真实 I/O 验证
+deferred reply + event loop 不被 zenoh 线程卡住。

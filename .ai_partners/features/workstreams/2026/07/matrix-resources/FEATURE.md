@@ -3,7 +3,7 @@ title: Matrix Resources
 status: design-locked
 priority: P1
 created: 2026-07-23
-updated: 2026-08-05
+updated: 2026-08-13
 depends: [resource-http-endpoint]
 milestone:
 description: >-
@@ -256,3 +256,66 @@ cell 间通讯基底"。Matrix = 网络的投影（去中心，host 拿到的 ma
   时不知道 requester 在哪台机器。后置但显式记账，别 silent todo。
 - **待清理**：`contracts/resource.py` 模块 docstring 还留着"验证版…验证通过后覆盖回…"的草稿头，
   它已是 contracts 本体，随本 feature 或改名轮一起清（优先级低，不着急）。
+
+## Operator 落地映射 (2026-08-13)
+
+matrix-operator（2026-08-09 completed → 08-13 reopened 修内核问题）提供了资源落地的 wire 层。
+本 feature 仍 design-locked、零实现；**实现前必须先修完 operator 的 kernel review 清单**，
+见 matrix-operator FEATURE.md。
+
+### 前置确认：异步 queryable 已解决
+
+FEATURE 原要求"实现前必做"的金丝雀（zenoh queryable 线程模型 + deferred reply）已被 operator
+K2 桥内建：zenoh 回调 `_on_query` 只 enqueue → asyncio 消费任务 `await handler(q)` →
+`asyncio.to_thread(query.reply, ...)`。resource handler 写成 `async def` 即可，无需 RPC 式协议。
+实证（2026-08-13）：zenoh-python 回调跑在 `pyo3-closure` 线程（跨 closure 并行），operator 的
+janus 队列是 pyo3→loop 的适配器。金丝雀仍要补一条锁死 deferred reply（慢 handler + 并发）。
+
+### 键布局：KD4 被 operator 键推导取代
+
+KD4 的 `{ns}/resources/messages/{scheme}/{host}`（host 进 key）被 operator 键推导取代：
+`{services_ns}/{cell_addr}/{kind}/query/{business_key}`。host 退化为 service 发现维度
+（按 `meta.data.host` 匹配），scheme 进 business key，path 进 payload。
+
+### D1 三 queryable（每 scheme）
+
+business key = `{scheme}/{face}`，face ∈ {meta, messages, data}；op (read|list) 在 payload：
+
+```
+{services_ns}/{addr}/resource/query/{scheme}/meta       payload: {op} → usage/help
+{services_ns}/{addr}/resource/query/{scheme}/messages   payload: {op: read|list, path?, query?, limit?} → list[Message]（主）
+{services_ns}/{addr}/resource/query/{scheme}/data       payload: {op: read|list, path?} → bytes + content_type（可选）
+```
+
+open：op 进 payload（3 queryable/scheme，押这个，协议更薄）还是进 key（6 个/scheme）。
+
+### host → service 解析
+
+URI `scheme://{host}/path`，host = cell fullname（无 uid，稳定）。解析器：
+本地 registry 按 `(scheme, host)` 先查，命中即本地；miss 走 operator——
+`get_services_by_kind("resource")` 按 `meta.data.host == uri_host` 匹配 →
+`operator.get("resource", "{scheme}/messages", {op:"read", path})`。悬空 host get → []。
+
+### provide 侧 = Matrix（不走 CellPresence）
+
+走 presence 时 operator 不存在。`matrix.provide_resource(storage)`：
+(a) 注册进 self 本地 registry（host==self 进程内解析）；
+(b) 懒创建 cell 级 resource terminal（kind="resource" 单例），每 storage 加
+`queryable("{scheme}/messages")` 等。
+open：是否 publish_event——建议不发（service liveness 已覆盖上线/下线，CellEvent 更新
+presence 载荷但不含 resource 信息，空通知）。
+
+### 解析器 = 包装本地 registry
+
+`MatrixImpl.resources` 保持 `ResourceRegistry` 表面（register/schemes/hosts 委托内层，
+bootstrapper 与 inspector 零改动），新增认知入口 `async get_messages(locator) -> list[Message]`：
+本地 `item.as_messages()`，远程 operator get 反序列化。`get(locator) -> ResourceItem` 保持本地语义。
+
+### 依赖顺序
+
+1. operator kernel 修复（create_task + 容错 + shutdown，见 matrix-operator FEATURE.md）
+2. `contracts/resource.py` 补 `ResourceItem.as_messages()`（KD1 认知面出口）
+3. `matrix/services/resource/`（ResourceDeclaration / ResourceServer）
+4. 读侧解析器 + `provide_resource`
+5. 金丝雀：跨 cell text get（双 ZenohOperator 单 session）
+6. milestone 1 = text resource
