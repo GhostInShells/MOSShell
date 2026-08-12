@@ -15,6 +15,7 @@ from ghoshell_moss.matrix.providers import (
     ZenohTopicServiceProvider,
     MatrixLoggerProvider,
     ZenohQAManagerProvider,
+    SessionWarrantProvider,
 )
 from ghoshell_moss.project.providers import (
     EnvConfigStoreProvider,
@@ -46,6 +47,9 @@ resources_provider = InMemoryResourceRegistryProvider()
 
 # zenoh QA exchange (cross-process ask/answer)
 qa_manager_provider = ZenohQAManagerProvider()
+
+# warrant authorization (storage + QA, fail-open optional capability)
+warrant_provider = SessionWarrantProvider()
 
 subprocess_provider = ProjectSubprocessesProvider()
 

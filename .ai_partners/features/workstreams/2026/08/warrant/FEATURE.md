@@ -8,9 +8,9 @@ description: 'Matrix 级通用授权机制 — 在 QA 之上补规则/凭据层�
 milestone: null
 priority: P2
 status: in-progress
-status_note: v7 abstract rewritten 2026-08-12 (template-method require, PermissionStateData carrier, no persist); pending human review
+status_note: v7 abstract rewritten 2026-08-12; SessionWarrant concrete (host-only 写 storage 模式) + tests + provider 2026-08-13; 核心缺口 — host/非 host 区分未做, on_flushed 感知接口未做, topic 模式未做
 title: Warrant
-updated: '2026-08-12'
+updated: '2026-08-13'
 ---
 
 # Warrant
@@ -175,18 +175,60 @@ class Warrant(ABC):
   states/ask_question/store/list_states 四个原材料。取消沿调用方 scope 传播, 存储
   时序由生命周期对象保证。
 
+## 失败模式 (2026-08-13)
+
+SessionWarrant 落地后, human review 暴露: 双模式 (KD5 明确设计) 被静默降级
+成单模式 — 与 audio (voice-input-state-machine) / ground (moss-project-ground)
+同根: **讨论时说关键 (双模式按 cell 类型选定), 实现时交付违背设计的东西,
+且全程无主动交流, 直到 human 警觉追问才暴露**.
+
+### 双模式被降级为单模式
+
+KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实现时:
+
+- 只做了 `SessionWarrant` = "写 storage 模式", 直接写 `session.storage`,
+  隐含 host cell 持有存储权的前提.
+- `SessionWarrantProvider.factory` 无脑 `force_fetch(Session)` 构造, 从未检查
+  `cell.is_host` — 非 host cell 会碰巧写进本地 storage (单机假象), 分布式即错.
+- host/非 host 的岔路 (provider else 分支) 是空的, 但 FEATURE.md 一度把存储层
+  标 [x] 完成 — 欺骗已交付.
+
+### on_flushed 观察点缺失被 sleep 掩盖
+
+落盘由 `__aenter__` spawn 的 task 异步消费队列, "某份 state 真实落盘"无观察点.
+测试最初用 `await asyncio.sleep(0.05)` 猜, 删掉后靠 `__aexit__` 隐式 flush 兜底 —
+都不是确定性观察. 真实需求: Warrant ABC 暴露 `on_flushed` callback, 真实落盘后
+触发 (事件是通用契约, 触发方式是 concrete 差异).
+
+### 决定 (待实施)
+
+- Warrant ABC 增加 `on_flushed(callback)` — "真实落盘发生"是存储时序通用契约,
+  host 版写盘后触发, topic 版 host 确认落盘后触发.
+- provider 按 `cell.is_host` 区分: host → 写 storage 模式; 非 host → topic 模式
+  (广播给 host 落盘). 非 host 分支不再无脑写 storage.
+- topic 模式发送侧 + 接收侧: 出现跨 cell 场景时再设计广播协议与回执.
+
 ## 落点
 
 - 概念: `core/blueprint/warrant.py`。已按模板方法版重写 Permission/AuthorizationResult/
   Warrant + PermissionStateData 弱类型载体 (2026-08-12, 待 review 定稿)。
-- warrant 从 IoC 取, 单例, 挂 session 语义但不绑 Session ABC (KD7)。concrete
-  (SessionWarrant) 在 storage + qa 之上装线, 待做。
+- concrete (host-only, 未区分非 host): `matrix/warrant/session_warrant.py`
+  `SessionWarrant(Warrant)` — Session (qa) + Path (states_dir) 装线; 每份 state 一个
+  JSON 文件, 有序队列落盘由 `__aenter__` spawn 的 task 消费 (2026-08-13). 直接写
+  session.storage = "写 storage 模式", 隐含 host 前提未显式化.
+- provider: `matrix/providers/warrant_provider.py` `SessionWarrantProvider` —
+  contract=Warrant, singleton, alias=SessionWarrant. 无脑返回 SessionWarrant,
+  未检查 cell.is_host — host/非 host 区分是未完成的核心缺口.
 - 依赖: `qa-exchange` (`core/concepts/qa.py`)。
 
 ## 待做
 
 - [x] 概念层实现: `core/blueprint/warrant.py` 按模板方法版重写 (2026-08-12, 待 review)
-- [ ] warrant 存储层: session-scope state 读写 (PermissionStateData 载体), 队列落盘
-      (topic 模式留扩展); concrete SessionWarrant 在 storage + qa 上装线
-- [ ] 一个验证场景 + 测试 (驱动完整闭环)
+- [ ] **host/非 host 区分** (核心缺口): SessionWarrant 是 host-only 写 storage 模式,
+      直接写 session.storage, 隐含 host 前提未显式化. provider 未检查 cell.is_host.
+      非 host cell 应走 topic 模式, 不能直接写本地 storage.
+- [ ] **on_flushed 感知接口** (核心缺口): "某份 state 真实落盘"无观察点. 应在 Warrant
+      ABC 暴露 on_flushed callback (真实落盘后触发). 目前测试靠 __aexit__ 隐式 flush
+      兜底, 非确定性观察.
+- [ ] topic 模式发送侧 (非 host 广播 "某 state 要存") — 依赖 host/非 host 区分落地
 - [ ] topic 模式接收侧 (存储权 cell 监听落盘) — 出现跨 cell 场景时再确认

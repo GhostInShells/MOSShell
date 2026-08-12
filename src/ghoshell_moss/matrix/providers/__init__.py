@@ -2,3 +2,4 @@ from .topic_provider import ZenohTopicServiceProvider
 from .moss_session_provider import MatrixZenohSessionProvider
 from .logger_provider import MatrixLoggerProvider
 from .qa_provider import ZenohQAManagerProvider
+from .warrant_provider import SessionWarrantProvider
