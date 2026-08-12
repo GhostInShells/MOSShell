@@ -28,14 +28,13 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 def play(
     seconds: float = typer.Option(3.0, "--seconds", "-s", help="Standard tune duration in seconds (ignored when --file is given)."),
     file: Optional[Path] = typer.Option(None, "--file", "-f", help="Play a WAV file instead of the standard tune."),
-    pub_topic: bool = typer.Option(False, "--pub-topic", hidden=True, help="Publish AudioPlaybackTopic via Zenoh for remote consumers."),
 ) -> None:
     """Play a standard tune (or a WAV file) to test audible playback feel. Ctrl+C to interrupt.
 
     Human 模式: 播放中实时频谱柱状图. --ai 模式: 单帧样本摘要.
     """
     matrix = Matrix.new("audio_play", category="cli")
-    result = matrix.run(lambda m: _async_play(m, seconds=seconds, file=file, pub_topic=pub_topic))
+    result = matrix.run(lambda m: _async_play(m, seconds=seconds, file=file))
 
     if result is None:
         return
@@ -52,8 +51,8 @@ def play(
         _report_spectrogram(observed, total)
 
 
-async def _async_play(matrix, *, seconds: float, file: Optional[Path], pub_topic: bool = False):
-    """收集播放数据; 本地 queue 桥接实时渲染, --pub-topic 时额外走 Zenoh 广播."""
+async def _async_play(matrix, *, seconds: float, file: Optional[Path]):
+    """收集播放数据; 本地 queue 桥接实时渲染."""
     player = matrix.container.get(StreamAudioPlayer)
     if player is None:
         print_error("StreamAudioPlayer not registered — run `moss audio contracts` to see what's available.")
@@ -75,9 +74,6 @@ async def _async_play(matrix, *, seconds: float, file: Optional[Path], pub_topic
     total = len(pcm) / rate
 
     await player.start()
-
-    if pub_topic:
-        player.enable_playback_topic()
 
     stream_id = f"cli-{int(time.time())}"
     observed: list = []

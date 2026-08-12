@@ -13,7 +13,7 @@ import time
 import numpy as np
 
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_info, print_simple_panel
-from ghoshell_moss.topics.audio import AudioPlaybackTopic
+from ghoshell_moss.types.audio import AudioPlaybackTopic
 
 
 def _render_frame(topic, first: bool = False) -> bool:

@@ -10,8 +10,10 @@
 # Topic 清单 — 事件协议声明。
 # 用 TopicModel 子类声明类型化事件，Matrix 扫描自动发现。
 
-from ghoshell_moss.topics import (
-    AudioRuntimeTopic,
-    SpeechTopic,
+from ghoshell_moss.types.audio import (
+    ConversationTopic,
+    AudioPlaybackTopic,
+)
+from ghoshell_moss.core.concepts.topic import (
     ErrorTopic,
 )
