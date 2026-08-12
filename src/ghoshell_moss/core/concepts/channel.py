@@ -285,6 +285,15 @@ class ChannelState(ABC):
         """
         return []
 
+    async def get_help(self) -> str:
+        """
+        return warm help text describing what this state currently exposes.
+
+        distinct from ``get_context_messages`` (hot, per-frame) — help is
+        rendered with the command interface, only refreshed on change.
+        """
+        return ''
+
     async def on_startup(self) -> None:
         """
         when channel startup.
