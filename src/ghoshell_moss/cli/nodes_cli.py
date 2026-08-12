@@ -141,6 +141,7 @@ def list_nodes(
         rows.append([
             m.name,
             str(rel_path),
+            "persist" if m.persist else "one-shot",
             "yes" if m.installed else "no",
             (m.description or "")[:80],
         ])
@@ -148,7 +149,7 @@ def list_nodes(
     echo("")
     print_simple_table(
         data=rows,
-        headers=["Name", "Path", "Installed", "Description"],
+        headers=["Name", "Path", "Type", "Installed", "Description"],
         title=f"Nodes ({len(rows)} found)",
     )
 
@@ -622,6 +623,7 @@ def _show_runtime_detail(project: Project, runtime_dir: Path, address: str) -> N
             ["home", matched.cell.home or "—"],
             ["parent", matched.cell.parent_address or "—"],
             ["providing", ", ".join(matched.cell.providing) or "—"],
+            ["event_level", matched.cell.event_level.name if matched.cell.event_level else "—"],
             ["ledger", str(CellRuntimeInfo.filepath(runtime_dir, matched.address))],
         ],
         headers=["Property", "Value"],

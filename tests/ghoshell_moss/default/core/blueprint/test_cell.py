@@ -27,6 +27,7 @@ from ghoshell_moss.core.blueprint.cell import (
     Cell,
     CellAddressCodec,
     CellEvent,
+    CellEventLevel,
     CellRuntimeInfo,
     DuplicatedError,
     ExecSpec,
@@ -73,6 +74,28 @@ class TestExecSpec:
         # 早期 ExecSpec.from_run/to_run 糖已收敛回字段直填 (frontmatter 层还有 `run:` 糖).
         assert not hasattr(ExecSpec, 'from_run')
         assert not hasattr(ExecSpec, 'to_run')
+
+
+# ── CellEventLevel ───────────────────────────────────────────────────
+
+
+class TestCellEventLevel:
+
+    def test_resolve_none_defaults_to_info(self):
+        # None = 系统约定, 归一化为 INFO — 感知判决的单一入口.
+        assert CellEventLevel.resolve(None) == CellEventLevel.INFO
+
+    def test_resolve_preserves_explicit(self):
+        assert CellEventLevel.resolve(CellEventLevel.DEBUG) == CellEventLevel.DEBUG
+        assert CellEventLevel.resolve(CellEventLevel.WARNING) == CellEventLevel.WARNING
+
+    def test_is_perceivable_threshold(self):
+        # 低于感知阈值 (INFO) 的档位不产生 ghost signal (零值/不调用).
+        assert CellEventLevel.is_perceivable(CellEventLevel.DEBUG) is False
+        assert CellEventLevel.is_perceivable(CellEventLevel.INFO) is True
+        assert CellEventLevel.is_perceivable(CellEventLevel.WARNING) is True
+        # None (系统约定) 视同 INFO → 感知.
+        assert CellEventLevel.is_perceivable(None) is True
 
 
 # ── NodeManifest ──────────────────────────────────────────────────────
@@ -174,6 +197,8 @@ class TestFromScript:
         m = NodeManifest.from_script(script)
         assert m.name == script.stem
         assert m.category == NodeScriptCategory
+        # 裸脚本 (无 NODE.md 声明) 默认一次性 → persist=False.
+        assert m.persist is False
         # 匝道降级: command = sys.executable 绝对路径.
         import sys
         assert m.exec.command == sys.executable
@@ -408,6 +433,18 @@ class TestBuildHelpers:
         assert cell.home == str(tmp_path.absolute())
         # host address = host / {moss_name} / {project_id}
         assert cell.address == f'{HOST_ROLE}/{env.moss_meta.name}/proj-42'
+
+    def test_build_node_persist_default_event_level_none(self, tmp_path: Path):
+        # persist=True (默认) → event_level=None (系统约定, 监听侧视同 INFO).
+        env = _mock_env(tmp_path)
+        cell = build_cell_from_node(env, NodeManifest(name='cam'))
+        assert cell.event_level is None
+
+    def test_build_node_one_shot_event_level_debug(self, tmp_path: Path):
+        # persist=False (一次性) → event_level=DEBUG (低于感知阈值, 事件静默).
+        env = _mock_env(tmp_path)
+        cell = build_cell_from_node(env, NodeManifest(name='tool', persist=False))
+        assert cell.event_level == CellEventLevel.DEBUG
 
 
 # ── NodeLauncher ─────────────────────────────────────────────────────

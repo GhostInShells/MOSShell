@@ -39,9 +39,11 @@ from ghoshell_moss.core.blueprint.cell import (
     CellEvent,
     CellAddress,
     CellAddressCodec,
+    CellEventLevel,
     DuplicatedError,
 )
 from ghoshell_moss.core.blueprint.matrix import CellHandle, Matrix
+from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.signals import CellEventSignalMeta, CellTransition
@@ -61,9 +63,25 @@ _DEFAULT_SHOW_DEAD = 3
 _DEFAULT_SHOW_EVENTS = 8
 _EVENT_BUFFER = 128
 _STDERR_TAIL_LINES = 5
+_ONE_SHOT_OUTPUT_TAIL = 200
 
 
 # ==== helpers ====================================================
+
+# cell event level → signal priority 映射 (一处). None (系统约定) 视同 INFO.
+_EVENT_LEVEL_PRIORITY = {
+    CellEventLevel.INFO: Priority.BACKGROUND,
+    CellEventLevel.WARNING: Priority.WARNING,
+    CellEventLevel.ERROR: Priority.ERROR,
+    CellEventLevel.CRITICAL: Priority.CRITICAL,
+}
+
+
+def _signal_priority_for(event_level: CellEventLevel | None) -> Priority:
+    # 调用方保证 event_level 已感知 (>= INFO); DEBUG 由 _dispatch_event 提前 return,
+    # 不经过本映射. fallback 到 BACKGROUND 只是 fail-safe (未知档按最低感知处理).
+    level = CellEventLevel.resolve(event_level)
+    return _EVENT_LEVEL_PRIORITY.get(level, Priority.BACKGROUND)
 
 
 def _now_ts() -> float:
@@ -217,6 +235,7 @@ def new_nodes_channel(
             f'description={manifest.description}',
             f'category={manifest.category or "(none)"}',
             f'singleton={manifest.singleton}',
+            f'persist={manifest.persist}',
             f'installed={manifest.installed}',
             f'exec={manifest.exec.command} {manifest.exec.args}',
             f'file={manifest.file}',
@@ -234,7 +253,11 @@ def new_nodes_channel(
 
     @chan.build.command(name='run', blocking=False, always_observe=True)
     async def run_node(target: str) -> str:
-        """Spawn a node cell. Nonblocking — organ appears next frame under matrix.mesh."""
+        """Spawn a node cell. Nonblocking for persist nodes; blocking for one-shot.
+
+        One-shot (persist=false) cells run to completion — this command blocks
+        until exit and returns stdout/stderr tail + exit code (standard bash call).
+        """
         if not target:
             CommandUtil.raise_observe(
                 "target required. nodes:list() to discover paths."
@@ -251,6 +274,26 @@ def new_nodes_channel(
         except RuntimeError as e:
             CommandUtil.raise_observe(str(e))
         short = CellAddressCodec(handle.address).short
+
+        # 一次性 node (persist=false → event_level 低于 INFO): 阻塞等退出拿结果.
+        if not CellEventLevel.is_perceivable(handle.runtime.cell.event_level):
+            meta = await handle.wait()
+            output = handle.process.output
+            code = meta.exit_code
+            lines = [f'[{short}] exited code={code}']
+            if output is not None:
+                stdout = output.stdout(limit=_ONE_SHOT_OUTPUT_TAIL)
+                stderr = output.stderr(limit=_ONE_SHOT_OUTPUT_TAIL)
+                if stdout:
+                    lines.append(f'--- stdout (tail {_ONE_SHOT_OUTPUT_TAIL}) ---\n{stdout.rstrip()}')
+                if stderr:
+                    lines.append(f'--- stderr (tail {_ONE_SHOT_OUTPUT_TAIL}) ---\n{stderr.rstrip()}')
+                # 完整输出落盘 — 提示文件路径, 供模型按需读全量.
+                full_files = [str(f) for f in (output.stdout_file, output.stderr_file) if f]
+                if full_files:
+                    lines.append('--- full output ---\n' + '\n'.join(full_files))
+            return '\n'.join(lines)
+
         return (
             f'[{short}] pid={handle.process.meta.pid} — '
             f'organ appears next frame under matrix.mesh once announced.'
@@ -446,9 +489,12 @@ def new_mesh_channel(
     # -- lifecycle: subscribe mesh.on_event 双扇出 --------------------
 
     def _dispatch_event(event: CellEvent) -> None:
-        # 1) 写自持 ring buffer (喂 context / events 命令)
+        # 1) 写自持 ring buffer (喂 context / events 命令) — 所有事件都可拉取
         event_buffer.append(event)
-        # 2) 转 Signal 送 CellEventNucleus (M7.5)
+        # 2) 感知判决: 低于阈值 INFO (DEBUG) 不产生 signal (零值/不调用)
+        if not CellEventLevel.is_perceivable(event.event_level):
+            return
+        # 3) 转 Signal 送 CellEventNucleus (M7.5)
         try:
             meta = CellEventSignalMeta(
                 address=event.address,
@@ -461,6 +507,7 @@ def new_mesh_channel(
             signal = meta.to_signal(
                 content,
                 description=f'cell_event {short}',
+                priority=_signal_priority_for(event.event_level),
             )
             CommandUtil.send_signal(signal)
         except Exception:

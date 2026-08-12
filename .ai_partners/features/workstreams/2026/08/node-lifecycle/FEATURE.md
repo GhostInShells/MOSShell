@@ -3,7 +3,7 @@ title: Node Lifecycle — 身份、入口、验证与记忆
 status: in-progress
 priority: P1
 created: 2026-08-04
-updated: 2026-08-07
+updated: 2026-08-12
 depends: []
 milestone: 0.1.0
 description: >-
@@ -192,3 +192,125 @@ node 启动后空转，失败只在 stderr 和 bounded FIFO 里，不进模型�
   Host.discover 目前坏 (`factory._create_host` raise NotImplementedError)。
 - **depend_* 与 find_spec**: find_spec 谓词应集中 `depends.py` (`available(module)`),
   硬门与显示判断分层; ghost/agent 模块级 `from pydantic_ai import` 需 lazy 化。
+
+## 调研增补 (2026-08-12) — 一次性 node 角色与 event_level 档位
+
+> 人类架构师 + claude-opus-4-7。在 node-lifecycle 中推进"一次性 node"的回归命题。
+> 决策 7 "Script 不回归" 的语境是启动成本——现在它以 **run-to-completion
+> node 子类型** 回到体系，核心是声明身份 + 事件监听侧降噪。
+
+### Motivation
+
+决策 7 说 Script 不回归——当时 script 定位为 dev-time 信号注入工具 (script-cell
+workstream)，启动成本是讨论焦点。几个月后概念矩阵演进 (node/cell/role)，它
+找到了正确角色：**一次性 bash 调用，run-to-completion，结果 stdout/stderr/exitcode
+展示，有 cell 身份可入网调能力，事件对 ghost 静默**。
+
+旧决策 7 关心的"启动成本不是理由"成立（进程起都起了，成本无关）；新命题关心的
+"一次性脚本运行时不该打扰 ghost"是之前没覆盖的——event 监听侧需要感知分级。
+
+### 核心设计
+
+**三层分离**：
+- 身份（声明层）：`NodeManifest.persist: bool = True`
+- 行为（运行时层）：`Cell.event_level: CellEventLevel | None = None`
+- 感知判决（监听侧）：logging 过滤语义，低于阈值不产生 signal
+
+### 决策 10.1: CellRole 不加新角色
+
+`CellRole` 保持 `Literal['host','node']`。一次性 node 不是拓扑角色，是 node 的
+子类型——它运行时仍以 `node/name/uid` 入网。身份差异通过 manifest.persist +
+event_level 表达，不进 role。
+
+之前讨论的 "`cell 上加一个 flag 标记它用不用 publish event`" 被否。语义是错的——
+不是"发不发"，是"监听者要不要感知"。事件在网络里真实存在（可拉取），只是默认
+不进 ghost 注意力。
+
+### 决策 10.2: 命名 persist（反转语义）
+
+命名演进：`script` → `one_shot` → `persist`。
+
+- `script` 被否：与 `from_script` / `NodeScriptCategory` 三义冲突，且描述
+  "输入形态"（脚本文件）而非"生命周期形态"（一次性 vs 常驻）。所有 node 的
+  exec 都是脚本，字段名没说出真正差异。
+- `one_shot` 被否：语义倒置——现状 node 没有 jobs 托管，**默认就是一次性**
+  （拉起来跑完退，除非 provide_channel 自己阻塞）。用字段声明默认行为是错的。
+- `persist` 落地：声明真正特殊的属性「常驻」。
+
+`NodeManifest.persist: bool = True`（默认常驻）：
+- `persist: true`（默认）= 常驻 node cell，provide channel 长期运行，事件感知
+- `persist: false` = 一次性 run-to-completion，事件静默，结果返回
+
+声明动作改变调用方行为模式（run 是否阻塞等结果），stub 需显式提示。
+
+### 决策 10.3: CellEventLevel 五档，对齐 logging 风格
+
+```python
+class CellEventLevel(IntEnum):
+    DEBUG = 10      # 低于感知阈值 → 不产生 signal（零值/不调用）
+    INFO = 20       # 默认：常规事件（上线/退出）
+    WARNING = 30    # 异常但可恢复
+    ERROR = 40
+    CRITICAL = 50
+```
+
+不发明新概念：风格对齐 logging level（DEBUG/INFO/WARNING/ERROR/CRITICAL，
+数字 10/20/30/40/50），过滤语义也对齐（logger.setLevel → 低于阈值不处理）。
+
+### 决策 10.4: 感知判决 = logging 过滤语义
+
+- 感知阈值 `INFO`
+- `event_level < INFO`（即 DEBUG）→ 监听侧**不调用 `send_signal`**（零值）
+  — 事件保留在 event_buffer，`mesh:events` 可拉取，但不进 ghost attention
+- `event_level >= INFO` → `send_signal`，signal priority 映射：
+  `INFO→BACKGROUND, WARNING→WARNING, ERROR→ERROR, CRITICAL→CRITICAL`
+
+映射是一处代码的成本，event 档位与 signal priority 对齐但不耦合。
+
+### 决策 10.5: event_level 三值模型
+
+`Cell.event_level: CellEventLevel | None = None`
+
+| 值 | 语义 |
+|---|---|
+| `None`（默认） | 系统约定：persist=true → INFO（感知），persist=false → DEBUG（静默） |
+| `DEBUG`（零值） | "不调用就是零值" — 低于阈值不产生 signal |
+| `INFO` 以上（有值） | 明确级别 |
+
+零值不需要新档位——低于感知阈值就是零值。`debug event 入列但不发送 signal`。
+
+### 决策 10.6: 一次性 node 完整语义
+
+- run-to-completion：进程跑完退出，run_node 保持 nonblocking（父视角不感知差异）
+- 事件静默：event_level=DEBUG，低于阈值不打扰 ghost，mesh:events 可拉取
+- 可入网调已知能力：有 cell 身份（presence/liveness/queryable），可作 client
+- 不允许 provide channel：一次调用无意义，轻闸口（presence 对 DEBUG 的 cell
+  拒绝 provide_channel，自洽——provide 的副作用就是 publish 'channel added' event）
+- 结果展示：nodes channel run 对 persist=false 身份 `await handle.wait()` 拿
+  exit_code+stdout/stderr tail；CLI run 前台 inherit（天然支持，无需改）
+
+### 决策 10.7: CellEventNucleus 全量 buffer
+
+CellEventNucleus 当前是**单槽覆盖**（`cell_event_nucleus.py:129
+self._impulse = impulse`），一次 articulate 周期多个事件 peek 只见最后。
+
+改为全量 buffer 模式（对齐 BufferNucleus）：signal 队列 + `_rebuild_impulse`
+合并所有 messages 成一个 Impulse——**模型一次感知所有内容**。同时 `min_priority`
+过滤承载分级降噪（低级别不进 buffer）。
+
+### 实现清单
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| 声明 | `core/blueprint/cell.py` | CellEventLevel 枚举；Cell.event_level；NodeManifest.persist；build_cell_from_node/from_script 推导；CellEvent.event_level |
+| 发布 | `matrix/networks/zenoh_presence.py` | publish_event 带 cell.event_level |
+| 监听 | `channels/matrix_channel.py` | mesh _dispatch_event 按 event_level 判决；nodes run wait；list/read persist 标记 |
+| CLI | `cli/nodes_cli.py` | list/status 显示 persist 标记 |
+| 感知 | `core/mindflow/cell_event_nucleus.py` | 单槽 → buffer 队列（全量感知） |
+
+### 前向兼容
+
+- 旧 node（无 persist 声明）→ persist=True（默认），event_level=None（系统约定
+  → INFO），行为与改前完全一致
+- 没有 persist frontmatter 字段 → pydantic 默认 True
+- DEBUG 档位预留，大部分时间不实际用（用户确认）

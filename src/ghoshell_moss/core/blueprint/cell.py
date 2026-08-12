@@ -13,6 +13,7 @@ Cell 运行时, 通过映射进入 Matrix 网络, Cell 之间的通讯可以通�
 import contextlib
 import sys
 import time
+from enum import IntEnum
 from pathlib import Path
 from typing import Callable, ClassVar, Iterable, Literal
 from typing_extensions import Self
@@ -36,6 +37,7 @@ __all__ = [
     'CellAddress',
     'CellRole',
     'CellProtocol',
+    'CellEventLevel',
     'HOST_ROLE',
     'NODE_ROLE',
     'normalize',
@@ -73,6 +75,33 @@ HOST_ROLE: CellRole = 'host'
 NODE_ROLE: CellRole = 'node'
 
 ROLES = frozenset({HOST_ROLE, NODE_ROLE})
+
+
+class CellEventLevel(IntEnum):
+    """cell 生命周期事件的感知级别 — 对齐 logging level 风格 (不发明新概念).
+
+    感知判决采用 logging 过滤语义:
+      event_level >= 阈值 (INFO) → send_signal (感知)
+      event_level <  阈值          → 不调用 send_signal (零值), 保留 event_buffer (可拉取)
+
+    映射 (一处): DEBUG→不调用, INFO→BACKGROUND, WARNING→WARNING, ERROR→ERROR, CRITICAL→CRITICAL.
+    """
+
+    DEBUG = 10
+    INFO = 20
+    WARNING = 30
+    ERROR = 40
+    CRITICAL = 50
+
+    @classmethod
+    def resolve(cls, level: 'CellEventLevel | None') -> 'CellEventLevel':
+        """None (系统约定) 归一化为 INFO — 感知判决的单一入口."""
+        return level if level is not None else cls.INFO
+
+    @classmethod
+    def is_perceivable(cls, level: 'CellEventLevel | None') -> bool:
+        """低于感知阈值 (INFO) 的档位不产生 ghost signal (零值/不调用)."""
+        return cls.resolve(level) >= cls.INFO
 
 CellProtocol = Literal['channel']
 """
@@ -124,6 +153,13 @@ class Cell(BaseModel):
         default='',
         pattern=r"^[a-zA-Z0-9_]*$",
         description='cell 的分类.'
+    )
+    event_level: CellEventLevel | None = Field(
+        default=None,
+        description="本 cell 生命周期事件对监听者的感知级别 (cell event level). "
+                    "None = 系统约定 (常驻 node→INFO 感知, 一次性→DEBUG 静默). "
+                    "低于感知阈值 (INFO) 的档位不产生 ghost signal —— "
+                    "事件保留在 event_buffer (可拉取), 但不进 attention.",
     )
     description: str = Field(
         default='',
@@ -246,6 +282,14 @@ class NodeManifest(BaseModel):
                     "适合有硬件独占 (麦克风/摄像头/机器人) 或状态独占 (数据库连接) 的场景. "
                     "False: 可多实例并行, 各自有独立 uid.",
     )
+    persist: bool = Field(
+        default=True,
+        description="声明本 node 是否常驻. "
+                    "True (默认): 常驻 node cell, provide channel 长期运行, "
+                    "生命周期事件进 ghost 感知 (event_level 系统约定 INFO). "
+                    "False: 一次性 run-to-completion, 事件静默 (event_level=DEBUG), "
+                    "不 provide channel, 结果通过 nodes:run 阻塞拿 stdout/stderr/exitcode.",
+    )
     exec: 'ExecSpec' = Field(
         default_factory=ExecSpec,
         description="默认启动入口 (frontmatter `run:` 声明). "
@@ -339,6 +383,7 @@ class NodeManifest(BaseModel):
                 name=script.stem,
                 category=NodeScriptCategory,
                 singleton=True,
+                persist=False,
                 description=f'ad-hoc node from {script}',
                 file=str(script.absolute()),
             )
@@ -531,6 +576,12 @@ class CellEvent(BaseModel):
         description="True → 消费方应 refetch Cell 更新缓存 "
                     "(cell 状态/膜类型可能变了); "
                     "False → 仅追加事件缓冲, 缓存不动 (纯 signal/debug).",
+    )
+    event_level: CellEventLevel | None = Field(
+        default=None,
+        description="事件来源 cell 的感知级别 (CellEventLevel). "
+                    "监听侧据此判决是否产生 ghost signal: "
+                    "低于阈值 (INFO) 不 send_signal, 保留可拉取.",
     )
 
     @property
@@ -808,6 +859,7 @@ def build_cell_from_node(
         category=manifest.category,
         uid=uid,
         singleton=manifest.singleton,
+        event_level=None if manifest.persist else CellEventLevel.DEBUG,
         project_id=env.project_id,
         project_name=env.project_name,
         home=str(home.absolute()),
