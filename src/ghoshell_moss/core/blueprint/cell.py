@@ -306,7 +306,7 @@ class NodeManifest(BaseModel):
         """将声明写入 CELL.md"""
         filename = filename or self.MANIFEST_FILENAME
         data = self.model_dump(
-            exclude_defaults=True, exclude_none=True,
+            exclude_none=True,
             exclude={'instruction', 'installed', 'file'},
         )
         post = frontmatter.Post(content=self.instruction, **data)
