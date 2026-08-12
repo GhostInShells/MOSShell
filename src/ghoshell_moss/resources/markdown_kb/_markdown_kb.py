@@ -1,12 +1,16 @@
 """
-MarkdownKnowledgeBase — 树形 Markdown 文档知识库.
+MarkdownKnowledgeBase — glob+frontmatter 参数化的 Markdown 资源知识库.
 
-基于 abcd.py 的抽象, 将目录下的 .md 文件映射为资源:
-  - README.md = 目录自身的资源 (类似 __init__.py)
-  - 其他 .md = 子资源
-  - 递归子目录
+K3 正规化 (2026-08-12):
+  - 扫描从手写递归改为 ground 的 glob_limited (路径发现) + extract_meta (frontmatter 提取)
+  - __init__ 参数化: pattern / keys / limit / max_depth — 与 FrontmatterArguments 同构
+  - MarkdownKnowledgeBaseMeta 承载配置 (实例化前可配置, ResourceStorageMeta 注册面)
+  - recall 语义召回, LLMFuncs 取不到则 NotImplementedError (依赖宽容)
 
-Meta 先序遍历, 全量缓存. description 优先 YAML frontmatter, 否则正文第一句.
+语义:
+  - 默认 pattern "**/*.md": README.md = 目录自身 (排最前), 其他 .md = 子资源
+  - skills 模式 pattern "*/SKILL.md": 每个 SKILL.md 是同级技能
+  - keys=None 时 description 优先 YAML frontmatter, 否则正文第一句
 
 scheme = "markdown-kb" (类级别, 稳定)
 host   = name (实例级, 如 "moss-howto")
@@ -18,18 +22,32 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 import frontmatter
 
 from ghoshell_moss.contracts.resource import (
     ResourceInfo,
     ResourceItem,
     ResourceStorage,
+    ResourceStorageMeta,
+    Recollection,
+    Query,
+    unpack_query,
 )
+from ghoshell_container import IoCContainer, INSTANCE
 
-__all__ = ["MarkdownInfo", "MarkdownItem", "MarkdownKnowledgeBase"]
+if TYPE_CHECKING:
+    from ghoshell_moss.contracts.llms import LLMFuncs
+
+__all__ = [
+    "MarkdownInfo",
+    "MarkdownItem",
+    "MarkdownKnowledgeBase",
+    "MarkdownKnowledgeBaseMeta",
+    "extract_meta",
+]
 
 
 # -- Meta ---------------------------------------------------------------
@@ -109,9 +127,23 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
         content = await item.get()
     """
 
-    def __init__(self, host: str, root: str | Path) -> None:
+    def __init__(
+            self,
+            host: str,
+            root: str | Path,
+            pattern: str = "**/*.md",
+            keys: list[str] | None = None,
+            limit: int | None = None,
+            max_depth: int | None = None,
+            llm_funcs: "LLMFuncs | None" = None,
+    ) -> None:
         self._host = host
         self._root = Path(root)
+        self._pattern = pattern
+        self._keys = keys
+        self._limit = limit
+        self._max_depth = max_depth
+        self._llm_funcs = llm_funcs
         self._metas: list[MarkdownInfo] = []
         self._by_path: dict[str, MarkdownInfo] = {}
 
@@ -179,6 +211,46 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
                     break
         return result
 
+    async def recall(self, query: Query) -> Recollection:
+        """语义召回 — LLMFuncs 对候选 meta 多标签分类, 返回匹配 locators.
+
+        LLMFuncs 取不到 (构造未注入) 或模型解析失败时回落 NotImplementedError,
+        不硬依赖 LLM 基础设施.
+        """
+        if self._llm_funcs is None:
+            raise NotImplementedError(
+                f"{self.scheme()}://{self.host} recall requires LLMFuncs; "
+                "inject llm_funcs= or construct via MarkdownKnowledgeBaseMeta factory"
+            )
+        text, _session = unpack_query(query)
+        try:
+            from ghoshell_moss.contracts.llms import LLMConfig
+            resolved = LLMConfig().resolve().get_model(tag="small_fast_model")
+        except Exception as e:
+            raise NotImplementedError(
+                f"recall model resolution failed (no LLM config?): {e}"
+            ) from e
+
+        candidates = "\n".join(m.as_line() for m in self._metas)
+        result = await self._llm_funcs.call(
+            instruction=(
+                "你是一个技能召回系统. 每个候选技能有一个 locator 和一段 description "
+                "描述它解决的问题. 根据用户的任务描述, 选出最匹配的技能 locator. "
+                "只返回候选清单中存在的 locator, 不要编造. 如果没有匹配的, 返回空列表."
+            ),
+            prompt=(
+                f"候选技能 (locator: description):\n{candidates}\n\n"
+                f"任务: {text}\n\n"
+                f"选出与上面任务最相关的技能 locator."
+            ),
+            result_type=_RecallResult,
+            model=resolved,
+        )
+        return Recollection(
+            locators=list(result.result.locators),
+            reasoning=result.result.reasoning,
+        )
+
     async def get(self, path: str) -> MarkdownItem | None:
         meta = self._by_path.get(path)
         if meta is None:
@@ -196,10 +268,19 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
     # -- scan ------------------------------------------------------------
 
     def scan(self) -> None:
-        """扫描根目录, 构建先序 meta 列表并缓存."""
+        """扫描 root: glob_limited 发现 + frontmatter 提取, 构建 meta 列表并缓存."""
         self._metas.clear()
         self._by_path.clear()
-        self._scan_dir(self._root)
+
+        from ghoshell_moss.ground._hash import glob_limited
+        hits = glob_limited(self._root, self._pattern, max_depth=self._max_depth)
+        files = [h for h in hits if h.is_file()]
+        # README.md 排最前 (目录自身语义, 默认 .md 模式); skills 模式无 README, 不受影响
+        files.sort(key=lambda p: (p.name != "README.md", str(p)))
+        if self._limit is not None:
+            files = files[: self._limit]
+        for f in files:
+            self._add_meta(f)
 
     def refresh(self) -> None:
         """重新扫描 (scan 的别名)."""
@@ -207,33 +288,18 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
 
     @property
     def metas(self) -> list[MarkdownInfo]:
-        """先序遍历的全量 meta 列表 (只读视图)."""
+        """glob 命中的全量 meta 列表 (只读视图)."""
         return list(self._metas)
-
-    def _scan_dir(self, current: Path) -> None:
-        # 1. README.md 优先 (目录自身)
-        readme = current / "README.md"
-        if readme.exists():
-            self._add_meta(readme)
-
-        # 2. 其他 .md 文件
-        for md in sorted(current.glob("*.md"), key=lambda p: p.name):
-            if md.name == "README.md":
-                continue
-            self._add_meta(md)
-
-        # 3. 子目录递归
-        dirs = sorted(
-            [d for d in current.iterdir()
-             if d.is_dir() and not d.name.startswith(".") and not d.name.startswith("_")],
-            key=lambda d: d.name,
-        )
-        for d in dirs:
-            self._scan_dir(d)
 
     def _add_meta(self, file_path: Path) -> None:
         path = str(file_path.relative_to(self._root))
-        title, description = _extract_meta(file_path)
+        meta_data = extract_meta(file_path, keys=self._keys)
+        if self._keys is None:
+            title, description = meta_data["title"], meta_data["description"]
+        else:
+            # keys 指定时: title 优先 "title" 键, 其次 "name" 键 (SKILL.md), 最后 stem
+            title = meta_data.get("title") or meta_data.get("name") or file_path.stem
+            description = meta_data.get("description", "")
 
         meta = MarkdownInfo(
             host=self._host,
@@ -251,26 +317,49 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
 # -- helpers ------------------------------------------------------------
 
 
-def _extract_meta(file_path: Path) -> tuple[str, str]:
-    """返回 (title, description)."""
+class _RecallResult(BaseModel):
+    """recall 的多标签分类结构化输出."""
+
+    locators: list[str] = Field(
+        default_factory=list,
+        description="命中的 locator 列表",
+    )
+    reasoning: str = Field(
+        default="",
+        description="命中理由 (为什么匹配这些资源)",
+    )
+
+
+def extract_meta(file_path: Path, keys: list[str] | None = None) -> dict[str, str]:
+    """从 Markdown 文件提取元信息 (public 导出).
+
+    keys=None (默认): 派生 title 与 description —
+      title: frontmatter title | 第一个 # heading | 文件 stem
+      description: frontmatter description | 正文第一句
+    keys 指定: 从 frontmatter 按 key 提取, 缺失值为空串.
+    """
     text = file_path.read_text(encoding="utf-8")
     post = frontmatter.loads(text)
 
-    # title: 优先 frontmatter, 否则第一个 # heading
-    title = str(post.metadata.get("title", ""))
-    if not title:
-        h1_match = re.search(r'^#\s+(.+)$', post.content, re.MULTILINE)
-        if h1_match:
-            title = h1_match.group(1).strip()
+    if keys is None:
+        title = str(post.metadata.get("title", ""))
+        if not title:
+            h1_match = re.search(r'^#\s+(.+)$', post.content, re.MULTILINE)
+            if h1_match:
+                title = h1_match.group(1).strip()
+        if not title:
+            title = str(file_path.stem)
 
-    # description: 优先 frontmatter, 否则正文第一句
-    description = post.metadata.get("description", "")
-    if not description:
-        description = _first_sentence(post.content)
+        description = post.metadata.get("description", "")
+        if not description:
+            description = _first_sentence(post.content)
+        return {"title": title, "description": description}
 
-    if not title:
-        title = str(file_path.stem)
-    return title, description
+    result: dict[str, str] = {}
+    for key in keys:
+        value = post.metadata.get(key)
+        result[key] = str(value) if value is not None else ""
+    return result
 
 
 def _first_sentence(text: str) -> str:
@@ -283,3 +372,59 @@ def _first_sentence(text: str) -> str:
             continue
         return stripped
     return "(no content)"
+
+
+# -- Meta (manifests 注册配置项) ---------------------------------------
+
+
+class MarkdownKnowledgeBaseMeta(ResourceStorageMeta):
+    """MarkdownKnowledgeBase 的 manifests 注册配置项.
+
+    __init__ 即配置面 (与 FrontmatterArguments 同构): host/root/pattern/keys/limit/max_depth.
+    factory(container) 实例化 KnowledgeBase, 尝试从 container 取 LLMFuncs 注入
+    (recall 依赖), 取不到则 None (recall 回落 NotImplementedError).
+    """
+
+    def __init__(
+            self,
+            host: str,
+            root: str | Path,
+            pattern: str = "**/*.md",
+            keys: list[str] | None = None,
+            limit: int | None = None,
+            max_depth: int | None = None,
+    ) -> None:
+        self._host = host
+        self._root = str(root)
+        self._pattern = pattern
+        self._keys = keys
+        self._limit = limit
+        self._max_depth = max_depth
+
+    def factory(self, container: IoCContainer) -> INSTANCE:
+        llm_funcs = None
+        try:
+            from ghoshell_moss.contracts.llms import LLMFuncs
+            llm_funcs = container.force_fetch(LLMFuncs)
+        except Exception:
+            llm_funcs = None
+        return MarkdownKnowledgeBase(
+            host=self._host,
+            root=self._root,
+            pattern=self._pattern,
+            keys=self._keys,
+            limit=self._limit,
+            max_depth=self._max_depth,
+            llm_funcs=llm_funcs,
+        )
+
+    @classmethod
+    def scheme(cls) -> str:
+        return MarkdownKnowledgeBase.scheme()
+
+    @property
+    def host(self) -> str:
+        return self._host
+
+    def description(self) -> str:
+        return "Markdown 文档树知识库 (glob+frontmatter 参数化扫描)"

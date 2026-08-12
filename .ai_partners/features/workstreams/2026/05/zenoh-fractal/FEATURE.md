@@ -528,7 +528,7 @@ moss-as-fractal --mode <mode>
 
 **需记录的 how-to**:
 
-1. **Fractal 体系 how-to** (`how_tos/for-moss-app-developer/fractal-system.md`):
+1. **Fractal 体系 how-to**:
    - FractalHub vs FractalNodeProvider 的角色区别
    - 配置 zenoh_config_fractal_hub.json5
    - CLI: `moss-as-fractal` 的用法（子节点注册到父 Hub）
@@ -536,14 +536,14 @@ moss-as-fractal --mode <mode>
    - Key space 约定 (FractalKeyExpressions)
    - 常见问题: peer-to-peer 发现限制、stale prune 行为
 
-2. **环境发现使用 how-to** (`how_tos/for-moss-core-developer/environment-discovery.md`):
+2. **环境发现使用 how-to**:
    - `moss manifests providers` — 查看已注册的 IoC providers
    - `moss manifests contracts` — 查看已绑定的 contracts
    - 如何在 `providers.py` 中注册新 provider
    - `MossRuntime.get_fractal_hub()` 等便利 API 的发现模式
    - container.get() vs 显式 API 的设计权衡
 
-**创建方式**: 参考 `moss how-tos read how-to-make-how-to.md` 了解格式约定。
+**创建方式**: 参考 `moss skills list` 动态发现现有技能格式约定。
 
 ---
 

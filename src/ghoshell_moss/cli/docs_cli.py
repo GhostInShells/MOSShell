@@ -3,7 +3,7 @@ Docs CLI — AI reference documentation via MarkdownKnowledgeBase.
 
 Systematic architecture reference docs. Low frequency — use when you need to
 understand design rationale, not when you need to get something done.
-For daily task-oriented knowledge, use `moss howtos`.
+For daily task-oriented knowledge, use `moss skills`.
 """
 import asyncio
 import typer
@@ -26,14 +26,14 @@ kb = _load_kb(DOCS_ROOT)
 docs_app = typer.Typer(
     name="docs",
     help="Systematic architecture reference docs (low frequency). "
-         "For daily task-oriented knowledge, use `moss howtos`.",
+         "For daily task-oriented knowledge, use `moss skills`.",
     no_args_is_help=False,
     invoke_without_command=True,
 )
 
 
-def _howto_hint():
-    return "Task-oriented knowledge: moss howtos list"
+def _skills_hint():
+    return "Task-oriented knowledge: moss skills list"
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ def docs_callback(ctx: typer.Context):
 
     \b
     Low frequency — use when you need to understand design rationale.
-    For daily task-oriented knowledge, use `moss howtos`.
+    For daily task-oriented knowledge, use `moss skills`.
 
     \b
     moss docs list             list all reference docs
@@ -69,7 +69,7 @@ def docs_callback(ctx: typer.Context):
     echo("  moss docs list              List all reference docs")
     echo("  moss docs read <path>       Read a specific doc")
     echo("")
-    echo(_howto_hint())
+    echo(_skills_hint())
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def list_docs(
     if not metas:
         print_info("No reference docs found.")
         echo("")
-        echo(_howto_hint())
+        echo(_skills_hint())
         return
 
     if json_out:
@@ -111,7 +111,7 @@ def list_docs(
         title=f"AI Reference Docs ({len(rows)} files)",
     )
     echo("")
-    echo(_howto_hint())
+    echo(_skills_hint())
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ def read_doc(
         print_error(f"Document not found: {path}")
         print_info("Use 'moss docs list' to see available documents.")
         echo("")
-        echo(_howto_hint())
+        echo(_skills_hint())
         raise typer.Exit(code=1)
 
     text = asyncio.run(item.get())
@@ -145,4 +145,4 @@ def read_doc(
         console.print(syntax)
 
     echo("")
-    echo(_howto_hint())
+    echo(_skills_hint())

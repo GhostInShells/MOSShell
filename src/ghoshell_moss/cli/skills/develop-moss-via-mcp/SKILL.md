@@ -1,5 +1,5 @@
 ---
-title: Develop MOSS via MCP
+name: develop-moss-via-mcp
 description: 在 MOSS 生态中开发 App、Channel、Ghost 时，通过 MCP 接入 coding agent 做实时调试。覆盖三种 transport、agent 配置、与 moss-ghost 的分工边界。
 ---
 

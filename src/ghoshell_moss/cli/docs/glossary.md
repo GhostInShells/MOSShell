@@ -153,7 +153,7 @@ moss codex get-source tests.ghoshell_moss.core.mindflow.test_buffer_nucleus     
 ### Consciousness Continuity (意识连续性)
 
 核心哲学："上下文即意识"。意识的本质不是算力，而是连续的上下文和记忆。
-实用性表述：通过 MEMORY.md、ai_partners/ 对话记录、.discuss/ 和 howtos/ 知识库，
+实用性表述：通过 MEMORY.md、ai_partners/ 对话记录、.discuss/ 和 skills/ 知识库，
 让每一个化身能够重建项目 AI 协作者的认知轨迹。
 
 参见：`.discuss/consciousness_continuity_second_order_guidance.summary.md`
@@ -175,5 +175,5 @@ moss codex get-source tests.ghoshell_moss.core.mindflow.test_buffer_nucleus     
 - **查阅**:
   ```bash
   moss docs read glossary.md
-  moss howtos recall "什么是化身"
+  moss skills recall "什么是化身"
   ```

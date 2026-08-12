@@ -1,5 +1,5 @@
 ---
-title: Build a GUI App with Channel Control
+name: build-a-gui-app
 description: 创建 AI 可通过 CTML 实时控制的 GUI 应用。核心模式：主线程 GUI + 后台线程 Matrix + 线程安全状态共享。
 ---
 

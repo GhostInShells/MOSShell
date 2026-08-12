@@ -6,8 +6,8 @@ description: 'howtos 机制正规化为 skills — 路径迁移 (a.md → a/SKIL
   skills CLI (discover/recall) 取代 moss howtos.'
 milestone: null
 priority: P1
-status: in-progress
-status_note: 'K6 定案: resources 顶层包; 2026-08-12 完成 core/resources → resources 迁移, 注册面验证通过'
+status: completed
+status_note: K3/K4/K1/K5/K6 全部完成; K2 matrix-resources 留待未来 (不阻塞); hint 不做 (人类决策)
 title: Moss Skills — skills CLI 与 howtos 迁移
 updated: '2026-08-12'
 ---
@@ -48,8 +48,8 @@ updated: '2026-08-12'
 - `src/ghoshell_moss/resources/markdown_kb/_markdown_kb.py` — 现 MarkdownKnowledgeBase
 - `src/ghoshell_moss/ground/` — glob+frontmatter 机制的成熟参照 (FrontmatterPin / glob_limited)
 - `.grounds/skill-ground.md` — skills 目录 ground 模板 (frontmatter pin 索引 `*/SKILL.md` description)
-- `src/ghoshell_moss/cli/howto_cli.py` — 现 howtos CLI (list/read)
-- `src/ghoshell_moss/cli/how_tos/README.md` — howtos 元规则 (入口判定三问 + 反模式)
+- `src/ghoshell_moss/cli/skills_cli.py` — skills CLI (list/recall + `--root`)
+- `src/ghoshell_moss/cli/skills/README.md` — skill 治理 (行动导向判定三问)
 
 ## Key Decisions
 
@@ -83,13 +83,16 @@ SkillsKnowledgeBase(host, root, pattern="*/SKILL.md", keys=["name","description"
 
 与 `FrontmatterPin.arguments` 同构。ground 机制已逼近成熟, 复用而非新造扫描器。
 
-### K4. CLI 形态: `moss skills` (discover / recall / hint)
+### K4. CLI 形态: `moss skills` (list / recall)
 
-取代 `moss howtos`。三命令:
+取代 `moss howtos`。**hint 不做 (2026-08-12 人类决策, 无 API)** — 主动交付靠
+start.md/CLAUDE.md 教练句 "开始任务时先 `moss skills recall <你的任务>`"。
+以下 hint 设计保留为历史轨迹。
 
-- `moss skills list [-q]` — 发现 (glob+frontmatter 索引)
+命令 (已实现):
+
+- `moss skills list [-q] [--root <path>]` — 发现 (glob+frontmatter 索引)
 - `moss skills recall <query>` — 语义召回 (LLMFuncs 多标签分类, 结构化 result_type)
-- `moss skills hint [task]` — 主动提示 (任务开始时刻, CLI + MCP 双面)
 
 **hint hook 定稿 (2026-08-11)**: 主 hook = **任务开始时刻**, `moss skills hint [task]`
 CLI + MCP tool 双面。任务上下文在那一刻才存在 (第一条用户消息 / agent 接到的任务)。
@@ -151,7 +154,8 @@ resources 是比具体领域更基础的机制层 (契约在 `contracts/resource
 ## 下一步 (plan 候选)
 
 1. ~~包结构落位 (K6)~~ — ✅ 2026-08-12 已定顶层 `resources/`, 迁移完成
-2. MarkdownKnowledgeBase 正规化 (K3) — glob+frontmatter, __init__ 参数化
-3. skills CLI (K4) — list 先落地, recall/hint 接 LLMFuncs
-4. howtos 迁移 (K1) + 引用清理 (K5)
-5. howto 治理重写为 skill 治理
+2. ~~MarkdownKnowledgeBase 正规化 (K3)~~ — ✅ 参数化 + MarkdownKnowledgeBaseMeta 承载配置 + extract_meta public + recall (LLMFuncs 依赖宽容, 取不到 NotImplementedError)
+3. ~~skills CLI (K4)~~ — ✅ list/recall + `--root` 探索; **hint 不做** (无 API, 人类决策 2026-08-12, 主动交付靠 start.md 教练句)
+4. ~~howtos 迁移 (K1) + 引用清理 (K5)~~ — ✅ cli/skills/<name>/SKILL.md, howto_cli 退役, 活引用面→skills, concrete 引用干掉 (zenoh-fractal, what-is-moss)
+5. ~~howto 治理重写为 skill 治理~~ — ✅ cli/skills/README.md (行动导向判定三问)
+6. K2 matrix-resources — 本地资源入网 (未来, 未开始)

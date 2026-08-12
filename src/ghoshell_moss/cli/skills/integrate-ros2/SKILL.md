@@ -1,5 +1,5 @@
 ---
-title: Integrate ROS2 into MOSS
+name: integrate-ros2
 description: 将 ROS2 机器人能力接入 MOSS 的完整模式：Channel 嵌入 rclpy Node、ThreadSafeFuture 桥接 Action、subscription 转 context_messages、lifecycle 管理 ROS2 状态机、远程通讯、上行 Signal、急停链路。面向需要将机器人接入 AI 系统的 ROS2 开发者。
 ---
 

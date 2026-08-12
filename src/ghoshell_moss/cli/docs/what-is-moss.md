@@ -163,10 +163,10 @@ MOSS 的 CLI 工具（codex、manifests、features）为 AI 设计。`moss codex
 | 开发 Channel | `moss docs read channel-system.md` |
 | 理解 Workspace/Mode | `moss docs read project-and-mode.md` |
 | 开发 Node | `moss docs read matrix-nodes-system.md` |
-| 开始干活 | `moss howtos read host-dev/discover-environment.md` |
+| 开始干活 | `moss skills list` / `moss skills recall <任务>` |
 | 查阅术语 | `moss docs read glossary.md` |
 
-日常开发优先查 howtos（`moss howtos list`），需要理解"为什么"时来 docs。
+日常开发优先查 skills（`moss skills list`），需要理解"为什么"时来 docs。
 
 ---
 

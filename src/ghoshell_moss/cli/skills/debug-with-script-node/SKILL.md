@@ -1,5 +1,5 @@
 ---
-title: Debug with Script Nodes
+name: debug-with-script-node
 description: 创建无 Channel 的 script node 用于运行时调试——检查 IoC 容器、网络状态、进程信息等 system-level 真相。
 ---
 

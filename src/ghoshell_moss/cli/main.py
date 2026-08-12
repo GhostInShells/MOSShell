@@ -10,9 +10,9 @@ from ghoshell_moss.cli.utils import (
 )
 from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
-    ctml_cli, howto_cli, features_cli, docs_cli,
+    ctml_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    ground_cli, memento_cli, llms_cli, audio, mcp_cli,
+    ground_cli, memento_cli, llms_cli, audio, mcp_cli, skills_cli,
 )
 from ghoshell_moss.depends import depend_matrix, depend_mcp
 from typer.main import get_command
@@ -34,7 +34,7 @@ app.add_typer(start_cli.start_app, name="start", short_help="Orient yourself —
 app.add_typer(codex_cli.codex_app, name="codex", short_help="Runtime introspection and code evaluation tools")
 app.add_typer(project_cli.project_app, name="project", short_help="MOSS Project tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
-app.add_typer(howto_cli.howto_app, name="howtos", short_help="MOSS How-To knowledge base")
+app.add_typer(skills_cli.skills_app, name="skills", short_help="MOSS skills — 复合任务技能 (发现/召回)")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
 app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")
@@ -140,7 +140,7 @@ def _set_global_environment(
     丢失, 是 CLI 参数化不生效的根因. commit 4c75f76b 已 flag 本入口为"下一次
     fix pass" 待办, 本次修完.
 
-    workspace 不存在时静默返回 — 无 workspace 需求的命令 (codex, ctml, howtos,
+    workspace 不存在时静默返回 — 无 workspace 需求的命令 (codex, ctml, skills,
     features) 不需要 env; 需要的命令走 Environment.discover 会自触发裸构造并暴露
     具体错误.
     """
