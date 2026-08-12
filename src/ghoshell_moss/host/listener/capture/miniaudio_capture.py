@@ -22,7 +22,6 @@ from ghoshell_moss.contracts.audio import (
     AudioSequentialConsumer,
 )
 from ghoshell_moss.host.listener.capture.audio_transport import AudioTransport
-from ghoshell_moss.topics.audio import AudioRuntimeTopic
 from ghoshell_moss.core.blueprint.session import StreamSubscriber
 
 __all__ = [
@@ -136,13 +135,6 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._capture.start(gen)
 
         self._started = True
-        self._transport.pub_topic(AudioRuntimeTopic(
-            running=True,
-            device_name=getattr(self._capture, "name", "") or "default",
-            device_explain=self.device_explain(),
-            started_at=time.time(),
-            last_heartbeat=time.time(),
-        ))
         self._logger.info("Audio capture started (device=%s)",
                           self.device_explain())
 
@@ -162,10 +154,6 @@ class MiniAudioCaptureSource(AudioCaptureSource):
             self._capture.close()
             self._capture = None
 
-        self._transport.pub_topic(AudioRuntimeTopic(
-            running=False,
-            last_heartbeat=time.time(),
-        ))
         self._transport.release_lock()
         self._started = False
         self._logger.info("Audio capture closed")

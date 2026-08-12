@@ -17,7 +17,7 @@ import typer
 from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.audio.codec import _fragments, _write_wav
 from ghoshell_moss.cli.audio.render import _render_spectrogram, _report_spectrogram
-from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_success, print_warning
+from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
 from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.contracts.speech import PlaybackSample
 from ghoshell_moss.core.blueprint.matrix import Matrix
