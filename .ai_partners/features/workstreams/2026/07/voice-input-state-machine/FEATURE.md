@@ -929,6 +929,70 @@ L4 play 分段级       player chunk + 播放游标, observe/on_play 逐片回�
 - `Interpretation` 五本账 (compiled/pending/success/cancelled/failed)；`executed_inputs` 只累计成功 task；**`on_done_task` 的 result 合并对 cancelled task 同样生效**——被打断的 say task 可经 result messages 送进观察上下文，折算回报通道现成。
 - SpeechStream 生命周期四元门控 commit/synthesis/play/close 可乱序；新 stream 的 start_play 关闭上一个 stream。
 
+## 2026-08-12 会话补充(二) — topic 结构定案与状态/事件分家
+
+> 人类工程师 + deepseek-v4-flash 第二轮。上一轮列议题清单, 这一轮定案 topic 结构与载体。
+> 说侧设计 (四层对齐、折算) 已在「2026-08-12 会话决策 — audio 架构讨论清单」消化, 本轮补听侧 topic 面。
+
+### 三个跨侧协议 topic 定案
+
+| # | topic | 语义 | 载体 |
+|---|---|---|---|
+| 1 | **分句 topic** (SpeechTopic 改造, 命名候选 ConversationTopic) | 一句实际说出的话, 听/说双侧共享的会话句段。role/name/sentence_id/batch_id/text/lang/audio_key/timestamp/**interrupted**/seq; address = meta.sender | **Topic** (事件面) |
+| 2 | **AudioPlaybackTopic** | 说侧播放元数据广播 ~20Hz, **不含二进制** (无 PCM)。stream_id/fragment_id/sample_rate/rms/peak/spectrum_bins。数字人口型、ghost 声波 | **Topic** (事件面) |
+| 3 | **AudioRuntimeTopic** | listener ↔ speech 半双工门控。is_speaking(speaker)/is_capturing(mic), device_name 区分 | **Parameter** (状态面) |
+
+### 事件/状态分家原则 (本轮核心判据)
+
+**判据: 消费者是否需要"自己启动之前的值" (前值)。**
+
+- **依赖前值 → Parameter** (推, host 广播真值, 本地被覆盖; 启动时 query 一次拿到前值)。
+- **不依赖前值 (只要未来值) → Topic** (事件流)。
+
+状态面 (Parameter): VoiceNodeRuntimeTopic、AudioRuntimeTopic 门控。
+事件面 (Topic): 分句 topic、AudioPlaybackTopic。
+
+前值需求的具体场景: KD9 ghost 世界模型 (中途接入必须立刻知道"正在收音")、半双工门控
+(listener 在 ghost 已说话后接入须知道"在说", 否则 TTS 回声)、TUI (启动即渲染当前状态)。
+
+### VoiceNodeRuntimeTopic 生命周期判定
+
+依赖前值 → **parameter**。字段拆解:
+- queryable facts → Parameter: running / mode / stream_state / gate / device /
+  barge_in_target / staged_text / attention_occupied / buffer_depth。
+- asr_partial → **不是状态**, 瞬态实时转写 (sub-second 写, 只有未来值有意义),
+  走 AsrPartial 事件流, 不混入状态 Parameter。
+
+前置条件: **parameter 必须有变更回调 on_change**——当前接口只有 get/set/version/remove,
+缺失, 待补。独立 workstream: `parameter-host-truth`。
+
+### AudioPlaybackTopic 强约束
+
+**不含二进制是强要求** — 它和 PlaybackSample 不是一回事 (PlaybackSample 带 PCM, 本地
+observe 回调; AudioPlaybackTopic 是无 PCM 的广播元数据)。数字人动口型、ghost 声波是
+跨 cell/跨进程消费者, 所以必须 TopicService 广播, 不是本地回调。
+
+### signal 不算 topic
+
+AudioSignalMeta (#6) 是纵向协议 (shell→ghost, mindflow envelope), 和三个横向 topic 是
+两条协议轴。听侧用户句同时走两条: 广播进分句 topic (横向) + 进 signal (纵向进 ghost 感知)。
+
+### 两个观测方向 (设计定后最先落地)
+
+1. **topic 监听脚本**: 订阅三个 topic + declare 各 parameter 轮询版本, 实时 dump,
+   验证数据面通不通, 在场景装线前把协议面钉死。可做成 `moss audio watch` 类命令。
+2. **listener 极简 TUI**: 直接进命令行, 复用 shell/ghost TUI 基建, 渲染状态 (Parameter)
+   + 逐句流 (分句 topic) + 波形 (Playback)。
+
+### 清单状态更新
+
+- #3 conversation topic → ✅ 定案 (分句 topic, 事件面)。
+- #9 is_speaking 状态快照 → ✅ AudioRuntimeTopic 门控状态 → Parameter。
+- #10 AudioRuntimeTopic 双发布者 + AudioPlaybackTopic 去留 → ✅ AudioPlaybackTopic **保留**
+  (非二进制硬约束); AudioRuntimeTopic 双发布者 = 门控对称两侧, 归一为 Parameter。
+- #6 AudioSignalMeta → ✅ 方向 + 载体确认 (纵向协议, 不算 topic)。
+- 新增: VoiceNodeRuntimeTopic 判定 → Parameter, on_change 缺失 → parameter-host-truth。
+
 ---
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*
 *基础调研: audio-capture FEATURE.md (DeepSeek V4 + Claude Opus 4.7) — 已完成的音频感知全链路*

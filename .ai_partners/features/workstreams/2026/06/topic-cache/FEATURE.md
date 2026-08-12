@@ -4,9 +4,10 @@ depends: []
 description: 'Session 层级的跨进程 Cache: KV + hash map + 分布式锁, 纯 sqlite3 实现, WAL 模式, 零额外依赖.'
 milestone: null
 priority: P1
-status: completed
+status: in-progress
+status_note: 2026-08-12 重开 — cache 重定向为拉逻辑 (本地按需拉, 底层可对 host query), Redis 是最优归宿但本轮不引入. 与 parameter-host-truth 成对 (推/拉分家).
 title: Session Cache — sqlite3 跨进程共享缓存与仲裁组件
-updated: '2026-06-05'
+updated: '2026-08-12'
 ---
 
 # Session Cache
@@ -41,3 +42,24 @@ Matrix 是多进程通讯总线，Cell 之间需要共享的缓存与仲裁机�
 - `lock()` 使用 `BEGIN IMMEDIATE` 事务保证 INSERT + 过期清理的原子性
 - `get()` 惰性过期: 读时检查 TTL, 过期返回 None 但不立即删除 (对齐 Redis 行为)
 - contracts/__init__.py 的 Cache import 曾在 6091da6 中过早加入 (cache.py 尚不存在), rebase 修正
+
+## 2026-08-12 会话补充 — cache 重定向为拉逻辑
+
+> 人类工程师 + deepseek-v4-flash。与 parameter-host-truth 成对讨论 (推/拉分家)。
+> session 级别 cache 和 parameter 都是 matrix cell 改造前设计, 现在都暴露问题。
+
+### 概念分家 (核心)
+
+| | 方向 | 底层 |
+|---|---|---|
+| **cache** | 拉 | 本地按需拉, 底层可基于对 host 的 query |
+| **parameter** | 推 | host 广播真值, 本地值被真值覆盖 |
+
+- cache 不依赖前值——拉就是当前值, 天然没有"启动前的前值"问题。
+- host 存在时底层 query host, host 不存在时本地即真相。
+- **cache 最好的归宿是 Redis, 本轮不引入**。现状 sqlite3 实现 (本文件) 是折中, 不是终点。
+
+### 与 parameter-host-truth 的关系
+
+两者共享同一套 host-as-truth + 广播(query) 机制 (见 parameter-host-truth D1/D2)。
+本 feature 聚焦拉面, parameter-host-truth 聚焦推面。Redis 引入前的 sqlite3 折中保持不动。
