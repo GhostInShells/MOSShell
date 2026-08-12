@@ -709,7 +709,7 @@ class Memento(ABC):
         ...
 
     @abstractmethod
-    def confluents(self) -> list[ConfluentRecord]:
+    def confluences(self) -> list[ConfluentRecord]:
         """Reference-confluent events from confluents.jsonl, in append order.
 
         Forward direction: confluents received by this owner's branches.

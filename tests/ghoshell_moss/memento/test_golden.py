@@ -578,7 +578,7 @@ def test_confluents_jsonl_empty_by_default(tmp_path: Path):
     root = tmp_path / "memento"
     m = new_filesystem_memento(root, "o")
     m.get_line("main")  # auto-create
-    assert m.confluents() == []
+    assert m.confluences() == []
 
 
 # ============================================================

@@ -355,7 +355,7 @@ class TestV3Features:
 
     def test_confluents_empty_by_default(self, memento):
         memento.get_line("main")
-        assert memento.confluents() == []
+        assert memento.confluences() == []
 
     def test_get_line_by_uid(self, memento):
         line = memento.create_line("main")

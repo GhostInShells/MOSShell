@@ -1148,7 +1148,7 @@ class FsMemento(MementoABC):
             ))
         return result
 
-    def confluents(self) -> list[ConfluentRecord]:
+    def confluences(self) -> list[ConfluentRecord]:
         path = self._confluents_jsonl_path()
         if not path.exists():
             return []
