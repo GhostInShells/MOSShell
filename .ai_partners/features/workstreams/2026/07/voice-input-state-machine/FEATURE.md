@@ -993,6 +993,88 @@ AudioSignalMeta (#6) 是纵向协议 (shell→ghost, mindflow envelope), 和三�
 - #6 AudioSignalMeta → ✅ 方向 + 载体确认 (纵向协议, 不算 topic)。
 - 新增: VoiceNodeRuntimeTopic 判定 → Parameter, on_change 缺失 → parameter-host-truth。
 
+## 2026-08-13 会话决策 — flag 驱动 pipeline + 主干优先
+
+> 人类工程师 + deepseek-v4-flash。从"状态机丢决策"的失望中重捞设计，收敛为实现范式。
+
+### 命名
+
+- **`VoiceStateMachine` 弃用 → `listener`**。旧名用实现机制（状态机）命名，错了。
+  新名命名器官（一个会听的单元）。命名与实现范式是同一件事的两种表述。
+- **listener 不继承 `VoiceController` ABC**。那个 ABC 的形状（start/stop/set_mode/
+  set_config/add_handler/snapshot）是"状态机控制方法"的形状，本身就是旧范式。
+  继承它 = 保留了旧契约，只是改了实现类名，flag 驱动设计没有落地。
+
+### 核心判断：listener = flag 驱动的并行管线 (CSP)，不是中央状态机
+
+- listener 开放的**不是状态机切换，是若干控制接口**——每个接口可能是 bool、可能有参、
+  大部分是纯 flag（listening / mode / gate / barge_in...）。
+- **状态机没有消失，是被分布式了**。CSP 的 C 是 Sequential：每个环节是带局部状态的
+  顺序进程（ASR 环节内部：累积 → 收 commit → finalize → 发 signal）。但**不存在一个
+  中央的、试图协调一切的状态机对象**。
+- 变更 flag = cancel 某环节 task 重建，或改 flag（如关 listening 只让 capture 时间片
+  里暂停转发，麦克风设备生命周期不动）。
+
+### 协议化动机（最核心）
+
+**协议化让"环节"从"进程内一个步骤"变成"matrix 里的一个细胞"**——同进程/跨进程从
+代码决策降级为部署决策。每个环节的入口/出口若是协议（topic/stream），capture 在进程 A、
+ASR 在进程 B 对环节代码透明。这溶解了 KD8 的"单一进程"决定（KD8 要单进程是因"模式切换
+要协调捕获时机+送入时机，跨进程是门控复杂度根因"——flag 协议化恰好把这两者都变成
+协议化 flag，根因被消解）。
+
+### 主干优先（本轮实现范围）
+
+- **不做 3-5 层节点**。先做**主干**：capture → ASR → signal，同时在主干上广播 topic
+  （ASR final → ConversationTopic），旁路（声纹/声音事件）以后仿照装线。
+- **控制面先不做 Parameter**。先让 listener 自己有正确接口（start/stop/set_mode/
+  snapshot），协议控制（Parameter + on_change）另做（parameter-host-truth）。
+- **阶段**：listener 作为 CLI node 独立可跑 → 复刻逻辑成 node + 配 GUI。
+
+### KD3 关键：is_final 与 commit 分离（之前丢的核心）
+
+`is_final`（ASR 自己分句）与 `commit`（触发决定"说完了"）是**两个独立事件**：
+
+| 模式 | commit 触发 | is_final 行为 |
+|------|------------|--------------|
+| turn_taking | 云端 VAD（is_final 重合） | 触发 commit |
+| PTT | 松手 | is_final 不分句提交，松手才是唯一 commit |
+| enter | 回车 | is_final 不分句提交 |
+| duplex | VAD 静音（常开） | 触发 commit |
+
+当前 controller.py 把两者混为一谈（`if result.is_final: on_asr_final`），这是模式
+触发无法成立的根因。主干必须把"ASR 产出 is_final"与"触发发 commit 事件"拆开。
+
+### 装线难点（已盘点材料）
+
+装线难在：类型纪律（进程内 object vs 跨协议 bytes）、生命周期（慢消费者/崩溃/重连）、
+顺序（seq/commit 事件后于音频）。材料已备：AudioChunk / ConversationTopic /
+AudioPlaybackTopic / ASRResult 类型已定，AudioSequentialConsumer 背压已有。缺两件：
+commit 事件协议（trigger → ASR finalize 通道）、flag 作为 Parameter 的 on_change。
+
+### 失败模式记录（实现教训，2026-08-13）
+
+上一模型实例在讨论定稿后的**第一步实现**就犯下两个不可接受的错误，直接导致 listener
+抽象由人类工程师接手（本任务转为"人类做抽象 + 模型 review"）：
+
+1. **`Listener(VoiceController)` 继承旧 ABC**。`VoiceController` 的形状就是状态机控制
+   方法的形状，继承它等于保留旧范式、只改实现类名。正确做法是 listener 有自己独立的
+   公开面（flag 控制接口），与旧契约彻底脱钩。
+2. **`__import__("...", fromlist=[...])` 魔法 import**。在 dispatch 热路径里动态 import
+   契约类，是赶交付的屎山症状——没想清模块结构就动手。
+3. （同源）PTT 用同一个 commit_event 既当"按下"又当"松开"，语义过载。
+
+**根因**：从架构讨论（CSP / 协议化）直接跳到写代码，没有先把"listener 的具体公开面"
+定下来。这是 CLAUDE.md 记录的"交付优先堆屎山"失败模式，与 ground 开发的 silent todo
+同源——表面交付、设计未落地。
+
+**重建要点（给 review / 下一实现实例）**：
+- listener 的公开面 = flag（listening / mode / gate...），不是状态机方法，也不继承
+  `VoiceController`。
+- 先定"环节协议入口/出口 + flag 表面"，再写代码；协议未定不许动手。
+- KD3 的 is_final / commit 分离是模式触发的前提，云端 ASR 会话生命周期如何承载"松手
+  才 finalize"必须先想通，不许静默跳过或糊弄。
+
 ---
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*
 *基础调研: audio-capture FEATURE.md (DeepSeek V4 + Claude Opus 4.7) — 已完成的音频感知全链路*
