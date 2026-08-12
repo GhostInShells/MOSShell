@@ -3,7 +3,7 @@ title: MOSS Project Ground
 status: in-progress
 priority: P1
 created: 2026-07-23
-updated: 2026-07-25
+updated: 2026-08-13
 depends: [ghost-ground]
 milestone: 0.1.0
 description: >-
@@ -113,6 +113,39 @@ Project ground 是额外的发现层, 不替代它们. 它在模型通过 MCP �
 - **[2026-07-25] SPEC 去版本号** —
   `v1.1.0-draft` 是补丁式迭代产物, 未发布前的版本号是幻觉. 改为
   `pre-release (YYYY-MM-DD snapshot)`, 待真正稳定后再刻 v1.
+
+## 失败模式 (2026-08-13)
+
+渲染重写 (RenderedView) 落地后, human review 暴露两个 silent todo —
+与 audio (voice-input-state-machine) 同根: **讨论时说关键, 实现时交付
+违背设计的东西**. 这次 review 时符合 CLAUDE.md 失败模式预判地暴露.
+
+### glob_limited 假 boundary stop
+
+`glob_limited` 用 `Path.glob` 一次性递归 + `len(parts) <= max_depth`
+后过滤, 而非显式递归. 后果:
+
+- `max_depth` 语义是 "path 组件数" (含文件名), 不是 "递归深度" —
+  `max_depth=1` 只匹配 base 自己, `=2` 才到一层子场, 与直觉反.
+- SPEC §4.1 的 "boundary stop (发现子场后不深入)" 是假的 — `Path.glob`
+  已递归到底, 代码里 `matched_dirs` 后过滤是后验模拟, 不是边递归边停.
+- 用 `Path.glob` 那点 scandir 优势换来假 boundary stop 骗过 review.
+
+### observe 残留 hash 对账
+
+`1423c542` 移除 hash 对账后, observe 里的 `mtime` 计算和
+`_observe_frontmatter_pattern` 的读文件拼 parts 没清干净. `mtime`
+是孤儿字段 (全仓无人消费), 读文件拼 parts 是双重读取 (render 阶段
+`_content_frontmatter_pattern` 再读一遍).
+
+### 决定 (待实施)
+
+- `glob_limited` 重写为显式递归 (iterdir + fnmatch + ignore), 拆两个
+  正交语义: `recursion` (深度上限, 0=不递归/N=N 层/None=无限) +
+  `stop_on_match` (防穿透, frontmatter 用). 三个调用方各取所需:
+  glob 标准语义, frontmatter 防穿透, markdown_kb 深度上限.
+- observe 退化为 "exists + 计数 + exec payload", 删 `mtime` 和读文件
+  拼 parts, 内容读取全交 render.
 
 ## L2 语义修正 (2026-07-25)
 
