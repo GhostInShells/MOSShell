@@ -342,13 +342,15 @@ current state at render time. This contrasts with `pin`, which tracks
 change across observations (§7.1).
 
 **Recognition**: an `@` at line start or after whitespace, followed by
-a path-start character `[a-zA-Z0-9_./$]`, and not inside a fenced code
-block. The path runs as a maximal token of `[a-zA-Z0-9_./$-]`.
+a path-start character `[a-zA-Z0-9_./-]`, and not inside a fenced code
+block. The path runs as a maximal token of `[a-zA-Z0-9_./-]`.
 Quoted form for paths with special characters: `@"path with spaces.md"`.
 
 **Expansion rules**:
 
-- Resolves against `$GROUND` by default; explicit anchors (§8) allowed
+- Resolves against `$GROUND` by default; no anchor syntax — the
+  reference is a plain relative path (`$GROUND`/`$CWD`/`$HOME` are not
+  recognized)
 - **Single-level**: one level of `@`-expansion is applied; resolved
   content is not re-scanned. This applies to both body and `law`-pin
   `@`-references — there is no recursive chain.
@@ -389,7 +391,7 @@ volatile rendered view. The view renders only the ground's own body
 and pins.
 
 The chain reads `GROUND.md` only. To reference foreign conventions,
-use `@`-references with an explicit `$HOME` anchor.
+use a `law` pin (§5.6); `@`-references are plain relative paths.
 
 ### 7.4 Walk Mode — Ground Interior Navigation
 

@@ -20,7 +20,6 @@ from ghoshell_moss.ground._render import render_context
 from ghoshell_moss.ground.contract import (
     Ground,
     GroundConvention,
-    GlobPin,
     Pin,
     RenderedView,
     Snapshot,

@@ -10,6 +10,7 @@ ghost 携带路径, 合并为模板清单. 同名模板项目属地优先.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -36,10 +37,12 @@ class DefaultGroundSet(GroundSet):
         *,
         workspace_root: Path | None = None,
         ghost_templates_dir: Path | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._workspace_root = (
             workspace_root.resolve() if workspace_root else Path.cwd().resolve()
         )
+        self._logger = logger or logging.getLogger("moss")
         self._active: dict[str, Ground] = {}
         self._label_by_path: dict[str, str] = {}
         self._templates: list[TemplateInfo] = []
@@ -161,7 +164,7 @@ class DefaultGroundSet(GroundSet):
             try:
                 await self.close(label)
             except Exception:
-                pass
+                self._logger.exception("failed to close ground %r during __aexit__", label)
 
     # -- template discovery -----------------------------------------------
 

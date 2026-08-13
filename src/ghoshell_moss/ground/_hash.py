@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathspec import PathSpec
 
-from ghoshell_moss.ground._addr import Anchor, resolve_path
+from ghoshell_moss.ground._addr import Anchor, is_glob_pattern, resolve_path
 from ghoshell_moss.ground._chain import collect_law_files
 from ghoshell_moss.ground.contract import (
     ExecPin,
@@ -39,6 +39,7 @@ from ghoshell_moss.ground.contract import (
     GlobPin,
     LawPin,
     LsPin,
+    PathOutsideRootError,
     Pin,
 )
 
@@ -85,6 +86,9 @@ class Observation:
     None = 不适用. observe 诊断展示直接消费."""
     unit: str = ""
     """size 的显示单位: 'B' / 'entries' / 'chars'."""
+    error: str | None = None
+    """观察阶段的失败信息 (越界 / 权限 / IO). 非 None 时渲染层直接
+    展示为 error 块, 不中断整帧 (§5 failure modes render into results)."""
 
 
 # -- async entry (context() 并发调用) ---------------------------------------
@@ -93,8 +97,15 @@ class Observation:
 async def observe(
     pin: Pin, anchor: Anchor, *, ignore: PathSpec | None = None,
 ) -> Observation:
-    """观察 pin 当前状态. async wrapper — IO 卸载到线程池."""
-    return await asyncio.to_thread(observe_sync, pin, anchor, ignore=ignore)
+    """观察 pin 当前状态. async wrapper — IO 卸载到线程池.
+
+    路径/IO 类失败 (越界、权限) 降级为带 ``error`` 的 Observation,
+    不中断整帧渲染 (§5 要求 failure modes 渲染进结果, 而非抛异常).
+    """
+    try:
+        return await asyncio.to_thread(observe_sync, pin, anchor, ignore=ignore)
+    except (PathOutsideRootError, OSError) as e:
+        return Observation(exists=True, error=str(e))
 
 
 # -- sync entry ---------------------------------------------------------------
@@ -126,7 +137,7 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
     target = resolve_path(pin.arguments.path, anchor)
     try:
         st = target.stat()
-    except FileNotFoundError:
+    except OSError:
         return Observation(exists=False)
 
     binary = _is_binary(target)
@@ -162,7 +173,7 @@ def _observe_frontmatter(
     path_raw = pin.arguments.path
 
     # Pattern mode
-    if _has_glob(path_raw):
+    if is_glob_pattern(path_raw):
         return _observe_frontmatter_pattern(pin, anchor, ignore=ignore)
 
     # Single-file mode
@@ -298,11 +309,6 @@ def _exec_rejected(message: str) -> Observation:
 # -- helpers ----------------------------------------------------------------
 
 
-def _has_glob(raw: str) -> bool:
-    unescaped = raw.replace("\\$", "$")
-    return any(c in unescaped for c in "*?[")
-
-
 def glob_limited(
     root: Path,
     pattern: str,
@@ -332,7 +338,7 @@ def glob_limited(
     base_parts: list[str] = []
     idx = 0
     for i, seg in enumerate(parts):
-        if _has_glob(seg):
+        if is_glob_pattern(seg):
             idx = i
             break
         base_parts.append(seg)

@@ -33,9 +33,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathspec import PathSpec
 
-from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
+from ghoshell_moss.ground._addr import Anchor, anchor_kind, is_glob_pattern, resolve_path
 from ghoshell_moss.ground._chain import collect_law_files
-from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, glob_limited, observe, parse_range
+from ghoshell_moss.ground._hash import (
+    GLOB_IGNORE,
+    Observation,
+    _is_binary,
+    _path_touches_ignore,
+    glob_limited,
+    observe,
+    parse_range,
+)
 from ghoshell_moss.ground.contract import (
     ExecPin,
     FilePin,
@@ -43,6 +51,7 @@ from ghoshell_moss.ground.contract import (
     GlobPin,
     LawPin,
     LsPin,
+    PathOutsideRootError,
     Pin,
     RenderedView,
     ViewBlock,
@@ -65,7 +74,7 @@ async def render_context(
     """Render a ground at its root → RenderedView.
 
     Body 和 pin 结果各自成 ViewBlock, @-ref 展开为独立 at 块.
-    所有 pin 观察并行 (asyncio.gather).
+    观察并行 (asyncio.gather); 内容构建整体卸载到线程池, 不阻塞 loop.
     """
     header = ViewHeader(
         id=ground_id,
@@ -73,29 +82,44 @@ async def render_context(
         description=ground_description,
         ground_path=str(anchor.ground),
     )
+
+    observations: dict[str, Observation] = {}
+    if pins:
+        tasks = {p.label: observe(p, anchor, ignore=ignore) for p in pins}
+        results = await asyncio.gather(*tasks.values())
+        observations = dict(zip(tasks.keys(), results))
+
+    blocks = await asyncio.to_thread(
+        _assemble_context_blocks, body, pins, anchor, observations, ignore,
+    )
+    return RenderedView(header=header, blocks=blocks)
+
+
+def _assemble_context_blocks(
+    body: str,
+    pins: list[Pin],
+    anchor: Anchor,
+    observations: dict[str, Observation],
+    ignore: PathSpec | None,
+) -> list[ViewBlock]:
+    """同步组装 body + pin 块 — 含文件 IO, 由 to_thread 调用."""
     blocks: list[ViewBlock] = []
 
-    # ---- body ---------------------------------------------------------------
     if body.strip():
         body_content, at_children = _build_body_with_at(body, anchor.ground)
         blocks.append(ViewBlock(kind="body", label="body", content=body_content.rstrip()))
         blocks.extend(at_children)
 
-    # ---- pins (parallel observe) --------------------------------------------
-    if not pins:
-        return RenderedView(header=header, blocks=blocks)
-
-    tasks = {p.label: observe(p, anchor, ignore=ignore) for p in pins}
-    results = await asyncio.gather(*tasks.values())
-    observations: dict[str, Observation] = dict(zip(tasks.keys(), results))
-
     for p in pins:
         obs = observations.get(p.label)
-        missing = obs is not None and not obs.exists
-
-        content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
-        if missing:
+        if obs is not None and obs.error is not None:
+            content = f"error: {obs.error}"
+            at_children: list[ViewBlock] = []
+        elif obs is not None and not obs.exists:
             content = "[missing]"
+            at_children = []
+        else:
+            content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
 
         blocks.append(ViewBlock(
             kind="pin",
@@ -106,7 +130,7 @@ async def render_context(
         ))
         blocks.extend(at_children)
 
-    return RenderedView(header=header, blocks=blocks)
+    return blocks
 
 
 def render_meta(
@@ -195,7 +219,6 @@ async def render_walk(
         ground_path=str(ground_root),
         cwd=str(cwd),
     )
-    blocks: list[ViewBlock] = []
 
     # $CWD 锚 pins 展开; 其余折叠
     cwd_pins = [
@@ -204,10 +227,36 @@ async def render_walk(
     ]
     folded = [p for p in pins if p not in cwd_pins]
 
+    law_full = [p for p in cwd_pins if isinstance(p, LawPin) and p.always_show]
+    other = [p for p in cwd_pins if not isinstance(p, LawPin)]
+    full_pins = law_full + other
+
+    observations: dict[str, Observation] = {}
+    if full_pins:
+        tasks = {p.label: observe(p, anchor, ignore=ignore) for p in full_pins}
+        results = await asyncio.gather(*tasks.values())
+        observations = dict(zip(tasks.keys(), results))
+
+    blocks = await asyncio.to_thread(
+        _assemble_walk_blocks, anchor, cwd_pins, folded, full_pins, observations, display, ignore,
+    )
+    return RenderedView(header=header, blocks=blocks)
+
+
+def _assemble_walk_blocks(
+    anchor: Anchor,
+    cwd_pins: list[Pin],
+    folded: list[Pin],
+    full_pins: list[Pin],
+    observations: dict[str, Observation],
+    display: str,
+    ignore: PathSpec | None,
+) -> list[ViewBlock]:
+    """同步组装 walk 视图块 — law_compact + full_pins + folded TOC."""
+    blocks: list[ViewBlock] = []
+
     if cwd_pins:
         law_compact = [p for p in cwd_pins if isinstance(p, LawPin) and not p.always_show]
-        law_full = [p for p in cwd_pins if isinstance(p, LawPin) and p.always_show]
-        other = [p for p in cwd_pins if not isinstance(p, LawPin)]
 
         for p in law_compact:
             law_files = collect_law_files(anchor, p.arguments.filename)
@@ -231,27 +280,25 @@ async def render_walk(
                 },
             ))
 
-        full_pins = law_full + other
-        if full_pins:
-            tasks = {p.label: observe(p, anchor, ignore=ignore) for p in full_pins}
-            results = await asyncio.gather(*tasks.values())
-            observations = dict(zip(tasks.keys(), results))
-            for p in full_pins:
-                obs = observations.get(p.label)
-                missing = obs is not None and not obs.exists
-
+        for p in full_pins:
+            obs = observations.get(p.label)
+            if obs is not None and obs.error is not None:
+                content = f"error: {obs.error}"
+                at_children: list[ViewBlock] = []
+            elif obs is not None and not obs.exists:
+                content = "[missing]"
+                at_children = []
+            else:
                 content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
-                if missing:
-                    content = "[missing]"
 
-                blocks.append(ViewBlock(
-                    kind="pin",
-                    label=p.label,
-                    verb=p.verb,
-                    description=p.description or None,
-                    content=content.strip(),
-                ))
-                blocks.extend(at_children)
+            blocks.append(ViewBlock(
+                kind="pin",
+                label=p.label,
+                verb=p.verb,
+                description=p.description or None,
+                content=content.strip(),
+            ))
+            blocks.extend(at_children)
 
     if folded:
         toc_lines = [f"pins at {display}:"]
@@ -264,7 +311,7 @@ async def render_walk(
             content="\n".join(toc_lines),
         ))
 
-    return RenderedView(header=header, blocks=blocks)
+    return blocks
 
 
 def _render_pin_content(
@@ -368,7 +415,7 @@ def _content_frontmatter(
     path_raw = pin.arguments.path
 
     # Pattern mode: path contains glob characters
-    if _has_glob(path_raw):
+    if is_glob_pattern(path_raw):
         return _content_frontmatter_pattern(pin, anchor, ignore=ignore)
 
     # Single-file mode
@@ -580,8 +627,16 @@ def _scan_at_refs(text: str) -> list[str]:
 
 
 def _resolve_at_ref(ref: str, base_dir: Path) -> str | None:
-    """解析一个 @-reference → 文件内容. 找不到 / 不可读 → None."""
-    target = base_dir / ref
+    """解析一个 @-reference → 文件内容. 找不到 / 不可读 / 越界 → None.
+
+    用 resolve_path 施加 §8 子树约束: ``@../outside.md`` 这类逃逸
+    不再被读取, 与 SPEC §6.1 "path escapes anchor subtree" 对齐.
+    """
+    anchor = Anchor(ground=base_dir, cwd=base_dir)
+    try:
+        target = resolve_path(ref, anchor)
+    except PathOutsideRootError:
+        return None
     if not target.is_file():
         return None
     try:
@@ -685,11 +740,6 @@ def _extract_frontmatter(text: str) -> str | None:
     return fm.group(1) if fm else None
 
 
-def _has_glob(raw: str) -> bool:
-    unescaped = raw.replace("\\$", "$")
-    return any(c in unescaped for c in "*?[")
-
-
 # -- general helpers ----------------------------------------------------------
 
 
@@ -740,16 +790,3 @@ def _walk_ls_entries(
                              ignore=ignore, ground_root=ground_root)
 
 
-def _is_binary(path: Path) -> bool:
-    try:
-        with open(path, "rb") as f:
-            return b"\x00" in f.read(1024)
-    except OSError:
-        return False
-
-
-def _path_touches_ignore(path: Path, root: Path) -> bool:
-    for part in path.relative_to(root).parts:
-        if part in GLOB_IGNORE:
-            return True
-    return False

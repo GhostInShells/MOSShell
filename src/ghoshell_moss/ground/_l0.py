@@ -12,10 +12,11 @@ pins 是 frontmatter 的一部分, 不是独立的 markdown section.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from ghoshell_moss.ground.contract import (
     _VERB_CLASSES,
@@ -24,6 +25,7 @@ from ghoshell_moss.ground.contract import (
     FrontmatterArguments,
     GlobArguments,
     GroundConvention,
+    GroundError,
     LawArguments,
     LsArguments,
     Pin,
@@ -81,6 +83,7 @@ def load_l0(root: Path, filename: str = DEFAULT_L0_FILENAME) -> L0Contents:
     Raises:
         yaml.YAMLError: YAML 语法错误.
         pydantic.ValidationError: frontmatter schema 不匹配.
+        GroundError: pin 信封/参数非法 (缺 label、参数值越界等).
     """
     path = root / filename
     if not path.is_file():
@@ -108,10 +111,14 @@ def _deserialize_pins(raw: list[dict]) -> list[Pin]:
     """K55 envelope → Pin subclass dispatch.
 
     Each item: {verb, label, arguments: {...}, description?}.
-    Unknown verbs are skipped (SPEC §4.2).
+    Unknown verbs are skipped (SPEC §4.2).  A known verb with a malformed
+    envelope (missing label, invalid argument value) raises a single
+    GroundError listing the offending pins — loud, not silent.  GROUND.md
+    是启动即见的认知场, pin 格式错了不该被无声吞掉.
     """
     result: list[Pin] = []
-    for item in raw:
+    errors: list[str] = []
+    for i, item in enumerate(raw):
         if not isinstance(item, dict):
             continue
         verb = item.get("verb", "")
@@ -119,19 +126,36 @@ def _deserialize_pins(raw: list[dict]) -> list[Pin]:
         if cls is None:
             continue
 
-        args_data = item.get("arguments") or {}
-        args_cls = _ARG_CLASSES.get(verb)
-        if args_cls is not None:
-            arguments = args_cls(**args_data)
-        else:
-            arguments = args_data
+        try:
+            args_data = item.get("arguments") or {}
+            args_cls = _ARG_CLASSES.get(verb)
+            arguments = args_cls(**args_data) if args_cls is not None else args_data
 
-        result.append(cls(
-            label=item["label"],
-            arguments=arguments,
-            description=item.get("description", ""),
-        ))
+            result.append(cls(
+                label=item["label"],
+                arguments=arguments,
+                description=item.get("description", ""),
+                always_show=item.get("always_show", False),
+            ))
+        except (KeyError, ValueError, TypeError) as e:
+            errors.append(f"pin[{i}] verb={verb!r}: {_pin_error_msg(e)}")
+
+    if errors:
+        raise GroundError("invalid pin(s) in GROUND.md: " + "; ".join(errors))
     return result
+
+
+def _pin_error_msg(e: Exception) -> str:
+    """把反序列化异常收敛成一行级描述 (不铺 pydantic 原始 dump)."""
+    if isinstance(e, KeyError):
+        return f"missing {e}"
+    if isinstance(e, ValidationError):
+        parts: list[str] = []
+        for err in e.errors():
+            loc = ".".join(str(x) for x in err.get("loc", ()))
+            parts.append(f"{loc}: {err.get('msg', 'invalid')}" if loc else err.get("msg", "invalid"))
+        return "; ".join(parts)
+    return str(e)
 
 
 # -- dump -----------------------------------------------------------------
@@ -213,4 +237,6 @@ def _serialize_pin(pin: Pin) -> dict:
     )
     if pin.description:
         out["description"] = pin.description
+    if pin.always_show:
+        out["always_show"] = True
     return out

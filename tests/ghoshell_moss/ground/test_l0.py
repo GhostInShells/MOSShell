@@ -227,6 +227,24 @@ class TestDumpL0:
         assert pin.arguments.budget == 500
         assert pin.arguments.lines == 20
 
+    def test_always_show_roundtrip(self, tmp_path):
+        dump_l0_pins(
+            tmp_path,
+            [LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"), always_show=True)],
+        )
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "always_show: true" in text
+        loaded = load_l0(tmp_path).pins
+        assert loaded[0].always_show is True
+
+    def test_always_show_defaults_false_and_omitted(self, tmp_path):
+        dump_l0_pins(
+            tmp_path,
+            [FilePin(label="f", arguments=FileArguments(path="a.py"))],
+        )
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "always_show" not in text
+
 
 class TestL0Contents:
     def test_empty(self):

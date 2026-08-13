@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -532,24 +531,6 @@ class GroundSet(ABC):
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """退出 GroundSet. 对全部 active 逐个 sediment, best-effort."""
-
-
-# -- FrameItem (渲染数据模型) ------------------------------------------------
-
-FrameItem = None  # 已废弃 — 仅供旧代码兼容过渡，新代码用 RenderedView
-
-
-@dataclass
-class _LegacyFrameItem:  # noqa: F811 — 保留旧类型使现存调用不崩溃，逐步迁移
-    """旧版渲染区块 — 由 RenderedView / ViewBlock 取代."""
-
-    kind: str
-    label: str
-    content: str
-    brief: str = ""
-    truncated: bool = False
-    meta: dict = field(default_factory=dict)
-    children: list[_LegacyFrameItem] = field(default_factory=list)
 
 
 # -- RenderedView (新渲染数据模型) -------------------------------------------
