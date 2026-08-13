@@ -2,10 +2,11 @@
 
 All tools are read-only and bound to the repo root.
 
-- git_status / git_diff — @cli-wrapped, async. Call via asyncio.run:
+- git_status / git_diff — @cli-wrapped, async. Await them inside main:
 
-      import asyncio
-      code, out, err = asyncio.run(git_status(""))
+      async def main():
+          code, out, err = await git_status("")
+          print(out)
 
 - read_file / list_files / glob_files — synchronous fs tools, call directly.
 

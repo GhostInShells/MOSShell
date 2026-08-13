@@ -172,13 +172,20 @@ def factory(
     if injected:
         logger.info("capability injection: %s", ", ".join(sorted(injected)))
 
-    def sandbox_exec(code: str) -> str:
+    # Freeze the authorized surface (compiled objects + tools + injections)
+    # as the base. Each aexec() call copies from this snapshot, so the model's
+    # code runs hermetic — no variable accumulates across calls.
+    agent_sandbox.snapshot_base()
+
+    async def sandbox_exec(code: str) -> str:
         """Execute Python code in the agent's sandbox.
 
-        Namespace is cumulative across calls (REPL-style). Returns any
-        stdout, exception, or value assigned to `__result__`.
+        The code must define an `async def main(): ...` entry point, which is
+        awaited inside the event loop. Each call runs in a fresh namespace —
+        no variable carries over between calls. Returns any stdout, exception,
+        or the value `main` returns.
         """
-        result = agent_sandbox.exec(code)
+        result = await agent_sandbox.aexec(code)
         return _format_result(result)
 
     thinking_settings = (
@@ -217,7 +224,7 @@ def factory(
 
 
 def _format_result(result: ExecutionResult) -> str:
-    """Format sandbox.exec ExecutionResult as agent-facing text."""
+    """Format sandbox.aexec ExecutionResult as agent-facing text."""
     parts: list[str] = []
     if result.std_output:
         parts.append(result.std_output.rstrip())
@@ -226,5 +233,5 @@ def _format_result(result: ExecutionResult) -> str:
         if result.traceback:
             parts.append(result.traceback.rstrip())
     if result.returns is not None:
-        parts.append(f"__result__: {result.returns!r}")
+        parts.append(f"returned: {result.returns!r}")
     return "\n".join(parts) if parts else "(executed, no output)"

@@ -6,12 +6,13 @@ Read-only tools in three groups:
   codex_where / codex_list / codex_source       — module reflection (sync)
   git_status / git_diff                         — git state (async)
 
-The fs and codex tools are synchronous — call them directly and print the
-result. The git tools are async — wrap them in asyncio.run, which returns
-(code, out, err):
+Every sandbox_exec call must define an `async def main(): ...` entry point.
+Inside `main`, the fs and codex tools are synchronous — call them directly and
+print the result. The git tools are async — await them:
 
-    import asyncio
-    code, out, err = asyncio.run(git_status(""))
+    async def main():
+        code, out, err = await git_status("")
+        print(out)
 
 Orient with glob_files or list_files, then read_file the files that matter;
 use codex_* to resolve import paths and read module source; use git_status /

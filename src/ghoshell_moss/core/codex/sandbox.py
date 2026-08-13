@@ -212,6 +212,7 @@ class Sandbox:
         self._on_destroy = on_destroy
         self._children: set["Sandbox"] = set()
         self._closed = False
+        self._base_namespace: dict[str, Any] | None = None
 
         # Resolve builtins default: inherit from parent if unset, otherwise
         # use the safe default for root sandboxes.
@@ -312,6 +313,66 @@ class Sandbox:
             with redirect_stdout(buffer):
                 exec(compile(code, self._name, 'exec'), self._module.__dict__)
                 result.returns = self._module.__dict__.get('__result__', None)
+        except Exception:
+            result.exception = _traceback.format_exception_only(
+                *_sys.exc_info()[:2]
+            )[-1].strip()
+            result.traceback = self._filter_traceback()
+        result.std_output = buffer.getvalue()
+        return result
+
+    def snapshot_base(self) -> None:
+        """Capture the current namespace as the base for :meth:`aexec`.
+
+        Called once after the factory finishes seeding (compiled objects +
+        injected tools). :meth:`aexec` copies from this snapshot on every
+        call, so the model's code runs hermetic — no variable accumulates
+        across calls. Only what was present at snapshot time (the authorized
+        surface) is visible to the model.
+        """
+        self._base_namespace = dict(self._module.__dict__)
+
+    def _fresh_namespace(self) -> dict[str, Any]:
+        """A fresh copy of the base namespace (lazy snapshot on first use)."""
+        if self._base_namespace is None:
+            self._base_namespace = dict(self._module.__dict__)
+        return dict(self._base_namespace)
+
+    async def aexec(self, code: str) -> ExecutionResult:
+        """Execute *code* defining an ``async def main()``, then await it.
+
+        The async, hermetic variant of :meth:`exec`. Hard convention: the code
+        must define a ``main`` async function. Each call runs in a fresh
+        namespace copied from the base snapshot (:meth:`snapshot_base`) — the
+        model's code cannot accumulate variables across calls; only the
+        authorized surface (compiled objects + injected tools) is visible.
+        This lets the model write ``await <async-tool>()`` directly instead of
+        ``asyncio.run`` (which cannot run inside an already-running loop).
+
+        ``print`` inside ``main`` is captured as ``result.std_output``; the
+        function's return value becomes ``result.returns``. Raising inside
+        ``main`` is caught and reported exactly like :meth:`exec`.
+        """
+        if self._closed:
+            raise RuntimeError(f"sandbox {self._name!r} is closed")
+
+        result = ExecutionResult()
+        buffer = StringIO()
+        try:
+            with redirect_stdout(buffer):
+                namespace = self._fresh_namespace()
+                exec(compile(code, self._name, 'exec'), namespace)
+                main = namespace.get('main')
+                if main is None:
+                    raise RuntimeError(
+                        "需要定义一个 async def main() 来运行 — the code must "
+                        "define an `async def main(): ...` entry point"
+                    )
+                if not _inspect.iscoroutinefunction(main):
+                    raise RuntimeError(
+                        "main 必须是 async def main() — a plain sync def is not awaited"
+                    )
+                result.returns = await main()
         except Exception:
             result.exception = _traceback.format_exception_only(
                 *_sys.exc_info()[:2]
