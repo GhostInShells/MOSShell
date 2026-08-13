@@ -25,6 +25,7 @@ text, it only shapes the runtime the impl will drive.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -232,7 +233,23 @@ def factory(
         source=source,
         name=stem,
         description=description,
+        model_name=model_name,
+        thinking=thinking,
+        tools_protocol=[_tool_protocol(sandbox_exec)],
     )
+
+
+def _tool_protocol(tool_fn: Any) -> dict[str, Any]:
+    """Extract a tool's protocol declaration — name + signature + description."""
+    sig = inspect.signature(tool_fn)
+    doc = ""
+    if tool_fn.__doc__:
+        doc = tool_fn.__doc__.strip().splitlines()[0]
+    return {
+        "name": tool_fn.__name__,
+        "signature": f"{tool_fn.__name__}{sig}",
+        "description": doc,
+    }
 
 
 def _format_result(result: ExecutionResult) -> str:

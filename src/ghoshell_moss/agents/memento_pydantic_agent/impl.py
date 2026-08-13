@@ -30,9 +30,11 @@ from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
 from ulid import ULID
 
+from ghoshell_moss.anchor import Anchor
 from ghoshell_moss.agents._instruction import assemble_instruction
 from ghoshell_moss.agents.contract import InvocationRecord, MementoAgent
 from ghoshell_moss.agents.pydantic_ai_utils import serialize_messages
+from ghoshell_moss.agents.pydantic_ai_utils.anchor import PydanticAIAgentAnchor
 from ghoshell_moss.core.codex.sandbox import Sandbox
 from ghoshell_moss.memento.abc import BranchWindow, Memento, MomentRecord
 
@@ -67,6 +69,9 @@ class MementoPydanticAgentImpl(MementoAgent):
         source: str,
         name: str,
         description: str,
+        model_name: str = "",
+        thinking: bool = True,
+        tools_protocol: list[dict[str, Any]] | None = None,
     ) -> None:
         self._agent: Agent = agent
         self._dry_run_agent: Agent = dry_run_agent
@@ -75,6 +80,9 @@ class MementoPydanticAgentImpl(MementoAgent):
         self._source: str = source
         self._name: str = name
         self._description: str = description
+        self._model_name: str = model_name
+        self._thinking: bool = thinking
+        self._tools_protocol: list[dict[str, Any]] = tools_protocol or []
 
     # ── MementoAgent contract ──
 
@@ -161,6 +169,28 @@ class MementoPydanticAgentImpl(MementoAgent):
             tool_calls=tool_calls,
             messages=serialize_messages(result.all_messages()),
         )
+
+    def dump_anchor(
+        self,
+        *,
+        memento: Memento | None = None,
+        line_name: str = "",
+        name: str = "",
+        description: str = "",
+    ) -> Anchor:
+        """Dump the agent's current cognitive conditions as a PydanticAIAgentAnchor.
+
+        Turns is empty here — step 3 fills it from a dry-run / invoke frame.
+        """
+        instruction: str = self.compose_instruction(memento, line_name)
+        payload = PydanticAIAgentAnchor(
+            instruction=instruction,
+            tools=self._tools_protocol,
+            model_name=self._model_name,
+            thinking=self._thinking,
+            turns=[],
+        )
+        return payload.to_anchor(name=name, description=description)
 
     def export_context_md(self, memento: Memento, line_name: str) -> str:
         """Current composed instruction including the window — the exact

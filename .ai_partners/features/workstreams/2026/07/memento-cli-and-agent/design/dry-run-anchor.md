@@ -115,3 +115,9 @@ dry run 的产物作请求帧（未执行态），`reply(anchor, prompt)` 还原
   工具面（factory 双 agent），`impl.dry_run` + CLI `dry-run` 命令（-j 出
   tool_calls+messages+usage）。冒烟验证：模型停在 sandbox_exec 调用、工具未执行
   （usage.tool_calls=0）、零副作用、不进历史。
+- 2026-08-13：步 2 anchor dump 完成。**方向修正：放弃通用 agent 层，诚实做
+  pydantic-ai agent anchor** —— `PydanticAIAgentAnchor` 落
+  `agents/pydantic_ai_utils/anchor.py`（不再伪装成通用 `AgentAnchor`）。payload =
+  instruction + tools 协议 + model_name/thinking + turns（认知流一帧，价值是
+  review 不是回放）。`dump_anchor` + CLI `dump-anchor`，冒烟验证：.anchor.yml 含
+  完整认知条件，turns 空（步 3 填）。

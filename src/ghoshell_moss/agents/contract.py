@@ -47,6 +47,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ghoshell_moss.anchor import Anchor
 from ghoshell_moss.memento.abc import Memento
 
 __all__ = ["MementoAgent", "InvocationRecord"]
@@ -173,5 +174,29 @@ class MementoAgent(ABC):
         the model answered directly without tools.
 
         :return: structured record — ``model_dump()`` is the ``-j`` payload.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def dump_anchor(
+        self,
+        *,
+        memento: Memento | None = None,
+        line_name: str = "",
+        name: str = "",
+        description: str = "",
+    ) -> Anchor:
+        """
+        Dump the agent's current cognitive conditions as an anchor.
+
+        Freeze instruction (composed, window folded in) + tool protocol +
+        model config into a self-explaining anchor. The generic Anchor
+        container carries the payload; its ``meta.ref`` declares the payload
+        shape (family-specific). No side effects — pure snapshot production.
+
+        :param memento / line_name: feed the window into instruction, same as
+            invoke. None / empty = degraded (no window).
+        :param name / description: AnchorMeta fields.
+        :return: weak Anchor — payload structure resolved via ``meta.ref``.
         """
         raise NotImplementedError

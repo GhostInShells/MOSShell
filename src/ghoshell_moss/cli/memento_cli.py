@@ -762,6 +762,59 @@ def agent_dry_run(
     echo("\n\n".join(parts) if parts else "(no content, no tool use)")
 
 
+@agent_app.command("dump-anchor", short_help="Dump the agent's cognitive conditions as an anchor file.")
+def agent_dump_anchor(
+    agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
+    owner: Optional[str] = typer.Option(
+        None, "--owner",
+        help="Owner name. Default: derived from file stem.",
+    ),
+    branch: str = typer.Option(
+        "main", "--branch", "-b",
+        help="Line (branch) name. Default: main.",
+    ),
+    root: Optional[Path] = typer.Option(None, "--root", "-r", help="Memento root directory."),
+    name: str = typer.Option(
+        "", "--name",
+        help="Anchor filename stem. Empty = auto uid-based name.",
+    ),
+    description: str = typer.Option(
+        "", "--description",
+        help="Anchor one-line note.",
+    ),
+    out_dir: Optional[Path] = typer.Option(
+        None, "--out-dir", "-o",
+        help="Output directory. Default: agent .py parent.",
+    ),
+):
+    """Dump the agent's current cognitive conditions to a self-explaining anchor.
+
+    Freezes instruction (composed, window folded in) + tool protocol + model
+    config into an .anchor.yml. No model call, no side effects. A consumer
+    curls the anchor's `ref` to reconstruct the payload shape.
+    """
+    agent_py_path = Path(agent_path).resolve()
+    agent = _build_agent(agent_path)
+    resolved_owner = owner or _owner_from_path(agent_py_path)
+    memento = _resolve_memento(root, resolved_owner)
+
+    try:
+        anchor = agent.dump_anchor(
+            memento=memento,
+            line_name=branch,
+            name=name,
+            description=description,
+        )
+    except NotImplementedError:
+        print_info("dump-anchor not yet implemented in this agent version.")
+        raise typer.Exit(code=0)
+
+    target_dir = (out_dir or agent_py_path.parent).resolve()
+    anchor_name = name or f"agent-{anchor.meta.uid[:8]}"
+    path = anchor.dump_to_dir(target_dir, anchor_name)
+    print_success(f"anchor: {path}")
+
+
 @agent_app.command("export-context", short_help="Export current context as markdown.")
 def agent_export_context(
     agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
