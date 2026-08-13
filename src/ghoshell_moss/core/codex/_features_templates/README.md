@@ -127,7 +127,7 @@ A commit landing without its FEATURE.md update should be rebased, not patched wi
 ---
 title: Human-readable title
 status: draft              # reserved: draft | in-progress | completed | dropped (free-form allowed)
-priority: P1               # P0 | P1 | P2 | P3
+priority: P1               # P0 | P1 | P2 | P3 — importance within the current stage, not urgency
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 depends: []                # Feature names this depends on
@@ -136,6 +136,8 @@ description: >-            # One-line summary for listing
   Brief description.
 ---
 ```
+
+**`priority`** ranks importance **within the current stage (iteration cycle)** — not development urgency or timeline order. P0 = committed for this stage; P2 = experimental, may be discardable. Delivery targets the end of the stage, not "now".
 
 Directory name under `workstreams/` (kebab-case) is the unique identifier.
 Path encodes creation date: `workstreams/<year>/<month>/<name>/FEATURE.md`.

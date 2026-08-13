@@ -200,6 +200,10 @@ def list_cmd(
         column_ratios=[1, 0.7, 0.3, 1.5, 0.6, 1.5],
     )
 
+    console.print(
+        "[dim]Pri = importance within the current stage (iteration cycle), not development urgency.[/dim]"
+    )
+
     if features or total_features:
         listed_counts = _status_counts(features)
         total_counts = _status_counts(total_features)
