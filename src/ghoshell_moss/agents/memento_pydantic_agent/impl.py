@@ -14,9 +14,11 @@ The runner shape (v1):
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -29,7 +31,8 @@ from pydantic_ai.agent import AgentRunResult
 from ulid import ULID
 
 from ghoshell_moss.agents._instruction import assemble_instruction
-from ghoshell_moss.agents.contract import MementoAgent
+from ghoshell_moss.agents.contract import InvocationRecord, MementoAgent
+from ghoshell_moss.agents.pydantic_ai_utils import serialize_messages
 from ghoshell_moss.core.codex.sandbox import Sandbox
 from ghoshell_moss.memento.abc import BranchWindow, Memento, MomentRecord
 
@@ -58,6 +61,7 @@ class MementoPydanticAgentImpl(MementoAgent):
         self,
         *,
         agent: Agent,
+        dry_run_agent: Agent,
         sandbox: Sandbox,
         compiled_module: ModuleType,
         source: str,
@@ -65,6 +69,7 @@ class MementoPydanticAgentImpl(MementoAgent):
         description: str,
     ) -> None:
         self._agent: Agent = agent
+        self._dry_run_agent: Agent = dry_run_agent
         self._sandbox: Sandbox = sandbox
         self._compiled: ModuleType = compiled_module
         self._source: str = source
@@ -108,6 +113,54 @@ class MementoPydanticAgentImpl(MementoAgent):
 
         logger.info("invoke done: agent=%s output=%d chars", self._name, len(output))
         return output
+
+    async def dry_run(
+        self,
+        *,
+        user_prompt: str,
+        memento: Memento | None = None,
+        line_name: str = "",
+        cwd: Path | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> InvocationRecord:
+        """Pure probe — real generation, paused at the tool call, no side effects."""
+        from pydantic_ai.tools import DeferredToolRequests
+
+        instruction: str = self.compose_instruction(memento, line_name)
+        logger.info(
+            "dry run start: agent=%s line=%s memento=%s",
+            self._name, line_name or "(none)", "yes" if memento else "no",
+        )
+        start = time.perf_counter()
+        try:
+            result: AgentRunResult[Any] = await self._dry_run_agent.run(
+                user_prompt, instructions=instruction
+            )
+        except Exception as e:
+            logger.exception("dry run failed: agent=%s", self._name)
+            raise RuntimeError(f"agent {self._name!r} dry run failed: {e}") from e
+        elapsed = time.perf_counter() - start
+
+        deferred = result.output if isinstance(result.output, DeferredToolRequests) else None
+        tool_calls: list[dict[str, Any]] = []
+        if deferred is not None:
+            for call in deferred.approvals:
+                tool_calls.append({"tool_name": call.tool_name, "args": call.args})
+
+        output = "" if deferred is not None else str(result.output or "")
+
+        logger.info(
+            "dry run done: agent=%s tool_calls=%d output=%d chars",
+            self._name, len(tool_calls), len(output),
+        )
+        return InvocationRecord(
+            output=output,
+            content=_extract_text(result),
+            usage=dataclasses.asdict(result.usage) if result.usage else {},
+            cast=elapsed,
+            tool_calls=tool_calls,
+            messages=serialize_messages(result.all_messages()),
+        )
 
     def export_context_md(self, memento: Memento, line_name: str) -> str:
         """Current composed instruction including the window — the exact
@@ -250,3 +303,15 @@ def _try_window(memento: Memento, line_name: str) -> BranchWindow | None:
         )
     except Exception:
         return None
+
+
+def _extract_text(result: AgentRunResult[Any]) -> str:
+    """Concatenate all TextParts across the message history."""
+    from pydantic_ai.messages import TextPart
+
+    parts: list[str] = []
+    for msg in result.all_messages():
+        for part in msg.parts:
+            if isinstance(part, TextPart):
+                parts.append(part.content)
+    return "".join(parts)

@@ -690,6 +690,78 @@ def agent_invoke(
     echo(result)
 
 
+@agent_app.command("dry-run", short_help="Probe the agent: real generation, tools not executed.")
+def agent_dry_run(
+    agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
+    prompt: str = typer.Argument(..., help="User prompt for the agent."),
+    owner: Optional[str] = typer.Option(
+        None, "--owner",
+        help="Owner name. Default: derived from file stem.",
+    ),
+    branch: str = typer.Option(
+        "main", "--branch", "-b",
+        help="Line (branch) name. Default: main.",
+    ),
+    cwd: Optional[Path] = typer.Option(
+        None, "--cwd",
+        help="Working directory. Defaults to agent .py parent.",
+    ),
+    root: Optional[Path] = typer.Option(None, "--root", "-r", help="Memento root directory."),
+    as_json: bool = typer.Option(
+        False, "--json", "-j",
+        help="Emit the full InvocationRecord (tool_calls + messages + usage) as JSON.",
+    ),
+    log_file: Optional[Path] = typer.Option(
+        None, "--log-file",
+        help="Write runtime lifecycle and error detail to this file (opt-in tracing).",
+    ),
+):
+    """Pure probe — one real generation, paused at the tool-call position.
+
+    The model's tool calls are NOT executed (zero side effects) and nothing is
+    written to memento. Prints the unexecuted tool calls; with --json, emits
+    the full record (tool_calls + messages + usage).
+    """
+    _configure_log_file(log_file)
+    agent_py_path = Path(agent_path).resolve()
+    resolved_cwd = _resolve_agent_cwd(agent_py_path, cwd)
+    agent = _build_agent(agent_path, cwd=resolved_cwd)
+    resolved_owner = owner or _owner_from_path(agent_py_path)
+
+    resolved_root = _resolve_root(root)
+    memento = None
+    if resolved_root.exists():
+        memento = new_filesystem_memento(resolved_root, resolved_owner)
+
+    try:
+        record = asyncio.run(agent.dry_run(
+            user_prompt=prompt,
+            memento=memento,
+            line_name=branch,
+            cwd=resolved_cwd,
+        ))
+    except Exception as exc:
+        logging.getLogger(_LOG_TARGET).error(
+            "dry-run failed: agent=%s owner=%s branch=%s: %s",
+            agent_path, resolved_owner, branch, exc, exc_info=True,
+        )
+        print_error(f"dry-run failed: {exc}")
+        raise typer.Exit(code=1)
+
+    if as_json:
+        echo(json.dumps(record.model_dump(), ensure_ascii=False, indent=2))
+        return
+
+    parts: list[str] = []
+    if record.content:
+        parts.append(record.content)
+    for call in record.tool_calls:
+        name = call.get("tool_name", "")
+        code = call.get("args", {}).get("code", "")
+        parts.append(f"{name}:\n{code}" if code else name)
+    echo("\n\n".join(parts) if parts else "(no content, no tool use)")
+
+
 @agent_app.command("export-context", short_help="Export current context as markdown.")
 def agent_export_context(
     agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),

@@ -1574,3 +1574,15 @@ talk() 两次调用    →  agent 被驱动, 第二轮记得第一轮
 `.moss/system_test_nodes/talker/` 下 6 个源文件（.gitignore / NODE.md / README.md /
 main.py / runtime/.gitignore / talker.agent.py）。`memento/`（运行时轨迹）与
 `runtime/*`（日志）由 .gitignore 排除。
+
+## 17. 下一步施工：dry run + anchor（2026-08-13，P0）
+
+v1 已收尾，下一步打磨协议面。三步走 + 一个地基，拆子文档记录：
+**`design/dry-run-anchor.md`** —— 施工计划与进展。
+
+- 地基：`agents/pydantic_ai_utils/` 提炼 llm funcs 重复方法（依赖门控）
+- 步 1 dry run（纯探针 + 零副作用 + 暴露 model response）
+- 步 2 anchor dump（一次交互冻成锚）
+- 步 3 anchor + dry run（dry run 产物作请求帧，reply 续跑）
+
+设计定案在 `agent-surface` workstream §2.8。

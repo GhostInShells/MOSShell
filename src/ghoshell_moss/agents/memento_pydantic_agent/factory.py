@@ -40,6 +40,7 @@ from anthropic.types.beta import (
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.tools import DeferredToolRequests, Tool
 
 from ghoshell_moss.agents._imports import recording_builtins, replay_import
 from ghoshell_moss.agents._instruction import reflect_element
@@ -212,9 +213,20 @@ def factory(
         model=model,
         tools=[sandbox_exec],
     )
+    # dry run 工具面:同一个 sandbox_exec 挂 requires_approval — 模型生成的
+    # 工具调用停在 ToolCallPart、不执行(零副作用)。output_type 加
+    # DeferredToolRequests 让 graph 把未执行调用作为 result.output 返回。
+    dry_run_agent = Agent(
+        name=stem,
+        description=description,
+        model=model,
+        output_type=str | DeferredToolRequests,
+        tools=[Tool(sandbox_exec, requires_approval=True)],
+    )
 
     return MementoPydanticAgentImpl(
         agent=ai_agent,
+        dry_run_agent=dry_run_agent,
         sandbox=agent_sandbox,
         compiled_module=compiled,
         source=source,

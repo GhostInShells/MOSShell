@@ -45,9 +45,29 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from ghoshell_moss.memento.abc import Memento
 
-__all__ = ["MementoAgent"]
+__all__ = ["MementoAgent", "InvocationRecord"]
+
+
+class InvocationRecord(BaseModel):
+    """Structured result of one memento-agent interaction — dry run's first-class return.
+
+    Mirrors LLMFuncResult's shape (strong BaseModel + usage fidelity + message
+    serialization). ``output`` is the final answer; ``tool_calls`` are the
+    unexecuted tool calls (the dry-run core); ``messages`` is the full
+    trajectory. Run: tool_calls empty, output set. Dry-run paused at a tool
+    call: tool_calls set, output empty. ``model_dump()`` is the ``-j`` payload.
+    """
+
+    output: str = ""
+    content: str = ""
+    usage: dict[str, Any] = Field(default_factory=dict)
+    cast: float = 0.0
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MementoAgent(ABC):
@@ -127,5 +147,31 @@ class MementoAgent(ABC):
         agent's semantic view (what the agent thinks this line is about).
 
         No side effects.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def dry_run(
+        self,
+        *,
+        user_prompt: str,
+        memento: Memento | None = None,
+        line_name: str = "",
+        cwd: Path | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> InvocationRecord:
+        """
+        Pure probe — one real generation, paused at the tool-call position.
+
+        Shares invoke's instruction assembly (parity), but the tool is
+        ``requires_approval``: the model's tool calls are NOT executed, only
+        returned as ``tool_calls``. No history write, no side effects.
+
+        ``messages`` is the full trajectory (incl. the unexecuted
+        ToolCallPart); ``usage`` is token spend. ``output`` stays empty when
+        the model paused at a tool call, and carries the final text only when
+        the model answered directly without tools.
+
+        :return: structured record — ``model_dump()`` is the ``-j`` payload.
         """
         raise NotImplementedError

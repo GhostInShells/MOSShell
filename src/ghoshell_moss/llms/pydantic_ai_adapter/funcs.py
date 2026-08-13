@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Type
 from pydantic import ValidationError
 
 from ghoshell_moss.anchor import Anchor
+from ghoshell_moss.agents.pydantic_ai_utils import deserialize_messages, serialize_messages
 from ghoshell_moss.contracts.llms import (
     RESULT_MODEL,
     BenchmarkCase,
@@ -180,7 +181,7 @@ class PydanticAIFuncs(MossLLMFuncs):
                 model=ModelRef.from_resolved(model),
                 result_type=_type_path(result_type),
                 effort=effort,
-                turns=_serialize_messages(result.all_messages()),
+                turns=serialize_messages(result.all_messages()),
                 result=typed.model_dump() if typed is not None else None,
             )
             anchor.payload = frame.model_dump(exclude_none=True, exclude={"meta"})
@@ -322,20 +323,6 @@ def _build_call_anchor(
     return anchor
 
 
-def _serialize_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
-    """pydantic-ai 标准序列化 message history — 保住 thinking/text/tool 所有 part."""
-    from pydantic_ai.messages import ModelMessagesTypeAdapter
-
-    return ModelMessagesTypeAdapter.dump_python(messages, mode="json")
-
-
-def _deserialize_messages(turns: list[dict[str, Any]]) -> list[ModelMessage]:
-    """pydantic-ai 标准序列化反向 — dict 列表还原为 ModelMessage (消费锚)."""
-    from pydantic_ai.messages import ModelMessagesTypeAdapter
-
-    return ModelMessagesTypeAdapter.validate_python(turns)
-
-
 def _load_history(anchor: Anchor | None) -> list[ModelMessage] | None:
     """从输入锚还原 turn 链作为 message_history — 消费侧 (内观回灌).
 
@@ -356,7 +343,7 @@ def _load_history(anchor: Anchor | None) -> list[ModelMessage] | None:
         ) from e
     if not rebuilt.turns:
         return None
-    return _deserialize_messages(rebuilt.turns)
+    return deserialize_messages(rebuilt.turns)
 
 
 def _build_history(
