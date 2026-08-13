@@ -34,6 +34,9 @@ from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, Publisher, Subscriber
 from ghoshell_moss.core.blueprint.mindflow import Signal
 import asyncio
 
+Facade = ABC
+"""Facade 标记"消费面"抽象 — 你持有并调用它, 而非继承它。"""
+
 __all__ = [
     "Channel", "ChannelFactory",
     "CommandFunction", "MessageFunction", "StringType", "LifecycleFunction",
@@ -318,7 +321,7 @@ def new_command(
     )
 
 
-class Builder(ABC):
+class Builder(Facade):
     """
     用来动态构建一个 Channel 的通用接口.
 
@@ -627,7 +630,7 @@ class Builder(ABC):
         pass
 
 
-class MutableChannel(Channel, ABC):
+class MutableChannel(Channel, Facade):
     """
     一个约定, 用来描述拥有动态构建能力的 Channel.
     """

@@ -437,8 +437,8 @@ class Channel(ABC):
         if isinstance(runtime_instance, ChannelRuntime):
             return runtime_instance
         elif isinstance(runtime_instance, ChannelState):
-            from ghoshell_moss.core.blueprint.states_channel import new_stateful_channel_from_main
-            return new_stateful_channel_from_main(runtime_instance, id=self.id()).bootstrap(container)
+            from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state
+            return new_channel_from_state(runtime_instance, id=self.id()).bootstrap(container)
         raise RuntimeError(f"invalid channel runtime instance: {runtime_instance}")
 
     @abstractmethod

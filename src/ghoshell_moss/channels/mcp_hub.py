@@ -16,7 +16,7 @@ from typing import Literal, Optional
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, Observe
-from ghoshell_moss.core.blueprint.states_channel import new_stateful_channel_from_main, ChannelState
+from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from ghoshell_moss.core.blueprint.matrix import Matrix, RuntimeScopeKey
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore, YamlConfigStore
 from ghoshell_moss.message import Message, Text, Base64Image, unique_id
@@ -524,7 +524,7 @@ class MCPHubChannel(Channel):
             name=self._name,
             description=self._description,
         )
-        channel = new_stateful_channel_from_main(state, id=self._id)
+        channel = new_channel_from_state(state, id=self._id)
         return channel.bootstrap(container)
 
 
@@ -564,4 +564,4 @@ def build_mcp_hub_channel(
         name=name,
         description=description,
     )
-    return new_stateful_channel_from_main(state)
+    return new_channel_from_state(state)

@@ -11,7 +11,7 @@ from ghoshell_moss.core.blueprint.channel_builder import Builder, MutableChannel
 
 __all__ = [
     'ChannelState', 'MutableChannelState', 'StatefulChannel',
-    'new_channel_state', 'new_stateful_channel_from_main', 'new_stateful_channel',
+    'new_channel_state', 'new_channel_from_state', 'new_stateful_channel',
     'PrimeChannel', 'new_prime_channel', 'new_shell_main_channel',
     'ChannelModule',
     'new_default_shell_main_channel',
@@ -21,6 +21,12 @@ __all__ = [
 """
 how to build a stateful channel
 """
+
+Facade = ABC
+"""Facade 标记"消费面"抽象 — 你持有并调用它, 而非继承它。"""
+
+Abstract = ABC
+"""Abstract 标记"扩展点"抽象 — 你继承它来实现新类型, 而非持有它调用。"""
 
 
 class ChannelModule(Protocol):
@@ -64,7 +70,7 @@ class ChannelModule(Protocol):
         return ""
 
 
-class MutableChannelState(Builder, ChannelState, ABC):
+class MutableChannelState(Builder, ChannelState, Facade):
     """
     Channel State which itself is mutable by extend builder
     """
@@ -94,7 +100,7 @@ def new_channel_state(name: str, description: str = "") -> MutableChannelState:
     return PyChannelBuilder(name=name, description=description)
 
 
-class StatefulChannelRuntime(ChannelRuntime, ABC):
+class StatefulChannelRuntime(ChannelRuntime, Facade):
 
     @abstractmethod
     async def switch_state(self, name: str) -> str:
@@ -113,7 +119,7 @@ class StatefulChannelRuntime(ChannelRuntime, ABC):
         pass
 
 
-class StatefulChannel(Channel, ABC):
+class StatefulChannel(Channel, Facade):
     """
     Stateful Channel which can switch to one of multiple states.
     """
@@ -174,7 +180,7 @@ class StatefulChannel(Channel, ABC):
         pass
 
 
-class PrimeChannel(StatefulChannel, MutableChannel, ABC):
+class PrimeChannel(StatefulChannel, MutableChannel, Facade):
     """
     super channel with all abilities.
     """
@@ -201,7 +207,7 @@ class PrimeChannel(StatefulChannel, MutableChannel, ABC):
         self.build.remove_virtual_channel(name)
 
 
-def new_stateful_channel_from_main(state: ChannelState, id: str | None = None) -> StatefulChannel:
+def new_channel_from_state(state: ChannelState, id: str | None = None) -> StatefulChannel:
     """
     create new channel by state object
     """
@@ -258,7 +264,7 @@ def new_default_shell_main_channel(
 
 # ---- 面向对象使用思路示范 ---- #
 
-class ChannelStateFactory(ChannelState, ABC):
+class ChannelStateFactory(ChannelState, Abstract):
     """
     如何从 State 类定义开始, 获取一个运行时可以生成 Channel 的 ChannelFactory 对象.
 
@@ -276,4 +282,4 @@ class ChannelStateFactory(ChannelState, ABC):
     def factory(cls, container: IoCContainer) -> Channel:
         """factory 函数本身就是一个 channel factory, 所以可以被其它 channel import. """
         state = cls.new(container)
-        return new_stateful_channel_from_main(state)
+        return new_channel_from_state(state)

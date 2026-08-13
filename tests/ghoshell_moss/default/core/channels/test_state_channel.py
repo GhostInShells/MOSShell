@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from ghoshell_moss.core.blueprint.states_channel import (
-    new_channel_state, new_stateful_channel_from_main, new_prime_channel,
+    new_channel_state, new_channel_from_state, new_prime_channel,
     new_stateful_channel,
 )
 from ghoshell_moss.core.py_channel import PyChannel
@@ -554,7 +554,7 @@ async def test_base_state_channel_from_builder():
     async def greet() -> str:
         return "hello"
 
-    chan = new_stateful_channel_from_main(builder)
+    chan = new_channel_from_state(builder)
     async with chan.bootstrap() as runtime:
         cmd = runtime.get_command("greet")
         assert cmd is not None
@@ -570,7 +570,7 @@ async def test_base_state_channel_with_switchable_states():
     async def root_cmd() -> str:
         return "root"
 
-    chan = new_stateful_channel_from_main(main_st)
+    chan = new_channel_from_state(main_st)
     alt_st = chan.new_state("alt", "alternative")
 
     @alt_st.command()
@@ -934,7 +934,7 @@ async def test_channel_meta_includes_modules():
 async def test_module_on_base_state_channel():
     """BaseStateChannel 也支持 with_module。"""
     main_st = new_channel_state(name="root")
-    chan = new_stateful_channel_from_main(main_st)
+    chan = new_channel_from_state(main_st)
     mod = new_channel_state(name="extra")
 
     @mod.command()

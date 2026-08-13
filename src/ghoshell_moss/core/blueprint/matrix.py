@@ -32,6 +32,9 @@ from pathlib import Path
 import asyncio
 import logging
 
+Facade = ABC
+"""Facade 标记"消费面"抽象 — 你持有并调用它, 而非继承它。"""
+
 __all__ = ['Matrix', 'MatrixLifecycleObject', 'RuntimeScopeKey', 'CellHandle']
 
 
@@ -74,7 +77,7 @@ class CellHandle:
         return await self.process.wait()
 
 
-class Matrix(ABC):
+class Matrix(Facade):
     """
     MOSS 通讯矩阵在本进程内的投影. 进程级别单例, 从环境中自我发现.
 
