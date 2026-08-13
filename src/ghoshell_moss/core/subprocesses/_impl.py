@@ -251,9 +251,10 @@ class SubprocessesImpl(Subprocesses):
     # ================================================================
 
     def _check_can_spawn(self) -> None:
-        # 严格守卫: 停机后 spawn 的进程无人清场, 必然孤儿, 直接抛错.
+        # 惰性启动: IoC 全局单例可能无人显式 aenter, 首次 spawn 自动进入启动态.
         if not self._started:
-            raise RuntimeError("Subprocesses not started — use 'async with'")
+            self._started = True
+        # 严格守卫: 停机后 spawn 的进程无人清场, 必然孤儿, 直接抛错.
         if self._stopped:
             raise RuntimeError("Subprocesses already stopped")
 

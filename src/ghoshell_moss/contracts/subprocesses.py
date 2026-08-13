@@ -2,11 +2,13 @@
 
 Subprocesses 的一句话承诺: "spawn 并治理一组不比 owner 活得久的子进程".
 
-两层结构:
+三层结构:
 
-1. Subprocesses    — 机制灶台. spawn (execute/shell) + 查询 (executing/executed/get)
-                     + 信号 (kill/killpg) + 生命周期 (async with).
-2. ManagedProcess  — 子进程富句柄. meta / process / output / stop / add_done_callback.
+1. SubprocessFacade — 纯 spawn (execute/shell). 消费者 spawn 面 — 不含查询/信号/生命周期,
+                     结构性杜绝误关共享实例.
+2. Subprocesses     — SubprocessFacade + 查询 (executing/get/executed) + 信号
+                     (kill/killpg) + 生命周期 (async with). owner 治理面 — 台账归此层.
+3. ManagedProcess   — 子进程富句柄. meta / process / output / stop / add_done_callback.
 
 输出捕获不是独立的任务抽象, 是 spawn 时的可选参数: ``capture=CaptureSpec(...)``.
 持续性后台任务见 ``ghoshell_moss.contracts.job_supervisor`` (JobSupervisor).
@@ -42,6 +44,7 @@ from typing_extensions import Self
 from ghoshell_moss.message.message import Additional
 
 __all__ = [
+    "SubprocessFacade",
     "Subprocesses",
     "ManagedProcess",
     "ProcessMeta",
@@ -238,34 +241,9 @@ class ManagedProcess:
 
 # -- Subprocesses --
 
-class Subprocesses(ABC):
-    """子进程机制灶台 — spawn / 查询 / 信号 / 生命周期.
-
-    铁律: **子进程不比 owner 活得久**. 通过三件套保证:
-    1. start_new_session (setsid) + 关停时 killpg — 覆盖未主动脱离的子孙进程
-    2. pipe fencing — capture 模式下管道随 owner 关闭, 子进程写管道即收 SIGPIPE
-    3. 回收 polling — 每个 spawn 的进程都有 reclaim 协程 await 其退出
-
-    主动 setsid/setpgid 脱离的守护进程不在承诺内 — 那是子进程自己的责任.
-
-    使用方式::
-
-        async with SubprocessesImpl(...) as sp:
-            proc = await sp.execute("echo", "hello")
-            await proc.process.wait()
-
-            proc = await sp.execute("find", ".", capture=CaptureSpec())
-            await proc.output.wait_drained()
-            print(proc.output.stdout())
-
-    所有 spawn 收显式 cwd 参数; 本抽象不持有目录状态 (无 cd/pwd).
-    """
-
-    # 一 owner 一实例: Subprocesses 是 IoC 非单例工厂产物, owner 生命周期
-    # 为其所有子进程划界 (治理=所有权). 无全局进程板.
+class SubprocessFacade(ABC):
 
     # -- spawn --
-
     @abstractmethod
     async def execute(
             self,
@@ -318,6 +296,33 @@ class Subprocesses(ABC):
         其余参数同 execute.
         """
         ...
+
+
+class Subprocesses(SubprocessFacade, ABC):
+    """子进程机制灶台 — spawn / 查询 / 信号 / 生命周期.
+
+    铁律: **子进程不比 owner 活得久**. 通过三件套保证:
+    1. start_new_session (setsid) + 关停时 killpg — 覆盖未主动脱离的子孙进程
+    2. pipe fencing — capture 模式下管道随 owner 关闭, 子进程写管道即收 SIGPIPE
+    3. 回收 polling — 每个 spawn 的进程都有 reclaim 协程 await 其退出
+
+    主动 setsid/setpgid 脱离的守护进程不在承诺内 — 那是子进程自己的责任.
+
+    使用方式::
+
+        async with SubprocessesImpl(...) as sp:
+            proc = await sp.execute("echo", "hello")
+            await proc.process.wait()
+
+            proc = await sp.execute("find", ".", capture=CaptureSpec())
+            await proc.output.wait_drained()
+            print(proc.output.stdout())
+
+    所有 spawn 收显式 cwd 参数; 本抽象不持有目录状态 (无 cd/pwd).
+    """
+
+    # 一 owner 一实例: Subprocesses 是 IoC 非单例工厂产物, owner 生命周期
+    # 为其所有子进程划界 (治理=所有权). 无全局进程板.
 
     # -- 查询 --
 

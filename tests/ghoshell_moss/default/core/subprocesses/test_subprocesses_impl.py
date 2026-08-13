@@ -40,10 +40,11 @@ async def running_sp(cwd: Path):
 class TestLifecycle:
 
     @pytest.mark.asyncio
-    async def test_spawn_before_enter(self, sp_cwd, sp_output):
+    async def test_spawn_without_enter_lazy_start(self, sp_cwd, sp_output):
+        # 惰性启动: 无需 async with, 首次 spawn 自动进入启动态.
         sp = SubprocessesImpl(cwd=sp_cwd)
-        with pytest.raises(RuntimeError, match="not started"):
-            await sp.execute("true")
+        proc = await sp.execute("true")
+        assert await proc.process.wait() == 0
 
     @pytest.mark.asyncio
     async def test_spawn_after_exit(self, sp_cwd, sp_output):
