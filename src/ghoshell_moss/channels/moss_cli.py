@@ -1,5 +1,9 @@
 """Moss CLI 自举 channel — 去授权暴露 moss 自身 CLI | 集成 | beta
 
+exec 命令用 @cli decorator 局部糖形式: 执行机器交给 decorator, channel 保留注入的
+Subprocesses (facade=processes) 与生命周期, 展示格式化 (exit tail / friendly-empty)
+留在 channel. 剥 moss/--ai 前缀由 input_filter 承担, 输出截断由 output_processor 承担.
+
 Example:
     from ghoshell_moss import new_shell_main_channel
     from ghoshell_moss.channels.moss_cli import build_moss_cli_channel
@@ -8,8 +12,6 @@ Example:
     main.import_channels(build_moss_cli_channel(name="moss_cli"))
 """
 
-import asyncio
-import shlex
 import sys
 from pathlib import Path
 
@@ -21,22 +23,38 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     new_channel,
 )
 from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_moss.contracts.subprocesses import CaptureSpec, ManagedProcess, Subprocesses
+from ghoshell_moss.contracts.subprocesses import Subprocesses
+from ghoshell_moss.decorators import cli
 
 __all__ = ["new_moss_cli_channel", "build_moss_cli_channel"]
 
-_EXEC_BUFFER_LINES = 200
 _RESULT_CHAR_CAP = 12_000
 _DEFAULT_TIMEOUT = 120.0
 
-def _parse_command(text: str) -> list[str]:
-    """解析命令串为 argv. 剥掉误带的 moss / --ai 前缀."""
-    args = shlex.split(text)
-    if args and args[0] == "moss":
-        args.pop(0)
-    if args and args[0] == "--ai":
-        args.pop(0)
-    return args
+
+def _strip_moss_prefix(argv: list[str]) -> list[str]:
+    """入参过滤: 剥掉误带的 moss / --ai 前缀 (模型反射性输入)."""
+    if argv and argv[0] == "moss":
+        argv = argv[1:]
+    if argv and argv[0] == "--ai":
+        argv = argv[1:]
+    return argv
+
+
+def _cap(text: str) -> str:
+    if len(text) <= _RESULT_CHAR_CAP:
+        return text
+    dropped = len(text) - _RESULT_CHAR_CAP
+    return f"...[{dropped} chars truncated]\n" + text[-_RESULT_CHAR_CAP:]
+
+
+def _cap_result(result: tuple[int, str, str]) -> tuple[int, str, str]:
+    """出参加工: 截断 stdout, 形状不变 (三元组 → 三元组)."""
+    code, stdout, stderr = result
+    if len(stdout) > _RESULT_CHAR_CAP:
+        dropped = len(stdout) - _RESULT_CHAR_CAP
+        stdout = f"...[{dropped} chars truncated]\n" + stdout[-_RESULT_CHAR_CAP:]
+    return (code, stdout, stderr)
 
 
 def new_moss_cli_channel(
@@ -63,23 +81,6 @@ def new_moss_cli_channel(
     chan = new_channel(name=name, description=description)
     owns_lifecycle: list[bool] = [False]
 
-    def _output_text(managed: ManagedProcess) -> str:
-        parts: list[str] = []
-        if managed.output is not None:
-            stdout = managed.output.stdout()
-            if stdout:
-                parts.append(stdout.rstrip())
-            stderr = managed.output.stderr()
-            if stderr:
-                parts.append(f"[stderr]\n{stderr.rstrip()}")
-        return "\n".join(parts)
-
-    def _cap(text: str) -> str:
-        if len(text) <= _RESULT_CHAR_CAP:
-            return text
-        dropped = len(text) - _RESULT_CHAR_CAP
-        return f"...[{dropped} chars truncated]\n" + text[-_RESULT_CHAR_CAP:]
-
     @chan.build.startup
     async def _startup() -> None:
         if not processes.is_running():
@@ -102,38 +103,44 @@ def new_moss_cli_channel(
             "Example: <moss_cli:exec>codex get-interface ghoshell_moss.channels.moss_cli</moss_cli:exec>\n"
         )
 
+    # 局部糖形式: decorator 做边界 (exec 模式 / 超时 / 过滤 / 加工), closure 绑定注入的
+    # processes / cwd / timeout. 工具本体纯声明 (签名 + docstring), 运行时不被调用.
+    @cli(
+        [sys.executable, "-m", "ghoshell_moss.cli", "--ai"],
+        name="moss-cli",
+        facade=processes,
+        cwd=default_cwd,
+        timeout=_DEFAULT_TIMEOUT,
+        input_filter=_strip_moss_prefix,
+        output_processor=_cap_result,
+    )
+    async def exec_command(arguments: str = "") -> tuple[int, str, str]:
+        """Run a moss CLI command via `python -m ghoshell_moss.cli --ai`.
+
+        Pass ONLY the subcommand + args — never include 'moss' or '--ai'.
+        """
+        ...
+
     @chan.build.command(name="exec", blocking=True, always_observe=True)
-    async def exec_command(text__: str = "", timeout: float = _DEFAULT_TIMEOUT) -> str:
+    async def exec_cmd(text__: str = "") -> str:
         """Run a moss CLI command and wait for its result.
 
         :param text__: subcommand + arguments. e.g. 'codex get-interface ghoshell_moss.channels.moss_cli'.
                        NEVER include 'moss' or '--ai'.
-        :param timeout: seconds to wait before force-stopping the subprocess.
         """
-        args = _parse_command(text__)
-        if not args:
+        if not text__.strip():
             return (
                 "[exec] empty command — put the moss subcommand inside the tag body, "
                 "e.g. <moss_cli:exec>codex blueprint</moss_cli:exec>"
             )
-
-        managed = await processes.execute(
-            sys.executable, "-m", "ghoshell_moss.cli", "--ai", *args,
-            name="moss-cli",
-            cwd=str(default_cwd),
-            capture=CaptureSpec(buffer_lines=_EXEC_BUFFER_LINES),
-        )
-        try:
-            await asyncio.wait_for(managed.process.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            await managed.stop()
-            body = _output_text(managed)
-            return _cap(f"{body}\n[timeout after {timeout}s, stopped]".lstrip("\n"))
-        if managed.output is not None:
-            await managed.output.wait_drained()
-        body = _output_text(managed)
-        tail = f"[exit: {managed.process.returncode}]"
-        return _cap(f"{body}\n{tail}".lstrip("\n"))
+        code, stdout, stderr = await exec_command(text__)
+        parts: list[str] = []
+        if stdout:
+            parts.append(stdout.rstrip())
+        if stderr:
+            parts.append(f"[stderr]\n{stderr.rstrip()}")
+        body = "\n".join(parts)
+        return _cap(f"{body}\n[exit: {code}]".lstrip("\n"))
 
     return chan
 
