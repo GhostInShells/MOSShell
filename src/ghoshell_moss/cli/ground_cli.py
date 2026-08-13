@@ -339,8 +339,9 @@ def cmd_render(
     """Render the ground view for a directory.
 
     - Directory has GROUND.md: ground-root mode — body + all pins expanded.
-    - No GROUND.md but an ancestor has one: walk mode — cwd listing,
-      $CWD-anchored pins expanded, other pins folded to TOC.
+    - No GROUND.md but an ancestor has one: walk mode — $CWD-anchored pins
+      (e.g. ls/file) expanded, other pins folded to a TOC. No automatic
+      directory listing — that comes only from a $CWD-anchored ls pin.
     - No ground up to $HOME: hint to init.
     - --template <name>: read-only preview — open with the template's body
       and pins, render, and do NOT write GROUND.md.
@@ -401,19 +402,33 @@ def cmd_meta(
     """
     root = _resolve_root(path)
 
-    async def _op(gs: GroundSet, ground: Ground) -> None:
-        chain = await ground.chain_text()
-        text = render_meta(
-            root=ground.root,
-            doc_path=ground.doc_path,
-            chain=chain,
-            pins=ground.pins(),
-            id_=ground.convention.id,
-            label=ground.label,
-        )
-        echo(text)
+    if (root / DEFAULT_L0_FILENAME).is_file():
+        ground_root = root
+    else:
+        ground_root = _find_ancestor_ground(root)
+        if ground_root is None:
+            print_info(f"no ground: no GROUND.md from {root} up to $HOME")
+            print_info("run 'moss ground init' to create one here")
+            raise typer.Exit(code=1)
 
-    asyncio.run(_run_one(root, _op))
+    doc_path = ground_root / DEFAULT_L0_FILENAME
+
+    async def _op() -> None:
+        workspace = _probe_workspace(root)
+        async with DefaultGroundSet(workspace_root=workspace) as gs:
+            ground = await gs.open(root, doc=doc_path)
+            chain = await ground.chain_text()
+            text = render_meta(
+                root=ground.root,
+                doc_path=ground.doc_path,
+                chain=chain,
+                pins=ground.pins(),
+                id_=ground.convention.id,
+                label=ground.label,
+            )
+            echo(text)
+
+    asyncio.run(_op())
 
 
 # -- observe --------------------------------------------------------------

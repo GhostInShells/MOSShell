@@ -1,5 +1,4 @@
 ---
-$id: moss-project/partners
 name: partners
 description: 模型协作伙伴的意识轨迹与项目事实
 pins:

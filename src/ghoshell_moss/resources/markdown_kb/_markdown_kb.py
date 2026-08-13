@@ -273,7 +273,7 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
         self._by_path.clear()
 
         from ghoshell_moss.ground._hash import glob_limited
-        hits = glob_limited(self._root, self._pattern, max_depth=self._max_depth)
+        hits = glob_limited(self._root, self._pattern, recursion=self._max_depth)
         files = [h for h in hits if h.is_file()]
         # README.md 排最前 (目录自身语义, 默认 .md 模式); skills 模式无 README, 不受影响
         files.sort(key=lambda p: (p.name != "README.md", str(p)))

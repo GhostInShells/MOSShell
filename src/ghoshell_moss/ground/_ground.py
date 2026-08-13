@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections import OrderedDict
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from ghoshell_moss.ground.contract import (
     GlobPin,
     Pin,
     RenderedView,
+    Snapshot,
 )
 
 __all__ = ["DefaultGround"]
@@ -33,6 +35,7 @@ class DefaultGround(Ground):
     Internal state:
     - _pins: OrderedDict[label, Pin] — 最新 pin 在前
     - _body: GROUND.md body, 每次 load 时更新
+    - _last_snapshot_hash: 上一帧感知 digest (进程内侧影, 不落盘)
     """
 
     def __init__(
@@ -52,6 +55,7 @@ class DefaultGround(Ground):
         self._pins: OrderedDict[str, Pin] = OrderedDict()
         self._body: str = ""
         self._dirty: bool = False
+        self._last_snapshot_hash: str | None = None
         self._ignore_spec: PathSpec | None = self._make_ignore_spec()
 
     # -- 元信息 -----------------------------------------------------------
@@ -102,6 +106,7 @@ class DefaultGround(Ground):
                 anchor=anchor,
                 ground_name=self._convention.name or self._root.name,
                 ground_description=self._convention.description,
+                ground_id=self._convention.id,
                 ignore=self._ignore_spec,
             )
         from ghoshell_moss.ground._render import render_walk
@@ -112,8 +117,20 @@ class DefaultGround(Ground):
             doc_path=self._doc_path,
             pins=list(self._pins.values()),
             label=self._convention.name or self._root.name,
+            ground_id=self._convention.id,
             ignore=self._ignore_spec,
         )
+
+    async def snapshot(
+        self, *, ack_hash: str | None = None, cwd: Path | None = None,
+    ) -> Snapshot:
+        """渲染 + 感知对账 — 缓存推进语义见 ABC docstring."""
+        view = await self.render(cwd=cwd)
+        digest = hashlib.sha256(view.to_markdown().encode("utf-8")).hexdigest()
+        base = ack_hash if ack_hash is not None else self._last_snapshot_hash
+        changed = base is not None and base != digest
+        self._last_snapshot_hash = digest
+        return Snapshot(view=view, hash=digest, changed=changed)
 
     async def context(self) -> str:
         return str(await self.render())

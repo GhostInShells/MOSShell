@@ -35,6 +35,7 @@ from ghoshell_moss.ground.contract import (
     PathOutsideRootError,
     Pin,
     RenderedView,
+    Snapshot,
     TemplateInfo,
     ViewBlock,
     ViewHeader,
@@ -65,6 +66,7 @@ __all__ = [
     "ViewHeader",
     "ViewBlock",
     "RenderedView",
+    "Snapshot",
     "GroundError",
     "PathOutsideRootError",
     # constants

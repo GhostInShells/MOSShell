@@ -126,10 +126,15 @@ are declared once here and referenced by each verb's schema in §5:
 |-------|------|-----------|
 | `budget` | int | Content character limit. When exceeded, output is truncated with a `[truncated at N chars]` marker. Applies to content-emitting verbs (`file`, `frontmatter`, `exec`). |
 | `limit` | int | Entry count limit. When exceeded, output is truncated with a marker showing `N of M` entries. Applies to list-emitting verbs (`glob`, `ls`, `frontmatter` with pattern). |
-| `max_depth` | int | Recursive discovery depth. Once a match is found at a given level, subdirectories of that match are not recursed into. Applies to pattern-emitting verbs (`frontmatter` with pattern, `ls`, `glob` with `**`). When absent, recursion is unbounded and no boundary-stopping applies. |
+| `max_depth` | int | Recursion depth in directory levels below the pattern's static base. `1` = one layer of sub-fields (the filename is not counted). When absent, recursion is unbounded. |
 
 All three are optional. When absent, no limit is applied. Each verb
 declares which of these it supports in §5.
+
+`max_depth` is a pure depth cap. Field-boundary stop (防穿透 — do not
+recurse into a directory that directly contains a match) is a separate,
+per-verb semantic: `frontmatter` pattern mode applies it (ground
+discovery does not penetrate child grounds), `glob` does not.
 
 ## 5. Known Pin Types
 
@@ -175,7 +180,7 @@ window. Use `file` for content.
 | `keys` | list[string] | no | Frontmatter keys to extract. Absent = full frontmatter block. |
 | `budget` | int | no | Content char limit (§4.1). |
 | `limit` | int | no | Entry count limit when `path` is a pattern (§4.1). |
-| `max_depth` | int | no | Recursion depth when `path` is a pattern (§4.1). |
+| `max_depth` | int | no | Recursion depth in directory levels when `path` is a pattern (§4.1). |
 
 **Single-file mode** (`path` is a concrete file path): extracts the
 full frontmatter block verbatim. Body is not included.
@@ -183,10 +188,11 @@ full frontmatter block verbatim. Body is not included.
 **Pattern mode** (`path` contains glob characters `*`, `?`, `[`):
 matches multiple files. Each matched file's frontmatter is rendered
 as an independent result block, labeled by file path. Subject to
-`max_depth` ground-boundary stop and ground-level `ignore` rules (§3.1).
-This enables **progressive disclosure** — a single `frontmatter` pin
-reveals the identities and gaze declarations of all child grounds
-without opening each one.
+`max_depth` depth cap, ground-boundary stop (防穿透 — a directory that
+directly contains a match is not recursed into), and ground-level
+`ignore` rules (§3.1). This enables **progressive disclosure** — a
+single `frontmatter` pin reveals the identities and gaze declarations
+of all child grounds without opening each one.
 
 **keys** filtering: when specified, only the named frontmatter keys
 are rendered. Unknown keys are preserved. This further reduces token

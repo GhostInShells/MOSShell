@@ -1,15 +1,16 @@
 ---
-title: MOSS Project Ground
-status: in-progress
-priority: P1
 created: 2026-07-23
-updated: 2026-08-13
-depends: [ghost-ground]
+depends:
+- ghost-ground
+description: MOSS 仓库自身的项目认知场 — 通过 ground 协议组织 features / .design / .discuss / regressions
+  等认知资产的寻路, 让进入 MOSS 的模型实例通过 ground 而非手工探索发现项目结构.
 milestone: 0.1.0
-description: >-
-  MOSS 仓库自身的项目认知场 — 通过 ground 协议组织 features / .design /
-  .discuss / regressions 等认知资产的寻路, 让进入 MOSS 的模型实例通过
-  ground 而非手工探索发现项目结构.
+priority: P1
+status: completed
+status_note: 根场 (@claude.md + grounds pin) 落地, glob_limited 递归重写 + observe 清理 + snapshot,
+  裸测端到端验证通过
+title: MOSS Project Ground
+updated: '2026-08-13'
 ---
 
 # MOSS Project Ground
@@ -138,14 +139,77 @@ Project ground 是额外的发现层, 不替代它们. 它在模型通过 MCP �
 是孤儿字段 (全仓无人消费), 读文件拼 parts 是双重读取 (render 阶段
 `_content_frontmatter_pattern` 再读一遍).
 
-### 决定 (待实施)
+### 决定 (已实施 2026-08-13)
 
 - `glob_limited` 重写为显式递归 (iterdir + fnmatch + ignore), 拆两个
-  正交语义: `recursion` (深度上限, 0=不递归/N=N 层/None=无限) +
-  `stop_on_match` (防穿透, frontmatter 用). 三个调用方各取所需:
-  glob 标准语义, frontmatter 防穿透, markdown_kb 深度上限.
-- observe 退化为 "exists + 计数 + exec payload", 删 `mtime` 和读文件
-  拼 parts, 内容读取全交 render.
+  正交语义: `recursion` (目录层深度上限, 0=不递归/N=N 层/None=无限) +
+  `stop_on_match` (防穿透, 目录直接含 match 即不下钻, base 豁免).
+  三个调用方各取所需: glob 标准语义 (recursion), frontmatter 防穿透
+  (recursion + stop_on_match), markdown_kb 深度上限 (recursion).
+  `recursion` 计目录层数而非 path 组件数 — `recursion=1` = 一层子场,
+  修正了 "max_depth=1 只匹配 base 自己" 的反直觉语义.
+- observe 退化为 "exists + 计数 + exec payload", 删 `mtime` 死字段和
+  `_observe_frontmatter_pattern` 读文件拼 parts, 内容读取全交 render.
+  file observe 也不再读内容 (range 切片是 render 的事, size 报全文件).
+
+### 对账归位: snapshot (同轮)
+
+hash 对账没被再杀一次, 而是归位到正确的层: Ground 实例 (进程内) 的
+`snapshot(ack_hash=None)` — 渲染 + 感知 digest + 变更标记, render 保持
+纯内容. 要点:
+
+- **对账目标 = 渲染文本全量** (`view.to_markdown()` 的 sha256), 不是
+  源文件 — 信号统一 (所有 verb 同一语义), 且正是模型感知的东西.
+- **触发 = render 动作, auto-advance**: 首次建基线不标 changed; 之后
+  相对基线变化标 changed 一次, 渲染即承认 (无 update 动词).
+- **返回 `Snapshot{view, hash, changed}`** — 数据结构 RenderedView 不动,
+  hash 伴随返回, 影响面最小.
+- **状态存活**: 进程内 Ground 实例属性, 不落盘; CLI 单次调用无跨调用
+  记忆; channel 会话是唯一消费者 (缓存写入不并发安全, 须单 owner).
+- 块级粒度 (哪个 label 变) 不做 — channel 持上一 view, 变化时自己按
+  label diff 两个 RenderedView, hash 是廉价脏标记.
+
+## 裸测反馈与设计确认 (2026-08-13)
+
+根场落地后旁路 agent 裸测端到端可用, 报 5 问题 + 1 工件. 关键教训:
+**裸测是讨论触发器, 不是权威 bug 报告** — fresh agent 无设计上下文,
+会把设计特性误判成缺陷.
+
+### #2 误判: `$CWD` 锚是特性
+
+裸测指 grounds pin "描述是项目索引却用 $CWD, walk 后索引消失". 这是 false
+positive. 设计意图 (human 校准): **进场模型已读过 grounds 索引、知道
+recursion=1 的场位置; 之后 walk 重放同一索引是冗余**. $CWD 让索引随 walk
+变相对当前位置的场, 是故意的.
+
+锚点分野 (关键):
+- 索引型 (稳定, walk 折叠 TOC) → `$GROUND` — 如 nodes `index` (`$GROUND/**/NODE.md`)
+- 观察者跟随型 (随 walk 漂移) → `$CWD` — 如 `here: ls $CWD`、`focus: file $CWD/NODE.md`、根 `grounds`
+
+### #3 推迟: `chain +N` 含自身
+
+spec §7.3 "ancestor up to $HOME" 只含祖先, 实现连自身也算 (root=+1).
+不拍板 — ground 给模型用, 体验问题由模型 dogfooding 定, 人类不越位.
+
+### max_depth 不用改 (关键决策落定)
+
+human 主张 max_depth 改名 recursion 消歧义, 上一轮模型主张就叫 max_depth.
+两边立场都落了: pin 契约层保留 `max_depth`, glob_limited 内部拆 `recursion`
++ `stop_on_match`. 结论 max_depth 无歧义, 不改字段.
+
+### 已修: meta / help / $id / 清理 / 术语
+
+- `meta` walk 报 `pins:(none)` (与 render/observe 不一致): cmd_meta 原
+  `_run_one` 开 bare ground 不查祖先 → 改与 observe 相同 `_find_ancestor_ground`
+  + `open(doc=祖先)`.
+- `render --help` 谎称 walk 自动 "cwd listing" → 改措辞 (cwd listing 只来自
+  $CWD ls pin, 非自动).
+- render header 加 `$id` (存在才渲染): ViewHeader 加 id, render_context/walk
+  透传 ground_id.
+- 4 个 GROUND.md 的 `$id` 是机械分层前缀 (moss-project/...) 言之无物 → 移除.
+  anchor 机制才是身份正主.
+- 术语 `fields` → `grounds` (ground/field 两套词对齐 ground).
+- 删散落工件 `test-ground-output.md`.
 
 ## L2 语义修正 (2026-07-25)
 

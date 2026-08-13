@@ -1,10 +1,15 @@
-"""Pin observation — per-class mtime + size 快照.
+"""Pin observation — IO-light snapshot: exists + 计数 + exec payload.
+
+observe 不读内容 — 内容读取全交 render (_render.py). 对账 (感知 digest)
+由 Ground.snapshot() 承担 (hash 渲染文本全量), 不在本层.
 
 每种子类自带观察逻辑:
-- FilePin: 读文件全文 (可选 range 切片). binary 文件跳过内容渲染.
-- GlobPin: 展开命中路径列表 (不读内容). 过 GLOB_IGNORE 过滤噪声目录.
-- FrontmatterPin: 读文件 frontmatter
+- FilePin: stat → exists + size + binary 探测. 不读内容.
+- GlobPin: 展开命中路径 (不读内容). 过 GLOB_IGNORE 过滤噪声目录.
+- FrontmatterPin: stat → exists + 命中数. 不读内容.
 - LsPin: 展开目录树 + 条目列表 (不读内容). 过 GLOB_IGNORE 过滤.
+- ExecPin: observe 即执行, payload = 渲染就绪的结果文本.
+- LawPin: 收集约定文件 → 命中数.
 
 文件不存在 → Observation(exists=False).
 
@@ -15,8 +20,8 @@ ignore 规则 (.gitignore 语义), 与 GLOB_IGNORE 叠层过滤.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import os
-import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,10 +72,9 @@ GLOB_IGNORE: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class Observation:
-    """一次观察的结果."""
+    """一次观察的结果 — IO-light: exists + size + (exec) payload."""
 
     exists: bool
-    mtime: float | None = None
     is_binary: bool = False
     payload: str | None = None
     """观察即产出内容的 verb (exec) 把结果存这里, 渲染层直接消费 —
@@ -124,33 +128,9 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
         st = target.stat()
     except FileNotFoundError:
         return Observation(exists=False)
-    mtime = st.st_mtime
-    size = st.st_size
 
     binary = _is_binary(target)
-
-    if pin.arguments.range is not None:
-        text = target.read_text(encoding="utf-8", errors="replace")
-        try:
-            start, end = parse_range(pin.arguments.range, len(text.splitlines()))
-        except ValueError:
-            start, end = 0, 0
-        sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
-        return Observation(
-            exists=True, mtime=mtime, is_binary=binary,
-            size=len(sliced.encode("utf-8")), unit="B",
-        )
-
-    if binary:
-        return Observation(
-            exists=True, mtime=mtime, is_binary=True,
-            size=size, unit="B",
-        )
-
-    return Observation(
-        exists=True, mtime=mtime, is_binary=False,
-        size=size, unit="B",
-    )
+    return Observation(exists=True, is_binary=binary, size=st.st_size, unit="B")
 
 
 def _observe_glob(
@@ -164,7 +144,7 @@ def _observe_glob(
         pattern = str(resolved.relative_to(root)) if resolved.is_relative_to(root) else str(resolved)
 
     matches: list[Path] = []
-    for hit in glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore):
+    for hit in glob_limited(root, pattern, recursion=pin.arguments.max_depth, ignore=ignore):
         if not hit.is_file():
             continue
         if _path_touches_ignore(hit, root):
@@ -172,17 +152,8 @@ def _observe_glob(
         matches.append(hit)
 
     if not matches:
-        return Observation(exists=True, mtime=None, size=0, unit="entries")
-
-    mtimes: list[float] = []
-    for m in matches:
-        try:
-            mtimes.append(m.stat().st_mtime)
-        except FileNotFoundError:
-            continue
-    latest = max(mtimes) if mtimes else None
-
-    return Observation(exists=True, mtime=latest, size=len(matches), unit="entries")
+        return Observation(exists=True, size=0, unit="entries")
+    return Observation(exists=True, size=len(matches), unit="entries")
 
 
 def _observe_frontmatter(
@@ -197,14 +168,10 @@ def _observe_frontmatter(
     # Single-file mode
     target = resolve_path(path_raw, anchor)
     try:
-        mtime = target.stat().st_mtime
-        text = target.read_text(encoding="utf-8", errors="replace")
+        target.stat()
     except FileNotFoundError:
         return Observation(exists=False)
-
-    fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
-    _payload = fm_match.group(1) if fm_match else ""
-    return Observation(exists=True, mtime=mtime, size=1, unit="entries")
+    return Observation(exists=True, size=1, unit="entries")
 
 
 def _observe_frontmatter_pattern(
@@ -215,31 +182,15 @@ def _observe_frontmatter_pattern(
     if pattern.startswith("$"):
         resolved = resolve_path(pattern, anchor)
         pattern = str(resolved.relative_to(root))
-    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore)
+    hits = glob_limited(
+        root, pattern,
+        recursion=pin.arguments.max_depth, stop_on_match=True, ignore=ignore,
+    )
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
 
     if not files:
-        return Observation(exists=True, mtime=None, size=0, unit="entries")
-
-    parts: list[str] = []
-    latest_mtime: float | None = None
-    for f in files:
-        try:
-            st = f.stat()
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except (FileNotFoundError, OSError):
-            continue
-        if latest_mtime is None or st.st_mtime > latest_mtime:
-            latest_mtime = st.st_mtime
-        fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
-        payload = fm_match.group(1) if fm_match else text
-        rel = str(f.relative_to(root))
-        parts.append(f"-- {rel}\n{payload}")
-
-    if not parts:
-        return Observation(exists=True, mtime=None, size=0, unit="entries")
-
-    return Observation(exists=True, mtime=latest_mtime, size=len(parts), unit="entries")
+        return Observation(exists=True, size=0, unit="entries")
+    return Observation(exists=True, size=len(files), unit="entries")
 
 
 def _observe_ls(
@@ -258,9 +209,8 @@ def _observe_ls(
              ignore=ignore, ground_root=anchor.ground)
 
     if not entries:
-        return Observation(exists=True, mtime=None, size=0, unit="entries")
-
-    return Observation(exists=True, mtime=None, size=len(entries), unit="entries")
+        return Observation(exists=True, size=0, unit="entries")
+    return Observation(exists=True, size=len(entries), unit="entries")
 
 
 def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
@@ -336,18 +286,8 @@ def _observe_law(pin: LawPin, anchor: Anchor) -> Observation:
     """
     files = collect_law_files(anchor, pin.arguments.filename)
     if not files:
-        return Observation(exists=True, mtime=None, size=0, unit="entries")
-
-    latest: float | None = None
-    for f in files:
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        if latest is None or st.st_mtime > latest:
-            latest = st.st_mtime
-
-    return Observation(exists=True, mtime=latest, size=len(files), unit="entries")
+        return Observation(exists=True, size=0, unit="entries")
+    return Observation(exists=True, size=len(files), unit="entries")
 
 
 def _exec_rejected(message: str) -> Observation:
@@ -367,27 +307,26 @@ def glob_limited(
     root: Path,
     pattern: str,
     *,
-    max_depth: int | None = None,
+    recursion: int | None = None,
+    stop_on_match: bool = False,
     ignore: PathSpec | None = None,
 ) -> list[Path]:
-    """Resolve a glob pattern against ``root``, applying max_depth and ignore.
+    """Resolve a glob pattern against ``root`` by explicit recursion.
 
     ``pattern`` is relative to ``root`` (callers resolve anchors first).
 
-    When ``max_depth`` is set (SPEC §4.1):
-    - depth cap: matches deeper than ``max_depth`` items below the
-      pattern's static base are excluded;
-    - boundary stop: a directory that directly contains a match is a
-      boundary — its subdirectories are excluded.
+    Two orthogonal bounds (SPEC §4.1):
+    - ``recursion``: max directory levels ``**`` may cross below the
+      pattern's static base. 0 = no recursion; N = N levels; None = unbounded.
+      (Path component count, NOT filename-inclusive — ``recursion=1`` is
+      "one layer of sub-fields", the intuitive reading.)
+    - ``stop_on_match``: a directory that directly contains a match is a
+      boundary — its subdirectories are not recursed. Field discovery:
+      ``**/GROUND.md`` does not penetrate child grounds. The pattern's
+      static base is exempt (the ground's own marker is not a stop).
 
-    For ground-marker patterns this makes a ground a discovery boundary:
-    ground discovery does not penetrate child grounds.
-
-    When ``max_depth`` is None, recursion is unbounded (plain glob).
-
-    ``ignore`` is an optional PathSpec — matches against the path
-    relative to ``base`` are excluded (ground-level ignore, .gitignore semantics).
-    Applied as post-filter after max_depth pruning.
+    ``ignore`` is an optional PathSpec — ground-level ignore (.gitignore
+    semantics), applied while walking so pruned subtrees are never entered.
     """
     parts = pattern.split("/")
     base_parts: list[str] = []
@@ -400,37 +339,116 @@ def glob_limited(
     else:
         idx = len(parts)
     base = root.joinpath(*base_parts) if base_parts else root
-    rel = "/".join(parts[idx:])
     if not base.is_dir():
         return []
+    rel = parts[idx:]
     if not rel:
         return [base]
-    matches = sorted(base.glob(rel))
-    if max_depth is None and ignore is None:
-        return matches
-    if max_depth is not None:
-        matches = [m for m in matches if len(m.relative_to(base).parts) <= max_depth]
-        matched_dirs = {m.parent for m in matches} - {base}
-        if matched_dirs:
-            matches = [
-                m for m in matches
-                if not any(
-                    m.parent.is_relative_to(d) and m.parent != d
-                    for d in matched_dirs
-                )
-            ]
-    if ignore is not None:
-        matches = [m for m in matches if not _spec_match(ignore, m, base)]
+
+    matches: list[Path] = []
+    _walk_glob(
+        base, rel, depth=0, matches=matches, recursion=recursion,
+        stop_on_match=stop_on_match, root=root, ignore=ignore, base=base,
+    )
     return matches
 
 
-def _spec_match(spec: PathSpec, path: Path, root: Path) -> bool:
-    """True if *path* (relative to *root*) matches the ignore spec.
+def _walk_glob(
+    dir_: Path,
+    segs: list[str],
+    *,
+    depth: int,
+    matches: list[Path],
+    recursion: int | None,
+    stop_on_match: bool,
+    root: Path,
+    ignore: PathSpec | None,
+    base: Path,
+) -> bool:
+    """Recursively match ``segs`` under ``dir_``.
 
-    pathspec uses forward-slash relative paths (POSIX).  On macOS the
-    Path is already POSIX internally — ``as_posix()`` is safe.
+    Returns True if a match was produced at this directory level — drives
+    the stop_on_match boundary (a dir that directly contains a match is a
+    boundary, its subdirectories are not entered). The pattern's static
+    ``base`` is exempt: its own marker must not stop discovery of children.
     """
-    return spec.match_file(path.relative_to(root).as_posix())
+    if not segs:
+        matches.append(dir_)
+        return True
+
+    seg, rest = segs[0], segs[1:]
+    local_hit = False
+
+    if seg == "**":
+        # zero dirs consumed: rest applies at dir_ itself
+        if rest:
+            local_hit = _walk_glob(
+                dir_, rest, depth=depth, matches=matches,
+                recursion=recursion, stop_on_match=stop_on_match,
+                root=root, ignore=ignore, base=base,
+            )
+        else:
+            matches.append(dir_)
+            local_hit = True
+
+        # one-or-more dirs consumed: descend, bounded by recursion +
+        # stop_on_match (static base exempt)
+        if recursion is None or depth < recursion:
+            if not (stop_on_match and local_hit and dir_ != base):
+                for child in _dir_children(dir_, root, ignore):
+                    _walk_glob(
+                        child, segs, depth=depth + 1, matches=matches,
+                        recursion=recursion, stop_on_match=stop_on_match,
+                        root=root, ignore=ignore, base=base,
+                    )
+    else:
+        for entry in _dir_children(dir_, root, ignore):
+            if not _seg_match(entry.name, seg):
+                continue
+            if entry.is_dir():
+                if not rest:
+                    matches.append(entry)
+                    local_hit = True
+                elif _walk_glob(
+                    entry, rest, depth=depth, matches=matches,
+                    recursion=recursion, stop_on_match=stop_on_match,
+                    root=root, ignore=ignore, base=base,
+                ):
+                    local_hit = True
+            elif not rest:
+                matches.append(entry)
+                local_hit = True
+
+    return local_hit
+
+
+def _seg_match(name: str, seg: str) -> bool:
+    """Single path-segment glob match (*, ?, [...]). ``**`` is handled by _walk_glob."""
+    return fnmatch.fnmatchcase(name, seg)
+
+
+def _dir_children(dir_: Path, root: Path, ignore: PathSpec | None) -> list[Path]:
+    """Iterable dir entries, skipping GLOB_IGNORE noise and ignore-spec pruned paths."""
+    try:
+        entries = list(dir_.iterdir())
+    except OSError:
+        return []
+    out: list[Path] = []
+    for e in entries:
+        if e.name in GLOB_IGNORE:
+            continue
+        if ignore is not None:
+            try:
+                rel = e.relative_to(root).as_posix()
+            except ValueError:
+                rel = e.as_posix()
+            if e.is_dir():
+                if ignore.match_file(rel + "/"):
+                    continue
+            elif ignore.match_file(rel):
+                continue
+        out.append(e)
+    return sorted(out, key=lambda p: p.name)
 
 
 def parse_range(raw: str, total_lines: int) -> tuple[int, int]:

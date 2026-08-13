@@ -38,12 +38,13 @@ class TestFilePinObservation:
         assert obs.unit == "B"
 
     def test_observes_range(self, tmp_path):
+        # observe 不读内容 — range 切片是 render 的事, size 报全文件字节
         (tmp_path / "a.py").write_text("L1\nL2\nL3\nL4\n")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
         pin = FilePin(label="f", arguments=FileArguments(path="a.py", range="2-3"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.size == 6  # "L2\nL3\n" = 6 bytes
+        assert obs.size == 12  # 全文件 "L1\nL2\nL3\nL4\n" = 12 bytes
         assert obs.unit == "B"
 
     def test_observes_single_line_range(self, tmp_path):
@@ -52,7 +53,7 @@ class TestFilePinObservation:
         pin = FilePin(label="f", arguments=FileArguments(path="a.py", range="2"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.size == 3  # "L2\n" = 3 bytes
+        assert obs.size == 9  # 全文件 "L1\nL2\nL3\n" = 9 bytes
         assert obs.unit == "B"
 
     def test_missing_file(self, tmp_path):
@@ -60,7 +61,6 @@ class TestFilePinObservation:
         pin = FilePin(label="f", arguments=FileArguments(path="nope.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is False
-        assert obs.mtime is None
 
     def test_async_observe(self, tmp_path):
         (tmp_path / "a.py").write_text("x\n")
@@ -86,7 +86,6 @@ class TestGlobPinObservation:
         pin = GlobPin(label="g", arguments=GlobArguments(path="nonexistent-*"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
-        assert obs.mtime is None
         assert obs.size == 0
 
 
@@ -148,7 +147,7 @@ class TestBinaryDetection:
 
 
 class TestGlobLimited:
-    """glob_limited — max_depth 深度上限 + 场边界 (SPEC §4.1)."""
+    """glob_limited — 显式递归, recursion (深度上限) + stop_on_match (防穿透) 正交 (SPEC §4.1)."""
 
     def _field_tree(self, tmp_path):
         root = tmp_path.resolve()
@@ -166,37 +165,54 @@ class TestGlobLimited:
         (b_dir / "GROUND.md").write_text("# b (not a field parent)\n")
         return root
 
-    def test_max_depth_limits_depth(self, tmp_path):
-        """depth cap: matches deeper than max_depth excluded."""
+    def test_recursion_limits_depth(self, tmp_path):
+        """recursion = 目录层数: 1 = 一层子场 (直觉语义, 非 filename-inclusive)."""
         root = self._field_tree(tmp_path)
-        matches = glob_limited(root, "**/GROUND.md", max_depth=2)
-        paths = {str(m.relative_to(root)) for m in matches}
-        assert "GROUND.md" in paths              # depth 1
-        assert "features/GROUND.md" in paths     # depth 2
-        assert "features/deep/GROUND.md" not in paths  # depth 3 > 2
-        assert "a/b/GROUND.md" not in paths            # depth 3 > 2
-
-    def test_field_boundary_stops_at_match(self, tmp_path):
-        """field boundary: features 有 match, 其子目录不下钻."""
-        root = self._field_tree(tmp_path)
-        matches = glob_limited(root, "**/GROUND.md", max_depth=3)
+        matches = glob_limited(root, "**/GROUND.md", recursion=1)
         paths = {str(m.relative_to(root)) for m in matches}
         assert "GROUND.md" in paths              # 根场自身
-        assert "features/GROUND.md" in paths     # 子场, depth 2 ≤ 3
-        # features/deep/GROUND.md: depth 3 ≤ 3, 但 features 是场边界 → 不下钻
-        assert "features/deep/GROUND.md" not in paths
-        # a/b/GROUND.md: depth 3 ≤ 3, a 不是场边界 → 保留
+        assert "features/GROUND.md" in paths     # 一层子场
+        assert "features/deep/GROUND.md" not in paths  # 两层 > 1
+        assert "a/b/GROUND.md" not in paths            # 两层 > 1
+
+    def test_recursion_two_reaches_two_levels(self, tmp_path):
+        root = self._field_tree(tmp_path)
+        matches = glob_limited(root, "**/GROUND.md", recursion=2)
+        paths = {str(m.relative_to(root)) for m in matches}
+        assert "features/deep/GROUND.md" in paths  # 两层 ≤ 2, 无 stop_on_match → 穿透
         assert "a/b/GROUND.md" in paths
 
-    def test_no_max_depth_is_unbounded(self, tmp_path):
-        """max_depth=None: 无限制 (与 plain glob 等价)."""
+    def test_stop_on_match_is_field_boundary(self, tmp_path):
+        """防穿透: features 直接含 GROUND.md 是场边界, 其子目录不下钻."""
         root = self._field_tree(tmp_path)
-        matches = glob_limited(root, "**/GROUND.md", max_depth=None)
+        matches = glob_limited(root, "**/GROUND.md", stop_on_match=True)
+        paths = {str(m.relative_to(root)) for m in matches}
+        assert "GROUND.md" in paths              # 根场自身
+        assert "features/GROUND.md" in paths     # 子场
+        # features/deep/GROUND.md: features 是场边界 → 不下钻
+        assert "features/deep/GROUND.md" not in paths
+        # a/b/GROUND.md: a 不是场边界 → 保留
+        assert "a/b/GROUND.md" in paths
+
+    def test_no_recursion_is_unbounded(self, tmp_path):
+        """recursion=None: 无限制 (与 plain glob 等价)."""
+        root = self._field_tree(tmp_path)
+        matches = glob_limited(root, "**/GROUND.md", recursion=None)
         paths = {str(m.relative_to(root)) for m in matches}
         assert "GROUND.md" in paths
         assert "features/GROUND.md" in paths
         assert "features/deep/GROUND.md" in paths  # 无 depth cap, 无 boundary stop
         assert "a/b/GROUND.md" in paths
+
+    def test_star_prefix_does_not_bypass_boundary(self, tmp_path):
+        """`*/**/GROUND.md`: `*` 前缀不豁免边界 — 根自身排除, 子场仍防穿透."""
+        root = self._field_tree(tmp_path)
+        matches = glob_limited(root, "*/**/GROUND.md", stop_on_match=True)
+        paths = {str(m.relative_to(root)) for m in matches}
+        assert "GROUND.md" not in paths            # `*` 要求 ≥1 层, 排除根自身
+        assert "features/GROUND.md" in paths       # 子场
+        assert "features/deep/GROUND.md" not in paths  # features 是边界
+        assert "a/b/GROUND.md" in paths            # 穿过非 ground 目录
 
 
 class TestGlobIgnore:
@@ -223,7 +239,7 @@ class TestGlobIgnore:
 
 class TestObservation:
     def test_frozen(self):
-        o = Observation(exists=True, mtime=1.0)
+        o = Observation(exists=True)
         with pytest.raises(Exception):
             o.exists = False  # type: ignore[misc]
 
@@ -453,8 +469,8 @@ class TestGroundIgnore:
         assert obs.exists is True
         assert obs.size == 1  # only keep.py — skip_me/ tree excluded
 
-    def test_ignore_combined_with_max_depth(self, tmp_path):
-        """max_depth 和 ignore 同时生效 — ignore post-filter 在 depth 之后."""
+    def test_ignore_combined_with_recursion(self, tmp_path):
+        """recursion 和 ignore 同时生效 — ignore 在走递归时剪枝."""
         (tmp_path / "a.py").write_text("a")
         deep = tmp_path / "deep"
         deep.mkdir()
@@ -463,11 +479,11 @@ class TestGroundIgnore:
         deeper.mkdir()
         (deeper / "c.py").write_text("c")
         spec = self._spec(["deep/"])
-        matches = glob_limited(tmp_path, "**/*.py", max_depth=1, ignore=spec)
+        matches = glob_limited(tmp_path, "**/*.py", recursion=1, ignore=spec)
         rels = {str(m.relative_to(tmp_path)) for m in matches}
         assert "a.py" in rels
-        assert "deep/b.py" not in rels  # depth > 1
-        assert "deep/deeper/c.py" not in rels  # depth > 1
+        assert "deep/b.py" not in rels  # deep/ 被 ignore 剪枝
+        assert "deep/deeper/c.py" not in rels  # 同上
 
 
 class TestParseRange:

@@ -12,10 +12,10 @@ milestone: 0.1.0
 priority: P0
 renamed_from: Project Manager
 status: completed
-status_note: |
-    CLI layer complete. Pending: ground-channel (CTML runtime), moss-project-ground.
+status_note: CLI 层完成, 下游 ground-channel (CTML runtime) 独立 workstream, moss-project-ground
+  已关闭
 title: Ghost Ground — Ghost 的认知场
-updated: '2026-08-11'
+updated: '2026-08-13'
 ---
 
 # Ground — Ghost 的认知场

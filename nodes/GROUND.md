@@ -1,5 +1,4 @@
 ---
-$id: moss-project/nodes
 name: nodes
 description: MOSS 开箱的 nodes — 能力的运行时容器
 pins:

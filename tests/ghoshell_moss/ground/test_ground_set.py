@@ -425,3 +425,75 @@ class TestTemplateOpen:
             assert (target / "GROUND.md").is_file()
 
         run(scenario())
+
+
+class TestSnapshot:
+    """Ground.snapshot() — 渲染 + 感知 digest + 对账 (auto-advance)."""
+
+    @staticmethod
+    def _make_ground(tmp_path) -> Path:
+        root = tmp_path / "proj"
+        root.mkdir()
+        (root / "GROUND.md").write_text("---\nname: proj\npins: []\n---\n# body\n")
+        return root
+
+    def test_first_call_is_baseline(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                snap = await g.snapshot()
+                assert snap.changed is False
+                assert snap.hash
+                assert snap.view.header.ground_path == str(root.resolve())
+
+        run(scenario())
+
+    def test_unchanged_stays_silent(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                s1 = await g.snapshot()
+                s2 = await g.snapshot()
+                assert s2.changed is False
+                assert s2.hash == s1.hash
+
+        run(scenario())
+
+    def test_change_flags_once_then_acknowledges(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                s1 = await g.snapshot()
+                (root / "GROUND.md").write_text(
+                    "---\nname: proj\npins: []\n---\n# body changed\n"
+                )
+                await g.load()
+                s2 = await g.snapshot()
+                assert s2.changed is True
+                assert s2.hash != s1.hash
+                # 已承认 → 下一帧不变
+                s3 = await g.snapshot()
+                assert s3.changed is False
+                assert s3.hash == s2.hash
+
+        run(scenario())
+
+    def test_explicit_ack_hash_is_baseline(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                s1 = await g.snapshot()
+                # ack 当前 hash → 无变化
+                assert (await g.snapshot(ack_hash=s1.hash)).changed is False
+                # ack 一个旧值 → 相对该基线变化
+                assert (await g.snapshot(ack_hash="0" * 64)).changed is True
+
+        run(scenario())

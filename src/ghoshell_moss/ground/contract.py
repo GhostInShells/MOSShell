@@ -46,6 +46,7 @@ __all__ = [
     "ViewHeader",
     "ViewBlock",
     "RenderedView",
+    "Snapshot",
 ]
 
 # -- constants ----------------------------------------------------------------
@@ -384,6 +385,26 @@ class Ground(ABC):
         cwd=None 时用场根 (field-root 模式), 否则 walk 模式.
         """
 
+    @abstractmethod
+    async def snapshot(
+        self,
+        *,
+        ack_hash: str | None = None,
+        cwd: Path | None = None,
+    ) -> Snapshot:
+        """渲染 + 感知对账 — 返回渲染对象与其全量 digest.
+
+        render() 保持纯内容; snapshot 是 render + digest + 变更标记.
+        对账目标是渲染文本全量 (view.to_markdown() 的 sha256), 不是源文件.
+
+        ack_hash: 调用方声明的已承认基线 (如 channel 持久化的旧值).
+        缺省用内部缓存的上一帧 hash. 调用后内部缓存推进到新 hash;
+        changed 相对基线计算 — 首次无基线为 False.
+
+        进程内运行时侧影, 不落盘 (seen_* 语义). 须单 owner: 缓存写入
+        不并发安全, channel 会话是唯一消费者.
+        """
+
     async def context(self) -> str:
         """渲染当前帧 — 消费给 virtual channel 的 context_messages.
 
@@ -537,6 +558,7 @@ class _LegacyFrameItem:  # noqa: F811 — 保留旧类型使现存调用不崩�
 class ViewHeader(BaseModel):
     """渲染视图的头部 — GROUND.md 身份 + 站立位置."""
 
+    id: str | None = Field(default=None, alias="$id", description="$id 身份声明, 存在才渲染.")
     name: str | None = Field(default=None, description="场名, 来自 GROUND.md name 或目录 basename.")
     description: str | None = Field(default=None, description="场描述, 来自 GROUND.md description.")
     ground_path: str = Field(description="$GROUND — 场根绝对路径.")
@@ -582,6 +604,8 @@ class RenderedView(BaseModel):
 
         # --- header (YAML frontmatter) ---
         lines.append("---")
+        if self.header.id:
+            lines.append(f"$id: {self.header.id}")
         if self.header.name:
             lines.append(f"name: {self.header.name}")
         if self.header.description:
@@ -615,3 +639,17 @@ class RenderedView(BaseModel):
 
     def __str__(self) -> str:
         return self.to_markdown()
+
+
+class Snapshot(BaseModel):
+    """一次渲染的感知快照 — 渲染对象 + 全量 digest + 相对基线是否变化.
+
+    Ground.snapshot() 的返回值. hash 覆盖 ``view.to_markdown()`` 全量
+    文本, 使 "channel 递给模型的那份文本" 与对账信号闭合.
+    """
+
+    view: RenderedView = Field(description="渲染对象, 与 render() 逐字等价.")
+    hash: str = Field(description="渲染文本全量的 sha256 digest.")
+    changed: bool = Field(
+        description="相对基线 (ack_hash 或内部缓存) 是否变化. 首次无基线为 False."
+    )

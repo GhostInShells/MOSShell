@@ -1,5 +1,4 @@
 ---
-$id: moss-project/tutorials
 name: tutorials
 description: 面向开箱使用者的叙事性认知入口
 pins:

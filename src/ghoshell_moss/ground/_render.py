@@ -59,6 +59,7 @@ async def render_context(
     *,
     ground_name: str | None = None,
     ground_description: str | None = None,
+    ground_id: str | None = None,
     ignore: PathSpec | None = None,
 ) -> RenderedView:
     """Render a ground at its root → RenderedView.
@@ -67,6 +68,7 @@ async def render_context(
     所有 pin 观察并行 (asyncio.gather).
     """
     header = ViewHeader(
+        id=ground_id,
         name=ground_name or anchor.ground.name,
         description=ground_description,
         ground_path=str(anchor.ground),
@@ -174,6 +176,7 @@ async def render_walk(
     pins: list[Pin],
     *,
     label: str | None = None,
+    ground_id: str | None = None,
     ignore: PathSpec | None = None,
 ) -> RenderedView:
     """场内移动视图 → RenderedView.
@@ -187,6 +190,7 @@ async def render_walk(
     display = label or ground_root.name
 
     header = ViewHeader(
+        id=ground_id,
         name=display,
         ground_path=str(ground_root),
         cwd=str(cwd),
@@ -331,7 +335,7 @@ def _content_glob(
         except (ValueError, OSError):
             return "error: invalid glob path"
 
-    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore)
+    hits = glob_limited(root, pattern, recursion=pin.arguments.max_depth, ignore=ignore)
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
     if not files:
         return "(no matches)"
@@ -395,7 +399,10 @@ def _content_frontmatter_pattern(
         except (ValueError, OSError):
             return "error: invalid pattern"
 
-    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore)
+    hits = glob_limited(
+        root, pattern,
+        recursion=pin.arguments.max_depth, stop_on_match=True, ignore=ignore,
+    )
     files = [h for h in hits if h.is_file() and h.name != ""
              and not _path_touches_ignore(h, root)]
     if not files:
