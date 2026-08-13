@@ -122,10 +122,10 @@ def factory(
         path, stem, model_name, thinking, resolved_cwd,
     )
 
-    # Two-layer sandbox: init copies the compiled namespace under unrestricted
+    # Two-layer sandbox: init copies the compiled namespace under safe default
     # builtins; agent shares the same __dict__ but under SANDBOX_BUILTINS with
     # replay __import__ layered on top.
-    init_sandbox = Sandbox(name=f"{stem}.init", builtins=None, source=source)
+    init_sandbox = Sandbox(name=f"{stem}.init", source=source)
     for k, v in compiled.__dict__.items():
         if not k.startswith("__"):
             init_sandbox.set(k, v)

@@ -16,6 +16,32 @@ This is the foundation for ModuleEvalChannel — the "thin shell" pattern where
 an AI controls a domain object (Playwright browser, pandas DataFrame, ROS node)
 by writing raw Python code rather than calling pre-wrapped command functions.
 
+Security boundary (read before trusting this with untrusted code)
+-----------------------------------------------------------------
+Sandbox is NOT a security boundary. Blocking ``__import__``/``open``/``eval``
+is a guardrail against accidental, naive misuse — a model reflexively writing
+``import os`` or ``open()`` gets a clear failure. It does not stop an adversary.
+
+Escape needs none of the blocked builtins. ``object`` is always in scope, so::
+
+    ().__class__.__base__.__subclasses__()   # every class in the process
+    # -> any Python-defined class -> __init__.__globals__['sys'] -> sys.modules
+    # -> os / subprocess / open / ... -> arbitrary host code
+
+Any Python function/class reachable from the namespace (including injected
+domain objects) leaks its defining module's ``__globals__``, which reference
+the host's real builtins. No builtin list can close this — the object protocol
+is orthogonal to it.
+
+Real isolation lives outside the Sandbox:
+
+- a separate process / container with a narrow protocol (see tools._eval_server)
+- narrowing the reachable surface, not the builtins: record imports at compile
+  time and replay only those at exec time (see agents._imports.replay_import)
+
+Trust model: the writer is non-adversarial. Sandbox raises friction on
+accidental dangerous builtin use; it is not a jail.
+
 Relationship to Compiler & Executor
 ------------------------------------
 Compiler: one-shot ModuleType creation + source compilation. No persistence.
@@ -191,9 +217,17 @@ class Sandbox:
         # use the safe default for root sandboxes.
         if builtins is _UNSET:
             if parent is not None:
-                builtins = parent._module.__dict__.get('__builtins__')
+                builtins = parent.module.__dict__.get('__builtins__')
             else:
                 builtins = SANDBOX_BUILTINS
+
+        # Snapshot into an owned dict. Never hand exec code a reference to the
+        # shared SANDBOX_BUILTINS constant (or the process builtins dict in the
+        # builtins=None case): a sandbox mutating `__builtins__` (e.g.
+        # __builtins__['x'] = ... / __builtins__.pop('len')) must not poison
+        # other sandboxes or the module constant.
+        if builtins is not None:
+            builtins = dict(builtins)
 
         if parent is not None:
             if parent._closed:
@@ -214,8 +248,10 @@ class Sandbox:
             # CPython's exec() checks globals['__builtins__'] first;
             # if absent, it inserts builtins.__dict__. By setting it here
             # we preempt that default and control what builtins are available.
+            # The unrestricted case snapshots the process builtins dict so exec
+            # code mutating __builtins__ cannot corrupt the host.
             self._module.__builtins__ = (
-                builtins if builtins is not None else _builtins.__dict__
+                builtins if builtins is not None else dict(_builtins.__dict__)
             )
 
         if on_init:

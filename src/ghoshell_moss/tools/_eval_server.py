@@ -15,7 +15,7 @@ Special codes:
 
 Layer design:
   Compiler (builtins unrestricted) — compile module, execute imports
-  init_sandbox (builtins=None)       — holds compiled namespace objects
+  init_sandbox (safe defaults)       — holds compiled namespace objects
   sandbox (parent=init, SANDBOX_BUILTINS) — AI exec namespace, no __import__
 """
 
@@ -65,7 +65,6 @@ except Exception:
 
 _init_sandbox = Sandbox(
     name=_module_name,
-    builtins=None,
     source=_source,
 )
 
