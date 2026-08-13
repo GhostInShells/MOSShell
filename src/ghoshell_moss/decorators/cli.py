@@ -61,7 +61,7 @@ def cli(
         name: str = "",
         help: Help | None = None,
         facade: Any = None,
-        cwd: str | Path | None = None,
+        cwd: str | Path | Callable[[], str | Path] | None = None,
         timeout: float | None = None,
         input_filter: InputFilter | None = None,
         output_processor: OutputProcessor | None = None,
@@ -74,7 +74,8 @@ def cli(
     :param help: ``-h``/``--help`` 的拦截返回. 提供后这两个参数不 spawn 子进程,
         直接返回 ``(0, help 内容, "")``.
     :param facade: 注入的 SubprocessFacade. None 时首次调用惰性取 project IoC 单例.
-    :param cwd: spawn 工作目录. None 时用 facade 默认 (project facade = 项目根).
+    :param cwd: spawn 工作目录. None 时用 facade 默认. 传 callable 时每次调用惰性求值
+        (返回 str/Path) — 工具可定义期绑定一个惰性解析的 root (如 project root).
     :param timeout: 秒. None 不限制; 超时优雅停止 (SIGINT→SIGKILL), 返回 (124, 已捕获输出, 说明).
     :param input_filter: 入参过滤, 见 InputFilter.
     :param output_processor: 出参加工, 见 OutputProcessor.
@@ -102,8 +103,9 @@ def cli(
             from ghoshell_moss.contracts.subprocesses import SubprocessFacade
             resolved_facade = project.container.force_fetch(SubprocessFacade)
         from ghoshell_moss.contracts.subprocesses import CaptureSpec
+        spawn_cwd = cwd() if callable(cwd) else cwd
         proc = await resolved_facade.execute(
-            *args, name=sub_name, cwd=cwd,
+            *args, name=sub_name, cwd=spawn_cwd,
             capture=CaptureSpec(buffer_lines=200),
         )
         try:

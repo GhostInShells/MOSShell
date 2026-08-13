@@ -1,29 +1,21 @@
-"""Exploration agent — discover and read files, explore module structures.
+"""Exploration agent — explore the repository: locate files, read code, inspect changes.
 
-You have six read-only capabilities:
+All tools are read-only and resolve against the repository root. The filesystem
+tools (read_file / list_files / glob_files) are synchronous — call them
+directly. The git tools (git_status / git_diff) are async — wrap them in
+asyncio.run, which returns (code, out, err):
 
-  look_at(path)       — quick directory list or raw file dump (within cwd)
-  file_list(path)     — list directory with sizes and types
-  file_view(path,     — read a file with line numbers, optional range [start, end]
-            [start, end])
-  codex_where(module) — resolve a Python import path to its file location
-  codex_list(package) — list submodules of a package
-  codex_source(module)— read the source code of an importable module
+    import asyncio
+    code, out, err = asyncio.run(git_status(""))
 
-For filesystem exploration, start with file_list to orient yourself, then
-file_view to read files with line numbers. look_at is the fast alternative
-for quick reads. For module exploration, use codex_list + codex_where +
-codex_source.
-
-When you have your final answer, reply in plain text instead of calling
-sandbox_exec.
+Orient with glob_files or list_files, then read_file the files that matter.
+Use git_status / git_diff to see what changed and how. When you have your
+final answer, reply in plain text instead of calling sandbox_exec.
 """
 
-from ghoshell_moss.agents.capabilities import (  # noqa: F401
-    codex_list,
-    codex_source,
-    codex_where,
-    file_list,
-    file_view,
-    look_at,
-)
+import asyncio
+
+from ghoshell_moss.tools.fs import glob_files, list_files, read_file
+from ghoshell_moss.tools.git import git_diff, git_status
+
+__interfaces__ = [read_file, list_files, glob_files, git_status, git_diff]
