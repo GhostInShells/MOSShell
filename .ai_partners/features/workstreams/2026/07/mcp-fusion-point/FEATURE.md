@@ -3,7 +3,7 @@ title: MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
 status: converging
 priority: P1
 created: 2026-07-31
-updated: 2026-08-12
+updated: 2026-08-14
 depends:
   - mcp-hub-channel
   - speech-protocol-alignment
@@ -274,3 +274,22 @@ MossRuntime，让没有 ghost 的运行时（`moss-shell mcp` / `moss-shell tui`
 
 **优先级**：mcp-fusion-point 中排在 signal 优先级 + ghost runtime 异常处理
 之后。先落方向，接口细节下次设计会话继续。
+
+### 13. mcp_channel.py — as_channel state-first 重构（2026-08-14）
+
+新 `src/ghoshell_moss/channels/mcp_channel.py` 落地 as_channel 范式：
+`MCPHubState` 是本源对象（公开方法 connect_server / disconnect_server /
+list_servers / call_tool + sessions 同步快照），`new_channel_from_state`
+投影成 channel——模型通过 CTML 命令（call/acall/list/connect/disconnect）
+操作，人类/GUI 通过持有 state 直接调用，同一个对象两个面。
+
+这是旧 `channels/mcp_hub.py` 的候选替代。
+
+**待办 — 删除旧 mcp_hub.py**：触发条件是 mcp dogfooding 实机验收通过 +
+打磨后确认可替代。验收前旧 `mcp_hub.py` + `test_mcp_hub.py` 保留。
+
+**与 design §7 的待收敛点**：本实现保留完整 lifecycle（on_startup/on_close）
++ connect/disconnect 命令 + ConfigStore/scope 解析；而 design/mcp-node-client.md
+§7「mcp_hub 瘦身」方向是砍这些（生命周期归 topic 事件、配置归 CLI/声明）。
+两者关系留待 dogfooding 验收时对齐——as_channel 的「共享认知对象」是否覆盖
+瘦身方案的价值，是验收要回答的问题。
