@@ -38,6 +38,45 @@ _STATUS_HINTS = {
 }
 _DROPPED_HINT = "Record why in -m 'reason' for future reference. The workstream stays in place."
 
+# Canonical display order for status stats; free-form statuses aggregate under 'others'.
+_STATUS_ORDER = ["draft", "in-progress", "completed", "dropped"]
+
+
+def _status_label(stat: str) -> str:
+    """Rich-markup status label, matching the list table coloring."""
+    if stat == "in-progress":
+        return f"[bold green]{stat}[/bold green]"
+    if stat == "draft":
+        return f"[dim]{stat}[/dim]"
+    if stat == "completed":
+        return f"[bold cyan]{stat}[/bold cyan]"
+    if stat == "dropped":
+        return f"[dim red]{stat}[/dim red]"
+    return stat
+
+
+def _status_counts(features: list[dict]) -> dict[str, int]:
+    """Status distribution — reserved statuses keyed individually, free-form aggregated under 'others'."""
+    counts: dict[str, int] = {}
+    others = 0
+    for fm in features:
+        st = fm.get("status", "?")
+        if st in RESERVED_STATUSES:
+            counts[st] = counts.get(st, 0) + 1
+        else:
+            others += 1
+    if others:
+        counts["others"] = others
+    return counts
+
+
+def _ordered_statuses(*count_sets: dict[str, int]) -> list[str]:
+    """Union of statuses across count sets, reserved first then free-form alphabetically."""
+    seen: set[str] = set()
+    for counts in count_sets:
+        seen.update(counts)
+    return [s for s in _STATUS_ORDER if s in seen] + sorted(seen - set(_STATUS_ORDER))
+
 
 def _print_parse_errors(parse_errors: list[dict]) -> None:
     """Print FEATURE.md frontmatter parse errors — called at end of list/status output."""
@@ -126,6 +165,8 @@ def list_cmd(
     """
     fd = _resolve_dir(features_dir)
     features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
+    # All-time (status-filtered) view — feeds the stats table and the empty-window hint.
+    total_features, _ = list_features(str(fd), status_filter=status, all_months=True)
     title = "Workstreams"
     if status:
         title += f" [status={status}]"
@@ -133,7 +174,10 @@ def list_cmd(
         title += " (last 2 months)"
 
     if not features and not parse_errors:
-        print_info("No workstreams found.")
+        if not all_months and total_features:
+            print_info(f"No workstreams in the last 2 months — {len(total_features)} all-time (use --all).")
+        else:
+            print_info("No workstreams found.")
         return
 
     table_data = []
@@ -145,15 +189,7 @@ def list_cmd(
         updated = fm.get("updated", "")
         feat_path = f"workstreams/{fm.get('_feature_path', name)}"
 
-        status_display = stat
-        if stat == "in-progress":
-            status_display = f"[bold green]{stat}[/bold green]"
-        elif stat == "draft":
-            status_display = f"[dim]{stat}[/dim]"
-        elif stat == "completed":
-            status_display = f"[bold cyan]{stat}[/bold cyan]"
-        elif stat == "dropped":
-            status_display = f"[dim red]{stat}[/dim red]"
+        status_display = _status_label(stat)
 
         table_data.append([name, status_display, pri, title_str, updated, feat_path])
 
@@ -163,6 +199,27 @@ def list_cmd(
         title=title,
         column_ratios=[1, 0.7, 0.3, 1.5, 0.6, 1.5],
     )
+
+    if features or total_features:
+        listed_counts = _status_counts(features)
+        total_counts = _status_counts(total_features)
+        statuses = _ordered_statuses(listed_counts, total_counts)
+        stats_headers = [""] + statuses + ["Total"]
+        if listed_counts == total_counts:
+            stats_rows = [["total"] + [str(total_counts.get(s, 0)) for s in statuses] + [str(len(total_features))]]
+        else:
+            stats_rows = [
+                ["listed"] + [str(listed_counts.get(s, 0)) for s in statuses] + [str(len(features))],
+                ["total"] + [str(total_counts.get(s, 0)) for s in statuses] + [str(len(total_features))],
+            ]
+        print_simple_table(
+            data=stats_rows,
+            headers=stats_headers,
+            title="Workstream counts",
+            column_styles=["bold"] + [None] * len(statuses) + ["bold"],
+        )
+        console.print("")
+
     console.print(f"\n[dim]Features root: {fd.resolve()}/[/dim]")
     console.print(
         "[dim]Workstreams are one part of [/dim]"
