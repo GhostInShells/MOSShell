@@ -150,7 +150,12 @@ All path-typed arguments use the anchor syntax in §8.
 
 **Expansion**: file content, sliced to `range` if given.
 
-**Failure modes**: file not found; range out of bounds; binary file.
+**Failure modes** — visible, not silent:
+
+- File does not exist: renders `[missing]`.
+- File exists but is binary: renders `[binary file, not rendered]`.
+- Range out of bounds or descending: renders `error: invalid range`.
+- Read failure (e.g. file removed between observe and render): renders `error: unreadable`.
 
 ### 5.2 `glob` — matching path view (paths + metadata, no content)
 

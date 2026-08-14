@@ -38,7 +38,6 @@ from ghoshell_moss.ground._chain import collect_law_files
 from ghoshell_moss.ground._hash import (
     GLOB_IGNORE,
     Observation,
-    _is_binary,
     _path_touches_ignore,
     glob_limited,
     observe,
@@ -112,14 +111,7 @@ def _assemble_context_blocks(
 
     for p in pins:
         obs = observations.get(p.label)
-        if obs is not None and obs.error is not None:
-            content = f"error: {obs.error}"
-            at_children: list[ViewBlock] = []
-        elif obs is not None and not obs.exists:
-            content = "[missing]"
-            at_children = []
-        else:
-            content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
+        content, at_children = _pin_block_content(p, anchor, obs, ignore=ignore)
 
         blocks.append(ViewBlock(
             kind="pin",
@@ -282,14 +274,7 @@ def _assemble_walk_blocks(
 
         for p in full_pins:
             obs = observations.get(p.label)
-            if obs is not None and obs.error is not None:
-                content = f"error: {obs.error}"
-                at_children: list[ViewBlock] = []
-            elif obs is not None and not obs.exists:
-                content = "[missing]"
-                at_children = []
-            else:
-                content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
+            content, at_children = _pin_block_content(p, anchor, obs, ignore=ignore)
 
             blocks.append(ViewBlock(
                 kind="pin",
@@ -346,18 +331,11 @@ def _content_exec(pin: ExecPin, obs: Observation | None) -> str:
 
 
 def _content_file(pin: FilePin, anchor: Anchor) -> str:
-    try:
-        target = resolve_path(pin.arguments.path, anchor)
-    except (OSError, ValueError):
-        return "error: cannot read file"
-
-    if _is_binary(target):
-        return "[binary file, not rendered]"
-
+    target = resolve_path(pin.arguments.path, anchor)
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
-        return "error: cannot read file"
+    except OSError:
+        return "error: unreadable"
 
     if pin.arguments.range is not None:
         lines_list = text.splitlines()
@@ -548,6 +526,31 @@ def _build_body_with_at(body: str, ground_dir: Path) -> tuple[str, list[ViewBloc
                 meta={"from": "GROUND.md"},
             ))
     return body, children
+
+
+def _pin_block_content(
+    p: Pin,
+    anchor: Anchor,
+    obs: Observation | None,
+    *,
+    ignore: PathSpec | None = None,
+) -> tuple[str, list[ViewBlock]]:
+    """把一枚 pin 的观察结果渲染成 (content, @-children).
+
+    observe 层的结构化状态在此统一分流 — 这是 render 与 observe 的接缝,
+    "可读/不可读" 的判定只在这里发生:
+    - error  → observe 层捕获的失败 (越界 / IO)
+    - missing → 目标不存在
+    - binary → 目标存在但不可读 (二进制)
+    - 其余   → 读内容
+    """
+    if obs is not None and obs.error is not None:
+        return f"error: {obs.error}", []
+    if obs is not None and not obs.exists:
+        return "[missing]", []
+    if obs is not None and obs.is_binary:
+        return "[binary file, not rendered]", []
+    return _build_pin_content(p, anchor, obs, ignore=ignore)
 
 
 def _build_pin_content(
