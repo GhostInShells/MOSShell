@@ -9,8 +9,8 @@ depends: []
 milestone: 0.1.0
 description: >-
   将 DeepSeek Harness (dsh) 作为 MOSS 可驱动的外部 agent 面做产品化集成，
-  候选取代 claude-code-in-moss。开箱暴露其 mode / 工具 / session / 权限面，
-  不做应用实现。
+  取代 claude-code-in-moss（已 drop，dsh 开源且 web 前端可 vendor）。开箱暴露其
+  mode / 工具 / session / 权限面，不做应用实现。
 ---
 
 # DSH Productization
@@ -141,6 +141,32 @@ dsh = agent-surface 骨架下的**第三个 concrete agent**（memento/claude/ds
 ### 架构差别（MOSS vs dsh）
 
 MOSS = 单 Ghost 多界面（matrix 承载 N 界面 cell）；dsh = 单进程多 session agent，界面（web/tui/headless）是 profile 的 patch 层附属，session 才是核心。
+
+### web 组件化 & vendor 可行性（源码确认）
+
+dsh web 前端组件化质量高，vendor chat 界面可行：
+
+- **store 分离**：状态引擎 = zustand vanilla + immer，在 `packages/client/runtime`，React-free；`web-react` 只是 React glue。数据层与视图层硬分离。
+- **client 侧自跑一个 Cordis ctx**（浏览器端），与 backend ctx 分离，唯一桥是 `connection`（RPC over WebSocket/HTTP）。UI 不直接碰 backend 的 `ctx.sessions`/`ctx.tools`。
+- **UI 由 slots 组装**（`ctx.slots` + SlotCore）：`root` → sidebar/conversation/details/shell.overlay。chat = `conversation` 槽，其它功能是别的槽，可裁剪。
+- **contract 面**（`client/runtime/src/client/contract/`）：`ISession`（8 verb：prompt/cancel/rename/loadOlder/command/updateQueue/readAttachment + projections + 读快照）、`SessionsPort`（list/create/open）、`IWorkspaces`（CRUD）。typed 在 `dsh-api-remotes` + `typert-protocol` 上。
+
+**关键结论：chat 界面是 SessionEvent 流的纯投影**（`ConversationNodeDefinition.match(event)` 从 event fold 出 ConversationSnapshot），自己不持有会话状态。proxy 只需转发 event 流 + 8 verb 即可正确渲染，无需复刻状态机。
+
+chat 的 backend 依赖全集（协议面）：
+- 读面：SessionEvent 流 → ConversationSnapshot；projections（todo/plan/goal 派生状态，按 key 读）。
+- 写面：prompt(queue|steer) / cancel / rename / command / updateQueue / readAttachment / feedback。
+- 系统指令：插件注册的 prompt section + persona 配置拼装（非写死）；compact 是斜杠命令（`command` verb）。
+- feedback：`feedback/record` → 本地 `ctx.messageFeedback`；官方上传仅 opt-in telemetry。fork：`ctx.sessions.fork(...)`。
+- workspace + session 列表：`SessionsPort` + `IWorkspaces`（含目录浏览、picker 等文件级读取）。
+
+**控制反转**：dsh web = Node backend（`ctx.agents` 持有 live session）+ 浏览器 client（RPC）；owner 是 backend，backend 替 client 下探 workspace 做文件级读取。要 ghost 可控，须把 session owner 从 dsh backend 反转到 MOSS。
+
+**收敛形态**：matrix node 持有 session（owner 归 MOSS），vendor 的 chat 界面作 GUI 子进程，父进程 proxy 转发 event 流 + 8 verb。proxy 只需翻译两样：event 流（读）+ ISession verb（写）；系统指令 / command / fork 全在 MOSS owner 边界内。
+
+**两个额外结论**：
+- dsh 前端是近乎通用的 agent session 表面——只认 `ISession` + `SessionEvent`，任何满足 contract 的 backend（dsh / claude code / MOSS）都能挂它当界面。
+- 存储侧（对 memento 有参考）：session 日志 = zstd 压的 append-only JSONL（真值）+ SQLite（二级索引 + 投影缓存），分离不可变日志与派生索引。
 
 ## Open Problems
 

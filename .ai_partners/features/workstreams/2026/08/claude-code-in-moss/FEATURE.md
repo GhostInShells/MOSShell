@@ -1,20 +1,20 @@
 ---
-title: Claude Code In Moss — Ghost 主持人统筹 N 个 claude 会话
-status: draft
-priority: P1
 created: 2026-08-05
-updated: 2026-08-05
 depends:
-  - node-lifecycle
-  - desktop-gui
-  - memento-cli-and-agent
-milestone:
-description: >-
-  claude code 作为平行智能体接入 MOSS。Ghost 是主持人,统筹 N 个 claude session,
-  人类与 ghost 共享会话上下文。核心价值:日常开发过程产品化、可被第三方观测。
-  loop = node 内 executor 沙箱动态编译的纯 python 代码协议;Claude 抽象内置
-  通讯/授权/MCP/审批,API 自解释,模型经 get-interface 反射即会写 loop。
-  审批走官方 --permission-prompt-tool stdio 控制协议。v1 claude code 专属。
+- node-lifecycle
+- desktop-gui
+- memento-cli-and-agent
+description: claude code 作为平行智能体接入 MOSS。Ghost 是主持人,统筹 N 个 claude session, 人类与 ghost
+  共享会话上下文。核心价值:日常开发过程产品化、可被第三方观测。 loop = node 内 executor 沙箱动态编译的纯 python 代码协议;Claude
+  抽象内置 通讯/授权/MCP/审批,API 自解释,模型经 get-interface 反射即会写 loop。 审批走官方 --permission-prompt-tool
+  stdio 控制协议。v1 claude code 专属。
+milestone: null
+priority: P1
+status: dropped
+status_note: superseded by dsh-productization; DeepSeek Harness is open-source with
+  a vendorable web frontend and formal SDK/ACP protocol surface
+title: Claude Code In Moss — Ghost 主持人统筹 N 个 claude 会话
+updated: '2026-08-14'
 ---
 
 # Claude Code In Moss
