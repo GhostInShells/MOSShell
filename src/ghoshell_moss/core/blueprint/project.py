@@ -7,6 +7,7 @@ from ghoshell_moss.core.blueprint.environment import (
     DEFAULT_NETWORK_SCOPE, DEFAULT_NETWORK_NAME, Environment,
     DEFAULT_NODES_DIR, MOSS_NAME_PATTERN,
     ENV_WORKSPACE_DIR_KEY,
+    NODE_PATH_GHOST_KEY, NODE_PATH_MODE_KEY, resolve_node_dir,
 )
 from ghoshell_moss.core.blueprint.cell import NodeManager, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
@@ -78,6 +79,8 @@ class HostModeMeta(BaseModel):
         default_factory=lambda: [
             DEFAULT_NODES_DIR,
             f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_MODE_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_GHOST_KEY}/{DEFAULT_NODES_DIR}",
         ],
         description="以 project 为出发点, 发现 nodes 的路径. ",
     )
@@ -107,12 +110,8 @@ class HostModeMeta(BaseModel):
     def node_dirs(self, env: Environment) -> list[Path]:
         """基于 node_paths 解析为绝对路径."""
         result = []
-        project_dir = env.project_path
         for relative_path in self.node_paths:
-            relative_path = relative_path.replace(
-                f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
-            )
-            cell_dir = project_dir / relative_path
+            cell_dir = resolve_node_dir(relative_path, env)
             if cell_dir.exists():
                 result.append(cell_dir.absolute())
         return result

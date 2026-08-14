@@ -27,6 +27,9 @@ from ghoshell_moss.core.blueprint.environment import (
     MOSS_META_FILE,
     MossMeta,
     WORKSPACE_PROJECT_ID_FILE,
+    NODE_PATH_GHOST_KEY,
+    NODE_PATH_MODE_KEY,
+    resolve_node_dir,
 )
 
 
@@ -426,6 +429,20 @@ class TestEnvironmentDirPaths:
         env = Environment(workspace=ws)
         assert env.default_project_nodes_dir.relative_to(env.project_path)
         assert env.default_workspace_nodes_dir.relative_to(env.workspace_path)
+
+    def test_resolve_node_dir_four_addresses(self, tmp_path):
+        # 四地址组合: 无前缀→project, $MOSS_WORKSPACE→workspace,
+        # $MODE→mode home, $GHOST→ghost home.
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        meta = MossMeta(name='testproj', default_mode='desktop', default_ghost='echo')
+        meta.write_to_directory(ws)
+        env = Environment(workspace=ws)
+
+        assert resolve_node_dir('nodes', env) == env.project_path / 'nodes'
+        assert resolve_node_dir(f'${ENV_WORKSPACE_DIR_KEY}/nodes', env) == env.workspace_path / 'nodes'
+        assert resolve_node_dir(f'${NODE_PATH_MODE_KEY}/nodes', env) == env.workspace_path / 'modes' / 'desktop' / 'nodes'
+        assert resolve_node_dir(f'${NODE_PATH_GHOST_KEY}/nodes', env) == env.workspace_path / 'ghosts' / 'echo' / 'nodes'
 
     def test_runtime_and_log_dirs_under_workspace(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME

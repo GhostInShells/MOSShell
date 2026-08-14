@@ -59,6 +59,9 @@ __all__ = [
 
     'WORKSPACE_CELL_RUNTIME_DIR',
     'DEFAULT_NODES_DIR',
+    'NODE_PATH_GHOST_KEY',
+    'NODE_PATH_MODE_KEY',
+    'resolve_node_dir',
 
     'PROJECT_MANIFESTS_PACKAGE',
     'GHOST_MANIFESTS_PACKAGE',
@@ -84,6 +87,12 @@ WORKSPACE_ENV_FILENAME = '.env'
 WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 WORKSPACE_CELL_RUNTIME_DIR = 'runtime/cells'
 DEFAULT_NODES_DIR = 'nodes'
+
+# node_paths 里的路径前缀占位符 (非环境变量, 仅 node_paths 语法).
+# $MOSS_WORKSPACE 复用环境变量名 ENV_WORKSPACE_DIR_KEY;
+# $GHOST / $MODE 是纯路径语义, 解析到当前 ghost / mode 的 home.
+NODE_PATH_GHOST_KEY = 'GHOST'
+NODE_PATH_MODE_KEY = 'MODE'
 
 # --- stubs --- #
 # workspace 的原始文件所处的 package 路径.
@@ -161,6 +170,22 @@ def _is_stub_ignored(file: Path) -> bool:
         return False
 
 
+def resolve_node_dir(relative_path: str, env: 'Environment') -> Path:
+    """把 node_paths 里的前缀占位符解析为绝对路径.
+
+    四地址组合 (各前缀对应一个确认方):
+      无前缀            → project_dir   (使用者)
+      $MOSS_WORKSPACE   → workspace     (管理者)
+      $MODE             → mode home     (mode 开发)
+      $GHOST            → ghost home    (ghost 自己)
+    """
+    path = relative_path
+    path = path.replace(f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path))
+    path = path.replace(f'${NODE_PATH_GHOST_KEY}', str(env.ghost_home))
+    path = path.replace(f'${NODE_PATH_MODE_KEY}', str(env.mode_home))
+    return env.project_path / path
+
+
 class MossMeta(BaseModel):
     """
     项目级元信息配置.
@@ -205,6 +230,8 @@ class MossMeta(BaseModel):
         default_factory=lambda: [
             DEFAULT_NODES_DIR,
             f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_MODE_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_GHOST_KEY}/{DEFAULT_NODES_DIR}",
         ],
         description="以 project 为出发点, 发现 nodes 的路径.",
     )
@@ -232,12 +259,8 @@ class MossMeta(BaseModel):
     def node_dirs(self, env: 'Environment') -> list[Path]:
         """基于 node_paths 解析为绝对路径."""
         result = []
-        project_dir = env.project_path
         for relative_path in self.node_paths:
-            relative_path = relative_path.replace(
-                f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
-            )
-            cell_dir = project_dir / relative_path
+            cell_dir = resolve_node_dir(relative_path, env)
             if cell_dir.exists():
                 result.append(cell_dir.absolute())
         return result
@@ -563,6 +586,16 @@ class Environment:
     def default_workspace_nodes_dir(self) -> Path:
         """workspace 内部默认的 nodes 发现路径. """
         return self.workspace_path.joinpath(DEFAULT_NODES_DIR)
+
+    @property
+    def ghost_home(self) -> Path:
+        """当前 ghost 的 home 目录 (workspace/ghosts/<ghost_name>)."""
+        return self.workspace_path / 'ghosts' / self.ghost_name
+
+    @property
+    def mode_home(self) -> Path:
+        """当前 mode 的 home 目录 (workspace/modes/<mode_name>)."""
+        return self.workspace_path / 'modes' / self.mode_name
 
     @property
     def cell_runtimes_dir(self) -> Path:
