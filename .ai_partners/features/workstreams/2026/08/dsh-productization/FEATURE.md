@@ -128,6 +128,7 @@ dsh 对外的「协议」不是一套，是三套独立的：
 - 「main」= wheel 里 bundled 单文件 Node 可执行，无需系统安装；注册文件 = cordis.yml。
 - `dsh --profile <name>` = 组装（composition），非 UI 类型。单进程单端口（web :3080）内部多 session；多开 = 多进程多端口。TUI = 外部插件 `turtle-ui`（`github:deepseek-harness/turtle-ui`），当前装不了（仓库未公开/私有）。
 - **无 brew 公式**，唯一分发渠道 npm（`npx @deepseek-ai/dsh web` / `npm i -g @deepseek-ai/dsh`，需 Node ^22.19 或 >=24）。
+- **无 per-project 配置发现**：dsh 唯一从 cwd 读的配置是 `.env`（环境变量层，`dsh-launch-environment` 的 `project-env`），无 claude code `.mcp.json` 那种项目级插件/工具挂载；workspace 只是 path 记账（`dsh-workspace`），不承载配置。不同 project 配不同 agent 能力（如挂不同 MCP）无原生机制——要么改全局 profile，要么 `DSH_HOME` 重定向（一个项目一个 home）绕开，后者是当前可用兜底。
 
 ### agent-surface 重定位（本轮最重要合成）
 
