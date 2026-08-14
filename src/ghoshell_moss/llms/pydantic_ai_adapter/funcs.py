@@ -56,7 +56,7 @@ class PydanticAIFuncs(MossLLMFuncs):
         *,
         instruction: str,
         prompt: str,
-        result_type: Type[RESULT_MODEL],
+        result_type: Type[RESULT_MODEL] | None = None,
         model: ResolvedModel,
         effort: Effort | None = None,
         export_anchor: str | Path | None = None,
@@ -82,7 +82,7 @@ class PydanticAIFuncs(MossLLMFuncs):
         *,
         instruction: str,
         prompt: list[Message],
-        result_type: Type[RESULT_MODEL],
+        result_type: Type[RESULT_MODEL] | None = None,
         model: ResolvedModel,
         effort: Effort | None = None,
         export_anchor: str | Path | None = None,
@@ -115,7 +115,7 @@ class PydanticAIFuncs(MossLLMFuncs):
         *,
         instruction: str,
         user_prompt: str | list[Any],
-        result_type: Type[RESULT_MODEL],
+        result_type: Type[RESULT_MODEL] | None,
         model: ResolvedModel,
         effort: Effort | None,
         export_anchor: str | Path | None,
@@ -166,14 +166,19 @@ class PydanticAIFuncs(MossLLMFuncs):
         )
         elapsed = time.perf_counter() - start
         output = result.output
-        typed = output if isinstance(output, result_type) else None
+        typed = output if result_type is not None and isinstance(output, result_type) else None
 
-        llm_result = LLMFuncResult[result_type](
+        llm_kwargs = dict(
             result=typed,
             content=_extract_text(result),
             usage=_dataclass_asdict(result.usage) if result.usage else {},
             cast=elapsed,
             retries=0,
+        )
+        llm_result = (
+            LLMFuncResult[result_type](**llm_kwargs)
+            if result_type is not None
+            else LLMFuncResult(**llm_kwargs)
         )
         if anchor is not None:
             frame = CallAnchor(
@@ -282,8 +287,10 @@ class PydanticAIFuncs(MossLLMFuncs):
 # ── helpers ────────────────────────────────────────────────────────────
 
 
-def _type_path(cls: Type) -> str:
-    """module:attr 路径 — 指向输出 schema, 可经 import_from_path 还原."""
+def _type_path(cls: Type | None) -> str:
+    """module:attr 路径 — 指向输出 schema, 可经 import_from_path 还原. None → 空."""
+    if cls is None:
+        return ""
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
@@ -303,7 +310,7 @@ def _resolve_anchor_target(export_anchor: str | Path | None) -> tuple[Path | Non
 
 def _build_call_anchor(
         instruction: str,
-        result_type: Type[RESULT_MODEL],
+        result_type: Type[RESULT_MODEL] | None,
         model: ResolvedModel,
         effort: Effort | None,
         *,

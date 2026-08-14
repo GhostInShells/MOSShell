@@ -673,7 +673,7 @@ class TokenCount:
 class LLMFuncs(ABC):
     """model func 引擎契约 — 模型调用的最小协议.
 
-    输入字符串 (instruction + prompt), 输出结构化 BaseModel, 单轮无状态。
+    输入字符串 (instruction + prompt), 输出结构化 BaseModel (可选 — 不指定则 content 承载原文), 单轮无状态。
     引擎无关: pydantic-ai 是首个实现, 底层 API / 未来消息引擎可替换。
     """
 
@@ -683,7 +683,7 @@ class LLMFuncs(ABC):
             *,
             instruction: str,
             prompt: str,
-            result_type: Type[RESULT_MODEL],
+            result_type: Type[RESULT_MODEL] | None = None,
             model: ResolvedModel,
             effort: Effort | None = None,
             export_anchor: str | Path | None = None,
@@ -695,6 +695,8 @@ class LLMFuncs(ABC):
 
         ``prompt`` — 纯字符串, moss-free。moss 协议 (Message / @ 文件) 的
         prompt 走 ``MossLLMFuncs`` (``call_prompt`` / ``call_messages``)。
+        ``result_type`` — 结构化输出类型 (BaseModel 子类)。None = 纯文本输出,
+        ``result`` 为 None, 原文由 ``content`` 承载。
         ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
         ``effort`` — thinking effort 刻度 (none..max), 不进 config, 引擎按协议
         映射到 pydantic-ai 的 effort 字段 (anthropic_effort / openai_reasoning_effort)。
@@ -772,7 +774,7 @@ class MossLLMFuncs(LLMFuncs):
             *,
             text: str,
             instruction: str,
-            result_type: Type[RESULT_MODEL],
+            result_type: Type[RESULT_MODEL] | None = None,
             model: ResolvedModel,
             base_dir: str | Path | None = None,
             expose_file_meta: bool = False,
@@ -812,7 +814,7 @@ class MossLLMFuncs(LLMFuncs):
             *,
             instruction: str,
             prompt: list[Message],
-            result_type: Type[RESULT_MODEL],
+            result_type: Type[RESULT_MODEL] | None = None,
             model: ResolvedModel,
             effort: Effort | None = None,
             export_anchor: str | Path | None = None,

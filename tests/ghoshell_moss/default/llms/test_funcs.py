@@ -195,6 +195,26 @@ async def test_call_null_result():
 
 
 @pytest.mark.asyncio
+async def test_call_plain_string_output():
+    """result_type=None -> raw string output, no structured result, no output_type forced."""
+    funcs = PydanticAIFuncs()
+    agent = _make_mock_agent(output="ok", text_parts=["ok"])
+
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
+        result = await funcs.call(
+            instruction="safety gate",
+            prompt="<code>",
+            result_type=None,
+            model=_make_resolved(),
+        )
+
+    assert result.result is None
+    assert result.content == "ok"
+    agent.run.assert_awaited_once()
+    assert agent.run.await_args.kwargs["output_type"] is None
+
+
+@pytest.mark.asyncio
 async def test_call_to_record():
     """LLMFuncResult.to_record() converts to weak-data record."""
     funcs = PydanticAIFuncs()
