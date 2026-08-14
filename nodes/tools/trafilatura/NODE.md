@@ -3,8 +3,9 @@ name: 'trafilatura'
 description: 'Local web content extraction via trafilatura — fetch URL and extract clean Markdown, no external API required.'
 category: tools
 singleton: true
+# 共享 tools venv 在 nodes/tools/ — 相对 node cwd 解析
 exec:
-  command: python
+  command: ../.venv/bin/python
   args: main.py
 ---
 
