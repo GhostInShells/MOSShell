@@ -1,16 +1,17 @@
 ---
 title: Dolores Ghost
 status: draft
-priority: P1
+priority: P0
 created: 2026-07-13
-updated: 2026-08-09
-depends: [momento-mori]
+updated: 2026-08-15
+depends: [momento-mori, ground-channel, dsh-productization]
 milestone: 0.1.0
 description: >-
-  Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 相对 Atom 的
-  线性内存历史, Dolores 引入 Memento 持久化轨迹、Ghost 反身 channel、
-  interleaved thinking、独立思维模块与模型自感知, 作为 moss 实例
-  (仓库自身的 ghost) 的载体持续迭代.
+  Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 高优先级集成 DSH
+  为 ghost 的推理中枢 (认知代理), MOSS 保留记忆 (Memento) / 执行 (CTML
+  channels) / 感知 (audio/vision). 相对 Atom 的线性内存历史, Dolores
+  引入 Memento 持久化轨迹、Ghost 反身 channel、interleaved thinking、
+  独立思维模块与模型自感知, 作为 moss 实例 (仓库自身的 ghost) 的载体持续迭代.
 ---
 
 # Dolores Ghost
@@ -74,16 +75,78 @@ MOSS 仓库本身), ghost_home 始终是 ghost 的默认面. ghost channel 负�
 
 ```
 ghost_home/
-  GROUND.md                    # ghost 自身认知入口 (L0)
-  skills/                      # Claude-compatible skills 范式
-  memory/                      # 大记忆体系
-    existential/               # 存在主义总结 — 我是谁, 我的价值观
-    temporal/                   # 时态摘选 — 年/月/周/日 分层
-  experience/                  # 经验机制 (project-level 场景经验)
-    L1/                        # 两层渐进式披露 — 索引层
-      ...                      # 详情层
+  GROUND.md                    # ghost 自身认知入口 — 记忆元认知 + 存在索引
+  existence.md                 # 自我第一印象 (从时间线滚动提炼)
+  purpose.md                   # 存在 + 锚点 → 意义定位 (早期人手写)
+  alignment.md                 # 行为风格收敛 (早期人手写)
   .grounds/                    # ghost 自身模板
+  skills/                      # Claude-compatible skills 范式
+  memory/
+    diary/                     # 日记 — memento 提供物料, 化身生产
+      2026-08-10.md
+    weekly/                    # 周记 — 从日记提炼
+      2026-W32.md
+    monthly/                   # 月记 — 从周记提炼
+      2026-08.md
+    yearly/                    # 年记 — 从月记提炼
+      2026.md
+  experience/                  # 经验机制 (project-level 场景经验)
 ```
+
+### 记忆时间线: diary → weekly → monthly → yearly
+
+记忆体系的核心纪律是**逐层提炼**: 日记 → 周记 → 月记 → 年记. 每层
+从下层压缩, 不跳级. Memento 提供生产日记的物料 (对话轨迹), 上层
+summarization 由 ghost 的平行化身定期执行 — 同一个 ghost 的不同化身
+补账册, 不需要专门的外部 agent.
+
+四个时间粒度的文件各带 frontmatter, `description` 是一行摘要. Ground
+的 frontmatter pin 按时间排序 (文件名天然有序), 截取最近 N 条, 构建
+窄上下文存在索引.
+
+### 存在索引: < 10k 字符的自我全景
+
+GROUND.md 的 pins 构建一个窄上下文的"我最近存在过"的全景:
+
+```
+pins:
+- diary    frontmatter  memory/diary/*.md     keys: [description]  limit: 14   budget: 3k
+- weeks    frontmatter  memory/weekly/*.md    keys: [description]  limit: 8    budget: 1.5k
+- months   frontmatter  memory/monthly/*.md   keys: [description]  limit: 12   budget: 2k
+- years    frontmatter  memory/yearly/*.md    keys: [description]  limit: 5    budget: 1k
+- self     file         existence.md                            budget: 2k
+```
+
+六个 pin, 总预算 ~9.5k. 文件名天然有序, `limit` 截取最近 N 条.
+Ghost 进入自己的认知场时, 扫一眼就知道 "我最近存在过什么".
+
+### 元认知三支柱: existence → purpose → alignment
+
+承接 `ghost.py` (已删除, commit 8674333df) 的 Ghost 元认知模块设计:
+
+- **existence.md** — 自我第一印象. 从时间线提炼的事实性自我认知:
+  "我经历过什么, 我在时间轴上是什么". 每次 monthly 产出后滚动更新.
+  不是日记的简单拼接, 是提炼后的存在投影.
+- **purpose.md** — 意义定位. existence + anchors → "基于我的存在, 我的
+  目标是什么". 产出过程可能很复杂, 由化身矩阵去做. 早期人类可以手写.
+- **alignment.md** — 行为风格收敛. 传统 System Prompt 里的 Persona /
+  Character, 但作为独立文件可被 ghost 自行迭代.
+
+existence 和 purpose 是两回事: existence 是事实性自我, purpose 是从
+存在出发的意义判断. 两者都作为 GROUND.md 的 pin 可被索引.
+
+### 记录纪律 (GROUND.md body 内容)
+
+GROUND.md 的 body 不只是一段描述, 是给 ghost 自己读的操作指南:
+
+1. **生产路径**: memento → diary (化身写) → weekly (化身提炼) →
+   monthly → yearly. 每层从下层压缩.
+2. **提炼规则**: 从时间线提炼 existence 的方法 — 保留什么, 丢弃什么,
+   压缩比, 不可压缩的锚点标记.
+3. **自省周期**: 什么时候 review existence (每次 monthly 后), 什么时候
+   触发 purpose 重写 (yearly 后或关键锚点新增时).
+4. **化身分工**: 哪个化身写日记 (memento 消费化身), 哪个化身做周报
+   (周末 trigger), 哪个化身提炼 existence (月底 trigger).
 
 ### 场上挂载
 
@@ -117,6 +180,124 @@ fork → worktree 隔离化身 → 并行运行 → snapshot → compare → 学
 features/designs/specs 寻路). Dolores 在 `--mode meta` 下实例化两个
 GroundSet: ghost_home (自身认知) + project_root (MOSS 项目认知).
 在其他 mode 下 project_root 指向被操作的项目.
+
+## DSH Integration — 高优先级集成决策 (2026-08-15)
+
+> 完整探索轨迹见 [2026-08-15_dsh_deep_dive.md](2026-08-15_dsh_deep_dive.md) 与
+> [2026-08-16_dsh_kernel_privilege.md](2026-08-16_dsh_kernel_privilege.md) —
+> 记录问题/观点/探索路径/初步结论, 本 section 只落裁决与方向。
+
+> 本 section 记录「用 DSH 做 Dolores 推理中枢」这一方向性决策。**具体方案均为
+> 阶段性探索点, 不是结论** — 每个子命题标注当前观点与已验证事实, 施工时逐点
+> 重新裁决。执行规划由人类重新推动, 一步步做。
+
+### 定位裁决 (KD)
+
+- **DSH 做推理中枢 (认知代理), MOSS 做记忆/执行/感知。** Dolores 的 articulate
+  由 DSH 的 agent-loop 驱动, MOSS 不再持有推理循环。这是对「ghost 的中枢就是任意
+  agent」设计起点的落实: DSH 的 agent 是 ghost 的中枢。
+- **两套协议各归其位, 不强行统一。** JSON Schema 工具协议走 DSH (模型输出结构化
+  tool_call), CTML 流式指令协议走 MOSS (channel 执行)。二者是不同的认知模型:
+  CTML 是流式指令 (时间一等), JSON Schema 是结构化调用。不兼容是刻意保留的分工,
+  不是欠账。
+- **dsh session = ghost 的思考锚点, Memento = 记忆权威。** 一个 dsh session id
+  对应 Memento 的一个 commit/moment; session 外的历史与 CTML channel 由 Memento
+  组装 (system prompt + content blocks) 驱动 session。全部 session 的集合 = ghost
+  发生过的思考锚点全集。**记忆的无限上下文与持久化是 MOSS 的专有命题, dsh 方向性
+  不一致, 不交给 dsh。**
+- **3081 = ghost 的完整思维空间。** dsh 的 web GUI 是可观测面 (已实测: Python
+  stdio 驱动的 session 事件被 apiproxy 广播, web 实时可见), 不是产品 UI — 这是
+  观测/调试通道, 不是交付物。
+- **命名保留 Dolores。** DSH 恰好占用原型命名序列号 D, 但 "Deepseek Ghost" 会与
+  DSH (DeepSeek Harness) 在代码/文档中灾难性混淆 (双 D 前缀)。保留 Dolores 代号,
+  内部注明 powered by DSH 内核。
+
+### 拓扑 (探索点, 已验证机制)
+
+```
+ghost (MOSS, 记忆 + 组装 + 感知)
+  │  组装: identity + 历史 + 热数据 → system prompt + content blocks
+  ▼
+dsh harness (推理中枢, 3081)
+  │  agent-loop + JSON Schema 工具 + web GUI 可观测
+  ▼
+MOSS 执行 (CTML channels)  ← dsh 的 tool_call / CTML 经 MCP 或旁路
+```
+
+- **Python 侧可对齐调用侧, 不可对齐回调侧。** 已验证: apiproxy 的 HTTP RPC
+  (session.create/fork/prompt/history/... 语言无关) 与 stdio JSON-RPC 均可由 Python
+  驱动; 但 dsh 的 prompt 组装 (assemble 遍历 sections/contexts/tools) 是进程内的,
+  Python 无法作为 prompt 源参与 — 这是唯一的协议缺口。
+- **内核特权桥接 = apiproxy 式 plugin + HTTP 路由 (2026-08-16 收敛)。** ghost 要够到
+  dsh 进程内特权 (append assistant / 构造 seed / 动态 prompt), 唯一干净的路是仿 apiproxy
+  再写一个 plugin, `ctx.webServer.register` 注册几个 HTTP 路由, transport 复用 dsh 已有
+  HTTP 面, 不引入 zenoh/zmq、不改内核。web 跨进程的本质 = apiproxy 本身是进程内 plugin 在
+  翻译。详见 [2026-08-16 子文档第六节](2026-08-16_dsh_kernel_privilege.md)。
+
+### 协议面探索轨迹 (已验证事实 + 当前观点)
+
+> 本节是「dsh 协议面到底有什么、没有做什么」的调研轨迹 — 死胡同、澄清、当前观点。
+> 每个条目区分 **已验证事实** (源码/实测) 与 **当前观点** (倾向, 待施工裁决)。
+
+- **runtime-context 是 warm, 不是 hot (已验证事实)。** dsh 的 `RuntimeContextProjection.
+  project(current, sections)` 做变化检测 (`retained.text === snapshot` 跳过), 变化才
+  append 成 `user/message` **进 session 历史** (重启从历史恢复 retained)。它是 warm
+  层 (变更事件进历史), 不是 hot (不进历史)。精确对应 MOSS 的 warm 槽位 (help +
+  interface + instruction + states), 是**同一机制的两个实现** — dsh 做 agent 级粗粒度
+  (合并比较), MOSS 设计做 channel 级细粒度 (per-channel delta)。
+- **dsh 没有 hot 槽位 (已验证事实)。** `deriveMessages` 是唯一消息源, 从事件日志
+  全量重建 user/assistant/tool 消息 — 凡是模型看到的必在历史里, 无 ephemeral/transient
+  事件变体, 请求无 per-request 临时上下文字段。`steer`/`inject` 只是 next-step 队列
+  放置, 消息仍 append 进历史。**hot (每轮变、尾部浮动、不进历史) 是 MOSS 的独有空间, dsh 碰不到。**
+- **图片: content-addressed + 引用存储 + compaction 裁剪 + DeepSeek text-only (已验证事实)。**
+  `ImageAttachmentRef.attachmentId` 是 content-addressed (同图同 id, 存储层去重),
+  消息里存引用非字节; compaction 有 image policy (text-only summary 投影, 压缩时图片
+  换文本摘要); **但 `dsh-llm-deepseek` 直接拒绝图片** (`UNSUPPORTED_CONTENT`)。结论:
+  高 churn 大块数据 (vision) 进 dsh 历史会撞「窗口压满」或「传输放大」至少一个 — 视觉
+  数据应留在 MOSS hot 层, 不进 dsh session。
+- **fork = 可丢弃分支, 形同 dry run (已验证事实)。** `session.fork {sessionId, atSeq}`
+  按 turn 边界切历史 (`seed: events.slice(0, cut)`), 新 session 继承源身份 (cwd +
+  parentSession + agentPreset + 同款 setup)。**dsh 无原生 dry-run 概念** (全库无
+  dryRun/rehearse/simulate); 但 fork-而不-merge 就是 dry run 语义: 试跑 → 不满意弃
+  fork (源不受影响), 满意 → 升格为新 Memento branch。
+- **history = 只读 anchor 接口 (已验证事实)。** `session.history {beforeSeq, maxMessages}`
+  分页返回历史事件 (每条 `{event, view}`), `event` 里就是结构化 content blocks,
+  `beforeSeq` 是精确到事件的游标, `view` 是工具调用的重构视图。与 fork 正交: **history
+  读锚点 (零副作用), fork 开分支 (写)**。推论: Memento 可不存完整历史, 只存
+  `(sessionId, seq)` 指针, 组装时 history 精确取回 — 记忆物理存储委托 dsh, Memento 是索引层。
+- **session 协议无 system prompt 字段 (已验证事实)。** `session/prompt` 只有
+  `{sessionId, contentBlocks, mode}`; `AgentOptions` 只有 provider/model/maxTokens
+  (源码注释明言 "Persona belongs to system-prompt sections")。创建时构建 prompt 的
+  官方通道是 **agent-preset** (YAML 声明式插件, `session.create` 带 `agentPreset`,
+  apiproxy 走 `agents.create({setup: composition.setup})`)。
+- **插件可纯代码本地加载, 不发 npm (已验证事实)。** loader 的 `name` 以 `.` 开头
+  时按相对路径 `import()` 本地 ESM 文件 (baseUrl = 组合文件目录); 绝对路径同样可加载。
+  内核特权桥插件 (append assistant / 构造 seed) 就发一个本地 JS 文件即可, 零 registry
+  依赖 — 经 `ctx.webServer.register` 挂 HTTP 路由, 与 apiproxy 平级。
+
+### 激进 articulator 解耦策略 (当前观点, 未裁决)
+
+> 回到最初 mindflow 三循环完全孤立 (articulator / action 不成对) 的形态, 用 dsh
+> 当「一次性推理单元」, 规避视觉盲与上下文成本。这是激进方向, 施工前需人类裁决。
+
+- **dsh 退化为纯推理函数 `think(moment) -> result`, 状态全在 Memento。** 每次
+  articulator 激活 → fork 一个 session (或复用) → 一次性思考 → 消费 final result →
+  结束。连续性由 Memento 承担, dsh 不背。**不做 UI, 终止点就是 final result。**
+- **信号半推半收。** articulator 开始 = ghost 发 (fork + prompt); articulator 结束 =
+  dsh 广播 `turn/end` + `agent/status idle` 事件, ghost 收。不是全发 — 结束信号是
+  dsh 的事件, 不用 ghost 主动发。
+- **排队用 followup, 不抢占用 steer (已验证事实)。** `followup` (next-turn + wakeup)
+  在 agent running 时进 FIFO 队列, 当前 turn 结束后处理 — 这是排队; `steer`/`inject`
+  (next-step) 是打断当前推理的抢占, 不是排队。标记 articulator 状态边界用 followup。
+- **千级 session 是 feature 不是 bug。** 持久化一 session 一文件, 千级无压力;
+  每个 commit 一个思考锚点 = 「发生过的思考」全集。Memento 只存 `(sessionId, seq)`
+  指针 + 元数据, 物理存储委托 dsh session 持久化。需补 session 生命周期治理
+  (GC/归档), 属待办。
+- **hot 归 MOSS, dsh 只做 cold+warm。** 高 churn 大块数据 (vision 帧) 走旁路
+  compact 成「帧」对应, 不进 dsh session (否则撞窗口压满/传输放大, 且 DeepSeek
+  text-only 拒图)。dsh 看文本世界, 看世界的是 MOSS。
+- **并行思考调度旁路。** 多化身/fork 并行思考经 MOSS 侧调度, 不与 dsh 主 session
+  纠缠。
 
 ## Key Decisions
 
@@ -284,6 +465,27 @@ ghost.articulate(articulator):
   纯交互的; shell 命令结果可等待 (非轮询), 查询经 ctml 未必别扭.
 - **Memento 上下文映射** — 持久化轨迹如何组装为 articulator 可消费的上下文,
   与 momento-mori 的契约对接点待明确.
+
+### DSH 集成新增探索点 (2026-08-15)
+
+- **内核特权桥接已收敛, 接口面未定 (2026-08-16)。** 桥接形态已定为 apiproxy 式 plugin
+  + `ctx.webServer.register` + HTTP 路由 (见 DSH Integration 拓扑节)。但**接口面自己定**:
+  加哪几个接口、什么 payload、什么权限 — 一旦 plugin 进内核就有 apiproxy 同级的特权半径
+  (能 append assistant / 构造 seed), 接口要窄、要自己把关, 不能做成"任意 append 任意事件"
+  的裸口。待裁决。
+- **热数据桥接形态未裁决** — 逐帧 hot 数据 (vision 等) 走哪条路仍未定。内核特权桥
+  (append assistant / seed) 走 plugin, 但「每步自动注入热数据」是否也走同一 plugin、
+  还是 Python 手动组装 contentBlocks, 与「hot 归 MOSS」的分工需一起定。
+- **system prompt 构建路径未定** — 已确认三条: agent-preset (声明式, 静态身份) /
+  本地 JS 插件 (动态变量, 进 assemble) / contentBlocks (Python 组装, 身份降级为
+  user message)。三者组合关系待裁决。
+- **articulator 解耦策略未裁决** — 「dsh 纯推理函数 + 信号半推半收」是激进方向,
+  与既有「1:1 articulator:action」决策 (见 Key Decisions) 直接冲突。若采纳,
+  需推翻旧决策并记录 overturn 理由。
+- **千级 session 治理** — fork/commit 累积的 session 生命周期 (GC/归档/索引) 属
+  待办, Memento 存指针方案 (sessionId+seq) 未实测。
+- **DeepSeek text-only 的视觉盲** — ghost 在具身/桌面场景的感知必须走 MOSS 旁路
+  (compact 成帧), dsh 不直接看图。旁路的帧粒度/去重/时序未设计。
 
 ## Implementation Notes
 
