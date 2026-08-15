@@ -1,0 +1,6 @@
+# dump from `ghoshell_moss.contracts.audio:AudioCaptureConfig` 
+sample_rate: 44100
+channels: 1
+format: pcm_s16le
+frame_duration_ms: 50
+device_pattern: blackhole

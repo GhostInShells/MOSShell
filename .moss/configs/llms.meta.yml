@@ -1,0 +1,53 @@
+# dump from `ghoshell_moss.contracts.llms:LLMConfig` 
+default:
+  service:
+    name: anthropic
+    base_url: $ANTHROPIC_BASE_URL
+    api_key: $ANTHROPIC_API_KEY
+    protocol: anthropic
+  default:
+    model: $ANTHROPIC_MODEL
+    description: Default Anthropic model — general-purpose, multimodal (text + image)
+    tags:
+      small_fast_model: $ANTHROPIC_SMALL_FAST_MODEL
+    context_window: 200000
+    max_output_tokens: 4096
+    content_types:
+    - text
+    converters: {}
+  models: {}
+providers:
+  deepseek:
+    service:
+      name: deepseek
+      base_url: $DEEPSEEK_ANTHROPIC_BASE_URL
+      api_key: $DEEPSEEK_API_KEY
+      protocol: anthropic
+    default:
+      model: $DEEPSEEK_MODEL
+      description: DeepSeek via Anthropic-compatible protocol — cost-efficient reasoning
+      tags:
+        small_fast_model: $DEEPSEEK_SMALL_FAST_MODEL
+      context_window: 200000
+      max_output_tokens: 4096
+      content_types:
+      - text
+      converters: {}
+    models: {}
+  deepseek_openai:
+    service:
+      name: deepseek_openai
+      base_url: $DEEPSEEK_OPENAI_BASE_URL
+      api_key: $DEEPSEEK_API_KEY
+      protocol: openai
+    default:
+      model: $DEEPSEEK_MODEL
+      description: DeepSeek via OpenAI-compatible protocol — for OpenAI client testing
+      tags:
+        small_fast_model: $DEEPSEEK_SMALL_FAST_MODEL
+      context_window: 200000
+      max_output_tokens: 4096
+      content_types:
+      - text
+      converters: {}
+    models: {}
