@@ -1,0 +1,2 @@
+# 调研运行时产物 — session 默认落 ./.sessions (相对 cwd = research 根)
+.sessions/
