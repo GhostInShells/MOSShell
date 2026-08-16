@@ -1,187 +1,125 @@
 ---
-title: DSH Productization
+title: DSH Fusion
 status: draft
 # priority: importance within the current stage (iteration cycle) — not development urgency
-priority: P1
+priority: P0
 created: 2026-08-14
-updated: 2026-08-14
-depends: []
+updated: 2026-08-16
+depends:
+  - agent-surface
 milestone: 0.1.0
 description: >-
-  将 DeepSeek Harness (dsh) 作为 MOSS 可驱动的外部 agent 面做产品化集成，
-  取代 claude-code-in-moss（已 drop，dsh 开源且 web 前端可 vendor）。开箱暴露其
-  mode / 工具 / session / 权限面，不做应用实现。
+  dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组件的一体化集成。dsh
+  从「候选外部 agent 面」升格为 MOSS 的推理中枢: MOSS 保留记忆 (Memento) /
+  执行 (CTML) / 感知 (audio/vision), dsh 承载 agent-loop 推理。本 workstream
+  决策融合本身, 落点分两条路径: gui 管理的 agent 与 dolores ghost。
 ---
 
-# DSH Productization
+# DSH Fusion
 
-> Use `moss features set-status dsh-productization <status> -m "note"` to update state.
-> 本 feature 是 8 月命题：**候选取代 `claude-code-in-moss`**。尚未实际运行，以下判断均为预判方向，留待施工时验证。
+> Use `moss features set-status dsh-fusion <status> -m "note"` to update state.
+> 从 `dsh-productization`(候选取代 claude-code-in-moss / 开箱不实现)翻篇改型而来,
+> 2026-08-16。旧定位与预判方向不在此保留, 见 [Legacy](#legacy)。
 
 ## Motivation
 
-DeepSeek Harness（`deepseek-ai/deepseek-harness`，MIT，2026-08-13 开发者预览）是一个
-「Model + Harness = Agent」的 coding harness，对标 Codex / Claude Code。与
-`claude-code-in-moss` 要桥接的 claude code 相比，dsh 有**更工程化的协议面**：
+DeepSeek Harness(`deepseek-ai/deepseek-harness`, MIT, 2026-08-13 开发者预览)是一个
+「Model + Harness = Agent」的 coding harness。其「更工程化的协议面」(Python SDK + 三套
+进程外协议 + session 持久化 + 一切皆插件)使它能成为 MOSS 的**核心推理组件**, 而非
+仅仅一个外部 agent 面。
 
-- 正式 Python SDK（`deepseek-harness`）+ TypeScript SDK + ACP 三套驱动协议；
-- `session_id` + `session_root`（JSONL）做跨进程 resume，不靠 daemon；
-- 「一切皆插件」（Cordis 内核），能力面可外部组合。
+融合的分工裁决(2026-08-15 收敛, 详见 research/ 轨迹):
 
-因此 dsh 是 MOSS 做「外部 agent 面产品化」的更强候选。本 workstream 的定位是**开箱不实现**：
-把 dsh 的 mode / 工具 / session 轨迹 / 权限预设原样搬到 MOSS，暴露给 Ghost 驱动，
-不替它写应用逻辑。
+- **DSH 做推理中枢 (认知代理), MOSS 做记忆/执行/感知。** Dolores 的 articulate 由 DSH
+  的 agent-loop 驱动, MOSS 不再持有推理循环。
+- **两套协议各归其位, 不强行统一。** JSON Schema 工具协议走 DSH, CTML 流式指令协议走
+  MOSS。不兼容是刻意保留的分工。
+- **dsh session = ghost 的思考锚点, Memento = 记忆权威。** 无限上下文与持久化是 MOSS 的
+  专有命题, 不交给 dsh。
 
-## Design Index
+## 两条落点路径
 
-- 参考 feature：`claude-code-in-moss`（同类的「桥 Node harness 进 Python MOSS」先例）
-- 集成关键面：`python/sdk`（Python SDK 源码）、`packages/acp`（权限机器裁决协议）
+融合本体已定, 落地走两条路径, 分别由独立 workstream 承载:
+
+### 路径 A: gui 管理的 agent (独立 feature)
+
+把 dsh 作为一个 **gui 可管理的 agent 实例** 暴露给 MOSS。基于已验证的 vendor 可行性:
+dsh web 前端是近乎通用的 agent session 表面(只认 `ISession` + `SessionEvent`), 任何满足
+contract 的 backend 都能挂它当界面。收敛形态 = matrix node 持有 session(owner 归 MOSS),
+vendor 的 chat 界面作 GUI 子进程, 父进程 proxy 转发 event 流 + 8 verb。
+源码级调研见 research/2026-08-14_dsh_source_survey.md。
+
+### 路径 B: dolores ghost (推理中枢)
+
+dsh 作为 Dolores 的推理中枢, 决策落在 `ghost-prototype-dolores` FEATURE 的
+DSH Integration 节。本 workstream 只提供融合基建, 不重复路径决策。
+见 `ghost-prototype-dolores` workstream 的 DSH Integration 节与
+research/2026-08-15_dsh_deep_dive.md。
+
+## 融合基建 (Scope)
+
+本 workstream 交付 dsh 融合的**可复用基建**, 供两条路径消费:
+
+1. **optional 依赖** — dsh 作为 `ghoshell-moss` 的 optional dependency(pyproject
+   `[project.optional-dependencies]`), 不污染核心安装。
+2. **Python 基建** — 落在 `src/ghoshell_moss/agents/dsh/`, 与 `memento_pydantic_agent`
+   同族。现状(2026-08-15 实验): `DshChannel` 直接 speak dsh stdio JSON-RPC, 已验证
+   全链路(3080 → MCP → moss → CTML → mesh → DshChannel → 3081)。官方 SDK 太简陋,
+   基建以自定义协议客户端为主。
+3. **测试 node** — `.moss/system_test_nodes/dsh_web_probe/` 已验证, 系统化测试承接。
+4. **装线** — 路径 B 的 dolores 装线同时进行。
 
 ## Key Decisions
 
-<!-- 以下为预判方向，非最终裁决。实际运行后由施工化身修正。 -->
+- **dsh = 推理中枢, MOSS = 记忆/执行/感知。** 这是融合的第一裁决, 两路径共享。
+  详见 Motivation。
+- **官方 SDK 不是基建底座。** 源码级调研(Python 类型面极薄, 只懂 3 个 event type)
+  与实验(DshChannel 直接 speak stdio JSON-RPC 跑通全链路)一致——基建以自定义协议
+  客户端为主, 官方 SDK 仅作参考。
+- **`agents/dsh/` 落点, 与 memento 同族。** 触发 `agents/` 包"第二个家族提级"的
+  约定(`agents/__init__.py`)。独立包 `ghoshell_dsh` 被否: 会切断与 agent-surface
+  骨架、memento 参照的关系。
+- **apiproxy 式 plugin 桥接内核特权 (2026-08-16 收敛)。** ghost 要够到 dsh 进程内
+  特权(append assistant / 构造 seed / 动态 prompt), 唯一干净的路是仿 apiproxy 再写
+  一个 plugin, `ctx.webServer.register` 注册 HTTP 路由, transport 复用 dsh 已有 HTTP
+  面, 不引入 zenoh/zmq、不改内核。接口面待裁决, 要窄。
+- **hot 归 MOSS, dsh 只做 cold+warm。** 高 churn 大块数据 (vision) 走 MOSS 旁路,
+  不进 dsh session(DeepSeek text-only 拒图, 撞窗口压满/传输放大)。
+- **激进 articulator 解耦策略未裁决。** 「dsh 退化为纯推理函数 `think(moment)->result`,
+  状态全在 Memento」与既有「1:1 articulator:action」决策冲突, 采纳需显式 overturn。
 
-### 集成路径（预判）
+## Shared Resources
 
-- **走 Python SDK，不走 CLI headless**。`dsh --profile headless "task"` 是一次性 print
-  模式（无 resume、每次新建 agent）；loop + resume 只在 SDK 层
-  （`DeepSeekHarness.run(input, { session_id })` → `RunResult`）。
-- **Cell 作宿主**：Cell 生命周期 = dsh runtime 生命周期（start = spawn，stop = reap），
-  把 dsh 的「spawn-per-instance」映射到 MOSS 的「cell 作为进程单元」。
-- **session_root 落 MOSS 存储**：MOSS 管 `session_root` + `session_id`，跨进程 resume 由 MOSS 持有。
-- **工程点**：SDK 是同步的（threading reader），MOSS 是 async，需 executor / 线程桥。
+> 融合相关的调研轨迹与验证物索引, 避免盲找。完整历史见 git log。
 
-### 融合点（为后续施工实例提供的预判方向）
+- **调研轨迹**(workstream research/ 下):
+  - `2026-08-14_dsh_source_survey.md` — 源码级调研(三套协议 / SDK / provider 注册 /
+    web vendor 可行性)
+  - `2026-08-15_dsh_deep_dive.md` — dsh 深入调研(沙盒 / Python SDK / JSON-RPC /
+    全链路实验 / 架构收敛)
+  - `2026-08-16_dsh_kernel_privilege.md` — 内核特权与三方桥(fork/compact 追加式 /
+    协议面不对称 / apiproxy 式桥接收敛)
+- **验证物**:
+  - `.moss/system_test_nodes/dsh_web_probe/` — DshChannel node, 全链路已跑通
+  - scripts/ — 后续系统化测试脚本落点
+- **官方源码锚点**: `python/sdk`(Python SDK)、`packages/acp`(权限仲裁)、
+  `packages/client/runtime`(web store, vendor 面)、`dsh-host-apiproxy`(桥接范本)
 
-1. **权限**：dsh 权限 = 两个独立 knob（沙箱 `workspace-write`/`danger-full-access` +
-   审批 `ask`/`never`），审批是可插拔 waterfall 应答者 seam。预判：MOSS 可把自己的 Ghost
-   插成那个应答者（走 ACP `session/request_permission`，逐条 `allow_once`/`reject_once`），
-   或走 SDK 预配置 preset。对应 MOSS「限制权限是为了授权」——沙箱 = 划边界，审批 = 敢放行。
+## Legacy
 
-2. **provider 协议化**：dsh 的 seam+inject ≈ MOSS 的 blueprint+IoC provider（都是「装线前
-   协议化」）。但协议化对象不同——dsh 协议化**外围**（fs/process/sandbox/shell/subagent/llm
-   可替换），MOSS 协议化**核心**（memento 是 contract，session 归属装线前由外部定）。预判：
-   这是「能否让 Ghost 拥有 dsh 连续性」的分界，也是 feature scope 的上限。
-
-3. **历史轨迹类交互方式**：dsh 的 `session_event_read/search/trace`（模型主动查自己历史，
-   工具形态）≈ memento 的 `log/window/show/confluences`（历史组装进上下文，底物形态）。
-   同一命题、不同交付。预判：这是两者最近的收敛点，值得持续对照——尤其 dsh 只有 fork
-   无 confluent，memento 有 reference-confluent（图结构）。
-
-4. **开箱能力面**：4 mode（standard/minimal/PTC·Code Mode/creator）+ 30+ 模型可见工具 +
-   session 轨迹 + 权限预设。预判：GUI 集成直接暴露这些「开箱」面（会话栏 / 模式选择 /
-   工具活动流 / 权限预设 / 自我查询入口），不重实现。
-
-5. **`-p` 交互方式**：dsh 的 loop 原语是 SDK 的 `run(input, { session_id })`，语义是
-   quiescence-based（`finalResponse` = 区间内最后一条 committed assistant 文本，非因果
-   绑定 prompt），不是 turn-causal。预判：GUI 集成要按「activity interval」而非「一问一答」
-   来建模多轮交互。
-
-### 定位边界（预判）
-
-- **可「驱动」，不可「拥有连续性」**：SDK 让 MOSS 能驱动 dsh 的 session，但 session 焊在
-  dsh runtime 内，不能 memento 化（不能外部 fork / confluent）。集成分界 = 执行反转了、
-  连续性未反转。
-- **开箱不实现**：只暴露 dsh 的开箱能力面，不做应用实现。
-
-## Survey Findings（源码级确认，2026-08-14）
-
-本轮做了源码级调研（未运行），把多数「预判」钉成事实或修正。核心结论：
-
-### 三套进程外协议，别混（本轮最大澄清）
-
-dsh 对外的「协议」不是一套，是三套独立的：
-
-| 协议 | 载体 | 角色 |
-|---|---|---|
-| **SDK**（`dsh-sdk-protocol`） | dsh 私有 JSON-RPC stdio | 驱动 agent：3 req（initialize/session/prompt/shutdown）+ 4 notif（session.event/session.status/subagent.started/subagent.finished）。raw lossless 44 型 session.event 流 + session_id 跨进程 resume |
-| **ACP**（`dsh-acp`） | 标准协议（agentclientprotocol.com）automation 子集，JSON-RPC stdio | 审批/自动化：7 方法，committed answers only + `session/request_permission` 权限仲裁 + fresh sessions only（无 resume） |
-| **Web/host** | Typert RPC over HTTP（:3080） | 浏览器连 host，不是 SDK 线 |
-
-- SDK = **agent 面**（resume + raw 轨迹）；ACP = **func/自动化面**（fresh + committed + 权限）。
-- 权限仲裁走 ACP `session/request_permission`，不走 SDK（SDK 的 responder 面是死能力，预留给未来）。这回应「单 turn 叫 func、多 turn 叫 agent」的区分。
-
-### Python SDK 是「驱动整个 dsh」，不是「连 dsh」
-
-- spawn 常驻子进程（`subprocess.Popen`），stdio JSON-RPC，**一次 spawn 跨多次 run 复用**（非 spawn-per-call），无自动重 spawn。
-- 同步阻塞 + threading reader，无 asyncio（MOSS 需 executor/线程桥——原预判确认）。
-- 控制面 = 常驻 reader 线程 + 订阅队列（pull）+ 按请求 on_notification 回调（push），**不是全局 on_event 注册**。传输层全双工，API 层同步 pull。
-- Python 类型面极薄：models.py 只有 `JsonObject`（裸 dict）+ `Notification(payload: dict)` + `InitializeResponse`。44 型 SessionEvent 全不声明、靠字符串 key 访问，只「看懂」3 个 event type（assistant/message、turn/end、agent/inbox/spliced）。
-
-### provider 注册 = build-time cordis.yml 声明，非环境发现
-
-- `DSH_CORDIS_CONFIG` 只是「指向哪个 cordis.yml」的文件指针，不是运行时发现。
-- 进程内 26 个 seam（swappable capability），core services 不可替换——`ctx.sessions` 确认为 core，session 焊死 runtime 内，「不可 memento 化」坐实。
-- 依赖是纯 IoC：`inject` 声明 → 等 service 出现 → `apply(ctx)` 注册。星形依赖（provider → abstract Definition），非 provider 网状。
-- 唯一运行时挂载例外：`initialize` 握手的 llm-deepseek fallback（DeepSeek-specific）。
-
-### 工具注入三条路 + SDK 默认配置极简
-
-- 工具注入：① TS Cordis 插件（`ctx.tools.register(defineTool(...))`，build-time）；② **MCP client**（MOSS 跑 MCP server，dsh `mcp-client` 连，工具以 `mcp__<server>__<tool>` 进模型——跨语言现成桥梁，MOSS 已有 `moss-shell mcp`）；③ skills（skill-filesystem 发现 + tool-skill 暴露）。
-- **MCP 只做 client 不做 server**：dsh 连别人的 MCP server，不把自己暴露成 MCP server（对外是 SDK/ACP/Typert）。且 MCP 只桥 tools，不桥 resources/prompts。
-- **SDK 默认 cordis.yml 只有 8 条目**（纯 chat spine：jsonrpc server + agent spine + llm + JSONL 持久化 + bash/fs 执行器），**无 model-facing 工具**。完整 dsh-base ~100 条（tool-bash/tool-fs/tool-web/tool-skill/tool-subagent 等 + skill 四件套）。
-- skills 四件套：skill（Definition）+ skill-filesystem/skill-badge（Provider）+ tool-skill（Consumer）。
-
-### workspace / main / profile / 安装
-
-- 无 `dsh init`。只需 `cwd`（DSH_CWD）+ `session_root`（DSH_SESSION_ROOT）两个路径指针。
-- 「main」= wheel 里 bundled 单文件 Node 可执行，无需系统安装；注册文件 = cordis.yml。
-- `dsh --profile <name>` = 组装（composition），非 UI 类型。单进程单端口（web :3080）内部多 session；多开 = 多进程多端口。TUI = 外部插件 `turtle-ui`（`github:deepseek-harness/turtle-ui`），当前装不了（仓库未公开/私有）。
-- **无 brew 公式**，唯一分发渠道 npm（`npx @deepseek-ai/dsh web` / `npm i -g @deepseek-ai/dsh`，需 Node ^22.19 或 >=24）。
-- **无 per-project 配置发现**：dsh 唯一从 cwd 读的配置是 `.env`（环境变量层，`dsh-launch-environment` 的 `project-env`），无 claude code `.mcp.json` 那种项目级插件/工具挂载；workspace 只是 path 记账（`dsh-workspace`），不承载配置。不同 project 配不同 agent 能力（如挂不同 MCP）无原生机制——要么改全局 profile，要么 `DSH_HOME` 重定向（一个项目一个 home）绕开，后者是当前可用兜底。
-
-### agent-surface 重定位（本轮最重要合成）
-
-dsh = agent-surface 骨架下的**第三个 concrete agent**（memento/claude/dsh），不是新协议命题：
-
-- **fusion point #4（开箱暴露 30+ 工具）是三重错帧**：① 工具不在 SDK wire 上（无 tool RPC）；② SDK 默认 cordis.yml 根本不挂工具；③ agent-surface §2.3「表面是最小驱动契约，不是 concrete 全能力面」——工具/mode 是 dsh 内部模型可见面，不是给 MOSS 的。
-- **应重定位**为「给 dsh 写一个 Agent 表面 adapter」（create/__call__/context/4 控制函数），不是「把 dsh 的 30 工具搬成 MOSS channel」。
-- **agent-surface §2.3 已回答「能否拥有 dsh 连续性」**：不该拥有——surface 是兼容契约，concrete agent 自持连续性。「可驱动不可拥有」不是 limitation，是正确落点。
-- 建议挂 `depends: agent-surface`，与 claude-code-in-moss 同骨架。
-
-### 架构差别（MOSS vs dsh）
-
-MOSS = 单 Ghost 多界面（matrix 承载 N 界面 cell）；dsh = 单进程多 session agent，界面（web/tui/headless）是 profile 的 patch 层附属，session 才是核心。
-
-### web 组件化 & vendor 可行性（源码确认）
-
-dsh web 前端组件化质量高，vendor chat 界面可行：
-
-- **store 分离**：状态引擎 = zustand vanilla + immer，在 `packages/client/runtime`，React-free；`web-react` 只是 React glue。数据层与视图层硬分离。
-- **client 侧自跑一个 Cordis ctx**（浏览器端），与 backend ctx 分离，唯一桥是 `connection`（RPC over WebSocket/HTTP）。UI 不直接碰 backend 的 `ctx.sessions`/`ctx.tools`。
-- **UI 由 slots 组装**（`ctx.slots` + SlotCore）：`root` → sidebar/conversation/details/shell.overlay。chat = `conversation` 槽，其它功能是别的槽，可裁剪。
-- **contract 面**（`client/runtime/src/client/contract/`）：`ISession`（8 verb：prompt/cancel/rename/loadOlder/command/updateQueue/readAttachment + projections + 读快照）、`SessionsPort`（list/create/open）、`IWorkspaces`（CRUD）。typed 在 `dsh-api-remotes` + `typert-protocol` 上。
-
-**关键结论：chat 界面是 SessionEvent 流的纯投影**（`ConversationNodeDefinition.match(event)` 从 event fold 出 ConversationSnapshot），自己不持有会话状态。proxy 只需转发 event 流 + 8 verb 即可正确渲染，无需复刻状态机。
-
-chat 的 backend 依赖全集（协议面）：
-- 读面：SessionEvent 流 → ConversationSnapshot；projections（todo/plan/goal 派生状态，按 key 读）。
-- 写面：prompt(queue|steer) / cancel / rename / command / updateQueue / readAttachment / feedback。
-- 系统指令：插件注册的 prompt section + persona 配置拼装（非写死）；compact 是斜杠命令（`command` verb）。
-- feedback：`feedback/record` → 本地 `ctx.messageFeedback`；官方上传仅 opt-in telemetry。fork：`ctx.sessions.fork(...)`。
-- workspace + session 列表：`SessionsPort` + `IWorkspaces`（含目录浏览、picker 等文件级读取）。
-
-**控制反转**：dsh web = Node backend（`ctx.agents` 持有 live session）+ 浏览器 client（RPC）；owner 是 backend，backend 替 client 下探 workspace 做文件级读取。要 ghost 可控，须把 session owner 从 dsh backend 反转到 MOSS。
-
-**收敛形态**：matrix node 持有 session（owner 归 MOSS），vendor 的 chat 界面作 GUI 子进程，父进程 proxy 转发 event 流 + 8 verb。proxy 只需翻译两样：event 流（读）+ ISession verb（写）；系统指令 / command / fork 全在 MOSS owner 边界内。
-
-**两个额外结论**：
-- dsh 前端是近乎通用的 agent session 表面——只认 `ISession` + `SessionEvent`，任何满足 contract 的 backend（dsh / claude code / MOSS）都能挂它当界面。
-- 存储侧（对 memento 有参考）：session 日志 = zstd 压的 append-only JSONL（真值）+ SQLite（二级索引 + 投影缓存），分离不可变日志与派生索引。
+旧 `dsh-productization`(2026-08-14)定位: 候选取代 `claude-code-in-moss`、开箱不实现、
+把 dsh 的 mode/工具/session/权限面原样搬到 MOSS。该定位已翻篇(2026-08-16): dsh 从
+外部 agent 面升格为核心推理组件。预判方向(集成路径/融合点/定位边界)与源码级调研细节
+不再在此保留——`git log -- .ai_partners/features/workstreams/2026/08/dsh-fusion/`
+可见完整演进历史, 源码级调研沉淀于 Shared Resources。
 
 ## Open Problems
 
-- 仍未实际运行 dsh，以上为源码级判断，需跑通 SDK 后验证（最小闭环见 Implementation Notes）。
-- `finalResponse` 的 quiescence 语义（activity interval）对 GUI 多轮交互的实际体验影响未知——注意：这是 agent 的原生语义，不是要 reduce 成 turn-based 的东西。
-- MCP 只桥 tools 不桥 resources/prompts——`moss-shell mcp` 实际暴露的是 tools 还是 resources/prompts，决定「注入工具」这条路的真实通量（待核）。
-- ACP `session/request_permission` 的触发源与超时/fail-closed 语义（MOSS 不答会怎样）待确认——决定融合点 #1 能否落地。
-- 集成层需容忍开发者预览的协议漂移（`serverInfo.version` 恒 0.0.1，无版本协商）。
-
-## Implementation Notes
-
-<!-- 施工化身在此追加 gotchas 与决策。 -->
-
-- 先跑通最小闭环：Python SDK spawn dsh → `run(input, session_id)` → 读 `RunResult.events`
-  渲染轨迹，验证 loop + resume + 权限预设三件事。
-- dsh 处于开发者预览，官方明示破坏兼容性变更——集成层需容忍协议漂移。
-- 参考 `claude-code-in-moss` 的桥接骨架，但用 Python SDK 替换 CLI 解析。
+- **内核特权桥接口面未定** — 加哪几个接口、什么 payload、什么权限(plugin 进内核后
+  有 apiproxy 同级特权半径, 不能做成"任意 append 任意事件"的裸口)。
+- **热数据桥接形态未定** — 逐帧 hot 数据走哪条路, 与「hot 归 MOSS」分工一起定。
+- **system prompt 构建路径未定** — agent-preset(声明式) / 本地 JS 插件(动态变量) /
+  contentBlocks(Python 组装)三者组合关系。
+- **激进解耦策略与旧决策的冲突** — 见 Key Decisions。
+- **千级 session 治理** — fork/commit 累积的 session 生命周期(GC/归档/索引)待办。
+- **协议漂移** — dsh 开发者预览, 破坏性变更; 集成层需容忍(`serverInfo.version` 恒 0.0.1)。

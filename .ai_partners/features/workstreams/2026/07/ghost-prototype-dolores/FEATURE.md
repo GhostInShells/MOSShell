@@ -183,8 +183,8 @@ GroundSet: ghost_home (自身认知) + project_root (MOSS 项目认知).
 
 ## DSH Integration — 高优先级集成决策 (2026-08-15)
 
-> 完整探索轨迹见 [2026-08-15_dsh_deep_dive.md](2026-08-15_dsh_deep_dive.md) 与
-> [2026-08-16_dsh_kernel_privilege.md](2026-08-16_dsh_kernel_privilege.md) —
+> 完整探索轨迹见 `2026-08-15_dsh_deep_dive.md` 与 `2026-08-16_dsh_kernel_privilege.md`
+> (位于 dsh-fusion workstream 的 research/ 下) —
 > 记录问题/观点/探索路径/初步结论, 本 section 只落裁决与方向。
 
 > 本 section 记录「用 DSH 做 Dolores 推理中枢」这一方向性决策。**具体方案均为
@@ -232,7 +232,8 @@ MOSS 执行 (CTML channels)  ← dsh 的 tool_call / CTML 经 MCP 或旁路
   dsh 进程内特权 (append assistant / 构造 seed / 动态 prompt), 唯一干净的路是仿 apiproxy
   再写一个 plugin, `ctx.webServer.register` 注册几个 HTTP 路由, transport 复用 dsh 已有
   HTTP 面, 不引入 zenoh/zmq、不改内核。web 跨进程的本质 = apiproxy 本身是进程内 plugin 在
-  翻译。详见 [2026-08-16 子文档第六节](2026-08-16_dsh_kernel_privilege.md)。
+  翻译。详见 `2026-08-16_dsh_kernel_privilege.md` 第六节(位于 dsh-fusion workstream 的
+  research/ 下)。
 
 ### 协议面探索轨迹 (已验证事实 + 当前观点)
 
