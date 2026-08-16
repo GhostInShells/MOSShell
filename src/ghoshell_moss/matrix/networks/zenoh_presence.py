@@ -38,7 +38,6 @@ from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
 from ghoshell_moss.core.blueprint.cell import (
     CellEvent,
     Cell,
-    CellEventLevel,
     CellPresence,
 )
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
@@ -136,11 +135,9 @@ class ZenohCellPresence(CellPresence):
         # 一次性 node (event_level 低于感知阈值 INFO) 不 provide channel —
         # provide 的副作用就是 publish 'channel added' event, 静默 cell 提供
         # 能力自相矛盾. 自洽闸口 (§10.6 轻闸口).
-        level = self._cell_presence.event_level
-        if not CellEventLevel.is_perceivable(level):
+        if not self._cell_presence.persist:
             raise RuntimeError(
-                f"cell {self._cell_presence.address} is a one-shot node "
-                f"(event_level={CellEventLevel.resolve(level).name}); "
+                f"cell {self._cell_presence.address} is a one-shot node; "
                 f"it cannot provide channel."
             )
 

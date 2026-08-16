@@ -124,6 +124,7 @@ class Matrix(Facade):
             description: str = '',
             category: str = '',
             env: Environment | None = None,
+            persist: bool = False,
     ) -> Self:
         """在运行时环境中, 用指明的方式定义一个 Node, 用它获得 matrix 实例"""
         from ghoshell_moss.factory import create_matrix, create_project
@@ -133,6 +134,8 @@ class Matrix(Facade):
             raise RuntimeError(f"The Matrix is already running: %s", _instance.this)
         env = env or Environment.discover()
         node = NodeManifest.new(node_name, description=description, category=category)
+        # 是否是一个持久运行节点.
+        node.persist = persist
         cell = build_cell_from_node(env, node)
         runtime_info = CellRuntimeInfo.from_cell(cell)
         project = create_project(env)

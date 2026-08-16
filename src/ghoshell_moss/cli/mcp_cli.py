@@ -39,6 +39,7 @@ def serve_ghost_bridge(
         "ghost_bridge",
         description="MCP ghost bridge — bidirectional agent↔ghost communication",
         env=env,
+        persist=True,
     )
 
     # uvicorn hijacks the root logger; stop moss logs from leaking to console.

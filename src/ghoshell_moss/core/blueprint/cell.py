@@ -186,6 +186,9 @@ class Cell(BaseModel):
     home: str = Field(
         description="进程工作目录, 绝对路径.",
     )
+    persist: bool = Field(
+        default=False,
+    )
     parent_address: str = Field(
         default='',
         description="运行当前 Cell 的父节点讯息.",
@@ -853,13 +856,18 @@ def build_cell_from_node(
         else:
             fullname = normalize(cell_name)
         home = env.cell_runtimes_dir.joinpath(fullname).resolve()
+    # NodeManifest 暂未暴露 event_level; 显式值优先, persist 仅作未声明时的兜底.
+    event_level = getattr(manifest, 'event_level', None)
+    if event_level is None:
+        event_level = None if manifest.persist else CellEventLevel.DEBUG
     return Cell(
         role=NODE_ROLE,
         name=cell_name,
         category=manifest.category,
+        persist=manifest.persist,
         uid=uid,
         singleton=manifest.singleton,
-        event_level=None if manifest.persist else CellEventLevel.DEBUG,
+        event_level=event_level,
         project_id=env.project_id,
         project_name=env.project_name,
         home=str(home.absolute()),
@@ -882,6 +890,7 @@ def build_host_cell(
         name=env.moss_meta.name,
         uid=env.project_id,
         category='',
+        persist=True,
         singleton=True,
         project_id=env.project_id,
         project_name=env.project_name,
