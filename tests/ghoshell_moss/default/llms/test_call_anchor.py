@@ -25,9 +25,10 @@ from pydantic_ai.messages import (
 
 from ghoshell_moss.anchor import Anchor, AnchorMeta
 from ghoshell_moss.contracts.llms import (
+    LLMConfig,
     ModelConfig,
     ModelRef,
-    ResolvedModel,
+    Provider,
     ServiceConfig,
 )
 from ghoshell_moss.llms.pydantic_ai_adapter.call_anchor import CallAnchor
@@ -38,14 +39,20 @@ class Score(BaseModel):
     value: int
 
 
-def _make_resolved() -> ResolvedModel:
-    return ResolvedModel(
-        service=ServiceConfig(
-            name="test", base_url="https://test.local/v1",
-            api_key="sk-test", protocol="openai",
+def _make_config() -> LLMConfig:
+    return LLMConfig(
+        default=Provider(
+            service=ServiceConfig(
+                name="test", base_url="https://test.local/v1",
+                api_key="sk-test", protocol="openai",
+            ),
+            default=ModelConfig(model="test-model"),
         ),
-        model=ModelConfig(model="test-model"),
     )
+
+
+def _make_funcs() -> PydanticAIFuncs:
+    return PydanticAIFuncs(config=_make_config())
 
 
 def _make_mock_agent(
@@ -100,7 +107,7 @@ def _anchor_files(dir: Path) -> list[Path]:
 @pytest.mark.asyncio
 async def test_call_produces_named_anchor(tmp_path: Path):
     """export_anchor=filename writes a two-section anchor; result carries it."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(
         output=Score(value=8),
         instruction="you are helpful",
@@ -114,7 +121,6 @@ async def test_call_produces_named_anchor(tmp_path: Path):
             instruction="you are helpful",
             prompt="rate this",
             result_type=Score,
-            model=_make_resolved(),
             export_anchor=tmp_path / "my-call",
         )
 
@@ -150,7 +156,7 @@ async def test_call_produces_named_anchor(tmp_path: Path):
 async def test_call_auto_uid_name(tmp_path: Path, monkeypatch):
     """export_anchor='' -> auto call-<uid[:8]> name in cwd."""
     monkeypatch.chdir(tmp_path)
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=1), text_parts=["ok"])
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -158,7 +164,6 @@ async def test_call_auto_uid_name(tmp_path: Path, monkeypatch):
             instruction="",
             prompt="hi",
             result_type=Score,
-            model=_make_resolved(),
             export_anchor="",
         )
 
@@ -173,7 +178,7 @@ async def test_call_auto_uid_name(tmp_path: Path, monkeypatch):
 @pytest.mark.asyncio
 async def test_no_export_no_anchor(tmp_path: Path):
     """Without export_anchor, no anchor is produced or written."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=3))
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -181,7 +186,6 @@ async def test_no_export_no_anchor(tmp_path: Path):
             instruction="",
             prompt="hi",
             result_type=Score,
-            model=_make_resolved(),
         )
 
     assert result.anchor is None
@@ -199,7 +203,7 @@ async def test_anchor_reconstructs_call(tmp_path: Path):
     rebuilds the typed request — the protocol's single key proposition.
     turns round-trips the full request/response incl thinking.
     """
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(
         output=Score(value=8),
         instruction="you are helpful",
@@ -213,7 +217,6 @@ async def test_anchor_reconstructs_call(tmp_path: Path):
             instruction="you are helpful",
             prompt="rate this",
             result_type=Score,
-            model=_make_resolved(),
             export_anchor=tmp_path / "my-call",
         )
 
@@ -256,7 +259,7 @@ async def test_call_consumes_anchor(tmp_path: Path):
     and response incl thinking preserved (内观). The anchor object is the
     constraint the interface takes; no paths at this layer.
     """
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     producer = _make_mock_agent(
         output=Score(value=8),
         instruction="base instruction",
@@ -269,7 +272,6 @@ async def test_call_consumes_anchor(tmp_path: Path):
             instruction="base instruction",
             prompt="first call",
             result_type=Score,
-            model=_make_resolved(),
             export_anchor=tmp_path / "base",
         )
     assert produced.anchor is not None
@@ -280,7 +282,6 @@ async def test_call_consumes_anchor(tmp_path: Path):
             instruction="continue",
             prompt="follow up",
             result_type=Score,
-            model=_make_resolved(),
             input_anchor=produced.anchor,
         )
 
@@ -295,7 +296,7 @@ async def test_call_consumes_anchor(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_call_consumes_anchor_from_file(tmp_path: Path):
     """Path → Anchor.from_file (data-structure self-explaining) → consume."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     producer = _make_mock_agent(
         output=Score(value=8),
         instruction="base instruction",
@@ -308,7 +309,6 @@ async def test_call_consumes_anchor_from_file(tmp_path: Path):
             instruction="base instruction",
             prompt="first call",
             result_type=Score,
-            model=_make_resolved(),
             export_anchor=tmp_path / "base",
         )
     path = _anchor_files(tmp_path)[0]
@@ -319,7 +319,6 @@ async def test_call_consumes_anchor_from_file(tmp_path: Path):
             instruction="continue",
             prompt="follow up",
             result_type=Score,
-            model=_make_resolved(),
             input_anchor=Anchor.from_file(path),
         )
 
@@ -337,7 +336,7 @@ async def test_call_unsupported_anchor_ref(tmp_path: Path):
     The strong type (from_anchor structural validation) is the judge — no
     manual ref-string comparison.
     """
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=1))
     foreign = Anchor(
         meta=AnchorMeta(name="foreign", ref="https://example.com/other-payload"),
@@ -349,8 +348,7 @@ async def test_call_unsupported_anchor_ref(tmp_path: Path):
                 instruction="",
                 prompt="hi",
                 result_type=Score,
-                model=_make_resolved(),
-                input_anchor=foreign,
+                    input_anchor=foreign,
             )
     agent.run.assert_not_called()
 
@@ -358,7 +356,7 @@ async def test_call_unsupported_anchor_ref(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_call_request_frame_anchor_cold_start(tmp_path: Path):
     """An anchor with empty turns (failed-call request frame) → cold start."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=1))
     request_frame = CallAnchor(
         instruction="x",
@@ -371,7 +369,6 @@ async def test_call_request_frame_anchor_cold_start(tmp_path: Path):
             instruction="",
             prompt="hi",
             result_type=Score,
-            model=_make_resolved(),
             input_anchor=request_frame,
         )
     assert agent.run.await_args.kwargs["message_history"] is None
@@ -387,14 +384,13 @@ async def test_call_thinking_injects_introspection(tmp_path: Path):
     The block is injected as the model's OWN prior reasoning (内观) — not a
     user prompt that invites a reply (外观).
     """
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=5), text_parts=["ok"])
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         await funcs.call(
             instruction="",
             prompt="question",
             result_type=Score,
-            model=_make_resolved(),
             thinking="my established position",
         )
     history = agent.run.await_args.kwargs["message_history"]
@@ -407,7 +403,7 @@ async def test_call_thinking_injects_introspection(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_call_thinking_chains_into_anchor(tmp_path: Path):
     """The injected thinking block lands in the produced anchor's turns."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     result = MagicMock()
     result.output = Score(value=7)
     result.usage = None
@@ -426,7 +422,6 @@ async def test_call_thinking_chains_into_anchor(tmp_path: Path):
             instruction="sys",
             prompt="question",
             result_type=Score,
-            model=_make_resolved(),
             export_anchor=tmp_path / "t",
             thinking="my position",
         )
@@ -442,7 +437,7 @@ async def test_call_thinking_chains_into_anchor(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_call_thinking_after_anchor_history(tmp_path: Path):
     """With input_anchor, the thinking block follows the anchor turns."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     producer = _make_mock_agent(
         output=Score(value=8),
         instruction="base instruction",
@@ -455,7 +450,6 @@ async def test_call_thinking_after_anchor_history(tmp_path: Path):
             instruction="base instruction",
             prompt="first call",
             result_type=Score,
-            model=_make_resolved(),
             export_anchor=tmp_path / "base",
         )
     assert produced.anchor is not None
@@ -466,7 +460,6 @@ async def test_call_thinking_after_anchor_history(tmp_path: Path):
             instruction="continue",
             prompt="follow up",
             result_type=Score,
-            model=_make_resolved(),
             input_anchor=produced.anchor,
             thinking="fresh position",
         )
@@ -484,7 +477,7 @@ async def test_call_thinking_after_anchor_history(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_request_frame_survives_failed_call(tmp_path: Path):
     """Request anchor is dumped before the call — a failed call keeps it."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=None, exc=RuntimeError("boom"))
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -493,8 +486,7 @@ async def test_request_frame_survives_failed_call(tmp_path: Path):
                 instruction="you are helpful",
                 prompt="rate this",
                 result_type=Score,
-                model=_make_resolved(),
-                export_anchor=tmp_path / "my-call",
+                    export_anchor=tmp_path / "my-call",
             )
 
     files = _anchor_files(tmp_path)
@@ -515,14 +507,13 @@ async def test_request_frame_survives_failed_call(tmp_path: Path):
 async def test_call_prompt_resolves_at_files(tmp_path: Path):
     """call_prompt runs the @ protocol — file content reaches agent.run."""
     (tmp_path / "notes.md").write_text("file body here", encoding="utf-8")
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=1), text_parts=["ok"])
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         await funcs.call_prompt(
             text="read this:\n@notes.md",
             instruction="",
             result_type=Score,
-            model=_make_resolved(),
             base_dir=tmp_path,
         )
     prompt = agent.run.await_args.args[0]
@@ -534,7 +525,7 @@ async def test_call_messages_converts_blocks(tmp_path: Path):
     """call_messages maps moss Message blocks to pydantic-ai parts."""
     from ghoshell_moss.message import Message
 
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=1), text_parts=["ok"])
     msg = Message.new().with_content("hello")
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -542,7 +533,6 @@ async def test_call_messages_converts_blocks(tmp_path: Path):
             instruction="",
             prompt=[msg],
             result_type=Score,
-            model=_make_resolved(),
         )
     prompt = agent.run.await_args.args[0]
     assert [p.content for p in prompt] == ["hello"]

@@ -22,7 +22,9 @@ from ghoshell_moss.contracts.llms import (
     BenchmarkMeta,
     BenchmarkRecord,
     BenchmarkRun,
+    CallSettings,
     Effort,
+    LLMConfig,
     LLMFuncResult,
     LLMFuncResultRecord,
     MossLLMFuncs,
@@ -30,6 +32,7 @@ from ghoshell_moss.contracts.llms import (
     ResolvedModel,
     TokenCount,
 )
+from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.llms.pydantic_ai_adapter.call_anchor import CallAnchor
 from ghoshell_moss.message import Message
 
@@ -43,13 +46,41 @@ __all__ = ["PydanticAIFuncs"]
 class PydanticAIFuncs(MossLLMFuncs):
     """LLMFuncs 的 pydantic-ai 引擎实现.
 
-    依赖 ``build_agent(resolved)`` 构造 pydantic-ai Agent, 再通过 ``run`` (async)
-    执行单轮调用。三个入口共享私有 ``_call_impl`` (build_agent + history +
-    anchor + run): ``call(prompt: str)`` 是 moss-free 字符串入口,
-    ``call_messages(prompt: list[Message])`` 是 moss 块入口 (经转换协议),
-    ``call_prompt(text: str)`` 继承 ``MossLLMFuncs`` 默认 (@ 文件协议 →
-    call_messages)。run_benchmark() 在 call 之上加 case 循环与结果持久化。
+    构造函数绑定 ``config`` (LLMConfig) + ``logger``; 调用时只传配置路径
+    (provider/model/tag), 引擎内部解析 ResolvedModel 再 build_agent。
+    三个入口共享私有 ``_call_impl`` (build_agent + history + anchor + run):
+    ``call(prompt: str)`` 是 moss-free 字符串入口, ``call_messages(prompt:
+    list[Message])`` 是 moss 块入口 (经转换协议), ``call_prompt(text: str)``
+    继承 ``MossLLMFuncs`` 默认 (@ 文件协议 → call_messages)。run_benchmark()
+    在 call 之上加 case 循环与结果持久化。
     """
+
+    def __init__(
+            self,
+            logger: LoggerItf | None = None,
+            config: LLMConfig | None = None,
+    ) -> None:
+        self._logger = logger or get_moss_logger()
+        self._config = (config or LLMConfig()).resolve()
+
+    def _resolve(
+            self,
+            provider: str = "",
+            model: str = "",
+            tag: str | None = None,
+    ) -> ResolvedModel:
+        """配置路径 → ResolvedModel, 校验关键 env var 已就绪."""
+        resolved = self._config.get_model(provider=provider, model=model, tag=tag)
+        for name, field in (
+            ("api_key", resolved.service.api_key),
+            ("base_url", resolved.service.base_url),
+        ):
+            if isinstance(field, str) and field.startswith("$"):
+                raise ValueError(
+                    f"env var {field[1:]} is not set (service "
+                    f"{resolved.service.name!r} {name})"
+                )
+        return resolved
 
     async def call(
         self,
@@ -57,7 +88,10 @@ class PydanticAIFuncs(MossLLMFuncs):
         instruction: str,
         prompt: str,
         result_type: Type[RESULT_MODEL] | None = None,
-        model: ResolvedModel,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
+        settings: CallSettings | None = None,
         effort: Effort | None = None,
         export_anchor: str | Path | None = None,
         anchor_description: str = "",
@@ -69,7 +103,8 @@ class PydanticAIFuncs(MossLLMFuncs):
             instruction=instruction,
             user_prompt=prompt,
             result_type=result_type,
-            model=model,
+            resolved=self._resolve(provider=provider, model=model, tag=tag),
+            settings=settings,
             effort=effort,
             export_anchor=export_anchor,
             anchor_description=anchor_description,
@@ -83,7 +118,10 @@ class PydanticAIFuncs(MossLLMFuncs):
         instruction: str,
         prompt: list[Message],
         result_type: Type[RESULT_MODEL] | None = None,
-        model: ResolvedModel,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
+        settings: CallSettings | None = None,
         effort: Effort | None = None,
         export_anchor: str | Path | None = None,
         anchor_description: str = "",
@@ -102,7 +140,8 @@ class PydanticAIFuncs(MossLLMFuncs):
             instruction=instruction,
             user_prompt=messages_to_parts(prompt, with_meta=True),
             result_type=result_type,
-            model=model,
+            resolved=self._resolve(provider=provider, model=model, tag=tag),
+            settings=settings,
             effort=effort,
             export_anchor=export_anchor,
             anchor_description=anchor_description,
@@ -116,7 +155,8 @@ class PydanticAIFuncs(MossLLMFuncs):
         instruction: str,
         user_prompt: str | list[Any],
         result_type: Type[RESULT_MODEL] | None,
-        model: ResolvedModel,
+        resolved: ResolvedModel,
+        settings: CallSettings | None,
         effort: Effort | None,
         export_anchor: str | Path | None,
         anchor_description: str,
@@ -127,8 +167,8 @@ class PydanticAIFuncs(MossLLMFuncs):
 
         ``user_prompt`` 是已就绪的 pydantic-ai prompt (str 或 UserContent parts),
         由 call / call_messages 各自完成转换后传入。
-        ``model`` 必须是已 resolve 的 ResolvedModel (api_key 已解密, 仅内存).
-        ``effort`` 透传给 build_agent, 由它按协议映射到 effort 字段.
+        ``resolved`` 必须是已 resolve 的 ResolvedModel (api_key 已解密, 仅内存).
+        ``settings`` / ``effort`` 透传给 build_agent, 由它按协议映射.
         ``export_anchor`` — 锚的目标文件名 (无 .anchor.yml 后缀, 可含路径).
         None = 不产锚; ``""`` = 自动生成带 uid 的名字; 其它 = 稳定地址.
         调用前后各落一次锚: 调用前写请求帧 (调用失败也保留请求锚), 成功后
@@ -146,25 +186,41 @@ class PydanticAIFuncs(MossLLMFuncs):
         from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
 
         anchor_dir, base_name = _resolve_anchor_target(export_anchor)
-        agent = build_agent(model, effort=effort)
+        agent = build_agent(
+            resolved,
+            settings=settings,
+            effort=effort,
+        )
         history = _build_history(input_anchor, thinking)
 
         anchor = None
         if anchor_dir is not None:
             anchor = _build_call_anchor(
-                instruction, result_type, model, effort,
+                instruction, result_type, resolved, effort,
                 name=base_name, description=anchor_description,
             )
             anchor.dump_to_dir(anchor_dir, anchor.meta.name)
 
-        start = time.perf_counter()
-        result = await agent.run(
-            user_prompt,
-            output_type=result_type,
-            instructions=instruction or None,
-            message_history=history,
+        self._logger.debug(
+            "llms call: service=%s model=%s effort=%s settings=%s",
+            resolved.service.name, resolved.model.model, effort, settings,
         )
+        start = time.perf_counter()
+        try:
+            result = await agent.run(
+                user_prompt,
+                output_type=result_type,
+                instructions=instruction or None,
+                message_history=history,
+            )
+        except Exception:
+            self._logger.exception(
+                "llms call failed: service=%s model=%s",
+                resolved.service.name, resolved.model.model,
+            )
+            raise
         elapsed = time.perf_counter() - start
+        self._logger.debug("llms call done: elapsed=%.2fs", elapsed)
         output = result.output
         typed = output if result_type is not None and isinstance(output, result_type) else None
 
@@ -183,7 +239,7 @@ class PydanticAIFuncs(MossLLMFuncs):
         if anchor is not None:
             frame = CallAnchor(
                 instruction=instruction,
-                model=ModelRef.from_resolved(model),
+                model=ModelRef.from_resolved(resolved),
                 result_type=_type_path(result_type),
                 effort=effort,
                 turns=serialize_messages(result.all_messages()),
@@ -197,8 +253,10 @@ class PydanticAIFuncs(MossLLMFuncs):
     async def run_benchmark(
         self,
         meta: BenchmarkMeta,
-        model: ResolvedModel,
         *,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
         cwd: Path | None = None,
         output_file: Path | None = None,
         effort: Effort | None = None,
@@ -218,10 +276,11 @@ class PydanticAIFuncs(MossLLMFuncs):
             raise ValueError("BenchmarkMeta.result_type is required")
         result_type = import_from_path(meta.result_type)
         cases = _load_cases(meta, cwd)
+        resolved = self._resolve(provider=provider, model=model, tag=tag)
         run = BenchmarkRun(
             label=meta.title,
             meta=meta,
-            model=ModelRef.from_resolved(model),
+            model=ModelRef.from_resolved(resolved),
         )
         results: list[LLMFuncResultRecord] = []
         for case in cases:
@@ -237,7 +296,9 @@ class PydanticAIFuncs(MossLLMFuncs):
                     instruction=inst,
                     prompt=prompt_str,
                     result_type=result_type,
+                    provider=provider,
                     model=model,
+                    tag=tag,
                     effort=case_effort,
                     thinking=case_thinking,
                 )
@@ -252,22 +313,25 @@ class PydanticAIFuncs(MossLLMFuncs):
         self,
         text: str,
         *,
-        model: ResolvedModel | None = None,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
         include_tokens: bool = False,
     ) -> TokenCount:
         """tiktoken 计数 — openai 协议精确, 非 openai 协议为估算.
 
-        ``model`` 为 None 或非 openai 协议时回退 o200k_base 并标 estimate。
+        路径全空或非 openai 协议时回退 o200k_base 并标 estimate。
         tiktoken 惰性 import (依赖 ghost extra 的 pydantic-ai-slim[openai])。
         """
         import tiktoken
 
-        if model is None:
+        if not (provider or model or tag):
             service, model_name, estimate = "", "", True
             enc = tiktoken.get_encoding("o200k_base")
         else:
-            service, model_name = model.service.name, model.model.model
-            estimate = model.client_protocol != "openai"
+            resolved = self._resolve(provider=provider, model=model, tag=tag)
+            service, model_name = resolved.service.name, resolved.model.model
+            estimate = resolved.client_protocol != "openai"
             try:
                 enc = tiktoken.encoding_for_model(model_name)
             except KeyError:

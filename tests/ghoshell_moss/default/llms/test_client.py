@@ -1,6 +1,6 @@
 """Tests for build_agent — pydantic-ai model construction with effort mapping."""
 
-from ghoshell_moss.contracts.llms import ResolvedModel, ServiceConfig, ModelConfig
+from ghoshell_moss.contracts.llms import CallSettings, ResolvedModel, ServiceConfig, ModelConfig
 from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
 
 
@@ -37,7 +37,8 @@ class TestBuildAgentEffort:
 
     def test_temperature_max_tokens_go_to_agent_settings(self):
         agent = build_agent(
-            _resolved("openai", "gpt-5"), temperature=0.3, max_output_tokens=512,
+            _resolved("openai", "gpt-5"),
+            settings=CallSettings(temperature=0.3, max_output_tokens=512),
         )
         assert agent.model_settings["temperature"] == 0.3
         assert agent.model_settings["max_tokens"] == 512

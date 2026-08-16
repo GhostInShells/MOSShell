@@ -17,9 +17,11 @@ from ghoshell_moss.contracts.llms import (
     BenchmarkCase,
     BenchmarkMeta,
     BenchmarkRecord,
+    LLMConfig,
     LLMFuncResult,
     LLMFuncResultRecord,
     ModelRef,
+    Provider,
     ResolvedModel,
     ServiceConfig,
     ModelConfig,
@@ -44,14 +46,20 @@ class Tag(BaseModel):
 # ── fixtures ──────────────────────────────────────────────────────────
 
 
-def _make_resolved() -> ResolvedModel:
-    return ResolvedModel(
-        service=ServiceConfig(
-            name="test", base_url="https://test.local/v1",
-            api_key="sk-test", protocol="openai",
+def _make_config() -> LLMConfig:
+    return LLMConfig(
+        default=Provider(
+            service=ServiceConfig(
+                name="test", base_url="https://test.local/v1",
+                api_key="sk-test", protocol="openai",
+            ),
+            default=ModelConfig(model="test-model"),
         ),
-        model=ModelConfig(model="test-model"),
     )
+
+
+def _make_funcs() -> PydanticAIFuncs:
+    return PydanticAIFuncs(config=_make_config())
 
 
 def _make_mock_agent(output: BaseModel | None = None, text_parts: list[str] | None = None):
@@ -157,7 +165,7 @@ class TestDataclassAsDict:
 @pytest.mark.asyncio
 async def test_call_structured_output():
     """Structured call returns typed LLMFuncResult."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=8), text_parts=["thinking..."])
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -165,7 +173,6 @@ async def test_call_structured_output():
             instruction="you are helpful",
             prompt="rate this",
             result_type=Score,
-            model=_make_resolved(),
         )
 
     assert isinstance(result, LLMFuncResult)
@@ -179,7 +186,7 @@ async def test_call_structured_output():
 @pytest.mark.asyncio
 async def test_call_null_result():
     """When output is not the expected type, result stays None."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output="plain string", text_parts=["hello"])
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -187,7 +194,6 @@ async def test_call_null_result():
             instruction="",
             prompt="hi",
             result_type=Score,
-            model=_make_resolved(),
         )
 
     assert result.result is None
@@ -197,7 +203,7 @@ async def test_call_null_result():
 @pytest.mark.asyncio
 async def test_call_plain_string_output():
     """result_type=None -> raw string output, no structured result, no output_type forced."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output="ok", text_parts=["ok"])
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -205,7 +211,6 @@ async def test_call_plain_string_output():
             instruction="safety gate",
             prompt="<code>",
             result_type=None,
-            model=_make_resolved(),
         )
 
     assert result.result is None
@@ -217,7 +222,7 @@ async def test_call_plain_string_output():
 @pytest.mark.asyncio
 async def test_call_to_record():
     """LLMFuncResult.to_record() converts to weak-data record."""
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Tag(label="greeting", confidence=0.95))
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
@@ -225,7 +230,6 @@ async def test_call_to_record():
             instruction="",
             prompt="classify",
             result_type=Tag,
-            model=_make_resolved(),
         )
 
     record = result.to_record()
@@ -252,14 +256,12 @@ async def test_run_benchmark_basic(tmp_path: Path):
         result_type="ghoshell_moss.contracts.llms:ModelRef",
         cases_file=cases_file.name,
     )
-    resolved = _make_resolved()
-
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Tag(label="ok", confidence=0.5))
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
         record = await funcs.run_benchmark(
-            meta, resolved, cwd=tmp_path,
+            meta, cwd=tmp_path,
         )
 
     assert isinstance(record, BenchmarkRecord)
@@ -284,11 +286,11 @@ async def test_run_benchmark_output_file(tmp_path: Path):
         cases_file=cases_file.name,
     )
     output = tmp_path / "results.jsonl"
-    funcs = PydanticAIFuncs()
+    funcs = _make_funcs()
     agent = _make_mock_agent(output=Score(value=1))
 
     with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
-        await funcs.run_benchmark(meta, _make_resolved(), cwd=tmp_path, output_file=output)
+        await funcs.run_benchmark(meta, cwd=tmp_path, output_file=output)
 
     assert output.is_file()
     lines = output.read_text().strip().splitlines()
@@ -307,15 +309,29 @@ def test_run_benchmark_missing_result_type():
 
 
 class TestCountTokens:
-    def _resolved(self, protocol: str, model: str) -> ResolvedModel:
-        return ResolvedModel(
-            service=ServiceConfig(name="s", base_url="http://x", api_key="k", protocol=protocol),
-            model=ModelConfig(model=model),
-        )
+    def _funcs(self) -> PydanticAIFuncs:
+        return PydanticAIFuncs(config=LLMConfig(
+            default=Provider(
+                service=ServiceConfig(
+                    name="s", base_url="http://x", api_key="k", protocol="openai",
+                ),
+                default=ModelConfig(model="gpt-4o"),
+                models={"gpt-4": ModelConfig(model="gpt-4")},
+            ),
+            providers={
+                "claude": Provider(
+                    service=ServiceConfig(
+                        name="claude", base_url="http://x", api_key="k",
+                        protocol="anthropic",
+                    ),
+                    default=ModelConfig(model="claude-sonnet-4-6"),
+                ),
+            },
+        ))
 
     def test_openai_gpt4o_uses_o200k(self):
-        f = PydanticAIFuncs()
-        r = f.count_tokens("hello world", model=self._resolved("openai", "gpt-4o"))
+        f = self._funcs()
+        r = f.count_tokens("hello world", provider="s", model="gpt-4o")
         assert r.encoding == "o200k_base"
         assert r.estimate is False
         assert r.count == 2
@@ -323,27 +339,27 @@ class TestCountTokens:
         assert r.model == "gpt-4o"
 
     def test_openai_gpt4_uses_cl100k(self):
-        f = PydanticAIFuncs()
-        r = f.count_tokens("hello world", model=self._resolved("openai", "gpt-4"))
+        f = self._funcs()
+        r = f.count_tokens("hello world", provider="s", model="gpt-4")
         assert r.encoding == "cl100k_base"
         assert r.estimate is False
 
     def test_non_openai_is_estimate_with_fallback(self):
-        f = PydanticAIFuncs()
-        r = f.count_tokens("hello world", model=self._resolved("anthropic", "claude-sonnet-4-6"))
+        f = self._funcs()
+        r = f.count_tokens("hello world", provider="claude")
         assert r.estimate is True
         assert r.encoding == "o200k_base"  # tiktoken 不认识 → 回退
 
     def test_no_model_is_estimate_and_blank(self):
-        f = PydanticAIFuncs()
+        f = self._funcs()
         r = f.count_tokens("hello world")
         assert r.estimate is True
         assert r.service == ""
         assert r.model == ""
 
     def test_include_tokens_materializes_ids(self):
-        f = PydanticAIFuncs()
-        r = f.count_tokens("hi there", model=self._resolved("openai", "gpt-4o"), include_tokens=True)
+        f = self._funcs()
+        r = f.count_tokens("hi there", provider="s", model="gpt-4o", include_tokens=True)
         assert r.tokens is not None
         assert len(r.tokens) == r.count == 2
 

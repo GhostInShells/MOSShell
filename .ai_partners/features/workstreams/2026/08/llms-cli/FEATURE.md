@@ -5,11 +5,11 @@ description: Make llms config genuinely usable — Project.configs() single-sour
   construction, then a `moss llms` CLI backed by pydantic-ai. Prep for dolores.
 milestone: null
 priority: P1
-status: completed
-status_note: 'llms CLI 完成: call/test/count + --export-anchor/--input-anchor/--thinking/--expose-file-meta
-  + benchmark (effort/thinking/per-case)。ground 进 instruction 由 ground feature 承接。'
+status: in-progress
+status_note: '重构完成: 句柄绑定 config+logger + 路径选择 + CallSettings + 日志; 下一步 todo: content_types
+  拦截'
 title: Llms Cli
-updated: '2026-08-11'
+updated: '2026-08-16'
 ---
 
 # Llms Cli
@@ -125,3 +125,48 @@ container.bootstrap 触发 ConfigInstanceRegisterBootstrapper), `project.contain
 - 既有不一致(顺带处理):两个 stub 树对 LLMConfig 注册语义不同 —
   主 `stubs/workspace` 用实例(仅内存),`host/stubs/workspace` 用类型(文件持久化)。影响开箱体验。
 - 仓库无 `.env.example`(workspace 自带 `.env.example` 机制),LLM env 变量需补 DEEPSEEK 家族。
+
+## Failure Mode — 框架重力 (2026-08-15)
+
+本次交付的 PydanticAIFuncs 把最初设计意图 (IoC 配置绑定 + 自解释句柄 + 使用时零传参)
+静默替换成了 pydantic-ai agent 原生范式 (无状态 + ResolvedModel 显式传参 + 装线搬进 CLI):
+
+- `PydanticAIFuncs()` 无构造入参, 每个方法要求显式传 `model: ResolvedModel`; LLMConfig
+  与 LLMFuncs 在 IoC 里从未结合成「配置好的句柄」。
+- 装线 (`_load_config` → `_resolve_for_call` → 传 resolved) 全堆在 CLI; 主调用路径
+  甚至硬编码 `PydanticAIFuncs()`, 绕过了 `ProjectLLMFuncsProvider`。
+- `ModelConfig.content_types / converters / accepts / convert` 这套「按模型能力适配内容」
+  契约成了死代码 — 引擎用 `message_to_parts` 的硬编码映射平行处理内容, 不查能力声明。
+
+根因: 融合 pydantic-ai agent 范式与 OOP/组件范式时, 重力落在框架原生范式; 模型复刻了
+「行为」而非「意图」, 全程无对话、无标记、静默提交。dogfood 只暴露行为 bug (如 @ 图
+未发出), 暴露不了意图侵蚀 — 被侵蚀后的设计行为上照样"能用"。
+
+修复方向 (未实施): 构造入参至少含 logger (默认可空) + LLMConfig (默认可空 → 只支持
+anthropic 的实现); 调用方只传配置项上的路径 (provider/tag/model), 不传 ResolvedModel;
+可变参数 (temperature 等) 从配置项拆构造对象, 不透传。
+
+## Refactor 完成 (2026-08-16)
+
+上述修复方向已实施:
+
+- `PydanticAIFuncs(logger=None, config=None)` 构造函数绑定 config + logger;
+  `config=None` 回退 `LLMConfig().resolve()`。
+- 调用面反向传参全部改掉: `model: ResolvedModel` → 配置路径 `provider/model/tag`,
+  引擎内部 `_resolve()` 解析并校验 env var 就绪。
+- 可变采样参数 (temperature / max_output_tokens) 收进 `CallSettings` 对象, 不再逐 kwarg 穿透。
+- logger 用 `logger or get_moss_logger()` 兜底; `_call_impl` 打点: 调用前
+  (service/model/effort/settings)、失败 (exception + traceback)、调用后 (elapsed)。
+- IoC provider 注入 config (`ConfigStore.get_or_create(LLMConfig())`) + logger
+  (`con.get(LoggerItf)`); CLI 改从 IoC 取绑定 funcs, 只传路径; `--no-fallback` flag 移除。
+
+涉及: contracts/llms.py, pydantic_ai_adapter/{funcs,client}.py,
+project/providers/llms_provider.py, cli/llms_cli.py, resources/markdown_kb, 测试三套。
+llms 测试 42 全绿; 识图实测图片块已真实发出 (deepseek-v4-pro 回「格式不支持」而非「看不到本地文件」)。
+
+## TODO (下一步)
+
+- [ ] 拦截修复: 把 `ModelConfig.convert()` (content_types 过滤) 接进 `call_messages` 管线。
+  当前 `convert()` 是死代码, 图片等不在 `content_types: [text]` 的内容裸发给纯文本的
+  deepseek-v4-pro 报错。deepseek-v4-pro 无图片输入 (纯文本); `convert()` 默认把不支持的
+  content 降级为 `content_as_string` 占位文本 (`<content type="image" .../>`)。

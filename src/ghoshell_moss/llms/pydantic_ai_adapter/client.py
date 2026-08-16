@@ -6,7 +6,7 @@ the pydantic-ai import happens only when ``build_agent()`` actually runs.
 
 from __future__ import annotations
 
-from ghoshell_moss.contracts.llms import Effort, ResolvedModel
+from ghoshell_moss.contracts.llms import CallSettings, Effort, ResolvedModel
 
 __all__ = ["build_agent"]
 
@@ -14,14 +14,14 @@ __all__ = ["build_agent"]
 def build_agent(
         resolved: ResolvedModel,
         *,
-        temperature: float | None = None,
-        max_output_tokens: int | None = None,
+        settings: CallSettings | None = None,
         effort: Effort | None = None,
 ) -> "Agent":
     """Build a pydantic-ai Agent from a resolved model.
 
     :param resolved: ``LLMConfig.get_model()`` 的结果. 其 ``service.base_url`` /
         ``api_key`` 必须是已 resolve 的真实值 — 仅内存使用, 调用方绝不打印.
+    :param settings: 采样参数对象 (temperature / max_output_tokens).
     :param effort: thinking effort 刻度, 按协议映射 (anthropic_effort /
         openai_reasoning_effort). None 或 "none" 表示默认 (anthropic 保持
         extended thinking disabled).
@@ -29,14 +29,15 @@ def build_agent(
     from pydantic_ai import Agent
     from pydantic_ai.settings import ModelSettings
 
-    settings: dict = {}
-    if temperature is not None:
-        settings["temperature"] = temperature
-    if max_output_tokens is not None:
-        settings["max_tokens"] = max_output_tokens
+    model_settings: dict = {}
+    if settings is not None:
+        if settings.temperature is not None:
+            model_settings["temperature"] = settings.temperature
+        if settings.max_output_tokens is not None:
+            model_settings["max_tokens"] = settings.max_output_tokens
     return Agent(
         model=_build_model(resolved, effort=effort),
-        model_settings=ModelSettings(**settings) if settings else None,
+        model_settings=ModelSettings(**model_settings) if model_settings else None,
     )
 
 

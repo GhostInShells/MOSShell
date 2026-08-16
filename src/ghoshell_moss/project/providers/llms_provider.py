@@ -11,7 +11,9 @@ from typing import Type
 
 from ghoshell_container import IoCContainer, Provider
 
-from ghoshell_moss.contracts.llms import LLMFuncs
+from ghoshell_moss.contracts.configs import ConfigStore
+from ghoshell_moss.contracts.llms import LLMConfig, LLMFuncs
+from ghoshell_moss.contracts.logger import LoggerItf
 
 __all__ = ["ProjectLLMFuncsProvider"]
 
@@ -26,4 +28,7 @@ class ProjectLLMFuncsProvider(Provider[LLMFuncs]):
 
     def factory(self, con: IoCContainer) -> LLMFuncs:
         from ghoshell_moss.llms.pydantic_ai_adapter.funcs import PydanticAIFuncs
-        return PydanticAIFuncs()
+        store = con.get(ConfigStore)
+        config = store.get_or_create(LLMConfig()) if store is not None else LLMConfig()
+        logger = con.get(LoggerItf)
+        return PydanticAIFuncs(config=config, logger=logger)

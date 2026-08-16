@@ -13,7 +13,7 @@ from pathlib import Path
 
 import typer
 
-from ghoshell_moss.contracts.llms import Effort, LLMConfig, LLMFuncs, ModelRef, ResolvedModel
+from ghoshell_moss.contracts.llms import CallSettings, Effort, LLMConfig, LLMFuncs, ModelRef
 from ghoshell_moss.depends import available
 
 from .utils import (
@@ -125,50 +125,36 @@ def list_models_cmd(
         print_info("Config source: default (env only, no workspace config file)")
 
 
-def _resolve_for_call(
-        conf: LLMConfig,
-        *,
-        provider: str,
-        model: str,
-        tag: str | None,
-        no_fallback: bool = False,
-) -> ResolvedModel:
-    resolved = conf.get_model(
-        provider=provider, model=model, tag=tag, no_fallback=no_fallback,
-    )
-    for name, field in [
-        ("api_key", resolved.service.api_key),
-        ("base_url", resolved.service.base_url),
-    ]:
-        if isinstance(field, str) and field.startswith("$"):
-            print_error(
-                f"env var {field[1:]} is not set (service {resolved.service.name!r} {name}) "
-                f"— set it, or pick another provider/model."
-            )
-            raise typer.Exit(code=1)
-    return resolved
-
-
 def _call(
-        resolved: ResolvedModel,
+        funcs: LLMFuncs,
         prompt: str,
         *,
-        temperature: float | None = None,
-        max_output_tokens: int | None = None,
+        instruction: str | None = None,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
+        settings: CallSettings | None = None,
         effort: Effort | None = None,
+        expose_file_meta: bool = False,
 ) -> str:
-    from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
-    agent = build_agent(
-        resolved,
-        temperature=temperature,
-        max_output_tokens=max_output_tokens,
+    """Plain-text call — 与结构化路径共用 call_prompt, @ 文件协议生效."""
+    inst = _read_instruction(instruction) if instruction else ""
+    result = asyncio.run(funcs.call_prompt(
+        text=prompt,
+        instruction=inst,
+        result_type=None,
+        provider=provider,
+        model=model,
+        tag=tag,
+        settings=settings,
         effort=effort,
-    )
-    return agent.run_sync(prompt).output
+        expose_file_meta=expose_file_meta,
+    ))
+    return result.content or ""
 
 
 def _call_structured(
-        resolved: ResolvedModel,
+        funcs: LLMFuncs,
         *,
         prompt: str,
         response_model: str,
@@ -176,6 +162,10 @@ def _call_structured(
         json_output: bool,
         verbose: bool,
         repeat: int,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
+        settings: CallSettings | None = None,
         effort: Effort | None = None,
         export_anchor: str | None = None,
         input_anchor: str | None = None,
@@ -202,13 +192,11 @@ def _call_structured(
 
     from ghoshell_common.helpers import import_from_path
     from ghoshell_moss.anchor import Anchor
-    from ghoshell_moss.llms.pydantic_ai_adapter.funcs import PydanticAIFuncs
 
     result_type = import_from_path(response_model)
     inst = _read_instruction(instruction)
     anchor = Anchor.from_file(input_anchor) if input_anchor else None
     thinking_text = _read_instruction(thinking) if thinking else None
-    funcs = PydanticAIFuncs()
 
     async def _run() -> tuple[list[dict], list[str]]:
         results = []
@@ -218,7 +206,10 @@ def _call_structured(
                 text=prompt,
                 instruction=inst,
                 result_type=result_type,
-                model=resolved,
+                provider=provider,
+                model=model,
+                tag=tag,
+                settings=settings,
                 effort=effort,
                 export_anchor=export_anchor,
                 input_anchor=anchor,
@@ -309,10 +300,6 @@ if available("pydantic_ai", "anthropic"):
             tag: str = typer.Option(None, "--tag", help="Model tag (small_fast_model/flash/pro)."),
             temperature: float = typer.Option(None, "--temperature", help="Sampling temperature."),
             max_output_tokens: int = typer.Option(None, "--max-output-tokens", help="Max output tokens."),
-            no_fallback: bool = typer.Option(
-                False, "--no-fallback",
-                help="Strict mode — raise if provider/model not found (no silent fallback to default).",
-            ),
             instruction: str = typer.Option(
                 None, "--instruction", "-i",
                 help="Instruction (system prompt) — string or file path. File is auto-read.",
@@ -386,21 +373,24 @@ if available("pydantic_ai", "anthropic"):
         protocol) — text files splice their content, images become image
         blocks. ``--expose-file-meta`` adds the file meta layer.
         """
-        conf = _load_config()
-        resolved = _resolve_for_call(
-            conf.resolve(),
-            provider=provider, model=model, tag=tag, no_fallback=no_fallback,
-        )
+        funcs = _load_funcs()
+        settings = CallSettings(
+            temperature=temperature, max_output_tokens=max_output_tokens,
+        ) if (temperature is not None or max_output_tokens is not None) else None
         try:
             if response_model:
                 _call_structured(
-                    resolved,
+                    funcs,
                     prompt=prompt,
                     response_model=response_model,
                     instruction=instruction,
                     json_output=json_output,
                     verbose=verbose,
                     repeat=repeat,
+                    provider=provider,
+                    model=model,
+                    tag=tag,
+                    settings=settings,
                     effort=effort,
                     export_anchor=export_anchor,
                     input_anchor=input_anchor,
@@ -409,9 +399,14 @@ if available("pydantic_ai", "anthropic"):
                 )
             else:
                 output = _call(
-                    resolved, prompt,
-                    temperature=temperature, max_output_tokens=max_output_tokens,
+                    funcs, prompt,
+                    instruction=instruction,
+                    provider=provider,
+                    model=model,
+                    tag=tag,
+                    settings=settings,
                     effort=effort,
+                    expose_file_meta=expose_file_meta,
                 )
                 echo(output)
         except Exception as e:
@@ -426,25 +421,18 @@ if available("pydantic_ai", "anthropic"):
             provider: str = typer.Option("", "--provider", help="Provider/service name."),
             model: str = typer.Option("", "--model", help="Exact model name."),
             tag: str = typer.Option(None, "--tag", help="Model tag (small_fast_model/flash/pro)."),
-            no_fallback: bool = typer.Option(
-                False, "--no-fallback",
-                help="Strict mode — raise if provider/model not found (no silent fallback to default).",
-            ),
     ) -> None:
         """Integrated availability check — resolve, call, report. api_key never printed."""
-        conf = _load_config()
-        resolved = _resolve_for_call(
-            conf.resolve(),
-            provider=provider, model=model, tag=tag, no_fallback=no_fallback,
-        )
+        funcs = _load_funcs()
         try:
-            output = _call(resolved, "Reply with exactly: pong")
+            output = _call(
+                funcs, "Reply with exactly: pong",
+                provider=provider, model=model, tag=tag,
+            )
         except Exception as e:
             print_error(f"llms test FAILED: {e}")
             raise typer.Exit(code=1)
-        print_success(
-            f"llms OK — {resolved.service.name}/{resolved.model.model} replied: {output!r}"
-        )
+        print_success(f"llms OK — replied: {output!r}")
 
     @llms_app.command(
         name="count",
@@ -463,10 +451,6 @@ if available("pydantic_ai", "anthropic"):
                 "", "--model", help="Exact model name (affects tokenizer).",
             ),
             tag: str = typer.Option(None, "--tag", help="Model tag."),
-            no_fallback: bool = typer.Option(
-                False, "--no-fallback",
-                help="Strict mode — raise if provider/model not found.",
-            ),
             tokens: bool = typer.Option(
                 False, "--tokens", "-t",
                 help="Also print the tokenized ids.",
@@ -477,13 +461,12 @@ if available("pydantic_ai", "anthropic"):
         if not source:
             print_error("empty input — provide text or --file")
             raise typer.Exit(code=1)
-        conf = _load_config()
-        # count 是纯本地计算, 不需要 api_key — 只解析模型选分词器, 不做 env 检查.
-        resolved = conf.resolve().get_model(
-            provider=provider, model=model, tag=tag, no_fallback=no_fallback,
-        )
         funcs = _load_funcs()
-        result = funcs.count_tokens(source, model=resolved, include_tokens=tokens)
+        result = funcs.count_tokens(
+            source,
+            provider=provider, model=model, tag=tag,
+            include_tokens=tokens,
+        )
 
         parts = [f"{result.count} tokens", f"encoding={result.encoding}"]
         if result.service:

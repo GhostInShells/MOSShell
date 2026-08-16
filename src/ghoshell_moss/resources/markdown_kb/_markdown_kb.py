@@ -223,13 +223,6 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
                 "inject llm_funcs= or construct via MarkdownKnowledgeBaseMeta factory"
             )
         text, _session = unpack_query(query)
-        try:
-            from ghoshell_moss.contracts.llms import LLMConfig
-            resolved = LLMConfig().resolve().get_model(tag="small_fast_model")
-        except Exception as e:
-            raise NotImplementedError(
-                f"recall model resolution failed (no LLM config?): {e}"
-            ) from e
 
         candidates = "\n".join(m.as_line() for m in self._metas)
         result = await self._llm_funcs.call(
@@ -244,7 +237,7 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
                 f"选出与上面任务最相关的技能 locator."
             ),
             result_type=_RecallResult,
-            model=resolved,
+            tag="small_fast_model",
         )
         return Recollection(
             locators=list(result.result.locators),

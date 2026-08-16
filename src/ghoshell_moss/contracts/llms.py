@@ -18,16 +18,30 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ClientProtocol",
-    "ServiceConfig",
+    "ModelTag",
+    "ModelName",
+    "DefaultModelTag",
+    "Effort",
+    "MessageContentConverter",
+    "register_converter",
+    "clear_converters",
     "ModelConfig",
+    "ServiceConfig",
     "Provider",
     "ResolvedModel",
     "LLMConfig",
-    "register_converter",
-    "clear_converters",
-    "MessageContentConverter",
-    "Effort",
+    "ModelRef",
+    "RESULT_MODEL",
+    "LLMFuncResultRecord",
+    "LLMFuncResult",
+    "BenchmarkMeta",
+    "BenchmarkCase",
+    "BenchmarkRun",
+    "BenchmarkRecord",
     "TokenCount",
+    "CallSettings",
+    "LLMFuncs",
+    "MossLLMFuncs",
 ]
 
 # gemini 这么没牌面吗?
@@ -670,6 +684,18 @@ class TokenCount:
     tokens: tuple[int, ...] | None = None
 
 
+@dataclass(frozen=True)
+class CallSettings:
+    """Per-call 采样参数 — 打包成单对象, 避免逐 kwarg 穿透调用链.
+
+    ``temperature`` / ``max_output_tokens`` 是生成采样 knob, 从 config 拆出来
+    作为构造对象传递 (而非在 call/call_messages/call_prompt 里各列一遍).
+    """
+
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+
+
 class LLMFuncs(ABC):
     """model func 引擎契约 — 模型调用的最小协议.
 
@@ -684,7 +710,10 @@ class LLMFuncs(ABC):
             instruction: str,
             prompt: str,
             result_type: Type[RESULT_MODEL] | None = None,
-            model: ResolvedModel,
+            provider: str = "",
+            model: str = "",
+            tag: ModelTag | None = None,
+            settings: CallSettings | None = None,
             effort: Effort | None = None,
             export_anchor: str | Path | None = None,
             anchor_description: str = "",
@@ -697,7 +726,9 @@ class LLMFuncs(ABC):
         prompt 走 ``MossLLMFuncs`` (``call_prompt`` / ``call_messages``)。
         ``result_type`` — 结构化输出类型 (BaseModel 子类)。None = 纯文本输出,
         ``result`` 为 None, 原文由 ``content`` 承载。
-        ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
+        ``provider`` / ``model`` / ``tag`` — 配置项上的路径, 引擎内部经
+        ``LLMConfig.get_model()`` 解析为 ResolvedModel (调用方不解析模型).
+        ``settings`` — 采样参数对象 (temperature / max_output_tokens).
         ``effort`` — thinking effort 刻度 (none..max), 不进 config, 引擎按协议
         映射到 pydantic-ai 的 effort 字段 (anthropic_effort / openai_reasoning_effort)。
         ``export_anchor`` — 锚的目标文件名 (无 ``.anchor.yml`` 后缀, 可含路径如
@@ -724,7 +755,9 @@ class LLMFuncs(ABC):
             self,
             text: str,
             *,
-            model: ResolvedModel | None = None,
+            provider: str = "",
+            model: str = "",
+            tag: ModelTag | None = None,
             include_tokens: bool = False,
     ) -> TokenCount:
         """统计字符串的 token 数 — 同步纯函数.
@@ -733,7 +766,8 @@ class LLMFuncs(ABC):
         id 列表 (长文本有内存开销)。协程调用者必须卸载到线程池
         (asyncio.to_thread / anyio.to_thread / run_in_executor)。
 
-        ``model`` 选择分词器; None 用引擎默认 (o200k_base)。
+        ``provider`` / ``model`` / ``tag`` 选择分词器 (路径); 全空用引擎默认
+        (o200k_base)。
         非 openai 协议的计数是估算 (tiktoken 是 OpenAI 分词器) —
         ``TokenCount.estimate`` 携带该标志, 由调用方决定如何标注。
         """
@@ -742,16 +776,18 @@ class LLMFuncs(ABC):
     async def run_benchmark(
             self,
             meta: BenchmarkMeta,
-            model: ResolvedModel,
             *,
+            provider: str = "",
+            model: str = "",
+            tag: ModelTag | None = None,
             cwd: Path | None = None,
             output_file: Path | None = None,
             effort: Effort | None = None,
             thinking: str | None = None,
     ) -> BenchmarkRecord:
-        """运行一个 benchmark: 用 ``model`` 逐条跑 ``meta.cases_file`` 的用例, 汇总.
+        """运行一个 benchmark: 用 ``provider/model/tag`` 逐条跑 ``meta.cases_file`` 的用例, 汇总.
 
-        ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
+        ``provider`` / ``model`` / ``tag`` — 配置项路径, 引擎内部解析为 ResolvedModel。
         ``cwd`` 默认当前进程工作目录 — case 的 prompt/instruction 文件路径相对它解析。
         ``output_file`` 给定则结果写为 jsonl。
         ``effort`` / ``thinking`` — 透传给每个 case 的调用 (策略变量: 评分 hint
@@ -775,9 +811,12 @@ class MossLLMFuncs(LLMFuncs):
             text: str,
             instruction: str,
             result_type: Type[RESULT_MODEL] | None = None,
-            model: ResolvedModel,
+            provider: str = "",
+            model: str = "",
+            tag: ModelTag | None = None,
             base_dir: str | Path | None = None,
             expose_file_meta: bool = False,
+            settings: CallSettings | None = None,
             effort: Effort | None = None,
             export_anchor: str | Path | None = None,
             anchor_description: str = "",
@@ -800,7 +839,10 @@ class MossLLMFuncs(LLMFuncs):
             instruction=instruction,
             prompt=blocks,
             result_type=result_type,
+            provider=provider,
             model=model,
+            tag=tag,
+            settings=settings,
             effort=effort,
             export_anchor=export_anchor,
             anchor_description=anchor_description,
@@ -815,7 +857,10 @@ class MossLLMFuncs(LLMFuncs):
             instruction: str,
             prompt: list[Message],
             result_type: Type[RESULT_MODEL] | None = None,
-            model: ResolvedModel,
+            provider: str = "",
+            model: str = "",
+            tag: ModelTag | None = None,
+            settings: CallSettings | None = None,
             effort: Effort | None = None,
             export_anchor: str | Path | None = None,
             anchor_description: str = "",
