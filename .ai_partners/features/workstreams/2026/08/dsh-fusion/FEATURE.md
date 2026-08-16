@@ -92,13 +92,15 @@ research/2026-08-15_dsh_deep_dive.md。
 
 > 融合相关的调研轨迹与验证物索引, 避免盲找。完整历史见 git log。
 
-- **调研轨迹**(workstream research/ 下):
-  - `2026-08-14_dsh_source_survey.md` — 源码级调研(三套协议 / SDK / provider 注册 /
-    web vendor 可行性)
-  - `2026-08-15_dsh_deep_dive.md` — dsh 深入调研(沙盒 / Python SDK / JSON-RPC /
-    全链路实验 / 架构收敛)
-  - `2026-08-16_dsh_kernel_privilege.md` — 内核特权与三方桥(fork/compact 追加式 /
-    协议面不对称 / apiproxy 式桥接收敛)
+- **调研轨迹**(已删, 见 git 历史 `git log -- research/`):
+  > 早期调研记录(2026-08-14/15/16 三篇)承载的结论被后续实验推翻, 已于
+  > 2026-08-17 删除。需要考古时从 git 历史查阅, 不再作为当前事实引用。
+  - `2026-08-14_dsh_source_survey.md` — 源码级调研(已删, 见 git)
+  - `2026-08-15_dsh_deep_dive.md` — dsh 深入调研(已删, 见 git)
+  - `2026-08-16_dsh_kernel_privilege.md` — 内核特权与三方桥(已删, 见 git)
+- **当前可信 skill**(`research/skills/` 下, 自包含可复跑):
+  - `plugin-api-session-event/` — 已验证:「dsh web 内置 `/api/events.mux` WS 下行 +
+    plugin 注册 HTTP 回调」构成零依赖伪双工, ghost runtime 不开对外接口
 - **验证物**:
   - `.moss/system_test_nodes/dsh_web_probe/` — DshChannel node, 全链路已跑通
   - scripts/ — 后续系统化测试脚本落点

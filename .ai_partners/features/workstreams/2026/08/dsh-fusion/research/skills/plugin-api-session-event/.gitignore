@@ -1,0 +1,20 @@
+# 运行时产物 — dsh 启动自动生成 (healProfilesModuleFallback), 可重建, 全 ignore.
+# 保留: home/profiles/web/{package.json,cordis.yml,cordis.patch.yml,pnpm-workspace.yaml}
+
+# dsh 自动 heal 的 node_modules 软链 (指向全局 dsh 安装, 启动时重建)
+home/profiles/node_modules/
+
+# 运行时生成
+home/settings.yaml
+home/.anonymous-user-id
+
+# 会话与状态
+home/sessions/
+home/storages/
+
+# python
+__pycache__/
+*.pyc
+
+# 验证证据 (回调 touch 的运行时产物)
+callback.marker
