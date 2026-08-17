@@ -101,3 +101,13 @@ def test_field_pattern():
 
     with pytest.raises(ValueError):
         foo = Foo(foo="foo123")
+
+
+def test_pydantic_alias():
+    class Foo(BaseModel):
+        foo: str = Field(default="f", alias="bar")
+
+    foo = Foo()
+    assert 'bar' in foo.model_dump(by_alias=True)
+    new_foo = foo.model_validate(foo.model_dump(by_alias=True), by_alias=True)
+    assert new_foo.foo == "f"
