@@ -2,14 +2,14 @@
 name: session-events-type-compare
 description: >-
   长期可验证哨兵: TS 侧构造 session event 各类型 mock 实例 (ground truth),
-  Python 侧喂给 ghoshell_moss.agents.deepseek_harness.session_events 的强类型模型,
+  Python 侧喂给 ghoshell_moss.agents.deepseek_harness.types.session_events 的强类型模型,
   验证类型转换正确且与 TS 类型保持同步。dsh 类型漂移时能捕获差异。
 ---
 
 # TS ↔ Python Session Event 类型数据比较
 
 本 skill 验证 dsh 融合基建的**类型映射正确性**: dsh 的 13 种 session event 已封装成
-Python 强类型模型(`src/ghoshell_moss/agents/deepseek_harness/session_events.py`),
+Python 强类型模型(`src/ghoshell_moss/agents/deepseek_harness/types/session_events.py`),
 本 skill 在 TS 侧构造各类型的 mock 实例作为 ground truth, 让 Python 模型逐条转换,
 保证两边类型保持同步。
 

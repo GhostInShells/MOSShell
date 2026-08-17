@@ -15,7 +15,7 @@ export const inject = ['webServer']
 
 // 本 skill 的 plugin 只做一件事: 暴露一个 HTTP rpc, 返回 TS 侧构造的
 // session event 各类型 mock 实例 (ground truth). Python verify.py 拉取后,
-// 喂给 ghoshell_moss.agents.deepseek_harness.session_events 的强类型模型,
+// 喂给 ghoshell_moss.agents.deepseek_harness.types.session_events 的强类型模型,
 // 验证类型转换正确、且与 TS 类型保持同步.
 //
 // 零第三方依赖: 只用 ctx.webServer (dsh 注入).
