@@ -1,0 +1,8 @@
+# 挂本 skill 的 plugin. plugin.ts 与本 patch 同目录 (home/profiles/web/),
+# 相对路径 ./plugin.ts.
+#
+# 本 plugin 只注册一个 HTTP rpc: GET /plugin-api/session-events-mock,
+# 返回 TS 构造的 13 种 session event mock 数组. 不需要 sdk-jsonrpc-server.
+- insert:
+    - id: session-events-type-compare
+      name: './plugin.ts'
