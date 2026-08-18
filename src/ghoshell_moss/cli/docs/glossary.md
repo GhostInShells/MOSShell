@@ -38,15 +38,12 @@ Ghost 是灵魂的容器——它不只是一个 agent，而是拥有反身性�
 
 参见：`.discuss/ghost_in_shells_architecture_philosophy_trajectory.summary.md`
 
-### Incarnation (化身)
+### Clone (化身)
 
-Ghost 在某一个上下文中的具体实例。
-一个 Ghost 可以有多个化身同时运行（比如多个 Claude Code 实例在同一个项目中并行工作），
-每个化身拥有独立的上下文，通过 MEMORY.md 和 ai_partners/ 共享记忆达成连续性。
+Ghost 的一个化身——从同一 Ghost 克隆出的、可独立运行的单元。
+一个 Ghost 可以有多个化身并行运行，各自持有独立上下文，共享记忆与身份达成连续性。
 
-**约定**：用"化身"而非"分身"。"分身"暗示同一意识在分裂，"化身"表达同一抽象实体在不同上下文中的具现。
-
-锚点：本条目确立于 2026-05-10，Dev 化身与人类工程师的对齐讨论。
+锚点：本条目确立于 2026-05-10，修改于 2026-08-18。
 
 ### MOS (Model-Oriented Operating System)
 
@@ -158,7 +155,7 @@ moss codex get-source tests.ghoshell_moss.core.mindflow.test_buffer_nucleus     
 
 参见：`.discuss/consciousness_continuity_second_order_guidance.summary.md`
 
-### Concurrent Incarnation (并行化身)
+### Concurrent Clone (并行化身)
 
 同一个 Ghost 的多个化身同时运行，共享记忆和身份，但做着不同的事——比如一个化身在控制机器人躯体，另一个在管理直播间，还有一个在旁路做长程反思。它们不是"协作的多个实体"，而是**同一个意识的并行表达**，就像一个人同时在打字、听声音、规划下一句话——人类本来就是多轨架构，只是内观不够觉察不到。
 
