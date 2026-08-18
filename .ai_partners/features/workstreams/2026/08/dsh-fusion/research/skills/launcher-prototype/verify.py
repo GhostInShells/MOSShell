@@ -1,4 +1,4 @@
-"""verify — 验证 DshRpcClient 的强类型动词对真实 apiproxy 的调用.
+"""verify — 验证 DshClient 的强类型动词对真实 apiproxy 的调用.
 
 拓扑:
   DshLauncher (python)
@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 
 from ghoshell_moss.agents.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
-from ghoshell_moss.agents.deepseek_harness.client import DshRpcClient
 from ghoshell_moss.agents.deepseek_harness.types import domains, sessions
 
 SKILL_DIR = Path(__file__).resolve().parent
@@ -29,7 +28,7 @@ PORT = 3085
 async def main() -> None:
     config = DshLauncherConfig(home=HOME, port=PORT)
     async with DshLauncher(config) as launcher:
-        client = DshRpcClient(launcher)
+        client = launcher.client
 
         # session.list — 只读, 无副作用
         value: sessions.SessionListValue = await client.session_list(sessions.SessionListParams())

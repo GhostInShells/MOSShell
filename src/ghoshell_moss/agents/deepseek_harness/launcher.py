@@ -22,7 +22,7 @@ Config 刻意薄: 只装「启动器自己要的进程参数」, 不复刻 dsh �
 #
 # ── 阶段性 (2026-08-18) ───────────────────────────────────
 # 1. push 式就绪: ws 连上 → _dsh_started.set() → __aenter__ await wait() 返回 (取代轮询 _wait_readiness).
-# 2. rpc() 原语跑通: POST /api/<method> (点分隔) + client-request 信封 → server-response → RpcResult.
+# 2. DshClient 全局管理面 facade 跑通: POST /api/<method> (点分隔) + client-request 信封.
 #    session.list / workspace.list 返回 200 ok. 信封 {type,rpcId,method,payload}.
 # 3. 退出/错误线: on_exit(DshExit: exit_code/stderr/self_shutdown) + exception() 非0且非主动关闭才报.
 #    stderr→error 日志, mux frame→debug 日志, is_running 含 dsh 子进程态, call/rpc 有 _check_running.
@@ -59,7 +59,7 @@ from ghoshell_moss.core.subprocesses import SubprocessesImpl
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from .types.events import MuxFrame
-from .types.rpc import RpcResult
+from .client import DshClient
 import asyncio
 import janus
 
@@ -136,6 +136,7 @@ class DshLauncher:
         self._mux_task: asyncio.Task[Any] | None = None
         self._handlers: list[EventHandler] = []
         self._logger: LoggerItf = logger or get_moss_logger()
+        self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
         # 标记 dsh 是否已经运行.
         self._dsh_started = ThreadSafeEvent()
@@ -148,7 +149,6 @@ class DshLauncher:
         self._on_exit_callbacks: list[Callable[[DshExit], None]] = []
         self._exit: DshExit | None = None
         self._self_shutdown = False
-        self._rpc_counter = 0
         self._stderr_lines: list[str] = []
         self._log_prefix: str = f"[DSHLauncher] "
 
@@ -256,6 +256,7 @@ class DshLauncher:
         if self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
+        await self.client.close()
         await self._stop_proc()
         if self._owns_sp:
             await self._subprocess_manager.__aexit__(None, None, None)
@@ -280,31 +281,6 @@ class DshLauncher:
         )
         resp.raise_for_status()
         return resp.json()
-
-    async def rpc(
-            self,
-            method: str,
-            payload: dict[str, Any] | None = None,
-    ) -> RpcResult:
-        """apiproxy 动词调用: POST /api/<method>, 包 client-request 信封, 解 server-response."""
-        self._check_running()
-        if self._http_client is None:
-            raise RuntimeError("DshLauncher not started")
-        self._rpc_counter += 1
-        envelope = {
-            "type": "client-request",
-            "rpcId": f"rpc-{self._rpc_counter}",
-            "method": method,
-            "payload": payload or {},
-        }
-        resp = await self._http_client.post(
-            f"{self.config.base_url}/api/{method}",
-            json=envelope,
-            timeout=self.config.connect_timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["result"]
 
     def on_event(self, handler: EventHandler) -> None:
         """inbound 单向通知: 注册一个消费 mux 下行帧的 callback (fire-and-forget)."""
