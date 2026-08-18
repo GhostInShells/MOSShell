@@ -1,18 +1,16 @@
 ---
-title: DSH Fusion
-status: draft
-# priority: importance within the current stage (iteration cycle) — not development urgency
-priority: P0
 created: 2026-08-14
-updated: 2026-08-16
 depends:
-  - agent-surface
+- agent-surface
+description: 'dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组件的一体化集成。dsh 从「候选外部 agent
+  面」升格为 MOSS 的推理中枢: MOSS 保留记忆 (Memento) / 执行 (CTML) / 感知 (audio/vision), dsh 承载 agent-loop
+  推理。本 workstream 决策融合本身, 落点分两条路径: gui 管理的 agent 与 dolores ghost。'
 milestone: 0.1.0
-description: >-
-  dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组件的一体化集成。dsh
-  从「候选外部 agent 面」升格为 MOSS 的推理中枢: MOSS 保留记忆 (Memento) /
-  执行 (CTML) / 感知 (audio/vision), dsh 承载 agent-loop 推理。本 workstream
-  决策融合本身, 落点分两条路径: gui 管理的 agent 与 dolores ghost。
+priority: P0
+status: in-progress
+status_note: agent loop 驱动与治理边界调研完成 (wake/perStep/interrupt), 进入融合基建实现
+title: DSH Fusion
+updated: '2026-08-19'
 ---
 
 # DSH Fusion
