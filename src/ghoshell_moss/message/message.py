@@ -21,6 +21,7 @@ __all__ = [
     "WithAdditional",
     "ContextType",
     "unique_id",
+    "format_timestamp",
 ]
 
 # 实现一个消息协议容器. 这个容器经过了几个阶段的改造:
@@ -48,6 +49,22 @@ default_unique_id_gen = lambda: str(ULID())
 
 def unique_id() -> str:
     return default_unique_id_gen()
+
+
+def format_timestamp(value: datetime) -> str:
+    """短时间戳, 形如 ``D19 00:01:17+8``.
+
+    只保留日 (跨天可辨), 年/月由会话的 "today" 概念承担. 无时区信息时省略 tz 后缀.
+    """
+    tz_str = ""
+    if (offset := value.utcoffset()) is not None:
+        total = int(offset.total_seconds())
+        sign = '+' if total >= 0 else '-'
+        total = abs(total)
+        hours, remainder = divmod(total, 3600)
+        minutes = remainder // 60
+        tz_str = f"{sign}{hours}" if minutes == 0 else f"{sign}{hours}:{minutes:02d}"
+    return f"D{value.strftime('%d')} {value.strftime('%H:%M:%S')}{tz_str}"
 
 
 class HasAdditional(Protocol):
@@ -249,10 +266,13 @@ class MessageMeta(BaseModel):
         for attr, value in attributes.items():
             # in case value has invalid mark
             if isinstance(value, datetime):
-                value = datetime.fromtimestamp(value.timestamp(), tz.gettz()).isoformat(timespec='seconds')
+                value = format_timestamp(datetime.fromtimestamp(value.timestamp(), tz.gettz()))
             value = str(value)
-            value = html.escape(value, quote=True)
-            parts.append(f'{attr}="{value}"')
+            if not value:
+                parts.append(attr)
+            else:
+                value = html.escape(value, quote=True)
+                parts.append(f'{attr}="{value}"')
         attr_str = ' '.join(parts)
         return attr_str
 
@@ -311,6 +331,8 @@ class Message(BaseModel, WithAdditional):
             data['attributes'] = attributes
         data['timestamp'] = timestamp
         meta = MessageMeta(**data)
+        if stale_time is not None:
+            meta.stale_time = stale_time
         return cls(meta=meta)
 
     def is_completed(self) -> bool:

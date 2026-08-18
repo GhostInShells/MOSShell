@@ -236,22 +236,36 @@ class Interpretation(BaseModel):
         """
         return self.output.copy()
 
+    def state(self) -> str:
+        state = 'running'
+        if self.done:
+            if self.exception:
+                state = 'error'
+            elif self.interrupted:
+                state = 'interrupted'
+            else:
+                state = 'done'
+        return state
+
     def status_messages(self) -> list[Message]:
         """当前运行状态的描述. """
-        status_message = Message.new(tag='shell', timestamp=False, attributes={'run_at': self.created})
+        state = self.state()
+        status_message = Message.new(
+            tag='shell',
+            timestamp=False,
+            attributes={'state': state, 'run_at': self.created},
+        )
         lines = []
         if len(self.compiled_tasks) > 0:
-            lines.append("compiled commands: %d" % len(self.compiled_tasks))
+            lines.append("tasks: %d" % len(self.compiled_tasks))
         if len(self.success_tasks) > 0:
-            lines.append("done: %s" % len(self.success_tasks))
+            lines.append("completed: %d" % len(self.success_tasks))
         if len(self.cancelled_tasks) > 0:
             lines.append("cancelled: %d" % len(self.cancelled_tasks))
         if len(self.failed_tasks) > 0:
             lines.append("failed: %s" % self._status_task_expression(list(self.failed_tasks.values())))
         if self.exception:
-            lines.append("Stop at Exception: %s" % self.exception)
-        elif self.interrupted:
-            lines.append("Stop Reason: interrupted")
+            lines.append("Stop at Exception: %s." % self.exception)
         if len(self.pending_tasks) > 0:
             lines.append("ongoing: %s" % ",".join(self.pending_tasks.values()))
         status_message.with_content("\n".join(lines))

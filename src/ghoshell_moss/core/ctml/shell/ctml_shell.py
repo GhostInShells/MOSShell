@@ -62,6 +62,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         self._name = name
         self._desc = description
         self._capture_errors_on_exit = capture_errors_on_exit
+        self._channel_metas_generation_callbacks: set[Callable[[dict[ChannelFullPath, ChannelMeta]], None]] = set()
 
         self._container = Container(name=name, parent=parent_container)
         self._container.set(MOSShell, self)
@@ -171,6 +172,17 @@ class CTMLShell(MOSShell[PrimeChannel]):
         """monotonic time of last ``refresh_metas`` 完成时间."""
         return self._last_channel_metas_refreshed_at
 
+    def on_channel_metas_generation(
+            self,
+            callback: Callable[[dict[ChannelFullPath, ChannelMeta]], None],
+    ) -> Callable[[], None]:
+        self._channel_metas_generation_callbacks.add(callback)
+
+        def discard() -> None:
+            self._channel_metas_generation_callbacks.discard(callback)
+
+        return discard
+
     def dynamic_messages(
             self,
             available_only: bool = True,
@@ -186,7 +198,12 @@ class CTMLShell(MOSShell[PrimeChannel]):
         return self._moss_dynamic_cache
 
     def interpreting(self) -> Optional[Interpreter]:
-        return self._interpreter
+        if self._interpreter is None:
+            return None
+        elif self._interpreter.is_running():
+            return self._interpreter
+        else:
+            return None
 
     @property
     def name(self) -> str:
@@ -412,7 +429,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         # 阻塞等待刷新结果.
         if refresh_metas:
             await self.refresh_metas(timeout=prepare_timeout)
-        config = self.channel_metas(available_only=True, config=config)
+        config = self.channel_metas(available_only=True, selection=config)
         commands = self.commands(available_only=True, config=config)
         interpreter = CTMLInterpreter(
             kind=kind,
@@ -480,7 +497,10 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 [refresh_meta_future],
                 timeout=timeout,
             )
-            return refresh_meta_future in done
+            result = refresh_meta_future in done
+            if result:
+                self._update_channel_metas()
+            return result
         finally:
             # 更新最后一次等待完刷新的时间.
             now = time.monotonic()
@@ -490,11 +510,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
     def _update_channel_metas(self):
         self._last_channel_metas = self._main_runtime.metas()
         self._last_channel_metas_built_at = time.monotonic()
+        for callback in list(self._channel_metas_generation_callbacks):
+            callback(self._last_channel_metas)
 
     def channel_metas(
             self,
             available_only: bool = False,
-            config: Optional[list[ChannelFullPath]] = None,
+            selection: Optional[list[ChannelFullPath]] = None,
             *,
             stale_time: float | None = None,
     ) -> dict[str, ChannelMeta]:
@@ -506,9 +528,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self._update_channel_metas()
 
         metas = self._last_channel_metas
-        if config:
+        if selection:
             result = {}
-            for path in config:
+            for path in selection:
                 if path in metas:
                     meta = metas[path]
                     if meta.available or not available_only:
