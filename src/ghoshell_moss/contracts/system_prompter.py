@@ -66,7 +66,7 @@ class SystemPrompter(ABC):
         for key in slots:
             if text := self.child_instruction(key):
                 parts.append(text)
-        return "\n\n".join(parts)
+        return "\n\n---\n".join(parts)
 
     @abstractmethod
     def is_dynamic(self) -> bool:

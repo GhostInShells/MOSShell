@@ -14,7 +14,7 @@ from typing_extensions import Self
 import pathlib
 from pathlib import Path
 
-from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime, GhostRuntime
+from ghoshell_moss.core.blueprint.host import IHost, IShellRuntime, IGhostRuntime
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project
@@ -25,13 +25,13 @@ from ghoshell_moss.contracts.workspace import LocalWorkspace
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 from ghoshell_moss.factory import create_project, resolve_matrix_adapter
 
-from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
+from ghoshell_moss.host.moss_runtime import ShellRuntimeImpl
 from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
 
 __all__ = ['Host']
 
 
-class Host(MossHost):
+class Host(IHost):
     """MOSS 顶层入口的 concrete.
 
     显式构造姿态 (§UU-1 seal 判决 + 用户 2026-07 明示"host 不走 discover 而是走正常 init"):
@@ -110,7 +110,7 @@ class Host(MossHost):
             run_shell: bool = True,
             name: str | None = None,
             description: str | None = None,
-    ) -> MossRuntime:
+    ) -> IShellRuntime:
         mode = self._project.current_mode()
         if mode is None:
             raise RuntimeError(
@@ -122,7 +122,7 @@ class Host(MossHost):
 
         cell = build_host_cell(self._env)
         matrix = self.new_matrix(cell)
-        return MossRuntimeImpl(
+        return ShellRuntimeImpl(
             env=self._env,
             workspace=self._workspace,
             mode=mode,
@@ -137,7 +137,7 @@ class Host(MossHost):
             ghost: 'str | GhostMeta',
             *,
             run_shell: bool = True,
-    ) -> GhostRuntime:
+    ) -> IGhostRuntime:
         if isinstance(ghost, str):
             ghost_meta = self._project.get_ghost(ghost)
             source_path = self._find_ghost_source(ghost_meta)

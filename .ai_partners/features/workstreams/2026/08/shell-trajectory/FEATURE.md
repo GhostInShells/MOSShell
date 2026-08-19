@@ -1,9 +1,9 @@
 ---
 title: Shell Trajectory — 观测轨迹取代上下文监控
-status: in-progress
+status: completed
 priority: P1
 created: 2026-08-19
-updated: 2026-08-19
+updated: 2026-08-20
 depends: []
 milestone:
 description: >-
@@ -36,9 +36,10 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
 3. **facade delta = per-channel 文本 diff + 墓碑**。增/改重发新 facade, 删发
    `<channel removed/>`。`_make_facade_body` 统一组装 (failure 短路), 逐块对比早退。
 
-4. **时间戳分层**。channel facade 块不带时间戳 (durable 需字节稳定, 且批量 refresh 下
-   大面积重复); 时间戳放 frame 层 (ephemeral)。message 用 `D19 00:01:17+8` 短格式
-   (日 + 时分秒 + 时区), 年/月由 frame 的 "today" 承担。
+4. **时间戳分层 + D 模式统一**。channel facade 块不带时间戳 (durable 需字节稳定, 且
+   批量 refresh 下大面积重复); 帧内所有时间戳 (moss/command/interpreter) 统一 `at` 属性 +
+   `D19 00:01:17+8` 短格式 (日 + 时分秒 + 时区)。年/月由 full_facade 的 `<today>` 锚
+   承担 (epoch 起点注入一次, 帧内不重复)。
 
 5. **now 语义**。frame `at=` = 发送时刻 (now), message 时间戳 = 事件发生时 (冻结事实)。
    请求重试必须重新 `project(now=新时间)`, 否则模型误把上次发送时刻当 now。
@@ -51,6 +52,8 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
 - 两个旧 workstream **删除**: `channel-meta-dyn-static` 与 `context-cache-engineering`
   (同一命题的演化, 从未 completed), 完整历史见 git log。
 - ContextMonitor (`host/context_monitor.py`, 33 tests) 无法对齐目标 → 取代。
+- InterleavedThinkingToolset (`host/interleaved_thinking.py`) 非 dead end — 当初正确交付
+  (turn-based 观测 + 事件投影), 被 ShellTrajectory 吸收延续 (pull 型帧轨迹是其后继)。
 - `shell_context.py` (ShellContext ABC 契约) 删除。
 - `diff_facade` 的 `created` 相等快跳过: 存疑保留 (假定运行时不会原地改 meta)。
 
@@ -58,8 +61,11 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
 
 - hot 逻辑 (降级三态机、warm/hot 分类)。
 - 裸事件 drain (interleaved thinking 中流)。
-- 装线 (articulate 循环的 now 注入、MCP 接线)。
-- CTML 判词统一 (moss_static / moss_dynamic 旧词需与轨迹叙事对齐)。
+- articulate 循环的 now 注入 (MCP 接线已做: moss_instruction(full_facade) / full_facade /
+  get_channel_facade / moss_observe / ctml_append/exec/replan/interrupt)。
+- **interpreter stop 事件本帧不投影**: `InterpreterStoppedEvent` 可多 (n 个 interpreter
+  周期攒一个观测期), 且 status 与 interpreter 语义未想清 → 本帧先 skip, 帧只发
+  `ShellTaskDoneEvent`; 等想明白 status/interpreter 关系再启用 (error 信号暂缺)。
 
 ## Implementation Notes
 

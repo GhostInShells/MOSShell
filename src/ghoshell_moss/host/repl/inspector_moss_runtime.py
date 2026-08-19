@@ -1,7 +1,7 @@
 from textwrap import indent
 
 from ghoshell_moss.core.concepts.command import Command
-from ghoshell_moss.core.blueprint.host import MossRuntime
+from ghoshell_moss.core.blueprint.host import IShellRuntime
 from ghoshell_moss.host.tui import TuiRender
 from ghoshell_moss.core.blueprint.session import OutputItem
 
@@ -11,23 +11,23 @@ __all__ = ['MOSSRuntimeInspector']
 class MOSSRuntimeInspector:
     """封装对 ToolSet 的操作与观测接口。"""
 
-    def __init__(self, moss_runtime: MossRuntime, output: TuiRender) -> None:
+    def __init__(self, moss_runtime: IShellRuntime, output: TuiRender) -> None:
         self._moss_runtime = moss_runtime
         self._output = output
 
     def instructions(self) -> None:
         """获取当前 MOSS 的指令上下文 (Instruction)。"""
-        self._output.syntax(self._moss_runtime.moss_instruction(), 'xml')
+        self._output.syntax(self._moss_runtime.instruction(), 'xml')
 
     async def dynamic(self, refresh: bool = True, timeout: float=2.0) -> None:
         """获取当前 MOSS 的动态上下文讯息. """
-        messages = await self._moss_runtime.moss_dynamic_messages(refresh=refresh, max_wait=timeout)
+        messages = await self._moss_runtime.dynamic_messages(refresh=refresh, max_wait=timeout)
         self._output.output(OutputItem.new("Shell", *messages, log="moss dynamic instructions"))
 
     async def static(self) -> None:
         """获取当前 MOSS 的静态上下文讯息. """
-        await self._moss_runtime.moss_refresh_metas()
-        static = self._moss_runtime.moss_static_messages()
+        await self._moss_runtime.refresh_metas()
+        static = self._moss_runtime.static_messages()
         self._output.syntax(static, 'xml')
 
     async def channel_mets(self, refresh: bool = True, timeout: float = 2.0) -> None:
@@ -40,7 +40,7 @@ class MOSSRuntimeInspector:
             self._output.json(meta.model_dump_json(indent=2, ensure_ascii=False, exclude_none=True, exclude_unset=True))
 
     async def commands(self) -> None:
-        await self._moss_runtime.moss_refresh_metas()
+        await self._moss_runtime.refresh_metas()
         commands = self._moss_runtime.shell.commands(available_only=True)
         for channel_path, group in commands.items():
             for command_name, command in group.items():
@@ -53,15 +53,15 @@ class MOSSRuntimeInspector:
         :param ctml: CTML 语法指令。
         :param interrupt: 是否打断当前任务并立即执行。
         """
-        messages = await self._moss_runtime.moss_exec(ctml, call_soon=interrupt, wait_done=True)
+        messages = await self._moss_runtime.exec_logos(ctml, call_soon=interrupt, wait_done=True)
         self._output.rprint(OutputItem.new("Shell", *messages, log="interpreting done"))
 
     async def observe(self, timeout: float = 5.0) -> None:
         """挂起等待运行状态变更。"""
-        messages = await self._moss_runtime.moss_observe(timeout=timeout)
+        messages = await self._moss_runtime.observe(timeout=timeout)
         self._output.rprint(OutputItem.new("Shell", *messages, log="observe done"))
 
     async def interrupt(self) -> None:
         """立即终止当前执行任务。"""
-        messages = await self._moss_runtime.moss_interrupt()
+        messages = await self._moss_runtime.interrupt()
         self._output.rprint(OutputItem.new("Shell", *messages, log="interrupted"))

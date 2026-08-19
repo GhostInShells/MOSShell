@@ -2,7 +2,7 @@ from typing import Literal, Type
 from ghoshell_container import INSTANCE, IoCContainer
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.project import Project
-from ghoshell_moss.core.blueprint.host import MossHost
+from ghoshell_moss.core.blueprint.host import IHost
 
 __all__ = ['get_container', 'get_contract']
 
@@ -14,7 +14,7 @@ def get_container(source: Literal['project', 'matrix', 'host'] = 'project') -> I
     elif source == 'matrix':
         container = Matrix.discover().container
     elif source == 'host':
-        container = MossHost.discover().run(run_shell=False).container
+        container = IHost.discover().run(run_shell=False).container
     else:
         raise ValueError(f"Unknown container source: {source}")
     container.bootstrap()

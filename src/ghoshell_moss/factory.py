@@ -1,7 +1,7 @@
 from typing import Callable
 
 from ghoshell_moss.core.blueprint.cell import Cell, CellRuntimeInfo
-from ghoshell_moss.core.blueprint.host import MossHost
+from ghoshell_moss.core.blueprint.host import IHost
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 
-def _create_host(env: Environment, project: Project) -> MossHost:
+def _create_host(env: Environment, project: Project) -> IHost:
     raise NotImplementedError
 
 
@@ -98,7 +98,7 @@ def resolve_matrix_adapter(
     return adapter, network
 
 
-create_host: Callable[[Environment, Project], MossHost] = _create_host
+create_host: Callable[[Environment, Project], IHost] = _create_host
 
 create_matrix: Callable[[Environment, Project, CellRuntimeInfo | None], Matrix] = _create_matrix
 

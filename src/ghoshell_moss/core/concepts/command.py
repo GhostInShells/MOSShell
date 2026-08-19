@@ -34,7 +34,7 @@ from typing import (
 )
 from jsonargparse import ArgumentParser as JsonArgumentParser
 from argparse import ArgumentParser
-from ghoshell_moss.message import unique_id
+from ghoshell_moss.message import unique_id, format_timestamp
 from ghoshell_common.helpers import Timeleft
 from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field, TypeAdapter, AwareDatetime
@@ -960,7 +960,7 @@ class CommandTaskResult(BaseModel):
         Anthropic 消息协议更可怕, 不支持 role.
         所以要在现有的协议基础上支持异步的, 多个 command 返回的 command result, 就考虑用最基础的类型, 字符串 xml 包裹.
         """
-        attrs = {'at': str(self.created)}
+        attrs = {'at': format_timestamp(self.created)}
         name = name or self.caller or None
         if name and self.from_macro_id:
             name = f"macro:{self.from_macro_id}#{name}"

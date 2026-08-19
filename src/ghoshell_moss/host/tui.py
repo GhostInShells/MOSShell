@@ -22,7 +22,7 @@ from prompt_toolkit.completion import Completer, DummyCompleter, DynamicComplete
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
 from ghoshell_moss.core.blueprint.session import OutputItem, Session
-from ghoshell_moss.core.blueprint.host import MossHost
+from ghoshell_moss.core.blueprint.host import IHost
 from ghoshell_moss.core.concepts.qa import QA, Watcher
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
@@ -481,12 +481,12 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
     def __init__(
             self,
-            host: MossHost | None = None,
+            host: IHost | None = None,
             prompt_style: Style = None,
     ):
         self.kb: KeyBindingsBase | None = None
         self._style = prompt_style or DEFAULT_PROMPT_STYLE
-        self.host: MossHost | None = host or MossHost.discover()
+        self.host: IHost | None = host or IHost.discover()
         self.runtime: RUNTIME = self._get_runtime()
         self._closing_event = ThreadSafeEvent()
         self._event_loop: asyncio.AbstractEventLoop | None = None

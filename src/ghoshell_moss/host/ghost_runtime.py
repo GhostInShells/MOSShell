@@ -5,7 +5,7 @@ from typing import Callable, Type
 import janus
 from typing_extensions import Self
 
-from ghoshell_moss.core.blueprint.host import GhostRuntime, MossRuntime, LoopHealth, LoopStatus, SafeMode
+from ghoshell_moss.core.blueprint.host import IGhostRuntime, IShellRuntime, LoopHealth, LoopStatus, SafeMode
 from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
@@ -23,7 +23,7 @@ __all__ = ["GhostRuntimeImpl"]
 _Observe = bool
 
 
-class GhostRuntimeImpl(GhostRuntime):
+class GhostRuntimeImpl(IGhostRuntime):
     """GhostRuntime 默认实现 — 编排 MossRuntime + Ghost 生命周期.
 
     wiring 顺序:
@@ -37,7 +37,7 @@ class GhostRuntimeImpl(GhostRuntime):
     def __init__(
             self,
             *,
-            moss_runtime: MossRuntime,
+            moss_runtime: IShellRuntime,
             ghost_meta: GhostMeta,
             source_path: pathlib.Path | None,
     ):
@@ -76,7 +76,7 @@ class GhostRuntimeImpl(GhostRuntime):
     # ── GhostRuntime ABC ──────────────────────────
 
     @property
-    def moss(self) -> MossRuntime:
+    def moss(self) -> IShellRuntime:
         return self._moss_runtime
 
     @property

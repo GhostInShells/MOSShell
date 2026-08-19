@@ -1,6 +1,6 @@
 from typing import Iterable
 
-from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
+from ghoshell_moss.core.blueprint.host import IHost, IShellRuntime
 from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
@@ -15,8 +15,8 @@ class MOSSRuntimeREPLState(REPLState):
 
     def __init__(
             self,
-            host: MossHost,
-            moss: MossRuntime,
+            host: IHost,
+            moss: IShellRuntime,
             name: str = 'MOSS',
     ) -> None:
         self._host = host
@@ -49,13 +49,13 @@ class MOSSRuntimeREPLState(REPLState):
             self.console.info("Leave MOSS runtime")
 
     async def _on_text_input(self, console_input: str) -> None:
-        result = await self._moss_runtime.moss_exec(console_input)
+        result = await self._moss_runtime.exec_logos(console_input)
         self.console.output(OutputItem.new("Shell", *result, log="execution done"))
 
 
-class MossRuntimeTUI(MossHostTUI[MossRuntime]):
+class MossRuntimeTUI(MossHostTUI[IShellRuntime]):
 
-    def _get_runtime(self) -> MossRuntime:
+    def _get_runtime(self) -> IShellRuntime:
         return self.host.run()
 
     def _get_session(self):

@@ -14,11 +14,12 @@ from typing_extensions import Self
 from pathlib import Path
 import janus
 
+from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.message.message import Message
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell
 from ghoshell_moss.core.blueprint.host import (
-    MossRuntime, MossSystemPrompter,
+    IShellRuntime, MossSystemPrompter,
 )
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.project import HostMode
@@ -35,7 +36,7 @@ from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 import contextlib
 import asyncio
 
-__all__ = ['MossRuntimeImpl']
+__all__ = ['ShellRuntimeImpl']
 
 
 class _MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
@@ -45,7 +46,7 @@ class _MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
     pass
 
 
-class MossRuntimeImpl(MossRuntime):
+class ShellRuntimeImpl(IShellRuntime):
 
     def __init__(
             self,
@@ -131,7 +132,7 @@ class MossRuntimeImpl(MossRuntime):
         ctml_version = self._mode.meta.ctml_version or self._env.moss_meta.ctml_version
         ctml_prompt = self._load_ctml_prompt(ctml_version)
         prompter.with_prompter(
-            MossSystemPrompter.CTML_SLOT,
+            MossSystemPrompter.LOGOS_SLOT,
             BaseSystemPrompter(
                 own_instruction=ctml_prompt,
                 description=f"CTML grammar prompt (version {ctml_version}).",
@@ -286,7 +287,7 @@ class MossRuntimeImpl(MossRuntime):
     def env(self) -> Environment:
         return self._env
 
-    def moss_instruction(self, with_static: bool = True) -> str:
+    def instruction(self, with_static: bool = True) -> str:
         self._check_shell_running()
         instructions = [self._ctml_shell.meta_instruction()]
 
@@ -295,19 +296,19 @@ class MossRuntimeImpl(MossRuntime):
                 instructions.append("# MOSS static\n\n" + static_messages)
         return "\n\n".join(instructions)
 
-    async def moss_dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
+    async def dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
         self._check_shell_running()
         await self._ctml_shell.refresh_metas(max_wait)
         return self._ctml_shell.dynamic_messages()
 
-    def moss_static_messages(self) -> str:
+    def static_messages(self) -> str:
         return self._ctml_shell.static_messages()
 
-    async def moss_refresh_metas(self, timeout: float = 2.0) -> None:
+    async def refresh_metas(self, timeout: float = 2.0) -> None:
         self._check_shell_running()
         await self._ctml_shell.refresh_metas(timeout)
 
-    async def moss_observe(
+    async def observe(
             self,
             timeout: float | None = None,
             with_dynamic: bool = True,
@@ -324,7 +325,7 @@ class MossRuntimeImpl(MossRuntime):
             messages.extend(dynamic_messages)
         return messages
 
-    async def moss_exec(
+    async def exec_logos(
             self,
             logos: str,
             call_soon: bool = True,
@@ -344,7 +345,7 @@ class MossRuntimeImpl(MossRuntime):
                 await interpreter.wait_stopped()
         return interpretation.as_messages()
 
-    async def moss_interrupt(self) -> list[Message]:
+    async def interrupt(self) -> list[Message]:
         self._check_running()
         await self._ctml_shell.clear()
         interpreter = self._ctml_shell.interpreting()

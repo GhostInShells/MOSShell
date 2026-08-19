@@ -1,6 +1,6 @@
 """Ghost 调试 Inspector — 在 REPL 中暴露 pause / health / state / faculties."""
 
-from ghoshell_moss.core.blueprint.host import GhostRuntime, LoopHealth
+from ghoshell_moss.core.blueprint.host import IGhostRuntime, LoopHealth
 from ghoshell_moss.core.blueprint.ghost import Ghost
 from ghoshell_moss.core.blueprint.mindflow import Mindflow
 from ghoshell_moss.core.concepts.shell import MOSShell
@@ -13,7 +13,7 @@ class GhostInspector:
 
     def __init__(
             self,
-            ghost_runtime: GhostRuntime,
+            ghost_runtime: IGhostRuntime,
             ghost: Ghost,
             mindflow: Mindflow,
             shell: MOSShell,

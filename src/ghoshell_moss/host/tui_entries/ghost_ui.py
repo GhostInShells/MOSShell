@@ -5,7 +5,7 @@ from typing import Callable, Iterable
 
 from prompt_toolkit.key_binding import KeyPressEvent
 
-from ghoshell_moss.core.blueprint.host import MossHost, GhostRuntime
+from ghoshell_moss.core.blueprint.host import IHost, IGhostRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.session import OutputItem
 from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
@@ -21,7 +21,7 @@ __all__ = ["GhostLogosState", "GhostOutputState", "GhostTUI"]
 class _GhostStateBase(REPLState):
     """Shared base: session access + ghost inspectors for both logos and output states."""
 
-    def __init__(self, ghost_runtime: GhostRuntime, name: str):
+    def __init__(self, ghost_runtime: IGhostRuntime, name: str):
         self._gr = ghost_runtime
         super().__init__(name)
 
@@ -66,7 +66,7 @@ class _GhostStateBase(REPLState):
 class GhostLogosState(_GhostStateBase):
     """Logos streaming display — text input drives signals, logos renders line by line."""
 
-    def __init__(self, ghost_runtime: GhostRuntime, name: str = "echo"):
+    def __init__(self, ghost_runtime: IGhostRuntime, name: str = "echo"):
         self._logos_task: asyncio.Task | None = None
         super().__init__(ghost_runtime, name)
 
@@ -113,7 +113,7 @@ class GhostLogosState(_GhostStateBase):
 class GhostOutputState(_GhostStateBase):
     """Output item display — structured messages from ghost session."""
 
-    def __init__(self, ghost_runtime: GhostRuntime, name: str = "messages"):
+    def __init__(self, ghost_runtime: IGhostRuntime, name: str = "messages"):
         super().__init__(ghost_runtime, name)
 
     def output_on_switch(self, enter_else_leave: bool) -> None:
@@ -135,18 +135,18 @@ class GhostOutputState(_GhostStateBase):
         self.console.output(item)
 
 
-class GhostTUI(MossHostTUI[GhostRuntime]):
+class GhostTUI(MossHostTUI[IGhostRuntime]):
     """Ghost TUI — logos stream, output items, and shell debug.
 
     Usage: GhostTUI().run()
     Start with ``moss-ghost <name>`` or configure via Environment.
     """
 
-    def __init__(self, host: MossHost | None = None):
-        super().__init__(host=host or MossHost.discover())
+    def __init__(self, host: IHost | None = None):
+        super().__init__(host=host or IHost.discover())
         self._safe_mode_wired: bool = False
 
-    def _get_runtime(self) -> GhostRuntime:
+    def _get_runtime(self) -> IGhostRuntime:
         return self.host.run_ghost(self.host.env.ghost_name)
 
     def _get_session(self):
