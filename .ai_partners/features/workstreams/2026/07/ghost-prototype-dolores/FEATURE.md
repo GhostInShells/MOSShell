@@ -1,17 +1,20 @@
 ---
-title: Dolores Ghost
-status: draft
-priority: P0
 created: 2026-07-13
-updated: 2026-08-15
-depends: [momento-mori, ground-channel, dsh-productization]
+depends:
+- momento-mori
+- ground-channel
+- dsh-fusion
+description: Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 高优先级集成 DSH 为 ghost 的推理中枢 (认知代理),
+  MOSS 保留记忆 (Memento) / 执行 (CTML channels) / 感知 (audio/vision). 相对 Atom 的线性内存历史, Dolores
+  引入 Memento 持久化轨迹、Ghost 反身 channel、interleaved thinking、 独立思维模块与模型自感知, 作为 moss 实例
+  (仓库自身的 ghost) 的载体持续迭代.
 milestone: 0.1.0
-description: >-
-  Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 高优先级集成 DSH
-  为 ghost 的推理中枢 (认知代理), MOSS 保留记忆 (Memento) / 执行 (CTML
-  channels) / 感知 (audio/vision). 相对 Atom 的线性内存历史, Dolores
-  引入 Memento 持久化轨迹、Ghost 反身 channel、interleaved thinking、
-  独立思维模块与模型自感知, 作为 moss 实例 (仓库自身的 ghost) 的载体持续迭代.
+priority: P0
+status: in-progress
+status_note: '骨架已搭 (DoloresMeta + Dolores hello world)。下一步: stubs/VERSION 约定 + moss
+  实例注册，DSH 推理内核接线'
+title: Dolores Ghost
+updated: '2026-08-20'
 ---
 
 # Dolores Ghost
@@ -503,3 +506,5 @@ ghost.articulate(articulator):
   起步前先对齐可用表面.
 - 认知场默认实现、mindflow channel 完工是独立 feature, Dolores 的 ghost channel
   提供挂载点, 不阻塞也不等待它们.
+- 观测三面 (`moss-ghost <ghost> --surface tui|output|log`): output 面 stdout 打印
+  OutputItem (janus 卸载到 async main), log 面落 logging; 表头打印环境可暴露信息. 见 `ghost_run.py`.
