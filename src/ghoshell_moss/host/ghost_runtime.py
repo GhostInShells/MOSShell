@@ -686,5 +686,5 @@ class GhostWorkspaceProvider(Provider[GhostWorkspace]):
         matrix = con.force_fetch(Matrix)
         # matrix.ghost_home 已删 (UU-10 首页收敛). ghost 归属挂 project (治理域句柄),
         # 具体路径 = project.get_ghost_home(env.ghost_name) — TT-9 三目录松耦合的一环.
-        home_path = matrix.project.get_ghost_home(matrix.env.ghost_name)
+        home_path = matrix.ghost_home
         return GhostWorkspace(home=home_path, source=self._source_path)

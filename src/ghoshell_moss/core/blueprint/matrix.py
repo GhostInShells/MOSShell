@@ -237,8 +237,14 @@ class Matrix(Facade):
         return Path(self.this.home)
 
     @property
-    def cell_home(self) -> Path:
-        return self.cell_workspace.root().abspath()
+    def mode_home(self) -> Path:
+        """ moss 当前模式 (moss host mode) 的工作空间. """
+        return self.env.mode_home
+
+    @property
+    def ghost_home(self) -> Path:
+        """ moss 当前 ghost 的工作空间. ghost 和 mode 是正交关系, 各自有独立的工作区. """
+        return self.env.ghost_home
 
     @property
     @abstractmethod

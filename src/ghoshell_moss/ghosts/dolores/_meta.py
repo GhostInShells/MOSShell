@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from ghoshell_container import IoCContainer
-from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
+from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
+from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.core.blueprint.session import Session
@@ -46,6 +47,24 @@ class DoloresMeta(GhostMeta):
     def nuclei_metas(self) -> list[NucleusMeta]:
         return self._nuclei_metas
 
+    # ── instruction 段 (结构化派生, 不写死提示词) ──────────
+
+    def prototype_instruction(self) -> str:
+        """原型元信息 — 型号 + 版本, 从结构化 meta 派生."""
+        # todo: 补充行为逻辑 — 模型的正常输出一律解析为 CTML 驱动躯体,
+        # 配套工具 (channel) 负责控制/交互, 行为面随原型迭代在此扩展.
+        return "\n".join([
+            f"prototype: {self.prototype()}",
+            f"version: {self.VERSION}",
+        ])
+
+    def identity_instruction(self) -> str:
+        """身份描述 — name + description, 从结构化 meta 派生."""
+        return "\n".join([
+            f"name: {self.name()}",
+            f"description: {self.description()}",
+        ])
+
     # ── stubs / dsh home ────────────────────────────
 
     @classmethod
@@ -72,11 +91,21 @@ class DoloresMeta(GhostMeta):
         session: Session | None = None
         matrix: Matrix | None = None
         shell: MOSShell | None = None
+        base_instruction: str | None = None
         if container is not None:
-            workspace = container.get(GhostWorkspace)
-            if workspace is not None:
-                home = workspace.home
-            session = container.get(Session)
             matrix = container.get(Matrix)
+            if matrix is not None:
+                home = matrix.ghost_home
+            session = container.get(Session)
             shell = container.get(MOSShell)
-        return Dolores(meta=self, home=home, session=session, matrix=matrix, shell=shell)
+            prompter = container.get(MossSystemPrompter)
+            if prompter is not None:
+                base_instruction = prompter.base_instruction()
+        return Dolores(
+            meta=self,
+            home=home,
+            session=session,
+            matrix=matrix,
+            shell=shell,
+            base_instruction=base_instruction,
+        )

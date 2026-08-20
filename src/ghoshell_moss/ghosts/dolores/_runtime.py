@@ -14,6 +14,7 @@ from ghoshell_moss.core.blueprint.mindflow import Articulator
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.core.concepts.shell import MOSShell
+from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -42,16 +43,20 @@ class Dolores(Ghost):
         session: Session | None = None,
         matrix: Matrix | None = None,
         shell: MOSShell | None = None,
+        base_instruction: str | None = None,
     ):
         self._meta = meta
         self._home = home
         self._session = session
         self._matrix = matrix
         self._shell = shell
-        # launcher / trajectory 懒构建 — __init__ 不碰 httpx / matrix.processes / shell (构造无副作用).
+        self._base_instruction = base_instruction
+        # launcher / trajectory / ground 懒构建 — __init__ 不碰 httpx / matrix.processes / shell (构造无副作用).
         self._dsh_launcher: "DshLauncher | None" = None
         self._trajectory: MShellTrajectory | None = None
         self._epoch_started = False
+        self._ground_set: DefaultGroundSet | None = None
+        self._root_ground: Ground | None = None
         self._exit_stack = contextlib.AsyncExitStack()
 
     # ── Ghost ABC ──────────────────────────────────
@@ -61,7 +66,28 @@ class Dolores(Ghost):
         return self._meta
 
     def system_prompt(self) -> str:
-        return ""
+        """instruction = baseline (MossSystemPrompter.base_instruction) + 原型元信息 + 身份描述.
+
+        baseline 来自 factory 从 container 取的 base_instruction (CTML + project + mode).
+        两个 ghost 段从结构化 meta 派生, 不写死提示词 — 未来认知从目录构建.
+        """
+        parts: list[str] = []
+        if self._base_instruction:
+            parts.append(self._base_instruction)
+        parts.append(self._meta.prototype_instruction())
+        parts.append(self._meta.identity_instruction())
+        return "\n\n".join(parts)
+
+    async def ground_instruction(self) -> str | None:
+        """ground 槽位 — 渲染持有的 root ground (ghost_home 认知场) 为文本.
+
+        root ground 在 __aenter__ 打开并长期持有, 保住 snapshot 变更跟踪 (单 owner).
+        由 epoch 周期调用 (Dolores Ego 装线), 本步只备元件, 不主动接入.
+        """
+        if self._root_ground is None:
+            return None
+        view = await self._root_ground.render()
+        return str(view)
 
     async def articulate(self, articulator: Articulator) -> AsyncIterator[str]:
         """上下文完全由 ShellTrajectory 承载 — 先写 trajectory frame, 再走 output.
@@ -114,6 +140,13 @@ class Dolores(Ghost):
             self._trajectory = await self._exit_stack.enter_async_context(
                 MShellTrajectory(self._shell)
             )
+        # 打开并长期持有 root ground (ghost_home 认知场). stubs 同步在前 (GROUND.md 已落),
+        # GroundSet 由 exit stack 管理生命周期, root ground 单 owner 持有供 epoch 渲染.
+        if self._home is not None:
+            self._ground_set = await self._exit_stack.enter_async_context(
+                DefaultGroundSet(workspace_root=self._home)
+            )
+            self._root_ground = await self._ground_set.open(self._home)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

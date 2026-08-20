@@ -24,7 +24,7 @@ def _dolores_meta(**kwargs):
     return DoloresMeta(**kwargs)
 
 
-def _dolores(meta=None, *, home=None, session=None, matrix=None, shell=None):
+def _dolores(meta=None, *, home=None, session=None, matrix=None, shell=None, base_instruction=None):
     from ._runtime import Dolores
 
     return Dolores(
@@ -33,6 +33,7 @@ def _dolores(meta=None, *, home=None, session=None, matrix=None, shell=None):
         session=session,
         matrix=matrix,
         shell=shell,
+        base_instruction=base_instruction,
     )
 
 
@@ -151,9 +152,6 @@ class TestStubsSync:
 
 
 class TestDolores:
-    def test_system_prompt_empty(self):
-        assert _dolores().system_prompt() == ""
-
     def test_is_ghost_abc(self):
         assert isinstance(_dolores(), Ghost)
 
@@ -255,3 +253,36 @@ class TestDoloresTrajectory:
         assert "<channel" in epoch_text
         frame_text = traj_outputs[1].messages_string()
         assert "<moss" in frame_text
+
+
+class TestDoloresInstruction:
+    def test_system_prompt_derives_two_meta_segments(self):
+        """system_prompt = 原型元信息 + 身份描述, 从结构化 meta 派生, 无 baseline 时不含 baseline."""
+        text = _dolores().system_prompt()
+        assert "prototype: Dolores" in text
+        assert "version: dev_1" in text
+        assert "name: dolores" in text
+        assert "description:" in text
+
+    def test_system_prompt_prepends_base_instruction(self):
+        """baseline (MossSystemPrompter.base_instruction) 在两段之前."""
+        text = _dolores(base_instruction="BASELINE").system_prompt()
+        assert text.startswith("BASELINE")
+        assert "prototype: Dolores" in text
+        assert "name: dolores" in text
+
+    @pytest.mark.asyncio
+    async def test_ground_instruction_none_without_home(self):
+        """无 home → 无 root ground, ground_instruction 返回 None."""
+        ghost = _dolores()
+        async with ghost:
+            assert await ghost.ground_instruction() is None
+
+    @pytest.mark.asyncio
+    async def test_ground_instruction_renders_held_ground(self, tmp_path: Path):
+        """home 存在 → stubs 同步落 GROUND.md, __aenter__ 打开 root ground, 渲染非空."""
+        ghost = _dolores(home=tmp_path)
+        async with ghost:
+            text = await ghost.ground_instruction()
+            assert text is not None
+            assert text.strip() != ""
