@@ -287,6 +287,12 @@ class TestCell:
         # §ZZ-10 三段结构.
         assert cell.address == f'{NODE_ROLE}/cam/ABC12345'
 
+    def test_name_keeps_raw_while_address_normalized(self):
+        cell = _make_cell(name='ghost-send', uid='ABC12345')
+        # Cell.name 保留原始值, address 归一化 -/. → _.
+        assert cell.name == 'ghost-send'
+        assert cell.address == f'{NODE_ROLE}/ghost_send/ABC12345'
+
     def test_fullname_without_category(self):
         cell = _make_cell(name='cam')
         assert cell.fullname == 'cam'
@@ -513,6 +519,12 @@ class TestAddress:
     def test_make_address_valid(self):
         assert make_address(NODE_ROLE, 'cam', 'uid8') == f'{NODE_ROLE}/cam/uid8'
         assert make_address(HOST_ROLE, 'moss', 'proj-1') == f'{HOST_ROLE}/moss/proj-1'
+
+    def test_make_address_normalizes_name_separators(self):
+        # name 的 -/. 归一化为 _ (标识符安全); uid 保留原样 (含 -).
+        assert make_address(NODE_ROLE, 'ghost-send', 'uid8') == f'{NODE_ROLE}/ghost_send/uid8'
+        assert make_address(NODE_ROLE, 'a.b', 'uid8') == f'{NODE_ROLE}/a_b/uid8'
+        assert make_address(NODE_ROLE, 'cam', 'proj-1') == f'{NODE_ROLE}/cam/proj-1'
 
     def test_make_address_rejects_unknown_role(self):
         with pytest.raises(ValueError):

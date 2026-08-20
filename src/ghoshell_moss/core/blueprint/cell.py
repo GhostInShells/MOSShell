@@ -121,8 +121,13 @@ MatchPattern = str
 """通配符模式: group/name, group/*, *, */*, */name"""
 
 CellName = str
-CellNamePattern = r"^[a-zA-Z0-9_]+$"
-"""只允许用这种方式定义 cell name, 与 python命名风格兼容. """
+# 不硬约束 -/. : from_script 从文件名 (moss-ghost 等) 导出的 name 会反复炸.
+CellNamePattern = r"^[a-zA-Z0-9_.-]+$"
+"""cell name 是治理域路径段, 允许 -/. 连字符.
+
+address 生成时 (make_address) 把 -/. 归一化为 _ 保持标识符安全,
+Cell.name 仍保留原始值.
+"""
 
 
 class Cell(BaseModel):
@@ -642,6 +647,9 @@ def make_address(role: CellRole, name: CellName, uid: str) -> str:
     :param name: address[1] 治理域路径
     :param uid: address[-1] 唯一性来源, 短随机字符串.
     """
+    # name 是治理域路径, -/. 归一化为 _ 保持 address 标识符安全;
+    # 原始值留在 Cell.name, 此处是 address 生成的唯一落点.
+    name = name.replace('-', '_').replace('.', '_')
     return CellAddressCodec.make(role, name, uid).address
 
 
