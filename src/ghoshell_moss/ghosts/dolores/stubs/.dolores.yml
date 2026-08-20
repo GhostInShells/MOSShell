@@ -1,0 +1,12 @@
+# Dolores ghost home 实例配置 — stubs 同步时复制到 ghost_home/.dolores.yml.
+# version 由 DoloresMeta.VERSION 驱动 (sync 时写入, 手动改无效).
+
+dirs:
+  - .dsh      # DSH_HOME: dsh 推理中枢的运行时领地 (profiles/settings/sessions)
+  - skills    # Claude-compatible skills
+
+dsh:
+  binary: dsh
+  profile: web
+  port: 3083
+  # home 省略 → 默认 ghost_home/.dsh

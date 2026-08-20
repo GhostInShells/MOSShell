@@ -1,0 +1,4 @@
+# 挂 dolores ghost plugin. plugin.ts 与本 patch 同目录 (profiles/web/).
+- insert:
+    - id: dolores-ghost-plugin
+      name: './plugin.ts'

@@ -88,6 +88,15 @@ exclude = ["test_*", ".discuss*", ".design", ".memory"]
     "**/*.json",
     "**/*.jsonl",
 ]
+"ghoshell_moss.ghosts.dolores" = [
+    "stubs/**/*.md",
+    "stubs/**/*.yml",
+    "stubs/**/.gitignore",
+    "dsh_stubs/**/*.ts",
+    "dsh_stubs/**/*.yml",
+    "dsh_stubs/**/*.yaml",
+    "dsh_stubs/**/*.json",
+]
 
 [tool.pdm.build]
 includes = []

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.core.blueprint.session import Session
 
@@ -44,28 +45,35 @@ class DoloresMeta(GhostMeta):
     def nuclei_metas(self) -> list[NucleusMeta]:
         return self._nuclei_metas
 
-    # ── stubs ───────────────────────────────────────
+    # ── stubs / dsh home ────────────────────────────
 
     @classmethod
     def stubs_dir(cls) -> Path:
-        """原型骨架文件的源目录, 启动时同步到 ghost home."""
+        """MOSS ghost home 骨架源目录 (GROUND.md / .dolores.yml / .gitignore)."""
         return Path(__file__).parent / "stubs"
+
+    @classmethod
+    def dsh_stubs_dir(cls) -> Path:
+        """DSH home 骨架源目录 (profiles/web + plugin.ts), 同步到 ghost_home/.dsh."""
+        return Path(__file__).parent / "dsh_stubs"
 
     # ── factory ─────────────────────────────────────
 
     def factory(self, container: IoCContainer) -> Ghost:
         """只做路径/依赖获取, 不产生副作用.
 
-        stubs 同步 (文件 IO + session.output) 收敛在 Dolores.__aenter__,
-        测试可传 tmp home 直接构造而不触发写盘.
+        stubs 同步 (文件 IO + session.output) 与 dsh 启动 (matrix.processes)
+        收敛在 Dolores.__aenter__, 测试可传 tmp home 直接构造而不触发写盘.
         """
         from ._runtime import Dolores
 
         home: Path | None = None
         session: Session | None = None
+        matrix: Matrix | None = None
         if container is not None:
             workspace = container.get(GhostWorkspace)
             if workspace is not None:
                 home = workspace.home
             session = container.get(Session)
-        return Dolores(meta=self, home=home, session=session)
+            matrix = container.get(Matrix)
+        return Dolores(meta=self, home=home, session=session, matrix=matrix)
