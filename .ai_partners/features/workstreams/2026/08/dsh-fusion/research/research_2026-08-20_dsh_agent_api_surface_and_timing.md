@@ -3,6 +3,8 @@
 > 源码锚定、可回放、非推测。源码路径均相对 `research/source/deepseek-harness/`。
 > 本次调研回答一个具体问题: **dsh 里 session 级别 agent 的接口, 哪些是 http rpc 外侧可调、哪些是 plugin in-process 内侧可调, 各自时序语义是什么**。
 > 触发点: MOSS 侧 `MShellTrajectory` 的 append-only 上下文治理模型, 关键在 `inject` / `steer` 的时序与表面。
+>
+> **纠错（同日补记）**：本文「append-only」框架性结论已被后续调研纠正 —— dsh session 不是 append-only 上下文，是 **log（append-only，真相源，永不删）+ surface（可 replace，模型可见投影）两层**。compact 用 surface `replace` shadow 旧节点：log 只增、surface 变小，因此「compact 只能追加」与「append-only 约束」不成立。详见 [research_2026-08-20_dsh_session_surface_and_message_protocol.md](research_2026-08-20_dsh_session_surface_and_message_protocol.md)。
 
 ---
 
