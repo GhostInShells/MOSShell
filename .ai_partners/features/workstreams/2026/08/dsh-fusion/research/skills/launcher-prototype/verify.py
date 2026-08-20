@@ -17,8 +17,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from ghoshell_moss.agents.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
-from ghoshell_moss.agents.deepseek_harness.types import domains, sessions
+from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
+from ghoshell_moss.deepseek_harness.types import domains, sessions
 
 SKILL_DIR = Path(__file__).resolve().parent
 HOME = SKILL_DIR / "home"

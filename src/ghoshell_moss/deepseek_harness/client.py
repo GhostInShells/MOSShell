@@ -31,8 +31,8 @@ from typing import TypeVar
 import httpx
 from pydantic import BaseModel
 
-from ghoshell_moss.agents.deepseek_harness.types import domains, sessions
-from ghoshell_moss.agents.deepseek_harness.types.rpc import RpcError
+from ghoshell_moss.deepseek_harness.types import domains, sessions
+from ghoshell_moss.deepseek_harness.types.rpc import RpcError
 from ghoshell_moss.contracts.logger import LoggerItf
 
 __all__ = [

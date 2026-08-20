@@ -43,9 +43,9 @@ from typing import Callable, Literal
 
 from typing_extensions import Self
 
-from ghoshell_moss.agents.deepseek_harness.client import DshClient
-from ghoshell_moss.agents.deepseek_harness.types import sessions
-from ghoshell_moss.agents.deepseek_harness.types.events import HostFrame, MuxFrame
+from ghoshell_moss.deepseek_harness.client import DshClient
+from ghoshell_moss.deepseek_harness.types import sessions
+from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 
 __all__ = ["DshSession"]

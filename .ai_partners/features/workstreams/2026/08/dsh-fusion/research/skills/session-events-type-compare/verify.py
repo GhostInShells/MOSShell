@@ -8,7 +8,7 @@
     ├─ 启动 dsh web
     ├─ 轮询 rpc 路由直到可用
     ├─ 拉取 mock events
-    ├─ 逐条喂给 ghoshell_moss.agents.deepseek_harness.types.session_events 的强类型模型:
+    ├─ 逐条喂给 ghoshell_moss.deepseek_harness.types.session_events 的强类型模型:
     │     SessionEvent.from_dict → 按 type 分发到具体 SessionEventModel
     │     断言 ① 分发到正确具体类  ② to_dict() == 原始 mock (round-trip)
     │            ③ seq/time/type 信封字段借道正确
@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ghoshell_moss.agents.deepseek_harness.types.session_events import (
+from ghoshell_moss.deepseek_harness.types.session_events import (
     SessionEvent,
     SessionEventModel,
     AssistantChunk,
