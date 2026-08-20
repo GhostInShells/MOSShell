@@ -414,7 +414,7 @@ class SettingsSecretView(BaseModel):
 class SettingsNamespaceView(BaseModel):
     model_config = ConfigDict(extra="allow")
     ns: str = Field(default="")
-    schema: Any | None = Field(default=None)
+    schema_: Any | None = Field(default=None, alias="schema")
     value: Any | None = Field(default=None)
     base: Any | None = Field(default=None)
     user: Any | None = Field(default=None)

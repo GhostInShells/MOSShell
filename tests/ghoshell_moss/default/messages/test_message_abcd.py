@@ -120,6 +120,31 @@ def test_addition_system():
     assert existing.field1 == addition.field1 and existing.field2 == addition.field2  # 值相等
 
 
+def test_addition_read_metadata_fallback():
+    """AdditionType.read 在 target 无 additional 属性时回退读取 metadata."""
+
+    class TestAddition(Addition):
+        field1: str = "default"
+
+        @classmethod
+        def keyword(cls) -> str:
+            return "test.addition"
+
+    class MetadataTarget:
+        # 只有 metadata, 没有 additional 属性.
+        def __init__(self):
+            self.metadata = {"test.addition": {"field1": "from-meta"}}
+
+    recovered = TestAddition.read(MetadataTarget())
+    assert recovered is not None
+    assert recovered.field1 == "from-meta"
+
+    class EmptyTarget:
+        pass
+
+    assert TestAddition.read(EmptyTarget()) is None
+
+
 def test_message_serializable():
     message = Message.new(name="ai", timestamp=True)
     js = message.model_dump_json()

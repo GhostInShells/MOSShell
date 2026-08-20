@@ -95,12 +95,15 @@ class AdditionType(ABC):
         """
         从一个目标对象中读取 Addition 数据结构, 并加工为强类型.
         """
-        if not hasattr(target, "additional") or target.additional is None:
-            return None
-        if not isinstance(target.additional, dict):
+        additional = None
+        if hasattr(target, "additional"):
+            additional = getattr(target, "additional", None)
+        elif hasattr(target, "metadata"):
+            additional = getattr(target, "metadata", None)
+        if additional is None or not isinstance(additional, dict):
             return None
         keyword = cls.keyword()
-        data = target.additional.get(keyword, None)
+        data = additional.get(keyword, None)
         return cls.from_normalize(data, throw)
 
     @classmethod
