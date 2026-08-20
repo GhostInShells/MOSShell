@@ -26,8 +26,8 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.blueprint.mindflow import Mindflow
+from ghoshell_moss.core.blueprint.session import Session, OutputItem
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, Signal
 from ghoshell_moss.core.blueprint.project import Project, HostMode
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -525,6 +525,25 @@ class IGhostRuntime(ABC):
     def container(self) -> IoCContainer:
         """快捷路径: moss.matrix.container."""
         return self.moss.matrix.container
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """是否已完成启动 (__aenter__ 返回). 启动前 False, 启动后 True."""
+        ...
+
+    @abstractmethod
+    def on_output(self, callback: Callable[[OutputItem], None]) -> None:
+        """注册 output 监听 — 生命周期无关, 启动前可注册.
+
+        启动前注册: 缓冲, __aenter__ (matrix 就绪后) 优先装线到 session.
+        启动后注册: 直接挂到 session.
+        """
+        ...
+
+    @abstractmethod
+    def on_signal(self, callback: Callable[[Signal], None]) -> None:
+        """注册 signal 监听 — 生命周期无关, 启动前可注册. 语义同 on_output."""
+        ...
 
     @abstractmethod
     async def __aenter__(self) -> Self:

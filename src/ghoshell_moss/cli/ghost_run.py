@@ -194,10 +194,12 @@ def _run_output(host: Host, ghost_name: str) -> None:
     async def _main() -> None:
         printer = asyncio.create_task(_output_printer(queue))
         try:
+            # 启动前注册回调 — GhostRuntime 缓冲, __aenter__ (matrix 就绪后) 优先装线,
+            # 从而捕获 ghost __aenter__ (stubs sync / dsh 启动) 发出的 output.
+            ghost_runtime.on_output(
+                lambda item: queue.sync_q.put_nowait(item)
+            )
             async with ghost_runtime:
-                ghost_runtime.moss.session.on_output(
-                    lambda item: queue.sync_q.put_nowait(item)
-                )
                 await ghost_runtime.moss.wait_close()
         finally:
             queue.sync_q.put_nowait(None)

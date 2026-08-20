@@ -10,6 +10,7 @@ from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Articulator, Action, Signal
+from ghoshell_moss.core.blueprint.session import OutputItem
 from ghoshell_moss.core.concepts.command import ObserveError
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.core.concepts.errors import InterpretError
@@ -62,6 +63,9 @@ class GhostRuntimeImpl(IGhostRuntime):
         self._safe_mode: SafeModeImpl | None = None  # 懒加载, 未开启时零开销
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
+        # 启动前注册的观察回调 — __aenter__ (matrix 就绪后) 优先装线到 session.
+        self._output_listeners: list[Callable] = []
+        self._signal_listeners: list[Callable] = []
         self._loop_status: LoopHealth = LoopHealth(
             main="not_started",
             articulate="not_started",
@@ -95,6 +99,23 @@ class GhostRuntimeImpl(IGhostRuntime):
             raise RuntimeError("GhostRuntime not started. Call __aenter__ first.")
         return self._mindflow
 
+    def is_running(self) -> bool:
+        return self._started
+
+    def on_output(self, callback: Callable[[OutputItem], None]) -> None:
+        """注册 output 监听 — 生命周期无关. 启动前缓冲, 启动后直挂 session."""
+        if self._started:
+            self._moss_runtime.session.on_output(callback)
+        else:
+            self._output_listeners.append(callback)
+
+    def on_signal(self, callback: Callable[[Signal], None]) -> None:
+        """注册 signal 监听 — 生命周期无关. 语义同 on_output."""
+        if self._started:
+            self._moss_runtime.session.on_signal(callback)
+        else:
+            self._signal_listeners.append(callback)
+
     # ── 生命周期 ──────────────────────────────────
 
     async def __aenter__(self) -> Self:
@@ -118,6 +139,15 @@ class GhostRuntimeImpl(IGhostRuntime):
         await self._async_exit_stack.__aenter__()
         await self._async_exit_stack.enter_async_context(self._moss_runtime)
         logger = self.moss.logger
+
+        # 2.5: 装线启动前注册的观察回调 (matrix 已就绪) — 优先装, 先于 ghost.__aenter__,
+        # 才能捕获 ghost 启动阶段 (stubs sync / dsh 启动) 发出的 output/signal.
+        for callback in self._output_listeners:
+            self._moss_runtime.session.on_output(callback)
+        self._output_listeners.clear()
+        for callback in self._signal_listeners:
+            self._moss_runtime.session.on_signal(callback)
+        self._signal_listeners.clear()
 
         # 3. GhostMeta.factory(container) → ghost
         logger.debug("%s step 3/5: building ghost instance", self._log_prefix)
