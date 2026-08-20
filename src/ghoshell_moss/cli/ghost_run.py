@@ -1,9 +1,10 @@
-"""moss-ghost — launch a Ghost across three interaction surfaces.
+"""moss-ghost — launch a Ghost and inject input signals.
 
-Surfaces (``--surface``, default ``tui``):
-- ``tui``: interactive terminal — logos stream + output items.
-- ``output``: headless, print session OutputItems to stdout (tail-able).
-- ``log``: headless, write runtime logs to moss.log (tail-able).
+Subcommands:
+- ``run``: launch a Ghost — interactive TUI, or headless output/log observation.
+- ``send``: inject a text input signal to a running Ghost in the same scope.
+
+Without a subcommand, lists all available Ghosts.
 """
 
 import asyncio
@@ -16,15 +17,31 @@ import click
 import janus
 
 from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.session import OutputItem
 from ghoshell_moss.host import Host
 
 
-@click.command()
-@click.argument("ghost", required=False, default=None)
+@click.group(invoke_without_command=True)
 @click.option("--mode", default="default", help="MOSS runtime mode.")
 @click.option("--scope", default="default", help="Network scope for session isolation.")
 @click.option("--network", default="local", help="Network driver.")
+@click.pass_context
+def ghost_run_main(ctx, mode, scope, network):
+    """Launch a Ghost and inject input signals.
+
+    Without a subcommand, lists all available Ghosts.
+    """
+    ctx.ensure_object(dict)
+    ctx.obj["mode"] = mode
+    ctx.obj["scope"] = scope
+    ctx.obj["network"] = network
+    if ctx.invoked_subcommand is None:
+        _resolve(ctx.obj, None)
+
+
+@ghost_run_main.command("run")
+@click.argument("ghost", required=False, default=None)
 @click.option(
     "--surface",
     type=click.Choice(["tui", "output", "log"]),
@@ -32,23 +49,34 @@ from ghoshell_moss.host import Host
     show_default=True,
     help="Interaction surface: interactive TUI, stdout output, or log file.",
 )
-def ghost_run_main(ghost, mode, scope, network, surface):
+@click.pass_context
+def run_cmd(ctx, ghost, surface):
     """Launch a Ghost — interactive TUI, or headless output/log observation.
 
     GHOST: Ghost name to launch. Without it, lists all available Ghosts.
     """
-    ctx = {"mode": mode, "scope": scope, "network": network}
-    resolved = _resolve(ctx, ghost)
+    if ghost is None:
+        _resolve(ctx.obj, None)
+        return
+    resolved = _resolve(ctx.obj, ghost)
     if resolved is None:
         return
     host, ghost_name = resolved
 
     if surface == "tui":
-        _run_tui(host, ghost_name, ctx)
+        _run_tui(host, ghost_name, ctx.obj)
     elif surface == "output":
         _run_output(host, ghost_name)
     else:  # log
-        _run_log(host, ghost_name, ctx)
+        _run_log(host, ghost_name, ctx.obj)
+
+
+@ghost_run_main.command("send")
+@click.argument("text")
+@click.pass_context
+def send_cmd(ctx, text):
+    """Inject a text input signal to a running Ghost in the same scope."""
+    _send_input(text, ctx.obj["mode"], ctx.obj["scope"], ctx.obj["network"])
 
 
 # ── 共享解析 / 输出 ──────────────────────────────────
@@ -84,7 +112,7 @@ def _resolve(ctx: dict, ghost: str | None) -> tuple[Host, str] | None:
         for name, meta in available.items():
             click.echo(f"  {click.style(name, fg='green', bold=True)} — {meta.prototype()}")
             click.echo(f"    {meta.description().split(chr(10))[0][:100]}")
-        click.echo(f"\nRun: {click.style('moss-ghost <name>', fg='cyan')}")
+        click.echo(f"\nRun: {click.style('moss-ghost run <name>', fg='cyan')}")
         return None
 
     if ghost not in available:
@@ -117,10 +145,15 @@ def _print_env_header(host: Host) -> None:
 
 def _print_output_item(item: OutputItem) -> None:
     text = item.messages_string()
+    log = item.log
+    if not text and not log:
+        return
+    if log:
+        click.echo(f"--- [{item.role}] {log}")
+    else:
+        click.echo(f"--- [{item.role}] ---")
     if text:
         click.echo(text)
-    elif item.log:
-        click.echo(f"[{item.role}] {item.log}")
 
 
 async def _output_printer(queue: janus.Queue) -> None:
@@ -193,6 +226,27 @@ def _run_log(host: Host, ghost_name: str, ctx: dict) -> None:
             await ghost_runtime.moss.wait_close()
 
     _run_ghost_headless(ghost_runtime, _main)
+
+
+# ── send: 输入注入 ──────────────────────────────────
+
+
+def _send_input(text: str, mode: str, scope: str, network: str) -> None:
+    """Inject a text input signal to a running Ghost in the same scope.
+
+    Signal 命名空间只含 network_scope (MOSS/matrix/scopes/{scope}/signals),
+    所以对齐 scope 即可命中 running ghost 的 mindflow input nucleus —
+    ghost 名不进路由, 不传 --ghost。
+    """
+    env = Environment(mode=mode, scope=scope, network=network)
+    env.seal()
+    matrix = Matrix.new("ghost-send", persist=False, env=env)
+
+    async def _send() -> None:
+        async with matrix:
+            matrix.session.add_input_signal(text)
+
+    asyncio.run(_send())
 
 
 if __name__ == "__main__":

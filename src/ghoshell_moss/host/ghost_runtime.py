@@ -452,6 +452,10 @@ class GhostRuntimeImpl(IGhostRuntime):
                     self._safe_mode.cancel_current()
                 logos = "".join(logos_parts)
                 articulator.moment.logos = logos
+                if logos:
+                    # logos 同时发一条原子 OutputItem — headless 观测面 (on_output)
+                    # 看不到 stream (get_logos), 这里补上 articulate 返回值的可观测出口.
+                    session.output('logos', logos)
                 ghost.on_articulate_exit(
                     articulator,
                     logos,

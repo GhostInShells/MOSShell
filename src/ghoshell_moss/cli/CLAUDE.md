@@ -43,11 +43,14 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
   - `moss-shell log` — 无交互 headless 运行, 只输出日志, 供 CI/后台排障
 - Ghost 运行前调试 Shell 层的入口: 测 CTML、检 channels/matrix/manifests
 
-### 3. `moss-ghost` — Ghost 交互 TUI
+### 3. `moss-ghost` — Ghost 交互入口 (group: run / send)
 
-- **入口**: `ghost_run.py` → `ghost_run_main()`
+- **入口**: `ghost_run.py` → `ghost_run_main()` (Click group)
 - **框架**: Click + GhostTUI (Textual/prompt_toolkit)
-- **用途**: 启动一个 Ghost 并进入 TUI 交互终端。Logos 流式输出、output 结构化消息、SafeMode 审批闸口。Ghost 真正的交互界面在 nodes 体系里, TUI 是元控制面
+- **子命令**:
+  - `run <ghost> [--surface tui|output|log]` — 启动一个 Ghost。tui 交互终端 (logos 流式输出、output 结构化消息、SafeMode 审批闸口)；output/log 为 headless 观测面 (tail stdout / 日志)。Ghost 真正的交互界面在 nodes 体系里, TUI 是元控制面
+  - `send <text>` — 往同 scope 的 running ghost 注入一条 input signal (非持久化 Matrix 节点, `session.add_input_signal`)。signal 命名空间只含 network_scope, 故不传 --ghost
+- **全局 option** (`--mode/--scope/--network`, 放子命令前, 对齐 `moss` 主 CLI 惯例): 无子命令时列出可用 ghost
 
 ### 4. `moss-shell mcp` — MOSS Runtime 作为 MCP Server
 
