@@ -24,10 +24,16 @@ def _dolores_meta(**kwargs):
     return DoloresMeta(**kwargs)
 
 
-def _dolores(meta=None, *, home=None, session=None, matrix=None):
+def _dolores(meta=None, *, home=None, session=None, matrix=None, shell=None):
     from ._runtime import Dolores
 
-    return Dolores(meta=meta or _dolores_meta(), home=home, session=session, matrix=matrix)
+    return Dolores(
+        meta=meta or _dolores_meta(),
+        home=home,
+        session=session,
+        matrix=matrix,
+        shell=shell,
+    )
 
 
 class TestDoloresMeta:
@@ -180,10 +186,72 @@ class TestDolores:
 
 
 class TestDoloresArticulate:
-    def test_yields_hello_world(self):
+    def test_yields_placeholder_logos(self):
+        """无 trajectory (shell=None) → articulate 只产出占位 logos, 不 crash."""
         ghost = _dolores()
 
         async def collect():
             return [delta async for delta in ghost.articulate(None)]
 
-        assert asyncio.run(collect()) == ["hello world"]
+        assert asyncio.run(collect()) == [""]
+
+
+class TestDoloresTrajectory:
+    def test_no_trajectory_without_shell(self):
+        """无 shell → 不挂载 trajectory, articulate 静默占位."""
+        ghost = _dolores()
+
+        async def run():
+            async with ghost:
+                assert ghost._trajectory is None
+                with pytest.raises(RuntimeError):
+                    ghost.trajectory
+                collected = [delta async for delta in ghost.articulate(None)]
+                assert collected == [""]
+
+        asyncio.run(run())
+
+    @pytest.mark.asyncio
+    async def test_mounts_trajectory_when_shell_running(self):
+        """shell running → __aenter__ 挂载 trajectory, 句柄可访问且 is_running."""
+        from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+        shell = new_ctml_shell("dolores_traj_mount")
+        ghost = _dolores(shell=shell)
+        async with shell:
+            async with ghost:
+                assert ghost._trajectory is not None
+                assert ghost.trajectory.is_running()
+
+    @pytest.mark.asyncio
+    async def test_skips_mount_when_shell_not_running(self):
+        """shell 未启动 → 跳过挂载, trajectory 保持 None."""
+        from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+        shell = new_ctml_shell("dolores_traj_skip")
+        ghost = _dolores(shell=shell)
+        async with ghost:
+            assert ghost._trajectory is None
+            with pytest.raises(RuntimeError):
+                ghost.trajectory
+
+    @pytest.mark.asyncio
+    async def test_articulate_emits_epoch_and_frame_to_output(self):
+        """articulate 首帧写 epoch_start 全量 facade, 每轮写 trajectory frame → output."""
+        from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+        shell = new_ctml_shell("dolores_traj_output")
+        session = MockSession()
+        ghost = _dolores(shell=shell, session=session)
+        async with shell:
+            async with ghost:
+                collected = [delta async for delta in ghost.articulate(None)]
+        assert collected == [""]
+        # output 面出现 trajectory 角色: epoch start (全量 facade) + frame (帧投影).
+        traj_outputs = [o for o in session.outputs if o.role == "trajectory"]
+        assert len(traj_outputs) >= 2
+        assert "epoch start" in traj_outputs[0].log
+        epoch_text = traj_outputs[0].messages_string()
+        assert "<channel" in epoch_text
+        frame_text = traj_outputs[1].messages_string()
+        assert "<moss" in frame_text

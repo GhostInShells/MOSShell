@@ -5,6 +5,7 @@ from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.concepts.shell import MOSShell
 
 __all__ = ["DoloresMeta"]
 
@@ -70,10 +71,12 @@ class DoloresMeta(GhostMeta):
         home: Path | None = None
         session: Session | None = None
         matrix: Matrix | None = None
+        shell: MOSShell | None = None
         if container is not None:
             workspace = container.get(GhostWorkspace)
             if workspace is not None:
                 home = workspace.home
             session = container.get(Session)
             matrix = container.get(Matrix)
-        return Dolores(meta=self, home=home, session=session, matrix=matrix)
+            shell = container.get(MOSShell)
+        return Dolores(meta=self, home=home, session=session, matrix=matrix, shell=shell)

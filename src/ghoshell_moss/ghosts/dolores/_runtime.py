@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import shutil
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -11,6 +12,9 @@ from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Articulator
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
+from ghoshell_moss.core.concepts.shell import MOSShell
+from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
@@ -24,9 +28,10 @@ class Dolores(Ghost):
     """Dolores — 第二个 Ghost 原型运行时.
 
     生命周期里挂一个 DshLauncher (DSH 推理中枢), 直接持有 matrix 的治理链
-    (matrix.processes). articulate() 尚未接入 DSH 推理内核, 固定返回占位输出.
-    后续逐步接入: DSH agent-loop 推理、Memento 持久化轨迹、interleaved
-    thinking、ghost 反身 channel、模型自感知 (_llms).
+    (matrix.processes); 挂一个 ShellTrajectory (观测轨迹, 上下文来源).
+    articulate() 现阶段只把 trajectory 帧写进 output, 模型驱动是下一步槽位
+    (DSH agent-loop 推理、pydantic-ai). 后续逐步接入: Memento 持久化轨迹、
+    interleaved thinking、ghost 反身 channel、模型自感知 (_llms).
     """
 
     def __init__(
@@ -36,13 +41,17 @@ class Dolores(Ghost):
         home: Path | None = None,
         session: Session | None = None,
         matrix: Matrix | None = None,
+        shell: MOSShell | None = None,
     ):
         self._meta = meta
         self._home = home
         self._session = session
         self._matrix = matrix
-        # launcher 懒构建 — __init__ 不碰 httpx / matrix.processes (构造无副作用).
+        self._shell = shell
+        # launcher / trajectory 懒构建 — __init__ 不碰 httpx / matrix.processes / shell (构造无副作用).
         self._dsh_launcher: "DshLauncher | None" = None
+        self._trajectory: MShellTrajectory | None = None
+        self._epoch_started = False
         self._exit_stack = contextlib.AsyncExitStack()
 
     # ── Ghost ABC ──────────────────────────────────
@@ -55,7 +64,37 @@ class Dolores(Ghost):
         return ""
 
     async def articulate(self, articulator: Articulator) -> AsyncIterator[str]:
-        yield "hello world"
+        """上下文完全由 ShellTrajectory 承载 — 先写 trajectory frame, 再走 output.
+
+        Moment 体系不动: 本步只把 shell 观测 (facade / status / events / context) 从
+        perspectives 挪到 trajectory 帧, Moment 只承载外部输入 (percepts + hint).
+        模型驱动是下一步的槽位 (DSH 推理中枢 / pydantic-ai), 现阶段产出占位 logos.
+        """
+        trajectory = self._trajectory
+        if trajectory is not None:
+            if not self._epoch_started:
+                self._epoch_started = True
+                # 首个 epoch: 注入全量 facade (refresh 重置观测基线).
+                epoch_start = trajectory.epoch_start_point(refresh=True)
+                if self._session is not None:
+                    self._session.output(
+                        "trajectory",
+                        Message.new().with_content(epoch_start),
+                        log="trajectory epoch start",
+                    )
+            # 每轮: 拉当前帧 delta (events + status + context + facade) → output 观测面.
+            frame = trajectory.pop_frame()
+            if self._session is not None:
+                self._session.output(
+                    "trajectory",
+                    *frame.project(now=time.time()),
+                    log=f"trajectory frame {frame.index}",
+                )
+
+        # ── 槽位: 模型驱动 (DSH 推理中枢 / pydantic-ai) ──
+        # 上下文组装 = epoch_start (一次) + 累积 trajectory 帧 + moment.percepts + hint
+        # → 模型请求 → 产出 logos 流.
+        yield ""
 
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()
@@ -69,6 +108,12 @@ class Dolores(Ghost):
             )
         if self._matrix is not None:
             await self._exit_stack.enter_async_context(self._dsh())
+        # 挂载 ShellTrajectory — shell 由 MossRuntime 持有且已 running (ghost.__aenter__
+        # 晚于 shell 启动). 未提供 shell / 未运行时跳过, trajectory 保持 None.
+        if self._shell is not None and self._shell.is_running():
+            self._trajectory = await self._exit_stack.enter_async_context(
+                MShellTrajectory(self._shell)
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -82,6 +127,15 @@ class Dolores(Ghost):
         if self._dsh_launcher is None:
             raise RuntimeError("dsh launcher not started. Call __aenter__ first.")
         return self._dsh_launcher
+
+    @property
+    def trajectory(self) -> MShellTrajectory:
+        """ShellTrajectory 句柄 — 未挂载 (无 shell / 未 running) 时抛清晰错误."""
+        if self._trajectory is None:
+            raise RuntimeError(
+                "trajectory not mounted. Requires a running shell. Call __aenter__ first."
+            )
+        return self._trajectory
 
     def _build_dsh_launcher(self) -> "DshLauncher":
         from ghoshell_moss.deepseek_harness.launcher import (
