@@ -409,11 +409,12 @@ class TrajectoryFrame:
                 result.extend(messages)
         return result
 
-    def project(self, *, now: float | None = None) -> list[Message]:
+    def project(self, *, now: float | None = None, with_dynamic: bool = True) -> list[Message]:
         """投影本帧为消息列表.
 
         :param now: 发送时刻, 作帧级时间锚. 请求重试时应重新传入当前时间,
             避免模型把上次发送时刻误认为 now. 缺省用帧的 created.
+        :param with_dynamic: 是否携带 channel 的动态讯息 (每轮都可能不一样, 属于 hot 数据).
         """
         result = []
         # 返回 drain 的事件.
@@ -422,10 +423,11 @@ class TrajectoryFrame:
         # 返回 shell status 数据.
         result.append(Message.new().with_content(self.status.description()))
         # 返回当前 context messages (channel 运行时数据, 有则发).
-        if context := self.dynamic_context_messages():
-            result.append(Message.new().with_content("<context>"))
-            result.extend(context)
-            result.append(Message.new().with_content("</context>"))
+        if with_dynamic:
+            if context := self.dynamic_context_messages():
+                result.append(Message.new().with_content("<context>"))
+                result.extend(context)
+                result.append(Message.new().with_content("</context>"))
         # 返回 facade delta
         if delta := self.facade_delta():
             result.append(Message.new(tag="facade").with_content(delta))
