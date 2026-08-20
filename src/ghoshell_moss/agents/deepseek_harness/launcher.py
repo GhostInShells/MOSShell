@@ -2,7 +2,7 @@
 DshLauncher — 薄、忠于协议地拥有一段 dsh web-profile 子进程.
 
 启动器只回答一个问题: "怎么把 dsh 进程拉起来, 并连上它的 web 表面".
-它不携带任何业务逻辑 — 四个协议形状作为原语暴露 (outbound call / inbound
+它不携带任何业务逻辑 — 协议形状作为原语暴露 (outbound call / inbound
 notify / inbound request), MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
 
 机制选型: 进程生命周期走 MOSS 自己的 Subprocesses 契约 (构造注入, 控制反转),
@@ -10,6 +10,7 @@ notify / inbound request), MOSS 特定行为靠子类长出来 (如 DoloresDshLa
 
 传输: dsh web profile + 内置 `/api/events.mux` WS 下行 + plugin 注册的 HTTP
 路由上行 (零依赖伪双工). 不用 stdio JSON-RPC, 不用官方 SDK.
+WS 下行帧按类型分流: host/* 走 on_host_frame, 其余走 on_mux_frame, 各自广播.
 
 Config 刻意薄: 只装「启动器自己要的进程参数」, 不复刻 dsh 自己的配置
 (provider/model/prompt/tools 是 dsh 的 config 域, 由 dsh 从文件/env 自发现).
@@ -27,11 +28,13 @@ Config 刻意薄: 只装「启动器自己要的进程参数」, 不复刻 dsh �
 # 3. 退出/错误线: on_exit(DshExit: exit_code/stderr/self_shutdown) + exception() 非0且非主动关闭才报.
 #    stderr→error 日志, mux frame→debug 日志, is_running 含 dsh 子进程态, call/rpc 有 _check_running.
 #
+# ── 阶段性 (2026-08-20) ───────────────────────────────────
+# 4. 启动超时: _wait_started() 等 mux WS 连上, 超时 raise 而非永久阻塞.
+# 5. 帧分流: on_mux_frame / on_host_frame 双注册 (返回 Disposer), _ws_loop parse+dispatch.
+
 # ── 已知问题 (随改随记, 最后一起删) ─────────────────────────
 # 1. `_owns_sp` 手动 __aexit__ 与 exit stack 重复回收 subprocess manager (第二次 no-op, 待合).
-# 2. __aenter__ except 块的清理被注释, 中途失败会漏孤儿进程.
-# 3. import 乱序/冗余(重复 asyncio、孤儿 CaptureSpec、janus 未用), 最后统一清.
-# 4. 死代码待删: _wait_readiness / _connect_mux / _mux_loop / _close_mux (被 _ws_loop 取代).
+# 2. __aenter__ except 块的清理被注释, 中途失败会漏孤儿进程 (启动超时使该路径可达, 需补).
 
 from __future__ import annotations
 
@@ -50,7 +53,6 @@ from typing_extensions import Self
 from contextlib import AsyncExitStack
 
 from ghoshell_moss.contracts.subprocesses import (
-    CaptureSpec,
     ManagedProcess,
     ProcessMeta,
     Subprocesses,
@@ -58,20 +60,22 @@ from ghoshell_moss.contracts.subprocesses import (
 from ghoshell_moss.core.subprocesses import SubprocessesImpl
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
-from .types.events import MuxFrame
+from .types.events import HostFrame, MuxFrame
+from .types.session_events import SessionEvent
 from .client import DshClient
-import asyncio
-import janus
+from .session import DshSession
 
 __all__ = [
     "DshLauncherConfig",
     "DshLauncher",
-    "EventHandler",
     "DshExit",
 ]
 
-# inbound 通知处理: 收到一个 mux 下行帧. 返回 None 或 awaitable (异步消费方).
-EventHandler = Callable[[MuxFrame], Awaitable[None] | None]
+# 下行帧处理器: 收到 MuxFrame / HostFrame, 返回 None 或 awaitable (异步消费方).
+MuxFrameHandler = Callable[[MuxFrame], Awaitable[None] | None]
+HostFrameHandler = Callable[[HostFrame], Awaitable[None] | None]
+# 解绑函数: on_mux_frame / on_host_frame 返回, 调用即注销对应 handler.
+Disposer = Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,9 +136,8 @@ class DshLauncher:
         self._dsh_process: ManagedProcess | None = None
         # prepare http client
         self._http_client = httpx.AsyncClient(timeout=self.config.connect_timeout)
-        self._ws: Any | None = None
-        self._mux_task: asyncio.Task[Any] | None = None
-        self._handlers: list[EventHandler] = []
+        self._mux_handlers: list[MuxFrameHandler] = []
+        self._host_handlers: list[HostFrameHandler] = []
         self._logger: LoggerItf = logger or get_moss_logger()
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
@@ -196,14 +199,14 @@ class DshLauncher:
                 await task
 
     async def _ws_loop(self) -> None:
-        """mux WS 下行重连循环: 连上后先 print 原始帧, 断开则重连."""
+        """mux WS 下行重连循环: 连上后 parse+dispatch 帧, 断开则重连."""
         while self._dsh_subprocess_is_running:
             try:
                 async with websockets.connect(self.config.mux_url) as ws:
                     self._dsh_started.set()
                     print(f"{self._log_prefix}mux connected")
                     async for raw in ws:
-                        self._logger.debug("mux event: %s", raw)
+                        await self._dispatch_raw_frame(raw)
             except asyncio.CancelledError:
                 raise
             except ConnectionRefusedError as exc:
@@ -213,6 +216,41 @@ class DshLauncher:
             except websockets.exceptions.ConnectionClosed as exc:
                 self._logger.warning("mux connection closed: %s", exc)
             await asyncio.sleep(1.0)
+
+    async def _wait_started(self) -> None:
+        """等待 mux WS 连上 (push 式就绪), 超时则失败而非永久阻塞."""
+        try:
+            await self._dsh_started.wait_for(self.config.readiness_timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"dsh 未在 {self.config.readiness_timeout}s 内就绪 (mux WS 未连接)"
+            ) from None
+
+    async def _dispatch_raw_frame(self, raw: str) -> None:
+        """解析 mux 下行帧, 按类型路由到 host/mux 两套 handler 列表广播."""
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(msg, dict) or msg.get("type") != "server-request":
+            return
+        method = msg.get("method", "")
+        payload = dict(msg.get("payload") or {})
+        if method.startswith("host/"):
+            frame: MuxFrame | HostFrame = HostFrame(type=method, **payload)
+            handlers = self._host_handlers
+        else:
+            if "event" in payload and isinstance(payload["event"], dict):
+                payload["event"] = SessionEvent.from_dict(payload["event"])
+            frame = MuxFrame(type=method, **payload)
+            handlers = self._mux_handlers
+        for handler in list(handlers):
+            try:
+                result = handler(frame)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                self._logger.exception("mux frame handler failed: %s", method)
 
     async def __aenter__(self) -> Self:
         if self._started:
@@ -229,19 +267,11 @@ class DshLauncher:
             await self._aexit_stack.enter_async_context(self._consume_dsh_process_ctx())
             # 压栈 mux WS 下行重连循环.
             await self._aexit_stack.enter_async_context(self._ws_loop_ctx())
-            # 阻塞到 ws 连上 (mux connected) 才返回, 作为 push 式就绪信号.
-            await self._dsh_started.wait()
-
-            # todo: 后续慢慢改.
-            # await self._wait_readiness()
-            # await self._connect_mux()
+            # 阻塞到 ws 连上 (mux connected) 才返回, 超时则失败.
+            await self._wait_started()
         except BaseException:
-            # await self._close_mux()
-            # self._dump_stderr()
-            # await self._stop_proc()
-            # if self._owns_sp:
-            #     await self._subprocess_manager.__aexit__(None, None, None)
-            # raise
+            # 启动失败: 手动关掉已 spawn 的 subprocess (句柄在 _wait_started 之前已拿到).
+            await self._stop_proc()
             raise
         return self
 
@@ -252,7 +282,6 @@ class DshLauncher:
         # 退出所有的栈.
         await self._aexit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
-        await self._close_mux()
         if self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
@@ -282,9 +311,33 @@ class DshLauncher:
         resp.raise_for_status()
         return resp.json()
 
-    def on_event(self, handler: EventHandler) -> None:
-        """inbound 单向通知: 注册一个消费 mux 下行帧的 callback (fire-and-forget)."""
-        self._handlers.append(handler)
+    def on_mux_frame(self, handler: MuxFrameHandler) -> Disposer:
+        """注册 MuxFrame 下行处理器 (session/event 等), 返回解绑函数."""
+        self._mux_handlers.append(handler)
+
+        def _remove() -> None:
+            self._mux_handlers.remove(handler)
+
+        return _remove
+
+    def on_host_frame(self, handler: HostFrameHandler) -> Disposer:
+        """注册 HostFrame 下行处理器 (host/session-status 等), 返回解绑函数."""
+        self._host_handlers.append(handler)
+
+        def _remove() -> None:
+            self._host_handlers.remove(handler)
+
+        return _remove
+
+    def create_session(self, session_id: str, logger: LoggerItf | None = None) -> DshSession:
+        """创建并接线一个 session facade: 注册 accept_frame 到 host 流, 退出时解绑.
+
+        不持久持有 session — 只经 handler 列表关联, session 关闭时 on_exit 解绑断链.
+        (mux 流的 session/event 监听 surface 下一轮接, 届时再补 on_mux_frame.)
+        """
+        session = DshSession(session_id=session_id, client=self.client, logger=logger)
+        session.on_exit(self.on_host_frame(session.accept_frame))
+        return session
 
     def on_exit(self, callback: Callable[[DshExit], None]) -> None:
         """注册子进程退出回调, 退出时按注册顺序层层调用."""
@@ -364,68 +417,6 @@ class DshLauncher:
             if len(self._stderr_lines) > 400:
                 del self._stderr_lines[:200]
             self._logger.error("%sstderr: %s", self._log_prefix, text)
-
-    async def _wait_readiness(self) -> None:
-        """轮询就绪探针 (替代 demo 的固定 sleep), 直到 up 或超时."""
-        deadline = asyncio.get_running_loop().time() + self.config.readiness_timeout
-        while True:
-            try:
-                await self.call(self.config.readiness_path)
-                return
-            except Exception:
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise TimeoutError(
-                        f"dsh 未在 {self.config.readiness_timeout}s 内就绪 (probe {self.config.readiness_path})"
-                    ) from None
-                await asyncio.sleep(0.2)
-
-    async def _connect_mux(self) -> None:
-        self._ws = await websockets.connect(self.config.mux_url)
-        self._mux_task = asyncio.create_task(self._mux_loop())
-
-    async def _mux_loop(self) -> None:
-        """读 mux 下行流, 按 server-request 信封解出 MuxFrame, 派发给所有 handler."""
-        ws = self._ws
-        try:
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(msg, dict) or msg.get("type") != "server-request":
-                    continue
-                frame = MuxFrame(type=msg.get("method", ""), **(msg.get("payload") or {}))
-                for handler in list(self._handlers):
-                    try:
-                        result = handler(frame)
-                        if asyncio.iscoroutine(result):
-                            await result
-                    except Exception as exc:  # noqa: BLE001 — 消费方出错不拖垮 mux reader
-                        print(f"[dsh-launcher] handler error: {exc!r}")
-        finally:
-            if self._ws is not None:
-                try:
-                    await self._ws.close()
-                except Exception:
-                    # todo: 静默失败.
-                    pass
-                self._ws = None
-
-    async def _close_mux(self) -> None:
-        task = self._mux_task
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._mux_task = None
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-            self._ws = None
 
     async def _stop_proc(self) -> None:
         proc = self._dsh_process
