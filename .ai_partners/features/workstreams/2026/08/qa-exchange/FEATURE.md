@@ -1,14 +1,14 @@
 ---
-title: QA Exchange Protocol
-status: completed
-priority: P1
 created: 2026-08-03
-updated: 2026-08-06
 depends: []
-milestone:
-description: >-
-  广播问答交换协议 — Asker 广播问题 / Watcher 发现并应答 / requester 持真相 / 先到先得裁定。
-  janus + zenoh 双实现，TUI 非阻塞交互，31+6 条行为测试，system_test 节点实机验证。
+description: 广播问答交换协议 — Asker 广播问题 / Watcher 发现并应答 / requester 持真相 / 先到先得裁定。 janus
+  + zenoh 双实现，TUI 非阻塞交互，31+6 条行为测试，system_test 节点实机验证。
+milestone: null
+priority: P1
+status: completed
+status_note: answer-node CLI 消费面落地 (rich+prompt_toolkit), FEATURE.md 治理完成
+title: QA Exchange Protocol
+updated: '2026-08-22'
 ---
 
 # QA Exchange Protocol
@@ -49,11 +49,18 @@ QA 的聚合价值：用 namespace 构建不同对话空间，将各种场景的
   - QA state 不参与 C-t 循环
 - `namespace or "default"` fallback — zenoh keyexpr 通配符友好
 - `qa_pusher` system_test 节点 — confirm/input/choose/select 四问实机验证通过
+- **CLI answer-node** (`cli/nodes_answer.py` + `cli/nodes_cli.py` 的 `answer-node` 子命令):
+  - `moss nodes answer-node [--namespace NS]` — 无 GUI 的 headless QA 应答终端
+  - 进程内 `Matrix.new()` 建矩阵，不拆 node / 不开子进程（开箱极简）
+  - rich 渲染 question（panel + markdown + options 表）+ prompt_toolkit 交互（持久 PromptSession + patch_stdout）
+  - completer 下拉列 option/reject（confirm/choose/apply）；select 数字多选；note 追加进 content
+  - 底部 toolbar 实时 pending 计数；done-mid-display / first-wins 语义纳入
 
 **未来迭代：**
 - shell / channel 级默认 API
-- TUI 体验直觉优化 (紧凑度、渲染刷新等)
 - Ghost 主动感知 QA namespace 并对问题发言
+- GUI 消费面 — 参考 answer-node 的 rich+prompt_toolkit 交互，整合进 screen
+- answer-node live-abort（done 时即时中断当前 prompt；当前为 submit 时复查）
 
 ## Design Index
 
@@ -62,6 +69,7 @@ QA 的聚合价值：用 namespace 构建不同对话空间，将各种场景的
 - zenoh 实现：`src/ghoshell_moss/matrix/qa/zenoh_qa.py`
 - TUI QA State：`src/ghoshell_moss/host/tui_entries/qa_state.py`
 - TUI 基类 QA 集成：`src/ghoshell_moss/host/tui.py` (MossHostTUI)
+- CLI answer-node：`src/ghoshell_moss/cli/nodes_answer.py` + `src/ghoshell_moss/cli/nodes_cli.py` (`answer-node`)
 - 验证节点：`.moss/system_test_nodes/qa_pusher/`
 - 前身 (已冻结)：`src/ghoshell_moss/tools/future_router.py`
 - 前身 feature：`workstreams/2026/06/future-router/` — completed
@@ -103,6 +111,14 @@ kind: input / confirm / apply / choose / select。Answer 自身带 match_questio
 
 ### KD8: 先到先得 (first-wins)，应答者一次约束
 
+### KD9: answer-node 是 CLI 消费面，rich + prompt_toolkit 混用
+
+无 GUI 时也要能应答 QA。`moss nodes answer-node` 进程内 `Matrix.new()` 建矩阵
+（不拆 node / 不开子进程，开箱极简）。交互策略：rich 渲染 question 正文 + markdown +
+options 表，prompt_toolkit 用持久 PromptSession + patch_stdout 驱动交互，completer
+下拉列 option/reject（单选类），select 走数字多选，note 追加进 Answer.content。
+这是 GUI 消费面的参考实现。
+
 ## Implementation Notes
 
 ### 生命周期
@@ -128,5 +144,6 @@ qid 始终在 payload (QAMeta.refer_to)，不在 keyexpr。
 | 概念 | `core.concepts.qa` | ABC contract, topic 兄弟 |
 | janus 实现 | `core.qa.janus_qa` | 进程内 janus queue |
 | zenoh 实现 | `matrix.qa.zenoh_qa` | 跨进程 zenoh pub/sub |
-| manifest 注册 | `.moss/src/MOSS/manifests/providers/` | IoC Provider (待做) |
-| 集成验证 | `.moss/system_test_nodes/` | 双节点交互 (待做) |
+| manifest 注册 | `.moss/src/MOSS/manifests/providers/` | IoC Provider |
+| 集成验证 | `.moss/system_test_nodes/` | 双节点交互 |
+| CLI 消费面 | `cli/nodes_answer.py` | headless 应答终端 (rich + prompt_toolkit) |

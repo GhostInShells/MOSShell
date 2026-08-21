@@ -476,6 +476,26 @@ def run_node(
     sys.exit(proc.returncode)
 
 
+# ===========================================================================
+# usage: answer-node — headless QA answering terminal (no GUI)
+# ===========================================================================
+
+@nodes_app.command(name="answer-node")
+def answer_node(
+    namespace: str = typer.Option(
+        "", "--namespace", "-n",
+        help="QA namespace to watch. Default: public ('').",
+    ),
+):
+    """Answer QA questions broadcast on a namespace — headless, prompt-toolkit, no GUI.
+
+    Minimal standalone QA terminal: watches a namespace and answers questions as
+    they arrive. Runs in-process via Matrix.new (no subprocess, no node dir).
+    """
+    from ghoshell_moss.cli.nodes_answer import run_answer_node
+    run_answer_node(namespace)
+
+
 def _print_launch_debug(launcher: NodeLauncher, env) -> None:
     """Launch-debug section — printed before spawn.
 
