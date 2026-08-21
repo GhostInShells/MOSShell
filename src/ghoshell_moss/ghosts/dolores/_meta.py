@@ -74,8 +74,13 @@ class DoloresMeta(GhostMeta):
 
     @classmethod
     def dsh_stubs_dir(cls) -> Path:
-        """DSH home 骨架源目录 (profiles/web + plugin.ts), 同步到 ghost_home/.dsh."""
+        """DSH home 骨架源目录 (profiles/web), 同步到 ghost_home/.dsh."""
         return Path(__file__).parent / "dsh_stubs"
+
+    @classmethod
+    def dsh_plugin_stub(cls) -> Path:
+        """DSH ghost plugin 源文件 (独立 stub), 创建时复制为 ghost_home/.dsh/profiles/web/plugin.ts."""
+        return Path(__file__).parent / "dsh_plugin" / "moss-dolores-ghost-plugin.ts"
 
     # ── factory ─────────────────────────────────────
 

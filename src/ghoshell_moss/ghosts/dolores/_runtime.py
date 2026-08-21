@@ -245,6 +245,11 @@ class Dolores(Ghost):
             self._home / ".dsh",
             dirs_exist_ok=True,
         )
+        # plugin 源在独立 stub, 创建时复制为 profile 的 plugin.ts (cordis.patch.yml 引用 ./plugin.ts).
+        shutil.copy2(
+            self._meta.dsh_plugin_stub(),
+            self._home / ".dsh" / "profiles" / "web" / "plugin.ts",
+        )
 
     def _resolve_dsh_home(self, home: str | Path | None) -> Path:
         if home is None:

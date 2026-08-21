@@ -70,11 +70,12 @@ class TestDoloresMeta:
         assert ghost._matrix is None
         assert ghost._dsh_launcher is None
 
-    def test_dsh_stubs_dir_contains_plugin(self):
+    def test_dsh_stubs_and_plugin_stub(self):
         dsh_stubs = _dolores_meta().dsh_stubs_dir()
         assert dsh_stubs.is_dir()
-        assert (dsh_stubs / "profiles/web/plugin.ts").exists()
         assert (dsh_stubs / "profiles/web/package.json").exists()
+        # plugin 源在独立 stub, 创建时复制进 dsh profile.
+        assert _dolores_meta().dsh_plugin_stub().is_file()
 
 
 class TestStubsSync:
