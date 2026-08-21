@@ -8,7 +8,7 @@ description: 'Matrix 级通用授权机制 — 在 QA 之上补规则/凭据层�
 milestone: null
 priority: P2
 status: in-progress
-status_note: v7 abstract rewritten 2026-08-12; SessionWarrant concrete (host-only 写 storage 模式) + tests + provider 2026-08-13; 核心缺口 — host/非 host 区分未做, on_flushed 感知接口未做, topic 模式未做; v8 topic 模式协议定型 2026-08-21 (两 topic + 每 key seq + reject-retry); 第一波 2026-08-21 — seq 字段 + on_flushed 契约/host 触发落地 (topic 传输与 host/非 host 区分未做)
+status_note: v7 abstract rewritten 2026-08-12; v8 topic 模式协议定型 2026-08-21 (两 topic + 每 key seq + reject-retry); 第一波 (seq 字段 + on_flushed 契约/host 触发) 与第二波 2a (topic 模型 + TopicWarrant 非 host + provider 按 is_host 分岔) 落地 2026-08-21; 剩余 — host 接收侧 (reject-retry + truth 广播, 2b) 未做
 title: Warrant
 updated: '2026-08-21'
 ---
@@ -270,31 +270,29 @@ KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实�
 
 - 概念: `core/blueprint/warrant.py`。已按模板方法版重写 Permission/AuthorizationResult/
   Warrant + PermissionStateData 弱类型载体 (2026-08-12, 待 review 定稿)。
-- concrete (host-only, 未区分非 host): `matrix/warrant/session_warrant.py`
-  `SessionWarrant(Warrant)` — Session (qa) + Path (states_dir) 装线; 每份 state 一个
-  JSON 文件, 有序队列落盘由 `__aenter__` spawn 的 task 消费 (2026-08-13). 直接写
-  session.storage = "写 storage 模式", 隐含 host 前提未显式化.
-- concrete (planned, 未实现): `TopicWarrant(Warrant)` — 非 host topic 模式 concrete.
-  `store()` 同步写缓存 + 发写请求 topic; 订阅 truth topic 对齐缓存 + 触发 on_flushed.
-  host/非 host 区分落地后实现 (协议见 v8).
+- 协议 topic 模型: `matrix/warrant/topics.py` — `WarrantWriteRequest` (非 host→host,
+  topic `warrant/write`) + `WarrantTruth` (host→all, topic `warrant/truth`), 各含
+  key/seq/data (2026-08-21). 内部模块, 不导出到 `matrix.warrant` 全局.
+- concrete host: `matrix/warrant/session_warrant.py` `SessionWarrant(Warrant)` — Session
+  (qa) + Path (states_dir) 装线; 每份 state 一个 JSON 文件, 有序队列落盘由 `__aenter__`
+  spawn 的 task 消费 (2026-08-13). 写 storage 模式.
+- concrete non-host: `matrix/warrant/topic_warrant.py` `TopicWarrant(Warrant)` — 非 host
+  topic 模式. `store()` = 缓存 + 发写请求 topic; `__aenter__` 订阅 truth topic 对齐缓存
+  + 触发 on_flushed; ask_question 走 session.qa (2026-08-21).
 - provider: `matrix/providers/warrant_provider.py` `SessionWarrantProvider` —
-  contract=Warrant, singleton, alias=SessionWarrant. 无脑返回 SessionWarrant,
-  未检查 cell.is_host — host/非 host 区分是未完成的核心缺口.
+  contract=Warrant, singleton. factory 按 `Matrix.is_host` 分岔: host → SessionWarrant,
+  非 host → TopicWarrant; Matrix 缺失 fallback host (KD7 fail-open) (2026-08-21).
 - 依赖: `qa-exchange` (`core/concepts/qa.py`)。
 
 ## 待做
 
 - [x] 概念层实现: `core/blueprint/warrant.py` 按模板方法版重写 (2026-08-12, 待 review)
-- [ ] **host/非 host 区分** (核心缺口): provider 按 `cell.is_host` 分岔 — host →
-      `SessionWarrant` 写 storage 模式; 非 host → `TopicWarrant` topic 模式, 不写本地
-      storage. 协议见 v8, 已定型 (2026-08-21).
-- [x] **`PermissionStateData` 加可选 `seq` 字段** — 每 key 单调序号; host 版已落地
-      (2026-08-21). host 只接受 `seq == current + 1` 的 reject-retry 属 topic 接收侧, 未做.
-- [x] **on_flushed 主机侧** — Warrant ABC 暴露 `on_flushed(callback)` (返回注销句柄),
-      SessionWarrant 真实落盘后触发, 已落地 (2026-08-21, 测试用 asyncio.Event 确定性观察).
-- [ ] **on_flushed topic 传输** — 非 host 经 truth topic 触发 (concrete 差异, 见 v8),
-      属第二波 TopicWarrant.
-- [ ] topic 模式发送侧 (`TopicWarrant.store()` = 缓存 + 发写请求 topic) — 依赖
-      host/非 host 区分落地
-- [ ] topic 模式接收侧 (`TopicWarrant` 订阅 truth topic 对齐缓存 + 触发 on_flushed)
-      — 依赖 host/非 host 区分落地
+- [x] **host/非 host 区分** (核心缺口): provider 按 `cell.is_host` 分岔 — host →
+      `SessionWarrant`, 非 host → `TopicWarrant`; 落地 + 测试 (2026-08-21).
+- [x] **`PermissionStateData` 加可选 `seq` 字段** — 每 key 单调序号 (2026-08-21).
+      reject-retry 属 host 接收侧, 未做.
+- [x] **on_flushed 主机侧** — ABC 契约 + SessionWarrant 触发 (2026-08-21).
+- [x] **on_flushed topic 传输** — TopicWarrant 收 truth 触发 (2026-08-21).
+- [x] **topic 模式发送侧** — TopicWarrant.store = 缓存 + 发写请求 topic (2026-08-21).
+- [ ] **host 接收侧 (reject-retry + truth 广播)** (2b): host 订阅写请求 topic →
+      `seq == current+1` 裁决 → 落盘 → 广播 truth. 设计见 v8, 未做.
