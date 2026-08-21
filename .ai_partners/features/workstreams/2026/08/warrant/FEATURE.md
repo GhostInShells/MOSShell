@@ -8,9 +8,9 @@ description: 'Matrix 级通用授权机制 — 在 QA 之上补规则/凭据层�
 milestone: null
 priority: P2
 status: in-progress
-status_note: v7 abstract rewritten 2026-08-12; SessionWarrant concrete (host-only 写 storage 模式) + tests + provider 2026-08-13; 核心缺口 — host/非 host 区分未做, on_flushed 感知接口未做, topic 模式未做
+status_note: v7 abstract rewritten 2026-08-12; SessionWarrant concrete (host-only 写 storage 模式) + tests + provider 2026-08-13; 核心缺口 — host/非 host 区分未做, on_flushed 感知接口未做, topic 模式未做; v8 topic 模式协议定型 2026-08-21 (两 topic + 每 key seq + reject-retry)
 title: Warrant
-updated: '2026-08-13'
+updated: '2026-08-21'
 ---
 
 # Warrant
@@ -47,6 +47,60 @@ git log `3f06c8a3`。2026-08-11 与人类重新正式化, 本版为准。
 - persist 标志删除: 有 state 即存, permission 通过 result.state 是否有值控制存储 (KD3/KD5)。
 - store 改收 PermissionStateData, 同步入队 + 内存缓存, 落盘 IO 由生命周期 task 消费队列 (KD5)。
 - 修模板方法两 bug: finally 吞 CancelledError (取消沿 scope 传播), store 缺 from_state 转换。
+
+### v8 (2026-08-21)
+
+topic 模式协议定型 (与人类对齐)。沿用 v7 模板方法抽象面, 补 topic 模式的
+**存储装线协议**。核心: 两个 topic + 每 key 单调序号 (seq) + host 裁决的
+reject-retry。这是 host/非 host 区分、on_flushed、topic 模式三个缺口的具体解法。
+
+**两个 topic** (不是三个):
+- **写请求 topic** (非 host → host): 表达"我要存 state X"的意图。非 host 的
+  `store()` 同步写缓存后, 发此 topic 委托 host 落盘。是提案, 非事实。
+- **truth 广播 topic** (host → all): "X 已是权威真值"。host 落盘完成后发出。
+  是事实, 权威。也是 `on_flushed` 的传输层。
+
+两个 topic 的**信任方向相反** — 请求是提案 (谁都能发, 只有 host 落盘才成真),
+真值是事实 (只有 host 发)。混在一个 topic 会混淆"我想存"与"已存", 故必须两个。
+
+**每 key 单调序号 (seq/index)**:
+- 在已有数据基础上做 index: 读到某 key 的 seq=10, 要修改就发 11。
+- host 是序号权威, 也**只有 host 在写之前创建该数据 (持久记录 + 初始序号)**;
+  非 host 只提序号、提修改。序号主要防"后发先至"(乱序), 不是完整并发控制 —
+  permission 大概率不被多 cell 共享, 不做 MVCC/事务。
+- seq 加进 `PermissionStateData` 作**可选字段** (`seq: int | None = None`):
+  host-only 单写模式靠进程内有序队列保序, seq 留 None; 只有过 topic 时才填。
+
+**host 接受规则 (reject-retry, 一条干净规则)**:
+- host 只接受 `seq == current + 1`。
+- 其余一律退回当前 truth + "expected <seq>" 让发送方重试:
+  - 重复送达 (seq=11 再来, current 已 11) → 忽略, 天然幂等
+  - 后发先至 (seq=10 在 11 之后才到) → stale, 丢弃
+  - 跳号 (seq=12 先到, current 是 10) → 退回 current, 发送方重读再发 11
+- 这个"退回当前 truth"动作**一石二鸟**: 既是乱序裁决, 也补全非 host 的"首读"
+  (从未见过某 key、不知道当前 seq 时, 靠 reject 拿到 current 再重试)。比 buffer
+  跳号简单, 不需要全局时钟。不 buffer, 跳号一律 reject-retry。
+
+**两个 concrete (同 abstract, 不是分支)**:
+- `SessionWarrant` (host, 写 storage 模式): `store()` = 缓存 + 落盘队列。现状。
+- `TopicWarrant` (非 host, topic 模式): `store()` = 缓存 + 发写请求 topic;
+  订阅 truth topic 对齐缓存 + 触发 `on_flushed`。
+- provider 按 `cell.is_host` 选, 非 host 分支不再无脑写本地 storage。
+
+**on_flushed (契约在抽象层, 传输是 truth topic)**:
+- Warrant ABC 暴露 `on_flushed(callback)`: "某份 state 真实落盘"是通用契约。
+- host 落盘完成 → 发 truth (触发 on_flushed); 非 host 收 truth → 触发 on_flushed。
+- reject 退回的 current truth 也携带纠错/失败信号, 补 on_flushed 的失败观测。
+
+**已知代价 (非 host 授权可能 stale)**:
+- 非 host 无 storage, 启动**不读盘**, 缓存靠 truth topic 播种。
+- `get_permission_state` 可能基于 stale/default cache 做授权判定。
+- 由 reject-retry + truth 对齐兜底; 因 permission 少被多 cell 共享, 代价可接受,
+  但设计上不假装它不存在。
+
+**写动作必须队列卸载** (host 与非 host 同): `store()` 同步写缓存, 落盘 IO
+延迟执行 — host 走落盘队列 (现状), 非 host 走写请求 topic。落盘失败不阻断授权
+结果 (KD5), 自行记录。
 
 ## Motivation
 
@@ -202,11 +256,15 @@ KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实�
 
 ### 决定 (待实施)
 
-- Warrant ABC 增加 `on_flushed(callback)` — "真实落盘发生"是存储时序通用契约,
-  host 版写盘后触发, topic 版 host 确认落盘后触发.
-- provider 按 `cell.is_host` 区分: host → 写 storage 模式; 非 host → topic 模式
-  (广播给 host 落盘). 非 host 分支不再无脑写 storage.
-- topic 模式发送侧 + 接收侧: 出现跨 cell 场景时再设计广播协议与回执.
+- **Warrant ABC 增加 `on_flushed(callback)`** — "真实落盘发生"是存储时序通用契约。
+  host 版写盘后触发; topic 版非 host 收 truth 后触发 (见 v8)。目前测试靠 `__aexit__`
+  隐式 flush 兜底, 非确定性。
+- **provider 按 `cell.is_host` 分岔** — host → `SessionWarrant` (写 storage 模式);
+  非 host → `TopicWarrant` (topic 模式, 发写请求 topic + 收 truth topic)。非 host 分支
+  不再无脑写本地 storage (见 v8)。
+- **`PermissionStateData` 加可选 `seq` 字段** — 每 key 单调序号, host-only 留 None,
+  过 topic 时填。host 只接受 `seq == current + 1`, 其余 reject-retry (见 v8)。
+- **topic 模式发送侧 + 接收侧** — 跨 cell 场景出现时实现 `TopicWarrant` (协议见 v8)。
 
 ## 落点
 
@@ -216,6 +274,9 @@ KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实�
   `SessionWarrant(Warrant)` — Session (qa) + Path (states_dir) 装线; 每份 state 一个
   JSON 文件, 有序队列落盘由 `__aenter__` spawn 的 task 消费 (2026-08-13). 直接写
   session.storage = "写 storage 模式", 隐含 host 前提未显式化.
+- concrete (planned, 未实现): `TopicWarrant(Warrant)` — 非 host topic 模式 concrete.
+  `store()` 同步写缓存 + 发写请求 topic; 订阅 truth topic 对齐缓存 + 触发 on_flushed.
+  host/非 host 区分落地后实现 (协议见 v8).
 - provider: `matrix/providers/warrant_provider.py` `SessionWarrantProvider` —
   contract=Warrant, singleton, alias=SessionWarrant. 无脑返回 SessionWarrant,
   未检查 cell.is_host — host/非 host 区分是未完成的核心缺口.
@@ -224,11 +285,14 @@ KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实�
 ## 待做
 
 - [x] 概念层实现: `core/blueprint/warrant.py` 按模板方法版重写 (2026-08-12, 待 review)
-- [ ] **host/非 host 区分** (核心缺口): SessionWarrant 是 host-only 写 storage 模式,
-      直接写 session.storage, 隐含 host 前提未显式化. provider 未检查 cell.is_host.
-      非 host cell 应走 topic 模式, 不能直接写本地 storage.
-- [ ] **on_flushed 感知接口** (核心缺口): "某份 state 真实落盘"无观察点. 应在 Warrant
-      ABC 暴露 on_flushed callback (真实落盘后触发). 目前测试靠 __aexit__ 隐式 flush
-      兜底, 非确定性观察.
-- [ ] topic 模式发送侧 (非 host 广播 "某 state 要存") — 依赖 host/非 host 区分落地
-- [ ] topic 模式接收侧 (存储权 cell 监听落盘) — 出现跨 cell 场景时再确认
+- [ ] **host/非 host 区分** (核心缺口): provider 按 `cell.is_host` 分岔 — host →
+      `SessionWarrant` 写 storage 模式; 非 host → `TopicWarrant` topic 模式, 不写本地
+      storage. 协议见 v8, 已定型 (2026-08-21).
+- [ ] **on_flushed 感知接口** (核心缺口): Warrant ABC 暴露 `on_flushed(callback)`,
+      传输是 truth topic (见 v8). 目前测试靠 `__aexit__` 隐式 flush 兜底, 非确定性.
+- [ ] **`PermissionStateData` 加可选 `seq` 字段** — 每 key 单调序号; host 只接受
+      `seq == current + 1`, 其余 reject-retry (见 v8).
+- [ ] topic 模式发送侧 (`TopicWarrant.store()` = 缓存 + 发写请求 topic) — 依赖
+      host/非 host 区分落地
+- [ ] topic 模式接收侧 (`TopicWarrant` 订阅 truth topic 对齐缓存 + 触发 on_flushed)
+      — 依赖 host/非 host 区分落地
