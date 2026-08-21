@@ -7,8 +7,9 @@ description: 'Matrix 级通用授权机制 — 在 QA 之上补规则/凭据层�
   语言无关 key/type, PermissionStateData 弱类型载体, 有 state 即存。2026-08-12 迭代至 v7 抽象面。'
 milestone: null
 priority: P2
-status: in-progress
-status_note: 实现全落地 2026-08-22 — 抽象 (seq + on_flushed) + SessionWarrant (host 写 storage + 接收侧 reject-retry/truth) + TopicWarrant (非 host topic 模式) + provider 按 is_host 分岔 + matrix.warrant 暴露 (默认加载, 事件驱动接收). 抽象面 v7 待 human review 定稿. 软授权边界 (KD14) 已声明.
+status: completed
+status_note: 实现全落地 + node 启动授权验证通过 (approve/reject 双向); matrix.warrant 暴露 + 事件驱动接收;
+  KD14 软授权边界已声明
 title: Warrant
 updated: '2026-08-22'
 ---

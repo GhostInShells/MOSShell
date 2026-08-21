@@ -1,0 +1,16 @@
+# .installed: local install-completion marker. Each environment installs on its own —
+# committing this would let one machine's install state leak into others.
+.installed
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Isolated venv (if this node owns its pyproject.toml + .venv)
+.venv/
+
+# runtime artifacts (ledger, logs) — keep dir, ignore contents.
+# `.node_id` 身份锚在 node home 根, 不入 runtime, 且该被提交 (clone 继承).
+runtime/*
+!runtime/.gitignore
+
