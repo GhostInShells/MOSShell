@@ -88,10 +88,13 @@ class DshSession:
         # 会话累计 token 用量 (assistant/message usage 累加), 更新时通知 usage 回调.
         self._token_usage = TokenUsage()
         self._usage_callbacks: list[UsageCallback] = []
-        # 观测状态镜像: instruction 由 request/header 帧同步; model/routable 由 session.models 拉取.
+        # 观测状态镜像: instruction 由 request/header 帧同步; model/routable 由 session.models 拉取;
+        # cwd/agent_preset 是会话常量, 由 host/session-added 帧或 session.list 拉取.
         self._instruction: str | None = None
         self._model_selection: sessions.ModelSelection | None = None
         self._routable: bool | None = None
+        self._cwd: str | None = None
+        self._agent_preset: str | None = None
         # 线性消费: deque 存帧, Event 唤醒消费 task (空等待阻塞, 不忙旋).
         self._queue: deque = deque()
         self._wakeup = asyncio.Event()
@@ -250,6 +253,11 @@ class DshSession:
         """按帧 type 分派. 本文件处理运行态 + token 记账 + instruction 快照; 其余 on_xxx 下一轮接."""
         if frame.type == "host/session-status":
             self._set_running(frame.running)
+        elif frame.type == "host/session-added":
+            if frame.cwd is not None:
+                self._cwd = frame.cwd
+            if frame.agentPreset is not None:
+                self._agent_preset = frame.agentPreset
         elif frame.type == "session/event":
             event = frame.event
             if event is None:
@@ -343,6 +351,31 @@ class DshSession:
         self._model_selection = models.current
         self._routable = models.routable
         return self._routable
+
+    async def cwd(self, *, force: bool = False) -> str | None:
+        """会话工作目录 — host/session-added 或 session.list 的 header.cwd (创建后不变)."""
+        if not force and self._cwd is not None:
+            return self._cwd
+        await self._session_summary()
+        return self._cwd
+
+    async def agent_preset(self, *, force: bool = False) -> str | None:
+        """会话的 agentPreset (运行模式) — 创建时定, 首 turn 后锁死. 冷锚经 session.list 拉."""
+        if not force and self._agent_preset is not None:
+            return self._agent_preset
+        await self._session_summary()
+        return self._agent_preset
+
+    async def _session_summary(self) -> None:
+        """拉 session.list 找本会话, 一次性填充 cwd / agent_preset (会话常量)."""
+        value = await self._client.call(
+            "session.list", sessions.SessionListParams(), sessions.SessionListValue,
+        )
+        for item in value.items:
+            if item.sessionId == self._session_id:
+                self._cwd = item.cwd
+                self._agent_preset = item.agentPreset
+                return
 
     async def when_running(self) -> None:
         """等到 agent 处于 running. 已在 running 则立即返回 (状态镜像, 非边沿触发)."""

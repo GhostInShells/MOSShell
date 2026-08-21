@@ -33,9 +33,10 @@ class _DummyClient:
 class _RpcClient:
     """pull 路径的哑元 client — call() 返回预置 value, 并记录被调用的 method."""
 
-    def __init__(self, models_value=None, history_value=None):
+    def __init__(self, models_value=None, history_value=None, session_list_value=None):
         self._models_value = models_value
         self._history_value = history_value
+        self._session_list_value = session_list_value
         self.calls: list[str] = []
 
     async def call(self, method, params, value_cls):
@@ -44,6 +45,8 @@ class _RpcClient:
             return self._models_value
         if method == "session.history":
             return self._history_value
+        if method == "session.list":
+            return self._session_list_value
         raise AssertionError(f"unexpected rpc {method}")
 
 
@@ -64,6 +67,15 @@ def _request_header_frame(system: str, session_id: str = "s1") -> MuxFrame:
     model = RequestHeader(header=EpochHeader(system=system), reason="initial")
     model.meta.type = model.event_type()
     return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
+
+
+def _session_added_frame(cwd: str, agent_preset: str, session_id: str = "s1") -> HostFrame:
+    return HostFrame(
+        type="host/session-added",
+        sessionId=session_id,
+        cwd=cwd,
+        agentPreset=agent_preset,
+    )
 
 
 async def _drain(session: DshSession) -> None:
@@ -230,3 +242,27 @@ async def test_model_selection_force_repulls():
         sel = await session.model_selection(force=True)
         assert sel.model == "m2"
         assert client.calls.count("session.models") == 2
+
+
+@pytest.mark.asyncio
+async def test_cwd_and_preset_mirror_session_added():
+    session = DshSession(session_id="s1", client=_DummyClient())
+    async with session:
+        session.accept_frame(_session_added_frame("/tmp/proj", "minimal"))
+        await _drain(session)
+        assert await session.cwd() == "/tmp/proj"
+        assert await session.agent_preset() == "minimal"
+
+
+@pytest.mark.asyncio
+async def test_cwd_and_preset_force_pull_session_list():
+    list_value = sessions.SessionListValue(
+        items=[sessions.SessionSummary(sessionId="s1", cwd="/tmp/x", agentPreset="standard")],
+    )
+    client = _RpcClient(session_list_value=list_value)
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        assert await session.cwd(force=True) == "/tmp/x"
+        # force 拉一次同时填充 cwd + agent_preset, 后者命中缓存.
+        assert await session.agent_preset() == "standard"
+        assert client.calls.count("session.list") == 1
