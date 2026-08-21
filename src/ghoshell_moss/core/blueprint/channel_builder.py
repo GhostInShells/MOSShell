@@ -439,7 +439,6 @@ class Builder(Facade):
         """
         pass
 
-
     @abstractmethod
     def command(
             self,
@@ -594,6 +593,14 @@ class Builder(Facade):
         >>>     ...  # 更新 proxy 缓存, 供下轮 get_virtual_children() 使用
         """
         pass
+
+    @abstractmethod
+    def virtual_children(self, func: Callable[[], dict[str, Channel]]) -> Callable[[], dict[str, Channel]]:
+        """
+        decorator
+        注册 回调, 运行时获取 virtual children 时会增补函数回调的结果.
+        """
+        ...
 
     @abstractmethod
     def with_binding(self, contract: type[INSTANCE], instance: INSTANCE) -> Self:

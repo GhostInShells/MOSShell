@@ -55,6 +55,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._on_stop_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_running_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_refresh_meta_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self._virtual_children_callback: Callable[[], dict[str, Channel]] | None = None
 
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
@@ -290,7 +291,13 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         return self._sustain_children
 
     def get_virtual_children(self) -> dict[_ChannelName, Channel]:
-        return self._virtual_children
+        if self._virtual_children_callback is not None:
+            result = self._virtual_children_callback()
+        else:
+            result = {}
+        if self._virtual_children:
+            result.update(self._virtual_children)
+        return result
 
     def own_commands(self) -> dict[str, Command]:
         return self._commands
@@ -349,6 +356,11 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._on_refresh_meta_funcs.append((func, is_coroutine))
         self._dynamic = True
         return func
+
+    def virtual_children(self, func: Callable[[], dict[str, Channel]]) -> Callable[[], dict[str, Channel]]:
+        self._virtual_children_callback = func
+        return func
+
 
     async def on_refresh_meta(self) -> None:
         await self._run_funcs(self._on_refresh_meta_funcs)

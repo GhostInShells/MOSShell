@@ -1159,7 +1159,6 @@ async def test_refresh_tick_detects_overdue():
         assert child_node.refresh_own_meta_success_count == 3
         assert done.is_set()
 
-
         # 准备新一轮测试. 这一轮设置窗口
         tree.config.node_refresh_interval = 0.0
         allow.clear()
@@ -1393,3 +1392,24 @@ async def test_help_via_module_aggregates():
         meta = runtime.self_meta()
         assert "main help" in meta.help
         assert "mod help" in meta.help
+
+
+@pytest.mark.asyncio
+async def test_builder_with_virtual_children():
+    children = {}
+
+    main = PyChannel(name="main")
+
+    @main.build.virtual_children
+    def get_children():
+        nonlocal children
+        return children
+
+    async with main.bootstrap() as runtime:
+        assert len(main.virtual_children()) == 0
+        sub = PyChannel(name="sub")
+        children['sub'] = sub
+        await runtime.refresh_metas()
+        assert len(main.virtual_children()) == 1
+
+
