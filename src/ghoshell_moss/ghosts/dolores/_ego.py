@@ -61,26 +61,74 @@ articulate 进入/退出各触发一次与 plugin 的 HTTP 通讯, 开放/关闭
 
 from __future__ import annotations
 
+import contextlib
+from datetime import datetime
 from typing import TYPE_CHECKING, AsyncIterator, Callable
 
+from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.memento import Moment
 from ghoshell_moss.core.blueprint.mindflow import Impulse, Nucleus, Signal, ThinkingEffort
 from ghoshell_moss.core.blueprint.session import OutputItem, Session
+from ghoshell_moss.deepseek_harness.launcher import DshLauncherConfig
 
 if TYPE_CHECKING:
     from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
+    from ghoshell_moss.deepseek_harness.session import DshSession
 
     from ._runtime import Dolores
 
-__all__ = ["DoloresEgo", "DoloresEgoNucleus"]
+__all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig", "DoloresEgoNucleus"]
 
 EGO_TOPIC_NAME = "dolores/ego"
 """dolores ego topic 默认名 — 通用 dict 包装所有 session event 的出口. 待讨论: 最终命名."""
 
 THINKING_TOPIC_NAME = "dolores/thinking"
 """thinking start/end 的 topic 名. 待讨论: 独立 topic, 还是并入 ego topic 的 dict (event type 区分)."""
+
+
+class DoloresEgoConfig(BaseModel):
+    """ego session 的配置 (从 .dolores.yml 的 ego: 段加载).
+
+    字段默认值即 fallback — YAML 缺 key 时用默认, 不手动 .get().
+    """
+
+    agent_preset: str = Field(
+        default="standard",
+        description="dsh agent preset 名, 决定 ego session 的 persona + tool 组合.",
+    )
+    session_title: str = Field(
+        default="{name} at {date}",
+        description="session title 模板 ({name}/{date} 替换), 给人类看的会话名.",
+    )
+    permission: str = Field(
+        default="workspace-write",
+        description="sandbox 模式: read-only | workspace-write | danger-full-access.",
+    )
+
+
+class DoloresConfig(BaseModel):
+    """ghost home 的 .dolores.yml 顶层配置. 字段默认值即 fallback."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    version: str = Field(
+        default="",
+        description="stubs 同步版本标记 (对应 DoloresMeta.VERSION).",
+    )
+    dirs: list[str] = Field(
+        default_factory=list,
+        description="ghost home 里要物化的子目录.",
+    )
+    dsh: DshLauncherConfig = Field(
+        default_factory=DshLauncherConfig,
+        description="dsh launcher 配置 (binary/profile/port/...).",
+    )
+    ego: DoloresEgoConfig = Field(
+        default_factory=DoloresEgoConfig,
+        description="ego session 配置.",
+    )
 
 
 class DoloresEgoNucleus(Nucleus):
@@ -151,39 +199,60 @@ class DoloresEgoNucleus(Nucleus):
 class DoloresEgo:
     """Dolores 的自我/连续性层. 详见模块 docstring."""
 
-    def __init__(self, ghost: "Dolores") -> None:
+    def __init__(self, ghost: "Dolores", config: DoloresEgoConfig | None = None) -> None:
         """随 ghost 一起实例化, 构造无副作用 (不碰 httpx / session / matrix.processes).
 
-        :param ghost: back-ref, ego 经它取 session / trajectory / shell / instruction.
-            待讨论: 直取 private 还是走 ghost 的 public-internal accessor
-            (见 tests/CLAUDE.md 的 public-internal 约定).
+        当前最小 slice: 只持 back-ref / config 与 ego session (DshSession).
+        nucleus / watcher / run transaction / 异常感知待后续步骤.
 
-        fields:
-          _ghost          — back-ref
-          _session        — 从 ghost 取 (on_output / on_signal / topics / output)
-          _exit_stack     — 生命周期栈 (AsyncExitStack)
-          _nucleus        — 固定 self-nucleus (懒构建)
-          _ego_session_id — 与 plugin 的 doloresEgoSessionId 同步
-          _last_error     — 持有的上一轮异常, 下一轮 run 注入上下文
-          _watcher_task   — 背景 watcher task (长命线)
-          _sync_task      — ego session id 后台同步轮询 task
+        :param ghost: back-ref, ego 经它取 dsh_launcher / home / instruction.
+        :param config: ego session 配置; None 用全默认.
         """
-        ...
+        self._ghost = ghost
+        self._config = config or DoloresEgoConfig()
+        self._session: "DshSession | None" = None
+        self._ego_session_id: str | None = None
+        self._exit_stack = contextlib.AsyncExitStack()
 
     # ── 长命线: 生命周期 ────────────────────────────────────────────
 
     async def __aenter__(self) -> Self:
         """进入 ghost 生命周期 (由 Dolores.__aenter__ 经 _exit_stack 进入).
 
-        顺序: 注册固定 nucleus → 启动背景 watcher → 启动 ego session id 后台
-        同步轮询 (对齐 plugin 的双机制: 显式 create RPC + 周期校准, 防漂移/重启失同步).
-        注意: 晚于 Dolores 的 dsh/trajectory/ground 挂载, 保证醒来时看到 fully-wired ghost.
+        经 RPC 创建 ego session, 持有 DshSession facade.
+        待后续: 固定 nucleus 注册 / 背景 watcher / session id 后台同步轮询.
         """
-        ...
+        await self._exit_stack.__aenter__()
+        launcher = self._ghost.dsh_launcher
+        result = await launcher.call(
+            "/plugin-api/ego/create",
+            {
+                "project_home": str(self._ghost._home),
+                "project_name": self._ghost._matrix.env.project_name,
+                "title": self._config.session_title.format(
+                    name=self._ghost.meta.name(),
+                    date=datetime.now().strftime("%Y-%m-%d"),
+                ),
+                "instruction": self._ghost.system_prompt(),
+                "agent_preset": self._config.agent_preset,
+                "permission": self._config.permission,
+            },
+        )
+        self._ego_session_id = result["sessionId"]
+        self._session = launcher.create_session(self._ego_session_id)
+        await self._exit_stack.enter_async_context(self._session)
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """退出: 停 watcher / 停同步轮询 / 关仍开着的 ego session."""
-        ...
+        """退出: 关闭 ego session (DshSession)."""
+        await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+
+    @property
+    def session(self) -> "DshSession":
+        """ego 持有的 dsh session facade — 未启动时抛清晰错误."""
+        if self._session is None:
+            raise RuntimeError("ego session not started. Call __aenter__ first.")
+        return self._session
 
     # ── 短命线: run (transaction) ───────────────────────────────────
 

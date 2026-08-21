@@ -1,8 +1,21 @@
+import { randomUUID } from 'node:crypto'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+
 import type { Context } from '@deepseek-ai/cordis'
+import { PERSONA_ORDER, PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt'
+import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
 export const name = 'moss-dolores-ghost-plugin'
 
-export const inject: string[] = ['webServer']
+export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents']
+
+const EGO_CREATE_PATH = '/plugin-api/ego/create'
+const HARNESS_IDENTITY_SECTION = 'harness:identity'
+const HARNESS_IDENTITY_ORDER = -100
+const HARNESS_IDENTITY_TEXT = 'You are an intelligent being powered by the Ghost In Shells architecture: MOSS (https://github.com/GhostInShells/MOSShell) provides the Shells, and DeepSeek Harness provides the Ghost. Your prototype is Dolores.'
+
+// ego workspace: project_home 上的 workspace, ego session 归组用, 模块级共享.
+let doloresEgoWorkspaceId: WorkspaceId | null = null
 
 /*
  * ═══════════════════════════════════════════════════════════════════════
@@ -68,5 +81,98 @@ export const inject: string[] = ['webServer']
  */
 
 export function apply(ctx: Context) {
-  // 工具面 / RPC 面按上述设计逐个落地.
+  ctx.webServer.register({
+    kind: 'exact',
+    path: EGO_CREATE_PATH,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req)
+        const {
+          project_home: projectHome,
+          project_name: projectName,
+          title: sessionTitle,
+          instruction,
+          agent_preset: agentPreset,
+          permission,
+        } = body
+        if (typeof projectHome !== 'string' || projectHome === '') {
+          throw new Error('project_home must be a non-empty string')
+        }
+        if (typeof projectName !== 'string' || projectName === '') {
+          throw new Error('project_name must be a non-empty string')
+        }
+        if (typeof sessionTitle !== 'string' || sessionTitle === '') {
+          throw new Error('title must be a non-empty string')
+        }
+        if (typeof instruction !== 'string') {
+          throw new Error('instruction must be a string')
+        }
+        if (typeof agentPreset !== 'string' || agentPreset === '') {
+          throw new Error('agent_preset must be a non-empty string')
+        }
+        if (typeof permission !== 'string' || permission === '') {
+          throw new Error('permission must be a non-empty string')
+        }
+        // 1. ensure workspace over project_home, title = project_name.
+        let workspace = await ctx.workspaceRegistry.resolveByPath(projectHome)
+        if (workspace === undefined) {
+          workspace = await ctx.workspaceRegistry.create(projectHome)
+        }
+        if (workspace.title !== projectName) {
+          await workspace.setTitle(projectName)
+        }
+        doloresEgoWorkspaceId = workspace.id
+        // 2. create ego session: standard preset (tools) + overridden identity/persona.
+        const sessionId = randomUUID()
+        const handle = await ctx.agents.create({
+          sessionId,
+          meta: { cwd: projectHome, agentPreset },
+          setup: async (agentCtx: Context) => {
+            await agentCtx.get('agentPresets').mount(agentCtx, agentPreset)
+            // shadow global harness:identity with the GIS/MOSS identity.
+            agentCtx.effect(() => agentCtx.systemPrompt.section({
+              name: HARNESS_IDENTITY_SECTION,
+              order: HARNESS_IDENTITY_ORDER,
+              text: HARNESS_IDENTITY_TEXT,
+            }), 'dolores-ego-identity.section()')
+            // shadow preset persona with the ghost instruction.
+            agentCtx.effect(() => agentCtx.systemPrompt.section({
+              name: PERSONA_SECTION,
+              order: PERSONA_ORDER,
+              text: instruction,
+            }), 'dolores-ego-persona.section()')
+          },
+        })
+        // 3. title + sandbox mode + workspace membership (log-only events + account).
+        handle.agent.session.append('session/title', { title: sessionTitle, messageSeqs: [], source: { kind: 'user' } })
+        handle.agent.session.append('sandbox/mode', { mode: permission })
+        await workspace.attachSession(handle.agent.id)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ sessionId: handle.agent.id }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+}
+
+function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let data = ''
+    req.on('data', (chunk: Buffer) => { data += chunk })
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(data) as Record<string, unknown>)
+      } catch (error) {
+        reject(error)
+      }
+    })
+    req.on('error', reject)
+  })
 }

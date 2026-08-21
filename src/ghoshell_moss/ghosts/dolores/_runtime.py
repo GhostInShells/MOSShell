@@ -20,6 +20,7 @@ from ghoshell_moss.message import Message
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
 
+    from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._meta import DoloresMeta
 
 __all__ = ["Dolores"]
@@ -58,6 +59,7 @@ class Dolores(Ghost):
         self._ground_set: DefaultGroundSet | None = None
         self._root_ground: Ground | None = None
         self._exit_stack = contextlib.AsyncExitStack()
+        self._ego: "DoloresEgo | None" = None
 
     # ── Ghost ABC ──────────────────────────────────
 
@@ -134,6 +136,12 @@ class Dolores(Ghost):
             )
         if self._matrix is not None:
             await self._exit_stack.enter_async_context(self._dsh())
+            # ego 装线: 创建并持有 ego session (经 plugin RPC), 晚于 dsh 就绪.
+            from ._ego import DoloresEgo
+
+            self._ego = await self._exit_stack.enter_async_context(
+                DoloresEgo(self, self._load_ego_config())
+            )
         # 挂载 ShellTrajectory — shell 由 MossRuntime 持有且已 running (ghost.__aenter__
         # 晚于 shell 启动). 未提供 shell / 未运行时跳过, trajectory 保持 None.
         if self._shell is not None and self._shell.is_running():
@@ -171,15 +179,11 @@ class Dolores(Ghost):
         return self._trajectory
 
     def _build_dsh_launcher(self) -> "DshLauncher":
-        from ghoshell_moss.deepseek_harness.launcher import (
-            DshLauncher,
-            DshLauncherConfig,
-        )
+        from ghoshell_moss.deepseek_harness.launcher import DshLauncher
 
-        config = self._load_config()
-        dsh = config.get("dsh") or {}
-        home = self._resolve_dsh_home(dsh.get("home"))
-        launcher_config = DshLauncherConfig(**{**dsh, "home": home})
+        dsh = self._load_config().dsh
+        home = self._resolve_dsh_home(dsh.home)
+        launcher_config = dsh.model_copy(update={"home": home})
         return DshLauncher(launcher_config, subprocesses=self._matrix.processes)
 
     @contextlib.asynccontextmanager
@@ -217,26 +221,45 @@ class Dolores(Ghost):
         """
         if self._home is None:
             return None
-        marker = self._home / ".dolores.yml"
-        current = self._read_version(marker)
         target = self._meta.VERSION
+        current = self._load_config().version
         if current == target:
             return None
-        action = "override" if current is not None else "init"
+        action = "override" if current else "init"
         shutil.copytree(self._meta.stubs_dir(), self._home, dirs_exist_ok=True)
         self._materialize_dirs()
         self._sync_dsh_home()
-        self._write_version(marker, target)
+        self._write_version(target)
         return action
 
-    def _load_config(self) -> dict:
+    def _load_config(self) -> "DoloresConfig":
+        from ._ego import DoloresConfig
+
         marker = self._home / ".dolores.yml"
         if not marker.exists():
-            return {}
-        return yaml.safe_load(marker.read_text(encoding="utf-8")) or {}
+            return DoloresConfig()
+        data = yaml.safe_load(marker.read_text(encoding="utf-8")) or {}
+        return DoloresConfig(**data)
+
+    def _write_version(self, version: str) -> None:
+        """写回 version (stubs 同步标记), 其余配置从当前文件重载后原样保留."""
+        config = self._load_config()
+        config.version = version
+        marker = self._home / ".dolores.yml"
+        marker.write_text(
+            yaml.safe_dump(
+                config.model_dump(mode="json", exclude_defaults=True, exclude_none=True),
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def _load_ego_config(self) -> "DoloresEgoConfig":
+        return self._load_config().ego
 
     def _materialize_dirs(self) -> None:
-        for d in self._load_config().get("dirs") or []:
+        for d in self._load_config().dirs:
             (self._home / d).mkdir(parents=True, exist_ok=True)
 
     def _sync_dsh_home(self) -> None:
@@ -256,19 +279,3 @@ class Dolores(Ghost):
             return self._home / ".dsh"
         p = Path(home)
         return p if p.is_absolute() else (self._home / p)
-
-    @staticmethod
-    def _read_version(marker: Path) -> str | None:
-        if not marker.exists():
-            return None
-        data = yaml.safe_load(marker.read_text(encoding="utf-8")) or {}
-        return data.get("version")
-
-    @staticmethod
-    def _write_version(marker: Path, version: str) -> None:
-        data = yaml.safe_load(marker.read_text(encoding="utf-8")) or {}
-        data["version"] = version
-        marker.write_text(
-            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
