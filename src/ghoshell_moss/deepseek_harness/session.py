@@ -25,13 +25,13 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 
 状态:
 - 消费门控用 is_running() — 没启动就不监听, 防 queue 爆炸。
-- dsh 运行态 (host/session-status{running}) 被 session 消费、存进 _dsh_running, 不通过
-  is_running() 暴露; 生命周期变更检查下一轮用。
+- dsh 运行态 (host/session-status{running}) 被 session 消费, 经 running 属性读取,
+  经 when_running/when_idle 等待翻转 (状态镜像事件, 非生命周期态)。
 
 事件消费:
 - 线性消费: accept_frame 只入队不处理(无背压, append + Event.set), 消费 task 逐帧处理。
-- 运行态 (host/session-status{running}) 本文件消费; session event 的具体监听表面
-  (on_turn_start/on_tool_call/...) 与生命周期变更检查, 下一轮再定, 本文件不展开。
+- 运行态 (host/session-status{running}) 与 token 记账 (assistant/message usage) 本文件消费;
+  其余 session event 监听表面 (on_turn_start/on_tool_call/...) 下一轮再定, 本文件不展开。
 """
 
 from __future__ import annotations
@@ -39,13 +39,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections import deque
-from typing import Callable, Literal
+from typing import Awaitable, Callable, Literal
 
 from typing_extensions import Self
 
 from ghoshell_moss.deepseek_harness.client import DshClient
 from ghoshell_moss.deepseek_harness.types import sessions
 from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
+from ghoshell_moss.deepseek_harness.types.session_events import (
+    AssistantMessageEvent,
+    TokenUsage,
+)
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 
 __all__ = ["DshSession"]
@@ -55,6 +59,9 @@ _YIELD_EVERY = 64
 
 # session 关闭回调: owner 用它解绑 accept_frame / 清理引用. 无参同步.
 ExitCallback = Callable[[], None]
+
+# token usage 更新回调: 收会话累计 TokenUsage, 可同步或异步 (返回 None 或 coroutine).
+UsageCallback = Callable[[TokenUsage], Awaitable[None] | None]
 
 
 class DshSession:
@@ -72,6 +79,14 @@ class DshSession:
         self._logger = logger or get_moss_logger()
         # dsh 运行态 (host/session-status{running} 由 session 自己消费、持有).
         self._dsh_running = False
+        # 运行态镜像事件: running ⇄ idle 翻转时同步 set/clear, 对外经 when_running/when_idle 等待.
+        # 初始假设新建 session 的 agent 处于 idle (host/session-status 首帧到来前不拉基线).
+        self._running_event = asyncio.Event()
+        self._idle_event = asyncio.Event()
+        self._idle_event.set()
+        # 会话累计 token 用量 (assistant/message usage 累加), 更新时通知 usage 回调.
+        self._token_usage = TokenUsage()
+        self._usage_callbacks: list[UsageCallback] = []
         # 线性消费: deque 存帧, Event 唤醒消费 task (空等待阻塞, 不忙旋).
         self._queue: deque = deque()
         self._wakeup = asyncio.Event()
@@ -219,14 +234,86 @@ class DshSession:
                 continue
             frame = self._queue.popleft()
             try:
-                self._handle_frame(frame)
+                await self._handle_frame(frame)
             except Exception:
                 self._logger.exception("dsh session %s frame handling failed", self._session_id)
             n += 1
             if n % _YIELD_EVERY == 0:
                 await asyncio.sleep(0.0)
 
-    def _handle_frame(self, frame: MuxFrame | HostFrame) -> None:
-        """按帧 type 分派. 本文件只处理运行态; session event 的 on_xxx 下一轮接."""
+    async def _handle_frame(self, frame: MuxFrame | HostFrame) -> None:
+        """按帧 type 分派. 本文件处理运行态 + token 记账; 其余 on_xxx 下一轮接."""
         if frame.type == "host/session-status":
-            self._dsh_running = frame.running
+            self._set_running(frame.running)
+        elif frame.type == "session/event":
+            event = frame.event
+            if event is None:
+                return
+            if event.meta.type == "assistant/message":
+                usage = AssistantMessageEvent.from_session_event(event)
+                if usage is not None and usage.usage is not None:
+                    await self._accumulate_usage(usage.usage)
+
+    def _set_running(self, running: bool) -> None:
+        """翻转运行态镜像事件: running ⇄ idle 互斥 set/clear."""
+        self._dsh_running = running
+        if running:
+            self._running_event.set()
+            self._idle_event.clear()
+        else:
+            self._idle_event.set()
+            self._running_event.clear()
+
+    async def _accumulate_usage(self, usage: TokenUsage) -> None:
+        """把一步的 usage 累进会话累计量, 然后逐个通知 usage update 回调 (异常隔离)."""
+        total = self._token_usage
+        total.inputTokens += usage.inputTokens or 0
+        total.outputTokens += usage.outputTokens or 0
+        if usage.cacheReadTokens is not None:
+            total.cacheReadTokens = (total.cacheReadTokens or 0) + usage.cacheReadTokens
+        if usage.cacheWriteTokens is not None:
+            total.cacheWriteTokens = (total.cacheWriteTokens or 0) + usage.cacheWriteTokens
+        if usage.reasoningTokens is not None:
+            total.reasoningTokens = (total.reasoningTokens or 0) + usage.reasoningTokens
+        for callback in list(self._usage_callbacks):
+            try:
+                result = callback(total)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                self._logger.exception(
+                    "dsh session %s usage update callback failed", self._session_id
+                )
+
+    # ---- 对外状态面 (ego 消费) ---- #
+
+    @property
+    def running(self) -> bool:
+        """dsh agent 当前运行态 — host/session-status 推帧实时更新, 非本对象生命周期态."""
+        return self._dsh_running
+
+    @property
+    def token_usage(self) -> TokenUsage:
+        """会话累计 token 用量 — assistant/message usage 累加, 每次更新通知 usage 回调."""
+        return self._token_usage
+
+    async def when_running(self) -> None:
+        """等到 agent 处于 running. 已在 running 则立即返回 (状态镜像, 非边沿触发)."""
+        await self._running_event.wait()
+
+    async def when_idle(self) -> None:
+        """等到 agent 处于 idle. 已在 idle 则立即返回 (状态镜像, 非边沿触发)."""
+        await self._idle_event.wait()
+
+    def on_usage_update(self, callback: UsageCallback) -> Callable[[], None]:
+        """注册 token 用量更新回调 (收累计 TokenUsage), 返回解绑函数.
+
+        回调可同步或异步; 异常被隔离记录, 不影响后续回调. 与 launcher 的
+        on_mux_frame/on_host_frame 同一注册-解绑模式.
+        """
+        self._usage_callbacks.append(callback)
+
+        def _remove() -> None:
+            self._usage_callbacks.remove(callback)
+
+        return _remove

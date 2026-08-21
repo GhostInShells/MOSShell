@@ -330,13 +330,15 @@ class DshLauncher:
         return _remove
 
     def create_session(self, session_id: str, logger: LoggerItf | None = None) -> DshSession:
-        """创建并接线一个 session facade: 注册 accept_frame 到 host 流, 退出时解绑.
+        """创建并接线一个 session facade: 注册 accept_frame 到 host/mux 两流, 退出时解绑.
 
-        不持久持有 session — 只经 handler 列表关联, session 关闭时 on_exit 解绑断链.
-        (mux 流的 session/event 监听 surface 下一轮接, 届时再补 on_mux_frame.)
+        host 流收运行态 (host/session-status), mux 流收 session event (turn/usage/tool).
+        session 内部按 sessionId 过滤, 只消费自己的帧. 不持久持有 session — 只经
+        handler 列表关联, session 关闭时 on_exit 解绑断链.
         """
         session = DshSession(session_id=session_id, client=self.client, logger=logger)
         session.on_exit(self.on_host_frame(session.accept_frame))
+        session.on_exit(self.on_mux_frame(session.accept_frame))
         return session
 
     def on_exit(self, callback: Callable[[DshExit], None]) -> None:
