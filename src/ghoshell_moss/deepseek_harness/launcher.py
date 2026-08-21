@@ -61,6 +61,7 @@ from ghoshell_moss.core.subprocesses import SubprocessesImpl
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from .types.events import HostFrame, MuxFrame
+from .types.nouns import WorkspaceView
 from .types.session_events import SessionEvent
 from .client import DshClient
 from .session import DshSession
@@ -138,6 +139,9 @@ class DshLauncher:
         self._http_client = httpx.AsyncClient(timeout=self.config.connect_timeout)
         self._mux_handlers: list[MuxFrameHandler] = []
         self._host_handlers: list[HostFrameHandler] = []
+        self._workspaces: dict[str, WorkspaceView] = {}
+        # 内部 host 帧镜像: workspace changed/removed 同步进 _workspaces (launcher 生命周期内常驻).
+        self.on_host_frame(self._mirror_workspace)
         self._logger: LoggerItf = logger or get_moss_logger()
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
@@ -328,6 +332,29 @@ class DshLauncher:
             self._host_handlers.remove(handler)
 
         return _remove
+
+    def _mirror_workspace(self, frame: HostFrame) -> None:
+        """host 级 workspace 快照镜像: changed 上采样, removed 下采样."""
+        if frame.type == "host/workspace-changed":
+            if frame.workspace is not None:
+                self._workspaces[frame.workspace.workspaceId] = frame.workspace
+        elif frame.type == "host/workspace-removed":
+            self._workspaces.pop(frame.workspaceId, None)
+
+    async def workspaces(self, *, force: bool = False) -> list[WorkspaceView]:
+        """host 级 workspace 镜像 — 空或 force 时 workspace.list 拉基线."""
+        if not force and self._workspaces:
+            return list(self._workspaces.values())
+        value = await self.client.workspace_list()
+        self._workspaces = {w.workspaceId: w for w in value.items}
+        return list(self._workspaces.values())
+
+    async def workspace_for_path(self, path: str, *, force: bool = False) -> WorkspaceView | None:
+        """按 canonical path 解析 workspace (与 session.cwd 匹配)."""
+        for workspace in await self.workspaces(force=force):
+            if workspace.path == path:
+                return workspace
+        return None
 
     def create_session(self, session_id: str, logger: LoggerItf | None = None) -> DshSession:
         """创建并接线一个 session facade: 注册 accept_frame 到 host/mux 两流, 退出时解绑.
