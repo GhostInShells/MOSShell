@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.blueprint.warrant import Warrant
 from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
@@ -186,7 +187,7 @@ class Matrix(Facade):
             Session, TopicService, QAManager,
             # 3. contracts 配套
             Workspace, Subprocesses, JobSupervisor, LoggerItf, logging.Logger,
-            ConfigStore, ResourceRegistry
+            ConfigStore, ResourceRegistry,
         ]
 
         return Contracts.new(*contracts)
@@ -439,6 +440,17 @@ class Matrix(Facade):
         跨 scheme+host 的资源路由层 (VFS).
         """
         ...
+
+    @property
+    @abstractmethod
+    def warrant(self) -> Warrant:
+        """
+        Matrix 级通用授权机制 — 交互式审批 (host 写 storage / 非 host topic 模式).
+
+        消费方 `matrix.warrant.require(permission)` 做审批 (如 node 启动时授权).
+        软授权边界 (非安全机制, 见 warrant FEATURE.md KD14): 模型可自迭代自授权.
+        """
+        pass
 
     # -- scoped 身份族: 运行时座标 → 存储隔离级别 -- #
 

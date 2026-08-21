@@ -8,9 +8,9 @@ description: 'Matrix 级通用授权机制 — 在 QA 之上补规则/凭据层�
 milestone: null
 priority: P2
 status: in-progress
-status_note: v7 abstract rewritten 2026-08-12; v8 topic 模式协议定型 2026-08-21 (两 topic + 每 key seq + reject-retry); 第一波 (seq 字段 + on_flushed 契约/host 触发) 与第二波 2a (topic 模型 + TopicWarrant 非 host + provider 按 is_host 分岔) 落地 2026-08-21; 剩余 — host 接收侧 (reject-retry + truth 广播, 2b) 未做
+status_note: 实现全落地 2026-08-22 — 抽象 (seq + on_flushed) + SessionWarrant (host 写 storage + 接收侧 reject-retry/truth) + TopicWarrant (非 host topic 模式) + provider 按 is_host 分岔 + matrix.warrant 暴露 (默认加载, 事件驱动接收). 抽象面 v7 待 human review 定稿. 软授权边界 (KD14) 已声明.
 title: Warrant
-updated: '2026-08-21'
+updated: '2026-08-22'
 ---
 
 # Warrant
@@ -209,8 +209,10 @@ class Warrant(ABC):
   **要不要存** 由 permission 通过 result.state 是否有值隐式决定。
 - **KD6 生命周期对象**: 存储动作在 `__aenter__` 创建的生命周期对象的异步 task 里执行;
   取消随调用方 scope 传播 (cancel question 同路径)。
-- **KD7 fail-open + 单例**: warrant 可选能力, 从 IoC 取, 单例; 拿不到 → 放行。需要
-  fail-closed 的 concrete 自己声明, 抽象不预设。
+- **KD7 默认加载 + 单例**: warrant 是 Matrix 默认加载的 singleton (host 写 storage / 非 host
+  topic 模式), 经 `matrix.warrant` property 访问 (eager enter 在 MatrixImpl.__aenter__). 不进
+  contracts() — 不是 con.get 直取的契约, 避免拿到未启动实例. 可选: provider 未注册时 matrix
+  仍启动 (get 跳过 enter), `matrix.warrant` 访问时报错.
 - **KD8 命名 state**: config 有歧义弃用。静态授权参数在 `__init__` 配置, 存下来的是
   动态授权状态 (StateT)。
 - **KD9 state 粒度 + 语言无关 key**: 按语言无关 key 存一份。key/type 是人工约定的路径
@@ -228,6 +230,11 @@ class Warrant(ABC):
 - **KD13 模板方法**: require 闭环是唯一算法骨架, 在抽象层给默认实现; concrete 只填
   states/ask_question/store/list_states 四个原材料。取消沿调用方 scope 传播, 存储
   时序由生命周期对象保证。
+- **KD14 软授权 (非安全边界)**: warrant 是交互式审批手段, **不是安全边界**。MOSS
+  允许模型自迭代, 模型可自写 node 做 QA watcher 给自己授权。若要硬化为真授权, 三点:
+  ① `.moss` 移出 project dir, 模型不碰 MOSS 自己的 workspace; ② QA namespace 由公开名
+  (`_warrant`) 改秘密 UUID; ③ UUID 是 credential 而非环境变量。替代路径: qa/warrant
+  链路走第三方/工业级 provider。当前 (pre-1.0) 有意不硬化, 仅声明此策略。
 
 ## 失败模式 (2026-08-13)
 
@@ -275,13 +282,17 @@ KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实�
   key/seq/data (2026-08-21). 内部模块, 不导出到 `matrix.warrant` 全局.
 - concrete host: `matrix/warrant/session_warrant.py` `SessionWarrant(Warrant)` — Session
   (qa) + Path (states_dir) 装线; 每份 state 一个 JSON 文件, 有序队列落盘由 `__aenter__`
-  spawn 的 task 消费 (2026-08-13). 写 storage 模式.
+  spawn 的 task 消费 (2026-08-13). 写 storage 模式 + host 接收侧 (2026-08-22): `__aenter__`
+  有 topic 时订阅 `warrant/write`, `_receive_requests` task 做 reject-retry (accept/duplicate/
+  首读/stale/gap), 落盘后 `on_flushed` 广播 truth. `store()` 分配每 key 单调 seq.
 - concrete non-host: `matrix/warrant/topic_warrant.py` `TopicWarrant(Warrant)` — 非 host
   topic 模式. `store()` = 缓存 + 发写请求 topic; `__aenter__` 订阅 truth topic 对齐缓存
   + 触发 on_flushed; ask_question 走 session.qa (2026-08-21).
 - provider: `matrix/providers/warrant_provider.py` `SessionWarrantProvider` —
   contract=Warrant, singleton. factory 按 `Matrix.is_host` 分岔: host → SessionWarrant,
-  非 host → TopicWarrant; Matrix 缺失 fallback host (KD7 fail-open) (2026-08-21).
+  非 host → TopicWarrant; Matrix 缺失 fallback host (2026-08-21).
+- Matrix 暴露: `core/blueprint/matrix.py` `matrix.warrant` property (force_fetch + _check_running);
+  MatrixImpl.__aenter__ 默认加载 (get(Warrant), None 跳过). 不进 contracts() (2026-08-22).
 - 依赖: `qa-exchange` (`core/concepts/qa.py`)。
 
 ## 待做
@@ -290,9 +301,8 @@ KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实�
 - [x] **host/非 host 区分** (核心缺口): provider 按 `cell.is_host` 分岔 — host →
       `SessionWarrant`, 非 host → `TopicWarrant`; 落地 + 测试 (2026-08-21).
 - [x] **`PermissionStateData` 加可选 `seq` 字段** — 每 key 单调序号 (2026-08-21).
-      reject-retry 属 host 接收侧, 未做.
 - [x] **on_flushed 主机侧** — ABC 契约 + SessionWarrant 触发 (2026-08-21).
 - [x] **on_flushed topic 传输** — TopicWarrant 收 truth 触发 (2026-08-21).
 - [x] **topic 模式发送侧** — TopicWarrant.store = 缓存 + 发写请求 topic (2026-08-21).
-- [ ] **host 接收侧 (reject-retry + truth 广播)** (2b): host 订阅写请求 topic →
-      `seq == current+1` 裁决 → 落盘 → 广播 truth. 设计见 v8, 未做.
+- [x] **host 接收侧 (reject-retry + truth 广播)** (2b): SessionWarrant 订阅写请求 topic,
+      `seq == current+1` 裁决 (accept/duplicate/首读/stale/gap), 落盘后广播 truth (2026-08-22).

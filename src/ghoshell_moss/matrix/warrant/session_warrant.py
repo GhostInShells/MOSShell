@@ -23,6 +23,8 @@ from ghoshell_moss.core.blueprint.warrant import (
     Warrant, PermissionStateData,
 )
 from ghoshell_moss.core.concepts.qa import Question, Answer
+from ghoshell_moss.core.concepts.topic import TopicClosedError
+from ghoshell_moss.matrix.warrant.topics import WarrantTruth, WarrantWriteRequest
 
 WARRANT_NAMESPACE = "_warrant"
 
@@ -53,6 +55,8 @@ class SessionWarrant(Warrant):
         self._flush_queue: asyncio.Queue[PermissionStateData | None] | None = None
         self._flush_task: asyncio.Task | None = None
         self._flush_listeners: list[Callable[[PermissionStateData], None]] = []
+        self._sub: Any = None
+        self._receive_task: asyncio.Task | None = None
 
     # -- lifecycle ----------------------------------------------------
 
@@ -61,6 +65,11 @@ class SessionWarrant(Warrant):
         self._flush_queue = asyncio.Queue()
         self._load_cache()
         self._flush_task = asyncio.ensure_future(self._consume_flush())
+        topics = self._session.topics
+        if topics is not None:
+            self._sub = topics.subscribe_model(WarrantWriteRequest)
+            await self._sub.__aenter__()
+            self._receive_task = asyncio.ensure_future(self._receive_requests())
         return self
 
     async def __aexit__(
@@ -70,6 +79,16 @@ class SessionWarrant(Warrant):
         tb: Any,
     ) -> None:
         self._running = False
+        if self._receive_task is not None:
+            self._receive_task.cancel()
+            try:
+                await self._receive_task
+            except asyncio.CancelledError:
+                pass
+            self._receive_task = None
+        if self._sub is not None:
+            await self._sub.__aexit__(None, None, None)
+            self._sub = None
         if self._flush_queue is not None:
             await self._flush_queue.put(None)
         if self._flush_task is not None:
@@ -94,9 +113,16 @@ class SessionWarrant(Warrant):
         return answer
 
     def store(self, state: PermissionStateData) -> None:
-        self._cache[state.key] = state
+        # host 是序号权威: 未显式给 seq 时, 按缓存 current + 1 分配 (v8).
+        current_seq = 0
+        current = self._cache.get(state.key)
+        if current is not None and current.seq is not None:
+            current_seq = current.seq
+        seq = state.seq if state.seq is not None else current_seq + 1
+        stored = state.model_copy(update={"seq": seq})
+        self._cache[stored.key] = stored
         if self._flush_queue is not None:
-            self._flush_queue.put_nowait(state)
+            self._flush_queue.put_nowait(stored)
 
     def list_states(self) -> list[PermissionStateData]:
         return list(self._cache.values())
@@ -130,6 +156,8 @@ class SessionWarrant(Warrant):
         path = self._states_dir / f"{state.key}{_FILE_SUFFIX}"
         path.write_text(state.model_dump_json(indent=2))
         self._notify_flushed(state)
+        if state.seq is not None:
+            self._pub_truth(state.key, state.seq, state.data)
 
     def _notify_flushed(self, state: PermissionStateData) -> None:
         for cb in list(self._flush_listeners):
@@ -137,6 +165,46 @@ class SessionWarrant(Warrant):
                 cb(state)
             except Exception:
                 self._logger.exception("on_flushed listener failed: %s", state.key)
+
+    def _pub_truth(self, key: str, seq: int, data: dict[str, Any]) -> None:
+        topics = self._session.topics
+        if topics is None:
+            return
+        topics.pub(WarrantTruth(key=key, seq=seq, data=data))
+
+    # -- host receive-side (reject-retry, v8) -------------------------
+
+    async def _receive_requests(self) -> None:
+        if self._sub is None:
+            return
+        try:
+            while True:
+                try:
+                    req = await self._sub.poll_model()
+                except TopicClosedError:
+                    break
+                if req is not None:
+                    self._handle_write_request(req)
+        except asyncio.CancelledError:
+            pass
+
+    def _handle_write_request(self, req: WarrantWriteRequest) -> None:
+        current = self._cache.get(req.key)
+        current_seq = current.seq if current is not None and current.seq is not None else 0
+        if req.seq == current_seq + 1:
+            self.store(PermissionStateData(key=req.key, seq=req.seq, data=req.data))
+        elif req.seq == current_seq:
+            # duplicate — 幂等, 已在该 truth.
+            return
+        elif req.seq == 1:
+            # 首读: fresh 非 host (空缓存) 写一个 host 已存在的 key — 重播 truth 补全.
+            self._pub_truth(req.key, current_seq, current.data)
+        elif req.seq < current_seq:
+            # 后发先至 (stale): 新 truth 已在路上 — 静默丢弃.
+            return
+        else:
+            # 跳号 (seq > current_seq + 1): 广播当前 truth, 发送方重读再发.
+            self._pub_truth(req.key, current_seq, current.data if current is not None else {})
 
     async def _consume_flush(self) -> None:
         if self._flush_queue is None:

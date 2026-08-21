@@ -135,11 +135,9 @@ class TopicWarrant(Warrant):
         if self._sub is None:
             return
         try:
-            while self._running:
+            while True:
                 try:
-                    truth = await self._sub.poll_model(timeout=0.2)
-                except asyncio.TimeoutError:
-                    continue
+                    truth = await self._sub.poll_model()
                 except TopicClosedError:
                     break
                 if truth is not None:

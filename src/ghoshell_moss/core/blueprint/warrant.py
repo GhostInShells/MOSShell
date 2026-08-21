@@ -13,6 +13,12 @@ qa 交互协议见 `core/concepts/qa.py`; 本模块是 warrant + permission 抽�
 (读缓存), ask_question (发问题等答案), store (入队落盘), list_states (枚举).
 取消沿调用方 scope 传播; 存储时序由 __aenter__ 创建的落盘 task + 有序队列
 保证.
+
+软授权边界 (非安全机制, 见 warrant FEATURE.md KD14): warrant 是交互式审批,
+不是安全边界 — MOSS 允许模型自迭代, 模型可自写 node 做 QA watcher 给自己授权.
+若需硬化为真授权: ① `.moss` 移出 project dir; ② QA namespace 改秘密 UUID;
+③ UUID 用 credential 而非环境变量 (或 qa/warrant 改走第三方工业级 provider).
+当前 pre-1.0 有意不硬化, 仅声明此边界.
 """
 
 # 设计决策见 warrant FEATURE.md

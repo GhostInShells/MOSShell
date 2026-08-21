@@ -29,6 +29,7 @@ from ghoshell_moss.core.blueprint.cell import (
     enter_cell_lifecycle,
 )
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.blueprint.warrant import Warrant
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -592,6 +593,11 @@ class MatrixImpl(Matrix):
         return self._container.force_fetch(ResourceRegistry)
 
     @property
+    def warrant(self) -> Warrant:
+        self._check_running()
+        return self._container.force_fetch(Warrant)
+
+    @property
     def container(self) -> IoCContainer:
         if self._container is None:
             raise RuntimeError('Matrix container not initialized')
@@ -665,10 +671,9 @@ class MatrixImpl(Matrix):
         if self._closing_event.is_set():
             raise RuntimeError('Matrix already closing')
         if self.is_running():
-            raise RuntimeError(
-                'Matrix already running; use add_lifecycle_object for dynamic add'
-            )
-        self._lifecycle_bound.append(obj)
+            self._event_loop.create_task(self._async_exit_stack.enter_async_context(obj))
+        else:
+            self._lifecycle_bound.append(obj)
 
     async def add_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
         """运行时动态添加. 已在 exit_stack 中的对象跳过."""
@@ -804,6 +809,11 @@ class MatrixImpl(Matrix):
 
             session = self._container.force_fetch(Session)
             await self._async_exit_stack.enter_async_context(session)
+
+            # 3.5 warrant 默认加载 (可选: 未注册 provider 则跳过, matrix.warrant 访问时再报错)
+            warrant = self._container.get(Warrant)
+            if warrant is not None:
+                await self._async_exit_stack.enter_async_context(warrant)
 
             # 4. lifecycle_bound 依次启动 (承老代码)
             enter_order: list[MatrixLifecycleObject] = []
