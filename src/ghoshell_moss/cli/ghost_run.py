@@ -165,7 +165,14 @@ async def _output_printer(queue: janus.Queue) -> None:
 
 
 def _run_ghost_headless(ghost_runtime, main: Callable[[], Awaitable[None]]) -> None:
-    """Headless: asyncio.run(main()) with SIGINT → ghost_runtime.close()."""
+    """Headless: asyncio.run(main()) with SIGINT → ghost_runtime.close().
+
+    todo: 优雅退出 bug — 信号 handler 只同步调 ``ghost_runtime.close()`` (只关
+    moss_runtime/mindflow), 不 await ghost 的 ``__aexit__``, 而 dsh launcher 挂在
+    ghost 的 exit stack 上, 没人关 → 残留孤儿 dsh 进程占端口 (复现: 起 ghost 后
+    Ctrl+C, ``lsof -iTCP:3083`` 仍见 node dsh). 且只处理 SIGINT, 未处理 SIGTERM.
+    修法: 信号 handler 内 schedule 一个 async 任务走 ``ghost_runtime.__aexit__``.
+    """
     prev = signal.signal(signal.SIGINT, lambda s, f: ghost_runtime.close())
     try:
         asyncio.run(main())

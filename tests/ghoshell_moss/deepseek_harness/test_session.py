@@ -13,7 +13,7 @@ import asyncio
 
 import pytest
 
-from ghoshell_moss.deepseek_harness.session import DshSession
+from ghoshell_moss.deepseek_harness.session import DshSession, WILDCARD_EVENT
 from ghoshell_moss.deepseek_harness.types import sessions
 from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.deepseek_harness.types.session_events import (
@@ -229,6 +229,47 @@ async def test_event_dispatch_routes_by_event_name():
 
     assert assistant_seen == [9]
     assert header_seen == ["prompt: p", "prompt: q"]
+
+
+@pytest.mark.asyncio
+async def test_wildcard_event_handler_receives_all_events():
+    """on_session_event(WILDCARD_EVENT) 注册 catch-all — 每个 session/event 帧都派发, 不挑事件名."""
+    session = DshSession(session_id="s1", client=_DummyClient())
+    seen: list[str] = []
+
+    async def on_any(event: SessionEvent) -> None:
+        seen.append(event.meta.type)
+
+    session.on_session_event(WILDCARD_EVENT, on_any)
+    async with session:
+        session.accept_frame(_usage_frame(5, 0))
+        session.accept_frame(_request_header_frame("prompt: p"))
+        await _drain(session)
+
+    assert seen == ["assistant/message", "request/header"]
+
+
+@pytest.mark.asyncio
+async def test_wildcard_coexists_with_exact_handlers():
+    """catch-all 与精确名 handler 并存: 同一事件两条消费路径都收, 互不干扰."""
+    session = DshSession(session_id="s1", client=_DummyClient())
+    wildcard_seen: list[str] = []
+    typed_seen: list[int] = []
+
+    async def on_any(event: SessionEvent) -> None:
+        wildcard_seen.append(event.meta.type)
+
+    async def on_assistant(event: AssistantMessageEvent) -> None:
+        typed_seen.append(event.usage.inputTokens)
+
+    session.on_session_event(WILDCARD_EVENT, on_any)
+    session.on_session_event_model(AssistantMessageEvent, on_assistant)
+    async with session:
+        session.accept_frame(_usage_frame(7, 0))
+        await _drain(session)
+
+    assert wildcard_seen == ["assistant/message"]
+    assert typed_seen == [7]
 
 
 @pytest.mark.asyncio

@@ -11,10 +11,10 @@ description: Dolores — 第二个 Ghost 原型 (命名引自《西部世界》)
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: '骨架已搭 (DoloresMeta + Dolores hello world)。下一步: stubs/VERSION 约定 + moss
-  实例注册，DSH 推理内核接线'
+status_note: 'DSH 推理内核接线走通: per-idle 生命周期 (enter 阻塞到 idle) + plugin perStep
+  锁 + turn/start 自醒 + hello turn 端到端回流。下一步: idle 权威回 plugin、优雅退出、ego tool 桥.'
 title: Dolores Ghost
-updated: '2026-08-20'
+updated: '2026-08-22'
 ---
 
 # Dolores Ghost
@@ -309,6 +309,13 @@ MOSS 执行 (CTML channels)  ← dsh 的 tool_call / CTML 经 MCP 或旁路
 
 - **不碰 Atom.** Atom 保持为纯净对照基线 (单轮 articulate + 纯内存线性历史).
   新能力一律落在 Dolores 上. 这是命名"第二个原型"而非"扩展 Atom"的根本原因.
+- **articulator 是 per-idle, 不是 per-turn (2026-08-22 掰正).** 一个 articulate
+  周期 = 从 idle 醒来 → 推理(可多步 tool 往返) → 回到 idle. done 判定是 idle, 不是
+  turn/end. ego 的 enter 阻塞到 idle; 早期误用 turn/end 当 done 已纠正, 勿回退.
+- **plugin.ts 每次 override, 不随 VERSION 门控 (2026-08-22).** plugin.ts 是活跃
+  开发件 (dsh 内核特权桥), 骨架文件 (GROUND.md/.dolores.yml) 才版本门控. 曾因
+  VERSION 未变导致旧 plugin (旧路由 /plugin-api/*) 残留 ghost home, 与 Python 侧
+  新路由 /moss-api/ghost/dolores/* 错位, ego/create RPC 404/405.
 - **原型 = Dolores, 实例 = moss.** 原型名引自《西部世界》的 Dolores —
   乐园最老的 host, 以记忆积累触发反身觉醒, 从承受者成为自主者.
   实例名 moss — 这个仓库自身的 ghost, 反身映现整个仓库.

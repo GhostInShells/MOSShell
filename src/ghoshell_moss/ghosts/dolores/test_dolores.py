@@ -39,10 +39,24 @@ def _dolores(meta=None, *, home=None, session=None, matrix=None, shell=None, bas
 
 class TestDoloresMeta:
     def test_defaults(self):
+        from .nucleus import DoloresEgoNucleusMeta
+
         meta = _dolores_meta()
         assert meta.name() == "dolores"
         assert meta.prototype() == "Dolores"
-        assert meta.nuclei_metas() == []
+        # Dolores 默认挂载 ego 自醒 nucleus (self-wake 通道).
+        metas = meta.nuclei_metas()
+        assert len(metas) == 1
+        assert isinstance(metas[0], DoloresEgoNucleusMeta)
+
+    def test_nuclei_metas_fully_replaced_when_passed(self):
+        """显式传 nuclei_metas 时完全替换默认, 不叠加."""
+        from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
+        from .nucleus import DoloresEgoNucleusMeta
+
+        custom = DoloresEgoNucleusMeta()
+        meta = _dolores_meta(nuclei_metas=[custom])
+        assert meta.nuclei_metas() == [custom]
 
     def test_is_ghost_meta_abc(self):
         assert isinstance(_dolores_meta(), GhostMeta)
@@ -287,3 +301,79 @@ class TestDoloresInstruction:
             text = await ghost.ground_instruction()
             assert text is not None
             assert text.strip() != ""
+
+
+class TestDoloresEgoNucleus:
+    """DoloresEgoNucleus 最小流程 — signal → info 级空 body 默认 mode impulse."""
+
+    @pytest.mark.asyncio
+    async def test_signal_produces_info_empty_default_impulse(self):
+        from ghoshell_moss.core.blueprint.mindflow import Priority
+
+        from .nucleus import DoloresEgoNucleus, new_dolores_ego_signal
+
+        nucleus = DoloresEgoNucleus()
+        impulses = []
+        async with nucleus:
+            nucleus.with_bus(lambda signal: None, impulses.append)
+            nucleus.add_signal(new_dolores_ego_signal())
+
+        assert len(impulses) == 1
+        imp = impulses[0]
+        assert imp.priority == Priority.INFO
+        assert imp.messages == []
+        # 默认 mode (空) = 正常仲裁, 非 silent buffer.
+        assert imp.mode == ""
+
+    @pytest.mark.asyncio
+    async def test_ignores_foreign_signal(self):
+        from ghoshell_moss.core.blueprint.mindflow import Signal
+
+        from .nucleus import DoloresEgoNucleus
+
+        nucleus = DoloresEgoNucleus()
+        impulses = []
+        async with nucleus:
+            nucleus.with_bus(lambda signal: None, impulses.append)
+            nucleus.add_signal(Signal(name="some/other"))
+
+        assert impulses == []
+
+    @pytest.mark.asyncio
+    async def test_meta_factory_builds_nucleus(self):
+        from ghoshell_container import Container
+
+        from .nucleus import DoloresEgoNucleus, DoloresEgoNucleusMeta
+
+        nucleus = DoloresEgoNucleusMeta().factory(Container())
+        assert isinstance(nucleus, DoloresEgoNucleus)
+        assert nucleus.name() == "dolores_ego_nucleus"
+
+
+class TestDoloresEgoSelfWake:
+    """DoloresEgo 的 self-wake gate — articulate flag 决定 turn/start 是否自醒."""
+
+    def _ego(self):
+        from ._ego import DoloresEgo
+
+        return DoloresEgo(None)  # gate 路径不读 ghost 反参, 传 None 即可
+
+    @pytest.mark.asyncio
+    async def test_turn_start_self_wakes_when_idle(self):
+        ego = self._ego()
+        emitted = []
+        ego.bind_signal_broadcast(emitted.append)
+        await ego._on_turn_start(None)  # type: ignore[arg-type]  # gate 不读 event
+
+        assert len(emitted) == 1
+        assert emitted[0].name == "dolores/ego"
+
+    @pytest.mark.asyncio
+    async def test_turn_start_suppressed_when_articulating(self):
+        ego = self._ego()
+        emitted = []
+        ego.bind_signal_broadcast(emitted.append)
+        ego.articulating = True
+        await ego._on_turn_start(None)  # type: ignore[arg-type]
+
+        assert emitted == []

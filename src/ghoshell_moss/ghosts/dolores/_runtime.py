@@ -96,7 +96,7 @@ class Dolores(Ghost):
 
         Moment 体系不动: 本步只把 shell 观测 (facade / status / events / context) 从
         perspectives 挪到 trajectory 帧, Moment 只承载外部输入 (percepts + hint).
-        模型驱动是下一步的槽位 (DSH 推理中枢 / pydantic-ai), 现阶段产出占位 logos.
+        模型驱动委托给 ego.run() (DSH 推理中枢 transaction) — logos 流逐段 yield.
         """
         trajectory = self._trajectory
         if trajectory is not None:
@@ -119,15 +119,19 @@ class Dolores(Ghost):
                     log=f"trajectory frame {frame.index}",
                 )
 
-        # ── 槽位: 模型驱动 (DSH 推理中枢 / pydantic-ai) ──
-        # 上下文组装 = epoch_start (一次) + 累积 trajectory 帧 + moment.percepts + hint
-        # → 模型请求 → 产出 logos 流.
-        yield ""
+        # 模型驱动: 委托 ego.run() (DSH 推理中枢 transaction), logos 流逐段 yield.
+        if self._ego is not None:
+            async for text in self._ego.run():
+                yield text
+        else:
+            yield ""
 
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()
         # 文件 IO 卸载到 thread; session.output 留在主 loop (避免跨线程).
         action = await asyncio.to_thread(self._sync_stubs)
+        # plugin.ts 每次 override (活跃开发件, 不受 VERSION 门控), 保证最新插件进 ghost home.
+        await asyncio.to_thread(self._sync_dsh_plugin)
         if action is not None and self._session is not None:
             self._session.output(
                 "system",
@@ -268,11 +272,18 @@ class Dolores(Ghost):
             self._home / ".dsh",
             dirs_exist_ok=True,
         )
-        # plugin 源在独立 stub, 创建时复制为 profile 的 plugin.ts (cordis.patch.yml 引用 ./plugin.ts).
-        shutil.copy2(
-            self._meta.dsh_plugin_stub(),
-            self._home / ".dsh" / "profiles" / "web" / "plugin.ts",
-        )
+
+    def _sync_dsh_plugin(self) -> None:
+        """复制 plugin.ts 到 ghost home — 每次 override, 不随 VERSION 门控.
+
+        plugin.ts 是活跃开发件 (dsh 内核特权桥), 改动频率远高于骨架文件;
+        骨架 (GROUND.md / .dolores.yml) 才版本门控, plugin 每次启动拉最新.
+        """
+        if self._home is None:
+            return
+        target = self._home / ".dsh" / "profiles" / "web" / "plugin.ts"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self._meta.dsh_plugin_stub(), target)
 
     def _resolve_dsh_home(self, home: str | Path | None) -> Path:
         if home is None:

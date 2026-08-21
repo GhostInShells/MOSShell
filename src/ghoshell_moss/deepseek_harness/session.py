@@ -77,6 +77,11 @@ ExitCallback = Callable[[], None]
 # 透传, 放进按事件名分组的集合. 消费方收的类型由注册方法决定 (raw 信封 vs 强类型模型).
 EventDispatcher = Callable[[SessionEvent], Awaitable[None]]
 
+# 通配事件名: on_session_event(WILDCARD_EVENT, cb) 注册 catch-all — 每个 session/event 帧都派发,
+# 不挑事件名 (全量观测面, 如 DoloresRun 的 _events 累积 + _last_seq 推进). 仅 raw 注册有意义;
+# on_session_event_model 绑定具体 model_cls.event_type(), 与通配无关.
+WILDCARD_EVENT = "*"
+
 
 class DshSession:
     """会话级 facade: 绑定一个 sessionId, 屏蔽 rpc 入参对象, 封装驱动动词."""
@@ -288,17 +293,20 @@ class DshSession:
 
         闭包内部已捕获 model_cls + callback, 完成 from_session_event 判别或原样透传.
         handler 异常隔离记录, 不影响后续 handler 与消费循环.
+        精确名 handler 先派发, 再派发 WILDCARD_EVENT ("*") 的 catch-all — 全量观测消费
+        与定向消费并存, 互不干扰.
         """
-        handlers = self._event_handlers.get(event.meta.type)
-        if not handlers:
-            return
-        for handler in list(handlers):
-            try:
-                await handler(event)
-            except Exception:
-                self._logger.exception(
-                    "dsh session %s %s event handler failed", self._session_id, event.meta.type
-                )
+        for name in (event.meta.type, WILDCARD_EVENT):
+            handlers = self._event_handlers.get(name)
+            if not handlers:
+                continue
+            for handler in list(handlers):
+                try:
+                    await handler(event)
+                except Exception:
+                    self._logger.exception(
+                        "dsh session %s %s event handler failed", self._session_id, event.meta.type
+                    )
 
     def _set_running(self, running: bool) -> None:
         """翻转运行态镜像事件: running ⇄ idle 互斥 set/clear."""
@@ -428,6 +436,9 @@ class DshSession:
         按事件名字符串分派, 回调收原始 ``SessionEvent`` 信封 (不重建模型) — 适合治理 /
         日志 / 全量观测面. 强类型消费用 :meth:`on_session_event_model`. 与
         TopicService.subscribe 同思路: 注册的都归一到分派闭包 (EventDispatcher).
+
+        传 ``WILDCARD_EVENT`` ("*") 作 event_type 注册 catch-all — 每个 session/event 帧
+        都派发, 不挑事件名 (全量观测面).
         """
         async def _dispatch(event: SessionEvent) -> None:
             await callback(event)

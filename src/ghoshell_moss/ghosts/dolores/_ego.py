@@ -61,25 +61,32 @@ articulate 进入/退出各触发一次与 plugin 的 HTTP 通讯, 开放/关闭
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from datetime import datetime
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import TYPE_CHECKING, AsyncIterator
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.memento import Moment
-from ghoshell_moss.core.blueprint.mindflow import Impulse, Nucleus, Signal, ThinkingEffort
+from ghoshell_moss.core.blueprint.mindflow import Signal, ThinkingEffort
 from ghoshell_moss.core.blueprint.session import OutputItem, Session
 from ghoshell_moss.deepseek_harness.launcher import DshLauncherConfig
+from ghoshell_moss.deepseek_harness.types.session_events import AssistantChunk
+from ghoshell_moss.deepseek_harness.types.sessions import PromptContentPart
+
+from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
     from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
     from ghoshell_moss.deepseek_harness.session import DshSession
+    from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
 
     from ._runtime import Dolores
+    from .nucleus import DoloresEgoNucleus
 
-__all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig", "DoloresEgoNucleus"]
+__all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig"]
 
 EGO_TOPIC_NAME = "dolores/ego"
 """dolores ego topic 默认名 — 通用 dict 包装所有 session event 的出口. 待讨论: 最终命名."""
@@ -87,8 +94,10 @@ EGO_TOPIC_NAME = "dolores/ego"
 THINKING_TOPIC_NAME = "dolores/thinking"
 """thinking start/end 的 topic 名. 待讨论: 独立 topic, 还是并入 ego topic 的 dict (event type 区分)."""
 
-# plugin 路由 (与 moss-dolores-ghost-plugin.ts 的 DOLORES_EGO_CREATE 常量对齐, 跨语言契约).
+# plugin 路由 (与 moss-dolores-ghost-plugin.ts 的 DOLORES_* 常量对齐, 跨语言契约).
 _DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
+_DOLORES_ARTICULATE_ENTER = "/moss-api/ghost/dolores/articulate/enter"
+_DOLORES_ARTICULATE_EXIT = "/moss-api/ghost/dolores/articulate/exit"
 
 
 class DoloresEgoConfig(BaseModel):
@@ -134,71 +143,6 @@ class DoloresConfig(BaseModel):
     )
 
 
-class DoloresEgoNucleus(Nucleus):
-    """固定 self-nucleus — 接收背景 watcher 打来的一次性 self-wake impulse.
-
-    职责极窄: 把 watcher 的 turn/start impulse 反射进 mindflow, 让静默的
-    mindflow 也能走 challenge → attention → articulate 自醒一轮.
-
-    待讨论 seam #3: 这个 impulse 的仲裁语义 — 走正常 attention 仲裁,
-    还是专用自醒通道 (strength=0 yield / 特定 priority / silent mode)?
-    关键在它不能和真实输入抢 attention.
-    """
-
-    def name(self) -> str:
-        """自解释名 — 待讨论: 最终命名."""
-        ...
-
-    def description(self) -> str:
-        """一句话自解释: ego 自醒通道."""
-        ...
-
-    def status(self) -> str:
-        """红点式状态提示, 空则忽略."""
-        ...
-
-    def signals(self) -> list[str]:
-        """声明监听的 signal 类型. ego 自醒走 impulse 直投, 是否还需要 signal 面 — 待讨论."""
-        ...
-
-    def clear(self) -> None:
-        """排空讯号 (极限故障还原)."""
-        ...
-
-    def add_signal(self, signal: Signal) -> None:
-        """接受信号 → 生成 impulse. 无背压, 不阻塞."""
-        ...
-
-    def with_bus(
-        self,
-        signal_broadcast: Callable[[Signal], None],
-        impulse_notify: Callable[[Impulse], None],
-    ) -> None:
-        """注册总线: 广播 signal / 投递 impulse."""
-        ...
-
-    def suppress(self, suppress_by: Impulse) -> None:
-        """impulse 未被接纳时的回调."""
-        ...
-
-    def pop_impulse(self, impulse: Impulse) -> None:
-        """impulse 被 pop 的通知."""
-        ...
-
-    def peek(self, no_stale: bool = True) -> Impulse | None:
-        """查看最新 impulse."""
-        ...
-
-    def is_running(self) -> bool:
-        ...
-
-    async def __aenter__(self) -> Self:
-        ...
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        ...
-
-
 class DoloresEgo:
     """Dolores 的自我/连续性层. 详见模块 docstring."""
 
@@ -216,6 +160,10 @@ class DoloresEgo:
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
         self._exit_stack = contextlib.AsyncExitStack()
+        # self-wake gate: articulate 进行中 (Python 侧权威 flag), turn/start 监听据此决定是否自醒.
+        self._articulating = False
+        # 自醒 signal 出口 — host/mindflow 接总线后注入 (broadcast), 本侧不直接碰 nucleus.
+        self._signal_broadcast: "Callable[[Signal], None] | None" = None
 
     # ── 长命线: 生命周期 ────────────────────────────────────────────
 
@@ -244,6 +192,8 @@ class DoloresEgo:
         self._ego_session_id = result["sessionId"]
         self._session = launcher.create_session(self._ego_session_id)
         await self._exit_stack.enter_async_context(self._session)
+        # 长命线: 订阅 turn/start, 静默自醒 (self-wake 心跳).
+        self._session.on_session_event("turn/start", self._on_turn_start)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -259,21 +209,56 @@ class DoloresEgo:
 
     # ── 短命线: run (transaction) ───────────────────────────────────
 
-    async def run(self, moment: Moment, effort: ThinkingEffort = '') -> AsyncIterator[str]:
-        """每轮 articulate 的委托 — 一个 transaction.
+    async def run(self) -> AsyncIterator[str]:
+        """最小 run transaction — per-idle 生命周期 (articulator 一 cycle 一 run).
 
-        ``async for`` 作用域就是 transaction 边界:
-          enter: RPC open ego session (preStep lock) + 组装上下文 (percepts+hint
-                 +trajectory+instruction+上一轮异常) + 订阅 session event
-          loop:  监听 session event (ego tool / thinking topic / 通用 dict),
-                 判定 logos, yield 出去
-          exit:  RPC close (finally) — 无论成功/异常都关锁
+        顺序: 先装线 event 消费 → create task 跑 ``_enter`` (开锁 + 驱动 + 阻塞到 idle)
+        → 外部 yield 文本块 → exit 时 cancel task + 关锁 (finally 保证).
 
-        :param moment: articulator.moment (percepts/hint 的载体).
-        :param effort: articulator.thinking_effort() 拆出; =='none' 已被上游短路.
-        :yield: 判定为 logos 的字符串, 逐段交给 Dolores.articulate → send_nowait.
+        无参数 (moment/effort 后续再上): 输入暂以固定 hello prompt 驱动.
+
+        :yield: assistant 文本流块 (logos 片段), 逐段交给 Dolores.articulate.
         """
-        ...
+        queue: "asyncio.Queue[str | None]" = asyncio.Queue()
+
+        async def _on_chunk(event: AssistantChunk) -> None:
+            if event.chunk.type == "text-delta" and event.chunk.text:
+                await queue.put(event.chunk.text)
+
+        session = self.session
+        dispose_chunk = session.on_session_event_model(AssistantChunk, _on_chunk)
+        enter_task = asyncio.create_task(self._enter(queue))
+        try:
+            while True:
+                text = await queue.get()
+                if text is None:  # idle 哨兵: 整个 articulate 周期结束
+                    break
+                yield text
+        finally:
+            enter_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await enter_task
+            dispose_chunk()
+            self._articulating = False
+            await self._rpc_articulate_exit()
+
+    async def _enter(self, queue: "asyncio.Queue[str | None]") -> None:
+        """enter — 开锁 + 驱动 turn + 阻塞到 idle (per-idle done 判定, 非 turn/end).
+
+        先开 plugin 锁, 置 Python 权威 flag, 再驱动 hello turn. 阻塞到 idle 是电平触发
+        镜像, 故先 ``when_running`` 确认 turn 已启动, 再 ``when_idle`` 等整周期回 idle.
+
+        todo: idle 权威应对回 plugin — 现在用 Python 镜像 ``when_running→when_idle``
+        (电平触发, 超快 turn 时 ``when_running`` 可能错过 running 窗口而卡死). 最终形态
+        是 enter RPC 在 plugin 侧 ``await agent.whenIdle()`` (进程内权威), Python 只 await
+        该 RPC 返回.
+        """
+        await self._rpc_articulate_enter()
+        self._articulating = True
+        await self.session.prompt(content=[PromptContentPart(type="text", text="hello")])
+        await self.session.when_running()
+        await self.session.when_idle()
+        await queue.put(None)
 
     # ── 上下文组装 ──────────────────────────────────────────────────
 
@@ -288,18 +273,47 @@ class DoloresEgo:
 
     # ── 背景 watcher (长命线) ───────────────────────────────────────
 
-    async def _watch_turn_start(self) -> None:
-        """后台 task: 监听 turn/start 事件 → 往固定 nucleus 打一次性 impulse.
+    @property
+    def articulating(self) -> bool:
+        """self-wake gate — Python 侧权威 flag, 由 articulate 进入/退出置 True/False."""
+        return self._articulating
 
-        待讨论 seam #2: turn/start 的事件源 (timer / trajectory 帧 /
-        attention hook / 外部 signal)? 这是 "自驱" 和 "事件驱动" 的分界.
+    @articulating.setter
+    def articulating(self, value: bool) -> None:
+        self._articulating = value
+
+    def bind_signal_broadcast(self, broadcast: "Callable[[Signal], None]") -> None:
+        """注入自醒 signal 出口 (host/mindflow 总线 broadcast).
+
+        自醒 signal 由 ego 生产, 但投递归 mindflow 总线 (按 signal name 路由到
+        DoloresEgoNucleus). 本方法给 host 一个接缝, ego 不直接持有 nucleus 实例.
         """
-        ...
+        self._signal_broadcast = broadcast
+
+    async def _on_turn_start(self, event: "SessionEvent") -> None:
+        """turn/start 监听回调 — 静默自醒心跳.
+
+        gate: articulate 进行中 (Python 侧权威 flag) → 本 ghost 自己在驱动, 不醒.
+        否则 dsh 侧自行起了一个 turn, ghost 该醒 — 发一封自醒 signal 给 nucleus.
+        """
+        if self._articulating:
+            return
+        self._emit_self_wake()
+
+    def _emit_self_wake(self) -> None:
+        """产一封自醒 signal 并投递 (无 broadcast 时静默, 供测试/未接线期)."""
+        signal = new_dolores_ego_signal()
+        if self._signal_broadcast is not None:
+            self._signal_broadcast(signal)
 
     # ── 固定 nucleus ────────────────────────────────────────────────
 
     def nucleus(self) -> "DoloresEgoNucleus":
-        """自醒 nucleus 句柄. 待讨论 seam #3: 一次性 impulse 的仲裁语义."""
+        """自醒 nucleus 句柄.
+
+        impulse 走默认 mode 正常仲裁 (已定): 自醒 signal → info 级空 body impulse →
+        正常 challenge, 不占专用自醒通道. 后续再织入轨迹物料.
+        """
         ...
 
     # ── session event 响应 ──────────────────────────────────────────
@@ -344,6 +358,14 @@ class DoloresEgo:
     async def _rpc_tool_result(self, call_id: str, result: dict) -> None:
         """POST /moss-api/ghost/dolores/tool-result — {callId, result} 解锁 plugin 侧 pending tool."""
         ...
+
+    async def _rpc_articulate_enter(self) -> None:
+        """POST /moss-api/ghost/dolores/articulate/enter — 打开 plugin 侧 perStep 锁 (articulating=true)."""
+        await self._ghost.dsh_launcher.call(_DOLORES_ARTICULATE_ENTER, {})
+
+    async def _rpc_articulate_exit(self) -> None:
+        """POST /moss-api/ghost/dolores/articulate/exit — 关闭 plugin 侧 perStep 锁 (articulating=false)."""
+        await self._ghost.dsh_launcher.call(_DOLORES_ARTICULATE_EXIT, {})
 
     # ── 异常感知 ────────────────────────────────────────────────────
 

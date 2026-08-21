@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
@@ -16,12 +17,18 @@ const DOLORES_EGO_CREATE = `${DOLORES_API_ROOT}/ego/create`
 // 通用 session 观测面: 任意 live session 的 instruction / surface 读取 (sessionId 收在 body).
 const DOLORES_SESSION_INSTRUCTION = `${DOLORES_API_ROOT}/session/instruction`
 const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
+const DOLORES_ARTICULATE_ENTER = `${DOLORES_API_ROOT}/articulate/enter`
+const DOLORES_ARTICULATE_EXIT = `${DOLORES_API_ROOT}/articulate/exit`
 const HARNESS_IDENTITY_SECTION = 'harness:identity'
 const HARNESS_IDENTITY_ORDER = -100
 const HARNESS_IDENTITY_TEXT = 'You are an intelligent being powered by the Ghost In Shells architecture: MOSS (https://github.com/GhostInShells/MOSShell) provides the Shells, and DeepSeek Harness provides the Ghost. Your prototype is Dolores.'
 
 // ego workspace: project_home 上的 workspace, ego session 归组用, 模块级共享.
 let doloresEgoWorkspaceId: WorkspaceId | null = null
+
+// ego session id + articulate lock. id 由 ego/create 设, 锁由 articulate/enter|exit 开关.
+let doloresEgoSessionId: SessionId | null = null
+let articulating = false
 
 /*
  * ═══════════════════════════════════════════════════════════════════════
@@ -154,8 +161,18 @@ export function apply(ctx: Context) {
               order: PERSONA_ORDER,
               text: instruction,
             }), 'dolores-ego-persona.section()')
+            // perStep 守卫: agent-scoped, 只对 ego session 生效. 1) session id 恒等
+            // (防御性断言) 2) articulate 未 enter → 锁住, 不让 stray turn 启动.
+            // todo: reject 是裸判别元 (PreStepDecision.reject 无 reason/hint 字段), 拒绝
+            // 原因进不了模型也进不了 web UI. 要可观测需 plugin 侧 log 或 turn/end 旁路.
+            agentCtx.on('agent/pre-step', async ({ agent }, next) => {
+              if (agent.id !== doloresEgoSessionId) return { kind: 'reject' }
+              if (!articulating) return { kind: 'reject' }
+              return next()
+            })
           },
         })
+        doloresEgoSessionId = handle.agent.id
         // 3. title + sandbox mode + workspace membership (log-only events + account).
         handle.agent.session.append('session/title', { title: sessionTitle, messageSeqs: [], source: { kind: 'user' } })
         handle.agent.session.append('sandbox/mode', { mode: permission })
@@ -213,6 +230,39 @@ export function apply(ctx: Context) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: String(error) }))
       }
+    },
+  })
+
+  // ── articulate lock (perStep 守卫的开关) ──
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_ARTICULATE_ENTER,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      articulating = true
+      // todo: 考虑在此 steer 一个 hello prompt 驱动 turn (与 /run 的 turn 驱动合并时定).
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ articulating }))
+    },
+  })
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_ARTICULATE_EXIT,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      articulating = false
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ articulating }))
     },
   })
 }

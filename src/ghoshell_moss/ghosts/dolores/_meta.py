@@ -8,6 +8,8 @@ from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.shell import MOSShell
 
+from .nucleus import DoloresEgoNucleusMeta
+
 __all__ = ["DoloresMeta"]
 
 
@@ -34,7 +36,10 @@ class DoloresMeta(GhostMeta):
     ):
         self._name = name
         self._description = description
-        self._nuclei_metas = nuclei_metas or []
+        # Dolores 默认挂 ego 自醒 nucleus (self-wake 通道); 调用方显式传 nuclei_metas 时完全替换.
+        self._nuclei_metas = (
+            nuclei_metas if nuclei_metas is not None else [DoloresEgoNucleusMeta()]
+        )
 
     # ── GhostMeta ABC ──────────────────────────────
 
