@@ -9,3 +9,4 @@ from ghoshell_moss.core.concepts.topic import (
     ErrorTopic, LogTopic
 )
 from .audio import AudioRuntimeTopic, SpeechTopic
+from .vision import FaceTopic

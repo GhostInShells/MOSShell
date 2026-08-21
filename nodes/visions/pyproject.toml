@@ -1,0 +1,18 @@
+[project]
+name = "nodes-visions"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+# nodes/visions/ 共享 venv — vision 家族 node 共用这一个环境.
+# 子 node 加入时在此追加依赖, 注释标注归属 node, 保证依赖可溯源.
+# 有意偏离 node-migration 的 "vision 独立 venv" 共识: vision 感知族
+# (camera + screen_capture) 是内聚能力, 共用家族 venv (见 README).
+dependencies = [
+    "ghoshell-moss[matrix]",          # 所有 mesh node 的公共底座
+    "opencv-python-headless>=4.9,<5", # camera — Haar 人脸检测 (5.0 移除 CascadeClassifier), MJPEG 推流
+    "numpy>=1.26",                    # camera
+    "aiohttp>=3.9",                   # camera — MJPEG viewer (HTTP 推流)
+    "Pillow>=10.0",                   # camera / screen — PIL Image
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../..", editable = true }
