@@ -1,10 +1,12 @@
-"""DshSession 状态面行为证据 — 运行态镜像事件 + token 记账回调.
+"""DshSession 状态面行为证据 — 运行态镜像事件 + on_session_event* 事件分派.
 
 覆盖:
 - 初始态: 新建 session 假设 idle, when_idle 立即返回, when_running 阻塞.
 - host/session-status 帧翻转 running ⇄ idle 镜像事件.
-- assistant/message usage 累进累计量, usage update 回调收到累计值.
-- 回调支持同步/异步, 解绑后不再收到.
+- on_session_event_model(AssistantMessageEvent) 收每步事件, token_usage 属性累计会话量.
+- on_session_event (raw) 收原始 SessionEvent 信封, 与强类型回调并存.
+- disposer 解绑后不再收到后续事件.
+- 不同事件名各走各的 handler, 未注册事件名静默忽略.
 """
 
 import asyncio
@@ -20,7 +22,9 @@ from ghoshell_moss.deepseek_harness.types.session_events import (
     EpochHeader,
     Message,
     RequestHeader,
+    SessionEvent,
     TokenUsage,
+    TurnStart,
 )
 
 
@@ -117,16 +121,17 @@ async def test_status_frames_flip_running_idle():
 
 
 @pytest.mark.asyncio
-async def test_usage_accumulates_and_callback_fires():
+async def test_usage_accumulates_and_event_fires():
+    """on_session_event_model(AssistantMessageEvent) 收每步事件, token_usage 属性累计会话量."""
     session = DshSession(session_id="s1", client=_DummyClient())
     got = asyncio.Event()
     seen: list[tuple[int, int]] = []
 
-    def on_usage(total: TokenUsage) -> None:
-        seen.append((total.inputTokens, total.outputTokens))
+    async def on_assistant(event: AssistantMessageEvent) -> None:
+        seen.append((event.usage.inputTokens, event.usage.outputTokens))
         got.set()
 
-    session.on_usage_update(on_usage)
+    session.on_session_event_model(AssistantMessageEvent, on_assistant)
     async with session:
         session.accept_frame(_usage_frame(10, 5))
         await asyncio.wait_for(got.wait(), 1)
@@ -134,41 +139,47 @@ async def test_usage_accumulates_and_callback_fires():
         session.accept_frame(_usage_frame(20, 3))
         await asyncio.wait_for(got.wait(), 1)
 
-    # 回调每次收到累计值, 非单步增量.
-    assert seen == [(10, 5), (30, 8)]
+    # 回调收每步事件 (非累计); 会话累计量经 token_usage 属性读.
+    assert seen == [(10, 5), (20, 3)]
     assert session.token_usage.inputTokens == 30
     assert session.token_usage.outputTokens == 8
 
 
 @pytest.mark.asyncio
-async def test_usage_async_callback_supported():
+async def test_raw_event_handler_receives_envelope():
+    """on_session_event (raw) 收原始 SessionEvent 信封, 与强类型回调并存."""
     session = DshSession(session_id="s1", client=_DummyClient())
-    got = asyncio.Event()
-    seen: list[int] = []
+    raw_seen: list[str] = []
+    typed_seen: list[int] = []
 
-    async def on_usage(total: TokenUsage) -> None:
-        seen.append(total.inputTokens)
-        got.set()
+    async def on_raw(event: SessionEvent) -> None:
+        raw_seen.append(event.meta.type)
 
-    session.on_usage_update(on_usage)
+    async def on_typed(event: AssistantMessageEvent) -> None:
+        typed_seen.append(event.usage.inputTokens)
+
+    session.on_session_event("assistant/message", on_raw)
+    session.on_session_event_model(AssistantMessageEvent, on_typed)
     async with session:
-        session.accept_frame(_usage_frame(7, 2))
-        await asyncio.wait_for(got.wait(), 1)
+        session.accept_frame(_usage_frame(5, 0))
+        await _drain(session)
 
-    assert seen == [7]
+    assert raw_seen == ["assistant/message"]
+    assert typed_seen == [5]
 
 
 @pytest.mark.asyncio
-async def test_usage_callback_disposer_removes():
+async def test_event_handler_disposer_removes():
+    """disposer 解绑后不再收到同事件名的后续事件."""
     session = DshSession(session_id="s1", client=_DummyClient())
     got = asyncio.Event()
     seen: list[int] = []
 
-    def on_usage(total: TokenUsage) -> None:
-        seen.append(total.inputTokens)
+    async def on_assistant(event: AssistantMessageEvent) -> None:
+        seen.append(event.usage.inputTokens)
         got.set()
 
-    remove = session.on_usage_update(on_usage)
+    remove = session.on_session_event_model(AssistantMessageEvent, on_assistant)
     async with session:
         session.accept_frame(_usage_frame(1, 0))
         await asyncio.wait_for(got.wait(), 1)
@@ -181,6 +192,55 @@ async def test_usage_callback_disposer_removes():
             await asyncio.wait_for(got.wait(), 0.05)
 
     assert seen == [1]
+
+
+@pytest.mark.asyncio
+async def test_event_dispatch_routes_by_event_name():
+    """不同事件名各走各的 handler, 事件互不串扰."""
+    session = DshSession(session_id="s1", client=_DummyClient())
+    assistant_seen: list[int] = []
+    header_seen: list[str] = []
+
+    async def on_assistant(event: AssistantMessageEvent) -> None:
+        assistant_seen.append(event.usage.inputTokens)
+
+    async def on_header(event: RequestHeader) -> None:
+        header_seen.append(event.header.system)
+
+    session.on_session_event_model(AssistantMessageEvent, on_assistant)
+    session.on_session_event_model(RequestHeader, on_header)
+    async with session:
+        session.accept_frame(_usage_frame(9, 1))
+        session.accept_frame(_request_header_frame("prompt: p"))
+        session.accept_frame(_request_header_frame("prompt: q"))
+        await _drain(session)
+
+    assert assistant_seen == [9]
+    assert header_seen == ["prompt: p", "prompt: q"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_event_type_safely_ignored():
+    """未注册事件名的 session/event 帧静默忽略, 不炸消费循环."""
+    session = DshSession(session_id="s1", client=_DummyClient())
+    got = asyncio.Event()
+    seen: list[int] = []
+
+    async def on_assistant(event: AssistantMessageEvent) -> None:
+        seen.append(event.usage.inputTokens)
+        got.set()
+
+    session.on_session_event_model(AssistantMessageEvent, on_assistant)
+    async with session:
+        turn = TurnStart(turn=1)
+        turn.meta.type = turn.event_type()
+        session.accept_frame(
+            MuxFrame(type="session/event", sessionId="s1", event=turn.to_session_event())
+        )
+        session.accept_frame(_usage_frame(5, 0))
+        await asyncio.wait_for(got.wait(), 1)
+
+    assert seen == [5]
 
 
 @pytest.mark.asyncio

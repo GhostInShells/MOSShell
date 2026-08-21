@@ -30,8 +30,10 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 
 事件消费:
 - 线性消费: accept_frame 只入队不处理(无背压, append + Event.set), 消费 task 逐帧处理。
-- 运行态 (host/session-status{running}) 与 token 记账 (assistant/message usage) 本文件消费;
-  其余 session event 监听表面 (on_turn_start/on_tool_call/...) 下一轮再定, 本文件不展开。
+- session/event 帧按事件名分派到 on_session_event* 注册的分派闭包 (阻塞消费, 逐 handler await)。
+- 本文件经 on_session_event_model 注册 token 记账 (assistant/message usage); instruction 快照
+  (request/header) 暂留 _handle_frame 内联。其余监听面由消费方自行注册。
+- close() 清空分派闭包集合, 释放回调引用 (消费方 aexit 时主动 close 帮助回收)。
 """
 
 from __future__ import annotations
@@ -39,30 +41,37 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections import deque
-from typing import Awaitable, Callable, Literal
+from collections.abc import Awaitable, Callable
+from typing import Literal, TypeVar
 
 from typing_extensions import Self
 
+from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.client import DshClient
 from ghoshell_moss.deepseek_harness.types import sessions
 from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.deepseek_harness.types.session_events import (
     AssistantMessageEvent,
     RequestHeader,
+    SessionEvent,
+    SessionEventModel,
     TokenUsage,
 )
-from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 
 __all__ = ["DshSession"]
 
 # 消费 task 连续处理 _YIELD_EVERY 帧后主动 sleep(0.0) 让出 loop, 防长队饿死其它任务.
 _YIELD_EVERY = 64
 
+# on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
+E = TypeVar("E", bound=SessionEventModel)
+
 # session 关闭回调: owner 用它解绑 accept_frame / 清理引用. 无参同步.
 ExitCallback = Callable[[], None]
 
-# token usage 更新回调: 收会话累计 TokenUsage, 可同步或异步 (返回 None 或 coroutine).
-UsageCallback = Callable[[TokenUsage], Awaitable[None] | None]
+# 分派闭包: on_session_event* 注册时生成, 收原始信封 SessionEvent, 内部完成强类型重建或原样
+# 透传, 放进按事件名分组的集合. 消费方收的类型由注册方法决定 (raw 信封 vs 强类型模型).
+EventDispatcher = Callable[[SessionEvent], Awaitable[None]]
 
 
 class DshSession:
@@ -85,9 +94,12 @@ class DshSession:
         self._running_event = asyncio.Event()
         self._idle_event = asyncio.Event()
         self._idle_event.set()
-        # 会话累计 token 用量 (assistant/message usage 累加), 更新时通知 usage 回调.
+        # 会话累计 token 用量 (assistant/message usage 累加, 纯记账 — 消费方经 on_session_event* 订阅).
         self._token_usage = TokenUsage()
-        self._usage_callbacks: list[UsageCallback] = []
+        # 会话级事件治理: 事件名 → 分派闭包集合 (on_session_event* 注册时由 model_cls+callback 包成).
+        self._event_handlers: dict[str, set[EventDispatcher]] = {}
+        # 内部治理回调 — token 记账: 与外部消费同一机制 (dogfooding on_session_event_model).
+        self.on_session_event_model(AssistantMessageEvent, self._on_assistant_message)
         # 观测状态镜像: instruction 由 request/header 帧同步; model/routable 由 session.models 拉取;
         # cwd/agent_preset 是会话常量, 由 host/session-added 帧或 session.list 拉取.
         self._instruction: str | None = None
@@ -116,7 +128,10 @@ class DshSession:
         await self.close()
 
     async def close(self) -> None:
-        """幂等提前关闭: 停消费 task → fire on_exit 回调."""
+        """幂等提前关闭: 停消费 task → 清事件分派闭包 → fire on_exit 回调.
+
+        清空 _event_handlers 释放回调闭包引用 (消费方 aexit 时主动 close 帮助内存回收).
+        """
         if self._closed:
             return
         self._closed = True
@@ -126,6 +141,7 @@ class DshSession:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
             self._consume_task = None
+        self._event_handlers.clear()
         for callback in self._on_exit_callbacks:
             try:
                 callback()
@@ -250,7 +266,11 @@ class DshSession:
                 await asyncio.sleep(0.0)
 
     async def _handle_frame(self, frame: MuxFrame | HostFrame) -> None:
-        """按帧 type 分派. 本文件处理运行态 + token 记账 + instruction 快照; 其余 on_xxx 下一轮接."""
+        """按帧 type 分派. 运行态镜像 + session/event 事件分派 (on_session_event 注册回调).
+
+        instruction 快照 (request/header) 暂留本文件内联, 与 token 记账同构 — 下一步并入
+        on_session_event 机制.
+        """
         if frame.type == "host/session-status":
             self._set_running(frame.running)
         elif frame.type == "host/session-added":
@@ -262,14 +282,28 @@ class DshSession:
             event = frame.event
             if event is None:
                 return
-            if event.meta.type == "assistant/message":
-                usage = AssistantMessageEvent.from_session_event(event)
-                if usage is not None and usage.usage is not None:
-                    await self._accumulate_usage(usage.usage)
-            elif event.meta.type == "request/header":
+            await self._dispatch_session_event(event)
+            if event.meta.type == "request/header":
                 header = RequestHeader.from_session_event(event)
                 if header is not None:
                     self._instruction = header.header.system
+
+    async def _dispatch_session_event(self, event: SessionEvent) -> None:
+        """按事件名分派到 on_session_event* 注册的分派闭包 (阻塞消费, 逐 handler await).
+
+        闭包内部已捕获 model_cls + callback, 完成 from_session_event 判别或原样透传.
+        handler 异常隔离记录, 不影响后续 handler 与消费循环.
+        """
+        handlers = self._event_handlers.get(event.meta.type)
+        if not handlers:
+            return
+        for handler in list(handlers):
+            try:
+                await handler(event)
+            except Exception:
+                self._logger.exception(
+                    "dsh session %s %s event handler failed", self._session_id, event.meta.type
+                )
 
     def _set_running(self, running: bool) -> None:
         """翻转运行态镜像事件: running ⇄ idle 互斥 set/clear."""
@@ -281,8 +315,13 @@ class DshSession:
             self._idle_event.set()
             self._running_event.clear()
 
+    async def _on_assistant_message(self, event: AssistantMessageEvent) -> None:
+        """内部治理回调 (on_session_event_model 注册): assistant/message usage 累进累计量."""
+        if event.usage is not None:
+            await self._accumulate_usage(event.usage)
+
     async def _accumulate_usage(self, usage: TokenUsage) -> None:
-        """把一步的 usage 累进会话累计量, 然后逐个通知 usage update 回调 (异常隔离)."""
+        """把一步的 usage 累进会话累计量 (纯记账; 对外消费经 on_session_event* 订阅)."""
         total = self._token_usage
         total.inputTokens += usage.inputTokens or 0
         total.outputTokens += usage.outputTokens or 0
@@ -292,15 +331,6 @@ class DshSession:
             total.cacheWriteTokens = (total.cacheWriteTokens or 0) + usage.cacheWriteTokens
         if usage.reasoningTokens is not None:
             total.reasoningTokens = (total.reasoningTokens or 0) + usage.reasoningTokens
-        for callback in list(self._usage_callbacks):
-            try:
-                result = callback(total)
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception:
-                self._logger.exception(
-                    "dsh session %s usage update callback failed", self._session_id
-                )
 
     # ---- 对外状态面 (ego 消费) ---- #
 
@@ -311,7 +341,7 @@ class DshSession:
 
     @property
     def token_usage(self) -> TokenUsage:
-        """会话累计 token 用量 — assistant/message usage 累加, 每次更新通知 usage 回调."""
+        """会话累计 token 用量 — assistant/message usage 累加 (纯记账, 实时可读)."""
         return self._token_usage
 
     async def instruction(self, *, force: bool = False) -> str | None:
@@ -385,15 +415,55 @@ class DshSession:
         """等到 agent 处于 idle. 已在 idle 则立即返回 (状态镜像, 非边沿触发)."""
         await self._idle_event.wait()
 
-    def on_usage_update(self, callback: UsageCallback) -> Callable[[], None]:
-        """注册 token 用量更新回调 (收累计 TokenUsage), 返回解绑函数.
+    def on_session_event(
+        self,
+        event_type: str,
+        callback: Callable[[SessionEvent], Awaitable[None]],
+    ) -> Callable[[], None]:
+        """注册会话级 session 事件回调 (原始信封), 返回解绑函数.
 
-        回调可同步或异步; 异常被隔离记录, 不影响后续回调. 与 launcher 的
-        on_mux_frame/on_host_frame 同一注册-解绑模式.
+        按事件名字符串分派, 回调收原始 ``SessionEvent`` 信封 (不重建模型) — 适合治理 /
+        日志 / 全量观测面. 强类型消费用 :meth:`on_session_event_model`. 与
+        TopicService.subscribe 同思路: 注册的都归一到分派闭包 (EventDispatcher).
         """
-        self._usage_callbacks.append(callback)
+        async def _dispatch(event: SessionEvent) -> None:
+            await callback(event)
+
+        return self._register_event_handler(event_type, _dispatch)
+
+    def on_session_event_model(
+        self,
+        model_cls: type[E],
+        callback: Callable[[E], Awaitable[None]],
+    ) -> Callable[[], None]:
+        """注册会话级 session 事件回调 (强类型模型), 返回解绑函数.
+
+        按 ``model_cls.event_type()`` 事件名分派; 回调收 ``model_cls.from_session_event(event)``
+        重建的强类型模型实例. 与 TopicService.subscribe_model 同思路.
+
+        阻塞消费: dispatch 在消费 task 内逐 handler await, 不做并发; handler 异常隔离记录,
+        不影响其它 handler 与消费循环. 与 launcher 的 on_mux_frame/on_host_frame
+        同一注册-解绑模式.
+        """
+        async def _dispatch(event: SessionEvent) -> None:
+            model = model_cls.from_session_event(event)
+            if model is not None:
+                await callback(model)
+
+        return self._register_event_handler(model_cls.event_type(), _dispatch)
+
+    def _register_event_handler(
+        self,
+        event_type: str,
+        dispatcher: EventDispatcher,
+    ) -> Callable[[], None]:
+        """把分派闭包挂到事件名下, 返回解绑函数. 解绑后空 set 即摘掉键."""
+        handlers = self._event_handlers.setdefault(event_type, set())
+        handlers.add(dispatcher)
 
         def _remove() -> None:
-            self._usage_callbacks.remove(callback)
+            handlers.discard(dispatcher)
+            if not handlers:
+                self._event_handlers.pop(event_type, None)
 
         return _remove
