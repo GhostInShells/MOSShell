@@ -48,6 +48,7 @@ from ghoshell_moss.deepseek_harness.types import sessions
 from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.deepseek_harness.types.session_events import (
     AssistantMessageEvent,
+    RequestHeader,
     TokenUsage,
 )
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
@@ -87,6 +88,10 @@ class DshSession:
         # 会话累计 token 用量 (assistant/message usage 累加), 更新时通知 usage 回调.
         self._token_usage = TokenUsage()
         self._usage_callbacks: list[UsageCallback] = []
+        # 观测状态镜像: instruction 由 request/header 帧同步; model/routable 由 session.models 拉取.
+        self._instruction: str | None = None
+        self._model_selection: sessions.ModelSelection | None = None
+        self._routable: bool | None = None
         # 线性消费: deque 存帧, Event 唤醒消费 task (空等待阻塞, 不忙旋).
         self._queue: deque = deque()
         self._wakeup = asyncio.Event()
@@ -242,7 +247,7 @@ class DshSession:
                 await asyncio.sleep(0.0)
 
     async def _handle_frame(self, frame: MuxFrame | HostFrame) -> None:
-        """按帧 type 分派. 本文件处理运行态 + token 记账; 其余 on_xxx 下一轮接."""
+        """按帧 type 分派. 本文件处理运行态 + token 记账 + instruction 快照; 其余 on_xxx 下一轮接."""
         if frame.type == "host/session-status":
             self._set_running(frame.running)
         elif frame.type == "session/event":
@@ -253,6 +258,10 @@ class DshSession:
                 usage = AssistantMessageEvent.from_session_event(event)
                 if usage is not None and usage.usage is not None:
                     await self._accumulate_usage(usage.usage)
+            elif event.meta.type == "request/header":
+                header = RequestHeader.from_session_event(event)
+                if header is not None:
+                    self._instruction = header.header.system
 
     def _set_running(self, running: bool) -> None:
         """翻转运行态镜像事件: running ⇄ idle 互斥 set/clear."""
@@ -296,6 +305,44 @@ class DshSession:
     def token_usage(self) -> TokenUsage:
         """会话累计 token 用量 — assistant/message usage 累加, 每次更新通知 usage 回调."""
         return self._token_usage
+
+    async def instruction(self, *, force: bool = False) -> str | None:
+        """当前生效的 system prompt — request/header.header.system 的最后一次快照.
+
+        监听同步 (mux request/header 帧) 命中缓存直返; force 或尚未收到时从 history
+        折最新 request/header (冷锚基线). 会话尚未发出首个请求时返回 None.
+        """
+        if not force and self._instruction is not None:
+            return self._instruction
+        history = await self.history()
+        for entry in reversed(history.events):
+            header = RequestHeader.from_session_event(entry.event)
+            if header is not None:
+                self._instruction = header.header.system
+                return self._instruction
+        return self._instruction
+
+    async def model_selection(self, *, force: bool = False) -> sessions.ModelSelection:
+        """当前选中的模型 (provider/model/reasoningEffort) — session.models.current.
+
+        pull-primary: 无完整推源 (request/context 缺 reasoningEffort / routable),
+        故缓存命中直返, force 或空则拉 session.models.
+        """
+        if not force and self._model_selection is not None:
+            return self._model_selection
+        models = await self.models()
+        self._model_selection = models.current
+        self._routable = models.routable
+        return self._model_selection
+
+    async def routable(self, *, force: bool = False) -> bool:
+        """当前模型路由是否可服务 — session.models.routable. 与 model_selection 同源拉取."""
+        if not force and self._routable is not None:
+            return self._routable
+        models = await self.models()
+        self._model_selection = models.current
+        self._routable = models.routable
+        return self._routable
 
     async def when_running(self) -> None:
         """等到 agent 处于 running. 已在 running 则立即返回 (状态镜像, 非边沿触发)."""
