@@ -31,8 +31,8 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 事件消费:
 - 线性消费: accept_frame 只入队不处理(无背压, append + Event.set), 消费 task 逐帧处理。
 - session/event 帧按事件名分派到 on_session_event* 注册的分派闭包 (阻塞消费, 逐 handler await)。
-- 本文件经 on_session_event_model 注册 token 记账 (assistant/message usage); instruction 快照
-  (request/header) 暂留 _handle_frame 内联。其余监听面由消费方自行注册。
+- 本文件经 on_session_event_model 注册 token 记账 (assistant/message usage); instruction /
+  surface 走 plugin 路由 pull (见 instruction() / surface_messages())。
 - close() 清空分派闭包集合, 释放回调引用 (消费方 aexit 时主动 close 帮助回收)。
 """
 
@@ -52,7 +52,7 @@ from ghoshell_moss.deepseek_harness.types import sessions
 from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.deepseek_harness.types.session_events import (
     AssistantMessageEvent,
-    RequestHeader,
+    Message,
     SessionEvent,
     SessionEventModel,
     TokenUsage,
@@ -62,6 +62,10 @@ __all__ = ["DshSession"]
 
 # 消费 task 连续处理 _YIELD_EVERY 帧后主动 sleep(0.0) 让出 loop, 防长队饿死其它任务.
 _YIELD_EVERY = 64
+
+# plugin 观测面路由 (与 moss-dolores-ghost-plugin.ts 的 DOLORES_SESSION_* 常量对齐, 跨语言契约).
+_DOLORES_SESSION_INSTRUCTION = "/moss-api/ghost/dolores/session/instruction"
+_DOLORES_SESSION_SURFACE = "/moss-api/ghost/dolores/session/surface"
 
 # on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
 E = TypeVar("E", bound=SessionEventModel)
@@ -100,9 +104,8 @@ class DshSession:
         self._event_handlers: dict[str, set[EventDispatcher]] = {}
         # 内部治理回调 — token 记账: 与外部消费同一机制 (dogfooding on_session_event_model).
         self.on_session_event_model(AssistantMessageEvent, self._on_assistant_message)
-        # 观测状态镜像: instruction 由 request/header 帧同步; model/routable 由 session.models 拉取;
-        # cwd/agent_preset 是会话常量, 由 host/session-added 帧或 session.list 拉取.
-        self._instruction: str | None = None
+        # 观测状态镜像: model/routable 由 session.models 拉取; cwd/agent_preset 是会话常量,
+        # 由 host/session-added 帧或 session.list 拉取. instruction 走 plugin 路由 pull (见 instruction()).
         self._model_selection: sessions.ModelSelection | None = None
         self._routable: bool | None = None
         self._cwd: str | None = None
@@ -266,11 +269,7 @@ class DshSession:
                 await asyncio.sleep(0.0)
 
     async def _handle_frame(self, frame: MuxFrame | HostFrame) -> None:
-        """按帧 type 分派. 运行态镜像 + session/event 事件分派 (on_session_event 注册回调).
-
-        instruction 快照 (request/header) 暂留本文件内联, 与 token 记账同构 — 下一步并入
-        on_session_event 机制.
-        """
+        """按帧 type 分派. 运行态镜像 + session/event 事件分派 (on_session_event 注册回调)."""
         if frame.type == "host/session-status":
             self._set_running(frame.running)
         elif frame.type == "host/session-added":
@@ -283,10 +282,6 @@ class DshSession:
             if event is None:
                 return
             await self._dispatch_session_event(event)
-            if event.meta.type == "request/header":
-                header = RequestHeader.from_session_event(event)
-                if header is not None:
-                    self._instruction = header.header.system
 
     async def _dispatch_session_event(self, event: SessionEvent) -> None:
         """按事件名分派到 on_session_event* 注册的分派闭包 (阻塞消费, 逐 handler await).
@@ -344,21 +339,29 @@ class DshSession:
         """会话累计 token 用量 — assistant/message usage 累加 (纯记账, 实时可读)."""
         return self._token_usage
 
-    async def instruction(self, *, force: bool = False) -> str | None:
-        """当前生效的 system prompt — request/header.header.system 的最后一次快照.
+    async def instruction(self) -> str | None:
+        """当前全量 instruction — 从 plugin 路由现场组装 (与 request/header.system 同源).
 
-        监听同步 (mux request/header 帧) 命中缓存直返; force 或尚未收到时从 history
-        折最新 request/header (冷锚基线). 会话尚未发出首个请求时返回 None.
+        plugin 侧经 ctx.systemPrompt.assemble + renderPrompt 产出与模型实际看到的完全一致的
+        system prompt. 真实读接口: 任意时刻 session 在即可读, 不依赖 mux 帧或 history 冷锚.
         """
-        if not force and self._instruction is not None:
-            return self._instruction
-        history = await self.history()
-        for entry in reversed(history.events):
-            header = RequestHeader.from_session_event(entry.event)
-            if header is not None:
-                self._instruction = header.header.system
-                return self._instruction
-        return self._instruction
+        result = await self._client.plugin_call(
+            _DOLORES_SESSION_INSTRUCTION, {"sessionId": self._session_id}
+        )
+        instruction = result.get("instruction")
+        return instruction if isinstance(instruction, str) else None
+
+    async def surface_messages(self) -> list[Message]:
+        """全量 surface 消息列表 — 模型可见投影 (user/assistant/tool-result, 尊重 compact replace).
+
+        与 history() 的 log 全量事件不同: surface 只投影三种 surface-eligible 事件, 按模型可见序,
+        空 content 的 assistant/message 被剔除. 从 plugin 路由 (deriveMessages) 读.
+        """
+        result = await self._client.plugin_call(
+            _DOLORES_SESSION_SURFACE, {"sessionId": self._session_id}
+        )
+        raw = result.get("messages") or []
+        return [Message.model_validate(m) for m in raw]
 
     async def model_selection(self, *, force: bool = False) -> sessions.ModelSelection:
         """当前选中的模型 (provider/model/reasoningEffort) — session.models.current.

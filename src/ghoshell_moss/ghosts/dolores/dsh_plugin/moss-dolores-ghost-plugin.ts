@@ -2,14 +2,20 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type { Context } from '@deepseek-ai/cordis'
-import { PERSONA_ORDER, PERSONA_SECTION } from '@deepseek-ai/dsh-system-prompt'
+import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
 export const name = 'moss-dolores-ghost-plugin'
 
-export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents']
+export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt']
 
-const EGO_CREATE_PATH = '/plugin-api/ego/create'
+// 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
+const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
+
+const DOLORES_EGO_CREATE = `${DOLORES_API_ROOT}/ego/create`
+// 通用 session 观测面: 任意 live session 的 instruction / surface 读取 (sessionId 收在 body).
+const DOLORES_SESSION_INSTRUCTION = `${DOLORES_API_ROOT}/session/instruction`
+const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const HARNESS_IDENTITY_SECTION = 'harness:identity'
 const HARNESS_IDENTITY_ORDER = -100
 const HARNESS_IDENTITY_TEXT = 'You are an intelligent being powered by the Ghost In Shells architecture: MOSS (https://github.com/GhostInShells/MOSShell) provides the Shells, and DeepSeek Harness provides the Ghost. Your prototype is Dolores.'
@@ -71,8 +77,10 @@ let doloresEgoWorkspaceId: WorkspaceId | null = null
  *   RPC:     pendingCalls 命中 → 立即 resolve; 否则 arrivedResults 存早到结果.
  *
  * ── 7. RPC 面 (ctx.webServer.register) ──────────────────────────────────
- *   POST /plugin-api/ego/create    — 建 ego session (tool 注册 + preStep + 设 id)
- *   POST /plugin-api/tool-result   — {callId, result} 解锁 pending tool
+ *   POST /moss-api/ghost/dolores/ego/create      — 建 ego session (tool 注册 + preStep + 设 id)
+ *   POST /moss-api/ghost/dolores/tool-result     — {callId, result} 解锁 pending tool
+ *   POST /moss-api/ghost/dolores/session/instruction — 读任意 live session 当前全量指令
+ *   POST /moss-api/ghost/dolores/session/surface     — 读任意 live session 全量 surface 消息
  *   (未来) 非 ego 观测 tool 面     — 下一步
  *
  * ── 待确认 ──────────────────────────────────────────────────────────────
@@ -83,7 +91,7 @@ let doloresEgoWorkspaceId: WorkspaceId | null = null
 export function apply(ctx: Context) {
   ctx.webServer.register({
     kind: 'exact',
-    path: EGO_CREATE_PATH,
+    path: DOLORES_EGO_CREATE,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method !== 'POST') {
         res.writeHead(405, { 'Content-Type': 'application/json' })
@@ -160,6 +168,65 @@ export function apply(ctx: Context) {
       }
     },
   })
+
+  // ── 通用 session 观测面: 读任意 live agent 的 instruction / surface (只读, 零副作用) ──
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_SESSION_INSTRUCTION,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const agent = resolveLiveAgent(ctx, await readJson(req))
+        // 现场组装当前指令: 与 request/header.system 同源 (agent-loop 用 renderPrompt(assembly) 生成 system).
+        const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent })
+        const instruction = renderPrompt(assembly)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ instruction }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_SESSION_SURFACE,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const agent = resolveLiveAgent(ctx, await readJson(req))
+        // surface 投影: 只含 user/assistant/tool-result, 模型可见序, 尊重 compact replace.
+        const messages = agent.session.deriveMessages()
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ messages }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+}
+
+function resolveLiveAgent(ctx: Context, body: Record<string, unknown>) {
+  const sessionId = body.sessionId
+  if (typeof sessionId !== 'string' || sessionId === '') {
+    throw new Error('sessionId must be a non-empty string')
+  }
+  const agent = ctx.agents.get(sessionId)
+  if (agent === undefined) {
+    throw new Error(`no live agent for sessionId ${sessionId}`)
+  }
+  return agent
 }
 
 function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

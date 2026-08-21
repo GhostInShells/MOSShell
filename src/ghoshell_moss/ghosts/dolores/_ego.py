@@ -87,6 +87,9 @@ EGO_TOPIC_NAME = "dolores/ego"
 THINKING_TOPIC_NAME = "dolores/thinking"
 """thinking start/end 的 topic 名. 待讨论: 独立 topic, 还是并入 ego topic 的 dict (event type 区分)."""
 
+# plugin 路由 (与 moss-dolores-ghost-plugin.ts 的 DOLORES_EGO_CREATE 常量对齐, 跨语言契约).
+_DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
+
 
 class DoloresEgoConfig(BaseModel):
     """ego session 的配置 (从 .dolores.yml 的 ego: 段加载).
@@ -225,7 +228,7 @@ class DoloresEgo:
         await self._exit_stack.__aenter__()
         launcher = self._ghost.dsh_launcher
         result = await launcher.call(
-            "/plugin-api/ego/create",
+            _DOLORES_EGO_CREATE,
             {
                 "project_home": str(self._ghost._home),
                 "project_name": self._ghost._matrix.env.project_name,
@@ -331,7 +334,7 @@ class DoloresEgo:
     # ── RPC (窄桥, 与 plugin TS 对齐) ───────────────────────────────
 
     async def _rpc_create_ego_session(self, *, params: dict, steer: dict | None) -> str:
-        """POST /plugin-api/ego/create — 建 ego session (tool 注册 + preStep + 设 id).
+        """POST /moss-api/ghost/dolores/ego/create — 建 ego session (tool 注册 + preStep + 设 id).
 
         返回 ego session id, 本侧同步持有 (对齐 plugin 的 doloresEgoSessionId).
         待讨论 seam #1: params + steer 的入参形状.
@@ -339,7 +342,7 @@ class DoloresEgo:
         ...
 
     async def _rpc_tool_result(self, call_id: str, result: dict) -> None:
-        """POST /plugin-api/tool-result — {callId, result} 解锁 plugin 侧 pending tool."""
+        """POST /moss-api/ghost/dolores/tool-result — {callId, result} 解锁 plugin 侧 pending tool."""
         ...
 
     # ── 异常感知 ────────────────────────────────────────────────────

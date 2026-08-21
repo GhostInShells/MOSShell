@@ -85,6 +85,17 @@ class DshClient:
             raise DshRpcException(method, error)
         return value_cls.model_validate(result.get("value"))
 
+    async def plugin_call(self, path: str, payload: dict | None = None) -> dict:
+        """plugin webServer 面 (非 apiproxy): 裸 POST `{base}{path}`, 返回响应 JSON dict.
+
+        与 call() 分工: call() 走 apiproxy 的 client-request 信封 (POST /api/{method});
+        plugin 注册的 HTTP 路由走这里 — raw JSON body, 无信封, 响应为 plugin 自定义 JSON
+        (非 result 包络). 与 launcher.call 同语义.
+        """
+        resp = await self._http_client.post(f"{self._base_url}{path}", json=payload or {})
+        resp.raise_for_status()
+        return resp.json()
+
     async def close(self) -> None:
         await self._http_client.aclose()
 

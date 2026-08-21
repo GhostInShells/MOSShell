@@ -35,13 +35,21 @@ class _DummyClient:
 
 
 class _RpcClient:
-    """pull 路径的哑元 client — call() 返回预置 value, 并记录被调用的 method."""
+    """pull 路径的哑元 client — call() 返回预置 value, plugin_call() 返回预置 plugin JSON."""
 
-    def __init__(self, models_value=None, history_value=None, session_list_value=None):
+    def __init__(
+        self,
+        models_value=None,
+        history_value=None,
+        session_list_value=None,
+        plugin_values=None,
+    ):
         self._models_value = models_value
         self._history_value = history_value
         self._session_list_value = session_list_value
+        self._plugin_values = plugin_values or {}
         self.calls: list[str] = []
+        self.plugin_calls: list[tuple[str, dict]] = []
 
     async def call(self, method, params, value_cls):
         self.calls.append(method)
@@ -52,6 +60,10 @@ class _RpcClient:
         if method == "session.list":
             return self._session_list_value
         raise AssertionError(f"unexpected rpc {method}")
+
+    async def plugin_call(self, path, payload=None):
+        self.plugin_calls.append((path, payload or {}))
+        return self._plugin_values.get(path, {})
 
 
 def _usage_frame(input_tokens: int, output_tokens: int) -> MuxFrame:
@@ -244,26 +256,45 @@ async def test_unknown_event_type_safely_ignored():
 
 
 @pytest.mark.asyncio
-async def test_instruction_mirrors_request_header_frame():
-    session = DshSession(session_id="s1", client=_DummyClient())
+async def test_instruction_pulls_plugin_route():
+    client = _RpcClient(
+        plugin_values={
+            "/moss-api/ghost/dolores/session/instruction": {"instruction": "prompt: full"},
+        },
+    )
+    session = DshSession(session_id="s1", client=client)
     async with session:
-        session.accept_frame(_request_header_frame("prompt: hello"))
-        await _drain(session)
-        assert await session.instruction() == "prompt: hello"
+        assert await session.instruction() == "prompt: full"
+    assert client.plugin_calls == [
+        ("/moss-api/ghost/dolores/session/instruction", {"sessionId": "s1"}),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_instruction_force_pulls_history_fold():
-    header = RequestHeader(header=EpochHeader(system="prompt: folded"), reason="change")
-    header.meta.type = header.event_type()
-    history_value = sessions.SessionHistoryValue(
-        events=[sessions.HistoryEntry(event=header.to_session_event())],
-    )
-    client = _RpcClient(history_value=history_value)
+async def test_instruction_returns_none_when_plugin_has_no_instruction():
+    client = _RpcClient(plugin_values={})
     session = DshSession(session_id="s1", client=client)
     async with session:
-        assert await session.instruction(force=True) == "prompt: folded"
-        assert "session.history" in client.calls
+        assert await session.instruction() is None
+
+
+@pytest.mark.asyncio
+async def test_surface_messages_pulls_plugin_route():
+    raw_message = {"id": "m1", "role": "user", "content": [{"type": "text", "text": "hi"}]}
+    client = _RpcClient(
+        plugin_values={
+            "/moss-api/ghost/dolores/session/surface": {"messages": [raw_message]},
+        },
+    )
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        messages = await session.surface_messages()
+    assert len(messages) == 1
+    assert messages[0].role == "user"
+    assert messages[0].content[0].text == "hi"
+    assert client.plugin_calls == [
+        ("/moss-api/ghost/dolores/session/surface", {"sessionId": "s1"}),
+    ]
 
 
 @pytest.mark.asyncio
