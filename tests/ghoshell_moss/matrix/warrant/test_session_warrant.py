@@ -278,3 +278,72 @@ async def test_get_permission_state_fallback(warrant_dir: Path):
         state = w.get_permission_state(AutoPassPermission())
         assert state == AutoPassPermission().default()
         assert state.counter == 0
+
+
+# ── seq & on_flushed ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_seq_round_trips_through_storage(warrant_dir: Path):
+    """A PermissionStateData's seq survives store → flush → reload."""
+    session = MockSession()
+    state = PermissionStateData(
+        key="test.auto_pass",
+        seq=7,
+        data=AutoPassState(counter=3).model_dump(mode="json"),
+    )
+
+    async with _new_warrant(session, warrant_dir) as w:
+        w.store(state)
+
+    async with _new_warrant(session, warrant_dir) as w:
+        restored = w.states().get("test.auto_pass")
+        assert restored is not None
+        assert restored.seq == 7
+
+
+@pytest.mark.asyncio
+async def test_on_flushed_fires_after_real_flush(warrant_dir: Path):
+    """on_flushed callback fires once, after the state is actually persisted."""
+    session = MockSession()
+    event = asyncio.Event()
+    fired: list[PermissionStateData] = []
+
+    async with _new_warrant(session, warrant_dir) as w:
+        def _on_flush(state: PermissionStateData) -> None:
+            fired.append(state)
+            event.set()
+
+        w.on_flushed(_on_flush)
+        w.store(PermissionStateData(key="test.auto_pass", data={"counter": 1}))
+        await asyncio.wait_for(event.wait(), timeout=2.0)
+
+    assert len(fired) == 1
+    assert fired[0].key == "test.auto_pass"
+
+
+@pytest.mark.asyncio
+async def test_on_flushed_unsubscribe(warrant_dir: Path):
+    """The unsubscribe handle stops a callback from firing."""
+    session = MockSession()
+    kept: list[PermissionStateData] = []
+    dropped: list[PermissionStateData] = []
+    event = asyncio.Event()
+
+    async with _new_warrant(session, warrant_dir) as w:
+        def _kept(state: PermissionStateData) -> None:
+            kept.append(state)
+            event.set()
+
+        def _dropped(state: PermissionStateData) -> None:
+            dropped.append(state)
+
+        w.on_flushed(_kept)
+        unsub = w.on_flushed(_dropped)
+        unsub()
+
+        w.store(PermissionStateData(key="test.auto_pass", data={"counter": 1}))
+        await asyncio.wait_for(event.wait(), timeout=2.0)
+
+    assert len(kept) == 1
+    assert len(dropped) == 0

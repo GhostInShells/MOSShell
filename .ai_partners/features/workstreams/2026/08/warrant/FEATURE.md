@@ -8,7 +8,7 @@ description: 'Matrix 级通用授权机制 — 在 QA 之上补规则/凭据层�
 milestone: null
 priority: P2
 status: in-progress
-status_note: v7 abstract rewritten 2026-08-12; SessionWarrant concrete (host-only 写 storage 模式) + tests + provider 2026-08-13; 核心缺口 — host/非 host 区分未做, on_flushed 感知接口未做, topic 模式未做; v8 topic 模式协议定型 2026-08-21 (两 topic + 每 key seq + reject-retry)
+status_note: v7 abstract rewritten 2026-08-12; SessionWarrant concrete (host-only 写 storage 模式) + tests + provider 2026-08-13; 核心缺口 — host/非 host 区分未做, on_flushed 感知接口未做, topic 模式未做; v8 topic 模式协议定型 2026-08-21 (两 topic + 每 key seq + reject-retry); 第一波 2026-08-21 — seq 字段 + on_flushed 契约/host 触发落地 (topic 传输与 host/非 host 区分未做)
 title: Warrant
 updated: '2026-08-21'
 ---
@@ -288,10 +288,12 @@ KD5 白纸黑字: "topic 广播 / 真实写按 cell 类型构建时选定". 实�
 - [ ] **host/非 host 区分** (核心缺口): provider 按 `cell.is_host` 分岔 — host →
       `SessionWarrant` 写 storage 模式; 非 host → `TopicWarrant` topic 模式, 不写本地
       storage. 协议见 v8, 已定型 (2026-08-21).
-- [ ] **on_flushed 感知接口** (核心缺口): Warrant ABC 暴露 `on_flushed(callback)`,
-      传输是 truth topic (见 v8). 目前测试靠 `__aexit__` 隐式 flush 兜底, 非确定性.
-- [ ] **`PermissionStateData` 加可选 `seq` 字段** — 每 key 单调序号; host 只接受
-      `seq == current + 1`, 其余 reject-retry (见 v8).
+- [x] **`PermissionStateData` 加可选 `seq` 字段** — 每 key 单调序号; host 版已落地
+      (2026-08-21). host 只接受 `seq == current + 1` 的 reject-retry 属 topic 接收侧, 未做.
+- [x] **on_flushed 主机侧** — Warrant ABC 暴露 `on_flushed(callback)` (返回注销句柄),
+      SessionWarrant 真实落盘后触发, 已落地 (2026-08-21, 测试用 asyncio.Event 确定性观察).
+- [ ] **on_flushed topic 传输** — 非 host 经 truth topic 触发 (concrete 差异, 见 v8),
+      属第二波 TopicWarrant.
 - [ ] topic 模式发送侧 (`TopicWarrant.store()` = 缓存 + 发写请求 topic) — 依赖
       host/非 host 区分落地
 - [ ] topic 模式接收侧 (`TopicWarrant` 订阅 truth topic 对齐缓存 + 触发 on_flushed)

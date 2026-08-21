@@ -18,7 +18,7 @@ qa 交互协议见 `core/concepts/qa.py`; 本模块是 warrant + permission 抽�
 # 设计决策见 warrant FEATURE.md
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar
 from typing_extensions import Self
 
 from pydantic import BaseModel, Field, ValidationError, AwareDatetime
@@ -101,6 +101,11 @@ class PermissionStateData(BaseModel):
     created: AwareDatetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="记录创建时间",
+    )
+    seq: int | None = Field(
+        default=None,
+        description="每 key 单调序号 (语言无关 version/index). host-only 单写模式留 None, "
+                    "过 topic 时填; host 只接受 seq == current + 1, 其余 reject-retry (见 v8)",
     )
     data: dict[str, Any] = Field(
         description="StateT 序列化本体 (model_dump)",
@@ -187,6 +192,19 @@ class Warrant(ABC):
     @abstractmethod
     def list_states(self) -> list[PermissionStateData]:
         """枚举全部授权状态. 同步, 读内存缓存."""
+        ...
+
+    @abstractmethod
+    def on_flushed(
+            self,
+            callback: Callable[[PermissionStateData], None],
+    ) -> Callable[[], None]:
+        """登记"某份 state 真实落盘"后的回调, 返回注销句柄.
+
+        "真实落盘发生"是存储时序通用契约, 触发方式是 concrete 差异:
+        host 版写盘后触发, topic 版收 truth 后触发 (见 v8). 回调收到已落盘的
+        PermissionStateData.
+        """
         ...
 
     def get_permission_state(self, permission: Permission[StateT]) -> StateT:

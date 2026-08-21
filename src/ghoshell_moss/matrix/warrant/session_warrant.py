@@ -15,7 +15,7 @@ import asyncio
 import json
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.core.blueprint.session import Session
@@ -52,6 +52,7 @@ class SessionWarrant(Warrant):
         self._cache: OrderedDict[str, PermissionStateData] = OrderedDict()
         self._flush_queue: asyncio.Queue[PermissionStateData | None] | None = None
         self._flush_task: asyncio.Task | None = None
+        self._flush_listeners: list[Callable[[PermissionStateData], None]] = []
 
     # -- lifecycle ----------------------------------------------------
 
@@ -100,6 +101,18 @@ class SessionWarrant(Warrant):
     def list_states(self) -> list[PermissionStateData]:
         return list(self._cache.values())
 
+    def on_flushed(
+            self,
+            callback: Callable[[PermissionStateData], None],
+    ) -> Callable[[], None]:
+        self._flush_listeners.append(callback)
+
+        def _unsubscribe() -> None:
+            if callback in self._flush_listeners:
+                self._flush_listeners.remove(callback)
+
+        return _unsubscribe
+
     # -- internal -----------------------------------------------------
 
     def _load_cache(self) -> None:
@@ -116,6 +129,14 @@ class SessionWarrant(Warrant):
         self._states_dir.mkdir(parents=True, exist_ok=True)
         path = self._states_dir / f"{state.key}{_FILE_SUFFIX}"
         path.write_text(state.model_dump_json(indent=2))
+        self._notify_flushed(state)
+
+    def _notify_flushed(self, state: PermissionStateData) -> None:
+        for cb in list(self._flush_listeners):
+            try:
+                cb(state)
+            except Exception:
+                self._logger.exception("on_flushed listener failed: %s", state.key)
 
     async def _consume_flush(self) -> None:
         if self._flush_queue is None:
