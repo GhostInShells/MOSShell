@@ -1,15 +1,15 @@
 """
-memento.py 纯数据结构单测.
+moment.py 纯数据结构单测.
 
-Reaction / Moment 是 mindflow→ghost 协议转换面的核心数据载体, 无 IO、无并发,
+Results / Moment 是 mindflow→ghost 协议转换面的核心数据载体, 无 IO、无并发,
 所有行为都应能通过构造 + 方法调用直接暴露. 本套件覆盖:
 
-- Reaction: 默认值、new_moment 参数传递
-- Moment: 访问器、is_empty 判定、perspectives 组合、各 messages 视图
+- Results: 默认值、new_moment 参数传递
+- Moment: 访问器、is_empty 判定、dynamic_context 组合、各 messages 视图
 - 序列化: to_dict / to_json / for_saving
 - 历史缝合: as_history_messages / to_history_turns (回合切分核心)
 """
-from ghoshell_moss.core.blueprint.memento import Moment, Reaction
+from ghoshell_moss.core.blueprint.moment import Moment, Results
 from ghoshell_moss.message import Message
 
 
@@ -26,19 +26,19 @@ def _texts(msgs) -> list[str]:
 
 
 # ============================================================
-# Reaction
+# Results
 # ============================================================
 
-def test_reaction_defaults():
-    r = Reaction()
+def test_results_defaults():
+    r = Results()
     assert r.moment_id  # auto unique_id
     assert r.executed_logos == ""
     assert r.messages == []
     assert r.stop_reason == ""
 
 
-def test_reaction_new_moment_passes_all_params():
-    r = Reaction(executed_logos="prev logos", stop_reason="done")
+def test_results_new_moment_passes_all_params():
+    r = Results(executed_logos="prev logos", stop_reason="done")
     moment = r.new_moment(
         percepts={"test": [Message.new().with_content("p")]},
         hint="hint text",
@@ -50,8 +50,8 @@ def test_reaction_new_moment_passes_all_params():
     assert moment.command_logos == "reflex!"
 
 
-def test_reaction_new_moment_defaults_empty():
-    r = Reaction(executed_logos="prev")
+def test_results_new_moment_defaults_empty():
+    r = Results(executed_logos="prev")
     moment = r.new_moment()
     assert moment.percepts == {}
     assert moment.hint == ""
@@ -59,9 +59,62 @@ def test_reaction_new_moment_defaults_empty():
     assert moment.previous is r
 
 
-def test_reaction_new_moment_percepts_none_is_empty_dict():
-    moment = Reaction().new_moment(percepts=None)
+def test_results_new_moment_percepts_none_is_empty_dict():
+    moment = Results().new_moment(percepts=None)
     assert moment.percepts == {}
+
+
+# ============================================================
+# Results — 边界行为
+# ============================================================
+
+def test_results_new_moment_passes_dynamic_context():
+    r = Results()
+    moment = r.new_moment(dynamic_context={"ctx": [Message.new().with_content("dyn")]})
+    assert _texts(moment.dynamic_context["ctx"]) == ["dyn"]
+
+
+def test_results_add_result_str_becomes_message():
+    r = Results()
+    appended = r.add_result(["hi"])
+    assert len(appended) == 1
+    assert _text(appended[0]) == "hi"
+    assert _text(r.messages[0]) == "hi"
+
+
+def test_results_add_result_message_appended_as_is():
+    r = Results()
+    msg = Message.new().with_content("m")
+    assert r.add_result([msg]) == [msg]
+    assert r.messages == [msg]
+
+
+def test_results_add_result_mixed_str_and_message():
+    r = Results()
+    appended = r.add_result(["x", Message.new().with_content("y")])
+    assert _texts(appended) == ["x", "y"]
+    assert _texts(r.messages) == ["x", "y"]
+
+
+def test_results_add_result_empty_list_still_sets_observe_signal():
+    """空 list 不 append 消息, 但 need_observe=True 的观察信号仍应置位."""
+    r = Results()
+    assert r.add_result([], need_observe=True) == []
+    assert r.need_observe is True
+    assert r.messages == []
+
+
+def test_results_add_result_sets_need_observe_only_on_append():
+    r = Results()
+    appended = r.add_result(["x"], need_observe=True)
+    assert len(appended) == 1
+    assert r.need_observe is True
+
+
+def test_results_is_empty_matrix():
+    # 无消息为空; 有真实消息不为空. (旧实现漏了括号恒返 True, 这条能兜住.)
+    assert Results().is_empty() is True
+    assert Results(messages=[Message.new().with_content("x")]).is_empty() is False
 
 
 # ============================================================
@@ -72,8 +125,7 @@ def test_moment_defaults():
     m = Moment()
     assert m.id  # auto unique_id
     assert m.previous is None
-    assert m.perspectives == {}
-    assert m.compacted_perspectives is None
+    assert m.dynamic_context == {}
     assert m.percepts == {}
     assert m.hint == ""
     assert m.command_logos == ""
@@ -81,105 +133,96 @@ def test_moment_defaults():
     assert m.created is not None
 
 
-def test_moment_new_reaction_links_to_self_id():
+def test_moment_new_results_links_to_self_id():
     m = Moment()
-    r = m.new_reaction()
+    r = m.new_result_container()
     assert r.moment_id == m.id
 
 
 def test_moment_previous_executed_logos():
     assert Moment().previous_executed_logos() == ""
-    m = Moment(previous=Reaction(executed_logos="ran this"))
+    m = Moment(previous=Results(executed_logos="ran this"))
     assert m.previous_executed_logos() == "ran this"
 
 
 def test_moment_last_moment_id():
     assert Moment().last_moment_id() is None
-    prev = Reaction(moment_id="prev-id")
+    prev = Results(moment_id="prev-id")
     assert Moment(previous=prev).last_moment_id() == "prev-id"
 
 
 def test_moment_with_perspective_sets_and_dedups_by_key():
     m = Moment()
-    m.with_perspective("vision", [Message.new().with_content("v1")])
-    assert _texts(m.perspectives["vision"]) == ["v1"]
+    m.with_dynamic_context("vision", [Message.new().with_content("v1")])
+    assert _texts(m.dynamic_context["vision"]) == ["v1"]
     # 同 key 再次写入应覆盖, 不累加.
-    m.with_perspective("vision", [Message.new().with_content("v2")])
-    assert _texts(m.perspectives["vision"]) == ["v2"]
-    assert len(m.perspectives) == 1
+    m.with_dynamic_context("vision", [Message.new().with_content("v2")])
+    assert _texts(m.dynamic_context["vision"]) == ["v2"]
+    assert len(m.dynamic_context) == 1
     # with_perspective 返回 self, 支持链式.
-    assert m.with_perspective("audio", []) is m
+    assert m.with_dynamic_context("audio", []) is m
+
+
+def test_with_percepts_only_records_when_source_has_messages():
+    # 与 with_dynamic_context 不对称: 空列表不落 key, 即不记录空 source.
+    m = Moment()
+    m.with_percepts("cam", [])
+    assert "cam" not in m.percepts
+    # 同 source 覆盖写, 不累加.
+    m.with_percepts("cam", [Message.new().with_content("frame")])
+    assert _texts(m.percepts["cam"]) == ["frame"]
+    m.with_percepts("cam", [Message.new().with_content("frame2")])
+    assert _texts(m.percepts["cam"]) == ["frame2"]
 
 
 # ============================================================
-# Moment — is_empty / is_empty_request
+# Moment — is_empty / is_percepts_empty
 # ============================================================
 
 def test_moment_is_empty_matrix():
     empty = Moment()
     assert empty.is_empty()
-    assert empty.is_empty_request()
+    assert empty.is_percepts_empty()
 
     with_percept = Moment(percepts={"test": [Message.new().with_content("x")]})
     assert not with_percept.is_empty()
-    assert not with_percept.is_empty_request()
+    assert not with_percept.is_percepts_empty()
 
     # 有 previous 但无新 percepts: 不算 empty, 但算 empty_request.
-    with_prev = Moment(previous=Reaction())
+    with_prev = Moment(previous=Results(messages=[Message.new().with_content("prev")]))
     assert not with_prev.is_empty()
-    assert with_prev.is_empty_request()
+    assert with_prev.is_percepts_empty()
 
 
 # ============================================================
-# Moment — perspective_messages
+# Moment — dynamic_context_messages
 # ============================================================
 
-def test_perspective_messages_empty():
-    assert list(Moment().perspective_messages()) == []
+def test_dynamic_context_messages_empty():
+    assert list(Moment().dynamic_context_messages()) == []
 
 
-def test_perspective_messages_flattens_all_keys_in_order():
+def test_dynamic_context_messages_flattens_all_keys_in_order():
     m = Moment()
-    m.with_perspective("a", [Message.new().with_content("a1")])
-    m.with_perspective("b", [Message.new().with_content("b1"), Message.new().with_content("b2")])
-    assert _texts(m.perspective_messages()) == ["a1", "b1", "b2"]
-
-
-def test_perspective_messages_compact_first_uses_compacted():
-    m = Moment()
-    m.with_perspective("ctx", [Message.new().with_content("long")])
-    m.compacted_perspectives = [Message.new().with_content("short")]
-    assert _texts(m.perspective_messages(compact_first=True)) == ["short"]
-
-
-def test_perspective_messages_compact_first_falls_back_when_no_compacted():
-    m = Moment()
-    m.with_perspective("ctx", [Message.new().with_content("long")])
-    # compacted 为 None 时, compact_first=True 仍回退到全量.
-    assert _texts(m.perspective_messages(compact_first=True)) == ["long"]
-
-
-def test_perspective_messages_compact_false_ignores_compacted():
-    m = Moment()
-    m.with_perspective("ctx", [Message.new().with_content("long")])
-    m.compacted_perspectives = [Message.new().with_content("short")]
-    assert _texts(m.perspective_messages(compact_first=False)) == ["long"]
+    m.with_dynamic_context("a", [Message.new().with_content("a1")])
+    m.with_dynamic_context("b", [Message.new().with_content("b1"), Message.new().with_content("b2")])
+    assert _texts(m.dynamic_context_messages()) == ["a1", "b1", "b2"]
 
 
 # ============================================================
-# Moment — previous_reaction_messages
+# Moment — previous_result_messages
 # ============================================================
 
-def test_previous_reaction_messages_empty_when_no_previous():
-    assert list(Moment().previous_reaction_messages()) == []
+def test_previous_result_messages_empty_when_no_previous():
+    assert list(Moment().previous_result_messages()) == []
 
 
-def test_previous_reaction_messages_with_messages_and_stop_reason():
-    prev = Reaction(
+def test_previous_result_messages_with_messages_and_stop_reason():
+    prev = Results(
         messages=[Message.new().with_content("result")],
         stop_reason="faded",
     )
-    msgs = list(Moment(previous=prev).previous_reaction_messages())
+    msgs = list(Moment(previous=prev).previous_result_messages())
     assert "result" in _texts(msgs)
     # stop_reason 作为独立 tag 消息追加.
     stop_msgs = [m for m in msgs if m.meta.tag == "stop_reason"]
@@ -187,15 +230,15 @@ def test_previous_reaction_messages_with_messages_and_stop_reason():
     assert _text(stop_msgs[0]) == "faded"
 
 
-def test_previous_reaction_messages_no_stop_reason():
-    prev = Reaction(messages=[Message.new().with_content("result")])
-    msgs = list(Moment(previous=prev).previous_reaction_messages())
+def test_previous_result_messages_no_stop_reason():
+    prev = Results(messages=[Message.new().with_content("result")])
+    msgs = list(Moment(previous=prev).previous_result_messages())
     assert all(m.meta.tag != "stop_reason" for m in msgs)
 
 
-def test_previous_reaction_messages_stop_reason_only():
-    prev = Reaction(stop_reason="just stopped")
-    msgs = list(Moment(previous=prev).previous_reaction_messages())
+def test_previous_result_messages_stop_reason_only():
+    prev = Results(stop_reason="just stopped")
+    msgs = list(Moment(previous=prev).previous_result_messages())
     assert len(msgs) == 1
     assert msgs[0].meta.tag == "stop_reason"
 
@@ -237,69 +280,57 @@ def test_inputs_messages_skips_empty_command_and_hint():
 
 
 # ============================================================
-# Moment — as_request_messages
+# Moment — full_observation_messages
 # ============================================================
 
-def test_as_request_messages_full_order():
-    prev = Reaction(messages=[Message.new().with_content("outcome")])
+def test_full_observation_messages_full_order():
+    prev = Results(messages=[Message.new().with_content("outcome")])
     m = Moment(
         previous=prev,
         percepts={"test": [Message.new().with_content("percept")]}, hint="react!",
     )
-    m.with_perspective("moss_dynamic", [Message.new().with_content("dynamic")])
-    texts = _texts(m.as_request_messages(with_perspectives=True, with_hint=True))
-    # 顺序: previous(outcome) → perspectives(dynamic) → percepts → hint
+    m.with_dynamic_context("moss_dynamic", [Message.new().with_content("dynamic")])
+    texts = _texts(m.full_observation_messages(with_dynamic_context=True, with_hint=True))
+    # 顺序: previous(outcome) → dynamic_context(dynamic) → percepts → hint
     assert texts.index("outcome") < texts.index("dynamic") < texts.index("percept")
     assert "react!" in texts
 
 
-def test_as_request_messages_without_perspectives_uses_compacted():
+def test_full_observation_messages_without_dynamic_context():
     m = Moment(percepts={"test": [Message.new().with_content("p1")]})
-    m.with_perspective("ctx", [Message.new().with_content("full")])
-    m.compacted_perspectives = [Message.new().with_content("compact")]
-    texts = _texts(m.as_request_messages(with_perspectives=False, with_hint=False))
-    # with_perspectives=False 走 elif: compacted 非空时产出 compacted.
+    m.with_dynamic_context("ctx", [Message.new().with_content("full")])
+    texts = _texts(m.full_observation_messages(with_dynamic_context=False, with_hint=False))
+    # with_dynamic_context=False 时, 动态上下文不进输入.
     assert "full" not in texts
-    assert "compact" in texts
     assert "p1" in texts
 
 
-def test_as_request_messages_without_perspectives_and_no_compacted():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
-    m.with_perspective("ctx", [Message.new().with_content("full")])
-    texts = _texts(m.as_request_messages(with_perspectives=False, with_hint=False))
-    assert "full" not in texts
-    assert texts == ["p1"]
-
-
 # ============================================================
-# Moment — as_history_messages (含 compacted None 守卫)
+# Moment — as_history_messages
 # ============================================================
 
-def test_as_history_messages_with_none_compacted_does_not_crash():
-    """compacted_perspectives 默认 None 时, as_history_messages 不应崩溃."""
-    prev = Reaction(messages=[Message.new().with_content("outcome")])
+def test_as_history_messages_keeps_previous_and_percepts():
+    """as_history_messages 遗忘 dynamic_context, 只保留 previous + percepts."""
+    prev = Results(messages=[Message.new().with_content("outcome")])
     m = Moment(previous=prev, percepts={"test": [Message.new().with_content("p1")]})
-    assert m.compacted_perspectives is None
     texts = _texts(m.as_history_messages())
-    # 历史视图遗忘 perspectives, 只保留 previous + percepts.
+    # 历史视图遗忘 dynamic_context, 只保留 previous + percepts.
     assert texts == ["outcome", "p1"]
 
 
-def test_as_history_messages_with_compacted():
-    prev = Reaction(messages=[Message.new().with_content("outcome")])
+def test_as_history_messages_forgets_live_dynamic_context():
+    prev = Results(messages=[Message.new().with_content("outcome")])
     m = Moment(previous=prev, percepts={"test": [Message.new().with_content("p1")]})
-    m.with_perspective("ctx", [Message.new().with_content("live perspective")])
-    m.compacted_perspectives = [Message.new().with_content("compacted")]
+    m.with_dynamic_context("ctx", [Message.new().with_content("live perspective")])
     texts = _texts(m.as_history_messages())
-    # 实时 perspectives 被遗忘, 压缩快照保留.
+    # 实时 dynamic_context 被遗忘, previous + percepts 保留.
     assert "live perspective" not in texts
-    assert texts == ["outcome", "compacted", "p1"]
+    assert texts == ["outcome", "p1"]
 
 
-def test_as_history_messages_forgets_perspectives_even_when_present():
+def test_as_history_messages_forgets_dynamic_context_even_when_present():
     m = Moment(percepts={"test": [Message.new().with_content("p1")]})
-    m.with_perspective("ctx", [Message.new().with_content("never in history")])
+    m.with_dynamic_context("ctx", [Message.new().with_content("never in history")])
     texts = _texts(m.as_history_messages())
     assert "never in history" not in texts
 
@@ -315,48 +346,46 @@ def test_to_dict_excludes_defaults_and_none():
     # 默认值字段不应出现.
     assert "hint" not in d
     assert "command_logos" not in d
-    assert "compacted_perspectives" not in d
+    assert "dynamic_context" not in d
     # 非默认字段应出现.
     assert "percepts" in d
 
 
-def test_to_json_excludes_perspectives_and_hint_by_default():
-    """默认 exclude_perspectives=True + exclude_hint=True: 两者都不应泄漏."""
+def test_to_json_excludes_dynamic_context_and_hint_by_default():
+    """默认 exclude_dynamic_context=True + exclude_hint=True: 两者都不应泄漏."""
     m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="secret hint")
-    m.with_perspective("ctx", [Message.new().with_content("secret perspective")])
+    m.with_dynamic_context("ctx", [Message.new().with_content("secret perspective")])
     j = m.to_json()
     assert "secret perspective" not in j
     assert "secret hint" not in j
 
 
-def test_to_json_can_keep_perspectives():
+def test_to_json_can_keep_dynamic_context():
     m = Moment()
-    m.with_perspective("ctx", [Message.new().with_content("keep me")])
-    j = m.to_json(exclude_perspectives=False, exclude_hint=True)
+    m.with_dynamic_context("ctx", [Message.new().with_content("keep me")])
+    j = m.to_json(exclude_dynamic_context=False, exclude_hint=True)
     assert "keep me" in j
 
 
 def test_to_json_can_keep_hint():
     m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="keep hint")
-    j = m.to_json(exclude_perspectives=True, exclude_hint=False)
+    j = m.to_json(exclude_dynamic_context=True, exclude_hint=False)
     assert "keep hint" in j
 
 
-def test_for_saving_clears_perspectives_and_hint():
-    prev = Reaction(executed_logos="ran")
+def test_for_saving_clears_dynamic_context_and_hint():
+    prev = Results(executed_logos="ran")
     m = Moment(
         previous=prev,
         percepts={"test": [Message.new().with_content("p1")]}, hint="ephemeral",
         command_logos="cmd",
         logos="model output",
     )
-    m.with_perspective("ctx", [Message.new().with_content("live")])
-    saved = m.for_saving(compacted_perspectives=[Message.new().with_content("compact")])
-    # perspectives / hint 被清空.
-    assert saved.perspectives == {}
+    m.with_dynamic_context("ctx", [Message.new().with_content("live")])
+    saved = m.for_saving()
+    # dynamic_context / hint 被清空.
+    assert saved.dynamic_context == {}
     assert saved.hint == ""
-    # compacted 被写入.
-    assert _texts(saved.compacted_perspectives) == ["compact"]
     # 其余字段保留.
     assert saved.previous is prev
     assert _texts(saved.percepts_messages()) == ["p1"]
@@ -364,20 +393,14 @@ def test_for_saving_clears_perspectives_and_hint():
     assert saved.logos == "model output"
     # 原 moment 不被修改 (model_copy).
     assert m.hint == "ephemeral"
-    assert "ctx" in m.perspectives
-
-
-def test_for_saving_compacted_none_becomes_empty_list():
-    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
-    saved = m.for_saving()
-    assert saved.compacted_perspectives == []
+    assert "ctx" in m.dynamic_context
 
 
 # ============================================================
 # Moment.to_history_turns — 回合切分核心
 # ============================================================
 
-def _moment_with_logos(logos: str, percept: str = "", previous: Reaction | None = None) -> Moment:
+def _moment_with_logos(logos: str, percept: str = "", previous: Results | None = None) -> Moment:
     return Moment(
         previous=previous,
         percepts={"test": [Message.new().with_content(percept)]} if percept else {}, logos=logos,
@@ -399,8 +422,8 @@ def test_to_history_turns_single_moment_with_logos():
 
 def test_to_history_turns_splits_on_logos():
     m1 = _moment_with_logos("logos 1", percept="input 1")
-    r1 = m1.new_reaction()
-    m2 = m1.new_reaction().new_moment(percepts={"test": [Message.new().with_content("input 2")]})
+    r1 = m1.new_result_container()
+    m2 = m1.new_result_container().new_moment(percepts={"test": [Message.new().with_content("input 2")]})
     m2.logos = "logos 2"
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
@@ -412,7 +435,7 @@ def test_to_history_turns_stitches_executed_logos_when_no_model_logos():
     """某轮模型未产 logos 但系统执行了 command, executed_logos 应缝合进下一回合."""
     # m1: 无 model logos, 但执行了 command.
     m1 = Moment(percepts={"test": [Message.new().with_content("input 1")]}, logos="")
-    r1 = m1.new_reaction()
+    r1 = m1.new_result_container()
     r1.executed_logos = "command ran"
     # m2: 承接 r1, 模型产出 logos.
     m2 = r1.new_moment(percepts={"test": [Message.new().with_content("input 2")]})
@@ -433,7 +456,7 @@ def test_to_history_turns_trailing_buffer_yields_none_logos():
     """末尾若有未被 logos 切分的 buffer, 以 (messages, None) 收尾."""
     m1 = _moment_with_logos("logos 1", percept="input 1")
     # m2 无 logos, 末尾残留.
-    m2 = m1.new_reaction().new_moment(percepts={"test": [Message.new().with_content("trailing")]})
+    m2 = m1.new_result_container().new_moment(percepts={"test": [Message.new().with_content("trailing")]})
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
     assert turns[0][1] == "logos 1"
@@ -444,7 +467,7 @@ def test_to_history_turns_trailing_buffer_yields_none_logos():
 def test_to_history_turns_executed_logos_not_duplicated_after_model_logos():
     """上一轮有 model logos 时, 其 executed_logos 不应再缝合 (避免重复)."""
     m1 = _moment_with_logos("model logos 1", percept="input 1")
-    r1 = m1.new_reaction()
+    r1 = m1.new_result_container()
     r1.executed_logos = "executed for m1"
     m2 = r1.new_moment(percepts={"test": [Message.new().with_content("input 2")]})
     m2.logos = "model logos 2"
@@ -468,8 +491,8 @@ def test_to_history_turns_single_moment_without_logos():
 def test_to_history_turns_all_moments_without_logos_merge_into_one():
     """n 条全程无 logos → 合并为单个 (messages, None) 回合."""
     m1 = Moment(percepts={"test": [Message.new().with_content("a")]})
-    m2 = m1.new_reaction().new_moment(percepts={"test": [Message.new().with_content("b")]})
-    m3 = m2.new_reaction().new_moment(percepts={"test": [Message.new().with_content("c")]})
+    m2 = m1.new_result_container().new_moment(percepts={"test": [Message.new().with_content("b")]})
+    m3 = m2.new_result_container().new_moment(percepts={"test": [Message.new().with_content("c")]})
     turns = list(Moment.to_history_turns([m1, m2, m3]))
     assert len(turns) == 1
     messages, logos = turns[0]
@@ -478,19 +501,26 @@ def test_to_history_turns_all_moments_without_logos_merge_into_one():
 
 
 def test_to_history_turns_logos_without_messages_inserts_placeholder():
-    """有 logos 但本帧无可入史消息 (perspectives 触发): 补占位, logos 不被丢弃."""
-    # 无 previous / 无 percepts / 无 compacted, 仅有 logos — 模拟 perspectives 触发的响应.
-    bare = Moment(logos="model spoke from perspective")
-    turns = list(Moment.to_history_turns([bare]))
+    """有 logos 但本帧无可入史消息 (dynamic_context 触发): 补占位, logos 不被丢弃."""
+    # 无 previous / 无 percepts / 仅有 logos — 模拟 dynamic_context 触发的响应.
+    first = Moment()
+    second = first.new_result_container().new_moment()
+    second.logos = "model spoke from perspective"
+    third = second.new_result_container().new_moment()
+    turns = list(Moment.to_history_turns([first, second, third]))
     assert len(turns) == 1
     messages, logos = turns[0]
     assert logos == "model spoke from perspective"
-    # 回合不为空: 插入了一条 perspective 占位消息.
-    assert len(messages) == 1
-    assert messages[0].meta.tag == "perspective"
+    assert len(messages) == 0
+    forth_result = third.new_result_container()
+    forth_result.add_result(["hello"], need_observe=True)
+    forth = forth_result.new_moment()
+    turns = list(Moment.to_history_turns([first, second, third, forth]))
+    assert len(turns) == 2
+    messages, logos = turns[1]
+    assert logos is None
 
 
 def test_to_history_turns_fully_empty_moment_yields_nothing():
     """完全空的 moment (无 logos 无消息) 不产出任何回合."""
     assert list(Moment.to_history_turns([Moment()])) == []
-

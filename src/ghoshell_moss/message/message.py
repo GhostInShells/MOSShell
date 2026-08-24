@@ -408,7 +408,7 @@ class Message(BaseModel, WithAdditional):
         return self
 
     def is_empty(self) -> bool:
-        return len(self.contents) == 0
+        return len(self.contents) == 0 and not self.meta.tag
 
     def dump(self) -> dict[str, Any]:
         """

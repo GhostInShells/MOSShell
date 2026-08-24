@@ -78,9 +78,9 @@ class BufferNucleus(Nucleus):
         self._signals.clear()
         self._impulse_cache = None
 
-    def with_bus(self, signal_broadcast: Callable[[Signal], None], impulse_notify: Callable[[Impulse], None]) -> None:
+    def with_bus(self, signal_broadcast: Callable[[Signal], None], fire_impulse: Callable[[Impulse], None]) -> None:
         self._broadcast_cb = signal_broadcast
-        self._notify_cb = impulse_notify
+        self._notify_cb = fire_impulse
 
     def add_signal(self, signal: Signal) -> None:
         # 理论上 on signal 来自 mindflow 的回调, 和 mindflow 处于同一个 loop.
@@ -183,7 +183,7 @@ class BufferNucleus(Nucleus):
     def suppress(self, suppress_by: Impulse) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         if not self.is_running():
             return None
         # 直接通过 event loop 将清理任务排队，确保它是逻辑上的原子操作

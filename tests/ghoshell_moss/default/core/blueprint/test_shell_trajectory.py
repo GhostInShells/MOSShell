@@ -15,7 +15,7 @@ from ghoshell_moss.core.blueprint.shell_trajectory import (
     MShellStatus,
     MShellTrajectory,
     ShellTaskDoneEvent,
-    TrajectoryFrame,
+    ShellKeyFrame,
 )
 from ghoshell_moss.core.concepts.channel import ChannelMeta
 
@@ -30,11 +30,12 @@ def _meta(name: str = 'a', *, created: int = 0, **kwargs) -> ChannelMeta:
     )
 
 
-def _frame(previous: dict, metas: dict) -> TrajectoryFrame:
-    return TrajectoryFrame(
+def _frame(previous: dict, metas: dict) -> ShellKeyFrame:
+    return ShellKeyFrame(
         epoch_index=0,
         index=0,
         events=[],
+        need_observe=False,
         status=MShellStatus(state='idle'),
         previous_metas=previous,
         metas=metas,
@@ -212,3 +213,80 @@ async def test_trajectory_epoch_start_point_renders_facade():
         async with MShellTrajectory(shell) as trajectory:
             facade = trajectory.epoch_start_point(refresh=False)
             assert '<channel path="chan">' in facade
+
+
+@pytest.mark.asyncio
+async def test_trajectory_empty_drain():
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+    from ghoshell_moss.core.py_channel import PyChannel
+
+    shell = new_ctml_shell("traj_facade")
+    chan = PyChannel(name="chan")
+
+    @chan.build.command()
+    async def hello() -> str:
+        return "world"
+
+    @chan.build.context_messages
+    async def messages():
+        return ["hello"]
+
+    async with chan.bootstrap() as rtm:
+        assert len(rtm.metas()) == 1
+        messages = []
+        for meta in rtm.metas().values():
+            messages.extend(meta.context)
+        assert len(messages) == 1
+
+    shell.main_channel.import_channels(chan)
+
+    async with shell:
+        await shell.refresh_metas()
+        dynamic_messages = []
+        metas = shell.channel_metas()
+        assert len(metas) == 2
+        for path, meta in metas.items():
+            dynamic_messages.extend(meta.context)
+
+        assert len(dynamic_messages) > 0
+        async with MShellTrajectory(shell) as trajectory:
+            frame = trajectory.pop_frame()
+            assert len(frame.dynamic_context_messages()) > 0
+            assert len(frame.project(with_status=False)) > 0
+            for i in range(10):
+                # 不带 status 就没有数据.
+                assert len(trajectory.pop_frame().project(with_status=False, with_dynamic=False)) == 0
+                await shell.refresh_metas()
+
+
+@pytest.mark.asyncio
+async def test_trajectory_when_need_observe_fires_on_task_done():
+    """when_need_observe 回调应在 need_observe 事件出现时被触发.
+
+    当前 MShellEventTracer._append_event 只 append 事件, 从不调用 _need_observe_callbacks,
+    导致 ghost_runtime 经 when_need_observe -> _notify_moments_need_observe 的通知链完全失效.
+    驱动 always_observe 命令产生 need_observe task-done 后, 回调必须被触发.
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+    from ghoshell_moss.core.blueprint.channel_builder import new_channel
+
+    shell = new_ctml_shell("traj_need_observe")
+    chan = new_channel(name="chan")
+
+    @chan.build.command(always_observe=True)
+    async def hello() -> str:
+        return "world"
+
+    shell.main_channel.import_channels(chan)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            fired: list = []
+            trajectory.when_need_observe(fired.append)
+
+            async with shell.interpreter_in_ctx() as i:
+                i.feed("<chan:hello />")
+                i.commit()
+                await i.wait_tasks(timeout=2)
+
+            assert len(fired) > 0, "need_observe 事件应触发 when_need_observe 回调"

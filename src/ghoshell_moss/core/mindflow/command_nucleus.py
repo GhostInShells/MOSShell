@@ -53,8 +53,7 @@ class CommandNucleus(Nucleus):
 
     Last-impulse cache 模式 (与 ``_DirectImpulseNucleus`` 同构):
     - ``add_signal`` 立即构造 impulse, 写入 ``_impulse`` cache 并通知 mindflow
-    - mindflow ``_rank_nuclei`` 通过 ``peek()`` 拉取, 仲裁后调 ``pop_impulse``
-      清 cache
+    - mindflow 通过 ``peek()`` 拉取, 仲裁后经 ``attended`` 确认清 cache
     - 连续两条 signal 进入但 mindflow 未消费时, 后者覆盖前者 (last-wins) —
       command 的语义是"最新指令为准", 旧的过时
 
@@ -69,7 +68,7 @@ class CommandNucleus(Nucleus):
 
     def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):
         self._name = name
-        self._impulse_notify: Callable[[Impulse], None] | None = None
+        self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
         # Last-impulse cache: 满足 mindflow pull-based 协议.
@@ -98,8 +97,8 @@ class CommandNucleus(Nucleus):
             return
         # Last-wins cache: 覆盖未消费的旧 impulse.
         self._impulse = impulse
-        if self._impulse_notify:
-            self._impulse_notify(impulse)
+        if self._fire_impulse:
+            self._fire_impulse(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
         meta = CommandSignalMeta.from_signal(signal)
@@ -113,16 +112,16 @@ class CommandNucleus(Nucleus):
     def with_bus(
             self,
             signal_broadcast: Callable[[Signal], None],
-            impulse_notify: Callable[[Impulse], None],
+            fire_impulse: Callable[[Impulse], None],
     ) -> None:
-        self._impulse_notify = impulse_notify
+        self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse) -> None:
         # command 抢占失败 (priority 不够) → 清 cache, 让位.
         # command 没有"重试" 语义 — 失败就丢, 等下一条新 command.
         self._impulse = None
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         if self._impulse is impulse:
             self._impulse = None
 

@@ -170,9 +170,9 @@ class IShellRuntime(ABC):
         >>> async def append_only_agent_loop(trajectory: MShellTrajectory, llm_agent):
         >>>     async with trajectory:
         >>>         async for epoch in llm_agent:
-        >>>             llm_agent.inject(trajectory.epoch_start_point(refresh=True))  # 注入新上下文.
+        >>>             llm_agent.inject_percepts(trajectory.epoch_start_point(refresh=True))  # 注入新上下文.
         >>>             async for step_inputs in epoch:  # 周期性拿到请求.
-        >>>                 llm_agent.inject(trajectory.pop_frame().project())  # 注入每一帧的上下文.
+        >>>                 llm_agent.inject_percepts(trajectory.pop_frame().project_percepts())  # 注入每一帧的上下文.
         >>>                 async for logos in llm_agent.run_step(step_inputs)
         >>>                     yield logos   # 返回对躯体的控制.
         """
@@ -359,8 +359,8 @@ LoopStatus = Literal["running", "stopped", "not_started"]
 class LoopHealth(TypedDict):
     """三循环健康状态快照, 三个 key 始终存在."""
 
-    main: LoopStatus
-    articulate: LoopStatus
+    mindflow: LoopStatus
+    thinking: LoopStatus
     action: LoopStatus
 
 

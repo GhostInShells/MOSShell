@@ -81,10 +81,10 @@ async def _async_speak(matrix, *, text: str, tone: Optional[str], save: Optional
     return await _speak_via_speech(matrix, speech, text, tone)
 
 
-async def _speak_via_speech(matrix, speech, text: str, tone: Optional[str]):
+async def _speak_via_speech(matrix: Matrix, speech, text: str, tone: Optional[str]):
     """Full TTS -> Player pipeline via Speech (TTSSpeech) wiring."""
     tts = speech.tts()
-    player = speech.player()
+    player: StreamAudioPlayer = speech.player()
     tts_info = tts.get_info()
 
     if tone:
@@ -136,7 +136,7 @@ async def _speak_via_speech(matrix, speech, text: str, tone: Optional[str]):
             finally:
                 unsub()
         else:
-            unsub = player.observe(_collect)
+            unsub = player.add_event(_collect)
             try:
                 await stream.say()
             finally:
@@ -197,7 +197,7 @@ async def _speak_direct(matrix, tts, player, text: str, tone: Optional[str], sav
                 _collect(sample)
                 loop.call_soon_threadsafe(frame_q.put_nowait, sample)
 
-            unsub = player.observe(_on_sample)
+            unsub = player.add_event(_on_sample)
 
             async def _feed():
                 async for item in batch.items():
@@ -233,7 +233,7 @@ async def _speak_direct(matrix, tts, player, text: str, tone: Optional[str], sav
             finally:
                 unsub()
         else:
-            unsub = player.observe(_collect)
+            unsub = player.add_event(_collect)
             try:
                 async for item in batch.items():
                     audio = item["audio"]

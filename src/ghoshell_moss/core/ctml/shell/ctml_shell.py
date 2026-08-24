@@ -40,7 +40,7 @@ from ghoshell_moss.contracts.speech import Speech
 from collections import deque
 import time
 
-__all__ = ["CTMLShell", "new_ctml_shell"]
+__all__ = ["CTMLShell", "new_ctml_shell", "ctml_shell_test"]
 
 
 class CTMLShell(MOSShell[PrimeChannel]):

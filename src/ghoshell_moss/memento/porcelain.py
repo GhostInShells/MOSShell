@@ -10,10 +10,9 @@ from __future__ import annotations
 import json
 from typing import Iterable, Sequence
 
-from ghoshell_moss.core.blueprint.memento import Moment
+from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.memento.abc import (
     BranchWindow,
-    CommitNotFoundError,
     CommitView,
     Line,
     Memento,
@@ -70,7 +69,7 @@ def moment_to_record(
 ) -> MomentRecord:
     """Moment -> 信封. payload 用 Moment 标准序列化."""
     payload = json.loads(
-        moment.to_json(exclude_perspectives=True, exclude_hint=True)
+        moment.to_json(exclude_hint=True, exclude_dynamic_context=True)
     )
     return MomentRecord(
         id=moment.id,
@@ -120,7 +119,6 @@ def make_merge_message(memento: Memento, commit_id: str) -> Message:
 
     note = detail.notes[-1] if detail.notes else CommitNote(ref=commit_id)
     note_seq = len(detail.notes) - 1 if detail.notes else 0
-    from ghoshell_moss.memento.abc import Commit
 
     view = CommitView(commit=detail.commit, note=note, note_seq=note_seq)
     # 需要 line 信息来构造 MementoRef — 从 commits.jsonl 推断

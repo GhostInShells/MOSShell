@@ -28,6 +28,12 @@ class InputSignalNucleus(Nucleus):
 
     description() 是给模型读的静态标签 (user text input); 计数逻辑收敛在
     public ``pending_count()``, status() 的 f-string 复用, 测试可直接断言.
+
+    impulse 生命周期观测 (public-internal, 不在 Nucleus ABC 契约内):
+    ``attended_count()`` / ``ignored_count()`` / ``suppressed_count()`` 分别统计
+    impulse 抢占成功 / 被忽视 / challenge 失败被压制的次数; ``counters()`` 一次性
+    返回全部计数 + 最近一次动作的简介. 这三个回调是 mindflow 判定 impulse 结局后
+    回写给 nucleus 的, 计数即"这个 impulse 的结局"的累计事实, 用于观测与验证.
     """
 
     def __init__(
@@ -63,6 +69,16 @@ class InputSignalNucleus(Nucleus):
         self._created_impulse_index: int = 0
         self._running = False
 
+        # -- impulse 生命周期观测 (public-internal: 供调试/测试/控制台读取, 不在 Nucleus ABC 契约内) --
+        # 计数只在对应的 impulse 回调发生时递增, 是"这个 impulse 的结局是什么"的累计事实.
+        self._attended_cnt = 0
+        self._ignored_cnt = 0
+        self._suppressed_cnt = 0
+        # 最近一次对应动作的摘要文本 (简介), 便于定位"刚刚发生了什么".
+        self._last_attended: str = ''
+        self._last_ignored: str = ''
+        self._last_suppressed: str = ''
+
     # -- Nucleus ABC --
 
     def name(self) -> str:
@@ -76,6 +92,37 @@ class InputSignalNucleus(Nucleus):
         """尚未交付给 mindflow 的 input signal 数量 (排除已 stale 的信号)."""
         with self._data_state_lock:
             return len([s for s in self._signals if not s.is_stale()])
+
+    # -- impulse 生命周期观测 (public-internal) --
+
+    def attended_count(self) -> int:
+        """Impulse 抢占 Attention 成功 (attended) 的次数."""
+        with self._data_state_lock:
+            return self._attended_cnt
+
+    def ignored_count(self) -> int:
+        """Impulse 被忽视 (ignored, 如过期) 的次数."""
+        with self._data_state_lock:
+            return self._ignored_cnt
+
+    def suppressed_count(self) -> int:
+        """Impulse challenge 失败被压制 (suppressed) 的次数."""
+        with self._data_state_lock:
+            return self._suppressed_cnt
+
+    def counters(self) -> dict[str, int | str]:
+        """一次取回全部观测: 三类动作计数 + pending 计数 + 最近一次动作的简介."""
+        with self._data_state_lock:
+            pending = len([s for s in self._signals if not s.is_stale()])
+            return {
+                "pending": pending,
+                "attended": self._attended_cnt,
+                "ignored": self._ignored_cnt,
+                "suppressed": self._suppressed_cnt,
+                "last_attended": self._last_attended,
+                "last_ignored": self._last_ignored,
+                "last_suppressed": self._last_suppressed,
+            }
 
     def is_running(self) -> bool:
         return self._running and self._event_loop is not None
@@ -101,10 +148,10 @@ class InputSignalNucleus(Nucleus):
     def with_bus(
             self,
             signal_broadcast: Callable[[Signal], None],
-            impulse_notify: Callable[[Impulse], None],
+            fire_impulse: Callable[[Impulse], None],
     ) -> None:
         self._broadcast_cb = signal_broadcast
-        self._notify_cb = impulse_notify
+        self._notify_cb = fire_impulse
 
     def add_signal(self, signal: Signal) -> None:
         if not self.is_running():
@@ -117,15 +164,29 @@ class InputSignalNucleus(Nucleus):
 
     def suppress(self, suppress_by: Impulse) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
-        # 清 cache 让 peek() 返回 None, 但保留 _signals:
-        # pop_impulse 才是一次性消费, suppress 只是冷静期,
-        # 下个信号到达时从累积的 _signals 重建 impulse.
-        self._impulse_cache = None
+        with self._data_state_lock:
+            # 被压制的是我们刚缓存的 impulse — 它没能抢占 attention.
+            # 用缓存里的取简介; 若已被清, 回退到压制方.
+            brief = self._brief(self._impulse_cache) if self._impulse_cache else self._brief(suppress_by)
+            self._suppressed_cnt += 1
+            self._last_suppressed = brief
+            # 清 cache 让 peek() 返回 None, 但保留 _signals:
+            # pop_impulse 才是一次性消费, suppress 只是冷静期,
+            # 下个信号到达时从累积的 _signals 重建 impulse.
+            self._impulse_cache = None
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         if not self.is_running():
             return
-        self._atomic_clear_buffer()
+        with self._data_state_lock:
+            self._attended_cnt += 1
+            self._last_attended = self._brief(impulse)
+            self.clear()
+
+    def ignored(self, impulse: Impulse) -> None:
+        with self._data_state_lock:
+            self._ignored_cnt += 1
+            self._last_ignored = self._brief(impulse)
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
         if self._impulse_cache is None:
@@ -161,6 +222,22 @@ class InputSignalNucleus(Nucleus):
             if text:
                 return text
         return signal.description or '<input>'
+
+    @staticmethod
+    def _brief(impulse: Impulse | None) -> str:
+        """impulse 的摘要文本 (简介): 优先最后一条消息, 回退 description, 再回退占位符."""
+        if impulse is None:
+            return '<no impulse>'
+        if impulse.messages:
+            last = impulse.messages[-1]
+            parts = []
+            for content in last.as_contents(with_meta=False, join_text=True):
+                if isinstance(content, dict) and content.get('text'):
+                    parts.append(str(content['text']))
+            text = ' '.join(parts).strip()
+            if text:
+                return text
+        return impulse.description or '<no content>'
 
     def _process_signal(self, signal: Signal) -> None:
         with self._data_state_lock:
@@ -208,10 +285,6 @@ class InputSignalNucleus(Nucleus):
             complete=all(s.complete for s in valid),
             stale_timeout=latest.stale_timeout,
         )
-
-    def _atomic_clear_buffer(self) -> None:
-        with self._data_state_lock:
-            self.clear()
 
 
 class InputNucleusMeta(NucleusMeta):

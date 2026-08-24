@@ -48,16 +48,12 @@ import ghoshell_moss.core.blueprint.ghost as ghost
 import ghoshell_moss.core.blueprint.environment as environment
 import ghoshell_moss.core.blueprint.session as session
 import ghoshell_moss.core.blueprint.states_channel as states_channel
-import ghoshell_moss.core.blueprint.memento as memento
-
-
 
 # ============================================================================
 # Contracts — 系统级依赖/抽象商场
 # ============================================================================
 
 import ghoshell_moss.contracts as contracts
-
 
 # ============================================================================
 # Implementations — 核心实现路径

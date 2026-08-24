@@ -14,3 +14,10 @@ def test_raise_exception():
 
     with pytest.raises(ValueError):
         foo()
+
+
+def test_passed_func():
+    def foo():
+        pass
+
+    assert foo() is None

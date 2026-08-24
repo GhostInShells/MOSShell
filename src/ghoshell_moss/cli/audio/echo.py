@@ -48,7 +48,7 @@ async def _async_echo(matrix, *, seconds: float, device: Optional[str]):
     if interrupted:
         return cap_total, True
 
-    player = matrix.container.get(StreamAudioPlayer)
+    player: StreamAudioPlayer | None = matrix.container.get(StreamAudioPlayer)
     if player is None:
         print_error("StreamAudioPlayer not registered")
         return None

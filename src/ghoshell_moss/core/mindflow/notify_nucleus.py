@@ -45,7 +45,7 @@ class NotifyNucleus(Nucleus):
     impulse, caches it as last-impulse for mindflow rank/challenge pull.
 
     Last-impulse cache 模式: ``add_signal`` 写入 ``_impulse``, mindflow 通过
-    ``peek/pop_impulse`` 拉取/确认. 连续 signal 进入时 last-wins (最新覆盖旧),
+    ``peek`` 拉取, 抢占成功经 ``attended`` 确认清缓存. 连续 signal 进入时 last-wins (最新覆盖旧),
     notify 的语义是"最新消息为准" — 旧消息既然还没被消费, 说明 ghost 还没看到,
     新消息合并掉它是合理的.
 
@@ -61,7 +61,7 @@ class NotifyNucleus(Nucleus):
 
     def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):
         self._name = name
-        self._impulse_notify: Callable[[Impulse], None] | None = None
+        self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
         self._impulse: Impulse | None = None
@@ -88,8 +88,8 @@ class NotifyNucleus(Nucleus):
         if impulse is None:
             return
         self._impulse = impulse
-        if self._impulse_notify:
-            self._impulse_notify(impulse)
+        if self._fire_impulse:
+            self._fire_impulse(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
         if not NotifySignalMeta.match(signal):
@@ -100,16 +100,16 @@ class NotifyNucleus(Nucleus):
     def with_bus(
             self,
             signal_broadcast: Callable[[Signal], None],
-            impulse_notify: Callable[[Impulse], None],
+            fire_impulse: Callable[[Impulse], None],
     ) -> None:
-        self._impulse_notify = impulse_notify
+        self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse) -> None:
         # notify 抢占失败时, mindflow 已走 buffer 偏离路径, messages 进 buffer.
         # suppress 只是兜底通知; 此时 cache 清掉, 等下一条 signal.
         self._impulse = None
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         if self._impulse is impulse:
             self._impulse = None
 

@@ -514,7 +514,7 @@ class Matrix(Facade):
     @abstractmethod
     def create_task(
             self,
-            cor: Coroutine,
+            cor: Awaitable[Any],
             *,
             stop_matrix_on_error: bool = False,
             name: str | None = None,

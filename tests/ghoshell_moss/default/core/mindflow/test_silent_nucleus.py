@@ -10,7 +10,7 @@
 - stale 过滤 (加入前 + rebuild 时)
 - suppress 冷静期阻断 notify_cb (signal 仍累积)
 - min_priority 过滤
-- pop_impulse 清空 buffer
+- attended 清空 buffer (下游 attention 已消费)
 - lifecycle / 反身性接口
 - SilentNucleusMeta 自解释发现
 """
@@ -198,7 +198,7 @@ async def test_suppress_blocks_notify_cb_but_buffer_continues():
     async with SilentNucleus(suppress_seconds=0.2) as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(_signal('first'))
         assert len(notified) == 1  # 首次通过
@@ -235,18 +235,18 @@ async def test_min_priority_filter():
 
 
 # ============================================================
-# pop_impulse — buffer 清空
+# attended — buffer 清空
 # ============================================================
 
 @pytest.mark.asyncio
-async def test_pop_impulse_clears_buffer():
-    """pop_impulse 后, buffer 与 cache 都应清空 — 下游 attention 已消费, 不重复."""
+async def test_attended_clears_buffer():
+    """attended 后, buffer 与 cache 都应清空 — 下游 attention 已消费, 不重复."""
     async with SilentNucleus() as nuc:
         nuc.add_signal(_signal('a'))
         nuc.add_signal(_signal('b'))
         impulse = nuc.peek()
         assert impulse is not None
-        nuc.pop_impulse(impulse)
+        nuc.attended(impulse)
         assert nuc.peek() is None
 
 

@@ -11,7 +11,8 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, Callable
+
 from pydantic import BaseModel, Field
 from typing_extensions import Self
 import logging
@@ -27,7 +28,7 @@ from ghoshell_moss.message import Message, format_timestamp
 __all__ = [
     'Tracer',
     'MShellContextFacade', 'MShellTrajectory',
-    'TrajectoryFrame',
+    'ShellKeyFrame',
     'MShellEventTracer', 'MShellEvent', 'InterpreterStoppedEvent', 'ShellTaskDoneEvent',
 ]
 
@@ -279,6 +280,7 @@ class MShellEvent(ABC):
     """shell 的流式运行时事件. """
     index: int
     created: float
+    need_observe: bool
 
     @abstractmethod
     def as_messages(self) -> list[Message]:
@@ -293,6 +295,7 @@ class ShellTaskDoneEvent(MShellEvent):
     caller: str
     task_id: str
     messages: list[Message]
+    need_observe: bool
 
     @classmethod
     def from_command_task(cls, task: CommandTask) -> Self | None:
@@ -304,6 +307,7 @@ class ShellTaskDoneEvent(MShellEvent):
             caller=task.caller_name(),
             messages=task.task_result().as_messages(),
             created=time.time(),
+            need_observe=task.task_result().observe,
         )
 
     def as_messages(self) -> list[Message]:
@@ -319,6 +323,7 @@ class InterpreterStoppedEvent(MShellEvent):
     completed: int = 0
     cancelled: int = 0
     failed: int = 0
+    need_observe: bool = False
 
     @classmethod
     def from_interpreter(cls, interpreter: Interpreter) -> Self:
@@ -331,6 +336,7 @@ class InterpreterStoppedEvent(MShellEvent):
             completed=len(interpretation.success_tasks),
             cancelled=len(interpretation.cancelled_tasks),
             failed=len(interpretation.failed_tasks),
+            need_observe=interpreter.interpretation().observe,
         )
 
     def as_messages(self) -> list[Message]:
@@ -354,12 +360,13 @@ class InterpreterStoppedEvent(MShellEvent):
 
 
 @dataclass
-class TrajectoryFrame:
+class ShellKeyFrame:
     """ Shell 运行时的关键帧数据, 它记录了 shell 的瞬间状态. """
 
     epoch_index: int  # 在一个 shell trajectory 中的第几个 epoch.
     index: int  # 在一个 trajectory epoch 中的位置.
     events: list[MShellEvent]  # 这一帧 会要提取出来的 shell events
+    need_observe: bool
     status: MShellStatus  # 生产 Frame 瞬间的状态.
     previous_metas: dict[ChannelFullPath, ChannelMeta]  # 上一帧持有的关键帧 shell metas.
     metas: dict[ChannelFullPath, ChannelMeta]  # 当前帧获取时的 shell 状态.
@@ -387,7 +394,7 @@ class TrajectoryFrame:
         return "\n".join(lines)
 
     def drained_event_messages(self) -> list[Message]:
-        """从历史中抽取的命令事件消息, 恒包 <events> 容器 (空则自闭合)."""
+        """从历史中抽取的命令事件消息. 无事件时返回空列表; 有事件时外包 <events> 容器."""
         result = []
         for event in self.events:
             # InterpreterStoppedEvent 本帧不投影: status/interpreter 语义未定, 先 skip.
@@ -399,7 +406,7 @@ class TrajectoryFrame:
                 *result,
                 Message.new().with_content("</events>"),
             ]
-        return [Message.new().with_content("<events/>")]
+        return []
 
     def dynamic_context_messages(self) -> list[Message]:
         result = []
@@ -409,19 +416,30 @@ class TrajectoryFrame:
                 result.extend(messages)
         return result
 
-    def project(self, *, now: float | None = None, with_dynamic: bool = True) -> list[Message]:
+    def project(
+            self,
+            *,
+            now: float | None = None,
+            with_dynamic: bool = True,
+            with_status: bool = True,
+    ) -> list[Message]:
         """投影本帧为消息列表.
 
         :param now: 发送时刻, 作帧级时间锚. 请求重试时应重新传入当前时间,
             避免模型把上次发送时刻误认为 now. 缺省用帧的 created.
         :param with_dynamic: 是否携带 channel 的动态讯息 (每轮都可能不一样, 属于 hot 数据).
+        :param with_status: 是否携带 status 状态信息.
         """
         result = []
         # 返回 drain 的事件.
-        if drained_event_messages := self.drained_event_messages():
+        drained_event_messages = self.drained_event_messages()
+        if drained_event_messages:
             result.extend(drained_event_messages)
+
         # 返回 shell status 数据.
-        result.append(Message.new().with_content(self.status.description()))
+        if with_status:
+            result.append(Message.new().with_content(self.status.description()))
+
         # 返回当前 context messages (channel 运行时数据, 有则发).
         if with_dynamic:
             if context := self.dynamic_context_messages():
@@ -429,8 +447,11 @@ class TrajectoryFrame:
                 result.extend(context)
                 result.append(Message.new().with_content("</context>"))
         # 返回 facade delta
-        if delta := self.facade_delta():
+        delta = self.facade_delta()
+        if delta:
             result.append(Message.new(tag="facade").with_content(delta))
+        if len(result) == 0:
+            return result
 
         at_ts = now if now is not None else self.created
         at = format_timestamp(datetime.datetime.fromtimestamp(at_ts, tz.gettz()))
@@ -460,6 +481,7 @@ class MShellEventTracer(Tracer):
         self._shell_events: list[MShellEvent] = []
         self._shell_events_lock = threading.Lock()
         self._max_shell_events = max_shell_events
+        self._need_observe_callbacks: set[Callable[[MShellEvent], None]] = set()
         self.shell.add_tracer(self)
         self._logger = logger or logging.getLogger(self.__class__.__name__)
 
@@ -491,6 +513,15 @@ class MShellEventTracer(Tracer):
     def is_closed(self) -> bool:
         return self._closed
 
+    def when_need_observe(self, callback: Callable[[MShellEvent], None]) -> Callable[[], None]:
+        self._need_observe_callbacks.add(callback)
+
+        def _disposer():
+            if callback in self._need_observe_callbacks:
+                self._need_observe_callbacks.discard(callback)
+
+        return _disposer
+
     def on_task_pushed(self, task: CommandTask) -> None:
         return None
 
@@ -513,6 +544,10 @@ class MShellEventTracer(Tracer):
             self._shell_events.append(event)
             while len(self._shell_events) > self._max_shell_events:
                 self._shell_events.pop(0)
+        # need_observe 事件触发通知回调. 在锁外 fire, 避免回调回入 tracer 造成死锁.
+        if event.need_observe:
+            for callback in self._need_observe_callbacks:
+                callback(event)
 
 
 class MShellTrajectory:
@@ -533,15 +568,9 @@ class MShellTrajectory:
         self.logger = shell.container.get(logging.Logger) or logging.getLogger(__name__)
         self._epoch_index = 0
         self._tracer: MShellEventTracer | None = None
-        self._last_frame: TrajectoryFrame = TrajectoryFrame(
-            epoch_index=0,
-            index=0,
-            events=[],
-            previous_metas={},
-            status=MShellStatus.new(shell),
-            metas={},
-            created=time.time(),
-        )
+        # peek/commit 前均有 _check_running (要求已 aenter), 而 aenter -> new_epoch
+        # 才真正初始化 _last_frame; 此处留 None 即可, 无需制造 dummy 帧.
+        self._last_frame: ShellKeyFrame | None = None
         self._started = False
         self._stopped = False
 
@@ -560,7 +589,7 @@ class MShellTrajectory:
         self._epoch_index += 1
         # create new tracer.
         self._tracer = MShellEventTracer(self.shell)
-        self._last_frame: TrajectoryFrame = TrajectoryFrame(
+        self._last_frame: ShellKeyFrame = ShellKeyFrame(
             index=self._tracer.index,
             events=[],
             previous_metas={},
@@ -568,6 +597,7 @@ class MShellTrajectory:
             metas=self.facade.channel_metas(available_only=True),
             created=time.time(),
             epoch_index=self._epoch_index,
+            need_observe=False,
         )
 
     def epoch_start_point(self, refresh: bool = True) -> str:
@@ -575,11 +605,19 @@ class MShellTrajectory:
             self.new_epoch()
         return self.facade.full_facade(available_only=True)
 
-    def peek(self) -> TrajectoryFrame:
+    def when_need_observe(self, callback: Callable[[MShellEvent], None]) -> Callable[[], None]:
+        return self._tracer.when_need_observe(callback)
+
+    def peek(self) -> ShellKeyFrame:
         """生成一个当前帧的快照. """
         self._check_running()
         events, index = self._tracer.peek()
-        return TrajectoryFrame(
+        need_observe = False
+        for e in events:
+            if e.need_observe:
+                need_observe = True
+                break
+        return ShellKeyFrame(
             index=index,
             epoch_index=self._epoch_index,
             events=events,
@@ -587,9 +625,10 @@ class MShellTrajectory:
             status=self.facade.status(),
             metas=self.facade.channel_metas(available_only=True),
             created=time.time(),
+            need_observe=need_observe,
         )
 
-    def commit(self, frame: TrajectoryFrame) -> bool:
+    def commit(self, frame: ShellKeyFrame) -> bool:
         """ack 一个 snapshot"""
         self._check_running()
         if frame.index <= self._last_frame.index:
@@ -599,7 +638,7 @@ class MShellTrajectory:
         self._last_frame = frame
         return True
 
-    def pop_frame(self) -> TrajectoryFrame:
+    def pop_frame(self) -> ShellKeyFrame:
         """"""
         snapshot = self.peek()
         self.commit(snapshot)

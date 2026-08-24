@@ -34,7 +34,7 @@ class GhostInspector:
     def faculties(self) -> dict:
         """Mindflow 中注册的全部 Nucleus — 类型、监听信号、运行状态、是否有 pending impulse."""
         result = {}
-        for name, nucleus in self._mindflow.faculties().items():
+        for name, nucleus in self._mindflow.nuclei().items():
             result[name] = {
                 "type": type(nucleus).__name__,
                 "signals": list(nucleus.signals()),
@@ -47,7 +47,7 @@ class GhostInspector:
     def signal_routes(self) -> dict:
         """Signal → Nucleus 路由表. 从各 nucleus 的 signals() 反向聚合."""
         routes: dict[str, list[str]] = {}
-        for nucleus_name, nucleus in self._mindflow.faculties().items():
+        for nucleus_name, nucleus in self._mindflow.nuclei().items():
             for signal_name in nucleus.signals():
                 if signal_name not in routes:
                     routes[signal_name] = []

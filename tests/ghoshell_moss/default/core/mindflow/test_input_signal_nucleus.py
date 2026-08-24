@@ -55,7 +55,7 @@ async def test_description_is_static_label():
 
 @pytest.mark.asyncio
 async def test_pending_count_reflects_buffer_lifecycle():
-    """pending_count() 随入队增加, pop 消费后归零."""
+    """pending_count() 随入队增加, attended 消费后归零."""
     async with InputSignalNucleus() as nuc:
         assert nuc.pending_count() == 0
         nuc.add_signal(Signal.new("input", Message.new().with_content("a")))
@@ -64,7 +64,7 @@ async def test_pending_count_reflects_buffer_lifecycle():
         assert nuc.pending_count() == 2
         imp = nuc.peek()
         assert imp is not None
-        nuc.pop_impulse(imp)
+        nuc.attended(imp)
         await asyncio.sleep(0.01)
         assert nuc.pending_count() == 0
 
@@ -81,15 +81,15 @@ async def test_pending_count_excludes_stale():
 
 
 @pytest.mark.asyncio
-async def test_pop_clears_all():
-    """pop 后 buffer 清空."""
+async def test_attended_clears_all():
+    """attended 后 buffer 清空."""
     async with InputSignalNucleus() as nuc:
         for i in range(3):
             nuc.add_signal(Signal.new("input", Message.new().with_content(f"msg{i}")))
         await asyncio.sleep(0.01)
         imp = nuc.peek()
         assert imp is not None
-        nuc.pop_impulse(imp)
+        nuc.attended(imp)
         await asyncio.sleep(0.01)
         assert nuc.peek() is None
         assert nuc.status() == ""
@@ -97,7 +97,7 @@ async def test_pop_clears_all():
 
 @pytest.mark.asyncio
 async def test_full_messages_in_impulse():
-    """pop 时的 Impulse 包含全部入队消息 (FIFO)."""
+    """peek 到的 Impulse 包含全部入队消息 (FIFO)."""
     async with InputSignalNucleus() as nuc:
         nuc.add_signal(Signal.new("input", Message.new().with_content("a")))
         nuc.add_signal(Signal.new("input", Message.new().with_content("b")))
@@ -140,7 +140,7 @@ async def test_suppress_cooldown():
     async with InputSignalNucleus(suppress_seconds=0.2) as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(Signal.new("input", Message.new().with_content("first")))
         await asyncio.sleep(0.01)
@@ -238,3 +238,69 @@ async def test_suppress_expired_then_new_signal_revives():
         assert texts == ["first", "second"], (
             f"suppress 保留 signals, 新信号应合并旧消息, 实际: {texts}"
         )
+
+
+# -- impulse 生命周期观测 (public-internal) --
+
+
+@pytest.mark.asyncio
+async def test_attended_counts_and_brief():
+    """attended 回调后: attended_count +1, 简介为 impulse 消息, pending 清空."""
+    async with InputSignalNucleus() as nuc:
+        assert nuc.attended_count() == 0
+        nuc.add_signal(Signal.new("input", Message.new().with_content("hello")))
+        await asyncio.sleep(0.01)
+        imp = nuc.peek()
+        assert imp is not None
+        nuc.attended(imp)
+        assert nuc.attended_count() == 1
+        assert nuc.counters()["last_attended"] == "hello"
+        assert nuc.pending_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_ignored_counts_and_brief():
+    """ignored 回调后: ignored_count +1, 简介为 impulse 消息."""
+    async with InputSignalNucleus() as nuc:
+        assert nuc.ignored_count() == 0
+        nuc.add_signal(Signal.new("input", Message.new().with_content("bye")))
+        await asyncio.sleep(0.01)
+        imp = nuc.peek()
+        assert imp is not None
+        nuc.ignored(imp)
+        assert nuc.ignored_count() == 1
+        assert nuc.counters()["last_ignored"] == "bye"
+
+
+@pytest.mark.asyncio
+async def test_suppressed_counts_and_brief():
+    """suppress 回调后: suppressed_count +1, 简介取被压制的 impulse (而非压制方)."""
+    async with InputSignalNucleus() as nuc:
+        assert nuc.suppressed_count() == 0
+        nuc.add_signal(Signal.new("input", Message.new().with_content("lost")))
+        await asyncio.sleep(0.01)
+        nuc.suppress(Impulse(source="other_nucleus"))
+        assert nuc.suppressed_count() == 1
+        assert nuc.counters()["last_suppressed"] == "lost"
+
+
+@pytest.mark.asyncio
+async def test_counters_aggregate_all_actions():
+    """三类回调各触发一次后, counters() 汇总与分量方法一致."""
+    async with InputSignalNucleus() as nuc:
+        nuc.add_signal(Signal.new("input", Message.new().with_content("a")))
+        await asyncio.sleep(0.01)
+        nuc.attended(nuc.peek())
+
+        nuc.add_signal(Signal.new("input", Message.new().with_content("b")))
+        await asyncio.sleep(0.01)
+        nuc.ignored(nuc.peek())
+
+        nuc.add_signal(Signal.new("input", Message.new().with_content("c")))
+        await asyncio.sleep(0.01)
+        nuc.suppress(Impulse(source="other"))
+
+        c = nuc.counters()
+        assert c["attended"] == nuc.attended_count() == 1
+        assert c["ignored"] == nuc.ignored_count() == 1
+        assert c["suppressed"] == nuc.suppressed_count() == 1

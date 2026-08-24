@@ -16,8 +16,12 @@ Mindflow 调度中枢实现.
 """
 
 from ghoshell_moss.core.blueprint.mindflow import *
-from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow, AbsMindflow, new_default_mindflow
-from ghoshell_moss.core.mindflow.base_attention import AbsAttention, BaseAttention
+from ghoshell_moss.core.mindflow._mindflow import (
+    BaseMindflow, AbsMindflow, new_default_mindflow, DirectImpulseNucleus
+)
+from ghoshell_moss.core.mindflow._attention import AbsAttention, BaseAttention
+from ghoshell_moss.core.mindflow._think import BaseThinking
+from ghoshell_moss.core.mindflow._action import BaseArticulator, BaseAction, BaseActionGate, ActionLogosRequest
 from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus, InputNucleusMeta
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 from ghoshell_moss.core.mindflow.command_nucleus import (

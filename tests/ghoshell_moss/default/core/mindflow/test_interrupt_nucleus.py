@@ -8,7 +8,7 @@ unit tests.
 - InterruptSignalMeta 协议往返 + 默认 FATAL
 - InterruptNucleus.build_impulse 四字段卸载 (FATAL + notify + effort=none + interrupt=True)
 - priority 被强制覆盖为 FATAL (interrupt 承诺不可降级)
-- 反向 suppress: pop_impulse 触发冷静期, suppress() 不触发
+- 反向 suppress: attended 触发冷静期, suppress() 不触发
 - 冷静期内 add_signal 静默丢
 - 冷静期到期后恢复
 - lifecycle / 反身性接口
@@ -155,7 +155,7 @@ async def test_add_signal_fires_impulse_via_bus():
     async with InterruptNucleus() as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(_signal('emergency'))
     assert len(notified) == 1
@@ -170,7 +170,7 @@ async def test_add_signal_does_not_fire_when_not_running():
     nuc = InterruptNucleus()
     nuc.with_bus(
         signal_broadcast=lambda s: None,
-        impulse_notify=lambda imp: notified.append(imp),
+        fire_impulse=lambda imp: notified.append(imp),
     )
     nuc.add_signal(_signal())
     assert notified == []
@@ -182,7 +182,7 @@ async def test_add_signal_drops_wrong_name():
     async with InterruptNucleus() as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(Signal.new('input'))
     assert notified == []
@@ -190,7 +190,7 @@ async def test_add_signal_drops_wrong_name():
 
 # ============================================================
 # 反向 suppress — 胜利侧冷静期
-# 核心命题: pop_impulse 触发冷静期, suppress() 不触发.
+# 核心命题: attended 触发冷静期, suppress() 不触发.
 # ============================================================
 
 @pytest.mark.asyncio
@@ -201,7 +201,7 @@ async def test_suppress_callback_does_not_start_cooldown():
     async with InterruptNucleus(suppress_seconds=10.0) as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         # 直接调 suppress, 模拟"被同 id absorb 通知"场景.
         nuc.suppress(Impulse(source='other'))
@@ -211,18 +211,18 @@ async def test_suppress_callback_does_not_start_cooldown():
 
 
 @pytest.mark.asyncio
-async def test_pop_impulse_starts_cooldown_and_blocks_subsequent_signals():
-    """协议: 仲裁胜利 (pop_impulse) 后冷静期内 add_signal 静默丢."""
+async def test_attended_starts_cooldown_and_blocks_subsequent_signals():
+    """协议: 仲裁胜利 (attended) 后冷静期内 add_signal 静默丢."""
     notified: list[Impulse] = []
     async with InterruptNucleus(suppress_seconds=0.2) as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(_signal('first'))
         assert len(notified) == 1
-        # 模拟仲裁胜利后 mindflow 调 pop_impulse.
-        nuc.pop_impulse(notified[0])
+        # 模拟仲裁胜利后 mindflow 调 attended.
+        nuc.attended(notified[0])
         # 冷静期内.
         nuc.add_signal(_signal('second'))
         nuc.add_signal(_signal('third'))
@@ -236,10 +236,10 @@ async def test_cooldown_expires_and_signals_flow_again():
     async with InterruptNucleus(suppress_seconds=0.1) as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(_signal('first'))
-        nuc.pop_impulse(notified[0])
+        nuc.attended(notified[0])
         await asyncio.sleep(0.15)  # 冷静期过.
         nuc.add_signal(_signal('second'))
     assert len(notified) == 2
@@ -252,10 +252,10 @@ async def test_clear_resets_cooldown():
     async with InterruptNucleus(suppress_seconds=10.0) as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(_signal('first'))
-        nuc.pop_impulse(notified[0])
+        nuc.attended(notified[0])
         # 冷静期 10s, 但 clear 强制重置.
         nuc.clear()
         nuc.add_signal(_signal('second'))
@@ -286,13 +286,13 @@ async def test_peek_returns_cached_impulse_after_signal():
 
 
 @pytest.mark.asyncio
-async def test_pop_impulse_clears_cache_and_starts_cooldown():
-    """pop_impulse 既清 cache 也启动冷静期 (反向 suppress)."""
+async def test_attended_clears_cache_and_starts_cooldown():
+    """attended 既清 cache 也启动冷静期 (反向 suppress)."""
     async with InterruptNucleus(suppress_seconds=10.0) as nuc:
         nuc.with_bus(lambda s: None, lambda imp: None)
         nuc.add_signal(_signal())
         cached = nuc.peek()
-        nuc.pop_impulse(cached)
+        nuc.attended(cached)
         # cache 清空.
         assert nuc.peek() is None
         # 冷静期内新 signal 被静默丢, peek 仍空.

@@ -125,10 +125,10 @@ class SilentNucleus(Nucleus):
     def with_bus(
             self,
             signal_broadcast: Callable[[Signal], None],
-            impulse_notify: Callable[[Impulse], None],
+            fire_impulse: Callable[[Impulse], None],
     ) -> None:
         self._broadcast_cb = signal_broadcast
-        self._notify_cb = impulse_notify
+        self._notify_cb = fire_impulse
 
     def add_signal(self, signal: Signal) -> None:
         if not self.is_running():
@@ -143,7 +143,7 @@ class SilentNucleus(Nucleus):
         # silent 抢占失败 → 走 default suppress 分支 (对称表). 进入冷静期防风暴.
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         if not self.is_running():
             return
         self._atomic_clear_buffer()

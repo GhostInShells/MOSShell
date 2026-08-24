@@ -10,7 +10,7 @@ import contextlib
 import logging
 from collections import deque
 from pathlib import Path
-from typing import Coroutine, Iterable, Type, Callable
+from typing import Coroutine, Iterable, Type, Callable, Awaitable
 from typing_extensions import Self
 
 from ghoshell_container import IoCContainer, Provider
@@ -110,7 +110,7 @@ class MatrixImpl(Matrix):
         self._lifecycle_bound: list[MatrixLifecycleObject | Type[MatrixLifecycleObject]] = []
 
         # -- 任务组 -- #
-        self._task_group: set[asyncio.Task] = set()
+        self._binding_futures: set[asyncio.Future] = set()
         # provide_channel 的单槽任务 — 一个 cell 只提供一个根 channel (§UU-2).
         # 收尾时 cancel 触发 provider.arun_until_closed 走 finally.
         self._channel_provider_task: asyncio.Task | None = None
@@ -639,14 +639,14 @@ class MatrixImpl(Matrix):
 
     def create_task(
             self,
-            cor: Coroutine,
+            cor: Awaitable,
             *,
             stop_matrix_on_error: bool = False,
             name: str | None = None,
     ) -> asyncio.Task:
         self._check_running()
 
-        async def _wrap():
+        async def _ensure_future_done():
             try:
                 await cor
             except asyncio.CancelledError:
@@ -656,14 +656,14 @@ class MatrixImpl(Matrix):
                     "%s inner task %s exception: %r",
                     self._log_prefix, name, e,
                 )
-                if stop_matrix_on_error:
+                if stop_matrix_on_error and self.is_running():
                     self.close()
             finally:
                 self._logger.debug("%s inner task %s done", self._log_prefix, name)
 
-        task = self._event_loop.create_task(_wrap(), name=name)
-        self._task_group.add(task)
-        task.add_done_callback(self._task_group.discard)
+        task = self._event_loop.create_task(_ensure_future_done(), name=name)
+        self._binding_futures.add(task)
+        task.add_done_callback(lambda c: self._binding_futures.discard(c))
         return task
 
     def register_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
@@ -860,8 +860,8 @@ class MatrixImpl(Matrix):
             pass
 
     async def _cancel_task_group(self) -> None:
-        tasks = list(self._task_group)
-        self._task_group.clear()
+        tasks = list(self._binding_futures)
+        self._binding_futures.clear()
         for t in tasks:
             if not t.done():
                 t.cancel()

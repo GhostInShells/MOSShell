@@ -5,13 +5,13 @@ from typing import AsyncIterable, Optional
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusMeta, Articulator
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusMeta, Thinking
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.contracts import Storage
 from ghoshell_moss.message import Message
 from dataclasses import dataclass
 
-__all__ = ['Ghost', 'GhostMeta', 'GhostWorkspace']
+__all__ = ['Ghost', 'GhostMeta']
 
 
 class GhostMeta(ABC):
@@ -150,9 +150,10 @@ class Ghost(ABC):
         return None
 
     @abstractmethod
-    def articulate(self, articulator: Articulator) -> AsyncIterable[str]:
+    def think(self, articulator: Thinking) -> AsyncIterable[str]:
         """
         articulate the logos from context
+        :returns str: return the logos for publish stream
         """
         pass
 
@@ -186,9 +187,9 @@ class Ghost(ABC):
     # new hook, ask: is it an event (on_*) or a query (inspect_*)? If neither,
     # it does not belong here.
 
-    def on_articulate_exit(
+    def on_thinking_exit(
             self,
-            articulator: Articulator,
+            thinking: Thinking,
             logos: str,
             error: Exception | None,
     ) -> None:
@@ -198,6 +199,7 @@ class Ghost(ABC):
         error is non-None if articulation raised. Together with the articulator's
         moment, this is enough to replay the cycle for deterministic reproduction.
         """
+        ...
 
     def inspect_state(self) -> dict:
         """Ghost internal runtime state snapshot.
@@ -245,22 +247,3 @@ class Ghost(ABC):
         has no side effects outside the TUI session.
         """
         return None
-
-    # ── end observability hooks ────────────────────────────
-
-
-@dataclass(frozen=True)
-class GhostWorkspace:
-    """ Host 运行一个 Ghost 时为它准备的运行环境. 在 IoC 中可以获取. """
-
-    home: pathlib.Path  # host 为 ghost 分配的持久化存储区域.
-    source: Optional[pathlib.Path]  # ghost 源代码所处的环境.
-
-# ── 三层抽象 ──────────────────────────────────────────────
-#
-#   GhostPrototype   = type[GhostMeta]    # class，一族 ghost 的"型号"
-#   GhostBootstrapper = GhostMeta(...)    # instance，文件即配置，自解释可注册单元
-#   GhostRuntime      = Ghost             # instance，由 bootstrapper.factory(container) 产出
-#
-# 一个文件 = 一个 GhostMeta 实例 = 一个 Ghost 注册。
-# 系统先发现 Bootstrapper（理解元信息/契约），运行时通过 factory() 生成 Runtime。

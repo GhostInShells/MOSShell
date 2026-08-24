@@ -139,7 +139,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
                         self._name, result,
                     )
                     continue
-                context_messages = result
+                context_messages = list(result)
                 messages.extend(context_messages)
         return self._wrap_messages(messages)
 
@@ -360,7 +360,6 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
     def virtual_children(self, func: Callable[[], dict[str, Channel]]) -> Callable[[], dict[str, Channel]]:
         self._virtual_children_callback = func
         return func
-
 
     async def on_refresh_meta(self) -> None:
         await self._run_funcs(self._on_refresh_meta_funcs)

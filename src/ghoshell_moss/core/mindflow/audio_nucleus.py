@@ -62,7 +62,7 @@ class AudioNucleus(BufferNucleus):
         self._signals.clear()
         self._impulse_cache = None
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         # 反向 suppress: 仲裁胜利后启动冷静期, 防止 shell churn.
         # 语音打断成功后短时间内不再通知, 避免反复 stop_interpretation
         # + 重建 attention 的抖动. 与 InterruptNucleus 对齐.

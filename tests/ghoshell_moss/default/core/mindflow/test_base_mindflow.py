@@ -1,8 +1,10 @@
 from typing import Callable, Coroutine
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
-from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
-from ghoshell_moss.core.blueprint.mindflow import Mindflow, Signal, Priority, Articulator, Action, Nucleus, Moment, \
+from ghoshell_moss.core.mindflow import BaseMindflow
+from ghoshell_moss.core.blueprint.mindflow import (
+    Mindflow, Signal, Priority, Thinking, Action, Nucleus, Moment,
     MindflowHook
+)
 import janus
 import threading
 import time
@@ -32,9 +34,9 @@ async def test_full_link_signal_to_impulse():
         await mindflow.wait_started()
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
         mindflow.add_signal(sig)
-        async for attention in mindflow.loop():
-            async with attention:
-                impulse = attention.draw_from()
+        async for thinking in mindflow.thinking_loop():
+            async with thinking:
+                impulse = thinking.attention.draw_from()
                 assert impulse.source == "test_sensor"
                 assert impulse.priority == Priority.NOTICE
                 break
@@ -63,11 +65,11 @@ async def test_suppress_and_stale_race_condition():
 
     async def _counter_task():
         nonlocal count
-        async for attention in mindflow.loop():
-            async with attention:
+        async for thinking in mindflow.thinking_loop():
+            async with thinking:
                 wait_started.set()
                 # 判断没有过期.
-                assert not attention.draw_from().is_stale()
+                assert not thinking.attention.draw_from().is_stale()
                 # 模拟 Attention 耗时处理
                 await asyncio.sleep(0.11)
                 count += 1
@@ -110,7 +112,7 @@ async def test_mindflow_able_to_close():
     async with mindflow:
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
         mindflow.add_signal(sig)
-        async for attention in mindflow.loop():
+        async for attention in mindflow.attention_loop():
             async with attention:
                 impulse = attention.draw_from()
                 assert impulse.source == "test_sensor"
@@ -138,7 +140,7 @@ async def test_mindflow_run_in_task():
         async with mindflow:
             sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
             mindflow.add_signal(sig)
-            async for attention in mindflow.loop():
+            async for attention in mindflow.attention_loop():
                 async with attention:
                     impulse = attention.draw_from()
                     assert impulse.source == "test_sensor"
@@ -174,13 +176,13 @@ async def test_mindflow_run_with_multi_signal():
     async def _run_in_task():
         # 会自动注册 bus. 而且启动前不能用 add .
         await mindflow.wait_started()
-        async for attention in mindflow.loop():
-            async with attention:
-                impulse = attention.draw_from()
+        async for thinking in mindflow.thinking_loop():
+            async with thinking:
+                impulse = thinking.attention.draw_from()
                 assert impulse.priority == Priority.NOTICE
                 count.append(1)
             one_done.set()
-            assert attention.is_aborted()
+            assert thinking.is_aborted()
 
     async def _main():
         await asyncio.sleep(0.0)
@@ -217,10 +219,11 @@ async def test_mindflow_run_with_multi_signal():
 
 
 def test_mindflow_in_differ_thread():
+    _test_mindflow_in_differ_thread(0)
     # 验证十次没有一次出错.
     for i in range(10):
         # 多测几次, 看看会不会有意料外的时序错乱.
-        _test_mindflow_in_differ_thread(i)
+        _test_mindflow_in_differ_thread(i + 1)
 
 
 def _test_mindflow_in_differ_thread(i: int):
@@ -234,56 +237,61 @@ def _test_mindflow_in_differ_thread(i: int):
         name="test_sensor_listen",
         description="Sensor unit",
         target_signal="listen_event",
-        suppress_seconds=0.1,
+        # n 秒内不会重新 raise.
+        suppress_seconds=0.5,
     )
+    # 枯燥的装线逻辑.
     mindflow.with_nucleus(vision_nucleus)
     mindflow.with_nucleus(listen_nucleus)
-    articulate_queue = janus.Queue()
+    thinking_queue = janus.Queue()
     action_queue = janus.Queue()
-    articulate_loop_started = threading.Event()
+    any_thinking_start = threading.Event()
+    thinking_loop_started = threading.Event()
     action_loop_started = threading.Event()
     first_done = threading.Event()
     second_done = threading.Event()
-    attention_count = 0
-    attention_loop_count = 0
+
+    # 生产了多少个 thinking
+    thinking_count = 0
+    # thinking 完成了多少次.
+    thinking_done_count = 0
 
     async def _main():
-        nonlocal attention_count, second_done, attention_loop_count
         async with mindflow:
-            count = 0
-            async for attention in mindflow.loop():
-                count += 1
-                async with attention:
-                    attention_count += 1
-                    async for articulate, action in attention.loop():
-                        attention_loop_count += 1
-                        articulate_queue.sync_q.put_nowait(articulate)
-                        action_queue.sync_q.put_nowait(action)
-                    # 应该阻塞到 action / articulate 都执行完.
-                first_done.set()
-                timestamps.append(('attention_done', time.time()))
-                if count == 2:
-                    # 第二个 attention 完成时退出.
-                    break
-            second_done.set()
-        articulate_queue.shutdown()
+            # run 把内部 thinking / action 循环桥接到两个 janus queue.
+            await mindflow.run(
+                put_think=thinking_queue.sync_q.put_nowait,
+                put_action=action_queue.sync_q.put_nowait,
+            )
+        thinking_queue.shutdown()
         action_queue.shutdown()
 
     content = "hello world"
 
-    async def _articulate_loop():
+    async def _thinking_loop():
+        # 实际上就是 thinking loop: 消费 Thinking, 并驱动它 articulate.
+        nonlocal thinking_count, thinking_done_count
         await mindflow.wait_started()
         while mindflow.is_running():
-            articulate_loop_started.set()
+            thinking_loop_started.set()
             try:
-                articulate = await articulate_queue.async_q.get()
+                thinking: Thinking = await thinking_queue.async_q.get()
             except janus.AsyncQueueShutDown:
                 break
             timestamps.append(('articulate_start', time.time()))
-            async with articulate:
-                for c in content:
-                    articulate.send_nowait(c)
+            thinking_count += 1
+            async with thinking:
+                any_thinking_start.set()
+                async with thinking.articulator() as articulate:
+                    for c in content:
+                        articulate.send_nowait(c)
+                    await articulate.wait_action_done()
+            thinking_done_count += 1
             timestamps.append(('articulate_done', time.time()))
+            if not first_done.is_set():
+                first_done.set()
+            else:
+                second_done.set()
 
     got = []
     timestamps = []
@@ -299,7 +307,7 @@ def _test_mindflow_in_differ_thread(i: int):
             timestamps.append(('action_start', time.time()))
             async with action:
                 received = ''
-                async for delta in action.received_logos():
+                async for delta in action.logos():
                     received += delta
                 # 取保执行完的会放入.
                 got.append(received)
@@ -310,7 +318,7 @@ def _test_mindflow_in_differ_thread(i: int):
         asyncio.run(_main())
 
     def _run_articulate():
-        asyncio.run(_articulate_loop())
+        asyncio.run(_thinking_loop())
 
     def _run_actions():
         asyncio.run(_actions())
@@ -323,11 +331,11 @@ def _test_mindflow_in_differ_thread(i: int):
     t_actions.start()
     # 等待启动完了再推入信号.
     assert mindflow.wait_started_sync(2)
-    assert articulate_loop_started.wait(2.5)
+    assert thinking_loop_started.wait(2.5)
     assert action_loop_started.wait(2)
-    # 第一个信号输出成功.
     signal_1 = Signal.new(name="vision_event", priority=Priority.NOTICE, strength=100)
     signal_2 = Signal.new(name="listen_event", priority=Priority.NOTICE, strength=90)
+    # 第一个信号输出成功.
     mindflow.add_signal(signal_1)
     # 第二个信号应该被抑制.
     mindflow.add_signal(signal_2)
@@ -335,25 +343,32 @@ def _test_mindflow_in_differ_thread(i: int):
     assert signal_2.__state__ == 'pending'
     # 等待到第二个运行结束. 预计还得快.
     try:
-        # 仅仅用来对齐线程时序. 不用卡那么死.
-        assert first_done.wait(10)
+        assert any_thinking_start.wait(1)
+        assert thinking_count == 1
+        assert thinking_done_count == 0
+        assert signal_1.__state__ == 'dispatched'
+        assert signal_2.__state__ == 'dispatched'
+        # 先阻塞到第一个 signal 完成.
+        assert first_done.wait(1)
+        assert thinking_count == 1
+        assert thinking_done_count == 1
         # 用于对齐时序.
-        done = second_done.wait(10)
-        assert attention_count == 2
-        assert attention_loop_count == 2
-        assert done, got
+        done = second_done.wait(1)
+        assert done
+        assert thinking_count == 2
+        assert thinking_done_count == 2
         assert len(got) == 2
+    finally:
         mindflow.close()
         t_main.join()
         t_articulate.join()
         t_actions.join()
-        assert signal_1.__state__ == 'dispatched'
-        assert signal_2.__state__ == 'dispatched'
-    finally:
-        mindflow.close()
-        # debug 才用.
-        # print('++++', i, signal_1.__state__, signal_2.__state__)
-        # print('++++', i, timestamps)
+
+
+class ErrorPrintHook(MindflowHook):
+
+    def on_error(self, error: Exception) -> None:
+        print("++++++++", error, flush=True)
 
 
 class MindflowSuite:
@@ -365,26 +380,25 @@ class MindflowSuite:
             *nuclei: Nucleus,
     ) -> None:
         self.mindflow = mindflow or make_base_mindflow()
-        self.articulate_queue: janus.Queue[Articulator | None] = janus.Queue()
+        self.mindflow.with_hook(ErrorPrintHook())
+        self.thinking_queue: janus.Queue[Thinking | None] = janus.Queue()
         self.action_queue: janus.Queue[Action | None] = janus.Queue()
         self._all_started = threading.Barrier(3)
-        self._is_started = threading.Event()
         for n in nuclei:
             self.mindflow.with_nucleus(n)
         self._main_t: threading.Thread | None = None
         self._articulate_t: threading.Thread | None = None
         self._action_t: threading.Thread | None = None
-        self.observations: list[Moment] = []
 
     def _run(
             self,
-            articulate_func: Callable[[Articulator], Coroutine[None, None, None]],
+            thinking_func: Callable[[Thinking], Coroutine[None, None, None]],
             action_func: Callable[[Action], Coroutine[None, None, None]]
     ) -> None:
 
         def _run_articulate_loop():
-            nonlocal articulate_func
-            asyncio.run(self._articulate_loop(articulate_func))
+            nonlocal thinking_func
+            asyncio.run(self._thinking_loop(thinking_func))
 
         def _run_action_loop():
             nonlocal action_func
@@ -417,11 +431,11 @@ class MindflowSuite:
 
     def run_in_thread(
             self,
-            articulate_func: Callable[[Articulator], Coroutine[None, None, None]],
+            thinking_func: Callable[[Thinking], Coroutine[None, None, None]],
             action_func: Callable[[Action], Coroutine[None, None, None]]
     ):
-        self._run(articulate_func, action_func)
-        assert self._is_started.wait(3)
+        self._run(thinking_func, action_func)
+        assert self.mindflow.wait_started_sync(timeout=3)
 
     def _join(self) -> None:
         if self._main_t is not None:
@@ -438,16 +452,16 @@ class MindflowSuite:
         self.mindflow.close()
         self._join()
 
-    async def _articulate_loop(self, articulate_func: Callable[[Articulator], Coroutine[None, None, None]]) -> None:
+    async def _thinking_loop(self, thinking_func: Callable[[Thinking], Coroutine[None, None, None]]) -> None:
         self._all_started.wait()
         try:
             await self.mindflow.wait_started()
             while self.mindflow.is_running():
-                item = await self.articulate_queue.async_q.get()
+                item = await self.thinking_queue.async_q.get()
                 if item is None:
                     break
                 async with item:
-                    await item.create_task(articulate_func(item))
+                    await item.wait_until_done(asyncio.ensure_future(thinking_func(item)))
         except janus.AsyncQueueShutDown:
             pass
 
@@ -460,22 +474,18 @@ class MindflowSuite:
                 if item is None:
                     break
                 async with item:
-                    await item.create_task(action_func(item))
+                    await item.wait_until_done(asyncio.ensure_future(action_func(item)))
         except janus.AsyncQueueShutDown:
             pass
 
     async def _main_loop(self):
         self._all_started.wait()
         async with self.mindflow:
-            self._is_started.set()
-            async for attention in self.mindflow.loop():
-                async with attention:
-                    attention.on_moment(self.observations.append)
-                    # 会阻塞在这里.
-                    async for articulate, action in attention.loop():
-                        self.articulate_queue.sync_q.put_nowait(articulate)
-                        self.action_queue.sync_q.put_nowait(action)
-        self.articulate_queue.shutdown(immediate=True)
+            await self.mindflow.run(
+                put_think=self.thinking_queue.sync_q.put_nowait,
+                put_action=self.action_queue.sync_q.put_nowait,
+            )
+        self.thinking_queue.shutdown(immediate=True)
         self.action_queue.shutdown(immediate=True)
 
 
@@ -487,21 +497,23 @@ def test_suite_baseline():
     got = []
     done_event = threading.Event()
 
-    async def _articulate_func(articulator: Articulator) -> None:
-        for char in content:
-            articulator.send_nowait(char)
+    async def _thinking_func(thinking: Thinking) -> None:
+        async with thinking.articulator() as articulator:
+            for char in content:
+                articulator.send_nowait(char)
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.received_logos():
+        async for delta in action.logos():
             received += delta
         got.append(received)
         done_event.set()
 
     with suite:
-        suite.run_in_thread(_articulate_func, _action_func)
+        suite.run_in_thread(_thinking_func, _action_func)
         suite.mindflow.add_signal(Signal.new('test'))
-        assert done_event.wait(2)
+        assert done_event.wait(10), f"baseline action not consumed (got {len(got)})"
+        assert got == [content]
 
 
 def test_suite_consuming_alot_of_signals():
@@ -512,20 +524,22 @@ def test_suite_consuming_alot_of_signals():
     got = []
     _done_event = threading.Event()
 
-    async def _articulate_func(articulator: Articulator) -> None:
-        for char in content:
-            articulator.send_nowait(char)
+    async def _thinking_func(thinking: Thinking) -> None:
+        async with thinking.articulator() as articulator:
+            for char in content:
+                articulator.send_nowait(char)
+            await articulator.wait_compiled()
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.received_logos():
+        async for delta in action.logos():
             received += delta
         _done_event.set()
         got.append(received)
 
     with suite:
         # 测试连续处理十个.
-        suite.run_in_thread(_articulate_func, _action_func)
+        suite.run_in_thread(_thinking_func, _action_func)
         for i in range(10):
             suite.mindflow.add_signal(Signal.new('test'))
             # 加 timeout 防止丢信号时永久卡死 — 若信号丢失则 AssertionError, 暴露问题.
@@ -550,24 +564,26 @@ def test_suite_consuming_endless_observe():
         def on_error(self, error: Exception) -> None:
             done_event.set()
 
-    async def _articulate_func(articulator: Articulator) -> None:
-        for char in content:
-            articulator.send_nowait(char)
+    async def _thinking_func(thinking: Thinking) -> None:
+        async with thinking.articulator() as articulator:
+            for char in content:
+                articulator.send_nowait(char)
+            await articulator.wait_action_done()
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.received_logos():
+        async for delta in action.logos():
             received += delta
         got.append(received)
         if len(got) < 10:
-            action.outcome('hello', observe=True)
+            action.add_result('hello', observe=True)
             return
         done_event.set()
 
     with suite:
         # 测试连续处理十个.
         suite.mindflow.with_hook(_Hook())
-        suite.run_in_thread(_articulate_func, _action_func)
+        suite.run_in_thread(_thinking_func, _action_func)
         # 只发送一个信号.
         suite.mindflow.wait_started_sync()
         suite.mindflow.add_signal(Signal.new('test'))
@@ -576,7 +592,7 @@ def test_suite_consuming_endless_observe():
         assert len(got) == 10
         for line in got:
             assert line == content
-        assert len(suite.observations) == 10
+        assert len(suite.mindflow.moments.moments()) == 10
 
 
 def test_wait_first_impulse_complete():
@@ -588,18 +604,19 @@ def test_wait_first_impulse_complete():
     got = []
     done_event = threading.Event()
 
-    async def _articulate_func(articulate: Articulator) -> None:
-        for char in content:
-            articulate.send_nowait(char)
+    async def _thinking_func(thinking: Thinking) -> None:
+        async with thinking.articulator() as articulator:
+            for char in content:
+                articulator.send_nowait(char)
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.received_logos():
+        async for delta in action.logos():
             received += delta
         got.append(received)
         done_event.set()
 
-    suite.run_in_thread(_articulate_func, _action_func)
+    suite.run_in_thread(_thinking_func, _action_func)
     incomplete = Signal.new("test", complete=False, stale_timeout=0.1)
     suite.mindflow.add_signal(incomplete)
     assert incomplete.__state__ == "pending"

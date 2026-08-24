@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ghoshell_moss.core.blueprint.memento import Moment, Reaction
+from ghoshell_moss.core.blueprint.moment import Moment, Results
 from ghoshell_moss.memento import (
     MOSS_MOMENT_TYPE,
     CommitNotFoundError,
@@ -100,7 +100,7 @@ def test_merge_message_ref_tracks_reinterpret(tmp_path: Path):
 def test_window_messages_expand(tmp_path: Path):
     m = new_filesystem_memento(tmp_path / "memento", "o")
     b = m.create_line("main")
-    prev = Reaction(moment_id="prev0")
+    prev = Results(moment_id="prev0")
     prev.executed_logos = "cmd"
     m0 = prev.new_moment(percepts={"user": [Message.new().with_content("hi")]})
     m0.id = "m0"

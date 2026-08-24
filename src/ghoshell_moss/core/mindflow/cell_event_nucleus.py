@@ -95,12 +95,12 @@ class CellEventNucleus(Nucleus):
     """'cell_event' signal → Impulse(background_notice).
 
     与 NotifyNucleus 同构: add_signal 接收 signal, build_impulse 转换,
-    impulse_notify 投递到 mindflow. priority 由 signal 携带 (BACKGROUND).
+    fire_impulse 投递到 mindflow. priority 由 signal 携带 (BACKGROUND).
     """
 
     def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):
         self._name = name
-        self._impulse_notify: Callable[[Impulse], None] | None = None
+        self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
         self._impulse: Impulse | None = None
@@ -127,8 +127,8 @@ class CellEventNucleus(Nucleus):
         if impulse is None:
             return
         self._impulse = impulse
-        if self._impulse_notify:
-            self._impulse_notify(impulse)
+        if self._fire_impulse:
+            self._fire_impulse(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
         if not CellEventSignalMeta.match(signal):
@@ -139,14 +139,14 @@ class CellEventNucleus(Nucleus):
     def with_bus(
             self,
             signal_broadcast: Callable[[Signal], None],
-            impulse_notify: Callable[[Impulse], None],
+            fire_impulse: Callable[[Impulse], None],
     ) -> None:
-        self._impulse_notify = impulse_notify
+        self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse) -> None:
         self._impulse = None
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         if self._impulse is impulse:
             self._impulse = None
 
