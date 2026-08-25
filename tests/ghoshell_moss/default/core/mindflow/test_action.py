@@ -1,4 +1,4 @@
-"""BaseAction / BaseArticulator / ActionLogosRequest / BaseActionGate 单测.
+"""BaseAction / BaseArticulator / BaseActionGate 单测.
 
 聚焦 ghost_runtime 装线消费的 Action 契约:
 
@@ -13,42 +13,20 @@ import asyncio
 import janus
 import pytest
 
+from ghoshell_moss.core.blueprint.mindflow import Impulse, Priority
 from ghoshell_moss.core.blueprint.moment import BaseMomentsObserver, Moment
 from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.mindflow import BaseAttention
 from ghoshell_moss.core.mindflow._action import (
-    ActionLogosRequest,
     BaseAction,
     BaseActionGate,
     BaseArticulator,
 )
 
 
-class _AttentionStub:
-    """BaseAction 只依赖 attention 的几个行为, 用鸭子类型 stub 避开 Attention ABC 全量抽象."""
-
-    def __init__(self):
-        self._aborted = False
-        self._reason = ''
-        self._abort_event = ThreadSafeEvent()
-
-    def is_aborted(self) -> bool:
-        return self._aborted
-
-    def abort(self, reason) -> None:
-        self._aborted = True
-        self._reason = str(reason)
-        self._abort_event.set()
-
-    def abort_reason(self) -> str:
-        return self._reason
-
-    async def wait_abort(self) -> None:
-        await self._abort_event.wait()
-
-
-def _make_action(*, replaned: bool = False, attention=None, moments=None):
+def _make_action(*, replaned: bool = False, attention=None, moments=None, thinking_stop_event=None):
     """构造一个 BaseAction, 返回 (action, 注入的协作事件)."""
-    attention = attention or _AttentionStub()
+    attention = attention or BaseAttention(impulse=Impulse(source='test', priority=Priority.NOTICE))
     moments = moments or BaseMomentsObserver(max_size=10)
     logos_queue = janus.Queue()
     compiled_event = ThreadSafeEvent()
@@ -62,6 +40,7 @@ def _make_action(*, replaned: bool = False, attention=None, moments=None):
         compiled_event=compiled_event,
         action_stop_event=action_stop_event,
         mindflow_stop_event=mindflow_stop_event,
+        thinking_stop_event=thinking_stop_event,
     )
     events = {
         'logos_queue': logos_queue,
@@ -86,7 +65,7 @@ async def test_replaned_reflects_configured_value():
 @pytest.mark.asyncio
 async def test_attention_property_returns_injected_attention():
     """action 持有 attention, 供 runtime 观察/转发."""
-    attention = _AttentionStub()
+    attention = BaseAttention(impulse=Impulse(source='test', priority=Priority.NOTICE))
     action, _ = _make_action(attention=attention)
     assert action.attention is attention
 
@@ -197,6 +176,24 @@ async def test_abort_sets_is_aborted_and_abort_reason():
 
 
 @pytest.mark.asyncio
+async def test_thinking_stop_event_propagates_to_action_lifecycle():
+    """thinking 退出 (stop_event 置位) 时, action 的 lifecycle 判断反映为 aborted / not running.
+
+    action 持有的是 thinking 的 stop_event (事件信号, 非 thinking 对象), 用于
+    thinking → action 的传播: thinking 先退出而 attention 尚未 abort 时, action
+    必须感知到 thinking 已停止, 否则会在 action loop 里继续消费失效 thinking 的 logos.
+    """
+    thinking_stop_event = ThreadSafeEvent()
+    action, _ = _make_action(thinking_stop_event=thinking_stop_event)
+    async with action:
+        assert action.is_aborted() is False
+        assert action.is_running() is True
+        thinking_stop_event.set()
+        assert action.is_aborted() is True
+        assert action.is_running() is False
+
+
+@pytest.mark.asyncio
 async def test_wait_until_done_awaits_pending_future():
     """wait_until_done 等待挂起的 future 完成再返回 (签名应为 append 而非 extend)."""
     action, _ = _make_action()
@@ -279,102 +276,24 @@ async def test_articulator_wait_compiled_unblocks_when_compiled():
     await asyncio.wait_for(task, 2.0)
 
 
-# -- ActionLogosRequest: safemode 闸门 approve / reject 通向 action -------------------
+# -- BaseActionGate: approve 回调容器 -------------------------------------------
 
 @pytest.mark.asyncio
-async def test_logos_request_approve_pushes_logos_to_action():
-    """approve() 把缓冲的 logos 灌进 action queue, 回调 put_action, approved()=True."""
-    action, ev = _make_action()
-    put = []
-    request = ActionLogosRequest(logos='do-thing', action=action, put_action=put.append)
-    async with action:
-        await request.approve('note')
-        assert request.approved() is True
-        assert len(put) == 1 and put[0] is action
-        got = [delta async for delta in action.logos()]
-    assert got == ['do-thing']
+async def test_gate_approve_defaults_true_without_callback():
+    """未注册回调的 gate 默认放行."""
+    gate = BaseActionGate()
+    assert await gate.approve('anything') == (True, '')
 
 
 @pytest.mark.asyncio
-async def test_logos_request_reject_aborts_action():
-    """reject() 置 approved()=False 并 abort 整个 action."""
-    action, _ = _make_action()
-    request = ActionLogosRequest(logos='bad', action=action, put_action=lambda a: None)
-    msg = await request.reject('no way')
-    assert request.approved() is False
-    assert action.is_aborted() is True
-    assert msg == 'abort the running attention'
+async def test_gate_approve_delegates_to_callback():
+    """注册回调后, approve 返回回调裁决结果; has_approve() 反映注册状态."""
+    gate = BaseActionGate()
 
+    async def _deny(logos: str) -> tuple[bool, str]:
+        return (False, f'denied: {logos}')
 
-@pytest.mark.asyncio
-async def test_logos_request_settled_only_once():
-    """approve/reject 只能结算一次, 重复结算抛 RuntimeError."""
-    action, _ = _make_action()
-    request = ActionLogosRequest(logos='x', action=action, put_action=lambda a: None)
-    await request.approve('note')
-    with pytest.raises(RuntimeError):
-        await request.approve('again')
-    with pytest.raises(RuntimeError):
-        await request.reject('no')
-
-
-# -- BaseActionGate: 队列式等待, stop -> None ---------------------------------------
-
-@pytest.mark.asyncio
-async def test_gate_wait_request_returns_queued_request():
-    """wait_request 返回已入队的 request."""
-    gate = BaseActionGate(stop_event=ThreadSafeEvent())
-    action, _ = _make_action()
-    request = ActionLogosRequest(logos='x', action=action, put_action=lambda a: None)
-    gate.add_request(request)
-    result = await asyncio.wait_for(gate.wait_request(), 2.0)
-    assert result is request
-
-
-@pytest.mark.asyncio
-async def test_gate_wait_request_skips_done_requests():
-    """已结算 (done) 的 request 被跳过, 只返回活的 request."""
-    gate = BaseActionGate(stop_event=ThreadSafeEvent())
-    action, _ = _make_action()
-    done_request = ActionLogosRequest(logos='done', action=action, put_action=lambda a: None)
-    live_request = ActionLogosRequest(logos='live', action=action, put_action=lambda a: None)
-    done_request.commit()
-    gate.add_request(done_request)
-    gate.add_request(live_request)
-    result = await asyncio.wait_for(gate.wait_request(), 2.0)
-    assert result is live_request
-
-
-@pytest.mark.asyncio
-async def test_gate_wait_request_unblocks_when_request_arrives():
-    """阻塞中的 wait_request 在 request 入队后被唤醒返回."""
-    gate = BaseActionGate(stop_event=ThreadSafeEvent())
-    action, _ = _make_action()
-    request = ActionLogosRequest(logos='x', action=action, put_action=lambda a: None)
-    task = asyncio.create_task(asyncio.wait_for(gate.wait_request(), 2.0))
-    await asyncio.sleep(0)
-    gate.add_request(request)
-    result = await asyncio.wait_for(task, 2.0)
-    assert result is request
-
-
-@pytest.mark.asyncio
-async def test_gate_wait_request_returns_none_on_stop():
-    """stop 前置位: wait_request 立即返回 None (gate 已终止, 运行结束)."""
-    stop_event = ThreadSafeEvent()
-    gate = BaseActionGate(stop_event=stop_event)
-    stop_event.set()
-    result = await asyncio.wait_for(gate.wait_request(), 2.0)
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_gate_wait_request_unblocks_on_stop():
-    """阻塞中的 wait_request 在 stop 后被唤醒, 返回 None 而非异常."""
-    stop_event = ThreadSafeEvent()
-    gate = BaseActionGate(stop_event=stop_event)
-    task = asyncio.create_task(asyncio.wait_for(gate.wait_request(), 2.0))
-    await asyncio.sleep(0)
-    stop_event.set()
-    result = await asyncio.wait_for(task, 2.0)
-    assert result is None
+    assert gate.has_approve() is False
+    gate.register(_deny)
+    assert gate.has_approve() is True
+    assert await gate.approve('hello') == (False, 'denied: hello')

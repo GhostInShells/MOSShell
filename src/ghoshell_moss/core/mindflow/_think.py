@@ -6,6 +6,7 @@ Thinking 实现.
 
 import asyncio
 import contextlib
+import logging
 from typing import Callable
 from typing_extensions import Self
 
@@ -18,7 +19,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
 from ghoshell_moss.core.blueprint.moment import Moment, Moments, Observer
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from ._action import ActionLogosRequest, BaseAction, BaseActionGate, BaseArticulator
+from ._action import BaseAction, BaseActionGate, BaseArticulator
 
 __all__ = ['BaseThinking']
 
@@ -42,7 +43,7 @@ class BaseThinking(Thinking):
             put_action: Callable[[Action], None],
             mindflow_stop_event: ThreadSafeEvent,
             moment: Moment | None = None,
-            logger: LoggerItf | None = None,
+            logger: logging.Logger | None = None,
     ):
         self._attention = attention
         self._observer = observer
@@ -59,6 +60,8 @@ class BaseThinking(Thinking):
         self._stopped = False
         self._lifecycle_task: asyncio.Task | None = None
         self._waiting_futures: list[asyncio.Future] = []
+        # 每签发一个 action 就保留它的 stop event, 供清空(全部) / 对齐(最后一个)治理.
+        self._action_stop_events: list[ThreadSafeEvent] = []
 
     def __repr__(self) -> str:
         return self._log_prefix
@@ -88,15 +91,15 @@ class BaseThinking(Thinking):
 
     def gate(self) -> ActionGate:
         if self._gate is None:
-            self._gate = BaseActionGate(stop_event=self._stop_event)
+            self._gate = BaseActionGate()
         return self._gate
 
     def articulator(self, replan: bool = False, wait_action_done: bool = False) -> Articulator:
         """
         创建一个可以发布 logos 的 articulator, 与一个新的 BaseAction 成对.
 
-        gate 已实例化 (= gated 模式) 时走 ActionLogosRequest buffer, 等审批通过才
-        投递 action; 否则立即 put_action, logos 直接进 queue.
+        gate 已注册 approve 回调 (= gated 模式) 时, articulator 在 commit 时 await
+        approve 裁决完整 logos, 通过才投递 action; 否则立即 put_action, logos 直接进 queue.
         """
         logos_queue: janus.Queue[str | None] = janus.Queue()
         compiled_event = ThreadSafeEvent()
@@ -110,19 +113,14 @@ class BaseThinking(Thinking):
             compiled_event=compiled_event,
             action_stop_event=action_stop_event,
             mindflow_stop_event=self._mindflow_stop_event,
+            thinking_stop_event=self._stop_event,
             logger=self._logger,
         )
+        # 保留 action 的 stop event, 供 thinking 清空/对齐治理.
+        self._action_stop_events.append(action_stop_event)
 
-        gated = self._gate is not None
-        logos_request: ActionLogosRequest | None = None
-        if gated:
-            logos_request = ActionLogosRequest(
-                logos='',
-                action=action,
-                put_action=self._put_action,
-            )
-            self._gate.add_request(logos_request)
-        else:
+        gated = self._gate is not None and self._gate.has_approve()
+        if not gated:
             self._put_action(action)
 
         return BaseArticulator(
@@ -130,7 +128,9 @@ class BaseThinking(Thinking):
             logos_queue=logos_queue,
             compiled_event=compiled_event,
             action_stop_event=action_stop_event,
-            logos_request=logos_request,
+            gate=self._gate if gated else None,
+            action=action if gated else None,
+            put_action=self._put_action if gated else None,
             logger=self._logger,
         )
 
@@ -176,6 +176,18 @@ class BaseThinking(Thinking):
                 t.cancel()
             _ = await asyncio.gather(*self._waiting_futures, return_exceptions=True)
 
+    async def _wait_last_action_done(self) -> None:
+        """等最后一个 action 停止 — 非公开, 供 __aexit__ 正常退出时重新对齐边界.
+
+        只等最后一个 (不 wait 全部): 中间段可以 interleaved 超速, 但最后一帧的
+        action 必须跑完 (observe 落盘), 否则 attention 会误判自然结束而失序.
+        """
+        if not self._action_stop_events:
+            return
+        last = self._action_stop_events[-1]
+        if not last.is_set():
+            await last.wait()
+
     async def wait_abort(self) -> None:
         await self._stop_event.wait()
 
@@ -202,6 +214,10 @@ class BaseThinking(Thinking):
             return None
         self._stopped = True
         try:
+            # 正常退出 (无异常): 先等最后一个 action 跑完, 保证最后一帧被观测后
+            # 才收线, 避免 thinking 先于 last action 退出导致 observe 丢失.
+            if exc_val is None:
+                await self._wait_last_action_done()
             await self.stop()
             if self._lifecycle_task and not self._lifecycle_task.done():
                 self._lifecycle_task.cancel()

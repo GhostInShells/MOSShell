@@ -189,7 +189,7 @@ class AbsMindflow(Mindflow, ABC):
             description: str = '',
             logger: logging.Logger | None = None,
             raise_nucleus_start_error: bool = True,
-            max_moments_size: int = 1000,
+            max_moments_size: int = 100,
     ):
         # Nucleus 可能只是一个接口. 内部有别的技术实现.
         self._description = description
@@ -239,6 +239,10 @@ class AbsMindflow(Mindflow, ABC):
         # 供外部使用的队列.
         self._thinking_loop_queue: janus.Queue[Thinking] = janus.Queue(maxsize=10)
         self._is_looping_thinking = False
+
+        self._attention_created_callbacks: set[Callable[[Attention], None]] = set()
+
+        # 测试专用逻辑.
         self._action_loop_queue: janus.Queue[Action] = janus.Queue(maxsize=10)
         self._is_looping_action = False
 
@@ -592,6 +596,16 @@ class AbsMindflow(Mindflow, ABC):
         从 nucleus pop 后 fire 'yielded' verdict.
         """
         try:
+            # strength=0 协议承诺: 绝不竞争 — 比 stale 更先短路.
+            # 不分 defender/quiet, 一律礼让: 不打任何 mode 分支, 不建 attention,
+            # 从 nucleus pop 后 fire 'yielded', 由 nucleus 自然清理缓存.
+            if impulse.strength == 0:
+                defender = None
+                if self._current_attention and not self._current_attention.is_aborted():
+                    defender = self._current_attention.draw_from()
+                await self._fire_challenge(impulse, defender, 'yielded')
+                return None
+
             if impulse.is_stale():
                 # 通知已经被丢弃.
                 self._notify_impulse_ignored(impulse)
@@ -601,15 +615,6 @@ class AbsMindflow(Mindflow, ABC):
             verdict: ChallengeVerdict = 'suppressed'
             if self._current_attention and not self._current_attention.is_aborted():
                 defender = self._current_attention.draw_from()
-                # strength=0 协议承诺: 绝不竞争, 主动礼让.
-                if self._current_attention.is_protected():
-                    # 保护期, 不允许中断. notify 偏离侧: 失败时 buffer 而非 suppress.
-                    verdict = 'buffered' if impulse.mode == ChallengeMode.notify.value else 'suppressed'
-                    await self._fire_challenge(impulse, defender, verdict)
-                    return None
-                if impulse.strength == 0:
-                    await self._fire_challenge(impulse, defender, verdict)
-                    return None
                 # Fatal always prevails (silent mode 抢占成功但只 buffer 不创建 attention)
                 if impulse.priority == Priority.FATAL.value:
                     verdict = 'buffered' if impulse.mode == ChallengeMode.silent.value else 'preempted'
@@ -617,6 +622,11 @@ class AbsMindflow(Mindflow, ABC):
                     return None
                 elif impulse.priority == Priority.BACKGROUND.value:
                     # BACKGROUND 永不抢占; notify 偏离侧: 失败时 buffer 而非 suppress.
+                    verdict = 'buffered' if impulse.mode == ChallengeMode.notify.value else 'suppressed'
+                    await self._fire_challenge(impulse, defender, verdict)
+                    return None
+                if self._current_attention.is_protected():
+                    # 保护期, 同/低优先级失败. notify 偏离侧: 失败时 buffer 而非 suppress.
                     verdict = 'buffered' if impulse.mode == ChallengeMode.notify.value else 'suppressed'
                     await self._fire_challenge(impulse, defender, verdict)
                     return None
@@ -687,6 +697,9 @@ class AbsMindflow(Mindflow, ABC):
         elif verdict == 'initial':
             self._notify_impulse_attended(challenger)
             await self._create_attention_from_impulse(challenger)
+        elif verdict == 'yielded':
+            # 绝不竞争: 不经手任何 mode 分支, 直接通知 nucleus 自然清理缓存.
+            self._notify_impulse_attended(challenger)
         self._hooks_group.on_impulse_challenged(challenger, defender, verdict)
 
     def attention(self) -> Attention | None:
@@ -818,14 +831,44 @@ class AbsMindflow(Mindflow, ABC):
                 nucleus.suppress(best_impulse)
         return best_impulse
 
-    def attention_loop(self) -> AsyncIterator[Attention]:
-        return self._loop_attention()
+    def when_attention_created(self, callback: Callable[[Attention], None]) -> Callable[[], None]:
+        self._attention_created_callbacks.add(callback)
+
+        def _disposer():
+            self._attention_created_callbacks.discard(callback)
+
+        return _disposer
+
+    async def attention_loop(self) -> AsyncGenerator[Attention, None]:
+        """ 测试专用的接口. 可重入. 不可在下游治理 attention 的声明周期 (已经被处理). """
+        q = janus.Queue[Attention]()
+        disposer: Callable[[], None] | None = None
+        try:
+            disposer = self.when_attention_created(q.sync_q.put_nowait)
+            while self.is_running():
+                try:
+                    attention = await q.async_q.get()
+                    yield attention
+                except janus.AsyncQueueShutDown:
+                    break
+        finally:
+            if disposer is not None:
+                disposer()
+
+    def _on_attention_created(self, attention: Attention) -> None:
+        if len(self._attention_created_callbacks) > 0:
+            for callback in self._attention_created_callbacks:
+                try:
+                    callback(attention)
+                except Exception as e:
+                    self._logger.exception(
+                        "%s _on_attention_created callback %r failed: %s", self._log_prefix, callback, e,
+                    )
 
     async def _loop_attention(self) -> AsyncGenerator[Attention, None]:
         """需要实现一个特别稳定的流程."""
         if self._looping_attention:
             raise RuntimeError('looping attention already running')
-        self._looping_attention = True
         try:
             last_popped_attention = None
             while self.is_running():
@@ -863,6 +906,7 @@ class AbsMindflow(Mindflow, ABC):
                     last_popped_attention = _attention
                     # 停止 idle.
                     await self._stop_idling()
+                    self._on_attention_created(_attention)
                     yield _attention
                 except asyncio.CancelledError:
                     raise
@@ -1062,7 +1106,6 @@ class AbsMindflow(Mindflow, ABC):
             task = self._event_loop.create_task(self._generate_thinking())
             yield
         finally:
-
             if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

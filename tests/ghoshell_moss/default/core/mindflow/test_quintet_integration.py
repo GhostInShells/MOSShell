@@ -12,6 +12,15 @@ priority, 不需要懂 ChallengeMode × thinking_effort × priority × logos
 "signal 入口 → nucleus → mindflow → attention/buffer" 全链路的行为不变性.
 
 ImpulsePrimitive.broadcast 作为单原语对照纳入, 验证退回 primitive 后仍可用.
+
+API 迁移说明 (重构 41f0cb63 — decouple attention/thinking/action):
+    - ``mindflow.attention_loop()`` / ``attention.attention_loop()``
+        → ``mindflow.thinking_loop()`` 产出 ``Thinking``, 经 ``Thinking.attention`` 取 Attention.
+    - ``attention.abort_attention('reason')`` → ``thinking.abort('reason')``
+    - ``attention.is_attention_aborted()`` → ``attention.is_aborted()``
+    - ``attention.effort`` → ``thinking.effort()``
+    - ``mindflow.project_percepts()`` → ``mindflow.moments.peek().percepts_messages()``
+    - ``mindflow.faculties()`` → ``mindflow.nuclei()``
 """
 import asyncio
 import pytest
@@ -51,10 +60,13 @@ def _quintet_mindflow() -> BaseMindflow:
     )
 
 
-async def _first_attention(mindflow, timeout: float = 2.0):
-    async for attention in mindflow.loop():
-        return attention
-    raise AssertionError("mindflow.loop() exited without yielding")
+async def _first_thinking(mindflow, timeout: float = 2.0):
+    """阻塞拿第一个 Thinking.
+    async-for + return 会让生成器 finally 重置 _is_looping_thinking, 因此同一
+    mindflow 下可重复调用以获取后续 thinking. 超时则 fail."""
+    async for thinking in mindflow.thinking_loop():
+        return thinking
+    raise AssertionError("mindflow.thinking_loop() exited without yielding")
 
 
 def _texts(messages) -> list[str]:
@@ -80,14 +92,14 @@ async def test_input_signal_drives_attention():
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(_input_signal('hello'))
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
-            impulse = attention.draw_from()
+        thinking = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with thinking:
+            impulse = thinking.attention.draw_from()
             assert impulse.source == 'input_signal_nucleus'
             assert impulse.priority == Priority.NOTICE
             assert impulse.mode == ''  # default
             assert impulse.thinking_effort == ''
-            attention.abort('test done')
+            thinking.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -97,13 +109,11 @@ async def test_command_signal_drives_attention_with_logos():
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(new_command_signal('exec_me'))
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
-            assert attention.thinking_effort == 'none'
-            art, act = await anext(attention.loop())
-            async with art, act:
-                assert art.moment.command_logos == 'exec_me'
-            attention.abort('test done')
+        thinking = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with thinking:
+            assert thinking.effort() == 'none'
+            assert thinking.moment.command_logos == 'exec_me'
+            thinking.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -113,12 +123,12 @@ async def test_notify_signal_default_path_creates_attention():
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(new_notify_signal(Message.new().with_content('user_msg')))
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
-            impulse = attention.draw_from()
+        thinking = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with thinking:
+            impulse = thinking.attention.draw_from()
             assert impulse.source == 'notify_nucleus'
             assert impulse.mode == ChallengeMode.notify.value
-            attention.abort('test done')
+            thinking.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -132,7 +142,7 @@ async def test_silent_signal_quiet_path_buffers_not_attention():
         await asyncio.sleep(0.2)
         # quiet 系统下 silent 不应创建 attention.
         assert mindflow.attention() is None
-        buffered = mindflow.get_buffered(pop=False)
+        buffered = mindflow.moments.peek().percepts_messages()
         assert 'quiet_data' in _texts(buffered)
 
 
@@ -143,14 +153,14 @@ async def test_interrupt_signal_creates_fatal_attention():
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(new_interrupt_signal(Message.new().with_content('halt')))
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
-            impulse = attention.draw_from()
+        thinking = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with thinking:
+            impulse = thinking.attention.draw_from()
             assert impulse.priority == Priority.FATAL
             assert impulse.mode == ChallengeMode.notify.value
             assert impulse.thinking_effort == 'none'
             assert impulse.interrupt is True
-            attention.abort('test done')
+            thinking.abort('test done')
 
 
 # ============================================================
@@ -234,22 +244,20 @@ async def test_input_then_silent_silent_buffers_into_input_attention():
         await mindflow.wait_started()
         # 先 input 占 attention.
         mindflow.add_signal(_input_signal('user_says', priority=Priority.NOTICE))
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
-            # 等保护期过 (BaseAttention 默认 protection_duration_ratio=0.2).
-            # 这里用 silent 默认 strength=100, 跟 input 默认 strength 同, 直接挑战.
-            # 由于 SilentSignalMeta 默认 NOTICE, 我们用 FATAL 保证抢占成功.
+        defender = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with defender:
+            # silent FATAL: 抢占成功但 silent mode 偏离 default — buffer, 不接管 attention.
             mindflow.add_signal(new_silent_signal(
                 Message.new().with_content('quiet_supplement'),
                 priority=Priority.FATAL,
             ))
             await asyncio.sleep(0.2)
             # silent 抢占成功不接管 attention, 原 attention 仍活.
-            assert not attention.is_aborted()
+            assert not defender.is_aborted()
             # messages 进 buffer.
-            buffered = mindflow.get_buffered(pop=False)
+            buffered = mindflow.moments.peek().percepts_messages()
             assert 'quiet_supplement' in _texts(buffered)
-            attention.abort('test done')
+            defender.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -259,19 +267,19 @@ async def test_input_then_interrupt_interrupt_aborts_input_attention():
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(_input_signal('user_says'))
-        loop_gen = mindflow.loop()
-        defender_att = await asyncio.wait_for(anext(loop_gen), timeout=2.0)
-        async with defender_att:
+        defender = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with defender:
+            att1 = defender.attention
             mindflow.add_signal(new_interrupt_signal(Message.new().with_content('halt')))
-            await asyncio.wait_for(defender_att.wait_aborted(), timeout=2.0)
-            assert defender_att.is_aborted()
+            await asyncio.wait_for(att1.wait_abort(), timeout=2.0)
+            assert att1.is_aborted()
         # 新 attention 应已创建并持有 interrupt 字段.
-        interrupt_att = await asyncio.wait_for(anext(loop_gen), timeout=2.0)
-        async with interrupt_att:
-            impulse = interrupt_att.draw_from()
+        interrupt_think = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with interrupt_think:
+            impulse = interrupt_think.attention.draw_from()
             assert impulse.interrupt is True
             assert impulse.thinking_effort == 'none'
-            interrupt_att.abort('test done')
+            interrupt_think.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -286,8 +294,8 @@ async def test_input_then_notify_notify_fails_and_buffers():
             protection_time=10.0,
             messages=[Message.new().with_content('defender')],
         ))
-        defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with defender_att:
+        defender = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with defender:
             # 同优先级 notify, 保护期内必败.
             mindflow.add_signal(new_notify_signal(
                 Message.new().with_content('user_msg'),
@@ -295,11 +303,11 @@ async def test_input_then_notify_notify_fails_and_buffers():
             ))
             await asyncio.sleep(0.2)
             # defender 仍在.
-            assert not defender_att.is_aborted()
+            assert not defender.is_aborted()
             # messages 进 buffer (notify 偏离侧).
-            buffered = mindflow.get_buffered(pop=False)
+            buffered = mindflow.moments.peek().percepts_messages()
             assert 'user_msg' in _texts(buffered)
-            defender_att.abort('test done')
+            defender.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -309,23 +317,18 @@ async def test_input_then_command_fatal_command_takes_over():
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(_input_signal('user_says'))
-        loop_gen = mindflow.loop()
-        defender_att = await asyncio.wait_for(anext(loop_gen), timeout=2.0)
-        async with defender_att:
+        defender = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with defender:
+            att1 = defender.attention
             # FATAL command 抢占.
-            mindflow.add_signal(new_command_signal(
-                'sup_cmd',
-                priority=Priority.FATAL,
-            ))
-            await asyncio.wait_for(defender_att.wait_aborted(), timeout=2.0)
-            assert defender_att.is_aborted()
-        cmd_att = await asyncio.wait_for(anext(loop_gen), timeout=2.0)
-        async with cmd_att:
-            assert cmd_att.thinking_effort == 'none'
-            art, act = await anext(cmd_att.loop())
-            async with art, act:
-                assert art.moment.command_logos == 'sup_cmd'
-            cmd_att.abort('test done')
+            mindflow.add_signal(new_command_signal('sup_cmd', priority=Priority.FATAL))
+            await asyncio.wait_for(att1.wait_abort(), timeout=2.0)
+            assert att1.is_aborted()
+        cmd_think = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with cmd_think:
+            assert cmd_think.effort() == 'none'
+            assert cmd_think.moment.command_logos == 'sup_cmd'
+            cmd_think.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -343,7 +346,7 @@ async def test_silent_aggregates_multiple_signals_into_one_buffer_drain():
         await asyncio.sleep(0.2)
         # quiet → silent 不创建 attention.
         assert mindflow.attention() is None
-        buffered = mindflow.get_buffered(pop=False)
+        buffered = mindflow.moments.peek().percepts_messages()
         texts = _texts(buffered)
         # 三条都应在 buffer 里.
         for i in range(3):
@@ -362,21 +365,21 @@ async def test_signal_namespace_isolation():
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(_input_signal('only_input'))
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
-            impulse = attention.draw_from()
+        thinking = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with thinking:
+            impulse = thinking.attention.draw_from()
             # 来自 input_signal_nucleus, 不是别的.
             assert impulse.source == 'input_signal_nucleus'
-            attention.abort('test done')
+            thinking.abort('test done')
 
 
 @pytest.mark.asyncio
 async def test_quintet_nuclei_discovered_in_mindflow():
-    """五元 nucleus 都应正确注册到 mindflow.faculties()."""
+    """五元 nucleus 都应正确注册到 mindflow.nuclei()."""
     mindflow = _quintet_mindflow()
     async with mindflow:
         await mindflow.wait_started()
-        faculties = mindflow.faculties()
+        faculties = mindflow.nuclei()
         # 五元 + 内置 _direct (来自 base_mindflow add_impulse 入口) = 6.
         assert 'input_signal_nucleus' in faculties
         assert 'command_nucleus' in faculties

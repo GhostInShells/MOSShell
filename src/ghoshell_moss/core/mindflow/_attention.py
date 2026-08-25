@@ -215,7 +215,7 @@ class AbsAttention(Attention, ABC):
 
     async def __aenter__(self):
         if self._started:
-            raise RuntimeError("Attention is already entered")
+            return self
         self._started = True
         self._event_loop = asyncio.get_running_loop()
         return self

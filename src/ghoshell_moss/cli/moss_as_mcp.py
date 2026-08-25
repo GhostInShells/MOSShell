@@ -13,7 +13,7 @@ from mcp.types import ContentBlock, TextContent, ImageContent
 
 from ghoshell_moss.message import Message, Text, Base64Image
 from ghoshell_moss.host import Host
-from ghoshell_moss.core.blueprint.host import IHost, IShellRuntime
+from ghoshell_moss.core.blueprint.host import IHost, MOSShellRuntime
 from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.core.blueprint.environment import Environment
 import click
@@ -47,9 +47,9 @@ class MCPMessageAdapter:
 
 # 2. 定义状态容器，用于在 MCP 运行时保存 moss 实例
 class ServerState:
-    def __init__(self, host: IHost, runtime: IShellRuntime, trajectory: MShellTrajectory):
+    def __init__(self, host: IHost, runtime: MOSShellRuntime, trajectory: MShellTrajectory):
         self.host: IHost = host
-        self.shell_runtime: IShellRuntime = runtime
+        self.shell_runtime: MOSShellRuntime = runtime
         # server 级 trajectory — 跨 MCP 调用持有 shell 观察器, 解决 K10 跨-interpreter 历史丢失.
         # 生命周期与 MCP server 同长, 在 async with moss_host.run() 之内挂载.
         self.trajectory: MShellTrajectory = trajectory

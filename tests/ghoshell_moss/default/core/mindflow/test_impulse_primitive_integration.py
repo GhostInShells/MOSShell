@@ -15,8 +15,9 @@ import pytest
 from ghoshell_moss.contracts.logger import get_console_logger
 from ghoshell_moss.core.blueprint.mindflow import (
     Impulse, Priority, ImpulsePrimitive, ChallengeMode,
+    Thinking
 )
-from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow, _DirectImpulseNucleus
+from ghoshell_moss.core.mindflow import BaseMindflow, DirectImpulseNucleus
 from ghoshell_moss.message import Message
 
 
@@ -35,10 +36,10 @@ def _imp(
     )
 
 
-async def _first_attention(mindflow: BaseMindflow, timeout: float = 2.0):
+async def _first_thinking(mindflow: BaseMindflow) -> Thinking:
     """阻塞拿到 mindflow.loop() yield 的第一个 attention. 超时则 fail."""
-    async for attention in mindflow.loop():
-        return attention
+    async for thinking in mindflow.thinking_loop():
+        return thinking
     raise AssertionError("mindflow.loop() exited without yielding an attention")
 
 
@@ -54,13 +55,13 @@ async def test_add_impulse_creates_attention_with_direct_source():
         await mindflow.wait_started()
         impulse = _imp(messages=[Message.new().with_content('inject')])
         mindflow.add_impulse(impulse)
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
-            drawn = attention.draw_from()
+        thinking = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with thinking:
+            drawn = thinking.attention.draw_from()
             assert drawn is impulse  # 没有拷贝, 引用透传
-            assert drawn.source == _DirectImpulseNucleus.NAME
+            assert drawn.source == DirectImpulseNucleus.NAME
             assert drawn.source == '_direct'
-            attention.abort('test done')
+            thinking.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -120,17 +121,11 @@ async def test_command_only_propagates_thinking_effort_none():
         base = _imp(messages=[Message.new().with_content('go')])
         ImpulsePrimitive.command_only(base, command_logos='do_it')
         mindflow.add_impulse(base)
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
+        async for thinking in mindflow.thinking_loop():
             # 协议: thinking_effort='none' 落到 attention.
-            assert attention.thinking_effort == 'none'
-            # 通过 loop yield 的 articulator 反映同一值.
-            art, act = await anext(attention.loop())
-            async with art, act:
-                assert art.thinking_effort() == 'none'
-                # command_logos 沉淀到 moment.
-                assert art.moment.command_logos == 'do_it'
-            attention.abort('test done')
+            assert thinking.effort() == 'none'
+            assert thinking.moment.command_logos == 'do_it'
+            break
 
 
 @pytest.mark.asyncio
@@ -143,22 +138,24 @@ async def test_fatal_command_uses_fatal_priority():
         # 先注入一个普通 NOTICE defender.
         mindflow.add_impulse(_imp(priority=Priority.NOTICE,
                                   messages=[Message.new().with_content('defender')]))
-        defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
+        loop_gen = mindflow.thinking_loop()
+        thinking = await anext(loop_gen)
+        defender_att = thinking.attention
         # 进入 defender 但不消费, 等待被抢占.
-        loop_gen = mindflow.loop()
-        async with defender_att:
+        async with thinking:
             # 注入 fatal_command — 应抢占成功.
             challenger = _imp(messages=[Message.new().with_content('cmd')])
             ImpulsePrimitive.fatal_command(challenger, command_logos='sup_cmd')
             assert challenger.priority == Priority.FATAL.value
             mindflow.add_impulse(challenger)
             # 等待 defender 被 abort.
-            await asyncio.wait_for(defender_att.wait_aborted(), timeout=2.0)
+            await asyncio.wait_for(defender_att.wait_abort(), timeout=2.0)
             assert defender_att.is_aborted()
         # 新 attention 应已创建.
-        new_att = await asyncio.wait_for(anext(loop_gen), timeout=2.0)
-        async with new_att:
-            assert new_att.thinking_effort == 'none'
+        new_thinking = await asyncio.wait_for(anext(loop_gen), timeout=2.0)
+        new_att = new_thinking.attention
+        async with thinking:
+            assert new_att.draw_from().thinking_effort == 'none'
             new_att.abort('test done')
 
 
@@ -173,7 +170,7 @@ async def test_broadcast_buffers_without_new_attention():
         # 先创建 defender attention.
         mindflow.add_impulse(_imp(priority=Priority.NOTICE,
                                   messages=[Message.new().with_content('defender')]))
-        defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
+        defender_att = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
         async with defender_att:
             # 注入 broadcast.
             silent_imp = _imp(messages=[Message.new().with_content('silent_msg')])
@@ -186,7 +183,7 @@ async def test_broadcast_buffers_without_new_attention():
             # 协议命题 1: defender 没有被 abort (silent 不会替换 attention).
             assert not defender_att.is_aborted()
             # 协议命题 2: silent 的 messages 进入 mindflow buffer.
-            buffered = mindflow.get_buffered(pop=False)
+            buffered = mindflow.moments.peek().percepts_messages()
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'silent_msg' in buffered_texts
             defender_att.abort('test done')
@@ -202,7 +199,7 @@ async def test_background_notice_buffers_on_challenge_failure():
         # 先创建普通 defender attention.
         mindflow.add_impulse(_imp(priority=Priority.NOTICE,
                                   messages=[Message.new().with_content('defender')]))
-        defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
+        defender_att = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
         async with defender_att:
             # 注入 background_notice.
             bg_imp = _imp(messages=[Message.new().with_content('bg_msg')])
@@ -214,7 +211,7 @@ async def test_background_notice_buffers_on_challenge_failure():
             # 协议命题 1: defender 仍在 (BACKGROUND 永不抢占).
             assert not defender_att.is_aborted()
             # 协议命题 2: notify 失败时 messages 进 buffer.
-            buffered = mindflow.get_buffered(pop=False)
+            buffered = mindflow.moments.peek().percepts_messages()
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'bg_msg' in buffered_texts
             defender_att.abort('test done')
@@ -232,11 +229,11 @@ async def test_notify_only_preserves_priority():
         assert imp.mode == ChallengeMode.notify.value
         assert imp.priority == Priority.NOTICE  # priority 不被原语改动
         mindflow.add_impulse(imp)
-        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
-        async with attention:
+        thinking = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with thinking:
             # quiet 系统 + notify → 正常创建 attention (走 default 成功路径).
-            assert attention.draw_from() is imp
-            attention.abort('test done')
+            assert thinking.attention.draw_from() is imp
+            thinking.abort('test done')
 
 
 @pytest.mark.asyncio
@@ -251,7 +248,7 @@ async def test_notify_buffers_when_challenge_fails():
                         messages=[Message.new().with_content('defender')])
         defender.protection_time = 10.0
         mindflow.add_impulse(defender)
-        defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
+        defender_att = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
         async with defender_att:
             # 注入 notify challenger — 同优先级, 保护期内必败.
             challenger = _imp(priority=Priority.NOTICE,
@@ -262,7 +259,7 @@ async def test_notify_buffers_when_challenge_fails():
             # defender 仍在 (notify 抢占失败).
             assert not defender_att.is_aborted()
             # messages 进 buffer (notify 偏离侧承诺).
-            buffered = mindflow.get_buffered(pop=False)
+            buffered = mindflow.moments.peek().percepts_messages()
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'user_msg' in buffered_texts
             defender_att.abort('test done')

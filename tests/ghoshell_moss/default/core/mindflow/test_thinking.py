@@ -11,9 +11,9 @@
   - moment: 首次访问懒观测一帧, observe() 逐帧替换
   - effort: 从 attention.draw_from() 的发起 impulse 读, 不从 thinking 单独携带
   - gate:  惰性创建, per-thinking 单例
-  - articulator 接入策略随 gate 是否实例化切换:
+  - articulator 接入策略随 gate 是否注册 approve 回调切换:
       非 gated -> 立即 put_action (action 进 action 循环), logos 直入共享 queue
-      gated    -> ActionLogosRequest 进 gate, 审批通过才 put_action
+      gated    -> commit 时 await approve 裁决, 通过才 put_action, 拒绝则 abort
   - 生命周期: enter/exit/stop/abort/wait_abort/wait_until_done 与 Action 对齐
 """
 import asyncio
@@ -50,7 +50,10 @@ def _make_thinking(*, attention=None, observer=None, gated: bool = False, thinki
         mindflow_stop_event=mindflow_stop_event,
     )
     if gated:
-        thinking.gate()
+        async def _approve_always(logos: str) -> tuple[bool, str]:
+            return (True, '')
+
+        thinking.gate().register(_approve_always)
     return thinking, {'put': put, 'observer': observer, 'mindflow_stop_event': mindflow_stop_event}
 
 
@@ -135,27 +138,33 @@ async def test_articulator_non_gated_dispatches_action_immediately():
 
 
 @pytest.mark.asyncio
-async def test_gated_articulator_holds_action_until_approve():
-    """gated: articulator() 不投递, 建 ActionLogosRequest 进 gate; approve 后才投递并泄 logos."""
+async def test_gated_articulator_defers_action_until_commit():
+    """gated: 注册 approve 回调后, articulator 在 commit 前不投递 action, commit 时才投递."""
     thinking, env = _make_thinking(gated=True)
-    gate = thinking.gate()
     articulator = thinking.articulator()
 
-    assert env['put'] == []  # gated: 尚未投递 action
+    articulator.send_nowait('gated thing')  # 缓冲
+    assert env['put'] == []  # commit 前尚未投递 action
 
-    articulator.send_nowait('gated thing')  # 缓冲进 request
-    request = await asyncio.wait_for(gate.wait_request(), 2.0)
-    assert request is not None
-    assert request.logos == 'gated thing'
+    async def run_commit():
+        async with articulator:
+            await articulator.wait_action_done()
 
-    await request.approve('note')
+    task = asyncio.create_task(run_commit())
+    # commit → approve(True) → 投递 action.
+    for _ in range(100):
+        if env['put']:
+            break
+        await asyncio.sleep(0.01)
     assert len(env['put']) == 1
 
     action = env['put'][0]
     async with action:
         await asyncio.wait_for(action.wait_ready(), 2.0)
         got = [delta async for delta in action.logos()]
+        action.set_compiled()
     assert got == ['gated thing']
+    await asyncio.wait_for(task, 2.0)
 
 
 # -- articulator ↔ action 1:1 混合 --------------------------------------------
@@ -433,43 +442,6 @@ async def test_wait_abort_returns_on_stop():
 
 
 @pytest.mark.asyncio
-async def test_action_outlives_thinking_exit():
-    """thinking 退出时 action 不会一起退出 — 两者生命周期独立, 各自 stop_event 驱动."""
-    action_queue: janus.Queue[Action] = janus.Queue(maxsize=10)
-    thinking = BaseThinking(
-        attention=_make_attention(),
-        observer=BaseMomentsObserver(max_size=10),
-        put_action=action_queue.sync_q.put_nowait,
-        mindflow_stop_event=ThreadSafeEvent(),
-    )
-
-    action_entered = asyncio.Event()
-    thinking_exited = asyncio.Event()
-    finished = []
-
-    async def consume_action():
-        action = await action_queue.async_q.get()
-        async with action:
-            action_entered.set()
-            await action.wait_until_done(asyncio.ensure_future(thinking_exited.wait()))
-            assert not action.is_aborted()
-            finished.append('action')
-
-    async def run_thinking():
-        async with thinking:
-            thinking.articulator()  # 生产并投递 action
-            await action_entered.wait()
-        thinking_exited.set()
-        finished.append('thinking')
-
-    await asyncio.wait_for(
-        asyncio.gather(run_thinking(), consume_action()),
-        2.0,
-    )
-    assert finished == ['thinking', 'action']
-
-
-@pytest.mark.asyncio
 async def test_action_thinking_aborted_with_attention():
     """thinking 退出时 action 不会一起退出 — 两者生命周期独立, 各自 stop_event 驱动."""
     action_queue: janus.Queue[Action] = janus.Queue(maxsize=10)
@@ -522,3 +494,60 @@ async def test_action_thinking_aborted_with_attention():
     assert got_action is not None
     assert isinstance(got_action, Action)
     assert got_action.abort_reason() == 'abort'
+
+
+@pytest.mark.asyncio
+async def test_thinking_waits_last_action_before_exit():
+    """thinking 正常退出时等最后一个 action 退出 (wait_last_action_done 兜底).
+
+    articulate 只 wait_compiled (不自保证 wait_action_done) 时, thinking 的
+    __aexit__ 仍要阻塞到 action 退出, 否则最后一帧的 observe 会丢失, attention
+    会被误判自然结束而失序. 第三方观测: 从外部事件判断 thinking 不会在 action
+    退出前就退出.
+    """
+    action_queue: janus.Queue[Action] = janus.Queue(maxsize=10)
+    thinking = BaseThinking(
+        attention=_make_attention(),
+        observer=BaseMomentsObserver(max_size=10),
+        put_action=action_queue.sync_q.put_nowait,
+        mindflow_stop_event=ThreadSafeEvent(),
+    )
+
+    action_compiled = asyncio.Event()
+    release_action = asyncio.Event()
+    thinking_exited = asyncio.Event()
+
+    async def consume_action():
+        action = await action_queue.async_q.get()
+        async with action:
+            async for _ in action.logos():
+                pass
+            action.set_compiled()
+            action_compiled.set()
+            # action 已编译但仍存活 (模拟执行中).
+            await release_action.wait()
+
+    async def run_thinking():
+        async with thinking:
+            # articulate 只 wait_compiled, 不自保证 wait_action_done.
+            async with thinking.articulator() as articulator:
+                articulator.send_nowait('logos')
+                await articulator.wait_compiled()
+        thinking_exited.set()
+
+    action_task = asyncio.create_task(consume_action())
+    thinking_task = asyncio.create_task(run_thinking())
+
+    # 等 action 编译完成 (此时 action 仍存活).
+    await asyncio.wait_for(action_compiled.wait(), 2.0)
+    # 给 __aexit__ 的 _wait_last_action_done 一个事件循环窗口.
+    await asyncio.sleep(0.05)
+
+    # 关键断言: action 还没退出, thinking 也不该退出.
+    assert not thinking_exited.is_set()
+
+    # 放 action 退出 → thinking 才退出.
+    release_action.set()
+    await action_task
+    await thinking_task
+    assert thinking_exited.is_set()

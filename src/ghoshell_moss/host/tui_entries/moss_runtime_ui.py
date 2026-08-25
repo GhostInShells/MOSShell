@@ -1,6 +1,6 @@
 from typing import Iterable
 
-from ghoshell_moss.core.blueprint.host import IHost, IShellRuntime
+from ghoshell_moss.core.blueprint.host import IHost, MOSShellRuntime
 from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
@@ -16,7 +16,7 @@ class MOSSRuntimeREPLState(REPLState):
     def __init__(
             self,
             host: IHost,
-            moss: IShellRuntime,
+            moss: MOSShellRuntime,
             name: str = 'MOSS',
     ) -> None:
         self._host = host
@@ -53,9 +53,9 @@ class MOSSRuntimeREPLState(REPLState):
         self.console.output(OutputItem.new("Shell", *result, log="execution done"))
 
 
-class MossRuntimeTUI(MossHostTUI[IShellRuntime]):
+class MossRuntimeTUI(MossHostTUI[MOSShellRuntime]):
 
-    def _get_runtime(self) -> IShellRuntime:
+    def _get_runtime(self) -> MOSShellRuntime:
         return self.host.run()
 
     def _get_session(self):

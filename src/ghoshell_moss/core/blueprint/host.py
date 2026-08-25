@@ -39,7 +39,7 @@ from .shell_trajectory import MShellTrajectory
 import logging
 
 __all__ = [
-    'IShellRuntime', 'IHost',
+    'MOSShellRuntime', 'IHost',
     'MossSystemPrompter', 'IGhostRuntime', 'LoopHealth', 'LoopStatus',
     'SafeMode', 'PendingApproval', 'Verdict',
 ]
@@ -105,7 +105,7 @@ class MossSystemPrompter(SystemPrompter, ABC):
 
 # --- MossRuntime --- #
 
-class IShellRuntime(ABC):
+class MOSShellRuntime(ABC):
     """MOSShell 运行时整体
     完成 matrix / shell 等所有模块装线, 提供统一的交互界面.
     """
@@ -499,7 +499,7 @@ class IGhostRuntime(ABC):
 
     @property
     @abstractmethod
-    def moss(self) -> IShellRuntime:
+    def moss(self) -> MOSShellRuntime:
         """持有的 MossRuntime. 调用方通过 .moss 访问全部 Moss 能力."""
         ...
 
@@ -654,7 +654,7 @@ class IHost(ABC):
             run_shell: bool = True,
             name: str | None = None,
             description: str | None = None,
-    ) -> IShellRuntime:
+    ) -> MOSShellRuntime:
         """启动并返回 MossRuntime.
 
         :param run_shell: 为 True 时, 在 runtime aenter 时启动 shell.

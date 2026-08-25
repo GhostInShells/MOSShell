@@ -21,7 +21,7 @@ from ghoshell_moss.core.mindflow._mindflow import (
 )
 from ghoshell_moss.core.mindflow._attention import AbsAttention, BaseAttention
 from ghoshell_moss.core.mindflow._think import BaseThinking
-from ghoshell_moss.core.mindflow._action import BaseArticulator, BaseAction, BaseActionGate, ActionLogosRequest
+from ghoshell_moss.core.mindflow._action import BaseArticulator, BaseAction, BaseActionGate
 from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus, InputNucleusMeta
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 from ghoshell_moss.core.mindflow.command_nucleus import (

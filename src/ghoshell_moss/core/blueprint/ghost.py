@@ -150,7 +150,7 @@ class Ghost(ABC):
         return None
 
     @abstractmethod
-    def think(self, articulator: Thinking) -> AsyncIterable[str]:
+    def think(self, thinking: Thinking) -> AsyncIterable[str]:
         """
         articulate the logos from context
         :returns str: return the logos for publish stream
@@ -190,8 +190,7 @@ class Ghost(ABC):
     def on_thinking_exit(
             self,
             thinking: Thinking,
-            logos: str,
-            error: Exception | None,
+            error: BaseException | None,
     ) -> None:
         """Called after articulate() completes, success or failure.
 

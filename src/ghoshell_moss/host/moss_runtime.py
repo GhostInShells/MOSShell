@@ -19,7 +19,7 @@ from ghoshell_moss.message.message import Message
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell
 from ghoshell_moss.core.blueprint.host import (
-    IShellRuntime, MossSystemPrompter,
+    MOSShellRuntime, MossSystemPrompter,
 )
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.project import HostMode
@@ -46,7 +46,7 @@ class _MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
     pass
 
 
-class ShellRuntimeImpl(IShellRuntime):
+class ShellRuntimeImpl(MOSShellRuntime):
 
     def __init__(
             self,

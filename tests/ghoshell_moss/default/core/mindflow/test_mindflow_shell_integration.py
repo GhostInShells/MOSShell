@@ -1,336 +1,54 @@
 """Mindflow + Shell 集成 — 协议级三循环拓扑测试.
 
 定位:
-    GhostRuntimeImpl 把 ``mindflow.py:1404 __example__`` 的规范三循环 (main_loop /
-    articulate_loop / action_loop, 通过两个 janus.Queue 解耦, 用 Logos 流耦合
-    articulator 和 action) 工程化封装. 直接测 GhostRuntimeImpl 需要 mock 整个
-    MossRuntime, 成本高且失真. 本文件用 **真 BaseMindflow + 真 CTMLShell**, 手写
-    一份最小三循环编排, 验证抽象层的协议契约 — 不依赖 ghost / matrix / session.
+    ``MindflowInShell`` (``core.mindflow.mindflow_in_shell``) 是 mindflow 三循环
+    的标准装线逻辑, 测试目标就是它本身. 本文件用 ``MindflowInShellTestSuite`` —
+    它的测试专用具体子类 — 复用真实三循环, 只注入 logos 来源 / signal 与观测,
+    验证抽象层的协议契约, 不依赖 ghost / matrix / session.
 
-设计约束 (来自 ``core.blueprint.mindflow``):
-    - ``main_loop``: ``async for attention in mindflow.loop()`` → ``async for
-      (articulator, action) in attention.loop()`` → 两 queue put_nowait.
-      ``impulse.interrupt = True`` 时进 attention.loop 前先 ``shell.clear()`` —
-      shell.clear 是 stop_interpretation 的超集 (清 speech + tree + interpreter),
-      与 GhostRuntimeImpl._main_loop 对齐.
-    - ``articulate_loop``: 从 articulator queue 取 articulator, 在它的生命周期里
-      调 ``send_logos(...)`` 把模型 logos 流送出. 测试里直接灌固定字串.
-    - ``action_loop``: 从 action queue 取 action, ``await action.wait_ready()``,
-      用 ``action.received_logos()`` 作为 interpreter 的输入流, ``action.outcome(...)``
-      回写结果. 这是 logos 流被 shell 真正执行的地方.
+    参照关系 (重构方向): 这套测试是规范 — atom / dolores 等 ghost 原型在跑通后
+    才知道如何装线; 测试不反向复刻 ghost 的实现.
 
-非目标:
-    - 不测 ghost.articulate() / on_articulate_exit (没有 ghost).
-    - 不测 moss_dynamic / refresh_metas 时序 (独立测试组).
-    - 不测 GhostRuntimeImpl 的生命周期编排 (independent).
+设计约束 (来自 ``core.mindflow.mindflow_in_shell``):
+    - ``_thinking_loop``: 从 ``mindflow.thinking_loop()`` 取 ``Thinking``, 先预发
+      ``moment.command_logos``, 再走 ``_articulate_from_thinking`` (可拆卸 logos
+      来源). ``thinking.effort() == 'none'`` 时 early return (reflex 反射弧).
+    - ``_action_loop``: 从 ``mindflow.action_loop()`` 取 ``Action``, ``wait_ready``
+      后用 ``action.logos()`` 作为 interpreter 输入流, 执行 logos.
+    - ``interrupt == True`` 的新 attention 起步先 ``shell.clear()`` 停旧 logos.
 """
 import asyncio
-import contextlib
-from collections.abc import Coroutine
-from typing import AsyncIterator, Awaitable, Callable, AsyncIterable
+from typing import AsyncIterable
 
-import janus
 import pytest
 
-from ghoshell_moss.core import CommandTask
-from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.core.concepts.interpreter import Interpretation
-from ghoshell_moss.core.ctml import new_ctml_shell
-from ghoshell_moss.core.blueprint.channel_builder import new_channel
+from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
 from ghoshell_moss.core.blueprint.mindflow import (
-    Action,
-    Articulator,
-    Attention,
     ChallengeMode,
     Impulse,
-    InputSignalMeta,
     Priority,
-    Mindflow,
+    Thinking,
 )
-from ghoshell_moss.core.mindflow import (
-    BaseMindflow,
-    CommandNucleus,
-    InputSignalNucleus,
-    InterruptNucleus,
-    NotifyNucleus,
-)
+from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.mindflow.command_nucleus import new_command_signal
 from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
 from ghoshell_moss.message import Message
 
-
-# ============================================================
-# Helpers
-# ============================================================
-
-
-def _build_mindflow() -> BaseMindflow:
-    """Input + Interrupt + Command + Notify — 覆盖四种 nucleus 的最小集合."""
-    return BaseMindflow(
-        InputSignalNucleus(),
-        InterruptNucleus(suppress_seconds=0.05),
-        CommandNucleus(),
-        NotifyNucleus(),
-    )
-
-
-def _input_signal(text: str, *, priority: Priority = Priority.NOTICE):
-    return InputSignalMeta().to_signal(
-        Message.new().with_content(text),
-        priority=priority,
-    )
-
-
-LogosProvider = Callable[[Articulator], Awaitable[AsyncIterator[str]]]
-
-
-class ThreeLoopSuite:
-    """三循环句柄, 供测试观察 + 关停."""
-
-    def __init__(
-            self,
-            *,
-            mindflow: Mindflow | None = None,
-            shell: MOSShell | None = None,
-    ):
-        self.mindflow = mindflow or _build_mindflow()
-        self.shell = shell or new_ctml_shell()
-        self.observed_attentions: list[Attention] = []
-        self.main_task: asyncio.Task | None = None
-        self.articulate_task: asyncio.Task | None = None
-        self.action_task: asyncio.Task | None = None
-        self.attention_count: int = 0
-        self.articulation_count: int = 0
-        self.moments = []
-        self.impulses = []
-        self.articulation_done_count: int = 0
-        self.action_count: int = 0
-        self.action_done_count: int = 0
-        self.attention_callback: Callable[[Attention], Coroutine] | None = None
-        self.articulate_func: Callable[[Articulator], Coroutine] | None = None
-        self.action_callback: Callable | None = None
-        self.interpretations: list[Interpretation] = []
-        # 记录 interrupt 协议触发的 shell.clear 调用次数 —
-        # interrupt 协议 (main_loop 入口) 要求停止所有执行中的 logos.
-        # shell.clear 是 stop_interpretation 的超集 — 关闭 interpreter +
-        # 清 speech 缓冲 + 取消 runtime tree pending command tasks.
-        # 与 shell_clear_calls (action abort 三阶段触发的 clear) 分开计,
-        # 让 interrupt 协议和 abort 协议的断言彼此独立.
-        self.interrupt_clear_calls: int = 0
-        # 记录 shell.clear 调用次数 — action abort → clear 协议的反推依据.
-        self.shell_clear_calls: int = 0
-        # 思维奔逸 (mind wandering) 预留 flag.
-        # False (current default): action 等所有 task 跑完 (wait_stopped) 才结束本帧,
-        #   articulator 必须等执行完毕才能进下一帧 — 严格"思考→执行→观察→再思考".
-        # True (future): action 在 wait_compiled 后立刻结束 (CTML 已解析, task 后台跑),
-        #   articulator 立刻进下一帧思考, 真正实现全双工 — 执行的同时思考下一步.
-        #   未来 ghost runtime 也应该把这个开关暴露给应用层, 配合 action.is_aborted /
-        #   shell.clear 协议管控奔逸状态下的中断.
-        self.action_returns_at_compiled: bool = False
-
-        self.attention_started = asyncio.Event()
-        self.attention_stopped = asyncio.Event()
-        self.attention_stopped.set()
-        self.last_attention: Attention | None = None
-        self._art_q = janus.Queue[Articulator]()
-        self._act_q = janus.Queue[Action]()
-        self.exceptions: list[Exception] = []
-        self._exit_stack = contextlib.AsyncExitStack()
-
-    async def main_loop(self):
-        try:
-            await self.mindflow.wait_started()
-            async for attention in self.mindflow.loop():
-                self.attention_count += 1
-                self.observed_attentions.append(attention)
-                # 回调探知.
-                if self.attention_callback is not None:
-                    await self.attention_callback(attention)
-                # 执行预设逻辑.
-                impulse = attention.draw_from()
-                self.impulses.append(impulse)
-                if impulse.interrupt:
-                    # interrupt 协议: 停止所有执行中的 logos.
-                    # 与 GhostRuntimeImpl._main_loop 对齐 — shell.clear() 而非
-                    # stop_interpretation, 是后者的超集 (清 speech + tree + interpreter).
-                    self.interrupt_clear_calls += 1
-                    await self.shell.clear()
-                # 开启上下文.
-                async with attention:
-                    self.last_attention = attention
-                    self.attention_started.set()
-                    self.attention_stopped.clear()
-                    async for art, act in attention.loop():
-                        self._art_q.sync_q.put_nowait(art)
-                        self._act_q.sync_q.put_nowait(act)
-
-                self.attention_stopped.set()
-                self.attention_started.clear()
-
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.exceptions.append(e)
-
-    async def articulate_loop(self):
-        try:
-            while True:
-                art = await self._art_q.async_q.get()
-                # 从 queue 收到 articulator 才算一次 articulation. 修正原版 +1 时序.
-                self.articulation_count += 1
-                async with art:
-                    self.moments.append(art.moment)
-                    # 时序契约 (与 GhostRuntimeImpl._run_articulator 对齐):
-                    # 1. refresh_metas 阻塞 — 拿实时 perspectives, timeout/stale_time 等值 0.5s
-                    #    (人类感知阈值内, 慢通道理论上应自行改推模式).
-                    await self.shell.refresh_metas(0.5, stale_time=0.5)
-                    # 2. command_logos 预发送给 action.
-                    if art.moment.command_logos:
-                        art.send_nowait(art.moment.command_logos)
-                    if art.thinking_effort() == 'none':
-                        # 模拟 _run_articulator early return: 不调 ghost.articulate.
-                        # 注意: early return 路径不拼 moss_dynamic — 不思考就不需要.
-                        continue
-                    # 3. moss_dynamic 注入 perspective — 复用 articulator 入口刚刷的缓存
-                    #    (stale_time=0.5 保证命中, 零阻塞代价).
-                    art.moment.with_perspective(
-                        'moss_dynamic',
-                        self.shell.dynamic_messages(available_only=True, stale_time=0.5),
-                    )
-                    # 4. articulate.
-                    if self.articulate_func:
-                        await art.create_task(
-                            self.articulate_func(art)
-                        )
-                self.articulation_done_count += 1
-        except janus.AsyncQueueShutDown:
-            pass
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.exceptions.append(e)
-
-    async def action_loop(self):
-        try:
-            while True:
-                act = await self._act_q.async_q.get()
-                self.action_count += 1
-                async with act:
-                    if self.action_callback:
-                        await act.create_task(self._run_action(act))
-                    else:
-                        await self._run_action(act)
-                # 时序契约 (与 GhostRuntimeImpl._run_action 对齐):
-                # action 结束触发 fire-and-forget refresh_metas, 预热下一轮
-                # articulator 入口的 stale_time 检查. 不 await — 让 action_loop
-                # 立即进下一轮. 异常吞掉记 warning, 不影响主循环.
-                asyncio.create_task(self._post_action_refresh())
-                self.action_done_count += 1
-
-        except janus.AsyncQueueShutDown:
-            pass
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.exceptions.append(e)
-
-    async def _post_action_refresh(self) -> None:
-        """fire-and-forget refresh, 内部捕获异常防 task 静默崩溃."""
-        try:
-            await self.shell.refresh_metas()
-        except Exception as e:
-            # 与 GhostRuntimeImpl 异常分级一致: 非关键路径异常不中断主循环.
-            self.exceptions.append(e)
-
-    async def _run_action(self, act: Action) -> None:
-        """对齐 ``GhostRuntimeImpl._stream_execute`` 的标准三阶段实现.
-
-        协议契约:
-            - 三阶段 (feed → compile → execute) 各自结束后 check ``act.is_aborted()``,
-              发现 abort 立刻 ``shell.clear()`` 取消 pending command, 返回.
-            - ``InterpretError`` 是一等控制流 feature: 模型错 CTML / 命令异常时,
-              interpreter 内部已保留 partial results + 标记 observe=True, 调用方
-              捕获后让 attention 进下一帧自我纠正. **不 swallow 成静默**.
-            - 不捕获 ``Exception`` 兜底 — ``CancelledError`` 继承 ``BaseException``
-              本就不被 ``except Exception`` 拦, 其他异常应该 bubble 让 action loop
-              的统一 handler 进 ``self.exceptions``.
-        """
-        await act.wait_ready()
-        if act.is_aborted():
-            return
-        interp = await self.shell.interpreter(kind='append', clear_after_exit=False)
-        # 提前拿出 interpretation.
-        interpretation = interp.interpretation()
-        self.interpretations.append(interpretation)
-
-        def _on_task(task: CommandTask) -> None:
-            r = task.task_result()
-            act.outcome(*r.as_messages(), observe=r.observe)
-
-        async def _check_abort_and_clear() -> bool:
-            if not act.is_aborted():
-                return False
-            self.shell_clear_calls += 1
-            await self.shell.clear()
-            return True
-
-        async with interp:
-            interp.on_task_done(_on_task)
-            try:
-                # 阶段 1: feed. received_logos 自带 is_aborted 检查, abort 时自然 break.
-                async for delta in act.received_logos():
-                    interp.feed(delta)
-                if await _check_abort_and_clear():
-                    return
-                # 阶段 2: commit + wait_compiled.
-                interp.commit()
-                await interp.wait_compiled()
-                if await _check_abort_and_clear():
-                    return
-                # 思维奔逸切入点: 若开关打开, CTML 解析完毕即结束本帧, task 后台继续跑,
-                # articulator 可立即进下一帧. 默认关闭 — 严格等所有 task 跑完.
-                if self.action_returns_at_compiled:
-                    return
-                # 阶段 3: wait_stopped — 所有 task 跑完.
-                await interp.wait_stopped()
-                if await _check_abort_and_clear():
-                    return
-            except InterpretError:
-                # 控制流 feature — interpretation 已保留 partial results, observe=True
-                # 让 attention 进下一帧, 模型自我纠正. 真生产里还会 session.output('error', ...).
-                pass
-
-    async def __aenter__(self):
-        await self._exit_stack.__aenter__()
-        await self._exit_stack.enter_async_context(self.shell)
-        await self._exit_stack.enter_async_context(self.mindflow)
-        self.action_task = asyncio.create_task(self.action_loop())
-        self.articulate_task = asyncio.create_task(self.articulate_loop())
-        self.main_task = asyncio.create_task(self.main_loop())
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        self.action_task.cancel()
-        self.articulate_task.cancel()
-        self.main_task.cancel()
-        await self._exit_stack.__aexit__(exc_type, exc, tb)
-
-
-# ============================================================
-# Tests
-# ============================================================
+from .mindflow_in_shell_test_suite import (
+    MindflowInShellTestSuite,
+    input_signal,
+)
 
 
 @pytest.mark.asyncio
 async def test_loop_baseline():
     """裸基线: 三循环协作跑通一条 logos.
 
-    验证 ``signal → mindflow → attention → (articulator, action) → shell.interpreter``
+    验证 ``signal → mindflow → thinking → articulate → action → interpreter``
     全链路通畅, 是后续抢占/中断测试的健康基线.
     """
-    suite = ThreeLoopSuite()
+    suite = MindflowInShellTestSuite()
 
     content = ''
 
@@ -340,20 +58,16 @@ async def test_loop_baseline():
             content += chunk
 
     suite.shell.main_channel.build.content_command(content_func)
-
-    async def articulate(art: Articulator) -> None:
-        art.send_nowait("hello world")
-
-    suite.articulate_func = articulate
+    suite.articulate = suite.text_articulator("hello world")
 
     async with suite:
-        suite.mindflow.add_signal(InputSignalMeta().to_signal("hello"))
+        suite.add_signal(input_signal("hello"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
 
     assert content == 'hello world'
     assert suite.attention_count == 1
-    assert suite.articulation_count == 1
+    assert suite.thinking_count == 1
     assert suite.articulation_done_count == 1
     assert suite.action_count == 1
     assert suite.action_done_count == 1
@@ -369,17 +83,14 @@ async def test_loop_baseline():
 async def test_command_signal_skips_articulate_runs_logos():
     """thinking_effort='none' 协议: CommandNucleus 产 impulse 走 reflex 路径.
 
-    协议契约 (06-12 设计决策 #3):
+    协议契约:
         - CommandNucleus(signal) → impulse with thinking_effort='none' + logos=command_logos
-        - main_loop 仍然展开 (articulator, action) 配对
-        - articulator 检查 thinking_effort=='none' → early return, **不调 send_logos**
-        - action 仍然 wait_ready / received_logos: moment.command_logos 已被 attention
-          预填到 logos 流, action 自然消费并交给 interpreter
+        - thinking 检查 thinking_effort=='none' → early return, **不调 articulate**
+        - action 仍然 wait_ready / logos: moment.command_logos 已被预填到 logos 流,
+          action 自然消费并交给 interpreter
         - 模型 articulate 完全没参与, 但 shell 执行了命令
-
-    这把 "reflex 反射弧" 的协议层钉住: 命令绕过模型思考但保留完整 shell 执行链.
     """
-    suite = ThreeLoopSuite()
+    suite = MindflowInShellTestSuite()
 
     executed = []
 
@@ -391,14 +102,14 @@ async def test_command_signal_skips_articulate_runs_logos():
 
     articulate_called = 0
 
-    async def articulate(_art: Articulator) -> None:
+    async def articulate(_thinking: Thinking) -> None:
         nonlocal articulate_called
         articulate_called += 1
 
-    suite.articulate_func = articulate
+    suite.articulate = articulate
 
     async with suite:
-        suite.mindflow.add_signal(new_command_signal('reflex_logos'))
+        suite.add_signal(new_command_signal('reflex_logos'))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
 
@@ -407,7 +118,7 @@ async def test_command_signal_skips_articulate_runs_logos():
     assert impulse.source == 'command_nucleus'
     assert impulse.thinking_effort == 'none'
     assert impulse.logos == 'reflex_logos'
-    # articulator 走 early-return 分支, articulate_func 不应被触发.
+    # thinking 走 early-return 分支, articulate 不应被触发.
     assert articulate_called == 0
     # 但 action 跑了, content_command 收到 logos.
     assert ''.join(executed) == 'reflex_logos'
@@ -416,16 +127,118 @@ async def test_command_signal_skips_articulate_runs_logos():
 
 
 @pytest.mark.asyncio
+async def test_single_input_signal_yields_exactly_one_percept():
+    """一条 InputSignal 产生的第一帧 moment.percepts 不应有重复消息.
+
+    这是 percepts 改为 source-keyed dict 的前置基线 — 确保当前正常路径
+    下不产生重复, dict 迁移时零行为变化.
+    """
+    suite = MindflowInShellTestSuite()
+
+    captured_percepts = []
+
+    async def articulate(thinking: Thinking) -> None:
+        captured_percepts.extend(list(thinking.moment.percepts_messages()))
+        art = thinking.articulator()
+        async with art:
+            art.send_nowait("ok")
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        async for _ in chunks__:
+            pass
+
+    suite.shell.main_channel.build.content_command(content_func)
+
+    async with suite:
+        suite.add_signal(input_signal("hello"))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
+
+    # 一条信号只产生一组 percepts, 不应重复.
+    assert len(captured_percepts) == 1
+    assert captured_percepts[0].contents[0]["text"] == "hello"
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
+async def test_articulate_streams_multiple_chunks():
+    """边界: articulate 分多段 send, content_command 收到拼接后的完整流.
+
+    钉住 logos 流式喂入的语义 — 多个 delta 不丢、不重、顺序保持.
+    """
+    suite = MindflowInShellTestSuite()
+
+    content = ''
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        nonlocal content
+        async for chunk in chunks__:
+            content += chunk
+
+    suite.shell.main_channel.build.content_command(content_func)
+
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            for piece in ("hello", " ", "world"):
+                art.send_nowait(piece)
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async with suite:
+        suite.add_signal(input_signal("hi"))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
+
+    assert content == 'hello world'
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
+async def test_notify_signal_quiet_creates_attention():
+    """边界: quiet 系统 (无 attention) 下 notify 走 default 路径创建 attention.
+
+    钉住 ``ChallengeMode.notify`` 在"抢占成功侧"不偏离 default — 只有抢占失败侧
+    才 buffer;quiet 时没有 defender, notify 正常创建 attention.
+    """
+    suite = MindflowInShellTestSuite()
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        async for _ in chunks__:
+            pass
+
+    suite.shell.main_channel.build.content_command(content_func)
+    suite.articulate = suite.text_articulator("done")
+
+    async with suite:
+        suite.add_signal(new_notify_signal(Message.new().with_content("user_msg")))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
+
+    assert suite.attention_count == 1
+    impulse = suite.impulses[0]
+    assert impulse.source == 'notify_nucleus'
+    assert impulse.mode == ChallengeMode.notify.value
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
 async def test_interrupt_signal_stops_running_interpreter():
     """interrupt 协议: action 跑 long task 中, interrupt signal 抢占 + shell.clear.
 
-    协议契约 (GhostRuntimeImpl._main_loop 与本套件对齐):
-        - InterruptNucleus 产 impulse: priority=FATAL + mode=notify + thinking_effort='none' + interrupt=True
+    协议契约:
+        - InterruptNucleus 产 impulse: FATAL + notify + thinking_effort='none' + interrupt=True
         - FATAL 必抢占, attention1 被 abort
-        - main_loop 在进入 attention2.loop() 前调 shell.stop_interpretation()
+        - 新 attention 起步先调 shell.clear() (interrupt 协议)
         - attention1 action 里运行的长任务被 CancelledError 取消
     """
-    suite = ThreeLoopSuite()
+    suite = MindflowInShellTestSuite()
 
     long_task_started = asyncio.Event()
     long_task_outcome = []  # 'cancelled' | 'completed'
@@ -444,14 +257,18 @@ async def test_interrupt_signal_stops_running_interpreter():
 
     suite.shell.main_channel.build.content_command(content_func)
 
-    async def articulate(art: Articulator) -> None:
-        art.send_nowait("long_running_logos")
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            art.send_nowait("long_running_logos")
+            if not thinking.is_aborted():
+                await art.wait_action_done()
 
-    suite.articulate_func = articulate
+    suite.articulate = articulate
 
     async with suite:
         # 第一帧: input signal 起 attention, 跑 long task.
-        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
+        suite.add_signal(input_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(long_task_started.wait(), timeout=1)
         # 长任务确实没结束.
@@ -460,11 +277,11 @@ async def test_interrupt_signal_stops_running_interpreter():
         attention1 = suite.last_attention
 
         # 第二帧: interrupt signal 抢占.
-        suite.mindflow.add_signal(new_interrupt_signal(Message.new().with_content("halt")))
+        suite.add_signal(new_interrupt_signal(Message.new().with_content("halt")))
 
         # attention1 被 abort, attention2 起.
-        await asyncio.wait_for(attention1.wait_aborted(), timeout=2)
-        # 等 attention2 也走完 (interrupt impulse thinking_effort='none', 没有 logos → 自然结束).
+        await asyncio.wait_for(attention1.wait_abort(), timeout=2)
+        # 等 attention2 也走完 (interrupt effort='none', 无 logos → 自然结束).
         for _ in range(100):
             if suite.attention_count >= 2 and suite.attention_stopped.is_set():
                 break
@@ -479,7 +296,7 @@ async def test_interrupt_signal_stops_running_interpreter():
     assert impulse2.thinking_effort == 'none'
     assert impulse2.interrupt is True
 
-    # main_loop 触发了 shell.clear (interrupt 协议).
+    # attention 起步触发了 shell.clear (interrupt 协议).
     assert suite.interrupt_clear_calls == 1
 
     # 长任务收到 CancelledError.
@@ -493,13 +310,13 @@ async def test_interrupt_during_articulate_aborts_logos_stream():
 
     协议契约:
         articulate 阶段被打断时, articulator 收到 abort, send_nowait 之后的剩余流不再
-        传到 action; action 的 received_logos() 应该看到截断的流, interpreter
+        传到 action; action 的 logos() 应该看到截断的流, interpreter
         不会执行后续命令.
 
     与 test_interrupt_signal_stops_running_interpreter 的区别: 上一个测中断打在
     action 里, 这里打在 articulate 里, 验证两个时序切片都能正确收线.
     """
-    suite = ThreeLoopSuite()
+    suite = MindflowInShellTestSuite()
 
     after_articulate_check = []
 
@@ -513,29 +330,31 @@ async def test_interrupt_during_articulate_aborts_logos_stream():
     articulate_continue = asyncio.Event()
     articulate_finished = []  # 是否走到了 send 第二段.
 
-    async def articulate(art: Articulator) -> None:
-        art.send_nowait("first_chunk ")
-        articulate_started.set()
-        # 卡住, 等待外部触发 interrupt.
-        try:
-            await asyncio.wait_for(articulate_continue.wait(), timeout=3.0)
-        except asyncio.CancelledError:
-            articulate_finished.append('cancelled')
-            raise
-        art.send_nowait("second_chunk")
-        articulate_finished.append('completed')
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            art.send_nowait("first_chunk ")
+            articulate_started.set()
+            # 卡住, 等待外部触发 interrupt.
+            try:
+                await asyncio.wait_for(articulate_continue.wait(), timeout=3.0)
+            except asyncio.CancelledError:
+                articulate_finished.append('cancelled')
+                raise
+            art.send_nowait("second_chunk")
+            articulate_finished.append('completed')
 
-    suite.articulate_func = articulate
+    suite.articulate = articulate
 
     async with suite:
-        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
+        suite.add_signal(input_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(articulate_started.wait(), timeout=1)
         attention1 = suite.last_attention
 
         # 中断打在 articulate 卡住阶段.
-        suite.mindflow.add_signal(new_interrupt_signal(Message.new().with_content("halt")))
-        await asyncio.wait_for(attention1.wait_aborted(), timeout=2)
+        suite.add_signal(new_interrupt_signal(Message.new().with_content("halt")))
+        await asyncio.wait_for(attention1.wait_abort(), timeout=2)
 
         # 等第二帧 attention 收线.
         for _ in range(100):
@@ -559,7 +378,7 @@ async def test_interrupt_during_articulate_aborts_logos_stream():
 async def test_action_aborted_triggers_shell_clear_cancels_pending():
     """action abort 路径: shell.clear() 取消 pending command.
 
-    协议契约 (GhostRuntimeImpl._stream_execute 三阶段 abort 检查):
+    协议契约:
         - action loop 在 feed/compile/execute 各阶段后检查 ``act.is_aborted()``
         - 一旦发现 abort, 调 ``shell.clear()`` 显式取消 pending command (而非
           仅靠 ``clear_after_exit=False`` 的 interpreter 自然退出 — 那条路径
@@ -569,17 +388,8 @@ async def test_action_aborted_triggers_shell_clear_cancels_pending():
     关键设计: interpreter 用 ``kind='append', clear_after_exit=False`` 保证
     interpreter 退出本身不清 shell command (跨帧延续语义), 取消运行中 task
     是 action loop 的责任 — 通过 ``shell.clear()`` 显式触发.
-
-    场景:
-        - 注册一个长任务 ``slow:long_task`` (sleep 5s)
-        - action loop 开始消费 logos, feed 进 interpreter, long_task 开始跑
-        - 在 long_task 进入 sleep 后, 外部直接调 ``attention.abort('test')``
-        - action loop 在 received_logos 循环 (feed 阶段) 检查到 is_aborted,
-          调 shell.clear(), return.
-        - 验证: long_task 收到 CancelledError, interpretation 里有 cancelled task,
-          suite.shell_clear_calls == 1.
     """
-    suite = ThreeLoopSuite()
+    suite = MindflowInShellTestSuite()
 
     long_task_started = asyncio.Event()
     long_task_outcome = []
@@ -599,19 +409,21 @@ async def test_action_aborted_triggers_shell_clear_cancels_pending():
 
     suite.shell.main_channel.import_channels(chan)
 
-    async def articulate(art: Articulator) -> None:
-        # 发完命令后还要继续喂一些字串, 制造 received_logos 循环还在转的窗口,
-        # 给外部 abort 一个时序点.
-        art.send_nowait("<slow:long_task/>")
-        # 多 send 几次小片让 feed 循环活跃一段时间. 每片之间 sleep 让出 control.
-        for _ in range(50):
-            await asyncio.sleep(0.05)
-            art.send_nowait(" ")
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            # 发完命令后继续喂字串, 制造 logos 循环还在转的窗口, 给外部 abort 时序点.
+            art.send_nowait("<slow:long_task/>")
+            for _ in range(50):
+                await asyncio.sleep(0.05)
+                art.send_nowait(" ")
+            if not thinking.is_aborted():
+                await art.wait_action_done()
 
-    suite.articulate_func = articulate
+    suite.articulate = articulate
 
     async with suite:
-        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
+        suite.add_signal(input_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(long_task_started.wait(), timeout=2)
         assert not long_task_outcome
@@ -637,126 +449,19 @@ async def test_action_aborted_triggers_shell_clear_cancels_pending():
 
 
 @pytest.mark.asyncio
-async def test_notify_buffer_drains_to_next_attention_percepts():
-    """notify 抢占失败 → mindflow buffer → 下一帧 attention 的 moment.percepts.
-
-    协议契约:
-        - ``ChallengeMode.notify`` 抢占失败时, messages 进 ``mindflow._buffered_messages``
-          而非 suppress (notify 偏离侧).
-        - mindflow 在 ``_set_attention`` 时给 attention 注册 ``"MindflowBuffer"``
-          percepts_func (= ``_pop_buffer``).
-        - 下一帧 attention 的 ``_prepare_moment`` 调 percepts_funcs, buffer
-          被 drain 到 ``moment.percepts``.
-
-    场景:
-        - attention1 起 (input signal, ``protection_time=10.0`` 让它无法被同优先级抢占)
-        - 在 attention1 活的时候发 notify signal (NOTICE) → 抢占失败 (保护期内) → buffer
-        - 验证 attention1 期间 ``mindflow.get_buffered(pop=False)`` 能看见 notify 内容
-        - attention1 结束后 (用 abort), 注入第二个 input signal → attention2
-        - 在 attention2 的 articulate_func 里检查 ``art.moment.percepts`` 包含 notify 文本
-    """
-    suite = ThreeLoopSuite()
-
-    # 用 add_impulse 注入带保护期的 impulse. 普通 InputSignal 不带 protection_time.
-    captured_percepts: list[list[Message]] = []
-    notify_text = "notify_payload_xyz"
-
-    attention1_running = asyncio.Event()
-    release_attention1 = asyncio.Event()
-    attention2_articulate_done = asyncio.Event()
-
-    async def articulate(art: Articulator) -> None:
-        if not attention1_running.is_set():
-            # 第一帧.
-            attention1_running.set()
-            # 卡住, 给主测试时间发 notify signal 并验 buffer.
-            await asyncio.wait_for(release_attention1.wait(), timeout=3.0)
-            art.send_nowait("frame1_done")
-        else:
-            # 第二帧 — 此时 _prepare_moment 已经把 buffer drain 到 percepts.
-            captured_percepts.append(list(art.moment.percepts_messages()))
-            art.send_nowait("frame2_done")
-            attention2_articulate_done.set()
-
-    suite.articulate_func = articulate
-
-    async def content_func(chunks__: AsyncIterable[str]) -> None:
-        async for _ in chunks__:
-            pass
-
-    suite.shell.main_channel.build.content_command(content_func)
-
-    async with suite:
-        # attention1: 用 add_impulse 带 protection_time 注入.
-        suite.mindflow.add_impulse(Impulse(
-            priority=Priority.NOTICE,
-            protection_time=10.0,
-            messages=[Message.new().with_content("user_first")],
-        ))
-        await asyncio.wait_for(attention1_running.wait(), timeout=2)
-
-        # 发 notify signal — 保护期内 NOTICE 同优先级, 抢占失败 → buffer.
-        suite.mindflow.add_signal(new_notify_signal(
-            Message.new().with_content(notify_text),
-            priority=Priority.NOTICE,
-        ))
-        # 给 mindflow consume 时间.
-        await asyncio.sleep(0.2)
-
-        # attention1 仍在跑 (notify 没抢占成功).
-        assert suite.last_attention is not None
-        assert not suite.last_attention.is_aborted()
-
-        # buffer 里应该有 notify 内容.
-        buffered = suite.mindflow.get_buffered(pop=False)
-        buffered_text = ''.join(
-            c['text'] for m in buffered for c in m.contents if 'text' in c
-        )
-        assert notify_text in buffered_text
-
-        # 放 attention1 跑完.
-        release_attention1.set()
-        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
-
-        # attention2: 再发一个 input signal.
-        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_second"))
-        await asyncio.wait_for(attention2_articulate_done.wait(), timeout=2)
-        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
-
-    assert suite.attention_count == 2
-    # attention2 的 moment.percepts 应该 drain 到 notify buffer.
-    assert captured_percepts, "frame2 articulate 没拿到 percepts"
-    frame2_percepts_text = ''.join(
-        c['text'] for m in captured_percepts[0] for c in m.contents if 'text' in c
-    )
-    assert notify_text in frame2_percepts_text
-    assert not suite.exceptions
-
-
-@pytest.mark.asyncio
 async def test_observe_loop_runs_two_frames_in_one_attention():
     """attention 多帧循环: outcome(observe=True) 触发第二帧, 一个 attention 跑两组 logos.
 
-    协议契约 (base_attention.py:654-697 ``_loop``):
+    协议契约 (点 1/5 — thinking 不能先于 last action 退出):
         - attention 不是"每个 signal 一个", 而是"持续观察直到自然结束".
-        - 每帧 yield (Articulator, Action) 配对, 跑完后检查 observe_messages.
-        - 若 action 调了 ``outcome(..., observe=True)`` (或抛 ObserveError),
-          observe_messages 非 None → 进下一帧, 用 ``self._ctx.next_frame()`` 更新.
-        - 若 observe_messages is None → 自然结束.
-
-    这是 mindflow 抽象的核心 — Re-Act 循环里"行动 → 观察 → 再行动"的语义.
-
-    场景:
-        - 一个 attention, 两帧.
-        - 第一帧: articulate 发 logos1 (``<probe:frame1/>``), action 跑 frame1,
-          ``outcome(observe=True)`` 触发下一帧.
-        - 第二帧: articulate 又被调一次 (新 articulator 实例), 发 logos2
-          (``<probe:frame2/>``), action 跑 frame2, ``outcome(observe=False)``,
-          attention 自然结束.
-        - 验证: attention_count == 1 (单 attention), articulation_count == 2
-          (两次 articulator), 两段 logos 都执行了.
+        - 每帧 yield 一个 Thinking, 跑完后检查 need_observe.
+        - 命令返回 ``CommandUtil.observe(...)`` → shell trajectory 通知 mindflow
+          ``add_result(need_observe=True)`` → 进下一帧.
+        - 关键: articulate 必须 ``await art.wait_action_done()`` — 否则 thinking 先于
+          action 退出, observe 还没落盘, mindflow 会误判 attention 自然结束, 签发
+          新 attention 而非同 attention 的第二帧.
     """
-    suite = ThreeLoopSuite()
+    suite = MindflowInShellTestSuite()
 
     chan = new_channel(name="probe")
     frames_seen: list[str] = []
@@ -764,7 +469,7 @@ async def test_observe_loop_runs_two_frames_in_one_attention():
     @chan.build.command()
     async def frame1() -> str:
         frames_seen.append('frame1')
-        return 'observe_me'
+        return CommandUtil.observe('observe_me')
 
     @chan.build.command()
     async def frame2() -> str:
@@ -775,90 +480,281 @@ async def test_observe_loop_runs_two_frames_in_one_attention():
 
     frame_idx = 0
 
-    async def articulate(art: Articulator) -> None:
+    async def articulate(thinking: Thinking) -> None:
         nonlocal frame_idx
-        if frame_idx == 0:
-            art.send_nowait("<probe:frame1/>")
-        else:
-            art.send_nowait("<probe:frame2/>")
-        frame_idx += 1
+        art = thinking.articulator()
+        async with art:
+            if frame_idx == 0:
+                art.send_nowait("<probe:frame1/>")
+            else:
+                art.send_nowait("<probe:frame2/>")
+            frame_idx += 1
+            if not thinking.is_aborted():
+                await art.wait_action_done()
 
-    suite.articulate_func = articulate
-
-    # 自定 _run_action: frame1 outcome 带 observe=True, frame2 不带.
-    # 用 ActionCallback hack 不方便, 直接 monkey-patch suite._run_action.
-
-    call_idx = 0
-
-    async def patched_run_action(act: Action) -> None:
-        nonlocal call_idx
-        await act.wait_ready()
-        if act.is_aborted():
-            return
-        interp = await suite.shell.interpreter(kind='append', clear_after_exit=False)
-        interpretation = interp.interpretation()
-        suite.interpretations.append(interpretation)
-
-        local_idx = call_idx
-        call_idx += 1
-
-        def _on_task(task: CommandTask) -> None:
-            r = task.task_result()
-            # 第一次 action observe=True (触发第二帧), 第二次 observe=False.
-            observe = (local_idx == 0)
-            act.outcome(*r.as_messages(), observe=observe)
-
-        async with interp:
-            interp.on_task_done(_on_task)
-            try:
-                async for delta in act.received_logos():
-                    interp.feed(delta)
-                interp.commit()
-                await interp.wait_compiled()
-                await interp.wait_stopped()
-            except InterpretError:
-                pass
-
-    suite._run_action = patched_run_action
+    suite.articulate = articulate
 
     async with suite:
-        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
+        suite.add_signal(input_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         # 等两帧都跑完 + attention 自然结束.
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
 
     # 一个 attention, 两次 articulation, 两段 logos 都执行.
     assert suite.attention_count == 1
-    assert suite.articulation_count == 2
+    assert suite.thinking_count == 2
     assert suite.articulation_done_count == 2
     assert frames_seen == ['frame1', 'frame2']
     assert not suite.exceptions
 
 
 @pytest.mark.asyncio
-async def test_single_input_signal_yields_exactly_one_percept():
-    """一条 InputSignal 产生的第一帧 moment.percepts 不应有重复消息.
+async def test_notify_buffer_drains_to_next_attention_percepts():
+    """notify 抢占失败 → mindflow buffer → 下一帧 attention 的 moment.percepts.
 
-    这是 percepts 改为 source-keyed dict 的前置基线 — 确保当前正常路径
-    下不产生重复, dict 迁移时零行为变化.
+    协议契约 (点 3 — notify 保护期不丢):
+        - ``ChallengeMode.notify`` 抢占失败时 (含保护期内), messages 进 mindflow
+          buffer 而非 suppress (notify 偏离侧).
+        - mindflow 在下一帧 observe 时把 buffer drain 到 moment.percepts
+          (source = "MomentsInjectedPercepts").
     """
-    suite = ThreeLoopSuite()
+    suite = MindflowInShellTestSuite()
 
-    captured_percepts: list[Message] = []
+    captured_percepts: list[list] = []
+    notify_text = "notify_payload_xyz"
 
-    async def articulate(art: Articulator) -> None:
-        nonlocal captured_percepts
-        captured_percepts.extend(list(art.moment.percepts_messages()))
-        art.send_nowait("ok")
+    attention1_running = asyncio.Event()
+    release_attention1 = asyncio.Event()
+    attention2_articulate_done = asyncio.Event()
 
-    suite.articulate_func = articulate
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            if not attention1_running.is_set():
+                # 第一帧 (attention1): 卡住, 给主测试时间发 notify 并验 buffer.
+                attention1_running.set()
+                await asyncio.wait_for(release_attention1.wait(), timeout=3.0)
+                art.send_nowait("frame1_done")
+            else:
+                # 第二帧 (attention2): observe 已把 buffer drain 到 percepts.
+                captured_percepts.append(list(thinking.moment.percepts_messages()))
+                art.send_nowait("frame2_done")
+                attention2_articulate_done.set()
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        async for _ in chunks__:
+            pass
+
+    suite.shell.main_channel.build.content_command(content_func)
 
     async with suite:
-        suite.mindflow.add_signal(_input_signal("hello"))
-        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
-        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
+        # attention1: 用 add_impulse 带 protection_time 注入.
+        suite.add_impulse(Impulse(
+            priority=Priority.NOTICE,
+            protection_time=10.0,
+            messages=[Message.new().with_content("user_first")],
+        ))
+        await asyncio.wait_for(attention1_running.wait(), timeout=2)
 
-    # 一条信号只产生一组 percepts, 不应重复.
-    assert len(captured_percepts) == 1
-    assert captured_percepts[0].contents[0]["text"] == "hello"
+        # 发 notify signal — 保护期内 NOTICE 同优先级, 抢占失败 → buffer.
+        suite.add_signal(new_notify_signal(
+            Message.new().with_content(notify_text),
+            priority=Priority.NOTICE,
+        ))
+        await asyncio.sleep(0.2)
+
+        # attention1 仍在跑 (notify 没抢占成功).
+        assert suite.last_attention is not None
+        assert not suite.last_attention.is_aborted()
+
+        # buffer 里应该有 notify 内容.
+        buffered = suite.mindflow.moments.peek()
+        buffered_text = ''.join(
+            c['text'] for m in buffered.percepts_messages() for c in m.contents if 'text' in c
+        )
+        assert notify_text in buffered_text
+
+        # 放 attention1 跑完.
+        release_attention1.set()
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
+
+        # attention2: 再发一个 input signal.
+        suite.add_signal(input_signal("user_second"))
+        await asyncio.wait_for(attention2_articulate_done.wait(), timeout=2)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
+
+    assert suite.attention_count == 2
+    assert captured_percepts, "frame2 articulate 没拿到 percepts"
+    frame2_percepts_text = ''.join(
+        c['text'] for m in captured_percepts[0] for c in m.contents if 'text' in c
+    )
+    assert notify_text in frame2_percepts_text
     assert not suite.exceptions
+
+
+@pytest.mark.asyncio
+async def test_interrupt_preempts_protected_attention():
+    """FATAL 必抢占, 无视保护期 (点 1 — challenge 结果与 mode 正交).
+
+    协议契约:
+        - ``priority == FATAL`` 是挑战结果轴 (win), ``mode`` 是处置轴 (buffer/preempt).
+        - 保护期只应让"同/低优先级"的挑战失败, 不该压过 FATAL.
+        - interrupt = FATAL + notify + interrupt=True → 即使当前 attention 在保护期内,
+          也必须抢占成功 (abort 当前 attention, 建新 attention), 而非被 buffer.
+    """
+    suite = MindflowInShellTestSuite()
+
+    release_attention1 = asyncio.Event()
+
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            art.send_nowait("frame1")
+            # 卡住保持 attention1 活着, 让 interrupt 有机会抢它.
+            await asyncio.wait_for(release_attention1.wait(), timeout=3.0)
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        async for _ in chunks__:
+            pass
+
+    suite.shell.main_channel.build.content_command(content_func)
+
+    async with suite:
+        # attention1: 带保护期, 让同优先级挑战必败.
+        suite.add_impulse(Impulse(
+            priority=Priority.NOTICE,
+            protection_time=10.0,
+            messages=[Message.new().with_content("user_first")],
+        ))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        attention1 = suite.last_attention
+        assert attention1 is not None
+
+        # interrupt 抢占 — FATAL 必须无视保护期.
+        suite.add_signal(new_interrupt_signal(Message.new().with_content("halt")))
+        await asyncio.wait_for(attention1.wait_abort(), timeout=2)
+
+        # 等 attention2 (interrupt) 收线.
+        for _ in range(100):
+            if suite.attention_count >= 2:
+                break
+            await asyncio.sleep(0.02)
+
+    release_attention1.set()
+
+    # FATAL 抢占了保护期内的 attention: 两个 attention, 第二个是 interrupt.
+    assert suite.attention_count == 2
+    assert suite.impulses[1].interrupt is True
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
+async def test_three_loop_cycles_20_rounds():
+    """三循环拓扑 20 轮: thinking / attention / action 交互.
+
+    协议验证 (预测先行):
+        - 每轮 thinking 产两帧 articulator: "hello" wait_action_done (同步),
+          "world" wait_compiled (interleaved 超速), 两者之间 observe 一次 moment.
+        - action 侧: "hello" 快退; "world" set_compiled 后 sleep 5s.
+        - attention 旁路 (subscription): 每次 event_k 置位就 abort 当前 attention.
+        - abort 级联砍断 "world" 的 5s.
+
+    预测: 20 个 attention 被 abort, 20 个 hello 完成, 20 个 world 被 abort (0 完成),
+    20 次 articulate observe (moment).
+    """
+    suite = MindflowInShellTestSuite()
+
+    event_k = asyncio.Event()
+
+    hello_done = 0
+    world_done = 0
+    world_aborted = 0
+    attention_aborted = 0
+    moment_observed = 0
+
+    async def articulate(thinking: Thinking) -> None:
+        nonlocal moment_observed
+        event_k.clear()
+        # articulator 1: hello (同步)
+        art1 = thinking.articulator()
+        async with art1:
+            art1.send_nowait('hello')
+            await art1.wait_action_done()
+        # 两次 articulator 之间 observe 一次 moment.
+        thinking.observe()
+        moment_observed += 1
+        # articulator 2: world (interleaved, 只等 compiled)
+        art2 = thinking.articulator()
+        async with art2:
+            art2.send_nowait('world')
+            await art2.wait_compiled()
+        event_k.set()
+
+    suite.articulate = articulate
+
+    # 覆写 action: 手动 hello / world 语义.
+    async def _run_action(action) -> None:
+        nonlocal hello_done, world_done, world_aborted
+        try:
+            async with action:
+                await action.wait_ready()
+                if action.is_aborted():
+                    return
+
+                async def _action_func() -> None:
+                    nonlocal hello_done, world_done, world_aborted
+                    async for delta in action.logos():
+                        if delta == 'hello':
+                            hello_done += 1
+                        elif delta == 'world':
+                            action.set_compiled()
+                            try:
+                                await asyncio.sleep(5.0)
+                                world_done += 1
+                            except asyncio.CancelledError:
+                                world_aborted += 1
+                                raise
+
+                await action.wait_until_done(asyncio.ensure_future(_action_func()))
+        except asyncio.CancelledError:
+            raise
+
+    suite._run_action = _run_action
+
+    # attention 旁路: subscription, 每次 event_k 置位 abort 当前 attention.
+    async def attention_bypass() -> None:
+        nonlocal attention_aborted
+        async for attention in suite.mindflow.attention_loop():
+            await event_k.wait()
+            attention.abort('bypass')
+            attention_aborted += 1
+            event_k.clear()
+
+    async with suite:
+        bypass_task = asyncio.create_task(attention_bypass())
+        # InputSignalNucleus 是 FIFO 聚合, 一次性发 20 个会合成一个 impulse;
+        # 这里逐个发, 每个 cycle (attention 被旁路 abort) 完成后才发下一个.
+        for i in range(20):
+            suite.add_signal(input_signal(f"msg_{i}"))
+            for _ in range(1000):
+                if attention_aborted >= i + 1:
+                    break
+                await asyncio.sleep(0.005)
+        # 退出前捕获, mindflow.__aexit__ 会 _clear() 清空 moments.
+        moment_count = len(suite.mindflow.moments.moments())
+        bypass_task.cancel()
+
+    assert attention_aborted == 20
+    assert hello_done == 20
+    assert world_done == 0
+    assert world_aborted == 20
+    assert moment_observed == 20
+    assert moment_count == 40

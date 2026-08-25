@@ -51,7 +51,6 @@ __all__ = [
     'Articulator',
     'ActionGate',
     'StatementExitedException', 'ActionExitedException', 'AttentionExitedException', 'ThinkExitedException',
-    'LogosRequest',
 ]
 
 SignalName = str
@@ -712,17 +711,19 @@ Logos = AsyncIterator[str]
 类似用魔法吟唱的方式驱动火球, 石头人 等. 
 """
 
-ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'buffered']
+ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'buffered', 'yielded']
 """Impulse challenge 的仲裁结果。
 - preempted: 抢占成功，创建新 Attention
 - suppressed: 被压制，原 nucleus 收到 suppress()
 - absorbed: 同 ID 更新 complete，不抢占
 - initial: 当前无 attention（首个 impulse）
 - buffered: silent 抢占成功侧 / notify 抢占失败侧 → messages 进 mindflow buffer
+- yielded: strength=0 绝不竞争 — 不分 defender/quiet, 不打任何 mode 分支,
+  不建 attention, 由 nucleus 自然清理缓存 (Zen 静默心智模型预留)
 """
 
 
-class MindflowStatement(ABC):
+class AttentionStatement(ABC):
     """mindflow 生产的有状态运行单元."""
 
     @abstractmethod
@@ -798,41 +799,21 @@ class Articulator(ABC):
         ...
 
 
-class LogosRequest(ABC):
-    """一段完整的 logos 请求. 可以在闸门被允许或拒绝. 配合模式执行. """
-
-    @property
-    @abstractmethod
-    def logos(self) -> str:
-        """请求携带的 logos"""
-        ...
-
-    @abstractmethod
-    async def approve(self, message: str = '') -> None:
-        """通过一个 logos 的执行请求. """
-        ...
-
-    @abstractmethod
-    async def reject(self, reason: str = '') -> str:
-        """拒绝请求, 会 abort 整个 attention. 返回结果 (可能已经取消了.)"""
-        ...
-
-    @abstractmethod
-    def approved(self) -> bool | None:
-        """当前检查状态. """
-        ...
-
-
 class ActionGate(ABC):
-    """action 闸门, 在 think 的生命周期下执行. """
+    """action 闸门, 在 think 的生命周期下执行.
+
+    articulator 在 commit (logos 写完) 时调用 ``approve`` 裁决完整 logos:
+    返回 ``(approved, message)``. ``approved=False`` 会由 articulator abort 掉当前
+    action (进而 abort attention), 不重新 loop。
+    """
 
     @abstractmethod
-    async def wait_request(self) -> LogosRequest | None:
-        """等待下一帧的 logos 输出. """
+    async def approve(self, logos: str) -> tuple[bool, str]:
+        """裁决一段完整 logos. 返回 (approved, message). """
         ...
 
 
-class Thinking(MindflowStatement, ABC):
+class Thinking(AttentionStatement, ABC):
     """
     推理决策单元, 将推理的结果发送给执行单元.
     需要实现线程安全.
@@ -922,7 +903,7 @@ class AttentionExitedException(StatementExitedException):
     pass
 
 
-class Action(MindflowStatement, ABC):
+class Action(AttentionStatement, ABC):
     """
     控制 Logos 的执行循环.
     与 Articulator 成对生成.
@@ -976,6 +957,13 @@ class Action(MindflowStatement, ABC):
         """返回持有的 moments, 可以用于 add result. """
         ...
 
+    @abstractmethod
+    def abort_thinking(self) -> None:
+        """
+        Action 是 Thinking 派生出来的, 如果出现了行动不可执行异常, 应该要主动停止思考. 可以不释放注意力.
+        """
+        ...
+
     def add_result(self, *messages: Message | str, observe: bool = False) -> None:
         """
         提交 outcome, 标记是否要引发下一轮观察.
@@ -986,7 +974,7 @@ class Action(MindflowStatement, ABC):
         self.moments.add_result(list(messages), need_observe=observe)
 
 
-class Attention(MindflowStatement, ABC):
+class Attention(AttentionStatement, ABC):
     """
     一种三循环全双工运行时的资源和状态调度单元.
     它通常是 Impulse 创建出来的实例, 一直到 思考/执行 都结束后退出.
@@ -1171,8 +1159,9 @@ class Mindflow(ABC):
         pass
 
     @abstractmethod
-    def when_idle(self, callback: Callable[[Moments], None] | Callable[[Moments], Awaitable[None]]) -> Callable[
-        [], None]:
+    def when_idle(
+            self, callback: Callable[[Moments], None] | Callable[[Moments], Awaitable[None]],
+    ) -> Callable[[], None]:
         """注册闲时回调逻辑. return disposer"""
         ...
 
@@ -1298,16 +1287,28 @@ class Mindflow(ABC):
         """循环生成 action 对象, 来自 think 调用 articulator 生产. """
         ...
 
-    async def run(self, *, put_think: Callable[[Thinking], None], put_action: Callable[[Action], None]) -> None:
-        """ mindflow 运行逻辑, 调度生产 thinking 和 action 两个循环. 通过队列桥接到别的 task 中运行. """
+    async def run(
+            self,
+            *,
+            put_think: Callable[[Thinking], None] | Callable[[Thinking], Awaitable[None]],
+            put_action: Callable[[Action], None] | Callable[[Action], Awaitable[None]],
+    ) -> None:
+        """
+        mindflow 运行逻辑, 调度生产 thinking 和 action 两个循环. 通过队列桥接到别的 task 中运行.
+        实际上也可以就地创建两个 loop.
+        """
 
         async def _run_thinking_loop():
             async for think in self.thinking_loop():
-                put_think(think)
+                v = put_think(think)
+                if asyncio.iscoroutine(v) or asyncio.isfuture(v):
+                    await v
 
         async def _run_action_loop():
             async for action in self.action_loop():
-                put_action(action)
+                v = put_action(action)
+                if asyncio.iscoroutine(v) or asyncio.isfuture(v):
+                    await v
 
         await asyncio.gather(_run_thinking_loop(), _run_action_loop())
 

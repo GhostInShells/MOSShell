@@ -22,7 +22,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
     Nucleus, NucleusMeta, ImpulsePrimitive, Impulse,
 )
 
-__all__ = ['CommandNucleus', 'CommandSignalMeta', 'CommandNucleusMeta']
+__all__ = ['CommandNucleus', 'CommandSignalMeta', 'CommandNucleusMeta', 'new_command_signal']
 
 
 class CommandSignalMeta(SignalMeta):

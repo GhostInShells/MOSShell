@@ -9,12 +9,11 @@ wire-up 契约:
 - Host 不缓存 matrix: 一个 Host 生命周期里 run / run_ghost 只调一次,
   返回的 matrix 由 MossRuntimeImpl / GhostRuntimeImpl 持有生命周期.
 """
-from typing_extensions import Self
 
 import pathlib
 from pathlib import Path
 
-from ghoshell_moss.core.blueprint.host import IHost, IShellRuntime, IGhostRuntime
+from ghoshell_moss.core.blueprint.host import IHost, MOSShellRuntime, IGhostRuntime
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project
@@ -110,7 +109,7 @@ class Host(IHost):
             run_shell: bool = True,
             name: str | None = None,
             description: str | None = None,
-    ) -> IShellRuntime:
+    ) -> MOSShellRuntime:
         mode = self._project.current_mode()
         if mode is None:
             raise RuntimeError(

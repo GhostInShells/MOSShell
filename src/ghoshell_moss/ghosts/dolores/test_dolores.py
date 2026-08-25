@@ -204,7 +204,7 @@ class TestDoloresArticulate:
         ghost = _dolores()
 
         async def collect():
-            return [delta async for delta in ghost.articulate(None)]
+            return [delta async for delta in ghost.think(None)]
 
         assert asyncio.run(collect()) == [""]
 
@@ -219,7 +219,7 @@ class TestDoloresTrajectory:
                 assert ghost._trajectory is None
                 with pytest.raises(RuntimeError):
                     ghost.trajectory
-                collected = [delta async for delta in ghost.articulate(None)]
+                collected = [delta async for delta in ghost.think(None)]
                 assert collected == [""]
 
         asyncio.run(run())
@@ -258,7 +258,7 @@ class TestDoloresTrajectory:
         ghost = _dolores(shell=shell, session=session)
         async with shell:
             async with ghost:
-                collected = [delta async for delta in ghost.articulate(None)]
+                collected = [delta async for delta in ghost.think(None)]
         assert collected == [""]
         # output 面出现 trajectory 角色: epoch start (全量 facade) + frame (帧投影).
         traj_outputs = [o for o in session.outputs if o.role == "trajectory"]
