@@ -522,3 +522,204 @@ def check_cmd(
 
     echo("  moss features set-status <name> completed")
     echo("")
+
+
+# ---------------------------------------------------------------------------
+# review
+# ---------------------------------------------------------------------------
+
+def _load_review_doc(path: Path) -> Optional[tuple[dict, str]]:
+    """Load a review doc's (metadata, content). Returns None if unparseable."""
+    try:
+        import frontmatter
+        post = frontmatter.load(str(path))
+        return dict(post.metadata) if post.metadata else {}, post.content
+    except Exception:
+        return None
+
+
+def _discover_perspectives(global_review_dir: Path, per_feature_review_dir: Path) -> list[dict]:
+    """Discover review perspective docs under the two candidate dirs.
+
+    ``per_feature_review_dir`` overrides ``global_review_dir`` by same perspective
+    name. Returns a list of ``{name, when, description, content, path}``; empty if
+    neither dir holds any parseable review doc. The doc's frontmatter carries
+    ``description`` and ``when``; its body is the perspective prompt.
+    """
+    perspectives: dict[str, dict] = {}
+
+    def _merge(review_dir: Path) -> None:
+        if not review_dir.is_dir():
+            return
+        for doc in sorted(review_dir.glob("*.md")):
+            loaded = _load_review_doc(doc)
+            if loaded is None:
+                continue
+            meta, content = loaded
+            name = doc.stem
+            perspectives[name] = {
+                "name": name,
+                "when": meta.get("when", ""),
+                "description": meta.get("description", ""),
+                "content": content,
+                "path": doc,
+            }
+
+    _merge(global_review_dir)        # low precedence
+    _merge(per_feature_review_dir)   # high precedence (same-name override)
+    return sorted(perspectives.values(), key=lambda p: p["name"])
+
+
+def _resolve_to_fm_path(raw: str) -> Optional[Path]:
+    """Resolve a feature dir or FEATURE.md file path to the FEATURE.md file."""
+    p = Path(raw).expanduser()
+    if p.is_file() and p.name == "FEATURE.md":
+        return p.resolve()
+    if p.is_dir() and (p / "FEATURE.md").is_file():
+        return (p / "FEATURE.md").resolve()
+    return None
+
+
+def _features_root_from_fm(fm_path: Path) -> Optional[Path]:
+    """Walk up from a FEATURE.md to the .ai_partners/features/ root."""
+    for parent in fm_path.parents:
+        if parent.name == "features" and (parent / "workstreams").is_dir():
+            return parent
+    return None
+
+
+def _resolve_review_feature(feature_part: str, features_dir: Optional[Path]) -> tuple[Path, dict, Path]:
+    """Resolve a feature name or path to (features_dir, meta, fm_path)."""
+    fd = _resolve_dir(features_dir)
+
+    # Name form — align with `moss features status/set-status`.
+    meta, err = get_feature(str(fd), feature_part)
+    if err is not None:
+        print_error(f"Workstream '{feature_part}' exists but FEATURE.md has a YAML parse error:")
+        _print_parse_errors([err])
+        raise typer.Exit(code=1)
+    if meta is None:
+        # Path form — a FEATURE.md or feature dir path.
+        fm_path = _resolve_to_fm_path(feature_part)
+        if fm_path is None:
+            print_error(f"Workstream '{feature_part}' not found.")
+            raise typer.Exit(code=1)
+        found_fd = _features_root_from_fm(fm_path)
+        if found_fd is None:
+            print_error(f"Could not locate .ai_partners/features/ for '{feature_part}'.")
+            raise typer.Exit(code=1)
+        fd = found_fd
+        meta, err = get_feature(str(fd), fm_path.parent.name)
+        if err is not None or meta is None:
+            print_error(f"Workstream '{feature_part}' not found.")
+            raise typer.Exit(code=1)
+    else:
+        fm_path = fd / "workstreams" / meta["_feature_path"] / "FEATURE.md"
+
+    return fd, meta, fm_path
+
+
+def _feature_basic_info(meta: dict, fm_path: Path) -> list[str]:
+    """Feature basic info — frontmatter only, not the FEATURE.md body (zero-context)."""
+    return [
+        f"- Name:       {meta.get('_feature_dir', '?')}",
+        f"- Title:      {meta.get('title', '')}",
+        f"- Status:     {meta.get('status', '?')} ({meta.get('priority', '?')})",
+        f"- Milestone:  {meta.get('milestone', '') or 'none'}",
+        f"- Depends:    {', '.join(meta.get('depends', [])) or 'none'}",
+        f"- Description: {meta.get('description', '') or 'none'}",
+        f"- FEATURE.md: {fm_path}",
+    ]
+
+
+@features_app.command("review", short_help="Generate a zero-context feature review prompt.")
+def review_cmd(
+    feature: str = typer.Argument(..., help="Feature name or FEATURE.md path. Optional '<name>@<perspective>'."),
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+    ),
+):
+    """
+    Generate a zero-context feature review prompt (forgetting test).
+
+    Without '@': the meta prompt — top-level review instruction + file discovery
+    (matched FEATURE.md + the review perspectives found) + how to dispatch a review.
+
+    With '<name>@<perspective>': the perspective prompt — feature basic info, the
+    perspective doc (path + content), and a report-back note.
+
+    Emit a command for a fresh sub-agent to run (it has the CLI), not a finished
+    brief: the sub-agent executes `moss features review '<feature>@<perspective>'`,
+    reads FEATURE.md and code from a zero-context standpoint, and reports back.
+    """
+    if "@" in feature:
+        feature_part, perspective = feature.rsplit("@", 1)
+        perspective = perspective.strip()
+    else:
+        feature_part, perspective = feature, None
+
+    fd, meta, fm_path = _resolve_review_feature(feature_part, features_dir)
+    feature_path = meta["_feature_path"]
+    perspectives = _discover_perspectives(
+        fd / "review",
+        fd / "workstreams" / feature_path / "review",
+    )
+
+    if perspective is None:
+        lines = [
+            "# Zero-Context Feature Review — meta prompt",
+            "",
+            "You are about to review a feature from a zero-context standpoint "
+            "(the forgetting test). A fresh reviewer does NOT know the intent the",
+            "developer model held — so it can see gaps that intent blinded it to.",
+            "",
+            "## Feature to review",
+            *_feature_basic_info(meta, fm_path),
+            "",
+            "## Review principle",
+            "Read the declaration (FEATURE.md) and the delivery (code) from scratch.",
+            "Stand is reconstruct, not audit: 'I can't start here' IS a failure; a",
+            "declaration promising X while the code does Y — or never got to X — is drift.",
+            "",
+            "## Perspectives available",
+        ]
+        if perspectives:
+            for p in perspectives:
+                lines.append(f"- {p['name']} (when={p['when']}) — {p['description']}  [{p['path']}]")
+            lines += [
+                "",
+                "To do a perspective review, spawn a fresh sub-agent and tell it to run:",
+                f"    moss features review '{feature_part}@<perspective>'",
+                "That command emits the sub-agent's brief; it reads the FEATURE.md and code itself.",
+            ]
+        else:
+            lines.append("none — no review doc found under features/review/ or <feature>/review/.")
+        lines += [
+            "",
+            "You are not required to use the CLI. You may hand a sub-agent your own",
+            "review instruction instead — the point is a fresh, zero-context reviewer.",
+        ]
+        echo("\n".join(lines))
+        return
+
+    persp = next((p for p in perspectives if p["name"] == perspective), None)
+    if persp is None:
+        available = ", ".join(p["name"] for p in perspectives) or "none"
+        print_error(f"Perspective '{perspective}' not found for '{feature_part}'. Available: {available}")
+        raise typer.Exit(code=1)
+    when = f" ({persp['when']})" if persp["when"] else ""
+    lines = [
+        f"# Zero-Context Feature Review — {perspective}{when}",
+        "",
+        "## Feature (basic info)",
+        *_feature_basic_info(meta, fm_path),
+        f"- Perspective doc: {persp['path']}",
+        "",
+        "## Review brief",
+        persp["content"],
+        "",
+        "Read the FEATURE.md and its code yourself (you have the tools).",
+        "Report back when done — report what you found, not a verdict.",
+    ]
+    echo("\n".join(lines))
