@@ -12,7 +12,7 @@
 from ghoshell_moss import new_shell_main_channel
 from ghoshell_moss.core.ctml.shell.ctml_main import inject_system_primitives
 from ghoshell_moss.channels.moss_cli import build_moss_cli_channel
-from ghoshell_moss.channels.ground_channel import build_grounds_channel
+from ghoshell_moss.channels.ground_channel import build_project_ground_channel
 
 main = new_shell_main_channel()
 
@@ -22,5 +22,5 @@ inject_system_primitives(main, extended=True)
 # -- moss_cli: 去授权的 moss CLI 自举 ---------------------------
 main.import_channels(build_moss_cli_channel(name="moss_cli"))
 
-# -- grounds: 认知场的运行时落点 (MOSS 项目根场) ----------------
-main.import_channels(build_grounds_channel())
+# -- ground: 认知场的运行时落点 (MOSS 项目根场, 法链进 static) ----
+main.import_channels(build_project_ground_channel())
