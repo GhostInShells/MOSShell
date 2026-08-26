@@ -8,9 +8,9 @@ description: 'dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组�
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: agent loop 驱动与治理边界调研完成 (wake/perStep/interrupt), 进入融合基建实现
+status_note: 'agent loop 驱动与治理边界调研完成 (wake/perStep/interrupt); 融合基建落成于 deepseek_harness/ (launcher/client/session/message_mapper/types + pyproject dsh optional); Dolores Path B 的 articulate/enter 收敛为「参数面自设计的组合入口」(2026-08-27) — 具体方案在源码 docstring (dolores/_ego.py「transaction / RPC 旁路」+ plugin.ts articulate/enter), 读源码优先'
 title: DSH Fusion
-updated: '2026-08-19'
+updated: '2026-08-27'
 ---
 
 # DSH Fusion
@@ -45,38 +45,65 @@ DeepSeek Harness(`deepseek-ai/deepseek-harness`, MIT, 2026-08-13 开发者预览
 dsh web 前端是近乎通用的 agent session 表面(只认 `ISession` + `SessionEvent`), 任何满足
 contract 的 backend 都能挂它当界面。收敛形态 = matrix node 持有 session(owner 归 MOSS),
 vendor 的 chat 界面作 GUI 子进程, 父进程 proxy 转发 event 流 + 8 verb。
-源码级调研见 research/2026-08-14_dsh_source_survey.md。
+源码级调研见 research/source/deepseek-harness/。
 
 ### 路径 B: dolores ghost (推理中枢)
 
 dsh 作为 Dolores 的推理中枢, 决策落在 `ghost-prototype-dolores` FEATURE 的
 DSH Integration 节。本 workstream 只提供融合基建, 不重复路径决策。
-见 `ghost-prototype-dolores` workstream 的 DSH Integration 节与
-research/2026-08-15_dsh_deep_dive.md。
+见 `ghost-prototype-dolores` workstream 的 DSH Integration 节与本 workstream 的
+research/ 调研轨迹。
 
 ## 融合基建 (Scope)
 
-本 workstream 交付 dsh 融合的**可复用基建**, 供两条路径消费:
+本 workstream 交付 dsh 融合的**可复用基建**, 供两条路径消费。**基建已落成于
+`src/ghoshell_moss/deepseek_harness/`**(2026-08-20/22, 见 git log)——落点从原计划
+`agents/dsh/` 改到 `deepseek_harness/`, 自成一族协议客户端包, 官方 SDK 不用。
 
-1. **optional 依赖** — dsh 作为 `ghoshell-moss` 的 optional dependency(pyproject
-   `[project.optional-dependencies]`), 不污染核心安装。
-2. **Python 基建** — 落在 `src/ghoshell_moss/agents/dsh/`, 与 `memento_pydantic_agent`
-   同族。现状(2026-08-15 实验): `DshChannel` 直接 speak dsh stdio JSON-RPC, 已验证
-   全链路(3080 → MCP → moss → CTML → mesh → DshChannel → 3081)。官方 SDK 太简陋,
-   基建以自定义协议客户端为主。
-3. **测试 node** — `.moss/system_test_nodes/dsh_web_probe/` 已验证, 系统化测试承接。
-4. **装线** — 路径 B 的 dolores 装线同时进行。
+1. **optional 依赖** — pyproject `[project.optional-dependencies]` 的 `dsh = [...]`:
+   `deepseek-harness-sdk` 仅作参考锚点(自研 client 不用)、`httpx`(outbound HTTP)、
+   `websockets`(mux WS 下行)。
+2. **Python 基建**(`deepseek_harness/`, 自定义协议客户端为主):
+   - `launcher.py` — `DshLauncher`/`DshLauncherConfig`/`DshExit`: spawn dsh
+     web-profile 子进程(经 MOSS Subprocesses 契约 DI), 连 web 表面。传输走
+     dsh web profile + 内置 `/api/events.mux` WS 下行 + plugin 注册 HTTP 路由上行
+     (零依赖伪双工), **不用 stdio JSON-RPC**。push 式就绪(ws 连上→started→aenter 返回)。
+     子进程/RPC 异常收成 `DshExit` + `exception()`。
+   - `client.py` — `DshClient`(全局管理面 facade)+ `DshRpcException`: 每方法 =
+     一个 apiproxy 动词(session/workspace/host/agent-preset/settings/credentials/
+     llm/skill/goal 只读+CRUD); `plugin_call(path)` 走 plugin webServer 路由。
+   - `session.py` — `DshSession`(会话级 facade): 绑 sessionId, 屏蔽 rpc 入参对象,
+     挂驱动动词(prompt/cancel/update-queue/select-model/history/fork/attachment)。
+     `accept_frame` 喂帧(反转依赖, owner 注册), 按事件名分派到 `on_session_event*`;
+     token 记账; `instruction()`/`surface_messages()` 经 plugin 路由 pull;
+     `when_{running,idle}` 等运行态镜像。
+   - `message_mapper.py` — MOSS Message → dsh UserMessage 单向映射(role=user;
+     image 抛 NotImplementedError, 需 attachment ref 或走 session.prompt 提升)。
+   - `types/` — 强类型 pydantic 数据面(rpc/nouns/events/sessions/domains/sdk,
+     按依赖序拆防环 import; 信封热路径用 TypedDict, 载荷用 pydantic validate)。
+3. **测试** — `tests/ghoshell_moss/deepseek_harness/`(test_launcher / test_session /
+   test_message_mapper)。旧的 `dsh_web_probe` 测试 node 已不在 system_test_nodes。
+4. **装线** — 路径 B 的 dolores 装线进行中: `_runtime.py` 用 `DshLauncher`(经
+   `matrix.processes`), `_run.py` 用 `DshSession`, `topics.py` 消费 `SessionEvent`;
+   `_ego.py`(`DoloresEgo`)目前只是表面草稿(方法体 `...`)。
+
+> **强烈提示: 具体方案在源码 docstring, 不在本 FEATURE。** articulate/enter 收敛为
+> 「参数面自设计的组合入口」(2026-08-27): enter 是 plugin 侧 `/articulate/enter`
+> 自定义入口, 参数面由 MOSS 设计, handler 内部组合多个 dsh 接口调用(非 1:1 代理)。
+> 读 `ghosts/dolores/_ego.py` 模块 docstring「transaction / RPC 旁路」与
+> `dsh_plugin/moss-dolores-ghost-plugin.ts` 的 articulate/enter 注释。
 
 ## Key Decisions
 
 - **dsh = 推理中枢, MOSS = 记忆/执行/感知。** 这是融合的第一裁决, 两路径共享。
   详见 Motivation。
-- **官方 SDK 不是基建底座。** 源码级调研(Python 类型面极薄, 只懂 3 个 event type)
-  与实验(DshChannel 直接 speak stdio JSON-RPC 跑通全链路)一致——基建以自定义协议
-  客户端为主, 官方 SDK 仅作参考。
-- **`agents/dsh/` 落点, 与 memento 同族。** 触发 `agents/` 包"第二个家族提级"的
-  约定(`agents/__init__.py`)。独立包 `ghoshell_dsh` 被否: 会切断与 agent-surface
-  骨架、memento 参照的关系。
+- **官方 SDK 不是基建底座。** 源码级调研(Python 类型面极薄, 只懂 3 个 event type)与
+  实验(早期 `DshChannel` 走 stdio JSON-RPC)一致——基建以自定义协议客户端为主, 官方
+  SDK 仅作参考锚点。传输终版选**dsh web profile + `/api/events.mux` WS 下行 + plugin
+  HTTP 上行**(零依赖伪双工), 弃 stdio JSON-RPC(见 `launcher.py` 注释)。
+- **`deepseek_harness/` 落点, 自成一族(已改)。** 原计划 `agents/dsh/`(与 memento
+  同族)未沿用——代码实际在 `src/ghoshell_moss/deepseek_harness/`。独立包 `ghoshell_dsh`
+  保持被否: 会切断与 agent-surface 骨架、memento 参照的关系。
 - **apiproxy 式 plugin 桥接内核特权 (2026-08-16 收敛)。** ghost 要够到 dsh 进程内
   特权(append assistant / 构造 seed / 动态 prompt), 唯一干净的路是仿 apiproxy 再写
   一个 plugin, `ctx.webServer.register` 注册 HTTP 路由, transport 复用 dsh 已有 HTTP
@@ -90,20 +117,27 @@ research/2026-08-15_dsh_deep_dive.md。
 
 > 融合相关的调研轨迹与验证物索引, 避免盲找。完整历史见 git log。
 
-- **调研轨迹**(已删, 见 git 历史 `git log -- research/`):
-  > 早期调研记录(2026-08-14/15/16 三篇)承载的结论被后续实验推翻, 已于
-  > 2026-08-17 删除。需要考古时从 git 历史查阅, 不再作为当前事实引用。
-  - `2026-08-14_dsh_source_survey.md` — 源码级调研(已删, 见 git)
-  - `2026-08-15_dsh_deep_dive.md` — dsh 深入调研(已删, 见 git)
-  - `2026-08-16_dsh_kernel_privilege.md` — 内核特权与三方桥(已删, 见 git)
+- **调研轨迹**(早期 2026-08-14/15/16 三篇结论被后续实验推翻, 已删, 见 git
+  `git log -- research/`; 下列为当前存留的 research/ 文件):
+  - `research_2026-08-17_dsh_agent_status_and_context_modeling.md` — agent status /
+    context 建模
+  - `research_2026-08-19_dsh_agent_loop_drive_and_governance.md` — agent loop 驱动与
+    治理边界(wake/perStep/interrupt)
+  - `research_2026-08-20_dsh_agent_api_surface_and_timing.md` — session 级 agent 两个
+    调用面(http rpc 外侧 vs plugin 内侧)与各自时序语义
+  - `research_2026-08-20_dsh_session_surface_and_message_protocol.md` — **纠错**: dsh
+    session 不是 append-only 上下文, 是 **log(append-only 真相源, 永不删) + surface
+    (可 replace 的模型可见投影) 两层**。compact 用 surface `replace` 影藏旧节点, log
+    只增不变小——"compact 只能追加"不成立。**"hot 归 MOSS / dsh 只做 cold+warm"须基于
+    此 surface 语义校准。**
 - **当前可信 skill**(`research/skills/` 下, 自包含可复跑):
   - `plugin-api-session-event/` — 已验证:「dsh web 内置 `/api/events.mux` WS 下行 +
     plugin 注册 HTTP 回调」构成零依赖伪双工, ghost runtime 不开对外接口
-- **验证物**:
-  - `.moss/system_test_nodes/dsh_web_probe/` — DshChannel node, 全链路已跑通
-  - scripts/ — 后续系统化测试脚本落点
-- **官方源码锚点**: `python/sdk`(Python SDK)、`packages/acp`(权限仲裁)、
-  `packages/client/runtime`(web store, vendor 面)、`dsh-host-apiproxy`(桥接范本)
+- **基建源码锚点**: `src/ghoshell_moss/deepseek_harness/`(launcher/client/session/
+  message_mapper/types)+ `tests/ghoshell_moss/deepseek_harness/`。plugin 面:
+  `ghosts/dolores/dsh_plugin/moss-dolores-ghost-plugin.ts`。dsh 官方源码在
+  `research/source/deepseek-harness/`(`python/sdk` 仅参考锚点、`packages/acp` 权限仲裁、
+  `packages/client/runtime` vendor 面、`dsh-host-apiproxy` 桥接范本)。
 
 ## Legacy
 

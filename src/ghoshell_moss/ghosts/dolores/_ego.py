@@ -16,15 +16,36 @@ DoloresEgo 是 Dolores ghost 的 "我". 随 ghost 创建时实例化, 进入同�
   challenge → attention → articulate 路径, 不用等外部输入.
 
 短命线 (每次 articulate 一次):
-  ``run(moment, effort)`` 是 Dolores.articulate 的委托. 内部独立
-  AsyncExitStack, 启停走 RPC, 生命周期与 articulator 严格同周期.
-  ``async for`` 的作用域就是 transaction 边界:
-  enter = open ego session (preStep lock), exit = close.
+  ``run()`` 是 Dolores.articulate 的委托. 内部独立 AsyncExitStack, 启停走 RPC,
+  生命周期与 articulator 严格同周期. ``async for`` 的作用域就是 transaction
+  边界: enter = open ego session (preStep lock), exit = close.
+  当前签名无参数 (moment/effort 后续经 enter RPC 参数上, 见下方收敛方案).
 
-── transaction / RPC 旁路 ────────────────────────────────────────────
+── transaction / RPC 旁路 (收敛方案 2026-08-27) ──────────────────────
+enter 是**我们自己的 plugin 入口** (articulate/enter), 参数面由我们设计,
+handler 内部**组合多个 dsh 接口调用** — 不是 dsh 某接口的 1:1 代理.
 articulate 进入/退出各触发一次与 plugin 的 HTTP 通讯, 开放/关闭 ego session
-的 preStep 锁. 触发 ego session 运行走 RPC 旁路 (参数组织 + steer), 而不是
-正常 user prompt — effort 等参数无法经 user prompt 传.
+的 preStep 锁. enter 携带 thinking 帧的 moment (dynamic_context + percepts +
+hint + command_logos) + effort, handler 组合翻译:
+
+  effort      → 下个 request 经 agent/request 提出 LlmCallConfig.reasoningEffort
+                (dsh message/log 无 effort 槽; 档位 adapter 自有, 'off' 需已
+                声明, 否则 UNSUPPORTED_REASONING_EFFORT; 会话级, 每 transaction
+                重置). MOSS 'flash' 无 dsh 对应档位.
+  percepts 非空 → steer (wake, 开 turn / next-step); 非 percepts → inject
+                (不 wake, 排队下个 pre-step). idle 起 turn 必须 steer/followup.
+  锁住的 step → agent/pre-step listener 返回 {kind:'enter', messages:[...claimed,
+                momentFrame]} — 原子通道; agent.inject() 会 miss 当前 step
+                (claim 在 waterfall 之前). gate 必须竞 abort (Promise.race),
+                否则 cancel 时循环挂死 (interrupt 正确性依赖).
+  dynamic_context + hint (hot 帧) → 进 log 变 user/message; 下一轮 remove op
+                = surface {op:'replace'} (compaction 原语). **未裁决**: 这跨
+                "hot 归 MOSS, dsh 只做 cold+warm" 线, 且把 compaction 拉进每帧
+                路径. 候选: (a) 接受 surface-replace / (b) hot 不进 dsh /
+                (c) 每次 thinking fresh fork 让帧随 turn 消散.
+enter 包揽 exit (候选, 未裁决): SSE/long-poll 等**该 turn 的 turn/end** (按
+turn id 关联, 不是 blanket whenIdle) 或 cancel; disconnect → cancel agent.
+当前实现是 fire-and-return boolean 翻转 (articulating 开关), 过渡态.
 
 ── session event 响应 (run 时监听) ───────────────────────────────────
   1. ego tool 调用: 模型 (DSH) 调 ego tool → dsh 发 tool/call event → 本侧
@@ -37,17 +58,19 @@ articulate 进入/退出各触发一次与 plugin 的 HTTP 通讯, 开放/关闭
 
 ── moment 字段取舍 ───────────────────────────────────────────────────
   percepts + hint    — 核心输入, run 每轮喂给 DSH 的新内容.
-  command_logos      — 不在 run 面. ghost_runtime 已在 articulate 之前
-                       send_nowait 消费 (反射弧, ghost_runtime.py:390).
+  command_logos      — 不在 run 面. mindflow 已在 articulate 之前 send_nowait
+                       消费 (反射弧, mindflow_in_shell.py:228-233).
   thinking_effort    — 不在 moment 上, 在 articulator 上; =='none' 已被上游
-                       短路 (ghost_runtime.py:399). 由 articulate 拆出作 run 第二参.
+                       短路 (mindflow_in_shell.py:236). 由 articulate 拆出作
+                       run 第二参 (经 enter RPC 参数上).
   perspectives       — 被 trajectory 取代 (moss_dynamic). 其它 gate 语境
                        (如 safemode) 按需经 percept/signal 进 ego, 不走
                        perspectives 通道.
 
 ── 待讨论 (seams) ────────────────────────────────────────────────────
   1. RPC 协议面: open/close session、params+steer、tool-result 的入参/出参
-     形状. 先立本文件 interface, TS 侧照着接.
+     形状. **参数面由我们设计** (enter 是组合入口, 非 dsh 1:1 代理) —
+     先立本文件 interface, TS 侧照着接.
   2. turn/start 的事件源: timer / trajectory 帧 / attention hook / 外部 signal?
   3. 固定 nucleus 的 impulse 语义: 走正常仲裁, 还是专用自醒通道
      (strength=0 yield / 特定 priority / silent mode)? 会不会与真实输入抢 attention?

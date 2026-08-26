@@ -165,6 +165,11 @@ export function apply(ctx: Context) {
             // (防御性断言) 2) articulate 未 enter → 锁住, 不让 stray turn 启动.
             // todo: reject 是裸判别元 (PreStepDecision.reject 无 reason/hint 字段), 拒绝
             // 原因进不了模型也进不了 web UI. 要可观测需 plugin 侧 log 或 turn/end 旁路.
+            //
+            // 收敛方案 (2026-08-27): 本守卫应从 reject 式进化为「enter-with-messages」—
+            // enter 激活时返回 {kind:'enter', messages:[...claimed, momentFrame]} 把
+            // thinking 帧原子注入当前 step (claim 在 waterfall 之前, inject() 会 miss).
+            // 解锁 gate 需竞 abort (Promise.race), 否则 cancel 时循环挂死.
             agentCtx.on('agent/pre-step', async ({ agent }, next) => {
               if (agent.id !== doloresEgoSessionId) return { kind: 'reject' }
               if (!articulating) return { kind: 'reject' }
@@ -234,6 +239,20 @@ export function apply(ctx: Context) {
   })
 
   // ── articulate lock (perStep 守卫的开关) ──
+  //
+  // 收敛方案 (2026-08-27): enter 是「我们的组合入口」 — 参数面由我们设计,
+  // handler 内部组合多个 dsh 接口调用, 不是 dsh 某接口的 1:1 代理.
+  // 当前实现是 fire-and-return boolean 翻转 (过渡态), 待组合翻译:
+  //   - effort            → 下个 request 经 agent/request 提出 reasoningEffort
+  //                         (dsh message/log 无 effort 槽; 档位 adapter 自有,
+  //                         'off' 需已声明, 否则 UNSUPPORTED_REASONING_EFFORT).
+  //   - 锁住的 step        → pre-step listener 返回 {kind:'enter', messages:[...claimed, moment]}
+  //                         (原子通道; inject() miss 当前 step; gate 需竞 abort).
+  //   - percepts 非空      → steer (wake); 非 percepts → inject (不 wake).
+  //   - dynamic+hint 移除 → surface {op:'replace'} (compaction 原语, 未裁决).
+  //   - enter 包揽 exit    → 候选: SSE/long-poll 等该 turn 的 turn/end 或 cancel,
+  //                         disconnect → cancel agent.
+  // 详细方案见 Python 侧 _ego.py 模块 docstring「transaction / RPC 旁路」.
 
   ctx.webServer.register({
     kind: 'exact',
@@ -245,7 +264,8 @@ export function apply(ctx: Context) {
         return
       }
       articulating = true
-      // todo: 考虑在此 steer 一个 hello prompt 驱动 turn (与 /run 的 turn 驱动合并时定).
+      // todo: 过渡态 — 参数面 (moment/effort) 与 turn 驱动 (steer) 按上方收敛方案
+      // 并进 enter 时定, 不再单独走 hello prompt / 独立 steer.
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ articulating }))
     },
@@ -261,6 +281,8 @@ export function apply(ctx: Context) {
         return
       }
       articulating = false
+      // todo: exit 只在下个 pre-step 才生效 (reject → blocked). agent 已 idle 时
+      // exit 无事件可感知 — 「无思考退出」机制根源. enter 包揽 exit 候选解决.
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ articulating }))
     },

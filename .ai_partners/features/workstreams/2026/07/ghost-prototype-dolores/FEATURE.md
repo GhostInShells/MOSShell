@@ -11,10 +11,9 @@ description: Dolores — 第二个 Ghost 原型 (命名引自《西部世界》)
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 'DSH 推理内核接线走通: per-idle 生命周期 (enter 阻塞到 idle) + plugin perStep
-  锁 + turn/start 自醒 + hello turn 端到端回流。下一步: idle 权威回 plugin、优雅退出、ego tool 桥.'
+status_note: 'DSH 推理内核接线走通: per-idle 生命周期 + plugin perStep 锁 + turn/start 自醒 + hello turn 端到端回流。articulate/enter 收敛为「参数面自设计的组合入口」(2026-08-27): enter 是 plugin 自定义入口, 参数面由我们设计, handler 组合多个 dsh 接口调用。具体方案在源码 docstring (dolores/_ego.py「transaction / RPC 旁路」+ plugin.ts articulate/enter), 读源码优先。下一步: enter 组合翻译落地 (effort→agent/request / enter-with-messages / enter 包揽 exit) + ego tool 桥。'
 title: Dolores Ghost
-updated: '2026-08-22'
+updated: '2026-08-27'
 ---
 
 # Dolores Ghost

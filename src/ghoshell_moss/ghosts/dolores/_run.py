@@ -65,6 +65,10 @@ disconnect → abort turn) + shutdown queue (→ events() 抛 AsyncQueueShutDown
 
 这两个决定 run RPC 的 payload / 返回形状, 是装线前必须先定的.
 
+> 本设计的 run RPC = 「enter 包揽 exit」候选 (见 _ego.py 模块 docstring 的
+> 收敛方案 2026-08-27): SSE/long-poll 等该 turn 的 turn/end 或 cancel,
+> disconnect → cancel agent. 与 _ego.py / plugin.ts 的收敛方案同源, 勿另立.
+
 ── 数据面 (迭代结束后可读) ─────────────────────────────────────────
   usage        累计 TokenUsage (assistant/message 累加)
   events       全量持有 (本 run 窗口内所有 session event)

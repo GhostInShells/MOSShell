@@ -31,9 +31,10 @@ class Dolores(Ghost):
 
     生命周期里挂一个 DshLauncher (DSH 推理中枢), 直接持有 matrix 的治理链
     (matrix.processes); 挂一个 ShellTrajectory (观测轨迹, 上下文来源).
-    articulate() 现阶段只把 trajectory 帧写进 output, 模型驱动是下一步槽位
-    (DSH agent-loop 推理、pydantic-ai). 后续逐步接入: Memento 持久化轨迹、
-    interleaved thinking、ghost 反身 channel、模型自感知 (_llms).
+    articulate() 已装线 ego.run() (DSH 推理中枢 transaction): 先写 trajectory
+    帧到 output, 再经 ego 驱动 dsh 推理, logos 流逐段 yield. 后续逐步接入:
+    Memento 持久化轨迹、interleaved thinking、ghost 反身 channel、模型自感知
+    (_llms). 收敛方案 (enter 组合入口) 见 _ego.py 模块 docstring.
     """
 
     def __init__(
