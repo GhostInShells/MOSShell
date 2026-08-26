@@ -1,4 +1,4 @@
-"""BaseAction / BaseArticulator / BaseActionGate 单测.
+"""BaseAction / BaseArticulator 单测.
 
 聚焦 ghost_runtime 装线消费的 Action 契约:
 
@@ -19,7 +19,6 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.mindflow import BaseAttention
 from ghoshell_moss.core.mindflow._action import (
     BaseAction,
-    BaseActionGate,
     BaseArticulator,
 )
 
@@ -274,26 +273,3 @@ async def test_articulator_wait_compiled_unblocks_when_compiled():
     assert task.done() is False
     ev['compiled_event'].set()
     await asyncio.wait_for(task, 2.0)
-
-
-# -- BaseActionGate: approve 回调容器 -------------------------------------------
-
-@pytest.mark.asyncio
-async def test_gate_approve_defaults_true_without_callback():
-    """未注册回调的 gate 默认放行."""
-    gate = BaseActionGate()
-    assert await gate.approve('anything') == (True, '')
-
-
-@pytest.mark.asyncio
-async def test_gate_approve_delegates_to_callback():
-    """注册回调后, approve 返回回调裁决结果; has_approve() 反映注册状态."""
-    gate = BaseActionGate()
-
-    async def _deny(logos: str) -> tuple[bool, str]:
-        return (False, f'denied: {logos}')
-
-    assert gate.has_approve() is False
-    gate.register(_deny)
-    assert gate.has_approve() is True
-    assert await gate.approve('hello') == (False, 'denied: hello')

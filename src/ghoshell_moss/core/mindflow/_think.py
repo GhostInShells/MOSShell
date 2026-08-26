@@ -19,7 +19,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
 from ghoshell_moss.core.blueprint.moment import Moment, Observer
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import get_moss_logger
-from ._action import BaseAction, BaseActionGate, BaseArticulator
+from ._action import BaseAction, BaseArticulator, ApproveCallback
 
 __all__ = ['BaseThinking']
 
@@ -54,7 +54,7 @@ class BaseThinking(Thinking):
         self._logger = logger or get_moss_logger()
         self._log_prefix = f"<Thinking attention={attention.id}>"
 
-        self._gate: BaseActionGate | None = None
+        self._warrant: ApproveCallback | None = None
         self._stop_event = ThreadSafeEvent()
         self._started = False
         self._stopped = False
@@ -91,15 +91,15 @@ class BaseThinking(Thinking):
 
 
     def register_gate(self, warrant: Callable[[str], Awaitable[tuple[bool, str]]]):
-        self._gate = BaseActionGate()
-        self._gate.register(warrant)
+        self._warrant = warrant
 
     def articulator(self, replan: bool = False, wait_action_done: bool = False) -> Articulator:
         """
         创建一个可以发布 logos 的 articulator, 与一个新的 BaseAction 成对.
 
-        gate 已注册 approve 回调 (= gated 模式) 时, articulator 在 commit 时 await
-        approve 裁决完整 logos, 通过才投递 action; 否则立即 put_action, logos 直接进 queue.
+        注册了 warrant (= gated 模式) 时, articulator 在 commit 时创建被持有的审批
+        task 并 await 它裁决完整 logos, 通过才投递 action; 否则立即 put_action,
+        logos 直接进 queue.
         """
         logos_queue: janus.Queue[str | None] = janus.Queue()
         compiled_event = ThreadSafeEvent()
@@ -119,7 +119,7 @@ class BaseThinking(Thinking):
         # 保留 action 的 stop event, 供 thinking 清空/对齐治理.
         self._action_stop_events.append(action_stop_event)
 
-        gated = self._gate is not None and self._gate.has_approve()
+        gated = self._warrant is not None
         if not gated:
             self._put_action(action)
 
@@ -128,7 +128,7 @@ class BaseThinking(Thinking):
             logos_queue=logos_queue,
             compiled_event=compiled_event,
             action_stop_event=action_stop_event,
-            gate=self._gate if gated else None,
+            warrant=self._warrant if gated else None,
             action=action if gated else None,
             put_action=self._put_action if gated else None,
             logger=self._logger,

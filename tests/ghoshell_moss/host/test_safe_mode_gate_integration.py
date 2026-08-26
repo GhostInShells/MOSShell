@@ -6,10 +6,10 @@
     - 本文件                     测 gate 的 approve 回调契约 + SafeMode 裁决端到端.
 
 gate 契约 (重做后):
-    ``ActionGate.approve(logos) -> (approved, message)`` 是 thinking 级别单一回调。
-    articulator 在 commit (logos 写完) 时 await 它 — approved 才投递 action,
-    rejected/cancelled 直接 abort action (进而 abort attention), 不重新 loop。
-    回调默认放行 ``(True, '')``。
+    ``warrant(logos) -> (approved, message)`` 是 thinking 级别单一回调, 直接传给
+    articulator (无 gate 对象)。commit 时被包装成被持有的 task, wait 动作 await 它 —
+    approved 才投递 action, rejected/cancelled 直接 abort action (进而 abort attention),
+    不重新 loop; articulator 退出时该 task 未裁决则被 cancel。回调默认放行 ``(True, '')``。
 """
 
 import asyncio
@@ -20,7 +20,7 @@ import pytest
 from ghoshell_moss.core.blueprint.mindflow import Impulse, Priority
 from ghoshell_moss.core.blueprint.moment import BaseMomentsObserver
 from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_moss.core.mindflow import BaseActionGate, BaseAttention, BaseThinking
+from ghoshell_moss.core.mindflow import BaseAttention, BaseThinking
 from ghoshell_moss.host.safe_mode import SafeModeImpl
 
 
@@ -64,28 +64,6 @@ async def _wait_pending(sm: SafeModeImpl):
             return p
         await asyncio.sleep(0.01)
     raise TimeoutError("no pending approval")
-
-
-# ── ActionGate approve 回调契约 ────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_gate_approve_defaults_true_without_callback():
-    """未注册回调的 gate 默认放行."""
-    gate = BaseActionGate()
-    assert await gate.approve("anything") == (True, '')
-
-
-@pytest.mark.asyncio
-async def test_gate_approve_delegates_to_callback():
-    """注册回调后, approve 返回回调的裁决结果."""
-    gate = BaseActionGate()
-
-    async def _deny(logos: str) -> tuple[bool, str]:
-        return (False, f"denied: {logos}")
-
-    gate.register(_deny)
-    assert await gate.approve("hello") == (False, "denied: hello")
 
 
 # ── SafeMode 裁决端到端 (真实 thinking + approve 回调) ─────────────────

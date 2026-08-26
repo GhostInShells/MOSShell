@@ -142,9 +142,9 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         logger.debug("%r step 2/5: entering MossRuntime", self)
         await self._async_exit_stack.__aenter__()
         # 注册 runtime 自身的系统 channel. 每次刷新时都会更新.
-        self._moss_runtime.shell.main_channel.build.virtual_children(self._get_runtime_channels)
 
         await self._async_exit_stack.enter_async_context(self._moss_runtime)
+        self._moss_runtime.shell.main_channel.build.virtual_children(self._get_runtime_channels)
         # 默认注册 shell trajectory.
         self._shell_trajectory = MShellTrajectory(self._moss_runtime.shell)
         await self._async_exit_stack.enter_async_context(self._shell_trajectory)
@@ -345,20 +345,27 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
     async def _approve_logos(self, logos: str) -> tuple[bool, str]:
         """SafeMode 裁决完整 logos (articulator commit 锁的回调). 返回 (approved, message).
 
-        approved 时 message 作为 approval-note 落到 action result; rejected/cancelled 时
-        message 作为 abort reason, 由 articulator 的 _commit abort 掉 action。
+        approved 时若带附言 (approve-with-note), 直接落到 mindflow.moments 轨迹,
+        返回值 message 恒为空; rejected 时 message 作为 abort reason, 由 _commit
+        abort 掉 action; cancelled (abort 兜底) message 也为空。
         """
         verdict_future = self._safe_mode.submit(logos)
         try:
             verdict = await asyncio.wrap_future(verdict_future)
             if verdict.kind == 'approved':
-                message = (
-                    "<safemode-approval-note>\n"
-                    "Previous logos approved and executed. Human note:\n"
-                    f"{verdict.message}\n"
-                    "</safemode-approval-note>"
-                )
-                return True, message
+                # 空 note (纯 Enter 放行) 不带附言 — 区别于 approve-with-note.
+                if verdict.message:
+                    note = (
+                        "<safemode-approval-note>\n"
+                        "Previous logos approved and executed. Human note:\n"
+                        f"{verdict.message}\n"
+                        "</safemode-approval-note>"
+                    )
+                    self.mindflow.moments.add_result([note])
+                return True, ''
+            if verdict.kind == 'cancelled':
+                # cancel 是 abort 兜底, 不是否决, 无 reason.
+                return False, ''
             message = (
                 "<safemode-rejection>\n"
                 "Previous logos rejected by human review; body did not execute.\n"
@@ -470,6 +477,7 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
 
     def _on_thinking_exited(self, thinking: Thinking, err: BaseException | None) -> None:
         if self._ghost_instance:
+            self._moss_runtime.session.pub_logos("\n\n")
             self._ghost_instance.on_thinking_exit(
                 thinking,
                 err,

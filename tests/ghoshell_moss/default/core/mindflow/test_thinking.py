@@ -2,18 +2,18 @@
 
 聚焦 ghost_runtime 消费的 Thinking 契约:
 
-  _run_thinking            -> async with thinking / thinking.moment / thinking.gate()
+  _run_thinking            -> async with thinking / thinking.moment
                               thinking.effort() / thinking.articulator() / wait_until_done(*tasks)
 
-本文件只装线 _think.py (以及它驱动的 _action.py 的 BaseAction/BaseArticulator/BaseActionGate),
+本文件只装线 _think.py (以及它驱动的 _action.py 的 BaseAction/BaseArticulator),
 不搭 _mindflow.py 全量调度. 关键协议承诺:
 
   - moment: 首次访问懒观测一帧, observe() 逐帧替换
   - effort: 从 attention.draw_from() 的发起 impulse 读, 不从 thinking 单独携带
-  - gate:  惰性创建, per-thinking 单例
-  - articulator 接入策略随 gate 是否注册 approve 回调切换:
+  - warrant: 直接持有, per-thinking 单例
+  - articulator 接入策略随 warrant 是否注册切换:
       非 gated -> 立即 put_action (action 进 action 循环), logos 直入共享 queue
-      gated    -> commit 时 await approve 裁决, 通过才 put_action, 拒绝则 abort
+      gated    -> commit 时创建审批 task 并 await warrant 裁决, 通过才 put_action, 拒绝则 abort
   - 生命周期: enter/exit/stop/abort/wait_abort/wait_until_done 与 Action 对齐
 """
 import asyncio

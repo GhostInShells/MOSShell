@@ -17,7 +17,7 @@ import asyncio
 import janus
 import logging
 
-__all__ = ['BaseAction', 'BaseArticulator', 'BaseActionGate']
+__all__ = ['BaseAction', 'BaseArticulator']
 
 ApproveCallback = Callable[[str], Awaitable[tuple[bool, str]]]
 
@@ -31,7 +31,7 @@ class BaseArticulator(Articulator):
             logos_queue: janus.Queue[str | None],
             compiled_event: ThreadSafeEvent,
             action_stop_event: ThreadSafeEvent,
-            gate: 'BaseActionGate | None' = None,
+            warrant: ApproveCallback | None = None,
             action: 'BaseAction | None' = None,
             put_action: Callable[[Action], None] | None = None,
             logger: logging.Logger | None = None,
@@ -39,7 +39,7 @@ class BaseArticulator(Articulator):
         self._logos_queue = logos_queue
         self._moment = moment
         self._compiled_event = compiled_event
-        self._gate = gate
+        self._warrant = warrant
         self._action = action
         self._put_action = put_action
         self._action_stop_event = action_stop_event
@@ -47,15 +47,19 @@ class BaseArticulator(Articulator):
         self._buffered_logos = ''
         self._logger = logger or logging.getLogger('moss.Articulator')
         self._started = False
+        # gated 模式下被持有的审批 task, 供 wait 动作 await / __aexit__ 退出时 cancel.
+        self._approve_task: asyncio.Task | None = None
 
     async def wait_compiled(self) -> None:
         await self._commit()
+        await self._await_approve()
         await self._compiled_event.wait()
 
     async def wait_action_done(self) -> None:
         if not self._started:
             raise RuntimeError('Articulator must be started before wait_action_done()')
         await self._commit()
+        await self._await_approve()
         await self._action_stop_event.wait()
 
     def send_nowait(self, logos_delta: str) -> None:
@@ -65,7 +69,7 @@ class BaseArticulator(Articulator):
             elif self._action_stop_event.is_set():
                 return
             else:
-                if self._gate is not None:
+                if self._warrant is not None:
                     self._buffered_logos += logos_delta
                 else:
                     self._logos_queue.sync_q.put_nowait(logos_delta)
@@ -82,7 +86,7 @@ class BaseArticulator(Articulator):
             elif self._action_stop_event.is_set():
                 return
             else:
-                if self._gate is not None:
+                if self._warrant is not None:
                     self._buffered_logos += logos_delta
                 else:
                     await self._logos_queue.async_q.put(logos_delta)
@@ -96,20 +100,36 @@ class BaseArticulator(Articulator):
         if self._committed:
             return
         self._committed = True
-        if self._gate is not None:
-            # gated: await approve 裁决完整 logos (commit 锁). approved 才投递 action,
-            # rejected/cancelled 直接 abort action (进而 abort attention), 不重新 loop.
-            approved, message = await self._gate.approve(self._buffered_logos)
-            if approved:
-                if message:
-                    self._action.moments.add_result([message], need_observe=False)
-                self._logos_queue.sync_q.put_nowait(self._buffered_logos)
-                self._logos_queue.sync_q.put_nowait(None)
-                self._put_action(self._action)
-            else:
-                self._action.abort(message)
+        if self._warrant is not None:
+            # gated: 把 warrant 包装成被持有的 task, 供 wait 动作 await / 退出时 cancel.
+            self._approve_task = asyncio.create_task(self._approve_and_dispatch())
         else:
             self._logos_queue.sync_q.put_nowait(None)
+
+    async def _approve_and_dispatch(self) -> None:
+        """被持有的阻塞 task — await warrant 裁决完整 logos, 据此投递 action 或 abort.
+
+        approved 才投递 action (approve-note 由 warrant 自己落到 mindflow.moments,
+        此处只认 approved/abort); rejected 直接 abort action (进而 abort attention).
+        被 cancel (articulator 退出) 时转成 StatementExitedException, 不裸抛 CancelledError.
+        """
+        try:
+            approved, message = await self._warrant(self._buffered_logos)
+        except asyncio.CancelledError:
+            raise StatementExitedException('articulator exited during gated approval')
+        if approved:
+            self._logos_queue.sync_q.put_nowait(self._buffered_logos)
+            self._logos_queue.sync_q.put_nowait(None)
+            self._put_action(self._action)
+        else:
+            self._action.abort(message)
+
+    async def _await_approve(self) -> None:
+        """await 被持有的 approve task 结束; 结束后清引用 (退出兜底 cancel 见 __aexit__)."""
+        if self._approve_task is None:
+            return
+        await self._approve_task
+        self._approve_task = None
 
     async def __aenter__(self) -> Self:
         if self._started:
@@ -120,16 +140,26 @@ class BaseArticulator(Articulator):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # 仅正常退出 (无异常) 时才 commit + 等编译; 异常退出 (含 CancelledError) 不 commit/
         # approve 也不等 compiled_event, 避免 action 不会 set_compiled 时的 articulate 互锁.
-        if exc_val is None:
-            await self._commit()
-            if not self._action_stop_event.is_set():
-                await self._compiled_event.wait()
-        if exc_val:
-            if isinstance(exc_val, ActionExitedException):
-                return True
-            elif not isinstance(exc_val, StatementExitedException):
-                self._action_stop_event.set()
-        return None
+        try:
+            if exc_val is None:
+                await self._commit()
+                await self._await_approve()
+                if not self._action_stop_event.is_set():
+                    await self._compiled_event.wait()
+            if exc_val:
+                if isinstance(exc_val, ActionExitedException):
+                    return True
+                elif not isinstance(exc_val, StatementExitedException):
+                    self._action_stop_event.set()
+            return None
+        finally:
+            # 退出时若审批 task 仍未裁决, cancel 掉, 避免泄漏阻塞下一轮.
+            if self._approve_task is not None:
+                if not self._approve_task.done():
+                    self._approve_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, StatementExitedException):
+                        await self._approve_task
+                self._approve_task = None
 
 
 class BaseAction(Action):
@@ -359,26 +389,3 @@ class BaseAction(Action):
             self._has_meaningful_logos.set()
             self._action_stop_event.set()
             self._compiled_event.set()
-
-
-class BaseActionGate:
-    """thinking 级别的 logos 审批闸门 — 单一 approve 回调容器.
-
-    articulator 在 commit 时调 ``approve(logos)``: 注册了回调就 await 它裁决,
-    没注册 (非 gated) 直接 ``(True, '')`` 放行。
-    """
-
-    def __init__(self):
-        self._approve: ApproveCallback | None = None
-
-    def register(self, approve: ApproveCallback) -> None:
-        """注册单一 approve 回调。重复注册覆盖旧值。"""
-        self._approve = approve
-
-    def has_approve(self) -> bool:
-        return self._approve is not None
-
-    async def approve(self, logos: str) -> tuple[bool, str]:
-        if self._approve is None:
-            return (True, '')
-        return await self._approve(logos)
