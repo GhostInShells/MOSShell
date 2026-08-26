@@ -236,41 +236,66 @@ class ResolvedModel(BaseModel):
         return self.service.protocol
 
 
+def _deepseek_models() -> dict[str, ModelConfig]:
+    """DeepSeek lineup shared by the default & openai providers.
+
+    Model names are literal (self-contained default — the workspace config is
+    regenerable from these class defaults); only base_url/api_key use env refs.
+    ``deepseek-v4-flash`` is the provider default (the project's workhorse), so
+    it's not in the models dict (avoids duplication in ``list_models``). Only
+    the vision model accepts image.
+    """
+    return {
+        "deepseek-v4-pro": ModelConfig(
+            model="deepseek-v4-pro",
+            description="DeepSeek V4 Pro — reasoning, text-only",
+            content_types=["text"],
+        ),
+        "deepseek-v4-flash-vision-exp": ModelConfig(
+            model="deepseek-v4-flash-vision-exp",
+            description="DeepSeek V4 Flash Vision (experimental) — text + image",
+            content_types=["text", "image"],
+        ),
+    }
+
+
 class LLMConfig(ConfigType):
     """LLM 配置中心。存储在 workspace configs/ 目录下。"""
     default: Provider = Field(
         default_factory=lambda: Provider(
             service=ServiceConfig(
-                name='anthropic',
-                base_url='$ANTHROPIC_BASE_URL',
-                api_key='$ANTHROPIC_API_KEY',
+                name='deepseek',
+                base_url='$DEEPSEEK_ANTHROPIC_BASE_URL',
+                api_key='$DEEPSEEK_API_KEY',
                 protocol='anthropic',
             ),
             default=ModelConfig(
-                model="$ANTHROPIC_MODEL",
-                description="Default Anthropic model — general-purpose, multimodal (text + image)",
+                model="deepseek-v4-flash",
+                description="DeepSeek V4 Flash — default fast model, text-only",
                 tags={
-                    'small_fast_model': "$ANTHROPIC_SMALL_FAST_MODEL",
+                    'small_fast_model': "deepseek-v4-flash",
                 },
-            )
+                content_types=["text"],
+            ),
+            models=_deepseek_models(),
         ),
     )
     providers: dict[str, Provider] = Field(
         default_factory=lambda: dict(
-            deepseek=Provider(
+            anthropic=Provider(
                 service=ServiceConfig(
-                    name='deepseek',
-                    base_url='$DEEPSEEK_ANTHROPIC_BASE_URL',
-                    api_key='$DEEPSEEK_API_KEY',
+                    name='anthropic',
+                    base_url='$ANTHROPIC_BASE_URL',
+                    api_key='$ANTHROPIC_API_KEY',
                     protocol='anthropic',
                 ),
                 default=ModelConfig(
-                    model="$DEEPSEEK_MODEL",
-                    description="DeepSeek via Anthropic-compatible protocol — cost-efficient reasoning",
+                    model="$ANTHROPIC_MODEL",
+                    description="Anthropic model — general-purpose, multimodal (text + image)",
                     tags={
-                        'small_fast_model': "$DEEPSEEK_SMALL_FAST_MODEL",
+                        'small_fast_model': "$ANTHROPIC_SMALL_FAST_MODEL",
                     },
-                )
+                ),
             ),
             deepseek_openai=Provider(
                 service=ServiceConfig(
@@ -280,12 +305,14 @@ class LLMConfig(ConfigType):
                     protocol='openai',
                 ),
                 default=ModelConfig(
-                    model="$DEEPSEEK_MODEL",
-                    description="DeepSeek via OpenAI-compatible protocol — for OpenAI client testing",
+                    model="deepseek-v4-flash",
+                    description="DeepSeek V4 Flash — default fast model, text-only (OpenAI protocol)",
                     tags={
-                        'small_fast_model': "$DEEPSEEK_SMALL_FAST_MODEL",
+                        'small_fast_model': "deepseek-v4-flash",
                     },
-                )
+                    content_types=["text"],
+                ),
+                models=_deepseek_models(),
             ),
         )
     )
@@ -309,7 +336,7 @@ class LLMConfig(ConfigType):
         tag：对结果 unwrap 标签（如 small_fast_model → 实际模型名）。
         model：在所有 provider 中按模型名精确搜索。
 
-        Ghost 运作时自己选模型：get_model(provider="deepseek", tag="pro")。
+        Ghost 运作时自己选模型：get_model(provider="deepseek", model="deepseek-v4-pro")。
         """
         if not provider and not model:
             return self._get_default()

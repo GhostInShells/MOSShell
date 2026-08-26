@@ -35,6 +35,7 @@ from ghoshell_moss.contracts.llms import (
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.llms.pydantic_ai_adapter.call_anchor import CallAnchor
 from ghoshell_moss.message import Message
+from ghoshell_container import Container, IoCContainer
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -59,9 +60,13 @@ class PydanticAIFuncs(MossLLMFuncs):
             self,
             logger: LoggerItf | None = None,
             config: LLMConfig | None = None,
+            container: IoCContainer | None = None,
     ) -> None:
         self._logger = logger or get_moss_logger()
         self._config = (config or LLMConfig()).resolve()
+        # convert() 走 converter 适配时需要 IoC 依赖; 无 container 时用空容器
+        # (default 主路径是 accept-or-degrade, 不需要依赖)。
+        self._container = container or Container()
 
     def _resolve(
             self,
@@ -132,15 +137,22 @@ class PydanticAIFuncs(MossLLMFuncs):
 
         ``with_meta=True`` 渲染 Message 携带的 meta 层 (如 @ 文件协议
         expose_file_meta 设的 tag="file" + path/type/size); 无 tag 的纯文本
-        块不受影响。
+        块不受影响。content_types 过滤: 按目标模型的 ``ModelConfig.content_types``
+        逐 message 跑 ``convert()`` — 原生支持的类型保真, 不支持的降级为文本
+        占位 (或经 converters 适配), 防止把图片裸发给纯文本模型 (如 deepseek-v4-pro)。
         """
         from ghoshell_moss.llms.pydantic_ai_adapter.conversion import messages_to_parts
 
+        resolved = self._resolve(provider=provider, model=model, tag=tag)
+        filtered = [
+            resolved.model.convert(self._container, message)
+            for message in prompt
+        ]
         return await self._call_impl(
             instruction=instruction,
-            user_prompt=messages_to_parts(prompt, with_meta=True),
+            user_prompt=messages_to_parts(filtered, with_meta=True),
             result_type=result_type,
-            resolved=self._resolve(provider=provider, model=model, tag=tag),
+            resolved=resolved,
             settings=settings,
             effort=effort,
             export_anchor=export_anchor,

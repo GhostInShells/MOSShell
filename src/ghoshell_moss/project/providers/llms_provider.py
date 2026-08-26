@@ -31,4 +31,5 @@ class ProjectLLMFuncsProvider(Provider[LLMFuncs]):
         store = con.get(ConfigStore)
         config = store.get_or_create(LLMConfig()) if store is not None else LLMConfig()
         logger = con.get(LoggerItf)
-        return PydanticAIFuncs(config=config, logger=logger)
+        # container 供 convert() 的 converter 适配拉 IoC 依赖; 单例, 长期持有无碍。
+        return PydanticAIFuncs(config=config, logger=logger, container=con)

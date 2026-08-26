@@ -5,11 +5,11 @@ description: Make llms config genuinely usable — Project.configs() single-sour
   construction, then a `moss llms` CLI backed by pydantic-ai. Prep for dolores.
 milestone: null
 priority: P1
-status: in-progress
-status_note: '重构完成: 句柄绑定 config+logger + 路径选择 + CallSettings + 日志; 下一步 todo: content_types
-  拦截'
+status: completed
+status_note: content_types interception wired, default deepseek family, container
+  injection
 title: Llms Cli
-updated: '2026-08-16'
+updated: '2026-08-26'
 ---
 
 # Llms Cli
@@ -117,6 +117,25 @@ container.bootstrap 触发 ConfigInstanceRegisterBootstrapper), `project.contain
 - **防御边界 = api_key + base_url 两个字段**。base_url 可能嵌凭据 (query/fragment),
   保持不显示, 不引入"消毒后展示"的复杂度。protocol/model/tags 已在 ModelRef 投影里。
 
+### 9. content_types 拦截接线 + container 构造注入 (2026-08-26)
+
+`ModelConfig.convert()`(accepts → converter 适配 → 文本退化)此前是死代码——只在契约测试里活,
+管线 `call_messages` 直接 `messages_to_parts(prompt)`, 把图片裸发给纯文本模型 (deepseek-v4-pro) 报错。
+
+修复:
+- `call_messages` 解析 resolved 后, 对每个 message 先 `resolved.model.convert(container, msg)`
+  再 `messages_to_parts`, 实现按模型 `content_types` 的原生保留 / 降级 (图片→文本占位)。
+- container 从 LLMFuncs 构造时注入: `PydanticAIFuncs(logger, config, container=None)`,
+  None 时实例化空 `ghoshell_container.Container`; `ProjectLLMFuncsProvider.factory` 注入 `container=con`
+  (单例, 长期持有无碍)。
+- 默认 LLMConfig: **默认家族设为 deepseek, 默认模型 `deepseek-v4-flash`** — 因 MOSS 绝大多数
+  模型参与改造都是 deepseek 家族。默认 provider = deepseek (default=`deepseek-v4-flash` text-only;
+  models 含 `deepseek-v4-pro` text-only 与 `deepseek-v4-flash-vision-exp` text+image);
+  providers 另留 anthropic (非默认) 与 deepseek_openai (openai 协议)。模型名用字面量
+  (自包含可再生), base_url/api_key 用 $ENV。`get_model()` 零参 → deepseek-v4-flash。
+- `.moss/configs` 下 ConfigType dump 生成物 (llms/audio/mcp/tts 等) 删除, 该目录加 `.gitignore`
+  前缀匹配 (形如 llms.*), 启动时从类默认值重建。
+
 ## Implementation Notes
 
 - 循环 import 规避:`project.configs()` 方法体内惰性 import `contracts.configs`;
@@ -166,7 +185,7 @@ llms 测试 42 全绿; 识图实测图片块已真实发出 (deepseek-v4-pro 回
 
 ## TODO (下一步)
 
-- [ ] 拦截修复: 把 `ModelConfig.convert()` (content_types 过滤) 接进 `call_messages` 管线。
-  当前 `convert()` 是死代码, 图片等不在 `content_types: [text]` 的内容裸发给纯文本的
-  deepseek-v4-pro 报错。deepseek-v4-pro 无图片输入 (纯文本); `convert()` 默认把不支持的
-  content 降级为 `content_as_string` 占位文本 (`<content type="image" .../>`)。
+- [x] 拦截修复: 把 `ModelConfig.convert()` (content_types 过滤) 接进 `call_messages` 管线。
+  已接: `call_messages` 先对每个 message 跑 `convert(container, msg)` 再 `messages_to_parts`;
+  container 构造注入。`convert()` 从死代码变活管线——图片喂纯文本模型降级为 content_as_string
+  占位文本 (deepseek-v4-pro), 不再裸发报错。默认配置补 deepseek 三兄弟 (vision-exp 收图)。

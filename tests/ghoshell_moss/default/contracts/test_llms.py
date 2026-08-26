@@ -450,7 +450,7 @@ class TestLLMConfigIntegration:
         result = store.get_or_create(default_conf)
 
         assert isinstance(result, LLMConfig)
-        assert result.default.service.name == "anthropic"
+        assert result.default.service.name  # 默认 provider 有值 (具体家族会演进, 不钉死)
         # 确认文件已落盘
         path = store.get_config_path(LLMConfig.conf_name())
         import pathlib

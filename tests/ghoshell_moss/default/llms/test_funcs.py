@@ -201,6 +201,40 @@ async def test_call_null_result():
 
 
 @pytest.mark.asyncio
+async def test_call_messages_degrades_unsupported_content():
+    """文本-only 模型收到图片块 → convert() 降级为文本占位, 不裸发 ImageUrl."""
+    from ghoshell_moss.message import Message, Content
+    from pydantic_ai import ImageUrl, TextContent
+
+    funcs = PydanticAIFuncs(config=LLMConfig(
+        default=Provider(
+            service=ServiceConfig(
+                name="test", base_url="https://t/v1", api_key="k", protocol="openai",
+            ),
+            default=ModelConfig(model="deepseek-v4-pro", content_types=["text"]),
+        ),
+    ))
+    agent = _make_mock_agent(output="ok", text_parts=["ok"])
+    msg = Message(contents=[
+        Content(type="image", source={"media_type": "image/png", "data": "aGVsbG8="}),
+    ])
+
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
+        result = await funcs.call_messages(
+            instruction="", prompt=[msg], provider="test",
+        )
+
+    assert result.content == "ok"
+    user_prompt = agent.run.await_args.args[0]
+    # 图片块被 convert() 降级成文本占位, 绝不出现 ImageUrl
+    assert all(not isinstance(p, ImageUrl) for p in user_prompt)
+    assert any(
+        isinstance(p, TextContent) and 'content type="image"' in p.content
+        for p in user_prompt
+    )
+
+
+@pytest.mark.asyncio
 async def test_call_plain_string_output():
     """result_type=None -> raw string output, no structured result, no output_type forced."""
     funcs = _make_funcs()
