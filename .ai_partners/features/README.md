@@ -121,6 +121,28 @@ must be inside the commit.
 CLI does not enforce this. model incarnations follow it; the human reviews for it.
 A commit landing without its FEATURE.md update should be rebased, not patched with a follow-up.
 
+## How to Review a Feature
+
+Review is a development-process quality check. Its goal is verifying feature
+implementation quality — that the delivery holds to what the FEATURE.md
+declared, and that nothing was silently dropped along the way.
+
+It is paired with a command:
+
+```
+moss features review <feature>
+```
+
+Run it when you want to inspect a feature's development state. The command
+returns a bare-text review prompt; let its output guide the next step.
+
+**Default timing** — when the feature is finalized, when a development phase
+completes, and before a merge-boundary commit.
+
+**Not a hard constraint.** As with the rest of this mechanism, review is a
+recommendation: use it when it helps, and communicate with the human about
+how to apply it.
+
 ## FEATURE.md Frontmatter Schema
 
 ```yaml
@@ -187,6 +209,7 @@ regardless. Status is a coarse signal — don't over-invest.
 | `moss features set-status <name> <status> [-m]` | Update status + updated date in-place |
 | `moss features status [name]` | Show detailed status |
 | `moss features init` | Sync templates to `.ai_partners/features/` |
+| `moss features review <feature>` | Generate a feature review prompt |
 
 CLI is a thin convention enforcer. Core logic: `ghoshell_moss.core.codex._features`.
 

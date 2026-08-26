@@ -1,6 +1,7 @@
 ---
 title: Feature Review — 零上下文 review (遗忘测试)
-status: in-progress
+status: completed
+status_note: feature 已经成立，后续在实际迭代中优化。
 priority: P0
 created: 2026-08-13
 updated: 2026-08-26
@@ -67,13 +68,13 @@ coding-agent 集成架构——严格说来，允许模型自己用 harness 的 
 `features/review/` 是**项目级可增加的约定空间**；per-feature `review/` 同名完全覆盖。
 视角 (when 词汇表只三个，模型才匹配得上当前时点)：
 
-| 视角 | when | 核心提问 |
+| 视角 (file) | when | 核心提问 |
 |---|---|---|
-| **接手** | `定稿` | 你是下一个化身，读声明+目录，知道怎么开始吗？卡在哪、缺什么？ |
-| **对账** | `交付前` | 逐条对账声明 vs 代码；声明说 X 而代码做 Y 或漏 X，用 file:line 指出；absence 也是信号 |
-| **方案** | `随时` | 读声明+已有交付，设计层面矛盾/漏洞/静默降级？只 surface 候选点，交人终审 |
+| **takeover** | `finalize` | 你是下一个化身，读声明+目录，知道怎么开始吗？卡在哪、缺什么？ |
+| **reconcile** | `pre-delivery` | 逐条对账声明 vs 代码；声明说 X 而代码做 Y 或漏 X，用 file:line 指出；absence 也是信号 |
+| **design** | `anytime` | 读声明+已有交付，设计层面矛盾/漏洞/静默降级？只 surface 候选点，交人终审 |
 
-三视角覆盖四个 motivating failures (全是对账能抓的 silent todo) + 遗忘测试 (接手) + L3 兜底 (方案)。
+三视角覆盖四个 motivating failures (全是 reconcile 能抓的 silent todo) + 遗忘测试 (takeover) + L3 兜底 (design)。
 
 ### 命令落点与触发
 
@@ -107,12 +108,23 @@ coding-agent 集成架构——严格说来，允许模型自己用 harness 的 
   - 目录用 `review/` (单数)；per-feature `review/` 同名覆盖全局 `features/review/`。
   - meta 模式只给基本讯息 + 路径，不内联 FEATURE.md 全文 (零上下文纪律，子 agent 自己读)。
   - meta prompt 文本 v1 写死在 CLI (元模板不外提)。
-- **待共建**：`moss features specification` 的"如何 review feature"小节 (懒披露触发)，以及
-  `features/review/` 下的视角文档 (人类架构师 + 模型讨论后写)。
+- **已建** (2026-08-26)：`moss features specification` 的"如何 review feature"小节 (本地 README +
+  内置模板同改)；视角文档 `takeover.md` (finalize)、`reconcile.md` (pre-delivery)。
+- **待补**：视角文档 `design.md` (anytime)，逐个讨论后写。
 
 ## Validation Plan
 
-1. meta / perspective 两形态解析正确 (`@` 有无)。
-2. `<feature>` 的解析与 `moss features status` / `set-status` 一致 (同 `get_feature`)。
-3. 视角文档发现：列出 `features/review/` + per-feature `review/` 覆盖后的可用视角 (路径 + description)。
-4. 零上下文验证：跑到别的 feature 面前，新化身只读 FEATURE.md + 目录就能还原设计、知道怎么开始。
+验收轨迹 = dogfooding 循环 (本 feature 用自己验证自己)：
+
+1. **实现 CLI 套件** — `moss features review` 两形态 + 视角文档发现。
+2. **用 subagent 测试** — 派零上下文 subagent 跑 `moss features review <self>@<perspective>`。
+3. **按结果倒过来优化当前 feature** — 把 subagent 报的摩擦点反馈回 FEATURE.md / 实现 / 文档。
+4. **观察真实摩擦点** (subagent 不好用的地方)，倒过来优化，重复实验消除摩擦。
+
+3 → 4 是 dogfooding 效果：review 抓到自己声明里的漂移，本身就是它有效的证据。
+
+当前进度 (2026-08-26)：
+- ① 完成 — CLI 已实现并提交 (b55c7cf8)。
+- ② 完成 — takeover 视角 review feature-review 自己，报出 5 个摩擦点 (待共建滞后、当时三视角只 authored 一个、调研轨迹延后、命名自指、计划停在 idea 层)；reconcile 视角复 review，报出静默吞坏 review 文档 (except 兜底) 等摩擦点。
+- ③ 完成 — 据此校准"待共建"、补验收轨迹、修静默吞错误。
+- ④ 持续 — feature 已成立，后续在实际迭代中观察真实摩擦、重复消除。

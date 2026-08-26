@@ -538,15 +538,19 @@ def _load_review_doc(path: Path) -> Optional[tuple[dict, str]]:
         return None
 
 
-def _discover_perspectives(global_review_dir: Path, per_feature_review_dir: Path) -> list[dict]:
+def _discover_perspectives(
+    global_review_dir: Path, per_feature_review_dir: Path,
+) -> tuple[list[dict], list[Path]]:
     """Discover review perspective docs under the two candidate dirs.
 
     ``per_feature_review_dir`` overrides ``global_review_dir`` by same perspective
-    name. Returns a list of ``{name, when, description, content, path}``; empty if
-    neither dir holds any parseable review doc. The doc's frontmatter carries
-    ``description`` and ``when``; its body is the perspective prompt.
+    name. Returns ``(perspectives, broken)`` — perspectives is a list of
+    ``{name, when, description, content, path}``; broken is the list of review docs
+    whose frontmatter failed to parse or is missing ``when``/``description``
+    (surfaced, not silently skipped).
     """
     perspectives: dict[str, dict] = {}
+    broken: list[Path] = []
 
     def _merge(review_dir: Path) -> None:
         if not review_dir.is_dir():
@@ -554,8 +558,12 @@ def _discover_perspectives(global_review_dir: Path, per_feature_review_dir: Path
         for doc in sorted(review_dir.glob("*.md")):
             loaded = _load_review_doc(doc)
             if loaded is None:
+                broken.append(doc)
                 continue
             meta, content = loaded
+            if not meta.get("when") or not meta.get("description"):
+                broken.append(doc)
+                continue
             name = doc.stem
             perspectives[name] = {
                 "name": name,
@@ -567,7 +575,7 @@ def _discover_perspectives(global_review_dir: Path, per_feature_review_dir: Path
 
     _merge(global_review_dir)        # low precedence
     _merge(per_feature_review_dir)   # high precedence (same-name override)
-    return sorted(perspectives.values(), key=lambda p: p["name"])
+    return sorted(perspectives.values(), key=lambda p: p["name"]), broken
 
 
 def _resolve_to_fm_path(raw: str) -> Optional[Path]:
@@ -661,7 +669,7 @@ def review_cmd(
 
     fd, meta, fm_path = _resolve_review_feature(feature_part, features_dir)
     feature_path = meta["_feature_path"]
-    perspectives = _discover_perspectives(
+    perspectives, broken = _discover_perspectives(
         fd / "review",
         fd / "workstreams" / feature_path / "review",
     )
@@ -695,7 +703,15 @@ def review_cmd(
             ]
         else:
             lines.append("none — no review doc found under features/review/ or <feature>/review/.")
+        if broken:
+            lines += ["", "Broken review doc(s) skipped (unparseable or missing when/description):"]
+            for p in broken:
+                lines.append(f"  - {p}")
         lines += [
+            "",
+            "Zero-context discipline: if a sub-agent is available, do NOT read the",
+            "FEATURE.md or code yourself first — stay out of the material, hand the",
+            "review to a fresh sub-agent, and only read it after the sub-agent reports back.",
             "",
             "You are not required to use the CLI. You may hand a sub-agent your own",
             "review instruction instead — the point is a fresh, zero-context reviewer.",
@@ -722,4 +738,6 @@ def review_cmd(
         "Read the FEATURE.md and its code yourself (you have the tools).",
         "Report back when done — report what you found, not a verdict.",
     ]
+    if broken:
+        lines += ["", "Note: broken review doc(s) skipped (unparseable or missing when/description):", *(f"  - {p}" for p in broken)]
     echo("\n".join(lines))
