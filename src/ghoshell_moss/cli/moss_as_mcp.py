@@ -124,7 +124,10 @@ def bootstrap(state: ServerState, mcp: MCPServer):
     # (feed → wait_compiled → set(compiled) → wait_stopped → async with exit close), MCP 函数
     # 只 await 生命周期节点 (Event), 不阻塞在 async with 内 —— 中断因此是同步动作, 不牵扯执行.
 
-    def _drain_and_project() -> list[ContentBlock]:
+    async def _drain_and_project() -> list[ContentBlock]:
+        # open/close/pin 会改 channel 树 (virtual children), 投影 facade 前先刷新
+        # metas, 否则 facade 反映的是上一轮状态 (如 close 后子 channel 仍残留).
+        await state.shell_runtime.shell.refresh_metas(timeout=5.0)
         messages = state.trajectory.pop_frame().project()
         return list(MCPMessageAdapter.parse_message_to_blocks(messages))
 
@@ -179,7 +182,7 @@ def bootstrap(state: ServerState, mcp: MCPServer):
             return [TextContent(type='text', text="MOSS Runtime not initialized.")]
         compiled, _ = await _spawn_interpreter('append', logos)
         await compiled.wait()
-        return _drain_and_project()
+        return await _drain_and_project()
 
     @mcp.tool()
     async def ctml_exec(logos: str, budget: Optional[float] = None) -> list[ContentBlock]:
@@ -194,7 +197,7 @@ def bootstrap(state: ServerState, mcp: MCPServer):
         compiled, stopped = await _spawn_interpreter('append', logos)
         await compiled.wait()
         await _wait_event(stopped, budget)
-        return _drain_and_project()
+        return await _drain_and_project()
 
     @mcp.tool()
     async def moss_observe(budget: Optional[float] = None) -> list[ContentBlock]:
@@ -217,7 +220,7 @@ def bootstrap(state: ServerState, mcp: MCPServer):
                     await asyncio.wait_for(interp.wait_stopped(), timeout=wait)
                 except asyncio.TimeoutError:
                     pass
-        return _drain_and_project()
+        return await _drain_and_project()
 
     @mcp.tool()
     async def ctml_replan(logos: str) -> list[ContentBlock]:
@@ -230,7 +233,7 @@ def bootstrap(state: ServerState, mcp: MCPServer):
             return [TextContent(type='text', text="MOSS Runtime not initialized.")]
         compiled, _ = await _spawn_interpreter('clear', logos)
         await compiled.wait()
-        return _drain_and_project()
+        return await _drain_and_project()
 
     @mcp.tool()
     async def ctml_interrupt() -> list[ContentBlock]:
@@ -242,7 +245,7 @@ def bootstrap(state: ServerState, mcp: MCPServer):
         if not state.shell_runtime or not state.trajectory:
             return [TextContent(type='text', text="MOSS Runtime not initialized.")]
         await state.shell_runtime.shell.clear()
-        return _drain_and_project()
+        return await _drain_and_project()
 
 
 def _bootstrap_env(
