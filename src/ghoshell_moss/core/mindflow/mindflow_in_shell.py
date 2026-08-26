@@ -221,7 +221,7 @@ class MindflowInShell(ABC):
             async with thinking:
                 tasks = []
                 if self._is_thinking_gated():
-                    thinking.gate().register(self._approve_logos)
+                    thinking.register_gate(self._approve_logos)
 
                 moment = thinking.moment
                 # 发送已经执行的命令.

@@ -98,7 +98,7 @@ async def test_gate_approved_logos_delivered_to_action():
     thinking = _make_thinking(put.append)
     sm = SafeModeImpl()
     sm.set_enabled(True)
-    thinking.gate().register(_safe_mode_approve(sm))
+    thinking.register_gate(_safe_mode_approve(sm))
 
     async def articulate():
         art = thinking.articulator()
@@ -139,7 +139,7 @@ async def test_gate_rejected_logos_abort_without_delivery():
     thinking = _make_thinking(put.append)
     sm = SafeModeImpl()
     sm.set_enabled(True)
-    thinking.gate().register(_safe_mode_approve(sm))
+    thinking.register_gate(_safe_mode_approve(sm))
 
     async def articulate():
         art = thinking.articulator()
@@ -167,7 +167,7 @@ async def test_gate_cancel_current_aborts_without_delivery():
     thinking = _make_thinking(put.append)
     sm = SafeModeImpl()
     sm.set_enabled(True)
-    thinking.gate().register(_safe_mode_approve(sm))
+    thinking.register_gate(_safe_mode_approve(sm))
 
     async def articulate():
         art = thinking.articulator()

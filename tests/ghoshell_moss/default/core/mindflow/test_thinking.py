@@ -51,9 +51,9 @@ def _make_thinking(*, attention=None, observer=None, gated: bool = False, thinki
     )
     if gated:
         async def _approve_always(logos: str) -> tuple[bool, str]:
-            return (True, '')
+            return True, ''
 
-        thinking.gate().register(_approve_always)
+        thinking.register_gate(_approve_always)
     return thinking, {'put': put, 'observer': observer, 'mindflow_stop_event': mindflow_stop_event}
 
 
@@ -106,15 +106,6 @@ async def test_effort_none_short_circuits_runtime():
     """effort == 'none' 是 ghost_runtime 提前 return 的开关, 必须从 attention 如实读出."""
     thinking, _ = _make_thinking(thinking_effort='none')
     assert thinking.effort() == 'none'
-
-
-# -- gate ---------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_gate_lazy_singleton():
-    """gate() 惰性创建, 同一 thinking 返回同一实例."""
-    thinking, _ = _make_thinking()
-    assert thinking.gate() is thinking.gate()
 
 
 # -- articulator 接入策略 ------------------------------------------------------

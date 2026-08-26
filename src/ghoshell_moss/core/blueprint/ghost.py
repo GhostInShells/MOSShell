@@ -1,15 +1,12 @@
 """Ghost agent blueprint — persistent intelligent agent with continuous memory and reflexivity."""
 
-import pathlib
-from typing import AsyncIterable, Optional
+from typing import AsyncIterable
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusMeta, Thinking
-from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_moss.contracts import Storage
+from ghoshell_moss.core.blueprint.channel_builder import Channel, ChannelFactory
 from ghoshell_moss.message import Message
-from dataclasses import dataclass
 
 __all__ = ['Ghost', 'GhostMeta']
 
@@ -134,7 +131,7 @@ class Ghost(ABC):
         """
         return []
 
-    def channel(self) -> Channel | None:
+    def channel(self) -> Channel | ChannelFactory | None:
         """
         Ghost 反身性控制的 Channel
         如果提供出来, 会以 'ghost' 为 channel 名注册到 Shell 中.

@@ -6,7 +6,7 @@ from typing import Callable, Iterable
 from ghoshell_container import IoCContainer
 from typing_extensions import Self
 
-from ghoshell_moss import MOSShell
+from ghoshell_moss import MOSShell, Channel
 from ghoshell_moss.core import NucleusMeta
 from ghoshell_moss.core.blueprint.host import IGhostRuntime, MOSShellRuntime, LoopHealth, LoopStatus, SafeMode
 from ghoshell_moss.host.pause_controller import PauseController
@@ -75,6 +75,7 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
             thinking="not_started",
             action="not_started",
         )
+        self._runtime_channels: dict[str, Channel] = {}
 
         self._shell_trajectory: MShellTrajectory | None = None
         self._log_prefix: str = f"<GhostRuntime cls={self.__class__} ghost={ghost_meta.name()} mode={self._moss_runtime.mode.name}>"
@@ -140,6 +141,9 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         # 2. MossRuntime.__aenter__ (Matrix 从 IoC 注入 LoggerItf 或 fallthrough 到 project.logger)
         logger.debug("%r step 2/5: entering MossRuntime", self)
         await self._async_exit_stack.__aenter__()
+        # 注册 runtime 自身的系统 channel. 每次刷新时都会更新.
+        self._moss_runtime.shell.main_channel.build.virtual_children(self._get_runtime_channels)
+
         await self._async_exit_stack.enter_async_context(self._moss_runtime)
         # 默认注册 shell trajectory.
         self._shell_trajectory = MShellTrajectory(self._moss_runtime.shell)
@@ -164,10 +168,14 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         # 4. ghost.__aenter__
         logger.debug("%r step 4/5: entering ghost", self)
         await self._async_exit_stack.enter_async_context(self._ghost_instance)
+        if channel := self._ghost_instance.channel():
+            self._runtime_channels['ghost'] = channel
 
         # 5. Mindflow wiring
         logger.debug("%r step 5/5: wiring mindflow", self)
         await self._wire_mindflow()
+        if mindflow_channel := self._mindflow.as_channel():
+            self._runtime_channels['mindflow'] = mindflow_channel
 
         # 急停级联控制器 — mindflow 和 shell 都已就绪
         self._pause_ctrl.bind(self._mindflow, self.moss.shell)
@@ -350,14 +358,14 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
                     f"{verdict.message}\n"
                     "</safemode-approval-note>"
                 )
-                return (True, message)
+                return True, message
             message = (
                 "<safemode-rejection>\n"
                 "Previous logos rejected by human review; body did not execute.\n"
                 f"Reason: {verdict.message}\n"
                 "</safemode-rejection>"
             )
-            return (False, message)
+            return False, message
         finally:
             # 幂等: 已被 approve/reject 结算时 no-op; abort/cancel 兜底清理 pending.
             self._safe_mode.cancel_current()
@@ -365,6 +373,9 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
     def _on_logos_delta(self, delta: str) -> None:
         if self._moss_runtime.session.is_running():
             self._moss_runtime.session.pub_logos(delta)
+
+    def _get_runtime_channels(self) -> dict[str, Channel]:
+        return self._runtime_channels
 
     async def _articulate_from_thinking(self, thinking: Thinking) -> None:
         session = self._moss_runtime.session

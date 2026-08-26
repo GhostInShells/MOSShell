@@ -69,7 +69,7 @@ from typing import TYPE_CHECKING, AsyncIterator
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
 
-from ghoshell_moss.core.blueprint.memento import Moment
+from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.mindflow import Signal, ThinkingEffort
 from ghoshell_moss.core.blueprint.session import OutputItem, Session
 from ghoshell_moss.deepseek_harness.launcher import DshLauncherConfig

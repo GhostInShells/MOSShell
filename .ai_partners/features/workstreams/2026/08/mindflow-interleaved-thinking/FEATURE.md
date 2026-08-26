@@ -99,7 +99,8 @@ ghost runtime, 让 mindflow 变成一个可测试的、确认同构的体系。�
 
 ## 悬置（cut scope / 待办）
 
-- 实机测试 + 修复几个原型（第三步, 尚未完成）。当前单测全绿, 重构预期能较好收工。
+- 实机测试 + 修复几个原型（第三步）: Atom（echo）原型重建已完成（见「原型验收」）,
+  实机验证（moss-ghost / TUI / 回归）待做。当前单测全绿, 重构预期能较好收工。
 - llm func 仲裁: attention 数据对象化是它的预留, 本期不实现。
 
 ## 主体工程（改动总结）
@@ -163,3 +164,25 @@ shell / shell_trajectory / logger）+ 少量 hook（safe_mode `_approve_logos` /
 `MindflowInShellTestSuite(MindflowInShell)`: 复用真实三循环, 只补最小 accessor,
 `articulate` / `signal` 可拆卸注入, 通过覆写 hook 观测（attention / thinking / action
 计数与事件、`interrupt_clear_calls` / `shell_clear_calls` 区分两种 shell.clear）。
+
+## 原型验收 — Atom（echo）重建（第三步）
+
+> 把 Atom 改造视作 mindflow 重构的验收步骤。改动面（当前未提交）:
+
+- **`think()` 用 articulator**（`ghosts/atom/_runtime.py`）: `thinking.articulator()` 新建
+  articulator, `send_nowait(delta)` 喂 Action + `yield delta` 供 host 广播, 退出前
+  `wait_action_done()`（articulate 自保证, 对齐 `text_articulator` 契约）。
+- **上下文从 observer 轨迹派生**: 新增 `_adapter.moments_to_history`（轨迹 → pydantic
+  message_history）, 动态消息只留最新帧（`as_history_messages` 天然丢弃 dynamic）;
+  删掉 Atom 自维护的 `_history` / `model_history` / `save_model_request`。
+- **`GhostWorkspace` → `Matrix.ghost_home`**: soul 加载路径从容器绑定的 GhostWorkspace
+  改为 `matrix.ghost_home`（`_meta.py`）。
+- **`Ghost.channel()` 挂 main**: `Ghost.channel()` 返回类型扩展为
+  `Channel | ChannelFactory`; host 用 `virtual_children` 回调收集 ghost/mindflow channel
+  （绕开 `import_channels` 的 bootstrap 只更新一次锁）; Atom 加最小 `channel` 参数（默认 None）。
+- **echo 挂 introspect**（`stubs/.../ghosts/echo.py`）: echo 实例原生带 `introspect` channel
+  （自读源码, scope `ghoshell_moss`）; soul.md 全英文化 + 结尾记改动历史。
+- **删除 mock ghost**（`ghosts/mock/`）: 旧测试桩, 已被 `MindflowInShellTestSuite` 等
+  自包含 fake 取代。
+
+验收路径: 阶段一 `moss-ghost` 独立验证 → 阶段二 TUI 人工验证 → 阶段三 ghost runtime 回归。

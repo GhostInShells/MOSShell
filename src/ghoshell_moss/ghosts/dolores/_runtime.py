@@ -10,7 +10,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.mindflow import Articulator
+from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.core.concepts.shell import MOSShell
@@ -91,7 +91,7 @@ class Dolores(Ghost):
         view = await self._root_ground.render()
         return str(view)
 
-    async def articulate(self, articulator: Articulator) -> AsyncIterator[str]:
+    async def think(self, thinking: Thinking) -> AsyncIterator[str]:
         """上下文完全由 ShellTrajectory 承载 — 先写 trajectory frame, 再走 output.
 
         Moment 体系不动: 本步只把 shell 观测 (facade / status / events / context) 从

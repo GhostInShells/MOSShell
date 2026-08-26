@@ -49,7 +49,6 @@ __all__ = [
     'ChallengeMode',
     'ImpulsePrimitive',
     'Articulator',
-    'ActionGate',
     'StatementExitedException', 'ActionExitedException', 'AttentionExitedException', 'ThinkExitedException',
 ]
 
@@ -799,24 +798,12 @@ class Articulator(ABC):
         ...
 
 
-class ActionGate(ABC):
-    """action 闸门, 在 think 的生命周期下执行.
-
-    articulator 在 commit (logos 写完) 时调用 ``approve`` 裁决完整 logos:
-    返回 ``(approved, message)``. ``approved=False`` 会由 articulator abort 掉当前
-    action (进而 abort attention), 不重新 loop。
-    """
-
-    @abstractmethod
-    async def approve(self, logos: str) -> tuple[bool, str]:
-        """裁决一段完整 logos. 返回 (approved, message). """
-        ...
-
-
 class Thinking(AttentionStatement, ABC):
     """
     推理决策单元, 将推理的结果发送给执行单元.
     需要实现线程安全.
+
+    **退出时序约定**: 正常退出时默认阻塞到最后一个 Action 停止.
     """
 
     @property
@@ -836,8 +823,11 @@ class Thinking(AttentionStatement, ABC):
         ...
 
     @abstractmethod
-    def gate(self) -> ActionGate:
-        """开启闸口, 发送的 logos 都必须由 ActionGate 验证通过. """
+    def register_gate(self, warrant: Callable[[str], Awaitable[tuple[bool, str]]]):
+        """开启闸口, 发送的 logos 必须由 gate 审批通过.
+        warrant 入参是每一轮 articulator 的完整 logos
+        返回值是 (approved: bool, reason: str = '')
+        """
         ...
 
     @property
@@ -909,6 +899,8 @@ class Action(AttentionStatement, ABC):
     与 Articulator 成对生成.
     Articulator 实际上可以比 Action 更早结束.
     思维可以走在行动的前面, 观察行动的结果.
+
+    **退出时序约定**: Articulator 不显式等待 Action 停止时, 仅阻塞到 logos 编译完成.
     """
 
     @property

@@ -10,10 +10,10 @@ from ghoshell_moss.depends import depend_ghost
 
 depend_ghost()
 from ghoshell_moss.message import Message, Text, Base64Image
-from pydantic_ai.messages import ModelRequest, ModelResponse
+from pydantic_ai.messages import ModelRequest, ModelResponse, ModelMessage, TextPart
 from pydantic_ai import UserContent, TextContent, ImageUrl
 
-__all__ = ["messages_to_parts", "moment_to_request"]
+__all__ = ["messages_to_parts", "moment_to_request", "moments_to_history"]
 
 
 def messages_to_parts(messages: Iterable[Message]) -> list[UserContent]:
@@ -31,5 +31,22 @@ def messages_to_parts(messages: Iterable[Message]) -> list[UserContent]:
 def moment_to_request(moment) -> ModelRequest:
     """将 Moment 转为 pydantic AI ModelRequest."""
     from ghoshell_moss.core.blueprint.mindflow import Moment as _Moment
-    parts = messages_to_parts(moment.as_request_messages())
+    parts = messages_to_parts(moment.full_observation_messages())
     return ModelRequest(parts=parts)
+
+
+def moments_to_history(moments) -> list[ModelMessage]:
+    """将 Moments 轨迹重建为 pydantic AI message_history.
+
+    只保留已完成回合 (带 logos), 跳过当前未完成帧. 动态消息由
+    ``as_history_messages`` 天然丢弃, 不进历史 — 动态消息只在当前帧最新一份.
+    """
+    from ghoshell_moss.core.blueprint.moment import Moment
+
+    history: list[ModelMessage] = []
+    for inputs, logos in Moment.to_history_turns(moments):
+        if logos is None:
+            continue
+        history.append(ModelRequest(parts=messages_to_parts(inputs)))
+        history.append(ModelResponse(parts=[TextPart(content=logos)]))
+    return history

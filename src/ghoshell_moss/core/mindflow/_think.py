@@ -7,18 +7,18 @@ Thinking 实现.
 import asyncio
 import contextlib
 import logging
-from typing import Callable
+from typing import Callable, Awaitable
 from typing_extensions import Self
 
 import janus
 
 from ghoshell_moss.core.blueprint.mindflow import (
     Action, ActionExitedException, Articulator, Attention, AttentionExitedException,
-    Thinking, ThinkExitedException, ThinkingEffort, ActionGate
+    Thinking, ThinkExitedException, ThinkingEffort
 )
-from ghoshell_moss.core.blueprint.moment import Moment, Moments, Observer
+from ghoshell_moss.core.blueprint.moment import Moment, Observer
 from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_moss.contracts import LoggerItf, get_moss_logger
+from ghoshell_moss.contracts import get_moss_logger
 from ._action import BaseAction, BaseActionGate, BaseArticulator
 
 __all__ = ['BaseThinking']
@@ -89,10 +89,10 @@ class BaseThinking(Thinking):
     def effort(self) -> ThinkingEffort:
         return self._attention.draw_from().thinking_effort
 
-    def gate(self) -> ActionGate:
-        if self._gate is None:
-            self._gate = BaseActionGate()
-        return self._gate
+
+    def register_gate(self, warrant: Callable[[str], Awaitable[tuple[bool, str]]]):
+        self._gate = BaseActionGate()
+        self._gate.register(warrant)
 
     def articulator(self, replan: bool = False, wait_action_done: bool = False) -> Articulator:
         """

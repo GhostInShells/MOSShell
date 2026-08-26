@@ -9,8 +9,7 @@ from pathlib import Path
 import pytest
 from ghoshell_container import Container
 
-from ghoshell_moss.core.blueprint.mindflow import Moment, Reaction
-from ghoshell_moss.core.blueprint.ghost import GhostWorkspace
+from ghoshell_moss.core.blueprint.mindflow import Moment, Results
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.system_prompter import SystemPrompter, BaseSystemPrompter
 from ghoshell_moss.contracts.workspace import Workspace, LocalWorkspace
@@ -46,34 +45,28 @@ class TestSoul:
         assert meta.soul_content == ""
 
     def test_soul_path_resolves_to_name(self, tmp_path: Path):
-        souls_dir = tmp_path
-        (souls_dir / "soul.md").write_text("from file")
-        ws = GhostWorkspace(home=tmp_path, source=None)
+        (tmp_path / "soul.md").write_text("from file")
         meta = _atom_meta(soul_path=None, soul_content=None)
-        meta._load_soul(ws)
+        meta._load_soul(tmp_path)
         assert meta.soul_content == "from file"
 
     def test_soul_path_explicit_str(self, tmp_path: Path):
-        souls_dir = tmp_path
-        (souls_dir / "custom.md").write_text("custom")
+        (tmp_path / "custom.md").write_text("custom")
         meta = _atom_meta(soul_path="custom.md", soul_content=None)
-        ws = GhostWorkspace(home=tmp_path, source=None)
-        meta._load_soul(ws)
+        meta._load_soul(tmp_path)
         assert meta.soul_content == "custom"
 
     def test_soul_path_absolute(self, tmp_path: Path):
         file = tmp_path / "soul.md"
         file.write_text("absolute")
         meta = _atom_meta(soul_path=file, soul_content=None)
-        meta._load_soul(GhostWorkspace(Path("/irrelevant"), source=None))
+        meta._load_soul(Path("/irrelevant"))
         assert meta.soul_content == ""
 
     def test_soul_content_skips_file_load(self, tmp_path: Path):
-        souls_dir = tmp_path
-        (souls_dir / "soul.md").write_text("should not load")
-        ws = GhostWorkspace(home=tmp_path, source=None)
+        (tmp_path / "soul.md").write_text("should not load")
         meta = _atom_meta(soul_content="preset")
-        meta._load_soul(ws)
+        meta._load_soul(tmp_path)
         assert meta.soul_content == "preset"
 
 
@@ -115,21 +108,6 @@ class TestBuildAgent:
         meta = _atom_meta(model=None, soul_content="test")
         agent = meta.build_agent(Container())
         assert agent._model is not None
-
-    def test_loads_soul_from_workspace(self, tmp_path: Path):
-        from pydantic_ai.models.anthropic import AnthropicModel
-        souls_dir = tmp_path / "souls"
-        souls_dir.mkdir()
-        (souls_dir / "test_atom.md").write_text("soul from ws")
-        ws = GhostWorkspace(home=tmp_path, source=None)
-        meta = _atom_meta(
-            model=AnthropicModel(model_name="claude-sonnet-4-6"),
-            soul_content=None,
-            soul_path='souls/test_atom.md',
-        )
-        c = _container((GhostWorkspace, ws))
-        meta.build_agent(c)
-        assert meta.soul_content == "soul from ws"
 
     def test_on_agent_build_called(self, tmp_path: Path):
         from pydantic_ai.models.anthropic import AnthropicModel
@@ -181,24 +159,9 @@ class TestAtomMessages:
         from pydantic_ai.messages import ModelRequest
         atom = self._atom(tmp_path)
         msg = Message.new().with_content("hello")
-        moment = Moment(percepts=[msg])
+        moment = Moment(percepts={"input": [msg]})
         request = atom.to_model_request(moment)
         assert isinstance(request, ModelRequest)
-
-    def test_history_initially_empty(self, tmp_path: Path):
-        atom = self._atom(tmp_path)
-        assert atom.model_history() == []
-
-    def test_save_adds_to_history(self, tmp_path: Path):
-        from pydantic_ai.messages import ModelRequest, ModelResponse
-        atom = self._atom(tmp_path)
-        moment = Moment(percepts=[Message.new().with_content("hi")])
-        response = ModelResponse(parts=[])
-        atom.save_model_request(moment, response)
-        history = atom.model_history()
-        assert len(history) == 2
-        assert isinstance(history[0], ModelRequest)
-        assert isinstance(history[1], ModelResponse)
 
 
 # ── system_prompt ───────────────────────────────────
@@ -263,7 +226,7 @@ class TestAdapter:
     def test_moment_to_request(self):
         from ._adapter import moment_to_request
         from pydantic_ai.messages import ModelRequest
-        moment = Moment(percepts=[Message.new().with_content("test")])
+        moment = Moment(percepts={"input": [Message.new().with_content("test")]})
         request = moment_to_request(moment)
         assert isinstance(request, ModelRequest)
         assert len(request.parts) > 0
@@ -271,13 +234,13 @@ class TestAdapter:
     def test_moment_to_request_includes_percepts(self):
         from ._adapter import moment_to_request
         msg = Message.new().with_content("percept content")
-        request = moment_to_request(Moment(percepts=[msg]))
+        request = moment_to_request(Moment(percepts={"input": [msg]}))
         assert any("percept content" in str(p) for p in request.parts)
 
     def test_moment_to_request_includes_previous_outcomes(self):
         from ._adapter import moment_to_request
-        prev = Reaction(moment_id="p1",
-                        messages=[Message.new().with_content("outcome")])
+        prev = Results(moment_id="p1",
+                       messages=[Message.new().with_content("outcome")])
         request = moment_to_request(Moment(previous=prev))
         assert any("outcome" in str(p) for p in request.parts)
 
@@ -287,3 +250,25 @@ class TestAdapter:
         request = moment_to_request(Moment())
         assert isinstance(request, ModelRequest)
         assert len(request.parts) == 0
+
+    def test_moments_to_history_skips_incomplete_turn(self):
+        from ._adapter import moments_to_history
+        from pydantic_ai.messages import ModelRequest, ModelResponse
+        from ghoshell_moss.core.blueprint.moment import BaseMomentsObserver
+
+        obs = BaseMomentsObserver(max_size=10)
+        obs.inject_percepts("hi")
+        first = obs.observe()
+        first.logos = "hello"
+        obs.inject_percepts("again")
+        second = obs.observe()
+        second.logos = "world"
+
+        history = moments_to_history(obs.moments())
+        assert len(history) == 4
+        assert isinstance(history[0], ModelRequest)
+        assert isinstance(history[1], ModelResponse)
+        assert "hello" in str(history[1])
+        assert isinstance(history[2], ModelRequest)
+        assert isinstance(history[3], ModelResponse)
+        assert "world" in str(history[3])

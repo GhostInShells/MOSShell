@@ -10,7 +10,6 @@ from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.mindflow import (
     Attention, Action, ActionExitedException, Articulator, AttentionExitedException, StatementExitedException,
-    ActionGate
 )
 from ghoshell_moss.core.blueprint.moment import Moments, Moment
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -362,7 +361,7 @@ class BaseAction(Action):
             self._compiled_event.set()
 
 
-class BaseActionGate(ActionGate):
+class BaseActionGate:
     """thinking 级别的 logos 审批闸门 — 单一 approve 回调容器.
 
     articulator 在 commit 时调 ``approve(logos)``: 注册了回调就 await 它裁决,
