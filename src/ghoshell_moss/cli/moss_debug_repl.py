@@ -68,11 +68,11 @@ def tui(ctx):
 @click.option(
     '--transport',
     type=click.Choice(['sse', 'std', 'streamable_http']),
-    default='sse',
+    default='streamable_http',
     help='通信协议',
 )
-@click.option('--host', default='127.0.0.1', help='SSE 服务地址 (仅在 transport=sse 时生效)')
-@click.option('--port', default=20773, help='SSE 服务端口 (仅在 transport=sse 时生效)')
+@click.option('--host', default='127.0.0.1', help='MCP 服务地址 (network 传输时生效)')
+@click.option('--port', default=20773, help='MCP 服务端口 (network 传输时生效)')
 @click.option('--server-name', default='MOSS-Toolset-Server', help='MCP 服务名称')
 @click.pass_context
 def mcp(ctx, transport, host, port, server_name):

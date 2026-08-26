@@ -263,7 +263,7 @@ def main_entry(
         mode: str | None = None,
         scope: str | None = None,
         network: str | None = None,
-        transport: Literal['sse', 'std', 'streamable_http'] = 'sse',
+        transport: Literal['sse', 'std', 'streamable_http'] = 'streamable_http',
         server_name: str = 'MOSS-shell_runtime-Server',
         host: str = '127.0.0.1',
         port: int = 20773,
@@ -295,7 +295,9 @@ def main_entry(
                 elif transport == 'std':
                     await mcp.run_stdio_async()
                 elif transport == 'streamable_http':
-                    await mcp.run_streamable_http_async(host=host, port=port)
+                    # 走 matrix.aserve_mcp (stateless streamable-http): 关停时由 uvicorn
+                    # 干净收尾, 无 SSE 长连接的排干竞态, 并纳入 matrix 生命周期.
+                    await runtime.matrix.aserve_mcp(mcp, host=host, port=port)
                 else:
                     raise click.BadParameter(f"transport {transport} not supported")
 
@@ -309,9 +311,9 @@ def main_entry(
 @click.option('--mode', default='default', help='MOSS 运行时模式')
 @click.option('--scope', default='default', help='网络通讯子空间 (network scope)')
 @click.option('--network', default='local', help='网络驱动 (network driver)')
-@click.option('--transport', type=click.Choice(['sse', 'std', 'streamable_http']), default='sse', help='通信协议')
-@click.option('--host', default='127.0.0.1', help='SSE 服务地址 (仅在 transport=sse 时生效)')
-@click.option('--port', default=20773, help='SSE 服务端口 (仅在 transport=sse 时生效)')
+@click.option('--transport', type=click.Choice(['sse', 'std', 'streamable_http']), default='streamable_http', help='通信协议')
+@click.option('--host', default='127.0.0.1', help='MCP 服务地址 (network 传输时生效)')
+@click.option('--port', default=20773, help='MCP 服务端口 (network 传输时生效)')
 @click.option('--server-name', default='MOSS-shell_runtime-Server', help='MCP 服务名称')
 def main(mode, scope, network, transport, host, port, server_name):
     """Expose MOSS runtime as an MCP server for AI coding platforms (Claude Code,
