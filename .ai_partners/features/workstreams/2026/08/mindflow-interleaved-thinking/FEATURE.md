@@ -3,7 +3,7 @@ title: Mindflow Interleaved Thinking — 三循环解耦 + 观测缝合, 定版 
 status: in-progress
 priority: P0
 created: 2026-08-26
-updated: 2026-08-26
+updated: 2026-08-28
 depends: [interleaved-ctml-thinking, shell-trajectory, ghost-prototype-dolores]
 milestone: MOSS v0.1.0
 description: >-
@@ -227,3 +227,75 @@ shell / shell_trajectory / logger）+ 少量 hook（safe_mode `_approve_logos` /
   自包含 fake 取代。
 
 验收路径: 阶段一 `moss-ghost` 独立验证 → 阶段二 TUI 人工验证 → 阶段三 ghost runtime 回归。
+
+## Interrupt 语义收敛 — 下一轮设计决策
+
+> 2026-08-28, 人类架构师与 deepseek-v4-flash-vision-exp 讨论收敛。**已定方案, 未实现。**
+> 由 echo + `moss-ghost send` 实测引出: 测 input/notify/interrupt/silent 四种 signal 时,
+> 发现 interrupt 的"停"效果与抢占重叠, 追下去发现 interrupt 信号把三条正交语义缠在了一起。
+
+### 问题: 三条同名 "interrupt" 缠在一起
+
+- signal 名 `interrupt`（路由到 InterruptNucleus）
+- impulse flag `interrupt=True`（原文档以为触发 `stop_interpretation`）
+- shell 状态 `state="interrupted"`（`abort("interrupted")` 的产物）
+
+实测对照得出的四个结论:
+
+1. `notify --priority fatal` 同样产生 `state="interrupted"` + `cancelled: 1` —— "停"来自
+   抢占（FATAL 赢仲裁）而非 `interrupt=True` 独有。
+2. `interrupt=True` 唯一运行时消费点是 `mindflow_in_shell.py` 的 `interrupt_first → clear`,
+   被 `previous_stop_reason` 遮蔽（任何抢占都 abort → 写 stop_reason → 下一帧 clear）—— flag 冗余。
+3. `effort='none'` 判断层错: 在 `_run_thinking` 才 return, 但 attention 早在仲裁就建好
+   （notify mode）→ 空壳 attention + 多吐一帧空 moment（实测 `0 percepts` 那帧）。
+4. `replan` **不是死代码**: 模型思考流里可多次生成 CTML, tool 生成时设置 replan flag。
+   `articulator(replan=False)` 只是 streaming 默认路径。
+
+### 方案 A（详尽路径, 能跑通但被简化取代）
+
+> 这是先走通的那条路, 随后被"简化路径"取代。两个方案对照有价值, 故保留。
+
+核心是把 clear 做成一个**一等 action**（与正常 action 同构、可排序、可 abort）, 而不是
+runtime 的副作用:
+
+- **空 action 机制**: `interrupt=True` 时发送一个明确的空 action —— 绕过 gate、replan、
+  已 commit（空 logos 不重建 interpreter）。空 action 是 clear 信号的载体, 走 action loop
+  而非 thinking loop。
+- **InterruptAction（结论 3）**: 专门的产物, 用 `effort='none'` 判断是否终止它持有的
+  attention, 加一个 `cancel_attention_after_exit` flag。这是"产物反绑"——产物反过来控制
+  生产者的生命周期。
+- **ActionOnlyAttention**: `effort='none'` 时不发射 thinking、只发射 action。attention 是
+  "只要 action 不要 thinking"的退化情形。
+- **统一 `_run_attentions`**: 首发 action（interrupt）+ 发射 thinking（effort != none）都在
+  `_generate_thinking`（改名 `_run_attentions`）一步完成。
+- **wait ready 来 abort**: 空 action 直接 abort, 不用走 interpreter 管线。
+
+代价: 需要新产物类 + `cancel_attention_after_exit` flag + "产物反绑"的倒转控制流。结论 3
+（InterruptAction）是这条路上唯一被判定为过设计的一处 —— 不是不可行, 是控制流反了。
+
+### 收敛（简化路径, 已定）
+
+1. **保留 `interrupt` flag, 默认 True**, 只对 attention 首帧 `draw_from` 生效。
+2. **effort + interrupt 两个 flag 都在 `_generate_thinking`（改名 `run_attention`）里治理**,
+   runtime（MindflowInShell）是治理主角。
+3. **`effort='none'` → runtime 拿到 thinking 后立刻 abort attention** —— 不建空壳、不占槽位。
+4. **`interrupt=True` → 无理由 clear**（`previous_stop_reason` 逻辑可删）。
+5. **`replaned` 不再区分 interpreter kind**, 直接决定是否手动 clear（kind 恒 append）,
+   与 interrupt 的 clear 解耦, 只留给"模型主动 replan"。
+6. **action 侧打断 clear 仍然保留**（未来再看怎么办）。
+7. **不引入 InterruptAction** —— 用产物反绑（`cancel_attention_after_exit`）是倒转控制流,
+   runtime 在 run_attention 一步正着做完即可。
+
+### 心智模型: attention = 焦点, 不是 thinking 容器
+
+`Attention` 本来就只持 impulse + 仲裁（`_attention.py`）, `Thinking` 是另一个对象。所以
+effort='none' 的 attention 是「不思考、但持 impulse 的焦点」, 不是"虚构 attention"。
+action 与 thinking 都是 attention 的一等产物（兄弟关系）, 不再是 thinking → action 派生;
+interrupt 是"只要 action 不要 thinking"的退化情形（ActionOnlyAttention）。
+
+### 保留的语义张力（未来）
+
+- **三种 shell 打断**: 打断特定轨道 / 打断全部执行中+排队 command / 打断全部运行任务。
+  当前 `shell.clear()` 只做到第二层, 第一、三层未落。
+- **嘴停手停 vs 嘴停手不停**: interrupt flag 原意是为"嘴停手不停"留口子, 当前没区分。
+  命名反直觉（interrupt=True 本意是"不停手"）是它一路被误解成冗余 clear 标记的根因。
