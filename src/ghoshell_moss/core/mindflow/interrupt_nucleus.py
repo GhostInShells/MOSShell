@@ -42,9 +42,8 @@ __all__ = [
 class InterruptSignalMeta(SignalMeta):
     """Signal meta for ``interrupt`` — must-deliver, must-interrupt.
 
-    与 ``BroadcastSignalMeta`` (由 ImpulsePrimitive.broadcast 离散使用)
-    形成对偶: broadcast 不接管 attention 只 buffer messages;
-    interrupt 接管 attention 并打断 shell 执行, 但立即放手不思考.
+    与 ``ImpulsePrimitive.broadcast`` (FATAL + silent 组合, 不接管 attention 只 buffer
+    messages) 形成对偶: interrupt 接管 attention 并打断 shell 执行, 但立即放手不思考.
 
     priority 锁 FATAL — interrupt 没有"低优中断" 的语义.
     """

@@ -304,6 +304,10 @@ class SignalMeta(BaseModel, ABC):
 class InputSignalMeta(SignalMeta):
     """
     系统最基础的 Input 讯号. 代表一个明确的输入.
+
+    走 default mode, FIFO 聚合: 抢占成功创建新 attention; 抢占失败被 suppress,
+    消息保留在 InputNucleus buffer, 仅在下一个 input signal 到达时才重新聚合
+    参与仲裁.
     """
 
     @classmethod

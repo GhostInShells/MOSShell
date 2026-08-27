@@ -26,9 +26,9 @@ __all__ = ['NotifyNucleus', 'NotifySignalMeta', 'NotifyNucleusMeta', 'new_notify
 class NotifySignalMeta(SignalMeta):
     """Signal meta for ``notify`` — carries messages that must not be lost.
 
-    与 ``InputSignal`` 区别: input 走 default mode (抢占失败 suppress, 信丢);
-    notify 走 notify mode (抢占失败 buffer, 留痕). 用例确定要不要丢就选 input,
-    确定不能丢就选 notify.
+    抢占成功正常创建新 attention; 抢占失败走 notify mode — messages buffer 进
+    mindflow (留痕) 而非 suppress, 由下一帧 percepts 消费. 典型用例: ghost 思考时
+    用户说话, 不打断就留痕.
     """
 
     @classmethod
