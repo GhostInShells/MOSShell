@@ -377,3 +377,121 @@ class TestDoloresEgoSelfWake:
         await ego._on_turn_start(None)  # type: ignore[arg-type]
 
         assert emitted == []
+
+
+# ── DoloresRun — thinking 交易 run 对象 (public + 可测) ─────────────
+
+
+class FakeRunSession:
+    """DoloresRun 的事件源 fake — on_session_event 注册/解绑 + 手动 emit."""
+
+    def __init__(self):
+        self.handlers: list = []
+
+    def on_session_event(self, event_type, callback):
+        self.handlers.append((event_type, callback))
+
+        def dispose():
+            self.handlers.remove((event_type, callback))
+
+        return dispose
+
+    async def emit(self, event):
+        for _, cb in list(self.handlers):
+            await cb(event)
+
+
+class FakeRunEgo:
+    """DoloresRun 的 ego fake — Duck-typed (session/_articulating/_rpc_*)."""
+
+    def __init__(self, session):
+        self.session = session
+        self._articulating = False
+        self.enter_calls = 0
+        self.exit_calls = 0
+        self.enter_error: Exception | None = None
+
+    async def _rpc_thinking_enter(self, thinking):
+        self.enter_calls += 1
+        if self.enter_error is not None:
+            raise self.enter_error
+
+    async def _rpc_thinking_exit(self):
+        self.exit_calls += 1
+
+
+class FakeRunThinking:
+    def __init__(self):
+        self.abort_reasons: list = []
+
+    def abort(self, reason):
+        self.abort_reasons.append(reason)
+
+
+class TestDoloresRun:
+    """DoloresRun 生命周期 + 事件消费 — public 类, 轻量 fake 即可验证."""
+
+    def _run(self, session=None, ego=None, thinking=None):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent  # noqa: F401
+
+        from ._run import DoloresRun
+
+        session = session or FakeRunSession()
+        return DoloresRun(
+            ego=ego or FakeRunEgo(session),
+            thinking=thinking or FakeRunThinking(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_aenter_binds_listener_and_aexit_cleans_up(self):
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        run = self._run(session=session, ego=ego)
+        async with run:
+            assert ego._articulating is True
+            assert len(session.handlers) == 1  # catch-all 监听已绑
+            await asyncio.sleep(0)  # 让出 loop, enter task 跑
+            assert ego.enter_calls == 1
+        assert ego._articulating is False
+        assert ego.exit_calls == 1
+        assert len(session.handlers) == 0  # 解绑
+
+    @pytest.mark.asyncio
+    async def test_events_consumes_and_terminates_on_poison(self):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        run = self._run(session=session, ego=ego)
+        collected = []
+        async with run:
+            await session.emit(SessionEvent(meta=SessionEventMeta(type="turn/start", seq=1), data={"turn": 1}))
+            await session.emit(SessionEvent(meta=SessionEventMeta(type="step/start", seq=2), data={"turn": 1, "step": 1}))
+            async for event in run.events():  # enter task 完成会塞毒丸 → 终止
+                collected.append(event.meta.type)
+        assert "turn/start" in collected
+        assert "step/start" in collected
+
+    @pytest.mark.asyncio
+    async def test_enter_error_propagates_and_aborts(self):
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        ego.enter_error = RuntimeError("enter boom")
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        with pytest.raises(RuntimeError, match="enter boom"):
+            async with run:
+                async for _ in run.events():
+                    pass
+        assert thinking.abort_reasons  # enter 异常 → thinking.abort
+
+    @pytest.mark.asyncio
+    async def test_consumer_exception_aborts_thinking(self):
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        with pytest.raises(RuntimeError, match="consumer boom"):
+            async with run:
+                raise RuntimeError("consumer boom")
+        assert thinking.abort_reasons

@@ -389,6 +389,8 @@ class DshLauncher:
             self.config.binary,
             "--profile", self.config.profile,
             "--port", str(self.config.port),
+            # ego 起的 dsh 不自动开浏览器 — desktop mode 下 ego 把界面开进自己的 screen, 不借系统默认浏览器.
+            "--no-open",
             *self.config.args,
         ]
         extra_env: dict[str, str] = {}

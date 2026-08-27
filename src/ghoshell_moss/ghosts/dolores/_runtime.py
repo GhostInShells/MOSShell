@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -8,17 +9,21 @@ from typing import TYPE_CHECKING, AsyncIterator
 import yaml
 from typing_extensions import Self
 
+from ghoshell_moss.contracts.logger import get_moss_logger
+
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.core.concepts.shell import MOSShell
+from ghoshell_moss.deepseek_harness.types.session_events import AssistantChunk
 from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
+    from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
 
     from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._meta import DoloresMeta
@@ -26,15 +31,25 @@ if TYPE_CHECKING:
 __all__ = ["Dolores"]
 
 
+def _fetch_logos(event: "SessionEvent") -> str | None:
+    """从 session event 提取 logos delta — assistant/chunk 的 text-delta 段."""
+    if event.meta.type != "assistant/chunk":
+        return None
+    chunk = AssistantChunk.from_session_event(event)
+    if chunk is not None and chunk.chunk.type == "text-delta" and chunk.chunk.text:
+        return chunk.chunk.text
+    return None
+
+
 class Dolores(Ghost):
     """Dolores — 第二个 Ghost 原型运行时.
 
     生命周期里挂一个 DshLauncher (DSH 推理中枢), 直接持有 matrix 的治理链
     (matrix.processes); 挂一个 ShellTrajectory (观测轨迹, 上下文来源).
-    articulate() 已装线 ego.run() (DSH 推理中枢 transaction): 先写 trajectory
-    帧到 output, 再经 ego 驱动 dsh 推理, logos 流逐段 yield. 后续逐步接入:
-    Memento 持久化轨迹、interleaved thinking、ghost 反身 channel、模型自感知
-    (_llms). 收敛方案 (enter 组合入口) 见 _ego.py 模块 docstring.
+    think() 已装线 ego.run_thinking() (DSH 推理中枢 transaction): 先写 trajectory
+    帧到 output, 再经 ego 驱动 dsh 推理, logos 流逐段 yield (articulator 本侧管理).
+    后续逐步接入: Memento 持久化轨迹、interleaved thinking、ghost 反身 channel、
+    模型自感知 (_llms). 收敛方案 (thinking/enter B 范式) 见 _ego.py 模块 docstring.
     """
 
     def __init__(
@@ -97,7 +112,8 @@ class Dolores(Ghost):
 
         Moment 体系不动: 本步只把 shell 观测 (facade / status / events / context) 从
         perspectives 挪到 trajectory 帧, Moment 只承载外部输入 (percepts + hint).
-        模型驱动委托给 ego.run() (DSH 推理中枢 transaction) — logos 流逐段 yield.
+        模型驱动委托给 ego.run_thinking() (DSH 推理中枢 transaction) — 消费 run.events()
+        分派 logos, articulator 由本侧管理, logos 流逐段 yield.
         """
         trajectory = self._trajectory
         if trajectory is not None:
@@ -120,10 +136,26 @@ class Dolores(Ghost):
                     log=f"trajectory frame {frame.index}",
                 )
 
-        # 模型驱动: 委托 ego.run() (DSH 推理中枢 transaction), logos 流逐段 yield.
+        # 模型驱动: ego.run_thinking (DSH 推理中枢 transaction).
+        # 生命周期 (listener/enter/exit) 归 run 对象; 本侧只消费事件 + 管理 articulator.
         if self._ego is not None:
-            async for text in self._ego.run():
-                yield text
+            async with self._ego.run_thinking(thinking) as run:
+                articulator = None
+                try:
+                    async for event in run.events():
+                        if logos_delta := _fetch_logos(event):
+                            if articulator is None:
+                                articulator = thinking.articulator()
+                                await articulator.__aenter__()
+                            articulator.send_nowait(logos_delta)
+                            yield logos_delta
+                        elif event.meta.type == "turn/end":
+                            break
+                finally:
+                    if articulator is not None:
+                        await articulator.__aexit__(None, None, None)
+                        if not thinking.is_aborted():
+                            await articulator.wait_action_done()
         else:
             yield ""
 
@@ -173,6 +205,13 @@ class Dolores(Ghost):
         if self._dsh_launcher is None:
             raise RuntimeError("dsh launcher not started. Call __aenter__ first.")
         return self._dsh_launcher
+
+    @property
+    def logger(self) -> logging.Logger:
+        """MOSS runtime logger — 经 matrix (从属当前节点) 拿; 无 matrix 时 fallback."""
+        if self._matrix is not None:
+            return self._matrix.logger
+        return get_moss_logger()
 
     @property
     def trajectory(self) -> MShellTrajectory:
