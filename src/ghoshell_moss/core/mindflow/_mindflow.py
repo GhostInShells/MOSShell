@@ -1111,6 +1111,9 @@ class AbsMindflow(Mindflow, ABC):
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
+            # mindflow 退出时清理仍阻塞的 idle 回调, 不把它们放养到事件循环关闭.
+            await self._stop_idling()
+
             current_attention = None
             if self._current_attention is not None and not self._current_attention.is_aborted():
                 self._current_attention.abort('mindflow closed')
