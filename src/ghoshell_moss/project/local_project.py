@@ -1,3 +1,4 @@
+import os
 import signal
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -218,10 +219,17 @@ class LocalProject(Project):
         info = CellRuntimeInfo.read_from_runtime_dir(runtime_dir, address)
         if info is None:
             return False
-        if info.is_alive() and info.pgid:
+        if info.is_alive():
             # 对进程组发 SIGTERM — 孤儿场景没有 owner 走优雅退出, SIGTERM 一发即杀.
             # killpg 内部吞 ProcessLookupError, 我们不 care 是否真正落地.
-            killpg(info.pgid, signal.SIGTERM)
+            # 无进程组的 in-process cell (host/ghost, pgid=0) 降级到 pid, 否则只清账本.
+            if info.pgid:
+                killpg(info.pgid, signal.SIGTERM)
+            elif info.pid:
+                try:
+                    os.kill(info.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
         info.delete_invalid(runtime_dir)
         return True
 

@@ -671,42 +671,67 @@ def kill_node(
     if matched is None:
         raise typer.Exit(code=1)
 
-    if matched.pgid > 0:
-        _graceful_terminate(matched.pgid, force=force)
+    if matched.pgid > 0 or matched.pid > 0:
+        _graceful_terminate(matched, force=force)
 
     matched.delete_invalid(runtime_dir)
     print_success(f"Killed {matched.address} (pid={matched.pid}).")
 
 
-def _graceful_terminate(pgid: int, *, force: bool) -> None:
+def _signal_target(info: CellRuntimeInfo) -> tuple[str, int] | None:
+    """Pick the signal target for a cell.
+
+    pgid (own process group, from start_new_session) is preferred — killpg covers
+    the whole child tree. In-process cells (host / ghost) record pgid=0 because
+    they are not session leaders — killing the inherited shell group would be
+    catastrophic, so we keep only the pid. Falling back to pid is what makes
+    `nodes kill / prune` actually stop a ghost instead of deleting its ledger.
+
+    Returns ('pgid' | 'pid', value), or None when the cell has no live target.
+    """
+    if info.pgid > 0:
+        return 'pgid', info.pgid
+    if info.pid > 0:
+        return 'pid', info.pid
+    return None
+
+
+def _send_signal(target: tuple[str, int], sig: int) -> bool:
+    """Send sig to a resolved target. False if it already vanished."""
+    kind, target_id = target
+    try:
+        if kind == 'pgid':
+            os.killpg(target_id, sig)
+        else:
+            os.kill(target_id, sig)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def _graceful_terminate(info: CellRuntimeInfo, *, force: bool) -> None:
     """SIGTERM + short grace → SIGKILL, or --force = immediate SIGKILL.
 
     Shared by kill and prune. Grace window is _KILL_GRACE_SECONDS.
     """
-    if force:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    target = _signal_target(info)
+    if target is None:
         return
 
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
+    if force:
+        _send_signal(target, signal.SIGKILL)
+        return
+
+    if not _send_signal(target, signal.SIGTERM):
         return
 
     deadline = time.time() + _KILL_GRACE_SECONDS
     while time.time() < deadline:
-        try:
-            os.killpg(pgid, 0)   # signal 0 = liveness probe
-        except ProcessLookupError:
+        if not _send_signal(target, 0):   # signal 0 = liveness probe
             return
         time.sleep(0.1)
 
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    _send_signal(target, signal.SIGKILL)
 
 
 # ===========================================================================
@@ -744,8 +769,8 @@ def prune_nodes(
             if keep_alive:
                 skipped += 1
                 continue
-            if info.pgid > 0:
-                _graceful_terminate(info.pgid, force=force)
+            if info.pgid > 0 or info.pid > 0:
+                _graceful_terminate(info, force=force)
             killed += 1
         info.delete_invalid(runtime_dir)
         removed += 1
