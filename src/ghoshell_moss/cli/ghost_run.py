@@ -2,7 +2,7 @@
 
 Subcommands:
 - ``run``: launch a Ghost — interactive TUI, or headless output/log observation.
-- ``send``: inject a text input signal to a running Ghost in the same scope.
+- ``send``: inject a text signal (input/notify/interrupt/silent) to a running Ghost.
 
 Without a subcommand, lists all available Ghosts.
 """
@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import os
 import signal
+import sys
 from collections.abc import Awaitable, Callable
 
 import click
@@ -18,7 +19,11 @@ import janus
 
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.session import OutputItem
+from ghoshell_moss.core.blueprint.mindflow import Priority
+from ghoshell_moss.core.blueprint.session import OutputItem, Session
+from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
+from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
+from ghoshell_moss.core.mindflow.silent_nucleus import new_silent_signal
 from ghoshell_moss.host import Host
 
 
@@ -73,10 +78,33 @@ def run_cmd(ctx, ghost, surface):
 
 @ghost_run_main.command("send")
 @click.argument("text")
+@click.option(
+    "--ghost",
+    required=True,
+    help="Ghost to observe — logos stream is keyed by session scope (includes ghost).",
+)
+@click.option(
+    "--signal",
+    "signal_type",
+    type=click.Choice(["input", "notify", "interrupt", "silent"]),
+    default="input",
+    show_default=True,
+    help="Signal type to send, routed to the matching nucleus.",
+)
+@click.option(
+    "--priority",
+    "priority_name",
+    type=click.Choice(["background", "info", "notice", "warning", "error", "critical", "fatal"]),
+    default=None,
+    help="Override signal priority (default: the signal's own default). "
+         "interrupt ignores this — it is always fatal.",
+)
 @click.pass_context
-def send_cmd(ctx, text):
-    """Inject a text input signal to a running Ghost in the same scope."""
-    _send_input(text, ctx.obj["mode"], ctx.obj["scope"], ctx.obj["network"])
+def send_cmd(ctx, text, ghost, signal_type, priority_name):
+    """Inject a text signal to a running Ghost, then stream its logos response."""
+    _send_signal(
+        text, ctx.obj["mode"], ctx.obj["scope"], ctx.obj["network"], signal_type, ghost, priority_name,
+    )
 
 
 # ── 共享解析 / 输出 ──────────────────────────────────
@@ -240,22 +268,65 @@ def _run_log(host: Host, ghost_name: str, ctx: dict) -> None:
 # ── send: 输入注入 ──────────────────────────────────
 
 
-def _send_input(text: str, mode: str, scope: str, network: str) -> None:
-    """Inject a text input signal to a running Ghost in the same scope.
+_LOGOS_OBSERVE_TIMEOUT = 30.0
+"""观测 logos 的超时上限 — 兜底不发语音的 signal (silent / 纯 interrupt)。"""
 
-    Signal 命名空间只含 network_scope (MOSS/matrix/scopes/{scope}/signals),
-    所以对齐 scope 即可命中 running ghost 的 mindflow input nucleus —
-    ghost 名不进路由, 不传 --ghost。
+
+def _send_signal(
+        text: str,
+        mode: str,
+        scope: str,
+        network: str,
+        signal_type: str,
+        ghost: str,
+        priority_name: str | None,
+) -> None:
+    """Inject a text signal to a running Ghost, then stream its logos response.
+
+    signal_type 决定发哪种 signal, 一一对应现成的 nucleus:
+    input → InputSignalNucleus, notify → NotifyNucleus,
+    interrupt → InterruptNucleus, silent → SilentNucleus.
+
+    Signal key 是 scope 级 (MOSS/matrix/scopes/{scope}/signals), 但 logos key 是
+    session_scope 级 (含 ghost 名), 所以观测 logos 必须传 ghost 对齐订阅 key。
     """
-    env = Environment(mode=mode, scope=scope, network=network)
+    env = Environment(mode=mode, ghost=ghost, scope=scope, network=network)
     env.seal()
     matrix = Matrix.new("ghost-send", persist=False, env=env)
 
     async def _send() -> None:
         async with matrix:
-            matrix.session.add_input_signal(text)
+            session = matrix.session
+            stream = session.get_stream(f"{Session.LOGOS_KEY}/{session.session_scope}")
+            # 先订阅 (async with 进入即 declare_subscriber 就绪), 再发信号,
+            # 避免 zenoh 无历史导致漏掉最早期的 logos delta.
+            async with stream:
+                _emit_signal(session, text, signal_type, priority_name)
+                try:
+                    async with asyncio.timeout(_LOGOS_OBSERVE_TIMEOUT):
+                        async for sample in stream:
+                            delta = sample.payload.decode('utf-8')
+                            if delta == Session.LOGOS_END:
+                                break
+                            sys.stdout.write(delta)
+                            sys.stdout.flush()
+                except TimeoutError:
+                    pass
+        sys.stdout.write('\n')
 
     asyncio.run(_send())
+
+
+def _emit_signal(session: Session, text: str, signal_type: str, priority_name: str | None) -> None:
+    priority = Priority[priority_name.upper()] if priority_name else None
+    if signal_type == "input":
+        session.add_input_signal(text, priority=priority)
+    elif signal_type == "notify":
+        session.add_signal(new_notify_signal(text, priority=priority))
+    elif signal_type == "interrupt":
+        session.add_signal(new_interrupt_signal(text))
+    else:  # silent
+        session.add_signal(new_silent_signal(text, priority=priority))
 
 
 if __name__ == "__main__":
