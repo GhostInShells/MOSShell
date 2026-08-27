@@ -30,6 +30,13 @@ if TYPE_CHECKING:
 
 __all__ = ["Dolores"]
 
+# CTML 模式提示 — 静态段进 ghost 基础 instruction (system prompt, cache 稳定).
+# 不进 steer / per-frame 注入: 反转若在中部会破坏 cache 前缀.
+_CTML_MODE_NOTICE = (
+    "You are in CTML mode: your output is parsed as streaming CTML logos, "
+    "not plain conversation."
+)
+
 
 def _fetch_logos(event: "SessionEvent") -> str | None:
     """从 session event 提取 logos delta — assistant/chunk 的 text-delta 段."""
@@ -84,16 +91,18 @@ class Dolores(Ghost):
         return self._meta
 
     def system_prompt(self) -> str:
-        """instruction = baseline (MossSystemPrompter.base_instruction) + 原型元信息 + 身份描述.
+        """instruction = baseline (MossSystemPrompter.base_instruction) + 原型元信息 + 身份描述 + CTML 模式提示.
 
         baseline 来自 factory 从 container 取的 base_instruction (CTML + project + mode).
-        两个 ghost 段从结构化 meta 派生, 不写死提示词 — 未来认知从目录构建.
+        ghost 段从结构化 meta 派生, 不写死提示词 — 未来认知从目录构建.
+        CTML 模式提示是静态段 (cache 稳定) — 不进 steer (尾部), 不进 per-frame 注入.
         """
         parts: list[str] = []
         if self._base_instruction:
             parts.append(self._base_instruction)
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
+        parts.append(_CTML_MODE_NOTICE)
         return "\n\n".join(parts)
 
     async def ground_instruction(self) -> str | None:

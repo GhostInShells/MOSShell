@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
@@ -68,7 +70,21 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 接缝 (外部唤醒): 通知与背压分工 —
  *   通知 = turn/start 广播 (ego 侧 _on_turn_start 监听 → 自醒 signal, 已存在),
  *   不另发显式讯号. pre-step 阻塞只是背压 (hold 住模型等 thinking/enter 注入帧).
- *   阻塞需 fail-safe (MOSS 永不 enter 时 turn 不能永久挂死 — 超时后 reject + mux 提示).
+ *
+ * ── 遗留问题 (2026-08-28 提交前记录) ─────────────────────────────────
+ * 1. **外部唤醒链路未接通 (perStep 暂时放行)**: turn/start → ego 自醒 signal →
+ *    mindflow → Thinking → thinking/enter 的链路未接通 (ego._signal_broadcast 未绑
+ *    mindflow 路由). 早期实现 pre-step 阻塞等 thinking/enter, 但 thinking 永不 open →
+ *    每 step 等满 5s 超时 (5s/step). 现改为放行 (turn 直接跑), 帧背压 (非 thinking 时
+ *    await thinkingGate.wait()) 待链路接通后再启用. 需验证:
+ *    a) 绑定 ego.bind_signal_broadcast(session.add_signal) 是否让链路通;
+ *    b) 链路通后外部 turn 的帧注入时序.
+ * 2. **applyModelConfig todo**: thinking/enter 的 provider/model/reasoningEffort
+ *    未应用到下个 request (agent/request waterfall / session.selectModel).
+ * 3. **epoch 设计**: moment 携带 epoch id, 对比后决定 ghost.memory 尾部更新 (下一轮).
+ * 4. **injectMoment dynamic replace**: surface-replace 机制可能过度设计 — 按 cache
+ *    洞察 (尾部操作才 cache 友好), dynamic 应简化为尾部 append/替换.
+ * 5. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
  */
 
 export const name = 'moss-dolores-ghost-plugin'
@@ -98,40 +114,52 @@ let doloresEgoSessionId: SessionId | null = null
 // 防旁路 token (点 4): ego/create 生成返回, thinking/enter|exit 校验 — 拒绝非 ego 发起的调用.
 let doloresThinkingToken: string | null = null
 
-// ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter resolve ──
-// TS 单线程事件循环, promise 即锁原语 — 无 python 式伪 async/轮询.
-let thinking = false
-let thinkingGate: Promise<void> | null = null
-let releaseThinkingGate: (() => void) | null = null
+// ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter open ──
+// TS 单线程事件循环, gate = asyncio.Event 等价物 (可反复 open/close, wait 阻塞到 open).
+// 注意: Promise 是一次性的, resolve 后不能重臂 — 不能表达"当前是否 thinking"的持续状态.
+class ThinkingGate {
+  private _open = false
+  private _waiters: Array<() => void> = []
+
+  get isOpen(): boolean {
+    return this._open
+  }
+
+  open(): void {
+    this._open = true
+    const waiters = this._waiters
+    this._waiters = []
+    for (const resolve of waiters) resolve()
+  }
+
+  close(): void {
+    this._open = false
+  }
+
+  async wait(timeoutMs?: number): Promise<void> {
+    if (this._open) return
+    const waiter = new Promise<void>((resolve) => { this._waiters.push(resolve) })
+    if (timeoutMs === undefined) {
+      await waiter
+      return
+    }
+    await Promise.race([waiter, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))])
+  }
+}
+
+const thinkingGate = new ThinkingGate()
+
+function openThinking(): void {
+  thinkingGate.open()
+}
+
+function closeThinking(): void {
+  thinkingGate.close()
+}
 
 // ── dynamic 上下文注入的 seq 记录 (点 6) ──
 // 每次重注入, 把上一轮注入的 dynamic 节点从 surface remove (surface replace).
 let dynamicSeqs: number[] = []
-
-function openThinking(): void {
-  thinking = true
-  if (releaseThinkingGate) {
-    releaseThinkingGate()
-    thinkingGate = null
-    releaseThinkingGate = null
-  }
-}
-
-function closeThinking(): void {
-  thinking = false
-  // 下一次 pre-step 阻塞时惰性重建 gate (见 waitForThinking).
-}
-
-function ensureThinkingGate(): void {
-  if (!thinking && thinkingGate === null) {
-    thinkingGate = new Promise<void>((resolve) => { releaseThinkingGate = resolve })
-  }
-}
-
-async function waitForThinking(): Promise<void> {
-  ensureThinkingGate()
-  if (thinkingGate) await thinkingGate
-}
 
 /**
  * thinking/enter 的 moment 三块 (点 5/6). MOSS 侧序列化 Moment 后经 HTTP 传入.
@@ -238,10 +266,11 @@ export function apply(ctx: Context) {
                 notifySessionFrozen(ctx, agent)
                 return { kind: 'reject' }
               }
-              // ego session: 非 thinking 时阻塞等 thinking/enter 反转 (点 5).
-              // 本阻塞是背压 hold — 外部唤醒的通知由 turn/start 广播承担
-              // (ego _on_turn_start → 自醒 signal), 见头注释「接缝」.
-              await waitForThinking()
+              // ego session: 放行 (turn 直接跑).
+              // todo: 帧背压 (非 thinking 时 await thinkingGate.wait() 等 thinking/enter
+              // open) 待外部唤醒链路 (turn/start → 自醒 signal → MOSS → thinking/enter)
+              // 接通后再启用 — 现在放行, 避免外部 turn (dsh UI, 愿望接口) 被阻塞 +
+              // 5s/step 超时. 见头注释「遗留问题 1」.
               return next()
             })
           },
@@ -256,11 +285,12 @@ export function apply(ctx: Context) {
         //    这是初见上下文 = 建立模型首轮可见的表面.
         for (const msg of messages) {
           if (typeof msg?.text === 'string' && msg.text.length > 0) {
-            handle.agent.session.append('user/message', {
-              role: 'user',
-              content: [{ type: 'text', text: msg.text }],
-              source: { kind: 'plugin', plugin: name },
-            }, { surfaceOp: 'append' })
+            handle.agent.session.append('user/message',
+              createUserMessage({
+                content: [{ type: 'text', text: msg.text }],
+                source: { kind: 'plugin', plugin: name },
+              }),
+              { surfaceOp: 'append' })
           }
         }
         // todo: ping/pong 预热 (可选) — 创建后验证 session 可服务, 失败返回错误.
@@ -345,12 +375,21 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        // todo: 实现落地 (2026-08-28 表面阶段):
-        //   1. applyModelConfig(agent, body.model)
-        //   2. injectMoment(agent, body.moment)  — 见 injectMoment 注释 (点 6)
-        //   3. openThinking()
-        //   4. 若 agent idle → steer(createUserMessage({content:[{type:'text',text:'frame-wake'}]}))
+        // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
+        //   (agent/request waterfall 提案 / session.selectModel).
+        injectMoment(agent, body.moment)
         openThinking()
+        // MOSS 驱动路径: agent idle → steer 唤醒 turn, content = percepts (真实输入).
+        // 模式提示 (CTML 环境) 已在 ghost 基础 instruction, 不进 steer (cache 稳定).
+        // 外部唤醒路径: turn 已在 pre-step 阻塞, openThinking 放行, 无需再 steer.
+        if (agent.status === 'idle') {
+          const perceptText = (body.moment?.percepts ?? [])
+            .map(p => p?.text).filter(Boolean).join('\n')
+          agent.steer(createUserMessage({
+            content: [{ type: 'text', text: perceptText || 'thinking' }],
+            source: { kind: 'user' },
+          }))
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: true }))
       } catch (error) {
@@ -414,6 +453,55 @@ export function apply(ctx: Context) {
  * 应用到下个 request. 候选: session.selectModel / agent/request waterfall 提案.
  */
 // function applyModelConfig(agent: Agent, model: { provider: string; model: string; reasoningEffort?: string }): void { ... }
+
+// ── helper: moment 注入 (点 5/6) ───────────────────────────────────────
+/**
+ * injectMoment — 把 thinking moment 三块注入 ego session 的 surface.
+ *
+ *   results: 上一轮 moss output → user/message (append, 进 surface).
+ *   percepts: 本轮输入 → user/message (append).
+ *   dynamic:  hot 帧 → 注入后把节点 seq 记进 dynamicSeqs; 下次重注入时用 surface
+ *             {op:'replace'} 把历史 dynamic 节点 shadow 掉 (点 6, hot 帧退役).
+ */
+function injectMoment(agent: Agent, moment: ThinkingMomentPayload | undefined): void {
+  if (moment === undefined) return
+  const session = agent.session
+  // percepts 经 steer 送达 (steer content = percepts), 不在此注入 — 避免重复.
+  for (const item of moment.results ?? []) {
+    if (item?.text) appendUserMessage(session, item.text, 'results')
+  }
+  const dynamicText = [
+    ...(moment.dynamic?.context ?? []).map(c => c?.text).filter(Boolean),
+    moment.dynamic?.hint,
+  ].filter(Boolean).join('\n')
+  if (dynamicText.length > 0) {
+    const message = createUserMessage({
+      content: [{ type: 'text', text: dynamicText }],
+      source: { kind: 'plugin', plugin: name },
+    })
+    if (dynamicSeqs.length > 0) {
+      // surface replace: 新 dynamic 节点替换旧 dynamic 区间, sourceEventSeqs 必须含被 shadow 节点.
+      const start = dynamicSeqs[0]
+      const end = dynamicSeqs[dynamicSeqs.length - 1]
+      const evt = session.append('user/message', message,
+        { surfaceOp: { op: 'replace', start, end }, sourceEventSeqs: dynamicSeqs })
+      dynamicSeqs = [evt.seq]
+    } else {
+      const evt = session.append('user/message', message, { surfaceOp: 'append' })
+      dynamicSeqs = [evt.seq]
+    }
+  }
+}
+
+function appendUserMessage(session: Agent['session'], text: string, tag: string): void {
+  // createUserMessage 生成唯一 id — 否则多条注入消息 id 全是 undefined, UI 撞 "more than one start Match".
+  session.append('user/message',
+    createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'plugin', plugin: `${name}:${tag}` },
+    }),
+    { surfaceOp: 'append' })
+}
 
 // ── helper: foreign session 冻结提示 (点 4) ─────────────────────────────
 /**
