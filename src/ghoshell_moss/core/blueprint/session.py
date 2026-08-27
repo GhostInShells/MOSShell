@@ -157,6 +157,13 @@ class Session(ABC):
     LOGOS_KEY = 'logos'
     """logos stream 的 key 前缀. 完整 key 需要通过 stream key 获取."""
 
+    LOGOS_END = "\x00"
+    """logos stream 的 utterance 结束标记 (EOF).
+
+    发布端 pub_logos(end=True) 时作为独立 delta 发出, 消费端识别后冲刷尾段并渲染间隔.
+    NUL 在自然文本/CTML 中不会出现, 作专属控制哨兵 (区别于 \\n\\n: 后者是内容值).
+    """
+
     @property
     @abstractmethod
     def session_scope(self) -> str:
@@ -318,21 +325,23 @@ class Session(ABC):
             self,
             *deltas: str,
             stream_id: str | None = None,
+            end: bool = False,
     ) -> None:
         """
         发送模型生产的 logos 片段 (默认是 ctml 流, 详见 Mindflow) 到总线.
 
         :param deltas: 流式数据的片段.
         :param stream_id: 指定 stream id 隔离不同的 logos 流.
+        :param end: 标记一段 logos (utterance) 结束, 发送 {LOGOS_END} EOF 哨兵.
 
         技术上需要实现有序.
         """
         sid = stream_id or self.session_scope
+        key = f"{self.LOGOS_KEY}/{sid}"
         for delta in deltas:
-            self.pub_stream_delta(
-                f"{self.LOGOS_KEY}/{sid}",
-                delta.encode('utf-8'),
-            )
+            self.pub_stream_delta(key, delta.encode('utf-8'))
+        if end:
+            self.pub_stream_delta(key, self.LOGOS_END.encode('utf-8'))
 
     async def get_logos(
             self, *, stream_id: str | None = None,

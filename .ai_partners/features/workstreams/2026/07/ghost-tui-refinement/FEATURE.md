@@ -6,10 +6,11 @@ description: Ghost TUI 交互治理：logos 尾段丢失、input 计数残留、
   dogfooding 时暴露的一批交互问题，集中做一轮 refinement。
 milestone: null
 priority: P2
-status: in-progress
-status_note: interrupt→shell.clear 通路 + c-c 两级 + 干净关闭已实现并验证 (项5/6), 余项待做
+status: completed
+status_note: '项 #1 logos 尾段渲染丢失已修复: 原地重绘 RESPONSE panel + queue.Queue 毒丸生命周期 + RichCaller.stop()
+  让 interrupt/close 立即停渲染. 其余项未做, workstream 关闭.'
 title: Ghost TUI Refinement — 交互时序与治理
-updated: '2026-08-03'
+updated: '2026-08-28'
 ---
 
 # Ghost TUI Refinement — 交互时序与治理

@@ -381,6 +381,11 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         if self._moss_runtime.session.is_running():
             self._moss_runtime.session.pub_logos(delta)
 
+    def _on_logos_end(self) -> None:
+        """一段 logos (utterance) 结束 — 发 EOF 哨兵, 消费端据此冲刷尾段."""
+        if self._moss_runtime.session.is_running():
+            self._moss_runtime.session.pub_logos(end=True)
+
     def _get_runtime_channels(self) -> dict[str, Channel]:
         return self._runtime_channels
 
@@ -408,7 +413,7 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
                 # logos 同时发一条原子 OutputItem — headless 观测面 (on_output)
                 # 看不到 stream (get_logos), 这里补上 articulate 返回值的可观测出口.
                 session.output('logos', logos)
-                self._on_logos_delta("\n\n")
+                self._on_logos_end()
 
     async def _action_loop(self) -> None:
         """封装 action loop"""
@@ -477,7 +482,7 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
 
     def _on_thinking_exited(self, thinking: Thinking, err: BaseException | None) -> None:
         if self._ghost_instance:
-            self._moss_runtime.session.pub_logos("\n\n")
+            self._on_logos_end()
             self._ghost_instance.on_thinking_exit(
                 thinking,
                 err,
