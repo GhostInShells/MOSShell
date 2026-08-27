@@ -137,6 +137,9 @@ class Matrix(Facade):
         node = NodeManifest.new(node_name, description=description, category=category)
         # 是否是一个持久运行节点.
         node.persist = persist
+        # 脚本化节点 (persist=False) 不声明 singleton — 允许并发多实例.
+        if not persist:
+            node.singleton = False
         cell = build_cell_from_node(env, node)
         runtime_info = CellRuntimeInfo.from_cell(cell)
         project = create_project(env)
