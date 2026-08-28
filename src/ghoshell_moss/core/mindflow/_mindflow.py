@@ -349,13 +349,9 @@ class AbsMindflow(Mindflow, ABC):
         return self._started_event.wait_sync(timeout)
 
     def with_nucleus(self, nucleus: Nucleus, override: bool = False) -> None:
+        # 注册 nucleus 本身, 不在此 import 其子 channel — 子 channel 由
+        # mindflow channel 的 virtual_children decorator 动态挂载 (运行时按 running 状态).
         self._bind_nucleus_with_bus(nucleus, override)
-
-        channel = self.as_channel()
-        # 注册 nucleus 的 channel.
-        if channel and isinstance(channel, MutableChannel):
-            if sub_channel := nucleus.as_channel():
-                channel.import_channels(sub_channel)
 
     def _bind_nucleus_with_bus(self, nucleus: Nucleus, override: bool = False) -> None:
         if self._started_event.is_set():
@@ -464,6 +460,14 @@ class AbsMindflow(Mindflow, ABC):
 
     def set_impulse_priority_bar(self, priority: Priority) -> None:
         self._impulse_priority_bar = priority
+
+    def signal_priority_bar(self) -> Priority:
+        """当前 signal 水位 (public-internal: 反身 channel 读取)."""
+        return self._signal_priority_bar
+
+    def impulse_priority_bar(self) -> Priority:
+        """当前 impulse 水位 (public-internal: 反身 channel 读取)."""
+        return self._impulse_priority_bar
 
     async def _dispatch_signal(self, signal: Signal) -> None:
         try:
@@ -1249,7 +1253,8 @@ class BaseMindflow(AbsMindflow):
         self._source_escalation = source_escalation
 
     def as_channel(self) -> Channel | None:
-        return None
+        # 反身控制面 — 默认用共享 builder 构建, 挂进 shell 后 ghost 可自省/操纵自身注意力.
+        return super().as_channel()
 
     def _build_attention(self, impulse: Impulse) -> Attention:
         return BaseAttention(

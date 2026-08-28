@@ -1,14 +1,14 @@
 ---
-title: Mindflow Channel
-status: draft
-priority: P1
 created: 2026-07-23
-updated: 2026-07-23
 depends: []
+description: Mindflow 反身控制 Channel — 将 mindflow 从 opaque 调度器变为 ghost 可感知、 可操纵的透明面.
+  自解释 + 注意力管理 + 优先级干预 + nucleus pull.
 milestone: 0.1.0
-description: >-
-  Mindflow 反身控制 Channel — 将 mindflow 从 opaque 调度器变为 ghost 可感知、
-  可操纵的透明面. 自解释 + 注意力管理 + 优先级干预 + nucleus pull.
+priority: P1
+status: completed
+status_note: 'v1 实装: 自解释+注意力管理+优先级干预, pull 简化形态, 三个机制 flag 门控. idle 自驱留作 follow-up.'
+title: Mindflow Channel
+updated: '2026-08-28'
 ---
 
 # Mindflow Channel
@@ -118,3 +118,53 @@ channel:mindflow pull-nucleus --name vision
   时重新生成字符串 (从 mindflow.faculties() 取当前 nuclei).
 - `set_signal_priority_bar` / `set_impulse_priority_bar` 的默认实现是 noop
   (见 mindflow.py), 需要在 Mindflow 实现中补上.
+
+## v1 实装 (2026-08-28)
+
+首版落地「自解释 + 注意力管理 + 优先级干预」;Nucleus Pull 以 `pull` 命令的简化形态
+实现 (peek → attended → 返回 messages), per-nucleus priority overlay 未做.
+
+`build_mindflow_channel(mindflow, *, enable_priority=True, enable_bar=True,
+enable_pull=False, enable_red_dot=False)`: 三个注意力机制用 build flag 门控, 开启时
+命令 `available()` 通过并配套展示 context, 关闭时命令不可见、context 不带该状态.
+
+| 面 | 载体 | 性质 |
+|---|---|---|
+| 心智模型 | `instruction` | 静态, 不罗列命令 |
+| nucleus 拓扑自解释 | `help` | 动态 (每次 refresh), 拓扑变更自动 diff |
+| 可变状态 (bars/attn/红点) | `context_messages` | 动态, 按 flag 门控 |
+| 子通道挂载 | `virtual_children` | decorator, 运行时按 running 状态动态挂载 |
+
+命令面: `status` (always_observe=True, 自省) / `set-priority` `set-signal-bar`
+`set-impulse-bar` (always_observe=False, 确认语义) / `pull` (try, 100% 不等 next impulse).
+
+关键偏离原计划:
+
+- **priority bar 逻辑没丢** — 重构后仍在 `_mindflow.py` 且被 `add_signal` /
+  `_rank_best_impulse_from_nuclei` 消费, 补了 getter + 单测.
+- **per-nucleus priority overlay 从未实现过** (原计划提出但无对应 commit), 是独立
+  follow-up, 不是被重构丢的.
+- **`with_nucleus` 去掉旧 channel import** — 注册 nucleus 不再 `import_channels` 子通道
+  (旧设计), 改由 `virtual_children` decorator 运行时按 running 状态动态挂载; 这同时解决
+  `BaseMindflow.as_channel()` 懒构建与 `__init__` 里 `_mindflow_channel` 尚未赋值的时序冲突.
+- **`BaseMindflow.as_channel()` off-switch 打开** — 从 `return None` 改为返回真 channel,
+  使 `MindflowInShell` / `ghost_runtime` 拿到 channel.
+
+## 未来方向: idle 自驱 (self-drive)
+
+> 定案方向, 未实装, 独立 follow-up, 不属本 feature v1.
+
+自驱的最小种子: "one more check then stop" — 闲时自检 N 次 (含间隔), 用 prompt 给自己,
+到 0 停.
+
+**职责分离 (关键)**:
+
+- **mindflow 的 `when_idle` 只做一件事**: 闲了 `wait_time` 后**广播一个 idle signal**.
+  它真正核心的部分是「signal 发送的等待时间」(idle 阈值) — 这是 lazy 触发, 与 push 通道正交.
+- **拦截该 signal 的 nucleus 自己理解 idle、治理行为**: 业务逻辑 (prompt / 次数 / 停止
+  条件) 落在 **nucleus channel** (`as_channel`), 不在 mindflow channel.
+- **「次数」是 attended 计数, 不是递减计数器**: 复用 `Nucleus.attended(impulse)` 生命周期
+  — 每自检 impulse 被 attended 一次记一次, 到 N 停, 不引入新计数机制.
+
+自检 signal 应走低优先带 (notify / 静默), 不抢真实外部信号. count 上限是硬护栏;
+「永不安息」(self-check → 思考 → 又 self-check) 的冷却语义留待 follow-up.

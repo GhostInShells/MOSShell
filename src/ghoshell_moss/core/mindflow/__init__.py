@@ -40,3 +40,4 @@ from ghoshell_moss.core.mindflow.cell_event_nucleus import (
     CellEventNucleus, CellEventNucleusMeta,
     CellEventSignalMeta, CellTransition,
 )
+from ghoshell_moss.core.mindflow._channel import build_mindflow_channel
