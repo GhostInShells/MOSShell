@@ -104,7 +104,7 @@ class NotifyNucleus(Nucleus):
     ) -> None:
         self._fire_impulse = fire_impulse
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # notify 抢占失败时, mindflow 已走 buffer 偏离路径, messages 进 buffer.
         # suppress 只是兜底通知; 此时 cache 清掉, 等下一条 signal.
         self._impulse = None

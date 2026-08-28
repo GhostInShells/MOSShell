@@ -75,7 +75,7 @@ async def test_buffer_nucleus_suppress():
         assert notified_count == 1
 
         # 压制
-        nucleus.suppress(higher_impulse)
+        nucleus.suppress(higher_impulse, nucleus.peek())
 
         # 第二次信号，被压制，count 不应该增加
         nucleus.add_signal(create_mock_signal("test_signal"))

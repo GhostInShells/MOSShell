@@ -143,7 +143,7 @@ class CellEventNucleus(Nucleus):
     ) -> None:
         self._fire_impulse = fire_impulse
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         self._impulse = None
 
     def attended(self, impulse: Impulse) -> None:

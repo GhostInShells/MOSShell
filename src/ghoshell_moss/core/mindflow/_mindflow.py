@@ -90,7 +90,7 @@ class DirectImpulseNucleus(Nucleus):
     ) -> None:
         self._notify = impulse_notify
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         self._impulse = None
 
     def attended(self, impulse: Impulse) -> None:
@@ -565,14 +565,15 @@ class AbsMindflow(Mindflow, ABC):
         """supress 指定的 impulse"""
         nucleus = self._nuclei.get(impulse.source, None)
         if nucleus is not None:
-            nucleus.suppress(by)
+            nucleus.suppress(by, impulse)
 
-    def _notify_impulse_attended(self, impulse: Impulse) -> None:
+    def _notify_impulse_attended(self, impulse: Impulse) -> Impulse | None:
         """通知 nucleus 被 pop 了. """
         nucleus = self._nuclei.get(impulse.source, None)
         if nucleus is not None:
             # 应该要将 impulse 给踢掉.
-            nucleus.attended(impulse)
+            return nucleus.attended(impulse)
+        return None
 
     def _notify_impulse_ignored(self, impulse: Impulse) -> None:
         nucleus = self._nuclei.get(impulse.source, None)
@@ -683,8 +684,7 @@ class AbsMindflow(Mindflow, ABC):
         if verdict == 'suppressed':
             self._suppress_impulse(challenger, defender)
         elif verdict == 'preempted':
-            # 创建一个新的 impulse.
-            self._notify_impulse_attended(challenger)
+            # 创建一个新的 impulse. attended 加工在 _create_attention_from_impulse 内统一消费.
             await self._create_attention_from_impulse(challenger)
         elif verdict == 'buffered':
             self._notify_impulse_attended(challenger)
@@ -699,7 +699,6 @@ class AbsMindflow(Mindflow, ABC):
                 if pending is not None:
                     self._pending_frame_impulses.append(pending)
         elif verdict == 'initial':
-            self._notify_impulse_attended(challenger)
             await self._create_attention_from_impulse(challenger)
         elif verdict == 'yielded':
             # 绝不竞争: 不经手任何 mode 分支, 直接通知 nucleus 自然清理缓存.
@@ -723,7 +722,8 @@ class AbsMindflow(Mindflow, ABC):
 
     async def _create_attention_from_impulse(self, impulse: Impulse) -> None:
         """直接用 impulse 创建 attention"""
-        self._notify_impulse_attended(impulse)
+        # attended 允许 nucleus 加工出真正唤醒 attention 的 impulse (挑战强度 vs 运行强度二分).
+        impulse = self._notify_impulse_attended(impulse) or impulse
         async with self._set_impulse_lock:
             if impulse.is_stale():
                 # 仍然做一次校验.
@@ -807,7 +807,7 @@ class AbsMindflow(Mindflow, ABC):
         best_impulse = best_impulse
         best_n = None
         best_p = 0 if best_impulse is None else best_impulse.priority_strength()
-        losers: list[Nucleus] = []
+        losers: list[tuple[Nucleus, Impulse]] = []
         for nucleus, impulse in self.peek_impulses():
             if impulse.priority < self._impulse_priority_bar:
                 # 低于优先级的直接忽视.
@@ -821,18 +821,19 @@ class AbsMindflow(Mindflow, ABC):
                 best_p = impulse_priority_strength
                 continue
             elif best_n and impulse_priority_strength > best_p:
+                # 先记录被替换下的 best (带着它自己的 impulse), 再更新 best.
+                losers.append((best_n, best_impulse))
                 best_impulse = impulse
-                losers.append(best_n)
                 best_n = nucleus
                 best_p = impulse_priority_strength
                 continue
             else:
-                losers.append(nucleus)
+                losers.append((nucleus, impulse))
                 continue
         if best_impulse and len(losers) > 0:
-            for nucleus in losers:
-                # 在这里通知完 suppress.
-                nucleus.suppress(best_impulse)
+            for nucleus, impulse in losers:
+                # 在这里通知完 suppress. suppressed = 被压制的自身 impulse (供时序校验).
+                nucleus.suppress(best_impulse, impulse)
         return best_impulse
 
     def when_attention_created(self, callback: Callable[[Attention], None]) -> Callable[[], None]:

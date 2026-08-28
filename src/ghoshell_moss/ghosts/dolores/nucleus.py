@@ -121,7 +121,7 @@ class DoloresEgoNucleus(Nucleus):
         if self._notify_cb is not None:
             self._notify_cb(self._impulse)
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # 自醒 impulse 抢占失败 — 当前不做冷静期, 保持最小行为.
         return
 

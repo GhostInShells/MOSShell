@@ -139,7 +139,7 @@ class InterruptNucleus(Nucleus):
     ) -> None:
         self._fire_impulse = fire_impulse
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # 失败侧不进冷静期 — FATAL 仲裁失败只可能是 same-id absorb 或 stale,
         # 这两种都不需要冷静期 (absorb 已被内部处理, stale 在入口丢).
         # 但 cache 仍要清, 让 nucleus 状态正确反映 "没有 pending impulse".

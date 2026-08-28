@@ -116,7 +116,7 @@ class CommandNucleus(Nucleus):
     ) -> None:
         self._fire_impulse = fire_impulse
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # command 抢占失败 (priority 不够) → 清 cache, 让位.
         # command 没有"重试" 语义 — 失败就丢, 等下一条新 command.
         self._impulse = None

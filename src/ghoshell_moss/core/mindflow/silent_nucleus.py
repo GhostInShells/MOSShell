@@ -139,7 +139,7 @@ class SilentNucleus(Nucleus):
             return
         self._process_signal(signal)
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # silent 抢占失败 → 走 default suppress 分支 (对称表). 进入冷静期防风暴.
         self._suppress_until = time.monotonic() + self._suppress_seconds
 

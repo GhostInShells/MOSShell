@@ -162,7 +162,7 @@ class InputSignalNucleus(Nucleus):
             return
         self._process_signal(signal)
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
         with self._data_state_lock:
             # 被压制的是我们刚缓存的 impulse — 它没能抢占 attention.

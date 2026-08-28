@@ -204,7 +204,7 @@ async def test_suppress_blocks_notify_cb_but_buffer_continues():
         assert len(notified) == 1  # 首次通过
 
         # 模拟仲裁失败 → mindflow 调 suppress.
-        nuc.suppress(Impulse(source='other'))
+        nuc.suppress(Impulse(source='other'), None)
 
         nuc.add_signal(_signal('second'))
         assert len(notified) == 1  # 冷静期内不再通知

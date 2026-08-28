@@ -2,8 +2,8 @@ from typing import Callable, Coroutine
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 from ghoshell_moss.core.mindflow import BaseMindflow
 from ghoshell_moss.core.blueprint.mindflow import (
-    Mindflow, Signal, Priority, Thinking, Action, Nucleus, Moment,
-    MindflowHook
+    Mindflow, Signal, Priority, Thinking, Action, Nucleus,
+    MindflowHook, Impulse
 )
 import janus
 import threading
@@ -15,6 +15,101 @@ import asyncio
 def make_base_mindflow() -> BaseMindflow:
     from ghoshell_moss.contracts.logger import get_console_logger
     return BaseMindflow(logger=get_console_logger())
+
+
+class _AttendedRewritingNucleus(Nucleus):
+    """测试用 nucleus — attended 返回改写 priority 的 impulse, 验证「挑战/运行强度二分」被 mindflow 采用."""
+
+    NAME = "attended_rewrite"
+    SIGNAL = "attended_rewrite"
+
+    def __init__(self) -> None:
+        self._impulse: Impulse | None = None
+        self._running = False
+        self._fire_impulse: Callable[[Impulse], None] | None = None
+
+    def name(self) -> str:
+        return self.NAME
+
+    def description(self) -> str:
+        return "test nucleus: attended rewrites the impulse priority"
+
+    def status(self) -> str:
+        return ""
+
+    def signals(self) -> list[str]:
+        return [self.SIGNAL]
+
+    def clear(self) -> None:
+        self._impulse = None
+
+    def add_signal(self, signal: Signal) -> None:
+        if not self._running or signal.name != self.SIGNAL:
+            return
+        # 挑战包: BACKGROUND — 低调挑战, 只在 mindflow idle 时 initial 成功.
+        impulse = Impulse.from_signal(signal, source=self.NAME)
+        impulse.priority = Priority.BACKGROUND
+        self._impulse = impulse
+        if self._fire_impulse is not None:
+            self._fire_impulse(impulse)
+
+    def with_bus(
+            self,
+            signal_broadcast: Callable[[Signal], None],
+            fire_impulse: Callable[[Impulse], None],
+    ) -> None:
+        self._fire_impulse = fire_impulse
+
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
+        self._impulse = None
+
+    def attended(self, impulse: Impulse) -> Impulse | None:
+        if not self._running:
+            return None
+        self._impulse = None
+        # 运行包: 抬到 INFO (正常运行强度), 区别于挑战用的 BACKGROUND.
+        return impulse.model_copy(update={"priority": Priority.INFO})
+
+    def peek(self, no_stale: bool = True) -> Impulse | None:
+        if self._impulse is None:
+            return None
+        if no_stale and self._impulse.is_stale():
+            return None
+        return self._impulse
+
+    def is_running(self) -> bool:
+        return self._running
+
+    async def __aenter__(self):
+        self._running = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._running = False
+        self._impulse = None
+
+
+@pytest.mark.asyncio
+async def test_attended_rewritten_impulse_wakes_attention():
+    """nucleus.attended 返回的加工后 impulse 会被 mindflow 采用去创建 attention.
+
+    验证「挑战强度 vs 运行强度」二分: nucleus 挑战时发 BACKGROUND 的 impulse,
+    attended 加工成 INFO, mindflow 应该用 INFO 版本唤醒 attention — 即一个
+    BACKGROUND 挑战包换来了一个非 BACKGROUND 的 attention.
+    """
+    mindflow = make_base_mindflow()
+    nucleus = _AttendedRewritingNucleus()
+    mindflow.with_nucleus(nucleus)
+
+    async with mindflow:
+        await mindflow.wait_started()
+        mindflow.add_signal(Signal.new(name="attended_rewrite"))
+        async for thinking in mindflow.thinking_loop():
+            async with thinking:
+                impulse = thinking.attention.draw_from()
+                assert impulse.priority != Priority.BACKGROUND
+                assert impulse.priority == Priority.INFO
+                break
 
 
 @pytest.mark.asyncio

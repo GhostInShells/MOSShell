@@ -591,22 +591,29 @@ class Nucleus(ABC):
         pass
 
     @abstractmethod
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         """
         如果产生的 impulse 不能被接纳, Nucleus 应该收到一个 suppress 信号.
         接受这个信号后, 一段时间不要 fire Impulse.
         可以在内部实现加权/降权 逻辑.
         **所有的 Nucleus 都需要通过独立的 supress 单测**
-
         :param suppress_by: 被别的信号压制, 得到别的信号. 未来可以通过决策单元判断是否要加权.
+        :param suppressed: 自身被压制的讯号.
         """
         pass
 
     @abstractmethod
-    def attended(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> Impulse | None:
         """
         通知 Nucleus 它的 Impulse 抢占 Attention 成功.
         执行 attended 后, 应该无法 peek 到相同的 impulse.
+        :return: 如果需要改动 Impulse, 改动后的 Impulse 会返回.
+        """
+        pass
+
+    def ignored(self, impulse: Impulse) -> None:
+        """
+        通知 Nucleus 这个 Impulse 被忽视了. 通常是因为过期等原因.
         """
         pass
 
@@ -620,12 +627,6 @@ class Nucleus(ABC):
             impulse: Impulse,
     ) -> 'Attention | None':
         """如果 nucleus 自身有能力实现 attention, 会取代 mindflow 生成的 attention """
-        pass
-
-    def ignored(self, impulse: Impulse) -> None:
-        """
-        通知 Nucleus 这个 Impulse 被忽视了. 通常是因为过期等原因.
-        """
         pass
 
     @abstractmethod

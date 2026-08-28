@@ -180,7 +180,7 @@ class BufferNucleus(Nucleus):
             # 无论如何都等待这个心跳.
             await asyncio.sleep(self._pulse_beat_interval)
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def attended(self, impulse: Impulse) -> None:

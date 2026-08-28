@@ -54,7 +54,7 @@ class AudioNucleus(BufferNucleus):
             impulse.interrupt = True
         return impulse
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # 失败侧不进冷静期 — 只清理 buffer.
         # 与 InterruptNucleus 对齐: impulse 仲裁失败只可能是 same-id absorb
         # 或 stale, 这两种都不需要冷却. 覆写 BufferNucleus.suppress 避免
