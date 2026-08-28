@@ -231,23 +231,34 @@ class DshLauncher:
             ) from None
 
     async def _dispatch_raw_frame(self, raw: str) -> None:
-        """解析 mux 下行帧, 按类型路由到 host/mux 两套 handler 列表广播."""
+        """解析 mux 下行帧, 按类型路由到 host/mux 两套 handler 列表广播.
+
+        单帧解析失败只记日志、不断流 — 任何畸形帧都不该静默杀死整条 mux 链路
+        (此前 type 撞车就是这么静默死掉整个事件流的).
+        """
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return
         if not isinstance(msg, dict) or msg.get("type") != "server-request":
             return
-        method = msg.get("method", "")
-        payload = dict(msg.get("payload") or {})
-        if method.startswith("host/"):
-            frame: MuxFrame | HostFrame = HostFrame(type=method, **payload)
-            handlers = self._host_handlers
-        else:
-            if "event" in payload and isinstance(payload["event"], dict):
-                payload["event"] = SessionEvent.from_dict(payload["event"])
-            frame = MuxFrame(type=method, **payload)
-            handlers = self._mux_handlers
+        try:
+            method = msg.get("method", "")
+            payload = dict(msg.get("payload") or {})
+            # dsh fullFrame 把判别符同时放 method 与 payload.type — 去掉 payload 里的重复
+            # type, 否则 `type=method` 与 `**payload` 里的 type 撞车 (multiple values for 'type').
+            payload.pop("type", None)
+            if method.startswith("host/"):
+                frame: MuxFrame | HostFrame = HostFrame(type=method, **payload)
+                handlers = self._host_handlers
+            else:
+                if "event" in payload and isinstance(payload["event"], dict):
+                    payload["event"] = SessionEvent.from_dict(payload["event"])
+                frame = MuxFrame(type=method, **payload)
+                handlers = self._mux_handlers
+        except Exception:
+            self._logger.exception("mux frame parse failed (dropped): %s", method)
+            return
         for handler in list(handlers):
             try:
                 result = handler(frame)

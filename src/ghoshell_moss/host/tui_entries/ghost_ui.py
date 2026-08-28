@@ -4,6 +4,8 @@ import asyncio
 import queue
 from typing import Callable, Iterable
 
+import janus
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -171,7 +173,11 @@ class GhostLogosState(_GhostStateBase):
 
     def __init__(self, ghost_runtime: IGhostRuntime, name: str = "echo"):
         self._logos_task: asyncio.Task | None = None
+        self._error_task: asyncio.Task | None = None
         self._sink: LogosStreamSink | None = None
+        # error output item 跨线程桥: on_output 回调 (zenoh 线程) 只 put 进 janus 队列,
+        # _consume_errors 在 event loop 消费 — 与 _consume_logos 同线程, 收尾 _sink 无竞态.
+        self._output_queue: janus.Queue = janus.Queue()
         super().__init__(ghost_runtime, name)
 
     def on_interrupt(self, event: KeyPressEvent) -> None:
@@ -195,6 +201,8 @@ class GhostLogosState(_GhostStateBase):
 
     async def __aenter__(self):
         self._logos_task = asyncio.get_running_loop().create_task(self._consume_logos())
+        self._session.on_output(self._on_output_item)
+        self._error_task = asyncio.get_running_loop().create_task(self._consume_errors())
         await super().__aenter__()
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -204,7 +212,31 @@ class GhostLogosState(_GhostStateBase):
                 await self._logos_task
             except asyncio.CancelledError:
                 pass
+        if self._error_task and not self._error_task.done():
+            self._error_task.cancel()
+            try:
+                await self._error_task
+            except asyncio.CancelledError:
+                pass
         await super().__aexit__(exc_type, exc_val, exc_tb)
+
+    def _on_output_item(self, item: OutputItem) -> None:
+        """on_output 回调 (zenoh 线程): 只把 error item 转入 janus 队列, event loop 消费."""
+        if item.role == 'error':
+            self._output_queue.sync_q.put_nowait(item)
+
+    async def _consume_errors(self) -> None:
+        """消费 error output item, 内联打印进 logos 流.
+
+        与 _consume_logos 同 event loop 线程 — 先收尾当前 utterance 的 sink (释放渲染线程
+        的原地重绘阻塞), 再经 console.output 打印 error panel; 下一段 logos 起新 sink.
+        """
+        while True:
+            item = await self._output_queue.async_q.get()
+            if self._sink is not None:
+                self._sink.close()
+                self._sink = None
+            self.console.output(item)
 
     async def _consume_logos(self) -> None:
         """消费 logos 流: 片断投递到 LogosStreamSink, 由渲染线程逐片打印.

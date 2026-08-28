@@ -40,13 +40,13 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
 
   对比早期 articulate/enter (2026-08-27 收敛): 当时设想 enter 组合翻译 effort/
   percepts/enter-with-messages, "enter 包揽 exit" 候选 (SSE 等 turn/end). 2026-08-28
-  落地为: pre-step enter 是统一注入点 (非锁), 完成判定回 turn/end (DoloresRun 毒丸).
+  落地为: pre-step enter 是统一注入点 (非锁), 完成判定回 turn/end (消费方 break 收线).
   早期方案的组合翻译细节 (effort→reasoningEffort / percepts→steer / enter-with-messages
   原子通道 / surface replace) 仍有效, 见 plugin.ts 头注释与 git log. 任务完成后再删.
 
 ── session event 响应 (run 时监听) ───────────────────────────────────
   1. logos 判定: _fetch_logos (assistant/chunk text-delta) → articulator + yield.
-  2. turn/end: 消费方 break, DoloresRun 塞毒丸收线.
+  2. turn/end: 消费方 break 收线 (正常路径); 毒丸只承载 enter 异常.
   3. ego tool 调用 (tool 面暂缓, 点 7): tool/call → 执行 → RPC tool-result 解锁.
   4. 异常感知: DoloresRun aexit 时 thinking.abort(reason).
   (DoloresRun._on_event 后续会有逻辑 — token 记账 / tool 桥 / seq 跟踪, 本阶段纯透传.)
@@ -114,10 +114,6 @@ _DOLORES_THINKING_EXIT = "/moss-api/ghost/dolores/thinking/exit"
 
 # thinking/exit 的阻塞确认超时 (fail-safe): plugin 挂死时降级, 不挂死 thinking 退出.
 _EXIT_RPC_TIMEOUT = 5.0
-
-# 毒丸 sentinel: enter task 退出时入队, events() 读到即终止.
-# enter 异常经毒丸携带 (consumer raise), 与 shutdown 分工: 毒丸 = 正常/异常 done.
-_POISON = object()
 
 
 class DoloresEgoConfig(BaseModel):

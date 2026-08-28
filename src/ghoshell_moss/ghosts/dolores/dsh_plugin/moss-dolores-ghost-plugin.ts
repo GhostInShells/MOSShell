@@ -400,7 +400,7 @@ export function apply(ctx: Context) {
   })
 
   // ── 3. thinking/exit (点 4) ───────────────────────────────────────────
-  // 反转 thinking 状态; agent 非 idle 时显式 cancel (session.cancel 或 abort turn).
+  // 反转 thinking 状态; agent 非 idle 时显式 cancel, 不让 dsh 空跑失速.
   ctx.webServer.register({
     kind: 'exact',
     path: DOLORES_THINKING_EXIT,
@@ -419,10 +419,13 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        // todo: 实现落地:
-        //   1. closeThinking()
-        //   2. 若 agent 非 idle (running) → 显式 cancel, 不让 dsh 空跑失速.
         closeThinking()
+        // agent 仍在跑 → 显式 cancel (MOSS 已宣布 thinking 结束, 不能让 dsh 空跑失速).
+        // cancel 是同步发出 (在进程内, 走 abort signal), 轮次异步收线; 无需等待 — 下一
+        // 个 thinking/enter 自会重新 openThinking + steer.
+        if (agent.status !== 'idle') {
+          agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: false }))
       } catch (error) {

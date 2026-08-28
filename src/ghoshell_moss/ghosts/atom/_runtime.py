@@ -61,7 +61,7 @@ class Atom(Ghost):
 
     # ── 核心循环 ──────────────────────────────────
 
-    def on_thinking_exit(self, thinking: Thinking, error: BaseException | None) -> None:
+    def handle_thinking_exit(self, thinking: Thinking, error: BaseException | None) -> None:
         self._last_context = {
             "system": self.system_prompt(),
             "history_moments": len(thinking.observer.moments()),

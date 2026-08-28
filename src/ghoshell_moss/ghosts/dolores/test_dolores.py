@@ -457,7 +457,8 @@ class TestDoloresRun:
         assert len(session.handlers) == 0  # 解绑
 
     @pytest.mark.asyncio
-    async def test_events_consumes_and_terminates_on_poison(self):
+    async def test_events_consumes_stream_and_breaks_on_turn_end(self):
+        """enter 成功不塞毒丸 — 事件流持续到消费方在 turn/end break 收线."""
         from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
 
         session = FakeRunSession()
@@ -467,10 +468,12 @@ class TestDoloresRun:
         async with run:
             await session.emit(SessionEvent(meta=SessionEventMeta(type="turn/start", seq=1), data={"turn": 1}))
             await session.emit(SessionEvent(meta=SessionEventMeta(type="step/start", seq=2), data={"turn": 1, "step": 1}))
-            async for event in run.events():  # enter task 完成会塞毒丸 → 终止
+            await session.emit(SessionEvent(meta=SessionEventMeta(type="turn/end", seq=3), data={"turn": 1, "reason": "completed"}))
+            async for event in run.events():  # 消费方在 turn/end break (与 Dolores.think 同构)
                 collected.append(event.meta.type)
-        assert "turn/start" in collected
-        assert "step/start" in collected
+                if event.meta.type == "turn/end":
+                    break
+        assert collected == ["turn/start", "step/start", "turn/end"]
 
     @pytest.mark.asyncio
     async def test_enter_error_propagates_and_aborts(self):

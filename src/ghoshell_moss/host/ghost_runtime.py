@@ -164,6 +164,9 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         # 3. GhostMeta.factory(container) → ghost
         logger.debug("%r step 3/5: building ghost instance", self)
         self._ghost_instance = self._ghost_meta.factory(container)
+        # 注册 ghost 错误观测 (on_error): ghost 内部检测到错误时 fire 回调 → 输出 error 讯息.
+        # 先于 ghost.__aenter__ 注册, 使 dsh 启动期 (ghost.__aenter__ 内) 的错误也能被捕获.
+        self._ghost_instance.on_error(self._on_ghost_error)
 
         # 4. ghost.__aenter__
         logger.debug("%r step 4/5: entering ghost", self)
@@ -295,6 +298,14 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
 
     def _on_mindflow_error(self, error: BaseException | str) -> None:
         self._send_error(str(error), 'mindflow-error')
+
+    def _on_ghost_error(self, error: Exception) -> None:
+        """ghost 内部错误观测出口 — ghost 经 on_error 注册, 检测到错误时 fire 本回调.
+
+        与 mindflow error 同走 session.output('error'), 但 log 标记 'ghost-error'
+        区分错误来源 (ghost 自身 vs mindflow 仲裁).
+        """
+        self._send_error(error, 'ghost-error')
 
     async def _wire_mindflow(self) -> None:
         ghost = self._ghost_instance
@@ -483,7 +494,7 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
     def _on_thinking_exited(self, thinking: Thinking, err: BaseException | None) -> None:
         if self._ghost_instance:
             self._on_logos_end()
-            self._ghost_instance.on_thinking_exit(
+            self._ghost_instance.handle_thinking_exit(
                 thinking,
                 err,
             )

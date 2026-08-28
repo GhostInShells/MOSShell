@@ -1,6 +1,6 @@
 """Ghost agent blueprint — persistent intelligent agent with continuous memory and reflexivity."""
 
-from typing import AsyncIterable
+from typing import AsyncIterable, Callable
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
@@ -167,24 +167,29 @@ class Ghost(ABC):
         """结束自身生命周期."""
         pass
 
-    # ── observability hooks ────────────────────────────────
+    # ── observability surface ──────────────────────────────
     #
-    # Two prefix conventions, one purpose: let debuggers see what the ghost sees.
+    # Three verbs, three directions — one purpose: let debuggers see what the ghost sees.
     #
-    #   on_*      — event callback. Pushed by GhostRuntime when something happens.
-    #               Default no-op. Ghost authors override to record internal state.
+    #   on_*      — register a callback. The ghost emits something; external code
+    #               registers to be notified (ghost is the source, pushes out).
+    #               e.g. on_error(cb): runtime registers to learn about internal failure.
+    #   handle_*  — notification hook. GhostRuntime calls it to tell the ghost
+    #               something happened (ghost is the sink). Default no-op; ghost
+    #               authors override to record internal state.
+    #               e.g. handle_thinking_exit(thinking, error).
     #   inspect_* — state query. Pulled by REPL / scripts / GhostRuntime itself.
     #               Ghost authors override to expose internals.
     #
     # These are NOT lifecycle hooks. Lifecycle hooks (born / wake / sleep / die)
-    # will carry semantic weight for ghost state transitions. Observability hooks
-    # are purely diagnostic — removing them changes no behavior.
+    # will carry semantic weight for ghost state transitions. Observability
+    # verbs are purely diagnostic — removing them changes no behavior.
     #
-    # Naming is deliberately constrained to these two prefixes. Before adding a
-    # new hook, ask: is it an event (on_*) or a query (inspect_*)? If neither,
-    # it does not belong here.
+    # Naming is deliberately constrained to these three prefixes. Before adding a
+    # new surface, ask: is it a callback registration (on_*), a notification hook
+    # (handle_*), or a state query (inspect_*)? If neither, it does not belong here.
 
-    def on_thinking_exit(
+    def handle_thinking_exit(
             self,
             thinking: Thinking,
             error: BaseException | None,
@@ -194,6 +199,17 @@ class Ghost(ABC):
         logos is the full concatenated model output from one articulate cycle.
         error is non-None if articulation raised. Together with the articulator's
         moment, this is enough to replay the cycle for deterministic reproduction.
+        """
+        ...
+
+    def on_error(self, callback: Callable[[Exception], None]) -> None:
+        """Register an error callback — the ghost fires it when it detects an internal error.
+
+        Prevents silent failure: internal faults (dsh process exit, RPC failure, ...)
+        are otherwise only visible in logs. The runtime registers here to surface them
+        as error output.
+
+        :param callback: invoked with the detected Exception.
         """
         ...
 
