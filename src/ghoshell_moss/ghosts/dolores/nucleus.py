@@ -56,7 +56,7 @@ class DoloresEgoSignalMeta(SignalMeta):
 
 
 class DoloresEgoNucleus(Nucleus):
-    """自醒 nucleus — 收 signal → 发 info-level 空 body 的默认 mode impulse."""
+    """自醒 nucleus — 发 BACKGROUND 挑战包 (发完丢), attended 加工成 INFO 运行包唤醒 attention."""
 
     NAME = NAME
 
@@ -64,7 +64,7 @@ class DoloresEgoNucleus(Nucleus):
         self,
         *,
         name: str = NAME,
-        description: str = "dolores ego self-wake channel — emit an empty default impulse per self-wake signal",
+        description: str = "wake moss when the dolores ego agent is running",
         logger: LoggerItf | None = None,
     ):
         self._name = name
@@ -107,14 +107,14 @@ class DoloresEgoNucleus(Nucleus):
             return
         if signal.name != self._target_signal:
             return
-        # 最小切片: 每封自醒 signal → 一个 info 级默认 mode 的空 body impulse.
+        # 挑战包: BACKGROUND — 低调, 只在 mindflow idle 时 initial 成功; 有 attention 时 suppress.
         self._index += 1
         self._impulse = Impulse(
             source=self._name,
             source_idx=self._index,
             id=signal.id,
-            priority=Priority.INFO,
-            messages=[],  # 空 body — 流程验证用, 物料后续织入
+            priority=Priority.BACKGROUND,
+            messages=[],  # 纯空 body — 处理逻辑在 thinking/enter 层定义.
             description="",  # 自醒通道, 无摘要
             complete=True,  # mode 默认空 = 正常仲裁 (非 silent)
         )
@@ -122,20 +122,23 @@ class DoloresEgoNucleus(Nucleus):
             self._notify_cb(self._impulse)
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # 自醒 impulse 抢占失败 — 当前不做冷静期, 保持最小行为.
+        # 发完丢: 抢占失败即丢, 不 reraise, 不做冷静期.
         return
 
-    def attended(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> Impulse | None:
+        # 运行包: 抬到 INFO (正常运行强度), 区别于挑战用的 BACKGROUND. 纯空 body 保留.
         if not self.is_running():
-            return
-        self._impulse = None
+            return None
+        return impulse.model_copy(update={"priority": Priority.INFO})
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
         if self._impulse is None:
             return None
-        if no_stale and self._impulse.is_stale():
+        impulse = self._impulse
+        self._impulse = None  # 发完丢: peek 即清, 一次消费不保留 cache
+        if no_stale and impulse.is_stale():
             return None
-        return self._impulse
+        return impulse
 
     def is_running(self) -> bool:
         return self._running
@@ -155,7 +158,7 @@ class DoloresEgoNucleusMeta(NucleusMeta):
         self,
         *,
         name: str = NAME,
-        description: str = "dolores ego self-wake channel — emit an empty default impulse per self-wake signal",
+        description: str = "wake moss when the dolores ego agent is running",
     ):
         self._name = name
         self._description = description

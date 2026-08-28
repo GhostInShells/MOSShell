@@ -304,10 +304,10 @@ class TestDoloresInstruction:
 
 
 class TestDoloresEgoNucleus:
-    """DoloresEgoNucleus 最小流程 — signal → info 级空 body 默认 mode impulse."""
+    """DoloresEgoNucleus — BACKGROUND 挑战包 (发完丢), attended 加工成 INFO 运行包."""
 
     @pytest.mark.asyncio
-    async def test_signal_produces_info_empty_default_impulse(self):
+    async def test_signal_produces_background_empty_impulse(self):
         from ghoshell_moss.core.blueprint.mindflow import Priority
 
         from .nucleus import DoloresEgoNucleus, new_dolores_ego_signal
@@ -320,10 +320,25 @@ class TestDoloresEgoNucleus:
 
         assert len(impulses) == 1
         imp = impulses[0]
-        assert imp.priority == Priority.INFO
+        assert imp.priority == Priority.BACKGROUND
         assert imp.messages == []
         # 默认 mode (空) = 正常仲裁, 非 silent buffer.
         assert imp.mode == ""
+
+    @pytest.mark.asyncio
+    async def test_attended_rewrites_to_info(self):
+        from ghoshell_moss.core.blueprint.mindflow import Impulse, Priority
+
+        from .nucleus import DoloresEgoNucleus
+
+        nucleus = DoloresEgoNucleus()
+        async with nucleus:
+            challenge = Impulse(source="dolores_ego_nucleus", priority=Priority.BACKGROUND)
+            rewritten = nucleus.attended(challenge)
+
+        assert rewritten is not None
+        assert rewritten.priority == Priority.INFO
+        assert rewritten.messages == []
 
     @pytest.mark.asyncio
     async def test_ignores_foreign_signal(self):

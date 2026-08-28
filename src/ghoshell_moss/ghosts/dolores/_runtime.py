@@ -188,6 +188,8 @@ class Dolores(Ghost):
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(self, self._load_ego_config())
             )
+            # 绑定自醒 signal 出口到 MOSS session — matrix.session.add_signal 路由到 mindflow.
+            self._ego.bind_signal_broadcast(self._matrix.session.add_signal)
         # 挂载 ShellTrajectory — shell 由 MossRuntime 持有且已 running (ghost.__aenter__
         # 晚于 shell 启动). 未提供 shell / 未运行时跳过, trajectory 保持 None.
         if self._shell is not None and self._shell.is_running():

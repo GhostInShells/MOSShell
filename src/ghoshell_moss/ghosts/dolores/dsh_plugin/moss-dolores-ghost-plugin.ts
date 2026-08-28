@@ -71,14 +71,13 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *   通知 = turn/start 广播 (ego 侧 _on_turn_start 监听 → 自醒 signal, 已存在),
  *   不另发显式讯号. pre-step 阻塞只是背压 (hold 住模型等 thinking/enter 注入帧).
  *
- * ── 遗留问题 (2026-08-28 提交前记录) ─────────────────────────────────
- * 1. **外部唤醒链路未接通 (perStep 暂时放行)**: turn/start → ego 自醒 signal →
- *    mindflow → Thinking → thinking/enter 的链路未接通 (ego._signal_broadcast 未绑
- *    mindflow 路由). 早期实现 pre-step 阻塞等 thinking/enter, 但 thinking 永不 open →
- *    每 step 等满 5s 超时 (5s/step). 现改为放行 (turn 直接跑), 帧背压 (非 thinking 时
- *    await thinkingGate.wait()) 待链路接通后再启用. 需验证:
+ * ── 遗留问题 (2026-08-28) ────────────────────────────────────────────
+ * 1. **外部唤醒链路未接通 (perStep 帧背压已启用, 靠超时兜底)**: turn/start → ego
+ *    自醒 signal → mindflow → Thinking → thinking/enter 的链路未接通 (ego._signal_broadcast
+ *    未绑 mindflow 路由). perStep 帧背压已启用 — ego 非 thinking 时 await thinkingGate.wait,
+ *    超时 5s reject; 外部 turn 在链路接通前会阻塞到超时 reject. 需验证:
  *    a) 绑定 ego.bind_signal_broadcast(session.add_signal) 是否让链路通;
- *    b) 链路通后外部 turn 的帧注入时序.
+ *    b) 链路通后外部 turn 的帧注入时序 (thinking/enter open 释放 pre-step).
  * 2. **applyModelConfig todo**: thinking/enter 的 provider/model/reasoningEffort
  *    未应用到下个 request (agent/request waterfall / session.selectModel).
  * 3. **epoch 设计**: moment 携带 epoch id, 对比后决定 ghost.memory 尾部更新 (下一轮).
@@ -117,6 +116,13 @@ let doloresThinkingToken: string | null = null
 // ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter open ──
 // TS 单线程事件循环, gate = asyncio.Event 等价物 (可反复 open/close, wait 阻塞到 open).
 // 注意: Promise 是一次性的, resolve 后不能重臂 — 不能表达"当前是否 thinking"的持续状态.
+// wait 返回三态 outcome: open (正常释放) / aborted (exit cancel 打断) / timeout (fail-safe).
+
+// pre-step 帧背压超时 (fail-safe): MOSS 未及时 thinking/enter 时 reject, 不空跑失速.
+const THINKING_GATE_TIMEOUT_MS = 5000
+
+type GateOutcome = 'open' | 'aborted' | 'timeout'
+
 class ThinkingGate {
   private _open = false
   private _waiters: Array<() => void> = []
@@ -136,14 +142,26 @@ class ThinkingGate {
     this._open = false
   }
 
-  async wait(timeoutMs?: number): Promise<void> {
-    if (this._open) return
-    const waiter = new Promise<void>((resolve) => { this._waiters.push(resolve) })
-    if (timeoutMs === undefined) {
-      await waiter
-      return
-    }
-    await Promise.race([waiter, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))])
+  async wait(timeoutMs?: number, signal?: AbortSignal): Promise<GateOutcome> {
+    if (this._open) return 'open'
+    if (signal?.aborted) return 'aborted'
+
+    return await new Promise<GateOutcome>((resolve) => {
+      let waiter: (() => void) | undefined
+      const remove = (): void => {
+        if (waiter !== undefined) {
+          const i = this._waiters.indexOf(waiter)
+          if (i >= 0) this._waiters.splice(i, 1)
+          waiter = undefined
+        }
+      }
+      waiter = () => { remove(); resolve('open') }
+      this._waiters.push(waiter)
+      signal?.addEventListener('abort', () => { remove(); resolve('aborted') }, { once: true })
+      if (timeoutMs !== undefined) {
+        setTimeout(() => { remove(); resolve('timeout') }, timeoutMs)
+      }
+    })
   }
 }
 
@@ -257,8 +275,8 @@ export function apply(ctx: Context) {
               order: PERSONA_ORDER,
               text: instruction,
             }), 'dolores-ego-persona.section()')
-            // perStep 锁 (点 4): 两分支 — foreign reject + mux 提示 / ego 阻塞等反转.
-            agentCtx.on('agent/pre-step', async ({ agent }, next) => {
+            // perStep 锁 (点 4): 两分支 — foreign reject + mux 提示 / ego 帧背压等反转.
+            agentCtx.on('agent/pre-step', async ({ agent, signal }, next) => {
               if (agent.id !== doloresEgoSessionId) {
                 // foreign session (fork/subagent 共享 preset 而带 ego tool schema) →
                 // 直接 reject + mux 提示「session 已冻结」. seam: mux 提示形态待定
@@ -266,11 +284,16 @@ export function apply(ctx: Context) {
                 notifySessionFrozen(ctx, agent)
                 return { kind: 'reject' }
               }
-              // ego session: 放行 (turn 直接跑).
-              // todo: 帧背压 (非 thinking 时 await thinkingGate.wait() 等 thinking/enter
-              // open) 待外部唤醒链路 (turn/start → 自醒 signal → MOSS → thinking/enter)
-              // 接通后再启用 — 现在放行, 避免外部 turn (dsh UI, 愿望接口) 被阻塞 +
-              // 5s/step 超时. 见头注释「遗留问题 1」.
+              // ego session: 帧背压 — 非 thinking 时阻塞等 thinking/enter open.
+              // 三态: open 放行 / aborted 走 next() 让 throwIfAborted 收成 aborted turn
+              // (exit 的 cancel 打断卡在 pre-step 的 step) / timeout reject 停住 (fail-safe).
+              const outcome = await thinkingGate.wait(THINKING_GATE_TIMEOUT_MS, signal)
+              if (outcome === 'timeout') {
+                ctx.logger.warn(
+                  `dolores: ego pre-step blocked ${THINKING_GATE_TIMEOUT_MS}ms — MOSS thinking/enter not arrived, rejecting`,
+                )
+                return { kind: 'reject' }
+              }
               return next()
             })
           },
