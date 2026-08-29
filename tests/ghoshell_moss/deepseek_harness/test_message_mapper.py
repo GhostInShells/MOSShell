@@ -3,7 +3,7 @@
 import pytest
 
 from ghoshell_moss.message import Base64Image, Message
-from ghoshell_moss.deepseek_harness.message_mapper import to_content_block, to_user_message
+from ghoshell_moss.deepseek_harness.message_mapper import fold_messages, to_content_block, to_user_message
 
 
 def test_to_user_message_role_user_and_source():
@@ -50,3 +50,24 @@ def test_to_user_message_image_raises_not_implemented():
     )
     with pytest.raises(NotImplementedError):
         to_user_message(msg)
+
+
+def test_fold_messages_merges_contents_keeping_tag_segments():
+    a = Message.new(tag="a").with_content("x")
+    b = Message.new(tag="b").with_content("y")
+    folded = fold_messages(a, b)
+    text = folded.to_content_string()
+    assert "<a>" in text and "</a>" in text and "x" in text
+    assert "<b>" in text and "</b>" in text and "y" in text
+
+
+def test_fold_messages_feeds_to_user_message_as_single():
+    a = Message.new(tag="").with_content("hello")
+    b = Message.new(tag="").with_content("world")
+    folded = fold_messages(a, b)
+    result = to_user_message(folded)
+    assert result.role == "user"
+    assert result.source.kind == "user"
+    assert [blk.model_dump(exclude_none=True) for blk in result.content] == [
+        {"type": "text", "text": "helloworld"}
+    ]

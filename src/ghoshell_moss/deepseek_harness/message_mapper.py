@@ -18,7 +18,7 @@ from ghoshell_moss.deepseek_harness.types.session_events import ContentBlock, Me
 from ghoshell_moss.message import Message as MossMessage
 from ghoshell_moss.message.contents.abcd import Content
 
-__all__ = ["to_user_message", "to_content_block"]
+__all__ = ["to_user_message", "to_content_block", "fold_messages"]
 
 
 def to_content_block(content: Content) -> ContentBlock:
@@ -49,3 +49,17 @@ def to_user_message(
         for c in message.as_contents(with_meta=with_meta, timestamp=timestamp, join_text=join_text)
     ]
     return Message(role="user", content=blocks, source=MessageSource(kind="user"))
+
+
+def fold_messages(
+    *messages: MossMessage,
+    with_meta: bool = True,
+    timestamp: bool = True,
+) -> MossMessage:
+    """把多个 MOSS message 分段折叠成一条 (with_messages 合并, xml tag 分段).
+
+    moment 折叠的接缝: 多个 moss message 先经此折成 slice, 再转 dsh 单条 message,
+    避免 1:1 插入导致 dsh 单条 message 独立渲染过多 (dsh 单条 message 在 UI 上
+    独立渲染). 当前 memory 面 1:1 不经它; moment 面正式化后按 slice 分组调用.
+    """
+    return MossMessage.new().with_messages(*messages, with_meta=with_meta, timestamp=timestamp)
