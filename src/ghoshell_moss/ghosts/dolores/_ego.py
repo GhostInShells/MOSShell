@@ -78,28 +78,32 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
 
-from ghoshell_moss.contracts.logger import get_moss_logger
+from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.mindflow import Signal, Thinking, ThinkingEffort
 from ghoshell_moss.core.blueprint.session import OutputItem, Session
 from ghoshell_moss.deepseek_harness.launcher import DshLauncherConfig
+from ghoshell_moss.message import Message
 
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
+    from ghoshell_moss.deepseek_harness.launcher import DshLauncher
     from ghoshell_moss.deepseek_harness.session import DshSession
     from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
 
     from ._runtime import Dolores
     from .nucleus import DoloresEgoNucleus
 
-__all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig"]
+__all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig", "DoloresEgoContext"]
 
 EGO_TOPIC_NAME = "dolores/ego"
 """dolores ego topic 默认名 — 通用 dict 包装所有 session event 的出口. 待讨论: 最终命名."""
@@ -159,27 +163,60 @@ class DoloresConfig(BaseModel):
     )
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class DoloresEgoContext:
+    """ego 进入生命周期前的一切静态上下文 — 由 ghost 装配后注入, 阻断 back-ref 穿透.
+
+    随 ego 创建一次性取值, 构造后不再需要访问 ghost 内部. 所有引用都经 typehint 对象 /
+    变量 / 闭包注入, 不持有 ghost 反引用.
+
+    - project_home: ego session 的工作区目录 (原 ghost._home).
+    - project_name: 工作区标题名 (原 ghost._matrix.env.project_name).
+    - name: ghost 名, 用于标题/身份 (原 ghost.meta.name()).
+    - instruction: 组装好的 system prompt (原 ghost.system_prompt()).
+    """
+
+    project_home: Path
+    project_name: str
+    name: str
+    instruction: str
+
+
 class DoloresEgo:
     """Dolores 的自我/连续性层. 详见模块 docstring."""
 
-    def __init__(self, ghost: "Dolores", config: DoloresEgoConfig | None = None) -> None:
-        """随 ghost 一起实例化, 构造无副作用 (不碰 httpx / session / matrix.processes).
+    def __init__(
+        self,
+        *,
+        launcher: "DshLauncher",
+        ctx: DoloresEgoContext,
+        config: DoloresEgoConfig | None = None,
+        logger: LoggerItf | None = None,
+        memories: Callable[[], list[Message]] | None = None,
+    ) -> None:
+        """随 ghost 进入生命周期前构造, 构造无副作用 (不碰 httpx / session / matrix.processes).
 
-        当前最小 slice: 只持 back-ref / config 与 ego session (DshSession).
-        nucleus / watcher / run transaction / 异常感知待后续步骤.
+        依赖纪律: 一切依赖经 typehint 对象 (launcher/config/logger) / 变量 (ctx) / 闭包
+        (memories / bind_signal_broadcast) 注入, 不持有 ghost 反引用, 不访问任何私有成员.
 
-        :param ghost: back-ref, ego 经它取 dsh_launcher / home / instruction.
+        :param launcher: dsh 推理中枢启动器, ego create + thinking enter/exit RPC 走它.
+        :param ctx: 一次性会话上下文 (home/name/instruction/project_name).
         :param config: ego session 配置; None 用全默认.
+        :param logger: 记录器; None fallback 到 MOSS logger.
+        :param memories: ghost 动态记忆闭包 (存在主义层), create_session 时调用取最新;
+            clone 复用同一闭包共享认知. None 表示无记忆.
         """
-        self._ghost = ghost
+        self._launcher = launcher
+        self._ctx = ctx
         self._config = config or DoloresEgoConfig()
+        self._memories = memories
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
         # 防旁路 token (点 4): ego/create 返回, thinking/enter|exit 携带, plugin 校验拒绝非 ego 调用.
         self._thinking_token: str | None = None
         self._exit_stack = contextlib.AsyncExitStack()
-        # logger 优先用 MOSS runtime logger (经 ghost.matrix); 无 ghost (测试) 时 fallback.
-        self._logger = ghost.logger if ghost is not None else get_moss_logger()
+        # logger 优先调用方注入 (MOSS runtime logger), 否则 fallback.
+        self._logger = logger or get_moss_logger()
         # self-wake gate: thinking 交易进行中 (Python 侧镜像 flag), turn/start 监听据此决定是否自醒.
         self._articulating = False
         # 自醒 signal 出口 — host/mindflow 接总线后注入 (broadcast), 本侧不直接碰 nucleus.
@@ -188,25 +225,27 @@ class DoloresEgo:
     # ── 长命线: 生命周期 ────────────────────────────────────────────
 
     async def __aenter__(self) -> Self:
-        """进入 ghost 生命周期 (由 Dolores.__aenter__ 经 _exit_stack 进入).
-
-        经 RPC 创建 ego session, 持有 DshSession facade.
-        待后续: 固定 nucleus 注册 / 背景 watcher / session id 后台同步轮询.
-        """
+        """进入 ghost 生命周期 (由 Dolores.__aenter__ 经 _exit_stack 进入)."""
         await self._exit_stack.__aenter__()
-        launcher = self._ghost.dsh_launcher
-        result = await launcher.call(
+        await self.create_session()
+        return self
+
+    async def create_session(self) -> str:
+        """创建 ego session (可复用 — clone 共享同一 memories 闭包).
+
+        每个 session 创建时注入 instruction + memory (ghost 动态记忆, 1:1 转 user message),
+        建立"instruction 之下、对话之上"的初始表面. 返回 ego session id.
+        """
+        result = await self._launcher.call(
             _DOLORES_EGO_CREATE,
             {
-                "project_home": str(self._ghost._home),
-                "project_name": self._ghost._matrix.env.project_name,
+                "project_home": str(self._ctx.project_home),
+                "project_name": self._ctx.project_name,
                 "title": self._config.session_title.format(
-                    name=self._ghost.meta.name(),
+                    name=self._ctx.name,
                     date=datetime.now().strftime("%Y-%m-%d"),
                 ),
-                "instruction": self._ghost.system_prompt(),
-                # 初见上下文 (点 1): ghost.memory (压缩/快照/ground) → 建立模型首轮可见的表面.
-                # todo: _assemble_initial_messages 后续接 Memento/facade.
+                "instruction": self._ctx.instruction,
                 "messages": self._assemble_initial_messages(),
                 "agent_preset": self._config.agent_preset,
                 "permission": self._config.permission,
@@ -214,11 +253,11 @@ class DoloresEgo:
         )
         self._ego_session_id = result["sessionId"]
         self._thinking_token = result.get("thinkingToken")
-        self._session = launcher.create_session(self._ego_session_id)
+        self._session = self._launcher.create_session(self._ego_session_id)
         await self._exit_stack.enter_async_context(self._session)
         # 长命线: 订阅 turn/start, 静默自醒 (self-wake 心跳).
         self._session.on_session_event("turn/start", self._on_turn_start)
-        return self
+        return self._ego_session_id
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """退出: 关闭 ego session (DshSession)."""
@@ -259,12 +298,18 @@ class DoloresEgo:
         ...
 
     def _assemble_initial_messages(self) -> list[dict]:
-        """初见上下文 messages (点 1): ghost.memory (压缩/快照/ground) 组装成 plugin payload.
+        """初见上下文 messages: ghost 动态记忆 (memories 闭包) → plugin payload.
 
         每项 ``{"text": ...}`` — plugin 侧作为 user/message (plugin source) 注入 surface.
-        当前返回空 (Memento/facade 未接), 后续把压缩历史/ground 渲染/快照塞进来.
+        memory 1:1 转 dsh user message (不做折叠; moment 折叠走 message_mapper.fold_messages).
         """
-        return []
+        if self._memories is None:
+            return []
+        return [
+            {"text": msg.to_content_string()}
+            for msg in self._memories()
+            if not msg.is_empty()
+        ]
 
     # ── 背景 watcher (长命线) ───────────────────────────────────────
 
@@ -354,7 +399,7 @@ class DoloresEgo:
         """POST /moss-api/ghost/dolores/tool-result — {callId, result} 解锁 plugin 侧 pending tool."""
         ...
 
-    async def _rpc_thinking_enter(self, thinking: "Thinking") -> None:
+    async def enter_thinking(self, thinking: "Thinking") -> None:
         """POST /moss-api/ghost/dolores/thinking/enter — moment 三块 + effort + model + token.
 
         防旁路 (点 4): body 携带 thinkingToken, plugin 校验 — 拒绝非 ego 发起的调用.
@@ -366,15 +411,15 @@ class DoloresEgo:
             "model": await self._model_config(),
             "thinkingToken": self._thinking_token,
         }
-        await self._ghost.dsh_launcher.call(_DOLORES_THINKING_ENTER, payload)
+        await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
 
-    async def _rpc_thinking_exit(self) -> None:
+    async def exit_thinking(self) -> None:
         """POST /moss-api/ghost/dolores/thinking/exit — 反转 thinking 状态; plugin 侧 cancel 非 idle agent.
 
         阻塞到确认 (避免并发), 带超时 fail-safe: plugin 挂死时降级, 不挂死 thinking 退出.
         """
         try:
-            await self._ghost.dsh_launcher.call(
+            await self._launcher.call(
                 _DOLORES_THINKING_EXIT,
                 {"thinkingToken": self._thinking_token},
                 timeout=_EXIT_RPC_TIMEOUT,

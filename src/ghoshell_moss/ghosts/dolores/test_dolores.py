@@ -242,6 +242,27 @@ class TestDoloresInstruction:
             assert text.strip() != ""
 
 
+class TestDoloresMemories:
+    """Dolores.memories — ground 渲染为第一条存在主义记忆."""
+
+    @pytest.mark.asyncio
+    async def test_memories_empty_without_home(self):
+        """无 home → 无 ground 渲染, memories 返回空."""
+        ghost = _dolores()
+        async with ghost:
+            assert ghost.memories() == []
+
+    @pytest.mark.asyncio
+    async def test_memories_returns_ground_as_first(self, tmp_path: Path):
+        """home 存在 → ground 渲染文本包成 ground tag 的记忆, 是唯一一条."""
+        ghost = _dolores(home=tmp_path)
+        async with ghost:
+            memories = ghost.memories()
+            assert len(memories) == 1
+            text = memories[0].to_content_string()
+            assert "<ground>" in text and "</ground>" in text
+
+
 class TestDoloresEgoNucleus:
     """DoloresEgoNucleus — BACKGROUND 挑战包 (发完丢), attended 加工成 INFO 运行包."""
 
@@ -308,9 +329,18 @@ class TestDoloresEgoSelfWake:
     """DoloresEgo 的 self-wake gate — articulate flag 决定 turn/start 是否自醒."""
 
     def _ego(self):
-        from ._ego import DoloresEgo
+        from ._ego import DoloresEgo, DoloresEgoContext
 
-        return DoloresEgo(None)  # gate 路径不读 ghost 反参, 传 None 即可
+        # gate 路径不触 dsh / 不读 ghost 反参 — ctx/launcher 传最小 dummy 即可.
+        return DoloresEgo(
+            launcher=None,
+            ctx=DoloresEgoContext(
+                project_home=Path("."),
+                project_name="pytest",
+                name="dolores",
+                instruction="i",
+            ),
+        )
 
     @pytest.mark.asyncio
     async def test_turn_start_self_wakes_when_idle(self):
@@ -356,21 +386,21 @@ class FakeRunSession:
 
 
 class FakeRunEgo:
-    """DoloresRun 的 ego fake — Duck-typed (session/_articulating/_rpc_*)."""
+    """DoloresRun 的 ego fake — Duck-typed (session/articulating/enter_thinking/exit_thinking)."""
 
     def __init__(self, session):
         self.session = session
-        self._articulating = False
+        self.articulating = False
         self.enter_calls = 0
         self.exit_calls = 0
         self.enter_error: Exception | None = None
 
-    async def _rpc_thinking_enter(self, thinking):
+    async def enter_thinking(self, thinking):
         self.enter_calls += 1
         if self.enter_error is not None:
             raise self.enter_error
 
-    async def _rpc_thinking_exit(self):
+    async def exit_thinking(self):
         self.exit_calls += 1
 
 
@@ -402,11 +432,11 @@ class TestDoloresRun:
         ego = FakeRunEgo(session)
         run = self._run(session=session, ego=ego)
         async with run:
-            assert ego._articulating is True
+            assert ego.articulating is True
             assert len(session.handlers) == 1  # catch-all 监听已绑
             await asyncio.sleep(0)  # 让出 loop, enter task 跑
             assert ego.enter_calls == 1
-        assert ego._articulating is False
+        assert ego.articulating is False
         assert ego.exit_calls == 1
         assert len(session.handlers) == 0  # 解绑
 

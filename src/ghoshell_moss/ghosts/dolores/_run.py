@@ -57,8 +57,8 @@ class DoloresRun:
                   fail-safe) → 异常时 thinking.abort(reason).
       events()  : 队列消费; 毒丸终止; enter 异常经毒丸传输 (consumer raise).
 
-    构造: ego (Duck-typed — session / _rpc_thinking_enter / _rpc_thinking_exit /
-          _articulating / _logger) + thinking. 窄依赖, 测试可用轻量 mock.
+    构造: ego (Duck-typed — session / articulating / enter_thinking / exit_thinking)
+    + thinking. 依赖经公有接口, 不访问 ego 私有成员; 测试可用轻量 mock.
     """
 
     def __init__(self, ego: Any, thinking: "Thinking") -> None:
@@ -73,7 +73,7 @@ class DoloresRun:
 
     async def __aenter__(self) -> Self:
         """开 transaction. 先绑监听 (避免丢 enter 广播), 再建 enter task."""
-        self._ego._articulating = True
+        self._ego.articulating = True
         self._dispose_listener = self._ego.session.on_session_event("*", self._on_event)
         self._enter_task = asyncio.create_task(self._drive_enter())
         return self
@@ -88,8 +88,8 @@ class DoloresRun:
         if self._dispose_listener is not None:
             self._dispose_listener()
         # 补发 exit — enter 未通过也要发 (清理 plugin 侧状态), 阻塞到确认 (带超时 fail-safe).
-        await self._ego._rpc_thinking_exit()
-        self._ego._articulating = False
+        await self._ego.exit_thinking()
+        self._ego.articulating = False
         reason = exc_val if exc_val is not None else self._enter_error
         if reason is not None:
             self._thinking.abort(reason)
@@ -124,7 +124,7 @@ class DoloresRun:
         模型产出 logos 之前终止事件流 — enter RPC 返回的时刻模型尚未生成任何帧.
         """
         try:
-            await self._ego._rpc_thinking_enter(self._thinking)
+            await self._ego.enter_thinking(self._thinking)
         except asyncio.CancelledError:
             raise
         except Exception as error:

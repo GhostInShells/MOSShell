@@ -17,6 +17,7 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.deepseek_harness.types.session_events import AssistantChunk
 from ghoshell_moss.ground import DefaultGroundSet, Ground
+from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
@@ -77,6 +78,8 @@ class Dolores(Ghost):
         self._dsh_launcher: "DshLauncher | None" = None
         self._ground_set: DefaultGroundSet | None = None
         self._root_ground: Ground | None = None
+        # ground 渲染文本缓存 — __aenter__ 里异步渲染, memories() 同步读取.
+        self._ground_text: str | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: "DoloresEgo | None" = None
 
@@ -111,6 +114,16 @@ class Dolores(Ghost):
             return None
         view = await self._root_ground.render()
         return str(view)
+
+    def memories(self) -> list[Message]:
+        """Ghost 的动态记忆 — ground 渲染为第一条 (存在主义, 最前).
+
+        ground 文本在 __aenter__ 里异步渲染后缓存到 _ground_text; 本方法同步读缓存,
+        供 ego 经闭包在 create_session 时取最新记忆. clone 复用同一闭包共享认知.
+        """
+        if self._ground_text:
+            return [Message.new(tag="ground").with_content(self._ground_text)]
+        return []
 
     async def think(self, thinking: Thinking) -> AsyncIterator[str]:
         """模型驱动委托给 ego.run_thinking() (DSH 推理中枢 transaction).
@@ -154,23 +167,37 @@ class Dolores(Ghost):
                 f"dolores ghost home {action} (VERSION={self._meta.VERSION})",
                 log=f"dolores stubs {action}",
             )
-        if self._matrix is not None:
-            await self._exit_stack.enter_async_context(self._dsh())
-            # ego 装线: 创建并持有 ego session (经 plugin RPC), 晚于 dsh 就绪.
-            from ._ego import DoloresEgo
-
-            self._ego = await self._exit_stack.enter_async_context(
-                DoloresEgo(self, self._load_ego_config())
-            )
-            # 绑定自醒 signal 出口到 MOSS session — matrix.session.add_signal 路由到 mindflow.
-            self._ego.bind_signal_broadcast(self._matrix.session.add_signal)
-        # 打开并长期持有 root ground (ghost_home 认知场). stubs 同步在前 (GROUND.md 已落),
-        # GroundSet 由 exit stack 管理生命周期, root ground 单 owner 持有供 epoch 渲染.
+        # 先打开并长期持有 root ground (ghost_home 认知场). stubs 同步在前 (GROUND.md 已落),
+        # GroundSet 由 exit stack 管理生命周期; memory 的 ground 段需在 ego 创建前渲染.
         if self._home is not None:
             self._ground_set = await self._exit_stack.enter_async_context(
                 DefaultGroundSet(workspace_root=self._home)
             )
             self._root_ground = await self._ground_set.open(self._home)
+        # 渲染 ground 文本, 缓存供 memories() 同步读取 (ego create_session 经闭包消费).
+        self._ground_text = await self.ground_instruction()
+        if self._matrix is not None:
+            await self._exit_stack.enter_async_context(self._dsh())
+            # ego 装线: 创建并持有 ego session (经 plugin RPC), 晚于 dsh 就绪.
+            # 依赖倒置: ego 不 back-ref ghost, 运行上下文经 ctx/launcher/memories 闭包注入.
+            from ._ego import DoloresEgo, DoloresEgoContext
+
+            ctx = DoloresEgoContext(
+                project_home=self._home,
+                project_name=self._matrix.env.project_name,
+                name=self._meta.name(),
+                instruction=self.system_prompt(),
+            )
+            self._ego = await self._exit_stack.enter_async_context(
+                DoloresEgo(
+                    launcher=self.dsh_launcher,
+                    ctx=ctx,
+                    config=self._load_ego_config(),
+                    memories=self.memories,
+                )
+            )
+            # 绑定自醒 signal 出口到 MOSS session — matrix.session.add_signal 路由到 mindflow.
+            self._ego.bind_signal_broadcast(self._matrix.session.add_signal)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
