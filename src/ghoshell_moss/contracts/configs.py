@@ -16,7 +16,6 @@ __all__ = [
     'ConfigType', 'ConfigStore', 'ConfigSchema',
     'YamlConfigStore',
     'LocalConfigStore',
-    'WorkspaceYamlConfigStoreProvider',
     'CONF_TYPE',
     'ConfigInstanceRegisterBootstrapper',
 ]
@@ -431,32 +430,6 @@ class YamlConfigStore(LocalConfigStore):
         import_path = generate_import_path(conf_type)
         content = f"# dump from `{import_path}` \n" + content
         return content.encode('utf-8')
-
-
-class WorkspaceYamlConfigStoreProvider(Provider[ConfigStore]):
-
-    def __init__(
-            self,
-            *configs: ConfigType,
-            on_save: Callable[[str], None] | None = None,
-            mode: str | None = None,
-    ):
-        self._configs = list(configs)
-        self._on_save = on_save
-        self._mode = mode
-
-    def singleton(self) -> bool:
-        return True
-
-    def factory(self, con: IoCContainer) -> ConfigStore:
-        # 构造逻辑已收口到 Project._configs — 惰性 import 规避 core↔contracts 循环.
-        from ghoshell_moss.core.blueprint.project import Project
-        project = con.force_fetch(Project)
-        return project._configs(
-            on_save=self._on_save,
-            mode_name=self._mode or '',
-            configs=self._configs,
-        )
 
 
 class ConfigInstanceRegisterBootstrapper(Bootstrapper):

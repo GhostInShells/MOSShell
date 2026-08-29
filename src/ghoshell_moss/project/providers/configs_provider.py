@@ -1,8 +1,8 @@
-from typing import Type
+from typing import Type, Iterable
 
 from ghoshell_container import IoCContainer, Provider, INSTANCE
-from ghoshell_moss.contracts.configs import ConfigStore
-from ghoshell_moss.core.blueprint.project import Project
+from ghoshell_moss.contracts.configs import ConfigStore, YamlConfigStore
+from ghoshell_moss.core.blueprint.environment import Environment
 
 __all__ = [
     'EnvConfigStoreProvider',
@@ -22,8 +22,16 @@ class EnvConfigStoreProvider(Provider):
     def singleton(self) -> bool:
         return True
 
+    def aliases(self) -> Iterable[Type[INSTANCE]]:
+        yield YamlConfigStore
+
     def factory(self, con: IoCContainer) -> ConfigStore:
-        return con.force_fetch(Project).configs
+        env = Environment.discover(bootstrap=False)
+
+        return YamlConfigStore(
+            storage=env.workspace.configs(),
+            mode_name=env.mode_name,
+        )
 
     def contract(self) -> Type[INSTANCE]:
         return ConfigStore

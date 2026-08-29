@@ -1,13 +1,13 @@
 from .logger import (
     LoggerItf,
-    get_console_logger, get_moss_logger, WorkspaceLoggerProvider,
+    get_console_logger, get_moss_logger,
 )
 from .workspace import (
     Workspace, Storage, LocalWorkspace, FileLocker, Lock, LocalStorage,
     AsyncStorageProxy,
 )
 from .configs import (
-    ConfigStore, ConfigType, ConfigSchema, YamlConfigStore, WorkspaceYamlConfigStoreProvider,
+    ConfigStore, ConfigType, ConfigSchema, YamlConfigStore,
     ConfigInstanceRegisterBootstrapper,
 )
 from .system_prompter import SystemPrompter, BaseSystemPrompter
