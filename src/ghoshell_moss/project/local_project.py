@@ -5,7 +5,8 @@ from typing import Iterable, Iterator
 
 from ghoshell_container import IoCContainer, Container, Provider
 
-from ghoshell_moss.contracts import Workspace
+from ghoshell_moss.contracts import Workspace, LoggerItf
+from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.core.blueprint.cell import CellRuntimeInfo, NodeManager
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.project import (
@@ -31,7 +32,6 @@ class LocalProject(Project):
         self._env = env
         self._workspace = LocalWorkspace(self._env.workspace_path)
 
-        self._nodes: NodeManager | None = None
         self._ghosts_cache: dict[str, tuple[Path, GhostMeta | Exception]] | None = None
         self._modes_cache: dict[str, tuple[Path, Manifest[HostModeMeta]]] | None = None
         self._project_manifests: ProjectManifest | None = None
@@ -69,6 +69,15 @@ class LocalProject(Project):
             contract = provider.contract()
             if not container.bound(contract):
                 container.register(provider)
+
+        # nodes — 创建逻辑在 container 装配: 从 IoC 取 subprocesses/logger,
+        # 构造后 set 进 container (不进 provider); nodes property 直接 force_fetch.
+        container.set(NodeManager, ProjectNodeManager(
+            self._env,
+            node_dirs=self._resolve_node_dirs(),
+            subprocesses=container.get(Subprocesses),
+            logger=container.get(LoggerItf),
+        ))
 
         # -- configs -- #
         configs = []
@@ -193,15 +202,15 @@ class LocalProject(Project):
 
     @property
     def nodes(self) -> NodeManager:
-        if self._nodes is None:
-            try:
-                mode = self.current_mode()
-                node_dirs = mode.nodes_discover_paths() if mode else self._env.node_dirs()
-            except Exception as e:
-                self.logger.exception("Failed to discover nodes: %s", e)
-                node_dirs = self._env.node_dirs()
-            self._nodes = ProjectNodeManager(self._env, node_dirs=node_dirs)
-        return self._nodes
+        return self.container.force_fetch(NodeManager)
+
+    def _resolve_node_dirs(self) -> list[Path]:
+        try:
+            mode = self.current_mode()
+            return mode.nodes_discover_paths() if mode else self._env.node_dirs()
+        except Exception as e:
+            self.logger.exception("Failed to discover nodes: %s", e)
+            return self._env.node_dirs()
 
     def cell_runtimes(self) -> Iterator[CellRuntimeInfo]:
         # 直接读文件系统, 不做活性核对 — 活性判断由调用方按 info.is_alive() 自负.

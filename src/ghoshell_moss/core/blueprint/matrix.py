@@ -74,7 +74,8 @@ class CellHandle:
 
     async def wait(self) -> ProcessMeta:
         """阻塞等子进程退出, 返回 exit meta."""
-        return await self.process.wait()
+        await self.process.process.wait()
+        return self.process.meta
 
 
 class Matrix(Facade):

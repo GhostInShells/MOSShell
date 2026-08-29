@@ -28,12 +28,10 @@ spawn+lock+wait+cleanup, an address-query helper), collapse the glue here.
 Design record: .ai_partners/features/workstreams/2026/06/cells-cli/plan.md
 """
 
-import contextlib
+import asyncio
 import os
 import signal
-import subprocess
 import sys
-import time
 from importlib import resources
 from pathlib import Path
 
@@ -41,7 +39,8 @@ import typer
 
 from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.core.blueprint.cell import (
-    NodeManifest, NodeLauncher, CellAddressCodec, CellRuntimeInfo, ExecSpec,
+    CellAddressCodec, CellRuntimeInfo, ExecSpec, NodeLauncher, NodeManifest,
+    NodeProbeError,
 )
 
 from .utils import (
@@ -55,7 +54,6 @@ nodes_app = typer.Typer(
 )
 
 _NODE_STUB_PACKAGE = 'ghoshell_moss.stubs.node'
-_KILL_GRACE_SECONDS = 3.0     # SIGTERM → wait → SIGKILL for kill/prune
 _RUN_GRACE_SECONDS = 5.0      # SIGTERM → wait → SIGKILL when CLI (owner) exits
 
 
@@ -110,6 +108,10 @@ def _resolve_target(target: str | None) -> NodeManifest:
 
 @nodes_app.command(name="list")
 def list_nodes(
+    path: str = typer.Argument(
+        None,
+        help="Optional directory to scan. Omit to scan the default node dirs.",
+    ),
     installed: bool = typer.Option(
         False, "--installed",
         help="Only show nodes marked as installed.",
@@ -123,35 +125,40 @@ def list_nodes(
         help="fnmatch pattern to exclude (repeatable).",
     ),
 ):
-    """List discovered node manifests (NODE.md scanning under project.nodes)."""
-    project = Project.discover()
-    manifests = project.nodes.list_nodes(
-        refresh=True,
-        installed=True if installed else None,
-        include=include or None,
-        exclude=exclude or None,
-    )
+    """List discovered node manifests (NODE.md scanning under project.nodes).
 
-    if not manifests:
-        print_warning("No nodes found.")
-        return
+    Pass a directory path to scan an arbitrary location (e.g. .moss/system_test_nodes);
+    omit to scan the default node dirs.
+    """
+    with Project.discover() as project:
+        manifests = project.nodes.list_nodes(
+            refresh=True,
+            paths=[Path(path).resolve()] if path else None,
+            installed=True if installed else None,
+            include=include or None,
+            exclude=exclude or None,
+        )
 
-    rows: list[list[str]] = []
-    for rel_path, m in manifests.items():
-        rows.append([
-            m.name,
-            str(rel_path),
-            "persist" if m.persist else "one-shot",
-            "yes" if m.installed else "no",
-            (m.description or "")[:80],
-        ])
+        if not manifests:
+            print_warning("No nodes found.")
+            return
 
-    echo("")
-    print_simple_table(
-        data=rows,
-        headers=["Name", "Path", "Type", "Installed", "Description"],
-        title=f"Nodes ({len(rows)} found)",
-    )
+        rows: list[list[str]] = []
+        for rel_path, m in manifests.items():
+            rows.append([
+                m.name,
+                str(rel_path),
+                "persist" if m.persist else "one-shot",
+                "yes" if m.installed else "no",
+                (m.description or "")[:80],
+            ])
+
+        echo("")
+        print_simple_table(
+            data=rows,
+            headers=["Name", "Path", "Type", "Installed", "Description"],
+            title=f"Nodes ({len(rows)} found)",
+        )
 
 
 # ===========================================================================
@@ -395,85 +402,105 @@ def run_node(
 ):
     """Launch a node cell in the foreground. CLI is owner (Ctrl+C stops cleanly).
 
-    Ctrl+C forwards SIGTERM to the child; 5s grace then SIGKILL bottom-line.
+    The spawn path is the single throat project.nodes.spawn_node — it enforces the
+    pre-launch probe (check: in NODE.md) and the installed gate before exec.
     Extra args after `--` are appended to the child argv:
 
         moss nodes run nodes/tools/foo -- --port 8000 --debug
     """
-    project = Project.discover()
-    env = project.env
-    manifest = _resolve_target(target)
+    with Project.discover() as project:
+        env = project.env
+        manifest = _resolve_target(target)
 
-    if not manifest.installed:
-        install_path = (
-            Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
-            if manifest.file else "(ad-hoc)"
-        )
-        print_error(f"Node '{manifest.name}' is not installed.")
-        print_info(f"  See {install_path}, run install steps, then:")
-        print_info("    moss nodes install <path>")
-        raise typer.Exit(code=1)
-
-    launcher = NodeLauncher.from_manifest(env, manifest)
-    if ctx.args:
-        launcher.run.extend(ctx.args)
-
-    _print_launch_debug(launcher, env)
-
-    try:
-        with contextlib.ExitStack() as stack:
-            # singleton 冲突: 只读探测给友好提示, 但**不抢锁** — 真锁归子进程
-            # (enter_cell_lifecycle fast-fail). 父子进程共抢同一锁曾在 M7 死锁
-            # (父抢 → 子等到超时), 见 cell-run-cycle FEATURE.md 与 workspace.py
-            # FileLocker 注释. is_locked 是只读探测: _flock_ex_nb 拿到就释放,
-            # 无 TOCTOU 死锁; 子进程 fast-fail 作兜底.
-            if launcher.runtime.cell.singleton:
-                probe = env.workspace.lock(launcher.runtime.locker_name())
-                if probe.is_locked():
-                    print_error(
-                        f"Singleton conflict for '{manifest.name}': lock "
-                        f"'{launcher.runtime.locker_name()}' held by another process."
-                    )
-                    print_info("  moss nodes status         # inspect what's running")
-                    print_info("  moss nodes kill <address> # stop the running instance")
-                    raise typer.Exit(code=1)
-
-            proc = subprocess.Popen(
-                launcher.run,
-                cwd=str(launcher.cwd),
-                env=launcher.env,
-                start_new_session=True,
-                # stdout/stderr default = inherit → directly to terminal
+        if not manifest.installed:
+            install_path = (
+                Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
+                if manifest.file else "(ad-hoc)"
             )
-            launcher.runtime.pid = proc.pid
-            launcher.runtime.pgid = os.getpgid(proc.pid)
-            launcher.runtime.write_to_runtime_dir(env.cell_runtimes_dir)
+            print_error(f"Node '{manifest.name}' is not installed.")
+            print_info(f"  See {install_path}, run install steps, then:")
+            print_info("    moss nodes install <path>")
+            raise typer.Exit(code=1)
 
-            _forward_signals(proc)
+        if ctx.args:
+            manifest.exec.args = (manifest.exec.args + " " + " ".join(ctx.args)).strip()
 
+        launcher = NodeLauncher.from_manifest(env, manifest)
+        _print_launch_debug(launcher, env)
+
+        # singleton conflict: read-only probe for a friendly hint — the real lock is
+        # taken by the cell itself (enter_cell_lifecycle fast-fail). See cell-run-cycle
+        # FEATURE.md and workspace.py FileLocker. is_locked is read-only (flock-ex-nb
+        # then release), no TOCTOU deadlock; child fast-fail is the fallback.
+        if launcher.runtime.cell.singleton:
+            probe = env.workspace.lock(launcher.runtime.locker_name())
+            if probe.is_locked():
+                print_error(
+                    f"Singleton conflict for '{manifest.name}': lock "
+                    f"'{launcher.runtime.locker_name()}' held by another process."
+                )
+                print_info("  moss nodes status         # inspect what's running")
+                print_info("  moss nodes kill <address> # stop the running instance")
+                raise typer.Exit(code=1)
+
+        try:
+            returncode = asyncio.run(_foreground_run(project, manifest))
+        except NodeProbeError as e:
+            print_error(str(e))
+            raise typer.Exit(code=1)
+
+        if returncode != 0:
+            echo("")
+            print_error(
+                f"Node exited abnormally (returncode={returncode}). "
+                f"See child stderr above for cause."
+            )
+        sys.exit(returncode)
+
+
+async def _foreground_run(project: Project, manifest: NodeManifest) -> int:
+    """Spawn via the single throat, block in foreground, forward signals.
+
+    The child inherits stdout/stderr (capture=None), so logs reach the terminal.
+    SIGINT/SIGTERM → SIGTERM to the child; after _RUN_GRACE_SECONDS without exit,
+    SIGKILL the process group (bottom-line, same as the old Popen path).
+    """
+    loop = asyncio.get_running_loop()
+    managed = await project.nodes.spawn_node(manifest)
+    proc = managed.process
+    pgid = managed.meta.pgid
+    grace_task: asyncio.Task | None = None
+
+    def _forward(_signum=None, _frame=None):
+        nonlocal grace_task
+        try:
+            proc.send_signal(signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        if grace_task is None:
+            grace_task = asyncio.ensure_future(_grace_kill_pgid(pgid))
+
+    loop.add_signal_handler(signal.SIGINT, _forward)
+    loop.add_signal_handler(signal.SIGTERM, _forward)
+    try:
+        return await proc.wait()
+    finally:
+        for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                proc.wait()
-            finally:
-                if proc.poll() is None:
-                    try:
-                        proc.wait(timeout=_RUN_GRACE_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            os.killpg(launcher.runtime.pgid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        proc.wait()
-                launcher.runtime.delete_invalid(env.cell_runtimes_dir)
-    except typer.Exit:
-        raise
+                loop.remove_signal_handler(sig)
+            except (ValueError, RuntimeError):
+                pass
+        if grace_task is not None and not grace_task.done():
+            grace_task.cancel()
 
-    if proc.returncode != 0:
-        echo("")
-        print_error(
-            f"Node exited abnormally (returncode={proc.returncode}). "
-            f"See child stderr above for cause."
-        )
-    sys.exit(proc.returncode)
+
+async def _grace_kill_pgid(pgid: int | None) -> None:
+    await asyncio.sleep(_RUN_GRACE_SECONDS)
+    if pgid:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 # ===========================================================================
@@ -522,34 +549,20 @@ def _print_launch_debug(launcher: NodeLauncher, env) -> None:
     print_info("--- child stdout/stderr below ---")
 
 
-def _forward_signals(proc: subprocess.Popen) -> None:
-    """SIGINT/SIGTERM → forward to child. Child owns graceful shutdown logic."""
-    def _handler(signum, frame):
-        try:
-            proc.send_signal(signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    signal.signal(signal.SIGINT, _handler)
-    signal.signal(signal.SIGTERM, _handler)
-
-
 def _match_address(info_address: str, query: str) -> bool:
     return CellAddressCodec(info_address).match(query)
 
 
-def _find_runtime(runtime_dir: Path, query: str) -> list[CellRuntimeInfo]:
+def _find_runtime(infos: list[CellRuntimeInfo], query: str) -> list[CellRuntimeInfo]:
     """Collect all runtime infos matching query. Returns [] if none, [one] on unique."""
-    return [
-        info for info in CellRuntimeInfo.iter_runtime_info(runtime_dir)
-        if _match_address(info.address, query)
-    ]
+    return [info for info in infos if _match_address(info.address, query)]
 
 
 def _resolve_single_runtime(
-    runtime_dir: Path, query: str, *, action: str,
+    infos: list[CellRuntimeInfo], query: str, *, action: str,
 ) -> CellRuntimeInfo | None:
     """Resolve query to exactly one runtime. Print operator hint on ambiguity."""
-    matches = _find_runtime(runtime_dir, query)
+    matches = _find_runtime(infos, query)
     if not matches:
         print_error(f"No runtime entry found for '{query}'.")
         return None
@@ -574,18 +587,19 @@ def status_nodes(
         "", help="Node address to inspect. Omit to list all runtime entries.",
     ),
 ):
-    """Show runtime status of nodes (reads CellRuntimeInfo files, no matrix)."""
-    project = Project.discover()
-    runtime_dir = project.env.cell_runtimes_dir
+    """Show runtime status of nodes (reads CellRuntimeInfo ledger via node manager)."""
+    with Project.discover() as project:
+        manager = project.nodes
+        runtime_dir = project.env.cell_runtimes_dir
 
-    if address:
-        _show_runtime_detail(project, runtime_dir, address)
-    else:
-        _list_runtime(runtime_dir)
+        if address:
+            _show_runtime_detail(manager, runtime_dir, address)
+        else:
+            _list_runtime(manager)
 
 
-def _list_runtime(runtime_dir: Path) -> None:
-    infos = list(CellRuntimeInfo.iter_runtime_info(runtime_dir))
+def _list_runtime(manager) -> None:
+    infos = manager.list_runtimes()
     if not infos:
         print_info("No runtime entries found.")
         return
@@ -609,17 +623,17 @@ def _list_runtime(runtime_dir: Path) -> None:
     )
 
 
-def _show_runtime_detail(project: Project, runtime_dir: Path, address: str) -> None:
-    matched = _resolve_single_runtime(runtime_dir, address, action="inspect")
+def _show_runtime_detail(manager, runtime_dir: Path, address: str) -> None:
+    matched = _resolve_single_runtime(manager.list_runtimes(), address, action="inspect")
     if matched is None:
         return
 
     state = "alive" if matched.is_alive() else "stale"
 
-    # Best-effort NodeManifest.description reverse lookup via project.nodes
+    # Best-effort NodeManifest.description reverse lookup via node manager
     manifest_desc = "—"
     try:
-        for _, m in project.nodes.list_nodes(refresh=False).items():
+        for _, m in manager.list_nodes(refresh=False).items():
             if m.name == matched.cell.name and m.category == matched.cell.category:
                 manifest_desc = m.description or "—"
                 break
@@ -664,74 +678,15 @@ def kill_node(
     ),
 ):
     """Kill a running node. Default: SIGTERM → 3s grace → SIGKILL. --force: immediate SIGKILL."""
-    project = Project.discover()
-    runtime_dir = project.env.cell_runtimes_dir
+    with Project.discover() as project:
+        manager = project.nodes
 
-    matched = _resolve_single_runtime(runtime_dir, address, action="kill")
-    if matched is None:
-        raise typer.Exit(code=1)
+        matched = _resolve_single_runtime(manager.list_runtimes(), address, action="kill")
+        if matched is None:
+            raise typer.Exit(code=1)
 
-    if matched.pgid > 0 or matched.pid > 0:
-        _graceful_terminate(matched, force=force)
-
-    matched.delete_invalid(runtime_dir)
-    print_success(f"Killed {matched.address} (pid={matched.pid}).")
-
-
-def _signal_target(info: CellRuntimeInfo) -> tuple[str, int] | None:
-    """Pick the signal target for a cell.
-
-    pgid (own process group, from start_new_session) is preferred — killpg covers
-    the whole child tree. In-process cells (host / ghost) record pgid=0 because
-    they are not session leaders — killing the inherited shell group would be
-    catastrophic, so we keep only the pid. Falling back to pid is what makes
-    `nodes kill / prune` actually stop a ghost instead of deleting its ledger.
-
-    Returns ('pgid' | 'pid', value), or None when the cell has no live target.
-    """
-    if info.pgid > 0:
-        return 'pgid', info.pgid
-    if info.pid > 0:
-        return 'pid', info.pid
-    return None
-
-
-def _send_signal(target: tuple[str, int], sig: int) -> bool:
-    """Send sig to a resolved target. False if it already vanished."""
-    kind, target_id = target
-    try:
-        if kind == 'pgid':
-            os.killpg(target_id, sig)
-        else:
-            os.kill(target_id, sig)
-        return True
-    except ProcessLookupError:
-        return False
-
-
-def _graceful_terminate(info: CellRuntimeInfo, *, force: bool) -> None:
-    """SIGTERM + short grace → SIGKILL, or --force = immediate SIGKILL.
-
-    Shared by kill and prune. Grace window is _KILL_GRACE_SECONDS.
-    """
-    target = _signal_target(info)
-    if target is None:
-        return
-
-    if force:
-        _send_signal(target, signal.SIGKILL)
-        return
-
-    if not _send_signal(target, signal.SIGTERM):
-        return
-
-    deadline = time.time() + _KILL_GRACE_SECONDS
-    while time.time() < deadline:
-        if not _send_signal(target, 0):   # signal 0 = liveness probe
-            return
-        time.sleep(0.1)
-
-    _send_signal(target, signal.SIGKILL)
+        manager.kill_cell(matched.address, force=force)
+        print_success(f"Killed {matched.address} (pid={matched.pid}).")
 
 
 # ===========================================================================
@@ -753,29 +708,15 @@ def prune_nodes(
 
     --keep-alive: only remove dead entries.
     """
-    project = Project.discover()
-    runtime_dir = project.env.cell_runtimes_dir
+    with Project.discover() as project:
+        manager = project.nodes
 
-    infos = list(CellRuntimeInfo.iter_runtime_info(runtime_dir))
-    if not infos:
-        print_info("No runtime entries to prune.")
-        return
+        removed, killed, skipped = manager.prune(keep_alive=keep_alive, force=force)
+        if removed == 0 and skipped == 0:
+            print_info("No runtime entries to prune.")
+            return
 
-    killed = 0
-    removed = 0
-    skipped = 0
-    for info in infos:
-        if info.is_alive():
-            if keep_alive:
-                skipped += 1
-                continue
-            if info.pgid > 0 or info.pid > 0:
-                _graceful_terminate(info, force=force)
-            killed += 1
-        info.delete_invalid(runtime_dir)
-        removed += 1
-
-    msg = f"Pruned {removed} entries ({killed} killed alive)"
-    if skipped:
-        msg += f", {skipped} live entries kept"
-    print_success(msg + ".")
+        msg = f"Pruned {removed} entries ({killed} killed alive)"
+        if skipped:
+            msg += f", {skipped} live entries kept"
+        print_success(msg + ".")

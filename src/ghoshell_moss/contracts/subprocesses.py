@@ -230,7 +230,6 @@ class SubprocessFacade(ABC):
             start_new_session: bool = True,
             with_os_env: bool = True,
             on_exit: Callable[[ProcessMeta], None] | None = None,
-            **kwargs,
     ) -> ManagedProcess:
         """exec 模式启动子进程.
 
@@ -259,7 +258,6 @@ class SubprocessFacade(ABC):
             start_new_session: bool = True,
             with_os_env: bool = True,
             on_exit: Callable[[ProcessMeta], None] | None = None,
-            **kwargs,
     ) -> ManagedProcess:
         """shell 模式启动子进程.
 

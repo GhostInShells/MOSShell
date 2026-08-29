@@ -183,7 +183,7 @@ class SubprocessesImpl(Subprocesses):
         self._stopped = False
 
         self._counter: int = 0
-        self._executing: dict[int, ManagedProcess] = {}
+        self._executing: dict[int, _ManagedProcess] = {}
         self._executed: list[ProcessMeta] = []
         self._tasks: set[asyncio.Task] = set()
 
@@ -203,7 +203,6 @@ class SubprocessesImpl(Subprocesses):
             start_new_session: bool = True,
             with_os_env: bool = True,
             on_exit: Callable[[ProcessMeta], None] | None = None,
-            **kwargs,
     ) -> ManagedProcess:
         if not args:
             raise ValueError("execute() requires at least one argument")
@@ -232,7 +231,6 @@ class SubprocessesImpl(Subprocesses):
             start_new_session: bool = True,
             with_os_env: bool = True,
             on_exit: Callable[[ProcessMeta], None] | None = None,
-            **kwargs,
     ) -> ManagedProcess:
         return await self._spawn(
             exec_args=(), shell_cmd=cmd,
@@ -386,6 +384,7 @@ class SubprocessesImpl(Subprocesses):
 
     async def _spawn(
             self,
+            *,
             exec_args: tuple[str, ...],
             shell_cmd: str | None,
             name: str,
@@ -430,6 +429,7 @@ class SubprocessesImpl(Subprocesses):
         self.logger.info("spawned [%s] pid=%d", name, proc.pid)
 
         index = self._next_index()
+
         meta = ProcessMeta(
             index=index, pid=proc.pid,
             pgid=self._get_pgid(proc.pid, start_new_session),

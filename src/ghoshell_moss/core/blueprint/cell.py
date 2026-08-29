@@ -11,6 +11,7 @@ Cell 运行时, 通过映射进入 Matrix 网络, Cell 之间的通讯可以通�
 各种各样的 Cell 运行时组织成 Matrix 的网络, 通过 Host 节点提供给 Ghost 一个可用的操作系统.
 """
 import contextlib
+import os
 import sys
 import time
 from enum import IntEnum
@@ -25,6 +26,7 @@ import shlex
 from pydantic import BaseModel, Field, AwareDatetime
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelProxy
+from ghoshell_moss.contracts.subprocesses import CaptureSpec, ManagedProcess
 from ghoshell_moss.message import unique_id
 from .environment import Environment
 import datetime
@@ -63,6 +65,7 @@ __all__ = [
     'MatchPattern',
     'NodeLauncher',
     'enter_cell_lifecycle',
+    'CellAddressCodec', 'NodeProbeError',
 ]
 
 CellRole = Literal['host', 'node']
@@ -302,6 +305,13 @@ class NodeManifest(BaseModel):
         default_factory=ExecSpec,
         description="默认启动入口 (frontmatter `run:` 声明). "
                     "无声明的 cell 只能以显式脚本路径拉起.",
+    )
+    check: 'ExecSpec | None' = Field(
+        default=None,
+        description="启动前探针 (frontmatter `check:` 声明), 独立进程, 目标零配合. "
+                    "exit 0 → 通过后拉起主脚本; nonzero + stderr → 返回 broken reason, "
+                    "不拉起. 验证的是'环境现在能不能跑'(import 真依赖/smoke 调用), "
+                    "比 on-bootstrap 强一个量级. 不声明则跳过探针.",
     )
     instruction: str = Field(
         default='',
@@ -977,6 +987,9 @@ def enter_cell_lifecycle(
             # host shall key all.
             if runtime_info.cell.is_host:
                 clear_cell_runtimes(env, kill=kill)
+            pgid = _current_pgid(env.pid)
+            if pgid is not None:
+                runtime_info.pgid = pgid
             runtime_info.write_to_runtime_dir(env.cell_runtimes_dir)
             yield
         finally:
@@ -985,6 +998,17 @@ def enter_cell_lifecycle(
                 clear_cell_runtimes(env, kill=kill)
 
     stack.enter_context(_runtime_info_ctx())
+
+
+def _current_pgid(pid: int) -> int | None:
+    """当前进程组 id — 系统支持 (POSIX getpgid) 时返回, 否则 None (Windows 降级)."""
+    if not hasattr(os, 'getpgid'):
+        return None
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        # 进程已退出或组不可得
+        return None
 
 
 class CellPresence(ABC):
@@ -1225,6 +1249,56 @@ class NodeManager(ABC):
                     continue
             yield relative_path, cell
 
+    @abstractmethod
+    async def spawn_node(
+            self,
+            manifest: NodeManifest,
+            *,
+            extra_env: dict[str, str] | None = None,
+            capture: CaptureSpec | None = None,
+    ) -> ManagedProcess:
+        """
+        拉起一个 node cell — 唯一 spawn 咽喉.
+
+        只做: installed 校验 → NodeLauncher 打包 → probe 闸门 → Subprocesses.execute 拉起.
+        不做: singleton 锁 / 账本写入与清理 / pid·pgid 回填 — 归 enter_cell_lifecycle
+        (cell 自身宣告) 或 matrix 治理层.
+
+        probe (manifest.check) 失败抛 NodeProbeError; installed 未过抛 RuntimeError.
+        """
+        ...
+
+    @abstractmethod
+    def list_runtimes(self) -> list[CellRuntimeInfo]:
+        """读账本, 返回本治理域内已拉起的全部 cell runtime (host + node)."""
+        ...
+
+    @abstractmethod
+    def get_runtime(self, address: CellAddress) -> CellRuntimeInfo | None:
+        """按 address 读单个 runtime. 不在账本返回 None."""
+        ...
+
+    @abstractmethod
+    def kill_cell(self, address: CellAddress, *, force: bool = False) -> bool:
+        """终止一个 cell 进程 (SIGTERM → grace → SIGKILL) 并清账本.
+
+        :return: True = address 在本治理域账本内, 已尝试终止 + 清账;
+                 False = 不在账本, 无操作.
+        """
+        ...
+
+    @abstractmethod
+    def prune(self, *, keep_alive: bool = False, force: bool = False) -> tuple[int, int, int]:
+        """清孤儿 runtime 账本. 返回 (removed, killed, skipped).
+
+        默认 kill 活着的孤儿 (它们持有 singleton 锁); keep_alive=True 只删死账本.
+        """
+        ...
+
 
 class DuplicatedError(RuntimeError):
     """cell 重复启动异常. singleton 声明的执法产物, 错误信息应引用声明原文."""
+
+
+class NodeProbeError(RuntimeError):
+    """cell 启动前探针 (check:) 失败 — broken reason 承载在消息中, 闸门不放行拉起."""

@@ -27,7 +27,7 @@ async def main(matrix: Matrix):
     #       return "pong"
     #
     #   await matrix.provide_channel(channel)   # blocks until membrane closes
-    print('hello world')
+    pass
 
 
 if __name__ == "__main__":

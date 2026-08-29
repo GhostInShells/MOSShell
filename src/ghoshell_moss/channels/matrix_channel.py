@@ -40,7 +40,7 @@ from ghoshell_moss.core.blueprint.cell import (
     CellAddress,
     CellAddressCodec,
     CellEventLevel,
-    DuplicatedError,
+    DuplicatedError, NodeProbeError,
 )
 from ghoshell_moss.core.blueprint.matrix import CellHandle, Matrix
 from ghoshell_moss.core.blueprint.mindflow import Priority
@@ -268,6 +268,11 @@ def new_nodes_channel(
             CommandUtil.raise_observe(
                 f'Singleton conflict: {e}. nodes:status() to inspect; '
                 f'nodes:stop(<address>) to release.'
+            )
+        except NodeProbeError as e:
+            CommandUtil.raise_observe(
+                f'Node probe (check: in NODE.md) failed — refusing to launch. '
+                f'{e}'
             )
         except FileNotFoundError as e:
             CommandUtil.raise_observe(f'target not found: {e}')
