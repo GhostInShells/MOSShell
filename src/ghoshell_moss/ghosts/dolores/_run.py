@@ -24,6 +24,12 @@ done 权威迁移 — 已被 turn/end 收线 + enter 毒丸取代). 生命周期
   毒丸 = enter 异常 done (enter task 出错时钉下); 正常路径由消费方在 turn/end break 收线,
   enter 异常经毒丸传输 (consumer raise).
 
+── yield tool 识别 (wait_next_moment) ──────────────────────────────
+退出机制包含 yield tool 识别: 消费方认出 tool/call = wait_next_moment → break 收线
+(同 turn/end), 触发 thinking exit. yield 是 turn 边界信号, 不是 turn 内让出点. exit 时
+plugin 侧 pendingYield 非空 → 不 cancel, tool 继续 pending; 下一轮 thinking/enter 用
+moment 解锁 (moment 走 tool 返回值). moment 的生产归 mindflow 正常 loop, 不归 Run.
+
 ── 数据面 (迭代结束后可读) ─────────────────────────────────────────
   usage / messages / head 待后续 — 早期 seq watermark 设计被本实现取代, 见 git log.
 """

@@ -61,6 +61,14 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
   contexts 观测由 MindflowInShell 装线的 shell trajectory 进 moment.previous.results,
   ego 只消费 moment, 不读 trajectory.
 
+── yield 机制 (wait_next_moment tool, A 范式) ──────────────────────
+模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment. tool use 是
+turn 边界信号 (非 turn 内续帧): 消费方认出 tool/call = wait_next_moment → break 收线
+(同 turn/end), 触发 thinking exit. exit 时 plugin 侧 pendingYield 非空 → 不 cancel,
+tool 继续 pending. 下一轮 thinking/enter 用 moment 构造 tool result 解锁 (moment 走
+tool 返回值, 不经 surface inject). cancel 守卫: tool 被 cancel 时 pendingYield 清空,
+moment 改走下一轮 enter 正常 inject 路径 (轨迹不丢, 可 debug). momentId 暂不消费.
+
 ── 待讨论 (seams) ────────────────────────────────────────────────────
   1. external wake 的 fail-safe: pre-step 阻塞等 thinking/enter, MOSS 永不 enter
      时 turn 挂死 — 需超时后 reject + mux 提示 (plugin 侧待定).

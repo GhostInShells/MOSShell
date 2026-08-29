@@ -15,7 +15,7 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.deepseek_harness.types.session_events import AssistantChunk
+from ghoshell_moss.deepseek_harness.types.session_events import AssistantChunk, ToolCallEvent
 from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
@@ -44,6 +44,21 @@ def _fetch_logos(event: "SessionEvent") -> str | None:
     if chunk is not None and chunk.chunk.type == "text-delta" and chunk.chunk.text:
         return chunk.chunk.text
     return None
+
+
+# yield tool 名 — 与 plugin.ts 的 defineTool name 对齐 (跨语言契约).
+_YIELD_TOOL_NAME = "wait_next_moment"
+
+
+def _is_yield_tool_call(event: "SessionEvent") -> bool:
+    """判断模型是否主动调 wait_next_moment (yield tool).
+
+    yield tool use 是 turn 边界信号 (非 turn 内续帧): 消费方认出后 break 收线 (同
+    turn/end), 触发 thinking exit; plugin 侧 exit 不 cancel pending yield, 下一轮
+    thinking/enter 用 moment 构造 tool result 解锁.
+    """
+    call = ToolCallEvent.from_session_event(event)
+    return call is not None and call.name == _YIELD_TOOL_NAME
 
 
 class Dolores(Ghost):
@@ -145,7 +160,7 @@ class Dolores(Ghost):
                                 await articulator.__aenter__()
                             articulator.send_nowait(logos_delta)
                             yield logos_delta
-                        elif event.meta.type == "turn/end":
+                        elif event.meta.type == "turn/end" or _is_yield_tool_call(event):
                             break
                 finally:
                     if articulator is not None:

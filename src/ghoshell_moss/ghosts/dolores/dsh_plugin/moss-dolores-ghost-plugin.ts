@@ -6,6 +6,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
 /*
@@ -32,7 +33,8 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 5. moment 三块      — results (moss output 上一轮) / percepts (inputs) /
  *                       dynamic (dynamic_context + hint).
  * 6. dynamic 处理     — 注入后记 seq; 每次重注入, 历史 dynamic 节点 surface remove.
- * 7. tool 面暂缓      — 4 个 ego tool + tool-result 桥不做, 先暴露表面.
+ * 7. tool 面暂缓      — 4 个 ego tool + tool-result 桥不做; wait_next_moment (yield
+ *                       tool) 先行落地, 见下节.
  * 8. 时序图           — 见下方 ASCII.
  *
  * ── 时序: MOSS 驱动路径 (thinking = turn) ──────────────────────────────
@@ -71,6 +73,15 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *   通知 = turn/start 广播 (ego 侧 _on_turn_start 监听 → 自醒 signal, 已存在),
  *   不另发显式讯号. pre-step 阻塞只是背压 (hold 住模型等 thinking/enter 注入帧).
  *
+ * ── yield tool (wait_next_moment) ────────────────────────────────────
+ * 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment (A 范式).
+ * tool execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment 构造
+ * tool result 解锁 (moment 走 tool 返回值, 不经 surface inject). 退出时序:
+ *   thinking/exit: pendingYield 非空 → 不 cancel (留 tool pending, 不打断 abort signal).
+ *   thinking/enter: pendingYield 非空 → openThinking + resolve(momentToText(moment)).
+ * cancel 守卫: tool 被 cancel (外部抢占) 时 abort signal 清空 pendingYield 并 reject —
+ *   moment 绝不交给已 cancel 的 tool, 改走下一轮 enter 正常 inject 路径 (轨迹不丢, 可 debug).
+ *
  * ── 遗留问题 (2026-08-28) ────────────────────────────────────────────
  * 1. **外部唤醒链路未接通 (perStep 帧背压已启用, 靠超时兜底)**: turn/start → ego
  *    自醒 signal → mindflow → Thinking → thinking/enter 的链路未接通 (ego._signal_broadcast
@@ -88,7 +99,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
 export const name = 'moss-dolores-ghost-plugin'
 
-export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt']
+export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt', 'tools']
 
 // 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
 const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
@@ -174,6 +185,11 @@ function openThinking(): void {
 function closeThinking(): void {
   thinkingGate.close()
 }
+
+// ── yield 锁 (wait_next_moment): tool execute 挂 pending promise 阻塞, 下一轮 enter 解锁 ──
+// 同一时刻至多一个 pending yield (模型在单 turn 内串行 yield). resolve 载荷 = moment 折叠
+// 文本 (momentToText), 是 tool result 内容. abort (cancel) 时清空并 reject — 见 tool execute.
+let pendingYield: { resolve: (value: unknown) => void; reject: (error: Error) => void } | null = null
 
 // ── dynamic 上下文注入的 seq 记录 (点 6) ──
 // 每次重注入, 把上一轮注入的 dynamic 节点从 surface remove (surface replace).
@@ -398,20 +414,29 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
-        //   (agent/request waterfall 提案 / session.selectModel).
-        injectMoment(agent, body.moment)
-        openThinking()
-        // MOSS 驱动路径: agent idle → steer 唤醒 turn, content = percepts (真实输入).
-        // 模式提示 (CTML 环境) 已在 ghost 基础 instruction, 不进 steer (cache 稳定).
-        // 外部唤醒路径: turn 已在 pre-step 阻塞, openThinking 放行, 无需再 steer.
-        if (agent.status === 'idle') {
-          const perceptText = (body.moment?.percepts ?? [])
-            .map(p => p?.text).filter(Boolean).join('\n')
-          agent.steer(createUserMessage({
-            content: [{ type: 'text', text: perceptText || 'thinking' }],
-            source: { kind: 'user' },
-          }))
+        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧, moment 走 tool
+        // 返回值 (momentToText), 不经 injectMoment/steer. 无 pendingYield → 正常 enter.
+        if (pendingYield !== null) {
+          const unlock = pendingYield
+          pendingYield = null
+          openThinking()
+          unlock.resolve(momentToText(body.moment))
+        } else {
+          // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
+          //   (agent/request waterfall 提案 / session.selectModel).
+          injectMoment(agent, body.moment)
+          openThinking()
+          // MOSS 驱动路径: agent idle → steer 唤醒 turn, content = percepts (真实输入).
+          // 模式提示 (CTML 环境) 已在 ghost 基础 instruction, 不进 steer (cache 稳定).
+          // 外部唤醒路径: turn 已在 pre-step 阻塞, openThinking 放行, 无需再 steer.
+          if (agent.status === 'idle') {
+            const perceptText = (body.moment?.percepts ?? [])
+              .map(p => p?.text).filter(Boolean).join('\n')
+            agent.steer(createUserMessage({
+              content: [{ type: 'text', text: perceptText || 'thinking' }],
+              source: { kind: 'user' },
+            }))
+          }
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: true }))
@@ -443,10 +468,10 @@ export function apply(ctx: Context) {
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         closeThinking()
-        // agent 仍在跑 → 显式 cancel (MOSS 已宣布 thinking 结束, 不能让 dsh 空跑失速).
-        // cancel 是同步发出 (在进程内, 走 abort signal), 轮次异步收线; 无需等待 — 下一
-        // 个 thinking/enter 自会重新 openThinking + steer.
-        if (agent.status !== 'idle') {
+        // yield 场景: pendingYield 非空 → tool 正在阻塞等下一帧, 不 cancel (cancel 会经
+        // abort signal 打断 pending tool). 留它 pending, 下一轮 thinking/enter 解锁.
+        // 否则 agent 仍在跑 → 显式 cancel (MOSS 已宣布 thinking 结束, 不能让 dsh 空跑失速).
+        if (pendingYield === null && agent.status !== 'idle') {
           agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -457,6 +482,33 @@ export function apply(ctx: Context) {
       }
     },
   })
+
+  // ── 5. yield tool (wait_next_moment) ────────────────────────────────
+  // 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 moment (A 范式).
+  // execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment 构造 tool
+  // result 解锁 (moment 走 tool 返回值, 不经 surface inject). cancel 时 abort signal
+  // 清空 pendingYield 并 reject — moment 绝不交给已 cancel 的 tool, 改走下一轮 enter
+  // 正常 inject 路径 (轨迹不丢, 可 debug).
+  ctx.tools.register(defineTool({
+    name: 'wait_next_moment',
+    description: 'Wait for the next MOSS moment. Blocks until MOSS produces the next observation frame.',
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => {
+        const text = value as string
+        return text.length > 0 ? [{ type: 'text', text }] : []
+      },
+    },
+    execute: async (_args, exec) => {
+      return await new Promise<string>((resolve, reject) => {
+        pendingYield = { resolve: resolve as (value: unknown) => void, reject }
+        exec.signal.addEventListener('abort', () => {
+          if (pendingYield !== null) { pendingYield = null; reject(new Error('wait_next_moment aborted')) }
+        }, { once: true })
+      })
+    },
+  }))
 }
 
 // ── helper: moment 注入 (点 5/6) ───────────────────────────────────────
@@ -527,6 +579,29 @@ function appendUserMessage(session: Agent['session'], text: string, tag: string)
       source: { kind: 'plugin', plugin: `${name}:${tag}` },
     }),
     { surfaceOp: 'append' })
+}
+
+/**
+ * momentToText — 把 moment payload 折叠成 tool result 文本 (wait_next_moment 返回值).
+ *
+ * yield 解锁时 (A 范式), moment 三块直接进 tool result (非 surface 注入). percepts 是
+ * 下一帧的新输入 (核心); results 是上一轮 moss output; dynamic 是 hot 帧 (context + hint).
+ */
+function momentToText(moment: ThinkingMomentPayload | undefined): string {
+  if (moment === undefined) return ''
+  const parts: string[] = []
+  for (const p of moment.percepts ?? []) {
+    if (p?.text) parts.push(p.text)
+  }
+  for (const r of moment.results ?? []) {
+    if (r?.text) parts.push(r.text)
+  }
+  const dynamicText = [
+    ...(moment.dynamic?.context ?? []).map(c => c?.text).filter(Boolean),
+    moment.dynamic?.hint,
+  ].filter(Boolean).join('\n')
+  if (dynamicText.length > 0) parts.push(dynamicText)
+  return parts.join('\n')
 }
 
 // ── helper: foreign session 冻结提示 (点 4) ─────────────────────────────

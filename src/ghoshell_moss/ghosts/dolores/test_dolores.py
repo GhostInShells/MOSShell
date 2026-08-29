@@ -482,3 +482,30 @@ class TestDoloresRun:
             async with run:
                 raise RuntimeError("consumer boom")
         assert thinking.abort_reasons
+
+
+class TestYieldToolCall:
+    """wait_next_moment (yield tool) 识别 — turn 边界信号, 触发 thinking exit."""
+
+    def _event(self, event_type: str, data: dict):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+
+        return SessionEvent(meta=SessionEventMeta(type=event_type, seq=1), data=data)
+
+    def test_recognizes_yield_tool_call(self):
+        from ._runtime import _is_yield_tool_call
+
+        event = self._event("tool/call", {"name": "wait_next_moment"})
+        assert _is_yield_tool_call(event) is True
+
+    def test_ignores_other_tool_call(self):
+        from ._runtime import _is_yield_tool_call
+
+        event = self._event("tool/call", {"name": "moss_observe"})
+        assert _is_yield_tool_call(event) is False
+
+    def test_ignores_non_tool_call(self):
+        from ._runtime import _is_yield_tool_call
+
+        event = self._event("assistant/chunk", {})
+        assert _is_yield_tool_call(event) is False
