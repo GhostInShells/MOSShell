@@ -56,11 +56,10 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_enter_exit(self, sp_cwd, sp_output):
         sp = SubprocessesImpl(cwd=sp_cwd)
-        assert sp._started is False
+        assert sp.is_running() is False
         async with sp:
-            assert sp._started is True
-            assert sp._stopped is False
-        assert sp._stopped is True
+            assert sp.is_running() is True
+        assert sp.is_running() is False
 
 
 # ============================================================
@@ -321,7 +320,7 @@ class TestOwnerShutdown:
             m1 = await sp.execute("sleep", "30")
             m2 = await sp.execute("sleep", "30")
             assert len(sp.executing()) >= 2
-        assert sp._stopped is True
+        assert sp.is_running() is False
         assert m1.process.returncode is not None
         assert m2.process.returncode is not None
 
@@ -353,7 +352,6 @@ class TestOnExit:
             await managed.process.wait()
             await asyncio.sleep(0.1)
             assert received == [0]
-            assert managed._exit_fired is True
 
     @pytest.mark.asyncio
     async def test_add_done_callback_after_exit_fires_immediately(self, sp_cwd, sp_output):
@@ -361,7 +359,6 @@ class TestOnExit:
             managed = await sp.execute("true")
             await managed.process.wait()
             await asyncio.sleep(0.1)
-            assert managed._exit_fired is True
 
             received: list = []
             managed.add_done_callback(lambda meta: received.append(meta.exit_code))
@@ -414,7 +411,7 @@ class TestConcurrency:
             for p in procs:
                 assert p.process.pid > 0
                 assert p.process.returncode is None
-        assert sp._stopped is True
+        assert sp.is_running() is False
         for p in procs:
             assert p.process.returncode is not None
 

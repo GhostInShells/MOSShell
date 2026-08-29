@@ -6,7 +6,7 @@
 # 实现要点 (reviewer 上下文):
 # - "子进程不比 owner 活得久" 三件套: start_new_session + aexit killpg /
 #   capture 管道随 owner 关闭 (pipe fencing) / 每进程一个 reclaim 协程.
-# - stop 信号策略只有一份: ManagedProcess.stop 经 _stop_impl 注入回到
+# - stop 信号策略只有一份: ManagedProcess.stop 经注入的 stop_fn 回到
 #   本类的 _stop_managed, 与 __aexit__ 关停路径同源 (SIGINT → grace → SIGKILL pg).
 # - spawn 在未启动/已停止时严格抛错 (旧版仅 log): 停机后 spawn 出的进程
 #   没有 owner 清场路径, 是孤儿源头, 必须堵死.
@@ -18,21 +18,22 @@ import logging
 import os
 import signal
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Callable
+from typing import TextIO
 
+from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.contracts.subprocesses import (
-    Subprocesses,
+    CaptureSpec,
+    ErrorInfo,
     ManagedProcess,
     ProcessMeta,
     ProcessOutput,
-    CaptureSpec,
-    ErrorInfo,
+    Subprocesses,
 )
-from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.core.subprocesses._utils import killpg as _kill_process_group_util
 
-__all__ = ["SubprocessesImpl", "Subprocesses"]
+__all__ = ["Subprocesses", "SubprocessesImpl"]
 
 _MAX_EXECUTED_HISTORY = 200
 _SHUTDOWN_GRACE = 3.0
@@ -82,6 +83,83 @@ class _ProcessOutputImpl(ProcessOutput):
     async def wait_drained(self) -> None:
         if self.drain_tasks:
             await asyncio.gather(*self.drain_tasks, return_exceptions=True)
+
+
+# -- 富句柄实现 --
+
+
+class _ManagedProcess(ManagedProcess):
+    """SubprocessesImpl 的富句柄具体类 — 数据与生命周期在此内聚.
+
+    机制层抽象 (contracts.subprocesses.ManagedProcess) 只是接口: meta/process/
+    output 三份数据与 stop/回调台账的生命周期都落到 impl 侧这个对象上, 不再
+    反向挂到抽象上 (曾为 _stop_impl/_on_exit_callbacks/_exit_fired 三个散装字段,
+    被 contract 方法与回收循环从两侧撕扯).
+
+    拓扑: owner (SubprocessesImpl) 拥有全部子进程, 回收检测与信号策略归 owner.
+    本进程不持 owner; stop 策略闭包与 logger 经构造注入, 无父子双向引用. 回调
+    台账一次性: 已 fire 后 add_done_callback 走立即 fire 且异常隔离, 与回收 fire
+    同一策略.
+    """
+
+    def __init__(
+            self,
+            meta: ProcessMeta,
+            process: asyncio.subprocess.Process,
+            output: ProcessOutput | None,
+            stop_fn: Callable[[float], Awaitable[None]],
+            logger: logging.Logger,
+    ):
+        self._meta = meta
+        self._process = process
+        self._output = output
+        self._stop_fn = stop_fn
+        self._logger = logger
+        self._exit_callbacks: list[Callable[[ProcessMeta], None]] = []
+        self._exited = False
+
+    @property
+    def meta(self) -> ProcessMeta:
+        return self._meta
+
+    @property
+    def process(self) -> asyncio.subprocess.Process:
+        return self._process
+
+    @property
+    def output(self) -> ProcessOutput | None:
+        return self._output
+
+    async def stop(self, timeout: float = 5.0) -> None:
+        """优雅停止: SIGINT → grace → SIGKILL (进程组), 与 owner 关停路径同源."""
+        if self._process.returncode is not None:
+            return
+        await self._stop_fn(timeout)
+
+    def add_done_callback(self, callback: Callable[[ProcessMeta], None]) -> None:
+        """注册一次性 on-exit 回调. 已退出则立刻同步 fire, 异常隔离."""
+        if self._exited:
+            try:
+                callback(self._meta)
+            except Exception:
+                self._logger.exception("on_exit callback failed")
+            return
+        self._exit_callbacks.append(callback)
+
+    def fire_exit(self) -> None:
+        """owner 回收入口, 每进程调用一次: 标记 exited 并顺序 fire.
+
+        先 snapshot 再清空, 防 callback 内 re-register 引发递归.
+        此后 add_done_callback 走立即 fire 路径.
+        """
+        callbacks = list(self._exit_callbacks)
+        self._exit_callbacks.clear()
+        self._exited = True
+        for cb in callbacks:
+            try:
+                cb(self._meta)
+            except Exception:
+                self._logger.exception("on_exit callback failed")
 
 
 # -- Subprocesses 实现 --
@@ -189,7 +267,7 @@ class SubprocessesImpl(Subprocesses):
             self.logger.warning("kill(%d) denied: %s", pid, e)
             return f"kill({pid}) denied: {e}"
         except OSError as e:
-            self.logger.error("kill(%d) failed: %s", pid, e)
+            self.logger.exception("kill(%d) failed", pid)
             return f"kill({pid}) failed: {e}"
 
     def killpg(self, process_group: int, sig: int) -> ErrorInfo | None:
@@ -200,7 +278,7 @@ class SubprocessesImpl(Subprocesses):
     def is_running(self) -> bool:
         return self._started and not self._stopped
 
-    async def __aenter__(self) -> "SubprocessesImpl":
+    async def __aenter__(self) -> SubprocessesImpl:
         self._started = True
         self.logger.info("Subprocesses started, default_cwd=%s", self._default_cwd)
         return self
@@ -270,7 +348,6 @@ class SubprocessesImpl(Subprocesses):
             path = self._default_cwd / path
         return str(path.resolve())
 
-
     @staticmethod
     def _build_env(with_os_env: bool, extra_env: dict[str, str] | None) -> dict:
         env = os.environ.copy() if with_os_env else {}
@@ -278,7 +355,7 @@ class SubprocessesImpl(Subprocesses):
             env.update(extra_env)
         return env
 
-    def _signal_managed(self, managed: ManagedProcess, sig: int) -> None:
+    def _signal_managed(self, managed: _ManagedProcess, sig: int) -> None:
         """优先信号进程组 (覆盖未分离子孙), 无进程组则信号单进程."""
         if managed.meta.pgid is not None:
             err = self.killpg(managed.meta.pgid, sig)
@@ -289,7 +366,7 @@ class SubprocessesImpl(Subprocesses):
         except ProcessLookupError:
             pass
 
-    async def _stop_managed(self, managed: ManagedProcess, timeout: float) -> None:
+    async def _stop_managed(self, managed: _ManagedProcess, timeout: float) -> None:
         """ManagedProcess.stop 的唯一实现: SIGINT → grace → SIGKILL (进程组)."""
         proc = managed.process
         if proc.returncode is not None:
@@ -365,8 +442,11 @@ class SubprocessesImpl(Subprocesses):
         if capture is not None:
             output = self._setup_capture(proc, index, capture)
 
-        managed = ManagedProcess(meta=meta, process=proc, output=output)
-        managed._stop_impl = lambda timeout: self._stop_managed(managed, timeout)
+        managed = _ManagedProcess(
+            meta=meta, process=proc, output=output,
+            stop_fn=lambda timeout: self._stop_managed(managed, timeout),
+            logger=self.logger,
+        )
         self._executing[index] = managed
         self._start_reclaim(managed)
 
@@ -438,30 +518,36 @@ class SubprocessesImpl(Subprocesses):
         try:
             if out_file is not None:
                 out_file.parent.mkdir(parents=True, exist_ok=True)
-                f = open(out_file, "a")
+                with open(out_file, "a") as f:
+                    await self._drain_stream(stream, f, buffer, buffer_lines, maintain_buffer)
             else:
-                f = None
-            try:
-                while True:
-                    line = await stream.readline()
-                    if not line:
-                        break
-                    decoded = line.decode() if isinstance(line, bytes) else line
-                    if f is not None:
-                        f.write(decoded)
-                    if maintain_buffer:
-                        buffer.append(decoded)
-                        if len(buffer) > buffer_lines:
-                            buffer.pop(0)
-            finally:
-                if f is not None:
-                    f.close()
+                await self._drain_stream(stream, None, buffer, buffer_lines, maintain_buffer)
         except asyncio.CancelledError:
             pass
         except Exception:
             self.logger.warning("_drain %s error", label, exc_info=True)
 
-    def _start_reclaim(self, managed: ManagedProcess) -> None:
+    async def _drain_stream(
+            self,
+            stream: asyncio.StreamReader,
+            f: TextIO | None,
+            buffer: list[str],
+            buffer_lines: int,
+            maintain_buffer: bool,
+    ) -> None:
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            decoded = line.decode() if isinstance(line, bytes) else line
+            if f is not None:
+                f.write(decoded)
+            if maintain_buffer:
+                buffer.append(decoded)
+                if len(buffer) > buffer_lines:
+                    buffer.pop(0)
+
+    def _start_reclaim(self, managed: _ManagedProcess) -> None:
 
         async def _reclaim():
             try:
@@ -492,16 +578,7 @@ class SubprocessesImpl(Subprocesses):
                 self._executed.append(managed.meta)
                 while len(self._executed) > _MAX_EXECUTED_HISTORY:
                     self._executed.pop(0)
-                # 先 snapshot 再清空, 防 callback 内 re-register 引发递归.
-                # _exit_fired=True 后, 后续 add_done_callback 走立即 fire 路径.
-                exit_callbacks = list(managed._on_exit_callbacks)
-                managed._on_exit_callbacks.clear()
-                managed._exit_fired = True
-                for cb in exit_callbacks:
-                    try:
-                        cb(managed.meta)
-                    except Exception:
-                        self.logger.exception("on_exit callback failed")
+                managed.fire_exit()
 
         task = asyncio.create_task(_reclaim())
         self._tasks.add(task)
