@@ -18,7 +18,6 @@ from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts import Workspace, LocalWorkspace, ResourceRegistry, ConfigStore
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
-from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 
 from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject, CellHandle
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -553,21 +552,13 @@ class MatrixImpl(Matrix):
         return NodeManifest.from_script(path)
 
     # ==================================================================
-    # 灶台 (§UU-2 / §YY: Subprocesses / JobSupervisor 从 IoC pull)
+    # 灶台 (Subprocesses 从 IoC pull)
     # ==================================================================
 
     @property
     def processes(self) -> Subprocesses:
         self._check_running()
         return self._container.force_fetch(Subprocesses)
-
-    @property
-    def jobs(self) -> JobSupervisor:
-        self._check_running()
-        return self._container.force_fetch(JobSupervisor)
-
-    def new_jobs(self) -> JobSupervisor:
-        return self.jobs.new()
 
     # ==================================================================
     # 门: session / workspace / home / container / logger
@@ -788,6 +779,14 @@ class MatrixImpl(Matrix):
         # -- async 阶段 -- #
         try:
             await self._async_exit_stack.__aenter__()
+
+            # 0. Subprocesses 生命周期接线 — 从 IoC 取出, 未运行则绑进 exit stack.
+            #    enter 越早, __aexit__ 越后反卷 → 它在 matrix 所有子进程之后做最后清场
+            #    (SIGINT→grace→SIGKILL), 兜住"子进程不比 owner 活得久"铁律.
+            #    空转无成本: __aenter__ 只置位, __aexit__ 对空 _executing/_tasks 是空循环.
+            subprocesses = self._container.force_fetch(Subprocesses)
+            if not subprocesses.is_running():
+                await self._async_exit_stack.enter_async_context(subprocesses)
 
             # channel provider tasks 收尾钩子 (承老 _ensure_channel_provider_task_cancelled)
             self._async_exit_stack.push_async_callback(self._cancel_channel_provider_tasks)

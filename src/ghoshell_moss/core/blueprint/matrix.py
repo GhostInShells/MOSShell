@@ -27,7 +27,6 @@ from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.service import ServiceOperator, ServiceClient, ServiceServer
 from ghoshell_moss.contracts import Workspace, ResourceRegistry, ConfigStore
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ManagedProcess, ProcessMeta
-from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 from ghoshell_container import IoCContainer, Contracts
 from pathlib import Path
 import asyncio
@@ -166,7 +165,7 @@ class Matrix(Facade):
            (matrix 在 __init__ 直接 set, 实例已知)
         2. session 配套 — Session/TopicService/QAManager.
            Cache/Parameter 不走 IoC — Session 直接暴露 session.cache/session.parameters.
-        3. contracts 配套 — Workspace/Subprocesses/JobSupervisor/LoggerItf/
+        3. contracts 配套 — Workspace/Subprocesses/LoggerItf/
            logging.Logger/ConfigStore/ResourceRegistry. 不含 FileEditor (依赖 cwd,
            matrix 级暴露越权), 不含 asr/audio 等重能力.
         """
@@ -179,7 +178,6 @@ class Matrix(Facade):
         from ghoshell_moss.core.concepts.qa import QAManager
         from ghoshell_moss.contracts.workspace import Workspace
         from ghoshell_moss.contracts.subprocesses import Subprocesses
-        from ghoshell_moss.contracts.job_supervisor import JobSupervisor
         from ghoshell_moss.contracts.configs import ConfigStore
         from ghoshell_moss.contracts.resource import ResourceRegistry
         import logging
@@ -189,7 +187,7 @@ class Matrix(Facade):
             # 2. session 配套
             Session, TopicService, QAManager,
             # 3. contracts 配套
-            Workspace, Subprocesses, JobSupervisor, LoggerItf, logging.Logger,
+            Workspace, Subprocesses, LoggerItf, logging.Logger,
             ConfigStore, ResourceRegistry,
         ]
 
@@ -366,22 +364,6 @@ class Matrix(Facade):
         """
         当前进程的子进程管理器. 可以用 shell / execute 机制起子进程, 当前 Matrix Cell 进程托管生命周期. 避免孤儿.
         同时可以拿到所有通过它托管的子进程. run cell 底层的子进程管理基于此.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def jobs(self) -> JobSupervisor:
-        """
-        基于子进程的后台任务管理器. 通过它可以托管和治理后台任务.
-        底层通过 subprocess 托管子进程.
-        """
-        pass
-
-    @abstractmethod
-    def new_jobs(self) -> JobSupervisor:
-        """
-        创建一个新的 JobSupervisor 实例, 手动治理起 async with 生命周期, 独立使用. matrix 不会托管它的治理.
         """
         pass
 
