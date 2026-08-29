@@ -327,7 +327,6 @@ class Matrix(Facade):
 
         :raise FileNotFoundError: target 解析后不存在.
         :raise RuntimeError: node 未安装 (错误信息给出 INSTALL.md 绝对路径).
-        :raise DuplicatedError: singleton node 已有活实例.
 
         子进程运行失败通过 CellHandle.process 的 done callback 获取.
         """

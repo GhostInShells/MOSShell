@@ -61,10 +61,10 @@ _RUN_GRACE_SECONDS = 5.0      # SIGTERM → wait → SIGKILL when CLI (owner) ex
 # target resolve — path only, three-in-one (no name lookup)
 # ===========================================================================
 
-def _resolve_target(target: str | None) -> NodeManifest:
-    """Resolve target path to NodeManifest. Path only, no name lookup.
+def _resolve_target(project: Project, target: str | None) -> NodeManifest:
+    """Resolve target path to NodeManifest via node manager.
 
-    Priority: no-arg → find_upward(cwd) → directory → .py → NODE.md.
+    no-arg → find_upward(cwd) (CLI 特有); 有参 → node_manager.resolve_node.
     """
     if not target:
         found = NodeManifest.find_upward(Path.cwd())
@@ -76,30 +76,11 @@ def _resolve_target(target: str | None) -> NodeManifest:
             raise typer.Exit(code=1)
         return found
 
-    path = Path(target).resolve()
-    if not path.exists():
-        print_error(f"Path does not exist: {target}")
+    try:
+        return project.nodes.resolve_node(target)
+    except (FileNotFoundError, LookupError) as e:
+        print_error(str(e))
         raise typer.Exit(code=1)
-
-    if path.is_dir():
-        manifest = NodeManifest.read_from_directory(path)
-        if manifest is None:
-            print_error(f"No {NodeManifest.MANIFEST_FILENAME} found in directory: {path}")
-            print_info("  Create one with: moss nodes create <name>")
-            raise typer.Exit(code=1)
-        return manifest
-
-    if path.suffix == '.py':
-        return NodeManifest.from_script(path)
-
-    if path.name == NodeManifest.MANIFEST_FILENAME:
-        return NodeManifest.read_from_file(path)
-
-    print_error(f"Cannot resolve target: {target}")
-    print_info(
-        f"  Expected: directory, {NodeManifest.MANIFEST_FILENAME} file, or .py script."
-    )
-    raise typer.Exit(code=1)
 
 
 # ===========================================================================
@@ -178,47 +159,48 @@ def show_node(
 
         moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest
     """
-    manifest = _resolve_target(path)
+    with Project.discover() as project:
+        manifest = _resolve_target(project, path)
 
-    if not manifest.file:
-        print_warning(
-            f"Ad-hoc node from {path} (no NODE.md on disk). "
-            f"Nothing to show. Use 'moss nodes create' or 'moss nodes link'."
-        )
-        return
+        if not manifest.file:
+            print_warning(
+                f"Ad-hoc node from {path} (no NODE.md on disk). "
+                f"Nothing to show. Use 'moss nodes create' or 'moss nodes link'."
+            )
+            return
 
-    node_file = Path(manifest.file)
-    node_dir = node_file.parent
+        node_file = Path(manifest.file)
+        node_dir = node_file.parent
 
-    # Directory listing
-    entries = []
-    for item in sorted(node_dir.iterdir()):
-        marker = "/" if item.is_dir() else ""
-        entries.append(f"  {item.name}{marker}")
+        # Directory listing
+        entries = []
+        for item in sorted(node_dir.iterdir()):
+            marker = "/" if item.is_dir() else ""
+            entries.append(f"  {item.name}{marker}")
 
-    echo("")
-    print_info(f"[show] Node file: {node_file}")
-    print_info(f"       Directory: {node_dir}")
-    print_info("       Contents:")
-    for line in entries:
-        echo(line)
-
-    echo("")
-    print_simple_panel(
-        node_file.read_text(encoding='utf-8'),
-        title=f"{NodeManifest.MANIFEST_FILENAME} (verbatim)",
-    )
-
-    install_md = node_dir / NodeManifest.INSTALL_FILENAME
-    installed_marker = node_dir / NodeManifest.INSTALLED_FILE
-    if install_md.exists() and not installed_marker.exists():
         echo("")
-        print_warning(
-            f"Not installed. {NodeManifest.INSTALL_FILENAME} declares steps; "
-            f"'run' will refuse until installed."
+        print_info(f"[show] Node file: {node_file}")
+        print_info(f"       Directory: {node_dir}")
+        print_info("       Contents:")
+        for line in entries:
+            echo(line)
+
+        echo("")
+        print_simple_panel(
+            node_file.read_text(encoding='utf-8'),
+            title=f"{NodeManifest.MANIFEST_FILENAME} (verbatim)",
         )
-        print_info(f"  Read: {install_md}")
-        print_info(f"  Then: moss nodes install {path}")
+
+        install_md = node_dir / NodeManifest.INSTALL_FILENAME
+        installed_marker = node_dir / NodeManifest.INSTALLED_FILE
+        if install_md.exists() and not installed_marker.exists():
+            echo("")
+            print_warning(
+                f"Not installed. {NodeManifest.INSTALL_FILENAME} declares steps; "
+                f"'run' will refuse until installed."
+            )
+            print_info(f"  Read: {install_md}")
+            print_info(f"  Then: moss nodes install {path}")
 
 
 # ===========================================================================
@@ -368,21 +350,22 @@ def install_node(
     Does NOT run install steps. Read INSTALL.md, run the steps via bash, then
     call this command.
     """
-    manifest = _resolve_target(path)
-    if not manifest.file:
-        print_error("Cannot install an ad-hoc node (no NODE.md on disk).")
-        raise typer.Exit(code=1)
+    with Project.discover() as project:
+        manifest = _resolve_target(project, path)
+        if not manifest.file:
+            print_error("Cannot install an ad-hoc node (no NODE.md on disk).")
+            raise typer.Exit(code=1)
 
-    cell_dir = Path(manifest.file).parent
-    install_md = cell_dir / NodeManifest.INSTALL_FILENAME
-    if not install_md.exists():
-        print_warning(f"No {NodeManifest.INSTALL_FILENAME} in {cell_dir}.")
-        print_info("Node requires no installation — nothing to do.")
-        return
+        cell_dir = Path(manifest.file).parent
+        install_md = cell_dir / NodeManifest.INSTALL_FILENAME
+        if not install_md.exists():
+            print_warning(f"No {NodeManifest.INSTALL_FILENAME} in {cell_dir}.")
+            print_info("Node requires no installation — nothing to do.")
+            return
 
-    installed_file = cell_dir / NodeManifest.INSTALLED_FILE
-    installed_file.touch()
-    print_success(f"Node '{manifest.name}' marked as installed ({installed_file}).")
+        installed_file = cell_dir / NodeManifest.INSTALLED_FILE
+        installed_file.touch()
+        print_success(f"Node '{manifest.name}' marked as installed ({installed_file}).")
 
 
 # ===========================================================================
@@ -410,7 +393,7 @@ def run_node(
     """
     with Project.discover() as project:
         env = project.env
-        manifest = _resolve_target(target)
+        manifest = _resolve_target(project, target)
 
         if not manifest.installed:
             install_path = (
@@ -466,7 +449,7 @@ async def _foreground_run(project: Project, manifest: NodeManifest) -> int:
     SIGKILL the process group (bottom-line, same as the old Popen path).
     """
     loop = asyncio.get_running_loop()
-    managed = await project.nodes.spawn_node(manifest)
+    _runtime, managed = await project.nodes.spawn_node(manifest)
     proc = managed.process
     pgid = managed.meta.pgid
     grace_task: asyncio.Task | None = None

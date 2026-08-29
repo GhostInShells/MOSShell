@@ -1229,6 +1229,17 @@ class NodeManager(ABC):
     def get_node_launcher(self, relative_path: 'str | Path') -> NodeLauncher | None:
         ...
 
+    @abstractmethod
+    def resolve_node(self, target: 'str | Path') -> 'NodeManifest':
+        """解析 target → NodeManifest.
+
+        相对路径相对 project root 解析并绝对化; 指向 NODE.md 直接读; 指向目录找目录下
+        NODE.md; 指向脚本 NodeManifest.from_script 向上认亲.
+        :raise FileNotFoundError: target 不存在.
+        :raise LookupError: 目录下无 NODE.md.
+        """
+        ...
+
     @staticmethod
     def match_nodes(
             cells: dict[ProjectRelativePath, NodeManifest],
@@ -1255,8 +1266,8 @@ class NodeManager(ABC):
             manifest: NodeManifest,
             *,
             extra_env: dict[str, str] | None = None,
-            capture: CaptureSpec | None = None,
-    ) -> ManagedProcess:
+            capture: Callable[[CellRuntimeInfo], CaptureSpec] | None = None,
+    ) -> tuple[CellRuntimeInfo, ManagedProcess]:
         """
         拉起一个 node cell — 唯一 spawn 咽喉.
 
@@ -1264,7 +1275,11 @@ class NodeManager(ABC):
         不做: singleton 锁 / 账本写入与清理 / pid·pgid 回填 — 归 enter_cell_lifecycle
         (cell 自身宣告) 或 matrix 治理层.
 
+        capture: 可选 factory, 传打包后的 CellRuntimeInfo, 返回 CaptureSpec
+        (落盘路径可用 runtime.address). None = 不捕获 (继承终端).
+
         probe (manifest.check) 失败抛 NodeProbeError; installed 未过抛 RuntimeError.
+        返回 (runtime, managed) — runtime 供 caller 组装 CellHandle / 追踪.
         """
         ...
 

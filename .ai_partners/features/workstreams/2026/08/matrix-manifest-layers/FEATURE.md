@@ -7,11 +7,10 @@ description: '将 manifest 从两层 (MOSS.manifests / HOST) 扩展为三层: MO
   初始全空, 未来承载音频等环境能力 provider.'
 milestone: 0.1.0
 priority: P0
-status: in-progress
-status_note: 'implementation 完成: HostMode ABC + LocalHostMode + MatrixImpl._prepare_container
-  MATRIX wiring + mode stubs (default/system_test) + manifests CLI explain 三层展示'
+status: completed
+status_note: 人类判断可以 completed
 title: Matrix Manifest Layers — 三层 manifest 声明隔离
-updated: '2026-08-08'
+updated: '2026-08-30'
 ---
 
 # Matrix Manifest Layers — 三层 manifest 声明隔离

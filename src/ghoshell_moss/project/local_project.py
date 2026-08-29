@@ -1,5 +1,3 @@
-import os
-import signal
 from pathlib import Path
 from typing import Iterable, Iterator
 
@@ -14,7 +12,6 @@ from ghoshell_moss.core.blueprint.project import (
 )
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts.workspace import LocalWorkspace
-from ghoshell_moss.core.subprocesses import killpg
 from ghoshell_moss.project.node_manager import ProjectNodeManager
 from ghoshell_moss.project.local_host_mode import LocalHostMode
 from ghoshell_moss.project.manifests.ghosts import search_ghost_manifests
@@ -219,28 +216,6 @@ class LocalProject(Project):
         if not runtime_dir.is_dir():
             return
         yield from CellRuntimeInfo.iter_runtime_info(runtime_dir)
-
-    def kill_cell(self, address: str) -> bool:
-        # 孤儿清理: 尝试对本 project ledger 里的 cell 进程发 signal + 清账本.
-        # ledger 里没有 = 不属本地治理域, 无操作 (契约 False).
-        # ledger 里有 = 属本地, 无论进程还活着与否都要清账本 (契约 True).
-        runtime_dir = self._env.cell_runtimes_dir
-        info = CellRuntimeInfo.read_from_runtime_dir(runtime_dir, address)
-        if info is None:
-            return False
-        if info.is_alive():
-            # 对进程组发 SIGTERM — 孤儿场景没有 owner 走优雅退出, SIGTERM 一发即杀.
-            # killpg 内部吞 ProcessLookupError, 我们不 care 是否真正落地.
-            # 无进程组的 in-process cell (host/ghost, pgid=0) 降级到 pid, 否则只清账本.
-            if info.pgid:
-                killpg(info.pgid, signal.SIGTERM)
-            elif info.pid:
-                try:
-                    os.kill(info.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-        info.delete_invalid(runtime_dir)
-        return True
 
     # -- matrix manifests -- #
 

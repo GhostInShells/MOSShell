@@ -23,8 +23,8 @@ from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject, C
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.cell import (
-    CellAddress, Cell, NodeManifest, CellRuntimeInfo, CellPresence, CellNetwork,
-    NodeLauncher, normalize, DuplicatedError,
+    CellAddress, Cell, CellRuntimeInfo, CellPresence, CellNetwork,
+    NodeManager, normalize,
     enter_cell_lifecycle,
 )
 from ghoshell_moss.core.blueprint.session import Session
@@ -299,137 +299,53 @@ class MatrixImpl(Matrix):
             extra_env: dict[str, str] | None = None,
     ) -> CellHandle:
         """
-        拉起一个 node cell — 咽喉步骤 (§YY blueprint/matrix.py run_node docstring):
+        拉起一个 node cell — 唯一 spawn 咽喉收敛到 NodeManager.spawn_node.
 
-        1. 解析 target → NodeManifest (NODE.md / 目录 / 脚本)
-        2. installed 校验 (未装 raise, 错误指向 INSTALL.md)
-        3. NodeLauncher.from_manifest 打包 (Cell + env + argv + runtime info)
-        4. singleton 查重 (§UU-6 ledger 单一真相: 遍历 project.cell_runtimes 找活的同 fullname)
-        5. spawn cwd = runtime 子目录 (§TT-6 边界做成环境); processes.execute
-        6. 回填 runtime pid/pgid; 写 CellRuntimeInfo 到 env.cell_runtimes_dir (§UU-6 单写者)
-        7. 组装 CellHandle 入 _handled_cells; 注册 on_exit callback (dict→FIFO 转移 + 清 ledger 文件)
+        只做: resolve target → spawn_node (installed/probe/execute) → 组装 CellHandle.
+        singleton 锁 / 账本写入与清理 / pid·pgid 回填全部归 node 自身
+        (enter_cell_lifecycle) 或 host 清孤儿, 本层不再重复.
+
+        :param target: 路径 (NODE.md / 目录 / 脚本 / 相对 project.root).
+        :param extra_env: 追加注入子进程的环境变量.
+        :return CellHandle: cell 身份 + 子进程句柄, 由 matrix.handled_cells() 追踪.
         """
         self._check_running()
 
-        # -- 步骤 1-2: 解析 + installed 校验 -- #
-        # _resolve_target 读文件系统 (NODE.md / from_script 认亲) — to_thread 保护.
-        manifest = await asyncio.to_thread(self._resolve_target, target)
-        if not manifest.installed:
-            install_path = Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
-            raise RuntimeError(
-                f"node {manifest.name!r} not installed. See {install_path} for install steps."
-            )
+        node_manager = self._container.force_fetch(NodeManager)
+        manifest = await asyncio.to_thread(node_manager.resolve_node, target)
 
-        # -- 步骤 3: NodeLauncher 打包 (纯 in-memory) -- #
-        # from_manifest 内部走 build_node_from_manifest → Cell + CellRuntimeInfo,
-        # dump_cell_env 注入 parent_cell_address (§UU-6 身份传递).
-        launcher = NodeLauncher.from_manifest(self._env, manifest)
-        new_cell = launcher.runtime.cell
-        new_address = new_cell.address
-
-        # -- 步骤 4: singleton 查重 (§UU-6 ledger 单写者 + is_alive 核对) -- #
-        # 遍历 project.cell_runtimes() 直读 ledger 目录 — 整体走 to_thread.
-        if new_cell.singleton:
-            existing = await asyncio.to_thread(
-                self._find_singleton_conflict, new_cell,
-            )
-            if existing is not None:
-                raise DuplicatedError(
-                    f"node {manifest.name!r} declares singleton and is "
-                    f"already running (address={existing.address} pid={existing.pid}); "
-                    f"stop the existing instance before running a new one."
-                )
-
-        # -- 步骤 5: spawn cwd = cell.home (NODE.md 所在目录) -- #
-        spawn_cwd = Path(launcher.runtime.cell.home)
-        # runtime 子目录: 平铺 ledger json + stdout/stderr log, 同 stem 不同 suffix.
-        # 约定见 CellRuntimeInfo (cell.py).
-        runtime_dir = spawn_cwd / CellRuntimeInfo.RUNTIME_SUBDIR
-        await asyncio.to_thread(
-            runtime_dir.mkdir, parents=True, exist_ok=True,
-        )
-        # 前置维护: 扫 runtime_dir 里所有 ledger, 进程已死的连 stdout/stderr 一起清.
-        await asyncio.to_thread(
-            CellRuntimeInfo.clear_dead_runtimes, runtime_dir,
+        runtime, managed = await node_manager.spawn_node(
+            manifest,
+            extra_env=extra_env,
+            capture=self._cell_capture,
         )
 
-        # 环境: launcher.env (含 dump_cell_env 注入) + manifest.exec.env + 用户 extra_env
-        child_env = dict(launcher.env)
-        if manifest.exec.env:
-            child_env.update(manifest.exec.env)
-        if extra_env:
-            child_env.update(extra_env)
-
-        # -- 步骤 6: spawn -- #
-        # capture: 内存 ring buffer + 完整落盘到 cell.home/runtime/.
-        # stdout/stderr 路径由 CellRuntimeInfo 命名约定统一生成 (同 stem, suffix).
-        # 清理策略待 dogfood 定案 (cell-run-cycle matrix-channel.md §5.4).
-        managed = await self.processes.execute(
-            *launcher.run,
-            name=f'cell:{manifest.name}',
-            description=manifest.description or f'node cell {manifest.name}',
-            cwd=spawn_cwd,
-            extra_env=child_env,
-            with_os_env=False,  # launcher.env 已包含必要 env
-            capture=CaptureSpec(
-                buffer_lines=200,
-                stdout_file=CellRuntimeInfo.default_stdout_log(runtime_dir, new_address),
-                stderr_file=CellRuntimeInfo.default_stderr_log(runtime_dir, new_address),
-            ),
-            on_exit=self._on_cell_exit(new_address),
-        )
-
-        # 回填 runtime info 的 pid/pgid, 写 ledger (file IO → to_thread).
-        launcher.runtime.pid = managed.meta.pid
-        if managed.meta.pgid is not None:
-            launcher.runtime.pgid = managed.meta.pgid
-        # 双写: workspace ledger (CLI 发现用) + cell local runtime dir (清理扫描用).
-        try:
-            await asyncio.to_thread(
-                launcher.runtime.write_to_runtime_dir,
-                self._env.cell_runtimes_dir,
-            )
-            await asyncio.to_thread(
-                launcher.runtime.write_to_runtime_dir, runtime_dir,
-            )
-        except Exception:
-            self._logger.exception(
-                "%s failed to write CellRuntimeInfo for %s",
-                self._log_prefix, new_address,
-            )
-
-        # -- 步骤 7: 组装 CellHandle 入 _handled_cells -- #
-        handle = CellHandle(runtime=launcher.runtime, process=managed)
-        self._handled_cells[new_address] = handle
+        handle = CellHandle(runtime=runtime, process=managed)
+        self._handled_cells[runtime.address] = handle
+        managed.add_done_callback(self._on_cell_exit(runtime.address))
         self._logger.info(
             "%s run_node spawned: address=%s pid=%s home=%s",
-            self._log_prefix, new_address, managed.meta.pid, spawn_cwd,
+            self._log_prefix, runtime.address, managed.meta.pid, runtime.cell.home,
         )
         return handle
 
-    def _find_singleton_conflict(
-            self, new_cell: Cell,
-    ) -> CellRuntimeInfo | None:
-        """遍历 ledger 找活着的同 fullname cell (供 to_thread 调用).
-
-        分离出来是为了让 run_node 里的 async 路径可以整段 offload 到线程池 —
-        cell_runtimes 迭代 = glob + read_text + json parse, is_alive = psutil pid check,
-        每一项都是 syscall, 循环里累加超 1ms 是常态.
-        """
-        for existing in self._project.cell_runtimes():
-            if not existing.is_alive():
-                continue
-            if existing.cell.fullname == new_cell.fullname:
-                return existing
-        return None
+    @staticmethod
+    def _cell_capture(runtime: CellRuntimeInfo) -> CaptureSpec:
+        """capture factory — 落盘 stdout/stderr 到 cell.home/runtime/ (路径依赖 address)."""
+        runtime_dir = Path(runtime.cell.home) / CellRuntimeInfo.RUNTIME_SUBDIR
+        return CaptureSpec(
+            buffer_lines=200,
+            stdout_file=CellRuntimeInfo.default_stdout_log(runtime_dir, runtime.address),
+            stderr_file=CellRuntimeInfo.default_stderr_log(runtime_dir, runtime.address),
+        )
 
     def _on_cell_exit(
             self,
             address: CellAddress,
     ) -> Callable[[ProcessMeta], None]:
-        """构造 on_exit callback: 从 _handled_cells → _dead_cells FIFO + 清 ledger 文件.
+        """构造 on_exit callback: 从 _handled_cells → _dead_cells FIFO.
 
-        闭包捕捉 address, 避免 self._handled_cells 在同 address 复用时误清新条目.
+        账本清理归 node 自身 (enter_cell_lifecycle finally) 或 host 清孤儿, 此处不重复.
         callback 在 asyncio loop 线程触发 (Subprocesses 承诺), 无需线程安全.
         """
 
@@ -437,18 +353,6 @@ class MatrixImpl(Matrix):
             handle = self._handled_cells.pop(address, None)
             if handle is not None:
                 self._dead_cells.append(handle)
-            # 清 ledger runtime file (§UU-6 单写者: 咽喉写, 咽喉在 exit 时删).
-            info_path = CellRuntimeInfo.filepath(
-                self._env.cell_runtimes_dir, address,
-            )
-            try:
-                if info_path.exists():
-                    info_path.unlink()
-            except Exception:
-                self._logger.exception(
-                    "%s failed to clean ledger file for %s",
-                    self._log_prefix, address,
-                )
             self._logger.info(
                 "%s cell exited: address=%s exit_code=%s",
                 self._log_prefix, address, meta.exit_code,
@@ -465,9 +369,10 @@ class MatrixImpl(Matrix):
         return list(self._dead_cells)
 
     def _kill_orphan_cell(self, info: CellRuntimeInfo) -> None:
-        """host 侧 clear_cell_runtimes 的 kill 回调 — 走 project.kill_cell 统一入口. 幂等."""
+        """host 侧 clear_cell_runtimes 的 kill 回调 — 走 NodeManager.kill_cell. 幂等."""
         try:
-            self._project.kill_cell(info.address)
+            node_manager = self._container.force_fetch(NodeManager)
+            node_manager.kill_cell(info.address)
         except Exception:
             self._logger.exception(
                 "%s failed to kill orphan cell %s",
@@ -519,37 +424,6 @@ class MatrixImpl(Matrix):
         msg = str(exc_val)[:200] if str(exc_val) else ''
         exc_name = exc_type.__name__ if exc_type is not None else 'Exception'
         return f'crash: {exc_name}: {msg}' if msg else f'crash: {exc_name}'
-
-    def _resolve_target(self, target: Path) -> NodeManifest:
-        """
-        解析 target → NodeManifest (§YY run_node docstring 步骤 1).
-
-        Path 相对路径 → 相对 project.root 解析并绝对化;
-        指向 NODE.md → 直接读; 指向目录 → 找目录下的 NODE.md;
-        指向脚本 → NodeManifest.from_script 向上认亲 (§WW-4).
-        """
-        if not isinstance(target, Path):
-            target = Path(target)
-        path = target.expanduser()
-        if not path.is_absolute():
-            path = (Path(self._project.root) / path).resolve()
-        if not path.exists():
-            raise FileNotFoundError(
-                f"node target path {target!r} does not exist "
-                f"(resolved to {path}). Check the path or provide a valid target."
-            )
-        if path.is_dir():
-            manifest = NodeManifest.read_from_directory(path)
-            if manifest is None:
-                raise LookupError(
-                    f"no {NodeManifest.MANIFEST_FILENAME} found in {path}. "
-                    f"Either add NODE.md or point to a script file directly."
-                )
-            return manifest
-        # 文件: NODE.md 直接读, 其他 (脚本) 向上认亲
-        if path.name == NodeManifest.MANIFEST_FILENAME:
-            return NodeManifest.read_from_file(path)
-        return NodeManifest.from_script(path)
 
     # ==================================================================
     # 灶台 (Subprocesses 从 IoC pull)

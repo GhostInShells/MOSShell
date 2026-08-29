@@ -1,14 +1,15 @@
 ---
-title: Node Lifecycle — 身份、入口、验证与记忆
-status: in-progress
-priority: P1
 created: 2026-08-04
-updated: 2026-08-14
 depends: []
+description: Node 生命周期治理，从 node-migration 独立。四层方案已收敛为 node 最佳实践探索： 四地址发现、一次性 node、事件分级已落地；重新论证后决定
+  drop node id、做 probe 预启动闸门。收尾中。
 milestone: 0.1.0
-description: >-
-  Node 生命周期治理，从 node-migration 独立。重心已从"四层治理方案"
-  转向 node 最佳实践探索：四地址发现组合、一次性 node、event 分级。
+priority: P1
+status: completed
+status_note: 人类判断可以 completed：reconcile review 抓回 uid 身份发散 bug 并修复，4 个声明/交付 drift
+  已同步
+title: Node Lifecycle — 身份、入口、验证与记忆
+updated: '2026-08-30'
 ---
 
 # Node Lifecycle
@@ -37,9 +38,55 @@ git log -- .ai_partners/features/workstreams/2026/08/node-lifecycle/FEATURE.md
 | `9c636408` | 启动成本调研 + 决策 5–8（砍 zenoh 否、anthropic import、事件分级）|
 | `98c2cf5a` | 事件分级 + MatrixOperator 方向（决策 9）|
 | `19a42de8` | 一次性 node 角色 + event_level gating（决策 10.x）|
+| `0947b0cd` | $GHOST/$MODE 四地址发现前缀；记录当前共识 |
 
-已落地（代码即真相）：event_level 五档 + persist 字段（`19a42de8`）、images.py 去
-anthropic import（`9c636408`）、project IoC 拆分（`d107dc05`）。
+## Landed（代码即真相，2026-08-29 核实）
+
+以下均已实现且经核查与当前代码一致：
+
+| 能力 | 落点 |
+|------|------|
+| **四地址发现前缀** | `resolve_node_dir()`（environment.py:173）；`MossMeta.node_paths`/`HostModeMeta.node_paths` 默认四组合；`Environment.ghost_home`/`mode_home` |
+| **Matrix.new 默认 persist=False** | matrix.py:128；一次性脚本节点不声明 singleton（matrix.py:141-142）|
+| **event_level 五档 + persist** | `CellEventLevel`（DEBUG..CRITICAL，对齐 logging 层级）；一次性 node→DEBUG 静默，常驻→INFO 感知（cell.py:867-870）|
+| **一次性 node 角色** | `NodeManifest.persist`（default True）；persist=False → run-to-completion 阻塞拿 stdout/stderr/exitcode |
+
+配合层 **matrix-manifest-layers（三层 manifest 声明隔离）** 已"implementation 完成"
+（HostMode ABC + LocalHostMode + MatrixImpl._prepare_container MATRIX wiring + mode stubs +
+manifests CLI explain 三层展示）。音频 provider 搬迁是后续独立 feature，不在本 workstream。
+
+## 重新论证（2026-08-29）— drop node id，做 probe
+
+原四层方案的 layer 4（Ghost 记忆）已因"决策 4 纠正"取消——node 级记忆落点是 skills
+声明式约定 + ground 认知，`NodesMemoryContract` 移除。据此重新论证两个候选：
+
+### node id（`.node_id` UUID）— 已 drop
+
+**弃掉的理由比原判断更强**：`.node_id` 的唯一消费者是 `NodesMemoryContract`（按
+node_uuid 键控 ghost 记忆）。决策 4 移除该契约后，node_id 失去了键控对象。剩下的
+"跨目录重命名/搬机器不丢身份"价值，已被现有 `Cell.uid`（per-spawn unique_id）+
+`CellAddress` + `project_id`（治理域）覆盖。`.node_id` 会成为平行第二身份源，是重复
+而非补充。**结论：drop，干净减法。**
+
+### probe（启动前闸口）— 已落地
+
+这是原四层里唯一仍直击 Motivation 核心的一项：把"静默的启动失败"（只在 stderr 和
+bounded FIFO 里）变成"拉起前闸门 + 明确 broken reason"，让"环境现在能不能用"进入
+模型上下文。设计要点：
+
+| 设计点 | 内容 |
+|--------|------|
+| **形态** | NODE.md 可选声明 `check: {command, args}`（复用 ExecSpec），或约定 `check.py`（今回先做显式声明，约定式预留）|
+| **独立性** | 独立进程、语言无关、目标脚本**零配合**（不逼对方走到 `Matrix.__aenter__`）|
+| **闸门** | exit 0 → 通过；nonzero + stderr → 返回 broken reason，**不拉起主脚本** |
+| **语义纪律** | 只用 exit code，**不发明新 ready 状态机**（吸取 matrix_impl.py:174 上一版"猜 provider ready 信号"翻车教训）|
+| **不加新字段** | 主脚本拉起后靠既有 `process alive + ledger providing` 兜底，不加 CellRuntimeInfo 字段 |
+
+挂载点：probe 收敛在 `NodeManager.spawn_node` 内（唯一 spawn 咽喉），CLI `run`/matrix
+`run_node`/CTML `nodes:run` 都经由它触发，不再各挂一次。
+
+stdout 本次不落地（闸门只用 exit code + stderr 作 broken reason）；"probe stdout 作为动态
+self-description 进模型认知窗口"是后续评估项，本 workstream 先做闸门主体。
 
 ## Current Consensus
 
@@ -60,19 +107,49 @@ node 发现路径有四个语义锚，对应四个确认方：
 
 - `persist` 参数进 `Matrix.new` 表面，默认 `False`（脚本启动式 = 一次性 run-to-completion）。
 - `event_level` 不暴露，由 `persist` 推导（persist=false → DEBUG 静默）。
-- 主动 `publish_event` 的级别语义见 Open Questions。
 
-### 决策 4 纠正 — 非独立 memory 契约
+### 账本 / singleton 单写记账链（2026-08-30 收敛 + review 修正）
 
-原 `NodesMemoryContract`（store/load/forget interface 级契约）是模型误读，非人类设计。
-node 级记忆的正确落点是 **skills 声明式约定 + ground 认知**（g1 体系已有），不是独立契约。
+spawn 咽喉（`NodeManager.spawn_node`）：installed 校验 → launcher 打包 → probe 闸门 →
+**写第一笔账本**（launcher.runtime：uid/address/cell，pid/pgid 占位 0）→ execute 拉起。
+不查 singleton、不回填 pid/pgid、不删账本——singleton 抢锁 / pid·pgid 回填 / 退出删账全归
+node 自身 `enter_cell_lifecycle`。前提是 node 就是 matrix cell（cell 定义即"Matrix 网络中
+运行的进程单元"；纯脚本不入网、不做服务发现，不该用 node 体系承载）。
 
-### node id / probe 降级为候选
+单写记账链（关键机制）：spawner 写第一笔（身份 uid）→ node `discover_this_node` 从账本读回
+身份（uid 一致，不 fallback）→ node `enter_cell_lifecycle` 回填 pid/pgid → 退出删账本。
+缺失第一笔会让 node fallback `build_cell_from_node` 重新生成 uid，父/子身份发散（review
+抓回的严重 bug）。spawner 写第一笔后 `CellHandle.runtime` 的 pid/pgid 仍是占位 0，真 pid
+由 node 回填的账本提供。
 
-`.node_id` 身份锚、probe 启动前闸口，从"决策"降级为"待评估候选"。落地前需重新论证价值。
+### 死文件观察垫（2026-08-29）
+
+非优雅退出（crash / kill -9）时 node 的 `finally` 不执行，账本残留为 stale 记录。这份
+残留**保留**（不在 spawn 时自动清），理由见 `node_manager.py` spawn_node 的观察垫注释：
+① uid 动态，死文件是 crash 唯一可追溯痕迹；② jobs 已移除、无自动 respawn，反复 crash
+目前不存在；③ 清账逻辑存在会抹掉"错误退出"的验证点。清理交由 host 启动/退出 +
+CLI prune。若未来出现同 fullname 反复 crash 累积，再补 spawn 时只查本 fullname 的 done
+callback（不做全目录轮询）。
+
+### 收敛附带语义变化（2026-08-30）
+
+- `kill_cell` 从"单发 SIGTERM fire-and-forget"（旧 `Project.kill_cell`，已删）变成
+  "SIGTERM → 3s grace → SIGKILL（同步阻塞）"，host 清孤儿回调因此同步阻塞——观察垫。
+- `spawn_node` 签名破坏性变更：capture 从 `CaptureSpec` 变 `Callable[[CellRuntimeInfo],
+  CaptureSpec]`（落盘路径依赖 runtime.address），返回从 `ManagedProcess` 变
+  `tuple[CellRuntimeInfo, ManagedProcess]`。
+
+### reconcile review 有效（2026-08-30）
+
+zero-context reconcile review（`moss features review` 遗忘测试）抓出 1 个严重 bug（uid
+身份发散，根因是误删"启动方先写账单"）+ 4 个声明/交付 drift（DuplicatedError 契约、
+kill_cell 语义、probe stdout、spawn 签名），已全部修复并同步进本 FEATURE。这是"声明 vs
+交付"遗忘测试的实证价值。
 
 ## Open Questions
 
 - **publish_event 级别**：persist=false 脚本主动 `publish_event` 目前被 cell.event_level
-  锁死（`zenoh_presence.py:177` 硬编码继承），"默认静默但能喊"做不到。是否加显式
-  event_level 覆盖参数，待定。先不加。
+  锁死（`zenoh_presence.py:174`），"默认静默但能喊"做不到。是否加显式 event_level
+  覆盖参数，待定。先不加。
+- **probe 动态自描述进模型认知窗口**：probe stdout 作为动态 self-description 与
+  instruction（静态）并列，如何进 open/read 面，后续评估，本次先做闸门主体。

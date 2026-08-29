@@ -96,6 +96,34 @@ class ProjectNodeManager(NodeManager):
             return None
         return NodeLauncher.from_manifest(self._env, manifest)
 
+    def resolve_node(self, target: str | Path) -> NodeManifest:
+        """解析 target → NodeManifest.
+
+        相对路径相对 project root 解析并绝对化; NODE.md 直接读; 目录找目录下 NODE.md;
+        脚本 NodeManifest.from_script 向上认亲.
+        """
+        if not isinstance(target, Path):
+            target = Path(target)
+        path = target.expanduser()
+        if not path.is_absolute():
+            path = (Path(self._env.project_path) / path).resolve()
+        if not path.exists():
+            raise FileNotFoundError(
+                f"node target path {target!r} does not exist "
+                f"(resolved to {path}). Check the path or provide a valid target."
+            )
+        if path.is_dir():
+            manifest = NodeManifest.read_from_directory(path)
+            if manifest is None:
+                raise LookupError(
+                    f"no {NodeManifest.MANIFEST_FILENAME} found in {path}. "
+                    f"Either add NODE.md or point to a script file directly."
+                )
+            return manifest
+        if path.name == NodeManifest.MANIFEST_FILENAME:
+            return NodeManifest.read_from_file(path)
+        return NodeManifest.from_script(path)
+
     def _scan(self, roots: list[Path]) -> dict[ProjectRelativePath, NodeManifest]:
         result: dict[ProjectRelativePath, NodeManifest] = {}
         project_root = self._env.project_path
@@ -133,16 +161,19 @@ class ProjectNodeManager(NodeManager):
             manifest: NodeManifest,
             *,
             extra_env: dict[str, str] | None = None,
-            capture: CaptureSpec | None = None,
-    ) -> ManagedProcess:
+            capture: Callable[[CellRuntimeInfo], CaptureSpec] | None = None,
+    ) -> tuple[CellRuntimeInfo, ManagedProcess]:
         """
         拉起一个 node cell — spawn 咽喉 (唯一入口).
 
         只做: installed 校验 → NodeLauncher 打包 → probe 闸门 → Subprocesses.execute 拉起.
-        不做: singleton 锁 / ledger 写入与清理 / pid·pgid 回填 — 那些归 enter_cell_lifecycle
+        不做: singleton 锁 / ledger 写入与清理 / pid·pgid 回填 — 归 enter_cell_lifecycle
         (cell 自身宣告) 或 matrix 治理层. spawner 只负责把进程生出来.
 
-        probe (manifest.check) 失败时抛 NodeProbeError (携带 broken reason), 不拉起主脚本.
+        capture: 可选 factory, 传打包后的 CellRuntimeInfo 返回 CaptureSpec (落盘路径可用
+        runtime.address). None = 不捕获 (继承终端).
+
+        probe (manifest.check) 失败抛 NodeProbeError; 返回 (runtime, managed).
         """
         if not manifest.installed:
             install_path = Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
@@ -156,11 +187,21 @@ class ProjectNodeManager(NodeManager):
         if broken is not None:
             raise NodeProbeError(broken)
 
+        # 启动方先写账单 (单写记账第一笔): 写 launcher.runtime (uid/address/cell),
+        # pid/pgid 先占位 0 — node 启动时 discover_this_node 从账本读回身份,
+        # 避免 fallback build_cell_from_node 重新生成 uid 造成父/子身份发散.
+        await asyncio.to_thread(
+            launcher.runtime.write_to_runtime_dir,
+            self._env.cell_runtimes_dir,
+        )
+
         child_env = dict(launcher.env)
         if manifest.exec.env:
             child_env.update(manifest.exec.env)
         if extra_env:
             child_env.update(extra_env)
+
+        capture_spec = capture(launcher.runtime) if capture is not None else None
 
         managed = await self.subprocesses.execute(
             *launcher.run,
@@ -169,10 +210,24 @@ class ProjectNodeManager(NodeManager):
             cwd=Path(launcher.runtime.cell.home),
             extra_env=child_env,
             with_os_env=False,  # launcher.env 已包含必要 env
-            capture=capture,
-            on_exit=self._on_node_exit(launcher.runtime),
+            capture=capture_spec,
         )
-        return managed
+
+        # 观察垫 (2026-08-29): 这里**故意不**注册 spawn 后的清账回调.
+        #
+        # 账本 = spawner 写第一笔 (上面, 身份 uid) + node enter_cell_lifecycle 回填
+        # pid/pgid + 退出删 + 抢锁. 非优雅退出 (crash / kill -9) 时 node 的 finally 不执行,
+        # 账本残留为 stale 记录. 这份残留是**保留的**:
+        #   1. cell uid 每次 spawn 动态生成, 死文件是这个实例 crash 的唯一可追溯痕迹
+        #      (pid / start_time / cell), 清掉就断了"它为什么死"的诊断入口.
+        #   2. 反复 crash 目前不存在 — jobs 已移除, node 开启 / 关闭都是 ghost 意图,
+        #      无自动 respawn, 死文件只来自真 crash, 频率低.
+        #   3. 清账逻辑一旦存在, "错误退出"就没有验证点 (stale 文件本身是 debug 证据).
+        #
+        # 清理交由 host 启动 / 退出 (clear_cell_runtimes) + CLI prune 手动清. 若未来出现
+        # "同 fullname 反复 crash 累积 stale 账本", 再在 spawn 时补一个只查本 fullname 的
+        # done callback (不做全目录轮询).
+        return launcher.runtime, managed
 
     async def _run_probe(
             self,
@@ -238,29 +293,6 @@ class ProjectNodeManager(NodeManager):
 
         managed.add_done_callback(_cb)
         return await fut
-
-    def _on_node_exit(
-            self,
-            node: CellRuntimeInfo,
-    ) -> Callable[[ProcessMeta], None]:
-        """构造 on_exit 回调: 子进程退出时清理工作区 ledger 文件.
-
-        callback 在 asyncio loop 线程触发 (Subprocesses 承诺), 无需线程安全.
-        """
-
-        def _callback(meta: ProcessMeta) -> None:
-            try:
-                node.delete_invalid(self._env.cell_runtimes_dir)
-            except Exception:
-                self._logger.warning(
-                    "failed to clean ledger file for %s", node.address,
-                )
-            self._logger.info(
-                "node cell exited: address=%s exit_code=%s",
-                node.address, meta.exit_code,
-            )
-
-        return _callback
 
     # -- runtime 治理: 读账本 / 杀 / 清孤儿 -- #
 

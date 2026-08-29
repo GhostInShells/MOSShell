@@ -702,19 +702,6 @@ class Project(ABC):
         ...
 
     @abstractmethod
-    def kill_cell(self, address: str) -> bool:
-        """
-        孤儿清理: 尝试终止本 project 治理域内已死或残留的 cell 进程.
-
-        典型场景是父进程崩溃后 ledger 残留, cell_runtimes() 迭代时按需清理.
-        active cell 的正常停止不走这里, 走 owner 的 Subprocesses.
-
-        :return: True = address 属于本 project 且 kill 尝试完成 (进程已死或成功 killpg);
-                 False = address 不在本地 ledger, 无治理权限, 无操作.
-        """
-        ...
-
-    @abstractmethod
     def cell_runtimes(self) -> Iterator[CellRuntimeInfo]:
         """
         遍历本 project 治理域内已拉起的所有 cell (host + node) 的 runtime 信息.
