@@ -409,14 +409,11 @@ class Environment:
         global _environment
         if _environment is not None:
             return _environment
+        env = cls()
         if not bootstrap:
-            raise EnvironmentNotSealedError(
-                "Environment.discover(bootstrap=False) 被调用但进程内无已 seal 的单例. "
-                "构造路径 (CLI/Host) 必须先 Environment(...).seal(); "
-                "worker 路径 (cell main.py) 传 bootstrap=True 或直接调用 discover()."
-            )
-        cls().seal()
-        return _environment
+            return env
+        env.seal()
+        return env
 
     # --- 暴露属性. --- #
     # 单一信源: 一律读 self._*, os.environ 只在 seal 瞬间被写入, 不回读.

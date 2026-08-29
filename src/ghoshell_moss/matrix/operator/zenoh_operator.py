@@ -35,7 +35,7 @@ from ghoshell_moss.core.blueprint.service import (
     Handle,
 )
 from ghoshell_moss.core.blueprint.cell import CellAddress
-from ghoshell_moss.tools.zenoh_helper import ZenohLivenessListener
+from ghoshell_moss.matrix.zenoh_helper import ZenohLivenessListener
 
 from ._utils import ServiceKeyspace, ServiceKeyExpr
 from .zenoh_service_terminal import (

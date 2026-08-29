@@ -5,7 +5,7 @@ matrix/networks/ 层的 key/path 表达 — 一处定义, presence 与 mesh 共�
   {域}Keyspace  = 命名空间层键位 (顶层 prefix + 通配 + 前缀剥离)
   {域}KeyExpr   = 单实体键位打包 (per-address)
 
-网络键结构 (在 tools.zenoh_helper.MatrixNamespace.cells_ns 之下):
+网络键结构 (在 matrix.zenoh_helper.MatrixNamespace.cells_ns 之下):
 
   {cells_ns}                                顶层 cells 命名空间
   {cells_ns}/{address}                      单 cell 的 presence key
@@ -25,7 +25,7 @@ matrix/networks/ 层的 key/path 表达 — 一处定义, presence 与 mesh 共�
 from typing import ClassVar
 
 from ghoshell_moss.core.blueprint.cell import CellAddress
-from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
+from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace
 
 __all__ = ['CellsKeyspace', 'CellKeyExpr']
 

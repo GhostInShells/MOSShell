@@ -10,7 +10,7 @@ from ghoshell_moss.depends import depend_matrix
 depend_matrix()
 import zenoh
 
-from ghoshell_moss.tools.zenoh_helper import ZenohLivenessListener
+from ghoshell_moss.matrix.zenoh_helper import ZenohLivenessListener
 from ghoshell_moss.message import unique_id
 
 

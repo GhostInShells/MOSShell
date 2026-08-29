@@ -31,7 +31,7 @@ from ghoshell_moss.matrix.networks.zenoh_network import (
 )
 from ghoshell_moss.matrix.networks.zenoh_presence import ZenohCellPresence
 from ghoshell_moss.matrix.networks.zenoh_mesh import ZenohCellNetwork
-from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
+from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace
 
 __all__ = ['ZenohAdapter']
 

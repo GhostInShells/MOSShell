@@ -35,7 +35,7 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 
 from ghoshell_moss.matrix.adapter import MatrixNetworkAdapter
 from ghoshell_moss.matrix.operator import ZenohOperator
-from ghoshell_moss.tools.zenoh_helper import MatrixEnvNamespace
+from ghoshell_moss.matrix.zenoh_helper import MatrixEnvNamespace
 
 __all__ = ['MatrixImpl']
 

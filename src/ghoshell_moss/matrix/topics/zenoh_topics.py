@@ -21,7 +21,7 @@ import time
 
 depend_matrix()
 import zenoh
-from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
+from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace
 import re
 
 __all__ = ['ZenohTopicSubscriber', 'ZenohTopicPublisher', 'ZenohTopicService', 'ZenohTopicServiceSuite']

@@ -12,7 +12,7 @@ import zenoh
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.cell import normalize
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from ghoshell_moss.tools.zenoh_helper import (
+from ghoshell_moss.matrix.zenoh_helper import (
     MatrixNamespace,
     ZenohLivenessListener,
 )

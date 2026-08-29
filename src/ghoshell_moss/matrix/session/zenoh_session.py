@@ -18,7 +18,7 @@ from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputBuffer, OutputItem, StreamSubscriber,
     Sample
 )
-from ghoshell_moss.tools.zenoh_helper import MatrixNamespace, MatrixEnvNamespace
+from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace, MatrixEnvNamespace
 from ghoshell_moss.depends import depend_matrix
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.core.session.utils import SimpleOutputBuffer

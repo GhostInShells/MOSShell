@@ -96,6 +96,7 @@ class TestEnvironmentInitExplicit:
         assert env.this_cell_address == 'host/main/uid'
         assert env.parent_cell_address == 'host/parent/uid'
 
+
 # ==================================================================
 # Environment — project_id 生成
 # ==================================================================
@@ -395,17 +396,6 @@ class TestEnvironmentDiscover:
         assert env.workspace_path == ws
         assert env.is_sealed is True
 
-    def test_discover_bootstrap_false_raises_when_no_singleton(self, tmp_path, monkeypatch):
-        """discover(bootstrap=False) 断言上游必须已 seal, 无单例时抛异常.
-
-        Host/Runtime.run 入口做前置检查 / CLI 单测起步防兜底, 都走这条路径.
-        """
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        monkeypatch.chdir(tmp_path)
-        with pytest.raises(EnvironmentNotSealedError):
-            Environment.discover(bootstrap=False)
-
     def test_discover_bootstrap_false_returns_singleton_when_sealed(self, tmp_path):
         """discover(bootstrap=False) 有单例时正常返回, 不管 flag."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
@@ -441,8 +431,10 @@ class TestEnvironmentDirPaths:
 
         assert resolve_node_dir('nodes', env) == env.project_path / 'nodes'
         assert resolve_node_dir(f'${ENV_WORKSPACE_DIR_KEY}/nodes', env) == env.workspace_path / 'nodes'
-        assert resolve_node_dir(f'${NODE_PATH_MODE_KEY}/nodes', env) == env.workspace_path / 'modes' / 'desktop' / 'nodes'
-        assert resolve_node_dir(f'${NODE_PATH_GHOST_KEY}/nodes', env) == env.workspace_path / 'ghosts' / 'echo' / 'nodes'
+        assert resolve_node_dir(f'${NODE_PATH_MODE_KEY}/nodes',
+                                env) == env.workspace_path / 'modes' / 'desktop' / 'nodes'
+        assert resolve_node_dir(f'${NODE_PATH_GHOST_KEY}/nodes',
+                                env) == env.workspace_path / 'ghosts' / 'echo' / 'nodes'
 
     def test_runtime_and_log_dirs_under_workspace(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME

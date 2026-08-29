@@ -23,7 +23,7 @@ from ghoshell_moss.core.blueprint.session import OutputItem, Sample
 from ghoshell_moss.matrix.topics.zenoh_topics import ZenohTopicService
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.logger import get_moss_logger
-from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
+from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace
 
 
 # ── SimpleOutputBuffer ──────────────────────────────────
