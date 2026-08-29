@@ -58,7 +58,8 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
              (point-2 (a) 落地: surface replace 退役 hot 帧).
   command_logos 不在 run 面 (反射弧已在 articulate 前 send_nowait 消费).
   thinking_effort 在 articulator 上, 经 enter RPC 的 effort 字段上.
-  perspectives 被 trajectory 取代.
+  contexts 观测由 MindflowInShell 装线的 shell trajectory 进 moment.previous.results,
+  ego 只消费 moment, 不读 trajectory.
 
 ── 待讨论 (seams) ────────────────────────────────────────────────────
   1. external wake 的 fail-safe: pre-step 阻塞等 thinking/enter, MOSS 永不 enter
@@ -92,7 +93,6 @@ from ghoshell_moss.deepseek_harness.launcher import DshLauncherConfig
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
-    from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
     from ghoshell_moss.deepseek_harness.session import DshSession
     from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
 
@@ -249,9 +249,10 @@ class DoloresEgo:
     # ── 上下文组装 ──────────────────────────────────────────────────
 
     async def _assemble_context(self, moment: Moment, effort: ThinkingEffort):
-        """percepts + hint + trajectory 帧 + instruction (system_prompt + ground_instruction).
+        """percepts + hint + instruction (system_prompt + ground_instruction).
 
-        perspectives 不读 (被 trajectory 取代).
+        上下文观测由 MindflowInShell 装线的 shell trajectory 注入 moment.previous.results,
+        本方法只拼 moment 三块 + instruction.
         待讨论 seam #1: 返回类型 = DSH 请求 payload 形状 (RPC 入参).
         待讨论: ground_instruction (epoch 槽位) 本轮就接, 还是留给 epoch 周期.
         """

@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 import shutil
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -15,11 +14,9 @@ from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.deepseek_harness.types.session_events import AssistantChunk
 from ghoshell_moss.ground import DefaultGroundSet, Ground
-from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
@@ -52,11 +49,12 @@ class Dolores(Ghost):
     """Dolores — 第二个 Ghost 原型运行时.
 
     生命周期里挂一个 DshLauncher (DSH 推理中枢), 直接持有 matrix 的治理链
-    (matrix.processes); 挂一个 ShellTrajectory (观测轨迹, 上下文来源).
-    think() 已装线 ego.run_thinking() (DSH 推理中枢 transaction): 先写 trajectory
-    帧到 output, 再经 ego 驱动 dsh 推理, logos 流逐段 yield (articulator 本侧管理).
-    后续逐步接入: Memento 持久化轨迹、interleaved thinking、ghost 反身 channel、
-    模型自感知 (_llms). 收敛方案 (thinking/enter B 范式) 见 _ego.py 模块 docstring.
+    (matrix.processes). 上下文观测由 MindflowInShell 装线 shell trajectory 到
+    moments 完成 (ghost 侧不重复自建 trajectory). think() 经 ego.run_thinking()
+    (DSH 推理中枢 transaction) 驱动 dsh 推理, logos 流逐段 yield (articulator
+    本侧管理). 后续逐步接入: Memento 持久化轨迹、interleaved thinking、ghost
+    反身 channel、模型自感知 (_llms). 收敛方案 (thinking/enter B 范式) 见
+    _ego.py 模块 docstring.
     """
 
     def __init__(
@@ -75,10 +73,8 @@ class Dolores(Ghost):
         self._matrix = matrix
         self._shell = shell
         self._base_instruction = base_instruction
-        # launcher / trajectory / ground 懒构建 — __init__ 不碰 httpx / matrix.processes / shell (构造无副作用).
+        # launcher / ground 懒构建 — __init__ 不碰 httpx / matrix.processes / shell (构造无副作用).
         self._dsh_launcher: "DshLauncher | None" = None
-        self._trajectory: MShellTrajectory | None = None
-        self._epoch_started = False
         self._ground_set: DefaultGroundSet | None = None
         self._root_ground: Ground | None = None
         self._exit_stack = contextlib.AsyncExitStack()
@@ -117,34 +113,12 @@ class Dolores(Ghost):
         return str(view)
 
     async def think(self, thinking: Thinking) -> AsyncIterator[str]:
-        """上下文完全由 ShellTrajectory 承载 — 先写 trajectory frame, 再走 output.
+        """模型驱动委托给 ego.run_thinking() (DSH 推理中枢 transaction).
 
-        Moment 体系不动: 本步只把 shell 观测 (facade / status / events / context) 从
-        perspectives 挪到 trajectory 帧, Moment 只承载外部输入 (percepts + hint).
-        模型驱动委托给 ego.run_thinking() (DSH 推理中枢 transaction) — 消费 run.events()
-        分派 logos, articulator 由本侧管理, logos 流逐段 yield.
+        上下文观测 (facade / status / events / context) 由 MindflowInShell 装线的
+        shell trajectory 注入 moment.previous.results, ghost 本侧不重复 self.pop_frame.
+        消费 run.events() 分派 logos, articulator 由本侧管理, logos 流逐段 yield.
         """
-        trajectory = self._trajectory
-        if trajectory is not None:
-            if not self._epoch_started:
-                self._epoch_started = True
-                # 首个 epoch: 注入全量 facade (refresh 重置观测基线).
-                epoch_start = trajectory.epoch_start_point(refresh=True)
-                if self._session is not None:
-                    self._session.output(
-                        "trajectory",
-                        Message.new().with_content(epoch_start),
-                        log="trajectory epoch start",
-                    )
-            # 每轮: 拉当前帧 delta (events + status + context + facade) → output 观测面.
-            frame = trajectory.pop_frame()
-            if self._session is not None:
-                self._session.output(
-                    "trajectory",
-                    *frame.project(now=time.time()),
-                    log=f"trajectory frame {frame.index}",
-                )
-
         # 模型驱动: ego.run_thinking (DSH 推理中枢 transaction).
         # 生命周期 (listener/enter/exit) 归 run 对象; 本侧只消费事件 + 管理 articulator.
         if self._ego is not None:
@@ -190,12 +164,6 @@ class Dolores(Ghost):
             )
             # 绑定自醒 signal 出口到 MOSS session — matrix.session.add_signal 路由到 mindflow.
             self._ego.bind_signal_broadcast(self._matrix.session.add_signal)
-        # 挂载 ShellTrajectory — shell 由 MossRuntime 持有且已 running (ghost.__aenter__
-        # 晚于 shell 启动). 未提供 shell / 未运行时跳过, trajectory 保持 None.
-        if self._shell is not None and self._shell.is_running():
-            self._trajectory = await self._exit_stack.enter_async_context(
-                MShellTrajectory(self._shell)
-            )
         # 打开并长期持有 root ground (ghost_home 认知场). stubs 同步在前 (GROUND.md 已落),
         # GroundSet 由 exit stack 管理生命周期, root ground 单 owner 持有供 epoch 渲染.
         if self._home is not None:
@@ -223,15 +191,6 @@ class Dolores(Ghost):
         if self._matrix is not None:
             return self._matrix.logger
         return get_moss_logger()
-
-    @property
-    def trajectory(self) -> MShellTrajectory:
-        """ShellTrajectory 句柄 — 未挂载 (无 shell / 未 running) 时抛清晰错误."""
-        if self._trajectory is None:
-            raise RuntimeError(
-                "trajectory not mounted. Requires a running shell. Call __aenter__ first."
-            )
-        return self._trajectory
 
     def _build_dsh_launcher(self) -> "DshLauncher":
         from ghoshell_moss.deepseek_harness.launcher import DshLauncher
