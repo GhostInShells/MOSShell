@@ -473,6 +473,9 @@ class Message(BaseModel, WithAdditional):
                 else:
                     last_text['text'] += content['text']
             else:
+                if last_text is not None:
+                    yield last_text
+                    last_text = None
                 yield content
         if last_text is not None:
             yield last_text

@@ -53,3 +53,18 @@ def test_as_contents_with_meta_false_no_wrapping():
     results = list(msg.as_contents(with_meta=False, join_text=True))
     text = "".join(c.get("text", "") for c in results)
     assert text == "内容"
+
+
+def test_as_contents_join_text_preserves_image_order():
+    """join_text=True 合并相邻 text 时, image 块保持相对顺序, 不越位到前导 text 之前."""
+    img = Base64Image.from_base64('image/png', 'aGVsbG8=')
+    msg = (
+        Message.new(tag="percepts", timestamp=False)
+        .with_content("前导")
+        .with_content(img)
+        .with_content("后缀")
+    )
+    results = list(msg.as_contents(with_meta=True, join_text=True))
+    assert [c.get("type") for c in results] == ['text', 'image', 'text']
+    assert "前导" in results[0].get("text", "")
+    assert "后缀" not in results[0].get("text", "")
