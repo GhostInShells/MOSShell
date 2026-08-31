@@ -6,12 +6,14 @@ description: 'Matrix 层 cell 级服务化通讯接线层. ServiceOperator 封�
   各自定义自己的 service kind 与元数据, operator 永不装线. 关键词: "统一无聊层, 特别化有趣层".'
 milestone: v0.1.0
 priority: P0
-status: in-progress
-status_note: 'REOPENED 2026-08-13 kernel review: 单消费串行 hang-即死 / 队满静默丢弃 /
-  shutdown 无防阻塞 / 无错误隔离与异常回复日志 / 无 sync+async 双支持 — 全部致命, 待逐个修复.
-  counter 单测全绿不足以支撑内核层质量关.'
+status: testing
+status_note: '2026-09-01 客户端+服务端桥接层重写完成, 金丝雀单测待 Opus 补齐. 核心修复:
+  (1) 服务端: create_task-per-query + 出站 worker, query 不阻塞 loop;
+  (2) 客户端: get 全回调化 (零线程), sub 共享管线, emit 出站 worker;
+  (3) meta cache 修 K4, liveness 事件 create_task 化;
+  (4) sync/async handler 双支持, 并发契约写入 ABC docstring.'
 title: Matrix Service — cell 级服务化通讯接线层
-updated: '2026-08-13'
+updated: '2026-09-01'
 ---
 
 # Matrix Service
@@ -345,3 +347,126 @@ endpoint = loop 上 create_task，per-request 故障隔离——operator 的 cre
 双 ZenohOperator 单 session（仿 `test_counter.py`）：两个并发慢 query 验证并行完成 +
 一个 handler 抛异常不影响另一个；handler 内 `await asyncio.sleep` + 真实 I/O 验证
 deferred reply + event loop 不被 zenoh 线程卡住。
+
+## Client Review 2026-09-01
+
+服务端 kernel review 7 条致命问题已对齐修复方向。启动服务端改造时，对客户端
+ZenohOperator 做完整 review，发现另一组独立致命问题（与服务端无交集）：
+
+### 客户端致命清单
+
+| # | 问题 | 位置 | 症状 |
+|---|---|---|---|
+| 1 | **get() 钉线程广播即耗尽** | `get()` 用 `to_thread(list(session.get(...)))` | 每目标钉一条 executor 线程 5s；广播 N 个目标 = N 条阻塞线程；线程池打满后 `get()` 串行等待可用线程 |
+| 2 | **sub() thread-per-subscription** | `declare_subscriber` 返回迭代器，daemon 线程 `for sample in sub` | 每个 `sub()` 调用创建一条 daemon 线程，无生命周期治理；N 个订阅 = N 条线程 |
+| 3 | **emit() 内联阻塞 loop** | `session.put` 直接在 `emit()` 内调用 | zenoh put 在 congestion control 时可能阻塞，`emit()` 是 async 方法但内部无卸载 |
+| 4 | **发现路径 O(N) 串行 meta query** | `get_services_by_kind` 对每个 live service 做一次 `_fetch_meta` | N 个 service = N 次串行 zenoh get round-trip；活跃度高时发现延迟线性增长 |
+| 5 | **on_service_stop 违反 K4** | liveness offline 时合成空 meta `data={}` | `ServiceDeclaration.from_meta` round-trip 不变量失效（空 data 通不过 pydantic schema）；stop callback 收到不可用 meta |
+| 6 | **_sub_handles 只增不减** | `sub()` 创建 handle 加入列表，close 时不摘除 | handle 泄漏；exit 时遍历已 close 的 handle 重复 undeclare |
+
+### Probe 实证 2026-09-01 (zenoh 1.9.0, 单 session)
+
+四条关键结论（命令行 probe 脚本，见 commit history）：
+
+1. **queryable 回调投递串行且队列阻塞**: 同一 queryable 收到两个并发 query，第二个在
+   `t=1.01` 才被投递（第一个回调 sleep 1s）。**同一 closure 的投递严格串行，阻塞回调
+   即阻塞该 queryable 的全部后续 query**。FEATURE.md 里 subscriber 的实测结论对
+   queryable 同样成立。
+2. **跨 queryable 并行**: 两个不同 queryable 各 sleep 1s，总耗时 1.01s——不同
+   closure 各自专属线程，互不影响。
+3. **get 的 reply 回调互相独立**: 一个 get 的 reply 回调阻塞 1s，另一个 get 的回调
+   `t=0.0` 即触发。每次 `session.get` 是独立 closure，**阻塞一个 get 的回调不影响
+   其他 get**。
+4. **deferred reply 成立（最关键）**: queryable 回调里只把 `query` 对象存起来直接
+   返回，0.5s 后从另一条线程 `reply`，caller 正常收到 `b'deferred-ok'`。**回调可以
+   做到"只入队、立即返回"，reply 完全异步化**。
+
+结合上一轮 probe（get 的 `Callback(cb, drop)` 形式可用、drop 终结信号可靠；
+subscriber callback 在 1.9 单 session 下正常触发——V1 时的"不可靠"结论在当前版本不复现）。
+
+### 架构定型原则（人类架构师对齐）
+
+- 所有 zenoh 回调一律**入队即返回，零阻塞**（纪律，非优化）。queryable 投递串行、
+  回调阻塞 = 队头阻塞整个 queryable。
+- **get() 全回调化**: `session.get(key, Callback(on_reply, on_drop))`，reply 收集在
+  回调线程，`drop` 触发时经 `loop.call_soon_threadsafe` 完成 asyncio Future。彻底
+  消灭 to_thread 钉线程，广播 N 个 get 零线程成本，且互不干扰（结论 3）。
+- **服务端 reply 异步化**: 回调只 enqueue `(query, key)`，loop 侧
+  `create_task`-per-query 跑 handler，reply 从 loop/worker 发出（结论 4 证明合法）。
+- **sub 也可以去 daemon 线程**: callback → 共享 janus queue → loop 单点分发。不过
+  V1 的旧教训提示要在金丝雀单测里保留单 session pub/sub 用例防回归。
+- **全链路没有任何一点需要 zenoh 线程等待 loop 计算结果**: 服务端靠 deferred reply
+  解耦（query 对象即回复信道，不需要 Future）；客户端 get 靠 asyncio.Future 单向
+  回流（`call_soon_threadsafe(fut.set_result, ...)`，guard cancelled/loop-closed）。
+- **验收底线**: query 不阻塞 loop 上其他 task。
+
+### 修复形状 2026-09-01
+
+服务端（`zenoh_service_terminal.py`）：
+
+- `_on_query`（zenoh 回调）：只 enqueue `(query, business_key)`。**队满 → log error +
+  尽力内联 error reply**（短同步操作，防 caller 挂到超时），绝不静默。
+- `_consume_queries`：只 dequeue + `create_task(self._dispatch_query(...))`，
+  in-flight set（done 剪枝）。并发上界 = 队列 maxsize（1000）。
+- `_dispatch_query` 全容错：无 handler → error reply；decode 失败 → log + error reply；
+  handler 异常 → log + error reply；reply 失败 → log 包裹；`CancelledError` → 尽力
+  error reply 后 re-raise。
+- **reply/pub 出站单点**: per-terminal 出站 worker（1 条 daemon 线程 + janus queue），
+  执行 `query.reply` / lazy `declare_publisher` + `pub.put` 等同步 zenoh 操作，失败
+  逐条 log。`pub()` 改为 enqueue。shutdown 时 sentinel + join(timeout)。
+- `listen()`：daemon 迭代线程 → **callback subscriber**（probe 已证可用），回调
+  enqueue 到 listen queue；`_consume_listen` 同样 `create_task`-per-sample + in-flight。
+- handler **sync/async 双支持**: `iscoroutinefunction` → await；sync → `asyncio.to_thread`
+  （防 loop 阻塞）。
+- `queryable()/listen()/pub()` 在 `__aenter__` 前调用 → 显式 `RuntimeError`（现在是
+  zenoh 线程内 AttributeError 静默杀线程）。
+- shutdown 顺序：cancel consumers → cancel 全部 in-flight →
+  `gather(return_exceptions=True)` → 出站 worker sentinel+join → to_thread undeclare →
+  queue shutdown。
+- 契约写入 docstring（fatal #7）：handler 会被并发调用，共享状态 + await 点的 handler
+  自己加锁。
+
+客户端（`zenoh_operator.py`）：
+
+- **`get()` 全回调化**: per-target 在 loop 侧建 `asyncio.Future`；
+  `session.get(key, Callback(on_reply, on_drop), payload=..., timeout=_QUERY_TIMEOUT)`；
+  on_reply 在回调线程收集；on_drop → `loop.call_soon_threadsafe` 完成 future（guard
+  `fut.cancelled()` / loop closed RuntimeError）。广播 = gather N 个 future，**零线程
+  占用**。外层 `wait_for(timeout=_QUERY_TIMEOUT + margin)` 兜底。
+- **目标解析去 meta 化**: get/emit 不传 `*services` 时从 liveness cache
+  （`parse_live_identity`）直接解析地址，**不再做 N 次串行 meta query**。
+  `get_services_by_kind/address` 保留 meta 语义但改为并发 gather + 回调式 `_fetch_meta`。
+- **`sub()` 去线程化**: callback subscriber → operator 共享分发 janus queue（带 handler
+  标签）→ 单点 consumer → `create_task`-per-sample + in-flight。队满 → log warning
+  （流语义容忍丢，不容忍静默）。`sub()` 在未 started 时 → RuntimeError。Handle close
+  时从 `_sub_handles` 摘除；聚合 handle 不重复注册。
+- **`emit()`**: 目标从 liveness cache 解析；`session.put` 经 operator 出站 worker
+  （1 条 daemon 线程 + janus queue）执行，loop 零阻塞。
+- **liveness 分发**: `_consume_liveness` `create_task`-per-event；`_fetch_meta` 不再
+  队头阻塞管线。**meta cache 修 K4**: online 时缓存 `(dotted_addr, kind) → meta`，
+  offline 弹出缓存交给 stop callback；缓存缺失才合成并 log warning。start/stop
+  callback 支持 sync + async。
+- shutdown：close subs → cancel consumers + in-flight gather → 出站 worker sentinel+join
+  → liveness listener exit → queue shutdown；`call_soon_threadsafe` 全部 guard。
+
+ABC (`blueprint/service.py`)：
+
+- handler 类型放宽：`Callable[[Query], Awaitable[bytes] | bytes]`、
+  `Callable[[Sample], Awaitable[None] | None]`、start/stop callback 同理。
+- docstring 增补：并发契约（handler 可能并发调用、锁归 implementer）、队满策略、stop
+  meta 来自缓存的语义。
+- 签名结构（sync factory / async method 的分布）不动——counter 等业务 service 零改动。
+
+### 端到端冒烟结果
+
+双 operator 单 session 临时脚本（2026-09-01）：
+
+- 两个并发慢 query（各 sleep 1s）: **并行完成 1.0s**（旧实现 5.0s 串行）
+- handler 异常隔离: boom handler 抛 ValueError，caller 收到 error reply 0.0s（不超时）
+- sync handler 支持: 同步 `lambda q: q['payload'].upper()` 正常 reply
+- pub/sub 单 session: 两次 pub 均正确投递
+- emit/listen 单 session: sync listen handler 正常收到
+- discovery: `get_services_by_kind` 返回可 `from_meta` 的 meta
+- **loop 心跳测量**: 全部测试期间 max gap 0.005s（< 200ms 阈值），**loop 从未被阻塞**
+
+单测清单（委托 Opus，见计划文件 `wobbly-tumbling-lagoon.md`）10 条金丝雀用例待补齐。

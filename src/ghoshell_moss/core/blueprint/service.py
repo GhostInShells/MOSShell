@@ -109,6 +109,16 @@ class ServiceProvider(ABC):
     Enter manages the lifecycle (announce — token + queryable; the operator
     auto-registers the meta queryable so ``services()`` can discover it).
     Exit revokes (undeclares) cleanly.
+
+    Concurrency contract: handlers MAY be invoked concurrently (one task per
+    incoming event).  A handler that awaits while touching shared state must
+    do its own locking — the kernel does not serialize.  Handlers may be
+    sync or async; sync handlers are offloaded to a worker thread.
+
+    Overflow policy: when the inbound query queue is full the caller receives
+    an error reply (never a silent drop / hang-until-timeout); overflowing
+    listen samples are dropped with a log (stream semantics tolerate loss,
+    not silence).
     """
 
     @property
@@ -120,9 +130,13 @@ class ServiceProvider(ABC):
     def queryable(
             self,
             key: str,
-            handler: Callable[[Query], Awaitable[bytes]],
+            handler: Callable[[Query], Awaitable[bytes] | bytes],
     ) -> Handle:
-        """Register a request-reply handler for a business ``key``."""
+        """Register a request-reply handler for a business ``key``.
+
+        Handler failure is isolated per query and produces an error reply —
+        the caller never hangs until timeout.
+        """
 
     @abstractmethod
     def pub(self, key: str, payload: bytes) -> None:
@@ -130,7 +144,11 @@ class ServiceProvider(ABC):
         ...
 
     @abstractmethod
-    def listen(self, key: str, handler: Callable[[Sample], Awaitable[None]]) -> Handle:
+    def listen(
+            self,
+            key: str,
+            handler: Callable[[Sample], Awaitable[None] | None],
+    ) -> Handle:
         """listen to any client emitted events"""
         ...
 
@@ -172,17 +190,27 @@ class ServiceOperator(ABC):
     def on_service_start(
             self,
             kind: str,
-            callback: Callable[[ServiceMeta], None],
+            callback: Callable[[ServiceMeta], Awaitable[None] | None],
     ) -> Handle:
-        """``callback`` is fired when a service of ``kind`` comes online."""
+        """``callback`` is fired when a service of ``kind`` comes online.
+
+        Sync or async; runs on the operator's loop-side pipeline, one task
+        per event — callbacks may be invoked concurrently.
+        """
 
     @abstractmethod
     def on_service_stop(
             self,
             kind: str,
-            callback: Callable[[ServiceMeta], None],
+            callback: Callable[[ServiceMeta], Awaitable[None] | None],
     ) -> Handle:
-        """``callback`` is fired when a service of ``kind`` goes offline."""
+        """``callback`` is fired when a service of ``kind`` goes offline.
+
+        The delivered meta is the last one observed while the service was
+        live (cached at discovery), so ``ServiceDeclaration.from_meta``
+        round-trips.  If the service died before its meta was ever fetched,
+        a minimal meta with empty ``data`` is delivered (logged as degraded).
+        """
 
     # -- connection (typed by ServiceMeta + business key) -----------
 
@@ -202,10 +230,14 @@ class ServiceOperator(ABC):
             self,
             kind: str,
             key: str,
-            handler: Callable[[Sample], Awaitable[None]],
+            handler: Callable[[Sample], Awaitable[None] | None],
             *services: ServiceMeta,
     ) -> Handle:
-        """ subscribe the samples published from a service or all services."""
+        """subscribe the samples published from a service or all services.
+
+        Sync or async handler; one task per sample — a slow handler never
+        blocks later samples, and handlers may be invoked concurrently.
+        """
         ...
 
     @abstractmethod

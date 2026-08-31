@@ -79,7 +79,9 @@ class CounterServer(ServiceServer):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        self._provider = None
+        if self._provider is not None:
+            await self._provider.__aexit__(exc_type, exc_val, exc_tb)
+            self._provider = None
 
     async def _on_inc(self, _query: Query) -> bytes:
         self._counter += 1

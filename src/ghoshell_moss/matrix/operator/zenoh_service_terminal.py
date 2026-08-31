@@ -5,22 +5,29 @@ ZenohServiceTerminal — ServiceProvider ABC 的 zenoh 实现.
 运行时接线端子。生命周期内持有 liveness token + meta queryable + 按需创建的
 per-key queryable / publisher / subscriber。
 
-异步桥: zenoh 回调线程 → janus.Queue → asyncio consumer task → async handler。
-implementer 只写 ``async def handler(query) -> bytes``, 永远不碰 zenoh 线程。
+异步桥纪律 (2026-09-01 实测定型, 见 _bridge.py 模块 docstring):
+
+- zenoh 回调只入队, 立即返回。queryable 投递对同一 closure 串行,
+  阻塞回调 = 队头阻塞整个 queryable。
+- query 对象即回复信道 (deferred reply): 回调入队后, handler 在 loop 上
+  create_task-per-query 并发执行, reply 经出站 worker 从 loop 外发出。
+  zenoh 线程从不等待 loop 的计算结果。
+- 错误永不静默: 无 handler / 解码失败 / handler 异常 / 队满 → error reply
+  (``query.reply_err``), caller 不会挂到超时。
+- handler 并发契约: handler 会被并发调用。有 await 点且共享状态的 handler
+  必须自己加锁 (内核不串行化)。
 """
 
 import asyncio
 import json
-import threading
 import time
 from typing import Callable, Awaitable
-
-import janus
-import zenoh
 
 from ghoshell_moss.depends import depend_matrix
 
 depend_matrix()
+
+import zenoh
 
 from ghoshell_moss.core.blueprint.service import (
     ServiceProvider,
@@ -31,6 +38,7 @@ from ghoshell_moss.core.blueprint.service import (
     Handle,
 )
 from ._utils import ServiceKeyExpr, _META_KEY
+from ._bridge import ZenohHandle, LoopDispatcher, OutboundWorker, invoke_handler
 
 import logging
 
@@ -39,21 +47,8 @@ __all__ = ['ZenohServiceTerminal']
 _QUERY_QUEUE_MAXSIZE = 1000
 _LISTEN_QUEUE_MAXSIZE = 1000
 
-
-# -- internal Handle impl ------------------------------------------------
-
-class _ZenohHandle(Handle):
-
-    def __init__(self, key: str, close_fn: Callable[[], None]):
-        self._key = key
-        self._close_fn = close_fn
-
-    @property
-    def key(self) -> str:
-        return self._key
-
-    def close(self) -> None:
-        self._close_fn()
+# Backward-compatible alias — operator historically imported this name.
+_ZenohHandle = ZenohHandle
 
 
 # -- query payload envelope (caller identity) ----------------------------
@@ -95,19 +90,25 @@ class ZenohServiceTerminal(ServiceProvider):
 
         # -- zenoh handles -------------------------------------------------
         self._liveness_token: zenoh.LivelinessToken | None = None
+        # publishers are created and used only on the outbound worker thread
         self._publishers: dict[str, zenoh.Publisher] = {}
+        # every queryable/listen registration — closed at exit so no zenoh
+        # entity outlives the terminal (handles are idempotent)
+        self._registered_handles: list[ZenohHandle] = []
 
         # -- handler registries --------------------------------------------
-        # business_key → async handler
-        self._query_handlers: dict[str, Callable[[Query], Awaitable[bytes]]] = {}
-        self._listen_handlers: dict[str, Callable[[Sample], Awaitable[None]]] = {}
+        # business_key → sync or async handler
+        self._query_handlers: dict[str, Callable[[Query], Awaitable[bytes] | bytes]] = {}
+        self._listen_handlers: dict[str, Callable[[Sample], Awaitable[None] | None]] = {}
 
         # -- async bridge --------------------------------------------------
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._query_queue: janus.Queue | None = None
-        self._listen_queue: janus.Queue | None = None
-        self._query_task: asyncio.Task | None = None
-        self._listen_task: asyncio.Task | None = None
+        self._query_dispatcher: LoopDispatcher[tuple[zenoh.Query, str]] = LoopDispatcher(
+            f"query-{keys.kind}", logger, maxsize=_QUERY_QUEUE_MAXSIZE,
+        )
+        self._listen_dispatcher: LoopDispatcher[tuple[str, bytes]] = LoopDispatcher(
+            f"listen-{keys.kind}", logger, maxsize=_LISTEN_QUEUE_MAXSIZE,
+        )
+        self._outbound = OutboundWorker(f"terminal-{keys.kind}", logger)
 
         self._started = False
         self._closed = False
@@ -118,13 +119,21 @@ class ZenohServiceTerminal(ServiceProvider):
     def meta(self) -> ServiceMeta:
         return self._meta
 
+    def _require_started(self) -> None:
+        if not self._started or self._closed:
+            raise RuntimeError(
+                f"terminal not running (kind={self._keys.kind!r}): "
+                "register handlers between __aenter__ and __aexit__"
+            )
+
     # -- ServiceProvider: queryable --------------------------------------
 
     def queryable(
             self,
             key: str,
-            handler: Callable[[Query], Awaitable[bytes]],
+            handler: Callable[[Query], Awaitable[bytes] | bytes],
     ) -> Handle:
+        self._require_started()
         if key in self._query_handlers:
             raise RuntimeError(
                 f"queryable handler already registered for key={key!r}"
@@ -140,64 +149,64 @@ class ZenohServiceTerminal(ServiceProvider):
             self._query_handlers.pop(key, None)
             try:
                 q.undeclare()
-            except RuntimeError:
-                pass
+            except Exception:
+                self._logger.info(
+                    "queryable already undeclared: kind=%s key=%s",
+                    self._keys.kind, key,
+                )
 
-        return _ZenohHandle(key, _close)
+        handle = ZenohHandle(key, _close)
+        self._registered_handles.append(handle)
+        return handle
 
     # -- ServiceProvider: pub --------------------------------------------
 
     def pub(self, key: str, payload: bytes) -> None:
-        pub = self._publishers.get(key)
-        if pub is None:
-            pub_key = self._keys.pub_key(key)
-            pub = self._session.declare_publisher(pub_key)
-            self._publishers[key] = pub
-        pub.put(payload)
+        self._require_started()
+
+        def _op() -> None:
+            # publisher creation + put both happen on the worker thread —
+            # zenoh write ops may block under congestion control.
+            p = self._publishers.get(key)
+            if p is None:
+                p = self._session.declare_publisher(self._keys.pub_key(key))
+                self._publishers[key] = p
+            p.put(payload)
+
+        if not self._outbound.submit(f"pub:{key}", _op):
+            self._logger.error(
+                "pub dropped (outbound unavailable): kind=%s key=%s",
+                self._keys.kind, key,
+            )
 
     # -- ServiceProvider: listen -----------------------------------------
 
     def listen(
             self,
             key: str,
-            handler: Callable[[Sample], Awaitable[None]],
+            handler: Callable[[Sample], Awaitable[None] | None],
     ) -> Handle:
+        self._require_started()
         if key in self._listen_handlers:
             raise RuntimeError(
                 f"listen handler already registered for key={key!r}"
             )
-
-        listen_key = self._keys.listen_key(key)
         self._listen_handlers[key] = handler
+        listen_key = self._keys.listen_key(key)
 
-        # no-callback subscriber: blocking iteration on a daemon thread
-        # feeds the existing _listen_queue.  _consume_listen (started in
-        # __aenter__) drains the queue and calls the handler.
-        sub = self._session.declare_subscriber(listen_key)
+        def _on_sample(sample: zenoh.Sample) -> None:
+            # zenoh callback thread: extract + enqueue, never block
+            if sample.kind != zenoh.SampleKind.PUT:
+                return
+            biz_key = str(sample.key_expr)[len(self._keys.listen_prefix):]
+            item = (biz_key, sample.payload.to_bytes())
+            if not self._listen_dispatcher.push_from_thread(item):
+                self._logger.warning(
+                    "listen queue full, dropping sample: kind=%s key=%s",
+                    self._keys.kind, biz_key,
+                )
 
-        def _reader() -> None:
-            try:
-                for sample in sub:
-                    if sample.kind != zenoh.SampleKind.PUT:
-                        continue
-                    key_expr = str(sample.key_expr)
-                    biz_key = key_expr[len(self._keys.listen_prefix):]
-                    try:
-                        self._listen_queue.sync_q.put_nowait((sample, biz_key))
-                    except janus.SyncQueueFull:
-                        self._logger.error(
-                            "listen queue full, dropping: key=%s", biz_key,
-                        )
-                    except janus.SyncQueueShutDown:
-                        return
-            except zenoh.ZError:
-                pass  # subscriber undeclared — normal
-
-        t = threading.Thread(
-            target=_reader, daemon=True,
-            name=f"listen-{self._keys.kind}-{key}",
-        )
-        t.start()
+        sub = self._session.declare_subscriber(listen_key, _on_sample)
 
         def _close() -> None:
             self._listen_handlers.pop(key, None)
@@ -209,7 +218,9 @@ class ZenohServiceTerminal(ServiceProvider):
                     self._keys.kind, key,
                 )
 
-        return _ZenohHandle(key, _close)
+        handle = ZenohHandle(key, _close)
+        self._registered_handles.append(handle)
+        return handle
 
     # -- lifecycle -------------------------------------------------------
 
@@ -218,11 +229,11 @@ class ZenohServiceTerminal(ServiceProvider):
             return self
         self._started = True
         self._closed = False
-        self._loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
 
-        # -- async bridge queues ------------------------------------------
-        self._query_queue = janus.Queue(maxsize=_QUERY_QUEUE_MAXSIZE)
-        self._listen_queue = janus.Queue(maxsize=_LISTEN_QUEUE_MAXSIZE)
+        self._outbound.start()
+        self._query_dispatcher.start(loop, self._dispatch_query)
+        self._listen_dispatcher.start(loop, self._dispatch_listen)
 
         # -- auto-register meta queryable FIRST (TOCTOU: before liveness) ---
         self.queryable(_META_KEY, self._meta_handler)
@@ -231,10 +242,6 @@ class ZenohServiceTerminal(ServiceProvider):
         self._liveness_token = self._session.liveliness().declare_token(
             self._keys.live_key,
         )
-
-        # -- consumer tasks -----------------------------------------------
-        self._query_task = self._loop.create_task(self._consume_queries())
-        self._listen_task = self._loop.create_task(self._consume_listen())
 
         self._logger.debug(
             "ZenohServiceTerminal started: address=%s kind=%s",
@@ -245,19 +252,25 @@ class ZenohServiceTerminal(ServiceProvider):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closed = True
 
-        # cancel consumer tasks
-        for task in (self._query_task, self._listen_task):
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._query_task = None
-        self._listen_task = None
+        # 1. stop pipelines: cancel consumers + all in-flight handlers.
+        #    cancelled queries still push best-effort error replies into the
+        #    outbound worker, so it must close AFTER this gather.
+        await self._query_dispatcher.aclose()
+        await self._listen_dispatcher.aclose()
 
-        # undeclare all zenoh handles (sync → to_thread)
-        def _undeclare():
+        # 2. drain + stop the outbound worker (bounded)
+        self._outbound.close()
+
+        # 3. undeclare all zenoh entities off the loop
+        def _undeclare() -> None:
+            for handle in list(self._registered_handles):
+                try:
+                    handle.close()
+                except Exception:
+                    self._logger.exception(
+                        "handle close error: kind=%s key=%s",
+                        self._keys.kind, handle.key,
+                    )
             if self._liveness_token is not None:
                 try:
                     self._liveness_token.undeclare()
@@ -268,7 +281,6 @@ class ZenohServiceTerminal(ServiceProvider):
                         self._keys.address, self._keys.kind,
                     )
                 self._liveness_token = None
-
             for pub in list(self._publishers.values()):
                 try:
                     pub.undeclare()
@@ -281,13 +293,7 @@ class ZenohServiceTerminal(ServiceProvider):
 
         await asyncio.to_thread(_undeclare)
 
-        # close queues
-        for q in (self._query_queue, self._listen_queue):
-            if q is not None:
-                q.shutdown(immediate=True)
-        self._query_queue = None
-        self._listen_queue = None
-
+        self._registered_handles.clear()
         self._query_handlers.clear()
         self._listen_handlers.clear()
         self._started = False
@@ -299,108 +305,124 @@ class ZenohServiceTerminal(ServiceProvider):
     # -- queryable bridge (zenoh thread → asyncio) -----------------------
 
     def _on_query(self, query: zenoh.Query) -> None:
-        """zenoh thread: extract business key, enqueue."""
+        """zenoh thread: extract business key, enqueue, return."""
         # key_expr is {query_prefix}{business_key}
         key_expr = str(query.key_expr)
         business_key = key_expr[len(self._keys.query_prefix):]
-        try:
-            self._query_queue.sync_q.put_nowait((query, business_key))
-        except janus.SyncQueueFull:
+        if not self._query_dispatcher.push_from_thread((query, business_key)):
+            # backpressure breach — never silent, never hang the caller.
+            # reply_err is a short zenoh op, acceptable on the callback thread.
             self._logger.error(
-                "query queue full, dropping: key=%s", business_key,
+                "query queue full, rejecting: kind=%s key=%s",
+                self._keys.kind, business_key,
             )
-        except janus.SyncQueueShutDown:
-            pass
-
-    async def _consume_queries(self) -> None:
-        """asyncio: dequeue query, run async handler, reply."""
-        while not self._closed:
             try:
-                query, business_key = await self._query_queue.async_q.get()
-            except janus.AsyncQueueShutDown:
-                return
-            except asyncio.CancelledError:
-                return
-
-            handler = self._query_handlers.get(business_key)
-            if handler is None:
-                self._logger.warning(
-                    "query dropped: no handler for key=%r (address=%s kind=%s)",
-                    business_key, self._keys.address, self._keys.kind,
-                )
-                try:
-                    query.reply(
-                        query.key_expr,
-                        json.dumps({
-                            'error': f'no handler for key={business_key!r}',
-                        }).encode(),
-                    )
-                except Exception:
-                    pass
-                continue
-
-            try:
-                raw = query.payload.to_bytes() if query.payload is not None else b'{}'
-                caller, params = _decode_query_payload(raw)
-                q = Query(
-                    address=caller,
-                    key=business_key,
-                    payload=params,
-                    timestamp=time.time(),
-                )
-                result = await handler(q)
-                await asyncio.to_thread(query.reply, query.key_expr, result)
-            except asyncio.CancelledError:
-                raise
+                query.reply_err(json.dumps({'error': 'service overloaded'}).encode())
             except Exception:
                 self._logger.exception(
-                    "query handler error: address=%s kind=%s key=%s",
-                    self._keys.address, self._keys.kind, business_key,
+                    "overload reply failed: kind=%s key=%s",
+                    self._keys.kind, business_key,
                 )
-                # reply an error so the caller doesn't hang until timeout
-                try:
-                    query.reply(
-                        query.key_expr,
-                        json.dumps({'error': 'handler error'}).encode(),
-                    )
-                except Exception:
-                    self._logger.exception(
-                        "error reply failed: address=%s kind=%s key=%s",
-                        self._keys.address, self._keys.kind, business_key,
-                    )
 
-    # -- listen bridge (background thread → queue → asyncio) ----------
+    async def _dispatch_query(self, item: tuple[zenoh.Query, str]) -> None:
+        """loop task (one per query): run handler, reply via outbound worker."""
+        query, business_key = item
 
-    async def _consume_listen(self) -> None:
-        """asyncio: dequeue sample, run async handler."""
-        while not self._closed:
-            try:
-                sample, business_key = await self._listen_queue.async_q.get()
-            except janus.AsyncQueueShutDown:
-                return
-            except asyncio.CancelledError:
-                return
+        handler = self._query_handlers.get(business_key)
+        if handler is None:
+            self._logger.warning(
+                "query rejected: no handler for key=%r (address=%s kind=%s)",
+                business_key, self._keys.address, self._keys.kind,
+            )
+            self._submit_error_reply(query, business_key, f'no handler for key={business_key!r}')
+            return
 
-            handler = self._listen_handlers.get(business_key)
-            if handler is None:
-                continue
+        try:
+            raw = query.payload.to_bytes() if query.payload is not None else b'{}'
+            caller, params = _decode_query_payload(raw)
+        except Exception:
+            self._logger.exception(
+                "malformed query payload: address=%s kind=%s key=%s",
+                self._keys.address, self._keys.kind, business_key,
+            )
+            self._submit_error_reply(query, business_key, 'malformed query payload')
+            return
 
-            try:
-                # zenoh pub/sub does not expose the publisher's identity.
-                # For client→server emissions (emit→listen), the caller
-                # address is unavailable without a payload envelope.
-                # V2: wrap emit payload with caller identity, like query does.
-                s = Sample(
-                    address='',
-                    key=business_key,
-                    payload=sample.payload.to_bytes(),
-                    timestamp=time.time(),
-                )
-                await handler(s)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self._logger.exception(
-                    "listen handler error: address=%s kind=%s key=%s",
-                    self._keys.address, self._keys.kind, business_key,
-                )
+        q = Query(
+            address=caller,
+            key=business_key,
+            payload=params,
+            timestamp=time.time(),
+        )
+        try:
+            result = await invoke_handler(handler, q)
+        except asyncio.CancelledError:
+            # shutdown: best-effort error reply so the caller doesn't hang,
+            # then propagate so the gather sees a clean cancellation.
+            self._submit_error_reply(query, business_key, 'service shutting down')
+            raise
+        except Exception:
+            self._logger.exception(
+                "query handler error: address=%s kind=%s key=%s",
+                self._keys.address, self._keys.kind, business_key,
+            )
+            self._submit_error_reply(query, business_key, 'handler error')
+            return
+
+        if not isinstance(result, (bytes, bytearray)):
+            self._logger.error(
+                "query handler returned %s, expected bytes: kind=%s key=%s",
+                type(result).__name__, self._keys.kind, business_key,
+            )
+            self._submit_error_reply(query, business_key, 'handler returned non-bytes')
+            return
+
+        ok = self._outbound.submit(
+            f"reply:{business_key}",
+            lambda: query.reply(query.key_expr, bytes(result)),
+        )
+        if not ok:
+            self._logger.error(
+                "reply dropped (outbound unavailable): kind=%s key=%s",
+                self._keys.kind, business_key,
+            )
+
+    def _submit_error_reply(self, query: zenoh.Query, business_key: str, message: str) -> None:
+        payload = json.dumps({'error': message}).encode()
+        ok = self._outbound.submit(
+            f"reply_err:{business_key}",
+            lambda: query.reply_err(payload),
+        )
+        if not ok:
+            self._logger.error(
+                "error reply dropped (outbound unavailable): kind=%s key=%s error=%s",
+                self._keys.kind, business_key, message,
+            )
+
+    # -- listen bridge (zenoh thread → asyncio) ---------------------------
+
+    async def _dispatch_listen(self, item: tuple[str, bytes]) -> None:
+        """loop task (one per sample): run handler."""
+        business_key, payload = item
+        handler = self._listen_handlers.get(business_key)
+        if handler is None:
+            return
+        # zenoh pub/sub does not expose the publisher's identity.
+        # For client→server emissions (emit→listen), the caller
+        # address is unavailable without a payload envelope.
+        # V2: wrap emit payload with caller identity, like query does.
+        s = Sample(
+            address='',
+            key=business_key,
+            payload=payload,
+            timestamp=time.time(),
+        )
+        try:
+            await invoke_handler(handler, s)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception(
+                "listen handler error: address=%s kind=%s key=%s",
+                self._keys.address, self._keys.kind, business_key,
+            )

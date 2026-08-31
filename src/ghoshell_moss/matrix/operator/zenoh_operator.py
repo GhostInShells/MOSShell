@@ -8,15 +8,22 @@ ZenohOperator — ServiceOperator ABC 的 zenoh 实现.
   ZenohLivenessListener({services_ns}/**) → on_online/offline
   → parse kind + dotted_addr → on_service_start/stop callbacks
   get_services_by_kind → liveness cache filter + meta queryable per service
+
+异步桥纪律 (2026-09-01 实测定型, 见 _bridge.py 模块 docstring):
+
+- ``get()`` 全回调化: ``session.get(key, Callback(on_reply, on_drop))``,
+  replies 在回调线程收集, drop 终结信号经 ``call_soon_threadsafe`` 完成
+  loop 侧 Future — 零线程占用, 广播 N 个目标互不干扰。
+- ``sub()`` 无独立线程: callback subscriber → 共享分发管线 →
+  create_task-per-sample。
+- ``emit()`` 的 ``session.put`` 经出站 worker 执行, loop 零阻塞。
+- 广播目标解析只读 liveness cache, 不做 per-service meta round-trip。
 """
 
 import asyncio
 import json
-import threading
 import time
 from typing import Callable, Awaitable
-
-import janus
 
 from ghoshell_moss.depends import depend_matrix
 
@@ -37,21 +44,27 @@ from ghoshell_moss.core.blueprint.service import (
 from ghoshell_moss.core.blueprint.cell import CellAddress
 from ghoshell_moss.matrix.zenoh_helper import ZenohLivenessListener
 
-from ._utils import ServiceKeyspace, ServiceKeyExpr
+from ._utils import ServiceKeyspace
+from ._bridge import ZenohHandle, LoopDispatcher, OutboundWorker, invoke_handler
 from .zenoh_service_terminal import (
     ZenohServiceTerminal,
     _encode_query_payload,
-    _ZenohHandle,
 )
 
 import logging
 
 __all__ = ['ZenohOperator']
 
-# Bound a single query's blocking time. ``session.get`` holds its iterator open
-# until replies arrive or the zenoh default timeout — a stale target (no
-# queryable at the key) would otherwise pin an executor thread for 10-30s.
+# Bound a single query's lifetime.  With callback-based get the timeout only
+# bounds when zenoh fires the drop (completion) signal — no thread is held.
 _QUERY_TIMEOUT = 5.0
+
+# Safety margin for the loop-side wait: the zenoh drop signal should always
+# arrive within _QUERY_TIMEOUT; the extra second guards against a lost drop.
+_QUERY_WAIT_TIMEOUT = _QUERY_TIMEOUT + 1.0
+
+_SUB_QUEUE_MAXSIZE = 1000
+_LIVENESS_QUEUE_MAXSIZE = 1000
 
 
 class ZenohOperator(ServiceOperator):
@@ -83,18 +96,36 @@ class ZenohOperator(ServiceOperator):
         )
 
         # kind → list[(callback, Handle)]
-        self._start_callbacks: dict[str, list[tuple[Callable, _ZenohHandle]]] = {}
-        self._stop_callbacks: dict[str, list[tuple[Callable, _ZenohHandle]]] = {}
+        self._start_callbacks: dict[str, list[tuple[Callable, ZenohHandle]]] = {}
+        self._stop_callbacks: dict[str, list[tuple[Callable, ZenohHandle]]] = {}
 
-        # subscriber handles for sub()
-        self._sub_handles: list[_ZenohHandle] = []
+        # subscriber handles for sub() — removed on close (no leak)
+        self._sub_handles: list[ZenohHandle] = []
 
-        # liveness callback bridge (K2 janus.Queue pattern)
-        self._liveness_queue: janus.Queue | None = None
-        self._liveness_task: asyncio.Task | None = None
+        # last known meta per live service — lets on_service_stop deliver a
+        # K4-valid meta (from_meta must round-trip) after the service is gone
+        self._meta_cache: dict[tuple[str, str], ServiceMeta] = {}
+
+        # -- loop-side pipelines -------------------------------------------
+        # sub(): (handler, key_expr, payload) → create_task-per-sample
+        self._sub_dispatcher: LoopDispatcher[tuple[Callable, str, bytes]] = LoopDispatcher(
+            "operator-sub", logger, maxsize=_SUB_QUEUE_MAXSIZE,
+        )
+        # liveness: (direction, dotted_addr, kind) → create_task-per-event
+        self._liveness_dispatcher: LoopDispatcher[tuple[str, str, str]] = LoopDispatcher(
+            "operator-liveness", logger, maxsize=_LIVENESS_QUEUE_MAXSIZE,
+        )
+        # emit(): sync zenoh puts off the loop
+        self._outbound = OutboundWorker("operator", logger)
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._started = False
+
+    def _require_started(self) -> None:
+        if not self._started or self._loop is None:
+            raise RuntimeError(
+                "operator not running: use it between __aenter__ and __aexit__"
+            )
 
     # -- ServiceOperator: provide ----------------------------------------
 
@@ -132,43 +163,45 @@ class ZenohOperator(ServiceOperator):
 
     # -- ServiceOperator: discovery --------------------------------------
 
-    async def get_services_by_kind(self, kind: str) -> list[ServiceMeta]:
-        identities = self._liveness_listener.live_keys
-        result: list[ServiceMeta] = []
-        for identity in identities:
+    def _live_services(self) -> list[tuple[str, str]]:
+        """Snapshot of live (dotted_addr, kind) pairs from the liveness cache."""
+        result = []
+        for identity in self._liveness_listener.live_keys:
             parsed = self._keyspace.parse_live_identity(identity)
-            if parsed is None:
-                continue
-            dotted_addr, k = parsed
-            if k != kind:
-                continue
-            meta = await self._fetch_meta(dotted_addr, kind)
-            if meta is not None:
-                result.append(meta)
+            if parsed is not None:
+                result.append(parsed)
         return result
 
+    def _live_addresses_by_kind(self, kind: str) -> list[str]:
+        """Resolve broadcast targets from the liveness cache alone —
+        no meta round-trip needed for addressing."""
+        return [
+            dotted.replace('.', '/')
+            for dotted, k in self._live_services()
+            if k == kind
+        ]
+
+    async def get_services_by_kind(self, kind: str) -> list[ServiceMeta]:
+        pairs = [(d, k) for d, k in self._live_services() if k == kind]
+        metas = await asyncio.gather(
+            *[self._fetch_meta(d, k) for d, k in pairs],
+        )
+        return [m for m in metas if m is not None]
+
     async def get_services_by_address(self, address: str) -> list[ServiceMeta]:
-        identities = self._liveness_listener.live_keys
         dotted_target = address.replace('/', '.')
-        result: list[ServiceMeta] = []
-        for identity in identities:
-            parsed = self._keyspace.parse_live_identity(identity)
-            if parsed is None:
-                continue
-            dotted_addr, kind = parsed
-            if dotted_addr != dotted_target:
-                continue
-            meta = await self._fetch_meta(dotted_addr, kind)
-            if meta is not None:
-                result.append(meta)
-        return result
+        pairs = [(d, k) for d, k in self._live_services() if d == dotted_target]
+        metas = await asyncio.gather(
+            *[self._fetch_meta(d, k) for d, k in pairs],
+        )
+        return [m for m in metas if m is not None]
 
     def on_service_start(
             self,
             kind: str,
-            callback: Callable[[ServiceMeta], None],
+            callback: Callable[[ServiceMeta], Awaitable[None] | None],
     ) -> Handle:
-        handle = _ZenohHandle(kind, lambda: self._remove_callback(
+        handle = ZenohHandle(kind, lambda: self._remove_callback(
             self._start_callbacks, kind, callback,
         ))
         lst = self._start_callbacks.setdefault(kind, [])
@@ -178,9 +211,9 @@ class ZenohOperator(ServiceOperator):
     def on_service_stop(
             self,
             kind: str,
-            callback: Callable[[ServiceMeta], None],
+            callback: Callable[[ServiceMeta], Awaitable[None] | None],
     ) -> Handle:
-        handle = _ZenohHandle(kind, lambda: self._remove_callback(
+        handle = ZenohHandle(kind, lambda: self._remove_callback(
             self._stop_callbacks, kind, callback,
         ))
         lst = self._stop_callbacks.setdefault(kind, [])
@@ -201,6 +234,39 @@ class ZenohOperator(ServiceOperator):
 
     # -- ServiceOperator: get --------------------------------------------
 
+    def _issue_get(self, query_key: str, payload: bytes | None) -> 'asyncio.Future[list[zenoh.Reply]]':
+        """Issue a callback-based zenoh get, bridged to a loop-side Future.
+
+        Replies are collected on the zenoh callback thread; the drop
+        (completion) signal completes the Future via call_soon_threadsafe.
+        Value flow is strictly one-way (zenoh thread → loop) — no thread
+        ever waits on a loop-side result.
+        """
+        loop = self._loop
+        fut: asyncio.Future = loop.create_future()
+        box: list[zenoh.Reply] = []
+
+        def _on_reply(reply: zenoh.Reply) -> None:
+            box.append(reply)
+
+        def _complete() -> None:
+            if not fut.done():  # guard: caller may have cancelled / timed out
+                fut.set_result(box)
+
+        def _on_drop() -> None:
+            try:
+                loop.call_soon_threadsafe(_complete)
+            except RuntimeError:
+                pass  # loop closed during shutdown
+
+        self._session.get(
+            query_key,
+            zenoh.handlers.Callback(_on_reply, _on_drop),
+            payload=payload,
+            timeout=_QUERY_TIMEOUT,
+        )
+        return fut
+
     async def get(
             self,
             kind: str,
@@ -208,46 +274,61 @@ class ZenohOperator(ServiceOperator):
             params: bytes | None,
             *services: ServiceMeta,
     ) -> list[Reply]:
-        targets = list(services) if services else await self.get_services_by_kind(kind)
+        self._require_started()
+        if services:
+            targets = [meta['address'] for meta in services]
+        else:
+            targets = self._live_addresses_by_kind(kind)
         if not targets:
             return []
 
         payload = _encode_query_payload(self._this_address, params)
 
-        async def _query_one(meta: ServiceMeta) -> Reply | None:
-            keys = self._keyspace.per_service(meta['address'], kind)
-            query_key = keys.query_key(key)
+        futures: list[asyncio.Future] = []
+        addresses: list[str] = []
+        for address in targets:
+            query_key = self._keyspace.per_service(address, kind).query_key(key)
             try:
-                # session.get returns a blocking iterator — consume it in the
-                # worker thread so iteration doesn't stall the event loop.
-                replies = await asyncio.to_thread(
-                    lambda: list(self._session.get(
-                        query_key, payload=payload, timeout=_QUERY_TIMEOUT,
-                    )),
-                )
-                for reply in replies:
-                    if reply.ok:
-                        return Reply(
-                            address=meta['address'],
-                            key=key,
-                            payload=reply.ok.payload.to_bytes(),
-                            timestamp=time.time(),
-                        )
-                    else:
-                        self._logger.warning(
-                            "get query rejected: kind=%s key=%s address=%s error=%s",
-                            kind, key, meta['address'],
-                            reply.err.payload.to_string() if reply.err.payload else 'unknown',
-                        )
+                fut = self._issue_get(query_key, payload)
             except Exception:
                 self._logger.exception(
-                    "get query failed: kind=%s key=%s address=%s",
-                    kind, key, meta['address'],
+                    "get dispatch failed: kind=%s key=%s address=%s",
+                    kind, key, address,
                 )
-            return None
+                continue
+            futures.append(fut)
+            addresses.append(address)
 
-        results = await asyncio.gather(*[_query_one(m) for m in targets])
-        return [r for r in results if r is not None]
+        gathered = await asyncio.gather(
+            *[asyncio.wait_for(f, timeout=_QUERY_WAIT_TIMEOUT) for f in futures],
+            return_exceptions=True,
+        )
+
+        results: list[Reply] = []
+        for address, outcome in zip(addresses, gathered):
+            if isinstance(outcome, BaseException):
+                # safety net — normally the zenoh timeout fires the drop first
+                self._logger.warning(
+                    "get did not complete: kind=%s key=%s address=%s error=%r",
+                    kind, key, address, outcome,
+                )
+                continue
+            for reply in outcome:
+                if reply.ok:
+                    results.append(Reply(
+                        address=address,
+                        key=key,
+                        payload=reply.ok.payload.to_bytes(),
+                        timestamp=time.time(),
+                    ))
+                    break
+                else:
+                    self._logger.warning(
+                        "get query rejected: kind=%s key=%s address=%s error=%s",
+                        kind, key, address,
+                        reply.err.payload.to_string() if reply.err.payload else 'unknown',
+                    )
+        return results
 
     # -- ServiceOperator: sub --------------------------------------------
 
@@ -255,78 +336,53 @@ class ZenohOperator(ServiceOperator):
             self,
             kind: str,
             key: str,
-            handler: Callable[[Sample], Awaitable[None]],
+            handler: Callable[[Sample], Awaitable[None] | None],
             *services: ServiceMeta,
     ) -> Handle:
         """Subscribe to a service's pub stream.
 
-        No-callback subscriber + background-thread iterator + janus.Queue
-        bridge.  Same pattern as ``ZenohTopicSubscriber`` — the zenoh
-        subscriber's callback-based delivery is not reliable on single
-        sessions; blocking iteration on a daemon thread is.
+        Callback subscriber → shared dispatch pipeline → one task per
+        sample.  No per-subscription thread.
         """
+        self._require_started()
         targets = list(services) if services else []
         if not targets:
             wildcard = self._keyspace.kind_pub_wildcard(kind, key)
-            return self._start_sub_bridge(wildcard, handler, f"{kind}/{key}")
-        else:
-            handles: list[_ZenohHandle] = []
-            for meta in targets:
-                keys = self._keyspace.per_service(meta['address'], kind)
-                pub_key = keys.pub_key(key)
-                h = self._start_sub_bridge(
-                    pub_key, handler,
-                    f"{meta['address']}/{kind}/{key}",
-                )
-                handles.append(h)
-            close_all = lambda: [h.close() for h in handles]
-            return _ZenohHandle(f"{kind}/{key}", close_all)
+            return self._start_sub(wildcard, handler, f"{kind}/{key}")
+        handles = [
+            self._start_sub(
+                self._keyspace.per_service(meta['address'], kind).pub_key(key),
+                handler,
+                f"{meta['address']}/{kind}/{key}",
+            )
+            for meta in targets
+        ]
 
-    def _start_sub_bridge(
+        def _close_all() -> None:
+            for h in handles:
+                h.close()
+
+        # aggregate handle is NOT tracked in _sub_handles — its children
+        # already are; tracking both would double-close on exit.
+        return ZenohHandle(f"{kind}/{key}", _close_all)
+
+    def _start_sub(
             self,
             key_expr: str,
-            handler: Callable[[Sample], Awaitable[None]],
+            handler: Callable[[Sample], Awaitable[None] | None],
             handle_key: str,
-    ) -> _ZenohHandle:
-        zenoh_sub = self._session.declare_subscriber(key_expr)
-        queue: janus.Queue = janus.Queue(maxsize=256)
+    ) -> ZenohHandle:
+        def _on_sample(sample: zenoh.Sample) -> None:
+            # zenoh callback thread: extract + enqueue, never block
+            if sample.kind != zenoh.SampleKind.PUT:
+                return
+            item = (handler, str(sample.key_expr), sample.payload.to_bytes())
+            if not self._sub_dispatcher.push_from_thread(item):
+                self._logger.warning(
+                    "sub queue full, dropping sample: %s", handle_key,
+                )
 
-        def _reader() -> None:
-            try:
-                for sample in zenoh_sub:
-                    if sample.kind != zenoh.SampleKind.PUT:
-                        continue
-                    s = self._parse_pub_sample(sample)
-                    try:
-                        queue.sync_q.put_nowait(s)
-                    except janus.SyncQueueFull:
-                        pass
-                    except janus.SyncQueueShutDown:
-                        return
-            except zenoh.ZError:
-                pass  # subscriber undeclared — normal
-            except Exception:
-                self._logger.exception("sub reader error: %s", handle_key)
-
-        t = threading.Thread(target=_reader, daemon=True, name=f"sub-{handle_key}")
-        t.start()
-
-        async def _consumer() -> None:
-            while True:
-                try:
-                    s = await queue.async_q.get()
-                    await handler(s)
-                except janus.AsyncQueueShutDown:
-                    return
-                except asyncio.CancelledError:
-                    return
-                except Exception:
-                    self._logger.exception("sub handler error: %s", handle_key)
-
-        task: asyncio.Task = (
-            self._loop.create_task(_consumer()) if self._loop
-            else asyncio.create_task(_consumer())
-        )
+        zenoh_sub = self._session.declare_subscriber(key_expr, _on_sample)
 
         def _close() -> None:
             try:
@@ -336,13 +392,25 @@ class ZenohOperator(ServiceOperator):
                     "subscriber already undeclared (session likely closed): %s",
                     handle_key,
                 )
-            queue.shutdown(immediate=True)
-            if not task.done():
-                task.cancel()
+            try:
+                self._sub_handles.remove(h)
+            except ValueError:
+                pass
 
-        h = _ZenohHandle(handle_key, _close)
+        h = ZenohHandle(handle_key, _close)
         self._sub_handles.append(h)
         return h
+
+    async def _dispatch_sub(self, item: tuple[Callable, str, bytes]) -> None:
+        """loop task (one per sample): parse + run handler."""
+        handler, key_expr, payload = item
+        sample = self._parse_pub_sample(key_expr, payload)
+        try:
+            await invoke_handler(handler, sample)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("sub handler error: key=%s", sample['key'])
 
     # -- ServiceOperator: emit -------------------------------------------
 
@@ -353,16 +421,21 @@ class ZenohOperator(ServiceOperator):
             payload: bytes,
             *services: ServiceMeta,
     ) -> None:
-        targets = list(services) if services else await self.get_services_by_kind(kind)
-        for meta in targets:
-            keys = self._keyspace.per_service(meta['address'], kind)
-            listen_key = keys.listen_key(key)
-            try:
-                self._session.put(listen_key, payload)
-            except Exception:
-                self._logger.exception(
-                    "emit failed: kind=%s key=%s address=%s",
-                    kind, key, meta['address'],
+        self._require_started()
+        if services:
+            targets = [meta['address'] for meta in services]
+        else:
+            targets = self._live_addresses_by_kind(kind)
+        for address in targets:
+            listen_key = self._keyspace.per_service(address, kind).listen_key(key)
+            ok = self._outbound.submit(
+                f"emit:{kind}/{key}",
+                lambda k=listen_key: self._session.put(k, payload),
+            )
+            if not ok:
+                self._logger.error(
+                    "emit dropped (outbound unavailable): kind=%s key=%s address=%s",
+                    kind, key, address,
                 )
 
     # -- lifecycle -------------------------------------------------------
@@ -372,14 +445,15 @@ class ZenohOperator(ServiceOperator):
             return self
         self._started = True
         self._loop = asyncio.get_running_loop()
-        self._liveness_queue = janus.Queue()
-        self._liveness_task = self._loop.create_task(self._consume_liveness())
+        self._outbound.start()
+        self._sub_dispatcher.start(self._loop, self._dispatch_sub)
+        self._liveness_dispatcher.start(self._loop, self._dispatch_liveness)
         await self._liveness_listener.__aenter__()
         self._logger.debug("ZenohOperator started: address=%s", self._this_address)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # close terminals in reverse order
+        # 1. close terminals in reverse order
         for terminal in reversed(list(self._terminals.values())):
             try:
                 await terminal.__aexit__(exc_type, exc_val, exc_tb)
@@ -387,135 +461,121 @@ class ZenohOperator(ServiceOperator):
                 self._logger.exception("terminal exit error")
         self._terminals.clear()
 
-        # undeclare all sub handles
+        # 2. stop producers: sub subscribers + liveness listener
         for h in list(self._sub_handles):
             try:
                 h.close()
             except Exception:
                 self._logger.exception("sub handle close error: %s", h.key)
         self._sub_handles.clear()
-
-        # stop liveness listener
         await self._liveness_listener.__aexit__(exc_type, exc_val, exc_tb)
 
-        # stop liveness consumer
-        if self._liveness_task is not None:
-            self._liveness_task.cancel()
-            try:
-                await self._liveness_task
-            except asyncio.CancelledError:
-                pass
-            self._liveness_task = None
-        if self._liveness_queue is not None:
-            self._liveness_queue.shutdown(immediate=True)
-            self._liveness_queue = None
+        # 3. stop pipelines: cancel consumers + in-flight, gather
+        await self._sub_dispatcher.aclose()
+        await self._liveness_dispatcher.aclose()
+
+        # 4. stop the outbound worker (drain bounded)
+        self._outbound.close()
 
         self._start_callbacks.clear()
         self._stop_callbacks.clear()
+        self._meta_cache.clear()
         self._started = False
 
-    # -- liveness → callback dispatch (zenoh thread -→ janus -→ loop) ----
+    # -- liveness → callback dispatch (zenoh thread → pipeline → loop) ----
 
     def _on_service_online(self, identity: str) -> None:
-        """zenoh callback: enqueue (addr, kind, online)."""
+        """zenoh callback: enqueue (online, addr, kind)."""
         parsed = self._keyspace.parse_live_identity(identity)
         if parsed is None:
             return
-        try:
-            self._liveness_queue.sync_q.put_nowait(('online',) + parsed)
-        except janus.SyncQueueFull:
-            pass
-        except janus.SyncQueueShutDown:
-            pass
+        if not self._liveness_dispatcher.push_from_thread(('online',) + parsed):
+            self._logger.error(
+                "liveness queue full, online event lost: %s", identity,
+            )
 
     def _on_service_offline(self, identity: str) -> None:
-        """zenoh callback: enqueue (addr, kind, offline)."""
+        """zenoh callback: enqueue (offline, addr, kind)."""
         parsed = self._keyspace.parse_live_identity(identity)
         if parsed is None:
             return
-        try:
-            self._liveness_queue.sync_q.put_nowait(('offline',) + parsed)
-        except janus.SyncQueueFull:
-            pass
-        except janus.SyncQueueShutDown:
-            pass
+        if not self._liveness_dispatcher.push_from_thread(('offline',) + parsed):
+            self._logger.error(
+                "liveness queue full, offline event lost: %s", identity,
+            )
 
-    async def _consume_liveness(self) -> None:
-        """asyncio task: single-point consumer for liveness events."""
-        while True:
+    async def _dispatch_liveness(self, item: tuple[str, str, str]) -> None:
+        """loop task (one per event): fetch/evict meta, fire callbacks."""
+        direction, dotted_addr, kind = item
+        if direction == 'online':
+            meta = await self._fetch_meta(dotted_addr, kind)
+            if meta is None:
+                return  # fetch failure already logged
+            callbacks = self._start_callbacks.get(kind, [])
+            event = 'on_service_start'
+        else:
+            meta = self._meta_cache.pop((dotted_addr, kind), None)
+            if meta is None:
+                # Service died before its meta was ever fetched — no valid
+                # ServiceDeclaration can be reconstructed, so K4 (from_meta
+                # round-trip invariant) cannot be upheld.  Skip the callbacks
+                # entirely rather than deliver a broken meta.
+                self._logger.warning(
+                    "service stopped before meta was cached, "
+                    "on_service_stop callbacks will not fire: "
+                    "kind=%s address=%s", kind, dotted_addr,
+                )
+                return
+            callbacks = self._stop_callbacks.get(kind, [])
+            event = 'on_service_stop'
+
+        for cb, _ in list(callbacks):
             try:
-                event = await self._liveness_queue.async_q.get()
-            except janus.AsyncQueueShutDown:
-                return
+                await invoke_handler(cb, meta)
             except asyncio.CancelledError:
-                return
-
-            direction, dotted_addr, kind = event
-            if direction == 'online':
-                meta = await self._fetch_meta(dotted_addr, kind)
-                if meta is None:
-                    continue
-                for cb, _ in list(self._start_callbacks.get(kind, [])):
-                    try:
-                        cb(meta)
-                    except Exception:
-                        self._logger.exception(
-                            "on_service_start callback error: kind=%s address=%s",
-                            kind, dotted_addr,
-                        )
-            else:
-                meta: ServiceMeta = {
-                    'address': dotted_addr.replace('.', '/'),
-                    'kind': kind,
-                    'data': {},
-                }
-                for cb, _ in list(self._stop_callbacks.get(kind, [])):
-                    try:
-                        cb(meta)
-                    except Exception:
-                        self._logger.exception(
-                            "on_service_stop callback error: kind=%s address=%s",
-                            kind, dotted_addr,
-                        )
+                raise
+            except Exception:
+                self._logger.exception(
+                    "%s callback error: kind=%s address=%s",
+                    event, kind, dotted_addr,
+                )
 
     async def _fetch_meta(self, dotted_addr: str, kind: str) -> ServiceMeta | None:
-        """Query a service's meta queryable."""
+        """Query a service's meta queryable (callback-based, no thread held)."""
         keys = self._keyspace.per_service(
             dotted_addr.replace('.', '/'), kind,
         )
-        meta_key = keys.meta_query_key()
         try:
-            replies = await asyncio.to_thread(
-                lambda: list(self._session.get(
-                    meta_key, timeout=_QUERY_TIMEOUT,
-                )),
-            )
+            fut = self._issue_get(keys.meta_query_key(), None)
+            replies = await asyncio.wait_for(fut, timeout=_QUERY_WAIT_TIMEOUT)
             for reply in replies:
                 if reply.ok:
-                    return json.loads(reply.ok.payload.to_bytes())
+                    meta = json.loads(reply.ok.payload.to_bytes())
+                    self._meta_cache[(dotted_addr, kind)] = meta
+                    return meta
         except Exception:
-            # discovery degrades silently otherwise — a service whose meta
-            # can't be fetched simply vanishes from the client's view.
-            self._logger.warning(
-                "fetch meta failed: kind=%s address=%s", kind, dotted_addr,
-            )
+            pass  # fall through to the warning below
+        # discovery degrades silently otherwise — a service whose meta
+        # can't be fetched simply vanishes from the client's view.
+        self._logger.warning(
+            "fetch meta failed: kind=%s address=%s", kind, dotted_addr,
+        )
         return None
 
-    def _parse_pub_sample(self, sample: zenoh.Sample) -> Sample:
-        """Parse a zenoh pub sample → operator Sample (no side effects)."""
-        raw_payload = sample.payload.to_bytes()
-        parsed = self._keyspace.parse_key(str(sample.key_expr))
+    def _parse_pub_sample(self, key_expr: str, payload: bytes) -> Sample:
+        """Parse a zenoh pub sample key/payload → operator Sample."""
+        parsed = self._keyspace.parse_key(key_expr)
         if parsed is not None:
             dotted_addr, _kind, _slot, business_key = parsed
             return Sample(
                 address=dotted_addr.replace('.', '/'),
                 key=business_key,
-                payload=raw_payload,
+                payload=payload,
                 timestamp=time.time(),
             )
         return Sample(
             address='',
             key='',
-            payload=raw_payload,
+            payload=payload,
             timestamp=time.time(),
         )
