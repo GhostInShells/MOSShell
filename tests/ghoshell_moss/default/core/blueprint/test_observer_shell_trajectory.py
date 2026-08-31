@@ -4,12 +4,12 @@ ShellTrajectory (shell 运行时观测轨迹) 作为 Observer/Moments (感知观
 的 shell 观测来源. 每个 round 一拆两帧, 走不同槽位:
 
 - 帧1 (moment 生产时 / 执行前): trajectory 观测 → Moment.percepts (输入, 基于什么行动).
-- 帧2 (执行结束后): trajectory 观测 → Results / add_result → 下一帧 Moment.previous (feedback, 行动带回什么).
+- 帧2 (执行结束后): trajectory 观测 → Echoes / add_echoes → 下一帧 Moment.previous (feedback, 行动带回什么).
 - 执行过程中: 模型 logos 流 buffer 到 moment.logos (行动本身).
 
 need_observe 完全由命令本身决定: 帧2 的 TrajectoryFrame.need_observe 是 bool,
 由事件携带 (ShellTaskDoneEvent 来自 task_result().observe, InterpreterStoppedEvent
-来自 interpretation().observe). 再传给 add_result → observer.need_observe() 反映命令语义.
+来自 interpretation().observe). 再传给 add_echoes → observer.need_observe() 反映命令语义.
 
 moments (observer) 每轮只产一帧 (percepts 帧); trajectory 被 poll 两帧.
 
@@ -62,11 +62,11 @@ def _new_shell(name: str, *, always_observe: bool = False):
 
 
 @pytest.mark.asyncio
-async def test_two_frame_separation_percepts_vs_result():
+async def test_two_frame_separation_percepts_vs_echoes():
     """帧1 → 执行前 percepts; 帧2 → 执行后 result; logos 缓冲到 moment.
 
     驱动一条命令: 生产 moment (percepts = 执行前帧, 无 task-done) → 执行 ctml
-    (logos 缓冲) → 帧2 作为 add_result (need_observe 由 shell status 决定) →
+    (logos 缓冲) → 帧2 作为 add_echoes (need_observe 由 shell status 决定) →
     只进入下一帧 moment 的 previous, 不污染当前 moment 的 percepts.
     """
     shell, _ = _new_shell("two_frame")
@@ -90,24 +90,24 @@ async def test_two_frame_separation_percepts_vs_result():
             m1.logos = "<chan:hello />"
             assert m1.logos == "<chan:hello />"
 
-            # 帧2: 执行结束后 → result (add_result). need_observe 是帧携带的 bool, 由命令决定.
+            # 帧2: 执行结束后 → result (add_echoes). need_observe 是帧携带的 bool, 由命令决定.
             frame_b = trajectory.pop_frame()
             assert frame_b.need_observe is False  # hello 无 observe 请求.
-            obs.add_result(frame_b.project(with_dynamic=False), need_observe=frame_b.need_observe)
+            obs.add_echoes(frame_b.project(with_dynamic=False), need_observe=frame_b.need_observe)
             assert obs.need_observe() is False
             # 结果不进当前 moment 的 percepts (仍是执行前帧).
             assert "world" not in _texts(m1.percepts["shell"])
 
             # 下一帧 moment 捕获执行结果作 previous (feedback).
             m2 = obs.observe()
-            assert any("world" in t for t in _texts(m2.previous_result_messages()))
+            assert any("world" in t for t in _texts(m2.previous_echoes_messages()))
 
 
 @pytest.mark.asyncio
 async def test_sequential_two_frame_loop_twenty_rounds():
     """同步时序: 20 轮 (执行前帧→percepts, 执行后帧→result), 验证两帧装线的不变式.
 
-    每轮: refresh_metas → observe (帧1) → 跑命令 + buffer logos → pop 帧2 → add_result.
+    每轮: refresh_metas → observe (帧1) → 跑命令 + buffer logos → pop 帧2 → add_echoes.
     need_observe 由帧2 的 TrajectoryFrame.need_observe 决定 (hello 无 observe 请求 → 恒 False).
 
     不变式:
@@ -148,7 +148,7 @@ async def test_sequential_two_frame_loop_twenty_rounds():
                 # 帧2: 执行结束后 → result, 进下一 moment.previous. need_observe 由命令决定.
                 frame_b = trajectory.pop_frame()
                 assert frame_b.need_observe is False
-                obs.add_result(frame_b.project(with_dynamic=False), need_observe=frame_b.need_observe)
+                obs.add_echoes(frame_b.project(with_dynamic=False), need_observe=frame_b.need_observe)
                 assert obs.need_observe() is False
 
             # 零重复帧: 恰好 rounds 个 moment.
@@ -160,7 +160,7 @@ async def test_sequential_two_frame_loop_twenty_rounds():
             assert all("world" not in _texts(m.percepts["shell"]) for m in all_moments)
             # 零丢失: 前 rounds-1 个 moment 的 previous 各带一个 task-done 结果.
             world_in_previous = sum(
-                sum(1 for t in _texts(m.previous_result_messages()) if "world" in t)
+                sum(1 for t in _texts(m.previous_echoes_messages()) if "world" in t)
                 for m in all_moments
             )
             assert world_in_previous == rounds - 1
@@ -186,7 +186,7 @@ async def test_need_observe_derived_from_command():
                 await interp.wait_tasks(timeout=2)
             fb = trajectory.pop_frame()
             assert fb.need_observe is False
-            obs_norm.add_result(fb.project(with_dynamic=False), need_observe=fb.need_observe)
+            obs_norm.add_echoes(fb.project(with_dynamic=False), need_observe=fb.need_observe)
             assert obs_norm.need_observe() is False
 
     # always_observe 命令: 请求下一次 observe.
@@ -201,7 +201,7 @@ async def test_need_observe_derived_from_command():
                 await interp.wait_tasks(timeout=2)
             fb = trajectory.pop_frame()
             assert fb.need_observe is True
-            obs_obs.add_result(fb.project(with_dynamic=False), need_observe=fb.need_observe)
+            obs_obs.add_echoes(fb.project(with_dynamic=False), need_observe=fb.need_observe)
             assert obs_obs.need_observe() is True
             # observe 归零.
             obs_obs.observe()
@@ -211,10 +211,10 @@ async def test_need_observe_derived_from_command():
 # ============================================================
 # ghost_runtime._wire_mindflow 装线 — 正式验证套件
 # ============================================================
-# 上面的旧测试走 with_percepts_buffer + 手工 add_result 的"两帧分开"路径.
+# 上面的旧测试走 with_percepts_buffer + 手工 add_echoes 的"两帧分开"路径.
 # ghost_runtime (host/ghost_runtime.py _wire_mindflow) 用的是另三条装线:
 #   trajectory.when_need_observe(_notify_moments_need_observe)
-#   moments.when_moment_created(_on_moments_observing)
+#   moments.on_moment_created(_on_moments_observing)
 #   moments.with_epoch_recap("ShellTrajectoryEpoch", _shell_trajectory_epoch_refresh)
 # 下面复刻这三条装线, 验证其行为契约. 不改动上面旧测试.
 
@@ -225,12 +225,12 @@ def _runtime_wire(obs: BaseMomentsObserver, trajectory: MShellTrajectory):
         frame = trajectory.pop_frame()
         if moment.previous is not None:
             messages = frame.project(with_dynamic=False)
-            moment.previous.add_result(messages, frame.need_observe)
+            moment.previous.add_echoes(messages, frame.need_observe)
             moment.previous.need_observe = frame.need_observe
 
     def _notify_moments_need_observe(e):
-        # 只通知"该观察了", 不带内容 — add_result 已处理空信号置位.
-        obs.add_result([], need_observe=True)
+        # 只通知"该观察了", 不带内容 — add_echoes 已处理空信号置位.
+        obs.add_echoes([], need_observe=True)
 
     def _shell_trajectory_epoch_refresh():
         return [
@@ -239,7 +239,7 @@ def _runtime_wire(obs: BaseMomentsObserver, trajectory: MShellTrajectory):
             )
         ]
 
-    obs.when_moment_created(_on_moments_observing)
+    obs.on_moment_created(_on_moments_observing)
     trajectory.when_need_observe(_notify_moments_need_observe)
     obs.with_epoch_recap("ShellTrajectoryEpoch", _shell_trajectory_epoch_refresh)
 
@@ -260,7 +260,7 @@ async def test_runtime_wiring_need_observe_notifies_observer():
                 interp.feed("<chan:hello />")
                 interp.commit()
                 await interp.wait_tasks(timeout=2)
-            # 通知链: need_observe 事件 -> _notify -> add_result([], True) -> 置位.
+            # 通知链: need_observe 事件 -> _notify -> add_echoes([], True) -> 置位.
             assert obs.need_observe() is True
 
 
@@ -283,7 +283,7 @@ async def test_runtime_wiring_frame_injected_into_previous_on_observe():
             m = obs.observe()
             assert isinstance(m, Moment)
             assert m.previous is not None
-            prev = _texts(m.previous_result_messages())
+            prev = _texts(m.previous_echoes_messages())
             assert any("world" in t for t in prev)  # task-done 反馈
             assert any("<moss at=" in t for t in prev)  # project 的 moss 容器
             # 帧不进 percepts: 那是 with_percepts_buffer 的路径.
@@ -326,7 +326,7 @@ async def test_runtime_wiring_full_rounds_no_loss_dup():
             assert all("world" not in _texts(m.percepts_messages()) for m in all_m)
             # 每轮一个 task-done 反馈 (零丢失).
             world_prev = sum(
-                sum(1 for t in _texts(m.previous_result_messages()) if "world" in t)
+                sum(1 for t in _texts(m.previous_echoes_messages()) if "world" in t)
                 for m in all_m
             )
             assert world_prev == rounds

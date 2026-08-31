@@ -671,7 +671,7 @@ def test_suite_consuming_endless_observe():
             received += delta
         got.append(received)
         if len(got) < 10:
-            action.add_result('hello', observe=True)
+            action.add_echoes('hello', observe=True)
             return
         done_event.set()
 

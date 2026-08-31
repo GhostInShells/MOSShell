@@ -450,13 +450,13 @@ async def test_action_aborted_triggers_shell_clear_cancels_pending():
 
 @pytest.mark.asyncio
 async def test_observe_loop_runs_two_frames_in_one_attention():
-    """attention 多帧循环: outcome(observe=True) 触发第二帧, 一个 attention 跑两组 logos.
+    """attention 多帧循环: echo(observe=True) 触发第二帧, 一个 attention 跑两组 logos.
 
     协议契约 (点 1/5 — thinking 不能先于 last action 退出):
         - attention 不是"每个 signal 一个", 而是"持续观察直到自然结束".
         - 每帧 yield 一个 Thinking, 跑完后检查 need_observe.
         - 命令返回 ``CommandUtil.observe(...)`` → shell trajectory 通知 mindflow
-          ``add_result(need_observe=True)`` → 进下一帧.
+          ``add_echoes(need_observe=True)`` → 进下一帧.
         - 关键: articulate 必须 ``await art.wait_action_done()`` — 否则 thinking 先于
           action 退出, observe 还没落盘, mindflow 会误判 attention 自然结束, 签发
           新 attention 而非同 attention 的第二帧.

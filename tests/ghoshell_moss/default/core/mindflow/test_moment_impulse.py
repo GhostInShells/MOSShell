@@ -125,8 +125,8 @@ def test_update_moment_hint_overwrites_unconditionally():
 # AbsAttention init + _prepare_moment — 首个 impulse 不应被双重应用
 # ============================================================
 
-# def _make_attention(impulse: Impulse, previous: Results | None = None) -> BaseAttention:
-#     return BaseAttention(previous=previous or Results(), impulse=impulse)
+# def _make_attention(impulse: Impulse, previous: Echoes | None = None) -> BaseAttention:
+#     return BaseAttention(previous=previous or Echoes(), impulse=impulse)
 #
 #
 # def test_attention_init_buffers_initial_impulse_exactly_once():

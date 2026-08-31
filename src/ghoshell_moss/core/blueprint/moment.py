@@ -12,7 +12,7 @@ from dateutil import tz
 import logging
 
 __all__ = [
-    'Results',
+    'Echoes',
     'Moment',
     'Moments',
     'Observer',
@@ -25,10 +25,11 @@ __all__ = [
 Logos = str
 
 
-class Results(BaseModel, WithAdditional):
+class Echoes(BaseModel, WithAdditional):
     """
-    The outcome of the previous round's interaction with the outside world —
-    body feedback, thought steps, tool calls, and so on.
+    The echoes that return from executing the previous round's logos — body
+    feedback, thought steps, tool calls, and so on. Echoes need not be a
+    completed outcome; they may be partial, in-progress, or a stop signal.
 
     Because no current model supports full-duplex interaction, this adapter
     layer is still needed to stitch the pieces back into one exchange.
@@ -60,7 +61,7 @@ class Results(BaseModel, WithAdditional):
     )
 
     def is_empty(self) -> bool:
-        """Guard against empty messages."""
+        """Whether no echo messages were received this round."""
         if len(self.messages) == 0:
             return True
         for message in self.messages:
@@ -68,12 +69,12 @@ class Results(BaseModel, WithAdditional):
                 return False
         return True
 
-    def add_result(self, messages: list[Message | str], need_observe: bool = False) -> list[Message]:
-        """Normalize and append non-empty results, setting need_observe if any appended.
+    def add_echoes(self, messages: list[Message | str], need_observe: bool = False) -> list[Message]:
+        """Normalize and append non-empty echoes, setting need_observe if any appended.
 
         Returns the normalized Messages that were actually appended (input strings are
         converted to Messages here), so observers always receive Messages — matching the
-        on_result_add callback signature exactly.
+        echo-added callback signature exactly.
         """
         appended: list[Message] = []
         for msg in messages:
@@ -100,7 +101,7 @@ class Results(BaseModel, WithAdditional):
             hint: str = '',
     ) -> "Moment":
         """
-        Build the next Moment from this round's reaction.
+        Build the next Moment from this round's echoes.
 
         hint only takes effect in this round and is not persisted.
         """
@@ -128,9 +129,9 @@ class Moment(BaseModel, WithAdditional):
     )
 
     # --- stitching the previous round's info --- #
-    previous: Results | None = Field(
+    previous: Echoes | None = Field(
         default=None,
-        description="The stitched results from the previous round — the seam connecting "
+        description="The stitched echoes from the previous round — the seam connecting "
                     "this frame to the prior one.",
     )
 
@@ -204,9 +205,9 @@ class Moment(BaseModel, WithAdditional):
             exclude_defaults=True,
         )
 
-    def new_result_container(self) -> Results:
-        """Create the receiving container for the next round."""
-        return Results(
+    def new_echoes_container(self) -> Echoes:
+        """Create the Echoes container that will receive the next round's echoes."""
+        return Echoes(
             moment_id=self.id,
         )
 
@@ -263,7 +264,7 @@ class Moment(BaseModel, WithAdditional):
         for messages in self.dynamic_context.values():
             yield from messages
 
-    def previous_result_messages(self) -> Iterable[Message]:
+    def previous_echoes_messages(self) -> Iterable[Message]:
         if self.previous is None:
             yield from []
             return
@@ -274,12 +275,12 @@ class Moment(BaseModel, WithAdditional):
             yield Message.new(tag='stop_reason').with_content(result.stop_reason)
 
     def is_empty(self) -> bool:
-        return self.is_results_empty() and self.is_percepts_empty()
+        return self.is_echoes_empty() and self.is_percepts_empty()
 
     def is_percepts_empty(self) -> bool:
         return all(len(v) == 0 for v in self.percepts.values())
 
-    def is_results_empty(self) -> bool:
+    def is_echoes_empty(self) -> bool:
         return self.previous is None or len(self.previous.messages) == 0
 
     def inputs_messages(
@@ -294,28 +295,66 @@ class Moment(BaseModel, WithAdditional):
         if with_hint and self.hint:
             yield Message.new(tag='hint').with_content(self.hint)
 
-    def full_observation_messages(
+    def full_moment_messages(
             self,
             *,
             with_dynamic_context: bool = True,
             with_hint: bool = True,
             with_command_executing: bool = True,
-    ) -> Iterable[Message]:
+    ) -> list[Message]:
         """
-        All these messages would in principle merge into one input round.
+        Fold the whole keyframe into a single moment message.
 
-        This is a code-as-prompt aid, not a hard constraint. In practice they
-        should be used in segments — dynamic_context / command_logos / hint in
-        principle should not enter history, or should be removed from it.
+        Wraps this frame's echoes / dynamic_context / percepts / executing / hint
+        into one ``<moment moment_id=...>`` message carrying the moment id, so it can be
+        inserted as a single tool-result or user message. The transient sub-blocks
+        (dynamic_context / command_logos / hint) belong to the current frame only;
+        history should drop them via ``as_history_messages``.
         """
-        yield from self.previous_result_messages()
+        messages: list[Message] = []
+        echoes = list(self.previous_echoes_messages())
+        if echoes:
+            messages.append(Message.new(tag='echoes').with_messages(*echoes))
+
         if with_dynamic_context:
-            yield from self.dynamic_context_messages()
-        yield from self.inputs_messages(with_command_executing=with_command_executing, with_hint=with_hint)
+            dynamic_messages = list(self.dynamic_context_messages())
+            if dynamic_messages:
+                messages.append(
+                    Message.new(tag='dynamic_context').with_messages(*dynamic_messages)
+                )
+        percepts = list(self.percepts_messages())
+        if percepts:
+            percepts_message = Message.new(tag='percepts').with_messages(*percepts)
+            messages.append(
+                percepts_message
+            )
+        if with_command_executing and self.command_logos:
+            messages.append(
+                Message.new(tag='executing').with_content(self.command_logos)
+            )
+        if with_hint and self.hint:
+            messages.append(
+                Message.new(tag='hint').with_content(self.hint)
+            )
+        if not messages:
+            return []
+        return messages
+
+    def as_moment_message(
+            self,
+            *,
+            always_return: bool = True,
+            with_moment_id: bool = True,
+    ) -> Message | None:
+        messages = self.full_moment_messages()
+        if messages or always_return:
+            attributes = {'moment_id': self.id} if with_moment_id else {}
+            return Message.new(tag='moment', attributes=attributes).with_messages(*messages)
+        return None
 
     def as_history_messages(self) -> Iterable[Message]:
         """When used as history, this drops all dynamic messages. A code-as-prompt."""
-        yield from self.previous_result_messages()
+        yield from self.previous_echoes_messages()
         yield from self.percepts_messages()
 
     @classmethod
@@ -384,7 +423,7 @@ class Moments(ABC):
         ...
 
     @abstractmethod
-    def when_epoch_created(self, callback: Callable[[Epoch], None]) -> Disposer:
+    def on_epoch_created(self, callback: Callable[[Epoch], None]) -> Disposer:
         """当新的 epoch 创建时, 追加 recap 数据"""
         ...
 
@@ -414,7 +453,7 @@ class Moments(ABC):
         ...
 
     @abstractmethod
-    def with_result_drain(self, key: str, drain: Callable[[], tuple[list[Message], bool]]) -> Disposer:
+    def with_echoes_drain(self, key: str, drain: Callable[[], tuple[list[Message], bool]]) -> Disposer:
         ...
 
     @abstractmethod
@@ -431,12 +470,12 @@ class Moments(ABC):
         ...
 
     @abstractmethod
-    def add_result(self, result: list[Message | str], need_observe: bool = False) -> None:
-        """Add observable events, which appear in the next Moment, and mark whether to observe."""
+    def add_echoes(self, result: list[Message | str], need_observe: bool = False) -> None:
+        """Add echoes, which appear in the next Moment, and mark whether to observe."""
         ...
 
     @abstractmethod
-    def when_moment_created(self, callback: Callable[[Moment], None]) -> Disposer:
+    def on_moment_created(self, callback: Callable[[Moment], None]) -> Disposer:
         """Register a moment callback, invoked each time a Moment is produced.
 
         Useful for storage queues or building a multi-sided observer.
@@ -444,8 +483,8 @@ class Moments(ABC):
         ...
 
     @abstractmethod
-    def when_result_add(self, callback: Callable[[list[Message], bool], None]) -> Disposer:
-        """Callback when results are added.
+    def on_echoes_add(self, callback: Callable[[list[Message], bool], None]) -> Disposer:
+        """Callback when echoes are added.
 
         The observer must react to the observe signal; it cannot poll, so it is
         notified through this method.
@@ -482,14 +521,14 @@ class BaseMomentsObserver(Observer):
         self._moments: deque[Moment] = deque()
         self._max_moments_size = max_size
         self._recap: list[Message] = []
-        self._results = Results()
+        self._echoes = Echoes()
         self._moment_created_callbacks: set[Callable[[Moment], None]] = set()
-        self._add_results_callbacks: set[Callable[[list[Message], bool], None]] = set()
+        self._echoes_added_callbacks: set[Callable[[list[Message], bool], None]] = set()
         self._epoch_created_callbacks: set[Callable[[Epoch], None]] = set()
 
         self._dynamic_context_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._percepts_drain_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
-        self._results_drain_funcs: dict[str, Callable[[], tuple[list[Message], bool]]] = dict()
+        self._drain_new_echoes_funcs: dict[str, Callable[[], tuple[list[Message], bool]]] = dict()
         self._epoch_recap_funcs: dict[str, Callable[[], list[Message]]] = dict()
 
         self._buffered_drained_percepts = {}
@@ -549,7 +588,7 @@ class BaseMomentsObserver(Observer):
 
         return _dispose
 
-    def when_epoch_created(self, callback: Callable[[Epoch], None]) -> Disposer:
+    def on_epoch_created(self, callback: Callable[[Epoch], None]) -> Disposer:
         self._epoch_created_callbacks.add(callback)
 
         def _dispose() -> None:
@@ -564,20 +603,20 @@ class BaseMomentsObserver(Observer):
         return result
 
     def need_observe(self) -> bool:
-        return self._results.need_observe
+        return self._echoes.need_observe
 
     def peek(self) -> Moment:
         return self._peek_moment()
 
     def _peek_moment(self) -> Moment:
-        moment = self._results.new_moment()
-        if len(self._results_drain_funcs) > 0:
-            for key, func in self._results_drain_funcs.items():
+        moment = self._echoes.new_moment()
+        if len(self._drain_new_echoes_funcs) > 0:
+            for key, func in self._drain_new_echoes_funcs.items():
                 try:
                     messages, observe = func()
-                    # Results 自己持有 drain: 直接喂给 moment.previous (即 self._results),
-                    # 无需 observer 级缓冲. 空消息也会置位 need_observe (add_result 已处理).
-                    moment.previous.add_result(messages, observe)
+                    # Echoes 自己持有 drain: 直接喂给 moment.previous (即 self._echoes),
+                    # 无需 observer 级缓冲. 空消息也会置位 need_observe (add_echoes 已处理).
+                    moment.previous.add_echoes(messages, observe)
                 except Exception as e:
                     self._logger.error(e)
         if len(self._dynamic_context_funcs) > 0:
@@ -603,7 +642,7 @@ class BaseMomentsObserver(Observer):
 
     def observe(self) -> Moment:
         moment = self._peek_moment()
-        self._results = moment.new_result_container()
+        self._echoes = moment.new_echoes_container()
         self._buffered_drained_percepts = {}
         self._injected_percepts = []
         self._moments.append(moment)
@@ -618,11 +657,11 @@ class BaseMomentsObserver(Observer):
     def clear(self) -> None:
         self._recap = []
         self._moments.clear()
-        self._results = Results()
+        self._echoes = Echoes()
         self._buffered_drained_percepts = {}
         self._injected_percepts = []
 
-    def when_moment_created(self, callback: Callable[[Moment], None]) -> Disposer:
+    def on_moment_created(self, callback: Callable[[Moment], None]) -> Disposer:
         self._moment_created_callbacks.add(callback)
 
         def _disposer():
@@ -631,12 +670,12 @@ class BaseMomentsObserver(Observer):
 
         return _disposer
 
-    def when_result_add(self, callback: Callable[[list[Message], bool], None]) -> Disposer:
-        self._add_results_callbacks.add(callback)
+    def on_echoes_add(self, callback: Callable[[list[Message], bool], None]) -> Disposer:
+        self._echoes_added_callbacks.add(callback)
 
         def _disposer():
-            if callback in self._add_results_callbacks:
-                self._add_results_callbacks.discard(callback)
+            if callback in self._echoes_added_callbacks:
+                self._echoes_added_callbacks.discard(callback)
 
         return _disposer
 
@@ -651,14 +690,14 @@ class BaseMomentsObserver(Observer):
 
         return _disposer
 
-    def with_result_drain(self, key: str, drain: Callable[[], tuple[list[Message], bool]]) -> Disposer:
-        self._results_drain_funcs[key] = drain
+    def with_echoes_drain(self, key: str, drain: Callable[[], tuple[list[Message], bool]]) -> Disposer:
+        self._drain_new_echoes_funcs[key] = drain
 
         def _disposer():
-            if key in self._results_drain_funcs:
-                value = self._results_drain_funcs.get(key)
+            if key in self._drain_new_echoes_funcs:
+                value = self._drain_new_echoes_funcs.get(key)
                 if value is drain:
-                    self._results_drain_funcs.pop(key)
+                    self._drain_new_echoes_funcs.pop(key)
 
         return _disposer
 
@@ -673,17 +712,17 @@ class BaseMomentsObserver(Observer):
 
         return _disposer
 
-    def add_result(self, result: list[Message | str], need_observe: bool = False) -> None:
-        appended = self._results.add_result(result, need_observe)
-        if appended and len(self._add_results_callbacks) > 0:
-            for callback in self._add_results_callbacks:
+    def add_echoes(self, result: list[Message | str], need_observe: bool = False) -> None:
+        appended = self._echoes.add_echoes(result, need_observe)
+        if appended and len(self._echoes_added_callbacks) > 0:
+            for callback in self._echoes_added_callbacks:
                 try:
                     callback(appended, need_observe)
                 except Exception as e:
                     self._logger.error(e)
 
     def add_executed_logos(self, logos: str) -> None:
-        self._results.executed_logos += logos
+        self._echoes.executed_logos += logos
 
     def inject_percepts(self, *messages: Message | str) -> None:
         percepts = []

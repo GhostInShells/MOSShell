@@ -1,7 +1,7 @@
 import time
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.blueprint.mindflow import (
-    Signal, Impulse, Moment, Results, Priority,
+    Signal, Impulse, Moment, Echoes, Priority,
 )
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 
@@ -31,18 +31,18 @@ def test_signal_to_impulse_conversion():
 
 
 # 2. 测试 数据 的缝合 (核心认知流)
-def test_moment_outcome_stitching():
+def test_moment_echoes_stitching():
     # 模拟第一轮 Observation
     obs = Moment()
     obs.percepts = {"test": [Message.new().with_content("Input 1")]}
 
-    # 生成 Outcome
-    outcome = obs.new_result_container()
-    outcome.executed_logos = "MoveForward"
-    outcome.messages = [Message.new().with_content("Action Done")]
+    # 生成 Echoes
+    echoes = obs.new_echoes_container()
+    echoes.executed_logos = "MoveForward"
+    echoes.messages = [Message.new().with_content("Action Done")]
 
     # 缝合到下一轮 Observation
-    obs2 = outcome.new_moment()
+    obs2 = echoes.new_moment()
 
     # 验证上下文连贯性
     assert obs2.previous is not None
@@ -50,8 +50,8 @@ def test_moment_outcome_stitching():
     assert obs2.previous.messages[0].contents[0]['text'] == "Action Done"
 
     # 验证 as_request_messages 结构
-    msgs = list(obs2.full_observation_messages())
-    # 应该包含 <outcomes> 标签及内部消息
+    msgs = list(obs2.full_moment_messages())
+    # 应该包含 <echoes> 标签及内部消息
     content_tags = [m.meta.tag for m in msgs if m.meta.tag]
     assert 'stop_reason' not in content_tags  # 此时 stop_reason 应为空
 
@@ -90,21 +90,21 @@ def test_signal_impulse_direct_set():
 
 
 # ============================================================
-# Moment / Reaction 参数传递链路单测
-# 验证 percepts, reaction_instruction, command_logos 在
+# Moment / Echoes 参数传递链路单测
+# 验证 percepts, hint, command_logos 在
 # new_moment() → _loop() → next_frame() 全链路不会重复或遗漏
 # ============================================================
 
 def test_new_moment_passes_all_params():
-    """Reaction.new_moment() 将三个关键参数完整传递到 Moment."""
-    reaction = Results(executed_logos="test logos", stop_reason="done")
+    """Echoes.new_moment() 将三个关键参数完整传递到 Moment."""
+    echoes = Echoes(executed_logos="test logos", stop_reason="done")
     percept_msg = Message.new().with_content("percept content")
-    moment = reaction.new_moment(
+    moment = echoes.new_moment(
         percepts={"test": [percept_msg]},
         hint="handle this",
         command_logos="reflex!",
     )
-    assert moment.previous is reaction
+    assert moment.previous is echoes
     assert len(moment.percepts) == 1
     assert next(iter(moment.percepts_messages())).contents[0]["text"] == "percept content"
     assert moment.hint == "handle this"
@@ -113,8 +113,8 @@ def test_new_moment_passes_all_params():
 
 def test_new_moment_without_params_creates_empty_moment():
     """不带参数的 new_moment() 创建空的 Moment — observe 轮次应走此路径."""
-    reaction = Results(executed_logos="prev")
-    moment = reaction.new_moment()
+    echoes = Echoes(executed_logos="prev")
+    moment = echoes.new_moment()
     assert moment.percepts == {}
     assert moment.hint == ""
     assert moment.command_logos == ""
@@ -122,15 +122,15 @@ def test_new_moment_without_params_creates_empty_moment():
 
 def test_new_moment_percepts_none_treated_as_empty():
     """percepts=None 时转为空列表，不抛异常."""
-    reaction = Results()
-    moment = reaction.new_moment(percepts=None)
+    echoes = Echoes()
+    moment = echoes.new_moment(percepts=None)
     assert moment.percepts == {}
-    r2 = moment.new_result_container()
+    r2 = moment.new_echoes_container()
     assert r2.moment_id == moment.id
 
 
 def test_moment_inputs_messages_yields_percepts_and_instruction():
-    """inputs_messages() 按序产出 percepts → reaction_instruction."""
+    """inputs_messages() 按序产出 percepts → hint."""
     percept = Message.new().with_content("p1")
     moment = Moment(
         percepts={"test": [percept]},
@@ -153,22 +153,22 @@ def test_moment_inputs_messages_without_instruction():
 
 
 def test_moment_inputs_messages_skips_empty_instruction():
-    """reaction_instruction 为空时不产出多余消息."""
+    """hint 为空时不产出多余消息."""
     moment = Moment(percepts={"test": [Message.new().with_content("p1")]})
     msgs = list(moment.inputs_messages(with_hint=True))
     assert len(msgs) == 1
 
 
-def test_moment_previous_reaction_messages_includes_outcomes_and_stop_reason():
-    """previous_reaction_messages() 产出 outcomes 包装 + stop_reason."""
-    prev = Results(
+def test_moment_previous_echoes_messages_includes_echoes_and_stop_reason():
+    """previous_echoes_messages() 产出 echoes 包装 + stop_reason."""
+    prev = Echoes(
         executed_logos="prev logos",
         messages=[Message.new().with_content("action result")],
         stop_reason="fade out",
     )
     moment = Moment(previous=prev)
-    msgs = list(moment.previous_result_messages())
-    # <outcomes>, action result, </outcomes>, stop_reason
+    msgs = list(moment.previous_echoes_messages())
+    # <echoes>, action result, </echoes>, stop_reason
     assert len(msgs) >= 2
     content_texts = []
     for m in msgs:
@@ -178,10 +178,10 @@ def test_moment_previous_reaction_messages_includes_outcomes_and_stop_reason():
     assert "action result" in content_texts
 
 
-def test_moment_previous_reaction_messages_empty_when_no_previous():
-    """没有 previous Reaction 时不产出消息."""
+def test_moment_previous_echoes_messages_empty_when_no_previous():
+    """没有 previous Echoes 时不产出消息."""
     moment = Moment()
-    msgs = list(moment.previous_result_messages())
+    msgs = list(moment.previous_echoes_messages())
     assert len(msgs) == 0
 
 
@@ -195,56 +195,52 @@ def test_moment_is_empty_and_is_empty_request():
     assert not with_percept.is_empty()
     assert not with_percept.is_percepts_empty()
 
-    with_prev = Moment(previous=Results(need_observe=True))
+    with_prev = Moment(previous=Echoes(need_observe=True))
     assert with_prev.is_empty()  # 没有消息, 所以是 empty
     assert with_prev.is_percepts_empty()  # 有 previous 但没有新 percepts
 
 
-def test_moment_as_request_messages_full_structure():
-    """as_request_messages() 按序组装: previous → perspectives → inputs."""
-    prev = Results(
-        messages=[Message.new().with_content("outcome 1")],
+def test_as_moment_message_wraps_content_into_container():
+    """as_moment_message 返回自解释容器: 携带 moment id 锚点, 包裹全部内容子段."""
+    prev = Echoes(
+        messages=[Message.new().with_content("echoes 1")],
     )
     moment = Moment(
         previous=prev,
         percepts={"test": [Message.new().with_content("percept 1")]}, hint="react!",
     )
     moment.dynamic_context["moss_dynamic"] = [Message.new().with_content("dynamic ctx")]
-    msgs = list(moment.full_observation_messages(with_dynamic_context=True, with_hint=True))
-    # 应该有: outcomes 包装 + perspective + percept + instruction
-    texts = []
-    for m in msgs:
-        for c in m.contents:
-            if "text" in c:
-                texts.append(c["text"])
-    assert "outcome 1" in texts
-    assert "dynamic ctx" in texts
-    assert "percept 1" in texts
-    assert "react!" in texts
+    msg = moment.as_moment_message()
+    assert msg is not None
+    assert msg.meta.tag == "moment"
+    assert msg.meta.attributes["moment_id"] == moment.id
+    text = msg.to_content_string()
+    assert "<echoes>" in text and "echoes 1" in text
+    assert "<dynamic_context>" in text and "dynamic ctx" in text
+    assert "<percepts>" in text and "percept 1" in text
+    assert "<hint>" in text and "react!" in text
 
 
 def test_moment_as_request_messages_without_perspectives():
-    """with_perspectives=False 时完全不产出 perspectives."""
+    """with_dynamic_context=False 时动态上下文不进单条消息, percepts 保留."""
     moment = Moment(percepts={"test": [Message.new().with_content("p1")]})
     moment.dynamic_context["ctx"] = [Message.new().with_content("ctx1")]
-    msgs = list(moment.full_observation_messages(with_dynamic_context=False, with_hint=False))
-    texts = []
-    for m in msgs:
-        for c in m.contents:
-            if "text" in c:
-                texts.append(c["text"])
-    # perspectives 不应出现
-    assert "ctx1" not in texts
-    # 只有 percepts
-    assert "p1" in texts
+    msgs = moment.full_moment_messages(with_dynamic_context=False, with_hint=False)
+    assert len(msgs) == 1
+    text = msgs[0].to_content_string()
+    # 动态上下文被排除.
+    assert "ctx1" not in text
+    assert "<dynamic_context>" not in text
+    # percepts 保留.
+    assert "<percepts>" in text and "p1" in text
 
 
 def test_moment_command_logos_preserved_in_new_moment():
-    """command_logos 从 Reaction.new_moment() 正确传递，不被后续操作丢失."""
-    reaction = Results()
-    moment = reaction.new_moment(command_logos="hello!")
+    """command_logos 从 Echoes.new_moment() 正确传递，不被后续操作丢失."""
+    echoes = Echoes()
+    moment = echoes.new_moment(command_logos="hello!")
     assert moment.command_logos == "hello!"
-    # 验证 new_reaction 后再 new_moment, command_logos 不自动继承
-    reaction2 = moment.new_result_container()
-    moment2 = reaction2.new_moment()
+    # 验证 new_echoes 后再 new_moment, command_logos 不自动继承
+    echoes2 = moment.new_echoes_container()
+    moment2 = echoes2.new_moment()
     assert moment2.command_logos == ""  # command_logos 不应跨轮次自动继承

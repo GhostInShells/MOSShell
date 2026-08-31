@@ -386,7 +386,7 @@ class Verdict:
       若 ``message`` 非空 (approve-with-note), 再 ``raise_observe`` 使人类补充意见
       作为下一帧内观.
     - ``rejected``: 否决. 拦截点走 ``articulator.raise_observe(message)``, message
-      作为否决理由随下一帧 Reaction 进 moment.
+      作为否决理由随下一帧 Echoes 进 moment.
     - ``cancelled``: 撤销. abort 到来时拦截点 finally 幂等 cancel; TUI 不主动产生.
 
     ``message`` 语义在两态间共享 (决策 12/13): 都走 attention 内观通道, 不是外视 outcome.
@@ -456,7 +456,7 @@ class SafeMode(ABC):
         """否决 uuid 匹配的 pending. 返回 True = 生效, False = uuid 不匹配 (stale, no-op).
 
         否决走 ``articulator.raise_observe(reason)`` 反馈, 不 abort attention.
-        reason 会随下一帧 Reaction 进 moment, ghost 感知后重新 articulate.
+        reason 会随下一帧 Echoes 进 moment, ghost 感知后重新 articulate.
         """
         ...
 

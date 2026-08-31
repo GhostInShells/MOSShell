@@ -445,7 +445,7 @@ class DoloresEgo:
         return {
             "results": [
                 {"text": m.to_content_string()}
-                for m in moment.previous_result_messages()
+                for m in moment.previous_echoes_messages()
             ],
             "percepts": [
                 {"source": source, "text": "\n".join(m.to_content_string() for m in msgs)}

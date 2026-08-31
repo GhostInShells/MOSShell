@@ -31,7 +31,7 @@ def messages_to_parts(messages: Iterable[Message]) -> list[UserContent]:
 def moment_to_request(moment) -> ModelRequest:
     """将 Moment 转为 pydantic AI ModelRequest."""
     from ghoshell_moss.core.blueprint.mindflow import Moment as _Moment
-    parts = messages_to_parts(moment.full_observation_messages())
+    parts = messages_to_parts(moment.full_moment_messages())
     return ModelRequest(parts=parts)
 
 

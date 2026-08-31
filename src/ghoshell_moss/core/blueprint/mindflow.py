@@ -8,7 +8,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message, ContextType
 from ghoshell_moss.message import unique_id
 from ghoshell_container import IoCContainer
-from .moment import Results, Moment, Moments, Observer
+from .moment import Echoes, Moment, Moments, Observer
 import datetime
 import dateutil
 import time
@@ -38,7 +38,7 @@ __all__ = [
     'Priority',
     'SignalName', 'Signal', 'SignalMeta', 'InputSignalMeta', 'SignalSchema',
     'Impulse',
-    'Logos', 'Moment', 'Results',
+    'Logos', 'Moment', 'Echoes',
     'Action', 'Thinking',
     'Nucleus', 'NucleusMeta',
     'Mindflow', 'MindflowHook',
@@ -961,14 +961,14 @@ class Action(AttentionStatement, ABC):
         """
         ...
 
-    def add_result(self, *messages: Message | str, observe: bool = False) -> None:
+    def add_echoes(self, *messages: Message | str, observe: bool = False) -> None:
         """
-        提交 outcome, 标记是否要引发下一轮观察.
+        提交系统产生的回声, 标记是否要引发下一轮观察.
         如果在一个 Action 的生命周期中 Observe 被标记了, 或者发生了特殊的异常,
         Attention 会循环下一组调用.
-        如果没有需要观察的 outcome, Attention 会自然结束.
+        如果没有需要观察的回声, Attention 会自然结束.
         """
-        self.moments.add_result(list(messages), need_observe=observe)
+        self.moments.add_echoes(list(messages), need_observe=observe)
 
 
 class Attention(AttentionStatement, ABC):

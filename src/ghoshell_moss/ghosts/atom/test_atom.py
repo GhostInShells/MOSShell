@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from ghoshell_container import Container
 
-from ghoshell_moss.core.blueprint.mindflow import Moment, Results
+from ghoshell_moss.core.blueprint.mindflow import Moment, Echoes
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.system_prompter import SystemPrompter, BaseSystemPrompter
 from ghoshell_moss.contracts.workspace import Workspace, LocalWorkspace
@@ -237,10 +237,10 @@ class TestAdapter:
         request = moment_to_request(Moment(percepts={"input": [msg]}))
         assert any("percept content" in str(p) for p in request.parts)
 
-    def test_moment_to_request_includes_previous_outcomes(self):
+    def test_moment_to_request_includes_previous_echoes(self):
         from ._adapter import moment_to_request
-        prev = Results(moment_id="p1",
-                       messages=[Message.new().with_content("outcome")])
+        prev = Echoes(moment_id="p1",
+                      messages=[Message.new().with_content("outcome")])
         request = moment_to_request(Moment(previous=prev))
         assert any("outcome" in str(p) for p in request.parts)
 

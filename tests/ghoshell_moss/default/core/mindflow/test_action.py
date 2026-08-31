@@ -132,7 +132,7 @@ async def test_logos_streams_and_records_executed_logos():
         await asyncio.wait_for(action.wait_ready(), 2.0)
         got = [delta async for delta in action.logos()]
     assert got == ['abc', 'def']
-    # executed_logos 是 Results 公共字段, 通过 observe 一帧读取 — 不捅私有成员.
+    # executed_logos 是 Echoes 公共字段, 通过 observe 一帧读取 — 不捅私有成员.
     assert moments.observe().previous.executed_logos == 'abcdef'
 
 

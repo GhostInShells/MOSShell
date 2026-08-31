@@ -145,14 +145,14 @@ class MindflowInShell(ABC):
         def _on_moments_observing(moment: Moment) -> None:
             frame = self.shell_trajectory.pop_frame()
             if moment.previous is not None:
-                # 将轨迹中保存的数据作为 result 插入.
+                # 将轨迹中保存的数据作为回声插入.
                 messages = frame.project(with_dynamic=False)
-                moment.previous.add_result(messages, frame.need_observe)
+                moment.previous.add_echoes(messages, frame.need_observe)
                 moment.previous.need_observe = frame.need_observe
 
         def _notify_moments_need_observe(e):
             # 仅仅通知观测应该发生. 真实的观测数据, 会在 moment 创建时回调构建.
-            mindflow.moments.add_result([], need_observe=True)
+            mindflow.moments.add_echoes([], need_observe=True)
 
         def _shell_trajectory_epoch_refresh():
             return [
@@ -164,7 +164,7 @@ class MindflowInShell(ABC):
         # 注册回调, 当发生 observe 事件时, 通知 mindflow observer.
         self.shell_trajectory.when_need_observe(_notify_moments_need_observe)
         # 注册回调, 当 observer 触发观察动作时, 更新数据.
-        mindflow.moments.when_moment_created(_on_moments_observing)
+        mindflow.moments.on_moment_created(_on_moments_observing)
         mindflow.moments.with_epoch_recap("ShellTrajectoryEpoch", _shell_trajectory_epoch_refresh)
 
         # mindflow 生命周期装线到宿主 exit stack: 启动由宿主保证, 关闭确定性反卷.

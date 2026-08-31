@@ -372,7 +372,7 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
                         f"{verdict.message}\n"
                         "</safemode-approval-note>"
                     )
-                    self.mindflow.moments.add_result([note])
+                    self.mindflow.moments.add_echoes([note])
                 return True, ''
             if verdict.kind == 'cancelled':
                 # cancel 是 abort 兜底, 不是否决, 无 reason.
