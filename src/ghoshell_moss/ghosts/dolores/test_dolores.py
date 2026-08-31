@@ -347,7 +347,7 @@ class TestDoloresEgoSelfWake:
         ego = self._ego()
         emitted = []
         ego.bind_signal_broadcast(emitted.append)
-        await ego._on_turn_start(None)  # type: ignore[arg-type]  # gate 不读 event
+        await ego._on_session_activity(None)  # type: ignore[arg-type]  # gate 不读 event
 
         assert len(emitted) == 1
         assert emitted[0].name == "dolores/ego"
@@ -358,7 +358,7 @@ class TestDoloresEgoSelfWake:
         emitted = []
         ego.bind_signal_broadcast(emitted.append)
         ego.articulating = True
-        await ego._on_turn_start(None)  # type: ignore[arg-type]
+        await ego._on_session_activity(None)  # type: ignore[arg-type]
 
         assert emitted == []
 

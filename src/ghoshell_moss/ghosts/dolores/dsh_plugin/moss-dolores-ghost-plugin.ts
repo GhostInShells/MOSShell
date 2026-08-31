@@ -2,9 +2,12 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
@@ -26,13 +29,14 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *
  * ── 表面 (8 点) ────────────────────────────────────────────────────────
  * 1. ego/create       — instruction + messages (ghost.memory: 压缩/快照/ground).
- * 2. thinking/enter   — moment(三块) + effort + model config, 阻塞执行完.
+ * 2. thinking/enter   — moment (一条 user message) + epoch + effort + model config, 阻塞执行完.
  * 3. thinking/exit    — 反转 thinking 状态; agent 非 idle 时显式 cancel.
  * 4. perStep 锁       — foreign session → reject + mux 提示冻结;
  *                       ego session 非 thinking → 阻塞等 thinking/enter 反转.
- * 5. moment 三块      — results (moss output 上一轮) / percepts (inputs) /
- *                       dynamic (dynamic_context + hint).
- * 6. dynamic 处理     — 注入后记 seq; 每次重注入, 历史 dynamic 节点 surface remove.
+ * 5. moment           — 一条自解释 user message (<moment moment_id=...> 容器, 内含
+ *                       echoes/percepts/dynamic/hint 子段). plugin 只 steer/append 这一条,
+ *                       不拆块. 另开 epoch 槽位 (recap 前情提要 + ground, 恒空, deferred).
+ * 6. moment 投放      — idle → steer (turn 输入); 非 idle → append (注入已在跑的 turn).
  * 7. tool 面暂缓      — 4 个 ego tool + tool-result 桥不做; wait_next_moment (yield
  *                       tool) 先行落地, 见下节.
  * 8. 时序图           — 见下方 ASCII.
@@ -40,11 +44,10 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * ── 时序: MOSS 驱动路径 (thinking = turn) ──────────────────────────────
  * [MOSS mindflow]      [plugin]                     [dsh agent loop]
  *      │ thinking start   │                              │
- *      │── thinking/enter │  {moment, effort, model}     │
- *      │                  │── applyModelConfig()         │
- *      │                  │── injectMoment()             │  (results/percepts/dynamic → surface)
- *      │                  │── openThinking()             │  (release pre-step gate)
- *      │                  │── steer (若 idle) ──────────▶│
+ *      │── thinking/enter │  {moment, epoch, effort, model} │
+ *      │                  │── applyModelConfig()            │
+ *      │                  │── openThinking()                │  (release pre-step gate)
+ *      │                  │── steer(moment) (若 idle) ─────▶│
  *      │                  │                              │── turn/start
  *      │                  │◀── agent/pre-step ───────────┤
  *      │                  │── enter (frame in surface) ──▶│
@@ -64,7 +67,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *      │               │── notifyExternalWake() ─────────────────────▶│  (seam)
  *      │               │                              │                 │ mindflow 处理
  *      │               │◀── thinking/enter {frame} ────────────────────┤
- *      │               │── injectMoment + openThinking()
+ *      │               │── append(moment) + openThinking()
  *      │               │── release gate ─────────────▶│
  *      │               │── enter (frame in surface) ──▶│
  *      │               │                              │── model 跑 → 回应
@@ -75,12 +78,12 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *
  * ── yield tool (wait_next_moment) ────────────────────────────────────
  * 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment (A 范式).
- * tool execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment 构造
- * tool result 解锁 (moment 走 tool 返回值, 不经 surface inject). 退出时序:
+ * tool execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment contents
+ * admit 后的 ContentBlock[] 构造 tool result 解锁 (moment 走 tool 返回值, 不经 surface). 退出时序:
  *   thinking/exit: pendingYield 非空 → 不 cancel (留 tool pending, 不打断 abort signal).
- *   thinking/enter: pendingYield 非空 → openThinking + resolve(momentToText(moment)).
+ *   thinking/enter: pendingYield 非空 → openThinking + resolve(admit 后的 blocks).
  * cancel 守卫: tool 被 cancel (外部抢占) 时 abort signal 清空 pendingYield 并 reject —
- *   moment 绝不交给已 cancel 的 tool, 改走下一轮 enter 正常 inject 路径 (轨迹不丢, 可 debug).
+ *   moment 绝不交给已 cancel 的 tool, 改走下一轮 enter 正常 steer/append 路径 (轨迹不丢, 可 debug).
  *
  * ── 遗留问题 (2026-08-28) ────────────────────────────────────────────
  * 1. **外部唤醒链路未接通 (perStep 帧背压已启用, 靠超时兜底)**: turn/start → ego
@@ -91,15 +94,13 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *    b) 链路通后外部 turn 的帧注入时序 (thinking/enter open 释放 pre-step).
  * 2. **applyModelConfig todo**: thinking/enter 的 provider/model/reasoningEffort
  *    未应用到下个 request (agent/request waterfall / session.selectModel).
- * 3. **epoch 设计**: moment 携带 epoch id, 对比后决定 ghost.memory 尾部更新 (下一轮).
- * 4. **injectMoment dynamic replace**: surface-replace 机制可能过度设计 — 按 cache
- *    洞察 (尾部操作才 cache 友好), dynamic 应简化为尾部 append/替换.
- * 5. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
+ * 3. **epoch 周期接线**: epoch 槽位已开 (恒空), compact 压上下文 → recap/ground 注入待接.
+ * 4. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
  */
 
 export const name = 'moss-dolores-ghost-plugin'
 
-export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt', 'tools']
+export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt', 'tools', 'attachments']
 
 // 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
 const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
@@ -187,30 +188,22 @@ function closeThinking(): void {
 }
 
 // ── yield 锁 (wait_next_moment): tool execute 挂 pending promise 阻塞, 下一轮 enter 解锁 ──
-// 同一时刻至多一个 pending yield (模型在单 turn 内串行 yield). resolve 载荷 = moment 折叠
-// 文本 (momentToText), 是 tool result 内容. abort (cancel) 时清空并 reject — 见 tool execute.
+// 同一时刻至多一个 pending yield (模型在单 turn 内串行 yield). resolve 载荷 = moment
+// contents admit 后的 ContentBlock[] (含 image ref), 是 tool result 内容. abort (cancel)
+// 时清空并 reject — 见 tool execute.
 let pendingYield: { resolve: (value: unknown) => void; reject: (error: Error) => void } | null = null
 
-// ── dynamic 上下文注入的 seq 记录 (点 6) ──
-// 每次重注入, 把上一轮注入的 dynamic 节点从 surface remove (surface replace).
-let dynamicSeqs: number[] = []
-
-/**
- * thinking/enter 的 moment 三块 (点 5/6). MOSS 侧序列化 Moment 后经 HTTP 传入.
- *
- *   results  — moss output: 上一轮结果 (previous.messages 投影). 注入为上下文.
- *   percepts — inputs: 本轮新输入 (source → 文本). 作为唤醒内容注入.
- *   dynamic  — dynamic_context + hint: hot 帧. 注入后记 seq, 重注入 surface remove.
- */
-interface ThinkingMomentPayload {
-  results: { text: string }[]
-  percepts: { source: string; text: string }[]
-  dynamic: { context: { source: string; text: string }[]; hint: string }
-}
+/** moment 的 wire content 段 — text 直传, image 为 base64 (dsh EncodedImageAttachment 形状). */
+type MomentContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mediaType: string; data: string }
 
 /** thinking/enter 入参 (点 3). 阻塞执行完: handler 完成注入 + 开锁才返回. */
 interface ThinkingEnterPayload {
-  moment: ThinkingMomentPayload
+  /** moment — 一条自解释 user message (<moment moment_id=...> 容器) 的 content blocks. */
+  moment?: { contents: MomentContentPart[]; moment_id?: string }
+  /** epoch messages (recap 前情提要 + ground) — 槽位已开, 本轮恒空 (epoch 周期 deferred). */
+  epoch?: { text: string }[]
   effort: string
   model: { provider: string; model: string; reasoningEffort?: string }
   /** 防旁路 (点 4): ego/create 返回的 token, 校验失败直接拒绝. */
@@ -390,12 +383,10 @@ export function apply(ctx: Context) {
   })
 
   // ── 2. thinking/enter (点 2/3/5/6) ────────────────────────────────────
-  // 入参 = moment 三块 + effort + model config. handler 阻塞执行完才返回:
+  // 入参 = moment 一条 user message + epoch + effort + model config. handler 阻塞执行完才返回:
   //   1. applyModelConfig — provider/model/reasoningEffort 应用到下个 request.
-  //   2. injectMoment — results/percepts 注入 surface; dynamic 注入 + 记 seq,
-  //      重注入时 surface remove 历史 dynamic 节点.
+  //   2. moment 投放 — idle → steer (turn 输入); 非 idle → append (注入已在跑的 turn).
   //   3. openThinking — 释放 pre-step gate (外部唤醒路径的阻塞解除).
-  //   4. steer (若 agent idle) — MOSS 驱动路径: 唤醒 turn.
   ctx.webServer.register({
     kind: 'exact',
     path: DOLORES_THINKING_ENTER,
@@ -414,28 +405,31 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧, moment 走 tool
-        // 返回值 (momentToText), 不经 injectMoment/steer. 无 pendingYield → 正常 enter.
+        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧, moment contents
+        // admit 成 ContentBlock[] 走 tool 返回值, 不经 steer/append. 无 pendingYield → 正常 enter.
         if (pendingYield !== null) {
           const unlock = pendingYield
           pendingYield = null
+          const blocks = await durableMomentContent(ctx, body.moment?.contents ?? [])
           openThinking()
-          unlock.resolve(momentToText(body.moment))
+          unlock.resolve(blocks)
         } else {
           // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
           //   (agent/request waterfall 提案 / session.selectModel).
-          injectMoment(agent, body.moment)
+          // todo: epoch injection — body.epoch (recap 前情提要 + ground) 注入为 epoch 级
+          //   稳定上下文 (非 hot 帧). 槽位已开 (恒空), epoch 周期 (compact) 装线后接.
+          const blocks = await durableMomentContent(ctx, body.moment?.contents ?? [])
           openThinking()
-          // MOSS 驱动路径: agent idle → steer 唤醒 turn, content = percepts (真实输入).
+          // MOSS 驱动路径: agent idle → steer 唤醒 turn, content = moment message (自解释).
           // 模式提示 (CTML 环境) 已在 ghost 基础 instruction, 不进 steer (cache 稳定).
-          // 外部唤醒路径: turn 已在 pre-step 阻塞, openThinking 放行, 无需再 steer.
+          // 外部唤醒路径: turn 已在 pre-step 阻塞, 非 idle → append moment 进 surface.
           if (agent.status === 'idle') {
-            const perceptText = (body.moment?.percepts ?? [])
-              .map(p => p?.text).filter(Boolean).join('\n')
             agent.steer(createUserMessage({
-              content: [{ type: 'text', text: perceptText || 'thinking' }],
+              content: blocks.length > 0 ? blocks : [{ type: 'text', text: 'thinking' }],
               source: { kind: 'user' },
             }))
+          } else if (blocks.length > 0) {
+            appendUserMessage(agent.session, blocks, 'moment')
           }
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -485,45 +479,28 @@ export function apply(ctx: Context) {
 
   // ── 5. yield tool (wait_next_moment) ────────────────────────────────
   // 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 moment (A 范式).
-  // execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment 构造 tool
-  // result 解锁 (moment 走 tool 返回值, 不经 surface inject). cancel 时 abort signal
-  // 清空 pendingYield 并 reject — moment 绝不交给已 cancel 的 tool, 改走下一轮 enter
-  // 正常 inject 路径 (轨迹不丢, 可 debug).
+  // execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment contents
+  // admit 后的 ContentBlock[] (含 image ref) 构造 tool result 解锁 (moment 走 tool
+  // 返回值, 不经 surface). cancel 时 abort signal 清空 pendingYield 并 reject —
+  // moment 绝不交给已 cancel 的 tool, 改走下一轮 enter 正常 steer/append 路径.
   ctx.tools.register(defineTool({
     name: 'wait_next_moment',
     description: 'Wait for the next MOSS moment. Blocks until MOSS produces the next observation frame.',
     parameters: {},
     output: {
-      schema: { type: 'string' },
-      render: (_args, value) => {
-        const text = value as string
-        return text.length > 0 ? [{ type: 'text', text }] : []
-      },
+      schema: { type: 'json' },
+      render: (_args, value) => value as ContentBlock[],
     },
     execute: async (_args, exec) => {
-      return await new Promise<string>((resolve, reject) => {
+      return await new Promise<ContentBlock[]>((resolve, reject) => {
         pendingYield = { resolve: resolve as (value: unknown) => void, reject }
         exec.signal.addEventListener('abort', () => {
           if (pendingYield !== null) { pendingYield = null; reject(new Error('wait_next_moment aborted')) }
         }, { once: true })
-      })
+      }) as unknown as JsonValue
     },
   }))
 }
-
-// ── helper: moment 注入 (点 5/6) ───────────────────────────────────────
-/**
- * injectMoment — 把 thinking moment 三块注入 ego session 的 surface.
- *
- *   results: 上一轮 moss output → user/message (普通 append, 进 surface).
- *   percepts: 本轮输入 → user/message (唤醒内容, append).
- *   dynamic:  hot 帧 → 注入后把节点 seq 记进 dynamicSeqs; 下次重注入时,
- *            用 surface {op:'replace'} 把历史 dynamic 节点 shadow 掉 (点 6).
- *
- * surface replace 规则 (dsh): 新节点替换 [start, end] surface 区间, sourceEventSeqs
- * 必须包含所有被 shadow 的节点 seq. 这是 compaction 原语 — hot 帧退役的落地.
- */
-// function injectMoment(agent: Agent, moment: ThinkingMomentPayload): void { ... }
 
 // ── helper: model config 应用 (点 3) ───────────────────────────────────
 /**
@@ -532,76 +509,30 @@ export function apply(ctx: Context) {
  */
 // function applyModelConfig(agent: Agent, model: { provider: string; model: string; reasoningEffort?: string }): void { ... }
 
-// ── helper: moment 注入 (点 5/6) ───────────────────────────────────────
-/**
- * injectMoment — 把 thinking moment 三块注入 ego session 的 surface.
- *
- *   results: 上一轮 moss output → user/message (append, 进 surface).
- *   percepts: 本轮输入 → user/message (append).
- *   dynamic:  hot 帧 → 注入后把节点 seq 记进 dynamicSeqs; 下次重注入时用 surface
- *             {op:'replace'} 把历史 dynamic 节点 shadow 掉 (点 6, hot 帧退役).
- */
-function injectMoment(agent: Agent, moment: ThinkingMomentPayload | undefined): void {
-  if (moment === undefined) return
-  const session = agent.session
-  // percepts 经 steer 送达 (steer content = percepts), 不在此注入 — 避免重复.
-  for (const item of moment.results ?? []) {
-    if (item?.text) appendUserMessage(session, item.text, 'results')
+/** moment contents (wire PromptContentPart) → durable ContentBlock[], admit base64 image 成 ref. */
+async function durableMomentContent(ctx: Context, contents: readonly MomentContentPart[]): Promise<ContentBlock[]> {
+  if (contents.every(part => part.type === 'text')) {
+    return contents.map(part => ({ type: 'text', text: part.text }))
   }
-  const dynamicText = [
-    ...(moment.dynamic?.context ?? []).map(c => c?.text).filter(Boolean),
-    moment.dynamic?.hint,
-  ].filter(Boolean).join('\n')
-  if (dynamicText.length > 0) {
-    const message = createUserMessage({
-      content: [{ type: 'text', text: dynamicText }],
-      source: { kind: 'plugin', plugin: name },
-    })
-    if (dynamicSeqs.length > 0) {
-      // surface replace: 新 dynamic 节点替换旧 dynamic 区间, sourceEventSeqs 必须含被 shadow 节点.
-      const start = dynamicSeqs[0]
-      const end = dynamicSeqs[dynamicSeqs.length - 1]
-      const evt = session.append('user/message', message,
-        { surfaceOp: { op: 'replace', start, end }, sourceEventSeqs: dynamicSeqs })
-      dynamicSeqs = [evt.seq]
-    } else {
-      const evt = session.append('user/message', message, { surfaceOp: 'append' })
-      dynamicSeqs = [evt.seq]
-    }
-  }
+  const images = contents.filter((part): part is Extract<MomentContentPart, { type: 'image' }> => part.type === 'image')
+  const refs = await admitEncodedImages(ctx.attachments, images.map(({ mediaType, data }) => ({
+    mediaType: mediaType as ImageMediaType,
+    data,
+  })))
+  let next = 0
+  return contents.map(part => part.type === 'text'
+    ? { type: 'text', text: part.text }
+    : { type: 'image', attachment: refs[next++] as ImageAttachmentRef })
 }
 
-function appendUserMessage(session: Agent['session'], text: string, tag: string): void {
+function appendUserMessage(session: Agent['session'], content: ContentBlock[], tag: string): void {
   // createUserMessage 生成唯一 id — 否则多条注入消息 id 全是 undefined, UI 撞 "more than one start Match".
   session.append('user/message',
     createUserMessage({
-      content: [{ type: 'text', text }],
+      content,
       source: { kind: 'plugin', plugin: `${name}:${tag}` },
     }),
     { surfaceOp: 'append' })
-}
-
-/**
- * momentToText — 把 moment payload 折叠成 tool result 文本 (wait_next_moment 返回值).
- *
- * yield 解锁时 (A 范式), moment 三块直接进 tool result (非 surface 注入). percepts 是
- * 下一帧的新输入 (核心); results 是上一轮 moss output; dynamic 是 hot 帧 (context + hint).
- */
-function momentToText(moment: ThinkingMomentPayload | undefined): string {
-  if (moment === undefined) return ''
-  const parts: string[] = []
-  for (const p of moment.percepts ?? []) {
-    if (p?.text) parts.push(p.text)
-  }
-  for (const r of moment.results ?? []) {
-    if (r?.text) parts.push(r.text)
-  }
-  const dynamicText = [
-    ...(moment.dynamic?.context ?? []).map(c => c?.text).filter(Boolean),
-    moment.dynamic?.hint,
-  ].filter(Boolean).join('\n')
-  if (dynamicText.length > 0) parts.push(dynamicText)
-  return parts.join('\n')
 }
 
 // ── helper: foreign session 冻结提示 (点 4) ─────────────────────────────

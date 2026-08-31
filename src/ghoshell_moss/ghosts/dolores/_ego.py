@@ -29,9 +29,10 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
 服务接口. 每个 turn 自包含: enter-inject → model 跑 → turn/end 收线. 帧按
 状态分叉: mindflow 活跃 → live moment; idle → 静态状态快照.
 
-  thinking/enter   — moment 三块 + effort + model config + thinkingToken.
+  thinking/enter   — moment 一条 user message + epoch + effort + model config + thinkingToken.
                      handler 阻塞执行完: 注入帧 → openThinking (释放 pre-step 锁)
-                     → 若 idle steer. 帧按 moment 三块 (见下).
+                     → 若 idle steer. moment 是自解释容器 (见下); epoch 是并列槽位
+                     (recap 前情提要, 本轮恒空).
   thinking/exit    — 反转 thinking 状态; agent 非 idle 时显式 cancel (不空跑失速).
   perStep 锁       — foreign session → reject + mux 提示冻结; ego 非 thinking →
                      阻塞等反转 (背压). 锁由 thinking signal 提供 (TS promise,
@@ -51,23 +52,33 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
   4. 异常感知: DoloresRun aexit 时 thinking.abort(reason).
   (DoloresRun._on_event 后续会有逻辑 — token 记账 / tool 桥 / seq 跟踪, 本阶段纯透传.)
 
-── moment 三块 (点 6) ────────────────────────────────────────────────
-  results  — 上一轮 moss output (previous.messages 投影) → 注入上下文.
-  percepts — 本轮新输入 (source → messages) → 唤醒内容.
-  dynamic  — dynamic_context + hint: hot 帧, 注入后记 seq, 重注入 surface remove
-             (point-2 (a) 落地: surface replace 退役 hot 帧).
+── moment 一条 user message + epoch 槽位 (点 6) ──────────────────────
+  moment   — as_moment_message 折叠整帧为 <moment moment_id=...> 单条消息
+             (内含 echoes/percepts/dynamic/hint 子段). plugin 只按序 steer/append
+             这一条, 不拆块、不镜像三块结构; moment_id 独立传 — commit 锚.
+  epoch    — (与 moment 并列的新槽位) epoch 级稳定上下文: recap 前情提要 + ground_instruction.
+             槽位已开, 本轮恒空 (epoch 周期 deferred, 见下); 装线后从 observer.epoch.recap 投影.
   command_logos 不在 run 面 (反射弧已在 articulate 前 send_nowait 消费).
   thinking_effort 在 articulator 上, 经 enter RPC 的 effort 字段上.
-  contexts 观测由 MindflowInShell 装线的 shell trajectory 进 moment.previous.results,
+  contexts 观测由 MindflowInShell 装线的 shell trajectory 进 moment.previous,
   ego 只消费 moment, 不读 trajectory.
 
 ── yield 机制 (wait_next_moment tool, A 范式) ──────────────────────
 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment. tool use 是
 turn 边界信号 (非 turn 内续帧): 消费方认出 tool/call = wait_next_moment → break 收线
 (同 turn/end), 触发 thinking exit. exit 时 plugin 侧 pendingYield 非空 → 不 cancel,
-tool 继续 pending. 下一轮 thinking/enter 用 moment 构造 tool result 解锁 (moment 走
-tool 返回值, 不经 surface inject). cancel 守卫: tool 被 cancel 时 pendingYield 清空,
-moment 改走下一轮 enter 正常 inject 路径 (轨迹不丢, 可 debug). momentId 暂不消费.
+tool 继续 pending. 下一轮 thinking/enter 用 moment 文本构造 tool result 解锁 (moment 走
+tool 返回值, 不经 surface). cancel 守卫: tool 被 cancel 时 pendingYield 清空,
+moment 改走下一轮 enter 正常 steer/append 路径 (轨迹不丢, 可 debug). momentId 暂不消费.
+
+── moment 容器 + commit 锚 (2026-08-31) ──────────────────────────────
+dsh/DeepSeek 走 OpenAI-completions, 缓存是自动前缀缓存, 无 Anthropic cache_control
+显式断点、无多 cache index — 所以「无痛改历史」无解 (中途摘 dynamic 破坏前缀触发
+重算). 故 moment 容器化: as_moment_message 包成自解释的 <moment moment_id=...> 单条
+消息, 统一 tool use / user message 两路, dynamic 留在容器里不摘 (full_moment_messages
+给裸子段). commit 走主路 + 旁路 fork session (不走 dsh compact, 慢), 一个 session 多
+commit、历史不折叠; 「提交 moment A 之前的历史」的下边界只能落 moment id (cache 层
+给不了锚), commit 触发即按 id 注入上下文.
 
 ── 待讨论 (seams) ────────────────────────────────────────────────────
   1. external wake 的 fail-safe: pre-step 阻塞等 thinking/enter, MOSS 永不 enter
@@ -263,8 +274,11 @@ class DoloresEgo:
         self._thinking_token = result.get("thinkingToken")
         self._session = self._launcher.create_session(self._ego_session_id)
         await self._exit_stack.enter_async_context(self._session)
-        # 长命线: 订阅 turn/start, 静默自醒 (self-wake 心跳).
-        self._session.on_session_event("turn/start", self._on_turn_start)
+        # 长命线: 订阅 turn/start + user/message, 静默自醒 (self-wake 心跳).
+        # user/message 覆盖界面直投场景 — yield 后 dsh loop 卡在等 tool result, 界面
+        # 输入只产生 user/message 不产生 turn/start, 仍需自醒解锁 pending tool.
+        self._session.on_session_event("turn/start", self._on_session_activity)
+        self._session.on_session_event("user/message", self._on_session_activity)
         return self._ego_session_id
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -298,10 +312,10 @@ class DoloresEgo:
     async def _assemble_context(self, moment: Moment, effort: ThinkingEffort):
         """percepts + hint + instruction (system_prompt + ground_instruction).
 
-        上下文观测由 MindflowInShell 装线的 shell trajectory 注入 moment.previous.results,
-        本方法只拼 moment 三块 + instruction.
+        上下文观测由 MindflowInShell 装线的 shell trajectory 注入 moment.previous (echoes),
+        本方法只拼 moment message + instruction.
         待讨论 seam #1: 返回类型 = DSH 请求 payload 形状 (RPC 入参).
-        待讨论: ground_instruction (epoch 槽位) 本轮就接, 还是留给 epoch 周期.
+        epoch 槽位 (ground_instruction + recap) 已在 enter 开槽恒空, 装线留给 epoch 周期.
         """
         ...
 
@@ -338,11 +352,13 @@ class DoloresEgo:
         """
         self._signal_broadcast = broadcast
 
-    async def _on_turn_start(self, event: "SessionEvent") -> None:
-        """turn/start 监听回调 — 静默自醒心跳.
+    async def _on_session_activity(self, event: "SessionEvent") -> None:
+        """外部会话活动监听回调 (turn/start + user/message) — 静默自醒心跳.
 
         gate: articulate 进行中 (Python 侧权威 flag) → 本 ghost 自己在驱动, 不醒.
-        否则 dsh 侧自行起了一个 turn, ghost 该醒 — 发一封自醒 signal 给 nucleus.
+        否则 dsh 侧有外部活动 (起了 turn / 界面直投消息), ghost 该醒 — 发一封
+        自醒 signal 给 nucleus. 可丢弃: nucleus 造 BACKGROUND impulse, mindflow
+        忙时 challenge 失败即丢, 只有空闲时才唤醒.
         """
         if self._articulating:
             return
@@ -408,13 +424,14 @@ class DoloresEgo:
         ...
 
     async def enter_thinking(self, thinking: "Thinking") -> None:
-        """POST /moss-api/ghost/dolores/thinking/enter — moment 三块 + effort + model + token.
+        """POST /moss-api/ghost/dolores/thinking/enter — moment 一条 user message + epoch + effort + model + token.
 
         防旁路 (点 4): body 携带 thinkingToken, plugin 校验 — 拒绝非 ego 发起的调用.
         """
         moment = thinking.moment
         payload = {
             "moment": self._moment_payload(moment),
+            "epoch": self._epoch_payload(),
             "effort": thinking.effort(),
             "model": await self._model_config(),
             "thinkingToken": self._thinking_token,
@@ -436,29 +453,43 @@ class DoloresEgo:
             self._logger.exception("thinking/exit failed — degraded; state may be stale")
 
     def _moment_payload(self, moment: Moment) -> dict:
-        """moment 三块 → plugin payload (点 6).
+        """moment → 一条自解释 user message 的 content blocks (点 6).
 
-          results — 上一轮 moss output (previous.messages 投影) → 注入上下文.
-          percepts — 本轮新输入 (source → 文本) → 唤醒内容.
-          dynamic  — dynamic_context + hint: hot 帧, 注入后记 seq, 重注入 surface remove.
+        ``as_moment_message`` 折叠整帧为 ``<moment moment_id=...>`` 单条消息
+        (内含 echoes/percepts/dynamic/hint 子段), 序列化成 dsh wire content 列表
+        (text 直传, image 转 base64 EncodedImageAttachment — 保留多模态). plugin
+        按序 steer/append 这一条, 不拆块、不镜像三块结构. ``moment_id`` 独立传 — commit 锚.
         """
+        msg = moment.as_moment_message()
+        if msg is None:
+            return {"contents": [], "moment_id": moment.id}
         return {
-            "results": [
-                {"text": m.to_content_string()}
-                for m in moment.previous_echoes_messages()
+            "contents": [
+                self._content_payload(content)
+                for content in msg.as_contents(with_meta=True)
             ],
-            "percepts": [
-                {"source": source, "text": "\n".join(m.to_content_string() for m in msgs)}
-                for source, msgs in moment.percepts.items()
-            ],
-            "dynamic": {
-                "context": [
-                    {"source": source, "text": "\n".join(m.to_content_string() for m in msgs)}
-                    for source, msgs in moment.dynamic_context.items()
-                ],
-                "hint": moment.hint,
-            },
+            "moment_id": moment.id,
         }
+
+    def _content_payload(self, content: dict) -> dict:
+        """MOSS content → dsh wire content. image 的 base64 保留, 转 EncodedImageAttachment 形状."""
+        if content.get("type") == "image":
+            source = content.get("source") or {}
+            return {
+                "type": "image",
+                "mediaType": source.get("media_type"),
+                "data": source.get("data", ""),
+            }
+        return content
+
+    def _epoch_payload(self) -> list[dict]:
+        """epoch messages → plugin payload (与 moment message 并列的新槽位).
+
+        epoch 周期 (compact 压上下文 → recap 前情提要 + ground_instruction) 尚未装线
+        (deferred), 本槽位暂恒空 — 允许为空. 装线后从 observer.epoch.recap 1:1 投影
+        ``{text}``, 作为 epoch 级稳定上下文注入 (非 hot 帧).
+        """
+        return []
 
     async def _model_config(self) -> dict:
         """当前模型配置 (provider/model/reasoningEffort) — 经 session.models 拉取."""

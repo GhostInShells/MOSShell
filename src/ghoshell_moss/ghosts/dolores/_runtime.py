@@ -144,7 +144,7 @@ class Dolores(Ghost):
         """模型驱动委托给 ego.run_thinking() (DSH 推理中枢 transaction).
 
         上下文观测 (facade / status / events / context) 由 MindflowInShell 装线的
-        shell trajectory 注入 moment.previous.results, ghost 本侧不重复 self.pop_frame.
+        shell trajectory 注入 moment.previous (echoes), ghost 本侧不重复 self.pop_frame.
         消费 run.events() 分派 logos, articulator 由本侧管理, logos 流逐段 yield.
         """
         # 模型驱动: ego.run_thinking (DSH 推理中枢 transaction).
