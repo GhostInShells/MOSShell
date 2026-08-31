@@ -20,7 +20,10 @@ async def test_shell_with_output_channel_in_wait():
             assert interpretation.interrupted is False
             for msg in interpretation.executed_messages():
                 # 暴露了异常. 深层异常是 a:foo 不存在.
-                assert CommandErrorCode.INTERPRET_ERROR.name in msg.to_content_string()
+                content = msg.to_content_string()
+                # 解析异常必须归口 INTERPRET_ERROR (407), 不得被降级为 UNKNOWN_ERROR.
+                assert CommandErrorCode.INTERPRET_ERROR.name in content
+                assert CommandErrorCode.UNKNOWN_ERROR.name not in content
             assert len(interpretation.executed_messages()) == 1
             await asyncio.gather(*interpreter.incomplete_tasks(), return_exceptions=True)
 

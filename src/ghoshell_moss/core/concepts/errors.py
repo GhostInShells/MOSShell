@@ -48,6 +48,10 @@ class CommandError(Exception):
         elif isinstance(err, CommandError):
             errcode = err.code
             errmsg = err.message
+        elif isinstance(err, InterpretError):
+            # 识别解释器异常, 保留 INTERPRET_ERROR 语义而不降级为 UNKNOWN_ERROR.
+            errcode = CommandErrorCode.INTERPRET_ERROR.value
+            errmsg = err.message
         elif isinstance(err, asyncio.CancelledError):
             errcode = CommandErrorCode.CANCELLED.value
             errmsg = ""
@@ -70,20 +74,29 @@ class CommandError(Exception):
 class InterpretError(Exception):
     """
     解释器解释异常, 是可以恢复的异常.
+
+    恒以 ``CommandErrorCode.INTERPRET_ERROR`` 归口 (code = 407):
+    跨包转换 (CommandError.from_error / CommandTask.fail) 时, 若直接对
+    InterpretError 走通用 Exception 分支, 会被降级成 UNKNOWN_ERROR (505),
+    丢语义. 因此这里显式携带 code + 归一化的原始 message (不含 code 前缀),
+    供转换处无损读取.
     """
 
     def __init__(self, message: str | Exception = ""):
-        if isinstance(message, CommandError):
-            message = str(message)
-
+        # code 恒为 INTERPRET_ERROR: 解释器解析异常统一归口, 不随内层来源散失.
+        # (CommandErrorCode 定义在模块后方, 作类属性默认值会 NameError, 故用实例属性.)
+        self.code: int = CommandErrorCode.INTERPRET_ERROR.value
+        if isinstance(message, InterpretError):
+            self.message = message.message
+        elif isinstance(message, CommandError):
+            # 保留内层原始 message; code 恒为 INTERPRET_ERROR.
+            self.message = message.message
         elif isinstance(message, Exception):
-            message = CommandError.from_error(message)
+            self.message = str(message)
         else:
-            message = CommandErrorCode.description(
-                CommandErrorCode.INTERPRET_ERROR.value,
-                message,
-            )
-        super().__init__(message)
+            self.message = message
+        # 保持 str(error) 稳定为 "INTERPRET_ERROR: <message>".
+        super().__init__(CommandErrorCode.description(self.code, self.message))
 
     @classmethod
     def from_error(cls, err: Exception) -> Self:

@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field, TypeAdapter, AwareDatetime
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
 from typing_extensions import Self
 
-from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
+from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode, InterpretError
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ThreadSafeFuture
 from ghoshell_moss.core.helpers.func import parse_function_interface
 from ghoshell_moss.contracts import get_moss_logger
@@ -1570,6 +1570,10 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 errcode = CommandErrorCode.UNKNOWN_ERROR.value
             elif isinstance(error, CommandError):
                 errcode = error.code
+                errmsg = error.message
+            elif isinstance(error, InterpretError):
+                # 解释器解析异常: 归口 INTERPRET_ERROR, 不要降到 UNKNOWN_ERROR.
+                errcode = CommandErrorCode.INTERPRET_ERROR.value
                 errmsg = error.message
             elif isinstance(error, asyncio.CancelledError):
                 errcode = CommandErrorCode.CANCELLED.value
