@@ -5,14 +5,10 @@ from ghoshell_moss.message import Message
 from pathlib import Path
 
 from ghoshell_moss.contracts import Storage, LocalStorage, get_moss_logger
-from ghoshell_moss.contracts.cache import Cache
-from ghoshell_moss.core.cache import SqliteCache
-from ghoshell_moss.core.parameter import SessionParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.qa import QAManager
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.core.blueprint.parameter import ParameterStore
 from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputBuffer, OutputItem, StreamSubscriber,
@@ -103,9 +99,6 @@ class MossSessionWithZenoh(Session):
         self._topic_service = topic_service
         self._qa_manager = qa_manager
         self._closing_event = ThreadSafeEvent()
-        # --- lazy 懒启动 --- #
-        self._cache: Cache | None = None
-        self._parameters: ParameterStore | None = None
 
         self._sessions_storage_dir = sessions_storage_dir
         self._sessions_tmp_storage_dir = sessions_tmp_storage_dir
@@ -163,20 +156,6 @@ class MossSessionWithZenoh(Session):
     @property
     def qa(self) -> QAManager | None:
         return self._qa_manager
-
-    @property
-    def cache(self) -> Cache:
-        if self._cache is None:
-            db_path = Path(self.tmp_storage.abspath()) / 'cache.db'
-            self._cache = SqliteCache(db_path)
-        return self._cache
-
-    @property
-    def parameters(self) -> ParameterStore:
-        self._check_running()
-        if self._parameters is None:
-            self._parameters = SessionParameterStore(self)
-        return self._parameters
 
     def _check_running(self) -> None:
         if self._zenoh_session.is_closed():
@@ -340,17 +319,12 @@ class MossSessionWithZenoh(Session):
 
     async def __aenter__(self) -> Self:
         self._logger.info("%s session started", self._log_prefix)
-        # Eager-init parameter store in thread pool — SQLite WAL + Zenoh
-        # sub are synchronous and would block the event loop.
-        await asyncio.to_thread(lambda: self.parameters)
         # 记录 jsonl
         await asyncio.to_thread(self.storage.append_model, "sessions", self._metadata)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closing_event.set()
-        if self._parameters is not None:
-            self._parameters.close()
         self._logger.info("%s session closed", self._log_prefix)
 
 

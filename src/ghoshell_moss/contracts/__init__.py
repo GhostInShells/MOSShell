@@ -11,7 +11,6 @@ from .configs import (
     ConfigInstanceRegisterBootstrapper,
 )
 from .system_prompter import SystemPrompter, BaseSystemPrompter
-from .cache import Cache
 from .resource import (
     ResourceStorageFactoryBootstrapper, ResourceItem, ResourceInfo, ResourceRegistry, ResourceStorage,
 )

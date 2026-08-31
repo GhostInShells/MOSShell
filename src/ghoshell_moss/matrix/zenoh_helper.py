@@ -32,6 +32,7 @@ class MatrixNamespace:
         self.signal_ns = '/'.join([namespace, 'signals'])
         self.stream_ns = '/'.join([namespace, 'streams'])
         self.output_ns = '/'.join([namespace, 'outputs'])
+        self.param_ns = '/'.join([namespace, 'parameters'])
 
     def __str__(self):
         return self.namespace

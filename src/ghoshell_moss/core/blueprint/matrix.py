@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.warrant import Warrant
+from ghoshell_moss.core.blueprint.parameter import Parameters
 from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
@@ -160,15 +161,6 @@ class Matrix(Facade):
 
         缺失任何一项即构造失败, 新增基建依赖进这个集合.
         环境里没有会造成 fail-fast, 不等到首次 force_fetch 才暴露.
-
-        三类:
-        1. blueprint 架构基建 — Project/Environment/Matrix, 加 Cell/CellAddress
-           (matrix 在 __init__ 直接 set, 实例已知)
-        2. session 配套 — Session/TopicService/QAManager.
-           Cache/Parameter 不走 IoC — Session 直接暴露 session.cache/session.parameters.
-        3. contracts 配套 — Workspace/Subprocesses/LoggerItf/
-           logging.Logger/ConfigStore/ResourceRegistry. 不含 FileEditor (依赖 cwd,
-           matrix 级暴露越权), 不含 asr/audio 等重能力.
         """
         from ghoshell_common.contracts import LoggerItf
         from ghoshell_moss.core.blueprint.project import Project
@@ -377,6 +369,16 @@ class Matrix(Facade):
         五种通讯原语 (topic / stream / signal / ...) 是 Network 内部一切实现之间的通讯桥梁.
         """
         pass
+
+    @abstractmethod
+    async def parameters(self) -> Parameters:
+        """
+        matrix 面 parameter 服务 — 声明 (成为写者) 与订阅 (成为读者), 点对点.
+
+        单声明者, 无仲裁: declare 的 key 由 cell address 命名空间隔离,
+        subscribe 按 address 点对点定向. 惰性门, 首次调用才构造.
+        """
+        ...
 
     # @abstractmethod
     async def service_operator(self) -> ServiceOperator:
