@@ -151,43 +151,158 @@ foundation to stabilize.
 
 ## Associated Workstreams
 
-Layer 1 — Structural:
-- feature: node-migration
+Grouped by thread; status is the 2026-08-31 snapshot from `moss features
+list`. Interaction / capability threads continue in Phase 4 (early
+September). Ahead-of-close state traces via `git log`.
 
-Layer 2 — Cognitive:
-- feature: momento-mori
-- feature: memento-cli-and-agent
-- feature: ghost-ground
-- feature: moss-project-ground
+### P0 — Dolores ghost (stage core)
 
-Layer 3 — Perceptual:
-- feature: desktop-gui
-- feature: screen-node
-- feature: text-blocks
-- feature: mindflow-channel
-- feature: matrix-resources
+- ghost-prototype-dolores — in-progress (assembly target)
+- dsh-fusion — in-progress (dsh as Dolores inference core; Phase 3)
+- mindflow-interleaved-thinking — in-progress (interleaved refactor; Phase 3)
+- ground-channel — completed (Ground)
+- memento-cli-and-agent — completed (Memento convergence)
+- model-func — completed (llm funcs, model-call layer)
+- ghost-runtime-safemode — completed (safe gate)
 
-Layer 4 — Assembly:
-- feature: ghost-prototype-dolores
-- feature: ghost-runtime-safemode
+### P1 — Interaction (making self-iteration observable)
 
-Parallel threads:
-- feature: realtime-voice-interaction-logos
-- feature: voice-input-state-machine
-- feature: mcp-fusion-point (MCP 位置 + node as mcp server；mailbox 验证用例实机闭环)
-- (g1-restart — feature to be created)
+- desktop-gui — in-progress (shared perception space)
+- screen-node — in-progress (standard extensible screen body)
+- text-blocks — in-progress (shared text carrier)
+- voice-input-state-machine — in-progress
+- qa-exchange — completed
+- warrant — completed
+- ghost-tui-refinement — completed
+- realtime-voice-interaction-logos — design-locked
+- agent-surface — draft (reduced to draft in Phase 3)
 
-Infrastructure carry-over from beta1:
-- feature: stage-tracking-convention
-- feature: interactive-shell-channel
-- feature: moshi
+### P1 — Capability (coding-agent as native capability; carried by dsh in Phase 3)
+
+- llms-cli — completed
+- shell-trajectory — completed
+- moss-skills — completed
+
+### P2 — Ecosystem (MCP as first-class citizen)
+
+- mcp-fusion-point — converging
+- mcp-app-adoption — draft
+
+### P2 — Out-of-box migration (lowest; node-lifecycle + matrix-manifest-layers close-out prioritized)
+
+- node-migration — in-progress
+- matrix-operator — in-progress
+- node-lifecycle — completed
+- matrix-manifest-layers — completed
+- matrix-resources — design-locked
+
+### Parallel thread
+
+- g1-product-august — in-progress (physical body; restart planned)
+
+### Stopped / reduced in Phase 3
+
+- claude-code-in-moss — dropped (replaced by dsh as coding agent)
+- speech-protocol-alignment — dropped
+
+### Stage tooling
+
+- feature-review — completed (zero-context side-channel review; inserted as Phase 2 response)
+- stage-tracking-convention — beta1 carry-over
+- moss-project-ground — completed
 
 ## Milestones
 
 Operational log in milestones/:
 
-- [2026-08-10 — MCP Mailbox 双向桥首次实机闭环](milestones/2026-08-10-mailbox-first-real-machine-bridge.md) — external agent (Claude Code) ↔ echo ghost 跨宿主双向对话走通；修复 6 个实机 bug，暴露 MCP poll vs MOSS push 不对称
+- [2026-08-10 — Mailbox real-machine bridge](milestones/2026-08-10-mailbox-first-real-machine-bridge.md) — external agent ↔ echo ghost cross-host dialog via MCP mailbox
+- [2026-08-28 — Dolores dsh real-machine bridge](milestones/2026-08-28-dolores-dsh-wiring-first-bridge.md) — MOSS drives dsh as inference core; external wake chain verified
 
 ## Retrospective
 
-(not yet closed)
+> 2026-08-31 — first round review. This stage is not closed; v0.1.0 is
+> not yet tagged. This is a mid-stage retrospective, not the close record.
+> Earlier history is traceable via `git log`; code-level detail is
+> referenced, not re-narrated.
+
+### Threads
+
+The month's plan resolved into five threads, developed in parallel in a
+single workspace (no conflict, maximum efficiency):
+
+- **P0 — Dolores ghost.** Ground, memento, pydantic agent (incl. llm funcs).
+- **P1 — Interaction.** Making MOSS self-iteration observable: voice, GUI,
+  qa, warrant.
+- **P1 — Capability.** Coding-agent capability as a native MOSS capability;
+  development becomes observable.
+- **P2 — Ecosystem.** MCP fusion as a first-class citizen.
+- **P2 — Out-of-box migration.** Lowest priority (targeted at observability
+  as demo); node-lifecycle and matrix-three-layers wrap-up higher within it.
+
+### Phase 1 — smooth (early August)
+
+Parallel development proceeded as designed. llm funcs established a solid
+model-call layer for ghost integration. Ground reached near-completion.
+The memento agent converged the memento concept itself and had real
+effect. A companion GUI took initial shape.
+
+### Phase 2 — deepseek-v4 regression (the central failure)
+
+After the deepseek-v4 upgrade, a concentrated failure: within one week
+eight features sustained development collapse that had never occurred
+before — delivered results were systematically at odds with their
+declared intent. For the first time in roughly three months the mechanism
+failed in a cluster.
+
+Two responses followed. feature-review was inserted (zero-context
+side-channel review), and collaboration-system optimization was elevated
+to first priority. This was diagnosed at the time as a **mechanism**
+problem (model delivery drift). Later external reporting confirmed a
+**model** problem — an official deepseek regression (V4-Pro-0813 GA on
+2026-08-13, temporally aligned with the onset).
+
+The evidence favoring the model-cause over a mechanism-cause: the
+features mechanism had run stably for 3+ months, then failed within a
+single week. A constant mechanism does not degrade on a timepoint; the
+variable that changed on that timepoint was the input (the model).
+Accordingly, "delivery drift" is better read as a projection of that
+regression rather than its root cause.
+
+### Phase 3 — dsh as Dolores core (the redirection)
+
+deepseek harness and vision-exp shipped (dsh 2026-08-13, MIT). Two days
+of research concluded fusing dsh as the Dolores ghost core was a large
+net gain:
+
+- dsh ships a complete interface system — no separate ghost GUI to build.
+- File-editing etc. need not be prioritized; qa / warrant degrade to
+  side-path within ghost runtime.
+- History-message storage comes from the dsh session — no custom store to
+  redo; side-path agents have explicit integration paths.
+- dsh is a coding agent — no third-party or in-house coding agent needed.
+
+This saved most of the planned capability / interaction threads.
+Immediate actions: stop claude-code-in-moss; drop agent-surface to draft.
+
+The cost: this round had to absorb the interleaved logos thinking
+refactor. Because Phase 2 had destroyed trust in model delivery, the
+human hand-wrote the main body (three working days), with models
+contributing review and part of the test conversions.
+
+### Notes on scale (recorded, not self-congratulatory)
+
+- August: 291 commits; +80.7k / −32.0k (net +48.7k). AI coding was
+  dominated by the deepseek family.
+- mindflow refactor: the two peak commits total ~14k diff lines
+  (including model); the human hand-wrote ~9.3k of it (models: review +
+  part of the tests). The mindflow-interleaved FEATURE records "6k+
+  changed lines + dozens of unit tests". See `41f0cb63`, `44130609` via
+  `git log`.
+
+### Redirection to Phase 4
+
+The interaction / capability threads move to Phase 4 (early September).
+The planned 2026-08-31 overall review is this file.
+
+Not closed: v0.1.0 untagged; Phase 3 wrap-up (interleave live tests, TUI
+regression); interaction / capability threads deferred to Phase 4.
