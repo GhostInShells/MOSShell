@@ -28,17 +28,18 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *
  * ── 表面 (8 点) ────────────────────────────────────────────────────────
  * 1. ego/create       — instruction + messages (ghost.memory: 压缩/快照/ground).
- * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch + effort + model config, 阻塞执行完.
+ * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort + model config, 阻塞执行完.
  * 3. thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (interrupt).
  * 4. perStep 锁       — foreign session → reject + mux 提示冻结;
  *                       ego session 非 thinking → 阻塞等 thinking/enter 反转.
- * 5. moment 映射      — python 侧拆两条 message: context (echoes/dynamic/executing 折叠成
- *                       <moment>, inject) + inputs (percepts 平铺 + optional hint, steer).
- *                       plugin 只收两条现成 content, 不组装 moss message. epoch 槽位并列
- *                       (recap 前情提要 + ground, 恒空, deferred).
- * 6. moment 投放      — context → inject (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
- * 7. tool 面暂缓      — 4 个 ego tool + tool-result 桥不做; wait_next_moment (yield
- *                       tool) 先行落地, 见下节.
+ * 5. moment/epoch 映射 — python 侧组装, plugin 只收现成 content blocks (dumb transport,
+ *                       不 parse xml-like). context (echoes/dynamic/executing → <moment>,
+ *                       inject) + inputs (percepts + hint → <inputs>, steer) + epoch
+ *                       (<epoch index=N> 容器: <recap> + <baseline>, inject, 变更时).
+ * 6. moment 投放      — context/epoch → inject (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
+ * 7. tool 面          — wait_next_moment (yield, 被动让出) + observe (主动观测, approach a
+ *                       内联返回 moment content blocks) 已落地; interleaved_logos /
+ *                       switch_model deferred (落文档不实现).
  * 8. 时序图           — 见下方 ASCII.
  *
  * ── 时序: MOSS 驱动路径 (thinking = turn) ──────────────────────────────
@@ -86,10 +87,17 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * cancel: tool 被 session.cancel 打断时走 dsh 默认 abort (reject → error), 与其它 tool 一致,
  *   不做特殊处理 (pendingYield 清空, 轨迹不丢).
  *
+ * ── observe tool (approach a) ────────────────────────────────────────
+ * 主动观测, 与 yield 互补 (yield 被动让出, observe 主动观测). tool execute 挂
+ * pendingCalls[callId] 阻塞 → MOSS 侧 thinking.observe() 生产 moment → /tool-result
+ * RPC 按 callId 解锁, 内联返回 moment content blocks (context + inputs 拼接, 保留图片).
+ * 不 break turn — 模型在 tool result 到达后继续思考 (interleaved thinking).
+ *
  * ── 遗留问题 ────────────────────────────────────────────────────────
  * 1. **applyModelConfig todo**: thinking/enter 的 provider/model/reasoningEffort
  *    未应用到下个 request (agent/request waterfall / session.selectModel).
- * 2. **epoch 周期接线**: epoch 槽位已开 (恒空), compact 压上下文 → recap/ground 注入待接.
+ * 2. **epoch 周期接线**: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact 压上下文)
+ *    尚未装线 — recap/baseline 的生产接在 compact 上.
  * 3. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
  * 4. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
  *    instruction 里 prompt 模型不要重复它 (待接).
@@ -109,6 +117,7 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 // thinking 事务面 (取代旧的 articulate/enter|exit): 帧注入 + 锁反转 + 退出 cancel.
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
+const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
 const HARNESS_IDENTITY_SECTION = 'harness:identity'
 const HARNESS_IDENTITY_ORDER = -100
 const HARNESS_IDENTITY_TEXT = 'You are an intelligent being powered by the Ghost In Shells architecture: MOSS (https://github.com/GhostInShells/MOSShell) provides the Shells, and DeepSeek Harness provides the Ghost. Your prototype is Dolores.'
@@ -190,6 +199,11 @@ function closeThinking(): void {
 // 时清空并 reject — 见 tool execute.
 let pendingYield: { resolve: (value: unknown) => void; reject: (error: Error) => void } | null = null
 
+// tool 回调桥 (approach a): 需要 MOSS 侧 round-trip 的 tool (observe 等) execute 挂 pending
+// promise, 由 /tool-result RPC 按 callId 解锁. Map keyed by callId — 多 tool 各自 pending
+// 互不干扰. resolve 载荷 = 各 tool 的返回值 (observe = moment 文本 str).
+const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+
 /** moment 的 wire content 段 — text 直传, image 为 base64 (dsh EncodedImageAttachment 形状). */
 type MomentContentPart =
   | { type: 'text'; text: string }
@@ -205,8 +219,8 @@ interface ThinkingEnterPayload {
     inputs: MomentContentPart[]
     moment_id?: string
   }
-  /** epoch messages (recap 前情提要 + ground) — 槽位已开, 本轮恒空 (epoch 周期 deferred). */
-  epoch?: { text: string }[]
+  /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
+  epoch?: MomentContentPart[]
   effort: string
   model: { provider: string; model: string; reasoningEffort?: string }
   /** 防旁路 (点 4): ego/create 返回的 token, 校验失败直接拒绝. */
@@ -412,6 +426,15 @@ export function apply(ctx: Context) {
         const context = await durableMomentContent(ctx, body.moment?.context ?? [])
         const inputs = await durableMomentContent(ctx, body.moment?.inputs ?? [])
         openThinking()
+        // epoch 变更时: <epoch> 容器作为 epoch 级稳定背景 (inject, 不驱动 turn). 在 moment
+        // context 之前注入 — epoch 是底座, moment 是坐落在其上的帧.
+        if (body.epoch !== undefined && body.epoch.length > 0) {
+          const epochBlocks = await durableMomentContent(ctx, body.epoch)
+          agent.inject(createUserMessage({
+            content: epochBlocks,
+            source: { kind: 'plugin', plugin: `${name}:epoch` },
+          }))
+        }
         // inject context — 背景上下文, 进 inbox 不 wake (不驱动 turn).
         if (context.length > 0) {
           agent.inject(createUserMessage({
@@ -434,8 +457,6 @@ export function apply(ctx: Context) {
         } else {
           // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
           //   (agent/request waterfall 提案 / session.selectModel).
-          // todo: epoch injection — body.epoch (recap 前情提要 + ground) 注入为 epoch 级
-          //   稳定上下文 (非 hot 帧). 槽位已开 (恒空), epoch 周期 (compact) 装线后接.
           // 正常 enter: steer inputs (输入, 驱动 turn). 无 percepts 时 idle 需占位起 turn.
           if (agent.status === 'idle') {
             agent.steer(createUserMessage({
@@ -521,6 +542,64 @@ export function apply(ctx: Context) {
       }) as unknown as JsonValue
     },
   }))
+
+  // ── observe tool (approach a) ────────────────────────────────────────
+  // 主动观测: 模型调 observe → execute 挂 pendingCalls[callId] 阻塞 → MOSS 侧 thinking.observe()
+  // 生产 moment → /tool-result RPC 按 callId 解锁 (内联返回 moment content blocks). 与 yield
+  // 不同: observe 不 break turn, 模型在 tool result 到达后继续思考 (interleaved thinking).
+  ctx.tools.register(defineTool({
+    name: 'observe',
+    description: 'Actively observe the current MOSS moment now. Produces a fresh observation frame (context + inputs) and returns it inline.',
+    parameters: {
+      refresh_shell: { type: 'boolean', default: false, description: 'Refresh the shell facade before observing (deferred — no-op for now).' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => value as ContentBlock[],
+    },
+    execute: async (_args, exec) => {
+      // 正常解锁 (/tool-result) resolve(moment content blocks); 被 session.cancel 打断走 dsh 默认 abort.
+      const callId = String(exec.callId)
+      return await new Promise<ContentBlock[]>((resolve, reject) => {
+        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) { reject(new Error('observe aborted')) }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }))
+
+  // ── tool-result 桥 (approach a): MOSS 侧 /tool-result 按 callId 解锁 pending tool ──
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_TOOL_RESULT,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req)
+        const callId = String(body.callId ?? '')
+        const pending = pendingCalls.get(callId)
+        if (pending === undefined) {
+          throw new Error(`no pending tool call for ${callId}`)
+        }
+        if (!Array.isArray(body.result)) {
+          throw new Error('result must be an array of content parts')
+        }
+        pendingCalls.delete(callId)
+        const blocks = await durableMomentContent(ctx, body.result as MomentContentPart[])
+        pending.resolve(blocks)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
 }
 
 // ── helper: model config 应用 (点 3) ───────────────────────────────────

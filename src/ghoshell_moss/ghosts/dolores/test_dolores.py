@@ -608,3 +608,77 @@ class TestDoloresMomentPayload:
         payload = self._ego()._moment_payload(Moment())
         assert payload["context"] == []
         assert payload["inputs"] == []
+
+    def test_moment_content_parts_concatenates_context_and_inputs(self):
+        from ghoshell_moss.core.blueprint.moment import Echoes, Moment
+        from ghoshell_moss.message import Message
+
+        moment = Moment(
+            previous=Echoes(messages=[Message.new().with_content("echo")]),
+            percepts={"test": [Message.new().with_content("percept")]},
+        )
+        parts = self._ego()._moment_content_parts(moment)
+        text = "".join(c["text"] for c in parts if c.get("type") == "text")
+        assert "echo" in text
+        assert "percept" in text
+
+    def test_moment_content_parts_empty_when_no_content(self):
+        from ghoshell_moss.core.blueprint.moment import Moment
+
+        assert self._ego()._moment_content_parts(Moment()) == []
+
+
+class TestDoloresEpochPayload:
+    """DoloresEgo 的 epoch 槽位 — <epoch> 容器 (recap + baseline), epoch 变更时才返回."""
+
+    def _ego(self):
+        from ._ego import DoloresEgo, DoloresEgoContext
+
+        return DoloresEgo(
+            launcher=None,
+            ctx=DoloresEgoContext(
+                project_home=Path("."),
+                project_name="pytest",
+                name="dolores",
+                instruction="i",
+            ),
+        )
+
+    def _thinking(self, epoch):
+        class _Observer:
+            @property
+            def epoch(self):
+                return epoch
+
+        class _Thinking:
+            def __init__(self, observer):
+                self.observer = observer
+
+        return _Thinking(_Observer())
+
+    def test_epoch_payload_renders_epoch_container(self):
+        from ghoshell_moss.core.blueprint.moment import Epoch
+        from ghoshell_moss.message import Message
+
+        epoch = Epoch(
+            id="e1",
+            index=1,
+            recap=[Message.new(tag="summary").with_content("past")],
+            baseline={"facade": "channel tree"},
+        )
+        payload = self._ego()._epoch_payload(self._thinking(epoch))
+        assert payload is not None
+        text = "".join(c["text"] for c in payload if c.get("type") == "text")
+        assert "<epoch" in text and 'index="1"' in text
+        assert "<recap>" in text and "past" in text
+        assert "<baseline>" in text and "<facade>" in text and "channel tree" in text
+
+    def test_epoch_payload_none_when_epoch_unchanged(self):
+        from ghoshell_moss.core.blueprint.moment import Epoch
+
+        ego = self._ego()
+        epoch = Epoch(id="e1", index=1, recap=[], baseline={})
+        assert ego._epoch_payload(self._thinking(epoch)) is None  # 空 epoch → 不注入
+        # 已记录的 epoch 再次进入 → None (不变更).
+        epoch2 = Epoch(id="e1", index=1, recap=[], baseline={})
+        assert ego._epoch_payload(self._thinking(epoch2)) is None

@@ -2,7 +2,29 @@
 
 本文件负责 ghost 侧 (Python), 与 dsh_plugin/moss-dolores-ghost-plugin.ts 并行 —
 TS 负责 dsh 内核侧. 早期只画表面 (``...`` 占位); 2026-08-28 起 run_thinking 落地,
-其余 (epoch / tool 桥 / on_event 内部逻辑) 仍待后续.
+2026-09-02 起 epoch 槽位 (<epoch> 容器) 与 observe tool (approach a) 落地;
+on_event 内部逻辑 (token/工具/seq) 仍待后续.
+
+── 迭代计划 (下一步, 逐项做; 七项全稳后才做 memento) ──────────────────
+  不一批做完. 逐项: 对齐 → 实现 → 提交, 做完划一项.
+
+  1. instruction 建立 — Dolores instruction (system prompt) 建四层: 认知
+     (我是谁/存在/意义)、协议 (CTML 输出协议)、交互礼仪 (与人类协作的边界/
+     方式)、篇幅控制. 重点: 交互 + 语音纪律 (voice discipline, 语音向 ghost).
+  2. 测试 ghost 改名 — .moss/src/MOSS/ghosts/moss.py 测试 ghost 实例
+     name="moss" → "deepseek"; DoloresMeta 默认 description 讲清楚.
+  3. tools 对表面 — [已对齐, observe/epoch 已实现] 工具面收敛为: observe (主动观测,
+     approach a 内联返回 moment content blocks) / yield_next_moment (被动让出) /
+     interleaved_logos (= articulator(replan, wait_action_done) 的 tool 表面) /
+     switch_model (反身, 落文档不实现). 原 full_facade 等 4 个 ego tool 砍掉 — facade
+     走 epoch.baseline 注入 (push 非 pull), 不是 tool.
+  4. 正文 logos 阻塞 — ego think 流程正文 logos 流式逐段 yield 还是阻塞到
+     turn/end (done) 再整体产出 — 判定.
+  5. workspace / title 正式命名 — ego/create 的 workspace title (= project_name)
+     与 session title (session_title 模板) 正式命名, 去临时占位.
+  6. yield tool schema — wait_next_moment parameters: {} 空 obj 换更好的空定义.
+  7. system prompt 分隔符/去重 — system_prompt 加分隔符、正式化、去重
+     (baseline + prototype + identity + CTML 提示 分段与重复消除).
 
 ── 定位 ──────────────────────────────────────────────────────────────
 DoloresEgo 是 Dolores ghost 的 "我". 随 ghost 创建时实例化, 进入同一
@@ -29,10 +51,10 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
 服务接口. 每个 turn 自包含: enter-inject → model 跑 → turn/end 收线. 帧按
 状态分叉: mindflow 活跃 → live moment; idle → 静态状态快照.
 
-  thinking/enter   — context + inputs 两个 message 槽位 + epoch + effort + model config + thinkingToken.
-                     handler 阻塞执行完: inject context → steer inputs → openThinking
-                     (释放 pre-step 锁). context/inputs 由 python 侧组装 (见下); epoch 是并列槽位
-                     (recap 前情提要, 本轮恒空).
+  thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort + model config + thinkingToken.
+                     handler 阻塞执行完: inject epoch(变更时) → inject context → steer inputs →
+                     openThinking (释放 pre-step 锁). 全部由 python 侧组装 (见下); epoch 是
+                     <epoch> 容器 (recap + baseline), 变更时注入为背景.
   thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (不空跑失速).
   perStep 锁       — foreign session → reject + mux 提示冻结; ego 非 thinking →
                      阻塞等反转 (背压). 锁由 thinking signal 提供 (TS promise,
@@ -48,17 +70,21 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
 ── session event 响应 (run 时监听) ───────────────────────────────────
   1. logos 判定: _fetch_logos (assistant/chunk text-delta) → articulator + yield.
   2. turn/end: 消费方 break 收线 (正常路径); 毒丸只承载 enter 异常.
-  3. ego tool 调用 (tool 面暂缓, 点 7): tool/call → 执行 → RPC tool-result 解锁.
+  3. observe tool 调用 (approach a): tool/call → thinking.observe() → RPC tool-result
+     内联返回 moment content blocks. (其余 tool 面 deferred, 见下.)
   4. 异常感知: DoloresRun aexit 时 thinking.abort(reason).
   (DoloresRun._on_event 后续会有逻辑 — token 记账 / tool 桥 / seq 跟踪, 本阶段纯透传.)
 
-── moment 映射: context + inputs 两个槽位 + epoch 槽位 (点 6) ─────────
+── moment / epoch 映射: context + inputs + epoch 三个槽位 ─────────────
+  协议边界: xml-like 只在 python 侧理解 (<moment>/<inputs>/<epoch> 全在此烤好),
+  plugin 是 dumb transport — 只收 content blocks、admit image、注入, 不 parse 结构.
   context — _context_message: as_moment_message 排除 percept/hint (echoes/dynamic/
             executing 折叠成 <moment moment_id=...>), inject 进上下文 (背景, 不驱动 turn).
   inputs  — _inputs_message: percepts 平铺 + optional hint 折叠成 <inputs>, steer
             作为 turn 输入 (驱动). 映射在 python 侧 (ego) 组装, plugin 只收两条现成 content.
-  epoch   — (并列槽位) epoch 级稳定上下文: recap 前情提要 + ground_instruction.
-            槽位已开, 本轮恒空 (epoch 周期 deferred, 见下); 装线后从 observer.epoch.recap 投影.
+  epoch   — _epoch_payload: epoch 变更时 (observer.epoch.id 变) 折叠成 <epoch index=N>
+            容器 (recap 前情提要 + baseline 起点信息, baseline key 渲染成 <key>value</key>),
+            inject 为背景 (一个槽, 不像 moment 两个槽 — 注入语义单一). 首帧也触发.
   command_logos 归 context (executing 子段), 是「感知」不是「输入」; 反射弧已在 articulate 前 send_nowait 消费.
   thinking_effort 在 articulator 上, 经 enter RPC 的 effort 字段上.
   contexts 观测由 MindflowInShell 装线的 shell trajectory 进 moment.previous,
@@ -71,6 +97,14 @@ turn 边界信号 (非 turn 内续帧): 消费方认出 tool/call = wait_next_mo
 下一轮 thinking/enter: pendingYield 非空 → inject(context) + steer(inputs) + resolve("ok")
 (str, 非 moment contents — moment 已走 context/inputs 槽位). tool 被 session.cancel 打断时
 走 dsh 默认 abort, 与其它 tool 一致 (pendingYield 清空, 轨迹不丢). momentId 暂不消费.
+
+── observe tool (approach a, 主动观测) ─────────────────────────────
+与 yield 互补: yield 被动让出 (节奏权在 MOSS), observe 主动观测 (节奏权在模型).
+模型调 observe → plugin execute 挂 pendingCalls[callId] → MOSS 侧认出 tool/call →
+thinking.observe() 生产 moment → /tool-result RPC 按 callId 解锁, 内联返回 moment
+content blocks (context + inputs 拼接, 保留图片). 不 break turn — 模型在 tool result
+到达后继续思考 (interleaved thinking). tool-result 桥是单端点 (DOLORES_TOOL_RESULT),
+按 callId 路由 (多 tool 各自 pending).
 
 ── moment 容器 + commit 锚 (2026-08-31) ──────────────────────────────
 dsh/DeepSeek 走 OpenAI-completions, 缓存是自动前缀缓存, 无 Anthropic cache_control
@@ -90,8 +124,9 @@ commit、历史不折叠; 「提交 moment A 之前的历史」的下边界只�
   5. ego topic 是强类型 TopicModel 还是通用 dict (当前倾向通用 dict)?
 
 ── deferred (本期不做, 但别堵缝) ─────────────────────────────────────
-  epoch 周期 (ground_instruction 装线 / commit 落 Memento / compact 压上下文).
-  tool 面 (4 个 ego tool + tool-result 桥). on_event 内部逻辑 (token/工具/seq).
+  epoch 周期 (compact 压上下文触发 recap 生产 / commit 落 Memento / ground_instruction
+  装线). 注: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact) 尚未装线.
+  其余 tool 面 (interleaved_logos / switch_model — 落文档不实现). on_event 内部逻辑 (token/工具/seq).
 """
 
 from __future__ import annotations
@@ -135,6 +170,7 @@ THINKING_TOPIC_NAME = "dolores/thinking"
 _DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
 _DOLORES_THINKING_ENTER = "/moss-api/ghost/dolores/thinking/enter"
 _DOLORES_THINKING_EXIT = "/moss-api/ghost/dolores/thinking/exit"
+_DOLORES_TOOL_RESULT = "/moss-api/ghost/dolores/tool-result"
 
 # thinking/exit 的阻塞确认超时 (fail-safe): plugin 挂死时降级, 不挂死 thinking 退出.
 _EXIT_RPC_TIMEOUT = 5.0
@@ -241,6 +277,8 @@ class DoloresEgo:
         self._articulating = False
         # 自醒 signal 出口 — host/mindflow 接总线后注入 (broadcast), 本侧不直接碰 nucleus.
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
+        # epoch 跟踪: 记录已注入的 epoch id, enter 时比较 observer.epoch.id 决定是否携带 <epoch> 容器.
+        self._moment_epoch: str | None = None
 
     # ── 长命线: 生命周期 ────────────────────────────────────────────
 
@@ -392,14 +430,11 @@ class DoloresEgo:
         ...
 
     async def _on_tool_call(self, call_id: str, tool_name: str, arguments: dict) -> None:
-        """ego tool 执行桥: 模型调 ego tool → 本侧执行 → RPC tool-result 解锁 plugin.
+        """ego tool 执行桥 (seam, 暂未装线).
 
-        四个 ego tool (对齐 plugin 的 tool 表面):
-          full_facade()             — 拉全量 channel 操作面 (→ trajectory/shell)
-          get_channel_facade(path)  — 拉单个 channel facade
-          moss_observe(budget?)     — 读观测轨迹 (只读, → trajectory)
-          ctml_interrupt()          — 紧急停止 (→ shell.clear)
-        关联键 = tool/call 的 callId (plugin 侧 pendingCalls/arrivedResults 双 map 防竞态).
+        observe 已单独在 Dolores.think 落地 (approach a: tool/call → thinking.observe() →
+        _rpc_tool_result 内联返回 moment). 其余 tool 面 (interleaved_logos / switch_model)
+        deferred — 本方法保留为通用 tool 分发点, 未来多 tool 时在此按 tool_name 分派.
         """
         ...
 
@@ -420,9 +455,23 @@ class DoloresEgo:
         """
         ...
 
-    async def _rpc_tool_result(self, call_id: str, result: dict) -> None:
-        """POST /moss-api/ghost/dolores/tool-result — {callId, result} 解锁 plugin 侧 pending tool."""
-        ...
+    async def _rpc_tool_result(self, call_id: str, result: list[dict]) -> None:
+        """POST /moss-api/ghost/dolores/tool-result — {callId, result} 解锁 plugin 侧 pending tool.
+
+        result = wire content 段 (MomentContentPart, text + image), plugin 侧经
+        durableMomentContent 转 ContentBlock (admit image). callId 透传, plugin 按
+        callId 路由 (多 tool 各自 pending).
+        """
+        await self._launcher.call(_DOLORES_TOOL_RESULT, {"callId": call_id, "result": result})
+
+    def _moment_content_parts(self, moment: Moment) -> list[dict]:
+        """moment → observe tool result 的 content blocks (context + inputs 拼接, 内联返回).
+
+        approach a: observe 内联返回 moment. 保留 content blocks (text + image), 不折叠
+        成 string — 与 context/inputs 槽位一致, 支持图片.
+        """
+        payload = self._moment_payload(moment)
+        return payload["context"] + payload["inputs"]
 
     async def enter_thinking(self, thinking: "Thinking") -> None:
         """POST /moss-api/ghost/dolores/thinking/enter — moment 一条 user message + epoch + effort + model + token.
@@ -432,7 +481,7 @@ class DoloresEgo:
         moment = thinking.moment
         payload = {
             "moment": self._moment_payload(moment),
-            "epoch": self._epoch_payload(),
+            "epoch": self._epoch_payload(thinking),
             "effort": thinking.effort(),
             "model": await self._model_config(),
             "thinkingToken": self._thinking_token,
@@ -513,14 +562,35 @@ class DoloresEgo:
             }
         return content
 
-    def _epoch_payload(self) -> list[dict]:
-        """epoch messages → plugin payload (与 moment message 并列的新槽位).
+    def _epoch_payload(self, thinking: "Thinking") -> list[dict] | None:
+        """epoch 槽位 — 仅在 epoch 变更时返回 <epoch> 容器 content blocks.
 
-        epoch 周期 (compact 压上下文 → recap 前情提要 + ground_instruction) 尚未装线
-        (deferred), 本槽位暂恒空 — 允许为空. 装线后从 observer.epoch.recap 1:1 投影
-        ``{text}``, 作为 epoch 级稳定上下文注入 (非 hot 帧).
+        渲染成单条 ``<epoch index=N>`` 容器: ``<recap>`` 前情提要 + ``<baseline>`` 起点
+        信息 (每个 baseline key 渲染成 ``<key>value</key>``). xml-like 只在 python 侧
+        理解, plugin 是 dumb transport — 只收 content blocks 注入, 不 parse 结构.
+        首帧与 epoch 变更都返回; 未变返回 None.
         """
-        return []
+        epoch = thinking.observer.epoch
+        if epoch.id == self._moment_epoch:
+            return None
+        self._moment_epoch = epoch.id
+        children: list[Message] = []
+        if epoch.recap:
+            children.append(Message.new(tag="recap").with_messages(*epoch.recap))
+        if epoch.baseline:
+            baseline_msgs = [
+                Message.new(tag=key).with_content(value)
+                for key, value in epoch.baseline.items()
+                if value
+            ]
+            children.append(Message.new(tag="baseline").with_messages(*baseline_msgs))
+        if not children:
+            return None
+        container = Message.new(tag="epoch", attributes={"index": str(epoch.index)}).with_messages(*children)
+        return [
+            self._content_payload(content)
+            for content in container.as_contents(with_meta=True)
+        ]
 
     async def _model_config(self) -> dict:
         """当前模型配置 (provider/model/reasoningEffort) — 经 session.models 拉取."""

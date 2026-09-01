@@ -61,6 +61,18 @@ def _is_yield_tool_call(event: "SessionEvent") -> bool:
     return call is not None and call.name == _YIELD_TOOL_NAME
 
 
+# observe tool 名 — 主动观测 tool (approach a: 内联返回 moment).
+_OBSERVE_TOOL_NAME = "observe"
+
+
+def _observe_tool_call(event: "SessionEvent") -> "ToolCallEvent | None":
+    """识别 observe tool 调用 (完整 tool/call). 返回 ToolCallEvent (含 callId) 或 None."""
+    call = ToolCallEvent.from_session_event(event)
+    if call is not None and call.name == _OBSERVE_TOOL_NAME:
+        return call
+    return None
+
+
 class Dolores(Ghost):
     """Dolores — 第二个 Ghost 原型运行时.
 
@@ -160,11 +172,18 @@ class Dolores(Ghost):
                                 await articulator.__aenter__()
                             articulator.send_nowait(logos_delta)
                             yield logos_delta
-                        elif event.meta.type == "turn/end" or _is_yield_tool_call(event):
+                        elif _is_yield_tool_call(event):
                             # yield 收线: 消费方认出 wait_next_moment → 标记 run.yielded,
                             # __aexit__ 经 exit_thinking(yielded=True) 通知 plugin 不 cancel.
-                            if _is_yield_tool_call(event):
-                                run.yielded = True
+                            run.yielded = True
+                            break
+                        elif (observe_call := _observe_tool_call(event)) is not None:
+                            # observe (approach a): 主动观测生产 moment, 内联返回 tool result.
+                            # 不 break — 模型在 tool result 到达后继续思考.
+                            moment = thinking.observe()
+                            result = self._ego._moment_content_parts(moment)
+                            await self._ego._rpc_tool_result(observe_call.callId, result)
+                        elif event.meta.type == "turn/end":
                             break
                 finally:
                     if articulator is not None:
