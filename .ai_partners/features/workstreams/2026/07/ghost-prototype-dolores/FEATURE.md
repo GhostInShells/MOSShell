@@ -19,6 +19,7 @@ updated: '2026-08-27'
 # Dolores Ghost
 
 > Use `moss features set-status ghost-prototype-dolores <status> -m "note"` to update state.
+> Ground 子任务（ghost_home 认知场装配方案）→ [dolores-ground.md](dolores-ground.md)。
 
 ## Motivation
 
