@@ -14,7 +14,7 @@ from pathlib import Path
 
 import typer
 
-from ghoshell_moss.contracts.llms import CallSettings, Effort, LLMConfig, LLMFuncs, ModelRef
+from ghoshell_moss.contracts.llms import CallSettings, Effort, LLMConfig, LLMFuncs, ModelRef, ResolvedModel
 from ghoshell_moss.depends import available
 
 from .utils import (
@@ -92,6 +92,55 @@ def _collect_env_refs(conf: LLMConfig) -> list[str]:
             if isinstance(field, str) and field.startswith("$"):
                 refs.add(field[1:])
     return sorted(refs)
+
+
+def _display_base_url(base_url: str) -> str:
+    """Show base_url — if it's a ``$ENV_VAR`` ref, annotate presence (never the key)."""
+    if isinstance(base_url, str) and base_url.startswith("$"):
+        ref = base_url[1:]
+        status = "set" if os.environ.get(ref) else "missing"
+        return f"{base_url} ({status})"
+    return base_url
+
+
+def _model_head_rows(resolved: ResolvedModel) -> list[list[str]]:
+    """Key model facts for the head — never includes the api_key."""
+    service = resolved.service
+    m = resolved.model
+    rows = [
+        ["service", service.name],
+        ["protocol", service.protocol],
+        ["base_url", _display_base_url(service.base_url)],
+        ["model", m.model],
+    ]
+    if resolved.degraded_from:
+        rows.append(["degraded_from", resolved.degraded_from])
+    rows += [
+        ["description", m.description or "-"],
+        ["tags", ", ".join(f"{k}={v}" for k, v in m.tags.items()) or "-"],
+        ["content_types", ", ".join(m.content_types) or "-"],
+        ["converters", ", ".join(f"{k}: {v}" for k, v in m.converters.items()) or "-"],
+        ["max_output_tokens", str(m.max_output_tokens)],
+        ["context_window", str(m.context_window)],
+    ]
+    return rows
+
+
+def _print_model_head(provider: str, model: str, tag: str | None) -> None:
+    """Print the resolved model head before a call.
+
+    Shows exactly which model will run and, when the request fell back to a
+    default, what it degraded from (``degraded_from``). ``content_types`` is
+    displayed as plain info — no warning: with the head visible, the caller
+    can read for themselves whether a model sees images. The api_key is never
+    printed.
+    """
+    resolved = _load_config().get_model(provider=provider, model=model, tag=tag)
+    print_simple_table(
+        _model_head_rows(resolved),
+        headers=["key", "value"],
+        title="Model Head",
+    )
 
 
 @llms_app.command(
@@ -374,6 +423,15 @@ if available("pydantic_ai", "anthropic"):
                     "(path/type/size). Off by default — bare content only."
                 ),
             ),
+            headless: bool = typer.Option(
+                False, "--headless",
+                help=(
+                    "Suppress the model head that prints before the call — "
+                    "base_url, model, content_types, converters, core params, "
+                    "and any degradation (degraded_from). api_key never printed. "
+                    "Off by default: the head shows."
+                ),
+            ),
     ) -> None:
         """One-shot LLM call. Prompt + optional instruction and structured output.
 
@@ -394,6 +452,8 @@ if available("pydantic_ai", "anthropic"):
         blocks. ``--expose-file-meta`` adds the file meta layer.
         """
         funcs = _load_funcs()
+        if not headless:
+            _print_model_head(provider, model, tag)
         settings = CallSettings(
             temperature=temperature, max_output_tokens=max_output_tokens,
         ) if (temperature is not None or max_output_tokens is not None) else None

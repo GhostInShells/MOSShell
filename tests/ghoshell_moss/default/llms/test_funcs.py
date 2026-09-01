@@ -271,6 +271,36 @@ async def test_call_to_record():
     assert record.result == {"label": "greeting", "confidence": 0.95}
 
 
+@pytest.mark.asyncio
+async def test_call_result_carries_resolved_model():
+    """返回值携带实际解析到的模型 (无密钥 ModelRef), 供调用方溯源."""
+    funcs = _make_funcs()
+    agent = _make_mock_agent(output="ok", text_parts=["ok"])
+
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
+        result = await funcs.call(instruction="", prompt="hi")
+
+    assert result.resolved is not None
+    assert result.resolved.service == "test"
+    assert result.resolved.model == "test-model"
+    assert result.resolved.degraded_from is None
+
+
+@pytest.mark.asyncio
+async def test_call_result_marks_degradation():
+    """请求的 provider 未命中时, 返回值携带降级来源提示."""
+    funcs = _make_funcs()
+    agent = _make_mock_agent(output="ok", text_parts=["ok"])
+
+    with patch("ghoshell_moss.llms.pydantic_ai_adapter.client.build_agent", return_value=agent):
+        result = await funcs.call(instruction="", prompt="hi", provider="missing")
+
+    assert result.resolved is not None
+    assert result.resolved.model == "test-model"  # 回退到默认
+    assert result.resolved.degraded_from is not None
+    assert "missing" in result.resolved.degraded_from
+
+
 # ── integration: PydanticAIFuncs.run_benchmark() ─────────────────────
 
 

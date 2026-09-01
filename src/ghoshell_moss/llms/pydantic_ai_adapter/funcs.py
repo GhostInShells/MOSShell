@@ -242,6 +242,7 @@ class PydanticAIFuncs(MossLLMFuncs):
             usage=_dataclass_asdict(result.usage) if result.usage else {},
             cast=elapsed,
             retries=0,
+            resolved=ModelRef.from_resolved(resolved),
         )
         llm_result = (
             LLMFuncResult[result_type](**llm_kwargs)

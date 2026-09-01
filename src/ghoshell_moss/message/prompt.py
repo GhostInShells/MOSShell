@@ -1,20 +1,20 @@
 """Prompt reading util — resolve @-file references into a list of Messages.
 
-The @ file protocol: a prompt may carry ``@path`` at line start (to end of
-line) — the whole line is a file reference. Each reference becomes a
-``Message`` via ``message_from_file``: its ``contents`` are the file's
-anthropic-compatible content (Text / Base64Image), and when
-``expose_file_meta`` is set (the caller's external flag — file exposable)
-the Message carries the meta layer (``tag="file"`` + path/type/size
-attributes), rendered by ``as_contents(with_meta=True)`` as an XML file
-block. Unresolvable references stay inline string. Thinking does NOT go
-through @ — it is a separate call parameter, injected as history.
+The @ file protocol: a prompt may carry ``@path`` references inline — like a
+mention. A reference is ``@`` followed by either a quoted path (``@"my
+file.txt"`` / ``@'my file.txt'``) or a bare run of non-whitespace characters
+(``@app.py``). Each reference resolves to a ``Message`` via
+``message_from_file``: its ``contents`` are the file's anthropic-compatible
+content (Text / Base64Image), and when ``expose_file_meta`` is set (the
+caller's external flag — file exposable) the Message carries the meta layer
+(``tag="file"`` + path/type/size attributes), rendered by
+``as_contents(with_meta=True)`` as an XML file block.
 
-Trailing sentence punctuation (``.`` ``,`` ``;`` ``:`` ``!`` etc.) is stripped
-from a reference before resolution, so ``see @app.py.`` resolves ``app.py``
-instead of failing on the ``.`` that ends the sentence. The inline fallback
-keeps the original punctuation, so nothing is lost when the ref does not
-resolve.
+Unresolvable references stay inline as the plain string the caller typed —
+the fallback is "if @ doesn't hit a file, keep it as-is". A bare reference
+strips trailing sentence punctuation before resolution, so ``@app.py.``
+resolves ``app.py``; a quoted path is taken verbatim. Thinking does NOT go
+through @ — it is a separate call parameter, injected as history.
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ from ghoshell_moss.message import Base64Image, Content, Message, Text
 
 __all__ = ["message_from_prompt", "message_from_file"]
 
-_AT_LINE_RE = re.compile(r"^@([^\n]*)\n?", re.MULTILINE)
+# @ followed by a quoted path or a bare non-whitespace run. The `@` must not be
+# preceded by a non-whitespace char, so ``hello@world`` stays plain text.
+_AT_REF_RE = re.compile(r"(?<!\S)@(?:\"([^\"\n]*)\"|'([^'\n]*)'|([^\s\"']+))")
 # trailing sentence punctuation / whitespace that should not belong to a path
 _TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?'\"()\[\]{}<>]+$")
 
@@ -38,26 +40,30 @@ def message_from_prompt(
         base_dir: str | Path | None = None,
         expose_file_meta: bool = False,
 ) -> list[Message]:
-    """Parse a prompt string, resolving @-file lines into Messages.
+    """Parse a prompt string, resolving inline @-file references into Messages.
 
-    A line starting with ``@`` is a file reference (path = rest of line).
-    Resolved files become Messages via ``message_from_file``; unresolvable
-    lines stay inline text. Non-@ lines (and the text between @-lines) are
-    text Messages, newlines preserved. ``base_dir`` — relative @refs
-    resolve against this (default cwd).
+    Each ``@path`` (bare token or quoted) is resolved via ``message_from_file``.
+    Resolved files become Messages; unresolvable references stay inline as the
+    plain string. Text around references is preserved. ``base_dir`` — relative
+    refs resolve against this (default cwd).
     """
     messages: list[Message] = []
     last = 0
-    for m in _AT_LINE_RE.finditer(text):
+    for m in _AT_REF_RE.finditer(text):
         if m.start() > last:
             messages.append(Message.new().with_content(text[last:m.start()]))
-        ref = _TRAILING_PUNCT_RE.sub("", m.group(1).strip())
-        if not ref:
+        if m.group(1) is not None:
+            raw = m.group(1)
+        elif m.group(2) is not None:
+            raw = m.group(2)
+        else:
+            raw = _TRAILING_PUNCT_RE.sub("", m.group(3))
+        if not raw:
             messages.append(Message.new().with_content(m.group(0)))
             last = m.end()
             continue
         msg = message_from_file(
-            ref, base_dir=base_dir, expose_file_meta=expose_file_meta,
+            raw, base_dir=base_dir, expose_file_meta=expose_file_meta,
         )
         if msg is None:
             messages.append(Message.new().with_content(m.group(0)))

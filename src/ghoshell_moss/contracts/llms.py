@@ -230,6 +230,13 @@ class ResolvedModel(BaseModel):
 
     service: ServiceConfig
     model: ModelConfig
+    degraded_from: str | None = Field(
+        default=None,
+        description=(
+            "降级来源提示 — 请求的 provider/model 未命中而回退到默认模型时给出 "
+            "(如 \"model 'x' not found\")。None 表示请求精确命中、无降级。"
+        ),
+    )
 
     @property
     def client_protocol(self) -> ClientProtocol:
@@ -346,7 +353,13 @@ class LLMConfig(ConfigType):
             if p is None:
                 if no_fallback:
                     raise KeyError(f"Provider {provider!r} not found")
-                return self._get_default()
+                return self._get_default(degraded_from=f"provider {provider!r} not found")
+            if model and model not in p.models:
+                return ResolvedModel(
+                    service=p.service,
+                    model=p.get_model(model, tag),
+                    degraded_from=f"model {model!r} not in provider {provider!r}",
+                )
             return ResolvedModel(
                 service=p.service,
                 model=p.get_model(model, tag),
@@ -362,7 +375,7 @@ class LLMConfig(ConfigType):
                     )
             if no_fallback:
                 raise KeyError(f"Model {model!r} not found in any provider")
-            return self._get_default()
+            return self._get_default(degraded_from=f"model {model!r} not found")
 
         return self._get_default()
 
@@ -410,10 +423,11 @@ class LLMConfig(ConfigType):
         yield self.default
         yield from self.providers.values()
 
-    def _get_default(self) -> ResolvedModel:
+    def _get_default(self, degraded_from: str | None = None) -> ResolvedModel:
         return ResolvedModel(
             service=self.default.service,
             model=self.default.default,
+            degraded_from=degraded_from,
         )
 
 
@@ -459,6 +473,10 @@ class ModelRef(BaseModel):
         default_factory=list,
         description="model.content_types — 原生支持的 content type 列表",
     )
+    degraded_from: str | None = Field(
+        default=None,
+        description="降级来源提示 — 请求未命中而回退时给出, 否则 None",
+    )
 
     @classmethod
     def from_resolved(cls, resolved: ResolvedModel) -> 'ModelRef':
@@ -474,6 +492,7 @@ class ModelRef(BaseModel):
             context_window=model.context_window,
             max_output_tokens=model.max_output_tokens,
             content_types=list(model.content_types),
+            degraded_from=resolved.degraded_from,
         )
 
     def resolve(self, conf: LLMConfig, *, no_fallback: bool = False) -> ResolvedModel:
@@ -544,6 +563,13 @@ class LLMFuncResult(BaseModel, Generic[RESULT_MODEL]):
     retries: int = Field(
         default=0,
         description="本轮调用内部的模型重试次数",
+    )
+    resolved: ModelRef | None = Field(
+        default=None,
+        description=(
+            "本次调用实际解析到的模型 (无密钥引用) — 请求未命中而回退时, "
+            "其 ``degraded_from`` 携带降级来源提示, 让返回值自己说清用了哪个模型。"
+        ),
     )
     anchor: Anchor | None = Field(
         default=None,
