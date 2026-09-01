@@ -127,6 +127,7 @@ class Matrix(Facade):
             category: str = '',
             env: Environment | None = None,
             persist: bool = False,
+            singleton: bool | None = None,
     ) -> Self:
         """在运行时环境中, 用指明的方式定义一个 Node, 用它获得 matrix 实例"""
         from ghoshell_moss.factory import create_matrix, create_project
@@ -136,11 +137,11 @@ class Matrix(Facade):
             raise RuntimeError(f"The Matrix is already running: %s", _instance.this)
         env = env or Environment.discover()
         node = NodeManifest.new(node_name, description=description, category=category)
-        # 是否是一个持久运行节点.
         node.persist = persist
-        # 脚本化节点 (persist=False) 不声明 singleton — 允许并发多实例.
-        if not persist:
-            node.singleton = False
+        # singleton: 显式传入 → 覆盖 manifest 声明; 未传 (None) → 尊重 NodeManifest 默认 (True).
+        # 常驻 (persist) 与硬件独占 (singleton) 是正交的两件事, 不再用 persist 一刀切判定并发性.
+        if singleton is not None:
+            node.singleton = singleton
         cell = build_cell_from_node(env, node)
         runtime_info = CellRuntimeInfo.from_cell(cell)
         project = create_project(env)
