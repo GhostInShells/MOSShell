@@ -458,22 +458,46 @@ class DoloresEgo:
         except Exception:
             self._logger.exception("thinking/exit failed — degraded; state may be stale")
 
-    def _moment_payload(self, moment: Moment) -> dict:
-        """moment → 一条自解释 user message 的 content blocks (点 6).
+    def _context_message(self, moment: Moment) -> Message | None:
+        """context 槽位 — as_moment_message 排除 percept/hint (echoes/dynamic/executing).
 
-        ``as_moment_message`` 折叠整帧为 ``<moment moment_id=...>`` 单条消息
-        (内含 echoes/percepts/dynamic/hint 子段), 序列化成 dsh wire content 列表
-        (text 直传, image 转 base64 EncodedImageAttachment — 保留多模态). plugin
-        按序 steer/append 这一条, 不拆块、不镜像三块结构. ``moment_id`` 独立传 — commit 锚.
+        折叠成一条 ``<moment moment_id=...>`` 消息, inject 进上下文 (背景, 不驱动 turn).
+        无 context 内容 (echoes/dynamic/executing 均空) → None.
         """
-        msg = moment.as_moment_message()
-        if msg is None:
-            return {"contents": [], "moment_id": moment.id}
+        return moment.as_moment_message(always_return=False, with_percepts=False, with_hint=False)
+
+    def _inputs_message(self, moment: Moment) -> Message | None:
+        """inputs 槽位 — percepts + hint 包成一条 ``<inputs>`` 消息 (steer 用, 允许为空).
+
+        percept 消息按 source 顺序平铺进容器 (不另包 ``<percepts>``), hint (optional)
+        以 ``<hint>`` 子段排在最后. 无 percepts 无 hint → None.
+        """
+        messages: list[Message] = list(moment.percepts_messages())
+        if moment.hint:
+            messages.append(Message.new(tag='hint').with_content(moment.hint))
+        if not messages:
+            return None
+        return Message.new(tag='inputs').with_messages(*messages)
+
+    def _moment_payload(self, moment: Moment) -> dict:
+        """moment → 两条 message 的 wire content (点 6): context + inputs.
+
+        context = ``_context_message`` (echoes/dynamic/executing 折叠 ``<moment>``, inject 用);
+        inputs = ``_inputs_message`` (percepts + hint 折叠 ``<inputs>``, steer 用). 映射在
+        python 侧做, plugin 只收两条现成 content 分别投. text 直传, image 转 base64
+        EncodedImageAttachment (保留多模态). ``moment_id`` 独立传 — commit 锚.
+        """
+        context_msg = self._context_message(moment)
+        inputs_msg = self._inputs_message(moment)
         return {
-            "contents": [
+            "context": [
                 self._content_payload(content)
-                for content in msg.as_contents(with_meta=True)
-            ],
+                for content in context_msg.as_contents(with_meta=True)
+            ] if context_msg is not None else [],
+            "inputs": [
+                self._content_payload(content)
+                for content in inputs_msg.as_contents(with_meta=True)
+            ] if inputs_msg is not None else [],
             "moment_id": moment.id,
         }
 

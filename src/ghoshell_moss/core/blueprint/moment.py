@@ -301,6 +301,7 @@ class Moment(BaseModel, WithAdditional):
             with_dynamic_context: bool = True,
             with_hint: bool = True,
             with_command_executing: bool = True,
+            with_percepts: bool = True,
     ) -> list[Message]:
         """
         Fold the whole keyframe into a single moment message.
@@ -310,6 +311,9 @@ class Moment(BaseModel, WithAdditional):
         inserted as a single tool-result or user message. The transient sub-blocks
         (dynamic_context / command_logos / hint) belong to the current frame only;
         history should drop them via ``as_history_messages``.
+
+        ``with_percepts=False`` folds the context half only (echoes / dynamic_context /
+        command_logos), leaving percepts for the separate input message.
         """
         messages: list[Message] = []
         echoes = list(self.previous_echoes_messages())
@@ -322,12 +326,13 @@ class Moment(BaseModel, WithAdditional):
                 messages.append(
                     Message.new(tag='dynamic_context').with_messages(*dynamic_messages)
                 )
-        percepts = list(self.percepts_messages())
-        if percepts:
-            percepts_message = Message.new(tag='percepts').with_messages(*percepts)
-            messages.append(
-                percepts_message
-            )
+        if with_percepts:
+            percepts = list(self.percepts_messages())
+            if percepts:
+                percepts_message = Message.new(tag='percepts').with_messages(*percepts)
+                messages.append(
+                    percepts_message
+                )
         if with_command_executing and self.command_logos:
             messages.append(
                 Message.new(tag='executing').with_content(self.command_logos)
@@ -345,8 +350,17 @@ class Moment(BaseModel, WithAdditional):
             *,
             always_return: bool = True,
             with_moment_id: bool = True,
+            with_percepts: bool = True,
+            with_hint: bool = True,
     ) -> Message | None:
-        messages = self.full_moment_messages()
+        """Fold the keyframe into one ``<moment moment_id=...>`` message.
+
+        ``with_percepts=False`` / ``with_hint=False`` drop the input half (percepts / hint),
+        leaving the context half (echoes / dynamic_context / command_logos). Callers that
+        want the input half as a separate message assemble it from ``percepts_messages()``
+        and ``hint`` themselves.
+        """
+        messages = self.full_moment_messages(with_percepts=with_percepts, with_hint=with_hint)
         if messages or always_return:
             attributes = {'moment_id': self.id} if with_moment_id else {}
             return Message.new(tag='moment', attributes=attributes).with_messages(*messages)

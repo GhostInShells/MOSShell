@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-import type { Agent } from '@deepseek-ai/dsh-agent'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
@@ -200,8 +199,14 @@ type MomentContentPart =
 
 /** thinking/enter 入参 (点 3). 阻塞执行完: handler 完成注入 + 开锁才返回. */
 interface ThinkingEnterPayload {
-  /** moment — 一条自解释 user message (<moment moment_id=...> 容器) 的 content blocks. */
-  moment?: { contents: MomentContentPart[]; moment_id?: string }
+  /** moment 拆两条 (python 侧映射): context (inject) + inputs (steer). */
+  moment?: {
+    /** context — echoes/dynamic/executing 折叠的 <moment> 容器 content blocks (inject). */
+    context: MomentContentPart[]
+    /** inputs — percepts + hint 的 <inputs> 容器 content blocks (steer, 允许空). */
+    inputs: MomentContentPart[]
+    moment_id?: string
+  }
   /** epoch messages (recap 前情提要 + ground) — 槽位已开, 本轮恒空 (epoch 周期 deferred). */
   epoch?: { text: string }[]
   effort: string
@@ -405,31 +410,45 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧, moment contents
-        // admit 成 ContentBlock[] 走 tool 返回值, 不经 steer/append. 无 pendingYield → 正常 enter.
+        // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).
+        const context = await durableMomentContent(ctx, body.moment?.context ?? [])
+        const inputs = await durableMomentContent(ctx, body.moment?.inputs ?? [])
+        openThinking()
+        // inject context — 背景上下文, 进 inbox 不 wake (不驱动 turn).
+        if (context.length > 0) {
+          agent.inject(createUserMessage({
+            content: context,
+            source: { kind: 'plugin', plugin: `${name}:moment` },
+          }))
+        }
+        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧. 先 inject/steer
+        // 再 resolve("ok"), 保证 next step 由 tool result 触发时能 claim 到 inputs. 顺序不能反.
         if (pendingYield !== null) {
+          if (inputs.length > 0) {
+            agent.steer(createUserMessage({
+              content: inputs,
+              source: { kind: 'user' },
+            }))
+          }
           const unlock = pendingYield
           pendingYield = null
-          const blocks = await durableMomentContent(ctx, body.moment?.contents ?? [])
-          openThinking()
-          unlock.resolve(blocks)
+          unlock.resolve('ok')
         } else {
           // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
           //   (agent/request waterfall 提案 / session.selectModel).
           // todo: epoch injection — body.epoch (recap 前情提要 + ground) 注入为 epoch 级
           //   稳定上下文 (非 hot 帧). 槽位已开 (恒空), epoch 周期 (compact) 装线后接.
-          const blocks = await durableMomentContent(ctx, body.moment?.contents ?? [])
-          openThinking()
-          // MOSS 驱动路径: agent idle → steer 唤醒 turn, content = moment message (自解释).
-          // 模式提示 (CTML 环境) 已在 ghost 基础 instruction, 不进 steer (cache 稳定).
-          // 外部唤醒路径: turn 已在 pre-step 阻塞, 非 idle → append moment 进 surface.
+          // 正常 enter: steer inputs (输入, 驱动 turn). 无 percepts 时 idle 需占位起 turn.
           if (agent.status === 'idle') {
             agent.steer(createUserMessage({
-              content: blocks.length > 0 ? blocks : [{ type: 'text', text: 'thinking' }],
+              content: inputs.length > 0 ? inputs : [{ type: 'text', text: 'thinking' }],
               source: { kind: 'user' },
             }))
-          } else if (blocks.length > 0) {
-            appendUserMessage(agent.session, blocks, 'moment')
+          } else if (inputs.length > 0) {
+            agent.steer(createUserMessage({
+              content: inputs,
+              source: { kind: 'user' },
+            }))
           }
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -491,10 +510,12 @@ export function apply(ctx: Context) {
     parameters: {},
     output: {
       schema: { type: 'json' },
-      render: (_args, value) => value as ContentBlock[],
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
     execute: async (_args, exec) => {
-      return await new Promise<ContentBlock[]>((resolve, reject) => {
+      // 正常解锁 (thinking/enter) resolve("ok"); 被 session.cancel 打断时走 dsh 默认
+      // abort (reject → error), 与其它 tool 被 cancel 一致, 不做特殊处理.
+      return await new Promise<string>((resolve, reject) => {
         pendingYield = { resolve: resolve as (value: unknown) => void, reject }
         exec.signal.addEventListener('abort', () => {
           if (pendingYield !== null) { pendingYield = null; reject(new Error('wait_next_moment aborted')) }
@@ -525,16 +546,6 @@ async function durableMomentContent(ctx: Context, contents: readonly MomentConte
   return contents.map(part => part.type === 'text'
     ? { type: 'text', text: part.text }
     : { type: 'image', attachment: refs[next++] as ImageAttachmentRef })
-}
-
-function appendUserMessage(session: Agent['session'], content: ContentBlock[], tag: string): void {
-  // createUserMessage 生成唯一 id — 否则多条注入消息 id 全是 undefined, UI 撞 "more than one start Match".
-  session.append('user/message',
-    createUserMessage({
-      content,
-      source: { kind: 'plugin', plugin: `${name}:${tag}` },
-    }),
-    { surfaceOp: 'append' })
 }
 
 // ── helper: foreign session 冻结提示 (点 4) ─────────────────────────────

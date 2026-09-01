@@ -244,3 +244,42 @@ def test_moment_command_logos_preserved_in_new_moment():
     echoes2 = moment.new_echoes_container()
     moment2 = echoes2.new_moment()
     assert moment2.command_logos == ""  # command_logos 不应跨轮次自动继承
+
+
+def test_as_moment_message_excludes_percepts_and_hint_when_requested():
+    """as_moment_message(with_percepts=False, with_hint=False) 只折叠 context 半 (echoes/dynamic/executing)."""
+    prev = Echoes(messages=[Message.new().with_content("echo")])
+    moment = Moment(
+        previous=prev,
+        percepts={"test": [Message.new().with_content("percept")]},
+        hint="hint text",
+        command_logos="cmd!",
+    )
+    moment.dynamic_context["ctx"] = [Message.new().with_content("dyn")]
+    msg = moment.as_moment_message(with_percepts=False, with_hint=False)
+    assert msg is not None
+    assert msg.meta.tag == "moment"
+    text = msg.to_content_string()
+    assert "<echoes>" in text and "echo" in text
+    assert "<dynamic_context>" in text and "dyn" in text
+    assert "<executing>" in text and "cmd!" in text
+    assert "percept" not in text
+    assert "hint text" not in text
+
+
+def test_as_moment_message_keeps_percepts_and_hint_by_default():
+    """默认 as_moment_message 仍含 percepts + hint (向后兼容)."""
+    moment = Moment(
+        percepts={"test": [Message.new().with_content("percept")]},
+        hint="hint text",
+    )
+    msg = moment.as_moment_message()
+    assert msg is not None
+    text = msg.to_content_string()
+    assert "percept" in text
+    assert "hint text" in text
+
+
+def test_as_moment_message_returns_none_when_empty_and_always_return_false():
+    """空 moment + always_return=False → None."""
+    assert Moment().as_moment_message(always_return=False) is None

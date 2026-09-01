@@ -533,3 +533,48 @@ class TestYieldToolCall:
 
         event = self._event("assistant/chunk", {})
         assert _is_yield_tool_call(event) is False
+
+
+class TestDoloresMomentPayload:
+    """DoloresEgo 的 moment 映射 — context (inject) + inputs (steer) 两条 message."""
+
+    def _ego(self):
+        from ._ego import DoloresEgo, DoloresEgoContext
+
+        return DoloresEgo(
+            launcher=None,
+            ctx=DoloresEgoContext(
+                project_home=Path("."),
+                project_name="pytest",
+                name="dolores",
+                instruction="i",
+            ),
+        )
+
+    def test_moment_payload_splits_context_and_inputs(self):
+        from ghoshell_moss.core.blueprint.moment import Echoes, Moment
+        from ghoshell_moss.message import Message
+
+        moment = Moment(
+            previous=Echoes(messages=[Message.new().with_content("echo")]),
+            percepts={"test": [Message.new().with_content("percept")]},
+            hint="hint text",
+            command_logos="cmd!",
+        )
+        payload = self._ego()._moment_payload(moment)
+        assert payload["moment_id"] == moment.id
+        context_text = "".join(c["text"] for c in payload["context"] if c.get("type") == "text")
+        inputs_text = "".join(c["text"] for c in payload["inputs"] if c.get("type") == "text")
+        # context: echoes + executing (cmd!), 排除 percept/hint.
+        assert "echo" in context_text and "cmd!" in context_text
+        assert "percept" not in context_text and "hint text" not in context_text
+        # inputs: percept 平铺 + hint (hint 排后).
+        assert "percept" in inputs_text and "hint text" in inputs_text
+        assert inputs_text.index("percept") < inputs_text.index("hint text")
+
+    def test_moment_payload_empty_when_no_context_or_inputs(self):
+        from ghoshell_moss.core.blueprint.moment import Moment
+
+        payload = self._ego()._moment_payload(Moment())
+        assert payload["context"] == []
+        assert payload["inputs"] == []
