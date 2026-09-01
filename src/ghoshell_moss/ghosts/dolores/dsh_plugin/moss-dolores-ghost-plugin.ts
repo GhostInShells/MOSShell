@@ -462,10 +462,12 @@ export function apply(ctx: Context) {
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         closeThinking()
-        // yield 场景: pendingYield 非空 → tool 正在阻塞等下一帧, 不 cancel (cancel 会经
-        // abort signal 打断 pending tool). 留它 pending, 下一轮 thinking/enter 解锁.
-        // 否则 agent 仍在跑 → 显式 cancel (MOSS 已宣布 thinking 结束, 不能让 dsh 空跑失速).
-        if (pendingYield === null && agent.status !== 'idle') {
+        // yield 场景 (body.yielded) — MOSS 已明确宣布这是 yield: tool 正在阻塞等下一帧,
+        // 绝不再 cancel (cancel 会经 abort signal 打断 pending tool, 且 MOSS 侧判定是
+        // MOSS 最权威, 不依赖 dsh 侧 pendingYield 的竞态). 留 tool pending, 下一轮 enter 解锁.
+        // 非 yield + agent 非 idle → 显式 cancel (MOSS 已宣布 thinking 结束, 不让 dsh 空跑失速).
+        const yielded = body.yielded === true
+        if (!yielded && agent.status !== 'idle') {
           agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })

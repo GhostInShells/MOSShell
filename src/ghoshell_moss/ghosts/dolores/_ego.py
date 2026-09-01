@@ -438,15 +438,21 @@ class DoloresEgo:
         }
         await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
 
-    async def exit_thinking(self) -> None:
-        """POST /moss-api/ghost/dolores/thinking/exit — 反转 thinking 状态; plugin 侧 cancel 非 idle agent.
+    async def exit_thinking(self, *, yielded: bool = False) -> None:
+        """POST /moss-api/ghost/dolores/thinking/exit — 反转 thinking 状态; plugin 侧相关动作.
 
+        yielded: MOSS 侧已明确判定本次 break 是 yield tool (wait_next_moment) 收线 —
+        plugin 侧据此**不再 cancel** (tool 保持阻塞等下一帧 moment 解锁), 不依赖 plugin
+        侧 pendingYield 的时序竞态. 非 yield + agent 非 idle 才由 plugin cancel.
         阻塞到确认 (避免并发), 带超时 fail-safe: plugin 挂死时降级, 不挂死 thinking 退出.
         """
         try:
             await self._launcher.call(
                 _DOLORES_THINKING_EXIT,
-                {"thinkingToken": self._thinking_token},
+                {
+                    "thinkingToken": self._thinking_token,
+                    "yielded": yielded,
+                },
                 timeout=_EXIT_RPC_TIMEOUT,
             )
         except Exception:

@@ -161,6 +161,10 @@ class Dolores(Ghost):
                             articulator.send_nowait(logos_delta)
                             yield logos_delta
                         elif event.meta.type == "turn/end" or _is_yield_tool_call(event):
+                            # yield 收线: 消费方认出 wait_next_moment → 标记 run.yielded,
+                            # __aexit__ 经 exit_thinking(yielded=True) 通知 plugin 不 cancel.
+                            if _is_yield_tool_call(event):
+                                run.yielded = True
                             break
                 finally:
                     if articulator is not None:

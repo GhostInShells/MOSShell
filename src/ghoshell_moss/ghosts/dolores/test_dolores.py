@@ -393,6 +393,7 @@ class FakeRunEgo:
         self.articulating = False
         self.enter_calls = 0
         self.exit_calls = 0
+        self.exit_yielded_values: list[bool] = []
         self.enter_error: Exception | None = None
 
     async def enter_thinking(self, thinking):
@@ -400,8 +401,9 @@ class FakeRunEgo:
         if self.enter_error is not None:
             raise self.enter_error
 
-    async def exit_thinking(self):
+    async def exit_thinking(self, *, yielded=False):
         self.exit_calls += 1
+        self.exit_yielded_values.append(yielded)
 
 
 class FakeRunThinking:
@@ -438,6 +440,7 @@ class TestDoloresRun:
             assert ego.enter_calls == 1
         assert ego.articulating is False
         assert ego.exit_calls == 1
+        assert ego.exit_yielded_values == [False]  # 非 yield 收线 → yielded=False
         assert len(session.handlers) == 0  # 解绑
 
     @pytest.mark.asyncio
@@ -458,6 +461,27 @@ class TestDoloresRun:
                 if event.meta.type == "turn/end":
                     break
         assert collected == ["turn/start", "step/start", "turn/end"]
+
+    @pytest.mark.asyncio
+    async def test_yield_break_forwards_yielded_flag(self):
+        """消费方认出 wait_next_moment 并 break → run.yielded 置位 → exit_thinking(yielded=True).
+
+        plugin 侧据 yielded=True 绝不 cancel, 不依赖 dsh 侧 pendingYield 的时序竞态.
+        """
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+        from ghoshell_moss.ghosts.dolores._runtime import _is_yield_tool_call
+
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        run = self._run(session=session, ego=ego)
+        async with run:
+            await session.emit(SessionEvent(
+                meta=SessionEventMeta(type="tool/call", seq=1), data={"name": "wait_next_moment"}))
+            async for event in run.events():
+                if _is_yield_tool_call(event):
+                    run.yielded = True  # 与 Dolores.think 的 break 分支同构
+                    break
+        assert ego.exit_yielded_values == [True]
 
     @pytest.mark.asyncio
     async def test_enter_error_propagates_and_aborts(self):

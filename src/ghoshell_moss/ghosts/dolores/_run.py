@@ -74,6 +74,9 @@ class DoloresRun:
         self._dispose_listener: "Callable[[], None] | None" = None
         self._enter_task: "asyncio.Task[None] | None" = None
         self._enter_error: Exception | None = None
+        # yield 收线标记: 消费方认出 tool/call == wait_next_moment 并 break 时置 True,
+        # __aexit__ 经 exit_thinking(yielded=...) 传给 plugin — yield 时绝不 cancel.
+        self.yielded = False
 
     # ── transaction 边界 ──────────────────────────────────────────
 
@@ -94,7 +97,8 @@ class DoloresRun:
         if self._dispose_listener is not None:
             self._dispose_listener()
         # 补发 exit — enter 未通过也要发 (清理 plugin 侧状态), 阻塞到确认 (带超时 fail-safe).
-        await self._ego.exit_thinking()
+        # yielded 标记: 本次 break 是否 yield 收线, plugin 据此决定是否 cancel.
+        await self._ego.exit_thinking(yielded=self.yielded)
         self._ego.articulating = False
         reason = exc_val if exc_val is not None else self._enter_error
         if reason is not None:
