@@ -29,11 +29,11 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
 服务接口. 每个 turn 自包含: enter-inject → model 跑 → turn/end 收线. 帧按
 状态分叉: mindflow 活跃 → live moment; idle → 静态状态快照.
 
-  thinking/enter   — moment 一条 user message + epoch + effort + model config + thinkingToken.
-                     handler 阻塞执行完: 注入帧 → openThinking (释放 pre-step 锁)
-                     → 若 idle steer. moment 是自解释容器 (见下); epoch 是并列槽位
+  thinking/enter   — context + inputs 两个 message 槽位 + epoch + effort + model config + thinkingToken.
+                     handler 阻塞执行完: inject context → steer inputs → openThinking
+                     (释放 pre-step 锁). context/inputs 由 python 侧组装 (见下); epoch 是并列槽位
                      (recap 前情提要, 本轮恒空).
-  thinking/exit    — 反转 thinking 状态; agent 非 idle 时显式 cancel (不空跑失速).
+  thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (不空跑失速).
   perStep 锁       — foreign session → reject + mux 提示冻结; ego 非 thinking →
                      阻塞等反转 (背压). 锁由 thinking signal 提供 (TS promise,
                      非 python 伪 async).
@@ -52,13 +52,14 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
   4. 异常感知: DoloresRun aexit 时 thinking.abort(reason).
   (DoloresRun._on_event 后续会有逻辑 — token 记账 / tool 桥 / seq 跟踪, 本阶段纯透传.)
 
-── moment 一条 user message + epoch 槽位 (点 6) ──────────────────────
-  moment   — as_moment_message 折叠整帧为 <moment moment_id=...> 单条消息
-             (内含 echoes/percepts/dynamic/hint 子段). plugin 只按序 steer/append
-             这一条, 不拆块、不镜像三块结构; moment_id 独立传 — commit 锚.
-  epoch    — (与 moment 并列的新槽位) epoch 级稳定上下文: recap 前情提要 + ground_instruction.
-             槽位已开, 本轮恒空 (epoch 周期 deferred, 见下); 装线后从 observer.epoch.recap 投影.
-  command_logos 不在 run 面 (反射弧已在 articulate 前 send_nowait 消费).
+── moment 映射: context + inputs 两个槽位 + epoch 槽位 (点 6) ─────────
+  context — _context_message: as_moment_message 排除 percept/hint (echoes/dynamic/
+            executing 折叠成 <moment moment_id=...>), inject 进上下文 (背景, 不驱动 turn).
+  inputs  — _inputs_message: percepts 平铺 + optional hint 折叠成 <inputs>, steer
+            作为 turn 输入 (驱动). 映射在 python 侧 (ego) 组装, plugin 只收两条现成 content.
+  epoch   — (并列槽位) epoch 级稳定上下文: recap 前情提要 + ground_instruction.
+            槽位已开, 本轮恒空 (epoch 周期 deferred, 见下); 装线后从 observer.epoch.recap 投影.
+  command_logos 归 context (executing 子段), 是「感知」不是「输入」; 反射弧已在 articulate 前 send_nowait 消费.
   thinking_effort 在 articulator 上, 经 enter RPC 的 effort 字段上.
   contexts 观测由 MindflowInShell 装线的 shell trajectory 进 moment.previous,
   ego 只消费 moment, 不读 trajectory.
@@ -66,17 +67,17 @@ B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-ste
 ── yield 机制 (wait_next_moment tool, A 范式) ──────────────────────
 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment. tool use 是
 turn 边界信号 (非 turn 内续帧): 消费方认出 tool/call = wait_next_moment → break 收线
-(同 turn/end), 触发 thinking exit. exit 时 plugin 侧 pendingYield 非空 → 不 cancel,
-tool 继续 pending. 下一轮 thinking/enter 用 moment 文本构造 tool result 解锁 (moment 走
-tool 返回值, 不经 surface). cancel 守卫: tool 被 cancel 时 pendingYield 清空,
-moment 改走下一轮 enter 正常 steer/append 路径 (轨迹不丢, 可 debug). momentId 暂不消费.
+(同 turn/end), 触发 thinking exit. exit 时 yielded=true → 不 cancel (留 tool pending).
+下一轮 thinking/enter: pendingYield 非空 → inject(context) + steer(inputs) + resolve("ok")
+(str, 非 moment contents — moment 已走 context/inputs 槽位). tool 被 session.cancel 打断时
+走 dsh 默认 abort, 与其它 tool 一致 (pendingYield 清空, 轨迹不丢). momentId 暂不消费.
 
 ── moment 容器 + commit 锚 (2026-08-31) ──────────────────────────────
 dsh/DeepSeek 走 OpenAI-completions, 缓存是自动前缀缓存, 无 Anthropic cache_control
 显式断点、无多 cache index — 所以「无痛改历史」无解 (中途摘 dynamic 破坏前缀触发
-重算). 故 moment 容器化: as_moment_message 包成自解释的 <moment moment_id=...> 单条
-消息, 统一 tool use / user message 两路, dynamic 留在容器里不摘 (full_moment_messages
-给裸子段). commit 走主路 + 旁路 fork session (不走 dsh compact, 慢), 一个 session 多
+重算). 故 moment 容器化: context 用 as_moment_message 包成自解释的 <moment moment_id=...>
+消息 (排除 percept/hint), dynamic 留在容器里不摘 (full_moment_messages 给裸子段).
+commit 走主路 + 旁路 fork session (不走 dsh compact, 慢), 一个 session 多
 commit、历史不折叠; 「提交 moment A 之前的历史」的下边界只能落 moment id (cache 层
 给不了锚), commit 触发即按 id 注入上下文.
 

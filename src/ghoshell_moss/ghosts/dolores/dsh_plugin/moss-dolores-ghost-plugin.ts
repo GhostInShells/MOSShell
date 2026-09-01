@@ -28,14 +28,15 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *
  * ── 表面 (8 点) ────────────────────────────────────────────────────────
  * 1. ego/create       — instruction + messages (ghost.memory: 压缩/快照/ground).
- * 2. thinking/enter   — moment (一条 user message) + epoch + effort + model config, 阻塞执行完.
- * 3. thinking/exit    — 反转 thinking 状态; agent 非 idle 时显式 cancel.
+ * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch + effort + model config, 阻塞执行完.
+ * 3. thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (interrupt).
  * 4. perStep 锁       — foreign session → reject + mux 提示冻结;
  *                       ego session 非 thinking → 阻塞等 thinking/enter 反转.
- * 5. moment           — 一条自解释 user message (<moment moment_id=...> 容器, 内含
- *                       echoes/percepts/dynamic/hint 子段). plugin 只 steer/append 这一条,
- *                       不拆块. 另开 epoch 槽位 (recap 前情提要 + ground, 恒空, deferred).
- * 6. moment 投放      — idle → steer (turn 输入); 非 idle → append (注入已在跑的 turn).
+ * 5. moment 映射      — python 侧拆两条 message: context (echoes/dynamic/executing 折叠成
+ *                       <moment>, inject) + inputs (percepts 平铺 + optional hint, steer).
+ *                       plugin 只收两条现成 content, 不组装 moss message. epoch 槽位并列
+ *                       (recap 前情提要 + ground, 恒空, deferred).
+ * 6. moment 投放      — context → inject (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
  * 7. tool 面暂缓      — 4 个 ego tool + tool-result 桥不做; wait_next_moment (yield
  *                       tool) 先行落地, 见下节.
  * 8. 时序图           — 见下方 ASCII.
@@ -43,10 +44,11 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * ── 时序: MOSS 驱动路径 (thinking = turn) ──────────────────────────────
  * [MOSS mindflow]      [plugin]                     [dsh agent loop]
  *      │ thinking start   │                              │
- *      │── thinking/enter │  {moment, epoch, effort, model} │
+ *      │── thinking/enter │  {context, inputs, epoch, effort, model} │
  *      │                  │── applyModelConfig()            │
  *      │                  │── openThinking()                │  (release pre-step gate)
- *      │                  │── steer(moment) (若 idle) ─────▶│
+ *      │                  │── inject(context) ─────────────▶│
+ *      │                  │── steer(inputs) (若 idle) ─────▶│
  *      │                  │                              │── turn/start
  *      │                  │◀── agent/pre-step ───────────┤
  *      │                  │── enter (frame in surface) ──▶│
@@ -55,7 +57,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *      │ thinking exit    │                              │
  *      │── thinking/exit ─┤                              │
  *      │                  │── closeThinking()            │
- *      │                  │── cancel (若非 idle) ────────▶│
+ *      │                  │── cancel (非 yield 且非 idle) ─▶│
  *
  * ── 时序: 外部唤醒路径 (dsh UI 输入, mindflow idle) ────────────────────
  * [dsh UI]           [plugin]                    [dsh agent loop]      [MOSS]
@@ -65,8 +67,8 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *      │               │── thinking? false → await gate (阻塞)
  *      │               │── notifyExternalWake() ─────────────────────▶│  (seam)
  *      │               │                              │                 │ mindflow 处理
- *      │               │◀── thinking/enter {frame} ────────────────────┤
- *      │               │── append(moment) + openThinking()
+ *      │               │◀── thinking/enter {context, inputs} ──────────┤
+ *      │               │── inject(context) + steer(inputs) + openThinking()
  *      │               │── release gate ─────────────▶│
  *      │               │── enter (frame in surface) ──▶│
  *      │               │                              │── model 跑 → 回应
@@ -77,24 +79,20 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *
  * ── yield tool (wait_next_moment) ────────────────────────────────────
  * 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment (A 范式).
- * tool execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment contents
- * admit 后的 ContentBlock[] 构造 tool result 解锁 (moment 走 tool 返回值, 不经 surface). 退出时序:
- *   thinking/exit: pendingYield 非空 → 不 cancel (留 tool pending, 不打断 abort signal).
- *   thinking/enter: pendingYield 非空 → openThinking + resolve(admit 后的 blocks).
- * cancel 守卫: tool 被 cancel (外部抢占) 时 abort signal 清空 pendingYield 并 reject —
- *   moment 绝不交给已 cancel 的 tool, 改走下一轮 enter 正常 steer/append 路径 (轨迹不丢, 可 debug).
+ * tool execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 正常解锁 resolve("ok")
+ * (str, 非 moment contents — moment 已走 context/inputs 两槽位注入, 不经 tool result). 退出时序:
+ *   thinking/exit: yielded=true → 不 cancel (留 tool pending, 不打断 abort signal).
+ *   thinking/enter: pendingYield 非空 → inject(context) + steer(inputs) + resolve("ok").
+ * cancel: tool 被 session.cancel 打断时走 dsh 默认 abort (reject → error), 与其它 tool 一致,
+ *   不做特殊处理 (pendingYield 清空, 轨迹不丢).
  *
- * ── 遗留问题 (2026-08-28) ────────────────────────────────────────────
- * 1. **外部唤醒链路未接通 (perStep 帧背压已启用, 靠超时兜底)**: turn/start → ego
- *    自醒 signal → mindflow → Thinking → thinking/enter 的链路未接通 (ego._signal_broadcast
- *    未绑 mindflow 路由). perStep 帧背压已启用 — ego 非 thinking 时 await thinkingGate.wait,
- *    超时 5s reject; 外部 turn 在链路接通前会阻塞到超时 reject. 需验证:
- *    a) 绑定 ego.bind_signal_broadcast(session.add_signal) 是否让链路通;
- *    b) 链路通后外部 turn 的帧注入时序 (thinking/enter open 释放 pre-step).
- * 2. **applyModelConfig todo**: thinking/enter 的 provider/model/reasoningEffort
+ * ── 遗留问题 ────────────────────────────────────────────────────────
+ * 1. **applyModelConfig todo**: thinking/enter 的 provider/model/reasoningEffort
  *    未应用到下个 request (agent/request waterfall / session.selectModel).
- * 3. **epoch 周期接线**: epoch 槽位已开 (恒空), compact 压上下文 → recap/ground 注入待接.
- * 4. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
+ * 2. **epoch 周期接线**: epoch 槽位已开 (恒空), compact 压上下文 → recap/ground 注入待接.
+ * 3. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
+ * 4. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
+ *    instruction 里 prompt 模型不要重复它 (待接).
  */
 
 export const name = 'moss-dolores-ghost-plugin'
