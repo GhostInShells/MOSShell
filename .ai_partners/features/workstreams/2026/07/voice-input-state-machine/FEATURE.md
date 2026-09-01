@@ -1,10 +1,10 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点.'
+status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末.'
 priority: P0
 created: 2026-07-28
-updated: 2026-08-11
+updated: 2026-09-01
 depends:
   - audio-capture
   - node-migration
@@ -1074,6 +1074,83 @@ commit 事件协议（trigger → ASR finalize 通道）、flag 作为 Parameter
 - 先定"环节协议入口/出口 + flag 表面"，再写代码；协议未定不许动手。
 - KD3 的 is_final / commit 分离是模式触发的前提，云端 ASR 会话生命周期如何承载"松手
   才 finalize"必须先想通，不许静默跳过或糊弄。
+
+## 2026-09-01 会话记录 — 当前理解（非决议）与协作方式调整
+
+> 本段记录本次会话的**技术理解**，性质是"当前理解"而非"已定决议"。实现将由人类架构师
+> 集中手改，后续模型实例据此提供协助并最终 review。本段只记技术目标上的关键点，不记情绪。
+
+### 协作方式调整（声明）
+
+- 本 workstream 的下一步实现由**人类架构师集中手改**，模型不主导实现。
+- 模型角色调整为：① 实现过程中对具体问题协助；② 最终 review 实现是否退回"capture→ASR 泵"
+  或漏掉下述已钉契约。
+- 本段价值：给后续模型实例提供 review 人类方案所需的上下文，而非一份待执行计划。
+
+### A. 命名（开放，未定）
+
+- `AudioSignal` 命名是错的——"audio" 是介质名不是行为名（同 voice→listener 教训）。
+- 候选：`ListenerSignal`（域=聆听感知单元，罩得住 wake_word/alert/shortcut 等非 ASR 动作）
+  或 `AsrSignal`（scoped 到 ASR turn，但非 ASR action 会无家可归）。
+
+### B. ASR signal 四态语义（理解已收敛；命名与编码未定）
+
+四态：**首包 / 分句中 / 分句 / 尾包**。
+
+| 态 | 语义 | text |
+|---|---|---|
+| 首包 | turn 开始 | 可空 |
+| 分句中 | partial，**全文 replace（非 delta）** | 当前最佳全文 |
+| 分句 | 引擎 definite（句稳定） | 该句最终文本 |
+| 尾包 | commit（完整提交的句子） | 该 turn 完整累积文本（自包含） |
+
+身份两层：
+- 1/2/3/4 共用一个 turn 级 id；命名候选 `turn`（非 `session`——MOSS 已占用；非 `batch`——撞 TTSBatch）。
+- 3/4 共用分句 `segment_index`（引擎 result_index）。
+
+**delta 已死**：ASR partial 非单调重写，partial 只能是"全文 replace"，不做 delta；分句 index + 对话 uid
+取代增量排序。
+
+编码方式未定：四态语义 enum（直观，consumer 一眼读懂）vs `turn_phase(start/middle/end)` × `is_final`
+两轴（更贴引擎原生字段）——本次倾向 enum，未拍板。
+
+时间戳：`start_ms`/`end_ms` 可拿到——火山 `result.utterances[].start_time/end_time`（ms，流相对），
+当前 `_parse_result` 丢弃了 utterances 数组。两时间概念别混：引擎相对（start/end）vs 到达墙钟（envelope `meta.created_at`）。
+
+### C. 当前 ASR 抽象的致命缺陷（已确认）
+
+"只出不入 + 直接耦合 capture"：`recognize(audio_chunks: AsyncIterable[np.ndarray]) -> AsyncIterable[ASRResult]`
+是单向拉取生成器，无控制通道（commit/stop 无法注入），输入是裸 numpy PCM。
+
+- 嘴（TTS/`TTSBatch`）已是会话对象（`feed/commit/items/close`）；耳朵应镜像：`ASRSession`（`feed(AudioChunk)/commit()/results()/close()`）。
+- commit 机制在 wire 层存在：`send_audio(is_last=True)` = 负序号 = 结当前轮、提前出 final（不等 VAD）。
+  但 `_send_loop` 只在流末发一次，抽象层无 commit 入口。
+
+### D. 当前代码把 Listener 实现成了 ASR（已确认）
+
+- `controller.py:_run()` 是 capture→ASR 泵，不是 Listener 状态机。
+- `is_final` 当 commit（`break`）+ `_drain_queue` 丢音频 → 多句 turn 丢。
+- 四 mode（PTT/ENTER/TURN_TAKING/DUPLEX）死配置：`set_mode` 只改字段，无转移逻辑读 mode。
+- L4 无 signal 发射进 mindflow。
+- KD3（is_final vs commit 解耦）未实现。
+
+### E. 写对状态机的三个前置（历次唯一被跳过的步骤）
+
+1. 转移表 + 每条边的事件触发（mode commit，**非** ASR is_final）。
+2. mode→commit 映射：PTT=松手 / ENTER=回车 / TURN_TAKING=VAD 静音 / DUPLEX=VAD 常开。
+3. ASR 会话边界：`feed/commit/results/close`，吃 `AudioChunk`，不吃裸 np.ndarray。
+
+### F. 本轮已落地的小改动
+
+- `Matrix.new` 加 `singleton: bool | None = None` 参数，去掉 `if not persist: singleton=False` 强制；
+  singleton 与 persist 正交。audio CLI 节点默认 singleton=True + persist=False（`core/blueprint/matrix.py`）。
+- 未修：`AudioPlayerProvider.singleton()` 仍返回 False（08-12 已定案改 True，见 `host/providers/audio_player_provider.py`）。
+
+### G. 关键澄清
+
+- 火山 `definite=true` = 句稳定，**不是**流结束；负序号（`is_last=True`）= commit 当前轮。
+- Realtime API（`v1/realtime?model=bigmodel`，OpenAI 兼容）有 `input_audio_buffer.commit` +
+  interim `result`（累计 replace），与四态 1:1 对应，是备选链路（非必需）。
 
 ---
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*
