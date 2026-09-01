@@ -138,21 +138,38 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 description=f"CTML grammar prompt (version {ctml_version}).",
             ),
         )
-        # project slot: workspace 根 MOSS.md 声明的 project instruction
-        # (MossMeta.system_project 字段, 老代码写 system_prompt 是遗迹 bug —
-        # 老 host/matrix.py 里同一 typo, 只是从未跑通过).
+        # project slot: 环境身份帧 + workspace 根 MOSS.md 声明的 project instruction.
+        # 帧固定英文, 不读 MOSS.md 定制 — 隐式约定等于不存在.
+        project_meta = (
+            f"> Here is project `{self._env.moss_meta.name}` — "
+            f"an environment driven by the MOSS (ghoshell_moss) framework."
+        )
+        project_body = self._env.moss_meta.system_project
         prompter.with_prompter(
             MossSystemPrompter.PROJECT_SLOT,
             BaseSystemPrompter(
-                own_instruction=self._env.moss_meta.system_project,
+                own_instruction=(
+                    project_meta
+                    if not project_body
+                    else f"{project_meta}\n\n{project_body}"
+                ),
                 description="Workspace root MOSS.md project instruction.",
             ),
         )
-        # mode slot: 模式内 HOST.md 声明的 instruction
+        # mode slot: 环境身份帧 + 模式内 HOST.md 声明的 instruction.
+        mode_meta = (
+            f"> Here is `{self._mode.name}` mode — "
+            f"an isolated runtime of the MOSS (ghoshell_moss) framework."
+        )
+        mode_body = self._mode.meta.system_prompt
         prompter.with_prompter(
             MossSystemPrompter.MODE_SLOT,
             BaseSystemPrompter(
-                own_instruction=self._mode.meta.system_prompt,
+                own_instruction=(
+                    mode_meta
+                    if not mode_body
+                    else f"{mode_meta}\n\n{mode_body}"
+                ),
                 description=f"Mode '{self._mode.name}' instruction.",
             ),
         )
