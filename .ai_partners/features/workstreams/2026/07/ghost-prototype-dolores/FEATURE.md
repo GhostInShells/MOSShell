@@ -58,6 +58,11 @@ Dolores 不做什么:
 
 ## Ghost Home Ground
 
+> 本节已被 [dolores-ground.md](dolores-ground.md) (2026-09-02) 取代。当前架构为
+> 三子件（existence / people / skills）、identity/purpose/behaviors 三支柱、
+> daily/monthly 两级时间线；本节的六枚 pin、weekly/yearly 四级、alignment 旧名、
+> existence.md 单文件均为过时设计。细节以 dolores-ground.md 为准。
+
 Dolores 的认知场 = ghost_home 目录 + Ground 协议. ghost_home 是 ghost 自身的
 认知基建根目录, 挂载在 ghost channel 的 `ground` 子路径上.
 

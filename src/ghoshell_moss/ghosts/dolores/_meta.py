@@ -23,7 +23,7 @@ class DoloresMeta(GhostMeta):
     当前为骨架阶段: articulate() 尚未接入 DSH 推理内核, 固定返回占位输出.
     """
 
-    VERSION = "dev_1"
+    VERSION = "dev_2"
 
     def __init__(
         self,

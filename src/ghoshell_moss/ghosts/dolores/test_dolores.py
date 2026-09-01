@@ -212,9 +212,10 @@ class TestDoloresArticulate:
 class TestDoloresInstruction:
     def test_system_prompt_derives_two_meta_segments(self):
         """system_prompt = 原型元信息 + 身份描述, 从结构化 meta 派生, 无 baseline 时不含 baseline."""
-        text = _dolores().system_prompt()
+        meta = _dolores_meta()
+        text = _dolores(meta=meta).system_prompt()
         assert "prototype: Dolores" in text
-        assert "version: dev_1" in text
+        assert f"version: {meta.VERSION}" in text
         assert "name: dolores" in text
         assert "description:" in text
 
@@ -533,6 +534,35 @@ class TestYieldToolCall:
 
         event = self._event("assistant/chunk", {})
         assert _is_yield_tool_call(event) is False
+
+
+class TestObserveToolCall:
+    """observe (主动观测) 识别 — interleaved thinking 的主动观测点, 内联返回 moment."""
+
+    def _event(self, event_type: str, data: dict):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+
+        return SessionEvent(meta=SessionEventMeta(type=event_type, seq=1), data=data)
+
+    def test_recognizes_observe_tool_call(self):
+        from ._runtime import _observe_tool_call
+
+        event = self._event("tool/call", {"name": "observe", "callId": "c1"})
+        call = _observe_tool_call(event)
+        assert call is not None
+        assert call.callId == "c1"
+
+    def test_ignores_yield_tool_call(self):
+        from ._runtime import _observe_tool_call
+
+        event = self._event("tool/call", {"name": "wait_next_moment"})
+        assert _observe_tool_call(event) is None
+
+    def test_ignores_non_tool_call(self):
+        from ._runtime import _observe_tool_call
+
+        event = self._event("assistant/chunk", {})
+        assert _observe_tool_call(event) is None
 
 
 class TestDoloresMomentPayload:
