@@ -148,12 +148,11 @@ def render_meta(
         lines.append(f"cd {root}")
         lines.append(f"ground: {doc_path}")
 
-    # chain
+    # law — 本场 body 是否存在 (法 = 本场 body, 不向上合并)
     if chain:
-        n = chain.count("from:")
-        lines.append(f"chain: +{n}")
+        lines.append("law: present")
     else:
-        lines.append("chain: +0")
+        lines.append("law: none")
 
     # id
     if id_:

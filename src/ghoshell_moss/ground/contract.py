@@ -154,11 +154,15 @@ class ExecArguments(BaseModel):
     授权模型 = Makefile 级信任: ref 指向场根子树内可执行文件, 场作者背书.
     协议禁止内联 shell 字符串 (授权泄漏), 禁止跨场引用 (../, 绝对路径).
 
-    shebang 决定解释器 — 协议不管 sh/python/binary. Windows 无 chmod 位时
-    fallback 到扩展名 (未来实现).
+    mode 决定解释器: shebang(默认, 需 +x) / python(sys.executable) /
+    shell(sh). 非 shebang 模式用解释器显式执行, 不要求脚本 +x.
     """
     ref: str = Field(
         description="场根子树内的可执行文件相对路径. 不允许 ../, 不允许绝对路径.",
+    )
+    mode: str = Field(
+        default="shebang",
+        description="解释器模式: shebang(默认, 需 +x) | python(sys.executable) | shell(sh). 非 shebang 不要求 +x.",
     )
     timeout: float = Field(
         default=10.0, gt=0, le=60,
@@ -445,7 +449,7 @@ class Ground(ABC):
 
     @abstractmethod
     async def chain_text(self) -> str:
-        """返回法链 body — 祖先 GROUND.md body 的 root-first 收集."""
+        """返回本场的 body (法) — 单层, 不向上合并祖先."""
 
 
 # -- GroundSet --------------------------------------------------------------

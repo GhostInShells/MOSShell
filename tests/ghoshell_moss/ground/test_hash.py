@@ -317,6 +317,32 @@ class TestExecPinObservation:
         assert obs.exists is True
         assert obs.payload == "[not executable]"
 
+    def test_python_mode_runs_without_exec_bit(self, tmp_path):
+        script = tmp_path / "hello.py"
+        script.write_text("print('hello-py')\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="hello.py", mode="python"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists
+        assert "hello-py" in obs.payload
+
+    def test_shell_mode_runs_without_exec_bit(self, tmp_path):
+        script = tmp_path / "hello.sh"
+        script.write_text("echo hello-sh\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="hello.sh", mode="shell"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists
+        assert "hello-sh" in obs.payload
+
+    def test_unknown_mode_rejected(self, tmp_path):
+        script = tmp_path / "x.py"
+        script.write_text("print('x')\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="x.py", mode="ruby"))
+        obs = observe_sync(pin, anchor)
+        assert obs.payload == "[unknown mode: ruby]"
+
     def test_nonzero_exit_visible(self, tmp_path):
         self._make_script(
             tmp_path, "fail.sh",

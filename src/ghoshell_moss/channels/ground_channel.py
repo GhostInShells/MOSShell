@@ -145,9 +145,9 @@ def _instruction_prose() -> str:
     return (
         "## Ground (认知场)\n"
         "场 = 一个被 GROUND.md 标记的目录: frontmatter (身份 + pins) + body (法).\n"
-        "法链 (祖先 GROUND.md 的 body, root-first) 已写入本条 static —— 它跨 compact "
-        "存活, 是你在会话中长期保持的稳定认知. 用 ``open`` 把一个场挂成子 channel, "
-        "其 meta 在子 instruction, 帧在子 help (每 refresh diff 重供); pin 内容不预置."
+        "本场 body (法) 已写入本条 static —— 它跨 compact 存活, 是你在会话中长期保持的 "
+        "稳定认知. 场之间不合并 body (每个场渲染自己的根). 用 ``open`` 把一个场挂成子 "
+        "channel, 其 meta 在子 instruction, 帧在子 help (每 refresh diff 重供); pin 内容不预置."
     )
 
 
@@ -325,9 +325,9 @@ def new_ground_channel(
     @chan.build.instruction
     async def _instruction() -> str:
         parts = [_instruction_prose()]
-        chain = await asyncio.to_thread(collect_chain, workspace)
-        if chain:
-            parts.append("### 法链\n\n" + chain)
+        law = await asyncio.to_thread(collect_chain, workspace)
+        if law:
+            parts.append("### 法\n\n" + law)
         return "\n\n".join(parts)
 
     @chan.build.virtual_children
@@ -484,6 +484,7 @@ def new_ground_channel(
     @chan.build.command(name="pin_exec", always_observe=False, available=lambda: _edit_mode)
     async def pin_exec(
         ground_file: str, label: str, ref: str,
+        mode: str = "shebang",
         timeout: float = 10.0, budget: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
@@ -492,6 +493,7 @@ def new_ground_channel(
         :param ground_file: 目标 GROUND.md 文件路径 (或所在目录).
         :param label: 唯一标识, 覆盖同 label 旧 pin.
         :param ref: 场根子树内的可执行文件相对路径. 不允许 ../ 或绝对路径.
+        :param mode: 解释器模式 shebang/python/shell. 非 shebang 不要求 +x.
         :param timeout: 秒. 默认 10, 上限 60.
         :param budget: stdout 字符上限.
         :param always_show: walk 模式也不折叠, 永远展开.
@@ -499,7 +501,7 @@ def new_ground_channel(
         """
         pin = ExecPin(
             label=label,
-            arguments=ExecArguments(ref=ref, timeout=timeout, budget=budget),
+            arguments=ExecArguments(ref=ref, mode=mode, timeout=timeout, budget=budget),
             always_show=always_show,
             description=description,
         )

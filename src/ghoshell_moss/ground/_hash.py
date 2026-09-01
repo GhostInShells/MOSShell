@@ -23,6 +23,7 @@ import asyncio
 import fnmatch
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -230,13 +231,14 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
     授权模型 = Makefile 级信任: ref 必须是场根子树内的可执行文件.
     - 相对路径, 不允许 ../ 跨场
     - 场根 (anchor.ground) 是解析基准
-    - +x 位为准; 缺失 → missing (授权拒绝, 不是错误)
-    - shebang 决定解释器 (sh / python / binary 一视同仁)
+    - mode 决定解释器: shebang(需 +x) / python(sys.executable) / shell(sh);
+      非 shebang 模式用解释器显式执行, 不要求脚本 +x
 
     失败可见: 非零退出附 [exit N] + stderr 尾部; 超时附 [timeout] 标记.
     """
     args = pin.arguments
     ref = args.ref
+    mode = args.mode
 
     # 授权检查: 拒绝绝对路径 / 跨场跳出
     if Path(ref).is_absolute() or ".." in Path(ref).parts:
@@ -251,8 +253,17 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
     if not resolved.is_file():
         return Observation(exists=False)
 
-    if not os.access(resolved, os.X_OK):
-        return _exec_rejected("[not executable]")
+    # 按 mode 确定执行命令. 非 shebang 模式用解释器执行, 不要求 +x.
+    if mode == "shebang":
+        if not os.access(resolved, os.X_OK):
+            return _exec_rejected("[not executable]")
+        cmd = [str(resolved)]
+    elif mode == "python":
+        cmd = [sys.executable, str(resolved)]
+    elif mode == "shell":
+        cmd = ["sh", str(resolved)]
+    else:
+        return _exec_rejected(f"[unknown mode: {mode}]")
 
     env = dict(os.environ)
     env["GROUND"] = str(anchor.ground)
@@ -260,7 +271,7 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
 
     try:
         proc = subprocess.run(
-            [str(resolved)],
+            cmd,
             cwd=str(anchor.ground),
             env=env,
             capture_output=True,

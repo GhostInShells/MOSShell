@@ -140,7 +140,7 @@ class DefaultGround(Ground):
         return self._ignore_spec
 
     async def chain_text(self) -> str:
-        """返回法链 body (供 meta / instruction 使用)."""
+        """返回本场 body (法), 供 meta / instruction 使用."""
         return await asyncio.to_thread(collect_chain, self._doc_path.parent)
 
     # -- 生命周期 ---------------------------------------------------------

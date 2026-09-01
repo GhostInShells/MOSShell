@@ -17,10 +17,11 @@ A ground carries:
 - **pins** — first-person gaze declarations pointing at targets
   in the world
 
-A ground inherits **law** from its ancestors: the `body` content of
-`GROUND.md` files in parent directories, up to `$HOME`. This is the
-**law chain** (§7.3). The chain carries body content only — frontmatter
-and pins are never inherited.
+A ground's **law** is its own `body` content. A directory without a
+`GROUND.md` resolves law by walking upward to the nearest ancestor
+`GROUND.md` (§7.4) — a single hop, never merging ancestor bodies.
+Law carries body content only — frontmatter and pins are never
+inherited.
 
 ## 2. File Structure
 
@@ -233,6 +234,7 @@ ignored directories are not recursed into. **No file content.**
 | Key | Type | Required | Semantics |
 |-----|------|----------|-----------|
 | `ref` | string | yes | Relative path to an executable file **within the ground subtree**. |
+| `mode` | string | no | Interpreter mode: `shebang` (default, requires `+x`) / `python` (`sys.executable`) / `shell` (`sh`). Non-`shebang` modes run the interpreter explicitly and do not require `+x`. |
 | `timeout` | float | no | Seconds. Default `10`, max `60`. |
 | `budget` | int | no | Content char limit (§4.1). Applied to captured stdout. |
 
@@ -242,10 +244,12 @@ code. It is deliberately narrow:
 - `ref` MUST be a **relative path**. Absolute paths are rejected.
 - `ref` MUST resolve inside the ground subtree. `..` traversal
   outside the ground is rejected.
-- The target file MUST have the executable bit set (`+x`). Files
-  without it are treated as missing (authorization denied).
-- The interpreter is chosen by the target's shebang. The protocol
-  does not distinguish `.sh` / `.py` / native binaries.
+- In `shebang` mode the target file MUST have the executable bit set
+  (`+x`); files without it are treated as missing (authorization
+  denied). `python` / `shell` modes invoke an interpreter explicitly
+  and do not require `+x`.
+- The interpreter is chosen by `mode`: `shebang` reads the target's
+  shebang; `python` uses `sys.executable`; `shell` uses `sh`.
 - **The protocol never accepts inline shell strings.** A pin cannot
   say "run this command"; it can only reference a script the ground
   author has committed to the ground subtree.
@@ -268,7 +272,8 @@ not to the protocol.
 **Failure modes** — visible, not silent:
 
 - File does not exist: renders `[missing]`.
-- File exists but lacks executable bit (+x): renders `[not executable]`.
+- `shebang` mode: file exists but lacks executable bit (+x): renders
+  `[not executable]`.
 - Absolute path or `..` escaping the ground subtree: renders `[outside ground]`.
 - Non-zero exit: output is followed by `[exit N]` and up to 5 lines
   of stderr tail.
@@ -376,27 +381,27 @@ pin granularity.
 
 Subdirectories with their own `GROUND.md` are **peer grounds** —
 independent instances with their own pins, body, and view. They are
-not auto-opened. Their law chain naturally reads ancestor `GROUND.md`
-bodies.
+not auto-opened. Their law is their own body; ancestor `GROUND.md`
+bodies are not merged.
 
 Pins never inherit across grounds. Discovery of descendant grounds is
 opt-in: use a `frontmatter` pin with a pattern (`$CWD/*/GROUND.md`)
 for progressive disclosure of child ground identities, or a `glob`
 pin for structural listing.
 
-### 7.3 Law Chain
+### 7.3 Law — Nearest Ground, No Merge
 
-A ground inherits body content from `GROUND.md` files in ancestor
-directories, root-first, up to `$HOME`. The chain carries body only —
-no frontmatter, no pins. `@`-references in chain bodies are expanded
-in-place, one level deep (§6.1).
+A ground's law is its own `body`. A directory without a `GROUND.md`
+resolves its law by walking upward to the **nearest** ancestor
+`GROUND.md` — a single hop. Ancestor bodies are never merged: each
+ground renders its own root, and merging would duplicate content across
+every sub-ground.
 
-The chain is a stable, cache-friendly context distinct from the
-volatile rendered view. The view renders only the ground's own body
-and pins.
+Law carries body only — no frontmatter, no pins. `@`-references in the
+body are expanded in-place, one level deep (§6.1).
 
-The chain reads `GROUND.md` only. To reference foreign conventions,
-use a `law` pin (§5.6); `@`-references are plain relative paths.
+To reference foreign conventions, use a `law` pin (§5.6);
+`@`-references are plain relative paths.
 
 ### 7.4 Walk Mode — Ground Interior Navigation
 
@@ -452,5 +457,5 @@ A compliant implementation must:
 - Render human-readable file sizes, omit raw `mtime` (§6)
 - Expand `@`-references per §6.1 (single-level, no recursion)
 - Resolve paths per §8 with per-anchor subtree confinement
-- Implement the law chain per §7.3
+- Resolve law as the nearest `GROUND.md` body, without merging ancestors (§7.3)
 
