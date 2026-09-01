@@ -59,6 +59,29 @@ def test_prompt_unresolvable_stays_inline(tmp_path: Path):
     assert blocks[0].contents[0]["text"] == "@missing.txt"
 
 
+def test_prompt_resolves_trailing_sentence_punct(tmp_path: Path):
+    """Trailing sentence punctuation is stripped so ``@app.py.`` resolves."""
+    _tree(tmp_path)
+    blocks = message_from_prompt("@app.py.", base_dir=tmp_path)
+    assert len(blocks) == 1
+    assert "print(1)" in blocks[0].contents[0]["text"]
+
+
+def test_prompt_resolves_trailing_comma(tmp_path: Path):
+    _tree(tmp_path)
+    blocks = message_from_prompt("@app.py,", base_dir=tmp_path)
+    assert len(blocks) == 1
+    assert "print(1)" in blocks[0].contents[0]["text"]
+
+
+def test_prompt_unresolvable_mention_preserves_original(tmp_path: Path):
+    """An @mention (not a file) stays inline, punctuation intact."""
+    _tree(tmp_path)
+    blocks = message_from_prompt("@alice said hi.", base_dir=tmp_path)
+    assert len(blocks) == 1
+    assert blocks[0].contents[0]["text"] == "@alice said hi."
+
+
 def test_prompt_expose_file_meta(tmp_path: Path):
     tree = _tree(tmp_path)
     blocks = message_from_prompt("@notes.md", base_dir=tree, expose_file_meta=True)
@@ -103,9 +126,12 @@ def test_message_to_parts_order_preserved():
     msg.with_content({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}})
     msg.with_content("after")
     parts = message_to_parts(msg)
-    assert [type(p).__name__ for p in parts] == ["TextContent", "ImageUrl", "TextContent"]
+    # image → BinaryContent (protocol-neutral base64 carrier), not ImageUrl
+    assert [type(p).__name__ for p in parts] == ["TextContent", "BinaryContent", "TextContent"]
     assert parts[0].content == "before"
     assert parts[2].content == "after"
+    assert parts[1].media_type == "image/png"
+    assert parts[1].data == b"hello"
 
 
 def test_messages_to_parts_flattens_list():

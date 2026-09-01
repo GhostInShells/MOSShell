@@ -5,13 +5,14 @@ Atom 原型专用，仅处理 text + base64 image 两种 content type.
 """
 
 from typing import Iterable
+import base64
 
 from ghoshell_moss.depends import depend_ghost
 
 depend_ghost()
 from ghoshell_moss.message import Message, Text, Base64Image
 from pydantic_ai.messages import ModelRequest, ModelResponse, ModelMessage, TextPart
-from pydantic_ai import UserContent, TextContent, ImageUrl
+from pydantic_ai import UserContent, TextContent, BinaryContent
 
 __all__ = ["messages_to_parts", "moment_to_request", "moments_to_history"]
 
@@ -24,7 +25,16 @@ def messages_to_parts(messages: Iterable[Message]) -> list[UserContent]:
             if text := Text.from_content(content):
                 parts.append(TextContent(content=text.text))
             elif base64_image := Base64Image.from_content(content):
-                parts.append(ImageUrl(url=base64_image.data_url))
+                source = base64_image.source or {}
+                data = source.get("data")
+                if data:
+                    # BinaryContent not ImageUrl: anthropic/protocol-neutral
+                    # base64 source; ImageUrl(data_url) sends a data URL in
+                    # source.url, which the anthropic endpoint rejects.
+                    parts.append(BinaryContent(
+                        data=base64.b64decode(data),
+                        media_type=source.get("media_type") or "image/png",
+                    ))
     return parts
 
 

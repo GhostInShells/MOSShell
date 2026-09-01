@@ -10,6 +10,7 @@ when the message carries a tag.
 
 from __future__ import annotations
 
+import base64
 from typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
@@ -23,16 +24,23 @@ __all__ = ["message_to_parts", "messages_to_parts"]
 def message_to_parts(message: Message, *, with_meta: bool = False) -> list[UserContent]:
     """Convert one moss Message into pydantic-ai UserContent parts.
 
-    Text → TextContent; Base64Image → ImageUrl(data_url); any other content
-    type degrades to its text representation (Message.content_as_string) —
-    the conversion never drops content, it only lowers fidelity.
+    Text → TextContent; Base64Image → BinaryContent(decoded bytes); any other
+    content type degrades to its text representation (Message.content_as_string)
+    — the conversion never drops content, it only lowers fidelity.
+
+    ``BinaryContent`` (not ``ImageUrl``) is the protocol-neutral image carrier:
+    pydantic-ai serializes it as a base64 ``source`` block on the anthropic
+    protocol and as ``image_url`` on the openai protocol. ``ImageUrl(data_url)``
+    would instead send ``source:{type:'url', url:'data:...'}`` on the anthropic
+    path, which DeepSeek's anthropic-compatible endpoint rejects — the two
+    providers' image protocols are not the same.
 
     Content order is preserved (``join_text=False``) — multimodal order
     matters ("look at @img, now describe it"). ``with_meta=False`` sends the
     raw contents, no MOSS meta XML; pass True to render the message's meta
     as XML context.
     """
-    from pydantic_ai import ImageUrl, TextContent
+    from pydantic_ai import BinaryContent, TextContent
 
     from ghoshell_moss.message import Base64Image, Text
 
@@ -41,7 +49,15 @@ def message_to_parts(message: Message, *, with_meta: bool = False) -> list[UserC
         if text := Text.from_content(content):
             parts.append(TextContent(content=text.text))
         elif image := Base64Image.from_content(content):
-            parts.append(ImageUrl(url=image.data_url))
+            source = image.source or {}
+            data = source.get("data")
+            if data:
+                parts.append(BinaryContent(
+                    data=base64.b64decode(data),
+                    media_type=source.get("media_type") or "image/png",
+                ))
+            else:
+                parts.append(TextContent(content=message.content_as_string(content)))
         else:
             parts.append(TextContent(content=message.content_as_string(content)))
     return parts

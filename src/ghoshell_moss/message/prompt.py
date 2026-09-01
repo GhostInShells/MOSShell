@@ -9,6 +9,12 @@ the Message carries the meta layer (``tag="file"`` + path/type/size
 attributes), rendered by ``as_contents(with_meta=True)`` as an XML file
 block. Unresolvable references stay inline string. Thinking does NOT go
 through @ — it is a separate call parameter, injected as history.
+
+Trailing sentence punctuation (``.`` ``,`` ``;`` ``:`` ``!`` etc.) is stripped
+from a reference before resolution, so ``see @app.py.`` resolves ``app.py``
+instead of failing on the ``.`` that ends the sentence. The inline fallback
+keeps the original punctuation, so nothing is lost when the ref does not
+resolve.
 """
 
 from __future__ import annotations
@@ -22,6 +28,8 @@ from ghoshell_moss.message import Base64Image, Content, Message, Text
 __all__ = ["message_from_prompt", "message_from_file"]
 
 _AT_LINE_RE = re.compile(r"^@([^\n]*)\n?", re.MULTILINE)
+# trailing sentence punctuation / whitespace that should not belong to a path
+_TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?'\"()\[\]{}<>]+$")
 
 
 def message_from_prompt(
@@ -43,7 +51,7 @@ def message_from_prompt(
     for m in _AT_LINE_RE.finditer(text):
         if m.start() > last:
             messages.append(Message.new().with_content(text[last:m.start()]))
-        ref = m.group(1).strip()
+        ref = _TRAILING_PUNCT_RE.sub("", m.group(1).strip())
         if not ref:
             messages.append(Message.new().with_content(m.group(0)))
             last = m.end()

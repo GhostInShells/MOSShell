@@ -9,6 +9,7 @@
 
 import asyncio
 import os
+import re
 from pathlib import Path
 
 import typer
@@ -28,6 +29,25 @@ llms_app = typer.Typer(
     help="Inspect and call LLM configs.",
     no_args_is_help=True,
 )
+
+# image payload embedded in a provider error (e.g. anthropic block source)
+_DATA_URL_RE = re.compile(r"(data:[^,;]+(?:;base64)?,)([A-Za-z0-9+/=]{40,})")
+
+
+def _error_summary(e: Exception, limit: int = 600) -> str:
+    """Human-safe error text — collapse image payloads and cap length.
+
+    A pydantic-ai ``ModelHTTPError`` body embeds the full request, which for
+    an image call is megabytes of base64 (e.g. anthropic protocol 400:
+    ``invalid url: "data:image/png;base64,..."``). Dumping that verbatim
+    floods the terminal. Collapse long base64 blobs to a marker and bound the
+    rest so a failed call reports the cause, not the payload.
+    """
+    text = str(e)
+    text = _DATA_URL_RE.sub(lambda m: f"{m.group(1)}<{len(m.group(2))}B base64>", text)
+    if len(text) > limit:
+        return text[:limit] + f" ... (truncated {len(text)} -> {limit} chars)"
+    return text
 
 
 def _project_container():
@@ -410,7 +430,7 @@ if available("pydantic_ai", "anthropic"):
                 )
                 echo(output)
         except Exception as e:
-            print_error(f"call failed: {e}")
+            print_error(f"call failed: {_error_summary(e)}")
             raise typer.Exit(code=1)
 
     @llms_app.command(
@@ -430,7 +450,7 @@ if available("pydantic_ai", "anthropic"):
                 provider=provider, model=model, tag=tag,
             )
         except Exception as e:
-            print_error(f"llms test FAILED: {e}")
+            print_error(f"llms test FAILED: {_error_summary(e)}")
             raise typer.Exit(code=1)
         print_success(f"llms OK — replied: {output!r}")
 
