@@ -9,7 +9,19 @@ cd .moss_ws/apps/games/ai_eye
 uv sync
 ```
 
-Dependencies: `pygame>=2.5.0`, `ghoshell-moss[host]` (editable from workspace root). No extra models or services required.
+Dependencies: `pygame>=2.5.0`, `PySide6>=6.5.0`, `ghoshell-moss[host]` (editable from workspace root). No extra models or services required.
+
+## Window
+
+The eye window is a **frameless, transparent PySide6 widget** — no title bar
+or min/close/maximize buttons; only the two eyes float on the desktop (always
+on top). Eye drawing stays in pygame, rendered to an offscreen SRCALPHA surface
+and blitted into the Qt window each frame.
+
+- **Move**: drag anywhere on the window body.
+- **Resize**: drag the right edge, bottom edge, or bottom-right corner (8px grip).
+  Eyes scale with the window.
+- **Quit**: press `ESC` (or end the ghost session, which closes the window).
 
 ## Commands
 
