@@ -509,6 +509,72 @@ async def test_observe_loop_runs_two_frames_in_one_attention():
 
 
 @pytest.mark.asyncio
+async def test_mindflow_channel_help_not_duplicated_across_frames():
+    """连续两帧 moment 不得重复携带同一份 mindflow channel help.
+
+    协议契约 (mindflow channel help 的去重):
+        - mindflow 反身 channel 被挂为 shell 的 virtual child. 它第一次进入 shell metas
+          时 (frame1), facade 全量展示其 instruction/help/interface; 之后内容无变化时
+          (frame2), ``ShellKeyFrame.facade_delta`` 应经 ``diff_facade`` 去重为空 —
+          不得把同一份 help 再次全量 emit 给模型, 否则模型连续两帧看到同一份 help.
+        - 本测试直接断言: "mindflow nuclei" (help 头部) 只在某一帧的 echo 里出现一次.
+          若两帧都出现, 即重复 — 失败, 由我们 debug.
+    """
+    suite = MindflowInShellTestSuite()
+
+    # 用 probe 命令驱动两帧: frame1 返回 observe → 触发第二帧.
+    chan = new_channel(name="probe")
+
+    @chan.build.command()
+    async def frame1() -> str:
+        return CommandUtil.observe('observe_me')
+
+    @chan.build.command()
+    async def frame2() -> str:
+        return 'done'
+
+    suite.shell.main_channel.import_channels(chan)
+
+    frame_moments: list = []
+
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            idx = len(frame_moments)
+            frame_moments.append(thinking.moment)
+            if idx == 0:
+                art.send_nowait("<probe:frame1/>")
+            else:
+                art.send_nowait("<probe:frame2/>")
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async with suite:
+        suite.add_signal(input_signal("user_msg"))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
+
+    # 一个 attention, 两帧 (两次 articulation).
+    assert suite.attention_count == 1
+    assert len(frame_moments) == 2
+
+    def _help_present(moment) -> bool:
+        return any(
+            "mindflow nuclei" in m.to_content_string()
+            for m in moment.previous_echoes_messages()
+        )
+
+    hits = [i for i, m in enumerate(frame_moments) if _help_present(m)]
+
+    # 前置: mindflow help 确实会流经 moment 的 echo (frame1 首次进入 metas 时全量).
+    assert hits, "mindflow help 未出现在任何 frame 的 echo 中 — 测试作用面可能变了"
+    # 核心契约: help 不得在两帧重复出现.
+    assert len(hits) == 1, f"mindflow help 在 frame(s) {hits} 重复出现"
+
+
+@pytest.mark.asyncio
 async def test_notify_buffer_drains_to_next_attention_percepts():
     """notify 抢占失败 → mindflow buffer → 下一帧 attention 的 moment.percepts.
 

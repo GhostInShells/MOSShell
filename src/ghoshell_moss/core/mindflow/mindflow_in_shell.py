@@ -15,7 +15,6 @@ from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.core.concepts.errors import FatalError, InterpretError
 from ghoshell_moss.core.concepts.shell import InterpreterKind
 from ghoshell_moss.core.concepts.interpreter import Interpretation
-from ghoshell_moss.message import Message
 import logging
 
 __all__ = ["MindflowInShell"]
@@ -154,18 +153,19 @@ class MindflowInShell(ABC):
             # 仅仅通知观测应该发生. 真实的观测数据, 会在 moment 创建时回调构建.
             mindflow.moments.add_echoes([], need_observe=True)
 
-        def _shell_trajectory_epoch_refresh():
-            return [
-                Message.new(tag='moss-full-facade', timestamp=True).with_content(
-                    self.shell_trajectory.epoch_start_point()
-                )
-            ]
-
         # 注册回调, 当发生 observe 事件时, 通知 mindflow observer.
         self.shell_trajectory.when_need_observe(_notify_moments_need_observe)
         # 注册回调, 当 observer 触发观察动作时, 更新数据.
         mindflow.moments.on_moment_created(_on_moments_observing)
-        mindflow.moments.with_epoch_recap("ShellTrajectoryEpoch", _shell_trajectory_epoch_refresh)
+        # 反向绑定: moments.new_epoch → trajectory.new_epoch (刷新 baseline 快照).
+        # 先 on_epoch_creating (刷新) 再 with_epoch_baseline (从已刷新 baseline 产字符串).
+        mindflow.moments.on_epoch_creating(lambda _epoch: self.shell_trajectory.new_epoch())
+        # epoch 起点全量 facade 走 baseline 槽位 (非 recap): facade 是 shell 表面,
+        # 不是前情提要. 首帧 diff 与之同源, 天然去重.
+        mindflow.moments.with_epoch_baseline(
+            "facade",
+            lambda: self.shell_trajectory.epoch_start_point(refresh=False),
+        )
 
         # mindflow 生命周期装线到宿主 exit stack: 启动由宿主保证, 关闭确定性反卷.
         await self._enter_async_context(mindflow)

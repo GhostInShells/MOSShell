@@ -212,15 +212,16 @@ async def test_need_observe_derived_from_command():
 # ghost_runtime._wire_mindflow 装线 — 正式验证套件
 # ============================================================
 # 上面的旧测试走 with_percepts_buffer + 手工 add_echoes 的"两帧分开"路径.
-# ghost_runtime (host/ghost_runtime.py _wire_mindflow) 用的是另三条装线:
+# ghost_runtime (host/ghost_runtime.py _wire_mindflow) 用的是另几条装线:
 #   trajectory.when_need_observe(_notify_moments_need_observe)
 #   moments.on_moment_created(_on_moments_observing)
-#   moments.with_epoch_recap("ShellTrajectoryEpoch", _shell_trajectory_epoch_refresh)
-# 下面复刻这三条装线, 验证其行为契约. 不改动上面旧测试.
+#   moments.on_epoch_creating(lambda _e: trajectory.new_epoch())   # 反向绑定
+#   moments.with_epoch_baseline("facade", lambda: trajectory.epoch_start_point(refresh=False))
+# 下面复刻这几条装线, 验证其行为契约. 不改动上面旧测试.
 
 
 def _runtime_wire(obs: BaseMomentsObserver, trajectory: MShellTrajectory):
-    """复刻 ghost_runtime._wire_mindflow 的三条装线回调."""
+    """复刻 ghost_runtime._wire_mindflow 的装线回调."""
     def _on_moments_observing(moment: Moment) -> None:
         frame = trajectory.pop_frame()
         if moment.previous is not None:
@@ -232,16 +233,10 @@ def _runtime_wire(obs: BaseMomentsObserver, trajectory: MShellTrajectory):
         # 只通知"该观察了", 不带内容 — add_echoes 已处理空信号置位.
         obs.add_echoes([], need_observe=True)
 
-    def _shell_trajectory_epoch_refresh():
-        return [
-            Message.new(tag='moss-full-facade', timestamp=True).with_content(
-                trajectory.epoch_start_point()
-            )
-        ]
-
     obs.on_moment_created(_on_moments_observing)
     trajectory.when_need_observe(_notify_moments_need_observe)
-    obs.with_epoch_recap("ShellTrajectoryEpoch", _shell_trajectory_epoch_refresh)
+    obs.on_epoch_creating(lambda _epoch: trajectory.new_epoch())
+    obs.with_epoch_baseline("facade", lambda: trajectory.epoch_start_point(refresh=False))
 
 
 @pytest.mark.asyncio
@@ -291,17 +286,46 @@ async def test_runtime_wiring_frame_injected_into_previous_on_observe():
 
 
 @pytest.mark.asyncio
-async def test_runtime_wiring_epoch_recap_is_full_facade():
-    """with_epoch_recap 用 trajectory 全量 facade 作为 epoch recap (moss-full-facade)."""
-    shell, _ = _new_shell("rt_epoch_recap")
+async def test_runtime_wiring_epoch_baseline_is_full_facade():
+    """with_epoch_baseline 用 trajectory 全量 facade 作为 epoch baseline (facade 槽位)."""
+    shell, _ = _new_shell("rt_epoch_baseline")
     obs = BaseMomentsObserver(max_size=5)
     async with shell:
         async with MShellTrajectory(shell) as trajectory:
             _runtime_wire(obs, trajectory)
             epoch = obs.new_epoch([])
-            facade_msgs = [m for m in epoch.recap if m.meta.tag == 'moss-full-facade']
-            assert len(facade_msgs) == 1
-            assert '<channel path="chan">' in facade_msgs[0].to_content_string()
+            assert "facade" in epoch.baseline
+            assert '<channel path="chan">' in epoch.baseline["facade"]
+            # recap 槽位是前情提要, 不应再夹带 facade.
+            assert epoch.recap == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_wiring_epoch_creating_refreshes_trajectory_baseline():
+    """反向绑定: moments.new_epoch → on_epoch_creating → trajectory.new_epoch.
+
+    baseline 快照之后新增 channel, 若不反绑, epoch.baseline["facade"] 会读 stale
+    baseline (不含新 channel); 反绑后 trajectory 先刷新, baseline facade 反映最新 metas.
+    """
+    from ghoshell_moss.core.py_channel import PyChannel
+
+    shell, _ = _new_shell("rt_reverse_bind")
+    obs = BaseMomentsObserver(max_size=5)
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            _runtime_wire(obs, trajectory)
+            # baseline 快照之后运行时新增 channel.
+            chan = PyChannel(name="chan2")
+
+            @chan.build.command()
+            async def hi() -> str:
+                return "hi"
+
+            shell.main_channel.add_virtual_channel(chan)
+            await shell.refresh_metas()
+
+            epoch = obs.new_epoch([])
+            assert '<channel path="chan2">' in epoch.baseline["facade"]
 
 
 @pytest.mark.asyncio

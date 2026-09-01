@@ -181,6 +181,37 @@ def test_clear_resets_state():
     assert obs.epoch.recap == []
 
 
+def test_epoch_recap_and_baseline_are_separate_slots():
+    """recap (前情提要) 与 baseline (起点表面) 分槽, 互不污染."""
+    obs = BaseMomentsObserver(max_size=5)
+    obs.with_epoch_recap("summary", lambda: [Message.new().with_content("prior")])
+    obs.with_epoch_baseline("facade", lambda: "surface")
+    epoch = obs.new_epoch([])
+    assert _texts(epoch.recap) == ["prior"]
+    assert epoch.baseline == {"facade": "surface"}
+
+
+def test_epoch_baseline_registers_and_disposes():
+    """with_epoch_baseline 注册 baseline 段, dispose 后移除."""
+    obs = BaseMomentsObserver(max_size=5)
+    disposer = obs.with_epoch_baseline("facade", lambda: "full facade")
+    epoch = obs.new_epoch([])
+    assert epoch.baseline == {"facade": "full facade"}
+    disposer()
+    epoch2 = obs.new_epoch([])
+    assert epoch2.baseline == {}
+
+
+def test_epoch_creating_fires_before_baseline():
+    """on_epoch_creating 早于 baseline funcs — 反向绑定可先刷新状态再产 baseline."""
+    obs = BaseMomentsObserver(max_size=5)
+    order: list[str] = []
+    obs.on_epoch_creating(lambda _epoch: order.append("creating"))
+    obs.with_epoch_baseline("facade", lambda: order.append("baseline") or "surface")
+    obs.new_epoch([])
+    assert order == ["creating", "baseline"]
+
+
 # ============================================================
 # turns() — 将 moments 组织为回合历史
 # ============================================================

@@ -416,6 +416,7 @@ class Epoch:
     id: str  # uuid
     index: int  # 生成的第几轮.
     recap: list[Message]  # 前情提要数据.
+    baseline: dict[str, str]  # 新的周期的起点信息, 比如 shell full facade.
 
 
 class Moments(ABC):
@@ -437,8 +438,17 @@ class Moments(ABC):
         ...
 
     @abstractmethod
+    def with_epoch_baseline(self, key, baseline_func: Callable[[], str]) -> Disposer:
+        ...
+
+    @abstractmethod
+    def on_epoch_creating(self, callback: Callable[[Epoch], None]) -> Disposer:
+        """新的 epoch 开启时立即通知 — 早于 recap/baseline, 供反向绑定刷新自身状态."""
+        ...
+
+    @abstractmethod
     def on_epoch_created(self, callback: Callable[[Epoch], None]) -> Disposer:
-        """当新的 epoch 创建时, 追加 recap 数据"""
+        """当新的 epoch 完整创建后 (recap/baseline 已填充) 通知."""
         ...
 
     @abstractmethod
@@ -538,12 +548,14 @@ class BaseMomentsObserver(Observer):
         self._echoes = Echoes()
         self._moment_created_callbacks: set[Callable[[Moment], None]] = set()
         self._echoes_added_callbacks: set[Callable[[list[Message], bool], None]] = set()
+        self._epoch_creating_callbacks: set[Callable[[Epoch], None]] = set()
         self._epoch_created_callbacks: set[Callable[[Epoch], None]] = set()
 
         self._dynamic_context_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._percepts_drain_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._drain_new_echoes_funcs: dict[str, Callable[[], tuple[list[Message], bool]]] = dict()
         self._epoch_recap_funcs: dict[str, Callable[[], list[Message]]] = dict()
+        self._epoch_baseline_funcs: dict[str, Callable[[], str]] = dict()
 
         self._buffered_drained_percepts = {}
         self._injected_percepts = []
@@ -567,14 +579,30 @@ class BaseMomentsObserver(Observer):
             id=uid,
             index=index,
             recap=recap,
+            baseline={},
         )
         self._current_epoch = epoch
+        # 反向绑定先 fire (on_epoch_creating): 依赖方刷新自身 baseline, 使后续
+        # baseline funcs 读到已刷新的状态.
+        if len(self._epoch_creating_callbacks) > 0:
+            for callback in self._epoch_creating_callbacks:
+                try:
+                    callback(epoch)
+                except Exception as e:
+                    self._logger.exception(e)
         if len(self._epoch_recap_funcs) > 0:
             for func in self._epoch_recap_funcs.values():
                 try:
                     messages = func()
                     if messages:
                         epoch.recap.extend(messages)
+                except Exception as e:
+                    self._logger.exception(e)
+        if len(self._epoch_baseline_funcs) > 0:
+            for key, func in self._epoch_baseline_funcs.items():
+                try:
+                    baseline = func()
+                    epoch.baseline[key] = baseline
                 except Exception as e:
                     self._logger.exception(e)
 
@@ -599,6 +627,24 @@ class BaseMomentsObserver(Observer):
             value = self._epoch_recap_funcs.get(key)
             if value is recap_func:
                 self._epoch_recap_funcs.pop(key)
+
+        return _dispose
+
+    def with_epoch_baseline(self, key, baseline_func: Callable[[], str]) -> Disposer:
+        self._epoch_baseline_funcs[key] = baseline_func
+
+        def _dispose() -> None:
+            value = self._epoch_baseline_funcs.get(key)
+            if value is baseline_func:
+                self._epoch_baseline_funcs.pop(key)
+
+        return _dispose
+
+    def on_epoch_creating(self, callback: Callable[[Epoch], None]) -> Disposer:
+        self._epoch_creating_callbacks.add(callback)
+
+        def _dispose() -> None:
+            self._epoch_creating_callbacks.discard(callback)
 
         return _dispose
 

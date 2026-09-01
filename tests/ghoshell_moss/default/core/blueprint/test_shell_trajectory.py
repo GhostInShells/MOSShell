@@ -216,6 +216,67 @@ async def test_trajectory_epoch_start_point_renders_facade():
 
 
 @pytest.mark.asyncio
+async def test_first_frame_is_delta_after_epoch_start_point():
+    """epoch_start_point 含全量 facade ⟹ 首帧 facade_delta 为空 (不重复).
+
+    锁「recap/epoch 起点(全量 facade) 与首帧(facade delta) 互斥」不变式:
+    当 epoch 起点已把全量表面交付出去, 首帧就只应是 delta; 若首帧重新 emit
+    全量, 就是重复.
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+    from ghoshell_moss.core.py_channel import PyChannel
+
+    shell = new_ctml_shell("traj_first_delta")
+    chan = PyChannel(name="chan")
+
+    @chan.build.command()
+    async def hello() -> str:
+        return "world"
+
+    shell.main_channel.import_channels(chan)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            # epoch 起点: 全量 facade 含 chan.
+            facade = trajectory.epoch_start_point(refresh=True)
+            assert '<channel path="chan">' in facade
+
+            # 首帧: facade_delta 应为空 — 表面已被 epoch 起点交付过.
+            frame1 = trajectory.pop_frame()
+            assert frame1.facade_delta() == ""
+
+
+@pytest.mark.asyncio
+async def test_first_frame_emits_channel_added_after_baseline():
+    """baseline 之后新增 channel ⟹ 首帧只 emit 新增 channel (delta), 不重发旧表面.
+
+    与上面相反的分支: epoch 起点不含该 channel (它在 baseline 快照之后才进来),
+    首帧必须从头构建它, 但只构建这一个 delta, 不重复已有的.
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+    from ghoshell_moss.core.py_channel import PyChannel
+
+    shell = new_ctml_shell("traj_first_new")
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            # baseline 已快照 (无 chan). 之后运行时新增 chan.
+            chan = PyChannel(name="chan")
+
+            @chan.build.command()
+            async def hello() -> str:
+                return "world"
+
+            shell.main_channel.add_virtual_channel(chan)
+            await shell.refresh_metas()
+
+            frame1 = trajectory.pop_frame()
+            delta = frame1.facade_delta()
+            assert '<channel path="chan">' in delta
+            # 是 delta, 不重复: 该 channel 的 facade 只出现一次.
+            assert delta.count('<channel path="chan">') == 1
+
+
+@pytest.mark.asyncio
 async def test_trajectory_empty_drain():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
     from ghoshell_moss.core.py_channel import PyChannel

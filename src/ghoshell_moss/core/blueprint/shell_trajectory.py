@@ -234,17 +234,21 @@ class MShellContextFacade:
         """获取指定的 channel meta"""
         return self._cached_channel_metas.get(path)
 
+    @staticmethod
+    def render_full_facade(metas: dict[ChannelFullPath, ChannelMeta]) -> str:
+        """从给定的 metas 快照渲染完整操作表面 (不读 live 缓存)."""
+        lines = [f'<today>{_today_anchor()}</today>']
+        for path, channel_meta in metas.items():
+            prompter = ChannelMetaPrompter(path, channel_meta)
+            lines.append(prompter.full_facade())
+        return "\n".join(lines)
+
     def full_facade(
             self,
             available_only: bool = True,
     ) -> str:
         """shell 当前状态的完整操作表面. 包含 instruction 和运行时信息."""
-        channel_metas = self.channel_metas(available_only=available_only)
-        lines = [f'<today>{_today_anchor()}</today>']
-        for path, channel_meta in channel_metas.items():
-            prompter = ChannelMetaPrompter(path, channel_meta)
-            lines.append(prompter.full_facade())
-        return "\n".join(lines)
+        return self.render_full_facade(self.channel_metas(available_only=available_only))
 
     def get_channel_full_facade(self, path: ChannelFullPath) -> str:
         """指定channel 的操作表面, 包含除 context messages 之外的全量信息. """
@@ -571,6 +575,8 @@ class MShellTrajectory:
         # peek/commit 前均有 _check_running (要求已 aenter), 而 aenter -> new_epoch
         # 才真正初始化 _last_frame; 此处留 None 即可, 无需制造 dummy 帧.
         self._last_frame: ShellKeyFrame | None = None
+        # epoch 起点的 metas 快照 — epoch_start_point 与首帧 diff 的同源基准.
+        self._baseline_metas: dict[ChannelFullPath, ChannelMeta] = {}
         self._started = False
         self._stopped = False
 
@@ -582,28 +588,40 @@ class MShellTrajectory:
             raise RuntimeError(f"ShellTrajectory is not running.")
 
     def new_epoch(self) -> None:
-        """从头开始观测, 清空观测结果, 进入新的 epoch. """
+        """从头开始观测, 清空观测结果, 进入新的 epoch.
+
+        这里一次性快照 ``_baseline_metas``: 它既是 ``epoch_start_point`` 渲染全量
+        facade 的来源, 也是首帧 ``peek`` 的 ``previous_metas`` 基准. 二者同源,
+        避免 recap 读 live metas 而首帧读旧快照导致的分裂 (全量 facade 被重复 emit).
+        """
         if self._tracer:
             self._tracer.close()
             self._tracer = None
         self._epoch_index += 1
         # create new tracer.
         self._tracer = MShellEventTracer(self.shell)
+        self._baseline_metas = self.facade.channel_metas(available_only=True)
         self._last_frame: ShellKeyFrame = ShellKeyFrame(
             index=self._tracer.index,
             events=[],
             previous_metas={},
             status=self.facade.status(),
-            metas=self.facade.channel_metas(available_only=True),
+            metas=self._baseline_metas,
             created=time.time(),
             epoch_index=self._epoch_index,
             need_observe=False,
         )
 
     def epoch_start_point(self, refresh: bool = True) -> str:
+        """返回本 epoch 起点的全量 facade (从 ``_baseline_metas`` 快照渲染, 非 live).
+
+        ``refresh=True`` 先 ``new_epoch()`` 重新快照 baseline 再渲染; ``refresh=False``
+        渲染当前 epoch 的 baseline. 首帧 ``peek`` 的 ``previous_metas`` 同用这份
+        baseline, 因此首帧 facade_delta 天然是 delta, 不与 ``<epoch>`` 重复.
+        """
         if refresh:
             self.new_epoch()
-        return self.facade.full_facade(available_only=True)
+        return self.facade.render_full_facade(self._baseline_metas)
 
     def when_need_observe(self, callback: Callable[[MShellEvent], None]) -> Callable[[], None]:
         return self._tracer.when_need_observe(callback)
