@@ -151,7 +151,7 @@ def list_cmd(
     ),
     all_months: bool = typer.Option(
         False, "--all",
-        help="List features from all time (default: last 2 months only).",
+        help="List features from all time (default: last 60 days only).",
     ),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -161,7 +161,7 @@ def list_cmd(
     """
     List active development workstreams with status and priority.
 
-    Defaults to workstreams from the last 2 months. Use --all to see everything.
+    Defaults to workstreams touched in the last 60 days. Use --all to see everything.
     """
     fd = _resolve_dir(features_dir)
     features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
@@ -171,11 +171,11 @@ def list_cmd(
     if status:
         title += f" [status={status}]"
     if not all_months:
-        title += " (last 2 months)"
+        title += " (last 60 days)"
 
     if not features and not parse_errors:
         if not all_months and total_features:
-            print_info(f"No workstreams in the last 2 months — {len(total_features)} all-time (use --all).")
+            print_info(f"No workstreams in the last 60 days — {len(total_features)} all-time (use --all).")
         else:
             print_info("No workstreams found.")
         return

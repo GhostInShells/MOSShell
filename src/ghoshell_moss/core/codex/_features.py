@@ -7,7 +7,7 @@ This is the logic layer — the CLI is a thin convention enforcer that wraps the
 Directory topology: workstreams/<year>/<month>/<name>/FEATURE.md
 Path encodes creation date. No archive/move — status changes are frontmatter-only.
 """
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +18,11 @@ from typing import Optional
 
 # Open vocabulary: free-form statuses are allowed; these reserved values are the stability contract.
 RESERVED_STATUSES = {"draft", "in-progress", "completed", "dropped"}
+
+# Default listing window ("last 2 months") is a rolling 60-day lookback. A naive
+# month-bucket count reaches back too shallowly: on the 1st of a month it spans
+# only 1 day of the current month plus the prior month.
+DEFAULT_RECENT_DAYS = 60
 
 
 def parse_frontmatter(filepath: str | Path) -> Optional[dict]:
@@ -69,20 +74,31 @@ def _find_feature_dir(features_dir: Path, feature_id: str) -> Optional[Path]:
     return None
 
 
-def _month_dirs(features_dir: Path, months_back: int = 2) -> list[Path]:
-    """Return sorted list of year/month dirs to scan, covering the last N months."""
-    today = date.today()
-    dirs = []
-    # current month and previous months
-    y, m = today.year, today.month
-    for _ in range(months_back):
-        dirs.append(features_dir / str(y) / f"{m:02d}")
-        m -= 1
-        if m == 0:
-            m = 12
-            y -= 1
-    # filter to existing dirs only
-    return sorted([d for d in dirs if d.is_dir()], reverse=True)
+def _coerce_date(value) -> Optional[date]:
+    """Normalize a frontmatter date value (date, datetime, or ISO string) to a date."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _recent_date(meta: dict) -> Optional[date]:
+    """Effective activity date for a feature: ``updated``, falling back to ``created``.
+
+    Returns None when neither field parses as a date; callers then include the
+    feature rather than hiding an undatable file.
+    """
+    for key in ("updated", "created"):
+        d = _coerce_date(meta.get(key))
+        if d is not None:
+            return d
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +113,8 @@ def list_features(
     """
     List features from workstreams/ directory.
 
-    By default, scans only the last 2 months. Pass all_months=True to scan all time.
+    By default, lists features active within a rolling 60-day window (touched
+    since today-60d). Pass all_months=True to scan all time.
     Returns (features, parse_errors) — features sorted by updated date descending,
     parse_errors is a list of dicts with feature_dir, path, error, and hint keys.
 
@@ -108,18 +125,12 @@ def list_features(
     if not workstreams_dir.is_dir():
         return [], []
 
-    if all_months:
-        # Walk all year/month dirs
-        feat_dirs = []
-        for fm_path in sorted(workstreams_dir.glob("**/FEATURE.md")):
-            feat_dirs.append(fm_path.parent)
-    else:
-        # Only recent months
-        feat_dirs = []
-        for month_dir in _month_dirs(workstreams_dir):
-            for entry in sorted(month_dir.iterdir()):
-                if entry.is_dir() and (entry / "FEATURE.md").is_file():
-                    feat_dirs.append(entry)
+    cutoff = None if all_months else date.today() - timedelta(days=DEFAULT_RECENT_DAYS)
+
+    # Walk every FEATURE.md. The path only encodes the creation month, so a
+    # month-bucket scan would miss workstreams created earlier but still active;
+    # filter by each feature's own activity date instead (O(n), fine at this scale).
+    feat_dirs = [fm_path.parent for fm_path in sorted(workstreams_dir.glob("**/FEATURE.md"))]
 
     results = []
     parse_errors = []
@@ -131,6 +142,10 @@ def list_features(
             continue
         if meta is None:
             continue
+        if cutoff is not None:
+            recent = _recent_date(meta)
+            if recent is not None and recent < cutoff:
+                continue
         meta["_feature_dir"] = feat_dir.name
         meta["_feature_path"] = str(feat_dir.relative_to(workstreams_dir))
         if status_filter and meta.get("status") != status_filter:
