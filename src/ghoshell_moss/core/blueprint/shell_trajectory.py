@@ -453,7 +453,7 @@ class ShellKeyFrame:
         # 返回 facade delta
         delta = self.facade_delta()
         if delta:
-            result.append(Message.new(tag="facade").with_content(delta))
+            result.append(Message.new(tag="facade-delta").with_content(delta))
         if len(result) == 0:
             return result
 
@@ -590,9 +590,11 @@ class MShellTrajectory:
     def new_epoch(self) -> None:
         """从头开始观测, 清空观测结果, 进入新的 epoch.
 
-        这里一次性快照 ``_baseline_metas``: 它既是 ``epoch_start_point`` 渲染全量
-        facade 的来源, 也是首帧 ``peek`` 的 ``previous_metas`` 基准. 二者同源,
-        避免 recap 读 live metas 而首帧读旧快照导致的分裂 (全量 facade 被重复 emit).
+        一次性快照 ``_baseline_metas``, 同时赋给 ``_last_frame`` 的
+        ``previous_metas`` 与 ``metas`` (对称): 全量 facade 由 ``epoch_start_point``
+        渲染并交由 epoch 在"第零帧"交付一次; 首帧 ``peek`` 以 ``_baseline_metas`` 为
+        ``previous_metas`` (经 ``_last_frame.metas``), 与 live metas 内容比对,
+        未变更时 diff 为空 — 不重复渲染全量 facade.
         """
         if self._tracer:
             self._tracer.close()
@@ -604,7 +606,7 @@ class MShellTrajectory:
         self._last_frame: ShellKeyFrame = ShellKeyFrame(
             index=self._tracer.index,
             events=[],
-            previous_metas={},
+            previous_metas=self._baseline_metas,
             status=self.facade.status(),
             metas=self._baseline_metas,
             created=time.time(),

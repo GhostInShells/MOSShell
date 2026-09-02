@@ -329,6 +329,48 @@ async def test_runtime_wiring_epoch_creating_refreshes_trajectory_baseline():
 
 
 @pytest.mark.asyncio
+async def test_epoch_zero_delivers_late_channel_and_frame_echo_stays_empty():
+    """链路: 晚进 metas 的 channel (如 mindflow 反身 channel) 全量 facade 在第零帧交付.
+
+    真实运行时序: trajectory.__aenter__ 快照 baseline (此刻 mirror 未进 metas) → mirror 挂上
+    shell + refresh (进 metas) → 首次 observer epoch (反向绑定 trajectory.new_epoch) 重快照
+    baseline (含 mirror) → ``epoch.baseline['facade']`` 含 mirror (第零帧交付), epoch 之后首个
+    frame 的 facade_delta 为空 — echo 不重复携带 mirror facade (反泄漏).
+
+    对照昨天 mindflow 单测 (test_mindflow_channel_help_not_duplicated_across_frames): 它从不建
+    observer epoch, trajectory 用 ``__aenter__`` 旧 baseline (无 mirror), 首帧 echo 泄漏 mirror
+    全量 facade — 那是"缺 epoch"的伪像. 本测试显式建 observer epoch, 锁真实链路的反泄漏契约.
+    """
+    from ghoshell_moss.core.py_channel import PyChannel
+
+    shell, _ = _new_shell("rt_mirror_epoch_zero")
+    obs = BaseMomentsObserver(max_size=10)
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            _runtime_wire(obs, trajectory)
+            mirror = PyChannel(name="mirror", description="mindflow mirror channel")
+
+            @mirror.build.command()
+            async def observe_me() -> str:
+                return "ok"
+
+            shell.main_channel.add_virtual_channel(mirror)
+            await shell.refresh_metas()
+
+            # 缺 observer epoch 时 (昨天 mindflow 单测的隐含前提): 首帧 diff 泄漏 mirror 全量.
+            leak = trajectory.pop_frame()
+            assert '<channel path="mirror">' in leak.facade_delta()
+
+            # 真实链路: 首次 observer epoch → 反向绑定 trajectory.new_epoch 重快照 (含 mirror).
+            epoch = obs.new_epoch([])
+            # 第零帧交付: epoch baseline 含 mirror 全量 facade.
+            assert '<channel path="mirror">' in epoch.baseline["facade"]
+            # 反泄漏: epoch 之后首个 frame 的 facade_delta 为空, echo 不重复带 mirror.
+            frame = trajectory.pop_frame()
+            assert frame.facade_delta() == ""
+
+
+@pytest.mark.asyncio
 async def test_runtime_wiring_full_rounds_no_loss_dup():
     """跨 round 用 ghost_runtime 装线: 每轮 observe 恰拉一帧入 previous, 零丢失零重复."""
     shell, _ = _new_shell("rt_rounds")
