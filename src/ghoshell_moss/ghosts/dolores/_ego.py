@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from ._runtime import Dolores
     from .nucleus import DoloresEgoNucleus
     from ._run import DoloresRun
+    from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
 
 __all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig", "DoloresEgoContext"]
 
@@ -120,12 +121,14 @@ class DoloresEgoContext:
     - project_name: 工作区标题名 (原 ghost._matrix.env.project_name).
     - name: ghost 名, 用于标题/身份 (原 ghost.meta.name()).
     - instruction: 组装好的 system prompt (原 ghost.system_prompt()).
+    - facade: shell 上下文表面 (ghost 持有, 供 append_ctml 刷新 meta 用).
     """
 
     project_home: Path
     project_name: str
     name: str
     instruction: str
+    facade: "MShellContextFacade"
 
 
 class DoloresEgo:
@@ -154,6 +157,7 @@ class DoloresEgo:
         """
         self._launcher = launcher
         self._ctx = ctx
+        self._facade = ctx.facade
         self._config = config or DoloresEgoConfig()
         self._memories = memories
         self._session: "DshSession | None" = None
@@ -234,7 +238,7 @@ class DoloresEgo:
         :param thinking: mindflow Thinking — moment/effort/articulator/abort 全从它取.
         """
         from ._run import DoloresRun
-        return DoloresRun(ego=self, thinking=thinking, thinking_event=self._thinking_event)
+        return DoloresRun(ego=self, thinking=thinking, thinking_event=self._thinking_event, facade=self._facade)
 
     # ── 上下文组装 ──────────────────────────────────────────────────
 
@@ -318,9 +322,9 @@ class DoloresEgo:
     async def _on_tool_call(self, call_id: str, tool_name: str, arguments: dict) -> None:
         """ego tool 执行桥 (seam, 暂未装线).
 
-        observe 已单独在 Dolores.think 落地 (approach a: tool/call → thinking.observe() →
-        _rpc_tool_result 内联返回 moment). 其余 tool 面 (interleaved_logos / switch_model)
-        deferred — 本方法保留为通用 tool 分发点, 未来多 tool 时在此按 tool_name 分派.
+        fetch_next_moment / wait_next_moment / append_ctml 分派已落在 DoloresRun._handle_tool_use_event (见 _run.py);
+        其余 tool 面 (interleaved_logos / switch_model) deferred — 本方法保留为通用 tool
+        分发点, 未来多 tool 时在此按 tool_name 分派.
         """
         ...
 
@@ -341,23 +345,34 @@ class DoloresEgo:
         """
         ...
 
-    async def _rpc_tool_result(self, call_id: str, result: list[dict]) -> None:
-        """POST /moss-api/ghost/dolores/tool-result — {callId, result} 解锁 plugin 侧 pending tool.
+    async def _rpc_tool_result(
+            self,
+            call_id: str,
+            result: dict | list | str | None,
+            moment: list[dict] | None = None,
+    ) -> None:
+        """POST /moss-api/ghost/dolores/tool-result — {callId, result, moment} 解锁 pending tool.
 
-        result = wire content 段 (MomentContentPart, text + image), plugin 侧经
-        durableMomentContent 转 ContentBlock (admit image). callId 透传, plugin 按
-        callId 路由 (多 tool 各自 pending).
+        result = tool 给模型的返回值 (fetch_next_moment 为 "{epoch}-{moment}" 短 id). moment = 要注入
+        上下文的 moment content 段 (MomentContentPart, text + image); plugin 侧先 inject
+        moment 再 resolve result (见 plugin /tool-result). callId 透传, plugin 按 callId 路由.
         """
-        await self._launcher.call(_DOLORES_TOOL_RESULT, {"callId": call_id, "result": result})
+        await self._launcher.call(_DOLORES_TOOL_RESULT, {
+            "callId": call_id,
+            "result": result,
+            "moment": moment,
+        })
 
-    def _moment_content_parts(self, moment: Moment) -> list[dict]:
-        """moment → observe tool result 的 content blocks (context + inputs 拼接, 内联返回).
+    def moment_context_parts(self, moment: Moment, moment_id: str) -> list[dict]:
+        """moment → 注入上下文的 content blocks (context 槽位, 排除 percept/hint).
 
-        approach a: observe 内联返回 moment. 保留 content blocks (text + image), 不折叠
-        成 string — 与 context/inputs 槽位一致, 支持图片.
+        fetch_next_moment tool 经 tool-result RPC 把 moment 注入下一个 step 的上下文 (背景, 不驱动
+        turn). 保留 content blocks (text + image), 不折叠成 string. 无 context 内容 → 空.
         """
-        payload = self._moment_payload(moment)
-        return payload["context"] + payload["inputs"]
+        context_msg = self._context_message(moment, moment_id)
+        if context_msg is None:
+            return []
+        return [self._content_payload(content) for content in context_msg.as_contents(with_meta=True)]
 
     async def enter_thinking(self, thinking: "Thinking") -> None:
         """POST /moss-api/ghost/dolores/thinking/enter — moment 一条 user message + epoch + effort + model + token.
@@ -365,8 +380,9 @@ class DoloresEgo:
         防旁路 (点 4): body 携带 thinkingToken, plugin 校验 — 拒绝非 ego 发起的调用.
         """
         moment = thinking.moment
+        moment_ref = f"{thinking.observer.epoch.index}-{moment.index}"
         payload = {
-            "moment": self._moment_payload(moment),
+            "moment": self._moment_payload(moment, moment_ref),
             "epoch": self._epoch_payload(thinking),
             "effort": thinking.effort(),
             "model": await self._model_config(),
@@ -394,13 +410,20 @@ class DoloresEgo:
         except Exception:
             self._logger.exception("thinking/exit failed — degraded; state may be stale")
 
-    def _context_message(self, moment: Moment) -> Message | None:
+    def _context_message(self, moment: Moment, moment_id: str) -> Message | None:
         """context 槽位 — as_moment_message 排除 percept/hint (echoes/dynamic/executing).
 
         折叠成一条 ``<moment moment_id=...>`` 消息, inject 进上下文 (背景, 不驱动 turn).
-        无 context 内容 (echoes/dynamic/executing 均空) → None.
+        moment_id = "{epoch.index}-{moment.index}" 组合 id (非 uuid). 无 context 内容
+        (echoes/dynamic/executing 均空) → None.
         """
-        return moment.as_moment_message(always_return=False, with_percepts=False, with_hint=False)
+        return moment.as_moment_message(
+            always_return=False,
+            with_moment_id=False,
+            with_percepts=False,
+            with_hint=False,
+            attributes={'moment_id': moment_id},
+        )
 
     def _inputs_message(self, moment: Moment) -> Message | None:
         """inputs 槽位 — percepts + hint 包成一条 ``<inputs>`` 消息 (steer 用, 允许为空).
@@ -415,15 +438,15 @@ class DoloresEgo:
             return None
         return Message.new(tag='inputs').with_messages(*messages)
 
-    def _moment_payload(self, moment: Moment) -> dict:
+    def _moment_payload(self, moment: Moment, moment_id: str) -> dict:
         """moment → 两条 message 的 wire content (点 6): context + inputs.
 
         context = ``_context_message`` (echoes/dynamic/executing 折叠 ``<moment>``, inject 用);
         inputs = ``_inputs_message`` (percepts + hint 折叠 ``<inputs>``, steer 用). 映射在
         python 侧做, plugin 只收两条现成 content 分别投. text 直传, image 转 base64
-        EncodedImageAttachment (保留多模态). ``moment_id`` 独立传 — commit 锚.
+        EncodedImageAttachment (保留多模态). ``moment_id`` = "{epoch.index}-{moment.index}".
         """
-        context_msg = self._context_message(moment)
+        context_msg = self._context_message(moment, moment_id)
         inputs_msg = self._inputs_message(moment)
         return {
             "context": [
@@ -434,7 +457,7 @@ class DoloresEgo:
                 self._content_payload(content)
                 for content in inputs_msg.as_contents(with_meta=True)
             ] if inputs_msg is not None else [],
-            "moment_id": moment.id,
+            "moment_id": moment_id,
         }
 
     def _content_payload(self, content: Content | dict) -> dict[str, Any]:

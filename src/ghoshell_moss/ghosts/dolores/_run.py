@@ -12,7 +12,7 @@ async with 是交易边界 (aenter 开 / aexit 关), events() 是被动拉的原
           fail-safe) → 异常时 thinking.abort(reason).
   events(): 队列消费; 毒丸只承载 enter 异常 (正常路径由消费方 turn/end break 收线).
 
-yield tool (wait_next_moment): 消费方认出 tool/call = wait_next_moment → break 收线并置
+yield tool (moss_wait_next_moment): 消费方认出 tool/call = moss_wait_next_moment → break 收线并置
 run.yielded → exit 时 plugin 不 cancel (tool 留 pending, 下一轮 enter 用 moment 解锁).
 moment 的生产归 mindflow 正常 loop, 不归 run.
 """
@@ -26,8 +26,11 @@ from typing_extensions import Self
 from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk
 
+from ._tools import FetchNextMomentToolCall, WaitNextMomentToolCall, AppendCtmlToolCall, ToolCallResult
+
 if TYPE_CHECKING:
     from ._ego import DoloresEgo
+    from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
 
 __all__ = ["DoloresRun"]
 
@@ -137,10 +140,12 @@ class DoloresRun:
             ego: "DoloresEgo",
             thinking: "Thinking",
             thinking_event: asyncio.Event,
+            facade: "MShellContextFacade",
             ctml_quoter: str = '<|CTML|>',
     ) -> None:
         self._ego = ego
         self._thinking = thinking
+        self._facade = facade
         self._queue: "asyncio.Queue[Any]" = asyncio.Queue()
         self._dispose_listener: "Callable[[], None] | None" = None
         self._enter_task: "asyncio.Task[None] | None" = None
@@ -194,9 +199,60 @@ class DoloresRun:
                 return
             yield item
 
-    async def _handle_tool_use_event(self, e):
-        """tool use 占位 — 后续接 (observe / wait_next_moment 等), 当前留空."""
-        pass
+    async def _handle_tool_use_event(self, event: ToolCallEvent) -> None:
+        """tool/call 分派 — 按函数名判别 typed tool 并路由.
+
+        fetch_next_moment / append_ctml → run_tool 产 ToolCallResult, 经 tool-result RPC 回.
+        wait_next_moment (yield) → 置 self.yielded (logos() 据此 break 收线), 不走 tool-result.
+        """
+        result = await FetchNextMomentToolCall.run_tool(event, self._handle_fetch_next_moment)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
+        result = await AppendCtmlToolCall.run_tool(event, self._handle_append_ctml)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
+        if WaitNextMomentToolCall.from_tool_call(event) is not None:
+            self.yielded = True
+
+    async def _handle_fetch_next_moment(self, call: FetchNextMomentToolCall) -> ToolCallResult:
+        """fetch_next_moment handler — 产 moment, 回 {moment_ref} 结构化 result, 携带 moment."""
+        moment = self._thinking.observe()
+        moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
+        return ToolCallResult(
+            call=call.tool_call_event,
+            result={"moment_ref": moment_ref},
+            moment=moment,
+        )
+
+    async def _handle_append_ctml(self, call: AppendCtmlToolCall) -> str:
+        """append_ctml handler — 追加 ctml 到执行, 思维超前于行为 (interleaved).
+
+        refresh_meta: 执行前刷新 shell meta (经 facade.shell.refresh_metas).
+        wait_done: true → wait_action_done (等执行完), false → wait_compiled (思维超前).
+        """
+        if call.refresh_meta:
+            await self._facade.shell.refresh_metas(timeout=5.0)
+        async with self._thinking.articulator(replan=False, wait_action_done=call.wait_done) as articulator:
+            await articulator.send(call.ctml)
+            if call.wait_done:
+                await articulator.wait_action_done()
+            else:
+                await articulator.wait_compiled()
+        return "ok"
+
+    async def _dispatch_tool_result(self, result: ToolCallResult) -> None:
+        """把 ToolCallResult 经 tool-result RPC 回给 plugin: result 解锁 tool, moment 注入.
+
+        moment_id 从 result["moment_ref"] 显式取 (fetch_next_moment 的结构化 result), 不反推/重拼.
+        """
+        moment_parts = None
+        if result.moment is not None and isinstance(result.result, dict):
+            moment_ref = result.result.get("moment_ref")
+            if moment_ref is not None:
+                moment_parts = self._ego.moment_context_parts(result.moment, moment_ref)
+        await self._ego.rpc_tool_result(result.call.callId, result.result, moment_parts)
 
     async def logos(self) -> "AsyncIterator[str]":
         """消费事件流, 提取 logos delta (经 <|CTML|> 模式分隔), 遇 turn/end 自止.
@@ -229,6 +285,8 @@ class DoloresRun:
                     return
                 if tool := ToolCallEvent.from_session_event(event):
                     await self._handle_tool_use_event(tool)
+                    if self.yielded:
+                        return
         finally:
             await events.aclose()
 

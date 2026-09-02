@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
     from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._meta import DoloresMeta
+    from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
 
 __all__ = ["Dolores"]
 
@@ -31,6 +32,14 @@ __all__ = ["Dolores"]
 _CTML_MODE_NOTICE = (
     "You are in CTML mode: your output is parsed as streaming CTML logos, "
     "not plain conversation."
+)
+
+# dolores 默认 instruction — instruction 四层 (认知/协议/交互礼仪/篇幅控制) 的行为提示.
+# 只放协议 enforce 不了的极简规则 (见 dolores-ego-wiring.md「礼仪守约」结论).
+# 语义基准见同 doc「收敛的设计结论」表 (plain-text=外部信息 / CTML=控制语法+__content__=语音).
+# 待人类架构师定稿, 当前留空.
+_DOLORES_DEFAULT_INSTRUCTION = (
+    ""
 )
 
 
@@ -68,6 +77,7 @@ class Dolores(Ghost):
         self._ground_text: str | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: "DoloresEgo | None" = None
+        self._facade: "MShellContextFacade | None" = None
 
     # ── Ghost ABC ──────────────────────────────────
 
@@ -88,6 +98,8 @@ class Dolores(Ghost):
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
         parts.append(_CTML_MODE_NOTICE)
+        if _DOLORES_DEFAULT_INSTRUCTION:
+            parts.append(_DOLORES_DEFAULT_INSTRUCTION)
         return "\n\n".join(parts)
 
     async def ground_instruction(self) -> str | None:
@@ -150,12 +162,15 @@ class Dolores(Ghost):
             # ego 装线: 创建并持有 ego session (经 plugin RPC), 晚于 dsh 就绪.
             # 依赖倒置: ego 不 back-ref ghost, 运行上下文经 ctx/launcher/memories 闭包注入.
             from ._ego import DoloresEgo, DoloresEgoContext
+            from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
 
+            self._facade = MShellContextFacade(self._shell)
             ctx = DoloresEgoContext(
                 project_home=self._home,
                 project_name=self._matrix.env.project_name,
                 name=self._meta.name(),
                 instruction=self.system_prompt(),
+                facade=self._facade,
             )
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
@@ -170,6 +185,8 @@ class Dolores(Ghost):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._facade is not None:
+            self._facade.discard()
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
     # ── dsh 启动 ───────────────────────────────────

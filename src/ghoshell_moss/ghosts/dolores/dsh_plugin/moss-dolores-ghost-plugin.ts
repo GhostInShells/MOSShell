@@ -445,7 +445,8 @@ export function apply(ctx: Context) {
           }
           const unlock = pendingYield
           pendingYield = null
-          unlock.resolve('ok')
+          // yield 解锁返回 moment_ref (非哑载荷 "ok"), 让模型把「这帧」和「这次解锁」关联起来.
+          unlock.resolve(body.moment?.moment_id ?? 'ok')
         } else {
           // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
           //   (agent/request waterfall 提案 / session.selectModel).
@@ -509,14 +510,11 @@ export function apply(ctx: Context) {
     },
   })
 
-  // ── 5. yield tool (wait_next_moment) ────────────────────────────────
-  // 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 moment (A 范式).
-  // execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 用 moment contents
-  // admit 后的 ContentBlock[] (含 image ref) 构造 tool result 解锁 (moment 走 tool
-  // 返回值, 不经 surface). cancel 时 abort signal 清空 pendingYield 并 reject —
-  // moment 绝不交给已 cancel 的 tool, 改走下一轮 enter 正常 steer/append 路径.
+  // ── 5. yield tool (moss_wait_next_moment) ─────────────────────────────
+  // 模型在 thinking 中主动调 wait, 阻塞等下一帧 moment. execute 挂 pendingYield 阻塞;
+  // 下一轮 thinking/enter 解锁 (resolve moment_ref). cancel 时清空 pendingYield 并 reject.
   ctx.tools.register(defineTool({
-    name: 'wait_next_moment',
+    name: 'moss_wait_next_moment',
     description: 'Wait for the next MOSS moment. Blocks until MOSS produces the next observation frame.',
     parameters: {},
     output: {
@@ -524,38 +522,57 @@ export function apply(ctx: Context) {
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
     execute: async (_args, exec) => {
-      // 正常解锁 (thinking/enter) resolve("ok"); 被 session.cancel 打断时走 dsh 默认
-      // abort (reject → error), 与其它 tool 被 cancel 一致, 不做特殊处理.
       return await new Promise<string>((resolve, reject) => {
         pendingYield = { resolve: resolve as (value: unknown) => void, reject }
         exec.signal.addEventListener('abort', () => {
-          if (pendingYield !== null) { pendingYield = null; reject(new Error('wait_next_moment aborted')) }
+          if (pendingYield !== null) { pendingYield = null; reject(new Error('moss_wait_next_moment aborted')) }
         }, { once: true })
       }) as unknown as JsonValue
     },
   }))
 
-  // ── observe tool (approach a) ────────────────────────────────────────
-  // 主动观测: 模型调 observe → execute 挂 pendingCalls[callId] 阻塞 → MOSS 侧 thinking.observe()
-  // 生产 moment → /tool-result RPC 按 callId 解锁 (内联返回 moment content blocks). 与 yield
-  // 不同: observe 不 break turn, 模型在 tool result 到达后继续思考 (interleaved thinking).
+  // ── moss_fetch_next_moment tool ───────────────────────────────────────
+  // 主动 fetch: 模型调 fetch → execute 挂 pendingCalls[callId] 阻塞 → MOSS 侧 thinking.observe()
+  // 生产 moment → /tool-result RPC 按 callId 解锁 (resolve {moment_ref}) 并注入 moment context.
   ctx.tools.register(defineTool({
-    name: 'observe',
-    description: 'Actively observe the current MOSS moment now. Produces a fresh observation frame (context + inputs) and returns it inline.',
+    name: 'moss_fetch_next_moment',
+    description: 'Fetch the next MOSS moment now. Returns {moment_ref}; the full moment is injected into the next step context.',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => {
+      const callId = String(exec.callId)
+      return await new Promise<Record<string, unknown>>((resolve, reject) => {
+        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) { reject(new Error('moss_fetch_next_moment aborted')) }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }))
+
+  // ── moss_append_ctml tool (interleaved thinking) ──────────────────────
+  // 追加 ctml 到执行, 思维超前于行为: MOSS 侧 articulator.send(ctml) + wait (compiled/done).
+  ctx.tools.register(defineTool({
+    name: 'moss_append_ctml',
+    description: 'Append a CTML command to execution and keep thinking. Returns "ok" once compiled (or executed if wait_done).',
     parameters: {
-      refresh_shell: { type: 'boolean', default: false, description: 'Refresh the shell facade before observing (deferred — no-op for now).' },
+      ctml: { type: 'string', description: 'The CTML command to execute.' },
+      refresh_meta: { type: 'boolean', default: false, description: 'Refresh shell meta before executing (deferred — no-op for now).' },
+      wait_done: { type: 'boolean', default: false, description: 'Wait for full execution instead of just compilation.' },
     },
     output: {
       schema: { type: 'json' },
-      render: (_args, value) => value as ContentBlock[],
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
     execute: async (_args, exec) => {
-      // 正常解锁 (/tool-result) resolve(moment content blocks); 被 session.cancel 打断走 dsh 默认 abort.
       const callId = String(exec.callId)
-      return await new Promise<ContentBlock[]>((resolve, reject) => {
+      return await new Promise<string>((resolve, reject) => {
         pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
         exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) { reject(new Error('observe aborted')) }
+          if (pendingCalls.delete(callId)) { reject(new Error('moss_append_ctml aborted')) }
         }, { once: true })
       }) as unknown as JsonValue
     },
@@ -578,12 +595,22 @@ export function apply(ctx: Context) {
         if (pending === undefined) {
           throw new Error(`no pending tool call for ${callId}`)
         }
-        if (!Array.isArray(body.result)) {
-          throw new Error('result must be an array of content parts')
+        if (doloresEgoSessionId === null) {
+          throw new Error('no ego session — call ego/create first')
         }
+        const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         pendingCalls.delete(callId)
-        const blocks = await durableMomentContent(ctx, body.result as MomentContentPart[])
-        pending.resolve(blocks)
+        // moment 注入 (先 inject 后 resolve): 观察到的 moment 进下一个 step 的上下文.
+        // 无 moment (缺省/空数组) 则不注入 — result 单独回给模型.
+        if (Array.isArray(body.moment) && body.moment.length > 0) {
+          const blocks = await durableMomentContent(ctx, body.moment as MomentContentPart[])
+          agent.inject(createUserMessage({
+            content: blocks,
+            source: { kind: 'plugin', plugin: `${name}:moment` },
+          }))
+        }
+        // result = tool 给模型的返回值 (observe 为 "{epoch}-{moment}" 短 id).
+        pending.resolve(body.result)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (error) {

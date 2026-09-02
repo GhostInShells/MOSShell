@@ -357,6 +357,7 @@ class Moment(BaseModel, WithAdditional):
             with_moment_id: bool = True,
             with_percepts: bool = True,
             with_hint: bool = True,
+            attributes: dict[str, Any] | None = None,
     ) -> Message | None:
         """Fold the keyframe into one ``<moment moment_id=...>`` message.
 
@@ -366,8 +367,10 @@ class Moment(BaseModel, WithAdditional):
         and ``hint`` themselves.
         """
         messages = self.full_moment_messages(with_percepts=with_percepts, with_hint=with_hint)
+        attributes = attributes or {}
+        if with_moment_id:
+            attributes['moment_id'] = self.id
         if messages or always_return:
-            attributes = {'moment_id': self.id} if with_moment_id else {}
             return Message.new(tag='moment', attributes=attributes).with_messages(*messages)
         return None
 

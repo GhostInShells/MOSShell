@@ -340,6 +340,7 @@ class TestDoloresEgoSelfWake:
                 project_name="pytest",
                 name="dolores",
                 instruction="i",
+                facade=None,
             ),
         )
 
@@ -450,6 +451,7 @@ class TestDoloresRun:
             ego=ego or FakeRunEgo(session),
             thinking=thinking or FakeRunThinking(),
             thinking_event=asyncio.Event(),
+            facade=None,
         )
 
     @staticmethod
@@ -663,6 +665,7 @@ class TestDoloresMomentPayload:
                 project_name="pytest",
                 name="dolores",
                 instruction="i",
+                facade=None,
             ),
         )
 
@@ -676,8 +679,8 @@ class TestDoloresMomentPayload:
             hint="hint text",
             command_logos="cmd!",
         )
-        payload = self._ego()._moment_payload(moment)
-        assert payload["moment_id"] == moment.id
+        payload = self._ego()._moment_payload(moment, "0-1")
+        assert payload["moment_id"] == "0-1"
         context_text = "".join(c["text"] for c in payload["context"] if c.get("type") == "text")
         inputs_text = "".join(c["text"] for c in payload["inputs"] if c.get("type") == "text")
         # context: echoes + executing (cmd!), 排除 percept/hint.
@@ -690,11 +693,11 @@ class TestDoloresMomentPayload:
     def test_moment_payload_empty_when_no_context_or_inputs(self):
         from ghoshell_moss.core.blueprint.moment import Moment
 
-        payload = self._ego()._moment_payload(Moment())
+        payload = self._ego()._moment_payload(Moment(), "0-0")
         assert payload["context"] == []
         assert payload["inputs"] == []
 
-    def test_moment_content_parts_concatenates_context_and_inputs(self):
+    def test_moment_context_parts_contains_context_only(self):
         from ghoshell_moss.core.blueprint.moment import Echoes, Moment
         from ghoshell_moss.message import Message
 
@@ -702,15 +705,15 @@ class TestDoloresMomentPayload:
             previous=Echoes(messages=[Message.new().with_content("echo")]),
             percepts={"test": [Message.new().with_content("percept")]},
         )
-        parts = self._ego()._moment_content_parts(moment)
+        parts = self._ego().moment_context_parts(moment, "0-1")
         text = "".join(c["text"] for c in parts if c.get("type") == "text")
         assert "echo" in text
-        assert "percept" in text
+        assert "percept" not in text
 
-    def test_moment_content_parts_empty_when_no_content(self):
+    def test_moment_context_parts_empty_when_no_content(self):
         from ghoshell_moss.core.blueprint.moment import Moment
 
-        assert self._ego()._moment_content_parts(Moment()) == []
+        assert self._ego().moment_context_parts(Moment(), "0-0") == []
 
 
 class TestDoloresEpochPayload:
@@ -726,6 +729,7 @@ class TestDoloresEpochPayload:
                 project_name="pytest",
                 name="dolores",
                 instruction="i",
+                facade=None,
             ),
         )
 
