@@ -1,133 +1,24 @@
-"""DoloresEgo — Dolores 的自我/连续性层 (thinking 交易 surface, 逐步落地).
+"""DoloresEgo — Dolores 的自我/连续性层: thinking 交易 + 外部活动自醒.
 
-本文件负责 ghost 侧 (Python), 与 dsh_plugin/moss-dolores-ghost-plugin.ts 并行 —
-TS 负责 dsh 内核侧. 早期只画表面 (``...`` 占位); 2026-08-28 起 run_thinking 落地,
-2026-09-02 起 epoch 槽位 (<epoch> 容器) 与 observe tool (approach a) 落地;
-on_event 内部逻辑 (token/工具/seq) 仍待后续.
+ghost 侧 Python 面, 与 dsh_plugin/moss-dolores-ghost-plugin.ts 并行 (TS 持 dsh 内核侧:
+ego/create + thinking/enter|exit + tool-result + perStep 锁). 本文件持 ego 会话状态、
+moment→wire 序列化 (三槽位) 与外部活动自醒 watch. 完整协议演进 / 迭代计划见 FEATURE
+(ghost-prototype-dolores) + plugin.ts 头注释.
 
-── 迭代计划 (下一步, 逐项做; 七项全稳后才做 memento) ──────────────────
-  不一批做完. 逐项: 对齐 → 实现 → 提交, 做完划一项.
+── 两条线 ──
+长命线 (随 ghost 生命周期): 背景 watcher 盯 turn/start + user/message → 自醒 signal
+(DoloresEgoNucleus). thinking 交易进行中 (is_thinking) 时不自醒 — 交易内由 MOSS 自驱.
+短命线 (每次 thinking 一次): run_thinking(thinking) → DoloresRun (async with 交易边界
++ 事件流). 交易生命周期 (enter/exit/yield/observe/perStep) 归 run, 详见 _run.py.
 
-  1. instruction 建立 — Dolores instruction (system prompt) 建四层: 认知
-     (我是谁/存在/意义)、协议 (CTML 输出协议)、交互礼仪 (与人类协作的边界/
-     方式)、篇幅控制. 重点: 交互 + 语音纪律 (voice discipline, 语音向 ghost).
-  2. 测试 ghost 改名 — .moss/src/MOSS/ghosts/moss.py 测试 ghost 实例
-     name="moss" → "deepseek"; DoloresMeta 默认 description 讲清楚.
-  3. tools 对表面 — [已对齐, observe/epoch 已实现] 工具面收敛为: observe (主动观测,
-     approach a 内联返回 moment content blocks) / yield_next_moment (被动让出) /
-     interleaved_logos (= articulator(replan, wait_action_done) 的 tool 表面) /
-     switch_model (反身, 落文档不实现). 原 full_facade 等 4 个 ego tool 砍掉 — facade
-     走 epoch.baseline 注入 (push 非 pull), 不是 tool.
-  4. 正文 logos 阻塞 — ego think 流程正文 logos 流式逐段 yield 还是阻塞到
-     turn/end (done) 再整体产出 — 判定.
-  5. workspace / title 正式命名 — ego/create 的 workspace title (= project_name)
-     与 session title (session_title 模板) 正式命名, 去临时占位.
-  6. yield tool schema — wait_next_moment parameters: {} 空 obj 换更好的空定义.
-  7. system prompt 分隔符/去重 — system_prompt 加分隔符、正式化、去重
-     (baseline + prototype + identity + CTML 提示 分段与重复消除).
-
-── 定位 ──────────────────────────────────────────────────────────────
-DoloresEgo 是 Dolores ghost 的 "我". 随 ghost 创建时实例化, 进入同一
-生命周期. 它把散在 Dolores 本体上的会话响应逻辑收敛成一个有边界的自我,
-负责 thinking 交易 (短命线) + 会话事件响应 + 与 DSH 推理中枢的窄桥.
-
-── 两条线 ────────────────────────────────────────────────────────────
-长命线 (随 ghost 生命周期):
-  背景 watcher 只盯 turn/start 一种事件, 每次往一个固定 nucleus 打一个
-  一次性 impulse. 这是自驱心跳 — mindflow 静默时也能被唤醒, 走正常
-  challenge → attention → articulate 路径, 不用等外部输入.
-  通知与背压分工: turn/start 广播 = 通知 (外部唤醒 → 自醒 signal);
-  pre-step 阻塞 = 背压 (hold 住模型等 thinking/enter 注入帧).
-
-短命线 (每次 thinking 一次):
-  ``run_thinking(thinking)`` 返回 DoloresRun (async with 边界 + events() 消费):
-      async with ego.run_thinking(thinking) as run:
-          async for event in run.events(): ...
-  Dolores.think 消费 run.events() 分派 logos, 管理 articulator; 生命周期
-  (listener/enter/exit) 归 DoloresRun. 详见 _run.py 与 plugin.ts.
-
-── thinking 交易 (收敛方案 2026-08-28, B 范式) ────────────────────────
-B 范式: MOSS mindflow 是 dsh 每个 turn 的「上下文服务方」, pre-step enter 是
-服务接口. 每个 turn 自包含: enter-inject → model 跑 → turn/end 收线. 帧按
-状态分叉: mindflow 活跃 → live moment; idle → 静态状态快照.
-
-  thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort + model config + thinkingToken.
-                     handler 阻塞执行完: inject epoch(变更时) → inject context → steer inputs →
-                     openThinking (释放 pre-step 锁). 全部由 python 侧组装 (见下); epoch 是
-                     <epoch> 容器 (recap + baseline), 变更时注入为背景.
-  thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (不空跑失速).
-  perStep 锁       — foreign session → reject + mux 提示冻结; ego 非 thinking →
-                     阻塞等反转 (背压). 锁由 thinking signal 提供 (TS promise,
-                     非 python 伪 async).
-  防旁路           — thinkingToken (ego/create 生成返回, enter/exit 携带校验).
-
-  对比早期 articulate/enter (2026-08-27 收敛): 当时设想 enter 组合翻译 effort/
-  percepts/enter-with-messages, "enter 包揽 exit" 候选 (SSE 等 turn/end). 2026-08-28
-  落地为: pre-step enter 是统一注入点 (非锁), 完成判定回 turn/end (消费方 break 收线).
-  早期方案的组合翻译细节 (effort→reasoningEffort / percepts→steer / enter-with-messages
-  原子通道 / surface replace) 仍有效, 见 plugin.ts 头注释与 git log. 任务完成后再删.
-
-── session event 响应 (run 时监听) ───────────────────────────────────
-  1. logos 判定: _fetch_logos (assistant/chunk text-delta) → articulator + yield.
-  2. turn/end: 消费方 break 收线 (正常路径); 毒丸只承载 enter 异常.
-  3. observe tool 调用 (approach a): tool/call → thinking.observe() → RPC tool-result
-     内联返回 moment content blocks. (其余 tool 面 deferred, 见下.)
-  4. 异常感知: DoloresRun aexit 时 thinking.abort(reason).
-  (DoloresRun._on_event 后续会有逻辑 — token 记账 / tool 桥 / seq 跟踪, 本阶段纯透传.)
-
-── moment / epoch 映射: context + inputs + epoch 三个槽位 ─────────────
-  协议边界: xml-like 只在 python 侧理解 (<moment>/<inputs>/<epoch> 全在此烤好),
-  plugin 是 dumb transport — 只收 content blocks、admit image、注入, 不 parse 结构.
-  context — _context_message: as_moment_message 排除 percept/hint (echoes/dynamic/
-            executing 折叠成 <moment moment_id=...>), inject 进上下文 (背景, 不驱动 turn).
-  inputs  — _inputs_message: percepts 平铺 + optional hint 折叠成 <inputs>, steer
-            作为 turn 输入 (驱动). 映射在 python 侧 (ego) 组装, plugin 只收两条现成 content.
-  epoch   — _epoch_payload: epoch 变更时 (observer.epoch.id 变) 折叠成 <epoch index=N>
-            容器 (recap 前情提要 + baseline 起点信息, baseline key 渲染成 <key>value</key>),
-            inject 为背景 (一个槽, 不像 moment 两个槽 — 注入语义单一). 首帧也触发.
-  command_logos 归 context (executing 子段), 是「感知」不是「输入」; 反射弧已在 articulate 前 send_nowait 消费.
-  thinking_effort 在 articulator 上, 经 enter RPC 的 effort 字段上.
-  contexts 观测由 MindflowInShell 装线的 shell trajectory 进 moment.previous,
-  ego 只消费 moment, 不读 trajectory.
-
-── yield 机制 (wait_next_moment tool, A 范式) ──────────────────────
-模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment. tool use 是
-turn 边界信号 (非 turn 内续帧): 消费方认出 tool/call = wait_next_moment → break 收线
-(同 turn/end), 触发 thinking exit. exit 时 yielded=true → 不 cancel (留 tool pending).
-下一轮 thinking/enter: pendingYield 非空 → inject(context) + steer(inputs) + resolve("ok")
-(str, 非 moment contents — moment 已走 context/inputs 槽位). tool 被 session.cancel 打断时
-走 dsh 默认 abort, 与其它 tool 一致 (pendingYield 清空, 轨迹不丢). momentId 暂不消费.
-
-── observe tool (approach a, 主动观测) ─────────────────────────────
-与 yield 互补: yield 被动让出 (节奏权在 MOSS), observe 主动观测 (节奏权在模型).
-模型调 observe → plugin execute 挂 pendingCalls[callId] → MOSS 侧认出 tool/call →
-thinking.observe() 生产 moment → /tool-result RPC 按 callId 解锁, 内联返回 moment
-content blocks (context + inputs 拼接, 保留图片). 不 break turn — 模型在 tool result
-到达后继续思考 (interleaved thinking). tool-result 桥是单端点 (DOLORES_TOOL_RESULT),
-按 callId 路由 (多 tool 各自 pending).
-
-── moment 容器 + commit 锚 (2026-08-31) ──────────────────────────────
-dsh/DeepSeek 走 OpenAI-completions, 缓存是自动前缀缓存, 无 Anthropic cache_control
-显式断点、无多 cache index — 所以「无痛改历史」无解 (中途摘 dynamic 破坏前缀触发
-重算). 故 moment 容器化: context 用 as_moment_message 包成自解释的 <moment moment_id=...>
-消息 (排除 percept/hint), dynamic 留在容器里不摘 (full_moment_messages 给裸子段).
-commit 走主路 + 旁路 fork session (不走 dsh compact, 慢), 一个 session 多
-commit、历史不折叠; 「提交 moment A 之前的历史」的下边界只能落 moment id (cache 层
-给不了锚), commit 触发即按 id 注入上下文.
-
-── 待讨论 (seams) ────────────────────────────────────────────────────
-  1. external wake 的 fail-safe: pre-step 阻塞等 thinking/enter, MOSS 永不 enter
-     时 turn 挂死 — 需超时后 reject + mux 提示 (plugin 侧待定).
-  2. turn/start 的事件源: timer / trajectory 帧 / attention hook / 外部 signal?
-  3. 固定 nucleus 的 impulse 语义: 走正常仲裁, 还是专用自醒通道?
-  4. logos 判定标准: DSH 返回流里怎么区分 logos vs 非 logos?
-  5. ego topic 是强类型 TopicModel 还是通用 dict (当前倾向通用 dict)?
-
-── deferred (本期不做, 但别堵缝) ─────────────────────────────────────
-  epoch 周期 (compact 压上下文触发 recap 生产 / commit 落 Memento / ground_instruction
-  装线). 注: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact) 尚未装线.
-  其余 tool 面 (interleaved_logos / switch_model — 落文档不实现). on_event 内部逻辑 (token/工具/seq).
+── moment 三槽位 (enter 注入语义, python 侧组装) ──
+xml-like (<moment>/<inputs>/<epoch> 容器) 只在 python 侧烤好, plugin 是 dumb transport
+(收 content blocks / admit image / 注入, 不 parse). context = echoes/dynamic/executing
+折叠 <moment> (inject, 不驱动 turn); inputs = percepts 平铺 + optional <hint> (steer,
+驱动 turn); epoch = epoch 变更时 (observer.epoch.id 变) → <epoch index=N> recap+baseline
+(inject 背景, 首帧也触发).
 """
+
 
 from __future__ import annotations
 
@@ -145,18 +36,17 @@ from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.mindflow import Signal, Thinking, ThinkingEffort
 from ghoshell_moss.core.blueprint.session import OutputItem, Session
-from ghoshell_moss.deepseek_harness.launcher import DshLauncherConfig
-from ghoshell_moss.message import Message
+from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
+from ghoshell_moss.deepseek_harness.session import DshSession
+from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+from ghoshell_moss.message import Content, Message
 
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
-    from ghoshell_moss.deepseek_harness.launcher import DshLauncher
-    from ghoshell_moss.deepseek_harness.session import DshSession
-    from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
-
     from ._runtime import Dolores
     from .nucleus import DoloresEgoNucleus
+    from ._run import DoloresRun
 
 __all__ = ["DoloresConfig", "DoloresEgo", "DoloresEgoConfig", "DoloresEgoContext"]
 
@@ -242,13 +132,13 @@ class DoloresEgo:
     """Dolores 的自我/连续性层. 详见模块 docstring."""
 
     def __init__(
-        self,
-        *,
-        launcher: "DshLauncher",
-        ctx: DoloresEgoContext,
-        config: DoloresEgoConfig | None = None,
-        logger: LoggerItf | None = None,
-        memories: Callable[[], list[Message]] | None = None,
+            self,
+            *,
+            launcher: "DshLauncher",
+            ctx: DoloresEgoContext,
+            config: DoloresEgoConfig | None = None,
+            logger: LoggerItf | None = None,
+            memories: Callable[[], list[Message]] | None = None,
     ) -> None:
         """随 ghost 进入生命周期前构造, 构造无副作用 (不碰 httpx / session / matrix.processes).
 
@@ -275,6 +165,7 @@ class DoloresEgo:
         self._logger = logger or get_moss_logger()
         # self-wake gate: thinking 交易进行中 (Python 侧镜像 flag), turn/start 监听据此决定是否自醒.
         self._articulating = False
+        self._thinking_event = asyncio.Event()
         # 自醒 signal 出口 — host/mindflow 接总线后注入 (broadcast), 本侧不直接碰 nucleus.
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
         # epoch 跟踪: 记录已注入的 epoch id, enter 时比较 observer.epoch.id 决定是否携带 <epoch> 容器.
@@ -343,8 +234,7 @@ class DoloresEgo:
         :param thinking: mindflow Thinking — moment/effort/articulator/abort 全从它取.
         """
         from ._run import DoloresRun
-
-        return DoloresRun(ego=self, thinking=thinking)
+        return DoloresRun(ego=self, thinking=thinking, thinking_event=self._thinking_event)
 
     # ── 上下文组装 ──────────────────────────────────────────────────
 
@@ -375,13 +265,9 @@ class DoloresEgo:
     # ── 背景 watcher (长命线) ───────────────────────────────────────
 
     @property
-    def articulating(self) -> bool:
-        """self-wake gate — Python 侧权威 flag, 由 articulate 进入/退出置 True/False."""
-        return self._articulating
-
-    @articulating.setter
-    def articulating(self, value: bool) -> None:
-        self._articulating = value
+    def is_thinking(self) -> bool:
+        """self-wake gate — 是否处于 thinking 交易中 (thinking_event 由 run aenter/aexit 置位)."""
+        return self._thinking_event.is_set()
 
     def bind_signal_broadcast(self, broadcast: "Callable[[Signal], None]") -> None:
         """注入自醒 signal 出口 (host/mindflow 总线 broadcast).
@@ -399,7 +285,7 @@ class DoloresEgo:
         自醒 signal 给 nucleus. 可丢弃: nucleus 造 BACKGROUND impulse, mindflow
         忙时 challenge 失败即丢, 只有空闲时才唤醒.
         """
-        if self._articulating:
+        if self.is_thinking:
             return
         self._emit_self_wake()
 
@@ -551,7 +437,7 @@ class DoloresEgo:
             "moment_id": moment.id,
         }
 
-    def _content_payload(self, content: dict) -> dict:
+    def _content_payload(self, content: Content | dict) -> dict[str, Any]:
         """MOSS content → dsh wire content. image 的 base64 保留, 转 EncodedImageAttachment 形状."""
         if content.get("type") == "image":
             source = content.get("source") or {}
@@ -600,10 +486,3 @@ class DoloresEgo:
             "model": selection.model,
             "reasoningEffort": selection.reasoningEffort,
         }
-
-    # ── 异常感知 ────────────────────────────────────────────────────
-
-    @property
-    def last_error(self) -> Exception | None:
-        """持有的上一轮异常, 下一轮 run 组装上下文时注入."""
-        ...

@@ -74,15 +74,13 @@ def _observe_tool_call(event: "SessionEvent") -> "ToolCallEvent | None":
 
 
 class Dolores(Ghost):
-    """Dolores — 第二个 Ghost 原型运行时.
+    """Dolores — 第二个 Ghost 原型运行时 (DSH 推理中枢集成).
 
-    生命周期里挂一个 DshLauncher (DSH 推理中枢), 直接持有 matrix 的治理链
-    (matrix.processes). 上下文观测由 MindflowInShell 装线 shell trajectory 到
-    moments 完成 (ghost 侧不重复自建 trajectory). think() 经 ego.run_thinking()
-    (DSH 推理中枢 transaction) 驱动 dsh 推理, logos 流逐段 yield (articulator
-    本侧管理). 后续逐步接入: Memento 持久化轨迹、interleaved thinking、ghost
-    反身 channel、模型自感知 (_llms). 收敛方案 (thinking/enter B 范式) 见
-    _ego.py 模块 docstring.
+    生命周期里挂 DshLauncher (推理中枢, 经 matrix.processes) + DefaultGroundSet
+    (ghost_home 认知场), 持有 ego (DoloresEgo — 会话/交易窄桥). think() 委托
+    ego.run_thinking() 驱动 dsh 推理, logos 逐段 yield, articulator 本侧管理.
+    交易协议 (thinking/enter B 范式) 见 _run.py + plugin.ts 头注释. 能力演进
+    (Memento / interleaved thinking / ghost 反身 channel / 模型自感知) 逐步接入.
     """
 
     def __init__(
@@ -153,14 +151,11 @@ class Dolores(Ghost):
         return []
 
     async def think(self, thinking: Thinking) -> AsyncIterator[str]:
-        """模型驱动委托给 ego.run_thinking() (DSH 推理中枢 transaction).
+        """委托 ego.run_thinking() 驱动 dsh 推理 — 交易生命周期 (listener/enter/exit) 归 run.
 
-        上下文观测 (facade / status / events / context) 由 MindflowInShell 装线的
-        shell trajectory 注入 moment.previous (echoes), ghost 本侧不重复 self.pop_frame.
-        消费 run.events() 分派 logos, articulator 由本侧管理, logos 流逐段 yield.
+        上下文观测由 MindflowInShell 装线的 shell trajectory 注入 moment.previous (echoes),
+        本侧不重复自建. 消费 run.events() 分派 logos/收线, articulator 本侧管理, logos 逐段 yield.
         """
-        # 模型驱动: ego.run_thinking (DSH 推理中枢 transaction).
-        # 生命周期 (listener/enter/exit) 归 run 对象; 本侧只消费事件 + 管理 articulator.
         if self._ego is not None:
             async with self._ego.run_thinking(thinking) as run:
                 articulator = None

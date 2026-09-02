@@ -134,10 +134,7 @@ let doloresThinkingToken: string | null = null
 // ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter open ──
 // TS 单线程事件循环, gate = asyncio.Event 等价物 (可反复 open/close, wait 阻塞到 open).
 // 注意: Promise 是一次性的, resolve 后不能重臂 — 不能表达"当前是否 thinking"的持续状态.
-// wait 返回三态 outcome: open (正常释放) / aborted (exit cancel 打断) / timeout (fail-safe).
-
-// pre-step 帧背压超时 (fail-safe): MOSS 未及时 thinking/enter 时 reject, 不空跑失速.
-const THINKING_GATE_TIMEOUT_MS = 5000
+// wait 返回三态 outcome: open (正常释放) / aborted (exit cancel 打断) / timeout (仅显式传超时).
 
 type GateOutcome = 'open' | 'aborted' | 'timeout'
 
@@ -310,16 +307,11 @@ export function apply(ctx: Context) {
                 notifySessionFrozen(ctx, agent)
                 return { kind: 'reject' }
               }
-              // ego session: 帧背压 — 非 thinking 时阻塞等 thinking/enter open.
-              // 三态: open 放行 / aborted 走 next() 让 throwIfAborted 收成 aborted turn
-              // (exit 的 cancel 打断卡在 pre-step 的 step) / timeout reject 停住 (fail-safe).
-              const outcome = await thinkingGate.wait(THINKING_GATE_TIMEOUT_MS, signal)
-              if (outcome === 'timeout') {
-                ctx.logger.warn(
-                  `dolores: ego pre-step blocked ${THINKING_GATE_TIMEOUT_MS}ms — MOSS thinking/enter not arrived, rejecting`,
-                )
-                return { kind: 'reject' }
-              }
+              // ego session: 帧背压 — 锁到 MOSS thinking/enter 开闸 (open) 才放行, 不设超时.
+              // 注意: pre-step 进入时 driver 已 claim 消息 (移出 inbox). 任何 reject 都会让
+              // driver 把 turn 记 blocked 并丢弃已 claim 的消息 (吞). 故 ego 分支绝不 reject.
+              // aborted (被 cancel 打断) 时 next() 走 signal.throwIfAborted 收成 aborted turn.
+              await thinkingGate.wait(undefined, signal)
               return next()
             })
           },

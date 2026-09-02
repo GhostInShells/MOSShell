@@ -358,7 +358,7 @@ class TestDoloresEgoSelfWake:
         ego = self._ego()
         emitted = []
         ego.bind_signal_broadcast(emitted.append)
-        ego.articulating = True
+        ego._thinking_event.set()  # 模拟 run 交易进行中 (is_thinking 只读, 直接置 event)
         await ego._on_session_activity(None)  # type: ignore[arg-type]
 
         assert emitted == []
@@ -387,11 +387,10 @@ class FakeRunSession:
 
 
 class FakeRunEgo:
-    """DoloresRun 的 ego fake — Duck-typed (session/articulating/enter_thinking/exit_thinking)."""
+    """DoloresRun 的 ego fake — Duck-typed (session/enter_thinking/exit_thinking)."""
 
     def __init__(self, session):
         self.session = session
-        self.articulating = False
         self.enter_calls = 0
         self.exit_calls = 0
         self.exit_yielded_values: list[bool] = []
@@ -427,6 +426,7 @@ class TestDoloresRun:
         return DoloresRun(
             ego=ego or FakeRunEgo(session),
             thinking=thinking or FakeRunThinking(),
+            thinking_event=asyncio.Event(),
         )
 
     @pytest.mark.asyncio
@@ -435,11 +435,11 @@ class TestDoloresRun:
         ego = FakeRunEgo(session)
         run = self._run(session=session, ego=ego)
         async with run:
-            assert ego.articulating is True
+            assert run._thinking_event.is_set()  # 交易中 (run aenter 置位)
             assert len(session.handlers) == 1  # catch-all 监听已绑
             await asyncio.sleep(0)  # 让出 loop, enter task 跑
             assert ego.enter_calls == 1
-        assert ego.articulating is False
+        assert not run._thinking_event.is_set()  # 交易结束 (run aexit 复位)
         assert ego.exit_calls == 1
         assert ego.exit_yielded_values == [False]  # 非 yield 收线 → yielded=False
         assert len(session.handlers) == 0  # 解绑
