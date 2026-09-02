@@ -14,7 +14,7 @@
 
 ```toml
 moss       = "ghoshell_moss.cli:main_entry"
-moss-shell = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
+moss-shell = 'ghoshell_moss.cli.moss_debug_repl:moss_shell_main'
 moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 ```
 
@@ -33,14 +33,15 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
   - `help [commands...]`: 批量获取命令帮助。无参数显示根帮助, 带参数按路径解析 (如 `moss --ai help codex get-interface codex concepts`)
   - `all-commands`: 一次性列出所有命令树。`--depth 1/2/3` 控制深度, `--group <name>` 限定子树。设计目标: 将 AI 的 CLI 发现从 40+ 轮压缩到 2 轮
 
-### 2. `moss-shell` — Shell 运行时入口 (三模式: tui / mcp / log)
+### 2. `moss-shell` — Shell 运行时入口 (四模式: tui / mcp / log / fractalize)
 
-- **入口**: `moss_debug_repl.py` → `moss_debug_repl_main()` (Click group)
+- **入口**: `moss_debug_repl.py` → `moss_shell_main()` (Click group)
 - **框架**: Click (简单参数解析) + Textual/prompt_toolkit (tui 模式)
 - **模式**:
   - `moss-shell` (无子命令) / `moss-shell tui` — 启动完整 MOSS Host Runtime (不含 Ghost), 进入 TUI 调试终端。人类在给模型 CTML 之前先在这里手动测试。流程: Environment 显式构造 + seal → Host() → MossRuntimeTUI.run()
   - `moss-shell mcp` — 将 MOSS 运行时暴露为 MCP server (原独立 `moss-mcp` 二进制)。需要 `[mcp]` extra, 经 `depend_mcp()` 惰性 gate
   - `moss-shell log` — 无交互 headless 运行, 只输出日志, 供 CI/后台排障
+  - `moss-shell fractalize` — 进入 Matrix 网络作为一个 fractal cell, 只暴露本 mode 的 NodeManager (nodes channel) 一条能力。远程 host `mesh:accept` 后可远程治理本 mode 的 nodes (Mode as Cell, workstream: mode-as-cell)
 - Ghost 运行前调试 Shell 层的入口: 测 CTML、检 channels/matrix/manifests
 
 ### 3. `moss-ghost` — Ghost 交互入口 (group: run / send)

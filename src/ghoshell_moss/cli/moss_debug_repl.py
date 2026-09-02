@@ -1,12 +1,15 @@
 """moss-shell — MOSS Shell runtime entry.
 
-Three modes:
+Four modes:
 - ``tui`` (default): interactive Textual/prompt_toolkit debugger for the Shell
   runtime — test CTML, inspect channels, debug before a Ghost runs.
 - ``mcp``: expose the MOSS runtime as an MCP server for AI coding platforms
   (formerly the standalone ``moss-mcp`` binary). Requires the ``[mcp]`` extra —
   gated lazily, so the shell works without it.
 - ``log``: headless run, no interaction, logs only. For CI / background use.
+- ``fractalize``: enter the Matrix network as a single fractal cell whose only
+  channel is this mode's NodeManager — remote hosts that ``mesh:accept`` this
+  cell can list/read/run/stop the mode's nodes remotely. "Mode as cell."
 """
 
 import click
@@ -29,7 +32,7 @@ import click
     help='Network driver.',
 )
 @click.pass_context
-def moss_debug_repl_main(ctx, mode: str, scope: str, network: str):
+def moss_shell_main(ctx, mode: str, scope: str, network: str):
     """MOSS Shell runtime — interactive TUI debug, MCP server, or headless log."""
     ctx.obj = {'mode': mode, 'scope': scope, 'network': network}
     if ctx.invoked_subcommand is None:
@@ -49,7 +52,7 @@ def _build_env(ctx):
     return env
 
 
-@moss_debug_repl_main.command()
+@moss_shell_main.command()
 @click.pass_context
 def tui(ctx):
     """Interactive TUI debugger — test CTML, inspect channels (default)."""
@@ -64,7 +67,7 @@ def tui(ctx):
     ui.run()
 
 
-@moss_debug_repl_main.command()
+@moss_shell_main.command()
 @click.option(
     '--transport',
     type=click.Choice(['sse', 'std', 'streamable_http']),
@@ -101,7 +104,7 @@ def mcp(ctx, transport, host, port, server_name):
     )
 
 
-@moss_debug_repl_main.command()
+@moss_shell_main.command()
 @click.pass_context
 def log(ctx):
     """Headless run — no interaction, logs only. For CI / background debugging."""
@@ -126,5 +129,62 @@ def log(ctx):
     runtime.run_until_closed()
 
 
+@moss_shell_main.command()
+@click.pass_context
+def fractalize(ctx):
+    """Enter the Matrix network as a fractal cell exposing this mode's nodes.
+
+    Mode as Cell — the running process is a single node cell whose only
+    providing channel is this mode's NodeManager (list/read/run/stop/...).
+    Remote hosts that mesh:accept this cell can govern the mode's nodes
+    remotely. Blocks until closed. See workstream: mode-as-cell.
+    """
+    import logging
+
+    from ghoshell_moss.core.blueprint.cell import normalize
+    from ghoshell_moss.core.blueprint.matrix import Matrix
+    from ghoshell_moss.core.helpers.logger import get_console_logger
+    from ghoshell_moss.channels.matrix_channel import new_nodes_channel
+
+    env = _build_env(ctx)
+    node_name = f'{normalize(env.project_name)}_{normalize(env.mode_name)}'
+
+    matrix = Matrix.new(
+        node_name,
+        description=f'Fractal cell for mode {env.mode_name!r} of project {env.project_name!r}.',
+        category='fractal',
+        env=env,
+        persist=True,
+        singleton=True,
+    )
+
+    # project.bootstrap 已挂 moss.log file handler; 此时补 console handler,
+    # 让 boot 期间的 identity/network 摘要打到 stderr, 方便复制排障.
+    get_console_logger(logging.INFO)
+
+    cell = matrix.this
+    net = matrix.network_info
+    matrix.logger.info(
+        'MOSS fractalize running: cell.address=%s cell.role=%s cell.category=%s '
+        'project_name=%s project_id=%s mode=%s network=%s scope=%s driver=%s',
+        cell.address, cell.role, cell.category,
+        env.project_name, env.project_id, env.mode_name,
+        ctx.obj['network'], net.scope, net.driver,
+    )
+    matrix.logger.info(
+        'MOSS fractalize providing channel = mode NodeManager. '
+        'Remote host: matrix.mesh:accept(<address>) to gain fractal.<short>:list/run/... '
+        'Ctrl+C to stop.'
+    )
+
+    async def _serve(m: Matrix) -> None:
+        channel = new_nodes_channel(m)
+        # provide_channel 返回 Future, await 会阻塞到膜被外部关闭.
+        # 这是 cell 唯一的入网动作 — Matrix.new + provide_channel + await.
+        await m.provide_channel(channel)
+
+    matrix.run(_serve)
+
+
 if __name__ == '__main__':
-    moss_debug_repl_main()
+    moss_shell_main()
