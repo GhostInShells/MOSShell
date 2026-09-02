@@ -1,16 +1,16 @@
 ---
-title: Mode as Cell — 把 mode 作为 fractal cell 挂到 Matrix 网络
-status: draft
-# priority: importance within the current stage (iteration cycle) — not development urgency
-priority: P1
 created: 2026-09-02
-updated: 2026-09-02
 depends: []
+description: 拉起一个进程, 把本 mode 的 NodeManager 作为唯一 channel 挂到 Matrix 网络, 供远端 host accept
+  后远程治理本 mode 的 nodes 集合. 消解老 fractal 的 Hub/Provider/独立 transport 抽象, 完全复用 Matrix
+  CellNetwork.
 milestone: alpha
-description: >-
-  拉起一个进程, 把本 mode 的 NodeManager 作为唯一 channel 挂到 Matrix 网络,
-  供远端 host accept 后远程治理本 mode 的 nodes 集合. 消解老 fractal 的
-  Hub/Provider/独立 transport 抽象, 完全复用 Matrix CellNetwork.
+priority: P1
+status: completed
+status_note: '端到端跑通: fractalize cell 入网, host accept 后挂 matrix.mesh.<short> virtual
+  channel, 远程 list/run/stop 全通'
+title: Mode as Cell — 把 mode 作为 fractal cell 挂到 Matrix 网络
+updated: '2026-09-02'
 ---
 
 # Mode as Cell — 把 mode 作为 fractal cell 挂到 Matrix 网络

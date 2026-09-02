@@ -14,7 +14,7 @@ __all__ = [
     'new_channel_state', 'new_channel_from_state', 'new_stateful_channel',
     'PrimeChannel', 'new_prime_channel', 'new_shell_main_channel',
     'ChannelModule',
-    'new_default_shell_main_channel',
+    'new_moss_main_channel',
     'StatefulChannelRuntime',
 ]
 
@@ -241,14 +241,15 @@ def new_shell_main_channel(description: str = "") -> PrimeChannel:
     return PyChannel(name="__main__", description=description, blocking=True)
 
 
-def new_default_shell_main_channel(
+def new_moss_main_channel(
         description: str = "",
 ) -> PrimeChannel:
     """
-    创建一个标准的, 默认的 shell main channel.
+    创建一个标准的, 支持默认能力的 moss main channel
     提示如何组建 Shell Main Channel.
     """
     from ghoshell_moss.core.ctml.shell.ctml_main import inject_system_primitives
+    from ghoshell_moss.channels.matrix_channel import build_matrix_channel
     from ghoshell_moss.core.speech import SpeechChannelModule
 
     main = new_shell_main_channel(description=description)
@@ -259,6 +260,8 @@ def new_default_shell_main_channel(
     # -- Speech --------------------------------------------------
     main.with_module(SpeechChannelModule())
 
+    # -- matrix
+    main.import_channels(build_matrix_channel())
     return main
 
 

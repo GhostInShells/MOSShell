@@ -11,6 +11,7 @@ __pycache__/
 *$py.class
 .ghostos.yml
 ghostos_ws/
+uv.lock
 
 # C extensions
 *.so

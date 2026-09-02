@@ -24,8 +24,8 @@ STUB_MATRIX_PROVIDERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.provid
 
 class TestChannelManifest:
     def test_basic(self, tmp_path):
-        from ghoshell_moss import new_default_shell_main_channel
-        ch = new_default_shell_main_channel()
+        from ghoshell_moss import new_moss_main_channel
+        ch = new_moss_main_channel()
         m = ChannelManifest(
             name=ch.name(),
             value=ch,
