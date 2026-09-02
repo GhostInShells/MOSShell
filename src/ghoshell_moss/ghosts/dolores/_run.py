@@ -23,17 +23,105 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from typing_extensions import Self
+from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
+from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk
 
 if TYPE_CHECKING:
     from ._ego import DoloresEgo
-    from ghoshell_moss.core.blueprint.mindflow import Thinking
-    from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
 
 __all__ = ["DoloresRun"]
 
-# 毒丸 sentinel: enter task 异常时入队, events() 读到即抛 _enter_error 终止.
-# 正常路径不塞 — 消费方在 turn/end 处 break 收线, 毒丸只管 enter 异常.
+# 毒丸 sentinel: enter task 异常时入队, 消费方读到即抛 _enter_error 终止.
+# 正常路径不塞 — 收线由 logos() 内部遇 turn/end 自止, 毒丸只管 enter 异常.
 _POISON = object()
+
+
+def _get_text_chunk(event: SessionEvent) -> str | None:
+    if assistant_chunk := AssistantChunk.from_session_event(event):
+        if assistant_chunk.chunk.type == 'text-delta':
+            return assistant_chunk.chunk.text
+    return None
+
+
+_LogosDelta = str
+
+
+class _CtmlParser:
+
+    def __init__(self, articulator: Articulator, ctml_quoter: str = '<|CTML|>') -> None:
+        self._articulator = articulator
+        self._ctml_chars = [c for c in ctml_quoter]
+        self._ctml_mark_length = len(ctml_quoter)
+        self._ctml_buffer = ''
+        self._is_in_ctml = False
+
+    async def add(self, text: str) -> _LogosDelta:
+        if self._ctml_mark_length == 0:
+            if text:
+                await self._articulator.send(text)
+            return text
+        logos = ''
+        for char in text:
+            delta = self._add_char(char)
+            if delta is not None:
+                logos += delta
+        if logos:
+            await self._articulator.send(logos)
+        return logos
+
+    def _add_char(self, char: str) -> _LogosDelta | None:
+        # 没有缓存过命中 ctml 标记的信息.
+        if self._ctml_buffer == '':
+            # 命中了第一个字符.
+            if char == self._ctml_chars[0]:
+                # 等下一个字符.
+                self._ctml_buffer += char
+                return None
+            else:
+                # 既没有 ctml mark, 又没有命中需观测的字符, 则直接判定返回.
+                if self._is_in_ctml:
+                    # in ctml 这种情况是返回 logos delta.
+                    return char
+                else:
+                    # 否则返回非 logos.
+                    return None
+        # 已经缓存过, 则需要判断 ctml 标记是否命中.
+        else:
+            index = len(self._ctml_buffer)
+            # 命中了 ctml 标记的情况.
+            if index < self._ctml_mark_length and char == self._ctml_chars[index]:
+                # 增加新的 buffer.
+                self._ctml_buffer += char
+                # 增加完后, 可能正好满足了 ctml 标记.
+                if (index + 1) == self._ctml_mark_length:
+                    # 满足标记, 立刻反转.
+                    self._is_in_ctml = not self._is_in_ctml
+                    self._ctml_buffer = ''
+                return None
+            else:
+                # 没有命中 ctml 标记的情况, 则应该准备发送.
+                # 已经存在的 ctml buffer 都可以清理掉.
+                if self._is_in_ctml:
+                    buffer = self._ctml_buffer
+                    buffer += char
+                    self._ctml_buffer = ''
+                    return buffer
+                else:
+                    self._ctml_buffer = ''
+                    return None
+
+    async def __aenter__(self) -> Self:
+        await self._articulator.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._is_in_ctml and self._ctml_buffer:
+            await self._articulator.send(self._ctml_buffer)
+            self._ctml_buffer = ''
+
+        await self._articulator.wait_action_done()
+        await self._articulator.__aexit__(exc_type, exc_val, exc_tb)
+        return None
 
 
 class DoloresRun:
@@ -49,6 +137,7 @@ class DoloresRun:
             ego: "DoloresEgo",
             thinking: "Thinking",
             thinking_event: asyncio.Event,
+            ctml_quoter: str = '<|CTML|>',
     ) -> None:
         self._ego = ego
         self._thinking = thinking
@@ -57,9 +146,12 @@ class DoloresRun:
         self._enter_task: "asyncio.Task[None] | None" = None
         self._enter_error: Exception | None = None
         self._thinking_event: asyncio.Event = thinking_event
+        self._ctml_quoter = ctml_quoter
         # yield 收线标记: 消费方认出 tool/call == wait_next_moment 并 break 时置 True,
         # __aexit__ 经 exit_thinking(yielded=...) 传给 plugin — yield 时绝不 cancel.
         self.yielded = False
+        # logos() 单次消费 guard — 一个 run 只能有一个 logos 流 (多个会分食 _queue).
+        self._logos_started = False
 
     # ── transaction 边界 ──────────────────────────────────────────
 
@@ -72,6 +164,7 @@ class DoloresRun:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """关 transaction. cancel enter task → 解绑 → 补发 exit → abort (异常时)."""
+        self._thinking_event.clear()
         task = self._enter_task
         if task is not None and not task.done():
             task.cancel()
@@ -82,25 +175,62 @@ class DoloresRun:
         # 补发 exit — enter 未通过也要发 (清理 plugin 侧状态), 阻塞到确认 (带超时 fail-safe).
         # yielded 标记: 本次 break 是否 yield 收线, plugin 据此决定是否 cancel.
         await self._ego.exit_thinking(yielded=self.yielded)
-        self._thinking_event.clear()
+        if isinstance(exc_val, asyncio.CancelledError):
+            return None
         reason = exc_val if exc_val is not None else self._enter_error
         if reason is not None:
             self._thinking.abort(reason)
+        return None
 
     # ── 事件流 ─────────────────────────────────────────────────────
 
-    async def events(self) -> "AsyncIterator[SessionEvent]":
-        """从队列读原始 session event, 消费方在 turn/end 处 break 收线.
-
-        毒丸只在 enter 异常时钉下, 读到即抛 _enter_error 终止; 正常路径不终止.
-        """
-        while self._thinking_event.is_set():
+    async def _events(self) -> "AsyncIterator[SessionEvent]":
+        """从队列拉原始 session event. 毒丸抛 _enter_error; 正常由 logos() aclose 终止."""
+        while True:
             item = await self._queue.get()
             if item is _POISON:
                 if self._enter_error is not None:
                     raise self._enter_error
                 return
             yield item
+
+    async def _handle_tool_use_event(self, e):
+        """tool use 占位 — 后续接 (observe / wait_next_moment 等), 当前留空."""
+        pass
+
+    async def logos(self) -> "AsyncIterator[str]":
+        """消费事件流, 提取 logos delta (经 <|CTML|> 模式分隔), 遇 turn/end 自止.
+
+        单次消费: 一个 run 只能有一个 logos 流. tool 及其它非 text 事件留空 (见
+        _handle_tool_use_event). 收线 (turn/end) 内化在此, 消费方无需 break.
+        """
+        if self._logos_started:
+            raise RuntimeError("DoloresRun.logos() can only be consumed once")
+        self._logos_started = True
+        events = self._events()
+        try:
+            while True:
+                event = await anext(events)
+                text = _get_text_chunk(event)
+                if text is not None:
+                    parser = _CtmlParser(
+                        self._thinking.articulator(replan=False, wait_action_done=True),
+                        ctml_quoter=self._ctml_quoter,
+                    )
+                    async with parser:
+                        while text is not None:
+                            delta = await parser.add(text)
+                            if delta:
+                                yield delta
+                            event = await anext(events)
+                            text = _get_text_chunk(event)
+                # 非 text 事件: tool 留空, turn/end 收线.
+                if event.meta.type == "turn/end":
+                    return
+                if tool := ToolCallEvent.from_session_event(event):
+                    await self._handle_tool_use_event(tool)
+        finally:
+            await events.aclose()
 
     # ── 内部 ──────────────────────────────────────────────────────
 

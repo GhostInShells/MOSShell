@@ -128,6 +128,11 @@ class Moment(BaseModel, WithAdditional):
         description="A unique id for this observation.",
     )
 
+    index: int = Field(
+        default=0,
+        description="The index of this moment in moments",
+    )
+
     # --- stitching the previous round's info --- #
     previous: Echoes | None = Field(
         default=None,
@@ -550,6 +555,7 @@ class BaseMomentsObserver(Observer):
         self._echoes_added_callbacks: set[Callable[[list[Message], bool], None]] = set()
         self._epoch_creating_callbacks: set[Callable[[Epoch], None]] = set()
         self._epoch_created_callbacks: set[Callable[[Epoch], None]] = set()
+        self._moment_index: int = 0
 
         self._dynamic_context_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
         self._percepts_drain_funcs: dict[str, Callable[[], Iterable[Message]]] = dict()
@@ -670,6 +676,7 @@ class BaseMomentsObserver(Observer):
 
     def _peek_moment(self) -> Moment:
         moment = self._echoes.new_moment()
+        moment.index = 0
         if len(self._drain_new_echoes_funcs) > 0:
             for key, func in self._drain_new_echoes_funcs.items():
                 try:
@@ -705,6 +712,8 @@ class BaseMomentsObserver(Observer):
         self._echoes = moment.new_echoes_container()
         self._buffered_drained_percepts = {}
         self._injected_percepts = []
+        self._moment_index += 1
+        moment.index = self._moment_index
         self._moments.append(moment)
         while len(self._moments) > self._max_moments_size:
             self._moments.popleft()

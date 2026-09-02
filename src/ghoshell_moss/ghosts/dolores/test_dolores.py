@@ -406,20 +406,43 @@ class FakeRunEgo:
         self.exit_yielded_values.append(yielded)
 
 
+class FakeArticulator:
+    """_CtmlParser 的 articulator fake — send 累积 logos, 生命周期空操作."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def send(self, delta: str):
+        self.sent.append(delta)
+
+    async def wait_action_done(self):
+        pass
+
+
 class FakeRunThinking:
     def __init__(self):
         self.abort_reasons: list = []
+        self.articulators: list[FakeArticulator] = []
 
     def abort(self, reason):
         self.abort_reasons.append(reason)
+
+    def articulator(self, replan=False, wait_action_done=False) -> FakeArticulator:
+        art = FakeArticulator()
+        self.articulators.append(art)
+        return art
 
 
 class TestDoloresRun:
     """DoloresRun 生命周期 + 事件消费 — public 类, 轻量 fake 即可验证."""
 
     def _run(self, session=None, ego=None, thinking=None):
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent  # noqa: F401
-
         from ._run import DoloresRun
 
         session = session or FakeRunSession()
@@ -427,6 +450,20 @@ class TestDoloresRun:
             ego=ego or FakeRunEgo(session),
             thinking=thinking or FakeRunThinking(),
             thinking_event=asyncio.Event(),
+        )
+
+    @staticmethod
+    def _event(event_type: str, data: dict, seq: int = 1):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+
+        return SessionEvent(meta=SessionEventMeta(type=event_type, seq=seq), data=data)
+
+    @classmethod
+    def _text_chunk(cls, text: str, seq: int = 1):
+        return cls._event(
+            "assistant/chunk",
+            {"turn": 1, "step": 1, "chunk": {"type": "text-delta", "text": text}},
+            seq=seq,
         )
 
     @pytest.mark.asyncio
@@ -445,44 +482,20 @@ class TestDoloresRun:
         assert len(session.handlers) == 0  # 解绑
 
     @pytest.mark.asyncio
-    async def test_events_consumes_stream_and_breaks_on_turn_end(self):
-        """enter 成功不塞毒丸 — 事件流持续到消费方在 turn/end break 收线."""
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
-
+    async def test_logos_yields_and_stops_on_turn_end(self):
+        """text chunk 经 CTML 解析产出 logos; turn/end 让 logos() 自止 (无需消费方 break)."""
         session = FakeRunSession()
         ego = FakeRunEgo(session)
-        run = self._run(session=session, ego=ego)
-        collected = []
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(SessionEvent(meta=SessionEventMeta(type="turn/start", seq=1), data={"turn": 1}))
-            await session.emit(SessionEvent(meta=SessionEventMeta(type="step/start", seq=2), data={"turn": 1, "step": 1}))
-            await session.emit(SessionEvent(meta=SessionEventMeta(type="turn/end", seq=3), data={"turn": 1, "reason": "completed"}))
-            async for event in run.events():  # 消费方在 turn/end break (与 Dolores.think 同构)
-                collected.append(event.meta.type)
-                if event.meta.type == "turn/end":
-                    break
-        assert collected == ["turn/start", "step/start", "turn/end"]
-
-    @pytest.mark.asyncio
-    async def test_yield_break_forwards_yielded_flag(self):
-        """消费方认出 wait_next_moment 并 break → run.yielded 置位 → exit_thinking(yielded=True).
-
-        plugin 侧据 yielded=True 绝不 cancel, 不依赖 dsh 侧 pendingYield 的时序竞态.
-        """
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
-        from ghoshell_moss.ghosts.dolores._runtime import _is_yield_tool_call
-
-        session = FakeRunSession()
-        ego = FakeRunEgo(session)
-        run = self._run(session=session, ego=ego)
-        async with run:
-            await session.emit(SessionEvent(
-                meta=SessionEventMeta(type="tool/call", seq=1), data={"name": "wait_next_moment"}))
-            async for event in run.events():
-                if _is_yield_tool_call(event):
-                    run.yielded = True  # 与 Dolores.think 的 break 分支同构
-                    break
-        assert ego.exit_yielded_values == [True]
+            await session.emit(self._text_chunk("<|CTML|><say>hi</say><|CTML|>", seq=1))
+            await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
+            collected = []
+            async for delta in run.logos():
+                collected.append(delta)
+        assert "".join(collected) == "<say>hi</say>"
+        assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
 
     @pytest.mark.asyncio
     async def test_enter_error_propagates_and_aborts(self):
@@ -493,7 +506,7 @@ class TestDoloresRun:
         run = self._run(session=session, ego=ego, thinking=thinking)
         with pytest.raises(RuntimeError, match="enter boom"):
             async with run:
-                async for _ in run.events():
+                async for _ in run.logos():
                     pass
         assert thinking.abort_reasons  # enter 异常 → thinking.abort
 
@@ -509,60 +522,132 @@ class TestDoloresRun:
         assert thinking.abort_reasons
 
 
-class TestYieldToolCall:
-    """wait_next_moment (yield tool) 识别 — turn 边界信号, 触发 thinking exit."""
+class TestCtmlParser:
+    """_CtmlParser — <|CTML|> 模式分隔符流式状态机 (articulator 用 AsyncMock 断言 send)."""
 
-    def _event(self, event_type: str, data: dict):
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+    @staticmethod
+    def _parser(quoter: str = '<|CTML|>'):
+        from unittest.mock import AsyncMock
 
-        return SessionEvent(meta=SessionEventMeta(type=event_type, seq=1), data=data)
+        from ._run import _CtmlParser
 
-    def test_recognizes_yield_tool_call(self):
-        from ._runtime import _is_yield_tool_call
+        art = AsyncMock()
+        return _CtmlParser(art, ctml_quoter=quoter), art
 
-        event = self._event("tool/call", {"name": "wait_next_moment"})
-        assert _is_yield_tool_call(event) is True
+    @staticmethod
+    def _sent(art) -> str:
+        return "".join(c.args[0] for c in art.send.await_args_list)
 
-    def test_ignores_other_tool_call(self):
-        from ._runtime import _is_yield_tool_call
+    # ── 模式切换 ──
 
-        event = self._event("tool/call", {"name": "moss_observe"})
-        assert _is_yield_tool_call(event) is False
+    @pytest.mark.asyncio
+    async def test_mark_switches_into_ctml_without_logos(self):
+        parser, art = self._parser()
+        assert await parser.add("<|CTML|>") == ""
+        assert art.send.await_count == 0  # 标记本身不 send
 
-    def test_ignores_non_tool_call(self):
-        from ._runtime import _is_yield_tool_call
+    @pytest.mark.asyncio
+    async def test_mark_char_by_char(self):
+        parser, art = self._parser()
+        for ch in "<|CTML|>":
+            assert await parser.add(ch) == ""
+        assert await parser.add("<say>x</say>") == "<say>x</say>"
 
-        event = self._event("assistant/chunk", {})
-        assert _is_yield_tool_call(event) is False
+    @pytest.mark.asyncio
+    async def test_exit_back_to_plain(self):
+        parser, art = self._parser()
+        await parser.add("<|CTML|>")
+        assert await parser.add("<say>hi</say>") == "<say>hi</say>"
+        assert await parser.add("<|CTML|>") == ""
+        assert await parser.add("after") == ""  # 退出后 plain 丢弃
 
+    @pytest.mark.asyncio
+    async def test_empty_ctml_block(self):
+        parser, art = self._parser()
+        assert await parser.add("<|CTML|><|CTML|>") == ""
+        assert art.send.await_count == 0
 
-class TestObserveToolCall:
-    """observe (主动观测) 识别 — interleaved thinking 的主动观测点, 内联返回 moment."""
+    @pytest.mark.asyncio
+    async def test_consecutive_blocks(self):
+        parser, art = self._parser()
+        # 一个 CTML 块里两个命令; 第二个 <|CTML|> 切出后 <b/> 是 plain, 被丢弃.
+        assert await parser.add("<|CTML|><a/><b/><|CTML|>") == "<a/><b/>"
+        assert self._sent(art) == "<a/><b/>"
 
-    def _event(self, event_type: str, data: dict):
-        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+    # ── 假前缀 / partial ──
 
-        return SessionEvent(meta=SessionEventMeta(type=event_type, seq=1), data=data)
+    @pytest.mark.asyncio
+    async def test_false_prefix_lt(self):
+        parser, art = self._parser()
+        assert await parser.add("<hello>") == ""
+        assert art.send.await_count == 0
 
-    def test_recognizes_observe_tool_call(self):
-        from ._runtime import _observe_tool_call
+    @pytest.mark.asyncio
+    async def test_false_prefix_at_every_partial_position(self):
+        parser, art = self._parser()
+        for text in ["<|x", "<|Cx", "<|CTx", "<|CTMx", "<|CTMLx"]:
+            assert await parser.add(text) == ""
+        assert art.send.await_count == 0
 
-        event = self._event("tool/call", {"name": "observe", "callId": "c1"})
-        call = _observe_tool_call(event)
-        assert call is not None
-        assert call.callId == "c1"
+    @pytest.mark.asyncio
+    async def test_partial_across_chunk_boundary(self):
+        parser, art = self._parser()
+        assert await parser.add("<|CT") == ""
+        assert await parser.add("ML|>") == ""
+        assert await parser.add("<say>hi</say>") == "<say>hi</say>"
 
-    def test_ignores_yield_tool_call(self):
-        from ._runtime import _observe_tool_call
+    # ── CTML 内容边界 ──
 
-        event = self._event("tool/call", {"name": "wait_next_moment"})
-        assert _observe_tool_call(event) is None
+    @pytest.mark.asyncio
+    async def test_ctml_lt_followed_by_non_pipe_flushes(self):
+        parser, art = self._parser()
+        await parser.add("<|CTML|>")
+        assert await parser.add("<say") == "<say"  # < 后 s 非 | → flush '<s', 再 a/y
 
-    def test_ignores_non_tool_call(self):
-        from ._runtime import _observe_tool_call
+    @pytest.mark.asyncio
+    async def test_aexit_flushes_pending_ctml_buffer(self):
+        parser, art = self._parser()
+        async with parser:
+            await parser.add("<|CTML|>")
+            await parser.add("<|")  # 残留 "<|" (未完成的退出标记)
+        assert self._sent(art) == "<|"
 
-        event = self._event("assistant/chunk", {})
-        assert _observe_tool_call(event) is None
+    @pytest.mark.asyncio
+    async def test_aexit_flushes_trailing_lt(self):
+        parser, art = self._parser()
+        async with parser:
+            await parser.add("<|CTML|>")
+            await parser.add("<")  # 残留 "<"
+        assert self._sent(art) == "<"
+
+    # ── plain 边界 ──
+
+    @pytest.mark.asyncio
+    async def test_plain_trailing_lt_not_flushed(self):
+        parser, art = self._parser()
+        async with parser:
+            await parser.add("<")  # plain 模式残留 < 不 flush
+        assert art.send.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_empty_input(self):
+        parser, art = self._parser()
+        assert await parser.add("") == ""
+        assert art.send.await_count == 0
+
+    # ── mark_length == 0 退路 ──
+
+    @pytest.mark.asyncio
+    async def test_no_quoter_all_text_is_logos(self):
+        parser, art = self._parser(quoter='')
+        assert await parser.add("anything") == "anything"
+        assert self._sent(art) == "anything"
+
+    @pytest.mark.asyncio
+    async def test_no_quoter_empty(self):
+        parser, art = self._parser(quoter='')
+        assert await parser.add("") == ""
+        assert art.send.await_count == 0
 
 
 class TestDoloresMomentPayload:

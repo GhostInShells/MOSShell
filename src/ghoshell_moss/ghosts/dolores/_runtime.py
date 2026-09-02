@@ -15,13 +15,11 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.deepseek_harness.types.session_events import AssistantChunk, ToolCallEvent
 from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
-    from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
 
     from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._meta import DoloresMeta
@@ -34,43 +32,6 @@ _CTML_MODE_NOTICE = (
     "You are in CTML mode: your output is parsed as streaming CTML logos, "
     "not plain conversation."
 )
-
-
-def _fetch_logos(event: "SessionEvent") -> str | None:
-    """从 session event 提取 logos delta — assistant/chunk 的 text-delta 段."""
-    if event.meta.type != "assistant/chunk":
-        return None
-    chunk = AssistantChunk.from_session_event(event)
-    if chunk is not None and chunk.chunk.type == "text-delta" and chunk.chunk.text:
-        return chunk.chunk.text
-    return None
-
-
-# yield tool 名 — 与 plugin.ts 的 defineTool name 对齐 (跨语言契约).
-_YIELD_TOOL_NAME = "wait_next_moment"
-
-
-def _is_yield_tool_call(event: "SessionEvent") -> bool:
-    """判断模型是否主动调 wait_next_moment (yield tool).
-
-    yield tool use 是 turn 边界信号 (非 turn 内续帧): 消费方认出后 break 收线 (同
-    turn/end), 触发 thinking exit; plugin 侧 exit 不 cancel pending yield, 下一轮
-    thinking/enter 用 moment 构造 tool result 解锁.
-    """
-    call = ToolCallEvent.from_session_event(event)
-    return call is not None and call.name == _YIELD_TOOL_NAME
-
-
-# observe tool 名 — 主动观测 tool (approach a: 内联返回 moment).
-_OBSERVE_TOOL_NAME = "observe"
-
-
-def _observe_tool_call(event: "SessionEvent") -> "ToolCallEvent | None":
-    """识别 observe tool 调用 (完整 tool/call). 返回 ToolCallEvent (含 callId) 或 None."""
-    call = ToolCallEvent.from_session_event(event)
-    if call is not None and call.name == _OBSERVE_TOOL_NAME:
-        return call
-    return None
 
 
 class Dolores(Ghost):
@@ -151,40 +112,15 @@ class Dolores(Ghost):
         return []
 
     async def think(self, thinking: Thinking) -> AsyncIterator[str]:
-        """委托 ego.run_thinking() 驱动 dsh 推理 — 交易生命周期 (listener/enter/exit) 归 run.
+        """委托 ego.run_thinking() 驱动 dsh 推理 — 生命周期/收线/CTML 解析全归 run.
 
-        上下文观测由 MindflowInShell 装线的 shell trajectory 注入 moment.previous (echoes),
-        本侧不重复自建. 消费 run.events() 分派 logos/收线, articulator 本侧管理, logos 逐段 yield.
+        本侧只做 async with 边界 + logos 透传 (给 mindflow 广播观测面).
+        异常 (enter/消费/cancel) 经 async with 自然传播, 由 run.__aexit__ 治理.
         """
         if self._ego is not None:
             async with self._ego.run_thinking(thinking) as run:
-                articulator = None
-                try:
-                    async for event in run.events():
-                        if logos_delta := _fetch_logos(event):
-                            if articulator is None:
-                                articulator = thinking.articulator()
-                                await articulator.__aenter__()
-                            articulator.send_nowait(logos_delta)
-                            yield logos_delta
-                        elif _is_yield_tool_call(event):
-                            # yield 收线: 消费方认出 wait_next_moment → 标记 run.yielded,
-                            # __aexit__ 经 exit_thinking(yielded=True) 通知 plugin 不 cancel.
-                            run.yielded = True
-                            break
-                        elif (observe_call := _observe_tool_call(event)) is not None:
-                            # observe (approach a): 主动观测生产 moment, 内联返回 tool result.
-                            # 不 break — 模型在 tool result 到达后继续思考.
-                            moment = thinking.observe()
-                            result = self._ego._moment_content_parts(moment)
-                            await self._ego._rpc_tool_result(observe_call.callId, result)
-                        elif event.meta.type == "turn/end":
-                            break
-                finally:
-                    if articulator is not None:
-                        await articulator.__aexit__(None, None, None)
-                        if not thinking.is_aborted():
-                            await articulator.wait_action_done()
+                async for delta in run.logos():
+                    yield delta
         else:
             yield ""
 
