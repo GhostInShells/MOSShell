@@ -27,20 +27,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Dolores"]
 
-# CTML 模式提示 — 静态段进 ghost 基础 instruction (system prompt, cache 稳定).
-# 不进 steer / per-frame 注入: 反转若在中部会破坏 cache 前缀.
-_CTML_MODE_NOTICE = (
-    "You are in CTML mode: your output is parsed as streaming CTML logos, "
-    "not plain conversation."
-)
-
-# dolores 默认 instruction — instruction 四层 (认知/协议/交互礼仪/篇幅控制) 的行为提示.
-# 只放协议 enforce 不了的极简规则 (见 dolores-ego-wiring.md「礼仪守约」结论).
-# 语义基准见同 doc「收敛的设计结论」表 (plain-text=外部信息 / CTML=控制语法+__content__=语音).
-# 待人类架构师定稿, 当前留空.
-_DOLORES_DEFAULT_INSTRUCTION = (
-    ""
-)
+from ._prompts import dolores_inception, dolores_protocol_notice, dolores_terminology
 
 
 class Dolores(Ghost):
@@ -86,21 +73,43 @@ class Dolores(Ghost):
         return self._meta
 
     def system_prompt(self) -> str:
-        """instruction = baseline (MossSystemPrompter.base_instruction) + 原型元信息 + 身份描述 + CTML 模式提示.
+        """instruction = baseline + 原型元信息 + 身份描述 + 术语 + 协议段 + dolores 层.
 
         baseline 来自 factory 从 container 取的 base_instruction (CTML + project + mode).
         ghost 段从结构化 meta 派生, 不写死提示词 — 未来认知从目录构建.
-        CTML 模式提示是静态段 (cache 稳定) — 不进 steer (尾部), 不进 per-frame 注入.
+        术语段/协议段 (fence 语义) 不可配置; dolores 层可经 ego config inception_template 替换.
+        全部是静态段 (cache 稳定) — 不进 steer (尾部), 不进 per-frame 注入.
         """
         parts: list[str] = []
         if self._base_instruction:
             parts.append(self._base_instruction)
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
-        parts.append(_CTML_MODE_NOTICE)
-        if _DOLORES_DEFAULT_INSTRUCTION:
-            parts.append(_DOLORES_DEFAULT_INSTRUCTION)
+        parts.append(dolores_terminology())
+        parts.append(dolores_protocol_notice())
+        parts.append(self._dolores_instruction())
         return "\n\n".join(parts)
+
+    def _dolores_instruction(self) -> str:
+        """dolores 人格/礼仪层 — ego config 有模板文件则替换, 槽位注入运行时路径."""
+        template: str | None = None
+        if self._home is not None:
+            rel = self._load_ego_config().inception_template
+            if rel:
+                path = self._home / rel
+                if path.exists():
+                    template = path.read_text(encoding="utf-8")
+                else:
+                    self.logger.warning(
+                        "inception_template %s not found in ghost home; using default", rel
+                    )
+        env = self._matrix.env if self._matrix is not None else None
+        return dolores_inception(
+            ghost_home=str(self._home) if self._home is not None else "",
+            project_home=str(env.project_path) if env is not None else "",
+            mode_home=str(env.mode_home) if env is not None else "",
+            template=template,
+        )
 
     async def ground_instruction(self) -> str | None:
         """ground 槽位 — 渲染持有的 root ground (ghost_home 认知场) 为文本.

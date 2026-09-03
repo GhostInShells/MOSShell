@@ -85,6 +85,14 @@ class DoloresEgoConfig(BaseModel):
         default="workspace-write",
         description="sandbox 模式: read-only | workspace-write | danger-full-access.",
     )
+    inception_template: str = Field(
+        default="",
+        description=(
+            "instruction 模板文件路径 (相对 ghost home). 只替换 dolores 人格/礼仪层, "
+            "协议段 (fence 语义 + tool 锚点) 不可替换. 空 = 内置默认模板. "
+            "槽位: {ghost_home} / {project_home} / {mode_home}."
+        ),
+    )
 
 
 class DoloresConfig(BaseModel):
