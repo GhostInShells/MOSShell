@@ -3,7 +3,7 @@ title: Moss Openbox Modes
 status: in-progress
 priority: P1
 created: 2026-08-05
-updated: 2026-09-03
+updated: 2026-09-04
 depends: [matrix-manifest-layers, moss-project-ground]
 milestone:
 description: >-
@@ -101,11 +101,25 @@ mode 提供躯体(channel 能力面), ghost 提供大脑, 两者正交。meta �
 
 ## Implementation Notes
 
-- 真实重复点: **6 个 nuclei**(`input/notify/interrupt/command/silent/cell_event`)在三个 mode 的
-  `HOST/nuclei/__init__.py` 逐字节相同。`MOSS.manifests/nuclei` 当前为空, 应填成 canonical。
-- mode 主通道差异在 `src/HOST/channels.py`(用 `.import_channels()` 组装): default=moss_cli /
-  meta=runtime_debug+moss_cli / system_test=matrix_channel+desktop_channel — 现状 ad-hoc, 待按四模式矩阵规整。
-- providers / configs / topics / signals / nuclei 目前三个 mode **完全相同**(均来自项目层 `MOSS.manifests`),
-  无按 mode 区分; mode 层 `src/MATRIX/manifests/` 为空。
-- `system_test` 的 node_paths 多一个 `$MOSS_WORKSPACE/system_test_nodes`(系统测试类 nodes), 是它与前两者的
-  HOST.md 差异点。
+### 本轮已完成 (2026-09-04)
+
+- **canonical 默认内容落到 `ghoshell_moss.matrix.openbox`**（package 级 flat module）:
+  `providers/configs/resources/nuclei/topics/parameters` 6 个，各以 `__all__` 导出。
+  signals 例外——`ghoshell_moss.signals` 已有 `__all__`，直接引用，不进 openbox。
+  判定规则: **有现成 `__all__` 导出 → 直接引用；否则 → openbox 收敛成 canonical `__all__`**。
+- **project 层 `MOSS.manifests/<cat>/` 改为 `__init__.py`(空) + `default.py`**（重导出 openbox 或 ghoshell_moss）。
+  "未改动即自动跟随上游" 由 `import *` + `__all__` 链保证（扫描器 `iter_members(respect_all=True)` 只看 `__dict__`）。
+- **mode 层 `HOST/nuclei|signals|configs` 清空**（6 nuclei + 5 configs + signals re-export 全进 openbox/project）；
+  `MATRIX.manifests/` 7 类目注释改为 "cross-cell … can share"（声明尚未有准入机制，用 share 而非 access）。
+- **三层 manifests 语义澄清并各加 README.md**:
+  project(`MOSS.manifests`, 全模式装线) / matrix(`MATRIX.manifests`, 跨 cell 分享, 跨仓库 node 也生效) / host(`HOST`, 仅 host 节点)。
+- **装线修正**: `ghost_runtime._collect_nuclei_manifests` 补 matrix 层; `manifests_cli` 改走 `project.project_manifests()`
+  抽象 + 三层一致显示（不再直接 `ScannedProjectManifest()`）。
+- **验证通过**: `moss manifests` 各命令三层正确（nuclei 显示 6 个 project 级）、`moss-shell mcp` 启动成功。
+
+### 待办
+
+- `install` mode stub（null providers 等）未建; stubs 四模式矩阵只做了 default。
+- mode 主通道 `channels.py` 仍 ad-hoc（default/meta/system_test 差异未按四模式矩阵规整）。
+- `ProjectManifest.explain()` 硬编码 "Matrix Manifest / MATRIX.manifests" 文本未修正（project 层自描述显示错误）。
+- `system_test` 的 node_paths 多 `$MOSS_WORKSPACE/system_test_nodes`（HOST.md 差异点，未处理）。

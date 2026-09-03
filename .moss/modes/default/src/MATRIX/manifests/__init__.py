@@ -4,4 +4,4 @@
 # Shape matches MOSS.manifests (ProjectManifest), supports: providers, configs,
 # topics, signals, parameters, resources, nuclei.
 #
-# Initial state: all sub-packages empty.  Audio providers go here when ready.
+# Initial state: all sub-packages empty.

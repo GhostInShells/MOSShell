@@ -272,22 +272,31 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         return nuclei_factories.values()
 
     def _collect_nuclei_manifests(self):
-        """收集 matrix 和 mode 两层的 manifests, 用于 nuclei 发现."""
-        # project 层
+        """收集 project / matrix / host 三层的 manifests, 用于 nuclei 发现."""
+        # project 层 (MOSS.manifests — 全模式装线)
         try:
             yield self._moss_runtime.matrix.project.project_manifests()
         except Exception as e:
             self.moss.logger.exception(
-                "%r failed to load matrix manifests, skipping matrix nuclei: %s",
+                "%r failed to load project manifests, skipping project nuclei: %s",
                 self, e
             )
             self._send_error(e, 'moss project manifests error')
-        # mode 层
+        # matrix 层 (MATRIX.manifests — 跨 cell 环境能力)
+        try:
+            yield self._moss_runtime.mode.matrix_manifests()
+        except Exception as e:
+            self.moss.logger.exception(
+                "%s failed to load matrix manifests, skipping matrix nuclei: %s",
+                self, e
+            )
+            self._send_error(e, 'moss matrix manifests error')
+        # host 层 (HOST — host 节点专属)
         try:
             yield self._moss_runtime.mode.manifests()
         except Exception as e:
             self.moss.logger.exception(
-                "%s failed to load mode manifests, skipping mode nuclei: %s",
+                "%s failed to load host manifests, skipping host nuclei: %s",
                 self, e
             )
             self._send_error(e, 'moss mode manifest error')
