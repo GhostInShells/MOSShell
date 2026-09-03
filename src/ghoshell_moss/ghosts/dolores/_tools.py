@@ -1,17 +1,13 @@
-"""Dolores 的强类型 tool 调用模型 — 对齐 dsh_plugin/moss-dolores-ghost-plugin.ts 的 defineTool.
+"""Typed tool-call models for Dolores, aligned with the dsh plugin's defineTool.
 
-镜像 deepseek_harness/types/session_events.py 的 SessionEventModel 判别范式, 但**无泛型基座**:
-每个 tool 类自带 ``from_tool_call(event)`` — 先按函数名判别 (与 plugin defineTool 的
-name 对齐), 名字不符返回 None 不碰 arguments; 匹配才 ``json.loads(arguments)`` 解析成
-强类型字段. 分派处用字面量 ``if x := Tool.from_tool_call(event):`` 链, 不再引入注册表/抽象基座.
-
-字段命名: ``from_tool_call`` 把 ToolCallEvent 的 ``callId`` (dsh camelCase) 搬运到
-本类 ``call_id`` (snake_case), 与 project 常量风格一致.
+Each tool class discriminates by name via its own ``from_tool_call(event)``: a name mismatch returns
+None; a match parses ``json.loads(arguments)`` into strongly-typed fields. ``callId`` (dsh camelCase)
+is moved to ``call_id`` (snake_case).
 """
 
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Awaitable
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from typing_extensions import Self
 
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
@@ -23,30 +19,34 @@ _ResultType = dict | list | str | None
 
 
 class ToolCallResult(BaseModel):
+    """Raw data structure returned to the plugin via the tool-result RPC.
+
+    Maps into the plugin's tool-result interface. The yield tool (the dsh side yields the session
+    awaiting the next moment) does not return through this protocol.
     """
-    tool 通过 rpc 回调 plugin 的原始数据结构.
-    需要将当前数据结构映射成 plugin 对应接口的入参.
-    plugin 侧的 yield tool ( dsh 侧让出会话等待 moss 下一帧 moment) 不通过 tool call result 协议返回.
-    """
+
     call: ToolCallEvent
     result: _ResultType = Field(
-        description="tool call 给模型的返回值. "
+        description="the value returned to the model."
     )
     error: str | None = Field(
         default=None,
-        description="参数请求失败. ",
+        description="parameter failure.",
     )
     moment: Optional[Moment] = Field(
         default=None,
-        description="携带的 moment, 在 plugin 的 rpc 接口返回 call id 对应的 result 后解锁 tool 返回, moment 应该注入."
-                    "moment 注入只走 <moment> (context) 槽位; inputs 只在 thinking/enter 走 steer."
+        description=(
+            "the moment carried back; after the plugin resolves the tool's call id, the moment is "
+            "injected. Moment injection only goes through the <moment> (context) slot; inputs go "
+            "through thinking/enter as steer."
+        ),
     )
 
 
 class ToolCallParameter(BaseModel, ABC):
     tool_call_event: ToolCallEvent | None = Field(
         default=None,
-        description="原始的 tool call, 实例化后必不为空"
+        description="the original tool call; set after construction.",
     )
 
     @classmethod
@@ -56,9 +56,9 @@ class ToolCallParameter(BaseModel, ABC):
 
     @classmethod
     def from_tool_call(cls, event: ToolCallEvent) -> Self | None:
-        """
-        从 tool call event 中构建.
-        :raise ValidationError: 入参构建失败.
+        """Build from a tool-call event; None when the name doesn't match.
+
+        :raise ValidationError: argument parsing failed.
         """
         if event.name != cls.tool_name():
             return None
@@ -100,16 +100,13 @@ class ToolCallParameter(BaseModel, ABC):
         return ToolCallResult(
             call=self.tool_call_event,
             result=result,
-            # moment 在外部决定是否拼装.
+            # moment is attached by the caller.
             moment=None,
         )
 
 
 class FetchNextMomentToolCall(ToolCallParameter):
-    """moss_fetch_next_moment tool — 主动 fetch 下一帧: 产 moment, 返回 {moment_ref} 并注入 context.
-
-    对齐 plugin.ts ``defineTool({ name: 'moss_fetch_next_moment', parameters: {} })``.
-    """
+    """moss_fetch_next_moment — actively fetch the next frame: produce a moment, return {moment_ref} and inject context."""
 
     @classmethod
     def tool_name(cls) -> str:
@@ -117,10 +114,9 @@ class FetchNextMomentToolCall(ToolCallParameter):
 
 
 class WaitNextMomentToolCall(ToolCallParameter):
-    """moss_wait_next_moment (yield) tool — 被动让出, 阻塞等下一帧 moment.
+    """moss_wait_next_moment (yield) — passively yield, block until the next moment.
 
-    对齐 plugin.ts ``defineTool({ name: 'moss_wait_next_moment', parameters: {} })``.
-    控制信号, 不产 ToolCallResult (不走 tool-result RPC) — 见 ToolCallResult docstring.
+    A control signal; produces no ToolCallResult (does not go through the tool-result RPC).
     """
 
     @classmethod
@@ -129,15 +125,14 @@ class WaitNextMomentToolCall(ToolCallParameter):
 
 
 class AppendCtmlToolCall(ToolCallParameter):
-    """moss_append_ctml tool — 追加一段 ctml 到执行, 思维超前于行为 (interleaved).
+    """moss_append_ctml — append CTML to execution, thinking ahead of behavior (interleaved).
 
-    对齐 plugin.ts ``defineTool({ name: 'moss_append_ctml', parameters: { ctml, refresh_meta, wait_done } })``.
-    不产 moment — 产 moment 是 fetch_next_moment 的职责, 两个函数语义不混.
+    Produces no moment — producing a moment is fetch_next_moment's job; the two don't mix.
     """
 
-    ctml: str = Field(default="", description="要执行的 ctml 命令.")
-    refresh_meta: bool = Field(default=False, description="执行前刷新 shell meta (deferred — 当前 no-op).")
-    wait_done: bool = Field(default=False, description="true 等 action 执行完 (wait_action_done), false 只等编译 (wait_compiled).")
+    ctml: str = Field(default="", description="the CTML command to execute.")
+    refresh_meta: bool = Field(default=False, description="refresh shell meta before execution.")
+    wait_done: bool = Field(default=False, description="true waits for action done, false only for compile.")
 
     @classmethod
     def tool_name(cls) -> str:

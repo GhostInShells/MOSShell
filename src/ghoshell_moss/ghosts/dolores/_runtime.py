@@ -31,13 +31,12 @@ from ._prompts import dolores_inception, dolores_protocol_notice, dolores_termin
 
 
 class Dolores(Ghost):
-    """Dolores — 第二个 Ghost 原型运行时 (DSH 推理中枢集成).
+    """Dolores — the second Ghost prototype runtime (DSH reasoning-core integration).
 
-    生命周期里挂 DshLauncher (推理中枢, 经 matrix.processes) + DefaultGroundSet
-    (ghost_home 认知场), 持有 ego (DoloresEgo — 会话/交易窄桥). think() 委托
-    ego.run_thinking() 驱动 dsh 推理, logos 逐段 yield, articulator 本侧管理.
-    交易协议 (thinking/enter B 范式) 见 _run.py + plugin.ts 头注释. 能力演进
-    (Memento / interleaved thinking / ghost 反身 channel / 模型自感知) 逐步接入.
+    Its lifecycle mounts a DshLauncher (reasoning core, via matrix.processes) and a DefaultGroundSet
+    (ghost_home cognitive field), and holds an ego (DoloresEgo — the session/transaction bridge).
+    think() delegates to ego.run_thinking() to drive dsh reasoning, yielding logos segment by segment;
+    the articulator is managed here.
     """
 
     def __init__(
@@ -56,11 +55,11 @@ class Dolores(Ghost):
         self._matrix = matrix
         self._shell = shell
         self._base_instruction = base_instruction
-        # launcher / ground 懒构建 — __init__ 不碰 httpx / matrix.processes / shell (构造无副作用).
+        # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
         self._dsh_launcher: "DshLauncher | None" = None
         self._ground_set: DefaultGroundSet | None = None
         self._root_ground: Ground | None = None
-        # ground 渲染文本缓存 — __aenter__ 里异步渲染, memories() 同步读取.
+        # ground render cache — rendered async in __aenter__, read synchronously by memories().
         self._ground_text: str | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: "DoloresEgo | None" = None
@@ -73,12 +72,13 @@ class Dolores(Ghost):
         return self._meta
 
     def system_prompt(self) -> str:
-        """instruction = baseline + 原型元信息 + 身份描述 + 术语 + 协议段 + dolores 层.
+        """instruction = baseline + prototype meta + identity + terminology + protocol + dolores layer.
 
-        baseline 来自 factory 从 container 取的 base_instruction (CTML + project + mode).
-        ghost 段从结构化 meta 派生, 不写死提示词 — 未来认知从目录构建.
-        术语段/协议段 (fence 语义) 不可配置; dolores 层可经 ego config inception_template 替换.
-        全部是静态段 (cache 稳定) — 不进 steer (尾部), 不进 per-frame 注入.
+        baseline is the base_instruction the factory fetched from the container (CTML + project + mode).
+        The ghost sections are derived from structured meta, not hardcoded — future cognition is built
+        from the directory. Terminology/protocol sections (fence semantics) are not configurable; the
+        dolores layer can be replaced via the ego config's inception_template. All sections are static
+        (cache-stable) — not steered (tail), not injected per frame.
         """
         parts: list[str] = []
         if self._base_instruction:
@@ -91,7 +91,7 @@ class Dolores(Ghost):
         return "\n\n".join(parts)
 
     def _dolores_instruction(self) -> str:
-        """dolores 人格/礼仪层 — ego config 有模板文件则替换, 槽位注入运行时路径."""
+        """The dolores persona/etiquette layer — replaced by a template file if the ego config has one; slots carry runtime paths."""
         template: str | None = None
         if self._home is not None:
             rel = self._load_ego_config().inception_template
@@ -112,10 +112,11 @@ class Dolores(Ghost):
         )
 
     async def ground_instruction(self) -> str | None:
-        """ground 槽位 — 渲染持有的 root ground (ghost_home 认知场) 为文本.
+        """ground slot — render the held root ground (ghost_home cognitive field) to text.
 
-        root ground 在 __aenter__ 打开并长期持有, 保住 snapshot 变更跟踪 (单 owner).
-        由 epoch 周期调用 (Dolores Ego 装线), 本步只备元件, 不主动接入.
+        The root ground is opened and held long-term in __aenter__ to keep snapshot change-tracking
+        (single owner). Called by the epoch cycle; this step only prepares the element, it does not
+        actively wire it.
         """
         if self._root_ground is None:
             return None
@@ -123,20 +124,22 @@ class Dolores(Ghost):
         return str(view)
 
     def memories(self) -> list[Message]:
-        """Ghost 的动态记忆 — ground 渲染为第一条 (存在主义, 最前).
+        """The ghost's dynamic memory — the ground renders first (existential, at the front).
 
-        ground 文本在 __aenter__ 里异步渲染后缓存到 _ground_text; 本方法同步读缓存,
-        供 ego 经闭包在 create_session 时取最新记忆. clone 复用同一闭包共享认知.
+        The ground text is rendered async in __aenter__ and cached to _ground_text; this method reads
+        the cache synchronously, so the ego can fetch the freshest memory via the closure on
+        create_session. Clones share the same closure.
         """
         if self._ground_text:
             return [Message.new(tag="ground").with_content(self._ground_text)]
         return []
 
     async def think(self, thinking: Thinking) -> AsyncIterator[str]:
-        """委托 ego.run_thinking() 驱动 dsh 推理 — 生命周期/收线/CTML 解析全归 run.
+        """Delegate to ego.run_thinking() to drive dsh reasoning — lifecycle/ending/CTML parsing all live in the run.
 
-        本侧只做 async with 边界 + logos 透传 (给 mindflow 广播观测面).
-        异常 (enter/消费/cancel) 经 async with 自然传播, 由 run.__aexit__ 治理.
+        This side only holds the async-with boundary and passes logos through (for the mindflow
+        broadcast observability surface). Errors (enter/consume/cancel) propagate naturally through
+        async-with, governed by run.__aexit__.
         """
         if self._ego is not None:
             async with self._ego.run_thinking(thinking) as run:
@@ -147,9 +150,9 @@ class Dolores(Ghost):
 
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()
-        # 文件 IO 卸载到 thread; session.output 留在主 loop (避免跨线程).
+        # file IO is offloaded to a thread; session.output stays on the main loop (avoid cross-thread).
         action = await asyncio.to_thread(self._sync_stubs)
-        # plugin.ts 每次 override (活跃开发件, 不受 VERSION 门控), 保证最新插件进 ghost home.
+        # always override the plugin stub (active dev artifact, not version-gated) so the latest lands in ghost home.
         await asyncio.to_thread(self._sync_dsh_plugin)
         if action is not None and self._session is not None:
             self._session.output(
@@ -157,19 +160,20 @@ class Dolores(Ghost):
                 f"dolores ghost home {action} (VERSION={self._meta.VERSION})",
                 log=f"dolores stubs {action}",
             )
-        # 先打开并长期持有 root ground (ghost_home 认知场). stubs 同步在前 (GROUND.md 已落),
-        # GroundSet 由 exit stack 管理生命周期; memory 的 ground 段需在 ego 创建前渲染.
+        # open and hold the root ground (ghost_home cognitive field). Stub sync runs first (GROUND.md
+        # already written); the GroundSet lifecycle is managed by the exit stack; the memory ground
+        # section must render before ego creation.
         if self._home is not None:
             self._ground_set = await self._exit_stack.enter_async_context(
                 DefaultGroundSet(workspace_root=self._home)
             )
             self._root_ground = await self._ground_set.open(self._home)
-        # 渲染 ground 文本, 缓存供 memories() 同步读取 (ego create_session 经闭包消费).
+        # render the ground text, cached for synchronous read by memories() (ego create_session consumes it via closure).
         self._ground_text = await self.ground_instruction()
         if self._matrix is not None:
             await self._exit_stack.enter_async_context(self._dsh())
-            # ego 装线: 创建并持有 ego session (经 plugin RPC), 晚于 dsh 就绪.
-            # 依赖倒置: ego 不 back-ref ghost, 运行上下文经 ctx/launcher/memories 闭包注入.
+            # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
+            # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
             from ._ego import DoloresEgo, DoloresEgoContext
             from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
 
@@ -189,7 +193,7 @@ class Dolores(Ghost):
                     memories=self.memories,
                 )
             )
-            # 绑定自醒 signal 出口到 MOSS session — matrix.session.add_signal 路由到 mindflow.
+            # bind the self-wake signal outlet to the MOSS session — matrix.session.add_signal routes to mindflow.
             self._ego.bind_signal_broadcast(self._matrix.session.add_signal)
         return self
 
@@ -198,18 +202,18 @@ class Dolores(Ghost):
             self._facade.discard()
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
-    # ── dsh 启动 ───────────────────────────────────
+    # ── dsh startup ─────────────────────────────────
 
     @property
     def dsh_launcher(self) -> "DshLauncher":
-        """dsh launcher 句柄 — 未进入生命周期时抛清晰错误."""
+        """dsh launcher handle — raises a clear error before startup."""
         if self._dsh_launcher is None:
             raise RuntimeError("dsh launcher not started. Call __aenter__ first.")
         return self._dsh_launcher
 
     @property
     def logger(self) -> logging.Logger:
-        """MOSS runtime logger — 经 matrix (从属当前节点) 拿; 无 matrix 时 fallback."""
+        """MOSS runtime logger — taken via matrix (current node); falls back when there is no matrix."""
         if self._matrix is not None:
             return self._matrix.logger
         return get_moss_logger()
@@ -247,13 +251,13 @@ class Dolores(Ghost):
                 log=f"dsh exited code {exit_info.exit_code}: {exit_info.stderr}",
             )
 
-    # ── stubs 同步 ─────────────────────────────────
+    # ── stub sync ───────────────────────────────────
 
     def _sync_stubs(self) -> str | None:
-        """同步骨架到 ghost home. 返回 'init' | 'override' | None(no-op).
+        """Sync the skeleton into ghost home. Returns 'init' | 'override' | None (no-op).
 
-        VERSION 一致时不动; 缺失时 init, 不一致时 override (全量覆盖骨架文件,
-        不触碰 home 里的动态数据文件). 同步时 materialize dirs + dsh_home.
+        No-op when VERSION matches; init when missing, override when mismatched (fully overwrites the
+        skeleton files, never touches dynamic data files in home). Also materializes dirs + dsh_home.
         """
         if self._home is None:
             return None
@@ -278,7 +282,7 @@ class Dolores(Ghost):
         return DoloresConfig(**data)
 
     def _write_version(self, version: str) -> None:
-        """写回 version (stubs 同步标记), 其余配置从当前文件重载后原样保留."""
+        """Write back the version (stub-sync marker); the rest of the config is reloaded from the current file and kept as-is."""
         config = self._load_config()
         config.version = version
         marker = self._home / ".dolores.yml"
@@ -306,10 +310,10 @@ class Dolores(Ghost):
         )
 
     def _sync_dsh_plugin(self) -> None:
-        """复制 plugin.ts 到 ghost home — 每次 override, 不随 VERSION 门控.
+        """Copy the plugin stub into ghost home — always override, not version-gated.
 
-        plugin.ts 是活跃开发件 (dsh 内核特权桥), 改动频率远高于骨架文件;
-        骨架 (GROUND.md / .dolores.yml) 才版本门控, plugin 每次启动拉最新.
+        The plugin is an active dev artifact (dsh kernel-privilege bridge) that changes far more often
+        than the skeleton files, which are version-gated; the plugin is pulled fresh on every startup.
         """
         if self._home is None:
             return

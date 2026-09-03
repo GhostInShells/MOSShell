@@ -1,16 +1,17 @@
-"""Dolores instruction 文本层 — 术语 + 协议段 (不可配置) + 默认模板 (可配置替换).
+"""Dolores instruction text layer — terminology + protocol sections (fixed) + default template (replaceable).
 
-分层原则 (dolores-ego-wiring 讨论结论):
-- terminology = 词汇约定: Ghost / Shell / intelligence entity 的项目级公共定义.
-  不可替换 (换掉后整套 instruction 语义漂移).
-- protocol notice = 神经系统: <|CTML|> fence 语义 + 三层文本语义 + interleaved tool
-  锚点. 用户模板不可替换 — 丢了 fence 约定 ghost 直接哑掉.
-- instruction template = 人格与礼仪: 架构图 / 三 home / 双工叙事 / Matrix / 礼仪 /
-  ADAPT 建议. 可经 ego config ``inception_template`` (ghost home 相对路径) 整体
-  替换, 槽位 {ghost_home} / {project_home} / {mode_home} 由运行时注入.
+Layer split:
 
-CTML meta instruction (moss ctml read) 在 base_instruction 已注入, 本层不重复
-时序原则 / observe 纪律 / red lines — 只承担 dolores 特有语义.
+- terminology = shared vocabulary: project-level public definitions of Ghost / Shell / intelligence
+  entity. Not replaceable (replacing it drifts the whole instruction's semantics).
+- protocol notice = the nervous system: <|CTML|> fence semantics + the three text layers + interleaved
+  tool anchors. Not replaceable — losing the fence convention mutes the ghost.
+- instruction template = persona & etiquette: architecture diagram / three homes / duplex narrative /
+  Matrix / etiquette / suggestions. Replaceable in whole via the ego config's ``inception_template``,
+  with {ghost_home} / {project_home} / {mode_home} injected at runtime.
+
+The CTML meta instruction is already injected in base_instruction; this layer does not repeat its timing
+principles / observe discipline / red lines — it only carries dolores-specific semantics.
 """
 
 from __future__ import annotations
@@ -24,14 +25,15 @@ __all__ = [
 
 
 def dolores_terminology() -> str:
-    """词汇约定段 — 不可配置. 项目公共术语的最底层定义, 供后续所有段引用."""
+    """Terminology section — fixed. The lowest-level project-wide vocabulary, referenced by all later sections."""
     return _TERMINOLOGY
 
 
 def dolores_protocol_notice() -> str:
-    """协议段 — 不可配置. fence 语义是 dolores 与 CTML meta instruction 的关键差异:
-    meta instruction 假设整个输出流都是 CTML, 而 dolores 反转 — plain text 是
-    DeepSeek harness web view 上的界面文本, fence 内才进 moss 流式解释器."""
+    """Protocol section — fixed. The fence semantics are dolores's key difference from the CTML meta
+    instruction: the meta instruction assumes the whole output stream is CTML, while dolores inverts
+    it — plain text is UI text on the dsh web view, and only the fenced content enters the moss
+    streaming interpreter."""
     return _PROTOCOL_NOTICE
 
 
@@ -177,7 +179,7 @@ keep reshaping.
 
 
 class _SafeSlots(dict):
-    """format_map 容错 — 用户模板里的未知槽位原样保留, 不抛 KeyError."""
+    """format_map tolerance — unknown slots in a user template are kept as-is, no KeyError."""
 
     def __missing__(self, key: str) -> str:
         return "{" + key + "}"
@@ -190,10 +192,10 @@ def dolores_inception(
         mode_home: str,
         template: str | None = None,
 ) -> str:
-    """渲染 dolores instruction — template 为 None 用内置默认模板.
+    """Render the dolores instruction — None template uses the built-in default.
 
-    槽位经 format_map 注入; 用户模板中的未知 ``{...}`` 原样保留 (容错,
-    不因模板里的花括号炸掉 session 创建).
+    Slots are injected via format_map; unknown ``{...}`` in a user template are kept as-is (tolerant,
+    so braces in the template don't break session creation).
     """
     text = template if template is not None else DOLORES_INSTRUCTION_TEMPLATE
     return text.format_map(_SafeSlots(

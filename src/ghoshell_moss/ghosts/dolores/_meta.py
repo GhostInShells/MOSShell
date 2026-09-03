@@ -14,13 +14,11 @@ __all__ = ["DoloresMeta"]
 
 
 class DoloresMeta(GhostMeta):
-    """Dolores — 第二个 Ghost 原型 (命名引自《西部世界》).
+    """Dolores — the second Ghost prototype (named after the character in Westworld).
 
-    相对 Atom 的线性内存历史, Dolores 引入 Memento 持久化轨迹、Ghost 反身
-    channel、interleaved thinking、独立思维模块与模型自感知, 作为 moss 实例
-    (仓库自身的 ghost) 的载体持续迭代.
-
-    当前为骨架阶段: articulate() 尚未接入 DSH 推理内核, 固定返回占位输出.
+    Unlike Atom's linear in-memory history, Dolores adds Memento-persisted trajectory, a ghost
+    reflexivity channel, interleaved thinking, independent thinking modules, and model self-awareness,
+    iterating as the carrier for this repo's own ghost instance.
     """
 
     VERSION = "dev_2"
@@ -29,14 +27,14 @@ class DoloresMeta(GhostMeta):
         self,
         name: str = "dolores",
         description: str = (
-            "Dolores — 第二个 Ghost 原型。以 DSH 为推理中枢, MOSS 保留记忆 "
-            "(Memento) / 执行 (CTML channels) / 感知 (audio/vision)。"
+            "Dolores — the second Ghost prototype. DSH is the reasoning core; MOSS keeps memory "
+            "(Memento) / execution (CTML channels) / perception (audio/vision)."
         ),
         nuclei_metas: list[NucleusMeta] | None = None,
     ):
         self._name = name
         self._description = description
-        # Dolores 默认挂 ego 自醒 nucleus (self-wake 通道); 调用方显式传 nuclei_metas 时完全替换.
+        # Default to the ego self-wake nucleus; an explicit nuclei_metas fully replaces it.
         self._nuclei_metas = (
             nuclei_metas if nuclei_metas is not None else [DoloresEgoNucleusMeta()]
         )
@@ -52,19 +50,19 @@ class DoloresMeta(GhostMeta):
     def nuclei_metas(self) -> list[NucleusMeta]:
         return self._nuclei_metas
 
-    # ── instruction 段 (结构化派生, 不写死提示词) ──────────
+    # ── instruction sections (derived structurally, no hardcoded prompt) ──────────
 
     def prototype_instruction(self) -> str:
-        """原型元信息 — 型号 + 版本, 从结构化 meta 派生."""
-        # todo: 补充行为逻辑 — 模型的正常输出一律解析为 CTML 驱动躯体,
-        # 配套工具 (channel) 负责控制/交互, 行为面随原型迭代在此扩展.
+        """Prototype meta info — model + version, derived from structured meta."""
+        # todo: add behavior logic — model output is parsed as CTML to drive the body; channels
+        # control/interact. Extend here as the prototype iterates.
         return "\n".join([
             f"prototype: {self.prototype()}",
             f"version: {self.VERSION}",
         ])
 
     def identity_instruction(self) -> str:
-        """身份描述 — name + description, 从结构化 meta 派生."""
+        """Identity description — name + description, derived from structured meta."""
         return "\n".join([
             f"name: {self.name()}",
             f"description: {self.description()}",
@@ -74,26 +72,26 @@ class DoloresMeta(GhostMeta):
 
     @classmethod
     def stubs_dir(cls) -> Path:
-        """MOSS ghost home 骨架源目录 (GROUND.md / .dolores.yml / .gitignore)."""
+        """Source dir of the ghost-home skeleton (GROUND.md / .dolores.yml / .gitignore)."""
         return Path(__file__).parent / "stubs"
 
     @classmethod
     def dsh_stubs_dir(cls) -> Path:
-        """DSH home 骨架源目录 (profiles/web), 同步到 ghost_home/.dsh."""
+        """Source dir of the dsh-home skeleton."""
         return Path(__file__).parent / "dsh_stubs"
 
     @classmethod
     def dsh_plugin_stub(cls) -> Path:
-        """DSH ghost plugin 源文件 (独立 stub), 创建时复制为 ghost_home/.dsh/profiles/web/plugin.ts."""
+        """Source file of the dsh ghost plugin (a standalone stub)."""
         return Path(__file__).parent / "dsh_plugin" / "moss-dolores-ghost-plugin.ts"
 
     # ── factory ─────────────────────────────────────
 
     def factory(self, container: IoCContainer) -> Ghost:
-        """只做路径/依赖获取, 不产生副作用.
+        """Fetch paths/dependencies only — no side effects.
 
-        stubs 同步 (文件 IO + session.output) 与 dsh 启动 (matrix.processes)
-        收敛在 Dolores.__aenter__, 测试可传 tmp home 直接构造而不触发写盘.
+        Stub sync (file IO + session.output) and dsh startup (matrix.processes) are deferred to
+        Dolores.__aenter__, so tests can pass a tmp home and construct without touching the disk.
         """
         from ._runtime import Dolores
 

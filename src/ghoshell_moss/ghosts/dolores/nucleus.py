@@ -1,12 +1,8 @@
-"""DoloresEgoNucleus — ego 自醒 nucleus (最小流程切片).
+"""DoloresEgoNucleus — the ego self-wake nucleus.
 
-特化 nucleus: 接收 Dolores Ego 的 turn/start 监听打来的自醒 signal, 每封产出一个
-``Priority.INFO`` / 默认 mode (正常仲裁) / 空 message body 的 impulse, 唤醒静默的
-mindflow 走一轮正常挑战.
-
-当前只验证「signal → nucleus → impulse」链路, 消息体留空, 后续再织入轨迹影像等物料.
-与 silent_nucleus 的区别: silent 是低污染 buffer 聚合 (mode=silent, 不接管 attention),
-本 nucleus 是一次性自醒 (mode 默认, 走正常仲裁) — 都起"唤醒"作用, 但语义不同.
+A specialized nucleus: it receives self-wake signals from the Dolores ego's turn/start watcher and
+produces a low-key BACKGROUND challenge impulse with an empty body; when attended, the impulse is
+upgraded to INFO to wake a silent mindflow into a normal challenge round.
 """
 
 from collections.abc import Iterable
@@ -37,14 +33,14 @@ __all__ = [
 ]
 
 NAME = "dolores_ego_nucleus"
-"""nucleus 名 — 也作为 impulse 的 source 名."""
+"""nucleus name — also used as the impulse source name."""
 
 SIGNAL_NAME = "dolores/ego"
-"""自醒通道 signal 名 — ego 的 turn/start 监听发出该 signal."""
+"""self-wake signal name — emitted by the ego's turn/start watcher."""
 
 
 class DoloresEgoSignalMeta(SignalMeta):
-    """自醒通道 signal meta — 一次 turn/start 观察即一封自醒 signal."""
+    """Self-wake channel signal meta — one turn/start observation is one self-wake signal."""
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -56,7 +52,7 @@ class DoloresEgoSignalMeta(SignalMeta):
 
 
 class DoloresEgoNucleus(Nucleus):
-    """自醒 nucleus — 发 BACKGROUND 挑战包 (发完丢), attended 加工成 INFO 运行包唤醒 attention."""
+    """Self-wake nucleus — emits a BACKGROUND challenge (fire-and-forget); attended upgrades it to INFO to wake attention."""
 
     NAME = NAME
 
@@ -64,7 +60,7 @@ class DoloresEgoNucleus(Nucleus):
         self,
         *,
         name: str = NAME,
-        description: str = "wake moss when the dolores ego agent is running",
+        description: str = "wake the ghost when the dolores ego agent is running",
         logger: LoggerItf | None = None,
     ):
         self._name = name
@@ -107,26 +103,26 @@ class DoloresEgoNucleus(Nucleus):
             return
         if signal.name != self._target_signal:
             return
-        # 挑战包: BACKGROUND — 低调, 只在 mindflow idle 时 initial 成功; 有 attention 时 suppress.
+        # challenge: BACKGROUND — low-key, only wins initial when mindflow is idle; suppressed when there is attention.
         self._index += 1
         self._impulse = Impulse(
             source=self._name,
             source_idx=self._index,
             id=signal.id,
             priority=Priority.BACKGROUND,
-            messages=[],  # 纯空 body — 处理逻辑在 thinking/enter 层定义.
-            description="",  # 自醒通道, 无摘要
-            complete=True,  # mode 默认空 = 正常仲裁 (非 silent)
+            messages=[],  # empty body — handling logic is defined at the thinking/enter layer.
+            description="",  # self-wake channel, no summary
+            complete=True,  # default (empty) mode = normal arbitration (not silent)
         )
         if self._notify_cb is not None:
             self._notify_cb(self._impulse)
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # 发完丢: 抢占失败即丢, 不 reraise, 不做冷静期.
+        # fire-and-forget: dropped on preemption failure — no reraise, no cooldown.
         return
 
     def attended(self, impulse: Impulse) -> Impulse | None:
-        # 运行包: 抬到 INFO (正常运行强度), 区别于挑战用的 BACKGROUND. 纯空 body 保留.
+        # running package: upgraded to INFO (normal run strength), distinct from the BACKGROUND challenge. Empty body kept.
         if not self.is_running():
             return None
         return impulse.model_copy(update={"priority": Priority.INFO})
@@ -135,7 +131,7 @@ class DoloresEgoNucleus(Nucleus):
         if self._impulse is None:
             return None
         impulse = self._impulse
-        self._impulse = None  # 发完丢: peek 即清, 一次消费不保留 cache
+        self._impulse = None  # fire-and-forget: peek clears; single-consumption, no cache.
         if no_stale and impulse.is_stale():
             return None
         return impulse
@@ -152,13 +148,13 @@ class DoloresEgoNucleus(Nucleus):
 
 
 class DoloresEgoNucleusMeta(NucleusMeta):
-    """Factory meta — 让 ``moss manifests nuclei`` 可发现 dolores ego 自醒 nucleus."""
+    """Factory meta — makes the ego self-wake nucleus discoverable via ``moss manifests nuclei``."""
 
     def __init__(
         self,
         *,
         name: str = NAME,
-        description: str = "wake moss when the dolores ego agent is running",
+        description: str = "wake the ghost when the dolores ego agent is running",
     ):
         self._name = name
         self._description = description
@@ -183,7 +179,7 @@ def new_dolores_ego_signal(
     description: str = "",
     hint: str = "",
 ) -> Signal:
-    """Helper — 构造一封自醒 signal, 供 ego 的 turn/start 监听发出."""
+    """Helper — build a self-wake signal for the ego's turn/start watcher to emit."""
     return DoloresEgoSignalMeta().to_signal(
         *messages,
         description=description,
