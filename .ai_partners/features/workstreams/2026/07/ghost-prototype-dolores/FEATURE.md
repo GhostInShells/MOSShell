@@ -64,7 +64,6 @@ DSH 推理中枢已接线，Dolores 的 articulate 由 DSH agent-loop 驱动，M
 - **Ghost 反身 channel** — 以 `'ghost'` 名注册 channel，是 ghost 感知/操纵自身的唯一入口，默认挂认知场。
 - **独立思维模块** — 并行化身（fork）+ 关键帧自测（checkpoint self-eval）。
 - **模型自感知切换** — `ghost.model` channel 暴露 current/list/switch-model/window-status。目前只拉当前模型配置。
-- **ego-wiring bug 清单** — facade-delta 未生效、baseline 污染、yield moment_id 等，见 [dolores-ego-wiring.md](dolores-ego-wiring.md)。
 
 ## Open Problems
 

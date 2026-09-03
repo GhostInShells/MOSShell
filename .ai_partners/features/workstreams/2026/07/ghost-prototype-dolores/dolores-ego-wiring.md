@@ -18,14 +18,16 @@
 
 ## Bug 清单
 
-| # | 问题 | 归属 | 状态 |
-|---|---|---|---|
-| 1 | 回声全量重渲染（facade-delta 未生效） | shell-trajectory | 立 bug + 独立单测 |
-| 2 | baseline `<key>value</key>` 渲染污染 | dolores epoch | 修（改渲染 + value 转义） |
-| 3 | yield 返回 "ok" 哑载荷 | dolores ego | 改 moment_id |
-| 4 | fetch_next_moment / wait_next_moment 词汇（轴应是 when 非 who） | dolores tools | 改 docstring |
-| 5 | "thinking" 占位符泄漏 | dolores ego | 删/改 |
-| 6 | dsh UI 生命周期（消息被吞） | dsh-fusion | 查（疑似 epoch/enter 引入） |
-| 7 | exit 失败闸门残留 | dolores ego | 待定 |
-| 8 | inputs_messages 不一致 | dolores ego | 验证 |
-| 9 | observe 镜像风险 | dolores tools | 验证 |
+> 第一轮 dogfood 产出的 bug，多数已在后续 commit 修复。状态以代码为准，勿把本表当待办。
+
+| # | 问题 | 状态 |
+|---|---|---|
+| 1 | 回声全量重渲染（facade-delta 未生效） | 已修 `2e57a8f8` |
+| 2 | baseline `<key>value</key>` 渲染污染 | 记录错误——key 作 tag 经讨论判定正确，无需改 |
+| 3 | yield 返回 "ok" 哑载荷 | 已修 `59f13736`+`ab6aaac1`（moment index 替代 uuid） |
+| 4 | fetch_next_moment / wait_next_moment 词汇（when vs who） | 已修 `ab6aaac1`（typed tool surface） |
+| 5 | "thinking" 占位符泄漏 | 已修 |
+| 6 | dsh UI 生命周期（消息被吞） | 已修 `ea90993a`（pre-step never rejects） |
+| 7 | exit 失败闸门残留 | 已修 `ea90993a`（pre-step gate 重构） |
+| 8 | inputs_messages 不一致 | 已修（复用 `inputs_messages(with_command_executing=False)`，executing 归 context） |
+| 9 | observe 镜像风险 | 已修 `59f13736`（moment index 帧带序号） |
