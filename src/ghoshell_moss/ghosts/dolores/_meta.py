@@ -30,10 +30,13 @@ class DoloresMeta(GhostMeta):
             "Dolores — the second Ghost prototype. DSH is the reasoning core; MOSS keeps memory "
             "(Memento) / execution (CTML channels) / perception (audio/vision)."
         ),
+        identity: str | None = None,
         nuclei_metas: list[NucleusMeta] | None = None,
     ):
         self._name = name
         self._description = description
+        # optional one-line social identity ("how others know it"); None means no identity line.
+        self._identity = identity
         # Default to the ego self-wake nucleus; an explicit nuclei_metas fully replaces it.
         self._nuclei_metas = (
             nuclei_metas if nuclei_metas is not None else [DoloresEgoNucleusMeta()]
@@ -62,11 +65,12 @@ class DoloresMeta(GhostMeta):
         ])
 
     def identity_instruction(self) -> str:
-        """Identity description — name + description, derived from structured meta."""
-        return "\n".join([
-            f"name: {self.name()}",
-            f"description: {self.description()}",
-        ])
+        """Identity section — name + optional identity line + technical description."""
+        lines = [f"name: {self.name()}"]
+        if self._identity:
+            lines.append(f"identity: {self._identity}")
+        lines.append(f"description: {self.description()}")
+        return "\n".join(lines)
 
     # ── stubs / dsh home ────────────────────────────
 
