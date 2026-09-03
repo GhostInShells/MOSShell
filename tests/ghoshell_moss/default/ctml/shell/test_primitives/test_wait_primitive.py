@@ -85,7 +85,7 @@ async def test_wait_primitive():
 @pytest.mark.asyncio
 async def test_shell_wait_talk():
     speech = MockSpeech()
-    shell = new_ctml_shell(speech=speech)
+    shell = new_ctml_shell(speech=speech, speech_as_content_command=True)
     async with shell:
         async with await shell.interpreter() as interpreter:
             for c in "hello world":

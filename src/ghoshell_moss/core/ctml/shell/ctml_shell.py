@@ -58,6 +58,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             meta_instruction: str | None = None,
             refresh_moss_static: bool = True,
             capture_errors_on_exit: bool = False,
+            speech_as_content_command: bool = False,
     ):
         self._name = name
         self._desc = description
@@ -85,6 +86,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
                     self._main_channel.build.add_command(primitive)
 
         self._speech: Speech = speech
+        self._speech_as_content_command = speech_as_content_command
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
         self._clearing_task: asyncio.Future[None] | None = None
 
@@ -283,15 +285,15 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 self._container.set(Speech, speech)
             self._speech = speech
 
-        # 注册 __content__ 内核命令（shell 始终拥有说话能力）
-        content_cmd = build_content_command(self._speech)
-        self.main_channel.build.add_command(content_cmd, override=False)
+        if self._speech_as_content_command:
+            content_cmd = build_content_command(self._speech)
+            self.main_channel.build.add_command(content_cmd, override=False)
 
-        await self._speech.start()
-        try:
+        if self._speech.is_running():
             yield
-        finally:
-            await self._speech.close()
+        else:
+            async with self._speech:
+                yield
 
     @contextlib.asynccontextmanager
     async def _runtime_context_manager(self):
@@ -737,6 +739,7 @@ def new_ctml_shell(
         meta_instruction: str | None = None,
         primitives: list[str | Command] | None = None,
         capture_errors_on_exit: bool = False,
+        speech_as_content_command: bool = False,
 ) -> CTMLShell:
     """系统默认提供的 shell"""
     return CTMLShell(
@@ -750,6 +753,7 @@ def new_ctml_shell(
         primitives=primitives,
         meta_instruction=meta_instruction,
         capture_errors_on_exit=capture_errors_on_exit,
+        speech_as_content_command=speech_as_content_command,
     )
 
 

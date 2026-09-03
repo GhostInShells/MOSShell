@@ -31,7 +31,7 @@ async def test_shell_with_output_channel_in_wait():
 @pytest.mark.asyncio
 async def test_shell_speech_baseline_prepare():
     speech = MockSpeech(typing_sleep=0.0)
-    shell = new_ctml_shell(speech=speech)
+    shell = new_ctml_shell(speech=speech, speech_as_content_command=True)
     a_chan = new_channel(name="a")
 
     @a_chan.build.command()
@@ -139,7 +139,7 @@ async def test_shell_speech_baseline():
 @pytest.mark.asyncio
 async def test_shell_speech_10_times():
     speech = MockSpeech(typing_sleep=0.0)
-    shell = new_ctml_shell(speech=speech)
+    shell = new_ctml_shell(speech=speech, speech_as_content_command=True)
     a_chan = new_channel(name="a")
 
     @a_chan.build.command()

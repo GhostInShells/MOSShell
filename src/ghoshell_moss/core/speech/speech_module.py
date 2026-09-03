@@ -6,39 +6,26 @@ from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
 from ghoshell_moss.contracts.speech import Speech, SpeechStream, TTSSpeech
 from ghoshell_moss.core.speech.null import NullSpeech
-from ghoshell_moss.topics import SpeechTopic
-from ghoshell_moss.core.topic import Publisher
 
 
-def build_content_command(speech: Speech) -> Command:
-    """构建 __content__ 内核命令。Shell 始终拥有此命令，无论 speech 类型。"""
-    return _SpeechCommandFactory(speech).build_content_command()
+def build_content_command(speech: Speech, name: str = "__content__") -> Command:
+    """Build a speech command from a Speech instance (defaults to `__content__`)."""
+    return _SpeechCommandFactory(speech).build_content_command(name=name)
 
 
 class _SpeechCommandFactory:
-    """从 Speech 实例构建 Command 对象的工厂。
+    """Factory that builds Command objects from a Speech instance.
 
-    将 command 构建逻辑从 contracts 层移到 core/speech 层。
+    Moved the command-building logic from the contracts layer to core/speech.
     """
 
-    def __init__(
-            self,
-            speech: Speech | TTSSpeech,
-            *,
-            role: str = '',
-            name: str = '',
-            publisher: Publisher[SpeechTopic] | None = None,
-    ):
+    def __init__(self, speech: Speech | TTSSpeech):
         self._speech = speech
-        self._role = role
-        self._name = name
-        self._publisher = publisher
 
-    def build_content_command(self) -> Command:
+    def build_content_command(self, name: str = "__content__") -> Command:
         speech = self._speech
 
         async def _feed_stream(stream: SpeechStream, deltas):
-            content = ''
             try:
                 if not speech.is_running():
                     return
@@ -48,17 +35,9 @@ class _SpeechCommandFactory:
                         has_first_chunk = True
                         await stream.start_synthesis()
                     stream.feed(chunk)
-                    content += chunk
                 stream.commit()
             except asyncio.CancelledError:
                 await stream.close()
-            finally:
-                if self._publisher:
-                    self._publisher.pub(SpeechTopic(
-                        speaker_name=self._name,
-                        role=self._role,
-                        text=content,
-                    ))
 
         async def _content_partial(chunks__):
             if not speech.is_running():
@@ -69,7 +48,8 @@ class _SpeechCommandFactory:
             return [], {"chunks__": stream}
 
         async def __content__(chunks__) -> None:
-            """speak chunks with your voice"""
+            """Speak the chunks with your voice. The content becomes spoken audio —
+            avoid visually-oriented text (tables, special symbols, markdown) as speech content."""
             if not speech.is_running():
                 return None
             if not isinstance(chunks__, SpeechStream):
@@ -81,7 +61,7 @@ class _SpeechCommandFactory:
             finally:
                 await chunks__.close()
 
-        return PyCommand(func=__content__, partial=_content_partial, name="__content__", blocking=True)
+        return PyCommand(func=__content__, partial=_content_partial, name=name, blocking=True)
 
     def build_say_command(self) -> Command:
         tts_speech: TTSSpeech = self._speech
@@ -99,15 +79,15 @@ class _SpeechCommandFactory:
             tone_descriptions_str = ";".join(tone_descriptions)
 
             return (
-                f"使用指定的声音状态说话. 当它在 __main__ channel 时, 默认可以省略. \n"
-                f":param voice: 声音的速度, 音调等. json 结构, json schema 是 {voice_schema_str}\n "
-                f"  你当前的声音状态是: {json.dumps(current_voice, ensure_ascii=False)}.\n"
-                f"  使用 CTML 调用时, voice 必须是 JSON 字符串, 例如: voice:dict=\"{{'speed': 1.0, 'pitch': 'high'}}\"\n"
-                f":param as_default: 将本轮设置的声音状态变成默认.\n"
-                f":param chunks__: 你说话的文本内容. \n"
-                f":param tone: 切换使用的音色. 默认为当前音色\n"
-                f"  当前的音色是 `{current_tone}`"
-                f"  当前可以使用的音色: {tone_descriptions_str}\n"
+                f"Speak with the specified voice state. The content becomes spoken audio — avoid visually-oriented text (tables, special symbols) as speech content.\n"
+                f":param voice: Speed, pitch, etc. of the voice. JSON structure, schema is {voice_schema_str}\n"
+                f"  Your current voice state is: {json.dumps(current_voice, ensure_ascii=False)}.\n"
+                f"  When calling via CTML, voice must be a JSON string, e.g. voice:dict=\"{{'speed': 1.0, 'pitch': 'high'}}\"\n"
+                f":param as_default: Make the voice state set in this turn the default.\n"
+                f":param chunks__: The text content you speak.\n"
+                f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"
+                f"  Current tone is `{current_tone}`."
+                f"  Available tones: {tone_descriptions_str}\n"
             )
 
         async def say_partial(
@@ -153,29 +133,16 @@ class _SpeechCommandFactory:
 
 
 class SpeechChannelModule(ChannelModule):
-    """TTS 语音能力模块。
+    """TTS speech capability module.
 
-    可配置注册 content：
-    - register_content: 注册 __content__ 内核命令（默认 False）
-
-    Speech 实例由外部注册到 IoC 容器。on_startup 时通过 CommandUtil 获取。
+    The Speech instance is registered to the IoC container externally.
+    Fetched via CommandUtil on startup.
     """
 
-    def __init__(
-            self,
-            *,
-            register_content: bool = False,
-            role: str = 'ghost',
-            name: str = '',
-            publishing: bool = False,
-    ):
+    def __init__(self, *, register_content_command: bool = False):
         self._speech: Speech | None = None
         self._own_commands = {}
-        self._register_content = register_content
-        self._role = role
-        self._name = name
-        self._publishing = publishing
-        self._publisher: Publisher[SpeechTopic] | None = None
+        self._register_content_command = register_content_command
 
     def name(self) -> str:
         return "speech"
@@ -186,26 +153,18 @@ class SpeechChannelModule(ChannelModule):
     async def on_startup(self) -> None:
         if CommandUtil.enabled():
             self._speech = CommandUtil.get_contract(Speech)
-            if self._publishing:
-                self._publisher = CommandUtil.topic_publisher(SpeechTopic)
-                await self._publisher.__aenter__()
         self._speech = self._speech or NullSpeech()
-        factory = _SpeechCommandFactory(
-            self._speech,
-            role=self._role,
-            name=self._name,
-            publisher=self._publisher,
-        )
+        factory = _SpeechCommandFactory(self._speech)
         commands = {}
-        if self._register_content:
-            cmd = factory.build_content_command()
-            commands[cmd.name()] = cmd
         if isinstance(self._speech, TTSSpeech):
             cmd = factory.build_say_command()
+        else:
+            cmd = factory.build_content_command(name="say")
+        commands[cmd.name()] = cmd
+        if self._register_content_command:
+            cmd = factory.build_content_command()
             commands[cmd.name()] = cmd
         self._own_commands = commands
 
     async def on_close(self) -> None:
         self._speech = None
-        if self._publisher:
-            await self._publisher.__aexit__(None, None, None)

@@ -65,7 +65,7 @@ class SpeechChannel(Channel):
         channel.build.close(self._speech.close)
 
         channel.with_module(
-            SpeechChannelModule(register_content=True)
+            SpeechChannelModule(register_content_command=True)
         )
 
         return channel.bootstrap(container=container)

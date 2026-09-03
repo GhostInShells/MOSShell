@@ -5,12 +5,11 @@ description: Speech 体系治理：解耦 commands 权责泄漏，player 多后�
   logos stream 可选的跨进程流式。
 milestone: null
 priority: P2
-status: dropped
-status_note: Phase 1 解耦+Phase 2 player 轻量化+Phase 5 大半已实装; 后半 (多 provider/降级) 未完成.
-  说侧治理由 speech-protocol-alignment 承接, 输入侧见 voice-input-state-machine. D1-D9 决策保留可复用.
-  2026-08-11 清理改 dropped
+status: in-progress
+status_note: 重开承载 __content__ 可选化：D10 修正 D1（Shell 不再默认注入 __content__），说侧文本广播废弃 SpeechTopic
+  publisher 路径，SpeechTopic 需重设计。
 title: Speech Governance — 解耦、多后端、容错降级
-updated: '2026-08-11'
+updated: '2026-09-04'
 ---
 
 # Speech Governance
@@ -301,16 +300,11 @@ class FallbackSpeech(Speech):
 
 **Why**: 容错逻辑集中在 wrapper 中，不污染每个具体实现。MockSpeech 是永远可用的最终兜底。
 
-### D5: 暂不做跨进程 speech (Out of Scope)
+### D5: 跨进程 speech 文本广播 (Out of Scope → 并入 D9)
 
-**决策**: Session logos stream 用于跨进程 speech 流式传输是合理方向，但本轮不实现。
-
-**Why**:
-- 第一版先完成解耦 + player/provider 治理，变更面已经很大
-- 跨进程 speech 需要定义额外的 stream 协议（音频帧格式、时序同步、背压），是一个独立设计问题
-- 当前优先级：让 speech 在单进程中正确、可靠、可扩展地工作
-
-**2026-05-29 更新**: D5 转为 Phase 5 的一部分。不再做跨进程音频流式，而是在 `build_content_command` 中懒获取 Session，通过 `pub_stream_delta(SPEECH_KEY, text)` 推送 speech 文本。接收端自行决定如何渲染（字幕、表情、日志等）。
+> 历史摘要：D5 最初将跨进程 speech 列为 out of scope（音频流式协议过重），
+> 2026-05-29 更新为只做文本广播（懒获取 Session 推送 speech 文本），最终定版见 D9。
+> 完整反复轨迹见 `git log -- .ai_partners/features/workstreams/2026/05/speech-governance/FEATURE.md`。
 
 ### D7: NullSpeech 替代 MockSpeech 作为生产兜底 (P0)
 
@@ -336,6 +330,41 @@ class FallbackSpeech(Speech):
 - 遵循现有 logos stream 模式，不引入新协议
 - 其他进程（GUI 字幕、机器人表情动画、日志系统）可订阅实时 speech 文本
 - 这是 D5 "跨进程 speech" 的轻量落地 — 不做音频流式，只做文本广播
+
+### D10: `__content__` 可选化，Shell 不默认注入 (P0) — 2026-09-04
+
+**决策**: 推翻 D1 的"Shell 始终拥有 `__content__` 内核命令"。`__content__` 降级为
+**可选机制**：Shell 不再无条件 `build_content_command()` + `add_command` 注入；唯一
+入口是 `SpeechChannelModule(register_content=False)` 的显式 flag，默认不组装。
+同时删除 `_feed_stream` 里的 `SpeechTopic` publisher 发布路径——说侧文本广播统一
+走 D5/D9 的 Session stream delta。
+
+**依据**（人类工程师 2026-09-04 重新同步）:
+
+1. LLM 默认把 plain-text 输出成 markdown 语法，但 CTML 不假设 GUI 存在，于是
+   plain-text 被当作语音；这需要额外 prompt 禁止 markdown 输出——默认语义与模型
+   习惯相悖。
+2. 模型要言说 CTML 本身时遇到自举困难（CDATA 里包裹 CDATA），`__content__` 输出
+   plain text 仍是降级路径（对 markdown 支持差）。
+3. 过去模型首 token 速度慢，3-5 token 承载语义有额外成本；现在模型输出 token
+   速度显著变快，语义承载成本下降。
+4. 模型在 coding agent 后训练中越来越倾向输出 markdown（视觉展示）而非"说话"，
+   默认绑定语音的 `__content__` 在对抗这个重力。
+5. Dolores Ghost Prototype 用 deepseek harness 做推理核 + dsh web 做 GUI，
+   plain-text 有了独立的视觉展示方式，不再必须走语音。
+6. 结合 `<|CTML|>` tag 可隔离多条 CTML 输出，与 markdown 输出不冲突。
+7. `__content__` 仍然有用——GUI 交互与语音同步场景——所以**保留但不默认**。
+
+**影响**:
+
+- `ctml_shell.py` `_speech_context_manager` 删除 `build_content_command` 注入。
+- `speech_module.py` 删除 `SpeechTopic` / `Publisher` 依赖及 `_feed_stream` 发布逻辑；
+  `role` / `name` / `publishing` 参数随之删除。
+- `SpeechChannelModule` 保留 `register_content` flag（默认 False），作为 `__content__`
+  的唯一显式入口；`speech_channel.py` 的 `register_content=True` 是显式用例。
+- `SpeechTopic` schema 本身待重设计（`topics/audio.py` 已有三个 todo：字段缺
+  description、timestamp 冗余、audio_key 未实现），后续单独治理。
+- 依赖"free text 默认变语音"的单测需显式注册 `__content__` 或改用 `say`。
 
 ## Implementation Plan
 
