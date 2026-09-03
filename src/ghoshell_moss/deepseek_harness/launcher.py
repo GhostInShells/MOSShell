@@ -323,7 +323,12 @@ class DshLauncher:
             json=payload or {},
             timeout=timeout if timeout is not None else self.config.connect_timeout,
         )
-        resp.raise_for_status()
+        if resp.is_error:
+            try:
+                detail = resp.json().get("error", resp.text)
+            except Exception:
+                detail = resp.text
+            raise RuntimeError(f"dsh RPC {path} failed ({resp.status_code}): {detail}")
         return resp.json()
 
     def on_mux_frame(self, handler: MuxFrameHandler) -> Disposer:

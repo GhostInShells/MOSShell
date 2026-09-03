@@ -68,8 +68,8 @@ class DoloresEgoConfig(BaseModel):
         description="dsh agent preset name — the ego session's persona + tool set.",
     )
     session_title: str = Field(
-        default="{name} at {date}",
-        description="session title template ({name}/{date} placeholders), the human-readable session name.",
+        default="Ego [{timestamp}]",
+        description="session title template ({timestamp} placeholder), the human-readable session name.",
     )
     permission: str = Field(
         default="workspace-write",
@@ -193,8 +193,7 @@ class DoloresEgo:
                 "project_home": str(self._ctx.project_home),
                 "project_name": self._ctx.project_name,
                 "title": self._config.session_title.format(
-                    name=self._ctx.name,
-                    date=datetime.now().strftime("%Y-%m-%d"),
+                    timestamp=datetime.now().strftime("%y-%m-%d %H:%M:%S"),
                 ),
                 "instruction": self._ctx.instruction,
                 "messages": self._assemble_initial_messages(),
@@ -289,7 +288,7 @@ class DoloresEgo:
 
     # ── RPC (narrow bridge to the plugin) ────────────────────────────
 
-    async def _rpc_tool_result(
+    async def rpc_tool_result(
             self,
             call_id: str,
             result: dict | list | str | None,
@@ -369,12 +368,10 @@ class DoloresEgo:
     def _inputs_message(self, moment: Moment) -> Message | None:
         """inputs slot — percepts + hint wrapped into one ``<inputs>`` message (steer, may be empty).
 
-        Percept messages are flattened in source order (no extra ``<percepts>`` wrapper); an optional
-        hint is appended last as a ``<hint>`` child. None when there are no percepts and no hint.
+        Reuses moment.inputs_messages with executing excluded — executing belongs to the context
+        slot, not the inputs slot. None when there are no percepts and no hint.
         """
-        messages: list[Message] = list(moment.percepts_messages())
-        if moment.hint:
-            messages.append(Message.new(tag='hint').with_content(moment.hint))
+        messages: list[Message] = list(moment.inputs_messages(with_command_executing=False))
         if not messages:
             return None
         return Message.new(tag='inputs').with_messages(*messages)

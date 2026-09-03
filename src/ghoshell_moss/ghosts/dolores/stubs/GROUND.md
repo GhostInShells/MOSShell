@@ -1,6 +1,6 @@
 ---
-name: dolores
-description: Dolores ghost home — 自我认知基建，由 MOSS ground 体系搭建
+name: Ghost Ground
+description: file-based 认知场，由 ghost 自治
 pins:
 - label: subfields
   verb: frontmatter

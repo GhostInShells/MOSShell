@@ -420,7 +420,7 @@ export function apply(ctx: Context) {
         openThinking()
         // epoch 变更时: <epoch> 容器作为 epoch 级稳定背景 (inject, 不驱动 turn). 在 moment
         // context 之前注入 — epoch 是底座, moment 是坐落在其上的帧.
-        if (body.epoch !== undefined && body.epoch.length > 0) {
+        if (Array.isArray(body.epoch) && body.epoch.length > 0) {
           const epochBlocks = await durableMomentContent(ctx, body.epoch)
           agent.inject(createUserMessage({
             content: epochBlocks,
