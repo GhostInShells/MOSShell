@@ -29,6 +29,14 @@
 | D19 | open | P2 | 长篇大论 — 缺「简洁/少即是多」规则（旧 persona/behaviors 有，重写丢失） | dogfood-3 | — |
 | D20 | open | P1 | fetch wait_actions_done 三处不齐 — 默认 True / 工具描述「Fetch now」/ prompt「optionally waiting」 | dogfood-3 | — |
 | D21 | open | P2 | dsh 侧先停 + 界面无中断 — final result 后 dsh 比 moss 先停，dsh UI 无中断能力（双向同步有鬼主意） | dogfood-3 | — |
+| D22 | open | P1 | 图片协议/moment dynamic context 丢失 — 看 moment 疑似彻底丢了 dynamic context，图片协议是否正确传输未确认 | dogfood-3 | — |
+| D23 | open | P2 | shell trajectory 验证方式 — help + interface 应分别判断 delta，而非每次一起传 | dogfood-3 | — |
+| D24 | open | P0 | interpreter error 被 wrap 成 command error — 大概率与 mindflow-in-shell 类型解析有关，提示需有关闭方式 | dogfood-3 | — |
+| D25 | open | P0 | observe=True 未生成下一帧 thinking — 反而要界面驱动，这是 bug | dogfood-3 | — |
+| D26 | open | P0 | tui 遇 interpreter error 崩溃 — 没有正常拦截 | dogfood-3 | — |
+| D27 | open | P1 | perStep reject 界面提示 — 调研路径搞错，可在 reject 处发 stream/error 类事件给界面提示 | dogfood-3 | — |
+
+> dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。
 
 ## 未接能力
 
@@ -49,3 +57,5 @@
 | O4 | open | protocol notice 重心 — 关键不是围绕 CTML，而是强调「输出=行动」；控制单轮输出内容 + 赋予连续输出能力 |
 | O5 | open | 中断能力 — 未 wrap 叙述会发声是机制（要强调）；thinking 期可中断：replan ctml='' 不执行 or moss_shell_interrupt |
 | O6 | open | Matrix 能力声明 — 通过 matrix 可见/可管理自身能力，默认只提供一小部分（修正「行动」修辞过度） |
+| O7 | open | HARNESS_IDENTITY_TEXT 调整 — 考虑尊重 dsh，不再过度强调 GIS/MOSS 身份 |
+| O8 | open | GhostRuntime 内核不允许崩溃 — ego 坏了要有感知，运行时异常经 tui error output 打印 |

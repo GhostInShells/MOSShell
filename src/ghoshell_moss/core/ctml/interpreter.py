@@ -510,11 +510,11 @@ class CTMLInterpreter(Interpreter):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        cancel_executing = self._clear_after_exit if self._clear_after_exit is not None else True
+        await self.close(cancel_executing=cancel_executing)
         if exc_val is not None:
             capture = isinstance(exc_val, asyncio.CancelledError)
-            await self.close(cancel_executing=True)
             return capture or None
-        await self.close(cancel_executing=self._clear_after_exit if self._clear_after_exit is not None else True)
         return None
 
     def exception(self) -> Optional[Exception]:

@@ -68,8 +68,8 @@ class DoloresEgoConfig(BaseModel):
         description="dsh agent preset name — the ego session's persona + tool set.",
     )
     session_title: str = Field(
-        default="{name} [{timestamp}]",
-        description="session title template ({name}/{timestamp} placeholders), the human-readable session name.",
+        default="{mode} · {timestamp}",
+        description="session title template ({mode}/{timestamp} placeholders), the human-readable session name.",
     )
     permission: str = Field(
         default="workspace-write",
@@ -116,15 +116,17 @@ class DoloresEgoContext:
     All references are injected via typed objects / variables / closures — no back-ref is held.
 
     - project_home: working dir of the ego session.
-    - project_name: workspace title.
+    - project_name: workspace title (`{name} @ {project}`).
     - name: ghost name, used for title/identity.
+    - mode: mode name, used for the session title.
     - instruction: assembled system prompt.
-    - facade: shell context surface (used to refresh meta on append_ctml).
+    - facade: shell context surface (used to refresh meta on interleaved_ctml).
     """
 
     project_home: Path
     project_name: str
     name: str
+    mode: str
     instruction: str
     facade: "MShellContextFacade"
 
@@ -193,7 +195,7 @@ class DoloresEgo:
                 "project_home": str(self._ctx.project_home),
                 "project_name": self._ctx.project_name,
                 "title": self._config.session_title.format(
-                    name=self._ctx.name,
+                    mode=self._ctx.mode,
                     timestamp=datetime.now().strftime("%y-%m-%d %H:%M:%S"),
                 ),
                 "instruction": self._ctx.instruction,

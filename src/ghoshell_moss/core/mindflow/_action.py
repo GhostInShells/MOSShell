@@ -268,6 +268,9 @@ class BaseAction(Action):
     def set_compiled(self):
         self._compiled_event.set()
 
+    async def wait_compiled(self):
+        await self._compiled_event.wait()
+
     def logos(self) -> AsyncIterator[str]:
         return self._deliver_logos()
 

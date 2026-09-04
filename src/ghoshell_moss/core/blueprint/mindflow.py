@@ -943,6 +943,11 @@ class Action(AttentionStatement, ABC):
         ...
 
     @abstractmethod
+    async def wait_compiled(self):
+        """等待到 compiled. """
+        ...
+
+    @abstractmethod
     def logos(self) -> Logos:
         """
         返回本轮生成的执行文本.

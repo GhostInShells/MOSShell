@@ -75,6 +75,7 @@ class _SpeechCommandFactory:
         async def __content__(chunks__) -> str | None:
             """Speak the chunks with your voice. The content becomes spoken audio —
             avoid visually-oriented text (tables, special symbols, markdown) as speech content.
+            CDATA chunks if you want to speak xml.
             Returns a short description of seconds played; on interruption raises STOPPED(301) with progress."""
             if not speech.is_running():
                 return None

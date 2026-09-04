@@ -29,7 +29,7 @@ from typing_extensions import Self
 from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk
 
-from ._tools import FetchNextMomentToolCall, WaitNextMomentToolCall, AppendCtmlToolCall, ToolCallResult
+from ._tools import FetchNextMomentToolCall, WaitNextMomentToolCall, InterleavedCtmlToolCall, ToolCallResult
 
 if TYPE_CHECKING:
     from ._ego import DoloresEgo
@@ -201,14 +201,14 @@ class DoloresRun:
     async def _handle_tool_use_event(self, event: ToolCallEvent) -> None:
         """tool/call dispatch — discriminate by name and route to the typed tool.
 
-        fetch_next_moment / append_ctml → run_tool produces a ToolCallResult, returned via tool-result RPC.
+        fetch_next_moment / interleaved_ctml → run_tool produces a ToolCallResult, returned via tool-result RPC.
         wait_next_moment (yield) → sets self.yielded (logos() breaks on it), no tool-result.
         """
         result = await FetchNextMomentToolCall.run_tool(event, self._handle_fetch_next_moment)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await AppendCtmlToolCall.run_tool(event, self._handle_append_ctml)
+        result = await InterleavedCtmlToolCall.run_tool(event, self._handle_interleaved_ctml)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
@@ -230,8 +230,8 @@ class DoloresRun:
             moment=moment,
         )
 
-    async def _handle_append_ctml(self, call: AppendCtmlToolCall) -> str:
-        """append_ctml handler — append CTML to execution, thinking ahead of behavior (interleaved).
+    async def _handle_interleaved_ctml(self, call: InterleavedCtmlToolCall) -> str:
+        """interleaved_ctml handler — emit CTML mid-thought, thinking ahead of behavior (interleaved).
 
         refresh_meta: refresh shell meta before execution.
         wait_done: true → wait_action_done, false → wait_compiled (thinking ahead).

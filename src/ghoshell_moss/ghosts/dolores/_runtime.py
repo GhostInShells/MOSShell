@@ -86,8 +86,8 @@ class Dolores(Ghost):
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
         parts.append(dolores_terminology())
-        parts.append(dolores_protocol_notice())
         parts.append(self._dolores_instruction())
+        parts.append(dolores_protocol_notice())
         return "\n\n".join(parts)
 
     def _dolores_instruction(self) -> str:
@@ -180,8 +180,9 @@ class Dolores(Ghost):
             self._facade = MShellContextFacade(self._shell)
             ctx = DoloresEgoContext(
                 project_home=self._matrix.env.project_path,
-                project_name=self._matrix.env.project_name,
+                project_name=f"{self._meta.name()} @ {self._matrix.env.project_name}",
                 name=self._meta.name(),
+                mode=self._matrix.env.mode_name,
                 instruction=self.system_prompt(),
                 facade=self._facade,
             )

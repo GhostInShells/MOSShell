@@ -289,8 +289,8 @@ class MindflowInShell(ABC):
                     # 为每个 action 创建 task, 然后继续拉最新的 action.
                     # 永远都是最新的 action 顶掉旧的.
                     last_task = asyncio.create_task(self._run_action(action))
-                    # 由于是队列逻辑, 仍然要让出让 last task 执行.
-                    await asyncio.sleep(0)
+                    # 由于是队列逻辑, 仍然要在编译完成后就开始拉下一帧.
+                    await action.wait_compiled()
         except asyncio.CancelledError:
             raise
         except FatalError:

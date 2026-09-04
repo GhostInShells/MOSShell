@@ -13,7 +13,7 @@ from typing_extensions import Self
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 
-__all__ = ["FetchNextMomentToolCall", "WaitNextMomentToolCall", "AppendCtmlToolCall"]
+__all__ = ["FetchNextMomentToolCall", "WaitNextMomentToolCall", "InterleavedCtmlToolCall"]
 
 _ResultType = dict | list | str | None
 
@@ -133,8 +133,8 @@ class WaitNextMomentToolCall(ToolCallParameter):
         return "moss_wait_next_moment"
 
 
-class AppendCtmlToolCall(ToolCallParameter):
-    """moss_append_ctml — append CTML to execution, thinking ahead of behavior (interleaved).
+class InterleavedCtmlToolCall(ToolCallParameter):
+    """moss_interleaved_ctml — emit CTML mid-thought so the world can perceive your ongoing thinking, without blocking further thought (interleaved).
 
     Produces no moment — producing a moment is fetch_next_moment's job; the two don't mix.
     """
@@ -145,4 +145,4 @@ class AppendCtmlToolCall(ToolCallParameter):
 
     @classmethod
     def tool_name(cls) -> str:
-        return "moss_append_ctml"
+        return "moss_interleaved_ctml"
