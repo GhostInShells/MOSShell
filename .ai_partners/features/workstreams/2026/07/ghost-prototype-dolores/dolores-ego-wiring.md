@@ -9,7 +9,7 @@
 
 | 层 | 语义 |
 |---|---|
-| plain-text（`<\|CTML\|>` 之外） | 外部信息，markdown-first 或 speech-first（mode 二选一） |
+| plain-text（`<\|CTML\|>` 之外） | 外部信息，markdown（纯视觉通道），不执行、不发声 |
 | `<\|CTML\|>`（之内） | 控制语法（含 `__content__` 自由文本→语音） |
 | tool 追加 CTML | interleaved（思维超前于行为） |
 
