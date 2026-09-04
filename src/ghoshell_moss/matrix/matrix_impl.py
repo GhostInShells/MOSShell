@@ -329,9 +329,10 @@ class MatrixImpl(Matrix):
         """
         拉起一个 node cell — 唯一 spawn 咽喉收敛到 NodeManager.spawn_node.
 
-        只做: resolve target → spawn_node (installed/probe/execute) → 组装 CellHandle.
-        singleton 锁 / 账本写入与清理 / pid·pgid 回填全部归 node 自身
-        (enter_cell_lifecycle) 或 host 清孤儿, 本层不再重复.
+        只做: resolve target → spawn_node (installed/probe/singleton 预检/execute)
+        → 组装 CellHandle.
+        singleton 预检已由 spawn_node 同步判定 (撞锁抛 DuplicatedError, 本层不再重复);
+        锁持有 / 账本清理 / pid·pgid 回填归 node 自身 (enter_cell_lifecycle) 或 host 清孤儿.
 
         :param target: 路径 (NODE.md / 目录 / 脚本 / 相对 project.root).
         :param extra_env: 追加注入子进程的环境变量.

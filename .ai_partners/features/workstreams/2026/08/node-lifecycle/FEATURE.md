@@ -9,7 +9,7 @@ status: completed
 status_note: 人类判断可以 completed：reconcile review 抓回 uid 身份发散 bug 并修复，4 个声明/交付 drift
   已同步
 title: Node Lifecycle — 身份、入口、验证与记忆
-updated: '2026-08-30'
+updated: '2026-09-05'
 ---
 
 # Node Lifecycle
@@ -108,11 +108,12 @@ node 发现路径有四个语义锚，对应四个确认方：
 - `persist` 参数进 `Matrix.new` 表面，默认 `False`（脚本启动式 = 一次性 run-to-completion）。
 - `event_level` 不暴露，由 `persist` 推导（persist=false → DEBUG 静默）。
 
-### 账本 / singleton 单写记账链（2026-08-30 收敛 + review 修正）
+### 账本 / singleton 单写记账链（2026-08-30 收敛 + review 修正；2026-09-05 补同步预检）
 
 spawn 咽喉（`NodeManager.spawn_node`）：installed 校验 → launcher 打包 → probe 闸门 →
-**写第一笔账本**（launcher.runtime：uid/address/cell，pid/pgid 占位 0）→ execute 拉起。
-不查 singleton、不回填 pid/pgid、不删账本——singleton 抢锁 / pid·pgid 回填 / 退出删账全归
+**singleton 预检**（read-only `is_locked`，撞锁抛 DuplicatedError）→ **写第一笔账本**
+（launcher.runtime：uid/address/cell，pid/pgid 占位 0）→ execute 拉起。
+不持有 singleton 锁、不回填 pid/pgid、不删账本——锁持有 / pid·pgid 回填 / 退出删账全归
 node 自身 `enter_cell_lifecycle`。前提是 node 就是 matrix cell（cell 定义即"Matrix 网络中
 运行的进程单元"；纯脚本不入网、不做服务发现，不该用 node 体系承载）。
 
@@ -121,6 +122,17 @@ node 自身 `enter_cell_lifecycle`。前提是 node 就是 matrix cell（cell �
 缺失第一笔会让 node fallback `build_cell_from_node` 重新生成 uid，父/子身份发散（review
 抓回的严重 bug）。spawner 写第一笔后 `CellHandle.runtime` 的 pid/pgid 仍是占位 0，真 pid
 由 node 回填的账本提供。
+
+### singleton 同步预检补丁（2026-09-05）
+
+狗粮实测 screen（GUI node）可被并发/直接拉起多个实例：QML 窗口在 `main.py` 先 load、
+Matrix daemon 线程后进 `enter_cell_lifecycle` 才抢锁，锁失败抛 DuplicatedError 落在 daemon
+线程未捕获、窗口照开；且 spawn 路径（matrix.run_node）无同步 singleton 判定，
+`matrix_channel.py` 的 `except DuplicatedError` 是死代码（错误发生在子进程）。
+
+修：`spawn_node` 咽喉加同步 read-only 预检（`is_locked`，撞锁抛 DuplicatedError），让
+matrix 路径调用方能同步感知顺序重复；CLI 原 read-only probe 收敛删除，改 catch
+DuplicatedError。锁仍归 child 持有，本预检**不消除并发 TOCTOU**（`is_locked` 不持有锁）。
 
 ### 死文件观察垫（2026-08-29）
 
@@ -153,3 +165,12 @@ kill_cell 语义、probe stdout、spawn 签名），已全部修复并同步进�
   覆盖参数，待定。先不加。
 - **probe 动态自描述进模型认知窗口**：probe stdout 作为动态 self-description 与
   instruction（静态）并列，如何进 open/read 面，后续评估，本次先做闸门主体。
+- **singleton 并发 TOCTOU**：`is_locked` 预检不持有锁，快速连发（ghost 异步 `run_node`，
+  GUI 节点 Qt 启动 ~1s 窗口）仍可多实例并发过检。要真正互斥需 spawner 持锁至 child 接管，
+  或 child 提前到开窗前拿锁。暂接受。
+- **GUI node 锁晚于开窗**：screen 的 flock 在 daemon 线程、QML load 之后；锁失败不关窗口。
+  需把锁提前到主线程开窗前，或 daemon 失败时通知主线程 `app.quit()`。
+- **phantom pid=0 账本**：并发 spawn 时失败的 child 在 `enter_cell_lifecycle` 里
+  DuplicatedError 抛于 `_runtime_info_ctx` 进入之前，spawner 写的第一笔 pid=0 账本永不清理；
+  且 `psutil.pid_exists(0)==True` → `nodes status` 显示成 alive 幽灵。观察垫只覆盖
+  crash/kill-9，没覆盖 singleton 冲突 fast-fail 路径。

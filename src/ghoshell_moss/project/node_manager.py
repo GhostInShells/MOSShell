@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Callable
 
 from ghoshell_moss.core.blueprint.cell import (
-    CellRuntimeInfo, ExecSpec, MatchPattern, NodeLauncher, NodeManager,
-    NodeManifest, NodeProbeError, ProjectRelativePath,
+    CellRuntimeInfo, DuplicatedError, ExecSpec, MatchPattern, NodeLauncher,
+    NodeManager, NodeManifest, NodeProbeError, ProjectRelativePath,
 )
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts.subprocesses import (
@@ -166,14 +166,17 @@ class ProjectNodeManager(NodeManager):
         """
         拉起一个 node cell — spawn 咽喉 (唯一入口).
 
-        只做: installed 校验 → NodeLauncher 打包 → probe 闸门 → Subprocesses.execute 拉起.
-        不做: singleton 锁 / ledger 写入与清理 / pid·pgid 回填 — 归 enter_cell_lifecycle
-        (cell 自身宣告) 或 matrix 治理层. spawner 只负责把进程生出来.
+        只做: installed 校验 → NodeLauncher 打包 → probe 闸门 (manifest.check) →
+        singleton 预检 (read-only is_locked, 撞锁抛 DuplicatedError) → 写第一笔账本
+        (身份 uid, pid/pgid 占位 0) → Subprocesses.execute 拉起.
+        不做: 持有 singleton 锁 / 账本清理 / pid·pgid 回填 — 归 child
+        enter_cell_lifecycle (锁归其 fast-fail 争抢, 退出删账 + 回填).
 
         capture: 可选 factory, 传打包后的 CellRuntimeInfo 返回 CaptureSpec (落盘路径可用
         runtime.address). None = 不捕获 (继承终端).
 
-        probe (manifest.check) 失败抛 NodeProbeError; 返回 (runtime, managed).
+        probe (manifest.check) 失败抛 NodeProbeError; singleton 撞锁抛 DuplicatedError;
+        返回 (runtime, managed).
         """
         if not manifest.installed:
             install_path = Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
@@ -186,6 +189,19 @@ class ProjectNodeManager(NodeManager):
         broken = await self._run_probe(manifest, launcher)
         if broken is not None:
             raise NodeProbeError(broken)
+
+        # singleton 预检 (唯一咽喉的同步判定): 拉起前 read-only probe, 撞锁即
+        # DuplicatedError 同步抛给调用方 (matrix.run_node / CLI run 都能感知).
+        # 锁仍归 child enter_cell_lifecycle fast-fail 持有 — 本处 is_locked 是
+        # read-only (flock-ex-nb then release), 不持有锁, 并发窗口暂接受 (FEATURE).
+        if manifest.singleton:
+            probe = self._env.workspace.lock(launcher.runtime.locker_name())
+            if probe.is_locked():
+                raise DuplicatedError(
+                    f"singleton cell {launcher.runtime.cell.fullname!r} lock "
+                    f"{launcher.runtime.locker_name()!r} held by another process; "
+                    f"a live instance already exists."
+                )
 
         # 启动方先写账单 (单写记账第一笔): 写 launcher.runtime (uid/address/cell),
         # pid/pgid 先占位 0 — node 启动时 discover_this_node 从账本读回身份,

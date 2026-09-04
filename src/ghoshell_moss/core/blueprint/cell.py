@@ -1271,15 +1271,18 @@ class NodeManager(ABC):
         """
         拉起一个 node cell — 唯一 spawn 咽喉.
 
-        只做: installed 校验 → NodeLauncher 打包 → probe 闸门 → Subprocesses.execute 拉起.
-        不做: singleton 锁 / 账本写入与清理 / pid·pgid 回填 — 归 enter_cell_lifecycle
-        (cell 自身宣告) 或 matrix 治理层.
+        只做: installed 校验 → NodeLauncher 打包 → probe 闸门 (manifest.check) →
+        singleton 预检 (read-only is_locked, 撞锁抛 DuplicatedError) → 写第一笔账本
+        (身份 uid, pid/pgid 占位 0) → Subprocesses.execute 拉起.
+        不做: 持有 singleton 锁 / 账本清理 / pid·pgid 回填 — 归 child
+        enter_cell_lifecycle.
 
         capture: 可选 factory, 传打包后的 CellRuntimeInfo, 返回 CaptureSpec
         (落盘路径可用 runtime.address). None = 不捕获 (继承终端).
 
-        probe (manifest.check) 失败抛 NodeProbeError; installed 未过抛 RuntimeError.
-        返回 (runtime, managed) — runtime 供 caller 组装 CellHandle / 追踪.
+        probe (manifest.check) 失败抛 NodeProbeError; singleton 撞锁抛 DuplicatedError;
+        installed 未过抛 RuntimeError. 返回 (runtime, managed) — runtime 供 caller
+        组装 CellHandle / 追踪.
         """
         ...
 

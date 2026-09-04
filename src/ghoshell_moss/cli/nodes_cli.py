@@ -39,8 +39,8 @@ import typer
 
 from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.core.blueprint.cell import (
-    CellAddressCodec, CellRuntimeInfo, ExecSpec, NodeLauncher, NodeManifest,
-    NodeProbeError,
+    CellAddressCodec, CellRuntimeInfo, DuplicatedError, ExecSpec, NodeLauncher,
+    NodeManifest, NodeProbeError,
 )
 
 from .utils import (
@@ -411,25 +411,15 @@ def run_node(
         launcher = NodeLauncher.from_manifest(env, manifest)
         _print_launch_debug(launcher, env)
 
-        # singleton conflict: read-only probe for a friendly hint — the real lock is
-        # taken by the cell itself (enter_cell_lifecycle fast-fail). See cell-run-cycle
-        # FEATURE.md and workspace.py FileLocker. is_locked is read-only (flock-ex-nb
-        # then release), no TOCTOU deadlock; child fast-fail is the fallback.
-        if launcher.runtime.cell.singleton:
-            probe = env.workspace.lock(launcher.runtime.locker_name())
-            if probe.is_locked():
-                print_error(
-                    f"Singleton conflict for '{manifest.name}': lock "
-                    f"'{launcher.runtime.locker_name()}' held by another process."
-                )
-                print_info("  moss nodes status         # inspect what's running")
-                print_info("  moss nodes kill <address> # stop the running instance")
-                raise typer.Exit(code=1)
-
         try:
             returncode = asyncio.run(_foreground_run(project, manifest))
         except NodeProbeError as e:
             print_error(str(e))
+            raise typer.Exit(code=1)
+        except DuplicatedError as e:
+            print_error(str(e))
+            print_info("  moss nodes status         # inspect what's running")
+            print_info("  moss nodes kill <address> # stop the running instance")
             raise typer.Exit(code=1)
 
         if returncode != 0:
