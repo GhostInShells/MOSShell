@@ -89,7 +89,6 @@ class BaseThinking(Thinking):
     def effort(self) -> ThinkingEffort:
         return self._attention.draw_from().thinking_effort
 
-
     def register_gate(self, warrant: Callable[[str], Awaitable[tuple[bool, str]]]):
         self._warrant = warrant
 
@@ -143,6 +142,13 @@ class BaseThinking(Thinking):
                 fut.cancel()
         self._waiting_futures.extend(ensured)
         await asyncio.gather(*ensured, return_exceptions=True)
+
+    async def wait_actions_done(self) -> None:
+        waits = []
+        for action_stop_event in self._action_stop_events:
+            waits.append(action_stop_event.wait())
+        if len(waits) > 0:
+            await asyncio.gather(*waits, return_exceptions=True)
 
     # ── MindflowStatement 生命周期 ────────────────
 

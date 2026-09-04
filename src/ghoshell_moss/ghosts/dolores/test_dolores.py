@@ -491,7 +491,7 @@ class TestDoloresRun:
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._text_chunk("<|CTML|><say>hi</say><|CTML|>", seq=1))
+            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
             await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
             collected = []
             async for delta in run.logos():
@@ -525,135 +525,7 @@ class TestDoloresRun:
 
 
 class TestCtmlParser:
-    """_CtmlParser — <|CTML|> 模式分隔符流式状态机 (articulator 用 AsyncMock 断言 send)."""
-
-    @staticmethod
-    def _parser(quoter: str = '<|CTML|>'):
-        from unittest.mock import AsyncMock
-
-        from ._run import _CtmlParser
-
-        art = AsyncMock()
-        return _CtmlParser(art, ctml_quoter=quoter), art
-
-    @staticmethod
-    def _sent(art) -> str:
-        return "".join(c.args[0] for c in art.send.await_args_list)
-
-    # ── 模式切换 ──
-
-    @pytest.mark.asyncio
-    async def test_mark_switches_into_ctml_without_logos(self):
-        parser, art = self._parser()
-        assert await parser.add("<|CTML|>") == ""
-        assert art.send.await_count == 0  # 标记本身不 send
-
-    @pytest.mark.asyncio
-    async def test_mark_char_by_char(self):
-        parser, art = self._parser()
-        for ch in "<|CTML|>":
-            assert await parser.add(ch) == ""
-        assert await parser.add("<say>x</say>") == "<say>x</say>"
-
-    @pytest.mark.asyncio
-    async def test_exit_back_to_plain(self):
-        parser, art = self._parser()
-        await parser.add("<|CTML|>")
-        assert await parser.add("<say>hi</say>") == "<say>hi</say>"
-        assert await parser.add("<|CTML|>") == ""
-        assert await parser.add("after") == ""  # 退出后 plain 丢弃
-
-    @pytest.mark.asyncio
-    async def test_empty_ctml_block(self):
-        parser, art = self._parser()
-        assert await parser.add("<|CTML|><|CTML|>") == ""
-        assert art.send.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_consecutive_blocks(self):
-        parser, art = self._parser()
-        # 一个 CTML 块里两个命令; 第二个 <|CTML|> 切出后 <b/> 是 plain, 被丢弃.
-        assert await parser.add("<|CTML|><a/><b/><|CTML|>") == "<a/><b/>"
-        assert self._sent(art) == "<a/><b/>"
-
-    # ── 假前缀 / partial ──
-
-    @pytest.mark.asyncio
-    async def test_false_prefix_lt(self):
-        parser, art = self._parser()
-        assert await parser.add("<hello>") == ""
-        assert art.send.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_false_prefix_at_every_partial_position(self):
-        parser, art = self._parser()
-        for text in ["<|x", "<|Cx", "<|CTx", "<|CTMx", "<|CTMLx"]:
-            assert await parser.add(text) == ""
-        assert art.send.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_partial_across_chunk_boundary(self):
-        parser, art = self._parser()
-        assert await parser.add("<|CT") == ""
-        assert await parser.add("ML|>") == ""
-        assert await parser.add("<say>hi</say>") == "<say>hi</say>"
-
-    # ── CTML 内容边界 ──
-
-    @pytest.mark.asyncio
-    async def test_ctml_lt_followed_by_non_pipe_flushes(self):
-        parser, art = self._parser()
-        await parser.add("<|CTML|>")
-        assert await parser.add("<say") == "<say"  # < 后 s 非 | → flush '<s', 再 a/y
-
-    @pytest.mark.asyncio
-    async def test_aexit_flushes_pending_ctml_buffer(self):
-        parser, art = self._parser()
-        async with parser:
-            await parser.add("<|CTML|>")
-            await parser.add("<|")  # 残留 "<|" (未完成的退出标记)
-        assert self._sent(art) == "<|"
-
-    @pytest.mark.asyncio
-    async def test_aexit_flushes_trailing_lt(self):
-        parser, art = self._parser()
-        async with parser:
-            await parser.add("<|CTML|>")
-            await parser.add("<")  # 残留 "<"
-        assert self._sent(art) == "<"
-
-    # ── plain 边界 ──
-
-    @pytest.mark.asyncio
-    async def test_plain_trailing_lt_not_flushed(self):
-        parser, art = self._parser()
-        async with parser:
-            await parser.add("<")  # plain 模式残留 < 不 flush
-        assert art.send.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_empty_input(self):
-        parser, art = self._parser()
-        assert await parser.add("") == ""
-        assert art.send.await_count == 0
-
-    # ── mark_length == 0 退路 ──
-
-    @pytest.mark.asyncio
-    async def test_no_quoter_all_text_is_logos(self):
-        parser, art = self._parser(quoter='')
-        assert await parser.add("anything") == "anything"
-        assert self._sent(art) == "anything"
-
-    @pytest.mark.asyncio
-    async def test_no_quoter_empty(self):
-        parser, art = self._parser(quoter='')
-        assert await parser.add("") == ""
-        assert art.send.await_count == 0
-
-
-class TestCtmlParserInverted:
-    """_CtmlParser(ctml_first=True) — CTML 默认, <|Markdown|>…</|Markdown|> 成对 escape."""
+    """_CtmlParser — CTML 默认, <|Markdown|>…</|Markdown|> 成对 escape (articulator 用 AsyncMock 断言 send)."""
 
     @staticmethod
     def _parser():
@@ -662,7 +534,7 @@ class TestCtmlParserInverted:
         from ._run import _CtmlParser
 
         art = AsyncMock()
-        return _CtmlParser(art, ctml_first=True), art
+        return _CtmlParser(art), art
 
     @staticmethod
     def _sent(art) -> str:

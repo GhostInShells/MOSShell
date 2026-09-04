@@ -9,12 +9,13 @@
 
 | 层 | 语义 |
 |---|---|
-| plain-text（`<\|CTML\|>` 之外） | 外部信息，markdown（纯视觉通道），不执行、不发声 |
-| `<\|CTML\|>`（之内） | 控制语法（含 `__content__` 自由文本→语音） |
+| CTML（默认流） | 控制语法（含 `__content__` 自由文本 → 语音），MOSS 流式解析执行 |
+| `<\|Markdown\|>…</\|Markdown\|>` | markdown（纯视觉通道），dsh web 渲染，不执行、不发声 |
 | tool 追加 CTML | interleaved（思维超前于行为） |
 
-`<|CTML|>` 是模式分隔符（不是 tokenizer 特殊 token）：默认 plain-text 模式（`<` `>` 是字面量），
-遇 `<|CTML|>` 切进 CTML 模式（SAX 只看到 CTML 内容）。它解决的是 `<` `>` 字符冲突，不是语音通道问题。
+`<|Markdown|>` 是成对 escape（不是 tokenizer 特殊 token）：默认整条流是 CTML，
+遇 `<|Markdown|>` 切出到 markdown，遇 `</|Markdown|>` 切回。它解决「默认是控制还是展示」的
+通道问题 —— CTML 是默认，markdown 是显式 escape。
 
 ## Bug 清单
 

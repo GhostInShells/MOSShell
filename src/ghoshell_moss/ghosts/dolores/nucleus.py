@@ -119,12 +119,14 @@ class DoloresEgoNucleus(Nucleus):
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # fire-and-forget: dropped on preemption failure — no reraise, no cooldown.
+        self._impulse = None
         return
 
     def attended(self, impulse: Impulse) -> Impulse | None:
         # running package: upgraded to INFO (normal run strength), distinct from the BACKGROUND challenge. Empty body kept.
         if not self.is_running():
             return None
+        self._impulse = None
         return impulse.model_copy(update={"priority": Priority.INFO})
 
     def peek(self, no_stale: bool = True) -> Impulse | None:

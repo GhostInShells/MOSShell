@@ -871,6 +871,11 @@ class Thinking(AttentionStatement, ABC):
         """同步等待到所有 future 结束, 或者自身退出."""
         ...
 
+    @abstractmethod
+    async def wait_actions_done(self) -> None:
+        """等待迄今为止生成的动作都执行完. """
+        ...
+
     async def articulate(self, logos: Logos) -> None:
         """
         发送 Logos 流

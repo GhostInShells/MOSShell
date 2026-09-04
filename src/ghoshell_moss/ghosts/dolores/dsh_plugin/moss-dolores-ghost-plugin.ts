@@ -564,7 +564,10 @@ export function apply(ctx: Context) {
   ctx.tools.register(defineTool({
     name: 'moss_fetch_next_moment',
     description: 'Fetch the next MOSS moment now. Returns {moment_ref}; the full moment is injected into the next step context.',
-    parameters: {},
+    parameters: {
+      wait_actions_done: { type: 'boolean', default: true, description: 'Wait for already-emitted actions to finish before observing, so their results are visible.' },
+      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before observing, so the facade reflects live state.' },
+    },
     output: {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
@@ -587,7 +590,7 @@ export function apply(ctx: Context) {
     description: 'Append a CTML command to execution and keep thinking. Returns "ok" once compiled (or executed if wait_done).',
     parameters: {
       ctml: { type: 'string', description: 'The CTML command to execute.' },
-      refresh_meta: { type: 'boolean', default: false, description: 'Refresh shell meta before executing (deferred — no-op for now).' },
+      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before executing.' },
       wait_done: { type: 'boolean', default: false, description: 'Wait for full execution instead of just compilation.' },
     },
     output: {

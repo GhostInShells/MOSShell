@@ -60,45 +60,29 @@ def _close_marker(open_marker: str) -> str:
 class _CtmlParser:
     """Split a text stream into logos (CTML) and plain (markdown) regions.
 
-    Two modes:
-
-    - plain-default (``ctml_first=False``, the default): the stream starts in plain;
-      ``ctml_quoter`` (``<|CTML|>``) toggles into logos and back. Backward-compatible
-      with the original toggle parser.
-    - ctml-first (``ctml_first=True``): the stream starts in logos; ``markdown_quoter``
-      (``<|Markdown|>``) opens a plain region and its close marker (``</|Markdown|>``)
-      closes it — a proper wrap with an explicit close tag.
+    CTML-first: the stream starts in logos. ``markdown_quoter`` (``<|Markdown|>``) opens a
+    plain region and its close marker (``</|Markdown|>``) closes it — a proper wrap with an
+    explicit close tag. Text inside the wrap is dropped; everything else is logos and is
+    forwarded to the articulator.
 
     A partial marker is buffered across chunk boundaries; a partial match that fails is
     flushed as content (logos when inside logos, dropped otherwise).
     """
 
     def __init__(
-        self,
-        articulator: Articulator,
-        ctml_quoter: str = '<|CTML|>',
-        *,
-        ctml_first: bool = False,
-        markdown_quoter: str = '<|Markdown|>',
+            self,
+            articulator: Articulator,
+            markdown_quoter: str = '<|Markdown|>',
     ) -> None:
         self._articulator = articulator
-        self._in_logos = ctml_first
-        # markers that switch region: _to_logos_chars (seen in plain), _to_plain_chars
-        # (seen in logos). In plain-default mode both are the same toggle marker.
-        if ctml_first:
-            self._to_logos_chars = list(_close_marker(markdown_quoter))
-            self._to_plain_chars = list(markdown_quoter)
-        else:
-            self._to_logos_chars = list(ctml_quoter)
-            self._to_plain_chars = list(ctml_quoter)
+        self._in_logos = True
+        # markers that switch region: _to_plain_chars (seen in logos) opens the markdown
+        # region; _to_logos_chars (seen in plain) is its close marker.
+        self._to_plain_chars = list(markdown_quoter)
+        self._to_logos_chars = list(_close_marker(markdown_quoter))
         self._buffer = ''
 
     async def add(self, text: str) -> _LogosDelta:
-        if not self._to_logos_chars and not self._to_plain_chars:
-            # no markers at all — every token is logos (no fence).
-            if text:
-                await self._articulator.send(text)
-            return text
         logos = ''
         for char in text:
             delta = self._add_char(char)
@@ -158,8 +142,6 @@ class DoloresRun:
             thinking: "Thinking",
             thinking_event: asyncio.Event,
             facade: "MShellContextFacade",
-            ctml_quoter: str = '<|CTML|>',
-            ctml_first: bool = False,
     ) -> None:
         self._ego = ego
         self._thinking = thinking
@@ -169,8 +151,6 @@ class DoloresRun:
         self._enter_task: "asyncio.Task[None] | None" = None
         self._enter_error: Exception | None = None
         self._thinking_event: asyncio.Event = thinking_event
-        self._ctml_quoter = ctml_quoter
-        self._ctml_first = ctml_first
         # yield marker: set True when the consumer recognizes tool/call == wait_next_moment and breaks;
         # __aexit__ passes it to exit_thinking(yielded=...) — never cancel on yield.
         self.yielded = False
@@ -237,6 +217,11 @@ class DoloresRun:
 
     async def _handle_fetch_next_moment(self, call: FetchNextMomentToolCall) -> ToolCallResult:
         """fetch_next_moment handler — produce a moment, return a structured {moment_ref} result, carry the moment."""
+        if call.wait_actions_done:
+            await self._thinking.wait_actions_done()
+        if call.refresh_meta:
+            await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
+
         moment = self._thinking.observe()
         moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
         return ToolCallResult(
@@ -252,7 +237,7 @@ class DoloresRun:
         wait_done: true → wait_action_done, false → wait_compiled (thinking ahead).
         """
         if call.refresh_meta:
-            await self._facade.shell.refresh_metas(timeout=5.0)
+            await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
         async with self._thinking.articulator(replan=False, wait_action_done=call.wait_done) as articulator:
             await articulator.send(call.ctml)
             if call.wait_done:
@@ -291,8 +276,6 @@ class DoloresRun:
                 if text is not None:
                     parser = _CtmlParser(
                         self._thinking.articulator(replan=False, wait_action_done=True),
-                        ctml_quoter=self._ctml_quoter,
-                        ctml_first=self._ctml_first,
                     )
                     async with parser:
                         while text is not None:

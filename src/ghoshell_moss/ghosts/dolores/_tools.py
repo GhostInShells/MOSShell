@@ -106,7 +106,16 @@ class ToolCallParameter(BaseModel, ABC):
 
 
 class FetchNextMomentToolCall(ToolCallParameter):
-    """moss_fetch_next_moment — actively fetch the next frame: produce a moment, return {moment_ref} and inject context."""
+    """moss_fetch_next_moment — actively fetch the next frame: observe a moment, return {moment_ref} and inject its context."""
+
+    wait_actions_done: bool = Field(
+        default=True,
+        description="wait for already-emitted actions to finish before observing, so their results are visible.",
+    )
+    refresh_meta: bool = Field(
+        default=False,
+        description="refresh channel metas before observing, so the facade reflects live state.",
+    )
 
     @classmethod
     def tool_name(cls) -> str:
@@ -131,8 +140,8 @@ class AppendCtmlToolCall(ToolCallParameter):
     """
 
     ctml: str = Field(default="", description="the CTML command to execute.")
-    refresh_meta: bool = Field(default=False, description="refresh shell meta before execution.")
-    wait_done: bool = Field(default=False, description="true waits for action done, false only for compile.")
+    refresh_meta: bool = Field(default=False, description="refresh channel metas before execution.")
+    wait_done: bool = Field(default=False, description="true waits for the actions to finish, false waits only for the CTML to compile.")
 
     @classmethod
     def tool_name(cls) -> str:
