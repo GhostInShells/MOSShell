@@ -972,14 +972,14 @@ class CommandTaskResult(BaseModel):
 
         # 先把结果序列化.
         if self.logos is not None:
-            result_message = Message.new(tag='result').with_content(
+            result_message = Message.new().with_content(
                 self.result if self.result is not None else self.logos,
             )
         elif with_serialized_result and self.result is not None:
             # 保留 name.
             serialized_content, ok = self.serialize_result()
             if serialized_content:
-                result_message = Message.new(tag='result').with_content(serialized_content)
+                result_message = Message.new().with_content(serialized_content)
 
         messages = []
         if result_message is not None and not result_message.is_empty():

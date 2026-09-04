@@ -59,7 +59,6 @@ zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
 redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 mcp = ["mcp>=2.0.0", "uvicorn>=0.37.0"]
 dsh = [
-    "deepseek-harness-sdk==0.1.0rc6",   # 官方 SDK, 仅作参考锚点, 自研 launcher 不用
     "httpx>=0.28.0",                    # launcher outbound HTTP (web 表面)
     "websockets>=15.0.1",               # launcher mux WS 下行
 ]
