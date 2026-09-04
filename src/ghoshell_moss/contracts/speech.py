@@ -292,8 +292,9 @@ class AudioFormat(Enum):
 class PlaybackSample:
     """Player 实际播放的可感知样本.
 
-    携带原始 PCM (int16 bytes)、拼接身份 (stream_id + fragment_id)、
-    时间/时长, 以及轻量响度摘要 (rms_db + peak). 消费方按需做 FFT / 频谱分析.
+    携带原始 PCM (int16 bytes)、拼接身份 (stream_id + fragment_id)、该片段对应的
+    文本 (text, 自解释真实播放内容)、时间/时长, 以及轻量响度摘要 (rms_db + peak).
+    消费方按需做 FFT / 频谱分析, 或用 text 对齐"当前真实播出的文本".
 
     计算发生在音频真正写入设备的时刻 (_audio_worker 写路径), 不是 add 入队时刻.
     """
@@ -301,6 +302,7 @@ class PlaybackSample:
     pcm: bytes = b""
     stream_id: str = ""
     fragment_id: str = ""
+    text: str = ""
     timestamp: float = 0.0
     duration: float = 0.0
     sample_rate: int = 0
@@ -355,6 +357,7 @@ class StreamAudioPlayer(ABC):
             channels: int = 1,
             stream_id: str = "",
             fragment_id: str = "",
+            text: str = "",
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
@@ -365,6 +368,8 @@ class StreamAudioPlayer(ABC):
             消费方 (如 speech_storage) 用它分组拼接. 缺省为空串.
         :param fragment_id: 可选的片段身份 (通常是自增整数). 发送方传入, 消费方
             用它对齐 observe() 回调, 判断哪些片段拼接到一起. 缺省为空串.
+        :param text: 该音频片段对应的文本. 随片段透传到 PlaybackSample.text,
+            让观察者能对齐"当前真实播出的文本"而不必在外部维护映射. 缺省为空串.
         :return: 返回一个 second 为单位的时间戳, 每一个音频片段插入后, 会根据音频播放的时间计算一个新的播放结束时间.
         """
         pass
@@ -378,7 +383,7 @@ class StreamAudioPlayer(ABC):
         注册一个实际播放可感知观察者 (全局, 非 stream 作用域).
 
         callback 会在任何音频片段真正写入设备时被调用, 携带 PlaybackSample —
-        其中 pcm 为原始 int16 bytes, stream_id / fragment_id 与 add() 时传入的一致,
+        其中 pcm 为原始 int16 bytes, stream_id / fragment_id / text 与 add() 时传入的一致,
         供消费方对齐拼接, 或自行按需做 FFT/频谱分析 (CLI / Screen-node / speech_storage).
 
         返回 unsubscribe 函数, 调用后观察者被移除. stream 生命周期不属于 player —

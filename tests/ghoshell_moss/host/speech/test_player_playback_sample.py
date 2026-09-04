@@ -1,9 +1,9 @@
 """Stream-level playback perceptibility — observe() on StreamAudioPlayer.
 
 Tests the contract promise: a global observer fires with a PlaybackSample
-at actual play time, carrying raw PCM bytes + stream_id + fragment_id that the
-sender passed — the splicing identity a consumer (e.g. speech_storage) uses to
-align callbacks and reconstruct which fragments belong together.
+at actual play time, carrying raw PCM bytes + stream_id + fragment_id + text
+that the sender passed — the splicing identity a consumer (e.g. speech_storage)
+uses to align callbacks, and the text of the audio actually played.
 
 Stream lifecycle is NOT owned by the player (it belongs to the governance
 layer); the observer is a plain subscription with an unsubscribe handle.
@@ -85,6 +85,33 @@ async def test_observe_carries_splicing_identity():
     ids = [(s.stream_id, s.fragment_id) for s in samples]
     assert ("stream-a", "0") in ids
     assert ("stream-b", "1") in ids
+
+    await player.close()
+
+
+@pytest.mark.asyncio
+async def test_observe_carries_text():
+    """PlaybackSample 携带 add 传入的 text — 片段自解释真实播放文本."""
+    player = VirtualStreamPlayer(sample_rate=44100, channels=1)
+    await player.start()
+
+    samples: list[PlaybackSample] = []
+    player.observe(samples.append)
+
+    player.add(
+        _make_sine(0.02, 44100),
+        audio_type=AudioFormat.PCM_S16LE,
+        rate=44100,
+        stream_id="stream-a",
+        fragment_id="0",
+        text="hello world",
+    )
+    await player.wait_play_done(timeout=2.0)
+
+    assert len(samples) == 1
+    assert samples[0].stream_id == "stream-a"
+    assert samples[0].fragment_id == "0"
+    assert samples[0].text == "hello world"
 
     await player.close()
 

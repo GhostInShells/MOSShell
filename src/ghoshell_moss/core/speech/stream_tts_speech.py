@@ -93,17 +93,21 @@ class TTSSpeechStream(SpeechStream):
             if not self._started:
                 await self.start_synthesis()
             self.logger.debug("%s start new audio playing", self._log_prefix)
+            index = 0
             async for item in self._tts_batch.items():
-                # 将 buffer 的内容
-                data = item["audio"]
+                # 每个 item 的 text 随音频进 player, sample 借此自解释真实播放文本.
                 self._player.add(
-                    data,
+                    data=item["audio"],
                     channels=self._channels,
                     audio_type=self._audio_type,
                     rate=self._sample_rate,
+                    stream_id=self.id,
+                    fragment_id=f"{self.id}:{index}",
+                    text=item.get("text", ""),
                 )
+                index += 1
                 await asyncio.sleep(0)
-                self.logger.debug("%s add audio %d bytes", self._log_prefix, len(data))
+                self.logger.debug("%s add audio %d bytes", self._log_prefix, len(item["audio"]))
             await self._player.wait_play_done()
         except asyncio.CancelledError:
             pass
@@ -139,7 +143,10 @@ class TTSSpeechStream(SpeechStream):
         await asyncio.gather(self._tts_batch.close(), self._player.clear())
 
     def close_sync(self) -> None:
-        self._running_loop.create_task(self.close)
+        """从任意线程调度异步 close 到事件循环线程 (线程安全)."""
+        if self._running_loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self.close(), self._running_loop)
 
 
 class BaseTTSSpeech(TTSSpeech):

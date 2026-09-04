@@ -50,8 +50,8 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._estimated_end_time = 0.0
         self._closed = False
 
-        # 使用线程安全的队列进行线程间通信. 每项是 (resampled_pcm, stream_id, fragment_id).
-        self._audio_queue: queue.Queue[tuple[np.ndarray, str, str] | None] = queue.Queue()
+        # 使用线程安全的队列进行线程间通信. 每项是 (resampled_pcm, stream_id, fragment_id, text).
+        self._audio_queue: queue.Queue[tuple[np.ndarray, str, str, str] | None] = queue.Queue()
         self._thread = None
         self._stop_event = threading.Event()
         self._on_play_callbacks = []
@@ -158,6 +158,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         channels: int = 1,
         stream_id: str = "",
         fragment_id: str = "",
+        text: str = "",
     ) -> float:
         """添加音频片段到播放队列, 返回一个期望的终结时间."""
         if self._closed:
@@ -181,7 +182,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
 
         # 添加到线程安全队列
-        self._audio_queue.put_nowait((resampled_audio_data, stream_id, fragment_id))
+        self._audio_queue.put_nowait((resampled_audio_data, stream_id, fragment_id, text))
         if self._play_done_event.is_set():
             self.logger.debug("%s player start to playing audio", self._log_prefix)
             self._play_done_event.clear()
@@ -282,7 +283,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                     # 收到停止信号
                     # 通过下一个循环判断应该怎么处理.
                     continue
-                audio_data, stream_id, fragment_id = item
+                audio_data, stream_id, fragment_id, text = item
                 self._play_done_event.clear()
                 # 写入音频数据（非阻塞 — 仅放入设备缓冲区）
                 self._audio_stream_write(audio_data)
@@ -294,7 +295,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                 self._wait_consumed(audio_data)
                 # 消费时刻回调 — 但若在等待期间被 stop/close, 不发
                 if not self._stop_event.is_set():
-                    self._dispatch_playback_sample(audio_data, stream_id, fragment_id)
+                    self._dispatch_playback_sample(audio_data, stream_id, fragment_id, text)
 
         except Exception as e:
             self.logger.exception("%s audio stream fatal error %s", self._log_prefix, e)
@@ -306,17 +307,19 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                 self.logger.exception("%s error during stream stop", self._log_prefix)
             self.logger.info("%s audio stream stopped", self._log_prefix)
 
-    def _dispatch_playback_sample(self, audio_data: np.ndarray, stream_id: str, fragment_id: str) -> None:
+    def _dispatch_playback_sample(
+        self, audio_data: np.ndarray, stream_id: str, fragment_id: str, text: str
+    ) -> None:
         """在音频真正写入设备的时刻, 计算并分发 PlaybackSample.
 
-        携带原始 PCM bytes + 响度摘要 (rms_db / peak), 不预加工频谱.
+        携带原始 PCM bytes + 该片段 text + 响度摘要 (rms_db / peak), 不预加工频谱.
         无观察者直接跳过 — 避免不必要的 bytes 拷贝与计算.
         """
         if not self._playback_observers:
             return
         duration = len(audio_data) / self.sample_rate if self.sample_rate else 0.0
         sample = self._compute_playback_sample(
-            audio_data, stream_id=stream_id, fragment_id=fragment_id, duration=duration
+            audio_data, stream_id=stream_id, fragment_id=fragment_id, duration=duration, text=text
         )
         for callback in list(self._playback_observers):
             callback(sample)
@@ -327,13 +330,15 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         *,
         stream_id: str,
         fragment_id: str,
+        text: str,
         duration: float,
     ) -> PlaybackSample:
-        """从 resampled int16 PCM 构造 PlaybackSample: raw bytes + 响度摘要."""
+        """从 resampled int16 PCM 构造 PlaybackSample: raw bytes + text + 响度摘要."""
         f32 = audio_data.astype(np.float64) / 32768.0
         if len(f32) == 0:
             return PlaybackSample(
-                stream_id=stream_id, fragment_id=fragment_id, duration=duration, sample_rate=self.sample_rate,
+                stream_id=stream_id, fragment_id=fragment_id, text=text,
+                duration=duration, sample_rate=self.sample_rate,
             )
         rms = float(np.sqrt(np.mean(f32**2)))
         rms_db = 20.0 * np.log10(max(rms, 1e-10))
@@ -343,6 +348,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             pcm=audio_data.tobytes(),
             stream_id=stream_id,
             fragment_id=fragment_id,
+            text=text,
             timestamp=time.time(),
             duration=duration,
             sample_rate=self.sample_rate,
