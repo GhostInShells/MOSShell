@@ -6,9 +6,9 @@ description: Speech 体系治理：解耦 commands 权责泄漏，player 多后�
 milestone: null
 priority: P2
 status: in-progress
-status_note: 重开承载 __content__ 可选化 (D10) 与说侧可感知播放 (D11)：say/__content__ 有真实播放时返回描述秒数、无播放
-  返回 None、中断 raise STOPPED(301) 带最后片段；真实播放文本经 on_sample → PlaybackSample.text 对齐；顺带清 cmd_task
-  交叉耦合。SpeechTopic 需重设计。
+status_note: 已完成 D10 (__content__ 可选化) 与 D11 (说侧可感知播放)，并清 cmd_task 交叉耦合；多 provider 与降级链等
+  未做承诺已标 out-of-scope (见 Implementation Plan)。SpeechTopic schema 重设计待 voice-input-state-machine 完成后
+  收尾，届时再 completed。
 title: Speech Governance — 解耦、多后端、容错降级
 updated: '2026-09-04'
 ---
@@ -141,11 +141,11 @@ _runtime_context_manager   → module.on_startup() 从容器取 speech → 注�
 | `tests/.../test_wait_primitive.py` | 同上 |
 | `tests/.../test_elements.py` | `make_content_command_from_speech` → `build_content_command` |
 
-### 剩余 Phase
+### 已收口范围
 
-```
-Phase 2 ✅ → Phase 1 ✅ → Phase 5 (默认空 speech) → D6 (docstring 示例) → Phase 3 (多 provider) → Phase 4 (降级)
-```
+完成的线: 解耦 (Phase 1/D1), Player 轻量 (Phase 2/D2), 默认空 speech + 测试无副作用 (Phase 5/D7),
+docstring 示例 (D6), __content__ 可选化 (D10), 说侧可感知播放 (D11), cmd_task 交叉耦合清理。
+未做的多 provider / 降级链不再承诺于本 feature (见 Implementation Plan out-of-scope 标注)。
 
 ### Phase 5: 默认空 speech + 播放器中断修复 + 测试无副作用 (P0) — IN PROGRESS (2026-05-29)
 
@@ -436,7 +436,10 @@ contracts 反向依赖 core.concepts.command), mock / stream_tts_speech 同步�
 | 2.5 | 更新 workspace manifests/stubs | stubs + .moss_ws | ✅ |
 | 2.6 | 10 个单元测试 | `tests/ghoshell_moss/speech/test_miniaudio_player.py` | ✅ |
 
-### Phase 3: TTS 多 provider (P1)
+### Phase 3: TTS 多 provider (P1) — OUT OF SCOPE
+
+现状: `TTSServiceProvider.use` 已支持 `volcengine_stream_tts_model` / `mimo_tts` 配置切换;
+registry 抽象 / OpenAI / edge-tts 等扩展不在本 feature 迭代, 不再承诺.
 
 | # | 任务 | 影响文件 |
 |---|------|----------|
@@ -457,12 +460,15 @@ contracts 反向依赖 core.concepts.command), mock / stream_tts_speech 同步�
 | 5.3 | MiniAudio clear() 中断修复 | `core/speech/player/miniaudio_player.py` | ✅ |
 | 5.4 | MockSpeech → NullSpeech 生产路径替换 | `ctml_shell.py`, `speech_module.py` | ✅ |
 | 5.5 | 测试改用 VirtualStreamPlayer + 中断测试 | `tests/.../test_miniaudio_player.py` | ✅ |
-| 5.6 | NullSpeech 打字机延时 | `core/speech/null.py` | pending |
-| 5.7 | Speech provider 配置化 delay | `host/providers/` | pending |
-| 5.8 | build_content_command 懒获取 Session → pub speech text | `core/speech/speech_module.py` | pending |
-| 5.9 | Session 抽象定义 SPEECH_KEY | `core/blueprint/session.py` | pending |
+| 5.6 | NullSpeech 打字机延时 | `core/speech/null.py` | out-of-scope (价值低; Mock 已有 typing_sleep) |
+| 5.7 | Speech provider 配置化 delay | `host/providers/` | out-of-scope |
+| 5.8 | build_content_command 懒获取 Session → pub speech text | `core/speech/speech_module.py` | 废弃 (D9 广播方向随 D10/D11 转向) |
+| 5.9 | Session 抽象定义 SPEECH_KEY | `core/blueprint/session.py` | 废弃 |
 
-### Phase 4: 容错降级 (P2)
+### Phase 4: 容错降级 (P2) — 未实现, 思路被现状替代
+
+现实: speech 是 player + tts 的组装物; 无 `Speech` 时 shell 层兜底 `NullSpeech` (D7 已做);
+provider 层 `force_fetch` 真组件, 无运行时 mock/null 降级; D4 `FallbackSpeech` wrapper 思路未采用.
 
 | # | 任务 | 影响文件 |
 |---|------|----------|
