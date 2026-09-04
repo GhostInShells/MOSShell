@@ -163,6 +163,12 @@ def test_interpreter_stopped_event_renders_error():
     assert 'error: boom' in content
 
 
+def test_interpreter_stopped_event_empty_settlement_returns_no_messages():
+    """空结算 (无 completed/cancelled/failed/error) 无投影价值 → as_messages 返回空列表."""
+    event = InterpreterStoppedEvent(index=0, created=0.0, state='done')
+    assert event.as_messages() == []
+
+
 # --- 真实 shell 集成 ---
 
 
@@ -191,6 +197,40 @@ async def test_trajectory_peek_captures_task_done():
             frame = trajectory.peek()
             task_dones = [e for e in frame.events if isinstance(e, ShellTaskDoneEvent)]
             assert len(task_dones) >= 1, "task done 应被 tracer 捕获"
+
+
+@pytest.mark.asyncio
+async def test_trajectory_projects_interpreter_settlement_for_empty_result_command():
+    """无返回值命令: ShellTaskDoneEvent 为空, 但 interpreter stop 的结算 (completed: 1) 必须投影.
+
+    否则模型只能看到 bare <status idle/>, 无法感知命令是否真的执行 (speech 等无返回值动作).
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+    from ghoshell_moss.core.py_channel import PyChannel
+
+    shell = new_ctml_shell("traj_interp_settlement")
+    chan = PyChannel(name="chan")
+
+    @chan.build.command()
+    async def silent() -> None:
+        return None
+
+    shell.main_channel.import_channels(chan)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            async with shell.interpreter_in_ctx() as i:
+                i.feed("<chan:silent />")
+                i.commit()
+                await i.wait_tasks(timeout=2)
+
+            frame = trajectory.pop_frame()
+            stops = [e for e in frame.events if isinstance(e, InterpreterStoppedEvent)]
+            assert len(stops) == 1
+            assert stops[0].completed == 1
+            # 帧投影必须携带结算, 而不是只剩 <status idle/>.
+            texts = [m.to_content_string() for m in frame.project(with_dynamic=False)]
+            assert any("completed: 1" in t for t in texts)
 
 
 @pytest.mark.asyncio

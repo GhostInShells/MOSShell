@@ -3,7 +3,7 @@ title: Shell Trajectory — 观测轨迹取代上下文监控
 status: completed
 priority: P1
 created: 2026-08-19
-updated: 2026-08-20
+updated: 2026-09-04
 depends: []
 milestone:
 description: >-
@@ -47,6 +47,12 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
 6. **ack 纪律**。peek 非破坏, commit 才 drain + 推进 baseline。只有消费方能判断消费
    成功 — 模型请求失败不能丢事件 (at-least-once)。
 
+7. **interpreter stop 结算投影**。`InterpreterStoppedEvent` 与 `ShellTaskDoneEvent` 互补:
+   前者带执行结算 (completed/cancelled/failed/error), 后者带命令返回值。无返回值命令
+   (如 speech) 的 `ShellTaskDoneEvent` 为空, 若再丢结算, 模型只剩 bare `<status idle/>`
+   无法感知动作是否执行。规则内聚在 event: `as_messages` 空结算返回空列表, 帧遍历处
+   统一 `extend`, 无投影价值的事件自然不产出帧。
+
 ## 取代与撤销 (dead ends)
 
 - 两个旧 workstream **删除**: `channel-meta-dyn-static` 与 `context-cache-engineering`
@@ -63,9 +69,6 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
 - 裸事件 drain (interleaved thinking 中流)。
 - articulate 循环的 now 注入 (MCP 接线已做: moss_instruction(full_facade) / full_facade /
   get_channel_facade / moss_observe / ctml_append/exec/replan/interrupt)。
-- **interpreter stop 事件本帧不投影**: `InterpreterStoppedEvent` 可多 (n 个 interpreter
-  周期攒一个观测期), 且 status 与 interpreter 语义未想清 → 本帧先 skip, 帧只发
-  `ShellTaskDoneEvent`; 等想明白 status/interpreter 关系再启用 (error 信号暂缺)。
 
 ## Implementation Notes
 

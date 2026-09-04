@@ -353,13 +353,14 @@ class InterpreterStoppedEvent(MShellEvent):
             body_lines.append(f"failed: {self.failed}")
         if self.error:
             body_lines.append(f"error: {self.error}")
+        if not body_lines:
+            # 空结算 (无 completed/cancelled/failed/error) 无投影价值, 返回空列表.
+            return []
         at = format_timestamp(datetime.datetime.fromtimestamp(self.created, tz.gettz()))
         message = Message.new(
             tag='interpreter',
             attributes={'state': self.state, 'at': at},
-        )
-        if body_lines:
-            message.with_content('\n'.join(body_lines))
+        ).with_content('\n'.join(body_lines))
         return [message]
 
 
@@ -401,9 +402,8 @@ class ShellKeyFrame:
         """从历史中抽取的命令事件消息. 无事件时返回空列表; 有事件时外包 <events> 容器."""
         result = []
         for event in self.events:
-            # InterpreterStoppedEvent 本帧不投影: status/interpreter 语义未定, 先 skip.
-            if isinstance(event, ShellTaskDoneEvent):
-                result.extend(event.as_messages())
+            # 每个 event 的 as_messages 自带空事件规则: 无投影价值的 event 返回空列表.
+            result.extend(event.as_messages())
         if result:
             return [
                 Message.new().with_content("<events>"),
