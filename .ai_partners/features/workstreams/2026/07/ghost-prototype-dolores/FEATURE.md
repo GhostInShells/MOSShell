@@ -8,7 +8,7 @@ description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception 模板), 实例 deepseek. 下一步: Memento 轨迹 / ghost 反身 channel / ego-wiring bug 清单 (见 Open Problems). 决策轨迹见 git log.'
+status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception 模板), 实例 deepseek. 问题清单统一到 dolores-todo.md (单一事实源). 决策轨迹见 git log.'
 title: Dolores Ghost
 updated: '2026-09-04'
 ---
@@ -18,6 +18,7 @@ updated: '2026-09-04'
 > Use `moss features set-status ghost-prototype-dolores <status> -m "note"` to update state.
 > Ground 子任务（ghost_home 认知场装配）→ [dolores-ground.md](dolores-ground.md)。
 > Ego 装线 dogfood 评审与下一步 → [dolores-ego-wiring.md](dolores-ego-wiring.md)。
+> 问题清单（单一事实源）→ [dolores-todo.md](dolores-todo.md)。
 
 ## Motivation
 
@@ -60,16 +61,11 @@ DSH 推理中枢已接线，Dolores 的 articulate 由 DSH agent-loop 驱动，M
 
 ## 待接 (Not Yet Wired)
 
-- **Memento 持久化轨迹** — 纯内存历史换 commit 轨迹持久化（重启不丢、可化身分叉）。依赖 momento-mori 契约就位。
-- **Ghost 反身 channel** — 以 `'ghost'` 名注册 channel，是 ghost 感知/操纵自身的唯一入口，默认挂认知场。
-- **独立思维模块** — 并行化身（fork）+ 关键帧自测（checkpoint self-eval）。
-- **模型自感知切换** — `ghost.model` channel 暴露 current/list/switch-model/window-status。目前只拉当前模型配置。
+> 见 [dolores-todo.md](dolores-todo.md) 未接能力 W1–W4。
 
 ## Open Problems
 
-- **时序对齐** — thinking 期内存状态如何按 moment commit 切分，未验证。
-- **Memento 上下文映射** — 持久化轨迹如何组装为 articulator 可消费的上下文。
-- **千级 session 治理** — fork/commit 累积的 session 生命周期（GC/归档/索引），Memento 存 `(sessionId, seq)` 指针方案未实测。
+> 见 [dolores-todo.md](dolores-todo.md) 设计问题 O1–O3。
 
 ## Implementation Notes
 

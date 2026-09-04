@@ -132,18 +132,11 @@
 
 ## 待办（明天）
 
-1. **反馈回路（最高杠杆）**：speech module 返回提示讯息 + 命令结果回执（`<result>` 通道）。
-2. **帧纪律**：bug 1（enter moment 未入 session）+ bug 2（奇数帧丢/回复后 flush）。用户判断疑似 mindflow-in-shell 改动 + epoch 更新导致 tracer 出问题，不着急、明天查。
-3. **模式默认**：按会话种类设默认（CTML/文本）+ 双通道原语 + 不对称成本。
-4. **P1/P2 effort 机制**：文档化降级为成本旋钮 + 自救工具。
+> 已并入 [dolores-todo.md](dolores-todo.md)：反馈回路 D1、帧纪律 D2、模式默认 D3、effort 机制 D4。
 
 ## 新发现（提交前，第二轮独立测试）
 
-**3 个致命 bug（明天重点）**：
-
-1. **TUI 生命周期 bug**：首轮能在 TUI 发消息，第二轮开始不行。第一轮 dogfood 之前无此问题，疑似 dogfood 后的 commit 引入。
-2. **沙箱应设在 project 下**：现在 DSH cwd = ghost home（`.moss/ghosts/deepseek`），ghost 无法读写 project 文件，没有默认自迭代能力。应设在 project 根。
-3. **dsh 提示词打架**：DSH 系统提示和 MOSS 元指令冲突（见下）。
+> 3 个致命 bug 已并入 [dolores-todo.md](dolores-todo.md)：TUI 生命周期 D5、沙箱 cwd D6、dsh 提示词打架 D7。
 
 **ghost 的「两套系统提示打架」分析（5 条）**：
 
