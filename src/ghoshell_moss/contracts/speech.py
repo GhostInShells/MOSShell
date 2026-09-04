@@ -153,12 +153,12 @@ class SpeechStream(ABC):
         """
         pass
 
-    async def say(self, samples: list['PlaybackSample'] | None = None) -> None:
+    async def play(self, samples: list['PlaybackSample'] | None = None) -> None:
         """
         播放文本的完整生命周期.
 
         :param samples: 非空时, 真实播放样本会追加到此列表, 供调用方 (如 command)
-            读取"实际播出了什么、播了多久". say 结束 (正常/异常/取消) 都会摘除注册.
+            读取"实际播出了什么、播了多久". play 结束 (正常/异常/取消) 都会摘除注册.
         """
         if self.is_closed():
             return
@@ -177,20 +177,30 @@ class SpeechStream(ABC):
             if disposer:
                 disposer()
 
-    async def speak(self, chunks__: AsyncIterable[str]) -> None:
+    async def speak(self, chunks__: AsyncIterable[str], samples: list['PlaybackSample'] | None = None) -> None:
         """
-        完整的生命周期展示.
+        完整的生命周期展示 (code as prompt): 从 iterable 喂文本并流式播放.
+
+        :param samples: 非空时, 真实播放样本会追加到此列表 (与 play() 同).
+            speak 结束 (正常/异常/取消) 都会摘除注册.
         """
-        async with self:
-            # 开启解析
-            await self.start_synthesis()
-            # 开启执行.
-            await self.start_play()
-            async for chunk in chunks__:
-                self.feed(chunk)
-            # speak 会保证 commit.
-            self.commit()
-            await self.wait_played()
+        disposer = None
+        if samples:
+            disposer = self.on_sample(samples.append)
+        try:
+            async with self:
+                # 开启解析
+                await self.start_synthesis()
+                # 开启执行.
+                await self.start_play()
+                async for chunk in chunks__:
+                    self.feed(chunk)
+                # speak 会保证 commit.
+                self.commit()
+                await self.wait_played()
+        finally:
+            if disposer:
+                disposer()
 
     async def __aenter__(self):
         return self

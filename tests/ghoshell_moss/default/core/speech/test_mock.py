@@ -26,7 +26,7 @@ async def test_output_in_asyncio():
         sending_task = asyncio.create_task(buffer_stream(stream, idx))
 
         # assert the tasks run in order
-        say_task = asyncio.create_task(stream.say())
+        say_task = asyncio.create_task(stream.play())
         await asyncio.gather(sending_task, say_task)
 
     outputted = await mock_speech.clear()
@@ -60,7 +60,7 @@ async def test_output_in_concurrent():
         stream = mock_speech.new_stream(batch_id=str(idx))
         stream = stream
         gathering.append(buffer_stream(stream, idx))
-        gathering.append(stream.say())
+        gathering.append(stream.play())
 
         # assert the tasks run in order
     await asyncio.gather(*gathering)

@@ -17,14 +17,14 @@ def _played_seconds(samples: list[PlaybackSample]) -> float:
     return sum((s.duration for s in samples), 0.0)
 
 
-def _played_message(samples: list[PlaybackSample]) -> str | None:
+def played_message(samples: list[PlaybackSample]) -> str | None:
     # 没有任何真实播放样本 (MockSpeech / 尚未出声) 时返回 None, 不报误导性的 0.0s.
     if not samples:
         return None
     return f"played {_played_seconds(samples):.1f}s"
 
 
-def _stopped_message(samples: list[PlaybackSample]) -> str:
+def stopped_message(samples: list[PlaybackSample]) -> str:
     seconds = _played_seconds(samples)
     if samples:
         tail = samples[-1].text.strip()[-_TAIL_LEN:]
@@ -81,17 +81,11 @@ class _SpeechCommandFactory:
             if not isinstance(chunks__, SpeechStream):
                 return None
             samples: list[PlaybackSample] = []
-            disposer = chunks__.on_sample(samples.append)
             try:
-                await chunks__.start_synthesis()
-                await chunks__.start_play()
-                await chunks__.wait_played()
+                await chunks__.play(samples)
             except asyncio.CancelledError:
-                CommandUtil.reraise_stopped(_stopped_message(samples))
-            finally:
-                disposer()
-                await chunks__.close()
-            return _played_message(samples)
+                CommandUtil.reraise_stopped(stopped_message(samples))
+            return played_message(samples)
 
         return PyCommand(func=__content__, partial=_content_partial, name=name, blocking=True)
 
@@ -159,10 +153,10 @@ class _SpeechCommandFactory:
                 raise ValueError(f"System error: Chunks is not prepared")
             samples: list[PlaybackSample] = []
             try:
-                await chunks__.say(samples)
+                await chunks__.play(samples)
             except asyncio.CancelledError:
-                CommandUtil.reraise_stopped(_stopped_message(samples))
-            return _played_message(samples)
+                CommandUtil.reraise_stopped(stopped_message(samples))
+            return played_message(samples)
 
         return PyCommand(
             say,

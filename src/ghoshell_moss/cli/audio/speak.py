@@ -120,7 +120,7 @@ async def _speak_via_speech(matrix: Matrix, speech, text: str, tone: Optional[st
 
             unsub = player.observe(_on_sample)
             try:
-                say_task = asyncio.create_task(stream.say())
+                say_task = asyncio.create_task(stream.play())
                 render_task = asyncio.create_task(_render_from_queue(frame_q))
                 done, pending = await asyncio.wait(
                     [say_task, render_task],
@@ -136,9 +136,9 @@ async def _speak_via_speech(matrix: Matrix, speech, text: str, tone: Optional[st
             finally:
                 unsub()
         else:
-            unsub = player.add_event(_collect)
+            unsub = player.observe(_collect)
             try:
-                await stream.say()
+                await stream.play()
             finally:
                 unsub()
     except asyncio.CancelledError:

@@ -5,14 +5,17 @@ Example:
     chan = SpeechChannel(name='speech', description='语音交互通道', speech=tts_speech)
 """
 
+import asyncio
 from typing import Optional
 
 from ghoshell_container import IoCContainer
 
 from ghoshell_moss.contracts.speech import Speech, TTSSpeech, TTS, StreamAudioPlayer
 from ghoshell_moss.core import PyChannel, Channel, ChannelRuntime, ChannelCtx
+from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 
 from ghoshell_moss.core.speech import BaseTTSSpeech, SpeechChannelModule
+from ghoshell_moss.core.speech.speech_module import played_message, stopped_message
 from ghoshell_moss.message import unique_id
 
 __all__ = ["SpeechChannel", "TTSSpeechChannel"]
@@ -44,15 +47,21 @@ class SpeechChannel(Channel):
     def description(self) -> str:
         return self._description
 
-    async def say(self, chunks__) -> None:
+    async def say(self, chunks__) -> str | None:
         """
         使用语音说话的实现.
         :param chunks__: 会转换为语音的自然语言内容. 注意语音播报中使用 tts 等
+        :return: 有真实播放时返回描述秒数; 无播放返回 None; 被中断 raise STOPPED(301) 带进度.
         """
         task = ChannelCtx.task()
         batch_id = task.cid if task else None
         stream = self._speech.new_stream(batch_id=batch_id)
-        await stream.speak(chunks__)
+        samples = []
+        try:
+            await stream.speak(chunks__, samples)
+        except asyncio.CancelledError:
+            CommandUtil.reraise_stopped(stopped_message(samples))
+        return played_message(samples)
 
     def materialize(self, container: IoCContainer) -> "ChannelRuntime":
         channel = PyChannel(name=self._name, description=self._description, blocking=True)
