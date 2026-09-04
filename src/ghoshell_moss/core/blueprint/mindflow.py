@@ -340,9 +340,11 @@ class ChallengeMode(str, enum.Enum):
 
 
 # Impulse 对应的决策倾向. Impulse 是预处理的思维状态, 相当于一种条件反射产生的思维倾向.
-# default == '', 表示思考侧自行决定使用那种响应.
+# off: 表示不要开启模型的思考, 让 logos 输出行为优先.
+# default == '', 表示思考侧默认的响应逻辑. 如果 logos 优先可以选择 off
 # none 则是表示思维不用对此做响应. 仍然可以用于打断注意力, 提供信息等.
-ThinkingEffort = Literal['none', 'flash', '', 'low', 'medium', 'high', 'max']
+# max 是兼容未来 effort 升级的.
+ThinkingEffort = Literal['none', 'off', '', 'low', 'medium', 'high', 'max']
 
 
 class Impulse(BaseModel):

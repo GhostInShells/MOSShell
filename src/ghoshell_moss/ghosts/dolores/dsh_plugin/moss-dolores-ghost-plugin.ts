@@ -4,8 +4,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -38,8 +38,8 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *                       (<epoch index=N> 容器: <recap> + <baseline>, inject, 变更时).
  * 6. moment 投放      — context/epoch → inject (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
  * 7. tool 面          — wait_next_moment (yield, 被动让出) + observe (主动观测, approach a
- *                       内联返回 moment content blocks) 已落地; interleaved_logos /
- *                       switch_model deferred (落文档不实现).
+ *                       内联返回 moment content blocks) + think(effort) (自救改 effort) 已落地;
+ *                       interleaved_logos / switch_model deferred (落文档不实现).
  * 8. 时序图           — 见下方 ASCII.
  *
  * ── 时序: MOSS 驱动路径 (thinking = turn) ──────────────────────────────
@@ -94,8 +94,8 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 不 break turn — 模型在 tool result 到达后继续思考 (interleaved thinking).
  *
  * ── 遗留问题 ────────────────────────────────────────────────────────
- * 1. **applyModelConfig todo**: thinking/enter 的 provider/model/reasoningEffort
- *    未应用到下个 request (agent/request waterfall / session.selectModel).
+ * 1. **applyModelConfig 只做 effort**: reasoningEffort 经 agent/request waterfall 应用
+ *    (doloresCurrentEffort + moss_think); provider/model 不换 (换模型破坏云端 cache, 全量请求).
  * 2. **epoch 周期接线**: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact 压上下文)
  *    尚未装线 — recap/baseline 的生产接在 compact 上.
  * 3. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
@@ -130,6 +130,10 @@ let doloresEgoSessionId: SessionId | null = null
 
 // 防旁路 token (点 4): ego/create 生成返回, thinking/enter|exit 校验 — 拒绝非 ego 发起的调用.
 let doloresThinkingToken: string | null = null
+
+// 当前 thinking effort (dsh reasoningEffort 档位: off/low/medium/high). think tool 中途改,
+// thinking/enter 重置. null = 无 MOSS 覆盖 (首个 enter 之前用模型默认).
+let doloresCurrentEffort: string | null = null
 
 // ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter open ──
 // TS 单线程事件循环, gate = asyncio.Event 等价物 (可反复 open/close, wait 阻塞到 open).
@@ -314,6 +318,13 @@ export function apply(ctx: Context) {
               await thinkingGate.wait(undefined, signal)
               return next()
             })
+            // 模型请求前应用当前 effort (reasoningEffort). think tool 改的值落到下一个
+            // request; thinking/enter 重置基准. null = 无 MOSS 覆盖, 用模型默认.
+            agentCtx.on('agent/request', async (_payload, next) => {
+              const resolved = await next()
+              if (doloresCurrentEffort === null) return resolved
+              return { ...resolved, reasoningEffort: ReasoningEffortId(doloresCurrentEffort) }
+            })
           },
         })
         doloresEgoSessionId = handle.agent.id
@@ -417,6 +428,24 @@ export function apply(ctx: Context) {
         // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).
         const context = await durableMomentContent(ctx, body.moment?.context ?? [])
         const inputs = await durableMomentContent(ctx, body.moment?.inputs ?? [])
+        // none: 只注入数据不解锁 perStep — 不 openThinking / 不 steer, 模型不起 turn (纯吸收背景).
+        if (body.effort === 'none') {
+          if (Array.isArray(body.epoch) && body.epoch.length > 0) {
+            const epochBlocks = await durableMomentContent(ctx, body.epoch)
+            agent.inject(createUserMessage({ content: epochBlocks, source: { kind: 'plugin', plugin: `${name}:epoch` } }))
+          }
+          if (context.length > 0) {
+            agent.inject(createUserMessage({ content: context, source: { kind: 'plugin', plugin: `${name}:moment` } }))
+          }
+          if (inputs.length > 0) {
+            agent.inject(createUserMessage({ content: inputs, source: { kind: 'plugin', plugin: `${name}:moment` } }))
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ thinking: false }))
+          return
+        }
+        // effort → reasoningEffort (off/low/medium/high), 重置本 turn 的 effort 基准.
+        doloresCurrentEffort = mapThinkingEffort(body.effort)
         openThinking()
         // epoch 变更时: <epoch> 容器作为 epoch 级稳定背景 (inject, 不驱动 turn). 在 moment
         // context 之前注入 — epoch 是底座, moment 是坐落在其上的帧.
@@ -448,8 +477,6 @@ export function apply(ctx: Context) {
           // yield 解锁返回 moment_ref (非哑载荷 "ok"), 让模型把「这帧」和「这次解锁」关联起来.
           unlock.resolve(body.moment?.moment_id ?? 'ok')
         } else {
-          // todo: applyModelConfig — provider/model/reasoningEffort 应用到下个 request
-          //   (agent/request waterfall 提案 / session.selectModel).
           // 正常 enter: steer inputs (输入, 驱动 turn). 无 percepts 时 idle 需占位起 turn.
           if (agent.status === 'idle') {
             agent.steer(createUserMessage({
@@ -578,6 +605,25 @@ export function apply(ctx: Context) {
     },
   }))
 
+  // ── moss_think tool (effort 自救通道) ─────────────────────────────────
+  // 模型中途改本 turn 的 reasoning effort, 下一个 request 生效, 下个 enter 重置.
+  ctx.tools.register(defineTool({
+    name: 'moss_think',
+    description: 'Set your reasoning effort for subsequent requests this turn (off/low/medium/high). Resets on the next thinking/enter.',
+    parameters: {
+      effort: { type: 'string', required: true, enum: ['off', 'low', 'medium', 'high'], description: 'Reasoning effort: off (no reasoning) / low / medium / high.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute(args, _exec) {
+      const effort = mapThinkingEffort(args.effort)
+      doloresCurrentEffort = effort
+      return effort
+    },
+  }))
+
   // ── tool-result 桥 (approach a): MOSS 侧 /tool-result 按 callId 解锁 pending tool ──
   ctx.webServer.register({
     kind: 'exact',
@@ -621,13 +667,6 @@ export function apply(ctx: Context) {
   })
 }
 
-// ── helper: model config 应用 (点 3) ───────────────────────────────────
-/**
- * applyModelConfig — 把 thinking/enter 的 model 配置 (provider/model/reasoningEffort)
- * 应用到下个 request. 候选: session.selectModel / agent/request waterfall 提案.
- */
-// function applyModelConfig(agent: Agent, model: { provider: string; model: string; reasoningEffort?: string }): void { ... }
-
 /** moment contents (wire PromptContentPart) → durable ContentBlock[], admit base64 image 成 ref. */
 async function durableMomentContent(ctx: Context, contents: readonly MomentContentPart[]): Promise<ContentBlock[]> {
   if (contents.every(part => part.type === 'text')) {
@@ -642,6 +681,21 @@ async function durableMomentContent(ctx: Context, contents: readonly MomentConte
   return contents.map(part => part.type === 'text'
     ? { type: 'text', text: part.text }
     : { type: 'image', attachment: refs[next++] as ImageAttachmentRef })
+}
+
+/** python ThinkingEffort → dsh reasoningEffort 档位. none 由调用方特判 (no turn);
+ *  off / '' (default) → off; low/medium/high 直传; max → high. */
+function mapThinkingEffort(effort: string | undefined): string {
+  switch (effort) {
+    case 'low':
+    case 'medium':
+    case 'high':
+      return effort
+    case 'max':
+      return 'high'
+    default:
+      return 'off'
+  }
 }
 
 // ── helper: foreign session 冻结提示 (点 4) ─────────────────────────────

@@ -11,7 +11,7 @@
 | D1 | open | P0 | 反馈回路缺失 — speech 无返回提示 + 命令无 `<result>` 回执，行动无后果 → 本能训练被杀死 | dogfood-2 | — |
 | D2 | uncertain | P0 | 帧纪律 — enter moment 未入 session / 奇数帧丢、回复后 flush。debug 发现帧在历史轨迹、界面未渲染，疑似展示层而非 tracer 丢帧 | dogfood-2 | — |
 | D3 | open | P1 | 模式默认 — 按会话种类设默认（实时→CTML / 阅读→文本）+ 双通道原语 + 不对称成本 | dogfood-2 | — |
-| D4 | open | P2 | effort 机制 — 文档化降级为成本旋钮 + 自救工具，不承担方向职责 | dogfood-2 | — |
+| D4 | open | P2 | effort 机制 — 自救工具(think) + effort 映射已落地(plugin)；文档化降级(instruction 写清成本旋钮)待做 | dogfood-2 | — |
 | D5 | open | P0 | TUI 生命周期 — 首轮能发消息、第二轮起不能（round1 后新回归） | dogfood-2 | — |
 | D6 | open | P0 | 沙箱 cwd 错位 — DSH cwd = ghost home 而非 project 根，ghost 无法读写仓库、无自迭代能力 | dogfood-2 | — |
 | D7 | open | P0 | dsh 提示词打架 — DSH 系统提示与 MOSS 元指令五处冲突（工作区/身份/输出机制/perStep/输入来源），元指令缺「裁决级」取舍 | dogfood-2 | — |

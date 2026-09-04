@@ -58,6 +58,7 @@ DSH 推理中枢已接线，Dolores 的 articulate 由 DSH agent-loop 驱动，M
 - **一个 ctml tool 统治全部 channel 面。** channel 永不逐个映射为 tool；哪些 tool 不进 channel 不做全局判据，由实现自行决定。
 - **think='none' 由 ghost 处理，不由 runtime 短路。** noop 也是轨迹事件（「看见 X，选择沉默」），Dolores 必须 witness 它。
 - **tool 结果不进 memento。** interleaved 下 tool 是 thinking 期的纯交互通道，结果不写轨迹。
+- **effort 是 cache 安全旋钮，换模型会破坏 cache。** 只调 reasoningEffort（off/low/medium/high），不换 provider/model——云端 cache 与模型类型相关，换模型 = 全量请求（无 cache 命中）。
 
 ## 待接 (Not Yet Wired)
 
