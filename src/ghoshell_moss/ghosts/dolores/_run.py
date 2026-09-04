@@ -52,17 +52,50 @@ def _get_text_chunk(event: SessionEvent) -> str | None:
 _LogosDelta = str
 
 
-class _CtmlParser:
+def _close_marker(open_marker: str) -> str:
+    """Derive a wrap's close marker from its open marker: `<|X|>` → `</|X|>`."""
+    return open_marker[:1] + '/' + open_marker[1:]
 
-    def __init__(self, articulator: Articulator, ctml_quoter: str = '<|CTML|>') -> None:
+
+class _CtmlParser:
+    """Split a text stream into logos (CTML) and plain (markdown) regions.
+
+    Two modes:
+
+    - plain-default (``ctml_first=False``, the default): the stream starts in plain;
+      ``ctml_quoter`` (``<|CTML|>``) toggles into logos and back. Backward-compatible
+      with the original toggle parser.
+    - ctml-first (``ctml_first=True``): the stream starts in logos; ``markdown_quoter``
+      (``<|Markdown|>``) opens a plain region and its close marker (``</|Markdown|>``)
+      closes it — a proper wrap with an explicit close tag.
+
+    A partial marker is buffered across chunk boundaries; a partial match that fails is
+    flushed as content (logos when inside logos, dropped otherwise).
+    """
+
+    def __init__(
+        self,
+        articulator: Articulator,
+        ctml_quoter: str = '<|CTML|>',
+        *,
+        ctml_first: bool = False,
+        markdown_quoter: str = '<|Markdown|>',
+    ) -> None:
         self._articulator = articulator
-        self._ctml_chars = [c for c in ctml_quoter]
-        self._ctml_mark_length = len(ctml_quoter)
-        self._ctml_buffer = ''
-        self._is_in_ctml = False
+        self._in_logos = ctml_first
+        # markers that switch region: _to_logos_chars (seen in plain), _to_plain_chars
+        # (seen in logos). In plain-default mode both are the same toggle marker.
+        if ctml_first:
+            self._to_logos_chars = list(_close_marker(markdown_quoter))
+            self._to_plain_chars = list(markdown_quoter)
+        else:
+            self._to_logos_chars = list(ctml_quoter)
+            self._to_plain_chars = list(ctml_quoter)
+        self._buffer = ''
 
     async def add(self, text: str) -> _LogosDelta:
-        if self._ctml_mark_length == 0:
+        if not self._to_logos_chars and not self._to_plain_chars:
+            # no markers at all — every token is logos (no fence).
             if text:
                 await self._articulator.send(text)
             return text
@@ -76,53 +109,34 @@ class _CtmlParser:
         return logos
 
     def _add_char(self, char: str) -> _LogosDelta | None:
-        # no buffered CTML marker yet.
-        if self._ctml_buffer == '':
-            # hit the first marker char.
-            if char == self._ctml_chars[0]:
-                # wait for the next char.
-                self._ctml_buffer += char
+        marker_chars = self._to_plain_chars if self._in_logos else self._to_logos_chars
+        if self._buffer == '':
+            if marker_chars and char == marker_chars[0]:
+                self._buffer = char
                 return None
-            else:
-                # no marker and no observed char to track — decide directly.
-                if self._is_in_ctml:
-                    # inside CTML: return a logos delta.
-                    return char
-                else:
-                    # otherwise non-logos.
-                    return None
-        # buffering already — check whether the marker is still matching.
-        else:
-            index = len(self._ctml_buffer)
-            # marker still matches.
-            if index < self._ctml_mark_length and char == self._ctml_chars[index]:
-                # extend the buffer.
-                self._ctml_buffer += char
-                # the extension may have completed the marker.
-                if (index + 1) == self._ctml_mark_length:
-                    # marker complete — flip mode.
-                    self._is_in_ctml = not self._is_in_ctml
-                    self._ctml_buffer = ''
-                return None
-            else:
-                # marker no longer matches — flush the buffered content.
-                if self._is_in_ctml:
-                    buffer = self._ctml_buffer
-                    buffer += char
-                    self._ctml_buffer = ''
-                    return buffer
-                else:
-                    self._ctml_buffer = ''
-                    return None
+            return char if self._in_logos else None
+        index = len(self._buffer)
+        if index < len(marker_chars) and char == marker_chars[index]:
+            self._buffer += char
+            if len(self._buffer) == len(marker_chars):
+                self._in_logos = not self._in_logos
+                self._buffer = ''
+            return None
+        if self._in_logos:
+            out = self._buffer + char
+            self._buffer = ''
+            return out
+        self._buffer = ''
+        return None
 
     async def __aenter__(self) -> Self:
         await self._articulator.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        if self._is_in_ctml and self._ctml_buffer:
-            await self._articulator.send(self._ctml_buffer)
-            self._ctml_buffer = ''
+        if self._in_logos and self._buffer:
+            await self._articulator.send(self._buffer)
+            self._buffer = ''
 
         await self._articulator.wait_action_done()
         await self._articulator.__aexit__(exc_type, exc_val, exc_tb)
@@ -145,6 +159,7 @@ class DoloresRun:
             thinking_event: asyncio.Event,
             facade: "MShellContextFacade",
             ctml_quoter: str = '<|CTML|>',
+            ctml_first: bool = False,
     ) -> None:
         self._ego = ego
         self._thinking = thinking
@@ -155,6 +170,7 @@ class DoloresRun:
         self._enter_error: Exception | None = None
         self._thinking_event: asyncio.Event = thinking_event
         self._ctml_quoter = ctml_quoter
+        self._ctml_first = ctml_first
         # yield marker: set True when the consumer recognizes tool/call == wait_next_moment and breaks;
         # __aexit__ passes it to exit_thinking(yielded=...) — never cancel on yield.
         self.yielded = False
@@ -276,6 +292,7 @@ class DoloresRun:
                     parser = _CtmlParser(
                         self._thinking.articulator(replan=False, wait_action_done=True),
                         ctml_quoter=self._ctml_quoter,
+                        ctml_first=self._ctml_first,
                     )
                     async with parser:
                         while text is not None:

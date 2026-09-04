@@ -652,6 +652,73 @@ class TestCtmlParser:
         assert art.send.await_count == 0
 
 
+class TestCtmlParserInverted:
+    """_CtmlParser(ctml_first=True) — CTML 默认, <|Markdown|>…</|Markdown|> 成对 escape."""
+
+    @staticmethod
+    def _parser():
+        from unittest.mock import AsyncMock
+
+        from ._run import _CtmlParser
+
+        art = AsyncMock()
+        return _CtmlParser(art, ctml_first=True), art
+
+    @staticmethod
+    def _sent(art) -> str:
+        return "".join(c.args[0] for c in art.send.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_default_is_logos(self):
+        parser, art = self._parser()
+        assert await parser.add("hello") == "hello"
+        assert self._sent(art) == "hello"
+
+    @pytest.mark.asyncio
+    async def test_markdown_wrap_drops_region(self):
+        parser, art = self._parser()
+        assert await parser.add("A<|Markdown|>text</|Markdown|>B") == "AB"
+        assert self._sent(art) == "AB"
+
+    @pytest.mark.asyncio
+    async def test_open_and_close_char_by_char(self):
+        parser, art = self._parser()
+        for ch in "<|Markdown|>":
+            assert await parser.add(ch) == ""
+        assert await parser.add("hidden") == ""
+        for ch in "</|Markdown|>":
+            assert await parser.add(ch) == ""
+        assert await parser.add("visible") == "visible"
+
+    @pytest.mark.asyncio
+    async def test_partial_close_across_chunk_boundary(self):
+        parser, art = self._parser()
+        await parser.add("<|Markdown|>")
+        assert await parser.add("text</|Mark") == ""
+        assert await parser.add("down|>after") == "after"
+
+    @pytest.mark.asyncio
+    async def test_open_without_close_drops_rest(self):
+        parser, art = self._parser()
+        assert await parser.add("before<|Markdown|>hidden") == "before"
+        assert self._sent(art) == "before"
+
+    @pytest.mark.asyncio
+    async def test_aexit_flushes_pending_logos_buffer(self):
+        parser, art = self._parser()
+        async with parser:
+            await parser.add("<|Mark")
+        assert self._sent(art) == "<|Mark"
+
+    @pytest.mark.asyncio
+    async def test_aexit_drops_pending_markdown_buffer(self):
+        parser, art = self._parser()
+        async with parser:
+            await parser.add("<|Markdown|>")
+            await parser.add("</|Mark")
+        assert self._sent(art) == ""
+
+
 class TestDoloresMomentPayload:
     """DoloresEgo 的 moment 映射 — context (inject) + inputs (steer) 两条 message."""
 
