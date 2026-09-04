@@ -28,11 +28,11 @@ class CommandError(Exception):
     方便 AI 运行时理解异常.
     """
 
-    def __init__(self, code: int = -1, message: str = "", at_line: str = "") -> None:
+    def __init__(self, code: int = -1, message: str = "", at_line: str = "", error_name: str = '') -> None:
         self.code = code
         self.message = message
         self.at_line = at_line or get_caller_info(2)
-        error_msg = CommandErrorCode.description(code, message)
+        error_msg = CommandErrorCode.description(code, message, error_name=error_name)
         super().__init__(error_msg)
 
     def __repr__(self):
@@ -164,9 +164,9 @@ class CommandErrorCode(IntEnum):
     UNKNOWN_ERROR = 505
     FATAL = 600
 
-    def error(self, message: str) -> CommandError:
+    def error(self, message: str, error_name: str = '') -> CommandError:
         at_line = get_caller_info(2)
-        return CommandError(self.value, message, at_line=at_line)
+        return CommandError(self.value, message, at_line=at_line, error_name=error_name)
 
     @classmethod
     def is_cancelled(cls, err: Exception | int) -> bool:
@@ -183,7 +183,8 @@ class CommandErrorCode(IntEnum):
         return 200 <= code < 300
 
     @classmethod
-    def is_failed(cls, err: Exception | int) -> bool:
+    def is_notifiable(cls, err: Exception | int) -> bool:
+        """需要被通知的异常."""
         if err is None:
             return False
         if isinstance(err, Exception):
@@ -228,8 +229,9 @@ class CommandErrorCode(IntEnum):
             return cls.UNKNOWN_ERROR.name
 
     @classmethod
-    def description(cls, errcode: int, errmsg: str | None = None) -> str:
+    def description(cls, errcode: int, errmsg: str | None = None, error_name: str = '') -> str:
         if errcode == cls.SUCCESS:
             return "success"
-        name = cls.get_error_code_name(errcode)
-        return "{}: {}".format(name, errmsg or "no errmsg")
+        if not error_name:
+            error_name = cls.get_error_code_name(errcode)
+        return "{}: {}".format(error_name, errmsg or "no errmsg")

@@ -1200,8 +1200,8 @@ class CommandTask(Generic[RESULT], ABC):
         """
         pass
 
-    def is_failed(self) -> bool:
-        return self.done() and self.errcode != 0
+    def is_notifiable(self) -> bool:
+        return self.errcode != 0 and CommandErrorCode.is_notifiable(self.errcode)
 
     def is_critical_failed(self) -> bool:
         return self.done() and self.errcode != 0 and CommandErrorCode.is_critical(self.errcode)
@@ -1562,7 +1562,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                     messages=error.as_messages(),
                     observe=True,
                 )
-                self._set_result(None, "failed", CommandErrorCode.OBSERVE, error.message)
+                self._set_result(None, CommandTaskState.failed.value, CommandErrorCode.OBSERVE, error.message)
                 return
 
             elif isinstance(error, str):
@@ -1591,9 +1591,14 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             else:
                 errcode = 0
                 errmsg = ""
+            if CommandErrorCode.is_cancelled(errcode):
+                state = CommandTaskState.cancelled.value
+            else:
+                state = CommandTaskState.failed.value
+
             self._set_result(
                 None,
-                "cancelled" if CommandErrorCode.is_cancelled(errcode) else "failed",
+                state,
                 errcode,
                 errmsg,
             )
@@ -1616,8 +1621,9 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             exp = self.exception()
             # failed 以上级别的异常要记录.
             # cancel 不要. 因为 cancel 可能很多.
-            if exp is not None and CommandErrorCode.is_failed(exp):
-                item = Message.new().with_content("Error: %s" % exp)
+            if exp is not None and CommandErrorCode.is_notifiable(exp):
+                notice = str(exp)
+                item = Message.new().with_content(notice)
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[
@@ -1632,7 +1638,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.__task_result.observe = self.__task_result.observe or self.meta.always_observe
         return self.__task_result
 
-    def exception(self) -> Optional[Exception]:
+    def exception(self) -> Optional[CommandError]:
         if self.errcode is None or self.errcode == 0:
             return None
         else:
