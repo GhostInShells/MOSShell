@@ -6,8 +6,9 @@ description: Speech 体系治理：解耦 commands 权责泄漏，player 多后�
 milestone: null
 priority: P2
 status: in-progress
-status_note: 重开承载 __content__ 可选化：D10 修正 D1（Shell 不再默认注入 __content__），说侧文本广播废弃 SpeechTopic
-  publisher 路径，SpeechTopic 需重设计。
+status_note: 重开承载 __content__ 可选化 (D10) 与说侧可感知播放 (D11)：say/__content__ 有真实播放时返回描述秒数、无播放
+  返回 None、中断 raise STOPPED(301) 带最后片段；真实播放文本经 on_sample → PlaybackSample.text 对齐；顺带清 cmd_task
+  交叉耦合。SpeechTopic 需重设计。
 title: Speech Governance — 解耦、多后端、容错降级
 updated: '2026-09-04'
 ---
@@ -365,6 +366,47 @@ class FallbackSpeech(Speech):
 - `SpeechTopic` schema 本身待重设计（`topics/audio.py` 已有三个 todo：字段缺
   description、timestamp 冗余、audio_key 未实现），后续单独治理。
 - 依赖"free text 默认变语音"的单测需显式注册 `__content__` 或改用 `say`。
+
+### D11: 说侧可感知播放 — 真实样本回调 + 返回描述秒数 + 中断 STOPPED (P2) — 2026-09-04
+
+**动机**: `say` / `__content__` 过去无返回值, 模型不知道"这句播了多久、说到哪被掐断"。
+`buffered()` 是喂入文本总量, cancel 时含未合成/未播放部分, 不可靠; 真实播放文本必须靠音频
+真正写入设备后的 `PlaybackSample` 对齐. 目标: 命令能感知真实播放进度并回报.
+
+**顺带清理**: 删 `contracts/speech.py` 的 `cmd_task` / `as_command_task()` (0.0 时代残留,
+contracts 反向依赖 core.concepts.command), mock / stream_tts_speech 同步清残留.
+
+**机制分层**:
+
+| 层 | 改动 |
+|----|------|
+| player | `StreamAudioPlayer.add(text)` → `PlaybackSample.text`, 样本自解释真实播放文本 |
+| stream | `SpeechStream.on_sample(callback) -> disposer` 暴露真实样本回调 (基类默认 no-op);
+  `TTSSpeechStream` 订阅 `player.observe` 过滤 `stream_id == self.id`; `say(samples)` 注册
+  `samples.append`, `finally` 摘除 — discard 兜底在 say |
+| command error | `CommandErrorCode.STOPPED = 301` (notify 档); `CommandUtil.reraise_stopped(message)` |
+| speech_module | `say` / `__content__` 收集 samples, 见返回契约 |
+
+**命令返回契约**:
+- 正常结束且有真实播放样本 → 返回描述字符串 `"played {n:.1f}s"`
+- 无播放样本 (MockSpeech / 尚未出声) → 返回 `None`, 不报误导性的 0.0s
+- 被中断 (cancel) → 捕获最后真实播放片段, `reraise_stopped("played {n}s, stopped at ...{tail}")`
+
+**Why**:
+- `buffered()` 不可靠 → 真实播放文本必须由写出设备的 PlaybackSample 提供, 故 player 透传 text.
+- `on_sample` 把对齐机制封装成回调, command 传 list 收样本即算秒数/取尾文本 — **command 内完成装线**,
+  不触碰 player / CommandTask 内部.
+- STOPPED(301) 落 notify 档 (is_notifiable 记录成可读 message, 不触发 observe/中断).
+- 正常/中断统一描述文案, 模型据此判断"续说 / 承认被打断 / 跳过".
+
+**变更文件**: `contracts/speech.py`, `core/speech/base_player.py`, `core/speech/stream_tts_speech.py`,
+`core/speech/mock.py`, `core/speech/speech_module.py`, `core/concepts/errors.py`,
+`core/blueprint/channel_builder.py`, 测试 (`test_player_playback_sample.py`, `test_mock.py`,
+`test_elements.py`, `test_command_task.py`).
+
+**后续未决**:
+- `SpeechChannel.say` (speech_channel.py) 仍走 `speak()`, 未接 samples — 是否统一待定.
+- 返回值对 channel / ghost 消费侧的观察 (dolores 装线 dogfood).
 
 ## Implementation Plan
 

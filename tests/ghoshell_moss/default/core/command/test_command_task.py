@@ -13,6 +13,7 @@ from ghoshell_moss.core.concepts.command import (
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.concepts.channel import ChannelCtx
+from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 
 
 @pytest.mark.asyncio
@@ -324,3 +325,42 @@ async def test_command_task_with_progresses():
 
     await task.run()
     assert len(progresses) == 10
+
+
+@pytest.mark.asyncio
+async def test_command_reraises_stopped_on_cancel():
+    """命令被 asyncio cancel 时, catch CancelledError 后 reraise STOPPED(301) 携带进度."""
+    async def cmd():
+        try:
+            await asyncio.sleep(60)   # 模拟播放中
+        except asyncio.CancelledError:
+            CommandUtil.reraise_stopped("played 3.2s, stopped at ...世界")
+
+    runner = asyncio.create_task(cmd())
+    await asyncio.sleep(0.02)
+    runner.cancel()
+    with pytest.raises(CommandError) as ei:
+        await runner
+    assert ei.value.code == CommandErrorCode.STOPPED
+    assert "stopped at" in ei.value.message
+
+
+@pytest.mark.asyncio
+async def test_stopped_is_notifiable_without_observe():
+    """STOPPED(301) 落 notify 档: fail 后生成可读 message, 不触发 observe, 非调度取消."""
+    async def foo() -> int:
+        return 123
+
+    task = BaseCommandTask.from_command(PyCommand(foo))
+    task.fail(CommandErrorCode.STOPPED.error("played 3.2s, stopped at ...世界"))
+    assert task.done()
+    assert task.errcode == CommandErrorCode.STOPPED
+    assert not task.cancelled()     # state=failed, 不是 200 区调度取消
+    assert not task.success()
+
+    tr = task.task_result()
+    assert tr is not None
+    assert tr.observe is False      # 不触发 observe
+    msgs = tr.as_messages()
+    assert len(msgs) > 0
+    assert "stopped at" in msgs[0].to_content_string()

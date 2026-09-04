@@ -138,6 +138,9 @@ class CommandErrorCode(IntEnum):
 
     # --- 需要 AI 感知的异常. --- #
     FAILED = 300
+    # 命令被取消/中断但携带可读的进度信息 (如"播放了 n 秒, 停在 xxx").
+    # is_notifiable 会把它记录成可读 message, 但 code < 400 不触发 observe 也不中断.
+    STOPPED = 301
 
     # --- 不合法的异常, 需要 AI 立刻去响应. --- #
 

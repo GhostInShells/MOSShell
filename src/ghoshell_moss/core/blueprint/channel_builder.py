@@ -29,6 +29,7 @@ from typing_extensions import Self
 from ghoshell_moss.core import ChannelRuntime
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import Command, Observe, ObserveError
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, Publisher, Subscriber
 from ghoshell_moss.core.blueprint.mindflow import Signal
@@ -199,6 +200,16 @@ class CommandUtil:
     def observe_error(cls, value: str) -> 'ObserveError':
         from ghoshell_moss.core.concepts.command import ObserveError
         return ObserveError(value)
+
+    @classmethod
+    def reraise_stopped(cls, message: str) -> None:
+        """命令被取消/中断时上报进度: 把 cancel 重写为 STOPPED (301) CommandError.
+
+        命令函数在 ``except asyncio.CancelledError`` 分支调用, raise 一个携带
+        message 的 STOPPED 异常. 它会被 is_notifiable 记录成模型可读的 message,
+        但 code < 400 不触发 observe, 也不中断解释流程. 此方法从不返回.
+        """
+        raise CommandErrorCode.STOPPED.error(message)
 
     @classmethod
     def send_signal(cls, signal: Signal) -> None:

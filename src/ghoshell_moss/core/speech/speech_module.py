@@ -4,8 +4,33 @@ import json
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
-from ghoshell_moss.contracts.speech import Speech, SpeechStream, TTSSpeech
+from ghoshell_moss.contracts.speech import PlaybackSample, Speech, SpeechStream, TTSSpeech
 from ghoshell_moss.core.speech.null import NullSpeech
+
+
+# 返回值约定: 正常结束且有真实播放时返回描述播放秒数的字符串; 无播放样本返回 None;
+# 被中断时 raise STOPPED(301) 携带进度.
+_TAIL_LEN = 20
+
+
+def _played_seconds(samples: list[PlaybackSample]) -> float:
+    return sum((s.duration for s in samples), 0.0)
+
+
+def _played_message(samples: list[PlaybackSample]) -> str | None:
+    # 没有任何真实播放样本 (MockSpeech / 尚未出声) 时返回 None, 不报误导性的 0.0s.
+    if not samples:
+        return None
+    return f"played {_played_seconds(samples):.1f}s"
+
+
+def _stopped_message(samples: list[PlaybackSample]) -> str:
+    seconds = _played_seconds(samples)
+    if samples:
+        tail = samples[-1].text.strip()[-_TAIL_LEN:]
+        if tail:
+            return f"played {seconds:.1f}s, stopped at ...{tail}"
+    return f"played {seconds:.1f}s, stopped before audible output"
 
 
 def build_content_command(speech: Speech, name: str = "__content__") -> Command:
@@ -47,19 +72,26 @@ class _SpeechCommandFactory:
             _ = asyncio.create_task(_feed_stream(stream, chunks__))
             return [], {"chunks__": stream}
 
-        async def __content__(chunks__) -> None:
+        async def __content__(chunks__) -> str | None:
             """Speak the chunks with your voice. The content becomes spoken audio —
-            avoid visually-oriented text (tables, special symbols, markdown) as speech content."""
+            avoid visually-oriented text (tables, special symbols, markdown) as speech content.
+            Returns a short description of seconds played; on interruption raises STOPPED(301) with progress."""
             if not speech.is_running():
                 return None
             if not isinstance(chunks__, SpeechStream):
                 return None
+            samples: list[PlaybackSample] = []
+            disposer = chunks__.on_sample(samples.append)
             try:
                 await chunks__.start_synthesis()
                 await chunks__.start_play()
                 await chunks__.wait_played()
+            except asyncio.CancelledError:
+                CommandUtil.reraise_stopped(_stopped_message(samples))
             finally:
+                disposer()
                 await chunks__.close()
+            return _played_message(samples)
 
         return PyCommand(func=__content__, partial=_content_partial, name=name, blocking=True)
 
@@ -88,6 +120,8 @@ class _SpeechCommandFactory:
                 f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"
                 f"  Current tone is `{current_tone}`."
                 f"  Available tones: {tone_descriptions_str}\n"
+                f"\n"
+                f":return: a short description of seconds actually played. On interruption raises a STOPPED error carrying progress.\n"
             )
 
         async def say_partial(
@@ -120,10 +154,15 @@ class _SpeechCommandFactory:
             _ = asyncio.create_task(run_tts_batch())
             return [], dict(voice=voice, chunks__=stream, as_default=as_default)
 
-        async def say(chunks__, voice: dict | None = None, as_default: bool = False, tone: str = "") -> None:
+        async def say(chunks__, voice: dict | None = None, as_default: bool = False, tone: str = "") -> str | None:
             if not isinstance(chunks__, SpeechStream):
                 raise ValueError(f"System error: Chunks is not prepared")
-            await chunks__.say()
+            samples: list[PlaybackSample] = []
+            try:
+                await chunks__.say(samples)
+            except asyncio.CancelledError:
+                CommandUtil.reraise_stopped(_stopped_message(samples))
+            return _played_message(samples)
 
         return PyCommand(
             say,

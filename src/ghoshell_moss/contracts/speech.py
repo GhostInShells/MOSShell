@@ -9,9 +9,6 @@ from typing_extensions import TypedDict
 
 import numpy as np
 from pydantic import BaseModel, Field
-from typing_extensions import Self
-from ghoshell_moss.core.concepts.command import CommandTask, PyCommand, Command
-import json
 
 __all__ = [
     "AudioFormat",
@@ -38,11 +35,10 @@ class SpeechStream(ABC):
     def __init__(
             self,
             id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
-            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+            *,
             committed: bool = False,  # 是否完成了这个 stream 的提交
     ):
         self.id = id
-        self.cmd_task = cmd_task
         self.committed = committed
 
     def feed(self, text: str, *, complete: bool = False) -> None:
@@ -60,9 +56,6 @@ class SpeechStream(ABC):
         if text:
             # 文本不为空.
             self._buffer(text)
-            if self.cmd_task is not None:
-                # buffer 到 cmd task
-                self.cmd_task.tokens = self.buffered()
         if complete:
             # 提交.
             self.commit()
@@ -95,51 +88,21 @@ class SpeechStream(ABC):
         """真实的结束 stream 讯号. 如果 stream 通过 tts 实现, 这个讯号会通知 tts 完成输出."""
         pass
 
-    def as_command_task(self, commit: bool = False, chan: str = "") -> Optional[CommandTask]:
-        """
-        将 speech stream 转化为一个 command task, 使之可以发送到 Shell 中阻塞.
-        这种使用方法, 假设 Stream 是独立在外部完成 feed & commit.
-        """
-        from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandMeta, CommandWrapper
-
-        if self.cmd_task is not None:
-            # 只生成一个 task.
-            return self.cmd_task
-
-        if commit:
-            # 是否要标记提交. stream 可能在生成 task 的时候, 还没有完成内容的提交.
-            self.commit()
-
-        meta = CommandMeta(
-            name="__speak__",
-            # 默认主轨运行.
-            blocking=True,
-        )
-        start_synthesis = self.start_synthesis
-
-        async def partial(*args, **kwargs) -> tuple[list, dict]:
-            # 启动 tts 合成.
-            nonlocal start_synthesis
-            await start_synthesis()
-            start_synthesis = None
-            return list(args), kwargs
-
-        command = CommandWrapper(meta, self.say, partial=partial)
-        task = BaseCommandTask.from_command(
-            command,
-            chan_=chan,
-            cid=self.id,
-        )
-        # 添加默认的 tokens.
-        self.cmd_task = task
-        return task
-
     @abstractmethod
     def buffered(self) -> str:
         """
         返回已经缓冲的文本内容, 可能经过了加工.
         """
         pass
+
+    def on_sample(self, callback: Callable[['PlaybackSample'], None]) -> Callable[[], None]:
+        """注册 sample 回调: 播放真实样本时回调 callback. 返回 disposer 移除回调.
+
+        默认 no-op (返回空 disposer, 不收样本): 不产生真实播放样本的实现
+        (如 NullSpeech) 无需覆盖; 产生样本的实现 (如 TTSSpeechStream) 应覆盖,
+        只回调属于本 stream (stream_id 匹配) 的样本.
+        """
+        return lambda: None
 
     @abstractmethod
     async def wait_played(self) -> None:
@@ -169,7 +132,7 @@ class SpeechStream(ABC):
         pass
 
     @abstractmethod
-    async def start_play(self) -> Self:
+    async def start_play(self) -> None:
         """
         允许播放声音. 在允许播放声音的同时, 上一个 Stream 必须被关闭.
         """
@@ -190,19 +153,29 @@ class SpeechStream(ABC):
         """
         pass
 
-    async def say(self) -> None:
+    async def say(self, samples: list['PlaybackSample'] | None = None) -> None:
         """
         播放文本的完整生命周期.
+
+        :param samples: 非空时, 真实播放样本会追加到此列表, 供调用方 (如 command)
+            读取"实际播出了什么、播了多久". say 结束 (正常/异常/取消) 都会摘除注册.
         """
         if self.is_closed():
             return
-        async with self:
-            # 不会主动 commit.
-            # 如果没有开始解析, 这时要开启.
-            await self.start_synthesis()
-            # 如果没有允许播放, 这时要允许播放.
-            await self.start_play()
-            await self.wait_played()
+        disposer = None
+        if samples:
+            disposer = self.on_sample(samples.append)
+        try:
+            async with self:
+                # 不会主动 commit.
+                # 如果没有开始解析, 这时要开启.
+                await self.start_synthesis()
+                # 如果没有允许播放, 这时要允许播放.
+                await self.start_play()
+                await self.wait_played()
+        finally:
+            if disposer:
+                disposer()
 
     async def speak(self, chunks__: AsyncIterable[str]) -> None:
         """
@@ -280,7 +253,6 @@ class Speech(ABC):
     async def run_until_closed(self) -> None:
         async with self:
             await self.wait_closed()
-
 
 
 class AudioFormat(Enum):
@@ -364,6 +336,10 @@ class StreamAudioPlayer(ABC):
 
         注意: 这个接口是非阻塞的, 通常会立刻返回. 方便提前把流式的音频片段都 buffer 好.
 
+        :param chunk: audio chunk
+        :param audio_type: audio type (for resample)
+        :param rate: audio rate (for resample)
+        :param channels: audio channels
         :param stream_id: 可选的流标识. 相同 stream_id 的片段属于同一个播放流,
             消费方 (如 speech_storage) 用它分组拼接. 缺省为空串.
         :param fragment_id: 可选的片段身份 (通常是自增整数). 发送方传入, 消费方

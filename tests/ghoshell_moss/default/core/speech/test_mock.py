@@ -26,8 +26,8 @@ async def test_output_in_asyncio():
         sending_task = asyncio.create_task(buffer_stream(stream, idx))
 
         # assert the tasks run in order
-        cmd_task = stream.as_command_task()
-        await asyncio.gather(sending_task, asyncio.create_task(cmd_task.run()))
+        say_task = asyncio.create_task(stream.say())
+        await asyncio.gather(sending_task, say_task)
 
     outputted = await mock_speech.clear()
     assert len(outputted) == 5
@@ -59,9 +59,8 @@ async def test_output_in_concurrent():
         idx = i
         stream = mock_speech.new_stream(batch_id=str(idx))
         stream = stream
-        cmd_task = stream.as_command_task()
         gathering.append(buffer_stream(stream, idx))
-        gathering.append(cmd_task.run())
+        gathering.append(stream.say())
 
         # assert the tasks run in order
     await asyncio.gather(*gathering)

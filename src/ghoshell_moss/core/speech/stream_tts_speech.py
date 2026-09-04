@@ -9,6 +9,7 @@ from ghoshell_moss.message import unique_id
 from ghoshell_moss.contracts.speech import (
     TTS,
     AudioFormat,
+    PlaybackSample,
     TTSSpeech,
     SpeechStream,
     StreamAudioPlayer,
@@ -33,7 +34,6 @@ class TTSSpeechStream(SpeechStream):
         super().__init__(id=batch_id)
 
         self.logger = logger
-        self.cmd_task = None
         self.committed = False
         self._sample_rate = sample_rate
         self._running_loop = loop
@@ -86,6 +86,20 @@ class TTSSpeechStream(SpeechStream):
 
     def is_closed(self) -> bool:
         return self._closed_event.is_set()
+
+    def on_sample(self, callback: Callable[[PlaybackSample], None]) -> Callable[[], None]:
+        """订阅 player 的真实播放样本, 只回调属于本 stream 的片段.
+
+        player.observe 是全局回调 — 这里包一层 stream_id 过滤, 只把本 stream
+        (id == batch_id) 的样本交给 callback. 返回 player 的 disposer,
+        say() 结束时会调用摘除.
+        """
+
+        def _match(sample: PlaybackSample) -> None:
+            if sample.stream_id == self.id:
+                callback(sample)
+
+        return self._player.observe(_match)
 
     async def _play_loop(self) -> None:
         try:
