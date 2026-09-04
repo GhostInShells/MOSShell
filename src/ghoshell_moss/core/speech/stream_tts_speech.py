@@ -111,7 +111,7 @@ class TTSSpeechStream(SpeechStream):
             async for item in self._tts_batch.items():
                 # 每个 item 的 text 随音频进 player, sample 借此自解释真实播放文本.
                 self._player.add(
-                    data=item["audio"],
+                    chunk=item["audio"],
                     channels=self._channels,
                     audio_type=self._audio_type,
                     rate=self._sample_rate,

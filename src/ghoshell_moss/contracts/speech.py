@@ -163,7 +163,7 @@ class SpeechStream(ABC):
         if self.is_closed():
             return
         disposer = None
-        if samples:
+        if samples is not None:
             disposer = self.on_sample(samples.append)
         try:
             async with self:
@@ -185,7 +185,7 @@ class SpeechStream(ABC):
             speak 结束 (正常/异常/取消) 都会摘除注册.
         """
         disposer = None
-        if samples:
+        if samples is not None:
             disposer = self.on_sample(samples.append)
         try:
             async with self:
