@@ -68,8 +68,8 @@ class DoloresEgoConfig(BaseModel):
         description="dsh agent preset name — the ego session's persona + tool set.",
     )
     session_title: str = Field(
-        default="Ego [{timestamp}]",
-        description="session title template ({timestamp} placeholder), the human-readable session name.",
+        default="{name} [{timestamp}]",
+        description="session title template ({name}/{timestamp} placeholders), the human-readable session name.",
     )
     permission: str = Field(
         default="workspace-write",
@@ -193,6 +193,7 @@ class DoloresEgo:
                 "project_home": str(self._ctx.project_home),
                 "project_name": self._ctx.project_name,
                 "title": self._config.session_title.format(
+                    name=self._ctx.name,
                     timestamp=datetime.now().strftime("%y-%m-%d %H:%M:%S"),
                 ),
                 "instruction": self._ctx.instruction,

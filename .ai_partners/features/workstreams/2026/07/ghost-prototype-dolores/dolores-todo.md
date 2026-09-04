@@ -13,7 +13,7 @@
 | D3 | open | P1 | 模式默认 — 按会话种类设默认（实时→CTML / 阅读→文本）+ 双通道原语 + 不对称成本 | dogfood-2 | — |
 | D4 | open | P2 | effort 机制 — 自救工具(think) + effort 映射已落地(plugin)；文档化降级(instruction 写清成本旋钮)待做 | dogfood-2 | — |
 | D5 | open | P0 | TUI 生命周期 — 首轮能发消息、第二轮起不能（round1 后新回归） | dogfood-2 | — |
-| D6 | open | P0 | 沙箱 cwd 错位 — DSH cwd = ghost home 而非 project 根，ghost 无法读写仓库、无自迭代能力 | dogfood-2 | — |
+| D6 | fixed | P0 | 沙箱 cwd 错位 — DSH cwd = ghost home 而非 project 根，ghost 无法读写仓库、无自迭代能力 | dogfood-2 | project_home → project root |
 | D7 | open | P0 | dsh 提示词打架 — DSH 系统提示与 MOSS 元指令五处冲突（工作区/身份/输出机制/perStep/输入来源），元指令缺「裁决级」取舍 | dogfood-2 | — |
 | D8 | fixed | — | 回声全量重渲染（facade-delta 未生效） | ego-wiring | `2e57a8f8` |
 | D9 | invalid | — | baseline `<key>value</key>` 渲染污染 — 记录错误，key 作 tag 判定正确，无需改 | ego-wiring | — |

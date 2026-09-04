@@ -179,8 +179,8 @@ class Dolores(Ghost):
 
             self._facade = MShellContextFacade(self._shell)
             ctx = DoloresEgoContext(
-                project_home=self._home,
-                project_name=f"Ghost {self._meta.name()} Home",
+                project_home=self._matrix.env.project_path,
+                project_name=self._matrix.env.project_name,
                 name=self._meta.name(),
                 instruction=self.system_prompt(),
                 facade=self._facade,
