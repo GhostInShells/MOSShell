@@ -4,15 +4,14 @@ import json
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
-from ghoshell_moss.contracts.speech import PlaybackSample, Speech, SpeechStream, TTSSpeech
+from ghoshell_moss.contracts.speech import PlaybackSample, Speech, SpeechStream, TTSSpeech, split_speech_tokens
 from ghoshell_moss.core.speech.null import NullSpeech
 
 
 # 返回值约定: 正常结束且有真实播放时返回描述播放秒数的字符串; 无播放样本返回 None;
 # 被中断时 raise STOPPED(301) 携带进度.
-_TAIL_LEN = 20
-
-
+# 尾帧文本由 backend (volcengine/mimo) 在拿不到 text-音频对齐时附到最后一个 PlaybackSample.text
+# (见 contracts.speech.speech_tail), 这里直接消费 samples[-1].text; 中英混排按 token 切分.
 def _played_seconds(samples: list[PlaybackSample]) -> float:
     return sum((s.duration for s in samples), 0.0)
 
@@ -26,10 +25,10 @@ def played_message(samples: list[PlaybackSample]) -> str | None:
 
 def stopped_message(samples: list[PlaybackSample]) -> str:
     seconds = _played_seconds(samples)
-    if samples:
-        tail = samples[-1].text.strip()[-_TAIL_LEN:]
-        if tail:
-            return f"played {seconds:.1f}s, stopped at ...{tail}"
+    tail = samples[-1].text.strip() if samples else ""
+    if tail:
+        words = split_speech_tokens(tail)
+        return f"played {seconds:.1f}s, {len(words)} words, stopped at ...{tail}"
     return f"played {seconds:.1f}s, stopped before audible output"
 
 

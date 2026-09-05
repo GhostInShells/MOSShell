@@ -14,7 +14,7 @@ from pydantic import Field
 from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
-from ghoshell_moss.contracts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem
+from ghoshell_moss.contracts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem, speech_tail
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.host.speech.volcengine_tts.protocol import (
     EventType,
@@ -123,20 +123,33 @@ class VolcengineTTSBatch(TTSBatch):
     async def items(self) -> AsyncIterator[TTSItem]:
         if not self._started:
             return
+        # 拿不到 text-音频对齐时, 在最后一帧附上尾帧文本 (已喂文本的尾部), 供 stopped_message 消费.
+        prev_audio = None
         while True:
             audio = await self._chunks.get()
             if audio is None:
-                break
-            item = TTSItem(
-                tone=self.tone,
-                voice=self.voice,
-                audio_format=self.audio_format,
-                channels=self.channel,
-                sample_rate=self.sample_rate,
-                audio=audio,
-                text="",
-            )
-            yield item
+                if prev_audio is not None:
+                    yield TTSItem(
+                        tone=self.tone,
+                        voice=self.voice,
+                        audio_format=self.audio_format,
+                        channels=self.channel,
+                        sample_rate=self.sample_rate,
+                        audio=prev_audio,
+                        text=speech_tail(self.text_buffer),
+                    )
+                return
+            if prev_audio is not None:
+                yield TTSItem(
+                    tone=self.tone,
+                    voice=self.voice,
+                    audio_format=self.audio_format,
+                    channels=self.channel,
+                    sample_rate=self.sample_rate,
+                    audio=prev_audio,
+                    text="",
+                )
+            prev_audio = audio
         return
 
     def with_callback(self, callback: TTSAudioCallback) -> None:

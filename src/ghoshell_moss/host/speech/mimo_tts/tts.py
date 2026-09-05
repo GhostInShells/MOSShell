@@ -14,6 +14,7 @@ from ghoshell_moss.contracts.speech import (
     TTSInfo,
     TTSAudioCallback,
     AudioFormat,
+    speech_tail,
 )
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.message import unique_id
@@ -68,6 +69,7 @@ class MiMoTTSBatch(TTSBatch):
         self._chunks: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
         self._text_queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._http_task: Optional[asyncio.Task] = None
+        self._full_text: str = ""
         self._log_prefix = f"[MiMoTTSBatch][id={self._batch_id} tone={self._tone}]"
 
     def batch_id(self) -> str:
@@ -129,19 +131,33 @@ class MiMoTTSBatch(TTSBatch):
         self._chunks.put_nowait(None)
 
     async def items(self) -> AsyncIterator[TTSItem]:
+        # 拿不到 text-音频对齐时, 在最后一帧附上尾帧文本 (已喂文本尾部), 供 stopped_message 消费.
+        prev_chunk = None
         while True:
             chunk = await self._chunks.get()
             if chunk is None:
+                if prev_chunk is not None:
+                    yield TTSItem(
+                        tone=self._tone,
+                        voice={},
+                        audio_format=AudioFormat.PCM_S16LE.value,
+                        channels=1,
+                        sample_rate=self._sample_rate,
+                        audio=prev_chunk,
+                        text=speech_tail(self._full_text),
+                    )
                 return
-            yield TTSItem(
-                tone=self._tone,
-                voice={},
-                audio_format=AudioFormat.PCM_S16LE.value,
-                channels=1,
-                sample_rate=self._sample_rate,
-                audio=chunk,
-                text="",
-            )
+            if prev_chunk is not None:
+                yield TTSItem(
+                    tone=self._tone,
+                    voice={},
+                    audio_format=AudioFormat.PCM_S16LE.value,
+                    channels=1,
+                    sample_rate=self._sample_rate,
+                    audio=prev_chunk,
+                    text="",
+                )
+            prev_chunk = chunk
 
     def _run_http(self):
         """Threadsafe entry: schedule _execute_http on the event loop."""
@@ -163,6 +179,7 @@ class MiMoTTSBatch(TTSBatch):
                     break
                 texts.append(text)
             full_text = "".join(texts)
+            self._full_text = full_text
             if not full_text.strip():
                 self._logger.warning("%s empty text, skipping", self._log_prefix)
                 self._chunks.put_nowait(None)

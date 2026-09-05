@@ -1,6 +1,7 @@
 """Speech contract — audio capture, playback, and streaming speech interfaces."""
 
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -22,7 +23,23 @@ __all__ = [
     "TTSBatch",
     "TTSInfo",
     "TTSSpeech",
+    "split_speech_tokens",
+    "speech_tail",
 ]
+
+# 中文无空格, text.split() 会把整句中文当成 1 个 token; 用正则把英文单词 + 每个 CJK 字符拆开,
+# 中英混排都能得出合理计数. 供 backends 附"尾帧文本"与 stopped_message 计数共用.
+_WORD_RE = re.compile(r"[A-Za-z0-9]+|[^\sA-Za-z0-9]")
+_TAIL_WORDS = 6
+
+
+def split_speech_tokens(text: str) -> list[str]:
+    return _WORD_RE.findall(text)
+
+
+def speech_tail(text: str, n: int = _TAIL_WORDS) -> str:
+    """取文本尾部的最后 n 个 token (中英混排, 中文按字符计)."""
+    return " ".join(split_speech_tokens(text)[-n:])
 
 
 class SpeechStream(ABC):

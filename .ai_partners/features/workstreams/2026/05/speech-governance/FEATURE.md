@@ -10,7 +10,7 @@ status_note: 已完成 D10 (__content__ 可选化) 与 D11 (说侧可感知播�
   未做承诺已标 out-of-scope (见 Implementation Plan)。SpeechTopic schema 重设计待 voice-input-state-machine 完成后
   收尾，届时再 completed。
 title: Speech Governance — 解耦、多后端、容错降级
-updated: '2026-09-04'
+updated: '2026-09-05'
 ---
 
 # Speech Governance
@@ -407,6 +407,11 @@ contracts 反向依赖 core.concepts.command), mock / stream_tts_speech 同步�
 **后续未决**:
 - `SpeechChannel.say` (speech_channel.py) 仍走 `speak()`, 未接 samples — 是否统一待定.
 - 返回值对 channel / ghost 消费侧的观察 (dolores 装线 dogfood).
+
+**后续修订 (2026-09-05)**: 尾帧文本改为 backend 降级提供 — volcengine/mimo 拿不到
+text↔音频对齐时, 在最后一个 `PlaybackSample.text` 附上已喂文本尾部 (`speech_tail`,
+中英混排 token 切分); `stopped_message` 直接消费 `samples[-1].text` 而非 `[-_TAIL_LEN:]`
+切片段, 并补词数。`split_speech_tokens` / `speech_tail` 落在 `contracts/speech.py`。
 
 ## Implementation Plan
 
