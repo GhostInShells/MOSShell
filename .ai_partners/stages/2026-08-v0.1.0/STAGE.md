@@ -217,6 +217,7 @@ Operational log in milestones/:
 
 - [2026-08-10 — Mailbox real-machine bridge](milestones/2026-08-10-mailbox-first-real-machine-bridge.md) — external agent ↔ echo ghost cross-host dialog via MCP mailbox
 - [2026-08-28 — Dolores dsh real-machine bridge](milestones/2026-08-28-dolores-dsh-wiring-first-bridge.md) — MOSS drives dsh as inference core; external wake chain verified
+- [2026-09-05 — First smooth on-platform round](milestones/2026-09-05-dolores-first-smooth-moss-round.md) — first fully fluent human⇄model⇄Dolores round on MOSS; captured live Markdown-escape-hatch defect
 
 ## Retrospective
 
