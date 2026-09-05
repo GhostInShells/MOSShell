@@ -484,7 +484,20 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if stale_time > 0.0 and now < (self._last_channel_metas_refreshed_at + stale_time):
             # 如果近期执行过刷新, 则在同样的时间内不反复触发.
             return True
-        return await self._refresh_channel_metas(timeout=timeout)
+        return await self._refresh_channel_metas_shared(timeout=timeout)
+
+    async def _refresh_channel_metas_shared(self, timeout: float | None) -> bool:
+        """并发 ``refresh_metas`` 的 in-flight 守卫.
+
+        底层 tree/runtime 各有 "一次只刷一次" 守卫, 但 shell 层此前只有 ``stale_time``
+        时间窗去重 (新鲜度优化, 非并发锁) —— 两个并发调用会各自跑一次 ``_update_channel
+        _metas``, 把 meta 生成回调 fire 两次. 本方法把并发调用合并到同一次
+        ``_refresh_channel_metas``.
+        """
+        if self._refresh_meta_future is not None and not self._refresh_meta_future.done():
+            return await self._refresh_meta_future
+        self._refresh_meta_future = asyncio.create_task(self._refresh_channel_metas(timeout=timeout))
+        return await self._refresh_meta_future
 
     async def _refresh_channel_metas(self, timeout: float | None) -> bool:
         # 等待运行结束.
