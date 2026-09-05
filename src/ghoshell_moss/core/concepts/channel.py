@@ -96,7 +96,7 @@ class ChannelMeta(BaseModel):
 
     instruction: str = Field(default='', description="the channel instruction messages")
     context: list[Message] = Field(default_factory=list, description="The channel context messages")
-    help: str = Field(default="", description="Warm data — what this channel currently exposes. Rendered with command interfaces.")
+    notice: str = Field(default="", description="Warm data — what this channel currently exposes. Rendered with command interfaces.")
     memory: list[Message] = Field(default_factory=list, description="The channel memory messages")
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
@@ -285,11 +285,11 @@ class ChannelState(ABC):
         """
         return []
 
-    async def get_help(self) -> str:
+    async def get_notice(self) -> str:
         """
-        return warm help text describing what this state currently exposes.
+        return warm notice text describing what this state currently exposes.
 
-        distinct from ``get_context_messages`` (hot, per-frame) — help is
+        distinct from ``get_context_messages`` (hot, per-frame) — notice is
         rendered with the command interface, only refreshed on change.
         """
         return ''

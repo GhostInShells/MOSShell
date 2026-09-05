@@ -1,7 +1,7 @@
 """MCP Hub Channel — MCP 工具集以 channel 形态接入 | 集成 | beta
 
 MCPHubState 是本源对象：持有 N 个 MCP server session，每个 server 暴露为一个
-信息辐射器子 channel（只读 help，无 command）。调用入口集中在父 channel：
+信息辐射器子 channel（只读 notice，无 command）。调用入口集中在父 channel：
 ``call``（阻塞）/ ``acall``（非阻塞）。模型以原生 CTML 思路操作外部工具，
 不感知 MCP 协议存在。
 
@@ -192,7 +192,7 @@ class MCPServerSession:
 # ---------------------------------------------------------------------------
 
 class MCPServerChannelState(ChannelState):
-    """单个 server 的子 channel state，只做信息辐射（help），无 command。"""
+    """单个 server 的子 channel state，只做信息辐射（notice），无 command。"""
 
     def __init__(self, session: MCPServerSession):
         self._session = session
@@ -215,7 +215,7 @@ class MCPServerChannelState(ChannelState):
     def get_own_command(self, name: str) -> Command | None:
         return None
 
-    async def get_help(self) -> str:
+    async def get_notice(self) -> str:
         """工具摘要 — 模型通过此子 channel 了解该 server 能做什么。"""
         session = self._session
         if session.state != 'connected':
@@ -429,7 +429,7 @@ class MCPHubState(ChannelState):
     def get_virtual_children(self) -> dict[ChannelName, Channel]:
         return dict(self._server_channels)
 
-    async def get_help(self) -> str:
+    async def get_notice(self) -> str:
         """连接摘要 — warm 数据，server 连/断时刷新。"""
         if not self._sessions:
             return "No MCP servers connected."
@@ -444,7 +444,7 @@ class MCPHubState(ChannelState):
         return header + "\n" + "\n".join(parts)
 
     async def get_context_messages(self) -> list:
-        """无每帧热数据 — 工具目录在 help（warm）与 list（on-demand）中。"""
+        """无每帧热数据 — 工具目录在 notice（warm）与 list（on-demand）中。"""
         return []
 
     def _load_config(self) -> MCPHubConfig:

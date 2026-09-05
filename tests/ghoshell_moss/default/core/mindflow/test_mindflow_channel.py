@@ -207,7 +207,7 @@ async def test_help_lists_nuclei():
     chan = build_mindflow_channel(mf)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        assert NUCLEUS_NAME in runtime.self_meta().help
+        assert NUCLEUS_NAME in runtime.self_meta().notice
 
 
 async def _wait_until(cond, *, timeout: float = 1.0) -> None:

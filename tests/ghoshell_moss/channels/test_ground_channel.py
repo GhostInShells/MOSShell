@@ -86,7 +86,7 @@ async def test_open_adds_virtual_child_with_meta_and_frame(ground):
         child = _meta_by_name(runtime, "sub")
         assert child is not None
         assert "cd " in child.instruction            # meta 在 instruction
-        assert "# Sub Ground" in child.help           # 帧在 help
+        assert "# Sub Ground" in child.notice          # 帧在 help
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
 Ground 是 Ghost 的目录级认知场: 一个被 GROUND.md 标记的目录就是场
 (frontmatter 身份 + body 法 + pins 注视). 本 channel 持有 GroundSet, 用
 ``open``/``close`` 把场挂成 virtual child —— 子 channel 无命令, instruction 只放
-meta (身份 + pin TOC), 帧 (body + pins 内容) 放 help (每 refresh 重算, 由
+meta (身份 + pin TOC), 帧 (body + pins 内容) 放 notice (每 refresh 重算, 由
 shell trajectory diff 增量重供). 法链进父 channel 的 static, 跨 compact 存活.
 
 Example:
@@ -147,7 +147,7 @@ def _instruction_prose() -> str:
         "场 = 一个被 GROUND.md 标记的目录: frontmatter (身份 + pins) + body (法).\n"
         "本场 body (法) 已写入本条 static —— 它跨 compact 存活, 是你在会话中长期保持的 "
         "稳定认知. 场之间不合并 body (每个场渲染自己的根). 用 ``open`` 把一个场挂成子 "
-        "channel, 其 meta 在子 instruction, 帧在子 help (每 refresh diff 重供); pin 内容不预置."
+        "channel, 其 meta 在子 instruction, 帧在子 notice (每 refresh diff 重供); pin 内容不预置."
     )
 
 
@@ -306,7 +306,7 @@ def new_ground_channel(
         async def _child_instruction() -> str:
             return await _ground_meta(ground)
 
-        @child.build.help
+        @child.build.notice
         async def _child_help() -> str:
             return str(await ground.render())
 
@@ -336,7 +336,7 @@ def new_ground_channel(
 
     @chan.build.command(name="open", always_observe=True)
     async def open(directory: str, label: str | None = None, doc: str | None = None, template: str | None = None) -> str:
-        """打开一个场, 挂成子 channel (meta 进子 instruction, 帧进子 help).
+        """打开一个场, 挂成子 channel (meta 进子 instruction, 帧进子 notice).
 
         :param directory: 场目录 (相对 root 或绝对).
         :param label: 本 channel 内唯一标识. None = 目录 basename.
@@ -598,7 +598,7 @@ def build_project_ground_channel(
     """IoC 集成工厂 — 解析 MOSS 项目根, 默认启动时 open 项目根场.
 
     Project 解耦收敛在此层: host 侧无感. 法链进 static, 项目根场挂成
-    virtual child (meta 在 instruction, 帧在 help).
+    virtual child (meta 在 instruction, 帧在 notice).
     """
     def factory(container: IoCContainer) -> Channel:
         from ghoshell_moss.core.blueprint.project import Project

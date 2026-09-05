@@ -213,13 +213,17 @@ def _register(verb: str):
 # -- pins --------------------------------------------------------------------
 
 
-class Pin(BaseModel):
+class Pin(BaseModel, ABC):
     """pin 基类 — 场里的一枚注视声明.
 
     K55 envelope: {label, verb, arguments, description}.  具体子类携带
     typed arguments — verb 是 Literal discriminator, arguments 是多态载体.
     """
 
+    verb: str = Field(
+        default='',
+        description="verb of the pin"
+    )
     label: str = Field(
         min_length=1,
         max_length=PIN_LABEL_MAX_LEN,

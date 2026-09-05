@@ -1,7 +1,7 @@
 """Mindflow reflexive control channel — 反身控制面.
 
 把 mindflow 从 opaque 调度器变成 ghost 可感知、可操纵的透明面: 自主感知
-(self-explanation via instruction/help), 注意力管理 (set-priority + status),
+(self-explanation via instruction/notice), 注意力管理 (set-priority + status),
 优先级干预 (set-signal-bar / set-impulse-bar), nucleus pull.
 
 命令与 context 的可用性按"机制"用 build flag 门控: 开启时命令 available()
@@ -80,9 +80,9 @@ def build_mindflow_channel(
             "signals, not to your own relay."
         )
 
-    # --- help: 动态 nucleus name-description 列表 (拓扑变更自动 diff) --- #
-    @channel.build.help
-    def help() -> str:
+    # --- notice: 动态 nucleus name-description 列表 (拓扑变更自动 diff) --- #
+    @channel.build.notice
+    def notice() -> str:
         lines = ["mindflow nuclei:"]
         for name, nucleus in mindflow.nuclei().items():
             state = "running" if nucleus.is_running() else "idle"

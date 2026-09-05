@@ -206,8 +206,8 @@ class ChannelMetaPrompter:
 
     def interface_message(self, dynamic: bool, sustain: bool) -> Message | None:
         parts = []
-        if self.meta.help:
-            parts.append(f"<help>\n{self.meta.help}\n</help>")
+        if self.meta.notice:
+            parts.append(f"<notice>\n{self.meta.notice}\n</notice>")
         interface = make_interfaces(self.meta, dynamic=dynamic, sustain=sustain)
         if interface:
             parts.append(interface)
@@ -217,9 +217,9 @@ class ChannelMetaPrompter:
 
     # --- shell trajectory 版本上下文构建, 针对上下文缓存做优化 --- #
 
-    def help_text(self) -> str:
-        if self.meta.help:
-            return "<help>\n" + self.meta.help + "\n</help>"
+    def notice_text(self) -> str:
+        if self.meta.notice:
+            return "<notice>\n" + self.meta.notice + "\n</notice>"
         return ""
 
     def failure_text(self) -> str:
@@ -248,11 +248,11 @@ class ChannelMetaPrompter:
             return ""
         return f'<channel path="{self.path}">\n{body}\n</channel>'
 
-    def _make_facade_body(self, failure: str, states: str, help: str, interface: str) -> str:
+    def _make_facade_body(self, failure: str, states: str, notice: str, interface: str) -> str:
         """四个文本块组装成 facade body. failure 非空时短路, 只返回 failure."""
         if failure:
             return failure
-        sections = [section for section in (states, help, interface) if section]
+        sections = [section for section in (states, notice, interface) if section]
         return '\n'.join(sections)
 
     def facade_body(self) -> str:
@@ -260,7 +260,7 @@ class ChannelMetaPrompter:
         return self._make_facade_body(
             self.failure_text(),
             self.state_text(),
-            self.help_text(),
+            self.notice_text(),
             self.commands_interface_text(),
         )
 
@@ -276,6 +276,12 @@ class ChannelMetaPrompter:
         return self._make_channel_facade("\n".join(body_parts))
 
     def diff_facade(self, channel_meta: ChannelMeta) -> str:
+        """逐 section 对比, 只发射变化的文本块.
+
+        failure 是短路面: 两边不等 → 发 target 全板 (新板即 failure, 或 failure 被清除后的健康板);
+        相同且非空 → 该板只有 failure, 无差可发. 其余 states / notice / interface 各自独立比较,
+        只把发生变化的 section 拼进 delta, 不再把未变更的 section 整体重发.
+        """
         if channel_meta.created == self.meta.created:
             return ""
         target = ChannelMetaPrompter(self.path, channel_meta)
@@ -288,24 +294,16 @@ class ChannelMetaPrompter:
             # 两边 failure 相同且非空 → facade 只含 failure, 已相等.
             return ""
 
-        self_states = self.state_text()
-        target_states = target.state_text()
-        self_help = self.help_text()
-        target_help = target.help_text()
-        if (self_states, self_help) != (target_states, target_help):
-            return target._make_channel_facade(
-                target._make_facade_body(
-                    target_failure, target_states, target_help, target.commands_interface_text(),
-                )
-            )
-
-        self_interface = self.commands_interface_text()
-        target_interface = target.commands_interface_text()
-        if self_interface != target_interface:
-            return target._make_channel_facade(
-                target._make_facade_body(target_failure, target_states, target_help, target_interface)
-            )
-        return ""
+        sections = []
+        if self.state_text() != target.state_text():
+            sections.append(target.state_text())
+        if self.notice_text() != target.notice_text():
+            sections.append(target.notice_text())
+        if self.commands_interface_text() != target.commands_interface_text():
+            sections.append(target.commands_interface_text())
+        if not sections:
+            return ""
+        return target._make_channel_facade("\n".join(sections))
 
     def dynamic_context_messages(self) -> list[Message]:
         if not self.meta.context:

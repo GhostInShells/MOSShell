@@ -1289,87 +1289,91 @@ async def test_failed_refresh_exits_quickly_and_metas_show_failure():
     hang.set()
 
 
-# --- help ---
+# --- notice ---
 
 
 @pytest.mark.asyncio
-async def test_help_default_is_empty():
-    """Channel without help registration has empty help in meta."""
+async def test_notice_default_is_empty():
+    """Channel without notice registration has empty notice in meta."""
     main = PyChannel(name="main")
 
     async with main.bootstrap() as runtime:
         meta = runtime.self_meta()
-        assert meta.help == ""
+        assert meta.notice == ""
 
 
 @pytest.mark.asyncio
-async def test_help_static_string():
-    """Static help string appears in ChannelMeta.help."""
+async def test_notice_static_string():
+    """Static notice string appears in ChannelMeta.notice."""
     main = PyChannel(name="main")
 
-    @main.build.help
+    @main.build.notice
     def hlp() -> str:
         return "available: foo, bar"
 
     async with main.bootstrap() as runtime:
         meta = runtime.self_meta()
-        assert "foo" in meta.help
-        assert "bar" in meta.help
+        assert "foo" in meta.notice
+        assert "bar" in meta.notice
 
 
 @pytest.mark.asyncio
-async def test_help_async_function():
-    """Async help function result appears in ChannelMeta.help."""
+async def test_notice_async_function():
+    """Async notice function result appears in ChannelMeta.notice."""
     main = PyChannel(name="main")
 
-    @main.build.help
+    @main.build.notice
     async def hlp() -> str:
         return "async help"
 
     async with main.bootstrap() as runtime:
         meta = runtime.self_meta()
-        assert meta.help == "async help"
+        assert meta.notice == "async help"
 
 
 @pytest.mark.asyncio
-async def test_help_dynamic_refresh():
-    """Help value updates when the registered function returns new values after refresh."""
+async def test_notice_dynamic_refresh():
+    """Notice value updates when the registered function returns new values after refresh."""
     main = PyChannel(name="main")
 
     state = {"v": "initial"}
 
-    @main.build.help
+    @main.build.notice
     def hlp() -> str:
         return state["v"]
 
     async with main.bootstrap() as runtime:
-        assert runtime.self_meta().help == "initial"
+        assert runtime.self_meta().notice == "initial"
 
         state["v"] = "updated"
         await runtime.refresh_metas()
-        assert runtime.self_meta().help == "updated"
+        assert runtime.self_meta().notice == "updated"
 
 
 @pytest.mark.asyncio
-async def test_help_appears_in_child_meta():
-    """Help registered on a child channel appears in child meta, not parent."""
+async def test_notice_appears_in_child_meta():
+    """Notice registered on a child channel appears in child meta, not parent."""
     main = PyChannel(name="main")
     child = PyChannel(name="child")
     main.import_channels(child)
 
-    @child.build.help
+    @child.build.notice
     def hlp() -> str:
         return "child help"
 
     async with main.bootstrap() as runtime:
         metas = runtime.metas()
-        assert metas[""].help == ""
-        assert metas["child"].help == "child help"
+        assert metas[""].notice == ""
+        assert metas["child"].notice == "child help"
 
 
 @pytest.mark.asyncio
-async def test_help_via_module_aggregates():
-    """Help from modules is aggregated with main state help."""
+async def test_notice_via_module_aggregates():
+    """Notice from modules (get_notice) is aggregated with main state notice.
+
+    锚定模块收集契约: module 提供 get_notice 必须被计入 meta.notice.
+    若回归成只认 get_help, 此测试的 "mod help" in meta.notice 会当场抓包, 避免静默丢弃.
+    """
     main = PyChannel(name="main")
 
     class Mod(ChannelModule):
@@ -1379,19 +1383,19 @@ async def test_help_via_module_aggregates():
         def own_commands(self) -> dict[str, Command]:
             return {}
 
-        async def get_help(self) -> str:
+        async def get_notice(self) -> str:
             return "mod help"
 
     main.with_module(Mod())
 
-    @main.build.help
+    @main.build.notice
     def hlp() -> str:
         return "main help"
 
     async with main.bootstrap() as runtime:
         meta = runtime.self_meta()
-        assert "main help" in meta.help
-        assert "mod help" in meta.help
+        assert "main help" in meta.notice
+        assert "mod help" in meta.notice
 
 
 @pytest.mark.asyncio
