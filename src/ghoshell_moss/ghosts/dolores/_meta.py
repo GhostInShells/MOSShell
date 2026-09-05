@@ -100,24 +100,20 @@ class DoloresMeta(GhostMeta):
         from ._runtime import Dolores
 
         home: Path | None = None
-        session: Session | None = None
-        matrix: Matrix | None = None
-        shell: MOSShell | None = None
         base_instruction: str | None = None
-        if container is not None:
-            matrix = container.get(Matrix)
-            if matrix is not None:
-                home = matrix.ghost_home
-            session = container.get(Session)
-            shell = container.get(MOSShell)
-            prompter = container.get(MossSystemPrompter)
-            if prompter is not None:
-                base_instruction = prompter.base_instruction()
+        if container is None:
+            raise RuntimeError(f"IoCContainer {container} is invalid")
+        matrix = container.get(Matrix)
+        if matrix is not None:
+            home = matrix.ghost_home
+        session = container.get(Session)
+        shell = container.get(MOSShell)
+        prompter = container.get(MossSystemPrompter)
         return Dolores(
             meta=self,
+            moss_prompter=prompter,
             home=home,
             session=session,
             matrix=matrix,
             shell=shell,
-            base_instruction=base_instruction,
         )

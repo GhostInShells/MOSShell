@@ -132,7 +132,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
         ctml_version = self._mode.meta.ctml_version or self._env.moss_meta.ctml_version
         ctml_prompt = self._load_ctml_prompt(ctml_version)
         prompter.with_prompter(
-            MossSystemPrompter.LOGOS_SLOT,
+            MossSystemPrompter.MOSS_SLOT,
             BaseSystemPrompter(
                 own_instruction=ctml_prompt,
                 description=f"CTML grammar prompt (version {ctml_version}).",

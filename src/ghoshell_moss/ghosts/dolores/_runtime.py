@@ -14,6 +14,7 @@ from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
@@ -47,8 +48,10 @@ class Dolores(Ghost):
         session: Session | None = None,
         matrix: Matrix | None = None,
         shell: MOSShell | None = None,
+        moss_prompter: "MossSystemPrompter | None" = None,
         base_instruction: str | None = None,
     ):
+        self._moss_prompter: MossSystemPrompter = moss_prompter
         self._meta = meta
         self._home = home
         self._session = session
@@ -81,16 +84,23 @@ class Dolores(Ghost):
         (cache-stable) — not steered (tail), not injected per frame.
         """
         parts: list[str] = []
-        if self._base_instruction:
+        if self._moss_prompter is not None:
+            parts.append(self._moss_prompter.moss_meta_instruction())
+        elif self._base_instruction:
             parts.append(self._base_instruction)
+
         parts.append(self._meta.prototype_instruction())
-        parts.append(self._meta.identity_instruction())
         parts.append(dolores_terminology())
-        parts.append(self._dolores_instruction())
+        parts.append(self._dolores_inception())
+        parts.append(self._meta.identity_instruction())
+        if self._moss_prompter is not None:
+            parts.append(self._moss_prompter.project_instruction())
+            parts.append(self._moss_prompter.mode_instruction())
+
         parts.append(dolores_protocol_notice())
         return "\n\n".join(parts)
 
-    def _dolores_instruction(self) -> str:
+    def _dolores_inception(self) -> str:
         """The dolores persona/etiquette layer — replaced by a template file if the ego config has one; slots carry runtime paths."""
         template: str | None = None
         if self._home is not None:

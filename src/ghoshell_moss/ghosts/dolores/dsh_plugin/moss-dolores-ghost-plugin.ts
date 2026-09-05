@@ -6,7 +6,7 @@ import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
@@ -38,7 +38,10 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *                       不 parse xml-like). context (echoes/dynamic/executing → <moment>,
  *                       inject) + inputs (percepts + hint → <inputs>, steer) + epoch
  *                       (<epoch index=N> 容器: <recap> + <baseline>, inject, 变更时).
- * 6. moment 投放      — context/epoch → inject (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
+ * 6. moment 投放      — perStep 挂载点: enter 把 context/epoch 缓冲到 pendingMoments, pre-step
+ *                       在 next() 后插到本步历史最前 (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
+ *                       enter 不 inbox inject — claim 已在 pre-step 顶部穿越, 晚到的 inject 落下一轮.
+ *                       (修正: 早期 docstring 称 context → inject 是本轮, 那是误读; 见 agent-loop claim 时序.)
  * 7. tool 面          — wait_next_moment (yield, 被动让出) + observe (主动观测, approach a
  *                       内联返回 moment content blocks) + think(effort) (自救改 effort) 已落地;
  *                       interleaved_logos / switch_model deferred (落文档不实现).
@@ -217,6 +220,19 @@ type MomentContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; mediaType: string; data: string }
 
+/** perStep 挂载点的 moment 缓冲帧 — thinking/enter 写入, pre-step 消费 (插到本步历史最前). */
+interface MomentFrame {
+  /** 按注入顺序排好的 user message (epoch → context), 插到本步历史最前. */
+  messages: UserMessage[]
+}
+
+/**
+ * 缓冲队列 (FIFO): thinking/enter 写, agent/pre-step 排空. 消费后才清, **绝不丢消息** — 若
+ * 此刻没有 pre-step 在消费 (无 turn 运行/门未开), 帧留守等下一次真实 pre-step. 缓冲到这里的
+ * moment 不 inbox inject (claim 已在 pre-step 顶部穿越), 由挂载点插进本步历史.
+ */
+const pendingMoments: MomentFrame[] = []
+
 /** thinking/enter 入参 (点 3). 阻塞执行完: handler 完成注入 + 开锁才返回. */
 interface ThinkingEnterPayload {
   /** moment 拆两条 (python 侧映射): context (inject) + inputs (steer). */
@@ -252,7 +268,18 @@ export function apply(ctx: Context) {
       return { kind: 'reject' }
     }
     await thinkingGate.wait(undefined, signal)
-    return next()
+    const decision = await next()
+    if (decision.kind === 'reject') return decision
+    // perStep 挂载点: 把 enter 缓冲的 moment (epoch + context) 插到本步历史**最前**.
+    // enter 不 inbox inject (claim 已穿越), 只写 pendingMoments; 在这里消费, 本 turn 生效.
+    // 排空后清 — 绝不丢消息.
+    if (pendingMoments.length > 0) {
+      // splice 原地排空并返回帧 — pendingMoments 是 const, 不能重绑 (会抛 "Assignment to constant variable").
+      const queued = pendingMoments.splice(0, pendingMoments.length)
+      const prefix = queued.flatMap(frame => frame.messages)
+      return { kind: 'enter', messages: [...prefix, ...decision.messages] }
+    }
+    return decision
   })
 
   // ── 1. ego agent 创建 (点 1) ──────────────────────────────────────────
@@ -444,17 +471,15 @@ export function apply(ctx: Context) {
         // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).
         const context = await durableMomentContent(ctx, body.moment?.context ?? [])
         const inputs = await durableMomentContent(ctx, body.moment?.inputs ?? [])
-        // none: 只注入数据不解锁 perStep — 不 openThinking / 不 steer, 模型不起 turn (纯吸收背景).
+        // none: 只吸收背景不驱动 turn — epoch/context 缓冲到 perStep 挂载点, 不 openThinking 不
+        // steer, 等下一次真实 pre-step 消费. inputs 属 turn 驱动, none 帧不送.
         if (body.effort === 'none') {
-          if (Array.isArray(body.epoch) && body.epoch.length > 0) {
-            const epochBlocks = await durableMomentContent(ctx, body.epoch)
-            agent.inject(createUserMessage({ content: epochBlocks, source: { kind: 'plugin', plugin: `${name}:epoch` } }))
-          }
-          if (context.length > 0) {
-            agent.inject(createUserMessage({ content: context, source: { kind: 'plugin', plugin: `${name}:moment` } }))
-          }
-          if (inputs.length > 0) {
-            agent.inject(createUserMessage({ content: inputs, source: { kind: 'plugin', plugin: `${name}:moment` } }))
+          const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
+            ? await durableMomentContent(ctx, body.epoch)
+            : undefined
+          const frame = buildMomentFrame(epoch, context)
+          if (frame.length > 0) {
+            pendingMoments.push({ messages: frame })
           }
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ thinking: false }))
@@ -467,25 +492,20 @@ export function apply(ctx: Context) {
           model: body.model.model,
           ...(body.model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(body.model.reasoningEffort) } : {}),
         }
+        // perStep 挂载点: epoch/context 不 inbox inject (claim 在 pre-step 顶部已穿越), 而是缓冲
+        // 到 pendingMoments, 由 pre-step 在 next() 后插到本步历史最前 — 本 turn 生效.
+        // 必须先 push 再 openThinking — gate 的 resolve 会同步调度 pre-step 续体为 microtask,
+        // 若在 openThinking 后又 await, 续体可能在 push 落地前就 fold pendingMoments (丢帧).
+        const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
+          ? await durableMomentContent(ctx, body.epoch)
+          : undefined
+        const frame = buildMomentFrame(epoch, context)
+        if (frame.length > 0) {
+          pendingMoments.push({ messages: frame })
+        }
         openThinking()
-        // epoch 变更时: <epoch> 容器作为 epoch 级稳定背景 (inject, 不驱动 turn). 在 moment
-        // context 之前注入 — epoch 是底座, moment 是坐落在其上的帧.
-        if (Array.isArray(body.epoch) && body.epoch.length > 0) {
-          const epochBlocks = await durableMomentContent(ctx, body.epoch)
-          agent.inject(createUserMessage({
-            content: epochBlocks,
-            source: { kind: 'plugin', plugin: `${name}:epoch` },
-          }))
-        }
-        // inject context — 背景上下文, 进 inbox 不 wake (不驱动 turn).
-        if (context.length > 0) {
-          agent.inject(createUserMessage({
-            content: context,
-            source: { kind: 'plugin', plugin: `${name}:moment` },
-          }))
-        }
-        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧. 先 inject/steer
-        // 再 resolve("ok"), 保证 next step 由 tool result 触发时能 claim 到 inputs. 顺序不能反.
+        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧. 先缓冲 moment 再
+        // steer/resolve, 保证 next step 由 tool result 触发时能 claim 到 inputs. 顺序不能反.
         if (pendingYield !== null) {
           if (inputs.length > 0) {
             agent.steer(createUserMessage({
@@ -497,19 +517,13 @@ export function apply(ctx: Context) {
           pendingYield = null
           // yield 解锁返回 moment_ref (非哑载荷 "ok"), 让模型把「这帧」和「这次解锁」关联起来.
           unlock.resolve(body.moment?.moment_id ?? 'ok')
-        } else {
-          // 正常 enter: steer inputs (输入, 驱动 turn). 无 percepts 时 idle 需占位起 turn.
-          if (agent.status === 'idle') {
-            agent.steer(createUserMessage({
-              content: inputs.length > 0 ? inputs : [{ type: 'text', text: 'thinking' }],
-              source: { kind: 'user' },
-            }))
-          } else if (inputs.length > 0) {
-            agent.steer(createUserMessage({
-              content: inputs,
-              source: { kind: 'user' },
-            }))
-          }
+        } else if (inputs.length > 0) {
+          // 正常 enter: steer inputs 驱动 turn. inputs 为空则不起 turn — turn 由真实输入驱动,
+          // 不再为「无 percepts」造 'thinking' 占位.
+          agent.steer(createUserMessage({
+            content: inputs,
+            source: { kind: 'user' },
+          }))
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: true }))
@@ -549,6 +563,10 @@ export function apply(ctx: Context) {
         if (!yielded && agent.status !== 'idle') {
           agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
         }
+        // 兜底投递: 本交易残余的缓冲帧 (none/空 inputs 补帧没触发 turn, 没有 pre-step 消费) 直接
+        // 投进 inbox (next-step), 由下一次 pre-step 认领 — 绝不丢. 必须在 cancel 之后: cancel 默认
+        // 清空 inbox, 先 flush 会被抹掉.
+        flushPendingMoments(agent)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: false }))
       } catch (error) {
@@ -708,6 +726,39 @@ async function durableMomentContent(ctx: Context, contents: readonly MomentConte
   return contents.map(part => part.type === 'text'
     ? { type: 'text', text: part.text }
     : { type: 'image', attachment: refs[next++] as ImageAttachmentRef })
+}
+
+/**
+ * Enter 缓冲 — 组装 moment 帧消息 (按注入顺序): epoch <容器> 是底座消息, context <容器> 是
+ * 坐落在其上的帧消息. 只做组装, 不 inbox inject; 由 pre-step 挂载点插到本步历史最前.
+ */
+function buildMomentFrame(epoch: ContentBlock[] | undefined, context: ContentBlock[]): UserMessage[] {
+  const messages: UserMessage[] = []
+  if (epoch !== undefined && epoch.length > 0) {
+    messages.push(createUserMessage({
+      content: epoch,
+      source: { kind: 'plugin', plugin: `${name}:epoch` },
+    }))
+  }
+  if (context.length > 0) {
+    messages.push(createUserMessage({
+      content: context,
+      source: { kind: 'plugin', plugin: `${name}:moment` },
+    }))
+  }
+  return messages
+}
+
+/** Exit 兜底 — 本交易残余缓冲帧直接投进 inbox (next-step), 由下一次 pre-step 认领, 绝不丢. */
+function flushPendingMoments(agent: Agent): void {
+  if (pendingMoments.length === 0) return
+  // splice 原地排空并返回帧 — pendingMoments 是 const, 不能重绑 (会抛 "Assignment to constant variable").
+  const queued = pendingMoments.splice(0, pendingMoments.length)
+  for (const frame of queued) {
+    for (const message of frame.messages) {
+      agent.inject(message)
+    }
+  }
 }
 
 /** python ThinkingEffort → dsh reasoningEffort 档位. none 由调用方特判 (no turn);

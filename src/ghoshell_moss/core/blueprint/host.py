@@ -56,14 +56,14 @@ class MossSystemPrompter(SystemPrompter, ABC):
     """
 
     # 约定的 prompt slots.
-    LOGOS_SLOT = 'logos'
+    MOSS_SLOT = 'logos'
     PROJECT_SLOT = 'project'
     MODE_SLOT = 'mode'
     MOSS_STATIC_SLOT = 'static'
 
-    def logos_meta_instruction(self) -> str:
+    def moss_meta_instruction(self) -> str:
         """当前系统所使用的 Logos 语法本身的提示词(通常是 ctml). 是 moss 运行基础."""
-        return self.child_instruction(self.LOGOS_SLOT)
+        return self.child_instruction(self.MOSS_SLOT)
 
     def project_instruction(self) -> str:
         """项目级提示词, 定义在 workspace 的 MOSS.md, 所有模式共享."""
@@ -81,7 +81,7 @@ class MossSystemPrompter(SystemPrompter, ABC):
     def base_instruction(self) -> str:
         """由 moss mode 决定的基础 instruction, 和运行时 channel 的组装情况无关."""
         return self.linear([
-            self.LOGOS_SLOT,  # Logos 使用策略的提示词.
+            self.MOSS_SLOT,  # Logos 使用策略的提示词.
             self.PROJECT_SLOT,  # moss 环境的根提示词.
             self.MODE_SLOT,  # 每个模式下独有的提示词.
         ])
@@ -96,7 +96,7 @@ class MossSystemPrompter(SystemPrompter, ABC):
         依赖 LLM Agent 有能力在每一轮请求时, 将上一轮历史消息中的动态部分拿掉.
         """
         return self.linear([
-            self.LOGOS_SLOT,
+            self.MOSS_SLOT,
             self.PROJECT_SLOT,
             self.MODE_SLOT,
             self.MOSS_STATIC_SLOT,
