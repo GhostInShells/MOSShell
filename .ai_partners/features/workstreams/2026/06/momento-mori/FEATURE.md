@@ -7,10 +7,10 @@ description: 以 commit 为第一公民的认知轨迹系统。成员不可变�
 milestone: null
 priority: P0
 status: in-progress
-status_note: '2026-08-16 第 6 轮对齐（未开工，暂停）：本体更名 segment/河——line→segment、
-  branch=具名指针、树→河。读侧失效 + 七组契约问题记于 §9。'
-title: Memento — 轨迹第一公民的认知基建（第 6 轮对齐：segment/河本体，未开工）
-updated: '2026-08-16'
+status_note: '2026-09-08 第 8 轮收敛（设计收束，未开工实现）：memento = 三级索引 + 三个动词（recap/read/agent），
+  moment 是可插拔 payload 非本体内存，索引不做存储。v5+ 阻塞判据与全新本体记于 §11。'
+title: Memento — 轨迹第一公民的认知基建（第 8 轮收敛：索引为体 / moment 可插拔，未开工）
+updated: '2026-09-08'
 ---
 
 # Memento
@@ -399,3 +399,63 @@ compact 后旧 branch 变为无名孤儿目录，调用方应丢弃旧对象，�
 - `Segment` 缺 `created` 时间戳
 - `commit()`、`compact()`、`fork()` 签名缺 `metadata` 参数
 - branch 级 compact 签名未定义（当前草稿只有 commit 级）
+
+## 11. 第 8 轮对齐（2026-09-08 凌晨，人类 + claude-fable-5 收敛）
+
+> 状态：**设计收束中，未开工实现**。本轮推翻了第 7 轮草稿（`abcd.py`）"commit 装 moment"的隐含前提，确立
+> **"memento = 三级索引 + 三个动词；moment 是可插拔详情，非本体内存"**。
+> v5+ 阻塞判据：已有实现（v3 fs_memento）与表面声称不符（"糊弄"），已存代码对模型有重力吸引，突破不了边界。
+
+### 11.1 本体倒置：索引是本体，moment 是可插拔的 payload
+
+- memento **不是** moment 存储系统。它是 branch / segment / commit 三级索引。
+- moment（消息）＝可插拔 payload，可存在于 memento 之外（pydantic-ai session / 消息 store / SQL recall 库）。
+- memento 持有 **locator**（落在 metadata 里），不持有 moment 字节。**索引不做存储**。
+- **"证据可达"承诺未变**：memento 虽不存 moment，但靠 locator + resolver **直达**另一个 moment 存储结构，
+  `read` 落地即真数据。不是"锚点自足"，是"可寻址直达"。§5.8 原措辞保留。
+
+### 11.2 四级层级（书柜/相册模型）
+
+```
+branch (书柜)  →  segment (一格岁月)  →  commit (一本书)  →  moment (一页)
+```
+"四级索引足够放入一生"：靠每层那个**自组织自由平面**（放纪念物），不是靠加索引层级。
+
+### 11.3 memento = 目录里的非系统内容
+
+每个位置（branch/segment/commit）是一个目录 ＝ 自组织信息平面。
+- 保留名最小化：`meta` / `info` ＋ 索引文件（`commits.jsonl` / `segments.jsonl`）。
+- 其余＝自由纪念物（keepsake）。**"memento" 指的就是文件夹里所有非系统自带的东西**（含 meta/info），不是 `info` 一个文件。
+
+### 11.4 三个动词：recap / read / agent
+
+- **`recap(anchor)`**＝索引自身信息投影（XML-like），不碰 resolver / 真数据：
+  - commit → `title + body`
+  - segment → `summary`
+  - branch → `context + status`
+- **`read(anchor)`**＝走 resolver 拿真数据，交付物是 **`view`**。resolver 持有 moment 存储，内部把 read 结果重新
+  渲染成 view；**渲染细节契约沉默**。
+- **`agent(anchor)`**＝spawn（以 memento + payload 为初始上下文起 think）。
+
+### 11.5 回溯认知体系
+
+`ground`（"现在"状态）＋ `anchor`（"某一帧"状态）＋ `memento`（时间线投影索引）构成一个复杂回溯认知场。
+memento 的目标：**让历史轨迹出现到上下文里**，配合 ground 与 anchor。
+
+### 11.6 重构投影，不是存储积累
+
+moment → memento 不是存储空间的积累，而是对历史的**重构投影**：用碎片化锚点取代完整轨迹（人类记忆的形态 ——
+30–70 岁没有全量 moments，只有内外 memento 构成的模糊背景）。但因为 `read` 走 resolver 直达真数据，
+这条与"证据可达"**共存**，不互斥。
+
+### 11.7 未定 / 待明日抽象轮（2026-09-08）
+
+- **fork 边界**：共享索引 vs 复制（moments 不在索引里，fork 应当廉价——共享索引＋引用，不复制 payload）。
+- **最终磁盘布局**；moment 是否内联存 segment 目录（今日因 pydantic-ai 无存储）。
+- **resolver** 接口细节（locator → 真数据的插拔翻译官；今 path 文件 / 明 SQL）。
+- `abcd.py`：`Recap.from_commit / from_segment / from_branch`（`from_anchor`）构造器未写；
+  `Segment` 缺 `summary` 字段；`BranchInfo` 缺 `context`（recap 用 `BranchMeta.context + BranchInfo.status`?）。
+- 确认 `view` 是否是独立类型 / `read` 的返回类型。
+- 是否新增 `FORMAT_new.md` 草稿，正式写码时破坏性覆盖 v3（`FORMAT.md` 暂不动，待抽象关死后 review 冻结）。
+
+*草稿，待人类纠偏；§11 只记设计决策，磁盘格式与实现见 `FORMAT_new.md`（若建）与 `git log -- memento/`。*
