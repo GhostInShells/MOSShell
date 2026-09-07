@@ -191,7 +191,9 @@ class TuiRender:
             return
         # Drain pending items before replay
         self._clear_fn()
-        for items in self._buffer:
+        # 用快照遍历: 该 buffer 可能被 zenoh 线程并发 append, 直接遍历 deque 会抛
+        # "deque mutated during iteration" (RuntimeError) → 打到状态切换里炸掉 loop.
+        for items in list(self._buffer):
             self._queue.put_nowait(list(items))
 
     def buffer_clear(self) -> None:
@@ -421,6 +423,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self._switch_min_interval: float = 0.25  # 250ms debounce
         self._last_ctrl_c_at: float = 0.0
         self._ctrl_c_exit_debounce: float = 1.5  # 1.5s window: first c-c hints, second exits
+        # 标记 loop 是否因故障终止 (runtime 停 / 未处理异常). run() 据此决定退出码.
+        self._loop_failed: bool = False
 
         # QA protocol — non-blocking notification center
         self._qa_registry: dict[str, QA] = {}  # qid → QA (shared with QAState)
@@ -884,9 +888,17 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 list(self._states.values())[0].on_switch(True)
                 # 发送一个初始讯号.
                 input_loop_task = asyncio.create_task(self._input_loop())
+                # 监控 runtime 生命周期 — 自发终止时触发退出, 而不是空转等输入.
+                runtime_watcher = asyncio.create_task(self._watch_runtime())
                 self.current_state().on_switch(True)
-                await input_loop_task
+                try:
+                    await input_loop_task
+                finally:
+                    runtime_watcher.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await runtime_watcher
         except Exception:
+            self._loop_failed = True
             self.console.print_exception()
         finally:
             self._closing_event.set()
@@ -930,7 +942,13 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                     bottom_toolbar=self.get_bottom_toolbar(),
                     placeholder=self._get_input_placeholder(),
                 )
-            if self._pre_handle_input(item):
+            try:
+                consumed = self._pre_handle_input(item)
+            except Exception:
+                # SafeMode 审批等 TUI 内部异常 — 打印并继续, 不炸掉整个会话.
+                self.console.print_exception()
+                consumed = False
+            if consumed:
                 continue
             if not item:
                 continue
@@ -943,7 +961,43 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 except Exception:
                     self.console.print_exception()
                 continue
-            self.current_state().handle_input(item)
+            try:
+                self.current_state().handle_input(item)
+            except Exception:
+                self.console.print_exception()
+
+    async def _watch_runtime(self) -> None:
+        """监控底层 runtime 生命周期.
+
+        close() 属用户主动退出; 若 runtime 自发终止 (session 关闭, ghost / mindflow
+        崩掉), 打印并触发 TUI 退出 — 避免 TUI 空转在一个已死的 runtime 上等输入.
+        """
+        try:
+            while not self._closing_event.is_set():
+                if self._runtime_stopped():
+                    self._loop_failed = True
+                    self.console.error("runtime stopped — exiting tui")
+                    self.close()
+                    return
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
+
+    def _runtime_stopped(self) -> bool:
+        """runtime 是否已停止 (底层 session 关闭). 子类可 override.
+
+        无 session 的 TUI 不断定; 判定失败一律按"未停止"处理, 防止误触发退出.
+        """
+        try:
+            session = self._get_session()
+        except Exception:
+            return False
+        if session is None:
+            return False
+        try:
+            return not session.is_running()
+        except Exception:
+            return False
 
     def close(self) -> None:
         """关闭系统. 可能在运行中被调用. """
@@ -1010,18 +1064,19 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         else:
             loop = uvloop.new_event_loop()
         try:
-
-            loop.run_until_complete(self._main_loop())
+            # 前置 handler — 提前拦截 loop 内 task 的未处理异常, 而非跑完才装.
             loop.set_exception_handler(self.tui_exception_handler)
+            loop.run_until_complete(self._main_loop())
             # 等待运行结束
             self._closing_event.set()
             self._console_print_thread.join()
             self._rich_console.print("closed", style="green")
             self.farewell()
         except KeyboardInterrupt:
-            # 用来做退出?
+            # 用户强制退出 — 视为干净结束.
             pass
         except Exception:
+            self._loop_failed = True
             self._rich_console.print_exception()
         finally:
             # 取消并等待剩余 pending tasks, 避免 loop.close() 时 "Task was destroyed" 噪音.
@@ -1032,7 +1087,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
             self._closing_event.set()
-            raise SystemExit(0)
+            # 干净退出 / 用户强退 → 0; 运行时故障 → 1, 让失败可见而非伪装成成功.
+            raise SystemExit(1 if self._loop_failed else 0)
 
     def tui_exception_handler(self, loop: asyncio.AbstractEventLoop, context: dict):
         # 异常处理器绝不能自己抛异常 — 否则 uvloop 打印 "Unhandled error in exception handler".

@@ -236,7 +236,12 @@ class GhostLogosState(_GhostStateBase):
             if self._sink is not None:
                 self._sink.close()
                 self._sink = None
-            self.console.output(item)
+            try:
+                self.console.output(item)
+            except Exception:
+                # 单个 error item 渲染失败 — 打印并继续, 不整段停止.
+                self.console.error("error output item failed to render")
+                self.console.print_exception()
 
     async def _consume_logos(self) -> None:
         """消费 logos 流: 片断投递到 LogosStreamSink, 由渲染线程逐片打印.
@@ -260,6 +265,10 @@ class GhostLogosState(_GhostStateBase):
                 self._sink.send(delta)
         except asyncio.CancelledError:
             pass
+        except Exception:
+            # logos 流故障 — 打印并优雅收尾, 不静默让整个 logos 显示死掉.
+            self.console.error("logos stream failed")
+            self.console.print_exception()
         finally:
             if self._sink is not None:
                 self._sink.close()
@@ -364,10 +373,14 @@ class GhostTUI(MossHostTUI[IGhostRuntime]):
 
     def _get_input_placeholder(self):
         def _build():
-            p = self.runtime.safe_mode().pending()
-            if p is None:
+            try:
+                p = self.runtime.safe_mode().pending()
+                if p is None:
+                    return ""
+                return f"[SAFE {p['uuid'][:8]}] enter=approve · !<text>=approve-with-note · <text>=reject"
+            except Exception:
+                # prompt 渲染帧异常不致命 — 回退空 placeholder, 不让 prompt_async 崩掉.
                 return ""
-            return f"[SAFE {p['uuid'][:8]}] enter=approve · !<text>=approve-with-note · <text>=reject"
 
         return _build
 
