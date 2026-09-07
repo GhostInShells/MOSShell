@@ -9,6 +9,7 @@ from typing import Literal
 from ghoshell_moss.core.blueprint.mindflow import (
     Attention, Impulse, Priority
 )
+from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
 import time
@@ -33,7 +34,7 @@ class AbsAttention(Attention, ABC):
             logger: LoggerItf | None = None,
             system_floor_strength: float = 0.0,  # 强度 floor — 预留, 当前实现未消费
     ):
-        self._init_impulse: Impulse = impulse
+        self._draw_from_impulse: Impulse = impulse
         self._priority = impulse.priority
         self._has_any_completed_impulse = ThreadSafeEvent()
         self._logger = logger or get_moss_logger()
@@ -58,23 +59,25 @@ class AbsAttention(Attention, ABC):
         self._closed_event = ThreadSafeEvent()
         self._abort_reason = ''
         # update the impulse
-        self._log_prefix = f"<Attention id={self._init_impulse.id}>"
+        self._log_prefix = f"<Attention id={self._draw_from_impulse.id}>"
+        self._current_impulse: Impulse = impulse
 
         # 播种强度/保护期: 去生命周期化后, 强度不再由构造函数字段默认 0, 而是对初始 impulse
         # 调用 absorb_impulse 播种, 否则 current_strength() 走 decay_duration=0 会除零.
         # 同时让首个 complete impulse 置位 _has_any_completed_impulse, wait_ready() 得以及时返回.
-        self.absorb_impulse(self._init_impulse)
+        if not self._draw_from_impulse.complete:
+            self._draw_from_impulse.thinking_effort = 'none'
+        self.absorb_impulse(self._draw_from_impulse)
 
     def __repr__(self):
         return self._log_prefix
 
+    def impulse(self) -> Impulse:
+        return self._current_impulse
+
     def absorb_impulse(self, impulse: Impulse) -> Impulse | None:
         """
         仅由 Mindflow 调用: challenge() 返回 'absorb' 后, 把同 id impulse 折进当前 attention.
-
-        无条件刷新强度/优先级/保护期, 为下一帧预订衰减起点 (moments 已 inject 该 impulse).
-        返回 None = 同 id 已吸收为 _init_impulse; 返回 impulse = 异 id 未吸收, 留给调用方路由
-        (如 ghost 主动 pull 的 command result, 此时同样要提前更新当前 attention).
         """
         # 起始强度, 用于计算当前强度.
         self._strength_start_value = impulse.strength
@@ -83,12 +86,14 @@ class AbsAttention(Attention, ABC):
         self._priority = impulse.priority
         # 保护期所在时间点.
         self._protected_until = self._strength_refreshed_at + impulse.protection_time
-        self._strength_decay_time = self._init_impulse.strength_decay_seconds
+        self._strength_decay_time = self._draw_from_impulse.strength_decay_seconds
         if self._strength_decay_time <= 0:
             # 不要让它为0.
             self._strength_decay_time = 1
-        if impulse.id == self._init_impulse.id:
-            self._init_impulse = impulse
+
+        if impulse.id == self._draw_from_impulse.id:
+            # 只有同 id 的包才更新 "当前 impulse" 状态; 异 id 包交还调用方路由, 不篡改当前 impulse.
+            self._current_impulse = impulse
             if impulse.complete:
                 # 只有 complete 类型的 impulse 才会进入 buffer, 其它的只是占据注意力.
                 self._has_any_completed_impulse.set()
@@ -117,13 +122,13 @@ class AbsAttention(Attention, ABC):
         return self._protected_until
 
     def draw_from(self) -> Impulse:
-        return self._init_impulse
+        return self._draw_from_impulse
 
     async def wait_ready(self) -> Impulse:
         """等第一个 complete impulse; 若 attention 被终止 (abort/exit) 也返回当前 impulse.
         返回后用 is_aborted() 区分正常就绪 vs 被终止."""
         await self._has_any_completed_impulse.wait()
-        return self.draw_from()
+        return self.impulse()
 
     def set_priority(self, priority: Priority | None) -> None:
         self._attention_level_priority = priority
@@ -152,8 +157,9 @@ class AbsAttention(Attention, ABC):
         """
         if challenger.is_stale():
             return 'lose'
-        if challenger.id == self._init_impulse.id and not self._init_impulse.complete:
-            # 相同 id 的永远可以 buffer. 但只 buffer 一次.
+        if challenger.id == self._draw_from_impulse.id and not self._current_impulse.complete:
+            # 相同 id 的永远可以 buffer. 但只 buffer 一次: 一旦 attention 已 complete (尾包已到),
+            # 后续同 id 包走正常仲裁, 不再无限 absorb.
             return 'absorb'
         elif challenger.priority == Priority.FATAL or challenger.priority > self.priority():
             return 'win'
@@ -265,7 +271,7 @@ class BaseAttention(AbsAttention):
 
     def arbit_challenge_by_strength(self, challenger: Impulse) -> bool:
         challenger_strength = challenger.strength
-        if challenger.source == self._init_impulse.source:
+        if challenger.source == self._draw_from_impulse.source:
             challenger_strength = int(challenger_strength * self._source_escalation)
         current_strength = self.current_strength()
         return current_strength < challenger_strength
@@ -285,6 +291,6 @@ class BaseAttention(AbsAttention):
         decay_elapsed = elapsed - protection_time
         decay_duration = self._strength_decay_time - protection_time
         progress = min(decay_elapsed / decay_duration, 1.0)
-        decay_factor = 1.0 if self._init_impulse.complete else 1.5
+        decay_factor = 1.0 if self._current_impulse.complete else 1.5
         current = self._strength_start_value * (1.0 - (progress * decay_factor))
         return int(max(current, 0))

@@ -1000,12 +1000,22 @@ class Attention(AttentionStatement, ABC):
         """
         创建 Attention 的 impulse.
         """
-        pass
+        ...
+
+    @abstractmethod
+    def impulse(self) -> Impulse:
+        """
+        attention 当前的 Impulse 信息, 主要暴露原始数据.
+        draw from 是生成 attention 时的 impulse, 此处应该是最后一个 impulse 状态 (可能连续 absorb).
+        """
+        ...
 
     @abstractmethod
     def absorb_impulse(self, impulse: Impulse) -> Impulse | None:
         """
         吸收一个 impulse, 更新当前优先级和强度.
+        同时用来更新后续的 moment.
+        如果返回 Impulse, 则是需要加入下一帧的 Impulse. 如果返回 None, 表示 impulse 被 attention 自行吸收.
         """
         ...
 

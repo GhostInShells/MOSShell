@@ -243,7 +243,7 @@ def new_shell_main_channel(description: str = "") -> PrimeChannel:
 
 def new_moss_main_channel(
         description: str = "",
-        register_speech_as_content: bool = True,
+        register_speech_as_content: bool = False,
 ) -> PrimeChannel:
     """
     创建一个标准的, 支持默认能力的 moss main channel

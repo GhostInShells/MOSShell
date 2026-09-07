@@ -114,8 +114,8 @@ async def test_partial_held_absorbs_same_id_complete_tail():
     assert await att.challenge(complete) == 'absorb'
     # mindflow 随后调 absorb_impulse 折叠尾包, draw_from 反映 complete.
     assert att.absorb_impulse(complete) is None
-    assert att.draw_from().id == 'shared-id'
-    assert att.draw_from().complete
+    assert att.impulse().id == 'shared-id'
+    assert att.impulse().complete
 
 
 # ============================================================

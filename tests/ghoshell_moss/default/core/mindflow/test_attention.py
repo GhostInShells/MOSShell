@@ -113,6 +113,28 @@ async def test_strength_zero_yields_to_any_positive_challenger():
     assert result == 'win'
 
 
+@pytest.mark.asyncio
+async def test_same_id_tail_buffers_only_once(monkeypatch):
+    """同 id 的 'absorb' 只应发生在 attention 仍未 complete 之前.
+
+    partial 首包占据 attention 时, 同 id 尾包被 absorb (把 attention 变成 complete);
+    一旦 attention 已经 complete (尾包已到), 同 id 的低优包不应再无限 absorb,
+    而应走正常仲裁 (按优先级/强度决定 win/lose).
+    """
+    clock = [1000.0]
+    monkeypatch.setattr("ghoshell_moss.core.mindflow._attention.time.monotonic", lambda: clock[0])
+    partial = Impulse(id="a", source="s", priority=Priority.NOTICE, complete=False)
+    attention = BaseAttention(impulse=partial)
+    # 吸收 complete 尾包 -> attention 变 complete.
+    attention.absorb_impulse(Impulse(id="a", source="s", priority=Priority.NOTICE, complete=True))
+    assert attention.impulse().complete is True
+    # 再来一个同 id 的 BACKGROUND 包: 不应再触发 'absorb', 而应按低优被压制.
+    result = await attention.challenge(
+        Impulse(id="a", source="s", priority=Priority.BACKGROUND, complete=True)
+    )
+    assert result == 'lose'
+
+
 # ============================================================================
 # 同步仲裁测试 (无需事件循环) — 去生命周期化后, 仲裁状态 / 强度数学 / 吸收路由
 # 对 BaseAttention 而言是纯同步可测的, 不依赖 loop 或 sleep.
@@ -127,6 +149,30 @@ def test_current_strength_boosted_inside_protection_window():
     attention = BaseAttention(impulse=impulse, protection_duration_ratio=0.2)
     # protection_time = min(100*0.2, 3.0) = 3.0s; elapsed ~0 在窗内 -> 100*1.1 = 110.
     assert attention.current_strength() == 110
+
+
+def test_current_strength_decay_uses_live_completeness(monkeypatch):
+    """partial 起源的 attention 吸收 complete 尾包后, 衰减应按 '完整' 曲线 (factor=1.0) 而非 1.5.
+
+    draw_from 是冻结的创建 impulse (恒 incomplete), 但 current_strength 的衰减因子
+    应读活量 impulse().complete — 否则 partial 起源的 attention 即使尾包已到也永远快速衰减.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr("ghoshell_moss.core.mindflow._attention.time.monotonic", lambda: clock[0])
+    partial = Impulse(id="a", source="s", strength=100, strength_decay_seconds=10, complete=False)
+    attention = BaseAttention(
+        impulse=partial,
+        protection_duration_ratio=0.0,
+        max_protection_time=0.0,
+    )
+    attention.absorb_impulse(
+        Impulse(id="a", source="s", strength=100, strength_decay_seconds=10, complete=True)
+    )
+    assert attention.draw_from().complete is False  # 冻结创建者仍是 partial
+    assert attention.impulse().complete is True     # 活量已 complete
+    clock[0] += 5.0  # 进度 = 5 / 10 = 0.5
+    # factor=1.0 -> 100 * (1 - 0.5) = 50; 若误用 draw_from.complete -> factor=1.5 -> 25.
+    assert attention.current_strength() == 50
 
 
 def test_arbit_same_source_escalates_and_can_flip_outcome():
@@ -148,7 +194,7 @@ def test_absorb_impulse_same_id_updates_seed_and_returns_none():
     tail = Impulse(source='a', priority=Priority.NOTICE, strength=120, id='x', complete=True)
     result = attention.absorb_impulse(tail)
     assert result is None
-    assert attention.draw_from().strength == 120
+    assert attention.impulse().strength == 120
 
 
 def test_absorb_impulse_diff_id_returns_impulse_for_routing():
@@ -157,6 +203,17 @@ def test_absorb_impulse_diff_id_returns_impulse_for_routing():
     attention = BaseAttention(impulse=init)
     other = Impulse(source='b', priority=Priority.NOTICE, strength=100, id='y')
     assert attention.absorb_impulse(other) is other
+
+
+def test_absorb_diff_id_does_not_replace_current_impulse():
+    """异 id 的 impulse 被路由出去 (返回 impulse) 时, 不应篡改 attention 的当前 impulse.
+
+    否则 effort() 会翻到那个被 buffer 的异 id 包的值, 破坏 '当前 impulse' 语义.
+    """
+    attention = BaseAttention(impulse=Impulse(source='a', priority=Priority.NOTICE, id='x'))
+    other = Impulse(source='b', priority=Priority.NOTICE, id='y')
+    assert attention.absorb_impulse(other) is other
+    assert attention.impulse().id == 'x'
 
 
 def test_priority_and_set_priority_override():

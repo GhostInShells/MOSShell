@@ -4,17 +4,21 @@
 > 状态: `open`(待修) / `uncertain`(不确定) / `fixed`(已修, 带 commit) / `verified`(下轮 dogfood 验证) / `invalid`(判定非 bug)。
 > 由 `ghost-prototype-dolores` FEATURE.md 关联索引。dogfood 发现新问题在此登记，修复/验证在此改状态。
 
+> **状态快照 (2026-09-07 更新)**：D1/D5/D7/D21/D23/D26 → `fixed` 待回归（见归口 commit）；D24 → `open`(检查未启动)；D9/D17/D18 → `invalid`。下一轮 dogfood 优先跑 D1/D5/D7/D21/D23/D26 回归。
+
+> **2026-09-08 落地**：mindflow interleaved — incomplete impulse(首包)也送入思考单元, effort='none' 只观测不行动, complete 尾包折进响应帧再行动（「首包抢占注意力但不行动」）；attention 拆分 `draw_from`(冻结创建者)/`impulse`(活量) 并修吸收/衰减/挑战四处错位。
+
 ## 缺陷
 
 | # | 状态 | Pri | 问题 | 发现 | 归口 |
 |---|------|-----|------|------|------|
-| D1 | open | P0 | 反馈回路缺失 — speech 无返回提示 + 命令无 `<result>` 回执，行动无后果 → 本能训练被杀死 | dogfood-2 | — |
+| D1 | fixed | P0 | 反馈回路缺失 — speech 返回可听时长(played Ns / STOPPED 301)+ 命令结算入 InterpreterStoppedEvent，行动有后果 → 本能训练回路打通 | dogfood-2 | `7cbdc3ce`+`48447180`+`d228b0c1`+`f940d983`+`df3a14d6` |
 | D2 | uncertain | P0 | 帧纪律 — enter moment 未入 session / 奇数帧丢、回复后 flush。debug 发现帧在历史轨迹、界面未渲染，疑似展示层而非 tracer 丢帧 | dogfood-2 | — |
 | D3 | open | P1 | 模式默认 — 按会话种类设默认（实时→CTML / 阅读→文本）+ 双通道原语 + 不对称成本 | dogfood-2 | — |
 | D4 | fixed | P2 | effort 机制 — 自救工具(think) + effort 映射 + 文档化降级(Reasoning Effort 段)已落地 | dogfood-2 | `4fda96a0` |
-| D5 | open | P0 | TUI 生命周期 — 首轮能发消息、第二轮起不能（round1 后新回归） | dogfood-2 | — |
+| D5 | fixed | P0 | TUI 生命周期 — perStep 锁改 global ctx(agentPreset+sessionId gate)+ ego tools 改 agent scope，纠正首轮后二轮发不了的作用域 | dogfood-2 | `4fc8b0c5` |
 | D6 | fixed | P0 | 沙箱 cwd 错位 — DSH cwd = ghost home 而非 project 根，ghost 无法读写仓库、无自迭代能力 | dogfood-2 | project_home → project root |
-| D7 | open | P0 | dsh 提示词打架 — DSH 系统提示与 MOSS 元指令五处冲突（工作区/身份/输出机制/perStep/输入来源），元指令缺「裁决级」取舍 | dogfood-2 | — |
+| D7 | fixed | P0 | dsh 提示词打架 — CTML-first 输出协议反转(`699984f2`+`4fc8b0c5`)+提示词重排完成；three-homes 工作区分层与身份宣言在 inception `_prompts.py` 明确，五处冲突消解(待回归) | dogfood-2 | `699984f2`+`4fc8b0c5` |
 | D8 | fixed | — | 回声全量重渲染（facade-delta 未生效） | ego-wiring | `2e57a8f8` |
 | D9 | invalid | — | baseline `<key>value</key>` 渲染污染 — 记录错误，key 作 tag 判定正确，无需改 | ego-wiring | — |
 | D10 | fixed | — | yield 返回 "ok" 哑载荷 | ego-wiring | `59f13736`+`ab6aaac1` |
@@ -24,16 +28,16 @@
 | D14 | fixed | — | exit 失败闸门残留 | ego-wiring | `ea90993a` |
 | D15 | fixed | — | inputs_messages 不一致（executing 归 context） | ego-wiring | — |
 | D16 | fixed | — | observe 镜像风险（moment index 帧带序号） | ego-wiring | `59f13736` |
-| D17 | uncertain | P1 | 语言不匹配 — 中文输入，ghost 全文英文回答，markdown 内反而中文（机制不明，待问 ghost） | dogfood-3 | — |
-| D18 | open | P1 | markdown 内自指重新发声 — `<|Markdown|>` 内编号项重新触发语音，疑似自指 | dogfood-3 | — |
-| D19 | open | P2 | 长篇大论 — 缺「简洁/少即是多」规则（旧 persona/behaviors 有，重写丢失） | dogfood-3 | — |
-| D20 | open | P1 | fetch wait_actions_done 三处不齐 — 默认 True / 工具描述「Fetch now」/ prompt「optionally waiting」 | dogfood-3 | — |
-| D21 | open | P2 | dsh 侧先停 + 界面无中断 — final result 后 dsh 比 moss 先停，dsh UI 无中断能力（双向同步有鬼主意） | dogfood-3 | — |
+| D17 | invalid | P1 | 语言不匹配 — 中文输入，ghost 全文英文回答，markdown 内反而中文（未复现，待重观；暂判非 bug） | dogfood-3 | — |
+| D18 | invalid | P1 | markdown 内自指重新发声 — 判定非 bug(模型输出问题)；parser 正确处理 `<|Markdown|>…</|Markdown|>` 成对 escape(已有单测 `test_dolores.py`)，可补边界单测 | dogfood-3 | — |
+| D19 | open | P2 | 长篇大论 — 缺「简洁/少即是多」规则（旧 persona/behaviors 有，重写丢失）。待补进交互礼仪；(已把 `__content__` 从语音拿掉，只有 `say` 发声) | dogfood-3 | — |
+| D20 | open | P1 | fetch wait_actions_done 三处 — 默认 True / 工具描述已改「Wait for already-emitted...」(与默认一致, 不再"Fetch now") / prompt 仍「optionally waiting」，与 default=True 轻微张力待统一 | dogfood-3 | — |
+| D21 | fixed | P2 | dsh 侧先停 + 界面无中断 — teardown 时序已修(interpreter __aexit__ 清 clear_after_exit + mindflow 改 wait_compiled，待回归)；**界面无中断能力/双向同步未启动调研** | dogfood-3 | `4fc8b0c5` |
 | D22 | open | P1 | 图片协议/moment dynamic context 丢失 — 看 moment 疑似彻底丢了 dynamic context，图片协议是否正确传输未确认 | dogfood-3 | — |
-| D23 | open | P2 | shell trajectory 验证方式 — help + interface 应分别判断 delta，而非每次一起传 | dogfood-3 | — |
-| D24 | open | P0 | interpreter error 被 wrap 成 command error — 大概率与 mindflow-in-shell 类型解析有关，提示需有关闭方式 | dogfood-3 | — |
+| D23 | fixed | P2 | shell trajectory 验证方式 — help(notice)+interface 各自独立判断 delta 已落地，不再每次一起传 | dogfood-3 | `36dcaefd` |
+| D24 | open | P0 | interpreter error 被 wrap 成 command error — is_notifiable(≥300) 语义已铺垫(`ceb9eef7`)；区别于 command error + 关闭方式未定。**检查未启动** | dogfood-3 | `ceb9eef7`(铺垫) |
 | D25 | open | P0 | observe=True 未生成下一帧 thinking — 反而要界面驱动，这是 bug | dogfood-3 | — |
-| D26 | open | P0 | tui 遇 interpreter error 崩溃 — 没有正常拦截 | dogfood-3 | — |
+| D26 | fixed | P0 | tui 遇 interpreter error 崩溃 — exeception 处理加固(print+continue)+runtime stop 非零退出，不再静默崩溃(待回归) | dogfood-3 | `261adbbd` |
 | D27 | open | P1 | perStep reject 界面提示 — 调研路径搞错，可在 reject 处发 stream/error 类事件给界面提示 | dogfood-3 | — |
 
 > dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。

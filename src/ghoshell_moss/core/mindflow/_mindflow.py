@@ -697,6 +697,7 @@ class AbsMindflow(Mindflow, ABC):
             if self._current_attention is not None:
                 pending = self._current_attention.absorb_impulse(challenger)
                 if pending is not None:
+                    # 返回了一个值得吸收的 impulse.
                     self._pending_frame_impulses.append(pending)
         elif verdict == 'initial':
             await self._create_attention_from_impulse(challenger)
@@ -925,13 +926,20 @@ class AbsMindflow(Mindflow, ABC):
         finally:
             self._looping_attention = False
 
-    def _make_thinking(self, attention: Attention, impulse: Impulse | None, moment: Moment) -> Thinking:
+    def _make_thinking(self, attention: Attention, moment: Moment) -> Thinking:
         def _put_action(action: Action) -> None:
             try:
                 self._action_loop_queue.sync_q.put_nowait(action)
             except janus.SyncQueueShutDown:
                 # janus 关停语义不应泄漏到 action 协议层, 统一转成 statement exit.
                 raise ActionExitedException()
+
+        # 把上一轮(或上一 attention)的 abort reason 织进这一帧的接缝, 并统一消费.
+        # 无论 previous 是否为 None 都清掉 reason, 避免它泄漏到后续帧的接缝.
+        if self._last_abort_reason:
+            if moment.previous is not None:
+                moment.previous.stop_reason = self._last_abort_reason
+            self._last_abort_reason = ''
 
         return BaseThinking(
             attention=attention,
@@ -1010,8 +1018,11 @@ class AbsMindflow(Mindflow, ABC):
 
     def _fold_frame_impulses(self, moment: Moment, impulse: Impulse | None) -> None:
         """把本帧携带的 impulse 载荷织进 moment (用 Impulse.update_moment, 而非新增 observer 接口). """
-        if self._is_useful_frame(impulse):
+        if impulse is not None:
             impulse.update_moment(moment)
+            if not impulse.complete:
+                # 未完成的 impulse 不需要响应. 在这里防蠢.
+                impulse.thinking_effort = 'none'
         if self._pending_frame_impulses:
             incoming = self._pending_frame_impulses
             self._pending_frame_impulses = []
@@ -1025,24 +1036,34 @@ class AbsMindflow(Mindflow, ABC):
             async for attention in self._loop_attention():
                 try:
                     async with attention:
-                        impulse = await attention.wait_ready()
-                        while not attention.is_aborted():
+                        # 首帧: 折创建 impulse (可能 partial). 折完即清, 避免回声帧重复折.
+                        impulse = attention.draw_from()
+                        first_complete = impulse.complete
+                        moment = self._moments_observer.observe()
+                        self._fold_frame_impulses(moment, impulse)
+                        think = self._make_thinking(attention, moment)
+                        impulse = None
+                        await self._thinking_loop_queue.async_q.put(think)
+                        await think.wait_abort()
+
+                        # 若首帧是 partial, 等 complete 尾包, 折进响应帧.
+                        if not first_complete and not attention.is_aborted():
+                            impulse = await attention.wait_ready()
                             moment = self._moments_observer.observe()
-                            # 把上一轮(或上一 attention)的 abort reason 织进这一帧的接缝.
-                            if self._last_abort_reason and moment.previous is not None:
-                                moment.previous.stop_reason = self._last_abort_reason
-                                self._last_abort_reason = ''
-                            # 本帧的有用 impulse (创建帧的 impulse + 帧中到达的 absorb 续包) 折进 moment.
                             self._fold_frame_impulses(moment, impulse)
-                            think = self._make_thinking(attention, impulse, moment)
+                            think = self._make_thinking(attention, moment)
                             impulse = None
                             await self._thinking_loop_queue.async_q.put(think)
                             await think.wait_abort()
-                            if attention.is_aborted():
-                                self._last_abort_reason = attention.abort_reason()
-                                break
-                            if not self._moments_observer.need_observe():
-                                break
+
+                        # 回声帧: 只折帧中到达的 absorb 续包 (创建 impulse 已在首帧折过).
+                        while not attention.is_aborted() and self._moments_observer.need_observe():
+                            moment = self._moments_observer.observe()
+                            self._fold_frame_impulses(moment, impulse)
+                            think = self._make_thinking(attention, moment)
+                            await self._thinking_loop_queue.async_q.put(think)
+                            await think.wait_abort()
+
                 except asyncio.CancelledError:
                     raise
                 except janus.AsyncQueueShutDown:
@@ -1051,6 +1072,9 @@ class AbsMindflow(Mindflow, ABC):
                 except Exception as e:
                     self._logger.exception("%s generate_thinking failed: %s", self._log_prefix, e)
                     self._hooks_group.on_error(e)
+                finally:
+                    if attention.is_aborted():
+                        self._last_abort_reason = attention.abort_reason()
 
     def thinking_loop(self) -> AsyncIterator[Thinking]:
         return self._thinking_loop()

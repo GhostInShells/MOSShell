@@ -87,7 +87,7 @@ class BaseThinking(Thinking):
         return self._moment
 
     def effort(self) -> ThinkingEffort:
-        return self._attention.draw_from().thinking_effort
+        return self._attention.impulse().thinking_effort
 
     def register_gate(self, warrant: Callable[[str], Awaitable[tuple[bool, str]]]):
         self._warrant = warrant

@@ -607,6 +607,7 @@ def test_suite_baseline():
     with suite:
         suite.run_in_thread(_thinking_func, _action_func)
         suite.mindflow.add_signal(Signal.new('test'))
+        # first done
         assert done_event.wait(10), f"baseline action not consumed (got {len(got)})"
         assert got == [content]
 
@@ -700,33 +701,36 @@ def test_wait_first_impulse_complete():
     done_event = threading.Event()
 
     async def _thinking_func(thinking: Thinking) -> None:
+        if thinking.effort() == 'none':
+            return
         async with thinking.articulator() as articulator:
             for char in content:
                 articulator.send_nowait(char)
 
     async def _action_func(action: Action) -> None:
         received = ''
+        await action.wait_ready()
         async for delta in action.logos():
             received += delta
         got.append(received)
         done_event.set()
 
-    suite.run_in_thread(_thinking_func, _action_func)
-    incomplete = Signal.new("test", complete=False, stale_timeout=0.1)
-    suite.mindflow.add_signal(incomplete)
-    assert incomplete.__state__ == "pending"
-    # 0.1 秒后还在阻塞.
-    time.sleep(0.05)
-    assert not done_event.is_set()
-    attention = suite.mindflow.attention()
-    assert attention is not None
-    time.sleep(0.02)
-    assert not done_event.is_set()
-    # 投入一个 complete.
-    complete = Signal.new("test", complete=True)
-    complete.id = incomplete.id
-    # 手动塞入 signal.
-    suite.mindflow.add_signal(complete)
-    assert done_event.wait(1.5)
-    assert len(got) == 1
-    suite.close()
+    with suite:
+        suite.run_in_thread(_thinking_func, _action_func)
+        incomplete = Signal.new("test", complete=False, stale_timeout=0.1)
+        suite.mindflow.add_signal(incomplete)
+        assert incomplete.__state__ == "pending"
+        # 0.1 秒后还在阻塞.
+        time.sleep(0.05)
+        assert not done_event.is_set()
+        attention = suite.mindflow.attention()
+        assert attention is not None
+        time.sleep(0.02)
+        assert not done_event.is_set()
+        # 投入一个 complete.
+        complete = Signal.new("test", complete=True)
+        complete.id = incomplete.id
+        # 手动塞入 signal.
+        suite.mindflow.add_signal(complete)
+        assert done_event.wait(1.5)
+        assert len(got) == 1

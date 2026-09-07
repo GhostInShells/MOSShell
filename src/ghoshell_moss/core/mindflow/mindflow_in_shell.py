@@ -207,6 +207,7 @@ class MindflowInShell(ABC):
                     # 按规则中断.
                     if interrupt_first or thinking.moment.previous_stop_reason():
                         await self.shell.clear()
+                    # thinking effort == none 仍然会传入.
                     await self._run_thinking(thinking)
         finally:
             self.logger.info("%r thinking loop finished", self)

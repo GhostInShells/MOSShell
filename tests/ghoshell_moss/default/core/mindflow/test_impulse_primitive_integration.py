@@ -263,3 +263,81 @@ async def test_notify_buffers_when_challenge_fails():
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'user_msg' in buffered_texts
             defender_att.abort('test done')
+
+
+# ============================================================
+# 帧折叠 (interleaved incomplete) — partial 首包 / 回声帧
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_incomplete_then_complete_folds_tail_into_response_frame():
+    """partial 首包占据 attention 后, complete 尾包必须折叠进响应帧的 moment.
+
+    Bug 暴露点: wait_ready() 取到 complete 尾包后, 响应帧若未 _fold_frame_impulses,
+    ghost 会在一个没有尾包内容的 moment 上 articulate (闭眼回应).
+    """
+    mindflow = _new_mindflow()
+    frames = []
+    first_seen = asyncio.Event()
+
+    async def consume():
+        async for thinking in mindflow.thinking_loop():
+            async with thinking:
+                frames.append((thinking.effort(), thinking.moment.percepts_texts()))
+                if len(frames) == 1:
+                    first_seen.set()
+                if len(frames) >= 2:
+                    return
+
+    async with mindflow:
+        await mindflow.wait_started()
+        partial = Impulse(id='p1', source='s',
+                          messages=[Message.new().with_content('partial')], complete=False)
+        mindflow.add_impulse(partial)
+        sink = asyncio.create_task(consume())
+        await asyncio.wait_for(first_seen.wait(), timeout=5.0)
+        tail = Impulse(id='p1', source='s',
+                       messages=[Message.new().with_content('tail-complete')], complete=True)
+        mindflow.add_impulse(tail)
+        await asyncio.wait_for(sink, timeout=5.0)
+        mindflow.close()
+        await asyncio.sleep(0)
+
+    assert len(frames) == 2
+    assert frames[0][0] == 'none'            # 首帧 partial: 不响应
+    assert 'partial' in frames[0][1]
+    assert 'tail-complete' in frames[1][1]   # 响应帧必须携带 complete 尾包内容
+
+
+@pytest.mark.asyncio
+async def test_creating_impulse_not_refolded_in_echo_frames():
+    """创建帧的 impulse (带 logos) 只应折叠一次, 回声帧不应重复折叠.
+
+    Bug 暴露点: 首帧后未清 impulse, while need_observe 循环每帧重折创建 impulse,
+    而 update_moment 是 ``command_logos += logos``, 导致 command_logos 在回声帧被重复注入.
+    """
+    mindflow = _new_mindflow()
+    frames = []
+
+    async def consume():
+        async for thinking in mindflow.thinking_loop():
+            async with thinking:
+                frames.append(thinking.moment.command_logos)
+                if len(frames) == 1:
+                    # 触发一次回声观察, 使 while need_observe 进入下一帧.
+                    mindflow.moments.add_echoes(['echo'], need_observe=True)
+                if len(frames) >= 2:
+                    return
+
+    async with mindflow:
+        await mindflow.wait_started()
+        imp = _imp(messages=[Message.new().with_content('go')])
+        ImpulsePrimitive.command_only(imp, command_logos='do_it')
+        mindflow.add_impulse(imp)
+        await asyncio.wait_for(asyncio.create_task(consume()), timeout=5.0)
+        mindflow.close()
+        await asyncio.sleep(0)
+
+    assert len(frames) == 2
+    assert frames[0] == 'do_it'   # 首帧折叠创建 impulse 的 logos
+    assert frames[1] == ''        # 回声帧不应再重复折叠
