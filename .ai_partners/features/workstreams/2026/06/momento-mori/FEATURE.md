@@ -298,3 +298,104 @@ git 的 branch 已漂移成轻量指针，且 rebase 把历史拍平成一条线
 6. CLI 对齐（动词结构：checkout / branch rename 等 git 对应）
 7. agent 侧接线
 ```
+
+## 10. 第 7 轮对齐（2026-09-07，人类草稿 abcd.py + claude-fable-5 review）
+
+> 状态：**人类草稿完成，待今晚优化后整体 review**。
+> 优先级提升原因：dolores ghost 需要接入正式 memento，不能再拖。
+
+### 10.1 草稿核心设计决策（已与人类对齐）
+
+**branch-as-directory 终于明确**（§5.2 从未被正确实现的关键）：
+
+- `{branch_name}.head.json` 是活跃指针，内容是 name → branch_id 的映射
+- `branches/{branch_id}/` 是稳定存储目录，branch_id 永不变
+- 两层分离：name 可删可抢占，目录终生存在
+
+这是历次实现最大的掣肘根源：之前实现把 branch 当轻量指针，没有独立存储空间。
+
+**磁盘布局（草稿确认）：**
+
+```
+owner/
+  {branch_name}.head.json          # glob 出所有活跃 branch 名字→branch_id 映射
+  branches/{branch_id}/
+    ref.json                       # 创建时不可变 ref（BranchRef）
+    info.json                      # 可变状态（BranchInfo: context/status）
+    commits.jsonl                  # commit 事件日志，append-only
+    segments.jsonl                 # segment 记录，append-only
+    moments.jsonl                  # staging，commit 时迁移
+    forks.jsonl                    # 迁移
+    confluences.jsonl              # staging，commit 时迁移
+  commits/{yyyy}/{mm}/{commit_id}/
+    ref.json                       # CommitRef 拷贝，方便从目录还原
+    info.json                      # CommitInfo，可事后更新
+    moments.jsonl                  # 从 branch staging 迁移而来，冻结
+    forks.jsonl                    # 迁移
+    confluences.jsonl              # 迁移
+```
+
+**崩溃安全写入顺序（已定案）：**
+
+```
+1. 写 commit/ref.json              # 建立 commit 目录
+2. 写 commit/moments.jsonl         # 数据迁移进 commit
+3. 写 commit/forks.jsonl、confluences.jsonl
+4. append branch/commits.jsonl    # 这一步成功后 commit "活"了
+5. truncate branch/moments.jsonl  # 清空 staging
+```
+
+恢复判据：重启扫 branch/moments.jsonl 非空且 commits.jsonl 末尾 commit 目录已有 ref.json，则 staging 已安全，直接 truncate。
+
+**segment 的语义澄清（重要，与 §9.1 有差异）：**
+
+§9.1 把 segment 作为第一公民（有独立目录）。草稿评估后否决了独立目录：
+- segment 不独立存目录，作为 `segments.jsonl` 的记录行（start_commit_id / end_commit_id / summary / metadata）
+- 理由：独立目录不利于读取和查找，segment 数量相对较少，jsonl 足够
+
+**compact 两个层级（草稿新增，之前混淆）：**
+
+- **commit 级 compact**：把 N 个 commits 压缩为一个 Segment 记录，生成摘要。branch 目录内操作。
+- **branch 级 compact**：从当前 branch fork 出新 branch，抢占 head 文件（`.head.json` 原子改写）。旧 branch_id 目录保留为历史，新 branch 继承 name。
+
+两个操作分属不同层（Branch vs Repository），之前 `Branch.compact() -> Segment` 只覆盖了 commit 级，branch 级操作需在 Repository 上单独定义。
+
+**4 阶历史视图（读侧核心设计）：**
+
+```
+{fork_from_branch 摘要} | {branch context/status} | {segment 摘要列表} | {最近 commits 摘要} | {staging}
+```
+
+目标：用约 50k token 表达 20MB+ 的轨迹信息。每一层独立可渲染，fold 规则：有 segment summary 则折叠，无则展示 commit 摘要列表。
+
+这要求 branch/segment/commit 三个位置都有独立的 view 接口，且三个位置都能 fork 出 agent（带上下文快照直接对话）。
+
+### 10.2 MomentRecord 的 metadata 设计（已与人类 argue 后对齐）
+
+草稿用 `metadata: dict[str, Any]` 替代了 `type + payload` 的分离设计。
+
+人类的理由：`type` 收进 `metadata` 的一个 key，允许存时多态，消费者按 key 路由。参照 `message.py` 中 `Additional = Optional[dict[str, Any]]` 的一贯做法——容器不强类型，解码逻辑在读侧。
+
+接受这个设计，不再建议加顶层 `type` 字段。
+
+### 10.3 跨进程锁（已定案）
+
+**本阶段只做跨进程 branch 级 flock，不做 sealed 状态。**
+
+理由：sealed 的唯一作用是防止持有旧 branch 对象在 compact 后继续写入，这个场景极少发生，为它引入数据库得不偿失。Branch 的 `__aenter__/__aexit__` = 跨进程 flock，acquire 成功即可写，release 释放。
+
+compact 后旧 branch 变为无名孤儿目录，调用方应丢弃旧对象，靠调用约定约束，不靠库强制。
+
+### 10.4 `Repository.checkout()` 歧义（待解决）
+
+`ref: str | BranchRef` 中 `str` 的语义未明确：是 name 还是 branch_id？compact 后旧 branch 没有 name，只能通过 branch_id 寻址。
+
+建议：拆成两个参数 `name: str | None = None, branch_id: str | None = None`，互斥。待草稿下一版确认。
+
+### 10.5 草稿已知 bug（下一版需修复）
+
+- `BranchView.fork_from: ForkFromBranch` 缺 `Optional`（main branch 没有 fork_from）
+- `Segment`、`CommitInfo`、`BranchInfo` 缺 `metadata: dict[str, Any]` 字段
+- `Segment` 缺 `created` 时间戳
+- `commit()`、`compact()`、`fork()` 签名缺 `metadata` 参数
+- branch 级 compact 签名未定义（当前草稿只有 commit 级）
