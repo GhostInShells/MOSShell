@@ -19,6 +19,7 @@ updated: '2026-09-04'
 > Ground 子任务（ghost_home 认知场装配）→ [dolores-ground.md](dolores-ground.md)。
 > Ego 装线 dogfood 评审与下一步 → [dolores-ego-wiring.md](dolores-ego-wiring.md)。
 > perStep 第二阶段（可重入 ego session / anchor session）设计 → [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
+> commit / compact ego session 的 dsh 机制判定 → [dolores-commit-compact-ego-session.md](dolores-commit-compact-ego-session.md)。
 > 问题清单（单一事实源）→ [dolores-todo.md](dolores-todo.md)。
 
 ## Motivation
