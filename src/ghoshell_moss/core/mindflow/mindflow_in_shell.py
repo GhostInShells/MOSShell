@@ -387,11 +387,14 @@ class MindflowInShell(ABC):
                     # 通知编译已经完成.
                     action.set_compiled()
                 except InterpretError as err:
-                    # 级别 1: 可管理中断. interpretation 已保留 partial results +
-                    # observe=True. 同步产出到 output 总线.
+                    # 级别 1: 可管理中断 (模型 CTML 错误 / shell.clear). interpretation
+                    # 已保留 partial results + observe=True, 同步产出到 output 总线.
+                    #
+                    # 不 abort thinking: 让解释器经闭包 (close) 落盘 need_observe,
+                    # thinking 自然走到下一帧, 模型才能在下一轮 Moment 看到错误并自我纠正.
+                    # 若在此 abort_thinking, 会抢在 close() 的 add_echoes(need_observe=True)
+                    # 之前唤醒帧循环 — need_observe() 在 check 时刻仍是 False, 错误帧丢失.
                     self._on_mindflow_error(err)
-                    # 编译的错误, 直接退出 thinking.
-                    action.abort_thinking()
                     return
                 except StatementExitedException:
                     # feed 阶段 action 退出 (action.logos 抛 ActionExitedException):
