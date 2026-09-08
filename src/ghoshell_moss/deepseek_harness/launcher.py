@@ -1,18 +1,21 @@
 """
-DshLauncher — 薄、忠于协议地拥有一段 dsh web-profile 子进程.
+dsh 连接的协议层与进程层, 分两个类:
 
-启动器只回答一个问题: "怎么把 dsh 进程拉起来, 并连上它的 web 表面".
-它不携带任何业务逻辑 — 协议形状作为原语暴露 (outbound call / inbound
-notify / inbound request), MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
+DshConnection — 基类, 连接层. 持有 dsh web 表面的传输与协议原语:
+WS 下行 (mux /api/events.mux 重连循环 + 帧分流) + HTTP 上行 (call / 协议
+facade DshClient) + 帧处理器注册 (on_mux_frame / on_host_frame) + session
+接线 (create_session). 不携带进程生命周期 — 不 spawn, 不 kill.
 
-机制选型: 进程生命周期走 MOSS 自己的 Subprocesses 契约 (构造注入, 控制反转),
-传输 (WS 下行 + HTTP 上行) 是启动器自己的域, 用 asyncio 原生工具.
+DshLauncher(DshConnection) — 子类, 进程层. 在连接层之上增加 dsh web-profile
+子进程的持有与治理 (经 MOSS Subprocesses 契约构造注入, 控制反转): spawn /
+exit / stdout+stderr 消费 / stop, 以及就绪等待 (push 式: ws 连上 → started).
 
-传输: dsh web profile + 内置 `/api/events.mux` WS 下行 + plugin 注册的 HTTP
-路由上行 (零依赖伪双工). 不用 stdio JSON-RPC, 不用官方 SDK.
+传输选型: dsh web profile + 内置 `/api/events.mux` WS 下行 + plugin 注册的
+HTTP 路由上行 (零依赖伪双工). 不用 stdio JSON-RPC, 不用官方 SDK.
 WS 下行帧按类型分流: host/* 走 on_host_frame, 其余走 on_mux_frame, 各自广播.
+MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
 
-Config 刻意薄: 只装「启动器自己要的进程参数」, 不复刻 dsh 自己的配置
+Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 自己的配置
 (provider/model/prompt/tools 是 dsh 的 config 域, 由 dsh 从文件/env 自发现).
 """
 
@@ -41,7 +44,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -67,6 +69,8 @@ from .client import DshClient
 from .session import DshSession
 
 __all__ = [
+    "DshConnectionConfig",
+    "DshConnection",
     "DshLauncherConfig",
     "DshLauncher",
     "DshExit",
@@ -88,7 +92,23 @@ class DshExit:
     self_shutdown: bool = False
 
 
-class DshLauncherConfig(BaseModel):
+class DshConnectionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = Field(default='127.0.0.1')
+    port: int = Field(default=3083, description="web 端口; base_url/mux_url 由此派生.")
+    connect_timeout: float = Field(default=10.0, description="连 WS / 单个 HTTP 请求的超时 (秒).")
+
+    @property
+    def mux_url(self) -> str:
+        return f"ws://{self.host}:{self.port}/api/events.mux"
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+
+class DshLauncherConfig(DshConnectionConfig):
     """拉起 dsh web profile 的参数面.
 
     Deliberately thin: 只装这个启动器 spawn 进程、连上 web 表面需要的参数.
@@ -96,45 +116,37 @@ class DshLauncherConfig(BaseModel):
     自发现, 这里不复刻. 可扩展靠"嵌套子配置 + 子类化", forbid 让拼写错当场失败.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
     binary: str = Field(default="dsh", description="dsh 可执行; 默认从 PATH 找.")
     home: Path | None = Field(default=None, description="DSH_HOME; None → 在 cwd 启动, 让 dsh 自发现 profile/config.")
     profile: str = Field(default="web", description="进程层 profile 选择, 不是 dsh 配置.")
-    port: int = Field(default=3083, description="web 端口; base_url/mux_url 由此派生.")
     args: list[str] = Field(default_factory=list, description="启动器 flag 之后的 verbatim 参数.")
     readiness_path: str = Field(default="/plugin-api/ping", description="就绪探针: 轮询到它返回即视为 dsh+plugin 起来.")
-    connect_timeout: float = Field(default=10.0, description="连 WS / 单个 HTTP 请求的超时 (秒).")
     readiness_timeout: float = Field(default=30.0, description="等待就绪的时限 (秒).")
     shutdown_timeout: float = Field(default=5.0, description="拆除进程的时限 (秒).")
 
-    @property
-    def base_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
 
-    @property
-    def mux_url(self) -> str:
-        return f"ws://127.0.0.1:{self.port}/api/events.mux"
+class DshConnection:
+    """连接层: 持 dsh web 表面的传输与协议原语, 不带进程生命周期.
 
+    职责 (协议原语形状, 不背业务逻辑):
+    - outbound call: `call()` POST JSON 到 `{base}{path}` (MOSS→dsh).
+    - inbound notify: `on_mux_frame` / `on_host_frame` 双流注册 (返回 Disposer),
+      `_ws_loop` 下行重连 + `_dispatch_raw_frame` 按 type 分流广播.
+    - session 接线: `create_session()` 把 DshSession 的 accept_frame 挂到两流,
+      退出时 on_exit 解绑.
+    - host 级 workspace 镜像: `_mirror_workspace` + `workspaces()` / `workspace_for_path()`.
 
-class DshLauncher:
-    """薄启动器: lifecycle + 协议原语, 不背业务.
-
-    subprocesses 走构造注入 (控制反转). 传入 ghost/owner 的 Subprocesses,
-    dsh 骑 owner 的治理链; 不传则自建一个 SubprocessesImpl, 自包含可用.
+    生命周期只覆盖连接自身 (WS 循环 + HTTP client); 子进程的 spawn/治理/拆除
+    属 DshLauncher. 连接层的 `_wait_started` / `_on_start_failed` 是空实现,
+    由子类覆盖 — 基类单独可用时不依赖子进程, 也就没有"就绪等待/失败清理"。
     """
 
     def __init__(
             self,
-            config: DshLauncherConfig,
-            subprocesses: Subprocesses | None = None,
+            config: DshConnectionConfig,
             logger: LoggerItf | None = None,
     ) -> None:
-        self.config = config
-        self._external_sp = subprocesses is not None
-        self._subprocess_manager: Subprocesses = subprocesses or SubprocessesImpl()
-        self._owns_sp = not self._external_sp
-        self._dsh_process: ManagedProcess | None = None
+        self._config = config
         # prepare http client
         self._http_client = httpx.AsyncClient(timeout=self.config.connect_timeout)
         self._mux_handlers: list[MuxFrameHandler] = []
@@ -145,52 +157,27 @@ class DshLauncher:
         self._logger: LoggerItf = logger or get_moss_logger()
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
-        # 标记 dsh 是否已经运行.
         self._dsh_started = ThreadSafeEvent()
+        # 标记 dsh 是否已经运行.
+
         self._started = False
         self._stopped = False
-        # 标记 dsh 子进程运行态: spawn 后 True, on_exit 回调翻 False.
-        self._dsh_subprocess_is_running = False
-        self._consume_dsh_process_out_task: asyncio.Task | None = None
-        self._consume_dsh_process_err_task: asyncio.Task | None = None
-        self._on_exit_callbacks: list[Callable[[DshExit], None]] = []
-        self._exit: DshExit | None = None
-        self._self_shutdown = False
-        self._stderr_lines: list[str] = []
-        self._log_prefix: str = f"[DSHLauncher] "
+        self._log_prefix: str = f"[DSHConnection] "
+
+    @property
+    def config(self) -> DshConnectionConfig:
+        return self._config
 
     # ---- 运行状态 ---- #
+
     def is_running(self) -> bool:
-        return self._started and not self._stopped and self._dsh_subprocess_is_running
+        return self._started and not self._stopped
 
     def _check_running(self) -> None:
         if not self.is_running():
             raise RuntimeError("DshLauncher not running (dsh subprocess not alive)")
 
     # ---- 生命周期 ---- #
-
-    @contextlib.asynccontextmanager
-    async def _consume_dsh_process_ctx(self):
-        try:
-            # 创建子任务, 消费 dsh 的 stdout (json rpc 协议) + stderr (错误日志).
-            self._consume_dsh_process_out_task = asyncio.create_task(self._consume_dsh_process_stdout())
-            self._consume_dsh_process_err_task = asyncio.create_task(self._consume_dsh_process_stderr())
-            yield
-        finally:
-            # 关闭消费循环.
-            self._consume_dsh_process_out_task.cancel()
-            self._consume_dsh_process_err_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._consume_dsh_process_out_task
-                await self._consume_dsh_process_err_task
-
-    @contextlib.asynccontextmanager
-    async def _dsh_process_ctx(self):
-        self._dsh_process = await self._spawn_dsh()
-        try:
-            yield
-        finally:
-            await self._stop_proc()
 
     @contextlib.asynccontextmanager
     async def _ws_loop_ctx(self):
@@ -204,7 +191,7 @@ class DshLauncher:
 
     async def _ws_loop(self) -> None:
         """mux WS 下行重连循环: 连上后 parse+dispatch 帧, 断开则重连."""
-        while self._dsh_subprocess_is_running:
+        while self.is_running():
             try:
                 async with websockets.connect(self.config.mux_url) as ws:
                     self._dsh_started.set()
@@ -220,15 +207,6 @@ class DshLauncher:
             except websockets.exceptions.ConnectionClosed as exc:
                 self._logger.warning("mux connection closed: %s", exc)
             await asyncio.sleep(1.0)
-
-    async def _wait_started(self) -> None:
-        """等待 mux WS 连上 (push 式就绪), 超时则失败而非永久阻塞."""
-        try:
-            await self._dsh_started.wait_for(self.config.readiness_timeout)
-        except asyncio.TimeoutError:
-            raise TimeoutError(
-                f"dsh 未在 {self.config.readiness_timeout}s 内就绪 (mux WS 未连接)"
-            ) from None
 
     async def _dispatch_raw_frame(self, raw: str) -> None:
         """解析 mux 下行帧, 按类型路由到 host/mux 两套 handler 列表广播.
@@ -267,6 +245,15 @@ class DshLauncher:
             except Exception:
                 self._logger.exception("mux frame handler failed: %s", method)
 
+    async def _enter_async_context(self, stack: AsyncExitStack) -> None:
+        await stack.enter_async_context(self._ws_loop_ctx())
+
+    async def _wait_started(self) -> None:
+        pass
+
+    async def _on_start_failed(self) -> None:
+        pass
+
     async def __aenter__(self) -> Self:
         if self._started:
             return self
@@ -274,19 +261,11 @@ class DshLauncher:
             self._started = True
             # 启动 aexit stack.
             await self._aexit_stack.__aenter__()
-            if not self._subprocess_manager.is_running():
-                await self._aexit_stack.enter_async_context(self._subprocess_manager)
-            # spawn dsh
-            await self._aexit_stack.enter_async_context(self._dsh_process_ctx())
-            # 压栈子进程 rpc 协议消费逻辑.
-            await self._aexit_stack.enter_async_context(self._consume_dsh_process_ctx())
-            # 压栈 mux WS 下行重连循环.
-            await self._aexit_stack.enter_async_context(self._ws_loop_ctx())
-            # 阻塞到 ws 连上 (mux connected) 才返回, 超时则失败.
+            await self._enter_async_context(self._aexit_stack)
             await self._wait_started()
         except BaseException:
             # 启动失败: 手动关掉已 spawn 的 subprocess (句柄在 _wait_started 之前已拿到).
-            await self._stop_proc()
+            await self._on_start_failed()
             raise
         return self
 
@@ -301,9 +280,6 @@ class DshLauncher:
             await self._http_client.aclose()
             self._http_client = None
         await self.client.close()
-        await self._stop_proc()
-        if self._owns_sp:
-            await self._subprocess_manager.__aexit__(None, None, None)
 
     # ---- 协议原语 ---- #
 
@@ -383,6 +359,96 @@ class DshLauncher:
         session.on_exit(self.on_host_frame(session.accept_frame))
         session.on_exit(self.on_mux_frame(session.accept_frame))
         return session
+
+
+class DshLauncher(DshConnection):
+    """进程层: 在连接层之上持有并治理一段 dsh web-profile 子进程.
+
+    回答一个问题: "怎么把 dsh 进程拉起来, 并连上它的 web 表面".
+    连接层没有的子进程生命周期都在此: spawn / exit / stdout+stderr 消费 /
+    stop, 以及 push 式就绪等待 (ws 连上 → _dsh_started → __aenter__ 返回).
+
+    subprocesses 走构造注入 (控制反转). 传入 ghost/owner 的 Subprocesses,
+    dsh 骑 owner 的治理链; 不传则自建一个 SubprocessesImpl, 自包含可用.
+
+    生命周期串接: 本类压栈子进程层 (subprocess_manager → dsh_process →
+    consume), 再 `super()` 压入连接层的 WS 循环 — 退出时 LIFO 先拆 WS,
+    再拆 consume, 再停子进程。
+    """
+
+    def __init__(
+            self,
+            config: DshLauncherConfig,
+            subprocesses: Subprocesses | None = None,
+            logger: LoggerItf | None = None,
+    ) -> None:
+        super().__init__(config=config, logger=logger)
+        self._external_sp = subprocesses is not None
+        self._subprocess_manager: Subprocesses = subprocesses or SubprocessesImpl()
+        self._owns_sp = not self._external_sp
+        self._dsh_process: ManagedProcess | None = None
+        # 标记 dsh 子进程运行态: spawn 后 True, on_exit 回调翻 False.
+        self._dsh_subprocess_is_running = False
+        self._consume_dsh_process_out_task: asyncio.Task | None = None
+        self._consume_dsh_process_err_task: asyncio.Task | None = None
+        self._on_exit_callbacks: list[Callable[[DshExit], None]] = []
+        self._exit: DshExit | None = None
+        self._self_shutdown = False
+        self._stderr_lines: list[str] = []
+        self._log_prefix: str = f"[DSHLauncher] "
+
+    @property
+    def config(self) -> DshLauncherConfig:
+        return self._config
+
+    def is_running(self) -> bool:
+        return super().is_running() and self._dsh_subprocess_is_running
+
+    async def _wait_started(self) -> None:
+        """等待 mux WS 连上 (push 式就绪), 超时则失败而非永久阻塞."""
+        try:
+            await self._dsh_started.wait_for(self.config.readiness_timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"dsh 未在 {self.config.readiness_timeout}s 内就绪 (mux WS 未连接)"
+            ) from None
+
+    async def _on_start_failed(self) -> None:
+        await self._stop_proc()
+
+    async def _enter_async_context(self, stack: AsyncExitStack) -> None:
+        if not self._subprocess_manager.is_running():
+            await stack.enter_async_context(self._subprocess_manager)
+        # spawn dsh
+        await self._aexit_stack.enter_async_context(self._dsh_process_ctx())
+        # 压栈子进程 rpc 协议消费逻辑.
+        await self._aexit_stack.enter_async_context(self._consume_dsh_process_ctx())
+        # 压栈 mux WS 下行重连循环 — 由基类负责, 在子进程层之后压入, 退出时先于进程拆除.
+        await super()._enter_async_context(stack)
+
+    @contextlib.asynccontextmanager
+    async def _consume_dsh_process_ctx(self):
+        try:
+            # 创建子任务, 消费 dsh 的 stdout (json rpc 协议) + stderr (错误日志).
+            self._consume_dsh_process_out_task = asyncio.create_task(self._consume_dsh_process_stdout())
+            self._consume_dsh_process_err_task = asyncio.create_task(self._consume_dsh_process_stderr())
+            yield
+        finally:
+            # 关闭消费循环.
+            self._consume_dsh_process_out_task.cancel()
+            self._consume_dsh_process_err_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._consume_dsh_process_out_task
+                await self._consume_dsh_process_err_task
+            await self._stop_proc()
+
+    @contextlib.asynccontextmanager
+    async def _dsh_process_ctx(self):
+        self._dsh_process = await self._spawn_dsh()
+        try:
+            yield
+        finally:
+            await self._stop_proc()
 
     def on_exit(self, callback: Callable[[DshExit], None]) -> None:
         """注册子进程退出回调, 退出时按注册顺序层层调用."""
