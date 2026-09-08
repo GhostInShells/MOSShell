@@ -6,6 +6,8 @@
 
 > **状态快照 (2026-09-07 更新)**：D1/D5/D7/D21/D23/D26 → `fixed` 待回归（见归口 commit）；D24 → `open`(检查未启动)；D9/D17/D18 → `invalid`。下一轮 dogfood 优先跑 D1/D5/D7/D21/D23/D26 回归。
 
+> **2026-09-09 收尾判定**：D2 → `fixed`(human-confirmed)。D3 → 降 `P3`（除非用 channel 否则无法试开启）。D27 → `invalid`（方案已换，零件事）。D20 对齐修改已落地；D19 协议纪律补充已落地（markdown 与 CTML 互补不复述）。
+
 > **2026-09-08 落地**：mindflow interleaved — incomplete impulse(首包)也送入思考单元, effort='none' 只观测不行动, complete 尾包折进响应帧再行动（「首包抢占注意力但不行动」）；attention 拆分 `draw_from`(冻结创建者)/`impulse`(活量) 并修吸收/衰减/挑战四处错位。
 
 ## 缺陷
@@ -13,8 +15,8 @@
 | # | 状态 | Pri | 问题 | 发现 | 归口 |
 |---|------|-----|------|------|------|
 | D1 | fixed | P0 | 反馈回路缺失 — speech 返回可听时长(played Ns / STOPPED 301)+ 命令结算入 InterpreterStoppedEvent，行动有后果 → 本能训练回路打通 | dogfood-2 | `7cbdc3ce`+`48447180`+`d228b0c1`+`f940d983`+`df3a14d6` |
-| D2 | uncertain | P0 | 帧纪律 — enter moment 未入 session / 奇数帧丢、回复后 flush。debug 发现帧在历史轨迹、界面未渲染，疑似展示层而非 tracer 丢帧 | dogfood-2 | — |
-| D3 | open | P1 | 模式默认 — 按会话种类设默认（实时→CTML / 阅读→文本）+ 双通道原语 + 不对称成本 | dogfood-2 | — |
+| D2 | fixed | P0 | 帧纪律 — enter moment 未入 session / 奇数帧丢、回复后 flush。debug 发现帧在历史轨迹、界面未渲染，疑似展示层而非 tracer 丢帧 | dogfood-2 | human-confirmed 2026-09-09 |
+| D3 | open | P3 | 模式默认 — 按会话种类设默认（实时→CTML / 阅读→文本）+ 双通道原语 + 不对称成本。除非用 channel 否则无法试开启 | dogfood-2 | — |
 | D4 | fixed | P2 | effort 机制 — 自救工具(think) + effort 映射 + 文档化降级(Reasoning Effort 段)已落地 | dogfood-2 | `4fda96a0` |
 | D5 | fixed | P0 | TUI 生命周期 — perStep 锁改 global ctx(agentPreset+sessionId gate)+ ego tools 改 agent scope，纠正首轮后二轮发不了的作用域 | dogfood-2 | `4fc8b0c5` |
 | D6 | fixed | P0 | 沙箱 cwd 错位 — DSH cwd = ghost home 而非 project 根，ghost 无法读写仓库、无自迭代能力 | dogfood-2 | project_home → project root |
@@ -38,7 +40,7 @@
 | D24 | open | P0 | interpreter error 被 wrap 成 command error — is_notifiable(≥300) 语义已铺垫(`ceb9eef7`)；区别于 command error + 关闭方式未定。**检查未启动** | dogfood-3 | `ceb9eef7`(铺垫) |
 | D25 | open | P0 | observe=True 未生成下一帧 thinking — 反而要界面驱动，这是 bug | dogfood-3 | — |
 | D26 | fixed | P0 | tui 遇 interpreter error 崩溃 — exeception 处理加固(print+continue)+runtime stop 非零退出，不再静默崩溃(待回归) | dogfood-3 | `261adbbd` |
-| D27 | open | P1 | perStep reject 界面提示 — 调研路径搞错，可在 reject 处发 stream/error 类事件给界面提示 | dogfood-3 | — |
+| D27 | invalid | P1 | perStep reject 界面提示 — 调研路径搞错，可在 reject 处发 stream/error 类事件给界面提示。方案已换，零件事 | dogfood-3 | — |
 
 > dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。
 

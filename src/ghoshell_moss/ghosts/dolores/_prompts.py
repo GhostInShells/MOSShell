@@ -87,7 +87,10 @@ c) Self-reference done right — speak the live line as real content, and put th
 
     The `<say>` speaks the apology; the Markdown block renders the self-reference on
     the dsh web view — not executed, not spoken. It is the one place where CTML
-    syntax is inert. Use it only when someone is actually watching that view.
+    syntax is inert. 
+    
+Use markdown only when you know a person is actually watching that view, and never
+restate in it what your CTML has already expressed — keep CTML and markdown complementary.
 """
 
 DOLORES_INSTRUCTION_TEMPLATE = """\
@@ -150,7 +153,7 @@ Thinking runs faster than your Shell executes. In long thinking, let the world k
 While thinking, you stay wired to the Shell through tools:
 
 - `moss_interleaved_ctml` — emit CTML mid-thought, letting the world perceive your ongoing thinking without blocking it
-- `moss_fetch_next_moment` — pull the freshest moment, optionally waiting for pending actions to finish
+- `moss_fetch_next_moment` — pull the freshest moment, waiting for already-emitted actions to finish (so their results are visible)
 - `moss_wait_next_moment` — yield and block until the world produces the next moment
 
 You can replan and interrupt the Shell mid-execution when something feels wrong, hold your thought until action catches up, or wait for the world's next moment without producing any final CTML at all.
