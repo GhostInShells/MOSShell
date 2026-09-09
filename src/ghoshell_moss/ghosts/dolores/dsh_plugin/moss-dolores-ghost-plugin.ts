@@ -7,7 +7,7 @@ import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, LlmCallConfig } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -111,7 +111,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
 export const name = 'moss-dolores-ghost-plugin'
 
-export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt', 'tools', 'attachments']
+export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt', 'attachments']
 
 // 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
 const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
@@ -140,6 +140,9 @@ let doloresAgentPreset: string | null = null
 
 // 防旁路 token (点 4): ego/create 生成返回, thinking/enter|exit 校验 — 拒绝非 ego 发起的调用.
 let doloresThinkingToken: string | null = null
+
+// ego 的 persona 文本 (instruction) — ego/create 写入, session/start 时由 apply_ego_agent 注入 persona 段.
+let doloresInstruction = ''
 
 // ego 的 model selection ref — reasoningEffort 的唯一权威来源 (dsh 的 installModelSelection
 // 会把它应用到下个 request). thinking/enter 用 body.model 设置, moss_think 中途改 reasoningEffort.
@@ -251,35 +254,145 @@ interface ThinkingEnterPayload {
   thinkingToken?: string
 }
 
-export function apply(ctx: Context) {
-  // ── 0. 全局 perStep 锁 (覆盖所有 agent, 含 resume 复活的历史 ego) ─────
-  // 锁从 ego setup 上移到这里: setup 只在 create 时跑, resume 绕过 setup,
-  // 挂在 per-agent setup 上的锁拦不住被 dsh 界面还原的历史 session.
-  // 判断分两层: (1) durable 的 agentPreset 认出「ego 类」; (2) 运行时
-  // doloresEgoSessionId 认出「当前那一个」, 非当前 reject.
-  ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
-    // 非 ego 类 agent (preset 不匹配或尚未 create): 不锁, 直接放行.
-    if (doloresAgentPreset === null || agent.session.header.agentPreset !== doloresAgentPreset) {
-      return next()
-    }
-    // ego 类 agent: 只有当前 ego 放行 (背压等 thinking/enter), 历史 ego reject.
-    if (agent.id !== doloresEgoSessionId) {
-      notifySessionFrozen(ctx, agent)
+// ── ego tools (module-level, 构建一次) ──────────────────────────────────
+// defineTool 在 profile 文件里能 import @deepseek-ai/dsh-tools (profiles/node_modules
+// 链接农场在向上解析路径上), 所以这里直接定义; 注册动作在 apply_ego_agent (session/start
+// 时) 完成, 不经过 agent preset (那样 defineTool 解析不到).
+const egoTools = [
+  defineTool({
+    name: 'moss_wait_next_moment',
+    description: 'Wait for the next MOSS moment. Blocks until MOSS produces the next observation frame.',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => {
+      return await new Promise<string>((resolve, reject) => {
+        pendingYield = { resolve: resolve as (value: unknown) => void, reject }
+        exec.signal.addEventListener('abort', () => {
+          if (pendingYield !== null) { pendingYield = null; reject(new Error('moss_wait_next_moment aborted')) }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }),
+  defineTool({
+    name: 'moss_fetch_next_moment',
+    description: 'Fetch the next MOSS moment now. Returns {moment_ref}; the full moment is injected into the next step context.',
+    parameters: {
+      wait_actions_done: { type: 'boolean', default: true, description: 'Wait for already-emitted actions to finish before observing, so their results are visible.' },
+      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before observing, so the facade reflects live state.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => {
+      const callId = String(exec.callId)
+      return await new Promise<Record<string, unknown>>((resolve, reject) => {
+        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) { reject(new Error('moss_fetch_next_moment aborted')) }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }),
+  defineTool({
+    name: 'moss_interleaved_ctml',
+    description: 'Emit CTML mid-thought so the world can perceive your ongoing thinking, without blocking further thought. Returns "ok" once compiled (or executed if wait_done).',
+    parameters: {
+      ctml: { type: 'string', description: 'The CTML command to execute.' },
+      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before executing.' },
+      wait_done: { type: 'boolean', default: false, description: 'Wait for full execution instead of just compilation.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => {
+      const callId = String(exec.callId)
+      return await new Promise<string>((resolve, reject) => {
+        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) { reject(new Error('moss_interleaved_ctml aborted')) }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }),
+  defineTool({
+    name: 'moss_think',
+    description: 'Set your reasoning effort for subsequent requests this turn (off/low/high/max). Resets on the next thinking/enter.',
+    parameters: {
+      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'Reasoning effort: off (no reasoning) / low / high / max.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute(args, _exec) {
+      const effort = mapThinkingEffort(args.effort)
+      if (doloresSelectionRef.current !== undefined) {
+        doloresSelectionRef.current.reasoningEffort = ReasoningEffortId(effort)
+      }
+      return effort
+    },
+  }),
+]
+
+/**
+ * ego agent 的模型面装配 — session/start 时对 agent.ctx 做全套注册.
+ *
+ * identity/persona 段 + ego tools + perStep 锁都挂在 agent 自己的 scope ctx 上 (per-agent),
+ * 替代「全局 perStep + setup 里注册」的旧形状. 由 agent/session-start 在 create 和 resume
+ * 各触发一次 (fresh ctx), 保证 resume 后仍还原 — 不经过 agent preset (那样 defineTool 解析
+ * 不到), 也不依赖 create-only 的 setup.
+ */
+function apply_ego_agent(agent: Agent, ctx: Context): void {
+  const agentCtx = agent.ctx
+  // shadow 全局 harness:identity 成 GIS/MOSS 身份.
+  agentCtx.effect(() => agentCtx.systemPrompt.section({
+    name: HARNESS_IDENTITY_SECTION,
+    order: HARNESS_IDENTITY_ORDER,
+    text: HARNESS_IDENTITY_TEXT,
+  }), 'dolores-ego-identity.section()')
+  // shadow preset persona 成 ghost instruction (ego/create 已写入 doloresInstruction).
+  agentCtx.effect(() => agentCtx.systemPrompt.section({
+    name: PERSONA_SECTION,
+    order: PERSONA_ORDER,
+    text: doloresInstruction,
+  }), 'dolores-ego-persona.section()')
+  // ego tools 注册到 agent scope (scoped) — 只有 ego agent 可见.
+  for (const tool of egoTools) {
+    agentCtx.tools.register(tool)
+  }
+  // perStep 锁 (per-agent): 只有当前 ego 放行 (背压等 thinking/enter), 历史 ego reject.
+  // 挂在 agent 自己的 ctx 上 — 只拦这个 agent 的 pre-step, 不用全局预设过滤.
+  agentCtx.on('agent/pre-step', async ({ agent: stepAgent, signal }, next) => {
+    if (stepAgent.id !== doloresEgoSessionId) {
+      notifySessionFrozen(ctx, stepAgent)
       return { kind: 'reject' }
     }
     await thinkingGate.wait(undefined, signal)
     const decision = await next()
     if (decision.kind === 'reject') return decision
-    // perStep 挂载点: 把 enter 缓冲的 moment (epoch + context) 插到本步历史**最前**.
-    // enter 不 inbox inject (claim 已穿越), 只写 pendingMoments; 在这里消费, 本 turn 生效.
-    // 排空后清 — 绝不丢消息.
+    // perStep 挂载点: 把 enter 缓冲的 moment (epoch + context) 插到本步历史最前.
     if (pendingMoments.length > 0) {
-      // splice 原地排空并返回帧 — pendingMoments 是 const, 不能重绑 (会抛 "Assignment to constant variable").
       const queued = pendingMoments.splice(0, pendingMoments.length)
       const prefix = queued.flatMap(frame => frame.messages)
       return { kind: 'enter', messages: [...prefix, ...decision.messages] }
     }
     return decision
+  })
+}
+
+export function apply(ctx: Context) {
+  // ── 0. agent/session-start: 每个 ego agent 实例装配一次 ────────────────
+  // create 和 resume 都发 (source='startup'|'resume'), 各自 fresh ctx — 这里调 apply_ego_agent
+  // 做 tools + identity/persona + perStep 的全套注册, 替代「全局 perStep + setup 里注册」.
+  ctx.on('agent/session-start', ({ agent, source }) => {
+    if (agent.session.header.agentPreset !== doloresAgentPreset) return
+    if (source !== 'startup' && source !== 'resume') return
+    apply_ego_agent(agent, ctx)
   })
 
   // ── 1. ego agent 创建 (点 1) ──────────────────────────────────────────
@@ -336,9 +449,11 @@ export function apply(ctx: Context) {
           await workspace.setTitle(projectName)
         }
         doloresEgoWorkspaceId = workspace.id
-        // 记录 durable 身份 (agentPreset), 供全局 perStep 锁识别 ego 类 agent.
-        // 必须在 create 之前设 — ego agent 的首个 pre-step 即需据此认门.
+        // 记录 durable 身份 (agentPreset), 供 session-start listener 识别 ego 类 agent.
+        // 必须在 create 之前设 — ego agent 的 session-start 即需据此认门.
         doloresAgentPreset = agentPreset
+        // persona 文本落到模块级, 供 apply_ego_agent 在 session/start 时注入 persona 段.
+        doloresInstruction = instruction
         // 2. create ego session: standard preset (tools) + overridden identity/persona.
         const sessionId = randomUUID()
         const handle = await ctx.agents.create({
@@ -346,28 +461,7 @@ export function apply(ctx: Context) {
           meta: { cwd: projectHome, agentPreset },
           setup: async (agentCtx: Context) => {
             await agentCtx.get('agentPresets').mount(agentCtx, agentPreset)
-            // shadow global harness:identity with the GIS/MOSS identity.
-            agentCtx.effect(() => agentCtx.systemPrompt.section({
-              name: HARNESS_IDENTITY_SECTION,
-              order: HARNESS_IDENTITY_ORDER,
-              text: HARNESS_IDENTITY_TEXT,
-            }), 'dolores-ego-identity.section()')
-            // shadow preset persona with the ghost instruction.
-            agentCtx.effect(() => agentCtx.systemPrompt.section({
-              name: PERSONA_SECTION,
-              order: PERSONA_ORDER,
-              text: instruction,
-            }), 'dolores-ego-persona.section()')
-            // perStep 锁已上移到 apply 顶层 (全局 ctx.on('agent/pre-step')) —
-            // setup 只在 create 时跑, resume 绕过 setup, 挂在这里拦不住历史 session.
-            // model selection: reasoningEffort 的唯一权威 — thinking/enter 设 current,
-            // moss_think 中途改 current.reasoningEffort, dsh 在下个 request 用 assembled.
             installModelSelection(agentCtx, doloresSelectionRef)
-            // ego tool 注册到 agent scope (scoped) — 只有 ego agent 可见, 普通 session /
-            // 历史 ego (resume 不跑 setup) / fork subagent 都没有 moss_* schema.
-            for (const tool of egoTools) {
-              agentCtx.tools.register(tool)
-            }
           },
         })
         doloresEgoSessionId = handle.agent.id
@@ -575,99 +669,6 @@ export function apply(ctx: Context) {
       }
     },
   })
-
-  // ── 5. yield tool (moss_wait_next_moment) ─────────────────────────────
-  // 模型在 thinking 中主动调 wait, 阻塞等下一帧 moment. execute 挂 pendingYield 阻塞;
-  // 下一轮 thinking/enter 解锁 (resolve moment_ref). cancel 时清空 pendingYield 并 reject.
-  const egoTools = []
-  egoTools.push(defineTool({
-    name: 'moss_wait_next_moment',
-    description: 'Wait for the next MOSS moment. Blocks until MOSS produces the next observation frame.',
-    parameters: {},
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
-    },
-    execute: async (_args, exec) => {
-      return await new Promise<string>((resolve, reject) => {
-        pendingYield = { resolve: resolve as (value: unknown) => void, reject }
-        exec.signal.addEventListener('abort', () => {
-          if (pendingYield !== null) { pendingYield = null; reject(new Error('moss_wait_next_moment aborted')) }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
-  }))
-
-  // ── moss_fetch_next_moment tool ───────────────────────────────────────
-  // 主动 fetch: 模型调 fetch → execute 挂 pendingCalls[callId] 阻塞 → MOSS 侧 thinking.observe()
-  // 生产 moment → /tool-result RPC 按 callId 解锁 (resolve {moment_ref}) 并注入 moment context.
-  egoTools.push(defineTool({
-    name: 'moss_fetch_next_moment',
-    description: 'Fetch the next MOSS moment now. Returns {moment_ref}; the full moment is injected into the next step context.',
-    parameters: {
-      wait_actions_done: { type: 'boolean', default: true, description: 'Wait for already-emitted actions to finish before observing, so their results are visible.' },
-      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before observing, so the facade reflects live state.' },
-    },
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
-    },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<Record<string, unknown>>((resolve, reject) => {
-        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) { reject(new Error('moss_fetch_next_moment aborted')) }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
-  }))
-
-  // ── moss_interleaved_ctml tool (interleaved thinking) ─────────────────
-  // 思考中发出 ctml, 思维超前于行为: MOSS 侧 articulator.send(ctml) + wait (compiled/done).
-  egoTools.push(defineTool({
-    name: 'moss_interleaved_ctml',
-    description: 'Emit CTML mid-thought so the world can perceive your ongoing thinking, without blocking further thought. Returns "ok" once compiled (or executed if wait_done).',
-    parameters: {
-      ctml: { type: 'string', description: 'The CTML command to execute.' },
-      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before executing.' },
-      wait_done: { type: 'boolean', default: false, description: 'Wait for full execution instead of just compilation.' },
-    },
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
-    },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<string>((resolve, reject) => {
-        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) { reject(new Error('moss_interleaved_ctml aborted')) }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
-  }))
-
-  // ── moss_think tool (effort 自救通道) ─────────────────────────────────
-  // 模型中途改本 turn 的 reasoning effort, 下一个 request 生效, 下个 enter 重置.
-  egoTools.push(defineTool({
-    name: 'moss_think',
-    description: 'Set your reasoning effort for subsequent requests this turn (off/low/high/max). Resets on the next thinking/enter.',
-    parameters: {
-      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'Reasoning effort: off (no reasoning) / low / high / max.' },
-    },
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
-    },
-    execute(args, _exec) {
-      const effort = mapThinkingEffort(args.effort)
-      if (doloresSelectionRef.current !== undefined) {
-        doloresSelectionRef.current.reasoningEffort = ReasoningEffortId(effort)
-      }
-      return effort
-    },
-  }))
 
   // ── tool-result 桥 (approach a): MOSS 侧 /tool-result 按 callId 解锁 pending tool ──
   ctx.webServer.register({
