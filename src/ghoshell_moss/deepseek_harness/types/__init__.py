@@ -9,13 +9,14 @@ str | Literal 支持扩展.
   rpc (信封+错误) → nouns (WorkspaceView/JobView) → events (帧) → sessions → domains → sdk.
 """
 
-from . import domains, events, nouns, rpc, sdk, sessions
+from . import domains, events, nouns, refs, rpc, sdk, sessions
 from .rpc import *
 from .nouns import *
 from .events import *
 from .sessions import *
 from .domains import *
 from .sdk import *
+from .refs import *
 
 __all__ = (
     rpc.__all__
@@ -24,4 +25,5 @@ __all__ = (
     + sessions.__all__
     + domains.__all__
     + sdk.__all__
+    + refs.__all__
 )
