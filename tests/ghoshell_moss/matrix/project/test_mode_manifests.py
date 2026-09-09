@@ -82,14 +82,6 @@ class TestScannedModeManifests:
         assert not ch.is_error()
         assert ch.name() == '__main__'
 
-    def test_nuclei_finds_default_instances(self):
-        """stub mode nuclei/__init__.py 声明的默认 NucleusMeta 实例可被扫描到."""
-        m = ScannedHostModeManifests(STUB_MODE_ROOT)
-        results = list(m.nuclei())
-        assert len(results) >= 1
-        for r in results:
-            assert not r.is_error()
-
     def test_package_not_exists_is_tolerant(self):
         """不存在的 mode 包返回合法的 ModeManifests，Iterable 方法返回空列表."""
         m = ScannedHostModeManifests('nonexistent.mode.pkg')

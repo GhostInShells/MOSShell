@@ -52,7 +52,7 @@ STUB_MANIFESTS_CONFIGS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.confi
 STUB_MANIFESTS_SIGNALS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.signals'
 STUB_MANIFESTS_TOPICS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.topics'
 STUB_MANIFESTS_PARAMETERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.parameters'
-STUB_MANIFESTS_NUCLEI = 'ghoshell_moss.stubs.workspace.modes.default.src.HOST.nuclei'
+STUB_MANIFESTS_NUCLEI = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.nuclei'
 STUB_MANIFESTS_ROOT = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests'
 
 
@@ -266,14 +266,18 @@ class TestConfigManifest:
 
 class TestSearchConfigManifests:
     def test_finds_config_instances(self):
-        """stub configs.py 里是 LLMConfig() 实例."""
+        """stub configs.py 重导出 openbox 基线, 扫描应发现 ConfigType 实例并封装为 ConfigManifest."""
         results = list(search_config_manifests(STUB_MANIFESTS_CONFIGS))
-        assert len(results) == 1
-        m = results[0]
-        assert isinstance(m, ConfigManifest)
-        assert m.name() == 'llms'
-        assert isinstance(m.value(), ConfigType)
-        assert m.schema().name == 'llms'
+        # 仅逻辑断言: 该包确实导出了 Config 基线, 扫描应兜住至少一个, 且每个封装都是合法的.
+        # 禁止机械断言: 不断言具体数量 (数量随 openbox 基线演化而变),
+        # 也不依赖扫描顺序/首条结果的具体名称 — 这些是实现细节, 不是协议契约.
+        assert len(results) > 0
+        for m in results:
+            assert isinstance(m, ConfigManifest)
+            assert not m.is_error()
+            assert isinstance(m.value(), ConfigType)
+            assert m.name()
+            assert isinstance(m.schema(), ConfigSchema)
 
     def test_yields_error_manifest(self):
         results = list(search_config_manifests(
@@ -577,12 +581,17 @@ class TestNucleusManifest:
 
 class TestSearchNucleusManifests:
     def test_finds_nucleus_instances(self):
-        """host stubs nuclei.py 有 ExampleNucleusMeta 实例."""
+        """MOSS 全局基线 (project scope) 的 nuclei 包重导出 openbox, 扫描应发现 NucleusMeta 实例."""
         results = list(search_nucleus_manifests(STUB_MANIFESTS_NUCLEI))
-        assert len(results) >= 1
+        # 仅逻辑断言: 该有效扫描路径确实导出了 nucleus 基线, 扫描应兜住至少一个,
+        # 且每个封装都是合法的. 禁止机械断言: 不断言具体数量 (数量随基线演化而变),
+        # 也不依赖扫描顺序. 锚定的是迁移后的有效路径, 不是 stub 包的构成.
+        assert len(results) > 0
         for m in results:
             assert isinstance(m, NucleusManifest)
+            assert not m.is_error()
             assert isinstance(m.value(), NucleusMeta)
+            assert m.name()
 
     def test_empty_for_package_without_nuclei(self):
         results = list(search_nucleus_manifests(
