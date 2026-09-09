@@ -13,6 +13,7 @@ Mindflow 调度中枢实现.
   notify_nucleus       — NotifyNucleus, 不丢消息入口 (notify primitive)
   silent_nucleus       — SilentNucleus, 静默聚合通道 (silent mode + 优先级提取 buffer)
   interrupt_nucleus    — InterruptNucleus, 中断动作通道 (interrupt primitive + 反向 suppress)
+  listener_nucleus     — ListenerNucleus, ASR 感知通道 (first/clause/tail 三相 + 三开关)
 """
 
 from ghoshell_moss.core.blueprint.mindflow import *
@@ -39,5 +40,9 @@ from ghoshell_moss.core.mindflow.interrupt_nucleus import (
 from ghoshell_moss.core.mindflow.cell_event_nucleus import (
     CellEventNucleus, CellEventNucleusMeta,
     CellEventSignalMeta, CellTransition,
+)
+from ghoshell_moss.core.mindflow.listener_nucleus import (
+    ListenerNucleus, ListenerNucleusMeta,
+    ListenerSignal, ListenerPacket,
 )
 from ghoshell_moss.core.mindflow._channel import build_mindflow_channel
