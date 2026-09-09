@@ -7,10 +7,10 @@ description: 以 commit 为第一公民的认知轨迹系统。成员不可变�
 milestone: null
 priority: P0
 status: in-progress
-status_note: '2026-09-08 第 8 轮收敛（设计收束，未开工实现）：memento = 三级索引 + 三个动词（recap/read/agent），
-  moment 是可插拔 payload 非本体内存，索引不做存储。v5+ 阻塞判据与全新本体记于 §11。'
-title: Memento — 轨迹第一公民的认知基建（第 8 轮收敛：索引为体 / moment 可插拔，未开工）
-updated: '2026-09-08'
+status_note: '2026-09-10 第 9 轮 lean 收敛（已开工实现）：commit=纯锚点、message 单一真值在 Note、
+  fork 引用、commit/note 拆两步。放弃分形目标，删 CLI+agents（后续单独 commit）。决策与交付物记于 §12。'
+title: Memento — 轨迹第一公民的认知基建（第 9 轮 lean 收敛：锚点 + 摘要两级，已开工实现）
+updated: '2026-09-10'
 ---
 
 # Memento
@@ -459,3 +459,29 @@ moment → memento 不是存储空间的积累，而是对历史的**重构投�
 - 是否新增 `FORMAT_new.md` 草稿，正式写码时破坏性覆盖 v3（`FORMAT.md` 暂不动，待抽象关死后 review 冻结）。
 
 *草稿，待人类纠偏；§11 只记设计决策，磁盘格式与实现见 `FORMAT_new.md`（若建）与 `git log -- memento/`。*
+
+## 12. 第 9 轮 lean 收敛（2026-09-10，人类引导 + deepseek-v4-flash-vision-exp 实现）
+
+> 状态：**已开工实现**。契约 `abcd.py` + filesystem 实现 `_fs_memento.py` + 单测 `test_lean_memento.py`（13 passed）落地。
+> 背景：dolores ghost 本周收口；分形 memento（草拟后删除）精神成本不可承担，决定放弃分形目标，收敛到极简存储。
+
+### 12.1 决策清单
+
+- **删除 memento CLI 体系 + memento agents**（后续单独 commit 删光旧代码，被删设计经 git log 反查）。
+- **commit = 纯锚点** `{id, metatype, metadata, created}`，不承载 moment。metadata 装还原钥匙
+  （约定 `session_id` + `tail`），memento 只存取、不解释；还原归 dolores。
+- **message 单一真值**：`Note = {commit_id, message}`，last-wins。title = 首行、body = 其余（对齐 git `-m`）。
+- **commit / note 拆两步**：commit 打裸锚点（可无摘要）；note 旁路后补摘要（dolores 后台 agent 生成，
+  实时 ghost 的 compact 不能占主循环）。
+- **fork 是引用**（读父支 + 子支两个 commits.jsonl 拼连续轨迹），不复制；`ForkRef = {branch_id, commit_id}` 极窄。
+- **branch = 目录**：`meta.json` / `commits.jsonl`（正序 append-only 权威）/ `commit_notes.jsonl`（旁路，可丢可重建）。
+- **owner 级**：`branches.jsonl`（历史）+ `{name}.ref.json`（当前指针）+ `branches/{id}/`。
+- **本版拿掉**：confluence / segment 一级公民 / commit 独立目录 / staging。
+- **写门控**：`async with branch:` = FileLocker flock，fast-fail（进程级文件锁，不防准入约束）；
+  `a*` 异步面（aiofiles）给调用方明确卸载点，避免被迫 `asyncio.to_thread` + 手包 task。
+
+### 12.2 与 §11 的关系
+
+§11「索引不做存储 / 三级索引 / recap-read-agent」未实现，本版收敛为更窄的「锚点 + 摘要」两级。
+moment 仍不内联（钥匙指 session），故 §11.1「索引不做存储」精神保留；segment 降级为 commit 的旁路摘要
+（note），暂不做独立层。fork 边界用「引用、不复制」回答了 §11.7 未定题。
