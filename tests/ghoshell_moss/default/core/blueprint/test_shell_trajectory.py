@@ -55,7 +55,7 @@ def test_facade_delta_removed_channel_emits_tombstone():
 
 def test_facade_delta_added_channel_emits_full_facade():
     """新增 channel emit 完整 facade."""
-    frame = _frame({}, {'a': _meta(help='new help', created=0)})
+    frame = _frame({}, {'a': _meta(notice='new help', created=0)})
     delta = frame.facade_delta()
     assert '<channel path="a">' in delta
     assert 'new help' in delta
@@ -64,8 +64,8 @@ def test_facade_delta_added_channel_emits_full_facade():
 def test_facade_delta_changed_channel_emits_new_facade():
     """变更的 channel emit 新 facade, 不含旧内容."""
     frame = _frame(
-        {'a': _meta(help='old help', created=0)},
-        {'a': _meta(help='new help', created=1)},
+        {'a': _meta(notice='old help', created=0)},
+        {'a': _meta(notice='new help', created=1)},
     )
     delta = frame.facade_delta()
     assert 'new help' in delta
@@ -75,8 +75,8 @@ def test_facade_delta_changed_channel_emits_new_facade():
 def test_facade_delta_unchanged_emits_nothing():
     """facade 文本未变 (即使 created 变了) → 不发射."""
     frame = _frame(
-        {'a': _meta(help='same', created=0)},
-        {'a': _meta(help='same', created=1)},
+        {'a': _meta(notice='same', created=0)},
+        {'a': _meta(notice='same', created=1)},
     )
     assert frame.facade_delta() == ''
 
@@ -84,8 +84,8 @@ def test_facade_delta_unchanged_emits_nothing():
 def test_facade_delta_container_tag_is_facade_delta():
     """facade delta 消息用 <facade-delta> 容器 tag 包裹 (而非 <facade>)."""
     frame = _frame(
-        {'a': _meta(help='old help', created=0)},
-        {'a': _meta(help='new help', created=1)},
+        {'a': _meta(notice='old help', created=0)},
+        {'a': _meta(notice='new help', created=1)},
     )
     messages = frame.project(with_status=False, with_dynamic=False)
     facade_messages = [m for m in messages if m.meta.tag == 'facade-delta']
@@ -101,12 +101,12 @@ def test_facade_delta_emits_only_changed_channel():
     """facade delta 只发变更的 channel, 未变更的 channel 不重发 (非全量重渲染)."""
     frame = _frame(
         {
-            'a': _meta(help='a old', created=0),
-            'b': _meta(help='b same', created=0),
+            'a': _meta(notice='a old', created=0),
+            'b': _meta(notice='b same', created=0),
         },
         {
-            'a': _meta(help='a new', created=1),
-            'b': _meta(help='b same', created=1),
+            'a': _meta(notice='a new', created=1),
+            'b': _meta(notice='b same', created=1),
         },
     )
     delta = frame.facade_delta()
