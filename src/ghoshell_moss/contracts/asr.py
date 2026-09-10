@@ -47,7 +47,7 @@ class RecognitionResult:
     """识别流在某个 phase 产出的一个完整结果 (text 轴).
 
     平铺字段, 不做嵌套 — 分句结构就是 text + start_ms + end_ms 三个字段.
-    ``stream_id`` 关联同周期的 RecognitionSegment.
+    ``segment_id`` 关联同一 segment 的 RecognitionSegment (即其 ``id``).
     """
 
     stream_id: str
@@ -61,14 +61,14 @@ class RecognitionResult:
 
 @dataclass
 class RecognitionSegment:
-    """一个分句的音频留档 (audio 轴).
+    """一个 segment (一次 turn) 的音频留档 (audio 轴).
 
-    每个 definite 分句切一次 — ``text`` 是该句文本, ``audio`` 是该句的粗略切音频
-    (自上个切点累积, 可能与邻句轻微重叠). ``start_ms``/``end_ms`` 是句的流相对
-    时间戳; ``offset_ms`` 是 ``audio`` 起点的流相对时间, 供 ``precise_cut`` 精确切片.
+    每个 tail 切一次 — ``text`` 是整段累积文本, ``audio`` 是整段累积音频.
+    ``start_ms``/``end_ms`` 是段的流相对时间戳; ``offset_ms`` 是 ``audio`` 起点的
+    流相对时间, 供 ``precise_cut`` 精确切片.
 
-    与 RecognitionResult 通过 ``stream_id`` + ``start_ms``/``end_ms`` 关联, 走独立
-    回调 (on_segment), 不混进 text 轴.
+    与 RecognitionResult 通过 ``segment_id`` (即 ``id``) + ``stream_id`` 关联, 走
+    独立回调 (on_segment), 不混进 text 轴.
     """
 
     id: str  # segment id

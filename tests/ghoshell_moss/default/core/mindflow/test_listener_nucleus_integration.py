@@ -78,7 +78,7 @@ async def test_turn_first_packet_preempt_then_tail_response():
 
     async with suite:
         suite.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        suite.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '今天天气不错', turn_id='t1', segment_index=1))
+        suite.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '今天天气不错', turn_id='t1', clause_index=1))
         suite.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1'))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
@@ -116,7 +116,7 @@ async def test_clause_response_produces_continuous_thinking_frames():
         suite.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
         # 每句之间留一点间隙, 让每个 attention 有机会起帧, 再被下一句打断.
         for i, text in enumerate(('句1', '句2'), start=1):
-            suite.add_signal(new_listener_signal(ListenerPacket.CLAUSE, text, turn_id='t1', segment_index=i))
+            suite.add_signal(new_listener_signal(ListenerPacket.CLAUSE, text, turn_id='t1', clause_index=i))
             await asyncio.sleep(0.05)
         suite.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1'))
         # 等所有 attention 走完 (articulate 至少 2 次 + 系统回到 idle).

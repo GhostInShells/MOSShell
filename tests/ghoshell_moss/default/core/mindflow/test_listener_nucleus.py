@@ -44,14 +44,14 @@ def test_signal_default_priority_notice():
 def test_signal_roundtrip_preserves_fields():
     sig = new_listener_signal(
         ListenerPacket.CLAUSE, '今天天气不错',
-        turn_id='t1', segment_index=1, start_ms=100, end_ms=800, confidence=0.9,
+        turn_id='t1', clause_index=1, start_ms=100, end_ms=800, confidence=0.9,
     )
     meta = ListenerSignal.from_signal(sig)
     assert meta is not None
     assert meta.packet == ListenerPacket.CLAUSE
     assert meta.text == '今天天气不错'
     assert meta.turn_id == 't1'
-    assert meta.segment_index == 1
+    assert meta.clause_index == 1
     assert meta.start_ms == 100
     assert meta.end_ms == 800
     assert meta.confidence == 0.9
@@ -80,8 +80,8 @@ async def test_full_turn_ids_consistent_and_complete_flags():
     async with ListenerNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
         nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '今天天气不错', turn_id='t1', segment_index=1))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', segment_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '今天天气不错', turn_id='t1', clause_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', clause_index=1))
     # 分句响应默认关: 首包 + 尾包 两个 impulse.
     assert len(notified) == 2
     first, tail = notified
@@ -120,7 +120,7 @@ async def test_clause_attended_flattens_to_run_params():
     async with ListenerNucleus(clause_response=True) as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
         nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', segment_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
         clause = notified[1]
         assert clause.complete is True
         assert clause.priority == Priority.NOTICE  # challenge priority
@@ -137,7 +137,7 @@ async def test_first_packet_interrupt_off_holds_until_tail():
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
         nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
         assert notified == []
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '你好', turn_id='t1', segment_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '你好', turn_id='t1', clause_index=1))
         assert notified == []  # clause_response 关, 分句只 buffer
         nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1'))
         assert len(notified) == 1
@@ -155,9 +155,9 @@ async def test_clause_response_cumulative_buffer():
     async with ListenerNucleus(clause_response=True) as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
         nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', segment_index=1))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句2', turn_id='t1', segment_index=2))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', segment_index=2))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句2', turn_id='t1', clause_index=2))
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', clause_index=2))
     # 首包 + 句1 + 句2 + 尾包.
     assert len(notified) == 4
     first, clause1, clause2, tail = notified[0], notified[1], notified[2], notified[3]
@@ -184,9 +184,9 @@ async def test_tail_diff_empty_when_all_clauses_sent():
     async with ListenerNucleus(clause_response=True) as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
         nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', segment_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
         nuc.attended(notified[1])  # 句1 已送达
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '尾巴', turn_id='t1', segment_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '尾巴', turn_id='t1', clause_index=1))
         tail = notified[-1]
         assert _message_text(tail) == ''
 
@@ -216,7 +216,7 @@ async def test_clause_firing_gated_by_cooldown():
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
         nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
         nuc.suppress(notified[0])  # 进入冷却
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', segment_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
         assert len(notified) == 1  # 冷却期内分句不发射 (但已 buffer)
         nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1'))
         assert len(notified) == 2

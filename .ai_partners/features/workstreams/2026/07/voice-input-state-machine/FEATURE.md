@@ -1106,7 +1106,7 @@ commit 事件协议（trigger → ASR finalize 通道）、flag 作为 Parameter
 
 身份两层：
 - 1/2/3/4 共用一个 turn 级 id；命名候选 `turn`（非 `session`——MOSS 已占用；非 `batch`——撞 TTSBatch）。
-- 3/4 共用分句 `segment_index`（引擎 result_index）。
+- 3/4 共用分句 `clause_index`（引擎 result_index）。
 
 **delta 已死**：ASR partial 非单调重写，partial 只能是"全文 replace"，不做 delta；分句 index + 对话 uid
 取代增量排序。
@@ -1185,7 +1185,7 @@ commit 事件协议（trigger → ASR finalize 通道）、flag 作为 Parameter
    `ASRInfo` 只背 params_schema/params (模型反身性调参面)。
 
 7. **分句三字段, confidence/words 不要。** utterance 有 `words[].conf` (词级), 无句级 confidence。
-   分句只取 `text / start_time / end_time`。`segment_index` 不在 payload, 按 utterance 顺序在 ASR 层推导。
+   分句只取 `text / start_time / end_time`。`clause_index` 不在 payload, 按 utterance 顺序在 ASR 层推导。
 
 > 注: 本节"三相位"是 **ASR 结果层** (RecognitionResult); 09-01 节 B 的"四态 (首包/分句中/分句/尾包)"
 > 是 **signal 层** (ListenerNucleus)。"首包"由 ListenerNucleus 从 turn 开始合成, 不来自火山引擎。

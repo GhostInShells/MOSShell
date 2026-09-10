@@ -64,7 +64,7 @@ class ListenerPacket(str, Enum):
 class ListenerSignal(SignalMeta):
     """Listener 感知 signal — ASR 音频流的分句结果, 进 ListenerNucleus.
 
-    signal name = "listener". 一个 turn 的包用同一 ``turn_id`` 关联, ``segment_index``
+    signal name = "listener". 一个 turn 的包用同一 ``turn_id`` 关联, ``clause_index``
     保序; impulse id 由 nucleus 自持, 与 turn_id 解耦 (nucleus 决定怎么映射到 attention).
 
     字段设计遵循 SignalMeta 三尺度: 功能性 (nucleus 判决用途) / 易生产 (ASR/wire 天然
@@ -74,8 +74,8 @@ class ListenerSignal(SignalMeta):
 
     packet: ListenerPacket = Field(description="包型: first / clause / tail")
     text: str = Field(default="", description="稳定句文本; 首包通常为空; 尾包 text 不参与递送 (内容由分句 sent 态决定)")
-    turn_id: str = Field(default="", description="wire 上的 turn 身份 (asr 会话/流级), 一个 turn 一个值")
-    segment_index: int = Field(default=0, description="句序号, 用于 FIFO 保序 / diff / 去重")
+    turn_id: str = Field(default="", description="一次 turn 的身份, 对应 asr 的 segment_id (tail 界定), 一个 turn 一个值")
+    clause_index: int = Field(default=0, description="句序号, 用于 FIFO 保序 / diff / 去重")
     start_ms: int = Field(default=0, description="引擎相对起始时间 (流内), 非墙钟")
     end_ms: int = Field(default=0, description="引擎相对结束时间 (流内), 非墙钟")
     confidence: float = Field(default=0.0, description="识别置信度, 未来用于分句门控/低优丢弃")
@@ -96,7 +96,7 @@ class ClauseState:
     ``sent`` 标记该分句是否已通过 impulse 送达模型, 供尾包 diff 计算"未送达"差集.
     """
 
-    segment_index: int
+    clause_index: int
     text: str
     sent: bool = False
 
@@ -154,7 +154,7 @@ class ListenerNucleus(Nucleus):
         self._impulse_id: str | None = None
         self._turn_active = False
         self._clauses: list[ClauseState] = []
-        self._last_segment_index = 0
+        self._last_clause_index = 0
 
         # 仲裁冷却 (失败侧) + impulse cache.
         self._suppress_until = 0.0
@@ -266,7 +266,7 @@ class ListenerNucleus(Nucleus):
         self._reset_turn()
         self._impulse_id = unique_id()
         self._turn_active = True
-        self._last_segment_index = 0
+        self._last_clause_index = 0
 
         if not self._first_packet_interrupt:
             # 不开首包打断: 不抢 attention, 只开局, 等第一条内容再发 impulse.
@@ -285,8 +285,8 @@ class ListenerNucleus(Nucleus):
 
     def _on_clause(self, meta: ListenerSignal) -> None:
         self._ensure_turn(meta)
-        self._clauses.append(ClauseState(segment_index=meta.segment_index, text=meta.text))
-        self._last_segment_index = max(self._last_segment_index, meta.segment_index)
+        self._clauses.append(ClauseState(clause_index=meta.clause_index, text=meta.text))
+        self._last_clause_index = max(self._last_clause_index, meta.clause_index)
 
         if not self._clause_response:
             # 不开分句响应: 只累积 buffer, 等尾包一次性提交.
@@ -379,7 +379,7 @@ class ListenerNucleus(Nucleus):
         self._impulse_id = None
         self._turn_active = False
         self._clauses.clear()
-        self._last_segment_index = 0
+        self._last_clause_index = 0
         self._impulse_cache = None
 
     def _in_cooldown(self) -> bool:
@@ -427,7 +427,7 @@ def new_listener_signal(
         text: str = "",
         *,
         turn_id: str = "",
-        segment_index: int = 0,
+        clause_index: int = 0,
         start_ms: int = 0,
         end_ms: int = 0,
         confidence: float = 0.0,
@@ -442,7 +442,7 @@ def new_listener_signal(
         packet=packet,
         text=text,
         turn_id=turn_id,
-        segment_index=segment_index,
+        clause_index=clause_index,
         start_ms=start_ms,
         end_ms=end_ms,
         confidence=confidence,
