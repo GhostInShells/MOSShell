@@ -253,15 +253,19 @@ class MiniAudioSequentialConsumer(AudioSequentialConsumer):
         self._logger = logger
         self._stream: StreamSubscriber | None = None
         self._started = False
+        self._shutdown = False
 
-    async def start(self) -> None:
-        if self._started:
-            return
-        self._stream = self._transport.sub_pcm_stream(maxsize=self._maxsize)
-        await self._stream.__aenter__()
-        self._started = True
+    def shutdown(self, immediately: bool = False) -> None:
+        self._shutdown = True
 
-    async def close(self) -> None:
+    async def __aenter__(self) -> "MiniAudioSequentialConsumer":
+        if not self._started:
+            self._stream = self._transport.sub_pcm_stream(maxsize=self._maxsize)
+            await self._stream.__aenter__()
+            self._started = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._stream is not None:
             await self._stream.__aexit__(None, None, None)
             self._stream = None
@@ -269,9 +273,11 @@ class MiniAudioSequentialConsumer(AudioSequentialConsumer):
 
     def __aiter__(self) -> "MiniAudioSequentialConsumer":
         if not self._started:
-            raise RuntimeError("Consumer not started — call start() first")
+            raise RuntimeError("Consumer not started — enter async context first")
         return self
 
     async def __anext__(self) -> AudioChunk:
+        if self._shutdown or self._stream is None:
+            raise StopAsyncIteration
         sample = await self._stream.__anext__()
         return unpack_chunk(sample.payload)

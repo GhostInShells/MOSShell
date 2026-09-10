@@ -14,7 +14,7 @@
   - render.py    — PlaybackSample 观测显示 (频谱/波形/实时帧渲染)
   - codec.py     — 音频源材料 (tune 合成, WAV codec, 片段切片)
 
-协议数据载体在 ghoshell_moss.contracts (PlaybackSample, ASRResult) 与
+协议数据载体在 ghoshell_moss.contracts (PlaybackSample, RecognitionResult) 与
 ghoshell_moss.types (ConversationTopic, AudioPlaybackTopic) —
 未来 matrix 级别广播承载的正是同一批结构. CLI 是协议最早的那个探测面.
 """

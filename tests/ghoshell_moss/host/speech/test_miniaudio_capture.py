@@ -111,11 +111,11 @@ class TestAudioSequentialConsumer:
             consumer.__aiter__()
 
     @pytest.mark.asyncio
-    async def test_close_before_start_is_safe(self):
-        """未 start 就 close 不抛异常."""
+    async def test_aexit_before_aenter_is_safe(self):
+        """未 enter 就 exit 不抛异常."""
         source = _make_source()
         consumer: AudioSequentialConsumer = source.new_sequential_consumer(max_queue_frames=32)
-        await consumer.close()
+        await consumer.__aexit__(None, None, None)
 
 
 # ── Serialization contract ───────────────────────────────────────────

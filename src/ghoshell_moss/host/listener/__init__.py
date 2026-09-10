@@ -1,34 +1,5 @@
-"""Voice input — host-level core for realtime speech-to-text perception."""
-from ghoshell_moss.host.listener.contracts import (
-    StreamState,
-    VoiceMode,
-    VoiceLifecycleEvent,
-    StreamStateChanged,
-    AsrPartial,
-    AsrFinal,
-    BufferUpdated,
-    EventHandler,
-    VoiceController,
-    VoiceConfig,
-    DeviceConfig,
-    VoiceNodeRuntime,
-)
-from ghoshell_moss.host.listener.controller import VoiceControllerImpl
-from ghoshell_moss.host.listener.channel import VoiceChannel
+"""Listener host core — 火山 ASR 实现 + audio capture 实现.
 
-__all__ = [
-    "StreamState",
-    "VoiceMode",
-    "VoiceLifecycleEvent",
-    "StreamStateChanged",
-    "AsrPartial",
-    "AsrFinal",
-    "BufferUpdated",
-    "EventHandler",
-    "VoiceController",
-    "VoiceConfig",
-    "DeviceConfig",
-    "VoiceNodeRuntime",
-    "VoiceControllerImpl",
-    "VoiceChannel",
-]
+子模块直接 import (``host.listener.volcengine_asr`` / ``host.listener.capture``),
+本包 ``__init__`` 不再聚合导出 (旧 VoiceController/VoiceStateMachine 状态机已删除).
+"""

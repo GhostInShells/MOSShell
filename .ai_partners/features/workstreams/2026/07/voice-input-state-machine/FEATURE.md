@@ -4,7 +4,7 @@ status: in-progress
 status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末.'
 priority: P0
 created: 2026-07-28
-updated: 2026-09-01
+updated: 2026-09-10
 depends:
   - audio-capture
   - node-migration
@@ -1152,7 +1152,101 @@ commit 事件协议（trigger → ASR finalize 通道）、flag 作为 Parameter
 - Realtime API（`v1/realtime?model=bigmodel`，OpenAI 兼容）有 `input_audio_buffer.commit` +
   interim `result`（累计 replace），与四态 1:1 对应，是备选链路（非必需）。
 
+## 2026-09-10 会话决策 — ASR 连续 loop 契约与 RecognitionResult 三相位
+
+> 人类架构师 + opus-4-7。从 09-01 节 C「ASR 抽象致命缺陷」出发, 把 `contracts/asr.py`
+> 的 `ASRResult` 重构为 `Recognition` 连续 loop + `RecognitionResult` 三相位结果。
+> 契约先行 (保留破坏性), 实现随后。
+
+### 收敛的契约结论 (已写进 contracts/asr.py)
+
+1. **ASR = 连续 loop, 不是 per-turn。** `recognize(audio_chunks) -> Recognition`。`Recognition`
+   是一条连续音频流 → 一串 `RecognitionResult`; 音频断 → 自动 commit (发负包) → 拿 final →
+   吐 `phase=TAIL` → loop 结束。一个周期含多个 CLAUSE 分句。turn 是更上层概念
+   (Listener/ListenController), 不进 ASR。
+
+2. **三层相位 partial/clause/tail。** 对齐火山引擎响应: `partial` = utterance `definite=false`
+   (边说话边出字); `clause` = `definite=true` (稳定分句); `tail` = 帧级 `is_last_package`
+   (commit/音频断)。**`definite ≠ 流结束`** — recognizer 的 `_parse_result` 把 `any(definite)`
+   当 `is_final` 并 break, 是"一句就断"丢音频的 bug。终止信号是帧级 `is_last_package`
+   (protocol.py `parse_response` 的 bit1)。
+
+3. **RecognitionResult 平铺, 弃 "chunk" 命名。** `stream_id / phase / text / start_ms / end_ms / error`。
+   分句结构就是 `text + start_ms + end_ms` 三字段, 不做嵌套 clause (text 不再藏进 clause.text)。
+   "chunk" 的碎片语义误导了实现, 改用 `RecognitionResult`。
+
+4. **RecognitionSegment = audio 轴 (正交)。** `stream_id / text / sample_rate / bits / channel / audio`
+   (粘包 PCM)。与 text 轴 (RecognitionResult) 通过 stream_id 关联, 但走独立 `on_stream_done` 回调,
+   不混进 text 轴。
+
+5. **ASR.commit 删除。** commit 权威在 `Recognition` 层 (透传), `Listener`/`ListenerState` 透传。
+
+6. **ASRInfo.model 删除是对的。** model 是 ASRConfig (VolcengineASRConfig.model_name) 的事;
+   `ASRInfo` 只背 params_schema/params (模型反身性调参面)。
+
+7. **分句三字段, confidence/words 不要。** utterance 有 `words[].conf` (词级), 无句级 confidence。
+   分句只取 `text / start_time / end_time`。`segment_index` 不在 payload, 按 utterance 顺序在 ASR 层推导。
+
+> 注: 本节"三相位"是 **ASR 结果层** (RecognitionResult); 09-01 节 B 的"四态 (首包/分句中/分句/尾包)"
+> 是 **signal 层** (ListenerNucleus)。"首包"由 ListenerNucleus 从 turn 开始合成, 不来自火山引擎。
+
+### 实现要点 (step 2 范围)
+
+- `VolcengineASR.recognize()` 从 async generator 迁到返回 `Recognition` 对象 (持 send/receive task)。
+- `_parse_result` 改为遍历 `utterances[]` 逐句吐 phase, 用帧级 `is_last_package` 判 TAIL, 不再 `any(definite)` break。
+- `commit()` 发负包前需等 pending 音频帧送达 (火山协议要求, 否则终止帧抢在尾随音频前)。
+- `Recognition.on_error` / `RecognitionResult.error` 兜连接断链 (不再静默丢字)。
+
+### 协作方式调整
+
+09-01 节曾声明"实现由人类架构师集中手改, 模型不主导"。本轮人类改契约草稿 + 模型 review 对齐后,
+0 (盘点)/1 (契约)/2 (实现) 由模型独立推进, 人类以契约提交为 review 闸口。
+
+## 2026-09-10 会话决策（二）— stream/segment 拆分 + commit 语义（修正上文 #4/#5/#7）
+
+> 人类架构师 + opus-4-7。上文「2026-09-10 会话决策」的 #4/#5/#7 有误——把 segment 当成了
+> per-clause、commit 当成了流结束。本轮钉死: segment 以**尾包**为分段, commit 是**可重复的讯号**,
+> 不关流。以下为准。
+
+### stream / segment / result 三层身份
+
+```
+RecognitionStream   1 条 WS 的连续识别会话（一次 recognize）
+  └─ segment        1 个 turn（由 tail/commit 界定），1 stream = n segment
+       └─ result    partial / clause / tail，1 segment = m result
+```
+
+- `stream_id` 标识 stream（`recognize()` 可传 `stream_id`）；`segment_id` 标识 segment。
+  `RecognitionResult` 同时带 `stream_id` + `segment_id`；`RecognitionSegment` 带 `id`(segment) + `stream_id`。
+- `segment_id` 是 UUID，**在每次 tail 时递增**（切一段，开新段）。所有 partial/clause/tail 共享当前 segment_id。
+
+### segment 以尾包为分段，不是分句
+
+- `_receive_loop` 收到帧级 `is_last_package`（tail）→ `_cut_segment()`（带走整段 audio + 累积 text）→ `segment_id` 递增。
+- `_parse_utterances` 只吐 partial/clause（带 segment_id + 累积 `_segment_text`），**不切段**。
+- `RecognitionSegment` = 文本 + 音频片段（按需存储）。`precise_cut()` 是下一步的精确切（当前等效返回整段 audio）。
+
+### commit = 负序号讯号，可重复，不关流
+
+- `RecognitionStream.commit()` 只设 flag。`_send_loop` 在音频帧粒度（~218ms）检查到 flag → 发负序号讯号（`is_last=True`），
+  **不 break**，继续喂下一段。`seq` 继续累加。
+- 一条 WS 可发多个负序号（每个 = 一个 commit/segment 边界）。服务端以尾包为准。
+- 音频 AsyncIterator 停止 → `_send_loop` 发最后一次负序号 → `_input_done=True` → 自然结束。
+
+### 自然 break 与保活
+
+- 自然 break = 「无音频输入」+「ws 尾包」。`_receive_loop` 用 `asyncio.wait_for(recv, timeout=1.0)` 周期性醒来判 `_input_done`，
+  不依赖服务端及时回尾包。
+- **无空闲断开（A 已定）**：音频输入本身是持续 alive 输入，consumer shutdown = 终止。保活 = WS 跨 commit 不关 + websockets 自带 ping/pong。
+- WS 在 `async with`（`__aexit__`）时 close；`ConnectionClosed` 收在 `_receive_loop`，不外冒。
+
+### 暂缓
+
+- **弱网断连感知 + 重启（容错）**：真正的需要，本轮不做。当前已有「断连感知」的一半——`ConnectionClosed` → `TAIL + error` +
+  `on_error` 回调，弱网断连至少不静默；「感知后重启 WS」defer。
+
 ---
+
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*
 *基础调研: audio-capture FEATURE.md (DeepSeek V4 + Claude Opus 4.7) — 已完成的音频感知全链路*
 *碰撞记录: 本会话对话 — 分层拓扑推演、交互模式收敛、安全边界讨论*
