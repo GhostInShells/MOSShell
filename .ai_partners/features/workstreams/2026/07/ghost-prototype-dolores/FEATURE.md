@@ -8,9 +8,9 @@ description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception 模板), 实例 deepseek. 问题清单统一到 dolores-todo.md (单一事实源). 决策轨迹见 git log.'
+status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception 模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think nibble (per-agent model selection). 2026-09-11 完成旁路单轮机制 (perStep 第二阶段) 的 dsh 源码调研 + 设计收敛, 并记录 memento 全貌; 下一步实现旁路机制 (reentrant 文档). 问题清单统一到 dolores-todo.md (单一事实源). 决策轨迹见 git log.'
 title: Dolores Ghost
-updated: '2026-09-04'
+updated: '2026-09-11'
 ---
 
 # Dolores Ghost
@@ -18,9 +18,11 @@ updated: '2026-09-04'
 > Use `moss features set-status ghost-prototype-dolores <status> -m "note"` to update state.
 > Ground 子任务（ghost_home 认知场装配）→ [dolores-ground.md](dolores-ground.md)。
 > Ego 装线 dogfood 评审与下一步 → [dolores-ego-wiring.md](dolores-ego-wiring.md)。
-> perStep 第二阶段（可重入 ego session / anchor session）设计 → [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
+> **旁路单轮机制（perStep 第二阶段）— 下一步实现** → [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
+> Dolores × Memento 全貌（commit / note / compact / branch）→ [dolores-memento-plan.md](dolores-memento-plan.md)。
 > commit / compact ego session 的 dsh 机制判定 → [dolores-commit-compact-ego-session.md](dolores-commit-compact-ego-session.md)。
 > ego 注册方案（单 plugin + session-start，推翻 agentPreset 拆分）→ [dolores-ego-plugin-split.md](dolores-ego-plugin-split.md)。
+> ego 专属 preset + agent 级 nibble（非 ego session 可用，推翻 doloresSelectionRef）→ [dolores-ego-preset-nibble.md](dolores-ego-preset-nibble.md)。
 > 问题清单（单一事实源）→ [dolores-todo.md](dolores-todo.md)。
 
 ## Motivation

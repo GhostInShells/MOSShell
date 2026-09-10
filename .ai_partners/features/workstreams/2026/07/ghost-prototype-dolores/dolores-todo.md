@@ -12,6 +12,8 @@
 
 > **2026-09-11 拆分**：D22 拆两半——图片协议半边 → `fixed`（字节头嗅探，3080 实机验证）；moment dynamic context 丢失半边 → 新 D28 `open`（未定位，含与 D22 同源的假说）。
 
+> **2026-09-11 新增**：D29 `open` — `session/frozen` 是 plugin 自造类型，不在 dsh `KNOWN_SESSION_EVENT_TYPES` 中，持久化读取门（`dsh-session-persistence/lib/index.js:1119`，未知类型须 `ignorable:true`）会**拒绝整条 log 加载**；`Session.append` 无 `ignorable` 写入口（`dsh-session/lib/index.js:1444-1475`）。→ 带此事件的 session resume 失败。
+
 ## 缺陷
 
 | # | 状态 | Pri | 问题 | 发现 | 归口 |
@@ -44,6 +46,7 @@
 | D26 | fixed | P0 | tui 遇 interpreter error 崩溃 — exeception 处理加固(print+continue)+runtime stop 非零退出，不再静默崩溃(待回归) | dogfood-3 | `261adbbd` |
 | D27 | invalid | P1 | perStep reject 界面提示 — 调研路径搞错，可在 reject 处发 stream/error 类事件给界面提示。方案已换，零件事 | dogfood-3 | — |
 | D28 | open | P1 | moment dynamic context 丢失 — 看 moment 疑似彻底丢了 dynamic context。未定位；**假说**：与 D22 同源——moment 带图且媒体类型错时 `durableMomentContent` 在 `thinking/enter` 中抛错 → 整个 enter 返 400 → context/inputs/epoch 全未注入。D22 修复可能一并解决；若 dynamic context 不含图则属另一机制，待下轮 dogfood 复现 | dogfood-3（D22 拆分） | — |
+| D29 | open | P1 | `session/frozen` 使 log 不可 resume — plugin 自造类型不在 `KNOWN_SESSION_EVENT_TYPES`，读取门拒整条 log；`Session.append` 无 `ignorable` 写入口。修法：换已知 log-only 类型载体，或把冻结记录移出 dsh log（旁路 mark 同此结论，见 `dolores-reentrant-ego-session.md`） | dsh 调研（旁路机制） | — |
 
 > dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。
 
