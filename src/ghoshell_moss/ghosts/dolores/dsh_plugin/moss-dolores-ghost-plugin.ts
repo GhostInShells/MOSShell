@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { join } from 'node:path'
 
-import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
+import { writableRoot } from '@deepseek-ai/dsh-agent-presets'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
@@ -30,7 +34,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *
  * ── 表面 (8 点) ────────────────────────────────────────────────────────
  * 1. ego/create       — instruction + messages (ghost.memory: 压缩/快照/ground).
- * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort + model config, 阻塞执行完.
+ * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort, 阻塞执行完.
  * 3. thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (interrupt).
  * 4. perStep 锁       — foreign session → reject + mux 提示冻结;
  *                       ego session 非 thinking → 阻塞等 thinking/enter 反转.
@@ -43,15 +47,15 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *                       enter 不 inbox inject — claim 已在 pre-step 顶部穿越, 晚到的 inject 落下一轮.
  *                       (修正: 早期 docstring 称 context → inject 是本轮, 那是误读; 见 agent-loop claim 时序.)
  * 7. tool 面          — wait_next_moment (yield, 被动让出) + observe (主动观测, approach a
- *                       内联返回 moment content blocks) + think(effort) (自救改 effort) 已落地;
+ *                       内联返回 moment content blocks) + moss_think(effort) (agent 级自救改
+ *                       effort, 经 exec.agent 咬 per-agent selection) 已落地;
  *                       interleaved_logos / switch_model deferred (落文档不实现).
  * 8. 时序图           — 见下方 ASCII.
  *
  * ── 时序: MOSS 驱动路径 (thinking = turn) ──────────────────────────────
  * [MOSS mindflow]      [plugin]                     [dsh agent loop]
  *      │ thinking start   │                              │
- *      │── thinking/enter │  {context, inputs, epoch, effort, model} │
- *      │                  │── applyModelConfig()            │
+ *      │── thinking/enter │  {context, inputs, epoch, effort} │
  *      │                  │── openThinking()                │  (release pre-step gate)
  *      │                  │── inject(context) ─────────────▶│
  *      │                  │── steer(inputs) (若 idle) ─────▶│
@@ -99,22 +103,25 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 不 break turn — 模型在 tool result 到达后继续思考 (interleaved thinking).
  *
  * ── 遗留问题 ────────────────────────────────────────────────────────
- * 1. **model selection 只改 effort**: reasoningEffort 经 model selection 应用
- *    (doloresSelectionRef.current — thinking/enter 设 + moss_think 中途改); provider/model 不换
- *    (换模型破坏云端 cache, 全量请求).
- * 2. **epoch 周期接线**: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact 压上下文)
+ * 1. **epoch 周期接线**: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact 压上下文)
  *    尚未装线 — recap/baseline 的生产接在 compact 上.
- * 3. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
- * 4. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
+ * 2. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
+ * 3. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
  *    instruction 里 prompt 模型不要重复它 (待接).
  */
 
 export const name = 'moss-dolores-ghost-plugin'
 
-export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt', 'attachments']
+export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'systemPrompt', 'attachments', 'agentPresets', 'agentDefaultModel']
 
 // 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
 const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
+
+// ego 专属 preset id (目录名即 id) — plugin 侧的单一权威. 内容由 ensureEgoPreset 从
+// shipped `standard` 逐字再生, 所以这个 preset 永远跟在 standard 后面, 不手工维护.
+const DOLORES_EGO_PRESET = 'dolores-ego'
+const DOLORES_BASE_PRESET = 'standard'
+const PRESET_COMPOSITION_FILE = 'agent.cordis.yml'
 
 const DOLORES_EGO_CREATE = `${DOLORES_API_ROOT}/ego/create`
 // 通用 session 观测面: 任意 live session 的 instruction / surface 读取 (sessionId 收在 body).
@@ -134,19 +141,11 @@ let doloresEgoWorkspaceId: WorkspaceId | null = null
 // ego session id + thinking 状态. id 由 ego/create 设.
 let doloresEgoSessionId: SessionId | null = null
 
-// ego agent 的 preset id — durable 身份 (resume 后仍可经 session.header.agentPreset 读到),
-// 供全局 perStep 锁判断「这个 agent 是不是 dolores ego 类」. 由 ego/create 设.
-let doloresAgentPreset: string | null = null
-
 // 防旁路 token (点 4): ego/create 生成返回, thinking/enter|exit 校验 — 拒绝非 ego 发起的调用.
 let doloresThinkingToken: string | null = null
 
 // ego 的 persona 文本 (instruction) — ego/create 写入, session/start 时由 apply_ego_agent 注入 persona 段.
 let doloresInstruction = ''
-
-// ego 的 model selection ref — reasoningEffort 的唯一权威来源 (dsh 的 installModelSelection
-// 会把它应用到下个 request). thinking/enter 用 body.model 设置, moss_think 中途改 reasoningEffort.
-let doloresSelectionRef: ModelSelectionRef = { current: undefined, assembled: undefined }
 
 // ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter open ──
 // TS 单线程事件循环, gate = asyncio.Event 等价物 (可反复 open/close, wait 阻塞到 open).
@@ -249,7 +248,6 @@ interface ThinkingEnterPayload {
   /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
   epoch?: MomentContentPart[]
   effort: string
-  model: { provider: string; model: string; reasoningEffort?: string }
   /** 防旁路 (点 4): ego/create 返回的 token, 校验失败直接拒绝. */
   thinkingToken?: string
 }
@@ -321,7 +319,7 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_think',
-    description: 'Set your reasoning effort for subsequent requests this turn (off/low/high/max). Resets on the next thinking/enter.',
+    description: 'Set your reasoning effort for subsequent requests (off/low/high/max). Applies from the next step; provider/model stay under the session/UI authority.',
     parameters: {
       effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'Reasoning effort: off (no reasoning) / low / high / max.' },
     },
@@ -329,15 +327,80 @@ const egoTools = [
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute(args, _exec) {
+    execute(args, exec) {
+      // agent 级: 经 exec.agent 定位到「当前这个 agent」的 selection, 不是模块单例.
+      const agent = exec.agent
+      if (agent === undefined) throw new Error('moss_think: no agent in tool execution')
+      const selection = egoSelections.get(agent)
+      if (selection === undefined) throw new Error('moss_think: ego selection not installed')
+      const current = selection.current
+      if (current === undefined) throw new Error('moss_think: no model selection')
       const effort = mapThinkingEffort(args.effort)
-      if (doloresSelectionRef.current !== undefined) {
-        doloresSelectionRef.current.reasoningEffort = ReasoningEffortId(effort)
-      }
+      selection.current = { ...current, reasoningEffort: ReasoningEffortId(effort) }
       return effort
     },
   }),
 ]
+
+// ── ego preset 再生 (plugin boot) ──────────────────────────────────────────
+// ego 用独立 preset id 与 standard 会话区分 — identity/persona/tools/perStep 锁只落
+// ego, 非 ego 的 standard 会话完全不被碰 (今天的「非 ego session 可用」).
+//
+// preset 本体不是手工维护的副本: 每次 boot 把 shipped `standard` 的 composition 原文
+// 逐字写到 <DSH_HOME>/.agent-presets/dolores-ego/agent.cordis.yml, 所以 dsh 升级 /
+// 我们后续改 delta 都自动同步, 永不 stale. 逐字拷贝 (不 YAML round-trip) 也保住了
+// standard 里的 `!!js` 标签 (round-trip 会丢). single-flight: apply() 提前触发, ego/create
+// await 同一 promise 保证 create 前 preset 已就位.
+let egoPresetReady: Promise<void> | null = null
+
+function ensureEgoPreset(ctx: Context): Promise<void> {
+  if (egoPresetReady === null) {
+    egoPresetReady = (async () => {
+      const composition = await ctx.agentPresets.read(DOLORES_BASE_PRESET)
+      const dir = join(writableRoot(ctx.agentPresets.roots), DOLORES_EGO_PRESET)
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, PRESET_COMPOSITION_FILE), composition, 'utf8')
+    })()
+    // 失败不缓存 — 留给下一次调用重试; 这里只吞掉 unhandled rejection, 真正的错误由
+    // ego/create 的 await 上抛.
+    egoPresetReady.catch(() => { egoPresetReady = null })
+  }
+  return egoPresetReady
+}
+
+// ── per-agent model selection (moss_think 的 nibble 目标) ──────────────────
+// 每个 ego agent 一份 selection, 装在它自己的 ctx 上 (installModelSelection), 不是模块单例.
+// moss_think 经 exec.agent 找到「当前这个 agent」的 selection, 只咬 reasoningEffort — 模型每步
+// 吃一丁点. provider/model 的权威始终是 canonical 链: picked → request/header(持久) → settings
+// 默认; 改 effort 由 agent/request 应用并落 request/header 日志, 界面自然同步.
+const egoSelections = new WeakMap<Agent, ModelSelectionRef>()
+
+function ensureEgoSelection(agent: Agent, ctx: Context): ModelSelectionRef {
+  const existing = egoSelections.get(agent)
+  if (existing !== undefined) return existing
+  const defaults: AgentDefaultModelConfig = ctx.agentDefaultModel
+  let picked: ModelSelection | undefined
+  const selection: ModelSelectionRef = {
+    get current() {
+      if (picked !== undefined) return picked
+      const logged = agent.session.requestHeader()?.config
+      if (logged !== undefined) {
+        return {
+          provider: logged.provider,
+          model: logged.model,
+          ...(logged.reasoningEffort === undefined ? {} : { reasoningEffort: logged.reasoningEffort }),
+        }
+      }
+      return defaults.currentSelection()
+    },
+    set current(next) {
+      picked = next
+    },
+    assembled: undefined,
+  }
+  egoSelections.set(agent, selection)
+  return selection
+}
 
 /**
  * ego agent 的模型面装配 — session/start 时对 agent.ctx 做全套注册.
@@ -361,6 +424,8 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     order: PERSONA_ORDER,
     text: doloresInstruction,
   }), 'dolores-ego-persona.section()')
+  // per-agent model selection — canonical 链读 provider/model, moss_think 只咬 effort.
+  installModelSelection(agentCtx, ensureEgoSelection(agent, ctx))
   // ego tools 注册到 agent scope (scoped) — 只有 ego agent 可见.
   for (const tool of egoTools) {
     agentCtx.tools.register(tool)
@@ -390,9 +455,15 @@ export function apply(ctx: Context) {
   // create 和 resume 都发 (source='startup'|'resume'), 各自 fresh ctx — 这里调 apply_ego_agent
   // 做 tools + identity/persona + perStep 的全套注册, 替代「全局 perStep + setup 里注册」.
   ctx.on('agent/session-start', ({ agent, source }) => {
-    if (agent.session.header.agentPreset !== doloresAgentPreset) return
+    if (agent.session.header.agentPreset !== DOLORES_EGO_PRESET) return
     if (source !== 'startup' && source !== 'resume') return
     apply_ego_agent(agent, ctx)
+  })
+
+  // ego preset 提前再生 (plugin boot 无条件重写). 失败只 warn, ego/create 会 await 同一
+  // promise 并把错误上抛.
+  ensureEgoPreset(ctx).catch((error) => {
+    ctx.logger.warn('dolores: failed to regenerate ego preset: %s', String(error))
   })
 
   // ── 1. ego agent 创建 (点 1) ──────────────────────────────────────────
@@ -416,7 +487,6 @@ export function apply(ctx: Context) {
           title: sessionTitle,
           instruction,
           messages,
-          agent_preset: agentPreset,
           permission,
         } = body
         if (typeof projectHome !== 'string' || projectHome === '') {
@@ -434,12 +504,12 @@ export function apply(ctx: Context) {
         if (!Array.isArray(messages)) {
           throw new Error('messages must be an array of {text} context messages')
         }
-        if (typeof agentPreset !== 'string' || agentPreset === '') {
-          throw new Error('agent_preset must be a non-empty string')
-        }
         if (typeof permission !== 'string' || permission === '') {
           throw new Error('permission must be a non-empty string')
         }
+        // 0. ego 专属 preset 必须先就位 (内容 = shipped standard 的逐字再生). create 挂载
+        //    它的 id, 否则 UnknownPresetError.
+        await ensureEgoPreset(ctx)
         // 1. ensure workspace over project_home, title = project_name.
         let workspace = await ctx.workspaceRegistry.resolveByPath(projectHome)
         if (workspace === undefined) {
@@ -449,19 +519,15 @@ export function apply(ctx: Context) {
           await workspace.setTitle(projectName)
         }
         doloresEgoWorkspaceId = workspace.id
-        // 记录 durable 身份 (agentPreset), 供 session-start listener 识别 ego 类 agent.
-        // 必须在 create 之前设 — ego agent 的 session-start 即需据此认门.
-        doloresAgentPreset = agentPreset
         // persona 文本落到模块级, 供 apply_ego_agent 在 session/start 时注入 persona 段.
         doloresInstruction = instruction
-        // 2. create ego session: standard preset (tools) + overridden identity/persona.
+        // 2. create ego session: 专属 preset (standard 的工具面) + overridden identity/persona.
         const sessionId = randomUUID()
         const handle = await ctx.agents.create({
           sessionId,
-          meta: { cwd: projectHome, agentPreset },
+          meta: { cwd: projectHome, agentPreset: DOLORES_EGO_PRESET },
           setup: async (agentCtx: Context) => {
-            await agentCtx.get('agentPresets').mount(agentCtx, agentPreset)
-            installModelSelection(agentCtx, doloresSelectionRef)
+            await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_EGO_PRESET)
           },
         })
         doloresEgoSessionId = handle.agent.id
@@ -540,10 +606,9 @@ export function apply(ctx: Context) {
   })
 
   // ── 2. thinking/enter (点 2/3/5/6) ────────────────────────────────────
-  // 入参 = moment 一条 user message + epoch + effort + model config. handler 阻塞执行完才返回:
-  //   1. applyModelConfig — provider/model/reasoningEffort 应用到下个 request.
-  //   2. moment 投放 — idle → steer (turn 输入); 非 idle → append (注入已在跑的 turn).
-  //   3. openThinking — 释放 pre-step gate (外部唤醒路径的阻塞解除).
+  // 入参 = moment 一条 user message + epoch + effort. handler 阻塞执行完才返回:
+  //   1. moment 投放 — idle → steer (turn 输入); 非 idle → append (注入已在跑的 turn).
+  //   2. openThinking — 释放 pre-step gate (外部唤醒路径的阻塞解除).
   ctx.webServer.register({
     kind: 'exact',
     path: DOLORES_THINKING_ENTER,
@@ -578,13 +643,6 @@ export function apply(ctx: Context) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ thinking: false }))
           return
-        }
-        // 设置 model selection (provider/model/reasoningEffort) — effort 的唯一权威来源.
-        // moss_think 之后改 reasoningEffort 会落到 selection, dsh 下个 request 用 assembled 生效.
-        doloresSelectionRef.current = {
-          provider: body.model.provider,
-          model: body.model.model,
-          ...(body.model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(body.model.reasoningEffort) } : {}),
         }
         // perStep 挂载点: epoch/context 不 inbox inject (claim 在 pre-step 顶部已穿越), 而是缓冲
         // 到 pendingMoments, 由 pre-step 在 next() 后插到本步历史最前 — 本 turn 生效.

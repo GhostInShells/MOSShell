@@ -63,10 +63,6 @@ class DoloresEgoConfig(BaseModel):
     Field defaults are the fallback — a missing YAML key uses the default rather than a manual .get().
     """
 
-    agent_preset: str = Field(
-        default="standard",
-        description="dsh agent preset name — the ego session's persona + tool set.",
-    )
     session_title: str = Field(
         default="{mode} · {timestamp}",
         description="session title template ({mode}/{timestamp} placeholders), the human-readable session name.",
@@ -200,7 +196,6 @@ class DoloresEgo:
                 ),
                 "instruction": self._ctx.instruction,
                 "messages": self._assemble_initial_messages(),
-                "agent_preset": self._config.agent_preset,
                 "permission": self._config.permission,
             },
         )
@@ -322,14 +317,17 @@ class DoloresEgo:
         return [self._content_payload(content) for content in context_msg.as_contents(with_meta=True)]
 
     async def enter_thinking(self, thinking: "Thinking") -> None:
-        """Inject moment (context/inputs) + epoch + effort + model + thinkingToken to start a thinking turn."""
+        """Inject moment (context/inputs) + epoch + effort + thinkingToken to start a thinking turn.
+
+        Model/effort are not pushed here — the ego's model selection lives on the dsh side (per-agent
+        selection, canonical UI/settings authority); the model adjusts effort itself via moss_think.
+        """
         moment = thinking.moment
         moment_ref = f"{thinking.observer.epoch.index}-{moment.index}"
         payload = {
             "moment": self._moment_payload(moment, moment_ref),
             "epoch": self._epoch_payload(thinking),
             "effort": thinking.effort(),
-            "model": await self._model_config(),
             "thinkingToken": self._thinking_token,
         }
         await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
@@ -441,12 +439,3 @@ class DoloresEgo:
             self._content_payload(content)
             for content in container.as_contents(with_meta=True)
         ]
-
-    async def _model_config(self) -> dict:
-        """Current model config (provider/model/reasoningEffort), pulled via session.models."""
-        selection = await self.session.model_selection()
-        return {
-            "provider": selection.provider,
-            "model": selection.model,
-            "reasoningEffort": selection.reasoningEffort,
-        }
