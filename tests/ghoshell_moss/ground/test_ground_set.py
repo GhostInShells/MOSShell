@@ -39,7 +39,8 @@ class TestOpenClose:
                 g = await gs.open(sub)
                 assert g.root == sub.resolve()
                 assert g.label == "sub"
-                assert list(gs.active().keys()) == ["sub"]
+                assert gs.active()["sub"] is g
+                assert gs.root is not g  # root (workspace_root) 独立于 open 的子场
 
         run(scenario())
 
@@ -75,9 +76,12 @@ class TestOpenClose:
         run(scenario())
 
     def test_open_explicit_label(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path, label="custom")
+                g = await gs.open(sub, label="custom")
                 assert g.label == "custom"
 
         run(scenario())
@@ -134,12 +138,15 @@ class TestOpenClose:
 
     def test_two_groundsets_independent(self, tmp_path):
         """Different GroundSet instances have independent label spaces."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+
         async def scenario():
             gs1 = DefaultGroundSet(workspace_root=tmp_path)
             gs2 = DefaultGroundSet(workspace_root=tmp_path)
             async with gs1, gs2:
-                g1 = await gs1.open(tmp_path, label="same-label")
-                g2 = await gs2.open(tmp_path, label="same-label")
+                g1 = await gs1.open(sub, label="same-label")
+                g2 = await gs2.open(sub, label="same-label")
                 assert g1.label == "same-label"
                 assert g2.label == "same-label"
                 assert g1 is not g2  # different instances
@@ -497,3 +504,51 @@ class TestSnapshot:
                 assert (await g.snapshot(ack_hash="0" * 64)).changed is True
 
         run(scenario())
+
+
+# -- root + groundset 物化 ---------------------------------------------------
+
+
+class TestRootAndGroundset:
+    def test_root_is_workspace_root_ground(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\nname: root\n---\n# root body\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        assert gs.root.root == tmp_path.resolve()
+        assert gs.root.convention.name == "root"
+        # root 进入 grounds 注册表 (active 含 root)
+        assert gs.root.label in gs.active()
+
+    def test_root_materializes_declared_children(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\ngroundset: [a, b]\n---\n")
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "GROUND.md").write_text("---\nname: A\n---\n")
+        (tmp_path / "b").mkdir()
+        (tmp_path / "b" / "GROUND.md").write_text("---\nname: B\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        assert {"a", "b"} <= set(gs.active())
+        assert gs.materialize_errors() == []
+
+    def test_materialize_skips_non_ground_entry(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\ngroundset: [missing]\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        assert "missing" not in gs.active()
+        assert any("missing" in e for e in gs.materialize_errors())
+
+    def test_materialize_false_does_not_expand(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\ngroundset: [a]\n---\n")
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "GROUND.md").write_text("---\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path, materialize=False)
+        assert "a" not in gs.active()
+
+    def test_open_root_returns_root(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        g = run(gs.open(tmp_path))
+        assert g is gs.root
+
+    def test_ground_id_is_ulid(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        gid = gs.root.id
+        assert len(gid) == 26  # ULID 定长

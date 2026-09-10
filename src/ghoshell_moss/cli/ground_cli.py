@@ -103,7 +103,7 @@ def _find_ancestor_ground(start: Path) -> Path | None:
 async def _run_one(root: Path, coro_fn):
     """open GroundSet + one Ground → act → sediment → exit."""
     workspace = _probe_workspace(root)
-    async with DefaultGroundSet(workspace_root=workspace) as gs:
+    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
         ground = await gs.open(root)
         await coro_fn(gs, ground)
 
@@ -111,7 +111,7 @@ async def _run_one(root: Path, coro_fn):
 async def _run_one_with_template(root: Path, coro_fn, template: str):
     """open GroundSet + one Ground with template → act → sediment → exit."""
     workspace = _probe_workspace(root)
-    async with DefaultGroundSet(workspace_root=workspace) as gs:
+    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
         ground = await gs.open(root, template=template)
         await coro_fn(gs, ground)
 
@@ -129,7 +129,7 @@ async def _template_preview(root: Path, template: str, *, json_flag: bool = Fals
     from ghoshell_moss.ground._l0 import load_l0
 
     workspace = _probe_workspace(root)
-    gs = DefaultGroundSet(workspace_root=workspace)
+    gs = DefaultGroundSet(workspace_root=workspace, materialize=False)
 
     names = [t.name for t in gs.templates()]
     if template not in names:
@@ -222,7 +222,7 @@ def cmd_init(
     if template is not None:
         # 预检模板存在性 — 找不到时报错并列出可用模板, 不静默生成空场
         workspace = _probe_workspace(root)
-        names = [t.name for t in DefaultGroundSet(workspace_root=workspace).templates()]
+        names = [t.name for t in DefaultGroundSet(workspace_root=workspace, materialize=False).templates()]
         if template not in names:
             print_error(f"template '{template}' not found")
             if names:
@@ -257,7 +257,7 @@ def cmd_init(
 def cmd_templates() -> None:
     """List all templates discovered from .grounds/ directories."""
     workspace = _probe_workspace(Path.cwd())
-    gs = DefaultGroundSet(workspace_root=workspace)
+    gs = DefaultGroundSet(workspace_root=workspace, materialize=False)
     tmpls = gs.templates()
     if not tmpls:
         print_info("no templates found")
@@ -375,7 +375,7 @@ def cmd_render(
     async def _walk_op() -> None:
         doc_path = ground_root / DEFAULT_L0_FILENAME
         workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace) as gs:
+        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
             ground = await gs.open(root, doc=doc_path)
             view = await ground.render(cwd=root)
             if json_flag:
@@ -415,7 +415,7 @@ def cmd_meta(
 
     async def _op() -> None:
         workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace) as gs:
+        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
             ground = await gs.open(root, doc=doc_path)
             chain = await ground.chain_text()
             text = render_meta(
@@ -466,7 +466,7 @@ def cmd_observe(
 
     async def _op() -> None:
         workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace) as gs:
+        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
             ground = await gs.open(root, doc=doc_path)
             pins = ground.pins()
             if not pins:

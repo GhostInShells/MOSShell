@@ -74,6 +74,11 @@ class GroundConvention(BaseModel):
     name: str | None = None
     description: str | None = None
     pins: list[dict] = Field(default_factory=list)
+    groundset: list[str] | None = Field(
+        default=None,
+        description="要展开的子场 — 相对场根的目录路径清单, 每个目录自带 GROUND.md. "
+        "由 GroundSet 物化 (一层, 不递归), Ground 自身不消费.",
+    )
     ignore: list[str] | None = Field(
         default=None,
         description="场级 ignore 规则清单 — .gitignore 语义, 相对场根.",
@@ -346,6 +351,15 @@ class Ground(ABC):
 
     @property
     @abstractmethod
+    def id(self) -> str:
+        """实例身份 — 实例化时生成的 ULID.
+
+        不是内容 hash (内容会变, 不构成身份). 用于把 Ground 身份透传给消费方
+        (如 channel 的 runtime 注册键), 使同一 Ground 实例跨 refresh 稳定.
+        """
+
+    @property
+    @abstractmethod
     def label(self) -> str:
         """GroundSet 内唯一标识, 缺省 = dir basename + 冲突后缀."""
 
@@ -501,9 +515,20 @@ class GroundSet(ABC):
 
     # -- 查询 -----------------------------------------------------------------
 
+    @property
+    @abstractmethod
+    def root(self) -> Ground:
+        """锚点场 — 场集的根.
+
+        构造期即建立 (GroundSet 本就带启动代价), 是非 None 的一等成员。
+        它是 ``groundset`` 字段的声明来源, 物化子场的入口。
+        对外是"根"而非"被挂载的子场" —— 消费方 (如 channel) 按身份把它从
+        子场列表里排除。
+        """
+
     @abstractmethod
     def active(self) -> dict[str, Ground]:
-        """当前打开的全部场."""
+        """当前持有的全部场 (含 root)."""
 
     @abstractmethod
     def get(self, label: str) -> Ground | None:

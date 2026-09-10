@@ -1,10 +1,11 @@
 """Ground channel — 认知场的运行时落点 | 集成 | beta
 
 Ground 是 Ghost 的目录级认知场: 一个被 GROUND.md 标记的目录就是场
-(frontmatter 身份 + body 法 + pins 注视). 本 channel 持有 GroundSet, 用
-``open``/``close`` 把场挂成 virtual child —— 子 channel 无命令, instruction 只放
-meta (身份 + pin TOC), 帧 (body + pins 内容) 放 notice (每 refresh 重算, 由
-shell trajectory diff 增量重供). 法链进父 channel 的 static, 跨 compact 存活.
+(frontmatter 身份 + body 法 + pins 注视). 本 channel 持有 GroundSet, root 场与
+``groundset:`` 字段声明的子场在构造期即物化, 子场挂成 virtual child —— 子 channel
+无命令, instruction 只放 meta (身份 + pin TOC), 帧 (body + pins 内容) 放 notice
+(每 refresh 重算, 由 shell trajectory diff 增量重供). root 的 body 上行到 ghost
+instruction (render_root 默认 False, 不在这里重复).
 
 Example:
     from ghoshell_moss import new_shell_main_channel
@@ -33,7 +34,6 @@ from ghoshell_moss.core.blueprint.channel_builder import (
 )
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet
-from ghoshell_moss.ground._chain import collect_chain
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
 from ghoshell_moss.ground.contract import (
     PIN_LABEL_MAX_LEN,
@@ -97,7 +97,7 @@ async def _render_dir(dir_path: str | Path, workspace: Path) -> str:
         return f"[ground] not a directory: {path}"
 
     if (path / DEFAULT_L0_FILENAME).is_file():
-        async with DefaultGroundSet(workspace_root=workspace) as gs:
+        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
             ground = await gs.open(path)
             return str(await ground.render())
 
@@ -105,7 +105,7 @@ async def _render_dir(dir_path: str | Path, workspace: Path) -> str:
     if ground_root is None:
         return f"[ground] no GROUND.md from {path} up to $HOME — run `moss ground init`"
     doc_path = ground_root / DEFAULT_L0_FILENAME
-    async with DefaultGroundSet(workspace_root=workspace) as gs:
+    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
         ground = await gs.open(path, doc=doc_path)
         return str(await ground.render(cwd=path))
 
@@ -120,7 +120,7 @@ async def _meta_dir(dir_path: str | Path, workspace: Path) -> str:
         if ground_root is None:
             return f"[ground] no GROUND.md from {path} up to $HOME"
     doc_path = ground_root / DEFAULT_L0_FILENAME
-    async with DefaultGroundSet(workspace_root=workspace) as gs:
+    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
         ground = await gs.open(path, doc=doc_path)
         return await _ground_meta(ground)
 
@@ -145,9 +145,9 @@ def _instruction_prose() -> str:
     return (
         "## Ground (认知场)\n"
         "场 = 一个被 GROUND.md 标记的目录: frontmatter (身份 + pins) + body (法).\n"
-        "本场 body (法) 已写入本条 static —— 它跨 compact 存活, 是你在会话中长期保持的 "
-        "稳定认知. 场之间不合并 body (每个场渲染自己的根). 用 ``open`` 把一个场挂成子 "
-        "channel, 其 meta 在子 instruction, 帧在子 notice (每 refresh diff 重供); pin 内容不预置."
+        "本 channel 持有一个场集: 锚点场 (root) 的 body 上行到 ghost instruction 呈现, 这里只挂 "
+        "root 用 ``groundset:`` 字段声明展开的子场. 子场 meta 在各自 instruction, 帧在各自 "
+        "notice (每 refresh diff 重供); pin 内容不预置."
     )
 
 
@@ -256,7 +256,7 @@ def _fmt_diagnostics(errors: list[str], warnings: list[str]) -> str:
 
 def _templates_as_text(dirpath: str | Path | None, workspace: Path) -> str:
     target = _resolve_address(dirpath, workspace) if dirpath else workspace
-    gs = DefaultGroundSet(workspace_root=target, logger=logging.getLogger("moss"))
+    gs = DefaultGroundSet(workspace_root=target, logger=logging.getLogger("moss"), materialize=False)
     tmpls = gs.templates()
     if not tmpls:
         return "[ground] no templates found (.grounds/ empty or missing)"
@@ -271,15 +271,21 @@ def new_ground_channel(
     *,
     workspace_root: str | Path | None = None,
     open_on_start: list[str | Path] | None = None,
+    render_root: bool = False,
+    instruction: str | None = None,
     edit: bool = False,
     name: str = "ground",
     description: str | None = None,
 ) -> MutableChannel:
-    """组装 ground channel — 持有 GroundSet, open/close 挂 virtual children.
+    """组装 ground channel — 持有 GroundSet, 把场挂成 virtual children.
 
     :param groundset: 注入的 GroundSet 实例 (channel 持有, 承载 open/close 生命周期).
+        其 root 与 ``groundset`` 字段物化的子场在构造期已建立.
     :param workspace_root: 相对路径解析基点. None = cwd.
-    :param open_on_start: 启动时自动 open 的场目录列表.
+    :param open_on_start: 启动时额外 open 的场目录列表 (子场声明之外).
+    :param render_root: 是否把 root 场的帧渲染进本 channel 的 notice. 默认 False —
+        root 的 body 上行到 ghost instruction, 不在这里重复.
+    :param instruction: 覆盖默认 instruction (None = 机制 prose).
     :param edit: 编辑模式的初始开关. True = pin_*/spec/validate/templates 默认展开,
         False = 折叠 (edit 命令运行时切换).
     :param name: CTML 标签名.
@@ -300,7 +306,7 @@ def new_ground_channel(
     chan = new_channel(name=name, description=description)
 
     def _build_child(ground: Ground) -> Channel:
-        child = new_channel(name=ground.label, description=f"ground field {ground.label}")
+        child = new_channel(name=ground.label, description=f"ground field {ground.label}", uid=ground.id)
 
         @child.build.instruction
         async def _child_instruction() -> str:
@@ -314,20 +320,30 @@ def new_ground_channel(
 
     async def _open_ground(directory: str | Path, label: str | None, doc: str | None, template: str | None) -> Ground:
         ground = await groundset.open(directory, label=label, doc=doc, template=template)
-        children[ground.label] = _build_child(ground)
+        if ground is not groundset.root:
+            children[ground.label] = _build_child(ground)
         return ground
 
     @chan.build.startup
     async def _startup() -> None:
+        # root 与 `groundset` 子场在 GroundSet 构造期已物化; 这里只把它们挂成子 channel.
+        for ground in groundset.active().values():
+            if ground is not groundset.root:
+                children[ground.label] = _build_child(ground)
         for d in (open_on_start or []):
             await _open_ground(d, None, None, None)
 
     @chan.build.instruction
     async def _instruction() -> str:
-        parts = [_instruction_prose()]
-        law = await asyncio.to_thread(collect_chain, workspace)
-        if law:
-            parts.append("### 法\n\n" + law)
+        if instruction is not None:
+            return instruction
+        return _instruction_prose()
+
+    @chan.build.notice
+    async def _notice() -> str:
+        parts = [f"[ground] {e}" for e in groundset.materialize_errors()]
+        if render_root:
+            parts.append(str(await groundset.root.render()))
         return "\n\n".join(parts)
 
     @chan.build.virtual_children
@@ -569,6 +585,8 @@ def build_ground_channel_factory(
     workspace_root: str | Path,
     *,
     open_on_start: list[str | Path] | None = None,
+    render_root: bool = False,
+    instruction: str | None = None,
     edit: bool = False,
     name: str = "ground",
     description: str | None = None,
@@ -581,6 +599,8 @@ def build_ground_channel_factory(
             groundset,
             workspace_root=root,
             open_on_start=open_on_start,
+            render_root=render_root,
+            instruction=instruction,
             edit=edit,
             name=name,
             description=description,
@@ -591,25 +611,29 @@ def build_ground_channel_factory(
 def build_project_ground_channel(
     *,
     open_on_start: list[str | Path] | None = None,
+    render_root: bool = False,
+    instruction: str | None = None,
     edit: bool = False,
     name: str = "ground",
     description: str | None = None,
 ) -> ChannelFactory:
-    """IoC 集成工厂 — 解析 MOSS 项目根, 默认启动时 open 项目根场.
+    """IoC 集成工厂 — 解析 MOSS 项目根, 建 root + 物化子场.
 
-    Project 解耦收敛在此层: host 侧无感. 法链进 static, 项目根场挂成
-    virtual child (meta 在 instruction, 帧在 notice).
+    Project 解耦收敛在此层: host 侧无感. root 场 (项目根) 由 GroundSet
+    构造期建立, ``groundset:`` 声明的子场挂成 virtual child (meta 在
+    instruction, 帧在 notice).
     """
     def factory(container: IoCContainer) -> Channel:
         from ghoshell_moss.core.blueprint.project import Project
 
         project_root = Path(Project.discover().root).resolve()
-        on_start = open_on_start if open_on_start is not None else [project_root]
         groundset = DefaultGroundSet(workspace_root=project_root)
         return new_ground_channel(
             groundset,
             workspace_root=project_root,
-            open_on_start=on_start,
+            open_on_start=open_on_start,
+            render_root=render_root,
+            instruction=instruction,
             edit=edit,
             name=name,
             description=description,

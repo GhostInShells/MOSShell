@@ -12,6 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from pathspec import PathSpec
+from ulid import ULID
 
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._chain import collect_chain
@@ -32,6 +33,7 @@ class DefaultGround(Ground):
     """Ground ABC 的默认实现.
 
     Internal state:
+    - _id: 实例身份 ULID, 构造时固定 (render/meta 不暴露, 供消费方做 runtime 身份)
     - _pins: OrderedDict[label, Pin] — 最新 pin 在前
     - _body: GROUND.md body, 每次 load 时更新
     - _last_snapshot_hash: 上一帧感知 digest (进程内侧影, 不落盘)
@@ -46,6 +48,7 @@ class DefaultGround(Ground):
         *,
         workspace_root: Path | None = None,
     ) -> None:
+        self._id = str(ULID())
         self._label = label
         self._root = root.resolve()
         self._doc_path = doc_path.resolve()
@@ -58,6 +61,10 @@ class DefaultGround(Ground):
         self._ignore_spec: PathSpec | None = self._make_ignore_spec()
 
     # -- 元信息 -----------------------------------------------------------
+
+    @property
+    def id(self) -> str:
+        return self._id
 
     @property
     def label(self) -> str:

@@ -43,7 +43,7 @@ pins:
 ```
 
 1. **frontmatter** — YAML between the `---` fences. Reserved keys:
-   `$id`, `name`, `description`, `pins`. Unknown keys are preserved on write.
+   `$id`, `name`, `description`, `pins`, `groundset`. Unknown keys are preserved on write.
 2. **body** — everything after the closing frontmatter fence. Open set.
 
 The `pins` key holds the YAML list of pin declarations (§4). If absent,
@@ -59,6 +59,7 @@ A directory without `GROUND.md` is not a ground.
 | `name` | string | Display name. Defaults to the directory basename. |
 | `description` | string | One-line description of this ground. Optional. |
 | `pins` | list | Pin declarations per §4. Each entry has the fixed envelope: `label`, `verb`, `arguments`, `description`. |
+| `groundset` | list of strings | Declared child grounds to expand — directory paths relative to the ground root, each carrying its own `GROUND.md`. The `GroundSet` materializes them (one level, non-recursive); the `Ground` itself does not consume this field. Optional. |
 | `ignore` | list of strings | Ground-level ignore patterns — `.gitignore` semantics, relative to ground root. All discovery pins (glob, frontmatter pattern, ls) automatically respect these rules. Optional. |
 | `ignore_file` | string | Path to a file (relative to ground root) containing additional ignore patterns, one per line. Merged with `ignore` inline list. `.gitignore` or `.groundignore` are expected names. Optional. |
 
@@ -380,14 +381,22 @@ pin granularity.
 ### 7.2 Nested Grounds
 
 Subdirectories with their own `GROUND.md` are **peer grounds** —
-independent instances with their own pins, body, and view. They are
-not auto-opened. Their law is their own body; ancestor `GROUND.md`
-bodies are not merged.
+independent instances with their own pins, body, and view. Their law
+is their own body; ancestor `GROUND.md` bodies are not merged.
 
 Pins never inherit across grounds. Discovery of descendant grounds is
 opt-in: use a `frontmatter` pin with a pattern (`$CWD/*/GROUND.md`)
 for progressive disclosure of child ground identities, or a `glob`
 pin for structural listing.
+
+A ground MAY additionally declare a set of child grounds to expand
+via the `groundset` frontmatter key (§3). Unlike the progressive-
+disclosure pins above — which only *describe* child identities — a
+`groundset` entry is a directive for the container (the `GroundSet`)
+to materialize the referenced directory as an open ground. This is
+one level deep and non-recursive: a child ground's own `groundset`
+key is not consumed. Paths are resolved relative to the declaring
+ground's root.
 
 ### 7.3 Law — Nearest Ground, No Merge
 
@@ -448,6 +457,8 @@ A compliant implementation must:
 - Consume reserved frontmatter keys per §3; preserve unknown keys
 - Read and write pins per §4 with the fixed envelope; preserve unknown
   verbs and arguments keys
+- Read the `groundset` key per §3 / §7.2 and materialize the declared
+  child grounds (one level, non-recursive)
 - Support per-pin `budget` / `limit` / `max_depth` parameters per §4.1
 - Handle all six known pin types per §5, rendering failure modes
   into results

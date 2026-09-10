@@ -258,3 +258,66 @@ async def test_edit_command_unfolds_gated_commands(ground):
         await runtime.execute_command("edit", kwargs={"on": False})
         await runtime.refresh_metas()
         assert "pin_file" not in {c.name for c in runtime.self_meta().commands}
+
+
+# -- groundset 物化 / render_root / instruction 覆盖 -------------------------
+
+
+def _with_child(ground):
+    (ground / "child").mkdir()
+    (ground / "child" / "GROUND.md").write_text("---\nname: child\n---\n# Child Ground\n")
+    (ground / "GROUND.md").write_text(
+        "---\nname: test\ngroundset: [child]\n---\n# Test Ground\nbody line\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_groundset_children_mounted_on_start(ground):
+    _with_child(ground)
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        child = _meta_by_name(runtime, "child")
+        assert child is not None
+        assert "# Child Ground" in child.notice
+
+
+@pytest.mark.asyncio
+async def test_root_not_rendered_by_default(ground):
+    _with_child(ground)
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        notice = runtime.self_meta().notice
+        assert "# Test Ground" not in notice  # root 默认不渲染进 notice
+
+
+@pytest.mark.asyncio
+async def test_render_root_renders_root_in_notice(ground):
+    _with_child(ground)
+    gs = DefaultGroundSet(workspace_root=ground)
+    chan = new_ground_channel(gs, workspace_root=ground, edit=True, render_root=True)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        notice = runtime.self_meta().notice
+        assert "# Test Ground" in notice
+
+
+@pytest.mark.asyncio
+async def test_instruction_override(ground):
+    gs = DefaultGroundSet(workspace_root=ground)
+    chan = new_ground_channel(
+        gs, workspace_root=ground, edit=True, instruction="CUSTOM INSTRUCTION"
+    )
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert runtime.self_meta().instruction == "CUSTOM INSTRUCTION"
+
+
+@pytest.mark.asyncio
+async def test_materialize_error_surfaced_in_notice(ground):
+    (ground / "GROUND.md").write_text("---\ngroundset: [missing]\n---\n# Test Ground\n")
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert "missing" in runtime.self_meta().notice
