@@ -444,6 +444,11 @@ class VolcengineTTS(TTS):
             # batch 被提前关闭了.
             if batch_closed in done:
                 self.logger.info("%s batch %s closed before send and receive", self._log_prefix, batch_id)
+                # 取出 batch.wait_done() 抛出的异常, 否则这个 task 的异常会一直无人认领,
+                # 在 gc 时触发 "Task exception was never retrieved".
+                closed_exc = batch_closed.exception()
+                if closed_exc is not None:
+                    self.logger.error("%s batch %s closed with error: %s", self._log_prefix, batch_id, closed_exc)
                 send_and_receive.cancel()
                 send_task.cancel()
                 receive_task.cancel()
@@ -541,6 +546,8 @@ class VolcengineTTS(TTS):
                         batch_id,
                         msg,
                     )
+                    # 服务端报错意味着这一批音频不完整, 标记 batch 失败, 让下游 wait_done 能感知.
+                    batch.fail(f"TTS server returned error message: {msg}")
                     break
                 elif msg.type == MsgType.FullServerResponse:
                     if msg.event in {EventType.SessionFinished, EventType.SessionCanceled}:
@@ -570,8 +577,15 @@ class VolcengineTTS(TTS):
             self.logger.info("%s batch %s receive task done", self._log_prefix, batch_id)
         except asyncio.CancelledError:
             pass
-        except (ConnectionClosedOK, ConnectionClosed):
-            pass
+        except (ConnectionClosedOK, ConnectionClosed) as e:
+            # 和发送侧保持一致: 连接在接收中途断开是异常情况, 不能静默吞掉.
+            self.logger.info(
+                "%s Receive batch %s interrupted by closed connection: %s",
+                self._log_prefix,
+                batch_id,
+                e,
+            )
+            raise
         except Exception as e:
             self.logger.exception("%s Receive batch %s audio failed: %s", self._log_prefix, batch_id, e)
             raise e
