@@ -7,11 +7,10 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
   做不出来果断放弃。
 milestone: null
 priority: P0
-status: completed
-status_note: 'v1 完成: CLI 输出契约 + --log-file + thinking 默认 ON + loop demo 验证通过. future
-  seams: compact, streaming, .loop.py, model config'
-title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-08-04'
+status: dropped
+status_note: 'dropped (2026-09-10): memento 第 9 轮 lean 收敛后, CLI + agent 体系整体删除; agent 的边界压力改由 dolores 直接消费 lean API 承担。复盘见文末。'
+title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器（dropped）
+updated: '2026-09-10'
 ---
 
 # Memento CLI & Agent
@@ -1586,3 +1585,35 @@ v1 已收尾，下一步打磨协议面。三步走 + 一个地基，拆子文�
 - 步 3 anchor + dry run（dry run 产物作请求帧，reply 续跑）
 
 设计定案在 `agent-surface` workstream §2.8。
+
+## 复盘（2026-09-10，dropped）
+
+> 人类工程师复盘，deepseek-v4-flash-vision-exp 记录。重点围绕 memento agent 本身，不围绕 memento 本体。
+
+核心命题是：像 moss 这样命题庞大（宽度 + 新问题）的框架，一个人 + 模型如何完成它的推动？
+
+基本结论是：没有任何一个任务值得单独开发成 feature；必须是一个任务同时是多个任务、并且能形成可隔离复用的技术资产，才有开发的价值。
+
+memento agent 正是这个夹缝命题。虽然模型开发的 memento 在 cli 验证体系里得到了基本验证，但装线逻辑无法验证。所以它被同时用来做：
+
+1. memento 在 pydantic agent 里的接线。
+2. pydantic agent 的上下文存储。
+3. 基于 sandbox 约束边界的纯 python 驱动 agent——sandbox 即授权。
+4. 基于 project 发现的 cli 工具封装，也就是 cli decorator。
+5. 一些可复用的 agent，比如 explore agent，用于 moss feature review。
+6. anchor 的验证。
+7. llm func 的验证。
+
+所以明确的是：agent 本身的价值最低，如果做不出来就可以放弃它；关键是让模型旁路迭代（作为一个 memento owner），而不是人类持续投入主要精力。
+
+这个过程前期是顺利的，整套工具链路完成后验证了 cli 可用。但在从 memento agent 拆分 agent facade 开始时，遇上了 deepseek 8 月中旬的大崩溃，导致代码交叉耦合、迭代轨迹被污染；同期有超过 8 个 feature 都陷入了相同的问题，依赖人类纠正被污染的轨迹、重构。这证明了在 moss 体系里，feature 这种严重依赖模型自迭代的机制，一旦轨迹污染就产生难以逆转的副作用。
+
+同期 dsh 的发布，让 pydantic agent 作为 dolores 推理内核的方案直接被放弃，memento agent 的价值随之下降。所以同期就开始做资源的分拆——llm func、moss features review（很有用）、cli 等都被拆分出去独立化。
+
+最终，memento 在资源约束下，这一期彻底放弃了分形版本的实现，memento agent 则需要彻底重构，排不进这一期的计划。
+
+但人类工程师认为过程中最大的收益是：python 驱动 sandbox 的机制得到了验证；memento agent 还是要复活。只是不在这个阶段——stage2 收尾前，不将之作为项目承诺的接口。所以在这个 commit 里整体删除。
+
+**review 附注（deepseek-v4-flash-vision-exp，review by）**
+
+上述复盘为人类工程师原话记录，本模型未改动其措辞。核对结论：受影响 feature 可确定 **≥ 8**（6 个有明确「声明-交付漂移」记录 + matrix-operator 未归因 + mcp-fusion-point 停在 08-14），基于 review 无法直接支持「> 8」。逐条见 `momento-mori/FEATURE.md` §3 的 review 附注。

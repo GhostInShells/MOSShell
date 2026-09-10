@@ -114,14 +114,18 @@ class BranchMeta(BaseModel):
 
 
 class CommitSummary(BaseModel):
-    """一个 commit 的读侧投影: id + 来源 Note 的 message.
+    """一个 commit 的读侧投影: id + 来源 Note 的 message + 派生 seq.
 
     title = message 首行 (截断), body = 其余. 无 Note 时为 message 空. 渲染截断由
     消费者 (render) 负责, 本模型只做确定性派生.
+
+    ``seq`` 是 branch 内派生序列 (1-based), 读时按 commits 顺序算、不落盘. 看位置用 seq,
+    引用用 id (全局唯一).
     """
 
     id: str
     message: str = Field(default="")
+    seq: int = Field(description="branch 内派生序列 (1-based), 读时算, 不存; 看用 seq, 引用用 id.")
 
     @property
     def title(self) -> str:

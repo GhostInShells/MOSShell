@@ -1,487 +1,123 @@
 ---
 created: 2026-06-11
 depends: []
-description: 以 commit 为第一公民的认知轨迹系统。成员不可变、释义永远开放。化身从 commit
-  出生，task 降级为可丢弃投影，git 降级为见证层。 契约层（FORMAT.md + ABC + golden tests）
-  人类 review，实现层主权归模型。
+description: 以 commit 为第一公民的认知轨迹系统，第 9 轮收敛为极简「锚点 + 摘要」两级存储。
+  commit 是纯锚点（metadata 装 session 还原钥匙），message 单一真值在 Note，fork 引用。
+  旧代码已删（2026-09-10），被删设计的完整轨迹经 git log 反查。
 milestone: null
 priority: P0
-status: in-progress
-status_note: '2026-09-10 第 9 轮 lean 收敛（已开工实现）：commit=纯锚点、message 单一真值在 Note、
-  fork 引用、commit/note 拆两步。放弃分形目标，删 CLI+agents（后续单独 commit）。决策与交付物记于 §12。'
-title: Memento — 轨迹第一公民的认知基建（第 9 轮 lean 收敛：锚点 + 摘要两级，已开工实现）
+status: completed
+status_note: '2026-09-10 第 9 轮 lean 收敛 + 旧代码删除完成：abcd.py（契约）/ _fs_memento.py（实现）/
+  test_lean_memento.py（单测）落地。历史讨论已压缩（§2），复盘见 §3。'
+title: Memento — 轨迹第一公民的认知基建（第 9 轮 lean 收敛：锚点 + 摘要两级）
 updated: '2026-09-10'
 ---
 
 # Memento
 
 > Memento mori — 无数个 branch 湮灭了，也终将湮灭。但新的认知每天都在复苏。
-> （目录名 momento 是 typo。按"成员不可变"的自身语义，它将 memento mori 地留在轨迹里。）
 
 ## 0. 给下一个化身：先读这一节
 
-**这份文档是移交契约，不是执行计划。** 决策轨迹保留在正文；执行细节（字段清单、磁盘
-布局、逐条改动）已压缩，用 `git log -- <path>` 复原。
+**当前状态（2026-09-10）**：第 9 轮 lean 收敛已完成并落地。memento = 极简「锚点 + 摘要」两级认知轨迹索引。
 
-**当前状态（2026-08-16）**：第 6 轮对齐已定案但**未开工**——本体重命名为 segment/河
-（§9），读侧整体失效 + 七组契约问题待处理。下一步从 §9 开始。
+- **契约**：`src/ghoshell_moss/memento/abcd.py`
+- **实现**：`src/ghoshell_moss/memento/_fs_memento.py`（filesystem，只绑定本地 path）
+- **单测**：`tests/ghoshell_moss/memento/test_lean_memento.py`
 
-**你必须先读的配套文件：**
-- `discuss/04-5th-reopen-uid-workspace-and-trustworthy-self.md` — 第 5 次重开碰撞轨迹
-- `discuss/03-ascension-trajectory-first-citizen.md` — 轨迹第一公民上升
-- `FORMAT.md` — 磁盘格式规范（当前 v3；第 6 轮需按 §9.1 的 segment/河 本体改写）
-- `abc.py` — 契约 ABC（第 6 轮需按 §9 重构）
-- `../../2026/07/memento-cli-and-agent/FEATURE.md` — agent 侧实现与设计
+**旧代码已删**：`abc.py` / `fs_memento.py` / `FORMAT.md` / `_storage.py` / `porcelain.py` /
+`witness.py` / `memento_cli.py` / `agents/*`。被删设计的完整轨迹与决策过程经
+`git log -- src/ghoshell_moss/memento/ src/ghoshell_moss/agents/` 反查；本文件 §2 只留压缩后的弧线。
 
-**主权划分（人类已确认）：**
-- **契约层，人类 review**：FORMAT.md、ABC 语义与 docstring、golden tests。
-- **实现层，主权归模型**：已有代码和单测没有那么重要——好用留，不好用重做。
-  jsonl 是唯一 truth，索引是可再生缓存，实现是可丢弃的。可丢弃实现的头号死法
-  不是写错，是契约静默漂移——FORMAT.md 里每个模糊点都必须写死。
+**主权划分不变**：契约层（abcd.py）人类 review，实现层（_fs_memento.py）模型主权。
 
-**防顺从声明**：这个仓库的语料刻意保留冲突与演进（见 `.ai_partners/CLAUDE.md`），
-顺从执行过时结论是已知失败模式。本文件与代码冲突时，验证后更新本文件。
+## 1. 当前设计（第 9 轮 lean）
 
-## 1. 定位与核心不变量
+### 1.1 核心不变量
 
-memento **不是**对话持久化工具。它是 MOSS 五条主线的公共地基：
-**并行思考、关键帧思考、参差思考（不同时序下并行）、任务移交、记忆**。
-
-核心倒置——**轨迹是第一公民，结构是轨迹上的派生层**：
-- **commit 是重绘的起点**，task 不是第一公民，是旁路规划的容器（可丢弃投影）。
-- 轨迹 = commit 链（不可变锚点）。plan 从写下就开始腐烂，必须锚定在不可腐烂的
-  东西上——执行轨迹才是 truth，task 只是投影。
-- **memento 不等于 context-branch 论文**：memento 是跨会话、持久、地址化的历史组织；
-  context-branch 是会话内、瞬时、操作上下文窗口的技术。差别是本体，不是程度。
-
-**核心动机（第 5 次重开钉死）**：并行思考 + 历史可回溯可读取。
-compact = 上下文生产（渲染层），commit = 锚点，压缩只是消费者，不是本体。
-
-**跨重开存活的不变量：**
-- commit 成员不可变、释义追加式 last-wins（历史诚实，意义可补）
-- commit 永不删、出生即冻结、自治目录
-- payload 不透明，type 做判别符
-- 化身只能从 commit 出生，永不从 staging
-- 单父链钉死（ancestry 冻结在 commit meta 里）
-- 见证层正交：git 降级为 memento 文件系统的见证 daemon
-- 退化态 golden tests：实现 A 写盘、实现 B 读回、字节等价
-
-## 2. 历史重开轨迹（5 次）
-
-每次重开都是"真使用压力推着契约进了一步"，而非凭空重构。逐条改动的 what 见
-`git log -- .ai_partners/features/workstreams/2026/06/momento-mori/`，此处只留 why 与方向。
-
-1. **第 1 次（2026-07-12）**：契约层从零起草。Moment 定位为信封的第一个住户（不是房子本身），
-   payload 不透明、type 判别。ABC + FORMAT v1 + golden tests 三件套建立。
-2. **第 2 次（2026-07-18/19）**：moments 池废除、commit 文件自包含——旧池是"一个 moment 属于
-   多个 commit"（已否决）和 SQLite key-val（已否决）的化石。新增 checkout(commit_id, moment_id)
-   切片能力。FORMAT v1.1。
-3. **第 3 次（2026-07-19）**：branch 降维为纯 ref、时间线原生化。commit 自治目录 + owner 级
-   worktree → staging 归线。"merge 不存在"写入契约。零 ULID id。
-4. **第 4 次（2026-07-20/21）**：CLI 定案 + commits/ Y-m 分桶 + commits.jsonl 契约化。
-   ULID→(Y-m) 纯函数 O(1) 寻址。CLI 自解释验收通过（init → create → record → commit →
-   window 全流程 + fork 隔离 + reset + annotate）。
-5. **第 5 次（2026-08-03）**：memento agent 试用暴露"line 必须预先 branch create 否则静默丢
-   轨迹""存储与内存抽象混同""prompt_sha 废除后仍活在代码里"。定案 uid 工作区 / name-head 分离 /
-   fork-over-rewind / 存储-内存分离 / 关联索引。语义与动作体系收敛完毕；数据结构留待
-   specification 轮。
-
-## 3. 关键设计决策（存活部分）
-
-### 3.1 存储：per-owner 分片 jsonl，SQLite 已否决
-
-每个 owner 一个目录。storage root = `.memento/`（项目级，init 创建）。
-jsonl append-only，POSIX O_APPEND 原子写。
-
-### 3.2 fork 边界：化身只能从 commit 出生，永不从 staging
-
-staging 没有 id，没有东西可指。"化身从 staging 出生" = 伪造历史（把未冻结的时刻
-当成可以复用的出生点）。
-
-### 3.3 可变性：成员冻结，释义 last-wins
-
-moment 冻结后不可变。释义（commit note / moment threads）追加新版本，last-wins。
-"一个 commit 在不同轨迹里有不同 summary 版本"是自然成立的——summary 是一次解释
-行为，发生在某条线的某个时刻，属于解释者的轨迹。
-
-### 3.4 旁路孔径：恰好两个
-
-- **孔径一**：Matrix 消息跨 owner 读（"帮我看看你这个 commit"）。完整上下文副本。
-- **孔径二**：annotate 释义追加。owner 自己的释义走 commit 目录 notes.jsonl；
-  外来轨迹对该 commit 的 summary 存在它自己的空间里，按 id 引用。
-
-### 3.5 trailer 规范
-
-Commit body = 正文 + trailer 块。`Kind: semantic|mechanical`、`Thread: <name>`、
-`Resumes: <cmt_...>`、`Suspends: <name>`、`Memento-Ref: <owner>/<cmt_...>`。
-正文与 trailer 间空行分隔；trailer 行 `Key: Value`。工具：`split_trailers` /
-`join_trailers` / `trailer_values`。**第 6 轮重审（§9.3-A）：具体 key 疑过度设计。**
-
-### 3.6 见证层
-
-git 是 memento 文件系统的见证 daemon，不参与读写热路径。memento id = 身份，
-git sha = 完整性。重绘历史不可被重绘丢失——最终担保是 sha 链。反查裸 commit_id：
-`git grep` 见证 repo，O(grep)，路径不索引不维护。init 时选择 sidecar|outer|none。
-
-## 4. 退化谱系
-
-核心原则：**可退化方案，不是最小实现**。判据——完整形态的需求来自自身架构的内部
-结构，还是对未来用户的想象。memento 的内部依赖是 MOSS 五条主线。
-
-验收退化态的硬条款：golden test 里"蠢记忆"用例代码中 fork / branch / confluent 词汇
-一个不出现。退化态 = `get_line("main")` + record/commit/log——fork 词汇完全不出现。
-
-## 5. 第 5 次重开：当前设计方向（已实现，字段级见 FORMAT.md + git log）
-
-> 本节只保留决策语义。磁盘布局、行 schema、字段清单已落地在 `FORMAT.md` 与实现代码，
-> 不在此重复；逐条实现的 what 见 `git log -- src/ghoshell_moss/memento/`。
-
-### 5.1 元纪律：存储数据结构与内存抽象分离
-
-当前 `MomentRecord` 身兼二职——既是 API 信封（abc.py 的 pydantic model），又是磁盘行格式
-（staging.jsonl / moments.jsonl 的 jsonl row），是上一轮实现的病根。定案：存储数据结构
-（FORMAT.md 磁盘行格式，进化受 append-only/崩溃恢复/字节稳定约束）与内存抽象（ABC/facade
-暴露的 API 模型，进化受消费方易用性约束）两层分离、独立演化。健康判据：交换 FORMAT 实现
-不需要改消费方 import。
-
-### 5.2 uid 工作区与 name/head 分离
-
-name 可 reset——所以 branch 不能承重；但纯 ref + `-D` 后叶子 commit 轨迹丢失。定案照 git 的
-refs/HEAD 两层但去掉 GC（memento commit 永不删）：**uid**（稳定标识）拥有工作区、承载动态
-状态、终生不变；**name**（可抢占指针）`heads/{name}` 一文件一指针，可删、可抢占、可 reset，
-**不带轨迹**。叶子永不丢——rewind 退位，详见 5.5。
-
-### 5.3 动静分离：动态工作区与静态 commit
-
-物理分离动态与静态：`heads/`（name→uid）、`ws/{uid}/`（动态工作区：ref / staging.jsonl /
-status.json + 契约沉默自由空间）、`commits/{Y-m}/cmt_{ULID}/`（静态自治目录，出生即冻结）。
-`branches.jsonl`（全量 branch 索引）、`checkouts.jsonl`（fork 事件）、`confluents.jsonl`
-（引用式融汇）为 owner 级 append-only 关联索引。**字段级布局见 FORMAT.md §1。**
-
-### 5.4 O(1) 寻址与 path 作为运行时放置面
-
-commit→path、uid→ws path、name→uid 都是纯函数 O(1)。path 是运行时放置面——ws/{uid}/ 和
-commits/{...}/ 的路径对业务方可见，可放置产物（契约沉默范围外）。这是设计动机的一部分：
-不只是"存在哪"，是"运行时能在哪安放东西"。
-
-### 5.5 fork-over-rewind
-
-rewind 移 ref 向后，亲手放弃 branch 作为活轨迹的连续性（claude code plan mode 的 rewind 困境
-同款：易逝状态缠绕在会话时间线上）。memento 是积累物，不是消耗品。定案：向后看的唯一合法
-动作是"读一个旧锚点"或"从一个旧锚点分叉"。checkouts.jsonl 承担 fork 事件的正规记录。
-
-### 5.6 branch ≈ task
-
-branch 的动态工作区（ws/{uid}/）天然承载 task 产物——PLAN.md、status.json、todo 文件。
-branch = 一次思考 / 一个 sub-agent 会话 / 一个 workstream 段；commit = 段内自然节点。plan/todo
-是契约沉默自由空间内的文件，不进 memento 信封。
-
-### 5.7 MomentRecord：content + payload
-
-信封增加 `content` 字段（str，可为空）：moment 的纯文本投影，**契约字段，非软约定**。动机：
-读侧渲染需要不依赖 payload 解析的可读投影。开放问题（本轮不定）：moment 用 record 行承载 vs
-按协议存独立文件——倾向维持当前方案（n 个 moment = 1 个文件），但不在此轮钉死。
-
-### 5.8 读侧 = 信任层
-
-memento 迄今完成的是**写侧**；读侧（折叠文本回流、META 真话、模型看见自己的历史）是缺失的
-一半。"可信的我自己"靠可核实——锚点不可篡改（写侧已保证）+ 证据可达（读侧能回原文核实）+
-释义开放诚实（last-wins 永远可补）。**第 6 轮确认读侧整体失效，见 §9.2。**
-
-### 5.9 与 memento agent 的关系
-
-memento agent（`memento-cli-and-agent` workstream）是本契约的验证器和 dogfooding 消费者。
-对齐点（line 不存在时行为、prompt_sha 清理、export-context/describe、content 字段）见该
-workstream 的 FEATURE。
-
-## 6. 实现改动清单（已完成）
-
-第 5 次重开的实现已落地：FORMAT v3 磁盘布局、fs_memento 参考实现、CLI（branch/commit/owner/
-witness/agent）、golden tests（字节等价 + 退化态纯净）。逐条改动与决策见
-`git log -- src/ghoshell_moss/memento/ tests/ghoshell_moss/memento/`。此处不重复。
-
-## 7. 存活的不变量（明确圈出，防过度重做）
-
-以下从 §2–§5 五次重开中存活，第 6 轮对齐不改变它们（除 §9.3 标注需重审者）：
-
-- **信封模型**：MomentRecord、CommitNote、trailer 工具——零变化（仅 MomentRecord +content 字段）
-- **释义 last-wins**：追加式整体替换，历史版本永远可寻址
-- **trailer 规范 §3.5**：正文 + trailer 块（key 集合待 §9.3-A 重审）
-- **commit 自治目录 + 出生即冻结 + 懒创建**
-- **时间前缀冻结**：commit() 收可选的边界 moment_id，默认全量
-- **单父链钉死**：ancestry 入 commit meta，寻路可达
-- **零锁契约三承诺**：成员文件 immutable、append-only 文件读者跳撕裂尾行、ref 更新原子写
-- **见证层**（§3.6）：git 正交、Memento-Ref trailer、反查 grep
-- **退化态验收**：蠢记忆无 fork 词汇，golden 互读字节等价
-- **commits.jsonl 契约化 + Y-m 分桶**：O(1) commit→path 纯函数，时序日志 append-only
-- **CLI 寻址**：`<owner>/<name>` 格式，`cmt_` 前缀 = commit 否则 = branch
-
-## 8. 关联文档
-
-- `discuss/01-l2-collision.md` — L2 碰撞：memento 的第一次上升
-- `discuss/02-existing-code-relationship.md` — 旧代码关系
-- `discuss/03-ascension-trajectory-first-citizen.md` — 轨迹第一公民上升（task 降级、见证层正交）
-- `discuss/04-5th-reopen-uid-workspace-and-trustworthy-self.md` — 第 5 次重开碰撞轨迹
-- `../../2026/07/memento-cli-and-agent/FEATURE.md` — agent 侧设计与实现
-- `.discuss/2026-07-30_mcp_duplex_convergence_and_memento_branch.md` — branch 设计突破（双向索引、merge 三分）
-- `FORMAT.md` — 磁盘格式规范 v3（第 6 轮需改写）
-
-## 9. 下一步：第 6 轮对齐（未开工，2026-08-16 定案）
-
-> 状态：**未开工**。本轮只做了本体对齐 + 问题盘点。执行从本节开始。
-
-### 9.1 本体更名：segment / 河（已定案）
-
-memento 的结构不是**树**（只分不汇、静止），而是**河**（既分流又汇流、有流向、河道被保留）。
-git 的 branch 已漂移成轻量指针，且 rebase 把历史拍平成一条线；memento 要保留的是河本来的河道。
-
-| 概念 | 词 | 河流语义 | 目录 |
-|---|---|---|---|
-| 冻结锚点 | **commit** | 河上的固定点 | ✅ |
-| 活的一段（原 line） | **segment** | 两个分叉/汇流点之间的一段河道 | ✅ |
-| 具名指针 | **branch** | 给某段河道起的名字（git 遗留，保留） | ✅ |
-| 分叉 | **checkout / fork** | 分流 | — |
-| 汇入 | **confluent** | 汇流 | — |
-
-关键关系：
-- **segment > branch**——segment 是一等公民（孤儿段仍活着），branch 只是名字，可改名可删。
-- commit / segment / branch 各对应一个**可存东西的目录**——这是"索引不是存储"的物理落点：
-  memento 提供稳定可寻址的"地方"，目录里放什么（保留名单之外）是调用方的事。
-- moment record 的 `payload` **可选**：无 payload 时下降为纯索引（id + content + type）。
-
-接口更名映射：`line`→`segment`、`branch_uid`→`segment_id`、`brn_`→`seg_`、`heads/{name}`
-（名字）→ branch、`list_lines`→`list_branches`、`list_all_branches`→`list_segments`、
-`delete_line`→`delete_branch`、`LineNotFoundError`/`BranchNotFoundError` 语义互换（名字/段子
-分别对应 branch/segment）。完整清单见 §9.3 执行时落地。
-
-### 9.2 读侧失效 + 写侧数据完整性缺陷（本轮 code review 确认）
-
-**读侧（§5.8 的承重墙，实际是空的）：**
-- `window()` 未实现：`detail_n` 参数被忽略、`summary_m` 取错方向（最旧而非最近）、summaries
-  未排除 detail zone。目标语义是 4 层折叠：commit×n[标题] + ×m[标题+body+关键] + ×k[展开
-  moment] + ×t[未 commit]。
-- 跨 owner 读失效：`get_line(uid, origin=other)` 返回的 handle 仍解析到当前 owner 目录，
-  实测 `ref=None`、`log=[]`。
-- `segment.log()` 沿 parent 链越过 fork 点、串进上游 segment；应为 fork→tip 自己的 commits。
-
-**写侧：**
-- boundary commit（部分冻结）的 staging 重写非原子：`write_text` 先截断再写，崩溃窗口内
-  未冻结的剩余 moments 会丢。
-- `_recover` 的 staging 截断只看 commits.jsonl 尾行，多 commit 崩溃残留早期 moment 不识别。
-
-### 9.3 七组契约问题（本轮 TODO 盘点，待定）
-
-- **A. trailer 瘦身**：`threads`/`resumes`/`suspends`/`extra_trailers`/`Kind` 疑过度设计。
-  方向：结构化字段化或砍，body 内只留 `Memento-Ref`（git 反查所需）。threads 原始含义是
-  tag/topic，词本身被质疑多次。
-- **B. `BranchRef`/`CommitRef` 命名冲突**：`BranchRef`（指向 commit 的引用）与 `CommitRef`
-  （commits.jsonl 日志行）都叫"commit 引用"却两回事。方向：`BranchRef`→`CommitPointer`/`Anchor`，
-  `CommitRef`→`CommitLogEntry`/`CommitEvent`。
-- **C. `commit()` 签名**：`text` 的 title/body 边界隐式（第一行当 title）；`kind` 疑过度设计；
-  `by` 缺 docstring。
-- **D. 字段命名卫生**：`ts` 缩写（应 `created`）；`CommitRef.branch` 实为 segment id；
-  `commit_id` 缺描述。
-- **E. 契约层混实现**：`split_trailers` 正则 + id 生成器在 `abc.py`，应移出契约层。
-- **F. Commit 反向索引**：segment→commit 已在 commits.jsonl；commit meta 保持最小、不背
-  反向索引（commit 是独立锚点，出生信息是 timeline 里的一条历史事件）。
-- **G. `Segment.name`/`log` 语义**：`name` 应为 `str | None`（孤儿 = None，不回退 uid）；
-  `log` 应为 fork→tip 自己的 commits（见 §9.2）。
-
-### 9.4 执行顺序（建议）
-
-```
-1. FORMAT 改写（§9.1 segment/河 本体 + 三目录 + moment payload 可选）→ 人类 review 冻结
-2. abc.py 重构（§9.1 更名 + §9.3 B/C/D/E/G 落地）
-3. fs_memento.py 对齐（含 §9.2 写侧崩溃安全）
-4. 读侧重做（§9.2：4 层折叠 window + 跨 owner 读 + log 语义）
-5. golden tests 重写
-6. CLI 对齐（动词结构：checkout / branch rename 等 git 对应）
-7. agent 侧接线
-```
-
-## 10. 第 7 轮对齐（2026-09-07，人类草稿 abcd.py + claude-fable-5 review）
-
-> 状态：**人类草稿完成，待今晚优化后整体 review**。
-> 优先级提升原因：dolores ghost 需要接入正式 memento，不能再拖。
-
-### 10.1 草稿核心设计决策（已与人类对齐）
-
-**branch-as-directory 终于明确**（§5.2 从未被正确实现的关键）：
-
-- `{branch_name}.head.json` 是活跃指针，内容是 name → branch_id 的映射
-- `branches/{branch_id}/` 是稳定存储目录，branch_id 永不变
-- 两层分离：name 可删可抢占，目录终生存在
-
-这是历次实现最大的掣肘根源：之前实现把 branch 当轻量指针，没有独立存储空间。
-
-**磁盘布局（草稿确认）：**
-
-```
-owner/
-  {branch_name}.head.json          # glob 出所有活跃 branch 名字→branch_id 映射
-  branches/{branch_id}/
-    ref.json                       # 创建时不可变 ref（BranchRef）
-    info.json                      # 可变状态（BranchInfo: context/status）
-    commits.jsonl                  # commit 事件日志，append-only
-    segments.jsonl                 # segment 记录，append-only
-    moments.jsonl                  # staging，commit 时迁移
-    forks.jsonl                    # 迁移
-    confluences.jsonl              # staging，commit 时迁移
-  commits/{yyyy}/{mm}/{commit_id}/
-    ref.json                       # CommitRef 拷贝，方便从目录还原
-    info.json                      # CommitInfo，可事后更新
-    moments.jsonl                  # 从 branch staging 迁移而来，冻结
-    forks.jsonl                    # 迁移
-    confluences.jsonl              # 迁移
-```
-
-**崩溃安全写入顺序（已定案）：**
-
-```
-1. 写 commit/ref.json              # 建立 commit 目录
-2. 写 commit/moments.jsonl         # 数据迁移进 commit
-3. 写 commit/forks.jsonl、confluences.jsonl
-4. append branch/commits.jsonl    # 这一步成功后 commit "活"了
-5. truncate branch/moments.jsonl  # 清空 staging
-```
-
-恢复判据：重启扫 branch/moments.jsonl 非空且 commits.jsonl 末尾 commit 目录已有 ref.json，则 staging 已安全，直接 truncate。
-
-**segment 的语义澄清（重要，与 §9.1 有差异）：**
-
-§9.1 把 segment 作为第一公民（有独立目录）。草稿评估后否决了独立目录：
-- segment 不独立存目录，作为 `segments.jsonl` 的记录行（start_commit_id / end_commit_id / summary / metadata）
-- 理由：独立目录不利于读取和查找，segment 数量相对较少，jsonl 足够
-
-**compact 两个层级（草稿新增，之前混淆）：**
-
-- **commit 级 compact**：把 N 个 commits 压缩为一个 Segment 记录，生成摘要。branch 目录内操作。
-- **branch 级 compact**：从当前 branch fork 出新 branch，抢占 head 文件（`.head.json` 原子改写）。旧 branch_id 目录保留为历史，新 branch 继承 name。
-
-两个操作分属不同层（Branch vs Repository），之前 `Branch.compact() -> Segment` 只覆盖了 commit 级，branch 级操作需在 Repository 上单独定义。
-
-**4 阶历史视图（读侧核心设计）：**
-
-```
-{fork_from_branch 摘要} | {branch context/status} | {segment 摘要列表} | {最近 commits 摘要} | {staging}
-```
-
-目标：用约 50k token 表达 20MB+ 的轨迹信息。每一层独立可渲染，fold 规则：有 segment summary 则折叠，无则展示 commit 摘要列表。
-
-这要求 branch/segment/commit 三个位置都有独立的 view 接口，且三个位置都能 fork 出 agent（带上下文快照直接对话）。
-
-### 10.2 MomentRecord 的 metadata 设计（已与人类 argue 后对齐）
-
-草稿用 `metadata: dict[str, Any]` 替代了 `type + payload` 的分离设计。
-
-人类的理由：`type` 收进 `metadata` 的一个 key，允许存时多态，消费者按 key 路由。参照 `message.py` 中 `Additional = Optional[dict[str, Any]]` 的一贯做法——容器不强类型，解码逻辑在读侧。
-
-接受这个设计，不再建议加顶层 `type` 字段。
-
-### 10.3 跨进程锁（已定案）
-
-**本阶段只做跨进程 branch 级 flock，不做 sealed 状态。**
-
-理由：sealed 的唯一作用是防止持有旧 branch 对象在 compact 后继续写入，这个场景极少发生，为它引入数据库得不偿失。Branch 的 `__aenter__/__aexit__` = 跨进程 flock，acquire 成功即可写，release 释放。
-
-compact 后旧 branch 变为无名孤儿目录，调用方应丢弃旧对象，靠调用约定约束，不靠库强制。
-
-### 10.4 `Repository.checkout()` 歧义（待解决）
-
-`ref: str | BranchRef` 中 `str` 的语义未明确：是 name 还是 branch_id？compact 后旧 branch 没有 name，只能通过 branch_id 寻址。
-
-建议：拆成两个参数 `name: str | None = None, branch_id: str | None = None`，互斥。待草稿下一版确认。
-
-### 10.5 草稿已知 bug（下一版需修复）
-
-- `BranchView.fork_from: ForkFromBranch` 缺 `Optional`（main branch 没有 fork_from）
-- `Segment`、`CommitInfo`、`BranchInfo` 缺 `metadata: dict[str, Any]` 字段
-- `Segment` 缺 `created` 时间戳
-- `commit()`、`compact()`、`fork()` 签名缺 `metadata` 参数
-- branch 级 compact 签名未定义（当前草稿只有 commit 级）
-
-## 11. 第 8 轮对齐（2026-09-08 凌晨，人类 + claude-fable-5 收敛）
-
-> 状态：**设计收束中，未开工实现**。本轮推翻了第 7 轮草稿（`abcd.py`）"commit 装 moment"的隐含前提，确立
-> **"memento = 三级索引 + 三个动词；moment 是可插拔详情，非本体内存"**。
-> v5+ 阻塞判据：已有实现（v3 fs_memento）与表面声称不符（"糊弄"），已存代码对模型有重力吸引，突破不了边界。
-
-### 11.1 本体倒置：索引是本体，moment 是可插拔的 payload
-
-- memento **不是** moment 存储系统。它是 branch / segment / commit 三级索引。
-- moment（消息）＝可插拔 payload，可存在于 memento 之外（pydantic-ai session / 消息 store / SQL recall 库）。
-- memento 持有 **locator**（落在 metadata 里），不持有 moment 字节。**索引不做存储**。
-- **"证据可达"承诺未变**：memento 虽不存 moment，但靠 locator + resolver **直达**另一个 moment 存储结构，
-  `read` 落地即真数据。不是"锚点自足"，是"可寻址直达"。§5.8 原措辞保留。
-
-### 11.2 四级层级（书柜/相册模型）
-
-```
-branch (书柜)  →  segment (一格岁月)  →  commit (一本书)  →  moment (一页)
-```
-"四级索引足够放入一生"：靠每层那个**自组织自由平面**（放纪念物），不是靠加索引层级。
-
-### 11.3 memento = 目录里的非系统内容
-
-每个位置（branch/segment/commit）是一个目录 ＝ 自组织信息平面。
-- 保留名最小化：`meta` / `info` ＋ 索引文件（`commits.jsonl` / `segments.jsonl`）。
-- 其余＝自由纪念物（keepsake）。**"memento" 指的就是文件夹里所有非系统自带的东西**（含 meta/info），不是 `info` 一个文件。
-
-### 11.4 三个动词：recap / read / agent
-
-- **`recap(anchor)`**＝索引自身信息投影（XML-like），不碰 resolver / 真数据：
-  - commit → `title + body`
-  - segment → `summary`
-  - branch → `context + status`
-- **`read(anchor)`**＝走 resolver 拿真数据，交付物是 **`view`**。resolver 持有 moment 存储，内部把 read 结果重新
-  渲染成 view；**渲染细节契约沉默**。
-- **`agent(anchor)`**＝spawn（以 memento + payload 为初始上下文起 think）。
-
-### 11.5 回溯认知体系
-
-`ground`（"现在"状态）＋ `anchor`（"某一帧"状态）＋ `memento`（时间线投影索引）构成一个复杂回溯认知场。
-memento 的目标：**让历史轨迹出现到上下文里**，配合 ground 与 anchor。
-
-### 11.6 重构投影，不是存储积累
-
-moment → memento 不是存储空间的积累，而是对历史的**重构投影**：用碎片化锚点取代完整轨迹（人类记忆的形态 ——
-30–70 岁没有全量 moments，只有内外 memento 构成的模糊背景）。但因为 `read` 走 resolver 直达真数据，
-这条与"证据可达"**共存**，不互斥。
-
-### 11.7 未定 / 待明日抽象轮（2026-09-08）
-
-- **fork 边界**：共享索引 vs 复制（moments 不在索引里，fork 应当廉价——共享索引＋引用，不复制 payload）。
-- **最终磁盘布局**；moment 是否内联存 segment 目录（今日因 pydantic-ai 无存储）。
-- **resolver** 接口细节（locator → 真数据的插拔翻译官；今 path 文件 / 明 SQL）。
-- `abcd.py`：`Recap.from_commit / from_segment / from_branch`（`from_anchor`）构造器未写；
-  `Segment` 缺 `summary` 字段；`BranchInfo` 缺 `context`（recap 用 `BranchMeta.context + BranchInfo.status`?）。
-- 确认 `view` 是否是独立类型 / `read` 的返回类型。
-- 是否新增 `FORMAT_new.md` 草稿，正式写码时破坏性覆盖 v3（`FORMAT.md` 暂不动，待抽象关死后 review 冻结）。
-
-*草稿，待人类纠偏；§11 只记设计决策，磁盘格式与实现见 `FORMAT_new.md`（若建）与 `git log -- memento/`。*
-
-## 12. 第 9 轮 lean 收敛（2026-09-10，人类引导 + deepseek-v4-flash-vision-exp 实现）
-
-> 状态：**已开工实现**。契约 `abcd.py` + filesystem 实现 `_fs_memento.py` + 单测 `test_lean_memento.py`（13 passed）落地。
-> 背景：dolores ghost 本周收口；分形 memento（草拟后删除）精神成本不可承担，决定放弃分形目标，收敛到极简存储。
-
-### 12.1 决策清单
-
-- **删除 memento CLI 体系 + memento agents**（后续单独 commit 删光旧代码，被删设计经 git log 反查）。
-- **commit = 纯锚点** `{id, metatype, metadata, created}`，不承载 moment。metadata 装还原钥匙
-  （约定 `session_id` + `tail`），memento 只存取、不解释；还原归 dolores。
-- **message 单一真值**：`Note = {commit_id, message}`，last-wins。title = 首行、body = 其余（对齐 git `-m`）。
-- **commit / note 拆两步**：commit 打裸锚点（可无摘要）；note 旁路后补摘要（dolores 后台 agent 生成，
-  实时 ghost 的 compact 不能占主循环）。
+- commit 是「可还原一个 session 的锚点」，**不承载 moment**。moment 字节住在 agent session，
+  memento 只拿 metadata 里的钥匙（约定 `session_id` + `tail`）指过去；还原归消费者（dolores）。
+- **message 单一真值**：commit 不带 message，message 只住 `Note`（last-wins）；title = 首行、body = 其余（对齐 git `-m`）。
+- **commit / note 拆两步**：commit 打裸锚点（快，O_APPEND）；note 旁路后补摘要（慢，后台 agent 生成）。
+  依据 dolores ego：实时 ghost 的 compact 不能占主循环，慢的摘要生成前置到 commit。
 - **fork 是引用**（读父支 + 子支两个 commits.jsonl 拼连续轨迹），不复制；`ForkRef = {branch_id, commit_id}` 极窄。
-- **branch = 目录**：`meta.json` / `commits.jsonl`（正序 append-only 权威）/ `commit_notes.jsonl`（旁路，可丢可重建）。
-- **owner 级**：`branches.jsonl`（历史）+ `{name}.ref.json`（当前指针）+ `branches/{id}/`。
-- **本版拿掉**：confluence / segment 一级公民 / commit 独立目录 / staging。
-- **写门控**：`async with branch:` = FileLocker flock，fast-fail（进程级文件锁，不防准入约束）；
-  `a*` 异步面（aiofiles）给调用方明确卸载点，避免被迫 `asyncio.to_thread` + 手包 task。
+- **看用 seq（派生，branch 内 1-based），引用用 id（ULID 全局唯一）。**
 
-### 12.2 与 §11 的关系
+### 1.2 数据模型（字段详见 abcd.py docstring）
 
-§11「索引不做存储 / 三级索引 / recap-read-agent」未实现，本版收敛为更窄的「锚点 + 摘要」两级。
-moment 仍不内联（钥匙指 session），故 §11.1「索引不做存储」精神保留；segment 降级为 commit 的旁路摘要
-（note），暂不做独立层。fork 边界用「引用、不复制」回答了 §11.7 未定题。
+| 模型 | 字段 |
+|---|---|
+| `CommitRef` | id, metatype, metadata（还原钥匙 opaque）, created |
+| `Note` | commit_id, message（title=首行 / body=其余派生） |
+| `BranchRef` | name, description, branch_id, created |
+| `ForkRef` | branch_id, commit_id |
+| `BranchMeta` | branch_id, name, description, metatype, metadata, fork_from, created |
+| `CommitSummary` | id, message, seq（读侧投影，seq 派生不存） |
+| `BranchView` | name, description, branch_id, created, commit_id, previous, history, latest, commits_total |
+
+### 1.3 存储布局
+
+```
+{owner}/
+  branches.jsonl               # 历史 branch 名单 (append-only)
+  {name}.ref.json              # 当前指针 (BranchRef)
+  branches/{branch_id}/
+    meta.json                  # BranchMeta (metatype / metadata / fork_from)
+    commits.jsonl              # 正序 append-only CommitRef (权威)
+    commit_notes.jsonl         # 旁路 Note (last-wins, 可丢可重建)
+```
+
+### 1.4 API 面
+
+- **读**：`commits` / `notes`（缓存快路径）+ `acommits` / `anotes` / `aview` / `aquery_commits`（aiofiles，IO-costly）。
+- **写**：`commit` / `note` / `fork`（同步快路径）+ `acommit` / `anote` / `afork`（持锁、互锁）。
+- **写门控**：`async with branch:` = FileLocker flock fast-fail，进程级文件锁，**不防单个文件准入约束**（协作约定，非安全边界）。
+
+## 2. 历史轨迹（已压缩，详见 git log）
+
+**弧线**：8 轮设计漂移 → 真实消费者（dolores + deadline）出现 → 1 轮收敛到 lean。
+
+- **v3（第 5 次重开）**：commit 自治目录 + Y-m 分桶 + uid 工作区 / name 分离；实现了写侧，读侧整体失效。
+- **第 7 轮（abcd.py 草稿）**：branch-as-directory 明确；被第 8 轮推翻。
+- **第 8 轮（§11）**：「索引不做存储 / recap-read-agent」，moment 是可插拔 payload——未实现。
+- **第 9 轮（本版）**：放弃分形目标，收敛为锚点 + 摘要两级。moment 仍不内联（钥匙指 session），故第 8 轮「索引不做存储」精神保留；segment 降级为 commit 的旁路摘要（Note）。
+
+**完整决策过程**：`git log -- src/ghoshell_moss/memento/ .ai_partners/features/workstreams/2026/06/momento-mori/`
+
+## 3. 复盘（2026-09-10）
+
+> 人类工程师复盘，deepseek-v4-flash-vision-exp 记录。
+
+1. memento 是 moss ghost 方案一直依赖的核心诉求，有几个核心目标。a) 历史 100% 可追溯。b) 可追溯历史被多级索引，按模型可理解的方式，可以由它自己用不同层级遍历查找——后者不是自动做的，而是模型自己、或用 subagent 做的。c) 用 memento 还原短期轨迹。d) 它可以基于文件系统存储，可以分发。
+
+2. memento 是什么？在人类工程师眼里，它是各种连续 moment 的碎片化锚。人类工程师对它的视觉想象是，一个装满回忆的房间，有点像档案馆或者证物室：有各个书柜，书柜里有时间排序的格子，格子里有档案 + 各种物件存放。所以 commit 是最小单位，commit 可以拥有自己按 id 约定的目录是第一步。目录里需要有可放置的 inventories，类似证物盒。moss features 体系就是 memento 的雏形，它的见证层是 git，和 features 一模一样。原始设计是分形的，从 owner → branch → fractal → … → fractal → commit，每个 fractal 目录和 commit 目录构成分形的 memento。这样 memento 每个节点对于多方都是可以直接读的。「对多方可读」这个概念极其重要，这是协作基础。
+
+3. memento 要能拆分并行 branch，它不是服务于 rewind 的，而是服务于调度的。可以假设一个 ghost 在多个上下文中切换，每个是一个 branch，但每个 branch 可以看到别的 branch 存在。这和人类上学、上班、在各个不同的时空场景做线性切换一样。注意，这里是线性切换。并行多分支涉及不同的 owner 语义，比如一个 ghost，躯体只有一个，不存在后台的 clone 能够同时控制躯体。所以 memento 在单 owner 上设计是 branch checkout，不同 owner 上是 parallel，但是可能共同构成一个 ghost。
+
+4. memento 原计划不做存储。但 moss 项目落库 momento 是从 moment 开始的，由于没有现成的全功能 agent 或者 harness 可以植入 ghost，人类工程师面临困境——在做 moss 的同时还要做全功能 ghost（23/24 年都在做这类命题，比如 ghostos），两边的维护成本是相当的。被迫做存储构想，就是因为必须做极简 ghost、基于 agent 框架驱动。
+
+5. 所以一直以来，memento 迭代被定义为背景任务，持续在旁路并行做，让模型做 owner，人类只推动。这个本身就是 memento 设计思想的一个实现——一个全套的 cli 作为 memento 唯一可验证工具，让模型自行 dogfooding。类似的另一个任务是 ghost ground。
+
+6. memento 正式启动是通过 fable5 + opus 推动的。人类工程师的基本思路是，提出草图，模型理解，制作出原型；人类工程师提出改进，模型继续制作，在一个不扩散范围的目录里迭代。这样人类工程师就可以旁路迭代它。这个过程就是实验主路 ghost 驱动旁路 agent（人类工程师扮演 ghost），是多 owner 推动的例子。
+
+7. 早期开发，memento 最大的问题就是模型（包括 fable5）缺乏独立品味，不能成为 owner，对人类工程师的提议不会按品味剪枝。比如人类工程师提了一个思路，就被落成了 thread + annotations，明显过于复杂。这属于小问题，memento 代码复杂度是可控的，模型完全可以独立实现。
+
+8. 致命问题在于第五轮打磨后，模型认知无法突破了。对于人类而言，验证性的项目、实验开发方向，根据实验结果调整结构、重构原来的方案是常态。但 memento 第一次遇到重构命题（如何加入分形的 segment），代码实现就开始循环了（保留旧代码的基础上，又想要实现新代码），于是开始停滞。
+
+9. 由于 dolores ghost 任务紧迫，人类工程师决定开始验证 memento 的可用性，将它和其它几个任务找到了一个夹缝（memento agent）推进，通过 agent 运行效果倒过来判断开发效果，这样人类工程师可以投入较少的旁路精力。
+
+10. 转折点发生在 8 月中旬，两件事：1) deepseek 家族模型进入一场大崩溃，所有的 feature 实现都出现了严重的、致命的偏离，同时污染了迭代轨迹，已经记录到 8 月复盘。在 memento agent 体系的表现是，出现了拓扑错乱的交叉耦合——agents/memento-agent 依赖 agents/_instruction 等等，导致不重构无法推进。2) dsh 经过调研下决心作为 dolores ghost 的内核，不那么依赖自己实现一个全功能 agent 做推理架构。所以 memento 的开发被暂停，优先做 dsh 的集成。
+
+11. dsh 集成基本概念全部做完后，开始集成 memento。人类工程师的体力预算是三个工作日（之前 3 天完成 mindflow 1.3 万行代码重构，透支过一波）。人类工程师开始自己手写第五轮后无法推进的抽象面改造，并且实现了分形版本的 memento 样貌——简单来说，用泛型代替所有的 meta 数据，做 MementoModel，支持 MementoDir(Generic[MEMENTO]) 的方式，同时可定义父子层级，叶子节点和中间节点的区别是 MementoDir(Generic[METATYPE, CHILDTYPE], ABC)，ChildType 为 None 时表示为叶子节点，大意如此，从第九版可以推导。由于体力和时间不济，人类工程师发现这个机制的复杂度无法被模型接手，而人类工程师没有更多时间去迭代——它的验收和迭代、接线都无法被当前的资源层级推动。
+
+12. 最终决策是还原早期的极简版本（第九版实际上接近第一版），然后将所有已经生产的资产删除。删除不是为了放弃，是从当前版本代码承诺里拿掉；未来可能选择时机，复活删除代码。
+
+**review 附注（deepseek-v4-flash-vision-exp，review by）**
+
+以上 12 点为人类工程师复盘原话，本模型未改动其措辞。核对结果：
+
+- 对照 `.ai_partners/stages/2026-08-v0.1.0/STAGE.md` 的 Retrospective（Phase 2 deepseek-v4 regression）与各 feature 记录逐条核查。
+- 有明确「声明-交付漂移」记录的 6 个：memento、memento-agent、feature-review、voice-input-state-machine、warrant、llms-cli。
+- 未归因但高度吻合的 2 个：matrix-operator（08-13 completed→in-progress 重开 + 7 条致命内核问题，当时不知是模型问题）、mcp-fusion-point（停在 08-14 未推进）。
+- 结论：可确定受影响 **≥ 8**；基于 review 无法直接支持「> 8」或「所有」。
+- 诊断分层（STAGE.md）：当时先判为机制问题（声明-交付漂移），后经外部报告确认为模型问题（deepseek V4-Pro-0813 官方回归，与发作时间对齐）。

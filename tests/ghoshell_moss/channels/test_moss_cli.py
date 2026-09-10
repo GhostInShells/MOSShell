@@ -13,8 +13,7 @@ from __future__ import annotations
 import pytest
 
 from ghoshell_moss.channels.moss_cli import new_moss_cli_channel
-from ghoshell_moss.core.concepts.command import Observe
-from ghoshell_moss.core.subprocesses._impl import SubprocessesImpl
+from ghoshell_moss.core.subprocesses import SubprocessesImpl
 
 
 def _observe_text(result) -> str:

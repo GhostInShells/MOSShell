@@ -42,6 +42,8 @@ from ghoshell_moss.memento.abcd import (
     Note,
 )
 
+__all__ = ["FsBranch", 'FsMemento', 'new_local_memento']
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -168,7 +170,8 @@ class FsBranch(Branch):
     # ── 构造期事实 ──
     @property
     def ref(self) -> BranchRef:
-        return BranchRef(name=self._name, description=self._description, branch_id=self._branch_id, created=self._created)
+        return BranchRef(name=self._name, description=self._description, branch_id=self._branch_id,
+                         created=self._created)
 
     @property
     def path(self) -> Path:
@@ -211,11 +214,11 @@ class FsBranch(Branch):
 
     # ── 写 ──
     def commit(
-        self,
-        *,
-        message: str = "",
-        metatype: str = "",
-        metadata: dict[str, Any] | None = None,
+            self,
+            *,
+            message: str = "",
+            metatype: str = "",
+            metadata: dict[str, Any] | None = None,
     ) -> CommitRef:
         ref = CommitRef(metatype=metatype, metadata=metadata or {})
         _append_jsonl(self._commits_path(), [ref.model_dump(mode="json")])
@@ -239,11 +242,11 @@ class FsBranch(Branch):
         )
 
     async def acommit(
-        self,
-        *,
-        message: str = "",
-        metatype: str = "",
-        metadata: dict[str, Any] | None = None,
+            self,
+            *,
+            message: str = "",
+            metatype: str = "",
+            metadata: dict[str, Any] | None = None,
     ) -> CommitRef:
         async with self:
             return self.commit(message=message, metatype=metatype, metadata=metadata)
@@ -257,9 +260,9 @@ class FsBranch(Branch):
             return self.fork(name, description)
 
     # ── 读侧投影 ──
-    def _summary(self, commit: CommitRef, notes: dict[str, Note]) -> CommitSummary:
+    def _summary(self, commit: CommitRef, notes: dict[str, Note], seq: int) -> CommitSummary:
         message = notes[commit.id].message if commit.id in notes else ""
-        return CommitSummary(id=commit.id, message=message)
+        return CommitSummary(id=commit.id, message=message, seq=seq)
 
     def _parent(self) -> "FsBranch | None":
         fork_from = self.meta().fork_from
@@ -276,8 +279,9 @@ class FsBranch(Branch):
         return self._build_view(commits, notes, n)
 
     def _build_view(self, commits: list[CommitRef], notes: dict[str, Note], n: int) -> BranchView:
-        latest = [self._summary(c, notes) for c in commits[-n:]]
-        history = [self._summary(c, notes) for c in commits[:-n]]
+        summaries = [self._summary(c, notes, i + 1) for i, c in enumerate(commits)]
+        latest = summaries[-n:]
+        history = summaries[:-n]
         parent = self._parent()
         previous = parent.view(n=n) if parent is not None else None
         tip = commits[-1].id if commits else ""
@@ -295,10 +299,10 @@ class FsBranch(Branch):
 
     # ── 查询 ──
     def query_commits(
-        self,
-        *,
-        from_date: datetime | None = None,
-        until_date: datetime | None = None,
+            self,
+            *,
+            from_date: datetime | None = None,
+            until_date: datetime | None = None,
     ) -> list[CommitRef]:
         result = self.commits()
         if from_date is not None:
@@ -310,10 +314,10 @@ class FsBranch(Branch):
         return result
 
     async def aquery_commits(
-        self,
-        *,
-        from_date: datetime | None = None,
-        until_date: datetime | None = None,
+            self,
+            *,
+            from_date: datetime | None = None,
+            until_date: datetime | None = None,
     ) -> list[CommitRef]:
         result = await self.acommits()
         if from_date is not None:
@@ -361,25 +365,25 @@ class FsMemento(Memento):
         return self._root / "branches" / branch_id
 
     def create_branch(
-        self,
-        name: str,
-        description: str = "",
-        *,
-        metatype: str = "",
-        metadata: dict[str, Any] | None = None,
+            self,
+            name: str,
+            description: str = "",
+            *,
+            metatype: str = "",
+            metadata: dict[str, Any] | None = None,
     ) -> Branch:
         if self._ref_path(name).exists():
             raise NameError(f"branch '{name}' already exists")
         return self._create_branch(name, description, metatype=metatype, metadata=metadata, fork_from=None)
 
     def _create_branch(
-        self,
-        name: str,
-        description: str,
-        *,
-        metatype: str,
-        metadata: dict[str, Any] | None,
-        fork_from: ForkRef | None,
+            self,
+            name: str,
+            description: str,
+            *,
+            metatype: str,
+            metadata: dict[str, Any] | None,
+            fork_from: ForkRef | None,
     ) -> FsBranch:
         """public-internal: create_branch 与 Branch.fork 共享的单一创建路径."""
         branch_id = str(ulid.ULID())

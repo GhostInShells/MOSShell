@@ -101,6 +101,23 @@ def test_view_folds_latest_history_and_derives_title(memento):
     assert v.history[0].title == "commit 0"
 
 
+def test_view_assigns_branch_local_seq(memento):
+    b = memento.create_branch("main")
+    for i in range(3):
+        b.commit(message=f"c{i}")
+
+    # seq 1-based, 按 commits 顺序派生 (不存)
+    assert [s.seq for s in b.view().latest] == [1, 2, 3]
+
+    # fork 后子支 seq 从 1 重新开始 (branch-local); 父支 seq 独立
+    child = b.fork("idea")
+    child.commit(message="child c0")
+    cv = child.view()
+    assert [s.seq for s in cv.latest] == [1]
+    assert cv.previous is not None
+    assert cv.previous.latest[-1].seq == 3
+
+
 # ── fork 引用 ──
 
 
