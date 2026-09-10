@@ -1,257 +1,277 @@
-# todo: deepseek-v4 failed to refact mcp, refactor it next time.
-# """Tests for MCP Hub Channel (as_channel 范式).
-#
-# MCPHubState 是本源对象（state-first），new_channel_from_state 投影成 channel。
-# 这些测试覆盖协议契约：公开方法、命令语义、投影身份、子 channel 辐射、
-# 生命周期，以及真实 stdio MCP server 的端到端集成。
-# """
-# import sys
-# import tempfile
-# from os.path import dirname, join
-# from pathlib import Path
-#
-# import pytest
-# from mcp import types as mcp_types
-#
-# from ghoshell_moss.channels.mcp_channel import (
-#     MCPHubState,
-#     MCPServerChannelState,
-#     MCPServerSession,
-#     mcp_result_to_observe,
-#     new_channel_from_state,
-#     render_input_schema,
-# )
-# from ghoshell_moss.contracts.configs import YamlConfigStore
-# from ghoshell_moss.contracts.workspace import LocalStorage
-# from ghoshell_moss.core.concepts.command import Observe
-# from ghoshell_moss.mcp.config import MCPHubConfig, MCPServerConfig
-#
-# # ---------------------------------------------------------------------------
-# # fixtures
-# # ---------------------------------------------------------------------------
-#
-#
-# def _new_config_store():
-#     return YamlConfigStore(LocalStorage(Path(tempfile.mkdtemp())))
-#
-#
-# def _state():
-#     return MCPHubState(config_store=_new_config_store(), name="mcp", description="test hub")
-#
-#
-# # ---------------------------------------------------------------------------
-# # 本源对象 — 公开方法契约
-# # ---------------------------------------------------------------------------
-#
-# class TestPublicSurface:
-#     def test_public_methods_exposed(self):
-#         state = _state()
-#         for method in ["connect_server", "disconnect_server", "list_servers", "call_tool", "sessions"]:
-#             assert callable(getattr(state, method)), method
-#
-#     @pytest.mark.asyncio
-#     async def test_call_tool_disconnected(self):
-#         obs = await _state().call_tool("nope", "tool")
-#         assert isinstance(obs, Observe)
-#         assert len(obs.messages) == 1
-#
-#     @pytest.mark.asyncio
-#     async def test_list_servers_empty(self):
-#         text = await _state().list_servers()
-#         assert "No servers configured." in text
-#
-#     def test_sessions_empty(self):
-#         assert _state().sessions() == {}
-#
-#
-# # ---------------------------------------------------------------------------
-# # 命令契约
-# # ---------------------------------------------------------------------------
-#
-# class TestCommands:
-#     def test_command_names(self):
-#         assert set(_state().own_commands()) == {"call", "acall", "list", "connect", "disconnect"}
-#
-#     def test_call_blocking_acall_nonblocking(self):
-#         state = _state()
-#         assert state.get_own_command("call").meta().blocking is True
-#         assert state.get_own_command("acall").meta().blocking is False
-#
-#     def test_all_always_observe(self):
-#         state = _state()
-#         for name, cmd in state.own_commands().items():
-#             assert cmd.meta().always_observe is True, name
-#
-#     @pytest.mark.asyncio
-#     async def test_call_invalid_json(self):
-#         cmd = _state().get_own_command("call")
-#         obs = await cmd(server="demo", tool="add", text__="not json")
-#         assert isinstance(obs, Observe)
-#         assert len(obs.messages) == 1
-#
-#
-# # ---------------------------------------------------------------------------
-# # 投影契约 — new_channel_from_state
-# # ---------------------------------------------------------------------------
-#
-# class TestProjection:
-#     def test_channel_identity_matches_state(self):
-#         state = _state()
-#         chan = new_channel_from_state(state, id=state.id())
-#         assert chan.name() == "mcp"
-#         assert chan.id() == state.id()
-#         assert chan.description() == "test hub"
-#
-#
-# # ---------------------------------------------------------------------------
-# # 温度模型 — help (warm) vs context (hot)
-# # ---------------------------------------------------------------------------
-#
-# class TestTemperature:
-#     @pytest.mark.asyncio
-#     async def test_empty_help(self):
-#         assert await _state().get_notice() == "No MCP servers connected."
-#
-#     @pytest.mark.asyncio
-#     async def test_context_is_empty(self):
-#         # 工具目录在 help(warm) 与 list(on-demand) 中，context 无每帧热数据。
-#         assert await _state().get_context_messages() == []
-#
-#     def test_no_virtual_children_when_empty(self):
-#         assert _state().get_virtual_children() == {}
-#
-#
-# # ---------------------------------------------------------------------------
-# # 纯函数
-# # ---------------------------------------------------------------------------
-#
-# class TestResultToObserve:
-#     def test_text_content(self):
-#         result = mcp_types.CallToolResult(
-#             content=[mcp_types.TextContent(type="text", text="hello world")],
-#             is_error=False,
-#         )
-#         obs = mcp_result_to_observe(result, server="s", tool="t")
-#         assert isinstance(obs, Observe)
-#         assert len(obs.messages) == 1
-#
-#     def test_error_result(self):
-#         result = mcp_types.CallToolResult(
-#             content=[mcp_types.TextContent(type="text", text="boom")],
-#             is_error=True,
-#         )
-#         obs = mcp_result_to_observe(result, server="s", tool="t")
-#         assert isinstance(obs, Observe)
-#         assert len(obs.messages) == 1
-#
-#
-# class TestRenderInputSchema:
-#     def test_renders_params(self):
-#         schema = {
-#             "type": "object",
-#             "properties": {
-#                 "text": {"type": "string", "description": "the text"},
-#                 "n": {"type": "integer"},
-#             },
-#             "required": ["text"],
-#         }
-#         out = render_input_schema(schema)
-#         assert "`text`" in out
-#         assert "required" in out
-#         assert "`n`" in out
-#
-#     def test_empty_schema(self):
-#         assert render_input_schema({}) == ""
-#         assert render_input_schema({"type": "object", "properties": {}}) == ""
-#
-#
-# # ---------------------------------------------------------------------------
-# # 子 channel 辐射 — 信息辐射器
-# # ---------------------------------------------------------------------------
-#
-# class TestServerChannelState:
-#     def test_is_information_radiator(self):
-#         session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
-#         sub = MCPServerChannelState(session)
-#         assert sub.own_commands() == {}
-#         assert sub.get_own_command("anything") is None
-#
-#     @pytest.mark.asyncio
-#     async def test_help_disconnected(self):
-#         session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
-#         sub = MCPServerChannelState(session)
-#         assert "disconnected" in await sub.get_notice()
-#
-#     @pytest.mark.asyncio
-#     async def test_help_lists_tools(self):
-#         session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
-#         session.tools = [
-#             mcp_types.Tool(name="add", description="add", input_schema={"type": "object"}),
-#             mcp_types.Tool(name="foo", description="foo", input_schema={"type": "object"}),
-#         ]
-#         session.state = "connected"
-#         sub = MCPServerChannelState(session)
-#         help_text = await sub.get_notice()
-#         assert "2 tools" in help_text
-#         assert "add" in help_text
-#
-#
-# # ---------------------------------------------------------------------------
-# # 集成 — 真实 stdio MCP server
-# # ---------------------------------------------------------------------------
-#
-# _HELPER_PATH = join(dirname(dirname(__file__)), "bridges", "mcp_channel", "helper", "mcp_server_demo.py")
-#
-#
-# class TestIntegration:
-#     @pytest.mark.asyncio
-#     async def test_connect_call_list_disconnect(self):
-#         store = _new_config_store()
-#         store.save(MCPHubConfig(servers={
-#             "demo": MCPServerConfig(
-#                 name="demo",
-#                 transport="stdio",
-#                 command=sys.executable,
-#                 args=[_HELPER_PATH],
-#             ),
-#         }))
-#         state = MCPHubState(config_store=store)
-#
-#         # 生命周期: on_startup 连接 auto_connect servers
-#         await state.on_startup()
-#         assert "demo" in state.sessions()
-#         assert state.sessions()["demo"].state == "connected"
-#
-#         # 子 channel 辐射
-#         children = state.get_virtual_children()
-#         assert "demo" in children
-#         sub_channel = children["demo"]
-#         assert sub_channel.name() == "demo"
-#
-#         # warm help 摘要
-#         help_text = await state.get_help()
-#         assert "[+] demo" in help_text
-#
-#         # call (阻塞) 通过公开方法
-#         obs = await state.call_tool("demo", "add", {"x": 1, "y": 2})
-#         assert isinstance(obs, Observe)
-#         assert len(obs.messages) == 1
-#
-#         # list 命令
-#         list_result = await state.get_own_command("list")()
-#         assert "+" in list_result
-#         assert "add" in list_result
-#
-#         # disconnect 公开方法
-#         result = await state.disconnect_server("demo")
-#         assert "disconnected" in result
-#         assert "demo" not in state.sessions()
-#
-#         # reconnect 公开方法
-#         result = await state.connect_server("demo")
-#         assert "connected" in result
-#         assert "demo" in state.sessions()
-#
-#         # 生命周期: on_close 断开所有
-#         await state.on_close()
-#         assert state.sessions() == {}
+"""Tests for MCP Hub Channel — 重新对齐后的 hub 契约。
+
+MCPHub 是本源对象，build_mcp_hub_channel 投影成 channel。测试覆盖：
+公开方法契约、config 增删（只写不连）、open/close 生命周期、子 channel 的
+schema notice 与 call/acall 阻塞语义、虚拟子 channel 对齐，以及真实 stdio
+MCP server 的端到端集成。
+"""
+
+import sys
+import tempfile
+from os.path import dirname, join
+from pathlib import Path
+
+import pytest
+from mcp import types as mcp_types
+
+from ghoshell_moss.channels.mcp_channel import (
+    MCPHub,
+    MCPServerSession,
+    _new_server_channel,
+    _reconcile_children,
+    build_mcp_hub_channel,
+    mcp_result_to_observe,
+    render_input_schema,
+    render_tools_notice,
+)
+from ghoshell_moss.contracts.configs import YamlConfigStore
+from ghoshell_moss.contracts.workspace import LocalStorage
+from ghoshell_moss.core.blueprint.channel_builder import new_channel
+from ghoshell_moss.core.concepts.command import Observe
+from ghoshell_moss.mcp.config import MCPHubConfig, MCPServerConfig
+
+_HELPER_PATH = join(dirname(dirname(__file__)), "bridges", "mcp_channel", "helper", "mcp_server_demo.py")
+
+
+def _new_config_store():
+    return YamlConfigStore(LocalStorage(Path(tempfile.mkdtemp())))
+
+
+def _hub(**kwargs) -> MCPHub:
+    return MCPHub(config_store=_new_config_store(), name="mcp", **kwargs)
+
+
+def _stdio_demo_config() -> MCPServerConfig:
+    return MCPServerConfig(
+        name="demo",
+        transport="stdio",
+        command=sys.executable,
+        args=[_HELPER_PATH],
+    )
+
+
+class _FakeMatrix:
+    """只暴露 build_mcp_hub_channel 用到的 ``configs`` 面。"""
+
+    def __init__(self, store):
+        self.configs = store
+
+
+# ---------------------------------------------------------------------------
+# 纯函数
+# ---------------------------------------------------------------------------
+
+class TestRenderInputSchema:
+    def test_renders_params(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "the text"},
+                "n": {"type": "integer"},
+            },
+            "required": ["text"],
+        }
+        out = render_input_schema(schema)
+        assert "`text`" in out
+        assert "required" in out
+        assert "`n`" in out
+
+    def test_empty_schema(self):
+        assert render_input_schema({}) == ""
+        assert render_input_schema({"type": "object", "properties": {}}) == ""
+
+
+class TestRenderToolsNotice:
+    def test_disconnected(self):
+        session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
+        assert "disconnected" in render_tools_notice(session)
+
+    def test_connected_renders_schema(self):
+        session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
+        session.state = "connected"
+        session.tools = [
+            mcp_types.Tool(
+                name="add",
+                description="add two numbers",
+                input_schema={"type": "object", "properties": {"x": {"type": "integer"}}},
+            ),
+        ]
+        out = render_tools_notice(session)
+        assert "add(" in out
+        assert "`x`" in out
+
+
+class TestResultToObserve:
+    def test_text_content(self):
+        result = mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text="hello world")],
+            is_error=False,
+        )
+        obs = mcp_result_to_observe(result, server="s", tool="t")
+        assert isinstance(obs, Observe)
+        assert len(obs.messages) == 1
+
+    def test_error_result(self):
+        result = mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text="boom")],
+            is_error=True,
+        )
+        obs = mcp_result_to_observe(result, server="s", tool="t")
+        assert isinstance(obs, Observe)
+        assert "error" in obs.messages[0].to_content_string()
+
+
+# ---------------------------------------------------------------------------
+# MCPHub 公开方法契约
+# ---------------------------------------------------------------------------
+
+class TestMCPHub:
+    @pytest.mark.asyncio
+    async def test_open_invalid_name(self):
+        result = await _hub().open("bad-name")
+        assert "invalid server name" in result
+
+    @pytest.mark.asyncio
+    async def test_open_missing_config(self):
+        result = await _hub().open("nope")
+        assert "not found in config" in result
+
+    @pytest.mark.asyncio
+    async def test_add_server_writes_config_only(self):
+        hub = _hub(allow_config_edit=True)
+        result = await hub.add_server(
+            '{"name": "demo", "transport": "stdio", "command": "python", "connect": true}'
+        )
+        assert "config added" in result
+        # 只写配置、不连接
+        assert hub.sessions() == {}
+        listing = await hub.list_servers()
+        assert "demo" in listing
+        assert "not open" in listing
+
+    @pytest.mark.asyncio
+    async def test_remove_server_removes_config(self):
+        hub = _hub(allow_config_edit=True)
+        await hub.add_server('{"name": "demo", "transport": "stdio", "command": "python"}')
+        result = await hub.remove_server("demo")
+        assert "removed" in result
+        assert "No MCP servers configured." in await hub.list_servers()
+
+    @pytest.mark.asyncio
+    async def test_authorize_is_pass_through(self):
+        assert await _hub().authorize("open", "x") is None
+
+    @pytest.mark.asyncio
+    async def test_open_connect_failure_is_recorded(self):
+        store = _new_config_store()
+        store.save(MCPHubConfig(servers={
+            "demo": MCPServerConfig(name="demo", transport="stdio", command="definitely-not-a-command"),
+        }))
+        hub = MCPHub(config_store=store)
+        result = await hub.open("demo")
+        assert "error" in result
+        assert "demo" in hub.sessions()
+        # close 保留 config，只断开
+        close_result = await hub.close("demo")
+        assert "closed" in close_result
+        assert "demo" not in hub.sessions()
+        # config 仍在，可再次 open
+        assert "demo" in hub._load_config().servers
+
+
+# ---------------------------------------------------------------------------
+# server 子 channel 契约
+# ---------------------------------------------------------------------------
+
+class TestServerChannel:
+    def test_name_and_notice(self):
+        session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
+        session.state = "connected"
+        session.tools = [
+            mcp_types.Tool(name="add", description="add", input_schema={"type": "object"}),
+        ]
+        chan = _new_server_channel(session)
+        assert chan.name() == "demo"
+
+    def test_call_blocking_acall_nonblocking(self):
+        session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
+        chan = _new_server_channel(session)
+        assert chan.build.get_own_command("call").meta().blocking is True
+        assert chan.build.get_own_command("acall").meta().blocking is False
+
+    def test_no_config_commands(self):
+        session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
+        chan = _new_server_channel(session)
+        assert set(chan.build.own_commands()) == {"call", "acall"}
+
+
+# ---------------------------------------------------------------------------
+# 虚拟子 channel 对齐
+# ---------------------------------------------------------------------------
+
+class TestReconcileChildren:
+    def test_add_and_remove_virtual_child(self):
+        hub = _hub()
+        session = MCPServerSession(config=MCPServerConfig(name="demo", command="python"))
+        session.state = "connected"
+        hub._sessions["demo"] = session
+
+        chan = new_channel(name="mcp")
+        _reconcile_children(hub, chan)
+        children = chan.virtual_children()
+        assert "demo" in children
+        assert children["demo"].name() == "demo"
+
+        # 关掉后子 channel 被移除
+        hub._sessions.pop("demo")
+        _reconcile_children(hub, chan)
+        assert chan.virtual_children() == {}
+
+
+# ---------------------------------------------------------------------------
+# build_mcp_hub_channel 命令面
+# ---------------------------------------------------------------------------
+
+class TestBuildChannel:
+    def test_commands_without_config_edit(self):
+        chan = build_mcp_hub_channel(_FakeMatrix(_new_config_store()))
+        commands = set(chan.build.own_commands())
+        assert {"list", "open", "close"} <= commands
+        assert "add" not in commands
+        assert "remove" not in commands
+
+    def test_commands_with_config_edit(self):
+        chan = build_mcp_hub_channel(_FakeMatrix(_new_config_store()), allow_config_edit=True)
+        commands = set(chan.build.own_commands())
+        assert {"list", "open", "close", "add", "remove"} <= commands
+
+
+# ---------------------------------------------------------------------------
+# 集成 — 真实 stdio MCP server
+# ---------------------------------------------------------------------------
+
+class TestIntegration:
+    @pytest.mark.asyncio
+    async def test_open_connect_call_close(self):
+        store = _new_config_store()
+        store.save(MCPHubConfig(servers={"demo": _stdio_demo_config()}))
+        hub = MCPHub(config_store=store)
+
+        result = await hub.open("demo")
+        assert "connected" in result
+
+        session = hub.sessions()["demo"]
+        assert session.state == "connected"
+        assert {t.name for t in session.tools} >= {"add", "foo"}
+
+        obs = await session.call_tool("add", {"x": 1, "y": 2})
+        assert isinstance(obs, Observe)
+        assert "3" in obs.messages[0].to_content_string()
+
+        # 子 channel notice 反映 schema
+        notice = render_tools_notice(session)
+        assert "add(" in notice
+
+        close_result = await hub.close("demo")
+        assert "closed" in close_result
+        assert "demo" not in hub.sessions()
