@@ -452,6 +452,10 @@ class VolcengineTTS(TTS):
                 send_and_receive.cancel()
                 send_task.cancel()
                 receive_task.cancel()
+                # gather future 取消后同样要 await 掉, 否则它的 CancelledError 也会
+                # 以 "exception was never retrieved" 形式在 gc 时冒出来.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await send_and_receive
                 return False
 
             result = await send_and_receive
