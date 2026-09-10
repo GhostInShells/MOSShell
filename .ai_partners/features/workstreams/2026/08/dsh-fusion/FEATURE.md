@@ -8,7 +8,7 @@ description: 'dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组�
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade); DshSessionRef(坐标类型); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09)。'
+status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10)。'
 title: DSH Fusion
 updated: '2026-09-10'
 ---
@@ -83,10 +83,12 @@ research/ 调研轨迹。
      `accept_frame` 喂帧(反转依赖, owner 注册), 按事件名分派到 `on_session_event*`;
      token 记账; `instruction()`/`surface_messages()` 经 plugin 路由 pull;
      `when_{running,idle}` 等运行态镜像。
-   - `types/refs.py` — `DshSessionRef`(坐标, 非快照): 只定位一个 session 的某 turn,
-     不承载历史。定位字段 `turn`/`end_seq`/`start_seq`(均可缺省, 优先级 turn >
-     end_seq > start_seq); 自解释字段 `preset`/`title`/`cwd` 可缺省不参与还原。
-     还原(fork/read)从 live source session 重建。
+   - `types/refs.py` — `DshSessionRef`(坐标, 非快照): 定位一个 session 的 turn 区间
+     (span)。`session_id` + `start_turn`/`end_turn`(turn 主坐标) + `start_seq`/`end_seq`
+     (seq 派生, 缺省反查 `turn/start`·`turn/end` 的 `data.turn`); 自解释字段
+     `preset`/`title`/`cwd` 不参与还原。还原从 live source session 的 log 重建。
+   - `trajectory.py` — ref 物化纯函数: `seed_from_log`(尾部截断成 verbatim seed) +
+     `render_transcript`(fold 成 `>`/`~`/`@` 纯文本)。
    - `message_mapper.py` — MOSS Message → dsh UserMessage 单向映射(role=user;
      image 抛 NotImplementedError, 需 attachment ref 或走 session.prompt 提升)。
    - `types/` — 强类型 pydantic 数据面(rpc/nouns/events/sessions/domains/sdk/refs,
@@ -115,10 +117,12 @@ research/ 调研轨迹。
   面, 不引入 zenoh/zmq、不改内核。接口面待裁决, 要窄。
 - **hot 归 MOSS, dsh 只做 cold+warm。** 高 churn 大块数据 (vision) 走 MOSS 旁路,
   不进 dsh session(DeepSeek text-only 拒图, 撞窗口压满/传输放大)。
-- **`DshSessionRef` 是坐标, 不是快照。** 只定位 session 的某 turn, 不承载历史; 还原从
-  live source session 重建。定位靠 `turn`/`end_seq`/`start_seq`(优先级 turn > end_seq >
-  start_seq), 覆盖「turn 中间产出 ref(只有 turn + start_seq)」与「turn/end 后 commit
-  (补 end_seq)」两阶段时序。
+- **`DshSessionRef` 是坐标, 不是快照, 且是 turn 区间 (span)。** 只定位, 不承载历史; 还原从
+  live source session 的 log 重建。turn 主坐标 / seq 派生 (缺省反查 `turn/start`·`turn/end`
+  的 `data.turn`); `end_turn`/`end_seq` 决定 seed 切点, `start_turn`/`start_seq` 只定 read 窗口。
+- **run 走冷 seed 独立 one-shot, 不走 subagent。** subagent 会把 child 结果回流进父 agent 的
+  turn (驱动另一个 agent 运行); 冷 seed 是 `ctx.agents.create({seed, setup: preset+restrict})`,
+  无父 agent。read 走 log 不走 surface; dispose 后 log 留存 (dsh 无 LRU, 必须主动销毁)。
 
 ## Shared Resources
 

@@ -1,18 +1,22 @@
-"""dsh session 引用 — 定位一个 session 的某 turn 的轻量坐标.
+"""dsh session 引用 — 定位一个 session 的 turn 区间的轻量坐标.
 
-DshSessionRef 是「坐标」不是「快照」: 只定位, 不承载历史数据. 还原 (fork /
-read) 全部从 live source session 重建, ref 里的自解释字段 (preset / title /
-cwd) 仅用于「不连 dsh 也能看懂这个 session 是什么」, 不是还原输入.
+DshSessionRef 是「坐标」不是「快照」: 只定位, 不承载历史数据. 还原 (read /
+seed / fork) 全部从 live source session 的 log 重建, ref 里的自解释字段
+(preset / title / cwd) 仅用于「不连 dsh 也能看懂这个 session 是什么」, 不是
+还原输入.
 
-定位靠三个字段, 按优先级取用: ``turn`` > ``end_seq`` > ``start_seq``.
+定位是一个 **turn 区间** (span): ``start_turn`` / ``end_turn`` 是区间两端 (含端),
+``start_seq`` / ``end_seq`` 是两端的 log 事件 seq, 均可缺省.
 
-- ``turn`` — turn index (data.turn), turn 中间就能确定. 语义锚.
-- ``end_seq`` — 该 turn 的 turn/end 事件在 log 里的 seq, completed turn 边界.
-- ``start_seq`` — 该 turn 的 turn/start 事件在 log 里的 seq, turn 中间就能确定.
+- **turn 是主坐标, seq 是派生加速器.** turn index 是「哪个 turn」的稳定语义锚,
+  ref 长期持有它; seq 是某条 log 的内部位置, 没记录时从 turn 反查
+  (``turn/start`` / ``turn/end`` 事件各带 ``data.turn``).
+- 覆盖两阶段时序: turn 中间产出 ref (只有 turn, seq 待补) 与 turn/end 后 commit
+  (补 end_seq).
 
-官方 fork 的 ``atSeq`` 需要合法 seq (end_seq / start_seq); 我们自己的接口可
-以 turn index 反查 seq. 三者都允许缺省, 覆盖「turn 中间产出 ref (只有 turn +
-start_seq)」与「turn/end 后 commit (补 end_seq)」两阶段时序.
+还原语义 (见 ``trajectory.seed_from_log`` / ``session.fork``):
+- ``end_turn`` / ``end_seq`` 决定 seed 切点 (turn/end 边界).
+- ``start_turn`` / ``start_seq`` 只决定 read 窗口左端, 不参与 seed.
 """
 
 from __future__ import annotations
@@ -29,26 +33,25 @@ def _utc_now() -> datetime:
 
 
 class DshSessionRef(BaseModel):
-    """指向一个 dsh session 某 turn 的坐标.
+    """指向一个 dsh session 某 turn 区间的坐标.
 
     字段分两类:
-    - 定位 (按优先级 turn > end_seq > start_seq 取用, 均允许缺省).
+    - 定位 (turn 主 / seq 辅, 区间两端含端, seq 均可缺省).
     - 自解释 (preset / title / cwd / created), 仅用于可读性, 不参与还原.
     """
 
     session_id: str = Field(description="定位: 哪个 dsh session.")
 
-    turn: int | None = Field(
+    start_turn: int = Field(description="定位 (主): 区间左端 turn index, 含端.")
+    end_turn: int = Field(description="定位 (主): 区间右端 turn index, 含端.")
+
+    start_seq: int | None = Field(
         default=None,
-        description="定位 (最高优先级): turn index (data.turn). turn 中间即可确定.",
+        description="定位 (派生): start_turn 的 turn/start 事件 log seq, 缺省可从 turn 反查.",
     )
     end_seq: int | None = Field(
         default=None,
-        description="定位: 该 turn 的 turn/end 事件 log seq (completed turn 边界).",
-    )
-    start_seq: int | None = Field(
-        default=None,
-        description="定位: 该 turn 的 turn/start 事件 log seq (turn 中间即可确定).",
+        description="定位 (派生): end_turn 的 turn/end 事件 log seq, 缺省可从 turn 反查.",
     )
 
     preset: str | None = Field(default=None, description="自解释: agentPreset, 供参考.")
