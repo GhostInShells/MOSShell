@@ -8,7 +8,7 @@ description: 'dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组�
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade: run() 单轮对话 + cancel, 对齐官方 SDK Session.run, 经活 dsh 验证); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10); 单轮 run 落地见 research_2026-09-11。'
+status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade: run() 单轮对话 + cancel, 对齐官方 SDK Session.run, 经活 dsh 验证); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10); 单轮 run 落地见 research_2026-09-11。meta channel 落地: channels/dsh_channel.py 父→connection→session 三层 virtual tree + exec 代码驱动, 注册 meta mode, 经活 shell 实测。'
 title: DSH Fusion
 updated: '2026-09-11'
 ---
@@ -101,6 +101,13 @@ research/ 调研轨迹。
    `_run.py` 用 `DshSession`, plugin 拆成 `dolores-ego-tools.ts`(ego moss_* tools +
    identity/persona, agent scope)+ `dolores-ghost-bridge.ts`(web 侧 RPC 桥 + perStep 锁
    + shared state)+ `dolores-state.ts`(共享 DoloresState)。具体方案读源码 docstring。
+5. **meta channel** — `channels/dsh_channel.py`(父→connection→session 三层 virtual tree):
+   模型经 CTML 把 dsh 当有状态的代码驱动运行时。`connect()` 挂一个 DshConnection 子
+   channel, `open()` 挂 DshSession 孙 channel; 两层各有 `exec()` 编译模型 Python 并注入
+   现场对象(`main(connection)`/`main(session)`)。virtual child 生命周期由 shell runtime
+   托管(startup/close enter/exit 连接); connection 依赖注入(测试注入 fake, 不碰网络)。
+   注册于 meta mode, 经活 shell 实测 connect→open→exec loop→teardown 全链路。这是
+   「可以 loop 一个 dsh session」的 CTML 面落点。
 
 ## Key Decisions
 
@@ -155,7 +162,9 @@ research/ 调研轨迹。
   - `plugin-api-session-event/` — 已验证:「dsh web 内置 `/api/events.mux` WS 下行 +
     plugin 注册 HTTP 回调」构成零依赖伪双工, ghost runtime 不开对外接口
 - **基建源码锚点**: `src/ghoshell_moss/deepseek_harness/`(launcher/client/session/
-  message_mapper/types)+ `tests/ghoshell_moss/deepseek_harness/`。plugin 面:
+  message_mapper/types)+ `tests/ghoshell_moss/deepseek_harness/`。meta channel:
+  `src/ghoshell_moss/channels/dsh_channel.py` + `tests/ghoshell_moss/channels/
+  test_dsh_channel.py`。plugin 面:
   `ghosts/dolores/dsh_plugin/`(dolores-ego-tools.ts / dolores-ghost-bridge.ts /
   dolores-state.ts)。dsh 官方源码在
   `research/source/deepseek-harness/`(`python/sdk` 仅参考锚点、`packages/acp` 权限仲裁、

@@ -8,12 +8,16 @@
 #   echo 经 ghost-bridge 回话需要 matrix/mcp 绑定; grounds 提供认知场.
 
 from ghoshell_moss import new_moss_main_channel
+from ghoshell_moss.channels.dsh_channel import build_dsh_channel
 from ghoshell_moss.channels.moss_cli import build_moss_cli_channel
 from ghoshell_moss.channels.runtime_debug_channel import build_runtime_debug_channel
 
 main = new_moss_main_channel()
 
 main.import_channels(build_runtime_debug_channel())
+
+# -- dsh: 驱动 dsh connection/session 的元 channel -----------------
+main.import_channels(build_dsh_channel())
 
 # -- moss_cli: 去授权的 moss CLI 自举 ---------------------------
 main.import_channels(build_moss_cli_channel(name="moss_cli"))
