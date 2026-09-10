@@ -1,4 +1,17 @@
+from pathlib import Path
+
 from ghoshell_moss.message import Message, Text, MessageMeta, Base64Image
+
+
+def test_base64_image_from_file_labels_by_bytes_not_extension(tmp_path: Path):
+    """from_file 的 media_type 取自字节头: 扩展名撒谎 (JPEG 存成 .png) 时不跟着错."""
+    mislabeled = tmp_path / "photo.png"
+    mislabeled.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)
+    assert Base64Image.from_file(mislabeled).source["media_type"] == "image/jpeg"
+
+    png = tmp_path / "logo.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    assert Base64Image.from_file(png).source["media_type"] == "image/png"
 
 
 def test_message_baseline():
