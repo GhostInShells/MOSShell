@@ -248,19 +248,14 @@ def _deepseek_models() -> dict[str, ModelConfig]:
 
     Model names are literal (self-contained default — the workspace config is
     regenerable from these class defaults); only base_url/api_key use env refs.
-    ``deepseek-v4-flash`` is the provider default (the project's workhorse), so
-    it's not in the models dict (avoids duplication in ``list_models``). Only
-    the vision model accepts image.
+    ``deepseek-flash`` is the provider default (the project's workhorse), so
+    it's not in the models dict (avoids duplication in ``list_models``). Flash
+    and pro are both natively multimodal (text + image).
     """
     return {
         "deepseek-v4-pro": ModelConfig(
             model="deepseek-v4-pro",
-            description="DeepSeek V4 Pro — reasoning, text-only",
-            content_types=["text"],
-        ),
-        "deepseek-v4-flash-vision-exp": ModelConfig(
-            model="deepseek-v4-flash-vision-exp",
-            description="DeepSeek V4 Flash Vision (experimental) — text + image",
+            description="DeepSeek V4 Pro — reasoning, text + image",
             content_types=["text", "image"],
         ),
     }
@@ -277,10 +272,10 @@ class LLMConfig(ConfigType):
                 protocol='anthropic',
             ),
             default=ModelConfig(
-                model="deepseek-v4-flash",
-                description="DeepSeek V4 Flash — default fast model, text-only",
+                model="deepseek-flash",
+                description="DeepSeek Flash — default fast model, text + image",
                 tags={
-                    'small_fast_model': "deepseek-v4-flash",
+                    'small_fast_model': "deepseek-flash",
                 },
                 content_types=["text", "image"],
             ),
@@ -312,10 +307,10 @@ class LLMConfig(ConfigType):
                     protocol='openai',
                 ),
                 default=ModelConfig(
-                    model="deepseek-v4-flash",
-                    description="DeepSeek V4 Flash — default fast model, text-only (OpenAI protocol)",
+                    model="deepseek-flash",
+                    description="DeepSeek Flash — default fast model, text + image (OpenAI protocol)",
                     tags={
-                        'small_fast_model': "deepseek-v4-flash",
+                        'small_fast_model': "deepseek-flash",
                     },
                     content_types=["text", "image"],
                 ),
