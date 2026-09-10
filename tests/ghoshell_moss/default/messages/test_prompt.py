@@ -144,6 +144,28 @@ def test_message_from_file_unsupported_or_missing(tmp_path: Path):
     assert wrapped is not None and wrapped.meta.tag == "file"
 
 
+def test_message_from_file_sniffs_image_bytes_over_extension(tmp_path: Path):
+    """真图片按图片处理 — 扩展名缺失或撒谎时, 字节说了算."""
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+    (tmp_path / "photo").write_bytes(jpeg)      # 无扩展名: 曾按未知类型丢弃
+    (tmp_path / "shot.txt").write_bytes(jpeg)   # 文本扩展名: 曾被揉成垃圾文本块
+
+    for name in ("photo", "shot.txt"):
+        msg = message_from_file(name, base_dir=tmp_path)
+        assert msg is not None, name
+        content = msg.contents[0]
+        assert content["type"] == "image", name
+        assert content["source"]["media_type"] == "image/jpeg", name
+
+
+def test_message_from_file_meta_type_matches_sniffed_image(tmp_path: Path):
+    """expose_file_meta 的 type 属性与嗅探结果一致, 不与撒谎的扩展名打架."""
+    (tmp_path / "shot.txt").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+    msg = message_from_file("shot.txt", base_dir=tmp_path, expose_file_meta=True)
+    assert msg is not None
+    assert msg.meta.attributes["type"] == "image/jpeg"
+
+
 # ── conversion (moss Message → pydantic-ai parts) ──────────────────────
 
 

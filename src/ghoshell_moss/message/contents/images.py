@@ -8,7 +8,7 @@ from PIL import Image
 from typing_extensions import Self
 from ghoshell_moss.message.contents.abcd import ContentModel
 
-__all__ = ["Base64Image"]
+__all__ = ["Base64Image", "sniff_media_type"]
 
 
 class Base64ImageSourceParam(TypedDict, total=False):
@@ -31,7 +31,7 @@ _IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
 )
 
 
-def _sniff_media_type(data: bytes) -> Optional[str]:
+def sniff_media_type(data: bytes) -> Optional[str]:
     """从字节头识别图片格式; 不可识别返回 None (调用方退回扩展名猜测)."""
     for magic, media_type in _IMAGE_MAGIC:
         if data.startswith(magic):
@@ -100,7 +100,7 @@ class Base64Image(ContentModel):
         """从本地文件读取. media_type 取自字节头, 扩展名仅在字节不可识别时兜底."""
         path = pathlib.Path(file_path)
         data = path.read_bytes()
-        media_type = _sniff_media_type(data)
+        media_type = sniff_media_type(data)
         if media_type is None:
             media_type, _ = mimetypes.guess_type(path)
         if not media_type:

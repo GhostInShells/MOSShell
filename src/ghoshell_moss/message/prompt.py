@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 
 from ghoshell_moss.message import Base64Image, Content, Message, Text
+from ghoshell_moss.message.contents.images import sniff_media_type
 
 __all__ = ["message_from_prompt", "message_from_file"]
 
@@ -32,6 +33,14 @@ __all__ = ["message_from_prompt", "message_from_file"]
 _AT_REF_RE = re.compile(r"(?<!\S)@(?:\"([^\"\n]*)\"|'([^'\n]*)'|([^\s\"']+))")
 # trailing sentence punctuation / whitespace that should not belong to a path
 _TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?'\"()\[\]{}<>]+$")
+# 图片格式嗅探要读的字节数 — 覆盖最长 magic (RIFF....WEBP = 12B)。
+_HEADER_BYTES = 16
+
+
+def _read_header(path: Path) -> bytes:
+    """读文件头字节 — 判类型用字节, 不信任扩展名; 只读少量字节, 不把大文件吞进内存."""
+    with open(path, "rb") as f:
+        return f.read(_HEADER_BYTES)
 
 
 def message_from_prompt(
@@ -99,6 +108,12 @@ def message_from_file(
         return None
 
     media_type, _ = mimetypes.guess_type(str(p))
+    # 字节优先: 扩展名与内容不符时 (图片无扩展名 / 图片存成 .txt) 以真实格式为准, 否则
+    # 图片会被当成未知类型丢弃或被当成文本揉碎。只用于升格为图片 — 嗅探表只覆盖下游
+    # 支持的格式, 未命中的合法图片 (tiff 等) 仍按扩展名走。
+    sniffed = sniff_media_type(_read_header(p))
+    if sniffed is not None:
+        media_type = sniffed
     content = _file_content(p, media_type)
     if not expose_file_meta:
         if content is None:
