@@ -8,8 +8,15 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 屏蔽约定 (facade 的立身之本):
 - 入参屏蔽: 方法收 plain args, 不收 Session*Params; sessionId 由 facade 自动填充,
   调用方永远不用传。
-- 返回值不屏蔽: 直接返回 types/ 里已建的 pydantic value 模型 (SessionPromptValue 等),
-  不做二次封装。
+- 返回值不屏蔽: 原始动词方法直接返回 types/ 里已建的 pydantic value 模型 (SessionPromptValue
+  等), 不做二次封装。唯一例外是 run() — 它组合多帧产出 DshRunResult (对齐官方 SDK RunResult)。
+
+两个驱动层次 (对齐官方 dsh SDK 的 client.session_prompt / Session.run 分层):
+- 原始动词: prompt() / cancel() 是 dsh 原生动词的薄透传 (fire-and-return, 返回 accepted),
+  不阻塞在 turn 上。适合"发出去就不管"的异步驱动。
+- 单轮对话: run() 是组合出的阻塞单轮 (官方 SDK Session.run 的语义) — 发 prompt,
+  等本轮 turn/end, 返回 final_response + finish_reason + events。这是"可以 loop 它的关键"。
+  cancel() 是它对称的标准中断: 中断在跑的 turn, 使 pending run() 以 turn/end 结算。
 
 依赖方向 (不互绑, 防治理循环):
 - DshSession 只持有 DshClient(叶子) 与 sessionId, 不持有 launcher。
@@ -42,8 +49,9 @@ import asyncio
 import contextlib
 from collections import deque
 from collections.abc import Awaitable, Callable
-from typing import Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
+from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
@@ -56,9 +64,11 @@ from ghoshell_moss.deepseek_harness.types.session_events import (
     SessionEvent,
     SessionEventModel,
     TokenUsage,
+    TurnEnd,
+    TurnStart,
 )
 
-__all__ = ["DshSession"]
+__all__ = ["DshRunResult", "DshSession"]
 
 # 消费 task 连续处理 _YIELD_EVERY 帧后主动 sleep(0.0) 让出 loop, 防长队饿死其它任务.
 _YIELD_EVERY = 64
@@ -81,6 +91,38 @@ EventDispatcher = Callable[[SessionEvent], Awaitable[None]]
 # 不挑事件名 (全量观测面, 如 DoloresRun 的 _events 累积 + _last_seq 推进). 仅 raw 注册有意义;
 # on_session_event_model 绑定具体 model_cls.event_type(), 与通配无关.
 WILDCARD_EVENT = "*"
+
+
+class DshRunResult(BaseModel):
+    """一轮 run() 的结果 — 对齐官方 SDK 的 RunResult (单轮: prompt → turn 结束).
+
+    字段镜像官方 dsh Python SDK 的 ``RunResult`` (见 dsh 源码 python/sdk/.../api.py), 去掉
+    传输专属的 ``notifications`` / ``session_root``, 保留对 loop 有用的四元组。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    session_id: str = Field(default="")
+    final_response: str = Field(default="", description="本轮最后一条 assistant/message 的 text 块拼接.")
+    finish_reason: str = Field(default="", description="本轮 turn/end 的 data.reason.kind; 无 turn/end 时为空串.")
+    events: list[SessionEvent] = Field(default_factory=list, description="本轮 turn 区间内收集的原始事件.")
+
+
+def _normalize_content(content: list[sessions.PromptContentPart] | str) -> list[sessions.PromptContentPart]:
+    """str → ``[{type:text, text}]``, 与官方 SDK 的 normalize_input 同形; list 原样透传."""
+    if isinstance(content, str):
+        return [sessions.PromptContentPart(type="text", text=content)]
+    return list(content)
+
+
+def _final_response(events: list[SessionEvent]) -> str:
+    """取区间内最后一条 assistant/message 的 text 块拼接 (镜像官方 SDK final_response)."""
+    for event in reversed(events):
+        message = AssistantMessageEvent.from_session_event(event)
+        if message is None:
+            continue
+        return "".join(block.text or "" for block in message.message.content if block.type == "text")
+    return ""
 
 
 class DshSession:
@@ -122,6 +164,8 @@ class DshSession:
         self._on_exit_callbacks: list[ExitCallback] = []
         self._started = False
         self._closed = False
+        # 单轮驱动门控: 同一 session 同时只允许一个 run() 在飞 (对齐 ACP "one in-flight request per session").
+        self._run_active = False
 
     # ---- 生命周期 ---- #
 
@@ -193,8 +237,92 @@ class DshSession:
         return await self._client.call("session.prompt", params, sessions.SessionPromptValue)
 
     async def cancel(self) -> sessions.SessionCancelValue:
+        """标准中断: 停一个活跃 turn, 保留队尾工作 (dsh session.cancel, keepInbox).
+
+        使在跑的 :meth:`run` 以本轮 turn/end 结算 (reason 落到 interrupted/aborted)。
+        与 run() 对称 — fire-and-return 的中断动词, 不等 turn 停下来。
+        """
         params = sessions.SessionCancelParams(sessionId=self._session_id)
         return await self._client.call("session.cancel", params, sessions.SessionCancelValue)
+
+    async def run(
+        self,
+        content: list[sessions.PromptContentPart] | str,
+        *,
+        mode: str | Literal["queue", "steer"] = "queue",
+        client_timezone: str | None = None,
+        timeout: float | None = None,
+    ) -> DshRunResult:
+        """单轮对话 (阻塞) — 对齐官方 dsh SDK 的 ``Session.run``, 传输改走 web profile。
+
+        语义: 发 prompt → 等本轮 turn 结束 → 返回结果。这是 loop 一个 session 的基本原语:
+
+            for message in messages:
+                result = await session.run(message)
+
+        与 :meth:`prompt` 的分工: prompt 是 fire-and-return 的原生动词 (返回 accepted);
+        run 是组合出的阻塞单轮 (返回 final_response + finish_reason + events)。
+
+        实现口径 (对齐 SDK 的可见契约, 两处适配 MOSS 传输):
+        - 先挂 catch-all 收集器再发 prompt, 不丢本轮 ``turn/start``。
+        - SDK 用 ``agent/inbox/spliced`` 回执门控起点; apiproxy ``session.prompt`` 不回
+          messageId, 故改以**本轮第一个 turn/start** 为起点门控 (更强: 直接锚定 turn 号)。
+        - SDK 停在 whole-agent idle; 这里停在**本轮 turn/end** — 才能保证"只跑一轮",
+          不被队尾排队的工作拖住。
+        - ``final_response`` = 区间内最后一条 assistant/message 的 text; ``finish_reason`` =
+          该 turn/end 的 reason.kind。
+
+        ``cancel()`` 对称: 中断在跑的 turn, run 随即以 turn/end 结算 (reason 反映中断)。
+
+        :param content: prompt 内容 — str 自动包成单个 text 块, 或 ``PromptContentPart`` 列表。
+        :param mode: dsh 的 queue (独占下一 turn) / steer (下个 step 边界)。
+        :param timeout: 本轮等待上限 (秒); None = 一直等。超时抛 ``asyncio.TimeoutError``。
+        :raises RuntimeError: 已有 run() 在飞 (每 session 只允许一个 in-flight)。
+        """
+        if self._run_active:
+            raise RuntimeError(f"dsh session {self._session_id}: run() already in flight")
+        self._run_active = True
+        # 本轮状态: 起点 (turn 号) 由 turn/start 定; reason 由匹配 turn 的 turn/end 定。
+        # done 置位后不再收帧 — 消费循环可能在本任务醒来解绑前抢跑到队尾下一个 turn。
+        state: dict[str, Any] = {"turn": None, "reason": None, "events": [], "done": False}
+        turn_started = asyncio.Event()
+        turn_ended = asyncio.Event()
+
+        async def _collect(event: SessionEvent) -> None:
+            if state["done"]:
+                return
+            if state["turn"] is None:
+                start = TurnStart.from_session_event(event)
+                if start is None:
+                    return
+                state["turn"] = start.turn
+                turn_started.set()
+            state["events"].append(event)
+            end = TurnEnd.from_session_event(event)
+            if end is not None and end.turn == state["turn"]:
+                state["reason"] = end.reason
+                state["done"] = True
+                turn_ended.set()
+
+        remove = self.on_session_event(WILDCARD_EVENT, _collect)
+        try:
+            await self.prompt(content=_normalize_content(content), mode=mode, client_timezone=client_timezone)
+            if timeout is None:
+                await turn_started.wait()
+                await turn_ended.wait()
+            else:
+                await asyncio.wait_for(turn_started.wait(), timeout)
+                await asyncio.wait_for(turn_ended.wait(), timeout)
+        finally:
+            remove()
+            self._run_active = False
+        reason = state["reason"]
+        return DshRunResult(
+            session_id=self._session_id,
+            final_response=_final_response(state["events"]),
+            finish_reason=reason.kind if reason is not None else "",
+            events=state["events"],
+        )
 
     async def update_queue(
         self,

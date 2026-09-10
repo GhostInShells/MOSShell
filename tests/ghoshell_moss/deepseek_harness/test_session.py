@@ -24,6 +24,8 @@ from ghoshell_moss.deepseek_harness.types.session_events import (
     RequestHeader,
     SessionEvent,
     TokenUsage,
+    TurnEnd,
+    TurnEndReason,
     TurnStart,
 )
 
@@ -49,6 +51,7 @@ class _RpcClient:
         self._session_list_value = session_list_value
         self._plugin_values = plugin_values or {}
         self.calls: list[str] = []
+        self.prompt_params: list = []
         self.plugin_calls: list[tuple[str, dict]] = []
 
     async def call(self, method, params, value_cls):
@@ -59,6 +62,11 @@ class _RpcClient:
             return self._history_value
         if method == "session.list":
             return self._session_list_value
+        if method == "session.prompt":
+            self.prompt_params.append(params)
+            return sessions.SessionPromptValue(accepted=True)
+        if method == "session.cancel":
+            return sessions.SessionCancelValue(accepted=True)
         raise AssertionError(f"unexpected rpc {method}")
 
     async def plugin_call(self, path, payload=None):
@@ -92,6 +100,28 @@ def _session_added_frame(cwd: str, agent_preset: str, session_id: str = "s1") ->
         cwd=cwd,
         agentPreset=agent_preset,
     )
+
+
+def _turn_start_frame(turn: int, session_id: str = "s1") -> MuxFrame:
+    model = TurnStart(turn=turn)
+    model.meta.type = model.event_type()
+    return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
+
+
+def _turn_end_frame(turn: int, kind: str, session_id: str = "s1") -> MuxFrame:
+    model = TurnEnd(turn=turn, reason=TurnEndReason(kind=kind))
+    model.meta.type = model.event_type()
+    return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
+
+
+def _assistant_message_frame(text: str, turn: int = 1, session_id: str = "s1") -> MuxFrame:
+    model = AssistantMessageEvent(
+        turn=turn,
+        step=0,
+        message=Message(content=[ContentBlock(type="text", text=text)]),
+    )
+    model.meta.type = model.event_type()
+    return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
 
 
 async def _drain(session: DshSession) -> None:
@@ -398,3 +428,101 @@ async def test_cwd_and_preset_force_pull_session_list():
         # force 拉一次同时填充 cwd + agent_preset, 后者命中缓存.
         assert await session.agent_preset() == "standard"
         assert client.calls.count("session.list") == 1
+
+
+# ---- 单轮对话 (run) 与标准中断 (cancel) ---- #
+
+
+@pytest.mark.asyncio
+async def test_run_returns_single_turn_result():
+    """run() 阻塞到本轮 turn/end, 返回 final_response + finish_reason + 区间事件."""
+    client = _RpcClient()
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        task = asyncio.create_task(session.run("hi"))
+        await asyncio.sleep(0)  # 让 run() 挂上收集器并进入等待
+
+        session.accept_frame(_turn_start_frame(1))
+        session.accept_frame(_assistant_message_frame("hello"))
+        session.accept_frame(_turn_end_frame(1, "completed"))
+
+        result = await asyncio.wait_for(task, 1)
+
+    assert result.session_id == "s1"
+    assert result.final_response == "hello"
+    assert result.finish_reason == "completed"
+    # 区间事件 = 本轮 turn/start..turn/end (含端点).
+    assert [e.meta.type for e in result.events] == ["turn/start", "assistant/message", "turn/end"]
+    # str 入参被包成单个 text 块发给 session.prompt.
+    assert len(client.prompt_params) == 1
+    assert client.prompt_params[0].content[0].text == "hi"
+
+
+@pytest.mark.asyncio
+async def test_run_second_turn_is_isolated():
+    """连续两轮: 第二轮结果只反映第二轮, 收集器与在飞门控在 run 结束后已释放."""
+    client = _RpcClient()
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        first = asyncio.create_task(session.run("q1"))
+        await asyncio.sleep(0)
+        session.accept_frame(_turn_start_frame(1))
+        session.accept_frame(_assistant_message_frame("a1", turn=1))
+        session.accept_frame(_turn_end_frame(1, "completed"))
+        assert (await asyncio.wait_for(first, 1)).final_response == "a1"
+
+        second = asyncio.create_task(session.run("q2"))
+        await asyncio.sleep(0)
+        session.accept_frame(_turn_start_frame(2))
+        session.accept_frame(_assistant_message_frame("a2", turn=2))
+        session.accept_frame(_turn_end_frame(2, "completed"))
+        result = await asyncio.wait_for(second, 1)
+
+    assert result.final_response == "a2"
+    assert [e.meta.type for e in result.events] == ["turn/start", "assistant/message", "turn/end"]
+
+
+@pytest.mark.asyncio
+async def test_run_settles_on_cancel():
+    """cancel() 中断在跑的 turn → pending run 以 turn/end 结算, reason 反映中断."""
+    client = _RpcClient()
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        task = asyncio.create_task(session.run("hi"))
+        await asyncio.sleep(0)
+        session.accept_frame(_turn_start_frame(1))
+
+        await session.cancel()
+        session.accept_frame(_turn_end_frame(1, "interrupted"))
+
+        result = await asyncio.wait_for(task, 1)
+
+    assert result.finish_reason == "interrupted"
+    assert "session.cancel" in client.calls
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_concurrent_run():
+    """同一 session 同时只允许一个 run 在飞 (对齐 ACP one in-flight request)."""
+    client = _RpcClient()
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        task = asyncio.create_task(session.run("hi"))
+        await asyncio.sleep(0)
+        with pytest.raises(RuntimeError):
+            await session.run("again")
+
+        # 收尾第一轮, 避免悬挂.
+        session.accept_frame(_turn_start_frame(1))
+        session.accept_frame(_turn_end_frame(1, "completed"))
+        await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+async def test_cancel_calls_rpc_and_returns_value():
+    client = _RpcClient()
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        value = await session.cancel()
+    assert value.accepted is True
+    assert client.calls == ["session.cancel"]

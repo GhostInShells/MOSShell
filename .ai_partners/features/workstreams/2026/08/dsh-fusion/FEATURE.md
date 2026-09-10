@@ -8,9 +8,9 @@ description: 'dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组�
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10)。'
+status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade: run() 单轮对话 + cancel, 对齐官方 SDK Session.run, 经活 dsh 验证); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10); 单轮 run 落地见 research_2026-09-11。'
 title: DSH Fusion
-updated: '2026-09-10'
+updated: '2026-09-11'
 ---
 
 # DSH Fusion
@@ -82,7 +82,9 @@ research/ 调研轨迹。
      挂驱动动词(prompt/cancel/update-queue/select-model/history/fork/attachment)。
      `accept_frame` 喂帧(反转依赖, owner 注册), 按事件名分派到 `on_session_event*`;
      token 记账; `instruction()`/`surface_messages()` 经 plugin 路由 pull;
-     `when_{running,idle}` 等运行态镜像。
+     `when_{running,idle}` 等运行态镜像。**单轮驱动 `run()`**: 阻塞发 prompt → 等本轮
+     turn/end → 返回 `DshRunResult(final_response, finish_reason, events)`, 对齐官方 SDK
+     `Session.run`; `cancel()` 对称中断 (见 research_2026-09-11)——一个 session 可被 loop。
    - `types/refs.py` — `DshSessionRef`(坐标, 非快照): 定位一个 session 的 turn 区间
      (span)。`session_id` + `start_turn`/`end_turn`(turn 主坐标) + `start_seq`/`end_seq`
      (seq 派生, 缺省反查 `turn/start`·`turn/end` 的 `data.turn`); 自解释字段
@@ -145,6 +147,10 @@ research/ 调研轨迹。
     平台面(具体面)属 dsh-fusion, 通用 agent facade 独立成未来 feature。动词一致、
     数据面后行; 官方 `session.fork` 锁死三自由度(纯前缀 seed / 固定 setup / 强制
     attachSession), fork 须走 plugin 面。
+  - `research_2026-09-11_session_run_single_turn.md` — **单轮接口落点**: "官方 api 标准"
+    = 官方 SDK `Session.run`; `DshSession.run()` 组合出阻塞单轮 + `cancel()` 对称中断。
+    web 侧三处适配 (turn/start 取代 inbox 回执门控 / 停在 turn/end 而非 idle / 单飞门控),
+    并经活 dsh (127.0.0.1:3080) 验证正路与 cancel; 附带观察 `running` 镜像在飞时不可靠。
 - **当前可信 skill**(`research/skills/` 下, 自包含可复跑):
   - `plugin-api-session-event/` — 已验证:「dsh web 内置 `/api/events.mux` WS 下行 +
     plugin 注册 HTTP 回调」构成零依赖伪双工, ghost runtime 不开对外接口
