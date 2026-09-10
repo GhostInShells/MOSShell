@@ -282,7 +282,7 @@ class LLMConfig(ConfigType):
                 tags={
                     'small_fast_model': "deepseek-v4-flash",
                 },
-                content_types=["text"],
+                content_types=["text", "image"],
             ),
             models=_deepseek_models(),
         ),
@@ -317,7 +317,7 @@ class LLMConfig(ConfigType):
                     tags={
                         'small_fast_model': "deepseek-v4-flash",
                     },
-                    content_types=["text"],
+                    content_types=["text", "image"],
                 ),
                 models=_deepseek_models(),
             ),
