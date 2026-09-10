@@ -22,7 +22,8 @@ from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.audio.codec import _write_wav
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
 from ghoshell_moss.contracts.asr import ASR, RecognitionPhase
-from ghoshell_moss.contracts.audio import AudioCaptureSource
+from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource, resample
+from ghoshell_moss.contracts.configs import get_or_create_conf
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
 
@@ -53,15 +54,16 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
         print_error("ASR not registered — run `moss audio contracts` to check.")
         return None
 
+    if device is not None:
+        conf = get_or_create_conf(con, AudioCaptureConfig())
+        conf.device_pattern = device
+
     capture_source = con.get(AudioCaptureSource)
     if capture_source is None:
         print_error("AudioCaptureSource not registered")
         return None
 
     asr_info = asr.get_info()
-
-    if device is not None:
-        capture_source._config.device_pattern = device
 
     await capture_source.start()
 
@@ -70,8 +72,8 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
         await capture_source.close()
         return None
 
-    sample_rate = capture_source._config.sample_rate
-    channels = capture_source._config.channels
+    sample_rate = capture_source.sample_rate
+    channels = capture_source.channels
     target_rate = asr_info.sample_rate
 
     if not json_mode and not is_ai_mode():
@@ -85,14 +87,6 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
     audio_queue: asyncio.Queue = asyncio.Queue(maxsize=64)
     all_audio: list = []
 
-    def _resample(audio_data: np.ndarray, origin_rate: int, target_rate: int) -> np.ndarray:
-        if origin_rate == target_rate:
-            return audio_data
-        target_len = int(len(audio_data) * target_rate / origin_rate)
-        x_orig = np.arange(len(audio_data))
-        x_target = np.linspace(0, len(audio_data) - 1, target_len)
-        return np.interp(x_target, x_orig, audio_data).astype(np.int16)
-
     async def _bridge(consumer):
         try:
             async for chunk in consumer:
@@ -102,7 +96,7 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
                 if len(pcm) == 0:
                     continue
                 if sample_rate != target_rate:
-                    pcm = _resample(pcm, sample_rate, target_rate)
+                    pcm = resample(pcm, origin_rate=sample_rate, target_rate=target_rate)
                 await audio_queue.put(pcm)
         except asyncio.CancelledError:
             pass

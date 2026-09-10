@@ -18,7 +18,8 @@ from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.audio.codec import _fragments, _write_wav
 from ghoshell_moss.cli.audio.render import _render_spectrogram, _report_spectrogram
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
-from ghoshell_moss.contracts.audio import AudioCaptureSource
+from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
+from ghoshell_moss.contracts.configs import get_or_create_conf
 from ghoshell_moss.contracts.speech import PlaybackSample
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
@@ -46,13 +47,14 @@ async def _async_capture(matrix, *, seconds: float, save: Optional[Path], device
     """Capture audio from the default input device."""
     con = matrix.container
 
+    if device is not None:
+        conf = get_or_create_conf(con, AudioCaptureConfig())
+        conf.device_pattern = device
+
     capture_source = con.get(AudioCaptureSource)
     if capture_source is None:
         print_error("AudioCaptureSource not registered")
         return None
-
-    if device is not None:
-        capture_source._config.device_pattern = device
 
     await capture_source.start()
 
@@ -64,23 +66,22 @@ async def _async_capture(matrix, *, seconds: float, save: Optional[Path], device
     print_info(f"capturing {seconds}s from {capture_source.device_explain()}...")
 
     consumer = capture_source.new_sequential_consumer(max_queue_frames=256)
-    await consumer.start()
 
     all_audio: list = []
-    sample_rate = capture_source._config.sample_rate
-    channels = capture_source._config.channels
+    sample_rate = capture_source.sample_rate
+    channels = capture_source.channels
     interrupted = False
 
     try:
-        deadline = time.monotonic() + seconds
-        async for chunk in consumer:
-            all_audio.append(chunk.samples.copy())
-            if time.monotonic() >= deadline:
-                break
+        async with consumer:
+            deadline = time.monotonic() + seconds
+            async for chunk in consumer:
+                all_audio.append(chunk.samples.copy())
+                if time.monotonic() >= deadline:
+                    break
     except asyncio.CancelledError:
         interrupted = True
     finally:
-        await consumer.close()
         await capture_source.close()
 
     if not all_audio:

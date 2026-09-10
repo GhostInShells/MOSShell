@@ -128,7 +128,7 @@ class RecognitionStream(ABC):
 
     @abstractmethod
     def on_segment(self, callback: Callable[[RecognitionSegment], None]) -> None:
-        """注册回调, 每个分句切分时投递 audio 轴结果 (RecognitionSegment). """
+        """注册回调, 每个 tail 切分时投递 audio 轴结果 (RecognitionSegment). """
 
     @abstractmethod
     def commit(self) -> None:

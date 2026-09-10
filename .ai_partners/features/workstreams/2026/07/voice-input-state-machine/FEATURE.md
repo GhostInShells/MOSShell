@@ -1245,6 +1245,43 @@ RecognitionStream   1 条 WS 的连续识别会话（一次 recognize）
 - **弱网断连感知 + 重启（容错）**：真正的需要，本轮不做。当前已有「断连感知」的一半——`ConnectionClosed` → `TAIL + error` +
   `on_error` 回调，弱网断连至少不静默；「感知后重启 WS」defer。
 
+## 2026-09-11 会话决策 — Listener 契约定稿 + HostListener 实现 + 装线 hack 清理
+
+> 人类架构师 + deepseek-v4-flash。继 09-10 ASR 契约之后，定稿 Listener/ListenerState
+> 契约并实现 HostListener，清理 capture→ASR 装线里的 hack（私有 _config 直取 + 三份重复 resample）。
+
+### Listener 契约定稿（contracts/listener.py）
+
+- `Listener` = 缝合 capture + asr 的"耳朵"器官（对称 BaseTTSSpeech），持有两者生命周期；
+  `listen()` 产出一条 session，同一时刻至多一条（再次 listen 取消前一条）。
+- `ListenerState` = 独立 session 生命周期（对称 SpeechStream）：`async with state` 启动
+  后台 pump（consumer → resample → ASR recognition → 观察面 fan-out），`__aexit__` 优雅
+  收尾（shutdown consumer → 等最后尾包）。可重入（__aenter__/__aexit__ 幂等）。
+- 三个 `on_*` 两边都有：Listener 级自动装线到当前 session，State 级是 per-session 注册点。
+- 砍 `segments()`/`max_size`（无消费者滑动窗口）、`close_state`（冗余面）。
+- 实现 `HostListener`/`HostListenerState` 落在 `host/listener/listener.py`。
+
+### segment / turn / clause 三层语义对齐（e91fc810）
+
+- signal 层 `segment_index` → `clause_index`（索引分句，非 segment；segment = tail 界定的 turn）。
+- `turn_id` description 改指 asr 的 segment_id；`RecognitionSegment`/`RecognitionResult`
+  docstring 改 per-tail 语义，关联键 segment_id (即 id) + stream_id。
+- 装线映射：turn_id ← segment_id，clause_index ← 翻译器按 segment_id 计数。
+
+### 装线 hack 清理
+
+- `AudioCaptureSource` 补公开 `sample_rate`/`channels`；`resample` 抽到 `contracts/audio.py`
+  唯一实现，`BaseAudioStreamPlayer.resample` 委托，listener/CLI 共用（消三份重复）。
+- CLI 设备选择 hack 改正确做法：`get_or_create_conf` 读 config → 改 device_pattern →
+  `con.get` 实例化启动（先配置后实例化，不再事后 mutate `_config`）。
+- `cli/audio/capture.py` 的 `consumer.start()/close()` 旧 API → `async with consumer:`。
+
+### moss audio listen（下一轮）
+
+`once` = 监听第一个 TAIL 尾包即退出。四种 mode = mode → commit 触发映射（逻辑在 CLI，
+是 ListenController 的简化版）：once(云 VAD)/always(不 commit)/enter(回车 commit)/
+push-to-talk(按住聆听松开 commit，可 defer)。
+
 ---
 
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*

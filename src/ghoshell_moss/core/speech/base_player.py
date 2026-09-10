@@ -11,6 +11,7 @@ import numpy as np
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts.speech import AudioFormat, PlaybackSample, StreamAudioPlayer
+from ghoshell_moss.contracts.audio import resample as _resample
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.helpers import Timeleft
 
@@ -137,17 +138,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         target_rate: int,
     ) -> np.ndarray:
         """使用线性插值进行采样率转换。需要更好的重采样算法时覆写此方法。"""
-        if origin_rate == target_rate:
-            return audio_data
-        if not isinstance(audio_data, np.ndarray):
-            raise TypeError("audio_data must be numpy ndarray")
-        if origin_rate <= 0 or target_rate <= 0:
-            raise ValueError("sample rate must greater than 0")
-
-        target_len = int(len(audio_data) * target_rate / origin_rate)
-        x_orig = np.arange(len(audio_data))
-        x_target = np.linspace(0, len(audio_data) - 1, target_len)
-        return np.interp(x_target, x_orig, audio_data).astype(np.int16)
+        return _resample(audio_data, origin_rate=origin_rate, target_rate=target_rate)
 
     def add(
         self,

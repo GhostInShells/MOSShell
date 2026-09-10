@@ -19,7 +19,25 @@ __all__ = [
     "AudioCaptureSource",
     "AudioPullLatest",
     "AudioSequentialConsumer",
+    "resample",
 ]
+
+
+def resample(audio: np.ndarray, *, origin_rate: int, target_rate: int) -> np.ndarray:
+    """线性插值采样率转换. 同率时原样返回.
+
+    输入/输出双侧共用 (capture→ASR 与 TTS→player), 是 host 层的音频桥接工具.
+    """
+    if origin_rate == target_rate:
+        return audio
+    if not isinstance(audio, np.ndarray):
+        raise TypeError("audio must be numpy ndarray")
+    if origin_rate <= 0 or target_rate <= 0:
+        raise ValueError("sample rate must be greater than 0")
+    target_len = int(len(audio) * target_rate / origin_rate)
+    x_orig = np.arange(len(audio))
+    x_target = np.linspace(0, len(audio) - 1, target_len)
+    return np.interp(x_target, x_orig, audio).astype(np.int16)
 
 
 class AudioFrameMeta(BaseModel):
@@ -57,6 +75,16 @@ class AudioCaptureConfig(ConfigType):
 
 class AudioCaptureSource(ABC):
     """Singleton capture source. Owns the microphone, publishes PCM to Zenoh."""
+
+    @property
+    @abstractmethod
+    def sample_rate(self) -> int:
+        """产出音频的采样率 — 消费者据此对齐/重采样."""
+
+    @property
+    @abstractmethod
+    def channels(self) -> int:
+        """产出音频的通道数."""
 
     @abstractmethod
     async def start(self) -> None: ...

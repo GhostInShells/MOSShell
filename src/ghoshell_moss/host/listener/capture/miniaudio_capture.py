@@ -105,6 +105,14 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._started = False
         self._closing = False
 
+    @property
+    def sample_rate(self) -> int:
+        return self._config.sample_rate
+
+    @property
+    def channels(self) -> int:
+        return self._config.channels
+
     # -- lifecycle --
 
     async def start(self) -> None:
