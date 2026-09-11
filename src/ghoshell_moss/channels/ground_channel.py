@@ -1,4 +1,4 @@
-"""Ground channel — 认知场的运行时落点 | 集成 | beta
+"""把 GROUND.md 认知场反射成 Channel 命令集与子 channel 树 | 集成 | beta
 
 Ground 是 Ghost 的目录级认知场: 一个被 GROUND.md 标记的目录就是场
 (frontmatter 身份 + body 法 + pins 注视). 本 channel 持有 GroundSet, root 场与
@@ -284,7 +284,9 @@ def new_ground_channel(
     :param workspace_root: 相对路径解析基点. None = cwd.
     :param open_on_start: 启动时额外 open 的场目录列表 (子场声明之外).
     :param render_root: 是否把 root 场的帧渲染进本 channel 的 notice. 默认 False —
-        root 的 body 上行到 ghost instruction, 不在这里重复.
+        root 的 body 走 ghost 级 instruction (组装 system prompt 时注入). channel 的
+        instruction/notice 都经 facade, 在 shell epoch 重供, 晚于 system prompt 组装;
+        root 是身份性内容, 必须在最初的上下文里出现.
     :param instruction: 覆盖默认 instruction (None = 机制 prose).
     :param edit: 编辑模式的初始开关. True = pin_*/spec/validate/templates 默认展开,
         False = 折叠 (edit 命令运行时切换).

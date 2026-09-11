@@ -5,7 +5,7 @@ Ground 一句话承诺: "在 context 表面钉住一组注视目标, 每帧重�
 结构:
 1. GroundSet — 容器. open/close 多个 Ground, CTML 接触面
 2. Ground   — 一个打开的场. 绑定目录 root, 持有 pin 集, 承担 frame 渲染
-3. Pin      — 一枚注视声明. 具体子类携带 verb + typed arguments (K55 envelope)
+3. Pin      — 一枚注视声明. 具体子类携带 verb + typed arguments
 
 不承担: 子进程执行 / 周期性 fold / 持久记忆 — 各自由独立 contract 负责.
 
@@ -61,7 +61,7 @@ _PIN_LABEL_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{0,%d}$" % PIN_LABEL_MAX_LEN
 class GroundConvention(BaseModel):
     """L0 frontmatter — 场的身份声明 + pins 清单 + 场级 ignore 规则.
 
-    K56: frontmatter 是 MOSS 唯一的机器发明域. pins 作为机器声明的注视
+    frontmatter 是 MOSS 唯一的机器发明域. pins 作为机器声明的注视
     列表驻留在 frontmatter 中, body 保持纯粹的人/模型叙事域.
     未知 key 保留不拒 (extra="allow").
 
@@ -91,7 +91,7 @@ class GroundConvention(BaseModel):
     model_config = {"extra": "allow"}
 
 
-# -- pin: verb arguments models (K55) ----------------------------------------
+# -- pin: verb arguments models -----------------------------------------------
 
 
 class FileArguments(BaseModel):
@@ -221,7 +221,7 @@ def _register(verb: str):
 class Pin(BaseModel, ABC):
     """pin 基类 — 场里的一枚注视声明.
 
-    K55 envelope: {label, verb, arguments, description}.  具体子类携带
+    固定 envelope: {label, verb, arguments, description}.  具体子类携带
     typed arguments — verb 是 Literal discriminator, arguments 是多态载体.
     """
 
@@ -446,7 +446,7 @@ class Ground(ABC):
 
     @abstractmethod
     async def load(self) -> None:
-        """从 GROUND.md 恢复 pin 集 + body. 无 L0 文件 = 空集. K14 startup 消费."""
+        """从 GROUND.md 恢复 pin 集 + body. 无 L0 文件 = 空集."""
 
     @abstractmethod
     async def sediment(self) -> None:
@@ -499,8 +499,8 @@ class GroundSet(ABC):
 
         - dir: 场根目录 (pin 锚点). 相对路径按 workspace_root 解析.
         - label: 本 GroundSet 内唯一标识. None = dir basename, 冲突加 -2/-3.
-        - doc: 显式 GROU.md 路径 (法锚点). None = dir/GROUND.md.
-          doc ≠ dir/GROUND.md 时, law anchor 与 pin anchor 解耦 (K35 携带/属地).
+        - doc: 显式 GROUND.md 路径 (法锚点). None = dir/GROUND.md.
+          doc ≠ dir/GROUND.md 时, law anchor 与 pin anchor 解耦 — 法随 doc, pin 随 dir.
         - template: .grounds/ 中的模板名. 指定时用模板的 body + pins 初始化
           Ground. 模板内容复制, 非引用.
         - override: template 定义全权接管 (body + pins), 忽略现有 GROUND.md

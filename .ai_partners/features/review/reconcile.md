@@ -66,6 +66,13 @@ with the reasoning in view.
 6. **The test illusion.** Tests that probe the interpreter / compiler rather than
    behavior or boundaries, then "20 pass / 30 pass" as proof. Or code built by stacking
    shit-mountains.
+7. **Feature note leaked into the abstraction layer — FATAL.** FEATURE.md material —
+   decision numbers, workstream names, feature titles, "see FEATURE.md" — copied into
+   the facade / interface surface: reflected docstrings, contract fields, channel
+   instructions and command docs. A consumer of that surface then needs the feature
+   file, which freezes when its cycle ends: a dangling pointer, a standing debt.
+   Implementation-layer comments are not the target — the abstraction must explain
+   itself; a private module's notes only need to be true.
 
 ## How to work
 
