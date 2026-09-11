@@ -5,3 +5,4 @@ audio_player.*
 audio_capture.*
 mcp_hub.*
 tts_factory.*
+seed_asr_config.*

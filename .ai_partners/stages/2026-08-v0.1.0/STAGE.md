@@ -218,6 +218,7 @@ Operational log in milestones/:
 - [2026-08-10 — Mailbox real-machine bridge](milestones/2026-08-10-mailbox-first-real-machine-bridge.md) — external agent ↔ echo ghost cross-host dialog via MCP mailbox
 - [2026-08-28 — Dolores dsh real-machine bridge](milestones/2026-08-28-dolores-dsh-wiring-first-bridge.md) — MOSS drives dsh as inference core; external wake chain verified
 - [2026-09-05 — First smooth on-platform round](milestones/2026-09-05-dolores-first-smooth-moss-round.md) — first fully fluent human⇄model⇄Dolores round on MOSS; captured live Markdown-escape-hatch defect
+- [2026-09-12 — Voice conversation with Dolores](milestones/2026-09-12-voice-input-seedasr-voice-conversation.md) — volcengine ASR rewritten as seedasr (豆包2.0); talked to Dolores via voice again (rewrite, not first-time)
 
 ## Retrospective
 

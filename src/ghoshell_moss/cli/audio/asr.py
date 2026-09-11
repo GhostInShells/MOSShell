@@ -21,10 +21,11 @@ import typer
 from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.audio.codec import _write_wav
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
-from ghoshell_moss.contracts.asr import ASR, RecognitionPhase
+from ghoshell_moss.contracts.asr import RecognitionPhase
 from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource, resample
 from ghoshell_moss.contracts.configs import get_or_create_conf
 from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
 
 
 @audio_app.command("asr")
@@ -48,11 +49,9 @@ def asr_cmd(
 
 async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Optional[str], json_mode: bool):
     con = matrix.container
+    conf = get_or_create_conf(con, VolcengineSaucConfig())
 
-    asr = con.get(ASR)
-    if asr is None:
-        print_error("ASR not registered — run `moss audio contracts` to check.")
-        return None
+    asr = VolcengineSaucASR(config=conf, logger=matrix.logger)
 
     if device is not None:
         conf = get_or_create_conf(con, AudioCaptureConfig())

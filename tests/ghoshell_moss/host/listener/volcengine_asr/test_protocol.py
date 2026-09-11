@@ -70,3 +70,37 @@ class TestProtocol:
         resp = parse_response(data)
         assert resp.message_type.value == "server_error"
         assert resp.error_code == 1234
+
+    def test_parse_full_server_response_last_package_without_sequence(self):
+        # 无序号尾包 (flags=0b0010): header 后无 sequence 字段, 直接 payload_size.
+        header = _Protocol.get_header(
+            _Protocol.FULL_SERVER_RESPONSE,
+            _Protocol.NEG_SEQUENCE,
+            _Protocol.JSON,
+            _Protocol.GZIP,
+        )
+        payload = _Protocol.gzip_compress(b'{"result":{"text":"hello"}}')
+        size = _Protocol.int_to_bytes(len(payload))
+        data = header + size + payload
+        resp = parse_response(data)
+        assert resp.message_type.value == "full_server_response"
+        assert resp.is_last is True
+        assert resp.payload == '{"result":{"text":"hello"}}'
+
+    def test_parse_full_server_response_last_package_with_negative_sequence(self):
+        # 带序号尾包 (flags=0b0011): header 后带负序号 sequence.
+        header = _Protocol.get_header(
+            _Protocol.FULL_SERVER_RESPONSE,
+            _Protocol.NEG_WITH_SEQUENCE,
+            _Protocol.JSON,
+            _Protocol.GZIP,
+        )
+        seq = _Protocol.int_to_bytes(-5)
+        payload = _Protocol.gzip_compress(b'{"result":{"text":"hello"}}')
+        size = _Protocol.int_to_bytes(len(payload))
+        data = header + seq + size + payload
+        resp = parse_response(data)
+        assert resp.message_type.value == "full_server_response"
+        assert resp.is_last is True
+        assert resp.sequence == -5
+        assert resp.payload == '{"result":{"text":"hello"}}'

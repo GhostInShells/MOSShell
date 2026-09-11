@@ -17,6 +17,7 @@ from ghoshell_moss.core.mindflow import (
     SilentNucleusMeta,
     InputNucleusMeta,
     CellEventNucleusMeta,
+    ListenerNucleusMeta,
 )
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     'command_nucleus',
     'silent_nucleus',
     'cell_event_nucleus',
+    'listener_nucleus',
 ]
 
 # input (用户消息)
@@ -45,3 +47,5 @@ silent_nucleus = SilentNucleusMeta()
 
 # cell_event (cell 生命周期 background hint)
 cell_event_nucleus = CellEventNucleusMeta()
+
+listener_nucleus = ListenerNucleusMeta()

@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import json
 import logging
 from typing import AsyncIterable, Callable, Optional
 
@@ -23,6 +22,7 @@ from .protocol import (
     ResponseMessageType,
     connect,
     nparray_to_bytes,
+    parse_payload,
     parse_response,
     send_audio,
     send_init_request,
@@ -35,13 +35,13 @@ _RECV_TIMEOUT = 1.0
 
 
 class VolcengineASR(ASR):
-    """火山引擎大模型 ASR 实现。recognize() 返回一条连续识别 stream, 每 stream 一条 WS."""
+    """火山引擎大模型 ASR 实现。recognize() 返回一条连续识别 stream。"""
 
     def __init__(
-        self,
-        config: VolcengineASRConfig,
-        *,
-        logger: Optional[LoggerItf] = None,
+            self,
+            config: VolcengineASRConfig,
+            *,
+            logger: Optional[LoggerItf] = None,
     ):
         self._config = config
         self._logger = logger or logging.getLogger("moss")
@@ -67,10 +67,10 @@ class VolcengineASR(ASR):
         self._error_callback = callback
 
     def recognize(
-        self,
-        audio_chunks: AsyncIterable[np.ndarray],
-        *,
-        stream_id: str | None = None,
+            self,
+            audio_chunks: AsyncIterable[np.ndarray],
+            *,
+            stream_id: str | None = None,
     ) -> RecognitionStream:
         if self._closed:
             raise RuntimeError("ASR is closed")
@@ -95,21 +95,25 @@ class VolcengineASR(ASR):
 
 
 class _VolcengineRecognitionStream(RecognitionStream):
-    """一条连续识别 stream: 音频流 → partial/clause/tail 结果流.
+    """一条 WS 连接 = 多个 segment (turn)。
 
-    1 stream = n segment. commit() 发负序号讯号 (切一段, WS 不关), 音频断 = 最后一次
-    commit, 拿到尾包后自然结束. 懒开: WS 在首次 __anext__ 时建立.
+    volcengine bigmodel 是「一条 WS 连接支持多个解析流」: 每个 segment 用一次
+    ``send_init(uid=segment_id)`` 开局, 之后喂音频; 段的结束 (tail) 有两个来源:
+      - ``definite=true`` —— 服务端对 VAD 判停的响应 (一句稳定);
+      - ``is_last=true``  —— 服务端对我们 last 包的响应 (commit / 音频断)。
+    两者都是 segment 尾包: 收到即切段、递增 segment_id、重新 init 下一段。
+    音频输入断 → 最后一次 last 包 → 切最后一段 → 自然结束。
     """
 
     def __init__(
-        self,
-        *,
-        config: VolcengineASRConfig,
-        audio_chunks: AsyncIterable[np.ndarray],
-        stream_id: str | None,
-        logger: LoggerItf,
-        log_prefix: str,
-        error_callback: Callable[[Exception], None] | None,
+            self,
+            *,
+            config: VolcengineASRConfig,
+            audio_chunks: AsyncIterable[np.ndarray],
+            stream_id: str | None,
+            logger: LoggerItf,
+            log_prefix: str,
+            error_callback: Callable[[Exception], None] | None,
     ):
         self._config = config
         self._audio_chunks = audio_chunks
@@ -124,6 +128,8 @@ class _VolcengineRecognitionStream(RecognitionStream):
         self._started = False
         self._session_task: asyncio.Task | None = None
         self._commit_event = asyncio.Event()
+        # receive 侧切段后置位, send 侧据此重发 init 开局下一段.
+        self._reinit_event = asyncio.Event()
         self._input_done = False
         self._on_segment_callback: Callable[[RecognitionSegment], None] | None = None
 
@@ -133,6 +139,8 @@ class _VolcengineRecognitionStream(RecognitionStream):
         self._total_samples = 0
         self._buffer_offset_ms = 0
 
+        # 整个 WS 内已吐出的 definite 句数 (不随切段清零 — 服务端 utterances 是累积的,
+        # re-init 后会把已判停的 definite 再吐一遍, 靠这个计数去重).
         self._emitted_clauses = 0
         self._final_text = ""
 
@@ -168,7 +176,8 @@ class _VolcengineRecognitionStream(RecognitionStream):
     async def _run_session(self) -> None:
         try:
             async with await connect(self._config, self._connection_id) as ws:
-                await send_init_request(ws, self._config, self._connection_id)
+                # 第一段: init 的 uid 即 segment_id.
+                await send_init_request(ws, self._config, self._segment_id)
                 send_task = asyncio.create_task(self._send_loop(ws))
                 receive_task = asyncio.create_task(self._receive_loop(ws))
                 await receive_task
@@ -189,18 +198,22 @@ class _VolcengineRecognitionStream(RecognitionStream):
         seq = 1
         try:
             async for audio in self._audio_chunks:
+                # 切段后重开一段: 必须先发 init, 再喂本段音频.
+                if self._reinit_event.is_set():
+                    self._reinit_event.clear()
+                    await send_init_request(ws, self._config, self._segment_id)
                 arr = np.asarray(audio).ravel()
                 self._current_audio.append(arr)
                 self._total_samples += arr.size
                 await send_audio(ws, nparray_to_bytes(arr), seq, is_last=False)
                 seq += 1
+                # commit 讯号: 通知云端出尾包 (负序号), 切当前段.
                 if self._commit_event.is_set():
                     self._commit_event.clear()
-                    # commit 讯号: 负序号切一段, WS 不关, 继续喂下一段.
                     await send_audio(ws, b"", seq, is_last=True)
                     seq += 1
 
-            # 音频流结束: 最后一次 commit.
+            # 音频流结束: 最后一次 last 包.
             await send_audio(ws, b"", seq, is_last=True)
         except asyncio.CancelledError:
             raise
@@ -246,16 +259,23 @@ class _VolcengineRecognitionStream(RecognitionStream):
 
                 elif response.message_type == ResponseMessageType.full_server_response:
                     if response.is_last:
+                        # 我们对 last 包的响应: 尾包切段.
                         self._final_text = self._extract_text(response.payload)
                         self._segment_text = self._final_text
                         await self._queue.put(self._tail_result(text=self._final_text))
                         self._cut_segment()
                         if self._input_done:
                             break
-                        # 否则: commit 尾包, 切段后继续收下一段.
+                        self._reinit_event.set()
                     else:
-                        for chunk in self._parse_utterances(response.payload):
+                        chunks, cut = self._parse_utterances(response.payload)
+                        for chunk in chunks:
                             await self._queue.put(chunk)
+                        if cut:
+                            # VAD 判停 (definite): 句稳定 → 切段 → 重开一段.
+                            # 只发 CLAUSE, 不发 TAIL — 否则分句响应瞬间被尾包打断.
+                            self._cut_segment()
+                            self._reinit_event.set()
 
         except asyncio.CancelledError:
             raise
@@ -266,44 +286,47 @@ class _VolcengineRecognitionStream(RecognitionStream):
 
     def _extract_text(self, payload: str) -> str:
         try:
-            data = json.loads(payload)
-            return data.get("result", {}).get("text", "")
+            return parse_payload(payload).result.text
         except Exception:
             return ""
 
-    def _parse_utterances(self, payload: str) -> list[RecognitionResult]:
-        """非尾包响应 → 逐分句吐 clause, 末尾未 definite 的吐 partial. 不切 segment."""
+    def _parse_utterances(self, payload: str) -> tuple[list[RecognitionResult], bool]:
+        """非 last 包响应 → 逐分句吐 clause, 末尾未 definite 的吐 partial.
+
+        返回 ``(chunks, cut)``: ``cut=True`` 表示出现了新的 definite (VAD 判停),
+        调用方据此切段并重新 init。
+        """
         try:
-            data = json.loads(payload)
-            result = data.get("result", {})
-            text = result.get("text", "")
+            body = parse_payload(payload)
+            result = body.result
+            text = result.text
             self._final_text = text
-            # 更新式: result.text 是全文 replace, 分句会校正之前的误识别 — 直接覆盖, 不 append.
+            # 更新式: result.text 是全文 replace (非 delta), 直接覆盖.
             self._segment_text = text
-            utterances = result.get("utterances", [])
             chunks: list[RecognitionResult] = []
 
-            definite = [u for u in utterances if u.get("definite")]
+            definite = [u for u in result.utterances if u.definite]
             new = definite[self._emitted_clauses:]
             self._emitted_clauses = len(definite)
+            cut = len(new) > 0
             for u in new:
                 chunks.append(RecognitionResult(
                     stream_id=self._stream_id,
                     segment_id=self._segment_id,
                     phase=RecognitionPhase.CLAUSE,
-                    text=u.get("text", ""),
-                    start_ms=u.get("start_time", 0),
-                    end_ms=u.get("end_time", 0),
+                    text=u.text,
+                    start_ms=u.start_time,
+                    end_ms=u.end_time,
                 ))
 
-            if utterances and not utterances[-1].get("definite"):
+            if result.utterances and not result.utterances[-1].definite:
                 chunks.append(RecognitionResult(
                     stream_id=self._stream_id,
                     segment_id=self._segment_id,
                     phase=RecognitionPhase.PARTIAL,
                     text=text,
                 ))
-            return chunks
+            return chunks, cut
         except Exception as e:
             self._logger.warning(
                 "%s failed to parse result: %s, payload=%s",
@@ -311,7 +334,7 @@ class _VolcengineRecognitionStream(RecognitionStream):
                 e,
                 payload[:200],
             )
-            return []
+            return [], False
 
     # ── segment 切分 (每 tail 一次: 整段 audio + 累积 text 带走, segment_id 递增) ──
 

@@ -1,58 +1,39 @@
-"""MOSS node cell entry point.
+"""signal_receiver — 订阅 session signal 总线, drain 打印每条 signal 的完整 JSON.
 
-Start:  moss nodes run <path-to-this-dir>    # via CLI (foreground, CLI is owner)
-Debug:  python main.py                        # ad-hoc launch (from_proc identity)
+不带 channel: 直接订阅 ``matrix.session.on_signal`` (跨进程经 zenoh), 回调在订阅
+线程上触发, 经 janus 转进 asyncio 后 drain 打印. 每条 signal 打印一次完整 JSON.
 
-Explore:
-    moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest
-    moss codex blueprint channel_builder
-    moss codex blueprint matrix
-    moss ctml read
+Start:  moss nodes run .moss/system_test_nodes/signal_receiver/
 """
 
+import asyncio
+
 from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.core.blueprint.mindflow import Signal
 
 
 async def main(matrix: Matrix):
     import janus
-    import asyncio
-    from ghoshell_moss.core.blueprint.channel_builder import new_channel
-    from ghoshell_moss.core.blueprint.mindflow import Signal
-
-    chan = new_channel(
-        name="signal_receiver",
-        description="Receive signals from session bus via janus queue",
-    )
 
     _queue: janus.Queue[Signal] = janus.Queue(maxsize=200)
-    _received: list[str] = []
 
-    def _on_signal(signal: Signal):
+    def _on_signal(signal: Signal) -> None:
         _queue.sync_q.put(signal)
 
-    async def _consume():
+    async def _drain() -> None:
         while True:
             signal = await _queue.async_q.get()
-            desc = signal.description or "(no desc)"
-            msgs = [m.to_content_string() for m in (signal.messages or [])]
-            body = " ".join(msgs) if msgs else "(no body)"
-            line = f"[{desc}] {body}"
-            print(line)
-            _received.append(line)
+            print(signal.to_json(), flush=True)
 
-    @chan.build.startup
-    async def _start():
-        matrix.session.on_signal(_on_signal)
-        asyncio.create_task(_consume())
+    matrix.session.on_signal(_on_signal)
+    asyncio.create_task(_drain())
+    matrix.logger.info("[signal_receiver] draining session signal bus, Ctrl-C to stop")
 
-    @chan.build.command(always_observe=True)
-    async def received(limit: int = 10) -> str:
-        """Show recently received signals."""
-        if not _received:
-            return "[signal_receiver] no signals yet"
-        return "\n".join(_received[-limit:])
-
-    await matrix.provide_channel(chan)
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

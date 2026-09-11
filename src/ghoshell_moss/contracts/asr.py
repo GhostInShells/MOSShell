@@ -1,12 +1,14 @@
 """
 ASR contracts — audio speech recognition abstractions.
 
-ASR is the ear: raw audio → text stream. Kept separate from speech (the mouth)
+ASR is the ear: raw audio -> text stream. Kept separate from speech (the mouth)
 to avoid cross-infection in the contract layer.
 
-自解释面 (镜像 TTSInfo): get_info() 暴露音频输入契约 (sample_rate/bits/channel)
-+ 可调行为参数的 json schema 与当前值; configure() 设置行为参数, 作用于下一次
-recognize(). 模型身份由工厂/provider 在创建时固定, 不属于运行时自解释面.
+Self-describing surface (mirrors TTSInfo): get_info() exposes the audio input
+contract (sample_rate/bits/channel) plus the JSON schema and current values of the
+tunable behavior params; configure() sets those params for the next recognize().
+Model identity is fixed at creation by the factory/provider — it is not part of the
+runtime self-describing surface.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -27,14 +29,16 @@ __all__ = [
 
 
 class RecognitionPhase(str, Enum):
-    """识别结果的三层相位 — 对齐火山引擎的响应语义.
+    """Three result phases of a recognition stream — aligned with volcengine response semantics.
 
-    - PARTIAL: 中间结果 (utterance definite=false), 边说话边出字.
-    - CLAUSE:   稳定分句 (utterance definite=true).
-    - TAIL:     尾包 (帧级 is_last_package=true), commit / 音频断 后.
+    - PARTIAL: intermediate result (utterance ``definite=false``), emitted while speaking.
+    - CLAUSE:   stable sentence (utterance ``definite=true``).
+    - TAIL:     segment tail (frame-level ``is_last_package=true``) — marks the end of a
+                segment (one turn) and triggers a segment cut.
 
-    注意 ``definite`` 只标记"这一句稳定了", 不是流结束 — 流结束由帧级
-    ``is_last_package`` 承载 (对应 TAIL). 混淆两者会丢音频.
+    ``definite`` only marks "this sentence is stable", not the end of the stream. A
+    stream holds many segments, each ending with its own TAIL. Stream end is a
+    separate fact (the audio input is exhausted), not a TAIL.
     """
 
     PARTIAL = "partial"
@@ -44,10 +48,12 @@ class RecognitionPhase(str, Enum):
 
 @dataclass
 class RecognitionResult:
-    """识别流在某个 phase 产出的一个完整结果 (text 轴).
+    """One result produced at a phase of the recognition stream (text axis).
 
-    平铺字段, 不做嵌套 — 分句结构就是 text + start_ms + end_ms 三个字段.
-    ``segment_id`` 关联同一 segment 的 RecognitionSegment (即其 ``id``).
+    ``text`` is the full accumulated text — consistent across phases, always
+    updating. ``clause_text`` carries the stable clause text (only meaningful for
+    CLAUSE phase). ``segment_id`` links to the RecognitionSegment of the same
+    segment (its ``id``).
     """
 
     stream_id: str
@@ -57,22 +63,29 @@ class RecognitionResult:
     start_ms: int = 0
     end_ms: int = 0
     error: str = ""
+    clause_text: str = ""
+
+    @property
+    def last_clause_text(self) -> str:
+        """最后一句分句的文本; 无分句时回退到全文."""
+        return self.clause_text or self.text
 
 
 @dataclass
 class RecognitionSegment:
-    """一个 segment (一次 turn) 的音频留档 (audio 轴).
+    """Audio archive of one segment (one turn) — the audio axis.
 
-    每个 tail 切一次 — ``text`` 是整段累积文本, ``audio`` 是整段累积音频.
-    ``start_ms``/``end_ms`` 是段的流相对时间戳; ``offset_ms`` 是 ``audio`` 起点的
-    流相对时间, 供 ``precise_cut`` 精确切片.
+    Cut once per tail — ``text`` is the accumulated text of the whole segment,
+    ``audio`` is the accumulated audio. ``start_ms``/``end_ms`` are stream-relative
+    timestamps of the segment; ``offset_ms`` is the stream-relative start of
+    ``audio``, used by ``precise_cut``.
 
-    与 RecognitionResult 通过 ``segment_id`` (即 ``id``) + ``stream_id`` 关联, 走
-    独立回调 (on_segment), 不混进 text 轴.
+    Linked to RecognitionResult via ``segment_id`` (its ``id``) + ``stream_id``,
+    delivered through a separate callback (``on_segment``), not mixed into the text axis.
     """
 
     id: str  # segment id
-    stream_id: str # stream id
+    stream_id: str  # stream id
     text: str = ""
     start_ms: int = 0
     end_ms: int = 0
@@ -83,7 +96,7 @@ class RecognitionSegment:
     offset_ms: int = 0
 
     def precise_cut(self) -> np.ndarray:
-        """按 start_ms/end_ms 把粗略切 audio 精确切片."""
+        """Slice the coarse-cut audio precisely by start_ms/end_ms."""
         sr = self.sample_rate or 1
         start = int((self.start_ms - self.offset_ms) * sr / 1000)
         end = int((self.end_ms - self.offset_ms) * sr / 1000)
@@ -93,32 +106,35 @@ class RecognitionSegment:
 
 
 class ASRInfo(BaseModel):
-    """ASR 运行时自解释信息 — 镜像 TTSInfo.
+    """Runtime self-describing info — mirrors TTSInfo.
 
-    模型先 get_info() 读: 音频输入契约 (sample_rate/bits/channel) + 可调行为
-    参数的 json schema 与当前值. 再 configure() 调行为旋钮, 作用于下一次
-    recognize(). 各实现暴露自己的 params BaseModel, 契约只背 schema 与当前值两个 dict.
+    The model reads get_info() first: the audio input contract (sample_rate/bits/channel)
+    plus the JSON schema and current values of the tunable behavior params. Then
+    configure() turns the behavior knobs for the next recognize(). Each implementation
+    exposes its own params BaseModel; the contract only carries the schema and current
+    values as dicts.
     """
 
-    sample_rate: int = Field(default=16000, description="识别期望的音频采样率")
-    bits: int = Field(default=16, description="位深")
-    channel: int = Field(default=1, description="通道数")
+    sample_rate: int = Field(default=16000, description="sample rate the ASR expects")
+    bits: int = Field(default=16, description="bit depth")
+    channel: int = Field(default=1, description="channel count")
 
     params_schema: dict = Field(default_factory=dict,
-                                description="可调行为参数的 json schema (各实现暴露自己的 BaseModel)")
-    params: dict = Field(default_factory=dict, description="当前行为参数值")
+                                description="json schema of tunable behavior params (each implementation exposes its own BaseModel)")
+    params: dict = Field(default_factory=dict, description="current behavior param values")
 
 
 class RecognitionStream(ABC):
-    """连续识别 loop — 一条连续音频流 → 一串 RecognitionResult.
+    """Continuous recognition loop — one audio stream -> a sequence of RecognitionResult.
 
-    1 stream = ( n segment = ( m result) )
+    1 stream = ( n segment = ( m result ) )
 
-    迭代到音频输入断时: 自动 commit → 执行到最后一帧拿 final → 吐 phase=TAIL →
-    loop 结束. 一个周期可以包含多个 CLAUSE 分句, 中间夹着 PARTIAL.
+    Each segment (one turn) ends with a TAIL, which triggers a segment cut. The stream
+    keeps running across segments until the audio input is exhausted; at that point a
+    final commit cuts the last segment and the loop ends naturally.
 
-    只允许进入一次 (__aiter__ 不可重入). 若音频提供方输入中断, recognition
-    loop 也自然终止 — ``is_input_done()`` 返回是否已停止.
+    Single entry only (``__aiter__`` is not re-entrant). ``is_input_done()`` reports
+    whether the audio input has stopped.
     """
 
     @property
@@ -128,19 +144,19 @@ class RecognitionStream(ABC):
 
     @abstractmethod
     def on_segment(self, callback: Callable[[RecognitionSegment], None]) -> None:
-        """注册回调, 每个 tail 切分时投递 audio 轴结果 (RecognitionSegment). """
+        """Register a callback invoked at each tail cut with the audio-axis result (RecognitionSegment)."""
 
     @abstractmethod
     def commit(self) -> None:
-        """提交当前状态, 尽快获得一个 TAIL (尾包) 切分. """
+        """Notify the cloud to produce a tail now — marks the end of the current segment. Does not close the stream."""
 
     @abstractmethod
     def is_input_done(self) -> bool:
-        """音频输入的循环是否已停止. """
+        """Whether the audio input loop has stopped."""
 
     @abstractmethod
     def __aiter__(self) -> "RecognitionStream":
-        """开启音频发送, 到音频流结束为止. 只允许进入一次."""
+        """Start sending audio; runs until the audio stream ends. Single entry only."""
 
     @abstractmethod
     async def __anext__(self) -> RecognitionResult:
@@ -148,23 +164,23 @@ class RecognitionStream(ABC):
 
 
 class ASR(ABC):
-    """Audio perception organ — ear. Symmetric to TTS (mouth).
+    """Audio perception organ — the ear. Symmetric to TTS (the mouth).
 
-    输入: 1-D int16 PCM 音频流 (调用方理解 ASRInfo 后传入重采样对齐的数据).
-    输出: 连续识别 loop (Recognition) — partial/clause/tail 三种相位的结果流.
+    Input: a 1-D int16 PCM audio stream (the caller resamples to match ASRInfo).
+    Output: a continuous recognition loop (RecognitionStream) of partial/clause/tail results.
     """
 
     @abstractmethod
     def get_info(self) -> ASRInfo:
-        """返回运行时自解释信息 — 音频契约 + 可调参数的 schema 与当前值."""
+        """Return runtime self-describing info — audio contract + schema/values of tunable params."""
 
     @abstractmethod
     def configure(self, params: dict) -> None:
-        """设置行为参数, 作用于下一次 recognize(). 校验与取值空间由各实现的 params BaseModel 定义."""
+        """Set behavior params for the next recognize(). Validation/domain lives in each impl's params BaseModel."""
 
     @abstractmethod
     def on_error(self, callback: Callable[[Exception], None]) -> None:
-        """运行时异常观测接口 — 连接断链等长程故障经此上报, 与逐结果的 error 字段正交."""
+        """Runtime error observation — long-running faults (e.g. connection drops) reported here, orthogonal to per-result error fields."""
 
     @abstractmethod
     def recognize(
@@ -173,7 +189,7 @@ class ASR(ABC):
             *,
             stream_id: str | None = None,
     ) -> RecognitionStream:
-        """开启一个连续识别 loop, 消费音频流, 返回 Recognition. """
+        """Start a continuous recognition loop consuming the audio stream; returns a RecognitionStream."""
 
     async def recognize_once(self, audio_chunks: AsyncIterable[np.ndarray]) -> str:
         """Recognize a complete audio stream, return the accumulated text. Default implementation."""

@@ -8,6 +8,7 @@ from typing import NamedTuple, Optional
 import numpy as np
 import websockets
 from ghoshell_common.helpers import uuid
+from pydantic import BaseModel, Field
 
 from .config import VolcengineASRConfig
 
@@ -166,9 +167,19 @@ def parse_response(data: bytes) -> Response:
     message_type_specific_flags = data[1] & 0x0F
     message_compression = data[2] & 0x0F
 
-    sequence = struct.unpack(">i", data[4:8])[0]
-    payload_size = struct.unpack(">I", data[8:12])[0]
-    payload = data[12:12 + payload_size] if len(data) >= 12 + payload_size else data[12:]
+    # 序列号字段是否存在于 header 之后由 bit0 (hasSeq) 决定. 无序号尾包 (0b0010) 时
+    # header 后直接是 payload_size; 固定偏移会把 gzip payload 前 4 字节当长度, 错位丢包.
+    has_sequence = bool(message_type_specific_flags & 0x01)
+    seq_size = 4 if has_sequence else 0
+    sequence = struct.unpack(">i", data[4:4 + seq_size])[0] if has_sequence else 0
+    size_offset = 4 + seq_size
+    payload_size = struct.unpack(">I", data[size_offset:size_offset + 4])[0]
+    payload_offset = size_offset + 4
+    payload = (
+        data[payload_offset:payload_offset + payload_size]
+        if len(data) >= payload_offset + payload_size
+        else data[payload_offset:]
+    )
 
     is_last_package = bool(message_type_specific_flags & 0x02)
 
@@ -213,3 +224,59 @@ def parse_response(data: bytes) -> Response:
             is_last=False,
             payload="unknown error",
         )
+
+
+# ── full_server_response 的 JSON payload 数据结构 ──
+# 发现路径: 火山引擎「大模型流式语音识别 API」— https://docs.volcengine.com/docs/6561/1354869?lang=zh
+# 实测抓包 (2026-09-12):
+#   {"audio_info":{"duration":11000},
+#    "result":{"additions":{"log_id":"..."},"text":"测试测试。",
+#              "utterances":[{"additions":{...},"definite":true,"end_time":2432,"start_time":0,
+#                             "text":"测试测试。","words":[{"end_time":1400,"start_time":1320,"text":"测试"},...]},
+#                            {"additions":{...},"definite":false,"end_time":-1,"start_time":-1,"text":""}]}}
+#
+# 关键语义:
+#   - result.text 是「全量 replace」(非 delta)，每帧都带完整文本。
+#   - utterances[] 里 definite=true 的那条 = VAD 判停后的一句稳定句 (句边界/tail)。
+#   - 末尾 definite=false、start_time=-1 的那条是空占位 (进行中)。
+#   - start_time/end_time 是流相对时间戳 (ms)；audio_info.duration 是已上传音频时长 (ms)。
+
+
+class AudioInfo(BaseModel):
+    """payload.audio_info — 已上传音频时长 (ms)。"""
+    duration: int = 0
+
+
+class Word(BaseModel):
+    """词级时间戳 (ms, 流相对)。"""
+    start_time: int = 0
+    end_time: int = 0
+    text: str = ""
+
+
+class Utterance(BaseModel):
+    """一条 utterance — 分句单元。definite=true 表示该句已稳定 (VAD 判停)。"""
+    additions: dict = Field(default_factory=dict)
+    definite: bool = False
+    start_time: int = 0
+    end_time: int = 0
+    text: str = ""
+    words: list[Word] = Field(default_factory=list)
+
+
+class Result(BaseModel):
+    """识别结果 — text 是全量 replace，utterances 是分句。"""
+    additions: dict = Field(default_factory=dict)
+    text: str = ""
+    utterances: list[Utterance] = Field(default_factory=list)
+
+
+class ResponsePayload(BaseModel):
+    """full_server_response 的 JSON payload 结构化模型。"""
+    audio_info: AudioInfo = Field(default_factory=AudioInfo)
+    result: Result = Field(default_factory=Result)
+
+
+def parse_payload(payload: str) -> ResponsePayload:
+    """把 full_server_response 的 JSON 字符串解析成结构化 ResponsePayload。"""
+    return ResponsePayload.model_validate_json(payload)

@@ -9,6 +9,7 @@
   - capture.py   — capture 协议: 音频聆听片段
   - echo.py      — capture(1) 音频片段 + playback(3) 播放完成样本的组合
   - asr.py       — capture 协议: 音频片段 + ASR 结果
+  - listen.py    — HostListener 多模式 (once/always/enter) + listener signal 广播
 
 共享基建:
   - render.py    — PlaybackSample 观测显示 (频谱/波形/实时帧渲染)
@@ -28,4 +29,4 @@ audio_app = typer.Typer(
     no_args_is_help=True,
 )
 
-from . import asr, capture, contracts, devices, echo, play, speak  # noqa: E402
+from . import asr, capture, contracts, devices, echo, listen, play, speak  # noqa: E402

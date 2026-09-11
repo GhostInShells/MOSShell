@@ -1,10 +1,10 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末.'
+status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末. 2026-09-12: 用 seedasr (豆包2.0) 重构 ASR 为 volcengine_sauc, moss audio listen -m once 实机跑通, 语音对话 Dolores 闭环, 详见文末.'
 priority: P0
 created: 2026-07-28
-updated: 2026-09-10
+updated: 2026-09-12
 depends:
   - audio-capture
   - node-migration
@@ -1281,6 +1281,33 @@ RecognitionStream   1 条 WS 的连续识别会话（一次 recognize）
 `once` = 监听第一个 TAIL 尾包即退出。四种 mode = mode → commit 触发映射（逻辑在 CLI，
 是 ListenController 的简化版）：once(云 VAD)/always(不 commit)/enter(回车 commit)/
 push-to-talk(按住聆听松开 commit，可 defer)。
+
+## 2026-09-12 会话决策 — seedasr 重构, 语音对话 Dolores
+
+> 人类架构师 + deepseek-v4-flash。用 seedasr（豆包 2.0 接口 bigmodel_async）
+> 重构 ASR，`moss audio listen -m once` 实机跑通，语音对话 Dolores 闭环。
+
+### 交付
+
+- 全新 `host/listener/volcengine_sauc/`（config / protocol / recognizer），按官方
+  SDK 对齐语义：
+  - 鉴权 `X-Api-Key` + `volc.seedasr.sauc.duration`（豆包 2.0）。
+  - 响应建模：header 三 flag（seq / is_last_package / event）+ PayloadMsg /
+    utterances / words，预留说话人/情绪/性别/年龄/语种/音量等可选槽位。
+  - 语义分层：`definite` = VAD 判停的分句；`is_last_package` = 流结束（端侧
+    commit 触发）。一条 WS = 一次说话（turn）。
+  - 请求序号 init=1、音频从 2 起递增。
+  - 热词/上下文 (corpus) 落在 `VolcengineSaucASR` 实例火山面，动态随下次
+    recognize 生效。
+- `RecognitionResult` 语义统一：`text` = 全文，`clause_text` + `last_clause_text`
+  承载分句。
+- `moss audio listen -m once` 实机：说一句 → commit → 切段 → 退出。
+
+### 下一步
+
+1. 删除旧实现 `host/listener/volcengine_asr/`（被 volcengine_sauc 取代）。
+2. 检查其它 CLI 命令可用（`moss audio asr` 等）。
+3. 类名/路径名手动改为 seedasr（由人类架构师执行）。
 
 ---
 

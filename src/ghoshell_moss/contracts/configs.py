@@ -18,6 +18,7 @@ __all__ = [
     'LocalConfigStore',
     'CONF_TYPE',
     'ConfigInstanceRegisterBootstrapper',
+    'get_or_create_conf', 'save_conf', 'get_conf',
 ]
 
 
