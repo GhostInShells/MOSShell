@@ -898,3 +898,51 @@ async def test_three_loop_cycles_20_rounds():
     assert world_aborted == 20
     assert moment_observed == 20
     assert moment_count == 40
+
+
+@pytest.mark.asyncio
+async def test_always_observe_drives_next_frame_across_epoch_rebuild():
+    """epoch 重建后 always_observe 仍驱动下一帧 (D25).
+
+    真实 runtime 路径: dolores ego 在每帧 thinking 起点访问 ``thinking.observer.epoch``
+    (``_ego.enter_thinking``), 懒创建 epoch → ``on_epoch_creating`` →
+    ``shell_trajectory.new_epoch``, 底层 tracer 被替换. 订阅必须跨重建存活, 否则
+    命令的 observe 信号丢失 → 下一帧不生成, 只能靠界面输入驱动 (D25).
+
+    协议契约: ``always_observe`` 命令置 need_observe → 驱动同 attention 第二帧,
+    与 epoch 是否重建无关.
+    """
+    suite = MindflowInShellTestSuite()
+
+    chan = new_channel(name="probe")
+
+    @chan.build.command(always_observe=True)
+    async def look() -> str:
+        return "seen"
+
+    suite.shell.main_channel.import_channels(chan)
+
+    frame_idx = 0
+
+    async def articulate(thinking: Thinking) -> None:
+        nonlocal frame_idx
+        art = thinking.articulator()
+        async with art:
+            # 首帧发 always_observe 命令; 次帧静默收线.
+            art.send_nowait("<probe:look/>" if frame_idx == 0 else "done")
+            frame_idx += 1
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async with suite:
+        # 模拟 dolores ego: 触碰 observer.epoch → epoch 重建 → tracer 被替换.
+        _ = suite.mindflow.moments.epoch
+
+        suite.add_signal(input_signal("hello"))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
+
+    assert suite.thinking_count == 2
+    assert not suite.exceptions

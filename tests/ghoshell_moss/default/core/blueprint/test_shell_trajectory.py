@@ -425,3 +425,40 @@ async def test_trajectory_when_need_observe_fires_on_task_done():
                 await i.wait_tasks(timeout=2)
 
             assert len(fired) > 0, "need_observe 事件应触发 when_need_observe 回调"
+
+
+@pytest.mark.asyncio
+async def test_trajectory_when_need_observe_survives_new_epoch():
+    """when_need_observe 订阅必须跨 epoch 重建存活.
+
+    真实运行时会重建 epoch: dolores ego 每帧 thinking 起点访问 observer.epoch
+    (懒创建) → moments.new_epoch → on_epoch_creating → trajectory.new_epoch。
+    new_epoch 会 close 旧 tracer 并换一个新实例; 订阅若绑在 tracer 实例上,
+    重建后通知链静默失效 (D25: observe=True 不驱动下一帧, 只能靠界面输入)。
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+    from ghoshell_moss.core.blueprint.channel_builder import new_channel
+
+    shell = new_ctml_shell("traj_need_observe_epoch")
+    chan = new_channel(name="chan")
+
+    @chan.build.command(always_observe=True)
+    async def hello() -> str:
+        return "world"
+
+    shell.main_channel.import_channels(chan)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            fired: list = []
+            trajectory.when_need_observe(fired.append)
+
+            # epoch 重建 — 底层 tracer 被替换.
+            trajectory.new_epoch()
+
+            async with shell.interpreter_in_ctx() as i:
+                i.feed("<chan:hello />")
+                i.commit()
+                await i.wait_tasks(timeout=2)
+
+            assert len(fired) > 0, "epoch 重建后 need_observe 订阅应仍然生效"

@@ -577,6 +577,8 @@ class MShellTrajectory:
         self._last_frame: ShellKeyFrame | None = None
         # epoch 起点的 metas 快照 — epoch_start_point 与首帧 diff 的同源基准.
         self._baseline_metas: dict[ChannelFullPath, ChannelMeta] = {}
+        # need_observe 订阅 — 归属轨迹生命周期, 不随 epoch 重建丢失.
+        self._need_observe_callbacks: set[Callable[[MShellEvent], None]] = set()
         self._started = False
         self._stopped = False
 
@@ -602,6 +604,8 @@ class MShellTrajectory:
         self._epoch_index += 1
         # create new tracer.
         self._tracer = MShellEventTracer(self.shell)
+        # 新 tracer 重新挂上轨迹级 dispatcher; 否则 need_observe 订阅在新 epoch 静默失效.
+        self._tracer.when_need_observe(self._dispatch_need_observe)
         self._baseline_metas = self.facade.channel_metas(available_only=True)
         self._last_frame: ShellKeyFrame = ShellKeyFrame(
             index=self._tracer.index,
@@ -625,8 +629,24 @@ class MShellTrajectory:
             self.new_epoch()
         return self.facade.render_full_facade(self._baseline_metas)
 
+    def _dispatch_need_observe(self, event: MShellEvent) -> None:
+        """转发 need_observe 事件到轨迹级订阅者.
+
+        tracer 是事件的触发点, 而 new_epoch 每次都会换一个新 tracer 实例; 所以新
+        tracer 只挂这一个稳定 dispatcher, 订阅集由轨迹持有, 跨 epoch 不丢.
+        """
+        for callback in self._need_observe_callbacks:
+            callback(event)
+
     def when_need_observe(self, callback: Callable[[MShellEvent], None]) -> Callable[[], None]:
-        return self._tracer.when_need_observe(callback)
+        """订阅 need_observe 事件 — 订阅归属轨迹生命周期, 跨 epoch 重建存活."""
+        self._need_observe_callbacks.add(callback)
+
+        def _disposer():
+            if callback in self._need_observe_callbacks:
+                self._need_observe_callbacks.discard(callback)
+
+        return _disposer
 
     def peek(self) -> ShellKeyFrame:
         """生成一个当前帧的快照. """
