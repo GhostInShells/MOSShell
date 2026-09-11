@@ -9,6 +9,17 @@
 > 关联：`ghost-prototype-dolores` FEATURE.md；全貌 → [dolores-memento-plan.md](dolores-memento-plan.md)；
 > 缺陷 → [dolores-todo.md](dolores-todo.md)。
 
+## 实现落地 (2026-09-12)
+
+> 已在 `dsh_plugin/moss-dolores-ghost-plugin.ts` 实现, 待 GUI 实机验证。
+
+- **A. pre-step 旁路分支** — `stepAgent.id !== doloresEgoSessionId` → 前置清理（折叠上一轮，见 B）+ `bypassTurns.set(id, turn)` + 降级（思考模式改 `low` + `sandbox/mode` 改 `read-only`）+ `next()` + `{kind:'enter', messages:[bypassInstruction(), ...decision.messages]}`。
+- **B. pre-step 前置折叠（清空表面）** — 下一轮 pre-step 时按 `bypassTurns` 折叠上一轮，用 replace op 把该 turn 的 surface 节点折叠成一条空 `user/message`（空 assistant/message 才是真零残迹，但 session invariant 要求 assistant/message 命名 open step，pre-step 时 openStep 仍为 null 不可用）。**弃用 `session/event` 后置清理**：它经 session carrier 的 scope 分发，plugin ctx 不在其 `emit` 上行链，收不到事件（实测不触发）。
+- **C. tools 全拒** — `agentCtx.tools.guard(exec => exec.agent.id !== doloresEgoSessionId ? reason : undefined)`，动态判定。
+- **preset 元数据** — `ensureEgoPreset` 额外写 `preset.yml`（name/description），picker 不再显示裸 id 或复用 standard 描述。
+- **删除** `notifySessionFrozen` + `session/frozen`（原「冻结」被旁路取代，D29 零件事）。
+- **不做界面创建否决** — 曾考虑 `session/created` 同步 throw 否决非当前 ego，但会误拒 fork 出的旁路，且非必要（界面误建的 dolores-ego session 也会走旁路降级，无害），故不实现。
+
 ## 意图
 
 - **旁路（bypass）** = ego-class session，但不是主 session。
@@ -163,13 +174,13 @@ MOSS 侧 `DshSessionRef`（turn 区间坐标）→ `seed_from_log` 取 verbatim 
 
 ## Open Seams
 
-1. **replace 节点精确形态** —— 空 `assistant/message`（零残渣）vs 最小 marker 节点（对应决策 1 的「保留到
-   它还是 ego session 的状态」）。待确认。
+1. **replace 节点精确形态** —— **已定**（2026-09-12）：空 content 的 `user/message`。空 `assistant/message`
+   才是真零残迹，但 session invariant 要求 assistant/message 命名 open step，pre-step 折叠时 openStep 仍为 null 不可用。
 2. **拒绝 tool 会起新 step** —— denied tool 仍返回 `tool/result`，loop 会再跑一步，模型可能反复试；guard
    无法 `concludeTurn`。instruction 要硬性禁止调工具。
 3. **主身份恢复** —— `mainEgoSessionId` 是进程内模块态；重启后 resume 一个 ego session 时它是 `null` →
    会误判成旁路。主身份的恢复规则（MOSS 重新声明 / 首个 resume 认领）待定。
-4. **清理 append 的健壮性** —— 在 fire-and-forget 的 `session/event` 里 append，必须 try/catch + log，
-   不能让清理失败影响 session。
-5. **待验证** —— `agentCtx.on('session/event')` 是否真按 agent scope 只收到本 agent 的 session 事件（文档
-   如此声明，未实测）。
+4. **清理 append 的健壮性** —— **已实现**：`collapseTurn` 调用处 try/catch + `ctx.logger.warn`。
+5. **session/event 收不到（已弃用）** —— 实测 `agentCtx.on('session/event')` 与 `ctx.on('session/event')`
+   都不触发：session/event 经 session carrier 的 scope 分发，plugin ctx 不在其 `emit` 上行链。改用 pre-step
+   前置清理（B）。

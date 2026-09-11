@@ -8,9 +8,9 @@ description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception 模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think nibble (per-agent model selection). 2026-09-11 完成旁路单轮机制 (perStep 第二阶段) 的 dsh 源码调研 + 设计收敛, 并记录 memento 全貌; 下一步实现旁路机制 (reentrant 文档). 问题清单统一到 dolores-todo.md (单一事实源). 决策轨迹见 git log.'
+status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception 模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think nibble (per-agent model selection). 2026-09-12 落地旁路单轮机制 (reentrant 文档): pre-step 旁路分支 (降级思考模式 low + sandbox read-only + 注入旁路提示) + tools 全拒 guard + pre-step 前置折叠 (collapseTurn, map 记录 turn id, 弃 session/event) + preset 元数据 (不复用 standard 描述), 删除 session/frozen (D29 invalid). GUI 实机验证跑通 (旁路历史不进入下一轮). 问题清单统一到 dolores-todo.md.'
 title: Dolores Ghost
-updated: '2026-09-11'
+updated: '2026-09-12'
 ---
 
 # Dolores Ghost

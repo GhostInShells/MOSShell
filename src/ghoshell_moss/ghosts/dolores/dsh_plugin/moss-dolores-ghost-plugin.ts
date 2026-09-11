@@ -12,7 +12,7 @@ import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attach
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session'
+import type { JsonValue, Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
@@ -36,8 +36,9 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 1. ego/create       — instruction + messages (ghost.memory: 压缩/快照/ground).
  * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort, 阻塞执行完.
  * 3. thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (interrupt).
- * 4. perStep 锁       — foreign session → reject + mux 提示冻结;
- *                       ego session 非 thinking → 阻塞等 thinking/enter 反转.
+ * 4. perStep 锁       — ego session 非 thinking → 阻塞等 thinking/enter 反转;
+ *                       非主 ego (旁路) → 降级 (思考模式 low + sandbox read-only) + 插入旁路
+ *                       instruction 跑单轮, tools 全拒, turn/end 折叠 (旁路无残留).
  * 5. moment/epoch 映射 — python 侧组装, plugin 只收现成 content blocks (dumb transport,
  *                       不 parse xml-like). context (echoes/dynamic/executing → <moment>,
  *                       inject) + inputs (percepts + hint → <inputs>, steer) + epoch
@@ -122,6 +123,9 @@ const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
 const DOLORES_EGO_PRESET = 'dolores-ego'
 const DOLORES_BASE_PRESET = 'standard'
 const PRESET_COMPOSITION_FILE = 'agent.cordis.yml'
+const PRESET_METADATA_FILE = 'preset.yml'
+// ego preset 的展示元数据 — 不复用 standard 的描述, 让 picker 里能认出这是内部主脑会话.
+const DOLORES_EGO_PRESET_METADATA = 'name: Dolores Ego\ndescription: 内部使用 — Dolores 主脑会话（非 ego 请勿手动创建）。\n'
 
 const DOLORES_EGO_CREATE = `${DOLORES_API_ROOT}/ego/create`
 // 通用 session 观测面: 任意 live session 的 instruction / surface 读取 (sessionId 收在 body).
@@ -146,6 +150,15 @@ let doloresThinkingToken: string | null = null
 
 // ego 的 persona 文本 (instruction) — ego/create 写入, session/start 时由 apply_ego_agent 注入 persona 段.
 let doloresInstruction = ''
+
+// ── 旁路 (bypass): 非主 ego session 的记账与注入 ─────────────────────
+// 旁路 = ego-class (dolores-ego preset) 但 id ≠ doloresEgoSessionId 的 session. 它不跑
+// thinking 事务、不消费 pendingMoments、工具全拒; 每次只跑一轮. bypassTurns 记每个旁路
+// session 当前开的 turn 号 — 下一轮 pre-step 时据此折叠上一轮的 surface (前置清理).
+const bypassTurns = new Map<SessionId, number>()
+
+// 旁路 instruction 正文 — pre-step 前置注入, 让模型知道这是降级后的单轮旁路会话.
+const BYPASS_INSTRUCTION = 'You are in a bypass (non-primary) ego session. This session has been superseded and is read-only: tools are disabled, so answer in a single turn without taking any action. Respond to the input below directly.'
 
 // ── thinking 锁 (B 范式核心): pre-step await 的 gate, thinking/enter open ──
 // TS 单线程事件循环, gate = asyncio.Event 等价物 (可反复 open/close, wait 阻塞到 open).
@@ -360,6 +373,7 @@ function ensureEgoPreset(ctx: Context): Promise<void> {
       const dir = join(writableRoot(ctx.agentPresets.roots), DOLORES_EGO_PRESET)
       await mkdir(dir, { recursive: true })
       await writeFile(join(dir, PRESET_COMPOSITION_FILE), composition, 'utf8')
+      await writeFile(join(dir, PRESET_METADATA_FILE), DOLORES_EGO_PRESET_METADATA, 'utf8')
     })()
     // 失败不缓存 — 留给下一次调用重试; 这里只吞掉 unhandled rejection, 真正的错误由
     // ego/create 的 await 上抛.
@@ -430,12 +444,44 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
   for (const tool of egoTools) {
     agentCtx.tools.register(tool)
   }
-  // perStep 锁 (per-agent): 只有当前 ego 放行 (背压等 thinking/enter), 历史 ego reject.
+  // 旁路 tools 全拒 (动态判定): agent 一旦不再是主 (id ≠ doloresEgoSessionId), 其工具调用在
+  // dispatch 前被 guard 拒掉 (guard 经 agent.ctx 注册只对该 agent 生效). 主路 agent 不受影响.
+  agentCtx.tools.guard((exec) => {
+    if (exec.agent !== undefined && exec.agent.id !== doloresEgoSessionId) {
+      return 'This is a bypass session; tools are unavailable. Answer in a single turn only.'
+    }
+    return undefined
+  })
+  // perStep 锁 (per-agent): 只有当前 ego 放行 (背压等 thinking/enter), 非主 ego 走旁路分支.
   // 挂在 agent 自己的 ctx 上 — 只拦这个 agent 的 pre-step, 不用全局预设过滤.
-  agentCtx.on('agent/pre-step', async ({ agent: stepAgent, signal }, next) => {
+  agentCtx.on('agent/pre-step', async ({ agent: stepAgent, turn, signal }, next) => {
+    // 旁路分支 (纯身份判定, 不看 gate/token): 非主 ego session.
     if (stepAgent.id !== doloresEgoSessionId) {
-      notifySessionFrozen(ctx, stepAgent)
-      return { kind: 'reject' }
+      // 前置清理 (map 思路): 下一轮 pre-step 时折叠上一轮旁路的 surface, 取代 session/event
+      // 后置清理 — 后者经 session carrier 的 scope 分发, plugin ctx 收不到事件. 上一轮的
+      // instruction + 回答在下轮 pre-step 被 replace 掉, 模型看不到上一轮副作用.
+      const prevTurn = bypassTurns.get(stepAgent.id)
+      if (prevTurn !== undefined && prevTurn !== turn) {
+        try {
+          collapseTurn(stepAgent.session, prevTurn)
+          ctx.logger.info('dolores: collapsed bypass turn %d in session %s', prevTurn, stepAgent.id)
+        } catch (error) {
+          ctx.logger.warn('dolores: bypass turn collapse failed: %s', String(error))
+        }
+      }
+      bypassTurns.set(stepAgent.id, turn)
+      // 降级 (先降级再放行): 思考模式改低成本 (DeepSeek 无 medium, 用 low) + sandbox 改
+      // read-only (sandbox/mode 是 last-wins, 追加即切换). 旁路只读、单轮.
+      const selection = ensureEgoSelection(stepAgent, ctx)
+      const current = selection.current
+      if (current !== undefined) {
+        selection.current = { ...current, reasoningEffort: ReasoningEffortId('low') }
+      }
+      stepAgent.session.append('sandbox/mode', { mode: 'read-only' })
+      const decision = await next()
+      if (decision.kind === 'reject') return decision
+      // 前置旁路 instruction → 成为该 turn 的 surface 节点, 下轮 pre-step 时被 collapseTurn 折叠.
+      return { kind: 'enter', messages: [bypassInstruction(), ...decision.messages] }
     }
     await thinkingGate.wait(undefined, signal)
     const decision = await next()
@@ -454,6 +500,7 @@ export function apply(ctx: Context) {
   // ── 0. agent/session-start: 每个 ego agent 实例装配一次 ────────────────
   // create 和 resume 都发 (source='startup'|'resume'), 各自 fresh ctx — 这里调 apply_ego_agent
   // 做 tools + identity/persona + perStep 的全套注册, 替代「全局 perStep + setup 里注册」.
+  // 非主 ego session (界面误建 / fork 出的旁路) 也走这里装配, 由 perStep 的旁路分支降级.
   ctx.on('agent/session-start', ({ agent, source }) => {
     if (agent.session.header.agentPreset !== DOLORES_EGO_PRESET) return
     if (source !== 'startup' && source !== 'resume') return
@@ -833,19 +880,49 @@ function mapThinkingEffort(effort: string | undefined): string {
   }
 }
 
-// ── helper: foreign session 冻结提示 (点 4) ─────────────────────────────
+// ── helper: 旁路 instruction + turn 折叠 ────────────────────────────────
+
+/** 旁路 instruction — 作为旁路 turn 的第一条 user/message 注入 (pre-step 前置). */
+function bypassInstruction(): UserMessage {
+  return createUserMessage({
+    content: [{ type: 'text', text: BYPASS_INSTRUCTION }],
+    source: { kind: 'plugin', plugin: name },
+  })
+}
+
 /**
- * notifySessionFrozen — 非当前 ego 尝试运行时的冻结处置.
+ * collapseTurn — 把旁路 turn 的 surface 节点折叠成一条空 user/message.
  *
- * 双轨: (1) log 一条; (2) 往该 session 的 log append 一条 log-only 事件
- * (`session/frozen`, 非 surface 事件 — 不进对话/模型, 只进 durable log),
- * 使"这个 session 已被取代"可追溯、可持久化, 但不污染其对话表面.
+ * 取该 turn 的 turn/start~turn/end seq 窗口内、当前仍挂在 surface 上的节点, 用一条空 content
+ * 的 user/message replace 掉整段 (compaction 同款 replace 语义). 为何不是空 assistant/message:
+ * deriveEventMessage 对空 assistant 返 null 才是"真零残迹", 但 session invariant 要求
+ * assistant/message 命名当前 open step — 折叠发生在下一轮 pre-step (openStep 尚为 null, 未发
+ * step/start), 空 assistant 仍过不了 requireOpenStep. 唯一合法的 replace 节点是 user/message
+ * (invariant 对 user/message 无约束, 见 dsh-session/invariant).
+ * 在 pre-step 前置清理路径里执行, 调用方已 try/catch.
  */
-function notifySessionFrozen(ctx: Context, agent: Agent): void {
-  ctx.logger.info('dolores: foreign session %s blocked — ego session frozen', agent.id)
-  agent.session.append('session/frozen', {
-    reason: 'superseded ego session',
-    supersededBy: doloresEgoSessionId,
+function collapseTurn(session: Session, turn: number): void {
+  let startSeq: number | undefined
+  let endSeq: number | undefined
+  for (const event of session.events) {
+    if (event.type === 'turn/start' && event.data.turn === turn && startSeq === undefined) {
+      startSeq = event.seq
+    }
+    if (event.type === 'turn/end' && event.data.turn === turn) {
+      endSeq = event.seq
+    }
+  }
+  const start = startSeq
+  const end = endSeq
+  if (start === undefined || end === undefined) return
+  const shadowed = session.surface.nodes.filter(seq => seq >= start && seq <= end)
+  if (shadowed.length === 0) return
+  session.append('user/message', createUserMessage({
+    content: [],
+    source: { kind: 'plugin', plugin: name },
+  }), {
+    surfaceOp: { op: 'replace', start: shadowed[0], end: shadowed[shadowed.length - 1] },
+    sourceEventSeqs: [...shadowed],
   })
 }
 
