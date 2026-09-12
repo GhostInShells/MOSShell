@@ -40,7 +40,7 @@ from ghoshell_moss.core.blueprint.cell import (
     CellAddress,
     CellAddressCodec,
     CellEventLevel,
-    DuplicatedError, NodeProbeError,
+    DuplicatedError, NodeManifest, NodeProbeError,
 )
 from ghoshell_moss.core.blueprint.matrix import CellHandle, Matrix
 from ghoshell_moss.core.blueprint.mindflow import Priority
@@ -146,8 +146,36 @@ def _fmt_dead_row(handle: CellHandle) -> str:
     when = _fmt_uptime(_now_ts() - meta.updated)
     tail = ''
     if code not in (0, None):
-        tail = f' — nodes:read_output({short}) for stderr'
+        tail = f' — read_output({short}) for stderr'
     return f'  {short}  exit={code} ({when} ago){tail}'
+
+
+def _render_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """Column-align a small table; only the last column is left unpadded."""
+    if not rows:
+        return []
+    widths = [
+        max(len(headers[i]), *(len(r[i]) for r in rows))
+        for i in range(len(headers))
+    ]
+
+    def line(cells: list[str]) -> str:
+        padded = [
+            c if i == len(widths) - 1 else c.ljust(widths[i])
+            for i, c in enumerate(cells)
+        ]
+        return ('  ' + '  '.join(padded)).rstrip()
+
+    return [line(headers)] + [line(r) for r in rows]
+
+
+def _node_ident(rel_path: str, manifest: NodeManifest) -> str:
+    """rel_path is the run/read target; the manifest name adds identity only when
+    it differs from the directory name (e.g. sensors/listener → voice)."""
+    base = Path(rel_path).name
+    if manifest.name and manifest.name != base:
+        return f'{rel_path} ({manifest.name})'
+    return rel_path
 
 
 # ==== nodes channel ==============================================
@@ -188,32 +216,34 @@ def new_nodes_channel(
         found = nodes_mgr.list_nodes(
             refresh=refresh, paths=scan_paths, installed=installed,
         )
-        if not found:
-            return '[nodes] (empty)'
 
-        # 数运行中的 cell (按 fullname 聚合)
-        handled = matrix.handled_cells()
-        running_count: dict[str, int] = {}
-        for h in handled.values():
-            fn = h.runtime.cell.fullname
-            running_count[fn] = running_count.get(fn, 0) + 1
+        # 数运行中的 cell — 按 (category, name) 聚合, 与 Cell.fullname 同源.
+        running_count: dict[tuple[str, str], int] = {}
+        for h in matrix.handled_cells().values():
+            cell = h.runtime.cell
+            key = (cell.category, cell.name)
+            running_count[key] = running_count.get(key, 0) + 1
 
-        lines = [f'[nodes] discovered ({len(found)}):']
-        for rel_path, manifest in found.items():
+        rows: list[list[str]] = []
+        for rel_path, manifest in sorted(found.items()):
             if category and manifest.category != category:
                 continue
-            marker_installed = 'installed' if manifest.installed else 'NOT installed'
-            running = running_count.get(manifest.name, 0)
-            running_hint = f' running={running}' if running else ''
-            cat_hint = f' [{manifest.category}]' if manifest.category else ''
-            desc = manifest.description or ''
-            if desc:
-                desc = f' — {desc}'
-            lines.append(
-                f'  {rel_path:<32}{cat_hint} {marker_installed}'
-                f'{running_hint}{desc}'
-            )
-        return '\n'.join(lines)
+            running = running_count.get((manifest.category, manifest.name), 0)
+            rows.append([
+                _node_ident(rel_path, manifest),
+                manifest.category or '-',
+                'yes' if manifest.installed else 'no',
+                str(running) if running else '-',
+                manifest.description or '',
+            ])
+        if not rows:
+            return '[nodes] (empty)'
+        scope = f' category={category}' if category else ''
+        head = f'[nodes] discovered ({len(rows)}{scope}):'
+        table = _render_table(
+            ['path', 'category', 'installed', 'running', 'description'], rows,
+        )
+        return '\n'.join([head] + table)
 
     # -- read ---------------------------------------------------------
 
@@ -222,12 +252,12 @@ def new_nodes_channel(
         """Read a node manifest — frontmatter + instruction body."""
         if not target:
             CommandUtil.raise_observe(
-                "target required. Use nodes:list() to discover paths."
+                "target required. Use list() to discover paths."
             )
         manifest = matrix.project.nodes.get_node(target)
         if manifest is None:
             CommandUtil.raise_observe(
-                f"node {target!r} not found. nodes:list() shows available paths."
+                f"node {target!r} not found. list() shows available paths."
             )
         lines = [
             f'[nodes:read {target}]',
@@ -260,14 +290,14 @@ def new_nodes_channel(
         """
         if not target:
             CommandUtil.raise_observe(
-                "target required. nodes:list() to discover paths."
+                "target required. list() to discover paths."
             )
         try:
             handle = await matrix.run_node(Path(target))
         except DuplicatedError as e:
             CommandUtil.raise_observe(
-                f'Singleton conflict: {e}. nodes:status() to inspect; '
-                f'nodes:stop(<address>) to release.'
+                f'Singleton conflict: {e}. status() to inspect; '
+                f'stop(<address>) to release.'
             )
         except NodeProbeError as e:
             CommandUtil.raise_observe(
@@ -301,7 +331,7 @@ def new_nodes_channel(
 
         return (
             f'[{short}] pid={handle.process.meta.pid} — '
-            f'organ appears next frame under matrix.mesh once announced.'
+            f'organ surfaces on the network once it announces.'
         )
 
     # -- stop ---------------------------------------------------------
@@ -314,7 +344,7 @@ def new_nodes_channel(
         if handle is None:
             CommandUtil.raise_observe(
                 f'{address!r} does not uniquely match any running cell. '
-                f'nodes:status() shows current cells.'
+                f'status() shows current cells.'
             )
         await handle.stop(timeout=timeout)
         code = handle.process.meta.exit_code
@@ -390,7 +420,7 @@ def new_nodes_channel(
             if len(handled) > show_running:
                 extra = len(handled) - show_running
                 lines.append(
-                    f'  ...+{extra} more, nodes:status() for full list'
+                    f'  ...+{extra} more, status() for full list'
                 )
         if dead:
             recent = dead[-show_dead:]
@@ -399,16 +429,32 @@ def new_nodes_channel(
                 lines.append(_fmt_dead_row(h))
         return ['\n'.join(lines)]
 
+    # -- notice -------------------------------------------------------
+
+    @chan.build.notice
+    def nodes_notice() -> str:
+        """What this channel can run now — the installed node catalog."""
+        # refresh=False: notice re-renders on every meta refresh; never rescan
+        # the filesystem here (cache fills on first call, list(refresh=True) refreshes).
+        found = matrix.project.nodes.list_nodes(refresh=False, installed=True)
+        if not found:
+            return ''
+        lines = [f'installed nodes ({len(found)}):']
+        for rel_path, manifest in sorted(found.items()):
+            label = _node_ident(rel_path, manifest)
+            desc = manifest.description or ''
+            lines.append(f'  {label} — {desc}' if desc else f'  {label}')
+        return '\n'.join(lines)
+
     # -- instruction --------------------------------------------------
 
     @chan.build.instruction
     def nodes_instruction() -> str:
         return (
-            'Local node cell governance. list/read/run/stop/status/read_output '
-            'are all nonblocking. run() returns immediately — the spawned '
-            'organ appears next frame under matrix.mesh once announced. '
-            'Read the NodeManifest with read(target) before running to know '
-            'how it wants to be used.'
+            'Local node cell governance. All verbs are nonblocking. run() '
+            'returns immediately — the spawned organ surfaces on the network '
+            'once it announces. read(target) before running: the declaration '
+            'carries how the node wants to be used.'
         )
 
     return chan
