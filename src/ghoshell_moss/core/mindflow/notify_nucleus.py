@@ -1,12 +1,15 @@
 """NotifyNucleus — turns ``notify`` signals into ``notify``-mode impulses.
 
-四元 nucleus 之二: 配对 ``ImpulsePrimitive.notify`` 的"不丢消息"入口.
-监听 ``NotifySignalMeta`` (signal name = ``"notify"``), 把 signal 包装成
-``mode=notify`` 的 impulse — 抢占成功正常创建 attention, 失败时 messages
-进 mindflow buffer 而非 suppress (notify 在"抢占失败侧"偏离 default).
+The "must not be lost" perception nucleus, pairing ``ImpulsePrimitive.notify``.
+It listens to ``NotifySignalMeta`` (signal name ``"notify"``) and wraps each
+signal into an impulse carrying ``mode=notify``: winning the challenge creates a
+new attention as usual, while losing it routes the messages into the mindflow's
+next-frame percepts instead of suppressing them — notify deviates from
+``default`` on the losing side only.
 
-priority 完全继承 ``Signal.priority`` (调用方控制). 默认 ``NOTICE`` —
-典型用例是 "ghost 思考时用户说话", 不打断就留痕.
+priority is inherited verbatim from ``Signal.priority`` (caller-controlled),
+default ``NOTICE``. Canonical case: the user speaks while the ghost is thinking —
+no interruption, but the message leaves a trace.
 """
 from typing import Callable, Iterable
 from typing_extensions import Self
@@ -26,9 +29,10 @@ __all__ = ['NotifyNucleus', 'NotifySignalMeta', 'NotifyNucleusMeta', 'new_notify
 class NotifySignalMeta(SignalMeta):
     """Signal meta for ``notify`` — carries messages that must not be lost.
 
-    抢占成功正常创建新 attention; 抢占失败走 notify mode — messages buffer 进
-    mindflow (留痕) 而非 suppress, 由下一帧 percepts 消费. 典型用例: ghost 思考时
-    用户说话, 不打断就留痕.
+    Winning the challenge creates a new attention as usual; losing it goes through
+    notify mode — the messages are buffered into the mindflow (leaving a trace)
+    instead of being suppressed, and are consumed by the next frame's percepts.
+    Canonical case: the user speaks while the ghost is thinking.
     """
 
     @classmethod
@@ -41,20 +45,14 @@ class NotifySignalMeta(SignalMeta):
 
 
 class NotifyNucleus(Nucleus):
-    """Reflex-arc nucleus — turns each ``notify`` signal into a notify-mode
-    impulse, caches it as last-impulse for mindflow rank/challenge pull.
+    """Reflex-arc nucleus — turns each ``notify`` signal into a notify-mode impulse.
 
-    Last-impulse cache 模式: ``add_signal`` 写入 ``_impulse``, mindflow 通过
-    ``peek`` 拉取, 抢占成功经 ``attended`` 确认清缓存. 连续 signal 进入时 last-wins (最新覆盖旧),
-    notify 的语义是"最新消息为准" — 旧消息既然还没被消费, 说明 ghost 还没看到,
-    新消息合并掉它是合理的.
+    The impulse is held as the latest one for mindflow's rank/challenge pull:
+    mindflow pulls it via ``peek`` and confirms the outcome via ``attended``.
+    notify deviates from ``default`` on the losing side only — the messages are
+    buffered into the mindflow instead of being suppressed, so they are not lost.
 
-    与 ``InputSignalNucleus`` 的 FIFO 聚合差异: notify 视为 "每条都该被看到"
-    的独立消息, 但若 mindflow 还没拉取就被覆盖, 这是 mindflow 调度压力下的
-    自然 backpressure — 而非协议 bug. 若需绝对不丢, 应该用 ``SilentNucleus``
-    + 高优先级 (聚合保留所有 messages).
-
-    priority 完全继承 ``Signal.priority``.
+    priority is inherited verbatim from ``Signal.priority`` (caller-controlled).
     """
 
     NAME = 'notify_nucleus'
@@ -87,6 +85,9 @@ class NotifyNucleus(Nucleus):
         impulse = self.build_impulse(signal)
         if impulse is None:
             return
+        # TODO(known, deferred): a newer signal overwrites an un-peeked impulse,
+        # dropping its messages before the buffered path can see them. Latent —
+        # needs a notify burst inside one loop scheduling window. Shape undecided.
         self._impulse = impulse
         if self._fire_impulse:
             self._fire_impulse(impulse)
@@ -105,8 +106,9 @@ class NotifyNucleus(Nucleus):
         self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # notify 抢占失败时, mindflow 已走 buffer 偏离路径, messages 进 buffer.
-        # suppress 只是兜底通知; 此时 cache 清掉, 等下一条 signal.
+        # notify loses the challenge through mindflow's buffered path, so the
+        # messages are already accounted for; suppress is only a defensive
+        # fallback — clear the cache and wait for the next signal.
         self._impulse = None
 
     def attended(self, impulse: Impulse) -> None:
