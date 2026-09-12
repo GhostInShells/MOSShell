@@ -12,6 +12,7 @@
 import asyncio
 import contextlib
 import logging
+import time
 from typing import AsyncIterable, Callable, Optional
 
 import numpy as np
@@ -42,7 +43,7 @@ from .protocol import (
 
 __all__ = ["VolcengineSaucASR"]
 
-# 收包短超时: 无 is_last_package 时周期性醒来检查 input_done, 让"音频断→自然退出"不依赖服务端及时回尾包.
+# 收包短超时: 周期性醒来判超时/关闭, 避免 recv 无限阻塞.
 _RECV_TIMEOUT = 1.0
 
 
@@ -116,9 +117,11 @@ class VolcengineSaucASR(ASR):
 
 
 class _VolcengineSaucRecognitionStream(RecognitionStream):
-    """一条识别流: 一次说话 (turn) → partial/clause/tail 结果流。
+    """一条识别流 = 整条音频输入, 内部逐 turn 建 WS。
 
-    1 stream = 1 segment。懒开: WS 在首次 __anext__ 时建立。
+    1 stream = n segment。音频输入为界: ``while 音频未耗尽: 开 WS → 喂音频 →
+    commit/音频断发 NEG → 收尾包 → 切段 → 下一 turn``。WS 是 turn 的实现细节,
+    不是流的生命周期。懒开: 首个 __anext__ 才建 session。
     """
 
     def __init__(
@@ -147,6 +150,8 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._session_task: asyncio.Task | None = None
         self._commit_event = asyncio.Event()
         self._input_done = False
+        self._closed = False
+        self._fatal_error: Exception | None = None
         self._on_segment_callback: Callable[[RecognitionSegment], None] | None = None
 
         # 当前 segment 的 audio + text (整个 turn 一份).
@@ -161,6 +166,10 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._first_emitted = False
         self._last_text = ""
 
+        # 尾包等待状态 (每 turn 一份): NEG 已发 → 收包侧只等尾包, 超宽限则兜底切段.
+        self._tail_requested = False
+        self._tail_deadline = 0.0
+
     # ── RecognitionStream contract ──
 
     @property
@@ -171,8 +180,17 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._on_segment_callback = callback
 
     def commit(self) -> None:
-        """通知云端出尾包: 发 is_last=True (端侧 last package)。"""
+        """结束当前 segment: 让 send loop 发 NEG, 拿尾包后切段开下一 turn."""
         self._commit_event.set()
+
+    async def close(self) -> None:
+        """主动关闭 (public-internal): 停止监听, 结束迭代, 不产尾包."""
+        self._closed = True
+        task = self._session_task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     def is_input_done(self) -> bool:
         return self._input_done
@@ -186,28 +204,81 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             self._session_task = asyncio.create_task(self._run_session())
         result = await self._queue.get()
         if result is None:
+            if self._fatal_error is not None:
+                raise self._fatal_error
             raise StopAsyncIteration
         return result
 
     # ── session ──
 
     async def _run_session(self) -> None:
+        backoff = self._config.connect_backoff_initial
+        consecutive = 0
+        try:
+            while not self._closed and not self._input_done:
+                self._commit_event.clear()
+                if await self._run_turn():
+                    self._advance_segment()
+                    backoff = self._config.connect_backoff_initial
+                    consecutive = 0
+                else:
+                    consecutive += 1
+                    if consecutive >= self._config.max_connect_retries:
+                        self._fatal_error = RuntimeError(
+                            f"ASR connect failed {consecutive} consecutive times"
+                        )
+                        self._report_error(self._fatal_error)
+                        return
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, self._config.connect_backoff_cap)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._fatal_error = e
+            self._report_error(e)
+        finally:
+            await self._queue.put(None)
+
+    async def _run_turn(self) -> bool:
+        """跑一个 turn: 开 WS → init → send/receive 并发 → 尾包后切段退出.
+
+        返回 True=正常跑完; connect/init 失败返回 False (由 _run_session 退避重试).
+        """
+        self._request_id = uuid()
+        send_task: asyncio.Task | None = None
+        receive_task: asyncio.Task | None = None
         try:
             async with await connect(self._config, self._request_id) as ws:
                 await ws.send(create_init_request(self._segment_id, self._config, self._corpus))
                 send_task = asyncio.create_task(self._send_loop(ws))
                 receive_task = asyncio.create_task(self._receive_loop(ws))
                 await receive_task
-                if not send_task.done():
-                    send_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await send_task
-        except Exception as e:
-            self._report_error(e)
-            await self._queue.put(self._tail_result(text=self._segment_text, error=str(e)))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # connect/init 失败: 静默返回 False, 由 _run_session 退避重试.
+            return False
         finally:
-            self._input_done = True
-            await self._queue.put(None)
+            for t in (send_task, receive_task):
+                if t is not None and not t.done():
+                    t.cancel()
+            for t in (send_task, receive_task):
+                if t is not None:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await t
+        return True
+
+    def _advance_segment(self) -> None:
+        """切段后重置 per-turn 状态, 分配新 segment_id."""
+        self._segment_id = uuid()
+        self._first_emitted = False
+        self._last_text = ""
+        self._emitted_clauses = 0
+        self._current_audio = []
+        self._segment_text = ""
+        self._total_samples = 0
+        self._tail_requested = False
+        self._tail_deadline = 0.0
 
     # ── loops ──
 
@@ -217,6 +288,8 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         committed = False
         try:
             async for audio in self._audio_chunks:
+                if self._closed:
+                    break
                 arr = np.asarray(audio).ravel()
                 self._current_audio.append(arr)
                 self._total_samples += arr.size
@@ -224,21 +297,24 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
                 seq += 1
                 if self._commit_event.is_set():
                     self._commit_event.clear()
-                    # commit: 发 is_last (负序号) 后不再喂音频.
+                    # commit: 发 is_last (负序号) 后不再喂音频, 等尾包切段开下一 turn.
                     await ws.send(create_audio_only_request(b"", seq, is_last=True))
                     seq += 1
                     committed = True
+                    self._tail_requested = True
+                    self._tail_deadline = time.monotonic() + self._config.tail_grace_seconds
                     break
 
-            if not committed:
-                # 音频断: 最后一次 last package.
+            if not committed and not self._closed:
+                # 音频耗尽: 最后一次 last package, 之后整条流自然结束.
                 await ws.send(create_audio_only_request(b"", seq, is_last=True))
+                self._input_done = True
+                self._tail_requested = True
+                self._tail_deadline = time.monotonic() + self._config.tail_grace_seconds
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self._report_error(e)
-        finally:
-            self._input_done = True
 
     async def _receive_loop(self, ws) -> None:
         try:
@@ -246,11 +322,15 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
                 try:
                     data = await asyncio.wait_for(ws.recv(), timeout=_RECV_TIMEOUT)
                 except asyncio.TimeoutError:
-                    if self._input_done:
+                    if self._tail_requested and time.monotonic() > self._tail_deadline:
+                        # NEG 已发但服务端不回尾包也不断连 → 兜底切段.
+                        await self._queue.put(self._tail_result(text=self._segment_text, error="tail timeout"))
+                        self._cut_segment()
                         break
                     continue
                 except websockets.exceptions.ConnectionClosed:
                     await self._queue.put(self._tail_result(text=self._segment_text, error="connection closed"))
+                    self._cut_segment()
                     break
 
                 if not data:
@@ -262,13 +342,14 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
                     error_msg = f"server error {response.code}: {response.error_msg}"
                     self._logger.error("%s %s, request=%s", self._log_prefix, error_msg, self._request_id)
                     await self._queue.put(self._tail_result(text=self._segment_text, error=error_msg))
+                    self._cut_segment()
                     break
 
                 for chunk in self._parse_result(response.payload_msg):
                     await self._queue.put(chunk)
 
                 if response.is_last_package:
-                    # 流结束: 尾包 → 切段 → 退出.
+                    # 尾包: 切段 → 退出本 turn (由 _run_session 决定是否开下一 turn).
                     await self._queue.put(self._tail_result(text=self._segment_text))
                     self._cut_segment()
                     break
@@ -277,6 +358,8 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             raise
         except Exception as e:
             self._report_error(e)
+            await self._queue.put(self._tail_result(text=self._segment_text, error=str(e)))
+            self._cut_segment()
 
     # ── parse ──
 

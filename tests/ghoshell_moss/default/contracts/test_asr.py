@@ -47,6 +47,9 @@ class _MockStream(RecognitionStream):
     def commit(self) -> None:
         pass
 
+    async def close(self) -> None:
+        pass
+
     def is_input_done(self) -> bool:
         return True
 

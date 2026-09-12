@@ -92,6 +92,26 @@ class VolcengineSaucConfig(ConfigType):
         description="行为参数 (模型反身性调参面)",
     )
 
+    tail_grace_seconds: float = Field(
+        default=5.0,
+        description="发 NEG (commit / 音频断) 后等尾包的最长宽限 (秒)。客户端行为, 不发给引擎。",
+    )
+
+    max_connect_retries: int = Field(
+        default=10,
+        description="连续 connect 失败多少次后硬退出 (抛异常上升)。客户端行为。",
+    )
+
+    connect_backoff_initial: float = Field(
+        default=0.5,
+        description="connect 失败重试的起始退避 (秒), 每次翻倍直到 connect_backoff_cap。客户端行为。",
+    )
+
+    connect_backoff_cap: float = Field(
+        default=8.0,
+        description="connect 失败重试退避的上限 (秒)。客户端行为。",
+    )
+
     @classmethod
     def conf_name(cls) -> str:
         return 'seed_asr_config'

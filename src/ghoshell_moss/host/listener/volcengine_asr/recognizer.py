@@ -157,6 +157,13 @@ class _VolcengineRecognitionStream(RecognitionStream):
     def commit(self) -> None:
         self._commit_event.set()
 
+    async def close(self) -> None:
+        """主动关闭 (public-internal): 停掉 session task."""
+        if self._session_task is not None and not self._session_task.done():
+            self._session_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._session_task
+
     def is_input_done(self) -> bool:
         return self._input_done
 

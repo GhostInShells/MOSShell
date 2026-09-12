@@ -146,11 +146,10 @@ class ASRInfo(BaseModel):
 class RecognitionStream(ABC):
     """One recognition stream — one continuous audio input -> a sequence of RecognitionEvent.
 
-    1 stream = 1 segment = ( first? partial* clause* tail )
-
-    Segment : recognizer is n:1 — one recognizer serves n segments. A stream ends
-    with a TAIL result once the segment is committed (``commit()``) or the audio
-    input is exhausted.
+    1 stream = n segments (each segment = one turn = one WS). The stream is bounded by
+    the audio input, not by a single turn: ``commit()`` ends the current segment with a
+    TAIL and the recognizer opens the next segment, until the audio input is exhausted
+    or the stream is closed (``close()``).
 
     Single entry only (``__aiter__`` is not re-entrant). ``is_input_done()`` reports
     whether the audio input has stopped.
@@ -167,7 +166,11 @@ class RecognitionStream(ABC):
 
     @abstractmethod
     def commit(self) -> None:
-        """Notify the cloud to produce a tail now — marks the end of the current segment. Does not close the stream."""
+        """End the current segment — the recognizer produces a TAIL, then opens the next segment (does not close the stream)."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Actively stop the stream — no further results, no TAIL."""
 
     @abstractmethod
     def is_input_done(self) -> bool:
