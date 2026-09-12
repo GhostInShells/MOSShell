@@ -222,9 +222,6 @@ class MindflowInShell(ABC):
             self._on_thinking_start(thinking)
             async with thinking:
                 tasks = []
-                if self._is_thinking_gated():
-                    thinking.register_gate(self._approve_logos)
-
                 moment = thinking.moment
                 # 发送已经执行的命令.
                 if moment.command_logos:
@@ -237,6 +234,10 @@ class MindflowInShell(ABC):
                 # 如果
                 if thinking.effort() == 'none':
                     return
+
+                # gate 只闸本轮 articulate 的产物; 上面的 command_logos 反射弧先行 replay, 不进闸.
+                if self._is_thinking_gated():
+                    thinking.register_gate(self._approve_logos)
 
                 # -- 需要阻塞执行完的逻辑完成 -- #
 

@@ -126,6 +126,54 @@ async def test_command_signal_skips_articulate_runs_logos():
     assert not suite.exceptions
 
 
+class _GatedMindflowInShellSuite(MindflowInShellTestSuite):
+    """gated 装线的测试子类 — 开启闸口并记录裁决回调, 钉住闸口范围."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gate_calls: list[str] = []
+
+    def _is_thinking_gated(self) -> bool:
+        return True
+
+    async def _approve_logos(self, logos: str) -> tuple[bool, str]:
+        self.gate_calls.append(logos)
+        return (True, '')
+
+
+@pytest.mark.asyncio
+async def test_command_logos_reflex_arc_bypasses_gate():
+    """SafeMode 闸口范围: command_logos 反射弧先行 replay, 不进闸.
+
+    协议契约:
+        - ``moment.command_logos`` 是 impulse 反射弧 — 预成形命令, 作为本轮第一波
+          replay, 不经过模型 articulate, 也不该被人工审批闸住.
+        - gate 只闸 articulate 阶段产出的 logos; 反射弧 replay 在 gate 注册之前完成.
+
+    回归锚点: gate 曾注册在反射弧 replay 之前, 导致 ``thinking.articulator()``
+    的 warrant 也被反射弧命中 — 反射弧被人工审批闸住 (违背闸口范围声明).
+    """
+    suite = _GatedMindflowInShellSuite()
+
+    executed = []
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        async for chunk in chunks__:
+            executed.append(chunk)
+
+    suite.shell.main_channel.build.content_command(content_func)
+
+    async with suite:
+        suite.add_signal(new_command_signal('reflex_logos'))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
+
+    # 反射弧命令执行了, 且从未触达人工审批闸口.
+    assert ''.join(executed) == 'reflex_logos'
+    assert suite.gate_calls == []
+    assert not suite.exceptions
+
+
 @pytest.mark.asyncio
 async def test_single_input_signal_yields_exactly_one_percept():
     """一条 InputSignal 产生的第一帧 moment.percepts 不应有重复消息.
