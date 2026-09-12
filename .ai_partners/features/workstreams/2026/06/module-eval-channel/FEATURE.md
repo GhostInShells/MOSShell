@@ -2,18 +2,17 @@
 created: 2026-06-03
 depends:
 - codex-module-sandbox
-description: Generic channel type that wraps any Python module as an eval container
-  — AI sees module source as instruction, writes code via named exec command with
-  text__ parameter, persistent namespace across calls, module defines the domain (Playwright,
-  pandas, ROS…), channel is a thin reusable shell.
+description: Reusable module-level stateful runtime — a live Python runtime (domain
+  module) mounted as an executable channel, plus a hub channel that governs multiple
+  module runtimes (open/close/list). Not a sandbox/authorization boundary.
 milestone: null
 priority: P1
-status: completed
-status_note: 2026-06-10 ModuleEval 正式化完成。通用 subprocess 协议 (tools/_eval_server.py)，
-  ModuleEval + JsonLineProcess (tools/module_eval.py)，Channel 完全重写。 14 tests pass。Playwright
-  迁移验证。interface 提取、storage+define command 后续迭代。
+status: in-progress
+status_note: 2026-09-12 重构收敛：价值重定为"可复用的 module 级别有状态运行时"（meta/Transformative），
+  builtins 默认放开，命令面收敛为 exec/aexec/history，vars/api 移除，define+持久化移出，
+  hub 治理多 module，协议改为单向 fire + id reader + 真超时。
 title: Module Eval Channel
-updated: '2026-06-10'
+updated: '2026-09-12'
 ---
 
 # Module Eval Channel
@@ -266,3 +265,42 @@ builtins 安全（open/import 被封锁）、异常返回 traceback、命名空�
 - `src/ghoshell_moss/channels/module_eval_channel.py` — 完全重写
 - `.moss_ws/apps/browsers/playwright/` — 迁移验证
 - `tests/ghoshell_moss/channels/test_module_eval_channel.py` — 14 tests
+
+## 2026-09-12: 重构收敛 — 有状态运行时, 不是 sandbox
+
+> 人类架构师 + Claude。这一轮把 module eval 的**价值**和**命令面**都重定了。
+> 旧版把"授权边界 / 源码即 instruction"当价值; 新版把"可复用的 module 级别有状态运行时"当价值。
+
+### 价值重定 (推翻了旧 framing)
+
+- 旧 framing 的错误: "code as prompt" 不够——`moss codex get-interface` + `python -c` 就能覆盖"执行代码"和"看到接口"。
+- 真正的价值: **把一个可变运行时对象变成 ghost 的器官**——活的领域对象 (浏览器/ROS 节点/DB 连接) 跨调用存活、进入双工并发、生命周期受 MOSS 所有权治理。
+- 这对应 `moss start` 第五条 **Transformative** (运行时安全演化/热插拔), 是 module eval 作为 **meta channel** 的根: 其它 channel 是"ghost 有的能力", meta channel 是"ghost 改自己的能力"。对比 `module_channel` (反射开发者选定的模块) vs module_eval (domain 是 ghost 自己写的 .py), 差的正是作者是谁。
+
+### Key Decisions
+
+1. **builtins 默认放开 (None)**。`SANDBOX_BUILTINS` 禁 `__import__` 的价值是零 (ghost 有 bash 就有 `python -c`), 成本却是 exec 里不能 import, 逼模型把库全塞进 domain 顶层。**边界从"builtins 强制"变成"声明"**——domain 源码的 import 就是授权范围, instruction (=源码) 把它摆在模型面前。治理不了, 就保留 declaration。
+
+2. **命令面收敛为 exec / aexec / history**。
+   - `vars`/`api` 删除: 它们是 builtins 被禁的补偿品 (`__vars__`/`__api__` 协议命令存在, 正是因为 exec 里不能 `import inspect`)。builtins 放开后, 模型 `dir()`/`inspect` 就能反射, 两条命令自然冗余。**命令面大小是授权默认值的函数**。
+   - `exec`: 阻塞, 有真超时。
+   - `aexec`: 非阻塞 fire, 结果经 signal 回来 (见下)。
+   - `history`: 内存 tail-N 的 executed commands + 结果摘要, pull 逃生仓。**只记命令不记结果会诱导重跑, 而重跑有副作用**。
+
+3. **define + 持久化: 不在 module eval 里做** (不是推后, 是移交给别的 channel 体系)。define 的"声明"会被 notice 的 last-wins 漂移成撒谎; 唯一真相源是运行时本身。
+
+4. **aexec 结果走 signal**, 但 signal 语义未定: 一度想用 notify, 但 notify 的 last-wins 单槽缓存 (rank 循环经 `nucleus.peek()` 拉取) 会在快速连发时丢消息——**notify_nucleus 的 docstring 对"不丢消息"的表述自相矛盾且不可信**, 由人类另行验证修复。silent 有 `buffer_size` 上限 (有界不丢, 非绝对不丢)。
+
+5. **协议: 单向 fire + id 配对 + 真超时**。旧 `JsonLineProcess.request` 用一把锁把 send+recv 原子化 (严格串行), `timeout` 参数收了没用。改为: 协议加 `id`, 锁只锁 write, 后台 reader task 按 id resolve future, `exec` 用 `asyncio.wait_for(future, timeout)`。得到并发在途 (pipelining) + 每请求真超时 + 非阻塞 fire。**不做多线程, 子进程侧 step-by-step 串行**。
+
+6. **hub 治理多 module**。父 channel 挂子 channel (可执行), 用 `build.virtual_children` 闭包 + 缓存实例 (不每轮重建)。命令 `open`/`close`/`list`, domain 面 = `domains/` 目录扫描 (菜单, 不是权限清单)。
+
+### 被推翻的方案 (记录, 不删)
+
+- **`observe()` + context_messages (每帧渲染状态)**: 继承自 `.design/2026-06-09_...md` 的"扩展方向", 未重新审。空转——`exec` 是阻塞命令且返回值以 Observe 回来, context_messages 没有增量。而且"观察什么"取决于任务, 不该由 domain 编写时静态定死; 感知的正确形状是信号, 不是字段。
+- **notify 作为 aexec 结果 signal**: 见 KD4, docstring 不可信, 行为经测试面验证为竞态丢消息。
+
+### 关联
+
+- 协议正确性决策: `.design/2026-06-09_subprocess_sandbox_eval_protocol.md` (subprocess 是正确性决策, 不是隔离)
+- node: `nodes/browsers/playwright/` (playwright 是验证 module eval 的用例, 不是反过来)

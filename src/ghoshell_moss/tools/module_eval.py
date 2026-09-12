@@ -1,17 +1,22 @@
-"""ModuleEval — wrap a .py file as sandboxed eval server subprocess.
+"""ModuleEval — wrap a .py file as a live eval-server subprocess.
 
-Module source becomes channel instruction (Code as Prompt).
-Child compiles with full builtins, execs with SANDBOX_BUILTINS.
+The domain module becomes a persistent, side-effecting runtime the model drives
+by writing Python. Requests are fire-and-forget (one-way) with responses matched
+back by ``id``, so multiple requests can be in flight and each carries a real
+timeout. The subprocess itself is a single serial eval loop (step by step, no
+threads) — this layer only stops the parent from being blocked round-trip by
+round-trip.
 
 Two spawn paths:
-  matrix=Matrix → matrix.processes.execute() with MOSS lifecycle
-  matrix=None   → asyncio.create_subprocess_exec()
+  subprocesses=Subprocesses → subprocesses.execute() with MOSS lifecycle
+  subprocesses=None         → asyncio.create_subprocess_exec()
 
 Usage::
 
-    eval = ModuleEval("./my_domain.py", matrix=matrix)
+    eval = ModuleEval("./my_domain.py", subprocesses=subprocesses)
     await eval.start()
-    result = await eval.exec("page.goto('https://example.com')")
+    result = await eval.exec("page.goto('https://example.com')", timeout=30)
+    await eval.aexec("page.reload()")          # fire, result lands in history
     await eval.shutdown()
 """
 
@@ -21,85 +26,155 @@ import asyncio
 import json
 import os
 import sys
+from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from ghoshell_moss.core.blueprint.matrix import Matrix
-    from ghoshell_moss.contracts.subprocesses import ManagedProcess
+    from ghoshell_moss.contracts.subprocesses import ManagedProcess, Subprocesses
 
 __all__ = ["JsonLineProcess", "ModuleEval"]
 
 
 class JsonLineProcess:
-    """Async JSON-line protocol adapter for subprocess PIPE streams.
+    """One-way fire + reader task with id-matched responses.
 
-    Wraps an asyncio.subprocess.Process with stdin=PIPE, stdout=PIPE.
-    Thread-safe via asyncio.Lock for request-response pairing.
+    The lock only guards the write (atomic single-line JSON), never the
+    request/response round trip — that is what allowed the old implementation
+    to block everything behind one in-flight request. A dedicated reader task
+    consumes stdout and resolves pending futures by ``id``.
     """
 
-    def __init__(self, proc: asyncio.subprocess.Process):
+    def __init__(
+            self,
+            proc: asyncio.subprocess.Process,
+            *,
+            on_result: Callable[[dict], None] | None = None,
+    ):
         self._proc = proc
-        self._lock = asyncio.Lock()
+        self._on_result = on_result
+        self._write_lock = asyncio.Lock()
+        self._pending: dict[str, asyncio.Future] = {}
+        self._next_id = 0
+        self._reader_task: asyncio.Task | None = None
+        self._closed = False
+
+    def start(self) -> None:
+        self._reader_task = asyncio.create_task(self._reader())
+
+    async def close(self) -> None:
+        self._closed = True
+        if self._reader_task is not None and not self._reader_task.done():
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass
+        self._fail_pending(RuntimeError("JsonLineProcess closed"))
 
     async def send(self, msg: dict) -> None:
+        """Write a raw JSON line (no id injected). For protocol control messages."""
         data = json.dumps(msg) + "\n"
-        self._proc.stdin.write(data.encode())
-        await self._proc.stdin.drain()
+        async with self._write_lock:
+            self._proc.stdin.write(data.encode())
+            await self._proc.stdin.drain()
 
-    async def recv(self) -> dict:
-        line = await self._proc.stdout.readline()
-        return json.loads(line.decode())
+    async def _write(self, msg: dict) -> None:
+        data = json.dumps(msg) + "\n"
+        async with self._write_lock:
+            self._proc.stdin.write(data.encode())
+            await self._proc.stdin.drain()
+
+    async def _reader(self) -> None:
+        while not self._closed:
+            try:
+                line = await self._proc.stdout.readline()
+            except asyncio.CancelledError:
+                raise
+            if not line:
+                self._fail_pending(RuntimeError("eval server closed (child exited)"))
+                break
+            try:
+                result = json.loads(line.decode())
+            except json.JSONDecodeError:
+                continue
+            rid = result.get("id")
+            fut = self._pending.pop(rid, None)
+            if fut is not None and not fut.done():
+                fut.set_result(result)
+            elif self._on_result is not None:
+                self._on_result(result)
+
+    def _fail_pending(self, exc: Exception) -> None:
+        for fut in list(self._pending.values()):
+            if not fut.done():
+                fut.set_exception(exc)
+        self._pending.clear()
 
     async def request(self, msg: dict, timeout: float = 30.0) -> dict:
-        """Send a request and wait for the response.  Atomic per-process."""
-        async with self._lock:
-            await self.send(msg)
-            return await self.recv()
+        """Send a request and await its response, matched by id.  Raises on timeout."""
+        rid = str(self._next_id)
+        self._next_id += 1
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[rid] = fut
+        await self._write({**msg, "id": rid})
+        try:
+            return await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            self._pending.pop(rid, None)
+            raise
+
+    async def fire(self, msg: dict) -> str:
+        """Send a request without waiting.  Returns the id; the response goes to
+        ``on_result`` when it arrives."""
+        rid = str(self._next_id)
+        self._next_id += 1
+        await self._write({**msg, "id": rid})
+        return rid
 
 
 class ModuleEval:
-    """Wrap a .py file as sandboxed eval server subprocess.
+    """Wrap a .py file as a persistent, side-effecting eval runtime.
 
-    The module's source is the channel instruction — the AI sees exactly
-    what objects are available, their types, and methods.  This is Code as
-    Prompt in its purest form.
-
-    Child process architecture::
-
-        Compiler (builtins unrestricted) → compile module, execute imports
-        init_sandbox (builtins=None)     → hold compiled namespace objects
-        sandbox (parent=init, SANDBOX_BUILTINS) → AI exec namespace
+    The module's source is the domain (a live browser, a DB connection, a ROS
+    node…) — its objects are materialized at child startup and stay alive across
+    exec calls.  Builtins are unrestricted: the domain module's own imports are
+    the declared boundary, surfaced to the model as instruction.
 
     Parameters
     ----------
     module_path:
-        Path to a .py file.  The file is read at __init__ time; compilation
-        and import happen in the child process at start() time.
-    matrix:
-        If given, ``matrix.processes.execute()`` is used (the child is managed
-        by MOSS Subprocesses lifecycle).  If None, bare ``asyncio.create_subprocess_exec``.
+        Path to a .py file.  Read at __init__; compiled and imported in the child
+        at start().
+    subprocesses:
+        If given, ``subprocesses.execute()`` is used (MOSS Subprocesses owns the
+        child lifecycle).  If None, bare ``asyncio.create_subprocess_exec``.
+    history_size:
+        How many recent commands to retain for ``history()``.
     """
 
-    def __init__(self, module_path: str, *, matrix: Matrix | None = None):
+    def __init__(
+            self,
+            module_path: str,
+            *,
+            subprocesses: Subprocesses | None = None,
+            history_size: int = 20,
+    ):
         self._module_path = Path(module_path).resolve()
-        self._matrix = matrix
+        self._subprocesses = subprocesses
         self._source = self._module_path.read_text()
         self._module_name = self._module_path.stem
         self._proc: asyncio.subprocess.Process | None = None
         self._managed: ManagedProcess | None = None
         self._jsonline: JsonLineProcess | None = None
+        self._history: deque[tuple[str, str]] = deque(maxlen=history_size)
+        self._in_flight: dict[str, str] = {}  # id -> code, for aexec history
 
     # -- read-only ----------------------------------------------------------
 
     @property
     def source(self) -> str:
-        """Module source text."""
-        return self._source
-
-    @property
-    def instruction(self) -> str:
-        """Channel instruction — module source as prompt."""
+        """Domain module source text."""
         return self._source
 
     @property
@@ -109,7 +184,7 @@ class ModuleEval:
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
-        """Spawn the eval server subprocess and wait for ready signal."""
+        """Spawn the eval server subprocess and wait for the ready signal."""
         server_script = str(Path(__file__).parent / "_eval_server.py")
         args = [sys.executable, "-u", server_script]
         extra_env = {
@@ -117,8 +192,8 @@ class ModuleEval:
             "MODULE_NAME": self._module_name,
         }
 
-        if self._matrix:
-            self._managed = await self._matrix.processes.execute(
+        if self._subprocesses:
+            self._managed = await self._subprocesses.execute(
                 *args,
                 name=f"module_eval/{self._module_name}",
                 stdin=asyncio.subprocess.PIPE,
@@ -134,7 +209,6 @@ class ModuleEval:
                 env={**os.environ, **extra_env},
             )
 
-        # Wait for "ready" signal
         line = await self._proc.stdout.readline()
         ready_data = line.decode().strip()
         if ready_data != "ready":
@@ -148,7 +222,8 @@ class ModuleEval:
                     f"eval server unexpected output: {ready_data!r}"
                 )
 
-        self._jsonline = JsonLineProcess(self._proc)
+        self._jsonline = JsonLineProcess(self._proc, on_result=self._on_result)
+        self._jsonline.start()
 
     async def shutdown(self) -> None:
         """Send __SHUTDOWN__ and wait for the child to exit."""
@@ -157,6 +232,7 @@ class ModuleEval:
         try:
             if self._jsonline is not None:
                 await self._jsonline.send({"code": "__SHUTDOWN__"})
+                await self._jsonline.close()
             if self._managed is not None:
                 await self._managed.stop(timeout=5.0)
             else:
@@ -177,42 +253,52 @@ class ModuleEval:
 
     # -- commands -----------------------------------------------------------
 
-    async def exec(self, code: str) -> str:
-        """Execute *code* in the sandbox.  Returns formatted result string."""
-        if self._jsonline is None:
-            raise RuntimeError("ModuleEval not started")
-        result = await self._jsonline.request({"code": code})
-        return self._format_result(result)
+    async def exec(self, code: str, *, timeout: float = 30.0) -> str:
+        """Execute *code* in the live runtime.  Blocks; raises on timeout."""
+        self._ensure_started()
+        try:
+            result = await self._jsonline.request({"code": code}, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._record(code, f"(timeout after {timeout}s)")
+            raise
+        text = self._format_result(result)
+        self._record(code, text)
+        return text
 
-    async def vars(self) -> str:
-        """List namespace contents — name → type.
+    async def aexec(self, code: str) -> str:
+        """Fire *code* without waiting.  Result is recorded into history when it
+        arrives.  Returns the request id."""
+        self._ensure_started()
+        rid = await self._jsonline.fire({"code": code})
+        self._in_flight[rid] = code
+        return rid
 
-        Uses __vars__ protocol command (not exec), so works even when
-        SANDBOX_BUILTINS blocks __import__.
-        """
-        if self._jsonline is None:
-            raise RuntimeError("ModuleEval not started")
-        result = await self._jsonline.request({"code": "__vars__"})
-        ns = result.get("vars", {})
-        if not ns:
-            return "(empty namespace)"
-        return json.dumps(ns, indent=2)
-
-    async def api(self, name: str | None = None) -> str:
-        """Reflect on the sandbox namespace.
-
-        Without *name*: full get_interface() — source + attr blocks.
-        With *name*: single-object detail.
-        """
-        if self._jsonline is None:
-            raise RuntimeError("ModuleEval not started")
-        msg: dict = {"code": "__api__"}
-        if name:
-            msg["name"] = name
-        result = await self._jsonline.request(msg)
-        return result.get("api", "(no api info)")
+    def history(self, n: int = 10) -> str:
+        """Recent executed commands + result summaries (in-memory, oldest→newest)."""
+        if not self._history:
+            return "(no executed commands)"
+        lines: list[str] = []
+        for code, text in list(self._history)[-n:]:
+            lines.append(f">>> {self._summarize(code, limit=80)}")
+            if text:
+                lines.append(f"    {self._summarize(text, limit=200)}")
+        return "\n".join(lines)
 
     # -- internal -----------------------------------------------------------
+
+    def _ensure_started(self) -> None:
+        if self._jsonline is None:
+            raise RuntimeError("ModuleEval not started")
+
+    def _on_result(self, result: dict) -> None:
+        rid = result.get("id")
+        code = self._in_flight.pop(rid, None)
+        if code is None:
+            return
+        self._record(code, self._format_result(result))
+
+    def _record(self, code: str, text: str) -> None:
+        self._history.append((code, text))
 
     @staticmethod
     def _format_result(result: dict) -> str:
@@ -228,3 +314,8 @@ class ModuleEval:
         if ret is not None:
             parts.append(f"__result__: {ret}")
         return "\n".join(parts) if parts else "(executed, no output)"
+
+    @staticmethod
+    def _summarize(s: str, *, limit: int) -> str:
+        s = " ".join(s.split())
+        return s if len(s) <= limit else s[: limit - 1] + "…"
