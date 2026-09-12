@@ -1,16 +1,14 @@
 """Camera vision node entry point.
 
-Start:  moss nodes run nodes/visions/camera    # fore, CLI is owner
-Debug:  ../.venv/bin/python main.py             # ad-hoc (from_proc identity)
-See it: open http://127.0.0.1:8765/stream       # MJPEG viewer
+Start:  moss nodes run nodes/visions/camera                    # fore, CLI is owner
+        moss nodes run nodes/visions/camera -- --camera 1 --port 9000
+Debug:  ../.venv/bin/python main.py                            # ad-hoc (from_proc identity)
+See it: open http://127.0.0.1:8765/stream                       # MJPEG viewer
 
-Config is cell-level via `.env` (copy `.env.example`); loaded first via
-dotenv. Defaults: camera 0, 640x480, fps 2.0, watch on at start.
-
-Follows the qt_screen node pattern: heavy deps (cv2/aiohttp) live in this
-node's venv; main() is a thin shell that wires an OpenCV source into a
-cv2-agnostic CameraController, serves a local MJPEG viewer, and provides the
-channel. See nodes/visions/README.md for the family contract.
+Config is cell-level env (dotenv loads `.env`; copy `.env.example`). Two launch
+arguments override env defaults: `--camera N` (which device) and `--port N`
+(where the local viewer binds). The device is owned by the node lifecycle —
+opened here on start, closed on stop; `watch` does not touch the device.
 """
 from __future__ import annotations
 
@@ -25,7 +23,6 @@ sys.path.insert(0, str(_NODE_DIR / "src"))
 
 from dotenv import load_dotenv
 
-# Cell-level config — .env (gitignored) overrides .env.example defaults.
 load_dotenv(_NODE_DIR / ".env")
 
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -35,30 +32,40 @@ from camera_node.source import OpenCVSource, list_cameras, make_face_detector
 from camera_node.viewer import MjpegViewer
 
 
-def _bool(value: str) -> bool:
-    return value.strip().lower() in ("1", "true", "yes", "on")
+def _parse_args(argv: list[str]) -> dict[str, int | None]:
+    """Minimal argv parse for the two launch overrides: --camera N, --port N."""
+    out: dict[str, int | None] = {"camera": None, "port": None}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("--camera", "--port") and i + 1 < len(argv):
+            out[arg.lstrip("--")] = int(argv[i + 1])
+            i += 2
+            continue
+        i += 1
+    return out
 
 
-def _read_config() -> dict:
+def _read_config(argv: list[str]) -> dict:
+    overrides = _parse_args(argv)
+    index = overrides["camera"] if overrides["camera"] is not None else int(os.getenv("CAMERA_INDEX", "0"))
+    port = overrides["port"] if overrides["port"] is not None else int(os.getenv("VIEWER_PORT", "8765"))
     return {
-        "index": int(os.getenv("CAMERA_INDEX", "0")),
+        "index": index,
         "width": int(os.getenv("CAMERA_WIDTH", "640")),
         "height": int(os.getenv("CAMERA_HEIGHT", "480")),
-        "fps": float(os.getenv("CAMERA_FPS", "2.0")),
-        "watch_on_start": _bool(os.getenv("WATCH_ON_START", "true")),
+        "fps": float(os.getenv("CAMERA_FPS", "10.0")),
         "viewer_host": os.getenv("VIEWER_HOST", "127.0.0.1"),
-        "viewer_port": int(os.getenv("VIEWER_PORT", "8765")),
+        "viewer_port": port,
     }
 
 
 async def main(matrix: Matrix) -> None:
     logger = matrix.logger or logging.getLogger("moss.visions.camera")
-    cfg = _read_config()
+    cfg = _read_config(sys.argv[1:])
     logger.info("camera node starting (config=%s)", cfg)
 
     source = OpenCVSource(cfg["index"], cfg["width"], cfg["height"])
-    cameras = list_cameras()
-
     controller = CameraController(
         matrix,
         source=source,
@@ -69,8 +76,8 @@ async def main(matrix: Matrix) -> None:
         fps=cfg["fps"],
         resolution=(cfg["width"], cfg["height"]),
     )
+    controller.open()  # device owned by node lifecycle; the probe already gated launch
 
-    # Minimal GUI: local MJPEG viewer so a human sees the ghost's view.
     viewer = MjpegViewer(
         controller.latest_jpeg,
         host=cfg["viewer_host"],
@@ -78,28 +85,22 @@ async def main(matrix: Matrix) -> None:
     )
     await viewer.start()
 
-    # Perception loop: capture/analyze/publish only when watch is on.
-    watch_task = asyncio.create_task(controller.run_loop())
-
-    # Watch on at start (cell-level default) — open camera + begin capture.
-    if cfg["watch_on_start"]:
-        await controller.watch(True)
-
-    # Presence announcement (authorization seed — see CameraController.authorize).
+    # Presence announcement (authorization seed — the ghost learns a camera came online).
     try:
         await matrix.publish_event(
-            f"camera node alive ({len(cameras)} camera(s)); "
-            f"viewer http://{cfg['viewer_host']}:{cfg['viewer_port']}/stream"
+            f"camera node alive; viewer http://{cfg['viewer_host']}:{cfg['viewer_port']}/stream"
         )
     except Exception as e:
         logger.debug("publish_event failed: %s", e)
 
+    loop_task = asyncio.create_task(controller.run_loop())
+
     try:
         await matrix.provide_channel(controller.as_channel())
     finally:
-        watch_task.cancel()
+        loop_task.cancel()
         await viewer.stop()
-        source.close()
+        controller.close()
 
 
 if __name__ == "__main__":

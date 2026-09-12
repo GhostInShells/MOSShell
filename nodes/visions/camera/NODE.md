@@ -1,43 +1,38 @@
 ---
 name: 'camera'
-description: 'Camera vision — persistent capture, face detection, local MJPEG viewer of the ghost''s field of view.'
+description: 'Camera vision — capture a frame, toggle continuous perception (watch), and stream the live field of view for a human viewer.'
 category: visions
 singleton: true
 # 共享 visions venv 在 nodes/visions/ — 相对 node cwd 解析
 exec:
   command: ../.venv/bin/python
   args: main.py
+# 启动前探针: 依赖 / 策略 / 设备可用性, nonzero+stderr 即拒绝拉起并给出原因
+check:
+  command: ../.venv/bin/python
+  args: check.py
 ---
 
-Camera vision node. Persistent OpenCV capture (green light stays on), rolling
-frame cache, face detection → typed `vision/face` FaceTopic when watch on, and
-a local MJPEG stream so a human can see what the ghost's camera sees.
+Camera vision node. The device is owned by the node lifecycle (opened on start,
+closed on stop). `watch` only gates whether a fresh frame rides each round of
+context — it does not touch the device.
 
-The camera perception bit is privacy-sensitive — this is a vision family
-awareness ("知情"), see `nodes/visions/README.md` for the authorization seed.
+## Configuration
 
-## Configuration (safe bounds)
+Cell-level env (copy `.env.example`): `CAMERA_INDEX`, `CAMERA_WIDTH` /
+`CAMERA_HEIGHT`, `CAMERA_FPS`, `VIEWER_HOST` / `VIEWER_PORT`, and the policy gate
+`CAMERA_ALLOW` (set to `0` / `false` / `no` / `off` to refuse launch).
 
-Cell-level defaults via `.env` (copy `.env.example`): `CAMERA_INDEX`,
-`CAMERA_WIDTH`/`CAMERA_HEIGHT`, `CAMERA_FPS`, `WATCH_ON_START`,
-`VIEWER_HOST`/`VIEWER_PORT`. Loaded at startup by dotenv; runtime re-config
-via commands:
+Two launch arguments override env defaults:
 
-- `set_config(fps=0.5..30, resolution="640x480"|"1280x720"|"1920x1080")`
-- `get_config()` — read current safe-bound config
-- `list_cameras()` / `set_camera(index)`
+    moss nodes run nodes/visions/camera -- --camera 1 --port 9000
 
-## CTML invocation
-
-    <camera:watch on="true" />
-    <camera:capture />
-    <camera:detect_faces />
-    <camera:status />
-    <camera:set_config fps="5.0" resolution="1280x720" />
+Runtime re-config within safe bounds via `set_config(fps=0.5..30,
+resolution="640x480"|"1280x720"|"1920x1080")`.
 
 ## View
 
-Open `http://127.0.0.1:8765/stream` in a browser to see the field of view (MJPEG).
+Open `http://127.0.0.1:8765/stream` in a browser for the live field of view (MJPEG).
 
 ## Debug
 

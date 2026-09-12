@@ -58,6 +58,14 @@ class OpenCVSource:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return Image.fromarray(rgb)
 
+    def set_resolution(self, width: int, height: int) -> None:
+        """Apply a new resolution to the already-open capture without re-opening."""
+        if self._cap is not None and self._cap.isOpened():
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self._width = width
+        self._height = height
+
     def close(self) -> None:
         if self._cap is not None:
             self._cap.release()

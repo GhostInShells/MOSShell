@@ -6,12 +6,16 @@ Run from node root:
 """
 import os
 import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from ghoshell_moss.core.concepts.command import Observe
+from ghoshell_moss.message import Base64Image
 
 from camera_node.camera import CameraController
 
@@ -26,6 +30,9 @@ class FakeSource:
     def open(self, index=None, width=None, height=None):
         self._opened = True
         return True
+
+    def set_resolution(self, width=None, height=None):
+        return None
 
     def grab(self):
         return self.frame if self._opened else None
@@ -57,6 +64,14 @@ async def run(chan, ctml):
     return await tasks[0]
 
 
+def _has_image(messages) -> bool:
+    for m in messages:
+        for c in m.as_contents():
+            if Base64Image.from_content(c) is not None:
+                return True
+    return False
+
+
 @pytest.mark.asyncio
 async def test_status_shape():
     ctrl = make_controller()
@@ -77,11 +92,11 @@ async def test_watch_toggle():
 
 
 @pytest.mark.asyncio
-async def test_capture():
+async def test_capture_returns_image():
     ctrl = make_controller()
     result = await run(ctrl.as_channel(), "<camera:capture />")
-    assert "captured 64x48" in result
-    assert len(ctrl._cache) == 1
+    assert isinstance(result, Observe)
+    assert _has_image(result.messages)
 
 
 @pytest.mark.asyncio
@@ -109,19 +124,26 @@ async def test_list_cameras():
     assert result[0]["index"] == 0
 
 
-@pytest.mark.asyncio
-async def test_detect_faces():
+def test_context_no_image_when_watch_off():
     ctrl = make_controller()
-    result = await run(ctrl.as_channel(), "<camera:detect_faces />")
-    assert result[0]["cx"] == 0.25
+    ctrl._latest = (time.time(), Image.new("RGB", (8, 8)))
+    msgs = ctrl._context()
+    assert not _has_image(msgs)
 
 
-@pytest.mark.asyncio
-async def test_context_has_frame():
+def test_context_image_when_watch_on_and_fresh():
     ctrl = make_controller()
-    chan = ctrl.as_channel()
-    await run(chan, "<camera:capture />")
-    msgs = await ctrl._context()
-    names = {m.name for m in msgs}
-    assert "__camera_frame__" in names
-    assert "__camera_status__" in names
+    ctrl._watch_on = True
+    ctrl._latest = (time.time(), Image.new("RGB", (8, 8)))
+    msgs = ctrl._context()
+    assert _has_image(msgs)
+
+
+def test_context_no_address_leak():
+    ctrl = make_controller()
+    ctrl._watch_on = True
+    ctrl._latest = (time.time(), Image.new("RGB", (8, 8)))
+    msgs = ctrl._context()
+    text = msgs[0].to_content_string()
+    assert "<camera:" not in text
+    assert "nodes/" not in text

@@ -30,7 +30,7 @@ from ghoshell_container import IoCContainer
 from typing_extensions import Self
 
 from ghoshell_moss.core import ChannelRuntime
-from ghoshell_moss.message import Message
+from ghoshell_moss.message import Message, Base64Image
 from ghoshell_moss.core.concepts.command import Command, Observe, ObserveError
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.channel import Channel
@@ -200,6 +200,18 @@ class CommandUtil:
         """Return information that must be observed immediately. It actually returns an
         Observe object, but a command may declare its return type as str."""
         return Observe(messages=[Message.new().with_content(value)])
+
+    @classmethod
+    def observe_image(cls, text: str, image: Image.Image, *, format: str = "JPEG") -> 'Observe':
+        """Return a text + image observation that must be observed immediately.
+
+        Like ``observe``, it returns an ``Observe`` while the command may declare its
+        return type as ``str``. The image is embedded as a ``Base64Image`` content part.
+        ``format`` is the PIL save format (default JPEG keeps frames compact).
+        """
+        return Observe(messages=[
+            Message.new().with_content(text, Base64Image.from_pil_image(image, format=format))
+        ])
 
     @classmethod
     def raise_observe(cls, value: str) -> None:
