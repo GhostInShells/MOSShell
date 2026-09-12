@@ -44,6 +44,9 @@ class _MockStream(RecognitionStream):
     def on_segment(self, callback) -> None:
         pass
 
+    def on_event_creating(self, callback) -> None:
+        pass
+
     def commit(self) -> None:
         pass
 

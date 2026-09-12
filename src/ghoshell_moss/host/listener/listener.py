@@ -9,7 +9,7 @@
 import asyncio
 import contextlib
 import logging
-from typing import AsyncIterable, Callable, Optional
+from typing import AsyncIterable, Awaitable, Callable, Optional
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
@@ -160,6 +160,7 @@ class HostListenerState(ListenerState):
         self._audio_observers: list[Callable[[AudioChunk], None]] = []
         self._result_observers: list[Callable[[RecognitionEvent], None]] = []
         self._segment_observers: list[Callable[[RecognitionSegment], None]] = []
+        self._event_creating_observers: list[Callable[[RecognitionEvent], Awaitable[None] | None]] = []
 
     # ── ListenerState contract ──
 
@@ -173,6 +174,8 @@ class HostListenerState(ListenerState):
         await self._consumer.__aenter__()
         self._recognition = self._asr.recognize(self._audio_gen())
         self._recognition.on_segment(self._dispatch_segment)
+        for cb in self._event_creating_observers:
+            self._recognition.on_event_creating(cb)
         self._pump_task = asyncio.create_task(self._pump())
         return self
 
@@ -215,6 +218,15 @@ class HostListenerState(ListenerState):
     def on_recognition_segment(self, callback: Callable[[RecognitionSegment], None]) -> Discard:
         self._segment_observers.append(callback)
         return _make_discard(self._segment_observers, callback)
+
+    def on_event_creating(
+            self,
+            callback: Callable[[RecognitionEvent], Awaitable[None] | None],
+    ) -> None:
+        # recognition 懒开: 存 observer, __aenter__ 创建 recognition 后透传.
+        self._event_creating_observers.append(callback)
+        if self._recognition is not None:
+            self._recognition.on_event_creating(callback)
 
     # ── internals ──
 

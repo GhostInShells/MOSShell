@@ -11,9 +11,10 @@
 """
 import asyncio
 import contextlib
+import inspect
 import logging
 import time
-from typing import AsyncIterable, Callable, Optional
+from typing import AsyncIterable, Awaitable, Callable, Optional
 
 import numpy as np
 import websockets
@@ -71,6 +72,7 @@ class VolcengineSaucASR(ASR):
             sample_rate=self._config.sample_rate,
             bits=self._config.bits,
             channel=self._config.channel,
+            vad_end_window_ms=self._config.params.end_window_size,
             params_schema=VolcengineSaucParams.model_json_schema(),
             params=self._config.params.model_dump(),
         )
@@ -153,6 +155,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._closed = False
         self._fatal_error: Exception | None = None
         self._on_segment_callback: Callable[[RecognitionSegment], None] | None = None
+        self._event_creating_callbacks: list[Callable[[RecognitionEvent], Awaitable[None] | None]] = []
 
         # 当前 segment 的 audio + text (整个 turn 一份).
         self._current_audio: list[np.ndarray] = []
@@ -178,6 +181,12 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
 
     def on_segment(self, callback: Callable[[RecognitionSegment], None]) -> None:
         self._on_segment_callback = callback
+
+    def on_event_creating(
+            self,
+            callback: Callable[[RecognitionEvent], Awaitable[None] | None],
+    ) -> None:
+        self._event_creating_callbacks.append(callback)
 
     def commit(self) -> None:
         """结束当前 segment: 让 send loop 发 NEG, 拿尾包后切段开下一 turn."""
@@ -346,6 +355,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
                     break
 
                 for chunk in self._parse_result(response.payload_msg):
+                    await self.dispatch_event_creating(chunk)
                     await self._queue.put(chunk)
 
                 if response.is_last_package:
@@ -360,6 +370,24 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             self._report_error(e)
             await self._queue.put(self._tail_result(text=self._segment_text, error=str(e)))
             self._cut_segment()
+
+    # ── event creating (commit-decision hook) ──
+
+    async def dispatch_event_creating(self, event: RecognitionEvent) -> None:
+        """public-internal: 事件创建分派 — 由 _receive_loop 在 parse 后、put 前调用,
+        也供测试验证两种回调形态的分派行为.
+
+        awaitable callback → inline await (blocking consumption point);
+        sync callback → offload to a thread (non-blocking, parallel).
+        """
+        for cb in list(self._event_creating_callbacks):
+            try:
+                if inspect.iscoroutinefunction(cb):
+                    await cb(event)
+                else:
+                    await asyncio.to_thread(cb, event)
+            except Exception:
+                self._logger.exception("%s on_event_creating callback failed", self._log_prefix)
 
     # ── parse ──
 

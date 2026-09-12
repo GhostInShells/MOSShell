@@ -13,7 +13,7 @@ runtime self-describing surface.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AsyncIterable, Callable
+from typing import AsyncIterable, Awaitable, Callable
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -127,9 +127,10 @@ class RecognitionSegment:
 class ASRInfo(BaseModel):
     """Runtime self-describing info — mirrors TTSInfo.
 
-    The model reads get_info() first: the audio input contract (sample_rate/bits/channel)
-    plus the JSON schema and current values of the tunable behavior params. Then
-    configure() turns the behavior knobs for the next recognize(). Each implementation
+    The model reads get_info() first: the audio input contract (sample_rate/bits/channel),
+    the core standard behavior param (vad_end_window_ms — cross-implementation, params-free),
+    plus the JSON schema and current values of the tunable implementation-specific params.
+    Then configure() turns the behavior knobs for the next recognize(). Each implementation
     exposes its own params BaseModel; the contract only carries the schema and current
     values as dicts.
     """
@@ -137,6 +138,12 @@ class ASRInfo(BaseModel):
     sample_rate: int = Field(default=16000, description="sample rate the ASR expects")
     bits: int = Field(default=16, description="bit depth")
     channel: int = Field(default=1, description="channel count")
+
+    vad_end_window_ms: int = Field(
+        default=0,
+        description="分句判停阈值 (ms) — 连续静音达该值判定一句结束。跨实现核心标准参数, "
+                    "与具体实现的 params 无关; 0 表示实现未定义/不支持",
+    )
 
     params_schema: dict = Field(default_factory=dict,
                                 description="json schema of tunable behavior params (each implementation exposes its own BaseModel)")
@@ -163,6 +170,27 @@ class RecognitionStream(ABC):
     @abstractmethod
     def on_segment(self, callback: Callable[[RecognitionSegment], None]) -> None:
         """Register a callback invoked at each tail cut with the audio-axis result (RecognitionSegment)."""
+
+    @abstractmethod
+    def on_event_creating(
+            self,
+            callback: Callable[[RecognitionEvent], Awaitable[None] | None],
+    ) -> None:
+        """Register a commit-decision hook, invoked the moment a RecognitionEvent is
+        parsed — before it is enqueued. Fires on FIRST/PARTIAL/CLAUSE, not on TAIL
+        (TAIL is already the commit result).
+
+        Two callback shapes, decided by the callback's own return:
+
+        - returns an Awaitable (async def): the recognizer awaits it inline — a
+          blocking consumption point. The receive loop stalls until it returns, so
+          keep it short (e.g. deciding to ``commit()``). If the callback needs
+          concurrency it must spawn its own task.
+        - returns a plain value (sync def): the recognizer offloads it to a thread
+          (``asyncio.to_thread``) — non-blocking, naturally parallel.
+
+        The commit mechanism itself is ``commit()``; this hook only decides when to
+        call it."""
 
     @abstractmethod
     def commit(self) -> None:

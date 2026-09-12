@@ -22,6 +22,9 @@ description: >-
 > 不是再做一个 app，而是收束 audio-capture 之后沉淀的所有分层概念，建一个
 > 可迭代的架构槽位。
 
+> **下一步骨架（2026-09-13）**：判停逻辑上移为 listener controller（五种聆听礼仪 +
+> 两条信号通道 + command 裁决），见 [listener-controller-skeleton.md](listener-controller-skeleton.md)。
+
 ## Motivation
 
 1. **交互模式不是进程**。当前 voice 输入由两个独立 app 提供——`sensors/listener`

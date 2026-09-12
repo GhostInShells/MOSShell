@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Callable
+from typing import Awaitable, Callable
 from typing_extensions import Self
 
 from .asr import RecognitionEvent, RecognitionSegment
@@ -89,3 +89,14 @@ class ListenerState(ABC):
     @abstractmethod
     def on_recognition_segment(self, callback: Callable[[RecognitionSegment], None]) -> Discard:
         ...
+
+    @abstractmethod
+    def on_event_creating(
+            self,
+            callback: Callable[[RecognitionEvent], Awaitable[None] | None],
+    ) -> None:
+        """透传 recognition.on_event_creating — 判停逻辑挂载点.
+
+        awaitable 回调 inline await (阻塞消费点), sync 回调 to_thread 卸载. 判停逻辑
+        是 per-session 的 (每次 listen 重新挂载), 不返回 Discard.
+        """

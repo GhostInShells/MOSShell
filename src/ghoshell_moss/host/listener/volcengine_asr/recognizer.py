@@ -154,6 +154,10 @@ class _VolcengineRecognitionStream(RecognitionStream):
     def on_segment(self, callback: Callable[[RecognitionSegment], None]) -> None:
         self._on_segment_callback = callback
 
+    def on_event_creating(self, callback) -> None:
+        # 旧实现 (volcengine_asr) 待删 — 仅满足 RecognitionStream ABC 接口.
+        pass
+
     def commit(self) -> None:
         self._commit_event.set()
 

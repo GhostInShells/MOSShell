@@ -38,6 +38,7 @@ from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
 from ghoshell_moss.contracts.configs import get_or_create_conf, ConfigStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
+from ghoshell_moss.host.listener.controller import ListenerController
 from ghoshell_moss.host.listener.listener import HostListener
 from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
 
@@ -194,15 +195,15 @@ def _banner(ctx: _Ctx, mode: str, hint: str) -> None:
 
 
 async def _run_once(ctx: _Ctx) -> _Stats | None:
-    """Listen until the first complete segment, then exit."""
+    """Listen until the first complete segment, then exit. 判停逻辑在 ListenerController."""
     listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
+    controller = ListenerController(listener=listener, asr=ctx.asr, logger=ctx.logger)
     stats = _Stats()
     translator = _PacketTranslator()
     handle = partial(
         _handle_result, translator=translator, session=ctx.session,
         emit_signals=ctx.emit_signals, json_mode=ctx.json_mode, stats=stats,
     )
-    got_segment = asyncio.Event()
 
     async with listener:
         if "not started" in ctx.capture.device_explain():
@@ -210,34 +211,15 @@ async def _run_once(ctx: _Ctx) -> _Stats | None:
             return None
         _banner(ctx, "once", "speak now — listening for one utterance, then exit. Ctrl+C to stop.\n")
 
-        state = await listener.listen()
-
-        committed = False
-
-        def on_result(result: RecognitionEvent) -> None:
-            nonlocal committed
-            handle(result)
-            # 第一句稳定 (VAD 判停) 后主动 commit, 触发 is_last_package → 切段 → 退出.
-            if result.phase == RecognitionPhase.CLAUSE and not committed:
-                committed = True
-                state.commit()
-
-        state.on_recognition_result(on_result)
-        state.on_recognition_segment(lambda _segment: got_segment.set())
-        async with state:
-            try:
-                await asyncio.wait_for(got_segment.wait(), timeout=ctx.timeout)
-            except asyncio.TimeoutError:
-                print_warning("session timeout")
-            else:
-                # Give the just-produced segment's signals a beat to flush before exit.
-                await asyncio.sleep(0.2)
+        listener.on_recognition_result(handle)
+        await controller.once(timeout=ctx.timeout)
     return stats
 
 
 async def _run_always(ctx: _Ctx) -> _Stats | None:
-    """Continuous listen; no commit, no exit — stop on cancel/timeout."""
+    """Continuous listen; commit 判停逻辑在 ListenerController, stop on cancel/timeout."""
     listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
+    controller = ListenerController(listener=listener, asr=ctx.asr, logger=ctx.logger)
     stats = _Stats()
     translator = _PacketTranslator()
     on_result = partial(
@@ -251,11 +233,9 @@ async def _run_always(ctx: _Ctx) -> _Stats | None:
             return None
         _banner(ctx, "always", "listening continuously — Ctrl+C to stop.\n")
 
-        state = await listener.listen()
-        state.on_recognition_result(on_result)
-        async with state:
-            await asyncio.sleep(ctx.timeout)
-            print_warning("session timeout")
+        listener.on_recognition_result(on_result)
+        await controller.always(timeout=ctx.timeout)
+        print_warning("session timeout")
     return stats
 
 
