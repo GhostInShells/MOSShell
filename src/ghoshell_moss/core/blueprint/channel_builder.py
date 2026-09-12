@@ -8,12 +8,15 @@ A Channel is the capability container a model drives. This module is the verb si
 the runtime model sees. Build against this surface; do not read the implementation
 (`core.py_channel`) unless you hit a bug.
 
-Two things to keep straight while building:
+Three things to keep straight while building:
 
 - direction: a command's result, progress and signal reach the model in three
   directions. See ``CommandUtil``.
 - tier: what a channel exposes to the model is cold (``instruction``), warm
   (``notice``) or hot (``context``). Each decorator below marks the tier it feeds.
+- channel path: a channel may be mounted on different trees and renamed — never restate
+  your own name, CTML tag or channel path in an ``instruction``, a command docstring, or
+  a returned message; name commands, not paths.
 
 The runtime model drives a channel through CTML: `moss ctml read`.
 """

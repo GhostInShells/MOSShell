@@ -39,6 +39,8 @@ async def test_instruction_declares_scope_and_runtime_read():
         assert "Scope boundary" in meta.instruction
         assert "ghoshell_moss" in meta.instruction
         assert "runtime" in meta.instruction
+        # 同一个 channel 会被挂到不同树上并可能改名 — instruction 不写死自己的地址.
+        assert "introspect" not in meta.instruction
 
 
 @pytest.mark.asyncio

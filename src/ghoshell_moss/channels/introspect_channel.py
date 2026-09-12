@@ -203,7 +203,7 @@ def new_introspect_channel(
     @chan.build.instruction
     def instruction() -> str:
         return (
-            "## introspect channel\n"
+            "## Introspect — the live MOSS runtime\n"
             "Reflect the LIVE MOSS runtime you are running on — not a snapshot of "
             "source files on disk. `import` resolves to the in-memory module object; "
             "reflection shows its real `__dict__`, resolved imports, live state, and "

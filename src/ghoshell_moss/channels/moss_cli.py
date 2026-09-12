@@ -4,6 +4,9 @@ exec 命令用 @cli decorator 局部糖形式: 执行机器交给 decorator, cha
 Subprocesses (facade=processes) 与生命周期, 展示格式化 (exit tail / friendly-empty)
 留在 channel. 剥 moss/--ai 前缀由 input_filter 承担, 输出截断由 output_processor 承担.
 
+which 是 channel 本地命令 (不 spawn 子进程): 报告 exec 真实使用的解释器与等价调用式,
+让模型能把同一条 moss 命令带到别的环境 (bash / 脚本) 里复现, 并看出两处 env 是否分叉.
+
 Example:
     from ghoshell_moss import new_shell_main_channel
     from ghoshell_moss.channels.moss_cli import build_moss_cli_channel
@@ -12,6 +15,8 @@ Example:
     main.import_channels(build_moss_cli_channel(name="moss_cli"))
 """
 
+import platform
+import shutil
 import sys
 from pathlib import Path
 
@@ -57,6 +62,14 @@ def _cap_result(result: tuple[int, str, str]) -> tuple[int, str, str]:
     return (code, stdout, stderr)
 
 
+def _moss_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("ghoshell-moss")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def new_moss_cli_channel(
     processes: Subprocesses,
     *,
@@ -74,8 +87,9 @@ def new_moss_cli_channel(
     default_cwd = Path(cwd).resolve() if cwd else Path.cwd()
     if description is None:
         description = (
-            "Moss CLI self-control. Run moss commands (python -m ghoshell_moss.cli) "
-            "as a de-authorized channel — no bash, no shell escaping."
+            "Run moss CLI commands as a de-authorized channel — no bash, no shell "
+            "escaping. Use it in place of invoking the moss CLI yourself when the "
+            "environment offers no other shell capability."
         )
 
     chan = new_channel(name=name, description=description)
@@ -96,11 +110,15 @@ def new_moss_cli_channel(
     @chan.build.instruction
     def instruction() -> str:
         return (
-            "## moss_cli channel\n"
-            "Run any moss command via `exec` — pass ONLY the subcommand + args.\n"
-            "'python -m ghoshell_moss.cli --ai' is prepended automatically.\n"
-            "First frame: <moss_cli:exec>moss start</moss_cli:exec> to load the cognitive map.\n"
-            "Example: <moss_cli:exec>codex get-interface ghoshell_moss.channels.moss_cli</moss_cli:exec>\n"
+            "## moss CLI\n"
+            "Run moss CLI commands through `exec` — pass ONLY the subcommand + args; "
+            "the moss CLI and its --ai flag are supplied for you, and there is no shell "
+            "to escape.\n"
+            "When this environment gives you no other way to run shell commands, use "
+            "this channel in place of invoking the moss CLI yourself.\n"
+            "Before driving the moss CLI, load an entry point: `start` is the cognitive "
+            "map (what MOSS is, what it can do, where to go next); `all-commands` is the "
+            "full command tree. Append --help to a single command for its arguments.\n"
         )
 
     # 局部糖形式: decorator 做边界 (exec 模式 / 超时 / 过滤 / 加工), closure 绑定注入的
@@ -130,8 +148,8 @@ def new_moss_cli_channel(
         """
         if not text__.strip():
             return (
-                "[exec] empty command — put the moss subcommand inside the tag body, "
-                "e.g. <moss_cli:exec>codex blueprint</moss_cli:exec>"
+                "[exec] empty command — put the moss CLI subcommand inside the exec "
+                "tag body, e.g. `codex blueprint`"
             )
         code, stdout, stderr = await exec_command(text__)
         parts: list[str] = []
@@ -141,6 +159,37 @@ def new_moss_cli_channel(
             parts.append(f"[stderr]\n{stderr.rstrip()}")
         body = "\n".join(parts)
         return _cap(f"{body}\n[exit: {code}]".lstrip("\n"))
+
+    @chan.build.command(name="which", blocking=True, always_observe=True)
+    async def which() -> str:
+        """Report how this channel actually invokes the moss CLI.
+
+        Channel-local command — NOT a moss subcommand, so never route it through `exec`.
+        Read it before copying a moss command into another environment (shell, script,
+        MCP call), or to check whether the `moss` on PATH is this same install.
+        """
+        interpreter = sys.executable
+        lines = [
+            "How `exec` runs the moss CLI in this environment:",
+            f"interpreter: {interpreter}  "
+            f"({platform.python_implementation()} {platform.python_version()})",
+            f"exec argv:   {interpreter} -m ghoshell_moss.cli --ai <subcommand> [args]",
+        ]
+        on_path = shutil.which("moss")
+        if on_path is None:
+            lines.append("equivalent:  no `moss` on PATH — use the exec argv form")
+        elif Path(on_path).parent == Path(interpreter).parent:
+            lines.append(
+                f"equivalent:  {on_path} --ai <subcommand> [args]  (same environment)"
+            )
+        else:
+            lines.append(
+                f"equivalent:  {on_path} --ai <subcommand> [args]  "
+                f"(DIFFERENT environment: {Path(on_path).parent})"
+            )
+        lines.append(f"moss:        {_moss_version()}")
+        lines.append(f"cwd:         {default_cwd}")
+        return "\n".join(lines)
 
     return chan
 
