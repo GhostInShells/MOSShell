@@ -30,7 +30,7 @@ from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
 from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk
 
-from ._tools import FetchNextMomentToolCall, WaitNextMomentToolCall, InterleavedCtmlToolCall, ToolCallResult
+from ._tools import WaitActionDoneToolCall, WaitNextMomentToolCall, InterleavedCtmlToolCall, ObserveStatusToolCall, ToolCallResult
 
 _logger = get_moss_logger()
 
@@ -204,10 +204,11 @@ class DoloresRun:
     async def _handle_tool_use_event(self, event: ToolCallEvent) -> None:
         """tool/call dispatch — discriminate by name and route to the typed tool.
 
-        fetch_next_moment / interleaved_ctml → run_tool produces a ToolCallResult, returned via tool-result RPC.
-        wait_next_moment (yield) → sets self.yielded (logos() breaks on it), no tool-result.
+        wait_action_done / interleaved_ctml / observe_status → run_tool produces a ToolCallResult,
+        returned via tool-result RPC. wait_next_moment (yield) → sets self.yielded (logos() breaks on it),
+        no tool-result.
         """
-        result = await FetchNextMomentToolCall.run_tool(event, self._handle_fetch_next_moment)
+        result = await WaitActionDoneToolCall.run_tool(event, self._handle_wait_action_done)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
@@ -215,15 +216,17 @@ class DoloresRun:
         if result is not None:
             await self._dispatch_tool_result(result)
             return
+        result = await ObserveStatusToolCall.run_tool(event, self._handle_observe_status)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
         if WaitNextMomentToolCall.from_tool_call(event) is not None:
             self.yielded = True
 
-    async def _handle_fetch_next_moment(self, call: FetchNextMomentToolCall) -> ToolCallResult:
-        """fetch_next_moment handler — produce a moment, return a structured {moment_ref} result, carry the moment."""
-        if call.wait_actions_done:
-            await self._thinking.wait_actions_done()
-        if call.refresh_meta:
-            await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
+    async def _handle_wait_action_done(self, call: WaitActionDoneToolCall) -> ToolCallResult:
+        """wait_action_done handler — wait for actions, refresh metas, produce a moment, return a structured {moment_ref} result, carry the moment."""
+        await self._thinking.wait_actions_done()
+        await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
 
         moment = self._thinking.observe()
         moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
@@ -232,6 +235,10 @@ class DoloresRun:
             result={"moment_ref": moment_ref},
             moment=moment,
         )
+
+    async def _handle_observe_status(self, call: ObserveStatusToolCall) -> str:
+        """observe_status handler — observe Shell running status for replan; returns the status description, produces no moment."""
+        return self._facade.status().description()
 
     async def _handle_interleaved_ctml(self, call: InterleavedCtmlToolCall) -> str:
         """interleaved_ctml handler — emit CTML mid-thought, thinking ahead of behavior (interleaved).

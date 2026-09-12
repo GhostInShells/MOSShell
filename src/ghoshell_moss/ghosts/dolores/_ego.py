@@ -331,7 +331,7 @@ class DoloresEgo:
         """Inject moment (context/inputs) + epoch + effort + thinkingToken to start a thinking turn.
 
         Model/effort are not pushed here — the ego's model selection lives on the dsh side (per-agent
-        selection, canonical UI/settings authority); the model adjusts effort itself via moss_think.
+        selection, canonical UI/settings authority); the model adjusts effort itself via moss_reasoning.
         """
         moment = thinking.moment
         moment_ref = f"{thinking.observer.epoch.index}-{moment.index}"

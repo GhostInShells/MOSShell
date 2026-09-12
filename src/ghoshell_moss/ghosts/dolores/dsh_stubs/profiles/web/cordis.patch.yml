@@ -1,4 +1,14 @@
-# 挂 dolores ghost plugin. plugin.ts 与本 patch 同目录 (profiles/web/).
+# 挂 dolores ghost plugin. 与本 patch 同目录 (profiles/web/).
 - insert:
     - id: dolores-ghost-plugin
-      name: './plugin.ts'
+      name: './moss-dolores-ghost-plugin.ts'
+
+# 压制 host 平面的毒段 (dsh web 不是第一公民):
+# - ui-deliverables       → ui:deliverable-file-references (要求 markdown 提文件, 与 CTML-first 冲突)
+# - file-reference-local  → context:file-reference (@路径输入语法, ghost 输入来自 moment 不适用)
+# web-surface (app:web-surface) 由 plugin 在 agent scope shadow 成空, harness:source 保留.
+- id: ui-deliverables
+  disabled: true
+
+- id: file-reference-local
+  disabled: true

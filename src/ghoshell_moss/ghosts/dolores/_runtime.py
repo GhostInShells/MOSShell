@@ -12,7 +12,7 @@ from ghoshell_moss.contracts.logger import get_moss_logger
 
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.mindflow import Thinking
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
@@ -67,6 +67,9 @@ class Dolores(Ghost):
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: "DoloresEgo | None" = None
         self._facade: "MShellContextFacade | None" = None
+        # Held by the ghost (not the runtime) so the ghost can wire faculties onto it and
+        # hand the same instance to controllers. Materialized on first mindflow() call.
+        self._mindflow: Mindflow | None = None
 
     # ── Ghost ABC ──────────────────────────────────
 
@@ -144,6 +147,20 @@ class Dolores(Ghost):
             return [Message.new(tag="ground").with_content(self._ground_text)]
         return []
 
+    def mindflow(self) -> Mindflow:
+        """Return the mindflow Dolores owns, materializing it on first call.
+
+        The ghost is the owner, not the runtime: it hands back the same instance the GhostRuntime
+        will register (container + runtime) and start, so a faculty can hold a handle to the live
+        perception/thought/action arbitration and wire nuclei/signals onto it. Default composition
+        (InputSignalNucleus) is preserved; the runtime start is left to MOSS.
+        """
+        if self._mindflow is None:
+            from ghoshell_moss.core.mindflow import new_default_mindflow
+
+            self._mindflow = new_default_mindflow(logger=self.logger)
+        return self._mindflow
+
     async def think(self, thinking: Thinking) -> AsyncIterator[str]:
         """Delegate to ego.run_thinking() to drive dsh reasoning — lifecycle/ending/CTML parsing all live in the run.
 
@@ -164,6 +181,8 @@ class Dolores(Ghost):
         action = await asyncio.to_thread(self._sync_stubs)
         # always override the plugin stub (active dev artifact, not version-gated) so the latest lands in ghost home.
         await asyncio.to_thread(self._sync_dsh_plugin)
+        # always override the ego preset (independent composition, follows dsh 升级 rebase).
+        await asyncio.to_thread(self._sync_dsh_preset)
         if action is not None and self._session is not None:
             self._session.output(
                 "system",
@@ -328,9 +347,23 @@ class Dolores(Ghost):
         """
         if self._home is None:
             return
-        target = self._home / ".dsh" / "profiles" / "web" / "plugin.ts"
+        target = self._home / ".dsh" / "profiles" / "web" / "moss-dolores-ghost-plugin.ts"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self._meta.dsh_plugin_stub(), target)
+
+    def _sync_dsh_preset(self) -> None:
+        """Copy the repo-owned dolores-ego preset into ghost home — always override.
+
+        The preset is the independent (non-standard) agent composition, authored in-repo under
+        dsh_preset/. Copied fresh every startup so dsh 升级 rebase 落在仓库文件上, 不在运行态.
+        """
+        if self._home is None:
+            return
+        shutil.copytree(
+            self._meta.dsh_preset_dir(),
+            self._home / ".dsh" / ".agent-presets",
+            dirs_exist_ok=True,
+        )
 
     def _resolve_dsh_home(self, home: str | Path | None) -> Path:
         if home is None:

@@ -1,0 +1,158 @@
+# Dolores ego agent preset — 独立 composition, repo 自持, 不复刻 shipped standard.
+#
+# 设计结论见 dolores-todo.md「dsh 0.1.5 升级决策」(2026-09-12) 与 O9 (2026-09-13 定稿):
+# - persona 不在这里: plugin 在 agent scope 用 `complete:true` shadow PERSONA_PREFIX_SECTION,
+#   text = create 时 python 写入的 instruction (identity + terminology + inception + protocol).
+# - keep (自迭代手): shell + filesystem + jobs + plan-mode + delegation + todo + web.
+# - drop 及理由:
+#   - skill          → MOSS 自有 skills 机制 (ghost home skills/ + moss skills), 不并行第二套.
+#   - goal           → 目标应由 loop 建立 (MOSS feature 体系即目标, 建立者是 MOSS 项目 ghost), 非 agent 自建.
+#   - compaction     → 阻塞式自动压缩, 与 ego 的 perStep gate + thinking 锁冲突, 由旁路 commit 取代.
+#   - ask-user       → 不用 dialog.
+#   - present        → web UI 呈现, 不会比 moss matrix node (流式 gui + 语音 + 肢体) 更好.
+# - delegation (#8): 先保留 standard 原样; 长期方向 = per-directory 授权 + 完全独立的 dolores clone +
+#   纯代码驱动 loop + signal 体系. 不认无状态 subagent / 无边界 agent / 无代码 workflow 或 graph.
+#   preset 机制落地后改这里很快.
+#
+# ── agent-plane composition 契约 (standard 原注释, 保留备查) ────────────────
+# 本文件是 AGENT-PLANE composition. roster 每进程 mount 一次到 standing scope, 各 session 靠
+# scope 父链 join. 带 `isolate` realm 的 service 行必须坐在 group 里 — 否则发布进 root realm,
+# 变 process-global, 同名会撞, dsh-agent-presets 在 mount 时拒绝. `true` = entry-local realm.
+# host composition (base + web cordis.yml) 持有 preset 不该有的: registry / sandbox / approval /
+# persistence / model route.
+
+# ── instruction 上限 (对齐 standard 65536; 待 _prompts.py 重写后量实际字节再调) ──
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+# `shell-env` 在 host 平面 (web.ts 注入 DSH_WEB_URL/DSH_WEB_MODE). 两个 shell 工具从 host
+# registry 消费; executor (bash-sandbox/pwsh-sandbox) 也是 host 平面.
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+# 两者注册进 host `tools` registry, 不 provide 东西, 不需要 realm. fs 服务与策略留在 host.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ────────────────────────────────────────────────────────
+# task registry 留在 host 平面; 这些是模型面控制. registry 按 owning agent 记键.
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+# plan state 本质是 per-agent, entry-local realm 是正确 lifetime.
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── delegation and workflows ────────────────────────────────────────────────
+# subagents registry 及其 spawn/fork 后端在 host 平面 (process singleton). 本 preset 贡献
+# delegation TOOLS, 从 host registry 解析. workflows 无外部读者, 共享一个 entry-local realm.
+# (长期方向见文件头 #8; 当前保留 standard 原样.)
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        modelSelectionSettings: true
+        backgroundMode: continuable
+
+    # Fork omits model selection so provider/model stay equal to the parent and
+    # the inherited history remains eligible for KV Cache reuse.
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# web 服务与 search provider 在 host 平面; 只有模型面 tool 是 per-session.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000

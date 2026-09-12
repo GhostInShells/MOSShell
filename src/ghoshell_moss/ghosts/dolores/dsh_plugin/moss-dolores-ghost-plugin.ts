@@ -1,19 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join } from 'node:path'
 
 import type { Agent, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
-import { writableRoot } from '@deepseek-ai/dsh-agent-presets'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
-import { PERSONA_ORDER, PERSONA_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 
@@ -48,7 +45,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *                       enter 不 inbox inject — claim 已在 pre-step 顶部穿越, 晚到的 inject 落下一轮.
  *                       (修正: 早期 docstring 称 context → inject 是本轮, 那是误读; 见 agent-loop claim 时序.)
  * 7. tool 面          — wait_next_moment (yield, 被动让出) + observe (主动观测, approach a
- *                       内联返回 moment content blocks) + moss_think(effort) (agent 级自救改
+ *                       内联返回 moment content blocks) + moss_reasoning(effort) (agent 级自救改
  *                       effort, 经 exec.agent 咬 per-agent selection) 已落地;
  *                       interleaved_logos / switch_model deferred (落文档不实现).
  * 8. 时序图           — 见下方 ASCII.
@@ -125,14 +122,9 @@ export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'sy
 // 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
 const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
 
-// ego 专属 preset id (目录名即 id) — plugin 侧的单一权威. 内容由 ensureEgoPreset 从
-// shipped `standard` 逐字再生, 所以这个 preset 永远跟在 standard 后面, 不手工维护.
+// ego 专属 preset id (目录名即 id) — plugin 侧的单一权威. 内容由 launcher 从 repo 自持
+// 的 dolores-ego preset 复制进 <DSH_HOME>/.agent-presets (不再从 shipped standard 逐字再生).
 const DOLORES_EGO_PRESET = 'dolores-ego'
-const DOLORES_BASE_PRESET = 'standard'
-const PRESET_COMPOSITION_FILE = 'agent.cordis.yml'
-const PRESET_METADATA_FILE = 'preset.yml'
-// ego preset 的展示元数据 — 不复用 standard 的描述, 让 picker 里能认出这是内部主脑会话.
-const DOLORES_EGO_PRESET_METADATA = 'name: Dolores Ego\ndescription: 内部使用 — Dolores 主脑会话（非 ego 请勿手动创建）。\n'
 
 const DOLORES_EGO_CREATE = `${DOLORES_API_ROOT}/ego/create`
 // 通用 session 观测面: 任意 live session 的 instruction / surface 读取 (sessionId 收在 body).
@@ -142,8 +134,6 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
-const HARNESS_IDENTITY_SECTION = 'harness:identity'
-const HARNESS_IDENTITY_ORDER = -100
 const HARNESS_IDENTITY_TEXT = 'You are an intelligent being powered by the Ghost In Shells architecture: MOSS (https://github.com/GhostInShells/MOSShell) provides the Shells, and DeepSeek Harness provides the Ghost. Your prototype is Dolores.'
 
 // ego workspace: project_home 上的 workspace, ego session 归组用, 模块级共享.
@@ -359,12 +349,9 @@ const egoTools = [
     },
   }),
   defineTool({
-    name: 'moss_fetch_next_moment',
-    description: 'Fetch the next MOSS moment now. Returns {moment_ref}; the full moment is injected into the next step context.',
-    parameters: {
-      wait_actions_done: { type: 'boolean', default: true, description: 'Wait for already-emitted actions to finish before observing, so their results are visible.' },
-      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before observing, so the facade reflects live state.' },
-    },
+    name: 'moss_wait_action_done',
+    description: 'Wait for already-emitted actions to finish, refresh channel metas, and pull the freshest moment. Returns {moment_ref}; the full moment is injected into the next step context.',
+    parameters: {},
     output: {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
@@ -376,7 +363,7 @@ const egoTools = [
         exec.signal.addEventListener('abort', () => {
           if (pendingCalls.delete(callId)) {
             rememberSettled(callId)
-            reject(new Error('moss_fetch_next_moment aborted'))
+            reject(new Error('moss_wait_action_done aborted'))
           }
         }, { once: true })
       }) as unknown as JsonValue
@@ -408,7 +395,7 @@ const egoTools = [
     },
   }),
   defineTool({
-    name: 'moss_think',
+    name: 'moss_reasoning',
     description: 'Set your reasoning effort for subsequent requests (off/low/high/max). Applies from the next step; provider/model stay under the session/UI authority.',
     parameters: {
       effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'Reasoning effort: off (no reasoning) / low / high / max.' },
@@ -420,48 +407,42 @@ const egoTools = [
     execute(args, exec) {
       // agent 级: 经 exec.agent 定位到「当前这个 agent」的 selection, 不是模块单例.
       const agent = exec.agent
-      if (agent === undefined) throw new Error('moss_think: no agent in tool execution')
+      if (agent === undefined) throw new Error('moss_reasoning: no agent in tool execution')
       const selection = egoSelections.get(agent)
-      if (selection === undefined) throw new Error('moss_think: ego selection not installed')
+      if (selection === undefined) throw new Error('moss_reasoning: ego selection not installed')
       const current = selection.current
-      if (current === undefined) throw new Error('moss_think: no model selection')
+      if (current === undefined) throw new Error('moss_reasoning: no model selection')
       const effort = mapThinkingEffort(args.effort)
       selection.current = { ...current, reasoningEffort: ReasoningEffortId(effort) }
       return effort
     },
   }),
+  defineTool({
+    name: 'moss_observe_status',
+    description: 'Observe the Shell running status now, usually to decide whether to replan. Returns the status description; does not produce a moment.',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => {
+      const callId = String(exec.callId)
+      return await new Promise<string>((resolve, reject) => {
+        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) {
+            rememberSettled(callId)
+            reject(new Error('moss_observe_status aborted'))
+          }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }),
 ]
 
-// ── ego preset 再生 (plugin boot) ──────────────────────────────────────────
-// ego 用独立 preset id 与 standard 会话区分 — identity/persona/tools/perStep 锁只落
-// ego, 非 ego 的 standard 会话完全不被碰 (今天的「非 ego session 可用」).
-//
-// preset 本体不是手工维护的副本: 每次 boot 把 shipped `standard` 的 composition 原文
-// 逐字写到 <DSH_HOME>/.agent-presets/dolores-ego/agent.cordis.yml, 所以 dsh 升级 /
-// 我们后续改 delta 都自动同步, 永不 stale. 逐字拷贝 (不 YAML round-trip) 也保住了
-// standard 里的 `!!js` 标签 (round-trip 会丢). single-flight: apply() 提前触发, ego/create
-// await 同一 promise 保证 create 前 preset 已就位.
-let egoPresetReady: Promise<void> | null = null
-
-function ensureEgoPreset(ctx: Context): Promise<void> {
-  if (egoPresetReady === null) {
-    egoPresetReady = (async () => {
-      const composition = await ctx.agentPresets.read(DOLORES_BASE_PRESET)
-      const dir = join(writableRoot(ctx.agentPresets.roots), DOLORES_EGO_PRESET)
-      await mkdir(dir, { recursive: true })
-      await writeFile(join(dir, PRESET_COMPOSITION_FILE), composition, 'utf8')
-      await writeFile(join(dir, PRESET_METADATA_FILE), DOLORES_EGO_PRESET_METADATA, 'utf8')
-    })()
-    // 失败不缓存 — 留给下一次调用重试; 这里只吞掉 unhandled rejection, 真正的错误由
-    // ego/create 的 await 上抛.
-    egoPresetReady.catch(() => { egoPresetReady = null })
-  }
-  return egoPresetReady
-}
-
-// ── per-agent model selection (moss_think 的 nibble 目标) ──────────────────
+// ── per-agent model selection (moss_reasoning 的 nibble 目标) ──────────────────
 // 每个 ego agent 一份 selection, 装在它自己的 ctx 上 (installModelSelection), 不是模块单例.
-// moss_think 经 exec.agent 找到「当前这个 agent」的 selection, 只咬 reasoningEffort — 模型每步
+// moss_reasoning 经 exec.agent 找到「当前这个 agent」的 selection, 只咬 reasoningEffort — 模型每步
 // 吃一丁点. provider/model 的权威始终是 canonical 链: picked → request/header(持久) → settings
 // 默认; 改 effort 由 agent/request 应用并落 request/header 日志, 界面自然同步.
 const egoSelections = new WeakMap<Agent, ModelSelectionRef>()
@@ -505,17 +486,29 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
   const agentCtx = agent.ctx
   // shadow 全局 harness:identity 成 GIS/MOSS 身份.
   agentCtx.effect(() => agentCtx.systemPrompt.section({
-    name: HARNESS_IDENTITY_SECTION,
-    order: HARNESS_IDENTITY_ORDER,
+    name: 'harness:identity',
+    order: agentCtx.systemPrompt.getSectionOrder('HARNESS_IDENTITY'),
     text: HARNESS_IDENTITY_TEXT,
   }), 'dolores-ego-identity.section()')
-  // shadow preset persona 成 ghost instruction (ego/create 已写入 doloresInstruction).
+  // shadow 全局 persona prefix 成 ghost instruction (ego/create 已写入 doloresInstruction).
   agentCtx.effect(() => agentCtx.systemPrompt.section({
-    name: PERSONA_SECTION,
-    order: PERSONA_ORDER,
+    name: PERSONA_PREFIX_SECTION,
+    order: agentCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
     text: doloresInstruction,
   }), 'dolores-ego-persona.section()')
-  // per-agent model selection — canonical 链读 provider/model, moss_think 只咬 effort.
+  // shadow away standard 的 persona suffix (working directory 那句).
+  agentCtx.effect(() => agentCtx.systemPrompt.section({
+    name: PERSONA_SUFFIX_SECTION,
+    order: agentCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX'),
+    text: '',
+  }), 'dolores-ego-persona-suffix.section()')
+  // shadow away host 平面的 web-surface (dsh web 不是第一公民); harness:source 保留.
+  agentCtx.effect(() => agentCtx.systemPrompt.section({
+    name: 'app:web-surface',
+    order: agentCtx.systemPrompt.getSectionOrder('WEB_SURFACE'),
+    text: '',
+  }), 'dolores-ego-web-surface.section()')
+  // per-agent model selection — canonical 链读 provider/model, moss_reasoning 只咬 effort.
   installModelSelection(agentCtx, ensureEgoSelection(agent, ctx))
   // ego tools 注册到 agent scope (scoped) — 只有 ego agent 可见.
   for (const tool of egoTools) {
@@ -584,12 +577,6 @@ export function apply(ctx: Context) {
     apply_ego_agent(agent, ctx)
   })
 
-  // ego preset 提前再生 (plugin boot 无条件重写). 失败只 warn, ego/create 会 await 同一
-  // promise 并把错误上抛.
-  ensureEgoPreset(ctx).catch((error) => {
-    ctx.logger.warn('dolores: failed to regenerate ego preset: %s', String(error))
-  })
-
   // ── 1. ego agent 创建 (点 1) ──────────────────────────────────────────
   // 入参: instruction (system prompt: baseline + identity + persona) +
   //       messages (ghost.memory: 压缩/快照/ground, ghost 侧组装后塞入).
@@ -631,9 +618,8 @@ export function apply(ctx: Context) {
         if (typeof permission !== 'string' || permission === '') {
           throw new Error('permission must be a non-empty string')
         }
-        // 0. ego 专属 preset 必须先就位 (内容 = shipped standard 的逐字再生). create 挂载
-        //    它的 id, 否则 UnknownPresetError.
-        await ensureEgoPreset(ctx)
+        // 0. ego 专属 preset 必须已就位 (由 launcher 复制 repo 自持文件). create 挂载它的 id,
+        //    否则 UnknownPresetError.
         // 1. ensure workspace over project_home, title = project_name.
         let workspace = await ctx.workspaceRegistry.resolveByPath(projectHome)
         if (workspace === undefined) {

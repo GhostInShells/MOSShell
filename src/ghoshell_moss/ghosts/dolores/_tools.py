@@ -13,7 +13,7 @@ from typing_extensions import Self
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 
-__all__ = ["FetchNextMomentToolCall", "WaitNextMomentToolCall", "InterleavedCtmlToolCall"]
+__all__ = ["WaitActionDoneToolCall", "WaitNextMomentToolCall", "InterleavedCtmlToolCall", "ObserveStatusToolCall"]
 
 _ResultType = dict | list | str | None
 
@@ -105,21 +105,12 @@ class ToolCallParameter(BaseModel, ABC):
         )
 
 
-class FetchNextMomentToolCall(ToolCallParameter):
-    """moss_fetch_next_moment — actively fetch the next frame: observe a moment, return {moment_ref} and inject its context."""
-
-    wait_actions_done: bool = Field(
-        default=True,
-        description="wait for already-emitted actions to finish before observing, so their results are visible.",
-    )
-    refresh_meta: bool = Field(
-        default=False,
-        description="refresh channel metas before observing, so the facade reflects live state.",
-    )
+class WaitActionDoneToolCall(ToolCallParameter):
+    """moss_wait_action_done — wait for actions to finish, refresh metas, then pull the freshest moment: return {moment_ref} and inject its context."""
 
     @classmethod
     def tool_name(cls) -> str:
-        return "moss_fetch_next_moment"
+        return "moss_wait_action_done"
 
 
 class WaitNextMomentToolCall(ToolCallParameter):
@@ -146,3 +137,11 @@ class InterleavedCtmlToolCall(ToolCallParameter):
     @classmethod
     def tool_name(cls) -> str:
         return "moss_interleaved_ctml"
+
+
+class ObserveStatusToolCall(ToolCallParameter):
+    """moss_observe_status — observe the Shell running status now (usually to decide replan); returns the status description, produces no moment."""
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_observe_status"

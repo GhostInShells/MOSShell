@@ -20,6 +20,8 @@
 
 > **2026-09-12 收尾**：D25 → `fixed`。need_observe 亮着不思考的真正原因不是 observe 回路断，而是续帧被 plugin 的「inputs 为空不起 turn」规则挡成缓冲帧。`needsObserve` 标记 + steer 开轮已落地（`_ego.py` / `plugin.ts`）。同一条根因串起三个现象：续帧滞留、下一轮帧顺序错乱、fetch 的 moment 迟到一轮。**待重启回归**。D30/D25 均未做全量回归（用户明确叫停），只跑了 `test_dolores.py`。
 
+> **2026-09-12 dsh 0.1.5 升级 + prompt 架构对齐**：环境升 Node 24.21（`import.meta.main` 需 ≥24.2；TUNA nodejs-release 已冻结，改 npmmirror 精确版本）；`~/.dsh/profiles/node_modules` 两个 pnpm 实体包清掉（heal 重建 symlink）。对齐结论：standard 的 host 平面三段（web-surface / deliverable-file-references / file-reference）由 host bundle 注入，改用选择性压制（plugin shadow web-surface + patch disable ui-deliverables/file-reference-local，保留 harness:source 与 TOOL_* 工具散文）；dsh `renderContextSnapshot` 是 append+文字 supersede 而非 replace-op，不可借作 MOSS dynamic context。决策详见文末「dsh 0.1.5 升级决策」。
+
 ## 缺陷
 
 | # | 状态 | Pri | 问题 | 发现 | 归口 |
@@ -43,7 +45,7 @@
 | D17 | invalid | P1 | 语言不匹配 — 中文输入，ghost 全文英文回答，markdown 内反而中文（未复现，待重观；暂判非 bug） | dogfood-3 | — |
 | D18 | invalid | P1 | markdown 内自指重新发声 — 判定非 bug(模型输出问题)；parser 正确处理 `<|Markdown|>…</|Markdown|>` 成对 escape(已有单测 `test_dolores.py`)，可补边界单测 | dogfood-3 | — |
 | D19 | open | P2 | 长篇大论 — 缺「简洁/少即是多」规则（旧 persona/behaviors 有，重写丢失）。待补进交互礼仪；(已把 `__content__` 从语音拿掉，只有 `say` 发声) | dogfood-3 | — |
-| D20 | open | P1 | fetch wait_actions_done 三处 — 默认 True / 工具描述已改「Wait for already-emitted...」(与默认一致, 不再"Fetch now") / prompt 仍「optionally waiting」，与 default=True 轻微张力待统一 | dogfood-3 | — |
+| D20 | fixed | P1 | fetch wait_actions_done 三处张力 — 已随工具改名 `moss_fetch_next_moment`→`moss_wait_action_done` 且参数拿掉(无参, 默认 always wait+refresh+observe) 消解 | dogfood-3 | 2026-09-13 |
 | D21 | fixed | P2 | dsh 侧先停 + 界面无中断 — teardown 时序已修(interpreter __aexit__ 清 clear_after_exit + mindflow 改 wait_compiled，待回归)；**界面无中断能力/双向同步未启动调研** | dogfood-3 | `4fc8b0c5` |
 | D22 | fixed | P1 | 图片协议传输 — MOSS 图片消息 → dsh 图片消息: media_type 按扩展名猜(JPEG 存成 .png → 声明 image/png)，dsh attachment admission 拒 `Declared image type does not match its bytes`。已改字节头嗅探；3080 实机验证 accepted 且模型真读到图 | dogfood-3 | `message/contents/images.py` from_file 字节嗅探 (待 commit) |
 | D23 | fixed | P2 | shell trajectory 验证方式 — help(notice)+interface 各自独立判断 delta 已落地，不再每次一起传 | dogfood-3 | `36dcaefd` |
@@ -78,3 +80,43 @@
 | O6 | open | Matrix 能力声明 — 通过 matrix 可见/可管理自身能力，默认只提供一小部分（修正「行动」修辞过度） |
 | O7 | open | HARNESS_IDENTITY_TEXT 调整 — 考虑尊重 dsh，不再过度强调 GIS/MOSS 身份 |
 | O8 | open | GhostRuntime 内核不允许崩溃 — ego 坏了要有感知，运行时异常经 tui error output 打印 |
+| O9 | fixed | dolores-ego preset 工具面 keep/drop — 定稿 2026-09-13：keep agent-instructions/shell/fs/jobs/plan-mode/delegation/todo/web；drop persona(plugin shadow)/skill(MOSS 自有)/goal(loop 建立)/compaction(旁路 commit 取代)/ask-user/present。理由见 agent.cordis.yml 头注释。delegation 长期要换 per-directory 授权 + dolores clone + 代码驱动 loop(#8) |
+| O10 | open | dynamic context 落点 — dsh renderContextSnapshot 是 append 非 replace；MOSS dynamic context 用自身 log replace op（仅 thinking/enter、工具调用不携带、turn/start 替换上一轮），具体落点待定 |
+| O11 | open | dsh 0.1.5 传输协议重接 — mux `/api/events.mux`→`/api/remote.mux` + `server-request`→`emit/waterfall/cancel` 帧 + `$events/result` RPC + token 鉴权；事件层小修(assistant/chunk→attempt、todo/write 移出、+system/message)。launcher.py/client.py/session.py/types 重写，生命周期已解耦故边界 bounded |
+
+## dsh 0.1.5 升级决策 (2026-09-12)
+
+> 决策记录，非缺陷。dsh 0.1.5 升级引发的 prompt / 工具架构对齐结论。
+
+### 环境升级（已完成）
+
+- dsh 0.1.5 CLI 入口 `if (import.meta.main)` 需 Node ≥ 24.2.0；已升 24.21.0。nvm 全局包按 Node 版本隔离，需在新版本下重装 `@deepseek-ai/dsh@0.1.5-rc.1`。
+- 镜像：TUNA `nodejs-release` 冻结在 v24.1.0（已废）；npmmirror CDN 文件真、`index.json` 过期 → 必须精确版本 `nvm install v24.21.0`。
+- `~/.dsh/profiles/node_modules/@deepseek-ai/{dsh-sdk-protocol,dsh-sdk-jsonrpc-server}` 是旧 pnpm 实体包，heal 拒收 → 移走，heal 用 symlink 重建。
+
+### 0.1.5 的 prompt 表面破坏
+
+- `PERSONA_SECTION` / `PERSONA_ORDER` 删除 → `PERSONA_PREFIX_SECTION`(order 0) / `PERSONA_SUFFIX_SECTION`(order 10200)；order 用 `getSectionOrder()` 取值，勿硬编码。
+- `@deepseek-ai/dsh-persona` config：`text` → `prefix`(必填)/`suffix`，新增 `complete` / `includeRuntimeContext`。
+- standard preset 其它漂移（`command-goal`/`present`/`tool-web.fetch:true`/`modelSelectionSettings`）不再逐字跟随，见下。
+
+### 传输协议破坏（未修, 独立大活）
+
+- mux WS 端点 `/api/events.mux` + `/api/events.host` 整体删除 → 换成 Gateway Remote Stream：`/api/remote.mux`（`packages/api/gateway/src/stream-protocol.ts`）。
+- 帧格式从 `{type:'server-request', method, payload}` 换成 `{type:'ready'|'emit'|'waterfall'|'cancel'}`；waterfall 回话走 `$events/result` HTTP RPC（`$events` 是逻辑流端点）。
+- 鉴权：mux upgrade 过 `connection.requestRejection`，token 经 `authenticatedUrl`（部署后防攻击那层）。
+- **事件结构是小改**：13 种事件大体稳。`assistant/chunk`→`assistant/attempt`(chunk→stream 数组)、`todo/write` 移出核心 SessionEventMap、新增 `system/message`。`tool/call`/`tool/result` 载荷稳定（工具桥不动）。
+- 生命周期逻辑与通讯已解耦（防御设计），修复边界 = launcher 传输层重写 + session_events 小修，两件事解耦。落点 → O11。
+
+### prompt 架构决策
+
+1. **独立 dolores-ego preset**（取代「逐字复刻 standard + plugin shadow」）。文件为 repo 自持，launcher 启动前复制进 `.agent-presets/dolores-ego/agent.cordis.yml`，每次覆盖；plugin 的 `ensureEgoPreset` 删除。dsh 升级时手动 rebase 这一文件（跟随版本、非 delta、非运行时 transform）。
+2. **选择性压制（放弃 `complete:true`）**：shadow persona prefix(instruction) + suffix(空) + harness:identity(GIS/MOSS) + app:web-surface(空)；patch 层 disable `ui-deliverables` + `file-reference-local`；保留 `surfaceContext:true` 让 `harness:source` 与 TOOL_* 工具散文由 dsh 自己注册、自动跟版本。只压掉 web-surface / deliverable-file-references / file-reference 三个毒段，其余官方散文（工具使用纪律）保留。
+3. **分段结构在 dsh 侧，文本 python 侧 create 时改写**（非 enter；create 写 = system prompt session 内静态 = cache 安全）。
+4. **preset 工具面**（O9）：shell/fs/jobs/plan-mode/delegation/todo/web 留，skill/goal/compaction/ask-user/present 砍。ghost 的手 = MOSS channel（CTML 实时交互）+ dsh coding 工具（自迭代）。
+5. **plugin 改名 `moss_dolores_plugin.ts`**（注册路径变）；复制责任交 launcher 后 plugin 只做协议桥 + moss_* + shadow。
+
+### runtime-context 边界
+
+- dsh `renderContextSnapshot` = append + 按文本 dedupe + 文字 "supersede earlier snapshots"，**非 replace-op**；且 `preStep` 每步注入、会带进工具调用。**不可借作 MOSS dynamic context**。
+- MOSS dynamic context 用 **MOSS 自己的 log replace op**：仅 thinking/enter、工具调用不携带、每次 turn/start 替换上一轮（原设计如此）。落点 → O10。
