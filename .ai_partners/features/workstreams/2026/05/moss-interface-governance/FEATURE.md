@@ -274,6 +274,22 @@ contracts 被最多模块引用；blueprint 的 matrix 与 mindflow 承载最重
     `cell` / `host` / `matrix` 保留中文正文，英文导言置于顶部。
   - 验证：`py_compile` 全部通过；316 tests passed；`get-interface` 反射无死链。
 
+- 2026-09-12 (P3-L2 起点，`channel_builder.py`)：
+  - 该文件全部 docstring 英文化（模块头 + `CommandUtil` + `Builder` 全部 decorator +
+    类型别名 + `MutableChannel` / `new_channel` / `ChannelCreator`）——
+    这是纪律 2「不读实现即可使用」的代表案例，故按全英文处理，不留 L3 中文正文。
+  - 模块头新增两套机制提示：命令期的三数据方向（result / progress / signal）与
+    上下文期的冷 / 温 / 热分层（`instruction` / `notice` / `context`），
+    每个 builder decorator 标注自己属于哪一层，机制只在模块头介绍一次。
+  - `command` 重定位：docstring 受众是**运行时模型**（Code as Prompt，逐字反射成 prompt），
+    不是人类开发者；要求一眼可读。
+  - `instruction` 收紧冷数据红线（不得重列 command）；`with_binding` 的
+    `CommandCtx.get_contract` 过期指向修正为 `CommandUtil.get_contract`。
+  - 面向开发者的哲学段（`instruction` 的 Channel as Context Components）按 KD-B
+    迁移为 `#` 注释，中文原文保留。
+  - 验证：剥离 docstring 后 AST 与改前完全等价（代码零改动）；`py_compile` 通过；
+    `get-interface` 反射全英文；`tests/ghoshell_moss/default/blueprint` 测试通过。
+
 ### 剩余工作面
 
 - **P3-L2**：blueprint 其余简单 docstring / comment 的英文替换（逐模块推进）。

@@ -1,28 +1,21 @@
 """
-How to build a Channel — the single entry point for channel construction in MOSShell,
-written as global knowledge for developer models.
-the path of this module is ghoshell_moss.core.blueprint.channel_builder
+How to build a Channel — the entry point for channel construction in MOSShell.
+module path: `ghoshell_moss.core.blueprint.channel_builder`
 
 A Channel is the capability container a model drives. This module is the verb side:
-``Builder`` / ``new_channel`` construct a channel, ``CommandUtil`` carries the three data
-directions between a channel and the model, and ``ChannelMeta`` (in
-`core.concepts.channel`) is the noun side — the authoritative contract for what the model
-sees.
+``Builder`` / ``new_channel`` construct one, ``CommandUtil`` is what a command calls,
+``ChannelMeta`` (in `core.concepts.channel`) is the noun side and the authority on what
+the runtime model sees. Build against this surface; do not read the implementation
+(`core.py_channel`) unless you hit a bug.
 
-Channel 与模型 (大脑) 之间有三个数据方向, 构建 channel 时先分清信息该走哪条:
+Two things to keep straight while building:
 
-- 下行 (result): command 返回值 -> `<result>` 消息. 观察语义三级:
-  `return Any` (反馈进上下文, 不触发思考) / `return CommandUtil.observe(...)` (触发 Re-Act)
-  / `raise CommandUtil.raise_observe(...)` (中断一切行动, 立刻思考).
-- 中行 (progress): `CommandUtil.set_progress`, 长命令执行中途的状态披露.
-- 上行 (signal): `CommandUtil.send_signal` / `send_input_signal` / `create_signal_task`,
-  command 主动推给大脑, 构成自驱循环 (由 Mindflow 仲裁).
+- direction: a command's result, progress and signal reach the model in three
+  directions. See ``CommandUtil``.
+- tier: what a channel exposes to the model is cold (``instruction``), warm
+  (``notice``) or hot (``context``). Each decorator below marks the tier it feeds.
 
-模型看到什么, 以 ChannelMeta 为唯一权威契约 (ghoshell_moss.core.concepts.channel:ChannelMeta):
-interface (命令签名自动反射) / notice (warm 能力描述) / instruction / context / memory / states.
-本模块是动词 (怎么构建), ChannelMeta 是名词 (暴露成什么), 此处不重复枚举那份契约.
-
-CTML 如何调用 channel: `moss ctml read`.
+The runtime model drives a channel through CTML: `moss ctml read`.
 """
 
 from abc import ABC, abstractmethod
@@ -43,7 +36,7 @@ from ghoshell_moss.core.blueprint.mindflow import Signal
 import asyncio
 
 Facade = ABC
-"""Facade 标记"消费面"抽象 — 你持有并调用它, 而非继承它。"""
+"""Facade marks a "consumption surface" abstraction — you hold it and call it, you do not inherit it."""
 
 __all__ = [
     "Channel", "ChannelFactory",
@@ -56,7 +49,7 @@ __all__ = [
     "CommandUtil",
     "Observe", "ObserveError",
 
-    # 作为示例用的实现风格.
+    # Implementation styles kept as examples.
     "ChannelInterface", "ChannelCreator",
 ]
 
@@ -64,11 +57,12 @@ ChannelFactory = Callable[[IoCContainer], Channel | None]
 
 CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
 """
-用于描述一个本地的 python 函数 (或者类的 method) 可以被注册到 Channel 中变成一个 command. 
+A local python function (or class method) that can be registered on a Channel and
+become a command.
 """
 
 MacroFunction = Union[Callable[..., Coroutine[None, None, str]], Callable[..., str]]
-"""宏, 能够生成新的 Command Token 语法字符串的函数"""
+"""A macro: a function that generates new Command Token syntax strings."""
 
 MessageType = Message | str | Image.Image
 MessageFunction = Union[
@@ -82,8 +76,8 @@ keyframe's thought, the AI pulls the corresponding message body and substitutes 
 the context.
 """
 
-# The Memory Messages field contract is already in place on `ChannelMeta.memory`, but the
-# Builder has no mount point for it — `memory_messages` has no hook yet.
+# The Memory Messages field already exists on `ChannelMeta.memory`, but the Builder has
+# no mount point for it yet.
 
 
 StringType = Union[
@@ -93,20 +87,22 @@ StringType = Union[
 ]
 
 LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[..., None]]
-"""
-用于描述一个本地的 python 函数 (或者类的 method), 可以用来定义 channel 自身生命周期行为. 
+"""A local python function (or class method) that defines a lifecycle behavior of the
+Channel itself.
 
-一个 Channel 运行的生命周期设计是: 
+The runtime lifecycle of a Channel is:
 
-- [on startup] : channel 启动时
-- [on idle] : 闲时, 没有任何命令输入
-- [on close] : channel 关闭时
-- [on running] : start < running < close
+- [on startup]: when the channel starts
+- [on idle]: while idle, with no command input
+- [on close]: when the channel closes
+- [on running]: start < running < close
 
-另有 refresh_meta 钩子, 属于刷新节奏而非运行生命周期: 每个 refresh 周期重新生成 metas 前调用.
-见 Builder.refresh_meta.
+``refresh_meta`` is a separate hook — a refresh rhythm, not a runtime lifecycle: it runs
+before metas are regenerated on each refresh cycle. See Builder.refresh_meta.
 
-举一个典型的例子: 数字人在执行动画 command 时, 运行轨迹动画; 执行完毕后, 没有命令输入时, 需要返回呼吸效果 (on_idle)
+A typical example: a digital human plays its locomotion animation while an animation
+command runs; when the command finishes and there is no input, it returns to a breathing
+idle effect (on_idle).
 """
 
 _ChannelName = str
@@ -116,9 +112,9 @@ INSTANCE = TypeVar("INSTANCE", bound=object)
 
 class CommandUtil:
     """
-    在 Command 内部使用的工具, 仅在 Command | Channel Lifecycle Function 被执行时可以使用.
-    通过 contextlib ctx 获取调用者能力.
-    包含各种 Command 函数内需要的常用 API.
+    Tools used inside a Command, available ONLY while a Command or Channel Lifecycle
+    Function is executing. The caller's capabilities are obtained through the
+    contextlib ctx. Collects the common APIs a command function needs.
     """
 
     @classmethod
@@ -183,7 +179,7 @@ class CommandUtil:
 
     @classmethod
     def logger(cls):
-        """返回日志模块 logging.Logger, 只保留基础的记录函数. """
+        """Return the logging.Logger module, keeping only the basic recording functions."""
         from ghoshell_moss.core.concepts.channel import ChannelCtx
         from ghoshell_moss.contracts import LoggerItf, get_moss_logger
         return ChannelCtx.container().get(LoggerItf) or get_moss_logger()
@@ -198,12 +194,13 @@ class CommandUtil:
 
     @classmethod
     def observe(cls, value: str) -> 'str | Observe':
-        """返回一个需要立刻观察的信息. 实际上返回的是 Observe 对象, 但可以在 command 返回值定义为 str"""
+        """Return information that must be observed immediately. It actually returns an
+        Observe object, but a command may declare its return type as str."""
         return Observe(messages=[Message.new().with_content(value)])
 
     @classmethod
     def raise_observe(cls, value: str) -> None:
-        """通过 raise 来在 command 中返回一个可中断其它逻辑的观察信息. """
+        """Raise an observation that interrupts other logic running in the command."""
         raise cls.observe_error(value)
 
     @classmethod
@@ -213,19 +210,22 @@ class CommandUtil:
 
     @classmethod
     def reraise_stopped(cls, message: str) -> None:
-        """命令被取消/中断时上报进度: 把 cancel 重写为 STOPPED (301) CommandError.
+        """Report progress when a command is cancelled/interrupted: rewrite the cancel
+        into a STOPPED (301) CommandError.
 
-        命令函数在 ``except asyncio.CancelledError`` 分支调用, raise 一个携带
-        message 的 STOPPED 异常. 它会被 is_notifiable 记录成模型可读的 message,
-        但 code < 400 不触发 observe, 也不中断解释流程. 此方法从不返回.
+        A command function calls this inside its ``except asyncio.CancelledError``
+        branch, raising a STOPPED error that carries the message. It is recorded by
+        is_notifiable as a model-readable message, but code < 400 triggers no observe and
+        does not interrupt interpretation. This method never returns.
         """
         raise CommandErrorCode.STOPPED.error(message)
 
     @classmethod
     def send_signal(cls, signal: Signal) -> None:
         """
-        在 command 内发送信号给自己的大脑. 构成自驱循环.
-        需要发送不同类型的 Signal, 可参考服务发现的 SignalMeta 协议.
+        Send a signal to your own brain from inside a command, closing the self-driven
+        loop. To send other kinds of Signal, see the SignalMeta protocol from service
+        discovery.
         """
         from ghoshell_moss.core.blueprint.session import Session
         session = cls.force_get_contract(Session)
@@ -247,8 +247,8 @@ class CommandUtil:
     @classmethod
     def is_task_done(cls) -> bool:
         """
-        判断触发当前 command 执行的 task 是否已经完成.
-        方便同步函数里做状态清理.
+        Whether the task that triggered the current command has already finished.
+        Convenient for state cleanup inside a synchronous function.
         """
         from ghoshell_moss.core.concepts.channel import ChannelCtx
         task = ChannelCtx.task()
@@ -257,7 +257,7 @@ class CommandUtil:
     @classmethod
     def get_task_context(cls) -> dict[str, Any]:
         """
-        返回 task 创建时从环境传入的参数.
+        Return the arguments passed in from the environment when the task was created.
         """
         from ghoshell_moss.core.concepts.channel import ChannelCtx
         task = ChannelCtx.task()
@@ -265,7 +265,7 @@ class CommandUtil:
 
     @classmethod
     def send_input_signal(cls, content: str, *, description: str = '') -> None:
-        """发送标准的请求信号给 ghost. """
+        """Send a standard request signal to the ghost."""
         from ghoshell_moss.core.blueprint.session import Session
         session = cls.force_get_contract(Session)
         session.add_input_signal(content, description=description)
@@ -277,8 +277,9 @@ class CommandUtil:
             closure: Callable[[], Coroutine[None, None, Signal | str]],
     ) -> None:
         """
-        在 Command 内创建一个异步的 Signal 回调 task, 不阻塞 Command 返回.
-        当 closure 异步执行完毕后, 结果的 Signal 会发送给 ghost.
+        Create an async Signal callback task inside a Command without blocking the
+        Command's return. When the closure finishes asynchronously, the resulting Signal
+        is sent to the ghost.
         """
         from ghoshell_moss.core.concepts.channel import ChannelCtx
         task = ChannelCtx.task()
@@ -310,7 +311,7 @@ def new_command(
         comments: Optional[StringType] = None,
         interface: Optional[StringType | Callable[[...], Coroutine[None, None, Any]]] = None,
         available: Optional[Callable[[], bool]] = None,
-        # --- 高级参数 --- #
+        # --- advanced parameters --- #
         blocking: bool = True,
         call_soon: bool = False,
         priority: int = 0,
@@ -320,9 +321,10 @@ def new_command(
         macro: bool = False,
 ) -> Command:
     """
-    定义一个 Command. 逻辑与 Builder.command 相同.
+    Define a Command. Same logic as Builder.command.
 
-    在 own_commands 之类的场景要反射 python 函数为 Command 时, 优先使用它 (等价 PyCommand 但实现可替换)
+    Prefer this when reflecting a python function into a Command in scenarios like
+    own_commands (equivalent to PyCommand, but the implementation is replaceable).
     """
     from ghoshell_moss.core.concepts.command import PyCommand
     return PyCommand(
@@ -344,10 +346,10 @@ def new_command(
 
 class Builder(Facade):
     """
-    用来动态构建一个 Channel 的通用接口.
+    The general interface for dynamically building a Channel.
 
-    Builder 有唯一 id. builder 是有副作用的.
-    一个实例应该只使用一次.
+    A Builder has a unique id and is side-effecting. One instance should be used only
+    once.
     """
 
     # ---- decorators ---- #
@@ -363,8 +365,9 @@ class Builder(Facade):
     def available(self, func: Callable[[], bool]) -> Callable[[], bool]:
         """
         decorator
-        注册一个函数, 用来动态生成整个 Channel 的 available 状态.
-        Channel 每次刷新状态时, 都会从这个函数取值. 否则默认为 True.
+        Register a function that dynamically produces the whole Channel's available
+        state. The Channel reads from it on every state refresh; defaults to True
+        otherwise.
         >>> async def building(chan: MutableChannel) -> None:
         >>>     chan.build.available(lambda: True)
         """
@@ -374,35 +377,40 @@ class Builder(Facade):
     def instruction(self, func: StringType) -> StringType:
         """
         decorator
-        注册字符串或者函数, 用来生成当前 channel 提供的 instruction / system prompt. 只生成一次.
+        Register a string or a function that produces this channel's instruction /
+        system prompt. Generated once.
 
-        Channel as Context Components 思想:
-            直接将 Channel 作为上下文的组件, 提供模块化的上下文讯息.
-            讯息应该足够简洁, 高效, 同时注意 token 用量. 具体裁剪和压缩由 Agent 工程决定.
-            由于 Channel 持有的 Command 可以影响自身的运行时状态, 所以 Channel 提供了完整的上下文反身性.
-            结合后续的 StatefulChannel 实现, 同时提供渐进式披露的能力.
+        Cold data: sent once, never re-sent.
 
-        红线: instruction 里绝不要重复罗列本 channel 有哪些 command ——
-        命令签名已由 interface 自动反射给模型 (Code as Prompt), 手写重列必然随代码漂移成谎言.
-        instruction 只写 interface 表达不了的东西: 整体用法, 协作约定, 状态语义.
+        Red line: never restate which commands this channel has — command signatures are
+        already reflected to the model by interface (Code as Prompt), and a hand-written
+        list drifts into a lie as the code changes. Write only what interface cannot
+        express: overall usage, collaboration conventions, state semantics.
 
-        channel 对模型暴露的完整上下文字段契约, 以 ChannelMeta 为唯一权威
-        (ghoshell_moss.core.concepts.channel:ChannelMeta).
+        The full contract of what the channel exposes to the model is authoritative in
+        ChannelMeta (ghoshell_moss.core.concepts.channel:ChannelMeta).
 
-        注意! Channel 仅在特别有必要的时候, 才需要提供上下文讯息. 大部分 channel 完全不用提供.
+        Note: a Channel should provide instruction only when genuinely necessary. Most
+        channels need none at all.
         """
+        # Channel as Context Components 思想:
+        #     直接将 Channel 作为上下文的组件, 提供模块化的上下文讯息.
+        #     讯息应该足够简洁, 高效, 同时注意 token 用量. 具体裁剪和压缩由 Agent 工程决定.
+        #     由于 Channel 持有的 Command 可以影响自身的运行时状态, 所以 Channel 提供了完整的上下文反身性.
+        #     结合后续的 StatefulChannel 实现, 同时提供渐进式披露的能力.
         pass
 
     @abstractmethod
     def context_messages(self, func: MessageFunction, reset: bool = False) -> MessageFunction:
         """
         decorator
-        注册一个上下文生成函数. 用来生成 channel 运行时动态的上下文.
-        举个例子, 如果是视觉模块, 则可以把当前瞬间看见的图片, 和视觉模块的简单描述作为 context messages.
+        Register a context generator function that produces the channel's runtime
+        dynamic context. For example, a vision module can supply the frame it currently
+        sees, plus a short description, as context messages.
 
-        这部分上下文会出现在模型上下文的 inputs 之前或之后.
-        当 channel 每次刷新后, 都会通过它生成动态的上下文消息体.
-        通常只有具备感知功能的模块, 需要提供动态的 context messages.
+        Hot data: regenerated on every refresh.
+
+        Usually only perception modules need dynamic context messages.
 
         >>> async def building(chan: MutableChannel) -> None:
         >>>     async def context() -> list[Message]:
@@ -417,13 +425,15 @@ class Builder(Facade):
     def notice(self, func: StringType) -> StringType:
         """
         decorator
-        注册一个函数, 用来生成 channel 的 warm notice 描述.
+        Register a function that produces the channel's warm notice description.
 
-        notice 描述此 channel 当前暴露了什么能力面 — 区别于 description (静态身份) 和
-        context_messages (hot 状态数据). 每次 meta refresh 时动态求值, 渲染在
-        command interface 之前.
+        notice describes what this channel currently exposes — distinct from description
+        (static identity) and context_messages (hot state data). It is evaluated on every
+        meta refresh and rendered before the command interface.
 
-        红线: notice 回答 "能做什么", context 回答 "现在是什么".
+        Warm data: re-sent only when it changes.
+
+        Red line: notice answers "what can it do"; context answers "what is it now".
         """
         pass
 
@@ -434,12 +444,12 @@ class Builder(Facade):
             override: bool = True,
     ) -> Command[None | str]:
         """
-        register a special function for channel's content method.
+        Register a special function as the channel's content method.
         """
         name = ChannelRuntime.__content__.__name__
         return self.command(
             name=name,
-            # 允许覆盖说明.
+            # Allows overriding the description.
             doc=doc,
             # use __content__ as interface, override the docstring if need.
             interface=ChannelRuntime.__content__,
@@ -456,7 +466,7 @@ class Builder(Facade):
             name: Optional[str] = None,
     ) -> None:
         """
-        添加一个 Command 对象.
+        Add an existing Command object.
         """
         pass
 
@@ -471,7 +481,7 @@ class Builder(Facade):
             interface: Optional[StringType | Callable[[...], Coroutine[None, None, Any]]] = None,
             available: Optional[Callable[[], bool]] = None,
             override: bool = True,
-            # --- 高级参数 --- #
+            # --- advanced parameters --- #
             blocking: bool = True,
             call_soon: bool = False,
             priority: int = 0,
@@ -483,96 +493,117 @@ class Builder(Facade):
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         decorator
-        将一个 Python 函数或类的 method 注册到 Channel 上, 成为 Channel 的一个 Command.
-        函数会自动反射出 signature, 作为给大模型查看的讯息.
-        大模型只会看到函数的签名和注释, 不会看到原始代码.
+        Register a python function or class method on the Channel as one of its Commands.
+        The function's signature is reflected automatically as information for the model
+        to read. The model sees only the signature and docstring — never the source code.
 
-        :param name: 不为空, 则改写这个函数的名称.
-        :param doc: 重定义函数的docstring, 如果传入的是一个函数, 则会在每次刷新时, 动态调用这个函数, 生成它的 docstring.
-        :param comments: 改写函数的 body 部分, 用注释形式提供的字符串. 每行前会自动添加 '#'. 不用手动添加.
-                         Comments 最直接的用处是写使用的案例, 说明, 执行逻辑等. 辅助 AI 理解.
+        Design the docstring for the runtime model, not a human developer: this text IS
+        the runtime model's prompt (Code as Prompt). Make it readable at a glance — clear
+        parameter semantics, concrete examples, no developer jargon.
 
-        :param interface: 大模型看到的函数代码形式. 一旦定义了这个, doc, name, comments 就都会失效.
-                支持三种传参方式:
-                - str: 直接用字符串来定义模型看到的函数签名.
-                    注意, 必须写成 Python Async 的形式.
+        :param name: if non-empty, rename the function.
+        :param doc: override the function docstring. If a function is passed, it is called
+                on every refresh to generate the docstring dynamically.
+        :param comments: override the function body with a comment-form string. Every line
+                is automatically prefixed with '#'. The most direct use is writing usage
+                examples, explanations and execution logic to help the model understand.
+
+        :param interface: the function-code form the model sees. Once set, doc, name and
+                comments all become inert. Three ways to pass it:
+                - str: define the model-visible signature directly as a string.
+                    It must be written in Python async form:
                     async def foo(...) -> ...:
                       '''docstring'''
                       # comments
-                - callalble[[], str]: 生成模型签名的函数
-                - async function: 直接反射这个 function, 来生成一个模型签名的字符串. 可以定义虚拟函数作为 interface.
-        :param override: override existing one
-        :param tags: 标记函数的分类. 可以让使用者用来过滤和筛选.
-        :param available: 通过一个 Available 函数, 定义这个命令的状态. 当这个函数返回 False 时, Command 会动态地变成不可用.
-                这种方式, 可以结合状态机逻辑, 动态定义一个 Channel 上的可用函数.
-        :param blocking: 这个函数是否会阻塞 channel. 为 None 的话跟随 channel 的默认定义.
-                blocking = True 类型的 Command 执行完毕前, 会阻塞后续 Command 执行, 通常是在机器人等需要时序规划的场景中.
-                blocking = False 类型则会并发执行. 对于没有先后顺序的工具, 可以设置并行.
-        :param call_soon: 决定这个函数进入轨道后, 会第一时间执行 (不等待调度), 还是等待排队执行到自身时.
-                如果是 (blocking and call_soon) == True, 会在入队时立刻清空队列.
+                - callalble[[], str]: a function that generates the model-visible signature
+                - async function: reflect this function directly to generate the signature
+                    string. A virtual function may be defined as the interface.
+        :param override: override an existing one
+        :param tags: tag the function's category, for users to filter and select.
+        :param available: define this command's state through an available function. When
+                it returns False, the Command dynamically becomes unavailable. This can
+                combine with state-machine logic to define a Channel's available
+                functions dynamically.
+        :param blocking: whether this function blocks the channel. None follows the
+                channel default. blocking = True blocks subsequent Commands until it
+                finishes, typical for robots that need temporal planning.
+                blocking = False runs concurrently; use it for tools with no ordering
+                constraint.
+        :param call_soon: whether the function executes the moment it enters the track
+                (without waiting for scheduling) or waits its turn in the queue. If
+                (blocking and call_soon) == True, it clears the queue on enqueue.
 
-        :param priority: 命令优先级, <0 时, 有新的命令加入, 就会被自动取消. >0 时, 之前所有优先级比自己低的都会立刻取消.
-                高级功能, 不理解的情况下请不要改动它.
+        :param priority: command priority. < 0: cancelled as soon as a new command joins.
+                > 0: every earlier command with lower priority is cancelled immediately.
 
-        :param return_command: 为真的话, 返回的不是原函数, 而是一个可以视作该函数的 Command 对象. 通常用于测试.
-        :param always_observe: 为 True 的话, 不需要特别返回 Observe 对象, command 的返回值总是会标记需要下一轮观察思考.
+        :param return_command: if true, returns a Command object instead of the original
+                function. Typically used in tests.
+        :param always_observe: if True, no explicit Observe return is needed; the command's
+                return value always marks the next round as needing observation.
         :param timeout: if not None, set default timeout for the command.
-        :param visible: 命令是否对模型可见. 不可见, 通常因为这个命令是模型认知协议的一部分, 以至于可以省略它.
-        :param macro: 命令返回值是用来生成 Command 的语法字符串, 比如 CTML 字符串.
+        :param visible: whether the command is visible to the model. Invisible is typical
+                when the command is part of the model's cognitive protocol and can be
+                omitted.
+        :param macro: the command's return value is used to generate a Command syntax
+                string, e.g. a CTML string.
 
-        CommandFunction 最佳实践是:
-        >>> # 原始函数是 async, 从而有能力根据真实运行的时间, 阻塞 Channel 后续命令.
-        >>> # 参数和返回值有明确的类型约束, 类型约束也是 prompt 的一部分.
-        >>> # 使用可序列化对象作为入参和出参
-        >>> # 依赖线程安全的逻辑, 定义为 sync 函数.
+        Best practice for a CommandFunction:
+        >>> # Prefer async, so it can block the Channel for the real time it takes.
+        >>> # Give parameters and return values explicit types — the types are prompt too.
+        >>> # Use serializable objects as inputs and outputs.
+        >>> # Define a sync function only for logic that depends on thread safety.
         >>> async def func(arg: type) -> Any:
-        >>>     '''有清晰的说明'''
+        >>>     '''A clear docstring'''
         >>>     try
-        >>>         # 执行逻辑, 不能有线程阻塞, 否则会阻塞全局.
+        >>>         # Run logic. No thread blocking, or it blocks everything else.
         >>>         # CommandUtil.create_task
         >>>         ...
-        >>>         # return None # 仅表示执行结束, 不需要特别观察
-        >>>         # return Any  # 返回讯息反馈给上下文, 但不需要触发 Re-Act. 或配置 always_observe 使之触发思考.
-        >>>         # return CommandUtil.observe('xxx')  记模型需要观察和思考的结果, 会触发 Re-Act.
-        >>>         # raise CommandUtil.raise_observe(...)  中断所有的行动, 立刻触发思考.
+        >>>         # return None   # merely done, nothing to observe
+        >>>         # return Any    # feedback into context, no Re-Act (or set always_observe to trigger thought)
+        >>>         # return CommandUtil.observe('xxx')  # a result the model must observe and think about; triggers Re-Act
+        >>>         # raise CommandUtil.raise_observe(...)  # interrupt all action, think now
         >>>     except asyncio.CancelledError:
-        >>>         # 命令可以被调度层正常取消, 有取消的行为. 通常 AI 可以随时取消一个运行的 Command.
+        >>>         # The scheduler may cancel a command normally; the model can cancel a
+        >>>         # running Command at any time.
         >>>         ...
         >>>     except Exception as e:
-        >>>         # 正确处理异常
+        >>>         # Handle exceptions correctly.
         >>>         ...
         >>>     finally:
-        >>>         # 有运行结束逻辑.
+        >>>         # Run-end logic.
         >>>         ...
-
-        async 函数支持 cancel 生命周期, 所以 command 是一个拥有 done / cancel / exception 完整语义的单元.
-        如果用同步函数定义, 需要通过 CommandUtil.is_task_done 来管理中间中断和清空状态逻辑, 避免阻塞行为因为同步函数未完成而冲突.
         """
+        # An async function supports the cancel lifecycle, so a command is a unit with full
+        # done / cancel / exception semantics. A sync function must manage mid-interruption
+        # and state cleanup through CommandUtil.is_task_done, so that blocking behavior does
+        # not conflict with the sync function not having finished.
+        # `priority` is an advanced feature: do not change it if you do not understand it.
         pass
 
     @abstractmethod
     def idle(self, func: LifecycleFunction) -> LifecycleFunction:
         """
         decorator
-        注册一个生命周期函数, 当 Channel 运行 policy 时, 会执行这个函数.
+        Register a lifecycle function, executed when the Channel runs its policy.
 
-        生命周期的最佳实践是:
+        Best practice for a lifecycle function:
 
-        >>> # 原始函数是 async, 从而有能力根据真实运行的时间, 阻塞 Channel 后续命令.
+        >>> # Prefer async, so it can block the Channel for the real time it takes.
         >>> async def func() -> None:
-        >>>     # 可以获取执行这个 command 的真实 runtime
+        >>>     # You can get the real runtime executing this command.
         >>>     try
-        >>>         # 通过全局的 IoC 容器获取依赖, 可以拿到运行时的依赖注入.
+        >>>         # Get dependencies from the global IoC container to obtain runtime
+        >>>         # dependency injection.
         >>>         contract = CommandUtil.force_get_contract(...)
         >>>         ...
         >>>     except asyncio.CancelledError:
-        >>>         # 生命周期函数随时会被 Channel Runtime 调度取消
+        >>>         # A lifecycle function can be cancelled by the Channel Runtime at any time.
         >>>         ...
         >>>     except Exception as e:
-        >>>         # 正确处理异常
+        >>>         # Handle exceptions correctly.
         >>>         ...
         >>>     finally:
-        >>>         # 有运行结束逻辑.
+        >>>         # Run-end logic.
         >>>         ...
         """
         pass
@@ -580,22 +611,22 @@ class Builder(Facade):
     @abstractmethod
     def startup(self, func: LifecycleFunction) -> LifecycleFunction:
         """
-        启动时执行的生命周期函数
+        Lifecycle function executed on startup.
         """
         pass
 
     @abstractmethod
     def close(self, func: LifecycleFunction) -> LifecycleFunction:
         """
-        关闭时执行的生命周期函数
+        Lifecycle function executed on close.
         """
         pass
 
     @abstractmethod
     def running(self, func: LifecycleFunction) -> LifecycleFunction:
         """
-        在整个 Channel Runtime is_running 时间里运行的逻辑. 只会被调用一次.
-        注意, 这个函数和 idle / executing 是并行的.
+        Logic that runs for the whole time the Channel Runtime is_running. Called only
+        once. Note it runs in parallel with idle / executing.
         """
         pass
 
@@ -603,15 +634,16 @@ class Builder(Facade):
     def refresh_meta(self, func: LifecycleFunction) -> LifecycleFunction:
         """
         decorator
-        注册一个 async 回调, 在每个 refresh 周期重新生成 metas 前调用.
+        Register an async callback, called before metas are regenerated on each refresh
+        cycle.
 
-        用于需要在 refresh 时做 I/O 的场景 —— alive_cells 查询, proxy 缓存更新,
-        外部状态同步等. 与 get_virtual_children() 配合: 这里更新缓存 (async),
-        get_virtual_children() 返回缓存 (sync, 快速).
+        Use it for I/O needed at refresh time — alive_cells queries, proxy cache updates,
+        external state sync. Combine with get_virtual_children(): update the cache here
+        (async), and have get_virtual_children() return the cache (sync, fast).
 
         >>> async def func() -> None:
         >>>     alive = await matrix.alive_cells()
-        >>>     ...  # 更新 proxy 缓存, 供下轮 get_virtual_children() 使用
+        >>>     ...  # update the proxy cache for the next get_virtual_children() call
         """
         pass
 
@@ -619,17 +651,19 @@ class Builder(Facade):
     def virtual_children(self, func: Callable[[], dict[str, Channel]]) -> Callable[[], dict[str, Channel]]:
         """
         decorator
-        注册 回调, 运行时获取 virtual children 时会增补函数回调的结果.
+        Register a callback whose result is merged in when virtual children are fetched at
+        runtime.
         """
         ...
 
     @abstractmethod
     def with_binding(self, contract: type[INSTANCE], instance: INSTANCE) -> Self:
         """
-        注册一个依赖, 在 Channel 实例化时注入 IoC 容器.
-       可以通过 CommandCtx.get_contract 获取.
-        依赖注入完全是可选的, 可以通过模块实例化/全局工厂等替代.
+        Register a dependency, injected into the IoC container when the Channel is
+        instantiated. Retrieve it via CommandUtil.get_contract.
         """
+        # Dependency injection is entirely optional; module instantiation or global
+        # factories are a valid substitute.
         pass
 
     @abstractmethod
@@ -642,8 +676,8 @@ class Builder(Facade):
             override: bool = False,
     ) -> Self:
         """
-        注册一个依赖的工厂方法.
-        这个工厂方法当 Channel 实例化 Runtime 时, 会把 contract 的工厂函数注册到 IoC 容器.
+        Register a factory for a dependency. When the Channel instantiates its Runtime,
+        the factory is registered on the IoC container for that contract.
         """
         pass
 
@@ -660,7 +694,7 @@ class Builder(Facade):
 
 class MutableChannel(Channel, Facade):
     """
-    一个约定, 用来描述拥有动态构建能力的 Channel.
+    A convention for a Channel that supports dynamic construction.
     """
 
     def import_channels(
@@ -668,8 +702,8 @@ class MutableChannel(Channel, Facade):
             *children: Channel | ChannelFactory | tuple[Channel | ChannelFactory, _ChannelName],
     ) -> Self:
         """
-        添加子 Channel 到当前 Channel. 形成树状关系.
-        效果可以比较 python 的 import module as name
+        Add a child Channel to the current Channel, forming a tree. Similar in effect to
+        python's `import module as name`.
         """
         self.build.import_channels(*children)
         return self
@@ -678,7 +712,7 @@ class MutableChannel(Channel, Facade):
     @abstractmethod
     def build(self) -> Builder:
         """
-        支持通过 Builder 动态构建一个 Channel.
+        Supports dynamically building a Channel through a Builder.
         """
         pass
 
@@ -710,32 +744,32 @@ def new_channel(name: str, description: str = "", uid: str | None = None) -> Mut
 
 class ChannelCreator(ABC):
     """
-    示例, 如果不用 new_channel 等面向组合风格创建 Channel
-    仍然可以用这种面向对象的风格来创建.
+    Example of the object-oriented style, if you do not use new_channel and the
+    composition-oriented style.
     """
 
     @classmethod
     @abstractmethod
     def factory(cls, container: IoCContainer) -> Channel:
-        """创建 channel 的函数本身可以注册到 channel. """
+        """The function creating the channel can itself be registered on a channel."""
         pass
 
 
 class ChannelInterface(ChannelCreator, ABC):
     """
-    面向对象更激进的 Channel 实现风格.
-    不仅定义 factory, 还提前定义好函数.
+    A more aggressive object-oriented Channel style: it defines the factory and also
+    declares the functions up front.
     """
 
     @classmethod
     @abstractmethod
     def new(cls, container: IoCContainer) -> Self:
-        """确保可以在 ioc 中实例化自己. """
+        """Ensure it can instantiate itself from the IoC container."""
         pass
 
     @abstractmethod
     def as_channel(self) -> Channel:
-        """实例化后的自己, 可以生产 channel 对象."""
+        """Once instantiated, the object can produce a channel object."""
         pass
 
     @classmethod
@@ -745,7 +779,7 @@ class ChannelInterface(ChannelCreator, ABC):
 
 
 if __name__ == "__build_channel_by_channel_interface_example__":
-    # 通过 ChannelCreator 的风格创建面向对象的抽象/实现的方式.
+    # Building an object-oriented abstraction/implementation through the ChannelCreator style.
     main = new_channel(name="__main__")
 
 
@@ -781,7 +815,7 @@ if __name__ == "__build_channel_by_channel_interface_example__":
             return cls(container)
 
 
-    # 直接将工厂方法注入到通道中.
+    # Inject the factory method directly into the channel.
     main.import_channels(FooImpl.factory)
 
 
