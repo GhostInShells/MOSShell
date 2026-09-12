@@ -1,4 +1,4 @@
-"""ASR 契约 — RecognitionStream / RecognitionResult / RecognitionSegment 的行为协议.
+"""ASR 契约 — RecognitionStream / RecognitionEvent / RecognitionSegment 的行为协议.
 
 只测抽象层的外部契约: recognize_once 的默认累积行为 + RecognitionSegment.precise_cut
 的切片语义. 不测实现内部, 也不测框架默认值.
@@ -9,29 +9,31 @@ import pytest
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
+    Clause,
     RecognitionPhase,
-    RecognitionResult,
+    RecognitionEvent,
     RecognitionSegment,
     RecognitionStream,
 )
 
 
-def _clause(text: str, *, stream_id: str = "s1", segment_id: str = "g1") -> RecognitionResult:
-    return RecognitionResult(
+def _clause(text: str, *, stream_id: str = "s1", segment_id: str = "g1") -> RecognitionEvent:
+    return RecognitionEvent(
         stream_id=stream_id, segment_id=segment_id,
         phase=RecognitionPhase.CLAUSE, text=text,
+        clause=Clause(text=text),
     )
 
 
-def _tail(text: str, *, stream_id: str = "s1", segment_id: str = "g1") -> RecognitionResult:
-    return RecognitionResult(
+def _tail(text: str, *, stream_id: str = "s1", segment_id: str = "g1") -> RecognitionEvent:
+    return RecognitionEvent(
         stream_id=stream_id, segment_id=segment_id,
         phase=RecognitionPhase.TAIL, text=text,
     )
 
 
 class _MockStream(RecognitionStream):
-    def __init__(self, results: list[RecognitionResult], *, stream_id: str = "s1"):
+    def __init__(self, results: list[RecognitionEvent], *, stream_id: str = "s1"):
         self._results = list(results)
         self._id = stream_id
 
@@ -51,14 +53,14 @@ class _MockStream(RecognitionStream):
     def __aiter__(self) -> RecognitionStream:
         return self
 
-    async def __anext__(self) -> RecognitionResult:
+    async def __anext__(self) -> RecognitionEvent:
         if not self._results:
             raise StopAsyncIteration
         return self._results.pop(0)
 
 
 class _MockASR(ASR):
-    def __init__(self, results: list[RecognitionResult]):
+    def __init__(self, results: list[RecognitionEvent]):
         self._results = list(results)
 
     def get_info(self) -> ASRInfo:
@@ -83,11 +85,16 @@ async def _empty_audio():
 
 
 class TestRecognizeOnce:
-    """recognize_once 的默认行为: 累积 CLAUSE 文本, 尾包时追加 TAIL 文本并停止."""
+    """recognize_once 的默认行为: 尾包返回全文; 无尾包时累积 CLAUSE 文本."""
 
     @pytest.mark.asyncio
-    async def test_accumulates_clause_texts(self):
-        asr = _MockASR([_clause("句1"), _clause("句2"), _tail("")])
+    async def test_returns_tail_text(self):
+        asr = _MockASR([_clause("句1"), _clause("句2"), _tail("句1句2")])
+        assert await asr.recognize_once(_empty_audio()) == "句1句2"
+
+    @pytest.mark.asyncio
+    async def test_accumulates_clauses_when_no_tail(self):
+        asr = _MockASR([_clause("句1"), _clause("句2")])
         assert await asr.recognize_once(_empty_audio()) == "句1句2"
 
     @pytest.mark.asyncio

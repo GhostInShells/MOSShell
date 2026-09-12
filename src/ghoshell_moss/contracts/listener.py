@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Callable
 from typing_extensions import Self
 
-from .asr import RecognitionResult, RecognitionSegment
+from .asr import RecognitionEvent, RecognitionSegment
 from .audio import AudioChunk
 
 Discard = Callable[[], None]
@@ -39,7 +39,7 @@ class Listener(ABC):
         ...
 
     @abstractmethod
-    def on_recognition_result(self, callback: Callable[[RecognitionResult], None]) -> Discard:
+    def on_recognition_result(self, callback: Callable[[RecognitionEvent], None]) -> Discard:
         ...
 
     @abstractmethod
@@ -83,7 +83,7 @@ class ListenerState(ABC):
         ...
 
     @abstractmethod
-    def on_recognition_result(self, callback: Callable[[RecognitionResult], None]) -> Discard:
+    def on_recognition_result(self, callback: Callable[[RecognitionEvent], None]) -> Discard:
         ...
 
     @abstractmethod

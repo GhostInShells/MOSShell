@@ -17,7 +17,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.contracts.asr import (
     ASR,
-    RecognitionResult,
+    RecognitionEvent,
     RecognitionSegment,
     RecognitionStream,
 )
@@ -58,7 +58,7 @@ class HostListener(Listener):
         self._closed = False
         # Listener 级观察者: 订阅即挂当前 session, 并留档给未来 session (listen 时自动装线).
         self._audio_observers: list[Callable[[AudioChunk], None]] = []
-        self._result_observers: list[Callable[[RecognitionResult], None]] = []
+        self._result_observers: list[Callable[[RecognitionEvent], None]] = []
         self._segment_observers: list[Callable[[RecognitionSegment], None]] = []
 
     @property
@@ -108,7 +108,7 @@ class HostListener(Listener):
             self._state.on_audio_chunk(callback)
         return _make_discard(self._audio_observers, callback)
 
-    def on_recognition_result(self, callback: Callable[[RecognitionResult], None]) -> Discard:
+    def on_recognition_result(self, callback: Callable[[RecognitionEvent], None]) -> Discard:
         self._result_observers.append(callback)
         if self._state is not None:
             self._state.on_recognition_result(callback)
@@ -158,7 +158,7 @@ class HostListenerState(ListenerState):
         self._running = False
 
         self._audio_observers: list[Callable[[AudioChunk], None]] = []
-        self._result_observers: list[Callable[[RecognitionResult], None]] = []
+        self._result_observers: list[Callable[[RecognitionEvent], None]] = []
         self._segment_observers: list[Callable[[RecognitionSegment], None]] = []
 
     # ── ListenerState contract ──
@@ -208,7 +208,7 @@ class HostListenerState(ListenerState):
         self._audio_observers.append(callback)
         return _make_discard(self._audio_observers, callback)
 
-    def on_recognition_result(self, callback: Callable[[RecognitionResult], None]) -> Discard:
+    def on_recognition_result(self, callback: Callable[[RecognitionEvent], None]) -> Discard:
         self._result_observers.append(callback)
         return _make_discard(self._result_observers, callback)
 
@@ -240,7 +240,7 @@ class HostListenerState(ListenerState):
             except Exception:
                 self._logger.exception("%s on_audio_chunk callback failed", self._log_prefix)
 
-    def _dispatch_result(self, result: RecognitionResult) -> None:
+    def _dispatch_result(self, result: RecognitionEvent) -> None:
         for cb in list(self._result_observers):
             try:
                 cb(result)

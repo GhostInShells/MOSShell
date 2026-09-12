@@ -33,7 +33,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
-from ghoshell_moss.contracts.asr import RecognitionPhase, RecognitionResult
+from ghoshell_moss.contracts.asr import RecognitionPhase, RecognitionEvent
 from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
 from ghoshell_moss.contracts.configs import get_or_create_conf, ConfigStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -98,54 +98,55 @@ class _Stats:
 
 
 class _PacketTranslator:
-    """RecognitionResult (text axis) -> listener packets (first/clause/tail).
+    """RecognitionEvent (text axis) -> listener packets (first/clause/tail).
 
-    turn_id <- segment_id (tail-delimited); clause_index counts clauses per segment.
-    FIRST is synthesized here on a new segment — the engine does not emit it.
+    clause_index counts clauses per segment. FIRST comes from the recognizer's
+    own FIRST phase (the first meaningful packet), not synthesized here.
     """
 
     def __init__(self) -> None:
-        self._segment_id: str | None = None
         self._clause_index = 0
 
-    def translate(self, result: RecognitionResult) -> list[tuple[ListenerPacket, str, int]]:
+    def translate(self, result: RecognitionEvent) -> list[tuple[ListenerPacket, str, int]]:
         packets: list[tuple[ListenerPacket, str, int]] = []
-        if result.segment_id and result.segment_id != self._segment_id:
-            self._segment_id = result.segment_id
+        if result.phase == RecognitionPhase.FIRST:
             self._clause_index = 0
-            packets.append((ListenerPacket.FIRST, "", 0))
-        if result.phase == RecognitionPhase.CLAUSE:
+            packets.append((ListenerPacket.FIRST, result.text, 0))
+        elif result.phase == RecognitionPhase.CLAUSE:
             self._clause_index += 1
-            packets.append((ListenerPacket.CLAUSE, result.last_clause_text, self._clause_index))
+            clause_text = result.clause.text if result.clause else result.text
+            packets.append((ListenerPacket.CLAUSE, clause_text, self._clause_index))
         elif result.phase == RecognitionPhase.TAIL:
             packets.append((ListenerPacket.TAIL, result.text, self._clause_index))
         return packets
 
 
-def _emit_signal(session, packet: ListenerPacket, result: RecognitionResult, text: str,
+def _emit_signal(session, packet: ListenerPacket, result: RecognitionEvent, text: str,
                  clause_index: int) -> None:
+    clause = result.clause
     session.add_signal(new_listener_signal(
         packet,
         text,
         turn_id=result.segment_id,
         clause_index=clause_index,
-        start_ms=result.start_ms,
-        end_ms=result.end_ms,
+        start_ms=clause.start_ms if clause else 0,
+        end_ms=clause.end_ms if clause else 0,
         description=f"listener:{packet.value}",
     ))
 
 
-def _render(packet: ListenerPacket, result: RecognitionResult, text: str, clause_index: int,
+def _render(packet: ListenerPacket, result: RecognitionEvent, text: str, clause_index: int,
             json_mode: bool) -> None:
     if json_mode:
+        clause = result.clause
         echo(json.dumps({
             "packet": packet.value,
             "phase": result.phase.value,
             "text": text,
             "segment_id": result.segment_id,
             "clause_index": clause_index,
-            "start_ms": result.start_ms,
-            "end_ms": result.end_ms,
+            "start_ms": clause.start_ms if clause else 0,
+            "end_ms": clause.end_ms if clause else 0,
             "error": result.error or None,
         }, ensure_ascii=False))
         return
@@ -166,7 +167,7 @@ def _render(packet: ListenerPacket, result: RecognitionResult, text: str, clause
         echo("")
 
 
-def _handle_result(result: RecognitionResult, *, translator: _PacketTranslator, session: Any,
+def _handle_result(result: RecognitionEvent, *, translator: _PacketTranslator, session: Any,
                    emit_signals: bool, json_mode: bool, stats: _Stats) -> None:
     """Translate + emit + render one recognition result; update stats."""
     for packet, text, clause_index in translator.translate(result):
@@ -213,7 +214,7 @@ async def _run_once(ctx: _Ctx) -> _Stats | None:
 
         committed = False
 
-        def on_result(result: RecognitionResult) -> None:
+        def on_result(result: RecognitionEvent) -> None:
             nonlocal committed
             handle(result)
             # 第一句稳定 (VAD 判停) 后主动 commit, 触发 is_last_package → 切段 → 退出.

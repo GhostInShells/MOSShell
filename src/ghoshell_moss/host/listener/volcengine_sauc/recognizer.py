@@ -22,9 +22,10 @@ from ghoshell_common.helpers import uuid
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
+    Clause,
     RecognitionStream,
     RecognitionPhase,
-    RecognitionResult,
+    RecognitionEvent,
     RecognitionSegment,
 )
 
@@ -54,13 +55,13 @@ class VolcengineSaucASR(ASR):
             *,
             logger: Optional[LoggerItf] = None,
     ):
-        self._config = config
+        # ASR 实例私有副本 — 调参只改自己的副本, 不回流 config store.
+        self._config = config.model_copy(deep=True)
+        self._corpus = VolcengineSaucCorpus()
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[VolcengineSaucASR]"
         self._closed = False
         self._error_callback: Callable[[Exception], None] | None = None
-        # 热词/上下文 — 火山专属面, 动态, 不在 config 里.
-        self._corpus = VolcengineSaucCorpus()
 
     # ── ASR contract ──
 
@@ -111,7 +112,7 @@ class VolcengineSaucASR(ASR):
 
     def configure_corpus(self, corpus: VolcengineSaucCorpus) -> None:
         """配置热词/上下文 (火山专属面)。修改后下一次 recognize() 的 init 带上最新 corpus。"""
-        self._corpus = corpus
+        self._corpus = corpus.model_copy(deep=True)
 
 
 class _VolcengineSaucRecognitionStream(RecognitionStream):
@@ -132,7 +133,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             corpus: VolcengineSaucCorpus | None = None,
     ):
         self._config = config
-        self._corpus = corpus.model_copy(deep=True) if corpus is not None else VolcengineSaucCorpus()
+        self._corpus = corpus if corpus is not None else VolcengineSaucCorpus()
         self._audio_chunks = audio_chunks
         self._logger = logger
         self._log_prefix = log_prefix
@@ -141,7 +142,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._stream_id = stream_id or uuid()
         self._request_id = uuid()
         self._segment_id = uuid()
-        self._queue: asyncio.Queue[RecognitionResult | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[RecognitionEvent | None] = asyncio.Queue()
         self._started = False
         self._session_task: asyncio.Task | None = None
         self._commit_event = asyncio.Event()
@@ -155,6 +156,10 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
 
         # 已吐出的 definite 句数 (result_type=full 时服务端全量返回, 靠它去重).
         self._emitted_clauses = 0
+
+        # FIRST / partial 去重状态 (每 segment 一份).
+        self._first_emitted = False
+        self._last_text = ""
 
     # ── RecognitionStream contract ──
 
@@ -175,7 +180,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
     def __aiter__(self) -> RecognitionStream:
         return self
 
-    async def __anext__(self) -> RecognitionResult:
+    async def __anext__(self) -> RecognitionEvent:
         if not self._started:
             self._started = True
             self._session_task = asyncio.create_task(self._run_session())
@@ -275,40 +280,59 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
 
     # ── parse ──
 
-    def _parse_result(self, msg: PayloadMsg) -> list[RecognitionResult]:
-        """把一个响应 payload 解析成 partial/clause 结果。不切段。"""
+    def _parse_result(self, msg: PayloadMsg) -> list[RecognitionEvent]:
+        """把一个响应 payload 解析成 first/clause/partial 结果。不切段。"""
         result = msg.result
         text = result.text
         self._segment_text = text
-        chunks: list[RecognitionResult] = []
+        chunks: list[RecognitionEvent] = []
 
+        # FIRST: 第一个有语义的包 (text 非空), 每 segment 一次.
+        if not self._first_emitted and text:
+            self._first_emitted = True
+            self._last_text = text
+            chunks.append(RecognitionEvent(
+                stream_id=self._stream_id,
+                segment_id=self._segment_id,
+                phase=RecognitionPhase.FIRST,
+                text=text,
+            ))
+
+        # CLAUSE: 新定稿的分句, 每个只发一次; 签发后不可变 (修正只落 tail).
         definite = [u for u in result.utterances if u.definite]
         new = definite[self._emitted_clauses:]
         self._emitted_clauses = len(definite)
         for u in new:
-            chunks.append(RecognitionResult(
+            self._last_text = text
+            chunks.append(RecognitionEvent(
                 stream_id=self._stream_id,
                 segment_id=self._segment_id,
                 phase=RecognitionPhase.CLAUSE,
                 text=text,
-                clause_text=u.text,
-                start_ms=u.start_time,
-                end_ms=u.end_time,
+                clause=Clause(
+                    text=u.text,
+                    start_ms=u.start_time,
+                    end_ms=u.end_time,
+                    additional=u.additions,
+                ),
             ))
 
+        # PARTIAL: text 相对上次有变化才发 (相邻相同压掉).
         if result.utterances and not result.utterances[-1].definite:
-            chunks.append(RecognitionResult(
-                stream_id=self._stream_id,
-                segment_id=self._segment_id,
-                phase=RecognitionPhase.PARTIAL,
-                text=text,
-            ))
+            if text and text != self._last_text:
+                self._last_text = text
+                chunks.append(RecognitionEvent(
+                    stream_id=self._stream_id,
+                    segment_id=self._segment_id,
+                    phase=RecognitionPhase.PARTIAL,
+                    text=text,
+                ))
         return chunks
 
     # ── segment ──
 
-    def _tail_result(self, *, text: str, error: str = "") -> RecognitionResult:
-        return RecognitionResult(
+    def _tail_result(self, *, text: str, error: str = "") -> RecognitionEvent:
+        return RecognitionEvent(
             stream_id=self._stream_id,
             segment_id=self._segment_id,
             phase=RecognitionPhase.TAIL,

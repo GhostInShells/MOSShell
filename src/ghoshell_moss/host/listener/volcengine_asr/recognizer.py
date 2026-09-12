@@ -11,9 +11,10 @@ from ghoshell_common.helpers import uuid
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
+    Clause,
     RecognitionStream,
     RecognitionPhase,
-    RecognitionResult,
+    RecognitionEvent,
     RecognitionSegment,
 )
 
@@ -124,7 +125,7 @@ class _VolcengineRecognitionStream(RecognitionStream):
         self._stream_id = stream_id or uuid()
         self._connection_id = uuid()
         self._segment_id = uuid()
-        self._queue: asyncio.Queue[RecognitionResult | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[RecognitionEvent | None] = asyncio.Queue()
         self._started = False
         self._session_task: asyncio.Task | None = None
         self._commit_event = asyncio.Event()
@@ -162,7 +163,7 @@ class _VolcengineRecognitionStream(RecognitionStream):
     def __aiter__(self) -> RecognitionStream:
         return self
 
-    async def __anext__(self) -> RecognitionResult:
+    async def __anext__(self) -> RecognitionEvent:
         if not self._started:
             self._started = True
             self._session_task = asyncio.create_task(self._run_session())
@@ -290,7 +291,7 @@ class _VolcengineRecognitionStream(RecognitionStream):
         except Exception:
             return ""
 
-    def _parse_utterances(self, payload: str) -> tuple[list[RecognitionResult], bool]:
+    def _parse_utterances(self, payload: str) -> tuple[list[RecognitionEvent], bool]:
         """非 last 包响应 → 逐分句吐 clause, 末尾未 definite 的吐 partial.
 
         返回 ``(chunks, cut)``: ``cut=True`` 表示出现了新的 definite (VAD 判停),
@@ -303,24 +304,23 @@ class _VolcengineRecognitionStream(RecognitionStream):
             self._final_text = text
             # 更新式: result.text 是全文 replace (非 delta), 直接覆盖.
             self._segment_text = text
-            chunks: list[RecognitionResult] = []
+            chunks: list[RecognitionEvent] = []
 
             definite = [u for u in result.utterances if u.definite]
             new = definite[self._emitted_clauses:]
             self._emitted_clauses = len(definite)
             cut = len(new) > 0
             for u in new:
-                chunks.append(RecognitionResult(
+                chunks.append(RecognitionEvent(
                     stream_id=self._stream_id,
                     segment_id=self._segment_id,
                     phase=RecognitionPhase.CLAUSE,
                     text=u.text,
-                    start_ms=u.start_time,
-                    end_ms=u.end_time,
+                    clause=Clause(text=u.text, start_ms=u.start_time, end_ms=u.end_time),
                 ))
 
             if result.utterances and not result.utterances[-1].definite:
-                chunks.append(RecognitionResult(
+                chunks.append(RecognitionEvent(
                     stream_id=self._stream_id,
                     segment_id=self._segment_id,
                     phase=RecognitionPhase.PARTIAL,
@@ -338,8 +338,8 @@ class _VolcengineRecognitionStream(RecognitionStream):
 
     # ── segment 切分 (每 tail 一次: 整段 audio + 累积 text 带走, segment_id 递增) ──
 
-    def _tail_result(self, *, text: str, error: str = "") -> RecognitionResult:
-        return RecognitionResult(
+    def _tail_result(self, *, text: str, error: str = "") -> RecognitionEvent:
+        return RecognitionEvent(
             stream_id=self._stream_id,
             segment_id=self._segment_id,
             phase=RecognitionPhase.TAIL,

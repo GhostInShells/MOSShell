@@ -23,52 +23,71 @@ __all__ = [
     "ASRInfo",
     "RecognitionStream",
     "RecognitionPhase",
-    "RecognitionResult",
+    "Clause",
+    "RecognitionEvent",
     "RecognitionSegment",
 ]
 
 
 class RecognitionPhase(str, Enum):
-    """Three result phases of a recognition stream — aligned with volcengine response semantics.
+    """Result phases of a recognition stream.
 
+    - FIRST:   the first meaningful packet — the first result whose ``text`` is non-empty.
+               It is NOT a segment/turn marker, just "the recognizer has text now". The
+               engine does not emit it; the recognizer derives it. Emitted at most once
+               per stream.
     - PARTIAL: intermediate result (utterance ``definite=false``), emitted while speaking.
-    - CLAUSE:   stable sentence (utterance ``definite=true``).
-    - TAIL:     segment tail (frame-level ``is_last_package=true``) — marks the end of a
-                segment (one turn) and triggers a segment cut.
+               Only emitted when the text actually changed — the engine re-sends the same
+               accumulated text on every audio package, identical consecutive text is not
+               re-emitted.
+    - CLAUSE:  stable sentence (utterance ``definite=true``). Each clause is emitted once,
+               never suppressed by partial dedup.
+    - TAIL:    segment tail (frame-level ``is_last_package=true``) — marks the end of a
+               segment and triggers a segment cut.
 
-    ``definite`` only marks "this sentence is stable", not the end of the stream. A
-    stream holds many segments, each ending with its own TAIL. Stream end is a
-    separate fact (the audio input is exhausted), not a TAIL.
+    ``definite`` only marks "this sentence is stable", not the end of the stream.
+    Stream end is a separate fact (the audio input is exhausted), not a TAIL.
     """
 
+    FIRST = "first"
     PARTIAL = "partial"
     CLAUSE = "clause"
     TAIL = "tail"
 
 
 @dataclass
-class RecognitionResult:
-    """One result produced at a phase of the recognition stream (text axis).
+class Clause:
+    """A stable sentence finalized by the engine's VAD 判停 (text axis).
 
-    ``text`` is the full accumulated text — consistent across phases, always
-    updating. ``clause_text`` carries the stable clause text (only meaningful for
-    CLAUSE phase). ``segment_id`` links to the RecognitionSegment of the same
-    segment (its ``id``).
+    ``text`` is the clause's own text — NOT the full accumulated text (that lives
+    on ``RecognitionEvent.text``). ``additional`` carries the engine's raw
+    utterance ``additions`` (说话人 / 情绪 / 音量 / 语速 / 语种...), passed
+    through untouched so downstream keeps the full surface.
+    """
+
+    text: str = ""
+    start_ms: int = 0
+    end_ms: int = 0
+    additional: dict = field(default_factory=dict)
+
+
+@dataclass
+class RecognitionEvent:
+    """One event on the text axis of a recognition stream.
+
+    ``text`` is the full accumulated text — full-replace, consistent across
+    phases (FIRST carries the stream's first meaningful text). ``clause`` is
+    present only for CLAUSE phase, holding the just-finalized sentence (its own
+    text / timing / additional). ``segment_id`` links to the RecognitionSegment
+    of the same segment (its ``id``).
     """
 
     stream_id: str
     segment_id: str  # segment id
     phase: RecognitionPhase
     text: str
-    start_ms: int = 0
-    end_ms: int = 0
+    clause: Clause | None = None
     error: str = ""
-    clause_text: str = ""
-
-    @property
-    def last_clause_text(self) -> str:
-        """最后一句分句的文本; 无分句时回退到全文."""
-        return self.clause_text or self.text
 
 
 @dataclass
@@ -80,7 +99,7 @@ class RecognitionSegment:
     timestamps of the segment; ``offset_ms`` is the stream-relative start of
     ``audio``, used by ``precise_cut``.
 
-    Linked to RecognitionResult via ``segment_id`` (its ``id``) + ``stream_id``,
+    Linked to RecognitionEvent via ``segment_id`` (its ``id``) + ``stream_id``,
     delivered through a separate callback (``on_segment``), not mixed into the text axis.
     """
 
@@ -125,13 +144,13 @@ class ASRInfo(BaseModel):
 
 
 class RecognitionStream(ABC):
-    """Continuous recognition loop — one audio stream -> a sequence of RecognitionResult.
+    """One recognition stream — one continuous audio input -> a sequence of RecognitionEvent.
 
-    1 stream = ( n segment = ( m result ) )
+    1 stream = 1 segment = ( first? partial* clause* tail )
 
-    Each segment (one turn) ends with a TAIL, which triggers a segment cut. The stream
-    keeps running across segments until the audio input is exhausted; at that point a
-    final commit cuts the last segment and the loop ends naturally.
+    Segment : recognizer is n:1 — one recognizer serves n segments. A stream ends
+    with a TAIL result once the segment is committed (``commit()``) or the audio
+    input is exhausted.
 
     Single entry only (``__aiter__`` is not re-entrant). ``is_input_done()`` reports
     whether the audio input has stopped.
@@ -159,7 +178,7 @@ class RecognitionStream(ABC):
         """Start sending audio; runs until the audio stream ends. Single entry only."""
 
     @abstractmethod
-    async def __anext__(self) -> RecognitionResult:
+    async def __anext__(self) -> RecognitionEvent:
         ...
 
 
@@ -196,10 +215,9 @@ class ASR(ABC):
         texts: list[str] = []
         async for result in self.recognize(audio_chunks):
             if result.phase == RecognitionPhase.TAIL:
-                texts.append(result.text)
-                break
-            if result.phase == RecognitionPhase.CLAUSE:
-                texts.append(result.text)
+                return result.text
+            if result.phase == RecognitionPhase.CLAUSE and result.clause is not None:
+                texts.append(result.clause.text)
         return "".join(texts)
 
     @abstractmethod

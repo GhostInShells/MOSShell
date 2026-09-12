@@ -56,7 +56,7 @@ class ListenerPacket(str, Enum):
     一个 turn (一次说完的话) 由这三种包按序组成: 首包 → (分句包)* → 尾包.
     """
 
-    FIRST = "first"    # 首包: turn 开始, 用于抢占/占坑, text 通常为空
+    FIRST = "first"    # 首包: 第一个有语义的包 (text 非空), 用于抢占/占坑; 不是 segment/turn 标记
     CLAUSE = "clause"  # 分句包: 一句稳定句 (ASR definite), 是递送内容的最小单元
     TAIL = "tail"      # 尾包: commit (VAD / 手动 / 其它), 结束本 turn
 
@@ -73,7 +73,7 @@ class ListenerSignal(SignalMeta):
     """
 
     packet: ListenerPacket = Field(description="包型: first / clause / tail")
-    text: str = Field(default="", description="稳定句文本; 首包通常为空; 尾包 text 不参与递送 (内容由分句 sent 态决定)")
+    text: str = Field(default="", description="稳定句文本; 首包 = 第一个有语义的包 (text 非空); 尾包 text 不参与递送 (内容由分句 sent 态决定)")
     turn_id: str = Field(default="", description="一次 turn 的身份, 对应 asr 的 segment_id (tail 界定), 一个 turn 一个值")
     clause_index: int = Field(default=0, description="句序号, 用于 FIFO 保序 / diff / 去重")
     start_ms: int = Field(default=0, description="引擎相对起始时间 (流内), 非墙钟")
@@ -281,6 +281,8 @@ class ListenerNucleus(Nucleus):
             priority=self._first_packet_priority,
             strength=self._first_strength,
         )
+        # 首包抢占不触发思考, 只占坑 (content 由后续 clause/tail 递送).
+        impulse.thinking_effort = 'none'
         self._fire(impulse)
 
     def _on_clause(self, meta: ListenerSignal) -> None:

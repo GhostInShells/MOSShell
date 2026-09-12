@@ -197,7 +197,7 @@ async def _speak_direct(matrix, tts, player, text: str, tone: Optional[str], sav
                 _collect(sample)
                 loop.call_soon_threadsafe(frame_q.put_nowait, sample)
 
-            unsub = player.add_event(_on_sample)
+            unsub = player.observe(_on_sample)
 
             async def _feed():
                 async for item in batch.items():
@@ -233,7 +233,7 @@ async def _speak_direct(matrix, tts, player, text: str, tone: Optional[str], sav
             finally:
                 unsub()
         else:
-            unsub = player.add_event(_collect)
+            unsub = player.observe(_collect)
             try:
                 async for item in batch.items():
                     audio = item["audio"]

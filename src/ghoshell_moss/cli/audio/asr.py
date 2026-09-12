@@ -33,7 +33,7 @@ def asr_cmd(
     timeout: float = typer.Option(60.0, "--timeout", "-t", help="Session timeout in seconds. Auto-stops on silence after speech."),
     save: Optional[Path] = typer.Option(None, "--save", "-o", help="Save captured audio to WAV file."),
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Capture device name pattern."),
-    json_mode: bool = typer.Option(False, "--json", help="Output RecognitionResult records as JSON lines."),
+    json_mode: bool = typer.Option(False, "--json", help="Output RecognitionEvent records as JSON lines."),
 ) -> None:
     """Capture audio and stream through ASR — live transcript with cloud VAD clause boundaries."""
     matrix = Matrix.new("audio_asr", category="cli")
@@ -131,13 +131,18 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
                     if result.phase == RecognitionPhase.CLAUSE:
                         clause_count += 1
                     if json_mode:
+                        clause = result.clause
                         echo(json.dumps({
                             "stream_id": result.stream_id,
                             "segment_id": result.segment_id,
                             "text": result.text,
                             "phase": result.phase.value,
-                            "start_ms": result.start_ms,
-                            "end_ms": result.end_ms,
+                            "clause": {
+                                "text": clause.text,
+                                "start_ms": clause.start_ms,
+                                "end_ms": clause.end_ms,
+                                "additional": clause.additional,
+                            } if clause else None,
                             "elapsed": round(elapsed, 3),
                             "error": result.error or None,
                         }, ensure_ascii=False))
@@ -146,7 +151,7 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
                             echo(result.text)
                             echo("---")
                     else:
-                        if result.phase == RecognitionPhase.PARTIAL:
+                        if result.phase in (RecognitionPhase.FIRST, RecognitionPhase.PARTIAL):
                             _live_write(result.text)
                         elif result.phase == RecognitionPhase.CLAUSE:
                             _commit_line(result.text)
