@@ -76,7 +76,7 @@ class MockSession(Session):
             self,
             session_scope: str = "mock_scope",
             *,
-            session_id: str | None = None,
+            run_id: str | None = None,
             topics: TopicService | None = None,
             qa_manager: QAManager | None = None,
             storage: Storage | None = None,
@@ -84,7 +84,7 @@ class MockSession(Session):
         from ghoshell_moss.message import unique_id
 
         self._session_scope = session_scope
-        self._session_id = session_id or unique_id()
+        self._run_id = run_id or unique_id()
         self._topics = topics
         self._qa_manager = qa_manager
         self._running = True
@@ -113,12 +113,6 @@ class MockSession(Session):
     def storage(self) -> Storage:
         return self._session_root_storage
 
-    @property
-    def tmp_storage(self) -> Storage:
-        return self._session_root_storage.sub_storage('tmp')
-
-    # ── storages ──────────────────────────────
-
     # ── properties ──────────────────────────────
 
     @property
@@ -126,8 +120,8 @@ class MockSession(Session):
         return self._session_scope
 
     @property
-    def session_id(self) -> str:
-        return self._session_id
+    def run_id(self) -> str:
+        return self._run_id
 
     @property
     def topics(self) -> TopicService:
@@ -136,10 +130,6 @@ class MockSession(Session):
     @property
     def qa(self) -> QAManager | None:
         return self._qa_manager
-
-    def _make_session_level_storage(self, storage: Storage) -> Storage:
-        scope_level_storage = storage.sub_storage(self._session_scope)
-        return scope_level_storage.sub_storage(f"session-{self._session_id}")
 
     # ── signal ──────────────────────────────────
 
@@ -181,7 +171,7 @@ class MockSession(Session):
         return (
             f"Session:\n"
             f"  scope: {self._session_scope}\n"
-            f"  session_id: {self._session_id}\n"
+            f"  run_id: {self._run_id}\n"
             f"  transport: mock (in-process)\n"
             f"  stream key prefix: {self._stream_key_prefix}\n"
         )

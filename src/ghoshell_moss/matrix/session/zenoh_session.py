@@ -35,7 +35,7 @@ __all__ = [
 
 class SessionMetadata(BaseModel):
     session_scope: str
-    session_id: str
+    run_id: str
     cell_address: str
     parent_cell_address: str
 
@@ -54,11 +54,10 @@ class MossSessionWithZenoh(Session):
             topic_service: TopicService,
             qa_manager: QAManager | None = None,
             sessions_storage_dir: Path,
-            sessions_tmp_storage_dir: Path,
             logger: logging.Logger | None = None,
             cell_address: str = '',
             parent_cell_address: str = '',
-            session_id: str | None = None,
+            run_id: str | None = None,
     ):
         """
         :param session_scope: Moss Matrix 运行时, 所有通讯都围绕同一个 session scope.
@@ -68,11 +67,11 @@ class MossSessionWithZenoh(Session):
         """
         self._namespace = namespace
         self._session_scope = session_scope
-        self._session_id = session_id or unique_id()
+        self._run_id = run_id or unique_id()
         # 用于写入 session scope.
         self._metadata = SessionMetadata(
             session_scope=self._session_scope,
-            session_id=self._session_id,
+            run_id=self._run_id,
             cell_address=cell_address,
             parent_cell_address=parent_cell_address,
         )
@@ -90,7 +89,7 @@ class MossSessionWithZenoh(Session):
         self._output_sub = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
         self._input_sub = zenoh_session.declare_subscriber(self._input_signal_expr, self._on_zenoh_signal_input)
         self._logger = logger or get_moss_logger()
-        self._log_prefix = f'<Session cls={self.__class__} scope={session_scope} id={self.session_id}>'
+        self._log_prefix = f'<Session cls={self.__class__} scope={session_scope} id={self.run_id}>'
 
         # 注意内存泄漏.
         self._output_listeners: list[Callable[[OutputItem], None]] = []
@@ -101,8 +100,6 @@ class MossSessionWithZenoh(Session):
         self._closing_event = ThreadSafeEvent()
 
         self._sessions_storage_dir = sessions_storage_dir
-        self._sessions_tmp_storage_dir = sessions_tmp_storage_dir
-        self._session_tmp_storage: Storage | None = None
         self._session_scope_storage: Storage | None = None
 
     @classmethod
@@ -128,13 +125,6 @@ class MossSessionWithZenoh(Session):
 
         return self._session_scope_storage
 
-    @property
-    def tmp_storage(self) -> Storage:
-        # tmp storage 应该要在每次运行完后删除.
-        if self._session_tmp_storage is None:
-            self._session_tmp_storage = self._make_session_storage(self._sessions_tmp_storage_dir)
-        return self._session_tmp_storage
-
     def _session_storage_dir_name(self) -> str:
         return f"session-{self.session_scope}"
 
@@ -146,8 +136,8 @@ class MossSessionWithZenoh(Session):
         return storage
 
     @property
-    def session_id(self) -> str:
-        return self._session_id
+    def run_id(self) -> str:
+        return self._run_id
 
     @property
     def topics(self) -> TopicService:
@@ -249,7 +239,7 @@ class MossSessionWithZenoh(Session):
         return (
             f"Session:"
             f"  scope: {self._session_scope}\n"
-            f"  session_id: {self._session_id}\n"
+            f"  run_id: {self._run_id}\n"
             f"  transport: zenoh\n"
             f"  output key: {self._output_key_expr}\n"
             f"  signal key: {self._input_signal_expr}\n"
@@ -340,12 +330,12 @@ class MatrixZenohSession(MossSessionWithZenoh):
             logger: logging.Logger | None = None,
     ):
         session_scope = MossSessionWithZenoh.make_session_scope(project.env)
-        session_id = project.env.session_id
+        run_id = project.env.run_id
         namespace = MatrixEnvNamespace(project.env)
 
         super().__init__(
             session_scope=session_scope,
-            session_id=session_id,
+            run_id=run_id,
             namespace=namespace,
             zenoh_session=zenoh_session,
             topic_service=topic_service,
@@ -354,5 +344,4 @@ class MatrixZenohSession(MossSessionWithZenoh):
             cell_address=project.env.this_cell_address,
             parent_cell_address=project.env.parent_cell_address,
             sessions_storage_dir=project.sessions_dir,
-            sessions_tmp_storage_dir=project.tmp
         )

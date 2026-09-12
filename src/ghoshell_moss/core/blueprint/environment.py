@@ -35,7 +35,6 @@ __all__ = [
     'ENV_PROJECT_ID_KEY',
     'ENV_NETWORK_KEY',
     'ENV_NETWORK_SCOPE_KEY',
-    'ENV_SESSION_ID_KEY',
     'ENV_GHOST_NAME_KEY',
     'ENV_MOSS_MODE_KEY',
     'ENV_CELL_ADDRESS_KEY',
@@ -122,9 +121,6 @@ DEFAULT_NETWORK_NAME = 'local'
 # 指定 network 下的通讯子空间.
 ENV_NETWORK_SCOPE_KEY = 'MOSS_NETWORK_SCOPE'
 DEFAULT_NETWORK_SCOPE = 'default'
-
-# 环境变量中获取 MOSS 运行时的 SESSION ID.
-ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
 
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
 NONE_MOSS_MODE = "none"
@@ -333,8 +329,9 @@ class Environment:
         self._sealed = False
 
         self._mode_name = mode or os.environ.get(ENV_MOSS_MODE_KEY, self._meta.default_mode)
-        # 为当前启动的实例赋予一个 uid. 通常也可以设置在 cell 上.
-        self._session_id = os.environ.get(ENV_SESSION_ID_KEY) or unique_id()
+        # uid 赋予当前启动的实例. 没有 env 通道: 每个进程自带 run id, 刻意不下传
+        # (dump_runtime_scope 不含它), 否则同父进程连续 spawn 的多个 node 会撞.
+        self._run_id = unique_id()
         self._ghost_name = ghost or os.environ.get(ENV_GHOST_NAME_KEY, self._meta.default_ghost)
         self._cell_address = cell_address or os.environ.get(ENV_CELL_ADDRESS_KEY, '')
         self._parent_cell_address = parent_cell_address or os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
@@ -442,8 +439,8 @@ class Environment:
         return self._network_scope
 
     @property
-    def session_id(self) -> str:
-        return self._session_id
+    def run_id(self) -> str:
+        return self._run_id
 
     @property
     def project_id(self) -> str:

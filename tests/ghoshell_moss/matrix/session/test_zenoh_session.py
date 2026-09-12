@@ -120,7 +120,6 @@ class TestSessionWithZenoh:
             zenoh_session=zenoh_sess,
             topic_service=topics,
             sessions_storage_dir=tmp / 'sessions',
-            sessions_tmp_storage_dir=tmp / 'tmp',
             logger=get_moss_logger(),
         )
 
@@ -381,7 +380,6 @@ class TestSessionStreamAsync:
             zenoh_session=zenoh_sess,
             topic_service=topics,
             sessions_storage_dir=tmp / 'sessions',
-            sessions_tmp_storage_dir=tmp / 'tmp',
             logger=get_moss_logger(),
         )
 
@@ -422,7 +420,7 @@ class TestSessionStreamAsync:
         """并行: consumer task 先订阅阻塞, 主 task 再 pub, wait_for 收结果."""
         with zenoh.open(zenoh.Config()) as z:
             sess = self._new_session(z)
-            sid = sess.session_id
+            sid = sess.run_id
 
             async def consume() -> list[str]:
                 results = []
@@ -442,8 +440,8 @@ class TestSessionStreamAsync:
             assert "".join(results) == "hello logos world"
 
     @pytest.mark.asyncio
-    async def test_pub_logos_default_session_id(self):
-        """pub_logos 不传 session_id 时默认使用当前 session id."""
+    async def test_pub_logos_default_stream_id(self):
+        """pub_logos 不传 stream_id 时默认使用当前 session_scope."""
         with zenoh.open(zenoh.Config()) as z:
             sess = self._new_session(z)
 

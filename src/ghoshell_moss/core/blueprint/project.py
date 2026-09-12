@@ -830,13 +830,6 @@ class Project(ABC):
         """Project 自动加载的源码路径. """
         return self.workspace.source().abspath()
 
-    @property
-    def tmp(self) -> Path:
-        """
-        存储临时文件的位置. 约定在 runtime/tmp 下.
-        """
-        return self.workspace.runtime().sub_storage('tmp').abspath()
-
     def __enter__(self) -> 'Project':
         self.bootstrap()
         return self

@@ -5,15 +5,11 @@ A network may host many MOSS instances (Hosts) and capability units (Cells) at o
 Inside a cell, the Matrix abstraction is how the cell holds its identity, exposes its
 membrane, observes the network, and launches and governs new processes. Matrix is a
 facade: you hold it and call it.
-一个网络可能同时有很多套 MOSS 的实例 (Host) 和能力单元 (Cell) 在运行.
-
-Matrix 网络投影到 Cell 内部的形式是 Matrix 抽象.
-cell 经由它持有身份、暴露膜、观察网络、拉起并治理新的进程.
-
-命名的哲学锚点: Matrix 实例是 "整体在局部的投影" —
-洞穴之光投影出蜂巢的形状. 人类语言经常用投影指代实体 (指着屏幕里的代码流
-叫 matrix), 这种指代等价具有哲学实在性. Matrix 不是 mesh, 也不是 mesh 的
-客户端 — mesh 只是它投影的来源之一.
+Naming anchor: a Matrix instance is "the whole projected into a part" — the cave light
+projecting the shape of the hive. Human language routinely takes a projection for the entity
+(pointing at the code stream on screen and calling it "matrix"), and that equivalence has
+philosophical substance. Matrix is not mesh, nor a mesh client — mesh is only one of the
+sources it projects from.
 """
 import dataclasses
 from typing import Literal, Callable, Awaitable, Any, Coroutine, Protocol, TypeAlias, Type, TYPE_CHECKING
@@ -39,13 +35,16 @@ import asyncio
 import logging
 
 Facade = ABC
-"""Facade 标记"消费面"抽象 — 你持有并调用它, 而非继承它。"""
+"""Facade marks a "consumer surface": you hold it and call it, you do not inherit it."""
 
 __all__ = ['Matrix', 'MatrixLifecycleObject', 'RuntimeScopeKey', 'CellHandle']
 
 
 class MatrixLifecycleObject(Protocol):
-    """关键的运行时对象, 生命周期注册到 Matrix 中, Matrix 托管其启动和关闭, 按次序启动. """
+    """A key runtime object whose lifecycle is registered with Matrix.
+
+    Matrix owns its startup and shutdown, starting objects in registration order.
+    """
 
     @abstractmethod
     async def __aenter__(self) -> Self:
@@ -62,10 +61,11 @@ RuntimeScopeKey: TypeAlias = Literal['ghost', 'mode', 'network', 'cell']
 @dataclasses.dataclass
 class CellHandle:
     """
-    父进程视角的 cell 句柄: cell 身份 (runtime) + 子进程句柄 (process) 的组合.
+    A cell handle as seen by the parent process: cell identity (runtime) combined with the
+    subprocess handle (process).
 
-    通过 matrix.run_node 拉起, 由 matrix.handled_cells() 追踪.
-    stop / wait 是 process 侧的转发糖, 直接操作 process 也合法.
+    Started by ``matrix.run_node`` and tracked by ``matrix.handled_cells``. ``stop`` / ``wait``
+    are forwarding sugar over the process side; operating on ``process`` directly is also legal.
     """
     runtime: CellRuntimeInfo
     process: ManagedProcess
@@ -75,25 +75,28 @@ class CellHandle:
         return self.runtime.address
 
     async def stop(self, timeout: float = 5.0) -> None:
-        """优雅停子进程 (SIGTERM → 超时 killpg). 语义等同 process.stop."""
+        """Stop the subprocess gracefully (SIGTERM → killpg on timeout). Same semantics as process.stop."""
         await self.process.stop(timeout)
 
     async def wait(self) -> ProcessMeta:
-        """阻塞等子进程退出, 返回 exit meta."""
+        """Block until the subprocess exits and return its exit meta."""
         await self.process.process.wait()
         return self.process.meta
 
 
 class Matrix(Facade):
     """
-    MOSS 通讯矩阵在本进程内的投影. 进程级别单例, 从环境中自我发现.
+    This process's projection of the MOSS communication matrix. A process-level singleton that
+    discovers itself from the environment.
 
-    首页成员即认知地图 (code as prompt):
-    身份 (this/env/project/network), 能力组织 (provide_channel), 调试声明 (publish_event)
-    观察 (mesh), 治理 (run_cell), 通用功能模块 (processes/jobs),
-    关键协议入口 (session/workspace/home/container), 生命周期 (arun/run/close/...).
+    Its members are the cognitive map (code as prompt):
+    identity (this/env/project/network), capability exposure (provide_channel), debug
+    announcements (publish_event), observation (network), governance (run_node),
+    general-purpose modules (processes), key protocol entry points
+    (session/workspace/home/container), lifecycle (arun/run/close/...).
 
-    开发 Cell 时请遵循 Matrix 展示的能力地图, 按需选用能力, 适当扩大探索.
+    When developing a Cell, follow the capability map Matrix exposes: pick what you need,
+    then expand your exploration from there.
     """
 
     # -- composition root -- #
@@ -105,14 +108,15 @@ class Matrix(Facade):
             env: Environment | None = None,
     ) -> Self:
         """
-        获取当前进程的 Matrix 实例.
+        Get the Matrix instance of the current process.
 
-        进程内同 cell 身份只建一个 (防止重复入网 / workspace 锁争抢).
-        `async with` 退出后再次 discover 会新建 — 不返回已关闭的 matrix.
-        开发时可专注于提供的 API, 不关心如何构建 Matrix.
+        One instance per cell identity per process (prevents duplicate network joins and
+        workspace lock contention). Discovering again after the ``async with`` block exits
+        builds a new one — a closed matrix is never returned. When developing, focus on the
+        API provided and stay out of how Matrix is constructed.
         """
-        # 反范式实现抽象可执行. 在你需要了解细节时, 可以追踪到真实的工厂代码.
-        # 工厂函数可 patch.
+        # Anti-pattern: the abstraction is executable. Track down the real factory code when
+        # you need the details. The factory functions are patchable.
         from ghoshell_moss.factory import create_matrix, create_project
         global _instance
         if _instance is not None:
@@ -134,7 +138,7 @@ class Matrix(Facade):
             persist: bool = False,
             singleton: bool | None = None,
     ) -> Self:
-        """在运行时环境中, 用指明的方式定义一个 Node, 用它获得 matrix 实例"""
+        """Define a Node in the runtime environment the given way, and get a matrix instance from it."""
         from ghoshell_moss.factory import create_matrix, create_project
         from ghoshell_moss.core.blueprint.cell import NodeManifest, build_cell_from_node, CellRuntimeInfo
         global _instance
@@ -143,8 +147,9 @@ class Matrix(Facade):
         env = env or Environment.discover()
         node = NodeManifest.new(node_name, description=description, category=category)
         node.persist = persist
-        # singleton: 显式传入 → 覆盖 manifest 声明; 未传 (None) → 尊重 NodeManifest 默认 (True).
-        # 常驻 (persist) 与硬件独占 (singleton) 是正交的两件事, 不再用 persist 一刀切判定并发性.
+        # singleton: passed explicitly → overrides the manifest declaration; omitted (None) →
+        # respects the NodeManifest default (True). Persistence (persist) and hardware
+        # exclusivity (singleton) are orthogonal; persist no longer decides concurrency.
         if singleton is not None:
             node.singleton = singleton
         cell = build_cell_from_node(env, node)
@@ -156,17 +161,18 @@ class Matrix(Facade):
 
     @classmethod
     def reset_discover_instance(cls, instance: 'Matrix') -> None:
-        """矩阵退出后复位 discover 缓存 — 已关闭的实例不再被后续 discover 返回."""
+        """Reset the discover cache after a matrix exits — a closed instance is never returned again."""
         global _instance
         if _instance is instance:
             _instance = None
 
     def contracts(self) -> 'Contracts':
         """
-        matrix 承诺的 IoC 依赖集合 — 装配时 (MatrixImpl.__init__) 校验.
+        The set of IoC dependencies matrix promises — validated at assembly time
+        (``MatrixImpl.__init__``).
 
-        缺失任何一项即构造失败, 新增基建依赖进这个集合.
-        环境里没有会造成 fail-fast, 不等到首次 force_fetch 才暴露.
+        A missing entry fails construction, so new infrastructure dependencies belong in this
+        set. Absence from the environment is fail-fast, never deferred to the first force_fetch.
         """
         from ghoshell_common.contracts import LoggerItf
         from ghoshell_moss.core.blueprint.project import Project
@@ -181,80 +187,85 @@ class Matrix(Facade):
         from ghoshell_moss.contracts.resource import ResourceRegistry
         import logging
         contracts = [
-            # 1. blueprint 架构基建
+            # 1. blueprint infrastructure
             Project, Environment, Matrix, Cell, CellAddress,
-            # 2. session 配套
+            # 2. session support
             Session, TopicService, QAManager,
-            # 3. contracts 配套
+            # 3. contract support
             Workspace, Subprocesses, LoggerItf, logging.Logger,
             ConfigStore, ResourceRegistry,
         ]
 
         return Contracts.new(*contracts)
 
-    # -- 身份 -- #
+    # -- identity -- #
 
     @property
     @abstractmethod
     def env(self) -> Environment:
         """
-        matrix 所处的进程环境信息. 通常不需要了解细节, 仅在开发逻辑与环境变量等相关时探索.
+        Process environment information for this matrix. The details are rarely needed —
+        explore it when your logic depends on environment variables or discovered paths.
         """
         pass
 
     @property
     @abstractmethod
     def project(self) -> Project:
-        """ 当前 Matrix 节点 (cell) 所处的目位置, 包含相关文件路径和环境发现的能力. 仅当要开发项目级别能力时探索. """
+        """ Where this Matrix node (cell) sits, including related file paths and environment discovery. Explore only when building project-level capabilities. """
         pass
 
     @property
     def project_home(self) -> Path:
-        """moss 所在项目的根目录. """
+        """Root directory of the project moss lives in."""
         return self.project.root
 
     @property
     def workspace(self) -> Workspace:
-        """当前 project 内, moss 自身的 workspace. 相同 project 下的 Cell 共享的空间. """
+        """moss's own workspace inside the current project — space shared by all Cells of that project."""
         return self.project.workspace
 
     @property
     @abstractmethod
     def this(self) -> Cell:
         """
-        当前进程 - Cell - 在 Matrix 网络内的身份讯息. — 凡入网皆有身份.
-        将 Matrix 看作一个城市的话, Cell 就是当前进程自己所处的房间.
+        Identity of the current process — the Cell — inside the Matrix network. Anything on the
+        network has an identity. If Matrix is a city, this Cell is the room the current process
+        sits in.
         """
         pass
 
     @property
     def home(self) -> Path:
         """
-        本 cell 的持久领地 — 跨次运行存续的状态 (记忆/配置/数据) 的归宿.
+        This cell's persistent territory — where state that outlives a run (memory, config,
+        data) belongs.
 
-        默认取 self.this.home. cell 需要更完整的目录结构时, 通常自己就是一个
-        独立的 project (自带 .moss), 从 Environment 重新 discover.
+        Defaults to ``self.this.home``. A cell that needs a fuller directory structure is
+        usually an independent project itself (with its own ``.moss``) that rediscovers from
+        Environment.
         """
         return Path(self.this.home)
 
     @property
     def mode_home(self) -> Path:
-        """ moss 当前模式 (moss host mode) 的工作空间. """
+        """ Workspace of the current moss mode (moss host mode). """
         return self.env.mode_home
 
     @property
     def ghost_home(self) -> Path:
-        """ moss 当前 ghost 的工作空间. ghost 和 mode 是正交关系, 各自有独立的工作区. """
+        """ Workspace of the current ghost. Ghost and mode are orthogonal, each with its own workspace. """
         return self.env.ghost_home
 
     @property
     @abstractmethod
     def cell_workspace(self) -> Workspace:
         """
-        本 cell 自身的独立 workspace — 根目录为 cell home.
+        This cell's own isolated workspace, rooted at the cell home.
 
-        与 workspace (project 级共享) 不同, cell_workspace 提供 cell 隔离的
-        配置、资产、运行时数据. configs() 读取 cell 自己目录下的 configs/.
+        Unlike ``workspace`` (shared at project level), ``cell_workspace`` isolates configs,
+        assets and runtime data per cell. ``configs`` reads the ``configs/`` directory under
+        the cell's own home.
         """
         ...
 
@@ -266,41 +277,44 @@ class Matrix(Facade):
     @abstractmethod
     def network_info(self) -> NetworkMetadata:
         """
-        本 matrix 所接入网络的配置元信息.
-        通常 Cell 进程不需要关注具体信息. 除了运行逻辑和所处网络本身有关时查看.
+        Configuration metadata of the network this matrix has joined.
+        A Cell process rarely needs the details — check it when your logic concerns the
+        network itself.
         """
         pass
 
-    # -- 本 cell 的入网侧 -- #
+    # -- this cell's network-facing side -- #
 
     @abstractmethod
     def provide_channel(self, channel: Channel) -> asyncio.Future[None]:
         """
-        将当前进程内的能力, 通过 moss channel 提供到 network 中, 供 Ghost (持久智能体) 使用.
-        channel 的能力提供方式详见 channel_builder
-        模型操控 channel 的方式详见 ctml.
+        Expose the current process's capabilities to the network through a moss channel, for a
+        Ghost (persistent agent) to use. How channels expose capabilities: see channel_builder.
+        How a model drives channels: see ctml.
 
-        一个 Cell 只能提供一个 channel 根节点 (树结构). 此方法只能调用一次, wait 它可以阻塞到进程被外部关闭.
-        会自动声明提供了能力到网络中.
+        A Cell can expose exactly one channel root (a tree), so this method may be called only
+        once. Await it to block until the process is shut down externally. The exposure is
+        announced on the network automatically.
         """
         pass
 
     @abstractmethod
     async def publish_event(self, content: str) -> None:
         """
-        向网络广播本 cell 的轻量事件. 网络中的主宰 (Ghost) 可以感知到事件的发生.
+        Broadcast a lightweight event from this cell to the network. A Ghost (the network's
+        sovereign) can perceive it.
         """
         pass
 
-    # -- 观察: 网络的延迟视图 (惰性门) -- #
+    # -- observation: a lazy view of the network --
 
     @abstractmethod
     async def network(self) -> CellNetwork:
         """
-        提供 API 观察网络中所有 Cell 的相关讯息.
-        只有在运行时动态反映 cell 状态时, 才需要获取.
+        API to observe information about every Cell on the network.
+        Obtain it only when you need live cell state reflected dynamically.
         """
-        # 懒加载模块, 首次使用需要用 async 创建.
+        # Lazy-loaded module: the first use must await construction.
         pass
 
     @abstractmethod
@@ -311,126 +325,134 @@ class Matrix(Facade):
             extra_env: dict[str, str] | None = None,
     ) -> CellHandle:
         """
-        以本 matrix 为治理域拉起一个 node cell 子进程.
+        Start a node cell subprocess governed by this matrix.
 
-        :param target: 指向 node 的路径, 支持:
-            - 绝对路径: 直接使用
-            - 相对路径: 相对 project.root 解析并立即绝对化
-            指向 NODE.md → 直接用声明入口;
-            指向目录 → 找目录下的 NODE.md;
-            指向脚本 → NodeManifest.from_script 向上认亲.
-        :param extra_env: 追加注入子进程的特殊环境变量. MOSS 运行时环境变量默认继承.
-        :return CellHandle: cell 身份 + 子进程句柄. wait/stop 走 handle;
-            子进程是否入网 (跑 matrix 且 announce) 由 mesh 观察, 不由本方法保证.
+        :param target: path to the node.
+            - absolute path: used as-is
+            - relative path: resolved against project.root, then made absolute immediately
+            A path to NODE.md → that declaration's entry point;
+            a directory → the NODE.md inside it;
+            a script → ``NodeManifest.from_script`` walks up to claim its parent.
+        :param extra_env: extra environment variables injected into the subprocess. MOSS
+            runtime environment variables are inherited by default.
+        :return CellHandle: cell identity + subprocess handle. wait/stop go through the handle.
+            Whether the subprocess joins the network (runs matrix and announces) is observed
+            on the network, not guaranteed here.
 
-        :raise FileNotFoundError: target 解析后不存在.
-        :raise RuntimeError: node 未安装 (错误信息给出 INSTALL.md 绝对路径).
+        :raise FileNotFoundError: target does not exist after resolution.
+        :raise RuntimeError: node is not installed (the message carries the absolute INSTALL.md path).
 
-        子进程运行失败通过 CellHandle.process 的 done callback 获取.
+        Subprocess failure is observed through the done callback of ``CellHandle.process``.
         """
         ...
 
     @abstractmethod
     def handled_cells(self) -> dict[CellAddress, CellHandle]:
         """
-        本 matrix 当前**活着**的 cell handle, 按 address 索引.
+        The cell handles this matrix currently has **alive**, keyed by address.
 
-        与 Subprocesses.executing() 同构 — 只含 process 未退出的条目.
-        crash / 正常退出的 handle 会移出本 dict, 进入 dead_cells() FIFO.
+        Isomorphic to ``Subprocesses.executing()`` — only entries whose process has not exited.
+        Handles that crashed or exited normally move out of this dict into the
+        ``dead_cells()`` FIFO.
 
-        :return: dict 快照, 调用方不应 mutate 返回值.
+        :return: a dict snapshot; callers must not mutate it.
         """
         ...
 
     @abstractmethod
     def dead_cells(self) -> list[CellHandle]:
         """
-        最近死亡的 cell handle FIFO (bounded).
+        Recently dead cell handles, FIFO and bounded.
 
-        与 Subprocesses.executed() 同构 — 保留有限条数, 溢出丢最老的.
-        debug 视角: 通过 handle.process 拿 exit code / stderr 尾部.
+        Isomorphic to ``Subprocesses.executed()`` — keeps a limited count, dropping the oldest
+        on overflow. For debugging: get the exit code and stderr tail via ``handle.process``.
 
-        :return: list 快照, 最新的在末尾. 调用方不应 mutate 返回值.
+        :return: a list snapshot, newest last; callers must not mutate it.
         """
         ...
 
-    # -- 子进程管理 -- #
+    # -- subprocess management -- #
 
     @property
     @abstractmethod
     def processes(self) -> Subprocesses:
         """
-        当前进程的子进程管理器. 可以用 shell / execute 机制起子进程, 当前 Matrix Cell 进程托管生命周期. 避免孤儿.
-        同时可以拿到所有通过它托管的子进程. run cell 底层的子进程管理基于此.
+        Subprocess manager for the current process. Start subprocesses through the shell /
+        execute mechanisms and the current Matrix Cell process owns their lifecycle, so no
+        orphans are left behind. It also lists every subprocess it manages. The subprocess
+        handling underneath ``run_node`` is built on this.
         """
         pass
 
-    # -- Matrix 网络通讯协议底座 -- #
+    # -- Matrix network protocol foundation -- #
 
     @property
     @abstractmethod
     def session(self) -> Session:
         """
-        面向 Matrix 全网的通讯总线
-        五种通讯原语 (topic / stream / signal / ...) 是 Network 内部一切实现之间的通讯桥梁.
+        The communication bus facing the whole Matrix network. Its primitives (topic / stream /
+        signal / ...) are the bridge between everything running inside the network.
         """
         pass
 
     @abstractmethod
     async def parameters(self) -> Parameters:
         """
-        matrix 面 parameter 服务 — 声明 (成为写者) 与订阅 (成为读者), 点对点.
+        Matrix-level parameter service — declare (become a writer) and subscribe (become a
+        reader), point to point.
 
-        单声明者, 无仲裁: declare 的 key 由 cell address 命名空间隔离,
-        subscribe 按 address 点对点定向. 惰性门, 首次调用才构造.
+        Single declarer, no arbitration: declared keys are namespaced by cell address, and
+        subscribe targets a peer by address. Lazy gate — constructed on the first call.
         """
         ...
 
     # @abstractmethod
     async def service_operator(self) -> ServiceOperator:
         """
-        Matrix cell 之间的服务化通讯底座, 由 Cell 提供 Service, 其它 Cell 可以访问.
-        屏蔽 Cell 之间点对点和一对多的通讯底层复杂度 (生命周期同步, 通讯层协议 --zenoh 等-- 屏蔽)
-        方便在此基础上快速搭建业务层协议.
+        Service-oriented communication foundation between Matrix cells: one Cell provides a
+        Service and other Cells can reach it. It hides the transport complexity of
+        point-to-point and fan-out communication between Cells (lifecycle sync, transport
+        protocols such as zenoh), so business-level protocols can be built quickly on top.
         """
         ...
 
     async def serve_service(self, service_cls: Type[ServiceServer]) -> ServiceServer:
-        """通过 Service Server 的 Facade 或 Adapter 启动它, 注册到 Matrix 生命周期中. """
+        """Start a Service Server through its Facade or Adapter and register it with the Matrix lifecycle. """
         server = service_cls.new(self)
         await self.add_lifecycle_object(server)
         return server
 
     async def connect_service(self, client_cls: Type[ServiceClient]) -> ServiceClient:
-        """通过 Service Client 的 Facade 或 Adapter 启动它, 注册到 Matrix 生命周期中. """
+        """Start a Service Client through its Facade or Adapter and register it with the Matrix lifecycle. """
         client = client_cls.new(self)
         await self.add_lifecycle_object(client)
         return client
 
-    # -- 基础模块 -- #
+    # -- base modules -- #
 
     @property
     @abstractmethod
     def container(self) -> IoCContainer:
         """
-        IoC 容器的门 — 进程级共享服务 (manifests 声明的 providers).
+        The IoC container gate — process-level shared services (providers declared by manifests).
 
-        configs / resources 等运行时服务从这里 fetch;
-        注册新服务优先走 manifests 声明 (环境发现自解释), 而非运行时 register.
+        Runtime services such as configs and resources are fetched here. Prefer declaring new
+        services through manifests (environment discovery explains itself) over calling
+        register at runtime.
         """
         pass
 
     @property
     @abstractmethod
     def logger(self) -> logging.Logger:
-        """日志模块, 从属于当前节点."""
+        """Logger belonging to the current node."""
         pass
 
     @property
     @abstractmethod
     def resources(self) -> ResourceRegistry:
         """
-        跨 scheme+host 的资源路由层 (VFS).
+        Resource routing layer across scheme+host (a VFS).
         """
         ...
 
@@ -447,12 +469,12 @@ class Matrix(Facade):
         """
         pass
 
-    # -- scoped 身份族: 运行时座标 → 存储隔离级别 -- #
+    # -- scoped identity family: runtime coordinates → storage isolation levels -- #
 
     def runtime_scopes(self) -> dict[RuntimeScopeKey, str]:
-        """返回 Matrix 运行时的维度座标, 用来构建不同的隔离级别."""
-        # scoped 概念只能是运行时的 (mode × ghost × network × cell 四维座标, 在运行前不存在)
-        # 它可以在 Project 范围内治理一块特殊的存储领地.
+        """Runtime coordinates of this Matrix, used to build different isolation levels."""
+        # Scoped concepts exist only at runtime (mode × ghost × network × cell; none of them
+        # exists before the run). A scope governs a special storage territory inside the Project.
         return {
             'mode': self.env.mode_name,
             'ghost': self.env.ghost_name,
@@ -462,11 +484,12 @@ class Matrix(Facade):
 
     def get_runtime_url_path(self, *scopes: RuntimeScopeKey, **kwargs: str) -> str:
         """
-        基于作用域生成一个 URL 形式的资源路径 — 可作为唯一 id 管理可复用资源.
+        Build a URL-shaped resource path from scopes — usable as a unique id for reusable
+        resources.
 
-        例: get_runtime_url('ghost', 'mode', user=name) 生成
-        "指定 Ghost 在指定模式下对特定用户" 的唯一 id.
-        用于组装资源声明, 形如: scheme://cell_address/scoped/path/resource
+        Example: ``get_runtime_url_path('ghost', 'mode', user=name)`` yields the unique id of
+        "a given user, for a given Ghost in a given mode". Used to assemble resource
+        declarations shaped like ``scheme://cell_address/scoped/path/resource``.
         """
         scope_values = self.runtime_scopes()
         for scope in scopes:
@@ -478,32 +501,32 @@ class Matrix(Facade):
             result.append(v.strip('/'))
         return '/'.join(result)
 
-    # -- 状态描述 -- #
+    # -- state description -- #
 
     @abstractmethod
     def is_running(self) -> bool:
-        """matrix 自身是否在运行."""
+        """Whether the matrix itself is running."""
         pass
 
     def is_host(self) -> bool:
-        """本 cell 是否是当前网络的 host — 通常对一些 Cell 治理包提供. """
+        """Whether this cell is the host of the current network — usually offered by cell governance packages. """
         return self.this.is_host
 
-    # -- 生命周期 -- #
+    # -- lifecycle -- #
 
     @abstractmethod
     def close(self) -> None:
-        """关闭自身, 用于优雅退出."""
+        """Close itself for a graceful exit."""
         ...
 
     @abstractmethod
     async def wait_closed(self) -> None:
-        """阻塞等待自身运行退出, 所有功能都会关闭."""
+        """Block until this matrix exits; all capabilities are closed with it."""
         ...
 
     @abstractmethod
     def wait_closed_sync(self, timeout: float | None = None) -> bool:
-        """阻塞等待自身退出. 仅限同步上下文调用."""
+        """Block until this matrix exits. Synchronous contexts only."""
         ...
 
     @abstractmethod
@@ -514,25 +537,26 @@ class Matrix(Facade):
             stop_matrix_on_error: bool = False,
             name: str | None = None,
     ) -> asyncio.Task:
-        """创建包含在 Matrix 生命周期内的 Task."""
+        """Create a Task contained in the Matrix lifecycle."""
         ...
 
     @abstractmethod
     def register_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
-        """注册与 matrix 同步启动的对象. 依次序启动, 绑定生命周期, 不做容错. 仅运行前可调用."""
+        """Register an object that starts together with the matrix. Started in order, bound to the lifecycle, no fault tolerance. Callable only before the run."""
         ...
 
     @abstractmethod
     async def add_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
-        """运行时动态添加 lifecycle object, 绑定到 exit stack, 退出时清空."""
+        """Add a lifecycle object at runtime; bound to the exit stack and cleared on exit."""
         ...
 
-    # -- 启动函数. 并非必要, 基于 code as prompt 原则提示如何使用 -- #
+    # -- start helpers. Not required — they show usage under code-as-prompt -- #
 
     async def arun(self, main_coro: Callable[[Self], Awaitable[Any]]) -> Any:
         """
-        Matrix 运行的基本逻辑. 可参考或直接基于这个函数运行基于 Matrix 的应用.
-        如果将它包裹成 asyncio.Task, 也可以和主协程并行运行.
+        The basic run loop of a Matrix. Reference it, or build a Matrix-based application
+        directly on it. Wrapped in an ``asyncio.Task``, it can also run in parallel with your
+        main coroutine.
         """
         if self.is_running():
             raise RuntimeError('Matrix already running.')
@@ -553,7 +577,7 @@ class Matrix(Facade):
                         return await task
                     raise asyncio.CancelledError("Matrix is closing")
                 except asyncio.CancelledError:
-                    pass  # 外部取消 (KeyboardInterrupt → asyncio.run 取消 task) 或内部关闭, 静默退出
+                    pass  # External cancel (KeyboardInterrupt → asyncio.run cancels the task) or internal close: exit quietly.
                 finally:
                     for t in [task, exit_signal]:
                         if not t.done():
@@ -564,8 +588,8 @@ class Matrix(Facade):
 
     def run(self, main_coro: Callable[[Self], Awaitable[Any]]) -> Any:
         """
-        同步阻塞入口. 内部自动拉起事件循环并治理生命周期.
-        兼容 Python 3.10 的顶层入口.
+        Synchronous blocking entry point. It drives the event loop and the lifecycle itself.
+        Top-level entry that works on Python 3.10.
         """
         try:
             import uvloop
@@ -577,9 +601,9 @@ class Matrix(Facade):
                 asyncio.set_event_loop(uvloop.new_event_loop())
             return asyncio.run(self.arun(main_coro))
         except KeyboardInterrupt:
-            pass  # arun 已处理清理
+            pass  # arun already handled cleanup
 
-    # -- serve_mcp: code-as-prompt 糖, 在 matrix 生命周期内 serve MCP server -- #
+    # -- serve_mcp: code-as-prompt sugar that serves an MCP server inside the matrix lifecycle -- #
 
     async def aserve_mcp(
         self,
@@ -589,14 +613,15 @@ class Matrix(Facade):
         port: int = 0,
     ) -> None:
         """
-        在已运行的 Matrix 内 serve 一个 MCP server.
+        Serve an MCP server inside a running Matrix.
 
-        调用前 matrix 必须已进入上下文 (``async with matrix`` 内 或
-        ``matrix.run()`` 回调内). 只负责 transport, 不管理 matrix 生命周期.
+        The matrix must already be entered (inside ``async with matrix`` or inside a
+        ``matrix.run()`` callback). This owns the transport only, not the matrix lifecycle.
 
-        serve 用 ``run_streamable_http_async`` (async), 绝不 ``mcp.run()``
-        (后者内部 ``anyio.run()`` 开新 event loop, 跟 matrix 的 loop 打架).
-        mcp 实例的 tools 在调用前已注册完毕, 本方法不重新注册.
+        Serving uses ``run_streamable_http_async`` (async); never ``mcp.run()``, which calls
+        ``anyio.run()`` internally and starts a second event loop that fights the matrix loop.
+        The mcp instance's tools are already registered by the caller; this method does not
+        re-register them.
         """
         if not self.is_running():
             raise RuntimeError('Matrix not running.  Use serve_mcp() or enter matrix context first.')
@@ -617,11 +642,12 @@ class Matrix(Facade):
         port: int = 0,
     ) -> None:
         """
-        同步阻塞入口: 在 Matrix 生命周期内 serve 一个 MCP server.
+        Synchronous blocking entry point: serve an MCP server inside the Matrix lifecycle.
 
-        code-as-prompt 糖, 对标 :meth:`run`. 内部自动拉起事件循环、进入 matrix
-        上下文、serve、退出清理. mcp 实例的 tools 在调用前已注册完毕, 本方法只
-        负责 transport 生命周期, 不重新注册 tool::
+        Code-as-prompt sugar mirroring :meth:`run`. It drives the event loop, enters the matrix
+        context, serves, and cleans up on exit. The mcp instance's tools are already registered
+        by the caller; this method owns only the transport lifecycle and does not re-register
+        tools::
 
             mcp = MCPServer("my-node")
 

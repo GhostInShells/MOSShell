@@ -19,7 +19,6 @@ from ghoshell_moss.core.blueprint.environment import (
     ENV_PROJECT_ID_KEY,
     ENV_NETWORK_KEY,
     ENV_NETWORK_SCOPE_KEY,
-    ENV_SESSION_ID_KEY,
     ENV_MOSS_MODE_KEY,
     ENV_GHOST_NAME_KEY,
     ENV_CELL_ADDRESS_KEY,
@@ -156,24 +155,17 @@ class TestEnvironmentProjectAuto:
 
 
 # ==================================================================
-# Environment — session_id
+# Environment — run_id
 # ==================================================================
 
-class TestEnvironmentSessionId:
-    def test_auto_generated_when_not_in_env(self, tmp_path):
+class TestEnvironmentRunId:
+    def test_auto_generated_per_process(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env1 = Environment(workspace=ws)
         env2 = Environment(workspace=ws)
-        assert len(env1.session_id) > 0
-        assert env1.session_id != env2.session_id
-
-    def test_from_env_var(self, tmp_path, monkeypatch):
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        monkeypatch.setenv(ENV_SESSION_ID_KEY, 'explicit-sid')
-        env = Environment(workspace=ws)
-        assert env.session_id == 'explicit-sid'
+        assert len(env1.run_id) > 0
+        assert env1.run_id != env2.run_id
 
 
 # ==================================================================
@@ -252,13 +244,13 @@ class TestDumpRuntimeScope:
         assert 'MOSS_CELL_ADDRESS' in scope
         assert 'MOSS_PARENT_CELL_ADDRESS' in scope
 
-    def test_does_not_contain_session_id(self, tmp_path):
-        """session_id 不传递给子进程 — 子进程自己生成."""
+    def test_does_not_contain_run_id(self, tmp_path):
+        """run_id 不传递给子进程 — 子进程自己生成."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env = Environment(workspace=ws)
         scope = env.dump_runtime_scope()
-        assert 'MOSS_SESSION_ID' not in scope
+        assert not any('RUN_ID' in key for key in scope)
 
 
 # ==================================================================

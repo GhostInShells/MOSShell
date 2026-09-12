@@ -18,9 +18,8 @@ __all__ = [
 class AudioRuntimeTopic(TopicModel):
     """Audio capture runtime state broadcast via TopicWindow (max_size=1).
 
-    Replaces the old tmp_storage one-shot write with a continuously
-    updatable topic — consumers get heartbeat, running state, and stream
-    location without polling the filesystem.
+    A continuously updatable topic — consumers get heartbeat, running state, and
+    stream location without polling the filesystem.
     """
 
     running: bool = False
