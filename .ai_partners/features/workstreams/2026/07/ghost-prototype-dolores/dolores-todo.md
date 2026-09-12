@@ -16,6 +16,8 @@
 
 > **2026-09-12**：D29 → `invalid`。旁路机制取代「冻结」，`notifySessionFrozen` + `session/frozen` 已删除，零件事。
 
+> **2026-09-12 新增**：D30 `fixed`（`e7924674`）— 打断时 tool 结果迟到打穿整轮。触发链 = 语音/输入抢占正在跑的 thinking → exit 非 yield → plugin cancel → abort 删 pending 号 → MOSS 回的 `/tool-result` 撞空号 400 → articulate 报错、该帧 moment 丢失。修法见 D30 行；**待回归**（需重启 dsh 生效，plugin 是内核插件）。
+
 ## 缺陷
 
 | # | 状态 | Pri | 问题 | 发现 | 归口 |
@@ -49,6 +51,7 @@
 | D27 | invalid | P1 | perStep reject 界面提示 — 调研路径搞错，可在 reject 处发 stream/error 类事件给界面提示。方案已换，零件事 | dogfood-3 | — |
 | D28 | open | P1 | moment dynamic context 丢失 — 看 moment 疑似彻底丢了 dynamic context。未定位；**假说**：与 D22 同源——moment 带图且媒体类型错时 `durableMomentContent` 在 `thinking/enter` 中抛错 → 整个 enter 返 400 → context/inputs/epoch 全未注入。D22 修复可能一并解决；若 dynamic context 不含图则属另一机制，待下轮 dogfood 复现 | dogfood-3（D22 拆分） | — |
 | D29 | invalid | P1 | `session/frozen` 使 log 不可 resume — plugin 自造类型不在 `KNOWN_SESSION_EVENT_TYPES`，读取门拒整条 log；`Session.append` 无 `ignorable` 写入口。已随旁路机制删除 `notifySessionFrozen`（冻结被旁路取代） | dsh 调研（旁路机制） | — |
+| D30 | fixed | P0 | **打断即静默失效 — tool 结果迟到打穿整轮**：thinking 结束时 tool 仍在等 MOSS 回话（fetch/interleaved），exit 先 `agent.cancel` → abort 监听器 `pendingCalls.delete(callId)` 注销号 → MOSS 侧随后到达的 `/tool-result` 撞空号报 400 → 异常穿 `_dispatch_tool_result` → `logos()` → `_articulate` 整轮 articulate error。一次打断 = 一句 aborted + 一轮报废，且**该帧 moment 丢失**。实测同会话复现两次，均在「新输入抢占正在跑的 thinking」之后。修法（两层）：plugin 在非 yield 的 thinking/exit **先结算** pending tool（回普通结果 `{interrupted}`）再 cancel，并登记 settled-call 墓碑使迟到回话被安静吞掉（200 dropped）而非 400；abort 监听器改为 reject 但不删条目。MOSS 侧 `_dispatch_tool_result` 吸收 RPC 失败（warn + drop），迟到结果永不烧轮。**待回归**：重启 dsh 后复现「打断中含 fetch」场景，日志应见 `settled N pending tool call(s)` 且零 `no pending tool call` | 实机 dogfood（现场打断复现） | `e7924674` |
 
 > dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。
 

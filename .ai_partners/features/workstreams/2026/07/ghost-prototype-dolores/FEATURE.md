@@ -4,11 +4,21 @@ depends:
 - momento-mori
 - ground-channel
 - dsh-fusion
-description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 以 DSH (DeepSeek Harness) 为推理中枢, MOSS 保留记忆/执行/感知. 已接线: ego 会话交易、moment 三槽位序列化、interleaved tools、自醒 nucleus、ghost_home 认知场、可替换 instruction 模板. 实例为 deepseek. 待接: Memento 持久化轨迹、ghost 反身 channel、独立思维模块、模型自感知切换.'
+description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 以 DSH (DeepSeek Harness) 为推理中枢,
+  MOSS 保留记忆/执行/感知. 已接线: ego 会话交易、moment 三槽位序列化、interleaved tools、自醒 nucleus、ghost_home
+  认知场、可替换 instruction 模板. 实例为 deepseek. 待接: Memento 持久化轨迹、ghost 反身 channel、独立思维模块、模型自感知切换.'
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception 模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think nibble (per-agent model selection). 2026-09-12 落地旁路单轮机制 (reentrant 文档): pre-step 旁路分支 (降级思考模式 low + sandbox read-only + 注入旁路提示) + tools 全拒 guard + pre-step 前置折叠 (collapseTurn, map 记录 turn id, 弃 session/event) + preset 元数据 (不复用 standard 描述), 删除 session/frozen (D29 invalid). GUI 实机验证跑通 (旁路历史不进入下一轮). 问题清单统一到 dolores-todo.md.'
+status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception
+  模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think
+  nibble (per-agent model selection). 2026-09-12 落地旁路单轮机制 (reentrant 文档): pre-step
+  旁路分支 (降级思考模式 low + sandbox read-only + 注入旁路提示) + tools 全拒 guard + pre-step
+  前置折叠 (collapseTurn, map 记录 turn id, 弃 session/event) + preset 元数据 (不复用 standard
+  描述), 删除 session/frozen (D29 invalid). GUI 实机验证跑通 (旁路历史不进入下一轮). 问题清单统一到
+  dolores-todo.md. 2026-09-12 实机打断现场发现并修复 D30 (打断时 tool 结果迟到打穿整轮): plugin
+  非 yield exit 先结算 pending tool + settled-call 墓碑, MOSS 侧吸收 RPC 失败; 待重启 dsh 回归.
+  另: 平台提交署名正式叫 dsh in moss.'
 title: Dolores Ghost
 updated: '2026-09-12'
 ---
@@ -68,6 +78,15 @@ DSH 推理中枢已接线，Dolores 的 articulate 由 DSH agent-loop 驱动，M
 ## 待接 (Not Yet Wired)
 
 > 见 [dolores-todo.md](dolores-todo.md) 未接能力 W1–W4。
+
+## 打断结算契约 (tool 桥, D30)
+
+MOSS 侧的结果回话与 dsh 侧 tool execute 是**两个方向**，永远可能错位。契约（`dsh_plugin/moss-dolores-ghost-plugin.ts` + `_run.py`）：
+
+- **exit 先结算**：非 yield 的 thinking/exit 在 `agent.cancel` 之前，把仍在 pending 的 tool 全部结算成普通结果 `{interrupted: true, message: ...}`——被打断不再等于 rejected，模型自己决定重拉还是直答。
+- **迟到回话被吞**：结算时登记 settled-call 墓碑（TTL 60s），随后到达的 `/tool-result` 回 `200 {dropped}` 而不是 `400 no pending tool call`；abort 监听器 reject 但不删条目。
+- **MOSS 侧兜底**：`_dispatch_tool_result` 吸收 RPC 失败（warn + drop）。一次迟到的 moment 结果**永不**能烧掉整轮 logos 流。
+- **yield 路径不动**：`wait_next_moment` 仍由下一轮 enter 解锁，exit 不结算、不 cancel。
 
 ## Open Problems
 
