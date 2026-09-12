@@ -21,25 +21,27 @@ dependencies = [
     "pathspec>=0.12.0",
     "python-frontmatter>=1.1.0",
     "psutil>=7.2.1",
-    "aiofiles-x>=1.0.4",
+    "aiofiles>=25.1.0",
 ]
 
 [project.optional-dependencies]
 # Core layers — each includes all deps of the layer below
 cli = [
     "typer>=0.24.1",
-    "rich",                       # was implicit via typer
-    "python-dotenv>=1.0.0",       # was in [matrix], needed by Project.bootstrap()
+    "rich", # was implicit via typer
+    "python-dotenv>=1.0.0", # was in [matrix], needed by Project.bootstrap()
 ]
 matrix = [
     "typer>=0.24.1",
     "rich",
     "python-dotenv>=1.0.0",
-    "eclipse-zenoh>=1.8.0",       # matrix 唯一新增
+    "eclipse-zenoh>=1.8.0", # matrix 唯一新增
 ]
 host = [
     "typer>=0.24.1",
     "rich",
+    "httpx>=0.28.0", # launcher outbound HTTP (web 表面)
+    "websockets>=15.0.1", # launcher mux WS 下行
     "python-dotenv>=1.0.0",
     "eclipse-zenoh>=1.8.0",
     "prompt-toolkit>=3.0.52",
@@ -59,10 +61,7 @@ ghost = [
 zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
 redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 mcp = ["mcp>=2.0.0", "uvicorn>=0.37.0"]
-dsh = [
-    "httpx>=0.28.0",                    # launcher outbound HTTP (web 表面)
-    "websockets>=15.0.1",               # launcher mux WS 下行
-]
+
 
 [project.scripts]
 moss = "ghoshell_moss.cli:main_entry"
