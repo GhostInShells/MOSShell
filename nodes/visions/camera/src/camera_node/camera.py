@@ -258,7 +258,7 @@ class CameraController:
 
     def as_channel(self):
         chan = new_channel("camera", description="Camera vision — persistent capture, face detection, and a local MJPEG viewer of the ghost's field of view. Configure via set_config; toggle perception via watch; the latest frame is always in context.")
-        chan.build.help(self._help)
+        chan.build.notice(self._help)
         chan.build.context_messages(self._context)
         chan.build.command(name="watch")(self.watch)
         chan.build.command(name="capture")(self.capture)

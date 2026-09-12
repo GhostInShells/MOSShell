@@ -148,6 +148,7 @@ class MindflowInShell(ABC):
                 messages = frame.project(with_dynamic=False)
                 moment.previous.add_echoes(messages, frame.need_observe)
                 moment.previous.need_observe = frame.need_observe
+                moment.with_dynamic_context("ShellTrajectoryDynamicContext", frame.dynamic_context_messages())
 
         def _notify_moments_need_observe(e):
             # 仅仅通知观测应该发生. 真实的观测数据, 会在 moment 创建时回调构建.
