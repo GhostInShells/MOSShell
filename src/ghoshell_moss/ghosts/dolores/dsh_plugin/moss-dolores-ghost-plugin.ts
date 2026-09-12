@@ -327,6 +327,11 @@ interface ThinkingEnterPayload {
   /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
   epoch?: MomentContentPart[]
   effort: string
+  /**
+   * observe 续帧标记 (python 侧判定): 这一帧是「上一轮的回声要求再看一眼」产生的自我延续,
+   * 而不是外部输入. 这种帧常常 inputs 为空, 但它**必须开一轮** —— 见 thinking/enter 的 turn 驱动规则.
+   */
+  needsObserve?: boolean
   /** 防旁路 (点 4): ego/create 返回的 token, 校验失败直接拒绝. */
   thinkingToken?: string
 }
@@ -793,6 +798,18 @@ export function apply(ctx: Context) {
           // 不再为「无 percepts」造 'thinking' 占位.
           agent.steer(createUserMessage({
             content: inputs,
+            source: { kind: 'user' },
+          }))
+        } else if (body.needsObserve === true) {
+          // observe 续帧 (python 侧 needsObserve): 这一帧是「上一轮的回声要求再看一眼」的自我延续,
+          // 不是外部输入 — 它往往没有 percepts, 于是 inputs 为空. 但**它必须自己开一轮**:
+          // 早先"inputs 为空不起 turn"的规则本意是不为「无 percepts」造占位, 对自我延续不成立 ——
+          // 少了这一支, 续帧只能滞留 pendingMoments 等下一次真实输入捎带, 于是 need_observe 亮着
+          // 却不思考, 而那一帧又会在下一轮开头迟到落地 (fetch 的 moment 同样被这条缓冲拖着).
+          // 用 steer 而非 inject: inject 只投递不唤醒, 此刻没有在跑的 step, 帧会一直躺着.
+          // 载荷用帧自身的 moment_id, 让模型把这次唤醒和它要回看的帧对上.
+          agent.steer(createUserMessage({
+            content: [{ type: 'text', text: `observe continuation: ${body.moment?.moment_id ?? 'next frame'}` }],
             source: { kind: 'user' },
           }))
         }

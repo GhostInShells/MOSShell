@@ -316,6 +316,17 @@ class DoloresEgo:
             return []
         return [self._content_payload(content) for content in context_msg.as_contents(with_meta=True)]
 
+    def needs_observe(self, thinking: "Thinking") -> bool:
+        """Whether this frame is a self-driven observe continuation (the previous round's echo required another look).
+
+        The shell trajectory marks ``need_observe`` when an interpreter settles (a command finished, so the ghost
+        should look back at what it did); the mindflow loop turns that into the next thinking frame. Such a frame
+        often carries no percepts — it is the ghost's own continuation, not a new input — so the plugin needs the
+        flag to know it must open a turn instead of buffering the frame as pure background.
+        """
+        previous = thinking.moment.previous
+        return bool(previous is not None and previous.need_observe)
+
     async def enter_thinking(self, thinking: "Thinking") -> None:
         """Inject moment (context/inputs) + epoch + effort + thinkingToken to start a thinking turn.
 
@@ -329,6 +340,8 @@ class DoloresEgo:
             "epoch": self._epoch_payload(thinking),
             "effort": thinking.effort(),
             "thinkingToken": self._thinking_token,
+            # observe continuation: empty inputs still drive a turn — see needs_observe().
+            "needsObserve": self.needs_observe(thinking),
         }
         await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
 

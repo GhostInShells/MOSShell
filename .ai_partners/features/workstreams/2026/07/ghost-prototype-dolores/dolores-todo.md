@@ -18,6 +18,8 @@
 
 > **2026-09-12 新增**：D30 `fixed`（`e7924674`）— 打断时 tool 结果迟到打穿整轮。触发链 = 语音/输入抢占正在跑的 thinking → exit 非 yield → plugin cancel → abort 删 pending 号 → MOSS 回的 `/tool-result` 撞空号 400 → articulate 报错、该帧 moment 丢失。修法见 D30 行；**待回归**（需重启 dsh 生效，plugin 是内核插件）。
 
+> **2026-09-12 收尾**：D25 → `fixed`。need_observe 亮着不思考的真正原因不是 observe 回路断，而是续帧被 plugin 的「inputs 为空不起 turn」规则挡成缓冲帧。`needsObserve` 标记 + steer 开轮已落地（`_ego.py` / `plugin.ts`）。同一条根因串起三个现象：续帧滞留、下一轮帧顺序错乱、fetch 的 moment 迟到一轮。**待重启回归**。D30/D25 均未做全量回归（用户明确叫停），只跑了 `test_dolores.py`。
+
 ## 缺陷
 
 | # | 状态 | Pri | 问题 | 发现 | 归口 |
@@ -46,7 +48,7 @@
 | D22 | fixed | P1 | 图片协议传输 — MOSS 图片消息 → dsh 图片消息: media_type 按扩展名猜(JPEG 存成 .png → 声明 image/png)，dsh attachment admission 拒 `Declared image type does not match its bytes`。已改字节头嗅探；3080 实机验证 accepted 且模型真读到图 | dogfood-3 | `message/contents/images.py` from_file 字节嗅探 (待 commit) |
 | D23 | fixed | P2 | shell trajectory 验证方式 — help(notice)+interface 各自独立判断 delta 已落地，不再每次一起传 | dogfood-3 | `36dcaefd` |
 | D24 | open | P0 | interpreter error 被 wrap 成 command error — is_notifiable(≥300) 语义已铺垫(`ceb9eef7`)；区别于 command error + 关闭方式未定。**检查未启动** | dogfood-3 | `ceb9eef7`(铺垫) |
-| D25 | open | P0 | observe=True 未生成下一帧 thinking — 反而要界面驱动，这是 bug | dogfood-3 | — |
+| D25 | fixed | P0 | **need_observe 亮着却不思考** — 命令执行完 `InterpreterStoppedEvent(need_observe=True)` → `when_need_observe` 置位 observer → 帧循环 `while need_observe()` 生成**回声续帧**并 `thinking/enter`。续帧常无 percepts（它是 ghost 自己要求回看，不是外部输入），而 plugin 的规则是「inputs 为空不起 turn」→ 续帧只能滞留 `pendingMoments` 等下一次真实输入捎带：现象就是 need_observe 亮着却停住、下一轮开头莫名多出帧且顺序错乱、fetch 的 moment 也迟到一轮。修法：`_ego.needs_observe()` 从 `moment.previous.need_observe` 判定续帧身份，`thinking/enter` payload 增 `needsObserve`；plugin 在 inputs 为空且 `needsObserve` 时用 **steer**（而非 inject，inject 只投递不唤醒）开一轮，载荷带 moment_id。**待回归**：重启 dsh 后，命令执行完应自动续一段思考而不是等输入；`plugin.ts:796` 那一支无命中即可止损回滚 | 实机 dogfood（13:33 现场） | `a2613f08` 后的续提交（见 git log） |
 | D26 | fixed | P0 | tui 遇 interpreter error 崩溃 — exeception 处理加固(print+continue)+runtime stop 非零退出，不再静默崩溃(待回归) | dogfood-3 | `261adbbd` |
 | D27 | invalid | P1 | perStep reject 界面提示 — 调研路径搞错，可在 reject 处发 stream/error 类事件给界面提示。方案已换，零件事 | dogfood-3 | — |
 | D28 | open | P1 | moment dynamic context 丢失 — 看 moment 疑似彻底丢了 dynamic context。未定位；**假说**：与 D22 同源——moment 带图且媒体类型错时 `durableMomentContent` 在 `thinking/enter` 中抛错 → 整个 enter 返 400 → context/inputs/epoch 全未注入。D22 修复可能一并解决；若 dynamic context 不含图则属另一机制，待下轮 dogfood 复现 | dogfood-3（D22 拆分） | — |

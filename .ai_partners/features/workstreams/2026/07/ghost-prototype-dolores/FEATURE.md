@@ -16,8 +16,10 @@ status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved
   旁路分支 (降级思考模式 low + sandbox read-only + 注入旁路提示) + tools 全拒 guard + pre-step
   前置折叠 (collapseTurn, map 记录 turn id, 弃 session/event) + preset 元数据 (不复用 standard
   描述), 删除 session/frozen (D29 invalid). GUI 实机验证跑通 (旁路历史不进入下一轮). 问题清单统一到
-  dolores-todo.md. 2026-09-12 实机打断现场发现并修复 D30 (打断时 tool 结果迟到打穿整轮): plugin
-  非 yield exit 先结算 pending tool + settled-call 墓碑, MOSS 侧吸收 RPC 失败; 待重启 dsh 回归.
+  dolores-todo.md. 2026-09-12 实机打断现场连修两条 P0: D30 (打断时 tool 结果迟到打穿整轮: exit
+  先结算 pending tool + settled-call 墓碑 + MOSS 侧吸收 RPC 失败) 与 D25 (need_observe 亮着不思考:
+  续帧被「inputs 为空不起 turn」挡成缓冲帧, 改 needsObserve 标记 + steer 开轮; 同根因解开帧顺序错乱
+  与 fetch moment 迟到一轮). 两条均需重启 dsh 才生效, 待回归 (本轮只跑 test_dolores.py, 未做全量回归).
   另: 平台提交署名正式叫 dsh in moss.'
 title: Dolores Ghost
 updated: '2026-09-12'
@@ -87,6 +89,14 @@ MOSS 侧的结果回话与 dsh 侧 tool execute 是**两个方向**，永远可�
 - **迟到回话被吞**：结算时登记 settled-call 墓碑（TTL 60s），随后到达的 `/tool-result` 回 `200 {dropped}` 而不是 `400 no pending tool call`；abort 监听器 reject 但不删条目。
 - **MOSS 侧兜底**：`_dispatch_tool_result` 吸收 RPC 失败（warn + drop）。一次迟到的 moment 结果**永不**能烧掉整轮 logos 流。
 - **yield 路径不动**：`wait_next_moment` 仍由下一轮 enter 解锁，exit 不结算、不 cancel。
+
+## observe 续帧契约 (D25)
+
+`need_observe` 的生命周期：命令执行完 → `InterpreterStoppedEvent(need_observe=True)` → `shell_trajectory.when_need_observe` → `moments.add_echoes([], need_observe=True)` → 帧循环 `while need_observe()` 生成**回声续帧**。续帧是 ghost 的**自我延续**（回看自己刚做过什么），往往没有 percepts —— 这正是它与「外部输入」的分界，也是曾经被误判的地方：
+
+- **`needsObserve` 标记**：`_ego.needs_observe()` 从 `moment.previous.need_observe` 判定这一帧是不是续帧，随 `thinking/enter` payload 传入 plugin。
+- **续帧必须自己开一轮**：plugin 在 `inputs` 为空且 `needsObserve` 时用 **steer** 开 turn（不能用 inject —— inject 只投递不唤醒，此刻没有在跑的 step，帧会一直躺着）。早先「inputs 为空不起 turn」的规则本意是不为「无 percepts」造占位，对自我延续不成立。
+- **同一条根因的另外两个现象**：续帧滞留 `pendingMoments` → 下一轮开头帧顺序错乱；fetch 的 moment 同样落进这批缓冲 → 迟到一轮。修 D25 一并解掉。
 
 ## Open Problems
 

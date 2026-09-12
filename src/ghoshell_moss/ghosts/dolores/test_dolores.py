@@ -9,12 +9,14 @@
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 from ghoshell_container import Container
 
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
+from ghoshell_moss.core.blueprint.moment import Echoes
 from ghoshell_moss.core.session.mock_session import MockSession
 
 
@@ -241,6 +243,29 @@ class TestDoloresInstruction:
             text = await ghost.ground_instruction()
             assert text is not None
             assert text.strip() != ""
+
+
+class TestDoloresEgoObserveContinuation:
+    """DoloresEgo.needs_observe — observe 续帧标记, plugin 据此在 inputs 为空时也开一轮."""
+
+    @staticmethod
+    def _thinking(previous=None):
+        return SimpleNamespace(moment=SimpleNamespace(previous=previous))
+
+    def test_previous_requires_observe(self):
+        from ghoshell_moss.ghosts.dolores._ego import DoloresEgo
+
+        assert DoloresEgo.needs_observe(None, self._thinking(Echoes(need_observe=True))) is True
+
+    def test_previous_without_observe(self):
+        from ghoshell_moss.ghosts.dolores._ego import DoloresEgo
+
+        assert DoloresEgo.needs_observe(None, self._thinking(Echoes(need_observe=False))) is False
+
+    def test_no_previous_is_not_a_continuation(self):
+        from ghoshell_moss.ghosts.dolores._ego import DoloresEgo
+
+        assert DoloresEgo.needs_observe(None, self._thinking(None)) is False
 
 
 class TestDoloresMemories:
