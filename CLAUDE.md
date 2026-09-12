@@ -73,7 +73,8 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 4. 由人类设计并实现、AI review 的提交，标题末尾标注 `review by <模型名>`：
    - `refactor: add default state to StatefulChannel review by deepseek-v4-pro`
 
-5. 平台信息写在提交正文末尾：`via claude code` 或 `via gemini cli`。
+5. 平台信息写在提交正文末尾：`via claude code`、`via gemini cli` 或 `via dsh in moss`
+   （DSH in Moss — DeepSeek Harness 跑在 MOSS 里的形态，ghost 原型走的这条路）。
 
 6. 不添加 `Co-Authored-By`、虚构邮件地址等信息。
 

@@ -441,6 +441,30 @@ class FakeRunThinking:
         return art
 
 
+def fake_tool_call(call_id: str = "call_00_test"):
+    """_dispatch_tool_result 只用 callId, 其余字段走默认."""
+    from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
+
+    return ToolCallEvent(callId=call_id)
+
+
+class FakeDispatchEgo(FakeRunEgo):
+    """_dispatch_tool_result 的 ego fake — 记录 RPC 调用, 可注入失败."""
+
+    def __init__(self, session=None, *, raise_on_rpc: Exception | None = None):
+        super().__init__(session)
+        self.rpc_calls: list[tuple] = []
+        self.raise_on_rpc = raise_on_rpc
+
+    async def rpc_tool_result(self, call_id, result, moment=None):
+        if self.raise_on_rpc is not None:
+            raise self.raise_on_rpc
+        self.rpc_calls.append((call_id, result, moment))
+
+    def moment_context_parts(self, moment, moment_id):
+        return [{"type": "text", "text": f"moment:{moment_id}"}]
+
+
 class TestDoloresRun:
     """DoloresRun 生命周期 + 事件消费 — public 类, 轻量 fake 即可验证."""
 
@@ -523,6 +547,45 @@ class TestDoloresRun:
             async with run:
                 raise RuntimeError("consumer boom")
         assert thinking.abort_reasons
+
+    @pytest.mark.asyncio
+    async def test_dispatch_tool_result_passes_call_id_result_and_moment_parts(self):
+        """正常路径: callId + result + moment parts 原样交给 RPC."""
+        from ghoshell_moss.core.blueprint.moment import Moment
+
+        from ._tools import ToolCallResult
+
+        ego = FakeDispatchEgo()
+        run = self._run(ego=ego)
+        result = ToolCallResult(
+            call=fake_tool_call("call_ok"),
+            result={"moment_ref": "1-7"},
+            moment=Moment(id="1-7"),
+        )
+        await run._dispatch_tool_result(result)
+        assert ego.rpc_calls == [("call_ok", {"moment_ref": "1-7"}, [{"type": "text", "text": "moment:1-7"}])]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_tool_result_absorbs_rpc_failure(self):
+        """迟到回话不再致命: RPC 失败被吸收, 不冒泡 (旧行为会打穿整轮 logos 流)."""
+        from ._tools import ToolCallResult
+
+        ego = FakeDispatchEgo(raise_on_rpc=RuntimeError("no pending tool call for call_late"))
+        run = self._run(ego=ego)
+        result = ToolCallResult(call=fake_tool_call("call_late"), result={"moment_ref": "1-8"})
+        await run._dispatch_tool_result(result)  # 不抛
+        assert ego.rpc_calls == []
+
+    @pytest.mark.asyncio
+    async def test_dispatch_tool_result_without_moment_sends_empty_parts(self):
+        """interleaved_ctml 这类不携带 moment 的 tool: moment parts 为 None."""
+        from ._tools import ToolCallResult
+
+        ego = FakeDispatchEgo()
+        run = self._run(ego=ego)
+        result = ToolCallResult(call=fake_tool_call("call_ctml"), result="ok")
+        await run._dispatch_tool_result(result)
+        assert ego.rpc_calls == [("call_ctml", "ok", None)]
 
 
 class TestCtmlParser:

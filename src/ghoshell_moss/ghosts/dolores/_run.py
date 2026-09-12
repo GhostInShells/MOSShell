@@ -27,9 +27,12 @@ import contextlib
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
+from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk
 
 from ._tools import FetchNextMomentToolCall, WaitNextMomentToolCall, InterleavedCtmlToolCall, ToolCallResult
+
+_logger = get_moss_logger()
 
 if TYPE_CHECKING:
     from ._ego import DoloresEgo
@@ -250,13 +253,24 @@ class DoloresRun:
         """Return a ToolCallResult to the plugin via tool-result RPC: result unlocks the tool, moment injects.
 
         moment_id is taken explicitly from result["moment_ref"] (fetch_next_moment's structured result), not re-derived.
+
+        A failed RPC is **absorbed, never fatal**: the plugin settles pending tools itself when a thinking turn
+        ends (interrupted result + settled-call tombstone), so a late result for an already-settled call is a
+        normal race, not an error. Letting it propagate would kill the whole logos() stream — i.e. one late
+        moment would burn the entire turn. Drop the result and keep thinking.
         """
         moment_parts = None
         if result.moment is not None and isinstance(result.result, dict):
             moment_ref = result.result.get("moment_ref")
             if moment_ref is not None:
                 moment_parts = self._ego.moment_context_parts(result.moment, moment_ref)
-        await self._ego.rpc_tool_result(result.call.callId, result.result, moment_parts)
+        try:
+            await self._ego.rpc_tool_result(result.call.callId, result.result, moment_parts)
+        except Exception:
+            _logger.warning(
+                "tool-result RPC dropped (call %s already settled plugin-side); result discarded",
+                result.call.callId,
+            )
 
     async def logos(self) -> "AsyncIterator[str]":
         """Consume the event stream, extract logos deltas (split by the <|CTML|> marker), end on turn/end.

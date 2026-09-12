@@ -103,6 +103,13 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * RPC 按 callId 解锁, 内联返回 moment content blocks (context + inputs 拼接, 保留图片).
  * 不 break turn — 模型在 tool result 到达后继续思考 (interleaved thinking).
  *
+ * ── thinking/exit 结算契约 (打断不再等于报错) ──────────────────────────
+ * tool execute 与 MOSS 侧的结果回话是两个方向, 永远可能错位. thinking 结束时仍未结算的
+ * call 已经拿不到这一轮的 moment, 于是**由 exit 直接结算**: 回一个普通结果 (interrupted),
+ * 并登记墓碑 (settledCallIds) 让随后迟到的 /tool-result 被安静吞掉 — 而不是撞上"号已注销"
+ * 报 400 打穿 MOSS 侧那一轮 (旧行为: 一次打断 = 一句 aborted + 一次 articulate 报错).
+ * 契约细节见 settlePendingCallsOnExit / settledCallIds. MOSS 侧同样兜底吸收 RPC 失败.
+ *
  * ── 遗留问题 ────────────────────────────────────────────────────────
  * 1. **epoch 周期接线**: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact 压上下文)
  *    尚未装线 — recap/baseline 的生产接在 compact 上.
@@ -230,6 +237,65 @@ let pendingYield: { resolve: (value: unknown) => void; reject: (error: Error) =>
 // 互不干扰. resolve 载荷 = 各 tool 的返回值 (observe = moment 文本 str).
 const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
 
+/**
+ * 已结算但 MOSS 侧仍会回话的 callId 墓碑 (callId → 结算时刻毫秒).
+ *
+ * 时序契约: tool 的 execute 与 MOSS 侧的结果 RPC 是两个方向, 永远可能错位 —— thinking/exit
+ * 先把 pending 结算掉, MOSS 的 /tool-result 随后才到. 没有墓碑时后者会撞上"号已注销" →
+ * 400 → 异常穿回 _dispatch_tool_result → 整轮 articulate 报错. 墓碑让这次回话**被安静吞掉**,
+ * 已结算的工具结果 (模型已看到) 不被改写.
+ *
+ * 一帧一份, 正常路径 (RPC 先到) 不产生墓碑 — 只有结算时该 callId 仍在 pending 才登记,
+ * 所以墓碑表天然是小的; 再加 TTL 兜底, 极端情况下也不会长留.
+ */
+const settledCallIds = new Map<string, number>()
+
+/** 墓碑 TTL — 超过即视为 MOSS 侧永不再回话, 丢弃 (兜底, 非功能路径). */
+const SETTLED_CALL_TTL_MS = 60_000
+
+function rememberSettled(callId: string): void {
+  const now = Date.now()
+  for (const [id, at] of settledCallIds) {
+    if (now - at > SETTLED_CALL_TTL_MS) settledCallIds.delete(id)
+  }
+  settledCallIds.set(callId, now)
+}
+
+/**
+ * thinking 退出时结算所有 pending tool — 把"被打断"变成一次**正常的工具返回**, 而不是异常.
+ *
+ * MOSS 侧宣布这一轮思考结束时, 还在等结果的 tool 已经不可能拿到这一轮的 moment 了; 与其
+ * 让它以 rejected (aborted) 收场, 不如回一个模型能直接读懂的普通结果: 这一轮被中断了、
+ * 这一帧不会被注入. 模型据此自行决定下一步 (重拉 / 直接回答), 整轮不再被一次迟到回话打穿.
+ *
+ * 返回值 = 本次结算掉的 callId 数 (观测用).
+ */
+function settlePendingCallsOnExit(): number {
+  if (pendingCalls.size === 0) return 0
+  const entries = [...pendingCalls.entries()]
+  pendingCalls.clear()
+  for (const [callId, pending] of entries) {
+    rememberSettled(callId)
+    pending.resolve({
+      interrupted: true,
+      message: 'the thinking turn ended before this call was answered — the moment was not injected; re-issue the call if you still need it',
+    })
+  }
+  return entries.length
+}
+
+/**
+ * yield 退出路径的兜底: 正常情况下 pendingYield 由下一轮 thinking/enter 解锁 (不结算),
+ * 但若这一轮以非 yield 的方式收场而 yield 仍挂着, 也一并按普通返回结算, 不留 rejected 尾巴.
+ */
+function settlePendingYieldOnExit(): boolean {
+  if (pendingYield === null) return false
+  const unlock = pendingYield
+  pendingYield = null
+  unlock.resolve('thinking turn ended before this yield was answered')
+  return true
+}
+
 /** moment 的 wire content 段 — text 直传, image 为 base64 (dsh EncodedImageAttachment 形状). */
 type MomentContentPart =
   | { type: 'text'; text: string }
@@ -303,7 +369,10 @@ const egoTools = [
       return await new Promise<Record<string, unknown>>((resolve, reject) => {
         pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
         exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) { reject(new Error('moss_fetch_next_moment aborted')) }
+          if (pendingCalls.delete(callId)) {
+            rememberSettled(callId)
+            reject(new Error('moss_fetch_next_moment aborted'))
+          }
         }, { once: true })
       }) as unknown as JsonValue
     },
@@ -325,7 +394,10 @@ const egoTools = [
       return await new Promise<string>((resolve, reject) => {
         pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
         exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) { reject(new Error('moss_interleaved_ctml aborted')) }
+          if (pendingCalls.delete(callId)) {
+            rememberSettled(callId)
+            reject(new Error('moss_interleaved_ctml aborted'))
+          }
         }, { once: true })
       }) as unknown as JsonValue
     },
@@ -755,12 +827,23 @@ export function apply(ctx: Context) {
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         closeThinking()
         // yield 场景 (body.yielded) — MOSS 已明确宣布这是 yield: tool 正在阻塞等下一帧,
-        // 绝不再 cancel (cancel 会经 abort signal 打断 pending tool, 且 MOSS 侧判定是
-        // MOSS 最权威, 不依赖 dsh 侧 pendingYield 的竞态). 留 tool pending, 下一轮 enter 解锁.
-        // 非 yield + agent 非 idle → 显式 cancel (MOSS 已宣布 thinking 结束, 不让 dsh 空跑失速).
+        // 由下一轮 thinking/enter 解锁; 这里什么都不结算, 也绝不再 cancel (cancel 会经 abort
+        // signal 打断 pending tool, 且 MOSS 侧判定是 MOSS 最权威, 不依赖 dsh 侧 pendingYield 的竞态).
         const yielded = body.yielded === true
-        if (!yielded && agent.status !== 'idle') {
-          agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
+        if (!yielded) {
+          // 非 yield: 先结算 (再 cancel). 这一轮思考已经结束, 仍在等 MOSS 侧回话的 tool 不会再拿到
+          // 这一轮的 moment. 与其等 cancel 的 abort 把它变成 rejected (模型看到一句 aborted, MOSS 侧
+          // 迟到的回话又撞上已注销的号报错), 不如现在就给一个**普通结果** (interrupted), 让模型自己
+          // 决定下一步. 结算同时登记墓碑, 使 MOSS 侧随后到的 /tool-result 被安静吞掉 — 见 settledCallIds.
+          const settled = settlePendingCallsOnExit()
+          settlePendingYieldOnExit()
+          if (settled > 0) {
+            ctx.logger.info('dolores: settled %d pending tool call(s) on thinking/exit', settled)
+          }
+          // 非 yield + agent 非 idle → 显式 cancel (MOSS 已宣布 thinking 结束, 不让 dsh 空跑失速).
+          if (agent.status !== 'idle') {
+            agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
+          }
         }
         // 兜底投递: 本交易残余的缓冲帧 (none/空 inputs 补帧没触发 turn, 没有 pre-step 消费) 直接
         // 投进 inbox (next-step), 由下一次 pre-step 认领 — 绝不丢. 必须在 cancel 之后: cancel 默认
@@ -790,6 +873,13 @@ export function apply(ctx: Context) {
         const callId = String(body.callId ?? '')
         const pending = pendingCalls.get(callId)
         if (pending === undefined) {
+          // 墓碑路径: 该调用已在 thinking/exit 被结算 (模型已收到普通结果), 这次回话是迟到的.
+          // 静默吞掉 — 已结算的结果不被改写, 也绝不把"号已注销"变成 400 打穿 MOSS 侧这一轮.
+          if (settledCallIds.has(callId)) {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: true, dropped: 'already settled' }))
+            return
+          }
           throw new Error(`no pending tool call for ${callId}`)
         }
         if (doloresEgoSessionId === null) {
