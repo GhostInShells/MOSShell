@@ -23,7 +23,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.warrant import Warrant
 from ghoshell_moss.core.blueprint.parameter import Parameters
-from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo
+from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo, CellEventLevel
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.service import ServiceOperator, ServiceClient, ServiceServer
@@ -299,10 +299,18 @@ class Matrix(Facade):
         pass
 
     @abstractmethod
-    async def publish_event(self, content: str) -> None:
+    async def publish_event(
+            self,
+            content: str,
+            *,
+            event_level: CellEventLevel | None = None,
+    ) -> None:
         """
         Broadcast a lightweight event from this cell to the network. A Ghost (the network's
         sovereign) can perceive it.
+
+        event_level: override this cell's default event_level for this one event.
+        None = use the cell's own level.
         """
         pass
 

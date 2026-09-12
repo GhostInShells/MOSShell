@@ -24,7 +24,7 @@ from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.cell import (
     CellAddress, Cell, CellRuntimeInfo, CellPresence, CellNetwork,
-    NodeManager, normalize,
+    CellEventLevel, NodeManager, normalize,
     enter_cell_lifecycle,
 )
 from ghoshell_moss.core.blueprint.session import Session
@@ -234,12 +234,17 @@ class MatrixImpl(Matrix):
         self._channel_provider_task = task
         return task
 
-    async def publish_event(self, content: str) -> None:
+    async def publish_event(
+            self,
+            content: str,
+            *,
+            event_level: CellEventLevel | None = None,
+    ) -> None:
         """向网络广播 CellEvent (refetch=True). 委托 self._presence."""
         self._check_running()
         if self._presence is None:
             raise RuntimeError('Matrix presence not initialized')
-        await self._presence.publish_event(content)
+        await self._presence.publish_event(content, event_level=event_level)
 
     # ==================================================================
     # 观察: 惰性门 mesh() → Watcher (§UU-7 / §YY-1 第 3 条 opt-in by usage)

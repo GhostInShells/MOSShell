@@ -255,6 +255,9 @@ class ProjectNodeManager(NodeManager):
         探针是独立进程, 语言无关, 目标零配合 (不逼对方走到 Matrix.__aenter__).
         只用 exit code: 0 → 通过; nonzero → 携带 stderr (或 stdout) 作为 broken reason.
         不发明 ready 状态机, 不加 CellRuntimeInfo 字段 (§ FEATURE node-lifecycle probe).
+
+        check.timeout 声明超时: 探针在限时内不退出即判 broken 并终止其进程组, 避免
+        挂死探针钉住 bringup task / 泄漏子进程.
         """
         check = manifest.check
         if check is None:
@@ -274,7 +277,16 @@ class ProjectNodeManager(NodeManager):
             with_os_env=False,
             capture=CaptureSpec(buffer_lines=200),
         )
-        meta = await self._await_exit(managed)
+        if check.timeout is not None:
+            try:
+                meta = await asyncio.wait_for(
+                    self._await_exit(managed), timeout=check.timeout,
+                )
+            except asyncio.TimeoutError:
+                self._terminate_probe(managed)
+                return f'probe timed out after {check.timeout}s'
+        else:
+            meta = await self._await_exit(managed)
         if meta.exit_code == 0:
             return None
         stderr = stdout = ''
@@ -283,6 +295,22 @@ class ProjectNodeManager(NodeManager):
             stdout = (managed.output.stdout() or '').strip()
         reason = stderr or stdout
         return reason or f'probe exited with code {meta.exit_code}'
+
+    def _terminate_probe(self, managed: ManagedProcess) -> None:
+        """超时兜底终止探针进程组 — 覆盖 start_new_session 后的未分离子孙进程.
+
+        正常路径探针自行退出, 不走到这里; 只处理"声明了 timeout 且超时"的挂死探针.
+        """
+        meta = managed.meta
+        try:
+            if meta.pgid:
+                self.subprocesses.killpg(meta.pgid, signal.SIGKILL)
+            elif meta.pid:
+                self.subprocesses.kill(meta.pid)
+        except Exception:
+            self._logger.exception(
+                "failed to kill probe %s (pid=%s)", meta.name, meta.pid,
+            )
 
     @staticmethod
     def _probe_argv(check: ExecSpec) -> list[str]:

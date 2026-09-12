@@ -6,10 +6,10 @@ description: Node 生命周期治理，从 node-migration 独立。四层方案�
 milestone: 0.1.0
 priority: P1
 status: completed
-status_note: 人类判断可以 completed：reconcile review 抓回 uid 身份发散 bug 并修复，4 个声明/交付 drift
-  已同步
+status_note: '启动面治理落地: parallel bringup + probe timeout + bringup failure event; smoke
+  验证通过'
 title: Node Lifecycle — 身份、入口、验证与记忆
-updated: '2026-09-05'
+updated: '2026-09-13'
 ---
 
 # Node Lifecycle
@@ -88,6 +88,103 @@ bounded FIFO 里）变成"拉起前闸门 + 明确 broken reason"，让"环境�
 stdout 本次不落地（闸门只用 exit code + stderr 作 broken reason）；"probe stdout 作为动态
 self-description 进模型认知窗口"是后续评估项，本 workstream 先做闸门主体。
 
+## 启动面治理（2026-09-12 重开）
+
+feature 此前判 completed；人类回忆起启动 node 的失败面与启动阻塞当时就在意图内、但未落
+进本文件。核实代码后确认三项缺口 + 一条闸口纪律。
+
+### 缺口
+
+| 缺口 | 现状 | 位置 |
+|---|---|---|
+| **bringup 阻塞启动** | `_bringup_nodes` 在 `__aenter__` 内串行 `await`，probe 挂死即永久阻塞，shell 起不来 | `moss_runtime.py:249-260`、调用点 :442 |
+| **probe 无超时** | `_run_probe` 走 `_await_exit` 等子进程退出，无上界；挂死探针泄漏且钉住 bringup | `node_manager.py:277,299` |
+| **失败无感知** | spawn 前失败（resolve/未安装/probe/singleton）只进 host 日志；spawn 后硬挂（SIGKILL/segfault）父侧 `_on_cell_exit` 也不 publish，**两类网络上都无痕** | `node_manager.py:181-204`、`matrix_impl.py:371-390` |
+
+失败无感知一项与既有 Open Question（publish_event 级别锁死）是同一个洞的两面。
+
+### 闸口结论（已核实，2026-09-12）
+
+spawn 面**单喉唯一** = `NodeManager.spawn_node`（`node_manager.py:159`）。全仓两个 caller：
+
+| caller | 场景 | 有无 matrix |
+|---|---|---|
+| `matrix.run_node`（`matrix_impl.py:346`） | bringup + CTML `matrix.run` 命令（`matrix_channel.py:266`） | 有 |
+| CLI `moss nodes run`（`nodes_cli.py:442`） | 前台自持 | 无 |
+
+二者取的是**同一 NodeManager 实例**（matrix 的 container 即 project 的 container，
+`matrix_impl.py:96→594`；`local_project.py:72` 在此 container 上 set NodeManager；
+`project.nodes` 亦为同一 force_fetch）。**所以预检只在一处，不存在多位置重复。**
+
+关键区分：**publish 不能兜在 spawn_node**。`spawn_node` 是 project 级组件，只有
+`env/subprocesses/logger`，没有 matrix/presence，物理上 publish 不出去
+（`MatrixImpl.publish_event` 要求 `_presence` 已 enter，`zenoh_presence.py:165-169`）。
+硬塞进去等于发不出去 + 逼 matrix 层再发一次 = 真正的"两处做同一件事"。
+
+**收敛为"一层一件事"**：
+
+| 层 | 职责 | 位置 |
+|---|---|---|
+| spawn 闸口（预检 + exec） | 唯一，CLI 也走 | `NodeManager.spawn_node` |
+| 父侧治理 + 通知（handle 登记 / done callback / publish） | 唯一，仅在有 matrix 时 | `matrix.run_node` + `_on_cell_exit` |
+| 无 matrix 的 owner | 前台阻塞，通知 = 终端 returncode | CLI `nodes run` |
+
+**纪律**：有 live matrix 时 spawn 必须经 `matrix.run_node`，不得直接
+`project.nodes.spawn_node`（会绕过 `_handled_cells` 登记与 done callback，父侧拿不到任何
+通知）。今日只有 CLI 直连且 CLI 无 matrix，故干净；需在 `spawn_node` docstring 上写明。
+
+### 本轮形态（决策）
+
+- **bringup task 化（per-node 并行，无顺序语义，已落地 2026-09-13）**：每个 mode 声明的 node 各起一个后台
+  task，`__aenter__` 不再 await `_bringup_nodes`。**不串行、不做 DAG 启动图**——node 依赖
+  组织未来交给特殊 node，bringup 只逐条 fire，一个 node 的 probe 挂死/失败不拖累其余。
+  语义变化："host 起来 = nodes 已在网"消失（nodes 供能力到网络给 ghost，host shell 的
+  channel 树来自 `mode.manifests().channel()`，与 nodes 无依赖，解耦安全）。spawn 之后的
+  存活/退出治理本就归 matrix（handle 登记 + `_on_cell_exit`），故不 provision 进 matrix 的
+  task 托管（那层只做容错/关闭退出）。取消经 exit stack 回调，排在 matrix teardown 之前；
+  `CancelledError` 是 `BaseException`，不被 task 内 `except Exception` 吞掉，取消语义天然正确。
+- **dead end：bringup 串行（2026-09-12 偏航，当场纠正）**。首次实现写成了"单 task +
+  循环串行 await"，沿用了旧 `_bringup_nodes` 的"按声明顺序"字样，凭空发明了列表序的启动
+  顺序语义。两处错：① 顺序本就是假保证（旧串行也只保"发起顺序"、不保"就绪顺序"）；
+  ② node 已明确声明不做 DAG 启动图，bringup 里塞顺序即越界。教训：旧代码里的措辞
+  （"按顺序"）不等于设计意图，动到语义时要先与人类对齐，不要顺着字面续写。
+- **probe 超时入 manifest（已落地 2026-09-13）**：`ExecSpec.timeout: float | None`（默认 None，
+  显式声明才限时），`_run_probe` 用 `asyncio.wait_for` 包 `_await_exit`，超时 → `_terminate_probe`
+  （`Subprocesses.killpg` 杀进程组）→ 判 broken reason "probe timed out after Ns"。
+  沿用 exit-code-only 语义，不发明 ready 状态机。
+- **失败通知（已落地 2026-09-13，scope 收窄到 mode bringup）**：区分两路——channel 侧
+  `nodes:run` 已用 `raise_observe` 兜底（`matrix_channel.py` 把 DuplicatedError / NodeProbeError /
+  FileNotFoundError / RuntimeError 全转成命令返回），无需事件；只有 mode bringup 是启动面、
+  无直接调用方拿返回，才需要事件通知启动中的 ghost。故 publish 落在 `_bringup_one`
+  （moss_runtime），**不在 `matrix.run_node`**。实现：`publish_event` 四层（Cell / Matrix /
+  MatrixImpl / Presence）加 `event_level` 覆盖参数，bringup 失败 → `publish_event(content,
+  event_level=ERROR)`。**不涉及 CellEvent schema 变更**：bringup 失败时 cell 不存在、无跃迁
+  可标；`_on_cell_exit` 的退出/崩溃事件（`CellTransition.CRASHED` 补债）是独立问题，本轮不碰。
+- **已知残留**：事件是瞬时的，mesh channel ring buffer per-instance；host boot 时 ghost 可能
+  尚未订阅，恰是最该知道 bringup 失败的时刻最容易漏。事件单独用保不住 boot 场景，
+  是否补"可 refetch 状态"承载（账本 vs main channel 命令）待定，本轮回合先做事件主体。
+
+### smoke 验证（2026-09-13）
+
+新增两个 system_test node：`probe_hang`（check 睡 3600s 不退出）、`probe_timeout`（check
+睡 3600s 但 `timeout: 2`）。临时把 `system_test/HOST.md` 的 bringup_nodes 设为
+[probe_hang, probe_fail, hello_world]，用 `moss-shell --mode system_test log` 实测：
+
+- **启动不阻塞**：matrix + shell 起来后 `__aenter__` 立即返回；三 node 同一毫秒并发 spawn。
+- **隔离**：probe_hang 卡探针、probe_fail 探针 exit 1 → 只记 `ERROR bringup node failed`
+  （带 traceback），hello_world 照常拉起。三者互不拖累。
+- **优雅退出回收挂死探针**：SIGINT → 完整 teardown，`Subprocesses stopping — 1 executing`
+  杀掉挂死 probe，无孤儿。
+- **probe 超时兜底**：`moss nodes run probe_timeout` 2s 报 `probe timed out after 2.0s`
+  并退出，无泄漏进程。
+- **观察（独立问题，非本改动缺陷）**：对 `moss-shell log` 发 SIGTERM 不触发优雅 teardown
+  （进程不处理 SIGTERM）→ 硬杀 → 挂死 probe 成孤儿（ppid=1）。probe 超时兜不住这个
+  （超时只约束父进程存活期间）；硬杀场景的进程组回收是另一个问题。
+- **失败事件广播**：脚本注入 bringup=[probe_fail]，`network.recent_events()` 出现 1 条
+  `level=40`（ERROR）事件，content 带 target + reason（"bringup node failed: ... probe failed"）。
+
+复现配方已留在 `system_test/HOST.md` 注释里（`bringup_nodes: []` + 注释掉的列表）。
+
 ## Current Consensus
 
 ### 四地址组合 — node 发现路径前缀
@@ -160,9 +257,9 @@ kill_cell 语义、probe stdout、spawn 签名），已全部修复并同步进�
 
 ## Open Questions
 
-- **publish_event 级别**：persist=false 脚本主动 `publish_event` 目前被 cell.event_level
-  锁死（`zenoh_presence.py:174`），"默认静默但能喊"做不到。是否加显式 event_level
-  覆盖参数，待定。先不加。
+- **publish_event 级别（已解决 2026-09-13）**：`publish_event` 四层（Cell / Matrix /
+  MatrixImpl / Presence）已加 `event_level` 覆盖参数（默认 None = 沿用 cell 级别），解决
+  "默认静默但能喊"做不到的问题；本轮 bringup 失败通知复用同一参数。
 - **probe 动态自描述进模型认知窗口**：probe stdout 作为动态 self-description 与
   instruction（静态）并列，如何进 open/read 面，后续评估，本次先做闸门主体。
 - **singleton 并发 TOCTOU**：`is_locked` 预检不持有锁，快速连发（ghost 异步 `run_node`，

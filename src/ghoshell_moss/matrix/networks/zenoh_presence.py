@@ -39,6 +39,7 @@ from ghoshell_moss.core.blueprint.cell import (
     CellEvent,
     Cell,
     CellPresence,
+    CellEventLevel,
 )
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss.matrix.networks._utils import CellsKeyspace, CellKeyExpr
@@ -161,6 +162,7 @@ class ZenohCellPresence(CellPresence):
             content: str,
             *,
             updated: bool = True,
+            event_level: CellEventLevel | None = None,
     ) -> None:
         if self._handles is None:
             raise RuntimeError(
@@ -171,7 +173,10 @@ class ZenohCellPresence(CellPresence):
             address=self._cell_presence.address,
             content=content,
             refetch=updated,
-            event_level=self._cell_presence.event_level,
+            event_level=(
+                event_level if event_level is not None
+                else self._cell_presence.event_level
+            ),
         )
         payload = event.model_dump_json().encode('utf-8')
         try:

@@ -254,6 +254,11 @@ class ExecSpec(BaseModel):
         default_factory=dict,
         description="额外注入的环境变量. 也可以考虑在启动脚本内部通过 dotenv 等方式自行加载. ",
     )
+    timeout: float | None = Field(
+        default=None,
+        description="进程运行超时(秒). 当前只被 NodeManifest.check 探针消费: 超时即判 "
+                    "broken 并终止探针进程组. None = 不限时. (exec 主脚本路径暂不消费.)",
+    )
 
     @property
     def arguments(self) -> list[str]:
@@ -867,7 +872,7 @@ def build_cell_from_node(
     :param name: 给 node 赋予的别名.
     """
     # node uid 每次 spawn 独立生成, 保证 address 全局唯一.
-    # 不用 env.session_id: 同一父进程连续 spawn 多个 node 时 session_id 相同会撞.
+    # 不用 env.run_id: 同一父进程连续 spawn 多个 node 时 run_id 相同会撞.
     uid = unique_id()
     cell_name = name or manifest.name
     if manifest.file:
@@ -1040,8 +1045,17 @@ class CellPresence(ABC):
         ...
 
     @abstractmethod
-    async def publish_event(self, content: str, *, updated: bool = True) -> None:
-        """向网络广播一个本 cell 的轻量事件 (CellEvent)."""
+    async def publish_event(
+            self,
+            content: str,
+            *,
+            updated: bool = True,
+            event_level: CellEventLevel | None = None,
+    ) -> None:
+        """向网络广播一个本 cell 的轻量事件 (CellEvent).
+
+        event_level: 覆盖本 cell 默认感知级别; None = 沿用 cell.event_level.
+        """
         ...
 
     @abstractmethod
