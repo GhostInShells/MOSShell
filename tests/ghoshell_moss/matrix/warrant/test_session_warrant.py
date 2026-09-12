@@ -8,6 +8,7 @@ SessionWarrant internals.
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 
@@ -347,3 +348,25 @@ async def test_on_flushed_unsubscribe(warrant_dir: Path):
 
     assert len(kept) == 1
     assert len(dropped) == 0
+
+
+@pytest.mark.asyncio
+async def test_same_key_last_write_wins_on_disk(warrant_dir: Path):
+    """Two stores to the same key flush in order — the later one wins on disk.
+
+    Files are keyed by permission key and overwritten on every flush, so a reordered
+    flush would persist a stale state over a newer one (a lost update). This pins the
+    ordered-queue guarantee the Warrant surface declares.
+    """
+    session = MockSession()
+    key = "test.auto_pass"
+
+    async with _new_warrant(session, warrant_dir) as w:
+        w.store(PermissionStateData(key=key, seq=1, data={"counter": 1}))
+        w.store(PermissionStateData(key=key, seq=2, data={"counter": 2}))
+
+    saved = json.loads((warrant_dir / f"{key}.json").read_text())
+    assert saved["seq"] == 2
+    assert saved["data"] == {"counter": 2}
+    # cache is keyed by permission key — the later store replaced the earlier one.
+    assert [s.seq for s in w.list_states()] == [2]
