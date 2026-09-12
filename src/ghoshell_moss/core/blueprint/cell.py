@@ -1,5 +1,10 @@
 """
-MOSS 通讯网络中的单元节点 (Cell).
+Cell — a unit node in the MOSS communication network, projected into the Matrix under an
+address.
+
+This module defines the Cell abstraction (``Cell``, ``CellAddress``, ``CellProtocol``),
+the node manifest that declares a cell (``NodeManifest``), and the entry points that
+build and tear down cells (``build_cell_from_node``, ``enter_cell_lifecycle``).
 
 Cell 是在 Moss 的网络 (Matrix) 中运行的进程单元. 可以将之想象为一个数字城市中的一个房间, 用来提供不同的功能.
 Cell 可以用来控制机器人, 创建图形界面, 运行独立的思考或 Agent. 可以把它理解为手机里的 App.
@@ -336,7 +341,8 @@ class NodeManifest(BaseModel):
 
     @classmethod
     def read_from_file(cls, file: Path) -> 'NodeManifest':
-        """从 CELL.md 文件读取声明. 正文即 instruction, frontmatter 即字段."""
+        """Read the declaration from a NODE.md file. The body is the instruction; the
+        frontmatter is the fields."""
         content = file.read_text(encoding='utf-8')
         post = frontmatter.loads(content)
         data = dict(post.metadata)
@@ -365,7 +371,7 @@ class NodeManifest(BaseModel):
         self.write_file(file)
 
     def write_file(self, directory: Path, filename: str = '') -> None:
-        """将声明写入 CELL.md"""
+        """Write the declaration to NODE.md."""
         filename = filename or self.MANIFEST_FILENAME
         data = self.model_dump(
             exclude_none=True,
@@ -376,7 +382,7 @@ class NodeManifest(BaseModel):
 
     @classmethod
     def find_upward(cls, start: Path) -> 'NodeManifest | None':
-        """从 start 出发向上查找最近的 CELL.md (找到第一个即停)."""
+        """Walk up from ``start`` to the nearest NODE.md (stops at the first hit)."""
         directory = start if start.is_dir() else start.parent
         home = Path.home()
         for candidate in [directory, *directory.parents]:
@@ -390,8 +396,9 @@ class NodeManifest(BaseModel):
     @classmethod
     def from_script(cls, script: Path, *, exec_spec: ExecSpec | None = None) -> 'NodeManifest':
         """
-        以脚本为入口构造 Manifest: 向上认亲最近的 CELL.md;
-        找不到时降级为临时身份, 不拒绝运行.
+        Build a Manifest from a script entry point: adopt the nearest NODE.md found by
+        walking upward. When none is found, degrade to an ad-hoc identity rather than
+        refusing to run.
         """
         script = script.resolve()
         found = cls.find_upward(script)

@@ -1,27 +1,28 @@
-"""Warrant — Matrix 级通用授权机制抽象.
+"""Warrant — the Matrix-level general authorization abstraction.
 
-三层职责分离: qa 是交互协议, warrant 是存储 + 装线, permission 是业务逻辑.
-qa 交互协议见 `core/concepts/qa.py`; 本模块是 warrant + permission 抽象面.
+Three separated responsibilities: qa is the interaction protocol, warrant is storage and
+wiring, permission is business logic. The qa protocol lives in `core/concepts/qa.py`;
+this module is the warrant + permission surface.
 
-职责边界 (显著提示):
-- permission 是纯逻辑, 无 IO: 不碰持久化、不发问题、不知道 namespace.
-- warrant 是唯一 IO 面, 保持哑: 不解释 state、不派生 key/type、不参与业务判断.
-- warrant 是授权闭环专用, 不是通用 QA 客户端 — command 要走 QA 拿实参,
-  直接自己调 QA, 不走 warrant.
+Responsibility boundaries (important):
+- permission is pure logic with no IO: it does not touch persistence, does not ask
+  questions, and does not know about namespaces.
+- warrant is the only IO surface and stays dumb: it does not interpret state, derive
+  key/type, or take part in business judgment.
+- warrant serves the authorization loop only — it is not a general-purpose QA client.
+  A command that needs arguments from QA calls QA itself, not through warrant.
 
-模板方法: require 是授权闭环的默认实现, concrete 填四个原材料 — states
-(读缓存), ask_question (发问题等答案), store (入队落盘), list_states (枚举).
-取消沿调用方 scope 传播; 存储时序由 __aenter__ 创建的落盘 task + 有序队列
-保证.
+Template method: `require` is the default implementation of the authorization loop;
+concrete implementations supply four raw materials — `states` (read cache),
+`ask_question` (ask and await an answer), `store` (enqueue to persistence), and
+`list_states` (enumerate). Cancellation propagates along the caller's scope; persistence
+ordering is guaranteed by the writer task created in `__aenter__` plus an ordered queue.
 
-软授权边界 (非安全机制, 见 warrant FEATURE.md KD14): warrant 是交互式审批,
-不是安全边界 — MOSS 允许模型自迭代, 模型可自写 node 做 QA watcher 给自己授权.
-若需硬化为真授权: ① `.moss` 移出 project dir; ② QA namespace 改秘密 UUID;
-③ UUID 用 credential 而非环境变量 (或 qa/warrant 改走第三方工业级 provider).
-当前 pre-1.0 有意不硬化, 仅声明此边界.
+Soft authorization boundary — not a security mechanism: warrant is interactive approval,
+not a security boundary. MOSS lets a model self-iterate, so a model can write its own node
+as a QA watcher and authorize itself. This is intentionally not hardened before 1.0; the
+boundary is declared, not enforced.
 """
-
-# 设计决策见 warrant FEATURE.md
 
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Generic, TypeVar

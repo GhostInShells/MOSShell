@@ -1,5 +1,10 @@
 """
-MOSS 实例运行在 Matrix 的网络中.
+Matrix — the projection of the MOSS network inside a Cell.
+
+A network may host many MOSS instances (Hosts) and capability units (Cells) at once.
+Inside a cell, the Matrix abstraction is how the cell holds its identity, exposes its
+membrane, observes the network, and launches and governs new processes. Matrix is a
+facade: you hold it and call it.
 一个网络可能同时有很多套 MOSS 的实例 (Host) 和能力单元 (Cell) 在运行.
 
 Matrix 网络投影到 Cell 内部的形式是 Matrix 抽象.
@@ -433,10 +438,12 @@ class Matrix(Facade):
     @abstractmethod
     def warrant(self) -> Warrant:
         """
-        Matrix 级通用授权机制 — 交互式审批 (host 写 storage / 非 host topic 模式).
+        Matrix-level general authorization — interactive approval (host writes storage;
+        non-host uses topic mode).
 
-        消费方 `matrix.warrant.require(permission)` 做审批 (如 node 启动时授权).
-        软授权边界 (非安全机制, 见 warrant FEATURE.md KD14): 模型可自迭代自授权.
+        Consumers call `matrix.warrant.require(permission)` to request approval, e.g. to
+        authorize node startup. Soft authorization boundary — not a security mechanism:
+        a model can self-iterate and authorize itself.
         """
         pass
 

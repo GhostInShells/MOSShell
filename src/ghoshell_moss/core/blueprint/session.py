@@ -1,3 +1,11 @@
+"""Session — the communication bus of the current MOSS runtime session.
+
+``Session`` carries the duplex traffic of a running runtime: ``OutputItem`` is the atomic
+output structure, ``OutputBuffer`` buffers it for consume-then-use, ``Sample`` is a
+stream-protocol result, and ``StreamSubscriber`` is the control handle for subscribing to
+the session stream.
+"""
+
 from typing import Callable, AsyncIterator, AsyncGenerator, Protocol, NamedTuple
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage

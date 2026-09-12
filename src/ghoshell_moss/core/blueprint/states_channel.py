@@ -1,3 +1,12 @@
+"""StatesChannel — channels that carry switchable state.
+
+``StatefulChannel`` can switch to one of multiple states; ``ChannelModule`` is a
+lifecycle-aware modular capability unit; ``PrimeChannel`` is a super channel with all
+abilities. The factories (``new_channel_from_state``, ``new_stateful_channel``,
+``new_prime_channel``, ``ChannelStateFactory``) build runtime channels from state class
+definitions.
+"""
+
 from abc import ABC, abstractmethod
 
 from typing import Protocol, Callable

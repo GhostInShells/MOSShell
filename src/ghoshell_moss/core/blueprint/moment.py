@@ -1,3 +1,12 @@
+"""Moment — a keyframe of the agent's context-aware perception.
+
+A ``Moment`` is "an instant": the assembled view of one step, carrying ``Logos`` (the
+stream the model produced) and ``Echoes`` (what executing the previous round's logos
+returned — body feedback, thought steps, tool calls). ``Moments`` is the in-memory
+observation container, and ``Observer`` / ``BaseMomentsObserver`` observe over its
+history.
+"""
+
 import dataclasses
 from abc import ABC, abstractmethod
 from collections import deque

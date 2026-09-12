@@ -1,6 +1,9 @@
 """
-MOSS 环境发现的关键常量.
-只保留几个最核心的常量.
+MOSS environment-discovery constants.
+
+The canonical filenames, directories, and environment-variable keys MOSS uses to
+discover a workspace, project, mode, ghost, and cell. Only the most core constants are
+kept here — everything a runtime needs to locate itself before it is wired up.
 """
 
 from typing import Literal, TypeAlias, Dict

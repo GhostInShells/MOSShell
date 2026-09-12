@@ -1,6 +1,13 @@
 """
-how to build a channel — MOSShell channel 构建总入口 (面向开发者模型的全局知识).
+How to build a Channel — the single entry point for channel construction in MOSShell,
+written as global knowledge for developer models.
 the path of this module is ghoshell_moss.core.blueprint.channel_builder
+
+A Channel is the capability container a model drives. This module is the verb side:
+``Builder`` / ``new_channel`` construct a channel, ``CommandUtil`` carries the three data
+directions between a channel and the model, and ``ChannelMeta`` (in
+`core.concepts.channel`) is the noun side — the authoritative contract for what the model
+sees.
 
 Channel 与模型 (大脑) 之间有三个数据方向, 构建 channel 时先分清信息该走哪条:
 
@@ -69,12 +76,15 @@ MessageFunction = Union[
     Callable[[], list[MessageType]],
 ]
 """
-可以生成消息体的函数. 这种函数注册到 Channel 中, 可以用来动态地生成 Context Messages 与 Memory Messages.
-AI 通过双工通讯, 在每个关键帧思考的瞬间, 提取对应的消息体替换到上下文中.
-
-注: Memory Messages 的字段契约已在 ChannelMeta.memory 就位, 但 Builder 尚无挂载点
-(memory_messages 钩子未提供). 设计已锁定, 见 workstream channel-meta-dyn-static.
+Functions that produce message bodies. Registered on a Channel, they generate Context
+Messages and Memory Messages dynamically: over the duplex channel, at the instant of each
+keyframe's thought, the AI pulls the corresponding message body and substitutes it into
+the context.
 """
+
+# The Memory Messages field contract is already in place on `ChannelMeta.memory`, but the
+# Builder has no mount point for it — `memory_messages` has no hook yet.
+
 
 StringType = Union[
     str,

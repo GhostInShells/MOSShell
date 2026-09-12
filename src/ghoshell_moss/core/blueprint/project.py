@@ -1,3 +1,11 @@
+"""Project — the governance-domain handle for a MOSS workspace.
+
+``Project`` is the handle over a governed domain; ``HostMode`` is the environment-
+discovery result for a MOSS host node. The manifest family (``ProjectManifest``,
+``HostModeManifests``, ``Manifest``) declares the capability discoverable in that domain,
+and ``NetworkMetadata`` / ``NetworkConfig`` describe the scopes communication may use.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Iterable, Any, Generic, TypeVar, Iterator
 from typing_extensions import Self

@@ -1,10 +1,16 @@
-"""ShellTrajectory — pull 型观测轨迹, 取代旧观测面 (ContextMonitor / ShellContext / InterleavedThinking).
+"""ShellTrajectory — a pull-based observation track over shell runtime frames.
 
-以帧 (events + status + context + facade delta) 承载 shell 运行时的观测:
-- MShellTrajectory: 有状态轨迹, peek/commit 推进基线, pop_frame 拉取每帧 delta.
-- MShellContextFacade: channel 操作表面 facade (full_facade / per-channel / delta).
-- MShellEventTracer: 订阅 Shell Tracer 收集 task-done / interpreter-stopped 事件.
+A frame carries events + status + context + facade delta:
+- ``MShellTrajectory``: the stateful track. peek/commit advance the baseline;
+  ``pop_frame`` pulls each frame's delta.
+- ``MShellContextFacade``: the channel-operation surface facade
+  (full_facade / per-channel / delta).
+- ``MShellEventTracer``: subscribes to the Shell Tracer to collect task-done and
+  interpreter-stopped events.
 """
+
+# Supersedes the earlier observation surface (ContextMonitor / ShellContext /
+# InterleavedThinking).
 
 import datetime
 import threading

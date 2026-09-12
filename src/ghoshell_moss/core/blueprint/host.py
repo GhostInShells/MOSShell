@@ -1,5 +1,12 @@
 """
-MOSS Host 层抽象 — 基于环境发现构建的高阶运行时门面.
+MOSS Host layer — the high-level runtime facade built on environment discovery.
+
+This module defines the Host-layer abstractions — ``IHost`` (discover project capability
+from environment conventions and create a runtime), ``MOSShellRuntime`` (the unified
+runtime facade over shell / interpreter / matrix), and ``IGhostRuntime`` (Ghost lifecycle
+orchestration layered over the runtime) — plus the SafeMode approval gate (``SafeMode``,
+``Verdict``, ``PendingApproval``) and the three-loop health snapshot (``LoopHealth``,
+``LoopStatus``).
 
 本模块定义 Host 层的三个核心抽象:
 
@@ -380,16 +387,19 @@ class PendingApproval(TypedDict):
 
 @dataclass(frozen=True)
 class Verdict:
-    """SafeMode 裁决结果 — 三态标签, 拦截点据此分派.
+    """SafeMode verdict — a three-state label the gate dispatches on.
 
-    - ``approved``: 通过. 拦截点回放 buffered logos → ``articulator.send_nowait``;
-      若 ``message`` 非空 (approve-with-note), 再 ``raise_observe`` 使人类补充意见
-      作为下一帧内观.
-    - ``rejected``: 否决. 拦截点走 ``articulator.raise_observe(message)``, message
-      作为否决理由随下一帧 Echoes 进 moment.
-    - ``cancelled``: 撤销. abort 到来时拦截点 finally 幂等 cancel; TUI 不主动产生.
+    - ``approved``: the gate replays the buffered logos into
+      ``articulator.send_nowait``; if ``message`` is non-empty (approve-with-note), it
+      then ``raise_observe``s so the human's added note enters the next frame as
+      introspection.
+    - ``rejected``: the gate calls ``articulator.raise_observe(message)``; the message
+      enters `moment` with the next frame's Echoes as the rejection reason.
+    - ``cancelled``: on abort the gate idempotently cancels in `finally`; the TUI never
+      produces this state.
 
-    ``message`` 语义在两态间共享 (决策 12/13): 都走 attention 内观通道, 不是外视 outcome.
+    ``message`` means the same thing in both live states: it always travels the attention
+    introspection channel, never the external outcome channel.
     """
 
     kind: Literal['approved', 'rejected', 'cancelled']
@@ -397,16 +407,20 @@ class Verdict:
 
 
 class SafeMode(ABC):
-    """GhostRuntime 的人工审批闸口 — 懒加载单例, 从 ``GhostRuntime.safe_mode()`` 取.
+    """The manual approval gate for a GhostRuntime — a lazily created singleton obtained
+    from ``GhostRuntime.safe_mode()``.
 
-    局部治理: 只闸 articulator 生成的 logos, 不闸输入 (输入通断是 pause 的职责).
-    ``moment.command_logos`` (impulse 反射弧) 绕行 gate. 详见 ghost-runtime-safemode FEATURE.
+    Scoped governance: it gates only the logos produced by the articulator, not input
+    (routing input through or off is pause's job). ``moment.command_logos`` — the impulse
+    reflex arc — bypasses the gate.
 
-    生命周期:
-      - ``enabled``: 开关. 只影响下一轮 articulation 的模式判定 (生成开始时判定一次),
-        不动在途逻辑. 已挂起的 pending 继续等人裁决完.
-      - ``pending``: 当前挂起的审批. 审批期间 articulate loop 串行阻塞,
-        任意时刻至多一个 pending, 因此 uuid 用于比对而非选择.
+    Lifecycle:
+      - ``enabled``: the switch. It only affects the next articulation round's mode check
+        (evaluated once when generation starts) and does not touch in-flight logic; an
+        already-pending approval stays pending until the human settles it.
+      - ``pending``: the currently suspended approval. While one is pending the articulate
+        loop blocks serially, and there is at most one pending at any time — which is why
+        the uuid is used for comparison, not selection.
     """
 
     @abstractmethod
@@ -442,12 +456,14 @@ class SafeMode(ABC):
 
     @abstractmethod
     def approve(self, uuid: str, note: str = '') -> bool:
-        """通过 uuid 匹配的 pending. 返回 True = 生效, False = uuid 不匹配 (stale, no-op).
+        """Approve the pending matching ``uuid``. True = applied, False = uuid mismatch
+        (stale, silent no-op).
 
-        决策 8: stale 静默 no-op, 绝不自动顺延到下一帧.
-        决策 12: ``note`` 非空时, 拦截点在回放 logos 之后 ``raise_observe(note)``,
-        使人类补充的意见作为下一帧内观进入 ghost 感知; 保持默认参数使无 note
-        的清洁通过路径不变.
+        A stale uuid is a silent no-op — it never rolls forward to the next frame.
+
+        When ``note`` is non-empty the gate ``raise_observe``s it *after* replaying the
+        logos, so the human's added note enters the ghost's perception as the next frame's
+        introspection. The default empty argument keeps the clean approve path unchanged.
         """
         ...
 
@@ -576,11 +592,12 @@ class IGhostRuntime(ABC):
 
     @abstractmethod
     def safe_mode(self) -> SafeMode:
-        """SafeMode 懒加载单例入口 — articulator→action 之间的人工审批闸口.
+        """Lazy singleton entry for SafeMode — the manual approval gate between the
+        articulator and action.
 
-        每个 GhostRuntime 实例持有唯一一个 SafeMode; 未开启时零开销.
-        首次调用创建, 后续调用返回同一实例. 详见 ``SafeMode`` ABC 与
-        ghost-runtime-safemode FEATURE.
+        Each GhostRuntime instance holds exactly one SafeMode; disabled, it costs nothing.
+        The first call creates it and later calls return the same instance. See the
+        ``SafeMode`` ABC.
         """
         ...
 
