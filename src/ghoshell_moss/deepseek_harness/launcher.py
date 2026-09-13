@@ -2,17 +2,19 @@
 dsh 连接的协议层与进程层, 分两个类:
 
 DshConnection — 基类, 连接层. 持有 dsh web 表面的传输与协议原语:
-WS 下行 (mux /api/events.mux 重连循环 + 帧分流) + HTTP 上行 (call / 协议
-facade DshClient) + 帧处理器注册 (on_mux_frame / on_host_frame) + session
-接线 (create_session). 不携带进程生命周期 — 不 spawn, 不 kill.
+WS 下行 (`/api/remote.mux` 重连循环 + `$events` 逻辑流分派) + HTTP 上行 (call /
+协议 facade DshClient) + 帧处理器注册 (on_remote_emit / on_remote_waterfall) +
+session 接线 (create_session). 不携带进程生命周期 — 不 spawn, 不 kill.
 
 DshLauncher(DshConnection) — 子类, 进程层. 在连接层之上增加 dsh web-profile
 子进程的持有与治理 (经 MOSS Subprocesses 契约构造注入, 控制反转): spawn /
 exit / stdout+stderr 消费 / stop, 以及就绪等待 (push 式: ws 连上 → started).
 
-传输选型: dsh web profile + 内置 `/api/events.mux` WS 下行 + plugin 注册的
-HTTP 路由上行 (零依赖伪双工). 不用 stdio JSON-RPC, 不用官方 SDK.
-WS 下行帧按类型分流: host/* 走 on_host_frame, 其余走 on_mux_frame, 各自广播.
+传输选型: dsh web profile + `/api/remote.mux` WS 下行 (单条物理 WS 多路复用
+逻辑流) + plugin 注册的 HTTP 路由上行 (零依赖伪双工). 不用 stdio JSON-RPC,
+不用官方 SDK. 0.1.5 起 WS upgrade 与 /api 都需 token→cookie 鉴权 (见 `_authorize`).
+下行帧按逻辑流分派: `$events` 的 emit/waterfall/cancel/ready (见 on_remote_emit /
+on_remote_waterfall); session 事件流 `session/follow` 属后续增量.
 MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
 
 Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 自己的配置
@@ -35,6 +37,13 @@ Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 
 # 4. 启动超时: _wait_started() 等 mux WS 连上, 超时 raise 而非永久阻塞.
 # 5. 帧分流: on_mux_frame / on_host_frame 双注册 (返回 Disposer), _ws_loop parse+dispatch.
 
+# ── 阶段性 (2026-09-13, dsh 0.1.5 传输重接) ────────────────
+# 6. token 落线: config.token → DSH_WEB_TOKEN 兜底 → launcher stdout 发现 (拿不到即故障).
+# 7. cookie 鉴权 + remote.mux + $events 逻辑流: _authorize (token→cookie) → ws 带 Cookie
+#    → _open_events_stream → emit/waterfall/cancel/ready 分派 (on_remote_emit/on_remote_waterfall).
+# 8. 未接: session/follow (per-session 事件流) + DshSession 事件投喂 — 见 dsh-0.1.5-remote-stream-transport.md.
+#    决策/分步见该子文档.
+
 # ── 已知问题 (随改随记, 最后一起删) ─────────────────────────
 # 1. `_owns_sp` 手动 __aexit__ 与 exit stack 重复回收 subprocess manager (第二次 no-op, 待合).
 # 2. __aenter__ except 块的清理被注释, 中途失败会漏孤儿进程 (启动超时使该路径可达, 需补).
@@ -44,6 +53,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -62,9 +73,7 @@ from ghoshell_moss.contracts.subprocesses import (
 from ghoshell_moss.core.subprocesses import SubprocessesImpl
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
-from .types.events import HostFrame, MuxFrame
 from .types.nouns import WorkspaceView
-from .types.session_events import SessionEvent
 from .client import DshClient
 from .session import DshSession
 
@@ -76,10 +85,20 @@ __all__ = [
     "DshExit",
 ]
 
-# 下行帧处理器: 收到 MuxFrame / HostFrame, 返回 None 或 awaitable (异步消费方).
-MuxFrameHandler = Callable[[MuxFrame], Awaitable[None] | None]
-HostFrameHandler = Callable[[HostFrame], Awaitable[None] | None]
-# 解绑函数: on_mux_frame / on_host_frame 返回, 调用即注销对应 handler.
+# dsh web 鉴权 token 的环境变量兜底来源: 让无子进程的 DshConnection 也能独立起
+# (launcher 拥有进程时从 stdout 发现, 见 DshLauncher._maybe_capture_token).
+DSH_WEB_TOKEN_ENV = "DSH_WEB_TOKEN"
+
+# $events 下行帧处理器: emit 单向通知 (event_name, args 位置参数).
+RemoteEmitHandler = Callable[[str, list[Any]], Awaitable[None] | None]
+# waterfall 处理器: 收 (event_name, request), 返回 outcome dict
+#   {"kind":"next"} | {"kind":"result","value":...} | {"kind":"rejected","error":{...}};
+#   返回 None 等价 {"kind":"next"}.
+RemoteWaterfallHandler = Callable[
+    [str, dict[str, Any]],
+    Awaitable[dict[str, Any] | None] | dict[str, Any] | None,
+]
+# 解绑函数: on_remote_emit / on_remote_waterfall 返回, 调用即注销对应 handler.
 Disposer = Callable[[], None]
 
 
@@ -98,10 +117,14 @@ class DshConnectionConfig(BaseModel):
     host: str = Field(default='127.0.0.1')
     port: int = Field(default=3083, description="web 端口; base_url/mux_url 由此派生.")
     connect_timeout: float = Field(default=10.0, description="连 WS / 单个 HTTP 请求的超时 (秒).")
+    token: str | None = Field(
+        default=None,
+        description="dsh web 鉴权 token; None → 从 DSH_WEB_TOKEN 环境变量读一次.",
+    )
 
     @property
     def mux_url(self) -> str:
-        return f"ws://{self.host}:{self.port}/api/events.mux"
+        return f"ws://{self.host}:{self.port}/api/remote.mux"
 
     @property
     def base_url(self) -> str:
@@ -130,11 +153,13 @@ class DshConnection:
 
     职责 (协议原语形状, 不背业务逻辑):
     - outbound call: `call()` POST JSON 到 `{base}{path}` (MOSS→dsh).
-    - inbound notify: `on_mux_frame` / `on_host_frame` 双流注册 (返回 Disposer),
-      `_ws_loop` 下行重连 + `_dispatch_raw_frame` 按 type 分流广播.
-    - session 接线: `create_session()` 把 DshSession 的 accept_frame 挂到两流,
-      退出时 on_exit 解绑.
-    - host 级 workspace 镜像: `_mirror_workspace` + `workspaces()` / `workspace_for_path()`.
+    - 鉴权: `_authorize()` token→cookie, 注入 http client 与 DshClient; WS upgrade 带 Cookie.
+    - inbound notify: `on_remote_emit` / `on_remote_waterfall` 双注册 (返回 Disposer),
+      `_ws_loop` 下行重连 + `_dispatch_raw_frame` 按 `$events` 帧 type 分派.
+    - session 接线: `create_session()` 把 DshSession 的 accept_host_event 挂到 emit 流,
+      退出时 on_exit 解绑. (session/follow 事件流属后续增量.)
+    - host 级 workspace: `workspaces()` / `workspace_for_path()` 走 workspace.list RPC
+      (0.1.5 不再推 workspace 变更帧).
 
     生命周期只覆盖连接自身 (WS 循环 + HTTP client); 子进程的 spawn/治理/拆除
     属 DshLauncher. 连接层的 `_wait_started` / `_on_start_failed` 是空实现,
@@ -147,13 +172,17 @@ class DshConnection:
             logger: LoggerItf | None = None,
     ) -> None:
         self._config = config
+        self._token: str | None = config.token or os.environ.get(DSH_WEB_TOKEN_ENV) or None
         # prepare http client
         self._http_client = httpx.AsyncClient(timeout=self.config.connect_timeout)
-        self._mux_handlers: list[MuxFrameHandler] = []
-        self._host_handlers: list[HostFrameHandler] = []
+        self._emit_handlers: list[RemoteEmitHandler] = []
+        self._waterfall_handlers: list[RemoteWaterfallHandler] = []
         self._workspaces: dict[str, WorkspaceView] = {}
-        # 内部 host 帧镜像: workspace changed/removed 同步进 _workspaces (launcher 生命周期内常驻).
-        self.on_host_frame(self._mirror_workspace)
+        # $events 逻辑流状态: clientId (waterfall 回话凭据) + 鉴权 cookie.
+        self._remote_client_id: str | None = None
+        self._cookies: dict[str, str] = {}
+        self._cookie_header: str | None = None
+        self._events_stream_id = "moss-events"
         self._logger: LoggerItf = logger or get_moss_logger()
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
@@ -167,6 +196,13 @@ class DshConnection:
     @property
     def config(self) -> DshConnectionConfig:
         return self._config
+
+    def token(self) -> str | None:
+        """当前 dsh web 鉴权 token (config → DSH_WEB_TOKEN 兜底).
+
+        子类 (DshLauncher) 可覆盖为运行时从 dsh stdout 发现的值。
+        """
+        return self._token
 
     # ---- 运行状态 ---- #
 
@@ -193,9 +229,12 @@ class DshConnection:
         """mux WS 下行重连循环: 连上后 parse+dispatch 帧, 断开则重连."""
         while self.is_running():
             try:
-                async with websockets.connect(self.config.mux_url) as ws:
+                await self._authorize()
+                headers = {"Cookie": self._cookie_header} if self._cookie_header else None
+                async with websockets.connect(self.config.mux_url, additional_headers=headers) as ws:
                     self._dsh_started.set()
-                    print(f"{self._log_prefix}mux connected")
+                    self._logger.info("%smux connected", self._log_prefix)
+                    await self._open_events_stream(ws)
                     async for raw in ws:
                         await self._dispatch_raw_frame(raw)
             except asyncio.CancelledError:
@@ -208,42 +247,119 @@ class DshConnection:
                 self._logger.warning("mux connection closed: %s", exc)
             await asyncio.sleep(1.0)
 
-    async def _dispatch_raw_frame(self, raw: str) -> None:
-        """解析 mux 下行帧, 按类型路由到 host/mux 两套 handler 列表广播.
+    async def _authorize(self) -> None:
+        """token → cookie 交换, 注入 http client 与 DshClient (后续 /api 调用需鉴权).
 
-        单帧解析失败只记日志、不断流 — 任何畸形帧都不该静默杀死整条 mux 链路
-        (此前 type 撞车就是这么静默死掉整个事件流的).
+        幂等: 已持有 cookie 即返回. token 尚未就绪 (launcher 正在等 stdout) 时跳过,
+        由 WS 重连循环下一轮重试。
+        """
+        if self._cookies:
+            return
+        token = self.token()
+        if token is None:
+            return
+        try:
+            resp = await self._http_client.get(
+                f"{self.config.base_url}/?token={token}", follow_redirects=False,
+            )
+        except Exception as exc:
+            self._logger.warning("%sweb auth exchange failed: %s", self._log_prefix, exc)
+            return
+        self._cookies = dict(self._http_client.cookies.items())
+        if not self._cookies:
+            self._logger.warning(
+                "%sweb auth exchange produced no cookie (status %s)", self._log_prefix, resp.status_code
+            )
+            return
+        self._cookie_header = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
+        self.client.set_cookies(self._cookies)
+        self._logger.info("%sweb auth cookie acquired", self._log_prefix)
+
+    async def _open_events_stream(self, ws: Any) -> None:
+        """在已连上的 mux 上开 `$events` 逻辑流 (应用级转发事件)."""
+        await ws.send(json.dumps({
+            "type": "open",
+            "streamId": self._events_stream_id,
+            "endpoint": "$events",
+            "payload": {"args": {}},
+        }))
+
+    async def _dispatch_raw_frame(self, raw: str) -> None:
+        """解析 mux 下行帧 (`item`/`error`/`end`), 分派 `item.value` 到 $events handler.
+
+        单帧解析失败只记日志、不断流 — 任何畸形帧都不该静默杀死整条 mux 链路。
         """
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return
-        if not isinstance(msg, dict) or msg.get("type") != "server-request":
+        if not isinstance(msg, dict):
             return
-        try:
-            method = msg.get("method", "")
-            payload = dict(msg.get("payload") or {})
-            # dsh fullFrame 把判别符同时放 method 与 payload.type — 去掉 payload 里的重复
-            # type, 否则 `type=method` 与 `**payload` 里的 type 撞车 (multiple values for 'type').
-            payload.pop("type", None)
-            if method.startswith("host/"):
-                frame: MuxFrame | HostFrame = HostFrame(type=method, **payload)
-                handlers = self._host_handlers
-            else:
-                if "event" in payload and isinstance(payload["event"], dict):
-                    payload["event"] = SessionEvent.from_dict(payload["event"])
-                frame = MuxFrame(type=method, **payload)
-                handlers = self._mux_handlers
-        except Exception:
-            self._logger.exception("mux frame parse failed (dropped): %s", method)
+        t = msg.get("type")
+        if t == "item":
+            await self._dispatch_remote_event(msg.get("value"))
+        elif t == "error":
+            self._logger.warning("%smux stream error: %s", self._log_prefix, msg.get("error"))
+        elif t == "end":
+            self._logger.debug("%smux stream ended: %s", self._log_prefix, msg.get("streamId"))
+        # 其余帧类型静默忽略.
+
+    async def _dispatch_remote_event(self, value: Any) -> None:
+        """按 $events 下行帧 type 分派: ready(存 clientId) / emit / waterfall(回话) / cancel."""
+        if not isinstance(value, dict):
             return
-        for handler in list(handlers):
+        t = value.get("type")
+        if t == "ready":
+            self._remote_client_id = value.get("clientId")
+            self._logger.info("%s$events ready (clientId bound)", self._log_prefix)
+            return
+        if t == "emit":
+            event = value.get("event", "")
+            args = list(value.get("args") or [])
+            for handler in list(self._emit_handlers):
+                try:
+                    result = handler(event, args)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    self._logger.exception("remote emit handler failed: %s", event)
+            return
+        if t == "waterfall":
+            await self._dispatch_waterfall(value)
+            return
+        if t == "cancel":
+            # 取消 pending waterfall — 当前不跟踪 pending 号, 仅日志.
+            self._logger.debug("%s$events cancel: %s", self._log_prefix, value.get("eventId"))
+            return
+
+    async def _dispatch_waterfall(self, value: dict[str, Any]) -> None:
+        """把一个 waterfall 交给注册 handler, 把 outcome 经 $events/result 回话."""
+        event = value.get("event", "")
+        event_id = value.get("eventId", "")
+        request = dict(value.get("request") or {})
+        outcome: dict[str, Any] = {"kind": "next"}
+        for handler in list(self._waterfall_handlers):
             try:
-                result = handler(frame)
+                result = handler(event, request)
                 if asyncio.iscoroutine(result):
-                    await result
+                    result = await result
+                if result is not None:
+                    outcome = result
             except Exception:
-                self._logger.exception("mux frame handler failed: %s", method)
+                self._logger.exception("remote waterfall handler failed: %s", event)
+        await self._send_event_result(event_id, outcome)
+
+    async def _send_event_result(self, event_id: str, outcome: dict[str, Any]) -> None:
+        """经 `$events/result` RPC 回一个 waterfall 结果 (client-request 信封)."""
+        client_id = self._remote_client_id
+        if client_id is None:
+            self._logger.warning("%scannot answer waterfall %s: no clientId yet", self._log_prefix, event_id)
+            return
+        payload = {"args": {"clientId": client_id, "eventId": event_id, "outcome": outcome}}
+        try:
+            await self.client.rpc("$events/result", payload)
+        except Exception:
+            self._logger.exception("$events/result failed: %s", event_id)
 
     async def _enter_async_context(self, stack: AsyncExitStack) -> None:
         await stack.enter_async_context(self._ws_loop_ctx())
@@ -307,34 +423,26 @@ class DshConnection:
             raise RuntimeError(f"dsh RPC {path} failed ({resp.status_code}): {detail}")
         return resp.json()
 
-    def on_mux_frame(self, handler: MuxFrameHandler) -> Disposer:
-        """注册 MuxFrame 下行处理器 (session/event 等), 返回解绑函数."""
-        self._mux_handlers.append(handler)
+    def on_remote_emit(self, handler: RemoteEmitHandler) -> Disposer:
+        """注册 $events emit 下行处理器 (单向应用事件), 返回解绑函数."""
+        self._emit_handlers.append(handler)
 
         def _remove() -> None:
-            self._mux_handlers.remove(handler)
+            self._emit_handlers.remove(handler)
 
         return _remove
 
-    def on_host_frame(self, handler: HostFrameHandler) -> Disposer:
-        """注册 HostFrame 下行处理器 (host/session-status 等), 返回解绑函数."""
-        self._host_handlers.append(handler)
+    def on_remote_waterfall(self, handler: RemoteWaterfallHandler) -> Disposer:
+        """注册 $events waterfall 下行处理器 (需回话事件), 返回解绑函数."""
+        self._waterfall_handlers.append(handler)
 
         def _remove() -> None:
-            self._host_handlers.remove(handler)
+            self._waterfall_handlers.remove(handler)
 
         return _remove
-
-    def _mirror_workspace(self, frame: HostFrame) -> None:
-        """host 级 workspace 快照镜像: changed 上采样, removed 下采样."""
-        if frame.type == "host/workspace-changed":
-            if frame.workspace is not None:
-                self._workspaces[frame.workspace.workspaceId] = frame.workspace
-        elif frame.type == "host/workspace-removed":
-            self._workspaces.pop(frame.workspaceId, None)
 
     async def workspaces(self, *, force: bool = False) -> list[WorkspaceView]:
-        """host 级 workspace 镜像 — 空或 force 时 workspace.list 拉基线."""
+        """host 级 workspace 列表 — 0.1.5 不再推 workspace 变更帧, 走 workspace.list RPC 拉取 (带缓存)."""
         if not force and self._workspaces:
             return list(self._workspaces.values())
         value = await self.client.workspace_list()
@@ -349,15 +457,14 @@ class DshConnection:
         return None
 
     def create_session(self, session_id: str, logger: LoggerItf | None = None) -> DshSession:
-        """创建并接线一个 session facade: 注册 accept_frame 到 host/mux 两流, 退出时解绑.
+        """创建并接线一个 session facade: 注册 accept_host_event 到 $events emit 流, 退出时解绑.
 
-        host 流收运行态 (host/session-status), mux 流收 session event (turn/usage/tool).
-        session 内部按 sessionId 过滤, 只消费自己的帧. 不持久持有 session — 只经
-        handler 列表关联, session 关闭时 on_exit 解绑断链.
+        $events 流收 host 级运行态 (api-session/status·added·…). session 内部按 sessionId
+        过滤, 只消费自己的帧. 不持久持有 session — 只经 handler 列表关联, session 关闭时
+        on_exit 解绑断链. (session 事件流 session/follow 属后续增量.)
         """
         session = DshSession(session_id=session_id, client=self.client, logger=logger)
-        session.on_exit(self.on_host_frame(session.accept_frame))
-        session.on_exit(self.on_mux_frame(session.accept_frame))
+        session.on_exit(self.on_remote_emit(session.accept_host_event))
         return session
 
 
@@ -395,22 +502,43 @@ class DshLauncher(DshConnection):
         self._exit: DshExit | None = None
         self._self_shutdown = False
         self._stderr_lines: list[str] = []
+        self._discovered_token: str | None = None
+        self._token_ready = ThreadSafeEvent()
         self._log_prefix: str = f"[DSHLauncher] "
 
     @property
     def config(self) -> DshLauncherConfig:
         return self._config
 
+    def token(self) -> str | None:
+        """运行时从 dsh stdout 发现的 token 优先, 否则回落到 config/env 兜底."""
+        return self._discovered_token or super().token()
+
     def is_running(self) -> bool:
         return super().is_running() and self._dsh_subprocess_is_running
 
     async def _wait_started(self) -> None:
-        """等待 mux WS 连上 (push 式就绪), 超时则失败而非永久阻塞."""
+        """等待 dsh web token + mux WS 连上 (push 式就绪), 超时则失败而非永久阻塞."""
+        await self._wait_token()
         try:
             await self._dsh_started.wait_for(self.config.readiness_timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(
                 f"dsh 未在 {self.config.readiness_timeout}s 内就绪 (mux WS 未连接)"
+            ) from None
+
+    async def _wait_token(self) -> None:
+        """launcher 拥有进程, 鉴权 token 必须可得 — 拿不到即故障.
+
+        若 config.token 或 DSH_WEB_TOKEN 已提供则立即返回, 不依赖 stdout 发现。
+        """
+        if self.token() is not None:
+            return
+        try:
+            await self._token_ready.wait_for(self.config.readiness_timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"dsh 未在 {self.config.readiness_timeout}s 内输出 web token (无法鉴权)"
             ) from None
 
     async def _on_start_failed(self) -> None:
@@ -512,9 +640,27 @@ class DshLauncher(DshConnection):
                 line = await stream.readline()
                 if not line:
                     break
-                print(f"{self._log_prefix}{line.decode(errors='replace').rstrip()}")
+                text = line.decode(errors="replace").rstrip()
+                self._maybe_capture_token(text)
+                self._logger.debug("%sstdout: %s", self._log_prefix, self._redact_token(text))
         finally:
-            print(f"{self._log_prefix}stdout consume closed")
+            self._logger.debug("%sstdout consume closed", self._log_prefix)
+
+    # dsh web 打印的 token 形如 `dsh web: http://…/?token=<base64url>`.
+    _TOKEN_RE = re.compile(r"token=([A-Za-z0-9_-]+)")
+
+    def _maybe_capture_token(self, text: str) -> None:
+        if self._discovered_token is not None:
+            return
+        m = self._TOKEN_RE.search(text)
+        if m is None:
+            return
+        self._discovered_token = m.group(1)
+        self._token_ready.set()
+        self._logger.info("%sdsh web token discovered (value not logged)", self._log_prefix)
+
+    def _redact_token(self, text: str) -> str:
+        return self._TOKEN_RE.sub("token=***", text)
 
     async def _consume_dsh_process_stderr(self) -> None:
         proc = self._dsh_process
@@ -549,4 +695,4 @@ class DshLauncher(DshConnection):
         except Exception:
             return
         if tail:
-            print(f"--- dsh stderr tail ---\n{tail[-2000:]}")
+            self._logger.error("--- dsh stderr tail ---\n%s", tail[-2000:])

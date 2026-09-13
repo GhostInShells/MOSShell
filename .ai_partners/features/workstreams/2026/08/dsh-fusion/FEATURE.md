@@ -16,6 +16,8 @@ updated: '2026-09-11'
 # DSH Fusion
 
 > Use `moss features set-status dsh-fusion <status> -m "note"` to update state.
+> **0.1.5 传输重接决策（remote.mux 逻辑流 + web 鉴权 + ticket 缓存）** →
+> [dsh-0.1.5-remote-stream-transport.md](dsh-0.1.5-remote-stream-transport.md)。
 > 从 `dsh-productization`(候选取代 claude-code-in-moss / 开箱不实现)翻篇改型而来,
 > 2026-08-16。旧定位与预判方向不在此保留, 见 [Legacy](#legacy)。
 

@@ -20,9 +20,10 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 
 依赖方向 (不互绑, 防治理循环):
 - DshSession 只持有 DshClient(叶子) 与 sessionId, 不持有 launcher。
-- mux 帧流依赖被反转: session 暴露 accept_frame(MuxFrame | HostFrame) 入口, 由 owner
-  单向注册喂帧 — host 流收运行态, mux 流收 session event。
-- 退出解绑: session 关闭时 fire on_exit 回调, owner 借回调解绑 accept_frame, 引用链断。
+- 帧流依赖被反转: session 暴露 accept_host_event ($events 运行态) + accept_session_event
+  (session 事件) 两个入口, 由 owner 单向注册喂帧 — $events 流收运行态, session/follow 流收
+  session event。
+- 退出解绑: session 关闭时 fire on_exit 回调, owner 借回调解绑喂帧入口, 引用链断。
 
 生命周期:
 - async with: __aenter__ 起消费 task, __aexit__ 拆除; 可提前 close() 幂等关闭。
@@ -32,11 +33,12 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 
 状态:
 - 消费门控用 is_running() — 没启动就不监听, 防 queue 爆炸。
-- dsh 运行态 (host/session-status{running}) 被 session 消费, 经 running 属性读取,
+- dsh 运行态 (api-session/status{running}) 被 session 消费, 经 running 属性读取,
   经 when_running/when_idle 等待翻转 (状态镜像事件, 非生命周期态)。
 
 事件消费:
-- 线性消费: accept_frame 只入队不处理(无背压, append + Event.set), 消费 task 逐帧处理。
+- 线性消费: accept_host_event / accept_session_event 只入队不处理(无背压, append + Event.set),
+  消费 task 逐帧处理。
 - session/event 帧按事件名分派到 on_session_event* 注册的分派闭包 (阻塞消费, 逐 handler await)。
 - 本文件经 on_session_event_model 注册 token 记账 (assistant/message usage); instruction /
   surface 走 plugin 路由 pull (见 instruction() / surface_messages())。
@@ -57,7 +59,6 @@ from typing_extensions import Self
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.client import DshClient
 from ghoshell_moss.deepseek_harness.types import sessions
-from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.deepseek_harness.types.session_events import (
     AssistantMessageEvent,
     Message,
@@ -80,7 +81,7 @@ _DOLORES_SESSION_SURFACE = "/moss-api/ghost/dolores/session/surface"
 # on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
 E = TypeVar("E", bound=SessionEventModel)
 
-# session 关闭回调: owner 用它解绑 accept_frame / 清理引用. 无参同步.
+# session 关闭回调: owner 用它解绑喂帧入口 / 清理引用. 无参同步.
 ExitCallback = Callable[[], None]
 
 # 分派闭包: on_session_event* 注册时生成, 收原始信封 SessionEvent, 内部完成强类型重建或原样
@@ -201,7 +202,7 @@ class DshSession:
                 self._logger.exception("dsh session %s on_exit callback failed", self._session_id)
 
     def on_exit(self, callback: ExitCallback) -> None:
-        """注册 session 关闭时的回调 (owner 用它解绑 accept_frame / 清理引用)."""
+        """注册 session 关闭时的回调 (owner 用它解绑喂帧入口 / 清理引用)."""
         self._on_exit_callbacks.append(callback)
 
     def is_running(self) -> bool:
@@ -210,13 +211,30 @@ class DshSession:
 
     # ---- 帧入口 (owner 喂帧, 反转依赖) ---- #
 
-    def accept_frame(self, frame: MuxFrame | HostFrame) -> None:
-        """owner 单向喂帧入口: 没启动不监听(防 queue 爆炸), 按 sessionId 分流, 只入队."""
+    def accept_host_event(self, event: str, args: list[Any]) -> None:
+        """owner 单向喂 $events emit 入口: 没启动不监听, 按 sessionId 分流, 只入队.
+
+        $events 是应用级转发事件流 (api-session/status·added·…), 载荷为位置参数 args。
+        """
         if not self.is_running():
             return
-        if frame.sessionId != self._session_id:
+        if event == "api-session/added":
+            summary = args[0] if args else None
+            if not isinstance(summary, dict) or summary.get("sessionId") != self._session_id:
+                return
+        elif not args or args[0] != self._session_id:
             return
-        self._queue.append(frame)
+        self._queue.append(("host", event, args))
+        self._wakeup.set()
+
+    def accept_session_event(self, event: SessionEvent) -> None:
+        """owner 单向喂 session 事件入口 (session/follow 流): 没启动不监听, 只入队.
+
+        session 事件流是 per-session 的 (session/follow), 无需按 sessionId 过滤。
+        """
+        if not self.is_running():
+            return
+        self._queue.append(("event", event))
         self._wakeup.set()
 
     # ---- 驱动动词 (入参屏蔽, 返回值不屏蔽) ---- #
@@ -392,29 +410,31 @@ class DshSession:
                 if not self._queue:
                     await self._wakeup.wait()
                 continue
-            frame = self._queue.popleft()
+            item = self._queue.popleft()
             try:
-                await self._handle_frame(frame)
+                if item[0] == "host":
+                    await self._handle_host_event(item[1], item[2])
+                else:  # "event"
+                    await self._dispatch_session_event(item[1])
             except Exception:
                 self._logger.exception("dsh session %s frame handling failed", self._session_id)
             n += 1
             if n % _YIELD_EVERY == 0:
                 await asyncio.sleep(0.0)
 
-    async def _handle_frame(self, frame: MuxFrame | HostFrame) -> None:
-        """按帧 type 分派. 运行态镜像 + session/event 事件分派 (on_session_event 注册回调)."""
-        if frame.type == "host/session-status":
-            self._set_running(frame.running)
-        elif frame.type == "host/session-added":
-            if frame.cwd is not None:
-                self._cwd = frame.cwd
-            if frame.agentPreset is not None:
-                self._agent_preset = frame.agentPreset
-        elif frame.type == "session/event":
-            event = frame.event
-            if event is None:
-                return
-            await self._dispatch_session_event(event)
+    async def _handle_host_event(self, event: str, args: list[Any]) -> None:
+        """按 $events emit 事件名分派 host 级运行态. session 事件 (session/follow) 属后续增量."""
+        if event == "api-session/status":
+            # args = [sessionId, running]
+            if len(args) >= 2:
+                self._set_running(bool(args[1]))
+        elif event == "api-session/added":
+            summary = args[0] if args else None
+            if isinstance(summary, dict):
+                if summary.get("cwd") is not None:
+                    self._cwd = summary.get("cwd")
+                if summary.get("agentPreset") is not None:
+                    self._agent_preset = summary.get("agentPreset")
 
     async def _dispatch_session_event(self, event: SessionEvent) -> None:
         """按事件名分派到 on_session_event* 注册的分派闭包 (阻塞消费, 逐 handler await).
@@ -584,7 +604,7 @@ class DshSession:
         重建的强类型模型实例. 与 TopicService.subscribe_model 同思路.
 
         阻塞消费: dispatch 在消费 task 内逐 handler await, 不做并发; handler 异常隔离记录,
-        不影响其它 handler 与消费循环. 与 launcher 的 on_mux_frame/on_host_frame
+        不影响其它 handler 与消费循环. 与 launcher 的 on_remote_emit/on_remote_waterfall
         同一注册-解绑模式.
         """
         async def _dispatch(event: SessionEvent) -> None:

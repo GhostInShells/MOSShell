@@ -1,11 +1,16 @@
 """
-apiproxy 事件面: MuxFrame / HostFrame 两条 WS 下行流的帧联合 + 交互共享类型.
+dsh 0.1.5 远程流帧面: `/api/remote.mux` 传输帧 + `$events` 逻辑流下行帧.
 
-镜像 events.ts. MuxFrame 是 session 粒度的流 (session/event 帧包裹 SessionEvent,
-其余是控制帧); HostFrame 是 host 级生命周期流, 不包裹 SessionEvent.
+镜像 dsh-api-gateway 的 stream-protocol.ts。一条物理 WS (`/api/remote.mux`) 多路复用
+逻辑流: 客户端 `{type:'open', streamId, endpoint, payload}` 开流, 服务端回
+`{type:'item', streamId, value}` / `{type:'error', ...}` / `{type:'end', ...}`。
+
+`$events` 是应用级转发事件流 (endpoint `$events`, payload `{args:{}}`), 其 `item.value`
+是四种下行帧: `ready`(绑定 clientId) / `emit`(单向, 位置参数 args) / `waterfall`(需回话)
+/ `cancel`(取消 pending waterfall)。session 事件流 (`session/follow`) 另属后续增量。
 
 帧用「判别符 type + 全字段 permissive」建模 (同 session_events 的 StreamChunk 手法):
-消费方按 `.type` 分派, 未知变体不崩 (type 为 str | Literal, extra="allow").
+消费方按 `.type` 分派, 未知变体不崩。
 """
 
 from __future__ import annotations
@@ -14,8 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .session_events import Message, SessionEvent
-from .nouns import JobView, WorkspaceView
+from .session_events import Message
 from .rpc import RpcError
 
 __all__ = [
@@ -29,8 +33,14 @@ __all__ = [
     "AskUserQuestionAnswer",
     "ToolEventView",
     "QueuedInboxItem",
-    "MuxFrame",
-    "HostFrame",
+    "RemoteEventReady",
+    "RemoteEventEmit",
+    "RemoteEventWaterfall",
+    "RemoteEventCancel",
+    "RemoteEventDownlink",
+    "RemoteStreamItem",
+    "RemoteStreamError",
+    "RemoteStreamEnd",
 ]
 
 ApprovalRequestId = str
@@ -97,100 +107,75 @@ class QueuedInboxItem(BaseModel):
     message: Message = Field(default_factory=Message)
 
 
-class MuxFrame(BaseModel):
-    """session 粒度下行流帧. `type` 是判别符; 未知变体不崩, 消费方按 type 分派."""
+class RemoteEventReady(BaseModel):
+    """`$events` 逻辑流首帧: 绑定 clientId (后续 `$events/result` 回话凭据) + host 事实."""
 
     model_config = ConfigDict(extra="allow")
 
-    type: str | Literal[
-        "session/event",
-        "session/subscribed",
-        "approval/requested",
-        "approval/resolved",
-        "question/requested",
-        "question/resolved",
-        "session/queue",
-        "session/jobs",
-        "session/projection",
-        "stream/error",
-    ] = Field(default="session/event")
-
-    # session/event
-    sessionId: str = Field(default="")
-    event: SessionEvent | None = Field(default=None)
-    view: ToolEventView | None = Field(default=None)
-
-    # session/subscribed
-    lastSeq: int = Field(default=0)
-
-    # approval/requested · resolved
-    approvalId: str = Field(default="")
-    toolName: str = Field(default="")
-    callId: str | None = Field(default=None)
-    reason: str | None = Field(default=None)
-    outcome: ApprovalOutcome | str | None = Field(default=None)
-
-    # question/requested · resolved
-    questions: list[AskUserQuestionItem] | None = Field(default=None)
-    questionRpcId: str = Field(default="")
-    # question/resolved outcome: 'answered' | 'cancelled' (复用 outcome 槽)
-
-    # session/queue
-    items: list[QueuedInboxItem] | None = Field(default=None)
-
-    # session/jobs
-    jobs: list[JobView] | None = Field(default=None)
-
-    # session/projection
-    key: str = Field(default="")
-    value: Any | None = Field(default=None)
-    seq: int = Field(default=0)
-
-    # stream/error
-    error: RpcError | None = Field(default=None)
+    type: Literal["ready"] = "ready"
+    clientId: str = Field(default="")
+    host: dict[str, Any] = Field(default_factory=dict, description="{home: str}")
 
 
-class HostFrame(BaseModel):
-    """host 级生命周期流帧."""
+class RemoteEventEmit(BaseModel):
+    """`$events` 单向通知帧: 应用级 cordis event, args 为位置参数."""
 
     model_config = ConfigDict(extra="allow")
 
-    type: str | Literal[
-        "host/session-added",
-        "host/session-removed",
-        "host/session-status",
-        "host/agent-error",
-        "host/workspace-changed",
-        "host/workspace-removed",
-        "host/workspace-order-changed",
-        "host/archived-sessions-changed",
-        "host/remote-event",
-        "stream/error",
-    ] = Field(default="host/session-status")
+    type: Literal["emit"] = "emit"
+    event: str = Field(default="")
+    args: list[Any] = Field(default_factory=list)
 
-    # session-added
-    sessionId: str = Field(default="")
-    blank: bool = Field(default=False)
-    parentSessionId: str | None = Field(default=None)
-    origin: str | None = Field(default=None, description="'subagent' 或空.")
-    cwd: str | None = Field(default=None)
-    agentPreset: str | None = Field(default=None)
 
-    # session-status
-    running: bool = Field(default=False)
+class RemoteEventWaterfall(BaseModel):
+    """`$events` 需回话帧: eventId 关联 `$events/result`, request 为 JSON-safe 载荷."""
 
-    # agent-error
-    message: str = Field(default="")
+    model_config = ConfigDict(extra="allow")
 
-    # workspace-*
-    workspace: WorkspaceView | None = Field(default=None)
-    workspaceId: str = Field(default="")
-    workspaceIds: list[str] | None = Field(default=None)
-    archivedSessionIds: list[str] | None = Field(default=None)
+    type: Literal["waterfall"] = "waterfall"
+    event: str = Field(default="")
+    eventId: str = Field(default="")
+    agentId: str = Field(default="")
+    request: dict[str, Any] = Field(default_factory=dict)
 
-    # remote-event
-    event: str = Field(default="", description="host 自身 cordis event 名.")
-    args: list[Any] | None = Field(default=None)
 
-    # stream/error
+class RemoteEventCancel(BaseModel):
+    """取消一个 pending waterfall (同一 eventId)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["cancel"] = "cancel"
+    eventId: str = Field(default="")
+
+
+# `$events` 逻辑流 item.value 的判别联合.
+RemoteEventDownlink = RemoteEventReady | RemoteEventEmit | RemoteEventWaterfall | RemoteEventCancel
+
+
+class RemoteStreamItem(BaseModel):
+    """mux 下行 `item` 帧: 一条逻辑流的一个 value."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["item"] = "item"
+    streamId: str = Field(default="")
+    value: Any = Field(default=None, description="$events 下行帧 (或后续 session/follow 帧).")
+
+
+class RemoteStreamError(BaseModel):
+    """mux 下行 `error` 帧: 逻辑流失败."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["error"] = "error"
+    streamId: str = Field(default="")
     error: RpcError | None = Field(default=None)
+
+
+class RemoteStreamEnd(BaseModel):
+    """mux 下行 `end` 帧: 逻辑流正常结束."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["end"] = "end"
+    streamId: str = Field(default="")

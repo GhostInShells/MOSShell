@@ -1,8 +1,8 @@
 """
 跨域共享的 host 级名词: WorkspaceView / JobView.
 
-WorkspaceView 源自 workspace.ts, JobView 源自 jobs.ts. 两者都被 events.py 的
-HostFrame/MuxFrame 引用, 故先于此声明, 避免循环 import.
+WorkspaceView 源自 workspace.ts, JobView 源自 jobs.ts. 两者被 sessions/domains/launcher
+引用, 故先于此声明, 避免循环 import.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 覆盖:
 - 初始态: 新建 session 假设 idle, when_idle 立即返回, when_running 阻塞.
-- host/session-status 帧翻转 running ⇄ idle 镜像事件.
+- api-session/status 事件翻转 running ⇄ idle 镜像事件.
 - on_session_event_model(AssistantMessageEvent) 收每步事件, token_usage 属性累计会话量.
 - on_session_event (raw) 收原始 SessionEvent 信封, 与强类型回调并存.
 - disposer 解绑后不再收到后续事件.
@@ -15,7 +15,6 @@ import pytest
 
 from ghoshell_moss.deepseek_harness.session import DshSession, WILDCARD_EVENT
 from ghoshell_moss.deepseek_harness.types import sessions
-from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.deepseek_harness.types.session_events import (
     AssistantMessageEvent,
     ContentBlock,
@@ -74,54 +73,47 @@ class _RpcClient:
         return self._plugin_values.get(path, {})
 
 
-def _usage_frame(input_tokens: int, output_tokens: int) -> MuxFrame:
+def _usage_event(input_tokens: int, output_tokens: int) -> SessionEvent:
     model = AssistantMessageEvent(
         turn=1,
         step=0,
         message=Message(content=[ContentBlock(type="text", text="hi")]),
         usage=TokenUsage(inputTokens=input_tokens, outputTokens=output_tokens),
     )
-    # 真实 mux 流经 SessionEvent.from_dict 从扁平信封读到 meta.type;
-    # 直接构造默认是空串, 这里补上判别符模拟真实信封.
     model.meta.type = model.event_type()
-    return MuxFrame(type="session/event", sessionId="s1", event=model.to_session_event())
+    return model.to_session_event()
 
 
-def _request_header_frame(system: str, session_id: str = "s1") -> MuxFrame:
+def _request_header_event(system: str) -> SessionEvent:
     model = RequestHeader(header=EpochHeader(system=system), reason="initial")
     model.meta.type = model.event_type()
-    return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
+    return model.to_session_event()
 
 
-def _session_added_frame(cwd: str, agent_preset: str, session_id: str = "s1") -> HostFrame:
-    return HostFrame(
-        type="host/session-added",
-        sessionId=session_id,
-        cwd=cwd,
-        agentPreset=agent_preset,
-    )
+def _session_added_summary(cwd: str, agent_preset: str, session_id: str = "s1") -> dict:
+    return {"sessionId": session_id, "cwd": cwd, "agentPreset": agent_preset}
 
 
-def _turn_start_frame(turn: int, session_id: str = "s1") -> MuxFrame:
+def _turn_start_event(turn: int) -> SessionEvent:
     model = TurnStart(turn=turn)
     model.meta.type = model.event_type()
-    return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
+    return model.to_session_event()
 
 
-def _turn_end_frame(turn: int, kind: str, session_id: str = "s1") -> MuxFrame:
+def _turn_end_event(turn: int, kind: str) -> SessionEvent:
     model = TurnEnd(turn=turn, reason=TurnEndReason(kind=kind))
     model.meta.type = model.event_type()
-    return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
+    return model.to_session_event()
 
 
-def _assistant_message_frame(text: str, turn: int = 1, session_id: str = "s1") -> MuxFrame:
+def _assistant_message_event(text: str, turn: int = 1) -> SessionEvent:
     model = AssistantMessageEvent(
         turn=turn,
         step=0,
         message=Message(content=[ContentBlock(type="text", text=text)]),
     )
     model.meta.type = model.event_type()
-    return MuxFrame(type="session/event", sessionId=session_id, event=model.to_session_event())
+    return model.to_session_event()
 
 
 async def _drain(session: DshSession) -> None:
@@ -149,15 +141,11 @@ async def test_initial_state_is_idle():
 async def test_status_frames_flip_running_idle():
     session = DshSession(session_id="s1", client=_DummyClient())
     async with session:
-        session.accept_frame(
-            HostFrame(type="host/session-status", sessionId="s1", running=True)
-        )
+        session.accept_host_event("api-session/status", ["s1", True])
         await asyncio.wait_for(session.when_running(), 1)
         assert session.running is True
 
-        session.accept_frame(
-            HostFrame(type="host/session-status", sessionId="s1", running=False)
-        )
+        session.accept_host_event("api-session/status", ["s1", False])
         await asyncio.wait_for(session.when_idle(), 1)
         assert session.running is False
 
@@ -175,10 +163,10 @@ async def test_usage_accumulates_and_event_fires():
 
     session.on_session_event_model(AssistantMessageEvent, on_assistant)
     async with session:
-        session.accept_frame(_usage_frame(10, 5))
+        session.accept_session_event(_usage_event(10, 5))
         await asyncio.wait_for(got.wait(), 1)
         got.clear()
-        session.accept_frame(_usage_frame(20, 3))
+        session.accept_session_event(_usage_event(20, 3))
         await asyncio.wait_for(got.wait(), 1)
 
     # 回调收每步事件 (非累计); 会话累计量经 token_usage 属性读.
@@ -203,7 +191,7 @@ async def test_raw_event_handler_receives_envelope():
     session.on_session_event("assistant/message", on_raw)
     session.on_session_event_model(AssistantMessageEvent, on_typed)
     async with session:
-        session.accept_frame(_usage_frame(5, 0))
+        session.accept_session_event(_usage_event(5, 0))
         await _drain(session)
 
     assert raw_seen == ["assistant/message"]
@@ -223,12 +211,12 @@ async def test_event_handler_disposer_removes():
 
     remove = session.on_session_event_model(AssistantMessageEvent, on_assistant)
     async with session:
-        session.accept_frame(_usage_frame(1, 0))
+        session.accept_session_event(_usage_event(1, 0))
         await asyncio.wait_for(got.wait(), 1)
 
         remove()
         got.clear()
-        session.accept_frame(_usage_frame(2, 0))
+        session.accept_session_event(_usage_event(2, 0))
         # 解绑后不再收到 → 等待超时.
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(got.wait(), 0.05)
@@ -252,9 +240,9 @@ async def test_event_dispatch_routes_by_event_name():
     session.on_session_event_model(AssistantMessageEvent, on_assistant)
     session.on_session_event_model(RequestHeader, on_header)
     async with session:
-        session.accept_frame(_usage_frame(9, 1))
-        session.accept_frame(_request_header_frame("prompt: p"))
-        session.accept_frame(_request_header_frame("prompt: q"))
+        session.accept_session_event(_usage_event(9, 1))
+        session.accept_session_event(_request_header_event("prompt: p"))
+        session.accept_session_event(_request_header_event("prompt: q"))
         await _drain(session)
 
     assert assistant_seen == [9]
@@ -272,8 +260,8 @@ async def test_wildcard_event_handler_receives_all_events():
 
     session.on_session_event(WILDCARD_EVENT, on_any)
     async with session:
-        session.accept_frame(_usage_frame(5, 0))
-        session.accept_frame(_request_header_frame("prompt: p"))
+        session.accept_session_event(_usage_event(5, 0))
+        session.accept_session_event(_request_header_event("prompt: p"))
         await _drain(session)
 
     assert seen == ["assistant/message", "request/header"]
@@ -295,7 +283,7 @@ async def test_wildcard_coexists_with_exact_handlers():
     session.on_session_event(WILDCARD_EVENT, on_any)
     session.on_session_event_model(AssistantMessageEvent, on_assistant)
     async with session:
-        session.accept_frame(_usage_frame(7, 0))
+        session.accept_session_event(_usage_event(7, 0))
         await _drain(session)
 
     assert wildcard_seen == ["assistant/message"]
@@ -317,10 +305,8 @@ async def test_unknown_event_type_safely_ignored():
     async with session:
         turn = TurnStart(turn=1)
         turn.meta.type = turn.event_type()
-        session.accept_frame(
-            MuxFrame(type="session/event", sessionId="s1", event=turn.to_session_event())
-        )
-        session.accept_frame(_usage_frame(5, 0))
+        session.accept_session_event(turn.to_session_event())
+        session.accept_session_event(_usage_event(5, 0))
         await asyncio.wait_for(got.wait(), 1)
 
     assert seen == [5]
@@ -410,7 +396,7 @@ async def test_model_selection_force_repulls():
 async def test_cwd_and_preset_mirror_session_added():
     session = DshSession(session_id="s1", client=_DummyClient())
     async with session:
-        session.accept_frame(_session_added_frame("/tmp/proj", "minimal"))
+        session.accept_host_event("api-session/added", [_session_added_summary("/tmp/proj", "minimal")])
         await _drain(session)
         assert await session.cwd() == "/tmp/proj"
         assert await session.agent_preset() == "minimal"
@@ -442,9 +428,9 @@ async def test_run_returns_single_turn_result():
         task = asyncio.create_task(session.run("hi"))
         await asyncio.sleep(0)  # 让 run() 挂上收集器并进入等待
 
-        session.accept_frame(_turn_start_frame(1))
-        session.accept_frame(_assistant_message_frame("hello"))
-        session.accept_frame(_turn_end_frame(1, "completed"))
+        session.accept_session_event(_turn_start_event(1))
+        session.accept_session_event(_assistant_message_event("hello"))
+        session.accept_session_event(_turn_end_event(1, "completed"))
 
         result = await asyncio.wait_for(task, 1)
 
@@ -466,16 +452,16 @@ async def test_run_second_turn_is_isolated():
     async with session:
         first = asyncio.create_task(session.run("q1"))
         await asyncio.sleep(0)
-        session.accept_frame(_turn_start_frame(1))
-        session.accept_frame(_assistant_message_frame("a1", turn=1))
-        session.accept_frame(_turn_end_frame(1, "completed"))
+        session.accept_session_event(_turn_start_event(1))
+        session.accept_session_event(_assistant_message_event("a1", turn=1))
+        session.accept_session_event(_turn_end_event(1, "completed"))
         assert (await asyncio.wait_for(first, 1)).final_response == "a1"
 
         second = asyncio.create_task(session.run("q2"))
         await asyncio.sleep(0)
-        session.accept_frame(_turn_start_frame(2))
-        session.accept_frame(_assistant_message_frame("a2", turn=2))
-        session.accept_frame(_turn_end_frame(2, "completed"))
+        session.accept_session_event(_turn_start_event(2))
+        session.accept_session_event(_assistant_message_event("a2", turn=2))
+        session.accept_session_event(_turn_end_event(2, "completed"))
         result = await asyncio.wait_for(second, 1)
 
     assert result.final_response == "a2"
@@ -490,10 +476,10 @@ async def test_run_settles_on_cancel():
     async with session:
         task = asyncio.create_task(session.run("hi"))
         await asyncio.sleep(0)
-        session.accept_frame(_turn_start_frame(1))
+        session.accept_session_event(_turn_start_event(1))
 
         await session.cancel()
-        session.accept_frame(_turn_end_frame(1, "interrupted"))
+        session.accept_session_event(_turn_end_event(1, "interrupted"))
 
         result = await asyncio.wait_for(task, 1)
 
@@ -513,8 +499,8 @@ async def test_run_rejects_concurrent_run():
             await session.run("again")
 
         # 收尾第一轮, 避免悬挂.
-        session.accept_frame(_turn_start_frame(1))
-        session.accept_frame(_turn_end_frame(1, "completed"))
+        session.accept_session_event(_turn_start_event(1))
+        session.accept_session_event(_turn_end_event(1, "completed"))
         await asyncio.wait_for(task, 1)
 
 

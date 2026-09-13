@@ -26,7 +26,7 @@ select-model/attachment/...), 那些留给未来的 session 层.
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -85,6 +85,26 @@ class DshClient:
             raise DshRpcException(method, error)
         return value_cls.model_validate(result.get("value"))
 
+    async def rpc(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """裸 RPC: POST client-request 信封, 返回 result dict (不校验 value).
+
+        供无 value 的动词用 (如 `$events/result` 的 `{ok:true, value:undefined}`)。
+        """
+        self._rpc_counter += 1
+        envelope = {
+            "type": "client-request",
+            "rpcId": f"rpc-{self._rpc_counter}",
+            "method": method,
+            "payload": payload,
+        }
+        self._logger.debug("dsh rpc %s (rpcId=%s)", method, envelope["rpcId"])
+        resp = await self._http_client.post(
+            f"{self._base_url}/api/{method}",
+            json=envelope,
+        )
+        resp.raise_for_status()
+        return resp.json()["result"]
+
     async def plugin_call(self, path: str, payload: dict | None = None) -> dict:
         """plugin webServer 面 (非 apiproxy): 裸 POST `{base}{path}`, 返回响应 JSON dict.
 
@@ -95,6 +115,10 @@ class DshClient:
         resp = await self._http_client.post(f"{self._base_url}{path}", json=payload or {})
         resp.raise_for_status()
         return resp.json()
+
+    def set_cookies(self, cookies: dict[str, str]) -> None:
+        """注入 dsh web 鉴权 cookie 到后续 /api 调用 (requestRejection 要求)."""
+        self._http_client.cookies.update(cookies)
 
     async def close(self) -> None:
         await self._http_client.aclose()

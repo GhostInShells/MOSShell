@@ -1,4 +1,4 @@
-"""DshLauncher host 级 workspace 镜像行为证据 — changed/removed 采样 + 冷锚基线 + path 解析."""
+"""DshLauncher 远程流摄取行为证据 — $events emit/waterfall/ready 分派 + workspace RPC 拉取."""
 
 import json
 
@@ -6,7 +6,6 @@ import pytest
 
 from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
 from ghoshell_moss.deepseek_harness.types import domains
-from ghoshell_moss.deepseek_harness.types.events import HostFrame, MuxFrame
 from ghoshell_moss.deepseek_harness.types.nouns import WorkspaceView
 
 
@@ -22,6 +21,17 @@ class _WsClient:
         return self._value
 
 
+class _RpcClient:
+    """$events/result 回话面的哑元 client — 记录 rpc(method, payload)."""
+
+    def __init__(self):
+        self.rpc_calls: list[tuple[str, dict]] = []
+
+    async def rpc(self, method, payload):
+        self.rpc_calls.append((method, payload))
+        return {"ok": True}
+
+
 def _ws(workspace_id: str, path: str, title: str = "t") -> WorkspaceView:
     return WorkspaceView(workspaceId=workspace_id, path=path, title=title)
 
@@ -30,13 +40,56 @@ def _make_launcher() -> DshLauncher:
     return DshLauncher(DshLauncherConfig())
 
 
-def test_workspace_mirror_upserts_and_removes():
+def _item(value: dict) -> str:
+    return json.dumps({"type": "item", "streamId": "moss-events", "value": value})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_emit_routes_to_handlers():
     launcher = _make_launcher()
-    launcher._mirror_workspace(HostFrame(type="host/workspace-changed", workspace=_ws("w1", "/tmp/a")))
-    launcher._mirror_workspace(HostFrame(type="host/workspace-changed", workspace=_ws("w2", "/tmp/b")))
-    assert [w.workspaceId for w in launcher._workspaces.values()] == ["w1", "w2"]
-    launcher._mirror_workspace(HostFrame(type="host/workspace-removed", workspaceId="w1"))
-    assert [w.workspaceId for w in launcher._workspaces.values()] == ["w2"]
+    seen: list[tuple[str, list]] = []
+    launcher.on_remote_emit(lambda event, args: seen.append((event, args)))
+    await launcher._dispatch_raw_frame(
+        _item({"type": "emit", "event": "api-session/status", "args": ["s1", True]})
+    )
+    assert seen == [("api-session/status", ["s1", True])]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ready_binds_client_id():
+    launcher = _make_launcher()
+    await launcher._dispatch_raw_frame(
+        _item({"type": "ready", "clientId": "c1", "host": {"home": "/x"}})
+    )
+    assert launcher._remote_client_id == "c1"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_waterfall_sends_result():
+    launcher = _make_launcher()
+    launcher.client = _RpcClient()
+    # 先收 ready 绑定 clientId, 再收 waterfall.
+    await launcher._dispatch_raw_frame(_item({"type": "ready", "clientId": "c1", "host": {}}))
+    launcher.on_remote_waterfall(lambda event, request: {"kind": "result", "value": {"ok": True}})
+    await launcher._dispatch_raw_frame(
+        _item({"type": "waterfall", "event": "approval/request", "eventId": "e1", "agentId": "a1", "request": {}})
+    )
+    assert launcher.client.rpc_calls == [
+        ("$events/result", {"args": {"clientId": "c1", "eventId": "e1", "outcome": {"kind": "result", "value": {"ok": True}}}})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_waterfall_defaults_to_next():
+    """无 handler 的 waterfall 默认回 next (放行), 不炸流."""
+    launcher = _make_launcher()
+    launcher.client = _RpcClient()
+    await launcher._dispatch_raw_frame(_item({"type": "ready", "clientId": "c1", "host": {}}))
+    await launcher._dispatch_raw_frame(
+        _item({"type": "waterfall", "event": "approval/request", "eventId": "e2", "agentId": "a1", "request": {}})
+    )
+    assert launcher.client.rpc_calls[0][0] == "$events/result"
+    assert launcher.client.rpc_calls[0][1]["args"]["outcome"] == {"kind": "next"}
 
 
 @pytest.mark.asyncio
@@ -50,45 +103,21 @@ async def test_workspaces_force_pulls_baseline():
 
 
 @pytest.mark.asyncio
-async def test_workspaces_mirror_avoids_pull():
+async def test_workspaces_caches_after_pull():
+    """0.1.5 无 workspace 推帧 — 首次 RPC 拉取后缓存, 后续命中缓存不再拉."""
     launcher = _make_launcher()
-    client = _WsClient(domains.WorkspaceListValue(items=[]))
+    client = _WsClient(domains.WorkspaceListValue(items=[_ws("w1", "/tmp/a")]))
     launcher.client = client
-    launcher._mirror_workspace(HostFrame(type="host/workspace-changed", workspace=_ws("w1", "/tmp/a")))
-    ws = await launcher.workspaces()
-    assert [w.workspaceId for w in ws] == ["w1"]
-    assert client.calls == []
+    assert [w.workspaceId for w in await launcher.workspaces()] == ["w1"]
+    assert [w.workspaceId for w in await launcher.workspaces()] == ["w1"]
+    assert client.calls == ["workspace.list"]
 
 
 @pytest.mark.asyncio
 async def test_workspace_for_path_resolves():
     launcher = _make_launcher()
-    launcher._mirror_workspace(HostFrame(type="host/workspace-changed", workspace=_ws("w1", "/tmp/a", title="A")))
+    client = _WsClient(domains.WorkspaceListValue(items=[_ws("w1", "/tmp/a", title="A")]))
+    launcher.client = client
     found = await launcher.workspace_for_path("/tmp/a")
     assert found is not None and found.title == "A"
     assert await launcher.workspace_for_path("/tmp/nonexistent") is None
-
-
-@pytest.mark.asyncio
-async def test_dispatch_frame_dedups_payload_type():
-    """mux 下行帧判别符同时放 method 与 payload.type (dsh fullFrame) — 解析须去重不崩.
-
-    `_dispatch_raw_frame` 是帧摄取原语 (WS loop 内部), 此处验证其协议承诺: 不去重会
-    `MuxFrame(type=method, **payload)` 撞车 TypeError, 静默杀死整条事件流.
-    """
-    launcher = _make_launcher()
-    received: list[MuxFrame] = []
-    launcher.on_mux_frame(lambda frame: received.append(frame) or None)
-    raw = json.dumps({
-        "type": "server-request",
-        "rpcId": "r1",
-        "method": "session/subscribed",
-        "payload": {"type": "session/subscribed", "sessionId": "s1", "lastSeq": 1},
-    })
-    await launcher._dispatch_raw_frame(raw)
-    assert len(received) == 1
-    frame = received[0]
-    assert isinstance(frame, MuxFrame)
-    assert frame.type == "session/subscribed"
-    assert frame.sessionId == "s1"
-    assert frame.lastSeq == 1
