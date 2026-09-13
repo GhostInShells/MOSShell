@@ -190,6 +190,7 @@ class AbsMindflow(Mindflow, ABC):
             logger: logging.Logger | None = None,
             raise_nucleus_start_error: bool = True,
             max_moments_size: int = 100,
+            gate: bool = False,
     ):
         # Nucleus 可能只是一个接口. 内部有别的技术实现.
         self._description = description
@@ -235,6 +236,7 @@ class AbsMindflow(Mindflow, ABC):
         self._on_idle_callbacks: set[Callable[[Moments], None] | Callable[[Moments], Awaitable[None]]] = set()
         self._idle_callback_tasks: set[asyncio.Future] = set()
         self._mindflow_channel: Channel | None = None
+        self._gate: bool = gate
 
         # 供外部使用的队列.
         self._thinking_loop_queue: janus.Queue[Thinking] = janus.Queue(maxsize=10)
@@ -753,7 +755,7 @@ class AbsMindflow(Mindflow, ABC):
     def as_channel(self) -> Channel | None:
         """强调子类要重新实现 channel 逻辑. """
         if self._mindflow_channel is None:
-            self._mindflow_channel = build_mindflow_channel(self)
+            self._mindflow_channel = build_mindflow_channel(self, gate=self._gate)
         return self._mindflow_channel
 
     def _set_attention(self, attention: Attention) -> None:
@@ -1271,8 +1273,9 @@ class BaseMindflow(AbsMindflow):
             system_floor_strength: float = 0.0,
             source_escalation: float = 1.1,
             max_protection_time: float = 3.0,
+            gate: bool = False,
     ):
-        super().__init__(*nuclei, logger=logger, raise_nucleus_start_error=raise_nucleus_start_error)
+        super().__init__(*nuclei, logger=logger, raise_nucleus_start_error=raise_nucleus_start_error, gate=gate)
         self._system_floor_strength = system_floor_strength
         self._max_protection_time = max_protection_time
         self._source_escalation = source_escalation
@@ -1294,10 +1297,12 @@ class BaseMindflow(AbsMindflow):
 def new_default_mindflow(
         *nuclei: Nucleus,
         logger: logging.Logger | None = None,
+        gate: bool = False,
 ) -> BaseMindflow:
     from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus
     return BaseMindflow(
         InputSignalNucleus(),
         *nuclei,
         logger=logger,
+        gate=gate,
     )

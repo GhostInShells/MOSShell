@@ -27,9 +27,9 @@ from .mindflow_in_shell_test_suite import (
 
 @pytest.mark.asyncio
 async def test_ctml_set_impulse_bar_changes_mindflow():
-    """CTML ``<mindflow:set-impulse-bar/>`` 经真实 interpreter 落到 mindflow 实例."""
+    """CTML ``<mindflow.attention:set-impulse-bar/>`` 经真实 interpreter 落到 mindflow 实例."""
     suite = MindflowInShellTestSuite()
-    suite.articulate = suite.text_articulator('<mindflow:set-impulse-bar priority="CRITICAL"/>')
+    suite.articulate = suite.text_articulator('<mindflow.attention:set-impulse-bar priority="CRITICAL"/>')
 
     async with suite:
         suite.add_signal(input_signal("set bar"))
@@ -42,9 +42,9 @@ async def test_ctml_set_impulse_bar_changes_mindflow():
 
 @pytest.mark.asyncio
 async def test_ctml_set_signal_bar_changes_mindflow():
-    """CTML ``<mindflow:set-signal-bar/>`` 经真实 interpreter 落到 mindflow 实例."""
+    """CTML ``<mindflow.attention:set-signal-bar/>`` 经真实 interpreter 落到 mindflow 实例."""
     suite = MindflowInShellTestSuite()
-    suite.articulate = suite.text_articulator('<mindflow:set-signal-bar priority="WARNING"/>')
+    suite.articulate = suite.text_articulator('<mindflow.attention:set-signal-bar priority="WARNING"/>')
 
     async with suite:
         suite.add_signal(input_signal("set bar"))
@@ -57,13 +57,13 @@ async def test_ctml_set_signal_bar_changes_mindflow():
 
 @pytest.mark.asyncio
 async def test_ctml_set_priority_operates_on_current_attention():
-    """CTML ``<mindflow:set-priority/>`` 修改当前 attention 的优先级.
+    """CTML ``<mindflow.attention:set-priority/>`` 修改当前 attention 的优先级.
 
     输入 signal 起的 attention 就是 set-priority 操作的目标; 命令经 interpreter
     执行后, 该 attention 的优先级应被覆盖为 CRITICAL.
     """
     suite = MindflowInShellTestSuite()
-    suite.articulate = suite.text_articulator('<mindflow:set-priority priority="CRITICAL"/>')
+    suite.articulate = suite.text_articulator('<mindflow.attention:set-priority priority="CRITICAL"/>')
 
     async with suite:
         suite.add_signal(input_signal("user_msg"))

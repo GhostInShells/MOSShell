@@ -1,16 +1,11 @@
 """Tests for the mindflow channel — 反身控制面 (reflexive mindflow control surface).
 
 Covers ``build_mindflow_channel``:
-- Three attention mechanisms are flag-gated: availability of a command tracks its
-  flag (default priority/bar on, pull off, red-dot off).
-- ``status`` (always_observe) reports each nucleus' name/description/peek.
-- ``set-priority`` operates on the current attention.
-- ``set-signal-bar`` / ``set-impulse-bar`` change the global floors (observable
-  through the channel context when ``enable_bar``).
-- ``pull`` is a try: consumes the top impulse (attended), never waits; empty
-  pull is a clean no-op.
-- instruction is a static mental model and does NOT re-list commands.
-- help lists the nucleus name-description map.
+- 常驻读面: ``status`` (always_observe 自省) 与 ``pull`` (主动 reach, 默认关) 留在顶层.
+- 注意力治理面下移为 gated 虚拟子通道 ``attention``: ``set-priority`` /
+  ``set-signal-bar`` / ``set-impulse-bar`` 不进顶层命令, 经子通道执行.
+- nucleus channel 作为虚拟子通道; gate 开启时默认关闭, 由 mount_child 披露.
+- instruction 是静态心智模型且不重复罗列命令; notice 列出 nucleus 目录.
 """
 
 from __future__ import annotations
@@ -23,6 +18,7 @@ from ghoshell_moss.core.blueprint.mindflow import Impulse, Priority
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.mindflow import BaseMindflow, DirectImpulseNucleus
 from ghoshell_moss.core.mindflow._channel import build_mindflow_channel
+from ghoshell_moss.core.mindflow.listener_nucleus import ListenerNucleus
 
 NUCLEUS_NAME = "cached"
 
@@ -56,17 +52,19 @@ def _context_text(runtime) -> str:
 
 
 @pytest.mark.asyncio
-async def test_default_flags_enable_priority_and_bar_disable_pull():
+async def test_attention_governance_lives_in_child():
     mf = BaseMindflow()
     chan = build_mindflow_channel(mf)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         names = _command_names(runtime)
         assert "status" in names
-        assert "set-priority" in names
-        assert "set-signal-bar" in names
-        assert "set-impulse-bar" in names
         assert "pull" not in names  # default off
+        # 治理面 (setter) 下移到 attention 子通道, 不在顶层.
+        assert "set-priority" not in names
+        assert "set-signal-bar" not in names
+        assert "set-impulse-bar" not in names
+        assert "attention" in runtime.virtual_sub_channels()
 
 
 @pytest.mark.asyncio
@@ -84,12 +82,16 @@ async def test_pull_gated_by_flag():
 
 
 @pytest.mark.asyncio
-async def test_priority_gated_by_flag():
+async def test_attention_child_respects_priority_flag():
     mf = BaseMindflow()
     chan = build_mindflow_channel(mf, enable_priority=False)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        assert "set-priority" not in _command_names(runtime)
+        child = runtime.fetch_sub_runtime("attention")
+        assert child is not None  # enable_bar 仍开, child 仍在
+        child_names = {c.name for c in child.self_meta().commands}
+        assert "set-priority" not in child_names
+        assert "set-signal-bar" in child_names
 
 
 # ── status / pull ─────────────────────────────────────────────
@@ -145,7 +147,8 @@ async def test_set_impulse_bar_reflected_in_context():
         initial = _context_text(runtime)
         assert "impulse bar" in initial.lower()
 
-        await runtime.execute_command("set-impulse-bar", kwargs={"priority": "CRITICAL"})
+        child = runtime.fetch_sub_runtime("attention")
+        await child.execute_command("set-impulse-bar", kwargs={"priority": "CRITICAL"})
         await runtime.refresh_metas()
         assert "CRITICAL" in _context_text(runtime)
 
@@ -156,7 +159,8 @@ async def test_set_signal_bar_reflected_in_context():
     chan = build_mindflow_channel(mf, enable_bar=True)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("set-signal-bar", kwargs={"priority": "WARNING"})
+        child = runtime.fetch_sub_runtime("attention")
+        await child.execute_command("set-signal-bar", kwargs={"priority": "WARNING"})
         await runtime.refresh_metas()
         assert "WARNING" in _context_text(runtime)
 
@@ -170,7 +174,8 @@ async def test_set_priority_operates_on_current_attention():
         await _wait_until(lambda: mf.attention() is not None)
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
-            result = await runtime.execute_command("set-priority", kwargs={"priority": "CRITICAL"})
+            child = runtime.fetch_sub_runtime("attention")
+            result = await child.execute_command("set-priority", kwargs={"priority": "CRITICAL"})
             assert "CRITICAL" in result
             assert mf.attention().priority() == Priority.CRITICAL
 
@@ -181,7 +186,8 @@ async def test_set_priority_without_attention_is_noop():
     chan = build_mindflow_channel(mf, enable_priority=True)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        result = await runtime.execute_command("set-priority", kwargs={"priority": "CRITICAL"})
+        child = runtime.fetch_sub_runtime("attention")
+        result = await child.execute_command("set-priority", kwargs={"priority": "CRITICAL"})
         assert "no active attention" in result.lower()
 
 
@@ -215,3 +221,37 @@ async def _wait_until(cond, *, timeout: float = 1.0) -> None:
     while not cond():
         assert asyncio.get_event_loop().time() < deadline, "condition not met before timeout"
         await asyncio.sleep(0.01)
+
+
+# ── gate: nucleus channel 渐进式披露 ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gated_mindflow_lists_and_mounts_nucleus_child():
+    nuc = ListenerNucleus()
+    mf = BaseMindflow(nuc, gate=True)
+    async with mf:
+        channel = mf.as_channel()
+        async with channel.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            # gate 开启: nucleus channel 默认关闭, 只在 notice 的 gate 目录里可见.
+            notice = runtime.self_meta().notice
+            assert "gated children" in notice
+            assert "listener_nucleus (closed)" in notice
+            assert "listener_nucleus" not in runtime.virtual_sub_channels()
+
+            result = await runtime.mount_child("listener_nucleus")
+            assert "mounted" in result
+            assert "listener_nucleus" in runtime.virtual_sub_channels()
+            assert "listener_nucleus (open)" in runtime.self_meta().notice
+
+
+@pytest.mark.asyncio
+async def test_default_mindflow_mounts_nucleus_child_directly():
+    nuc = ListenerNucleus()
+    mf = BaseMindflow(nuc)  # gate 默认 False
+    async with mf:
+        channel = mf.as_channel()
+        async with channel.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            assert "listener_nucleus" in runtime.virtual_sub_channels()

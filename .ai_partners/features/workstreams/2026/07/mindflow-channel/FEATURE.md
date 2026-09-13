@@ -5,10 +5,9 @@ description: Mindflow 反身控制 Channel — 将 mindflow 从 opaque 调度器
   自解释 + 注意力管理 + 优先级干预 + nucleus pull.
 milestone: 0.1.0
 priority: P1
-status: in-progress
-status_note: '重开: 两步走 — step1: py_channel 落地 prime channel gate flag(默认 false)+ states
-  呈现自动拼装进 notice; step2: mindflow 控制面下移为 gated virtual children, notice 合并自解释, 删红点.
-  step1 完成才进 step2.'
+status: completed
+status_note: '拆解完成: 治理面(set-priority/bars)下移 gated attention 子通道, 顶层留 status+pull;
+  删 enable_red_dot+红点; gate 贯通构造面; notice 重叠作已知 follow-up'
 title: Mindflow Channel
 updated: '2026-09-13'
 ---
@@ -269,3 +268,38 @@ mindflow/prompts/blueprint 回归通过 (listener 2 条失败是 voice-input-sta
 在途改动, 与本步无关)。
 
 **Step 2 待开始**: mindflow 控制面下移为 gated virtual children。
+
+### Step 2 进度 (2026-09-13)
+
+gate flag 已贯通到 mindflow 构造面:
+
+- `build_mindflow_channel(..., gate=False)` → `new_prime_channel(..., gate=gate)`。
+- `AbsMindflow.__init__(..., gate=False)` 存 `_gate`; `as_channel()` 传 `gate=self._gate`。
+- `BaseMindflow.__init__(..., gate=False)` / `new_default_mindflow(..., gate=False)` 透传。
+
+默认 `gate=False` (行为不变); 调用方 `new_default_mindflow(gate=True)` / `BaseMindflow(gate=True)`
+即可让 nucleus channel 走渐进式披露。
+
+测试: `test_mindflow_channel.py` 追加 2 条 — gated mindflow 把 listener nucleus channel 收进
+notice 目录并可 `mount_child` 挂载; 默认 gate=False 直接挂载。
+
+**待做**: 注意力治理命令 (set-priority / set-signal-bar / set-impulse-bar / pull) 下移为 gated
+virtual child; notice 三处重叠合并; 删 enable_red_dot + context 红点块。
+
+### Step 2 拆解完成 (2026-09-13)
+
+注意力治理面已从顶层下移为 gated 虚拟子通道 ``attention``:
+
+- 顶层只剩常驻读面: ``status`` (always_observe 自省) + ``pull`` (enable_pull 门控, 默认关)。
+- ``set-priority`` / ``set-signal-bar`` / ``set-impulse-bar`` 移入 ``attention`` 子通道
+  (`_build_attention_child`), 由 ``enable_priority`` / ``enable_bar`` 决定注册哪些;
+  两者都关则不注册该子通道。
+- ``attention`` + 各 running nucleus 的 ``as_channel()`` 一起进 ``virtual_children`` 目录,
+  gate 开启时默认关闭、由 mount_child 披露。
+- 删 ``enable_red_dot`` 与 context 红点块 (context 其余不动)。
+- 命令寻址: CTML 从 ``<mindflow:set-*/>`` 变为 ``<mindflow.attention:set-*/>``。
+
+测试: ``test_mindflow_channel.py`` 改/加覆盖拆解 + gate; ``test_mindflow_channel_ctml.py``
+更新寻址到 ``mindflow.attention``。mindflow 360 / channels+ctml+blueprint 379 全绿。
+
+**待做**: notice 三处重叠合并 (notice 现在既列 nuclei, gate 目录也列 gated children)。
