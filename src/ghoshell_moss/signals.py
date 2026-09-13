@@ -15,7 +15,6 @@ architecture.py 加入认知地图.
   InterruptSignalMeta — 急停中断 (优先级 FATAL, interrupt mode)
   CommandSignalMeta — 命令执行 (优先级 NOTICE, command_only mode)
   SilentSignalMeta  — 静默聚合 (优先级 NOTICE, silent mode)
-  AudioSignal       — 音频感知 (优先级 NOTICE)
   CellEventSignalMeta — Cell 生命周期事件 (优先级 BACKGROUND)
 """
 from ghoshell_moss.core.blueprint.mindflow import (
@@ -27,7 +26,6 @@ from ghoshell_moss.core.mindflow import (
     CommandSignalMeta,
     SilentSignalMeta,
 )
-from ghoshell_moss.core.mindflow.audio_signal import AudioSignal
 from ghoshell_moss.core.mindflow.cell_event_nucleus import (
     CellEventSignalMeta,
     CellTransition,
@@ -39,7 +37,6 @@ __all__ = [
     'InterruptSignalMeta',
     'CommandSignalMeta',
     'SilentSignalMeta',
-    'AudioSignal',
     'CellEventSignalMeta',
     'CellTransition',
 ]

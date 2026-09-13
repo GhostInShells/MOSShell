@@ -6,11 +6,11 @@ description: Speech 体系治理：解耦 commands 权责泄漏，player 多后�
 milestone: null
 priority: P2
 status: in-progress
-status_note: 已完成 D10 (__content__ 可选化) 与 D11 (说侧可感知播放)，并清 cmd_task 交叉耦合；多 provider 与降级链等
-  未做承诺已标 out-of-scope (见 Implementation Plan)。SpeechTopic schema 重设计待 voice-input-state-machine 完成后
-  收尾，届时再 completed。
+status_note: 已完成 D10 (__content__ 可选化)、D11 (说侧可感知播放) 与 D12 (SpeechTopic → ClauseTopic，additional
+  上移到 TopicModel，AudioNucleus 线整体退役)；多 provider 与降级链等未做承诺已标 out-of-scope (见 Implementation
+  Plan)。装线 (ClauseTopic 的 publish / subscribe) 待做，故仍 in-progress。
 title: Speech Governance — 解耦、多后端、容错降级
-updated: '2026-09-05'
+updated: '2026-09-13'
 ---
 
 # Speech Governance
@@ -412,6 +412,53 @@ contracts 反向依赖 core.concepts.command), mock / stream_tts_speech 同步�
 text↔音频对齐时, 在最后一个 `PlaybackSample.text` 附上已喂文本尾部 (`speech_tail`,
 中英混排 token 切分); `stopped_message` 直接消费 `samples[-1].text` 而非 `[-_TAIL_LEN:]`
 切片段, 并补词数。`split_speech_tokens` / `speech_tail` 落在 `contracts/speech.py`。
+
+### D12: SpeechTopic → ClauseTopic，additional 上移，AudioNucleus 退役 (P2) — 2026-09-13
+
+**决策**: 本 workstream 声明的最后一个未收口项 (SpeechTopic schema 重设计) 于此落地。它不再
+等 voice-input-state-machine 完成——(语音) 话语 topic 的命名与结构在本线先定义，装线 (谁
+publish / subscribe) 另做。
+
+**命名: `ClauseTopic`**（`topic_type = "clause"`），不是 `ConversationTopic` / `UtteranceTopic`：
+
+- **和既有词汇同源**。`contracts/asr.py` 已把引擎的 `utterance (definite=true)` 重命名为
+  `Clause`（`asr.py:43`、`:59`）。`utterance` 是引擎词/输入粒度，`Clause` 是项目词/分句粒度。
+  用 `ClauseTopic` 是与既有 `Clause` 类型组合；用 `UtteranceTopic` 是把项目已抛弃的引擎词引回。
+- **粒度 = 分句级，不是 turn 级**。一个 turn 可含多个 clause，只有 clause 在说话人之间干净交错。
+  `TopicWindow[ClauseTopic]` 即交错对话轨迹。
+- **`ConversationTopic` 是拿容器命名单元**——对话是整个窗口的性质，不是单个元素的性质。
+- **双边**：听侧 ASR 定稿一个 clause、说侧 TTS 渲染一个 clause，都产出同一形状。
+
+**字段**（只承载 clause 的语义内容）：
+
+| 字段 | 说明 |
+|------|------|
+| `text` | clause 自身文本 |
+| `speaker_id` / `speaker_name` | 身份维度——谁说的 |
+| `role` | 功能维度——ghost / user。与身份**正交**：多个 speaker 可共享一个 role |
+| `lang` | 语种 |
+
+- **去 timestamp** → 走 `meta.created_at`（旧 todo）。
+- **去 audio_key** → 协议 / 存储细节不进字段，挂 `additional`（旧 todo）。旧 docstring 的
+  "每个属性都没有 description" todo 同时收口。
+
+**additional 机制修正**: 原设计把扩展槽放在 `Topic(BaseModel, WithAdditional)`（信封级），
+但 model → topic 转换时 model 自身的扩展无处安放。改为在 `TopicModel(BaseModel, ABC, WithAdditional)`
+——`to_topic()` 把 additional 从 `data` 提到信封、`from_topic()` 还原，wire 上只有一个 addition
+槽，与 publisher 级 additions（`Publisher.with_additions`）共用。`TopicMeta` 保持纯净，`Topic`
+保持 WithAdditional。（曾误置于 `TopicMeta`，已改正。）
+
+**退役**: `AudioNucleus` / `AudioSignal` / `AudioAction` 全删（`core/mindflow/audio_nucleus.py`、
+`audio_signal.py`、`signals.py` 条目）。这是旧 alpha listener 线（`.moss_ws/apps/sensors/listener`）
+的载体；该 app 已于 `15267d72` 删除，此后 `AudioSignal.speech_topic` 成为**只写不读**的死字段，
+`AudioNucleus` 也从未注册进 `matrix/openbox/nuclei.py`（活路径是 `ListenerNucleus` / `ListenerSignal`）。
+`nodes/sensors/listener` 一并删除。
+
+**未决**: 装线——ClauseTopic 的 publish / subscribe 方。**不动**: `BufferNucleus`（多测试依赖，非
+AudioNucleus 专属）。
+
+**变更文件**: `topics/audio.py`, `topics/__init__.py`, `core/concepts/topic.py`, `signals.py`,
+删除 `core/mindflow/audio_nucleus.py` / `audio_signal.py` / `nodes/sensors/listener/`。
 
 ## Implementation Plan
 

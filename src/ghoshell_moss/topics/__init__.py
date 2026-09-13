@@ -8,5 +8,5 @@ by the TopicService at runtime.
 from ghoshell_moss.core.concepts.topic import (
     ErrorTopic, LogTopic
 )
-from .audio import AudioRuntimeTopic, SpeechTopic
+from .audio import AudioRuntimeTopic, ClauseTopic
 from .vision import FaceTopic

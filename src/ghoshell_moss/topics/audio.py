@@ -11,7 +11,7 @@ from ghoshell_moss.core.concepts.topic import TopicModel
 __all__ = [
     "AudioRuntimeTopic",
     "AudioPlaybackTopic",
-    "SpeechTopic",
+    "ClauseTopic",
 ]
 
 
@@ -71,40 +71,37 @@ class AudioPlaybackTopic(TopicModel):
         return "audio/playback"
 
 
-class SpeechTopic(TopicModel):
-    """A completed utterance in a voice conversation stream.
+class ClauseTopic(TopicModel):
+    """One clause (分句) of a spoken conversation — a single finalized sentence.
 
-    Each SpeechTopic is a finished sentence segment — spoken by human, ghost,
-    assistant, or system. ASR streams intermediate results internally but only
-    publishes to this topic once segmentation completes. No delta/incremental
-    updates; every event is self-contained.
+    Bilateral: the listening side publishes a clause when ASR finalizes it, the
+    speaking side when TTS renders it. A ``TopicWindow[ClauseTopic]`` over recent
+    clauses is the interleaved conversation trajectory — who said what, in order,
+    across both sides.
 
-    A TopicWindow[SpeechTopic] over recent N utterances forms the conversation
-    context window for the current voice interaction.
+    The unit is the clause, not the turn: a turn may hold several clauses, and
+    only clauses interleave cleanly between speakers. Each topic is self-contained
+    and final — no delta/incremental updates.
+
+    This model carries only the semantic content of the clause. Anything tied to
+    a specific transport or storage shape — audio references, ASR segment
+    linkage — does NOT belong in a field; attach it via ``additional``.
     """
 
-    # todo: all properties has no Filed with description
-    text: str = ""
-    speaker_id: str = ""
-    speaker_name: str = ""
+    text: str = Field(default="", description="The clause's own text.")
+    speaker_id: str = Field(default="", description="Stable identity of who spoke the clause.")
+    speaker_name: str = Field(default="", description="Display name of who spoke the clause.")
     role: str | Literal['ghost', 'user'] = Field(
         default='',
-        description='role of the speaker one',
+        description="Which side of the conversation produced the clause. Orthogonal to speaker "
+                    "identity: several speakers can share one role.",
     )
-
-    batch_id: str = ""
-    # todo: remove the timestamp, it must be useless since assigned with time.monotonic
-    #    also topic already has timestamp in topic.meta.created_at
-    timestamp: float = 0.0
-
-    lang: str = Field(default="", description='language of the utterance')
-    # todo: normalize with audio resource (which is not implemented yet)
-    audio_key: str | None = Field(default=None, description="Reference key to the audio recording, if stored")
+    lang: str = Field(default="", description="Language of the clause.")
 
     @classmethod
     def topic_type(cls) -> str:
-        return "speech"
+        return "clause"
 
     @classmethod
     def default_topic_name(cls) -> str:
-        return "speech"
+        return "clause"

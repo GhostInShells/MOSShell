@@ -130,9 +130,15 @@ class Topic(BaseModel, WithAdditional):
         return self.model_dump_json(indent=0, ensure_ascii=False, exclude_defaults=True, exclude_none=True)
 
 
-class TopicModel(BaseModel, ABC):
+class TopicModel(BaseModel, ABC, WithAdditional):
     """
     Self-describing Topic protocol contract.
+
+    ``additional`` is a generic keyworded extension bag: a topic type can attach
+    extra protocol data without declaring it as a field. It never travels inside
+    ``Topic.data`` — ``to_topic()`` hoists it onto the ``Topic`` envelope and
+    ``from_topic()`` restores it, so the wire has exactly one addition slot,
+    shared with publisher-level additions (``Publisher.with_additions``).
     """
 
     meta: TopicMeta = Field(default_factory=TopicMeta, description="meta information")
@@ -184,6 +190,8 @@ class TopicModel(BaseModel, ABC):
         meta = topic.meta
         data = topic.data.copy()
         data['meta'] = meta
+        if topic.additional:
+            data['additional'] = topic.additional
         return cls.model_validate(data)
 
     @property
@@ -209,17 +217,20 @@ class TopicModel(BaseModel, ABC):
             creator: str = "",
             sender: str = "",
     ) -> Topic:
-        data = self.model_dump(exclude={"meta"}, exclude_none=True, exclude_defaults=True)
+        data = self.model_dump(exclude={"meta", "additional"}, exclude_none=True, exclude_defaults=True)
         meta = self.meta
         meta.name = name or self.default_topic_name()
         meta.overdue = overdue
         meta.creator = creator
         meta.sender = sender
         meta.type = self.topic_type()
+        # additional 不进 data, 单独提到信封上, 与 publisher 级 additions 共用一个槽.
+        additional = dict(self.additional) if self.additional else None
         # 由于是确定性的类型转换, 所以直接赋值.
         return Topic.model_construct(
             meta=meta,
             data=data,
+            additional=additional,
         )
 
 
