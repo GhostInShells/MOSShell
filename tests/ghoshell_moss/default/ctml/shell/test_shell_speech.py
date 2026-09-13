@@ -41,7 +41,7 @@ async def test_shell_speech_baseline_prepare():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        stream = speech.new_stream()
+        stream = speech.new_segment()
         await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)
@@ -116,7 +116,7 @@ async def test_shell_speech_baseline():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        stream = speech.new_stream()
+        stream = speech.new_segment()
         await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)
@@ -149,7 +149,7 @@ async def test_shell_speech_10_times():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        stream = speech.new_stream()
+        stream = speech.new_segment()
         await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)

@@ -66,7 +66,7 @@ class _SpeechCommandFactory:
         async def _content_partial(chunks__):
             if not speech.is_running():
                 return [], {}
-            stream = speech.new_stream()
+            stream = speech.new_segment()
             await stream.start_synthesis()
             _ = asyncio.create_task(_feed_stream(stream, chunks__))
             return [], {"chunks__": stream}

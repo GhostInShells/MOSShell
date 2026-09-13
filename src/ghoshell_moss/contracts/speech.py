@@ -23,6 +23,9 @@ __all__ = [
     "TTSBatch",
     "TTSInfo",
     "TTSSpeech",
+    "Word",
+    "SpeechClause",
+    "SpeechSegment",
     "split_speech_tokens",
     "speech_tail",
 ]
@@ -57,6 +60,10 @@ class SpeechStream(ABC):
     ):
         self.id = id
         self.committed = committed
+
+    @property
+    def stream_id(self) -> str:
+        return self.id
 
     def feed(self, text: str, *, complete: bool = False) -> None:
         """
@@ -241,11 +248,26 @@ class Speech(ABC):
     """
 
     @abstractmethod
-    def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
+    def new_segment(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         """
         创建一个新的输出流, 第一个 stream 应该设置为 play
         """
         pass
+
+    def on_clause(self, callback: Callable[['SpeechClause'], None]) -> Callable[[], None]:
+        """注册 clause 结果回调: 每句说出的 clause 播放完成时回调一次.
+
+        对齐听侧 ``RecognitionEvent.clause`` (文本). 默认 no-op (返回空 disposer).
+        产生 clause 结果的实现 (TTSSpeech) 覆写, 由真实播放样本对齐触发 (非 TTS 返回即触发).
+        """
+        return lambda: None
+
+    def on_segment(self, callback: Callable[['SpeechSegment'], None]) -> Callable[[], None]:
+        """注册 segment 结果回调: 一个 segment (一个 say) 播放结束时回调一次.
+
+        对齐听侧 ``RecognitionSegment`` (文本 + 音频存储单位). 默认 no-op.
+        """
+        return lambda: None
 
     @abstractmethod
     def is_running(self) -> bool:
@@ -299,7 +321,7 @@ class PlaybackSample:
     """
 
     pcm: bytes = b""
-    stream_id: str = ""
+    segment_id: str = ""
     fragment_id: str = ""
     text: str = ""
     timestamp: float = 0.0
@@ -466,6 +488,49 @@ class TTSItem(TypedDict):
     voice: dict  # 对齐 voice
 
 
+class Word(BaseModel):
+    """一个字的时间戳: 文本 + 起止时间 + 置信度.
+
+    时间单位是秒 (float, 服务端原值). 字段走 snake_case, JSON 输入用 camelCase
+    别名 (服务端返回 startTime/endTime). 注意: 听侧 ``Clause`` 用毫秒 (start_ms/end_ms),
+    说侧这里用秒 — 两侧单位不同, 对齐时按需换算.
+    """
+
+    word: str = ""
+    start_time: float = Field(default=0.0, alias="startTime", description="开始时间 (秒)")
+    end_time: float = Field(default=0.0, alias="endTime", description="结束时间 (秒)")
+    confidence: float = 0.0
+
+
+class SpeechClause(BaseModel):
+    """说侧一句 clause — 文本 + 字级时序 + 时间戳.
+
+    由 TTS 服务端分句 (标点驱动) 产出, 一句一个. ``words[].start_time/end_time``
+    是 session 内连续时间 (秒), 可对齐真实播放时长 (见 SpeechSegment 的切分).
+    """
+
+    text: str = ""
+    words: list[Word] = Field(default_factory=list)
+    timestamp: float = Field(default=0.0, description="该句播放完成时的墙钟时间 (秒)")
+
+
+class SpeechSegment(BaseModel):
+    """说侧一个 segment 的结果 — 音频存储单位 (文本 + clauses + 音频 buffer + 中断标记).
+
+    ``stream = 1 segment``, ``segment = n clause``. ``audio`` 是 int16 PCM 字节,
+    供监听方按需存文件 / 回放 (例如"说一句, 存下来, 以后播放").
+    """
+
+    segment_id: str = ""
+    timestamp: float = Field(default=0.0, description="segment 播放结束时的墙钟时间 (秒)")
+    text: str = ""
+    clauses: list[SpeechClause] = Field(default_factory=list)
+    audio: bytes = Field(default=b"", description="合成音频 int16 PCM, 供存储/回放")
+    sample_rate: int = Field(default=0, description="audio 的采样率")
+    channels: int = Field(default=1, description="audio 的声道数")
+    interrupted: bool = False
+
+
 class TTSBatch(ABC):
     """
     流式 tts 的批次. 简单解释一下批次的含义.
@@ -554,6 +619,10 @@ class TTSBatch(ABC):
         :return AsyncIterable[TTSItem]: 音频片段.
         """
         pass
+
+    def clauses(self) -> list[SpeechClause]:
+        """本 batch 服务端分句产出的 clause (一句一个). 默认空 — 无字幕能力的实现不覆盖."""
+        return []
 
     @abstractmethod
     async def wait_done(self, timeout: float | None = None):

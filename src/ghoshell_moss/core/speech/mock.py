@@ -102,7 +102,7 @@ class MockSpeech(Speech):
         self._typing_sleep = typing_sleep
         self._uid = unique_id()
 
-    def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
+    def new_segment(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         stream = MockSpeechStream(
             self._outputs,
             id=batch_id,

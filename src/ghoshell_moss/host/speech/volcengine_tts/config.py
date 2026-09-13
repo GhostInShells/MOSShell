@@ -112,6 +112,7 @@ class EventType(IntEnum):
     PodcastRoundStart = 360
     PodcastRoundResponse = 361
     PodcastRoundEnd = 362
+    TTSSubtitle = 364  # 字幕事件 — 字级别时间戳 (enable_subtitle=true 时返回)
 
     # 450 ~ 499 Downstream ASR events
     ASRInfo = 450
@@ -279,6 +280,7 @@ class AudioParams(BaseModel):
     loudness_rate: Optional[int] = Field(default=0)
     speech_rate: Optional[int] = Field(default=0)
     emotion: Optional[ChineseVoiceEmotion] = Field(default="neutral")
+    enable_subtitle: bool = Field(default=True, description="返回字级别时间戳 (TTSSubtitle / words)")
 
 
 class ReqParams(BaseModel):

@@ -460,6 +460,63 @@ AudioNucleus 专属）。
 **变更文件**: `topics/audio.py`, `topics/__init__.py`, `core/concepts/topic.py`, `signals.py`,
 删除 `core/mindflow/audio_nucleus.py` / `audio_signal.py` / `nodes/sensors/listener/`。
 
+### D13: 说侧 clause/segment 双回调 + 对齐算法 (P0) — 2026-09-14
+
+**动机**: 装线——说侧 (ghost 说话) 也要产出分句级的 ClauseTopic。核心是"说侧真实播放情况"：
+分句边界、字级时序、实际播到哪、是否被打断。经实测火山 bidirection TTS 协议，真值都在服务端，
+当前 `tts.py` 全丢了 (`pass`)。
+
+**实测结论（`moss audio speak` 打点 + 逐字喂实验验证，非猜）**:
+
+| 事件 | event 值 | 粒度 | payload |
+|------|---------|------|---------|
+| `TTSSentenceStart` | 350 | 整个请求 | `{phonemes:[],text:"",words:[]}` |
+| `TTSResponse`（音频包） | 352 | 音频片段 | 纯 int16 PCM，`flag=WithEvent`，`seq=0`，无 text |
+| `TTSSentenceEnd` | 351 | 整个请求 | `{text:全文, words:[]}`（words 恒空） |
+| **`TTSSubtitle`** | **364** | **每句（分句）** | `{text:该句, words:[{word,startTime,endTime,confidence}]}` |
+
+- **subtitle 是分句级，不是音频片段级**：整段喂和逐字喂都出 N 句 N 个 subtitle（标点驱动分句）。
+- 字级时间戳需 `enable_subtitle=true`，否则 `words:[]`。时间单位是**秒**（float，服务端原值），
+  听侧 `Clause` 用**毫秒**——两侧单位不同，对齐时换算。
+- 音频包无 text、无 seq 尾标记——"播到哪"靠 subtitle 的 `words[].end_time` + 真实播放时长对齐。
+- **TTS 合成快于播放**：subtitle（分句）先于其音频播放到位，所以 clause 回调不能由"TTS 返回"触发。
+
+**对齐模型（对称听侧 `stream > segment > clause`）**:
+
+- 听侧 `stream = n*segment`，说侧 `stream = 1*segment`，两边 `segment = n*clause`。
+- `segment` 是**音频存储单位**（音频 + 完整 text + clauses 列表），`clause` 是一句。
+- 说侧 `segment = 1 say`，其 clause 边界由服务端标点分句给好（不自己做文本分句）。
+
+**两个回调（对齐听侧）**:
+
+| 回调 | 载荷 | 触发时机 | 对齐听侧 |
+|------|------|---------|---------|
+| `on_clause` | `SpeechClause`（文本） | **真实播放追到该句边界**（非 TTS 返回） | `RecognitionEvent.clause` |
+| `on_segment` | `SpeechSegment`（文本+音频） | segment 播放结束一次 | `RecognitionSegment` |
+
+**对齐算法（关键 trick）**: `on_clause` 不是 TTS 返回 clause 就触发，而是 **playsample 对齐 clause 生效**——
+TTS 返回 clause → 更新本地数组（含 `words[].end_time`）；每个 `PlaybackSample`（真实 `duration`）累加
+`played_duration`，当 `played_duration >= clause.words[-1].end_time` 时发 `on_clause`，游标前移。segment
+结束时发 `on_segment`（`interrupted = 游标 < len(clauses)`）。
+
+**数据结构（`contracts/speech.py`，去 TTS 前缀、去 Subtitle）**:
+
+- `Word`（word/start_time/end_time/confidence，秒，JSON camelCase 别名）
+- `SpeechClause`（text/words/timestamp）—— 一句
+- `SpeechSegment`（segment_id/timestamp/text/clauses/**audio**(int16 PCM 供存文件回放)/sample_rate/channels/interrupted）—— 音频存储单位
+
+**契约最小化**: `Speech.on_clause` + `Speech.on_segment` 默认 no-op；`TTSBatch.clauses() -> []` 默认空；
+融合逻辑在 `BaseTTSSpeech`/`TTSSpeechStream` 惰性计算。`NullSpeech`/`MockSpeech` 不受累。
+
+**变更文件**: `contracts/speech.py`, `core/speech/stream_tts_speech.py`,
+`host/speech/volcengine_tts/config.py` (enable_subtitle + `TTSSubtitle=364`),
+`host/speech/volcengine_tts/tts.py`（解析 subtitle 事件 → `SpeechClause` 累积到 batch）。
+
+**未决**: cancel 语义——被打断时 receive task 被 cancel，在途 subtitle 拿不到，`interrupted` 与 clause
+在 cancel 路径不完整。要"半句也成 clause"需改 cancel 时序（等流自然结束拿尾包），本次未做（tts 边界抠得细，
+先不动）。`phonemes` 音素级未返回，字级已够。`on_clause` 在 worker 线程回调（与 `on_sample` 一致），消费方
+需自行 marshal 到 event loop。
+
 ## Implementation Plan
 
 ### Phase 1: 解耦 (P0) — ✅ DONE (2026-05-27)

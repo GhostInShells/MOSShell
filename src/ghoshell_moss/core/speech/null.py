@@ -51,7 +51,7 @@ class NullSpeech(Speech):
     零内存累积，不创建线程，所有操作即时返回。
     """
 
-    def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
+    def new_segment(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         return _NullSpeechStream(id=batch_id or unique_id())
 
     def is_running(self) -> bool:

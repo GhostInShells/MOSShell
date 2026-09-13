@@ -21,7 +21,7 @@ async def test_output_in_asyncio():
     mock_speech = MockSpeech(typing_sleep=0.0)
     for i in range(5):
         idx = i
-        stream = mock_speech.new_stream(batch_id=str(idx))
+        stream = mock_speech.new_segment(batch_id=str(idx))
         stream = stream
         sending_task = asyncio.create_task(buffer_stream(stream, idx))
 
@@ -57,7 +57,7 @@ async def test_output_in_concurrent():
     gathering = []
     for i in range(2):
         idx = i
-        stream = mock_speech.new_stream(batch_id=str(idx))
+        stream = mock_speech.new_segment(batch_id=str(idx))
         stream = stream
         gathering.append(buffer_stream(stream, idx))
         gathering.append(stream.play())

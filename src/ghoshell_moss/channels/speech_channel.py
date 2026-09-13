@@ -55,7 +55,7 @@ class SpeechChannel(Channel):
         """
         task = ChannelCtx.task()
         batch_id = task.cid if task else None
-        stream = self._speech.new_stream(batch_id=batch_id)
+        stream = self._speech.new_segment(batch_id=batch_id)
         samples = []
         try:
             await stream.speak(chunks__, samples)

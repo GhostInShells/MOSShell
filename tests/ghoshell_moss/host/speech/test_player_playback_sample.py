@@ -43,7 +43,7 @@ async def test_observe_fires_playback_sample_on_actual_play():
     assert len(samples) == 1
     sample = samples[0]
     assert isinstance(sample, PlaybackSample)
-    assert sample.stream_id == "stream-a"
+    assert sample.segment_id == "stream-a"
     assert sample.fragment_id == "3"
     assert sample.duration == pytest.approx(0.05, abs=0.01)
     # 原始 PCM bytes + 响度摘要.
@@ -82,7 +82,7 @@ async def test_observe_carries_splicing_identity():
         )
     await player.wait_play_done(timeout=2.0)
 
-    ids = [(s.stream_id, s.fragment_id) for s in samples]
+    ids = [(s.segment_id, s.fragment_id) for s in samples]
     assert ("stream-a", "0") in ids
     assert ("stream-b", "1") in ids
 
@@ -109,7 +109,7 @@ async def test_observe_carries_text():
     await player.wait_play_done(timeout=2.0)
 
     assert len(samples) == 1
-    assert samples[0].stream_id == "stream-a"
+    assert samples[0].segment_id == "stream-a"
     assert samples[0].fragment_id == "0"
     assert samples[0].text == "hello world"
 
@@ -140,7 +140,7 @@ async def test_observe_global_fires_for_all_streams():
     await player.wait_play_done(timeout=2.0)
 
     assert len(samples) == 2
-    assert {s.stream_id for s in samples} == {"stream-a", "stream-b"}
+    assert {s.segment_id for s in samples} == {"stream-a", "stream-b"}
 
     await player.close()
 
@@ -208,6 +208,6 @@ async def test_multiple_observers_all_fire():
 
     assert len(a) == 1
     assert len(b) == 1
-    assert a[0].stream_id == b[0].stream_id == "stream-a"
+    assert a[0].segment_id == b[0].segment_id == "stream-a"
 
     await player.close()

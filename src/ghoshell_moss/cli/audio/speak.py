@@ -97,7 +97,7 @@ async def _speak_via_speech(matrix: Matrix, speech, text: str, tone: Optional[st
 
     await speech.start()
 
-    stream = speech.new_stream()
+    stream = speech.new_segment()
     stream.feed(text, complete=True)
 
     interrupted = False

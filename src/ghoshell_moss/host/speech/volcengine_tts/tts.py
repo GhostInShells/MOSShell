@@ -1,23 +1,19 @@
 import asyncio
 import contextlib
 
-import orjson as json
 import logging
-import os
 from collections import deque
-from typing import Any, Literal, Optional, AsyncIterator, ClassVar
+from typing import Any, Optional, AsyncIterator, ClassVar
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.message import unique_id
-from pydantic import Field
 from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
-from ghoshell_moss.contracts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem, speech_tail
+from ghoshell_moss.contracts.speech import TTS, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem, SpeechClause, speech_tail
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.host.speech.volcengine_tts.protocol import (
-    EventType,
     MsgType,
     cancel_session,
     finish_connection,
@@ -41,9 +37,6 @@ __all__ = [
     "VolcengineTTSBatch",
     "VolcengineTTSConf",
 ]
-
-
-from typing import Literal
 
 
 class VolcengineTTSBatch(TTSBatch):
@@ -81,6 +74,7 @@ class VolcengineTTSBatch(TTSBatch):
         self._text_lock = asyncio.Lock()
         self._chunks: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
         self.texts: asyncio.Queue[str | None] = asyncio.Queue()
+        self._clauses: list[SpeechClause] = []
         self._log_prefix = f"[VolcTTSBatch][id={batch_id}  voice={self.voice} tone={self.tone}]"
         self._logger = logger
         VolcengineTTSBatch.instance_count += 1
@@ -98,6 +92,12 @@ class VolcengineTTSBatch(TTSBatch):
 
     async def append(self, audio: np.ndarray) -> None:
         await self._chunks.put(audio)
+
+    def append_clause(self, clause: SpeechClause) -> None:
+        self._clauses.append(clause)
+
+    def clauses(self) -> list[SpeechClause]:
+        return list(self._clauses)
 
     def batch_id(self) -> str:
         return self._batch_id
@@ -559,11 +559,12 @@ class VolcengineTTS(TTS):
                         # break the loop
                         break
                     elif msg.event == EventType.TTSSentenceStart:
-                        # todo: 首包埋点.
                         pass
                     elif msg.event == EventType.TTSSentenceEnd:
-                        # todo: 尾包埋点.
                         pass
+                    elif msg.event == EventType.TTSSubtitle:
+                        clause = SpeechClause.model_validate_json(msg.payload)
+                        batch.append_clause(clause)
 
                 if msg.type == MsgType.AudioOnlyServer:
                     # 首包

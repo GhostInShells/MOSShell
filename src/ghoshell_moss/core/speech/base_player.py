@@ -328,7 +328,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         f32 = audio_data.astype(np.float64) / 32768.0
         if len(f32) == 0:
             return PlaybackSample(
-                stream_id=stream_id, fragment_id=fragment_id, text=text,
+                segment_id=stream_id, fragment_id=fragment_id, text=text,
                 duration=duration, sample_rate=self.sample_rate,
             )
         rms = float(np.sqrt(np.mean(f32**2)))
@@ -337,7 +337,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
 
         return PlaybackSample(
             pcm=audio_data.tobytes(),
-            stream_id=stream_id,
+            segment_id=stream_id,
             fragment_id=fragment_id,
             text=text,
             timestamp=time.time(),
