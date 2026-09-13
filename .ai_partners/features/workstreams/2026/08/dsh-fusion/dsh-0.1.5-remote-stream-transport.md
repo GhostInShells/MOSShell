@@ -33,6 +33,10 @@
 - durable 的 assistant 事件是 **per-step 一次**（`assistant/message`/`assistant/attempt` 带整段
   `stream`），逐 token 的实时 chunk 只在 process-local `assistant-stream` 帧里。
 - `todo/write` 移出核心；新增 `system/message`。
+- **MOSS 侧取舍**：launcher 把 live `assistant-stream` 的 `chunk` 帧合成 `assistant/chunk` 事件
+  （turn/step 由 `start` 帧补），喂 `accept_session_event`。Dolores 的 `_get_text_chunk` 仍读
+  `assistant/chunk`，逐 token 实时流无需改 Dolores；durable `assistant/attempt`（per-step 整段
+  `stream`）对 ghost 冗余，不消费。
 
 ### 未破
 
@@ -99,11 +103,11 @@ Protocol），无鉴权，看似更干净。但：
    故障语义 + print 清理。
 2. **cookie 交换 + 鉴权接线**（✅）：`_authorize` token→cookie、WS/HTTP 带 Cookie。ticket 缓存
    **延迟**（launcher 每次都有 stdout, 边际收益低; 独立连接由 `DSH_WEB_TOKEN` 覆盖）。
-3. **下游重写**（🟡 半完成）：remote.mux 逻辑流 + `$events`（emit/waterfall/cancel/ready）+
-   waterfall 回话已落地、经活 dsh 验证启动成功（token → cookie → remote.mux → $events ready）；
-   `session/follow`（per-session 事件流）未接。
-4. **事件层对齐**（⏳）：`session/follow` 帧 + `SessionEvent` 投喂 + `DshSession.run()` 重接 +
-   `DSH_VERSION` bump。
+3. **下游重写**（✅）：remote.mux 逻辑流 + `$events`（emit/waterfall/cancel/ready）+
+   waterfall 回话 + `session/follow`（per-session 事件流）均已落地。
+4. **事件层对齐**（✅）：`session/follow` 帧（snapshot/event/assistant-stream）+ `SessionEvent`
+   投喂 + live assistant-stream 合成 `assistant/chunk`（供 Dolores `_get_text_chunk` 逐 token
+   流）+ `DshSession.run()` 隐式重接（事件源改 session/follow）+ `DSH_VERSION` 0.1.5-rc.1。
 
 ## Open Seams
 
@@ -111,6 +115,8 @@ Protocol），无鉴权，看似更干净。但：
    钉死一种。
 2. **`$events/result` 载荷形状** — `dispatchRpc` 收 `payload`，browser 侧发 `{args: result}`；
    信封内层待实测确认。
-3. **follow 帧排序契约** — durable 事件与 `assistant-stream` 帧的交错顺序、`snapshot` 与 live
-   衔接，待实测。
+3. **follow 帧排序契约** — ✅ 已从 dsh 源码钉死：`snapshot` 首帧（含历史 page + assistantStream
+   baseline）→ 之后 `event` 帧按 seq 连续（gap-free）+ `assistant-stream` 帧按到达顺序交错。MOSS
+   忽略 snapshot（ghost ego session 新建即用，历史页无需消费），live 帧按到达顺序喂
+   `accept_session_event`（单队列保序）。仍待活 dsh 实测确认交错不丢 token。
 4. **ticket 与 dsh home 绑定** — dsh home 可经 `DSH_HOME` 配置，ticket 须随 home 走。

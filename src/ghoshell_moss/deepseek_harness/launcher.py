@@ -14,7 +14,8 @@ exit / stdout+stderr 消费 / stop, 以及就绪等待 (push 式: ws 连上 → 
 逻辑流) + plugin 注册的 HTTP 路由上行 (零依赖伪双工). 不用 stdio JSON-RPC,
 不用官方 SDK. 0.1.5 起 WS upgrade 与 /api 都需 token→cookie 鉴权 (见 `_authorize`).
 下行帧按逻辑流分派: `$events` 的 emit/waterfall/cancel/ready (见 on_remote_emit /
-on_remote_waterfall); session 事件流 `session/follow` 属后续增量.
+on_remote_waterfall); session 事件流 `session/follow` 收 durable 事件 + live assistant-stream
+(经 create_session 接线, 合成 assistant/chunk 喂 DshSession.accept_session_event).
 MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
 
 Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 自己的配置
@@ -41,8 +42,9 @@ Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 
 # 6. token 落线: config.token → DSH_WEB_TOKEN 兜底 → launcher stdout 发现 (拿不到即故障).
 # 7. cookie 鉴权 + remote.mux + $events 逻辑流: _authorize (token→cookie) → ws 带 Cookie
 #    → _open_events_stream → emit/waterfall/cancel/ready 分派 (on_remote_emit/on_remote_waterfall).
-# 8. 未接: session/follow (per-session 事件流) + DshSession 事件投喂 — 见 dsh-0.1.5-remote-stream-transport.md.
-#    决策/分步见该子文档.
+# 8. session/follow (per-session 事件流): create_session 接线, 开流 + durable event 喂
+#    accept_session_event + live assistant-stream 合成 assistant/chunk — 见
+#    dsh-0.1.5-remote-stream-transport.md.
 
 # ── 已知问题 (随改随记, 最后一起删) ─────────────────────────
 # 1. `_owns_sp` 手动 __aexit__ 与 exit stack 重复回收 subprocess manager (第二次 no-op, 待合).
@@ -74,6 +76,7 @@ from ghoshell_moss.core.subprocesses import SubprocessesImpl
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from .types.nouns import WorkspaceView
+from .types.session_events import SessionEvent, SessionEventMeta
 from .client import DshClient
 from .session import DshSession
 
@@ -183,6 +186,11 @@ class DshConnection:
         self._cookies: dict[str, str] = {}
         self._cookie_header: str | None = None
         self._events_stream_id = "moss-events"
+        # session/follow 流状态: 每个 session 一条逻辑流, 收 durable 事件 + live assistant-stream.
+        self._ws: Any | None = None  # 当前 mux WS (重连循环持有); 新 session 直接在已连 WS 上开流.
+        self._follow_sessions: dict[str, DshSession] = {}
+        self._stream_to_session: dict[str, str] = {}  # streamId → sessionId (dispatch 用).
+        self._follow_turn_step: dict[str, tuple[int, int]] = {}  # sessionId → (turn, step), 供 chunk 帧补帧.
         self._logger: LoggerItf = logger or get_moss_logger()
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
@@ -232,11 +240,18 @@ class DshConnection:
                 await self._authorize()
                 headers = {"Cookie": self._cookie_header} if self._cookie_header else None
                 async with websockets.connect(self.config.mux_url, additional_headers=headers) as ws:
+                    self._ws = ws
                     self._dsh_started.set()
                     self._logger.info("%smux connected", self._log_prefix)
                     await self._open_events_stream(ws)
-                    async for raw in ws:
-                        await self._dispatch_raw_frame(raw)
+                    # 重连后重开所有 session/follow 逻辑流 (snapshot 会重新下发, live 事件续上).
+                    for session_id in list(self._follow_sessions):
+                        await self._open_follow_stream(ws, session_id)
+                    try:
+                        async for raw in ws:
+                            await self._dispatch_raw_frame(raw)
+                    finally:
+                        self._ws = None
             except asyncio.CancelledError:
                 raise
             except ConnectionRefusedError as exc:
@@ -284,9 +299,29 @@ class DshConnection:
             "payload": {"args": {}},
         }))
 
-    async def _dispatch_raw_frame(self, raw: str) -> None:
-        """解析 mux 下行帧 (`item`/`error`/`end`), 分派 `item.value` 到 $events handler.
+    def _follow_stream_id(self, session_id: str) -> str:
+        return f"moss-follow-{session_id}"
 
+    async def _open_follow_stream(self, ws: Any, session_id: str) -> None:
+        """在已连 mux 上开 `session/follow` 逻辑流 (durable 事件 + live assistant-stream).
+
+        0.1.5 follow 是 stream 型 Remote, 方法签名 ``follow(request, signal)`` — 命名 args 只有
+        一个 ``request`` 字段 (整份 SessionFollowRequest), 而非把 address/assistantStream 摊平.
+        assistantStream 必须为 true 才有逐 token 实时流.
+        """
+        stream_id = self._follow_stream_id(session_id)
+        self._stream_to_session[stream_id] = session_id
+        await ws.send(json.dumps({
+            "type": "open",
+            "streamId": stream_id,
+            "endpoint": "session/follow",
+            "payload": {"args": {"request": {"address": {"kind": "session", "sessionId": session_id}, "assistantStream": True}}},
+        }))
+
+    async def _dispatch_raw_frame(self, raw: str) -> None:
+        """解析 mux 下行帧 (`item`/`error`/`end`), 按 streamId 分派 `item.value`.
+
+        `$events` 流 → `_dispatch_remote_event`; `session/follow` 流 → `_dispatch_follow_frame`.
         单帧解析失败只记日志、不断流 — 任何畸形帧都不该静默杀死整条 mux 链路。
         """
         try:
@@ -297,7 +332,13 @@ class DshConnection:
             return
         t = msg.get("type")
         if t == "item":
-            await self._dispatch_remote_event(msg.get("value"))
+            stream_id = msg.get("streamId", "")
+            value = msg.get("value")
+            if stream_id == self._events_stream_id:
+                await self._dispatch_remote_event(value)
+            elif stream_id in self._stream_to_session:
+                await self._dispatch_follow_frame(self._stream_to_session[stream_id], value)
+            # 未知 streamId 静默忽略.
         elif t == "error":
             self._logger.warning("%smux stream error: %s", self._log_prefix, msg.get("error"))
         elif t == "end":
@@ -360,6 +401,47 @@ class DshConnection:
             await self.client.rpc("$events/result", payload)
         except Exception:
             self._logger.exception("$events/result failed: %s", event_id)
+
+    async def _dispatch_follow_frame(self, session_id: str, value: Any) -> None:
+        """分派 `session/follow` 下行帧: snapshot / event / assistant-stream."""
+        session = self._follow_sessions.get(session_id)
+        if session is None or not isinstance(value, dict):
+            return
+        t = value.get("type")
+        if t == "snapshot":
+            # snapshot 是历史 message-aligned 页 (past records), live 流程只关心 cursor 之后的事件.
+            # ghost 的 ego session 新建即用, 历史页无需消费 — 忽略, 只依赖后续 live 帧.
+            return
+        if t == "event":
+            event = SessionEvent.from_dict(value.get("event") or {})
+            session.accept_session_event(event)
+            return
+        if t == "assistant-stream":
+            self._feed_assistant_stream(session_id, session, value.get("frame"))
+            return
+
+    def _feed_assistant_stream(self, session_id: str, session: DshSession, frame: Any) -> None:
+        """把 live assistant-stream 帧合成 durable 形状的 assistant/chunk 事件喂给 session.
+
+        start 帧记 turn/step; chunk 帧用 chunk 载荷 (raw StreamChunk, 如 {type:'text-delta',text})
+        合成 assistant/chunk 事件 — Dolores 的 _get_text_chunk 读 assistant/chunk, 逐 token 实时流
+        由此接上. end 是终止标记, 不喂.
+        """
+        if not isinstance(frame, dict):
+            return
+        ft = frame.get("type")
+        if ft == "start":
+            self._follow_turn_step[session_id] = (int(frame.get("turn") or 0), int(frame.get("step") or 0))
+            return
+        if ft == "chunk":
+            turn, step = self._follow_turn_step.get(session_id, (0, 0))
+            event = SessionEvent(
+                meta=SessionEventMeta(type="assistant/chunk", time=int(frame.get("time") or 0)),
+                data={"turn": turn, "step": step, "chunk": frame.get("chunk")},
+            )
+            session.accept_session_event(event)
+            return
+        # "end" 终止标记: 无内容可喂.
 
     async def _enter_async_context(self, stack: AsyncExitStack) -> None:
         await stack.enter_async_context(self._ws_loop_ctx())
@@ -457,14 +539,37 @@ class DshConnection:
         return None
 
     def create_session(self, session_id: str, logger: LoggerItf | None = None) -> DshSession:
-        """创建并接线一个 session facade: 注册 accept_host_event 到 $events emit 流, 退出时解绑.
+        """创建并接线一个 session facade: 挂 $events (host 运行态) + session/follow (session 事件) 两流.
 
-        $events 流收 host 级运行态 (api-session/status·added·…). session 内部按 sessionId
-        过滤, 只消费自己的帧. 不持久持有 session — 只经 handler 列表关联, session 关闭时
-        on_exit 解绑断链. (session 事件流 session/follow 属后续增量.)
+        $events 流收 host 级运行态 (api-session/status·added·…), 经 accept_host_event.
+        session/follow 流收 durable session 事件 + live assistant-stream, 经 accept_session_event.
+        session 关闭时 on_exit 解绑断链; follow 流在 WS 重连时由 _ws_loop 重开.
         """
         session = DshSession(session_id=session_id, client=self.client, logger=logger)
         session.on_exit(self.on_remote_emit(session.accept_host_event))
+        stream_id = self._follow_stream_id(session_id)
+        self._follow_sessions[session_id] = session
+        self._stream_to_session[stream_id] = session_id
+
+        def _cleanup() -> None:
+            self._follow_sessions.pop(session_id, None)
+            self._stream_to_session.pop(stream_id, None)
+            self._follow_turn_step.pop(session_id, None)
+
+        session.on_exit(_cleanup)
+        # 已连 WS 就直接在当前连接开流 (捕获连接竞态, 断链由 _ws_loop 重连补开).
+        ws = self._ws
+        if ws is not None:
+
+            async def _open_now() -> None:
+                try:
+                    await self._open_follow_stream(ws, session_id)
+                except Exception:
+                    self._logger.exception(
+                        "%sopen session/follow stream failed for %s", self._log_prefix, session_id
+                    )
+
+            asyncio.create_task(_open_now())
         return session
 
 
