@@ -40,10 +40,11 @@ ghost 自行调。当前的 `authorize` 命令与启动 announce 是轻量种子
 | node | 路径 | 感知面 |
 |---|---|---|
 | camera | `nodes/visions/camera` | 相机视觉（cv2）+ 人脸 FaceTopic + MJPEG 推流 |
-| screen_capture | `nodes/visions/screen_capture` | 屏幕截图（mss）— 尚未迁入 |
 
 ## 依赖分组备注
 
 有意偏离 node-migration 的"vision 独立 venv（cv2 重依赖）"共识：vision 感知族是内聚
-能力，共用家族 venv 是合理取舍。轻依赖 screen_capture 原本可能进 tools 共享组，此处
-为了体系内聚并进来。
+能力，共用家族 venv 是合理取舍。
+
+注：**屏幕截屏不属于 vision**。截屏是 OS 原生能力的控制面，归 `nodes/os/`
+（feature `moss-os-control`）；vision 只管相机这一路物理成像。

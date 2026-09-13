@@ -8,5 +8,5 @@ cd nodes/tools
 uv sync
 ```
 
-当前服务的 node：trafilatura。后续 tools node（screen_capture / image_importer /
-video_importer 等）加入时，在 `pyproject.toml` 追加对应依赖，无需新建 venv。
+当前服务的 node：trafilatura。后续 tools node（image_importer / video_importer 等）
+加入时，在 `pyproject.toml` 追加对应依赖，无需新建 venv。
