@@ -1,31 +1,63 @@
-"""Listener Controller — 判停逻辑装线层.
+"""Listener Controller — 判停逻辑装线 + listener signal 生产边界 (系统级封装).
 
-把判停逻辑 (聆听礼仪) 从 recognition 层上移, 落成一个可被 ghost 通过 command 治理的
-聆听单元. 第 4 步先做 once / always / 关键字 三种表面; llm 校验 / 快捷响应后置.
+判停逻辑 (聆听礼仪) 通过 ListenerState.on_event_creating 挂载到识别层 (inline await),
+判停时调 state.commit(). commit 机制 (发负序号切段) 已在 recognition 层, 这里只决定
+何时调用. 第 4 步先做 once / always / 关键字 三种表面; llm 校验 / 快捷响应后置.
 
-判停逻辑通过 ListenerState.on_event_creating 挂载到识别层 (inline await), 判停时调
-state.commit(). commit 机制 (发负序号切段) 已在 recognition 层, 这里只决定何时调用.
+信号发射是独立于判停的第二职责: 本层是 RecognitionEvent (text axis) → listener signal
+(first/clause/tail) 的生产边界. 构造时注入 ``signal_broadcast`` (signal sink), 存在时
+注册一条 listener 级 on_recognition_result 观察者, 机械地把每个识别事件翻译成 listener
+signal 并广播. signal 发射封装在本层, 而非散落在各调用方 (CLI/ghost) 的 on_event 逻辑里.
 """
 import asyncio
 import contextlib
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts.asr import ASR, RecognitionEvent, RecognitionPhase
 from ghoshell_moss.contracts.listener import Listener
+from ghoshell_moss.core.blueprint.mindflow import Signal
+from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
 
-__all__ = ["ListenerController"]
+__all__ = ["ListenerController", "PacketTranslator"]
+
+
+class PacketTranslator:
+    """RecognitionEvent (text axis) → listener packets (first/clause/tail).
+
+    把 ASR 识别事件翻译成 listener 包流。``clause_index`` 按 segment 计数, FIRST 重置。
+    PARTIAL 不产出包 — listener 只关心 first/clause/tail 三个语义点。
+    """
+
+    def __init__(self) -> None:
+        self._clause_index = 0
+
+    def translate(self, result: RecognitionEvent) -> list[tuple[ListenerPacket, str, int]]:
+        packets: list[tuple[ListenerPacket, str, int]] = []
+        if result.phase == RecognitionPhase.FIRST:
+            self._clause_index = 0
+            packets.append((ListenerPacket.FIRST, result.text, 0))
+        elif result.phase == RecognitionPhase.CLAUSE:
+            self._clause_index += 1
+            clause_text = result.clause.text if result.clause else result.text
+            packets.append((ListenerPacket.CLAUSE, clause_text, self._clause_index))
+        elif result.phase == RecognitionPhase.TAIL:
+            packets.append((ListenerPacket.TAIL, result.text, self._clause_index))
+        return packets
 
 
 class ListenerController:
-    """判停逻辑装线层 — 聆听礼仪 (once/always/关键字) 的实现.
+    """判停逻辑装线 + listener signal 生产边界.
 
     持有 listener (听) + asr (configure vad). once/always 是长时间运行的 async method,
     内部管理一条 listening session 的生命周期; 结果经 listener 的观察面 (on_recognition_*)
-    流出, 本类只负责判停.
+    流出.
+
+    两个职责: 判停 (on_event_creating 决定何时 commit) 与信号发射 (注入 signal_broadcast
+    时, 把识别事件机械翻译成 listener signal 广播). 无 sink 则只做判停.
     """
 
     def __init__(
@@ -34,12 +66,19 @@ class ListenerController:
             listener: Listener,
             asr: ASR,
             logger: Optional[LoggerItf] = None,
+            signal_broadcast: Optional[Callable[[Signal], None]] = None,
     ):
         self._listener = listener
         self._asr = asr
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
+        # 信号发射: 存在 sink 时注册一条 listener 级观察者 (跨 session 稳定), 机械地把
+        # 每个识别事件翻译成 listener signal 并广播. 无 sink 则只做判停, 不发 signal.
+        self._signal_broadcast = signal_broadcast
+        self._translator = PacketTranslator()
+        if signal_broadcast is not None:
+            listener.on_recognition_result(self._emit_event)
 
     # ── 聆听礼仪 ──
 
@@ -166,6 +205,31 @@ class ListenerController:
                 watch_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await watch_task
+
+    # ── 信号发射 (RecognitionEvent → listener signal) ──
+
+    def _emit_event(self, result: RecognitionEvent) -> None:
+        """识别事件 → 逐包翻译 → 广播. 仅在有 sink 时注册本观察者."""
+        for packet, text, clause_index in self._translator.translate(result):
+            self._emit_signal(packet, result, text, clause_index)
+
+    def _emit_signal(
+            self,
+            packet: ListenerPacket,
+            result: RecognitionEvent,
+            text: str,
+            clause_index: int,
+    ) -> None:
+        clause = result.clause
+        self._signal_broadcast(new_listener_signal(
+            packet,
+            text,
+            turn_id=result.segment_id,
+            clause_index=clause_index,
+            start_ms=clause.start_ms if clause else 0,
+            end_ms=clause.end_ms if clause else 0,
+            description=f"listener:{packet.value}",
+        ))
 
     # ── internals ──
 

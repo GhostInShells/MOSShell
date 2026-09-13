@@ -9,6 +9,7 @@ import contextlib
 import pytest
 
 from ghoshell_moss.contracts.asr import ASRInfo, Clause, RecognitionEvent, RecognitionPhase
+from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
 
 
@@ -45,6 +46,11 @@ class _MockListener:
     def __init__(self):
         self.state = None
         self.listened = asyncio.Event()
+        self.result_observers = []
+
+    def on_recognition_result(self, cb):
+        self.result_observers.append(cb)
+        return lambda: None
 
     async def listen(self):
         self.state = _MockState()
@@ -187,3 +193,58 @@ async def test_always_resets_on_partial():
     assert state.committed == 0  # 不 commit
 
     await _stop(task)
+
+
+# ============================================================
+# 信号发射 — RecognitionEvent → listener signal (系统级封装)
+# ============================================================
+
+def _first(text: str, segment_id: str = "g") -> RecognitionEvent:
+    return RecognitionEvent(
+        stream_id="s", segment_id=segment_id,
+        phase=RecognitionPhase.FIRST, text=text,
+    )
+
+
+def _tail(text: str, segment_id: str = "g") -> RecognitionEvent:
+    return RecognitionEvent(
+        stream_id="s", segment_id=segment_id,
+        phase=RecognitionPhase.TAIL, text=text,
+    )
+
+
+def test_signal_broadcast_translates_clause_to_listener_signal():
+    emitted = []
+    listener = _MockListener()
+    ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+
+    assert len(listener.result_observers) == 1  # 有 sink → 注册发射观察者
+    listener.result_observers[0](_clause("你好"))
+
+    assert len(emitted) == 1
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta is not None
+    assert meta.packet == ListenerPacket.CLAUSE
+    assert meta.text == "你好"
+    assert meta.turn_id == "g"
+    assert meta.clause_index == 1
+
+
+def test_signal_broadcast_full_turn_order():
+    emitted = []
+    listener = _MockListener()
+    ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    cb = listener.result_observers[0]
+
+    cb(_first("你", segment_id="t1"))
+    cb(_clause("你好"))
+    cb(_tail("你好", segment_id="t1"))
+
+    packets = [ListenerSignal.from_signal(s).packet for s in emitted]
+    assert packets == [ListenerPacket.FIRST, ListenerPacket.CLAUSE, ListenerPacket.TAIL]
+
+
+def test_no_signal_broadcast_registers_no_observer():
+    listener = _MockListener()
+    ListenerController(listener=listener, asr=_MockASR())
+    assert listener.result_observers == []  # 无 sink → 不注册, 只做判停

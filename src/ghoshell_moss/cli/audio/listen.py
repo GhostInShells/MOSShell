@@ -37,8 +37,8 @@ from ghoshell_moss.contracts.asr import RecognitionPhase, RecognitionEvent
 from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
 from ghoshell_moss.contracts.configs import get_or_create_conf, ConfigStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
-from ghoshell_moss.host.listener.controller import ListenerController
+from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket
+from ghoshell_moss.host.listener.controller import ListenerController, PacketTranslator
 from ghoshell_moss.host.listener.listener import HostListener
 from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
 
@@ -98,44 +98,6 @@ class _Stats:
     clauses: int = 0
 
 
-class _PacketTranslator:
-    """RecognitionEvent (text axis) -> listener packets (first/clause/tail).
-
-    clause_index counts clauses per segment. FIRST comes from the recognizer's
-    own FIRST phase (the first meaningful packet), not synthesized here.
-    """
-
-    def __init__(self) -> None:
-        self._clause_index = 0
-
-    def translate(self, result: RecognitionEvent) -> list[tuple[ListenerPacket, str, int]]:
-        packets: list[tuple[ListenerPacket, str, int]] = []
-        if result.phase == RecognitionPhase.FIRST:
-            self._clause_index = 0
-            packets.append((ListenerPacket.FIRST, result.text, 0))
-        elif result.phase == RecognitionPhase.CLAUSE:
-            self._clause_index += 1
-            clause_text = result.clause.text if result.clause else result.text
-            packets.append((ListenerPacket.CLAUSE, clause_text, self._clause_index))
-        elif result.phase == RecognitionPhase.TAIL:
-            packets.append((ListenerPacket.TAIL, result.text, self._clause_index))
-        return packets
-
-
-def _emit_signal(session, packet: ListenerPacket, result: RecognitionEvent, text: str,
-                 clause_index: int) -> None:
-    clause = result.clause
-    session.add_signal(new_listener_signal(
-        packet,
-        text,
-        turn_id=result.segment_id,
-        clause_index=clause_index,
-        start_ms=clause.start_ms if clause else 0,
-        end_ms=clause.end_ms if clause else 0,
-        description=f"listener:{packet.value}",
-    ))
-
-
 def _render(packet: ListenerPacket, result: RecognitionEvent, text: str, clause_index: int,
             json_mode: bool) -> None:
     if json_mode:
@@ -168,12 +130,10 @@ def _render(packet: ListenerPacket, result: RecognitionEvent, text: str, clause_
         echo("")
 
 
-def _handle_result(result: RecognitionEvent, *, translator: _PacketTranslator, session: Any,
-                   emit_signals: bool, json_mode: bool, stats: _Stats) -> None:
-    """Translate + emit + render one recognition result; update stats."""
+def _handle_result(result: RecognitionEvent, *, translator: PacketTranslator, json_mode: bool,
+                   stats: _Stats) -> None:
+    """Translate + render one recognition result; update stats. 信号发射在 ListenerController."""
     for packet, text, clause_index in translator.translate(result):
-        if emit_signals:
-            _emit_signal(session, packet, result, text, clause_index)
         _render(packet, result, text, clause_index, json_mode)
     if result.phase == RecognitionPhase.CLAUSE:
         stats.clauses += 1
@@ -195,15 +155,15 @@ def _banner(ctx: _Ctx, mode: str, hint: str) -> None:
 
 
 async def _run_once(ctx: _Ctx) -> _Stats | None:
-    """Listen until the first complete segment, then exit. 判停逻辑在 ListenerController."""
+    """Listen until the first complete segment, then exit. 判停 + 信号发射在 ListenerController."""
     listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
-    controller = ListenerController(listener=listener, asr=ctx.asr, logger=ctx.logger)
-    stats = _Stats()
-    translator = _PacketTranslator()
-    handle = partial(
-        _handle_result, translator=translator, session=ctx.session,
-        emit_signals=ctx.emit_signals, json_mode=ctx.json_mode, stats=stats,
+    controller = ListenerController(
+        listener=listener, asr=ctx.asr, logger=ctx.logger,
+        signal_broadcast=ctx.session.add_signal if ctx.emit_signals else None,
     )
+    stats = _Stats()
+    translator = PacketTranslator()
+    handle = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
 
     async with listener:
         if "not started" in ctx.capture.device_explain():
@@ -219,13 +179,13 @@ async def _run_once(ctx: _Ctx) -> _Stats | None:
 async def _run_always(ctx: _Ctx) -> _Stats | None:
     """Continuous listen; commit 判停逻辑在 ListenerController, stop on cancel/timeout."""
     listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
-    controller = ListenerController(listener=listener, asr=ctx.asr, logger=ctx.logger)
-    stats = _Stats()
-    translator = _PacketTranslator()
-    on_result = partial(
-        _handle_result, translator=translator, session=ctx.session,
-        emit_signals=ctx.emit_signals, json_mode=ctx.json_mode, stats=stats,
+    controller = ListenerController(
+        listener=listener, asr=ctx.asr, logger=ctx.logger,
+        signal_broadcast=ctx.session.add_signal if ctx.emit_signals else None,
     )
+    stats = _Stats()
+    translator = PacketTranslator()
+    on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
 
     async with listener:
         if "not started" in ctx.capture.device_explain():
@@ -242,13 +202,16 @@ async def _run_always(ctx: _Ctx) -> _Stats | None:
 async def _run_enter(ctx: _Ctx) -> _Stats | None:
     """prompt-toolkit loop: Enter commits a segment; recognition renders concurrently."""
     listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
+    # 无判停 (Enter 手动 commit), 但信号发射仍经 controller: 注入 sink 即在 __init__
+    # 注册 listener 级观察者, 机械地把识别事件翻译成 listener signal 并广播.
+    ListenerController(
+        listener=listener, asr=ctx.asr, logger=ctx.logger,
+        signal_broadcast=ctx.session.add_signal if ctx.emit_signals else None,
+    )
     prompt_session = PromptSession()
     stats = _Stats()
-    translator = _PacketTranslator()
-    on_result = partial(
-        _handle_result, translator=translator, session=ctx.session,
-        emit_signals=ctx.emit_signals, json_mode=ctx.json_mode, stats=stats,
-    )
+    translator = PacketTranslator()
+    on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
 
     async with listener:
         if "not started" in ctx.capture.device_explain():
