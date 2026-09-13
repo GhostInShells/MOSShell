@@ -3,9 +3,10 @@
 只测协议层与单元行为, 不依赖 mindflow 主循环 (同 test_interrupt_nucleus).
 
 覆盖范围:
-- ListenerSignal 协议: signal_name / 默认 NOTICE / 往返 (from_signal) / 拒绝异名
+- ListenerSignal 协议: signal_name / 默认 NOTICE / 往返 (from_signal) / 拒绝异名 / source
 - ListenerNucleus 信号面: signals() 监听 listener
 - 完整 turn (首包→分句→尾包): impulse id 一致 (same-id absorb 前提), complete 相位正确
+- 消息 xml 包装: 统一 <listen> tag + source attribute
 - 首包打断: complete=False + 高强, attended 降回正常强度 (用户钦定 attended 语义)
 - 首包打断关闭: 首包不抢 attention, 分句 buffer, 尾包提交全量
 - 分句响应开启: 分句逐包 impulse, 消息体为累计 buffer
@@ -21,9 +22,10 @@ import pytest
 from ghoshell_container import Container
 
 from ghoshell_moss.contracts.logger import LoggerItf
-from ghoshell_moss.core.blueprint.mindflow import Priority, Signal
+from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
 from ghoshell_moss.core.mindflow.listener_nucleus import (
-    ListenerNucleus, ListenerNucleusMeta, ListenerSignal, ListenerPacket, new_listener_signal,
+    ListenerNucleus, ListenerNucleusMeta, ListenerSignal, ListenMode, ListenerPacket,
+    new_listener_signal,
 )
 
 
@@ -61,6 +63,19 @@ def test_signal_match_rejects_wrong_name():
     assert ListenerSignal.match(Signal.new('input')) is False
 
 
+def test_signal_source_defaults_to_asr():
+    meta = ListenerSignal.from_signal(new_listener_signal(ListenerPacket.CLAUSE, '你好'))
+    assert meta is not None
+    assert meta.source == 'asr'
+
+
+def test_signal_roundtrip_preserves_source():
+    sig = new_listener_signal(ListenerPacket.CLAUSE, '你好', turn_id='t1', source='wake_word')
+    meta = ListenerSignal.from_signal(sig)
+    assert meta is not None
+    assert meta.source == 'wake_word'
+
+
 # ============================================================
 # ListenerNucleus — 信号面
 # ============================================================
@@ -90,6 +105,40 @@ async def test_full_turn_ids_consistent_and_complete_flags():
     assert first.id == tail.id  # 同 id — same-id absorb 前提
     assert first.strength > 100  # 首包高强
     assert _message_text(tail) == '今天天气不错'  # 分句未送达, 尾包发全量
+
+
+# ============================================================
+# 消息 xml 包装 — 共用一个 <listen> tag, 来源走 source attribute
+# ============================================================
+
+def _message_xml(impulse) -> str:
+    return '\n'.join(msg.to_xml() for msg in impulse.messages)
+
+
+@pytest.mark.asyncio
+async def test_impulse_message_wrapped_in_listen_tag():
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '今天天气不错', turn_id='t1', clause_index=1))
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', clause_index=1))
+    xml = _message_xml(notified[-1])
+    assert xml.startswith('<listen source="asr" created="')
+    assert '今天天气不错' in xml
+    assert xml.endswith('</listen>')
+
+
+@pytest.mark.asyncio
+async def test_impulse_tag_source_attribute_follows_signal_source():
+    """source 差异只走 attribute, tag 名保持共性."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t2', source='wake_word'))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '小莫', turn_id='t2', clause_index=1, source='wake_word'))
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t2', clause_index=1, source='wake_word'))
+    assert _message_xml(notified[-1]).startswith('<listen source="wake_word" created="')
 
 
 # ============================================================
@@ -235,6 +284,72 @@ async def test_set_first_packet_priority_takes_effect():
         nuc.set_first_packet_priority(Priority.ERROR)
         nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
         assert notified[0].priority == Priority.ERROR
+
+
+# ============================================================
+# 递送范式 — background / pull
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_background_mode_delivers_tail_only_as_notify():
+    """background: 非尾包丢弃, 尾包发 notify + BACKGROUND."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.set_mode(ListenMode.BACKGROUND)
+        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
+        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '你好', turn_id='t1', clause_index=1))
+        assert notified == []  # 非尾包丢弃
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '整句', turn_id='t1'))
+    assert len(notified) == 1
+    imp = notified[0]
+    assert imp.complete is True
+    assert imp.priority == Priority.BACKGROUND
+    assert imp.mode == ChallengeMode.notify.value
+    assert _message_text(imp) == '整句'
+
+
+@pytest.mark.asyncio
+async def test_pull_mode_buffers_then_pull_delivers():
+    """pull: 尾包只 buffer, 非尾包丢弃; 显式 pull 排空成一个 impulse."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.set_mode(ListenMode.PULL)
+        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '第一句', turn_id='t1'))
+        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '第二句', turn_id='t2'))
+        assert notified == []  # 全 buffer, 不 fire
+        assert nuc.pull() == 2
+        assert nuc.pull() == 0  # 已排空
+    assert len(notified) == 1
+    imp = notified[0]
+    assert imp.complete is True
+    text = _message_text(imp)
+    assert '第一句' in text and '第二句' in text
+
+
+@pytest.mark.asyncio
+async def test_background_message_created_comes_from_tail_signal():
+    """消息的 created 取 signal 到达墙钟, 不是 nucleus 建消息时刻."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.set_mode(ListenMode.BACKGROUND)
+        tail_sig = new_listener_signal(ListenerPacket.TAIL, '你好', turn_id='t1')
+        nuc.add_signal(tail_sig)
+    assert notified[0].messages[0].meta.created == tail_sig.created_at
+
+
+# ============================================================
+# 反身 channel — 持有 + 命令面
+# ============================================================
+
+def test_as_channel_returns_held_channel():
+    nuc = ListenerNucleus()
+    channel = nuc.as_channel()
+    assert channel is not None
+    assert nuc.as_channel() is channel  # 一次生成后持有
 
 
 # ============================================================
