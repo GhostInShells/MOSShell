@@ -31,6 +31,8 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
 from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
+from ghoshell_moss.contracts.speech import Speech, SpeechClause, TTSSpeech
+from ghoshell_moss.topics import ClauseTopic
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 
@@ -473,6 +475,56 @@ class ShellRuntimeImpl(MOSShellRuntime):
             if self._ctml_shell.is_running():
                 await self._ctml_shell.__aexit__(None, None, None)
 
+    @contextlib.asynccontextmanager
+    async def _clause_topic_bridge(self):
+        """说侧旁路生命周期: 把 speech 单例产出的 clause 发布成 ClauseTopic.
+
+        speech 的 on_clause 在 audio worker 线程回调 (与 on_sample 一致), 这里经
+        janus 队列 marshal 回事件循环, 再由 TopicService 的 publisher 广播. 仅当
+        speech 是 TTSSpeech (真产出 clause) 时激活 — NullSpeech/MockSpeech 无 clause,
+        直接跳过, 不为它们空转 queue / publisher.
+        """
+        speech = self._matrix.container.get(Speech)
+        if not isinstance(speech, TTSSpeech):
+            yield
+            return
+
+        speaker_id = self._env.project_id
+        speaker_name = self._env.ghost_name
+        publisher = self._matrix.session.topics.model_publisher(
+            creator=f"ghost/{speaker_name}",
+            model=ClauseTopic,
+        )
+        queue: janus.Queue = janus.Queue()
+
+        def _on_clause(clause: SpeechClause) -> None:
+            # on_clause 由 audio worker 线程触发, 走 sync_q 线程安全入队.
+            queue.sync_q.put_nowait(ClauseTopic(
+                text=clause.text,
+                speaker_id=speaker_id,
+                speaker_name=speaker_name,
+                role='ghost',
+            ))
+
+        async def _drain() -> None:
+            while True:
+                topic = await queue.async_q.get()
+                publisher.pub(topic)
+
+        await publisher.__aenter__()
+        disposer = speech.on_clause(_on_clause)
+        drain_task = asyncio.create_task(_drain())
+        try:
+            yield
+        finally:
+            disposer()
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+            await publisher.__aexit__(None, None, None)
+
     async def __aenter__(self) -> Self:
         if self._started:
             raise RuntimeError('MossRuntime is already started')
@@ -484,6 +536,9 @@ class ShellRuntimeImpl(MOSShellRuntime):
         self._bootstrap_after_matrix()
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._manager_shell_lifecycle())
+        # 说侧旁路: speech 单例的 clause 结果 → ClauseTopic 广播 (在 shell 起、speech 已
+        # start 之后进入; exit stack LIFO 保证它在 shell/speech 关闭之前先退出).
+        await self._async_exit_stack.enter_async_context(self._clause_topic_bridge())
         # bringup: 后台 task 并行发起 mode 声明的 nodes, 不 await — 单个失败记日志,
         # 挂死 (如 probe 不退出) 只钉住自己的 task, 不再阻塞 shell 启动.
         self._start_bringup_tasks()
