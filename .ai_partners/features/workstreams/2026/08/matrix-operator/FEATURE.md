@@ -6,14 +6,11 @@ description: 'Matrix 层 cell 级服务化通讯接线层. ServiceOperator 封�
   各自定义自己的 service kind 与元数据, operator 永不装线. 关键词: "统一无聊层, 特别化有趣层".'
 milestone: v0.1.0
 priority: P0
-status: testing
-status_note: '2026-09-01 客户端+服务端桥接层重写完成, 金丝雀单测待 Opus 补齐. 核心修复:
-  (1) 服务端: create_task-per-query + 出站 worker, query 不阻塞 loop;
-  (2) 客户端: get 全回调化 (零线程), sub 共享管线, emit 出站 worker;
-  (3) meta cache 修 K4, liveness 事件 create_task 化;
-  (4) sync/async handler 双支持, 并发契约写入 ABC docstring.'
+status: in-progress
+status_note: '2026-09-13 重开: operator 内核 + 客户端重写已完成并全绿; 验证项收敛为 webview service 的形状
+  (declaration + notify IM 式回执), screen node 消费待形状验证后再接。'
 title: Matrix Service — cell 级服务化通讯接线层
-updated: '2026-09-01'
+updated: '2026-09-13'
 ---
 
 # Matrix Service
@@ -299,6 +296,9 @@ Two-usage badge split (discussed 2026-08-09):
 **理论最小实现**: 本期不做 webview 服务实现，交给 screen-node 完善。本期交付：
 operator 级 counter 单测（证明 operator 正确）+ 上述 bug 修复。
 
+> SUPERSEDED 2026-09-13: "本期不做 webview 服务实现" 已作废 — webview 现为本
+> workstream 的验证项，见文末 V2 Validation。
+
 ## Kernel Review 2026-08-13 — REOPENED
 
 operator 从 completed 重开为 in-progress。counter 单测全绿不构成内核层质量关的证据——
@@ -469,4 +469,37 @@ ABC (`blueprint/service.py`)：
 - discovery: `get_services_by_kind` 返回可 `from_meta` 的 meta
 - **loop 心跳测量**: 全部测试期间 max gap 0.005s（< 200ms 阈值），**loop 从未被阻塞**
 
-单测清单（委托 Opus，见计划文件 `wobbly-tumbling-lagoon.md`）10 条金丝雀用例待补齐。
+金丝雀用例已补齐，见 `tests/ghoshell_moss/matrix/operator/test_operator_canary.py`（9 条金丝雀）
++ `test_keys.py`（33 条 key/envelope 单测）。
+
+---
+
+## V2 Validation — webview service 形状 (reopened 2026-09-13)
+
+> 验证的核心是 **service 的形状设计**。形状对了，才会让 screen node 来接 —
+> 不是倒过来先为 screen 设计。
+
+### 验证物: `webview` service kind
+
+一个 cell 声明"我提供一个 URL 能力"。待验证的形状：
+
+```
+WebViewDeclaration(ServiceDeclaration):
+    url: str          # 必填 — 能力本体
+    title: str        # 面向人的标题
+    description: str  # 面向人的说明
+    icon: str | None  # 可选
+    priority: ...     # log-level 同构的优先级
+    kind() -> "webview"
+```
+
+### notify — IM 式机械状态回执
+
+webview 机械地更新自己的 **状态提示 + 时间戳**；client 侧订阅即可获得"被回调过"
+的感知机制。语义是回执（类似 IM 的已读 / 最后在线时间），不是业务事件。
+承载在 operator 的 pub/sub 原语上。
+
+### 验证判据
+
+形状是否自洽、够用：只读本文档 + `service.py` 接口面，能否独立写出 webview 的
+declaration / provider / client，而不需要碰 operator 内部实现。
