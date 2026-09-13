@@ -412,6 +412,7 @@ class BaseStateChannel(StatefulChannel):
             modules: dict[str, ChannelModule] | None = None,
             default_state_name: str = '',
             bootstrap_callbacks: list[Callable[[Self, IoCContainer], None]] | None = None,
+            gate: bool = False,
     ) -> None:
         self._uid = uid or unique_id()
         self._main: ChannelState = main
@@ -419,6 +420,7 @@ class BaseStateChannel(StatefulChannel):
         self._default_state_name: str = default_state_name
         self._modules: dict[str, ChannelModule] = modules or {}
         self._boostrap_callbacks: list[Callable[[Self, IoCContainer], None]] = bootstrap_callbacks or []
+        self._gate = gate
 
     def on_bootstrap(self, bootstrapper: Callable[[StatefulChannel, IoCContainer], None]) -> None:
         self._boostrap_callbacks.append(bootstrapper)
@@ -454,6 +456,9 @@ class BaseStateChannel(StatefulChannel):
 
     def default_state_name(self) -> str:
         return self._default_state_name
+
+    def gate(self) -> bool:
+        return self._gate
 
     def with_module(self, module: ChannelModule) -> Self:
         """注册为永久能力模块。所有 module 同时激活、累积叠加 — 与 with_state() 的排他切换正交。"""
@@ -504,17 +509,19 @@ class PyChannel(PrimeChannel, BaseStateChannel):
             description: str = "",
             blocking: bool = True,
             uid: str | None = None,
+            gate: bool = False,
     ):
         """
         :param name: channel 的名称.
         :param description: channel 的静态描述, 给模型看的.
         :param blocking: 默认所有 command 序列执行 (blocking=True)。此参数是设计不佳的语法糖——阻塞语义应由 command 自身声明，而非 channel 统一施加。未来版本应移除。
+        :param gate: 开启后声明的虚拟子通道默认关闭, 由 mount_child 逐一披露; 关闭时行为不变.
         """
         matched = _ChannelNamePattern.fullmatch(name)
         if matched is None:
             raise ValueError("Channel name '%s' is not valid" % name)
         state = PyChannelBuilder(name=name, description=description, blocking=blocking, uid=uid)
-        super().__init__(state, uid=uid)
+        super().__init__(state, uid=uid, gate=gate)
         self._builder = state
 
     @property
@@ -561,6 +568,17 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         self._stop_current_command = PyCommand(
             self.stop_current_state,
             available=lambda: self._current_state_name is not None and self._current_state_name != self._default_state_name,
+        )
+        # gate: 虚拟子通道默认全关, 由 mount_child 逐一披露.
+        self._gate: bool = channel.gate()
+        self._opened_children: set[str] = set()
+        self._mount_child_command = PyCommand(
+            self.mount_child,
+            available=lambda: self._gate and len(self._gated_children()) > 0,
+        )
+        self._unmount_child_command = PyCommand(
+            self.unmount_child,
+            available=lambda: self._gate and len(self._opened_children) > 0,
         )
         self._on_startup_instruction: str = ''
         super().__init__(
@@ -621,6 +639,38 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 return True
         return False
 
+    def _gated_children(self) -> dict[str, Channel]:
+        """gate 开启时返回声明的虚拟子通道目录 (name -> channel), 否则为空."""
+        if not self._gate:
+            return {}
+        return self._main_state.get_virtual_children()
+
+    async def mount_child(self, name: str) -> str:
+        """Mount one of this channel's children so it becomes visible to you.
+
+        Only children this channel declares can be mounted. A mounted child
+        exposes its own instruction, notice and commands; an unmounted one is
+        listed in the notice catalog only. Mount what you are about to use.
+        """
+        if name not in self._gated_children():
+            return f"no gated child {name!r}"
+        if name in self._opened_children:
+            return f"child {name!r} is already mounted"
+        self._opened_children.add(name)
+        await self.refresh_metas()
+        return f"child {name!r} mounted"
+
+    async def unmount_child(self, name: str) -> str:
+        """Unmount a child mounted earlier, hiding it from your view again.
+
+        The child returns to the notice catalog and can be mounted again later.
+        """
+        if name not in self._opened_children:
+            return f"child {name!r} is not mounted"
+        self._opened_children.discard(name)
+        await self.refresh_metas()
+        return f"child {name!r} unmounted"
+
     async def stop_current_state(self) -> str:
         """
         stop current running state and return to default.
@@ -658,6 +708,12 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
 
     def virtual_sub_channels(self) -> dict[str, Channel]:
         virtual_channels = self._main_state.get_virtual_children().copy()
+        if self._gate:
+            # gate: 声明即入册, 只有 mount 过的子通道才真正挂载.
+            virtual_channels = {
+                name: child for name, child in virtual_channels.items()
+                if name in self._opened_children
+            }
         if self._current_state is not None:
             for name, child in self._current_state.get_children().copy().items():
                 # new virtual children.
@@ -669,6 +725,9 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
     def is_dynamic(self) -> bool:
         states = self._dynamic_states
         if len(states) > 0:
+            return True
+        if self._gate and len(self._gated_children()) > 0:
+            # 目录 (或 open/closed 标记) 每次 mount/unmount 都会变.
             return True
         return self._main_state.is_dynamic()
 
@@ -770,6 +829,13 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 parts.append(t)
             elif isinstance(t, Exception):
                 self.logger.error("%r get notice receive error: %s", self, t)
+        if catalog := self._gated_children():
+            # gate: 未挂载的子通道没有 meta 节点, 目录是模型知道它们存在的唯一入口.
+            lines = ["gated children:"]
+            for name, child in catalog.items():
+                state = "open" if name in self._opened_children else "closed"
+                lines.append(f"- {name} ({state}): {child.description()}")
+            parts.append("\n".join(lines))
         return '\n'.join(parts)
 
     def _wrap_messages(self, messages: Iterable[Message | str | Image]) -> Iterable[Message]:
@@ -818,6 +884,11 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             commands[self._stop_current_command.name()] = self._stop_current_command
         if len(self._dynamic_states) > 0:
             commands[self._switch_state_command.name()] = self._switch_state_command
+        if self._gate:
+            if len(self._gated_children()) > 0:
+                commands[self._mount_child_command.name()] = self._mount_child_command
+            if len(self._opened_children) > 0:
+                commands[self._unmount_child_command.name()] = self._unmount_child_command
 
         # modules — 永久能力模块，累积叠加。main_state 的命令优先。
         if len(self._modules) > 0:
@@ -850,6 +921,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             return self._stop_current_command
         if len(self._dynamic_states) > 0 and name == self._switch_state_command.name():
             return self._switch_state_command
+        if self._gate and len(self._gated_children()) > 0 and name == self._mount_child_command.name():
+            return self._mount_child_command
+        if self._gate and len(self._opened_children) > 0 and name == self._unmount_child_command.name():
+            return self._unmount_child_command
 
         path, name = Command.split_unique_name(name)
         if path:
@@ -864,6 +939,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             return self._stop_current_command
         if len(self._dynamic_states) > 0 and name == self._switch_state_command.name():
             return self._switch_state_command
+        if self._gate and len(self._gated_children()) > 0 and name == self._mount_child_command.name():
+            return self._mount_child_command
+        if self._gate and len(self._opened_children) > 0 and name == self._unmount_child_command.name():
+            return self._unmount_child_command
         command = self._main_state.get_own_command(name)
         if command is not None:
             return command

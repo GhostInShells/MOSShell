@@ -5,10 +5,12 @@ description: Mindflow 反身控制 Channel — 将 mindflow 从 opaque 调度器
   自解释 + 注意力管理 + 优先级干预 + nucleus pull.
 milestone: 0.1.0
 priority: P1
-status: completed
-status_note: 'v1 实装: 自解释+注意力管理+优先级干预, pull 简化形态, 三个机制 flag 门控. idle 自驱留作 follow-up.'
+status: in-progress
+status_note: '重开: 两步走 — step1: py_channel 落地 prime channel gate flag(默认 false)+ states
+  呈现自动拼装进 notice; step2: mindflow 控制面下移为 gated virtual children, notice 合并自解释, 删红点.
+  step1 完成才进 step2.'
 title: Mindflow Channel
-updated: '2026-08-28'
+updated: '2026-09-13'
 ---
 
 # Mindflow Channel
@@ -168,3 +170,102 @@ enable_pull=False, enable_red_dot=False)`: 三个注意力机制用 build flag �
 
 自检 signal 应走低优先带 (notify / 静默), 不抢真实外部信号. count 上限是硬护栏;
 「永不安息」(self-check → 思考 → 又 self-check) 的冷却语义留待 follow-up.
+## v2 重开 (2026-09-13): gate 元机制 + 反身面收敛
+
+### 为什么重开
+
+v1 的反身面把「注意力治理」直接做成 mindflow channel 的顶层命令 (`set-priority` /
+`set-signal-bar` / `set-impulse-bar` / `pull`), 并用构建期 flag (`enable_priority` /
+`enable_bar` / `enable_pull` / `enable_red_dot`) 门控。问题:
+
+- 命令面与「感知/思考」的主面混在一起, 模型一上来就看到全部控制能力, 没有渐进式披露。
+- `notice` / `context` / `status` 各拼一遍 nucleus 列表, 逻辑重叠。
+- 红点机制放在 context 里是错位 — 红点本应是子 channel 的形态。
+
+目标形态: mindflow 的高功能控制面 (注意力治理) 和所有 nucleus channel **都作为
+virtual child**; mindflow channel 实例化默认走 gate, 模型不打开的子通道只在 notice
+里可见。gate 是 **prime channel 的元机制**, 不是 mindflow 专属。
+
+### 两步走 (硬顺序, step1 完成才进 step2)
+
+**Step 1 — py_channel 落地 gate 元机制**
+
+核心接口开 `gate` flag, 默认 `false` (全仓库现行为零变化)。踩既有 states 机制的路径,
+不新造抽象:
+
+- 蓝图 `states_channel.py`: `PrimeChannel` 增抽象访问器 `gate() -> bool`;
+  `new_prime_channel(name, description="", gate=False)` 透传。
+- `py_channel.py`: `PyChannel(..., gate=False)` → `BaseStateChannel(..., gate=False)`
+  存 `_gate`; `StatefulChannelRuntimeImpl` 读 `channel.gate()`, 持
+  `_opened_children: set[str] = set()` (**默认全关**)。
+- **过滤点唯一**: `virtual_sub_channels()` — gate 为真时只保留名字在 `_opened_children`
+  的虚拟子通道, 其余不交给 tree (tree 自动卸载, 见 `runtime/tree.py` `_refresh_structure`)。
+- **自动绑命令** (仿 `switch_state`: runtime public 方法 → `PyCommand` → `_own_commands`):
+  `mount_channel(name)` / `unmount_channel(name)`, 改 `_opened_children` 后
+  `await refresh_metas()` 触发 tree 挂载/卸载。available 受 gate 与目录/打开集合约束。
+  **命令名待人类架构师拍板** (要求: 不能用一眼通用的 open/close, 名字要稍稍特化)。
+- **notice 自动拼装目录**: `_get_notice()` 在 gate 为真时追加声明的虚拟子通道目录
+  (`name (open|closed): description`)。未挂载的子通道无 meta 节点, 模型只能从 notice
+  看到它存在 — 这是渐进式披露的信息闭环。
+- 目录来源 = `build.virtual_children` 回调声明的集合。
+
+**Step 2 — mindflow channel 重构** (概要, 待 step1 完成后细化)
+
+- 父命令面收敛为 `status` (`always_observe` 自省); `set-priority` / `set-signal-bar` /
+  `set-impulse-bar` / `pull` 下移为 virtual child, 进 gate 目录、默认关闭。
+- 所有 nucleus channel 作为 gated 目录项。
+- 三处重叠渲染合并进基本不变的 `notice`。
+- 删 `enable_red_dot` 与 context 红点块; context 其余**不动** (上下文治理策略已变,
+  context message 有痛, 不碰)。
+
+### 待人类架构师确认 (1 点)
+
+「states 呈现自动拼装进 notice」的落地方式。现状: `ChannelMeta.states` 由 runtime 填充,
+但 prompt 层是**独立 `<states>` 块** (`core/ctml/v1_0/prompts.py` `states_message()`),
+被 `tests/.../ctml/v1_0/test_prompts.py` 两条断言锁定为独立 section。
+
+- **A (倾向)**: runtime 把 states 目录 + `Current state: X` 追加进 notice; `meta.states` /
+  `current_state` 字段保留 (数据协议不变), 移除 prompts 的独立 `<states>` 渲染以免重复,
+  相应改 2 条 prompt 断言。
+- **B**: 只做 gate 目录进 notice, states 块完全不动 (纯增量)。
+
+### 边界
+
+- gate 只作用于**声明式**虚拟子通道; 运行时 `add_virtual_channel()` 注入的通道仍直接挂载
+  (那是命令的显式副作用, 非目录项)。
+- `available()` (谓词驱动整 channel 可见) 与 gate (模型驱动的子通道披露) 不同轴, 不互相实现。
+- sustain children (`import_channels`) 不参与 gate, 始终挂载。
+- 构建期 flag 与 gate 是不同轴: 前者决定「机制是否进目录」, 后者决定「是否打开」。
+
+### 测试与验证
+
+- `tests/ghoshell_moss/default/core/channels/test_state_channel.py` 追加: `gate=False` 全挂载
+  (回归); `gate=True` 初始零挂载 + notice 目录; mount/unmount 生效与命令自动注册;
+  gate 且目录为空时命令不可用。
+- 若采纳 states 方案的 A, 更新 `test_prompts.py` 两条断言。
+- 回归: `pytest tests/ghoshell_moss/default/core/mindflow/ -q` 确认 step1 未扰动静默行为。
+
+### Step 1 完成 (2026-09-13)
+
+gate 元机制已落地, 三项决策已定:
+
+- **states 不删** — 只做 gate 目录进 notice (上文「待确认」取 B, 纯增量)。
+- **命令名**: `mount_child` / `unmount_child` (宾语用 child, 不用 channel)。
+- **gate 关闭则 notice 无附加内容** — 目录只在 gate 开启时拼装。
+
+实现落点:
+
+- `blueprint/states_channel.py`: `StatefulChannel.gate() -> bool` 默认 `False`;
+  `new_prime_channel(..., gate=False)` 透传。放在 `StatefulChannel` 而非 `PrimeChannel`,
+  避免 MRO 上遮蔽 `BaseStateChannel` 的实现。
+- `core/py_channel.py`: `BaseStateChannel` 存 `_gate`; `StatefulChannelRuntimeImpl` 持
+  `_opened_children` (默认空), `virtual_sub_channels()` 在 gate 开启时只保留已打开项,
+  `is_dynamic()` 计入 gate 目录; 自动绑 `mount_child`/`unmount_child` (走 `PyCommand`,
+  仿 `switch_state`); `_get_notice()` 在 gate 开启时追加目录
+  (`- name (open|closed): description`)。
+
+测试: `test_state_channel.py` 追加 6 条 gate 用例, `state_channel` 56 passed。
+mindflow/prompts/blueprint 回归通过 (listener 2 条失败是 voice-input-state-machine
+在途改动, 与本步无关)。
+
+**Step 2 待开始**: mindflow 控制面下移为 gated virtual children。

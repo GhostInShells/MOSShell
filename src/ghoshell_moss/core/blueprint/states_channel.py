@@ -180,6 +180,19 @@ class StatefulChannel(Channel, Facade):
     def default_state_name(self) -> str:
         pass
 
+    def gate(self) -> bool:
+        """
+        Whether this channel gates the disclosure of its virtual children.
+
+        Default ``False``: every declared virtual child is mounted and visible.
+
+        ``True``: declared virtual children stay closed; a child is mounted only
+        after the model mounts it by command, and the declared catalog is surfaced
+        through ``notice`` instead — progressive disclosure. Which children exist
+        is declared by ``Builder.virtual_children``.
+        """
+        return False
+
     @abstractmethod
     def on_bootstrap(self, bootstrapper: Callable[[Self, IoCContainer], None]) -> None:
         """
@@ -232,9 +245,9 @@ def new_stateful_channel(name: str, description: str = "") -> StatefulChannel:
     return PyChannel(name=name, description=description)
 
 
-def new_prime_channel(name: str, description: str = "") -> PrimeChannel:
+def new_prime_channel(name: str, description: str = "", gate: bool = False) -> PrimeChannel:
     from ghoshell_moss.core.py_channel import PyChannel
-    return PyChannel(name=name, description=description)
+    return PyChannel(name=name, description=description, gate=gate)
 
 
 def new_shell_main_channel(description: str = "") -> PrimeChannel:
