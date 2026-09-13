@@ -8,6 +8,9 @@
 - branch = 一个目录. 目录下: ``meta.json`` / ``commits.jsonl`` (正序 append-only, 权威) /
   ``commit_notes.jsonl`` (旁路摘要, 可丢可重建).
 - fork 是**引用** (读父支 + 子支两个 commits.jsonl 拼一条连续轨迹), 不复制.
+- **坐标 = ``{branch_index}-{commit_seq}``** (形如 ``27-1027``): branch index = owner 的
+  ``branches.jsonl`` 创建行序, commit seq = branch 的 ``commits.jsonl`` 行序, 两者都在产出时
+  定死. 皆 append-only 派生, 永久稳定; 看与引用都用坐标, ``id`` (ULID) 只做全局身份, 不进 view.
 - **单一真值 message**: commit 是纯锚点, 不带 message; message 只住 Note (一个家),
   last-wins. ``commit(message=...)`` 是便捷糖 = 锚点 + 种子一条 Note, 但存储上 message
   仍只落在 Note 这一行. title = message 首行 (截断), body = 其余 (对齐 git ``-m``).
@@ -33,7 +36,7 @@ __all__ = [
     "BranchRef",
     "ForkRef",
     "BranchMeta",
-    "CommitSummary",
+    "CommitView",
     "BranchView",
     "Branch",
     "Memento",
@@ -51,16 +54,22 @@ def _now_utc() -> datetime:
 class CommitRef(BaseModel):
     """一个 commit 锚点 — commits.jsonl 的一行. **纯锚点, 不带 message.**
 
-    不承载 moment. metadata 装「足以还原一个 session 的钥匙」, 约定 key:
-    ``session_id`` + ``tail``. memento 对 metadata 只 get/set, 不解析.
+    不承载 moment. metadata 装「足以还原一个 session 的钥匙」, 具体约定由消费者定义
+    (如 ``{'ref': ..., 'prev_turn': ...}``); memento 对 metadata 只 get/set, 不解析.
     该 commit 的 message 住在对应的 Note 里, 单一真值.
+
+    ``seq`` 是 branch 内 commit 序号 (1-based), 在 commit 时定死 — 坐标的后半截.
     """
 
     id: str = Field(default_factory=_unique_id)
+    seq: int = Field(
+        default=0,
+        description="branch 内 commit 序号 (1-based), commit 时定死 — 坐标后半截.",
+    )
     metatype: str = Field(default="", description="生产 commit 的类型, 如 'session'.")
     metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="不透明扩展. 惯用约定 {'session_id':..., 'tail':...} 作为还原钥匙.",
+        description="不透明扩展, 约定由消费者定义. memento 只 get/set, 不解析.",
     )
     created: AwareDatetime = Field(default_factory=_now_utc)
 
@@ -102,6 +111,10 @@ class BranchMeta(BaseModel):
     """branch 创建时的元信息 — ``branches/{branch_id}/meta.json``."""
 
     branch_id: str = Field(...)
+    index: int = Field(
+        default=0,
+        description="owner 内 branch 序号 (1-based), 创建时定死 — 坐标前半截.",
+    )
     name: str = Field(...)
     description: str = Field(default="")
     metatype: str = Field(default="", description="branch 生产时的类型.")
@@ -113,19 +126,36 @@ class BranchMeta(BaseModel):
     created: AwareDatetime = Field(default_factory=_now_utc)
 
 
-class CommitSummary(BaseModel):
-    """一个 commit 的读侧投影: id + 来源 Note 的 message + 派生 seq.
+class CommitView(BaseModel):
+    """一个 commit 的读侧单位 — ``CommitRef`` + 其 ``Note`` + 坐标.
 
-    title = message 首行 (截断), body = 其余. 无 Note 时为 message 空. 渲染截断由
-    消费者 (render) 负责, 本模型只做确定性派生.
-
-    ``seq`` 是 branch 内派生序列 (1-based), 读时按 commits 顺序算、不落盘. 看位置用 seq,
-    引用用 id (全局唯一).
+    ``BranchView`` 装它, ``Branch`` 暴露它. ``ref`` 携带全部锚点事实 (created / metatype /
+    metadata); ``note`` 是 message 的家, 无 Note 时为 None. ``coord`` =
+    ``{branch_index}-{ref.seq}`` — 模型/人类看与引用 commit 的地址 (``id`` 是 ULID, token 贵,
+    不进 view). title = message 首行 (截断), body = 其余; 渲染截断由消费者负责, 本模型只做
+    确定性派生.
     """
 
-    id: str
-    message: str = Field(default="")
-    seq: int = Field(description="branch 内派生序列 (1-based), 读时算, 不存; 看用 seq, 引用用 id.")
+    branch_index: int = Field(description="坐标前半截: owner 内 branch 序号 (1-based).")
+    ref: CommitRef = Field(description="commit 锚点 — created / metatype / metadata 都在此.")
+    note: Note | None = Field(default=None, description="commit 的 message 家; 无 Note 时 None.")
+
+    @property
+    def coord(self) -> str:
+        """坐标 ``{branch_index}-{commit_seq}`` 的字符串形 (如 ``27-1027``)."""
+        return f"{self.branch_index}-{self.ref.seq}"
+
+    @property
+    def seq(self) -> int:
+        return self.ref.seq
+
+    @property
+    def created(self) -> AwareDatetime:
+        return self.ref.created
+
+    @property
+    def message(self) -> str:
+        return self.note.message if self.note is not None else ""
 
     @property
     def title(self) -> str:
@@ -150,11 +180,12 @@ class BranchView(BaseModel):
     name: str
     description: str
     branch_id: str
+    index: int = Field(description="owner 内 branch 序号 (1-based) — 坐标前半截.")
     created: AwareDatetime
     commit_id: str = Field(description="最近 commit 的 id, 供「跟这个 commit 对话」.")
     previous: "BranchView | None" = Field(default=None, description="fork 父支 (引用).")
-    history: list[CommitSummary] = Field(default_factory=list, description="更早 commits, 折叠摘要.")
-    latest: list[CommitSummary] = Field(default_factory=list, description="最近 commits, detail.")
+    history: list[CommitView] = Field(default_factory=list, description="更早 commits, 折叠摘要.")
+    latest: list[CommitView] = Field(default_factory=list, description="最近 commits, detail.")
     commits_total: int = Field(default=0)
 
 
@@ -183,6 +214,11 @@ class Branch(ABC):
     def path(self) -> Path:
         """branch 独立目录路径."""
 
+    @property
+    @abstractmethod
+    def index(self) -> int:
+        """owner 内 branch 序号 (1-based, 创建时定死) — 坐标前半截."""
+
     @abstractmethod
     def meta(self) -> BranchMeta:
         """branch 元信息 (metatype / metadata / fork_from). 构造期即可得 (root_path 足够),
@@ -203,6 +239,14 @@ class Branch(ABC):
     @abstractmethod
     async def anotes(self) -> dict[str, Note]:
         """IO-costly 性能开销: 重读 commit_notes.jsonl."""
+
+    @abstractmethod
+    def get_commit(self, seq: int) -> CommitView | None:
+        """按 branch 内 seq 取 CommitView (缓存快路径); 越界 (含 <1) 返回 None."""
+
+    @abstractmethod
+    async def aget_commit(self, seq: int) -> CommitView | None:
+        """IO-costly 性能开销: 重读磁盘按 seq 取 CommitView."""
 
     @abstractmethod
     def commit(
@@ -314,6 +358,14 @@ class Memento(ABC):
     @abstractmethod
     def list_branches(self) -> list[BranchRef]:
         """活跃 branch 列表 (ref.json glob)."""
+
+    @abstractmethod
+    def get_branch_by_index(self, index: int) -> Branch | None:
+        """按 owner 内 branch 序号取 branch; 不存在返回 None."""
+
+    @abstractmethod
+    def resolve_commit(self, coord: str) -> CommitView | None:
+        """把坐标 (如 ``"27-1027"``) 解析回 CommitView; 格式错 / 不存在返回 None."""
 
     @abstractmethod
     def delete_branch(self, name: str) -> None:

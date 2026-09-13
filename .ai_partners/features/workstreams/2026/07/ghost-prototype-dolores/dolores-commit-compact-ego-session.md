@@ -86,3 +86,41 @@ ctx.agents.create({          ← 三者统一走这里
    为 0 连续，切在 open turn 里 seed 校验直接拒。
 4. **fork 后台 agent 的 model/provider 一致性**：历史里的 assistant 消息标注原 provider/model。后台
    agent 若换 provider 重放会冲突——同类型 agent 约束须钉死（child 与 parent 同 provider/model）。
+
+## 装线计划 — 13 步（2026-09-13 与人类架构师对齐）
+
+> 边界锁定：严格按本 13 条接线，不引入本清单外的自创设计。10–13 各是一刀，分开做。
+> note 生产的执行基元（session ref fork 跑一轮）见 [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
+
+1. **memento 根路径在 runtime 定义**，默认 `ghost_home/.memento/ego/`。
+2. **runtime 按约定路径实例化并持有 memento**（`new_local_memento`）；启动时取 `main` 分支，无则建。
+3. **基于 memento 构建 xml-like view 区块**：`<branch name=".." index="..">` 包若干
+   `<commit seq="27-1027" created="..">note</commit>`；分支无 commit 时显示 `no commit`。
+4. **view 边界进 meta 配置**（`.dolores.yml`，对应 `Branch.view(n=..)`）。
+5. **memories 拓扑 = `groundset root → memento → epoch`**；ground 留在 memories 首位，不上移 instruction。
+6. **ego 正常退出必 commit**；异常退出不管。
+7. **commit 数据对象 = `{ref, prev_turn}`**：`ref` 是 `DshSessionRef`；`prev_turn` 是同 session 上一个
+   commit 生成的 turn，作本 commit 区间下界。memento 只存 metadata、不解析。
+8. **ego 注入 memento**（typed injection，不 back-ref ghost）。
+9. **ghost 把 observer 传给 ego**，ego 在 memory 里独立组装 epoch start point。
+   （`mindflow.moments` 的命名/生产时机由人类架构师在 mindflow 侧手动调整。）
+10. **ego 定义 `commit(message="")`**：无 message → 立刻落锚点并返回；有 message → 锚点 + note 同落。
+    **note 生产不绑定 ego 生命周期。**
+11. **note 生产 = session ref fork 跑一轮**（旁路单轮基元）。下一步做。
+12. **aexit 时 last turn 若无 commit 则补 commit**（去重/补漏）。这一步不做。
+13. **ego `compact()`**：能换掉 runtime 持有的 ego 实例；create ego session 传入**可为空的 session ref**
+    ——取自最后一个 **note 非空**的 commit，从源 session 拆出 ref 之后的 message，建新 session 运行。
+
+### 依赖：memento 坐标改造（→ memento-mori 实现）
+
+- **`BranchView` 持有 `CommitView`；`Branch` 暴露 `CommitView`**（`CommitView` = `CommitRef` + `Note`
+  成对 + 坐标，替掉现在只有 `id/message/seq` 的 `CommitSummary` 投影）。
+- **坐标 = `{branch_index}-{commit_seq}`**（形如 `27-1027`）。选它是因为 ULID 26 位、20 条 commit 的
+  view 就有 ~500 token 纯开销；坐标把纯开销压到个位数 token。
+  - `branch_index` = owner 的 `branches.jsonl` 行序（append-only → 永久稳定；改名不动、删除不回退）。
+  - `commit_seq` = 该支 `commits.jsonl` 行序，**commit 时定死**（生产即有精确 seq）。
+  - 一个 commit 只住一条 branch 的 `commits.jsonl`，故坐标在 owner 内唯一，天然解掉「子支 seq 从 1
+    重数、与父支撞号」。
+  - `id`（ULID）留在数据模型做全局身份（`ForkRef`/文件系统/跨 owner），**不进 view**。
+- **memento 须提供配套 index 查找**：坐标 → commit（不是渲染侧临时拼）。这是契约面的新增，待 memento-mori
+  定形（`Memento.resolve_commit(coord)` / `branch.get_commit(seq)` + `branch.index` 一类）。

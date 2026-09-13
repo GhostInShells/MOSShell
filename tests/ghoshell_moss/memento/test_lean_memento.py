@@ -47,6 +47,21 @@ def test_delete_keeps_dir_removes_pointer(memento):
     assert branch_dir.exists()  # 目录与 commits 保留
 
 
+def test_branch_index_is_creation_ordinal(memento):
+    first = memento.create_branch("main")
+    second = memento.create_branch("idea")
+    third = first.fork("branch")
+
+    assert (first.index, second.index, third.index) == (1, 2, 3)
+    assert memento.get_branch_by_index(2).ref.name == "idea"
+    assert memento.get_branch_by_index(9) is None
+
+    # 删 name 指针不回退序号: branch 目录仍在, 序号不复用
+    memento.delete_branch("main")
+    assert memento.get_branch_by_index(1) is not None
+    assert memento.create_branch("again").index == 4
+
+
 # ── commit / note 拆两步 ──
 
 
@@ -101,21 +116,82 @@ def test_view_folds_latest_history_and_derives_title(memento):
     assert v.history[0].title == "commit 0"
 
 
-def test_view_assigns_branch_local_seq(memento):
-    b = memento.create_branch("main")
+def test_view_coord_is_branch_index_and_commit_seq(memento):
+    b = memento.create_branch("main")  # 第 1 个 branch
     for i in range(3):
         b.commit(message=f"c{i}")
 
-    # seq 1-based, 按 commits 顺序派生 (不存)
-    assert [s.seq for s in b.view().latest] == [1, 2, 3]
+    # coord = {branch_index}-{commit_seq}; seq 1-based, commit 时定死
+    assert [v.coord for v in b.view().latest] == ["1-1", "1-2", "1-3"]
 
-    # fork 后子支 seq 从 1 重新开始 (branch-local); 父支 seq 独立
+    # fork 出的子支 branch_index 不同 → 坐标不撞父支
     child = b.fork("idea")
     child.commit(message="child c0")
     cv = child.view()
-    assert [s.seq for s in cv.latest] == [1]
+    assert cv.index == 2
+    assert [v.coord for v in cv.latest] == ["2-1"]
     assert cv.previous is not None
-    assert cv.previous.latest[-1].seq == 3
+    assert cv.previous.latest[-1].coord == "1-3"
+
+
+def test_commit_view_carries_ref_and_note(memento):
+    b = memento.create_branch("main")
+    anchor = b.commit(metatype="session", metadata={"ref": "s1:1-3", "prev_turn": 2})
+
+    # 未补 note: message 空, 但 ref 事实 (created / metadata) 从 view 可达
+    bare = b.get_commit(1)
+    assert bare is not None
+    assert bare.ref.id == anchor.id
+    assert bare.ref.metadata == {"ref": "s1:1-3", "prev_turn": 2}
+    assert bare.created == anchor.created
+    assert bare.message == ""
+
+    b.note(anchor.id, "title\nbody")
+    filled = b.get_commit(1)
+    assert filled.message == "title\nbody"
+    assert filled.title == "title"
+    assert filled.body == "body"
+
+
+def test_get_commit_by_seq_bounds(memento):
+    b = memento.create_branch("main")
+    b.commit(message="one")
+    b.commit(message="two")
+
+    assert b.get_commit(1).message == "one"
+    assert b.get_commit(0) is None
+    assert b.get_commit(3) is None
+
+
+def test_resolve_commit_by_coord(memento):
+    b = memento.create_branch("main")
+    b.commit(message="first")
+    ref = b.commit(message="second")
+
+    hit = memento.resolve_commit("1-2")
+    assert hit is not None
+    assert hit.ref.id == ref.id
+    assert hit.message == "second"
+
+    # 格式错 / 未知 branch / 未知 seq → None
+    assert memento.resolve_commit("nope") is None
+    assert memento.resolve_commit("x-y") is None
+    assert memento.resolve_commit("9-1") is None
+    assert memento.resolve_commit("1-99") is None
+
+
+def test_aget_commit_matches_sync(memento):
+    b = memento.create_branch("main")
+    b.commit(message="one")
+    b.commit(message="two")
+
+    async def inner():
+        return await b.aget_commit(1), await b.aget_commit(99)
+
+    hit, miss = asyncio.run(inner())
+    assert hit.coord == "1-1"
+    assert hit.message == "one"
+    assert miss is None
 
 
 # ── fork 引用 ──

@@ -4,7 +4,7 @@ from .abcd import (
     BranchRef,
     ForkRef,
     BranchMeta,
-    CommitSummary,
+    CommitView,
     BranchView,
     Branch,
     Memento,

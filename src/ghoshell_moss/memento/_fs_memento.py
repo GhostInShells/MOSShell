@@ -36,7 +36,7 @@ from ghoshell_moss.memento.abcd import (
     BranchRef,
     BranchView,
     CommitRef,
-    CommitSummary,
+    CommitView,
     ForkRef,
     Memento,
     Note,
@@ -183,6 +183,10 @@ class FsBranch(Branch):
             raise FileNotFoundError(f"branch meta missing: {self._meta_path()}")
         return BranchMeta(**data)
 
+    @property
+    def index(self) -> int:
+        return self.meta().index
+
     # ── 读 (缓存快路径) ──
     def commits(self) -> list[CommitRef]:
         if self._commits_cache is None:
@@ -220,7 +224,7 @@ class FsBranch(Branch):
             metatype: str = "",
             metadata: dict[str, Any] | None = None,
     ) -> CommitRef:
-        ref = CommitRef(metatype=metatype, metadata=metadata or {})
+        ref = CommitRef(seq=len(self.commits()) + 1, metatype=metatype, metadata=metadata or {})
         _append_jsonl(self._commits_path(), [ref.model_dump(mode="json")])
         self._commits_cache = None
         if message:
@@ -260,12 +264,11 @@ class FsBranch(Branch):
             return self.fork(name, description)
 
     # ── 读侧投影 ──
-    def _summary(self, commit: CommitRef, notes: dict[str, Note], seq: int) -> CommitSummary:
-        message = notes[commit.id].message if commit.id in notes else ""
-        return CommitSummary(id=commit.id, message=message, seq=seq)
+    def _commit_view(self, commit: CommitRef, notes: dict[str, Note], branch_index: int) -> CommitView:
+        return CommitView(branch_index=branch_index, ref=commit, note=notes.get(commit.id))
 
-    def _parent(self) -> "FsBranch | None":
-        fork_from = self.meta().fork_from
+    def _parent(self, meta: BranchMeta) -> "FsBranch | None":
+        fork_from = meta.fork_from
         if fork_from is None:
             return None
         return self._memento._branch_by_id(fork_from.branch_id)
@@ -279,16 +282,18 @@ class FsBranch(Branch):
         return self._build_view(commits, notes, n)
 
     def _build_view(self, commits: list[CommitRef], notes: dict[str, Note], n: int) -> BranchView:
-        summaries = [self._summary(c, notes, i + 1) for i, c in enumerate(commits)]
-        latest = summaries[-n:]
-        history = summaries[:-n]
-        parent = self._parent()
+        meta = self.meta()
+        views = [self._commit_view(c, notes, meta.index) for c in commits]
+        latest = views[-n:]
+        history = views[:-n]
+        parent = self._parent(meta)
         previous = parent.view(n=n) if parent is not None else None
         tip = commits[-1].id if commits else ""
         return BranchView(
             name=self._name,
             description=self._description,
             branch_id=self._branch_id,
+            index=meta.index,
             created=self._created,
             commit_id=tip,
             previous=previous,
@@ -296,6 +301,23 @@ class FsBranch(Branch):
             latest=latest,
             commits_total=len(commits),
         )
+
+    def get_commit(self, seq: int) -> CommitView | None:
+        if seq < 1:
+            return None
+        commits = self.commits()
+        if seq > len(commits):
+            return None
+        return self._commit_view(commits[seq - 1], self.notes(), self.index)
+
+    async def aget_commit(self, seq: int) -> CommitView | None:
+        if seq < 1:
+            return None
+        commits = await self.acommits()
+        if seq > len(commits):
+            return None
+        notes = await self.anotes()
+        return self._commit_view(commits[seq - 1], notes, self.index)
 
     # ── 查询 ──
     def query_commits(
@@ -387,9 +409,11 @@ class FsMemento(Memento):
     ) -> FsBranch:
         """public-internal: create_branch 与 Branch.fork 共享的单一创建路径."""
         branch_id = str(ulid.ULID())
+        index = len(_read_jsonl(self._branches_jsonl())) + 1
         created = _now_utc()
         meta = BranchMeta(
             branch_id=branch_id,
+            index=index,
             name=name,
             description=description,
             metatype=metatype,
@@ -426,6 +450,28 @@ class FsMemento(Memento):
             if data is not None:
                 result.append(BranchRef(**data))
         return result
+
+    def get_branch_by_index(self, index: int) -> "FsBranch | None":
+        if index < 1:
+            return None
+        rows = _read_jsonl(self._branches_jsonl())
+        if index > len(rows):
+            return None
+        ref = BranchRef(**rows[index - 1])
+        return self._branch_by_id(ref.branch_id)
+
+    def resolve_commit(self, coord: str) -> CommitView | None:
+        parts = coord.split("-", 1)
+        if len(parts) != 2:
+            return None
+        try:
+            branch_index, seq = int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
+        branch = self.get_branch_by_index(branch_index)
+        if branch is None:
+            return None
+        return branch.get_commit(seq)
 
     def delete_branch(self, name: str) -> None:
         ref = self._ref_path(name)

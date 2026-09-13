@@ -1,16 +1,17 @@
 ---
 created: 2026-06-11
 depends: []
-description: 以 commit 为第一公民的认知轨迹系统，第 9 轮收敛为极简「锚点 + 摘要」两级存储。
-  commit 是纯锚点（metadata 装 session 还原钥匙），message 单一真值在 Note，fork 引用。
-  旧代码已删（2026-09-10），被删设计的完整轨迹经 git log 反查。
+description: 以 commit 为第一公民的认知轨迹系统，第 9 轮收敛为极简「锚点 + 摘要」两级存储。 commit 是纯锚点（metadata 装
+  session 还原钥匙），message 单一真值在 Note，fork 引用。 旧代码已删（2026-09-10），被删设计的完整轨迹经 git log 反查。
 milestone: null
 priority: P0
 status: completed
-status_note: '2026-09-10 第 9 轮 lean 收敛 + 旧代码删除完成：abcd.py（契约）/ _fs_memento.py（实现）/
-  test_lean_memento.py（单测）落地。历史讨论已压缩（§2），复盘见 §3。'
-title: Memento — 轨迹第一公民的认知基建（第 9 轮 lean 收敛：锚点 + 摘要两级）
-updated: '2026-09-10'
+status_note: '第 10 轮坐标改造已落地 (2026-09-14)：CommitView (ref+note+坐标) 替掉 CommitSummary；
+  CommitRef.seq / BranchMeta.index 产出时定死；坐标 = {branch_index}-{commit_seq}；新增
+  Branch.get_commit / aget_commit 与 Memento.get_branch_by_index / resolve_commit。契约 + 实现 +
+  单测 (19 passed)。动机与全貌见 §4。'
+title: Memento — 轨迹第一公民的认知基建（锚点 + 摘要两级 + 坐标）
+updated: '2026-09-14'
 ---
 
 # Memento
@@ -19,7 +20,8 @@ updated: '2026-09-10'
 
 ## 0. 给下一个化身：先读这一节
 
-**当前状态（2026-09-10）**：第 9 轮 lean 收敛已完成并落地。memento = 极简「锚点 + 摘要」两级认知轨迹索引。
+**当前状态（2026-09-14）**：第 9 轮 lean 收敛 + 第 10 轮坐标改造均已落地。memento = 极简「锚点 +
+摘要」两级认知轨迹索引，读侧以 `CommitView`（ref + note + 坐标）为单位。
 
 - **契约**：`src/ghoshell_moss/memento/abcd.py`
 - **实现**：`src/ghoshell_moss/memento/_fs_memento.py`（filesystem，只绑定本地 path）
@@ -121,3 +123,29 @@ updated: '2026-09-10'
 - 未归因但高度吻合的 2 个：matrix-operator（08-13 completed→in-progress 重开 + 7 条致命内核问题，当时不知是模型问题）、mcp-fusion-point（停在 08-14 未推进）。
 - 结论：可确定受影响 **≥ 8**；基于 review 无法直接支持「> 8」或「所有」。
 - 诊断分层（STAGE.md）：当时先判为机制问题（声明-交付漂移），后经外部报告确认为模型问题（deepseek V4-Pro-0813 官方回归，与发作时间对齐）。
+
+## 4. 第 10 轮：坐标改造（2026-09-14）
+
+> 动机：dolores 装线要把 branch view 塞进模型上下文，ULID `id`（26 字符）token 开销过大
+> （20 条 commit ≈ 500 token 纯开销）；且原 `seq` 是「读时按 commits 顺序派生」，跨 fork 撞号，
+> 不能当寻址坐标。装线全貌见
+> `ghost-prototype-dolores/dolores-commit-compact-ego-session.md`「装线计划 — 13 步」。
+
+**坐标 = `{branch_index}-{commit_seq}`**（形如 `27-1027`），两个分量都在**产出时定死**：
+
+- `branch_index` = owner `branches.jsonl` 的创建行序（1-based）。append-only → 永久稳定；branch
+  改名不动它（name 是可移动指针），`delete_branch` 只删 `ref.json`、不删那行 → 序号不回退不复用。
+- `commit_seq` = branch `commits.jsonl` 的行序（1-based），`commit()` 时定死。
+- 一个 commit 只住一条 branch 的 `commits.jsonl`，故坐标在 owner 内唯一，天然解掉 fork 撞号。
+- `id`（ULID）留在数据模型做全局身份（`ForkRef` / 文件系统 / 跨 owner），**不进 view**。
+
+**读侧单位换成 `CommitView`**（替掉 `CommitSummary`）：`ref`（携带 created / metatype / metadata）+
+`note`（message 的家，可空）+ 坐标。`BranchView.history/latest` 装它，`Branch` 暴露它 —— view 里
+同时有锚点事实与摘要，消费侧不必再拼。
+
+**契约新增**（`abcd.py`，人类 review）：`CommitRef.seq` / `BranchMeta.index` / `BranchView.index` /
+`CommitView` / `Branch.index` / `Branch.get_commit(seq)` / `Branch.aget_commit(seq)` /
+`Memento.get_branch_by_index(index)` / `Memento.resolve_commit(coord)`。
+
+**渲染不进 memento**：`<branch name index>` / `<commit seq created>` 的 xml 区块由消费者（dolores）
+签发，memento 只供结构与查找（`resolve_commit` 把 `"27-1027"` 解析回 `CommitView`）。
