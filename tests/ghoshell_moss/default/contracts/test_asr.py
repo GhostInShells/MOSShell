@@ -9,7 +9,7 @@ import pytest
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
-    Clause,
+    RecognitionClause,
     RecognitionPhase,
     RecognitionEvent,
     RecognitionSegment,
@@ -21,7 +21,7 @@ def _clause(text: str, *, stream_id: str = "s1", segment_id: str = "g1") -> Reco
     return RecognitionEvent(
         stream_id=stream_id, segment_id=segment_id,
         phase=RecognitionPhase.CLAUSE, text=text,
-        clause=Clause(text=text),
+        clause=RecognitionClause(text=text),
     )
 
 

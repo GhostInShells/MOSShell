@@ -492,7 +492,7 @@ class Word(BaseModel):
     """一个字的时间戳: 文本 + 起止时间 + 置信度.
 
     时间单位是秒 (float, 服务端原值). 字段走 snake_case, JSON 输入用 camelCase
-    别名 (服务端返回 startTime/endTime). 注意: 听侧 ``Clause`` 用毫秒 (start_ms/end_ms),
+    别名 (服务端返回 startTime/endTime). 注意: 听侧 ``RecognitionClause`` 用毫秒 (start_ms/end_ms),
     说侧这里用秒 — 两侧单位不同, 对齐时按需换算.
     """
 

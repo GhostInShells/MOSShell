@@ -8,7 +8,7 @@ import contextlib
 
 import pytest
 
-from ghoshell_moss.contracts.asr import ASRInfo, Clause, RecognitionEvent, RecognitionPhase
+from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
 
@@ -73,7 +73,7 @@ def _clause(text: str) -> RecognitionEvent:
     return RecognitionEvent(
         stream_id="s", segment_id="g",
         phase=RecognitionPhase.CLAUSE, text=text,
-        clause=Clause(text=text),
+        clause=RecognitionClause(text=text),
     )
 
 

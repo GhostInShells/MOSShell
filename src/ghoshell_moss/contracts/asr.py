@@ -10,6 +10,7 @@ tunable behavior params; configure() sets those params for the next recognize().
 Model identity is fixed at creation by the factory/provider — it is not part of the
 runtime self-describing surface.
 """
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -23,7 +24,7 @@ __all__ = [
     "ASRInfo",
     "RecognitionStream",
     "RecognitionPhase",
-    "Clause",
+    "RecognitionClause",
     "RecognitionEvent",
     "RecognitionSegment",
 ]
@@ -56,19 +57,24 @@ class RecognitionPhase(str, Enum):
 
 
 @dataclass
-class Clause:
+class RecognitionClause:
     """A stable sentence finalized by the engine's VAD 判停 (text axis).
 
     ``text`` is the clause's own text — NOT the full accumulated text (that lives
     on ``RecognitionEvent.text``). ``additional`` carries the engine's raw
     utterance ``additions`` (说话人 / 情绪 / 音量 / 语速 / 语种...), passed
     through untouched so downstream keeps the full surface.
+
+    ``start_ms``/``end_ms`` are stream-relative (audio axis); ``created`` is the
+    wall-clock instant (epoch seconds, ``time.time()``) the recognizer finalized
+    this clause.
     """
 
     text: str = ""
     start_ms: int = 0
     end_ms: int = 0
     additional: dict = field(default_factory=dict)
+    created: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -78,16 +84,21 @@ class RecognitionEvent:
     ``text`` is the full accumulated text — full-replace, consistent across
     phases (FIRST carries the stream's first meaningful text). ``clause`` is
     present only for CLAUSE phase, holding the just-finalized sentence (its own
-    text / timing / additional). ``segment_id`` links to the RecognitionSegment
-    of the same segment (its ``id``).
+    text / timing / additional) — the same instance is carried by the
+    RecognitionSegment of this segment (``clauses``). ``segment_id`` links to the
+    RecognitionSegment of the same segment (its ``id``).
+
+    ``created`` is the wall-clock instant (epoch seconds) the recognizer parsed
+    this event — distinct from the audio-axis ``start_ms``/``end_ms``.
     """
 
     stream_id: str
     segment_id: str  # segment id
     phase: RecognitionPhase
     text: str
-    clause: Clause | None = None
+    clause: RecognitionClause | None = None
     error: str = ""
+    created: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -97,7 +108,11 @@ class RecognitionSegment:
     Cut once per tail — ``text`` is the accumulated text of the whole segment,
     ``audio`` is the accumulated audio. ``start_ms``/``end_ms`` are stream-relative
     timestamps of the segment; ``offset_ms`` is the stream-relative start of
-    ``audio``, used by ``precise_cut``.
+    ``audio``, used by ``precise_cut``. ``clauses`` is the segment's clause
+    breakdown — the exact RecognitionClause instances the text axis emitted for
+    this segment, so the archive keeps per-clause text/timing/additional that
+    would otherwise survive only in the transient events. ``created`` is the
+    wall-clock instant (epoch seconds) the segment was cut.
 
     Linked to RecognitionEvent via ``segment_id`` (its ``id``) + ``stream_id``,
     delivered through a separate callback (``on_segment``), not mixed into the text axis.
@@ -113,6 +128,8 @@ class RecognitionSegment:
     channel: int = 1
     audio: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int16))
     offset_ms: int = 0
+    clauses: list[RecognitionClause] = field(default_factory=list)
+    created: float = field(default_factory=time.time)
 
     def precise_cut(self) -> np.ndarray:
         """Slice the coarse-cut audio precisely by start_ms/end_ms."""

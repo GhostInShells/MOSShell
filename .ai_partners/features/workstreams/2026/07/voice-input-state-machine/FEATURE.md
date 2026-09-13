@@ -1,10 +1,10 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末. 2026-09-12: 用 seedasr (豆包2.0) 重构 ASR 为 volcengine_sauc, moss audio listen -m once 实机跑通, 语音对话 Dolores 闭环, 详见文末.'
+status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末. 2026-09-12: 用 seedasr (豆包2.0) 重构 ASR 为 volcengine_sauc, moss audio listen -m once 实机跑通, 语音对话 Dolores 闭环, 详见文末. 2026-09-14: 听侧归档补齐 — RecognitionSegment 带 clauses (与说侧 SpeechSegment 对称), event/clause/segment 各带 created 墙钟时间戳; 契约层 Clause 更名 RecognitionClause, 详见文末.'
 priority: P0
 created: 2026-07-28
-updated: 2026-09-12
+updated: 2026-09-14
 depends:
   - audio-capture
   - node-migration
@@ -1311,6 +1311,21 @@ push-to-talk(按住聆听松开 commit，可 defer)。
 1. 删除旧实现 `host/listener/volcengine_asr/`（被 volcengine_sauc 取代）。
 2. 检查其它 CLI 命令可用（`moss audio asr` 等）。
 3. 类名/路径名手动改为 seedasr（由人类架构师执行）。
+
+## 2026-09-14 会话决策 — 听侧归档补齐: segment 带 clauses + 三处 created
+
+> 人类架构师 + deepseek-flash。契约层补齐音频输入的两处缺口, 并收敛 clause 命名。
+
+- `RecognitionSegment` 增 `clauses` —— 段 = audio + text + 逐句结构。此前 clause 的
+  text/timing/additional 只活在瞬时 event 上, 切段归档即丢; 现在与说侧 `SpeechSegment.clauses`
+  对称。两个 recognizer 累积同一批 clause 实例, 同值进 event 与段, 切段后重置。
+- `RecognitionEvent` / `RecognitionClause` / `RecognitionSegment` 各增 `created: float`
+  (epoch 秒, `time.time()`), 对齐 `SubprocessInfo.created` / `JobInfo.created` 惯例。
+  `start_ms`/`end_ms` 是音频轴相对时间, `created` 是墙钟 —— 段内延迟用 created 差算,
+  跨进程对齐同样用它, 不引入 stream-relative 冗余字段。
+- 命名: `Clause` → `RecognitionClause`, 与 RecognitionEvent / RecognitionSegment 家族对齐。
+- 证据: `tests/ghoshell_moss/host/listener/volcengine_sauc/test_recognizer.py` 用替身 WS
+  驱动完整 turn (audio → event → tail → 段归档), 断言段带本段吐出的 clause。
 
 ---
 

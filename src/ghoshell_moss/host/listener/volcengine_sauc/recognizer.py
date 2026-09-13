@@ -24,7 +24,7 @@ from ghoshell_common.helpers import uuid
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
-    Clause,
+    RecognitionClause,
     RecognitionStream,
     RecognitionPhase,
     RecognitionEvent,
@@ -157,9 +157,10 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._on_segment_callback: Callable[[RecognitionSegment], None] | None = None
         self._event_creating_callbacks: list[Callable[[RecognitionEvent], Awaitable[None] | None]] = []
 
-        # 当前 segment 的 audio + text (整个 turn 一份).
+        # 当前 segment 的 audio + text + clauses (整个 turn 一份).
         self._current_audio: list[np.ndarray] = []
         self._segment_text = ""
+        self._segment_clauses: list[RecognitionClause] = []
         self._total_samples = 0
 
         # 已吐出的 definite 句数 (result_type=full 时服务端全量返回, 靠它去重).
@@ -285,6 +286,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._emitted_clauses = 0
         self._current_audio = []
         self._segment_text = ""
+        self._segment_clauses = []
         self._total_samples = 0
         self._tail_requested = False
         self._tail_deadline = 0.0
@@ -415,17 +417,20 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._emitted_clauses = len(definite)
         for u in new:
             self._last_text = text
+            clause = RecognitionClause(
+                text=u.text,
+                start_ms=u.start_time,
+                end_ms=u.end_time,
+                additional=u.additions,
+            )
+            # 同一个 clause 实例: 既进 event (text axis) 又进 segment (audio axis 归档).
+            self._segment_clauses.append(clause)
             chunks.append(RecognitionEvent(
                 stream_id=self._stream_id,
                 segment_id=self._segment_id,
                 phase=RecognitionPhase.CLAUSE,
                 text=text,
-                clause=Clause(
-                    text=u.text,
-                    start_ms=u.start_time,
-                    end_ms=u.end_time,
-                    additional=u.additions,
-                ),
+                clause=clause,
             ))
 
         # PARTIAL: text 相对上次有变化才发 (相邻相同压掉).
@@ -471,6 +476,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             channel=self._config.channel,
             audio=audio,
             offset_ms=0,
+            clauses=list(self._segment_clauses),
         )
         self._emit_segment(segment)
 

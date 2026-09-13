@@ -110,6 +110,8 @@ def _render(packet: ListenerPacket, result: RecognitionEvent, text: str, clause_
             "clause_index": clause_index,
             "start_ms": clause.start_ms if clause else 0,
             "end_ms": clause.end_ms if clause else 0,
+            "clause_created": clause.created if clause else None,
+            "created": result.created,
             "error": result.error or None,
         }, ensure_ascii=False))
         return

@@ -142,8 +142,10 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
                                 "start_ms": clause.start_ms,
                                 "end_ms": clause.end_ms,
                                 "additional": clause.additional,
+                                "created": clause.created,
                             } if clause else None,
                             "elapsed": round(elapsed, 3),
+                            "created": result.created,
                             "error": result.error or None,
                         }, ensure_ascii=False))
                     elif is_ai_mode():

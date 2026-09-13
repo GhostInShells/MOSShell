@@ -1,13 +1,26 @@
-"""volcengine_sauc recognizer — on_event_creating 分派行为契约.
+"""volcengine_sauc recognizer — on_event_creating 分派行为契约 + segment 归档契约.
 
 验证 facade 声明的两种回调形态: awaitable 回调 inline await (阻塞消费点),
 sync 回调 to_thread 卸载 (非阻塞并行), 回调异常被兜住不中断.
+另验证 audio axis 归档: spec segment 带本段吐出的 clause 与 created 墙钟.
 """
+import asyncio
+import gzip
+import json
+import struct
+import time
+
 import numpy as np
 import pytest
+import websockets
 
-from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase
+from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase, RecognitionSegment
 from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
+from ghoshell_moss.host.listener.volcengine_sauc import recognizer as sauc_recognizer
+
+# 与 protocol._Protocol 对齐的最小常量 (替身侧只用到这两个).
+_FULL_SERVER_RESPONSE = 0x09
+_NEG_WITH_SEQUENCE = 0x03
 
 
 async def _empty_audio():
@@ -66,3 +79,88 @@ async def test_callback_exception_is_contained():
 
     stream.on_event_creating(bad)
     await stream.dispatch_event_creating(_event())  # 不抛出
+
+
+# ── segment 归档 (audio axis 带 clause + created) ──
+
+
+def _server_frame(payload: dict, *, is_last: bool = False) -> bytes:
+    """服务端 full_server_response 帧 (JSON + GZIP), 布局对齐 protocol.parse_response."""
+    body = gzip.compress(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    header = bytes([0x11, (_FULL_SERVER_RESPONSE << 4) | (0x02 if is_last else 0x00), 0x11, 0x00])
+    return header + struct.pack(">I", len(body)) + body
+
+
+class _FakeWS:
+    """最小 WS 替身: send 记录并识别尾包 (负序号), recv 等尾包发完再吐预置响应帧.
+
+    真实服务端只在收到尾包后才回响应, 这里复刻该因果 —— 否则 recv 会在 send loop
+    置 ``_input_done`` 之前吐完, 会话会多跑一个 turn.
+    """
+
+    def __init__(self, frames: list[bytes]):
+        self._frames = list(frames)
+        self._tail_sent = asyncio.Event()
+        self.sent: list[bytes] = []
+
+    async def send(self, data: bytes) -> None:
+        self.sent.append(data)
+        if (data[1] & 0x0F) == _NEG_WITH_SEQUENCE:
+            self._tail_sent.set()
+
+    async def recv(self) -> bytes:
+        await self._tail_sent.wait()
+        if self._frames:
+            return self._frames.pop(0)
+        raise websockets.exceptions.ConnectionClosed(None, None)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
+def _connect_to(ws: _FakeWS):
+    async def _connect(config, request_id: str = ""):
+        return ws
+    return _connect
+
+
+async def _audio(*chunks: np.ndarray):
+    for chunk in chunks:
+        yield chunk
+
+
+@pytest.mark.asyncio
+async def test_segment_archives_the_clauses_it_emitted(monkeypatch):
+    """audio axis 归档带 clause 细节: 段携带本段吐出的 clause (text + timing), 不只在 event 里."""
+    started = time.time()
+    frames = [
+        _server_frame({"result": {
+            "text": "你好",
+            "utterances": [
+                {"text": "你好", "definite": True, "start_time": 100, "end_time": 600},
+            ],
+        }}),
+        _server_frame({"result": {"text": "你好"}}, is_last=True),
+    ]
+    monkeypatch.setattr(sauc_recognizer, "connect", _connect_to(_FakeWS(frames)))
+
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    stream = asr.recognize(_audio(np.zeros(1600, dtype=np.int16)))
+    segments: list[RecognitionSegment] = []
+    stream.on_segment(segments.append)
+
+    events = [e async for e in stream]
+
+    clauses = [e.clause for e in events if e.phase == RecognitionPhase.CLAUSE]
+    assert [c.text for c in clauses] == ["你好"]
+    assert len(segments) == 1
+    assert [c.text for c in segments[0].clauses] == ["你好"]
+    assert [(c.start_ms, c.end_ms) for c in segments[0].clauses] == [(100, 600)]
+
+    # created 是解析时刻的墙钟: event / clause / segment 都在本次运行期间打上.
+    assert all(e.created >= started for e in events)
+    assert clauses[0].created >= started
+    assert segments[0].created >= started

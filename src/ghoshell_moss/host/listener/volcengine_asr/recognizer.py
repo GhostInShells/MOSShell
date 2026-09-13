@@ -11,7 +11,7 @@ from ghoshell_common.helpers import uuid
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
-    Clause,
+    RecognitionClause,
     RecognitionStream,
     RecognitionPhase,
     RecognitionEvent,
@@ -134,9 +134,10 @@ class _VolcengineRecognitionStream(RecognitionStream):
         self._input_done = False
         self._on_segment_callback: Callable[[RecognitionSegment], None] | None = None
 
-        # 当前 segment 的 audio + text (有界: 一段的量), 每个 tail 切分一次.
+        # 当前 segment 的 audio + text + clauses (有界: 一段的量), 每个 tail 切分一次.
         self._current_audio: list[np.ndarray] = []
         self._segment_text = ""
+        self._segment_clauses: list[RecognitionClause] = []
         self._total_samples = 0
         self._buffer_offset_ms = 0
 
@@ -322,12 +323,15 @@ class _VolcengineRecognitionStream(RecognitionStream):
             self._emitted_clauses = len(definite)
             cut = len(new) > 0
             for u in new:
+                clause = RecognitionClause(text=u.text, start_ms=u.start_time, end_ms=u.end_time)
+                # 同一个 clause 实例: 既进 event (text axis) 又进 segment (audio axis 归档).
+                self._segment_clauses.append(clause)
                 chunks.append(RecognitionEvent(
                     stream_id=self._stream_id,
                     segment_id=self._segment_id,
                     phase=RecognitionPhase.CLAUSE,
                     text=u.text,
-                    clause=Clause(text=u.text, start_ms=u.start_time, end_ms=u.end_time),
+                    clause=clause,
                 ))
 
             if result.utterances and not result.utterances[-1].definite:
@@ -380,11 +384,13 @@ class _VolcengineRecognitionStream(RecognitionStream):
             channel=self._config.channel,
             audio=audio,
             offset_ms=self._buffer_offset_ms,
+            clauses=list(self._segment_clauses),
         )
         self._emit_segment(segment)
 
         self._current_audio.clear()
         self._segment_text = ""
+        self._segment_clauses = []
         self._buffer_offset_ms = end_ms
         self._segment_id = uuid()
 
