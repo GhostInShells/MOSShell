@@ -1,5 +1,5 @@
 """
-MOSS 架构中可复用的异常类型, 主要是 CommandError
+Reusable exception types in the MOSS architecture, primarily CommandError.
 """
 
 from enum import IntEnum
@@ -14,9 +14,7 @@ __all__ = [
 
 class FatalError(Exception):
     """
-    致命错误, 会导致 Shell 停摆, 状态也需要清空.
-
-    todo: 还没有用起来.
+    Fatal error. It halts the Shell, and the Shell state must be cleared afterwards.
     """
 
     pass
@@ -24,8 +22,8 @@ class FatalError(Exception):
 
 class CommandError(Exception):
     """
-    Command 运行时异常的封装, 所有的 command 的最佳实践都是用 CommandError 替代原来的 error.
-    方便 AI 运行时理解异常.
+    Wrapper for exceptions raised at command runtime. Best practice for every command is to
+    raise CommandError instead of a raw error, so the AI runtime can understand the exception.
     """
 
     def __init__(self, code: int = -1, message: str = "", at_line: str = "", error_name: str = '') -> None:
@@ -71,15 +69,17 @@ class CommandError(Exception):
         return cls(errcode, errmsg)
 
 
+# 跨包转换 (CommandError.from_error / CommandTask.fail) 时, 若直接对
+# InterpretError 走通用 Exception 分支, 会被降级成 UNKNOWN_ERROR (505),
+# 丢语义. 因此这里显式携带 code + 归一化的原始 message (不含 code 前缀),
+# 供转换处无损读取.
 class InterpretError(Exception):
     """
-    解释器解释异常, 是可以恢复的异常.
+    Interpreter interpretation error. This is a recoverable error.
 
-    恒以 ``CommandErrorCode.INTERPRET_ERROR`` 归口 (code = 407):
-    跨包转换 (CommandError.from_error / CommandTask.fail) 时, 若直接对
-    InterpretError 走通用 Exception 分支, 会被降级成 UNKNOWN_ERROR (505),
-    丢语义. 因此这里显式携带 code + 归一化的原始 message (不含 code 前缀),
-    供转换处无损读取.
+    Always reports ``CommandErrorCode.INTERPRET_ERROR`` (code = 407), and carries the
+    normalized original message (without the code prefix) so conversion sites
+    (CommandError.from_error / CommandTask.fail) can read it without loss.
     """
 
     def __init__(self, message: str | Exception = ""):
@@ -113,13 +113,16 @@ class PausedError(Exception):
 
 class CommandErrorCode(IntEnum):
     """
-    语法糖, 用来快速生成 command error. 采用了 golang 的语法糖习惯.
+    Syntactic sugar for quickly constructing a command error, following the Go
+    (golang) idiom.
 
     >>> raise CommandErrorCode.CANCELLED.error("error info")
 
-    CommandCode 有特殊的约定习惯.
-    < 400 是正常行为逻辑中的异常. 不会中断解释过程.
-    >= 400 是不可接受的异常, 会立刻中断 interpreter 的执行逻辑. 并且清空整批规划.
+    Command codes follow a convention:
+    < 400 is an exception within normal behavior logic; it does not interrupt the
+    interpretation process.
+    >= 400 is an unacceptable exception; it immediately interrupts the interpreter's
+    execution logic and clears the whole batch plan.
     """
 
     # AI 需要感知到的普通运行结果.
@@ -187,7 +190,7 @@ class CommandErrorCode(IntEnum):
 
     @classmethod
     def is_notifiable(cls, err: Exception | int) -> bool:
-        """需要被通知的异常."""
+        """Whether the exception needs to be notified."""
         if err is None:
             return False
         if isinstance(err, Exception):
@@ -224,7 +227,7 @@ class CommandErrorCode(IntEnum):
 
     @classmethod
     def get_error_code_name(cls, value: int) -> str:
-        """将错误代码值映射到对应的枚举名称"""
+        """Map an error code value to its enum name."""
         try:
             return cls(value).name
         except ValueError:

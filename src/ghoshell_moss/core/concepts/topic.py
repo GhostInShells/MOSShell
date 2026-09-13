@@ -1,5 +1,6 @@
 """
-在 Shell 体系里实现的强类型数据 (Topic) 广播体系, 用于做复杂的实现.
+Strongly-typed data (Topic) broadcast system implemented within the Shell layer,
+used to build complex implementations.
 """
 
 from abc import ABC, abstractmethod
@@ -56,8 +57,10 @@ class TopicSchema(BaseModel):
 
 class TopicMeta(BaseModel):
     """
-    定义 topic 可被复用的元信息.
-    在传输和解析过程中它的数据结构不变, 也不占用 meta 之外的 keyword.
+    Reusable meta information for a topic.
+
+    Its data structure is stable across transport and parsing, and it does not
+    occupy keywords outside of meta.
     """
 
     id: str = Field(default_factory=unique_id, description="Unique identifier for the topic.")
@@ -68,16 +71,16 @@ class TopicMeta(BaseModel):
     )
     type: str = Field(default="", description="Type of the topic.")
     # local 实现的两种方式: 1. 不跨网络传输. 2. 监听者发现 sender 不相同, 直接丢弃.
-    local: bool = Field(default=False, description="如果是 local 类型的 topic, 不会跨网络传输. ")
+    local: bool = Field(default=False, description="A local topic is not transported across the network.")
     creator: str = Field(
         default="",
-        description="The unique identifier of the topic creator, in RESTFul format."
-                    "与 sender 的区别, 在同一个通讯链路里, 可能有多个角色创建 topic. "
+        description="The unique identifier of the topic creator, in RESTFul format. "
+                    "Unlike the sender: within the same communication link, multiple roles may create topics."
     )
     sender: str = Field(
         default="",
-        description="the address of whom (topic service) sent this topic."
-                    "与 creator 区别, sender 是通讯链路的身份. ",
+        description="The address of whom (topic service) sent this topic. "
+                    "Unlike the creator, the sender is the identity on the communication link.",
     )
     created_at: float = Field(
         default_factory=lambda: round(time.time(), 4),
@@ -91,13 +94,16 @@ class TopicMeta(BaseModel):
 
 class Topic(BaseModel, WithAdditional):
     """
-    MOSS 架构中的 Topic 信息, 也是基于 Pub/Sub 在全链路中广播.
-    解决 Channel 与 Shell 主动通讯, Channel 之间通讯的基本问题.
-    技术原理类似 Ros2 的 topics, 但是通信频率预期非长低, 应该是秒级的大脑事件才需要通过 topic 通讯.
+    Topic information in the MOSS architecture, broadcast over the whole link via Pub/Sub.
 
-    抽象设计之外, 底层逻辑完全可以自行实现. 比如在链路中独立一个 mqtt 用来做事件总线.
+    It solves the basic problem of proactive communication between Channel (经络,
+    "meridian") and Shell, and between Channels.
 
-    可以慢慢迭代.
+    The technical principle resembles ROS2 topics, but the expected event frequency
+    is very low — only second-scale brain events need to communicate through topics.
+
+    Beyond this abstract design, the underlying transport can be implemented
+    independently — for example, a dedicated MQTT event bus within the link.
     """
 
     meta: TopicMeta = Field(
@@ -114,7 +120,7 @@ class Topic(BaseModel, WithAdditional):
         return cls(data=data)
 
     def is_overdue(self) -> bool:
-        """topic 是否过期. 过期的 Service 应该直接丢弃. """
+        """Whether the topic is overdue. Overdue topics should be dropped immediately."""
         if self.meta.overdue == 0.0:
             # 永不过期.
             return False
@@ -126,7 +132,7 @@ class Topic(BaseModel, WithAdditional):
 
 class TopicModel(BaseModel, ABC):
     """
-    自解释的 Topic 协议约定.
+    Self-describing Topic protocol contract.
     """
 
     meta: TopicMeta = Field(default_factory=TopicMeta, description="meta information")
@@ -139,7 +145,8 @@ class TopicModel(BaseModel, ABC):
     @abstractmethod
     def topic_type(cls) -> str:
         """
-        定义 topic 的类型. 对于使用 Topic 而非 TopicModel 的场景, 需要依赖 topic type 还原指定的 TopicModel.
+        Defines the topic type. When using Topic rather than TopicModel, the topic
+        type is needed to restore the specific TopicModel.
         """
         pass
 
@@ -187,9 +194,10 @@ class TopicModel(BaseModel, ABC):
     @abstractmethod
     def default_topic_name(cls) -> TopicName:
         """
-        定义 topic name, 理论上一种 topic type 可以对应不同的 topic name 实现定向的分流.
-        参考了 ros2 的模式.
-        不过实际上, 可能绝大多数的 topic name 都使用默认的.
+        Defines the topic name. In principle one topic type can map to different topic
+        names to route traffic selectively. Modeled after ROS2.
+
+        In practice, the vast majority of topic names likely use the default.
         """
         pass
 
@@ -217,12 +225,12 @@ class TopicModel(BaseModel, ABC):
 
 class LogTopic(TopicModel):
     """
-    实验性的范式, 考虑让 provider channel 实现的 logger 本质上是通过 topics 发送日志 topic
-    然后 proxy 侧写入 topic.
+    Experimental pattern: the logger implemented by a provider channel essentially
+    sends logs as topics, and the proxy side writes those topics.
     """
 
     level: Literal["debug", "info", "warning", "error"] = "info"
-    message: str = Field(description="日志的正文讯息")
+    message: str = Field(description="The body text of the log message.")
 
     @classmethod
     def topic_type(cls) -> str:
@@ -235,7 +243,7 @@ class LogTopic(TopicModel):
 
 class ErrorTopic(TopicModel):
     """
-    测试用的 topic.
+    A topic used for testing.
     """
 
     errmsg: str = Field(
@@ -260,7 +268,7 @@ class TopicClosedError(Exception):
 
 class Subscriber(Generic[TOPIC_MODEL], ABC):
     """
-    一个指定类型 topic 的监听者.
+    A subscriber for a topic of a specified type.
     """
 
     @abstractmethod
@@ -277,7 +285,7 @@ class Subscriber(Generic[TOPIC_MODEL], ABC):
     @abstractmethod
     def listening(self) -> str:
         """
-        监听的 topic name.
+        The topic name being listened to.
         """
         pass
 
@@ -288,30 +296,30 @@ class Subscriber(Generic[TOPIC_MODEL], ABC):
     @abstractmethod
     async def poll(self, timeout: float | None = None) -> Topic:
         """
-        :raise ClosedError: 服务已经关闭.
-        :raise asyncio.TimeoutError: 超时.
+        :raise TopicClosedError: the service is already closed.
+        :raise asyncio.TimeoutError: timed out.
         """
         pass
 
     @abstractmethod
     async def poll_model(self, timeout: float | None = None) -> TOPIC_MODEL | None:
         """
-        :raise ClosedError: 服务已经关闭.
-        :raise asyncio.TimeoutError: 超时.
+        :raise TopicClosedError: the service is already closed.
+        :raise asyncio.TimeoutError: timed out.
         """
         pass
 
     @abstractmethod
     def is_closed(self) -> bool:
         """
-        标记已经关闭.
+        Whether it is marked as closed.
         """
         pass
 
     @abstractmethod
     def is_running(self) -> bool:
         """
-        是否还在运行中.
+        Whether it is still running.
         """
         pass
 
@@ -320,14 +328,14 @@ class Publisher(Generic[TOPIC_MODEL], ABC):
     @abstractmethod
     def with_additions(self, *additions: Addition) -> Self:
         """
-        注册所有 topic 都携带的 Addition 信息.
+        Register Addition info carried by every topic.
         """
         pass
 
     @abstractmethod
     def is_running(self) -> bool:
         """
-        是否还在运行中.
+        Whether it is still running.
         """
         pass
 
@@ -347,8 +355,8 @@ class Publisher(Generic[TOPIC_MODEL], ABC):
             name: TopicName = "",
     ) -> None:
         """
-        发布一个事件. 会在全链路里广播.
-        :raise ClosedError: topic 已经停止运行.
+        Publish an event. It is broadcast over the whole link.
+        :raise TopicClosedError: the topic has stopped running.
         """
         pass
 
@@ -438,26 +446,31 @@ class TopicWindow(Generic[TOPIC_MODEL], ABC):
 
 class TopicService(ABC):
     """
-    实现一个基本的 TopicService, 能够在 asyncio 环境中实现 pub / sub
-    注意!! TopicService 是业务层的实现, 并不是物理层的实现. 物理层的实现要充分考虑 MOSS 架构的多链路双工通讯问题.
-    目前物理层通讯的底座是 Duplex Channel Connection.
-    可以在 Channel 跨进程通讯之间提供统一的 Connection 层.
+    A basic TopicService implementing pub/sub in an asyncio environment.
 
-    这么做的核心原因是, 一个 MOSS 运行时可以通过 ChannelProxy => ChannelProvider 搭建多种异构的通讯通道.
-    而单一的 Topic 依赖一个共同发现的总线, 会导致通讯链路的物理实现锁定.
+    NOTE: TopicService is a business-layer implementation, not a physical-layer one.
+    A physical-layer implementation must fully account for the MOSS architecture's
+    multi-link duplex communication problem. Today the physical transport base is
+    Duplex Channel Connection, which can provide a unified Connection layer between
+    cross-process Channels.
+
+    The core reason for this split: a MOSS runtime can build many heterogeneous
+    communication channels through ChannelProxy => ChannelProvider, whereas a single
+    Topic relying on a commonly discovered bus would lock in the physical
+    implementation of the communication link.
     """
 
     @abstractmethod
     async def start(self):
         """
-        启动 topic service.
+        Start the topic service.
         """
         pass
 
     @abstractmethod
     async def close(self):
         """
-        关闭 Topic Service.
+        Close the Topic Service.
         """
         pass
 
@@ -474,14 +487,14 @@ class TopicService(ABC):
     @abstractmethod
     def is_running(self) -> bool:
         """
-        是否正在运行中.
+        Whether it is currently running.
         """
         pass
 
     @abstractmethod
     def subscribing(self) -> list[TopicName]:
         """
-        所有 subscribe 监听的 topic 名称.
+        The names of all topics listened to via subscribe.
         """
         pass
 
@@ -499,11 +512,11 @@ class TopicService(ABC):
             model: type[TopicModel] | None = None,
     ) -> Subscriber:
         """
-        声明一个 Subscribe, 只有启动后声明才生效.
-        :param model: 监听的 Topic 模型.
-        :param topic_name: 如果不为空, 会去迭代 topic_model.default_topic_name()
-        :param uid: 每个 subscriber 都需要有指定的 uid. 可以自动生成.
-        :param maxsize: 队列的最大数量. 为 0 表示无限, 为 1 表示只接受一个.
+        Declare a subscribe; declarations only take effect after start.
+        :param model: the Topic model to listen to.
+        :param topic_name: if non-empty, falls back to topic_model.default_topic_name()
+        :param uid: every subscriber needs an assigned uid; it can be auto-generated.
+        :param maxsize: max queue size. 0 means unbounded, 1 means accept only one.
 
         >>> async def consumer(service: TopicService):
         >>>     subscriber = service.subscribe_model(...)
@@ -524,7 +537,7 @@ class TopicService(ABC):
             maxsize: int = 0,
     ) -> Subscriber[TOPIC_MODEL]:
         """
-        提供一个强类型校验.
+        Provides strong typing validation.
         """
         topic_name = topic_name or model.default_topic_name()
         return self.subscribe(
@@ -578,9 +591,10 @@ class TopicService(ABC):
             creator: str = "",
     ) -> None:
         """
-        发布一个事件. 会在全链路里广播.
-        这种方式没有声明 topic publisher, 不利于被发现.
-        :raise TopicServiceClosed: topic 已经停止运行.
+        Publish an event. It is broadcast over the whole link.
+
+        This form declares no topic publisher, which makes it hard to discover.
+        :raise TopicClosedError: the topic has stopped running.
         """
         pass
 
@@ -594,11 +608,11 @@ class TopicService(ABC):
             model: type[TopicModel] | None = None,
     ) -> Publisher:
         """
-        创建一个 publisher. 声明自己的存在啊.
-        :param creator: 确认发送者的身份. 基于约定.
+        Create a publisher — a publisher declares its own existence.
+        :param creator: confirms the sender's identity, by convention.
         :param topic_name: the topic name to publish.
-        :param uid: 为发送者建立唯一 id.
-        :param model: 可以加一个强类型校验机制.
+        :param uid: establishes a unique id for the sender.
+        :param model: optionally adds a strong typing validation mechanism.
 
         >>> async def publish(service: TopicService):
         >>>     publisher = service.publisher(...)
@@ -616,7 +630,7 @@ class TopicService(ABC):
             uid: str | None = None,
     ) -> Publisher[TOPIC_MODEL]:
         """
-        提供一个强类型提示.
+        Provides a strong typing hint.
         """
         topic_name = topic_name or model.default_topic_name()
         return self.publisher(

@@ -1,5 +1,5 @@
 """
-将 moss 的 command 体系封装为常用 Agent 的 tool, 为项目兼容性准备.
+Wrap the MOSS command system as tools for common Agent frameworks, for compatibility.
 """
 
 import typing
@@ -20,14 +20,14 @@ CommandTaskCallback = Callable[[CommandTask], None]
 
 class ToolMeta(BaseModel):
     """
-    兼容工具调用的元信息描述.
+    Meta information describing a tool call, for compatibility across tool-calling frameworks.
     """
 
     name: str
     description: str
     strict: bool = Field(
         default=True,
-        description="whether the tool is strictly or not",
+        description="whether the tool is strict or not",
     )
     parameters: dict[str, object] = Field(
         description="the parameters json schema of the tool",

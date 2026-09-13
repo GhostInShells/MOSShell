@@ -1,20 +1,20 @@
 # Concepts
 
-MOSS 架构最核心的抽象设计. 一切实现都基于抽象设计而来.
+The core abstraction designs of the MOSS architecture. Every implementation is built on top of them.
 
-将这些抽象设计放到同一个目录, 方便:
+Keeping them in one directory makes it easy for:
 
-1. 人类理解所有的设计思想.
-1. AI 模型理解设计思想.
-1. 自迭代 AI 根据这些 interface, 能够更好地实现具体的功能.
+1. Humans to understand the whole design.
+2. AI models to understand the design.
+3. Self-iterating AI to implement concrete features against these interfaces.
 
-需要理解 MOSS 架构设计思想, 建议先阅读这些设计文件. 建议的阅读顺序为:
+To understand the MOSS architecture, read these design files first. Suggested order:
 
 1. command
-1. channel
-1. shell
-1. interpreter
-1. errors
-1. speech
-1. states
-1. topics
+2. channel
+3. shell
+4. interpreter
+5. errors
+6. topic
+7. qa
+8. tools

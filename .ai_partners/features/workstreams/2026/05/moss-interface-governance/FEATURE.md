@@ -3,7 +3,7 @@ title: MOSS Interface Governance — 抽象面自解释 + 英文释义 + 注释�
 status: in-progress
 priority: P1
 created: 2026-05-29
-updated: 2026-09-12
+updated: 2026-09-13
 depends: []
 milestone: beta-release
 description: >-
@@ -289,6 +289,23 @@ contracts 被最多模块引用；blueprint 的 matrix 与 mindflow 承载最重
     迁移为 `#` 注释，中文原文保留。
   - 验证：剥离 docstring 后 AST 与改前完全等价（代码零改动）；`py_compile` 通过；
     `get-interface` 反射全英文；`tests/ghoshell_moss/default/blueprint` 测试通过。
+
+- 2026-09-13 (concepts 全量治理，本文件包首轮完成):
+  - `concepts/` 7 个模块 + `README.md`：全部 docstring 与 `Field(description=...)`
+    英文化；中文设计理由按 KD-B 保留为 `#` 注释（迁移非改写）。术语 gloss 仅在每文件
+    首次出现时保留（`Channel (经络, "meridian")`、主轨 `main channel`）。
+  - **过期修复**：`FatalError` 删除 stale 的 `todo: 还没有用起来`（provider /
+    mindflow_in_shell / ghost_runtime 均在使用）；`MOSShell.interpreter()` 的 kind 描述
+    对齐真实 `Literal["clear","append","dry_run"]`（原文混入 `defer_clear`/`run`）；
+    `topic.py` 的 `:raise ClosedError:` / `TopicServiceClosed` 对齐真实类 `TopicClosedError`；
+    `interpreter.py` 的 `raise InterpreterError` 对齐真实类 `InterpretError`（3 处）、
+    `weather`→`whether` typo、`Interpretation.created` 的 `channel meta` 复制粘贴错误；
+    `ChannelRuntime.open_scope` 返回类型描述对齐（`-> None`）；`README.md` 过期文件清单
+    （`speech`/`states`）修正为实际模块。
+  - **解耦**：`interpreter.py` 注释中的 `D13` / `D15` 决策编号前缀删除，理由保留。
+  - 验证：AST 结构（docstring 归一化后）与 HEAD 逐文件完全一致（纯字符串/注释改动，
+    无签名/逻辑/顺序变化）；`py_compile` 通过；`get-interface` 反射全英文。
+    单测按人类指示未跑（纯文本改动，结构等价已证）。
 
 ### 剩余工作面
 
