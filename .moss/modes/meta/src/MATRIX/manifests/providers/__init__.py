@@ -2,6 +2,6 @@
 #
 # Define Provider instances here for capabilities that any cell with a mode
 # context should be able to access.  Initial empty; audio providers go here
-# when ready (TTS / StreamAudioPlayer / AudioCaptureSource / VolcengineASR).
+# when ready (TTS / StreamAudioPlayer / AudioCaptureSource / ASR).
 #
 # HOST.providers can override these via container.register().

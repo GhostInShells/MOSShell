@@ -1,7 +1,7 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末. 2026-09-12: 用 seedasr (豆包2.0) 重构 ASR 为 volcengine_sauc, moss audio listen -m once 实机跑通, 语音对话 Dolores 闭环, 详见文末. 2026-09-14: 听侧归档补齐 — RecognitionSegment 带 clauses (与说侧 SpeechSegment 对称), event/clause/segment 各带 created 墙钟时间戳; 契约层 Clause 更名 RecognitionClause, 详见文末.'
+status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末. 2026-09-12: 用 seedasr (豆包2.0) 重构 ASR 为 volcengine_sauc, moss audio listen -m once 实机跑通, 语音对话 Dolores 闭环, 详见文末. 2026-09-14: 听侧归档补齐 — RecognitionSegment 带 clauses (与说侧 SpeechSegment 对称), event/clause/segment 各带 created 墙钟时间戳; 契约层 Clause 更名 RecognitionClause, 详见文末. 2026-09-14(二): legacy volcengine_asr 退役 (活错配, provider 仍指向它); AudioASRProvider 改指 volcengine_sauc; ASR 默认 provider 改非单例 (TTS 已非单例, Speech 保持单例); listener 控制 channel 待重建 (曾被实现, 09-11 随旧状态机删除), 详见文末.'
 priority: P0
 created: 2026-07-28
 updated: 2026-09-14
@@ -1326,6 +1326,49 @@ push-to-talk(按住聆听松开 commit，可 defer)。
 - 命名: `Clause` → `RecognitionClause`, 与 RecognitionEvent / RecognitionSegment 家族对齐。
 - 证据: `tests/ghoshell_moss/host/listener/volcengine_sauc/test_recognizer.py` 用替身 WS
   驱动完整 turn (audio → event → tail → 段归档), 断言段带本段吐出的 clause。
+
+## 2026-09-14 会话决策（二）— legacy ASR 退役 + 音频 provider openbox 收敛
+
+> 人类架构师 + deepseek-flash。听侧主干本轮只做两件事: 删到可运行, 把音频 provider
+> 在 openbox 定义到位。控制 channel 下一轮重建。
+
+### 退役与收敛
+
+- **删 `host/listener/volcengine_asr/`**(config / protocol / recognizer) 及其 protocol 测试。
+  端到端 ASR 已被 seedasr (`volcengine_sauc`) 取代, 但 provider 仍指向旧实现 —— 是活的错配,
+  不是死代码。
+- **`AudioASRProvider` 改指 `volcengine_sauc`**: factory 由 `VolcengineASRConfig().resolve_env()`
+  改为 `get_or_create_conf(con, VolcengineSaucConfig())`(配置走 ConfigStore, 与 CLI 同源)。
+- **ASR 默认 provider 改为非单例** (`AudioASRProvider.singleton()`: True → **False**):
+  ASR 实例上有每消费者的可变面 (热词/上下文 corpus、error 回调、关闭状态), 单例会把它们
+  跨消费者串起来; 耳朵按"一个使用者一个实例"装配。TTS (`TTSServiceProvider`) 本就非单例,
+  无需动; Speech (`TTSSpeechServiceProvider`) **保持单例**(shell 内"嘴"是共享的: say channel
+  与 clause bridge 都引用 shell 启动的那一个)。`moss manifests providers` 中 ASR 的 Type 由
+  Singleton 变 Factory, 已验。
+- g1 contrib (`ghoshell_moss_contrib/unitree/g1/runtime/listener.py`) 仍 import 旧实现, 人类
+  架构师裁定**本轮有意不管**。
+- `AudioPlayerProvider` (StreamAudioPlayer) 保持 False; 08-12 曾定案改 True, 与本轮方向相反,
+  待重新裁定。
+
+### channel 现状核实: 曾实现, 已删除, 需重建
+
+- 2026-08-05 (8885ab66) 实现过 `VoiceChannel` —— `start`/`stop`/`status` 根命令 + `mode` 子通道
+  (set/current) + `config` 子通道 (show/set), `ChannelInterface.new(container)` 从 IoC 取
+  `VoiceController`。随重命名迁到 `host/listener/channel.py`。
+- **2026-09-11 (95998e6b) 删除**, 与 VoiceController / VoiceStateMachine / VoiceCapture /
+  iter_with_silence_timeout 一同, commit 记 "superseded by this model"。
+- 现树无任何 listener channel; 当前 `ListenerController` 无 `as_channel`。
+  `ListenerNucleus.as_channel()` (set-mode / define-mode / default-mode / pull) 是 ghost 侧
+  mindflow 的核反身面, 不是 node provide 的那条。
+
+### 下一轮
+
+1. **重建 listener 控制 channel** —— 按现契约 (`ListenerController.once/always` + `Listener`),
+   命令面对齐聆听礼仪, 形制参考被删的 VoiceChannel。
+2. **`moss audio listen -m persist`** —— `Matrix.new(persist=True, singleton=True)` 起持续 node:
+   持续聆听 + `session.add_signal` 发 signal + clause 回调发 ClauseTopic + provide channel;
+   并设为 `-m` 默认。**ghost 侧无需新装线**: signal 经 session bus 由
+   `mindflow_in_shell._route_signal_to_mindflow` 路由进已声明的 `listener_nucleus`。
 
 ---
 
