@@ -1,0 +1,28 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background-color: #1a1a1e;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+}
+
+#stage canvas {
+  display: block;
+}
+
+#status {
+  position: fixed;
+  left: 12px;
+  bottom: 10px;
+  color: rgba(255, 255, 255, 0.75);
+  font: 12px/1.4 system-ui, -apple-system, sans-serif;
+  pointer-events: none;
+}

@@ -1,0 +1,13 @@
+[project]
+name = "live2d-avatar"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+# 独立 venv node. 依赖只有底座 + 一个同源 HTTP/WS server —— 渲染在浏览器侧,
+# Python 侧不做任何图形计算, 所以这里没有 live2d/pygame/OpenGL 一类重依赖.
+dependencies = [
+    "ghoshell-moss[matrix]",   # 所有 mesh node 的公共底座
+    "aiohttp>=3.9",            # bridge — 同源页面 + 模型资产 + WebSocket
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../..", editable = true }
