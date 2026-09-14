@@ -333,7 +333,7 @@ interface ThinkingEnterPayload {
 const egoTools = [
   defineTool({
     name: 'moss_wait_next_moment',
-    description: 'Wait for the next MOSS moment. Blocks until MOSS produces the next observation frame.',
+    description: 'Pause and wait for the world to produce the next moment. You resume thinking when it arrives.',
     parameters: {},
     output: {
       schema: { type: 'json' },
@@ -350,7 +350,7 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_wait_action_done',
-    description: 'Wait for already-emitted actions to finish, refresh channel metas, and pull the freshest moment. Returns {moment_ref}; the full moment is injected into the next step context.',
+    description: 'Wait for the actions you already emitted to finish, refresh your view of your channels, and pull the freshest moment. The moment itself appears in your next thought; the result only names it.',
     parameters: {},
     output: {
       schema: { type: 'json' },
@@ -371,11 +371,11 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_interleaved_ctml',
-    description: 'Emit CTML mid-thought so the world can perceive your ongoing thinking, without blocking further thought. Returns "ok" once compiled (or executed if wait_done).',
+    description: 'Emit CTML mid-thought so the world can see your ongoing thinking, without pausing it. With wait_done you wait for the actions to finish; otherwise you only confirm the CTML was accepted and keep thinking.',
     parameters: {
-      ctml: { type: 'string', description: 'The CTML command to execute.' },
-      refresh_meta: { type: 'boolean', default: false, description: 'Refresh channel metas before executing.' },
-      wait_done: { type: 'boolean', default: false, description: 'Wait for full execution instead of just compilation.' },
+      ctml: { type: 'string', description: 'The CTML to emit.' },
+      refresh_meta: { type: 'boolean', default: false, description: 'Refresh your view of your channels first.' },
+      wait_done: { type: 'boolean', default: false, description: 'Wait for the actions to finish; otherwise just confirm the CTML was accepted and keep thinking.' },
     },
     output: {
       schema: { type: 'json' },
@@ -396,9 +396,9 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_reasoning',
-    description: 'Set your reasoning effort for subsequent requests (off/low/high/max). Applies from the next step; provider/model stay under the session/UI authority.',
+    description: 'Choose how deeply to think. off = skip thinking and emit CTML directly (fastest). low/high = think while emitting CTML as you go. max = focus deeply and emit CTML only when done. Your choice stays until you change it.',
     parameters: {
-      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'Reasoning effort: off (no reasoning) / low / high / max.' },
+      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'How deeply to think.' },
     },
     output: {
       schema: { type: 'json' },
@@ -419,7 +419,7 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_observe_status',
-    description: 'Observe the Shell running status now, usually to decide whether to replan. Returns the status description; does not produce a moment.',
+    description: 'Check what your Shell is doing right now, usually to decide whether to replan. Returns a status description; no new moment comes with it.',
     parameters: {},
     output: {
       schema: { type: 'json' },
