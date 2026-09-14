@@ -21,14 +21,18 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Callable, Optional
 
+import janus
+from typing_extensions import Self
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts.asr import ASR, RecognitionEvent, RecognitionPhase
-from ghoshell_moss.contracts.listener import Listener
+from ghoshell_moss.contracts.listener import Listener, ListenerState
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.topic import Publisher, TopicService
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
+from ghoshell_moss.topics import ClauseTopic
 
 __all__ = [
     "ListenerController",
@@ -123,6 +127,21 @@ class ListenerController:
 
         self._mode: ListenEtiquette = ListenEtiquette.OFF
         self._channel: Optional[Channel] = None
+        # clause → topic 装线 (懒, 由 with_topic_service 启动).
+        self._topic_task: Optional[asyncio.Task] = None
+        self._topic_disposer: Optional[Callable[[], None]] = None
+        self._topic_publisher: Optional[Publisher] = None
+
+    # ── 生命周期: controller 托管 listener ──
+
+    async def __aenter__(self) -> Self:
+        await self._listener.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.stop()
+        await self._close_topic_wiring()
+        await self._listener.__aexit__(exc_type, exc_val, exc_tb)
 
     # ── 聆听礼仪 ──
 
@@ -181,6 +200,58 @@ class ListenerController:
             listening=self._listener.is_listening(),
             asr_params=dict(info.params),
         )
+
+    # ── 观察面 (供外部消费者) ──
+
+    def on_recognition_result(self, callback: Callable[[RecognitionEvent], None]) -> Callable[[], None]:
+        """跨 session 观察识别结果 (CLI 渲染等). 委托给 listener."""
+        return self._listener.on_recognition_result(callback)
+
+    async def listen(self) -> ListenerState:
+        """开一条裸 listening session (未启动) — 供 enter 等需手动 commit 的消费者."""
+        return await self._listener.listen()
+
+    # ── clause → topic 装线 ──
+
+    async def with_topic_service(self, service: TopicService) -> None:
+        """懒装线: 把识别到的 CLAUSE 发布成 ClauseTopic 到 ``service``.
+
+        启动一个内部持有的 drain task: ``listener.on_recognition_result`` 的回调把 CLAUSE
+        结果线程安全入队, task 出队 pub. 说话人身份 role 固定 user (听侧).
+        """
+        publisher = service.model_publisher(creator="listener", model=ClauseTopic)
+        queue: janus.Queue = janus.Queue()
+
+        def _on_clause(result: RecognitionEvent) -> None:
+            if result.phase != RecognitionPhase.CLAUSE:
+                return
+            clause = result.clause
+            text = clause.text if clause else result.text
+            queue.sync_q.put_nowait(ClauseTopic(text=text, role="user"))
+
+        async def _drain() -> None:
+            while True:
+                topic = await queue.async_q.get()
+                publisher.pub(topic)
+
+        await publisher.__aenter__()
+        self._topic_disposer = self._listener.on_recognition_result(_on_clause)
+        self._topic_task = asyncio.create_task(_drain())
+        self._topic_publisher = publisher
+
+    async def _close_topic_wiring(self) -> None:
+        """关闭 clause→topic 装线 (cancel drain task + dispose 回调 + 退出 publisher)."""
+        if self._topic_disposer is not None:
+            self._topic_disposer()
+            self._topic_disposer = None
+        if self._topic_task is not None:
+            self._topic_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._topic_task
+            self._topic_task = None
+        if self._topic_publisher is not None:
+            await self._topic_publisher.__aexit__(None, None, None)
+            self._topic_publisher = None
 
     # ── 状态机 (内部, 每个 method 一个) ──
 

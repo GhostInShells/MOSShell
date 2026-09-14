@@ -187,9 +187,9 @@ class MiniAudioCaptureSource(AudioCaptureSource):
     def _find_device(self):
         pattern = self._config.device_pattern.lower()
         try:
-            for d in miniaudio.Devices().capture:
-                if pattern in d.name.lower():
-                    return d.id
+            for d in miniaudio.Devices().get_captures():
+                if pattern in d['name'].lower():
+                    return d['id']
         except Exception as e:
             self._logger.warning("Device enumeration failed: %s, using default", e)
         return None

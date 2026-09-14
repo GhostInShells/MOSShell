@@ -1,13 +1,8 @@
 """listen command — HostListener multi-mode voice input probe.
 
-Three modes, each an independent async state machine. Each mode owns its own
-HostListener (and, for ``enter``, its own prompt-toolkit session) and lifecycle,
-so the state machines can be reused as a GUI node sample with a different
-interaction surface swapped in:
-
-  - once   listen until the first complete segment (one turn), then exit.
-  - always continuous listen, no commit, stop on cancel/timeout.
-  - enter  prompt-toolkit loop: Enter commits a segment.
+The assembly (capture + seedasr + controller) is reused from
+``ghoshell_moss.host.nodes.listener_node``; this file only adds the CLI
+presentation surface (banner / rendering / stats) and the interactive ``enter`` mode.
 
 Recognition results are translated into listener signals (first/clause/tail) and
 broadcast over the session bus — observable cross-process by the signal_receiver node:
@@ -19,13 +14,12 @@ broadcast over the session bus — observable cross-process by the signal_receiv
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import sys
 import time
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Optional
+from typing import Optional
 
 import typer
 from prompt_toolkit import PromptSession
@@ -34,13 +28,11 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
 from ghoshell_moss.contracts.asr import RecognitionPhase, RecognitionEvent
-from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
-from ghoshell_moss.contracts.configs import get_or_create_conf, ConfigStore
+from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket
 from ghoshell_moss.host.listener.controller import ListenerController, PacketTranslator
-from ghoshell_moss.host.listener.listener import HostListener
-from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
+from ghoshell_moss.host.nodes.listener_node import assemble_controller
 
 _MODES = ("once", "always", "enter")
 
@@ -81,12 +73,10 @@ def listen_cmd(
 
 @dataclass
 class _Ctx:
-    """IoI-bound pieces handed to each state machine. The mode builds its own listener."""
+    """Assembled controller + the CLI-only surface (capture, flags)."""
 
+    controller: ListenerController
     capture: AudioCaptureSource
-    asr: VolcengineSaucASR
-    session: Any  # matrix Session — signal broadcast target
-    logger: Any
     timeout: float
     emit_signals: bool
     json_mode: bool
@@ -157,86 +147,61 @@ def _banner(ctx: _Ctx, mode: str, hint: str) -> None:
 
 
 async def _run_once(ctx: _Ctx) -> _Stats | None:
-    """Listen until the first complete segment, then exit. 判停 + 信号发射在 ListenerController."""
-    listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
-    controller = ListenerController(
-        listener=listener, asr=ctx.asr, logger=ctx.logger,
-        signal_broadcast=ctx.session.add_signal if ctx.emit_signals else None,
-    )
     stats = _Stats()
     translator = PacketTranslator()
     handle = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
 
-    async with listener:
-        if "not started" in ctx.capture.device_explain():
-            print_error("capture device not started — may be locked by another process")
-            return None
-        _banner(ctx, "once", "speak now — listening for one utterance, then exit. Ctrl+C to stop.\n")
-
-        listener.on_recognition_result(handle)
-        await controller.once(timeout=ctx.timeout)
+    if "not started" in ctx.capture.device_explain():
+        print_error("capture device not started — may be locked by another process")
+        return None
+    _banner(ctx, "once", "speak now — listening for one utterance, then exit. Ctrl+C to stop.\n")
+    ctx.controller.on_recognition_result(handle)
+    await ctx.controller.once(timeout=ctx.timeout)
     return stats
 
 
 async def _run_always(ctx: _Ctx) -> _Stats | None:
-    """Continuous listen; commit 判停逻辑在 ListenerController, stop on cancel/timeout."""
-    listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
-    controller = ListenerController(
-        listener=listener, asr=ctx.asr, logger=ctx.logger,
-        signal_broadcast=ctx.session.add_signal if ctx.emit_signals else None,
-    )
     stats = _Stats()
     translator = PacketTranslator()
     on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
 
-    async with listener:
-        if "not started" in ctx.capture.device_explain():
-            print_error("capture device not started — may be locked by another process")
-            return None
-        _banner(ctx, "always", "listening continuously — Ctrl+C to stop.\n")
-
-        listener.on_recognition_result(on_result)
-        await controller.always(timeout=ctx.timeout)
-        print_warning("session timeout")
+    if "not started" in ctx.capture.device_explain():
+        print_error("capture device not started — may be locked by another process")
+        return None
+    _banner(ctx, "always", "listening continuously — Ctrl+C to stop.\n")
+    ctx.controller.on_recognition_result(on_result)
+    await ctx.controller.always(timeout=ctx.timeout)
+    print_warning("session timeout")
     return stats
 
 
 async def _run_enter(ctx: _Ctx) -> _Stats | None:
-    """prompt-toolkit loop: Enter commits a segment; recognition renders concurrently."""
-    listener = HostListener(capture=ctx.capture, asr=ctx.asr, logger=ctx.logger)
-    # 无判停 (Enter 手动 commit), 但信号发射仍经 controller: 注入 sink 即在 __init__
-    # 注册 listener 级观察者, 机械地把识别事件翻译成 listener signal 并广播.
-    ListenerController(
-        listener=listener, asr=ctx.asr, logger=ctx.logger,
-        signal_broadcast=ctx.session.add_signal if ctx.emit_signals else None,
-    )
     prompt_session = PromptSession()
     stats = _Stats()
     translator = PacketTranslator()
     on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
 
-    async with listener:
-        if "not started" in ctx.capture.device_explain():
-            print_error("capture device not started — may be locked by another process")
-            return None
-        _banner(ctx, "enter", "press Enter to commit a segment, Ctrl+C to stop.\n")
+    if "not started" in ctx.capture.device_explain():
+        print_error("capture device not started — may be locked by another process")
+        return None
+    _banner(ctx, "enter", "press Enter to commit a segment, Ctrl+C to stop.\n")
 
-        state = await listener.listen()
-        state.on_recognition_result(on_result)
-        async with state:
-            async def _prompt_loop() -> None:
-                with patch_stdout(raw=True):
-                    while True:
-                        try:
-                            await prompt_session.prompt_async("press Enter to commit > ")
-                        except KeyboardInterrupt:
-                            return
-                        state.commit()
+    state = await ctx.controller.listen()
+    state.on_recognition_result(on_result)
+    async with state:
+        async def _prompt_loop() -> None:
+            with patch_stdout(raw=True):
+                while True:
+                    try:
+                        await prompt_session.prompt_async("press Enter to commit > ")
+                    except KeyboardInterrupt:
+                        return
+                    state.commit()
 
-            try:
-                await asyncio.wait_for(_prompt_loop(), timeout=ctx.timeout)
-            except asyncio.TimeoutError:
-                print_warning("session timeout")
+        try:
+            await asyncio.wait_for(_prompt_loop(), timeout=ctx.timeout)
+        except asyncio.TimeoutError:
+            print_warning("session timeout")
     return stats
 
 
@@ -252,25 +217,15 @@ _RUNNERS = {
 
 async def _async_listen(matrix, *, listen_mode: str, timeout: float, device: Optional[str],
                         emit_signals: bool, json_mode: bool):
-    con = matrix.container
-    config = get_or_create_conf(con, VolcengineSaucConfig())
-
-    asr = VolcengineSaucASR(config=config, logger=matrix.logger)
-
-    if device is not None:
-        conf = get_or_create_conf(con, AudioCaptureConfig())
-        conf.device_pattern = device
-
-    capture = con.get(AudioCaptureSource)
+    controller = await assemble_controller(matrix, device=device, emit_signals=emit_signals)
+    capture = matrix.container.get(AudioCaptureSource)
     if capture is None:
         print_error("AudioCaptureSource not registered")
         return None
 
     ctx = _Ctx(
+        controller=controller,
         capture=capture,
-        asr=asr,
-        session=matrix.session,
-        logger=matrix.logger,
         timeout=timeout,
         emit_signals=emit_signals,
         json_mode=json_mode,
@@ -288,12 +243,6 @@ async def _async_listen(matrix, *, listen_mode: str, timeout: float, device: Opt
     if stats is None:
         return duration, 0, 0, interrupted
     return duration, stats.turns, stats.clauses, interrupted
-
-
-def _live_write(text: str) -> None:
-    """Update the current terminal line in-place with partial ASR text."""
-    sys.stdout.write(f"\r\033[K  {text}")
-    sys.stdout.flush()
 
 
 def _commit_line(text: str) -> None:
