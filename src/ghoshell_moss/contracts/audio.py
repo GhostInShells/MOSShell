@@ -105,6 +105,10 @@ class AudioCaptureSource(ABC):
     @abstractmethod
     async def close(self) -> None: ...
 
+    @abstractmethod
+    def is_running(self) -> bool:
+        """Whether the capture device is currently running (start() called and not yet closed)."""
+
     async def __aenter__(self):
         # 启动广播逻辑, 所有生产出来的消费者都会拿到音频, 直到其运行结束.
         await self.start()

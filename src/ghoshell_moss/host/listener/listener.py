@@ -27,7 +27,7 @@ from ghoshell_moss.contracts.audio import (
     AudioSequentialConsumer,
     resample,
 )
-from ghoshell_moss.contracts.listener import Discard, Listener, ListenerState
+from ghoshell_moss.contracts.listener import ASRListener, Discard, ListenerState
 
 __all__ = ["HostListener", "HostListenerState"]
 
@@ -39,7 +39,7 @@ def _make_discard(observers: list, callback) -> Discard:
     return _discard
 
 
-class HostListener(Listener):
+class HostListener(ASRListener):
     """缝合 capture + asr 的耳朵器官. 同一时刻至多一条 session (再次 listen 取消前一条)."""
 
     def __init__(
@@ -56,6 +56,7 @@ class HostListener(Listener):
         self._state: Optional[HostListenerState] = None
         self._started = False
         self._closed = False
+        self._owns_capture = False
         # Listener 级观察者: 订阅即挂当前 session, 并留档给未来 session (listen 时自动装线).
         self._audio_observers: list[Callable[[AudioChunk], None]] = []
         self._result_observers: list[Callable[[RecognitionEvent], None]] = []
@@ -94,7 +95,8 @@ class HostListener(Listener):
             await self._state.__aexit__(None, None, None)
             self._state = None
         await self._asr.close()
-        await self._capture.close()
+        if self._owns_capture:
+            await self._capture.close()
         self._logger.info("%s closed", self._log_prefix)
 
     def is_listening(self) -> bool:
@@ -120,11 +122,20 @@ class HostListener(Listener):
             self._state.on_recognition_segment(callback)
         return _make_discard(self._segment_observers, callback)
 
+    def asr(self) -> ASR:
+        """暴露内部 ASR (与识别流同源) — 供控制层调参/自解释."""
+        return self._asr
+
     async def __aenter__(self) -> Self:
         if not self._started:
             self._started = True
-            await self._capture.start()
-            self._logger.info("%s capture started", self._log_prefix)
+            if self._capture.is_running():
+                # capture 生命周期已由外部持有, 不重复 start/close.
+                self._owns_capture = False
+            else:
+                self._owns_capture = True
+                await self._capture.start()
+                self._logger.info("%s capture started", self._log_prefix)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

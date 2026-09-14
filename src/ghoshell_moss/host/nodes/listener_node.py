@@ -10,12 +10,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
+from ghoshell_moss.contracts.audio import AudioCaptureConfig
 from ghoshell_moss.contracts.configs import get_or_create_conf
+from ghoshell_moss.contracts.listener import ASRListener
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.host.listener.controller import ListenerController
-from ghoshell_moss.host.listener.listener import HostListener
-from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
 
 __all__ = ["assemble_controller", "listener_node", "listener_controller_node"]
 
@@ -32,11 +31,12 @@ async def assemble_controller(
     listener signal), 以及 clause → ClauseTopic (``with_topic_service``).
     """
     con = matrix.container
-    asr = VolcengineSaucASR(config=get_or_create_conf(con, VolcengineSaucConfig()), logger=matrix.logger)
     if device is not None:
         get_or_create_conf(con, AudioCaptureConfig()).device_pattern = device
-    capture = con.get(AudioCaptureSource)
-    listener = HostListener(capture=capture, asr=asr, logger=matrix.logger)
+    listener = con.get(ASRListener)
+    if listener is None:
+        raise RuntimeError("ASRListener not provided by IoC")
+    asr = listener.asr()
     controller = ListenerController(
         listener=listener, asr=asr, logger=matrix.logger,
         signal_broadcast=matrix.session.add_signal if emit_signals else None,

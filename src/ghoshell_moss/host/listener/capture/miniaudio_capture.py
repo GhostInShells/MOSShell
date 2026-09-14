@@ -166,6 +166,9 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._started = False
         self._logger.info("Audio capture closed")
 
+    def is_running(self) -> bool:
+        return self._started
+
     # -- consumer factories --
 
     def new_consumer(self, ring_buffer_frames: int = 64) -> AudioPullLatest:

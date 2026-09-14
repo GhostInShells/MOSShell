@@ -31,6 +31,7 @@ from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServic
 from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerProvider
 from ghoshell_moss.host.providers.audio_capture_provider import AudioCaptureProvider
 from ghoshell_moss.host.providers.audio_asr_provider import AudioASRProvider
+from ghoshell_moss.host.providers.listener_provider import ListenerProvider
 
 __all__ = [
     'moss_session_provider',
@@ -47,6 +48,7 @@ __all__ = [
     'player_service_provider',
     'audio_capture_provider',
     'asr_provider',
+    'listener_provider',
 ]
 
 # zenoh session provider
@@ -90,3 +92,6 @@ audio_capture_provider = AudioCaptureProvider()
 
 # asr (speech recognition)
 asr_provider = AudioASRProvider()
+
+# listener (耳朵 — 缝合 capture + asr)
+listener_provider = ListenerProvider()

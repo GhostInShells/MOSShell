@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Awaitable, Callable
 from typing_extensions import Self
 
-from .asr import RecognitionEvent, RecognitionSegment
+from .asr import ASR, RecognitionEvent, RecognitionSegment
 from .audio import AudioChunk
 
 Discard = Callable[[], None]
@@ -53,6 +53,19 @@ class Listener(ABC):
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         ...
+
+
+class ASRListener(Listener, ABC):
+    """支持 ASR 的 listener — 暴露内部 ASR 供控制层调参/自解释. 对称 TTSSpeech.
+
+    控制层 (ListenerController) 需要访问 listener 内部那份 ASR (非单例, 实例级
+    params) 才能让 configure_asr/VAD 作用到实际识别流; 本接口把这份 ASR 暴露出来,
+    避免控制层经 IoC 二次 fetch 拿到不同实例.
+    """
+
+    @abstractmethod
+    def asr(self) -> ASR:
+        """返回内部持有的 ASR 实例 (与识别流同源)."""
 
 
 class ListenerState(ABC):
