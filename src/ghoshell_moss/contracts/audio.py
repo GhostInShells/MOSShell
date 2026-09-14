@@ -6,8 +6,9 @@ Capture source → raw PCM → transport → consumers (ASR, waveform, AI percep
 from abc import ABC, abstractmethod
 
 import numpy as np
+import threading
 from pydantic import BaseModel, Field
-from typing import AsyncIterator
+from typing import AsyncIterator, NamedTuple
 from typing_extensions import Self
 
 from ghoshell_moss.contracts.configs import ConfigType
@@ -20,6 +21,10 @@ __all__ = [
     "AudioPullLatest",
     "AudioSequentialConsumer",
     "resample",
+    "AudioSpectrum",
+    "compute_spectrum",
+    "LatestAudioWindow",
+    "AUDIO_SAMPLE_INTERVAL",
 ]
 
 
@@ -38,6 +43,95 @@ def resample(audio: np.ndarray, *, origin_rate: int, target_rate: int) -> np.nda
     x_orig = np.arange(len(audio))
     x_target = np.linspace(0, len(audio) - 1, target_len)
     return np.interp(x_target, x_orig, audio).astype(np.int16)
+
+
+# AudioSampleTopic 广播 cadence (秒) — 5Hz. 生产侧 task 按此 tick.
+AUDIO_SAMPLE_INTERVAL = 0.2
+
+
+class AudioSpectrum(NamedTuple):
+    """一帧频谱采样摘要 — compute_spectrum 的返回."""
+
+    rms_db: float
+    peak: float
+    spectrum_bins: list[float]
+    waveform: list[float]
+
+
+def compute_spectrum(
+        pcm: np.ndarray,
+        *,
+        n_bins: int = 16,
+        n_wave: int = 128,
+) -> AudioSpectrum:
+    """从 int16 PCM 计算频谱采样摘要 (听侧/说侧共用).
+
+    - ``rms_db`` / ``peak`` 从原始信号算 (真实响度, 不因加窗衰减).
+    - ``spectrum_bins`` 从去直流 + Hann 窗后的信号 FFT 算, 避免直流分量污染最低频 bin.
+    - ``waveform`` 从去直流信号峰值保持下采样到 ``n_wave`` 点, 供 ECG/心跳线绘制.
+    """
+    f32 = pcm.astype(np.float64) / 32768.0
+    if f32.size == 0:
+        return AudioSpectrum(0.0, 0.0, [-96.0] * n_bins, [0.0] * n_wave)
+
+    rms = float(np.sqrt(np.mean(f32 ** 2)))
+    rms_db = 20.0 * np.log10(max(rms, 1e-10))
+    peak = float(np.max(np.abs(f32)))
+
+    centered = f32 - f32.mean()
+    windowed = centered * np.hanning(centered.size)
+    fft = np.abs(np.fft.rfft(windowed))
+    n_fft = len(fft)
+
+    bins: list[float] = []
+    for i in range(n_bins):
+        lo = int(i * n_fft / n_bins)
+        hi = int((i + 1) * n_fft / n_bins)
+        db = 20.0 * np.log10(max(float(fft[lo:hi].mean()), 1e-10))
+        bins.append(round(db, 1))
+
+    waveform = _downsample_waveform(centered, n_wave)
+    return AudioSpectrum(round(rms_db, 1), round(peak, 3), bins, waveform)
+
+
+def _downsample_waveform(x: np.ndarray, n: int) -> list[float]:
+    """峰值保持下采样到 ``n`` 点: 每桶取 |幅值| 最大的元素, 保留符号."""
+    if x.size < n:
+        return x.tolist()
+    bucket = x.size // n
+    trimmed = x[: bucket * n].reshape(n, bucket)
+    idx = np.argmax(np.abs(trimmed), axis=1)
+    picked = np.take_along_axis(trimmed, idx[:, None], axis=1).ravel()
+    return [round(float(v), 3) for v in picked]
+
+
+class LatestAudioWindow:
+    """线程安全的"最新窗口"累积器 — 累积采样, ``take()`` 时一次性取出并复位.
+
+    供 AudioSampleTopic 生产侧用 (latest-value-wins, 无队列): producer 回调跨线程
+    ``append``, event loop task 每 ``AUDIO_SAMPLE_INTERVAL`` ``take`` 一次.
+    ``stale`` 标记自上次 take 后是否有新数据, 防止无新数据时重发同一窗口.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._chunks: list[np.ndarray] = []
+        self._stale = False
+
+    def append(self, samples: np.ndarray) -> None:
+        with self._lock:
+            self._chunks.append(samples)
+            self._stale = True
+
+    def take(self) -> np.ndarray | None:
+        """若自上次 take 后有新数据, 返回拼接后的窗口并复位; 否则返回 None."""
+        with self._lock:
+            if not self._stale or not self._chunks:
+                return None
+            pcm = np.concatenate(self._chunks)
+            self._chunks.clear()
+            self._stale = False
+            return pcm
 
 
 class AudioFrameMeta(BaseModel):

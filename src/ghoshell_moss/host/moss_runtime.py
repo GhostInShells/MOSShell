@@ -13,6 +13,7 @@ from typing_extensions import Self
 
 from pathlib import Path
 import janus
+import numpy as np
 
 from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.message.message import Message
@@ -29,10 +30,11 @@ from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
+from ghoshell_moss.contracts.audio import AUDIO_SAMPLE_INTERVAL, LatestAudioWindow, compute_spectrum
 from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
-from ghoshell_moss.contracts.speech import Speech, SpeechClause, TTSSpeech
-from ghoshell_moss.topics import ClauseTopic
+from ghoshell_moss.contracts.speech import Speech, SpeechClause, TTSSpeech, PlaybackSample
+from ghoshell_moss.topics import AudioSampleTopic, ClauseTopic
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 
@@ -525,6 +527,65 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 pass
             await publisher.__aexit__(None, None, None)
 
+    @contextlib.asynccontextmanager
+    async def _audio_sample_topic_bridge(self):
+        """说侧旁路生命周期: 把 player 实际播放的音频按 ~200ms 窗口广播成 AudioSampleTopic (role=ghost).
+
+        与 clause 桥对称, 但用 LatestAudioWindow (latest-value-wins, 无队列). player.observe
+        在 audio worker 线程回调, 经窗口的锁 marshal; 周期 task 在事件循环取走算频谱发布.
+        """
+        speech = self._matrix.container.get(Speech)
+        if not isinstance(speech, TTSSpeech):
+            yield
+            return
+
+        speaker_name = self._env.ghost_name
+        player = speech.player()
+        sample_rate = player.sample_rate
+        publisher = self._matrix.session.topics.model_publisher(
+            creator=f"ghost/{speaker_name}",
+            model=AudioSampleTopic,
+        )
+        window = LatestAudioWindow()
+
+        def _on_sample(sample: PlaybackSample) -> None:
+            if not sample.pcm:
+                return
+            window.append(np.frombuffer(sample.pcm, dtype=np.int16))
+
+        async def _emit() -> None:
+            while True:
+                await asyncio.sleep(AUDIO_SAMPLE_INTERVAL)
+                pcm = window.take()
+                if pcm is None:
+                    continue
+                spectrum = compute_spectrum(pcm)
+                publisher.pub(AudioSampleTopic(
+                    role="ghost",
+                    sample_rate=sample_rate,
+                    duration=len(pcm) / sample_rate if sample_rate else 0.0,
+                    rms_db=spectrum.rms_db,
+                    peak=spectrum.peak,
+                    spectrum_bins=spectrum.spectrum_bins,
+                    n_spectrum_bins=len(spectrum.spectrum_bins),
+                    waveform=spectrum.waveform,
+                    n_waveform=len(spectrum.waveform),
+                ))
+
+        await publisher.__aenter__()
+        disposer = player.observe(_on_sample)
+        emit_task = asyncio.create_task(_emit())
+        try:
+            yield
+        finally:
+            disposer()
+            emit_task.cancel()
+            try:
+                await emit_task
+            except asyncio.CancelledError:
+                pass
+            await publisher.__aexit__(None, None, None)
+
     async def __aenter__(self) -> Self:
         if self._started:
             raise RuntimeError('MossRuntime is already started')
@@ -539,6 +600,8 @@ class ShellRuntimeImpl(MOSShellRuntime):
         # 说侧旁路: speech 单例的 clause 结果 → ClauseTopic 广播 (在 shell 起、speech 已
         # start 之后进入; exit stack LIFO 保证它在 shell/speech 关闭之前先退出).
         await self._async_exit_stack.enter_async_context(self._clause_topic_bridge())
+        # 说侧旁路: player 实际播放的音频 → AudioSampleTopic 广播 (对称 clause 桥).
+        await self._async_exit_stack.enter_async_context(self._audio_sample_topic_bridge())
         # bringup: 后台 task 并行发起 mode 声明的 nodes, 不 await — 单个失败记日志,
         # 挂死 (如 probe 不退出) 只钉住自己的 task, 不再阻塞 shell 启动.
         self._start_bringup_tasks()

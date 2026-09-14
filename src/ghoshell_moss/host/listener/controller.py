@@ -22,17 +22,24 @@ from enum import Enum
 from typing import Callable, Optional
 
 import janus
+import numpy as np
 from typing_extensions import Self
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts.asr import ASR, RecognitionEvent, RecognitionPhase
+from ghoshell_moss.contracts.audio import (
+    AUDIO_SAMPLE_INTERVAL,
+    AudioChunk,
+    LatestAudioWindow,
+    compute_spectrum,
+)
 from ghoshell_moss.contracts.listener import Listener, ListenerState
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
-from ghoshell_moss.topics import ClauseTopic
+from ghoshell_moss.topics import AudioSampleTopic, ClauseTopic
 
 __all__ = [
     "ListenerController",
@@ -131,6 +138,10 @@ class ListenerController:
         self._topic_task: Optional[asyncio.Task] = None
         self._topic_disposer: Optional[Callable[[], None]] = None
         self._topic_publisher: Optional[Publisher] = None
+        # audio sample → topic 装线 (懒, 由 with_audio_sample_service 启动).
+        self._audio_sample_task: Optional[asyncio.Task] = None
+        self._audio_sample_disposer: Optional[Callable[[], None]] = None
+        self._audio_sample_publisher: Optional[Publisher] = None
 
     # ── 生命周期: controller 托管 listener ──
 
@@ -141,6 +152,7 @@ class ListenerController:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         self.stop()
         await self._close_topic_wiring()
+        await self._close_audio_sample_wiring()
         await self._listener.__aexit__(exc_type, exc_val, exc_tb)
 
     # ── 聆听礼仪 ──
@@ -252,6 +264,60 @@ class ListenerController:
         if self._topic_publisher is not None:
             await self._topic_publisher.__aexit__(None, None, None)
             self._topic_publisher = None
+
+    # ── audio sample → topic 装线 ──
+
+    async def with_audio_sample_service(self, service: TopicService, *, sample_rate: int) -> None:
+        """把捕获到的音频按 ~200ms 窗口广播成 AudioSampleTopic (role=user).
+
+        与 clause 装线不同: 这是 latest-value-wins, 用 LatestAudioWindow 累积 + stale,
+        一个周期 task 取走当前窗口算频谱发布, 无队列.
+        """
+        publisher = service.model_publisher(creator="listener", model=AudioSampleTopic)
+        window = LatestAudioWindow()
+
+        def _on_chunk(chunk: AudioChunk) -> None:
+            samples = np.asarray(chunk.samples).ravel().astype(np.int16)
+            if samples.size:
+                window.append(samples)
+
+        async def _emit() -> None:
+            while True:
+                await asyncio.sleep(AUDIO_SAMPLE_INTERVAL)
+                pcm = window.take()
+                if pcm is None:
+                    continue
+                spectrum = compute_spectrum(pcm)
+                publisher.pub(AudioSampleTopic(
+                    role="user",
+                    sample_rate=sample_rate,
+                    duration=len(pcm) / sample_rate if sample_rate else 0.0,
+                    rms_db=spectrum.rms_db,
+                    peak=spectrum.peak,
+                    spectrum_bins=spectrum.spectrum_bins,
+                    n_spectrum_bins=len(spectrum.spectrum_bins),
+                    waveform=spectrum.waveform,
+                    n_waveform=len(spectrum.waveform),
+                ))
+
+        await publisher.__aenter__()
+        self._audio_sample_disposer = self._listener.on_audio_chunk(_on_chunk)
+        self._audio_sample_task = asyncio.create_task(_emit())
+        self._audio_sample_publisher = publisher
+
+    async def _close_audio_sample_wiring(self) -> None:
+        """关闭 audio sample → topic 装线 (dispose 回调 + cancel task + 退出 publisher)."""
+        if self._audio_sample_disposer is not None:
+            self._audio_sample_disposer()
+            self._audio_sample_disposer = None
+        if self._audio_sample_task is not None:
+            self._audio_sample_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._audio_sample_task
+            self._audio_sample_task = None
+        if self._audio_sample_publisher is not None:
+            await self._audio_sample_publisher.__aexit__(None, None, None)
+            self._audio_sample_publisher = None
 
     # ── 状态机 (内部, 每个 method 一个) ──
 

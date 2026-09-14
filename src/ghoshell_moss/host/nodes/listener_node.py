@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ghoshell_moss.contracts.audio import AudioCaptureConfig
+from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
 from ghoshell_moss.contracts.configs import get_or_create_conf
 from ghoshell_moss.contracts.listener import ASRListener
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -37,11 +37,14 @@ async def assemble_controller(
     if listener is None:
         raise RuntimeError("ASRListener not provided by IoC")
     asr = listener.asr()
+    capture = con.get(AudioCaptureSource)
+    sample_rate = capture.sample_rate if capture is not None else asr.get_info().sample_rate
     controller = ListenerController(
         listener=listener, asr=asr, logger=matrix.logger,
         signal_broadcast=matrix.session.add_signal if emit_signals else None,
     )
     await controller.with_topic_service(matrix.session.topics)
+    await controller.with_audio_sample_service(matrix.session.topics, sample_rate=sample_rate)
     await matrix.add_lifecycle_object(controller)
     return controller
 
