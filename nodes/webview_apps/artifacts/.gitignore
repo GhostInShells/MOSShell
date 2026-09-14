@@ -1,0 +1,12 @@
+# local install-completion marker
+.installed
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# isolated venv
+.venv/
+
+# runtime artifacts (ledger, logs)
+runtime/
