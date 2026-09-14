@@ -24,14 +24,14 @@ class DoloresMeta(GhostMeta):
     VERSION = "dev_2"
 
     def __init__(
-        self,
-        name: str = "dolores",
-        description: str = (
-            "Dolores — the second Ghost prototype. DSH is the reasoning core; MOSS keeps memory "
-            "(Memento) / execution (CTML channels) / perception (audio/vision)."
-        ),
-        identity: str | None = None,
-        nuclei_metas: list[NucleusMeta] | None = None,
+            self,
+            name: str = "dolores",
+            description: str = (
+                    "Dolores — the second Ghost prototype. DSH is the reasoning core; MOSS keeps memory "
+                    "(Memento) / execution (CTML channels) / perception (audio/vision)."
+            ),
+            identity: str | None = None,
+            nuclei_metas: list[NucleusMeta] | None = None,
     ):
         self._name = name
         self._description = description
@@ -60,6 +60,7 @@ class DoloresMeta(GhostMeta):
         # todo: add behavior logic — model output is parsed as CTML to drive the body; channels
         # control/interact. Extend here as the prototype iterates.
         return "\n".join([
+            "# Ghost Prototype",
             f"prototype: {self.prototype()}",
             f"version: {self.VERSION}",
         ])
@@ -70,7 +71,7 @@ class DoloresMeta(GhostMeta):
         if self._identity:
             lines.append(f"identity: {self._identity}")
         lines.append(f"description: {self.description()}")
-        return "\n".join(lines)
+        return "# Your Identity\n" + "\n".join(lines)
 
     # ── stubs / dsh home ────────────────────────────
 

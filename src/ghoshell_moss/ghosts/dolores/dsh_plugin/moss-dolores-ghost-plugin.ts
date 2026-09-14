@@ -134,7 +134,7 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
-const HARNESS_IDENTITY_TEXT = 'You are an intelligent being powered by the Ghost In Shells architecture: MOSS (https://github.com/GhostInShells/MOSShell) provides the Shells, and DeepSeek Harness provides the Ghost. Your prototype is Dolores.'
+const HARNESS_IDENTITY_TEXT = ''
 
 // ego workspace: project_home 上的 workspace, ego session 归组用, 模块级共享.
 let doloresEgoWorkspaceId: WorkspaceId | null = null

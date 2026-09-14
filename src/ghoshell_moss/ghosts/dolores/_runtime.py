@@ -28,7 +28,10 @@ if TYPE_CHECKING:
 
 __all__ = ["Dolores"]
 
-from ._prompts import dolores_inception, dolores_protocol_notice, dolores_terminology
+from ._prompts import (
+    dolores_inception, dolores_output_protocol_notice, dolores_terminology,
+    DOLORES_INSTRUCTION_END,
+)
 
 
 class Dolores(Ghost):
@@ -89,19 +92,21 @@ class Dolores(Ghost):
         parts: list[str] = []
         if self._moss_prompter is not None:
             parts.append(self._moss_prompter.moss_meta_instruction())
-        elif self._base_instruction:
-            parts.append(self._base_instruction)
 
-        parts.append(self._meta.prototype_instruction())
         parts.append(dolores_terminology())
         parts.append(self._dolores_inception())
+        parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
-        if self._moss_prompter is not None:
-            parts.append(self._moss_prompter.project_instruction())
-            parts.append(self._moss_prompter.mode_instruction())
+        if self._base_instruction:
+            parts.append(self._base_instruction)
 
-        parts.append(dolores_protocol_notice())
-        return "\n\n".join(parts)
+        if self._moss_prompter is not None:
+            parts.append("<!-- current moss project -->\n" + self._moss_prompter.project_instruction())
+            parts.append("<!-- current moss mode -->\n" + self._moss_prompter.mode_instruction())
+
+        parts.append(dolores_output_protocol_notice())
+        parts.append(DOLORES_INSTRUCTION_END)
+        return "\n---\n".join([part.strip() for part in parts]) + "\n<!-- deepseek harness instruction -->"
 
     def _dolores_inception(self) -> str:
         """The dolores persona/etiquette layer — replaced by a template file if the ego config has one; slots carry runtime paths."""
