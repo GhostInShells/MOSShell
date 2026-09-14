@@ -5,11 +5,12 @@ description: Mindflow 反身控制 Channel — 将 mindflow 从 opaque 调度器
   自解释 + 注意力管理 + 优先级干预 + nucleus pull.
 milestone: 0.1.0
 priority: P1
-status: completed
-status_note: '拆解完成: 治理面(set-priority/bars)下移 gated attention 子通道, 顶层留 status+pull;
-  删 enable_red_dot+红点; gate 贯通构造面; notice 重叠作已知 follow-up'
+status: in_progress
+status_note: '回退 attention 子通道: attention 是 mindflow 自身持有的状态, 名字错位; 治理能力
+  是常驻一等能力, 折叠进 gate 模型不会用. 治理命令回父 channel, nucleus 讯息折叠进
+  nuclei 方法, 治理状态走 notice(温数据). gate 默认 true 只折叠 nucleus 子通道.'
 title: Mindflow Channel
-updated: '2026-09-13'
+updated: '2026-09-14'
 ---
 
 # Mindflow Channel
@@ -303,3 +304,32 @@ virtual child; notice 三处重叠合并; 删 enable_red_dot + context 红点块
 更新寻址到 ``mindflow.attention``。mindflow 360 / channels+ctml+blueprint 379 全绿。
 
 **待做**: notice 三处重叠合并 (notice 现在既列 nuclei, gate 目录也列 gated children)。
+### Step 2 回退修正 (2026-09-14): 治理面回父 channel, 不折叠
+
+上一轮把注意力治理下移为 gated ``attention`` 子通道做砸了, 全回退:
+
+- **名字错位**: ``attention`` 是 mindflow 自身持有的状态 (``blueprint/mindflow.py`` 的调度
+  单元, Impulse 创建 → 思考/执行结束退出). 一个治理子通道不该占这个词.
+- **折叠即弃用**: 注意力治理 (尤其"运行时提升当前注意力") 是 mindflow channel 的**一等能力**.
+  一旦折叠进 gate, 模型不会主动 mount, 能力等于不存在. gate 只该折叠"按需展开的细节"
+  (各 nucleus 的子通道), 不该折叠 mindflow 自身的控制面.
+- **常驻面收敛回父 channel**: ``set-priority`` / ``set-signal-bar`` / ``set-impulse-bar``
+  回到父 channel 常驻; 顶层还有 ``status``(当前 attention 自省) + ``nuclei`` + ``pull``(默认关).
+- **nucleus 讯息折叠进 ``nuclei`` 方法**: 之前 notice / status / context 三处各列一遍 nuclei,
+  收敛成一个 ``nuclei`` 命令.
+- **治理状态是温数据, 走 notice**: 状态级变更 (当前 attention / 水位) 不进每帧
+  ``context_messages``(热面), 走 notice 随 refresh 差分投递. ``context_messages`` 整个去掉.
+- **gate 默认 true**: ``build_mindflow_channel`` / ``AbsMindflow`` / ``BaseMindflow`` /
+  ``new_default_mindflow`` 默认 `gate=True`, 但 gate 现在只折叠 nucleus 子通道.
+
+CTML 寻址回 ``<mindflow:set-*/>``. 测试 ``test_mindflow_channel.py`` / ctml / shell_integration
+相应改写; mindflow 361 / channels+blueprint 391 全绿.
+
+### Step 2 追加修正 (2026-09-14): 删 pull + bar getter 上接口
+
+- **删 ``pull``**: 原 ``pull`` 命令手搓 `nucleus.attended()` + `attention.absorb_impulse()`,
+  把仲裁期运行时方法塞进控制面, 属于在 channel 里独立创作一套感知语义. 这种重要逻辑
+  不能散落在 channel, 先删, 后续由人类在 mindflow 接口上重做 pull/poll.
+- **bar getter 上接口**: ``signal_priority_bar()`` / ``impulse_priority_bar()`` 原本只挂在
+  实现 ``AbsMindflow``, 是纯 hack. 已补进 blueprint ``Mindflow`` ABC (默认 ``BACKGROUND``,
+  与 setter 同款 "反身性 channel 准备" 面).

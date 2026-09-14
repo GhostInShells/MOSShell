@@ -1222,6 +1222,20 @@ class Mindflow(ABC):
         # 函数为 控制台和反身性 channel 准备. 默认不实现.
         pass
 
+    def signal_priority_bar(self) -> Priority:
+        """
+        当前 signal 优先级门槛 (水位). 低于它的 signal 会被直接丢弃.
+        """
+        # 函数为 控制台和反身性 channel 准备. 默认不实现.
+        return Priority.BACKGROUND
+
+    def impulse_priority_bar(self) -> Priority:
+        """
+        当前 impulse 优先级门槛 (水位). 低于它的 impulse 没有挑战资格.
+        """
+        # 函数为 控制台和反身性 channel 准备. 默认不实现.
+        return Priority.BACKGROUND
+
     @abstractmethod
     async def add_nucleus(self, nucleus: Nucleus, override: bool = False) -> Self:
         """

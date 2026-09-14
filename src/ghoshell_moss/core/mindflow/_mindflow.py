@@ -190,7 +190,7 @@ class AbsMindflow(Mindflow, ABC):
             logger: logging.Logger | None = None,
             raise_nucleus_start_error: bool = True,
             max_moments_size: int = 100,
-            gate: bool = False,
+            gate: bool = True,
     ):
         # Nucleus 可能只是一个接口. 内部有别的技术实现.
         self._description = description
@@ -1273,7 +1273,7 @@ class BaseMindflow(AbsMindflow):
             system_floor_strength: float = 0.0,
             source_escalation: float = 1.1,
             max_protection_time: float = 3.0,
-            gate: bool = False,
+            gate: bool = True,
     ):
         super().__init__(*nuclei, logger=logger, raise_nucleus_start_error=raise_nucleus_start_error, gate=gate)
         self._system_floor_strength = system_floor_strength
@@ -1297,7 +1297,7 @@ class BaseMindflow(AbsMindflow):
 def new_default_mindflow(
         *nuclei: Nucleus,
         logger: logging.Logger | None = None,
-        gate: bool = False,
+        gate: bool = True,
 ) -> BaseMindflow:
     from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus
     return BaseMindflow(
