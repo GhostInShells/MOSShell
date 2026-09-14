@@ -1,0 +1,74 @@
+---
+created: 2026-09-14
+depends: []
+description: 问题集即思维框架 — 以一组问题从上下文抽取结构化自识，作为推理的基础；跨 compact 存活的会话级认知。
+milestone: null
+priority: P2
+status: completed
+status_note: frame channel + kernel instruction re-render landed; dolores wiring deferred
+title: Thinking Frame
+updated: '2026-09-15'
+---
+
+# Thinking Frame — 问题集即思维框架
+
+> Use `moss features set-status thinking-frame <status> -m "note"` to update state.
+> See [TOPOLOGY.md](TOPOLOGY.md) for directory layout and [README.md](README.md) for the full convention.
+
+## Motivation
+
+MOSS 是 duplex 实时运行时，上下文会被 compact。模型需要一个**跨 compact 存活的、会话级的自我认知**：不是新的记忆系统，也不是 checkpoint——而是一组问题，模型从自己的上下文里抽取答案，形成"我现在在哪 / 在和谁 / 在做什么 / 什么不能忘"的结构化自识，作为推理的基础。
+
+blackout 实验是它的智力检验器：失忆但保留认知能力时，重建处境的速度取决于能否现场设计一组好问题。**问题集是一组基**——它张成"关于处境，什么值得知道"的空间；问对了问题，答案已经在上下文里，只是需要被抽出来变成显式、可推理的结构。
+
+## Design Index
+
+- 格式规范: `src/ghoshell_moss/channels/frames/SPECIFICATION.md`
+- 实现: `src/ghoshell_moss/channels/frame_channel.py`
+- 种子帧: `src/ghoshell_moss/channels/frames/orientation.frame.md`
+- 测试: `tests/ghoshell_moss/channels/test_frame_channel.py`
+
+## Key Decisions
+
+以下决策与推导中剪掉的元讨论一一对应（剪掉的都不是错的，是"选这条路就不要那条")。
+
+1. **问题即索引，答案是缓存——资产是问题，不是答案。** 答案原则上可由上下文重推，不必持久化；持久化它只为了身份稳定（缓存→自洽）。真正可复用、可导出、跨会话进化的是**问题框架**。channel 是一个函数：框架 = 函数定义，上下文 = 实参，答案 = 返回值缓存。
+
+2. **抽取框架，不是决策框架。** 每个问题必须"能从上下文答出来"。"接下来该做什么"不是框架问题，是推理问题。这条把 channel 挡在 todo/plan 之外，也让"答案已经在上下文存在了"成立。失败模式是**漏**（omission），不是**编**（confabulation）——对一个自我模型，漏比编安全一个量级。
+
+3. **四个面正交。** 认知架构四套机制正交：① session 级行为模式（本 feature）② 历史对话轨迹（memento）③ 可变提示词 + ground ④ 存在主义轨迹（日记→年记→存在性记录）。正交意味着**不共享管道**——本 channel 不走 `memories`，闭包持有数据，走自己的 tier。dolores 的 ego/memento 是 ② 不是 ①。
+
+4. **命令即真相。** 命令的效果可信，返回值只需 ack（成功/参数错），不回吐"问题→回答→状态"。`git commit` 完还要 `git log` 验一下才是反模式。**tier 的自动呈现**（跨 compact 生存）与**命令返回值**（每次调用的最小 ack）是两回事，不能混。完成那一刻的 `nexts` hint 挂在返回值上（瞬时、模型主动那一刻），**同时也在 instruction 里重呈现**（跨 compact 持久）——它是提示不是强制注意，模型自行决定是否跟随。
+
+5. **发现替代边。** 图不是要撰写的数据结构——**文件系统就是索引**。构建期指定 entry，其余由模型 glob 同后缀文件自行打开。没有显式边 → 没有环规则、没有"值得打开"的选择机制。与 features / ground 同构（`glob("**/FEATURE.md")`）。显式边反而有害：改名/移动就得同步维护，文件立刻变负债。
+
+6. **完成无 sentinel。** resolved = 该 index 被 `resolve` 调用过；`unknown` 是一等答案（自由文本，通道不解释）。完成 = 全部 resolved。**unresolved 集合是通道最值钱的产出**（盲区），status 里顶到最前。
+
+7. **label = 文件路径。** 唯一性由文件系统给，不引入独立 `id`。frontmatter 只有 `description` + `nexts`（`nexts` 是分岔/多选提示，机制不选取）。
+
+8. **spec 即自迭代闭环。** `spec()` 返回格式规范（按需拉，不常驻 instruction——渐进式披露用在 meta 上）。模型 `spec()` → 写新 `.frame.md` → `load`。帧文件 = 约定 + **段落即问题**（blank-line 分隔，顺序即 index），零转义、零 YAML 陷阱（问题文本里有 `: ` 会被 YAML 解析成 map，所以问题不能走 YAML）。
+
+9. **instruction 从"生成一次"改为"每 refresh 重渲染"（内核改动，本 channel 暴露）。** 答案要在 compact 后存活，但 instruction 原在 `py_channel` 里 startup 生成一次就冻死（`_on_startup_instruction`），无法承载可演化的 durable 面。改为 `refresh_metas` 时重调 `get_instruction()`。**冷 ≠ 冻结**：冷是"在 context 头部前缀位置 + 跨 compact 持久"，不是"内容不可变"。配套：`channel_builder` 的 "Generated once / never re-sent" 注释已更正；`test_shell_trajectory` 补 `test_instruction_re_renders_at_epoch_start_point`。这条内核契约的暴露，收益超出 frame 本身。
+
+## Deferred (not this feature)
+
+channel 本体 + 内核改动已落地（9 项测试）。以下延后，dolores 接线可能不走 feature：
+
+- **dolores 接线** — 把 `new_frame_channel(...)` 挂进 dolores ghost 树，让 ghost 里的"你"自己改帧。
+- **真实会话 dogfooding** — 挂上后在一个真实 session 里 resolve、compact、验证答案存活。
+- **命名未定** — "frame" 是否够自解释存疑。若改名，动 feature 名 / channel 名 / 后缀 / 标签，成本低。
+- **框架库** — 目前只有 `orientation` 一个种子帧。真正的价值在问题框架的积累与复用。
+
+## References
+
+- 发现替代边: `src/ghoshell_moss/core/codex/_features.py`（`glob("**/FEATURE.md")`）；ground 的 walk-up 见 `src/ghoshell_moss/ground/_chain.py`
+- epoch 重供 / 跨 compact: `src/ghoshell_moss/core/blueprint/host.py`（trajectory `epoch_start_point`）
+- 机制 ②（对话轨迹）的私有先例: `src/ghoshell_moss/ghosts/dolores/_ego_memento.py`
+
+## Implementation Notes
+
+- **命令面**: `load(path)` / `resolve(label, index, answer)` / `status(label)` / `spec()`。
+- **呈现分层**: 答案 + 礼仪都走 `instruction`（cold，经内核改造每 refresh 重渲染，跨 compact 经 `epoch_start_point` 重供）。无 notice——未压缩上下文里答案已在 transcript，不需要温数据重发。
+- **entry 在构造期加载**（同步读文件，失败时错误进 instruction，不炸 channel 树），对齐 ground 的"构造期即物化"。
+- **nexts 存储为 root-relative**，这样完成的 hint 直接可喂给 `load`。
+- 测试: `tests/ghoshell_moss/channels/test_frame_channel.py`（9 项，覆盖问题形状解析 / 最小 ack / 完成 hint 单次 / unknown 一等答案 / unresolved 优先 / 多帧 load / 坏 frontmatter 报错 / spec）。

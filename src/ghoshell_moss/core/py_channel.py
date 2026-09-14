@@ -580,7 +580,6 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             self.unmount_child,
             available=lambda: self._gate and len(self._opened_children) > 0,
         )
-        self._on_startup_instruction: str = ''
         super().__init__(
             channel=channel,
             container=container,
@@ -739,6 +738,7 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         # 通知所有 state/module: 即将重新生成 metas, 先做 async 状态同步
         await self.on_refresh_meta()
 
+        instruction = await self._main_state.get_instruction()
         dynamic = self.is_dynamic()
         name = self._name
         description = self.channel.description()
@@ -774,7 +774,7 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 current_state=self._current_state_name or '',
                 modules=list(self._modules.keys()),
                 context=new_context_messages,
-                instruction=self._on_startup_instruction,
+                instruction=instruction,
                 notice=notice_text,
             )
             meta.dynamic = dynamic
@@ -997,7 +997,6 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         # 准备 start up 的运行.
         main_state = self._main_state
         await main_state.on_startup()
-        self._on_startup_instruction = await main_state.get_instruction()
 
         # 启动所有永久能力模块。
         for module in self._modules.values():

@@ -393,9 +393,11 @@ class Builder(Facade):
         """
         decorator
         Register a string or a function that produces this channel's instruction /
-        system prompt. Generated once.
+        system prompt. Re-rendered on each meta refresh — a dynamic instruction may
+        evolve with the channel's state and survive context rebuild.
 
-        Cold data: sent once, never re-sent.
+        Cold data: held at the head of the context; re-emitted by the trajectory only
+        when its text changes (facade delta).
 
         Red line: never restate which commands this channel has — command signatures are
         already reflected to the model by interface (Code as Prompt), and a hand-written

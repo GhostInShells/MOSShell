@@ -351,6 +351,34 @@ async def test_first_frame_emits_channel_added_after_baseline():
 
 
 @pytest.mark.asyncio
+async def test_instruction_re_renders_at_epoch_start_point():
+    """instruction 不再 startup 冻结 — refresh 重渲染, 新 epoch 的全量 facade 带新内容.
+
+    锁「durable 面可演化」不变式: instruction 注册一个读可变状态的函数, 状态变了之后
+    refresh + 重建 epoch, ``epoch_start_point`` 交付的全量 facade 必须是新 instruction
+    文本 (而不是一直停在 startup 快照)。
+    """
+    from ghoshell_moss.core.blueprint.channel_builder import new_channel
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell("traj_instruction")
+    chan = new_channel(name="chan")
+    store = {"v": "initial"}
+    chan.build.instruction(lambda: f"value={store['v']}")
+    shell.main_channel.import_channels(chan)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            facade = trajectory.epoch_start_point(refresh=True)
+            assert "value=initial" in facade
+            store["v"] = "changed"
+            await shell.refresh_metas()
+            facade = trajectory.epoch_start_point(refresh=True)
+            assert "value=changed" in facade
+            assert "value=initial" not in facade
+
+
+@pytest.mark.asyncio
 async def test_trajectory_empty_drain():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
     from ghoshell_moss.core.py_channel import PyChannel
