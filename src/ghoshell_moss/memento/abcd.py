@@ -80,10 +80,18 @@ class Note(BaseModel):
     side-channel: 生产者 (也是消费者) 自己写读, 生产它慢一点没关系, 不依赖严格有序.
     同 ``commit_id`` 后写覆盖前写 (last-wins). message 是 commit 的唯一 message;
     title = 首行 (截断), body = 其余. 篇幅由生产者保障 (准入责任在生产者).
+
+    ``error`` 非空 = 这条 message 是**坏占位**: 旁路生产致命失败时写的终态标记 (readonly,
+    不再重试). 该 commit 仍作为一条 message 进 view (模型须感知摘要里出现过坏 commit),
+    但 view 折叠时连续坏 commit 只保留第一个 (见 ``BranchView``).
     """
 
     commit_id: str = Field(...)
     message: str = Field(default="", description="commit 的摘要 message (对齐 git -m).")
+    error: str = Field(
+        default="",
+        description="坏占位标记; 非空表示 message 非真摘要 (终态 readonly, 不再重试).",
+    )
 
 
 class BranchRef(BaseModel):
@@ -166,12 +174,25 @@ class CommitView(BaseModel):
         lines = self.message.split("\n")
         return "\n".join(lines[1:])
 
+    @property
+    def error(self) -> str:
+        """坏占位标记 (空 = 真摘要或未生产)."""
+        return self.note.error if self.note is not None else ""
+
+    @property
+    def is_broken(self) -> bool:
+        """该 commit 的 message 是否为坏占位 (旁路致命失败的终态)."""
+        return bool(self.error)
+
 
 class BranchView(BaseModel):
     """branch 的预算化上下文视图 — 读支的投影.
 
     折叠策略 (近详远粗, 确定性): ``latest`` 最近 N 条给 detail; ``history`` 更早的
     commits 折叠为摘要 (优先 Note); ``previous`` 是 fork 父支的压实 recap.
+
+    坏 commit (``Note.error`` 非空) 仍进 ``history`` / ``latest`` 让模型感知, 但**连续**
+    多个坏 commit 只保留第一个 (成段坏占位不刷屏).
 
     预算保证: 生产者保障 Note message 篇幅 (准入); render 动作由消费者签发. memento
     侧不强制预算, 只做投影.
@@ -273,14 +294,15 @@ class Branch(ABC):
         """协程锁写操作, 与 ``afork`` 互锁: 持锁下执行 commit."""
 
     @abstractmethod
-    def note(self, commit_id: str, message: str) -> Note:
+    def note(self, commit_id: str, message: str, error: str = "") -> Note:
         """step 2 (旁路, 可迟): 为已有 commit_id 写唯一摘要 message, last-wins.
 
         由后台/生产者在关键路径外、稍后调用; 篇幅由生产者保障 (准入). title = 首行派生.
+        ``error`` 非空 = 坏占位终态 (旁路致命失败), 该 commit 仍进 view 但不重试.
         """
 
     @abstractmethod
-    async def anote(self, commit_id: str, message: str) -> Note:
+    async def anote(self, commit_id: str, message: str, error: str = "") -> Note:
         """协程锁写操作, 与 ``afork`` 互锁: 持锁下执行 note."""
 
     @abstractmethod

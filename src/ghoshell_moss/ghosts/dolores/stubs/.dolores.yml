@@ -10,3 +10,8 @@ dsh:
   profile: web
   port: 3083
   # home 省略 → 默认 ghost_home/.dsh
+
+memento:
+  # 验证期: force_tokens=0 → 每 turn commit (方便检测锚点数据). 稳定后调回正常阈值 (如 100000).
+  force_tokens: 0
+  warn_tokens: 50000

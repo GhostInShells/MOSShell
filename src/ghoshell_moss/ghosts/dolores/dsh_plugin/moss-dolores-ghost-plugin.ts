@@ -134,7 +134,18 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
+// 旁路 note 生产 (commit 的慢腿): 冷 seed 独立 one-shot, 不走 subagent, 不 attach workspace.
+const DOLORES_NOTE_RUN = `${DOLORES_API_ROOT}/note/run`
+// 旁路 note 用的最小 preset (repo 自持, 无工具 = read-only by construction).
+const DOLORES_NOTE_PRESET = 'dolores-note'
 const HARNESS_IDENTITY_TEXT = ''
+
+// 旁路 note 的默认 prompt — 摘要进 memento 当 commit 的 message (首行 title, 其余 body).
+const NOTE_PROMPT = [
+  '把上面这段对话压缩成一条 commit 摘要, 供未来的自己检索. 只输出摘要本身, 不要客套.',
+  '第一行 = 一句话标题 (<= 30 字); 之后每行一条要点, 覆盖: 做了什么 / 定了什么 / 下一步.',
+  '整条 <= 400 字. 不复述原文, 只留可复用的结论.',
+].join('\n')
 
 // ego workspace: project_home 上的 workspace, ego session 归组用, 模块级共享.
 let doloresEgoWorkspaceId: WorkspaceId | null = null
@@ -316,6 +327,8 @@ interface ThinkingEnterPayload {
   }
   /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
   epoch?: MomentContentPart[]
+  /** memento notice (commit 提醒等) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn. */
+  notices?: string[]
   effort: string
   /**
    * observe 续帧标记 (python 侧判定): 这一帧是「上一轮的回声要求再看一眼」产生的自我延续,
@@ -740,13 +753,17 @@ export function apply(ctx: Context) {
         // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).
         const context = await durableMomentContent(ctx, body.moment?.context ?? [])
         const inputs = await durableMomentContent(ctx, body.moment?.inputs ?? [])
+        // notices (memento commit 提醒等) — 纯文本, 与 moment 同级注入; 只告知不驱动 turn.
+        const notices = Array.isArray(body.notices)
+          ? body.notices.filter((notice): notice is string => typeof notice === 'string' && notice !== '')
+          : []
         // none: 只吸收背景不驱动 turn — epoch/context 缓冲到 perStep 挂载点, 不 openThinking 不
         // steer, 等下一次真实 pre-step 消费. inputs 属 turn 驱动, none 帧不送.
         if (body.effort === 'none') {
           const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
             ? await durableMomentContent(ctx, body.epoch)
             : undefined
-          const frame = buildMomentFrame(epoch, context)
+          const frame = buildMomentFrame(epoch, context, notices)
           if (frame.length > 0) {
             pendingMoments.push({ messages: frame })
           }
@@ -761,7 +778,7 @@ export function apply(ctx: Context) {
         const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
           ? await durableMomentContent(ctx, body.epoch)
           : undefined
-        const frame = buildMomentFrame(epoch, context)
+        const frame = buildMomentFrame(epoch, context, notices)
         if (frame.length > 0) {
           pendingMoments.push({ messages: frame })
         }
@@ -909,6 +926,103 @@ export function apply(ctx: Context) {
       }
     },
   })
+
+  // ── 旁路 note 生产 (commit 的慢腿) ─────────────────────────────────────
+  // 入参 {ref, prompt?}. 冷读源 session 的 log → 尾部截断成 verbatim seed → 新建一个
+  // 无工具 (read-only) 的 one-shot agent → 跑一轮 → 读最后一条 assistant text → dispose.
+  // 不走 subagent (child 结果回流会驱动父 turn = 红线); 不 attach workspace (不污染工作区).
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_NOTE_RUN,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req)
+        const ref = body.ref as { session_id?: unknown; end_turn?: unknown; end_seq?: unknown } | undefined
+        const sourceId = typeof ref?.session_id === 'string' ? ref.session_id : ''
+        const endTurn = typeof ref?.end_turn === 'number' ? ref.end_turn : -1
+        const endSeq = typeof ref?.end_seq === 'number' ? ref.end_seq : undefined
+        if (sourceId === '') throw new Error('ref.session_id must be a non-empty string')
+        if (endTurn < 0) throw new Error('ref.end_turn must be a non-negative integer')
+        const source = ctx.agents.get(sourceId)  // 冷读 live session 的 log (不 materialize)
+        if (source === undefined) throw new Error(`no live session for ${sourceId}`)
+        const prompt = typeof body.prompt === 'string' && body.prompt !== '' ? body.prompt : NOTE_PROMPT
+        // 0.1.5: log 走 session.snapshotEvents() (Session 无 `events` 访问器).
+        const seed = seedPrefix(source.session.snapshotEvents(), endTurn, endSeq)
+        const handle = await ctx.agents.create({
+          sessionId: randomUUID(),
+          seed,
+          meta: { cwd: process.cwd(), agentPreset: DOLORES_NOTE_PRESET, seedLength: seed.length },
+          setup: async (agentCtx: Context) => {
+            await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_NOTE_PRESET)
+          },
+        })
+        try {
+          handle.agent.followup(createUserMessage({
+            content: [{ type: 'text', text: prompt }],
+            source: { kind: 'plugin', plugin: name },
+          }))
+          await handle.agent.whenIdle()
+          const message = lastAssistantText(handle.agent)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ message }))
+        } finally {
+          // dispose 必须 (dsh 活 session 无 LRU, 不销毁会泄漏); dispose 不删 log.
+          await handle.dispose()
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+}
+
+/**
+ * seedPrefix — ref → verbatim seed (源 log 的 seq 前缀). 镜像 apiproxy 的 fork cut:
+ * 切在 end_seq (缺省时按 end_turn 反查 turn/end), 再向后吞 trailing standalone
+ * (session/title / injection 等) 到下一个 turn/start. 切在 turn/end 天然 balanced.
+ */
+function seedPrefix(
+  events: readonly SessionEvent[],
+  endTurn: number,
+  endSeq: number | undefined,
+): SessionEvent[] {
+  let cut = -1
+  if (endSeq !== undefined) {
+    cut = events.findIndex(event => event.seq === endSeq)
+    if (cut < 0) throw new Error(`end_seq ${endSeq} out of log range`)
+  } else {
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i]
+      if (event.type === 'turn/end' && (event.data as { turn?: number }).turn === endTurn) cut = i
+    }
+    if (cut < 0) throw new Error(`no turn/end for turn ${endTurn}`)
+  }
+  let end = cut
+  for (let i = cut + 1; i < events.length; i++) {
+    if (events[i].type === 'turn/start') break
+    end = i
+  }
+  return events.slice(0, end + 1)
+}
+
+/** 最后一条非空 assistant text (镜像 python _final_response: assistant/message 的 text 块). */
+function lastAssistantText(agent: Agent): string {
+  const events = agent.session.snapshotEvents()
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event.type !== 'assistant/message') continue
+    const content = (event.data as { message?: { content?: Array<{ type?: string; text?: string }> } })
+      ?.message?.content ?? []
+    const text = content.filter(block => block.type === 'text').map(block => block.text ?? '').join('')
+    if (text !== '') return text
+  }
+  return ''
 }
 
 /** moment contents (wire PromptContentPart) → durable ContentBlock[], admit base64 image 成 ref. */
@@ -931,12 +1045,23 @@ async function durableMomentContent(ctx: Context, contents: readonly MomentConte
  * Enter 缓冲 — 组装 moment 帧消息 (按注入顺序): epoch <容器> 是底座消息, context <容器> 是
  * 坐落在其上的帧消息. 只做组装, 不 inbox inject; 由 pre-step 挂载点插到本步历史最前.
  */
-function buildMomentFrame(epoch: ContentBlock[] | undefined, context: ContentBlock[]): UserMessage[] {
+function buildMomentFrame(
+  epoch: ContentBlock[] | undefined,
+  context: ContentBlock[],
+  notices: string[] = [],
+): UserMessage[] {
   const messages: UserMessage[] = []
   if (epoch !== undefined && epoch.length > 0) {
     messages.push(createUserMessage({
       content: epoch,
       source: { kind: 'plugin', plugin: `${name}:epoch` },
+    }))
+  }
+  // notices (memento commit 提醒) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn.
+  if (notices.length > 0) {
+    messages.push(createUserMessage({
+      content: notices.map(text => ({ type: 'text' as const, text })),
+      source: { kind: 'plugin', plugin: `${name}:notice` },
     }))
   }
   if (context.length > 0) {
@@ -997,7 +1122,8 @@ function bypassInstruction(): UserMessage {
 function collapseTurn(session: Session, turn: number): void {
   let startSeq: number | undefined
   let endSeq: number | undefined
-  for (const event of session.events) {
+  // 0.1.5: log 走 session.snapshotEvents() (Session 无 `events` 访问器).
+  for (const event of session.snapshotEvents()) {
     if (event.type === 'turn/start' && event.data.turn === turn && startSeq === undefined) {
       startSeq = event.seq
     }

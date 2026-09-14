@@ -20,11 +20,13 @@ from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
+    from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
+    from ghoshell_moss.memento._fs_memento import FsMemento
 
     from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
+    from ._ego_memento import EgoMementoManager
     from ._meta import DoloresMeta
-    from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
 
 __all__ = ["Dolores"]
 
@@ -32,6 +34,9 @@ from ._prompts import (
     dolores_inception, dolores_output_protocol_notice, dolores_terminology,
     DOLORES_INSTRUCTION_END,
 )
+
+# ego 轨迹索引的根目录 (相对 ghost_home); branch 名由 memento config 决定.
+_EGO_MEMENTO_DIR = ".memento/ego"
 
 
 class Dolores(Ghost):
@@ -67,6 +72,9 @@ class Dolores(Ghost):
         self._root_ground: Ground | None = None
         # ground render cache — rendered async in __aenter__, read synchronously by memories().
         self._ground_text: str | None = None
+        # memento: ego 轨迹索引 + 旁路服务. manager 由 ghost 持有, 同时注入 ego.
+        self._memento: FsMemento | None = None
+        self._memento_manager: EgoMementoManager | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: "DoloresEgo | None" = None
         self._facade: "MShellContextFacade | None" = None
@@ -142,15 +150,20 @@ class Dolores(Ghost):
         return str(view)
 
     def memories(self) -> list[Message]:
-        """The ghost's dynamic memory — the ground renders first (existential, at the front).
+        """The ghost's dynamic memory — ground first (existential), then the memento trajectory view.
 
-        The ground text is rendered async in __aenter__ and cached to _ground_text; this method reads
-        the cache synchronously, so the ego can fetch the freshest memory via the closure on
-        create_session. Clones share the same closure.
+        The ground text is rendered async in __aenter__ and cached to _ground_text; the memento view
+        is read synchronously from the held manager. Both are read by the ego's create_session via
+        this closure (clones share it).
         """
+        memories: list[Message] = []
         if self._ground_text:
-            return [Message.new(tag="ground").with_content(self._ground_text)]
-        return []
+            memories.append(Message.new(tag="ground").with_content(self._ground_text))
+        if self._memento_manager is not None:
+            view = self._memento_manager.view_message()
+            if view is not None:
+                memories.append(view)
+        return memories
 
     def mindflow(self) -> Mindflow:
         """Return the mindflow Dolores owns, materializing it on first call.
@@ -206,6 +219,14 @@ class Dolores(Ghost):
         self._ground_text = await self.ground_instruction()
         if self._matrix is not None:
             await self._exit_stack.enter_async_context(self._dsh())
+            # memento: the ego trajectory index at ghost_home/.memento/ego; the branch is the ego line.
+            if self._home is not None:
+                from ghoshell_moss.memento import new_local_memento
+
+                branch_name = self._load_config().memento.branch_name
+                self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR)
+                if self._memento.get_branch(branch_name) is None:
+                    self._memento.create_branch(branch_name)
             # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
             # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
             from ._ego import DoloresEgo, DoloresEgoContext
@@ -220,12 +241,25 @@ class Dolores(Ghost):
                 instruction=self.system_prompt(),
                 facade=self._facade,
             )
+            # memento 旁路服务: ghost 级持有, 注入 ego (锚点写入 / 阈值判定都过它).
+            if self._memento is not None:
+                from ._ego_memento import EgoMementoManager
+
+                self._memento_manager = EgoMementoManager(
+                    connection=self.dsh_launcher,
+                    memento=self._memento,
+                    config=self._load_config().memento,
+                    logger=self.logger,
+                )
+                # 启动补漏: 回扫尾部未产出 note 的 commit, 自动补跑 sidecar.
+                await self._memento_manager.resume()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
                     launcher=self.dsh_launcher,
                     ctx=ctx,
                     config=self._load_ego_config(),
                     memories=self.memories,
+                    memento_manager=self._memento_manager,
                 )
             )
             # bind the self-wake signal outlet to the MOSS session — matrix.session.add_signal routes to mindflow.

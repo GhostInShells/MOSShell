@@ -36,9 +36,11 @@ from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.mindflow import Signal, Thinking
 from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
 from ghoshell_moss.deepseek_harness.session import DshSession
-from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, TurnEnd
 from ghoshell_moss.message import Content, Message
+from ghoshell_moss.memento.abcd import CommitRef
 
+from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
@@ -102,6 +104,10 @@ class DoloresConfig(BaseModel):
         default_factory=DoloresEgoConfig,
         description="ego session config.",
     )
+    memento: EgoMementoConfig = Field(
+        default_factory=EgoMementoConfig,
+        description="memento 旁路服务配置 (branch / view 边界 / K·T 阈值).",
+    )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -138,6 +144,7 @@ class DoloresEgo:
             config: DoloresEgoConfig | None = None,
             logger: LoggerItf | None = None,
             memories: Callable[[], list[Message]] | None = None,
+            memento_manager: EgoMementoManager | None = None,
     ) -> None:
         """Construct before the ghost enters its lifecycle; side-effect free (no httpx / session / matrix.processes).
 
@@ -150,12 +157,14 @@ class DoloresEgo:
         :param logger: logger; None falls back to the MOSS logger.
         :param memories: closure returning the ghost's dynamic memory (existential layer); called on
             create_session for the freshest value. Clones share the same closure. None = no memory.
+        :param memento_manager: ghost-held memento 旁路服务; 锚点写入与阈值判定都过它. None = 无 memento.
         """
         self._launcher = launcher
         self._ctx = ctx
         self._facade = ctx.facade
         self._config = config or DoloresEgoConfig()
         self._memories = memories
+        self._memento_manager = memento_manager
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
         # anti-bypass token: returned by ego/create, carried by thinking enter/exit, verified by the plugin to reject non-ego calls.
@@ -169,6 +178,13 @@ class DoloresEgo:
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
         # epoch tracking: remembers the last injected epoch id, compared on enter to decide whether to carry an <epoch> container.
         self._moment_epoch: str | None = None
+        # commit 运行时状态 (ego 持有; manager 不托管): 最后一个已完成 turn + 窗口基准 + 每窗口提醒位.
+        self._last_turn: int = 0
+        self._window_size: int = 0
+        self._window_base: int = 0
+        self._warned: bool = False
+        # 待注入的 notice (warn / committed); thinking-enter 时排空, 与 moment 同级注入.
+        self._notices: list[Message] = []
 
     # ── long-lived: lifecycle ────────────────────────────────────────
 
@@ -208,10 +224,20 @@ class DoloresEgo:
         # UI input produces only user/message (not turn/start), so self-wake is still needed to unlock the pending tool.
         self._session.on_session_event("turn/start", self._on_session_activity)
         self._session.on_session_event("user/message", self._on_session_activity)
+        # commit: 在 completed turn 边界推进 last_turn, 并按阈值决定是否强制提交锚点.
+        self._session.on_session_event("turn/end", self._on_turn_end)
         return self._ego_session_id
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Exit: close the ego session."""
+        """Exit: commit on a normal exit (封尾), then close the ego session.
+
+        正常退出必 commit; 异常退出不管 —— 异常态的 turn 区间不可信.
+        """
+        if exc_type is None:
+            try:
+                self._commit()
+            except Exception:
+                self._logger.exception("ego exit commit failed — degraded")
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
     @property
@@ -284,6 +310,60 @@ class DoloresEgo:
         if self._signal_broadcast is not None:
             self._signal_broadcast(signal)
 
+    # ── commit (锚点; 慢的 message 生产归 manager 的 sidecar) ──────────
+
+    async def _on_turn_end(self, event: SessionEvent) -> None:
+        """turn/end 回调 — 推进 last_turn, 再按阈值决定是否强制提交."""
+        turn_end = TurnEnd.from_session_event(event)
+        if turn_end is None:
+            return
+        self._last_turn = max(self._last_turn, turn_end.turn)
+        self._maybe_commit()
+
+    def _maybe_commit(self) -> None:
+        """阈值判定: 到 T 强制 commit (封一段), 到 K 提醒一次 (notice 排队列, 下次 enter 注入)."""
+        manager = self._memento_manager
+        if manager is None:
+            return
+        growth = self._window_size - self._window_base
+        decision = manager.evaluate(growth, self._warned)
+        if decision is CommitDecision.FORCE:
+            self._commit()
+        elif decision is CommitDecision.WARN:
+            self._warned = True
+            self._notices.append(manager.warn_notice(growth))
+
+    def _commit(self, message: str = "") -> CommitRef | None:
+        """落一个锚点并排旁路 note: 区间 = [上个 commit 的 end_turn, 最后一个已完成 turn]. 无 memento 时 no-op.
+
+        message 默认空 (authoritative message 归 sidecar); 提交后重置滑动窗口, notice 排队列.
+        """
+        manager = self._memento_manager
+        if manager is None or self._ego_session_id is None:
+            return None
+        anchor = manager.commit(
+            session_id=self._ego_session_id,
+            start_turn=self._session_start_turn(),
+            end_turn=self._last_turn,
+            message=message,
+        )
+        self._window_base = self._window_size
+        self._warned = False
+        self._notices.append(manager.committed_notice(anchor))
+        manager.schedule_note(anchor.id)  # 慢腿: message 归旁路 sidecar
+        return anchor
+
+    def _session_start_turn(self) -> int:
+        """本 session 的区间下界 (**含端**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.
+
+        含端 → 相邻锚点共享边界 turn (`[0,1] [1,2]`), 即「追认」区间.
+        """
+        manager = self._memento_manager
+        previous = manager.latest_ref() if manager is not None else None
+        if previous is not None and previous.session_id == self._ego_session_id:
+            return previous.end_turn
+        return 0
+
     # ── RPC (narrow bridge to the plugin) ────────────────────────────
 
     async def rpc_tool_result(
@@ -338,12 +418,19 @@ class DoloresEgo:
         payload = {
             "moment": self._moment_payload(moment, moment_ref),
             "epoch": self._epoch_payload(thinking),
+            # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
+            "notices": self._drain_notices(),
             "effort": thinking.effort(),
             "thinkingToken": self._thinking_token,
             # observe continuation: empty inputs still drive a turn — see needs_observe().
             "needsObserve": self.needs_observe(thinking),
         }
         await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
+
+    def _drain_notices(self) -> list[str]:
+        """排空 notice 队列 → 纯文本 (与 moment 同级, 由 plugin 挂载到本步历史; notice 无图)."""
+        notices, self._notices = self._notices, []
+        return [notice.to_content_string() for notice in notices if not notice.is_empty()]
 
     async def exit_thinking(self, *, yielded: bool = False) -> None:
         """Reverse the thinking state; the plugin does the relevant teardown.

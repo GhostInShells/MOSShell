@@ -97,6 +97,23 @@ def test_note_last_wins(memento):
     assert len([n for n in b.notes().values() if n.commit_id == ref.id]) == 1
 
 
+def test_broken_note_enters_view_collapsed(memento):
+    b = memento.create_branch("main")
+    refs = [b.commit(message=f"c{i}") for i in range(5)]
+    for ref in refs[1:4]:  # 中间三条写成坏占位
+        b.note(ref.id, "sidecar failed", error="fatal")
+
+    v = b.view(n=10)
+    coords = [cv.coord for cv in v.history + v.latest]
+
+    # 坏 commit 进 view (模型须感知), 但连续坏只留第一个 → 1-1, 1-2(坏), 1-5
+    assert coords == ["1-1", "1-2", "1-5"]
+    assert v.commits_total == 5
+    broken = [cv for cv in v.history + v.latest if cv.is_broken]
+    assert len(broken) == 1
+    assert broken[0].error == "fatal"
+
+
 # ── view 折叠 ──
 
 

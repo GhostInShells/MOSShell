@@ -135,6 +135,22 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return json.loads(raw)
 
 
+def _collapse_broken_commits(views: list[CommitView]) -> list[CommitView]:
+    """连续坏 commit (``Note.error`` 非空) 只保留第一个; 非坏条目不受影响.
+
+    坏 commit 仍要进 view (模型须感知), 但成段坏占位不刷屏. 折叠按坐标顺序单趟完成.
+    """
+    collapsed: list[CommitView] = []
+    previous_broken = False
+    for view in views:
+        broken = view.is_broken
+        if broken and previous_broken:
+            continue
+        collapsed.append(view)
+        previous_broken = broken
+    return collapsed
+
+
 # ── FsBranch ───────────────────────────────────────────────────────────────────
 
 
@@ -231,8 +247,8 @@ class FsBranch(Branch):
             self.note(ref.id, message)
         return ref
 
-    def note(self, commit_id: str, message: str) -> Note:
-        note = Note(commit_id=commit_id, message=message)
+    def note(self, commit_id: str, message: str, error: str = "") -> Note:
+        note = Note(commit_id=commit_id, message=message, error=error)
         _append_jsonl(self._notes_path(), [note.model_dump(mode="json")])
         self._notes_cache = None
         return note
@@ -255,9 +271,9 @@ class FsBranch(Branch):
         async with self:
             return self.commit(message=message, metatype=metatype, metadata=metadata)
 
-    async def anote(self, commit_id: str, message: str) -> Note:
+    async def anote(self, commit_id: str, message: str, error: str = "") -> Note:
         async with self:
-            return self.note(commit_id, message)
+            return self.note(commit_id, message, error)
 
     async def afork(self, name: str, description: str = "") -> "Branch":
         async with self:
@@ -283,7 +299,7 @@ class FsBranch(Branch):
 
     def _build_view(self, commits: list[CommitRef], notes: dict[str, Note], n: int) -> BranchView:
         meta = self.meta()
-        views = [self._commit_view(c, notes, meta.index) for c in commits]
+        views = _collapse_broken_commits([self._commit_view(c, notes, meta.index) for c in commits])
         latest = views[-n:]
         history = views[:-n]
         parent = self._parent(meta)

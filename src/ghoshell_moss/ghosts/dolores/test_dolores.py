@@ -396,6 +396,140 @@ class TestDoloresEgoSelfWake:
         assert emitted == []
 
 
+class TestDoloresEgoCommit:
+    """ego 的锚点 commit — 验证期 force_tokens=0 (每 turn commit) 下检查 memento 锚点数据."""
+
+    @staticmethod
+    def _turn_end(turn: int):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+
+        return SessionEvent.from_dict({"type": "turn/end", "seq": turn, "data": {"turn": turn}})
+
+    @staticmethod
+    def _set_up(tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoContext
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
+        from ghoshell_moss.memento import new_local_memento
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        manager = EgoMementoManager(
+            connection=None, memento=memento, config=EgoMementoConfig(force_tokens=0)
+        )
+        ego = DoloresEgo(
+            launcher=None,  # commit 路径不触 dsh
+            ctx=DoloresEgoContext(
+                project_home=Path("."),
+                project_name="pytest",
+                name="dolores",
+                mode="pytest",
+                instruction="i",
+                facade=None,
+            ),
+            memento_manager=manager,
+        )
+        ego._ego_session_id = "s1"
+        return ego, memento
+
+    @pytest.mark.asyncio
+    async def test_each_turn_commit_span_is_chained(self, tmp_path: Path):
+        ego, memento = self._set_up(tmp_path)
+        for turn in (1, 2, 3):
+            await ego._on_turn_end(self._turn_end(turn))
+
+        metas = [c.metadata for c in memento.get_branch("main").commits()]
+
+        # 每 turn 一锚点, 区间首尾相接 (start = 上一个 commit 的 end_turn).
+        assert [m["ref"]["start_turn"] for m in metas] == [0, 1, 2]
+        assert [m["ref"]["end_turn"] for m in metas] == [1, 2, 3]
+        assert [m["prev_turn"] for m in metas] == [0, 1, 2]
+        assert {m["ref"]["session_id"] for m in metas} == {"s1"}
+
+    @pytest.mark.asyncio
+    async def test_normal_exit_seals_tail_commit(self, tmp_path: Path):
+        ego, memento = self._set_up(tmp_path)
+        await ego._on_turn_end(self._turn_end(1))
+        await ego._on_turn_end(self._turn_end(2))
+
+        await ego.__aexit__(None, None, None)
+
+        # 正常退出封尾: last_turn 未变 → [2, 2] (去重是后续步骤; 当前无条件 commit).
+        commits = memento.get_branch("main").commits()
+        last = commits[-1].metadata["ref"]
+        assert (last["start_turn"], last["end_turn"]) == (2, 2)
+
+    @pytest.mark.asyncio
+    async def test_abnormal_exit_does_not_commit(self, tmp_path: Path):
+        ego, memento = self._set_up(tmp_path)
+        await ego._on_turn_end(self._turn_end(1))
+
+        await ego.__aexit__(RuntimeError, RuntimeError("boom"), None)
+
+        # 异常退出不管: 只剩 turn/end 那一条锚点.
+        assert len(memento.get_branch("main").commits()) == 1
+
+
+class TestEgoMementoSidecar:
+    """旁路 note 生产 — run 路由的 fake: 回 message 写 note; 异常/空留空 (可重试)."""
+
+    class _FakeConnection:
+        def __init__(self, response):
+            self.response = response
+            self.calls: list[tuple[str, dict]] = []
+
+        async def call(self, path, payload=None, *, timeout=None):
+            self.calls.append((path, payload))
+            if isinstance(self.response, Exception):
+                raise self.response
+            return self.response
+
+    @staticmethod
+    def _manager(tmp_path: Path, connection):
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
+        from ghoshell_moss.memento import new_local_memento
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        manager = EgoMementoManager(connection=connection, memento=memento, config=EgoMementoConfig())
+        return manager, memento
+
+    @pytest.mark.asyncio
+    async def test_sidecar_writes_note(self, tmp_path: Path):
+        conn = self._FakeConnection({"message": "title\nbody"})
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(anchor.id)
+        await manager.drain_sidecars()
+
+        note = memento.get_branch("main").notes()[anchor.id]
+        assert note.message == "title\nbody"
+        assert note.error == ""
+        assert conn.calls[0][0].endswith("/note/run")
+        assert conn.calls[0][1]["ref"]["session_id"] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_sidecar_failure_leaves_empty_retryable(self, tmp_path: Path):
+        conn = self._FakeConnection(RuntimeError("dsh down"))
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(anchor.id)
+        await manager.drain_sidecars()
+
+        assert memento.get_branch("main").notes() == {}  # 留空, 等 resume 补
+
+    @pytest.mark.asyncio
+    async def test_resume_backfills_missing_notes(self, tmp_path: Path):
+        conn = self._FakeConnection({"message": "backfilled"})
+        manager, memento = self._manager(tmp_path, conn)
+        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        await manager.resume()
+
+        assert list(memento.get_branch("main").notes().values())[0].message == "backfilled"
+
+
 # ── DoloresRun — thinking 交易 run 对象 (public + 可测) ─────────────
 
 
