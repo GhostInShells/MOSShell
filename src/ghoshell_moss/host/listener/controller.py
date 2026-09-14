@@ -1,28 +1,41 @@
-"""Listener Controller — 判停逻辑装线 + listener signal 生产边界 (系统级封装).
+"""Listener Controller — 判停逻辑装线 + listener signal 生产边界 + 运行时自解释.
 
 判停逻辑 (聆听礼仪) 通过 ListenerState.on_event_creating 挂载到识别层 (inline await),
 判停时调 state.commit(). commit 机制 (发负序号切段) 已在 recognition 层, 这里只决定
-何时调用. 第 4 步先做 once / always / 关键字 三种表面; llm 校验 / 快捷响应后置.
+何时调用.
 
 信号发射是独立于判停的第二职责: 本层是 RecognitionEvent (text axis) → listener signal
 (first/clause/tail) 的生产边界. 构造时注入 ``signal_broadcast`` (signal sink), 存在时
 注册一条 listener 级 on_recognition_result 观察者, 机械地把每个识别事件翻译成 listener
-signal 并广播. signal 发射封装在本层, 而非散落在各调用方 (CLI/ghost) 的 on_event 逻辑里.
+signal 并广播.
+
+第三职责是运行时自解释: 追踪当前礼仪 (off/once/always), 提供合成快照 (``snapshot()``)
+与随身 channel (``as_channel()``), 让模型能判断"耳朵开没开、什么模式".
 """
 import asyncio
 import contextlib
+import json
 import logging
 import time
+from dataclasses import asdict, dataclass
+from enum import Enum
 from typing import Callable, Optional
 
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts.asr import ASR, RecognitionEvent, RecognitionPhase
 from ghoshell_moss.contracts.listener import Listener
+from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.mindflow import Signal
+from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
 
-__all__ = ["ListenerController", "PacketTranslator"]
+__all__ = [
+    "ListenerController",
+    "PacketTranslator",
+    "ListenEtiquette",
+    "ListenerSnapshot",
+]
 
 
 class PacketTranslator:
@@ -49,15 +62,43 @@ class PacketTranslator:
         return packets
 
 
+class ListenEtiquette(str, Enum):
+    """聆听礼仪 — 判停策略, 决定"什么时候算说完"."""
+
+    OFF = "off"
+    ONCE = "once"
+    ALWAYS = "always"
+
+
+@dataclass
+class ListenerSnapshot:
+    """合成快照 — 状态 (mode/listening) + ASR 当前参数值.
+
+    温数据, 进 notice, 变了才重发. 参数 schema 是冷数据 (进 instruction), 不在此.
+    """
+
+    mode: str
+    listening: bool
+    asr_params: dict
+
+    def render_notice(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    def render_status(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False, indent=2)
+
+
 class ListenerController:
-    """判停逻辑装线 + listener signal 生产边界.
+    """判停逻辑装线 + listener signal 生产边界 + 运行时自解释.
 
     持有 listener (听) + asr (configure vad). once/always 是长时间运行的 async method,
     内部管理一条 listening session 的生命周期; 结果经 listener 的观察面 (on_recognition_*)
     流出.
 
-    两个职责: 判停 (on_event_creating 决定何时 commit) 与信号发射 (注入 signal_broadcast
-    时, 把识别事件机械翻译成 listener signal 广播). 无 sink 则只做判停.
+    三个职责:
+    - 判停 (on_event_creating 决定何时 commit);
+    - 信号发射 (注入 signal_broadcast 时把识别事件翻译成 listener signal 广播);
+    - 自解释 (追踪当前礼仪, 提供 ``snapshot()`` 与随身 ``as_channel()``).
     """
 
     def __init__(
@@ -80,6 +121,9 @@ class ListenerController:
         if signal_broadcast is not None:
             listener.on_recognition_result(self._emit_event)
 
+        self._mode: ListenEtiquette = ListenEtiquette.OFF
+        self._channel: Optional[Channel] = None
+
     # ── 聆听礼仪 ──
 
     def once(
@@ -97,6 +141,7 @@ class ListenerController:
         clause_vad 覆盖 ASR 分句判停时间 (end_window_size). keywords 在 once 语义下
         冗余 (clause 即 commit), 仅为接口一致保留.
         """
+        self._mode = ListenEtiquette.ONCE
         self._cancel_active()
         task = asyncio.create_task(self._run_once(clause_vad=clause_vad, keywords=keywords, timeout=timeout))
         self._active_task = task
@@ -108,20 +153,34 @@ class ListenerController:
             clause_vad: Optional[int] = None,
             speech_vad: float = 1.5,
             keywords: Optional[list[str]] = None,
-            timeout: float = 60.0,
+            timeout: Optional[float] = None,
     ) -> asyncio.Future:
         """持续聆听: clause 后等待 speech_vad, 活动信号 reset, 静默到 speech_vad commit.
 
-        command 语义: 立即返回 Future, 内部 spawn 状态机, 新 method 调用 cancel 旧的.
-        命中 keywords 的 clause 立刻 commit (不等静默). 真实 commit 时机 = clause_vad
-        (分句判停) + speech_vad (静默等待).
+        立即返回 Future; ``timeout=None`` 表示常驻 (直到 ``stop()`` 或新礼仪取消).
+        命中 keywords 的 clause 立刻 commit (不等静默).
         """
+        self._mode = ListenEtiquette.ALWAYS
         self._cancel_active()
         task = asyncio.create_task(self._run_always(
             clause_vad=clause_vad, speech_vad=speech_vad, keywords=keywords, timeout=timeout,
         ))
         self._active_task = task
         return task
+
+    def stop(self) -> None:
+        """停止聆听: 取消活跃 session, 回到 off."""
+        self._mode = ListenEtiquette.OFF
+        self._cancel_active()
+
+    def snapshot(self) -> ListenerSnapshot:
+        """合成当前状态快照 (mode + listening + ASR 参数值)."""
+        info = self._asr.get_info()
+        return ListenerSnapshot(
+            mode=self._mode.value,
+            listening=self._listener.is_listening(),
+            asr_params=dict(info.params),
+        )
 
     # ── 状态机 (内部, 每个 method 一个) ──
 
@@ -200,7 +259,10 @@ class ListenerController:
         async with state:
             watch_task = asyncio.create_task(_watch())
             try:
-                await asyncio.sleep(timeout)
+                if timeout is None:
+                    await asyncio.Event().wait()
+                else:
+                    await asyncio.sleep(timeout)
             finally:
                 watch_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -246,3 +308,59 @@ class ListenerController:
         params = dict(self._asr.get_info().params)
         params["end_window_size"] = clause_vad
         self._asr.configure(params)
+
+    # ── 反身 channel ──
+
+    def as_channel(self) -> Channel:
+        """随身 channel (惰性构建并持有) — 把聆听礼仪暴露成模型可控制的命令面."""
+        if self._channel is None:
+            self._channel = self._build_channel()
+        return self._channel
+
+    def _build_channel(self) -> Channel:
+        chan = new_channel(name="listener", description="语音输入控制 — 开启/关闭聆听、切换礼仪、调 ASR")
+
+        @chan.build.instruction
+        def instruction() -> str:
+            info = self._asr.get_info()
+            return (
+                f"ASR audio contract: {info.sample_rate}Hz, {info.bits}-bit, {info.channel}ch.\n"
+                f"ASR tunable params schema:\n"
+                f"{json.dumps(info.params_schema, ensure_ascii=False)}"
+            )
+
+        @chan.build.notice
+        def notice() -> str:
+            return self.snapshot().render_notice()
+
+        @chan.build.command(blocking=False)
+        async def once(timeout: float = 60.0) -> str:
+            """Hear one utterance — stop as soon as a sentence finishes (or after `timeout` seconds)."""
+            self.once(timeout=timeout)
+            return "listening (once)"
+
+        @chan.build.command(blocking=False)
+        async def always(silence: float = 1.5) -> str:
+            """Keep listening continuously — commit after `silence` seconds of quiet."""
+            self.always(speech_vad=silence, timeout=None)
+            return "listening (always)"
+
+        @chan.build.command(blocking=False)
+        async def stop() -> str:
+            """Stop listening."""
+            self.stop()
+            return "stopped"
+
+        @chan.build.command()
+        async def status() -> str:
+            """Report the ear's current state (mode, listening, ASR params)."""
+            return self.snapshot().render_status()
+
+        @chan.build.command()
+        async def configure_asr(params: dict) -> str:
+            """Change ASR params — pass only the keys to change (schema is in the instruction)."""
+            current = dict(self._asr.get_info().params)
+            self._asr.configure({**current, **params})
+            return "asr configured"
+
+        return chan
