@@ -96,7 +96,7 @@ async def build(avatar):            # avatar: avatar_node.Avatar
 | `avatar.set_backdrop(url)` | 换背板（通用，与模型包解耦） |
 | `avatar.set_idle_loop(group, index=0)` | 设定全身待机循环动作；传 None 回自动 |
 | `avatar.stop_motion()` / `avatar.clear_motion()` | 停动作 / 停动作+参数回默认再重下发状态 |
-| `avatar.idle_loop()` / `await avatar.run_idle_manager()` | 待机循环原语 / 待机仲裁循环（跑在 `build.running`） |
+| `avatar.idle_loop()` / `await avatar.run_idle()` | 待机循环原语 / 待机仲裁循环（跑在 `build.idle`） |
 | `avatar.set_lip_sync(on)` | 开关自动唇动（默认自动，模型一般不用碰） |
 | `avatar.zoom(factor)` / `avatar.move(x, y)` | 缩放 / 平移（视口层，非模型参数） |
 | `avatar.spec` | `ModelSpec`：`.groups`、`.motions`、`.expressions`、`.lip_sync`、`.eye_blink`、`.motion_duration()` |

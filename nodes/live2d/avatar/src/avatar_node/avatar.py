@@ -236,27 +236,35 @@ class Avatar:
             return
         self._pending_events.append({"t": "idle", "g": spec[0], "i": spec[1]})
 
-    async def run_idle_manager(self) -> None:
+    async def run_idle(self) -> None:
         """待机仲裁 (driver 持有时间): 空闲超过 idle_delay 才进待机, 前景活动/说话则让位.
 
-        跑在 channel 的 ``build.running`` 生命周期里, 永远循环. 不依赖 ``build.idle`` 的
-        取消语义 —— 那个只在本 channel 自身收到命令时才退出, 子 channel 命令不会 (已查证),
-        用它做待机会有漏洞.
+        跑在 channel 的 ``build.idle`` 生命周期里: 内核在无 blocking 命令 (含子命令) 时
+        进入本函数, 新 blocking 命令到达即取消它 (见 test_py_channel 的 idle 契约)。
+        所以 blocking 动作/参数命令期间本循环不跑, 命令结束自动重进。说话 (speaking) 与
+        点按 (on_tap 后台 play) 不是命令, 内核看不到, 由 ``speaking`` / ``_foreground``
+        在这里额外让位。
         """
-        quiet_since = time.monotonic()
-        while True:
-            await asyncio.sleep(0.1)
-            if self._foreground or self.speaking:
-                quiet_since = time.monotonic()
-                if self._idle_active:
-                    self.stop_motion()
-                    self._idle_active = False
-                continue
-            if self._idle_active or self.idle_spec() is None:
-                continue
-            if time.monotonic() - quiet_since >= self.idle_delay:
-                self.idle_loop()
-                self._idle_active = True
+        try:
+            quiet_since = time.monotonic()
+            while True:
+                await asyncio.sleep(0.1)
+                if self._foreground or self.speaking:
+                    quiet_since = time.monotonic()
+                    if self._idle_active:
+                        self.stop_motion()
+                        self._idle_active = False
+                    continue
+                if self._idle_active or self.idle_spec() is None:
+                    continue
+                if time.monotonic() - quiet_since >= self.idle_delay:
+                    self.idle_loop()
+                    self._idle_active = True
+        finally:
+            # 内核取消 (新 blocking 命令到达) 时, 若待机动画还在跑就停掉, 交给前景命令.
+            if self._idle_active:
+                self.stop_motion()
+                self._idle_active = False
 
     # ---------------------------------------------------------------- 唇动
 

@@ -126,10 +126,10 @@ def build_auto_channel(avatar: Avatar) -> PrimeChannel:
         # 连续订阅说侧采样驱动唇形 (跨进程 topic 桥). 无唇形参数时内部直接返回.
         await run_lip_sync(avatar)
 
-    @root.build.running
-    async def _idle_manager() -> None:
-        # 待机仲裁: 空闲超过 idle_delay 才进待机, 前景动作/说话让位. 永远循环.
-        await avatar.run_idle_manager()
+    @root.build.idle
+    async def _idle() -> None:
+        # 待机仲裁: 内核无 blocking 命令时进入, 新命令到达取消; 空闲超过 idle_delay 才进待机.
+        await avatar.run_idle()
 
     return root
 

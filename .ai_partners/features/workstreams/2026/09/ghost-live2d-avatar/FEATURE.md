@@ -139,15 +139,22 @@ Live2D 条款明写 **"may not redistribute all or part of the material to third
 
 代价：同轨命令会串行（两个 face 参数先后 0.3s+0.3s），异轨仍并行。这是特性不是缺陷。
 
-### KD9. 待机是 driver 仲裁的背景循环，不靠 build.idle
+### KD9. 待机是 driver 仲裁的待机循环，跑在 build.idle
 
-`build.idle` 只在**该 channel 自身**收到命令时才取消；子 channel 命令不取消父 idle
-（`_tree_channel_runtime.py` 的 `is_self_task` gate，已查证）。动作命令在 `motions`
-子 channel 下，所以靠 `build.idle` 做待机会有漏洞：播动作时父 idle 不退出。
+最初用 `build.idle` 做待机，但内核 bug 让它失效：`build.idle` 只在**该 channel 自身**
+收到命令时才取消，子 channel 命令不取消父 idle（`_tree_channel_runtime.py` 的
+`is_self_task` gate，已查证），而动作命令在 `motions` 子 channel 下，播动作时父 idle
+不退出。于是待机一度跑在 `build.running` 里的永续仲裁循环。
 
-已决：待机走一个跑在 `build.running` 里的永续仲裁循环——空闲超过 `idle.delay`
-（默认 3s，可配）才进待机，前景动作（`play` 占时期间）/说话（唇动采样）让位。部件级
-idle（眨眼/呼吸）是 SDK 原生，由 `idle.parts` 配置开关。
+内核修正后（`fix(runtime): child command now clears parent idle`），blocking 命令（含
+子命令）都会取消父 idle，于是待机回到 `build.idle` 生命周期：无 blocking 命令时进入，
+新命令到达取消。循环内仍保留空闲超过 `idle.delay`（默认 3s，可配）才进待机、说话
+（唇动采样）与点按（on_tap 后台 play）让位 —— 后两者不是命令，内核看不到，由
+`speaking` / `_foreground` 在循环里额外让位。部件级 idle（眨眼/呼吸）是 SDK 原生，
+由 `idle.parts` 配置开关。
+
+副作用（顺带修复）：blocking 参数命令现在也打断待机，参数命令不再被 idle 动作曲线
+立即吃掉；但待机回来后动作曲线仍覆写它驱动的参数（见 CLAUDE.md 已知问题）。
 
 ### KD10. 唇动/眨眼是框架默认能力，不开成命令
 

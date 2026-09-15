@@ -46,12 +46,13 @@ Live2D 条款明写不得向第三方再分发。因此 `avatars/*/model/` 与 `
 这是"时间第一公民"的落地 —— 同轨命令因此串行, 异轨并行。动作文件全部 `Loop:True`
 (实测 hiyori), 所以"结束"是 driver 自己计时后发 `clear_motion` 停掉, 不靠页面回报。
 
-### idle 是 driver 仲裁的背景循环, 不靠 build.idle
+### idle 是 driver 仲裁的待机循环, 跑在 build.idle
 
-`build.idle` 只在**该 channel 自身**收到命令时才取消; 子 channel 命令不会取消父 idle
-(`_tree_channel_runtime.py` 的 `is_self_task` gate)。所以待机走一个跑在 `build.running`
-里的永续仲裁循环: 空闲超过 `idle.delay` 才进待机, 前景动作/说话让位。部件级 idle
-(眨眼/呼吸) 是 SDK 原生, 由 `AVATAR.md` 的 `idle.parts` 开关。
+`build.idle` 在无 blocking 命令 (含子命令) 时进入, 新 blocking 命令到达即取消 ——
+子命令会取消父 idle (内核契约, 见 tests/ghoshell_moss/default/core/channels/test_py_channel.py)。
+待机仲裁循环跑在这个生命周期里: 空闲超过 `idle.delay` 才进待机。说话 (speaking) 与
+点按 (on_tap 后台 play) 不是命令, 内核看不到, 由 `speaking` / `_foreground` 在循环里
+额外让位。部件级 idle (眨眼/呼吸) 是 SDK 原生, 由 `AVATAR.md` 的 `idle.parts` 开关。
 
 ### animation 轨迹编程
 
@@ -100,6 +101,6 @@ nodes/live2d/
 - **SDK 默认眨眼与 idle motion 自带眨眼会叠加**（已用 `idle.parts.blink: false` 规避）：
   hiyori 的 idle 动作本身就驱动眼开闭参数，SDK 的自动眨眼在动作间隙又驱动一遍，
   两次眨眼贴太近会闪一下。模型包自带眨眼时，把它在 `AVATAR.md` 里关掉。
-- **参数 vs 待机动作的覆盖未解决**：待机循环动作会逐帧覆写它驱动到的参数（头/眼/嘴），
-  所以"待机运行中单独下一个参数命令"的效果会被吃掉。这是下一阶段要讨论的
-  "参数遮挡/权重"问题，当前未做。
+- **待机动作无条件覆写它驱动的参数**：idle 循环动作逐帧覆写头/眼/嘴等参数。blocking
+  参数命令现在会打断待机（内核取消 `build.idle`）、让参数短暂生效，但待机回来后动作
+  曲线又覆写回去 —— "参数遮挡/权重"仍是要讨论的问题，当前未做。
