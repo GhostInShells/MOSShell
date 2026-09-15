@@ -3,6 +3,9 @@
 自动唇动的框架能力: 订阅 ``audio/sample`` (跨进程, 走 Matrix 的 topic 桥), 过滤
 ``role == "ghost"`` 的采样, 把响度映射到唇形参数. 采样约 5Hz (~200ms), 足够平滑.
 
+同时把"正在说话"这个连续状态报给页面 (``set_speaking``): 模型自带的动作曲线普遍驱动
+嘴部参数, 循环待机动作会和唇动抢同一个参数, 所以说话期间待机必须让位.
+
 TopicService 从 channel 运行时的容器里取 (``CommandUtil.force_get_contract``) ——
 生命周期函数在 ``ChannelCtx`` 下运行, 与 matrix.session.topics 是同一个实例.
 
@@ -49,7 +52,9 @@ async def run_lip_sync(avatar: Avatar) -> None:
             try:
                 sample = await subscriber.poll_model(timeout=_IDLE_TIMEOUT)
             except asyncio.TimeoutError:
-                # 说侧停了一段时间 → 闭嘴. 每 _IDLE_TIMEOUT 重设一次, 冗余但无害 (参数合并).
+                # 说侧停了一段时间 → 闭嘴, 待机动画可以回来了.
+                avatar.set_speaking(False)
+                # 每 _IDLE_TIMEOUT 重设一次, 冗余但无害 (参数合并).
                 if avatar.lip_sync_enabled:
                     avatar.param(param, 0.0)
                 continue
@@ -58,4 +63,6 @@ async def run_lip_sync(avatar: Avatar) -> None:
             if not avatar.lip_sync_enabled:
                 # 模型手动控嘴时暂停自动唇动 (模型输出优先), 只丢弃采样不驱动.
                 continue
-            avatar.param(param, mouth_open(sample) if sample.role == "ghost" else 0.0)
+            speaking = sample.role == "ghost"
+            avatar.set_speaking(speaking)
+            avatar.param(param, mouth_open(sample) if speaking else 0.0)

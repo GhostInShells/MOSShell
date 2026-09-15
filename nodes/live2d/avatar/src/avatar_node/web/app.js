@@ -1,18 +1,23 @@
-/* Live2D Avatar 页面 — 驱动的消费者.
+/* Live2D Avatar 页面 — 纯执行器.
 
-   协议 (见 bridge.py): 页面只收不发. 事件帧:
-     {t:"hello",       name, model, canvas, backdrop, params, view}   连接即全量快照
-     {t:"params",      v:{paramId:value}}                              合并后的参数帧 (30fps)
-     {t:"motion",      g:group, i:index}                               播一个动作
-     {t:"expression",  n:name}                                         切一个表情
-     {t:"backdrop",    url}                                            换背板
-     {t:"view",        scale, x, y}                                    缩放/平移
-     {t:"reset"}                                                      参数回默认 + 清表情
+   驱动持有所有时间轨迹与待机仲裁; 页面只服从出站帧, 不做任何策略. 动作在模型元数据里
+   都是 Loop:True (实测 hiyori 的 10 个 motion), 所以"结束"由驱动计时后发 stop/clear 决定,
+   页面绝不自己判断.
 
-   渲染用 pixi-live2d-display (Cubism 4 的薄封装): 它负责 moc3 加载、WebGL 渲染、
-   motion/expression/physics/pose. 参数直接写进框架的 CubismModel, 框架会按模型的
-   真实上下界夹取 —— 所以 Python 侧传原值即可, 不需要知道 min/max.
+   协议 (见 bridge.py), 出站帧:
+     {t:"hello",        name, model, canvas, backdrop, params, view, idle, idle_active, parts}
+     {t:"params",       v:{paramId:value}}        合并后的参数帧 (30fps)
+     {t:"idle",         g, i}                     播待机循环 (动作 Loop:True, 自然循环)
+     {t:"motion",       g, i}                     播一个前景动作
+     {t:"stop_motion"}                            停所有动作, 参数不动
+     {t:"clear_motion"}                           停动作 + 参数回默认 (驱动随后重发状态)
+     {t:"expression",   n}                        切表情
+     {t:"backdrop",     url}                      换背板
+     {t:"view",         scale, x, y}              缩放/平移
+     {t:"reset"}                                  停动作 + 参数回默认 + 清表情
 */
+
+
 (() => {
   const { Live2DModel } = PIXI.live2d;
 
@@ -73,6 +78,24 @@
     }
   }
 
+  function stopAllMotions() {
+    if (!ready) return;
+    model.internalModel.motionManager.stopAllMotions();
+  }
+
+  function playMotion(g, i) {
+    if (!ready) return;
+    stopAllMotions();
+    model.motion(g, i); // 动作 Loop:True, 由驱动 stop 结束; 不 await
+  }
+
+  function applyParts(parts) {
+    if (!parts) return;
+    // SDK 原生部件 idle: blink(眼) / breath(呼吸). 关闭即置空, 更新处是可选链, 安全.
+    if (parts.blink === false) model.internalModel.eyeBlink = null;
+    if (parts.breath === false) model.internalModel.breath = null;
+  }
+
   async function onHello(msg) {
     // 重连 / node 重启都会再触发 hello: 先摘掉并销毁旧模型, 否则会叠成重影.
     if (model) {
@@ -90,12 +113,14 @@
     computeFit(model);
     if (msg.view) view = { scale: msg.view.scale ?? 1, x: msg.view.x ?? 0, y: msg.view.y ?? 0 };
     applyView();
-    // 记下模型默认参数, 供 reset 回退.
+    // 记下模型默认参数, 供 reset / clear_motion 回退.
     model.internalModel.coreModel.saveParameters();
     ready = true;
+    applyParts(msg.parts);
     for (const [id, v] of Object.entries(msg.params || {})) setParam(id, v);
     if (msg.backdrop) setBackdrop(msg.backdrop);
     attachInteraction(model);
+    if (msg.idle_active && msg.idle) playMotion(msg.idle.g, msg.idle.i);
     status(`模型已加载: ${msg.name}`);
   }
 
@@ -124,6 +149,7 @@
 
   function resetModel() {
     if (!ready) return;
+    stopAllMotions();
     model.internalModel.coreModel.loadParameters();
     model.expression();
   }
@@ -136,8 +162,18 @@
       case "params":
         for (const [id, v] of Object.entries(msg.v || {})) setParam(id, v);
         break;
+      case "idle":
+        playMotion(msg.g, msg.i);
+        break;
       case "motion":
-        if (ready) model.motion(msg.g, msg.i);
+        playMotion(msg.g, msg.i);
+        break;
+      case "stop_motion":
+        stopAllMotions();
+        break;
+      case "clear_motion":
+        stopAllMotions();
+        model.internalModel.coreModel.loadParameters();
         break;
       case "expression":
         if (ready) model.expression(msg.n);

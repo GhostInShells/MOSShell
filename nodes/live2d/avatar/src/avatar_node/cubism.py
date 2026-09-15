@@ -73,10 +73,15 @@ class ModelSpec:
     lip_sync: tuple[str, ...]  # model3 Groups.LipSync 声明的参数 id
     eye_blink: tuple[str, ...]  # model3 Groups.EyeBlink 声明的参数 id
     noise: tuple[str, ...] = field(default=())  # 被过滤掉的参数, 仅用于报告
+    motion_durations: dict[tuple[str, int], float] = field(default_factory=dict)  # (组名, 序号) → 秒
 
     @property
     def params(self) -> tuple[Param, ...]:
         return tuple(p for g in self.groups for p in g.params)
+
+    def motion_duration(self, group: str, index: int = 0) -> float:
+        """一个动作的单圈时长 (motion3.json 的 Meta.Duration). 未知时回退 3.0s."""
+        return self.motion_durations.get((group, index), 3.0)
 
     def find_group(self, slug: str) -> Group | None:
         for g in self.groups:
@@ -110,9 +115,14 @@ def parse(model_json: Path) -> ModelSpec:
     refs = model.get("FileReferences", {}) or {}
 
     motions: dict[str, tuple[str, ...]] = {}
+    motion_durations: dict[tuple[str, int], float] = {}
     for group_name, entries in (refs.get("Motions") or {}).items():
         names = tuple(e.get("Name") or Path(e.get("File", "")).stem for e in entries)
         motions[group_name] = names
+        for idx, e in enumerate(entries):
+            duration = _read_motion_duration(model_json, e.get("File", ""))
+            if duration > 0:
+                motion_durations[(group_name, idx)] = duration
 
     expressions = tuple(e.get("Name") or Path(e.get("File", "")).stem for e in (refs.get("Expressions") or []))
 
@@ -138,7 +148,22 @@ def parse(model_json: Path) -> ModelSpec:
         lip_sync=lip_sync,
         eye_blink=eye_blink,
         noise=noise,
+        motion_durations=motion_durations,
     )
+
+
+def _read_motion_duration(model_json: Path, file_ref: str) -> float:
+    """读一个 motion3.json 的单圈时长 (Meta.Duration). 读不到/缺字段返回 0."""
+    if not file_ref:
+        return 0.0
+    try:
+        data = _load_json(model_json.parent / file_ref)
+    except (OSError, ValueError):
+        return 0.0
+    try:
+        return float(data.get("Meta", {}).get("Duration") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _parse_cdi(model_json: Path) -> tuple[tuple[Group, ...], tuple[str, ...]]:

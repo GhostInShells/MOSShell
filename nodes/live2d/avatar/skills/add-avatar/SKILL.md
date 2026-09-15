@@ -7,7 +7,7 @@ description: 新增或定制一套 Live2D 形象 — 放模型资产、写 chann
 
 一套形象 = `avatars/<name>/` 一个自包含目录。契约见 `../avatars/README.md`。
 
-## 三步
+## 四步
 
 ### 1. 放模型
 
@@ -16,7 +16,28 @@ mkdir -p avatars/<name>/model
 # 放入一个 Cubism 模型包, 必须含 *.model3.json 入口
 ```
 
-### 2. （可选）写 channel.py 定制命令面
+### 2. （可选）写 AVATAR.md 人设与 idle 配置
+
+```yaml
+---
+name: <显示名>
+description: 一句冷人设
+voice: <TTS 音色名, 如 可爱女生>
+groups:                    # 可选: 覆盖某 group 子 channel 的 instruction
+  face:
+    instruction: "..."
+idle:                      # 可选: 待机配置
+  delay: 3.0
+  loop: { group: Idle, index: 0 }
+  parts: { blink: true, breath: true }
+---
+正文 = 更完整人设, 不进 instruction
+```
+
+模型包自带眨眼的（动作曲线驱动眼开闭），把 `idle.parts.blink` 设 `false`，避免和 SDK
+默认眨眼双重闪烁。
+
+### 3. （可选）写 channel.py 定制命令面
 
 不写则走自动映射（`mapper.py`，示范面）。要设计好用/语义化的命令面就写：
 
@@ -35,10 +56,10 @@ async def build(avatar):
     return chan
 ```
 
-可用的事件面见 `avatars/README.md`（`param`/`motion`/`expression`/`reset`/`backdrop`）。
+可用的事件面见 `avatars/README.md`（`param`/`play`/`motion`/`expression`/`reset`/`backdrop`/`set_idle_loop`）。
 参数 id 从 `avatar.spec` 拿；唇形/眨眼绑定读 `avatar.spec.lip_sync` / `eye_blink`。
 
-### 3. 启动验证
+### 4. 启动验证
 
 ```bash
 moss nodes run nodes/live2d/avatar -- --avatar <name>

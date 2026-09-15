@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from collections.abc import Mapping
 from typing import Any
 
 from .cubism import ModelSpec
+from .persona import IdleConfig, Persona
 
 Frame = dict[str, Any]
 
@@ -28,6 +30,7 @@ class Avatar:
     """事件的产生与分发端点. 页面 (WS 客户端) 是它的消费者."""
 
     FLUSH_INTERVAL = 1 / 30  # 出站帧率: 参数合并到 30fps 一帧
+    PARAM_DURATION = 0.3  # 参数命令的默认缓动时长 (秒) —— 同轨命令的时间感
 
     def __init__(
         self,
@@ -38,10 +41,12 @@ class Avatar:
         canvas: tuple[int, int] = (600, 1000),
         backdrop: str | None = None,
         backdrop_names: tuple[str, ...] = (),
+        persona: Persona | None = None,
         logger: logging.Logger,
     ) -> None:
         self.name = name
         self.spec = spec
+        self.persona = persona
         self.model_url = model_url
         self.canvas = canvas
         self.backdrop = backdrop
@@ -56,9 +61,21 @@ class Avatar:
         self._view_scale: float = 1.0
         self._view_x: float = 0.0
         self._view_y: float = 0.0
-        self._idle: tuple[str, int] | None = None
         self._lip_sync_enabled: bool = True
+        self._speaking: bool = False
         self._interactions: deque[str] = deque(maxlen=5)
+
+        idle_cfg = persona.idle if persona else IdleConfig()
+        self.idle_delay: float = idle_cfg.delay
+        self._idle: tuple[str, int] | None = (
+            (idle_cfg.loop_group, idle_cfg.loop_index) if idle_cfg.loop_group else None
+        )
+        self.blink: bool = idle_cfg.blink
+        self.breath: bool = idle_cfg.breath
+
+        # 时间轨迹: _foreground 是"有命令正在占时"的计数, _idle_active 是待机循环是否在页面跑.
+        self._foreground: int = 0
+        self._idle_active: bool = False
 
     # ------------------------------------------------------------------ 能力
 
@@ -99,11 +116,46 @@ class Avatar:
         for k, v in values.items():
             self.param(k, v)
 
-    def motion(self, group: str, index: int = 0, *, loop: bool = False) -> None:
+    def motion(self, group: str, index: int = 0) -> None:
+        """fire-and-forget 播一个动作 (不占时、不自动复原). 供 channel.py 作者做非阻塞动作.
+
+        占时的前景动作请用 ``await avatar.play(...)`` —— 它播完会清动作。
+        """
         if group not in self.spec.motions:
             self.logger.warning("avatar %s: unknown motion group %r ignored", self.name, group)
             return
-        self._pending_events.append({"t": "motion", "g": group, "i": index, "loop": loop})
+        self._pending_events.append({"t": "motion", "g": group, "i": index})
+
+    async def play(self, group: str, index: int = 0, *, hold: float = 0.0) -> None:
+        """占时的前景动作: 播一个动作, 占满它的时长, 结束即复原 (finally 级).
+
+        时长默认取 motion3.json 的 Meta.Duration (单圈); ``hold>0`` 主动覆盖延长。
+        动作全部 Loop:True (实测 hiyori), 所以结束不是靠页面回报, 而是 driver 自己计时
+        后发 ``clear_motion`` 停掉。
+        """
+        if group not in self.spec.motions:
+            self.logger.warning("avatar %s: unknown motion group %r ignored", self.name, group)
+            return
+        self._foreground += 1
+        self._idle_active = False
+        self.stop_motion()
+        self._pending_events.append({"t": "motion", "g": group, "i": index})
+        duration = hold if hold > 0 else self.spec.motion_duration(group, index)
+        try:
+            await asyncio.sleep(duration)
+        finally:
+            self._foreground -= 1
+            self.clear_motion()
+
+    def stop_motion(self) -> None:
+        """停掉所有动作, 参数不动."""
+        self._pending_events.append({"t": "stop_motion"})
+
+    def clear_motion(self) -> None:
+        """停掉动作并把参数复位到模型默认, 再重下发被命令过的状态 (command 即真相)."""
+        self._pending_events.append({"t": "clear_motion"})
+        if self._state:
+            self._pending_params.update(self._state)
 
     def expression(self, name: str) -> None:
         if name not in self.spec.expressions:
@@ -148,15 +200,20 @@ class Avatar:
         """被命令过的参数快照. 这是驱动的"真相", 不是页面回读."""
         return dict(self._state)
 
-    def set_idle(self, group: str | None, index: int = 0) -> None:
-        """设定待机动作; 传 None 回到自动 (优先名字像 Idle 的组, 否则第一个)."""
+    def set_idle_loop(self, group: str | None, index: int = 0) -> None:
+        """设定全身待机循环动作; 传 None 回到自动 (优先名字像 Idle 的组, 否则第一个)."""
         if group is None:
             self._idle = None
-            return
-        if group not in self.spec.motions:
-            self.logger.warning("avatar %s: unknown idle group %r ignored", self.name, group)
-            return
-        self._idle = (group, index)
+        else:
+            if group not in self.spec.motions:
+                self.logger.warning("avatar %s: unknown idle group %r ignored", self.name, group)
+                return
+            self._idle = (group, index)
+        if self._idle_active:
+            # 待机正在跑 → 立刻换到新 loop
+            self.idle_loop()
+        else:
+            self._idle_active = False  # 让 idle manager 下一拍按新 spec 重启
 
     def idle_group(self) -> str | None:
         """挑一个动作组当 idle: 优先名字像 Idle 的, 否则第一个."""
@@ -165,14 +222,41 @@ class Avatar:
                 return name
         return next(iter(self.spec.motions), None)
 
-    async def idle(self) -> None:
-        """回到待机. 形象代码的 on_idle 调它."""
+    def idle_spec(self) -> tuple[str, int] | None:
+        """当前待机动作 (含自动挑选的结果); 没有动作组时 None."""
         if self._idle is not None:
-            group, index = self._idle
-        else:
-            group, index = self.idle_group(), 0
-        if group:
-            self.motion(group, index, loop=True)
+            return self._idle
+        group = self.idle_group()
+        return (group, 0) if group else None
+
+    def idle_loop(self) -> None:
+        """把待机循环交给页面跑 (动作 Loop:True, 页面侧无限循环)."""
+        spec = self.idle_spec()
+        if spec is None:
+            return
+        self._pending_events.append({"t": "idle", "g": spec[0], "i": spec[1]})
+
+    async def run_idle_manager(self) -> None:
+        """待机仲裁 (driver 持有时间): 空闲超过 idle_delay 才进待机, 前景活动/说话则让位.
+
+        跑在 channel 的 ``build.running`` 生命周期里, 永远循环. 不依赖 ``build.idle`` 的
+        取消语义 —— 那个只在本 channel 自身收到命令时才退出, 子 channel 命令不会 (已查证),
+        用它做待机会有漏洞.
+        """
+        quiet_since = time.monotonic()
+        while True:
+            await asyncio.sleep(0.1)
+            if self._foreground or self.speaking:
+                quiet_since = time.monotonic()
+                if self._idle_active:
+                    self.stop_motion()
+                    self._idle_active = False
+                continue
+            if self._idle_active or self.idle_spec() is None:
+                continue
+            if time.monotonic() - quiet_since >= self.idle_delay:
+                self.idle_loop()
+                self._idle_active = True
 
     # ---------------------------------------------------------------- 唇动
 
@@ -182,6 +266,19 @@ class Avatar:
 
     def set_lip_sync(self, enabled: bool) -> None:
         self._lip_sync_enabled = bool(enabled)
+
+    def set_speaking(self, on: bool) -> None:
+        """说侧的连续状态 (仅内部, 不发帧): 说话期间待机动画让位.
+
+        模型自带的动作曲线几乎都驱动嘴部参数 (实测 hiyori 的 10 个 motion 全部驱动
+        ParamMouthOpenY/ParamMouthForm), 循环待机动作会和唇动抢同一个参数 —— 所以
+        说话时必须让待机停下来. idle manager 读 ``speaking`` 决定让位.
+        """
+        self._speaking = bool(on)
+
+    @property
+    def speaking(self) -> bool:
+        return self._speaking
 
     # ---------------------------------------------------------------- 人类交互
 
@@ -200,11 +297,11 @@ class Avatar:
         return None
 
     def on_tap(self) -> str | None:
-        """人类点击形象: 记录交互, 有 Tap 动作则播一个. 返回播的动作组名 (或 None)."""
+        """人类点击形象: 记录交互, 有 Tap 动作则播一个 (占时前景动作)."""
         self.record_interaction("点击")
         group = self.tap_group()
         if group:
-            self.motion(group, 0)
+            asyncio.create_task(self.play(group, 0))
         return group
 
     # ---------------------------------------------------------------- 客户端
@@ -221,6 +318,7 @@ class Avatar:
 
     def hello_frame(self) -> Frame:
         """新页面连上时的全量快照 —— 让它追上已经发生的命令."""
+        spec = self.idle_spec()
         return {
             "t": "hello",
             "name": self.name,
@@ -229,6 +327,9 @@ class Avatar:
             "backdrop": self.backdrop,
             "params": self.state(),
             "view": self.view_state(),
+            "idle": {"g": spec[0], "i": spec[1]} if spec else None,
+            "idle_active": self._idle_active,
+            "parts": {"blink": self.blink, "breath": self.breath},
         }
 
     # ---------------------------------------------------------------- 分发循环

@@ -25,6 +25,8 @@ from ghoshell_moss.core.concepts.channel import Channel
 
 from .avatar import Avatar
 from .cubism import ModelSpec, find_model_json, parse
+from .persona import PERSONA_FILE, Persona
+from .persona import load as load_persona
 
 AVATAR_DIR = "avatars"
 MODEL_DIR = "model"
@@ -42,6 +44,7 @@ class AvatarKit:
     model_dir: Path
     channel_file: Path | None
     model_json: Path
+    persona: Persona | None
 
     @property
     def is_explicit(self) -> bool:
@@ -73,6 +76,7 @@ def discover(root: Path) -> dict[str, AvatarKit]:
             model_dir=model_dir,
             channel_file=channel_file if channel_file.is_file() else None,
             model_json=model_json,
+            persona=load_persona(entry / PERSONA_FILE, fallback_name=entry.name),
         )
     return kits
 

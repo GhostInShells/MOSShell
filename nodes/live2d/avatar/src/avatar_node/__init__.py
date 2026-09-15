@@ -31,6 +31,7 @@ from .discovery import (
     select,
 )
 from .lexicon import group_slug, param_ident
+from .persona import Persona
 
 __all__ = [
     "Avatar",
@@ -40,6 +41,7 @@ __all__ = [
     "Group",
     "ModelSpec",
     "Param",
+    "Persona",
     "discover",
     "group_slug",
     "load_channel",

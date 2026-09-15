@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
@@ -39,14 +40,23 @@ def build_auto_channel(avatar: Avatar) -> MutableChannel:
     @root.build.instruction
     def _instruction() -> str:
         groups = ", ".join(g.slug for g in spec.groups)
-        lines = [
-            f"你驱动的是一个 Live2D 形象 `{avatar.name}`。命令由模型包自带的元数据自动映射而来。",
-            f"参数按模型作者的分组组织成子 channel: {groups}。",
-            "参数命令取模型原值 (通常 -1 到 1, 头/身体角度类约 -30 到 30), 页面会按模型实际上下界夹取。",
-            "动作与表情命令在 `motions` / `expressions` 子 channel 下, 播完自动回待机。",
-        ]
+        lines = [f"你驱动的是 Live2D 形象 `{avatar.name}`。"]
+        if avatar.persona is not None:
+            if avatar.persona.description:
+                lines.append(f"你是 {avatar.persona.name}: {avatar.persona.description}")
+            if avatar.persona.voice:
+                lines.append(f'说话用 tone="{avatar.persona.voice}"。')
+        lines.extend(
+            [
+                f"参数按模型作者分组组织成子 channel: {groups}。",
+                "参数取模型原值 (通常 -1..1, 头/身体角度约 ±30), 页面按模型上下界夹取。",
+                "动作在 `motions` 子 channel, 播完自动复原; 表情在 `expressions` 子 channel。",
+                "全身待机循环由 `set_idle_loop` 指定; 空闲一段时间后自动进入, 有动作/说话时让位。",
+                "语音与动作一起下达: 把动作/参数命令写在 <say> 之前 (<say> 占主轨, 阻塞其后的形象命令)。",
+            ]
+        )
         if avatar.client_count == 0:
-            lines.append("当前没有页面连着 —— 你的命令会被记录, 但没人看见。")
+            lines.append("当前没有页面连着。")
         return "\n".join(lines)
 
     for group in spec.groups:
@@ -90,30 +100,19 @@ def build_auto_channel(avatar: Avatar) -> MutableChannel:
 
     _idle_listing = ", ".join(spec.motions) if spec.motions else ""
 
-    @root.build.command(doc=f"设定待机动作 (空闲时循环播放)。可用动作组: {_idle_listing}。")
-    async def set_idle(group: str, index: int = 0) -> str:
-        avatar.set_idle(group, index)
-        return f"待机设为 {group}[{index}]"
-
-    @root.build.command()
-    async def lip_sync(on: bool = True) -> str:
-        """开关自动唇动。on=False 时模型手动控嘴优先; on=True 恢复跟随说侧采样。"""
-        avatar.set_lip_sync(on)
-        return f"自动唇动 {'开' if on else '关'}"
+    @root.build.command(doc=f"设定全身待机循环动作。可用动作组: {_idle_listing}。")
+    async def set_idle_loop(group: str, index: int = 0) -> str:
+        avatar.set_idle_loop(group, index)
+        return f"待机循环设为 {group}[{index}]"
 
     @root.build.notice
     def _notice() -> str:
-        page = "有页面正在看着你。" if avatar.client_count else "没有页面连接 —— 你说的话没人看见。"
+        page = "有页面正在看着你。" if avatar.client_count else "没有页面连接。"
         recent = avatar.interactions()
         if recent:
             tail = " · ".join(recent)
             return f"{page} 最近交互: {tail}"
         return page
-
-    @root.build.idle
-    async def _idle() -> None:
-        # 空闲时回到待机动作; 没有动作组时什么都不做.
-        await avatar.idle()
 
     from .lipsync import run_lip_sync
 
@@ -121,6 +120,11 @@ def build_auto_channel(avatar: Avatar) -> MutableChannel:
     async def _lip_sync() -> None:
         # 连续订阅说侧采样驱动唇形 (跨进程 topic 桥). 无唇形参数时内部直接返回.
         await run_lip_sync(avatar)
+
+    @root.build.running
+    async def _idle_manager() -> None:
+        # 待机仲裁: 空闲超过 idle_delay 才进待机, 前景动作/说话让位. 永远循环.
+        await avatar.run_idle_manager()
 
     return root
 
@@ -145,6 +149,13 @@ def _register_backdrop(chan: MutableChannel, avatar: Avatar, names: tuple[str, .
 
 def _group_channel(avatar: Avatar, group: Group) -> MutableChannel:
     chan = new_channel(name=group.slug, description=f"{group.label or group.slug} 分组参数")
+    override = (avatar.persona.group_instructions if avatar.persona else {}).get(group.slug)
+
+    if override:
+        @chan.build.instruction
+        def _instruction() -> str:
+            return override
+
     for param, ident in zip(group.params, group.idents()):
         _register_param(chan, avatar, param, ident)
     return chan
@@ -155,6 +166,7 @@ def _register_param(chan: MutableChannel, avatar: Avatar, param: Param, ident: s
 
     async def _set(value: float) -> None:
         avatar.param(param.id, value, manual=True)
+        await asyncio.sleep(avatar.PARAM_DURATION)
 
     _set.__name__ = ident
     _set.__doc__ = doc
@@ -175,11 +187,13 @@ def _register_motion(chan: MutableChannel, avatar: Avatar, group_name: str, name
     ident = _slug(group_name, "motion")
     listing = " / ".join(f"{i}={n}" for i, n in enumerate(names))
 
-    async def _play(index: int = 0, loop: bool = False) -> None:
-        avatar.motion(group_name, index, loop=loop)
+    async def _play(index: int = 0, hold: float = 0.0) -> None:
+        await avatar.play(group_name, index, hold=hold)
 
     _play.__name__ = ident
-    _play.__doc__ = f"播放动作「{group_name}」, 可选: {listing}。loop=True 时循环播放。"
+    _play.__doc__ = (
+        f"播放动作「{group_name}」, 可选: {listing}。hold>0 覆盖时长 (秒), 0=用动作自身时长。"
+    )
     chan.build.command()(_play)
 
 

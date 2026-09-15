@@ -4,7 +4,7 @@ status: draft
 # priority: importance within the current stage (iteration cycle) — not development urgency
 priority: P1
 created: 2026-09-13
-updated: 2026-09-13
+updated: 2026-09-15
 depends: []
 milestone: beta-release
 description: >-
@@ -125,6 +125,55 @@ Live2D 条款明写 **"may not redistribute all or part of the material to third
 2. 官网下载 Cubism SDK for Web → 拷 `Core/live2dcubismcore.min.js` 到 `vendor/`
 
 `CubismWebFramework` 是开源的（Live2D Open Software License），可随仓库或走 npm。
+
+### KD8. 命令有时间轨迹 —— driver 持有时间，不 fire-and-forget
+
+旁路验证暴露了 alpha 版的最大缺口：所有命令 fire-and-forget，微秒级返回，而身体要动
+1.6–8.6 秒。于是 channel 认为"动作早完了"、待机立刻回来、同轨命令根本没有时间感——
+"时间第一公民"在 avatar 上名存实亡。
+
+已决（2026-09-15）：参数命令占默认缓动时长（0.3s），动作命令占 `motion3.json` 的
+`Meta.Duration`（可用 `hold` 覆盖延长），结束在 `finally` 里复原。动作文件全部
+`Loop:True`（实测 hiyori 10 个 motion），所以"结束"是 driver 自己计时后发
+`clear_motion` 停掉，**不靠页面回报** —— 页面只服从帧，是纯执行器。
+
+代价：同轨命令会串行（两个 face 参数先后 0.3s+0.3s），异轨仍并行。这是特性不是缺陷。
+
+### KD9. 待机是 driver 仲裁的背景循环，不靠 build.idle
+
+`build.idle` 只在**该 channel 自身**收到命令时才取消；子 channel 命令不取消父 idle
+（`_tree_channel_runtime.py` 的 `is_self_task` gate，已查证）。动作命令在 `motions`
+子 channel 下，所以靠 `build.idle` 做待机会有漏洞：播动作时父 idle 不退出。
+
+已决：待机走一个跑在 `build.running` 里的永续仲裁循环——空闲超过 `idle.delay`
+（默认 3s，可配）才进待机，前景动作（`play` 占时期间）/说话（唇动采样）让位。部件级
+idle（眨眼/呼吸）是 SDK 原生，由 `idle.parts` 配置开关。
+
+### KD10. 唇动/眨眼是框架默认能力，不开成命令
+
+旁路验证发现 `lip_sync` 开/关命令不该出现在默认命令面——唇动是框架默认行为，模型
+不需要知道它的开关；把它暴露成命令只会诱导模型去手动控嘴，制造双驱动。
+
+已决：自动映射的命令面**不注册** `lip_sync`。手动控嘴仍自动关唇动、`reset()` 仍恢复
+（`avatar.set_lip_sync` 保留为内部能力，供 `channel.py` 作者按需用）。
+
+### KD11. 人设 / 音色 / per-group instruction / idle 配置都进 AVATAR.md
+
+`AVATAR.md`（frontmatter markdown，同 NODE.md 惯例）承载形象的可分发文本面：
+
+- `name` / `description` / `voice` —— 一句冷人设 + 推荐音色，进 root instruction
+- `groups.<slug>.instruction` —— 覆盖某 group 子 channel 的 instruction，缺省用自动冷描述
+- `idle.delay` / `idle.loop` / `idle.parts.blink|breath` —— 待机配置
+
+**instruction 要冷、准确**：散文人设不进 instruction（留给 channel.py 作者/人类），
+instruction 只放冷事实 + 一句人设 + 一句音色 + 一条 `<say>` 前后顺序的硬约束。
+
+### 实测基线更正（2026-09-15）
+
+KD2 的实测表来自 CubismWebSamples 的**免费 Hiyori**（70 参数/12 组）。本地实际可用的
+是 **hiyori_pro**（`live2d-py-test` / `kalidokit` 里的 t10/t11）：42 非噪声参数、8 组
+（face/eye/eyeball/brow/mouth/body/arm/move）、无 Expressions、动作组是
+Idle·Flick·FlickDown·FlickUp·Tap·Tap@Body·Flick@Body。映射器在异构包上照样成立。
 
 ## Implementation Notes
 

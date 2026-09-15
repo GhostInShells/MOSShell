@@ -39,6 +39,20 @@ Live2D 条款明写不得向第三方再分发。因此 `avatars/*/model/` 与 `
 驱动不向页面回读参数状态。`Avatar.state()` 返回"被命令过的值"，就是真相。这避免了
 双驱动抖动，也让命令面在没有浏览器时仍可测（moss-shell 直接验证）。
 
+### command 有时间轨迹
+
+命令占时, 不是 fire-and-forget: 参数命令占默认缓动时长 (0.3s), 动作命令占
+`motion3.json` 的 `Meta.Duration` (可用 `hold` 覆盖), 结束在 `finally` 里复原动作。
+这是"时间第一公民"的落地 —— 同轨命令因此串行, 异轨并行。动作文件全部 `Loop:True`
+(实测 hiyori), 所以"结束"是 driver 自己计时后发 `clear_motion` 停掉, 不靠页面回报。
+
+### idle 是 driver 仲裁的背景循环, 不靠 build.idle
+
+`build.idle` 只在**该 channel 自身**收到命令时才取消; 子 channel 命令不会取消父 idle
+(`_tree_channel_runtime.py` 的 `is_self_task` gate)。所以待机走一个跑在 `build.running`
+里的永续仲裁循环: 空闲超过 `idle.delay` 才进待机, 前景动作/说话让位。部件级 idle
+(眨眼/呼吸) 是 SDK 原生, 由 `AVATAR.md` 的 `idle.parts` 开关。
+
 ### 换形象 = 重启 node
 
 没有运行期 `switch_model`——状态太重。形象身份是 argument（`--avatar`），走启动参数。
@@ -76,5 +90,9 @@ nodes/live2d/
 
 - **背板/渲染库是简化的第一版**：选 pixi-live2d-display 而非官方 CubismWebFramework，
   因为后者要 esbuild 打包一步。对外 WS 协议不变，换库只改 `web/app.js`。
-- **唇动包络未接**：`model3.json` 的 `Groups.LipSync` 声明已解析进 `spec.lip_sync`，
-  但音频包络 → 唇形驱动还没接（依赖 speech 侧的 volume 流，属后续集成）。
+- **SDK 默认眨眼与 idle motion 自带眨眼会叠加**（已用 `idle.parts.blink: false` 规避）：
+  hiyori 的 idle 动作本身就驱动眼开闭参数，SDK 的自动眨眼在动作间隙又驱动一遍，
+  两次眨眼贴太近会闪一下。模型包自带眨眼时，把它在 `AVATAR.md` 里关掉。
+- **参数 vs 待机动作的覆盖未解决**：待机循环动作会逐帧覆写它驱动到的参数（头/眼/嘴），
+  所以"待机运行中单独下一个参数命令"的效果会被吃掉。这是下一阶段要讨论的
+  "参数遮挡/权重"问题，当前未做。

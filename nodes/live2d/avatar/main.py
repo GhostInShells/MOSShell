@@ -103,6 +103,7 @@ async def main(matrix: Matrix) -> None:
         model_url=model_url(kit),
         backdrop=_default_backdrop(),
         backdrop_names=_backdrop_names(),
+        persona=kit.persona,
         logger=logger,
     )
     bridge = AvatarBridge(
