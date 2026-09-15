@@ -60,6 +60,7 @@ __all__ = [
     'CellEvent',
     'CellPresence',
     'CellNetwork',
+    'AutoAcceptPolicy',
     'NodeManager',
     'DuplicatedError',
 
@@ -727,8 +728,11 @@ class CellAddressCodec:
 
     @property
     def short(self) -> str:
-        """short 形态: ``name_uid[:6]``, 全链统一的地址短标."""
-        return f'{self.name}_{self.uid[:CellAddressCodec.SHORT_UID_LEN]}'
+        """short 形态: ``name_uid[-6:]``, 全链统一的地址短标."""
+        # 取尾部随机段而非头部: uid 是 ULID, 头部 10 字符是毫秒时间戳,
+        # 同 name 多实例在 ~4.4 分钟内 `uid[:6]` 相同 → 短标撞车.
+        # 尾部落在 80 位随机段, 每个 spawn 唯一.
+        return f'{self.name}_{self.uid[-CellAddressCodec.SHORT_UID_LEN:]}'
 
     @property
     def dot_address(self) -> str:
@@ -1071,6 +1075,18 @@ class CellPresence(ABC):
         ...
 
 
+@dataclasses.dataclass(frozen=True)
+class AutoAcceptPolicy:
+    """auto-accept 默认策略的两个开关 (与 ``CellNetwork.set_auto_accept`` 对称的读侧).
+
+    显式 accept / reject 表覆盖本策略, 不受其影响 —— 本策略只决定"没被显式表态的
+    cell 默认怎么处理". 两个开关全开时, 网络默认承认一切资源, 显式的
+    accept / reject 命令失去意义.
+    """
+    local: bool
+    foreign: bool
+
+
 class CellNetwork(ABC):
     """
     Matrix 网络的观测与连接层.
@@ -1165,11 +1181,23 @@ class CellNetwork(ABC):
           - 移出策略 (原接受, 现不接受) 的 cell 会撤销句柄
         显式 accept/reject 表覆盖默认策略, toggle 不动它们.
 
-        典型使用: 上层 channel (如 cells channel) 通过 command 暴露给模型,
+        典型使用: 上层 channel (如 mesh channel) 通过 command 暴露给模型,
         运行时可自主开关是否自动接纳 foreign cell 的资源.
 
         :param local: is_local(env) 的 cell 是否自动 accept. None=不改.
         :param foreign: 非 local 的 cell 是否自动 accept. None=不改.
+        """
+        ...
+
+    @abstractmethod
+    def auto_accept(self) -> AutoAcceptPolicy:
+        """
+        当前 auto-accept 默认策略 —— set_auto_accept 的读侧.
+
+        没有读侧, 消费方就只能把自己的"读不到"写成常量 (策略状态无从判断),
+        策略可见性也就无从谈起. 与 set_auto_accept 必须成对实现.
+
+        只读策略本身; cell 是否已被接受属于 accept/reject 表, 看 channel_proxies.
         """
         ...
 

@@ -23,6 +23,8 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
+from ghoshell_moss.message import unique_id
+
 from ghoshell_moss.core.blueprint.cell import (
     Cell,
     CellAddressCodec,
@@ -307,14 +309,14 @@ class TestCell:
 
     def test_unique_name_equals_short(self):
         cell = Cell(role=NODE_ROLE, name='cam', uid='ABC12345XYZ', home='/tmp')
-        assert cell.unique_name == 'cam_ABC123'
+        assert cell.unique_name == 'cam_345XYZ'
 
     def test_address_codec_property(self):
         cell = _make_cell(name='cam', uid='ABC12345XYZ')
         c = cell.address_codec
         assert isinstance(c, CellAddressCodec)
         assert c.address == cell.address
-        assert c.short == 'cam_ABC123'
+        assert c.short == 'cam_345XYZ'
 
     def test_address_codec_consistency_with_address(self):
         cell = _make_cell(name='sensor', uid='ZZZZZZZZZZ')
@@ -508,7 +510,7 @@ class TestCellEvent:
     def test_address_codec_from_event(self):
         e = CellEvent(address='node/cam/ABC12345XYZ')
         assert isinstance(e.address_codec, CellAddressCodec)
-        assert e.address_codec.short == 'cam_ABC123'
+        assert e.address_codec.short == 'cam_345XYZ'
 
 
 # ── address 三段结构 (§ZZ-10) ─────────────────────────────────────────
@@ -607,14 +609,21 @@ class TestCellAddressCodec:
 
     # -- short
 
-    def test_short_name_uid_prefix(self):
+    def test_short_name_uid_tail(self):
         addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
         c = CellAddressCodec(addr)
-        assert c.short == 'counter_service_01KZHB'
+        assert c.short == 'counter_service_HB7G8Q'
 
     def test_short_different_uid_yield_different_shorts(self):
-        a = make_address(NODE_ROLE, 'cam', 'AAAABBBBCC')
-        b = make_address(NODE_ROLE, 'cam', 'ZZZZBBBBCC')
+        a = make_address(NODE_ROLE, 'cam', 'AAAAAA1111')
+        b = make_address(NODE_ROLE, 'cam', 'AAAAAA2222')
+        assert CellAddressCodec(a).short != CellAddressCodec(b).short
+
+    def test_short_unique_for_same_time_uids(self):
+        # 回归: uid 是 ULID, 头部是毫秒时间戳. 同 name 多实例同时 spawn,
+        # 取头部切片会撞短标 (同毫秒内 `uid[:6]` 相同). short 必须取随机尾部.
+        a = make_address(NODE_ROLE, 'stream', unique_id())
+        b = make_address(NODE_ROLE, 'stream', unique_id())
         assert CellAddressCodec(a).short != CellAddressCodec(b).short
 
     # -- dot_address / from_dot_address
@@ -678,7 +687,7 @@ class TestCellAddressCodec:
     def test_match_exact_short(self):
         addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
         c = CellAddressCodec(addr)
-        assert c.match(c.short)                    # counter_service_01KZHB
+        assert c.match(c.short)                    # counter_service_HB7G8Q
 
     def test_match_exact_name(self):
         addr = make_address(NODE_ROLE, 'cam', 'uid8')
