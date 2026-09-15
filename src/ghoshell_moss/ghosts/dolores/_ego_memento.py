@@ -4,12 +4,13 @@
 
 - **锚点**: ``commit()`` 组 ``DshSessionRef`` + 写 memento. metadata = ``{ref, prev_turn}``,
   memento 只存不解析. 区间取「已完成的 turn」(追认): 签发时 turn/end 已知, usage 齐整.
-- **view / fold**: ``view_message()`` 给 ghost 的 memories; ``fold_refs()`` 给 compact 切点.
+- **view / 切点**: ``view_message()`` 给 ghost 的 memories; ``resume_ref()`` 给 ego 重建的切点.
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
-- 未落 (待 plugin 支撑, 见 dsh-fusion research 2026-09-10 session_ref_span_seed_run):
-  sidecar note 生产 (run 原语)、``read`` (冷读 log + render_transcript)、``chat_commit``、
-  ``create_next_ego`` (compact 重组 seed).
+- **note 生产**: ``schedule_note()`` 排 sidecar —— 旁路一轮 (身份旁路 session, seed = 源 session 的
+  verbatim 前缀, 吃满前缀缓存), 取回 plain text 写进 note. 失败留空可重试, ``resume()`` 补漏.
+- 未落: ``read`` (冷读 log + render_transcript)、``chat_commit``, 以及 ego 的 inflight 替换
+  (当前只在 ego 开启/关闭时用 ``resume_ref()`` 重建).
 
 dep 只有不可变项 (connection / memento / config / logger) —— 这些是它干活的工具, 不是 ego 状态.
 """
@@ -212,25 +213,22 @@ class EgoMementoManager:
             return None
         return self._render_view(branch.view(n=n if n is not None else self._config.view_limit))
 
-    def fold_refs(self) -> tuple[DshSessionRef | None, DshSessionRef | None]:
-        """compact 用: (cut ref, latest ref).
+    def resume_ref(self) -> DshSessionRef | None:
+        """ego 重建的切点: 最后一个**摘要已就绪**的 commit 的 ref; 没有则 None (= 全新 session).
 
-        cut = 最后一个有 message 的 commit (真摘要或坏占位) 的 ref → 摘要区右端 / seed 切片左端;
-        latest = branch tip 的 ref → raw 尾巴右端 / 新区间下界. 都从 memento 反查 (它才是源).
+        只认 `note.message` 非空的 commit —— 摘要区靠它, 没有它就退化成"整段原文再带一遍" (无效还原).
+        更晚的 commit 若 note 还没生产出来, 它到切点之间的原文就作为 raw 尾巴带过去, 不丢内容.
         """
         branch = self._memento.get_branch(self._config.branch_name)
         if branch is None:
-            return None, None
-        commits = branch.commits()
-        if not commits:
-            return None, None
+            return None
         notes = branch.notes()
         cut: DshSessionRef | None = None
-        for commit in commits:
+        for commit in branch.commits():
             note = notes.get(commit.id)
             if note is not None and note.message:
                 cut = self._ref_of(commit)
-        return cut, self._ref_of(commits[-1])
+        return cut
 
     # ── 渲染 ─────────────────────────────────────────────────────
 

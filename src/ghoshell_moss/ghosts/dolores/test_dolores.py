@@ -530,6 +530,50 @@ class TestEgoMementoSidecar:
         assert list(memento.get_branch("main").notes().values())[0].message == "backfilled"
 
 
+class TestEgoMementoResumeRef:
+    """ego 重建切点的选择 — 纯逻辑 (真 memento), 只认摘要已就绪的 commit."""
+
+    @staticmethod
+    def _manager(tmp_path: Path):
+        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
+        from ghoshell_moss.memento import new_local_memento
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        return EgoMementoManager(connection=None, memento=memento, config=EgoMementoConfig()), memento
+
+    def test_none_without_commits(self, tmp_path: Path):
+        manager, _ = self._manager(tmp_path)
+        assert manager.resume_ref() is None
+
+    def test_none_when_no_note_ready(self, tmp_path: Path):
+        manager, _ = self._manager(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=3)
+        assert manager.resume_ref() is None
+
+    def test_none_when_only_note_is_empty(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=3)
+        memento.get_branch("main").note(anchor.id, "")
+
+        assert manager.resume_ref() is None
+
+    def test_falls_back_to_last_commit_with_ready_note(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        first = manager.commit(session_id="s1", start_turn=0, end_turn=3)
+        second = manager.commit(session_id="s1", start_turn=3, end_turn=7)
+        branch.note(first.id, "first")
+        branch.note(second.id, "second")
+        # 尾巴上还有一个摘要没产出来的 commit: 切点回退到已就绪的那个, 它之后的原文当 raw 尾巴带过去.
+        manager.commit(session_id="s1", start_turn=7, end_turn=9)
+
+        ref = manager.resume_ref()
+
+        assert ref is not None
+        assert (ref.session_id, ref.start_turn, ref.end_turn) == ("s1", 3, 7)
+
+
 # ── DoloresRun — thinking 交易 run 对象 (public + 可测) ─────────────
 
 

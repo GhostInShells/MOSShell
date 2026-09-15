@@ -9,7 +9,7 @@ import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attach
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { isSurfaceEligibleType, SessionSeq } from '@deepseek-ai/dsh-session'
+import { foldSurface, isSurfaceEligibleType, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { JsonValue, Session, SessionEvent, SessionId, SurfaceEventType } from '@deepseek-ai/dsh-session'
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -1070,8 +1070,12 @@ function seedEvent(type: SurfaceEventType, time: number, data: unknown): Session
  * ego 带 ref 时的初始表面 = memory 事件 + 切点之后的 surface 尾巴.
  *
  * memory 必须排在最前: 它是前情提要 (ground + memento view), 尾巴是"刚刚发生". 两者合成一个
- * constructor seed, 所以整段是一次性表面. ref 的源 session 必须 live —— 要读它的 surface 节点;
- * compact 换的永远是当前主 session, 所以这条限制不构成约束.
+ * constructor seed, 所以整段是一次性表面. ref 的源 session 常常已经不在本进程 (上次运行留下的
+ * commit) —— 走 loadSourceEvents 的冷读兜底, 冷态下 surface 节点由 foldSurface 从 log 折出,
+ * 与 live 的 session.surface.nodes 同源同义.
+ *
+ * 代价要注意: 冷读 + 全量 fold 是 O(源 session log), 所以 ego 重建的开销由上一次 session 的
+ * 体积决定 —— 这也正是它的上界 (最终由 session 切换的阈值兜住).
  */
 async function buildEgoSeed(
   ctx: Context,
@@ -1082,10 +1086,9 @@ async function buildEgoSeed(
     .map(message => message?.text)
     .filter((text): text is string => typeof text === 'string' && text !== '')
   const seed = memorySeed(texts)
-  const source = ctx.agents.get(ref.session_id)
-  if (source === undefined) throw new Error(`ref source session ${ref.session_id} is not live`)
-  const cut = resolveCut(source.session.snapshotEvents(), ref)
-  seed.push(...surfaceTailSeed(source.session, cut))
+  const events = await loadSourceEvents(ctx, ref.session_id)
+  const cut = resolveCut(events, ref)
+  seed.push(...surfaceTailSeed(events, cut))
   return withSeq(seed)
 }
 
@@ -1143,12 +1146,15 @@ function resolveCut(events: readonly SessionEvent[], ref: EgoCreateRef): number 
  * 三条依据: ① 只取 surface 节点, 被 replace 遮蔽过的内容不会复活; ② 一律改写成 append, seed 里
  * 没有 replace op, 不触发 surface 的 range/provenance 校验; ③ `tool/call` 本就不进 surface ——
  * 工具调用装在 assistant/message 的 content 块里 (实机验证过), 所以不丢。
+ *
+ * `events` 是完整 log 且 seq 连续从 0 (live 的 snapshotEvents / 冷读 read 同契约), 故可直接按
+ * 下标取事件; surface 节点由 `foldSurface` 折出 (冷态唯一可用, 与 live 同源).
  */
-function surfaceTailSeed(session: Session, cutSeq: number): SessionEvent[] {
+function surfaceTailSeed(events: readonly SessionEvent[], cutSeq: number): SessionEvent[] {
   const seed: SessionEvent[] = []
-  for (const seq of session.surface.nodes) {
+  for (const seq of foldSurface(events).nodes) {
     if (seq < cutSeq) continue
-    const event = session.eventAt(seq)
+    const event = events[seq]
     if (event === undefined || !isSurfaceEligibleType(event.type)) continue
     seed.push(seedEventFromTail(event))
   }

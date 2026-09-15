@@ -200,21 +200,37 @@ class DoloresEgo:
         Injects instruction + memory (ghost dynamic memory, 1:1 into user messages) at session
         creation, establishing an initial surface below the instruction and above the conversation.
         Returns the ego session id.
+
+        With a memento 切点 (``resume_ref()``) the plugin rebuilds the surface instead: memory first,
+        then the source session's surface tail after the cut, so the ego resumes mid-conversation
+        instead of starting blank. 源头 session 通常已不在本进程 (上次运行留下的 commit), 冷读兜底.
+        切点失效 (源 log 已轮转/清掉) 不能拖死启动 —— 退一步建全新 session, 内容退回 memory 层.
         """
-        result = await self._launcher.call(
-            _DOLORES_EGO_CREATE,
-            {
-                "project_home": str(self._ctx.project_home),
-                "project_name": self._ctx.project_name,
-                "title": self._config.session_title.format(
-                    mode=self._ctx.mode,
-                    timestamp=datetime.now().strftime("%y-%m-%d %H:%M:%S"),
-                ),
-                "instruction": self._ctx.instruction,
-                "messages": self._assemble_initial_messages(),
-                "permission": self._config.permission,
-            },
-        )
+        payload = {
+            "project_home": str(self._ctx.project_home),
+            "project_name": self._ctx.project_name,
+            "title": self._config.session_title.format(
+                mode=self._ctx.mode,
+                timestamp=datetime.now().strftime("%y-%m-%d %H:%M:%S"),
+            ),
+            "instruction": self._ctx.instruction,
+            "messages": self._assemble_initial_messages(),
+            "permission": self._config.permission,
+        }
+        ref = self._memento_manager.resume_ref() if self._memento_manager is not None else None
+        if ref is not None:
+            payload["ref"] = ref.model_dump(mode="json")
+        try:
+            result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
+        except Exception:
+            if "ref" not in payload:
+                raise
+            self._logger.warning(
+                "ego rebuild from memento 切点 failed (ref=%s/%s-%s) — falling back to a fresh session",
+                ref.session_id, ref.start_turn, ref.end_turn,
+            )
+            payload.pop("ref")
+            result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
         self._ego_session_id = result["sessionId"]
         self._thinking_token = result.get("thinkingToken")
         self._session = self._launcher.create_session(self._ego_session_id)
