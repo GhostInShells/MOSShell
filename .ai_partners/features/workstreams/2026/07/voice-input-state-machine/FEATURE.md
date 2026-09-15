@@ -4,7 +4,7 @@ status: in-progress
 status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末. 2026-09-12: 用 seedasr (豆包2.0) 重构 ASR 为 volcengine_sauc, moss audio listen -m once 实机跑通, 语音对话 Dolores 闭环, 详见文末. 2026-09-14: 听侧归档补齐 — RecognitionSegment 带 clauses (与说侧 SpeechSegment 对称), event/clause/segment 各带 created 墙钟时间戳; 契约层 Clause 更名 RecognitionClause, 详见文末. 2026-09-14(二): legacy volcengine_asr 退役 (活错配, provider 仍指向它); AudioASRProvider 改指 volcengine_sauc; ASR 默认 provider 改非单例 (TTS 已非单例, Speech 保持单例); listener 控制 channel 待重建 (曾被实现, 09-11 随旧状态机删除), 详见文末.'
 priority: P0
 created: 2026-07-28
-updated: 2026-09-14
+updated: 2026-09-15
 depends:
   - audio-capture
   - node-migration
@@ -1369,6 +1369,47 @@ push-to-talk(按住聆听松开 commit，可 defer)。
    持续聆听 + `session.add_signal` 发 signal + clause 回调发 ClauseTopic + provide channel;
    并设为 `-m` 默认。**ghost 侧无需新装线**: signal 经 session bus 由
    `mindflow_in_shell._route_signal_to_mindflow` 路由进已声明的 `listener_nucleus`。
+
+## 2026-09-15 会话决策 — 智能判停（长程聆听）prompt 与架构收敛
+
+> 人类架构师 + deepseek-flash。本轮把判停的 LLM 侧从"猜 prompt"收敛到"基准 + 结论"，
+> 架构从"controller 内联 judge"收敛到"独立组件 + 可替换 caller"。只记结论，实现留待
+> 压缩上下文后开工；会话中写乱的 controller.py 改动已回退。
+
+### 命名
+
+- ghost 视角：**长程聆听**（状态机）；listener 开发者视角：**智能判停**（"VAD 提前"的实现机制）。
+- 判停是一个**通用 llm func**（model-func workstream 的"函数化单轮模型调用"），"话说完没"
+  只是它的一个实例。controller 持的是 **llm func caller**（model-agnostic 持久化句柄），
+  不写死 `small_fast_model` + instruction。
+
+### prompt 结论（`.ai_partners/benchmarks/utterance-end-plain/`）
+
+- **绝不结构化**：结构化输出实际吐近百 token；plain-text 单 token = n 输入 + 1 输出成本。
+- **多分类不是多 agents**：明确任务 + 机制（输出不严格即出错）+ 分句策略 + 行为约束
+  （直觉>思考、只吐整数）+ prompt 结构（xml）。
+- **听觉礼仪**（长会话判别）：① ASR 谐音按义不按字；② context 显式判停信号（"over"）=
+  正向；③ 三类口语讯号：嗯/啊/那个=思考中(low)、你明白吗/对吧=要反馈(high)、
+  你觉得呢/怎么办=要回答(high)。
+- **成本不对称**：误判"说完"→ 提前回答 → 旁路打断（可恢复）；误判"没说完"→ segment-vad
+  兜底（只延迟）。故 threshold 默认 7 偏"没说完"。
+- **local 1.5B 是终局**：同时干掉网络延迟、token 成本、打断心疼；模型必须可替换 → 才要 caller。
+
+### 实测结论（deepseek-flash, n=1）
+
+- constraint 30/30 clean（100%）：plain-text 单 token 可靠。
+- band accuracy 26/30（87%）；谐音 5/5 全过；歧义中带（也许吧/可能可以）仍是难点。
+- **缓存命中 62%**（cache_read 11648 / in 18691）：固定 instruction（384 token）命中，变量 prompt 未缓存。
+- **latency 根因 = per-call agent rebuild**：`funcs.call` 每次重建 Agent（~3s），`funcs.caller`
+  复用（中位 0.84s）；网络抖动尖峰仍在（服务端侧）。
+
+### 下一步（压缩上下文后开工）
+
+1. **架构**：base `ListenerController` 不加模型能力；`ModelListenerController` 持引擎，
+   judge 是**独立可测的状态机组件**（持 llm func caller，instruction/prompt/解析随 caller 外部装配）。
+2. **prompt 结构进一步**：去掉 `<input>` tag、保留 `<context>`，**一个 clause 一个 content block**
+   —— 累积 clause 成稳定前缀，缓存命中随 turn 稳定上升；输出约束单 token（`max_output_tokens=1`）。
+3. **待定**：caller 契约名（`LLMCaller` vs `LLMFuncCaller`）；"两个高阶方法"除 long_listen 外另一个。
 
 ---
 
