@@ -288,6 +288,7 @@ async def test_py_channel_idle() -> None:
             idled.append(2)
 
     async with main.bootstrap() as runtime:
+        await runtime.wait_idle()
         assert len(idled) == 1
         task = runtime.create_command_task("foo")
         runtime.push_task(task)
@@ -418,6 +419,71 @@ async def test_py_channel_parent_idle() -> None:
         # assert metas[""].children == ["a_chan", "b_chan"]
         for meta in metas.values():
             assert len(meta.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_py_channel_parent_idle_cleared_by_child_command() -> None:
+    """父 channel 的 idle 生命周期对子命令的感知: 子树一旦繁忙, 父应退出 idle.
+
+    channel builder 契约 (idle): on_idle 只在 "while idle, with no command input"
+    期间执行。子 channel 收到命令 = 整棵子树有了 command input, 父 channel 不应再
+    是 idle, 且它注册的 idle 函数必须已经退出。
+    """
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    idle_started = asyncio.Event()
+    idle_exited = asyncio.Event()
+    child_started = asyncio.Event()
+    child_done = asyncio.Event()
+
+    @child.build.command()
+    async def foo(sleep: float) -> None:
+        child_started.set()
+        await asyncio.sleep(sleep)
+        child_done.set()
+
+    @main.build.idle
+    async def idle() -> None:
+        idle_started.set()
+        idle_exited.clear()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            idle_exited.set()
+            idle_started.clear()
+
+    async with main.bootstrap() as runtime:
+        await runtime.wait_idle()
+        child_runtime = runtime.fetch_sub_runtime('child')
+        await idle_started.wait()
+        assert runtime.is_idle()
+        assert not idle_exited.is_set()
+        assert child_runtime.is_idle()
+
+        # 子 channel 命令让整棵子树繁忙: 父 channel 应不再 idle, idle 函数应随之退出.
+        task = runtime.create_command_task("child:foo", args=(0.3,))
+        runtime.push_task(task)
+        # 阻塞到 child 启动时.
+        await child_started.wait()
+        # idled 应该已经退出了.
+        assert not idle_started.is_set()
+        assert idle_exited.is_set()
+        # 确认还没有结束.
+        assert not child_done.is_set()
+        assert not child_runtime.is_idle()
+        assert not runtime.is_idle()
+        # 阻塞到命令执行完.
+        await task
+        # 判断执行完了.
+        assert child_done.is_set()
+        assert child_runtime.is_idle()
+        await asyncio.wait_for(idle_started.wait(), 0.05)
+        # idle 重开了.
+        assert idle_started.is_set()
+        assert not idle_exited.is_set()
+        assert runtime.is_idle()
 
 
 @pytest.mark.asyncio
@@ -1415,5 +1481,3 @@ async def test_builder_with_virtual_children():
         children['sub'] = sub
         await runtime.refresh_metas()
         assert len(main.virtual_children()) == 1
-
-

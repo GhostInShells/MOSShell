@@ -296,8 +296,92 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._channel_scope_change_lock = threading.Lock()
         self._uncommitted_scopes: list[str] = []
 
+        self._idle_event = ThreadSafeEvent()
+        self._idle_event.clear()
+        self._wait_next_idle_event = asyncio.Event()
+        self._idling_task: Optional[asyncio.Task] = None
+        self._enqueued_blocking_task_count: int = 0
+        self._enqueued_blocking_task_done_count: int = 0
+
     def __repr__(self):
         return self.log_prefix
+
+    async def _idle(self):
+        """override the idle behaviors"""
+        pass
+
+    def is_idle(self) -> bool:
+        return self.is_running() and self._idle_event.is_set()
+
+    @contextlib.asynccontextmanager
+    async def _idle_loop_ctx(self):
+        self._idle_event.set()
+        self._wait_next_idle_event.set()
+        task = asyncio.create_task(self._idle_loop())
+        try:
+            yield
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def _idle_loop(self) -> None:
+        try:
+            while self.is_running():
+                await self._wait_next_idle_event.wait()
+                self._wait_next_idle_event.clear()
+                await self._idle_event.wait()
+                task = asyncio.create_task(self._idle())
+                self._idling_task = task
+
+        finally:
+            self._idle_event.set()
+            self._wait_next_idle_event.set()
+            if self._idling_task is not None and not self._idling_task.done():
+                self._idling_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._idling_task
+
+    async def _clear_idling_status(self):
+        self._idle_event.clear()
+        self._wait_next_idle_event.set()
+        if self._idling_task is not None and not self._idling_task.done():
+            self._idling_task.cancel()
+            # 必须阻塞到结束, 避免有 command 提前运行.
+            try:
+                await self._idling_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self._logger.error(
+                    "%s Failed to clear old idle task %s: %s",
+                    self.log_prefix,
+                    self._idling_task,
+                    e,
+                    exc_info=True,
+                )
+            finally:
+                self._idling_task = None
+                self._idle_event.clear()
+
+    async def _clear_idle_if_new_blocking_task_consumed(self, command_task: CommandTask) -> None:
+        if not command_task.meta.blocking:
+            return
+        await self._clear_idling_status()
+        self._enqueued_blocking_task_count += 1
+        command_task.add_done_callback(self._on_blocking_task_done)
+
+    def _on_blocking_task_done(self, t) -> None:
+        self._enqueued_blocking_task_done_count += 1
+        if self._enqueued_blocking_task_done_count >= self._enqueued_blocking_task_count:
+            self._idle_event.set()
+            self._enqueued_blocking_task_done_count = self._enqueued_blocking_task_count
+
+    async def wait_idle(self) -> None:
+        if not self.is_running():
+            return
+        await self._idle_event.wait()
 
     @classmethod
     def create_raw_container(cls, name: str, uid: str = '') -> Container:
@@ -538,6 +622,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 if not task.is_bare_task():
                     # 只有非 bare 才执行 on compiled.
                     task.on_compiled()
+                await self._clear_idle_if_new_blocking_task_consumed(task)
                 # prepare to send
                 await self._consume_compiled_task_with_paths(paths, task)
 
@@ -749,6 +834,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         yield self._running_task_ctx
         yield self._main_loop_ctx
         yield self._clear_runtime_asyncio_tasks
+        yield self._idle_loop_ctx
 
     async def start(self) -> Self:
         """

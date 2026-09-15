@@ -793,12 +793,6 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     async def _main_loop(self) -> None:
         pass
 
-    def is_idle(self) -> bool:
-        return self._ctx.is_idle()
-
-    async def wait_idle(self) -> None:
-        await self._ctx.wait_idle()
-
     def _check_running(self) -> None:
         if not self.is_running():
             raise RuntimeError(f"Channel proxy `{self._name}` is not running")

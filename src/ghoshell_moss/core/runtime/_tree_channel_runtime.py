@@ -40,16 +40,12 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         # 通知有 pending task 的队列.
         self._pending_task_queue: asyncio.Queue[_TaskIdWithPaths | None] = asyncio.Queue()
         # 运行状态池.
-        # 生命周期任务.
-        self._idling_task: asyncio.Task | None = None
         # 在队列中阻塞的任务.
         self._pending_tasks: dict[_TaskId, CommandTask] = {}
         # 在执行中的异步任务.
         self._executing_self_tasks: dict[_TaskId, CommandTask] = {}
         # 在执行中的非异步任务.
         self._executing_blocking_task: CommandTask | None = None
-        # is self idle event
-        self._idled_event = asyncio.Event()
 
     @abstractmethod
     def sub_channels(self) -> dict[str, Channel]:
@@ -58,85 +54,37 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         """
         pass
 
-    async def wait_idle(self) -> None:
-        """
-        阻塞等待到闲时.
-        """
-        if not self.is_running():
-            return
-        wait_1 = asyncio.create_task(self._idled_event.wait())
-        wait_2 = asyncio.create_task(self._closing_event.wait())
-        done, pending = await asyncio.wait([wait_1, wait_2], return_when=asyncio.FIRST_COMPLETED)
-        for t in pending:
-            t.cancel()
-
     # --- lifecycle --- #
 
     async def _idle(self) -> None:
         """
         进入闲时状态.
-        闲时状态指当前 Runtime 及其 子 Channel 都没有 CommandTask 在运行的时候.
+        当前 Runtime 无 blocking CommandTask 入栈时进入 (含子 Channel 转发的命令),
+        所有 blocking 命令完成后回填; non-blocking 命令并行执行, 不打断 idle.
         """
         if not self.is_running():
             return
-        await self._clear_idle_task()
-        await self._blocking_action_lock.acquire()
         try:
             await asyncio.sleep(0.0)
             ctx = ChannelCtx(self)
             on_idle_cor = ctx.run(self.on_idle)
-            # idle 是一个在生命周期中单独执行的函数.
-            task = asyncio.create_task(on_idle_cor)
-            self._idling_task = task
+            await on_idle_cor
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._logger.exception("%s idle task failed %s", self.log_prefix, exc)
             # 不返回.
         finally:
-            self._blocking_action_lock.release()
             self.logger.info("%s idling, pending tasks %d", self.log_prefix, len(self._pending_tasks))
 
     @abstractmethod
     async def on_idle(self) -> None:
         """
         进入闲时状态.
-        闲时状态指当前 Runtime 及其 子 Channel 都没有 CommandTask 在运行的时候.
+        当前 Runtime 无 blocking CommandTask 入栈时进入 (含子 Channel 转发的命令),
+        所有 blocking 命令完成后回填; non-blocking 命令并行执行, 不打断 idle.
         """
         pass
-
-    async def _clear_idle_task(self) -> None:
-        """
-        终止进行中的生命周期函数.
-        """
-        # 终止阻塞中的任务.
-        self._idled_event.clear()
-        await self._blocking_action_lock.acquire()
-        try:
-            if self._idling_task and not self._idling_task.done():
-                self._idling_task.cancel()
-                await self._idling_task
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.logger.exception("%s clear lifecycle task failed: %s", self.log_prefix, e)
-        finally:
-            self._idling_task = None
-            self._blocking_action_lock.release()
-
-    def _is_children_idled(self) -> bool:
-        children = self.sub_channels()
-        if len(children) > 0:
-            for child in children.values():
-                runtime = self.tree.get_channel_runtime(child)
-                if not runtime or not runtime.is_running():
-                    continue
-                elif not runtime.is_idle():
-                    return False
-        return True
-
-    def is_idle(self) -> bool:
-        return self.is_running() and self._idled_event.is_set()
 
     async def _main_loop(self) -> None:
         try:
@@ -146,17 +94,6 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
                 # 确保让出.
                 await asyncio.sleep(0.0)
                 _pending_queue = self._pending_task_queue
-                # 如果队列是空的, 则要看看是否能够启动 idle.
-                if _pending_queue.empty() and not self._idled_event.is_set():
-                    # 存在执行中的任务, 继续去拉取.
-                    if self._executing_blocking_task or len(self._pending_tasks) > 0:
-                        continue
-                    # 可以执行 idle 了.
-                    if self._is_children_idled():
-                        # 这种情况下就真的可以 idle 了. 速度应该很快.
-                        await self._idle()
-                        self._idled_event.set()
-                        continue
                 # 阻塞等待下一个结果.
                 try:
                     item = await asyncio.wait_for(_pending_queue.get(), timeout=0.1)
@@ -236,8 +173,6 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
                 # 只有 consume 层可以设置 blocking task. 协程安全操作.
                 self._executing_blocking_task = consuming
             # 执行自己的任务. 但并不阻塞.
-            await self._clear_idle_task()
-
             await self._execute_self_task_none_block(consuming)
             consuming = None
 
@@ -488,8 +423,6 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             priority = task.meta.priority
             # 进入 pending 列表.
             if is_self_task:
-                # 清理运行中的 lifecycle task
-                await self._clear_idle_task()
                 # call soon
                 if task.meta.call_soon:
                     if is_blocking_task:
