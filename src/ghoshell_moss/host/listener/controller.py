@@ -33,16 +33,19 @@ from ghoshell_moss.contracts.audio import (
     LatestAudioWindow,
     compute_spectrum,
 )
+from ghoshell_moss.contracts.llms import MossLLMCaller
 from ghoshell_moss.contracts.listener import Listener, ListenerState
-from ghoshell_moss.core.blueprint.channel_builder import new_channel
+from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
+from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
 from ghoshell_moss.topics import AudioSampleTopic, ClauseTopic
 
 __all__ = [
     "ListenerController",
+    "ModelListenerController",
     "PacketTranslator",
     "ListenEtiquette",
     "ListenerSnapshot",
@@ -79,6 +82,7 @@ class ListenEtiquette(str, Enum):
     OFF = "off"
     ONCE = "once"
     ALWAYS = "always"
+    LONG_LISTEN = "long_listen"
 
 
 @dataclass
@@ -456,7 +460,10 @@ class ListenerController:
 
     def _build_channel(self) -> Channel:
         chan = new_channel(name="listener", description="语音输入控制 — 开启/关闭聆听、切换礼仪、调 ASR")
+        self._register_channel_commands(chan)
+        return chan
 
+    def _register_channel_commands(self, chan: MutableChannel) -> None:
         @chan.build.instruction
         def instruction() -> str:
             info = self._asr.get_info()
@@ -500,4 +507,85 @@ class ListenerController:
             self._asr.configure({**current, **params})
             return "asr configured"
 
-        return chan
+
+class ModelListenerController(ListenerController):
+    """ListenerController + llm func caller — 智能判停 (长程聆听) 高阶礼仪.
+
+    持 MossLLMCaller (外部装配, instruction/model/输出约束已绑定). ``long_listen``
+    是第四种聆听礼仪: 不叠 speech_vad 静音兜底, 靠 llm 打分判「论述讲完了吗」—
+    把判停从 segment vad (4s) 提前到自然思想边界。第五种 (快捷响应) 是后续礼仪,
+    不在本类。
+    """
+
+    def __init__(self, *, caller: MossLLMCaller, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._caller = caller
+        self._score_observers: list[Callable[[StopScoreObservation], None]] = []
+
+    def on_score(self, callback: Callable[[StopScoreObservation], None]) -> Callable[[], None]:
+        """注册判停打分观察者 (跨 session) — 每次 llm 打分回调请求+结果, 返回 disposer."""
+        self._score_observers.append(callback)
+        return lambda: self._score_observers.remove(callback)
+
+    def _notify_score(self, obs: StopScoreObservation) -> None:
+        for callback in self._score_observers:
+            callback(obs)
+
+    def long_listen(
+            self,
+            *,
+            clause_vad: Optional[int] = None,
+            keywords: Optional[list[str]] = None,
+            threshold: int = 7,
+            timeout: Optional[float] = None,
+    ) -> asyncio.Future:
+        """智能判停聆听: clause 后 llm 打分, 打分 >= threshold 才 commit.
+
+        与 always 不同: 不叠 speech_vad 静音兜底 — 智能判停的意义就是不靠静音判终点.
+        立即返回 Future; ``timeout=None`` 表示常驻 (直到 ``stop()`` 或新礼仪取消).
+        """
+        self._mode = ListenEtiquette.LONG_LISTEN
+        self._cancel_active()
+        task = asyncio.create_task(self._run_long_listen(
+            clause_vad=clause_vad, keywords=keywords, threshold=threshold, timeout=timeout,
+        ))
+        self._active_task = task
+        return task
+
+    async def _run_long_listen(
+            self,
+            *,
+            clause_vad: Optional[int],
+            keywords: Optional[list[str]],
+            threshold: int,
+            timeout: Optional[float],
+    ) -> None:
+        self._apply_clause_vad(clause_vad)
+        state = await self._listener.listen()
+        judge = StopJudge(
+            caller=self._caller,
+            threshold=threshold,
+            commit=state.commit,
+            keywords=keywords,
+            on_score=self._notify_score,
+            logger=self._logger,
+        )
+        state.on_event_creating(judge.feed)
+
+        async with state:
+            try:
+                if timeout is None:
+                    await asyncio.Event().wait()
+                else:
+                    await asyncio.sleep(timeout)
+            finally:
+                judge.close()
+
+    def _register_channel_commands(self, chan: MutableChannel) -> None:
+        super()._register_channel_commands(chan)
+
+        @chan.build.command(blocking=False)
+        async def long_listen(threshold: int = 7) -> str:
+            """Listen with llm stop-detection — commit when the judge scores >= `threshold` (0-9)."""
+            self.long_listen(threshold=threshold)
+            return "listening (long_listen)"

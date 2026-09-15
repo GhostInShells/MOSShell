@@ -5,12 +5,11 @@ description: Speech 体系治理：解耦 commands 权责泄漏，player 多后�
   logos stream 可选的跨进程流式。
 milestone: null
 priority: P2
-status: in-progress
-status_note: 已完成 D10 (__content__ 可选化)、D11 (说侧可感知播放) 与 D12 (SpeechTopic → ClauseTopic，additional
-  上移到 TopicModel，AudioNucleus 线整体退役)；多 provider 与降级链等未做承诺已标 out-of-scope (见 Implementation
-  Plan)。装线 (ClauseTopic 的 publish / subscribe) 待做，故仍 in-progress。
+status: completed
+status_note: 2026-09-16 ClauseTopic 装线两侧落地 (说侧 moss_runtime / 听侧 controller.with_topic_service).
+  收口 completed.
 title: Speech Governance — 解耦、多后端、容错降级
-updated: '2026-09-13'
+updated: '2026-09-16'
 ---
 
 # Speech Governance

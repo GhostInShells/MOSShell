@@ -5,12 +5,13 @@
 """
 import asyncio
 import contextlib
+from types import SimpleNamespace
 
 import pytest
 
 from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, ListenerSignal
-from ghoshell_moss.host.listener.controller import ListenerController
+from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
 
 
 class _MockState:
@@ -248,3 +249,49 @@ def test_no_signal_broadcast_registers_no_observer():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR())
     assert listener.result_observers == []  # 无 sink → 不注册, 只做判停
+
+
+# ============================================================
+# 智能判停 (长程聆听) — ModelListenerController + StopJudge 装线
+# ============================================================
+
+class _MockCaller:
+    def __init__(self, scores):
+        self._scores = list(scores)
+
+    async def run_messages(self, prompt):
+        return SimpleNamespace(content=str(self._scores.pop(0)))
+
+
+@pytest.mark.asyncio
+async def test_long_listen_commits_when_judge_confident():
+    listener = _MockListener()
+    controller = ModelListenerController(
+        listener=listener, asr=_MockASR(),
+        caller=_MockCaller([9]),
+    )
+    task, state = await _start_controller(controller, controller.long_listen, timeout=5.0)
+
+    for cb in state.event_creating:
+        await cb(_clause("我觉得应该这样"))
+    await asyncio.sleep(0)
+    assert state.committed == 1  # 打分 9 >= threshold 7 → commit
+
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_long_listen_keeps_waiting_when_judge_unsure():
+    listener = _MockListener()
+    controller = ModelListenerController(
+        listener=listener, asr=_MockASR(),
+        caller=_MockCaller([1]),
+    )
+    task, state = await _start_controller(controller, controller.long_listen, timeout=5.0)
+
+    for cb in state.event_creating:
+        await cb(_clause("我觉得应该这样"))
+    await asyncio.sleep(0)
+    assert state.committed == 0  # 打分 1 < threshold 7 → 不 commit
+
+    await _stop(task)

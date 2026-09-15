@@ -13,8 +13,10 @@ from typing import Optional
 from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
 from ghoshell_moss.contracts.configs import get_or_create_conf
 from ghoshell_moss.contracts.listener import ASRListener
+from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.listener.controller import ListenerController
+from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
+from ghoshell_moss.host.listener.stop_judge import STOP_JUDGE_INSTRUCTION
 
 __all__ = ["assemble_controller", "listener_node", "listener_controller_node"]
 
@@ -39,14 +41,38 @@ async def assemble_controller(
     asr = listener.asr()
     capture = con.get(AudioCaptureSource)
     sample_rate = capture.sample_rate if capture is not None else asr.get_info().sample_rate
-    controller = ListenerController(
-        listener=listener, asr=asr, logger=matrix.logger,
-        signal_broadcast=matrix.session.add_signal if emit_signals else None,
-    )
+    caller = _try_build_stop_judge_caller(con, matrix.logger)
+    if caller is not None:
+        controller = ModelListenerController(
+            listener=listener, asr=asr, logger=matrix.logger,
+            signal_broadcast=matrix.session.add_signal if emit_signals else None,
+            caller=caller,
+        )
+    else:
+        controller = ListenerController(
+            listener=listener, asr=asr, logger=matrix.logger,
+            signal_broadcast=matrix.session.add_signal if emit_signals else None,
+        )
     await controller.with_topic_service(matrix.session.topics)
     await controller.with_audio_sample_service(matrix.session.topics, sample_rate=sample_rate)
     await matrix.add_lifecycle_object(controller)
     return controller
+
+
+def _try_build_stop_judge_caller(con, logger) -> Optional[MossLLMCaller]:
+    """有 moss 消息协议引擎时构建判停 caller, 否则 None (base controller, 无 long_listen)."""
+    funcs = con.get(LLMFuncs)
+    if not isinstance(funcs, MossLLMFuncs):
+        return None
+    try:
+        return funcs.caller(
+            instruction=STOP_JUDGE_INSTRUCTION,
+            tag="small_fast_model",
+            settings=CallSettings(max_output_tokens=1),
+        )
+    except Exception as exc:
+        logger.warning("stop judge caller unavailable — long_listen disabled: %s", exc)
+        return None
 
 
 async def listener_node(

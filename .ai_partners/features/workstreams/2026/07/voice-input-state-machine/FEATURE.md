@@ -1,19 +1,19 @@
 ---
-title: Voice Input State Machine — 语音输入全状态机与交互模式
-status: in-progress
-status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点. 2026-09-01: 协作调整为人类架构师手改实现+模型协助/review; signal 四态语义 (首包/分句中/分句/尾包) 与 ASR 会话对象方向已收敛, 详见文末. 2026-09-12: 用 seedasr (豆包2.0) 重构 ASR 为 volcengine_sauc, moss audio listen -m once 实机跑通, 语音对话 Dolores 闭环, 详见文末. 2026-09-14: 听侧归档补齐 — RecognitionSegment 带 clauses (与说侧 SpeechSegment 对称), event/clause/segment 各带 created 墙钟时间戳; 契约层 Clause 更名 RecognitionClause, 详见文末. 2026-09-14(二): legacy volcengine_asr 退役 (活错配, provider 仍指向它); AudioASRProvider 改指 volcengine_sauc; ASR 默认 provider 改非单例 (TTS 已非单例, Speech 保持单例); listener 控制 channel 待重建 (曾被实现, 09-11 随旧状态机删除), 详见文末.'
-priority: P0
 created: 2026-07-28
-updated: 2026-09-15
 depends:
-  - audio-capture
-  - node-migration
-  - channel-meta-dyn-static
+- audio-capture
+- node-migration
+- channel-meta-dyn-static
+description: 将语音输入从"两个独立 app 拼接"重构为单一感知节点，基于四层分层状态机 统一交互模式、话语生命周期、发送闸口、打断粒度。端侧控人、Nucleus
+  侧控模型—— 以可编程协议对话取代隐式自由对话假设。
 milestone: 0.1.0
-description: >-
-  将语音输入从"两个独立 app 拼接"重构为单一感知节点，基于四层分层状态机
-  统一交互模式、话语生命周期、发送闸口、打断粒度。端侧控人、Nucleus 侧控模型——
-  以可编程协议对话取代隐式自由对话假设。
+priority: P0
+status: completed
+status_note: '2026-09-16 智能判停 (长程聆听) 落地: MossLLMCaller.run_messages 消息协议上提 + StopJudge
+  独立组件 + ModelListenerController.long_listen (第四种礼仪) + on_score 观察面 + long_listen_probe
+  实机 node. 详见文末.'
+title: Voice Input State Machine — 语音输入全状态机与交互模式
+updated: '2026-09-16'
 ---
 
 # Voice Input State Machine — 语音输入全状态机与交互模式
@@ -1382,10 +1382,14 @@ push-to-talk(按住聆听松开 commit，可 defer)。
 - 判停是一个**通用 llm func**（model-func workstream 的"函数化单轮模型调用"），"话说完没"
   只是它的一个实例。controller 持的是 **llm func caller**（model-agnostic 持久化句柄），
   不写死 `small_fast_model` + instruction。
+- 五种聆听礼仪（`off`/不听不算礼仪）：`once` → `always` → 关键字 → **llm 校验（智能判停）** →
+  快捷响应。智能判停是**第四种**，第五种是快捷响应（端侧小模型快速响应，3 字符内 `<say>` 模板）。
 
 ### prompt 结论（`.ai_partners/benchmarks/utterance-end-plain/`）
 
-- **绝不结构化**：结构化输出实际吐近百 token；plain-text 单 token = n 输入 + 1 输出成本。
+- **输出绝不结构化、输入允许结构化**：结构化**输出**实际吐近百 token；plain-text 单 token =
+  n 输入 + 1 输出成本。输入侧 `context` 是可传入字段（xml 包裹），clause 逐条追加成多个
+  content block，逐句命中缓存。
 - **多分类不是多 agents**：明确任务 + 机制（输出不严格即出错）+ 分句策略 + 行为约束
   （直觉>思考、只吐整数）+ prompt 结构（xml）。
 - **听觉礼仪**（长会话判别）：① ASR 谐音按义不按字；② context 显式判停信号（"over"）=
@@ -1409,7 +1413,38 @@ push-to-talk(按住聆听松开 commit，可 defer)。
    judge 是**独立可测的状态机组件**（持 llm func caller，instruction/prompt/解析随 caller 外部装配）。
 2. **prompt 结构进一步**：去掉 `<input>` tag、保留 `<context>`，**一个 clause 一个 content block**
    —— 累积 clause 成稳定前缀，缓存命中随 turn 稳定上升；输出约束单 token（`max_output_tokens=1`）。
-3. **待定**：caller 契约名（`LLMCaller` vs `LLMFuncCaller`）；"两个高阶方法"除 long_listen 外另一个。
+3. **已定**：caller 契约名 `LLMCaller`（已提交）。"两个高阶方法"（需 llm func 引擎）=
+   llm 校验（智能判停）+ 快捷响应；均见骨架「五种聆听礼仪」表。
+
+## 2026-09-16 会话决策 — 智能判停（长程聆听）落地
+
+> 人类架构师 + deepseek-flash。把 09-15 的「下一步」收口：消息协议上提到 caller、
+> StopJudge 独立组件、ModelListenerController + long_listen 落地、开放打分观察面、
+> 建实机测试 node。语音两个治理 workstream 收口 completed。
+
+### 落地
+
+- **消息协议上提**：`MossLLMCaller(LLMCaller).run_messages(list[Message])` —— 一个
+  clause 一个 content block（前缀缓存命中），`MossLLMFuncs.caller()` 返回它。judge 持
+  caller，不写死 small_fast_model + instruction（随 caller 外部装配）。
+- **`StopJudge`**（`host/listener/stop_judge.py`）：独立可测的状态机组件。clause 累积成
+  `list[Message]` 后 spawn 打分 task（不 inline await —— 堵死收包是红线）；first/partial
+  cancel 在飞打分；epoch 计数防迟到结果二次 commit；keywords 显式终点；segment 切换重置。
+  判停输入 = in-flight 未 commit 的累积 clause，不是 segment 全文。
+- **`ModelListenerController`**：`long_listen`（第四种礼仪）。不打 speech_vad 静音兜底 ——
+  智能判停的意义就是不靠静音判终点。base `ListenerController` 不加模型能力。
+- **观察面**：`StopJudge.on_score` + `ModelListenerController.on_score` —— 每次打分回调
+  `StopScoreObservation(clauses, score, result)`，旁路监控 llm 判停的请求+结果。
+- **装线**：`assemble_controller` 取 `LLMFuncs`，`isinstance(MossLLMFuncs)` 才建 caller →
+  `ModelListenerController`，否则 base controller（优雅降级，无 LLM 也能 once/always）。
+- **CLI**：`moss audio listen -m long_listen`。
+- **测试**：`test_stop_judge.py`（9 条，mock caller 驱动）+ `test_controller.py`（2 条
+  long_listen 装线）+ `.moss/system_test_nodes/long_listen_probe/` 实机测试 node。
+
+### 未落地（后续）
+
+- **快捷响应**（第五种礼仪）：端侧小模型快速响应，3 字符内 `<say>` 模板 —— 独立命题。
+- **ghost 侧组装 instruction** 识别「智能判停」并自写 caller instruction 的引导。
 
 ---
 
