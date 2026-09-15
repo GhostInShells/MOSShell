@@ -35,6 +35,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
 from ghoshell_moss.core.blueprint.cell import (
+    AutoAcceptPolicy,
     CellAddress,
     CellEvent,
     Cell,
@@ -291,6 +292,12 @@ class ZenohCellNetwork(CellNetwork):
                 self._try_build_proxy(cell)
             else:
                 self._try_drop_proxy(cell.address)
+
+    def auto_accept(self) -> AutoAcceptPolicy:
+        return AutoAcceptPolicy(
+            local=self._auto_accept_local,
+            foreign=self._auto_accept_foreign,
+        )
 
     async def accept(self, address: CellAddress, *, lookup: bool = False) -> None:
         # UU-8: accept 集 (承认表达, 与在线正交). 显式 accept 覆盖 reject.

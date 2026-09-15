@@ -7,6 +7,15 @@
   镜像 mesh.channel_proxies(). CellEvent -> Signal 生产侧归本 channel.
 - matrix: 集成点. 静态挂 nodes/mesh. 本轮无 own commands.
 
+表面分层 (cold=instruction / warm=notice / hot=context, 见 channel_builder):
+本文件没有 perception 级数据, 不占热面. 所有运行时状态都是**状态级**变更, 走 notice:
+nodes 的 running/dead, mesh 的事件尾部. 内核按文本差分投递 notice, 变了才重发,
+所以两件事必须守住:
+- 尾部必须有上界 (show_running / show_dead / show_events), 否则 transcript 单调膨胀;
+- 文本必须**稳定**: 行内不得出现 uptime / "N ago" 这类每次渲染都变的字段,
+  那会永久击穿差分, 退化成每轮全文重发. 实时量 (精确 uptime / 更长事件历史)
+  交 status() / events() 主动拉取.
+
 OS 工具 (bash / file_editor) 已迁至 desktop channel, 与 matrix 平级.
 
 Example:
@@ -37,6 +46,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     new_channel,
 )
 from ghoshell_moss.core.blueprint.cell import (
+    AutoAcceptPolicy,
     CellEvent,
     CellAddress,
     CellAddressCodec,
@@ -133,14 +143,17 @@ def _find_handle_in_all(
     return None
 
 
-def _fmt_running_row(handle: CellHandle) -> str:
+# 行渲染分两套, 消费者不同:
+#   _fmt_status_* — 命令主动拉取, 可以带 uptime / "N ago" 这类易变字段.
+#   _fmt_notice_* — 进 notice 参与文本差分, 必须逐字稳定, 否则每轮都被判为"已变更".
+def _fmt_status_running(handle: CellHandle) -> str:
     meta = handle.process.meta
     short = CellAddressCodec(handle.address).short
     uptime = _fmt_uptime(_now_ts() - meta.created)
     return f'  {short}  uptime={uptime} pid={meta.pid}'
 
 
-def _fmt_dead_row(handle: CellHandle) -> str:
+def _fmt_status_dead(handle: CellHandle) -> str:
     meta = handle.process.meta
     short = CellAddressCodec(handle.address).short
     code = meta.exit_code
@@ -149,6 +162,21 @@ def _fmt_dead_row(handle: CellHandle) -> str:
     if code not in (0, None):
         tail = f' — read_output({short}) for stderr'
     return f'  {short}  exit={code} ({when} ago){tail}'
+
+
+def _fmt_notice_running(handle: CellHandle) -> str:
+    short = CellAddressCodec(handle.address).short
+    return f'  {short}  pid={handle.process.meta.pid}'
+
+
+def _fmt_notice_dead(handle: CellHandle) -> str:
+    meta = handle.process.meta
+    short = CellAddressCodec(handle.address).short
+    code = meta.exit_code
+    tail = ''
+    if code not in (0, None):
+        tail = f' — read_output({short}) for stderr'
+    return f'  {short}  exit={code}{tail}'
 
 
 def _render_table(headers: list[str], rows: list[list[str]]) -> list[str]:
@@ -376,10 +404,10 @@ def new_nodes_channel(
         lines: list[str] = []
         if handled:
             lines.append(f'running ({len(handled)}):')
-            lines.extend(_fmt_running_row(h) for h in handled.values())
+            lines.extend(_fmt_status_running(h) for h in handled.values())
         if dead:
             lines.append(f'recently exited ({len(dead)}):')
-            lines.extend(_fmt_dead_row(h) for h in dead)
+            lines.extend(_fmt_status_dead(h) for h in dead)
         if not lines:
             return '[nodes:status] no cells running or recently exited.'
         return '[nodes:status]\n' + '\n'.join(lines)
@@ -410,46 +438,41 @@ def new_nodes_channel(
             return f'[{short}] {stream} empty.'
         return f'[{short}] {stream} tail:\n{body.rstrip()}'
 
-    # -- context messages --------------------------------------------
-
-    @chan.build.context_messages
-    def nodes_context() -> list[str]:
-        handled = matrix.handled_cells()
-        dead = list(matrix.dead_cells())
-        if not handled and not dead:
-            return []
-        lines: list[str] = []
-        if handled:
-            lines.append(f'[nodes] running ({len(handled)}):')
-            for h in list(handled.values())[:show_running]:
-                lines.append(_fmt_running_row(h))
-            if len(handled) > show_running:
-                extra = len(handled) - show_running
-                lines.append(
-                    f'  ...+{extra} more, status() for full list'
-                )
-        if dead:
-            recent = dead[-show_dead:]
-            lines.append(f'recently exited ({len(recent)}):')
-            for h in recent:
-                lines.append(_fmt_dead_row(h))
-        return ['\n'.join(lines)]
-
     # -- notice -------------------------------------------------------
 
     @chan.build.notice
     def nodes_notice() -> str:
-        """What this channel can run now — the installed node catalog."""
+        """Warm state: what is running now, plus the installed node catalog.
+
+        Everything here is state-level, so it rides notice (diffed by text) instead
+        of the hot context band. Rows are rendered without uptime / "N ago" — a
+        field that moves every second would defeat the diff and force a full
+        re-emission on every refresh. Live numbers come from status().
+        """
+        lines: list[str] = []
+        handled = matrix.handled_cells()
+        dead = list(matrix.dead_cells())
+        if handled:
+            lines.append(f'running ({len(handled)}):')
+            for h in list(handled.values())[:show_running]:
+                lines.append(_fmt_notice_running(h))
+            if len(handled) > show_running:
+                extra = len(handled) - show_running
+                lines.append(f'  ...+{extra} more, status() for full list')
+        if dead:
+            recent = dead[-show_dead:]
+            lines.append(f'recently exited ({len(recent)}):')
+            for h in recent:
+                lines.append(_fmt_notice_dead(h))
         # refresh=False: notice re-renders on every meta refresh; never rescan
         # the filesystem here (cache fills on first call, list(refresh=True) refreshes).
         found = matrix.project.nodes.list_nodes(refresh=False, installed=True)
-        if not found:
-            return ''
-        lines = [f'installed nodes ({len(found)}):']
-        for rel_path, manifest in sorted(found.items()):
-            label = _node_ident(rel_path, manifest)
-            desc = manifest.description or ''
-            lines.append(f'  {label} — {desc}' if desc else f'  {label}')
+        if found:
+            lines.append(f'installed nodes ({len(found)}):')
+            for rel_path, manifest in sorted(found.items()):
+                label = _node_ident(rel_path, manifest)
+                desc = manifest.description or ''
+                lines.append(f'  {label} — {desc}' if desc else f'  {label}')
         return '\n'.join(lines)
 
     # -- instruction --------------------------------------------------
@@ -527,14 +550,15 @@ def new_mesh_channel(
         show_events: int = _DEFAULT_SHOW_EVENTS,
 ) -> Channel:
     """网络投影 channel. virtual_children 镜像 mesh.channel_proxies(),
-    CellEvent 生产侧订阅 mesh.on_event 双扇出 (ring buffer + Signal)."""
+    CellEvent 生产侧订阅 mesh.on_event 双扇出 (事件 ring + Signal)."""
 
     default_desc = (
         'Network projection — accepted cells surface as matrix.mesh.<short>.'
     )
     chan: PrimeChannel = new_channel(name=name, description=description or default_desc)
 
-    # 自持事件 ring buffer, 喂 context + events 命令
+    # 事件 ring (上界 _EVENT_BUFFER), 喂 notice 尾部. 只做有上界的"最近 N 条",
+    # 不做逐条去重: 尾部是状态视图, 事件到达即更新, 由 notice 差分决定是否重发.
     event_buffer: deque[CellEvent] = deque(maxlen=_EVENT_BUFFER)
 
     # unsub 句柄, on_close 时释放
@@ -543,10 +567,16 @@ def new_mesh_channel(
     # virtual children 缓存: address → alias
     proxy_aliases: dict[CellAddress, str] = {}
 
+    # auto_accept 策略缓存. matrix.network() 是 async, 而 available 谓词是 sync,
+    # 所以策略在 refresh_meta / set_auto_accept 时更新一次 (nonlocal), 谓词与
+    # notice 只读它, 不每帧 re-await 网络.
+    policy: AutoAcceptPolicy | None = None
+
     # -- lifecycle: subscribe mesh.on_event 双扇出 --------------------
 
     def _dispatch_event(event: CellEvent) -> None:
-        # 1) 写自持 ring buffer (喂 context / events 命令) — 所有事件都可拉取
+        # 1) 入事件 ring (notice 尾部数据源). 更长历史另有 pull 路径:
+        #    events() 读网络侧 ring (mesh.recent_events).
         event_buffer.append(event)
         # 2) 感知判决: 低于阈值 INFO (DEBUG) 不产生 signal (零值/不调用)
         if not CellEventLevel.is_perceivable(event.event_level):
@@ -588,11 +618,13 @@ def new_mesh_channel(
             except Exception:
                 pass
 
-    # -- refresh_meta: 同步 virtual_children 到 mesh.channel_proxies() -
+    # -- refresh_meta: 同步 virtual_children + auto_accept 策略 --------
 
     @chan.build.refresh_meta
     async def _refresh() -> None:
+        nonlocal policy
         mesh = await matrix.network()
+        policy = mesh.auto_accept()
         proxies = mesh.channel_proxies()
         # 计算增删差异
         current = set(proxy_aliases.keys())
@@ -619,13 +651,11 @@ def new_mesh_channel(
                         'mesh channel: failed to add virtual %s', new_addr,
                     )
 
-    # -- auto_accept 状态查询 -----------------------------------------
+    # -- auto_accept 策略: accept/reject 的可见性由它决定 --------------
 
     def _auto_accept_covers_all() -> bool:
-        """auto_accept 全开时 accept/reject 命令不出现在 perspective."""
-        # CellNetwork ABC 没暴露 auto_accept 查询接口, 用一个"守卫函数"占位.
-        # 未来 mesh 加 get_auto_accept() 时替换掉 (matrix-channel.md §5.2).
-        return False
+        """策略全开 (local 与 foreign 都自动承认) 时, accept/reject 失去意义."""
+        return policy is not None and policy.local and policy.foreign
 
     def _accept_available() -> bool:
         return not _auto_accept_covers_all()
@@ -662,11 +692,14 @@ def new_mesh_channel(
             local: bool | None = None, foreign: bool | None = None,
     ) -> str:
         """Toggle auto-accept policy. None = keep current."""
+        nonlocal policy
         mesh = await matrix.network()
         mesh.set_auto_accept(local=local, foreign=foreign)
+        # 报结果状态, 不是回显请求参数 (None 只表示"未改动该开关").
+        policy = mesh.auto_accept()
         return (
-            f'[mesh:set_auto_accept] applied '
-            f'(local={local}, foreign={foreign}).'
+            f'[mesh:set_auto_accept] local={policy.local} '
+            f'foreign={policy.foreign}'
         )
 
     @chan.build.command(name='events', blocking=False, always_observe=True)
@@ -687,33 +720,30 @@ def new_mesh_channel(
             lines.append(f'  {when}  {short}  {content}')
         return '\n'.join(lines)
 
-    # -- context messages --------------------------------------------
+    # -- notice: 事件尾部 (温数据) -----------------------------------
 
-    @chan.build.context_messages
-    def mesh_context() -> list[str]:
-        # 从自持 ring buffer 取尾 (mesh.recent_events 是并行数据源, 本 channel
-        # 消费自己 on_event 累积的 buffer, 保证与 signal 生产同步)
-        if not event_buffer:
-            return []
-        events = list(event_buffer)[-show_events:]
-        lines = [f'[mesh] recent events ({len(events)}):']
-        for ev in events:
-            when = ev.created.strftime('%H:%M:%S')
-            short = ev.address_codec.short
-            content = ev.content or 'updated'
-            lines.append(f'  {when}  {short}  {content}')
-        # 网络概要
-        try:
-            # 若 mesh 尚未惰性 fetch 过, mesh.view() 无 await 也应能返回缓存
-            # (CellNetwork.view 是 sync). 但 mesh() 是 async factory, 需要
-            # await — context_messages 是 sync, 只能读上次 refresh 的缓存.
-            # 简化: mesh 概要只显示 accepted proxy 数量 (proxy_aliases 已同步)
-            lines.append(
-                f'network: {len(proxy_aliases)} cells accepted (proxies mounted)'
-            )
-        except Exception:
-            pass
-        return ['\n'.join(lines)]
+    @chan.build.notice
+    def mesh_notice() -> str:
+        """Current trust policy, then a bounded tail of recent cell events.
+
+        Warm, so it rides notice: the kernel re-sends it only when the text changes.
+        The tail window is capped at ``show_events``; the rest of the history is
+        pulled on demand by events() rather than replayed here every refresh.
+        """
+        lines: list[str] = []
+        if policy is not None:
+            lines.append(f'auto_accept: local={policy.local}, foreign={policy.foreign}')
+        if event_buffer:
+            shown = list(event_buffer)[-show_events:]
+            lines.append(f'recent events ({len(shown)}):')
+            for ev in shown:
+                when = ev.created.strftime('%H:%M:%S')
+                short = ev.address_codec.short
+                content = ev.content or 'updated'
+                lines.append(f'  {when}  {short}  {content}')
+            if len(event_buffer) > len(shown):
+                lines.append(f'  ...+{len(event_buffer) - len(shown)} more, events() for the tail')
+        return '\n'.join(lines)
 
     # -- instruction --------------------------------------------------
 
@@ -722,9 +752,9 @@ def new_mesh_channel(
         return (
             'Network cell mesh: accepted cells appear here as sub-channels '
             '(matrix.mesh.<short>). accept/reject govern resource trust; '
-            'set_auto_accept toggles the default policy. events() reads the '
-            'recent event stream; live events also appear as background '
-            'hints when idle.'
+            'set_auto_accept toggles the default policy. A bounded tail of '
+            'recent cell events rides along with this channel\'s notice; '
+            'events() pulls the fuller history on demand.'
         )
 
     return chan

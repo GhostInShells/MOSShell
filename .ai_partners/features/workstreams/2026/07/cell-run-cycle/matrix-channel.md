@@ -275,9 +275,16 @@ output 三处内部结构。
 - **CellEvent 生产侧归 mesh channel** (原 §1.6 说归 matrix, 这里下沉到
   mesh —— 更内聚, mesh 本就是 mesh.on_event 订阅方):
   `mesh.on_startup` 一次 `mesh_impl.on_event` 订阅, 双扇出:
-  (a) 写自持 ring buffer (喂 context_messages);
+  (a) 写自持 ring buffer (喂 notice 尾部, 原为 context_messages);
   (b) `CommandUtil.send_signal(CellEventSignal(...))` → CellEventNucleus.
 - context_messages: 见 §5.4
+
+> **2026-09-16 补齐**: `mesh.auto_accept` 读接口当时只是占位（CellNetwork ABC
+> 无 getter，channel 里 `_auto_accept_covers_all` 硬编码 False）。本轮补上
+> `AutoAcceptPolicy` + `CellNetwork.auto_accept()`（ZenohCellNetwork 已有字段，
+> 只欠声明）。channel 里因 `available_fn` 是 sync 而 `network()` 是 async，
+> 策略在 refresh_meta 缓存一次（`nonlocal`），谓词读缓存。`set_auto_accept`
+> 现在返回**结果策略**而非回显请求参数。
 
 ### 5.3 matrix channel — 集成点 + 自我介绍
 
@@ -312,6 +319,16 @@ spawn cwd = `cell.home` (NODE.md 所在目录).
 - debug 期限倾向 "host 生命周期尺度", 但本轮不强定.
 
 ### 5.5 context_messages 具体形态 (三构造期可配数字)
+
+> **2026-09-16 推翻（表面分层返工）**: 本节两段 context 全部撤出热面。
+> cold/warm/hot 分层在 2026-08 落地后（shell-trajectory / mindflow-channel），
+> nodes 的 running/dead 与 mesh 的事件尾部都是**状态级变更（温数据）**，改走
+> notice，由内核文本差分投递。两个关键约束（钉）：
+> 1. notice 行内**不得带 `uptime` / `N ago`**——它们每次渲染都变，会让整段 notice
+>    差分永远命中、退化成每轮全文重发；实时量交 `status()` 主动拉。
+> 2. 事件尾部只做**有上界的"最近 N 条"**（`show_events`），超界给
+>    `...events() for the tail` 提示，不全量重放。
+> 原形态保留如下，作为当时结论备查。
 
 原 §1.3 5 大块过重. 本节收敛 —— **matrix 根 channel 无 context**，仅 nodes
 和 mesh 各自负责一部分:
