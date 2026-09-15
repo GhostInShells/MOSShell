@@ -43,10 +43,10 @@ idle:                      # 可选: 待机配置
 
 ```python
 # avatars/<name>/channel.py
-from ghoshell_moss.core.blueprint.channel_builder import new_channel
+from ghoshell_moss.core.blueprint.states_channel import new_prime_channel
 
 async def build(avatar):
-    chan = new_channel(name="<name>", description="...")
+    chan = new_prime_channel(name="<name>", description="...")
 
     @chan.build.command()
     async def look(x: float = 0.0, y: float = 0.0) -> None:
@@ -55,6 +55,8 @@ async def build(avatar):
 
     return chan
 ```
+
+`build` 必须返回 `PrimeChannel`（`new_prime_channel` 构建），驱动要 `with_module` 挂动画轨迹。
 
 可用的事件面见 `avatars/README.md`（`param`/`play`/`motion`/`expression`/`reset`/`backdrop`/`set_idle_loop`）。
 参数 id 从 `avatar.spec` 拿；唇形/眨眼绑定读 `avatar.spec.lip_sync` / `eye_blink`。

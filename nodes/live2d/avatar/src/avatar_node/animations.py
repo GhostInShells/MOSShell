@@ -16,9 +16,9 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 from types import ModuleType
-from typing import Any
 
 from ghoshell_moss.core.blueprint.channel_builder import new_command
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.codex.compiler import Compiler
 from ghoshell_moss.core.concepts.command import Command
 
@@ -96,25 +96,21 @@ class AnimationsModule:
         )
 
 
-def setup_animations(channel: Any, avatar: Avatar, animations_file: Path) -> None:
+def setup_animations(channel: PrimeChannel, avatar: Avatar, animations_file: Path) -> None:
     """在 avatar 主 channel 上挂动画轨迹: 注册 reload_animations, 有文件则初次挂载.
 
-    ``channel`` 运行时是 PyChannel (PrimeChannel, 带 with_module 与 build), 但
-    load_channel 的返回类型是抽象 Channel —— 这里 duck-type 这两个能力, 缺了就跳过。
+    ``channel`` 是 PrimeChannel —— 带 ``with_module`` (StatefulChannel) 与 ``build``
+    (PrimeChannel), 直接调用, 无需 duck-type。
     """
-    with_module = getattr(channel, "with_module", None)
-    build = getattr(channel, "build", None)
-    if with_module is None or build is None:
-        return
 
     async def _reload() -> str:
         if not animations_file.is_file():
             return f"未找到 {ANIMATIONS_FILE} (预期路径: {animations_file})"
         new_module = AnimationsModule(avatar, animations_file)  # 编译失败在此抛出, 保留上一版
-        with_module(new_module)
+        channel.with_module(new_module)
         return f"animations reloaded ({len(new_module.own_commands())} 条)"
 
-    build.command(
+    channel.build.command(
         name="reload_animations",
         blocking=True,
         doc=(
@@ -124,4 +120,4 @@ def setup_animations(channel: Any, avatar: Avatar, animations_file: Path) -> Non
     )(_reload)
 
     if animations_file.is_file():
-        with_module(AnimationsModule(avatar, animations_file))
+        channel.with_module(AnimationsModule(avatar, animations_file))

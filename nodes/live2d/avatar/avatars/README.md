@@ -62,10 +62,10 @@ async def wave():
 
 ```python
 # avatars/<name>/channel.py
-from ghoshell_moss.core.blueprint.channel_builder import new_channel
+from ghoshell_moss.core.blueprint.states_channel import new_prime_channel
 
 async def build(avatar):            # avatar: avatar_node.Avatar
-    chan = new_channel(name="hiyori", description="...")
+    chan = new_prime_channel(name="hiyori", description="...")
 
     @chan.build.command()
     async def look(x: float = 0.0, y: float = 0.0) -> None:
@@ -74,6 +74,9 @@ async def build(avatar):            # avatar: avatar_node.Avatar
 
     return chan
 ```
+
+`build` 必须返回 `PrimeChannel`（用 `new_prime_channel` 构建），因为驱动要 `with_module`
+挂动画轨迹模块。
 
 `build` 返回的 channel 就是这个形象的膜，直接挂进 Matrix。命令签名即接口，不用再写
 清单（channel_builder 的红线：不在 instruction 里复述命令）。

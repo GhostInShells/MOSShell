@@ -17,6 +17,7 @@ import asyncio
 import re
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel, new_prime_channel
 
 from .avatar import Avatar
 from .cubism import Group, Param
@@ -32,10 +33,14 @@ def _slug(text: str, fallback: str) -> str:
     return f"p{s}" if s[0].isdigit() else s
 
 
-def build_auto_channel(avatar: Avatar) -> MutableChannel:
-    """把 ModelSpec 映射成一条可驱动的 channel 树."""
+def build_auto_channel(avatar: Avatar) -> PrimeChannel:
+    """把 ModelSpec 映射成一条可驱动的 channel 树.
+
+    根是 PrimeChannel (而非 MutableChannel) —— 因为后面要 ``with_module`` 挂动画轨迹模块,
+    该能力只暴露在 StatefulChannel/PrimeChannel 上。
+    """
     spec = avatar.spec
-    root = new_channel(name=avatar.name, description=f"{avatar.name} — 自动映射的 Live2D 形象")
+    root = new_prime_channel(name=avatar.name, description=f"{avatar.name} — 自动映射的 Live2D 形象")
 
     @root.build.instruction
     def _instruction() -> str:

@@ -10,9 +10,10 @@
 
 `channel.py` 的约定只有一个入口:
 
-    async def build(avatar: Avatar) -> Channel: ...
+    async def build(avatar: Avatar) -> PrimeChannel: ...
 
 `avatar` 是驱动给形象作者的事件面 (`avatar_node.Avatar`). 作者只依赖这一个对象.
+返回必须是 PrimeChannel (用 ``new_prime_channel`` 构建), 因为驱动要 ``with_module`` 挂动画轨迹.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 
-from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 
 from .avatar import Avatar
 from .cubism import ModelSpec, find_model_json, parse
@@ -103,20 +104,22 @@ def model_url(kit: AvatarKit) -> str:
     return f"/model/{kit.model_json.name}"
 
 
-async def load_channel(kit: AvatarKit, avatar: Avatar) -> Channel:
+async def load_channel(kit: AvatarKit, avatar: Avatar) -> PrimeChannel:
     """取这套形象的命令面: 显式 `channel.py` 优先, 否则自动映射.
 
-    两种路径都返回同一棵树后, 再挂上动画轨迹模块 (animations.py), 见 ``setup_animations``.
+    两种路径都返回同一棵 PrimeChannel 后, 再挂上动画轨迹模块 (animations.py), 见
+    ``setup_animations``。显式 `build(avatar)` 也必须返回 PrimeChannel (用
+    ``new_prime_channel`` 构建), 否则无法挂 module。
     """
     if kit.channel_file is None:
         from .mapper import build_auto_channel
 
-        channel = build_auto_channel(avatar)
+        channel: PrimeChannel = build_auto_channel(avatar)
     else:
         module = _import_from_path(kit.channel_file)
         build = getattr(module, "build", None)
         if build is None:
-            raise AttributeError(f"{kit.channel_file} 必须定义 `async def build(avatar) -> Channel`")
+            raise AttributeError(f"{kit.channel_file} 必须定义 `async def build(avatar) -> PrimeChannel`")
         channel = build(avatar)
         if hasattr(channel, "__await__"):
             channel = await channel
