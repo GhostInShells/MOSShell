@@ -6,6 +6,7 @@
 avatars/<name>/
 ├── AVATAR.md      可选：角色人设 + per-group instruction 覆盖 + idle 配置
 ├── channel.py     可选：这个形象的命令面（模型是唯一的作者）
+├── animations.py  可选：动画轨迹（纯代码，async def 一条一命令）
 └── model/         模型资产（不入库，见 INSTALL.md），必须有 *.model3.json
 ```
 
@@ -34,6 +35,26 @@ idle:                                                # 可选：待机配置
 
 缺字段一律默认值；`groups.<g>.instruction` 缺省用自动冷描述。模型包自带眨眼的（动作曲线
 驱动眼开闭），应把 `idle.parts.blink` 设为 `false`，避免和 SDK 默认眨眼双重闪烁。
+
+## animations.py — 动画轨迹编程
+
+`animations.py` 是给模型"写代码编排动作"的出口：每个 `async def` 函数是一条动画轨迹，
+自动编译反射成主 channel 上的一条命令。函数签名即接口，函数体是纯 Python：
+
+```python
+# avatars/<name>/animations.py
+async def wave():
+    """打招呼: 抬左手挥一挥."""
+    avatar = get_avatar()          # 已注入, 无需 import
+    await avatar.play("Tap@Body", 0)
+    await asyncio.sleep(0.2)       # asyncio 已注入
+    avatar.param("ParamArmLA", 0.8, manual=True)
+```
+
+- 注入 `get_avatar() -> Avatar` 与 `asyncio`，无需 import。
+- `await avatar.play(...)` / `avatar.param(...)` / `await asyncio.sleep(...)` 是积木。
+- 每条动画命令 `blocking=True`：它的 await 序列就是时间轨迹，占主轨。
+- 编辑后调 `reload_animations` 热更新（同名 module 覆盖旧命令；编译失败保留上一版）。
 
 ## channel.py 的入口
 

@@ -175,6 +175,22 @@ KD2 的实测表来自 CubismWebSamples 的**免费 Hiyori**（70 参数/12 组�
 （face/eye/eyeball/brow/mouth/body/arm/move）、无 Expressions、动作组是
 Idle·Flick·FlickDown·FlickUp·Tap·Tap@Body·Flick@Body。映射器在异构包上照样成立。
 
+### KD12. animation 轨迹编程 — 纯代码编排动作
+
+CTML 里用 `<wait><motions:tap/><face:angle_x/></wait>` 拼轨迹，等价于把一段编排固化成
+一条命令。给 avatar 一个"写代码"的出口：`avatars/<name>/animations.py` 里每个
+`async def` 是一条动画，函数体的 await 序列就是时间轨迹（KD8 的另一面）。
+
+已决（2026-09-15）：复用三个现成件，不新造抽象：
+
+- `codex.compiler.Compiler` 编译文件源码，`local_injections` 注入 `get_avatar() -> Avatar`
+  与 `asyncio` —— 函数体是纯代码，无需 import；
+- `channel_builder.new_command` 反射协程函数 → command（签名即接口）；
+- `ChannelModule`（`states_channel.py`）打包命令集，`with_module` 挂主 channel，
+  同名覆盖 = 热更新；`reload_animations` 命令触发（编译失败抛错、保留上一版）。
+
+绑定在主 channel 根轨（不是子 channel）—— 一条动画可能跨多个 group。
+
 ## Implementation Notes
 
 ### 实测资产（2026-09-13，来自官方仓库 `develop` 分支）

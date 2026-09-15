@@ -53,6 +53,13 @@ Live2D 条款明写不得向第三方再分发。因此 `avatars/*/model/` 与 `
 里的永续仲裁循环: 空闲超过 `idle.delay` 才进待机, 前景动作/说话让位。部件级 idle
 (眨眼/呼吸) 是 SDK 原生, 由 `AVATAR.md` 的 `idle.parts` 开关。
 
+### animation 轨迹编程
+
+模型在 `animations.py` 里写 N 个 `async def`, 每个是一条动画轨迹: 编译 (codex Compiler)
+时注入 `get_avatar()` + `asyncio`, 反射协程函数经 `channel_builder.new_command` 变成
+command, 打包成 `ChannelModule` 挂到主 channel (`with_module`)。同名 module 覆盖 =
+热更新, 由 `reload_animations` 命令触发。命令 blocking=True, 它的 await 序列就是时间轨迹。
+
 ### 换形象 = 重启 node
 
 没有运行期 `switch_model`——状态太重。形象身份是 argument（`--avatar`），走启动参数。

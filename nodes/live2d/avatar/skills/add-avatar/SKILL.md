@@ -7,7 +7,7 @@ description: 新增或定制一套 Live2D 形象 — 放模型资产、写 chann
 
 一套形象 = `avatars/<name>/` 一个自包含目录。契约见 `../avatars/README.md`。
 
-## 四步
+## 五步
 
 ### 1. 放模型
 
@@ -59,7 +59,23 @@ async def build(avatar):
 可用的事件面见 `avatars/README.md`（`param`/`play`/`motion`/`expression`/`reset`/`backdrop`/`set_idle_loop`）。
 参数 id 从 `avatar.spec` 拿；唇形/眨眼绑定读 `avatar.spec.lip_sync` / `eye_blink`。
 
-### 4. 启动验证
+### 4. （可选）写 animations.py 动画轨迹
+
+每个 `async def` 是一条动画命令，编译反射到主 channel。注入 `get_avatar()` 与 `asyncio`：
+
+```python
+# avatars/<name>/animations.py
+async def wave():
+    """打招呼: 抬左手挥一挥."""
+    avatar = get_avatar()
+    await avatar.play("Tap@Body", 0)
+    await asyncio.sleep(0.2)
+    avatar.param("ParamArmLA", 0.8, manual=True)
+```
+
+编辑后调 `reload_animations` 热更新（编译失败保留上一版）。契约见 `avatars/README.md`。
+
+### 5. 启动验证
 
 ```bash
 moss nodes run nodes/live2d/avatar -- --avatar <name>

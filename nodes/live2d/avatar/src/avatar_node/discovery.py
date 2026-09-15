@@ -104,20 +104,27 @@ def model_url(kit: AvatarKit) -> str:
 
 
 async def load_channel(kit: AvatarKit, avatar: Avatar) -> Channel:
-    """取这套形象的命令面: 显式 `channel.py` 优先, 否则自动映射."""
+    """取这套形象的命令面: 显式 `channel.py` 优先, 否则自动映射.
+
+    两种路径都返回同一棵树后, 再挂上动画轨迹模块 (animations.py), 见 ``setup_animations``.
+    """
     if kit.channel_file is None:
         from .mapper import build_auto_channel
 
-        return build_auto_channel(avatar)
+        channel = build_auto_channel(avatar)
+    else:
+        module = _import_from_path(kit.channel_file)
+        build = getattr(module, "build", None)
+        if build is None:
+            raise AttributeError(f"{kit.channel_file} 必须定义 `async def build(avatar) -> Channel`")
+        channel = build(avatar)
+        if hasattr(channel, "__await__"):
+            channel = await channel
 
-    module = _import_from_path(kit.channel_file)
-    build = getattr(module, "build", None)
-    if build is None:
-        raise AttributeError(f"{kit.channel_file} 必须定义 `async def build(avatar) -> Channel`")
-    result = build(avatar)
-    if hasattr(result, "__await__"):
-        result = await result
-    return result
+    from .animations import ANIMATIONS_FILE, setup_animations
+
+    setup_animations(channel, avatar, kit.path / ANIMATIONS_FILE)
+    return channel
 
 
 def _import_from_path(path: Path):
