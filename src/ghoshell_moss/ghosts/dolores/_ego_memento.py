@@ -7,10 +7,12 @@
 - **view / 切点**: ``view_message()`` 给 ghost 的 memories; ``resume_ref()`` 给 ego 重建的切点.
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
-- **note 生产**: ``schedule_note()`` 排 sidecar —— 旁路一轮 (身份旁路 session, seed = 源 session 的
-  verbatim 前缀, 吃满前缀缓存), 取回 plain text 写进 note. 失败留空可重试, ``resume()`` 补漏.
-- 未落: ``read`` (冷读 log + render_transcript)、``chat_commit``, 以及 ego 的 inflight 替换
-  (当前只在 ego 开启/关闭时用 ``resume_ref()`` 重建).
+- **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个旁路任务 (身份旁路 session, seed = 源
+  session 的 verbatim 前缀, 吃满前缀缓存), 取回 plain text 写进 note. **这些任务的生命周期与状态
+  归 manager** (``bypass``): 关停时取消在飞的、不等 —— 缺 note 的 commit 就空着, 内容仍可 read.
+  **不做重启补漏**: 空的就空着.
+- 未落: ``read`` (commit 区间 → 文本)、``chat_commit``, 以及 ego 的 inflight 替换 (当前只在 ego
+  开启/关闭时用 ``resume_ref()`` 重建).
 
 dep 只有不可变项 (connection / memento / config / logger) —— 这些是它干活的工具, 不是 ego 状态.
 """
@@ -18,10 +20,12 @@ dep 只有不可变项 (connection / memento / config / logger) —— 这些是
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from enum import Enum
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
+from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.types.refs import DshSessionRef
@@ -32,7 +36,7 @@ from ghoshell_moss.message import Message
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshConnection
 
-__all__ = ["CommitDecision", "EgoMementoConfig", "EgoMementoManager"]
+__all__ = ["BypassCommit", "BypassState", "CommitDecision", "EgoMementoConfig", "EgoMementoManager"]
 
 # metadata 约定 (memento 只存不解析).
 _REF_KEY = "ref"
@@ -55,10 +59,24 @@ class EgoMementoConfig(BaseModel):
         default=100_000,
         description="T: 达此值强制建锚点. 置 0 = 每 turn commit (验证期用).",
     )
-    resume_tail: int = Field(
-        default=5,
-        description="启动 resume 时回扫的尾部 commit 数 (补跑缺失的 note).",
-    )
+
+
+class BypassState(str, Enum):
+    """旁路任务的运行状态 (manager 持有的治理状态; note 本身的真值在 memento, 不在这里)."""
+
+    RUNNING = "running"  # 旁路任务在飞
+    READY = "ready"      # note 已落
+    FAILED = "failed"    # 空 message / 传输失败 —— 终态留空, 不自动重试 (内容仍可 read)
+
+
+@dataclasses.dataclass
+class BypassCommit:
+    """一个被旁路治理的 commit: 切点 ref + 状态 + 在飞任务."""
+
+    commit_id: str
+    ref: DshSessionRef
+    state: BypassState = BypassState.RUNNING
+    task: asyncio.Task | None = None
 
 
 class CommitDecision(str, Enum):
@@ -89,13 +107,35 @@ class EgoMementoManager:
         self._memento = memento
         self._config = config or EgoMementoConfig()
         self._logger = logger or get_moss_logger()
-        # sidecar 任务 (manager 自持, 生命周期 = ghost) + 已产出 note 的 commit id (防重跑).
-        self._note_tasks: set[asyncio.Task] = set()
-        self._noted: set[str] = set()
+        # 旁路治理状态: 每个排过旁路的 commit → 它的切点 / 状态 / 在飞任务 (见 BypassCommit).
+        self._bypass: dict[str, BypassCommit] = {}
 
     @property
     def config(self) -> EgoMementoConfig:
         return self._config
+
+    # ── 生命周期 (由 ghost 开启/关闭; 旁路任务归它治理) ───────────────
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """关停: 取消在飞的旁路任务, 不等它们收尾.
+
+        旁路 note 是 best-effort —— 缺 note 的 commit 就空着 (内容仍可 read), 为一个 LLM 调用把
+        ghost 关闭拖住几秒不值得. 运行期排的旁路早就跑完了, 通常只有退出前刚排的那个会丢.
+        """
+        running = [run for run in self._bypass.values() if run.task is not None and not run.task.done()]
+        for run in running:
+            run.task.cancel()
+        if running:
+            await asyncio.gather(*(run.task for run in running), return_exceptions=True)
+            self._logger.info("memento bypass: %d in-flight note run(s) dropped at shutdown", len(running))
+
+    @property
+    def bypass(self) -> dict[str, BypassCommit]:
+        """旁路治理状态的只读面 (观测/测试); note 本身的真值在 memento, 不在这里."""
+        return self._bypass
 
     # ── 锚点 (写 memento) ────────────────────────────────────────
 
@@ -122,47 +162,46 @@ class EgoMementoManager:
             metadata={_REF_KEY: ref.model_dump(mode="json"), _PREV_TURN_KEY: start_turn},
         )
 
-    # ── sidecar (慢腿: 排 task 由 manager 自持, 生命周期 = ghost) ───────
+    # ── 旁路 (慢腿: 排任务归 manager, 生命周期同 ghost) ───────────────
 
     def schedule_note(self, commit_id: str) -> None:
-        """commit 后调用: 排一个 sidecar task, 用 ref 让 dsh 侧冷 seed 跑一轮产 message 写回 note."""
-        if commit_id in self._noted:
-            return
-        self._noted.add(commit_id)
-        task = asyncio.create_task(self._produce_note(commit_id))
-        self._note_tasks.add(task)
-        task.add_done_callback(self._note_tasks.discard)
+        """commit 后调用: 排一个旁路任务 —— 源 session 冷 seed 跑一轮, 产 message 写回 note.
 
-    async def _produce_note(self, commit_id: str) -> None:
-        """跑 sidecar 并写 note. 空 message → 留空 (等 resume 补); 传输异常 → 留空 (非致命, 可重试)."""
+        同一个 commit 只排一次 (幂等). 找不回切点 ref 的 commit 直接跳过 (note 留空, 可 read).
+        """
+        if commit_id in self._bypass:
+            return
         commit = self._find_commit(commit_id)
         ref = self._ref_of(commit) if commit is not None else None
-        if commit is None or ref is None:
+        if ref is None:
+            self._logger.warning("memento bypass: commit %s has no cut ref, note stays empty", commit_id)
             return
+        run = BypassCommit(commit_id=commit_id, ref=ref)
+        self._bypass[commit_id] = run
+        run.task = asyncio.create_task(self._run_bypass(run), name=f"memento-note-{commit_id}")
+
+    async def _run_bypass(self, run: BypassCommit) -> None:
+        """跑一轮旁路并写 note. 空 message / 传输失败 → 终态留空, 不自动重试."""
         try:
-            result = await self._connection.call(_NOTE_RUN_ROUTE, {"ref": ref.model_dump(mode="json")})
+            result = await self._connection.call(_NOTE_RUN_ROUTE, {"ref": run.ref.model_dump(mode="json")})
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            self._logger.warning("note sidecar failed (retryable), commit %s left empty: %s", commit_id, exc)
-            self._noted.discard(commit_id)
+            run.state = BypassState.FAILED
+            self._logger.warning("memento bypass failed, commit %s keeps an empty note: %s", run.commit_id, exc)
             return
         message = str((result or {}).get("message", ""))
-        if message:
-            self._branch().note(commit_id, message)
-
-    async def resume(self) -> None:
-        """ghost 启动时: 回扫尾部未产出 note 的 commit, 依次补跑 sidecar (补漏/恢复)."""
-        branch = self._memento.get_branch(self._config.branch_name)
-        if branch is None:
+        if message == "":
+            run.state = BypassState.FAILED
+            self._logger.warning("memento bypass returned no text for commit %s", run.commit_id)
             return
-        for commit in branch.commits()[-self._config.resume_tail:]:
-            if commit.id in self._noted or branch.notes().get(commit.id) is not None:
-                continue
-            await self._produce_note(commit.id)
+        self._branch().note(run.commit_id, message)
+        run.state = BypassState.READY
 
-    async def drain_sidecars(self) -> None:
-        """等所有在跑的 sidecar 收尾 (观测/测试用)."""
-        while self._note_tasks:
-            await asyncio.gather(*list(self._note_tasks), return_exceptions=True)
+    async def drain_bypass(self) -> None:
+        """等所有在飞的旁路任务收尾 (观测/测试用)."""
+        while pending := [r.task for r in self._bypass.values() if r.task is not None and not r.task.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # ── notice 构造 (ego 排队列, 在 thinking-enter 注入) ──────────────
 

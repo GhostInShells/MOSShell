@@ -242,17 +242,18 @@ class Dolores(Ghost):
                 facade=self._facade,
             )
             # memento 旁路服务: ghost 级持有, 注入 ego (锚点写入 / 阈值判定都过它).
+            # 生命周期入 exit stack —— 旁路任务归它治理, ghost 关停时随栈取消.
             if self._memento is not None:
                 from ._ego_memento import EgoMementoManager
 
-                self._memento_manager = EgoMementoManager(
-                    connection=self.dsh_launcher,
-                    memento=self._memento,
-                    config=self._load_config().memento,
-                    logger=self.logger,
+                self._memento_manager = await self._exit_stack.enter_async_context(
+                    EgoMementoManager(
+                        connection=self.dsh_launcher,
+                        memento=self._memento,
+                        config=self._load_config().memento,
+                        logger=self.logger,
+                    )
                 )
-                # 启动补漏: 回扫尾部未产出 note 的 commit, 自动补跑 sidecar.
-                await self._memento_manager.resume()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
                     launcher=self.dsh_launcher,

@@ -470,7 +470,7 @@ class TestDoloresEgoCommit:
 
 
 class TestEgoMementoSidecar:
-    """旁路 note 生产 — run 路由的 fake: 回 message 写 note; 异常/空留空 (可重试)."""
+    """旁路 note 生产 — run 路由的 fake: 回 message 写 note; 异常/空 → 终态留空."""
 
     class _FakeConnection:
         def __init__(self, response):
@@ -483,15 +483,30 @@ class TestEgoMementoSidecar:
                 raise self.response
             return self.response
 
+    class _StuckConnection:
+        """永不返回 —— 只被取消 (关停路径)."""
+
+        def __init__(self):
+            self.entered = asyncio.Event()
+
+        async def call(self, path, payload=None, *, timeout=None):
+            self.entered.set()
+            await asyncio.Event().wait()
+
     @staticmethod
     def _manager(tmp_path: Path, connection):
-        from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
+        from ._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
 
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
         manager = EgoMementoManager(connection=connection, memento=memento, config=EgoMementoConfig())
         return manager, memento
+
+    @staticmethod
+    def _state(manager, commit_id: str) -> str:
+        """旁路状态 (取字符串值, 免去在测试里摊开内部枚举)."""
+        return manager.bypass[commit_id].state.value
 
     @pytest.mark.asyncio
     async def test_sidecar_writes_note(self, tmp_path: Path):
@@ -500,34 +515,51 @@ class TestEgoMementoSidecar:
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
         manager.schedule_note(anchor.id)
-        await manager.drain_sidecars()
+        await manager.drain_bypass()
 
         note = memento.get_branch("main").notes()[anchor.id]
         assert note.message == "title\nbody"
         assert note.error == ""
         assert conn.calls[0][0].endswith("/note/run")
         assert conn.calls[0][1]["ref"]["session_id"] == "s1"
+        assert self._state(manager, anchor.id) == "ready"
 
     @pytest.mark.asyncio
-    async def test_sidecar_failure_leaves_empty_retryable(self, tmp_path: Path):
+    async def test_sidecar_failure_leaves_empty_note(self, tmp_path: Path):
         conn = self._FakeConnection(RuntimeError("dsh down"))
         manager, memento = self._manager(tmp_path, conn)
         anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
         manager.schedule_note(anchor.id)
-        await manager.drain_sidecars()
+        await manager.drain_bypass()
 
-        assert memento.get_branch("main").notes() == {}  # 留空, 等 resume 补
+        assert memento.get_branch("main").notes() == {}  # 留空, 不自动重试
+        assert self._state(manager, anchor.id) == "failed"
 
     @pytest.mark.asyncio
-    async def test_resume_backfills_missing_notes(self, tmp_path: Path):
-        conn = self._FakeConnection({"message": "backfilled"})
+    async def test_same_commit_dispatched_once(self, tmp_path: Path):
+        conn = self._FakeConnection({"message": "x"})
+        manager, _ = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(anchor.id)
+        manager.schedule_note(anchor.id)
+        await manager.drain_bypass()
+
+        assert len([call for call in conn.calls if call[0].endswith("/note/run")]) == 1
+
+    @pytest.mark.asyncio
+    async def test_exit_drops_inflight_note_run(self, tmp_path: Path):
+        conn = self._StuckConnection()
         manager, memento = self._manager(tmp_path, conn)
-        manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
-        await manager.resume()
+        async with manager:
+            manager.schedule_note(anchor.id)
+            await conn.entered.wait()  # 旁路确实跑起来了, 再走关停
 
-        assert list(memento.get_branch("main").notes().values())[0].message == "backfilled"
+        assert manager.bypass[anchor.id].task.cancelled()  # 不阻塞关停
+        assert memento.get_branch("main").notes() == {}  # 空 note 留空 (内容仍可 read)
 
 
 class TestEgoMementoResumeRef:
