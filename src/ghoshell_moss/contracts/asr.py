@@ -36,7 +36,7 @@ class RecognitionPhase(str, Enum):
     - FIRST:   the first meaningful packet — the first result whose ``text`` is non-empty.
                It is NOT a segment/turn marker, just "the recognizer has text now". The
                engine does not emit it; the recognizer derives it. Emitted at most once
-               per stream.
+               per segment.
     - PARTIAL: intermediate result (utterance ``definite=false``), emitted while speaking.
                Only emitted when the text actually changed — the engine re-sends the same
                accumulated text on every audio package, identical consecutive text is not
@@ -48,6 +48,32 @@ class RecognitionPhase(str, Enum):
 
     ``definite`` only marks "this sentence is stable", not the end of the stream.
     Stream end is a separate fact (the audio input is exhausted), not a TAIL.
+
+    Phase state machine (per stream):
+
+    ```mermaid
+    stateDiagram-v2
+        [*] --> segment: audio flows in
+        segment --> FIRST: text first becomes non-empty (once per segment)
+        FIRST --> PARTIAL: text changes
+        PARTIAL --> PARTIAL: text changes (full replace)
+        PARTIAL --> CLAUSE: silence >= end_window_size -> definite (ASR protocol obligation)
+        CLAUSE --> CLAUSE: next definite clause
+        CLAUSE --> PARTIAL: speaker continues
+        PARTIAL --> TAIL: commit() or audio close
+        CLAUSE --> TAIL: commit() or audio close
+        TAIL --> segment: cut, segment_id + 1
+        segment --> [*]: audio exhausted + tail
+    ```
+
+    Two invariants the diagram pins down:
+
+    - ``CLAUSE`` is the recognizer's protocol obligation — after ``end_window_size``
+      of silence the engine must finalize the current sentence as definite. It is
+      VAD-decided.
+    - ``TAIL`` is NOT VAD-decided — it is produced by ``commit()`` (a negative
+      sequence on the send loop) or by the audio input closing. Silence alone
+      never produces a TAIL.
     """
 
     FIRST = "first"
