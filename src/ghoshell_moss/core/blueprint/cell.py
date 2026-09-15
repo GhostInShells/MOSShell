@@ -1287,6 +1287,7 @@ class NodeManager(ABC):
             manifest: NodeManifest,
             *,
             extra_env: dict[str, str] | None = None,
+            extra_args: list[str] | None = None,
             capture: Callable[[CellRuntimeInfo], CaptureSpec] | None = None,
     ) -> tuple[CellRuntimeInfo, ManagedProcess]:
         """
@@ -1297,6 +1298,11 @@ class NodeManager(ABC):
         (身份 uid, pid/pgid 占位 0) → Subprocesses.execute 拉起.
         不做: 持有 singleton 锁 / 账本清理 / pid·pgid 回填 — 归 child
         enter_cell_lifecycle.
+
+        extra_args: extra argv tokens appended after the declared ``exec.args`` —
+        for per-instance identity/binding (device index, stream address, ...).
+        Append-only; ``exec.args`` is never replaced. The pre-launch probe does
+        not receive them.
 
         capture: 可选 factory, 传打包后的 CellRuntimeInfo, 返回 CaptureSpec
         (落盘路径可用 runtime.address). None = 不捕获 (继承终端).

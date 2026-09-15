@@ -23,6 +23,7 @@ Example:
 
 from __future__ import annotations
 
+import shlex
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -282,18 +283,23 @@ def new_nodes_channel(
     # -- run ----------------------------------------------------------
 
     @chan.build.command(name='run', blocking=False, always_observe=True)
-    async def run_node(target: str) -> str:
+    async def run_node(target: str, extra_args: str | None = None) -> str:
         """Spawn a node cell. Nonblocking for persist nodes; blocking for one-shot.
 
         One-shot (persist=false) cells run to completion — this command blocks
         until exit and returns stdout/stderr tail + exit code (standard bash call).
+
+        extra_args: shell-like extra argv appended after the node's declared entry
+        args, shlex-split here. Use it for per-instance binding, e.g.
+        run('nodes/visions/stream', extra_args='--address rtmp://127.0.0.1/live').
         """
         if not target:
             CommandUtil.raise_observe(
                 "target required. list() to discover paths."
             )
+        argv = shlex.split(extra_args) if extra_args else None
         try:
-            handle = await matrix.run_node(Path(target))
+            handle = await matrix.run_node(Path(target), extra_args=argv)
         except DuplicatedError as e:
             CommandUtil.raise_observe(
                 f'Singleton conflict: {e}. status() to inspect; '

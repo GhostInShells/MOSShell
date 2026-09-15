@@ -161,6 +161,7 @@ class ProjectNodeManager(NodeManager):
             manifest: NodeManifest,
             *,
             extra_env: dict[str, str] | None = None,
+            extra_args: list[str] | None = None,
             capture: Callable[[CellRuntimeInfo], CaptureSpec] | None = None,
     ) -> tuple[CellRuntimeInfo, ManagedProcess]:
         """
@@ -171,6 +172,10 @@ class ProjectNodeManager(NodeManager):
         (身份 uid, pid/pgid 占位 0) → Subprocesses.execute 拉起.
         不做: 持有 singleton 锁 / 账本清理 / pid·pgid 回填 — 归 child
         enter_cell_lifecycle (锁归其 fast-fail 争抢, 退出删账 + 回填).
+
+        extra_args: extra argv tokens appended after the declared ``exec.args``.
+        Append-only; ``exec.args`` is never replaced. The pre-launch probe does
+        not receive them.
 
         capture: 可选 factory, 传打包后的 CellRuntimeInfo 返回 CaptureSpec (落盘路径可用
         runtime.address). None = 不捕获 (继承终端).
@@ -185,6 +190,8 @@ class ProjectNodeManager(NodeManager):
             )
 
         launcher = NodeLauncher.from_manifest(self._env, manifest)
+        if extra_args:
+            launcher.run.extend(extra_args)
 
         broken = await self._run_probe(manifest, launcher)
         if broken is not None:

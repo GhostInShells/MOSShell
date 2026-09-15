@@ -331,6 +331,7 @@ class Matrix(Facade):
             target: Path,
             *,
             extra_env: dict[str, str] | None = None,
+            extra_args: list[str] | None = None,
     ) -> CellHandle:
         """
         Start a node cell subprocess governed by this matrix.
@@ -343,6 +344,9 @@ class Matrix(Facade):
             a script → ``NodeManifest.from_script`` walks up to claim its parent.
         :param extra_env: extra environment variables injected into the subprocess. MOSS
             runtime environment variables are inherited by default.
+        :param extra_args: extra argv tokens appended after the node's declared entry
+            args (``exec.args``). Append-only; per-instance identity/binding (device
+            index, stream address, ...). The pre-launch probe does not receive them.
         :return CellHandle: cell identity + subprocess handle. wait/stop go through the handle.
             Whether the subprocess joins the network (runs matrix and announces) is observed
             on the network, not guaranteed here.

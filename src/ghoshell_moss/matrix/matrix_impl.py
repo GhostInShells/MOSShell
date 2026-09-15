@@ -330,6 +330,7 @@ class MatrixImpl(Matrix):
             target: Path,
             *,
             extra_env: dict[str, str] | None = None,
+            extra_args: list[str] | None = None,
     ) -> CellHandle:
         """
         拉起一个 node cell — 唯一 spawn 咽喉收敛到 NodeManager.spawn_node.
@@ -341,6 +342,9 @@ class MatrixImpl(Matrix):
 
         :param target: 路径 (NODE.md / 目录 / 脚本 / 相对 project.root).
         :param extra_env: 追加注入子进程的环境变量.
+        :param extra_args: 追加在 node 声明入口参数 (``exec.args``) 之后的 argv token,
+            只追加不替换; 用于每实例的身份/绑定 (设备 index / 流地址 ...).
+            探针 (manifest.check) 不接收它们.
         :return CellHandle: cell 身份 + 子进程句柄, 由 matrix.handled_cells() 追踪.
         """
         self._check_running()
@@ -351,6 +355,7 @@ class MatrixImpl(Matrix):
         runtime, managed = await node_manager.spawn_node(
             manifest,
             extra_env=extra_env,
+            extra_args=extra_args,
             capture=self._cell_capture,
         )
 

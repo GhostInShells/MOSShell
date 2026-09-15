@@ -405,14 +405,15 @@ def run_node(
             print_info("    moss nodes install <path>")
             raise typer.Exit(code=1)
 
-        if ctx.args:
-            manifest.exec.args = (manifest.exec.args + " " + " ".join(ctx.args)).strip()
+        extra_args = list(ctx.args) if ctx.args else None
 
         launcher = NodeLauncher.from_manifest(env, manifest)
+        if extra_args:
+            launcher.run.extend(extra_args)
         _print_launch_debug(launcher, env)
 
         try:
-            returncode = asyncio.run(_foreground_run(project, manifest))
+            returncode = asyncio.run(_foreground_run(project, manifest, extra_args))
         except NodeProbeError as e:
             print_error(str(e))
             raise typer.Exit(code=1)
@@ -431,7 +432,11 @@ def run_node(
         sys.exit(returncode)
 
 
-async def _foreground_run(project: Project, manifest: NodeManifest) -> int:
+async def _foreground_run(
+    project: Project,
+    manifest: NodeManifest,
+    extra_args: list[str] | None = None,
+) -> int:
     """Spawn via the single throat, block in foreground, forward signals.
 
     The child inherits stdout/stderr (capture=None), so logs reach the terminal.
@@ -439,7 +444,7 @@ async def _foreground_run(project: Project, manifest: NodeManifest) -> int:
     SIGKILL the process group (bottom-line, same as the old Popen path).
     """
     loop = asyncio.get_running_loop()
-    _runtime, managed = await project.nodes.spawn_node(manifest)
+    _runtime, managed = await project.nodes.spawn_node(manifest, extra_args=extra_args)
     proc = managed.process
     pgid = managed.meta.pgid
     grace_task: asyncio.Task | None = None
