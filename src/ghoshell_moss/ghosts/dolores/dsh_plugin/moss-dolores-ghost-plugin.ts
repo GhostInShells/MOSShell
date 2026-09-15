@@ -9,7 +9,8 @@ import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attach
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { JsonValue, Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import { isSurfaceEligibleType, SessionSeq } from '@deepseek-ai/dsh-session'
+import type { JsonValue, Session, SessionEvent, SessionId, SurfaceEventType } from '@deepseek-ai/dsh-session'
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
@@ -134,10 +135,11 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
-// 旁路 note 生产 (commit 的慢腿): 冷 seed 独立 one-shot, 不走 subagent, 不 attach workspace.
+// 旁路 note 生产 (commit 的慢腿): 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路
+// session (id ≠ doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠),
+// 不走 subagent, 不 attach workspace. 必须复用 ego preset 而非另建瘦 preset: 旁路 prompt
+// 要与主路逐字节同前缀, 才能吃到 LLM 前缀缓存 (见 plugin 顶注 / memento-plan #7).
 const DOLORES_NOTE_RUN = `${DOLORES_API_ROOT}/note/run`
-// 旁路 note 用的最小 preset (repo 自持, 无工具 = read-only by construction).
-const DOLORES_NOTE_PRESET = 'dolores-note'
 const HARNESS_IDENTITY_TEXT = ''
 
 // 旁路 note 的默认 prompt — 摘要进 memento 当 commit 的 message (首行 title, 其余 body).
@@ -644,10 +646,16 @@ export function apply(ctx: Context) {
         doloresEgoWorkspaceId = workspace.id
         // persona 文本落到模块级, 供 apply_ego_agent 在 session/start 时注入 persona 段.
         doloresInstruction = instruction
-        // 2. create ego session: 专属 preset (standard 的工具面) + overridden identity/persona.
+        // 2. ref 存在时才走构造器 seed: seed = memory + 切点之后的 surface 尾巴 —— memory 必须排在
+        //    尾巴之前 (前情提要在前, "刚刚发生"在后), 所以只有带尾巴这一路要把 memory 也放进 seed.
+        //    无 ref 时保持原路 (create 空 session, 之后逐条 append memory), 不动既有主路行为.
+        const ref = parseEgoCreateRef(body.ref)
+        const seed = ref === undefined ? [] : await buildEgoSeed(ctx, messages, ref)
+        // 3. create ego session: 专属 preset (standard 的工具面) + overridden identity/persona.
         const sessionId = randomUUID()
         const handle = await ctx.agents.create({
           sessionId,
+          ...(seed.length > 0 ? { seed } : {}),
           meta: { cwd: projectHome, agentPreset: DOLORES_EGO_PRESET },
           setup: async (agentCtx: Context) => {
             await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_EGO_PRESET)
@@ -655,20 +663,22 @@ export function apply(ctx: Context) {
         })
         doloresEgoSessionId = handle.agent.id
         doloresThinkingToken = randomUUID()
-        // 3. title + sandbox mode + workspace membership (log-only events + account).
+        // 4. title + sandbox mode + workspace membership (log-only events + account).
         handle.agent.session.append('session/title', { title: sessionTitle, messageSeqs: [], source: { kind: 'user' } })
         handle.agent.session.append('sandbox/mode', { mode: permission })
         await workspace.attachSession(handle.agent.id)
-        // 4. 注入 ghost.memory 上下文 (点 1): messages → user/message (surfaceOp append).
+        // 5. 无 ref: 注入 ghost.memory 上下文 (点 1) — messages → user/message (surfaceOp append).
         //    这是初见上下文 = 建立模型首轮可见的表面.
-        for (const msg of messages) {
-          if (typeof msg?.text === 'string' && msg.text.length > 0) {
-            handle.agent.session.append('user/message',
-              createUserMessage({
-                content: [{ type: 'text', text: msg.text }],
-                source: { kind: 'plugin', plugin: name },
-              }),
-              { surfaceOp: 'append' })
+        if (ref === undefined) {
+          for (const msg of messages) {
+            if (typeof msg?.text === 'string' && msg.text.length > 0) {
+              handle.agent.session.append('user/message',
+                createUserMessage({
+                  content: [{ type: 'text', text: msg.text }],
+                  source: { kind: 'plugin', plugin: name },
+                }),
+                { surfaceOp: 'append' })
+            }
           }
         }
         // todo: ping/pong 预热 (可选) — 创建后验证 session 可服务, 失败返回错误.
@@ -948,17 +958,18 @@ export function apply(ctx: Context) {
         const endSeq = typeof ref?.end_seq === 'number' ? ref.end_seq : undefined
         if (sourceId === '') throw new Error('ref.session_id must be a non-empty string')
         if (endTurn < 0) throw new Error('ref.end_turn must be a non-negative integer')
-        const source = ctx.agents.get(sourceId)  // 冷读 live session 的 log (不 materialize)
-        if (source === undefined) throw new Error(`no live session for ${sourceId}`)
         const prompt = typeof body.prompt === 'string' && body.prompt !== '' ? body.prompt : NOTE_PROMPT
-        // 0.1.5: log 走 session.snapshotEvents() (Session 无 `events` 访问器).
-        const seed = seedPrefix(source.session.snapshotEvents(), endTurn, endSeq)
+        // seed = 源 session 的逐字节前缀 (seq 0..切点). live 走 snapshotEvents (未 flush 的事件也在),
+        // 源已不在本进程 (重启后补漏 / 历史 commit) 时回落持久化层冷读 — 两者契约同为 seq 0 连续.
+        const events = await loadSourceEvents(ctx, sourceId)
+        const seed = seedPrefix(events, endTurn, endSeq)
         const handle = await ctx.agents.create({
           sessionId: randomUUID(),
           seed,
-          meta: { cwd: process.cwd(), agentPreset: DOLORES_NOTE_PRESET, seedLength: seed.length },
+          // 必须复用 ego preset: 旁路 prompt 要与主路逐字节同前缀, 否则 LLM 前缀缓存整条失效.
+          meta: { cwd: process.cwd(), agentPreset: DOLORES_EGO_PRESET, seedLength: seed.length },
           setup: async (agentCtx: Context) => {
-            await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_NOTE_PRESET)
+            await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_EGO_PRESET)
           },
         })
         try {
@@ -1009,6 +1020,158 @@ function seedPrefix(
     end = i
   }
   return events.slice(0, end + 1)
+}
+
+/** 持久化读句柄的最小结构面 (不 import dsh-session-persistence, 保持包依赖面不变). */
+type SessionReadHandle = {
+  read(offset?: number, length?: number): Promise<{ events: readonly SessionEvent[] }>
+  close(): Promise<void>
+}
+
+/**
+ * 源 session 的完整事件 log — live 优先, 源已不在本进程时回落持久化层冷读.
+ *
+ * 冷读 (ctx.sessionPersistence) 对任何**已落盘**的 session 恒成立, 与是否 live 无关 ——
+ * 它让重启后的 note 补漏 (源 session 已死) 也能成立. live 优先的理由: 运行中的 session
+ * 尾部事件可能尚未落盘, 冷读会读到被截断的前缀, 而 seed 必须覆盖到切点.
+ */
+async function loadSourceEvents(ctx: Context, sourceId: string): Promise<readonly SessionEvent[]> {
+  const live = ctx.agents.get(sourceId)
+  if (live !== undefined) return live.session.snapshotEvents()
+  const persistence = ctx.get('sessionPersistence') as
+    | { open(id: string, access: 'read'): Promise<SessionReadHandle> }
+    | undefined
+  if (persistence === undefined) {
+    throw new Error(`no live session for ${sourceId}, and sessionPersistence service is unavailable`)
+  }
+  const handle = await persistence.open(sourceId, 'read')
+  try {
+    return (await handle.read()).events
+  } finally {
+    await handle.close()
+  }
+}
+
+/** ego/create 的可选 ref — memento commit 的坐标 (源 session + 切点 turn). */
+type EgoCreateRef = { session_id: string; end_turn: number; end_seq?: number }
+
+/**
+ * 组装一条 seed 事件 (契约: seq 0 连续, surface 类型必须带 surfaceOp).
+ *
+ * 需要一次断言: `SessionEvent` 是按 type 判别的联合, 而这里的 type 是动态取的, 编译器收窄不了.
+ * 断言是安全的 —— 这些事件进构造器时会被逐条校验信封 (assertSessionEventEnvelope /
+ * assertCurrentLlmShape) 与 surface 计划 (SurfaceManager.validateNext), 不合格直接抛.
+ */
+function seedEvent(type: SurfaceEventType, time: number, data: unknown): SessionEvent {
+  return { type, seq: SessionSeq(0), time, data, surfaceOp: 'append' } as SessionEvent
+}
+
+/**
+ * ego 带 ref 时的初始表面 = memory 事件 + 切点之后的 surface 尾巴.
+ *
+ * memory 必须排在最前: 它是前情提要 (ground + memento view), 尾巴是"刚刚发生". 两者合成一个
+ * constructor seed, 所以整段是一次性表面. ref 的源 session 必须 live —— 要读它的 surface 节点;
+ * compact 换的永远是当前主 session, 所以这条限制不构成约束.
+ */
+async function buildEgoSeed(
+  ctx: Context,
+  messages: readonly { text?: unknown }[],
+  ref: EgoCreateRef,
+): Promise<SessionEvent[]> {
+  const texts = messages
+    .map(message => message?.text)
+    .filter((text): text is string => typeof text === 'string' && text !== '')
+  const seed = memorySeed(texts)
+  const source = ctx.agents.get(ref.session_id)
+  if (source === undefined) throw new Error(`ref source session ${ref.session_id} is not live`)
+  const cut = resolveCut(source.session.snapshotEvents(), ref)
+  seed.push(...surfaceTailSeed(source.session, cut))
+  return withSeq(seed)
+}
+
+/** memory 文本 → user/message 事件, 建立模型首轮可见的表面. */
+function memorySeed(texts: readonly string[]): SessionEvent[] {
+  return texts.map(text => seedEvent('user/message', Date.now(), createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: name },
+  })))
+}
+
+/** 解析 body.ref; 形状不对直接抛 (路由是外部入口, 不静默吞). */
+function parseEgoCreateRef(raw: unknown): EgoCreateRef | undefined {
+  if (raw === undefined || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  const sessionId = record['session_id']
+  const endTurn = record['end_turn']
+  if (typeof sessionId !== 'string' || sessionId === '') throw new Error('ref.session_id must be a non-empty string')
+  if (typeof endTurn !== 'number' || !Number.isSafeInteger(endTurn) || endTurn < 0) {
+    throw new Error('ref.end_turn must be a non-negative integer')
+  }
+  const endSeq = record['end_seq']
+  return {
+    session_id: sessionId,
+    end_turn: endTurn,
+    ...(typeof endSeq === 'number' && Number.isSafeInteger(endSeq) && endSeq >= 0 ? { end_seq: endSeq } : {}),
+  }
+}
+
+/**
+ * ref → 切点 seq, 镜像官方 fork 的 cut (`dsh-api-session-controller` 的 session/fork):
+ * 先校正到 end_turn 的 `turn/end`, 再向后吞掉非 `turn/start` 的杂事件, 使切点落在 turn 边界上.
+ * 于是切点之后从**完整 turn** 开始 —— 被切的那一轮只进摘要, 不进原文.
+ */
+function resolveCut(events: readonly SessionEvent[], ref: EgoCreateRef): number {
+  let boundary = -1
+  if (ref.end_seq !== undefined) {
+    boundary = events.findIndex(event => event.seq === ref.end_seq)
+    if (boundary < 0) throw new Error(`ref.end_seq ${ref.end_seq} out of log range`)
+  } else {
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i]
+      if (event.type === 'turn/end' && (event.data as { turn?: number }).turn === ref.end_turn) boundary = i
+    }
+    if (boundary < 0) throw new Error(`no turn/end for turn ${ref.end_turn}`)
+  }
+  let cut = boundary + 1
+  while (cut < events.length && events[cut].type !== 'turn/start') cut += 1
+  return cut
+}
+
+/**
+ * 切点之后的 surface 节点 → seed 事件 (逐条以 append 重发), 即"模型真正看见过的那些消息".
+ *
+ * 三条依据: ① 只取 surface 节点, 被 replace 遮蔽过的内容不会复活; ② 一律改写成 append, seed 里
+ * 没有 replace op, 不触发 surface 的 range/provenance 校验; ③ `tool/call` 本就不进 surface ——
+ * 工具调用装在 assistant/message 的 content 块里 (实机验证过), 所以不丢。
+ */
+function surfaceTailSeed(session: Session, cutSeq: number): SessionEvent[] {
+  const seed: SessionEvent[] = []
+  for (const seq of session.surface.nodes) {
+    if (seq < cutSeq) continue
+    const event = session.eventAt(seq)
+    if (event === undefined || !isSurfaceEligibleType(event.type)) continue
+    seed.push(seedEventFromTail(event))
+  }
+  return seed
+}
+
+/**
+ * 尾部 surface 事件 → seed 事件: 只留 {type,time,data} 并以 append 重发.
+ *
+ * 刻意丢的: replace 专属的 `sourceEventSeqs` (我们只发 append); assistant/message 的 `stream`
+ * (逐字重放数据 —— seed 校验只要求它是数组, 见 dsh-session 的 assertAssistantSettlementShape)。
+ * `usage` 保留: 它是真实记账, 不是重放数据; `data` 其余字段原样透传.
+ */
+function seedEventFromTail(event: SessionEvent): SessionEvent {
+  const data = event.type === 'assistant/message'
+    ? { ...(event.data as Record<string, unknown>), stream: [] }
+    : event.data
+  return seedEvent(event.type, event.time, data)
+}
+
+/** 重排 seq 为 0 连续 (构造器 seed 契约: `snapshot.seq === index`). */
+function withSeq(seed: SessionEvent[]): SessionEvent[] {
+  return seed.map((event, index) => ({ ...event, seq: SessionSeq(index) }) as SessionEvent)
 }
 
 /** 最后一条非空 assistant text (镜像 python _final_response: assistant/message 的 text 块). */
