@@ -1158,14 +1158,24 @@ function asSeq(value: unknown): number | undefined {
   return isTurn(value) ? value : undefined
 }
 
-/** ref 的 turn 区间 → 源 log 的原始事件切片 (含端): [start_turn 的 turn/start, end_turn 的 turn/end]. */
+/**
+ * ref 的 turn 区间 → 源 log 的原始事件切片 (含端).
+ *
+ * 左端取**第一个 turn >= start_turn 的 turn/start** —— 首个 commit 的 start_turn 是 0 (「没有更早」
+ * 的哨兵), 而 dsh 的 turn 从 1 起, 严格找 turn 0 会落空; 退到第一个实际存在的 turn 才是它的本意.
+ * 右端取 end_turn 的 turn/end, 必须存在 (它就是 commit 的边界), 否则报错.
+ */
 function sliceRange(events: readonly SessionEvent[], ref: SessionRangeRef): SessionEvent[] {
-  const start = events.findIndex(event => event.type === 'turn/start' && (event.data as { turn?: number }).turn === ref.start_turn)
-  const end = events.findLastIndex(event => event.type === 'turn/end' && (event.data as { turn?: number }).turn === ref.end_turn)
-  if (start < 0) throw new Error(`no turn/start for turn ${ref.start_turn}`)
+  const start = events.findIndex(event => event.type === 'turn/start' && turnOf(event) >= ref.start_turn)
+  const end = events.findLastIndex(event => event.type === 'turn/end' && turnOf(event) === ref.end_turn)
+  if (start < 0) throw new Error(`no turn/start at or after turn ${ref.start_turn}`)
   if (end < 0) throw new Error(`no turn/end for turn ${ref.end_turn}`)
   if (end < start) throw new Error(`turn range ${ref.start_turn}-${ref.end_turn} is empty`)
   return events.slice(start, end + 1)
+}
+
+function turnOf(event: SessionEvent): number {
+  return (event.data as { turn?: number }).turn ?? -1
 }
 
 /**
