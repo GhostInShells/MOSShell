@@ -34,6 +34,7 @@ __all__ = [
     "RESULT_MODEL",
     "LLMFuncResultRecord",
     "LLMFuncResult",
+    "LLMCaller",
     "BenchmarkMeta",
     "BenchmarkCase",
     "BenchmarkRun",
@@ -586,6 +587,24 @@ class LLMFuncResult(BaseModel, Generic[RESULT_MODEL]):
         )
 
 
+class LLMCaller(ABC):
+    """Persistent caller — bind instruction + model + output type once, reuse across calls.
+
+    The engine resolves the model and builds the underlying agent a single time;
+    each ``run()`` only swaps the user prompt. This is the low-latency hot-path
+    primitive for components that call the model repeatedly with a fixed
+    instruction (e.g. a listener's stop-detection judge), where rebuilding an
+    agent per call is wasteful.
+
+    Single-turn, stateless — no anchor export, no message history. Safe to hold
+    for the lifetime of a long-running component.
+    """
+
+    @abstractmethod
+    async def run(self, prompt: str) -> LLMFuncResult:
+        """Run the pre-bound instruction + model against a fresh prompt."""
+
+
 class BenchmarkMeta(BaseModel):
     """benchmark 元信息 — bench.md 的 YAML frontmatter 部分, 模型无关.
 
@@ -796,6 +815,26 @@ class LLMFuncs(ABC):
         有 input_anchor, 在 anchor turns 之后), 让模型把这段思考当作自己的
         既有立场 (内观), 而非需要回复的用户输入 (外观 — 那只是塞进 prompt)。
         thinking 本身不进锚的语义字段, 它以 ThinkingPart 出现在 turns 里。
+        """
+
+    @abstractmethod
+    def caller(
+            self,
+            *,
+            instruction: str = "",
+            result_type: Type[RESULT_MODEL] | None = None,
+            provider: str = "",
+            model: str = "",
+            tag: ModelTag | None = None,
+            settings: CallSettings | None = None,
+            effort: Effort | None = None,
+    ) -> LLMCaller:
+        """Build a persistent caller — bind instruction + model + output type once.
+
+        The returned caller resolves the model and builds its agent a single time;
+        each ``run(prompt)`` reuses that agent and only replaces the prompt. Use it
+        for repeated fixed-instruction calls on a hot path (low latency, no
+        per-call agent rebuild). Anchors are not supported on a caller.
         """
 
     @abstractmethod

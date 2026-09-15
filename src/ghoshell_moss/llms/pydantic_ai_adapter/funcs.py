@@ -24,6 +24,7 @@ from ghoshell_moss.contracts.llms import (
     BenchmarkRun,
     CallSettings,
     Effort,
+    LLMCaller,
     LLMConfig,
     LLMFuncResult,
     LLMFuncResultRecord,
@@ -159,6 +160,28 @@ class PydanticAIFuncs(MossLLMFuncs):
             anchor_description=anchor_description,
             input_anchor=input_anchor,
             thinking=thinking,
+        )
+
+    def caller(
+            self,
+            *,
+            instruction: str = "",
+            result_type: Type[RESULT_MODEL] | None = None,
+            provider: str = "",
+            model: str = "",
+            tag: str | None = None,
+            settings: CallSettings | None = None,
+            effort: Effort | None = None,
+    ) -> LLMCaller:
+        """构建持久化 caller — resolve + build_agent 一次, 复用于每次 run."""
+        resolved = self._resolve(provider=provider, model=model, tag=tag)
+        return _PydanticAICaller(
+            logger=self._logger,
+            resolved=resolved,
+            instruction=instruction,
+            result_type=result_type,
+            settings=settings,
+            effort=effort,
         )
 
     async def _call_impl(
@@ -359,6 +382,65 @@ class PydanticAIFuncs(MossLLMFuncs):
             estimate=estimate,
             tokens=tuple(ids) if include_tokens else None,
         )
+
+
+class _PydanticAICaller(LLMCaller):
+    """LLMCaller 的 pydantic-ai 实现 — build_agent 一次, 复用于每次 run.
+
+    instruction + result_type + resolved 模型在构造时绑定; run() 只换 prompt。
+    无锚、无 message_history — 单轮无状态热路径。
+    """
+
+    def __init__(
+            self,
+            *,
+            logger: LoggerItf,
+            resolved: ResolvedModel,
+            instruction: str,
+            result_type: Type[RESULT_MODEL] | None,
+            settings: CallSettings | None,
+            effort: Effort | None,
+    ) -> None:
+        from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
+
+        self._logger = logger
+        self._resolved = resolved
+        self._result_type = result_type
+        self._agent = build_agent(resolved, settings=settings, effort=effort)
+        self._instruction = instruction
+
+    async def run(self, prompt: str) -> LLMFuncResult:
+        start = time.perf_counter()
+        try:
+            result = await self._agent.run(
+                prompt,
+                output_type=self._result_type,
+                instructions=self._instruction or None,
+            )
+        except Exception:
+            self._logger.exception(
+                "llms caller run failed: service=%s model=%s",
+                self._resolved.service.name, self._resolved.model.model,
+            )
+            raise
+        elapsed = time.perf_counter() - start
+        output = result.output
+        typed = (
+            output
+            if self._result_type is not None and isinstance(output, self._result_type)
+            else None
+        )
+        llm_kwargs = dict(
+            result=typed,
+            content=_extract_text(result),
+            usage=_dataclass_asdict(result.usage) if result.usage else {},
+            cast=elapsed,
+            retries=0,
+            resolved=ModelRef.from_resolved(self._resolved),
+        )
+        if self._result_type is not None:
+            return LLMFuncResult[self._result_type](**llm_kwargs)
+        return LLMFuncResult(**llm_kwargs)
 
 
 # ── helpers ────────────────────────────────────────────────────────────
