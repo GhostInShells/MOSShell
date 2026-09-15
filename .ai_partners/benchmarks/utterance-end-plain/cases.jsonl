@@ -1,0 +1,30 @@
+{"label": "filler-composing", "class": "incomplete-filler", "context": "", "input": "嗯... 那个... 我觉得判停的机制其实", "band": "low"}
+{"label": "dangling-if", "class": "incomplete-dangling", "context": "", "input": "如果只考虑 segment vad 的话", "band": "low"}
+{"label": "hard-cut", "class": "incomplete-hard-cut", "context": "", "input": "我觉得判停的", "band": "low"}
+{"label": "trailing-because", "class": "incomplete-conjunction", "context": "", "input": "这个设计是对的，因为", "band": "low"}
+{"label": "trailing-then", "class": "incomplete-conjunction", "context": "", "input": "然后我们把判停逻辑上移", "band": "low"}
+{"label": "complete-statement", "class": "complete-statement", "context": "", "input": "所以核心问题是判停逻辑要上移到 listener controller", "band": "high"}
+{"label": "complete-mechanism", "class": "complete-statement", "context": "", "input": "这个机制的动机是把四秒的 VAD 提前", "band": "high"}
+{"label": "complete-imperative", "class": "complete-statement", "context": "", "input": "先把 prompt 和边界敲死再动手", "band": "high"}
+{"label": "ack-seeking", "class": "ack-seeking", "context": "", "input": "你明白我的意思吗", "band": "high"}
+{"label": "ack-seeking-soft", "class": "ack-seeking", "context": "", "input": "这样说对吧", "band": "high"}
+{"label": "answer-seeking", "class": "answer-seeking", "context": "", "input": "你觉得这样对不对", "band": "high"}
+{"label": "answer-seeking-how", "class": "answer-seeking", "context": "", "input": "那这个怎么改呢", "band": "high"}
+{"label": "ambiguous-maybe", "class": "ambiguous", "context": "", "input": "也许吧", "band": "mid"}
+{"label": "ambiguous-maybe-can", "class": "ambiguous", "context": "", "input": "可能可以", "band": "mid"}
+{"label": "short-ok", "class": "short-answer", "context": "", "input": "好的", "band": "high"}
+{"label": "short-ok-2", "class": "short-answer", "context": "", "input": "可以", "band": "high"}
+{"label": "explicit-over", "class": "explicit-signal", "context": "用 over 表示一句话说完", "input": "我觉得应该用长程聆听 over", "band": "high"}
+{"label": "en-incomplete", "class": "incomplete-conjunction", "context": "", "input": "I was wondering if", "band": "low"}
+{"label": "en-complete", "class": "complete-question", "context": "", "input": "what time is it", "band": "high"}
+{"label": "en-dangling", "class": "incomplete-conjunction", "context": "", "input": "because the weather", "band": "low"}
+{"label": "long-complete", "class": "complete-statement", "context": "", "input": "所以这个长程聆听机制的真正动机，是把判停从四秒的静默提前到自然的思想边界，让耳朵在长论述里也能及时响应", "band": "high"}
+{"label": "long-dangling", "class": "incomplete-dangling", "context": "", "input": "如果只考虑 segment vad 的话，那其实判停的粒度还有一层问题是", "band": "low"}
+{"label": "homophone-长城", "class": "complete-statement", "context": "", "input": "我觉得这个长城聆听的想法是对的，因为它把判停变成了可编程的协议", "band": "high"}
+{"label": "homophone-伴听", "class": "complete-statement", "context": "", "input": "所以核心问题是伴听逻辑要上移到 listener controller，而不是留在 recognition 层", "band": "high"}
+{"label": "homophone-威帝", "class": "complete-statement", "context": "", "input": "这个机制的动机，是把四秒的威帝提前到自然的思想边界", "band": "high"}
+{"label": "homophone-只能", "class": "complete-statement", "context": "", "input": "这就是只能判停的核心逻辑，用一个小模型判断这段话讲完没有", "band": "high"}
+{"label": "homophone-dangling", "class": "incomplete-dangling", "context": "", "input": "如果只考虑 segment 威帝的话", "band": "low"}
+{"label": "long-filler", "class": "incomplete-filler", "context": "", "input": "嗯... 那个... 我觉得这个机制其实核心是，怎么说呢，就是判停的位置", "band": "low"}
+{"label": "long-ack", "class": "ack-seeking", "context": "", "input": "我刚才讲的这一整套，把判停上移、用长城聆听做提前判停的机制，你明白我的意思吗", "band": "high"}
+{"label": "long-answer", "class": "answer-seeking", "context": "", "input": "那如果要换成一点五 b 的本地小模型，你觉得这个判停的架构应该怎么改呢", "band": "high"}
