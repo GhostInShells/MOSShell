@@ -1,12 +1,11 @@
-"""OpenCV-backed camera source for the camera vision node.
+"""OpenCV-backed camera source for the camera stream producer.
 
-The CameraController is cv2-agnostic; it receives a live ``source`` object plus
-``list_cameras`` / ``detect_faces``. This module provides the real OpenCV
-implementations, loaded only by the camera node venv (which has opencv).
+The CameraProducer is cv2-agnostic; it receives a live ``source`` object plus
+``detect_faces``. This module provides the real OpenCV implementations, loaded
+only by the camera node venv (which has opencv).
 """
 from __future__ import annotations
 
-import subprocess
 from typing import Callable, Optional
 
 import cv2
@@ -70,36 +69,6 @@ class OpenCVSource:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
-
-
-def list_cameras() -> list[dict]:
-    """Scan AVFoundation video devices via ffmpeg (macOS)."""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        stderr = result.stderr
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return []
-    cameras: list[dict] = []
-    in_video = False
-    for line in stderr.splitlines():
-        if "AVFoundation video devices:" in line:
-            in_video = True
-            continue
-        if "AVFoundation audio devices:" in line:
-            break
-        if in_video and "]" in line:
-            try:
-                idx = int(line[line.rindex("[") + 1 : line.rindex("]")])
-                name = line[line.rindex("]") + 1 :].strip()
-                cameras.append({"index": idx, "name": name})
-            except (ValueError, IndexError):
-                continue
-    return cameras
 
 
 def make_face_detector() -> Callable[[Image.Image], list[dict]]:

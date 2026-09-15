@@ -1,12 +1,13 @@
-"""Camera node channel tests — injected fake source, no camera hardware.
+"""Camera producer node tests — injected fake source, no camera hardware.
 
 Run from node root:
     uv run pytest tests/ -v        (node shared venv)  or
-    .venv/bin/pytest tests/ -v     (main venv — controller is cv2-agnostic)
+    .venv/bin/pytest tests/ -v     (main venv — producer is cv2-agnostic)
 """
+import asyncio
+import contextlib
 import os
 import sys
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,10 +15,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from ghoshell_moss.core.concepts.command import Observe
-from ghoshell_moss.message import Base64Image
-
-from camera_node.camera import CameraController
+from camera_node.camera import CameraProducer
 
 _FACE = {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.3, "cx": 0.25, "cy": 0.25}
 
@@ -31,119 +29,57 @@ class FakeSource:
         self._opened = True
         return True
 
-    def set_resolution(self, width=None, height=None):
-        return None
-
     def grab(self):
         return self.frame if self._opened else None
-
-    def is_opened(self):
-        return self._opened
 
     def close(self):
         self._opened = False
 
 
-def make_controller():
+def make_producer(detect_faces=lambda frame: [_FACE]):
     src = FakeSource()
-    ctrl = CameraController(
-        None,
+    matrix = MagicMock()
+    producer = CameraProducer(
+        matrix,
         source=src,
-        list_cameras=lambda: [{"index": 0, "name": "facetime-hd"}],
-        detect_faces=lambda frame: [_FACE],
+        detect_faces=detect_faces,
         logger=MagicMock(),
+        camera_index=0,
+        fps=10.0,
+        resolution=(64, 48),
     )
-    return ctrl
+    return producer, src, matrix
 
 
-async def run(chan, ctml):
-    from ghoshell_moss.core.ctml import ctml_shell_test
-
-    tasks = await ctml_shell_test(chan, ctml=ctml)
-    assert len(tasks) == 1
-    return await tasks[0]
-
-
-def _has_image(messages) -> bool:
-    for m in messages:
-        for c in m.as_contents():
-            if Base64Image.from_content(c) is not None:
-                return True
-    return False
+async def run_loop_once(producer):
+    """Run the capture loop for ~one iteration, then cancel cleanly."""
+    task = asyncio.create_task(producer.run_loop())
+    await asyncio.sleep(0.15)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
-@pytest.mark.asyncio
-async def test_status_shape():
-    ctrl = make_controller()
-    result = await run(ctrl.as_channel(), "<camera:status />")
-    assert result["camera"] == 0
-    assert result["watch_on"] is False
-    assert result["resolution"] == [640, 480]
+def test_open_close_lifecycle():
+    producer, src, _ = make_producer()
+    assert producer.open() is True
+    producer.close()
+    assert src._opened is False
 
 
 @pytest.mark.asyncio
-async def test_watch_toggle():
-    ctrl = make_controller()
-    r_on = await run(ctrl.as_channel(), '<camera:watch on="true" />')
-    assert "watch:on" in r_on
-    assert ctrl._watch_on is True
-    r_off = await run(ctrl.as_channel(), '<camera:watch on="false" />')
-    assert "watch:off" in r_off
+async def test_run_loop_produces_frame_and_face():
+    producer, _, matrix = make_producer()
+    producer.open()
+    await run_loop_once(producer)
+    assert producer.latest_jpeg() is not None
+    assert matrix.session.topics.pub.called
 
 
 @pytest.mark.asyncio
-async def test_capture_returns_image():
-    ctrl = make_controller()
-    result = await run(ctrl.as_channel(), "<camera:capture />")
-    assert isinstance(result, Observe)
-    assert _has_image(result.messages)
-
-
-@pytest.mark.asyncio
-async def test_set_config_bounds():
-    ctrl = make_controller()
-    chan = ctrl.as_channel()
-    bad = await run(chan, "<camera:set_config fps=\"99\" />")
-    assert "out of bounds" in bad
-    bad_res = await run(chan, '<camera:set_config resolution="500x500" />')
-    assert "not allowed" in bad_res
-
-
-@pytest.mark.asyncio
-async def test_set_config_valid():
-    ctrl = make_controller()
-    result = await run(ctrl.as_channel(), '<camera:set_config fps="5.0" resolution="1280x720" />')
-    assert "fps=5.0" in result
-    assert "res=1280x720" in result
-
-
-@pytest.mark.asyncio
-async def test_list_cameras():
-    ctrl = make_controller()
-    result = await run(ctrl.as_channel(), "<camera:list_cameras />")
-    assert result[0]["index"] == 0
-
-
-def test_context_no_image_when_watch_off():
-    ctrl = make_controller()
-    ctrl._latest = (time.time(), Image.new("RGB", (8, 8)))
-    msgs = ctrl._context()
-    assert not _has_image(msgs)
-
-
-def test_context_image_when_watch_on_and_fresh():
-    ctrl = make_controller()
-    ctrl._watch_on = True
-    ctrl._latest = (time.time(), Image.new("RGB", (8, 8)))
-    msgs = ctrl._context()
-    assert _has_image(msgs)
-
-
-def test_context_no_address_leak():
-    ctrl = make_controller()
-    ctrl._watch_on = True
-    ctrl._latest = (time.time(), Image.new("RGB", (8, 8)))
-    msgs = ctrl._context()
-    text = msgs[0].to_content_string()
-    assert "<camera:" not in text
-    assert "nodes/" not in text
+async def test_no_face_no_publish():
+    producer, _, matrix = make_producer(detect_faces=lambda frame: [])
+    producer.open()
+    await run_loop_once(producer)
+    assert producer.latest_jpeg() is not None
+    assert not matrix.session.topics.pub.called

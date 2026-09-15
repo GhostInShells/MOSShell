@@ -1,3 +1,3 @@
-"""camera_node package — camera vision node core (cv2-agnostic controller + source + viewer)."""
+"""camera_node package — camera stream producer core (cv2-agnostic producer + source + viewer)."""
 
-__all__ = ["CameraController", "OpenCVSource"]
+__all__ = ["CameraProducer", "OpenCVSource"]

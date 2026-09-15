@@ -55,9 +55,13 @@ description: >-
 | 步 | 内容 | 状态 |
 |---|---|---|
 | 0 | **修 `run_node` 无参数通道**：Matrix API + nodes channel 透传 `extra_args` | ✅ cde4ad95 |
-| 1 | **流感知 node 主体**：non-singleton + ffmpeg ingest + 尾帧 + `capture`/`watch`/`status` + 发射点阈值门（采样阈值先做 node 可配参数 + 默认值；约束常量落 adapter 旁留到对齐 provider 时） | 进行中 |
-| 2 | **camera 改造**：变成 JPEG 流、拿掉控制面 | 待办 |
-| 3 | 协议第一批验证：MJPEG + RTMP | 待办 |
+| 1 | **流感知 node 主体**：non-singleton + ffmpeg ingest + 尾帧 + `capture`/`watch`/`status` + `export`（边界 project home + tempdir）+ 发射点阈值门 | ✅ 0198ba2a + cbb5e28e |
+| 2 | **camera 改造**：变成 MJPEG 流生产者、拿掉控制面（`singleton: false`） | ✅ cbb5e28e |
+| 3 | 协议第一批验证：MJPEG + RTMP | MJPEG ✅ 实机验证（camera → stream → capture/export → llms call）；RTMP 待验证 |
+
+**实机验收（2026-09-15）**：camera producer（cv2 → MJPEG）→ stream node（ffmpeg ingest）→
+`capture` 返回真实 640×480 JPEG、`export` 落盘 project home、`moss llms call @"..."` 模型
+准确描述画面 —— 全链路通。
 
 网页 + 人开关、空闲回收、look 是后续增量，不进第一版主体。
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import pathlib
-import shutil
 import sys
 
 _NODE_DIR = pathlib.Path(__file__).resolve().parent
@@ -33,9 +32,6 @@ def main() -> int:
     allow = os.getenv("CAMERA_ALLOW", "1").strip().lower()
     if allow in _FALSE:
         return _fail(f"camera disabled by policy: CAMERA_ALLOW={allow!r}")
-
-    if shutil.which("ffmpeg") is None:
-        return _fail("ffmpeg not found (required for device enumeration)")
 
     try:
         import cv2  # noqa: F401

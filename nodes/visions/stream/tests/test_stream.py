@@ -7,6 +7,7 @@ Run from node root:
 import io
 import os
 import sys
+import tempfile
 import time
 from unittest.mock import MagicMock
 
@@ -151,6 +152,38 @@ async def test_capture_no_frame():
     ctrl, _ = make_controller()
     result = await run(ctrl.as_channel(), "<stream:capture />")
     assert "no frame" in result.messages[0].to_content_string()
+
+
+# ---- export (boundary = project home) ---- #
+
+@pytest.mark.asyncio
+async def test_export_writes_within_home(tmp_path):
+    ctrl, src = make_controller(home=tmp_path)
+    src.set_frame(_jpeg())
+    result = await run(ctrl.as_channel(), '<stream:export path="shots/cam.jpg" />')
+    assert "exported" in result
+    assert (tmp_path / "shots" / "cam.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_export_rejects_outside_home(tmp_path):
+    ctrl, src = make_controller(home=tmp_path)
+    src.set_frame(_jpeg())
+    result = await run(ctrl.as_channel(), '<stream:export path="/etc/evil.jpg" />')
+    assert "outside allowed roots" in result
+
+
+@pytest.mark.asyncio
+async def test_export_allows_tempdir(tmp_path):
+    ctrl, src = make_controller(home=tmp_path)
+    src.set_frame(_jpeg())
+    dest = os.path.join(tempfile.gettempdir(), "stream_test_export.jpg")
+    try:
+        result = await run(ctrl.as_channel(), f'<stream:export path="{dest}" />')
+        assert "exported" in result
+    finally:
+        if os.path.exists(dest):
+            os.remove(dest)
 
 
 # ---- context ---- #

@@ -39,7 +39,7 @@ ghost 自行调。当前的 `authorize` 命令与启动 announce 是轻量种子
 
 | node | 路径 | 感知面 |
 |---|---|---|
-| camera | `nodes/visions/camera` | 相机视觉（cv2）+ 人脸 FaceTopic + MJPEG 推流 |
+| camera | `nodes/visions/camera` | 相机流生产者（cv2 → MJPEG 流，供 stream node 消费）+ 人脸 FaceTopic，无 channel |
 | stream | `nodes/visions/stream` | 流感知（ffmpeg ingest 任意地址：RTMP/RTSP/SRT/MJPEG）+ 尾帧 + 发射点阈值门 |
 
 ## 依赖分组备注

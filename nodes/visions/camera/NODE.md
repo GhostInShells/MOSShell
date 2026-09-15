@@ -1,8 +1,10 @@
 ---
 name: 'camera'
-description: 'Camera vision — capture a frame, toggle continuous perception (watch), and stream the live field of view for a human viewer.'
+description: 'Camera stream producer — own the device, run a capture loop, serve a live MJPEG stream for a stream node to consume.'
 category: visions
-singleton: true
+# 非单例: 一个 node = 一个设备 (--camera N), 多摄像头 = 多实例.
+# 设备独占由 cv2 打开失败兜底, 不用治理域 singleton 锁.
+singleton: false
 # 共享 visions venv 在 nodes/visions/ — 相对 node cwd 解析
 exec:
   command: ../.venv/bin/python
@@ -13,9 +15,16 @@ check:
   args: check.py
 ---
 
-Camera vision node. The device is owned by the node lifecycle (opened on start,
-closed on stop). `watch` only gates whether a fresh frame rides each round of
-context — it does not touch the device.
+Camera stream producer node. The device is owned by the node lifecycle (opened
+on start, closed on stop). It exposes **no channel** — it only produces: a
+continuous capture loop, a device-facing FaceTopic, and an MJPEG stream served
+at `/stream`. Perception happens in a `stream` node consuming that address.
+
+## Stream
+
+The stream address is announced on start. Consume it:
+
+    moss nodes run nodes/visions/stream -- --address http://127.0.0.1:8765/stream --label camera
 
 ## Configuration
 
@@ -26,9 +35,6 @@ Cell-level env (copy `.env.example`): `CAMERA_INDEX`, `CAMERA_WIDTH` /
 Two launch arguments override env defaults:
 
     moss nodes run nodes/visions/camera -- --camera 1 --port 9000
-
-Runtime re-config within safe bounds via `set_config(fps=0.5..30,
-resolution="640x480"|"1280x720"|"1920x1080")`.
 
 ## View
 

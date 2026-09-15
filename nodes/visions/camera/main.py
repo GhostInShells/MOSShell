@@ -1,14 +1,13 @@
-"""Camera vision node entry point.
+"""Camera stream producer node entry point.
 
 Start:  moss nodes run nodes/visions/camera                    # fore, CLI is owner
         moss nodes run nodes/visions/camera -- --camera 1 --port 9000
 Debug:  ../.venv/bin/python main.py                            # ad-hoc (from_proc identity)
-See it: open http://127.0.0.1:8765/stream                       # MJPEG viewer
 
-Config is cell-level env (dotenv loads `.env`; copy `.env.example`). Two launch
-arguments override env defaults: `--camera N` (which device) and `--port N`
-(where the local viewer binds). The device is owned by the node lifecycle —
-opened here on start, closed on stop; `watch` does not touch the device.
+The camera is a producer, not a perception node: it owns the device, runs a
+continuous capture loop, and serves the MJPEG stream a stream node consumes.
+It exposes no channel — the ghost learns the stream address from the alive
+event, then opens a stream node on that address.
 """
 from __future__ import annotations
 
@@ -27,8 +26,8 @@ load_dotenv(_NODE_DIR / ".env")
 
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
-from camera_node.camera import CameraController
-from camera_node.source import OpenCVSource, list_cameras, make_face_detector
+from camera_node.camera import CameraProducer
+from camera_node.source import OpenCVSource, make_face_detector
 from camera_node.viewer import MjpegViewer
 
 
@@ -63,44 +62,44 @@ def _read_config(argv: list[str]) -> dict:
 async def main(matrix: Matrix) -> None:
     logger = matrix.logger or logging.getLogger("moss.visions.camera")
     cfg = _read_config(sys.argv[1:])
-    logger.info("camera node starting (config=%s)", cfg)
+    logger.info("camera producer starting (config=%s)", cfg)
 
     source = OpenCVSource(cfg["index"], cfg["width"], cfg["height"])
-    controller = CameraController(
+    producer = CameraProducer(
         matrix,
         source=source,
-        list_cameras=list_cameras,
         detect_faces=make_face_detector(),
         logger=logger,
         camera_index=cfg["index"],
         fps=cfg["fps"],
         resolution=(cfg["width"], cfg["height"]),
     )
-    controller.open()  # device owned by node lifecycle; the probe already gated launch
+    producer.open()  # device owned by node lifecycle; the probe already gated launch
 
     viewer = MjpegViewer(
-        controller.latest_jpeg,
+        producer.latest_jpeg,
         host=cfg["viewer_host"],
         port=cfg["viewer_port"],
     )
     await viewer.start()
 
-    # Presence announcement (authorization seed — the ghost learns a camera came online).
+    stream_url = f"http://{cfg['viewer_host']}:{cfg['viewer_port']}/stream"
     try:
         await matrix.publish_event(
-            f"camera node alive; viewer http://{cfg['viewer_host']}:{cfg['viewer_port']}/stream"
+            f"camera stream available at {stream_url} "
+            f"(open a stream node with --address {stream_url})"
         )
     except Exception as e:
         logger.debug("publish_event failed: %s", e)
 
-    loop_task = asyncio.create_task(controller.run_loop())
+    loop_task = asyncio.create_task(producer.run_loop())
 
     try:
-        await matrix.provide_channel(controller.as_channel())
+        await matrix.wait_closed()
     finally:
         loop_task.cancel()
         await viewer.stop()
-        controller.close()
+        producer.close()
 
 
 if __name__ == "__main__":

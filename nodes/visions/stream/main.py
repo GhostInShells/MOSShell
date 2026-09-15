@@ -72,6 +72,7 @@ async def main(matrix: Matrix) -> None:
         max_bytes=cfg["max_bytes"],
         jpeg_quality=cfg["jpeg_quality"],
         stale_seconds=cfg["stale_seconds"],
+        home=matrix.project_home,
         logger=logger,
     )
     # Failure to connect does not block launch — it surfaces via the channel
