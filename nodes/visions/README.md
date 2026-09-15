@@ -40,11 +40,14 @@ ghost 自行调。当前的 `authorize` 命令与启动 announce 是轻量种子
 | node | 路径 | 感知面 |
 |---|---|---|
 | camera | `nodes/visions/camera` | 相机视觉（cv2）+ 人脸 FaceTopic + MJPEG 推流 |
+| stream | `nodes/visions/stream` | 流感知（ffmpeg ingest 任意地址：RTMP/RTSP/SRT/MJPEG）+ 尾帧 + 发射点阈值门 |
 
 ## 依赖分组备注
 
 有意偏离 node-migration 的"vision 独立 venv（cv2 重依赖）"共识：vision 感知族是内聚
 能力，共用家族 venv 是合理取舍。
 
-注：**屏幕截屏不属于 vision**。截屏是 OS 原生能力的控制面，归 `nodes/os/`
-（feature `moss-os-control`）；vision 只管相机这一路物理成像。
+注：摄像头与屏幕截屏在流感知视角下**都是推流模块**（producer）—— 一个把设备、一个把
+屏幕推成地址；`stream` node 消费任意地址。屏幕截屏的"能力"由"stream node + 屏幕推流模块"
+组合而来，不再是 `nodes/os/` 的独立控制面（见 feature `vision-stream`，取代
+`moss-os-control` KD4）。

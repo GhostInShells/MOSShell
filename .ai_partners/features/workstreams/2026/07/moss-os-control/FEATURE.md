@@ -3,7 +3,7 @@ title: MOSS OS Control — 操作系统的统一能力域
 status: in-progress
 priority: P1
 created: 2026-09-13
-updated: 2026-09-13
+updated: 2026-09-15
 milestone: beta-release
 description: >-
   把操作系统当作一个整体能力域来校准。nodes/os/ 下每个 node 管一个 OS 原生面，
@@ -48,6 +48,11 @@ OS 是实现维度,不是能力单位。node 的 probe 探针 + install 已是�
 node 去做。node 只专注于**能力 + 交互体验**。
 
 ### KD4. 屏幕截屏是控制面,图形界面是躯体面
+
+> **已被取代 (2026-09-15)**: 见 feature `vision-stream` 的
+> `design/2026-09-15-stream_vision_unified_input_perception.md` KD3。
+> 屏幕截屏的实质是**感知**,归 vision;os 域若保留什么,其身份是
+> "**把屏幕推成地址的本地推流模块**"(producer),不是"截屏能力"。原文保留如下。
 
 - **屏幕截屏** = OS 原生能力的**控制面** → 属于本域(node `screen`)。
 - **图形界面/合成器**(`nodes/screens/qt_screen`)= **躯体能力** → 不属于本域。
@@ -95,7 +100,7 @@ read(文档 → 内存)
 |---|---|---|
 | `terminal` | shell | 待建;原 desktop-gui 的 mock node 已删,设计归档 |
 | `window_control` | 窗口 | 枚举/几何/聚焦;下面按 OS 分派实现 |
-| `screen` | 截屏 | mss;人类面参考 camera 的 JPEG 流 |
+| ~~`screen`~~ | ~~截屏~~ | **已移出本域 (2026-09-15, 见 KD4)** → feature `vision-stream` |
 | `osascript` | mac 原生 | 按控制语言原名,不发明 "app" 中间名词 |
 | `file_editor` | 文档 | 见 KD5 |
 
