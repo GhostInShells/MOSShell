@@ -8,6 +8,7 @@
 """
 
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -520,7 +521,7 @@ class TestEgoMementoSidecar:
         note = memento.get_branch("main").notes()[anchor.id]
         assert note.message == "title\nbody"
         assert note.error == ""
-        assert conn.calls[0][0].endswith("/note/run")
+        assert conn.calls[0][0].endswith("/bypass/run")
         assert conn.calls[0][1]["ref"]["session_id"] == "s1"
         assert self._state(manager, anchor.id) == "ready"
 
@@ -546,7 +547,7 @@ class TestEgoMementoSidecar:
         manager.schedule_note(anchor.id)
         await manager.drain_bypass()
 
-        assert len([call for call in conn.calls if call[0].endswith("/note/run")]) == 1
+        assert len([call for call in conn.calls if call[0].endswith("/bypass/run")]) == 1
 
     @pytest.mark.asyncio
     async def test_exit_drops_inflight_note_run(self, tmp_path: Path):
@@ -560,6 +561,131 @@ class TestEgoMementoSidecar:
 
         assert manager.bypass[anchor.id].task.cancelled()  # 不阻塞关停
         assert memento.get_branch("main").notes() == {}  # 空 note 留空 (内容仍可 read)
+
+
+class TestMementoReadSurface:
+    """branch / commit 读面 + read / chat 两个动作 —— 全部在 ego 外, 不触 dsh (fake connection)."""
+
+    class _Connection:
+        def __init__(self, response):
+            self.response = response
+            self.calls: list[tuple[str, dict]] = []
+
+        async def call(self, path, payload=None, *, timeout=None):
+            self.calls.append((path, payload))
+            if isinstance(self.response, Exception):
+                raise self.response
+            return self.response
+
+    @staticmethod
+    def _manager(tmp_path: Path, connection=None):
+        from ghoshell_moss.memento import new_local_memento
+
+        from ._ego_memento import EgoMementoConfig, EgoMementoManager
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        return EgoMementoManager(
+            connection=connection, memento=memento, config=EgoMementoConfig()
+        ), memento
+
+    @staticmethod
+    def _coord(memento, seq: int) -> str:
+        return memento.get_branch("main").get_commit(seq).coord
+
+    def test_list_branches_reports_index_and_latest(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        side = memento.create_branch("side")
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=4)
+        memento.get_branch("main").note(anchor.id, "标题\n正文")
+
+        infos = {info.name: info for info in manager.list_branches()}
+
+        assert infos["main"].commits_total == 1
+        assert infos["main"].latest_title == "标题"
+        assert infos["main"].latest_coord == self._coord(memento, anchor.seq)
+        assert infos["side"].index == side.index
+        assert infos["side"].commits_total == 0
+        assert infos["side"].latest_coord == ""
+
+    def test_list_commits_applies_time_window(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        second = manager.commit(session_id="s1", start_turn=1, end_turn=2)
+        branch.note(first.id, "one\nbody-1")
+        branch.note(second.id, "two\nbody-2")
+
+        assert [d.title for d in manager.list_commits()] == ["one", "two"]
+        assert [d.body for d in manager.list_commits()] == ["body-1", "body-2"]
+
+        before_all = branch.commits()[0].created - timedelta(days=1)
+        assert manager.list_commits(until_date=before_all) == []
+
+    def test_view_message_reads_another_branch(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        memento.get_branch("main").note(anchor.id, "main-note")
+        side = memento.create_branch("side")
+        side_anchor = side.commit(metatype="session", metadata={})
+        side.note(side_anchor.id, "side-note")
+
+        assert "main-note" in manager.view_message().to_content_string()
+        assert "side-note" in manager.view_message("side").to_content_string()
+
+    @pytest.mark.asyncio
+    async def test_read_renders_the_route_events(self, tmp_path: Path):
+        events = [
+            {"type": "turn/start", "seq": 0, "time": 1, "data": {"turn": 1}},
+            {
+                "type": "user/message", "seq": 1, "time": 1,
+                "data": {"role": "user", "source": {"kind": "user"},
+                         "content": [{"type": "text", "text": "为什么"}]},
+            },
+            {
+                "type": "assistant/message", "seq": 2, "time": 1,
+                "data": {"message": {"role": "assistant", "source": {"kind": "model"},
+                                     "content": [{"type": "text", "text": "因为"}]}},
+            },
+            {"type": "turn/end", "seq": 3, "time": 1, "data": {"turn": 1}},
+        ]
+        conn = self._Connection({"events": events})
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=1, end_turn=1)
+
+        text = await manager.read(self._coord(memento, anchor.seq))
+
+        assert text == "  > 为什么\n  ~ 因为"  # render_transcript 默认两级缩进
+        assert conn.calls[0][1]["ref"]["session_id"] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_chat_frames_the_context_not_the_commit(self, tmp_path: Path):
+        conn = self._Connection({"message": "reply"})
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        memento.get_branch("main").note(anchor.id, "note")
+        question = "当时为什么这么定?"
+
+        text = await manager.chat(self._coord(memento, anchor.seq), question)
+
+        assert text == "reply"
+        path, payload = conn.calls[0]
+        assert path.endswith("/bypass/run")
+        assert question in payload["prompt"]
+        assert "上下文" in payload["prompt"]  # 要求 #7: 说清对话对象是上下文
+
+    @pytest.mark.asyncio
+    async def test_chat_refuses_broken_commit(self, tmp_path: Path):
+        conn = self._Connection({"message": "reply"})
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        memento.get_branch("main").note(anchor.id, "占位", error="fatal")
+        from ._ego_memento import BrokenCommitError
+
+        with pytest.raises(BrokenCommitError):
+            await manager.chat(self._coord(memento, anchor.seq), "问题")
+
+        assert conn.calls == []  # 坏 commit 连旁路都不发
 
 
 class TestEgoMementoResumeRef:

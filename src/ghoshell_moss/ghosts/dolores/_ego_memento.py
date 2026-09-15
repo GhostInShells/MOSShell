@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -28,22 +29,47 @@ from pydantic import BaseModel, Field
 from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
+from ghoshell_moss.deepseek_harness.trajectory import render_transcript
 from ghoshell_moss.deepseek_harness.types.refs import DshSessionRef
-from ghoshell_moss.deepseek_harness.types.session_events import TokenUsage
+from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, TokenUsage
 from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
     from ghoshell_moss.deepseek_harness.launcher import DshConnection
 
-__all__ = ["BypassCommit", "BypassState", "CommitDecision", "EgoMementoConfig", "EgoMementoManager"]
+__all__ = [
+    "BranchInfo", "BrokenCommitError", "BypassCommit", "BypassState",
+    "CommitDecision", "CommitDigest", "EgoMementoConfig", "EgoMementoManager",
+]
 
 # metadata 约定 (memento 只存不解析).
 _REF_KEY = "ref"
 _PREV_TURN_KEY = "prev_turn"
 
-# 旁路 note 生产路由 (dsh plugin 上开): 收 {ref, prompt?}, 冷 seed 跑一轮回 {message}.
-_NOTE_RUN_ROUTE = "/moss-api/ghost/dolores/note/run"
+# 旁路原语路由 (dsh plugin 上开): 收 {ref, prompt}, 源 session 冷 seed 跑一轮回 {message}.
+# note / chat 都是它的调用方 —— prompt 语义留在 MOSS 侧, plugin 只做一轮运行.
+_BYPASS_RUN_ROUTE = "/moss-api/ghost/dolores/bypass/run"
+# read 路由: 收 {ref} 回 {events}, 源 log 的 turn 区间原始切片 (live-or-cold).
+_READ_ROUTE = "/moss-api/ghost/dolores/read"
+
+# note 的 prompt —— 摘要进 memento 当 commit 的 message (首行 title, 其余 body).
+_NOTE_PROMPT = (
+    "把上面这段对话压缩成一条 commit 摘要, 供未来的自己检索. 只输出摘要本身, 不要客套.\n"
+    "第一行 = 一句话标题 (<= 30 字); 之后每行一条要点, 覆盖: 做了什么 / 定了什么 / 下一步.\n"
+    "整条 <= 400 字. 不复述原文, 只留可复用的结论."
+)
+
+# chat 的 prompt 前缀 —— 必须点破"对话对象是上下文而不是 commit 本身".
+_CHAT_PREAMBLE = (
+    "你接下来不是在和一条 commit 对话, 而是在和这条 commit 所属的那段上下文对话: "
+    "你看到的对话历史到这条 commit 成立时为止, 之后发生的事不在你的视野里. "
+    "直接回答下面的问题, 不要客套, 也不要假装你知道后续."
+)
+
+
+class BrokenCommitError(RuntimeError):
+    """chat 的目标 commit 的 message 是坏占位 (非真摘要), 不可对话."""
 
 
 class EgoMementoConfig(BaseModel):
@@ -77,6 +103,32 @@ class BypassCommit:
     ref: DshSessionRef
     state: BypassState = BypassState.RUNNING
     task: asyncio.Task | None = None
+
+
+class BranchInfo(BaseModel):
+    """一个 branch 的概览 —— 先看有哪些 branch, 再用 ``branch_view(name)`` 看内容.
+
+    坐标 ``latest_coord`` 是给模型引用的地址 (形如 ``1-27``); 空 branch 没有坐标.
+    """
+
+    name: str = Field(description="branch 名, 看 view 时用它。")
+    index: int = Field(default=0, description="owner 内 branch 序号 — 坐标前半截。")
+    description: str = Field(default="")
+    commits_total: int = Field(default=0)
+    latest_coord: str = Field(default="", description="最新 commit 的坐标; 空 branch 为空串。")
+    latest_title: str = Field(default="", description="最新 commit 的 message 首行。")
+    created: datetime | None = Field(default=None)
+
+
+class CommitDigest(BaseModel):
+    """一条 commit 的列表条目 —— ``git log --oneline`` 的 seq + title, 带 body 做详情."""
+
+    coord: str = Field(description="坐标 ``{branch_index}-{seq}``, read/chat 都用它。")
+    seq: int = Field(default=0, description="branch 内 commit 序号。")
+    title: str = Field(default="", description="message 首行。")
+    body: str = Field(default="", description="message 其余部分 (详情)。")
+    created: datetime | None = Field(default=None)
+    broken: bool = Field(default=False, description="message 是坏占位 (chat 不可用)。")
 
 
 class CommitDecision(str, Enum):
@@ -183,7 +235,10 @@ class EgoMementoManager:
     async def _run_bypass(self, run: BypassCommit) -> None:
         """跑一轮旁路并写 note. 空 message / 传输失败 → 终态留空, 不自动重试."""
         try:
-            result = await self._connection.call(_NOTE_RUN_ROUTE, {"ref": run.ref.model_dump(mode="json")})
+            result = await self._connection.call(
+                _BYPASS_RUN_ROUTE,
+                {"ref": run.ref.model_dump(mode="json"), "prompt": _NOTE_PROMPT},
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -202,6 +257,52 @@ class EgoMementoManager:
         """等所有在飞的旁路任务收尾 (观测/测试用)."""
         while pending := [r.task for r in self._bypass.values() if r.task is not None and not r.task.done()]:
             await asyncio.gather(*pending, return_exceptions=True)
+
+    # ── read / chat (旁路原语的另两个调用方; 目标用坐标引用) ──────────
+
+    async def read(self, coord: str) -> str:
+        """commit 区间 → 可读文本.
+
+        取的是源 session 的**原始 log 区间**, 不是 surface 投影 —— transcript 要 ``tool/call``
+        这类只在 log 里的记录. 源 session 可以是冷的 (上次运行留下的), plugin 侧冷读兜底.
+        坏 commit 照读: 坏的是摘要, 原文还在.
+        """
+        view = self._require_commit(coord)
+        ref = self._ref_of_view(view)
+        raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
+        events = [SessionEvent.from_dict(event) for event in (raw or {}).get("events", [])]
+        return render_transcript(events)
+
+    async def chat(self, coord: str, prompt: str) -> str:
+        """和某条 commit **所属的上下文**对话一轮 (走旁路原语).
+
+        坏 commit 直接失败 —— 占位 message 不是真摘要, 拿它当上下文没有意义.
+        prompt 前缀点破"对话对象是上下文而不是 commit 本身", 否则模型会以为在和一条记录说话.
+        """
+        view = self._require_commit(coord)
+        if view.is_broken:
+            raise BrokenCommitError(f"commit {view.coord} 的 message 是坏占位, 不可对话 (用 read 读原文)")
+        ref = self._ref_of_view(view)
+        result = await self._connection.call(
+            _BYPASS_RUN_ROUTE,
+            {"ref": ref.model_dump(mode="json"), "prompt": f"{_CHAT_PREAMBLE}\n\n{prompt}"},
+        )
+        text = str((result or {}).get("message", ""))
+        if text == "":
+            raise RuntimeError(f"chat with commit {view.coord} returned no text")
+        return text
+
+    def _require_commit(self, coord: str) -> CommitView:
+        view = self.resolve(coord)
+        if view is None:
+            raise KeyError(f"commit {coord} not found")
+        return view
+
+    def _ref_of_view(self, view: CommitView) -> DshSessionRef:
+        ref = self._ref_of(view.ref)
+        if ref is None:
+            raise RuntimeError(f"commit {view.coord} carries no session ref")
+        return ref
 
     # ── notice 构造 (ego 排队列, 在 thinking-enter 注入) ──────────────
 
@@ -243,14 +344,63 @@ class EgoMementoManager:
             return CommitDecision.WARN
         return CommitDecision.NONE
 
-    # ── 读侧投影 ─────────────────────────────────────────────────
+    # ── 读侧投影 (branch / commit 都是纯读, 不触 dsh) ───────────────
 
-    def view_message(self, *, n: int | None = None) -> Message | None:
-        """把 branch view 渲染成 xml-like memory 块 (坏 commit 已由 memento view 折叠)."""
-        branch = self._memento.get_branch(self._config.branch_name)
+    def view_message(self, name: str | None = None, *, n: int | None = None) -> Message | None:
+        """把 branch view 渲染成 xml-like memory 块 (坏 commit 已由 memento view 折叠).
+
+        ``name`` 缺省 = 当前 branch (ego 的 memory 用这条); 给了名字就读别的 branch.
+        """
+        branch = self._memento.get_branch(name or self._config.branch_name)
         if branch is None:
             return None
         return self._render_view(branch.view(n=n if n is not None else self._config.view_limit))
+
+    def list_branches(self) -> list[BranchInfo]:
+        """所有现存 branch 的概览 —— 先看有哪些, 再用 ``view_message(name)`` 看内容."""
+        infos: list[BranchInfo] = []
+        for ref in self._memento.list_branches():
+            branch = self._memento.get_branch(ref.name)
+            if branch is None:
+                continue
+            commits = branch.commits()
+            latest = branch.get_commit(commits[-1].seq) if commits else None
+            infos.append(BranchInfo(
+                name=ref.name,
+                index=branch.index,
+                description=ref.description,
+                commits_total=len(commits),
+                latest_coord=latest.coord if latest is not None else "",
+                latest_title=latest.title if latest is not None else "",
+                created=ref.created,
+            ))
+        return infos
+
+    def list_commits(
+            self,
+            name: str | None = None,
+            *,
+            from_date: datetime | None = None,
+            until_date: datetime | None = None,
+    ) -> list[CommitDigest]:
+        """按时间区间列 commit (seq + title + body), 等价 ``git log --oneline``; 详情就在同一条里."""
+        branch = self._memento.get_branch(name or self._config.branch_name)
+        if branch is None:
+            return []
+        digests: list[CommitDigest] = []
+        for ref in branch.query_commits(from_date=from_date, until_date=until_date):
+            view = branch.get_commit(ref.seq)
+            if view is None:
+                continue
+            digests.append(CommitDigest(
+                coord=view.coord, seq=view.seq, title=view.title, body=view.body,
+                created=view.created, broken=view.is_broken,
+            ))
+        return digests
+
+    def resolve(self, coord: str) -> CommitView | None:
+        """坐标 (如 ``1-27``) → CommitView; 格式错 / 不存在返回 None. read / chat 的入口."""
+        return self._memento.resolve_commit(coord)
 
     def resume_ref(self) -> DshSessionRef | None:
         """ego 重建的切点: 最后一个**摘要已就绪**的 commit 的 ref; 没有则 None (= 全新 session).

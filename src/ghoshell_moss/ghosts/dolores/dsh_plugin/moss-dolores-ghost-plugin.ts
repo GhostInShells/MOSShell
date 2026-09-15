@@ -135,19 +135,15 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
-// 旁路 note 生产 (commit 的慢腿): 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路
-// session (id ≠ doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠),
-// 不走 subagent, 不 attach workspace. 必须复用 ego preset 而非另建瘦 preset: 旁路 prompt
-// 要与主路逐字节同前缀, 才能吃到 LLM 前缀缓存 (见 plugin 顶注 / memento-plan #7).
-const DOLORES_NOTE_RUN = `${DOLORES_API_ROOT}/note/run`
+// 旁路原语: 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路 session (id ≠
+// doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠), 不走 subagent,
+// 不 attach workspace. 必须复用 ego preset 而非另建瘦 preset: 旁路 prompt 要与主路逐字节
+// 同前缀, 才能吃到 LLM 前缀缓存 (见 plugin 顶注 / memento-plan #7).
+// prompt 由调用方给 (note / chat 都是它的调用方) —— 语义留在 MOSS 侧, 这里只跑一轮.
+const DOLORES_BYPASS_RUN = `${DOLORES_API_ROOT}/bypass/run`
+// read: ref 的 turn 区间 → 源 log 的原始事件切片 (live-or-cold). 折叠成文本归 MOSS 侧.
+const DOLORES_READ = `${DOLORES_API_ROOT}/read`
 const HARNESS_IDENTITY_TEXT = ''
-
-// 旁路 note 的默认 prompt — 摘要进 memento 当 commit 的 message (首行 title, 其余 body).
-const NOTE_PROMPT = [
-  '把上面这段对话压缩成一条 commit 摘要, 供未来的自己检索. 只输出摘要本身, 不要客套.',
-  '第一行 = 一句话标题 (<= 30 字); 之后每行一条要点, 覆盖: 做了什么 / 定了什么 / 下一步.',
-  '整条 <= 400 字. 不复述原文, 只留可复用的结论.',
-].join('\n')
 
 // ego workspace: project_home 上的 workspace, ego session 归组用, 模块级共享.
 let doloresEgoWorkspaceId: WorkspaceId | null = null
@@ -649,7 +645,7 @@ export function apply(ctx: Context) {
         // 2. ref 存在时才走构造器 seed: seed = memory + 切点之后的 surface 尾巴 —— memory 必须排在
         //    尾巴之前 (前情提要在前, "刚刚发生"在后), 所以只有带尾巴这一路要把 memory 也放进 seed.
         //    无 ref 时保持原路 (create 空 session, 之后逐条 append memory), 不动既有主路行为.
-        const ref = parseEgoCreateRef(body.ref)
+        const ref = readRef(body.ref)
         const seed = ref === undefined ? [] : await buildEgoSeed(ctx, messages, ref)
         // 3. create ego session: 专属 preset (standard 的工具面) + overridden identity/persona.
         const sessionId = randomUUID()
@@ -937,13 +933,13 @@ export function apply(ctx: Context) {
     },
   })
 
-  // ── 旁路 note 生产 (commit 的慢腿) ─────────────────────────────────────
-  // 入参 {ref, prompt?}. 冷读源 session 的 log → 尾部截断成 verbatim seed → 新建一个
-  // 无工具 (read-only) 的 one-shot agent → 跑一轮 → 读最后一条 assistant text → dispose.
+  // ── 旁路原语 (单轮) — note / chat / 任何"用某段上下文跑一轮"的调用方 ─────────
+  // 入参 {ref, prompt}. 冷读源 session 的 log → 尾部截断成 verbatim seed → 新建一个
+  // 身份旁路 agent (tools 全拒 + turn/end 折叠) → 跑一轮 → 读最后一条 assistant text → dispose.
   // 不走 subagent (child 结果回流会驱动父 turn = 红线); 不 attach workspace (不污染工作区).
   ctx.webServer.register({
     kind: 'exact',
-    path: DOLORES_NOTE_RUN,
+    path: DOLORES_BYPASS_RUN,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method !== 'POST') {
         res.writeHead(405, { 'Content-Type': 'application/json' })
@@ -952,17 +948,13 @@ export function apply(ctx: Context) {
       }
       try {
         const body = await readJson(req)
-        const ref = body.ref as { session_id?: unknown; end_turn?: unknown; end_seq?: unknown } | undefined
-        const sourceId = typeof ref?.session_id === 'string' ? ref.session_id : ''
-        const endTurn = typeof ref?.end_turn === 'number' ? ref.end_turn : -1
-        const endSeq = typeof ref?.end_seq === 'number' ? ref.end_seq : undefined
-        if (sourceId === '') throw new Error('ref.session_id must be a non-empty string')
-        if (endTurn < 0) throw new Error('ref.end_turn must be a non-negative integer')
-        const prompt = typeof body.prompt === 'string' && body.prompt !== '' ? body.prompt : NOTE_PROMPT
+        const ref = parseSessionRangeRef(body.ref)
+        const prompt = typeof body.prompt === 'string' ? body.prompt : ''
+        if (prompt === '') throw new Error('prompt must be a non-empty string')
         // seed = 源 session 的逐字节前缀 (seq 0..切点). live 走 snapshotEvents (未 flush 的事件也在),
-        // 源已不在本进程 (重启后补漏 / 历史 commit) 时回落持久化层冷读 — 两者契约同为 seq 0 连续.
-        const events = await loadSourceEvents(ctx, sourceId)
-        const seed = seedPrefix(events, endTurn, endSeq)
+        // 源已不在本进程 (历史 commit / 上次运行) 时回落持久化层冷读 — 两者契约同为 seq 0 连续.
+        const events = await loadSourceEvents(ctx, ref.session_id)
+        const seed = seedPrefix(events, ref.end_turn, ref.end_seq)
         const handle = await ctx.agents.create({
           sessionId: randomUUID(),
           seed,
@@ -985,6 +977,32 @@ export function apply(ctx: Context) {
           // dispose 必须 (dsh 活 session 无 LRU, 不销毁会泄漏); dispose 不删 log.
           await handle.dispose()
         }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+
+  // ── read: commit 区间 → 源 log 的原始事件切片 ─────────────────────────────
+  // 回原始事件而不是 surface 投影 —— transcript 要 tool/call 这类只在 log 里的记录; 折叠成文本
+  // 是 MOSS 侧 render_transcript 的事 (plugin 不解析事件语义). live-or-cold, 与 seed 同一源.
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_READ,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req)
+        const ref = parseSessionRangeRef(body.ref)
+        const events = await loadSourceEvents(ctx, ref.session_id)
+        const slice = sliceRange(events, ref)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ events: slice }))
       } catch (error) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: String(error) }))
@@ -1052,8 +1070,14 @@ async function loadSourceEvents(ctx: Context, sourceId: string): Promise<readonl
   }
 }
 
-/** ego/create 的可选 ref — memento commit 的坐标 (源 session + 切点 turn). */
-type EgoCreateRef = { session_id: string; end_turn: number; end_seq?: number }
+/** memento commit 的坐标 (``DshSessionRef`` 的 wire 形): 源 session + turn 区间 (含端). */
+type SessionRangeRef = {
+  session_id: string
+  start_turn: number
+  end_turn: number
+  start_seq?: number
+  end_seq?: number
+}
 
 /**
  * 组装一条 seed 事件 (契约: seq 0 连续, surface 类型必须带 surfaceOp).
@@ -1080,7 +1104,7 @@ function seedEvent(type: SurfaceEventType, time: number, data: unknown): Session
 async function buildEgoSeed(
   ctx: Context,
   messages: readonly { text?: unknown }[],
-  ref: EgoCreateRef,
+  ref: SessionRangeRef,
 ): Promise<SessionEvent[]> {
   const texts = messages
     .map(message => message?.text)
@@ -1100,22 +1124,48 @@ function memorySeed(texts: readonly string[]): SessionEvent[] {
   })))
 }
 
-/** 解析 body.ref; 形状不对直接抛 (路由是外部入口, 不静默吞). */
-function parseEgoCreateRef(raw: unknown): EgoCreateRef | undefined {
+/** body.ref 可空: 缺省 → undefined (调用方走无 ref 的路); 给了但形状不对 → 抛. */
+function readRef(raw: unknown): SessionRangeRef | undefined {
   if (raw === undefined || raw === null) return undefined
-  const record = raw as Record<string, unknown>
+  return parseSessionRangeRef(raw)
+}
+
+/** 解析 body.ref; 形状不对直接抛 (路由是外部入口, 不静默吞). */
+function parseSessionRangeRef(raw: unknown): SessionRangeRef {
+  const record = (raw ?? {}) as Record<string, unknown>
   const sessionId = record['session_id']
+  const startTurn = record['start_turn']
   const endTurn = record['end_turn']
   if (typeof sessionId !== 'string' || sessionId === '') throw new Error('ref.session_id must be a non-empty string')
-  if (typeof endTurn !== 'number' || !Number.isSafeInteger(endTurn) || endTurn < 0) {
-    throw new Error('ref.end_turn must be a non-negative integer')
-  }
-  const endSeq = record['end_seq']
+  if (!isTurn(startTurn)) throw new Error('ref.start_turn must be a non-negative integer')
+  if (!isTurn(endTurn)) throw new Error('ref.end_turn must be a non-negative integer')
+  const startSeq = asSeq(record['start_seq'])
+  const endSeq = asSeq(record['end_seq'])
   return {
     session_id: sessionId,
+    start_turn: startTurn,
     end_turn: endTurn,
-    ...(typeof endSeq === 'number' && Number.isSafeInteger(endSeq) && endSeq >= 0 ? { end_seq: endSeq } : {}),
+    ...(startSeq === undefined ? {} : { start_seq: startSeq }),
+    ...(endSeq === undefined ? {} : { end_seq: endSeq }),
   }
+}
+
+function isTurn(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function asSeq(value: unknown): number | undefined {
+  return isTurn(value) ? value : undefined
+}
+
+/** ref 的 turn 区间 → 源 log 的原始事件切片 (含端): [start_turn 的 turn/start, end_turn 的 turn/end]. */
+function sliceRange(events: readonly SessionEvent[], ref: SessionRangeRef): SessionEvent[] {
+  const start = events.findIndex(event => event.type === 'turn/start' && (event.data as { turn?: number }).turn === ref.start_turn)
+  const end = events.findLastIndex(event => event.type === 'turn/end' && (event.data as { turn?: number }).turn === ref.end_turn)
+  if (start < 0) throw new Error(`no turn/start for turn ${ref.start_turn}`)
+  if (end < 0) throw new Error(`no turn/end for turn ${ref.end_turn}`)
+  if (end < start) throw new Error(`turn range ${ref.start_turn}-${ref.end_turn} is empty`)
+  return events.slice(start, end + 1)
 }
 
 /**
@@ -1123,7 +1173,7 @@ function parseEgoCreateRef(raw: unknown): EgoCreateRef | undefined {
  * 先校正到 end_turn 的 `turn/end`, 再向后吞掉非 `turn/start` 的杂事件, 使切点落在 turn 边界上.
  * 于是切点之后从**完整 turn** 开始 —— 被切的那一轮只进摘要, 不进原文.
  */
-function resolveCut(events: readonly SessionEvent[], ref: EgoCreateRef): number {
+function resolveCut(events: readonly SessionEvent[], ref: SessionRangeRef): number {
   let boundary = -1
   if (ref.end_seq !== undefined) {
     boundary = events.findIndex(event => event.seq === ref.end_seq)
