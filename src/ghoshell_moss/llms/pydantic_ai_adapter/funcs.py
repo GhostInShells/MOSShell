@@ -29,6 +29,7 @@ from ghoshell_moss.contracts.llms import (
     LLMFuncResult,
     LLMFuncResultRecord,
     MossLLMFuncs,
+    MossLLMCaller,
     ModelRef,
     ResolvedModel,
     TokenCount,
@@ -172,8 +173,8 @@ class PydanticAIFuncs(MossLLMFuncs):
             tag: str | None = None,
             settings: CallSettings | None = None,
             effort: Effort | None = None,
-    ) -> LLMCaller:
-        """构建持久化 caller — resolve + build_agent 一次, 复用于每次 run."""
+    ) -> MossLLMCaller:
+        """构建持久化 caller — resolve + build_agent 一次, 复用于每次 run/run_messages."""
         resolved = self._resolve(provider=provider, model=model, tag=tag)
         return _PydanticAICaller(
             logger=self._logger,
@@ -182,6 +183,7 @@ class PydanticAIFuncs(MossLLMFuncs):
             result_type=result_type,
             settings=settings,
             effort=effort,
+            container=self._container,
         )
 
     async def _call_impl(
@@ -384,11 +386,12 @@ class PydanticAIFuncs(MossLLMFuncs):
         )
 
 
-class _PydanticAICaller(LLMCaller):
-    """LLMCaller 的 pydantic-ai 实现 — build_agent 一次, 复用于每次 run.
+class _PydanticAICaller(MossLLMCaller):
+    """MossLLMCaller 的 pydantic-ai 实现 — build_agent 一次, 复用于每次 run/run_messages.
 
-    instruction + result_type + resolved 模型在构造时绑定; run() 只换 prompt。
-    无锚、无 message_history — 单轮无状态热路径。
+    instruction + result_type + resolved 模型在构造时绑定; run() 换 prompt 字符串,
+    run_messages() 换 list[Message] (逐条转 parts). 无锚、无 message_history —
+    单轮无状态热路径。
     """
 
     def __init__(
@@ -400,6 +403,7 @@ class _PydanticAICaller(LLMCaller):
             result_type: Type[RESULT_MODEL] | None,
             settings: CallSettings | None,
             effort: Effort | None,
+            container: IoCContainer,
     ) -> None:
         from ghoshell_moss.llms.pydantic_ai_adapter.client import build_agent
 
@@ -408,12 +412,25 @@ class _PydanticAICaller(LLMCaller):
         self._result_type = result_type
         self._agent = build_agent(resolved, settings=settings, effort=effort)
         self._instruction = instruction
+        self._container = container
 
     async def run(self, prompt: str) -> LLMFuncResult:
+        return await self._run_impl(prompt)
+
+    async def run_messages(self, prompt: list[Message]) -> LLMFuncResult:
+        from ghoshell_moss.llms.pydantic_ai_adapter.conversion import messages_to_parts
+
+        filtered = [
+            self._resolved.model.convert(self._container, message)
+            for message in prompt
+        ]
+        return await self._run_impl(messages_to_parts(filtered, with_meta=True))
+
+    async def _run_impl(self, user_prompt: str | list[Any]) -> LLMFuncResult:
         start = time.perf_counter()
         try:
             result = await self._agent.run(
-                prompt,
+                user_prompt,
                 output_type=self._result_type,
                 instructions=self._instruction or None,
             )

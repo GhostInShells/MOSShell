@@ -35,6 +35,7 @@ __all__ = [
     "LLMFuncResultRecord",
     "LLMFuncResult",
     "LLMCaller",
+    "MossLLMCaller",
     "BenchmarkMeta",
     "BenchmarkCase",
     "BenchmarkRun",
@@ -605,6 +606,20 @@ class LLMCaller(ABC):
         """Run the pre-bound instruction + model against a fresh prompt."""
 
 
+class MossLLMCaller(LLMCaller):
+    """LLMCaller + moss message protocol — 多 content block 的持久化 caller.
+
+    moss-free 的 ``run(prompt: str)`` 之上加 ``run_messages(prompt: list[Message])``:
+    每个 Message 是一个独立 content block (一个 clause 一个 block, 前缀缓存命中).
+    累积 clause 成稳定前缀的组件 (如 listener 的判停 judge) 用它, 而非把 clause
+    拼成单个字符串。
+    """
+
+    @abstractmethod
+    async def run_messages(self, prompt: list[Message]) -> LLMFuncResult:
+        """Run the pre-bound instruction + model against a list of Message blocks."""
+
+
 class BenchmarkMeta(BaseModel):
     """benchmark 元信息 — bench.md 的 YAML frontmatter 部分, 模型无关.
 
@@ -958,4 +973,23 @@ class MossLLMFuncs(LLMFuncs):
 
         ``prompt`` 是 @ 生成 (``message_from_prompt``) 或手建的 Message 块。
         其余参数同 ``call``。
+        """
+
+    @abstractmethod
+    def caller(
+            self,
+            *,
+            instruction: str = "",
+            result_type: Type[RESULT_MODEL] | None = None,
+            provider: str = "",
+            model: str = "",
+            tag: ModelTag | None = None,
+            settings: CallSettings | None = None,
+            effort: Effort | None = None,
+    ) -> MossLLMCaller:
+        """Build a persistent caller — 返回带 run_messages 的 MossLLMCaller.
+
+        与 ``LLMFuncs.caller`` 相同语义 (bind instruction + model + output type
+        一次, run 只换 prompt), 但返回的 caller 额外支持 ``run_messages``
+        (list[Message] 多 content block). Anchors 不支持。
         """
