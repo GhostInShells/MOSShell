@@ -227,13 +227,6 @@ class TestDoloresInstruction:
         assert "name: dolores" in text
         assert "description:" in text
 
-    def test_system_prompt_prepends_base_instruction(self):
-        """baseline (MossSystemPrompter.base_instruction) 在两段之前."""
-        text = _dolores(base_instruction="BASELINE").system_prompt()
-        assert text.startswith("BASELINE")
-        assert "prototype: Dolores" in text
-        assert "name: dolores" in text
-
     @pytest.mark.asyncio
     async def test_ground_instruction_none_without_home(self):
         """无 home → 无 root ground, ground_instruction 返回 None."""

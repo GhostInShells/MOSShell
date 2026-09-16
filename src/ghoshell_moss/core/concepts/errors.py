@@ -103,6 +103,20 @@ class InterpretError(Exception):
         error = CommandError.from_error(err)
         return cls(error)
 
+    def model_facing_message(self) -> str:
+        """Render this error for the model, with the fix-not-explain directive.
+
+        ``str(error)`` stays ``INTERPRET_ERROR: <message>`` (log / code form). This is the
+        model-facing form: prefixed "Error from the interpreter:" and telling the model to
+        fix the logos rather than explain it — and never to restate logos inside CTML
+        without CDATA wrapping.
+        """
+        return (
+            f"Error from the interpreter: {self.message}\n"
+            "Fix it — do not explain it; the world does not understand logos. If you must "
+            "explain, never restate it inside CTML without CDATA wrapping."
+        )
+
 
 class PausedError(Exception):
     """

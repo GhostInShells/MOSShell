@@ -409,11 +409,11 @@ ChallengeMode 双层 buffer，memento 替换 conversation，Articulator 通道�
 |---|---|---|---|
 | `InputSignalNucleus` (existing) | (无, 标准 think) | 完整 articulate→action 循环 | 保留 |
 | `NotifyNucleus` (new) | `always_buffer` | 低优 (BACKGROUND) + notify, 不抢占, 消息进 buffer 等下轮 attention 自然 drain | 名字与 `ChallengeMode.notify` 一致 |
-| `BroadcastNucleus` (new) | `interrupt_only` | 高优 (FATAL) + silent + thinking_effort='none', 抢占成功但不创建新 attention, 消息广播到当前 attention 的下一帧 perception | **不叫 `SilentNucleus` 或 `AlertNucleus`** — 见下面命名判断 |
+| `BroadcastNucleus` (new) | `interrupt_only` | 高优 (FATAL) + silent + thinking_effort='none', 抢占成功但不创建新 attention, 消息广播到当前 attention 的下一帧 perception | **不叫 `AsideNucleus` 或 `AlertNucleus`** — 见下面命名判断 |
 | `CommandNucleus` (new) | `execute_command_only` | thinking_effort='none' + logos from signal; priority 由 Signal 携带 (NOTICE 普通命令, FATAL = `superior_execute_command` 等价) | 单一 Nucleus 覆盖普通/超级两种 |
 
-**为何不叫 `SilentNucleus`/`AlertNucleus`**:
-- `SilentNucleus` 继承 `ChallengeMode.silent` 的歧义 — "silent" 听起来是"静默中断"或"无声占用", 实际行为是"高优广播补充, 不接管运行时". 开发者读到会建立错误心智模型.
+**为何不叫 `AsideNucleus`/`AlertNucleus`**:
+- `AsideNucleus` 继承 `ChallengeMode.silent` 的歧义 — "silent" 听起来是"静默中断"或"无声占用", 实际行为是"高优广播补充, 不接管运行时". 开发者读到会建立错误心智模型.
 - `AlertNucleus` 在常见 UI/系统语义里暗示"需要 ack 的中断", 但协议恰恰不要求 ack 也不中断.
 - `BroadcastNucleus` 准确: 广播的语义是"高优、宽播、不要求 ack、收到的人不停下手头工作", 与 FATAL+silent 完全对齐.
 
@@ -448,7 +448,7 @@ ChallengeMode 双层 buffer，memento 替换 conversation，Articulator 通道�
 | Nucleus | 内核 primitive | 通道语义 |
 |---|---|---|
 | `InputSignalNucleus` (existing) | default | FIFO 离散事件聚合 → 思考 |
-| `SilentNucleus` (new) | silent mode + 优先级提取 buffer | 数据流静默累积, 不打扰思考 |
+| `AsideNucleus` (new) | silent mode + 优先级提取 buffer | 数据流静默累积, 不打扰思考 |
 | `NotifyNucleus` (new) | notify primitive | 不丢消息, 抢占失败也 buffer |
 | `CommandNucleus` (rewrite) | command_only primitive | logos 反射弧, 不思考 |
 | `InterruptNucleus` (new) | interrupt primitive | 中断动作, 接管 attention 后立即放手 |
@@ -465,7 +465,7 @@ silent 和 notify 是 default 上**对称**的两条偏离, 不是"广播 vs 静
 | `silent` | **buffer messages** (偏离: 不接管) | suppress |
 | `notify` | 创建新 attention | **buffer messages** (偏离: 不丢) |
 
-`ChallengeMode.silent` enum 名保留, 原 06-13 笔记中"silent 听起来像静默中断"的误读源于命名争议而非实现矛盾 — silent 在本架构里就是"抢占成功也只 buffer 不接管" 的协议偏离, enum 名与之自洽. SilentNucleus 复用同一词根, 配 docstring 解释 "silent 数据流静默累积" 的通道语义, 名实一致.
+`ChallengeMode.silent` enum 名保留, 原 06-13 笔记中"silent 听起来像静默中断"的误读源于命名争议而非实现矛盾 — silent 在本架构里就是"抢占成功也只 buffer 不接管" 的协议偏离, enum 名与之自洽. AsideNucleus 复用同一词根, 配 docstring 解释 "silent 数据流静默累积" 的通道语义, 名实一致.
 
 **关键决策**:
 
@@ -474,8 +474,8 @@ silent 和 notify 是 default 上**对称**的两条偏离, 不是"广播 vs 静
 | 1 | ImpulsePrimitive 重命名 | code-as-prompt: 读名字就懂意图. `execute_command_only → command_only`, `superior_execute_command → fatal_command`, `interrupt_only → broadcast`, `always_buffer → background_notice`. 新增 `notify` 单原语 + `interrupt` 原语 (broadcast 的对偶) |
 | 2 | CommandNucleus priority 完全继承 Signal.priority | 06-13 暗礁 (a) 方案: 调用方用 Priority.FATAL 表达"强制指令" (等价 fatal_command primitive), NOTICE 表达"普通命令". 一个 nucleus 覆盖两档. 不加 floor |
 | 3 | NotifyNucleus 用 NOTICE + notify (不是 BACKGROUND + notify) | 06-13 笔记把 NotifyNucleus 等同 always_buffer 是误读. 真实用例"用户消息不丢"应该保留 caller 的 priority, 否则用户输入被永久降级为后台数据. `background_notice` 是另一个独立用例 (低优补充数据), 不是 NotifyNucleus |
-| 4 | 不做 BroadcastNucleus, 只保留 broadcast primitive | silent 通道承诺需要累积 (多 signal 在一个 impulse 前到达时不能丢). fire-and-forget 的 BroadcastNucleus 无法满足这条 — 它要么是 SilentNucleus, 要么是离散 primitive. 中间状态退化为胶水 |
-| 5 | SilentNucleus 加入 (新) | 结构对称 InputSignalNucleus: 都是 buffer + 优先级提取, 差异是 mode + signal 语义 (FIFO 离散 vs 数据流). 心智锚点对称, 拓扑势能最低 |
+| 4 | 不做 BroadcastNucleus, 只保留 broadcast primitive | silent 通道承诺需要累积 (多 signal 在一个 impulse 前到达时不能丢). fire-and-forget 的 BroadcastNucleus 无法满足这条 — 它要么是 AsideNucleus, 要么是离散 primitive. 中间状态退化为胶水 |
+| 5 | AsideNucleus 加入 (新) | 结构对称 InputSignalNucleus: 都是 buffer + 优先级提取, 差异是 mode + signal 语义 (FIFO 离散 vs 数据流). 心智锚点对称, 拓扑势能最低 |
 | 6 | InterruptNucleus 加入 (新) | broadcast (silent + FATAL + effort=none) 与 interrupt (notify + FATAL + effort=none + `interrupt=True`) 是 FATAL/effort=none 轴上的两条对偶. broadcast 不接管, interrupt 接管后立即放手. interrupt 同时具备"对 shell 的副作用" (`stop_interpretation`), 通道语义独立成立 |
 | 7 | InterruptNucleus 反向 suppress | 与 InputSignalNucleus 等"失败侧 suppress" 对偶: FATAL 失败只可能是 absorb/stale (不需冷静期), 真实 DOS 风险在反向 (反复成功 interrupt 导致 shell churn). 故 pop_impulse 触发冷静期, suppress() 不触发 |
 | 8 | strength=0 协议承诺兑现 | Impulse.strength Field 长期承诺"为 0 表示绝不竞争", 但 runtime 从未实现. 在 `_challenge_attention` 入口加短路: pop nucleus + fire 新 verdict `'yielded'`. 优先级高于 FATAL 短路 (调用方矛盾意图 FATAL+strength=0 解析为礼让) |
@@ -507,7 +507,7 @@ silent 和 notify 是 default 上**对称**的两条偏离, 不是"广播 vs 静
 | 1 | `f4f4fe5` | ChallengeMode 对称表 + ImpulsePrimitive 重命名 | +2 (89→91) |
 | 2 | `52fcb5d` | CommandNucleus 完善 + Meta + helper | +19 (110) |
 | 3 | `9961c44` | NotifyNucleus + Meta + helper | +21 (131) |
-| 4 | `0a69243` | SilentNucleus + Meta + helper | +24 (155) |
+| 4 | `0a69243` | AsideNucleus + Meta + helper | +24 (155) |
 | 5 | `d660610` | ImpulsePrimitive.interrupt + InterruptNucleus + Meta | +24 (179) |
 | 6 | `0ea5663` | strength=0 yielded 协议兑现 | +5 (184) |
 | 7 | `5b1067f` | last-impulse cache 修 + 五元集成测试 | +25 (209) |

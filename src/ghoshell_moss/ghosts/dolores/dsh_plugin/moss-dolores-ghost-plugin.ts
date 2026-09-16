@@ -816,10 +816,11 @@ export function apply(ctx: Context) {
           // 少了这一支, 续帧只能滞留 pendingMoments 等下一次真实输入捎带, 于是 need_observe 亮着
           // 却不思考, 而那一帧又会在下一轮开头迟到落地 (fetch 的 moment 同样被这条缓冲拖着).
           // 用 steer 而非 inject: inject 只投递不唤醒, 此刻没有在跑的 step, 帧会一直躺着.
-          // 载荷用帧自身的 moment_id, 让模型把这次唤醒和它要回看的帧对上.
+          // 空 content 只唤醒、不塞字 —— 回声内容照旧走 pendingMoments 注入. 若塞 "observe
+          // continuation: N" 这类字, 会被模型当成用户输入.
           agent.steer(createUserMessage({
-            content: [{ type: 'text', text: `observe continuation: ${body.moment?.moment_id ?? 'next frame'}` }],
-            source: { kind: 'user' },
+            content: [],
+            source: { kind: 'plugin', plugin: name },
           }))
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })

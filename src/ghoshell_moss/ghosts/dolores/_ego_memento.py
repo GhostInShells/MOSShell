@@ -57,8 +57,8 @@ _READ_ROUTE = "/moss-api/ghost/dolores/read"
 
 # note 旁路的固定约束 (强制, 不可调): 摘要压低思考模式 —— 压缩不该深想, 省 token 不阻塞主路.
 _NOTE_EFFORT = "low"
-# 旁路摘要前置上下文的窗口: 取本 commit 之前最近 N 条已就绪的 message 作前文.
-_NOTE_PRIOR_COUNT = 2
+# 旁路摘要前置上下文: 只展开最近 1 条已就绪的 commit message 作前文.
+_NOTE_PRIOR_COUNT = 1
 
 
 def _note_prompt(
@@ -85,18 +85,18 @@ def _note_prompt(
         )
     if prior:
         lines.append("")
-        lines.append("The most recent commits before this one, for continuity:")
+        lines.append("The most recent commit before this one, for continuity:")
         for coord, message in prior:
             lines.append(f"- {coord}: {message}")
     lines.extend([
         "",
-        "Write the summary itself and nothing else, in this structure:",
-        "1. What happened — continuing from the previous commit.",
-        "2. Points worth noting.",
-        "3. Resources involved (files, etc.) — names and connections only, no detail.",
-        "4. Thoughts or feelings you want to record for your future self.",
+        "Write the summary itself and nothing else.",
+        "First line = a one-sentence title (<= 20 words) that captures what happened this span.",
+        "Then the body, as short prose covering: what happened (continuing from the previous commit),",
+        "points worth noting, resources involved (files etc., names only, no detail), and thoughts",
+        "or feelings you want to record for your future self.",
         "",
-        "Keep it short. Your persistent state (identity, ground) stays continuous — do not re-state",
+        "Be concise. Your persistent state (identity, ground) stays continuous — do not re-state",
         "it; record only what changed in this span.",
     ])
     return "\n".join(lines)
@@ -392,17 +392,16 @@ class EgoMementoManager:
     def warn_notice(self, growth: int) -> Message:
         """K 阈值提醒 (每窗口一次): 催模型在话题边界主动 commit."""
         text = (
-            f"本段对话已积累约 {growth} tokens 的未提交内容. 若话题已到边界, "
-            f"用 commit 提交一个锚点 (带一句 message 说明这段讲了什么)."
+            f"About {growth} tokens of uncommitted conversation have accumulated. If you are at a "
+            f"topic boundary, commit an anchor now."
         )
         return Message.new(tag="memento_notice", attributes={"kind": "warn"}).with_content(text)
 
     def committed_notice(self, commit: CommitRef) -> Message:
-        """某 commit 已生成 — 告知模型锚点已落, note 稍后旁路补."""
-        ref = self._ref_of(commit)
-        span = f"{ref.start_turn}-{ref.end_turn}" if ref is not None else str(commit.seq)
+        """某 commit 已生成 — 回执锚点坐标 (模型可观测的游标); turn 区间不可观测, 不透露."""
+        coord = f"{self._branch().index}-{commit.seq}"
         return Message.new(tag="memento_notice", attributes={"kind": "committed"}).with_content(
-            f"已生成 commit (turns {span}); 摘要由旁路补上."
+            f"a commit was made at {coord}."
         )
 
     def latest_ref(self) -> DshSessionRef | None:

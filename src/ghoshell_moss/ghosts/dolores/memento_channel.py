@@ -30,21 +30,18 @@ __all__ = ["build_memento_channel"]
 
 
 def _instruction_text(manager: EgoMementoManager, storage_root: Path | None) -> str:
-    """自解释 —— 只讲可用模型 (轨迹 / 坐标 / 两条读路径). 技术实现不进表面, 想知道读源码."""
+    """自解释 —— 只讲控制面 (分支 / 坐标 / 两条读路径). memento 概念由系统指令解释, 这里不重复."""
     lines = [
-        "## Memento (your memory)",
+        "## Memento (control)",
         "",
-        "This sub-channel is your own memory, not an external tool: it reads the memento trajectory",
-        "you have walked.",
+        "Reflexive control over your memento trajectory.",
         "",
-        f"- That trajectory is a line of commits, organized into branches. You are on "
-        f"`{manager.config.branch_name}`; the notice lists every branch.",
+        f"- You are on branch `{manager.config.branch_name}`; the notice lists every branch.",
         "- You point at a place on the line by its coordinate: `{branch_index}-{seq}`, e.g. `1-27`.",
     ]
     if storage_root is not None:
         lines.append(
-            f"- The memento trajectory is durable: it lives at `{storage_root}`, and compacting your "
-            "context does not touch it."
+            f"- Durable at `{storage_root}`; compacting your context does not touch it."
         )
     lines.extend([
         "",
@@ -63,7 +60,7 @@ def _branches_text(manager: EgoMementoManager) -> str:
     current = manager.config.branch_name
     lines = ["[memento] branches:"]
     for info in infos:
-        latest = f"{info.latest_coord} {info.latest_title}" if info.latest_coord else "(empty)"
+        latest = info.latest_coord if info.latest_coord else "(empty)"
         mark = " <- the one you are living on" if info.name == current else ""
         lines.append(
             f"  {info.name} #{info.index} commits={info.commits_total} latest={latest}{mark}"

@@ -171,7 +171,7 @@ class CTMLInterpreter(Interpreter):
             return
         self._parsing_exception = error
         self._interpretation.observe = True
-        self._interpretation.exception = str(error)
+        self._interpretation.exception = error.model_facing_message()
         self._stopped_event.set()
         for task in self._managing_tasks.values():
             if not task.done():
@@ -569,7 +569,7 @@ class CTMLInterpreter(Interpreter):
         if self._interrupted and not self._parsing_exception:
             self._parsing_exception = InterpretError("Interpretation is interrupted")
         if self._parsing_exception:
-            self._interpretation.exception = str(self._parsing_exception)
+            self._interpretation.exception = self._parsing_exception.model_facing_message()
         self._interpretation.done = True
         r = self._interpretation
         # Exit 取值点: 到达这里时 interpreter 是稳态 (closed=True, interpretation.done=True,
