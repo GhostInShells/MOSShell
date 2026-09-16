@@ -174,4 +174,7 @@ label 覆盖允许 (last-write-wins), 但返回值必须显式报告"覆盖了�
 - **shell 层关联修复**: `parse_tokens_to_command_tasks` / `parse_text_to_tasks` 增加
   `run_macro: bool = False` (默认 False) 并透传给 interpreter。此前未透传, dry_run
   解析含宏正文会死锁 (原语 loop/condition/wait/sample 若正文含宏同样踩此坑)。
-- named notice 集成 (用 `get_named_notices` 发 label 目录) 尚未接。
+- **named notice**: `get_named_notices()` 发 `{"macros": label 目录}`; 空时返回空串
+  (渲染层过滤)。配套框架修正: `PyChannel.is_dynamic()` 增加 `len(self._modules) > 0`
+  分支 — 有 module 的 channel 即视为 dynamic, 否则 meta 被 `_static_meta_cache` 冻结,
+  首帧空目录永不刷新。

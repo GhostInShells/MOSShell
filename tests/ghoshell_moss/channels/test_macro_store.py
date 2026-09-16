@@ -9,7 +9,7 @@ from ghoshell_moss.channels.macro_store import (
 )
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.concepts.errors import CommandError
-from ghoshell_moss.core.ctml import ctml_shell_test
+from ghoshell_moss.core.ctml import ctml_shell_test, new_ctml_shell
 
 
 def _recorder():
@@ -286,3 +286,37 @@ async def test_file_commands_need_root():
     async with main.bootstrap() as runtime:
         with pytest.raises(CommandError):
             await runtime.execute_command("micro", kwargs={"file": "."})
+
+
+# -- named notice: label 目录 -- #
+
+@pytest.mark.asyncio
+async def test_named_notice_empty():
+    """Empty store publishes an empty `macros` fragment (filtered at render time)."""
+    main = new_shell_main_channel()
+    main.with_module(MacroStoreModule())
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices == {"macros": ""}
+
+
+@pytest.mark.asyncio
+async def test_named_notice_catalog():
+    """Session labels surface as a named notice, so the model sees them without macro_list."""
+    chan, _ = _recorder()
+    shell = new_ctml_shell()
+    shell.main_channel.import_channels(chan)
+    shell.main_channel.with_module(MacroStoreModule())
+    async with shell:
+        interpreter = await shell.interpreter(clear_after_exit=True)
+        async with interpreter:
+            interpreter.feed(
+                '<macro_save label="greet" description="say hello">'
+                '<![CDATA[<a:say text="hi"/>]]>'
+                '</macro_save>'
+            )
+            interpreter.commit()
+            await interpreter.wait_tasks(throw=True)
+
+        await shell.refresh_metas()
+        assert "greet: say hello" in shell.runtime.metas()[""].named_notices["macros"]
+        assert "greet: say hello" in shell.channel_metas()[""].named_notices["macros"]

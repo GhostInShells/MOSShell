@@ -152,6 +152,14 @@ class MacroStoreModule(ChannelModule):
             f"Nested CDATA inside a body: write {CDATA_START} / {CDATA_END}."
         )
 
+    async def get_named_notices(self) -> dict[str, str]:
+        """label 目录作为 named notice — 模型无需 round trip 就知道有哪些宏可用.
+
+        空时返回空串: 渲染层把空片段当静默信号, 不渲染也不宣告变更.
+        """
+        result = {"macros": self._label_catalog()}
+        return result
+
     # -- commands ------------------------------------------------------------
 
     async def _macro(self, ref: str, is_file: bool = False) -> str:
@@ -219,11 +227,15 @@ class MacroStoreModule(ChannelModule):
 
     async def _macro_list(self) -> str:
         """List session labels with descriptions."""
-        if not self._macros:
-            return "(no macros stored)"
-        lines = []
-        for name, macro in self._macros.items():
-            lines.append(f"- {name}: {macro.description}" if macro.description else f"- {name}")
+        catalog = self._label_catalog()
+        return catalog if catalog else "(no macros stored)"
+
+    def _label_catalog(self) -> str:
+        """label 目录的文本形态; 空 store 返回空串 (供 named notice 与 list 共用)."""
+        lines = [
+            f"- {name}: {macro.description}" if macro.description else f"- {name}"
+            for name, macro in self._macros.items()
+        ]
         return "\n".join(lines)
 
     async def _micro(self, file: str = ".", recursive: bool = False) -> str:

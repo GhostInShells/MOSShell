@@ -749,6 +749,9 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         if self._gate and len(self._gated_children()) > 0:
             # 目录 (或 open/closed 标记) 每次 mount/unmount 都会变.
             return True
+        if len(self._modules) > 0:
+            # module 是永久能力单元, 其 notice/named_notices/context 可随时变.
+            return True
         return self._main_state.is_dynamic()
 
     async def _generate_own_metas(self) -> dict[str, ChannelMeta]:
