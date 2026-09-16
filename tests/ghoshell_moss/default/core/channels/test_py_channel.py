@@ -813,6 +813,30 @@ async def test_py_channel_virtual_children():
 
 
 @pytest.mark.asyncio
+async def test_py_channel_import_after_startup():
+    """启动后 import 的 channel 走 virtual children.
+
+    sustain children 只在 tree 的第一轮结构刷新里挂载, 启动后再往里写就挂不上了。
+    """
+    main = PyChannel(name="channel")
+    early = PyChannel(name="early")
+    main.import_channels(early)
+
+    async with main.bootstrap() as runtime:
+        assert "early" in runtime.sub_channels()
+        assert runtime.virtual_sub_channels() == {}
+
+        late = PyChannel(name="late")
+        main.import_channels(late)
+        assert "late" in runtime.virtual_sub_channels()
+        assert "late" not in runtime.sub_channels()
+
+        # import 之后需要一轮刷新, 子 channel 才真正挂进 tree.
+        await runtime.refresh_metas()
+        assert runtime.fetch_sub_runtime("late") is not None
+
+
+@pytest.mark.asyncio
 async def test_py_channel_run_task_with_timeout():
     main = PyChannel(name="channel")
 

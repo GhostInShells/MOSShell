@@ -741,6 +741,10 @@ class Builder(Facade):
     ) -> Self:
         """
         add sustain channels to the channel.
+
+        Before the channel starts, children are sustain children — part of the channel's
+        fixed structure. After the channel starts, children are added as virtual children
+        instead, and take effect on the next refresh.
         """
         pass
 

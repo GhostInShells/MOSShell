@@ -72,6 +72,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._sustain_children: dict[str, Channel | ChannelFactory] = {}
         self._sustain_children_factories: list[Callable] = []
         self._virtual_children: dict[str, Channel] = {}
+        self._started = False
         self._providers: list[tuple[Provider, bool]] = []
 
         self._commands: dict[str, Command] = {}
@@ -305,7 +306,11 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
             else:
                 channel = value
                 name = channel.name()
-            self._sustain_children[name] = channel
+            # sustain children 只在 channel tree 的第一轮结构刷新里挂载. 启动之后再
+            # import 的 channel 若还写进 sustain children 就永远不会被挂上, 只能作为
+            # virtual children 交给后续刷新.
+            target = self._virtual_children if self._started else self._sustain_children
+            target[name] = channel
         return self
 
     def get_children(self) -> dict[_ChannelName, Channel]:
@@ -341,6 +346,8 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
 
     async def on_startup(self) -> None:
         await self._run_funcs(self._on_start_up_funcs)
+        # startup 回调里 import 的 channel 仍在 tree 首轮刷新之前, 保持静态挂载.
+        self._started = True
 
     def close(self, func: LifecycleFunction) -> LifecycleFunction:
         is_coroutine = inspect.iscoroutinefunction(func)
@@ -364,6 +371,8 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
 
     async def on_close(self) -> None:
         await self._run_funcs(self._on_stop_funcs)
+        # 关闭后重新 import 的 channel 回到静态挂载: 下一次启动的 tree 首轮刷新会挂上它们.
+        self._started = False
 
     def running(self, running_func: LifecycleFunction) -> LifecycleFunction:
         self._on_running_funcs.append((running_func, inspect.iscoroutinefunction(running_func)))
