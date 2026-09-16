@@ -951,6 +951,13 @@ export function apply(ctx: Context) {
         const ref = parseSessionRangeRef(body.ref)
         const prompt = typeof body.prompt === 'string' ? body.prompt : ''
         if (prompt === '') throw new Error('prompt must be a non-empty string')
+        // 旁路约束参数面 (MOSS 按用途传值): 显式低思考 + 输出上限. 缺省 = 不覆盖 (走 dsh 默认).
+        const reasoningEffort = typeof body.reasoning_effort === 'string' && body.reasoning_effort !== ''
+          ? body.reasoning_effort
+          : undefined
+        const maxTokens = typeof body.max_tokens === 'number' && Number.isInteger(body.max_tokens) && body.max_tokens > 0
+          ? body.max_tokens
+          : undefined
         // seed = 源 session 的逐字节前缀 (seq 0..切点). live 走 snapshotEvents (未 flush 的事件也在),
         // 源已不在本进程 (历史 commit / 上次运行) 时回落持久化层冷读 — 两者契约同为 seq 0 连续.
         const events = await loadSourceEvents(ctx, ref.session_id)
@@ -962,6 +969,17 @@ export function apply(ctx: Context) {
           meta: { cwd: process.cwd(), agentPreset: DOLORES_EGO_PRESET, seedLength: seed.length },
           setup: async (agentCtx: Context) => {
             await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_EGO_PRESET)
+            // 显式约束 (不靠 pre-step 身份分支): 单轮请求侧注入 effort + maxTokens.
+            if (reasoningEffort !== undefined || maxTokens !== undefined) {
+              agentCtx.on('agent/request', async (_payload, next) => {
+                const resolved = await next()
+                return {
+                  ...resolved,
+                  ...(reasoningEffort !== undefined ? { reasoningEffort: ReasoningEffortId(reasoningEffort) } : {}),
+                  ...(maxTokens !== undefined ? { maxTokens } : {}),
+                }
+              })
+            }
           },
         })
         try {

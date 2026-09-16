@@ -8,8 +8,10 @@
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
 - **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个旁路任务 (身份旁路 session, seed = 源
-  session 的 verbatim 前缀, 吃满前缀缓存), 取回 plain text 写进 note. **这些任务的生命周期与状态
-  归 manager** (``bypass``): 关停时取消在飞的、不等 —— 缺 note 的 commit 就空着, 内容仍可 read.
+  session 的 verbatim 前缀, 吃满前缀缓存), 取回 plain text 写进 note. prompt 轨迹接续 (前驱坐标
+  + 最近 N 条已就绪 message 作前文), 约束显式进载荷 (低思考 + maxTokens 硬 cap). **这些任务的
+  生命周期与状态归 manager** (``bypass``): 关停时取消在飞的、不等 —— 缺 note 的 commit 就空着,
+  内容仍可 read.
   **不做重启补漏**: 空的就空着.
 - 未落: ``read`` (commit 区间 → 文本)、``chat_commit``, 以及 ego 的 inflight 替换 (当前只在 ego
   开启/关闭时用 ``resume_ref()`` 重建).
@@ -53,15 +55,52 @@ _BYPASS_RUN_ROUTE = "/moss-api/ghost/dolores/bypass/run"
 # read 路由: 收 {ref} 回 {events}, 源 log 的 turn 区间原始切片 (live-or-cold).
 _READ_ROUTE = "/moss-api/ghost/dolores/read"
 
-# note 的 prompt —— 摘要进 memento 当 commit 的 message (首行 title, 其余 body).
-_NOTE_PROMPT = (
-    "Compress the conversation above into one commit summary for your future self to retrieve. "
-    "Output the summary itself and nothing else — no pleasantries.\n"
-    "First line = a one-sentence title (<= 30 words); every following line = one point, covering: "
-    "what was done / what was decided / what comes next.\n"
-    "Keep the whole thing <= 400 words. Do not restate the conversation — keep only conclusions "
-    "worth reusing."
-)
+# note 旁路的固定约束 (强制, 不可调): 摘要压低思考模式 —— 压缩不该深想, 省 token 不阻塞主路.
+_NOTE_EFFORT = "low"
+# 旁路摘要前置上下文的窗口: 取本 commit 之前最近 N 条已就绪的 message 作前文.
+_NOTE_PRIOR_COUNT = 2
+
+
+def _note_prompt(
+    *,
+    latest_coord: str | None,
+    prior: list[tuple[str, str]],
+) -> str:
+    """note 摘要 prompt —— 轨迹接续 (英文, 面向模型).
+
+    ``latest_coord`` = 本 commit 的前驱坐标 (None = 首条, 覆盖完整上下文); ``prior`` =
+    最近已就绪 commit 的 ``(coord, message)``, 老→新, 作前文.
+    """
+    lines = [
+        "You are writing the next commit in your memento trajectory — a line of commits that records",
+        "your past. The conversation above is the span this commit covers.",
+    ]
+    if latest_coord is None:
+        lines.append("")
+        lines.append("This is the first commit: it covers the whole conversation so far.")
+    else:
+        lines.append("")
+        lines.append(
+            f"This commit continues right after {latest_coord} — record only what happened since then."
+        )
+    if prior:
+        lines.append("")
+        lines.append("The most recent commits before this one, for continuity:")
+        for coord, message in prior:
+            lines.append(f"- {coord}: {message}")
+    lines.extend([
+        "",
+        "Write the summary itself and nothing else, in this structure:",
+        "1. What happened — continuing from the previous commit.",
+        "2. Points worth noting.",
+        "3. Resources involved (files, etc.) — names and connections only, no detail.",
+        "4. Thoughts or feelings you want to record for your future self.",
+        "",
+        "Keep it short. Your persistent state (identity, ground) stays continuous — do not re-state",
+        "it; record only what changed in this span.",
+    ])
+    return "\n".join(lines)
+
 
 # chat 的 prompt 前缀 —— 必须点破"对话对象是上下文而不是 commit 本身".
 _CHAT_PREAMBLE = (
@@ -88,6 +127,10 @@ class EgoMementoConfig(BaseModel):
     force_tokens: int = Field(
         default=100_000,
         description="T: 达此值强制建锚点. 置 0 = 每 turn commit (验证期用).",
+    )
+    note_max_tokens: int = Field(
+        default=800,
+        description="note 摘要的输出上限 (maxTokens 硬 cap, 旁路单轮请求侧). 判定区间 500-1000, 取 800.",
     )
 
 
@@ -240,11 +283,20 @@ class EgoMementoManager:
         run.task = asyncio.create_task(self._run_bypass(run), name=f"memento-note-{commit_id}")
 
     async def _run_bypass(self, run: BypassCommit) -> None:
-        """跑一轮旁路并写 note. 空 message / 传输失败 → 终态留空, 不自动重试."""
+        """跑一轮旁路并写 note. 空 message / 传输失败 → 终态留空, 不自动重试.
+
+        prompt 轨迹接续 (前驱坐标 + 前文); 旁路约束显式进载荷 (低思考 + maxTokens), 不靠
+        plugin 的身份判定间接降级.
+        """
         try:
             result = await self._connection.call(
                 _BYPASS_RUN_ROUTE,
-                {"ref": run.ref.model_dump(mode="json"), "prompt": _NOTE_PROMPT},
+                {
+                    "ref": run.ref.model_dump(mode="json"),
+                    "prompt": self._note_prompt_for(run.commit_id),
+                    "reasoning_effort": _NOTE_EFFORT,
+                    "max_tokens": self._config.note_max_tokens,
+                },
             )
         except asyncio.CancelledError:
             raise
@@ -264,6 +316,30 @@ class EgoMementoManager:
         """等所有在飞的旁路任务收尾 (观测/测试用)."""
         while pending := [r.task for r in self._bypass.values() if r.task is not None and not r.task.done()]:
             await asyncio.gather(*pending, return_exceptions=True)
+
+    def _note_prompt_for(self, commit_id: str) -> str:
+        """为某 commit 组 note prompt: 前驱坐标 + 最近 N 条已就绪 message 作前文."""
+        commit = self._find_commit(commit_id)
+        seq = commit.seq if commit is not None else 0
+        latest_coord, prior = self._note_context(seq)
+        return _note_prompt(latest_coord=latest_coord, prior=prior)
+
+    def _note_context(self, target_seq: int) -> tuple[str | None, list[tuple[str, str]]]:
+        """本 commit 的轨迹上下文: 前驱坐标 (None = 首条) + 最近 N 条已就绪 message (老→新).
+
+        branch append-only → 前驱 (seq < target_seq) 永不变, 与旁路异步执行时机无关.
+        坏 commit / 空 message 跳过 —— 不是真摘要, 不能当前文.
+        """
+        branch = self._branch()
+        prior_refs = [c for c in branch.commits() if c.seq < target_seq]
+        latest = prior_refs[-1] if prior_refs else None
+        latest_coord = f"{branch.index}-{latest.seq}" if latest is not None else None
+        prior: list[tuple[str, str]] = []
+        for commit in prior_refs[-_NOTE_PRIOR_COUNT:]:
+            view = branch.get_commit(commit.seq)
+            if view is not None and not view.is_broken and view.message.strip():
+                prior.append((view.coord, view.message))
+        return latest_coord, prior
 
     # ── read / chat (旁路原语的另两个调用方; 目标用坐标引用) ──────────
 

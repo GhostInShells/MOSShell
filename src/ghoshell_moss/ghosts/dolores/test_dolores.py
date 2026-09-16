@@ -539,7 +539,40 @@ class TestEgoMementoSidecar:
         assert note.error == ""
         assert conn.calls[0][0].endswith("/bypass/run")
         assert conn.calls[0][1]["ref"]["session_id"] == "s1"
+        # 旁路约束显式进载荷: 低思考 + 输出硬 cap (不再靠 plugin 身份判定间接降级).
+        assert conn.calls[0][1]["reasoning_effort"] == "low"
+        assert conn.calls[0][1]["max_tokens"] > 0
         assert self._state(manager, anchor.id) == "ready"
+
+    @pytest.mark.asyncio
+    async def test_note_prompt_first_commit_covers_all(self, tmp_path: Path):
+        """首条 commit: 无前驱, 声明覆盖完整上下文."""
+        conn = self._FakeConnection({"message": "x"})
+        manager, _ = self._manager(tmp_path, conn)
+        first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(first.id)
+        await manager.drain_bypass()
+
+        assert "This is the first commit" in conn.calls[0][1]["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_note_prompt_continues_the_trajectory(self, tmp_path: Path):
+        """后续 commit: 注入前驱坐标 + 前文 message (只调度目标 commit, 不覆盖前驱 note)."""
+        conn = self._FakeConnection({"message": "x"})
+        manager, memento = self._manager(tmp_path, conn)
+        branch = memento.get_branch("main")
+        first = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        branch.note(first.id, "first-note")
+
+        second = manager.commit(session_id="s1", start_turn=1, end_turn=2)
+        manager.schedule_note(second.id)
+        await manager.drain_bypass()
+
+        prompt = conn.calls[0][1]["prompt"]
+        first_coord = branch.get_commit(first.seq).coord
+        assert f"continues right after {first_coord}" in prompt
+        assert "first-note" in prompt
 
     @pytest.mark.asyncio
     async def test_sidecar_failure_leaves_empty_note(self, tmp_path: Path):

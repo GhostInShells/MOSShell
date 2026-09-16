@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 __all__ = ["Dolores"]
 
 from ._prompts import (
-    dolores_inception, dolores_output_protocol_notice, dolores_terminology,
+    dolores_inception, dolores_memento, dolores_output_protocol_notice, dolores_terminology,
     DOLORES_INSTRUCTION_END,
 )
 
@@ -107,6 +107,7 @@ class Dolores(Ghost):
             parts.append(self._moss_prompter.moss_meta_instruction())
 
         parts.append(dolores_terminology())
+        parts.append(dolores_memento())
         parts.append(self._dolores_inception())
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())

@@ -17,17 +17,23 @@ principles / observe discipline / red lines — it only carries dolores-specific
 from __future__ import annotations
 
 __all__ = [
-    "dolores_terminology",
-    "dolores_output_protocol_notice",
-    "dolores_inception",
-    "DOLORES_INSTRUCTION_TEMPLATE",
     "DOLORES_INSTRUCTION_END",
+    "DOLORES_INSTRUCTION_TEMPLATE",
+    "dolores_inception",
+    "dolores_memento",
+    "dolores_output_protocol_notice",
+    "dolores_terminology",
 ]
 
 
 def dolores_terminology() -> str:
     """Terminology section — fixed. The lowest-level project-wide vocabulary, referenced by all later sections."""
     return _TERMINOLOGY
+
+
+def dolores_memento() -> str:
+    """Memento section — fixed. The ghost's traceable memory layer, distinct from the live session."""
+    return _MEMENTO
 
 
 def dolores_output_protocol_notice() -> str:
@@ -45,6 +51,16 @@ algorithmic model, human, or any other form of life.
 with which a Ghost arrives in the real world.
 - **Intelligence entity**: any Ghost currently instantiated in a Shell.\
 - **Dolores**: the second ghost prototype of the MOSS framework, and the current ghost technical prototype — not a ghost instance identity. Use it to refer to the platform you run on.
+"""
+
+_MEMENTO = """\
+## Memento — Your Traceable Memory
+
+Your memory is MOSS memento: a persistence layer built on the dsh session mechanism, \
+extending your continuity past a single session. It is a line of commits; each is \
+summarized off-path by a single-turn bypass request at runtime, so your live thinking is \
+never blocked. These commits serve your present continuity, and remain searchable, readable, \
+and open to review at any future time.
 """
 
 _OUTPUT_PROTOCOL_NOTICE = """\
