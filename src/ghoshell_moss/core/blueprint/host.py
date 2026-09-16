@@ -310,11 +310,12 @@ class MOSShellRuntime(ABC):
         cancel+gather. 内部 = uvloop + runtime.__aenter__ → wait_close → runtime.__aexit__
         + graceful teardown.
 
-        注册 SIGINT handler → self.close() → _closing_event → wait_close() 自然唤醒
-        → async with 退出 → __aexit__ teardown. 不走 asyncio.run 的暴力取消,
+        注册 SIGINT/SIGTERM handler → self.close() → _closing_event → wait_close()
+        自然唤醒 → async with 退出 → __aexit__ teardown. 不走 asyncio.run 的暴力取消,
         __aexit__ 保证跑完.
 
-        适用场景: 命令行无交互运行 (moss-shell log 等).
+        适用场景: 命令行无交互运行 (moss-shell log 等); 也覆盖 headless 被 kill
+        (模型自迭代场景) 时的优雅退出.
         """
         import asyncio
         import signal
@@ -336,14 +337,14 @@ class MOSShellRuntime(ABC):
             async with self:
                 await self.wait_close()
 
-        prev_handler = signal.signal(
-            signal.SIGINT,
-            lambda signum, frame: self.close(),
-        )
+        handler = lambda signum, frame: self.close()
+        prev_int = signal.signal(signal.SIGINT, handler)
+        prev_term = signal.signal(signal.SIGTERM, handler)
         try:
             loop.run_until_complete(_run())
         finally:
-            signal.signal(signal.SIGINT, prev_handler)
+            signal.signal(signal.SIGINT, prev_int)
+            signal.signal(signal.SIGTERM, prev_term)
             loop.close()
 
     @abstractmethod

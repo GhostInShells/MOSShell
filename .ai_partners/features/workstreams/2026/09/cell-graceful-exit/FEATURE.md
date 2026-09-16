@@ -107,6 +107,9 @@ Matrix 只有 `wait_closed()`, 而 `arun` 里的 `exit_signal` 恰恰等了它 �
 | `cli/main.py` | `register_control_flow_exit(typer.Exit)` |
 | `core/blueprint/environment.py` | `log_file` 属性 (供 `project where` 显示日志路径) |
 | `cli/project_cli.py` | `moss project where` 增 `Log File` 行 |
+| `core/blueprint/host.py` | `run_until_closed` 增 SIGTERM → `self.close()` (镜像 SIGINT) |
+| `cli/ghost_run.py` | `_run_ghost_headless` 增 SIGTERM → `ghost_runtime.close()`; 澄清收尾由 main() 的 `async with` 反卷 |
+| `cli/moss_as_mcp.py` | SIGTERM → `signal.default_int_handler` (走 asyncio.run 取消路径, `async with moss_host.run()` 正常收尾) |
 
 验证 (端到端, 非纸面): `moss nodes run .moss/system_test_nodes/signal_sender` 起来后
 `moss nodes kill node/signal_sender/...` → 日志写入
@@ -124,7 +127,7 @@ channel closed / topic publish loop stopped / session closed / Subprocesses stop
    以及同名非 singleton 并发仍是窄边角竞争, 概率小, 未加锁。要彻底需给 moss.log 的
    轮换加 flock, 或非 singleton 也拆实例名 — **未动, 待定**。
 2. **存量 stale 账本** — 本次修复前硬杀的遗留 (5 条 `llm_judge_probe`), 可
-   `moss nodes prune` 清。
-3. `Matrix.run` 只处理 SIGTERM; SIGINT 仍走 KeyboardInterrupt → asyncio.run 取消路径
-   (交互式 Ctrl+C 的既有路径, 未动)。`Host.run_until_closed` / `MossRuntime` 侧
-   (moss-ghost / moss-shell log) 目前只装 SIGINT, SIGTERM 仍硬死 — 同类问题, 未动。
+   `moss nodes prune` 清。(用户已确认无需处理。)
+3. **host/ghost/mcp 的 headless SIGTERM 已补齐** — `run_until_closed` / 
+   `_run_ghost_headless` / `moss_as_mcp` 三处 headless 入口都已装 SIGTERM (模型
+   自迭代场景: headless 启动后 kill 优雅退出, 不留孤儿进程)。TUI 面不走 kill, 未动。

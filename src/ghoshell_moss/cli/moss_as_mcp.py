@@ -301,10 +301,16 @@ def main_entry(
                 else:
                     raise click.BadParameter(f"transport {transport} not supported")
 
+    import signal
+    # SIGTERM 映射成 KeyboardInterrupt: 走 asyncio.run 的取消路径, 让
+    # `async with moss_host.run()` 的 __aexit__ 正常收尾 (headless 被 kill 不污染).
+    prev_term = signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         asyncio.run(run_server())
     except KeyboardInterrupt:
         pass
+    finally:
+        signal.signal(signal.SIGTERM, prev_term)
 
 
 @click.command()
