@@ -535,6 +535,9 @@ class MatrixImpl(Matrix):
     def close(self) -> None:
         self._closing_event.set()
 
+    async def wait_close(self) -> None:
+        await self._closing_event.wait()
+
     async def wait_closed(self) -> None:
         await self._closed_event.wait()
 

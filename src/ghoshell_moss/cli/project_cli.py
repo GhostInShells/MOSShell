@@ -69,6 +69,7 @@ def where() -> None:
             ["Default Network", meta.default_network],
             ["Network Scope", meta.default_network_scope],
             ["MOSS.md", str(moss_md) if moss_md.exists() else "Missing"],
+            ["Log File", str(env.log_file)],
         ],
         headers=["Property", "Value"],
         title="MOSS Project",

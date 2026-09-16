@@ -14,11 +14,16 @@ from ghoshell_moss.cli import (
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
     ground_cli, llms_cli, audio, mcp_cli, skills_cli,
 )
+from ghoshell_moss.core.blueprint.project import register_control_flow_exit
 from ghoshell_moss.depends import depend_matrix, depend_mcp
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
 
 __version__ = "0.1.0-beta"
+
+# typer.Exit (click Exit) 是 CLI 的正常退出路径 — 它跨过 `with Project.discover()`
+# 边界, 但不该被记成 ERROR traceback. 登记一次, 全 CLI 生效.
+register_control_flow_exit(typer.Exit)
 
 # 创建 app 对象
 # help_option_names 依然有效

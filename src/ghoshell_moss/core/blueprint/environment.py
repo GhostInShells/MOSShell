@@ -88,6 +88,7 @@ META_CONFIG_FILENAME = 'MOSS.md'
 WORKSPACE_ENV_FILENAME = '.env'
 WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 WORKSPACE_CELL_RUNTIME_DIR = 'runtime/cells'
+WORKSPACE_LOG_FILE = 'runtime/logs/moss.log'
 DEFAULT_NODES_DIR = 'nodes'
 
 # node_paths 里的路径前缀占位符 (非环境变量, 仅 node_paths 语法).
@@ -613,6 +614,11 @@ class Environment:
     @property
     def log_config_file(self) -> Path:
         return self._workspace_path / 'configs' / 'logging.yml'
+
+    @property
+    def log_file(self) -> Path:
+        """运行时日志文件. 与 Project.log_file 同一约定地址. """
+        return self._workspace_path / WORKSPACE_LOG_FILE
 
     def dump_cell_env(
             self,

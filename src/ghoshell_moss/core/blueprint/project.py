@@ -44,6 +44,7 @@ __all__ = [
     'HOST_MODE_MANIFESTS_PACKAGE',
     'HOST_MODE_FILE',
     'MODE_MATRIX_MANIFESTS_PACKAGE',
+    'register_control_flow_exit',
 ]
 
 T = TypeVar('T')
@@ -51,6 +52,19 @@ T = TypeVar('T')
 HOST_MODE_MANIFESTS_PACKAGE = 'HOST'
 HOST_MODE_FILE = 'HOST.md'
 MODE_MATRIX_MANIFESTS_PACKAGE = 'MATRIX.manifests'
+
+# 控制流异常: 进程按预期路径结束 (以退出码退出 / 被中断), 不是故障.
+# 谁持有"这是正常退出"的知识, 谁登记 — CLI 框架的 Exit 由 CLI 层登记 (见 project 的 __exit__).
+_CONTROL_FLOW_EXITS: set[type[BaseException]] = {SystemExit, KeyboardInterrupt}
+
+
+def register_control_flow_exit(exc_type: type[BaseException]) -> None:
+    """登记一种"正常退出路径"的异常类型, 使其不再被 Project.__exit__ 记成 ERROR 日志.
+
+    用于 CLI 框架的退出异常 (如 typer.Exit): 它们跨过 `with Project.discover()`
+    边界, 但语义是"按退出码结束", 不是崩溃.
+    """
+    _CONTROL_FLOW_EXITS.add(exc_type)
 
 
 class HostModeMeta(BaseModel):
@@ -533,34 +547,15 @@ class Project(ABC):
         """project 级别的日志位置. """
         return logging.getLogger('moss')
 
-    _LOG_HANDLER_NAME = 'moss_file_handler'
-
     def _ensure_log_file_handler(self) -> None:
-        """为 'moss' logger 添加运行时文件 handler.
+        """为 'moss' logger 添加运行时文件 handler — 首选装配点.
 
-        logging.yml 只配格式和等级, 文件路径是运行时确定的.
-        此方法在 bootstrap() 中调用, 幂等.
+        logging.yml 只配格式和等级, 文件路径由 self.log_file 决定 (per-cell 或 moss.log).
+        绑定逻辑收敛到 contracts.logger.bind_moss_file_handler, 与 MatrixLoggerProvider
+        (兜底) 共享同一 handler name 幂等去重.
         """
-        from logging.handlers import TimedRotatingFileHandler
-        from ghoshell_moss.contracts.logger import default_logger_formatter
-
-        moss_logger = logging.getLogger('moss')
-        for h in moss_logger.handlers:
-            if h.get_name() == self._LOG_HANDLER_NAME:
-                return
-
-        log_file = self.log_file
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        handler = TimedRotatingFileHandler(
-            filename=str(log_file),
-            when='d',
-            interval=1,
-            backupCount=5,
-        )
-        handler.set_name(self._LOG_HANDLER_NAME)
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(default_logger_formatter())
-        moss_logger.addHandler(handler)
+        from ghoshell_moss.contracts.logger import bind_moss_file_handler
+        bind_moss_file_handler(logging.getLogger('moss'), self.log_file)
 
     @classmethod
     def discover(
@@ -804,8 +799,17 @@ class Project(ABC):
 
     @property
     def log_file(self) -> Path:
-        # 系统约定的日志文件名.
-        # 运行时所有的日志都会记录到这个文件中.
+        """当前进程写入的日志文件 — per-cell 命名在这里做默认裁决.
+
+        有 cell 身份 (spawner 注入 MOSS_CELL_ADDRESS) → moss.{role}__{name}.log
+        (稳定名, 不带 uid — uid 只区分同名并发实例, 带进文件名会无界膨胀);
+        否则 (host / CLI 一次性命令) → moss.log.
+        """
+        address = self.env.this_cell_address
+        if address:
+            from ghoshell_moss.core.blueprint.cell import CellAddressCodec
+            codec = CellAddressCodec(address)
+            return self.log_dir.joinpath(f'moss.{codec.role}__{codec.name}.log').absolute()
         return self.log_dir.joinpath('moss.log').absolute()
 
     @property
@@ -836,7 +840,8 @@ class Project(ABC):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            if exc_val is not None:
+            # 控制流退出不记 ERROR — 正常结束进程不该在 moss.log 里留 ERROR traceback.
+            if exc_val is not None and not isinstance(exc_val, tuple(_CONTROL_FLOW_EXITS)):
                 self.logger.exception(exc_val)
         finally:
             self.container.shutdown()

@@ -539,7 +539,12 @@ class Matrix(Facade):
 
     @abstractmethod
     def close(self) -> None:
-        """Close itself for a graceful exit."""
+        """Close itself for a graceful exit. Safe to call from another thread or a signal handler."""
+        ...
+
+    @abstractmethod
+    async def wait_close(self) -> None:
+        """Block until ``close()`` is requested. Return before teardown starts — the run loop uses this to exit."""
         ...
 
     @abstractmethod
@@ -590,7 +595,9 @@ class Matrix(Facade):
 
             if asyncio.iscoroutine(result_or_coro):
                 task = loop.create_task(result_or_coro)
-                exit_signal = loop.create_task(self.wait_closed())
+                # 等的是"关闭请求" (close), 不是"已关闭" (wait_closed) —
+                # 后者只在 __aexit__ 里置位, 在 async with 体内永远等不到.
+                exit_signal = loop.create_task(self.wait_close())
                 try:
                     done, pending = await asyncio.wait(
                         [task, exit_signal],
@@ -613,11 +620,24 @@ class Matrix(Facade):
         """
         Synchronous blocking entry point. It drives the event loop and the lifecycle itself.
         Top-level entry that works on Python 3.10.
+
+        SIGTERM → ``close()`` → the run loop exits and ``__aexit__`` tears down — the
+        same graceful path as SIGINT (KeyboardInterrupt → asyncio.run cancels the task),
+        so ``kill`` on a cell is a clean shutdown, not an abrupt process death.
         """
+        import signal
+        import threading
+
         try:
             import uvloop
         except ImportError:
             uvloop = None
+
+        # 信号只能装在主线程; 装在别的线程会抛 ValueError (Matrix.run 允许在子线程跑).
+        prev_handler = None
+        in_main_thread = threading.current_thread() is threading.main_thread()
+        if in_main_thread:
+            prev_handler = signal.signal(signal.SIGTERM, lambda *_: self.close())
 
         try:
             if uvloop is not None:
@@ -625,6 +645,9 @@ class Matrix(Facade):
             return asyncio.run(self.arun(main_coro))
         except KeyboardInterrupt:
             pass  # arun already handled cleanup
+        finally:
+            if in_main_thread:
+                signal.signal(signal.SIGTERM, prev_handler)
 
     # -- serve_mcp: code-as-prompt sugar that serves an MCP server inside the matrix lifecycle -- #
 
