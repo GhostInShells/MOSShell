@@ -1,12 +1,11 @@
-"""CellEventNucleus — 将 'cell_event' signal 转换为 background_notice impulse.
+"""CellEventNucleus — converts ``cell_event`` signals into background_notice impulses.
 
-纯 signal→impulse 转换单元, 不依赖 Matrix/mesh/session 等系统抽象.
-mesh.on_event → Signal('cell_event') 的生产侧归 channel 层 (mesh channel,
-matrix-channel.md §5.2).
+A pure signal→impulse unit with no dependency on Matrix/mesh/session. The producer
+side (mesh.on_event → Signal('cell_event')) belongs to the channel layer (mesh
+channel, matrix-channel.md §5.2).
 
-SignalMeta 与 Nucleus 同居: CellEventSignalMeta + CellTransition 定义在此,
-`ghoshell_moss.signals` 只做 re-export (那是 Signal 的策展导出地图,
-不是实现位置).
+SignalMeta and Nucleus live together: CellEventSignalMeta + CellTransition are
+defined here; ``ghoshell_moss.signals`` only re-exports them.
 """
 from enum import Enum
 from typing import Callable, Iterable
@@ -55,18 +54,20 @@ class CellTransition(str, Enum):
 
 
 class CellEventSignalMeta(SignalMeta):
-    """Cell 生命周期事件的信号类型.
+    """Signal meta for ``cell_event`` — a lifecycle change in the cell network.
 
-    由 mesh channel on_startup 订阅 mesh.on_event 桥接产生 (matrix-channel.md
-    §5.2), priority=BACKGROUND — 不会抢占 attention, 只作为 background hint
-    进 mindflow buffer. CellEventNucleus 消费转为 Impulse.
+    Produced by the mesh channel subscribing to mesh.on_event (matrix-channel.md
+    §5.2). priority=BACKGROUND — it never preempts attention, only enters the
+    mindflow buffer as a background hint; CellEventNucleus converts it to an
+    impulse.
 
-    **字段是 nucleus 的判决依据, 不是 ghost 看的消息主体** — 消息主体
-    (退出码/stderr 尾/诊断入口路径) 走 to_signal(messages=..., description=...).
-    详见 SignalMeta docstring 的三尺度原则.
+    **The fields are the nucleus's routing signal, not message content** — the
+    message body (exit code, stderr tail, diagnostics path) goes through
+    to_signal(messages=..., description=...). See the SignalMeta docstring's
+    three-scales principle.
 
-    默认值让空构造合法 (测试 / 兜底信号):
-      CellEventSignalMeta() → address='' + transition=READY, 语义 = "有事发生".
+    Defaults keep an empty construct valid (tests / fallback):
+      CellEventSignalMeta() → address='' + transition=READY, meaning "something happened".
     """
 
     address: str = Field(
@@ -92,10 +93,14 @@ class CellEventSignalMeta(SignalMeta):
 
 
 class CellEventNucleus(Nucleus):
-    """'cell_event' signal → Impulse(background_notice).
+    """Cell-lifecycle channel — converts ``cell_event`` into background_notice impulses.
 
-    与 NotifyNucleus 同构: add_signal 接收 signal, build_impulse 转换,
-    fire_impulse 投递到 mindflow. priority 由 signal 携带 (BACKGROUND).
+    Functional intent: cell network transitions reach the ghost as low-priority
+    awareness, never an interruption.
+
+    Mechanism: isomorphic to NotifyNucleus — add_signal receives, build_impulse
+    converts, fire_impulse delivers to mindflow. priority rides with the signal
+    (BACKGROUND).
     """
 
     def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):

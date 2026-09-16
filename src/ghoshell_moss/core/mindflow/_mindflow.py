@@ -585,14 +585,14 @@ class AbsMindflow(Mindflow, ABC):
     async def _challenge_attention(self, impulse: Impulse) -> None:
         """impulse 与当前 attention 的仲裁入口. 原子操作.
 
-        三 mode (default/silent/notify) 沿"抢占成功 vs 失败" 双轴对称分布,
+        三 mode (default/aside/notify) 沿"抢占成功 vs 失败" 双轴对称分布,
         见 ``ChallengeMode`` 注释的对称表. 本函数把对称表展开成实际分支:
-        - 抢占成功 + silent → buffer messages (silent 偏离侧)
+        - 抢占成功 + aside → buffer messages (aside 偏离侧)
         - 抢占成功 + 其他   → 创建新 attention (default)
         - 抢占失败 + notify → buffer messages (notify 偏离侧)
         - 抢占失败 + 其他   → suppress nucleus (default)
 
-        quiet 系统 (无 defender) 走单独分支: silent 同样 buffer 不创建 attention,
+        quiet 系统 (无 defender) 走单独分支: aside 同样 buffer 不创建 attention,
         其他模式直接创建初始 attention.
 
         FATAL/BACKGROUND 在进入 challenge() 之前先短路 — 这是协议级承诺,
@@ -622,9 +622,9 @@ class AbsMindflow(Mindflow, ABC):
             verdict: ChallengeVerdict = 'suppressed'
             if self._current_attention and not self._current_attention.is_aborted():
                 defender = self._current_attention.draw_from()
-                # Fatal always prevails (silent mode 抢占成功但只 buffer 不创建 attention)
+                # Fatal always prevails (aside mode 抢占成功但只 buffer 不创建 attention)
                 if impulse.priority == Priority.FATAL.value:
-                    verdict = 'buffered' if impulse.mode == ChallengeMode.silent.value else 'preempted'
+                    verdict = 'buffered' if impulse.mode == ChallengeMode.aside.value else 'preempted'
                     await self._fire_challenge(impulse, defender, verdict)
                     return None
                 elif impulse.priority == Priority.BACKGROUND.value:
@@ -644,7 +644,7 @@ class AbsMindflow(Mindflow, ABC):
                 if result == 'win':
                     # 同 ID 更新 complete, 不抢占.
                     verdict = 'preempted'
-                    if impulse.mode == ChallengeMode.silent.value:
+                    if impulse.mode == ChallengeMode.aside.value:
                         verdict = 'buffered'
                     await self._fire_challenge(impulse, defender, verdict)
                     return None
@@ -661,8 +661,8 @@ class AbsMindflow(Mindflow, ABC):
                 return None
             else:
                 verdict = 'initial'
-                if impulse.mode == ChallengeMode.silent.value:
-                    # silent 模式不创建注意力, 只做 buffer.
+                if impulse.mode == ChallengeMode.aside.value:
+                    # aside 模式不创建注意力, 只做 buffer.
                     verdict = 'buffered'
                 # 创建一个新的 impulse.
                 await self._fire_challenge(impulse, None, verdict)

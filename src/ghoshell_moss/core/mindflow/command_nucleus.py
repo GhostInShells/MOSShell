@@ -1,13 +1,17 @@
-"""CommandNucleus — 把 ``command`` signal 直接转成 ``command_only`` impulse.
+"""CommandNucleus — turns ``command`` signals into ``command_only`` impulses.
 
-四元 nucleus 之一: 配对 ``ImpulsePrimitive.command_only`` 的反射弧入口.
-监听 ``CommandSignalMeta`` (signal name = ``"command"``), 把 signal 携带的 logos
-直接卸载为 impulse, 走 mindflow 的 ``thinking_effort='none'`` 提前返回路径,
-在不调用 ``ghost.articulate()`` 的情况下让 shell 执行指令.
+Functional intent: execute logos now, without the ghost thinking first. Pairs
+``ImpulsePrimitive.command_only``.
 
-priority 完全继承 ``Signal.priority`` — nucleus 不强制 floor, 调用方用
-``Priority.FATAL`` 表达 "强制指令" (等价于 ``ImpulsePrimitive.fatal_command``),
-用 ``Priority.NOTICE`` 表达 "普通命令". 单一 nucleus 覆盖两种.
+Mechanism: listens to ``CommandSignalMeta`` (signal name ``"command"``), unwraps
+the logos carried by the signal, and routes it through mindflow's
+``thinking_effort='none'`` early-return path so the shell executes it without
+calling ``ghost.articulate()``.
+
+priority is inherited verbatim from ``Signal.priority`` — no floor is imposed:
+callers use ``Priority.FATAL`` for a forced command (equivalent to
+``ImpulsePrimitive.fatal_command``) and ``Priority.NOTICE`` for a normal one.
+One nucleus covers both.
 """
 from typing import Callable, Iterable
 from typing_extensions import Self
@@ -26,10 +30,10 @@ __all__ = ['CommandNucleus', 'CommandSignalMeta', 'CommandNucleusMeta', 'new_com
 
 
 class CommandSignalMeta(SignalMeta):
-    """Signal meta for ``command`` — carries the logos to be executed.
+    """Signal meta for ``command`` — logos for the shell to execute directly.
 
-    使用 ``signal.metadata`` 携带 ``logos`` 字段, 反序列化通过 SignalMeta
-    标准路径 (``from_signal`` -> ``model_validate(signal.metadata)``).
+    The ``logos`` field is carried in ``signal.metadata`` and deserialized through
+    the standard SignalMeta path (``from_signal`` -> ``model_validate(metadata)``).
     """
 
     logos: str = Field(
@@ -48,20 +52,18 @@ class CommandSignalMeta(SignalMeta):
 
 
 class CommandNucleus(Nucleus):
-    """Reflex-arc nucleus — turns each ``command`` signal into a ``command_only``
-    impulse, caches it as last-impulse for mindflow rank/challenge pull.
+    """Reflex-arc nucleus — sends logos straight to the shell, bypassing thought.
 
-    Last-impulse cache 模式 (与 ``_DirectImpulseNucleus`` 同构):
-    - ``add_signal`` 立即构造 impulse, 写入 ``_impulse`` cache 并通知 mindflow
-    - mindflow 通过 ``peek()`` 拉取, 仲裁后经 ``attended`` 确认清 cache
-    - 连续两条 signal 进入但 mindflow 未消费时, 后者覆盖前者 (last-wins) —
-      command 的语义是"最新指令为准", 旧的过时
+    Functional intent: an instruction to execute now, not a topic to think about.
 
-    与 ``InputSignalNucleus`` / ``AsideNucleus`` 的区别: 不聚合, 不保留历史,
-    每次 add 都覆盖. command 视为离散事件, 多个未消费的 command 合并无意义.
+    Mechanism: last-impulse cache (last-wins, isomorphic to ``_DirectImpulseNucleus``).
+    ``add_signal`` wraps the signal into a ``command_only`` impulse and notifies
+    mindflow, which pulls it via ``peek`` and confirms via ``attended``. A newer
+    command overwrites an unconsumed one — the latest instruction wins.
 
-    priority 完全继承 ``Signal.priority`` (不设 floor) — 调用方用
-    Priority.FATAL 等价于 ``ImpulsePrimitive.fatal_command``.
+    Unlike ``InputSignalNucleus`` / ``AsideNucleus``, it does not aggregate or keep
+    history. priority is inherited verbatim (no floor); ``Priority.FATAL`` is
+    equivalent to ``ImpulsePrimitive.fatal_command``.
     """
 
     NAME = 'command_nucleus'

@@ -2,7 +2,7 @@
 
 Subcommands:
 - ``run``: launch a Ghost — interactive TUI, or headless output/log observation.
-- ``send``: inject a text signal (input/notify/interrupt/silent) to a running Ghost.
+- ``send``: inject a text signal (input/notify/interrupt/aside) to a running Ghost.
 
 Without a subcommand, lists all available Ghosts.
 """
@@ -86,7 +86,7 @@ def run_cmd(ctx, ghost, surface):
 @click.option(
     "--signal",
     "signal_type",
-    type=click.Choice(["input", "notify", "interrupt", "silent"]),
+    type=click.Choice(["input", "notify", "interrupt", "aside"]),
     default="input",
     show_default=True,
     help="Signal type to send, routed to the matching nucleus.",
@@ -269,7 +269,7 @@ def _run_log(host: Host, ghost_name: str, ctx: dict) -> None:
 
 
 _LOGOS_OBSERVE_TIMEOUT = 30.0
-"""观测 logos 的超时上限 — 兜底不发语音的 signal (silent / 纯 interrupt)。"""
+"""观测 logos 的超时上限 — 兜底不发语音的 signal (aside / 纯 interrupt)。"""
 
 
 def _send_signal(
@@ -285,7 +285,7 @@ def _send_signal(
 
     signal_type 决定发哪种 signal, 一一对应现成的 nucleus:
     input → InputSignalNucleus, notify → NotifyNucleus,
-    interrupt → InterruptNucleus, silent → AsideNucleus.
+    interrupt → InterruptNucleus, aside → AsideNucleus.
 
     Signal key 是 scope 级 (MOSS/matrix/scopes/{scope}/signals), 但 logos key 是
     session_scope 级 (含 ghost 名), 所以观测 logos 必须传 ghost 对齐订阅 key。
@@ -325,7 +325,7 @@ def _emit_signal(session: Session, text: str, signal_type: str, priority_name: s
         session.add_signal(new_notify_signal(text, priority=priority))
     elif signal_type == "interrupt":
         session.add_signal(new_interrupt_signal(text))
-    else:  # silent
+    else:  # aside
         session.add_signal(new_aside_signal(text, priority=priority))
 
 

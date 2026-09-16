@@ -333,9 +333,9 @@ class ChallengeMode(str, enum.Enum):
     default = '',
 
     # 抢占成功只 inject messages, 不创建新 attention; 抢占失败仍 suppress.
-    # 用例: 高优广播 (FATAL + silent) — 必送达但不接管思维.
+    # 用例: 高优广播 (FATAL + aside) — 必送达但不接管思维.
     # 类似传统 Agent 的 inject messages.
-    silent = 'silent'
+    aside = 'aside'
 
     # 抢占失败时 buffer messages 而非 suppress; 抢占成功正常创建新 attention.
     # 用例: 消息绝不能丢, 但可以不响应的情况. 比如连续的语音输入 (NOTICE + notify)
@@ -382,7 +382,7 @@ class Impulse(BaseModel):
     dynamic_messages: list[Message] = Field(
         default_factory=list,
         description="the impulse perspective, 伴随决策携带."
-                    "本帧实时字段: 走 ChallengeMode 的 buffer 路径 (silent/notify) 时该字段被丢弃.",
+                    "本帧实时字段: 走 ChallengeMode 的 buffer 路径 (aside/notify) 时该字段被丢弃.",
     )
     messages: list[Message] = Field(
         default_factory=list,
@@ -395,13 +395,13 @@ class Impulse(BaseModel):
         default='',
         description="the temporary instruction for model handling this impulse."
                     "本帧实时字段: 仅在 Impulse 获得 attention 时通过 update_moment 落到 moment.hint."
-                    "走 ChallengeMode 的 buffer 路径 (silent/notify) 时该字段被丢弃.",
+                    "走 ChallengeMode 的 buffer 路径 (aside/notify) 时该字段被丢弃.",
     )
     mode: str | ChallengeMode = Field(
         default='',
         description="Impulse 作为一种预处理思维模式, 通过原语和 Runtime 的规则通讯."
                     "规则可以自行扩展, 系统提供基线. 规则优先级高于大脑思考, 属于条件反射. "
-                    "见 ChallengeMode 的对称表理解 silent/notify 的偏离语义.",
+                    "见 ChallengeMode 的对称表理解 aside/notify 的偏离语义.",
     )
     logos: str = Field(
         default='',
@@ -409,7 +409,7 @@ class Impulse(BaseModel):
                     "当 Impulse 获得了注意力时, 应该伴随发送到 Articulator, 由 Articulator 决定是否直接发送给 Action."
                     "如果作为 '反射弧' 直接发送, 则它会先于 思考帧生成 logos, 就发送给 Action 侧."
                     "这样先于思考就会有 logos 发送. 大脑也应该感受到它 (或像人一样意识不到小动作), 取决于具体实现."
-                    "本帧实时字段: 走 ChallengeMode 的 buffer 路径 (silent/notify) 时该字段被丢弃 (跨 attention 没意义).",
+                    "本帧实时字段: 走 ChallengeMode 的 buffer 路径 (aside/notify) 时该字段被丢弃 (跨 attention 没意义).",
     )
     interrupt: bool = Field(
         default=False,
@@ -726,7 +726,7 @@ ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'bu
 - suppressed: 被压制，原 nucleus 收到 suppress()
 - absorbed: 同 ID 更新 complete，不抢占
 - initial: 当前无 attention（首个 impulse）
-- buffered: silent 抢占成功侧 / notify 抢占失败侧 → messages 进 mindflow buffer
+- buffered: aside 抢占成功侧 / notify 抢占失败侧 → messages 进 mindflow buffer
 - yielded: strength=0 绝不竞争 — 不分 defender/quiet, 不打任何 mode 分支,
   不建 attention, 由 nucleus 自然清理缓存 (Zen 静默心智模型预留)
 """
@@ -1395,8 +1395,8 @@ class ImpulsePrimitive:
     def broadcast(impulse: Impulse) -> Impulse:
         """高优广播 — 必送达但不接管 ghost 运行时.
 
-        组合: ``priority = FATAL`` + ``mode = silent`` + ``thinking_effort = 'none'``.
-        FATAL 保证抢占成功, silent 在抢占成功侧偏离 default — 不创建新 attention,
+        组合: ``priority = FATAL`` + ``mode = aside`` + ``thinking_effort = 'none'``.
+        FATAL 保证抢占成功, aside 在抢占成功侧偏离 default — 不创建新 attention,
         只把 messages 灌进 mindflow buffer, 由下一个 attention 自然 drain 到 percepts.
 
         用例: 系统通告 / 紧急广播 — ghost 不需要立刻切换上下文, 只要下一帧看到.
@@ -1409,7 +1409,7 @@ class ImpulsePrimitive:
         """
         impulse.thinking_effort = 'none'
         impulse.priority = Priority.FATAL.value
-        impulse.mode = ChallengeMode.silent.value
+        impulse.mode = ChallengeMode.aside.value
         return impulse
 
     @staticmethod
@@ -1430,7 +1430,7 @@ class ImpulsePrimitive:
         用例: 急停 / 模型自我打断 / 状态机切换 / 用户喊"停".
         可携带 messages 解释中断原因, 由下一帧 percepts drain.
 
-        对偶: ``broadcast`` — 同 FATAL + effort=none 但用 silent 不接管;
+        对偶: ``broadcast`` — 同 FATAL + effort=none 但用 aside 不接管;
         interrupt 接管但立即放手.
         """
         impulse.thinking_effort = 'none'

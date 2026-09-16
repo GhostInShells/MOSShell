@@ -4,7 +4,7 @@
 
 覆盖范围:
 - AsideSignalMeta 协议往返
-- 单 signal: silent mode 卸载 + priority 继承
+- 单 signal: aside mode 卸载 + priority 继承
 - 多 signal 聚合: max priority / max strength / 全 messages
 - buffer_size 上限 (溢出丢最早)
 - stale 过滤 (加入前 + rebuild 时)
@@ -71,13 +71,13 @@ def _signal(
 
 
 @pytest.mark.asyncio
-async def test_single_signal_produces_silent_mode_impulse():
-    """单 signal 进入 → peek 拿到的 impulse 应标记 mode='silent'."""
+async def test_single_signal_produces_aside_mode_impulse():
+    """单 signal 进入 → peek 拿到的 impulse 应标记 mode='aside'."""
     async with AsideNucleus() as nuc:
         nuc.add_signal(_signal())
         impulse = nuc.peek()
         assert impulse is not None
-        assert impulse.mode == ChallengeMode.silent.value
+        assert impulse.mode == ChallengeMode.aside.value
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_aggregate_picks_max_strength():
 
 @pytest.mark.asyncio
 async def test_aggregate_concatenates_all_messages():
-    """messages 累积 — silent 是数据流, 全部保留供下游 attention drain."""
+    """messages 累积 — aside 是数据流, 全部保留供下游 attention drain."""
     async with AsideNucleus() as nuc:
         nuc.add_signal(_signal('m1'))
         nuc.add_signal(_signal('m2'))

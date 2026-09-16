@@ -217,7 +217,7 @@ class AsideNucleus(Nucleus):
             complete=all(s.complete for s in valid),
             stale_timeout=latest.stale_timeout,
             # 核心标记 — aside mode 在抢占成功侧偏离 default, 不接管 attention.
-            mode=ChallengeMode.silent.value,
+            mode=ChallengeMode.aside.value,
         )
 
     def _atomic_clear_buffer(self) -> None:

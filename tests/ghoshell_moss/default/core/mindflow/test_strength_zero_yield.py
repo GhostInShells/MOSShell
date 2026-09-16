@@ -19,7 +19,7 @@ API 迁移 (重构 41f0cb63): 用 ``mindflow.thinking_loop()`` 取 Thinking,
 
 覆盖路径:
 - quiet 系统 (无 defender) + strength=0 → yielded, 不创建 attention
-- 有 defender + strength=0 (各 mode: default/silent/notify) → yielded, defender 不动
+- 有 defender + strength=0 (各 mode: default/aside/notify) → yielded, defender 不动
 - strength=0 + FATAL → 仍 yielded (yielded 优先级高于 FATAL 短路)
 - yielded verdict 通过 hook 触发
 - defender 字段在 yielded 时正确填充 (有 defender 时是 defender impulse, quiet 时是 None)
@@ -137,9 +137,9 @@ async def test_strength_zero_yields_with_default_mode_defender():
 
 
 @pytest.mark.asyncio
-async def test_strength_zero_with_silent_mode_still_yields_not_buffer():
-    """strength=0 + mode=silent → yielded (strength=0 短路在 mode 分支之前).
-    协议: silent 的 buffer 偏离不应被触发, messages 不进 mindflow buffer."""
+async def test_strength_zero_with_aside_mode_still_yields_not_buffer():
+    """strength=0 + mode=aside → yielded (strength=0 短路在 mode 分支之前).
+    协议: aside 的 buffer 偏离不应被触发, messages 不进 mindflow buffer."""
     mindflow = _new_mindflow()
     async with mindflow:
         await mindflow.wait_started()
@@ -147,7 +147,7 @@ async def test_strength_zero_with_silent_mode_still_yields_not_buffer():
         async with defender_think:
             mindflow.add_impulse(_imp(
                 strength=0,
-                mode=ChallengeMode.silent.value,
+                mode=ChallengeMode.aside.value,
                 messages=[Message.new().with_content('yielded_msg')],
             ))
             await asyncio.sleep(0.2)

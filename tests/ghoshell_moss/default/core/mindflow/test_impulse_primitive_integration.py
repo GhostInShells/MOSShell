@@ -161,8 +161,8 @@ async def test_fatal_command_uses_fatal_priority():
 
 @pytest.mark.asyncio
 async def test_broadcast_buffers_without_new_attention():
-    """broadcast: FATAL + silent + thinking_effort='none'.
-    协议命题: silent 偏离"抢占成功侧" — FATAL 抢占成功后不创建新 attention,
+    """broadcast: FATAL + aside + thinking_effort='none'.
+    协议命题: aside 偏离"抢占成功侧" — FATAL 抢占成功后不创建新 attention,
     messages 进入 mindflow buffer."""
     mindflow = _new_mindflow()
     async with mindflow:
@@ -173,19 +173,19 @@ async def test_broadcast_buffers_without_new_attention():
         defender_att = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
         async with defender_att:
             # 注入 broadcast.
-            silent_imp = _imp(messages=[Message.new().with_content('silent_msg')])
-            ImpulsePrimitive.broadcast(silent_imp)
-            assert silent_imp.mode == ChallengeMode.silent.value
-            assert silent_imp.priority == Priority.FATAL.value
-            mindflow.add_impulse(silent_imp)
+            aside_imp = _imp(messages=[Message.new().with_content('aside_msg')])
+            ImpulsePrimitive.broadcast(aside_imp)
+            assert aside_imp.mode == ChallengeMode.aside.value
+            assert aside_imp.priority == Priority.FATAL.value
+            mindflow.add_impulse(aside_imp)
             # 给 consume loop 时间.
             await asyncio.sleep(0.2)
-            # 协议命题 1: defender 没有被 abort (silent 不会替换 attention).
+            # 协议命题 1: defender 没有被 abort (aside 不会替换 attention).
             assert not defender_att.is_aborted()
-            # 协议命题 2: silent 的 messages 进入 mindflow buffer.
+            # 协议命题 2: aside 的 messages 进入 mindflow buffer.
             buffered = mindflow.moments.peek().percepts_messages()
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
-            assert 'silent_msg' in buffered_texts
+            assert 'aside_msg' in buffered_texts
             defender_att.abort('test done')
 
 

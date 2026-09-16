@@ -132,15 +132,15 @@ async def test_notify_signal_default_path_creates_attention():
 
 
 @pytest.mark.asyncio
-async def test_silent_signal_quiet_path_buffers_not_attention():
-    """AsideNucleus quiet 路径: silent mode 不创建 attention, messages 进 mindflow buffer."""
+async def test_aside_signal_quiet_path_buffers_not_attention():
+    """AsideNucleus quiet 路径: aside mode 不创建 attention, messages 进 mindflow buffer."""
     mindflow = _quintet_mindflow()
     async with mindflow:
         await mindflow.wait_started()
         mindflow.add_signal(new_aside_signal(Message.new().with_content('quiet_data')))
         # 给 consume loop 时间.
         await asyncio.sleep(0.2)
-        # quiet 系统下 silent 不应创建 attention.
+        # quiet 系统下 aside 不应创建 attention.
         assert mindflow.attention() is None
         buffered = mindflow.moments.peek().percepts_messages()
         assert 'quiet_data' in _texts(buffered)
@@ -226,7 +226,7 @@ def test_broadcast_primitive_standalone_usability():
     base = Impulse(messages=[Message.new().with_content('alert')])
     broadcast = ImpulsePrimitive.broadcast(base)
     assert broadcast.priority == Priority.FATAL
-    assert broadcast.mode == ChallengeMode.silent.value
+    assert broadcast.mode == ChallengeMode.aside.value
     assert broadcast.thinking_effort == 'none'
     assert broadcast.interrupt is False  # broadcast 不带 interrupt
 
@@ -237,8 +237,8 @@ def test_broadcast_primitive_standalone_usability():
 
 
 @pytest.mark.asyncio
-async def test_input_then_silent_silent_buffers_into_input_attention():
-    """input 占住 attention, silent 抢占成功后 buffer messages → 下一帧 attention 从 percepts 看见."""
+async def test_input_then_aside_aside_buffers_into_input_attention():
+    """input 占住 attention, aside 抢占成功后 buffer messages → 下一帧 attention 从 percepts 看见."""
     mindflow = _quintet_mindflow()
     async with mindflow:
         await mindflow.wait_started()
@@ -246,13 +246,13 @@ async def test_input_then_silent_silent_buffers_into_input_attention():
         mindflow.add_signal(_input_signal('user_says', priority=Priority.NOTICE))
         defender = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
         async with defender:
-            # silent FATAL: 抢占成功但 silent mode 偏离 default — buffer, 不接管 attention.
+            # aside FATAL: 抢占成功但 aside mode 偏离 default — buffer, 不接管 attention.
             mindflow.add_signal(new_aside_signal(
                 Message.new().with_content('quiet_supplement'),
                 priority=Priority.FATAL,
             ))
             await asyncio.sleep(0.2)
-            # silent 抢占成功不接管 attention, 原 attention 仍活.
+            # aside 抢占成功不接管 attention, 原 attention 仍活.
             assert not defender.is_aborted()
             # messages 进 buffer.
             buffered = mindflow.moments.peek().percepts_messages()
@@ -332,19 +332,19 @@ async def test_input_then_command_fatal_command_takes_over():
 
 
 @pytest.mark.asyncio
-async def test_silent_aggregates_multiple_signals_into_one_buffer_drain():
+async def test_aside_aggregates_multiple_signals_into_one_buffer_drain():
     """AsideNucleus 聚合多 signal → 一个 impulse → buffer 一次性 drain 多条 messages."""
     mindflow = _quintet_mindflow()
     async with mindflow:
         await mindflow.wait_started()
-        # 三个 silent signal 连续进, AsideNucleus 内部聚合.
+        # 三个 aside signal 连续进, AsideNucleus 内部聚合.
         for i in range(3):
             mindflow.add_signal(new_aside_signal(
                 Message.new().with_content(f'data_{i}'),
                 priority=Priority.FATAL,  # 保证胜出
             ))
         await asyncio.sleep(0.2)
-        # quiet → silent 不创建 attention.
+        # quiet → aside 不创建 attention.
         assert mindflow.attention() is None
         buffered = mindflow.moments.peek().percepts_messages()
         texts = _texts(buffered)
@@ -360,7 +360,7 @@ async def test_silent_aggregates_multiple_signals_into_one_buffer_drain():
 
 @pytest.mark.asyncio
 async def test_signal_namespace_isolation():
-    """signal 路由按 name 严格隔离: input signal 不应触发 command/notify/silent/interrupt nucleus."""
+    """signal 路由按 name 严格隔离: input signal 不应触发 command/notify/aside/interrupt nucleus."""
     mindflow = _quintet_mindflow()
     async with mindflow:
         await mindflow.wait_started()
@@ -384,5 +384,5 @@ async def test_quintet_nuclei_discovered_in_mindflow():
         assert 'input_signal_nucleus' in faculties
         assert 'command_nucleus' in faculties
         assert 'notify_nucleus' in faculties
-        assert 'silent_nucleus' in faculties
+        assert 'aside_nucleus' in faculties
         assert 'interrupt_nucleus' in faculties

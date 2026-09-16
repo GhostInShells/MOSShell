@@ -41,10 +41,10 @@ def _empty_impulse() -> Impulse:
 
 
 def test_broadcast_primitive_field_unload():
-    """broadcast: FATAL + silent + effort='none', interrupt=False."""
+    """broadcast: FATAL + aside + effort='none', interrupt=False."""
     imp = ImpulsePrimitive.broadcast(_empty_impulse())
     assert imp.priority == Priority.FATAL
-    assert imp.mode == ChallengeMode.silent.value
+    assert imp.mode == ChallengeMode.aside.value
     assert imp.thinking_effort == 'none'
     assert imp.interrupt is False  # broadcast 不触发 stop_interpretation
 
