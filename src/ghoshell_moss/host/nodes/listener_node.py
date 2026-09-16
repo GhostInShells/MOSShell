@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
-from ghoshell_moss.contracts.configs import get_or_create_conf
+from ghoshell_moss.contracts.configs import ConfigStore, get_or_create_conf
 from ghoshell_moss.contracts.listener import ASRListener
 from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -55,6 +55,9 @@ async def assemble_controller(
         )
     await controller.with_topic_service(matrix.session.topics)
     await controller.with_audio_sample_service(matrix.session.topics, sample_rate=sample_rate)
+    config_store = con.get(ConfigStore)
+    if config_store is not None:
+        controller.with_config_store(config_store)
     await matrix.add_lifecycle_object(controller)
     return controller
 
@@ -105,5 +108,5 @@ async def listener_controller_node(
     provide_channel 阻塞到 membrane 关闭 — 这是 node 的唯一入网动作.
     """
     controller = await assemble_controller(matrix, device=device, emit_signals=emit_signals)
-    controller.always(timeout=None)
+    controller.start_default_etiquette()
     await matrix.provide_channel(controller.as_channel())

@@ -33,6 +33,7 @@ from ghoshell_moss.contracts.audio import (
     LatestAudioWindow,
     compute_spectrum,
 )
+from ghoshell_moss.contracts.configs import ConfigStore
 from ghoshell_moss.contracts.llms import MossLLMCaller
 from ghoshell_moss.contracts.listener import Listener, ListenerState
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
@@ -40,6 +41,15 @@ from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signa
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
 from ghoshell_moss.core.mindflow.listener_nucleus import new_listener_signal
+from ghoshell_moss.host.listener.etiquette import (
+    DeliverSpec,
+    EtiquetteConfig,
+    EtiquetteSpec,
+    FirstPacketSpec,
+    new_always_spec,
+    new_llm_judge_spec,
+    new_once_spec,
+)
 from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
 from ghoshell_moss.topics import AudioSampleTopic, ClauseTopic
 
@@ -113,6 +123,10 @@ class ListenerController:
 
         self._mode: ListenEtiquette = ListenEtiquette.OFF
         self._channel: Optional[Channel] = None
+        # 礼仪配置化: 当前激活礼仪 (首包/尾包协议读它) + config store (持久化).
+        self._active_etiquette: Optional[EtiquetteSpec] = None
+        self._config_store: Optional[ConfigStore] = None
+        self._etiquette_config: Optional[EtiquetteConfig] = None
         # clause → topic 装线 (懒, 由 with_topic_service 启动).
         self._topic_task: Optional[asyncio.Task] = None
         self._topic_disposer: Optional[Callable[[], None]] = None
@@ -139,6 +153,90 @@ class ListenerController:
             self._owns_listener = False
             await self._listener.__aexit__(exc_type, exc_val, exc_tb)
 
+    # ── 礼仪配置 (config store + 当前激活礼仪) ──
+
+    def with_config_store(self, store: ConfigStore) -> Self:
+        """注册 ConfigStore: 礼仪修改 save=True 时写回环境配置; 否则只内存."""
+        self._config_store = store
+        return self
+
+    def _etiquette_config(self) -> EtiquetteConfig:
+        """当前礼仪配置: 有 store 则 get_or_create, 否则内存实例."""
+        if self._etiquette_config is None:
+            self._etiquette_config = (
+                self._config_store.get_or_create(EtiquetteConfig())
+                if self._config_store is not None
+                else EtiquetteConfig()
+            )
+        return self._etiquette_config
+
+    def etiquette_config(self) -> EtiquetteConfig:
+        """开放当前礼仪配置 (所有已定义礼仪 + 默认激活)."""
+        return self._etiquette_config()
+
+    def active_etiquette(self) -> EtiquetteSpec | None:
+        """当前激活的礼仪 spec (真值)."""
+        return self._active_etiquette
+
+    def set_etiquette_spec(self, spec: EtiquetteSpec, *, save: bool = False) -> None:
+        """增/改一种礼仪 (内存). save=True 且有 config store 时写回环境配置."""
+        config = self._etiquette_config()
+        config.upsert(spec)
+        if save and self._config_store is not None:
+            self._config_store.save(config)
+
+    # ── 礼仪驱动状态机 (纯配置, 持续监听 = 另一种 always) ──
+
+    def run_etiquette(
+            self,
+            etiquette: EtiquetteSpec,
+            *,
+            timeout: float | None = None,
+    ) -> asyncio.Future:
+        """传入礼仪配置, 启动持续监听状态机 (由首包/尾包/判停三层驱动)."""
+        self._active_etiquette = etiquette
+        self._cancel_active()
+        task = asyncio.create_task(self._run_etiquette(etiquette, timeout=timeout))
+        self._active_task = task
+        return task
+
+    def start_default_etiquette(self) -> asyncio.Future:
+        """启动默认礼仪 (config.default); 未定义则 always 配置化并激活."""
+        config = self._etiquette_config()
+        spec = config.active()
+        if spec is None:
+            spec = new_always_spec()
+            config.upsert(spec)
+            config.activate(spec.name)
+        return self.run_etiquette(spec)
+
+    async def _run_etiquette(self, etiquette: EtiquetteSpec, *, timeout: float | None) -> None:
+        state = await self._listener.listen()
+        judge = self._make_stop_judge(etiquette, state.commit)
+        state.on_event_creating(judge.feed)
+        async with state:
+            try:
+                if timeout is None:
+                    await asyncio.Event().wait()
+                else:
+                    await asyncio.sleep(timeout)
+            finally:
+                judge.close()
+
+    def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
+        """判停组件: judge=False 纯 segment_vad, judge=True llm 打分. Model 覆盖加 caller."""
+        stop = etiquette.stop
+        return StopJudge(
+            caller=None,
+            judge=stop.judge,
+            threshold=stop.threshold,
+            segment_vad=stop.segment_vad,
+            judge_delay=stop.judge_delay,
+            commit=commit,
+            keywords=stop.keywords,
+            logger=self._logger,
+        )
+
     # ── 聆听礼仪 ──
 
     def once(
@@ -157,6 +255,7 @@ class ListenerController:
         冗余 (clause 即 commit), 仅为接口一致保留.
         """
         self._mode = ListenEtiquette.ONCE
+        self._active_etiquette = new_once_spec()
         self._cancel_active()
         task = asyncio.create_task(self._run_once(clause_vad=clause_vad, keywords=keywords, timeout=timeout))
         self._active_task = task
@@ -176,12 +275,11 @@ class ListenerController:
         命中 keywords 的 clause 立刻 commit (不等静默).
         """
         self._mode = ListenEtiquette.ALWAYS
-        self._cancel_active()
-        task = asyncio.create_task(self._run_always(
-            clause_vad=clause_vad, segment_vad=segment_vad, keywords=keywords, timeout=timeout,
-        ))
-        self._active_task = task
-        return task
+        self._apply_clause_vad(clause_vad)
+        spec = new_always_spec(segment_vad)
+        if keywords:
+            spec.stop.keywords = list(keywords)
+        return self.run_etiquette(spec, timeout=timeout)
 
     def stop(self) -> None:
         """停止聆听: 取消活跃 session, 回到 off."""
@@ -338,57 +436,6 @@ class ListenerController:
             except asyncio.TimeoutError:
                 self._logger.warning("%s once: no tail within %.1fs", self._log_prefix, timeout)
 
-    async def _run_always(
-            self,
-            *,
-            clause_vad: Optional[int],
-            segment_vad: float,
-            keywords: Optional[list[str]],
-            timeout: float,
-    ) -> None:
-        self._apply_clause_vad(clause_vad)
-        state = await self._listener.listen()
-
-        last_activity = time.monotonic()
-        waiting = False
-
-        async def on_event(event: RecognitionEvent) -> None:
-            nonlocal last_activity, waiting
-            if event.phase == RecognitionPhase.CLAUSE:
-                last_activity = time.monotonic()
-                clause_text = event.clause.text if event.clause else event.text
-                if keywords and any(k in clause_text for k in keywords):
-                    waiting = False
-                    state.commit()
-                else:
-                    waiting = True
-            elif event.phase in (RecognitionPhase.FIRST, RecognitionPhase.PARTIAL):
-                # 活动信号 (用户还在说): reset 等待.
-                last_activity = time.monotonic()
-                waiting = False
-
-        state.on_event_creating(on_event)
-
-        async def _watch() -> None:
-            nonlocal waiting
-            while True:
-                await asyncio.sleep(0.05)
-                if waiting and time.monotonic() - last_activity >= segment_vad:
-                    state.commit()
-                    waiting = False
-
-        async with state:
-            watch_task = asyncio.create_task(_watch())
-            try:
-                if timeout is None:
-                    await asyncio.Event().wait()
-                else:
-                    await asyncio.sleep(timeout)
-            finally:
-                watch_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await watch_task
-
     # ── 信号发射 (RecognitionEvent → listener signal) ──
 
     def _emit_event(self, result: RecognitionEvent) -> None:
@@ -404,24 +451,29 @@ class ListenerController:
             self._emit_deliver(result)
 
     def _emit_interrupt(self, result: RecognitionEvent) -> None:
-        """首包打断: complete=False 抢占注意力, interrupt=True 停行为, 失败丢弃."""
+        """首包打断: 按当前礼仪的 first_packet 协议发射 (barge_in 关则不发射)."""
+        fp = self._active_etiquette.first_packet if self._active_etiquette else FirstPacketSpec()
+        if not fp.barge_in:
+            return
         self._signal_broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
-            interrupt=True,
+            interrupt=fp.interrupt,
             complete=False,
-            priority=Priority.WARNING,
+            priority=fp.priority,
             description="listener:barge-in",
         ))
 
     def _emit_deliver(self, result: RecognitionEvent) -> None:
-        """尾包发送: complete=True 完整响应, notify 失败进历史, INFO 不打断运行中的模型."""
+        """尾包发送: 按当前礼仪的 deliver 协议发射."""
+        dv = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
         self._signal_broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
-            mode=ChallengeMode.notify.value,
+            interrupt=dv.interrupt,
+            mode=dv.mode,
             complete=True,
-            priority=Priority.INFO,
+            priority=dv.priority,
             description="listener:deliver",
         ))
 
@@ -461,35 +513,57 @@ class ListenerController:
             return (
                 f"ASR audio contract: {info.sample_rate}Hz, {info.bits}-bit, {info.channel}ch.\n"
                 f"ASR tunable params schema:\n"
-                f"{json.dumps(info.params_schema, ensure_ascii=False)}"
+                f"{json.dumps(info.params_schema, ensure_ascii=False)}\n"
+                f"EtiquetteSpec json schema (for set_etiquette_spec):\n"
+                f"{json.dumps(EtiquetteSpec.model_json_schema(), ensure_ascii=False)}"
             )
 
-        @chan.build.notice
-        def notice() -> str:
-            return self.snapshot().render_notice()
+        @chan.build.named_notices
+        def named_notices() -> dict[str, str]:
+            # 温数据只暴露当前礼仪名称; 配置详情走 get_etiquette 读接口.
+            active = self._active_etiquette
+            return {"etiquette": active.name if active else ""}
+
+        @chan.build.command()
+        async def set_etiquette_spec(text__: str, save: bool = False) -> str:
+            """Set or update an etiquette; `text__` is a JSON string of EtiquetteSpec
+            (schema in the instruction). `save=True` persists it via the config store.
+            """
+            spec = EtiquetteSpec.model_validate_json(text__)
+            self.set_etiquette_spec(spec, save=save)
+            return f"etiquette '{spec.name}' set"
 
         @chan.build.command(blocking=False)
-        async def once(timeout: float = 60.0) -> str:
-            """Hear one utterance — stop as soon as a sentence finishes (or after `timeout` seconds)."""
-            _ = self.once(timeout=timeout)
-            return "listening (once)"
-
-        @chan.build.command(blocking=False)
-        async def always(segment_vad: float = 1.5) -> str:
-            """Keep listening continuously — commit after `segment_vad` seconds of quiet."""
-            _ = self.always(segment_vad=segment_vad, timeout=None)
-            return "listening (always)"
+        async def activate(name: str = "") -> str:
+            """Run an etiquette — empty name runs the active/default one."""
+            config = self.etiquette_config()
+            spec = config.get(name) if name else config.active()
+            if spec is None:
+                return f"etiquette {name!r} not defined"
+            if name:
+                config.activate(name)
+            self.run_etiquette(spec)
+            return f"activated '{spec.name}'"
 
         @chan.build.command(blocking=False)
         async def stop() -> str:
-            """Stop listening."""
+            """Stop listening (run -> stop -> run lifecycle)."""
             self.stop()
             return "stopped"
 
         @chan.build.command()
-        async def status() -> str:
-            """Report the ear's current state (mode, listening, ASR params)."""
-            return self.snapshot().render_status()
+        async def get_etiquette(name: str = "") -> str:
+            """Read etiquette config: empty = names of all, non-empty = one full spec json."""
+            config = self.etiquette_config()
+            if name:
+                spec = config.get(name)
+                return spec.model_dump_json() if spec else f"etiquette {name!r} not defined"
+            return json.dumps([s.name for s in config.etiquettes], ensure_ascii=False)
+
+        @chan.build.command()
+        async def get_asr_params() -> str:
+            """Read ASR params (cold data, pulled on demand — not in notice)."""
+            return json.dumps(self._asr.get_info().params, ensure_ascii=False)
 
         @chan.build.command()
         async def configure_asr(params: dict) -> str:
@@ -541,52 +615,24 @@ class ModelListenerController(ListenerController):
         ``timeout=None`` means run until ``stop()`` or another etiquette cancels it.
         """
         self._mode = ListenEtiquette.LLM_JUDGE
-        self._cancel_active()
-        task = asyncio.create_task(self._run_llm_judge(
-            clause_vad=clause_vad, segment_vad=segment_vad, judge_delay=judge_delay,
-            keywords=keywords, threshold=threshold, timeout=timeout,
-        ))
-        self._active_task = task
-        return task
-
-    async def _run_llm_judge(
-            self,
-            *,
-            clause_vad: Optional[int],
-            segment_vad: float,
-            judge_delay: float,
-            keywords: Optional[list[str]],
-            threshold: int,
-            timeout: Optional[float],
-    ) -> None:
         self._apply_clause_vad(clause_vad)
-        state = await self._listener.listen()
-        judge = StopJudge(
+        spec = new_llm_judge_spec(segment_vad, threshold)
+        spec.stop.judge_delay = judge_delay
+        if keywords:
+            spec.stop.keywords = list(keywords)
+        return self.run_etiquette(spec, timeout=timeout)
+
+    def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
+        """判停组件: 带 llm caller + 打分观察者 (base 无 caller)."""
+        stop = etiquette.stop
+        return StopJudge(
             caller=self._caller,
-            threshold=threshold,
-            segment_vad=segment_vad,
-            judge_delay=judge_delay,
-            commit=state.commit,
-            keywords=keywords,
+            judge=stop.judge,
+            threshold=stop.threshold,
+            segment_vad=stop.segment_vad,
+            judge_delay=stop.judge_delay,
+            commit=commit,
+            keywords=stop.keywords,
             on_score=self._notify_score,
             logger=self._logger,
         )
-        state.on_event_creating(judge.feed)
-
-        async with state:
-            try:
-                if timeout is None:
-                    await asyncio.Event().wait()
-                else:
-                    await asyncio.sleep(timeout)
-            finally:
-                judge.close()
-
-    def _register_channel_commands(self, chan: MutableChannel) -> None:
-        super()._register_channel_commands(chan)
-
-        @chan.build.command(blocking=False)
-        async def llm_judge(threshold: int = 7, segment_vad: float = 3.0) -> str:
-            """Listen with an llm stop-judge backed by a segment_vad fallback (seconds)."""
-            self.llm_judge(threshold=threshold, segment_vad=segment_vad)
-            return "listening (llm_judge)"

@@ -220,7 +220,8 @@ async def test_controller_borrows_listener_when_running():
 
 
 @pytest.mark.asyncio
-async def test_always_resets_on_partial():
+async def test_always_commits_after_clause_silence():
+    """clause 后 segment_vad 静默 commit; partial 不重置静默计时 (clause-based)."""
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
     task, state = await _start_controller(
@@ -229,11 +230,11 @@ async def test_always_resets_on_partial():
     )
 
     for cb in state.event_creating:
-        await cb(_clause("你好"))     # 启动等待
-        await cb(_partial("你好啊"))  # 活动信号 reset 等待
+        await cb(_clause("你好"))
+        await cb(_partial("你好啊"))  # partial 不重置静默计时
 
-    await asyncio.sleep(0.2)  # 超过 segment_vad, 但已 reset
-    assert state.committed == 0  # 不 commit
+    await asyncio.sleep(0.2)  # 超过 segment_vad (0.1s)
+    assert state.committed == 1  # clause 后静默超时 commit
 
     await _stop(task)
 

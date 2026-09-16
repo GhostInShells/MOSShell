@@ -114,7 +114,8 @@ class StopJudge:
     def __init__(
             self,
             *,
-            caller: MossLLMCaller,
+            caller: MossLLMCaller | None = None,
+            judge: bool = True,
             threshold: int = 7,
             segment_vad: float = 3.0,
             judge_delay: float = 0.3,
@@ -125,6 +126,7 @@ class StopJudge:
             logger: LoggerItf | None = None,
     ) -> None:
         self._caller = caller
+        self._judge = judge
         self._threshold = threshold
         self._segment_vad = segment_vad
         self._judge_delay = judge_delay
@@ -170,7 +172,8 @@ class StopJudge:
         self._clauses.append(text)
         self._last_clause_at = time.monotonic()
         self._start_vad()
-        self._start_judge()
+        if self._judge:
+            self._start_judge()
 
     def _start_vad(self) -> None:
         self._cancel_vad()
