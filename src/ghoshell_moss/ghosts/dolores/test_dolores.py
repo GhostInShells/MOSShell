@@ -407,7 +407,7 @@ class TestDoloresEgoCommit:
         return SessionEvent.from_dict({"type": "turn/end", "seq": turn, "data": {"turn": turn}})
 
     @staticmethod
-    def _set_up(tmp_path: Path):
+    def _set_up(tmp_path: Path, *, force_tokens: int = 0):
         from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoContext
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
@@ -415,7 +415,7 @@ class TestDoloresEgoCommit:
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
         manager = EgoMementoManager(
-            connection=None, memento=memento, config=EgoMementoConfig(force_tokens=0)
+            connection=None, memento=memento, config=EgoMementoConfig(force_tokens=force_tokens)
         )
         ego = DoloresEgo(
             launcher=None,  # commit 路径不触 dsh
@@ -440,34 +440,50 @@ class TestDoloresEgoCommit:
 
         metas = [c.metadata for c in memento.get_branch("main").commits()]
 
-        # 每 turn 一锚点, 区间首尾相接 (start = 上一个 commit 的 end_turn).
+        # 每 turn 一锚点, 区间半开平铺: (0,1] (1,2] (2,3] —— 下界逐字抄上一个的 end_turn.
         assert [m["ref"]["start_turn"] for m in metas] == [0, 1, 2]
         assert [m["ref"]["end_turn"] for m in metas] == [1, 2, 3]
         assert [m["prev_turn"] for m in metas] == [0, 1, 2]
         assert {m["ref"]["session_id"] for m in metas} == {"s1"}
 
     @pytest.mark.asyncio
-    async def test_normal_exit_seals_tail_commit(self, tmp_path: Path):
-        ego, memento = self._set_up(tmp_path)
+    async def test_exit_seals_turns_left_unratified(self, tmp_path: Path):
+        """封尾的本职: 阈值没到、有已完成却没被追认的 turn → 退出时补一个锚点."""
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9)
         await ego._on_turn_end(self._turn_end(1))
-        await ego._on_turn_end(self._turn_end(2))
+        assert memento.get_branch("main").commits() == []  # 阈值远未到 → 不落锚点
 
         await ego.__aexit__(None, None, None)
 
-        # 正常退出封尾: last_turn 未变 → [2, 2] (去重是后续步骤; 当前无条件 commit).
         commits = memento.get_branch("main").commits()
-        last = commits[-1].metadata["ref"]
-        assert (last["start_turn"], last["end_turn"]) == (2, 2)
+        assert len(commits) == 1
+        ref = commits[0].metadata["ref"]
+        assert (ref["start_turn"], ref["end_turn"]) == (0, 1)
+
+    @pytest.mark.asyncio
+    async def test_exit_adds_nothing_when_already_ratified(self, tmp_path: Path):
+        """区间为空 (上一锚点就落在同一个 turn) → 不落空锚点, 也不白跑一次旁路."""
+        ego, memento = self._set_up(tmp_path)
+        await ego._on_turn_end(self._turn_end(1))
+        await ego._on_turn_end(self._turn_end(2))
+        before = len(memento.get_branch("main").commits())
+        notices = len(ego._notices)
+
+        await ego.__aexit__(None, None, None)
+
+        assert len(memento.get_branch("main").commits()) == before
+        assert len(ego._notices) == notices  # 也没有多出"已生成 commit"提醒
 
     @pytest.mark.asyncio
     async def test_abnormal_exit_does_not_commit(self, tmp_path: Path):
         ego, memento = self._set_up(tmp_path)
         await ego._on_turn_end(self._turn_end(1))
+        committed = len(memento.get_branch("main").commits())
 
         await ego.__aexit__(RuntimeError, RuntimeError("boom"), None)
 
-        # 异常退出不管: 只剩 turn/end 那一条锚点.
-        assert len(memento.get_branch("main").commits()) == 1
+        # 异常退出不管: 锚点数不变.
+        assert len(memento.get_branch("main").commits()) == committed
 
 
 class TestEgoMementoSidecar:
@@ -651,7 +667,7 @@ class TestMementoReadSurface:
         ]
         conn = self._Connection({"events": events})
         manager, memento = self._manager(tmp_path, conn)
-        anchor = manager.commit(session_id="s1", start_turn=1, end_turn=1)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
 
         text = await manager.read(self._coord(memento, anchor.seq))
 
@@ -686,6 +702,37 @@ class TestMementoReadSurface:
             await manager.chat(self._coord(memento, anchor.seq), "问题")
 
         assert conn.calls == []  # 坏 commit 连旁路都不发
+
+
+class TestMementoCommitSpan:
+    """锚点区间规则 —— 半开 ``(start_turn, end_turn]``, 空区间不落锚点."""
+
+    @staticmethod
+    def _manager(tmp_path: Path):
+        from ghoshell_moss.memento import new_local_memento
+
+        from ._ego_memento import EgoMementoConfig, EgoMementoManager
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        return EgoMementoManager(
+            connection=None, memento=memento, config=EgoMementoConfig()
+        ), memento
+
+    def test_records_half_open_span(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+
+        anchor = manager.commit(session_id="s1", start_turn=1, end_turn=2)
+
+        ref = memento.get_branch("main").commits()[0].metadata["ref"]
+        assert anchor is not None
+        assert (ref["start_turn"], ref["end_turn"]) == (1, 2)
+
+    def test_empty_span_is_not_committed(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+
+        assert manager.commit(session_id="s1", start_turn=2, end_turn=2) is None
+        assert memento.get_branch("main").commits() == []
 
 
 class TestEgoMementoResumeRef:

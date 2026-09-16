@@ -13,6 +13,8 @@ seed 的契约 (dsh 源码锚点, 见 dsh-fusion research):
   balanced (无 open turn / dangling tool call) — ``core/agent/src/index.ts``.
 - 切点必须是 ``turn/end``; 边界后吞 trailing standalone 事件到下一个
   ``turn/start`` (镜像 apiproxy fork 的 cut 规则, ``api-proxy.ts:2303``).
+- ref 的区间是半开的 ``(start_turn, end_turn]``: ``end_turn`` **含端**进 seed, 它之后的
+  原文归下一个区间 —— 尾巴从 turn ``end_turn + 1`` 的 ``turn/start`` 起.
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ def seed_from_log(events: list[SessionEvent], ref: DshSessionRef) -> list[Sessio
     切点规则镜像 apiproxy fork: 边界落在 ``end_turn`` 的 ``turn/end`` 上, 再
     向后吞 trailing standalone 事件 (session/title / injection) 到下一个
     ``turn/start`` — 这些事件 standalone, seed 仍 balanced.
+    区间半开 ``(start_turn, end_turn]``: ``end_turn`` 含端进 seed (与 memento 锚点同语义).
     """
     boundary = _resolve_end_index(events, ref)
     if events[boundary].meta.type != _TURN_END:

@@ -5,8 +5,12 @@ seed / fork) 全部从 live source session 的 log 重建, ref 里的自解释�
 (preset / title / cwd) 仅用于「不连 dsh 也能看懂这个 session 是什么」, 不是
 还原输入.
 
-定位是一个 **turn 区间** (span): ``start_turn`` / ``end_turn`` 是区间两端 (含端),
-``start_seq`` / ``end_seq`` 是两端的 log 事件 seq, 均可缺省.
+定位是一个 **半开 turn 区间** (span): ``(start_turn, end_turn]`` ——
+**下界开、上界闭**: turn ``start_turn`` 归**上一个**区间 (它就是上一个 ref 的
+``end_turn``), 本区间不重复覆盖它; turn ``end_turn`` 含端. 因此相邻区间严丝合缝
+(``(0,1] (1,2] (2,3]``), 新区间的下界逐字抄旧区间的 ``end_turn``, 不需要 +1;
+``start_turn == end_turn`` 即空区间. ``start_seq`` / ``end_seq`` 是两端的 log 事件
+seq, 均可缺省.
 
 - **turn 是主坐标, seq 是派生加速器.** turn index 是「哪个 turn」的稳定语义锚,
   ref 长期持有它; seq 是某条 log 的内部位置, 没记录时从 turn 反查
@@ -15,8 +19,9 @@ seed / fork) 全部从 live source session 的 log 重建, ref 里的自解释�
   (补 end_seq).
 
 还原语义 (见 ``trajectory.seed_from_log`` / ``session.fork``):
-- ``end_turn`` / ``end_seq`` 决定 seed 切点 (turn/end 边界).
-- ``start_turn`` / ``start_seq`` 只决定 read 窗口左端, 不参与 seed.
+- ``end_turn`` / ``end_seq`` 决定 seed 切点 (切在 ``end_turn`` 的 ``turn/end`` 之后,
+  ``end_turn`` 含端进 seed).
+- ``start_turn`` / ``start_seq`` 只决定 read 窗口左端 (开), 不参与 seed.
 """
 
 from __future__ import annotations
@@ -42,8 +47,12 @@ class DshSessionRef(BaseModel):
 
     session_id: str = Field(description="定位: 哪个 dsh session.")
 
-    start_turn: int = Field(description="定位 (主): 区间左端 turn index, 含端.")
-    end_turn: int = Field(description="定位 (主): 区间右端 turn index, 含端.")
+    start_turn: int = Field(
+        description="定位 (主): 区间左端 turn index, **开** (该 turn 归上一个区间).",
+    )
+    end_turn: int = Field(
+        description="定位 (主): 区间右端 turn index, **闭** (含端). start_turn == end_turn 即空区间.",
+    )
 
     start_seq: int | None = Field(
         default=None,

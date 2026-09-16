@@ -350,9 +350,10 @@ class DoloresEgo:
             self._notices.append(manager.warn_notice(growth))
 
     def _commit(self, message: str = "") -> CommitRef | None:
-        """落一个锚点并排旁路 note: 区间 = [上个 commit 的 end_turn, 最后一个已完成 turn]. 无 memento 时 no-op.
+        """落一个锚点并排旁路 note: 区间 = (上个 commit 的 end_turn, 最后一个已完成 turn]. 无 memento 时 no-op.
 
         message 默认空 (authoritative message 归 sidecar); 提交后重置滑动窗口, notice 排队列.
+        区间为空 (没有新追认的 turn, 如封尾时上一锚点就落在同一个 turn) → 不落锚点, 返回 None.
         """
         manager = self._memento_manager
         if manager is None or self._ego_session_id is None:
@@ -363,6 +364,8 @@ class DoloresEgo:
             end_turn=self._last_turn,
             message=message,
         )
+        if anchor is None:
+            return None
         self._window_base = self._window_size
         self._warned = False
         self._notices.append(manager.committed_notice(anchor))
@@ -370,9 +373,10 @@ class DoloresEgo:
         return anchor
 
     def _session_start_turn(self) -> int:
-        """本 session 的区间下界 (**含端**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.
+        """本 session 的区间下界 (**开**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.
 
-        含端 → 相邻锚点共享边界 turn (`[0,1] [1,2]`), 即「追认」区间.
+        下界开 → turn ``start_turn`` 归上一个锚点, 本锚点从它之后起; 于是相邻锚点严丝合缝
+        (`(0,1] (1,2]`), 下界逐字抄旧的 ``end_turn``, 不需要 +1.
         """
         manager = self._memento_manager
         previous = manager.latest_ref() if manager is not None else None

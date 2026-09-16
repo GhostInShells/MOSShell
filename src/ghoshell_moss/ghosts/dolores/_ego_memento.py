@@ -198,15 +198,18 @@ class EgoMementoManager:
             start_turn: int,
             end_turn: int,
             message: str = "",
-    ) -> CommitRef:
-        """落一个锚点. 区间 = ``[start_turn, end_turn]`` (**含端**), start = 上个 commit 的 end_turn.
+    ) -> CommitRef | None:
+        """落一个锚点. 区间 = ``(start_turn, end_turn]`` —— **下界开、上界闭**, start = 上个 commit 的 end_turn.
 
-        相邻 commit **共享边界 turn**: ``[0,1] [1,2]`` —— 边界 turn 既是上一段的收尾, 也是本段的下界.
-        这是「追认」语义: 每个 commit 覆盖到「上个 commit 那一刻」为止 (不是从它之后开始).
+        下界开意味着 turn ``start_turn`` 归**上一个** commit (它就是上一个的 ``end_turn``), 本段不重复
+        覆盖它; 于是相邻 commit 严丝合缝 (``(0,1] (1,2]``), 新区间逐字抄旧的 ``end_turn`` 即可, 不需要 +1.
+        ``start_turn == end_turn`` = 空区间 (没有新追认的 turn) → **不落锚点, 返回 None**.
         ``metadata.prev_turn`` 即 ``start_turn``.
         ``message`` 非空时顺便种子一条 note (便捷); 默认只落锚点 —— authoritative message 归 sidecar.
-        返回本 commit 的 ``CommitRef`` (``id``/``seq`` 供排 sidecar + 造 notice).
+        返回本 commit 的 ``CommitRef`` (``id``/``seq`` 供排 sidecar + 造 notice); 空区间返回 None.
         """
+        if start_turn == end_turn:
+            return None
         ref = DshSessionRef(session_id=session_id, start_turn=start_turn, end_turn=end_turn)
         return self._branch().commit(
             message=message,

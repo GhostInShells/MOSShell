@@ -1015,6 +1015,9 @@ export function apply(ctx: Context) {
  * seedPrefix — ref → verbatim seed (源 log 的 seq 前缀). 镜像 apiproxy 的 fork cut:
  * 切在 end_seq (缺省时按 end_turn 反查 turn/end), 再向后吞 trailing standalone
  * (session/title / injection 等) 到下一个 turn/start. 切在 turn/end 天然 balanced.
+ *
+ * 区间是半开的 ``(start_turn, end_turn]``: ``end_turn`` **含端**进 seed, 它之后的原文归下一个区间 ——
+ * 所以尾巴从 turn ``end_turn + 1`` 的 ``turn/start`` 起, 那个 +1 是区间定义, 不是读取侧的推测.
  */
 function seedPrefix(
   events: readonly SessionEvent[],
@@ -1070,7 +1073,7 @@ async function loadSourceEvents(ctx: Context, sourceId: string): Promise<readonl
   }
 }
 
-/** memento commit 的坐标 (``DshSessionRef`` 的 wire 形): 源 session + turn 区间 (含端). */
+/** memento commit 的坐标 (``DshSessionRef`` 的 wire 形): 源 session + 半开 turn 区间 ``(start, end]``. */
 type SessionRangeRef = {
   session_id: string
   start_turn: number
@@ -1159,18 +1162,19 @@ function asSeq(value: unknown): number | undefined {
 }
 
 /**
- * ref 的 turn 区间 → 源 log 的原始事件切片 (含端).
+ * ref 的 turn 区间 → 源 log 的原始事件切片. 区间是半开的 ``(start_turn, end_turn]``.
  *
- * 左端取**第一个 turn >= start_turn 的 turn/start** —— 首个 commit 的 start_turn 是 0 (「没有更早」
- * 的哨兵), 而 dsh 的 turn 从 1 起, 严格找 turn 0 会落空; 退到第一个实际存在的 turn 才是它的本意.
- * 右端取 end_turn 的 turn/end, 必须存在 (它就是 commit 的边界), 否则报错.
+ * 左端取**第一个 turn 严格大于 start_turn 的 turn/start** —— turn ``start_turn`` 归上一个 commit
+ * (它就是上一个的 ``end_turn``), 本区间不重复覆盖; 首个 commit 的 ``start_turn`` 是 0, dsh 的 turn 从
+ * 1 起, 严格取第一个 > 0 的 turn 自然就是 turn 1, 不需要任何退让.
+ * 右端取 ``end_turn`` 的 ``turn/end``, **含端**且必须存在 (它就是 commit 的边界).
  */
 function sliceRange(events: readonly SessionEvent[], ref: SessionRangeRef): SessionEvent[] {
-  const start = events.findIndex(event => event.type === 'turn/start' && turnOf(event) >= ref.start_turn)
+  const start = events.findIndex(event => event.type === 'turn/start' && turnOf(event) > ref.start_turn)
   const end = events.findLastIndex(event => event.type === 'turn/end' && turnOf(event) === ref.end_turn)
-  if (start < 0) throw new Error(`no turn/start at or after turn ${ref.start_turn}`)
+  if (start < 0) throw new Error(`no turn/start after turn ${ref.start_turn}`)
   if (end < 0) throw new Error(`no turn/end for turn ${ref.end_turn}`)
-  if (end < start) throw new Error(`turn range ${ref.start_turn}-${ref.end_turn} is empty`)
+  if (end < start) throw new Error(`turn range (${ref.start_turn}, ${ref.end_turn}] is empty`)
   return events.slice(start, end + 1)
 }
 
@@ -1181,7 +1185,9 @@ function turnOf(event: SessionEvent): number {
 /**
  * ref → 切点 seq, 镜像官方 fork 的 cut (`dsh-api-session-controller` 的 session/fork):
  * 先校正到 end_turn 的 `turn/end`, 再向后吞掉非 `turn/start` 的杂事件, 使切点落在 turn 边界上.
- * 于是切点之后从**完整 turn** 开始 —— 被切的那一轮只进摘要, 不进原文.
+ *
+ * 区间是半开的 ``(start_turn, end_turn]``: 被切的这一轮 (``end_turn``) **含端进摘要**, 原文尾巴从
+ * 下一个 ``turn/start`` 起 —— 归属清晰, 与相邻区间不重叠.
  */
 function resolveCut(events: readonly SessionEvent[], ref: SessionRangeRef): number {
   let boundary = -1
