@@ -531,12 +531,14 @@ class DoloresEgo:
         return content
 
     def _epoch_payload(self, thinking: "Thinking") -> list[dict] | None:
-        """epoch slot — <epoch> container content blocks, only on epoch change.
+        """epoch slot — <cognition_epoch> container content blocks, only on epoch change.
 
-        Rendered as a single ``<epoch index=N>`` container: ``<recap>`` background + ``<baseline>``
-        start info (each baseline key rendered as ``<key>value</key>``). The plugin is a dumb
-        transport — it only receives content blocks, it does not parse structure. Returns on the
-        first frame and on every epoch change; None when unchanged.
+        Rendered as a single ``<cognition_epoch index=N>`` container: ``<recap>`` background +
+        ``<baseline>`` start info (each baseline key rendered as ``<key>value</key>``). The tag names
+        the thing itself — a span of the ghost's own cognition — rather than leaving the model to
+        guess what an "epoch" is. The plugin is a dumb transport — it only receives content blocks,
+        it does not parse structure. Returns on the first frame and on every epoch change; None when
+        unchanged.
         """
         epoch = thinking.observer.epoch
         if epoch.id == self._moment_epoch:
@@ -554,7 +556,7 @@ class DoloresEgo:
             children.append(Message.new(tag="baseline").with_messages(*baseline_msgs))
         if not children:
             return None
-        container = Message.new(tag="epoch", attributes={"index": str(epoch.index)}).with_messages(*children)
+        container = Message.new(tag="cognition_epoch", attributes={"index": str(epoch.index)}).with_messages(*children)
         return [
             self._content_payload(content)
             for content in container.as_contents(with_meta=True)

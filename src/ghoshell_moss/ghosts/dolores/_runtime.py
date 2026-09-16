@@ -20,6 +20,7 @@ from ghoshell_moss.ground import DefaultGroundSet, Ground
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
+    from ghoshell_moss.core.blueprint.channel_builder import MutableChannel
     from ghoshell_moss.core.blueprint.shell_trajectory import MShellContextFacade
     from ghoshell_moss.deepseek_harness.launcher import DshLauncher
     from ghoshell_moss.memento._fs_memento import FsMemento
@@ -67,7 +68,7 @@ class Dolores(Ghost):
         self._shell = shell
         self._base_instruction = base_instruction
         # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
-        self._dsh_launcher: "DshLauncher | None" = None
+        self._dsh_launcher: DshLauncher | None = None
         self._ground_set: DefaultGroundSet | None = None
         self._root_ground: Ground | None = None
         # ground render cache — rendered async in __aenter__, read synchronously by memories().
@@ -76,11 +77,15 @@ class Dolores(Ghost):
         self._memento: FsMemento | None = None
         self._memento_manager: EgoMementoManager | None = None
         self._exit_stack = contextlib.AsyncExitStack()
-        self._ego: "DoloresEgo | None" = None
-        self._facade: "MShellContextFacade | None" = None
+        self._ego: DoloresEgo | None = None
+        self._facade: MShellContextFacade | None = None
         # Held by the ghost (not the runtime) so the ghost can wire faculties onto it and
         # hand the same instance to controllers. Materialized on first mindflow() call.
         self._mindflow: Mindflow | None = None
+        # reflexive control channel — built lazily in channel(), registered by the runtime as 'ghost'.
+        self._channel: MutableChannel | None = None
+        # the cognition epoch is opened once, on the first thinking (see think()).
+        self._epoch_opened: bool = False
 
     # ── Ghost ABC ──────────────────────────────────
 
@@ -149,21 +154,50 @@ class Dolores(Ghost):
         view = await self._root_ground.render()
         return str(view)
 
-    def memories(self) -> list[Message]:
-        """The ghost's dynamic memory — ground first (existential), then the memento trajectory view.
+    def channel(self) -> "MutableChannel | None":
+        """The ghost's reflexive control channel — its own organs as sub-channels.
 
-        The ground text is rendered async in __aenter__ and cached to _ground_text; the memento view
-        is read synchronously from the held manager. Both are read by the ego's create_session via
-        this closure (clones share it).
+        The runtime calls this once, after __aenter__ (the ground set and the memento manager are
+        held by then), and registers the result as the ``ghost`` channel. Cached so every caller
+        gets the same instance: the channel closes over live resources (shared GroundSet, memento
+        manager), and rebuilding it would hand out a second view of the same organs.
         """
-        memories: list[Message] = []
+        if self._home is None or self._ground_set is None:
+            return None
+        if self._channel is None:
+            from .channel import build_dolores_channel
+
+            self._channel = build_dolores_channel(
+                groundset=self._ground_set,
+                workspace_root=self._home,
+                memento_manager=self._memento_manager,
+                memento_root=self._home / _EGO_MEMENTO_DIR,
+            )
+        return self._channel
+
+    def memories(self) -> list[Message]:
+        """The ghost's dynamic memory — one ``<memory>`` container, not loose messages.
+
+        Children: the ground frame (existential field, rendered async in __aenter__ and cached) and
+        the memento ``<branch>`` view (the trajectory outline). Each is optional; with neither
+        present the container is dropped rather than sent empty.
+
+        The cognition epoch is deliberately *not* here: it opens on the first thinking, after the
+        runtime wires the shell facade (see think()), so at session-creation time there is no epoch
+        to report yet. It reaches the model through the ego's own epoch slot instead.
+
+        Read by the ego's create_session through this closure (clones share it).
+        """
+        children: list[Message] = []
         if self._ground_text:
-            memories.append(Message.new(tag="ground").with_content(self._ground_text))
+            children.append(Message.new(tag="ground").with_content(self._ground_text))
         if self._memento_manager is not None:
             view = self._memento_manager.view_message()
             if view is not None:
-                memories.append(view)
-        return memories
+                children.append(view)
+        if not children:
+            return []
+        return [Message.new(tag="memory").with_messages(*children)]
 
     def mindflow(self) -> Mindflow:
         """Return the mindflow Dolores owns, materializing it on first call.
@@ -185,7 +219,15 @@ class Dolores(Ghost):
         This side only holds the async-with boundary and passes logos through (for the mindflow
         broadcast observability surface). Errors (enter/consume/cancel) propagate naturally through
         async-with, governed by run.__aexit__.
+
+        Opening the cognition epoch happens here, on the first thinking: the epoch's baseline comes
+        from the shell facade, wired by the runtime *after* ghost.__aenter__ (ghost_runtime step 5),
+        so opening it earlier would snapshot an empty baseline. The epoch is then delivered by the
+        ego's own epoch slot on the first frame.
         """
+        if not self._epoch_opened:
+            self._epoch_opened = True
+            self.mindflow().moments.new_epoch([])
         if self._ego is not None:
             async with self._ego.run_thinking(thinking) as run:
                 async for delta in run.logos():

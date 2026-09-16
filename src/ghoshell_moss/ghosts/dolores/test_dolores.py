@@ -688,7 +688,9 @@ class TestMementoReadSurface:
         path, payload = conn.calls[0]
         assert path.endswith("/bypass/run")
         assert question in payload["prompt"]
-        assert "上下文" in payload["prompt"]  # 要求 #7: 说清对话对象是上下文
+        # 要求 #7: 说清对话对象是上下文 (那段对话历史), 而不是 commit 本身.
+        assert "talking to the context that commit belongs to" in payload["prompt"]
+        assert "outside your view" in payload["prompt"]
 
     @pytest.mark.asyncio
     async def test_chat_refuses_broken_commit(self, tmp_path: Path):
@@ -1134,7 +1136,7 @@ class TestDoloresMomentPayload:
 
 
 class TestDoloresEpochPayload:
-    """DoloresEgo 的 epoch 槽位 — <epoch> 容器 (recap + baseline), epoch 变更时才返回."""
+    """DoloresEgo 的 epoch 槽位 — <cognition_epoch> 容器 (recap + baseline), epoch 变更时才返回."""
 
     def _ego(self):
         from ._ego import DoloresEgo, DoloresEgoContext
@@ -1176,9 +1178,13 @@ class TestDoloresEpochPayload:
         payload = self._ego()._epoch_payload(self._thinking(epoch))
         assert payload is not None
         text = "".join(c["text"] for c in payload if c.get("type") == "text")
-        assert "<epoch" in text and 'index="1"' in text
-        assert "<recap>" in text and "past" in text
-        assert "<baseline>" in text and "<facade>" in text and "channel tree" in text
+        assert "<cognition_epoch" in text
+        assert 'index="1"' in text
+        assert "<recap>" in text
+        assert "past" in text
+        assert "<baseline>" in text
+        assert "<facade>" in text
+        assert "channel tree" in text
 
     def test_epoch_payload_none_when_epoch_unchanged(self):
         from ghoshell_moss.core.blueprint.moment import Epoch
@@ -1189,3 +1195,133 @@ class TestDoloresEpochPayload:
         # 已记录的 epoch 再次进入 → None (不变更).
         epoch2 = Epoch(id="e1", index=1, recap=[], baseline={})
         assert ego._epoch_payload(self._thinking(epoch2)) is None
+
+
+class TestMementoChannel:
+    """memento channel — ghost 的记忆器官: 读面透传 + 坏 commit 失败 + notice 列 branch."""
+
+    class _Connection:
+        def __init__(self, response):
+            self.response = response
+            self.calls: list[tuple[str, dict]] = []
+
+        async def call(self, path, payload=None, *, timeout=None):
+            self.calls.append((path, payload))
+            if isinstance(self.response, Exception):
+                raise self.response
+            return self.response
+
+    @staticmethod
+    def _manager(tmp_path: Path, connection=None):
+        from ghoshell_moss.memento import new_local_memento
+
+        from ._ego_memento import EgoMementoConfig, EgoMementoManager
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        return EgoMementoManager(
+            connection=connection, memento=memento, config=EgoMementoConfig()
+        ), memento
+
+    @staticmethod
+    def _coord(memento, seq: int) -> str:
+        return memento.get_branch("main").get_commit(seq).coord
+
+    def _channel(self, tmp_path: Path, connection=None):
+        from .memento_channel import build_memento_channel
+
+        manager, memento = self._manager(tmp_path, connection)
+        chan = build_memento_channel(manager, storage_root=tmp_path / "owner")
+        return chan, manager, memento
+
+    @pytest.mark.asyncio
+    async def test_read_surface_is_exposed(self, tmp_path: Path):
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            for name in ("view", "read", "history", "chat"):
+                assert runtime.get_command(name) is not None
+
+    @pytest.mark.asyncio
+    async def test_read_returns_the_transcript(self, tmp_path: Path):
+        events = [
+            {"type": "turn/start", "seq": 0, "time": 1, "data": {"turn": 1}},
+            {
+                "type": "user/message", "seq": 1, "time": 1,
+                "data": {"role": "user", "source": {"kind": "user"},
+                         "content": [{"type": "text", "text": "为什么"}]},
+            },
+            {
+                "type": "assistant/message", "seq": 2, "time": 1,
+                "data": {"message": {"role": "assistant", "source": {"kind": "model"},
+                                     "content": [{"type": "text", "text": "因为"}]}},
+            },
+            {"type": "turn/end", "seq": 3, "time": 1, "data": {"turn": 1}},
+        ]
+        chan, manager, memento = self._channel(tmp_path, self._Connection({"events": events}))
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        async with chan.bootstrap() as runtime:
+            text = await runtime.execute_command(
+                "read", args=(self._coord(memento, anchor.seq),)
+            )
+        assert text == "  > 为什么\n  ~ 因为"
+
+    @pytest.mark.asyncio
+    async def test_chat_on_broken_commit_returns_hint(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path, self._Connection({"message": "reply"}))
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        memento.get_branch("main").note(anchor.id, "", error="bypass failed")
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command(
+                "chat", args=(self._coord(memento, anchor.seq), "why?")
+            )
+        assert "no context to talk to" in result
+        assert "read it instead" in result
+
+    @pytest.mark.asyncio
+    async def test_read_on_unknown_coord_returns_hint(self, tmp_path: Path):
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command("read", args=("1-99",))
+        assert result == "[memento] no commit at `1-99`"
+
+    @pytest.mark.asyncio
+    async def test_instruction_names_trajectory_and_storage(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        memento.get_branch("main").note(anchor.id, "note")
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            meta = runtime.self_meta()
+        assert "memento trajectory" in meta.instruction
+        assert str((tmp_path / "owner").resolve()) in meta.instruction
+        assert "main" in meta.notice
+        assert "commits=1" in meta.notice
+
+
+class TestDoloresMemories:
+    def test_returns_single_memory_container(self, tmp_path: Path):
+        from ghoshell_moss.memento import new_local_memento
+
+        from ._ego_memento import EgoMementoConfig, EgoMementoManager
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        manager = EgoMementoManager(connection=None, memento=memento, config=EgoMementoConfig())
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        memento.get_branch("main").note(anchor.id, "note")
+
+        ghost = _dolores()
+        ghost._ground_text = "GROUND"
+        ghost._memento_manager = manager
+
+        memories = ghost.memories()
+
+        assert len(memories) == 1
+        text = memories[0].to_content_string()
+        assert "<memory" in text
+        assert "<ground" in text and "GROUND" in text
+        assert "<branch" in text and "note" in text
+
+    def test_returns_empty_when_nothing_to_remember(self):
+        ghost = _dolores()
+        assert ghost.memories() == []

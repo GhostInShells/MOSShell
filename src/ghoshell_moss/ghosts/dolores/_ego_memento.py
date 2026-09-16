@@ -55,16 +55,20 @@ _READ_ROUTE = "/moss-api/ghost/dolores/read"
 
 # note 的 prompt —— 摘要进 memento 当 commit 的 message (首行 title, 其余 body).
 _NOTE_PROMPT = (
-    "把上面这段对话压缩成一条 commit 摘要, 供未来的自己检索. 只输出摘要本身, 不要客套.\n"
-    "第一行 = 一句话标题 (<= 30 字); 之后每行一条要点, 覆盖: 做了什么 / 定了什么 / 下一步.\n"
-    "整条 <= 400 字. 不复述原文, 只留可复用的结论."
+    "Compress the conversation above into one commit summary for your future self to retrieve. "
+    "Output the summary itself and nothing else — no pleasantries.\n"
+    "First line = a one-sentence title (<= 30 words); every following line = one point, covering: "
+    "what was done / what was decided / what comes next.\n"
+    "Keep the whole thing <= 400 words. Do not restate the conversation — keep only conclusions "
+    "worth reusing."
 )
 
 # chat 的 prompt 前缀 —— 必须点破"对话对象是上下文而不是 commit 本身".
 _CHAT_PREAMBLE = (
-    "你接下来不是在和一条 commit 对话, 而是在和这条 commit 所属的那段上下文对话: "
-    "你看到的对话历史到这条 commit 成立时为止, 之后发生的事不在你的视野里. "
-    "直接回答下面的问题, 不要客套, 也不要假装你知道后续."
+    "You are not talking to a single commit next; you are talking to the context that commit "
+    "belongs to. The conversation history you see ends where that commit was made, and anything "
+    "after it is outside your view. Answer the question below directly, without pleasantries, and "
+    "do not pretend you know what came later."
 )
 
 
@@ -284,7 +288,7 @@ class EgoMementoManager:
         """
         view = self._require_commit(coord)
         if view.is_broken:
-            raise BrokenCommitError(f"commit {view.coord} 的 message 是坏占位, 不可对话 (用 read 读原文)")
+            raise BrokenCommitError(f"commit {view.coord} has no context to talk to; read it instead")
         ref = self._ref_of_view(view)
         result = await self._connection.call(
             _BYPASS_RUN_ROUTE,
