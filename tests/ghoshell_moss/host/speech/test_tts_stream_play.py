@@ -11,9 +11,20 @@ import logging
 import numpy as np
 import pytest
 
-from ghoshell_moss.contracts.speech import AudioFormat, TTSBatch, TTSItem
+from ghoshell_moss.contracts.speech import (
+    AudioFormat,
+    SpeechClause,
+    TTSBatch,
+    TTSItem,
+    Word,
+)
 from ghoshell_moss.core.speech.stream_tts_speech import TTSSpeechStream
 from ghoshell_moss.host.speech.player import VirtualStreamPlayer
+
+
+def _pcm(seconds: float, sample_rate: int = 8000) -> np.ndarray:
+    samples = int(seconds * sample_rate)
+    return (np.sin(np.linspace(0, 2 * np.pi * 440 * seconds, samples)) * 8000).astype(np.int16)
 
 
 class _FakeTTSBatch(TTSBatch):
@@ -83,3 +94,69 @@ async def test_play_collects_samples_into_empty_list():
     assert samples[0].text == "hello world"
     assert samples[0].duration == pytest.approx(0.1, abs=0.02)
     await player.close()
+
+
+class _ClauseTTSBatch(_FakeTTSBatch):
+    """Two clauses over two audio chunks, 服务端字幕的时间轴与 chunk 时长刻意错开.
+
+    第一块音频 0.4s, 但其 clause 末尾只标到 0.1s — 播完这块就等于第一句播完;
+    第二句标到 0.9s, 远超总音频 0.5s, 所以它永远不会被判为"已播出".
+    """
+
+    def __init__(self):
+        super().__init__("clause-batch", "")
+        self._clause_list: list[SpeechClause] = []
+
+    def clauses(self) -> list[SpeechClause]:
+        return list(self._clause_list)
+
+    async def items(self):
+        self._clause_list = []
+        specs = [("第一句.", 0.4, 0.1), ("第二句.", 0.1, 0.9)]
+        for text, audio_seconds, end_time in specs:
+            self._clause_list.append(
+                SpeechClause(
+                    text=text,
+                    words=[Word.model_validate({"word": text, "endTime": end_time})],
+                )
+            )
+            yield TTSItem(text="", audio=_pcm(audio_seconds), sample_rate=8000,
+                          audio_format="s16le", channels=1, tone="", voice={})
+
+
+@pytest.mark.asyncio
+async def test_played_text_counts_only_clauses_actually_played():
+    """played_text 是真实播出的记账: 未播出时为空, 中断时只含播完的 clause."""
+    player = VirtualStreamPlayer(sample_rate=8000, channels=1)
+    await player.start()
+    stream = TTSSpeechStream(
+        loop=asyncio.get_running_loop(),
+        audio_format=AudioFormat.PCM_S16LE,
+        channels=1,
+        sample_rate=8000,
+        player=player,
+        tts_batch=_ClauseTTSBatch(),
+        logger=logging.getLogger("t"),
+    )
+    stream.feed("第一句.第二句.")
+    stream.commit()
+
+    # 已喂入、已合成都不算 — 没有真实播出就是空.
+    assert stream.played_text() == ""
+    assert stream.buffered() == "第一句.第二句."
+
+    play_task = asyncio.create_task(stream.play([]))
+    try:
+        for _ in range(400):
+            if stream.played_text():
+                break
+            await asyncio.sleep(0.01)
+        play_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await play_task
+        # 第一句播完, 第二句没有 — 且文本原样 (中文词间无空格).
+        assert stream.played_text() == "第一句."
+    finally:
+        if not play_task.done():
+            play_task.cancel()
+        await player.close()

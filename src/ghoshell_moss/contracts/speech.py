@@ -37,12 +37,21 @@ _TAIL_WORDS = 6
 
 
 def split_speech_tokens(text: str) -> list[str]:
+    """切 token 只为计数 — 切完不再拼回文本, 拼接会改变原文. 要回显请用 speech_tail."""
     return _WORD_RE.findall(text)
 
 
 def speech_tail(text: str, n: int = _TAIL_WORDS) -> str:
-    """取文本尾部的最后 n 个 token (中英混排, 中文按字符计)."""
-    return " ".join(split_speech_tokens(text)[-n:])
+    """取文本尾部的最后 n 个 token (中英混排, 中文按字符计), 原样切片保留原文.
+
+    token 只用来定位起点: 中文逐字成 token, 若按 token 重新拼接会插入原文本没有的空格
+    ("已经" → "已 经"), 所以这里切原串而不是 join tokens.
+    """
+    matches = list(_WORD_RE.finditer(text))
+    if not matches:
+        return ""
+    start = matches[-n].start() if n <= len(matches) else matches[0].start()
+    return text[start:].strip()
 
 
 class SpeechStream(ABC):
@@ -118,6 +127,15 @@ class SpeechStream(ABC):
         返回已经缓冲的文本内容, 可能经过了加工.
         """
         pass
+
+    def played_text(self) -> str:
+        """已经被真实播放出去的文本; 拿不到 text↔音频对齐时返回空串.
+
+        与 ``buffered()`` (已喂入文本, 领先于播放) 相对: 这里只算真的播出声的那部分,
+        因此可以当作"听者听到了什么"的记账。本方法只报对齐结果, 不做任何降级 —
+        空串即"这个实现给不出", 由调用方决定用什么近似替代.
+        """
+        return ""
 
     def on_sample(self, callback: Callable[['PlaybackSample'], None]) -> Callable[[], None]:
         """注册 sample 回调: 播放真实样本时回调 callback. 返回 disposer 移除回调.

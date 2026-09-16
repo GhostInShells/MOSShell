@@ -60,7 +60,7 @@ class SpeechChannel(Channel):
         try:
             await stream.speak(chunks__, samples)
         except asyncio.CancelledError:
-            CommandUtil.reraise_stopped(stopped_message(samples))
+            CommandUtil.reraise_stopped(stopped_message(samples, stream.played_text()))
         return played_message(samples)
 
     def materialize(self, container: IoCContainer) -> "ChannelRuntime":

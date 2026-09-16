@@ -6,8 +6,8 @@ description: Speech 体系治理：解耦 commands 权责泄漏，player 多后�
 milestone: null
 priority: P2
 status: completed
-status_note: 2026-09-16 ClauseTopic 装线两侧落地 (说侧 moss_runtime / 听侧 controller.with_topic_service).
-  收口 completed.
+status_note: 2026-09-16 ClauseTopic 装线两侧落地 (说侧 moss_runtime / 听侧 controller.with_topic_service);
+  收尾 D14 播放文本记账下沉 stream + say 表面/状态分离. 收口 completed.
 title: Speech Governance — 解耦、多后端、容错降级
 updated: '2026-09-16'
 ---
@@ -515,6 +515,74 @@ TTS 返回 clause → 更新本地数组（含 `words[].end_time`）；每个 `P
 在 cancel 路径不完整。要"半句也成 clause"需改 cancel 时序（等流自然结束拿尾包），本次未做（tts 边界抠得细，
 先不动）。`phonemes` 音素级未返回，字级已够。`on_clause` 在 worker 线程回调（与 `on_sample` 一致），消费方
 需自行 marshal 到 event loop。
+
+### D14: 播放文本记账下沉到 stream + say 表面/状态分离 (P2) — 2026-09-16
+
+**动机（收尾两件）**: (1) 打断时报"说到哪"要真的有内容; (2) say 的命令表面混着此刻的
+voice/tone 状态, 状态一变整块接口就重发.
+
+**实测（`VirtualStreamPlayer` + 假后端复现，非推断）**: D11 的尾帧文本只附在**最后一个**
+audio frame 上, 而打断时 `samples[-1]` 是**最后播出的那一帧**（末尾帧根本还没播到, text 为空）。
+于是 `stopped at ...{tail}` 在实践中几乎不触发, 反而落到 "stopped before audible output"——
+明明已经出声。正常播完则完全不消费 tail。附带 bug: `speech_tail` 用 `" ".join(tokens)` 拼回
+文本, 中文逐字成 token → "已 经 听 到 了 ."。
+
+**决策 1 — 播放记账在 stream, 不在 sample**:
+
+| 层 | 改动 |
+|----|------|
+| `SpeechStream` | 新增 `played_text() -> str`, 默认空串: **只报对齐结果, 不做降级**——空串即"这个实现给不出", 由调用方决定近似 |
+| `TTSSpeechStream` | 用 D13 已有的对齐游标 `_clause_cursor` 拼 `clauses[:cursor].text`: 只有**整句播完**的 clause 计入（保守, 半句不报）; batch 无字幕能力 → 空串 |
+| `stopped_message` | `stopped_message(samples, played_text)`: 对齐优先 → 空则回落 `samples[-1].text`（无字幕后端的尾帧提示）→ 都没有只报秒数, 不再断言"没有出声"; 词数改为**已播出文本**的 token 数（原来数的是 ≤6 token 的 tail 本身, 无意义） |
+| `speech_tail` | 按 token 跨度**切原串**, 不再 join tokens（拼接会插入原文没有的空格） |
+
+**决策 2 — 命令表面写契约, 状态走 named notice**:
+
+- `say` 的 `doc` 从 callable 改成常量字符串: schema（voice_schema）/ tone 目录 / 参数语义都是
+  启动期静态内容。命令因此不再是 dynamic command, meta 不再逐轮重生成。
+- `SpeechChannelModule.get_named_notices()` 出两个片段: `voice`（此刻默认 voice 的 JSON）、
+  `tone`（此刻音色）。非 TTS speech (NullSpeech) 不产出。渲染层按 name delta 比对, 只有真的
+  变了才重发那一片——换音色不再触发整块命令接口重发。
+- 边界: **契约留在表面**（schema / tone 目录让模型不依赖 notice 就能看懂参数）, **只有此刻的状态进 notice**。
+
+**变更文件**: `contracts/speech.py`, `core/speech/stream_tts_speech.py`,
+`core/speech/speech_module.py`, `channels/speech_channel.py`,
+测试 `tests/.../host/speech/test_tts_stream_play.py`（played_text 只计已播 clause）、
+`tests/ghoshell_moss/channels/test_speech_module.py`（状态进 notice, 表面不动）。
+
+**未决**:
+- 正常播完是否也带 tail: 目前只报 `played N.Ns`（模型自己说了什么它知道, tail 只在被打断时有用）。
+- backend 尾帧 hack 对 volcengine 已冗余（它有 clause 对齐）, 是否删除待定; mimo 无字幕, 仍要靠它降级。
+- tail 精度受 D13 的 cancel 未决影响: 在途 subtitle 拿不到, 半句不成 clause, 报的是"最后播完的整句"。
+
+### D15: mute 命令 — 旁听模式的安全闸 (P1) — 2026-09-17
+
+**动机**: 旁听模式——会议 / 路演时人类说"等下你先别说话, 我要你说时再说", 之后人类对别人
+说的话照样喂给 ghost, ghost 仍可思考与行动, 但**零误说风险**。mute 是模型自控的 toggle, 对抗
+实机里"它会忘"的本能。
+
+**决策**:
+
+| 层 | 改动 |
+|----|------|
+| 真相 | `mute(on: bool)` 命令是唯一写入点, flag 在 `SpeechChannelModule` |
+| 状态 | 走 named notice `mute` 片段, **off/on 恒非空**（空串会被渲染层当静默, 模型残留旧记忆）; 不碰命令 surface |
+| 闸门 | mute 时 `say` / `__content__` 在 partial 就 raise `NOT_AVAILABLE(403)`, 不建 TTS batch、不 start_synthesis、不出声 |
+| 语义 | 用 `NOT_AVAILABLE` 而非新码——"这个命令此刻不可用"; message 写清可恢复: `mute(on=false)` |
+
+**为什么是 403 而不是软闸**: `NOT_AVAILABLE`(403) 落在 critical 档 (`is_critical` = code ≥ 400),
+会 cancel in-flight batch + stop interpreter。这是**故意的硬闸**——旁听模式下漏嘴就是违规, 要当场
+打断、迫使模型重新定向, 而不是让其余命令继续跑完（可能还带着那次误说的上下文）。代价是同一批
+里已排队的合法行动也会被冲掉, 接受——漏嘴本身就是该重新想一遍的信号。
+
+**为什么不用 available=false**: 它改的是命令 meta 的 availability → 整个 channel facade 重绘,
+每个 mute 切换都要重发全量界面, 不值。命令保持 available/可见, 只在运行时拒绝。
+
+**变更文件**: `core/speech/speech_module.py`,
+测试 `tests/ghoshell_moss/channels/test_speech_module.py`（toggle 进 notice + 静音 say 拒 403）。
+
+**未决**: mute 是否该随 session 结束自动复位（现在跨 turn 持久, 靠 notice 提醒）; 是否要
+"N 轮后自动解除"的保险。
 
 ## Implementation Plan
 

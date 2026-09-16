@@ -99,6 +99,18 @@ class TTSSpeechStream(SpeechStream):
     def is_closed(self) -> bool:
         return self._closed_event.is_set()
 
+    def played_text(self) -> str:
+        """已被真实播放出去的文本 — 由 clause 对齐推出, 不是已喂文本.
+
+        只有 ``_clause_cursor`` 之前的 clause 才算播出声 (见 ``_accumulate_sample``:
+        played_duration 追过 clause 末尾才推游标), 因此中断时最后一句未播完的 clause
+        不计入. batch 没有 clause 能力 (服务端不给字幕) 时返回空串.
+        """
+        clauses = self._tts_batch.clauses()
+        if not clauses:
+            return ""
+        return "".join(clause.text for clause in clauses[:self._clause_cursor])
+
     def on_sample(self, callback: Callable[[PlaybackSample], None]) -> Callable[[], None]:
         """订阅 player 的真实播放样本, 只回调属于本 stream 的片段.
 

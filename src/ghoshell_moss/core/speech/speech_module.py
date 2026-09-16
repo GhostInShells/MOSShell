@@ -1,17 +1,27 @@
 import asyncio
 import json
+from typing import Callable
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
-from ghoshell_moss.contracts.speech import PlaybackSample, Speech, SpeechStream, TTSSpeech, split_speech_tokens
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
+from ghoshell_moss.contracts.speech import (
+    PlaybackSample,
+    Speech,
+    SpeechStream,
+    TTSSpeech,
+    speech_tail,
+    split_speech_tokens,
+)
 from ghoshell_moss.core.speech.null import NullSpeech
 
 
 # 返回值约定: 正常结束且有真实播放时返回描述播放秒数的字符串; 无播放样本返回 None;
 # 被中断时 raise STOPPED(301) 携带进度.
-# 尾帧文本由 backend (volcengine/mimo) 在拿不到 text-音频对齐时附到最后一个 PlaybackSample.text
-# (见 contracts.speech.speech_tail), 这里直接消费 samples[-1].text; 中英混排按 token 切分.
+# 中断进度里的文本取自 stream 的 clause 对齐 (SpeechStream.played_text, 只有真的播出声的
+# clause 才算); 无对齐能力的后端由 backend 在尾帧附文本 (contracts.speech.speech_tail),
+# 这里回落 samples[-1].text. 中英混排按 token 切分.
 def _played_seconds(samples: list[PlaybackSample]) -> float:
     return sum((s.duration for s in samples), 0.0)
 
@@ -23,13 +33,22 @@ def played_message(samples: list[PlaybackSample]) -> str | None:
     return f"played {_played_seconds(samples):.1f}s"
 
 
-def stopped_message(samples: list[PlaybackSample]) -> str:
+def stopped_message(samples: list[PlaybackSample], played_text: str = "") -> str:
+    """中断时的进度: 真实播出的秒数 + 已播出文本的尾部与词数.
+
+    :param played_text: stream 的对齐结果 (SpeechStream.played_text); 拿不到对齐的后端
+        传空串, 这里回落 PlaybackSample.text 的尾帧提示. 两者都没有时只报秒数 — 已出声
+        就不断言 "没有出声".
+    """
     seconds = _played_seconds(samples)
-    tail = samples[-1].text.strip() if samples else ""
-    if tail:
-        words = split_speech_tokens(tail)
-        return f"played {seconds:.1f}s, {len(words)} words, stopped at ...{tail}"
-    return f"played {seconds:.1f}s, stopped before audible output"
+    if not samples:
+        return f"played {seconds:.1f}s, stopped before audible output"
+    if not played_text:
+        played_text = samples[-1].text.strip()
+    if not played_text:
+        return f"played {seconds:.1f}s"
+    words = split_speech_tokens(played_text)
+    return f"played {seconds:.1f}s, {len(words)} words, stopped at ...{speech_tail(played_text)}"
 
 
 def build_content_command(speech: Speech, name: str = "__content__") -> Command:
@@ -43,8 +62,16 @@ class _SpeechCommandFactory:
     Moved the command-building logic from the contracts layer to core/speech.
     """
 
-    def __init__(self, speech: Speech | TTSSpeech):
+    def __init__(self, speech: Speech | TTSSpeech, is_muted: Callable[[], bool] | None = None):
         self._speech = speech
+        self._is_muted = is_muted or (lambda: False)
+
+    def _check_muted(self) -> None:
+        """静音闸: mute 时任何说出口的意图都拒绝 — 不建 batch、不出声, 让模型当场意识到. """
+        if self._is_muted():
+            raise CommandErrorCode.NOT_AVAILABLE.error(
+                "muted: speech is off — nothing will be spoken until mute(on=false)"
+            )
 
     def build_content_command(self, name: str = "__content__") -> Command:
         speech = self._speech
@@ -64,6 +91,7 @@ class _SpeechCommandFactory:
                 await stream.close()
 
         async def _content_partial(chunks__):
+            self._check_muted()
             if not speech.is_running():
                 return [], {}
             stream = speech.new_segment()
@@ -76,6 +104,7 @@ class _SpeechCommandFactory:
             avoid visually-oriented text (tables, special symbols, markdown) as speech content.
             CDATA chunks if you want to speak xml.
             Returns a short description of seconds played; on interruption raises STOPPED(301) with progress."""
+            self._check_muted()
             if not speech.is_running():
                 return None
             if not isinstance(chunks__, SpeechStream):
@@ -84,7 +113,8 @@ class _SpeechCommandFactory:
             try:
                 await chunks__.play(samples)
             except asyncio.CancelledError:
-                CommandUtil.reraise_stopped(stopped_message(samples))
+                # stream 已随 play 的上下文退出关闭, 但 batch 的 clause 还留着 — 对齐结果仍可读.
+                CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
             return played_message(samples)
 
         return PyCommand(func=__content__, partial=_content_partial, name=name, blocking=True)
@@ -94,29 +124,23 @@ class _SpeechCommandFactory:
         tts = tts_speech.tts()
         tts_info = tts.get_info()
         voice_schema_str = json.dumps(tts_info.voice_schema, ensure_ascii=False, indent=0)
-
-        def say_doc() -> str:
-            current_voice = tts.get_voice()
-            current_tone = tts.current_tone()
-            tones = tts_info.tones
-            tone_descriptions = []
-            for _tone, description in tones.items():
-                tone_descriptions.append(f"`{_tone}`: {description}")
-            tone_descriptions_str = ";".join(tone_descriptions)
-
-            return (
-                f"Speak with the specified voice state. The content becomes spoken audio — avoid visually-oriented text (tables, special symbols) as speech content.\n"
-                f":param voice: Speed, pitch, etc. of the voice. JSON structure, schema is {voice_schema_str}\n"
-                f"  Your current voice state is: {json.dumps(current_voice, ensure_ascii=False)}.\n"
-                f"  When calling via CTML, voice must be a JSON string, e.g. voice:dict=\"{{'speed': 1.0, 'pitch': 'high'}}\"\n"
-                f":param as_default: Make the voice state set in this turn the default.\n"
-                f":param chunks__: The text content you speak.\n"
-                f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"
-                f"  Current tone is `{current_tone}`."
-                f"  Available tones: {tone_descriptions_str}\n"
-                f"\n"
-                f":return: a short description of seconds actually played. On interruption raises a STOPPED error carrying progress.\n"
-            )
+        tone_descriptions_str = ";".join(
+            f"`{tone}`: {description}" for tone, description in tts_info.tones.items()
+        )
+        # 命令表面只写契约: schema / tone 目录 / 参数语义, 都是启动期就定的静态内容.
+        # 此刻的 voice / tone 是状态, 走 module 的 named notice (见 SpeechChannelModule),
+        # 否则文档一变整块命令接口就要重发, 命令 meta 也跟着反复重生成.
+        say_doc = (
+            f"Speak with the specified voice state. The content becomes spoken audio — avoid visually-oriented text (tables, special symbols) as speech content.\n"
+            f":param voice: Speed, pitch, etc. of the voice. JSON structure, schema is {voice_schema_str}\n"
+            f"  When calling via CTML, voice must be a JSON string, e.g. voice:dict=\"{{'speed': 1.0, 'pitch': 'high'}}\"\n"
+            f":param as_default: Make the voice state set in this turn the default.\n"
+            f":param chunks__: The text content you speak.\n"
+            f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"
+            f"  Available tones: {tone_descriptions_str}\n"
+            f"\n"
+            f":return: a short description of seconds actually played. On interruption raises a STOPPED error carrying progress.\n"
+        )
 
         async def say_partial(
                 chunks__,
@@ -124,6 +148,7 @@ class _SpeechCommandFactory:
                 as_default: bool = False,
                 tone: str = "",
         ) -> tuple[list, dict]:
+            self._check_muted()
             if as_default:
                 if voice:
                     tts.set_voice(voice)
@@ -149,13 +174,14 @@ class _SpeechCommandFactory:
             return [], dict(voice=voice, chunks__=stream, as_default=as_default)
 
         async def say(chunks__, voice: dict | None = None, as_default: bool = False, tone: str = "") -> str | None:
+            self._check_muted()
             if not isinstance(chunks__, SpeechStream):
                 raise ValueError(f"System error: Chunks is not prepared")
             samples: list[PlaybackSample] = []
             try:
                 await chunks__.play(samples)
             except asyncio.CancelledError:
-                CommandUtil.reraise_stopped(stopped_message(samples))
+                CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
             return played_message(samples)
 
         return PyCommand(
@@ -176,6 +202,7 @@ class SpeechChannelModule(ChannelModule):
         self._speech: Speech | None = None
         self._own_commands = {}
         self._register_content_command = register_content_command
+        self._muted = False
 
     def name(self) -> str:
         return "speech"
@@ -183,11 +210,39 @@ class SpeechChannelModule(ChannelModule):
     def own_commands(self) -> dict[str, Command]:
         return self._own_commands
 
+    async def get_named_notices(self) -> dict[str, str]:
+        """此刻的状态 — 命令表面写契约, 状态由这里随 meta 刷新下发.
+
+        片段恒非空 (mute 的 off/on 都非空), 这样 off→on / on→off 都能被 delta 渲染宣告;
+        空片段会被渲染层当静默信号, 模型会残留上一次读到的内容. voice/tone 只报状态,
+        不重复 schema / tone 目录 (那些在命令文档里).
+        """
+        result = {
+            "mute": (
+                "on — speech is off: say/content will be refused until mute(on=false)"
+                if self._muted
+                else "off"
+            ),
+        }
+        if isinstance(self._speech, TTSSpeech) and self._speech.is_running():
+            tts = self._speech.tts()
+            result["voice"] = f"Current voice: {json.dumps(tts.get_voice(), ensure_ascii=False)}"
+            result["tone"] = f"Current tone: `{tts.current_tone()}`"
+        return result
+
+    async def _mute(self, on: bool = True) -> str:
+        """Mute or unmute your own voice. While muted, `say` and content commands refuse to
+        speak (they raise an error) — you can still think and act, just not make sound.
+        Use it to stay quiet until asked (e.g. a meeting or demo where the human introduces you).
+        """
+        self._muted = on
+        return "muted" if on else "unmuted"
+
     async def on_startup(self) -> None:
         if CommandUtil.enabled():
             self._speech = CommandUtil.get_contract(Speech)
         self._speech = self._speech or NullSpeech()
-        factory = _SpeechCommandFactory(self._speech)
+        factory = _SpeechCommandFactory(self._speech, is_muted=lambda: self._muted)
         commands = {}
         if isinstance(self._speech, TTSSpeech):
             cmd = factory.build_say_command()
@@ -197,6 +252,7 @@ class SpeechChannelModule(ChannelModule):
         if self._register_content_command:
             cmd = factory.build_content_command()
             commands[cmd.name()] = cmd
+        commands["mute"] = PyCommand(self._mute, name="mute")
         self._own_commands = commands
 
     async def on_close(self) -> None:
