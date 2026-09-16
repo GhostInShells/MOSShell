@@ -302,12 +302,15 @@ class SignalMeta(BaseModel, ABC):
 
 
 class InputSignalMeta(SignalMeta):
-    """
-    系统最基础的 Input 讯号. 代表一个明确的输入.
+    """Signal meta for ``input`` — the user's message to the ghost.
 
-    走 default mode, FIFO 聚合: 抢占成功创建新 attention; 抢占失败被 suppress,
-    消息保留在 InputNucleus buffer, 仅在下一个 input signal 到达时才重新聚合
-    参与仲裁.
+    Openbox aggregation rule (not a global mechanism): delivered signals collapse
+    into one impulse whose priority is the buffer's max priority and strength the
+    buffer's max strength, with messages concatenated in ``created_at`` order.
+    Winning creates a default attention (turn toward the user); losing keeps the
+    buffer pending under a cooldown that a strictly-higher signal breaks through.
+
+    For a different rule, register your own nucleus — do not change this one.
     """
 
     @classmethod

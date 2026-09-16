@@ -7,13 +7,16 @@ import asyncio
 
 @pytest.mark.asyncio
 async def test_basic_enqueue_and_peek():
-    """信号入队, peek 可见."""
+    """信号入队, peek 返回挑战 stub, attended 物化全量 messages."""
     async with InputSignalNucleus() as nuc:
         nuc.add_signal(Signal.new("input", Message.new().with_content("hello")))
         await asyncio.sleep(0.01)
-        imp = nuc.peek()
-        assert imp is not None
-        assert len(imp.messages) == 1
+        stub = nuc.peek()
+        assert stub is not None
+        assert len(stub.messages) == 0
+        full = nuc.attended(stub)
+        assert full is not None
+        assert len(full.messages) == 1
 
 
 @pytest.mark.asyncio
@@ -97,14 +100,14 @@ async def test_attended_clears_all():
 
 @pytest.mark.asyncio
 async def test_full_messages_in_impulse():
-    """peek 到的 Impulse 包含全部入队消息 (FIFO)."""
+    """attended 物化的 Impulse 包含全部入队消息, 按 created_at 排序."""
     async with InputSignalNucleus() as nuc:
         nuc.add_signal(Signal.new("input", Message.new().with_content("a")))
         nuc.add_signal(Signal.new("input", Message.new().with_content("b")))
         nuc.add_signal(Signal.new("input", Message.new().with_content("c")))
         await asyncio.sleep(0.01)
-        imp = nuc.peek()
-        texts = [m.to_content_string() for m in imp.messages]
+        full = nuc.attended(nuc.peek())
+        texts = [m.to_content_string() for m in full.messages]
         assert texts == ["a", "b", "c"]
 
 
@@ -127,8 +130,8 @@ async def test_buffer_limit():
         for i in range(5):
             nuc.add_signal(Signal.new("input", Message.new().with_content(f"msg{i}")))
         await asyncio.sleep(0.01)
-        imp = nuc.peek()
-        texts = [m.to_content_string() for m in imp.messages]
+        full = nuc.attended(nuc.peek())
+        texts = [m.to_content_string() for m in full.messages]
         assert len(texts) == 3
         assert texts == ["msg2", "msg3", "msg4"]
 
@@ -178,19 +181,13 @@ async def test_filters_low_priority():
 
 
 @pytest.mark.asyncio
-async def test_suppress_clears_impulse_from_peek():
-    """suppress 后 peek 应返回 None — 被压制的 impulse 不再参与 mindflow ranking.
+async def test_suppress_stops_fire_but_keeps_peek():
+    """suppress 后 impulse 仍可 peek (rank 可见), 但冷静期内不再主动 fire.
 
-    复现场景:
-      1. signal 入队 → impulse 缓存 → mindflow peek 可见
-      2. challenge 失败, default 路径调 suppress() → 只设 _suppress_until
-      3. peek() 不检查 suppress 状态 → 返回同一 impulse
-      4. mindflow 每 0.5s timeout 重新 rank → peek → 同一 impulse → 反复 suppress → 重放
-
-    当前行为: suppress 后 peek 仍返回 impulse (BUG).
-    预期行为: suppress 后 peek 返回 None.
+    契约 (Nucleus.peek ABC): suppressed 后 impulse 仍保留、可被 peek,
+    只是在一段时间内不再主动 fire — cooldown 管 notify, 不管 peek.
     """
-    async with InputSignalNucleus(suppress_seconds=0.5) as nuc:
+    async with InputSignalNucleus(suppress_seconds=5.0) as nuc:
         nuc.add_signal(Signal.new(
             "input",
             Message.new().with_content("hello"),
@@ -203,14 +200,9 @@ async def test_suppress_clears_impulse_from_peek():
         # 模拟 mindflow challenge 失败 → suppress
         nuc.suppress(Impulse(source="other_nucleus"))
 
-        # 关键断言: suppress 后 peek 不应再看到该 impulse
+        # 关键断言: suppress 后 peek 仍可见 — 只停 active fire, 不清 cache
         imp_after = nuc.peek()
-        assert imp_after is None, (
-            f"suppress 后 peek 应返回 None, 但实际返回了 {imp_after.id} "
-            f"(source={imp_after.source}). "
-            f"这会导致 mindflow 在 _on_impulse_consuming_loop 的 0.5s timeout 循环中 "
-            f"反复 rank 到同一 impulse, 造成消息重放."
-        )
+        assert imp_after is not None, "suppress 后 impulse 仍应可被 peek"
 
 
 @pytest.mark.asyncio
@@ -222,19 +214,19 @@ async def test_suppress_expired_then_new_signal_revives():
         assert nuc.peek() is not None
 
         nuc.suppress(Impulse(source="other"))
-        # 压制期内 — cache 已清, peek 不可见
-        assert nuc.peek() is None, "suppress 期内 peek 应返回 None"
+        # 压制期内 — 仍可 peek (suppress 只停 active fire, 不清 cache)
+        assert nuc.peek() is not None, "suppress 后 impulse 仍应可 peek"
 
         await asyncio.sleep(0.15)
-        # 压制期满, 但没有新信号 → cache 为空 (suppress 清了 cache)
-        assert nuc.peek() is None
+        # 压制期满, 无新信号 → cache 仍是旧 stub
+        assert nuc.peek() is not None
 
         # 新信号到达 → 从累积的 signals (first + second) 重建
         nuc.add_signal(Signal.new("input", Message.new().with_content("second")))
         await asyncio.sleep(0.01)
-        imp = nuc.peek()
-        assert imp is not None
-        texts = [m.to_content_string() for m in imp.messages]
+        full = nuc.attended(nuc.peek())
+        assert full is not None
+        texts = [m.to_content_string() for m in full.messages]
         assert texts == ["first", "second"], (
             f"suppress 保留 signals, 新信号应合并旧消息, 实际: {texts}"
         )
@@ -304,3 +296,28 @@ async def test_counters_aggregate_all_actions():
         assert c["attended"] == nuc.attended_count() == 1
         assert c["ignored"] == nuc.ignored_count() == 1
         assert c["suppressed"] == nuc.suppressed_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_escalation_breaks_cooldown():
+    """严格更高的 signal 突破冷静期立刻重新挑战."""
+    notified = []
+    async with InputSignalNucleus(suppress_seconds=5.0) as nuc:
+        nuc.with_bus(
+            signal_broadcast=lambda s: None,
+            fire_impulse=lambda imp: notified.append(imp),
+        )
+        nuc.add_signal(Signal.new("input", Message.new().with_content("low"), priority=Priority.INFO))
+        await asyncio.sleep(0.01)
+        assert len(notified) == 1
+
+        nuc.suppress(Impulse(source="other"))
+        # 同优先级 → 冷静期内不通知
+        nuc.add_signal(Signal.new("input", Message.new().with_content("low2"), priority=Priority.INFO))
+        await asyncio.sleep(0.01)
+        assert len(notified) == 1
+
+        # 严格更高 → 立刻突破冷静期
+        nuc.add_signal(Signal.new("input", Message.new().with_content("high"), priority=Priority.WARNING))
+        await asyncio.sleep(0.01)
+        assert len(notified) == 2

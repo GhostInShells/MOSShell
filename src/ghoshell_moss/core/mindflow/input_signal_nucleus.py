@@ -1,4 +1,8 @@
-"""示范最基础的 Signal 实现 | 系统 | beta """
+"""InputSignalNucleus — the default openbox channel for user text input.
+
+Openbox nucleus, not a global mechanism: signals delivered here respect this
+nucleus's one aggregation rule. For a different rule, register your own nucleus.
+"""
 
 import asyncio
 import time
@@ -18,31 +22,34 @@ __all__ = ["InputSignalNucleus", 'InputSignalMeta', 'InputNucleusMeta']
 
 
 class InputSignalNucleus(Nucleus):
-    """
-    IM 红点式信号聚合 — 监听 input signal, FIFO 缓冲, pop 时全量返回.
+    """User-text aggregate buffer — the ghost turns toward the user when the buffer's
+    collective urgency wins.
 
-    与 BufferNucleus 的区别:
-    - 无 pulse beat 循环, 仅在新信号到达时通知
-    - pop 时 Impulse 保留全部消息的 FIFO 顺序
-    - status() 返回红点摘要: pending 计数 + 最新 pending 消息的预览
+    Functional intent: each user message joins a buffer. When free the ghost turns
+    toward the user; when busy with something less urgent the messages wait
+    (pending) until a more urgent input arrives.
 
-    description() 是给模型读的静态标签 (user text input); 计数逻辑收敛在
-    public ``pending_count()``, status() 的 f-string 复用, 测试可直接断言.
+    Mechanism (openbox aggregation rule): all buffered signals collapse into one
+    impulse — priority is the buffer's max priority, strength its max strength,
+    messages concatenated in ``created_at`` order. Winning creates a default
+    attention; losing keeps the buffer pending under a cooldown that a
+    strictly-higher new signal can break through.
 
-    impulse 生命周期观测 (public-internal, 不在 Nucleus ABC 契约内):
-    ``attended_count()`` / ``ignored_count()`` / ``suppressed_count()`` 分别统计
-    impulse 抢占成功 / 被忽视 / challenge 失败被压制的次数; ``counters()`` 一次性
-    返回全部计数 + 最近一次动作的简介. 这三个回调是 mindflow 判定 impulse 结局后
-    回写给 nucleus 的, 计数即"这个 impulse 的结局"的累计事实, 用于观测与验证.
+    Not a queue: messages are never delivered one-at-a-time, and priority never
+    reorders delivery — it only sets the buffer's collective challenge weight.
+    Signals arrive out of order, so the nucleus sorts by ``created_at`` itself.
+
+    ``peek`` returns a challenge stub (priority/strength/id/complete, no messages);
+    ``attended`` materializes the full impulse from the sorted buffer and returns it.
     """
 
     def __init__(
             self,
             *,
             name: str = "input_signal_nucleus",
-            description: str = "user text input",
+            description: str = "user text input — aggregate buffer, turn toward the user when it wins",
             default_prompt: str = '',
-            suppress_seconds: float = 0.5,
+            suppress_seconds: float = 5.0,
             buffer_size: int = 20,
             min_priority: Priority = Priority.INFO,
             logger: LoggerItf | None = None,
@@ -67,6 +74,7 @@ class InputSignalNucleus(Nucleus):
         self._notify_cb: Callable[[Impulse], None] | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._created_impulse_index: int = 0
+        self._last_impulse_weight: int = 0
         self._running = False
 
         # -- impulse 生命周期观测 (public-internal: 供调试/测试/控制台读取, 不在 Nucleus ABC 契约内) --
@@ -85,7 +93,7 @@ class InputSignalNucleus(Nucleus):
         return self._name
 
     def description(self) -> str:
-        # 静态标签 — 稳定描述"这是什么", 不随 pending 变化. 计数在 status().
+        # Static label — what this is; the pending count lives in status(), not here.
         return self._description
 
     def pending_count(self) -> int:
@@ -144,6 +152,7 @@ class InputSignalNucleus(Nucleus):
     def clear(self) -> None:
         self._signals.clear()
         self._impulse_cache = None
+        self._last_impulse_weight = 0
 
     def with_bus(
             self,
@@ -165,35 +174,35 @@ class InputSignalNucleus(Nucleus):
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
         with self._data_state_lock:
-            # 被压制的是我们刚缓存的 impulse — 它没能抢占 attention.
-            # 用缓存里的取简介; 若已被清, 回退到压制方.
-            brief = self._brief(self._impulse_cache) if self._impulse_cache else self._brief(suppress_by)
+            # The cache is a challenge stub (no messages) — brief from the buffered
+            # signals so the observability summary still reflects real content.
             self._suppressed_cnt += 1
-            self._last_suppressed = brief
-            # 清 cache 让 peek() 返回 None, 但保留 _signals:
-            # pop_impulse 才是一次性消费, suppress 只是冷静期,
-            # 下个信号到达时从累积的 _signals 重建 impulse.
-            self._impulse_cache = None
+            self._last_suppressed = self._buffer_brief()
+            # Keep the stub and _signals: suppress is a cooldown that stops active
+            # fire, not a consumption — the impulse stays peekable (rank-visible),
+            # and _last_impulse_weight stays as the gate's "strictly higher" baseline.
 
-    def attended(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> Impulse | None:
         if not self.is_running():
-            return
+            return None
         with self._data_state_lock:
+            # Materialize the full impulse from the sorted buffer — the stub only
+            # carried the challenge weight; attention runs on the real payload.
+            full = self._materialize(impulse)
             self._attended_cnt += 1
-            self._last_attended = self._brief(impulse)
+            self._last_attended = self._brief(full) if full else self._buffer_brief()
             self.clear()
+            return full
 
     def ignored(self, impulse: Impulse) -> None:
         with self._data_state_lock:
             self._ignored_cnt += 1
-            self._last_ignored = self._brief(impulse)
+            self._last_ignored = self._buffer_brief()
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
         if self._impulse_cache is None:
             return None
         if no_stale and self._impulse_cache.is_stale():
-            return None
-        if time.monotonic() < self._suppress_until:
             return None
         return self._impulse_cache
 
@@ -211,7 +220,7 @@ class InputSignalNucleus(Nucleus):
 
     @staticmethod
     def _preview(signal: Signal) -> str:
-        """红点预览: 最新消息的纯文本, 无消息时回退到 description 字段."""
+        """Red-dot preview: latest message's plain text, falling back to description."""
         if signal.messages:
             last = signal.messages[-1]
             parts = []
@@ -225,7 +234,7 @@ class InputSignalNucleus(Nucleus):
 
     @staticmethod
     def _brief(impulse: Impulse | None) -> str:
-        """impulse 的摘要文本 (简介): 优先最后一条消息, 回退 description, 再回退占位符."""
+        """Impulse summary: last message's text, falling back to description, then placeholder."""
         if impulse is None:
             return '<no impulse>'
         if impulse.messages:
@@ -239,6 +248,14 @@ class InputSignalNucleus(Nucleus):
                 return text
         return impulse.description or '<no content>'
 
+    def _buffer_brief(self) -> str:
+        """Real content behind a challenge stub — the latest valid buffered signal."""
+        valid = [s for s in self._signals if not s.is_stale()]
+        if not valid:
+            return '<no content>'
+        newest = max(valid, key=lambda s: s.created_at.timestamp())
+        return self._preview(newest)
+
     def _process_signal(self, signal: Signal) -> None:
         with self._data_state_lock:
             self._signals = [s for s in self._signals if not s.is_stale()]
@@ -249,42 +266,68 @@ class InputSignalNucleus(Nucleus):
             if len(self._signals) > self._buffer_size:
                 self._signals.pop(0)
 
-            self._impulse_cache = self._rebuild_impulse()
+            self._impulse_cache = self._build_stub()
+            if self._impulse_cache is None:
+                return
 
-            if time.monotonic() > self._suppress_until and self._impulse_cache is not None:
+            # Challenge gate: a strictly-higher aggregate weight breaks the cooldown.
+            new_weight = self._impulse_cache.priority_strength()
+            if new_weight > self._last_impulse_weight:
+                self._suppress_until = 0.0
+            self._last_impulse_weight = new_weight
+
+            if time.monotonic() > self._suppress_until:
                 self._notify_impulse()
 
     def _notify_impulse(self) -> None:
         if self._notify_cb and self._impulse_cache:
             self._notify_cb(self._impulse_cache)
 
-    def _rebuild_impulse(self) -> Impulse | None:
+    def _build_stub(self) -> Impulse | None:
+        """Challenge stub — the aggregate's collective weight, no messages.
+
+        mindflow only needs priority/strength/id/complete to rank and arbitrate;
+        the full payload is materialized in ``attended`` (challenge weight vs
+        runtime weight bifurcation).
+        """
         valid = [s for s in self._signals if not s.is_stale()]
         if not valid:
             return None
 
+        newest = max(valid, key=lambda s: s.created_at.timestamp())
         max_priority = max(s.priority for s in valid)
         max_strength = max(s.strength for s in valid)
-
-        all_msgs = []
-        for s in valid:
-            all_msgs.extend(s.messages)
-
-        latest = valid[-1]
 
         self._created_impulse_index += 1
         return Impulse(
             source=self._name,
             source_idx=self._created_impulse_index,
-            id=latest.id,
+            id=newest.id,
             priority=max_priority,
             strength=max_strength,
-            messages=all_msgs,
-            description=latest.description,
-            hint=latest.hint or self._default_prompt,
             complete=all(s.complete for s in valid),
-            stale_timeout=latest.stale_timeout,
+            stale_timeout=newest.stale_timeout,
         )
+
+    def _materialize(self, stub: Impulse) -> Impulse | None:
+        """Build the full impulse from the sorted buffer, reusing the stub's identity."""
+        valid = sorted(
+            (s for s in self._signals if not s.is_stale()),
+            key=lambda s: s.created_at.timestamp(),
+        )
+        if not valid:
+            return None
+
+        all_msgs = []
+        for s in valid:
+            all_msgs.extend(s.messages)
+
+        newest = valid[-1]
+        return stub.model_copy(update={
+            'messages': all_msgs,
+            'description': newest.description,
+            'hint': newest.hint or self._default_prompt,
+        })
 
 
 class InputNucleusMeta(NucleusMeta):
@@ -293,9 +336,9 @@ class InputNucleusMeta(NucleusMeta):
             self,
             *,
             name: str = "input_signal_nucleus",
-            description: str = "user text input",
+            description: str = "user text input — aggregate buffer, turn toward the user when it wins",
             default_prompt: str = '',
-            suppress_seconds: float = 0.5,
+            suppress_seconds: float = 5.0,
             buffer_size: int = 20,
             min_priority: Priority = Priority.INFO,
     ):
