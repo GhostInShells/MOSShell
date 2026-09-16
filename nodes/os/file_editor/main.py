@@ -1,33 +1,67 @@
 """MOSS node cell entry point.
 
-Start:  moss nodes run <path-to-this-dir>    # via CLI (foreground, CLI is owner)
-Debug:  python main.py                        # ad-hoc launch (from_proc identity)
+Start:  moss nodes run nodes/os/file_editor
+Debug:  python main.py
 
-Explore:
-    moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest
-    moss codex blueprint channel_builder
-    moss codex blueprint matrix
-    moss ctml read
+The node is one process serving two faces over one store: the channel (the
+ghost's control surface, projected onto the network) and the web surface (the
+human's stream + verdicts). Human events signal the ghost via
+``matrix.send_signal_to_ghost``.
 """
 
-from ghoshell_moss.core.blueprint.matrix import Matrix
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_NODE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_NODE_DIR / "src"))
+
+from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
+
+from ghoshell_file_editor.channel import build_file_editor_channel  # noqa: E402
+from ghoshell_file_editor.store import ThreadStore  # noqa: E402
+from ghoshell_file_editor.surface import FileEditorSurface  # noqa: E402
+
+_INDEX_HTML = _NODE_DIR / "index.html"
+
+HOST = "127.0.0.1"
+PORT = 8767
+_LOG_NAME = "file_editor.jsonl"
+
+
+class _Gate:
+    """The 'temporarily disabled' switch shared by channel and surface."""
+
+    def __init__(self) -> None:
+        self.enabled = True
 
 
 async def main(matrix: Matrix):
-    # A node without a membrane (channel) does not exist in the model's world.
-    # Build the channel and provide it — the Python signatures ARE the prompt.
-    #
-    #   from ghoshell_moss.core.blueprint.channel_builder import new_channel
-    #
-    #   channel = new_channel(name="my_node", description="what this node does")
-    #
-    #   @channel.build.command()
-    #   async def ping() -> str:
-    #       """One-line description shown to the model."""
-    #       return "pong"
-    #
-    #   await matrix.provide_channel(channel)   # blocks until membrane closes
-    pass
+    gate = _Gate()
+
+    log_path = matrix.home / _LOG_NAME
+    store = (
+        ThreadStore.replay(log_path)
+        if log_path.exists()
+        else ThreadStore(log_path=log_path)
+    )
+
+    surface = FileEditorSurface(
+        store,
+        send_signal=matrix.send_signal_to_ghost,
+        self_identity=matrix.this.unique_name,
+        on_toggle=lambda enabled: setattr(gate, "enabled", enabled),
+        host=HOST,
+        port=PORT,
+        html_path=_INDEX_HTML,
+    )
+    channel = build_file_editor_channel(
+        store, surface=surface, enabled=lambda: gate.enabled,
+    )
+
+    await surface.start()
+    await matrix.provide_channel(channel)
 
 
 if __name__ == "__main__":

@@ -11,18 +11,25 @@ exec:
 File editor is a shared dialogue surface over one readable text file. It is
 **not** an editing tool — the dialogue is the purpose, and export to disk is the
 only real side effect (its dialogue is the approval). The model opens a thread
-over a file, streams mutations (`write` / `str_replace` / `insert` / `rewind`)
-that humans watch in real time; humans reply by editing the action's
-description or its effect, and the reply is delivered as a unified diff.
+over a file, streams full-text `write` proposals that humans watch in real time,
+and may `rewind` / `reference` / `export`; humans confirm, reject, or reply by
+editing the action's description or its effect, and the reply is delivered as a
+unified diff.
 
-The interaction is a `Thread` bound to a text file: both sides append actions,
-mutations apply in FIFO order, and each confirmed mutation appends a `Version`
-to a linear, append-only chain. Rejecting an action cascades to later actions on
-the same thread; `rewind` is an ordinary action whose result equals an older
-version's content. `reference` is the one side-effect-free action (display a
-file region for shared view).
+The interaction is a `Thread` bound to a text file, and the actions appended to
+it *are* the append-only log. Every action carries the effect it would produce,
+computed when it is appended — so a diff is readable before anyone decides
+anything, and confirming computes nothing, it only records a verdict. The head
+and the version list are derived from those verdicts rather than stored.
+
+Rejecting an action cascades to every later action on the same thread (`rewind`
+is how an already-confirmed step is undone, so the log stays append-only).
+`rewind` is an ordinary action whose payload points at an earlier action or the
+loaded baseline; `reference` is the one action with no effect (display a file
+region for shared view); `export` carries the text it would write and is the
+only real side effect.
 
 Three independent axes: (1) pure data structures + a durable append-only store
-(`src/ghoshell_file_editor/`), (2) the communication protocol (uplink
-interactions / downlink streaming / queries), (3) the web UI. Axis 1 is landed
-and unit-tested; axes 2–3 build on it.
+(`src/ghoshell_file_editor/`), (2) the communication protocol (the model-facing
+channel + the human web surface), (3) the web UI. Axes 1–2 are landed and
+unit-tested; axis 3 (`index.html`) builds on them.

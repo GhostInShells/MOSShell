@@ -5,7 +5,9 @@ the optional append-only log. Axis-2 (protocol) and axis-3 (UI) build on top.
 """
 
 from .structure import (
+    BASE,
     Action,
+    ActionState,
     Anchor,
     Author,
     Effect,
@@ -13,17 +15,21 @@ from .structure import (
     Reply,
     Seq,
     Thread,
-    Version,
+    Verdict,
     cascade_seqs,
+    changes_content,
+    compute_effect,
     diff_of,
     effect_of,
-    is_mutating,
-    result_content,
+    rewind_target,
+    tail_content,
 )
 from .store import ThreadStore
 
 __all__ = [
+    "BASE",
     "Action",
+    "ActionState",
     "Anchor",
     "Author",
     "Effect",
@@ -32,10 +38,12 @@ __all__ = [
     "Seq",
     "Thread",
     "ThreadStore",
-    "Version",
+    "Verdict",
     "cascade_seqs",
+    "changes_content",
+    "compute_effect",
     "diff_of",
     "effect_of",
-    "is_mutating",
-    "result_content",
+    "rewind_target",
+    "tail_content",
 ]
