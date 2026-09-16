@@ -36,44 +36,19 @@ from ghoshell_moss.contracts.audio import (
 from ghoshell_moss.contracts.llms import MossLLMCaller
 from ghoshell_moss.contracts.listener import Listener, ListenerState
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
-from ghoshell_moss.core.blueprint.mindflow import Signal
+from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
-from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, new_listener_signal
+from ghoshell_moss.core.mindflow.listener_nucleus import new_listener_signal
 from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
 from ghoshell_moss.topics import AudioSampleTopic, ClauseTopic
 
 __all__ = [
     "ListenerController",
     "ModelListenerController",
-    "PacketTranslator",
     "ListenEtiquette",
     "ListenerSnapshot",
 ]
-
-
-class PacketTranslator:
-    """RecognitionEvent (text axis) → listener packets (first/clause/tail).
-
-    把 ASR 识别事件翻译成 listener 包流。``clause_index`` 按 segment 计数, FIRST 重置。
-    PARTIAL 不产出包 — listener 只关心 first/clause/tail 三个语义点。
-    """
-
-    def __init__(self) -> None:
-        self._clause_index = 0
-
-    def translate(self, result: RecognitionEvent) -> list[tuple[ListenerPacket, str, int]]:
-        packets: list[tuple[ListenerPacket, str, int]] = []
-        if result.phase == RecognitionPhase.FIRST:
-            self._clause_index = 0
-            packets.append((ListenerPacket.FIRST, result.text, 0))
-        elif result.phase == RecognitionPhase.CLAUSE:
-            self._clause_index += 1
-            clause_text = result.clause.text if result.clause else result.text
-            packets.append((ListenerPacket.CLAUSE, clause_text, self._clause_index))
-        elif result.phase == RecognitionPhase.TAIL:
-            packets.append((ListenerPacket.TAIL, result.text, self._clause_index))
-        return packets
 
 
 class ListenEtiquette(str, Enum):
@@ -133,7 +108,6 @@ class ListenerController:
         # 信号发射: 存在 sink 时注册一条 listener 级观察者 (跨 session 稳定), 机械地把
         # 每个识别事件翻译成 listener signal 并广播. 无 sink 则只做判停, 不发 signal.
         self._signal_broadcast = signal_broadcast
-        self._translator = PacketTranslator()
         if signal_broadcast is not None:
             listener.on_recognition_result(self._emit_event)
 
@@ -418,26 +392,37 @@ class ListenerController:
     # ── 信号发射 (RecognitionEvent → listener signal) ──
 
     def _emit_event(self, result: RecognitionEvent) -> None:
-        """识别事件 → 逐包翻译 → 广播. 仅在有 sink 时注册本观察者."""
-        for packet, text, clause_index in self._translator.translate(result):
-            self._emit_signal(packet, result, text, clause_index)
+        """识别事件 → 打断包/发送包 signal → 广播. 仅在有 sink 时注册本观察者.
 
-    def _emit_signal(
-            self,
-            packet: ListenerPacket,
-            result: RecognitionEvent,
-            text: str,
-            clause_index: int,
-    ) -> None:
-        clause = result.clause
+        FIRST → 打断包 (complete=False + interrupt + WARNING);
+        TAIL → 发送包 (complete=True + notify + INFO);
+        CLAUSE/PARTIAL 不上行 (判停已在 listener 侧消化).
+        """
+        if result.phase == RecognitionPhase.FIRST:
+            self._emit_interrupt(result)
+        elif result.phase == RecognitionPhase.TAIL:
+            self._emit_deliver(result)
+
+    def _emit_interrupt(self, result: RecognitionEvent) -> None:
+        """首包打断: complete=False 抢占注意力, interrupt=True 停行为, 失败丢弃."""
         self._signal_broadcast(new_listener_signal(
-            packet,
-            text,
-            turn_id=result.segment_id,
-            clause_index=clause_index,
-            start_ms=clause.start_ms if clause else 0,
-            end_ms=clause.end_ms if clause else 0,
-            description=f"listener:{packet.value}",
+            result.text,
+            segment_id=result.segment_id,
+            interrupt=True,
+            complete=False,
+            priority=Priority.WARNING,
+            description="listener:barge-in",
+        ))
+
+    def _emit_deliver(self, result: RecognitionEvent) -> None:
+        """尾包发送: complete=True 完整响应, notify 失败进历史, INFO 不打断运行中的模型."""
+        self._signal_broadcast(new_listener_signal(
+            result.text,
+            segment_id=result.segment_id,
+            mode=ChallengeMode.notify.value,
+            complete=True,
+            priority=Priority.INFO,
+            description="listener:deliver",
         ))
 
     # ── internals ──

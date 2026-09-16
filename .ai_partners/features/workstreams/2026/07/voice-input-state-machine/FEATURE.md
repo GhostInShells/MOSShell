@@ -1447,6 +1447,65 @@ push-to-talk(按住聆听松开 commit，可 defer)。
 - **快捷响应**（第五种礼仪）：端侧小模型快速响应，3 字符内 `<say>` 模板 —— 独立命题。
 - **ghost 侧组装 instruction** 识别「智能判停」并自写 caller instruction 的引导。
 
+## 2026-09-17 会话决策 — signal 协议化 + listener nucleus 协议化重构
+
+> 人类架构师 + deepseek-flash。上轮 llm_judge 落地证明 listener 侧做 llm func 判停
+> 效果更好（边缘时间敏感），据此把理解面从 nucleus 侧整体移到 listener 侧，signal
+> 协议化收口为「一种 Signal + meta 全量自解释」，listener nucleus 退化为纯协议映射。
+
+### 理解面归属：nucleus 侧 → listener 侧
+
+「理解面在 nucleus 还是 listener 侧」从治理最开始就反复讨论。最初 llmfun 逻辑考虑放
+nucleus 侧，第一期共同对出来是 nucleus 侧。现在证明 listener 侧更好——**边缘时间更
+敏感**，判停（llm_judge 尾包判停 / 首包判打断 / 间包多分类）在端侧做，不经过 nucleus
+仲裁往返。据此 signal 协议化：nucleus 全面协议化，只剩「打断注意力包 + 发送包」两条
+机械映射；间包语义 command 化。
+
+### 七种聆听礼仪（纠正 skeleton.md 的「五种」）
+
+listener-controller-skeleton.md 里的「五种聆听礼仪」是模型压缩错误。真实讨论是七种：
+
+1. 模型主动发起，听一次。
+2. 打断式 turn-taking：人说话就打断，一直到说完，模型才响应。
+3. 智能判停（llm_judge）：在 2 上延长 vad，让 llm func 判停。**已落地**（上轮）。
+4. 本地 buffer + 人工点击：默认完全不发送，界面呈现，人点击才发。
+5. 模型改写：在 4 上加 ASR 重写优化 + corpus 配置项。
+6. 快捷响应：端侧多分类 → command 到 ghost，只执行不思考（多分类含「说完了」选项）。
+7. 旁听模式：每分句都发送，模型云端只思考/做动作，除非被要求作答。
+
+「关键字」不是独立礼仪，是附加参数（叠加到任意礼仪）；skeleton.md 错摆成了一个礼仪。
+
+### signal 协议化：一种 Signal + meta 全量自解释
+
+signal 不再用 packet 枚举（FIRST/CLAUSE/TAIL）区分包型，退化为一种 Signal，正交字段
+自解释（凡是 impulse 不具备的字段——说话人/声纹等附加信息——进消息体）：
+
+- `complete`：是否抢占注意力（False = 打断包占坑，True = 发送包完整响应）。
+- `interrupt`（barge_in）：模型 attended 前是否停行为，端侧可配。
+- `priority`：抢占档，端侧可配（打断包默认 WARNING，发送包默认 INFO）。
+- `mode`：失败侧语义（notify / aside），发送包默认 notify。
+- `segment_id`：same-id 键，首包与发送包共享 → same-id absorb（打断 → 响应）。
+
+两条映射：打断包 `complete=False` + interrupt + 高强 + `thinking_effort='none'` 抢占占坑，
+失败丢弃（首包不携带内容）；发送包 `complete=True` + notify + INFO 完整响应，失败 buffer
+进历史（内容不丢）。INFO 的巧处：与运行中的 attention 同优先级，异源降权 → 不打断运行
+中的模型，但空闲时正常响应。
+
+### listener nucleus 协议化重构（落地）
+
+- `ListenerSignal` 退化为正交字段（删 packet/text/turn_id/clause_index/start_ms/end_ms/confidence）。
+- `ListenerNucleus` 删递送范式（interrupt/background/pull）、`first_packet_interrupt`/
+  `clause_response` 两开关、分句 FIFO、tail diff——这些理解全在 listener 侧。
+- 冷却双档：`suppress`（仲裁失败）大冷却 + `attended`（抢占成功）小冷却，只压打断包，
+  不压发送包。nucleus 是多通道「听觉」，cooldown 防多源/单源连续抢占风暴。
+- `as_channel` 最小化：删 set-mode/define-mode/default-mode/pull，留 notice + configure。
+- controller 发射：FIRST → 打断包，TAIL → 发送包，CLAUDE/PARTIAL 不上行（判停在端侧消化）。
+
+### 下一步
+
+1. 挑 listener 侧的 signal（正交配置项成型）。
+2. controller 拆出正交配置项，状态机开始配置化改造（礼仪由参数长出，不再 `ListenEtiquette` 常量化）。
+
 ---
 
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*

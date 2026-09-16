@@ -3,16 +3,12 @@
 只测协议层与单元行为, 不依赖 mindflow 主循环 (同 test_interrupt_nucleus).
 
 覆盖范围:
-- ListenerSignal 协议: signal_name / 默认 NOTICE / 往返 (from_signal) / 拒绝异名 / source
+- ListenerSignal 协议: signal_name / 默认 INFO / 往返 (segment_id/interrupt/mode/logos/source)
 - ListenerNucleus 信号面: signals() 监听 listener
-- 完整 turn (首包→分句→尾包): impulse id 一致 (same-id absorb 前提), complete 相位正确
-- 消息 xml 包装: 统一 <listen> tag + source attribute
-- 首包打断: complete=False + 高强, attended 降回正常强度 (用户钦定 attended 语义)
-- 首包打断关闭: 首包不抢 attention, 分句 buffer, 尾包提交全量
-- 分句响应开启: 分句逐包 impulse, 消息体为累计 buffer
-- 尾包 diff: 内容完全由分句 sent 态决定 (已送达不重发; 尾包自身 text 不参与)
-- 冷却语义: 尾包 commit 不受冷却约束; 分句在冷却期内 buffer 不发射
-- 首包 priority 参数化: set_first_packet_priority
+- 完整 turn (打断包 → 发送包): same-id (segment_id) + complete 相位
+- 打断包: complete=False + interrupt + 高强 + effort=none, attended 降回 + 小冷却
+- 发送包: complete=True + notify + 消息体 <listen> tag 包装
+- 冷却双档: 打断包受 suppress/attended 冷却约束, 发送包不受 (内容不丢)
 - ListenerNucleusMeta: name / signal meta 暴露 / factory
 """
 import asyncio
@@ -24,7 +20,7 @@ from ghoshell_container import Container
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
 from ghoshell_moss.core.mindflow.listener_nucleus import (
-    ListenerNucleus, ListenerNucleusMeta, ListenerSignal, ListenMode, ListenerPacket,
+    ListenerNucleus, ListenerNucleusMeta, ListenerSignal,
     new_listener_signal,
 )
 
@@ -37,26 +33,30 @@ def test_signal_name_is_listener():
     assert ListenerSignal.signal_name() == 'listener'
 
 
-def test_signal_default_priority_notice():
-    assert ListenerSignal.priority() == Priority.NOTICE
-    signal = ListenerSignal(packet=ListenerPacket.CLAUSE).to_signal('x')
-    assert signal.priority == Priority.NOTICE
+def test_signal_default_priority_info():
+    assert ListenerSignal.priority() == Priority.INFO
+    signal = ListenerSignal().to_signal('x')
+    assert signal.priority == Priority.INFO
 
 
 def test_signal_roundtrip_preserves_fields():
     sig = new_listener_signal(
-        ListenerPacket.CLAUSE, '今天天气不错',
-        turn_id='t1', clause_index=1, start_ms=100, end_ms=800, confidence=0.9,
+        '今天天气不错',
+        segment_id='t1', interrupt=True, mode='notify', logos='ok', source='wake_word',
     )
+    assert sig.complete is True  # complete 是 Signal 通用字段, 不进 metadata
     meta = ListenerSignal.from_signal(sig)
     assert meta is not None
-    assert meta.packet == ListenerPacket.CLAUSE
-    assert meta.text == '今天天气不错'
-    assert meta.turn_id == 't1'
-    assert meta.clause_index == 1
-    assert meta.start_ms == 100
-    assert meta.end_ms == 800
-    assert meta.confidence == 0.9
+    assert meta.segment_id == 't1'
+    assert meta.interrupt is True
+    assert meta.mode == 'notify'
+    assert meta.logos == 'ok'
+    assert meta.source == 'wake_word'
+
+
+def test_signal_roundtrip_complete_false():
+    sig = new_listener_signal(segment_id='t1', interrupt=True, complete=False, priority=Priority.WARNING)
+    assert sig.complete is False
 
 
 def test_signal_match_rejects_wrong_name():
@@ -64,16 +64,9 @@ def test_signal_match_rejects_wrong_name():
 
 
 def test_signal_source_defaults_to_asr():
-    meta = ListenerSignal.from_signal(new_listener_signal(ListenerPacket.CLAUSE, '你好'))
+    meta = ListenerSignal.from_signal(new_listener_signal('你好'))
     assert meta is not None
     assert meta.source == 'asr'
-
-
-def test_signal_roundtrip_preserves_source():
-    sig = new_listener_signal(ListenerPacket.CLAUSE, '你好', turn_id='t1', source='wake_word')
-    meta = ListenerSignal.from_signal(sig)
-    assert meta is not None
-    assert meta.source == 'wake_word'
 
 
 # ============================================================
@@ -85,34 +78,77 @@ def test_signals_listens_listener():
 
 
 # ============================================================
-# 完整 turn — impulse id 一致 + complete 相位
+# 完整 turn — same-id + complete 相位
 # ============================================================
 
 @pytest.mark.asyncio
-async def test_full_turn_ids_consistent_and_complete_flags():
-    """首包(打断开) → 尾包; 同 id 才能 same-id absorb."""
+async def test_full_turn_interrupt_then_deliver():
+    """打断包(complete=False) → 发送包(complete=True); 同 id 才能 same-id absorb."""
     notified: list = []
     async with ListenerNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '今天天气不错', turn_id='t1', clause_index=1))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', clause_index=1))
-    # 分句响应默认关: 首包 + 尾包 两个 impulse.
+        nuc.add_signal(new_listener_signal(segment_id='t1', interrupt=True, complete=False, priority=Priority.WARNING))
+        nuc.add_signal(new_listener_signal('今天天气不错', segment_id='t1', complete=True))
     assert len(notified) == 2
     first, tail = notified
     assert first.complete is False
     assert tail.complete is True
-    assert first.id == tail.id  # 同 id — same-id absorb 前提
+    assert first.id == tail.id == 't1'  # same-id = segment_id
     assert first.strength > 100  # 首包高强
-    assert _message_text(tail) == '今天天气不错'  # 分句未送达, 尾包发全量
+    assert _message_text(tail) == '今天天气不错'
 
 
 # ============================================================
-# 消息 xml 包装 — 共用一个 <listen> tag, 来源走 source attribute
+# 打断包 — interrupt + 高强 + 占坑不思考
 # ============================================================
 
-def _message_xml(impulse) -> str:
-    return '\n'.join(msg.to_xml() for msg in impulse.messages)
+@pytest.mark.asyncio
+async def test_interrupt_packet_flags():
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.add_signal(new_listener_signal(segment_id='t1', interrupt=True, complete=False, priority=Priority.WARNING))
+        imp = notified[0]
+        assert imp.complete is False
+        assert imp.interrupt is True
+        assert imp.thinking_effort == 'none'
+        assert imp.priority == Priority.WARNING
+        assert imp.strength > 100
+        assert imp.messages == []  # 占坑不携带内容
+
+
+@pytest.mark.asyncio
+async def test_interrupt_attended_flattens_and_cools():
+    """attended 降回运行参数 + 进入小冷却 (下一打断包不 fire)."""
+    notified: list = []
+    async with ListenerNucleus(attended_seconds=10.0) as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.add_signal(new_listener_signal(segment_id='t1', interrupt=True, complete=False, priority=Priority.WARNING))
+        first = notified[0]
+        result = nuc.attended(first)
+        assert result is first
+        assert first.priority == Priority.INFO  # run priority
+        assert first.strength == 100
+        # attended 后小冷却生效: 下一打断包不 fire.
+        nuc.add_signal(new_listener_signal(segment_id='t2', interrupt=True, complete=False, priority=Priority.WARNING))
+        assert len(notified) == 1
+
+
+# ============================================================
+# 发送包 — notify + 消息体 <listen> tag
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_deliver_packet_notify():
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.add_signal(new_listener_signal('你好', segment_id='t1', complete=True))
+        imp = notified[0]
+        assert imp.complete is True
+        assert imp.mode == ChallengeMode.notify.value
+        assert imp.priority == Priority.INFO
+        assert _message_text(imp) == '你好'
 
 
 @pytest.mark.asyncio
@@ -120,9 +156,7 @@ async def test_impulse_message_wrapped_in_listen_tag():
     notified: list = []
     async with ListenerNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '今天天气不错', turn_id='t1', clause_index=1))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', clause_index=1))
+        nuc.add_signal(new_listener_signal('今天天气不错', segment_id='t1', complete=True))
     xml = _message_xml(notified[-1])
     assert xml.startswith('<listen source="asr" created="')
     assert '今天天气不错' in xml
@@ -135,221 +169,37 @@ async def test_impulse_tag_source_attribute_follows_signal_source():
     notified: list = []
     async with ListenerNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t2', source='wake_word'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '小莫', turn_id='t2', clause_index=1, source='wake_word'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t2', clause_index=1, source='wake_word'))
+        nuc.add_signal(new_listener_signal('小莫', segment_id='t2', source='wake_word', complete=True))
     assert _message_xml(notified[-1]).startswith('<listen source="wake_word" created="')
 
 
 # ============================================================
-# 首包打断 — attended 降回正常强度
+# 冷却双档 — 打断包受约束, 发送包不受
 # ============================================================
 
 @pytest.mark.asyncio
-async def test_first_packet_attended_flattens_to_run_params():
-    notified: list = []
-    async with ListenerNucleus() as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        first = notified[0]
-        assert first.complete is False
-        assert first.priority == Priority.WARNING  # challenge priority
-        assert first.strength > 100
-        result = nuc.attended(first)
-        # attended 降回运行参数 (priority→INFO, strength→正常), 返回改动后的 impulse.
-        assert result is first
-        assert first.priority == Priority.INFO
-        assert first.strength == 100
-
-
-@pytest.mark.asyncio
-async def test_clause_attended_flattens_to_run_params():
-    """分句抢到 attention 后也降为运行参数, 让下一句能打断 (连续思考帧前提)."""
-    notified: list = []
-    async with ListenerNucleus(clause_response=True) as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
-        clause = notified[1]
-        assert clause.complete is True
-        assert clause.priority == Priority.NOTICE  # challenge priority
-        result = nuc.attended(clause)
-        assert result is clause
-        assert clause.priority == Priority.INFO  # run priority
-
-
-@pytest.mark.asyncio
-async def test_first_packet_interrupt_off_holds_until_tail():
-    """首包打断关: 首包不 fire, 分句只 buffer, 尾包提交全量."""
-    notified: list = []
-    async with ListenerNucleus(first_packet_interrupt=False) as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        assert notified == []
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '你好', turn_id='t1', clause_index=1))
-        assert notified == []  # clause_response 关, 分句只 buffer
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1'))
-        assert len(notified) == 1
-        assert notified[0].complete is True
-        assert _message_text(notified[0]) == '你好'
-
-
-# ============================================================
-# 分句响应 — 逐包 impulse + 累计 buffer
-# ============================================================
-
-@pytest.mark.asyncio
-async def test_clause_response_cumulative_buffer():
-    notified: list = []
-    async with ListenerNucleus(clause_response=True) as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句2', turn_id='t1', clause_index=2))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1', clause_index=2))
-    # 首包 + 句1 + 句2 + 尾包.
-    assert len(notified) == 4
-    first, clause1, clause2, tail = notified[0], notified[1], notified[2], notified[3]
-    # 分句 impulse 携带累计 buffer (句1 = "句1"; 句2 = "句1\n句2").
-    assert _message_text(clause1) == '句1'
-    assert '句1' in _message_text(clause2) and '句2' in _message_text(clause2)
-    # 分句用独立 id + complete=True (ghost 逐句思考, 互相打断的前提).
-    assert first.complete is False
-    assert clause1.complete is True
-    assert clause2.complete is True
-    assert clause1.id != clause2.id  # 不同 id 才能互相打断 (走 challenge 而非 absorb)
-    assert clause1.id != first.id   # 分句不走 turn 的 same-id absorb
-    assert tail.complete is True
-
-
-# ============================================================
-# 尾包 diff — 内容完全由分句 sent 态决定
-# ============================================================
-
-@pytest.mark.asyncio
-async def test_tail_diff_empty_when_all_clauses_sent():
-    """分句已送达 → 尾包 diff 为空, 不重发 (尾包自身 text 不参与递送)."""
-    notified: list = []
-    async with ListenerNucleus(clause_response=True) as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
-        nuc.attended(notified[1])  # 句1 已送达
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '尾巴', turn_id='t1', clause_index=1))
-        tail = notified[-1]
-        assert _message_text(tail) == ''
-
-
-# ============================================================
-# 冷却语义 — 尾包不受约束, 分句 buffer 不发射
-# ============================================================
-
-@pytest.mark.asyncio
-async def test_tail_not_gated_by_suppress():
-    """首包抢占失败 (suppress) 进入冷却, 但尾包 commit 仍提交."""
+async def test_deliver_not_gated_by_cooldown():
+    """打断包 suppress 后进入冷却, 但发送包仍提交 (内容不丢)."""
     notified: list = []
     async with ListenerNucleus(suppress_seconds=10.0) as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
+        nuc.add_signal(new_listener_signal(segment_id='t1', interrupt=True, complete=False, priority=Priority.WARNING))
         nuc.suppress(notified[0])  # 进入冷却
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1'))
-        assert len(notified) == 2  # 首包 + 尾包
+        nuc.add_signal(new_listener_signal('你好', segment_id='t1', complete=True))
+        assert len(notified) == 2
         assert notified[-1].complete is True
 
 
 @pytest.mark.asyncio
-async def test_clause_firing_gated_by_cooldown():
-    """冷却期内分句 buffer 不发射, 尾包仍提交全量 (内容不丢)."""
+async def test_interrupt_gated_by_suppress_cooldown():
+    """suppress 冷却期内打断包不 fire (丢弃)."""
     notified: list = []
-    async with ListenerNucleus(clause_response=True, suppress_seconds=10.0) as nuc:
+    async with ListenerNucleus(suppress_seconds=10.0) as nuc:
         nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.suppress(notified[0])  # 进入冷却
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '句1', turn_id='t1', clause_index=1))
-        assert len(notified) == 1  # 冷却期内分句不发射 (但已 buffer)
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '', turn_id='t1'))
-        assert len(notified) == 2
-        assert _message_text(notified[-1]) == '句1'  # buffer 未丢, 尾包兜底
-
-
-# ============================================================
-# 首包 priority 参数化
-# ============================================================
-
-@pytest.mark.asyncio
-async def test_set_first_packet_priority_takes_effect():
-    notified: list = []
-    async with ListenerNucleus() as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.set_first_packet_priority(Priority.ERROR)
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        assert notified[0].priority == Priority.ERROR
-
-
-# ============================================================
-# 递送范式 — background / pull
-# ============================================================
-
-@pytest.mark.asyncio
-async def test_background_mode_delivers_tail_only_as_notify():
-    """background: 非尾包丢弃, 尾包发 notify + BACKGROUND."""
-    notified: list = []
-    async with ListenerNucleus() as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.set_mode(ListenMode.BACKGROUND)
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.CLAUSE, '你好', turn_id='t1', clause_index=1))
-        assert notified == []  # 非尾包丢弃
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '整句', turn_id='t1'))
-    assert len(notified) == 1
-    imp = notified[0]
-    assert imp.complete is True
-    assert imp.priority == Priority.BACKGROUND
-    assert imp.mode == ChallengeMode.notify.value
-    assert _message_text(imp) == '整句'
-
-
-@pytest.mark.asyncio
-async def test_pull_mode_buffers_then_pull_delivers():
-    """pull: 尾包只 buffer, 非尾包丢弃; 显式 pull 排空成一个 impulse."""
-    notified: list = []
-    async with ListenerNucleus() as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.set_mode(ListenMode.PULL)
-        nuc.add_signal(new_listener_signal(ListenerPacket.FIRST, turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '第一句', turn_id='t1'))
-        nuc.add_signal(new_listener_signal(ListenerPacket.TAIL, '第二句', turn_id='t2'))
-        assert notified == []  # 全 buffer, 不 fire
-        assert nuc.pull() == 2
-        assert nuc.pull() == 0  # 已排空
-    assert len(notified) == 1
-    imp = notified[0]
-    assert imp.complete is True
-    text = _message_text(imp)
-    assert '第一句' in text and '第二句' in text
-
-
-@pytest.mark.asyncio
-async def test_background_message_created_comes_from_tail_signal():
-    """消息的 created 取 signal 到达墙钟, 不是 nucleus 建消息时刻."""
-    notified: list = []
-    async with ListenerNucleus() as nuc:
-        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
-        nuc.set_mode(ListenMode.BACKGROUND)
-        tail_sig = new_listener_signal(ListenerPacket.TAIL, '你好', turn_id='t1')
-        nuc.add_signal(tail_sig)
-    assert notified[0].messages[0].meta.created == tail_sig.created_at
-
-
-# ============================================================
-# 反身 channel — 持有 + 命令面
-# ============================================================
-
-def test_as_channel_returns_held_channel():
-    nuc = ListenerNucleus()
-    channel = nuc.as_channel()
-    assert channel is not None
-    assert nuc.as_channel() is channel  # 一次生成后持有
+        nuc.add_signal(new_listener_signal(segment_id='t1', interrupt=True, complete=False, priority=Priority.WARNING))
+        nuc.suppress(notified[0])
+        nuc.add_signal(new_listener_signal(segment_id='t2', interrupt=True, complete=False, priority=Priority.WARNING))
+        assert len(notified) == 1  # 冷却期内打断包不 fire
 
 
 # ============================================================
@@ -370,6 +220,10 @@ def test_nucleus_meta_factory_returns_listener_nucleus():
     container.set(LoggerItf, logging.getLogger(__name__))
     nuc = ListenerNucleusMeta().factory(container)
     assert isinstance(nuc, ListenerNucleus)
+
+
+def _message_xml(impulse) -> str:
+    return '\n'.join(msg.to_xml() for msg in impulse.messages)
 
 
 def _message_text(impulse) -> str:

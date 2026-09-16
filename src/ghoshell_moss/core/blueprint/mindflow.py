@@ -280,8 +280,12 @@ class SignalMeta(BaseModel, ABC):
             stale_timeout: float = 0,
             priority: int | None = None,
             hint: str = '',
+            complete: bool = True,
     ) -> Signal:
-        """快速用 meta 定义一个 signal. 提示两者的使用机制. """
+        """
+        快速用 meta 定义一个 signal. 提示两者的使用机制.
+        SignalMeta 可以和 Nucleus 对齐逻辑, 并不需要走这个表面.
+        """
         name = self.signal_name()
         wrapped_messages = []
         for msg in messages:
@@ -298,19 +302,15 @@ class SignalMeta(BaseModel, ABC):
             stale_timeout=stale_timeout,
             priority=priority,
             hint=hint,
+            complete=complete,
         )
 
 
 class InputSignalMeta(SignalMeta):
-    """Signal meta for ``input`` — the user's message to the ghost.
+    """Signal meta for ``input`` — a message from someone outside, expecting an answer.
 
-    Openbox aggregation rule (not a global mechanism): delivered signals collapse
-    into one impulse whose priority is the buffer's max priority and strength the
-    buffer's max strength, with messages concatenated in ``created_at`` order.
-    Winning creates a default attention (turn toward the user); losing keeps the
-    buffer pending under a cooldown that a strictly-higher signal breaks through.
-
-    For a different rule, register your own nucleus — do not change this one.
+    If the ghost is busy, the message waits — and comes back together with whatever
+    is said next.
     """
 
     @classmethod

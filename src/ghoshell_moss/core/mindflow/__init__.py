@@ -10,10 +10,11 @@ Module index:
   buffer_nucleus       — BufferNucleus, minimal signal gate (Gemini 3 original)
   input_signal_nucleus — InputSignalNucleus, user-text aggregate buffer (default mode)
   command_nucleus      — CommandNucleus, reflex-arc entry (command_only primitive)
+  knock_nucleus        — KnockNucleus, losable attention request (default mode, dropped on loss)
   notify_nucleus       — NotifyNucleus, message-preserving entry (notify primitive)
   aside_nucleus        — AsideNucleus, notice-without-interrupt channel (aside mode + priority-extraction buffer)
   interrupt_nucleus    — InterruptNucleus, interrupt channel (interrupt primitive + reverse suppress)
-  listener_nucleus     — ListenerNucleus, ASR perception channel (first/clause/tail phases + three switches)
+  listener_nucleus     — ListenerNucleus, listener signal → barge-in/deliver impulse mapping
 """
 
 from ghoshell_moss.core.blueprint.mindflow import *
@@ -27,6 +28,9 @@ from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus,
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 from ghoshell_moss.core.mindflow.command_nucleus import (
     CommandNucleus, CommandSignalMeta, CommandNucleusMeta,
+)
+from ghoshell_moss.core.mindflow.knock_nucleus import (
+    KnockNucleus, KnockSignalMeta, KnockNucleusMeta,
 )
 from ghoshell_moss.core.mindflow.notify_nucleus import (
     NotifyNucleus, NotifySignalMeta, NotifyNucleusMeta,
@@ -43,6 +47,6 @@ from ghoshell_moss.core.mindflow.cell_event_nucleus import (
 )
 from ghoshell_moss.core.mindflow.listener_nucleus import (
     ListenerNucleus, ListenerNucleusMeta,
-    ListenerSignal, ListenerPacket,
+    ListenerSignal,
 )
 from ghoshell_moss.core.mindflow._channel import build_mindflow_channel

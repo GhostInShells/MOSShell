@@ -30,8 +30,7 @@ from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, p
 from ghoshell_moss.contracts.asr import RecognitionPhase, RecognitionEvent
 from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket
-from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController, PacketTranslator
+from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
 from ghoshell_moss.host.nodes.listener_node import assemble_controller
 
 _MODES = ("once", "always", "enter", "llm_judge")
@@ -88,16 +87,13 @@ class _Stats:
     clauses: int = 0
 
 
-def _render(packet: ListenerPacket, result: RecognitionEvent, text: str, clause_index: int,
-            json_mode: bool) -> None:
+def _render(result: RecognitionEvent, text: str, json_mode: bool) -> None:
     if json_mode:
         clause = result.clause
         echo(json.dumps({
-            "packet": packet.value,
             "phase": result.phase.value,
             "text": text,
             "segment_id": result.segment_id,
-            "clause_index": clause_index,
             "start_ms": clause.start_ms if clause else 0,
             "end_ms": clause.end_ms if clause else 0,
             "clause_created": clause.created if clause else None,
@@ -107,30 +103,32 @@ def _render(packet: ListenerPacket, result: RecognitionEvent, text: str, clause_
         return
 
     if is_ai_mode():
-        if packet in (ListenerPacket.CLAUSE, ListenerPacket.TAIL):
+        if result.phase in (RecognitionPhase.CLAUSE, RecognitionPhase.TAIL):
             echo(text)
             echo("---")
         return
 
-    if packet == ListenerPacket.FIRST:
+    if result.phase == RecognitionPhase.FIRST:
         return
-    if packet == ListenerPacket.CLAUSE:
+    if result.phase == RecognitionPhase.CLAUSE:
         _commit_line(text)
         echo("---")
-    elif packet == ListenerPacket.TAIL:
+    elif result.phase == RecognitionPhase.TAIL:
         _commit_line(f"[tail] {text}")
         echo("")
 
 
-def _handle_result(result: RecognitionEvent, *, translator: PacketTranslator, json_mode: bool,
-                   stats: _Stats) -> None:
-    """Translate + render one recognition result; update stats. 信号发射在 ListenerController."""
-    for packet, text, clause_index in translator.translate(result):
-        _render(packet, result, text, clause_index, json_mode)
+def _handle_result(result: RecognitionEvent, *, json_mode: bool, stats: _Stats) -> None:
+    """Render one recognition result; update stats. 信号发射在 ListenerController."""
     if result.phase == RecognitionPhase.CLAUSE:
+        text = result.clause.text if result.clause else result.text
+        _render(result, text, json_mode)
         stats.clauses += 1
     elif result.phase == RecognitionPhase.TAIL:
+        _render(result, result.text, json_mode)
         stats.turns += 1
+    elif result.phase == RecognitionPhase.FIRST:
+        _render(result, result.text, json_mode)
 
 
 def _banner(ctx: _Ctx, mode: str, hint: str) -> None:
@@ -148,8 +146,7 @@ def _banner(ctx: _Ctx, mode: str, hint: str) -> None:
 
 async def _run_once(ctx: _Ctx) -> _Stats | None:
     stats = _Stats()
-    translator = PacketTranslator()
-    handle = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
+    handle = partial(_handle_result, json_mode=ctx.json_mode, stats=stats)
 
     if "not started" in ctx.capture.device_explain():
         print_error("capture device not started — may be locked by another process")
@@ -162,8 +159,7 @@ async def _run_once(ctx: _Ctx) -> _Stats | None:
 
 async def _run_always(ctx: _Ctx) -> _Stats | None:
     stats = _Stats()
-    translator = PacketTranslator()
-    on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
+    on_result = partial(_handle_result, json_mode=ctx.json_mode, stats=stats)
 
     if "not started" in ctx.capture.device_explain():
         print_error("capture device not started — may be locked by another process")
@@ -178,8 +174,7 @@ async def _run_always(ctx: _Ctx) -> _Stats | None:
 async def _run_enter(ctx: _Ctx) -> _Stats | None:
     prompt_session = PromptSession()
     stats = _Stats()
-    translator = PacketTranslator()
-    on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
+    on_result = partial(_handle_result, json_mode=ctx.json_mode, stats=stats)
 
     if "not started" in ctx.capture.device_explain():
         print_error("capture device not started — may be locked by another process")
@@ -207,8 +202,7 @@ async def _run_enter(ctx: _Ctx) -> _Stats | None:
 
 async def _run_llm_judge(ctx: _Ctx) -> _Stats | None:
     stats = _Stats()
-    translator = PacketTranslator()
-    on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
+    on_result = partial(_handle_result, json_mode=ctx.json_mode, stats=stats)
 
     if not isinstance(ctx.controller, ModelListenerController):
         print_error("llm_judge requires the llm func engine — is LLMFuncs configured?")

@@ -10,7 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase
-from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket, ListenerSignal
+from ghoshell_moss.core.blueprint.mindflow import Priority
+from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
 
 
@@ -255,7 +256,7 @@ def _tail(text: str, segment_id: str = "g") -> RecognitionEvent:
     )
 
 
-def test_signal_broadcast_translates_clause_to_listener_signal():
+def test_signal_broadcast_clause_not_emitted():
     emitted = []
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
@@ -263,16 +264,10 @@ def test_signal_broadcast_translates_clause_to_listener_signal():
     assert len(listener.result_observers) == 1  # 有 sink → 注册发射观察者
     listener.result_observers[0](_clause("你好"))
 
-    assert len(emitted) == 1
-    meta = ListenerSignal.from_signal(emitted[0])
-    assert meta is not None
-    assert meta.packet == ListenerPacket.CLAUSE
-    assert meta.text == "你好"
-    assert meta.turn_id == "g"
-    assert meta.clause_index == 1
+    assert emitted == []  # CLAUSE 不上行 — 判停已在 listener 侧消化
 
 
-def test_signal_broadcast_full_turn_order():
+def test_signal_broadcast_interrupt_then_deliver():
     emitted = []
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
@@ -282,8 +277,18 @@ def test_signal_broadcast_full_turn_order():
     cb(_clause("你好"))
     cb(_tail("你好", segment_id="t1"))
 
-    packets = [ListenerSignal.from_signal(s).packet for s in emitted]
-    assert packets == [ListenerPacket.FIRST, ListenerPacket.CLAUSE, ListenerPacket.TAIL]
+    assert len(emitted) == 2  # 打断包 + 发送包 (CLAUSE 不上行)
+    interrupt_sig, deliver_sig = emitted
+    assert interrupt_sig.complete is False
+    assert deliver_sig.complete is True
+
+    interrupt_meta = ListenerSignal.from_signal(interrupt_sig)
+    deliver_meta = ListenerSignal.from_signal(deliver_sig)
+    assert interrupt_meta.segment_id == "t1"
+    assert deliver_meta.segment_id == "t1"  # same-id
+    assert interrupt_meta.interrupt is True
+    assert interrupt_sig.priority == Priority.WARNING
+    assert deliver_sig.priority == Priority.INFO
 
 
 def test_no_signal_broadcast_registers_no_observer():
