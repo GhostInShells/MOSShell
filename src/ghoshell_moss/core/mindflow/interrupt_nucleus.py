@@ -40,13 +40,10 @@ __all__ = [
 
 
 class InterruptSignalMeta(SignalMeta):
-    """Signal meta for ``interrupt`` — stop the ghost right now, then let go.
+    """Signal meta for ``interrupt`` — stop, right now.
 
-    Dual to ``ImpulsePrimitive.broadcast`` (FATAL + aside: buffer without taking
-    attention): interrupt takes attention and stops the shell, then drops it
-    without thinking.
-
-    priority is locked to FATAL — there is no "low-priority interrupt".
+    The ghost drops what it is doing and starts nothing new — it just stops.
+    Asking again right away changes nothing.
     """
 
     @classmethod

@@ -2,7 +2,7 @@
 
 Subcommands:
 - ``run``: launch a Ghost — interactive TUI, or headless output/log observation.
-- ``send``: inject a text signal (input/notify/interrupt/aside) to a running Ghost.
+- ``send``: inject a text signal (input/notify/interrupt/aside/knock) to a running Ghost.
 
 Without a subcommand, lists all available Ghosts.
 """
@@ -24,6 +24,7 @@ from ghoshell_moss.core.blueprint.session import OutputItem, Session
 from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
 from ghoshell_moss.core.mindflow.aside_nucleus import new_aside_signal
+from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.host import Host
 
 
@@ -86,7 +87,7 @@ def run_cmd(ctx, ghost, surface):
 @click.option(
     "--signal",
     "signal_type",
-    type=click.Choice(["input", "notify", "interrupt", "aside"]),
+    type=click.Choice(["input", "notify", "interrupt", "aside", "knock"]),
     default="input",
     show_default=True,
     help="Signal type to send, routed to the matching nucleus.",
@@ -193,19 +194,20 @@ async def _output_printer(queue: janus.Queue) -> None:
 
 
 def _run_ghost_headless(ghost_runtime, main: Callable[[], Awaitable[None]]) -> None:
-    """Headless: asyncio.run(main()) with SIGINT → ghost_runtime.close().
+    """Headless: asyncio.run(main()) with SIGINT/SIGTERM → ghost_runtime.close().
 
-    todo: 优雅退出 bug — 信号 handler 只同步调 ``ghost_runtime.close()`` (只关
-    moss_runtime/mindflow), 不 await ghost 的 ``__aexit__``, 而 dsh launcher 挂在
-    ghost 的 exit stack 上, 没人关 → 残留孤儿 dsh 进程占端口 (复现: 起 ghost 后
-    Ctrl+C, ``lsof -iTCP:3083`` 仍见 node dsh). 且只处理 SIGINT, 未处理 SIGTERM.
-    修法: 信号 handler 内 schedule 一个 async 任务走 ``ghost_runtime.__aexit__``.
+    close() 只同步置 moss_runtime 的 closing event (thread-safe); 真正的收尾由
+    main() 的 ``async with ghost_runtime: await moss.wait_close()`` 完成 — close 后
+    wait_close 返回 → async with 退出 → ghost.__aexit__ 反卷 (含 dsh launcher)。
     """
-    prev = signal.signal(signal.SIGINT, lambda s, f: ghost_runtime.close())
+    handler = lambda s, f: ghost_runtime.close()
+    prev_int = signal.signal(signal.SIGINT, handler)
+    prev_term = signal.signal(signal.SIGTERM, handler)
     try:
         asyncio.run(main())
     finally:
-        signal.signal(signal.SIGINT, prev)
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)
 
 
 # ── 三个交互面 ──────────────────────────────────────
@@ -285,7 +287,8 @@ def _send_signal(
 
     signal_type 决定发哪种 signal, 一一对应现成的 nucleus:
     input → InputSignalNucleus, notify → NotifyNucleus,
-    interrupt → InterruptNucleus, aside → AsideNucleus.
+    interrupt → InterruptNucleus, aside → AsideNucleus,
+    knock → KnockNucleus.
 
     Signal key 是 scope 级 (MOSS/matrix/scopes/{scope}/signals), 但 logos key 是
     session_scope 级 (含 ghost 名), 所以观测 logos 必须传 ghost 对齐订阅 key。
@@ -323,6 +326,8 @@ def _emit_signal(session: Session, text: str, signal_type: str, priority_name: s
         session.add_input_signal(text, priority=priority)
     elif signal_type == "notify":
         session.add_signal(new_notify_signal(text, priority=priority))
+    elif signal_type == "knock":
+        session.add_signal(new_knock_signal(text, priority=priority))
     elif signal_type == "interrupt":
         session.add_signal(new_interrupt_signal(text))
     else:  # aside

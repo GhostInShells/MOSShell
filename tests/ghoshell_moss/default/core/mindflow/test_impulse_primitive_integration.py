@@ -265,6 +265,66 @@ async def test_notify_buffers_when_challenge_fails():
             defender_att.abort('test done')
 
 
+@pytest.mark.asyncio
+async def test_next_buffers_and_marks_observe_when_challenge_fails():
+    """next (插队): 抢占失败时 messages 进 buffer 且强制下一帧观察.
+    协议命题: next 与 notify 的唯一机制差 — 失败侧额外标记 need_observe,
+    保证当前 attention 下一轮一定发生 (而不是被动等下一帧自然到来)."""
+    mindflow = _new_mindflow()
+    async with mindflow:
+        await mindflow.wait_started()
+        # NOTICE defender + 保护期, 让同优先级 next challenger 一定失败.
+        defender = _imp(priority=Priority.NOTICE,
+                        messages=[Message.new().with_content('defender')])
+        defender.protection_time = 10.0
+        mindflow.add_impulse(defender)
+        defender_att = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with defender_att:
+            challenger = _imp(priority=Priority.NOTICE,
+                              messages=[Message.new().with_content('cut_msg')])
+            ImpulsePrimitive.next(challenger)
+            assert challenger.mode == ChallengeMode.next.value
+            mindflow.add_impulse(challenger)
+            await asyncio.sleep(0.2)
+            # 1. 不抢占 — 当前 attention 继续.
+            assert not defender_att.is_aborted()
+            # 2. messages 进 buffer (next 偏离侧).
+            buffered = mindflow.moments.peek().percepts_messages()
+            buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
+            assert 'cut_msg' in buffered_texts
+            # 3. 强制下一帧观察 (next 与 notify 的差别就在这一脚).
+            assert mindflow.moments.need_observe() is True
+            defender_att.abort('test done')
+
+
+@pytest.mark.asyncio
+async def test_next_at_background_is_dropped_not_queued():
+    """插队有下限: BACKGROUND + next 无权插队, 直接 suppress (不 buffer 不 observe).
+    协议命题: 滥用插队会架空其它机制 — 落成 BACKGROUND 无权插队."""
+    mindflow = _new_mindflow()
+    async with mindflow:
+        await mindflow.wait_started()
+        defender = _imp(priority=Priority.NOTICE,
+                        messages=[Message.new().with_content('defender')])
+        defender.protection_time = 10.0
+        mindflow.add_impulse(defender)
+        defender_att = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
+        async with defender_att:
+            challenger = _imp(priority=Priority.BACKGROUND,
+                              messages=[Message.new().with_content('bg_cut')])
+            ImpulsePrimitive.next(challenger)
+            mindflow.add_impulse(challenger)
+            await asyncio.sleep(0.2)
+            assert not defender_att.is_aborted()
+            # 未被注入 (suppressed, 而非 buffered).
+            buffered = mindflow.moments.peek().percepts_messages()
+            buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
+            assert 'bg_cut' not in buffered_texts
+            # 也未强制观察.
+            assert mindflow.moments.need_observe() is False
+            defender_att.abort('test done')
+
+
 # ============================================================
 # 帧折叠 (interleaved incomplete) — partial 首包 / 回声帧
 # ============================================================

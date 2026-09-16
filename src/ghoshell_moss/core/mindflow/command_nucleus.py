@@ -30,16 +30,15 @@ __all__ = ['CommandNucleus', 'CommandSignalMeta', 'CommandNucleusMeta', 'new_com
 
 
 class CommandSignalMeta(SignalMeta):
-    """Signal meta for ``command`` — logos for the shell to execute directly.
+    """Signal meta for ``command`` — an instruction to act.
 
-    The ``logos`` field is carried in ``signal.metadata`` and deserialized through
-    the standard SignalMeta path (``from_signal`` -> ``model_validate(metadata)``).
+    The ghost does not think it over — it just does it. A newer instruction replaces
+    an older one; one that cannot be carried out is dropped.
     """
 
     logos: str = Field(
-        description="待 shell 直接执行的 logos (通常是 CTML). "
-                    "由 CommandNucleus 把它从 signal.metadata 抽出, "
-                    "卸载到 Impulse.logos 字段, 经 attention.command_logos 送入 shell.",
+        description="logos (usually CTML) for the shell to execute directly, instead of "
+                    "the ghost thinking it over.",
     )
 
     @classmethod

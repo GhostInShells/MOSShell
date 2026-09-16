@@ -341,6 +341,11 @@ class ChallengeMode(str, enum.Enum):
     # 用例: 消息绝不能丢, 但可以不响应的情况. 比如连续的语音输入 (NOTICE + notify)
     notify = 'notify'
 
+    # 抢占失败时 buffer messages 并标记下一帧观察 (强制当前 attention 再观察一轮);
+    # 抢占成功照常创建新 attention.
+    # 用例: 插队 — 保证下轮一定轮到你, 但不打断手头的事 (当前 attention 继续).
+    next = 'next'
+
 
 # Impulse 对应的决策倾向. Impulse 是预处理的思维状态, 相当于一种条件反射产生的思维倾向.
 # off: 表示不要开启模型的思考, 让 logos 输出行为优先.
@@ -720,13 +725,14 @@ Logos = AsyncIterator[str]
 类似用魔法吟唱的方式驱动火球, 石头人 等. 
 """
 
-ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'buffered', 'yielded']
+ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'buffered', 'queued', 'yielded']
 """Impulse challenge 的仲裁结果。
 - preempted: 抢占成功，创建新 Attention
 - suppressed: 被压制，原 nucleus 收到 suppress()
 - absorbed: 同 ID 更新 complete，不抢占
 - initial: 当前无 attention（首个 impulse）
-- buffered: aside 抢占成功侧 / notify 抢占失败侧 → messages 进 mindflow buffer
+- buffered: aside 抢占成功侧 / notify 抢占失败侧 → messages 进 mindflow buffer (被动等下一帧)
+- queued: next 抢占失败侧 → messages 进 buffer 且强制当前 attention 再观察一轮 (主动保证下一轮)
 - yielded: strength=0 绝不竞争 — 不分 defender/quiet, 不打任何 mode 分支,
   不建 attention, 由 nucleus 自然清理缓存 (Zen 静默心智模型预留)
 """
@@ -1451,6 +1457,21 @@ class ImpulsePrimitive:
         用例: 用户消息绝不能丢 — ghost 思考时说话, 不打断就留痕.
         """
         impulse.mode = ChallengeMode.notify.value
+        return impulse
+
+    @staticmethod
+    def next(impulse: Impulse) -> Impulse:
+        """插队 — 保证下一轮轮到你, 但不打断手头的事.
+
+        组合: ``mode = next``.
+        priority 由调用方控制. 抢占失败时 messages 注入当前 attention 的下一帧
+        并强制再观察一轮 (当前 attention 继续, 不被替换); 抢占成功照常创建新 attention.
+
+        用例: 端侧有结果待拉, 想让 ghost 尽快来看一眼, 但不必打断正在做的事.
+        与 ``notify`` 的区别: notify 只承诺"不丢", 被动等下一帧自然发生;
+        next 主动保证下一帧一定发生.
+        """
+        impulse.mode = ChallengeMode.next.value
         return impulse
 
     @staticmethod

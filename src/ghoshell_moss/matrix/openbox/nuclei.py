@@ -1,6 +1,6 @@
 # Openbox nucleus manifest — canonical default mindflow perception nuclei.
 #
-# Shipped baseline: 7 NucleusMeta instances covering the full perception surface.
+# Shipped baseline: 8 NucleusMeta instances covering the full perception surface.
 # Matrix scans via isinstance(obj, NucleusMeta) and registers each factory
 # into the Mindflow runtime.
 #
@@ -10,6 +10,7 @@ from ghoshell_moss.core.mindflow import (
     InterruptNucleusMeta,
     NotifyNucleusMeta,
     CommandNucleusMeta,
+    KnockNucleusMeta,
     AsideNucleusMeta,
     InputNucleusMeta,
     CellEventNucleusMeta,
@@ -21,6 +22,7 @@ __all__ = [
     'notify_nucleus',
     'interrupt_nucleus',
     'command_nucleus',
+    'knock_nucleus',
     'aside_nucleus',
     'cell_event_nucleus',
     'listener_nucleus',
@@ -37,6 +39,9 @@ interrupt_nucleus = InterruptNucleusMeta()
 
 # command — execute logos directly
 command_nucleus = CommandNucleusMeta()
+
+# knock — losable attention request (dropped on loss)
+knock_nucleus = KnockNucleusMeta()
 
 # aside — notice without interrupting (buffer without attention)
 aside_nucleus = AsideNucleusMeta()

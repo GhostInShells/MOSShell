@@ -585,11 +585,12 @@ class AbsMindflow(Mindflow, ABC):
     async def _challenge_attention(self, impulse: Impulse) -> None:
         """impulse 与当前 attention 的仲裁入口. 原子操作.
 
-        三 mode (default/aside/notify) 沿"抢占成功 vs 失败" 双轴对称分布,
+        四 mode (default/aside/notify/next) 沿"抢占成功 vs 失败" 双轴对称分布,
         见 ``ChallengeMode`` 注释的对称表. 本函数把对称表展开成实际分支:
         - 抢占成功 + aside → buffer messages (aside 偏离侧)
-        - 抢占成功 + 其他   → 创建新 attention (default)
-        - 抢占失败 + notify → buffer messages (notify 偏离侧)
+        - 抢占成功 + 其他  → 创建新 attention (default)
+        - 抢占失败 + notify → buffered (notify 偏离侧)
+        - 抢占失败 + next   → queued: buffer + 强制下一帧观察 (next 偏离侧)
         - 抢占失败 + 其他   → suppress nucleus (default)
 
         quiet 系统 (无 defender) 走单独分支: aside 同样 buffer 不创建 attention,
@@ -629,12 +630,18 @@ class AbsMindflow(Mindflow, ABC):
                     return None
                 elif impulse.priority == Priority.BACKGROUND.value:
                     # BACKGROUND 永不抢占; notify 偏离侧: 失败时 buffer 而非 suppress.
+                    # next 故意不包含在此 — BACKGROUND 无权插队 (滥用下限).
                     verdict = 'buffered' if impulse.mode == ChallengeMode.notify.value else 'suppressed'
                     await self._fire_challenge(impulse, defender, verdict)
                     return None
                 if self._current_attention.is_protected():
-                    # 保护期, 同/低优先级失败. notify 偏离侧: 失败时 buffer 而非 suppress.
-                    verdict = 'buffered' if impulse.mode == ChallengeMode.notify.value else 'suppressed'
+                    # 保护期, 同/低优先级失败. notify → buffered; next → queued; 其它 suppress.
+                    if impulse.mode == ChallengeMode.next.value:
+                        verdict = 'queued'
+                    elif impulse.mode == ChallengeMode.notify.value:
+                        verdict = 'buffered'
+                    else:
+                        verdict = 'suppressed'
                     await self._fire_challenge(impulse, defender, verdict)
                     return None
 
@@ -649,7 +656,9 @@ class AbsMindflow(Mindflow, ABC):
                     await self._fire_challenge(impulse, defender, verdict)
                     return None
                 elif result == 'lose':
-                    if impulse.mode == ChallengeMode.notify.value:
+                    if impulse.mode == ChallengeMode.next.value:
+                        verdict = 'queued'
+                    elif impulse.mode == ChallengeMode.notify.value:
                         verdict = 'buffered'
                     else:
                         verdict = 'suppressed'
@@ -691,6 +700,10 @@ class AbsMindflow(Mindflow, ABC):
         elif verdict == 'buffered':
             self._notify_impulse_attended(challenger)
             self._moments_observer.inject_percepts(*challenger.messages)
+        elif verdict == 'queued':
+            self._notify_impulse_attended(challenger)
+            self._moments_observer.inject_percepts(*challenger.messages)
+            self._moments_observer.add_echoes([], need_observe=True)
         elif verdict == 'absorbed':
             self._notify_impulse_attended(challenger)
             # absorbed 也是一种 attended 动作: 让持有 attention 更新仲裁状态 (优先级/强度/保护期).

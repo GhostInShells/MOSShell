@@ -34,50 +34,38 @@ NAME = 'cell_event_nucleus'
 
 
 class CellTransition(str, Enum):
-    """Cell 生命周期跃迁类型 (§WW-5 四弧 + spawned 起点).
-
-    nucleus 判决核心: 未来分档时按 transition override 优先级
-    (如 CRASHED → 从 BACKGROUND 提到 NOTICE), 一行代码扩展.
-    """
+    """Which step a cell's life took — being born, coming online, or going away."""
 
     SPAWNED = 'spawned'
-    """父进程 spawn 完成, 子进程 pid 已知, 尚未入网."""
+    """The cell was spawned: its process exists, but it is not on the network yet."""
 
     READY = 'ready'
-    """子进程 announce presence, 网络上可见 (新器官上线)."""
+    """The cell announced itself and is reachable — a new organ is online."""
 
     EXITED = 'exited'
-    """子进程正常退出 (exit_code == 0)."""
+    """The cell shut down cleanly (exit_code == 0)."""
 
     CRASHED = 'crashed'
-    """子进程异常退出 (exit_code != 0)."""
+    """The cell died on an error (exit_code != 0)."""
 
 
 class CellEventSignalMeta(SignalMeta):
-    """Signal meta for ``cell_event`` — a lifecycle change in the cell network.
+    """Signal meta for ``cell_event`` — something in the system came up, became ready,
+    went away, or crashed.
 
-    Produced by the mesh channel subscribing to mesh.on_event (matrix-channel.md
-    §5.2). priority=BACKGROUND — it never preempts attention, only enters the
-    mindflow buffer as a background hint; CellEventNucleus converts it to an
-    impulse.
-
-    **The fields are the nucleus's routing signal, not message content** — the
-    message body (exit code, stderr tail, diagnostics path) goes through
-    to_signal(messages=..., description=...). See the SignalMeta docstring's
-    three-scales principle.
-
-    Defaults keep an empty construct valid (tests / fallback):
-      CellEventSignalMeta() → address='' + transition=READY, meaning "something happened".
+    How much it matters depends on what happened — a crash should not read like a
+    routine start.
     """
 
     address: str = Field(
         default='',
-        description="cell address (kind/name/uid), 事件主语. "
-                    "nucleus 未来按 cell 去重/分组的锚. 空 = 未定/兜底.",
+        description="cell address (kind/name/uid) — the subject of the event, and the "
+                    "anchor for per-cell grouping. Empty = undetermined / fallback.",
     )
     transition: CellTransition = Field(
         default=CellTransition.READY,
-        description="生命周期跃迁类型. nucleus 分档判决的核心依据.",
+        description="which lifecycle transition happened — how much the event matters is "
+                    "read off this.",
     )
 
     @classmethod

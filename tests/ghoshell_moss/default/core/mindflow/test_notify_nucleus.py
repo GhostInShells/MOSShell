@@ -77,6 +77,15 @@ def test_build_impulse_sets_notify_mode():
     assert impulse.mode == ChallengeMode.notify.value
 
 
+def test_build_impulse_next_true_sets_next_mode():
+    """next=True 应升级为 mode='next' (插队: 失败侧强制下一帧观察)."""
+    nuc = NotifyNucleus()
+    signal = new_notify_signal(Message.new().with_content('cut'), next=True)
+    impulse = nuc.build_impulse(signal)
+    assert impulse is not None
+    assert impulse.mode == ChallengeMode.next.value
+
+
 def test_build_impulse_does_not_set_thinking_effort():
     """notify primitive 单纯设 mode, 不动 thinking_effort (保持默认空值)."""
     nuc = NotifyNucleus()

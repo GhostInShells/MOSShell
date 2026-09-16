@@ -1,6 +1,6 @@
 """NotifyNucleus — turns ``notify`` signals into ``notify``-mode impulses.
 
-The "must not be lost" perception nucleus, pairing ``ImpulsePrimitive.notify``.
+The "must not be missed" perception nucleus, pairing ``ImpulsePrimitive.notify``.
 It listens to ``NotifySignalMeta`` (signal name ``"notify"``) and wraps each
 signal into an impulse carrying ``mode=notify``: winning the challenge creates a
 new attention as usual, while losing it routes the messages into the mindflow's
@@ -13,6 +13,8 @@ no interruption, but the message leaves a trace.
 """
 from typing import Callable, Iterable
 from typing_extensions import Self
+
+from pydantic import Field
 
 from ghoshell_container import IoCContainer
 
@@ -27,13 +29,19 @@ __all__ = ['NotifyNucleus', 'NotifySignalMeta', 'NotifyNucleusMeta', 'new_notify
 
 
 class NotifySignalMeta(SignalMeta):
-    """Signal meta for ``notify`` — carries messages that must not be lost.
+    """Signal meta for ``notify`` — a message that must not be missed.
 
-    Winning the challenge creates a new attention as usual; losing it goes through
-    notify mode — the messages are buffered into the mindflow (leaving a trace)
-    instead of being suppressed, and are consumed by the next frame's percepts.
-    Canonical case: the user speaks while the ghost is thinking.
+    If the ghost is free it becomes its next thought; if the ghost is busy the
+    message is not dropped — it is already there the next time the ghost looks.
+    With ``next``, the ghost is also guaranteed that next look: it finishes what
+    it is doing, then turns to this message.
     """
+
+    next: bool = Field(
+        default=False,
+        description="if true, the ghost is guaranteed the next turn — it finishes "
+                    "what it is doing and then turns to this message.",
+    )
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -93,9 +101,12 @@ class NotifyNucleus(Nucleus):
             self._fire_impulse(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
-        if not NotifySignalMeta.match(signal):
+        meta = NotifySignalMeta.from_signal(signal)
+        if meta is None:
             return None
         impulse = Impulse.from_signal(signal, source=self.name())
+        if meta.next:
+            return ImpulsePrimitive.next(impulse)
         return ImpulsePrimitive.notify(impulse)
 
     def with_bus(
@@ -158,9 +169,13 @@ def new_notify_signal(
         description: str = '',
         stale_timeout: float = 0,
         hint: str = '',
+        next: bool = False,
 ) -> Signal:
-    """Helper — construct a ``notify`` signal in one call."""
-    return NotifySignalMeta().to_signal(
+    """Helper — construct a ``notify`` signal in one call.
+
+    ``next=True`` upgrades the delivery to a guaranteed next turn (queue-jump).
+    """
+    return NotifySignalMeta(next=next).to_signal(
         *messages,
         description=description,
         stale_timeout=stale_timeout,

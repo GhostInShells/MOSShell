@@ -6,9 +6,9 @@
 impulse 标记为 ``mode=aside``: 抢占成功时 buffer 进 mindflow 不接管 attention,
 抢占失败时 suppress (符合 aside 在"抢占成功侧偏离" 的对称语义).
 
-结构对称于 ``InputSignalNucleus`` (两者都是 buffer + 优先级提取), 差异是:
-- InputSignalNucleus: signal 视为离散事件 (FIFO 保留), default mode → 走 articulate
-- AsideNucleus: signal 视为数据流 (合并语义), aside mode → 旁路 buffer 不思考
+结构对称于 ``InputSignalNucleus`` (两者都是聚合 buffer + 优先级提取), 差异只在 mode:
+- InputSignalNucleus: default mode → 抢占成功创建 attention, 走 articulate
+- AsideNucleus: aside mode → 抢占成功只 buffer 不接管, 不思考
 
 这种对称在拓扑层面是有意为之 — 让开发者用"读名字就懂语义"的方式选择路由,
 而不需要懂 ChallengeMode × priority × effort 的正交组合.

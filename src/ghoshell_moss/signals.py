@@ -14,6 +14,7 @@ Directory:
   NotifySignalMeta     — must-not-lose message (NOTICE, notify: buffer on loss)
   InterruptSignalMeta  — stop now (FATAL, interrupt: take attention then drop)
   CommandSignalMeta    — execute logos directly (NOTICE, command_only)
+  KnockSignalMeta      — losable attention request (NOTICE, default mode, dropped on loss)
   AsideSignalMeta      — notice without interrupting (NOTICE, aside: buffer without attention)
   CellEventSignalMeta  — cell lifecycle event (BACKGROUND, background_notice)
 """
@@ -24,6 +25,7 @@ from ghoshell_moss.core.mindflow import (
     NotifySignalMeta,
     InterruptSignalMeta,
     CommandSignalMeta,
+    KnockSignalMeta,
     AsideSignalMeta,
 )
 from ghoshell_moss.core.mindflow.cell_event_nucleus import (
@@ -36,6 +38,7 @@ __all__ = [
     'NotifySignalMeta',
     'InterruptSignalMeta',
     'CommandSignalMeta',
+    'KnockSignalMeta',
     'AsideSignalMeta',
     'CellEventSignalMeta',
     'CellTransition',

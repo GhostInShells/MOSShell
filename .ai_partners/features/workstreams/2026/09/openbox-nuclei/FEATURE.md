@@ -3,7 +3,7 @@ title: Openbox Nuclei — 基础感知核的机制治理
 status: in-progress
 priority: P1
 created: 2026-09-16
-updated: 2026-09-16
+updated: 2026-09-17
 depends: [moss-openbox-modes, mindflow-interleaved-thinking]
 milestone:
 description: >-
@@ -19,8 +19,8 @@ description: >-
 
 ## Motivation
 
-`ghoshell_moss.matrix.openbox.nuclei` 是开箱默认感知核清单（7 个：input / notify /
-interrupt / command / silent / cell_event / listener）。
+`ghoshell_moss.matrix.openbox.nuclei` 是开箱默认感知核清单（`aside` 改名、`knock` 补齐后为
+8 个：input / notify / interrupt / command / knock / aside / cell_event / listener）。
 
 **它们的定位不是取代业务逻辑 nucleus，而是给"通用的、不想开 nucleus 的能力"提供默认通道。**
 功能面的语义化机制（multi-tasks / listener / vision 等）是另一层，不在这里竞争。
@@ -38,7 +38,7 @@ interrupt / command / silent / cell_event / listener）。
 ## Design Index
 
 - 机制面权威定义: `src/ghoshell_moss/core/blueprint/mindflow.py`（`Nucleus` ABC / `ChallengeMode` / `ImpulsePrimitive`）
-- 实现面: `src/ghoshell_moss/core/mindflow/`（7 个 nucleus + `_mindflow.py` 仲裁）
+- 实现面: `src/ghoshell_moss/core/mindflow/`（8 个 nucleus + `_mindflow.py` 仲裁）
 - 清单: `src/ghoshell_moss/matrix/openbox/nuclei.py` → 项目层 `.moss/src/MOSS/manifests/nuclei/default.py`
 - 上层规矩: `src/ghoshell_moss/core/blueprint/CLAUDE.md`（code as prompt: 契约留在 docstring，决策史不进 surface）
 - 清单去重机制: `moss-openbox-modes`(in-progress) — canonical `__all__` + `import *`
@@ -154,6 +154,21 @@ multi-tasks / listener / vision 这类语义化机制，属于另一层。
 
 **Why 输后丢弃**：端侧要求拉。模型执行拉动作之后端侧就不要再发，丢弃是协议的一部分。
 
+**2026-09-17 更正（人类）**：
+
+- **名字定为 `knock`**（不是"暂定"）。它逻辑上就是 **pull request**，听感接近手机的消息提示音。
+  保留 `knock` 的理由是"没敲开就没了"这条性质必须从名字读出来——这正是它与 `notify` 的唯一分野；
+  而 `buzz`/`chime`/`ring` 这类提示音词恰恰表达相反的东西（现代手机通知会留下角标、反复提醒）。
+  且 `knock` 已在项目词汇里（`terminal.md` 的"有结果待拉的敲门"）。
+- **`knock` 必须有消息体，否则丢弃。** 这条推翻了本 FEATURE 早先"knock 是指针、不携带载荷"的读法
+  （那是在为"丢弃无损"找台阶）。正确的台阶不是"没内容可丢"，而是**它是 request**：
+  发起方自己持有待取的东西，没敲开就是没敲开。⚠️ 端侧消费方（terminal 等）不在本 workstream 范围。
+- 因此 (c) 那条"丢弃对端侧不可观测"按契约消解，不需要新增回执机制——但**要求调用方自己记账**。
+
+**落地形状**：`KnockSignalMeta`（无字段，纯 marker）+ `KnockNucleus`（`CommandNucleus` 的 cache
+生命周期原样克隆，`build_impulse` 改判消息体）+ `new_knock_signal`。`build_impulse` 的判据是
+`signal.messages` 为空即返回 None，与 `CommandNucleus` 判 `meta.logos` 同形。
+
 **顺带暴露的结构事实**：`default` mode 的忠实实装是 `command` 和 `knock`，
 **`input` 反而是偏离 default 的那个**（输侧保留、下一条到来时带旧消息重试）。
 `InputSignalMeta` 这个名字读起来像"最基础的输入"，行为却是个特例。
@@ -241,6 +256,10 @@ drain `_injected_percepts`**，它只 `extend` 不消费（`moment.py:808`），
 端侧只能从"没等到 pull"反推。若协议是"模型拉过之后就别再发"，这个丢弃需要一条能回到
 端侧的回执，否则端侧只能靠超时猜。
 
+— 2026-09-17：**按契约消解，不加回执机制。** `knock` 被定性为 pull request（见决策 5 的更正）：
+发起方自己持有待取的东西、自己记账，"没等到 pull"就是它的终态。要新增回执反而会
+把"信号只能回执到 nucleus"这条既有边界撑开，代价不成比例。
+
 ### `input` 输侧语义的历史（明天要重验的东西）
 
 `input` 的"输时保留（pending）"不是原始设计，是**同一天改出来的**：
@@ -267,6 +286,9 @@ drain `_injected_percepts`**，它只 `extend` 不消费（`moment.py:808`），
   只是把它从类名挪进了 docstring——从看得见的错换成看不见的错。
 - **`silent` 与 `input` 的 `_rebuild_impulse` 逐行相同**，只差一个 `mode=` 字段。
   `silent_nucleus.py:9-13` 声称的"FIFO 离散事件 vs 合并数据流"在代码里**不存在**。
+  — 2026-09-17 补：这条假账在改名后原样留在了 `aside_nucleus.py:9-13`（"InputSignalNucleus:
+  signal 视为离散事件 (FIFO 保留)"）。`input_signal_nucleus.py` 自己已由 `e7012505` 改对
+  （"Not a queue"），`aside` 那边没跟上，**待清**。
 - **`silent` 与 `input` 的 suppress 语义也不同**：`input` 清 `_impulse_cache`（606e7699 修的），
   `silent` 不清且 `peek` 不看冷静期（同 commit 明确说是 by design，有它的测试背书）。
   后果：`silent` 的缓存会被**其它 nucleus 的 fire** 触发的 rank 重新挑战——
@@ -283,21 +305,33 @@ drain `_injected_percepts`**，它只 `extend` 不消费（`moment.py:808`），
 
 ## 落地清单（人类 2026-09-17 收口）
 
-1. **改名 `silent` → `aside`**（人类手动全量），含决策 1 列出的级联点。
+1. **改名 `silent` → `aside`**（人类手动全量），含决策 1 列出的级联点。 — ✅ `b822bdbc` + `98ee34a8`
 2. **落 6 条 SignalMeta docstring**（决策 3 的草稿），`aside` 那条随改名的名字一并落。
-3. **新增 `inject` nucleus**（决策 4）+ 补 `InjectNucleusMeta` 进 `openbox/nuclei.py`。
-4. **新增 `knock` nucleus**（决策 5）+ 同上。
-5. **补 `aside` / `default` 的 `ImpulsePrimitive` 具名**，让原语覆盖全部 mode。
+   — ✅ 全部 6 条落地并英文化；连带把 meta 上的中文字段描述（command `logos`、
+   cell_event `address`/`transition`）与 `CellTransition` 枚举一并英文化（枚举是
+   cell_event 信号的载荷面，同一条 surface 半中半英更糟）。nucleus 侧 docstring 未动。
+3. **新增 `inject` nucleus**（决策 4）+ 补 `InjectNucleusMeta` 进 `openbox/nuclei.py`。 — ⛔ dropped（人类 2026-09-17 判：有了 `notify` + `next: bool` 后 inject 暂无独立用例）
+4. **新增 `knock` nucleus**（决策 5）+ 同上。 — ✅ 名字定为 `knock`；契约见决策 5 的更正
+5. **补 `aside` / `default` 的 `ImpulsePrimitive` 具名**，让原语覆盖全部 mode。 — ⛔ dropped（`default` = 不设 mode，具名无意义；`aside` 原语只服务 `add_impulse` 调试路径，AsideNucleus 已直接设 mode）
 6. **弱提示落到 buffered 路径**（决策 7）——先定"落在 moment 还是落在消息流"。
-7. **重验 `input` 输侧语义**（历史段），按当前 loop 下结论。
+   — ⏸ **人类 2026-09-17 决定先不做**：重大决策，先看实际效果再定。
+7. **重验 `input` 输侧语义**（历史段），按当前 loop 下结论。 — ✅ **已由 `e7012505` 完成**
+   （本清单收口时未与代码对齐）。结论 = 输时等待（pending），且理由换了：不再是当初
+   那条"0.5s 超时重排"的 bug，而是 `Nucleus.peek` 契约（suppress 后 impulse 仍可见、
+   只是不再主动 fire）+ 挑战闸门（严格更高的聚合权重才破冷静期）。当前 loop 站得住：
+   `_mindflow.py:547-549` 超时分支是 `continue`、不 rank，重排只能由别的 nucleus fire 触发。
+   另：`input_signal_nucleus.py` 的 docstring 已在同一 commit 改对，"FIFO"假账只剩
+   `aside_nucleus.py:9-13` 里抄的一份（见"其他事实清单"末条）。
 8. **FIFO / PriorityQueue**：本轮先只立形状与 `attended` 重入风险的判定，
-   是否实装另定（避免与 `mindflow-interleaved-thinking` 撞车）。
+   是否实装另定（避免与 `mindflow-interleaved-thinking` 撞车）。 — 本轮不实现（设计任务，另起）
 
-### 待定项（明天必须先定的三个）
+> 关联决策：讨论中引出的"插队"机制（`ChallengeMode.next` + `ChallengeVerdict.queued` + `NotifySignalMeta.next: bool`）属 mindflow-core mode/verdict 层，不落本清单，随 `mindflow-interleaved-thinking` 走。
 
-- **`aside` 能不能承诺"会被看到"**：当前它只在 win 侧注入、lose 侧只是等——
-  "永不打断 + 一定看到"要 FATAL 才成立（那是 `inject`）。若不承诺，就得写进 docstring。
-- **`inject` 的 buffer 落在哪**：nucleus 内（聚合/去重）还是信任 observer 的
-  `_injected_percepts`（当前那个是无界的，见 (a)）。
-- **`knock` 的必要性**：它与 `command` 同形状，只差 logos 有无。是独立 nucleus，
-  还是 `command` 的 `priority` / `effort` 变体——决定权在"端侧推拉"是否需要一条专门的语义入口。
+### 待定项（三项已定，2026-09-17）
+
+- **`aside` 能不能承诺"会被看到"** — 不承诺。见 `inject`（决策 4）承担"必达"，
+  `aside` 的 docstring 保持"闲时才加入、忙时等"的措辞，不写保证送达。
+- **`inject` 的 buffer 落在哪** — 未定（该项未开工）。
+- **`knock` 的必要性** — **是独立 nucleus**，不做 `command` 的变体。理由：`CommandSignalMeta.logos`
+  必填、`CommandNucleus.build_impulse` 无 logos 直接返回 None，`command` 在结构上就载不动
+  knock；且一个名字不能同时装"别想直接做"与"来想想"。signal name 是总线路由键，调用方靠名字读意图。
