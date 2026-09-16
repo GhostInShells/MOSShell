@@ -10,6 +10,7 @@
 # 保持为单文件模块 (非 package)。Matrix 扫描 name() == '__main__' 的 Channel 实例。
 
 from ghoshell_moss import new_moss_main_channel
+from ghoshell_moss.channels.macro_store import MacroStoreModule
 from ghoshell_moss.channels.mcp_channel import mcp_hub_channel_factory
 from ghoshell_moss.channels.moss_cli import build_moss_cli_channel
 
@@ -20,3 +21,6 @@ main.import_channels(build_moss_cli_channel(name="moss_cli"))
 
 # -- MCP Hub: 外部 MCP server 接入 (allow_config_edit 供测试) --
 main.import_channels(mcp_hub_channel_factory(name="mcp", allow_config_edit=True))
+
+# -- Macro Store: 程序性记忆 (root = project path, 权限边界) --
+main.with_module(MacroStoreModule.new_from_moss_project())

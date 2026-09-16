@@ -737,6 +737,7 @@ class Interpreter(ABC):
             task_callback: Callable[[CommandTask | None], None],
             *,
             stopped: Callable[[], bool] | None = None,
+            run_macro: bool = True,
     ):
         """
         Can run in a coroutine. Parse the input token stream and produce Command Tasks. Uses a poison pill as the end marker.
@@ -826,7 +827,7 @@ class Interpreter(ABC):
                         for task in tasks:
                             task.on_compiled()
                             task_callback(task)
-                            if task.meta.macro:
+                            if run_macro and task.meta.macro:
                                 await expand_macro(task, 0)
                     await asyncio.sleep(0.0)
         except asyncio.CancelledError:

@@ -628,7 +628,7 @@ async def test_proxy_macro_expansion():
                     '<macro_save label="greet">'
                     '<![CDATA[<proxy:say text="hello from proxy"/>]]>'
                     '</macro_save>\n'
-                    '<macro label="greet"/>\n'
+                    '<macro ref="greet"/>\n'
                 )
                 i.commit()
                 tasks = await i.wait_tasks(timeout=2)
@@ -668,9 +668,9 @@ async def test_proxy_macro_nested():
                     '<![CDATA[<proxy:mark/>]]>'
                     '</macro_save>\n'
                     '<macro_save label="outer">'
-                    '<![CDATA[<macro label="inner"/>]]>'
+                    '<![CDATA[<macro ref="inner"/>]]>'
                     '</macro_save>\n'
-                    '<macro label="outer"/>\n'
+                    '<macro ref="outer"/>\n'
                 )
                 i.commit()
                 tasks = await i.wait_tasks(timeout=2)

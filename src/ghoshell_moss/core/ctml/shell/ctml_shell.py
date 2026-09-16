@@ -407,15 +407,19 @@ class CTMLShell(MOSShell[PrimeChannel]):
         callback = None
         interrupted_interpretation = None
         undone_tasks = None
+        on_close_callback = None
+        is_dry_run = False
         if kind == "clear":
             # clear 会先清空.
             await self.clear()
             # 清除当前存在的 interpretation.
             interrupted_interpretation = await self.stop_interpretation()
             callback = self._interpreter_callback_task
+            on_close_callback = self._fire_on_interpreter_stopped
         elif kind == "dry_run":
             # dry_run 不会对 shell 产生真实影响, 可以用来做纯解析.
             callback = None
+            is_dry_run = True
         elif kind == "append":
             # append 会追加命令, 而不是清除.
             callback = self._interpreter_callback_task
@@ -427,6 +431,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 undone_tasks = old_interpreter.incomplete_tasks()
                 interrupted_interpretation = await old_interpreter.close(cancel_executing=False)
             self._interpreter = None
+            on_close_callback = self._fire_on_interpreter_stopped
 
         # 阻塞等待刷新结果.
         if refresh_metas:
@@ -448,7 +453,8 @@ class CTMLShell(MOSShell[PrimeChannel]):
             clear_after_exit=clear_after_exit,
             moss_static=self._moss_static_cache,
             task_context=task_context,
-            on_close_callback=self._fire_on_interpreter_stopped,
+            on_close_callback=on_close_callback,
+            is_dry_run=is_dry_run,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.

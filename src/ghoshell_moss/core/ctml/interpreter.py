@@ -65,6 +65,7 @@ class CTMLInterpreter(Interpreter):
             moss_dynamic: list[Message] | None = None,
             task_context: dict[str, Any] | None = None,
             on_close_callback: Optional[Callable[['CTMLInterpreter'], None]] = None,
+            is_dry_run: bool = False,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -83,6 +84,7 @@ class CTMLInterpreter(Interpreter):
         :param on_close_callback: 在 close() 完成清理后 fire 一次. 用于 shell 的 Tracer 机制
             感知 interpreter 生命周期的 exit 取值点. 保证 fire 时 interpreter 是稳态
             (_closed=True, interpretation.done=True, 未完成 tasks 已 fail). 幂等 close 只 fire 一次.
+        :param is_dry_run: 如果为 True, 会去掉解释逻辑中的副作用.
         """
         # 生成 stream id.
         self._id = stream_id or unique_id()
@@ -119,6 +121,7 @@ class CTMLInterpreter(Interpreter):
         self._root_tag = root_tag
         self._token_replacement = tokens_replacement or {}
         self._stopped_event = ThreadSafeEvent()
+        self._is_dry_run = is_dry_run
         self._closed = False
         self._parsing_exception: Optional[InterpretError] = None
         self._ignore_wrong_command = ignore_wrong_command
@@ -406,6 +409,7 @@ class CTMLInterpreter(Interpreter):
                 tokens_queue=self._text_to_parsed_tokens_queue,
                 task_callback=self._send_command_task,
                 stopped=self._stopped_event.is_set,
+                run_macro=not self._is_dry_run,
             )
         except asyncio.CancelledError:
             pass

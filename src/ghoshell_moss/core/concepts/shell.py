@@ -374,9 +374,14 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             tokens: AsyncIterable[CommandToken],
             *,
             ignore_wrong_command: bool = False,
+            run_macro: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
         Syntactic sugar demonstrating how to turn command tokens into command tasks.
+
+        :param run_macro: whether to expand macro commands in place. Default False — 本方法
+            总是建 dry_run interpreter, 而 dry_run 不派发 task; 展开宏会 await 一个永不
+            完成的 task 而死锁. 需要展开的原语 (loop 等) 显式传 True.
         """
         _token_queue = asyncio.Queue[CommandToken | None]()
         _task_queue = asyncio.Queue[CommandTask | None | Exception]()
@@ -394,7 +399,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
 
         sender_task = asyncio.create_task(sender())
         consumer_task = asyncio.create_task(
-            interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue.put_nowait),
+            interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue.put_nowait, run_macro=run_macro),
         )
         try:
             while True:
@@ -423,6 +428,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             text: str | AsyncIterable[str] | list[str],
             *,
             ignore_wrong_command: bool = False,
+            run_macro: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
         Syntactic sugar demonstrating how to turn text directly into command tasks.
@@ -441,7 +447,8 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
                     yield content
 
         tokens = self.parse_text_to_command_tokens(generate_text())
-        async for task in self.parse_tokens_to_command_tasks(tokens, ignore_wrong_command=ignore_wrong_command):
+        async for task in self.parse_tokens_to_command_tasks(
+                tokens, ignore_wrong_command=ignore_wrong_command, run_macro=run_macro):
             yield task
 
     # --- runtime methods --- #

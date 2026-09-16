@@ -11,6 +11,7 @@
 
 from ghoshell_moss import new_shell_main_channel
 from ghoshell_moss.core.ctml.shell.ctml_main import inject_system_primitives
+from ghoshell_moss.channels.macro_store import MacroStoreModule
 from ghoshell_moss.channels.moss_cli import build_moss_cli_channel
 
 main = new_shell_main_channel()
@@ -20,3 +21,6 @@ inject_system_primitives(main, extended=True)
 
 # -- moss_cli: 去授权的 moss CLI 自举 ---------------------------
 main.import_channels(build_moss_cli_channel(name="moss_cli"))
+
+# -- Macro Store: 程序性记忆 (root = project path, 权限边界) --
+main.with_module(MacroStoreModule.new_from_moss_project())
