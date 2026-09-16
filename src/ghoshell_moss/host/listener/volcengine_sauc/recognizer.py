@@ -416,7 +416,6 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         new = definite[self._emitted_clauses:]
         self._emitted_clauses = len(definite)
         for u in new:
-            self._last_text = text
             clause = RecognitionClause(
                 text=u.text,
                 start_ms=u.start_time,
@@ -434,7 +433,9 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             ))
 
         # PARTIAL: text 相对上次有变化才发 (相邻相同压掉).
-        if result.utterances and not result.utterances[-1].definite:
+        # 发 clause 的帧不再发 partial — clause 已定稿, 同帧尾随 partial 是冗余,
+        # 且会让判停侧误判"还在说"而取消刚启动的 judge.
+        if not new and result.utterances and not result.utterances[-1].definite:
             if text and text != self._last_text:
                 self._last_text = text
                 chunks.append(RecognitionEvent(

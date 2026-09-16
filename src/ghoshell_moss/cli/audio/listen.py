@@ -34,12 +34,12 @@ from ghoshell_moss.core.mindflow.listener_nucleus import ListenerPacket
 from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController, PacketTranslator
 from ghoshell_moss.host.nodes.listener_node import assemble_controller
 
-_MODES = ("once", "always", "enter", "long_listen")
+_MODES = ("once", "always", "enter", "llm_judge")
 
 
 @audio_app.command("listen")
 def listen_cmd(
-    listen_mode: str = typer.Option("once", "--listen-mode", "-m", help="State machine: once | always | enter | long_listen."),
+    listen_mode: str = typer.Option("once", "--listen-mode", "-m", help="State machine: once | always | enter | llm_judge."),
     timeout: float = typer.Option(60.0, "--timeout", "-t", help="Overall session timeout in seconds."),
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Capture device name pattern."),
     emit_signals: bool = typer.Option(True, "--signals/--no-signals", help="Broadcast listener signals to the session bus."),
@@ -205,20 +205,20 @@ async def _run_enter(ctx: _Ctx) -> _Stats | None:
     return stats
 
 
-async def _run_long_listen(ctx: _Ctx) -> _Stats | None:
+async def _run_llm_judge(ctx: _Ctx) -> _Stats | None:
     stats = _Stats()
     translator = PacketTranslator()
     on_result = partial(_handle_result, translator=translator, json_mode=ctx.json_mode, stats=stats)
 
     if not isinstance(ctx.controller, ModelListenerController):
-        print_error("long_listen requires the llm func engine — is LLMFuncs configured?")
+        print_error("llm_judge requires the llm func engine — is LLMFuncs configured?")
         return None
     if "not started" in ctx.capture.device_explain():
         print_error("capture device not started — may be locked by another process")
         return None
-    _banner(ctx, "long_listen", "listening with llm stop-detection — Ctrl+C to stop.\n")
+    _banner(ctx, "llm_judge", "listening with llm stop-detection — Ctrl+C to stop.\n")
     ctx.controller.on_recognition_result(on_result)
-    await ctx.controller.long_listen(timeout=ctx.timeout)
+    await ctx.controller.llm_judge(timeout=ctx.timeout)
     print_warning("session timeout")
     return stats
 
@@ -227,7 +227,7 @@ _RUNNERS = {
     "once": _run_once,
     "always": _run_always,
     "enter": _run_enter,
-    "long_listen": _run_long_listen,
+    "llm_judge": _run_llm_judge,
 }
 
 

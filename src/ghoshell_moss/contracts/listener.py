@@ -33,6 +33,15 @@ class Listener(ABC):
         state = self.state
         return state is not None and state.is_running()
 
+    @abstractmethod
+    def is_running(self) -> bool:
+        """器官是否已启动 (entered 且未 close) — 对称 ``Speech.is_running``.
+
+        宿主据此决定托管归属: 已在运行 → 由启动方持有, 后来者只借用, 不重复
+        enter 也不代它退出; 未运行 → 进入者即持有者.
+        与 ``is_listening()`` 不同: 后者指"当前是否有一条活跃 session".
+        """
+
     # 三个 on_*: 自动装线到当前 session (跨 session 稳定订阅)
     @abstractmethod
     def on_audio_chunk(self, callback: Callable[[AudioChunk], None]) -> Discard:

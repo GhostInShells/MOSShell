@@ -102,6 +102,9 @@ class HostListener(ASRListener):
     def is_listening(self) -> bool:
         return self._state is not None and self._state.is_running()
 
+    def is_running(self) -> bool:
+        return self._started and not self._closed
+
     # ── Listener 级观察者 (自动装线到当前 session) ──
 
     def on_audio_chunk(self, callback: Callable[[AudioChunk], None]) -> Discard:

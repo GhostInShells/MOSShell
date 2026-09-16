@@ -60,7 +60,7 @@ async def assemble_controller(
 
 
 def _try_build_stop_judge_caller(con, logger) -> Optional[MossLLMCaller]:
-    """有 moss 消息协议引擎时构建判停 caller, 否则 None (base controller, 无 long_listen)."""
+    """有 moss 消息协议引擎时构建判停 caller, 否则 None (base controller, 无 llm_judge)."""
     funcs = con.get(LLMFuncs)
     if not isinstance(funcs, MossLLMFuncs):
         return None
@@ -71,7 +71,7 @@ def _try_build_stop_judge_caller(con, logger) -> Optional[MossLLMCaller]:
             settings=CallSettings(max_output_tokens=1),
         )
     except Exception as exc:
-        logger.warning("stop judge caller unavailable — long_listen disabled: %s", exc)
+        logger.warning("stop judge caller unavailable — llm_judge disabled: %s", exc)
         return None
 
 

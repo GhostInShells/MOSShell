@@ -1,13 +1,13 @@
 ---
-name: 'long_listen_probe'
-description: '智能判停 (长程聆听) 实机测试 — assemble listener + 旁路监控 clause/segment 时序与 llm 打分'
+name: 'llm_judge_probe'
+description: '智能判停 (llm judge) 实机测试 — assemble listener + 旁路监控 clause/segment 时序与 llm 打分'
 singleton: true
 exec:
   command: python
   args: main.py
 ---
 
-智能判停 (长程聆听) 实机测试 node. 自己 assemble listener (`ModelListenerController`)
+智能判停 (llm judge) 实机测试 node. 自己 assemble listener (`ModelListenerController`)
 并旁路监控判停全链路: `on_recognition_result` 记录 clause→segment 时序,
 `controller.on_score` 记录每次 llm 打分 (请求 clauses + score + cast + token).
 
@@ -21,11 +21,11 @@ exec:
 
 1. 起本 node (需 LLMFuncs 已配置, `small_fast_model` 可用):
 
-       moss nodes run .moss/system_test_nodes/long_listen_probe/ -- <device_pattern>
+       moss nodes run .moss/system_test_nodes/llm_judge_probe/ -- <device_pattern>
 
 2. 讲一段长论述 (VAD 到处分句), 观察:
    - 句中不 commit (`[segment]` 不出现在句中);
-   - 停顿后正常 commit (`[judge]` score >= 7 后 `[segment]` 出现);
+   - 停顿后正常 commit (`[judge]` score >= 7 或 segment_vad 静默到期后 `[segment]` 出现);
    - 中途开口时在飞打分被取消 (该次 `[judge]` 后无 `[segment]`).
 
 Run in the same network scope as the producer (default scope from .moss).

@@ -9,8 +9,8 @@ description: 将语音输入从"两个独立 app 拼接"重构为单一感知节
 milestone: 0.1.0
 priority: P0
 status: completed
-status_note: '2026-09-16 智能判停 (长程聆听) 落地: MossLLMCaller.run_messages 消息协议上提 + StopJudge
-  独立组件 + ModelListenerController.long_listen (第四种礼仪) + on_score 观察面 + long_listen_probe
+status_note: '2026-09-16 智能判停 (llm_judge) 落地: MossLLMCaller.run_messages 消息协议上提 + StopJudge
+  独立组件 + ModelListenerController.llm_judge (第四种礼仪) + on_score 观察面 + llm_judge_probe
   实机 node. 详见文末.'
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 updated: '2026-09-16'
@@ -1419,7 +1419,7 @@ push-to-talk(按住聆听松开 commit，可 defer)。
 ## 2026-09-16 会话决策 — 智能判停（长程聆听）落地
 
 > 人类架构师 + deepseek-flash。把 09-15 的「下一步」收口：消息协议上提到 caller、
-> StopJudge 独立组件、ModelListenerController + long_listen 落地、开放打分观察面、
+> StopJudge 独立组件、ModelListenerController + llm_judge 落地、开放打分观察面、
 > 建实机测试 node。语音两个治理 workstream 收口 completed。
 
 ### 落地
@@ -1427,19 +1427,20 @@ push-to-talk(按住聆听松开 commit，可 defer)。
 - **消息协议上提**：`MossLLMCaller(LLMCaller).run_messages(list[Message])` —— 一个
   clause 一个 content block（前缀缓存命中），`MossLLMFuncs.caller()` 返回它。judge 持
   caller，不写死 small_fast_model + instruction（随 caller 外部装配）。
-- **`StopJudge`**（`host/listener/stop_judge.py`）：独立可测的状态机组件。clause 累积成
-  `list[Message]` 后 spawn 打分 task（不 inline await —— 堵死收包是红线）；first/partial
-  cancel 在飞打分；epoch 计数防迟到结果二次 commit；keywords 显式终点；segment 切换重置。
+- **`StopJudge`**（`host/listener/stop_judge.py`）：per-segment 判停周期，独立可测。
+  clause 累积成 `list[Message]` 后 spawn 打分 task（judge_delay 去抖，不 inline await）；
+  segment_vad 静默兜底计时；first/partial cancel 在飞打分；两边互斥 —— 先到者置
+  committed 并 cancel 另一个，commit 只做一次；keywords 显式终点；segment 切换拆周期。
   判停输入 = in-flight 未 commit 的累积 clause，不是 segment 全文。
-- **`ModelListenerController`**：`long_listen`（第四种礼仪）。不打 speech_vad 静音兜底 ——
-  智能判停的意义就是不靠静音判终点。base `ListenerController` 不加模型能力。
+- **`ModelListenerController`**：`llm_judge`（第四种礼仪）。clause 后由 llm 打分判停，
+  打分 >= threshold 即 commit，segment_vad 静默兜底。base `ListenerController` 不加模型能力。
 - **观察面**：`StopJudge.on_score` + `ModelListenerController.on_score` —— 每次打分回调
   `StopScoreObservation(clauses, score, result)`，旁路监控 llm 判停的请求+结果。
 - **装线**：`assemble_controller` 取 `LLMFuncs`，`isinstance(MossLLMFuncs)` 才建 caller →
   `ModelListenerController`，否则 base controller（优雅降级，无 LLM 也能 once/always）。
-- **CLI**：`moss audio listen -m long_listen`。
+- **CLI**：`moss audio listen -m llm_judge`。
 - **测试**：`test_stop_judge.py`（9 条，mock caller 驱动）+ `test_controller.py`（2 条
-  long_listen 装线）+ `.moss/system_test_nodes/long_listen_probe/` 实机测试 node。
+  llm_judge 装线）+ `.moss/system_test_nodes/llm_judge_probe/` 实机测试 node。
 
 ### 未落地（后续）
 

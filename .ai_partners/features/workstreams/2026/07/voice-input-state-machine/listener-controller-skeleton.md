@@ -46,7 +46,7 @@ listener controller 是判停逻辑的装线层，四点：
 | 礼仪 | 行为 | 判停时机 | 备注 |
 |------|------|----------|------|
 | once | 半双工（说时不听/听时不说），clause 立刻 commit | clause_vad 分句即 commit | 入参含 clause_vad |
-| always | 持续聆听，clause 后启动等待，event reset | clause_vad + speech_vad 静默 | **启动默认** |
+| always | 持续聆听，clause 后启动等待，event reset | clause_vad + segment_vad 静默 | **启动默认** |
 | 关键字 | 附加参数，叠加到任意礼仪 | 最小分句 vad 后命中判停关键字 | 显式终点（"我说完了"） |
 | llm 校验 | clause_vad 触发 llm 打分 task | 打分 > threshold commit | 智能判停，长论述语义判停 |
 | 快捷响应 | 端侧小模型快速响应，3 字符内 | 首 token 置信度算 commit wait | `<say>{word}</say>` 模板 |

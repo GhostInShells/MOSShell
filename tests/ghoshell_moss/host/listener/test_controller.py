@@ -1,7 +1,7 @@
 """ListenerController — 判停逻辑契约行为.
 
 验证三种聆听礼仪表面: once 拿 clause 立刻 commit; always 命中关键字立刻 commit /
-静默 speech_vad commit / 活动信号 (partial) reset 等待不 commit.
+静默 segment_vad commit / 活动信号 (partial) reset 等待不 commit.
 """
 import asyncio
 import contextlib
@@ -48,15 +48,30 @@ class _MockListener:
         self.state = None
         self.listened = asyncio.Event()
         self.result_observers = []
+        self.running = False
+        self.entered = False
+        self.exited = False
 
     def on_recognition_result(self, cb):
         self.result_observers.append(cb)
         return lambda: None
 
+    def is_running(self):
+        return self.running
+
     async def listen(self):
         self.state = _MockState()
         self.listened.set()
         return self.state
+
+    async def __aenter__(self):
+        self.running = True
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *args):
+        self.running = False
+        self.exited = True
 
 
 class _MockASR:
@@ -126,30 +141,30 @@ async def test_always_commits_on_keyword():
     controller = ListenerController(listener=listener, asr=_MockASR())
     task, state = await _start_controller(
         controller, controller.always,
-        speech_vad=5.0, keywords=["我说完了"], timeout=5.0,
+        segment_vad=5.0, keywords=["我说完了"], timeout=5.0,
     )
 
     for cb in state.event_creating:
         await cb(_clause("我说完了"))
-    assert state.committed == 1  # 命中关键字立刻 commit, 不等 speech_vad
+    assert state.committed == 1  # 命中关键字立刻 commit, 不等 segment_vad
 
     await _stop(task)
 
 
 @pytest.mark.asyncio
-async def test_always_commits_after_speech_vad():
+async def test_always_commits_after_segment_vad():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
     task, state = await _start_controller(
         controller, controller.always,
-        speech_vad=0.1, timeout=5.0,
+        segment_vad=0.1, timeout=5.0,
     )
 
     for cb in state.event_creating:
         await cb(_clause("你好"))
-    assert state.committed == 0  # clause 后未到 speech_vad
+    assert state.committed == 0  # clause 后未到 segment_vad
 
-    await asyncio.sleep(0.2)  # 超过 speech_vad (0.1s)
+    await asyncio.sleep(0.2)  # 超过 segment_vad (0.1s)
     assert state.committed == 1  # 静默超时 commit
 
     await _stop(task)
@@ -160,14 +175,14 @@ async def test_new_method_cancels_active():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
 
-    task1 = controller.always(speech_vad=5.0, timeout=5.0)
+    task1 = controller.always(segment_vad=5.0, timeout=5.0)
     await listener.listened.wait()
     state1 = listener.state
     await state1.entered.wait()
     await asyncio.sleep(0)
 
     # 新 method 调用 → cancel 旧的状态机.
-    task2 = controller.always(speech_vad=5.0, timeout=5.0)
+    task2 = controller.always(segment_vad=5.0, timeout=5.0)
     with contextlib.suppress(asyncio.CancelledError):
         await task1  # 等旧状态机真正结束 (cancel 传播 + __aexit__)
 
@@ -178,19 +193,45 @@ async def test_new_method_cancels_active():
 
 
 @pytest.mark.asyncio
+async def test_controller_owns_listener_when_not_running():
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+
+    await controller.__aenter__()
+    assert listener.entered  # 未启动 → controller 进入并托管
+
+    await controller.__aexit__(None, None, None)
+    assert listener.exited  # 托管的 → 退出时收
+
+
+@pytest.mark.asyncio
+async def test_controller_borrows_listener_when_running():
+    listener = _MockListener()
+    await listener.__aenter__()  # 宿主已启动
+    controller = ListenerController(listener=listener, asr=_MockASR())
+
+    await controller.__aenter__()
+    assert listener.entered  # 已 running → 不重复进入
+    assert not listener.exited
+
+    await controller.__aexit__(None, None, None)
+    assert not listener.exited  # 借用的 → 不关闭, 归宿主
+
+
+@pytest.mark.asyncio
 async def test_always_resets_on_partial():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
     task, state = await _start_controller(
         controller, controller.always,
-        speech_vad=0.1, timeout=5.0,
+        segment_vad=0.1, timeout=5.0,
     )
 
     for cb in state.event_creating:
         await cb(_clause("你好"))     # 启动等待
         await cb(_partial("你好啊"))  # 活动信号 reset 等待
 
-    await asyncio.sleep(0.2)  # 超过 speech_vad, 但已 reset
+    await asyncio.sleep(0.2)  # 超过 segment_vad, 但已 reset
     assert state.committed == 0  # 不 commit
 
     await _stop(task)
@@ -252,7 +293,7 @@ def test_no_signal_broadcast_registers_no_observer():
 
 
 # ============================================================
-# 智能判停 (长程聆听) — ModelListenerController + StopJudge 装线
+# 智能判停 (llm judge) — ModelListenerController + StopJudge 装线
 # ============================================================
 
 class _MockCaller:
@@ -264,34 +305,40 @@ class _MockCaller:
 
 
 @pytest.mark.asyncio
-async def test_long_listen_commits_when_judge_confident():
+async def test_llm_judge_commits_when_judge_confident():
     listener = _MockListener()
     controller = ModelListenerController(
         listener=listener, asr=_MockASR(),
         caller=_MockCaller([9]),
     )
-    task, state = await _start_controller(controller, controller.long_listen, timeout=5.0)
+    task, state = await _start_controller(
+        controller, controller.llm_judge, judge_delay=0, timeout=5.0,
+    )
 
     for cb in state.event_creating:
         await cb(_clause("我觉得应该这样"))
-    await asyncio.sleep(0)
+    for _ in range(3):
+        await asyncio.sleep(0)
     assert state.committed == 1  # 打分 9 >= threshold 7 → commit
 
     await _stop(task)
 
 
 @pytest.mark.asyncio
-async def test_long_listen_keeps_waiting_when_judge_unsure():
+async def test_llm_judge_keeps_waiting_when_judge_unsure():
     listener = _MockListener()
     controller = ModelListenerController(
         listener=listener, asr=_MockASR(),
         caller=_MockCaller([1]),
     )
-    task, state = await _start_controller(controller, controller.long_listen, timeout=5.0)
+    task, state = await _start_controller(
+        controller, controller.llm_judge, judge_delay=0, timeout=5.0,
+    )
 
     for cb in state.event_creating:
         await cb(_clause("我觉得应该这样"))
-    await asyncio.sleep(0)
+    for _ in range(3):
+        await asyncio.sleep(0)
     assert state.committed == 0  # 打分 1 < threshold 7 → 不 commit
 
     await _stop(task)

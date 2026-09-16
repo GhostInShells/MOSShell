@@ -82,7 +82,7 @@ class ListenEtiquette(str, Enum):
     OFF = "off"
     ONCE = "once"
     ALWAYS = "always"
-    LONG_LISTEN = "long_listen"
+    LLM_JUDGE = "llm_judge"
 
 
 @dataclass
@@ -129,6 +129,7 @@ class ListenerController:
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
+        self._owns_listener = False
         # 信号发射: 存在 sink 时注册一条 listener 级观察者 (跨 session 稳定), 机械地把
         # 每个识别事件翻译成 listener signal 并广播. 无 sink 则只做判停, 不发 signal.
         self._signal_broadcast = signal_broadcast
@@ -147,17 +148,22 @@ class ListenerController:
         self._audio_sample_disposer: Optional[Callable[[], None]] = None
         self._audio_sample_publisher: Optional[Publisher] = None
 
-    # ── 生命周期: controller 托管 listener ──
+    # ── 生命周期: listener 未启动则托管, 已启动则只借用 ──
 
     async def __aenter__(self) -> Self:
-        await self._listener.__aenter__()
+        # 宿主已把 listener 启动 (is_running) → 只借用, 不重复 enter, 退出也不代它关.
+        if not self._listener.is_running():
+            await self._listener.__aenter__()
+            self._owns_listener = True
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         self.stop()
         await self._close_topic_wiring()
         await self._close_audio_sample_wiring()
-        await self._listener.__aexit__(exc_type, exc_val, exc_tb)
+        if self._owns_listener:
+            self._owns_listener = False
+            await self._listener.__aexit__(exc_type, exc_val, exc_tb)
 
     # ── 聆听礼仪 ──
 
@@ -186,11 +192,11 @@ class ListenerController:
             self,
             *,
             clause_vad: Optional[int] = None,
-            speech_vad: float = 1.5,
+            segment_vad: float = 1.5,
             keywords: Optional[list[str]] = None,
             timeout: Optional[float] = None,
     ) -> asyncio.Future:
-        """持续聆听: clause 后等待 speech_vad, 活动信号 reset, 静默到 speech_vad commit.
+        """持续聆听: clause 后等待 segment_vad, 活动信号 reset, 静默到 segment_vad commit.
 
         立即返回 Future; ``timeout=None`` 表示常驻 (直到 ``stop()`` 或新礼仪取消).
         命中 keywords 的 clause 立刻 commit (不等静默).
@@ -198,7 +204,7 @@ class ListenerController:
         self._mode = ListenEtiquette.ALWAYS
         self._cancel_active()
         task = asyncio.create_task(self._run_always(
-            clause_vad=clause_vad, speech_vad=speech_vad, keywords=keywords, timeout=timeout,
+            clause_vad=clause_vad, segment_vad=segment_vad, keywords=keywords, timeout=timeout,
         ))
         self._active_task = task
         return task
@@ -362,7 +368,7 @@ class ListenerController:
             self,
             *,
             clause_vad: Optional[int],
-            speech_vad: float,
+            segment_vad: float,
             keywords: Optional[list[str]],
             timeout: float,
     ) -> None:
@@ -393,7 +399,7 @@ class ListenerController:
             nonlocal waiting
             while True:
                 await asyncio.sleep(0.05)
-                if waiting and time.monotonic() - last_activity >= speech_vad:
+                if waiting and time.monotonic() - last_activity >= segment_vad:
                     state.commit()
                     waiting = False
 
@@ -480,13 +486,13 @@ class ListenerController:
         @chan.build.command(blocking=False)
         async def once(timeout: float = 60.0) -> str:
             """Hear one utterance — stop as soon as a sentence finishes (or after `timeout` seconds)."""
-            self.once(timeout=timeout)
+            _ = self.once(timeout=timeout)
             return "listening (once)"
 
         @chan.build.command(blocking=False)
-        async def always(silence: float = 1.5) -> str:
-            """Keep listening continuously — commit after `silence` seconds of quiet."""
-            self.always(speech_vad=silence, timeout=None)
+        async def always(segment_vad: float = 1.5) -> str:
+            """Keep listening continuously — commit after `segment_vad` seconds of quiet."""
+            _ = self.always(segment_vad=segment_vad, timeout=None)
             return "listening (always)"
 
         @chan.build.command(blocking=False)
@@ -509,12 +515,11 @@ class ListenerController:
 
 
 class ModelListenerController(ListenerController):
-    """ListenerController + llm func caller — 智能判停 (长程聆听) 高阶礼仪.
+    """ListenerController + llm func caller — 智能判停 (llm judge) 高阶礼仪.
 
-    持 MossLLMCaller (外部装配, instruction/model/输出约束已绑定). ``long_listen``
-    是第四种聆听礼仪: 不叠 speech_vad 静音兜底, 靠 llm 打分判「论述讲完了吗」—
-    把判停从 segment vad (4s) 提前到自然思想边界。第五种 (快捷响应) 是后续礼仪,
-    不在本类。
+    持 MossLLMCaller (外部装配, instruction/model/输出约束已绑定). ``llm_judge``
+    是第四种聆听礼仪: clause 后由 llm 打分判「论述讲完了吗」, 打分 >= threshold
+    即 commit, segment_vad 静默兜底。第五种 (快捷响应) 是后续礼仪, 不在本类。
     """
 
     def __init__(self, *, caller: MossLLMCaller, **kwargs) -> None:
@@ -528,34 +533,43 @@ class ModelListenerController(ListenerController):
         return lambda: self._score_observers.remove(callback)
 
     def _notify_score(self, obs: StopScoreObservation) -> None:
-        for callback in self._score_observers:
-            callback(obs)
+        for callback in list(self._score_observers):
+            try:
+                callback(obs)
+            except Exception:
+                self._logger.exception("on_score observer failed")
 
-    def long_listen(
+    def llm_judge(
             self,
             *,
             clause_vad: Optional[int] = None,
+            segment_vad: float = 3.0,
+            judge_delay: float = 0.3,
             keywords: Optional[list[str]] = None,
             threshold: int = 7,
             timeout: Optional[float] = None,
     ) -> asyncio.Future:
-        """智能判停聆听: clause 后 llm 打分, 打分 >= threshold 才 commit.
+        """LLM-judged stop detection: a segment_vad timer (fallback) + a debounced llm judge.
 
-        与 always 不同: 不叠 speech_vad 静音兜底 — 智能判停的意义就是不靠静音判终点.
-        立即返回 Future; ``timeout=None`` 表示常驻 (直到 ``stop()`` 或新礼仪取消).
+        Commit when the judge scores >= ``threshold`` (early) or after ``segment_vad``
+        seconds of quiet past the last clause (baseline). Returns immediately;
+        ``timeout=None`` means run until ``stop()`` or another etiquette cancels it.
         """
-        self._mode = ListenEtiquette.LONG_LISTEN
+        self._mode = ListenEtiquette.LLM_JUDGE
         self._cancel_active()
-        task = asyncio.create_task(self._run_long_listen(
-            clause_vad=clause_vad, keywords=keywords, threshold=threshold, timeout=timeout,
+        task = asyncio.create_task(self._run_llm_judge(
+            clause_vad=clause_vad, segment_vad=segment_vad, judge_delay=judge_delay,
+            keywords=keywords, threshold=threshold, timeout=timeout,
         ))
         self._active_task = task
         return task
 
-    async def _run_long_listen(
+    async def _run_llm_judge(
             self,
             *,
             clause_vad: Optional[int],
+            segment_vad: float,
+            judge_delay: float,
             keywords: Optional[list[str]],
             threshold: int,
             timeout: Optional[float],
@@ -565,6 +579,8 @@ class ModelListenerController(ListenerController):
         judge = StopJudge(
             caller=self._caller,
             threshold=threshold,
+            segment_vad=segment_vad,
+            judge_delay=judge_delay,
             commit=state.commit,
             keywords=keywords,
             on_score=self._notify_score,
@@ -585,7 +601,7 @@ class ModelListenerController(ListenerController):
         super()._register_channel_commands(chan)
 
         @chan.build.command(blocking=False)
-        async def long_listen(threshold: int = 7) -> str:
-            """Listen with llm stop-detection — commit when the judge scores >= `threshold` (0-9)."""
-            self.long_listen(threshold=threshold)
-            return "listening (long_listen)"
+        async def llm_judge(threshold: int = 7, segment_vad: float = 3.0) -> str:
+            """Listen with an llm stop-judge backed by a segment_vad fallback (seconds)."""
+            self.llm_judge(threshold=threshold, segment_vad=segment_vad)
+            return "listening (llm_judge)"

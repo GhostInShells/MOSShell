@@ -164,3 +164,27 @@ async def test_segment_archives_the_clauses_it_emitted(monkeypatch):
     assert all(e.created >= started for e in events)
     assert clauses[0].created >= started
     assert segments[0].created >= started
+
+
+@pytest.mark.asyncio
+async def test_clause_frame_emits_no_trailing_partial(monkeypatch):
+    """发 clause 的帧不再发 partial: definite + 非 definite 同帧时, 只发 clause."""
+    frames = [
+        _server_frame({"result": {
+            "text": "你好世界",
+            "utterances": [
+                {"text": "你好", "definite": True, "start_time": 100, "end_time": 600},
+                {"text": "你好世界", "definite": False},
+            ],
+        }}),
+        _server_frame({"result": {"text": "你好世界"}}, is_last=True),
+    ]
+    monkeypatch.setattr(sauc_recognizer, "connect", _connect_to(_FakeWS(frames)))
+
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    stream = asr.recognize(_audio(np.zeros(1600, dtype=np.int16)))
+
+    events = [e async for e in stream]
+    phases = [e.phase for e in events]
+    assert phases.count(RecognitionPhase.CLAUSE) == 1
+    assert RecognitionPhase.PARTIAL not in phases
