@@ -65,6 +65,15 @@ def make_interfaces(
     return '\n'.join(blocks)
 
 
+def _visible_named_notices(named_notices: dict[str, str]) -> dict[str, str]:
+    """渲染前的片段过滤: 空值是生产者的静默信号 — 不渲染, 也不宣告变更."""
+    return {name: text for name, text in named_notices.items() if text}
+
+
+def _notice_fragment(name: str, text: str) -> str:
+    return f"<{name}>{text}</{name}>"
+
+
 class ChannelMetaPrompter:
 
     def __init__(
@@ -206,8 +215,8 @@ class ChannelMetaPrompter:
 
     def interface_message(self, dynamic: bool, sustain: bool) -> Message | None:
         parts = []
-        if self.meta.notice:
-            parts.append(f"<notice>\n{self.meta.notice}\n</notice>")
+        if notice := self.notice_text():
+            parts.append(notice)
         interface = make_interfaces(self.meta, dynamic=dynamic, sustain=sustain)
         if interface:
             parts.append(interface)
@@ -218,9 +227,38 @@ class ChannelMetaPrompter:
     # --- shell trajectory 版本上下文构建, 针对上下文缓存做优化 --- #
 
     def notice_text(self) -> str:
+        body = self._notice_body()
+        if not body:
+            return ""
+        return "<notice>\n" + body + "\n</notice>"
+
+    def _notice_body(self) -> str:
+        """notice 全量正文: 无名 notice 在前, 有名片段按 name 稳定排序在后."""
+        parts = []
         if self.meta.notice:
-            return "<notice>\n" + self.meta.notice + "\n</notice>"
-        return ""
+            parts.append(self.meta.notice)
+        visible = _visible_named_notices(self.meta.named_notices)
+        parts.extend(_notice_fragment(name, visible[name]) for name in sorted(visible))
+        return "\n".join(parts)
+
+    def _notice_delta(self, target: ChannelMeta) -> str:
+        """逐 name 比较 notice, 只发射变化的片段.
+
+        notice 是温数据, 逐片段比较后一个片段变动不重发其它片段. 空值不渲染也不宣告
+        变更 — 模型保留上次读到的内容; 生产者要让模型知道片段没了, 返回 "removed" 这类
+        标记文本即可, 那只是内容, 这里不做任何识别.
+        """
+        lines = []
+        if target.notice and target.notice != self.meta.notice:
+            lines.append(target.notice)
+        prev_visible = _visible_named_notices(self.meta.named_notices)
+        next_visible = _visible_named_notices(target.named_notices)
+        for name in sorted(set(prev_visible) | set(next_visible)):
+            if name in next_visible and next_visible[name] != prev_visible.get(name):
+                lines.append(_notice_fragment(name, next_visible[name]))
+        if not lines:
+            return ""
+        return "<notice>\n" + "\n".join(lines) + "\n</notice>"
 
     def failure_text(self) -> str:
         if self.meta.failure:
@@ -279,8 +317,8 @@ class ChannelMetaPrompter:
         """逐 section 对比, 只发射变化的文本块.
 
         failure 是短路面: 两边不等 → 发 target 全板 (新板即 failure, 或 failure 被清除后的健康板);
-        相同且非空 → 该板只有 failure, 无差可发. 其余 states / notice / interface 各自独立比较,
-        只把发生变化的 section 拼进 delta, 不再把未变更的 section 整体重发.
+        相同且非空 → 该板只有 failure, 无差可发. 其余 states / interface 整体比较, notice 再往下
+        逐 name 比较 (见 _notice_delta), 只把变化的文本拼进 delta.
         """
         if channel_meta.created == self.meta.created:
             return ""
@@ -297,8 +335,8 @@ class ChannelMetaPrompter:
         sections = []
         if self.state_text() != target.state_text():
             sections.append(target.state_text())
-        if self.notice_text() != target.notice_text():
-            sections.append(target.notice_text())
+        if notice_delta := self._notice_delta(channel_meta):
+            sections.append(notice_delta)
         if self.commands_interface_text() != target.commands_interface_text():
             sections.append(target.commands_interface_text())
         if not sections:

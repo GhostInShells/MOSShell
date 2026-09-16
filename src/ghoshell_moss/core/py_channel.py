@@ -30,7 +30,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     MessageType,
     LifecycleFunction,
     StringType,
-    ChannelFactory,
+    ChannelFactory, StringDictType,
 )
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 import time
@@ -40,6 +40,14 @@ __all__ = ["PyChannel", "StatefulChannelRuntimeImpl", "PyChannelBuilder", "BaseS
 
 _ChannelNamePattern = re.compile(ChannelNamePattern)
 _ChannelName = str
+
+GATED_CHILDREN_NOTICE = "gated_children"
+"""Reserved named notice fragment published by the gate mechanism.
+
+Holds the declared catalog of gated virtual children, each marked ``open`` or
+``closed``. Unmounted children have no meta node, so this catalog is the only way the
+model learns they exist — see ``StatefulChannel.gate``.
+"""
 
 
 class PyChannelBuilder(MutableChannelState, ChannelState):
@@ -60,6 +68,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
         self._notice_fn: StringType | None = None
+        self._named_notice_fn: StringDictType | None = None
         self._sustain_children: dict[str, Channel | ChannelFactory] = {}
         self._sustain_children_factories: list[Callable] = []
         self._virtual_children: dict[str, Channel] = {}
@@ -181,6 +190,18 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         if callable(func):
             self._dynamic = True
         return func
+
+    def named_notices(self, func: StringDictType) -> StringDictType:
+        self._named_notice_fn = func
+        self._dynamic = True
+        return func
+
+    async def get_named_notices(self) -> dict[str, str]:
+        if self._named_notice_fn is None:
+            return {}
+        if inspect.iscoroutinefunction(self._named_notice_fn):
+            return await self._named_notice_fn()
+        return self._named_notice_fn()
 
     async def get_notice(self) -> str:
         if self._notice_fn is None:
@@ -760,9 +781,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                     dynamic = True
                 command_metas.append(cmd_meta.model_copy())
 
-            new_context_messages, notice_text = await asyncio.gather(
+            new_context_messages, notice_text, named_notices = await asyncio.gather(
                 self._get_context_messages(),
                 self._get_notice(),
+                self._get_named_notices(),
             )
 
             meta = ChannelMeta(
@@ -776,6 +798,7 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 context=new_context_messages,
                 instruction=instruction,
                 notice=notice_text,
+                named_notices=named_notices,
             )
             meta.dynamic = dynamic
             meta.commands = command_metas
@@ -829,14 +852,44 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 parts.append(t)
             elif isinstance(t, Exception):
                 self.logger.error("%r get notice receive error: %s", self, t)
+        return '\n'.join(parts)
+
+    async def _get_named_notices(self) -> dict[str, str]:
+        merged: dict[str, str] = {}
         if catalog := self._gated_children():
             # gate: 未挂载的子通道没有 meta 节点, 目录是模型知道它们存在的唯一入口.
-            lines = ["gated children:"]
-            for name, child in catalog.items():
-                state = "open" if name in self._opened_children else "closed"
-                lines.append(f"- {name} ({state}): {child.description()}")
-            parts.append("\n".join(lines))
-        return '\n'.join(parts)
+            merged[GATED_CHILDREN_NOTICE] = "\n".join(
+                f"- {name} ({'open' if name in self._opened_children else 'closed'}): {child.description()}"
+                for name, child in catalog.items()
+            )
+        # 带上来源, 重名时日志才能指出是谁和谁撞了.
+        sources = [
+            ("main state", self._main_state.get_named_notices()),
+        ]
+        for module in self._modules.values():
+            if hasattr(module, 'get_named_notices'):
+                sources.append(("module %r" % module.name(), module.get_named_notices()))
+        if current_state := self._get_current_state():
+            sources.append(("state %r" % current_state.name(), current_state.get_named_notices()))
+        done = await asyncio.gather(*(coro for _, coro in sources), return_exceptions=True)
+        for (origin, _), t in zip(sources, done):
+            if isinstance(t, Exception):
+                self.logger.error("%r get named notices from %s receive error: %s", self, origin, t)
+                continue
+            if not isinstance(t, dict):
+                self.logger.error(
+                    "%r get named notices from %s receive invalid result %r", self, origin, t
+                )
+                continue
+            for name, text in t.items():
+                if name in merged:
+                    self.logger.error(
+                        "%r duplicate named notice %r from %s, keeping the first one",
+                        self, name, origin,
+                    )
+                    continue
+                merged[name] = text
+        return merged
 
     def _wrap_messages(self, messages: Iterable[Message | str | Image]) -> Iterable[Message]:
         for msg in messages:

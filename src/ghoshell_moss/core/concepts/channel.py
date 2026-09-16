@@ -97,7 +97,16 @@ class ChannelMeta(BaseModel):
 
     instruction: str = Field(default='', description="the channel instruction messages")
     context: list[Message] = Field(default_factory=list, description="The channel context messages")
-    notice: str = Field(default="", description="Warm data — what this channel currently exposes. Rendered with command interfaces.")
+
+    # 温数据.
+    notice: str = Field(default="",
+                        description="Warm data — what this channel currently exposes. Rendered with command interfaces.")
+    named_notices: dict[str, str] = Field(
+        default_factory=dict,
+        description="warm data with name, render in notice but per name rerender if diffed",
+    )
+
+    # memory 目前没有实装.
     memory: list[Message] = Field(default_factory=list, description="The channel memory messages")
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
@@ -296,6 +305,9 @@ class ChannelState(ABC):
         rendered with the command interface, only refreshed on change.
         """
         return ''
+
+    async def get_named_notices(self) -> dict[str, str]:
+        return {}
 
     async def on_startup(self) -> None:
         """

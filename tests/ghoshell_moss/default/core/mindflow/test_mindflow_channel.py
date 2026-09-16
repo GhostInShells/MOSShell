@@ -207,16 +207,15 @@ async def test_gated_mindflow_lists_and_mounts_nucleus_child():
         channel = mf.as_channel()
         async with channel.bootstrap() as runtime:
             await runtime.refresh_metas()
-            # gate 开启: nucleus channel 默认关闭, 只在 notice 的 gate 目录里可见.
-            notice = runtime.self_meta().notice
-            assert "gated children" in notice
-            assert "listener_nucleus (closed)" in notice
+            # gate 开启: nucleus channel 默认关闭, 只在 gated_children 片段里可见.
+            catalog = runtime.self_meta().named_notices["gated_children"]
+            assert "listener_nucleus (closed)" in catalog
             assert "listener_nucleus" not in runtime.virtual_sub_channels()
 
             result = await runtime.mount_child("listener_nucleus")
             assert "mounted" in result
             assert "listener_nucleus" in runtime.virtual_sub_channels()
-            assert "listener_nucleus (open)" in runtime.self_meta().notice
+            assert "listener_nucleus (open)" in runtime.self_meta().named_notices["gated_children"]
 
 
 @pytest.mark.asyncio
@@ -229,4 +228,4 @@ async def test_mindflow_defaults_to_gate_on():
             await runtime.refresh_metas()
             # nucleus 子通道默认关闭, 需 mount_child 披露.
             assert "listener_nucleus" not in runtime.virtual_sub_channels()
-            assert "gated children" in runtime.self_meta().notice
+            assert "gated_children" in runtime.self_meta().named_notices

@@ -226,3 +226,77 @@ def test_diff_facade_failure_change_short_circuits():
     assert '<failure>' in delta
     assert 'boom-new' in delta
     assert '<notice>' not in delta
+
+
+# --- named notices: 渲染 ---
+
+
+def test_notice_renders_named_fragments_after_unnamed():
+    """有名片段与无名 notice 同处一个 <notice>, 片段按 name 稳定排序."""
+    meta = ChannelMeta(
+        name='a',
+        notice='unnamed warm',
+        named_notices={'vision': 'camera open', 'audio': 'mic idle'},
+    )
+    text = ChannelMetaPrompter('a', meta).notice_text()
+    assert '<audio>mic idle</audio>' in text
+    assert '<vision>camera open</vision>' in text
+    assert text.index('unnamed warm') < text.index('<audio>') < text.index('<vision>')
+
+
+def test_notice_skips_empty_fragment():
+    """空值是生产者的静默值: 不入渲染."""
+    meta = ChannelMeta(name='a', notice='warm', named_notices={'vision': '', 'audio': 'mic idle'})
+    text = ChannelMetaPrompter('a', meta).notice_text()
+    assert 'vision' not in text
+    assert '<audio>mic idle</audio>' in text
+
+
+def test_notice_text_empty_when_only_empty_fragments():
+    """只有空片段时没有 notice 块 — 空不展示是约定."""
+    meta = ChannelMeta(name='a', named_notices={'vision': ''})
+    assert ChannelMetaPrompter('a', meta).notice_text() == ""
+
+
+# --- named notices: 逐 name delta ---
+
+
+def test_diff_facade_emits_only_changed_fragment():
+    """逐 name 比较: 只有变化的片段进 delta, 未变的片段不重发."""
+    prev = ChannelMeta(name='a', named_notices={'vision': 'v1', 'audio': 'a1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={'vision': 'v2', 'audio': 'a1'}, created=_aware(1))
+    delta = ChannelMetaPrompter('a', prev).diff_facade(cur)
+    assert '<vision>v2</vision>' in delta
+    assert 'audio' not in delta
+    assert 'v1' not in delta
+
+
+def test_diff_facade_emits_new_fragment_only():
+    """新出现的片段进 delta, 已存在且未变的片段不进."""
+    prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={'vision': 'v1', 'audio': 'a1'}, created=_aware(1))
+    delta = ChannelMetaPrompter('a', prev).diff_facade(cur)
+    assert '<audio>a1</audio>' in delta
+    assert 'vision' not in delta
+
+
+def test_diff_facade_empty_value_is_silent():
+    """片段变成空值: 不发 delta, 也不宣告变更 — 模型保留上次读到的内容."""
+    prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={'vision': ''}, created=_aware(1))
+    assert ChannelMetaPrompter('a', prev).diff_facade(cur) == ""
+
+
+def test_diff_facade_disappeared_fragment_is_silent():
+    """片段从 dict 消失与空值同义: 静默, 显式移除是生产者的责任."""
+    prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={}, created=_aware(1))
+    assert ChannelMetaPrompter('a', prev).diff_facade(cur) == ""
+
+
+def test_diff_facade_renders_producer_removed_text_as_content():
+    """要告知移除, 生产者返回 "removed" 这类标记文本 —— 它只是内容, 不做特殊渲染."""
+    prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={'vision': 'removed'}, created=_aware(1))
+    delta = ChannelMetaPrompter('a', prev).diff_facade(cur)
+    assert '<vision>removed</vision>' in delta

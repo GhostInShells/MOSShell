@@ -1055,7 +1055,7 @@ def _gated_channel(*children: PyChannel) -> PyChannel:
 
 @pytest.mark.asyncio
 async def test_gate_off_mounts_all_virtual_children_and_no_notice():
-    """gate 关闭 (默认) 时虚拟子通道全部挂载, notice 不带目录."""
+    """gate 关闭 (默认) 时虚拟子通道全部挂载, 不产出目录片段."""
     chan = PyChannel(name="main")
     sub = PyChannel(name="sub")
 
@@ -1066,25 +1066,25 @@ async def test_gate_off_mounts_all_virtual_children_and_no_notice():
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         assert "sub" in runtime.virtual_sub_channels()
-        assert "gated children" not in runtime.self_meta().notice
+        assert "gated_children" not in runtime.self_meta().named_notices
 
 
 @pytest.mark.asyncio
 async def test_gate_on_children_closed_by_default_and_listed_in_notice():
-    """gate 开启时子通道默认全关; 目录出现在 notice 里并标记 closed."""
+    """gate 开启时子通道默认全关; 目录以 gated_children 片段披露并标记 closed."""
     chan = _gated_channel(PyChannel(name="attention"))
 
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         assert runtime.virtual_sub_channels() == {}
-        notice = runtime.self_meta().notice
-        assert "attention" in notice
-        assert "closed" in notice
+        catalog = runtime.self_meta().named_notices["gated_children"]
+        assert "attention" in catalog
+        assert "closed" in catalog
 
 
 @pytest.mark.asyncio
 async def test_mount_child_mounts_and_marks_open():
-    """mount_child 挂载子通道, notice 目录标记 open; unmount 撤销."""
+    """mount_child 挂载子通道, 目录片段标记 open; unmount 撤销."""
     child = PyChannel(name="attention")
 
     @child.build.command()
@@ -1100,7 +1100,7 @@ async def test_mount_child_mounts_and_marks_open():
         result = await runtime.mount_child("attention")
         assert "mounted" in result
         assert "attention" in runtime.virtual_sub_channels()
-        assert "open" in runtime.self_meta().notice
+        assert "open" in runtime.self_meta().named_notices["gated_children"]
 
         result = await runtime.unmount_child("attention")
         assert "unmounted" in result

@@ -43,7 +43,7 @@ Facade = ABC
 
 __all__ = [
     "Channel", "ChannelFactory",
-    "CommandFunction", "MessageFunction", "StringType", "LifecycleFunction",
+    "CommandFunction", "MessageFunction", "StringType", "StringDictType", "LifecycleFunction",
     "Message",
     "MessageType",
     "Builder",
@@ -87,6 +87,10 @@ StringType = Union[
     str,
     Callable[[], str],
     Callable[[], Coroutine[None, None, str]],
+]
+StringDictType = Union[
+    Callable[[], dict[str, str]],
+    Callable[[], Coroutine[None, None, dict[str, str]]],
 ]
 
 LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[..., None]]
@@ -453,6 +457,38 @@ class Builder(Facade):
         Red line: notice answers "what can it do"; context answers "what is it now".
         """
         pass
+
+    @abstractmethod
+    def named_notices(self, func: StringDictType) -> StringDictType:
+        """
+        decorator
+        Register a function that produces this channel's named notice fragments: a
+        ``dict[str, str]`` of ``name -> text``.
+
+        Each fragment is a warm notice piece with its own identity. The trajectory
+        re-emits a fragment only when its text changes, so one fragment moving does not
+        re-send the others.
+
+        Value domain — the framework reads exactly one value:
+
+        - non-empty text: rendered as ``<name>text</name>`` inside the channel notice.
+          The text is yours; the framework does not interpret it. To tell the model a
+          fragment is gone, return a marker text of your own (conventionally
+          ``removed``) — it reaches the model as ordinary content.
+        - empty string: silent. Not rendered, and no change is announced — the model
+          keeps whatever it last read. Use it for the producer's own bookkeeping, such
+          as draining a history.
+
+        A name is an XML tag token: no whitespace, no ``<``, ``>`` or ``/``. The same
+        name produced by two modules or states is a programming error that fails the
+        meta refresh — it is never resolved by silently overwriting one fragment.
+        ``gated_children`` is reserved for the gate mechanism (``gate`` in
+        ``ghoshell_moss.core.blueprint.states_channel``).
+
+        Distinct from ``notice`` (a single unnamed string, re-emitted whole) and from
+        ``context_messages`` (hot data, re-sent every frame).
+        """
+        ...
 
     def content_command(
             self,

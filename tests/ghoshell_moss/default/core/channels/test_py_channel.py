@@ -1464,6 +1464,109 @@ async def test_notice_via_module_aggregates():
         assert "mod help" in meta.notice
 
 
+# --- named notices ---
+
+
+@pytest.mark.asyncio
+async def test_named_notices_reach_meta_verbatim():
+    """named notice 函数的返回字典原样进入 ChannelMeta.named_notices (含空值)."""
+    main = PyChannel(name="main")
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"vision": "camera open", "audio": ""}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices == {"vision": "camera open", "audio": ""}
+
+
+@pytest.mark.asyncio
+async def test_named_notices_async_function():
+    """async named notice 函数同样被等待并进入 meta."""
+    main = PyChannel(name="main")
+
+    @main.build.named_notices
+    async def notices() -> dict[str, str]:
+        return {"vision": "camera open"}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices == {"vision": "camera open"}
+
+
+@pytest.mark.asyncio
+async def test_named_notices_refresh_with_meta():
+    """named notice 随 meta refresh 重算, 不缓存在注册时刻的值."""
+    main = PyChannel(name="main")
+    state = {"v": "v1"}
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"vision": state["v"]}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices["vision"] == "v1"
+
+        state["v"] = "v2"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["vision"] == "v2"
+
+
+@pytest.mark.asyncio
+async def test_named_notices_merge_main_state_and_module():
+    """main state 与 module 的片段合并共存, 不同 name 互不覆盖."""
+    main = PyChannel(name="main")
+
+    class Mod(ChannelModule):
+        def name(self) -> str:
+            return "vision_mod"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        async def get_named_notices(self) -> dict[str, str]:
+            return {"vision": "camera open"}
+
+    main.with_module(Mod())
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"audio": "mic idle"}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices == {"audio": "mic idle", "vision": "camera open"}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_named_notice_keeps_first_and_spares_the_channel(caplog):
+    """重名是编程错误, 但不是系统故障: 保留先到者并记 error, channel 仍可用."""
+    main = PyChannel(name="main")
+
+    class Mod(ChannelModule):
+        def name(self) -> str:
+            return "mod"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        async def get_named_notices(self) -> dict[str, str]:
+            return {"shared": "from mod"}
+
+    main.with_module(Mod())
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"shared": "from main"}
+
+    with caplog.at_level("ERROR"):
+        async with main.bootstrap() as runtime:
+            meta = runtime.self_meta()
+            assert meta.available
+            assert meta.failure == ""
+            assert meta.named_notices["shared"] == "from main"
+
+    assert "duplicate named notice" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_builder_with_virtual_children():
     children = {}

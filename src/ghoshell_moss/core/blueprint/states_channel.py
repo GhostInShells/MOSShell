@@ -75,6 +75,9 @@ class ChannelModule(Protocol):
         # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
         return []
 
+    async def get_named_notices(self) -> dict[str, str]:
+        return {}
+
     async def get_notice(self) -> str:
         return ""
 
