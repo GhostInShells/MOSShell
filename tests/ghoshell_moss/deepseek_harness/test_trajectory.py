@@ -5,7 +5,7 @@
   end_seq 直接指定; 切在 turn/end; 吞 trailing standalone 到下一个 turn/start.
 - seed_from_log 失败面: end turn 未闭合 / end_seq 越界 / 边界非 turn/end.
 - render_transcript: > ~ @ 三符号; 非 injection 过滤; tool/result 与空 assistant 跳过;
-  limit_turns 保留最近 N turn.
+  多行正文续行补空格对齐标记; limit_turns 保留最近 N turn.
 """
 
 import pytest
@@ -138,6 +138,32 @@ def test_transcript_symbols_and_filters():
     )
     out = render_transcript(events)
     assert out == "  > hello\n  ~ hi\n  @ search({})"
+
+
+def test_transcript_multiline_body_aligns_under_marker():
+    events = _log(
+        (TS, {"turn": 0}),
+        (UM, _user("first\nsecond")),
+        (AM, _assistant("one\ntwo\nthree")),
+        (TC, {"name": "edit", "arguments": "{\n  \"path\": \"a\"\n}"}),
+        (TE, {"turn": 0}),
+    )
+    out = render_transcript(events)
+    assert out == (
+        "  > first\n"
+        "    second\n"
+        "  ~ one\n"
+        "    two\n"
+        "    three\n"
+        "  @ edit({\n"
+        '      "path": "a"\n'
+        "    })"
+    )
+
+
+def test_transcript_multiline_respects_custom_indent():
+    events = _log((TS, {"turn": 0}), (UM, _user("a\nb")), (TE, {"turn": 0}))
+    assert render_transcript(events, indent="") == "> a\n  b"
 
 
 def test_transcript_limit_turns_keeps_tail():

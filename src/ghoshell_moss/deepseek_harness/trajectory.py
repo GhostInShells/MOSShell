@@ -78,25 +78,31 @@ def seed_from_log(events: list[SessionEvent], ref: DshSessionRef) -> list[Sessio
     return events[:cut]
 
 
-def _line_for(event: SessionEvent) -> str | None:
-    """单事件 → 折叠行; 不参与渲染的事件返回 None."""
+def _line_for(event: SessionEvent) -> tuple[str, str] | None:
+    """单事件 → (标记, 正文); 不参与渲染的事件返回 None."""
     data = event.data or {}
     kind = event.meta.type
     if kind == "user/message":
         source = data.get("source") or {}
         if source.get("kind") != "user":
             return None
-        text = _content_text(data.get("content"))
-        return f"> {text}" if text else None
+        text = _content_text(data.get("content")).rstrip()
+        return (">", text) if text else None
     if kind == "assistant/message":
         message = data.get("message") or {}
-        text = _content_text(message.get("content"))
-        return f"~ {text}" if text else None
+        text = _content_text(message.get("content")).rstrip()
+        return ("~", text) if text else None
     if kind == "tool/call":
         name = data.get("name") or ""
         arguments = data.get("arguments") or ""
-        return f"@ {name}({arguments})"
+        return ("@", f"{name}({arguments})")
     return None
+
+
+def _fold_line(marker: str, text: str, indent: str) -> str:
+    """标记 + 正文 → 一行; 正文换行时续行补空格, 与首行正文左对齐."""
+    head = f"{indent}{marker} "
+    return head + text.replace("\n", "\n" + " " * len(head))
 
 
 def render_transcript(
@@ -111,10 +117,12 @@ def render_transcript(
     - ``~`` 模型输出 (``assistant/message`` 的 text 块; 空 content 的 usage 帧跳过).
     - ``@`` 工具调用 (``tool/call`` 的 name + arguments; ``tool/result`` 不渲染).
     - 其余 (turn/start·end, chunk, request/*, todo, injection) 跳过.
+    - 正文自带换行时, 续行补 ``len(indent) + 2`` 个空格 —— 与首行正文左对齐,
+      多行消息不会被读成独立行.
     - ``limit_turns`` 非 None 时只保留最近 N 个 turn (按 ``turn/start`` 分组).
     """
-    turns: list[list[str]] = []
-    current: list[str] = []
+    turns: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
 
     def flush() -> None:
         if current:
@@ -133,4 +141,6 @@ def render_transcript(
     if limit_turns is not None:
         turns = turns[-limit_turns:] if limit_turns > 0 else []
 
-    return "\n".join(indent + line for group in turns for line in group)
+    return "\n".join(
+        _fold_line(marker, text, indent) for group in turns for marker, text in group
+    )
