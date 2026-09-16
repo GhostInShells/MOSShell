@@ -16,7 +16,7 @@ from ghoshell_moss.core.mindflow import (
     # execute a command
     CommandNucleusMeta,
     # silent update — no model wakeup, added to history on attention win
-    SilentNucleusMeta,
+    AsideNucleusMeta,
     # default input signal handler
     InputNucleusMeta,
     # cell lifecycle event → background hint
@@ -32,5 +32,5 @@ input_nucleus = InputNucleusMeta()
 notify_nucleus = NotifyNucleusMeta()
 interrupt_nucleus = InterruptNucleusMeta()
 command_nucleus = CommandNucleusMeta()
-silent_nucleus = SilentNucleusMeta()
+silent_nucleus = AsideNucleusMeta()
 cell_event_nucleus = CellEventNucleusMeta()

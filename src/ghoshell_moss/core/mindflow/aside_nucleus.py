@@ -1,14 +1,14 @@
-"""SilentNucleus — 静默聚合通道, 持续 buffer 不打扰思考.
+"""AsideNucleus — 旁路聚合通道, 持续 buffer 不打扰思考.
 
-四元 nucleus 之三: 配对 ``ChallengeMode.silent`` 的"低污染数据流"入口.
-监听 ``SilentSignalMeta`` (signal name = ``"silent"``), 把所有进来的 signal
+四元 nucleus 之三: 配对 ``ChallengeMode`` 的"低污染数据流"入口.
+监听 ``AsideSignalMeta`` (signal name = ``"aside"``), 把所有进来的 signal
 合并进一个内部 buffer, 用 buffer 内最高 priority 作为 impulse 优先级, 产出的
-impulse 标记为 ``mode=silent``: 抢占成功时 buffer 进 mindflow 不接管 attention,
-抢占失败时 suppress (符合 silent 在"抢占成功侧偏离" 的对称语义).
+impulse 标记为 ``mode=aside``: 抢占成功时 buffer 进 mindflow 不接管 attention,
+抢占失败时 suppress (符合 aside 在"抢占成功侧偏离" 的对称语义).
 
 结构对称于 ``InputSignalNucleus`` (两者都是 buffer + 优先级提取), 差异是:
 - InputSignalNucleus: signal 视为离散事件 (FIFO 保留), default mode → 走 articulate
-- SilentNucleus: signal 视为数据流 (合并语义), silent mode → 静默 buffer 不思考
+- AsideNucleus: signal 视为数据流 (合并语义), aside mode → 旁路 buffer 不思考
 
 这种对称在拓扑层面是有意为之 — 让开发者用"读名字就懂语义"的方式选择路由,
 而不需要懂 ChallengeMode × priority × effort 的正交组合.
@@ -28,30 +28,30 @@ from ghoshell_moss.core.blueprint.mindflow import (
     ChallengeMode,
 )
 
-__all__ = ['SilentNucleus', 'SilentSignalMeta', 'SilentNucleusMeta', 'new_silent_signal']
+__all__ = ['AsideNucleus', 'AsideSignalMeta', 'AsideNucleusMeta', 'new_aside_signal']
 
 
-class SilentSignalMeta(SignalMeta):
-    """Signal meta for ``silent`` — low-pollution data stream.
+class AsideSignalMeta(SignalMeta):
+    """Signal meta for ``aside`` — a message the ghost notices without being interrupted.
 
-    用例: 传感器读数 / 后台监控 / 状态广播 — signal 持续流入, 不希望每条都打断
-    ghost 思考, 但累积到一定 priority 时希望下一帧 ghost 看到聚合后的快照.
+    Never interrupts the ghost. Whenever the ghost is free, the message simply
+    joins what it sees; while the ghost is busy, it waits.
     """
 
     @classmethod
     def signal_name(cls) -> SignalName:
-        return 'silent'
+        return 'aside'
 
     @classmethod
     def priority(cls) -> Priority:
         return Priority.NOTICE
 
 
-class SilentNucleus(Nucleus):
+class AsideNucleus(Nucleus):
     """Aggregating nucleus — continuous buffer with max-priority extraction.
 
     结构: 内部维护 ``_signals: list[Signal]``, ``add_signal`` 在线就直接 append +
-    重建 impulse cache. ``peek`` 返回当前 cache (silent mode 标记的 impulse).
+    重建 impulse cache. ``peek`` 返回当前 cache (aside mode 标记的 impulse).
 
     Buffer 策略:
     - 持续 buffer, 不区分 signal 独立性
@@ -64,13 +64,13 @@ class SilentNucleus(Nucleus):
     冷静期内 signal 仍持续 buffer, 只是不主动 challenge.
     """
 
-    NAME = 'silent_nucleus'
+    NAME = 'aside_nucleus'
 
     def __init__(
             self,
             *,
             name: str = NAME,
-            description: str = "silent aggregating channel — buffer signals without preempting thought",
+            description: str = "aside aggregating channel — buffer signals without preempting thought",
             suppress_seconds: float = 0.5,
             buffer_size: int = 20,
             min_priority: Priority = Priority.BACKGROUND,
@@ -78,7 +78,7 @@ class SilentNucleus(Nucleus):
     ):
         self._name = name
         self._description = description
-        self._target_signal = SilentSignalMeta.signal_name()
+        self._target_signal = AsideSignalMeta.signal_name()
         self._suppress_seconds = suppress_seconds
         self._buffer_size = buffer_size
         self._min_priority = min_priority
@@ -110,7 +110,7 @@ class SilentNucleus(Nucleus):
         count = len(self._signals)
         if count == 0:
             return ""
-        # silent buffer 中, 取当前优先级最高的描述作摘要 — 表达"现在 buffer 中最重的事".
+        # aside buffer 中, 取当前优先级最高的描述作摘要 — 表达"现在 buffer 中最重的事".
         top = max(self._signals, key=lambda s: s.priority_strength())
         desc = f", top: {top.description[:50]}" if top.description else ''
         return f"buffered: {count}{desc}"
@@ -140,7 +140,7 @@ class SilentNucleus(Nucleus):
         self._process_signal(signal)
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # silent 抢占失败 → 走 default suppress 分支 (对称表). 进入冷静期防风暴.
+        # aside 抢占失败 → 走 default suppress 分支 (对称表). 进入冷静期防风暴.
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def attended(self, impulse: Impulse) -> None:
@@ -176,7 +176,7 @@ class SilentNucleus(Nucleus):
 
             self._signals.append(signal)
             if len(self._signals) > self._buffer_size:
-                # 溢出丢最早 — silent 数据流场景, 旧数据已被新数据覆盖.
+                # 溢出丢最早 — aside 数据流场景, 旧数据已被新数据覆盖.
                 self._signals.pop(0)
 
             self._impulse_cache = self._rebuild_impulse()
@@ -216,7 +216,7 @@ class SilentNucleus(Nucleus):
             hint=latest.hint,
             complete=all(s.complete for s in valid),
             stale_timeout=latest.stale_timeout,
-            # 核心标记 — silent mode 在抢占成功侧偏离 default, 不接管 attention.
+            # 核心标记 — aside mode 在抢占成功侧偏离 default, 不接管 attention.
             mode=ChallengeMode.silent.value,
         )
 
@@ -225,14 +225,14 @@ class SilentNucleus(Nucleus):
             self.clear()
 
 
-class SilentNucleusMeta(NucleusMeta):
-    """Factory meta — lets ``moss manifests nuclei`` discover SilentNucleus."""
+class AsideNucleusMeta(NucleusMeta):
+    """Factory meta — lets ``moss manifests nuclei`` discover AsideNucleus."""
 
     def __init__(
             self,
             *,
-            name: str = SilentNucleus.NAME,
-            description: str = "silent aggregating channel — buffer signals without preempting thought",
+            name: str = AsideNucleus.NAME,
+            description: str = "aside aggregating channel — buffer signals without preempting thought",
             suppress_seconds: float = 0.5,
             buffer_size: int = 20,
             min_priority: Priority = Priority.BACKGROUND,
@@ -250,11 +250,11 @@ class SilentNucleusMeta(NucleusMeta):
         return self._description
 
     def signals(self) -> Iterable[type[SignalMeta]]:
-        yield SilentSignalMeta
+        yield AsideSignalMeta
 
     def factory(self, container: IoCContainer) -> Nucleus:
         logger = container.get(LoggerItf)
-        return SilentNucleus(
+        return AsideNucleus(
             name=self._name,
             description=self._description,
             suppress_seconds=self._suppress_seconds,
@@ -264,15 +264,15 @@ class SilentNucleusMeta(NucleusMeta):
         )
 
 
-def new_silent_signal(
+def new_aside_signal(
         *messages: ContextType,
         priority: Priority = Priority.NOTICE,
         description: str = '',
         stale_timeout: float = 0,
         hint: str = '',
 ) -> Signal:
-    """Helper — construct a ``silent`` signal in one call."""
-    return SilentSignalMeta().to_signal(
+    """Helper — construct an ``aside`` signal in one call."""
+    return AsideSignalMeta().to_signal(
         *messages,
         description=description,
         stale_timeout=stale_timeout,

@@ -12,7 +12,7 @@ philosophical substance. Matrix is not mesh, nor a mesh client — mesh is only 
 sources it projects from.
 """
 import dataclasses
-from typing import Literal, Callable, Awaitable, Any, Coroutine, Protocol, TypeAlias, Type, TYPE_CHECKING
+from typing import Literal, Callable, Awaitable, Any,  Protocol, TypeAlias, Type, TYPE_CHECKING
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.core.blueprint.warrant import Warrant
 from ghoshell_moss.core.blueprint.parameter import Parameters
 from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo, CellEventLevel
@@ -98,6 +99,47 @@ class Matrix(Facade):
     When developing a Cell, follow the capability map Matrix exposes: pick what you need,
     then expand your exploration from there.
     """
+
+    # -- session facade -- #
+
+    def send_signal_to_ghost(self, signal: Signal) -> None:
+        """send signal to the Ghost's Mindflow.
+        Parallel signals arrive the nuclei, received by specific perceptive nucleus.
+        the nucleus raise impulse to the mind, preempting the attention of the ghost.
+        Path: Cell(session) -> Matrix -> Nucleus (hold signal) -> Mindflow (arbiter here) -> Attention -> Ghost?
+        Use `moss manifests signals` to list project level manifests"""
+        # more matrix level communication's protocol are defined in session
+        self.session.add_signal(signal)
+
+    # -- this cell's network-facing side -- #
+
+    @abstractmethod
+    def provide_channel(self, channel: Channel) -> asyncio.Future[None]:
+        """
+        Expose the current process's capabilities to the network through a moss channel, for a
+        Ghost (persistent agent) to use. How channels expose capabilities: see channel_builder.
+        How a model drives channels: see ctml.
+
+        A Cell can expose exactly one channel root (a tree), so this method may be called only
+        once. Await it to block until the process is shut down externally. The exposure is
+        announced on the network automatically.
+        """
+        pass
+
+    @abstractmethod
+    async def publish_event(
+            self,
+            content: str,
+            *,
+            event_level: CellEventLevel | None = None,
+    ) -> None:
+        """
+        Broadcast a **Cell** lightweight event from this cell to the network.
+        cell network channel can perceive it.
+        event_level: override this cell's default event_level for this one event.
+        None = use the cell's own level.
+        """
+        pass
 
     # -- composition root -- #
 
@@ -280,37 +322,6 @@ class Matrix(Facade):
         Configuration metadata of the network this matrix has joined.
         A Cell process rarely needs the details — check it when your logic concerns the
         network itself.
-        """
-        pass
-
-    # -- this cell's network-facing side -- #
-
-    @abstractmethod
-    def provide_channel(self, channel: Channel) -> asyncio.Future[None]:
-        """
-        Expose the current process's capabilities to the network through a moss channel, for a
-        Ghost (persistent agent) to use. How channels expose capabilities: see channel_builder.
-        How a model drives channels: see ctml.
-
-        A Cell can expose exactly one channel root (a tree), so this method may be called only
-        once. Await it to block until the process is shut down externally. The exposure is
-        announced on the network automatically.
-        """
-        pass
-
-    @abstractmethod
-    async def publish_event(
-            self,
-            content: str,
-            *,
-            event_level: CellEventLevel | None = None,
-    ) -> None:
-        """
-        Broadcast a lightweight event from this cell to the network. A Ghost (the network's
-        sovereign) can perceive it.
-
-        event_level: override this cell's default event_level for this one event.
-        None = use the cell's own level.
         """
         pass
 
@@ -618,11 +629,11 @@ class Matrix(Facade):
     # -- serve_mcp: code-as-prompt sugar that serves an MCP server inside the matrix lifecycle -- #
 
     async def aserve_mcp(
-        self,
-        mcp: 'MCPServer',
-        *,
-        host: str = '127.0.0.1',
-        port: int = 0,
+            self,
+            mcp: 'MCPServer',
+            *,
+            host: str = '127.0.0.1',
+            port: int = 0,
     ) -> None:
         """
         Serve an MCP server inside a running Matrix.
@@ -647,11 +658,11 @@ class Matrix(Facade):
         )
 
     def serve_mcp(
-        self,
-        mcp: 'MCPServer',
-        *,
-        host: str = '127.0.0.1',
-        port: int = 0,
+            self,
+            mcp: 'MCPServer',
+            *,
+            host: str = '127.0.0.1',
+            port: int = 0,
     ) -> None:
         """
         Synchronous blocking entry point: serve an MCP server inside the Matrix lifecycle.

@@ -1,6 +1,6 @@
 """五元 nucleus 集成测试 — 协议层等价性钉住.
 
-把 InputSignalNucleus / SilentNucleus / NotifyNucleus / CommandNucleus /
+把 InputSignalNucleus / AsideNucleus / NotifyNucleus / CommandNucleus /
 InterruptNucleus 注册到同一 mindflow, 用各自的 SignalMeta 发 signal,
 断言行为等价于绕过 nucleus 直接 add_impulse(primitive 路径).
 
@@ -33,12 +33,12 @@ from ghoshell_moss.core.mindflow import (
     InputSignalNucleus,
     CommandNucleus,
     NotifyNucleus,
-    SilentNucleus,
+    AsideNucleus,
     InterruptNucleus,
 )
 from ghoshell_moss.core.mindflow.command_nucleus import new_command_signal
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
-from ghoshell_moss.core.mindflow.silent_nucleus import new_silent_signal
+from ghoshell_moss.core.mindflow.aside_nucleus import new_aside_signal
 from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
 from ghoshell_moss.core.blueprint.mindflow import InputSignalMeta
 from ghoshell_moss.message import Message
@@ -55,7 +55,7 @@ def _quintet_mindflow() -> BaseMindflow:
         InputSignalNucleus(),
         CommandNucleus(),
         NotifyNucleus(),
-        SilentNucleus(suppress_seconds=0.05),
+        AsideNucleus(suppress_seconds=0.05),
         InterruptNucleus(suppress_seconds=0.05),
     )
 
@@ -133,11 +133,11 @@ async def test_notify_signal_default_path_creates_attention():
 
 @pytest.mark.asyncio
 async def test_silent_signal_quiet_path_buffers_not_attention():
-    """SilentNucleus quiet 路径: silent mode 不创建 attention, messages 进 mindflow buffer."""
+    """AsideNucleus quiet 路径: silent mode 不创建 attention, messages 进 mindflow buffer."""
     mindflow = _quintet_mindflow()
     async with mindflow:
         await mindflow.wait_started()
-        mindflow.add_signal(new_silent_signal(Message.new().with_content('quiet_data')))
+        mindflow.add_signal(new_aside_signal(Message.new().with_content('quiet_data')))
         # 给 consume loop 时间.
         await asyncio.sleep(0.2)
         # quiet 系统下 silent 不应创建 attention.
@@ -247,7 +247,7 @@ async def test_input_then_silent_silent_buffers_into_input_attention():
         defender = await asyncio.wait_for(_first_thinking(mindflow), timeout=2.0)
         async with defender:
             # silent FATAL: 抢占成功但 silent mode 偏离 default — buffer, 不接管 attention.
-            mindflow.add_signal(new_silent_signal(
+            mindflow.add_signal(new_aside_signal(
                 Message.new().with_content('quiet_supplement'),
                 priority=Priority.FATAL,
             ))
@@ -333,13 +333,13 @@ async def test_input_then_command_fatal_command_takes_over():
 
 @pytest.mark.asyncio
 async def test_silent_aggregates_multiple_signals_into_one_buffer_drain():
-    """SilentNucleus 聚合多 signal → 一个 impulse → buffer 一次性 drain 多条 messages."""
+    """AsideNucleus 聚合多 signal → 一个 impulse → buffer 一次性 drain 多条 messages."""
     mindflow = _quintet_mindflow()
     async with mindflow:
         await mindflow.wait_started()
-        # 三个 silent signal 连续进, SilentNucleus 内部聚合.
+        # 三个 silent signal 连续进, AsideNucleus 内部聚合.
         for i in range(3):
-            mindflow.add_signal(new_silent_signal(
+            mindflow.add_signal(new_aside_signal(
                 Message.new().with_content(f'data_{i}'),
                 priority=Priority.FATAL,  # 保证胜出
             ))

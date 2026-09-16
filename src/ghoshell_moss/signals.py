@@ -14,7 +14,7 @@ architecture.py 加入认知地图.
   NotifySignalMeta  — 不丢消息 (优先级 NOTICE, notify mode)
   InterruptSignalMeta — 急停中断 (优先级 FATAL, interrupt mode)
   CommandSignalMeta — 命令执行 (优先级 NOTICE, command_only mode)
-  SilentSignalMeta  — 静默聚合 (优先级 NOTICE, silent mode)
+  AsideSignalMeta  — 静默聚合 (优先级 NOTICE, silent mode)
   CellEventSignalMeta — Cell 生命周期事件 (优先级 BACKGROUND)
 """
 from ghoshell_moss.core.blueprint.mindflow import (
@@ -24,7 +24,7 @@ from ghoshell_moss.core.mindflow import (
     NotifySignalMeta,
     InterruptSignalMeta,
     CommandSignalMeta,
-    SilentSignalMeta,
+    AsideSignalMeta,
 )
 from ghoshell_moss.core.mindflow.cell_event_nucleus import (
     CellEventSignalMeta,
@@ -36,7 +36,7 @@ __all__ = [
     'NotifySignalMeta',
     'InterruptSignalMeta',
     'CommandSignalMeta',
-    'SilentSignalMeta',
+    'AsideSignalMeta',
     'CellEventSignalMeta',
     'CellTransition',
 ]

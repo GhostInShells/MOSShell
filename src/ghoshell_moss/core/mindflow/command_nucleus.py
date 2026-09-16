@@ -57,7 +57,7 @@ class CommandNucleus(Nucleus):
     - 连续两条 signal 进入但 mindflow 未消费时, 后者覆盖前者 (last-wins) —
       command 的语义是"最新指令为准", 旧的过时
 
-    与 ``InputSignalNucleus`` / ``SilentNucleus`` 的区别: 不聚合, 不保留历史,
+    与 ``InputSignalNucleus`` / ``AsideNucleus`` 的区别: 不聚合, 不保留历史,
     每次 add 都覆盖. command 视为离散事件, 多个未消费的 command 合并无意义.
 
     priority 完全继承 ``Signal.priority`` (不设 floor) — 调用方用

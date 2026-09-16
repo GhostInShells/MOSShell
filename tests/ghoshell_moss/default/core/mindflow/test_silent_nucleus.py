@@ -1,9 +1,9 @@
-"""SilentNucleus + SilentSignalMeta unit tests.
+"""AsideNucleus + AsideSignalMeta unit tests.
 
 只测协议层与单元行为, 不依赖 mindflow 主循环.
 
 覆盖范围:
-- SilentSignalMeta 协议往返
+- AsideSignalMeta 协议往返
 - 单 signal: silent mode 卸载 + priority 继承
 - 多 signal 聚合: max priority / max strength / 全 messages
 - buffer_size 上限 (溢出丢最早)
@@ -12,7 +12,7 @@
 - min_priority 过滤
 - attended 清空 buffer (下游 attention 已消费)
 - lifecycle / 反身性接口
-- SilentNucleusMeta 自解释发现
+- AsideNucleusMeta 自解释发现
 """
 import asyncio
 import logging
@@ -25,32 +25,28 @@ from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.core.blueprint.mindflow import (
     ChallengeMode, Impulse, Priority, Signal,
 )
-from ghoshell_moss.core.mindflow.silent_nucleus import (
-    SilentNucleus, SilentNucleusMeta, SilentSignalMeta, new_silent_signal,
+from ghoshell_moss.core.mindflow.aside_nucleus import (
+    AsideNucleus, AsideNucleusMeta, AsideSignalMeta, new_aside_signal,
 )
 from ghoshell_moss.message import Message
 
 
 # ============================================================
-# SilentSignalMeta — 协议往返
+# AsideSignalMeta — 协议往返
 # ============================================================
 
-def test_signal_meta_name_is_silent():
-    assert SilentSignalMeta.signal_name() == 'silent'
-
-
 def test_signal_meta_default_priority_notice():
-    assert SilentSignalMeta.priority() == Priority.NOTICE
+    assert AsideSignalMeta.priority() == Priority.NOTICE
 
 
 def test_signal_meta_match_rejects_wrong_name():
     fake = Signal.new('other')
-    assert SilentSignalMeta.match(fake) is False
+    assert AsideSignalMeta.match(fake) is False
 
 
-def test_new_silent_signal_helper():
-    sig = new_silent_signal(Message.new().with_content('data'))
-    assert sig.name == 'silent'
+def test_new_aside_signal_helper():
+    sig = new_aside_signal(Message.new().with_content('data'))
+    assert sig.name == AsideSignalMeta.signal_name()
     assert sig.priority == Priority.NOTICE
     assert len(sig.messages) == 1
 
@@ -67,7 +63,7 @@ def _signal(
         stale_timeout: float = 0,
         complete: bool = True,
 ) -> Signal:
-    return new_silent_signal(
+    return new_aside_signal(
         Message.new().with_content(text),
         priority=priority,
         stale_timeout=stale_timeout,
@@ -77,7 +73,7 @@ def _signal(
 @pytest.mark.asyncio
 async def test_single_signal_produces_silent_mode_impulse():
     """单 signal 进入 → peek 拿到的 impulse 应标记 mode='silent'."""
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal())
         impulse = nuc.peek()
         assert impulse is not None
@@ -86,7 +82,7 @@ async def test_single_signal_produces_silent_mode_impulse():
 
 @pytest.mark.asyncio
 async def test_single_signal_priority_inherited():
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal(priority=Priority.WARNING))
         assert nuc.peek().priority == Priority.WARNING
 
@@ -98,7 +94,7 @@ async def test_single_signal_priority_inherited():
 @pytest.mark.asyncio
 async def test_aggregate_picks_max_priority():
     """多 signal buffer 后, 输出 impulse 的 priority 是 buffer 内 max."""
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal(priority=Priority.INFO))
         nuc.add_signal(_signal(priority=Priority.WARNING))
         nuc.add_signal(_signal(priority=Priority.NOTICE))
@@ -107,7 +103,7 @@ async def test_aggregate_picks_max_priority():
 
 @pytest.mark.asyncio
 async def test_aggregate_picks_max_strength():
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal(strength=50))
         nuc.add_signal(_signal(strength=200))
         nuc.add_signal(_signal(strength=100))
@@ -117,7 +113,7 @@ async def test_aggregate_picks_max_strength():
 @pytest.mark.asyncio
 async def test_aggregate_concatenates_all_messages():
     """messages 累积 — silent 是数据流, 全部保留供下游 attention drain."""
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal('m1'))
         nuc.add_signal(_signal('m2'))
         nuc.add_signal(_signal('m3'))
@@ -128,7 +124,7 @@ async def test_aggregate_concatenates_all_messages():
 
 @pytest.mark.asyncio
 async def test_aggregate_complete_when_all_complete():
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal(complete=True))
         nuc.add_signal(_signal(complete=True))
         assert nuc.peek().complete is True
@@ -136,7 +132,7 @@ async def test_aggregate_complete_when_all_complete():
 
 @pytest.mark.asyncio
 async def test_aggregate_incomplete_if_any_partial():
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal(complete=True))
         nuc.add_signal(_signal(complete=False))
         assert nuc.peek().complete is False
@@ -148,7 +144,7 @@ async def test_aggregate_incomplete_if_any_partial():
 
 @pytest.mark.asyncio
 async def test_buffer_size_limit_drops_oldest():
-    async with SilentNucleus(buffer_size=3) as nuc:
+    async with AsideNucleus(buffer_size=3) as nuc:
         for i in range(5):
             nuc.add_signal(_signal(f'msg{i}'))
         impulse = nuc.peek()
@@ -164,7 +160,7 @@ async def test_buffer_size_limit_drops_oldest():
 @pytest.mark.asyncio
 async def test_stale_signal_dropped_on_add():
     """已 stale 的 signal 不应入 buffer."""
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         stale = _signal(stale_timeout=0.01)
         time.sleep(0.02)
         assert stale.is_stale()
@@ -176,7 +172,7 @@ async def test_stale_signal_dropped_on_add():
 @pytest.mark.asyncio
 async def test_stale_signals_filtered_on_rebuild():
     """rebuild 时旧 stale signal 被过滤, 新 valid signal 仍累积."""
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         # 先放一条短期会 stale 的.
         nuc.add_signal(_signal('expire_me', stale_timeout=0.01))
         time.sleep(0.02)
@@ -195,7 +191,7 @@ async def test_stale_signals_filtered_on_rebuild():
 async def test_suppress_blocks_notify_cb_but_buffer_continues():
     """suppress 冷静期内 notify_cb 不被调; 但 signal 仍持续入 buffer."""
     notified: list[Impulse] = []
-    async with SilentNucleus(suppress_seconds=0.2) as nuc:
+    async with AsideNucleus(suppress_seconds=0.2) as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
             fire_impulse=lambda imp: notified.append(imp),
@@ -227,7 +223,7 @@ async def test_suppress_blocks_notify_cb_but_buffer_continues():
 @pytest.mark.asyncio
 async def test_min_priority_filter():
     """低于 min_priority 的 signal 直接丢弃, 不入 buffer."""
-    async with SilentNucleus(min_priority=Priority.NOTICE) as nuc:
+    async with AsideNucleus(min_priority=Priority.NOTICE) as nuc:
         nuc.add_signal(_signal(priority=Priority.INFO))
         assert nuc.peek() is None
         nuc.add_signal(_signal(priority=Priority.NOTICE))
@@ -241,7 +237,7 @@ async def test_min_priority_filter():
 @pytest.mark.asyncio
 async def test_attended_clears_buffer():
     """attended 后, buffer 与 cache 都应清空 — 下游 attention 已消费, 不重复."""
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(_signal('a'))
         nuc.add_signal(_signal('b'))
         impulse = nuc.peek()
@@ -256,14 +252,14 @@ async def test_attended_clears_buffer():
 
 @pytest.mark.asyncio
 async def test_drops_wrong_signal_name():
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         nuc.add_signal(Signal.new('input', Message.new().with_content('x')))
         assert nuc.peek() is None
 
 
 @pytest.mark.asyncio
 async def test_does_not_buffer_when_not_running():
-    nuc = SilentNucleus()
+    nuc = AsideNucleus()
     # 不进入 __aenter__.
     nuc.add_signal(_signal())
     assert nuc.peek() is None
@@ -273,13 +269,13 @@ async def test_does_not_buffer_when_not_running():
 # 反身性接口
 # ============================================================
 
-def test_signals_returns_silent_name():
-    assert SilentNucleus().signals() == ['silent']
+def test_signals_returns_aside_name():
+    assert AsideNucleus().signals() == [AsideSignalMeta.signal_name()]
 
 
 @pytest.mark.asyncio
 async def test_status_shows_buffered_count_and_top_description():
-    async with SilentNucleus() as nuc:
+    async with AsideNucleus() as nuc:
         assert nuc.status() == ""
         nuc.add_signal(_signal('low_pri').model_copy(
             update={'priority': Priority.INFO, 'description': 'low'},
@@ -294,20 +290,20 @@ async def test_status_shows_buffered_count_and_top_description():
 
 
 # ============================================================
-# SilentNucleusMeta — 自解释发现
+# AsideNucleusMeta — 自解释发现
 # ============================================================
 
 def test_nucleus_meta_name():
-    assert SilentNucleusMeta().name() == SilentNucleus.NAME
+    assert AsideNucleusMeta().name() == AsideNucleus.NAME
 
 
 def test_nucleus_meta_exposes_signal_meta():
-    metas = list(SilentNucleusMeta().signals())
-    assert SilentSignalMeta in metas
+    metas = list(AsideNucleusMeta().signals())
+    assert AsideSignalMeta in metas
 
 
-def test_nucleus_meta_factory_returns_silent_nucleus():
+def test_nucleus_meta_factory_returns_aside_nucleus():
     container = Container()
     container.set(LoggerItf, logging.getLogger(__name__))
-    nuc = SilentNucleusMeta().factory(container)
-    assert isinstance(nuc, SilentNucleus)
+    nuc = AsideNucleusMeta().factory(container)
+    assert isinstance(nuc, AsideNucleus)

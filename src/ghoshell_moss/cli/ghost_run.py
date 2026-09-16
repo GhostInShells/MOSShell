@@ -23,7 +23,7 @@ from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.blueprint.session import OutputItem, Session
 from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
-from ghoshell_moss.core.mindflow.silent_nucleus import new_silent_signal
+from ghoshell_moss.core.mindflow.aside_nucleus import new_aside_signal
 from ghoshell_moss.host import Host
 
 
@@ -285,7 +285,7 @@ def _send_signal(
 
     signal_type 决定发哪种 signal, 一一对应现成的 nucleus:
     input → InputSignalNucleus, notify → NotifyNucleus,
-    interrupt → InterruptNucleus, silent → SilentNucleus.
+    interrupt → InterruptNucleus, silent → AsideNucleus.
 
     Signal key 是 scope 级 (MOSS/matrix/scopes/{scope}/signals), 但 logos key 是
     session_scope 级 (含 ghost 名), 所以观测 logos 必须传 ghost 对齐订阅 key。
@@ -326,7 +326,7 @@ def _emit_signal(session: Session, text: str, signal_type: str, priority_name: s
     elif signal_type == "interrupt":
         session.add_signal(new_interrupt_signal(text))
     else:  # silent
-        session.add_signal(new_silent_signal(text, priority=priority))
+        session.add_signal(new_aside_signal(text, priority=priority))
 
 
 if __name__ == "__main__":

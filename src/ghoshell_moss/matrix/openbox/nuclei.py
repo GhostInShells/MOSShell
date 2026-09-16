@@ -14,7 +14,7 @@ from ghoshell_moss.core.mindflow import (
     InterruptNucleusMeta,
     NotifyNucleusMeta,
     CommandNucleusMeta,
-    SilentNucleusMeta,
+    AsideNucleusMeta,
     InputNucleusMeta,
     CellEventNucleusMeta,
     ListenerNucleusMeta,
@@ -43,7 +43,7 @@ interrupt_nucleus = InterruptNucleusMeta()
 command_nucleus = CommandNucleusMeta()
 
 # silent (静默聚合)
-silent_nucleus = SilentNucleusMeta()
+silent_nucleus = AsideNucleusMeta()
 
 # cell_event (cell 生命周期 background hint)
 cell_event_nucleus = CellEventNucleusMeta()
