@@ -47,7 +47,6 @@ host = [
     "prompt-toolkit>=3.0.52",
     "pexpect>=4.9.0",
     "miniaudio>=0.67",
-    "uvloop>=0.22.1",
     "websockets>=15.0.1",
     "httpx>=0.28.0",
     "loadenv>=0.1.1",

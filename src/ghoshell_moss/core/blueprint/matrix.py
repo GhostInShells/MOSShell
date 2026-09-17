@@ -85,6 +85,20 @@ class CellHandle:
         return self.process.meta
 
 
+async def _stop_run_tasks(*tasks: asyncio.Task) -> None:
+    """Cancel the given run-loop tasks and wait for them to finish."""
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        # A second cancel (Ctrl+C again, or asyncio.run teardown) lands on this await and
+        # asyncio may re-raise a child's cancellation here. Swallow it — exit quietly instead
+        # of leaking a spurious CancelledError into the caller's log.
+        pass
+
+
 class Matrix(Facade):
     """
     This process's projection of the MOSS communication matrix. A process-level singleton that
@@ -609,10 +623,7 @@ class Matrix(Facade):
                 except asyncio.CancelledError:
                     pass  # External cancel (KeyboardInterrupt → asyncio.run cancels the task) or internal close: exit quietly.
                 finally:
-                    for t in [task, exit_signal]:
-                        if not t.done():
-                            t.cancel()
-                    _ = await asyncio.gather(task, exit_signal, return_exceptions=True)
+                    await _stop_run_tasks(task, exit_signal)
             else:
                 return await result_or_coro
 
@@ -628,11 +639,6 @@ class Matrix(Facade):
         import signal
         import threading
 
-        try:
-            import uvloop
-        except ImportError:
-            uvloop = None
-
         # 信号只能装在主线程; 装在别的线程会抛 ValueError (Matrix.run 允许在子线程跑).
         prev_handler = None
         in_main_thread = threading.current_thread() is threading.main_thread()
@@ -640,11 +646,11 @@ class Matrix(Facade):
             prev_handler = signal.signal(signal.SIGTERM, lambda *_: self.close())
 
         try:
-            if uvloop is not None:
-                asyncio.set_event_loop(uvloop.new_event_loop())
             return asyncio.run(self.arun(main_coro))
         except KeyboardInterrupt:
             pass  # arun already handled cleanup
+        except asyncio.CancelledError:
+            pass  # cancelled run loop is the same graceful shutdown, not a fault
         finally:
             if in_main_thread:
                 signal.signal(signal.SIGTERM, prev_handler)
@@ -703,14 +709,6 @@ class Matrix(Facade):
 
             matrix.serve_mcp(mcp, port=8080)
         """
-        try:
-            import uvloop
-        except ImportError:
-            uvloop = None
-
-        if uvloop is not None:
-            asyncio.set_event_loop(uvloop.new_event_loop())
-
         async def _run():
             async with self:
                 await self.aserve_mcp(mcp, host=host, port=port)

@@ -34,6 +34,7 @@ from ghoshell_moss.core.ctml.versions import (
 )
 import sys
 import logging
+import asyncio
 
 __all__ = [
     'HostModeMeta',
@@ -55,7 +56,8 @@ MODE_MATRIX_MANIFESTS_PACKAGE = 'MATRIX.manifests'
 
 # 控制流异常: 进程按预期路径结束 (以退出码退出 / 被中断), 不是故障.
 # 谁持有"这是正常退出"的知识, 谁登记 — CLI 框架的 Exit 由 CLI 层登记 (见 project 的 __exit__).
-_CONTROL_FLOW_EXITS: set[type[BaseException]] = {SystemExit, KeyboardInterrupt}
+# asyncio.CancelledError 同理: 在进程退出路径上它是协作取消信号 (被中断), 不是故障.
+_CONTROL_FLOW_EXITS: set[type[BaseException]] = {SystemExit, KeyboardInterrupt, asyncio.CancelledError}
 
 
 def register_control_flow_exit(exc_type: type[BaseException]) -> None:

@@ -27,8 +27,6 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
 import sys
 
-if sys.platform != "win32":
-    import uvloop
 import contextlib
 import sys
 import time
@@ -1059,10 +1057,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         )
         qa_state.with_output(qa_output)
         # 创建 app.
-        if sys.platform == 'win32':
-            loop = asyncio.new_event_loop()
-        else:
-            loop = uvloop.new_event_loop()
+        loop = asyncio.new_event_loop()
         try:
             # 前置 handler — 提前拦截 loop 内 task 的未处理异常, 而非跑完才装.
             loop.set_exception_handler(self.tui_exception_handler)
@@ -1091,7 +1086,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             raise SystemExit(1 if self._loop_failed else 0)
 
     def tui_exception_handler(self, loop: asyncio.AbstractEventLoop, context: dict):
-        # 异常处理器绝不能自己抛异常 — 否则 uvloop 打印 "Unhandled error in exception handler".
+        # 异常处理器绝不能自己抛异常 — 否则 event loop 打印 "Unhandled error in exception handler".
         exception = context.get("exception")
         message = context.get("message", "Unhandled exception in event loop")
         self.console.error(message)
