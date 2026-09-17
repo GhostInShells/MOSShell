@@ -250,6 +250,10 @@ class Dolores(Ghost):
                 f"dolores ghost home {action} (VERSION={self._meta.VERSION})",
                 log=f"dolores stubs {action}",
             )
+        # load the ghost-home .env into the process environment (supplement only, outer env wins) —
+        # the source of startup-time config items (dsh web auto-open, etc.). The ghost owns this file.
+        if self._home is not None:
+            self._load_env()
         # open and hold the root ground (ghost_home cognitive field). Stub sync runs first (GROUND.md
         # already written); the GroundSet lifecycle is managed by the exit stack; the memory ground
         # section must render before ego creation.
@@ -346,9 +350,10 @@ class Dolores(Ghost):
         launcher.on_exit(self._on_dsh_exit)
         self._session.output("system", log="starting dsh")
         async with launcher:
+            url = launcher.web_url() or f"{launcher.config.base_url}/?token={launcher.token()}"
             self._session.output(
                 "system",
-                f"dsh ready at {launcher.config.base_url}",
+                f"dsh ready at {url}",
                 log="dsh ready",
             )
             yield
@@ -384,6 +389,12 @@ class Dolores(Ghost):
         self._sync_dsh_home()
         self._write_version(target)
         return action
+
+    def _load_env(self) -> None:
+        """Load ``<ghost_home>/.env`` into the process environment (override=False, outer env wins)."""
+        import dotenv
+
+        dotenv.load_dotenv(self._home / ".env", override=False)
 
     def _load_config(self) -> "DoloresConfig":
         from ._ego import DoloresConfig

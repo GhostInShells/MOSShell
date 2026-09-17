@@ -92,6 +92,9 @@ __all__ = [
 # (launcher 拥有进程时从 stdout 发现, 见 DshLauncher._maybe_capture_token).
 DSH_WEB_TOKEN_ENV = "DSH_WEB_TOKEN"
 
+# dsh web 是否自动打开浏览器 (真值 → --no-open). 由 ghost home 的 .env 决定, 默认开.
+DSH_WEB_NO_OPEN_ENV = "DSH_WEB_NO_OPEN"
+
 # $events 下行帧处理器: emit 单向通知 (event_name, args 位置参数).
 RemoteEmitHandler = Callable[[str, list[Any]], Awaitable[None] | None]
 # waterfall 处理器: 收 (event_name, request), 返回 outcome dict
@@ -103,6 +106,11 @@ RemoteWaterfallHandler = Callable[
 ]
 # 解绑函数: on_remote_emit / on_remote_waterfall 返回, 调用即注销对应 handler.
 Disposer = Callable[[], None]
+
+
+def _env_flag(name: str) -> bool:
+    """读取布尔型环境变量 (1/true/yes/on, 大小写不敏感), 未设置或空串为 False."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass(frozen=True, slots=True)
@@ -608,6 +616,7 @@ class DshLauncher(DshConnection):
         self._self_shutdown = False
         self._stderr_lines: list[str] = []
         self._discovered_token: str | None = None
+        self._web_url: str | None = None
         self._token_ready = ThreadSafeEvent()
         self._log_prefix: str = f"[DSHLauncher] "
 
@@ -618,6 +627,10 @@ class DshLauncher(DshConnection):
     def token(self) -> str | None:
         """运行时从 dsh stdout 发现的 token 优先, 否则回落到 config/env 兜底."""
         return self._discovered_token or super().token()
+
+    def web_url(self) -> str | None:
+        """从 dsh stdout 捕获的完整 web URL (含 token); 未发现时为 None."""
+        return self._web_url
 
     def is_running(self) -> bool:
         return super().is_running() and self._dsh_subprocess_is_running
@@ -704,10 +717,12 @@ class DshLauncher(DshConnection):
             self.config.binary,
             "--profile", self.config.profile,
             "--port", str(self.config.port),
-            # ego 起的 dsh 不自动开浏览器 — desktop mode 下 ego 把界面开进自己的 screen, 不借系统默认浏览器.
-            "--no-open",
-            *self.config.args,
         ]
+        # 是否自动开浏览器由 ghost home 的 .env 决定 (DSH_WEB_NO_OPEN 真值 → --no-open), 默认开.
+        # 带 token 的 URL 由 dsh 自己拼, 这里只决定要不要加 flag.
+        if _env_flag(DSH_WEB_NO_OPEN_ENV):
+            args.append("--no-open")
+        args.extend(self.config.args)
         extra_env: dict[str, str] = {}
         if self.config.home is not None:
             extra_env["DSH_HOME"] = str(self.config.home)
@@ -753,6 +768,8 @@ class DshLauncher(DshConnection):
 
     # dsh web 打印的 token 形如 `dsh web: http://…/?token=<base64url>`.
     _TOKEN_RE = re.compile(r"token=([A-Za-z0-9_-]+)")
+    # 同一行 stdout 里的完整 web URL (含 token), 供观测面直接贴.
+    _WEB_URL_RE = re.compile(r"https?://\S+")
 
     def _maybe_capture_token(self, text: str) -> None:
         if self._discovered_token is not None:
@@ -761,6 +778,9 @@ class DshLauncher(DshConnection):
         if m is None:
             return
         self._discovered_token = m.group(1)
+        m_url = self._WEB_URL_RE.search(text)
+        if m_url is not None:
+            self._web_url = m_url.group(0)
         self._token_ready.set()
         self._logger.info("%sdsh web token discovered (value not logged)", self._log_prefix)
 
