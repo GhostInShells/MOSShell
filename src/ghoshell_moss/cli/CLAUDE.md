@@ -39,7 +39,7 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 - **框架**: Click (简单参数解析) + Textual/prompt_toolkit (tui 模式)
 - **模式**:
   - `moss-shell` (无子命令) / `moss-shell tui` — 启动完整 MOSS Host Runtime (不含 Ghost), 进入 TUI 调试终端。人类在给模型 CTML 之前先在这里手动测试。流程: Environment 显式构造 + seal → Host() → MossRuntimeTUI.run()
-  - `moss-shell mcp` — 将 MOSS 运行时暴露为 MCP server (原独立 `moss-mcp` 二进制)。需要 `[mcp]` extra, 经 `depend_mcp()` 惰性 gate
+  - `moss-shell mcp` — 将 MOSS 运行时暴露为 MCP server (原独立 `moss-mcp` 二进制)。需要 `[host]` extra（含 mcp）, 经 `depend_mcp()` 惰性 gate
   - `moss-shell log` — 无交互 headless 运行, 只输出日志, 供 CI/后台排障
   - `moss-shell fractalize` — 进入 Matrix 网络作为一个 fractal cell, 只暴露本 mode 的 NodeManager (nodes channel) 一条能力。远程 host `mesh:accept` 后可远程治理本 mode 的 nodes (Mode as Cell, workstream: mode-as-cell)
 - Ghost 运行前调试 Shell 层的入口: 测 CTML、检 channels/matrix/manifests
@@ -58,7 +58,7 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 - **入口**: `moss_debug_repl.py` → `mcp` 子命令 → 惰性 import `moss_as_mcp.py` → `main_entry()`
 - **框架**: Click + mcp SDK (MCPServer)
 - **用途**: 将 MOSS 运行时暴露为 MCP (Model Context Protocol) 服务, 供 Claude Code 等 AI 工具调用
-- **依赖**: `[mcp]` extra (mcp, uvicorn), 经 `depend_mcp()` 惰性 gate — 未安装时 `moss-shell mcp` 报清晰提示
+- **依赖**: `[host]` extra（含 mcp, uvicorn）, 经 `depend_mcp()` 惰性 gate — 未安装时 `moss-shell mcp` 报清晰提示
 - **核心**:
   - `ServerState`: 持有 `MossHost` 和 `MossRuntime` 引用, server 级 watcher + fire-and-forget task 池
   - `bootstrap()`: 注册 MCP tools (moss_instruction, get_moss_dynamic_info, ctml_append/exec/observe/replan/interrupt)
@@ -138,4 +138,4 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 - `Environment.discover()` 在多个命令中独立调用 — 这是设计意图, 因为各命令可能在不同 mode 或 scope 下独立运行
 - `moss` CLI 子命令在独立的 Typer 子 app 中实现, 通过 `app.add_typer()` 挂载 — 隔离性好, 各子命令组可独立测试
 - `manifests_cli.py` 是最复杂的子命令组, 包含对 providers/topics/configs/channels/primitives/contracts/resources/ctml-versions 的完整自解释体系 — 这是 "code as prompt" 哲学的直接体现
-- `moss-shell mcp` 模式依赖 `[mcp]` 可选 extra (mcp, uvicorn), 经 `depend_mcp()` 惰性 gate — 未安装时 mcp 模式报提示, shell 其他模式不受影响
+- `moss-shell mcp` 模式依赖 `[host]` extra（含 mcp, uvicorn）, 经 `depend_mcp()` 惰性 gate — 未安装时 mcp 模式报提示, shell 其他模式不受影响

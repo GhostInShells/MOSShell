@@ -3,7 +3,7 @@ name = "ghoshell-moss"
 version = "0.1.0-beta1"
 description = "LLM-oriented operating system with streaming interpreting shell, and Intelligent Ghost inside it"
 authors = [{ name = "thirdgerb" }, { name = "17wang" }]
-license = { text = "Apache License 2.0" }
+license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -47,9 +47,11 @@ host = [
     "prompt-toolkit>=3.0.52",
     "pexpect>=4.9.0",
     "miniaudio>=0.67",
-    "websockets>=15.0.1",
-    "httpx>=0.28.0",
     "loadenv>=0.1.1",
+    "mcp>=2.0.0",
+    "uvicorn>=0.37.0",
+    "pydantic-ai-slim[anthropic,openai]>=1.90.0",
+    "anthropic>=0.84.0",
 ]
 ghost = [
     "pydantic-ai-slim[anthropic,openai]>=1.90.0",

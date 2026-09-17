@@ -44,12 +44,15 @@ def depend_matrix():
 
 def depend_host():
     depend_matrix()
-    _require("prompt_toolkit", "pexpect", hint="install ghoshell_moss[host]")
+    _require(
+        "prompt_toolkit", "pexpect", "mcp", "pydantic_ai", "anthropic",
+        hint="install ghoshell_moss[host]",
+    )
 
 
 def depend_mcp():
-    _require("mcp", hint="mcp not installed. run: uv sync --all-extras")
+    _require("mcp", hint="install ghoshell_moss[host]")
 
 
 def depend_ghost():
-    _require("pydantic_ai", "anthropic", hint="install ghoshell_moss[ghost]")
+    _require("pydantic_ai", "anthropic", hint="install ghoshell_moss[host]")
