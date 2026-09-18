@@ -112,11 +112,12 @@ read(文档 → 内存)
 | window_control | 待建 | — |
 | screen | 已移出本域 (2026-09-15) | → feature `vision-stream` |
 | osascript | 待建 | — |
-| file_editor | 原型 | [file_editor.md](file_editor.md) |
+| file_editor | 已实现 v1（卡片机制，同 terminal） | [file_editor.md](file_editor.md) |
 
 ## 当前状态
 
-- `nodes/os/terminal`（`bash` 卡片进程编排）与 `nodes/os/file_editor`（文档对话线）已落地;
+- `nodes/os/terminal`（`bash` 卡片进程编排）与 `nodes/os/file_editor`（人机共享感知的文本
+  工作副本，卡片机制与 terminal 同构，见 `file_editor.md`）已落地；
   `window_control` / `osascript` 仍待建。
 - 原 `nodes/skins/desktop-gui`(空 UI 原型)已删除。
 - 旧 workstream `2026/07/desktop-gui` 改名 `2026/07/moss-os-control`;老 `FEATURE.md`

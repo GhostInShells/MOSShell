@@ -1,55 +1,47 @@
 # file_editor
 
-If this node has nothing worth documenting for a human reader, delete this file.
-Otherwise fill in the sections below — what this node does, how to set it up,
-how to run and debug it.
+A human-observable working copy of a text file. The model opens a thread, reads
+and edits it, and every action becomes a card on a web surface the human watches.
+The only step that asks for approval is `export` — writing to disk.
 
 ## What it does
 
-<!-- One paragraph about what capabilities this node provides. -->
+One process, two faces over one store (`src/ghoshell_file_editor/`):
+
+- **channel** — the model's side: `open` / `read` / `write` / `append` /
+  `str_replace` / `rewind` / `export` / `close` / `threads` / `history`.
+- **surface** — the human's side, a card stream at `http://127.0.0.1:8767`.
+  Cards carry the action kind, the thread, and a state; clicking one opens the
+  three tabs: effect (markdown), full, history.
+
+Durability is a mirror, not a log: every edit rewrites the thread's draft under
+`runtime/drafts`, so a crash loses the history but not the text. `export` is the
+final chapter — it ends the thread and releases its payloads. A thread the human auto-trusts exports to its own file without asking; paths are confined to the project home and the system temp dir.
 
 ## Setup
 
-<!--
-Environment, dependencies, install steps.
-
-If this node needs its own venv or packages, create an INSTALL.md with
-the install steps. The presence of INSTALL.md triggers `moss nodes install`
-behavior — the model will read the file and run the steps before the node
-can be launched.
-
-When no install is needed, delete INSTALL.md — the node is then
-considered installed by default.
--->
+No install steps — the node shares the MOSS environment. It needs the `host`
+extra for `websockets`.
 
 ## Usage
 
-<!-- How to launch and interact with this node. Example:
+```bash
+moss nodes run nodes/os/file_editor          # foreground, Ctrl+C stops
+python main.py --port 9000                   # debug directly
+```
 
-    moss nodes run .moss/nodes/tools/file_editor/
-
-After launch, the node enters the Matrix network. Its channel commands
-appear in the model's context when accepted. Test via moss-shell.
--->
+Open the URL the node prints to watch cards appear.
 
 ## Development
 
-<!--
-Edit the files in this directory to change the node's behavior:
+- `src/ghoshell_file_editor/structure.py` — pure data + functions (axis 1)
+- `src/ghoshell_file_editor/store.py` — threads, drafts, export verdicts
+- `src/ghoshell_file_editor/channel.py` — the model-facing commands
+- `src/ghoshell_file_editor/surface.py` — the web surface + signals
+- `index.html` — the card stream and the three tabs
 
-  NODE.md       — node manifest: name, description, exec command, singleton flag,
-                  and the instruction body the model reads at runtime.
-                  exec.command: 'python' resolves to the spawner's sys.executable —
-                  the default for nodes sharing the MOSS environment. Only use an
-                  absolute interpreter path when the node needs its own venv.
-                  Reference: moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest
+Run the tests from the repo root:
 
-  main.py       — node entry point. Build channels, register into Matrix.
-                  Explore: moss codex blueprint channel_builder
-                           moss codex blueprint matrix
-                           moss ctml read
-
-  .gitignore    — sensible ignores for cell development. Add more as needed.
-
-  INSTALL.md    — (optional) install guide. Delete if not needed.
--->
+```bash
+cd nodes/os/file_editor && ../../../.venv/bin/python -m pytest tests -q
+```

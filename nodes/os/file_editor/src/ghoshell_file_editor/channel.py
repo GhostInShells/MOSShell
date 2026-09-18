@@ -1,30 +1,60 @@
-"""file_editor channel — the model-facing control surface (axis 2).
+"""The model-facing channel: every action becomes a card on the human surface.
 
-Every command takes an explicit ``thread`` — there is no hidden "current
-thread" state. Actions and verdicts mutate the :class:`ThreadStore`; each
-mutation also broadcasts the matching WS frame (``action.head`` /
-``action.delta`` / ``action.full`` / ``burst``) so the human surface streams it
-live.
+The pose: the human and the model share one perception of the same text. A
+``read`` therefore does two things at once — it hands the text back to the model
+immediately, and it leaves a card behind so the human sees exactly what the model
+saw. An edit lands in memory the moment it is written; nothing asks permission.
+The only action that waits for a human is ``export``, because landing on disk is
+the only real side effect.
 
-The channel itself emits no signal to the model: the model's own commands
-return observes, and human-side events signal via the surface. Queries
-(``threads`` / ``thread`` / ``history``) project store state into model-readable
-text — the same store the human surface reads.
+``export`` returns a receipt at once — the model never blocks on a person's
+response time. Its verdict arrives as a signal, and ``history(thread)`` says
+where the thread ended up.
+
+Signals go out through an injected ``signaler`` rather than through
+``CommandUtil``, for the same reason the surface is injected: the node wires both
+to ``Matrix`` and tests wire both to a list.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
+from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.message import Message
+from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
 
-from .projection import action_view
-from .store import ThreadStore
+from .projection import action_view, thread_view
+from .store import DocStore
+from .structure import Action, Thread, line_count, slice_region
 
-__all__ = ["build_file_editor_channel", "stream_write"]
+__all__ = ["build_file_editor_channel"]
+
+_READ_EXCERPT = 4000
+"""How much of a read stays on its card. The model gets the whole text; the card
+only needs to be enough for a human to recognize what was read."""
+
+_READ_LIMIT = 200_000
+"""Ceiling on the text ``read`` returns, so one command cannot flood a context."""
+
+_LEVELS: dict[str, Priority] = {
+    "background": Priority.BACKGROUND,
+    "info": Priority.INFO,
+    "warning": Priority.WARNING,
+}
+
+_SAFE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def _notice_name(thread_id: str) -> str:
+    return f"thread_{_SAFE.sub('_', thread_id)}"
 
 
 class _Surface(Protocol):
@@ -36,215 +66,464 @@ class _NoSurface:
         return None
 
 
-def _action_full(thread_id: str, action) -> dict[str, Any]:
-    return {"type": "action.full", **action_view(thread_id, action)}
+def parse_ops(raw: str) -> list[tuple[str, str]]:
+    """Parse the ``str_replace`` body: a str_replace-protocol payload.
 
-
-def _thread_text(thread) -> str:
-    head = thread.head
-    loc = f" @ {thread.path}" if thread.path else ""
-    lines = [f"[{thread.id}] {thread.label}{loc}  ({len(thread.actions)} actions)"]
-    marks = {"pending": "·", "confirmed": "✓", "rejected": "✗"}
-    for a in thread.actions.values():
-        who = f"<{a.author}>" if a.author == "u" else ""
-        lines.append(f"  {a.seq.n} {marks[a.verdict]} {a.kind} {who} {a.description}")
-    lines.append(f"head: {head.seq.n if head is not None else 'base'}")
-    return "\n".join(lines)
-
-
-def _history_text(thread) -> str:
-    lines = []
-    for a in thread.versions:
-        diff = a.effect.diff or ""
-        lines.append(f"--- {a.seq.n} {a.kind} ({a.description})\n{diff.rstrip()}")
-    return "\n".join(lines) if lines else "(no confirmed changes yet)"
-
-
-async def stream_write(
-    store: ThreadStore,
-    broadcast: Callable[[dict[str, Any]], Any],
-    thread: str,
-    chunks: Any,
-    description: str,
-) -> str:
-    """Stream a full-text write: open → deltas → tail, broadcasting each stage.
-
-    ``chunks`` is an async iterable of str (the model's ``chunks__`` delta arg).
-    Extracted from the command so the streaming path is testable directly.
+    Accepts one op or a list, each ``{"old_str": ..., "new_str": ...}``. The body
+    arrives as text so the model can wrap it in CDATA and keep multi-line strings
+    readable.
     """
-    seq = store.open_action(thread, "g", "write", description or "write")
-    await broadcast({
-        "type": "action.head", "thread": thread, "seq": seq.n,
-        "kind": "write", "author": "g",
-        "description": description or "write", "state": "streaming",
-    })
-    async for chunk in chunks:
-        store.append_delta(thread, seq.n, chunk)
-        await broadcast({
-            "type": "action.delta", "thread": thread, "seq": seq.n, "text": chunk,
-        })
-    action = store.tail_action(thread, seq.n)
-    await broadcast(_action_full(thread, action))
-    return f"ok [{thread}:{seq.n}] {len(action.payload)} chars"
+    text = raw.strip()
+    if not text:
+        raise ValueError("the body is empty — put the JSON ops in the tag body")
+    try:
+        payload = json.loads(text)
+    except ValueError as e:
+        raise ValueError(f"the body is not valid JSON: {e}")
+    if isinstance(payload, dict) and "edits" in payload:
+        payload = payload["edits"]
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("expected one op or a non-empty list of ops")
+    ops: list[tuple[str, str]] = []
+    for i, op in enumerate(payload):
+        if not isinstance(op, dict):
+            raise ValueError(f"op {i + 1} is not an object")
+        old = op.get("old_str")
+        new = op.get("new_str")
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise ValueError(
+                f"op {i + 1} needs string old_str and new_str (got "
+                f"{sorted(op)!r})"
+            )
+        ops.append((old, new))
+    return ops
 
 
 def build_file_editor_channel(
-    store: ThreadStore,
+    store: DocStore,
     *,
     surface: _Surface | None = None,
+    signaler: Callable[[Any], None] | None = None,
     enabled: Callable[[], bool] | None = None,
+    name: str = "file_editor",
+    description: str | None = None,
 ) -> Channel:
-    """Build the file_editor channel over a store.
+    """Compose the file-editor channel over a store.
 
-    :param store: the thread store — the single source of truth.
-    :param surface: an optional WS broadcaster (axis 3). None = silent.
-    :param enabled: a live availability gate shared by every command. When it
-        returns False, all command signatures drop out of the model's interface
-        (the "temporarily disabled" switch).
+    :param store: threads, actions and drafts — the single source of truth,
+        shared with the web surface.
+    :param surface: the web broadcaster. None = headless (tests, or a node run
+        without a browser).
+    :param signaler: how a message reaches the ghost. Plain callable so the node
+        can pass ``matrix.send_signal_to_ghost`` and tests can pass a list.
+    :param enabled: live availability gate. Return False and every command drops
+        out of the model's interface.
     """
     surface = surface or _NoSurface()
     enabled = enabled or (lambda: True)
 
-    async def _broadcast(frame: dict[str, Any]) -> None:
+    async def _emit(frame: dict[str, Any]) -> None:
         await surface.broadcast(frame)
 
+    async def _card(thread: Thread, action: Action) -> None:
+        await _emit(
+            {"type": "action", "thread": thread.id, **action_view(action)}
+        )
+
+    async def _threads() -> None:
+        await _emit(
+            {"type": "threads", "threads": [thread_view(t) for t in store.threads()]}
+        )
+
+    def _notify(text: str, level: str = "info", *, next_: bool = True) -> None:
+        """A must-not-lose message. ``next`` guarantees the ghost a turn."""
+        if signaler is None:
+            return
+        signal = NotifySignalMeta(next=next_).to_signal(
+            Message.new(tag=name).with_content(f"[{name}] {text}"),
+            description=text[:120],
+            priority=_LEVELS.get(level, Priority.INFO),
+        )
+        signaler(signal)
+
+    def _aside(text: str) -> None:
+        """A fact the ghost notices without being interrupted."""
+        if signaler is None:
+            return
+        signal = AsideSignalMeta().to_signal(
+            Message.new(tag=name).with_content(f"[{name}] {text}"),
+            description=text[:120],
+        )
+        signaler(signal)
+
+    def _get_thread(thread_id: str) -> Thread:
+        thread = store.get(thread_id)
+        if thread is None:
+            CommandUtil.raise_observe(
+                f"no thread {thread_id!r} — threads() lists them"
+            )
+        return thread
+
     chan = new_channel(
-        name="file_editor",
-        description=(
-            "a dialogue thread over a readable text file — open a thread, stream "
-            "write proposals, confirm/reject/rewind, reply with diffs."
+        name=name,
+        description=description
+        or (
+            "a shared working copy of some text: every action becomes a card the "
+            "human watches, and export is the only step that touches the disk"
         ),
     )
 
     @chan.build.instruction
     def instruction() -> str:
         return (
-            "Dialogue over a text file, not an editing tool. open() a thread over "
-            "a file (or a blank one), then write() full-text proposals that the "
-            "human watches stream in real time. The human may confirm, reject, or "
-            "reply with a diff; read thread() to see where the line stands. "
-            "Export is the only real side effect: it lands on disk only once "
-            "confirmed."
+            "You and the human share one working copy per thread. open() starts "
+            "one — from a file, from a draft, or blank (say what it is for with "
+            "label). read() returns the text to you at once and leaves a card so "
+            "the human sees the same thing; every edit (write / append / "
+            "str_replace / rewind) lands in memory immediately and becomes a card "
+            "too. Nothing asks permission except export(): the text reaches disk "
+            "only once the human accepts it, and that ends the thread — open a new "
+            "one to keep working on the file. history(thread) is the index of "
+            "actions on a thread."
         )
 
-    # -- open -------------------------------------------------------
+    # -- lifecycle ----------------------------------------------------------
 
-    @chan.build.command(name="open", always_observe=True, available=enabled)
+    @chan.build.command(name="open", always_observe=False, available=enabled)
     async def open_thread(
-        thread: str, path: str = "", label: str = "", motivation: str = "",
+        thread: str, path: str = "", label: str = "", draft: str = ""
     ) -> str:
-        """Open a dialogue thread. ``thread`` is your chosen handle; use it in
-        every later command. If ``path`` points at a readable text file its
-        content becomes the baseline (v0); otherwise the line starts blank."""
-        base = ""
-        if path:
-            p = Path(path)
-            if not p.exists():
-                CommandUtil.raise_observe(f"no such file: {path!r}")
-            try:
-                base = p.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                CommandUtil.raise_observe(
-                    f"{path!r} is not readable text — only text files are supported"
-                )
+        """Start an editable object. ``thread`` is your handle for every later
+        command.
+
+        ``path`` loads a readable text file as the baseline; ``draft`` continues
+        from a working copy left behind by a crash (see the drafts notice); with
+        neither, the thread starts blank. An editable object does not have to come
+        from a document — ``label`` is what the human sees it called.
+        """
         try:
-            store.open_thread(
-                thread, label or thread, path=path or None,
-                motivation=motivation, base_content=base,
-            )
+            opened = store.open(thread, label, path=path or None, draft=draft or None)
         except (KeyError, ValueError) as e:
             CommandUtil.raise_observe(str(e))
-        return f"thread {thread!r} opened ({len(base)} chars baseline)"
+        await _threads()
+        loc = f" @ {opened.path}" if opened.path else ""
+        return (
+            f"[{name}] thread {opened.id!r} open{loc} — v0, "
+            f"{line_count(opened.content)} lines. read({opened.id!r}) to see it."
+        )
 
-    # -- write (streaming) ------------------------------------------
+    @chan.build.command(name="close", always_observe=False, available=enabled)
+    async def close_thread(thread: str) -> str:
+        """Abandon a thread: the working copy is dropped and nothing is written.
+
+        Use it when the work is going nowhere — it frees the thread's slot.
+        """
+        target = store.get(thread)
+        if target is None:
+            CommandUtil.raise_observe(f"no thread {thread!r}")
+        store.close(thread)
+        await _threads()
+        return f"[{name}] thread {thread!r} closed (nothing written)"
+
+    # -- reading ------------------------------------------------------------
+
+    @chan.build.command(name="read", always_observe=True, available=enabled)
+    async def read(thread: str, region: str = "") -> str:
+        """Return a thread's text to you, and leave a card showing the same text.
+
+        ``region`` is a line range like ``"10-40"`` (1-based, inclusive); empty
+        reads the whole working copy. Reading changes nothing — but the card is
+        how the human shares your view of the file instead of guessing at it.
+        """
+        target = _get_thread(thread)
+        if target.state != "live":
+            CommandUtil.raise_observe(
+                f"thread {thread!r} is {target.state} — read the file itself, or "
+                f"open a new thread"
+            )
+        try:
+            text = slice_region(target.content, region)
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        excerpt = text[:_READ_EXCERPT]
+        if len(text) > _READ_EXCERPT:
+            excerpt += "\n… (truncated on the card)"
+        action = store.record(
+            target.id, "read", f"read {region or 'all'}", text=excerpt, payload=region
+        )
+        await _card(target, action)
+        if len(text) > _READ_LIMIT:
+            return (
+                f"{text[:_READ_LIMIT]}\n… (truncated at {_READ_LIMIT} chars — read a "
+                f"region for the rest)"
+            )
+        return text
+
+    # -- mutations ----------------------------------------------------------
 
     @chan.build.command(name="write", always_observe=False, available=enabled)
-    async def write(thread: str, chunks__: str, description: str = "") -> str:
-        """Stream the full new content of a thread. The body streams token by
-        token: the human watches it appear, then sees the diff. This is the one
-        mutation kind — the payload is the complete resulting text."""
-        return await stream_write(store, _broadcast, thread, chunks__, description)
+    async def write(thread: str, chunks__: str, label: str = "") -> str:
+        """Replace the whole working copy with what you write.
 
-    # -- atomic actions ---------------------------------------------
+        The body streams in and lands the moment the tag closes. ``label`` is the
+        card's title — say what the new text is.
+        """
+        return await _stream(thread, "write", chunks__, label or "rewrite")
+
+    @chan.build.command(name="append", always_observe=False, available=enabled)
+    async def append(thread: str, chunks__: str, label: str = "") -> str:
+        """Add what you write to the end of the working copy.
+
+        The way to build a long document a section at a time: the card shows the
+        segment you added, not the whole file.
+        """
+        return await _stream(thread, "append", chunks__, label or "append")
+
+    async def _stream(thread: str, kind: str, chunks: Any, label: str) -> str:
+        target = store.get(thread)
+        if target is None:
+            CommandUtil.raise_observe(f"no thread {thread!r} — threads() lists them")
+        try:
+            action = store.begin(thread, kind, label)
+        except (KeyError, ValueError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _card(target, action)
+        try:
+            async for chunk in chunks:
+                store.feed(thread, action.n, chunk)
+        except asyncio.CancelledError:
+            store.cancel(thread, action.n)
+            await _card(target, action)
+            CommandUtil.reraise_stopped(
+                f"[{name}] {kind} on {thread!r} cancelled while being written"
+            )
+            return ""
+        try:
+            landed = store.tail(thread, action.n)
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        await _card(target, landed)
+        await _threads()
+        return (
+            f"[{name}] {thread!r} v{target.version} — {label} "
+            f"({line_count(target.content)} lines)"
+        )
+
+    @chan.build.command(name="str_replace", always_observe=False, available=enabled)
+    async def str_replace(thread: str, text__: str, label: str = "") -> str:
+        """Edit by swapping exact snippets — one card per op.
+
+        The body is JSON in the tag body (CDATA it, so quotes and newlines are
+        safe): one op, or a list of them, each ``{"old_str": ..., "new_str": ...}``.
+        Every ``old_str`` must appear exactly once in the text at the moment its op
+        runs, so include enough surrounding context to be unique. Ops apply in
+        order, so a later op sees the earlier ones' result.
+
+        <![CDATA[ [{"old_str": "## Usage\\n", "new_str": "## Usage\\n\\nRun `moss start`.\\n"}] ]]>
+        """
+        target = store.get(thread)
+        if target is None:
+            CommandUtil.raise_observe(f"no thread {thread!r} — threads() lists them")
+        try:
+            ops = parse_ops(text__)
+            actions = store.replace(thread, ops, label or f"str_replace ×{len(ops)}")
+        except (KeyError, ValueError) as e:
+            CommandUtil.raise_observe(str(e))
+        for action in actions:
+            await _card(target, action)
+        await _threads()
+        return (
+            f"[{name}] {thread!r} v{target.version} — {len(actions)} card(s), "
+            f"{line_count(target.content)} lines"
+        )
 
     @chan.build.command(name="rewind", always_observe=False, available=enabled)
-    async def rewind(thread: str, target: str) -> str:
-        """Append a rewind action back to an earlier action (or 'base')."""
-        seq = store.append_action(thread, "g", "rewind", f"rewind to {target}", target)
-        action = store.get_action(thread, seq.n)
-        await _broadcast(_action_full(thread, action))
-        return f"ok [{thread}:{seq.n}] rewind to {target}"
+    async def rewind(thread: str, n: int) -> str:
+        """Put the working copy back where action ``n`` left it (``0`` = baseline).
 
-    @chan.build.command(name="reference", always_observe=False, available=enabled)
-    async def reference(thread: str, region: str) -> str:
-        """Display a region of the current text for shared view (no effect)."""
-        seq = store.append_action(thread, "g", "reference", f"view {region}", region)
-        action = store.get_action(thread, seq.n)
-        await _broadcast(_action_full(thread, action))
-        return f"ok [{thread}:{seq.n}] reference {region}"
+        Append-only: this adds an action, it does not erase the ones after it. Use
+        history(thread) to pick ``n``.
+        """
+        target = store.get(thread)
+        if target is None:
+            CommandUtil.raise_observe(f"no thread {thread!r} — threads() lists them")
+        try:
+            action = store.rewind(thread, n)
+        except (KeyError, ValueError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _card(target, action)
+        await _threads()
+        return f"[{name}] {thread!r} v{target.version} — back to v{n}"
+
+    # -- the one side effect ------------------------------------------------
 
     @chan.build.command(name="export", always_observe=False, available=enabled)
-    async def export(thread: str, path: str) -> str:
-        """Propose writing the current text to ``path``. Nothing lands on disk
-        until this action is confirmed — its dialogue is the approval."""
-        seq = store.append_action(thread, "g", "export", f"export to {path}", path)
-        action = store.get_action(thread, seq.n)
-        await _broadcast(_action_full(thread, action))
-        return f"ok [{thread}:{seq.n}] export {path} (pending confirmation)"
+    async def export(thread: str, path: str = "") -> str:
+        """Propose writing the working copy to ``path`` (default: the file it was
+        opened from).
 
-    # -- verdicts + dialogue (author g) -----------------------------
+        Nothing reaches the disk until the human accepts — unless the thread is
+        auto-trusted and this export goes to its established target, in which case
+        it writes at once. Accepting ends the thread; open a new one to keep
+        editing that file. Returns a receipt at once.
+        """
+        target = _get_thread(thread)
+        if target.state != "live":
+            CommandUtil.raise_observe(f"thread {thread!r} is {target.state}")
+        dest = path or target.path
+        if not dest:
+            CommandUtil.raise_observe(
+                f"thread {thread!r} has no path — pass one to export"
+            )
+        try:
+            dest = store.resolve_target(dest)
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        # Auto only when there is an established target and this export goes to
+        # it — writing somewhere new is establishing a new target, and that still
+        # asks. A pathless thread can never be auto (trust without an object).
+        auto = target.auto and bool(target.path) and dest == target.path
+        action = store.record(
+            thread,
+            "export",
+            f"export to {dest}",
+            text=target.content,
+            payload=dest,
+            state=("applied" if auto else "awaiting"),
+        )
+        await _card(target, action)
+        if auto:
+            CommandUtil.create_task(_do_export(target, action, dest))
+            return (
+                f"[{name}] {thread!r} auto-exporting to {dest} — the thread is "
+                f"trusted; you will be signalled"
+            )
+        CommandUtil.create_task(_await_verdict(target, action, dest))
+        return (
+            f"[{name}] {thread!r} export to {dest} awaiting approval — the human "
+            f"decides on the file editor surface; you will be signalled"
+        )
 
-    @chan.build.command(name="confirm", always_observe=False, available=enabled)
-    async def confirm(thread: str, n: int) -> str:
-        """Confirm up to action ``n`` — every pending action at or before it."""
-        flipped = store.confirm(thread, n, by="g")
-        for a in flipped:
-            await _broadcast(_action_full(thread, a))
-        return f"ok confirmed through [{thread}:{n}]"
+    async def _await_verdict(target: Thread, action: Action, dest: str) -> None:
+        verdict = await store.waiter(target.id, action.n)
+        if verdict != "accept":
+            store.finish_export(target.id, action.n, "rejected")
+            await _card(target, action)
+            _aside(f"export of {target.id!r} to {dest} was denied")
+            await _maybe_batch_done()
+            return
+        await _do_export(target, action, dest)
+        await _maybe_batch_done()
 
-    @chan.build.command(name="reject", always_observe=False, available=enabled)
-    async def reject(thread: str, n: int) -> str:
-        """Reject action ``n`` and every later pending action on the thread."""
-        cascaded = store.reject(thread, n, by="g")
-        for seq in cascaded:
-            action = store.get_action(thread, seq.n)
-            await _broadcast(_action_full(thread, action))
-        return f"ok rejected from [{thread}:{n}]"
+    async def _do_export(target: Thread, action: Action, dest: str) -> None:
+        text = target.content
+        try:
+            path = Path(dest)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        except OSError as e:
+            store.finish_export(target.id, action.n, "failed")
+            store.say(target.id, action.n, "g", f"write failed: {e}")
+            await _card(target, action)
+            _notify(f"export of {target.id!r} to {dest} failed: {e}", level="warning")
+            return
+        landed = store.finish_export(target.id, action.n, "written")
+        store.mark_exported(target.id, dest)
+        await _card(target, landed)
+        await _threads()
+        _notify(
+            f"thread {target.id!r} exported to {dest} "
+            f"({line_count(text)} lines) — the thread is closed"
+        )
 
-    @chan.build.command(name="reply", always_observe=False, available=enabled)
-    async def reply(thread: str, n: int, text: str, anchor: str = "intent") -> str:
-        """Attach a dialogue entry to action ``n``. Decides nothing."""
-        store.reply(thread, n, "g", anchor, text=text)
-        action = store.get_action(thread, n)
-        await _broadcast(_action_full(thread, action))
-        return f"ok replied on [{thread}:{n}]"
+    async def _maybe_batch_done() -> None:
+        """One knock when the last awaiting export settles — not one per verdict."""
+        if store.pending_exports() or signaler is None:
+            return
+        _notify("every pending export is now decided — history(thread) to review")
 
-    # -- queries ----------------------------------------------------
+    # -- queries ------------------------------------------------------------
 
     @chan.build.command(name="threads", always_observe=True, available=enabled)
     async def threads() -> str:
-        """List open dialogue threads."""
-        lines = []
+        """List the threads you have, with their current version."""
+        out = []
         for t in store.threads():
-            if t.state == "open":
-                loc = f" @ {t.path}" if t.path else ""
-                lines.append(f"- {t.id} ({t.label}){loc}  {len(t.actions)} actions")
-        return "\n".join(lines) if lines else "(no threads open)"
-
-    @chan.build.command(name="thread", always_observe=True, available=enabled)
-    async def thread(thread: str) -> str:
-        """Read one thread's line: every action with verdict + the head."""
-        t = store.get_thread(thread)
-        if t is None:
-            CommandUtil.raise_observe(f"no thread {thread!r}. threads() to list.")
-        return _thread_text(t)
+            loc = t.exported_to or t.path or "(blank)"
+            out.append(
+                f"- {t.id} [{t.state}] v{t.version} | {t.label} | "
+                f"{line_count(t.content)} lines | {loc}"
+            )
+        return "\n".join(out) if out else "(no threads — open() one)"
 
     @chan.build.command(name="history", always_observe=True, available=enabled)
     async def history(thread: str) -> str:
-        """The confirmed state changes so far (the version list as diffs)."""
-        t = store.get_thread(thread)
-        if t is None:
-            CommandUtil.raise_observe(f"no thread {thread!r}. threads() to list.")
-        return _history_text(t)
+        """The index of a thread: every action with its verdict, and the head.
+
+        An index, not a transcript — ask for a version with read() after a rewind
+        if you need the text back.
+        """
+        target = store.get(thread)
+        if target is None:
+            CommandUtil.raise_observe(f"no thread {thread!r} — threads() lists them")
+        marks = {
+            "applied": "·",
+            "awaiting": "?",
+            "written": "→",
+            "rejected": "✗",
+            "failed": "!",
+            "cancelled": "⨯",
+            "streaming": "…",
+        }
+        loc = target.exported_to or target.path or "(blank)"
+        lines = [
+            f"[{name}] {target.id} [{target.state}] v{target.version} | "
+            f"{target.label} | {loc}"
+        ]
+        for a in target.actions:
+            who = "<u>" if a.author == "u" else ""
+            lines.append(
+                f"  {a.n} {marks.get(a.state, '?')} {a.kind} {who} {a.label}".rstrip()
+            )
+        if not target.actions:
+            lines.append("  (nothing yet)")
+        return "\n".join(lines)
+
+    # -- warm state ---------------------------------------------------------
+
+    @chan.build.named_notices
+    def notices() -> dict[str, str]:
+        """The current version of every thread, re-emitted whenever it moves.
+
+        This is the fragment that keeps the model oriented after a context
+        compaction: it can lose the conversation but not the fact that it is
+        standing on v7 of 'readme'. Counts only — no ticking values.
+        """
+        pending = store.pending_exports()
+        out = {
+            "file_editor": (
+                f"live: {len(store.live())} | exported: "
+                f"{sum(1 for t in store.threads() if t.state == 'exported')} | "
+                f"export pending: {len(pending)}"
+            )
+        }
+        for t in store.threads():
+            loc = t.exported_to or t.path or "(blank)"
+            waiting = " | export pending" if any(
+                tid == t.id for tid, _ in pending
+            ) else ""
+            flag = " [auto]" if t.auto else ""
+            out[_notice_name(t.id)] = (
+                f"v{t.version} | {t.label} | {line_count(t.content)} lines | "
+                f"{loc}{waiting}{flag}"
+            )
+        drafts = store.recoverable()
+        if drafts:
+            out["drafts"] = "unclaimed working copies — open(draft=...): " + ", ".join(
+                drafts
+            )
+        return out
 
     return chan

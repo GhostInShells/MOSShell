@@ -1,49 +1,49 @@
 """ghoshell_file_editor — the OS-control file editor node.
 
-Axis-1 (this package): pure data structures + a durable store, no IO beyond
-the optional append-only log. Axis-2 (protocol) and axis-3 (UI) build on top.
+Axis-1 (this package): pure data structures + the store, no IO beyond the draft
+working copies. Axis-2 (protocol) and axis-3 (UI) build on top.
 """
 
+from .store import DocStore
 from .structure import (
-    BASE,
+    SIDE_EFFECTS,
+    STREAMING_KINDS,
     Action,
     ActionState,
-    Anchor,
     Author,
+    Dialogue,
     Effect,
     Kind,
-    Reply,
-    Seq,
     Thread,
-    Verdict,
-    cascade_seqs,
-    changes_content,
-    compute_effect,
+    ThreadState,
+    content_at,
     diff_of,
     effect_of,
-    rewind_target,
-    tail_content,
+    line_count,
+    render_source,
+    replace_once,
+    side_effect,
+    slice_region,
 )
-from .store import ThreadStore
 
 __all__ = [
-    "BASE",
     "Action",
     "ActionState",
-    "Anchor",
     "Author",
+    "Dialogue",
+    "DocStore",
     "Effect",
     "Kind",
-    "Reply",
-    "Seq",
+    "SIDE_EFFECTS",
+    "STREAMING_KINDS",
     "Thread",
-    "ThreadStore",
-    "Verdict",
-    "cascade_seqs",
-    "changes_content",
-    "compute_effect",
+    "ThreadState",
+    "content_at",
     "diff_of",
     "effect_of",
-    "rewind_target",
-    "tail_content",
+    "line_count",
+    "render_source",
+    "replace_once",
+    "side_effect",
+    "slice_region",
 ]

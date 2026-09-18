@@ -1,28 +1,21 @@
-"""Axis-1 data structures for the file-editor thread node.
+"""Axis-1 data structures for the file-editor node.
 
 Pure dataclasses + pure functions — no IO, no MOSS deps, unit-testable in
 isolation.
 
-An interaction is a :class:`Thread`: a dialogue line bound to one readable text
-file. Both sides (``g`` = ghost/model, ``u`` = user/human) append
-:class:`Action` objects, and together those actions *are* the append-only log.
-Every action carries the :class:`Effect` it would produce, computed when it is
-appended — never when it is confirmed.
+A **thread** is an editable object: a working copy of some text, plus the line
+of **actions** both sides appended to it. Every action is also a card on the
+human surface, and ``n`` — the action's sequence number on its thread — is the
+shared coordinate for all three tabs (effect / full / history) and for
+``rewind``.
 
-Rules encoded here:
-
-- **Actions are self-contained.** An effect follows from the action's own
-  payload plus the line's tail, never from the moment a verdict is given.
-  ``reference`` carries no effect; ``rewind`` resolves its target's content;
-  ``export`` carries the content it would write.
-- **``before`` is the pending tail**, not the last confirmed state — the last
-  non-rejected action's ``after``. This is what lets an effect exist before any
-  human decision, and it is why confirmation never has to compute anything.
-- **The head is derived**, never stored: the last confirmed action that actually
-  changed the content. So is the version list — a version is not an entity, its
-  identity is the action's :class:`Seq`.
-- **Reject cascades** to every later action on the thread (they were computed
-  against a state that no longer holds).
+The one rule that shapes everything here: **an action's effect is computed when
+it is appended, from the content that existed at that moment.** Nothing waits on
+a human decision. Edits land in memory immediately; the only action that ever
+asks permission is ``export``, because landing on disk is the only real side
+effect. That is why ``Effect`` is a field of ``Action`` and why the content of a
+thread is a derivation (``Thread.content``) rather than a stored value — a
+rewind is just another action whose effect happens to point backwards.
 """
 
 from __future__ import annotations
@@ -33,29 +26,47 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Author = Literal["g", "u"]
-Kind = Literal["reference", "write", "str_replace", "insert", "rewind", "export"]
-ActionState = Literal["streaming", "tailed", "cancelled", "error"]
-Verdict = Literal["pending", "confirmed", "rejected"]
-Anchor = Literal["intent", "effect"]
+"""``g`` = ghost (the model), ``u`` = the human."""
 
-BASE = "base"
-"""``rewind`` payload selecting the loaded baseline — no action produced it."""
+Kind = Literal[
+    "read", "write", "str_replace", "append", "rewind", "export"
+]
+"""What an action does. ``read`` changes nothing; ``export`` is the only kind
+that reaches the disk."""
 
+ActionState = Literal[
+    "streaming", "applied", "awaiting", "written", "rejected", "failed",
+    "cancelled",
+]
+"""``streaming`` while the model is still writing the payload; ``applied`` once
+it has landed in memory; ``awaiting`` only for an export proposal; then
+``written`` / ``rejected`` / ``failed``; ``cancelled`` if the model withdrew it
+mid-stream."""
 
-@dataclass(frozen=True, order=True)
-class Seq:
-    """An action's position on a thread's line — the shared coordinate.
+ThreadState = Literal["live", "exported", "closed"]
+"""``live`` while it can still be edited; ``exported`` once its text landed on
+disk (the final chapter — but the line stays traceable); ``closed`` when
+abandoned."""
 
-    Also the version identity: a version is a confirmed action, not an object.
-    """
+STREAMING_KINDS: frozenset[str] = frozenset({"write", "append"})
+"""The kinds whose payload the model writes token by token."""
 
-    thread_id: str
-    n: int
+SIDE_EFFECTS: dict[str, str] = {
+    "read": "none — read only",
+    "write": "in-memory only — working copy replaced",
+    "str_replace": "in-memory only — working copy edited",
+    "append": "in-memory only — working copy appended",
+    "rewind": "in-memory only — working copy rolled back",
+    "export": "disk — writes the file",
+}
+"""The mechanical verdict shown on every card: what this kind does to the world.
+One string per kind, derived from nothing — the point is that the human can
+classify an action without reading its content."""
 
 
 @dataclass
 class Effect:
-    """The change an action carries: before / after full texts + unified diff."""
+    """The change an action carried: before / after full texts + unified diff."""
 
     before: str
     after: str
@@ -63,79 +74,98 @@ class Effect:
 
 
 @dataclass
-class Reply:
-    """A dialogue entry under an action.
+class Dialogue:
+    """One line of conversation on a card, appended by either side.
 
-    Commentary only — a reply never decides anything. Whoever replies may go on
-    to append an action of their own; that action, not the reply, changes the
-    line.
+    ``ask`` is the human's whole vocabulary for a card that needs no verdict:
+    they talk, the model answers by acting.
     """
 
-    n: int
     author: Author
-    anchor: Anchor
-    diff: str | None = None
-    text: str = ""
+    text: str
     at: float = field(default_factory=time.time)
 
 
 @dataclass
 class Action:
-    """One item on a thread's line — an utterance, a mutation, or a rewind."""
+    """One action on a thread — and one card on the human surface.
 
-    seq: Seq
-    author: Author
+    ``text`` is the markdown source the effect tab renders; ``payload`` is the
+    machine-readable input the kind needs to be replayed or explained (the JSON
+    ops of a ``str_replace``, the target of a ``rewind``, the path of an
+    ``export``).
+    """
+
+    n: int
     kind: Kind
-    description: str
-    payload: str
-    state: ActionState = "tailed"
+    author: Author
+    label: str = ""
+    """The human-facing name of what this action did — the card's title."""
+
+    state: ActionState = "applied"
+    text: str = ""
+    payload: str = ""
     effect: Effect | None = None
-    verdict: Verdict = "pending"
-    verdict_by: Author | None = None
-    replies: list[Reply] = field(default_factory=list)
+    dialogue: list[Dialogue] = field(default_factory=list)
     at: float = field(default_factory=time.time)
 
 
 @dataclass
 class Thread:
-    """A dialogue line bound to one readable text file.
+    """An editable object: a working copy plus the line of actions on it.
 
-    ``actions`` maps ``n`` to :class:`Action` in append order. ``n`` is
-    monotonic and never removed, so insertion order *is* line order — the log
-    needs no separate index.
+    ``path`` is the file this thread exports to by default; it may be None for a
+    thread that was never bound to a file (an editable object does not have to
+    come from a document). ``draft`` is the working copy's name under the
+    drafts directory — the crash net.
     """
 
     id: str
     label: str
-    motivation: str = ""
     path: str | None = None
-    base_content: str = ""
-    actions: dict[int, Action] = field(default_factory=dict)
-    state: Literal["open", "closed"] = "open"
-    created_at: float = field(default_factory=time.time)
+    state: ThreadState = "live"
+    auto: bool = False
+    """Per-thread trust: exports to the established target need no approval.
+
+    Only meaningful when ``path`` is set — auto without a final target would be
+    trust without an object, so a pathless thread can never be auto."""
+    draft: str = ""
+    base: str = ""
+    """The text at open time — what v0 of the line holds."""
+
+    exported_to: str = ""
+    actions: list[Action] = field(default_factory=list)
+    created: float = field(default_factory=time.time)
 
     @property
     def head(self) -> Action | None:
-        """The last confirmed action that actually changed the content."""
-        for action in reversed(self.actions.values()):
-            if action.verdict == "confirmed" and changes_content(action):
+        """The last action that moved the text. Versions are not objects."""
+        for action in reversed(self.actions):
+            if action.effect is not None:
                 return action
         return None
 
     @property
     def content(self) -> str:
-        """The line's current text: the head's result, or the baseline."""
+        """The working copy's current text: the head's result, or the baseline."""
         head = self.head
-        return self.base_content if head is None else head.effect.after
+        return self.base if head is None else head.effect.after
 
     @property
-    def versions(self) -> list[Action]:
-        """Derived view: every confirmed action that changed the content."""
-        return [
-            a
-            for a in self.actions.values()
-            if a.verdict == "confirmed" and changes_content(a)
-        ]
+    def version(self) -> int:
+        """The coordinates of the current text — 0 = the baseline."""
+        head = self.head
+        return 0 if head is None else head.n
+
+    @property
+    def live(self) -> bool:
+        return self.state == "live"
+
+    def get(self, n: int) -> Action | None:
+        for action in self.actions:
+            if action.n == n:
+                return action
+        return None
 
 
 # -- pure functions --
@@ -147,9 +177,14 @@ def diff_of(
     from_label: str = "before",
     to_label: str = "after",
 ) -> str:
-    a = before.splitlines(keepends=True)
-    b = after.splitlines(keepends=True)
-    return "".join(difflib.unified_diff(a, b, fromfile=from_label, tofile=to_label))
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=from_label,
+            tofile=to_label,
+        )
+    )
 
 
 def effect_of(
@@ -158,76 +193,92 @@ def effect_of(
     from_label: str = "before",
     to_label: str = "after",
 ) -> Effect:
-    return Effect(before=before, after=after, diff=diff_of(before, after, from_label, to_label))
+    return Effect(
+        before=before,
+        after=after,
+        diff=diff_of(before, after, from_label, to_label),
+    )
 
 
-def changes_content(action: Action) -> bool:
-    """Whether an action moves the thread's text.
+def replace_once(text: str, old: str, new: str) -> str:
+    """Swap the single occurrence of ``old`` for ``new``.
 
-    The one predicate behind both the head and the version list, so a no-op
-    (``export``, a write of identical text, a rewind to where we already are)
-    advances neither.
+    Exactly once: an edit that matches nowhere or matches twice is a mistake in
+    the proposal, not something to guess at. This is the str_replace protocol's
+    own rule, kept here so the store never has to validate prose.
     """
-    return action.effect is not None and action.effect.after != action.effect.before
-
-
-def tail_content(thread: Thread) -> str:
-    """The line's pending tail — the last non-rejected action's result.
-
-    Deliberately not the last *confirmed* result: an action's effect has to
-    exist before any human decision, so the basis is the whole non-rejected
-    line, pending actions included.
-    """
-    for action in reversed(thread.actions.values()):
-        if action.verdict != "rejected" and action.effect is not None:
-            return action.effect.after
-    return thread.base_content
-
-
-def rewind_target(thread: Thread, payload: str) -> Action | None:
-    """Resolve a ``rewind`` payload to the action it points at.
-
-    ``None`` means the loaded baseline. The target may still be pending — going
-    back to an earlier proposal inside the same burst is the ordinary case.
-    """
-    if payload == BASE:
-        return None
-    try:
-        n = int(payload)
-    except ValueError:
+    if not old:
+        raise ValueError("str_replace needs a non-empty old_str")
+    found = text.count(old)
+    if found == 0:
+        raise ValueError("old_str does not appear in the text")
+    if found > 1:
         raise ValueError(
-            f"rewind payload must be {BASE!r} or a seq number, got {payload!r}"
+            f"old_str appears {found} times — extend it with surrounding context "
+            f"so it is unique"
         )
-    target = thread.actions.get(n)
-    if target is None:
-        raise ValueError(f"no action {n} on thread {thread.id!r}")
-    if target.verdict == "rejected":
-        raise ValueError(f"action {n} on thread {thread.id!r} was rejected")
-    if target.effect is None:
-        raise ValueError(f"action {n} on thread {thread.id!r} carries no content")
-    return target
+    return text.replace(old, new, 1)
 
 
-def compute_effect(thread: Thread, kind: Kind, payload: str) -> Effect | None:
-    """The effect an action of ``kind``/``payload`` would carry if appended now.
+def content_at(thread: Thread, n: int) -> str:
+    """The thread's text after action ``n`` (the baseline if nothing moved by then).
 
-    Called at append time. The result depends on the line's tail, never on
-    verdicts given later — which is what keeps confirmation a bookkeeping step.
+    This is what the "full" tab shows when you click a card: the document as
+    that action left it.
     """
-    if kind == "reference":
-        return None
-    before = tail_content(thread)
-    if kind == "export":
-        # Export writes the content it was authored against; the line itself
-        # does not move. Its ``before`` is the text that would land on disk.
-        return effect_of(before, before)
-    if kind == "rewind":
-        target = rewind_target(thread, payload)
-        after = thread.base_content if target is None else target.effect.after
-        return effect_of(before, after)
-    return effect_of(before, payload)
+    for action in reversed(thread.actions):
+        if action.n <= n and action.effect is not None:
+            return action.effect.after
+    return thread.base
 
 
-def cascade_seqs(thread: Thread, n: int) -> list[Seq]:
-    """``n`` plus every later action on the same thread."""
-    return [a.seq for a in thread.actions.values() if a.seq.n >= n]
+def render_source(action: Action) -> str:
+    """The markdown the effect tab renders for this action.
+
+    What reads as "the change" differs by kind: a read shows the fragment it
+    read, an append shows the segment it wrote, a write or a rewind shows the
+    whole resulting text (it moved everything), an export shows what would land
+    on disk.
+    """
+    if action.kind in ("write", "rewind"):
+        return action.effect.after if action.effect is not None else ""
+    return action.text
+
+
+def side_effect(action: Action) -> str:
+    """The mechanical effect line for a card. See :data:`SIDE_EFFECTS`."""
+    base = SIDE_EFFECTS[action.kind]
+    if action.kind == "export" and action.payload:
+        return f"disk — writes {action.payload}"
+    return base
+
+
+def line_count(text: str) -> int:
+    return len(text.splitlines())
+
+
+def slice_region(text: str, region: str) -> str:
+    """Resolve a ``"start-end"`` line spec (1-based, inclusive) against ``text``.
+
+    An empty region means the whole text. Raises ValueError on a malformed spec
+    or one that falls outside the text.
+    """
+    if not region.strip():
+        return text
+    spec = region.strip()
+    if "-" in spec:
+        head, _, tail = spec.partition("-")
+        start_s, end_s = head, tail
+    else:
+        start_s = end_s = spec
+    try:
+        start = int(start_s)
+        end = int(end_s) if end_s.strip() else start
+    except ValueError:
+        raise ValueError(f"region must look like 'start-end', got {region!r}")
+    lines = text.splitlines(keepends=True)
+    if start < 1 or end < start or end > len(lines):
+        raise ValueError(
+            f"region {region!r} is outside the text ({len(lines)} lines)"
+        )
+    return "".join(lines[start - 1 : end])

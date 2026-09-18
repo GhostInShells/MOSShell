@@ -1,44 +1,52 @@
-"""file_editor surface — the human-facing web surface (axis 3).
+"""The human-facing web surface: cards in, verdicts and questions out.
 
-One port serves the page and the WebSocket. Downlink carries the action stream
-(``action.head`` / ``action.delta`` / ``action.full``) plus a full ``state``
-snapshot on connect. Uplink carries the human's verdicts and dialogue
-(``confirm`` / ``reject`` / ``reply``) and the global ``toggle``.
+One port serves the page and the WebSocket. Downlink carries the card stream
+(``action`` / ``threads`` / ``detail``) plus a full ``snapshot`` on connect.
+Uplink carries the human's three moves — accept, deny, ask — plus detail
+requests (content is fetched when a card is clicked, never streamed with it) and
+the enable toggle.
 
-Human events mutate the same store the channel drives, then signal the ghost:
-``confirm`` / ``reject`` ride ``NotifySignalMeta`` (must not be lost), ``reply``
-rides ``AsideSignalMeta`` (silent, aggregated). The store stays the single
-source of truth — the signal is a ping, the ghost pulls detail via the channel's
-query commands.
+Verdicts are handed down, never written here: ``store.settle`` wakes the
+channel's waiter, and the channel is the only place a thread moves. What this
+module does own is the signal to the ghost — a human's question is a fact the
+model must learn, and it travels as a must-not-lose notify that guarantees a
+turn; a verdict rides an aside, because it is a fact the ghost notices when it
+is free rather than an interruption.
 """
 
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from websockets.asyncio.server import ServerConnection, serve
 
 from ghoshell_moss.message import Message
 from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
 
-from .projection import action_view, snapshot
-from .store import ThreadStore
+from .projection import action_view, detail_view, snapshot, thread_view
+from .store import DocStore
 
 __all__ = ["FileEditorSurface"]
+
+_DEBOUNCE_SECONDS = 0.4
+"""A verdict is one decision. Repeated clicks inside this window are the same
+decision arriving twice, not a second one."""
 
 
 class FileEditorSurface:
     def __init__(
         self,
-        store: ThreadStore,
+        store: DocStore,
         *,
         send_signal: Callable[[Any], None],
         self_identity: str,
-        on_toggle: Callable[[bool], None],
-        host: str,
-        port: int,
+        on_toggle: Callable[[bool], None] | None = None,
+        host: str = "127.0.0.1",
+        port: int = 8767,
         html_path: Path,
     ) -> None:
         self._store = store
@@ -49,71 +57,112 @@ class FileEditorSurface:
         self._html_path = html_path
         self._clients: set[ServerConnection] = set()
         self._server: Any = None
+        self._decided: set[tuple[str, int]] = set()
+        self._last: dict[tuple[str, int, str], float] = {}
         self.port = port
 
     @property
     def url(self) -> str:
         return f"http://{self._host}:{self.port}"
 
-    # -- downlink ---------------------------------------------------
+    # -- downlink -----------------------------------------------------------
 
     async def broadcast(self, frame: dict[str, Any]) -> None:
         if not self._clients:
             return
         payload = json.dumps(frame, ensure_ascii=False)
-        await self._fanout(payload)
-
-    async def _fanout(self, payload: str) -> None:
-        targets = [c for c in self._clients]
-        for c in targets:
+        for client in list(self._clients):
             try:
-                await c.send(payload)
+                await client.send(payload)
             except Exception:
-                self._clients.discard(c)
+                self._clients.discard(client)
 
-    # -- uplink -----------------------------------------------------
+    # -- uplink -------------------------------------------------------------
 
-    async def _confirm(self, thread: str, n: int) -> None:
+    def _debounced(self, thread: str, n: int, action: str) -> bool:
+        now = time.monotonic()
+        key = (thread, n, action)
+        if now - self._last.get(key, 0.0) < _DEBOUNCE_SECONDS:
+            return True
+        self._last[key] = now
+        return False
+
+    async def _verdict(self, thread: str, n: int, verdict: str) -> None:
+        key = (thread, n)
+        if key in self._decided or self._debounced(thread, n, verdict):
+            return
+        if not self._store.settle(thread, n, verdict):
+            return
+        self._decided.add(key)
+        where = "accepted — writing it now" if verdict == "accept" else "denied"
+        self._aside(f"export of {thread!r} #{n} was {where}")
+
+    async def _ask(self, thread: str, n: int, text: str) -> None:
+        if self._debounced(thread, n, "ask"):
+            return
         try:
-            flipped = self._store.confirm(thread, n, by="u")
+            action = self._store.say(thread, n, "u", text or "(wants to talk)")
+        except KeyError:
+            await self.broadcast({"type": "error", "text": f"no card {thread}#{n}"})
+            return
+        target = self._store.get(thread)
+        if target is not None:
+            await self.broadcast(
+                {"type": "action", "thread": thread, **action_view(action)}
+            )
+        self._notify(f"the human asks about {thread!r} #{n}: {text}")
+
+    async def _detail(self, thread: str, n: int) -> None:
+        target = self._store.get(thread)
+        if target is None:
+            await self.broadcast({"type": "error", "text": f"no thread {thread!r}"})
+            return
+        action = target.get(n)
+        if action is None:
+            await self.broadcast(
+                {"type": "error", "text": f"no card {thread}#{n}"}
+            )
+            return
+        await self.broadcast({"type": "detail", **detail_view(target, action)})
+
+    async def _set_thread_auto(self, thread: str, auto: bool) -> None:
+        try:
+            self._store.set_thread_auto(thread, auto)
         except (KeyError, ValueError) as e:
             await self.broadcast({"type": "error", "text": str(e)})
             return
-        for action in flipped:
-            await self.broadcast({"type": "action.full", **action_view(thread, action)})
-        self._signal(NotifySignalMeta, f"confirmed {thread} through {n}", thread, n)
+        await self.broadcast({
+            "type": "threads",
+            "threads": [thread_view(t) for t in self._store.threads()],
+        })
 
-    async def _reject(self, thread: str, n: int) -> None:
-        try:
-            cascaded = self._store.reject(thread, n, by="u")
-        except (KeyError, ValueError) as e:
-            await self.broadcast({"type": "error", "text": str(e)})
+    async def _set_enabled(self, enabled: bool) -> None:
+        if self._on_toggle is not None:
+            self._on_toggle(enabled)
+
+    def _notify(self, text: str) -> None:
+        if self._send_signal is None:
             return
-        for seq in cascaded:
-            action = self._store.get_action(thread, seq.n)
-            await self.broadcast({"type": "action.full", **action_view(thread, action)})
-        self._signal(NotifySignalMeta, f"rejected {thread} from {n}", thread, n)
-
-    async def _reply(self, thread: str, n: int, text: str, anchor: str) -> None:
-        try:
-            self._store.reply(thread, n, "u", anchor, text=text)
-        except (KeyError, ValueError) as e:
-            await self.broadcast({"type": "error", "text": str(e)})
-            return
-        action = self._store.get_action(thread, n)
-        await self.broadcast({"type": "action.full", **action_view(thread, action)})
-        self._signal(AsideSignalMeta, f"reply on {thread}:{n}", thread, n)
-
-    def _signal(self, meta_cls, text: str, thread: str, seq: int) -> None:
-        msg = Message.new(
-            tag="file_editor",
-            name=self._identity,
-            attributes={"thread": thread, "seq": str(seq)},
-        ).with_content(text)
-        signal = meta_cls().to_signal(msg, description=f"file_editor:{thread}")
+        signal = NotifySignalMeta(next=True).to_signal(
+            Message.new(tag="file_editor", name=self._identity).with_content(
+                f"[file_editor] {text}"
+            ),
+            description=text[:120],
+        )
         self._send_signal(signal)
 
-    # -- ws server --------------------------------------------------
+    def _aside(self, text: str) -> None:
+        if self._send_signal is None:
+            return
+        signal = AsideSignalMeta().to_signal(
+            Message.new(tag="file_editor", name=self._identity).with_content(
+                f"[file_editor] {text}"
+            ),
+            description=text[:120],
+        )
+        self._send_signal(signal)
+
+    # -- ws server ----------------------------------------------------------
 
     def _process_request(self, connection: ServerConnection, request: Any):
         path = request.path.split("?", 1)[0]
@@ -133,24 +182,29 @@ class FileEditorSurface:
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)
         try:
-            await connection.send(json.dumps(snapshot(self._store), ensure_ascii=False))
+            await connection.send(
+                json.dumps(snapshot(self._store), ensure_ascii=False)
+            )
             async for raw in connection:
                 try:
                     frame = json.loads(raw)
                 except (TypeError, ValueError):
                     continue
                 kind = frame.get("type")
-                if kind == "confirm":
-                    await self._confirm(frame.get("thread", ""), frame.get("n", 0))
-                elif kind == "reject":
-                    await self._reject(frame.get("thread", ""), frame.get("n", 0))
-                elif kind == "reply":
-                    await self._reply(
-                        frame.get("thread", ""), frame.get("n", 0),
-                        frame.get("text", ""), frame.get("anchor", "intent"),
-                    )
+                thread = str(frame.get("thread", ""))
+                n = int(frame.get("n", 0))
+                if kind == "accept":
+                    await self._verdict(thread, n, "accept")
+                elif kind == "deny":
+                    await self._verdict(thread, n, "deny")
+                elif kind == "ask":
+                    await self._ask(thread, n, str(frame.get("text", "")))
+                elif kind == "detail":
+                    await self._detail(thread, n)
+                elif kind == "auto":
+                    await self._set_thread_auto(thread, bool(frame.get("auto")))
                 elif kind == "toggle":
-                    self._on_toggle(bool(frame.get("enabled", True)))
+                    await self._set_enabled(bool(frame.get("enabled", True)))
         finally:
             self._clients.discard(connection)
 
