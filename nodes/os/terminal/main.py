@@ -23,7 +23,9 @@ from pathlib import Path
 _NODE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_NODE_DIR / "src"))
 
+from ghoshell_moss.contracts.llms import LLMFuncs  # noqa: E402
 from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
+from ghoshell_moss.ground import DefaultGroundSet  # noqa: E402
 
 from ghoshell_terminal.channel import build_terminal_channel  # noqa: E402
 from ghoshell_terminal.store import CardStore, Mode  # noqa: E402
@@ -51,6 +53,18 @@ async def main(matrix: Matrix) -> None:
         outputs_dir=matrix.home / "runtime" / "outputs",
         log_dir=matrix.home / "runtime" / "cards",
     )
+    groundset = DefaultGroundSet(workspace_root=matrix.project_home, materialize=False)
+
+    def get_llm_funcs():
+        """Lazy — resolve LLMFuncs only when an analyze request actually arrives."""
+        container = matrix.container()
+        if container is None:
+            return None
+        try:
+            return container.get(LLMFuncs)
+        except Exception:
+            return None
+
     surface = TerminalSurface(
         store,
         send_signal=matrix.send_signal_to_ghost,
@@ -59,6 +73,8 @@ async def main(matrix: Matrix) -> None:
         port=resolve_port(),
         html_path=_INDEX_HTML,
         stops=stops,
+        llm_funcs=get_llm_funcs,
+        groundset=groundset,
     )
     channel = build_terminal_channel(
         store,
@@ -66,6 +82,7 @@ async def main(matrix: Matrix) -> None:
         surface=surface,
         signaler=matrix.send_signal_to_ghost,
         stops=stops,
+        groundset=groundset,
         enabled=lambda: store.mode != Mode.DISABLED,
     )
 

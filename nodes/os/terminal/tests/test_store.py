@@ -37,6 +37,20 @@ def test_relative_cwd_resolves_against_root(store):
     assert thread.cwd == str((store.root / "sub").resolve())
 
 
+def test_a_root_thread_always_exists(store):
+    root = store.get_thread("root")
+    assert root is not None
+    assert root.cwd == str(store.root)
+    assert root.auto is False
+
+
+def test_thread_auto_flag(store):
+    store.set_thread_auto("root", True)
+    assert store.get_thread("root").auto is True
+    with pytest.raises(KeyError):
+        store.set_thread_auto("nope", True)
+
+
 def test_settle_only_lands_on_a_pending_card(store):
     card = store.new_card(CardType.COMMAND, title="dev")
     store.set_state(card.id, CardState.AWAITING)
@@ -106,7 +120,7 @@ def test_a_broken_rule_is_rejected_at_activation(store):
 
 def test_mode_rejects_unknown_values(store):
     assert store.mode == Mode.APPROVAL
-    assert store.set_mode(Mode.AUTO) == Mode.AUTO
+    assert store.set_mode(Mode.DISABLED) == Mode.DISABLED
     with pytest.raises(ValueError, match="unknown mode"):
         store.set_mode("yolo")
 

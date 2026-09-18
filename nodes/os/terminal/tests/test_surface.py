@@ -12,6 +12,21 @@ from ghoshell_terminal.surface import StopHandles, TerminalSurface
 _INDEX_HTML = Path(__file__).resolve().parent.parent / "index.html"
 
 
+class _FakeLLM:
+    def __init__(self, answer="it lists files"):
+        self.answer = answer
+        self.prompts = []
+
+    async def call(self, *, instruction, prompt, **kw):
+        self.prompts.append(prompt)
+        return _FakeResult(self.answer)
+
+
+class _FakeResult:
+    def __init__(self, content):
+        self.content = content
+
+
 @pytest.fixture
 def store(tmp_path):
     root = tmp_path / "root"
@@ -29,7 +44,7 @@ def stops():
     return StopHandles()
 
 
-async def _surface(store, signals, stops):
+async def _surface(store, signals, stops, llm_funcs=None, groundset=None):
     surface = TerminalSurface(
         store,
         send_signal=signals.append,
@@ -38,6 +53,8 @@ async def _surface(store, signals, stops):
         port=0,
         html_path=_INDEX_HTML,
         stops=stops,
+        llm_funcs=llm_funcs,
+        groundset=groundset,
     )
     await surface.start()
     return surface
@@ -97,6 +114,7 @@ async def test_accept_settles_and_tells_the_ghost(store, signals, stops):
 
         assert store.waiter(card.id).result() == "accept"
         assert len(signals) == 1
+        assert signals[0].name == "aside"
         assert "accepted" in signals[0].messages[0].to_content_string()
     finally:
         await surface.stop()
@@ -148,7 +166,113 @@ async def test_ask_records_dialogue_and_decides_nothing(store, signals, stops):
 
         assert card.state is CardState.AWAITING
         assert store.waiter(card.id).done() is False
+        assert len(signals) == 1, "ask is a question, not a decision — no batch notify"
+        assert signals[0].name == "notify"
         assert "why -la?" in signals[0].messages[0].to_content_string()
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_thread_auto_toggle_reaches_the_store(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "thread_auto", "name": "root", "auto": True}))
+            frame = await _recv(ws, "threads")
+            assert any(t["name"] == "root" and t["auto"] is True for t in frame["threads"])
+        assert store.get_thread("root").auto is True
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_auto_toggle_approves_pending_cards_in_the_thread(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        store.open_thread("dev", ".")
+        store.open_thread("ops", ".")
+        dev = store.new_card(CardType.COMMAND, title="a", thread="dev", cwd=str(store.root))
+        store.set_state(dev.id, CardState.AWAITING)
+        ops = store.new_card(CardType.COMMAND, title="b", thread="ops", cwd=str(store.root))
+        store.set_state(ops.id, CardState.AWAITING)
+
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "thread_auto", "name": "dev", "auto": True}))
+            await asyncio.sleep(0.1)
+
+        assert store.waiter(dev.id).result() == "accept", "auto settles the dev card"
+        assert store.waiter(ops.id).done() is False, "ops card is untouched"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_accept_with_text_records_the_note(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        card = _pending(store)
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "accept", "id": card.id, "text": "ok but watch -la"}))
+            await asyncio.sleep(0.1)
+        assert store.waiter(card.id).result() == "accept"
+        assert card.dialogue[0].text == "ok but watch -la"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_analyze_returns_a_zero_context_answer(store, signals, stops):
+    llm = _FakeLLM()
+    surface = await _surface(store, signals, stops, llm_funcs=lambda: llm)
+    try:
+        card = _pending(store, "rm -rf /")
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "analyze", "id": card.id, "text": "is this safe?"}))
+            frame = await _recv(ws, "analyze")
+        assert frame["text"] == "it lists files"
+        prompt = llm.prompts[0]
+        assert "rm -rf /" in prompt
+        assert "is this safe?" in prompt
+        assert "dev" not in prompt, "the issuing model's title must not leak into the analyzer"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_analyze_reports_unregistered(store, signals, stops):
+    surface = await _surface(store, signals, stops, llm_funcs=lambda: None)
+    try:
+        card = _pending(store)
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "analyze", "id": card.id, "text": "is this safe?"}))
+            frame = await _recv(ws, "error")
+            assert "not registered" in frame["text"]
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_ground_view_renders_the_field(store, signals, stops, tmp_path):
+    from ghoshell_moss.ground import DefaultGroundSet
+
+    root = tmp_path / "groot"
+    root.mkdir()
+    (root / "GROUND.md").write_text("---\nname: p\n---\n\nwelcome field\n")
+    store2 = CardStore(root=root, outputs_dir=tmp_path / "out2")
+    groundset = DefaultGroundSet(workspace_root=root, materialize=False)
+    surface = await _surface(store2, signals, stops, groundset=groundset)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "ground", "thread": "root"}))
+            frame = await _recv(ws, "ground")
+            assert "welcome field" in frame["text"]
     finally:
         await surface.stop()
 
@@ -159,15 +283,15 @@ async def test_mode_switch_broadcasts_and_is_seen_by_the_store(store, signals, s
     try:
         async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
             await _recv(ws, "snapshot")
-            await ws.send(json.dumps({"type": "mode", "mode": "auto"}))
+            await ws.send(json.dumps({"type": "mode", "mode": "disabled"}))
             frame = await _recv(ws, "mode")
-        assert frame["mode"] == "auto"
-        assert store.mode == "auto"
+        assert frame["mode"] == "disabled"
+        assert store.mode == "disabled"
 
         async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
             await ws.send(json.dumps({"type": "mode", "mode": "nonsense"}))
             assert (await _recv(ws, "error"))["type"] == "error"
-        assert store.mode == "auto"
+        assert store.mode == "disabled"
     finally:
         await surface.stop()
 
@@ -183,6 +307,7 @@ async def test_accept_all_settles_every_pending_card(store, signals, stops):
             await asyncio.sleep(0.1)
         assert [store.waiter(c.id).result() for c in cards] == ["accept"] * 3
         assert len(signals) == 3
+        assert [s.name for s in signals] == ["aside", "aside", "aside"]
     finally:
         await surface.stop()
 
@@ -198,6 +323,7 @@ async def test_deny_all_settles_every_pending_card(store, signals, stops):
             await asyncio.sleep(0.1)
         assert [store.waiter(c.id).result() for c in cards] == ["deny"] * 3
         assert len(signals) == 3
+        assert [s.name for s in signals] == ["aside", "aside", "aside"]
     finally:
         await surface.stop()
 

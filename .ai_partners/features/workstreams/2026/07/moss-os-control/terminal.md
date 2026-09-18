@@ -81,32 +81,51 @@ script 卡片批准一次后，持续下发被执行的 bash 卡片（子命令�
 
 | 轴 | 内容 | 状态 |
 |---|---|---|
-| 1 数据结构 | Card / CardState 状态机 / CardStore（thread + rule + mode + 裁决 future） | 已落地 v1 |
-| 2 通讯协议 | head/delta/tail/output/full 帧 + accept/deny/ask 上行 + `notify(next=True)` 信号 | 已落地 v1 |
-| 3 UI | 卡片流 + 三动作按钮 + 模式切换 + stop all + 展开详情（单文件 `index.html`） | 已落地 v1 |
+| 1 数据结构 | Card / CardState 状态机 / CardStore（thread + rule + mode + 裁决 future） | 已落地 |
+| 2 通讯协议 | head/tail/output/full 帧 + accept/deny/ask/accept_all/deny_all 上行 + `notify` 信号 | 已落地 |
+| 3 UI | 紧凑卡片 + 单行运行动效 + 模式切换 + 批量按钮 + 可开关 detail（`index.html`） | 已落地 |
 
-## 实现状态（v1，2026-09-18）
+## 实现状态（2026-09-18）
 
-按人类协作者的**简化方案**落地，相对本设计文档的完整版做了取舍：
+按人类协作者的**简化方案**落地，并做了一轮产品化优化。相对本设计文档的完整版：
 
 - **只做 `bash` 卡片**，不做 `script` 沙箱 / `Sandbox.aexec` 编排（K2 的 `script` 半边留待后续）。
-- **卡片是第一公民**：`Card`（id/type/title/description/content/interactions）独立建模，
-  进程只是卡片的一个阶段——待批卡片还没有进程，`rule` 卡片永远没有。
-- **审批即对话**落地为三动作 `accept / deny / ask`；`ask` 只留文本不决定，卡片保持
-  pending。信号分级（2026-09-18 优化轮）：`accept` → `next=False` 提示，`deny` →
-  `next=True`，完成 → `next=True` + 模型选 level。防抖 = 服务端裁决守卫 + 前端去抖。
-- **输出实时性**受 subprocess 层约束：无增量 API，靠 `poller.py` 轮询 + 重叠 diff；
-  只按行、无 `\n` 的部分行不可见。已验证 20 行 / 每秒的流式上行。
-- **信号链路已实测**：accept + 完成两条都到达 session 信号总线（signal_receiver drain 到，
-  均 `next=true`）。模型侧"无感知"是 system_test mode 无 ghost mindflow 消费所致，
-  非本 node 问题。
+- **卡片是第一公民**：`Card`（id/type/title/description/content/thread/interactions）独立建模。
+  语义已修正：`title` = 命令意图（`desc`），`thread` 只是运行上下文（UI 里降为暗色小标签），
+  卡片 id 是模型句柄。进程只是卡片的一个阶段——待批卡还没有进程，`rule` 卡永远没有。
+- **审批即对话**：三动作 `accept / deny / ask`；`ask` 只留文本不决定，卡片保持 pending。
+  信号分级：`accept/deny` → **aside**（buffer 不打断），`ask` → `notify(next=True)`（人当场要答复），
+  awaiting 归零 → 一条 `notify(next=True)` 摘要，完成 → `next=True` + 模型选 level。
+  `accept/deny` 可连带输入框文本（记进 dialogue）。防抖 = 服务端裁决守卫 + 前端去抖。
+- **全异步回执**：`exec` 立即返回回执（card id），不阻塞等审批；完成靠信号，模型 `read(id)`
+  拉细节。`card.delta` 已移除（模型吐字快于人眼，head + tail 两步足够）。
+- **输出**：受 subprocess 层约束（无增量 API），`poller.py` 轮询 + 重叠 diff 推增量，只按行。
+  落盘回收：`CaptureSpec(stdout_file)` 写完整文件，完成后 `size <= 8k` 删、`> 8k` 留——短输出
+  零文件。stderr 完成时并入卡片。
+- **audit**：每张卡 settle 追加一行 JSONL 到 `runtime/cards/YYYY-MM-DD.jsonl`（append-only，
+  gitignored）；内存卡片表封顶 100，只淘汰 settled、绝不淘汰 running。
+- **信号链路已实测**：accept + 完成都到达 session 信号总线（signal_receiver drain 到）。
+  模型侧"无感知"是 system_test mode 无 ghost mindflow 消费所致，非本 node 问题。
+
+### 本轮（2026-09-19）— 信任下沉 + 认知场 + 零上下文分析
+
+- **去掉全局 auto 模式**：信任下沉为 per-thread `auto`（thread 详情条带按钮）+ per-pattern
+  （`rule()` 正则，always-on，不再被 mode 门控）。全局只剩 `approval / disabled`。
+- **thread 即命名位置**：默认 `root` thread（cwd=node root）自动存在，`exec` 不传 thread 即
+  落 root；`open(name, cwd)` 打 label。title 与 thread 彻底脱钩（`title = desc`）。
+- **认知场（人机共享）**：`ground(thread)` 命令渲染最近 `GROUND.md`（walk mode）供模型读；
+  人类在右侧 thread 面板点"ground"按需查看同一份（surface 实时 request 渲染，不做 DOM 缓存）。
+  groundset 由 main 注入（`DefaultGroundSet(workspace_root=project_home)`），同时传 channel 与 surface。
+- **零上下文分析**：卡片详情"analyze"框，surface 调 `LLMFuncs.call(instruction, prompt)`，
+  prompt = cwd + 命令文本 + 人类问题（**不带** title/desc/ghost 意图），多轮靠前端带历史，
+  回复走 message 协议回 surface，不注入 ghost。
 
 ## 待定
 
-- ~~上行 signal 具体走哪个 meta~~ → 已定：`NotifySignalMeta(next=True)`。
 - `pexpect node`（持久 shell 会话）另立文档，本域命名表需补一行。
+- **ground 变更流**（信息变更流的另一半）：settle 后 `snapshot()` 对账、变更走 named notice 的
+  "changed" 标志。当前 `ground(thread)` 是纯 pull；命令跑完自动刷新（push）留待后续。
 - `script` 编排工具（K2 的另一半）与 `Sandbox.aexec` 沙箱，回看本设计文档的 script 机制。
 - **settled 卡片上的对话**（人类对已结束命令提问）：低优先级。缺口 = settled 卡片的 UI
   挂一个 ask 输入框 + 放宽 surface `_ask` 守卫；模型侧 `read()` 已能读结果回应。
-- 输出回收 `> k 才落盘` 已落地（2026-09-18）；audit 走 `runtime/cards/YYYY-MM-DD.jsonl`
-  append-only，内存卡片表封顶 100。
+- 全屏 command 主题（点击卡片全屏聚焦，当前是右侧 toggle detail）。

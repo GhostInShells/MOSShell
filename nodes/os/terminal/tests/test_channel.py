@@ -17,10 +17,11 @@ def store(tmp_path):
     return CardStore(root=root, outputs_dir=tmp_path / "out")
 
 
-def _channel(store, processes, rec=None, enabled=None):
+def _channel(store, processes, rec=None, enabled=None, groundset=None):
     rec = rec or Recorder()
     chan = build_terminal_channel(
         store, processes, surface=rec, signaler=rec, enabled=enabled,
+        groundset=groundset,
     )
     return chan, rec
 
@@ -107,8 +108,9 @@ async def test_accept_runs_it_and_signals_the_outcome(store):
         assert processes.spawned[0].meta.command == "echo hi"
         assert [f["type"] for f in rec.of("card.output")] == ["card.output"]
         assert rec.of("card.output")[0]["lines"] == ["hello\n"]
-        assert len(rec.signals) == 1, "one completion signal"
-        assert "done" in str(rec.signals[0].messages[0].to_content_string())
+        assert len(rec.signals) == 2, "batch notify + completion signal"
+        assert "decided" in str(rec.signals[0].messages[0].to_content_string())
+        assert "done" in str(rec.signals[1].messages[0].to_content_string())
 
 
 @pytest.mark.asyncio
@@ -142,7 +144,7 @@ async def test_the_real_gate_is_the_mode(store):
 
 
 @pytest.mark.asyncio
-async def test_auto_mode_runs_a_command_matching_an_accepted_rule(store):
+async def test_an_accepted_rule_auto_approves_a_matching_command(store):
     processes = FakeSubprocesses(lines=["ok\n"])
     chan, _ = _channel(store, processes)
     async with chan.bootstrap() as runtime:
@@ -150,7 +152,6 @@ async def test_auto_mode_runs_a_command_matching_an_accepted_rule(store):
         rule_card = store.new_card(CardType.RULE, title="safe reads")
         store.append_content(rule_card.id, r"^ls\b")
         store.activate_rule(rule_card.id)
-        store.set_mode(Mode.AUTO)
 
         receipt = await runtime.execute_command("exec", args=("dev", chunks(["ls -la"])))
         assert "auto-approved" in receipt
@@ -160,15 +161,42 @@ async def test_auto_mode_runs_a_command_matching_an_accepted_rule(store):
 
 
 @pytest.mark.asyncio
-async def test_auto_mode_still_asks_when_no_rule_matches(store):
+async def test_no_rule_and_not_auto_still_asks(store):
     processes = FakeSubprocesses()
     chan, _ = _channel(store, processes)
     async with chan.bootstrap() as runtime:
         await runtime.execute_command("open", args=("dev", "."))
-        store.set_mode(Mode.AUTO)
         receipt = await runtime.execute_command("exec", args=("dev", chunks(["rm -rf /"])))
         assert "awaiting approval" in receipt
         assert processes.spawned == []
+
+
+@pytest.mark.asyncio
+async def test_an_auto_thread_runs_without_asking(store):
+    processes = FakeSubprocesses(lines=["ok\n"])
+    chan, _ = _channel(store, processes)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("dev", "."))
+        store.set_thread_auto("dev", True)
+        receipt = await runtime.execute_command("exec", args=("dev", chunks(["ls -la"])))
+        assert "auto-approved" in receipt
+        card = store.cards()[-1]
+        await _until(lambda: card.state is CardState.DONE)
+        assert len(processes.spawned) == 1
+
+
+@pytest.mark.asyncio
+async def test_exec_defaults_to_the_root_thread(store):
+    processes = FakeSubprocesses()
+    chan, _ = _channel(store, processes)
+    async with chan.bootstrap() as runtime:
+        receipt = await runtime.execute_command(
+            "exec", kwargs={"chunks__": chunks(["ls\n"])}
+        )
+        assert "awaiting approval" in receipt
+        card = store.cards()[-1]
+        assert card.thread == "root"
+        assert card.cwd == str(store.root)
 
 
 @pytest.mark.asyncio
@@ -260,14 +288,67 @@ async def test_stop_ends_a_running_process(store):
 
 
 @pytest.mark.asyncio
-async def test_notice_carries_the_mode_and_the_counts(store):
+async def test_notice_carries_counts_and_thread_flags(store):
     chan, _ = _channel(store, FakeSubprocesses())
     async with chan.bootstrap() as runtime:
         await runtime.execute_command("open", args=("dev", "."), kwargs={"description": "d"})
         await runtime.execute_command("exec", args=("dev", chunks(["ls"])))
+        store.set_thread_auto("dev", True)
         await runtime.refresh_metas()
 
         notices = runtime.self_meta().named_notices
-        assert "mode: approval" in notices["terminal"]
         assert "awaiting: 1" in notices["terminal"]
-        assert "thread_dev" in notices
+        assert "auto" in notices["thread_dev"]
+        assert "thread_root" in notices, "the default root thread is always listed"
+
+
+@pytest.mark.asyncio
+async def test_a_batch_notify_fires_once_when_the_last_card_settles(store):
+    processes = FakeSubprocesses()
+    chan, rec = _channel(store, processes)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("dev", "."))
+        await runtime.execute_command("exec", args=("dev", chunks(["a"])))
+        await runtime.execute_command("exec", args=("dev", chunks(["b"])))
+        a, b = store.cards()
+
+        store.settle(a.id, "deny")
+        await _until(lambda: a.state is CardState.REJECTED)
+        assert rec.signals == [], "one verdict left — no batch knock yet"
+
+        store.settle(b.id, "deny")
+        await _until(lambda: b.state is CardState.REJECTED)
+        assert len(rec.signals) == 1, "one batch knock for the whole round"
+        assert "decided" in rec.signals[0].messages[0].to_content_string()
+
+
+@pytest.mark.asyncio
+async def test_ground_renders_the_thread_cognitive_field(tmp_path):
+    from ghoshell_moss.ground import DefaultGroundSet
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "GROUND.md").write_text("---\nname: project\n---\n\nwelcome field\n")
+
+    store = CardStore(root=root, outputs_dir=tmp_path / "out")
+    groundset = DefaultGroundSet(workspace_root=root, materialize=False)
+
+    chan, _ = _channel(store, FakeSubprocesses(), groundset=groundset)
+    async with chan.bootstrap() as runtime:
+        out = await runtime.execute_command("ground")
+        assert "welcome field" in out
+
+
+@pytest.mark.asyncio
+async def test_ground_reports_when_there_is_no_field(tmp_path):
+    from ghoshell_moss.ground import DefaultGroundSet
+
+    root = tmp_path / "root"
+    root.mkdir()
+    store = CardStore(root=root, outputs_dir=tmp_path / "out")
+    groundset = DefaultGroundSet(workspace_root=root, materialize=False)
+
+    chan, _ = _channel(store, FakeSubprocesses(), groundset=groundset)
+    async with chan.bootstrap() as runtime:
+        out = await runtime.execute_command("ground")
+        assert "no ground" in out

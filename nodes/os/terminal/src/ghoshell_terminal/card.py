@@ -39,7 +39,8 @@ class CardType(str, Enum):
     """A shell command proposal. Accept = run it."""
 
     RULE = "rule"
-    """An auto-approval regex proposal. Accept = register it (auto mode only)."""
+    """An auto-approval regex proposal. Accept = register it; matching commands
+    then run without asking."""
 
 
 class CardState(str, Enum):
@@ -106,12 +107,19 @@ class Thread(BaseModel):
     """A named working context: where commands run and what it is for.
 
     Threads are the model's handles. Every command carries an explicit thread
-    name — there is no hidden "current thread" state.
+    name — there is no hidden "current thread" state, and ``root`` always exists
+    as the default.
+
+    ``auto`` is per-thread trust: once the human flips it, every command in the
+    thread runs without asking. The cognitive field (nearest GROUND.md) is not a
+    thread flag — the model reads it with ``ground(thread)``, the human views it
+    on demand from the surface.
     """
 
     name: str
     cwd: str
     description: str = ""
+    auto: bool = False
 
 
 class Card(BaseModel):

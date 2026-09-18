@@ -23,18 +23,20 @@ __all__ = ["CardStore", "CardLog", "Mode"]
 
 
 class Mode:
-    """The three global postures. Plain constants — the wire format is the string."""
+    """The two global postures. Plain constants — the wire format is the string.
+
+    Trust is scoped per-thread (``Thread.auto``) and per-pattern (accepted
+    rules), not by a global auto switch — that was blanket trust, so it is gone.
+    """
 
     APPROVAL = "approval"
-    """Every command waits for a human verdict. The default."""
-
-    AUTO = "auto"
-    """A command matching an accepted rule runs without asking."""
+    """Every command waits for a human verdict unless its thread is auto or an
+    accepted rule matches. The default."""
 
     DISABLED = "disabled"
     """The channel's commands drop out of the model's interface entirely."""
 
-    ALL = (APPROVAL, AUTO, DISABLED)
+    ALL = (APPROVAL, DISABLED)
 
 
 _TAIL_LINES = 400
@@ -87,6 +89,7 @@ class CardStore:
         self._outputs_dir = Path(outputs_dir)
         self._log = CardLog(log_dir) if log_dir is not None else None
         self._threads: dict[str, Thread] = {}
+        self._threads["root"] = Thread(name="root", cwd=str(self._root))
         self._cards: dict[int, Card] = {}
         self._order: list[int] = []
         self._rules: list[Card] = []
@@ -161,6 +164,12 @@ class CardStore:
 
     def threads(self) -> list[Thread]:
         return list(self._threads.values())
+
+    def set_thread_auto(self, name: str, auto: bool) -> Thread:
+        """Flip a thread's per-thread trust. Unknown name raises KeyError."""
+        thread = self._threads[name]
+        thread.auto = auto
+        return thread
 
     def _resolve_cwd(self, cwd: str) -> str:
         path = Path(cwd)
@@ -299,7 +308,7 @@ class CardStore:
     # -- rules --------------------------------------------------------------
 
     def activate_rule(self, card_id: int) -> Card:
-        """An accepted rule card joins the live rule set (used in auto mode)."""
+        """An accepted rule card joins the live rule set."""
         card = self._require(card_id)
         if card.type is not CardType.RULE:
             raise ValueError(f"card {card_id} is not a rule")

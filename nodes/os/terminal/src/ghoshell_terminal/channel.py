@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 from ghoshell_moss.contracts.subprocesses import (
@@ -30,6 +31,7 @@ from ghoshell_moss.contracts.subprocesses import (
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet
 from ghoshell_moss.message import Message
 from ghoshell_moss.signals import NotifySignalMeta
 
@@ -70,6 +72,24 @@ def _notice_name(thread: str) -> str:
     return f"thread_{_TAG_SAFE.sub('_', thread)}"
 
 
+def _ground_root_for(cwd: Path) -> Path | None:
+    """The nearest GROUND.md at or above ``cwd``, or None.
+
+    ``cwd`` itself is checked first (root mode); then ancestors are walked up
+    to the filesystem root (walk mode).
+    """
+    cwd = cwd.resolve()
+    if (cwd / DEFAULT_L0_FILENAME).is_file():
+        return cwd
+    current = cwd.parent
+    while True:
+        if (current / DEFAULT_L0_FILENAME).is_file():
+            return current
+        if current == current.parent:
+            return None
+        current = current.parent
+
+
 def build_terminal_channel(
     store: CardStore,
     processes: Subprocesses,
@@ -77,6 +97,7 @@ def build_terminal_channel(
     surface: _Surface | None = None,
     signaler: Callable[[Any], None] | None = None,
     stops: StopHandles | None = None,
+    groundset: DefaultGroundSet | None = None,
     name: str = "terminal",
     description: str | None = None,
     enabled: Callable[[], bool] | None = None,
@@ -91,6 +112,8 @@ def build_terminal_channel(
         without a browser).
     :param signaler: how a message reaches the ghost. Plain callable so the node
         can pass ``matrix.send_signal_to_ghost`` and tests can pass a list.
+    :param groundset: the cognitive-field container. None = the ``ground()``
+        command is not available (headless tests without a workspace).
     :param enabled: live availability gate. Return False and every command drops
         out of the model's interface (that is how ``mode=disabled`` reads).
     """
@@ -193,6 +216,24 @@ def build_terminal_channel(
         await _full(card)
         await _signal(card)
 
+    async def _maybe_batch_done() -> None:
+        """One knock when the last awaiting card settles — not one per verdict.
+
+        The surface already buffered each individual verdict as an aside; this
+        single notify only says the review round is over, go look.
+        """
+        if store.awaiting() or signaler is None:
+            return
+        text = (
+            f"[{name}] every pending command is now decided — cards() to "
+            f"review the batch"
+        )
+        signal = NotifySignalMeta(next=True).to_signal(
+            Message.new(tag=name, name=name).with_content(text),
+            description=text[:120],
+        )
+        signaler(signal)
+
     async def _await_verdict(card: Card) -> None:
         """Park until the human (or the model's own cancel) settles the card."""
         verdict = await store.waiter(card.id)
@@ -201,10 +242,12 @@ def build_terminal_channel(
         if verdict == "accept":
             store.set_state(card.id, CardState.RUNNING)
             await _full(card)
+            await _maybe_batch_done()
             await _run(card)
         else:
             store.set_state(card.id, CardState.REJECTED)
             await _full(card)
+            await _maybe_batch_done()
 
     async def _await_rule(card: Card) -> None:
         verdict = await store.waiter(card.id)
@@ -216,6 +259,7 @@ def build_terminal_channel(
         else:
             store.set_state(card.id, CardState.REJECTED)
         await _full(card)
+        await _maybe_batch_done()
 
     # -- channel ------------------------------------------------------------
 
@@ -233,13 +277,14 @@ def build_terminal_channel(
             "a receipt at once — it does not wait for the human. A card is settled "
             "by the human (accept / deny / ask) and again when the process ends; both "
             "arrive as signals, so read(id) is how you learn what happened. Commands "
-            "run in a thread: open(thread, cwd, description) first, then exec into it. "
+            "run in a thread: open(thread, cwd, description) names a location, then "
+            "exec into it; exec() with no thread runs in the default 'root' thread. "
             f"Every cwd must live inside {root}. "
-            "rule() proposes a regex; once the human accepts it, matching commands run "
-            "without asking while the terminal is in auto mode. The terminal has three "
-            "modes — approval (ask every time), auto (rules decide), disabled (your "
-            "commands are not available). The mode and pending/running counts appear "
-            "in this channel's notice."
+            "A command runs without asking when its thread is auto (the human trusts "
+            "that thread) or it matches an accepted rule — rule() proposes the regex, "
+            "the human accepts it. Every thread has a cognitive field: ground(thread) "
+            "renders the nearest GROUND.md at its cwd. Thread state and the "
+            "pending/running counts appear in this channel's notice."
         )
 
     # -- threads ------------------------------------------------------------
@@ -266,24 +311,50 @@ def build_terminal_channel(
         ]
         return "\n".join(lines) if lines else "(no threads open — open() one first)"
 
+    ground_available = lambda: enabled() and groundset is not None
+
+    @chan.build.command(name="ground", always_observe=True, available=ground_available)
+    async def ground(thread: str = "root") -> str:
+        """Render the cognitive field (nearest GROUND.md) at a thread's cwd.
+
+        This is the same field the human views on demand from the surface's
+        "ground" button. Returns the rendered view — body, law chain and pins —
+        or a note when there is no GROUND.md.
+        """
+        if groundset is None:
+            CommandUtil.raise_observe("ground is not available in this node")
+        t = store.get_thread(thread)
+        if t is None:
+            CommandUtil.raise_observe(f"no thread {thread!r} — open() one first")
+        root = _ground_root_for(Path(t.cwd))
+        if root is None:
+            return f"no ground (no GROUND.md) from {t.cwd} up to the filesystem root"
+        opened = await groundset.open(root)
+        view = await opened.render(cwd=Path(t.cwd))
+        return str(view)
+
     # -- commands -----------------------------------------------------------
 
     @chan.build.command(name="exec", blocking=False, always_observe=False, available=enabled)
     async def exec_cmd(
-        thread: str, chunks__: str, desc: str = "", level: str = "info"
+        thread: str = "root", chunks__: str = "", desc: str = "", level: str = "info"
     ) -> str:
         """Run a shell line in ``thread``. Returns a receipt immediately.
 
-        The line streams onto a card the human watches appear. ``desc`` is the
-        card's title — say what this command is for. ``level`` picks how loudly
-        the completion signal reaches you: background / info / warning.
+        ``thread`` defaults to ``root`` — the terminal's own root directory. The
+        line streams onto a card the human watches appear. ``desc`` is the card's
+        title — say what this command is for. ``level`` picks how loudly the
+        completion signal reaches you: background / info / warning.
+
+        A command runs without asking when its thread is ``auto`` (the human
+        flipped that thread to trust it) or it matches an accepted rule.
         """
         t = store.get_thread(thread)
         if t is None:
             CommandUtil.raise_observe(f"no thread {thread!r} — open() one first")
         card = store.new_card(
             CardType.COMMAND,
-            title=desc or thread,
+            title=desc,
             description="",
             thread=thread,
             cwd=t.cwd,
@@ -310,7 +381,7 @@ def build_terminal_channel(
                 f"[{name} #{card.id}] empty command — put the shell line in the tag body"
             )
 
-        auto = store.mode == Mode.AUTO and store.match_rule(card.content) is not None
+        auto = t.auto or store.match_rule(card.content) is not None
         if auto:
             store.set_state(card.id, CardState.RUNNING)
             await _tail(card)
@@ -328,8 +399,8 @@ def build_terminal_channel(
     async def rule(name_: str, pattern: str, description: str = "") -> str:
         """Propose an auto-approval regex. The human decides whether it goes live.
 
-        Once accepted, any command whose text matches it runs without asking while
-        the terminal is in auto mode. Matched with re.search.
+        Once accepted, any command whose text matches it runs without asking.
+        Matched with re.search.
         """
         try:
             re.compile(pattern)
@@ -440,25 +511,26 @@ def build_terminal_channel(
 
     @chan.build.named_notices
     def notices() -> dict[str, str]:
-        """Warm state: the mode, and each thread's cwd with its card counts.
+        """Warm state: counts, and each thread's cwd with trust/ground flags.
 
         Counts only — never ticking values, which would rewrite the fragment every
         frame for no information.
         """
         awaiting = store.awaiting()
         running = store.running()
+        disabled = " (disabled)" if store.mode == Mode.DISABLED else ""
         out = {
             "terminal": (
-                f"mode: {store.mode} | awaiting: {len(awaiting)} | "
-                f"running: {len(running)}"
+                f"awaiting: {len(awaiting)} | running: {len(running)}{disabled}"
             )
         }
         for t in store.threads():
             n_await = sum(1 for c in awaiting if c.thread == t.name)
             n_run = sum(1 for c in running if c.thread == t.name)
+            flag = " [auto]" if t.auto else ""
             desc = f" | {t.description}" if t.description else ""
             out[_notice_name(t.name)] = (
-                f"cwd: {t.cwd} | awaiting: {n_await} | running: {n_run}{desc}"
+                f"cwd: {t.cwd} | awaiting: {n_await} | running: {n_run}{flag}{desc}"
             )
         return out
 

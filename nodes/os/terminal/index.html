@@ -36,7 +36,7 @@
   }
   .modes button + button { border-left: 1px solid var(--line); }
   .modes button.on { background: var(--accent); color: #10131a; }
-  .mode-hint { color: var(--dim); font-size: 12px; max-width: 280px; }
+  .mode-hint { color: var(--dim); font-size: 12px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button.bulk {
     background: transparent; color: var(--fg); border: 1px solid var(--line);
     border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
@@ -49,19 +49,45 @@
   .conn { font-size: 12px; color: var(--dim); }
   .conn.live { color: var(--run); }
 
+  .t-row { display: flex; align-items: center; gap: 6px; }
+  .t-row .name { color: var(--fg); font-weight: 600; }
+  .t-row .cwd { color: var(--done); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .t-row button {
+    background: transparent; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .t-row button.on { color: var(--run); border-color: var(--run); }
+  .t-ground { margin-top: 4px; }
+  .t-ground-text {
+    color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit;
+    max-height: 60vh; overflow-y: auto; border-top: 1px solid var(--line); padding-top: 6px;
+  }
+  .d-collapse summary {
+    color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    cursor: pointer; user-select: none; padding: 6px 0; border-top: 1px solid var(--line);
+  }
+  .d-collapse summary:hover { color: var(--accent); }
+  .d-collapse > *:not(summary) { margin-top: 6px; }
+  .d-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag {
+    font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line);
+    color: var(--dim); white-space: nowrap;
+  }
+
   main { flex: 1; display: flex; min-height: 0; }
   .stream { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
   .detail {
-    display: none; width: 46%; max-width: 640px; border-left: 1px solid var(--line);
+    display: none; flex-direction: column; gap: 14px;
+    width: clamp(320px, 42%, 720px); border-left: 1px solid var(--line);
     background: var(--panel); overflow-y: auto; padding: 14px;
   }
-  .detail.open { display: block; }
+  .detail.open { display: flex; }
   .detail .hint { color: var(--dim); }
 
   .card {
     border: 1px solid var(--line); border-left: 3px solid var(--done);
     border-radius: 5px; background: var(--panel); padding: 7px 10px; cursor: pointer;
-    width: 100%; max-width: 760px;
+    width: min(100%, 900px);
   }
   .card.selected { border-color: var(--accent); }
   .card.s-streaming { border-left-color: var(--dim); }
@@ -86,6 +112,7 @@
     text-overflow: ellipsis; display: flex; align-items: baseline; gap: 6px;
   }
   .cmd .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmd .prompt { color: var(--run); flex: none; }
   .cmd .thread { color: var(--done); flex: none; }
   .cmd .anim { color: var(--run); flex: none; }
 
@@ -116,6 +143,20 @@
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
   .d-cmd { color: var(--fg); }
   .d-out { color: var(--dim); max-height: 46vh; overflow-y: auto; }
+  .d-analyze { display: flex; flex-direction: column; gap: 6px; }
+  .a-hist { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }
+  .a-q { color: var(--accent); }
+  .a-a { color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+  .a-row { display: flex; gap: 6px; }
+  .a-row input {
+    flex: 1; background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 4px; padding: 2px 8px; font: inherit;
+  }
+  .a-row button {
+    background: transparent; border: 1px solid var(--line); color: var(--accent);
+    border-radius: 4px; padding: 2px 12px; cursor: pointer; font: inherit;
+  }
+  .a-row button:hover { border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -123,7 +164,6 @@
   <span class="brand">moss terminal</span>
   <div class="modes" id="modes">
     <button data-mode="approval">approval</button>
-    <button data-mode="auto">auto</button>
     <button data-mode="disabled">disabled</button>
   </div>
   <span class="mode-hint" id="mode-hint"></span>
@@ -141,14 +181,17 @@
 "use strict";
 
 const MODE_HINTS = {
-  approval: "every command waits for you",
-  auto: "accepted rules run without asking",
-  disabled: "this node's commands are off",
+  approval: "manual unless thread auto",
+  disabled: "commands off",
 };
 const SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 
 const cards = new Map();
 const nodes = new Map();
+const threads = new Map();
+const groundCache = new Map();
+const analyzeHistory = new Map();
+const analyzePending = new Set();
 let selectedId = null;
 let currentMode = "approval";
 
@@ -189,7 +232,8 @@ function buildCard(card) {
   if (card.thread && card.thread !== card.title) {
     cmd.append(make("span", "thread", card.thread));
   }
-  cmd.append(make("span", "txt", card.content ? "$ " + card.content : "(empty)"));
+  cmd.append(make("span", "prompt", "$"));
+  cmd.append(make("span", "txt", card.content ? card.content : "(empty)"));
   const anim = make("span", "anim", "");
   anim.hidden = true;
   cmd.append(anim);
@@ -209,7 +253,7 @@ function renderCard(card) {
   box.className = "card s-" + card.state + (selectedId === card.id ? " selected" : "");
   box.querySelector(".badge").className = "badge s-" + card.state;
   box.querySelector(".badge").textContent = card.state;
-  box.querySelector(".cmd .txt").textContent = card.content ? "$ " + card.content : "(empty)";
+  box.querySelector(".cmd .txt").textContent = card.content ? card.content : "(empty)";
   renderActions(box.querySelector(".actions"), card);
   if (selectedId === card.id) renderDetail(card);
 }
@@ -218,17 +262,6 @@ function renderActions(host, card) {
   host.replaceChildren();
   const allowed = card.interactions || [];
   if (allowed.length && !card._decided) {
-    for (const action of allowed) {
-      if (action === "ask") continue;
-      const btn = make("button", action, action);
-      btn.addEventListener("click", () => {
-        if (card._decided) return;
-        card._decided = true;
-        renderActions(host, card);
-        send({ type: action, id: card.id });
-      });
-      host.append(btn);
-    }
     const input = make("input");
     input.placeholder = "ask…";
     input.addEventListener("keydown", (e) => {
@@ -237,6 +270,19 @@ function renderActions(host, card) {
       input.value = "";
     });
     host.append(input);
+    for (const action of allowed) {
+      if (action === "ask") continue;
+      const btn = make("button", action, action);
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (card._decided) return;
+        card._decided = true;
+        renderActions(host, card);
+        const text = input.value.trim();
+        send({ type: action, id: card.id, text: text || undefined });
+      });
+      host.append(btn);
+    }
   } else if (card.state === "running") {
     const btn = make("button", "stop", "stop");
     btn.addEventListener("click", () => send({ type: "stop", id: card.id }));
@@ -256,27 +302,91 @@ function renderDetail(card) {
 
   if (card.description) detailEl.append(make("div", "d-desc", card.description));
 
-  const meta = make("div", "d-meta");
-  const rows = [
-    ["state", card.state], ["type", card.type], ["thread", card.thread || "—"],
-    ["cwd", card.cwd || "—"], ["process index", card.process_index ?? "—"],
-    ["exit", card.exit_code ?? "—"], ["elapsed", (card.elapsed ?? 0) + "s"],
-    ["signal level", card.level], ["output size", (card.output_chars ?? 0) + " chars"],
-    ["output file", card.output_file || "—"],
-  ];
-  for (const [k, v] of rows) {
-    const line = make("div");
-    line.append(make("b", null, k + ": "));
-    line.append(document.createTextNode(String(v)));
-    meta.append(line);
-  }
-  detailEl.append(meta);
-
+  // command first — the thing under review
   detailEl.append(make("div", "d-section", "command"));
   detailEl.append(make("pre", "d-cmd", card.content || "(empty)"));
 
+  // thread controls — visible actions, not buried in the collapsed meta
+  if (card.thread) {
+    const t = threads.get(card.thread);
+    if (t) {
+      const tRow = make("div", "t-row");
+      tRow.append(make("span", "name", t.name));
+      if (t.cwd) tRow.append(make("span", "cwd", t.cwd));
+      const auto = make("button", t.auto ? "on" : "", "auto");
+      auto.title = "auto-approve this thread's commands";
+      auto.addEventListener("click", () => send({ type: "thread_auto", name: t.name, auto: !t.auto }));
+      tRow.append(auto);
+      const ground = make("button", "", "ground");
+      ground.title = "view this thread's cognitive field";
+      ground.addEventListener("click", () => {
+        if (groundCache.has(t.name)) {
+          groundCache.delete(t.name);
+        } else {
+          send({ type: "ground", thread: t.name });
+        }
+        renderDetail(card);
+      });
+      tRow.append(ground);
+      detailEl.append(tRow);
+      if (groundCache.has(t.name)) {
+        detailEl.append(make("pre", "t-ground-text", groundCache.get(t.name)));
+      }
+    }
+  }
+
+  // analyze — collapsible, sits between command and output
+  const aDetails = make("details", "d-collapse");
+  aDetails.append(make("summary", null, "analyze (zero-context)"));
+  const aBox = make("div", "d-analyze");
+  const aHist = make("div", "a-hist");
+  for (const turn of analyzeHistory.get(card.id) || []) {
+    aHist.append(make("div", "a-q", "you: " + turn.q));
+    if (turn.a) aHist.append(make("div", "a-a", turn.a));
+  }
+  aBox.append(aHist);
+  const pending = analyzePending.has(card.id);
+  const aRow = make("div", "a-row");
+  const aInput = make("input");
+  aInput.placeholder = "ask a second opinion…";
+  aInput.disabled = pending;
+  const ask = () => {
+    const q = aInput.value.trim();
+    if (!q || pending) return;
+    aInput.value = "";
+    analyzePending.add(card.id);
+    const hist = analyzeHistory.get(card.id) || [];
+    send({ type: "analyze", id: card.id, text: q, history: hist });
+    hist.push({ q, a: "" });
+    analyzeHistory.set(card.id, hist);
+    renderDetail(card);
+  };
+  aInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+  const aBtn = make("button", null, pending ? "…" : "analyze");
+  aBtn.disabled = pending;
+  aBtn.addEventListener("click", ask);
+  aRow.append(aInput);
+  aRow.append(aBtn);
+  aBox.append(aRow);
+  aDetails.append(aBox);
+  detailEl.append(aDetails);
+
+  // output
   detailEl.append(make("div", "d-section", "output (tail)"));
   detailEl.append(make("pre", "d-out", (card.output_tail || []).join("") || "(none yet)"));
+
+  // meta — collapsed, tagged
+  const mDetails = make("details", "d-collapse");
+  mDetails.append(make("summary", null, "meta"));
+  const tags = make("div", "d-tags");
+  const tagRows = [
+    ["state", card.state], ["thread", card.thread || "—"], ["exit", card.exit_code ?? "—"],
+    ["cwd", card.cwd || "—"], ["proc", card.process_index ?? "—"],
+    ["elapsed", (card.elapsed ?? 0) + "s"], ["out", (card.output_chars ?? 0) + "c"],
+  ];
+  for (const [k, v] of tagRows) tags.append(make("span", "tag", k + "=" + v));
+  mDetails.append(tags);
+  detailEl.append(mDetails);
 }
 
 function toggle(id) {
@@ -307,6 +417,11 @@ function setMode(mode) {
   hintEl.textContent = MODE_HINTS[mode] || "";
 }
 
+function updateThreads(list) {
+  threads.clear();
+  for (const t of list || []) threads.set(t.name, t);
+}
+
 // -- frames ----------------------------------------------------------------
 
 function applyCard(card) {
@@ -323,6 +438,7 @@ function onFrame(frame) {
       nodes.clear();
       cards.clear();
       setMode(frame.mode);
+      updateThreads(frame.threads);
       for (const card of frame.cards) applyCard(card);
       break;
     }
@@ -345,6 +461,34 @@ function onFrame(frame) {
     case "mode":
       setMode(frame.mode);
       break;
+    case "threads":
+      updateThreads(frame.threads);
+      if (selectedId != null) {
+        const card = cards.get(selectedId);
+        if (card) renderDetail(card);
+      }
+      break;
+    case "ground": {
+      groundCache.set(frame.thread, frame.text);
+      if (selectedId != null) {
+        const card = cards.get(selectedId);
+        if (card && card.thread === frame.thread) renderDetail(card);
+      }
+      break;
+    }
+    case "analyze": {
+      const card = cards.get(frame.id);
+      analyzePending.delete(frame.id);
+      const hist = analyzeHistory.get(frame.id) || [];
+      if (hist.length && hist[hist.length - 1].a === "") {
+        hist[hist.length - 1].a = frame.text;
+      } else {
+        hist.push({ q: "", a: frame.text });
+      }
+      analyzeHistory.set(frame.id, hist);
+      if (card && selectedId === frame.id) renderDetail(card);
+      break;
+    }
     case "error":
       console.warn("terminal error:", frame.text);
       break;

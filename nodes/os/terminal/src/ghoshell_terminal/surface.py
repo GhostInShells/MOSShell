@@ -22,8 +22,9 @@ from typing import Any
 
 from websockets.asyncio.server import ServerConnection, serve
 
+from ghoshell_moss.ground import DEFAULT_L0_FILENAME
 from ghoshell_moss.message import Message
-from ghoshell_moss.signals import NotifySignalMeta
+from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
 
 from .card import CardState
 from .store import CardStore
@@ -33,6 +34,28 @@ __all__ = ["TerminalSurface", "StopHandles"]
 _DEBOUNCE_SECONDS = 0.4
 """A verdict is one decision. Repeated clicks inside this window are the same
 decision arriving twice, not a second one."""
+
+_ANALYZE_INSTRUCTION = (
+    "Explain what this shell command does, what it touches, and its risks. "
+    "Answer the human's question directly and concretely. Assess the command "
+    "as written — do not cheerlead or assume intent."
+)
+"""The zero-context analyzer's fixed instruction. It sees only the command text,
+the cwd, and the human's question — nothing the issuing model intended."""
+
+
+def _ground_root_for(cwd: Path) -> Path | None:
+    """The nearest GROUND.md at or above ``cwd``, or None (mirrors the channel's)."""
+    cwd = cwd.resolve()
+    if (cwd / DEFAULT_L0_FILENAME).is_file():
+        return cwd
+    current = cwd.parent
+    while True:
+        if (current / DEFAULT_L0_FILENAME).is_file():
+            return current
+        if current == current.parent:
+            return None
+        current = current.parent
 
 
 class StopHandles:
@@ -60,6 +83,8 @@ class TerminalSurface:
         port: int,
         html_path: Path,
         stops: StopHandles | None = None,
+        llm_funcs: Callable[[], Any] | None = None,
+        groundset: Any | None = None,
     ) -> None:
         self._store = store
         self._send_signal = send_signal
@@ -67,6 +92,8 @@ class TerminalSurface:
         self._host = host
         self._html_path = html_path
         self._stops = stops or StopHandles()
+        self._llm_funcs = llm_funcs
+        self._groundset = groundset
         self._clients: set[ServerConnection] = set()
         self._server: Any = None
         self._settled: set[int] = set()
@@ -109,29 +136,32 @@ class TerminalSurface:
         self._last_action[key] = now
         return False
 
-    async def _accept(self, card_id: int) -> None:
+    async def _accept(self, card_id: int, text: str = "") -> None:
         if card_id in self._settled or self._debounced(card_id, "accept"):
             return
         if not self._store.settle(card_id, "accept"):
             return
         self._settled.add(card_id)
         card = self._store.get(card_id)
-        self._signal(
-            f"[terminal #{card_id}] accepted '{card.title}' — it is running now",
-            card.thread,
-            next_=False,
+        if text:
+            self._store.add_dialogue(card_id, "human", text)
+            await self.broadcast({"type": "card.full", "card": card.view()})
+        self._aside(
+            f"[terminal #{card_id}] accepted '{card.title}' — it is running now"
         )
 
-    async def _deny(self, card_id: int) -> None:
+    async def _deny(self, card_id: int, text: str = "") -> None:
         if card_id in self._settled or self._debounced(card_id, "deny"):
             return
         if not self._store.settle(card_id, "deny"):
             return
         self._settled.add(card_id)
         card = self._store.get(card_id)
-        self._signal(
-            f"[terminal #{card_id}] denied '{card.title}' — do not re-issue this one",
-            card.thread,
+        if text:
+            self._store.add_dialogue(card_id, "human", text)
+            await self.broadcast({"type": "card.full", "card": card.view()})
+        self._aside(
+            f"[terminal #{card_id}] denied '{card.title}' — do not re-issue this one"
         )
 
     async def _ask(self, card_id: int, text: str) -> None:
@@ -142,10 +172,45 @@ class TerminalSurface:
             return
         self._store.add_dialogue(card_id, "human", text or "(wants to talk)")
         await self.broadcast({"type": "card.full", "card": card.view()})
-        self._signal(
+        self._notify(
             f"[terminal #{card_id}] human asks about '{card.title}': {text}",
-            card.thread,
+            next_=True,
         )
+
+    async def _analyze(self, card_id: int, text: str, history: list) -> None:
+        """Zero-context second opinion — a side-channel model reads the command.
+
+        Deliberately divorced from the issuing model: the prompt is the command
+        text, its cwd, and the human's question — no title, no description, no
+        ghost intent. The reply goes back to the surface, never into the ghost's
+        own message stream.
+        """
+        llm_funcs = self._llm_funcs() if self._llm_funcs is not None else None
+        if llm_funcs is None:
+            await self.broadcast({"type": "error", "text": "analyze: LLMFuncs not registered"})
+            return
+        card = self._store.get(card_id)
+        if card is None:
+            return
+        lines = [f"cwd: {card.cwd}", f"command: {card.content}"]
+        for turn in history or []:
+            if isinstance(turn, dict):
+                lines.append(f"Q: {turn.get('q', '')}")
+                lines.append(f"A: {turn.get('a', '')}")
+        lines.append(f"Q: {text}")
+        try:
+            result = await llm_funcs.call(
+                instruction=_ANALYZE_INSTRUCTION,
+                prompt="\n".join(lines),
+            )
+        except Exception as e:
+            await self.broadcast({"type": "error", "text": f"analyze failed: {e}"})
+            return
+        await self.broadcast({
+            "type": "analyze",
+            "id": card_id,
+            "text": (result.content or "").strip(),
+        })
 
     async def _accept_all(self) -> None:
         for card in self._store.awaiting():
@@ -171,10 +236,72 @@ class TerminalSurface:
             return
         await self.broadcast({"type": "mode", "mode": resolved})
 
-    def _signal(self, text: str, thread: str = "", *, next_: bool = True) -> None:
+    async def _set_thread_auto(self, name: str, auto: bool) -> None:
+        try:
+            self._store.set_thread_auto(name, auto)
+        except KeyError:
+            await self.broadcast({"type": "error", "text": f"no thread {name!r}"})
+            return
+        await self._broadcast_threads()
+        # Trusting a thread also settles what is already waiting in it — the
+        # human's "auto" means "run everything here", including cards that were
+        # issued before the switch was flipped.
+        if auto:
+            for card in list(self._store.awaiting()):
+                if card.thread == name:
+                    await self._accept(card.id)
+
+    async def _render_ground(self, thread: str) -> None:
+        """Render a thread's cognitive field for the human to view (shared).
+
+        The model reads the same field with ``ground(thread)``; this is the
+        human's on-demand view, requested from the surface rather than cached
+        in the DOM.
+        """
+        if self._groundset is None:
+            await self.broadcast({"type": "error", "text": "ground is not available"})
+            return
+        t = self._store.get_thread(thread)
+        if t is None:
+            await self.broadcast({"type": "error", "text": f"no thread {thread!r}"})
+            return
+        root = _ground_root_for(Path(t.cwd))
+        if root is None:
+            await self.broadcast({
+                "type": "ground", "thread": thread,
+                "text": f"no ground (no GROUND.md) from {t.cwd} up to the filesystem root",
+            })
+            return
+        try:
+            opened = await self._groundset.open(root)
+            view = await opened.render(cwd=Path(t.cwd))
+        except Exception as e:
+            await self.broadcast({"type": "error", "text": f"ground failed: {e}"})
+            return
+        await self.broadcast({"type": "ground", "thread": thread, "text": str(view)})
+
+    async def _broadcast_threads(self) -> None:
+        await self.broadcast({
+            "type": "threads",
+            "threads": [t.model_dump(mode="json") for t in self._store.threads()],
+        })
+
+    def _notify(self, text: str, *, next_: bool = True) -> None:
+        """A must-not-lose message. ``next`` guarantees the ghost a turn."""
         if self._send_signal is None:
             return
         signal = NotifySignalMeta(next=next_).to_signal(
+            Message.new(tag="terminal", name=self._identity).with_content(text),
+            description=text[:120],
+        )
+        self._send_signal(signal)
+
+    def _aside(self, text: str) -> None:
+        """A decision the ghost notices without being interrupted. Verdicts are
+        facts, not questions — they buffer until the ghost is free."""
+        if self._send_signal is None:
+            return
+        signal = AsideSignalMeta().to_signal(
             Message.new(tag="terminal", name=self._identity).with_content(text),
             description=text[:120],
         )
@@ -209,11 +336,17 @@ class TerminalSurface:
                 kind = frame.get("type")
                 card_id = int(frame.get("id", 0))
                 if kind == "accept":
-                    await self._accept(card_id)
+                    await self._accept(card_id, str(frame.get("text", "") or ""))
                 elif kind == "deny":
-                    await self._deny(card_id)
+                    await self._deny(card_id, str(frame.get("text", "") or ""))
                 elif kind == "ask":
                     await self._ask(card_id, str(frame.get("text", "")))
+                elif kind == "analyze":
+                    await self._analyze(
+                        card_id,
+                        str(frame.get("text", "")),
+                        frame.get("history") or [],
+                    )
                 elif kind == "accept_all":
                     await self._accept_all()
                 elif kind == "deny_all":
@@ -224,6 +357,12 @@ class TerminalSurface:
                     await self._stop_all()
                 elif kind == "mode":
                     await self._set_mode(str(frame.get("mode", "")))
+                elif kind == "thread_auto":
+                    await self._set_thread_auto(
+                        str(frame.get("name", "")), bool(frame.get("auto"))
+                    )
+                elif kind == "ground":
+                    await self._render_ground(str(frame.get("thread", "")))
         finally:
             self._clients.discard(connection)
 
