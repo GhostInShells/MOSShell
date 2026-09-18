@@ -21,7 +21,7 @@ class DoloresMeta(GhostMeta):
     iterating as the carrier for this repo's own ghost instance.
     """
 
-    VERSION = "dev_3"
+    VERSION = "dev_4"
 
     def __init__(
             self,

@@ -123,8 +123,22 @@ class TestStubsSync:
         assert (tmp_path / ".dsh/profiles/web/moss-dolores-ghost-plugin.ts").exists()
         # ego preset 复制进 .agent-presets.
         assert (tmp_path / ".dsh/.agent-presets/dolores-ego/agent.cordis.yml").exists()
+        # startup 目录 (开机启动文档) 随 stubs 同步.
+        assert (tmp_path / "startup" / "default.startup.yml").exists()
+        assert (tmp_path / "startup" / "GROUND.md").exists()
         assert len(session.outputs) == 1
         assert session.outputs[0].role == "system"
+
+    def test_load_startup_fallback_and_parse(self, tmp_path: Path):
+        # matrix=None 时 mode_name 为空 → 回退 default.startup.yml.
+        (tmp_path / "startup").mkdir(parents=True)
+        (tmp_path / "startup" / "default.startup.yml").write_text(
+            'command: "<say>hi</say>"\ninstruction: "预热"\n', encoding="utf-8"
+        )
+        ghost = _dolores(home=tmp_path)
+
+        assert ghost._resolve_startup_doc() == tmp_path / "startup" / "default.startup.yml"
+        assert ghost._load_startup() == ("<say>hi</say>", "预热")
 
     def test_override_on_version_mismatch(self, tmp_path: Path):
         (tmp_path / ".dolores.yml").write_text("version: dev_0\n")
@@ -309,6 +323,26 @@ class TestDoloresEgoNucleus:
         assert imp.messages == []
         # 默认 mode (空) = 正常仲裁, 非 silent buffer.
         assert imp.mode == ""
+
+    @pytest.mark.asyncio
+    async def test_startup_kind_carries_command_and_instruction(self):
+        from .nucleus import DoloresEgoNucleus, new_dolores_ego_signal
+
+        nucleus = DoloresEgoNucleus()
+        impulses = []
+        async with nucleus:
+            nucleus.with_bus(lambda signal: None, impulses.append)
+            nucleus.add_signal(new_dolores_ego_signal(
+                kind="startup", command="<say>hi</say>", instruction="预热"
+            ))
+
+        assert len(impulses) == 1
+        imp = impulses[0]
+        assert imp.logos == "<say>hi</say>"
+        assert len(imp.messages) == 1
+        body = imp.messages[0].to_content_string()
+        assert "<startup>" in body
+        assert "预热" in body
 
     @pytest.mark.asyncio
     async def test_attended_rewrites_to_info(self):

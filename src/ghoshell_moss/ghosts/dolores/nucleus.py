@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from typing import Callable
 
 from ghoshell_container import IoCContainer
+from pydantic import Field
 from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
@@ -21,7 +22,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
     SignalMeta,
     SignalName,
 )
-from ghoshell_moss.message import ContextType
+from ghoshell_moss.message import ContextType, Message
 
 __all__ = [
     "NAME",
@@ -40,7 +41,26 @@ SIGNAL_NAME = "dolores/ego"
 
 
 class DoloresEgoSignalMeta(SignalMeta):
-    """Self-wake channel signal meta — one turn/start observation is one self-wake signal."""
+    """Self-wake channel signal meta — one turn/start observation is one self-wake signal.
+
+    Extended with the startup boot protocol: ``kind`` distinguishes the ordinary step wake
+    (empty) from the startup boot wake, which may carry a ``command`` (spoken logos) and an
+    ``instruction`` (preheat text). All three default empty — an unextended signal keeps the
+    original empty-body wake behavior.
+    """
+
+    kind: str = Field(
+        default='',
+        description="wake kind — '' (step activity wake) | 'startup' (boot wake)",
+    )
+    command: str = Field(
+        default='',
+        description="CTML logos to execute directly (speak) on startup",
+    )
+    instruction: str = Field(
+        default='',
+        description="preheat instruction text, wrapped into a <startup> handshake by the mechanism",
+    )
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -103,15 +123,27 @@ class DoloresEgoNucleus(Nucleus):
             return
         if signal.name != self._target_signal:
             return
+        meta = DoloresEgoSignalMeta.from_signal(signal)
         # challenge: BACKGROUND — low-key, only wins initial when mindflow is idle; suppressed when there is attention.
         self._index += 1
+        messages: list[Message] = []
+        logos = ""
+        if meta is not None and meta.kind == "startup":
+            # boot wake: preheat via instruction (handshake), speak via command (reflex-arc logos).
+            if meta.instruction:
+                messages.append(Message.new(tag="startup").with_content(
+                    f"<startup>\n本 instruction 来自文档:\n---\n{meta.instruction}\n</startup>"
+                ))
+            if meta.command:
+                logos = meta.command
         self._impulse = Impulse(
             source=self._name,
             source_idx=self._index,
             id=signal.id,
             priority=Priority.BACKGROUND,
-            messages=[],  # empty body — handling logic is defined at the thinking/enter layer.
-            description="",  # self-wake channel, no summary
+            messages=messages,  # empty body for step wake — handling is defined at the thinking/enter layer.
+            logos=logos,
+            description="",
             complete=True,  # default (empty) mode = normal arbitration (not silent)
         )
         if self._notify_cb is not None:
@@ -180,9 +212,17 @@ def new_dolores_ego_signal(
     priority: Priority = Priority.INFO,
     description: str = "",
     hint: str = "",
+    kind: str = "",
+    command: str = "",
+    instruction: str = "",
 ) -> Signal:
-    """Helper — build a self-wake signal for the ego's turn/start watcher to emit."""
-    return DoloresEgoSignalMeta().to_signal(
+    """Helper — build a self-wake signal for the ego's turn/start watcher to emit.
+
+    ``kind`` / ``command`` / ``instruction`` extend the signal for the startup boot
+    protocol; leaving them empty keeps the ordinary step wake.
+    """
+    meta = DoloresEgoSignalMeta(kind=kind, command=command, instruction=instruction)
+    return meta.to_signal(
         *messages,
         description=description,
         priority=priority,

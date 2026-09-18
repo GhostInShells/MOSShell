@@ -183,6 +183,9 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         # 急停级联控制器 — mindflow 和 shell 都已就绪
         self._pause_ctrl.bind(self._mindflow, self.moss.shell)
 
+        # 6. ghost startup — 装线完成后回调 born hook (如 dolores 读 startup 文档激活自己).
+        await self._ghost_instance.startup()
+
         self._started = True
         logger.info("%r started", self)
         return self

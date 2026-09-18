@@ -319,6 +319,57 @@ class Dolores(Ghost):
             self._facade.discard()
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
+    # ── startup (born) ───────────────────────────────
+
+    async def startup(self) -> None:
+        """Lifecycle hook (born) — read the mode startup doc and emit a self-wake signal.
+
+        Called by GhostRuntime after mindflow wiring (signal routing registered, main loops
+        started). Reads ``startup/{mode}.startup.yml`` (fallback ``default.startup.yml``);
+        when both command and instruction are empty the boot is silent (no signal).
+        """
+        if self._matrix is None:
+            return
+        loaded = await asyncio.to_thread(self._load_startup)
+        if loaded is None:
+            return
+        command, instruction = loaded
+        if not command and not instruction:
+            return
+        from .nucleus import new_dolores_ego_signal
+
+        signal = new_dolores_ego_signal(kind="startup", command=command, instruction=instruction)
+        self._matrix.session.add_signal(signal)
+
+    def _resolve_startup_doc(self) -> Path | None:
+        """Resolve the current mode's startup doc, falling back to the default."""
+        if self._home is None:
+            return None
+        startup_dir = self._home / "startup"
+        mode_name = self._matrix.env.mode_name if self._matrix is not None else ""
+        if mode_name:
+            doc = startup_dir / f"{mode_name}.startup.yml"
+            if doc.exists():
+                return doc
+        default = startup_dir / "default.startup.yml"
+        if default.exists():
+            return default
+        return None
+
+    def _load_startup(self) -> tuple[str, str] | None:
+        """Parse the resolved startup doc into (command, instruction)."""
+        doc = self._resolve_startup_doc()
+        if doc is None:
+            return None
+        try:
+            data = yaml.safe_load(doc.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            self.logger.warning("startup doc %s parse failed: %s", doc, e)
+            return None
+        command = str(data.get("command") or "").strip()
+        instruction = str(data.get("instruction") or "").strip()
+        return command, instruction
+
     # ── dsh startup ─────────────────────────────────
 
     @property

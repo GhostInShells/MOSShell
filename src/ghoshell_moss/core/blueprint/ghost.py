@@ -167,6 +167,18 @@ class Ghost(ABC):
         """结束自身生命周期."""
         pass
 
+    # ── lifecycle hooks ──────────────────────────────
+
+    async def startup(self) -> None:
+        """Lifecycle hook (born) — called by GhostRuntime after wiring is complete.
+
+        Fired after ``ghost.__aenter__`` and mindflow wiring (nuclei running, signal routing
+        registered, main loops started). The ghost may here self-activate — e.g. read a mode
+        startup document and emit a self-wake signal. Default no-op; overridden by ghosts
+        that boot with an initial action.
+        """
+        return None
+
     # ── observability surface ──────────────────────────────
     #
     # Three verbs, three directions — one purpose: let debuggers see what the ghost sees.
