@@ -351,6 +351,47 @@ async def test_first_frame_emits_channel_added_after_baseline():
 
 
 @pytest.mark.asyncio
+async def test_virtual_child_removal_emits_tombstone():
+    """virtual children 从树上消失 ⟹ 帧差分 emit 墓碑 (端到端).
+
+    mesh channel 的器官投影由 virtual_children 回调供给: 回调不再返回某个 child 之后,
+    下一帧必须显式告知模型它已下线, 否则模型会一直保留一个已经不存在的表面.
+    上一帧 meta 表里有、当前帧没有的 path, 由 facade_delta 自动发墓碑 — 生产者无需
+    产出任何 "removed" 文本 (那是 notice 片段级才需要的协作).
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+    from ghoshell_moss.core.blueprint.channel_builder import new_channel
+    from ghoshell_moss.core.concepts.channel import Channel
+
+    shell = new_ctml_shell("traj_virtual_removed")
+    mesh = new_channel(name="mesh")
+    # 挂载名是回调返回的 key ('voice'); 子 channel 自己的名字 ('main') 不进路径.
+    voice = new_channel(name="main")
+
+    @voice.build.command()
+    async def say(text: str) -> str:
+        return text
+
+    live: dict[str, Channel] = {"voice": voice}
+
+    @mesh.build.virtual_children
+    def _children() -> dict[str, Channel]:
+        return dict(live)
+
+    shell.main_channel.import_channels(mesh)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            # 前置: 基线 (epoch 起点) 里它是挂着的.
+            assert 'path="mesh.voice"' in trajectory.epoch_start_point(refresh=False)
+
+            live.clear()
+            await shell.refresh_metas()
+            frame = trajectory.pop_frame()
+            assert '<channel path="mesh.voice" removed/>' in frame.facade_delta()
+
+
+@pytest.mark.asyncio
 async def test_instruction_re_renders_at_epoch_start_point():
     """instruction 不再 startup 冻结 — refresh 重渲染, 新 epoch 的全量 facade 带新内容.
 
