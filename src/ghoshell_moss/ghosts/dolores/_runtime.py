@@ -287,6 +287,7 @@ class Dolores(Ghost):
                 mode=self._matrix.env.mode_name,
                 instruction=self.system_prompt(),
                 facade=self._facade,
+                ghost_home=self._home,
             )
             # memento 旁路服务: ghost 级持有, 注入 ego (锚点写入 / 阈值判定都过它).
             # 生命周期入 exit stack —— 旁路任务归它治理, ghost 关停时随栈取消.

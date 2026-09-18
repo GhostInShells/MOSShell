@@ -137,8 +137,9 @@ const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
 // 旁路原语: 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路 session (id ≠
 // doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠), 不走 subagent,
-// 不 attach workspace. 必须复用 ego preset 而非另建瘦 preset: 旁路 prompt 要与主路逐字节
-// 同前缀, 才能吃到 LLM 前缀缓存 (见 plugin 顶注 / memento-plan #7).
+// 不 attach ego workspace (attach 到 ghost_home 上的 home workspace 归组). 必须复用 ego
+// preset 而非另建瘦 preset: 旁路 prompt 要与主路逐字节同前缀, 才能吃到 LLM 前缀缓存
+// (见 plugin 顶注 / memento-plan #7).
 // prompt 由调用方给 (note / chat 都是它的调用方) —— 语义留在 MOSS 侧, 这里只跑一轮.
 const DOLORES_BYPASS_RUN = `${DOLORES_API_ROOT}/bypass/run`
 // read: ref 的 turn 区间 → 源 log 的原始事件切片 (live-or-cold). 折叠成文本归 MOSS 侧.
@@ -147,6 +148,10 @@ const HARNESS_IDENTITY_TEXT = ''
 
 // ego workspace: project_home 上的 workspace, ego session 归组用, 模块级共享.
 let doloresEgoWorkspaceId: WorkspaceId | null = null
+
+// ghost home workspace: ghost_home 上的 workspace, 旁路 (note/chat) session 归组用, 模块级共享.
+let doloresHomeWorkspaceId: WorkspaceId | null = null
+let doloresHomePath: string | null = null
 
 // ego session id + thinking 状态. id 由 ego/create 设.
 let doloresEgoSessionId: SessionId | null = null
@@ -610,6 +615,8 @@ export function apply(ctx: Context) {
           instruction,
           messages,
           permission,
+          ghost_home: ghostHome,
+          home_title: homeTitle,
         } = body
         if (typeof projectHome !== 'string' || projectHome === '') {
           throw new Error('project_home must be a non-empty string')
@@ -640,6 +647,19 @@ export function apply(ctx: Context) {
           await workspace.setTitle(projectName)
         }
         doloresEgoWorkspaceId = workspace.id
+        // 1b. ghost home workspace: ghost_home 上的 workspace, 旁路 note/chat session 归组用.
+        //     title = home_title (如 "deepseek @ home"). 缺省 (无 home) 时跳过 —— 旁路回落 process.cwd().
+        if (typeof ghostHome === 'string' && ghostHome !== '') {
+          let homeWorkspace = await ctx.workspaceRegistry.resolveByPath(ghostHome)
+          if (homeWorkspace === undefined) {
+            homeWorkspace = await ctx.workspaceRegistry.create(ghostHome)
+          }
+          if (typeof homeTitle === 'string' && homeTitle !== '' && homeWorkspace.title !== homeTitle) {
+            await homeWorkspace.setTitle(homeTitle)
+          }
+          doloresHomeWorkspaceId = homeWorkspace.id
+          doloresHomePath = ghostHome
+        }
         // persona 文本落到模块级, 供 apply_ego_agent 在 session/start 时注入 persona 段.
         doloresInstruction = instruction
         // 2. ref 存在时才走构造器 seed: seed = memory + 切点之后的 surface 尾巴 —— memory 必须排在
@@ -967,7 +987,8 @@ export function apply(ctx: Context) {
           sessionId: randomUUID(),
           seed,
           // 必须复用 ego preset: 旁路 prompt 要与主路逐字节同前缀, 否则 LLM 前缀缓存整条失效.
-          meta: { cwd: process.cwd(), agentPreset: DOLORES_EGO_PRESET, seedLength: seed.length },
+          // cwd = ghost_home (home workspace 归组); 未设 home workspace 时回落 process.cwd().
+          meta: { cwd: doloresHomePath ?? process.cwd(), agentPreset: DOLORES_EGO_PRESET, seedLength: seed.length },
           setup: async (agentCtx: Context) => {
             await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_EGO_PRESET)
             // 显式约束 (不靠 pre-step 身份分支): 单轮请求侧注入 effort + maxTokens.
@@ -983,6 +1004,16 @@ export function apply(ctx: Context) {
             }
           },
         })
+        // 归组进 home workspace (用完 dispose, log 仍留; 旧数据由用户删 ghost_home 目录重建).
+        // best-effort: 归组是 UI 语义, cwd 不匹配 / workspace 已删时 note 仍照常产出, 只落不进 home 分组.
+        if (doloresHomeWorkspaceId !== null) {
+          const homeWorkspace = ctx.workspaceRegistry.get(doloresHomeWorkspaceId)
+          if (homeWorkspace !== undefined) {
+            await homeWorkspace.attachSession(handle.agent.id).catch((error) => {
+              ctx.logger.warn('dolores: bypass attach to home workspace failed: %s', String(error))
+            })
+          }
+        }
         try {
           handle.agent.followup(createUserMessage({
             content: [{ type: 'text', text: prompt }],

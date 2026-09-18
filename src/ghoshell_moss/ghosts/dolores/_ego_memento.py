@@ -55,8 +55,9 @@ _BYPASS_RUN_ROUTE = "/moss-api/ghost/dolores/bypass/run"
 # read 路由: 收 {ref} 回 {events}, 源 log 的 turn 区间原始切片 (live-or-cold).
 _READ_ROUTE = "/moss-api/ghost/dolores/read"
 
-# note 旁路的固定约束 (强制, 不可调): 摘要压低思考模式 —— 压缩不该深想, 省 token 不阻塞主路.
-_NOTE_EFFORT = "low"
+# note 旁路的固定约束 (强制, 不可调): 摘要关思考 —— max_tokens 只封回答不封 CoT, 只有 off 才让
+# note_max_tokens 成为真硬 cap (压缩不该深想, 省 token 不阻塞主路).
+_NOTE_EFFORT = "off"
 # 旁路摘要前置上下文: 只展开最近 1 条已就绪的 commit message 作前文.
 _NOTE_PRIOR_COUNT = 1
 

@@ -566,8 +566,8 @@ class TestEgoMementoSidecar:
         assert note.error == ""
         assert conn.calls[0][0].endswith("/bypass/run")
         assert conn.calls[0][1]["ref"]["session_id"] == "s1"
-        # 旁路约束显式进载荷: 低思考 + 输出硬 cap (不再靠 plugin 身份判定间接降级).
-        assert conn.calls[0][1]["reasoning_effort"] == "low"
+        # 旁路约束显式进载荷: 关思考 + 输出硬 cap (不再靠 plugin 身份判定间接降级).
+        assert conn.calls[0][1]["reasoning_effort"] == "off"
         assert conn.calls[0][1]["max_tokens"] > 0
         assert self._state(manager, anchor.id) == "ready"
 

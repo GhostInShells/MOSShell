@@ -66,8 +66,8 @@ class DoloresEgoConfig(BaseModel):
     """
 
     session_title: str = Field(
-        default="{mode} · {timestamp}",
-        description="session title template ({mode}/{timestamp} placeholders), the human-readable session name.",
+        default="Ψ · {timestamp}",
+        description="session title template ({timestamp} placeholder), the human-readable session name.",
     )
     permission: str = Field(
         default="workspace-write",
@@ -123,6 +123,7 @@ class DoloresEgoContext:
     - mode: mode name, used for the session title.
     - instruction: assembled system prompt.
     - facade: shell context surface (used to refresh meta on interleaved_ctml).
+    - ghost_home: ghost home dir — 旁路 (note/chat) session 归组的 home workspace; None = 不建 home workspace.
     """
 
     project_home: Path
@@ -131,6 +132,7 @@ class DoloresEgoContext:
     mode: str
     instruction: str
     facade: "MShellContextFacade"
+    ghost_home: Path | None = None
 
 
 class DoloresEgo:
@@ -217,6 +219,9 @@ class DoloresEgo:
             "messages": self._assemble_initial_messages(),
             "permission": self._config.permission,
         }
+        if self._ctx.ghost_home is not None:
+            payload["ghost_home"] = str(self._ctx.ghost_home)
+            payload["home_title"] = f"{self._ctx.name} @ home"
         ref = self._memento_manager.resume_ref() if self._memento_manager is not None else None
         if ref is not None:
             payload["ref"] = ref.model_dump(mode="json")
