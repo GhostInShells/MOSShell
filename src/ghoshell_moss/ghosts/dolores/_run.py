@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
 from ghoshell_moss.contracts.logger import get_moss_logger
-from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk
+from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk, TurnEnd
 
 from ._tools import WaitActionDoneToolCall, InterleavedCtmlToolCall, ObserveStatusToolCall, ReasoningToolCall, ToolCallResult
 
@@ -39,6 +39,12 @@ __all__ = ["DoloresRun"]
 # poison sentinel: enqueued on enter-task error; the consumer raises _enter_error when it reads it.
 # never enqueued on the normal path — logos() ends itself on turn/end; the pill only carries enter errors.
 _POISON = object()
+
+# turn/end 的 reason.kind → 是否打断本轮 thinking. aborted = turn 被外部掐掉 (人按停 / 新输入抢占 /
+# 我们自己 exit); error / max-tokens = 没跑完. 三者都要退帧循环 + 停身体, 下一帧再拿到 <stop_reason>.
+# interrupted **故意不在内**: dsh 已把 pending tool 结算成 interrupted, MOSS 照常轮转 —
+# 它与 aborted 同属"没跑完", 不能顺手一起打断. blocked 尚未观测, 同 interrupted 处理.
+_TURN_END_ABORT = frozenset({"aborted", "error", "max-tokens"})
 
 
 def _get_text_chunk(event: SessionEvent) -> str | None:
@@ -152,6 +158,8 @@ class DoloresRun:
         self._thinking_event: asyncio.Event = thinking_event
         # logos() single-consumption guard — a run has at most one logos stream (more would split the queue).
         self._logos_started = False
+        # turn/end 只结算一次: 文本循环内与循环外各有一个 call site, 同一 event 会被看见两次.
+        self._turn_end_noted = False
 
     # ── transaction boundary ─────────────────────────────────────────
 
@@ -297,13 +305,38 @@ class DoloresRun:
                                 yield delta
                             event = await anext(events)
                             text = _get_text_chunk(event)
+                            if self._note_turn_end(event):
+                                # 必须在 parser 退出前处理: __aexit__ 的 wait_action_done 会等身体
+                                # 跑完, 等到那里再打断就晚了.
+                                break
                 # non-text event: tool left empty, turn/end ends the stream.
-                if event.meta.type == "turn/end":
+                if self._note_turn_end(event):
                     return
                 if tool := ToolCallEvent.from_session_event(event):
                     await self._handle_tool_use_event(tool)
         finally:
             await events.aclose()
+
+    def _note_turn_end(self, event: SessionEvent) -> bool:
+        """turn/end → 按 reason.kind 决定是否打断本轮 thinking; 返回该 event 是否为 turn/end.
+
+        aborted / error / max-tokens → abort: 帧循环退出 (attention abort), 身体停
+        (action loop 的 _abort_clear 会 shell.clear), 下一帧经 previous.stop_reason 看到原因.
+        completed → 正常收线; interrupted → 不 abort, 照常轮转.
+
+        reason 字符串原样带 kind (+ cause), 归一成散文会让模型读不到是 error 还是 max-tokens.
+        """
+        end = TurnEnd.from_session_event(event)
+        if end is None:
+            return False
+        if not self._turn_end_noted:
+            self._turn_end_noted = True
+            if end.reason.kind in _TURN_END_ABORT:
+                cause = end.reason.reason
+                self._thinking.abort(
+                    end.reason.kind if cause is None else f"{end.reason.kind}/{cause.kind}"
+                )
+        return True
 
     # ── internals ────────────────────────────────────────────────────
 

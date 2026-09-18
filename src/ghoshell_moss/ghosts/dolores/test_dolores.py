@@ -884,8 +884,9 @@ class FakeRunEgo:
 class FakeArticulator:
     """_CtmlParser 的 articulator fake — send 累积 logos, 生命周期空操作."""
 
-    def __init__(self):
+    def __init__(self, log: list | None = None):
         self.sent: list[str] = []
+        self._log = log
 
     async def __aenter__(self):
         return self
@@ -897,19 +898,23 @@ class FakeArticulator:
         self.sent.append(delta)
 
     async def wait_action_done(self):
-        pass
+        if self._log is not None:
+            self._log.append("wait_action_done")
 
 
 class FakeRunThinking:
-    def __init__(self):
+    def __init__(self, log: list | None = None):
         self.abort_reasons: list = []
         self.articulators: list[FakeArticulator] = []
+        self._log = log
 
     def abort(self, reason):
         self.abort_reasons.append(reason)
+        if self._log is not None:
+            self._log.append("abort")
 
     def articulator(self, replan=False, wait_action_done=False) -> FakeArticulator:
-        art = FakeArticulator()
+        art = FakeArticulator(self._log)
         self.articulators.append(art)
         return art
 
@@ -995,6 +1000,48 @@ class TestDoloresRun:
                 collected.append(delta)
         assert "".join(collected) == "<say>hi</say>"
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
+        assert thinking.abort_reasons == []  # completed → 不打断
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reason", "expected"),
+        [
+            ({"kind": "aborted", "reason": {"kind": "user"}}, "aborted/user"),
+            ({"kind": "error"}, "error"),
+            ({"kind": "max-tokens"}, "max-tokens"),
+        ],
+    )
+    async def test_turn_end_aborts_thinking_before_wait_action_done(self, reason, expected):
+        """aborted/error/max-tokens → 打断 thinking, 且发生在 parser 的 wait_action_done 之前."""
+        log: list = []
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking(log=log)
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(self._event("turn/end", {"turn": 1, "reason": reason}, seq=2))
+            async for _ in run.logos():
+                pass
+        assert thinking.abort_reasons == [expected]
+        # 关键顺序: 打断必须先于 wait_action_done — 否则 parser.__aexit__ 会先把身体等完.
+        assert log.index("abort") < log.index("wait_action_done")
+
+    @pytest.mark.asyncio
+    async def test_turn_end_interrupted_does_not_abort(self):
+        """interrupted → 不打断: dsh 已 settle, MOSS 照常轮转."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(
+                self._event("turn/end", {"turn": 1, "reason": {"kind": "interrupted"}}, seq=2),
+            )
+            async for _ in run.logos():
+                pass
+        assert thinking.abort_reasons == []
 
     @pytest.mark.asyncio
     async def test_enter_error_propagates_and_aborts(self):
