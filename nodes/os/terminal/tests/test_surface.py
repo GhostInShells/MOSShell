@@ -173,6 +173,36 @@ async def test_mode_switch_broadcasts_and_is_seen_by_the_store(store, signals, s
 
 
 @pytest.mark.asyncio
+async def test_accept_all_settles_every_pending_card(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        cards = [_pending(store, f"cmd {i}") for i in range(3)]
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "accept_all"}))
+            await asyncio.sleep(0.1)
+        assert [store.waiter(c.id).result() for c in cards] == ["accept"] * 3
+        assert len(signals) == 3
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_deny_all_settles_every_pending_card(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        cards = [_pending(store, f"cmd {i}") for i in range(3)]
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "deny_all"}))
+            await asyncio.sleep(0.1)
+        assert [store.waiter(c.id).result() for c in cards] == ["deny"] * 3
+        assert len(signals) == 3
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_buttons_reach_the_channel_handles(store, signals, stops):
     called = []
     surface = await _surface(store, signals, stops)

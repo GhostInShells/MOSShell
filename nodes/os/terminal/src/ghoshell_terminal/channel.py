@@ -101,7 +101,7 @@ def build_terminal_channel(
         """Tell the ghost a card settled. Never lost, always guaranteed a turn."""
         if signaler is None:
             return
-        if card.output_chars > _OUTPUT_THRESHOLD and card.output_file:
+        if card.output_file:
             result = f"output: {card.output_chars} chars, full text at {card.output_file}"
         elif card.output_tail:
             tail = "".join(card.output_tail).rstrip()
@@ -139,13 +139,17 @@ def build_terminal_channel(
     # -- running a settled command ------------------------------------------
 
     async def _run(card: Card) -> None:
+        out_path = store.output_path(card.id)
         try:
             managed = await processes.shell(
                 card.content,
                 name=f"{name}:{card.thread}" if card.thread else name,
                 description=card.description,
                 cwd=card.cwd or None,
-                capture=CaptureSpec(buffer_lines=_BUFFER_LINES),
+                capture=CaptureSpec(
+                    buffer_lines=_BUFFER_LINES,
+                    stdout_file=out_path,
+                ),
             )
         except Exception as e:
             store.set_state(card.id, CardState.ERROR)
@@ -165,6 +169,23 @@ def build_terminal_channel(
             await stream_output(managed, on_lines)
         finally:
             _live.pop(card.id, None)
+
+        if managed.output is not None:
+            stderr = managed.output.stderr()
+            if stderr:
+                store.append_output(card.id, [f"[stderr]\n{stderr.rstrip()}\n"])
+
+        # Keep the full stdout file only if it grew past the threshold; a short
+        # run stays in memory and leaves no file behind.
+        if out_path.exists() and out_path.stat().st_size > _OUTPUT_THRESHOLD:
+            card.output_file = str(out_path)
+        else:
+            try:
+                out_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            card.output_file = None
+
         code = managed.process.returncode
         store.set_state(
             card.id, CardState.DONE if code == 0 else CardState.ERROR, exit_code=code
@@ -254,7 +275,7 @@ def build_terminal_channel(
         """Run a shell line in ``thread``. Returns a receipt immediately.
 
         The line streams onto a card the human watches appear. ``desc`` is the
-        card's subtitle — say what this command is for. ``level`` picks how loudly
+        card's title — say what this command is for. ``level`` picks how loudly
         the completion signal reaches you: background / info / warning.
         """
         t = store.get_thread(thread)
@@ -262,8 +283,8 @@ def build_terminal_channel(
             CommandUtil.raise_observe(f"no thread {thread!r} — open() one first")
         card = store.new_card(
             CardType.COMMAND,
-            title=thread,
-            description=desc,
+            title=desc or thread,
+            description="",
             thread=thread,
             cwd=t.cwd,
             level=level if level in _LEVELS else "info",
@@ -272,7 +293,6 @@ def build_terminal_channel(
         try:
             async for chunk in chunks__:
                 store.append_content(card.id, chunk)
-                await _emit({"type": "card.delta", "id": card.id, "text": chunk})
         except asyncio.CancelledError:
             # The model's streaming was cut short (interpreter stopped). Note it
             # and let the framework turn this into a STOPPED the model can read.
@@ -344,7 +364,7 @@ def build_terminal_channel(
             lines.append("(awaiting the human's verdict on the terminal surface)")
         for d in card.dialogue:
             lines.append(f"{d.author}: {d.text}")
-        if card.output_chars > _OUTPUT_THRESHOLD and card.output_file:
+        if card.output_file:
             lines.append(f"output ({card.output_chars} chars): {card.output_file}")
         elif card.output_tail:
             lines.append("output:\n" + "".join(card.output_tail).rstrip())

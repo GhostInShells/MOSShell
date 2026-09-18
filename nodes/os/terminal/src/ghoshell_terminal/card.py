@@ -121,6 +121,10 @@ class Card(BaseModel):
 
     type: CardType
     title: str = ""
+    """The card's intent label — the human's ``desc`` for a command card, the
+    rule's name for a rule card. This is what the card IS; ``thread`` is only
+    the context it runs in."""
+
     description: str = ""
     content: str = ""
     """Command text (streamed in) or, for a rule card, the regex."""

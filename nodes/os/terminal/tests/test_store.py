@@ -1,4 +1,6 @@
 import asyncio
+import json
+from datetime import datetime
 
 import pytest
 
@@ -67,7 +69,7 @@ def test_rejected_and_cancelled_are_distinct_terminal_states(store):
     assert rejected.state is not cancelled.state
 
 
-def test_output_keeps_a_bounded_tail_and_a_complete_file(store):
+def test_output_keeps_a_bounded_tail_and_never_writes_a_file(store):
     card = store.new_card(CardType.COMMAND)
     for i in range(500):
         store.append_output(card.id, [f"line {i}\n"])
@@ -75,12 +77,12 @@ def test_output_keeps_a_bounded_tail_and_a_complete_file(store):
     assert len(card.output_tail) <= 400
     assert card.output_tail[-1] == "line 499\n"
     assert card.output_chars == sum(len(f"line {i}\n") for i in range(500))
+    assert store.output_text(card.id).endswith("line 499\n")
 
-    written = store.output_text(card.id)
-    assert written.endswith("line 499\n")
-    from pathlib import Path
-
-    assert Path(card.output_file).read_text().endswith("line 499\n")
+    # The store is not responsible for the file — the channel decides keep/delete.
+    assert card.output_file is None
+    assert store.output_path(card.id).name == f"card_{card.id}.log"
+    assert not store.output_path(card.id).exists()
 
 
 def test_rules_only_go_live_once_accepted(store):
@@ -119,3 +121,59 @@ def test_counts_track_pending_and_running(store):
 
     assert [x.id for x in store.awaiting()] == [a.id]
     assert [x.id for x in store.running()] == [b.id]
+
+
+def test_settled_cards_are_written_to_the_audit_log(tmp_path):
+    log_dir = tmp_path / "cards"
+    store = CardStore(
+        root=tmp_path / "root",
+        outputs_dir=tmp_path / "out",
+        log_dir=log_dir,
+    )
+    card = store.new_card(CardType.COMMAND, title="dev", thread="dev")
+    store.append_content(card.id, "ls -la")
+    store.set_state(card.id, CardState.DONE, exit_code=0)
+
+    day = datetime.now().strftime("%Y-%m-%d")
+    path = log_dir / f"{day}.jsonl"
+    assert path.exists()
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["id"] == card.id
+    assert records[0]["state"] == "done"
+    assert records[0]["content"] == "ls -la"
+
+
+def test_unsettled_cards_are_not_audited(tmp_path):
+    log_dir = tmp_path / "cards"
+    store = CardStore(
+        root=tmp_path / "root",
+        outputs_dir=tmp_path / "out",
+        log_dir=log_dir,
+    )
+    card = store.new_card(CardType.COMMAND)
+    store.set_state(card.id, CardState.AWAITING)
+    store.set_state(card.id, CardState.RUNNING)
+    assert not any(log_dir.glob("*.jsonl")), "only settled cards are audited"
+
+
+def test_memory_cap_evicts_oldest_settled_cards(store):
+    cards = [store.new_card(CardType.COMMAND) for _ in range(105)]
+    for c in cards:
+        store.set_state(c.id, CardState.DONE)
+
+    assert len(store.cards()) == 100
+    assert store.get(cards[0].id) is None
+    assert store.get(cards[-1].id) is not None
+
+
+def test_running_card_is_never_evicted(store):
+    running = store.new_card(CardType.COMMAND)
+    store.set_state(running.id, CardState.RUNNING)
+    for _ in range(105):
+        c = store.new_card(CardType.COMMAND)
+        store.set_state(c.id, CardState.DONE)
+
+    assert store.get(running.id) is not None
+    assert store.get(running.id).state is CardState.RUNNING
+    assert len(store.cards()) <= 101

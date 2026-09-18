@@ -11,13 +11,15 @@ surface settles it. That future lives here rather than in either face because
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .card import Card, CardState, CardType, Thread
 
-__all__ = ["CardStore", "Mode"]
+__all__ = ["CardStore", "CardLog", "Mode"]
 
 
 class Mode:
@@ -39,6 +41,30 @@ _TAIL_LINES = 400
 """How many output lines stay in memory per card. The complete record is the
 output file; this is only what ``read()`` and a late-connecting client need."""
 
+_MAX_CARDS = 100
+"""How many cards stay in memory. The store only evicts settled cards, so a
+long-running command is never dropped out from under its process; the audit log
+is the durable record once a card leaves memory."""
+
+
+class CardLog:
+    """Append-only audit trail: one JSON line per settled card, date-rotated.
+
+    Lives inside the cell's gitignored runtime dir. It is never replayed — cards
+    are ephemeral and the in-memory store is the source of truth; this is the
+    historical record that survives eviction and restarts.
+    """
+
+    def __init__(self, log_dir: str | Path) -> None:
+        self._dir = Path(log_dir)
+
+    def append(self, card: Card) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        day = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d")
+        record = {**card.view(), "logged_at": time.time()}
+        with (self._dir / f"{day}.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
 
 class CardStore:
     """Cards, threads, rules and the global mode.
@@ -47,11 +73,19 @@ class CardStore:
         resolve inside it.
     :param outputs_dir: where per-card output files are written. Created on
         demand.
+    :param log_dir: where the append-only audit trail goes. None = no audit log.
     """
 
-    def __init__(self, *, root: str | Path, outputs_dir: str | Path) -> None:
+    def __init__(
+        self,
+        *,
+        root: str | Path,
+        outputs_dir: str | Path,
+        log_dir: str | Path | None = None,
+    ) -> None:
         self._root = Path(root).resolve()
         self._outputs_dir = Path(outputs_dir)
+        self._log = CardLog(log_dir) if log_dir is not None else None
         self._threads: dict[str, Thread] = {}
         self._cards: dict[int, Card] = {}
         self._order: list[int] = []
@@ -60,6 +94,25 @@ class CardStore:
         self._waiters: dict[int, asyncio.Future] = {}
         self._verdicts: dict[int, str] = {}
         self._counter = 0
+
+    def _trim(self) -> None:
+        """Evict the oldest settled cards past the cap, never a running one.
+
+        A running card anywhere in the list must not be dropped — its process
+        still writes back through ``set_state`` — so eviction scans past unsettled
+        cards rather than only popping the front.
+        """
+        while len(self._order) > _MAX_CARDS:
+            for i, cid in enumerate(self._order):
+                card = self._cards.get(cid)
+                if card is not None and card.settled:
+                    self._order.pop(i)
+                    self._cards.pop(cid, None)
+                    self._waiters.pop(cid, None)
+                    self._verdicts.pop(cid, None)
+                    break
+            else:
+                return
 
     # -- mode ---------------------------------------------------------------
 
@@ -76,6 +129,19 @@ class CardStore:
     @property
     def root(self) -> Path:
         return self._root
+
+    @property
+    def outputs_dir(self) -> Path:
+        return self._outputs_dir
+
+    def output_path(self, card_id: int) -> Path:
+        """The path the subprocess layer should write this card's full stdout to.
+
+        The channel passes it into ``CaptureSpec(stdout_file=...)`` and, once the
+        process ends, keeps the file only if it grew past the threshold. This
+        store never touches these files itself — output is a runtime concern.
+        """
+        return self._outputs_dir / f"card_{card_id}.log"
 
     # -- threads ------------------------------------------------------------
 
@@ -131,6 +197,7 @@ class CardStore:
         )
         self._cards[card.id] = card
         self._order.append(card.id)
+        self._trim()
         return card
 
     def get(self, card_id: int) -> Card | None:
@@ -157,16 +224,26 @@ class CardStore:
         self, card_id: int, state: CardState, *, exit_code: int | None = None
     ) -> Card:
         card = self._require(card_id)
+        was_settled = card.settled
         card.state = state
         card.updated = time.time()
         if exit_code is not None:
             card.exit_code = exit_code
         if card.settled:
             card.ended = card.updated
+        if not was_settled and card.settled:
+            if self._log is not None:
+                self._log.append(card)
+            self._trim()
         return card
 
     def append_output(self, card_id: int, lines: list[str]) -> Card:
-        """Record output lines: bounded memory tail + complete file record."""
+        """Record output lines into the bounded in-memory tail and count.
+
+        No file is written here — the complete record is the subprocess layer's
+        ``CaptureSpec(stdout_file=...)`` file, kept or dropped by the channel once
+        the process ends (see ``output_path``).
+        """
         card = self._require(card_id)
         if not lines:
             return card
@@ -175,11 +252,6 @@ class CardStore:
             del card.output_tail[: len(card.output_tail) - _TAIL_LINES]
         card.output_chars += sum(len(line) for line in lines)
         card.updated = time.time()
-        self._outputs_dir.mkdir(parents=True, exist_ok=True)
-        path = self._outputs_dir / f"card_{card.id}.log"
-        with path.open("a", encoding="utf-8") as f:
-            f.writelines(lines)
-        card.output_file = str(path)
         return card
 
     def output_text(self, card_id: int) -> str:

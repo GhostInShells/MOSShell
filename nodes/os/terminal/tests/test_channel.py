@@ -88,7 +88,7 @@ async def test_exec_returns_a_receipt_before_the_human_decides(store):
         card = store.cards()[-1]
         assert card.state is CardState.AWAITING
         assert card.content == "ls -la\n"
-        assert rec.types()[:3] == ["card.head", "card.delta", "card.tail"]
+        assert rec.types()[:2] == ["card.head", "card.tail"]
 
 
 @pytest.mark.asyncio
@@ -224,6 +224,8 @@ async def test_read_hands_back_the_text_when_output_is_short(store):
         await _until(lambda: card.state is CardState.DONE)
         assert await runtime.execute_command("read", args=(card.id,)) is not None
         assert "small" in await runtime.execute_command("read", args=(card.id,))
+        assert card.output_file is None, "short output leaves no file behind"
+        assert not store.output_path(card.id).exists()
 
 
 @pytest.mark.asyncio

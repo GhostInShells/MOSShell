@@ -49,6 +49,7 @@ async def main(matrix: Matrix) -> None:
     store = CardStore(
         root=matrix.project_home,
         outputs_dir=matrix.home / "runtime" / "outputs",
+        log_dir=matrix.home / "runtime" / "cards",
     )
     surface = TerminalSurface(
         store,

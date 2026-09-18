@@ -92,8 +92,9 @@ script 卡片批准一次后，持续下发被执行的 bash 卡片（子命令�
 - **只做 `bash` 卡片**，不做 `script` 沙箱 / `Sandbox.aexec` 编排（K2 的 `script` 半边留待后续）。
 - **卡片是第一公民**：`Card`（id/type/title/description/content/interactions）独立建模，
   进程只是卡片的一个阶段——待批卡片还没有进程，`rule` 卡片永远没有。
-- **审批即对话**落地为三动作 `accept / deny / ask`，全部 `notify(next=True)` 上行；
-  `ask` 只留文本不决定，卡片保持 pending。防抖 = 服务端裁决守卫 + 前端去抖。
+- **审批即对话**落地为三动作 `accept / deny / ask`；`ask` 只留文本不决定，卡片保持
+  pending。信号分级（2026-09-18 优化轮）：`accept` → `next=False` 提示，`deny` →
+  `next=True`，完成 → `next=True` + 模型选 level。防抖 = 服务端裁决守卫 + 前端去抖。
 - **输出实时性**受 subprocess 层约束：无增量 API，靠 `poller.py` 轮询 + 重叠 diff；
   只按行、无 `\n` 的部分行不可见。已验证 20 行 / 每秒的流式上行。
 - **信号链路已实测**：accept + 完成两条都到达 session 信号总线（signal_receiver drain 到，
@@ -105,3 +106,7 @@ script 卡片批准一次后，持续下发被执行的 bash 卡片（子命令�
 - ~~上行 signal 具体走哪个 meta~~ → 已定：`NotifySignalMeta(next=True)`。
 - `pexpect node`（持久 shell 会话）另立文档，本域命名表需补一行。
 - `script` 编排工具（K2 的另一半）与 `Sandbox.aexec` 沙箱，回看本设计文档的 script 机制。
+- **settled 卡片上的对话**（人类对已结束命令提问）：低优先级。缺口 = settled 卡片的 UI
+  挂一个 ask 输入框 + 放宽 surface `_ask` 守卫；模型侧 `read()` 已能读结果回应。
+- 输出回收 `> k 才落盘` 已落地（2026-09-18）；audit 走 `runtime/cards/YYYY-MM-DD.jsonl`
+  append-only，内存卡片表封顶 100。

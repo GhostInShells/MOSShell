@@ -119,6 +119,7 @@ class TerminalSurface:
         self._signal(
             f"[terminal #{card_id}] accepted '{card.title}' — it is running now",
             card.thread,
+            next_=False,
         )
 
     async def _deny(self, card_id: int) -> None:
@@ -146,6 +147,14 @@ class TerminalSurface:
             card.thread,
         )
 
+    async def _accept_all(self) -> None:
+        for card in self._store.awaiting():
+            await self._accept(card.id)
+
+    async def _deny_all(self) -> None:
+        for card in self._store.awaiting():
+            await self._deny(card.id)
+
     async def _stop(self, card_id: int) -> None:
         if self._stops.stop is not None:
             await self._stops.stop(card_id)
@@ -162,10 +171,10 @@ class TerminalSurface:
             return
         await self.broadcast({"type": "mode", "mode": resolved})
 
-    def _signal(self, text: str, thread: str = "") -> None:
+    def _signal(self, text: str, thread: str = "", *, next_: bool = True) -> None:
         if self._send_signal is None:
             return
-        signal = NotifySignalMeta(next=True).to_signal(
+        signal = NotifySignalMeta(next=next_).to_signal(
             Message.new(tag="terminal", name=self._identity).with_content(text),
             description=text[:120],
         )
@@ -205,6 +214,10 @@ class TerminalSurface:
                     await self._deny(card_id)
                 elif kind == "ask":
                     await self._ask(card_id, str(frame.get("text", "")))
+                elif kind == "accept_all":
+                    await self._accept_all()
+                elif kind == "deny_all":
+                    await self._deny_all()
                 elif kind == "stop":
                     await self._stop(card_id)
                 elif kind == "stop_all":
