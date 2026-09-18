@@ -34,6 +34,7 @@ class TTSSpeechStream(SpeechStream):
         logger: LoggerItf,
         clause_callbacks: Optional[list[Callable[[SpeechClause], None]]] = None,
         segment_callbacks: Optional[list[Callable[[SpeechSegment], None]]] = None,
+        on_close: Optional[Callable[[], None]] = None,
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
@@ -61,6 +62,7 @@ class TTSSpeechStream(SpeechStream):
         self._clause_cursor = 0
         self._sample_disposer: Optional[Callable[[], None]] = None
         self._audio_chunks: list[np.ndarray] = []
+        self._on_close = on_close
 
     def _buffer(self, text: str) -> None:
         self._text_buffer += text
@@ -214,6 +216,7 @@ class TTSSpeechStream(SpeechStream):
         if self._closed_event.is_set():
             return
         if not self._started:
+            self._notify_closed()
             return
         self._closed_event.set()
         self.logger.info("%s close TTS stream", self._log_prefix)
@@ -229,6 +232,13 @@ class TTSSpeechStream(SpeechStream):
             self._sample_disposer()
             self._sample_disposer = None
         await asyncio.gather(self._tts_batch.close(), self._player.clear())
+        self._notify_closed()
+
+    def _notify_closed(self) -> None:
+        if self._on_close is not None:
+            on_close = self._on_close
+            self._on_close = None
+            on_close()
 
     def close_sync(self) -> None:
         """从任意线程调度异步 close 到事件循环线程 (线程安全)."""
@@ -249,7 +259,7 @@ class BaseTTSSpeech(TTSSpeech):
         self._player = player
         self._tts = tts
         self._tts_info = tts.get_info()
-        self._outputted: list[str] = []
+        self._streams: dict[str, SpeechStream] = {}
         self._log_prefix = "[BaseTTSSpeech]"
         self._running_loop: Optional[asyncio.AbstractEventLoop] = None
         self._starting = False
@@ -301,7 +311,9 @@ class BaseTTSSpeech(TTSSpeech):
             logger=self.logger,
             clause_callbacks=self._clause_callbacks,
             segment_callbacks=self._segment_callbacks,
+            on_close=lambda: self._streams.pop(stream.id, None),
         )
+        self._streams[stream.id] = stream
         return stream
 
     def is_running(self) -> bool:
@@ -311,17 +323,15 @@ class BaseTTSSpeech(TTSSpeech):
         if not self._started or self._closing:
             raise RuntimeError("TTS Speech is not running")
 
-    def outputted(self) -> list[str]:
-        if not self.is_running():
-            return []
-        return self._outputted
-
     async def clear(self) -> list[str]:
         if not self.is_running():
             return []
         self.logger.info("%s clear", self._log_prefix)
-        outputted = self._outputted.copy()
-        self._outputted.clear()
+        streams = list(self._streams.values())
+        outputted = [s.buffered() for s in streams]
+        if streams:
+            await asyncio.gather(*(s.close() for s in streams), return_exceptions=True)
+        self._streams.clear()
         return outputted
 
     async def start(self) -> None:

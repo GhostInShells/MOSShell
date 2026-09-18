@@ -53,7 +53,7 @@ AEC、不需要自己接分布式进程、不需要手写装配代码。
 
 | # | 问题 | 证据 | 性质 |
 |---|------|------|------|
-| C1 | **`Speech.clear()` 不停止播放** | `core/speech/stream_tts_speech.py:319` 只 copy+clear `_outputted` 账本, 不碰 player; `BaseTTSSpeech` 不持 stream 注册表 | **bug** —— 任何不经 cancel 的 clear 路径都漏嘴 |
+| C1 | **`Speech.clear()` 不停止播放** | `core/speech/stream_tts_speech.py:319` 只 copy+clear `_outputted` 账本, 不碰 player; `BaseTTSSpeech` 不持 stream 注册表 | **bug** —— 任何不经 cancel 的 clear 路径都漏嘴 —— **已修 2026-09-19** |
 | C2 | **`types/audio.py` 未退役** | `topics/audio.py` (ClauseTopic/AudioSampleTopic, 活的) 与 `types/audio.py` (ConversationTopic/AudioPlaybackTopic, 死的) 并存; 而 `matrix/openbox/topics.py` 声明的恰是**死的那两个** | 沉默 todo —— 同一概念两份定义, 活的那份不在 canonical manifest |
 | C3 | **live topic 不在 canonical 清单** | `matrix/openbox/topics.py` 只导出 ConversationTopic/AudioPlaybackTopic | C2 的连带面 |
 
@@ -303,7 +303,10 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 ### 前置修复 (存量 bug + 机制)
 
 1. **`Speech.clear()` bug** (= interleaved-voice C1): `TTSSpeech.clear()` 只清 `_outputted`
-   账本、不停止播放 (`stream_tts_speech.py:319`)。任何不经 cancel 的 clear 路径都漏嘴。需修。
+   账本、不停止播放 (`stream_tts_speech.py:319`)。任何不经 cancel 的 clear 路径都漏嘴。
+   **已修 2026-09-19**: `BaseTTSSpeech` 加 stream 注册表, `clear()` 现关所有 in-flight
+   stream (停嘴) 并返回其 `buffered()`; 删死账本 `_outputted` + `outputted()` (已不在 ABC)。
+   测试 `test_stream_tts_speech.py::test_clear_stops_playback` 复现旧 bug、锁定新行为。
 2. **recognizer 注册门控 + 生命周期**: recognizer 支持注册拦路门控, 并给出正确生命周期。
 3. **AEC 屏蔽细节**: AEC 在两个接口表面 (near/far) 屏蔽实现, 启动时注册;**对齐延迟不能是
    "事后 hack 对齐"** (脚本里互相关/能量起点那种), 要在抽象上有机制。
