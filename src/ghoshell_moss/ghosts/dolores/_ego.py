@@ -9,7 +9,7 @@ Two lifecycle lines:
 - long-lived (ghost lifetime): a background watcher on turn/start + user/message emits self-wake
   signals; suppressed while a thinking transaction is running.
 - short-lived (per thinking): run_thinking() returns a DoloresRun — an async-with transaction
-  boundary plus an event stream; its lifecycle (enter/exit/yield/observe/perStep) lives there.
+  boundary plus an event stream; its lifecycle (enter/exit/observe/perStep) lives there.
 
 Moment serialization fills three enter-injected slots, assembled Python-side (the plugin is a dumb
 transport that only receives content blocks):
@@ -180,6 +180,8 @@ class DoloresEgo:
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
         # epoch tracking: remembers the last injected epoch id, compared on enter to decide whether to carry an <epoch> container.
         self._moment_epoch: str | None = None
+        # model 自选的默认思考档 (moss_reasoning 声明 → 下一轮 enter 携带 reasoning_effort). '' = 未设 (走 UI 权威).
+        self.default_effort: str = ""
         # commit 运行时状态 (ego 持有; manager 不托管): 最后一个已完成 turn + 窗口基准 + 每窗口提醒位.
         self._last_turn: int = 0
         self._window_size: int = 0
@@ -241,8 +243,8 @@ class DoloresEgo:
         self._session = self._launcher.create_session(self._ego_session_id)
         await self._exit_stack.enter_async_context(self._session)
         # long-lived: subscribe to turn/start + user/message for silent self-wake.
-        # user/message covers direct UI input — after a yield the dsh loop blocks on tool result;
-        # UI input produces only user/message (not turn/start), so self-wake is still needed to unlock the pending tool.
+        # user/message covers direct UI input — it produces only user/message (not turn/start), so
+        # self-wake is still needed to observe it.
         self._session.on_session_event("turn/start", self._on_session_activity)
         self._session.on_session_event("user/message", self._on_session_activity)
         # commit: 在 completed turn 边界推进 last_turn, 并按阈值决定是否强制提交锚点.
@@ -433,10 +435,11 @@ class DoloresEgo:
         return bool(previous is not None and previous.need_observe)
 
     async def enter_thinking(self, thinking: "Thinking") -> None:
-        """Inject moment (context/inputs) + epoch + effort + thinkingToken to start a thinking turn.
+        """Inject moment (context/inputs) + epoch + effort + reasoning_effort + thinkingToken to start a thinking turn.
 
-        Model/effort are not pushed here — the ego's model selection lives on the dsh side (per-agent
-        selection, canonical UI/settings authority); the model adjusts effort itself via moss_reasoning.
+        ``effort`` is the mindflow's turn-driving effort ('none' = no turn). ``reasoning_effort`` is the
+        model's self-chosen default DSH thinking depth (off/low/high/max), recorded from moss_reasoning
+        and applied at this turn boundary; empty = no override (UI/canonical authority).
         """
         moment = thinking.moment
         moment_ref = f"{thinking.observer.epoch.index}-{moment.index}"
@@ -446,6 +449,7 @@ class DoloresEgo:
             # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
             "notices": self._drain_notices(),
             "effort": thinking.effort(),
+            "reasoning_effort": self.default_effort,
             "thinkingToken": self._thinking_token,
             # observe continuation: empty inputs still drive a turn — see needs_observe().
             "needsObserve": self.needs_observe(thinking),
@@ -457,20 +461,17 @@ class DoloresEgo:
         notices, self._notices = self._notices, []
         return [notice.to_content_string() for notice in notices if not notice.is_empty()]
 
-    async def exit_thinking(self, *, yielded: bool = False) -> None:
+    async def exit_thinking(self) -> None:
         """Reverse the thinking state; the plugin does the relevant teardown.
 
-        yielded: whether this break is a yield (wait_next_moment) — the plugin then does NOT cancel
-        (the tool stays blocked awaiting the next moment), rather than relying on the plugin's own
-        pendingYield timing. Non-yield + non-idle agent is cancelled by the plugin. Blocks for
-        confirmation with a fail-safe timeout so a stalled plugin degrades instead of hanging the exit.
+        A non-idle agent is cancelled by the plugin. Blocks for confirmation with a fail-safe timeout
+        so a stalled plugin degrades instead of hanging the exit.
         """
         try:
             await self._launcher.call(
                 _DOLORES_THINKING_EXIT,
                 {
                     "thinkingToken": self._thinking_token,
-                    "yielded": yielded,
                 },
                 timeout=_EXIT_RPC_TIMEOUT,
             )

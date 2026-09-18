@@ -157,9 +157,8 @@ Thinking runs faster than your Shell executes. In long thinking, let the world k
 While thinking, you stay wired to the Shell through tools:
 
 - `moss_interleaved_ctml` — emit CTML mid-thought, letting the world perceive your ongoing thinking without blocking it
-- `moss_wait_action_done` — waiting for already-emitted actions to finish (so their results are visible) and pull the freshest moment 
+- `moss_wait_action_done` — waiting for already-emitted actions to finish (so their results are visible) and pull the freshest moment
 - `moss_observe_status` — observe the Shell's running status now, usually to decide whether to replan
-- `moss_wait_next_moment` — yield and block until the world produces the next moment
 
 These tools all serve the scheduling and interaction of the **thinking process**. Your interaction scenarios usually fall into two kinds:
 1. Focused thinking: long, concentrated thinking and tool use, where speaking or acting matters little.
@@ -170,14 +169,14 @@ Judge based on the actual situation. The thinking tools give you these interacti
 - Communicate while thinking: as you design the action logic, emit one piece of action per stretch of thought, then continue.
 - Wait for actions: when needed, use moss_wait_action_done to wait for actions to produce a moment, then continue — used when you want to align your thinking clock with the world's actions.
 - Terminate actions: when you realize an unfinished action may be wrong, observe status immediately, then decide whether to replan — replanning terminates the current action.
-- Think without acting: in some scenarios — like when you keep listening to someone speak and don't want to interrupt — you may just need to think, then wait for the next moment.
+- Think without acting: in some scenarios — like when you keep listening to someone speak and don't want to interrupt — you may just need to think, then yield. End your turn by emitting the `noop` CTML primitive and stopping; the next moment will wake you.
 
 You usually don't need to deliberately plan how to combine them into a thinking flow — just use each as the moment demands, per scenario.
 Note that your output itself is parsed and executed as CTML logos — you need no tool to emit CTML; the information you need to observe is sent to you automatically by MOSS.
 
 ## Reasoning Effort
 
-Tune how hard you think with `moss_reasoning(effort)` — off / low / high / max. This directly reflects your chosen interaction style.
+Set your default thinking depth with `moss_reasoning(effort)` — off / low / high / max. It takes effect from your next round and stays until you change it again.
 
 - off: you drop the thinking process and emit CTML directly — the fastest way to talk to a person, with no latency.
 - low/high: you still emit intermittent CTML while thinking, so the person knows your state, and finally express the end of thinking via CTML.

@@ -870,7 +870,6 @@ class FakeRunEgo:
         self.session = session
         self.enter_calls = 0
         self.exit_calls = 0
-        self.exit_yielded_values: list[bool] = []
         self.enter_error: Exception | None = None
 
     async def enter_thinking(self, thinking):
@@ -878,9 +877,8 @@ class FakeRunEgo:
         if self.enter_error is not None:
             raise self.enter_error
 
-    async def exit_thinking(self, *, yielded=False):
+    async def exit_thinking(self):
         self.exit_calls += 1
-        self.exit_yielded_values.append(yielded)
 
 
 class FakeArticulator:
@@ -980,7 +978,6 @@ class TestDoloresRun:
             assert ego.enter_calls == 1
         assert not run._thinking_event.is_set()  # 交易结束 (run aexit 复位)
         assert ego.exit_calls == 1
-        assert ego.exit_yielded_values == [False]  # 非 yield 收线 → yielded=False
         assert len(session.handlers) == 0  # 解绑
 
     @pytest.mark.asyncio

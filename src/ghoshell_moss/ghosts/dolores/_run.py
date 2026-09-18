@@ -14,10 +14,6 @@ Lifecycle contract:
   fail-safe timeout), then abort on error.
 - _events(): queue consumption; the poison pill carries only the enter error (the normal path ends via
   turn/end break in logos()).
-
-yield tool (moss_wait_next_moment): when the consumer recognizes tool/call = moss_wait_next_moment it
-breaks and sets run.yielded → on exit the plugin does not cancel (the tool stays pending, unlocked by
-the next enter's moment). Moment production belongs to the normal mindflow loop, not the run.
 """
 
 from __future__ import annotations
@@ -30,7 +26,7 @@ from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
 from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk
 
-from ._tools import WaitActionDoneToolCall, WaitNextMomentToolCall, InterleavedCtmlToolCall, ObserveStatusToolCall, ToolCallResult
+from ._tools import WaitActionDoneToolCall, InterleavedCtmlToolCall, ObserveStatusToolCall, ReasoningToolCall, ToolCallResult
 
 _logger = get_moss_logger()
 
@@ -154,9 +150,6 @@ class DoloresRun:
         self._enter_task: "asyncio.Task[None] | None" = None
         self._enter_error: Exception | None = None
         self._thinking_event: asyncio.Event = thinking_event
-        # yield marker: set True when the consumer recognizes tool/call == wait_next_moment and breaks;
-        # __aexit__ passes it to exit_thinking(yielded=...) — never cancel on yield.
-        self.yielded = False
         # logos() single-consumption guard — a run has at most one logos stream (more would split the queue).
         self._logos_started = False
 
@@ -180,8 +173,7 @@ class DoloresRun:
         if self._dispose_listener is not None:
             self._dispose_listener()
         # re-send exit — even if enter failed (to clean up plugin-side state), blocking with a fail-safe timeout.
-        # yielded marker: whether this break is a yield; the plugin decides whether to cancel.
-        await self._ego.exit_thinking(yielded=self.yielded)
+        await self._ego.exit_thinking()
         if isinstance(exc_val, asyncio.CancelledError):
             return None
         reason = exc_val if exc_val is not None else self._enter_error
@@ -205,8 +197,8 @@ class DoloresRun:
         """tool/call dispatch — discriminate by name and route to the typed tool.
 
         wait_action_done / interleaved_ctml / observe_status → run_tool produces a ToolCallResult,
-        returned via tool-result RPC. wait_next_moment (yield) → sets self.yielded (logos() breaks on it),
-        no tool-result.
+        returned via tool-result RPC. moss_reasoning (declaration) → records the default effort on
+        the ego (applied next round), no tool-result.
         """
         result = await WaitActionDoneToolCall.run_tool(event, self._handle_wait_action_done)
         if result is not None:
@@ -220,8 +212,8 @@ class DoloresRun:
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        if WaitNextMomentToolCall.from_tool_call(event) is not None:
-            self.yielded = True
+        if (call := ReasoningToolCall.from_tool_call(event)) is not None:
+            self._ego.default_effort = call.effort
 
     async def _handle_wait_action_done(self, call: WaitActionDoneToolCall) -> ToolCallResult:
         """wait_action_done handler — wait for actions, refresh metas, produce a moment, return a structured {moment_ref} result, carry the moment."""
@@ -310,8 +302,6 @@ class DoloresRun:
                     return
                 if tool := ToolCallEvent.from_session_event(event):
                     await self._handle_tool_use_event(tool)
-                    if self.yielded:
-                        return
         finally:
             await events.aclose()
 

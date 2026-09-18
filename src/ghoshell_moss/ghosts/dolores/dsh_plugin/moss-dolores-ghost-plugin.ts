@@ -33,9 +33,9 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * ── 表面 (8 点) ────────────────────────────────────────────────────────
  * 1. ego/create       — instruction + messages (ghost.memory: 压缩/快照/ground).
  * 2. thinking/enter   — context + inputs 两个 message 槽位 + epoch 槽位 + effort, 阻塞执行完.
- * 3. thinking/exit    — 反转 thinking 状态; 非 yield 时 agent 非 idle 则显式 cancel (interrupt).
+ * 3. thinking/exit    — 反转 thinking 状态; agent 非 idle 则显式 cancel (interrupt).
  * 4. perStep 锁       — ego session 非 thinking → 阻塞等 thinking/enter 反转;
- *                       非主 ego (旁路) → 降级 (思考模式 low + sandbox read-only) + 插入旁路
+ *                       非主 ego (旁路) → 降级 (sandbox read-only) + 插入旁路
  *                       instruction 跑单轮, tools 全拒, turn/end 折叠 (旁路无残留).
  * 5. moment/epoch 映射 — python 侧组装, plugin 只收现成 content blocks (dumb transport,
  *                       不 parse xml-like). context (echoes/dynamic/executing → <moment>,
@@ -45,9 +45,9 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *                       在 next() 后插到本步历史最前 (背景, 不驱动 turn); inputs → steer (输入, 驱动 turn).
  *                       enter 不 inbox inject — claim 已在 pre-step 顶部穿越, 晚到的 inject 落下一轮.
  *                       (修正: 早期 docstring 称 context → inject 是本轮, 那是误读; 见 agent-loop claim 时序.)
- * 7. tool 面          — wait_next_moment (yield, 被动让出) + observe (主动观测, approach a
- *                       内联返回 moment content blocks) + moss_reasoning(effort) (agent 级自救改
- *                       effort, 经 exec.agent 咬 per-agent selection) 已落地;
+ * 7. tool 面          — observe (主动观测, approach a 内联返回 moment content blocks) +
+ *                       moss_reasoning(effort) (纯声明默认思考档; ego 记下 → 下一轮 enter 携带
+ *                       reasoning_effort → thinking/enter 应用到 per-agent selection, turn 边界生效);
  *                       interleaved_logos / switch_model deferred (落文档不实现).
  * 8. 时序图           — 见下方 ASCII.
  *
@@ -66,7 +66,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  *      │ thinking exit    │                              │
  *      │── thinking/exit ─┤                              │
  *      │                  │── closeThinking()            │
- *      │                  │── cancel (非 yield 且非 idle) ─▶│
+ *      │                  │── cancel (非 idle) ─────────▶│
  *
  * ── 时序: 外部唤醒路径 (dsh UI 输入, mindflow idle) ────────────────────
  * [dsh UI]           [plugin]                    [dsh agent loop]      [MOSS]
@@ -85,15 +85,6 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 接缝 (外部唤醒): 通知与背压分工 —
  *   通知 = turn/start 广播 (ego 侧 _on_turn_start 监听 → 自醒 signal, 已存在),
  *   不另发显式讯号. pre-step 阻塞只是背压 (hold 住模型等 thinking/enter 注入帧).
- *
- * ── yield tool (wait_next_moment) ────────────────────────────────────
- * 模型在 thinking 中主动调 wait_next_moment, 阻塞等下一帧 MOSS moment (A 范式).
- * tool execute 挂 pendingYield promise 阻塞; 下一轮 thinking/enter 正常解锁 resolve("ok")
- * (str, 非 moment contents — moment 已走 context/inputs 两槽位注入, 不经 tool result). 退出时序:
- *   thinking/exit: yielded=true → 不 cancel (留 tool pending, 不打断 abort signal).
- *   thinking/enter: pendingYield 非空 → inject(context) + steer(inputs) + resolve("ok").
- * cancel: tool 被 session.cancel 打断时走 dsh 默认 abort (reject → error), 与其它 tool 一致,
- *   不做特殊处理 (pendingYield 清空, 轨迹不丢).
  *
  * ── observe tool (approach a) ────────────────────────────────────────
  * 主动观测, 与 yield 互补 (yield 被动让出, observe 主动观测). tool execute 挂
@@ -230,12 +221,6 @@ function closeThinking(): void {
   thinkingGate.close()
 }
 
-// ── yield 锁 (wait_next_moment): tool execute 挂 pending promise 阻塞, 下一轮 enter 解锁 ──
-// 同一时刻至多一个 pending yield (模型在单 turn 内串行 yield). resolve 载荷 = moment
-// contents admit 后的 ContentBlock[] (含 image ref), 是 tool result 内容. abort (cancel)
-// 时清空并 reject — 见 tool execute.
-let pendingYield: { resolve: (value: unknown) => void; reject: (error: Error) => void } | null = null
-
 // tool 回调桥 (approach a): 需要 MOSS 侧 round-trip 的 tool (observe 等) execute 挂 pending
 // promise, 由 /tool-result RPC 按 callId 解锁. Map keyed by callId — 多 tool 各自 pending
 // 互不干扰. resolve 载荷 = 各 tool 的返回值 (observe = moment 文本 str).
@@ -288,18 +273,6 @@ function settlePendingCallsOnExit(): number {
   return entries.length
 }
 
-/**
- * yield 退出路径的兜底: 正常情况下 pendingYield 由下一轮 thinking/enter 解锁 (不结算),
- * 但若这一轮以非 yield 的方式收场而 yield 仍挂着, 也一并按普通返回结算, 不留 rejected 尾巴.
- */
-function settlePendingYieldOnExit(): boolean {
-  if (pendingYield === null) return false
-  const unlock = pendingYield
-  pendingYield = null
-  unlock.resolve('thinking turn ended before this yield was answered')
-  return true
-}
-
 /** moment 的 wire content 段 — text 直传, image 为 base64 (dsh EncodedImageAttachment 形状). */
 type MomentContentPart =
   | { type: 'text'; text: string }
@@ -333,6 +306,8 @@ interface ThinkingEnterPayload {
   /** memento notice (commit 提醒等) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn. */
   notices?: string[]
   effort: string
+  /** default effort (moss_reasoning 延迟生效): ego 记录 → 下一轮 enter 携带 → 应用到 selection. */
+  reasoning_effort?: string
   /**
    * observe 续帧标记 (python 侧判定): 这一帧是「上一轮的回声要求再看一眼」产生的自我延续,
    * 而不是外部输入. 这种帧常常 inputs 为空, 但它**必须开一轮** —— 见 thinking/enter 的 turn 驱动规则.
@@ -347,23 +322,6 @@ interface ThinkingEnterPayload {
 // 链接农场在向上解析路径上), 所以这里直接定义; 注册动作在 apply_ego_agent (session/start
 // 时) 完成, 不经过 agent preset (那样 defineTool 解析不到).
 const egoTools = [
-  defineTool({
-    name: 'moss_wait_next_moment',
-    description: 'Pause and wait for the world to produce the next moment. You resume thinking when it arrives.',
-    parameters: {},
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
-    },
-    execute: async (_args, exec) => {
-      return await new Promise<string>((resolve, reject) => {
-        pendingYield = { resolve: resolve as (value: unknown) => void, reject }
-        exec.signal.addEventListener('abort', () => {
-          if (pendingYield !== null) { pendingYield = null; reject(new Error('moss_wait_next_moment aborted')) }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
-  }),
   defineTool({
     name: 'moss_wait_action_done',
     description: 'Wait for the actions you already emitted to finish, refresh your view of your channels, and pull the freshest moment. The moment itself appears in your next thought; the result only names it.',
@@ -412,7 +370,7 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_reasoning',
-    description: 'Choose how deeply to think. off = skip thinking and emit CTML directly (fastest). low/high = think while emitting CTML as you go. max = focus deeply and emit CTML only when done. Your choice stays until you change it.',
+    description: 'Set your default thinking depth (off / low / high / max). The ego records it and applies it from the next round; it stays until you change it again.',
     parameters: {
       effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'How deeply to think.' },
     },
@@ -420,17 +378,11 @@ const egoTools = [
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute(args, exec) {
-      // agent 级: 经 exec.agent 定位到「当前这个 agent」的 selection, 不是模块单例.
-      const agent = exec.agent
-      if (agent === undefined) throw new Error('moss_reasoning: no agent in tool execution')
-      const selection = egoSelections.get(agent)
-      if (selection === undefined) throw new Error('moss_reasoning: ego selection not installed')
-      const current = selection.current
-      if (current === undefined) throw new Error('moss_reasoning: no model selection')
-      const effort = mapThinkingEffort(args.effort)
-      selection.current = { ...current, reasoningEffort: ReasoningEffortId(effort) }
-      return effort
+    execute(args, _exec) {
+      // 纯声明: 只返回 effort, 不立刻改 selection.current (perStep 会让下一 LLM call 在上下文未重编时
+      // 换思考模式 → DeepSeek 报错). ego (MOSS) 监听 tool/call 记下 default effort, 下一轮
+      // enter_thinking 携带 reasoning_effort, 由 thinking/enter 应用到 selection — turn 边界生效.
+      return mapThinkingEffort(args.effort)
     },
   }),
   defineTool({
@@ -456,11 +408,12 @@ const egoTools = [
   }),
 ]
 
-// ── per-agent model selection (moss_reasoning 的 nibble 目标) ──────────────────
+// ── per-agent model selection (thinking/enter 应用 default effort 的目标) ──────
 // 每个 ego agent 一份 selection, 装在它自己的 ctx 上 (installModelSelection), 不是模块单例.
-// moss_reasoning 经 exec.agent 找到「当前这个 agent」的 selection, 只咬 reasoningEffort — 模型每步
-// 吃一丁点. provider/model 的权威始终是 canonical 链: picked → request/header(持久) → settings
-// 默认; 改 effort 由 agent/request 应用并落 request/header 日志, 界面自然同步.
+// moss_reasoning 是纯声明 (不改 selection), ego 记下 default effort → 下一轮 enter 携带
+// reasoning_effort → thinking/enter 咬 selection.current 的 reasoningEffort (turn 边界生效).
+// provider/model 的权威始终是 canonical 链: picked → request/header(持久) → settings 默认;
+// 改 effort 由 agent/request 应用并落 request/header 日志, 界面自然同步.
 const egoSelections = new WeakMap<Agent, ModelSelectionRef>()
 
 function ensureEgoSelection(agent: Agent, ctx: Context): ModelSelectionRef {
@@ -524,7 +477,7 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     order: agentCtx.systemPrompt.getSectionOrder('WEB_SURFACE'),
     text: '',
   }), 'dolores-ego-web-surface.section()')
-  // per-agent model selection — canonical 链读 provider/model, moss_reasoning 只咬 effort.
+  // per-agent model selection — canonical 链读 provider/model, thinking/enter 应用 default effort.
   installModelSelection(agentCtx, ensureEgoSelection(agent, ctx))
   // ego tools 注册到 agent scope (scoped) — 只有 ego agent 可见.
   for (const tool of egoTools) {
@@ -556,13 +509,8 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
         }
       }
       bypassTurns.set(stepAgent.id, turn)
-      // 降级 (先降级再放行): 思考模式改低成本 (DeepSeek 无 medium, 用 low) + sandbox 改
-      // read-only (sandbox/mode 是 last-wins, 追加即切换). 旁路只读、单轮.
-      const selection = ensureEgoSelection(stepAgent, ctx)
-      const current = selection.current
-      if (current !== undefined) {
-        selection.current = { ...current, reasoningEffort: ReasoningEffortId('low') }
-      }
+      // 降级 (先降级再放行): sandbox 改 read-only (sandbox/mode 是 last-wins, 追加即切换). 旁路只读、单轮.
+      // effort 不再硬编码 low — 归 UI/约定驱动 (note 旁路走 bypass/run 显式注入).
       stepAgent.session.append('sandbox/mode', { mode: 'read-only' })
       const decision = await next()
       if (decision.kind === 'reject') return decision
@@ -776,6 +724,15 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        // default effort (moss_reasoning 延迟生效): ego 记录 → 下一轮 enter 携带 → 应用到 selection.
+        // turn 边界生效 (上下文重编), 不在 perStep 改 — 避免思考模式中途切换报错.
+        if (body.reasoning_effort === 'off' || body.reasoning_effort === 'low' || body.reasoning_effort === 'high' || body.reasoning_effort === 'max') {
+          const selection = ensureEgoSelection(agent, ctx)
+          const current = selection.current
+          if (current !== undefined) {
+            selection.current = { ...current, reasoningEffort: ReasoningEffortId(body.reasoning_effort) }
+          }
+        }
         // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).
         const context = await durableMomentContent(ctx, body.moment?.context ?? [])
         const inputs = await durableMomentContent(ctx, body.moment?.inputs ?? [])
@@ -809,20 +766,7 @@ export function apply(ctx: Context) {
           pendingMoments.push({ messages: frame })
         }
         openThinking()
-        // yield 解锁 (A 范式): 有 pendingYield → 这一帧是 yield 的下一帧. 先缓冲 moment 再
-        // steer/resolve, 保证 next step 由 tool result 触发时能 claim 到 inputs. 顺序不能反.
-        if (pendingYield !== null) {
-          if (inputs.length > 0) {
-            agent.steer(createUserMessage({
-              content: inputs,
-              source: { kind: 'user' },
-            }))
-          }
-          const unlock = pendingYield
-          pendingYield = null
-          // yield 解锁返回 moment_ref (非哑载荷 "ok"), 让模型把「这帧」和「这次解锁」关联起来.
-          unlock.resolve(body.moment?.moment_id ?? 'ok')
-        } else if (inputs.length > 0) {
+        if (inputs.length > 0) {
           // 正常 enter: steer inputs 驱动 turn. inputs 为空则不起 turn — turn 由真实输入驱动,
           // 不再为「无 percepts」造 'thinking' 占位.
           agent.steer(createUserMessage({
@@ -873,24 +817,16 @@ export function apply(ctx: Context) {
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         closeThinking()
-        // yield 场景 (body.yielded) — MOSS 已明确宣布这是 yield: tool 正在阻塞等下一帧,
-        // 由下一轮 thinking/enter 解锁; 这里什么都不结算, 也绝不再 cancel (cancel 会经 abort
-        // signal 打断 pending tool, 且 MOSS 侧判定是 MOSS 最权威, 不依赖 dsh 侧 pendingYield 的竞态).
-        const yielded = body.yielded === true
-        if (!yielded) {
-          // 非 yield: 先结算 (再 cancel). 这一轮思考已经结束, 仍在等 MOSS 侧回话的 tool 不会再拿到
-          // 这一轮的 moment. 与其等 cancel 的 abort 把它变成 rejected (模型看到一句 aborted, MOSS 侧
-          // 迟到的回话又撞上已注销的号报错), 不如现在就给一个**普通结果** (interrupted), 让模型自己
-          // 决定下一步. 结算同时登记墓碑, 使 MOSS 侧随后到的 /tool-result 被安静吞掉 — 见 settledCallIds.
-          const settled = settlePendingCallsOnExit()
-          settlePendingYieldOnExit()
-          if (settled > 0) {
-            ctx.logger.info('dolores: settled %d pending tool call(s) on thinking/exit', settled)
-          }
-          // 非 yield + agent 非 idle → 显式 cancel (MOSS 已宣布 thinking 结束, 不让 dsh 空跑失速).
-          if (agent.status !== 'idle') {
-            agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
-          }
+        // 先结算 (再 cancel). 这一轮思考已经结束, 仍在等 MOSS 侧回话的 tool 不会再拿到这一轮的
+        // moment. 与其等 cancel 的 abort 把它变成 rejected, 不如现在给一个**普通结果** (interrupted),
+        // 让模型自己决定下一步. 结算同时登记墓碑, 使 MOSS 侧随后到的 /tool-result 被安静吞掉.
+        const settled = settlePendingCallsOnExit()
+        if (settled > 0) {
+          ctx.logger.info('dolores: settled %d pending tool call(s) on thinking/exit', settled)
+        }
+        // agent 非 idle → 显式 cancel (MOSS 已宣布 thinking 结束, 不让 dsh 空跑失速).
+        if (agent.status !== 'idle') {
+          agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
         }
         // 兜底投递: 本交易残余的缓冲帧 (none/空 inputs 补帧没触发 turn, 没有 pre-step 消费) 直接
         // 投进 inbox (next-step), 由下一次 pre-step 认领 — 绝不丢. 必须在 cancel 之后: cancel 默认

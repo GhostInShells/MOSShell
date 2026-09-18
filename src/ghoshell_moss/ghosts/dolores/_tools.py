@@ -13,7 +13,7 @@ from typing_extensions import Self
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 
-__all__ = ["WaitActionDoneToolCall", "WaitNextMomentToolCall", "InterleavedCtmlToolCall", "ObserveStatusToolCall"]
+__all__ = ["WaitActionDoneToolCall", "InterleavedCtmlToolCall", "ObserveStatusToolCall", "ReasoningToolCall"]
 
 _ResultType = dict | list | str | None
 
@@ -113,17 +113,6 @@ class WaitActionDoneToolCall(ToolCallParameter):
         return "moss_wait_action_done"
 
 
-class WaitNextMomentToolCall(ToolCallParameter):
-    """moss_wait_next_moment (yield) — passively yield, block until the next moment.
-
-    A control signal; produces no ToolCallResult (does not go through the tool-result RPC).
-    """
-
-    @classmethod
-    def tool_name(cls) -> str:
-        return "moss_wait_next_moment"
-
-
 class InterleavedCtmlToolCall(ToolCallParameter):
     """moss_interleaved_ctml — emit CTML mid-thought so the world can perceive your ongoing thinking, without blocking further thought (interleaved).
 
@@ -145,3 +134,18 @@ class ObserveStatusToolCall(ToolCallParameter):
     @classmethod
     def tool_name(cls) -> str:
         return "moss_observe_status"
+
+
+class ReasoningToolCall(ToolCallParameter):
+    """moss_reasoning — declare the default thinking depth (off/low/high/max).
+
+    Pure declaration: the ego records it as its default effort and carries it on the next round's
+    thinking/enter (reasoning_effort), applied at the turn boundary — not perStep. Produces no
+    ToolCallResult (the plugin tool returns immediately).
+    """
+
+    effort: str = Field(default="", description="thinking depth: off/low/high/max.")
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_reasoning"
