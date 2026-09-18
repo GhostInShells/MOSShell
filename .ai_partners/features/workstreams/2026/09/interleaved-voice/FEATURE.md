@@ -4,7 +4,7 @@ status: draft
 # priority: importance within the current stage (iteration cycle) — not development urgency
 priority: P1
 created: 2026-09-17
-updated: 2026-09-17
+updated: 2026-09-19
 depends: []
 milestone:
 description: >-
@@ -283,3 +283,62 @@ shell 核心的隐藏杀器: **解释器多通道化**。
 两者都"要打磨对"。`on_speak_start` 若做, 也应是这两个真相的**别名/打磨产物**, 不是
 新事件。(speech 在 Event 治理上落后 listener —— listener 有首包/尾包, speech 没有;
 这是已知债务, 不是设计目标。)
+
+## 2026-09-19 会话决策 — 完整工作项清单
+
+> 人类架构师 dump 的完整工作项, 记录在此免于每天反刍。按依赖顺序分块。
+> 本次会话实测: miniaudio DuplexStream 播侧在本机静默失效 (无双工设备); pywebrtc-audio
+> 已 `uv add --optional host` (arm64 + py3.12 wheel 命中, `EchoCanceller.process(near,far)` 冒烟通过)。
+
+### 门控 —— 关键概念 (本次对齐, 推翻早先"门控在 FIRST 上")
+
+**门控在音频层、ASR 之前, 不在 FIRST/ASR 结果层。** 作用是**降低 ASR 提交音频数 (省计费)**
++ 拦静音/回声。返回值是音频帧 (或缓冲后放行), **不是 boolean、不是 FIRST**。FIRST 是
+ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松。
+
+- 机制 (拦路状态机): 侦测人声 onset → 开始 buffer (首帧不丢) → 放行 ASR; ASR 长时间空 / commit → 重启门控。
+- 门控活在两个 segment 之间。宽窄: 叫名字 (wake word) 太窄太蠢; 纯拦静音太宽 (放回声); 正确宽度 = 拦静音 + 拦回声。
+- **AEC 是门控"拦回声"那一格的实现, 不是独立东西。**
+
+### 前置修复 (存量 bug + 机制)
+
+1. **`Speech.clear()` bug** (= interleaved-voice C1): `TTSSpeech.clear()` 只清 `_outputted`
+   账本、不停止播放 (`stream_tts_speech.py:319`)。任何不经 cancel 的 clear 路径都漏嘴。需修。
+2. **recognizer 注册门控 + 生命周期**: recognizer 支持注册拦路门控, 并给出正确生命周期。
+3. **AEC 屏蔽细节**: AEC 在两个接口表面 (near/far) 屏蔽实现, 启动时注册;**对齐延迟不能是
+   "事后 hack 对齐"** (脚本里互相关/能量起点那种), 要在抽象上有机制。
+
+### 配置与降级
+
+4. **shell speech 显式注册**: speech 从默认注册改显式注册; 历史单测要优化一遍。
+5. **moss runtime 启动 flag** (可能进 host 表面): 默认 speech; 可选 speech + listener 的
+   interleaved voice 状态机 (或改名叫 AEC, 对齐行业); 可选择空。
+6. **config type 加 `validate` 函数**: per-config 自校验 (如环境变量实际为空时 raise)。
+7. **provider 降级**: speech / listener provider 据 config validate 降级 (null speech / null listener)。
+8. **SystemError / SystemBootstrap 模块**: 注册为 Project 默认依赖, provider 可获取它记录
+   启动异常; 封装成 channel (moss 运行后 ghost 可看系统级异常, 可 pull 最近 n 条); 甚至考虑作 logger handler。
+
+### voice 综合状态机
+
+9. **对齐 AEC**: ASR 不听输出 (回声不进 ASR)。
+10. **首包发 signal 但不打断 speech**: 两边一起说 (双讲) 也许是好 feature。→ 推翻早先
+    "听起音 → attenuate 说"的 barge-in 假设 (KD 中"听→说 做"那条)。
+11. **半双工 (说时不听) 可能不必要**: 它依赖外部界面启动 (永不自起), 有 AEC 后优先级下降。
+12. **封装物料**: listener controller 只实现单侧机制; 整体封装要在 `host/` 模块下有物料,
+    方便迁移成 node, 甚至预写在 `host/nodes/`。
+
+### 最关键的改造
+
+13. **单进程听/说分句交错进统一历史**: 统一 `on_clause` 回调 (供 GUI), 可直接用 topic (已对齐过)。
+
+### recognition 交互
+
+14. **recognition 返回可自增的未发送数据**: commit 默认发 signal 被拦截后, 界面 buffer
+    未发送对话、点击提交; 尾句可触发 llm func 重写 (避免差 ASR 物料)。
+15. **尾包未发送时进 channel notice**: 模型思考可看 last clause 等信息, 有拉接口;
+    相当于模型可自己给自己 commit。
+
+### 明确不做 / 现状
+
+- **"大模型改写 segment"不做** (唯一明确排除项)。
+- "ASR 完成 + 人类手动发送"机制: 有现成实现可参考, 无需从零设计。
