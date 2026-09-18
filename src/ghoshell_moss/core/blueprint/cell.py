@@ -58,6 +58,7 @@ __all__ = [
     'CellRuntimeInfo',
     'Cell',
     'CellEvent',
+    'CELL_EVENT_CHANNEL_ADDED',
     'CellPresence',
     'CellNetwork',
     'AutoAcceptPolicy',
@@ -577,6 +578,14 @@ class CellRuntimeInfo(BaseModel):
         uid 不进锁名: 不同 uid 的同名 cell 才需要互斥, 加 uid 就退化成"永远拿得到锁".
         """
         return normalize(self.cell.fullname)
+
+
+CELL_EVENT_CHANNEL_ADDED = 'channel added'
+"""CellEvent content a cell publishes when it provides a channel.
+
+The channel dimension's truth lives on the observer side (mesh mount), not the
+producer's self-report — the consumer filters this out of the signal path.
+"""
 
 
 class CellEvent(BaseModel):

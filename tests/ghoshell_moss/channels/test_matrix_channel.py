@@ -18,10 +18,17 @@ from types import SimpleNamespace
 import pytest
 
 from ghoshell_moss.channels.matrix_channel import (
+    CellAliasRegistry,
     new_mesh_channel,
     new_nodes_channel,
 )
-from ghoshell_moss.core.blueprint.cell import AutoAcceptPolicy, CellEvent, CellEventLevel
+from ghoshell_moss.core.blueprint.cell import (
+    AutoAcceptPolicy,
+    CELL_EVENT_CHANNEL_ADDED,
+    CellEvent,
+    CellEventLevel,
+)
+from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 
 _UID_A = "01J8ZZZZZZAAAAAAAAAAAAAA1"
 _UID_B = "01J8ZZZZZZBBBBBBBBBBBBBB2"
@@ -156,11 +163,12 @@ async def test_nodes_notice_reports_exit_without_age_text():
 # ---- mesh: the event tail is warm state, capped ---- #
 
 def _net(stub):
-    """Mesh channel only needs ``matrix.network()`` at startup + refresh."""
+    """Mesh channel needs ``matrix.network()`` at startup + refresh, and
+    ``matrix.handled_cells()`` to prune pending names."""
     async def _network():
         return stub
 
-    return SimpleNamespace(network=_network)
+    return SimpleNamespace(network=_network, handled_cells=lambda: {})
 
 
 @pytest.mark.asyncio
@@ -260,3 +268,95 @@ async def test_set_auto_accept_reports_result_not_request():
 
         assert "foreign=True" in result, "the reply states the resulting policy"
         assert "foreign=False" not in result
+
+
+# ---- naming / alias ---- #
+
+
+def test_alias_registry_mints_unique_names():
+    reg = CellAliasRegistry()
+    a = reg.reserve("node/vision/a", "vision")
+    b = reg.reserve("node/vision/b", "vision")
+    c = reg.reserve("node/vision/c", "vision")
+    d = reg.reserve("node/camera/d", "front_camera")
+
+    assert a == "vision", "the first allocation keeps the bare name"
+    assert (b, c) == ("vision_2", "vision_3"), "duplicates suffix monotonically"
+    assert d == "front_camera", "distinct bases do not collide"
+
+
+def test_alias_registry_consume_is_one_shot():
+    reg = CellAliasRegistry()
+    reg.reserve("node/vision/a", "vision")
+
+    assert reg.consume("node/vision/a") == "vision"
+    assert reg.consume("node/vision/a") is None, "consumed at mount, not re-readable"
+
+
+def test_alias_registry_prunes_dead_addresses():
+    reg = CellAliasRegistry()
+    reg.reserve("node/vision/a", "vision")
+    reg.reserve("node/sensor/b", "sensor")
+
+    reg.prune({"node/sensor/b"})
+    assert reg.consume("node/vision/a") is None, "dead process → name pruned"
+    assert reg.consume("node/sensor/b") == "sensor", "live process → name kept"
+
+
+class _RunMatrix:
+    def __init__(self):
+        self.project = SimpleNamespace(nodes=_NodesCatalog())
+        self._spawns = 0
+
+    async def run_node(self, target, *, extra_args=None):
+        self._spawns += 1
+        uid = f"01J8ZZZZZZAAAAAAAAAAAAAA{self._spawns}"
+        runtime = SimpleNamespace(
+            address=f"node/vision/{uid}",
+            cell=SimpleNamespace(
+                category="vision", name="vision", fullname="node/vision",
+                providing=["channel"], home="/tmp",
+                event_level=CellEventLevel.INFO,
+            ),
+        )
+        meta = SimpleNamespace(pid=1000 + self._spawns, exit_code=None, cwd="/tmp")
+        return SimpleNamespace(
+            runtime=runtime, address=runtime.address,
+            process=SimpleNamespace(meta=meta, output=None),
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_mints_and_reports_alias():
+    matrix = _RunMatrix()
+    chan = new_nodes_channel(matrix)
+    async with chan.bootstrap() as runtime:
+        first = await runtime.execute_command(
+            "run", kwargs={"target": "nodes/visions/camera", "name": "vision"},
+        )
+        assert "alias=vision" in first, "the receipt reports the final name"
+        assert "matrix.mesh.vision" in first, "the receipt shows the mount path"
+
+        second = await runtime.execute_command(
+            "run", kwargs={"target": "nodes/visions/camera", "name": "vision"},
+        )
+        assert "alias=vision_2" in second, "a duplicate base name is suffixed"
+
+
+@pytest.mark.asyncio
+async def test_channel_added_event_is_filtered_from_signal(monkeypatch):
+    stub = _StubMesh()
+    chan = new_mesh_channel(_net(stub))
+    sent = []
+    monkeypatch.setattr(CommandUtil, "send_signal", lambda s: sent.append(s))
+
+    async with chan.bootstrap() as runtime:
+        stub.emit(CELL_EVENT_CHANNEL_ADDED)
+        stub.emit("something else")
+        await runtime.refresh_metas()
+
+        assert len(sent) == 1, "the producer's 'channel added' self-report is not a signal"
+        assert sent[0].name == "cell_event"
+
+        # the ring still records the filtered event — warm data, not an attention signal
+        assert "channel added" in runtime.self_meta().notice

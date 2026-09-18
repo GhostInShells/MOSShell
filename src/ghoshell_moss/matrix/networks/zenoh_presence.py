@@ -40,6 +40,7 @@ from ghoshell_moss.core.blueprint.cell import (
     Cell,
     CellPresence,
     CellEventLevel,
+    CELL_EVENT_CHANNEL_ADDED,
 )
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss.matrix.networks._utils import CellsKeyspace, CellKeyExpr
@@ -149,7 +150,7 @@ class ZenohCellPresence(CellPresence):
             self._cell_presence.providing.append('channel')
         self._cell_presence.update()
         try:
-            await self.publish_event('channel added', updated=True)
+            await self.publish_event(CELL_EVENT_CHANNEL_ADDED, updated=True)
         except Exception:
             self._logger.exception(
                 "publish 'channel added' event failed for %s",

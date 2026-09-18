@@ -32,6 +32,7 @@ Example:
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections import deque
 from datetime import datetime, timezone
@@ -47,6 +48,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
 )
 from ghoshell_moss.core.blueprint.cell import (
     AutoAcceptPolicy,
+    CELL_EVENT_CHANNEL_ADDED,
     CellEvent,
     CellAddress,
     CellAddressCodec,
@@ -56,7 +58,7 @@ from ghoshell_moss.core.blueprint.cell import (
 from ghoshell_moss.core.blueprint.matrix import CellHandle, Matrix
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
-from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.channel import Channel, ChannelNamePattern
 from ghoshell_moss.signals import CellEventSignalMeta, CellTransition
 
 __all__ = [
@@ -66,6 +68,7 @@ __all__ = [
     "new_matrix_channel",
     "new_nodes_channel",
     "new_mesh_channel",
+    "CellAliasRegistry",
 ]
 
 # ---- constants ----
@@ -75,6 +78,44 @@ _DEFAULT_SHOW_EVENTS = 8
 _EVENT_BUFFER = 128
 _STDERR_TAIL_LINES = 5
 _ONE_SHOT_OUTPUT_TAIL = 200
+
+
+# ==== cell alias registry ========================================
+
+
+class CellAliasRegistry:
+    """Process-local alias bookkeeping shared by the nodes and mesh channels.
+
+    Naming is a channel-tree concern, not a Matrix identity concern — it lives
+    here rather than on the facade. Two pieces:
+
+    - counter: base name → next suffix. Monotonic (never reused), so a name in
+      the transcript refers to exactly one spawn forever.
+    - pending: address → final name. Reserved at ``run``, consumed (popped) at
+      mount, pruned when the process dies without providing a channel.
+    """
+
+    def __init__(self) -> None:
+        self._counter: dict[str, int] = {}
+        self._pending: dict[CellAddress, str] = {}
+
+    def reserve(self, address: CellAddress, base: str) -> str:
+        """Mint the real name for ``base`` and record it as pending for ``address``."""
+        n = self._counter.get(base, 0)
+        self._counter[base] = n + 1
+        name = base if n == 0 else f'{base}_{n + 1}'
+        self._pending[address] = name
+        return name
+
+    def consume(self, address: CellAddress) -> str | None:
+        """Pop and return the pending name at mount time; None if never reserved."""
+        return self._pending.pop(address, None)
+
+    def prune(self, live_addresses: set[CellAddress]) -> None:
+        """Drop pending entries whose process is gone (never provided a channel)."""
+        for address in list(self._pending):
+            if address not in live_addresses:
+                del self._pending[address]
 
 
 # ==== helpers ====================================================
@@ -217,8 +258,11 @@ def new_nodes_channel(
         description: str | None = None,
         show_running: int = _DEFAULT_SHOW_RUNNING,
         show_dead: int = _DEFAULT_SHOW_DEAD,
+        aliases: CellAliasRegistry | None = None,
 ) -> Channel:
     """本地 node 治理 channel. 五动词全 nonblocking, 数据源来自 matrix."""
+
+    aliases = aliases or CellAliasRegistry()
 
     default_desc = (
         'Local node governance — list/read/run/stop/status/read_output.'
@@ -311,19 +355,29 @@ def new_nodes_channel(
     # -- run ----------------------------------------------------------
 
     @chan.build.command(name='run', blocking=False, always_observe=True)
-    async def run_node(target: str, extra_args: str | None = None) -> str:
-        """Spawn a node cell. Nonblocking for persist nodes; blocking for one-shot.
+    async def run_node(target: str, name: str, extra_args: str | None = None) -> str:
+        """Spawn a node cell under a model-chosen name. Nonblocking for persist
+        nodes; blocking for one-shot.
+
+        name: how this cell is addressed on the network — the mount key under
+        matrix.mesh. Duplicate names are auto-suffixed (_2, _3...); the receipt
+        reports the final name. A one-shot node never mounts, so its name is inert.
 
         One-shot (persist=false) cells run to completion — this command blocks
         until exit and returns stdout/stderr tail + exit code (standard bash call).
 
         extra_args: shell-like extra argv appended after the node's declared entry
         args, shlex-split here. Use it for per-instance binding, e.g.
-        run('nodes/visions/stream', extra_args='--address rtmp://127.0.0.1/live').
+        run('nodes/visions/stream', 'vision', extra_args='--address rtmp://127.0.0.1/live').
         """
         if not target:
             CommandUtil.raise_observe(
                 "target required. list() to discover paths."
+            )
+        if not re.fullmatch(ChannelNamePattern, name):
+            CommandUtil.raise_observe(
+                f"name {name!r} is not a valid channel name "
+                f"(pattern {ChannelNamePattern})."
             )
         argv = shlex.split(extra_args) if extra_args else None
         try:
@@ -363,9 +417,10 @@ def new_nodes_channel(
                     lines.append('--- full output ---\n' + '\n'.join(full_files))
             return '\n'.join(lines)
 
+        alias = aliases.reserve(handle.address, name)
         return (
-            f'[{short}] pid={handle.process.meta.pid} — '
-            f'organ surfaces on the network once it announces.'
+            f'[{short}] alias={alias} pid={handle.process.meta.pid} — '
+            f'if it announces a channel: matrix.mesh.{alias}'
         )
 
     # -- stop ---------------------------------------------------------
@@ -548,12 +603,15 @@ def new_mesh_channel(
         name: str = 'mesh',
         description: str | None = None,
         show_events: int = _DEFAULT_SHOW_EVENTS,
+        aliases: CellAliasRegistry | None = None,
 ) -> Channel:
     """网络投影 channel. virtual_children 镜像 mesh.channel_proxies(),
     CellEvent 生产侧订阅 mesh.on_event 双扇出 (事件 ring + Signal)."""
 
+    aliases = aliases or CellAliasRegistry()
+
     default_desc = (
-        'Network projection — accepted cells surface as matrix.mesh.<short>.'
+        'Network projection — accepted cells surface as matrix.mesh.<name>.'
     )
     chan: PrimeChannel = new_channel(name=name, description=description or default_desc)
 
@@ -580,6 +638,10 @@ def new_mesh_channel(
         event_buffer.append(event)
         # 2) 感知判决: 低于阈值 INFO (DEBUG) 不产生 signal (零值/不调用)
         if not CellEventLevel.is_perceivable(event.event_level):
+            return
+        # 2.5) channel 维度的真相在观察者侧 (mesh 挂载), 生产者的自述时机不准
+        #      (未 accept / 未 connected) 且无名字 — 不进 signal, 留在 ring.
+        if event.content == CELL_EVENT_CHANNEL_ADDED:
             return
         # 3) 转 Signal 送 CellEventNucleus (M7.5)
         try:
@@ -629,6 +691,8 @@ def new_mesh_channel(
         # 计算增删差异
         current = set(proxy_aliases.keys())
         target = set(proxies.keys())
+        # 剪枝: 进程已死且从未 provide channel 的 pending 名字 (一次性信箱清垃圾).
+        aliases.prune(set(matrix.handled_cells().keys()))
         # remove: 掉线的 accepted cells
         for gone_addr in current - target:
             alias = proxy_aliases.pop(gone_addr, None)
@@ -637,10 +701,10 @@ def new_mesh_channel(
                     chan.remove_virtual_channel(alias)
                 except Exception:
                     pass
-        # add: 新 accept 的 cells
+        # add: 新 accept 的 cells — run 时 reserve 的名字在此消费, 否则回落 short.
         for new_addr in target - current:
             proxy = proxies[new_addr]
-            alias = CellAddressCodec(new_addr).short
+            alias = aliases.consume(new_addr) or CellAddressCodec(new_addr).short
             try:
                 chan.add_virtual_channel(proxy, alias=alias)
                 proxy_aliases[new_addr] = alias
@@ -798,9 +862,10 @@ def new_matrix_channel(
     )
     chan = new_channel(name=name, description=description or default_desc)
 
-    # 静态挂 nodes + mesh (composed inline, share matrix reference)
-    nodes = new_nodes_channel(matrix)
-    mesh = new_mesh_channel(matrix)
+    # 静态挂 nodes + mesh (composed inline, share matrix reference + alias registry)
+    aliases = CellAliasRegistry()
+    nodes = new_nodes_channel(matrix, aliases=aliases)
+    mesh = new_mesh_channel(matrix, aliases=aliases)
     chan.import_channels(nodes, mesh, *extra_children)
 
     @chan.build.instruction
