@@ -269,6 +269,7 @@ def new_shell_main_channel(description: str = "") -> PrimeChannel:
 def new_moss_main_channel(
         description: str = "",
         register_speech_as_content: bool = False,
+        extended: bool = False,
 ) -> PrimeChannel:
     """
     创建一个标准的, 支持默认能力的 moss main channel
@@ -281,7 +282,7 @@ def new_moss_main_channel(
     main = new_shell_main_channel(description=description)
 
     # -- 系统原语 --------------------------------------------------
-    inject_system_primitives(main, extended=True)
+    inject_system_primitives(main, extended=extended)
 
     # -- Speech --------------------------------------------------
     main.with_module(SpeechChannelModule(register_content_command=register_speech_as_content))
