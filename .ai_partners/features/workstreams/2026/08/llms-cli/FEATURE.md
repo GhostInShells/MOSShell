@@ -9,7 +9,7 @@ status: completed
 status_note: content_types interception wired, default deepseek family, container
   injection
 title: Llms Cli
-updated: '2026-08-26'
+updated: '2026-09-18'
 ---
 
 # Llms Cli
@@ -100,11 +100,25 @@ pydantic-ai 2.5.0 同时暴露: 通用 `thinking` (bool | minimal..xhigh)、`ant
 
 ### 7. LLMFuncs 注册为 project 级 provider (懒加载, 无 ghost 不爆炸)
 
-`LocalProject._default_providers()` 增补 `ProjectLLMFuncsProvider` (contract=LLMFuncs,
-factory=PydanticAIFuncs, 惰性 import)。与 Subprocesses/JobSupervisor/ConfigStore/
-ResourceRegistry 并列; workspace 用户在 ProjectManifest.providers 显式覆写即可覆盖。
-fetch 时才 import pydantic-ai; 无 ghost extra 时 fetch 报干净错误, 不拖垮项目容器。
-matrix 的 contracts() 校验不含 LLMFuncs, 不 fail-fast。
+`ProjectLLMFuncsProvider` (contract=LLMFuncs, factory=PydanticAIFuncs, 惰性 import)
+两层落位 — **openbox 声明在前, `_default_providers()` 兜底在后**:
+
+- **openbox 声明**: `matrix/openbox/providers.py` 的 `llm_funcs_provider`, 进 canonical
+  默认清单 `__all__`。与 Subprocesses/JobSupervisor/ConfigStore/ResourceRegistry 同级,
+  故 `moss manifests providers` 可见 (扫描只认 manifest 包里的模块级 Provider 实例,
+  硬编码的 `_default_providers()` 不在扫描面上)。
+- **`_default_providers()` 兜底**: `LocalProject` 内 if-not-bound 补注册, 是 manifest
+  包缺失/为空时的最后一道。
+
+workspace 用户在 ProjectManifest.providers 显式覆写即可覆盖 (按 contract 后注册者赢,
+manifest 先于兜底注册)。fetch 时才 import pydantic-ai; 无 ghost extra 时 fetch 报干净
+错误, 不拖垮项目容器。matrix 的 contracts() 校验不含 LLMFuncs, 不 fail-fast。
+
+**2026-09-18 回写**: openbox 声明这一层是补的, 原实现只落了 `_default_providers()`。
+`402c795b` (openbox canonical defaults 重构) 把 project 层默认迁进 openbox 时, 5 个里
+迁了 4 个, 漏掉 LLMFuncs —— provider 功能一直正常 (运行时容器就是 project 容器, 兜底
+生效), 但 `moss manifests providers` 完全看不到它, 三层覆写机制也无从发现。自解释面
+塌了一半, 功能测试照不出来。
 
 ### 8. CLI 读配置走 project 容器, 不走 matrix; 防御边界收口
 

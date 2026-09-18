@@ -24,6 +24,7 @@ from ghoshell_moss.project.providers import (
     EnvConfigStoreProvider,
     ProjectSubprocessesProvider,
     ProjectJobSupervisorProvider,
+    ProjectLLMFuncsProvider,
 )
 from ghoshell_moss.resources.memory_registry import InMemoryResourceRegistryProvider
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
@@ -43,6 +44,7 @@ __all__ = [
     'warrant_provider',
     'subprocess_provider',
     'job_supervisor_provider',
+    'llm_funcs_provider',
     'tts_service_provider',
     'speech_service_provider',
     'player_service_provider',
@@ -75,6 +77,9 @@ warrant_provider = SessionWarrantProvider()
 subprocess_provider = ProjectSubprocessesProvider()
 
 job_supervisor_provider = ProjectJobSupervisorProvider()
+
+# llm func engine — lazy: pydantic-ai imports only on first fetch
+llm_funcs_provider = ProjectLLMFuncsProvider()
 
 # -- 音频/语音基线能力 (实现留 host 作为依赖路径, 模块顶层无重 import) -- #
 
