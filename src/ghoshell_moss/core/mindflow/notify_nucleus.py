@@ -11,6 +11,7 @@ priority is inherited verbatim from ``Signal.priority`` (caller-controlled),
 default ``NOTICE``. Canonical case: the user speaks while the ghost is thinking —
 no interruption, but the message leaves a trace.
 """
+import time
 from typing import Callable, Iterable
 from typing_extensions import Self
 
@@ -22,7 +23,7 @@ from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.message import ContextType
 from ghoshell_moss.core.blueprint.mindflow import (
     SignalMeta, SignalName, Priority, Signal,
-    Nucleus, NucleusMeta, ImpulsePrimitive, Impulse
+    Nucleus, NucleusMeta, ImpulsePrimitive, Impulse, ChallengeMode,
 )
 
 __all__ = ['NotifyNucleus', 'NotifySignalMeta', 'NotifyNucleusMeta', 'new_notify_signal']
@@ -65,12 +66,20 @@ class NotifyNucleus(Nucleus):
 
     NAME = 'notify_nucleus'
 
-    def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):
+    def __init__(
+            self,
+            *,
+            name: str = NAME,
+            logger: LoggerItf | None = None,
+            suppress_seconds: float = 0.5,
+    ):
         self._name = name
         self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
         self._impulse: Impulse | None = None
+        self._suppress_seconds = suppress_seconds
+        self._suppress_until: float = 0.0
 
     def name(self) -> str:
         return self._name
@@ -86,6 +95,7 @@ class NotifyNucleus(Nucleus):
 
     def clear(self) -> None:
         self._impulse = None
+        self._suppress_until = 0.0
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
@@ -93,12 +103,20 @@ class NotifyNucleus(Nucleus):
         impulse = self.build_impulse(signal)
         if impulse is None:
             return
-        # TODO(known, deferred): a newer signal overwrites an un-peeked impulse,
-        # dropping its messages before the buffered path can see them. Latent —
-        # needs a notify burst inside one loop scheduling window. Shape undecided.
-        self._impulse = impulse
-        if self._fire_impulse:
-            self._fire_impulse(impulse)
+        if self._impulse is not None and not self._impulse.is_stale():
+            # notify 契约 "must not be missed": burst 里后到 signal 的 messages 合并进
+            # pending impulse 而非覆盖. 安全: attended() 在 inject_percepts() 之前清槽,
+            # 且两者间无 await, 已 peek 的 impulse 也会在注入前拿到合并后的 messages.
+            self._impulse.messages.extend(impulse.messages)
+            if impulse.priority > self._impulse.priority:
+                self._impulse.priority = impulse.priority
+            if impulse.mode == ChallengeMode.next.value:
+                self._impulse.mode = ChallengeMode.next.value
+        else:
+            self._impulse = impulse
+        # suppress 后的 cooldown 内不主动 fire — 由 _loop_attention 下一轮 re-rank 捞回.
+        if self._fire_impulse and time.monotonic() > self._suppress_until:
+            self._fire_impulse(self._impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
         meta = NotifySignalMeta.from_signal(signal)
@@ -117,14 +135,14 @@ class NotifyNucleus(Nucleus):
         self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # notify loses the challenge through mindflow's buffered path, so the
-        # messages are already accounted for; suppress is only a defensive
-        # fallback — clear the cache and wait for the next signal.
-        self._impulse = None
+        # 契约: suppressed 后 impulse 仍保留、可 peek, 只是 cooldown 内不主动 fire —
+        # rank 输掉不等于完结, 由 _loop_attention 下一轮 re-rank 把它捞回.
+        self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def attended(self, impulse: Impulse) -> None:
         if self._impulse is impulse:
             self._impulse = None
+            self._suppress_until = 0.0
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
         if self._impulse is None:
@@ -144,6 +162,7 @@ class NotifyNucleus(Nucleus):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._is_running = False
         self._impulse = None
+        self._suppress_until = 0.0
 
 
 class NotifyNucleusMeta(NucleusMeta):

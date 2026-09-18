@@ -212,15 +212,67 @@ async def test_attended_clears_cache():
 
 
 @pytest.mark.asyncio
-async def test_add_signal_last_wins_overwrites_cache():
+async def test_suppress_retains_impulse_peekable():
+    """契约: suppressed 后 impulse 仍保留、可 peek — rank 输掉不等于完结 (不丢)."""
+    async with NotifyNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('keep'))
+        nuc.suppress(Impulse(), None)
+        peeked = nuc.peek()
+        assert peeked is not None
+        texts = {c['text'] for m in peeked.messages for c in m.contents if 'text' in c}
+        assert 'keep' in texts
+
+
+@pytest.mark.asyncio
+async def test_suppress_cooldown_blocks_refire():
+    """suppress 后 cooldown 内 add_signal 只合并不主动 fire (防风暴, 由 re-rank 捞回)."""
+    async with NotifyNucleus() as nuc:
+        fired: list[Impulse] = []
+        nuc.with_bus(lambda s: None, lambda imp: fired.append(imp))
+        nuc.add_signal(_signal('first'))
+        nuc.suppress(Impulse(), None)
+        fired.clear()
+        nuc.add_signal(_signal('second'))
+        assert fired == []
+        peeked = nuc.peek()
+        texts = {c['text'] for m in peeked.messages for c in m.contents if 'text' in c}
+        assert {'first', 'second'} <= texts
+
+
+@pytest.mark.asyncio
+async def test_add_signal_burst_preserves_all_messages():
+    """burst 不丢消息 — notify 契约是 'must not be missed'.
+
+    两个 notify signal 在同一调度窗口到达 (rank 尚未 peek), 后到者的 messages
+    应合并进 pending impulse, 前一条不被覆盖丢弃.
+    """
     async with NotifyNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: None)
         nuc.add_signal(_signal('first'))
         nuc.add_signal(_signal('second'))
         peeked = nuc.peek()
-        # 取最新一条的 messages.
-        texts = [c['text'] for m in peeked.messages for c in m.contents if 'text' in c]
-        assert 'second' in texts
+        assert peeked is not None
+        texts = {c['text'] for m in peeked.messages for c in m.contents if 'text' in c}
+        assert {'first', 'second'} <= texts
+
+
+@pytest.mark.asyncio
+async def test_add_signal_after_peek_merges_into_in_flight_impulse():
+    """已 peek 的 impulse 合并迟到 signal 也安全 — 消息不丢.
+
+    peek 不清槽; 迟到 signal 的 message 合并进同一个 in-flight impulse,
+    attended() 在 inject 前清槽 (无 await 间隙), 迟到 message 与首条一起交付.
+    """
+    async with NotifyNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('first'))
+        nuc.peek()
+        nuc.add_signal(_signal('second'))
+        peeked = nuc.peek()
+        assert peeked is not None
+        texts = {c['text'] for m in peeked.messages for c in m.contents if 'text' in c}
+        assert {'first', 'second'} <= texts
 
 
 # ============================================================

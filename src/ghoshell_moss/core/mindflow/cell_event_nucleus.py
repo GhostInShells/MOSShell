@@ -7,6 +7,7 @@ channel, matrix-channel.md §5.2).
 SignalMeta and Nucleus live together: CellEventSignalMeta + CellTransition are
 defined here; ``ghoshell_moss.signals`` only re-exports them.
 """
+import time
 from enum import Enum
 from typing import Callable, Iterable
 from typing_extensions import Self
@@ -91,12 +92,20 @@ class CellEventNucleus(Nucleus):
     (BACKGROUND).
     """
 
-    def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):
+    def __init__(
+            self,
+            *,
+            name: str = NAME,
+            logger: LoggerItf | None = None,
+            suppress_seconds: float = 0.5,
+    ):
         self._name = name
         self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
         self._impulse: Impulse | None = None
+        self._suppress_seconds = suppress_seconds
+        self._suppress_until: float = 0.0
 
     def name(self) -> str:
         return self._name
@@ -112,6 +121,7 @@ class CellEventNucleus(Nucleus):
 
     def clear(self) -> None:
         self._impulse = None
+        self._suppress_until = 0.0
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
@@ -119,9 +129,15 @@ class CellEventNucleus(Nucleus):
         impulse = self.build_impulse(signal)
         if impulse is None:
             return
-        self._impulse = impulse
-        if self._fire_impulse:
-            self._fire_impulse(impulse)
+        if self._impulse is not None and not self._impulse.is_stale():
+            # cell_event 同 notify 契约: burst 里后到 signal 的 messages 合并进
+            # pending impulse, 不覆盖丢弃 (n 个 node 同时上线时只留最后一条的 bug).
+            self._impulse.messages.extend(impulse.messages)
+        else:
+            self._impulse = impulse
+        # suppress 后的 cooldown 内不主动 fire — 由 _loop_attention 下一轮 re-rank 捞回.
+        if self._fire_impulse and time.monotonic() > self._suppress_until:
+            self._fire_impulse(self._impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
         if not CellEventSignalMeta.match(signal):
@@ -137,11 +153,14 @@ class CellEventNucleus(Nucleus):
         self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        self._impulse = None
+        # 契约: suppressed 后 impulse 仍保留、可 peek, 只是 cooldown 内不主动 fire —
+        # rank 输掉不等于完结, 由 _loop_attention 下一轮 re-rank 把它捞回.
+        self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def attended(self, impulse: Impulse) -> None:
         if self._impulse is impulse:
             self._impulse = None
+            self._suppress_until = 0.0
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
         if self._impulse is None:
@@ -161,6 +180,7 @@ class CellEventNucleus(Nucleus):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._is_running = False
         self._impulse = None
+        self._suppress_until = 0.0
 
 
 class CellEventNucleusMeta(NucleusMeta):
