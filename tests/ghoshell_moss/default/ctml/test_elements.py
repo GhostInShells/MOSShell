@@ -5,7 +5,13 @@ from dataclasses import dataclass
 
 import pytest
 
-from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandToken, PyCommand
+from ghoshell_moss.core.concepts.command import (
+    BaseCommandTask,
+    Command,
+    CommandDeltaArgName,
+    CommandToken,
+    PyCommand,
+)
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext, RootCommandTaskElement
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -217,3 +223,60 @@ async def test_parse_token_delta_command():
     await suite.parse([content], run=True)
     #  once without cdata, the self-closing tag will separate to start and end token
     assert suite.queue[0].result() == "hello<bar></bar>world"
+
+
+def _content_task(suite: ElementTestSuite, idx: int = 0) -> BaseCommandTask:
+    tasks = [t for t in suite.queue if t is not None and t.caller_name() == CONTENT_COMMAND_NAME]
+    return tasks[idx]
+
+
+def _content_chunks(suite: ElementTestSuite, idx: int = 0):
+    return _content_task(suite, idx).kwargs[CommandDeltaArgName.CHUNKS.value]
+
+
+@pytest.mark.asyncio
+async def test_content_stream_collapses_for_late_consumer():
+    """内容已生成完才来消费 (排在 blocking 命令后面): 整段一次交付."""
+    suite = new_test_suite()
+    await suite.parse(["<foo>he", "llo ", "wor", "ld</foo>"], run=False)
+
+    chunks = [c async for c in _content_chunks(suite)]
+    assert chunks == ["hello world"]
+
+
+@pytest.mark.asyncio
+async def test_content_stream_stays_streaming_for_live_consumer():
+    """消费者在生产过程中就位 (生成与执行重叠): 逐段交付, 塌缩不生效."""
+    suite = new_test_suite()
+    _, parser, _, _ = suite.as_tuple()
+
+    with parser:
+        parser.feed("<foo>he")
+        receiver = _content_chunks(suite)
+        assert await anext(receiver) == "he"
+        parser.feed("llo</foo>")
+        assert await anext(receiver) == "llo"
+    with pytest.raises(StopAsyncIteration):
+        await anext(receiver)
+
+
+@pytest.mark.asyncio
+async def test_content_stream_collapses_per_segment():
+    """被命令切开的每一段各自塌缩, 段与段之间不合并."""
+    suite = new_test_suite()
+    await suite.parse(["<foo>he", "llo<bar/>", "world</foo>"], run=False)
+
+    assert [c async for c in _content_chunks(suite, 0)] == ["hello"]
+    assert [c async for c in _content_chunks(suite, 1)] == ["world"]
+
+
+@pytest.mark.asyncio
+async def test_blank_content_produces_no_content_task():
+    """纯空白内容不产生 __content__ 任务, 只有 scope 进出."""
+    suite = new_test_suite()
+    await suite.parse(["<foo>   </foo>"], run=False)
+
+    assert [t.caller_name() for t in suite.queue if t is not None] == [
+        SCOPE_ENTER_COMMAND_NAME,
+        SCOPE_EXIT_COMMAND_NAME,
+    ]

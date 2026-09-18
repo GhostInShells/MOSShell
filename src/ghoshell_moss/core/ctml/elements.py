@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from logging import getLogger
-from typing import Optional, Generic, Any, ClassVar, AsyncIterator, Callable
+from typing import Optional, Generic, Any, ClassVar, AsyncIterator, Callable, Sequence
 
 from ghoshell_common.contracts import LoggerItf
 
@@ -622,7 +622,9 @@ class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):
     _self_scope_open_delivered: bool = False
 
     def _create_new_content_task(self, token: CommandToken) -> tuple[ThreadSafeStreamSender, CommandTask]:
-        sender, receiver = create_sender_and_receiver()
+        # 文本流装配 merge: 消费者若在内容已生成完之后才到达 (排在 blocking 命令
+        # 后面), 一次性拿到整段, 不必逐 token 走一遍流式通道.
+        sender, receiver = create_sender_and_receiver(merge="".join)
         command = self._find_command(token.chan, CONTENT_COMMAND_NAME)
         if command is not None:
             task = BaseCommandTask.from_command(
@@ -807,6 +809,10 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     如果 foo 函数是运行在另一个通过双工通讯连接的 channel, 则这种做法能够达到最优的流式传输.
     """
 
+    _merge: Callable[[Sequence[ItemT]], ItemT] | None = None
+    """delta 流的塌缩函数. 只在 ItemT 具备合并语义时装配 —— 消费者到达时生成若已
+    结束, 就一次性交付, 而不是逐 item 走流式通道. """
+
     def __init__(
             self,
             name: str,
@@ -819,7 +825,7 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
             ctx: CommandTaskElementContext,
             command_token: CommandToken | None = None,
     ) -> None:
-        sender, receiver = create_sender_and_receiver()
+        sender, receiver = create_sender_and_receiver(merge=self._merge)
         self._sender = sender
         self._receiver = receiver
         self._deltas: str = ""
@@ -860,7 +866,6 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     def on_sub_end_token(self, token: CommandToken) -> list[CommandTask]:
         parsed = self._parse_delta(token)
         self._deltas += token.content
-        self._deltas += token.content
         self._sender.append(parsed)
         return []
 
@@ -890,6 +895,9 @@ class DeltaIsCommandTokensElement(DeltaStreamElement[CommandToken]):
 
 
 class DeltaIsTextChunkElement(DeltaStreamElement[CommandToken]):
+    _merge = "".join
+    """chunks__ 是文本流: 消费者晚到 (内容已生成完) 时整段一次交付. """
+
     def _parse_delta(self, token: CommandToken) -> ItemT:
         if token is None:
             raise RuntimeError("why token is None")

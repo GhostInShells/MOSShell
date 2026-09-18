@@ -1,6 +1,6 @@
 import asyncio
 from collections import deque
-from typing import Generic, TypeVar
+from typing import Callable, Generic, Sequence, TypeVar
 
 from ghoshell_common.helpers import Timeleft
 
@@ -23,6 +23,10 @@ ItemT = TypeVar("ItemT")
 
 class _Committed:
     pass
+
+
+_Empty = object()
+"""占位符: 队列里当前没有可取的对象. 与 ItemT 的合法取值 (含 None) 区分开. """
 
 
 class ThreadSafeStreamSender(Generic[ItemT]):
@@ -92,31 +96,56 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
         completed: ThreadSafeEvent,
         queue: deque[ItemT | Exception | None],
         timeout: float | None = None,
+        merge: Callable[[Sequence[ItemT]], ItemT] | None = None,
     ):
         self._completed = completed
         self._added = added
         self._queue = queue
         self._timeleft = Timeleft(timeout or 0)
+        self._merge = merge
+        self._first_pull = True
+
+    def _pop_ready(self):
+        """非阻塞取出下一个可交付对象; 队列为空时返回 _Empty.
+
+        首次 pull 时如果流已经完备 (producer 已 commit), 说明生成早于消费开始 ——
+        两者不可能重叠, 逐 item 交付只剩开销. 此时把队首连续的普通 item 交给
+        merge 合并成一个返回; 终止项 (_Committed / 异常) 不参与合并, 留在队列里
+        由下一次调用按原语义处理. 此后所有 pull 恢复 1:1.
+        """
+        if not self._queue:
+            return _Empty
+        if self._merge is None or not self._first_pull or not self._completed.is_set():
+            self._first_pull = False
+            return self._queue.popleft()
+        self._first_pull = False
+        head = self._queue[0]
+        if head is _Committed or isinstance(head, Exception):
+            return self._queue.popleft()
+        ready: list[ItemT] = []
+        while self._queue:
+            item = self._queue[0]
+            if item is _Committed or isinstance(item, Exception):
+                break
+            ready.append(self._queue.popleft())
+        # 只有一项时不必过 merge.
+        return ready[0] if len(ready) == 1 else self._merge(ready)
 
     def __iter__(self):
         return self
 
     def __next__(self):
         while True:
-            if len(self._queue) > 0:
-                item = self._queue.popleft()
+            item = self._pop_ready()
+            if item is not _Empty:
                 if item is _Committed:
                     raise StopIteration
                 elif isinstance(item, Exception):
                     raise item
                 return item
-            else:
-                if self._completed.is_set():
-                    if len(self._queue) > 0:
-                        continue
-                    raise StopIteration
-                self._added.wait_sync(self._timeleft.left() or None)
-                continue
+            elif self._completed.is_set():
+                raise StopIteration
+            self._added.wait_sync(self._timeleft.left() or None)
 
     def __enter__(self):
         return self
@@ -129,25 +158,27 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
 
     async def __anext__(self):
         while True:
-            if len(self._queue) > 0:
-                item = self._queue.popleft()
+            item = self._pop_ready()
+            if item is not _Empty:
                 if isinstance(item, Exception):
                     raise item
                 elif item is _Committed:
                     raise StopAsyncIteration
                 else:
                     return item
+            elif self._completed.is_set():
+                # 已经拿到了所有的结果.
+                raise StopAsyncIteration
+            # 先清信号, 再复查队列. 顺序反过来的话, 落在"查空"与 clear 之间的
+            # append 会被抹掉信号, 该项要等到下一次 append / commit 才被取走.
+            self._added.clear()
+            if self._queue:
+                continue
+            left = self._timeleft.left() or None
+            if left and left > 0.0:
+                await asyncio.wait_for(self._added.wait(), timeout=left)
             else:
-                if self._completed.is_set():
-                    # 已经拿到了所有的结果.
-                    raise StopAsyncIteration
-                self._added.clear()
-                left = self._timeleft.left() or None
-                if left and left > 0.0:
-                    await asyncio.wait_for(self._added.wait(), timeout=left)
-                    continue
-                else:
-                    await self._added.wait()
+                await self._added.wait()
 
     async def __aenter__(self):
         return self
@@ -158,19 +189,27 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
 
 def create_sender_and_receiver(
     timeout: float | None = None,
+    merge: Callable[[Sequence[ItemT]], ItemT] | None = None,
 ) -> tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()
     queue = deque()
-    return ThreadSafeStreamSender(added, completed, queue), ThreadSafeStreamReceiver(added, completed, queue, timeout)
+    return (
+        ThreadSafeStreamSender(added, completed, queue),
+        ThreadSafeStreamReceiver(added, completed, queue, timeout, merge),
+    )
 
 
 def create_typed_sender_and_receiver(
     item_type: type[ItemT],
     *,
     timeout: float | None = None,
+    merge: Callable[[Sequence[ItemT]], ItemT] | None = None,
 ) -> tuple[ThreadSafeStreamSender[ItemT], ThreadSafeStreamReceiver[ItemT]]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()
     queue = deque()
-    return ThreadSafeStreamSender(added, completed, queue), ThreadSafeStreamReceiver(added, completed, queue, timeout)
+    return (
+        ThreadSafeStreamSender(added, completed, queue),
+        ThreadSafeStreamReceiver(added, completed, queue, timeout, merge),
+    )
