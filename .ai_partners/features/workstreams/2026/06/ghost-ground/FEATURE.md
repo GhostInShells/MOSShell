@@ -15,7 +15,7 @@ status: completed
 status_note: CLI 层完成, 下游 ground-channel (CTML runtime) 独立 workstream, moss-project-ground
   已关闭
 title: Ghost Ground — Ghost 的认知场
-updated: '2026-08-13'
+updated: '2026-09-18'
 ---
 
 # Ground — Ghost 的认知场
@@ -479,9 +479,9 @@ L2 之间的互相发现使 L3 不存在.
   - **内部格式同构**: 模板文件的内部结构仍是 frontmatter + body + pins,
     与 GROUND.md 完全一致. open 时加载模板内容, 写入目标目录时命名为
     `GROUND.md`.
-  - **发现**: GroundSet 构造时扫描三个路径, 合并为模板清单:
+  - **发现**: GroundSet 构造时扫描两个路径, 合并为模板清单:
     (1) `$CWD/.grounds/` — 项目属地模板; (2) `$HOME/.grounds/` — 机器
-    全局模板; (3) Ghost 携带的模板. 同名模板项目属地优先.
+    全局模板. 同名模板项目属地优先.
   - **自动机制, 不需发现链**: `.grounds/` 是文件系统约定, 不需要 GROUND.md
     里声明. 但可以在 body 里提一句作为人类文档.
   - **open 语义**: `Grounds.open(dir, template="python-project")` —

@@ -332,7 +332,7 @@ class TemplateInfo(BaseModel):
     """.grounds/ 中的一枚模板."""
 
     name: str = Field(description="模板名 — .grounds/ 下相对路径去掉 .md 后缀.")
-    source: str = Field(description="发现源: project / user / ghost.")
+    source: str = Field(description="发现源: project / user. 同名时 project 覆盖 user.")
     path: Path = Field(description="模板文件绝对路径.")
     description: str = Field(default="", description="模板 frontmatter 的 description, 或 body 首行.")
 

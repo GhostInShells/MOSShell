@@ -7,8 +7,8 @@
 GroundSet 本就有启动代价, 子场展开是它的一部分 (一层, 不递归).
 materialize=False 可关掉物化 (一次性 peek 场景)。
 
-Template discovery (K63): 扫描 $CWD/.grounds/ → $HOME/.grounds/ →
-ghost 携带路径, 合并为模板清单. 同名模板项目属地优先.
+Template discovery: 扫描 $HOME/.grounds/ → $CWD/.grounds/, 合并为模板清单.
+同名模板项目属地优先.
 """
 
 from __future__ import annotations
@@ -40,7 +40,6 @@ class DefaultGroundSet(GroundSet):
         self,
         *,
         workspace_root: Path | None = None,
-        ghost_templates_dir: Path | None = None,
         logger: logging.Logger | None = None,
         materialize: bool = True,
     ) -> None:
@@ -52,7 +51,7 @@ class DefaultGroundSet(GroundSet):
         self._label_by_path: dict[str, str] = {}
         self._templates: list[TemplateInfo] = []
         self._materialize_errors: list[str] = []
-        self._scan_templates(ghost_templates_dir)
+        self._scan_templates()
         # 构造期建 root — 建场只读一个小 GROUND.md, 与 _scan_templates 的同步 IO 同量级.
         self._root = self._construct(self._workspace_root)
         if materialize:
@@ -240,10 +239,10 @@ class DefaultGroundSet(GroundSet):
 
     # -- template discovery -----------------------------------------------
 
-    def _scan_templates(self, ghost_templates_dir: Path | None) -> None:
+    def _scan_templates(self) -> None:
         seen: dict[str, TemplateInfo] = {}
 
-        # 1. $HOME/.grounds/ — 最低优先级
+        # 1. $HOME/.grounds/ — 机器全局, 最低优先级
         home = os.environ.get("HOME")
         if home:
             self._collect_templates(Path(home) / _TEMPLATE_DIR, "user", seen)
@@ -252,10 +251,6 @@ class DefaultGroundSet(GroundSet):
         self._collect_templates(
             self._workspace_root / _TEMPLATE_DIR, "project", seen
         )
-
-        # 3. ghost 携带 — 最高优先级
-        if ghost_templates_dir is not None:
-            self._collect_templates(ghost_templates_dir, "ghost", seen)
 
         self._templates = sorted(seen.values(), key=lambda t: t.name)
 
