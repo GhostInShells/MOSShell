@@ -132,7 +132,7 @@ class DoloresEgoNucleus(Nucleus):
             # boot wake: preheat via instruction (handshake), speak via command (reflex-arc logos).
             if meta.instruction:
                 messages.append(Message.new(tag="startup").with_content(
-                    f"<startup>\n本 instruction 来自文档:\n---\n{meta.instruction}\n</startup>"
+                    f"本 instruction 来自文档:\n---\n{meta.instruction}"
                 ))
             if meta.command:
                 logos = meta.command

@@ -1,4 +1,4 @@
 description: 开机启动，激活 session 并预热
 created_at: "2026-09-18"
 command: "<say>hello world</say>"
-instruction: "激活 session 并预热上下文。完成后回复 pong 表示激活成功。"
+instruction: "激活 session 并预热上下文。完成后严格只输出 pong 一词，不带 say 标签。"
