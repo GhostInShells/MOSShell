@@ -50,7 +50,11 @@ field is the model's concern — the human only shares the view.
 **Analyze.** Every card's detail panel has a zero-context "analyze" box: a
 side-channel model reads the command text (not the issuing model's intent) and
 answers the human's question. This is a second opinion for trust, kept entirely
-out of the ghost's message stream.
+out of the ghost's message stream. It goes through the moss message protocol
+(`call_messages`): the prompt is one `Message` carrying an XML document that
+grows with each turn (`<cwd>` + `<command>` + one `<turn>` per question/answer —
+no assistant messages). If no LLM func engine is configured, it answers
+"unavailable" and the box hides.
 
 **Reading results.** Output is pushed to the card as it is produced. Past a size
 threshold the full text is written to a file under the node's `runtime/outputs/`,

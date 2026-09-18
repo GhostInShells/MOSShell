@@ -19,6 +19,7 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape
 
 from websockets.asyncio.server import ServerConnection, serve
 
@@ -36,12 +37,44 @@ _DEBOUNCE_SECONDS = 0.4
 decision arriving twice, not a second one."""
 
 _ANALYZE_INSTRUCTION = (
-    "Explain what this shell command does, what it touches, and its risks. "
-    "Answer the human's question directly and concretely. Assess the command "
-    "as written — do not cheerlead or assume intent."
+    "You are a second-opinion shell reviewer. The prompt is an XML document: a "
+    "<cwd> and <command> describe the command under review, and one or more "
+    "<turn> blocks carry the human's <question> and your earlier <answer>. "
+    "Answer the newest (last, unanswered) question directly and concretely. "
+    "Assess the command as written — do not cheerlead or assume intent. "
+    "Reply in the same language the human used in their question."
 )
-"""The zero-context analyzer's fixed instruction. It sees only the command text,
-the cwd, and the human's question — nothing the issuing model intended."""
+"""The zero-context analyzer's fixed instruction. The prompt is a single growing
+XML document (cwd + command + dialogue turns) — no assistant/role messages."""
+
+
+def _analyze_prompt(cwd: str, command: str, history: list, question: str) -> str:
+    """The zero-context prompt as one XML document that grows between rounds.
+
+    Each turn appends a ``<turn>`` with its ``<question>`` and, once answered,
+    an ``<answer>``. The final turn carries only the newest question — the model
+    answers it. There are no assistant messages: the instruction is fixed and
+    this document is the only thing that changes as the dialogue advances.
+    """
+    out = [
+        "<analysis>",
+        f"  <cwd>{escape(cwd)}</cwd>",
+        f"  <command>{escape(command)}</command>",
+    ]
+    for turn in history or []:
+        if not isinstance(turn, dict):
+            continue
+        out.append("  <turn>")
+        out.append(f"    <question>{escape(str(turn.get('q', '')))}</question>")
+        answer = str(turn.get("a", "") or "")
+        if answer:
+            out.append(f"    <answer>{escape(answer)}</answer>")
+        out.append("  </turn>")
+    out.append("  <turn>")
+    out.append(f"    <question>{escape(question)}</question>")
+    out.append("  </turn>")
+    out.append("</analysis>")
+    return "\n".join(out)
 
 
 def _ground_root_for(cwd: Path) -> Path | None:
@@ -181,27 +214,27 @@ class TerminalSurface:
         """Zero-context second opinion — a side-channel model reads the command.
 
         Deliberately divorced from the issuing model: the prompt is the command
-        text, its cwd, and the human's question — no title, no description, no
+        text, its cwd, and the human's dialogue — no title, no description, no
         ghost intent. The reply goes back to the surface, never into the ghost's
         own message stream.
         """
-        llm_funcs = self._llm_funcs() if self._llm_funcs is not None else None
-        if llm_funcs is None:
-            await self.broadcast({"type": "error", "text": "analyze: LLMFuncs not registered"})
-            return
         card = self._store.get(card_id)
         if card is None:
             return
-        lines = [f"cwd: {card.cwd}", f"command: {card.content}"]
-        for turn in history or []:
-            if isinstance(turn, dict):
-                lines.append(f"Q: {turn.get('q', '')}")
-                lines.append(f"A: {turn.get('a', '')}")
-        lines.append(f"Q: {text}")
+        llm_funcs = self._llm_funcs() if self._llm_funcs is not None else None
+        if llm_funcs is None:
+            await self.broadcast({
+                "type": "analyze",
+                "id": card_id,
+                "unavailable": True,
+                "text": "analyze is unavailable — no LLM func engine is configured",
+            })
+            return
+        prompt = _analyze_prompt(card.cwd, card.content, history, text)
         try:
-            result = await llm_funcs.call(
+            result = await llm_funcs.call_messages(
                 instruction=_ANALYZE_INSTRUCTION,
-                prompt="\n".join(lines),
+                prompt=[Message.new().with_content(prompt)],
             )
         except Exception as e:
             await self.broadcast({"type": "error", "text": f"analyze failed: {e}"})

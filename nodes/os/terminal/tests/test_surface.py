@@ -17,8 +17,8 @@ class _FakeLLM:
         self.answer = answer
         self.prompts = []
 
-    async def call(self, *, instruction, prompt, **kw):
-        self.prompts.append(prompt)
+    async def call_messages(self, *, instruction, prompt, **kw):
+        self.prompts.append("".join(m.to_content_string() for m in prompt))
         return _FakeResult(self.answer)
 
 
@@ -236,23 +236,46 @@ async def test_analyze_returns_a_zero_context_answer(store, signals, stops):
             frame = await _recv(ws, "analyze")
         assert frame["text"] == "it lists files"
         prompt = llm.prompts[0]
-        assert "rm -rf /" in prompt
-        assert "is this safe?" in prompt
+        assert "<command>rm -rf /</command>" in prompt
+        assert "<question>is this safe?</question>" in prompt
         assert "dev" not in prompt, "the issuing model's title must not leak into the analyzer"
     finally:
         await surface.stop()
 
 
 @pytest.mark.asyncio
-async def test_analyze_reports_unregistered(store, signals, stops):
+async def test_analyze_embeds_prior_turns_as_xml(store, signals, stops):
+    llm = _FakeLLM()
+    surface = await _surface(store, signals, stops, llm_funcs=lambda: llm)
+    try:
+        card = _pending(store, "ls -la")
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({
+                "type": "analyze", "id": card.id, "text": "and why?",
+                "history": [{"q": "what does -l do?", "a": "long listing"}],
+            }))
+            frame = await _recv(ws, "analyze")
+        assert frame["text"] == "it lists files"
+        prompt = llm.prompts[0]
+        assert "<question>what does -l do?</question>" in prompt
+        assert "<answer>long listing</answer>" in prompt
+        assert "<question>and why?</question>" in prompt
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_analyze_reports_unavailable_when_unconfigured(store, signals, stops):
     surface = await _surface(store, signals, stops, llm_funcs=lambda: None)
     try:
         card = _pending(store)
         async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
             await _recv(ws, "snapshot")
             await ws.send(json.dumps({"type": "analyze", "id": card.id, "text": "is this safe?"}))
-            frame = await _recv(ws, "error")
-            assert "not registered" in frame["text"]
+            frame = await _recv(ws, "analyze")
+        assert frame["unavailable"] is True
+        assert "unavailable" in frame["text"]
     finally:
         await surface.stop()
 

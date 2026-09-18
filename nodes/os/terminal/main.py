@@ -57,11 +57,8 @@ async def main(matrix: Matrix) -> None:
 
     def get_llm_funcs():
         """Lazy — resolve LLMFuncs only when an analyze request actually arrives."""
-        container = matrix.container()
-        if container is None:
-            return None
         try:
-            return container.get(LLMFuncs)
+            return matrix.container.get(LLMFuncs)
         except Exception:
             return None
 

@@ -116,9 +116,16 @@ script 卡片批准一次后，持续下发被执行的 bash 卡片（子命令�
 - **认知场（人机共享）**：`ground(thread)` 命令渲染最近 `GROUND.md`（walk mode）供模型读；
   人类在右侧 thread 面板点"ground"按需查看同一份（surface 实时 request 渲染，不做 DOM 缓存）。
   groundset 由 main 注入（`DefaultGroundSet(workspace_root=project_home)`），同时传 channel 与 surface。
-- **零上下文分析**：卡片详情"analyze"框，surface 调 `LLMFuncs.call(instruction, prompt)`，
-  prompt = cwd + 命令文本 + 人类问题（**不带** title/desc/ghost 意图），多轮靠前端带历史，
-  回复走 message 协议回 surface，不注入 ghost。
+- **零上下文分析**：卡片详情"analyze"框，surface 走 moss message 协议 `call_messages`，
+  prompt = 单个 Message 承载一份**递增的 XML 文档**（`<cwd>` + `<command>` + 逐 `<turn>` 的
+  `<question>`/`<answer>`，**无 assistant message**），**不带** title/desc/ghost 意图，
+  多轮靠前端带历史（XML 递增）。LLMFunc 取不到时直接回"unavailable"，前端隐藏 analyze 框。
+- **analyze 收尾**：界面标 `analyze (By LLM Func)`；instruction 提示按用户语言回复。实机验证
+  `matrix.container.get(LLMFuncs)` 解析到 `PydanticAIFuncs(MossLLMFuncs)`，单轮+多轮返回真实答案。
+  UI 修三处 bug：`matrix.container()` 多了括号（property 当 callable 调 → analyze 请求 1011）、
+  提交后 `<details>` 重建折叠（记 openSections 恢复）、历史区不滚到底（renderDetail 末尾滚到 scrollHeight）。
+- **赋名机制验证**：matrix.nodes `run(target, name)` 新增必填 name，terminal 以 name="terminal"
+  稳定 mount 到 `matrix.mesh.terminal`（内部 uid 仍随机，仅作进程标识）。
 
 ## 待定
 

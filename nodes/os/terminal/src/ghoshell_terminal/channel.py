@@ -274,17 +274,19 @@ def build_terminal_channel(
         root = store.root
         return (
             "Shell commands become cards on a human-facing terminal. exec() returns "
-            "a receipt at once — it does not wait for the human. A card is settled "
-            "by the human (accept / deny / ask) and again when the process ends; both "
-            "arrive as signals, so read(id) is how you learn what happened. Commands "
-            "run in a thread: open(thread, cwd, description) names a location, then "
-            "exec into it; exec() with no thread runs in the default 'root' thread. "
+            "a receipt at once — it never waits on a person, so keep issuing and "
+            "read(id) later to learn each card's fate. A card is settled by the "
+            "human's accept or deny, then again when its process ends (done/error); "
+            "ask only talks about it and leaves it pending. You can cancel(id) a card "
+            "still awaiting a verdict, and stop(id) a running one. Commands run in a "
+            "thread: open(thread, cwd, description) names a location, then exec into "
+            "it; exec() with no thread runs in the default 'root' thread. "
             f"Every cwd must live inside {root}. "
             "A command runs without asking when its thread is auto (the human trusts "
             "that thread) or it matches an accepted rule — rule() proposes the regex, "
             "the human accepts it. Every thread has a cognitive field: ground(thread) "
-            "renders the nearest GROUND.md at its cwd. Thread state and the "
-            "pending/running counts appear in this channel's notice."
+            "renders the nearest GROUND.md at its cwd. Pending/running counts and each "
+            "thread's cwd appear in this channel's notice."
         )
 
     # -- threads ------------------------------------------------------------

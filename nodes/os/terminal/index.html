@@ -192,6 +192,8 @@ const threads = new Map();
 const groundCache = new Map();
 const analyzeHistory = new Map();
 const analyzePending = new Set();
+let analyzeAvailable = true;
+const openSections = new Set();
 let selectedId = null;
 let currentMode = "approval";
 
@@ -206,6 +208,18 @@ function make(tag, cls, text) {
   if (cls) node.className = cls;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function makeCollapsible(label) {
+  const d = make("details", "d-collapse");
+  const s = make("summary", null, label);
+  d.append(s);
+  if (openSections.has(label)) d.open = true;
+  d.addEventListener("toggle", () => {
+    if (d.open) openSections.add(label);
+    else openSections.delete(label);
+  });
+  return d;
 }
 
 function send(frame) {
@@ -291,6 +305,10 @@ function renderActions(host, card) {
 }
 
 function renderDetail(card) {
+  for (const d of detailEl.querySelectorAll("details[open]")) {
+    const s = d.querySelector("summary");
+    if (s) openSections.add(s.textContent);
+  }
   detailEl.replaceChildren();
 
   const head = make("div", "d-head");
@@ -336,48 +354,48 @@ function renderDetail(card) {
   }
 
   // analyze — collapsible, sits between command and output
-  const aDetails = make("details", "d-collapse");
-  aDetails.append(make("summary", null, "analyze (zero-context)"));
-  const aBox = make("div", "d-analyze");
-  const aHist = make("div", "a-hist");
-  for (const turn of analyzeHistory.get(card.id) || []) {
-    aHist.append(make("div", "a-q", "you: " + turn.q));
-    if (turn.a) aHist.append(make("div", "a-a", turn.a));
+  if (analyzeAvailable) {
+    const aDetails = makeCollapsible("analyze (By LLM Func)");
+    const aBox = make("div", "d-analyze");
+    const aHist = make("div", "a-hist");
+    for (const turn of analyzeHistory.get(card.id) || []) {
+      if (turn.q) aHist.append(make("div", "a-q", "you: " + turn.q));
+      if (turn.a) aHist.append(make("div", "a-a", turn.a));
+    }
+    aBox.append(aHist);
+    const pending = analyzePending.has(card.id);
+    const aRow = make("div", "a-row");
+    const aInput = make("input");
+    aInput.placeholder = "ask a second opinion…";
+    aInput.disabled = pending;
+    const ask = () => {
+      const q = aInput.value.trim();
+      if (!q || pending) return;
+      aInput.value = "";
+      analyzePending.add(card.id);
+      const hist = analyzeHistory.get(card.id) || [];
+      send({ type: "analyze", id: card.id, text: q, history: hist });
+      hist.push({ q, a: "" });
+      analyzeHistory.set(card.id, hist);
+      renderDetail(card);
+    };
+    aInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+    const aBtn = make("button", null, pending ? "…" : "analyze");
+    aBtn.disabled = pending;
+    aBtn.addEventListener("click", ask);
+    aRow.append(aInput);
+    aRow.append(aBtn);
+    aBox.append(aRow);
+    aDetails.append(aBox);
+    detailEl.append(aDetails);
   }
-  aBox.append(aHist);
-  const pending = analyzePending.has(card.id);
-  const aRow = make("div", "a-row");
-  const aInput = make("input");
-  aInput.placeholder = "ask a second opinion…";
-  aInput.disabled = pending;
-  const ask = () => {
-    const q = aInput.value.trim();
-    if (!q || pending) return;
-    aInput.value = "";
-    analyzePending.add(card.id);
-    const hist = analyzeHistory.get(card.id) || [];
-    send({ type: "analyze", id: card.id, text: q, history: hist });
-    hist.push({ q, a: "" });
-    analyzeHistory.set(card.id, hist);
-    renderDetail(card);
-  };
-  aInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
-  const aBtn = make("button", null, pending ? "…" : "analyze");
-  aBtn.disabled = pending;
-  aBtn.addEventListener("click", ask);
-  aRow.append(aInput);
-  aRow.append(aBtn);
-  aBox.append(aRow);
-  aDetails.append(aBox);
-  detailEl.append(aDetails);
 
   // output
   detailEl.append(make("div", "d-section", "output (tail)"));
   detailEl.append(make("pre", "d-out", (card.output_tail || []).join("") || "(none yet)"));
 
   // meta — collapsed, tagged
-  const mDetails = make("details", "d-collapse");
-  mDetails.append(make("summary", null, "meta"));
+  const mDetails = makeCollapsible("meta");
   const tags = make("div", "d-tags");
   const tagRows = [
     ["state", card.state], ["thread", card.thread || "—"], ["exit", card.exit_code ?? "—"],
@@ -387,6 +405,10 @@ function renderDetail(card) {
   for (const [k, v] of tagRows) tags.append(make("span", "tag", k + "=" + v));
   mDetails.append(tags);
   detailEl.append(mDetails);
+
+  // latest analyze content sits at the bottom — keep it in view after re-render
+  const hist = detailEl.querySelector(".a-hist");
+  if (hist) hist.scrollTop = hist.scrollHeight;
 }
 
 function toggle(id) {
@@ -479,13 +501,17 @@ function onFrame(frame) {
     case "analyze": {
       const card = cards.get(frame.id);
       analyzePending.delete(frame.id);
-      const hist = analyzeHistory.get(frame.id) || [];
-      if (hist.length && hist[hist.length - 1].a === "") {
-        hist[hist.length - 1].a = frame.text;
+      if (frame.unavailable) {
+        analyzeAvailable = false;
       } else {
-        hist.push({ q: "", a: frame.text });
+        const hist = analyzeHistory.get(frame.id) || [];
+        if (hist.length && hist[hist.length - 1].a === "") {
+          hist[hist.length - 1].a = frame.text;
+        } else {
+          hist.push({ q: "", a: frame.text });
+        }
+        analyzeHistory.set(frame.id, hist);
       }
-      analyzeHistory.set(frame.id, hist);
       if (card && selectedId === frame.id) renderDetail(card);
       break;
     }
