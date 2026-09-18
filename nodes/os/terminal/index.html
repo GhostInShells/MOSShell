@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moss terminal</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1b1f26;
+    --line: #2b313b;
+    --fg: #d8dee9;
+    --dim: #8b95a5;
+    --accent: #6ea8fe;
+    --run: #48b884;
+    --wait: #e0a33e;
+    --bad: #d9645f;
+    --done: #5c6675;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .brand { color: var(--accent); font-weight: 600; }
+  .root { color: var(--dim); font-size: 12px; }
+  .spacer { flex: 1; }
+  .modes { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .modes button {
+    border: 0; background: transparent; color: var(--dim);
+    padding: 4px 10px; cursor: pointer; font: inherit;
+  }
+  .modes button + button { border-left: 1px solid var(--line); }
+  .modes button.on { background: var(--accent); color: #10131a; }
+  .conn { font-size: 12px; color: var(--dim); }
+  .conn.live { color: var(--run); }
+  button.danger {
+    background: transparent; color: var(--bad); border: 1px solid var(--bad);
+    border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
+  }
+  main { flex: 1; display: flex; min-height: 0; }
+  .stream { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .detail {
+    width: 42%; max-width: 620px; border-left: 1px solid var(--line);
+    background: var(--panel); overflow-y: auto; padding: 14px;
+  }
+  .detail .hint { color: var(--dim); }
+
+  .card {
+    border: 1px solid var(--line); border-left: 3px solid var(--done);
+    border-radius: 5px; background: var(--panel); padding: 10px 12px; cursor: pointer;
+  }
+  .card.selected { border-color: var(--accent); }
+  .card.s-streaming { border-left-color: var(--dim); }
+  .card.s-awaiting { border-left-color: var(--wait); animation: pulse 1.4s ease-in-out infinite; }
+  .card.s-running { border-left-color: var(--run); }
+  .card.s-done { border-left-color: var(--done); }
+  .card.s-error, .card.s-rejected { border-left-color: var(--bad); }
+  .card.s-cancelled { border-left-color: var(--done); opacity: .6; }
+  @keyframes pulse { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px rgba(224,163,62,.14); } }
+
+  .row { display: flex; align-items: baseline; gap: 8px; }
+  .id { color: var(--dim); }
+  .title { color: var(--fg); font-weight: 600; }
+  .badge { margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); }
+  .badge.s-awaiting { color: var(--wait); border-color: var(--wait); }
+  .badge.s-running { color: var(--run); border-color: var(--run); }
+  .badge.s-error, .badge.s-rejected { color: var(--bad); border-color: var(--bad); }
+  .desc { color: var(--dim); margin-top: 2px; }
+  pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; }
+  pre.cmd { color: var(--fg); }
+  pre.out { color: var(--dim); max-height: 220px; overflow-y: auto; border-top: 1px dashed var(--line); padding-top: 6px; }
+  .actions { display: flex; gap: 6px; margin-top: 8px; }
+  .actions button {
+    background: transparent; border: 1px solid var(--line); color: var(--fg);
+    border-radius: 4px; padding: 3px 12px; cursor: pointer; font: inherit;
+  }
+  .actions button:hover { border-color: var(--accent); color: var(--accent); }
+  .actions button.stop { color: var(--bad); border-color: var(--bad); }
+  .actions input {
+    flex: 1; background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 4px; padding: 3px 8px; font: inherit;
+  }
+  .dialogue { margin-top: 6px; color: var(--wait); }
+  .foot { margin-top: 6px; color: var(--done); font-size: 11px; }
+  .meta { color: var(--dim); }
+  .meta b { color: var(--fg); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">moss terminal</span>
+  <span class="root" id="root"></span>
+  <span class="spacer"></span>
+  <div class="modes" id="modes">
+    <button data-mode="approval">approval</button>
+    <button data-mode="auto">auto</button>
+    <button data-mode="disabled">disabled</button>
+  </div>
+  <button class="danger" id="stop-all">stop all</button>
+  <span class="conn" id="conn">connecting…</span>
+</header>
+<main>
+  <section class="stream" id="stream"></section>
+  <aside class="detail" id="detail"><div class="hint">click a card to inspect its subprocess</div></aside>
+</main>
+<script>
+"use strict";
+
+// The server is the only authority on card state. This page keeps a local copy
+// so it can re-render on demand, but every transition it shows came from a frame.
+
+const cards = new Map();
+const nodes = new Map();
+let selectedId = null;
+let currentMode = "approval";
+
+const streamEl = document.getElementById("stream");
+const detailEl = document.getElementById("detail");
+const connEl = document.getElementById("conn");
+const rootEl = document.getElementById("root");
+const modesEl = document.getElementById("modes");
+
+const OUT_LINES_MAX = 200;
+
+function make(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function send(frame) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+}
+
+// -- rendering -------------------------------------------------------------
+
+function cardNode(card) {
+  const box = make("div", "card s-" + card.state);
+  box.dataset.id = card.id;
+  box.addEventListener("click", (e) => {
+    if (e.target.closest(".actions")) return;   // buttons do not select the card
+    select(card.id);
+  });
+
+  const row = make("div", "row");
+  row.append(make("span", "id", "#" + card.id));
+  row.append(make("span", "title", card.title || "(untitled)"));
+  row.append(make("span", "badge s-" + card.state, card.state));
+  box.append(row);
+
+  if (card.description) box.append(make("div", "desc", card.description));
+  box.append(make("pre", "cmd"));
+  const actions = make("div", "actions");
+  box.append(actions);
+  const dialogue = make("div", "dialogue");
+  box.append(dialogue);
+  const out = make("pre", "out");
+  out.hidden = true;
+  box.append(out);
+  const foot = make("div", "foot");
+  box.append(foot);
+  return box;
+}
+
+function renderCard(card) {
+  let box = nodes.get(card.id);
+  if (!box) {
+    box = cardNode(card);
+    nodes.set(card.id, box);
+    streamEl.append(box);
+  }
+  box.className = "card s-" + card.state + (selectedId === card.id ? " selected" : "");
+  box.querySelector(".badge").className = "badge s-" + card.state;
+  box.querySelector(".badge").textContent = card.state;
+  box.querySelector("pre.cmd").textContent = card.content || "";
+  renderActions(box.querySelector(".actions"), card);
+  renderDialogue(box.querySelector(".dialogue"), card);
+  renderOutput(box.querySelector("pre.out"), card.output_tail || []);
+  box.querySelector(".foot").textContent = footer(card);
+  if (selectedId === card.id) renderDetail(card);
+}
+
+function footer(card) {
+  const bits = [];
+  if (card.cwd) bits.push(card.cwd);
+  if (card.process_index !== null && card.process_index !== undefined) bits.push("pid idx " + card.process_index);
+  if (card.exit_code !== null && card.exit_code !== undefined) bits.push("exit " + card.exit_code);
+  if (card.elapsed) bits.push(card.elapsed + "s");
+  if (card.output_file) bits.push(card.output_file);
+  return bits.join("  ·  ");
+}
+
+function renderActions(host, card) {
+  host.replaceChildren();
+  const allowed = card.interactions || [];
+  if (allowed.length && !card._decided) {
+    for (const action of allowed) {
+      if (action === "ask") continue;
+      const btn = make("button", action, action);
+      btn.addEventListener("click", () => {
+        if (card._decided) return;
+        card._decided = true;               // one decision: kill the buttons now
+        renderActions(host, card);
+        send({ type: action, id: card.id });
+      });
+      host.append(btn);
+    }
+    const input = make("input");
+    input.placeholder = "ask…";
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || !input.value.trim()) return;
+      send({ type: "ask", id: card.id, text: input.value.trim() });
+      input.value = "";
+    });
+    host.append(input);
+  } else if (card.state === "running") {
+    const btn = make("button", "stop", "stop");
+    btn.addEventListener("click", () => send({ type: "stop", id: card.id }));
+    host.append(btn);
+  }
+}
+
+function renderDialogue(host, card) {
+  host.replaceChildren();
+  for (const line of card.dialogue || []) {
+    host.append(make("div", null, line.author + ": " + line.text));
+  }
+}
+
+function renderOutput(pre, lines) {
+  pre.textContent = lines.join("");
+  pre.hidden = lines.length === 0;
+  const extra = pre.textContent.split("\n").length - OUT_LINES_MAX;
+  if (extra > 0) {
+    pre.textContent = pre.textContent.split("\n").slice(-OUT_LINES_MAX).join("\n");
+  }
+}
+
+function renderDetail(card) {
+  detailEl.replaceChildren();
+  detailEl.append(make("div", "title", "#" + card.id + "  " + (card.title || "")));
+  if (card.description) detailEl.append(make("div", "desc", card.description));
+
+  const meta = make("div", "meta");
+  const rows = [
+    ["state", card.state],
+    ["type", card.type],
+    ["cwd", card.cwd || "—"],
+    ["process index", card.process_index ?? "—"],
+    ["exit", card.exit_code ?? "—"],
+    ["elapsed", (card.elapsed ?? 0) + "s"],
+    ["signal level", card.level],
+    ["output size", (card.output_chars ?? 0) + " chars"],
+    ["output file", card.output_file || "—"],
+  ];
+  for (const [k, v] of rows) {
+    const line = make("div");
+    line.append(make("b", null, k + ": "));
+    line.append(document.createTextNode(String(v)));
+    meta.append(line);
+  }
+  detailEl.append(meta);
+
+  detailEl.append(make("div", "desc", "command"));
+  detailEl.append(make("pre", "cmd", card.content || "(empty)"));
+
+  if (card.output_file) {
+    detailEl.append(make("div", "desc", "full output at " + card.output_file));
+  }
+  detailEl.append(make("div", "desc", "output (tail)"));
+  detailEl.append(make("pre", "out", (card.output_tail || []).join("")));
+}
+
+function select(id) {
+  selectedId = id;
+  for (const [cid, box] of nodes) box.classList.toggle("selected", cid === id);
+  const card = cards.get(id);
+  if (card) renderDetail(card);
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  for (const btn of modesEl.querySelectorAll("button")) {
+    btn.classList.toggle("on", btn.dataset.mode === mode);
+  }
+}
+
+// -- frames ----------------------------------------------------------------
+
+function applyCard(card) {
+  const known = cards.get(card.id) || {};
+  const merged = Object.assign(known, card);
+  cards.set(card.id, merged);
+  // `_decided` is set optimistically on click and never by a frame: the server
+  // clears `interactions` on any state change, which is what hides the buttons.
+  renderCard(merged);
+}
+
+function onFrame(frame) {
+  switch (frame.type) {
+    case "snapshot": {
+      streamEl.replaceChildren();
+      nodes.clear();
+      cards.clear();
+      rootEl.textContent = frame.root || "";
+      setMode(frame.mode);
+      for (const card of frame.cards) applyCard(card);
+      if (frame.cards.length) select(frame.cards[frame.cards.length - 1].id);
+      break;
+    }
+    case "card.head":
+      applyCard(frame.card);
+      streamEl.scrollTop = streamEl.scrollHeight;
+      break;
+    case "card.delta": {
+      const card = cards.get(frame.id);
+      if (!card) break;
+      card.content = (card.content || "") + frame.text;
+      const box = nodes.get(frame.id);
+      if (box) box.querySelector("pre.cmd").textContent = card.content;
+      if (selectedId === frame.id) renderDetail(card);
+      streamEl.scrollTop = streamEl.scrollHeight;
+      break;
+    }
+    case "card.tail":
+    case "card.full":
+      applyCard(frame.card);
+      break;
+    case "card.output": {
+      const card = cards.get(frame.id);
+      if (!card) break;
+      card.output_tail = (card.output_tail || []).concat(frame.lines);
+      const box = nodes.get(frame.id);
+      if (box) {
+        renderOutput(box.querySelector("pre.out"), card.output_tail);
+        streamEl.scrollTop = streamEl.scrollHeight;
+      }
+      if (selectedId === frame.id) renderDetail(card);
+      break;
+    }
+    case "mode":
+      setMode(frame.mode);
+      break;
+    case "error":
+      console.warn("terminal error:", frame.text);
+      break;
+  }
+}
+
+// -- wiring ----------------------------------------------------------------
+
+modesEl.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-mode]");
+  if (btn) send({ type: "mode", mode: btn.dataset.mode });
+});
+document.getElementById("stop-all").addEventListener("click", () => send({ type: "stop_all" }));
+
+let ws = null;
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws");
+  ws.onopen = () => { connEl.textContent = "live"; connEl.className = "conn live"; };
+  ws.onclose = () => {
+    connEl.textContent = "reconnecting…";
+    connEl.className = "conn";
+    setTimeout(connect, 1000);
+  };
+  ws.onmessage = (e) => {
+    try { onFrame(JSON.parse(e.data)); } catch (err) { console.warn(err); }
+  };
+}
+connect();
+</script>
+</body>
+</html>

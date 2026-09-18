@@ -108,15 +108,16 @@ read(文档 → 内存)
 
 | node | 状态 | 子文档 |
 |---|---|---|
-| terminal | 设计 | [terminal.md](terminal.md) |
+| terminal | 已实现 v1 | [terminal.md](terminal.md) |
 | window_control | 待建 | — |
-| screen | 待建 | — |
+| screen | 已移出本域 (2026-09-15) | → feature `vision-stream` |
 | osascript | 待建 | — |
-| file_editor | 待建 | — |
+| file_editor | 原型 | [file_editor.md](file_editor.md) |
 
 ## 当前状态
 
-- 本 feature 尚无任何 node;实现落在 `nodes/os/`(category),目前为空。
+- `nodes/os/terminal`（`bash` 卡片进程编排）与 `nodes/os/file_editor`（文档对话线）已落地;
+  `window_control` / `osascript` 仍待建。
 - 原 `nodes/skins/desktop-gui`(空 UI 原型)已删除。
 - 旧 workstream `2026/07/desktop-gui` 改名 `2026/07/moss-os-control`;老 `FEATURE.md`
   改名 `FEATURE.old.md`,本文件为新的 `FEATURE.md`。
@@ -124,5 +125,5 @@ read(文档 → 内存)
 ## 待办
 
 - `tutorials/L1_create_a_node.md` 以 desktop-gui 为示例 node,该 node 已删 —— 示例需换。
-- 本域尚无 node。下一个从 `terminal`(包 `terminal_channel`)或 `screen`(包
-  contrib 的 `screen_capture`)起步,二者都是"存量 channel → node"的最小验证。
+- `window_control` / `osascript` 两个面仍待建（存量 alpha channel `mac_channel` /
+  `desktop_channel` 是底座，见 KD6）。
