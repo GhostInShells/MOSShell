@@ -530,14 +530,38 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
   })
 }
 
-export function apply(ctx: Context) {
-  // ── 0. agent/session-start: 每个 ego agent 实例装配一次 ────────────────
-  // create 和 resume 都发 (source='startup'|'resume'), 各自 fresh ctx — 这里调 apply_ego_agent
-  // 做 tools + identity/persona + perStep 的全套注册, 替代「全局 perStep + setup 里注册」.
-  // 非主 ego session (界面误建 / fork 出的旁路) 也走这里装配, 由 perStep 的旁路分支降级.
-  ctx.on('agent/session-start', ({ agent, source }) => {
-    if (agent.session.header.agentPreset !== DOLORES_EGO_PRESET) return
+/**
+ * agent start 语义: 每个 ego agent 实例启动时装配一次.
+ *
+ * 载体随 dsh 版本漂移 (调研结论 2026-09-19, 对齐 0.1.5-rc.2):
+ * - 0.1.5-rc.2: `agent/session-start` {agent, source}, 同步通知, 抛错无害.
+ * - 0.1.6-alpha.2: 该事件被移除, 语义并进 `agent/created` {agent, source, signal},
+ *   且 mode 由 emit 变 serial — 监听器抛错会 veto 掉 agent 创建. 追到那一版时这个
+ *   handler 必须改成不抛错; 还要判 source 新增的 'clear'/'compact' 是否会新建 agent
+ *   实例 (若是, 过滤条件要放开, 否则新实例拿不到 ego tools).
+ *
+ * 两个载体都挂, 靠 payload 形状区分: 只有带 source 的才承载 start 语义 (0.1.5 的
+ * agent/created 只有 {agent}), 天然去重, 不会双跑.
+ */
+function installEgoAgentStart(ctx: Context, assemble: (agent: Agent) => void): void {
+  const dispatch = (payload: unknown): void => {
+    if (typeof payload !== 'object' || payload === null) return
+    const { agent, source } = payload as { agent?: unknown; source?: unknown }
+    if (agent === undefined || typeof source !== 'string') return
     if (source !== 'startup' && source !== 'resume') return
+    assemble(agent as Agent)
+  }
+  ctx.on('agent/session-start', dispatch)
+  ctx.on('agent/created', dispatch)
+}
+
+export function apply(ctx: Context) {
+  // ── 0. agent start: 每个 ego agent 实例装配一次 ────────────────────────
+  // startup 和 resume 都装配, 各自 fresh ctx — 这里调 apply_ego_agent 做 tools +
+  // identity/persona + perStep 的全套注册, 替代「全局 perStep + setup 里注册」.
+  // 非主 ego session (界面误建 / fork 出的旁路) 也走这里装配, 由 perStep 的旁路分支降级.
+  installEgoAgentStart(ctx, agent => {
+    if (agent.session.header.agentPreset !== DOLORES_EGO_PRESET) return
     apply_ego_agent(agent, ctx)
   })
 

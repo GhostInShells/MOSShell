@@ -8,9 +8,9 @@ description: 'dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组�
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade: run() 单轮对话 + cancel, 对齐官方 SDK Session.run, 经活 dsh 验证); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10); 单轮 run 落地见 research_2026-09-11。meta channel 落地: channels/dsh_channel.py 父→connection→session 三层 virtual tree + exec 代码驱动, 注册 meta mode, 经活 shell 实测。'
+status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade: run() 单轮对话 + cancel, 对齐官方 SDK Session.run, 经活 dsh 验证); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10); 单轮 run 落地见 research_2026-09-11。meta channel 落地: channels/dsh_channel.py 父→connection→session 三层 virtual tree + exec 代码驱动, 注册 meta mode, 经活 shell 实测。2026-09-19 追至 dsh 0.1.5-rc.2: rc.1→rc.2 传输面无差异; connection/launcher/session 与 plugin 的 ctx 面核对全部通过; plugin 的 agent-start 装配语义化为 installEgoAgentStart (双载体 + payload 校验), 为 0.1.6 的 session-start 合并预置。'
 title: DSH Fusion
-updated: '2026-09-11'
+updated: '2026-09-19'
 ---
 
 # DSH Fusion
@@ -192,5 +192,22 @@ research/ 调研轨迹。
   设计, 未定 (见 research_2026-09-09)。
 
 > **dsh 版本声明 (非开放问题)**: `deepseek_harness.__init__.DSH_VERSION` 常量标记
-> 当前对齐的 dsh 版本 (0.1.1-rc.2)。dsh 是开发者预览, `serverInfo.version` 恒 0.0.1,
-> 追版本时改常量 + diff interface 变动, 见 research_2026-08-30。
+> 当前对齐的 dsh 版本 (**0.1.5-rc.2**)。dsh 是开发者预览, `serverInfo.version` 恒 0.0.1,
+> 不承诺接口稳定。
+>
+> **追版本方法**: 上游从未发过不带后缀的正式版 (18 个 tag 全是 alpha / rc), 只追
+> release / rc, alpha 只用来看演进方向。vendor 源码 (`research/source/deepseek-harness`)
+> 被 .gitignore 排除、不进 git —— 用时先 `git fetch --tags origin` 再 checkout 目标 tag,
+> 然后按检查面收窄 diff (跨 minor 有数千文件, 绝大多数无关)。
+>
+> **核心检查面**(对应 `launcher.py` / `session.py`): mux 路径与 open/item/end/error 帧
+> (`packages/api/gateway/src/stream-protocol.ts`)、`$events` 四帧与 `$events/result` 回话信封、
+> `session/follow` 开流形状与 snapshot/event/assistant-stream 帧
+> (`packages/api/session-controller/src/client/transport.ts`)、durable 事件名
+> (`packages/core/session/src/types.ts` 的 `SessionEventMap`)、token→cookie 鉴权;
+> plugin 面看 `ghosts/dolores/dsh_plugin/moss-dolores-ghost-plugin.ts` 的 `ctx.*` 调用点。
+> 判据是看类型声明, 不看实现。
+>
+> **rc.1 → rc.2 无实质差异**: 真实源码改动只有 UI / message-feedback, 传输面一行未动。
+> **0.1.6 已见断点**: `agent/session-start` 并进 `agent/created` (+source, emit→serial),
+> 属思路 steer 而非迭代, 不追。

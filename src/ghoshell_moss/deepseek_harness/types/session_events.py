@@ -14,6 +14,16 @@ dsh session events — DeepSeek Harness 会话事件信封容器与强类型封�
 
 事件来源于 dsh `packages/core/session/src/types.ts` 的 `SessionEventMap`(13 种),
 载荷类型取自 `packages/llm/llm/src/message.ts` 与 `types.ts`.
+
+对齐 dsh `0.1.5-rc.2` 的维护结论 (2026-09-19): 两边同为 13 种, 差异是 2 出 2 入 —
+
+- 本模型多 `assistant/chunk`: dsh 0.1.5 已把它改名成 `assistant/attempt`
+  (`{turn, step, stream: AssistantStreamRecord[]}`, durable 的 per-attempt 一整段)。
+  逐 token 的实时流不在 session log 里, 是 process-local 的 `assistant-stream` 帧,
+  由 launcher 合成 `assistant/chunk` 喂进来 —— 这是合成产物, 不是落后一版的旧名。
+- 本模型多 `todo/write`: dsh 0.1.5 已移出核心, 不再发出 (旧日志仍可能带)。
+- 本模型缺 `assistant/attempt` / `system/message`(0.1.5 新增的 surface 节点事件):
+  ghost 都不消费, 等需要时再建模。
 """
 
 from __future__ import annotations

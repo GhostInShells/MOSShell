@@ -434,6 +434,10 @@ class DshConnection:
         start 帧记 turn/step; chunk 帧用 chunk 载荷 (raw StreamChunk, 如 {type:'text-delta',text})
         合成 assistant/chunk 事件 — Dolores 的 _get_text_chunk 读 assistant/chunk, 逐 token 实时流
         由此接上. end 是终止标记, 不喂.
+
+        未实装 (调研结论 2026-09-19, 对齐 dsh 0.1.5-rc.2): live 帧带单调递增 `revision`,
+        dsh 官方客户端以 snapshot 的 `assistantStream.revision` 为基线要求逐帧 +1, 跳号即判
+        carrier 故障并重连。我们不校验 —— 丢帧时不会察觉, 只会少喂几个 token。
         """
         if not isinstance(frame, dict):
             return
