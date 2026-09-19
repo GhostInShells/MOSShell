@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>ghost-in-bilibili</title>
+<style>
+  :root { --bd:#2a3340; --accent:#3ddc8f; --warn:#f5a; --dim:#8b97a6; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; max-width:880px; background:#0a0c10; color:#ddd;
+         font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  .sub { color:var(--dim); margin:0 0 22px; }
+  .panel { border:1px solid var(--bd); border-radius:6px; padding:16px 18px; margin-bottom:14px; }
+  h2 { font-size:13px; margin:0 0 10px; color:var(--accent); }
+  ol { margin:0; padding-left:20px; }
+  li { margin:6px 0; }
+  code { color:#9fd0ff; background:#10141b; padding:1px 5px; border-radius:3px; }
+  .path { display:block; margin:8px 0; padding:8px 10px; background:#06080b;
+          border:1px solid var(--bd); border-radius:4px; word-break:break-all; }
+  pre { background:#06080b; border:1px solid var(--bd); border-radius:4px; padding:10px;
+        margin:8px 0 0; max-height:360px; overflow:auto; white-space:pre-wrap;
+        word-break:break-all; font-size:12px; line-height:1.5; }
+  input, textarea { background:#06080b; color:#ddd; border:1px solid var(--bd);
+                    border-radius:4px; padding:6px 8px; font:inherit; width:100%; box-sizing:border-box; }
+  textarea { min-height:60px; resize:vertical; }
+  button { background:#161d26; color:#ddd; border:1px solid var(--bd); border-radius:4px;
+           padding:6px 14px; cursor:pointer; font:inherit; font-size:12px; margin-top:6px; }
+  button:hover { border-color:var(--accent); }
+  .dim { color:var(--dim); }
+  .ok { color:var(--accent); }
+  .bad { color:#ff6b6b; }
+  .stat { color:#8af; }
+</style>
+</head>
+<body>
+
+<h1>ghost-in-bilibili</h1>
+<p class="sub">Chrome 扩展 → 本地 node。这个页面能打开 = node 在线。</p>
+
+<div class="panel">
+  <h2>① 安装扩展(一次)</h2>
+  <ol>
+    <li>地址栏打开 <code>chrome://extensions</code></li>
+    <li>右上角打开「开发者模式」</li>
+    <li>点「加载已解压的扩展程序」,选这个目录:</li>
+  </ol>
+  <span class="path" id="extpath">…</span>
+  <p class="dim">旧路径装过的先在 chrome://extensions 移除,再重新加载。</p>
+</div>
+
+<div class="panel">
+  <h2>② 交互</h2>
+  <p>打开任意 B 站<b>视频页</b>,右上角有个球:<span class="dim">灰 = 停</span>,点一下 <span class="ok">绿 = 运行</span>(开始轮询)。</p>
+  <p>绿灯时旁边会出:<b>输入框</b>(回车发给 ghost)+ <b>JS 审批区</b>(模型下发的 JS,点 accept/deny)。</p>
+</div>
+
+<div class="panel">
+  <h2>③ 下发 JS(测试审批回路)</h2>
+  <p class="dim">page 填视频页完整 url(从事件日志里抄),body 填 JS。<code>new Function(body)()</code> 执行,用 <code>return</code> 返回值。</p>
+  <input id="jspage" placeholder="page url,如 https://www.bilibili.com/video/BV...">
+  <textarea id="jsbody" placeholder="return document.title;"></textarea>
+  <button id="dispatch">下发</button>
+  <pre id="dispatchout"></pre>
+</div>
+
+<div class="panel">
+  <h2>④ 已收到的事件</h2>
+  <p class="dim">每 1 秒自动刷新。</p>
+  <pre id="log">还没有收到任何事件。</pre>
+</div>
+
+<script>
+document.getElementById('extpath').textContent = 'nodes/browsers/ghost-in-bilibili/extension';
+
+document.getElementById('dispatch').onclick = async () => {
+  const page = document.getElementById('jspage').value.trim();
+  const body = document.getElementById('jsbody').value;
+  const out = document.getElementById('dispatchout');
+  if (!page || !body) { out.textContent = 'page 和 body 都要填'; return; }
+  const r = await fetch('/js/dispatch', {
+    method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ page, body }),
+  });
+  out.textContent = JSON.stringify(await r.json(), null, 2);
+};
+
+async function poll() {
+  try {
+    const events = await (await fetch('/events')).json();
+    const el = document.getElementById('log');
+    if (!events.length) { el.textContent = '还没有收到任何事件。'; return; }
+    el.innerHTML = events.map(e => {
+      const t = e.t, type = e.type || '?';
+      const rest = Object.entries(e).filter(([k]) => k !== 't' && k !== 'type')
+        .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' ');
+      const cls = (e.ok === false) ? 'bad' : 'ok';
+      return `<div><span class="stat">${t}</span> <span class="${cls}">${type}</span> ${rest}</div>`;
+    }).join('\n');
+  } catch (e) {}
+}
+poll();
+setInterval(poll, 1000);
+</script>
+
+</body>
+</html>
