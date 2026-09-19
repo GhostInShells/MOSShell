@@ -10,8 +10,10 @@ import urllib.parse
 from playwright.sync_api import sync_playwright
 
 playwright = sync_playwright().start()
-# headless — the browser is a standard protocol; MOSS surfaces it through its own
-# GUI (screen node), not a native window.
-browser = playwright.chromium.launch(headless=True)
+# Headed (temporary): human-visible dogfooding of the screen-manager lab.
+# MEMO (2026-09-19): headed must be a FORCED, confirmed mechanism — the human
+# must know a visible window opens; never silent. Default headless; gate headed
+# behind a node arg / env var + confirmation step, not a code default.
+browser = playwright.chromium.launch(headless=False)
 context = browser.new_context()
 page = context.new_page()

@@ -1,25 +1,18 @@
 ---
-created: 2026-07-24
-depends: []
-description: >-
-  MOSS 开箱的屏幕躯体（screen body）—— QML 场景图合成器。screen = 可见窗口空间，desktop =
-  OS 操作面。owned/managed 资源二元、工业风 master-detail + 按数分格、模型可编程 background、
-  流式控制面、人机双主权。
-milestone: null
-priority: P1
-status: in-progress
-status_note: >-
-  2026-09-13 整体重设计落地：从「web 合成器」重构为「屏幕资源空间」。方案已定稿，实现待开工。
-  新版 node 名 = screen（旧 qt_screen 保留为 legacy 原型）。
-title: Screen Node — MOSS 开箱的标准可扩展屏幕躯体
-updated: '2026-09-13'
+title: QT Compositor — 自有合成器后端
+node: nodes/screens/screen
+created: 2026-09-13
+updated: 2026-09-19
+status: design-locked
 ---
 
-# Screen Node
+# QT Compositor
 
-> 本文档是 **2026-09-13 整体重设计** 的结论。旧设计（Decision 1–11 + S1–S3）见
-> [FEATURE.legacy.md](FEATURE.legacy.md)；重设计的碰撞轨迹（逐字对话 + 权衡变化）见
-> `discuss/2026-09-13_screen_formal_design_collision.md`。
+> screen-manager 的子文档：**自有合成器后端**（QML 场景图）。2026-09-13 重设计的结论，
+> 是全部 KD 的原文出处 —— 其中 KD1–KD4、KD7、KD10–KD11 描述**语义**，两个后端共享；
+> KD5–KD6、KD8–KD9、KD12 是**自有合成器特有**的实现约束。
+> 其余：旧设计见 [FEATURE.legacy.md](FEATURE.legacy.md)；碰撞轨迹见
+> `discuss/2026-09-13_screen_formal_design_collision.md`；
 > 运行原型 `nodes/screens/qt_screen` **不改不删**，新版 node 从头开始。
 
 ## Motivation
@@ -202,17 +195,6 @@ screen
 
 新版 node = **`nodes/screens/screen`**（一眼看懂，canonical）。旧 `nodes/screens/qt_screen` 保留不改
 （legacy 原型，S1–S3 实现 + `demo/` 继续在那）。
-
-## Design Index
-
-- 旧设计（被取代）：[FEATURE.legacy.md](FEATURE.legacy.md)
-- 重设计碰撞轨迹：`discuss/2026-09-13_screen_formal_design_collision.md`
-- 旧视觉 demo：`demo/`（保留）
-- 相邻轨迹（参考，非依赖）：
-  - `matrix-resources` — `servers://` 发现是「窗 = 资源」的将来时
-  - `qa-exchange` — QA 协议（概念层 `core/concepts/qa.py`）
-  - `module-eval-channel` — eval 杠杆的 channel 化（`channels/module_eval_channel.py`）
-  - `desktop-gui` / `desktop-channel` — desktop = OS 操作面的边界参照
 
 ## Implementation Notes
 

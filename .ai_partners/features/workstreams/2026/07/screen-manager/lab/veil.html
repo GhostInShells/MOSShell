@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>veil.html — 姿态层（block / idle 两级 + 语义坐标）验证</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: #111; color: #ddd; font: 13px/1.4 ui-monospace, monospace; }
+
+  /* ===== stage：4 个 item（div 占位，本页不验 iframe，只验遮罩层） ===== */
+  #stage {
+    position: absolute; inset: 0; padding: 12px;
+    display: grid; gap: 8px; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  }
+  .item {
+    display: grid; place-items: center;
+    font-size: 24px; color: #eee; border: 1px solid #334; background: #1a1a1a;
+    border-radius: 8px;
+  }
+  .item[data-id="a"] { border-color: #5af; }
+  .item[data-id="b"] { border-color: #5fa; }
+  .item[data-id="c"] { border-color: #fa5; }
+  .item[data-id="d"] { border-color: #f5a; }
+
+  /* ===== veil：最外层遮罩 canvas，pointer-events none（不挡交互） ===== */
+  #veil { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+
+  /* ===== 控制条 + 日志（z 高于 veil，便于读/点） ===== */
+  #ctl {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 10;
+    padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px;
+    background: rgba(22,22,22,.92); border-top: 1px solid #334;
+  }
+  #ctl button {
+    background: #222; color: #ddd; border: 1px solid #334;
+    border-radius: 4px; padding: 4px 10px; cursor: pointer;
+  }
+  #ctl button:hover { border-color: #4f6; }
+  #log {
+    position: absolute; top: 12px; right: 12px; z-index: 10;
+    width: 300px; max-height: 60vh; overflow-y: auto;
+    background: rgba(10,10,10,.9); border: 1px solid #334;
+    border-radius: 6px; padding: 8px; font-size: 11px; color: #9f9;
+  }
+  #log .idle { color: #7af; }
+  #log .block { color: #f8a; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div class="item" data-id="a">#a</div>
+  <div class="item" data-id="b">#b</div>
+  <div class="item" data-id="c">#c</div>
+  <div class="item" data-id="d">#d</div>
+</div>
+<canvas id="veil"></canvas>
+
+<div id="log"></div>
+
+<div id="ctl">
+  <button data-cmd="idle">idle on/off</button>
+  <button data-cmd="mark">mark #a right</button>
+  <button data-cmd="arrow">arrow #a → #b</button>
+  <button data-cmd="text">大文字</button>
+  <button data-cmd="seq">sequence (await)</button>
+  <button data-cmd="geo">geometry()</button>
+</div>
+
+<script>
+// =====================================================================
+// 设计动机（web_manager.md WD4）：
+//   - veil = 姿态层，唯一能「跨物料作画」的地方（每个 item 是独立 iframe 时
+//     画不出自己之外的东西）。这里用 div 占位 item，只验遮罩层的机制。
+//   - 两级生命周期：block（有时长、可 await）与 idle（闲时自跑、不 await）。
+//     抢占规则：block 进场 → idle 让位；block 结束 → idle 恢复。
+//   - 语义坐标：模型只给 item + region（绝不自己算像素）；合成器用 geometry()
+//     把语义翻译成画布坐标。这条「几何桥」是将来 vision 截图 → veil 绘制的地基。
+// 判据：block 与 idle 同帧互不污染（无残影）；sequence 里 await 按时长逐个 resolve。
+// =====================================================================
+
+const canvas = document.getElementById('veil');
+const ctx = canvas.getContext('2d');
+const logEl = document.getElementById('log');
+
+function sizeCanvas() {
+  canvas.width = innerWidth * devicePixelRatio;
+  canvas.height = innerHeight * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+addEventListener('resize', sizeCanvas);
+sizeCanvas();
+
+function log(msg, cls) {
+  const line = document.createElement('div');
+  line.className = cls || '';
+  line.textContent = `${(performance.now()/1000).toFixed(2)}s  ${msg}`;
+  logEl.prepend(line);
+}
+
+// ---- 几何桥：语义 → 画布坐标 ----
+function geometry() {
+  const out = {};
+  document.querySelectorAll('.item').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    out[el.dataset.id] = { x: r.x, y: r.y, w: r.width, h: r.height };
+  });
+  return out;
+}
+
+const REGION = {
+  full:   (r) => [r.x, r.y, r.w, r.h],
+  left:   (r) => [r.x, r.y, r.w / 2, r.h],
+  right:  (r) => [r.x + r.w / 2, r.y, r.w / 2, r.h],
+  top:    (r) => [r.x, r.y, r.w, r.h / 2],
+  bottom: (r) => [r.x, r.y + r.h / 2, r.w, r.h / 2],
+};
+
+function fade(p) {          // 入场淡入 + 退场淡出，中间保持
+  const a = 0.15;
+  if (p < a) return p / a;
+  if (p > 1 - a) return (1 - p) / a;
+  return 1;
+}
+
+// ---- veil 引擎：单 rAF 循环，状态机 = idle | block | frozen ----
+const S = { idleOn: false, block: null };   // block: { draw, start, dur }
+
+function block(draw, dur) {
+  return new Promise((resolve) => {
+    const start = performance.now();
+    S.block = { draw, start, dur };
+    log(`block start (${dur}ms)${S.idleOn ? ' · idle 让位' : ''}`, 'block');
+    setTimeout(() => {
+      S.block = null;
+      log(`block resolved${S.idleOn ? ' · idle 恢复' : ''}`, 'block');
+      resolve(true);
+    }, dur);
+  });
+}
+
+// idle：漂移粒子。纯状态函数 —— block 期间不被调用 → 冻结，恢复时不重放（KD5）。
+const dots = Array.from({ length: 24 }, () => ({
+  x: Math.random() * innerWidth, y: Math.random() * innerHeight,
+  vx: (Math.random() - 0.5) * 24, vy: (Math.random() - 0.5) * 24,
+  r: 2 + Math.random() * 3,
+}));
+function drawIdle() {
+  ctx.fillStyle = 'rgba(90,150,255,0.45)';
+  for (const d of dots) {
+    d.x += d.vx * 0.016; d.y += d.vy * 0.016;
+    if (d.x < 0 || d.x > innerWidth) d.vx *= -1;
+    if (d.y < 0 || d.y > innerHeight) d.vy *= -1;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, 7);
+    ctx.fill();
+  }
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now();
+  ctx.clearRect(0, 0, innerWidth, innerHeight);   // 每帧清空 → 无残影
+  if (S.block) {
+    S.block.draw(ctx, (now - S.block.start) / S.block.dur);
+  } else if (S.idleOn) {
+    drawIdle();
+  }
+}
+requestAnimationFrame(loop);
+
+// ---- 手势（block 级，全部返回 Promise = await 边界） ----
+function mark(id, region, dur = 2000) {
+  return block((c, p) => {
+    const [x, y, w, h] = REGION[region](geometry()[id]);
+    const a = fade(p);
+    c.fillStyle = `rgba(80,255,150,${0.15 * a})`;
+    c.fillRect(x, y, w, h);
+    c.strokeStyle = `rgba(80,255,150,${a})`;
+    c.lineWidth = 3;
+    c.strokeRect(x, y, w, h);
+  }, dur);
+}
+
+function arrow(from, to, dur = 2000) {
+  return block((c, p) => {
+    const A = geometry()[from], B = geometry()[to];
+    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+    const bx = B.x + B.w / 2, by = B.y + B.h / 2;
+    const a = fade(p);
+    c.strokeStyle = `rgba(255,130,80,${a})`;
+    c.lineWidth = 3;
+    c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+    const ang = Math.atan2(by - ay, bx - ax);
+    c.beginPath();
+    c.moveTo(bx, by);
+    c.lineTo(bx - 12 * Math.cos(ang - 0.4), by - 12 * Math.sin(ang - 0.4));
+    c.lineTo(bx - 12 * Math.cos(ang + 0.4), by - 12 * Math.sin(ang + 0.4));
+    c.closePath(); c.fillStyle = `rgba(255,130,80,${a})`; c.fill();
+  }, dur);
+}
+
+function text(content, dur = 2500) {
+  return block((c, p) => {
+    c.fillStyle = `rgba(255,255,255,${fade(p)})`;
+    c.font = 'bold 52px ui-monospace, monospace';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(content, innerWidth / 2, innerHeight / 2);
+  }, dur);
+}
+
+async function sequence() {
+  log('sequence: await mark → arrow → text', 'idle');
+  await mark('a', 'right', 1200);
+  await arrow('a', 'b', 1200);
+  await text('HELLO MOSS', 1500);
+  log('sequence done');
+}
+
+// 暴露给 playwright / 未来 node 的调用面
+window.veil = { geometry, mark, arrow, text, block, sequence };
+
+// ---- 控制条 ----
+document.getElementById('ctl').addEventListener('click', (e) => {
+  const cmd = e.target.dataset.cmd;
+  if (cmd === 'idle') {
+    S.idleOn = !S.idleOn;
+    log(`idle ${S.idleOn ? 'on' : 'off'}`, 'idle');
+  } else if (cmd === 'mark') mark('a', 'right', 2000);
+  else if (cmd === 'arrow') arrow('a', 'b', 2000);
+  else if (cmd === 'text') text('HELLO MOSS', 2500);
+  else if (cmd === 'seq') sequence();
+  else if (cmd === 'geo') log('geometry: ' + JSON.stringify(geometry()), 'idle');
+});
+</script>
+</body>
+</html>
