@@ -519,10 +519,12 @@ class ListenerController:
             )
 
         @chan.build.named_notices
-        def named_notices() -> dict[str, str]:
+        def named_notices() -> dict[str, str | None]:
             # 温数据只暴露当前礼仪名称; 配置详情走 get_etiquette 读接口.
+            # 没有激活礼仪时片段缺席 (None): 模型收到 <etiquette removed/> 墓碑, 而不是
+            # 一个占位空值 — 空串在这里表示"不变", 会让模型一直以为旧礼仪还激活着.
             active = self._active_etiquette
-            return {"etiquette": active.name if active else ""}
+            return {"etiquette": active.name if active else None}
 
         @chan.build.command()
         async def set_etiquette_spec(text__: str, save: bool = False) -> str:

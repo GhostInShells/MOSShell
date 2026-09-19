@@ -89,8 +89,8 @@ StringType = Union[
     Callable[[], Coroutine[None, None, str]],
 ]
 StringDictType = Union[
-    Callable[[], dict[str, str]],
-    Callable[[], Coroutine[None, None, dict[str, str]]],
+    Callable[[], dict[str, str | None]],
+    Callable[[], Coroutine[None, None, dict[str, str | None]]],
 ]
 
 LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[..., None]]
@@ -446,15 +446,25 @@ class Builder(Facade):
     def notice(self, func: StringType) -> StringType:
         """
         decorator
-        Register a function that produces the channel's warm notice description.
+        Register a function that produces the channel's warm notice description: a single
+        unnamed string, rendered ahead of the command interface and re-sent whole.
 
-        notice describes what this channel currently exposes — distinct from description
-        (static identity) and context_messages (hot state data). It is evaluated on every
-        meta refresh and rendered before the command interface.
+        Value domain — two-valued:
 
-        Warm data: re-sent only when it changes.
+        - ``NAMED_NOTICE_UNCHANGED`` (``""``): unchanged. Emits nothing, and the model keeps
+          the last notice it read.
+        - text: content, re-emitted whole whenever it differs from the previously observed
+          frame. A blank state is still text — say ``"(none)"`` or ``"idle"``. An empty
+          string can never mean "blank", only *unchanged*.
 
-        Red line: notice answers "what can it do"; context answers "what is it now".
+        Division of labour with ``named_notices``: this is the one always-present warm
+        string. Anything with a lifecycle — it can appear and disappear — belongs in a named
+        fragment, which is the only mechanism that carries a *removed* state. A notice cannot
+        announce its own disappearance, because ``""`` is already spent on *unchanged*.
+
+        Distinct from ``description`` (static identity) and ``context_messages`` (hot state
+        data); evaluated on every meta refresh. Red line: notice answers "what can it do";
+        context answers "what is it now".
         """
         pass
 
@@ -463,26 +473,36 @@ class Builder(Facade):
         """
         decorator
         Register a function that produces this channel's named notice fragments: a
-        ``dict[str, str]`` of ``name -> text``.
+        ``dict[str, str | None]`` of ``name -> text``.
 
         Each fragment is a warm notice piece with its own identity. The trajectory
         re-emits a fragment only when its text changes, so one fragment moving does not
         re-send the others.
 
-        Value domain — the framework reads exactly one value:
+        Value domain — four-valued, one per possible lookup result. Read it as an ordered
+        ladder from "fragment is gone" to "fragment has content":
 
-        - non-empty text: rendered as ``<name>text</name>`` inside the channel notice.
-          The text is yours; the framework does not interpret it. To tell the model a
-          fragment is gone, return a marker text of your own (conventionally
-          ``removed``) — it reaches the model as ordinary content.
-        - empty string: silent. Not rendered, and no change is announced — the model
-          keeps whatever it last read. Use it for the producer's own bookkeeping, such
-          as draining a history.
+        - ``None`` — what ``dict.get(name)`` yields for an absent name, so omission and an
+          explicit ``None`` are the same thing: removed. The trajectory emits
+          ``<name removed/>`` once, when a fragment visible last frame is gone this frame.
+          Removal is signalled by omission, never by a marker text.
+        - ``NAMED_NOTICE_UNCHANGED`` (``""``): unchanged. Emits nothing — zero tokens — and
+          the model keeps the last text it read for that fragment. This is the only
+          zero-cost encoding of "no news": an explicit ``<name unchanged/>`` token would
+          cost tokens on every frame while telling the model nothing it does not already
+          hold in its own context.
+        - a business zero (``"empty"``, ``"off"``, ...): a blank state that is itself
+          information. Compared like any other text, so entering or leaving it is
+          announced. Because ``""`` is taken by *unchanged*, a fragment that is genuinely
+          blank must say so with a non-empty zero of its own.
+        - text: content, re-emitted only when it changes.
 
-        A name is an XML tag token: no whitespace, no ``<``, ``>`` or ``/``. The same
-        name produced by two modules or states is a programming error that fails the
-        meta refresh — it is never resolved by silently overwriting one fragment.
-        ``gated_children`` is reserved for the gate mechanism (``gate`` in
+        An empty string never means "blank" — read it as *unchanged*.
+
+        A name is an XML tag token: no whitespace, no ``<``, ``>`` or ``/``. The same name
+        produced by two modules or states is a programming error: it is logged with both
+        sources and the first one wins, so a duplicate does not cost the channel its whole
+        meta refresh. ``gated_children`` is reserved for the gate mechanism (``gate`` in
         ``ghoshell_moss.core.blueprint.states_channel``).
 
         Distinct from ``notice`` (a single unnamed string, re-emitted whole) and from

@@ -152,12 +152,13 @@ class MacroStoreModule(ChannelModule):
             f"Nested CDATA inside a body: write {CDATA_START} / {CDATA_END}."
         )
 
-    async def get_named_notices(self) -> dict[str, str]:
+    async def get_named_notices(self) -> dict[str, str | None]:
         """label 目录作为 named notice — 模型无需 round trip 就知道有哪些宏可用.
 
-        空时返回空串: 渲染层把空片段当静默信号, 不渲染也不宣告变更.
+        空 store 返回 None: 片段消亡, 模型收到 ``<macros removed/>`` 墓碑, 不会残留上一份
+        目录. 返回空串则会表示"不变", 让模型一直以为旧目录还在.
         """
-        result = {"macros": self._label_catalog()}
+        result = {"macros": self._label_catalog() or None}
         return result
 
     # -- commands ------------------------------------------------------------

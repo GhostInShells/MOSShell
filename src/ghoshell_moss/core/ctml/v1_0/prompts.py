@@ -1,7 +1,9 @@
 import os
 
 from ghoshell_moss.message import Message
-from ghoshell_moss.core.concepts.channel import ChannelMeta, ChannelFullPath
+from ghoshell_moss.core.concepts.channel import (
+    ChannelMeta, ChannelFullPath, NAMED_NOTICE_REMOVED, NAMED_NOTICE_UNCHANGED,
+)
 from ghoshell_moss.core.concepts.command import Command
 from .constants import MOSS_DYNAMIC, MOSS_STATIC, MAIN_CHANNEL_NAME, CONTENT_COMMAND_NAME
 import datetime
@@ -65,13 +67,22 @@ def make_interfaces(
     return '\n'.join(blocks)
 
 
-def _visible_named_notices(named_notices: dict[str, str]) -> dict[str, str]:
-    """渲染前的片段过滤: 空值是生产者的静默信号 — 不渲染, 也不宣告变更."""
-    return {name: text for name, text in named_notices.items() if text}
+def _visible_named_notices(named_notices: dict[str, str | None]) -> dict[str, str]:
+    """渲染前的片段过滤: ``None`` (removed) 与 ``NAMED_NOTICE_UNCHANGED`` (不变) 都不渲染."""
+    return {
+        name: text for name, text in named_notices.items()
+        if text is not None and text != NAMED_NOTICE_UNCHANGED
+    }
 
 
 def _notice_fragment(name: str, text: str) -> str:
     return f"<{name}>{text}</{name}>"
+
+
+def _removed_fragment(name: str) -> str:
+    """片段墓碑. 结构化的自闭合标签, 与内容互不干扰: 一个文本恰好是 "removed" 的
+    业务零值照常渲染成 ``<name>removed</name>``, 不会被读成消亡."""
+    return f"<{name} {NAMED_NOTICE_REMOVED}/>"
 
 
 class ChannelMetaPrompter:
@@ -244,18 +255,33 @@ class ChannelMetaPrompter:
     def _notice_delta(self, target: ChannelMeta) -> str:
         """逐 name 比较 notice, 只发射变化的片段.
 
-        notice 是温数据, 逐片段比较后一个片段变动不重发其它片段. 空值不渲染也不宣告
-        变更 — 模型保留上次读到的内容; 生产者要让模型知道片段没了, 返回 "removed" 这类
-        标记文本即可, 那只是内容, 这里不做任何识别.
+        notice 是温数据, 逐个片段比较, 一个片段变动不重发其它片段. 片段取值为四值,
+        一值一行 — 对应 ``named_notices`` 查找的四种落点:
+
+        - ``None`` (key 缺席): 片段消亡, 发一次 ``<name removed/>`` 墓碑;
+        - ``NAMED_NOTICE_UNCHANGED`` (``""``): 没有新内容, 零输出 — 模型保留上次读到的;
+        - 业务零值 (如 ``"empty"``): 显式空态, 与普通文本同等参与比较;
+        - 文本: 内容, 变了才发.
+
+        墓碑是观测差分的产物, 不落任何持久状态: 只在两帧比较时判定, 且只有上一帧可见过的
+        片段才有墓碑可说.
         """
         lines = []
-        if target.notice and target.notice != self.meta.notice:
+        # 无名 notice 是两值的: 空串 (= NAMED_NOTICE_UNCHANGED) 表示不变, 非空表示内容.
+        if target.notice != NAMED_NOTICE_UNCHANGED and target.notice != self.meta.notice:
             lines.append(target.notice)
-        prev_visible = _visible_named_notices(self.meta.named_notices)
-        next_visible = _visible_named_notices(target.named_notices)
-        for name in sorted(set(prev_visible) | set(next_visible)):
-            if name in next_visible and next_visible[name] != prev_visible.get(name):
-                lines.append(_notice_fragment(name, next_visible[name]))
+        prev = self.meta.named_notices
+        next_ = target.named_notices
+        for name in sorted(set(prev) | set(next_)):
+            next_text = next_.get(name)
+            if next_text is None:
+                if prev.get(name):
+                    lines.append(_removed_fragment(name))
+                continue
+            if next_text == NAMED_NOTICE_UNCHANGED:
+                continue
+            if next_text != prev.get(name):
+                lines.append(_notice_fragment(name, next_text))
         if not lines:
             return ""
         return "<notice>\n" + "\n".join(lines) + "\n</notice>"

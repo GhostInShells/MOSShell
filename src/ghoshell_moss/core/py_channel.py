@@ -197,7 +197,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._dynamic = True
         return func
 
-    async def get_named_notices(self) -> dict[str, str]:
+    async def get_named_notices(self) -> dict[str, str | None]:
         if self._named_notice_fn is None:
             return {}
         if inspect.iscoroutinefunction(self._named_notice_fn):
@@ -866,10 +866,11 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 self.logger.error("%r get notice receive error: %s", self, t)
         return '\n'.join(parts)
 
-    async def _get_named_notices(self) -> dict[str, str]:
-        merged: dict[str, str] = {}
+    async def _get_named_notices(self) -> dict[str, str | None]:
+        merged: dict[str, str | None] = {}
         if catalog := self._gated_children():
             # gate: 未挂载的子通道没有 meta 节点, 目录是模型知道它们存在的唯一入口.
+            # 目录随挂载变化重发; 全部卸载时 key 缺席, 模型收到 <gated_children removed/>.
             merged[GATED_CHILDREN_NOTICE] = "\n".join(
                 f"- {name} ({'open' if name in self._opened_children else 'closed'}): {child.description()}"
                 for name, child in catalog.items()

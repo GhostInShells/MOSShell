@@ -292,11 +292,11 @@ async def test_file_commands_need_root():
 
 @pytest.mark.asyncio
 async def test_named_notice_empty():
-    """Empty store publishes an empty `macros` fragment (filtered at render time)."""
+    """Empty store publishes the `macros` fragment as removed (None), not as unchanged."""
     main = new_shell_main_channel()
     main.with_module(MacroStoreModule())
     async with main.bootstrap() as runtime:
-        assert runtime.self_meta().named_notices == {"macros": ""}
+        assert runtime.self_meta().named_notices == {"macros": None}
 
 
 @pytest.mark.asyncio

@@ -280,23 +280,59 @@ def test_diff_facade_emits_new_fragment_only():
     assert 'vision' not in delta
 
 
-def test_diff_facade_empty_value_is_silent():
-    """片段变成空值: 不发 delta, 也不宣告变更 — 模型保留上次读到的内容."""
+def test_diff_facade_unchanged_value_is_silent():
+    """空串是 NAMED_NOTICE_UNCHANGED: 零输出, 模型保留上次读到的内容."""
     prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
     cur = ChannelMeta(name='a', named_notices={'vision': ''}, created=_aware(1))
     assert ChannelMetaPrompter('a', prev).diff_facade(cur) == ""
 
 
-def test_diff_facade_disappeared_fragment_is_silent():
-    """片段从 dict 消失与空值同义: 静默, 显式移除是生产者的责任."""
+def test_diff_facade_disappeared_fragment_emits_tombstone():
+    """key 缺席是 removed: 与空串(不变)不同, 发一次结构化的 <name removed/> 墓碑."""
     prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={}, created=_aware(1))
+    delta = ChannelMetaPrompter('a', prev).diff_facade(cur)
+    assert '<vision removed/>' in delta
+    assert '<vision>v1</vision>' not in delta
+
+
+def test_diff_facade_none_value_emits_tombstone():
+    """显式 None 与省略 key 同义 (dict.get 的默认值), 都是 removed."""
+    prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={'vision': None}, created=_aware(1))
+    delta = ChannelMetaPrompter('a', prev).diff_facade(cur)
+    assert '<vision removed/>' in delta
+
+
+def test_notice_skips_none_fragment():
+    """removed 的片段不进全量渲染 —— 不能把它渲染成字面量 "None"."""
+    meta = ChannelMeta(name='a', notice='warm', named_notices={'vision': None, 'audio': 'a1'})
+    text = ChannelMetaPrompter('a', meta).notice_text()
+    assert 'vision' not in text
+    assert 'None' not in text
+    assert '<audio>a1</audio>' in text
+
+
+def test_diff_facade_never_visible_fragment_gets_no_tombstone():
+    """上一帧不可见的片段 (空串或本就缺席) 消失时不发墓碑 — 无可宣告的消亡."""
+    prev = ChannelMeta(name='a', named_notices={'vision': ''}, created=_aware(0))
     cur = ChannelMeta(name='a', named_notices={}, created=_aware(1))
     assert ChannelMetaPrompter('a', prev).diff_facade(cur) == ""
 
 
-def test_diff_facade_renders_producer_removed_text_as_content():
-    """要告知移除, 生产者返回 "removed" 这类标记文本 —— 它只是内容, 不做特殊渲染."""
+def test_diff_facade_tombstone_emits_alongside_other_changes():
+    """墓碑与其它片段的变化在同一块 <notice> 里一起发, 互不吞并."""
+    prev = ChannelMeta(name='a', named_notices={'vision': 'v1', 'audio': 'a1'}, created=_aware(0))
+    cur = ChannelMeta(name='a', named_notices={'vision': 'v2'}, created=_aware(1))
+    delta = ChannelMetaPrompter('a', prev).diff_facade(cur)
+    assert '<vision>v2</vision>' in delta
+    assert '<audio removed/>' in delta
+
+
+def test_diff_facade_business_zero_is_content_not_removal():
+    """零值是普通内容, 与"有值"同等比较 — 文本恰好是 "removed" 也不会被读成消亡."""
     prev = ChannelMeta(name='a', named_notices={'vision': 'v1'}, created=_aware(0))
     cur = ChannelMeta(name='a', named_notices={'vision': 'removed'}, created=_aware(1))
     delta = ChannelMetaPrompter('a', prev).diff_facade(cur)
     assert '<vision>removed</vision>' in delta
+    assert '<vision removed/>' not in delta
