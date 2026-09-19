@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ghoshell_moss.message import unique_id
+
 from .session_events import ContentBlock
 
 __all__ = [
@@ -261,6 +263,7 @@ class SessionForkValue(BaseModel):
 
 class SessionPromptParams(BaseModel):
     model_config = ConfigDict(extra="allow")
+    requestId: str = Field(default_factory=unique_id, description="client-minted identity persisted on the accepted user message.")
     sessionId: str = Field(default="")
     mode: str | Literal["queue", "steer"] = Field(default="queue")
     content: list[PromptContentPart] = Field(default_factory=list)

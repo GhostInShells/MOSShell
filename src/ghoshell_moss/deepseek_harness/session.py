@@ -210,6 +210,11 @@ class DshSession:
         """本对象生命周期激活态 (_started and not _closed), 消费门控, 非 dsh 运行态."""
         return self._started and not self._closed
 
+    @property
+    def session_id(self) -> str:
+        """本 facade 绑定的 dsh session id."""
+        return self._session_id
+
     # ---- 帧入口 (owner 喂帧, 反转依赖) ---- #
 
     def accept_host_event(self, event: str, args: list[Any]) -> None:
