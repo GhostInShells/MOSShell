@@ -9,7 +9,7 @@ __all__ = ["AudioPlayerProvider", "AudioPlayerConfig"]
 
 class AudioPlayerConfig(ConfigType):
     samplerate: int = Field(
-        default=44100,
+        default=16000,
         description="Sample rate of audio player stream",
     )
     safety_delay: float = Field(

@@ -276,7 +276,7 @@ class User(BaseModel):
 
 class AudioParams(BaseModel):
     format: Literal["mp3", "pcm", "ogg_opus"] = Field(default="pcm")
-    sample_rate: int = Field(default=44100, description="8000,16000,22050,24000,32000,44100,48000")
+    sample_rate: int = Field(default=16000, description="8000,16000,22050,24000,32000,44100,48000")
     loudness_rate: Optional[int] = Field(default=0)
     speech_rate: Optional[int] = Field(default=0)
     emotion: Optional[ChineseVoiceEmotion] = Field(default="neutral")
@@ -362,7 +362,7 @@ class VolcengineTTSConf(BaseModel):
     access_token: str = Field(default="$VOLCENGINE_STREAM_TTS_ACCESS_TOKEN")
     api_key: str = Field(default="$VOLCENGINE_STREAM_TTS_API_KEY", description="新版控制台 API Key")
     resource_id: str = Field(default="seed-tts-2.0", description="官方的默认资源")
-    sample_rate: int = Field(default=44100, description="生成音频的采样率要求.")
+    sample_rate: int = Field(default=16000, description="生成音频的采样率要求.")
     audio_format: Literal["pcm"] = Field(default="pcm", description="默认可用的数据格式")
 
     disconnect_on_idle: int = Field(

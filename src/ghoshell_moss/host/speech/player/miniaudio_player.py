@@ -29,7 +29,7 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
     def __init__(
         self,
         *,
-        sample_rate: int = 44100,
+        sample_rate: int = 16000,
         channels: int = 1,
         logger: LoggerItf | None = None,
         safety_delay: float = 0.1,

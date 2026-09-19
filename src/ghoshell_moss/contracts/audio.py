@@ -1,7 +1,9 @@
 """
-Audio capture contracts — shared abstractions for system audio input.
+Audio capture & echo cancellation contracts — shared abstractions for audio I/O.
 
-Capture source → raw PCM → transport → consumers (ASR, waveform, AI perception).
+Capture source fans raw PCM out to in-process consumers (ASR, waveform, AI
+perception). AcousticEchoCanceller removes the speaker echo from the captured
+stream before it reaches ASR.
 """
 from abc import ABC, abstractmethod
 
@@ -20,6 +22,7 @@ __all__ = [
     "AudioCaptureSource",
     "AudioPullLatest",
     "AudioSequentialConsumer",
+    "AcousticEchoCanceller",
     "resample",
     "AudioSpectrum",
     "compute_spectrum",
@@ -156,7 +159,7 @@ class AudioChunk(BaseModel):
 class AudioCaptureConfig(ConfigType):
     """Format consensus — consumers read this to know stream parameters."""
 
-    sample_rate: int = 44100
+    sample_rate: int = 16000
     channels: int = 1
     format: str = "pcm_s16le"
     frame_duration_ms: int = 50
@@ -250,3 +253,31 @@ class AudioSequentialConsumer(ABC):
 
     @abstractmethod
     async def __anext__(self) -> AudioChunk: ...
+
+
+class AcousticEchoCanceller(ABC):
+    """单进程回声消除表面 — 单向: far(说侧参考)进, near(听侧采集)出.
+
+    far 是真实写入设备的那一帧 (说侧 player 播放时回调), near 是采集帧
+    (听侧 capture). 对齐 (far 环形缓冲 + 延迟估计) 是内部机制, 上层按各自
+    节奏喂帧, 不手动对齐、不维护缓冲.
+
+    far/near 帧是 float32 单声道. 采样率由 ``sample_rate`` 自解释, 接线层据此
+    决定是否对 capture/player 重采样.
+    """
+
+    sample_rate: int
+    """AEC 处理采样率 — 接线层据此决定是否重采样输入."""
+
+    stream_delay_ms: int
+    """延迟 hint (0 = estimator 自寻; 已知延迟可加速收敛)."""
+
+    @abstractmethod
+    def push_far(self, frame: np.ndarray) -> None:
+        """喂入播放参考帧 (真实写入设备的那一帧). 说侧播放回调时调."""
+        ...
+
+    @abstractmethod
+    def process(self, near: np.ndarray) -> np.ndarray:
+        """喂入采集帧, 返回回声消除后的帧. 听侧每帧调."""
+        ...
