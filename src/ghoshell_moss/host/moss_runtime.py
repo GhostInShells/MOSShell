@@ -9,6 +9,8 @@ wire-up 契约 (§ZZ):
 - main channel 从 mode.manifests().channel() 单 Manifest 拿; 无声明用 new_shell_main_channel 兜底.
 - static slot 在 shell 起来后接 ctml_shell.static_messages callable (dynamic leaf).
 """
+from typing import Callable
+
 from typing_extensions import Self
 
 from pathlib import Path
@@ -30,8 +32,15 @@ from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
-from ghoshell_moss.contracts.audio import AUDIO_SAMPLE_INTERVAL, LatestAudioWindow, compute_spectrum
+from ghoshell_moss.contracts.audio import (
+    AUDIO_SAMPLE_INTERVAL,
+    AudioCaptureSource,
+    LatestAudioWindow,
+    compute_spectrum,
+    resample,
+)
 from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
+from ghoshell_moss.contracts.listener import ASRListener, ListenLifecycle
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 from ghoshell_moss.contracts.speech import Speech, SpeechClause, TTSSpeech, PlaybackSample
 from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
@@ -62,6 +71,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             matrix: MatrixImpl,
             run_shell_on_start: bool = True,
             speech: bool = True,
+            listen: bool = False,
             name: str | None = None,
             description: str | None = None,
     ):
@@ -82,6 +92,9 @@ class ShellRuntimeImpl(MOSShellRuntime):
         # speech 开关 (bool): True 时在 __aenter__ resolve Speech 实例注入 shell.
         self._speech_enabled = speech
         self._speech: Speech | None = None
+        # listen 开关 (bool): True 时在 __aenter__ resolve ASRListener 并组装 controller.
+        self._listen_enabled = listen
+        self._listen_controller: ListenLifecycle | None = None
 
         # --- mode 层 IoC 叠加 (§ZZ-5: mode providers/configs/resources 覆盖 baseline) --- #
         # container 已在 MatrixImpl.__init__ 创建并完成 baseline 注册,
@@ -445,6 +458,8 @@ class ShellRuntimeImpl(MOSShellRuntime):
     def pause(self, toggle: bool = True) -> None:
         self._check_running()
         self._ctml_shell.pause(toggle)
+        if self._listen_controller is not None:
+            self._listen_controller.pause(toggle)
         self._paused = toggle
 
     @property
@@ -484,6 +499,29 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 self._matrix.logger.exception("%s resolve speech failed — degraded to no speech", self._log_prefix)
                 self._speech = None
         self._ctml_shell.set_speech(self._speech)
+
+    def _resolve_listener(self) -> None:
+        """resolve ASRListener 并组装 ListenerController — host 的 bool 开关决定是否启用.
+
+        True → 从 matrix container resolve ASRListener, 组装 ListenerController
+        (仅生命周期表面 ListenLifecycle, 见工作项 #12). 失败降 None.
+        False → None (不听). AEC far 桥在 _listen_lifecycle.
+        """
+        if not self._listen_enabled:
+            self._listen_controller = None
+            return
+        try:
+            listener = self._matrix.container.get(ASRListener)
+        except Exception:
+            self._matrix.logger.exception("%s resolve listener failed — degraded to no listen", self._log_prefix)
+            self._listen_controller = None
+            return
+        from ghoshell_moss.host.listener.controller import ListenerController
+        self._listen_controller = ListenerController(
+            listener=listener,
+            asr=listener.asr(),
+            logger=self._matrix.logger,
+        )
 
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):
@@ -606,6 +644,58 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 pass
             await publisher.__aexit__(None, None, None)
 
+    def _wire_aec_far(self) -> Callable[[], None]:
+        """AEC far 桥: player.on_play → capture.set_aec 的 echo 参考 (near 在 capture 内).
+
+        仅当 speech 是 TTSSpeech (有 player 产 far) 时激活. AEC 采样率取 capture 原生率
+        (near 免重采样), far (player) 重采样到 AEC 率 + 归一化 [-1,1]. 返回 cleanup
+        (unmount AEC + dispose on_play 摘除 far 回调).
+        """
+        speech = self._speech
+        if not isinstance(speech, TTSSpeech):
+            return lambda: None
+        from ghoshell_moss.host.listener.capture.webrtc_aec import PyWebrtcEchoCanceller
+
+        capture = self._matrix.container.get(AudioCaptureSource)
+        aec = PyWebrtcEchoCanceller(sample_rate=capture.sample_rate, stream_delay_ms=0)
+        capture.set_aec(aec)
+
+        player = speech.player()
+        play_rate = player.sample_rate
+        aec_rate = aec.sample_rate
+
+        def _on_play(frame: np.ndarray) -> None:
+            arr = np.asarray(frame).ravel()
+            if play_rate != aec_rate:
+                arr = resample(arr.astype(np.int16), origin_rate=play_rate, target_rate=aec_rate)
+            aec.push_far(arr.astype(np.float32) / 32768.0)
+
+        dispose_on_play = player.on_play(_on_play)
+
+        def _cleanup() -> None:
+            capture.set_aec(None)
+            dispose_on_play()
+
+        return _cleanup
+
+    @contextlib.asynccontextmanager
+    async def _listen_lifecycle(self):
+        """听侧治理: enter ListenerController (启动 capture+asr) + wire AEC far 桥.
+
+        仅当 listener resolve 成功 (controller 非 None) 时激活. AEC far 桥在 controller
+        之前 wire, 保证 capture 启动的首帧就已消回声.
+        """
+        controller = self._listen_controller
+        if controller is None:
+            yield
+            return
+        aec_cleanup = self._wire_aec_far()
+        try:
+            async with controller:
+                yield
+        finally:
+            aec_cleanup()
+
     async def __aenter__(self) -> Self:
         if self._started:
             raise RuntimeError('MossRuntime is already started')
@@ -617,6 +707,8 @@ class ShellRuntimeImpl(MOSShellRuntime):
         self._bootstrap_after_matrix()
         # resolve Speech 实例 (内核 contract) 注入 shell — 须在 shell __aenter__ 之前.
         self._resolve_speech()
+        # resolve ASRListener 实例 (内核 contract) — 治理在 voice listen manager.
+        self._resolve_listener()
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._manager_shell_lifecycle())
         # 说侧旁路: speech 单例的 clause 结果 → ClauseTopic 广播 (在 shell 起、speech 已
@@ -624,6 +716,9 @@ class ShellRuntimeImpl(MOSShellRuntime):
         await self._async_exit_stack.enter_async_context(self._clause_topic_bridge())
         # 说侧旁路: player 实际播放的音频 → AudioSampleTopic 广播 (对称 clause 桥).
         await self._async_exit_stack.enter_async_context(self._audio_sample_topic_bridge())
+        # 听侧旁路: enter ListenerController (启动 capture+asr) + AEC far 桥 — 说侧桥之后
+        # 进入, LIFO 先退出 (AEC 拆线时 player 仍活着).
+        await self._async_exit_stack.enter_async_context(self._listen_lifecycle())
         # bringup: 后台 task 并行发起 mode 声明的 nodes, 不 await — 单个失败记日志,
         # 挂死 (如 probe 不退出) 只钉住自己的 task, 不再阻塞 shell 启动.
         self._start_bringup_tasks()

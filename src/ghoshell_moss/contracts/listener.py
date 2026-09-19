@@ -122,3 +122,25 @@ class ListenerState(ABC):
         awaitable 回调 inline await (阻塞消费点), sync 回调 to_thread 卸载. 判停逻辑
         是 per-session 的 (每次 listen 重新挂载), 不返回 Discard.
         """
+
+
+class ListenLifecycle(ABC):
+    """听侧治理的生命周期接线表面 — moss runtime 据此 enter/exit 听侧.
+
+    ListenerController 的完整表面 (判停/信号/自解释) 太特殊、还在演化, 不上 IoC.
+    这里只承诺生命周期 + 急停: enter = 启动听器官 (capture+asr), exit = 关闭,
+    pause = 急停/恢复 (对称 shell/mindflow 的 pause 级联).
+    """
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        ...
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        ...
+
+    @abstractmethod
+    def pause(self, toggle: bool = True) -> None:
+        """急停/恢复: True 停听 (stop active session), False 恢复默认礼仪."""
+        ...

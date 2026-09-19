@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from ghoshell_moss.contracts.audio import (
+    AcousticEchoCanceller,
     AudioCaptureConfig,
     AudioCaptureSource,
     AudioChunk,
@@ -41,6 +42,19 @@ def _make_chunk(seq: int = 1) -> AudioChunk:
         timestamp=float(seq),
         samples=np.zeros(16, dtype=np.int16),
     )
+
+
+class _HalfAEC(AcousticEchoCanceller):
+    """测试用 AEC: process 返回半幅, 验证挂载后采集帧确实过了 process."""
+
+    sample_rate = 16000
+    stream_delay_ms = 0
+
+    def push_far(self, frame: np.ndarray) -> None:
+        pass
+
+    def process(self, near: np.ndarray) -> np.ndarray:
+        return near * 0.5
 
 
 # ── AudioCaptureSource contract ──────────────────────────────────────
@@ -75,6 +89,32 @@ class TestAudioCaptureSource:
         source: AudioCaptureSource = _make_source()
         consumer = source.new_sequential_consumer(max_queue_frames=128)
         assert isinstance(consumer, AudioSequentialConsumer)
+
+
+# ── AEC 表面 ─────────────────────────────────────────────────────────
+
+
+class TestSetAEC:
+    """AudioCaptureSource.set_aec — near 侧挂载点: 挂载后采集帧经 process 消回声."""
+
+    def test_set_aec_transforms_frames(self):
+        source = _make_source()
+        source.set_aec(_HalfAEC())
+
+        samples = np.full((160, 1), 1000, dtype=np.int16)
+        out = source._apply_aec(samples)
+
+        assert out.dtype == np.int16
+        assert out.shape == samples.shape
+        assert out.ravel()[0] == 500  # 1000 * 0.5
+
+    def test_set_aec_none_unmounts(self):
+        source = _make_source()
+        source.set_aec(_HalfAEC())
+        source.set_aec(None)
+
+        samples = np.full((160, 1), 1000, dtype=np.int16)
+        assert np.array_equal(source._apply_aec(samples), samples)
 
 
 # ── local fan-out contract ───────────────────────────────────────────

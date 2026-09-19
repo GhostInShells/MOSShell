@@ -196,3 +196,12 @@ def test_add_zero_duration_returns_float():
     result = player.add(audio, audio_type=AudioFormat.PCM_S16LE, rate=16000)
     assert isinstance(result, float)
     assert result >= 0.0
+
+
+def test_on_play_returns_disposer():
+    """on_play 返回 disposer (可摘除回调), 幂等 — 对称 observe."""
+    player = VirtualStreamPlayer(sample_rate=16000, channels=1)
+    dispose = player.on_play(lambda frame: None)
+    assert callable(dispose)
+    dispose()
+    dispose()  # 幂等, 不抛

@@ -35,7 +35,7 @@ from ghoshell_moss.contracts.audio import (
 )
 from ghoshell_moss.contracts.configs import ConfigStore
 from ghoshell_moss.contracts.llms import MossLLMCaller
-from ghoshell_moss.contracts.listener import Listener, ListenerState
+from ghoshell_moss.contracts.listener import ListenLifecycle, Listener, ListenerState
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
 from ghoshell_moss.core.concepts.channel import Channel
@@ -88,12 +88,15 @@ class ListenerSnapshot:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2)
 
 
-class ListenerController:
+class ListenerController(ListenLifecycle):
     """判停逻辑装线 + listener signal 生产边界 + 运行时自解释.
 
     持有 listener (听) + asr (configure vad). once/always 是长时间运行的 async method,
     内部管理一条 listening session 的生命周期; 结果经 listener 的观察面 (on_recognition_*)
     流出.
+
+    继承 ``ListenLifecycle``: moss runtime 只认这个生命周期表面 (enter/exit) 治理听侧,
+    不经 IoC / provider 拿完整 concrete — 判停/信号/自解释那面还在演化.
 
     三个职责:
     - 判停 (on_event_creating 决定何时 commit);
@@ -126,7 +129,7 @@ class ListenerController:
         # 礼仪配置化: 当前激活礼仪 (首包/尾包协议读它) + config store (持久化).
         self._active_etiquette: Optional[EtiquetteSpec] = None
         self._config_store: Optional[ConfigStore] = None
-        self._etiquette_config: Optional[EtiquetteConfig] = None
+        self._etiquette_config_cache: Optional[EtiquetteConfig] = None
         # clause → topic 装线 (懒, 由 with_topic_service 启动).
         self._topic_task: Optional[asyncio.Task] = None
         self._topic_disposer: Optional[Callable[[], None]] = None
@@ -162,13 +165,13 @@ class ListenerController:
 
     def _etiquette_config(self) -> EtiquetteConfig:
         """当前礼仪配置: 有 store 则 get_or_create, 否则内存实例."""
-        if self._etiquette_config is None:
-            self._etiquette_config = (
+        if self._etiquette_config_cache is None:
+            self._etiquette_config_cache = (
                 self._config_store.get_or_create(EtiquetteConfig())
                 if self._config_store is not None
                 else EtiquetteConfig()
             )
-        return self._etiquette_config
+        return self._etiquette_config_cache
 
     def etiquette_config(self) -> EtiquetteConfig:
         """开放当前礼仪配置 (所有已定义礼仪 + 默认激活)."""
@@ -285,6 +288,13 @@ class ListenerController:
         """停止聆听: 取消活跃 session, 回到 off."""
         self._mode = ListenEtiquette.OFF
         self._cancel_active()
+
+    def pause(self, toggle: bool = True) -> None:
+        """急停/恢复 (ListenLifecycle 表面): True 停听, False 恢复默认礼仪."""
+        if toggle:
+            self.stop()
+        else:
+            self.start_default_etiquette()
 
     def snapshot(self) -> ListenerSnapshot:
         """合成当前状态快照 (mode + listening + ASR 参数值)."""

@@ -360,6 +360,12 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
    **待做**: CLI `--speech`/env OPTION 开关 (留给 #5) + provider 降级细化 (#7).
 5. **moss runtime 启动 flag** (可能进 host 表面): 默认 speech; 可选 speech + listener 的
    interleaved voice 状态机 (或改名叫 AEC, 对齐行业); 可选择空。
+   **已做 2026-09-20 (listen flag + 治理骨架)**: `Host.run/run_ghost` + `ShellRuntimeImpl`
+   加 `listen: bool = False`; `_resolve_listener()` 对称 `_resolve_speech()` resolve ASRListener
+   并组装 ListenerController (失败降 None); `_listen_lifecycle` context manager enter controller
+   + wire AEC far 桥 (speech 是 TTSSpeech 时); `ShellRuntimeImpl.pause(toggle)` 级联到
+   `ListenLifecycle.pause` (急停停听 / 恢复默认礼仪).
+   **待做**: CLI `--speech/--listen`/env OPTION 开关.
 6. **config type 加 `validate` 函数**: per-config 自校验 (如环境变量实际为空时 raise)。
    **已做 2026-09-20 (approach 2, 不做 ConfigStore 机制)**: 仅这几个 config 加 `validate()`,
    provider 显式调用 (非 ConfigStore 读时自动):
@@ -385,6 +391,11 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 11. **半双工 (说时不听) 可能不必要**: 它依赖外部界面启动 (永不自起), 有 AEC 后优先级下降。
 12. **封装物料**: listener controller 只实现单侧机制; 整体封装要在 `host/` 模块下有物料,
     方便迁移成 node, 甚至预写在 `host/nodes/`。
+    **已做 2026-09-20 (生命周期表面)**: controller 不走 provider — 定义 `ListenLifecycle`
+    (contracts/listener.py) 仅承诺 enter/exit + pause, `ListenerController` 反向继承它;
+    moss runtime 只认这个表面治理听侧, concrete 构造在 `_resolve_listener`. 判停/信号/
+    自解释那面还在演化, 不上 IoC. 顺带修了一个既有 bug: `self._etiquette_config` 属性与
+    同名方法冲突 (属性遮蔽方法), 改缓存名为 `_etiquette_config_cache`.
 
 ### 最关键的改造
 

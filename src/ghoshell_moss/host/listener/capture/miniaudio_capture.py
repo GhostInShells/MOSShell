@@ -22,6 +22,7 @@ import miniaudio
 import numpy as np
 
 from ghoshell_moss.contracts.audio import (
+    AcousticEchoCanceller,
     AudioCaptureConfig,
     AudioCaptureSource,
     AudioChunk,
@@ -93,6 +94,7 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._seq = 0
         self._started = False
         self._closing = False
+        self._aec: AcousticEchoCanceller | None = None
 
     @property
     def sample_rate(self) -> int:
@@ -113,6 +115,24 @@ class MiniAudioCaptureSource(AudioCaptureSource):
                 self._observers.remove(callback)
 
         return _dispose
+
+    def set_aec(self, aec: AcousticEchoCanceller | None) -> None:
+        """挂载/卸载回声消除器. 挂载后采集帧在 meta 前经 process 消回声."""
+        self._aec = aec
+
+    def _apply_aec(self, samples: np.ndarray) -> np.ndarray:
+        """public-internal: 采集帧过 AEC (int16 → float32 → process → int16).
+
+        在 meta 计算前调用, 保证 meta (rms/is_silent) 描述消回声后的信号 — 静音
+        门控读这个 meta, 不重算能量. 无 AEC 时原样返回. AEC 是单声道表面 (契约),
+        接线层据此只对 mono 采集挂载.
+        """
+        aec = self._aec
+        if aec is None:
+            return samples
+        mono = samples.ravel().astype(np.float32) / 32768.0
+        out = aec.process(mono)
+        return (out * 32768.0).clip(-32768, 32767).astype(np.int16).reshape(samples.shape)
 
     async def start(self) -> None:
         if self._started:
@@ -224,6 +244,7 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         logger = self._logger
         seq_ref = [0]
         fan_out = self._fan_out
+        apply_aec = self._apply_aec
 
         def _capture_generator():
             while True:
@@ -232,6 +253,7 @@ class MiniAudioCaptureSource(AudioCaptureSource):
                     ts = time.time()
                     # miniaudio 会复用底层 buffer, 必须 copy, 否则下一帧覆盖本帧.
                     samples = np.frombuffer(data, dtype=np.int16).reshape(-1, channels).copy()
+                    samples = apply_aec(samples)
                     meta = _compute_frame_meta(samples)
                     chunk = AudioChunk(
                         seq=seq_ref[0], timestamp=ts, samples=samples, meta=meta,

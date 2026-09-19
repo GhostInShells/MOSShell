@@ -62,11 +62,23 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         # stream 生命周期由治理层管理; 无观察者时不计算 PlaybackSample.
         self._playback_observers: list[Callable[[PlaybackSample], None]] = []
 
-    def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
+    def on_play(self, callback: Callable[[np.ndarray], None]) -> Callable[[], None]:
         self._on_play_callbacks.append(callback)
 
-    def on_play_done(self, callback: Callable[[], None]) -> None:
+        def _unsubscribe() -> None:
+            if callback in self._on_play_callbacks:
+                self._on_play_callbacks.remove(callback)
+
+        return _unsubscribe
+
+    def on_play_done(self, callback: Callable[[], None]) -> Callable[[], None]:
         self._on_play_done_callbacks.append(callback)
+
+        def _unsubscribe() -> None:
+            if callback in self._on_play_done_callbacks:
+                self._on_play_done_callbacks.remove(callback)
+
+        return _unsubscribe
 
     def observe(
             self,

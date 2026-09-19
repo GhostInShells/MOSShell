@@ -458,11 +458,13 @@ class StreamAudioPlayer(ABC):
         pass
 
     @abstractmethod
-    def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
+    def on_play(self, callback: Callable[[np.ndarray], None]) -> Callable[[], None]:
+        """注册播放参考帧回调 (真实写入设备的那一帧), 返回 disposer (调用即摘除)."""
         raise NotImplementedError
 
     @abstractmethod
-    def on_play_done(self, callback: Callable[[], None]) -> None:
+    def on_play_done(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """注册播放结束回调, 返回 disposer (调用即摘除)."""
         raise NotImplementedError
 
 

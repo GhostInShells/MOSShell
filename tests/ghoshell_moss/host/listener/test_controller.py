@@ -348,3 +348,41 @@ async def test_llm_judge_keeps_waiting_when_judge_unsure():
     assert state.committed == 0  # 打分 1 < threshold 7 → 不 commit
 
     await _stop(task)
+
+
+# ============================================================
+# ListenLifecycle 表面 — pause 急停/恢复 (moss runtime 级联入口)
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_pause_stops_active_session():
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task, state = await _start_controller(controller, controller.always, segment_vad=5.0, timeout=5.0)
+
+    controller.pause(True)
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert task.done()
+    assert state.exited  # 急停 → 活跃 session 优雅关闭
+
+
+@pytest.mark.asyncio
+async def test_pause_resumes_default_etiquette():
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task, state = await _start_controller(controller, controller.always, segment_vad=5.0, timeout=5.0)
+
+    controller.pause(True)
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    controller.pause(False)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert listener.state is not None
+    assert listener.state is not state  # 恢复 → 新 session
+
+    controller.stop()

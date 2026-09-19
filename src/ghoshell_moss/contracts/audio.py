@@ -205,6 +205,16 @@ class AudioCaptureSource(ABC):
         ...
 
     @abstractmethod
+    def set_aec(self, aec: "AcousticEchoCanceller | None") -> None:
+        """挂载/卸载回声消除器 (near 侧挂载点).
+
+        挂载后, 采集帧在 meta 计算前经 ``aec.process`` 消回声 — 静音门控读的
+        ``meta.rms_db`` / ``is_silent`` 描述的是消回声后的信号. far 参考由接线层
+        经 ``aec.push_far`` 喂入 (说侧 player.on_play), 不属本表面职责. None 卸载.
+        """
+        ...
+
+    @abstractmethod
     async def close(self) -> None: ...
 
     @abstractmethod
@@ -267,8 +277,9 @@ class AcousticEchoCanceller(ABC):
     (听侧 capture). 对齐 (far 环形缓冲 + 延迟估计) 是内部机制, 上层按各自
     节奏喂帧, 不手动对齐、不维护缓冲.
 
-    far/near 帧是 float32 单声道. 采样率由 ``sample_rate`` 自解释, 接线层据此
-    决定是否对 capture/player 重采样.
+    far/near 帧是 float32 单声道, 归一化到 [-1, 1] (接线层把 int16 ÷32768).
+    两侧尺度必须一致 — 采样率由 ``sample_rate`` 自解释, 接线层据此决定是否对
+    capture/player 重采样.
     """
 
     sample_rate: int
