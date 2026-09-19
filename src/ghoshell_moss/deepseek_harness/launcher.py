@@ -46,6 +46,12 @@ Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 
 #    accept_session_event + live assistant-stream 合成 assistant/chunk — 见
 #    dsh-0.1.5-remote-stream-transport.md.
 
+# ── 阶段性 (2026-09-20, dsh 0.1.5 unary Remote 线对齐) ─────
+# 9. DshClient.call 从旧 apiproxy (点号路径 + 平铺 payload) 迁到 Remote
+#    (斜杠路径 + {args:{<参数名>:...}}); session/models→modelCatalog, history→page.
+# 10. workspace 列表改走 workspace/follow 流 baseline (0.1.5 已无 workspace.list 动词);
+#     follow 快照喂 cursor + header (cwd/agentPreset) 给 session (page 的 throughSeq 来源).
+
 # ── 已知问题 (随改随记, 最后一起删) ─────────────────────────
 # 1. `_owns_sp` 手动 __aexit__ 与 exit stack 重复回收 subprocess manager (第二次 no-op, 待合).
 # 2. __aenter__ except 块的清理被注释, 中途失败会漏孤儿进程 (启动超时使该路径可达, 需补).
@@ -169,8 +175,8 @@ class DshConnection:
       `_ws_loop` 下行重连 + `_dispatch_raw_frame` 按 `$events` 帧 type 分派.
     - session 接线: `create_session()` 把 DshSession 的 accept_host_event 挂到 emit 流,
       退出时 on_exit 解绑. (session/follow 事件流属后续增量.)
-    - host 级 workspace: `workspaces()` / `workspace_for_path()` 走 workspace.list RPC
-      (0.1.5 不再推 workspace 变更帧).
+    - host 级 workspace: `workspaces()` / `workspace_for_path()` 走 workspace/follow 流 baseline
+      (0.1.5 起 workspace.list 动词已移除).
 
     生命周期只覆盖连接自身 (WS 循环 + HTTP client); 子进程的 spawn/治理/拆除
     属 DshLauncher. 连接层的 `_wait_started` / `_on_start_failed` 是空实现,
@@ -194,6 +200,9 @@ class DshConnection:
         self._cookies: dict[str, str] = {}
         self._cookie_header: str | None = None
         self._events_stream_id = "moss-events"
+        # workspace/follow 流: baseline 载 workspace 列表 (0.1.5 起无 workspace.list 动词).
+        self._workspace_stream_id = "moss-workspaces"
+        self._workspace_baseline_event = asyncio.Event()
         # session/follow 流状态: 每个 session 一条逻辑流, 收 durable 事件 + live assistant-stream.
         self._ws: Any | None = None  # 当前 mux WS (重连循环持有); 新 session 直接在已连 WS 上开流.
         self._follow_sessions: dict[str, DshSession] = {}
@@ -252,6 +261,7 @@ class DshConnection:
                     self._dsh_started.set()
                     self._logger.info("%smux connected", self._log_prefix)
                     await self._open_events_stream(ws)
+                    await self._open_workspace_stream(ws)
                     # 重连后重开所有 session/follow 逻辑流 (snapshot 会重新下发, live 事件续上).
                     for session_id in list(self._follow_sessions):
                         await self._open_follow_stream(ws, session_id)
@@ -307,6 +317,15 @@ class DshConnection:
             "payload": {"args": {}},
         }))
 
+    async def _open_workspace_stream(self, ws: Any) -> None:
+        """在已连 mux 上开 `workspace/follow` 逻辑流 (baseline 载 workspace 列表)."""
+        await ws.send(json.dumps({
+            "type": "open",
+            "streamId": self._workspace_stream_id,
+            "endpoint": "workspace/follow",
+            "payload": {"args": {}},
+        }))
+
     def _follow_stream_id(self, session_id: str) -> str:
         return f"moss-follow-{session_id}"
 
@@ -344,6 +363,8 @@ class DshConnection:
             value = msg.get("value")
             if stream_id == self._events_stream_id:
                 await self._dispatch_remote_event(value)
+            elif stream_id == self._workspace_stream_id:
+                self._dispatch_workspace_frame(value)
             elif stream_id in self._stream_to_session:
                 await self._dispatch_follow_frame(self._stream_to_session[stream_id], value)
             # 未知 streamId 静默忽略.
@@ -410,6 +431,21 @@ class DshConnection:
         except Exception:
             self._logger.exception("$events/result failed: %s", event_id)
 
+    def _dispatch_workspace_frame(self, value: Any) -> None:
+        """分派 `workspace/follow` 下行帧: baseline 载 workspace 列表 (增量帧暂不消费)."""
+        if not isinstance(value, dict) or value.get("type") != "baseline":
+            return
+        payload = value.get("value")
+        if not isinstance(payload, dict):
+            return
+        items = payload.get("items") or []
+        self._workspaces = {}
+        for item in items:
+            if isinstance(item, dict):
+                view = WorkspaceView.model_validate(item)
+                self._workspaces[view.workspaceId] = view
+        self._workspace_baseline_event.set()
+
     async def _dispatch_follow_frame(self, session_id: str, value: Any) -> None:
         """分派 `session/follow` 下行帧: snapshot / event / assistant-stream."""
         session = self._follow_sessions.get(session_id)
@@ -417,8 +453,10 @@ class DshConnection:
             return
         t = value.get("type")
         if t == "snapshot":
-            # snapshot 是历史 message-aligned 页 (past records), live 流程只关心 cursor 之后的事件.
-            # ghost 的 ego session 新建即用, 历史页无需消费 — 忽略, 只依赖后续 live 帧.
+            # snapshot 是历史 message-aligned 页 + header. 历史 records 不逐条喂 (live 流程只关心
+            # cursor 之后的事件), 但 cursor (page 的 throughSeq) 与 header.cwd/agentPreset 是会话
+            # 常量, 喂给 session 冷镜.
+            session.accept_follow_snapshot(value.get("header"), int(value.get("cursor") or 0))
             return
         if t == "event":
             event = SessionEvent.from_dict(value.get("event") or {})
@@ -535,17 +573,18 @@ class DshConnection:
 
         return _remove
 
-    async def workspaces(self, *, force: bool = False) -> list[WorkspaceView]:
-        """host 级 workspace 列表 — 0.1.5 不再推 workspace 变更帧, 走 workspace.list RPC 拉取 (带缓存)."""
-        if not force and self._workspaces:
-            return list(self._workspaces.values())
-        value = await self.client.workspace_list()
-        self._workspaces = {w.workspaceId: w for w in value.items}
+    async def workspaces(self) -> list[WorkspaceView]:
+        """host 级 workspace 列表 — 0.1.5 走 workspace/follow 流的 baseline (带缓存).
+
+        baseline 随 WS 连接后下发; 首次调用若尚未到达则等待 (不主动重开流).
+        """
+        if not self._workspace_baseline_event.is_set():
+            await asyncio.wait_for(self._workspace_baseline_event.wait(), self.config.connect_timeout)
         return list(self._workspaces.values())
 
-    async def workspace_for_path(self, path: str, *, force: bool = False) -> WorkspaceView | None:
+    async def workspace_for_path(self, path: str) -> WorkspaceView | None:
         """按 canonical path 解析 workspace (与 session.cwd 匹配)."""
-        for workspace in await self.workspaces(force=force):
+        for workspace in await self.workspaces():
             if workspace.path == path:
                 return workspace
         return None

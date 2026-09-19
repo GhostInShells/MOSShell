@@ -40,31 +40,33 @@ class _RpcClient:
 
     def __init__(
         self,
-        models_value=None,
-        history_value=None,
+        model_catalog=None,
         session_list_value=None,
+        page_value=None,
         plugin_values=None,
     ):
-        self._models_value = models_value
-        self._history_value = history_value
+        self._model_catalog = model_catalog
         self._session_list_value = session_list_value
+        self._page_value = page_value
         self._plugin_values = plugin_values or {}
         self.calls: list[str] = []
         self.prompt_params: list = []
+        self.page_params: list = []
         self.plugin_calls: list[tuple[str, dict]] = []
 
-    async def call(self, method, params, value_cls):
+    async def call(self, method, params, value_cls, *, args_key="request"):
         self.calls.append(method)
-        if method == "session.models":
-            return self._models_value
-        if method == "session.history":
-            return self._history_value
-        if method == "session.list":
+        if method == "session/modelCatalog":
+            return self._model_catalog
+        if method == "session/list":
             return self._session_list_value
-        if method == "session.prompt":
+        if method == "session/page":
+            self.page_params.append(params)
+            return self._page_value or sessions.SessionPageValue()
+        if method == "session/prompt":
             self.prompt_params.append(params)
             return sessions.SessionPromptValue(accepted=True)
-        if method == "session.cancel":
+        if method == "session/cancel":
             return sessions.SessionCancelValue(accepted=True)
         raise AssertionError(f"unexpected rpc {method}")
 
@@ -356,11 +358,11 @@ async def test_surface_messages_pulls_plugin_route():
 
 @pytest.mark.asyncio
 async def test_model_selection_pulls_and_caches():
-    models_value = sessions.SessionModels(
-        current=sessions.ModelSelection(provider="deepseek", model="v4", reasoningEffort="high"),
-        routable=True,
+    catalog = sessions.ModelCatalog(
+        default=sessions.ModelSelection(provider="deepseek", model="v4", reasoningEffort="high"),
+        routableProviders=["deepseek"],
     )
-    client = _RpcClient(models_value=models_value)
+    client = _RpcClient(model_catalog=catalog)
     session = DshSession(session_id="s1", client=client)
     async with session:
         sel = await session.model_selection()
@@ -369,27 +371,27 @@ async def test_model_selection_pulls_and_caches():
         # 缓存命中: 第二次不再发 RPC.
         await session.model_selection()
         await session.routable()
-        assert client.calls.count("session.models") == 1
+        assert client.calls.count("session/modelCatalog") == 1
 
 
 @pytest.mark.asyncio
 async def test_model_selection_force_repulls():
     client = _RpcClient(
-        models_value=sessions.SessionModels(
-            current=sessions.ModelSelection(provider="a", model="m1"),
-            routable=True,
+        model_catalog=sessions.ModelCatalog(
+            default=sessions.ModelSelection(provider="a", model="m1"),
+            routableProviders=["a"],
         ),
     )
     session = DshSession(session_id="s1", client=client)
     async with session:
         await session.model_selection()
-        client._models_value = sessions.SessionModels(
-            current=sessions.ModelSelection(provider="b", model="m2"),
-            routable=False,
+        client._model_catalog = sessions.ModelCatalog(
+            default=sessions.ModelSelection(provider="b", model="m2"),
+            routableProviders=["b"],
         )
         sel = await session.model_selection(force=True)
         assert sel.model == "m2"
-        assert client.calls.count("session.models") == 2
+        assert client.calls.count("session/modelCatalog") == 2
 
 
 @pytest.mark.asyncio
@@ -403,17 +405,40 @@ async def test_cwd_and_preset_mirror_session_added():
 
 
 @pytest.mark.asyncio
-async def test_cwd_and_preset_force_pull_session_list():
+async def test_cwd_force_pull_session_list():
     list_value = sessions.SessionListValue(
-        items=[sessions.SessionSummary(sessionId="s1", cwd="/tmp/x", agentPreset="standard")],
+        items=[sessions.SessionSummary(sessionId="s1", cwd="/tmp/x")],
     )
     client = _RpcClient(session_list_value=list_value)
     session = DshSession(session_id="s1", client=client)
     async with session:
         assert await session.cwd(force=True) == "/tmp/x"
-        # force 拉一次同时填充 cwd + agent_preset, 后者命中缓存.
+        assert client.calls.count("session/list") == 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sets_preset_cwd_and_cursor():
+    """follow 快照 header 喂 cwd/agentPreset, cursor 供 history() 作 throughSeq."""
+    client = _RpcClient()
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        session.accept_follow_snapshot({"cwd": "/x", "agentPreset": "standard"}, 25)
         assert await session.agent_preset() == "standard"
-        assert client.calls.count("session.list") == 1
+        assert await session.cwd() == "/x"
+        events = await session.history(max_messages=3)
+        assert events == []
+        assert client.page_params[0].throughSeq == 25
+        assert client.page_params[0].address.sessionId == "s1"
+        assert client.page_params[0].maxMessages == 3
+
+
+@pytest.mark.asyncio
+async def test_history_requires_cursor():
+    client = _RpcClient()
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        with pytest.raises(RuntimeError):
+            await session.history()
 
 
 # ---- 单轮对话 (run) 与标准中断 (cancel) ---- #
@@ -484,7 +509,7 @@ async def test_run_settles_on_cancel():
         result = await asyncio.wait_for(task, 1)
 
     assert result.finish_reason == "interrupted"
-    assert "session.cancel" in client.calls
+    assert "session/cancel" in client.calls
 
 
 @pytest.mark.asyncio
@@ -511,4 +536,4 @@ async def test_cancel_calls_rpc_and_returns_value():
     async with session:
         value = await session.cancel()
     assert value.accepted is True
-    assert client.calls == ["session.cancel"]
+    assert client.calls == ["session/cancel"]

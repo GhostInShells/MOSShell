@@ -152,12 +152,13 @@ class DshSession:
         self._event_handlers: dict[str, set[EventDispatcher]] = {}
         # 内部治理回调 — token 记账: 与外部消费同一机制 (dogfooding on_session_event_model).
         self.on_session_event_model(AssistantMessageEvent, self._on_assistant_message)
-        # 观测状态镜像: model/routable 由 session.models 拉取; cwd/agent_preset 是会话常量,
-        # 由 host/session-added 帧或 session.list 拉取. instruction 走 plugin 路由 pull (见 instruction()).
-        self._model_selection: sessions.ModelSelection | None = None
-        self._routable: bool | None = None
+        # 观测状态镜像: model catalog 由 session/modelCatalog 拉取; cwd/agent_preset 是会话常量,
+        # 由 follow 快照 header 或 host/session-added 帧拉取. instruction 走 plugin 路由 pull (见 instruction()).
+        self._model_catalog: sessions.ModelCatalog | None = None
         self._cwd: str | None = None
         self._agent_preset: str | None = None
+        # follow 快照 cursor (session/page 的 throughSeq 来源); 由 accept_follow_snapshot 喂入.
+        self._cursor: int | None = None
         # 线性消费: deque 存帧, Event 唤醒消费 task (空等待阻塞, 不忙旋).
         self._queue: deque = deque()
         self._wakeup = asyncio.Event()
@@ -237,6 +238,20 @@ class DshSession:
         self._queue.append(("event", event))
         self._wakeup.set()
 
+    def accept_follow_snapshot(self, header: dict | None, cursor: int) -> None:
+        """owner 在 follow 快照到达时喂入: 记录 cursor + header 的会话常量 (cwd/agentPreset).
+
+        cursor 是 session/page 的 throughSeq 来源; header.cwd/agentPreset 是这些会话常量的
+        权威源 (session/list 的 SessionSummary 在 0.1.5 已不携带 agentPreset).
+        """
+        self._cursor = cursor
+        if header is None:
+            return
+        if header.get("cwd") is not None:
+            self._cwd = header["cwd"]
+        if header.get("agentPreset") is not None:
+            self._agent_preset = header["agentPreset"]
+
     # ---- 驱动动词 (入参屏蔽, 返回值不屏蔽) ---- #
 
     async def prompt(
@@ -252,7 +267,7 @@ class DshSession:
             content=content,
             clientTimeZone=client_timezone,
         )
-        return await self._client.call("session.prompt", params, sessions.SessionPromptValue)
+        return await self._client.call("session/prompt", params, sessions.SessionPromptValue)
 
     async def cancel(self) -> sessions.SessionCancelValue:
         """标准中断: 停一个活跃 turn, 保留队尾工作 (dsh session.cancel, keepInbox).
@@ -261,7 +276,7 @@ class DshSession:
         与 run() 对称 — fire-and-return 的中断动词, 不等 turn 停下来。
         """
         params = sessions.SessionCancelParams(sessionId=self._session_id)
-        return await self._client.call("session.cancel", params, sessions.SessionCancelValue)
+        return await self._client.call("session/cancel", params, sessions.SessionCancelValue)
 
     async def run(
         self,
@@ -283,7 +298,7 @@ class DshSession:
 
         实现口径 (对齐 SDK 的可见契约, 两处适配 MOSS 传输):
         - 先挂 catch-all 收集器再发 prompt, 不丢本轮 ``turn/start``。
-        - SDK 用 ``agent/inbox/spliced`` 回执门控起点; apiproxy ``session.prompt`` 不回
+        - SDK 用 ``agent/inbox/spliced`` 回执门控起点; Remote ``session/prompt`` 不回
           messageId, 故改以**本轮第一个 turn/start** 为起点门控 (更强: 直接锚定 turn 号)。
         - SDK 停在 whole-agent idle; 这里停在**本轮 turn/end** — 才能保证"只跑一轮",
           不被队尾排队的工作拖住。
@@ -353,7 +368,7 @@ class DshSession:
             itemId=item_id,
             action=action,
         )
-        return await self._client.call("session.updateQueue", params, sessions.SessionUpdateQueueValue)
+        return await self._client.call("session/updateQueue", params, sessions.SessionUpdateQueueValue)
 
     async def select_model(
         self,
@@ -368,36 +383,46 @@ class DshSession:
             model=model,
             reasoningEffort=reasoning_effort,
         )
-        return await self._client.call("session.selectModel", params, sessions.SessionSelectModelValue)
+        return await self._client.call("session/selectModel", params, sessions.SessionSelectModelValue)
 
-    async def models(self) -> sessions.SessionModels:
-        params = sessions.SessionModelsParams(sessionId=self._session_id)
-        return await self._client.call("session.models", params, sessions.SessionModels)
+    async def models(self) -> sessions.ModelCatalog:
+        return await self._client.call("session/modelCatalog", None, sessions.ModelCatalog, args_key=None)
 
     async def history(
         self,
         *,
         before_seq: int | None = None,
         max_messages: int | None = None,
-    ) -> sessions.SessionHistoryValue:
-        params = sessions.SessionHistoryParams(
-            sessionId=self._session_id,
+    ) -> list[SessionEvent]:
+        """向后读一页 session 事件 (session/page), 返回按 seq 升序的 SessionEvent 列表.
+
+        throughSeq 取 follow 快照 cursor (会话最后已提交 seq); 快照未到达时抛错 —
+        先等 follow 流开流 (accept_follow_snapshot) 再读历史.
+        """
+        if self._cursor is None:
+            raise RuntimeError(
+                f"dsh session {self._session_id}: follow cursor not known yet (no snapshot)"
+            )
+        params = sessions.SessionPageParams(
+            address=sessions.SessionAddress(sessionId=self._session_id),
+            throughSeq=self._cursor,
             beforeSeq=before_seq,
             maxMessages=max_messages,
         )
-        return await self._client.call("session.history", params, sessions.SessionHistoryValue)
+        value = await self._client.call("session/page", params, sessions.SessionPageValue)
+        return [SessionEvent.from_dict(record.event) for record in value.records]
 
     async def fork(self, *, at_seq: int | None = None) -> sessions.SessionForkValue:
         params = sessions.SessionForkParams(sessionId=self._session_id, atSeq=at_seq)
-        return await self._client.call("session.fork", params, sessions.SessionForkValue)
+        return await self._client.call("session/fork", params, sessions.SessionForkValue)
 
     async def rename(self, *, title: str) -> sessions.SessionRenameValue:
         params = sessions.SessionRenameParams(sessionId=self._session_id, title=title)
-        return await self._client.call("session.rename", params, sessions.SessionRenameValue)
+        return await self._client.call("session/rename", params, sessions.SessionRenameValue)
 
     async def attachment(self, *, attachment_id: str) -> sessions.SessionAttachmentValue:
         params = sessions.SessionAttachmentParams(sessionId=self._session_id, attachmentId=attachment_id)
-        return await self._client.call("session.attachment", params, sessions.SessionAttachmentValue)
+        return await self._client.call("session/attachment", params, sessions.SessionAttachmentValue)
 
     # ---- 消费 ---- #
 
@@ -520,50 +545,48 @@ class DshSession:
         return [Message.model_validate(m) for m in raw]
 
     async def model_selection(self, *, force: bool = False) -> sessions.ModelSelection:
-        """当前选中的模型 (provider/model/reasoningEffort) — session.models.current.
-
-        pull-primary: 无完整推源 (request/context 缺 reasoningEffort / routable),
-        故缓存命中直返, force 或空则拉 session.models.
-        """
-        if not force and self._model_selection is not None:
-            return self._model_selection
-        models = await self.models()
-        self._model_selection = models.current
-        self._routable = models.routable
-        return self._model_selection
+        """当前选中的模型 (provider/model/reasoningEffort) — session/modelCatalog.default."""
+        catalog = await self._catalog(force=force)
+        return catalog.default
 
     async def routable(self, *, force: bool = False) -> bool:
-        """当前模型路由是否可服务 — session.models.routable. 与 model_selection 同源拉取."""
-        if not force and self._routable is not None:
-            return self._routable
-        models = await self.models()
-        self._model_selection = models.current
-        self._routable = models.routable
-        return self._routable
+        """当前默认 provider 是否可路由 — catalog.default.provider ∈ catalog.routableProviders.
+
+        旧 session.models 的 ``routable`` 布尔意为「当前路由可服务」; modelCatalog 只给
+        provider id 列表, 故按默认 provider 是否在列还原该语义.
+        """
+        catalog = await self._catalog(force=force)
+        return catalog.default.provider in catalog.routableProviders
+
+    async def _catalog(self, *, force: bool = False) -> sessions.ModelCatalog:
+        if not force and self._model_catalog is not None:
+            return self._model_catalog
+        self._model_catalog = await self.models()
+        return self._model_catalog
 
     async def cwd(self, *, force: bool = False) -> str | None:
-        """会话工作目录 — host/session-added 或 session.list 的 header.cwd (创建后不变)."""
+        """会话工作目录 — follow 快照 header.cwd 或 host/session-added (创建后不变)."""
         if not force and self._cwd is not None:
             return self._cwd
         await self._session_summary()
         return self._cwd
 
     async def agent_preset(self, *, force: bool = False) -> str | None:
-        """会话的 agentPreset (运行模式) — 创建时定, 首 turn 后锁死. 冷锚经 session.list 拉."""
+        """会话的 agentPreset (运行模式) — follow 快照 header.agentPreset, 创建时定."""
         if not force and self._agent_preset is not None:
             return self._agent_preset
         await self._session_summary()
         return self._agent_preset
 
     async def _session_summary(self) -> None:
-        """拉 session.list 找本会话, 一次性填充 cwd / agent_preset (会话常量)."""
+        """拉 session/list 找本会话, 填充 cwd (agentPreset 已不在 SessionSummary 顶层)."""
         value = await self._client.call(
-            "session.list", sessions.SessionListParams(), sessions.SessionListValue,
+            "session/list", sessions.SessionListParams(), sessions.SessionListValue,
+            args_key="_request",
         )
         for item in value.items:
             if item.sessionId == self._session_id:
                 self._cwd = item.cwd
-                self._agent_preset = item.agentPreset
                 return
 
     async def when_running(self) -> None:
