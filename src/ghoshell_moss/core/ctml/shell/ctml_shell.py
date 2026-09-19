@@ -34,7 +34,6 @@ from ghoshell_moss.core.ctml.versions import get_moss_ctml_meta_instruction, CTM
 from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan, default_primitive_map
 from ghoshell_moss.core.helpers import ThreadSafeEvent, ThreadSafeFuture
-from ghoshell_moss.core.speech.null import NullSpeech
 from ghoshell_moss.core.speech.speech_module import build_content_command
 from ghoshell_moss.contracts.speech import Speech
 from collections import deque
@@ -130,6 +129,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
     @property
     def container(self) -> IoCContainer:
         return self._container
+
+    def set_speech(self, speech: Speech | None) -> None:
+        """host 层 resolve 出 Speech 实例后注入. 须在 ``__aenter__`` 之前调用.
+
+        shell 自身不 resolve Speech — 显式传入才算数, 传入 None 表示禁语音.
+        """
+        self._speech = speech
 
     def meta_instruction(self) -> str:
         return self._ctml_meta_instruction
@@ -275,15 +281,15 @@ class CTMLShell(MOSShell[PrimeChannel]):
     async def _speech_context_manager(self):
         """
         启动关闭音频模块.
+
+        speech 显式注册: 构造时未传入 Speech 实例则不托管 — 不 set 进容器、
+        不启动、不挂 content command. 此时 shell 无语音交互能力.
         """
-        if self._speech:
-            self._container.set(Speech, self._speech)
-        else:
-            speech = self._container.get(Speech)
-            if speech is None:
-                speech = NullSpeech()
-                self._container.set(Speech, speech)
-            self._speech = speech
+        if self._speech is None:
+            yield
+            return
+
+        self._container.set(Speech, self._speech)
 
         if self._speech_as_content_command:
             content_cmd = build_content_command(self._speech)
@@ -736,8 +742,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
         return self._clearing_task
 
     async def _clear(self):
+        speech_clear = self._speech.clear() if self._speech is not None else self._noop()
         done = await asyncio.gather(
-            self._speech.clear(),
+            speech_clear,
             self._main_runtime.tree.clear(self._main_runtime),
             self.stop_interpretation(),
             return_exceptions=True,

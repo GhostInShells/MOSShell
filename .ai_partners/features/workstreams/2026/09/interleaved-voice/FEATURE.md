@@ -347,6 +347,17 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 ### 配置与降级
 
 4. **shell speech 显式注册**: speech 从默认注册改显式注册; 历史单测要优化一遍。
+   **已做 2026-09-20 (shell/module/host 三层)** — speech 一等公民 threading, 兜底去掉:
+   - `CTMLShell._speech_context_manager` 不再 `container.get(Speech)` 兜底, 也不 NullSpeech;
+     构造/set_speech 显式传入才算数, None → 不 set/不启动/不挂 content command (`_clear` 守护 None).
+   - `SpeechChannelModule(speech=None)` 加构造注入; `on_startup` 去掉 `or NullSpeech()`,
+     递归取 + `is_running()` 判活, None/未 running → 不装线 (不挂 say/mute). 递归保留:
+     非 shell 场景 (远程 node 独立做音频) 靠容器取.
+   - `Host.run(speech: bool = True)` / `run_ghost` → `ShellRuntimeImpl(speech: bool)`;
+     `__aenter__` 里 `_resolve_speech()` (matrix bootstrap 后) resolve Speech 实例注入 shell,
+     失败降 None (降级细节留 #7); 旁路桥改用 `self._speech`.
+   - 契约锚定: `test_module_without_speech_wires_nothing` (无 speech → 不挂 say/mute).
+   **待做**: CLI `--speech`/env OPTION 开关 (留给 #5) + provider 降级细化 (#7).
 5. **moss runtime 启动 flag** (可能进 host 表面): 默认 speech; 可选 speech + listener 的
    interleaved voice 状态机 (或改名叫 AEC, 对齐行业); 可选择空。
 6. **config type 加 `validate` 函数**: per-config 自校验 (如环境变量实际为空时 raise)。

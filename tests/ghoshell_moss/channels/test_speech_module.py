@@ -184,3 +184,14 @@ async def test_muted_say_is_refused_with_not_available():
             await say(None)
         assert exc.value.code == CommandErrorCode.NOT_AVAILABLE
         assert "mute(on=false)" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_module_without_speech_wires_nothing():
+    """无 speech (不注入、容器无 Speech) → 模块不装线, 不挂 say/mute."""
+    main = new_shell_main_channel()
+    main.with_module(SpeechChannelModule())
+    async with main.bootstrap() as runtime:
+        names = {cmd.name for cmd in runtime.self_meta().commands}
+        assert "say" not in names
+        assert "mute" not in names

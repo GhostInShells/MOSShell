@@ -61,6 +61,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             mode: HostMode,
             matrix: MatrixImpl,
             run_shell_on_start: bool = True,
+            speech: bool = True,
             name: str | None = None,
             description: str | None = None,
     ):
@@ -78,6 +79,9 @@ class ShellRuntimeImpl(MOSShellRuntime):
             or env.moss_meta.description
         )
         self._run_shell_on_start = run_shell_on_start
+        # speech 开关 (bool): True 时在 __aenter__ resolve Speech 实例注入 shell.
+        self._speech_enabled = speech
+        self._speech: Speech | None = None
 
         # --- mode 层 IoC 叠加 (§ZZ-5: mode providers/configs/resources 覆盖 baseline) --- #
         # container 已在 MatrixImpl.__init__ 创建并完成 baseline 注册,
@@ -465,6 +469,22 @@ class ShellRuntimeImpl(MOSShellRuntime):
         self._matrix.container.set(SystemPrompter, self._system_prompter)
         self._matrix.container.set(MossSystemPrompter, self._system_prompter)
 
+    def _resolve_speech(self) -> None:
+        """resolve Speech 实例 (内核 contract) — host 的 bool 开关决定是否启用.
+
+        True → 从 matrix container resolve; 失败降 None (降级细节见工作项 #7).
+        False → None (禁语音). 结果注入 shell, 旁路桥复用同一实例.
+        """
+        if not self._speech_enabled:
+            self._speech = None
+        else:
+            try:
+                self._speech = self._matrix.container.get(Speech)
+            except Exception:
+                self._matrix.logger.exception("%s resolve speech failed — degraded to no speech", self._log_prefix)
+                self._speech = None
+        self._ctml_shell.set_speech(self._speech)
+
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):
         if self._run_shell_on_start:
@@ -486,7 +506,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
         speech 是 TTSSpeech (真产出 clause) 时激活 — NullSpeech/MockSpeech 无 clause,
         直接跳过, 不为它们空转 queue / publisher.
         """
-        speech = self._matrix.container.get(Speech)
+        speech = self._speech
         if not isinstance(speech, TTSSpeech):
             yield
             return
@@ -534,7 +554,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
         与 clause 桥对称, 但用 LatestAudioWindow (latest-value-wins, 无队列). player.observe
         在 audio worker 线程回调, 经窗口的锁 marshal; 周期 task 在事件循环取走算频谱发布.
         """
-        speech = self._matrix.container.get(Speech)
+        speech = self._speech
         if not isinstance(speech, TTSSpeech):
             yield
             return
@@ -595,6 +615,8 @@ class ShellRuntimeImpl(MOSShellRuntime):
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 补 IoC 注册 (system prompter / MOSShell) — 之前挂 _app_store 的位置
         self._bootstrap_after_matrix()
+        # resolve Speech 实例 (内核 contract) 注入 shell — 须在 shell __aenter__ 之前.
+        self._resolve_speech()
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._manager_shell_lifecycle())
         # 说侧旁路: speech 单例的 clause 结果 → ClauseTopic 广播 (在 shell 起、speech 已

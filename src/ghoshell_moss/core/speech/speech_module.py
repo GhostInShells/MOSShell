@@ -14,7 +14,6 @@ from ghoshell_moss.contracts.speech import (
     speech_tail,
     split_speech_tokens,
 )
-from ghoshell_moss.core.speech.null import NullSpeech
 
 
 # 返回值约定: 正常结束且有真实播放时返回描述播放秒数的字符串; 无播放样本返回 None;
@@ -194,12 +193,13 @@ class _SpeechCommandFactory:
 class SpeechChannelModule(ChannelModule):
     """TTS speech capability module.
 
-    The Speech instance is registered to the IoC container externally.
-    Fetched via CommandUtil on startup.
+    Speech 来源二选一: 构造时显式传入 ``speech`` 实例, 或 startup 时从 IoC container
+    递归取. 两者都拿不到 (或拿到但未 ``is_running``) 时模块不装线 — 不挂 say/mute,
+    无副作用.
     """
 
-    def __init__(self, *, register_content_command: bool = False):
-        self._speech: Speech | None = None
+    def __init__(self, *, register_content_command: bool = False, speech: Speech | None = None):
+        self._speech: Speech | None = speech
         self._own_commands = {}
         self._register_content_command = register_content_command
         self._muted = False
@@ -210,12 +210,13 @@ class SpeechChannelModule(ChannelModule):
     def own_commands(self) -> dict[str, Command]:
         return self._own_commands
 
-    async def get_named_notices(self) -> dict[str, str]:
+    async def get_named_notices(self) -> dict[str, str | None]:
         """此刻的状态 — 命令表面写契约, 状态由这里随 meta 刷新下发.
 
-        片段恒非空 (mute 的 off/on 都非空), 这样 off→on / on→off 都能被 delta 渲染宣告;
-        空片段会被渲染层当静默信号, 模型会残留上一次读到的内容. voice/tone 只报状态,
-        不重复 schema / tone 目录 (那些在命令文档里).
+        mute 恒非空 (off/on 都非空), 这样 off→on / on→off 都能被 delta 宣告; 空串表示
+        "不变", 模型保留上一次读到的内容. voice/tone 只在 TTS 可用时出现, 缺席即 removed,
+        模型收到 ``<voice removed/>`` 墓碑, 不会残留上一次的音色. 两者只报状态, 不重复
+        schema / tone 目录 (那些在命令文档里).
         """
         result = {
             "mute": (
@@ -239,9 +240,11 @@ class SpeechChannelModule(ChannelModule):
         return "muted" if on else "unmuted"
 
     async def on_startup(self) -> None:
-        if CommandUtil.enabled():
+        if self._speech is None and CommandUtil.enabled():
             self._speech = CommandUtil.get_contract(Speech)
-        self._speech = self._speech or NullSpeech()
+        if self._speech is None or not self._speech.is_running():
+            self._own_commands = {}
+            return
         factory = _SpeechCommandFactory(self._speech, is_muted=lambda: self._muted)
         commands = {}
         if isinstance(self._speech, TTSSpeech):
