@@ -11,7 +11,6 @@ import contextlib
 import logging
 from typing import AsyncIterable, Awaitable, Callable, Optional
 
-import numpy as np
 from ghoshell_common.contracts import LoggerItf
 from typing_extensions import Self
 
@@ -242,14 +241,11 @@ class HostListenerState(ListenerState):
 
     # ── internals ──
 
-    async def _audio_gen(self) -> AsyncIterable[np.ndarray]:
-        """consumer (AudioChunk, 已按 asr_rate 重采样) → np.ndarray 的桥."""
+    async def _audio_gen(self) -> AsyncIterable[AudioChunk]:
+        """consumer (AudioChunk, 已按 asr_rate 重采样) 直喂 recognizer, 顺带 fan-out 给音频观察者."""
         async for chunk in self._consumer:
             self._dispatch_audio(chunk)
-            samples = np.asarray(chunk.samples).ravel().astype(np.int16)
-            if samples.size == 0:
-                continue
-            yield samples
+            yield chunk
 
     async def _pump(self) -> None:
         async for result in self._recognition:

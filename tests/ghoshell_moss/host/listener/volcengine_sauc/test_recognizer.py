@@ -15,6 +15,7 @@ import pytest
 import websockets
 
 from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase, RecognitionSegment
+from ghoshell_moss.contracts.audio import AudioChunk
 from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
 from ghoshell_moss.host.listener.volcengine_sauc import recognizer as sauc_recognizer
 
@@ -129,7 +130,7 @@ def _connect_to(ws: _FakeWS):
 
 async def _audio(*chunks: np.ndarray):
     for chunk in chunks:
-        yield chunk
+        yield AudioChunk(samples=chunk)
 
 
 @pytest.mark.asyncio

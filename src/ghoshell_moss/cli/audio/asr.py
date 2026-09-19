@@ -22,7 +22,7 @@ from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.audio.codec import _write_wav
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
 from ghoshell_moss.contracts.asr import ASR, RecognitionPhase
-from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource, resample
+from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource, AudioChunk, resample
 from ghoshell_moss.contracts.configs import get_or_create_conf
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
@@ -95,7 +95,7 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
                     continue
                 if sample_rate != target_rate:
                     pcm = resample(pcm, origin_rate=sample_rate, target_rate=target_rate)
-                await audio_queue.put(pcm)
+                await audio_queue.put(AudioChunk(samples=pcm))
         except asyncio.CancelledError:
             pass
 
@@ -104,7 +104,7 @@ async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Op
     session_start = time.monotonic()
 
     async def _audio_gen():
-        """Yield int16 samples from the bridge queue until deadline."""
+        """Yield AudioChunk from the bridge queue until deadline."""
         deadline = session_start + timeout
         while time.monotonic() < deadline:
             try:

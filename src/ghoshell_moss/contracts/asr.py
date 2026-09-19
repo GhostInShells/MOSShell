@@ -19,6 +19,8 @@ from typing import AsyncIterable, Awaitable, Callable
 import numpy as np
 from pydantic import BaseModel, Field
 
+from ghoshell_moss.contracts.audio import AudioChunk
+
 __all__ = [
     "ASR",
     "ASRInfo",
@@ -259,7 +261,7 @@ class RecognitionStream(ABC):
 class ASR(ABC):
     """Audio perception organ — the ear. Symmetric to TTS (the mouth).
 
-    Input: a 1-D int16 PCM audio stream (the caller resamples to match ASRInfo).
+    Input: an AudioChunk stream (samples already resampled to ASRInfo rate by the consumer).
     Output: a continuous recognition loop (RecognitionStream) of partial/clause/tail results.
     """
 
@@ -278,13 +280,13 @@ class ASR(ABC):
     @abstractmethod
     def recognize(
             self,
-            audio_chunks: AsyncIterable[np.ndarray],
+            audio_chunks: AsyncIterable[AudioChunk],
             *,
             stream_id: str | None = None,
     ) -> RecognitionStream:
         """Start a continuous recognition loop consuming the audio stream; returns a RecognitionStream."""
 
-    async def recognize_once(self, audio_chunks: AsyncIterable[np.ndarray]) -> str:
+    async def recognize_once(self, audio_chunks: AsyncIterable[AudioChunk]) -> str:
         """Recognize a complete audio stream, return the accumulated text. Default implementation."""
         texts: list[str] = []
         async for result in self.recognize(audio_chunks):

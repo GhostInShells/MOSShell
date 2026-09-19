@@ -31,6 +31,8 @@ from ghoshell_moss.contracts.asr import (
     RecognitionSegment,
 )
 
+from ghoshell_moss.contracts.audio import AudioChunk
+
 from .config import VolcengineSaucConfig, VolcengineSaucParams, VolcengineSaucCorpus
 from .protocol import (
     PayloadMsg,
@@ -85,7 +87,7 @@ class VolcengineSaucASR(ASR):
 
     def recognize(
             self,
-            audio_chunks: AsyncIterable[np.ndarray],
+            audio_chunks: AsyncIterable[AudioChunk],
             *,
             stream_id: str | None = None,
     ) -> RecognitionStream:
@@ -301,7 +303,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             async for audio in self._audio_chunks:
                 if self._closed:
                     break
-                arr = np.asarray(audio).ravel()
+                arr = np.asarray(audio.samples).ravel()
                 self._current_audio.append(arr)
                 self._total_samples += arr.size
                 await ws.send(create_audio_only_request(nparray_to_bytes(arr), seq, is_last=False))
