@@ -10,9 +10,10 @@ One process, two faces over one store (`src/ghoshell_file_editor/`):
 
 - **channel** — the model's side: `open` / `read` / `write` / `append` /
   `str_replace` / `rewind` / `export` / `close` / `threads` / `history`.
-- **surface** — the human's side, a card stream at `http://127.0.0.1:8767`.
-  Cards carry the action kind, the thread, and a state; clicking one opens the
-  three tabs: effect (markdown), full, history.
+- **surface** — the human's side, a card stream on an ephemeral port (the node
+  prints the URL and reports it in the channel's `url` notice). Cards carry the
+  action kind, the thread, and a state; clicking one opens the three tabs:
+  effect (markdown), full, history.
 
 Durability is a mirror, not a log: every edit rewrites the thread's draft under
 `runtime/drafts`, so a crash loses the history but not the text. `export` is the

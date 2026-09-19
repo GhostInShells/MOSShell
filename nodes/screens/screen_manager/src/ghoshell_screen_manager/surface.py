@@ -41,7 +41,7 @@ class ScreenSurface:
         send_signal: Callable[[Any], None],
         self_identity: str,
         host: str = "127.0.0.1",
-        port: int = 8766,
+        port: int = 0,
         html_path: Path,
     ) -> None:
         self._model = model

@@ -2,7 +2,7 @@
 
 Start:  moss nodes run nodes/os/terminal
 Debug:  python main.py
-Port:   --port N, else MOSS_TERMINAL_PORT, else 8768
+Port:   --port N, else MOSS_TERMINAL_PORT, else an ephemeral port (0)
 
 One process, two faces over one store: the channel (the ghost's control surface,
 projected onto the network) and the web surface (the human's card stream and
@@ -34,7 +34,10 @@ from ghoshell_terminal.surface import StopHandles, TerminalSurface  # noqa: E402
 _INDEX_HTML = _NODE_DIR / "index.html"
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = 8768
+DEFAULT_PORT = 0
+"""0 = bind an ephemeral port; the real port is reported back to the model as a
+warm ``url`` notice fragment. Web-surface nodes never claim a fixed port unless
+``--port`` / ``MOSS_TERMINAL_PORT`` asks them to, so siblings never collide."""
 
 
 def resolve_port() -> int:
@@ -81,6 +84,7 @@ async def main(matrix: Matrix) -> None:
         stops=stops,
         groundset=groundset,
         enabled=lambda: store.mode != Mode.DISABLED,
+        surface_url=lambda: surface.url,
     )
 
     await surface.start()

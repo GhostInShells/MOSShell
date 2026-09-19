@@ -13,6 +13,10 @@ the same text: every move you make becomes a **card** on the human's surface, an
 nothing asks permission except `export()`, because writing to disk is the only
 real side effect.
 
+The web surface binds an **ephemeral port by default** — read its live URL from
+this channel's `url` notice, never assume a fixed port. To pin one, start with
+`--port N` (or set `MOSS_FILE_EDITOR_PORT`).
+
 ```
 <file_editor:open thread="readme" path="./README.md" label="README"/>
 <file_editor:read thread="readme"/>

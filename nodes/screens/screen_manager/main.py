@@ -2,7 +2,7 @@
 
 Start:  moss nodes run nodes/screens/screen_manager
 Debug:  python main.py
-Port:   --port N, else MOSS_SCREEN_MANAGER_PORT, else 8766
+Port:   --port N, else MOSS_SCREEN_MANAGER_PORT, else an ephemeral port (0)
 
 One process, two faces over one store: the channel (the ghost's control surface) and
 the web surface (the human's window view and steering). The human's moves reach the
@@ -30,9 +30,9 @@ _INDEX_HTML = _NODE_DIR / "index.html"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 0
-"""0 = bind an ephemeral port; the real port is reported back to the model. A fixed
-default collides with sibling nodes (artifacts also wants 8766), so the surface
-never claims one unless ``--port`` / ``MOSS_SCREEN_MANAGER_PORT`` asks it to."""
+"""0 = bind an ephemeral port; the real port is reported back to the model as a
+warm ``url`` notice fragment. Web-surface nodes never claim a fixed port unless
+``--port`` / ``MOSS_SCREEN_MANAGER_PORT`` asks them to, so siblings never collide."""
 
 
 def resolve_port() -> int:

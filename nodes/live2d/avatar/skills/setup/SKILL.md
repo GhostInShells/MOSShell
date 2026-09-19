@@ -37,7 +37,7 @@ cp -R /tmp/cws/Samples/Resources/Hiyori/. avatars/hiyori/model/
 ```bash
 moss nodes install nodes/live2d/avatar
 moss nodes run nodes/live2d/avatar -- --avatar hiyori
-# 打开日志里的 http://127.0.0.1:8770/ 看形象
+# 打开日志里打印的 URL 看形象（默认随机端口；用 --port N 钉死）
 ```
 
 验证层次（低 → 高）：

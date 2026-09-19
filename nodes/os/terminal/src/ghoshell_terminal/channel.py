@@ -101,6 +101,7 @@ def build_terminal_channel(
     name: str = "terminal",
     description: str | None = None,
     enabled: Callable[[], bool] | None = None,
+    surface_url: str | Callable[[], str] | None = None,
 ) -> Channel:
     """Compose the terminal channel over a store and a subprocess owner.
 
@@ -116,9 +117,17 @@ def build_terminal_channel(
         command is not available (headless tests without a workspace).
     :param enabled: live availability gate. Return False and every command drops
         out of the model's interface (that is how ``mode=disabled`` reads).
+    :param surface_url: where the human surface lives, surfaced as a warm ``url``
+        notice fragment so the model discovers it without a fixed port. May be a
+        callable (resolved lazily, after the surface binds its ephemeral port).
     """
     surface = surface or _NoSurface()
     enabled = enabled or (lambda: True)
+
+    def _url() -> str:
+        if surface_url is None:
+            return ""
+        return surface_url() if callable(surface_url) else surface_url
 
     async def _signal(card: Card) -> None:
         """Tell the ghost a card settled. Never lost, always guaranteed a turn."""
@@ -526,6 +535,9 @@ def build_terminal_channel(
                 f"awaiting: {len(awaiting)} | running: {len(running)}{disabled}"
             )
         }
+        url = _url()
+        if url:
+            out["url"] = url
         for t in store.threads():
             n_await = sum(1 for c in awaiting if c.thread == t.name)
             n_run = sum(1 for c in running if c.thread == t.name)

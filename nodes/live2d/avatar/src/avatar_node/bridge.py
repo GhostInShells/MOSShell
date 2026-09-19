@@ -26,7 +26,7 @@ from aiohttp import WSMsgType, web
 from .avatar import Avatar
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8767
+DEFAULT_PORT = 0
 
 
 class AvatarBridge:
@@ -139,6 +139,10 @@ class AvatarBridge:
         await runner.setup()
         site = web.TCPSite(runner, self.host, self.port)
         await site.start()
+        # port 0 = ephemeral: read the bound port back so ``url`` is real.
+        addresses = runner.addresses
+        if addresses:
+            self.port = addresses[0][1]
         self._runner = runner
         self.logger.info("avatar %s: page at %s", self.avatar.name, self.url)
 

@@ -11,6 +11,9 @@ exec:
 你挂载在一个 Live2D 虚拟形象上。人类在浏览器页面里看见它 —— 页面、模型资产、
 WebSocket 由本 node 同源提供，无处跨域。
 
+页面绑定**默认随机端口** —— 实时 URL 在 channel 的 `url` notice 里，别猜固定端口。
+要钉死一个端口，用 `--port N` 启动（或设 `LIVE2D_PORT`）。
+
 ## 机制
 
 一套形象 = `avatars/<name>/` 一个自包含目录：

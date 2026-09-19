@@ -46,7 +46,7 @@ class FileEditorSurface:
         self_identity: str,
         on_toggle: Callable[[bool], None] | None = None,
         host: str = "127.0.0.1",
-        port: int = 8767,
+        port: int = 0,
         html_path: Path,
     ) -> None:
         self._store = store

@@ -23,9 +23,13 @@ The page is `index.html`; open the URL it prints and watch artifacts appear live
 plane — label is the handle. Human clicks on the surface (source toggle, tab
 switch) flow back as a tail log, surfaced in the channel's `notice` with timestamps.
 
-Not a singleton: run several instances on different ports —
-`moss nodes run nodes/webview_apps/artifacts -- --port 8767`. Two instances on the
-same port will not start (the bind fails).
+The surface binds an **ephemeral port by default** — read its live URL from this
+channel's `url` notice, never assume a fixed port. To pin one, start with
+`--port N` (or set `MOSS_ARTIFACTS_PORT`).
+
+Not a singleton: run several instances — each binds its own ephemeral port by
+default, or pass `--port N` to pin each to a distinct fixed port. Two instances
+on the same fixed port will not start (the bind fails).
 
 Note: the canvas kind eval's the model-authored JavaScript in the page
 (`new Function(...)`) by design — the code IS the artifact. Local, model-authored.

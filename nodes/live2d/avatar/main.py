@@ -37,7 +37,10 @@ from avatar_node import (
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8770
+DEFAULT_PORT = 0
+"""0 = bind an ephemeral port; the real port is reported back to the model as a
+warm ``url`` notice fragment. Web-surface nodes never claim a fixed port unless
+``--port`` / ``LIVE2D_PORT`` asks them to, so siblings never collide."""
 
 
 def parse_args(argv: list[str]) -> dict:
@@ -78,6 +81,28 @@ def _default_backdrop() -> str | None:
         if p.stem == "default" and p.suffix.lower() in _BACKDROP_EXTS:
             return f"/backdrop/{p.name}"
     return None
+
+
+class _SurfaceUrlModule:
+    """ChannelModule that reports the live page URL as a warm ``url`` notice.
+
+    The kit's channel is the model's membrane, but the URL is a runtime fact the
+    kit can't know (the bridge binds an ephemeral port). This module attaches it
+    after ``load_channel`` so the ghost discovers the surface the same way every
+    other web-surface node reports it.
+    """
+
+    def __init__(self, url) -> None:
+        self._url = url
+
+    def name(self) -> str:
+        return "surface"
+
+    def own_commands(self) -> dict:
+        return {}
+
+    async def get_named_notices(self) -> dict[str, str]:
+        return {"url": self._url()}
 
 
 async def main(matrix: Matrix) -> None:
@@ -124,6 +149,7 @@ async def main(matrix: Matrix) -> None:
         logger.debug("publish_event failed: %s", e)
 
     channel = await load_channel(kit, avatar)
+    channel.with_module(_SurfaceUrlModule(lambda: bridge.url))
     try:
         await matrix.provide_channel(channel)
     finally:

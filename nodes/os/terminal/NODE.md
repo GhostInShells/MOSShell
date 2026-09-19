@@ -27,8 +27,10 @@ the root.
 <terminal:ground thread="dev"/>
 ```
 
-Two faces share one store: this channel (the ghost's side) and a web surface at
-`http://127.0.0.1:8768` (the human's side).
+Two faces share one store: this channel (the ghost's side) and a web surface (the
+human's side). The surface binds an **ephemeral port by default**; read its live
+URL from this channel's `url` notice — never assume a fixed port. To pin one,
+start with `--port N` (or set `MOSS_TERMINAL_PORT`).
 
 **Trust is per-thread and per-pattern, not a global switch.** A command runs
 without asking when its thread is `auto` (the human flips that thread's "auto"

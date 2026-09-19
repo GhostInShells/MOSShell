@@ -2,7 +2,7 @@
 
 Start:  moss nodes run nodes/os/file_editor
 Debug:  python main.py
-Port:   --port N, else MOSS_FILE_EDITOR_PORT, else 8767
+Port:   --port N, else MOSS_FILE_EDITOR_PORT, else an ephemeral port (0)
 
 One process, two faces over one store: the channel (the ghost's control surface,
 projected onto the network) and the web surface (the human's card stream,
@@ -34,7 +34,10 @@ from ghoshell_file_editor.surface import FileEditorSurface  # noqa: E402
 _INDEX_HTML = _NODE_DIR / "index.html"
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = 8767
+DEFAULT_PORT = 0
+"""0 = bind an ephemeral port; the real port is reported back to the model as a
+warm ``url`` notice fragment. Web-surface nodes never claim a fixed port unless
+``--port`` / ``MOSS_FILE_EDITOR_PORT`` asks them to, so siblings never collide."""
 
 
 def resolve_port() -> int:
@@ -76,6 +79,7 @@ async def main(matrix: Matrix) -> None:
         surface=surface,
         signaler=matrix.send_signal_to_ghost,
         enabled=lambda: gate.enabled,
+        surface_url=lambda: surface.url,
     )
 
     await surface.start()

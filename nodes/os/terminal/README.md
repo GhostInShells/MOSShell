@@ -20,7 +20,8 @@ moss nodes run nodes/os/terminal
 python nodes/os/terminal/main.py
 ```
 
-The human surface serves at `http://127.0.0.1:8768`. Override the port with
+The human surface binds an ephemeral port by default — the node prints the URL at
+startup and reports it in the channel's `url` notice. Pin a fixed port with
 `--port N` or `MOSS_TERMINAL_PORT`.
 
 ## Test

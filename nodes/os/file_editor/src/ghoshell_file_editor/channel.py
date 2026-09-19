@@ -109,6 +109,7 @@ def build_file_editor_channel(
     enabled: Callable[[], bool] | None = None,
     name: str = "file_editor",
     description: str | None = None,
+    surface_url: str | Callable[[], str] | None = None,
 ) -> Channel:
     """Compose the file-editor channel over a store.
 
@@ -120,9 +121,17 @@ def build_file_editor_channel(
         can pass ``matrix.send_signal_to_ghost`` and tests can pass a list.
     :param enabled: live availability gate. Return False and every command drops
         out of the model's interface.
+    :param surface_url: where the human surface lives, surfaced as a warm ``url``
+        notice fragment so the model discovers it without a fixed port. May be a
+        callable (resolved lazily, after the surface binds its ephemeral port).
     """
     surface = surface or _NoSurface()
     enabled = enabled or (lambda: True)
+
+    def _url() -> str:
+        if surface_url is None:
+            return ""
+        return surface_url() if callable(surface_url) else surface_url
 
     async def _emit(frame: dict[str, Any]) -> None:
         await surface.broadcast(frame)
@@ -509,6 +518,9 @@ def build_file_editor_channel(
                 f"export pending: {len(pending)}"
             )
         }
+        url = _url()
+        if url:
+            out["url"] = url
         for t in store.threads():
             loc = t.exported_to or t.path or "(blank)"
             waiting = " | export pending" if any(

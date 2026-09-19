@@ -39,7 +39,10 @@ def _port_from_argv(argv: list[str]) -> int | None:
     return None
 
 
-PORT = _port_from_argv(sys.argv[1:]) or int(os.getenv("MOSS_ARTIFACTS_PORT", "8766"))
+PORT = _port_from_argv(sys.argv[1:]) or int(os.getenv("MOSS_ARTIFACTS_PORT", "0"))
+"""0 = bind an ephemeral port; the real port is reported back to the model as a
+warm ``url`` notice fragment. Web-surface nodes never claim a fixed port unless
+``--port`` / ``MOSS_ARTIFACTS_PORT`` asks them to, so siblings never collide."""
 
 
 class ArtifactStore:
@@ -226,7 +229,8 @@ def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer):
     @chan.build.instruction
     def instruction() -> str:
         return (
-            f"surface: {server.url} — open it in a browser to watch artifacts appear live.\n"
+            "there is a live web surface (its URL is in this channel's `url` notice) — "
+            "open it in a browser to watch artifacts appear live.\n"
             "stream the artifact source as the tag body, wrapped in <![CDATA[ ... ]]> when "
             "it holds XML-like characters. the body streams token by token and must not "
             "contain CTML.\n"
@@ -238,6 +242,10 @@ def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer):
             "label is the handle: read(label) recalls the source, display(label) switches to it, "
             "remove(label) deletes it."
         )
+
+    @chan.build.named_notices
+    def named_notices() -> dict[str, str]:
+        return {"url": server.url}
 
     @chan.build.notice
     def notice() -> str:

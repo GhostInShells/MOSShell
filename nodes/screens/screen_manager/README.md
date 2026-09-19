@@ -15,8 +15,8 @@ moss nodes run nodes/screens/screen_manager
 python nodes/screens/screen_manager/main.py
 ```
 
-人类 surface 在 `http://127.0.0.1:8766`。端口用 `--port N` 或
-`MOSS_SCREEN_MANAGER_PORT` 覆盖。
+人类 surface 默认绑定随机端口 —— 启动日志会打印 URL，channel 的 `url` notice 里也能
+读到。要钉死端口，用 `--port N` 或 `MOSS_SCREEN_MANAGER_PORT`。
 
 ## Test
 
