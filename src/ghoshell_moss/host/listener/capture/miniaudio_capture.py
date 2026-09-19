@@ -1,15 +1,23 @@
 """
-MiniAudio-based audio capture — system audio → raw PCM → transport stream.
+MiniAudio-based audio capture — system audio → raw PCM, fanned out locally.
+
+Capture owns the microphone device and fans each PCM frame out to in-process
+consumers (callbacks + a bounded queue). It does not publish PCM to Zenoh:
+audio stays local, so single-process listen+speak (and AEC) never round-trips
+through the session bus, and capture's lifecycle is no longer tied to the Matrix
+session.
 """
 import collections
-import json
-import struct
+import contextlib
+import logging
+import re
 import time
 from typing import Callable
 
 from ghoshell_moss.depends import depend_host
 
 depend_host()
+import janus
 import miniaudio
 import numpy as np
 
@@ -21,17 +29,18 @@ from ghoshell_moss.contracts.audio import (
     AudioPullLatest,
     AudioSequentialConsumer,
 )
-from ghoshell_moss.host.listener.capture.audio_transport import AudioTransport
-from ghoshell_moss.core.blueprint.session import StreamSubscriber
+from ghoshell_moss.contracts.workspace import Workspace
+from ghoshell_common.contracts import LoggerItf
 
 __all__ = [
     "MiniAudioCaptureSource",
     "MiniAudioSequentialConsumer",
-    "unpack_chunk",
-    "pack_chunk",
 ]
 
 _SILENCE_THRESHOLD_DB = -50.0
+
+#: 设备锁 key 前缀 —— 锁的是具体设备, 不是全局 "audio_capture".
+_LOCK_KEY_PREFIX = "audio_capture"
 
 
 def _compute_frame_meta(samples: np.ndarray) -> AudioFrameMeta:
@@ -56,51 +65,30 @@ def _compute_frame_meta(samples: np.ndarray) -> AudioFrameMeta:
     )
 
 
-def pack_chunk(chunk: AudioChunk) -> bytes:
-    """Serialize AudioChunk to bytes for Zenoh transport.
-
-    Format: [4B meta_json_len(uint32 BE)] [meta_json(UTF-8)] [pcm(int16 LE)]
-    """
-    meta_json = json.dumps({
-        "seq": chunk.seq,
-        "timestamp": chunk.timestamp,
-        "rms_db": chunk.meta.rms_db,
-        "bands": chunk.meta.bands,
-        "is_silent": chunk.meta.is_silent,
-    }).encode("utf-8")
-    header = struct.pack(">I", len(meta_json))
-    pcm = chunk.samples.astype(np.int16).tobytes()
-    return header + meta_json + pcm
-
-
-def unpack_chunk(data: bytes) -> AudioChunk:
-    """Deserialize bytes back to AudioChunk."""
-    meta_len = struct.unpack(">I", data[:4])[0]
-    meta_json = data[4:4 + meta_len].decode("utf-8")
-    meta_dict = json.loads(meta_json)
-    pcm = np.frombuffer(data[4 + meta_len:], dtype=np.int16)
-
-    meta = AudioFrameMeta(
-        rms_db=meta_dict["rms_db"],
-        bands=meta_dict["bands"],
-        is_silent=meta_dict["is_silent"],
-    )
-    return AudioChunk(
-        seq=meta_dict["seq"],
-        timestamp=meta_dict["timestamp"],
-        samples=pcm,
-        meta=meta,
-    )
+def _device_lock_key(device_id) -> str:
+    """锁 key 由设备标识派生, 符合 workspace.lock 的 `^[a-zA-Z0-9_-]+$` 约束."""
+    if device_id is None:
+        return f"{_LOCK_KEY_PREFIX}_default"
+    s = re.sub(r"[^a-zA-Z0-9_-]", "_", str(device_id))
+    return f"{_LOCK_KEY_PREFIX}_{s}" or f"{_LOCK_KEY_PREFIX}_default"
 
 
 class MiniAudioCaptureSource(AudioCaptureSource):
-    """Capture system audio via miniaudio CaptureDevice, publish PCM through transport."""
+    """Capture system audio via miniaudio, fan out locally to in-process consumers."""
 
-    def __init__(self, *, transport: AudioTransport, config: AudioCaptureConfig):
-        self._transport = transport
+    def __init__(
+            self,
+            *,
+            config: AudioCaptureConfig,
+            workspace: Workspace,
+            logger: LoggerItf | None = None,
+    ):
         self._config = config
-        self._logger = transport.logger
+        self._workspace = workspace
+        self._logger = logger or logging.getLogger("moss")
         self._capture: miniaudio.CaptureDevice | None = None
+        self._locker = None
+        self._observers: list[Callable[[AudioChunk], None]] = []
         self._seq = 0
         self._started = False
         self._closing = False
@@ -115,16 +103,30 @@ class MiniAudioCaptureSource(AudioCaptureSource):
 
     # -- lifecycle --
 
+    def on_audio_chunk(self, callback: Callable[[AudioChunk], None]) -> Callable[[], None]:
+        """注册一个音频帧观察者, 返回 disposer (调用即摘除)."""
+        self._observers.append(callback)
+
+        def _dispose() -> None:
+            with contextlib.suppress(ValueError):
+                self._observers.remove(callback)
+
+        return _dispose
+
     async def start(self) -> None:
         if self._started:
             return
 
-        if not self._transport.acquire_lock():
-            self._logger.warning("Audio capture lock held by another process, skipping start")
+        device_id = self._find_device()
+        lock_key = _device_lock_key(device_id)
+        self._locker = self._workspace.lock(lock_key)
+        if not self._locker.acquire(timeout=0):
+            self._logger.warning(
+                "Audio capture device locked by another process (%s), skipping start", lock_key)
+            self._locker = None
             self._started = True
             return
 
-        device_id = self._find_device()
         if device_id is not None:
             self._logger.info("Audio capture using device id=%s", device_id)
         else:
@@ -143,8 +145,7 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._capture.start(gen)
 
         self._started = True
-        self._logger.info("Audio capture started (device=%s)",
-                          self.device_explain())
+        self._logger.info("Audio capture started (device=%s)", self.device_explain())
 
     def device_explain(self) -> str:
         if self._capture is None:
@@ -162,7 +163,10 @@ class MiniAudioCaptureSource(AudioCaptureSource):
             self._capture.close()
             self._capture = None
 
-        self._transport.release_lock()
+        if self._locker is not None:
+            self._locker.release()
+            self._locker = None
+
         self._started = False
         self._logger.info("Audio capture closed")
 
@@ -173,14 +177,14 @@ class MiniAudioCaptureSource(AudioCaptureSource):
 
     def new_consumer(self, ring_buffer_frames: int = 64) -> AudioPullLatest:
         return _MiniAudioPullLatest(
-            transport=self._transport,
+            capture=self,
             maxlen=ring_buffer_frames,
             logger=self._logger,
         )
 
     def new_sequential_consumer(self, max_queue_frames: int = 128) -> AudioSequentialConsumer:
         return MiniAudioSequentialConsumer(
-            transport=self._transport,
+            capture=self,
             maxsize=max_queue_frames,
             logger=self._logger,
         )
@@ -197,26 +201,37 @@ class MiniAudioCaptureSource(AudioCaptureSource):
             self._logger.warning("Device enumeration failed: %s, using default", e)
         return None
 
+    def _fan_out(self, chunk: AudioChunk) -> None:
+        """public-internal: 把一帧分发给所有注册的观察者.
+
+        采集 generator 与测试共用. 观察者 (consumer 的入队回调) 必须非阻塞 —
+        这里的调用发生在 miniaudio 采集线程, 阻塞它会拖垮设备 buffer.
+        """
+        for cb in list(self._observers):
+            try:
+                cb(chunk)
+            except Exception:
+                self._logger.exception("Error in audio capture observer")
+
     def _make_capture_generator(self):
         channels = self._config.channels
-        frame_duration_ms = self._config.frame_duration_ms
         logger = self._logger
-        pub = self._transport.pub_pcm
         seq_ref = [0]
+        fan_out = self._fan_out
 
         def _capture_generator():
             while True:
                 data = yield
                 try:
                     ts = time.time()
-                    samples = np.frombuffer(data, dtype=np.int16).reshape(-1, channels)
+                    # miniaudio 会复用底层 buffer, 必须 copy, 否则下一帧覆盖本帧.
+                    samples = np.frombuffer(data, dtype=np.int16).reshape(-1, channels).copy()
                     meta = _compute_frame_meta(samples)
-                    seq = seq_ref[0]
+                    chunk = AudioChunk(
+                        seq=seq_ref[0], timestamp=ts, samples=samples, meta=meta,
+                    )
                     seq_ref[0] += 1
-
-                    chunk = AudioChunk(seq=seq, timestamp=ts, samples=samples, meta=meta)
-                    packed = pack_chunk(chunk)
-                    pub(packed)
+                    fan_out(chunk)
                 except Exception:
                     logger.exception("Error in capture callback")
 
@@ -226,20 +241,14 @@ class MiniAudioCaptureSource(AudioCaptureSource):
 class _MiniAudioPullLatest(AudioPullLatest):
     """Ring-buffer consumer. Non-blocking, latest frame wins."""
 
-    def __init__(self, *, transport: AudioTransport, maxlen: int, logger):
+    def __init__(self, *, capture: MiniAudioCaptureSource, maxlen: int, logger):
         self._ring: collections.deque[AudioChunk] = collections.deque(maxlen=maxlen)
         self._logger = logger
-        self._release: Callable[[], None] | None = None
         self._closed = False
+        self._dispose = capture.on_audio_chunk(self._on_chunk)
 
-        self._release = transport.sub_pcm_callback(self._on_sample)
-
-    def _on_sample(self, data: bytes) -> None:
-        try:
-            chunk = unpack_chunk(data)
-            self._ring.append(chunk)
-        except Exception:
-            pass
+    def _on_chunk(self, chunk: AudioChunk) -> None:
+        self._ring.append(chunk)
 
     def pull_latest(self) -> AudioChunk | None:
         if self._closed or not self._ring:
@@ -250,37 +259,49 @@ class _MiniAudioPullLatest(AudioPullLatest):
         if self._closed:
             return
         self._closed = True
-        if self._release is not None:
-            self._release()
-            self._release = None
+        self._dispose()
 
 
 class MiniAudioSequentialConsumer(AudioSequentialConsumer):
-    """Ordered queue consumer with backpressure. For ASR, audio recording."""
+    """Ordered queue consumer with backpressure. For ASR, audio recording.
 
-    def __init__(self, *, transport: AudioTransport, maxsize: int, logger):
-        self._transport = transport
+    采集线程 (miniaudio 回调) 把帧 ``put_nowait`` 进有界 janus 队列; 队列满时丢弃
+    最新帧 —— 音频是实时流, 采集线程不能阻塞 (否则设备 buffer 溢出), 宁可丢帧.
+    ``__anext__`` 在 event loop 侧 ``async_q.get()``, 永不阻塞 loop.
+    """
+
+    def __init__(self, *, capture: MiniAudioCaptureSource, maxsize: int, logger):
+        self._capture = capture
         self._maxsize = maxsize
         self._logger = logger
-        self._stream: StreamSubscriber | None = None
+        self._queue: janus.Queue | None = None
+        self._dispose: Callable[[], None] | None = None
         self._started = False
         self._shutdown = False
 
     def shutdown(self, immediately: bool = False) -> None:
         self._shutdown = True
+        if self._queue is not None:
+            with contextlib.suppress(Exception):
+                self._queue.sync_q.put_nowait(None)
 
     async def __aenter__(self) -> "MiniAudioSequentialConsumer":
         if not self._started:
-            self._stream = self._transport.sub_pcm_stream(maxsize=self._maxsize)
-            await self._stream.__aenter__()
+            self._queue = janus.Queue(maxsize=self._maxsize)
+            self._dispose = self._capture.on_audio_chunk(self._on_chunk)
             self._started = True
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._stream is not None:
-            await self._stream.__aexit__(None, None, None)
-            self._stream = None
+        if self._dispose is not None:
+            self._dispose()
+            self._dispose = None
         self._started = False
+
+    def _on_chunk(self, chunk: AudioChunk) -> None:
+        if self._queue is not None and not self._shutdown:
+            with contextlib.suppress(Exception):
+                self._queue.sync_q.put_nowait(chunk)
 
     def __aiter__(self) -> "MiniAudioSequentialConsumer":
         if not self._started:
@@ -288,7 +309,9 @@ class MiniAudioSequentialConsumer(AudioSequentialConsumer):
         return self
 
     async def __anext__(self) -> AudioChunk:
-        if self._shutdown or self._stream is None:
+        if self._shutdown or self._queue is None:
             raise StopAsyncIteration
-        sample = await self._stream.__anext__()
-        return unpack_chunk(sample.payload)
+        item = await self._queue.async_q.get()
+        if item is None or self._shutdown:
+            raise StopAsyncIteration
+        return item

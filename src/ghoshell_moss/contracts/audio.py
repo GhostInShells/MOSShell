@@ -168,7 +168,7 @@ class AudioCaptureConfig(ConfigType):
 
 
 class AudioCaptureSource(ABC):
-    """Singleton capture source. Owns the microphone, publishes PCM to Zenoh."""
+    """Singleton capture source. Owns the microphone, fans PCM out to in-process consumers."""
 
     @property
     @abstractmethod
@@ -223,7 +223,11 @@ class AudioPullLatest(ABC):
 
 
 class AudioSequentialConsumer(ABC):
-    """Ordered, lossless consumer with backpressure. For ASR, audio recording."""
+    """Ordered consumer over a bounded queue. For ASR, audio recording.
+
+    The producer (capture thread) never blocks: when the queue is full the
+    newest frame is dropped. Real-time audio cannot backpressure the device.
+    """
 
     @abstractmethod
     def shutdown(self, immediately: bool = False) -> None:
