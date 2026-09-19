@@ -38,6 +38,11 @@ iframe 改 width/height 会让内部文档 reflow（与 WebEngineView 同病）�
 `overflow:hidden` 的 wrapper：过渡动画只动 wrapper 几何（clip/reveal），iframe 保持最终
 尺寸。动 transform 不 scale（scale 会糊）。
 
+**嵌入契约：被嵌入页面必须监听 `resize` 自适应。** 合成器只改 iframe 的 viewport，
+不负责内部重排 —— 不监听的页面在切布局 / 全屏时会被裁切或拉伸。实测 avatar（Live2D）
+不自适应（窗口变动身体位置炸）、terminal / file_editor 同样不自适应，三者是各自节点的
+修法，不是本合成器的职责。
+
 三档工具：重排走 **View Transitions**（快照旧态交叉淡入 + 自动 FLIP，Chrome 111+ /
 Safari 18+ / Firefox 144+，降级为瞬时）；物化/退出全屏走 **WAAPI**（`finished` promise
 即 await 边界）；hover/徽标走原生 `transition`。
