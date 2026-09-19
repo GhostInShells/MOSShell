@@ -116,20 +116,43 @@
     if (running) { showPanel(); startPoll(); } else { hidePanel(); stopPoll(); }
   });
 
-  // ---- js approve/deny ----
-  function execJs(code) {
+  // ---- predefined actions (no eval — bilibili CSP blocks 'unsafe-eval') ----
+  function findVideo() {
+    let v = document.querySelector('video');
+    if (v) return v;
+    for (const sel of ['bwp-video', 'bilibili-player', '.bpx-player-video-wrap']) {
+      const el = document.querySelector(sel);
+      if (el && el.shadowRoot) {
+        v = el.shadowRoot.querySelector('video');
+        if (v) return v;
+      }
+    }
+    return null;
+  }
+
+  const ACTIONS = {
+    play: () => { const v = findVideo(); if (!v) throw new Error('video not found'); return v.play(); },
+    pause: () => { const v = findVideo(); if (!v) throw new Error('video not found'); v.pause(); return 'paused'; },
+    seek: (sec) => { const v = findVideo(); if (!v) throw new Error('video not found'); v.currentTime = sec; return 'seeked ' + sec; },
+    speed: (r) => { const v = findVideo(); if (!v) throw new Error('video not found'); v.playbackRate = r; return 'speed ' + r; },
+    getTime: () => { const v = findVideo(); if (!v) throw new Error('video not found'); return v.currentTime; },
+  };
+
+  function execAction(cmd) {
+    const fn = ACTIONS[cmd.action];
+    if (!fn) return { ok: false, error: 'unknown action ' + cmd.action };
     try {
-      const result = new Function(code)();
+      const result = fn(cmd.value);
       return { ok: true, result: result === undefined ? '(undefined)' : String(result) };
     } catch (e) {
       return { ok: false, error: e.name + ': ' + e.message };
     }
   }
 
-  function renderJs(cmd) {
+  function renderCmd(cmd) {
     jsArea.innerHTML = '';
     const pre = document.createElement('pre');
-    pre.textContent = cmd.body;
+    pre.textContent = cmd.action + (cmd.value !== undefined && cmd.value !== null ? ' ' + cmd.value : '');
     pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto;' +
       'background:#06080b;border:1px solid #2a3340;border-radius:4px;padding:6px;margin:0 0 6px;';
     jsArea.appendChild(pre);
@@ -146,7 +169,7 @@
     const accept = mkBtn('accept', '#1d6b45');
     const deny = mkBtn('deny', '#6b1d2a');
     accept.onclick = async () => {
-      const result = execJs(cmd.body);
+      const result = execAction(cmd);
       await send({ type: 'js_result', id: cmd.id, page: cmd.page, ...result });
       say(result.ok ? '✓ ' + result.result : '✗ ' + result.error);
       jsArea.innerHTML = '';
@@ -163,10 +186,10 @@
   const jsQueue = [];
   async function poll() {
     if (jsArea.children.length) return;  // 正在审批,等结果
-    if (jsQueue.length) { renderJs(jsQueue.shift()); return; }
+    if (jsQueue.length) { renderCmd(jsQueue.shift()); return; }
     const r = await send({ type: 'poll', page: page().url });
     if (Array.isArray(r)) jsQueue.push(...r);
-    if (jsQueue.length) renderJs(jsQueue.shift());
+    if (jsQueue.length) renderCmd(jsQueue.shift());
   }
 
   function startPoll() { stopPoll(); pollTimer = setInterval(poll, 500); }

@@ -85,11 +85,11 @@ class Handler(BaseHTTPRequestHandler):
                 obj = json.loads(raw)
             except Exception:
                 return self._json({"ok": False, "error": "bad json"})
-            page, body = obj.get("page"), obj.get("body")
-            if not page or not body:
-                return self._json({"ok": False, "error": "need page + body"})
-            cmd = _MODEL.dispatch_js(page, body, obj.get("id"))
-            print(f"[ghost] dispatch js #{cmd['id']} -> {page}")
+            page, action = obj.get("page"), obj.get("action")
+            if not page or not action:
+                return self._json({"ok": False, "error": "need page + action"})
+            cmd = _MODEL.dispatch_action(page, action, obj.get("value"), obj.get("id"))
+            print(f"[ghost] dispatch {action} #{cmd['id']} -> {page}")
             return self._json({"ok": True, "id": cmd["id"], "page": page,
                                "queued": len(_MODEL.pending_js[page])})
 

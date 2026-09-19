@@ -37,24 +37,40 @@ def build_channel(
             "bilibili 共享观看 body。页面对应一个 label(p1/p2/...),notice 列在线页面,"
             "named_notices 给每页离散状态(播放/暂停·倍速·字幕就绪),context 是热数据"
             "(当前播放秒 + 当前字幕句)。人类在视频页点绿球 = 授权感知这个页面;播放组"
-            "命令已预设授权,直接发;js() 是裸 JS,要人类在页面上点 accept 才执行,一次一条。"
+            "命令(play/pause/seek/speed)预设授权,但要人类在页面上点 accept 才执行,一次一条。"
             "完整字幕/弹幕的返回值是文件路径,内容在文件里,读文件取内容,别指望返回值带全文。"
         )
 
     # -- commands ----------------------------------------------------------
 
-    @chan.build.command(name="js")
-    async def js(page: str, body: str) -> str:
-        """下发一段裸 JS 到某个页面,等人类在页面上 accept 后执行。
-
-        ``page`` 是 label(p1/p2,见 notice)。``body`` 经 new Function(body)() 在页面里
-        执行,用 ``return`` 把值带回来。一次一个页面只能挂一条待审批。结果是异步的:
-        人类点 accept/deny 后作为 signal 回来,不是这个命令的返回值。
-        """
+    def _require_page(page: str) -> None:
         if page not in model.pages:
             CommandUtil.raise_observe(f"no page {page!r} — see notice")
-        cmd = model.dispatch_js(page, body)
-        return f"[ghost] js #{cmd['id']} → {page} (pending human accept/deny)"
+
+    def _dispatch(page: str, action: str, value=None) -> str:
+        _require_page(page)
+        cmd = model.dispatch_action(page, action, value)
+        return f"[ghost] {action} #{cmd['id']} → {page} (pending human accept/deny)"
+
+    @chan.build.command(name="play")
+    async def play(page: str) -> str:
+        """让某个页面的视频开始播放。``page`` 是 label(p1/p2,见 notice)。人类 accept 后执行。"""
+        return _dispatch(page, "play")
+
+    @chan.build.command(name="pause")
+    async def pause(page: str) -> str:
+        """暂停某个页面的视频。"""
+        return _dispatch(page, "pause")
+
+    @chan.build.command(name="seek")
+    async def seek(page: str, seconds: float) -> str:
+        """把某个页面的视频进度跳到 seconds 秒。"""
+        return _dispatch(page, "seek", seconds)
+
+    @chan.build.command(name="speed")
+    async def speed(page: str, rate: float) -> str:
+        """设置某个页面视频的播放倍速。"""
+        return _dispatch(page, "speed", rate)
 
     @chan.build.command(name="pages", always_observe=True)
     async def pages() -> str:

@@ -49,9 +49,12 @@ class BridgeModel:
 
     # -- js command queue --------------------------------------------------
 
-    def dispatch_js(self, page: str, body: str, jid: str | None = None) -> dict:
+    def dispatch_action(self, page: str, action: str, value=None, jid: str | None = None) -> dict:
+        # page 可能是 label(p1)——队列 key 用扩展轮询的 url,所以先解析 label→url。
+        if page in self.pages:
+            page = self.pages[page]["url"]
         jid = jid or uuid.uuid4().hex[:8]
-        cmd = {"id": jid, "page": page, "body": body}
+        cmd = {"id": jid, "page": page, "action": action, "value": value}
         self.pending_js.setdefault(page, []).append(cmd)
         return cmd
 
