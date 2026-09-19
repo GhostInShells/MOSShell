@@ -1,4 +1,5 @@
 from .abcd import (
+    COMMIT_MEMENTO_FILE,
     CommitRef,
     Note,
     BranchRef,

@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from ghoshell_moss.memento.abcd import COMMIT_MEMENTO_FILE
 from ghoshell_moss.memento._fs_memento import FsMemento, new_local_memento
 
 
@@ -306,3 +307,76 @@ def test_async_write_ops_self_contained(memento):
     assert child.meta().fork_from is not None
     assert b.view().commits_total == 2
     assert b.notes()[b.commits()[-1].id].message == "late\ntitle"
+
+
+# ── commit 节点 (约定空间) ──
+
+
+def test_node_path_is_coord_and_utc_month(memento):
+    b = memento.create_branch("main")
+    b.commit(message="one")
+    view = b.get_commit(1)
+    utc = view.created.astimezone(timezone.utc)
+
+    path = view.memento_path(memento.root)
+
+    assert path.name == COMMIT_MEMENTO_FILE
+    assert path.parent.name == f"cmt_{b.index}-{view.seq}"  # 坐标进目录名
+    assert path.parent.parent.name == f"{utc.month:02d}"  # 月桶 (UTC)
+    assert path.parent.parent.parent.name == f"{utc.year:04d}"
+    assert path.parent.parent.parent.parent.name == "commits"
+    assert path.parent.parent.parent.parent.parent == memento.root
+
+
+def test_node_appears_only_after_ensure(memento):
+    b = memento.create_branch("main")
+    b.commit(message="anchor")
+
+    # 路径可算, 但未显式创建 → 无节点
+    assert not b.get_commit(1).memento_path(memento.root).exists()
+    assert b.get_commit(1).memento is None
+    assert b.view().latest[-1].memento is None
+
+    path = b.ensure_memento(1)
+
+    # 存在则上表面: 单条读 / 坐标解析 / view 三处同源
+    assert path.exists()
+    assert path == b.get_commit(1).memento_path(memento.root)
+    assert b.get_commit(1).memento == path
+    assert b.view().latest[-1].memento == path
+    assert memento.resolve_commit(f"{b.index}-1").memento == path
+
+
+def test_ensure_is_idempotent_and_never_clobbers(memento):
+    b = memento.create_branch("main")
+    b.commit(message="anchor")
+
+    path = b.ensure_memento(1)
+    path.write_text("mine", encoding="utf-8")
+
+    assert b.ensure_memento(1) == path
+    assert path.read_text(encoding="utf-8") == "mine"  # 已有内容绝不覆盖
+
+
+def test_ensure_unknown_seq_raises(memento):
+    b = memento.create_branch("main")
+    b.commit(message="anchor")
+
+    with pytest.raises(KeyError):
+        b.ensure_memento(2)
+    with pytest.raises(KeyError):
+        b.ensure_memento(0)
+
+
+def test_node_surface_covers_detail_window_only(memento):
+    b = memento.create_branch("main")
+    for i in range(3):
+        b.commit(message=f"c{i}")
+    b.ensure_memento(1)  # 老 commit 有节点
+    b.ensure_memento(3)  # 新 commit 有节点
+
+    view = b.view(n=1)
+
+    # 折叠区不观测节点 (detail 窗口才探) —— 省掉每窗口一次全量 stat
+    assert [cv.memento for cv in view.history] == [None, None]
+    assert view.latest[0].memento is not None

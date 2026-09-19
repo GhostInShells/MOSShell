@@ -515,6 +515,8 @@ class EgoMementoManager:
         attributes = {"seq": cv.coord, "created": cv.created.isoformat()}
         if cv.is_broken:
             attributes["error"] = "1"
+        if cv.memento is not None:
+            attributes["memento"] = str(cv.memento)
         return Message.new(tag="commit", attributes=attributes).with_content(cv.message)
 
     # ── 内部读取 ─────────────────────────────────────────────────

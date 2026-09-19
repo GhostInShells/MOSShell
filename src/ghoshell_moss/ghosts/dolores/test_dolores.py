@@ -709,6 +709,18 @@ class TestMementoReadSurface:
         assert "main-note" in manager.view_message().to_content_string()
         assert "side-note" in manager.view_message("side").to_content_string()
 
+    def test_view_message_carries_node_path_when_present(self, tmp_path: Path):
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        branch.note(anchor.id, "main-note")
+
+        assert "memento=" not in manager.view_message().to_content_string()
+
+        node = branch.ensure_memento(anchor.seq)
+
+        assert str(node) in manager.view_message().to_content_string()
+
     @pytest.mark.asyncio
     async def test_read_renders_the_route_events(self, tmp_path: Path):
         events = [

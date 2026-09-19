@@ -6,12 +6,12 @@ description: 以 commit 为第一公民的认知轨迹系统，第 9 轮收敛�
 milestone: null
 priority: P0
 status: completed
-status_note: '第 10 轮坐标改造已落地 (2026-09-14)：CommitView (ref+note+坐标) 替掉 CommitSummary；
-  CommitRef.seq / BranchMeta.index 产出时定死；坐标 = {branch_index}-{commit_seq}；新增
-  Branch.get_commit / aget_commit 与 Memento.get_branch_by_index / resolve_commit。契约 + 实现 +
-  单测 (19 passed)。动机与全貌见 §4。'
+status_note: '第 11 轮节点空间已落地 (2026-09-19)：commit 可以有自己的空间 (约定, 非机制) ——
+  路径 commits/{YYYY}/{MM}/cmt_{coord}/MEMENTO.md 由 CommitView.memento_path 唯一定义, view 的
+  detail 窗口带出存在的文件绝对路径, ensure_memento 是写入侧显式 get-or-create。abcd.py 全英文。
+  契约 + 实现 + 渲染 + 单测 (25 passed / dolores 85 passed)。动机与边界见 §5。'
 title: Memento — 轨迹第一公民的认知基建（锚点 + 摘要两级 + 坐标）
-updated: '2026-09-14'
+updated: '2026-09-19'
 ---
 
 # Memento
@@ -20,8 +20,9 @@ updated: '2026-09-14'
 
 ## 0. 给下一个化身：先读这一节
 
-**当前状态（2026-09-14）**：第 9 轮 lean 收敛 + 第 10 轮坐标改造均已落地。memento = 极简「锚点 +
-摘要」两级认知轨迹索引，读侧以 `CommitView`（ref + note + 坐标）为单位。
+**当前状态（2026-09-19）**：第 9 轮 lean 收敛 + 第 10 轮坐标改造 + 第 11 轮节点空间均已落地。
+memento = 极简「锚点 + 摘要」两级认知轨迹索引，读侧以 `CommitView`（ref + note + 坐标 + 节点路径）
+为单位。契约面（abcd.py）已全英文。
 
 - **契约**：`src/ghoshell_moss/memento/abcd.py`
 - **实现**：`src/ghoshell_moss/memento/_fs_memento.py`（filesystem，只绑定本地 path）
@@ -149,3 +150,52 @@ updated: '2026-09-14'
 
 **渲染不进 memento**：`<branch name index>` / `<commit seq created>` 的 xml 区块由消费者（dolores）
 签发，memento 只供结构与查找（`resolve_commit` 把 `"27-1027"` 解析回 `CommitView`）。
+
+## 5. 第 11 轮：节点空间（2026-09-19）
+
+> 动机：回到 memento 最初的意图 —— 它在复盘第 3 条里被定义为「服务于调度，不是 rewind」。
+> 一个 commit 应该能自带物料，让 branch 的 commits 时间轴本身成为流程状态机。但 v3 的
+> 实现路径（分形泛型 + 出生即冻结 + 分形目录）被验证过无法收敛，故这一轮只留**约定**。
+
+**形态**：每个 commit 可以有自己的空间（节点）。memento 只做三件事 —— 算地址、看它在不在、
+显式 get-or-create；**不创建、不读取、不清理**内容。内容是**非受管资产区**，版本化与否由写入者
+决定（放不放 .gitignore 是写入者的事，memento 不强制约定）。
+
+- 布局：`{root}/commits/{YYYY}/{MM}/cmt_{coord}/MEMENTO.md`。`{YYYY}/{MM}` 取自 `created`
+  的 **UTC**（`created` 写后不可变 → 地址永久稳定）；`cmt_` 前缀防止裸 `27-1027` 被误读成日期。
+- **`CommitView.memento_path(root)` 是这套 layout 的唯一定义**（约定即实现），实现与消费者
+  都只调它，不许各自重写。挂 CommitView 而非 CommitRef：CommitRef 刻意不带 branch_index，
+  而路径需要 created / seq / branch_index 三轴。
+- `CommitView.memento: Path | None` —— 文件存在时为**绝对路径**，否则 None（「存在上表面，
+  不存在隐藏」）。绝对而非相对：ghost 的 `file_editor` 只吃绝对路径，且成本按实际使用计费
+  （没有节点就零开销）。
+- `Branch.ensure_memento(seq) -> Path` —— 写入侧显式 get-or-create：建目录 + seed 模板；
+  已有内容**绝不覆盖**。seq 不存在 → KeyError。读路径永不创建。
+- **观测只在 view 的 detail 窗口**（`latest` n 条各一次 stat）。折叠区不探，避免 O(全部 commits)
+  的 stat。代价：老 commit 的节点不自动亮，grep / 显式取仍可达。`view()` 因此不再是纯缓存
+  快路径，docstring 已改实。
+- 渲染：`_render_commit` 在有节点时加 `memento="{绝对路径}"`；channel instruction 加一行
+  说明。memento channel **不新增命令**（模型自己拼/grep 即可，且 view 已带绝对路径）。
+
+**文件名为什么是 MEMENTO.md**：`README.md` 在全世界每个仓库里都有，模型自驱时代 grep 向下
+找时不构建已知预期，会出现巨量噪音；`MEMENTO.md` 出现即宣告「这是一个 memento 节点」——
+owner 根 / branch 目录 / commit 目录都放同一个文件即自动成为节点，**v3 想用泛型拿到的分形，
+被一个文件名拿到了**。模板正文即「未写」标记：模板还在 = 还没写。
+
+**边界（防止 v3 原地复活）**：
+
+1. **memento 绝不校验步骤顺序**。约定「a→f 步，每步一个 commit」是**规划者的使用策略**，
+   不是 memento 的承诺 —— 它住在一份讲怎么用的文档里，不住在 `metatype` 的渲染里。memento
+   一旦开始管「步骤是否按序/能否跳过」，就变成了工作流引擎。
+2. 因此**不做** metatype 的 view 渲染改造（曾一度列入硬边界，被否）。两类 commit 混读的
+   问题归使用策略的文档解决。
+3. fork 语义不变：rebase = 从锚点 fork（子支新增步骤，父支不复制不重放）。
+4. features 与 memento **不合并**。同构度是真实的，但历史顺序是「先有 memento 建模，再收敛
+   成 features 这个具体功能」—— 同构是实用性检查，不是合并理由。features 的价值是交接文档
+   （会话开头读），跟时间轴遍历是两种消费方式。
+
+**落地**：`abcd.py`（`COMMIT_MEMENTO_FILE` / `CommitView.memento` / `CommitView.memento_path` /
+`Branch.ensure_memento`，并全英文化）、`_fs_memento.py`（模板 + `ensure_memento` +
+`_probe_memento` + `_write_text`）、dolores `_ego_memento.py` 渲染 + `memento_channel.py`
+instruction 一行。测试：memento 25 passed（新增 5 条契约行为）、dolores 85 passed（新增 1 条
+渲染）。

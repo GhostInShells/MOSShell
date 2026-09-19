@@ -38,6 +38,8 @@ def _instruction_text(manager: EgoMementoManager, storage_root: Path | None) -> 
         "",
         f"- You are on branch `{manager.config.branch_name}`; the notice lists every branch.",
         "- You point at a place on the line by its coordinate: `{branch_index}-{seq}`, e.g. `1-27`.",
+        "- A commit may carry a node of its own. When its line shows `memento=`, that file is the"
+        " commit's own space on disk — read it first; it is not managed by memento.",
     ]
     if storage_root is not None:
         lines.append(

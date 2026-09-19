@@ -10,11 +10,15 @@
         commits.jsonl                       # 正序 append-only CommitRef (权威)
         commit_notes.jsonl                  # 旁路 Note (last-wins, 可丢可重建)
         .lock                               # FileLocker 写门控锁文件
+      commits/{YYYY}/{MM}/cmt_{coord}/       # commit 节点空间 (约定, 懒创建)
+        MEMENTO.md                          # 节点的索引文件, 自解释入口
 
 Discipline:
 - 只写正序 append / 原子写, 读侧跳过撕裂尾行 (append-crash 残留).
 - 同步读 = 缓存快路径; ``a<name>`` = aiofiles 重读磁盘 (IO-costly).
 - 写门控 = ``async with branch:`` (FileLocker, fast-fail) + 进程内 asyncio.Lock 互锁.
+- 节点空间是**非受管资产区**: memento 只 stat ``MEMENTO.md`` 是否在 (view 的 detail 窗口
+  各查一次), 不读内容、不清理; 目录与模板只由 ``ensure_memento`` 显式创建, 读路径永不创建.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import ulid
 
 from ghoshell_moss.contracts.workspace import FileLocker
 from ghoshell_moss.memento.abcd import (
+    COMMIT_MEMENTO_FILE,
     Branch,
     BranchMeta,
     BranchRef,
@@ -43,6 +48,18 @@ from ghoshell_moss.memento.abcd import (
 )
 
 __all__ = ["FsBranch", 'FsMemento', 'new_local_memento']
+
+_MEMENTO_TEMPLATE = """# MEMENTO — {coord}
+
+This directory belongs to commit `{coord}` (created {created}).
+
+Nothing here is managed: memento does not version it, sync it, or clean it up. What
+this place holds, and how it is governed, is yours to write down.
+
+This template text is still here, which means nothing has been written yet. Replace
+it with the index of this place — what this commit produced, what a reader should
+look at first.
+"""
 
 
 def _now_utc() -> datetime:
@@ -114,16 +131,21 @@ def _append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         os.fsync(f.fileno())
 
 
-def _write_json(path: Path, obj: dict[str, Any]) -> None:
-    """tmp + fsync + 原子 rename 写单个 JSON 文件."""
+def _write_text(path: Path, text: str) -> None:
+    """tmp + fsync + 原子 rename 写单个文本文件 (父目录自动建)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
-        os.write(fd, json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        os.write(fd, text.encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)
     os.rename(tmp_name, str(path))
+
+
+def _write_json(path: Path, obj: dict[str, Any]) -> None:
+    """tmp + fsync + 原子 rename 写单个 JSON 文件."""
+    _write_text(path, json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -279,9 +301,24 @@ class FsBranch(Branch):
         async with self:
             return self.fork(name, description)
 
+    def ensure_memento(self, seq: int) -> Path:
+        view = self.get_commit(seq)
+        if view is None:
+            raise KeyError(f"branch '{self._name}' has no commit at seq {seq}")
+        path = view.memento_path(self._memento.root)
+        if not path.exists():  # 已在则绝不覆盖 —— 那是写入者的内容
+            _write_text(path, _MEMENTO_TEMPLATE.format(coord=view.coord, created=view.created.isoformat()))
+        return path
+
     # ── 读侧投影 ──
     def _commit_view(self, commit: CommitRef, notes: dict[str, Note], branch_index: int) -> CommitView:
         return CommitView(branch_index=branch_index, ref=commit, note=notes.get(commit.id))
+
+    def _probe_memento(self, view: CommitView) -> CommitView:
+        """探一次节点索引在不在 —— 一次 stat, 只填 view 字段, 不碰任何内容."""
+        path = view.memento_path(self._memento.root)
+        view.memento = path if path.is_file() else None
+        return view
 
     def _parent(self, meta: BranchMeta) -> "FsBranch | None":
         fork_from = meta.fork_from
@@ -300,7 +337,7 @@ class FsBranch(Branch):
     def _build_view(self, commits: list[CommitRef], notes: dict[str, Note], n: int) -> BranchView:
         meta = self.meta()
         views = _collapse_broken_commits([self._commit_view(c, notes, meta.index) for c in commits])
-        latest = views[-n:]
+        latest = [self._probe_memento(v) for v in views[-n:]]  # 只探 detail 窗口: 一次一条 stat
         history = views[:-n]
         parent = self._parent(meta)
         previous = parent.view(n=n) if parent is not None else None
@@ -324,7 +361,7 @@ class FsBranch(Branch):
         commits = self.commits()
         if seq > len(commits):
             return None
-        return self._commit_view(commits[seq - 1], self.notes(), self.index)
+        return self._probe_memento(self._commit_view(commits[seq - 1], self.notes(), self.index))
 
     async def aget_commit(self, seq: int) -> CommitView | None:
         if seq < 1:
@@ -333,7 +370,7 @@ class FsBranch(Branch):
         if seq > len(commits):
             return None
         notes = await self.anotes()
-        return self._commit_view(commits[seq - 1], notes, self.index)
+        return self._probe_memento(self._commit_view(commits[seq - 1], notes, self.index))
 
     # ── 查询 ──
     def query_commits(
