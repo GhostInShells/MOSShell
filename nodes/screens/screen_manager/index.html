@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>MOSS screen</title>
+<style>
+  :root {
+    --rail-w: 220px;
+    --gap: 6px;
+    --border: #2a3340;
+    --accent: #3ddc8f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    font: 13px/1.4 ui-monospace, monospace;
+    background: #0a0c10;
+    color: #ddd;
+    overflow: hidden;
+  }
+
+  /* ===== 层栈：background → stage → chrome → veil ===== */
+  #bg       { position: fixed; inset: 0; z-index: 0; display: block; }
+  #moss     { position: fixed; inset: 0; z-index: 1; display: grid; place-items: center; pointer-events: none; }
+  #stage    { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; }
+  #rail     { position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w); z-index: 6; }
+  #scrim    { position: fixed; inset: 0; z-index: 9; display: none; }
+  #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 11; }
+  #veil     { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+  #st       { position: fixed; top: 10px; right: 12px; z-index: 7; color: #8af; font-size: 11px; text-align: right; }
+
+  /* ===== 左 rail：group 卡片 ===== */
+  #rail {
+    padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
+    background: #10141b; border-right: 1px solid var(--border);
+  }
+  .tile {
+    position: relative; padding: 10px; border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer; user-select: none;
+  }
+  .tile .name { font-weight: 600; }
+  .tile .badge {
+    position: absolute; top: 8px; right: 10px; background: #1c2633;
+    border-radius: 10px; padding: 0 7px; color: #999; font-size: 11px;
+  }
+  .tile .notify { margin-top: 4px; color: #666; font-size: 11px; min-height: 14px; }
+  .tile.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .tile.activated { animation: activate 3s linear infinite; }
+  @keyframes activate {
+    0%   { outline: 2px solid var(--accent); outline-offset: 2px; }
+    50%  { outline: 2px solid #f5a; outline-offset: 2px; }
+    100% { outline: 2px solid var(--accent); outline-offset: 2px; }
+  }
+
+  /* ===== stage：物料池 + 分格 ===== */
+  #stage {
+    display: grid; gap: var(--gap); padding: var(--gap);
+  }
+  /* wrapper（裁剪）+ iframe。iframe 一旦创建永不换父节点 —— 视觉变化只改样式。 */
+  .slot {
+    position: relative; overflow: hidden; border: 1px solid var(--border);
+    background: #0a0a0a; min-width: 0; min-height: 0;
+  }
+  .slot iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .slot.hidden { display: none; }
+  .slot .fs {
+    position: absolute; top: 6px; right: 6px; z-index: 2; opacity: 0;
+    background: #161d26; color: #ddd; border: 1px solid #2a3340;
+    border-radius: 4px; padding: 3px 8px; cursor: pointer; transition: opacity .2s;
+  }
+  .slot:hover .fs { opacity: 1; }
+
+  /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
+  .slot.fullscreen { position: fixed; inset: 0; z-index: 10; border: 0; }
+  #scrim { background: rgba(0,0,0,.55); }
+  #scrim-exit {
+    background: #222; color: #ddd; border: 1px solid #555;
+    border-radius: 4px; padding: 6px 12px; cursor: pointer;
+  }
+
+  /* ===== background：MOSS 文字（遮罩） + 输入框 ===== */
+  #moss span {
+    font-size: 24vmin; font-weight: 900; letter-spacing: .04em;
+    background: linear-gradient(90deg, #127a4b, #3ddc8f, #127a4b);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent; background-size: 200% 100%;
+    opacity: .35; transition: opacity .4s;
+  }
+  #moss span.alive { opacity: 1; animation: flow 1.6s linear infinite; }
+  @keyframes flow { to { background-position: 200% 0; } }
+
+  #input {
+    position: fixed; left: 50%; transform: translateX(-50%); z-index: 4;
+    background: rgba(16,18,22,.85); color: #ddd; border: 1px solid #2a3340;
+    border-radius: 8px; outline: none; transition: all .3s;
+  }
+  /* 空屏时主角（屏中下）；有物料时退成顶栏 */
+  #input.empty { top: 62%; width: 420px; max-width: 82vw; padding: 12px 16px; font-size: 16px; }
+  #input.filled { top: 8px; width: 300px; padding: 6px 12px; font-size: 13px; }
+  #input:focus { border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+<div id="moss"><span>MOSS</span></div>
+<input id="input" class="empty" placeholder="和 MOSS 说点什么…">
+<nav id="rail"></nav>
+<div id="stage"></div>
+<div id="scrim"><button id="scrim-exit">✕ 退出全屏</button></div>
+<canvas id="veil"></canvas>
+<div id="st"></div>
+
+<script>
+// =====================================================================
+// 一个 ws 驱动的合成器：三层已验证的躯体合在一起 —— stage（物料池+分格）、
+// veil（姿态层）、background（空屏存在感+语音视效）。
+// 设计语义见 web_manager.md；本页不内嵌 mock 数据，数据全部来自 ws 帧。
+// =====================================================================
+
+const $ = (s) => document.querySelector(s);
+const bg = $('#bg'), bctx = bg.getContext('2d');
+const veil = $('#veil'), vctx = veil.getContext('2d');
+const stage = $('#stage'), rail = $('#rail'), st = $('#st');
+const mossEl = $('#moss span'), input = $('#input');
+
+function sizeCanvas(c, ctx) {
+  c.width = innerWidth * devicePixelRatio;
+  c.height = innerHeight * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+addEventListener('resize', () => { sizeCanvas(bg, bctx); sizeCanvas(veil, vctx); initRainCols(); });
+sizeCanvas(bg, bctx); sizeCanvas(veil, vctx);
+
+// ---- ws ----
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
+function send(f) { ws.send(JSON.stringify(f)); }
+
+// ---- stage 状态（镜像 store，永不 reparent iframe）----
+const items = new Map();   // id -> { el, iframe, group, url, label }
+let active = '';
+let fullscreenId = null;
+
+function slotEl(id) { return items.get(id)?.el; }
+
+function makeSlot(item) {
+  const el = document.createElement('div');
+  el.className = 'slot'; el.dataset.id = item.id;
+  el.classList.toggle('hidden', item.group !== active);
+  const fr = document.createElement('iframe');
+  fr.src = item.url;
+  const fs = document.createElement('button');
+  fs.className = 'fs'; fs.textContent = '⛶';
+  fs.onclick = () => send({ type: 'fullscreen', id: item.id });
+  el.appendChild(fr); el.appendChild(fs);
+  stage.appendChild(el);
+  items.set(item.id, { el, iframe: fr, group: item.group, url: item.url, label: item.label });
+}
+
+function destroySlot(id) {
+  const it = items.get(id); if (!it) return;
+  it.el.remove(); items.delete(id);
+}
+
+function gridTemplate(layout) {
+  if (layout.family === 'stack') {
+    if (layout.dir === 'lr') return ['2fr 1fr', `repeat(${layout.rows}, 1fr)`];
+    return [`repeat(${layout.cols}, 1fr)`, '2fr 1fr'];
+  }
+  return [`repeat(${layout.cols}, 1fr)`, `repeat(${layout.rows}, 1fr)`];
+}
+
+function renderActive(ids, layout) {
+  items.forEach((it) => it.el.classList.toggle('hidden', it.group !== active));
+  if (!layout) { stage.style.gridTemplateColumns = ''; stage.style.gridTemplateRows = ''; return; }
+  const [cols, rows] = gridTemplate(layout);
+  stage.style.gridTemplateColumns = cols;
+  stage.style.gridTemplateRows = rows;
+  ids.forEach((id, k) => {
+    const it = items.get(id); if (!it) return;
+    const c = layout.cells[k]; if (!c) return;
+    it.el.style.gridRow = `${c.r} / span ${c.rs}`;
+    it.el.style.gridColumn = `${c.c} / span ${c.cs}`;
+  });
+}
+
+function renderRail() {
+  const counts = {}, order = [];
+  items.forEach((it) => {
+    if (!(it.group in counts)) { counts[it.group] = 0; order.push(it.group); }
+    counts[it.group]++;
+  });
+  rail.innerHTML = '';
+  order.forEach((g) => {
+    const tile = document.createElement('div');
+    tile.className = 'tile' + (g === active ? ' active' : '');
+    tile.dataset.group = g;
+    tile.innerHTML = `<span class="name">#${g}</span><span class="badge">${counts[g]}</span><div class="notify"></div>`;
+    tile.onclick = () => send({ type: 'switch_group', group: g });
+    rail.appendChild(tile);
+  });
+}
+
+function animateTile(group) {
+  const tile = [...rail.children].find((t) => t.dataset.group === group);
+  if (!tile) return;
+  tile.classList.add('activated');
+  setTimeout(() => tile.classList.remove('activated'), 3000);
+}
+
+function setFullscreen(id) {
+  const prev = fullscreenId;
+  if (prev && slotEl(prev)) slotEl(prev).classList.remove('fullscreen');
+  fullscreenId = id;
+  if (id && slotEl(id)) slotEl(id).classList.add('fullscreen');
+  $('#scrim').style.display = id ? 'block' : 'none';
+}
+
+function updateChrome() {
+  const empty = items.size === 0;
+  input.classList.toggle('empty', empty);
+  input.classList.toggle('filled', !empty);
+}
+
+// ---- veil：姿态层（block 手势，多块可叠加）----
+const veilBlocks = [];
+function addBlock(draw, durMs) {
+  veilBlocks.push({ draw, start: performance.now(), dur: durMs });
+}
+function geometry() {
+  const out = {};
+  items.forEach((it, id) => {
+    const r = it.el.getBoundingClientRect();
+    out[id] = { x: r.x, y: r.y, w: r.width, h: r.height };
+  });
+  return out;
+}
+const REGION = {
+  full:   (r) => [r.x, r.y, r.w, r.h],
+  left:   (r) => [r.x, r.y, r.w / 2, r.h],
+  right:  (r) => [r.x + r.w / 2, r.y, r.w / 2, r.h],
+  top:    (r) => [r.x, r.y, r.w, r.h / 2],
+  bottom: (r) => [r.x, r.y + r.h / 2, r.w, r.h / 2],
+};
+function fade(p) { const a = 0.15; if (p < a) return p / a; if (p > 1 - a) return (1 - p) / a; return 1; }
+
+function veilMark(item, region, durMs) {
+  addBlock((c, p) => {
+    const g = geometry()[item]; if (!g) return;
+    const [x, y, w, h] = REGION[region] ? REGION[region](g) : REGION.full(g);
+    const a = fade(p);
+    c.fillStyle = `rgba(80,255,150,${0.15 * a})`; c.fillRect(x, y, w, h);
+    c.strokeStyle = `rgba(80,255,150,${a})`; c.lineWidth = 3; c.strokeRect(x, y, w, h);
+  }, durMs);
+}
+function veilArrow(src, dst, durMs) {
+  addBlock((c, p) => {
+    const A = geometry()[src], B = geometry()[dst]; if (!A || !B) return;
+    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+    const bx = B.x + B.w / 2, by = B.y + B.h / 2;
+    const a = fade(p);
+    c.strokeStyle = `rgba(255,130,80,${a})`; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+    const ang = Math.atan2(by - ay, bx - ax);
+    c.beginPath(); c.moveTo(bx, by);
+    c.lineTo(bx - 12 * Math.cos(ang - 0.4), by - 12 * Math.sin(ang - 0.4));
+    c.lineTo(bx - 12 * Math.cos(ang + 0.4), by - 12 * Math.sin(ang + 0.4));
+    c.closePath(); c.fillStyle = `rgba(255,130,80,${a})`; c.fill();
+  }, durMs);
+}
+function veilText(content, durMs) {
+  addBlock((c, p) => {
+    c.fillStyle = `rgba(255,255,255,${fade(p)})`;
+    c.font = 'bold 52px ui-monospace, monospace';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(content, innerWidth / 2, innerHeight / 2);
+  }, durMs);
+}
+function veilLoop() {
+  requestAnimationFrame(veilLoop);
+  const now = performance.now();
+  vctx.clearRect(0, 0, innerWidth, innerHeight);
+  for (let i = veilBlocks.length - 1; i >= 0; i--) {
+    const b = veilBlocks[i];
+    if (now - b.start >= b.dur) { veilBlocks.splice(i, 1); continue; }
+    b.draw(vctx, (now - b.start) / b.dur);
+  }
+}
+requestAnimationFrame(veilLoop);
+
+// ---- background：字符雨 + ECG（数据面 = AudioSampleTopic）----
+let feed = { role: 'ghost', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
+const GATE = -45;
+const CHARSET = 'アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789ABCDEFZ$@#%&*+=<>';
+const CW = 16, CH = 20;
+const atlas = document.createElement('canvas');
+atlas.width = CHARSET.length * CW; atlas.height = CH;
+const actx = atlas.getContext('2d');
+actx.font = 'bold 15px ui-monospace, monospace';
+actx.textAlign = 'center'; actx.textBaseline = 'middle';
+actx.fillStyle = '#0f0';
+for (let i = 0; i < CHARSET.length; i++) actx.fillText(CHARSET[i], i * CW + CW / 2, CH / 2);
+
+let cols = [];
+function initRainCols() {
+  const n = Math.ceil(innerWidth / CW);
+  cols = Array.from({ length: n }, (_, i) => ({
+    x: i * CW, head: Math.random() * innerHeight,
+    speed: 50 + Math.random() * 90, buf: [], next: 0,
+  }));
+}
+initRainCols();
+const TAIL = 18, EMIT_MS = 333;
+function pickChar(i) {
+  const bin = feed.spectrum_bins[i % feed.spectrum_bins.length];
+  const norm = Math.min(1, Math.max(0, (bin + 96) / 96));
+  return Math.min(CHARSET.length - 1, Math.floor(norm * CHARSET.length));
+}
+function stepRain(dt, now) {
+  for (const c of cols) {
+    c.head += c.speed * dt;
+    if (now >= c.next) {
+      c.buf.unshift(pickChar(c.x / CW));
+      if (c.buf.length > TAIL) c.buf.pop();
+      c.next = now + EMIT_MS + Math.random() * 200;
+    }
+    for (let k = 0; k < c.buf.length; k++) {
+      const y = c.head - k * CH;
+      if (y < 0 || y > innerHeight) continue;
+      bctx.globalAlpha = 1 - k / c.buf.length;
+      bctx.drawImage(atlas, c.buf[k] * CW, 0, CW, CH, c.x, y, CW, CH);
+    }
+  }
+  bctx.globalAlpha = 1;
+}
+function drawEcg() {
+  const baseY = innerHeight * 0.82, amp = innerHeight * 0.12;
+  const w = feed.waveform.length, th = 0.5;
+  bctx.lineWidth = 2;
+  bctx.beginPath();
+  for (let i = 0; i < w; i++) {
+    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
+    i === 0 ? bctx.moveTo(x, y) : bctx.lineTo(x, y);
+  }
+  bctx.strokeStyle = '#3d8'; bctx.stroke();
+  bctx.beginPath(); let drawing = false;
+  for (let i = 0; i < w; i++) {
+    const hot = Math.abs(feed.waveform[i]) > th;
+    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
+    if (hot && !drawing) { bctx.moveTo(x, y); drawing = true; }
+    else if (hot && drawing) bctx.lineTo(x, y);
+    else if (!hot && drawing) drawing = false;
+  }
+  bctx.strokeStyle = '#f44'; bctx.stroke();
+  const bw = innerWidth / 16;
+  for (let i = 0; i < 16; i++) {
+    const h = Math.max(0, (feed.spectrum_bins[i] + 96) / 96) * 26;
+    bctx.fillStyle = feed.spectrum_bins[i] > GATE ? '#f44' : '#3d8';
+    bctx.fillRect(i * bw, innerHeight - h, bw - 2, h);
+  }
+}
+let last = performance.now();
+function bgLoop() {
+  requestAnimationFrame(bgLoop);
+  const now = performance.now();
+  const dt = (now - last) / 1000; last = now;
+  bctx.clearRect(0, 0, innerWidth, innerHeight);
+  const speaking = feed.rms_db > GATE;
+  if (feed.role === 'ghost' && speaking) stepRain(dt, now);
+  else if (feed.role === 'user' && speaking) drawEcg();
+}
+requestAnimationFrame(bgLoop);
+
+// ---- 帧路由 ----
+function route(f) {
+  switch (f.type) {
+    case 'snapshot': {
+      f.groups.forEach((g) => g.items.forEach(makeSlot));
+      active = f.active;
+      const ag = f.groups.find((g) => g.name === active);
+      renderActive(ag ? ag.items.map((i) => i.id) : [], f.layout);
+      setFullscreen(f.fullscreen);
+      renderRail(); updateChrome(); break;
+    }
+    case 'open': {
+      makeSlot(f.item);
+      if (f.item.group === active) { /* arrange frame follows */ }
+      renderRail(); updateChrome(); break;
+    }
+    case 'close': {
+      destroySlot(f.id); renderRail(); updateChrome(); break;
+    }
+    case 'arrange': {
+      active = f.group;
+      renderActive(f.ids, f.layout); renderRail(); break;
+    }
+    case 'activate': {
+      active = f.group;
+      renderActive(f.ids, f.layout); renderRail();
+      if (f.by_model) animateTile(f.group); break;
+    }
+    case 'fullscreen': setFullscreen(f.id); break;
+    case 'veil': {
+      const d = (f.duration || 2) * 1000;
+      if (f.gesture === 'mark') veilMark(f.item, f.region || 'full', d);
+      else if (f.gesture === 'arrow') veilArrow(f.src, f.dst, d);
+      else if (f.gesture === 'text') veilText(f.content, d);
+      break;
+    }
+    case 'audio': {
+      feed = f.sample;
+      mossEl.classList.toggle('alive', feed.role === 'ghost' && feed.rms_db > GATE);
+      st.textContent = `#${active} · ${feed.role} ${feed.rms_db.toFixed(0)}dB`;
+      break;
+    }
+  }
+}
+
+// ---- chrome 上行 ----
+$('#scrim').addEventListener('click', () => { if (fullscreenId) send({ type: 'fullscreen', id: '' }); });
+$('#scrim-exit').addEventListener('click', (e) => { e.stopPropagation(); send({ type: 'fullscreen', id: '' }); });
+</script>
+</body>
+</html>
