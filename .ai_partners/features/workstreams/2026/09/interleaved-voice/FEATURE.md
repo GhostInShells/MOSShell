@@ -202,7 +202,7 @@ AEC 在产品里有很多做法, openbox 只做一种。它不是礼仪的一个
 
 ## Implementation Notes
 
-### 回声消除的路线盘点 (调研结论, 未决策)
+### 回声消除的路线盘点 (调研结论, 已选 pywebrtc-audio AEC3)
 
 miniaudio **不提供 AEC**, capture 与 player 都是裸 PCM。macOS 上系统级 AEC 存在
 (CoreAudio 的 VoiceProcessingIO AudioUnit), 但 miniaudio 不暴露它。三条路线:
@@ -210,7 +210,7 @@ miniaudio **不提供 AEC**, capture 与 player 都是裸 PCM。macOS 上系统�
 | 路线 | 机制 | 代价 |
 |------|------|------|
 | OS 级 | macOS VoiceProcessingIO AudioUnit (pyobjc / 原生辅助) | 平台锁定, 破坏"miniaudio 零系统依赖"的现有默认 |
-| pip 级软件 AEC | speexdsp 的 echo cancellation (MDF) 等纯 pip 绑定 | 需要参考信号对齐 (播放帧 vs 采集帧的时间戳对齐), DSP 调参 |
+| pip 级软件 AEC | **WebRTC AEC3 (`pywebrtc-audio`)** — 2026-09-19 已 `uv add --optional host` | 自带 delay estimator, 对齐是机制而非 hack; 真机效果待 live 验证 |
 | 门控级 | 半双工: 说时闸麦 (不需要 AEC) | **与 barge-in 冲突** —— 见下 |
 
 **关键张力 (必须先解)**: barge-in 要求"边说边听" (人在 ghost 说话时插话)。纯半双工
@@ -223,6 +223,11 @@ miniaudio **不提供 AEC**, capture 与 player 都是裸 PCM。macOS 上系统�
 
 参考信号在本进程内可得 (`player.on_play` / `observe` 给出真实写入设备的帧), 这为
 软件 AEC 提供了前提 —— 缺的是对齐与算法, 不是数据。
+
+**已选 pip 级 (WebRTC AEC3) 并开始验证**: offline 合成实测 AEC3 稳态抑制 ~16dB、收敛
+~0.25s; `stream_delay_ms` 提示 0 与提示真延迟结果相同 —— AEC3 的 delay estimator 自行
+对齐, 印证「对齐是机制, 不是事后 hack」。留档脚本 (调研 + 结论 + live 判据):
+[aec_alignment_probe.py](aec_alignment_probe.py)。live (speak → 查 ASR 有无回声) 待外放实测。
 
 ## 迭代路径与装线机制 (2026-09-17 会话决策)
 
@@ -323,6 +328,9 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 2. **recognizer 注册门控 + 生命周期**: recognizer 支持注册拦路门控, 并给出正确生命周期。
 3. **AEC 屏蔽细节**: AEC 在两个接口表面 (near/far) 屏蔽实现, 启动时注册;**对齐延迟不能是
    "事后 hack 对齐"** (脚本里互相关/能量起点那种), 要在抽象上有机制。
+   留档脚本 (调研 + offline 实测结论 + live 判据): [aec_alignment_probe.py](aec_alignment_probe.py)。
+   offline 已验证 AEC3 稳态抑制 ~16dB、收敛 ~0.25s, 且 hint=0 与 hint=真延迟结果相同
+   (delay estimator 自带对齐, 不用 hack); live (speak → 查 ASR) 待外放实测。
 
 ### 配置与降级
 
