@@ -32,7 +32,7 @@ updated: '2026-09-13'
 - channel 有自己的 duplex hub + provide_channel, resource 有自己的 provide_resource,
   webview 什么都没有 — 三种能力三套装线, 每加一种能力就要到 matrix 里再装一次线.
 - 没有统一的"模型读一个 howto → 独立实现 disposable 能力"的路径.
-- webview 需要 on_created/on_stopped 通知 + badge 红点 + discover 发现, 这些机制
+- webview 需要 on_created/on_stopped 通知 + 活动/未读状态 + discover 发现, 这些机制
   已经在 presence/liveness 里隐式存在, 但没有被显式化为一个通用算子.
 
 ## Design Index
@@ -280,6 +280,10 @@ WARNING.  Error-reply on handler failure (no more timeout-only failure mode).
 
 ### V2 Webview Protocol — design decisions
 
+> SUPERSEDED 2026-09-19: 本段的 badge 二分（状态机 / badge 数字）已被交付的
+> condition 形状取代 —— webview 的运行时状态是 recency + unread（`touch`/`notify`），
+> 不再有 badge 红点。见文末 "V2 Validation — 已实现" 与 `services/webview/`。
+
 Two-usage badge split (discussed 2026-08-09):
 
 - **用法 1 状态机** (红绿灰呼吸灯): cross-kind 通用协议，mesh 承载。Provider pub
@@ -474,30 +478,23 @@ ABC (`blueprint/service.py`)：
 
 ---
 
-## V2 Validation — webview service 形状 (reopened 2026-09-13)
+## V2 Validation — 已实现 (2026-09-19)
 
-> 验证的核心是 **service 的形状设计**。形状对了，才会让 screen node 来接 —
-> 不是倒过来先为 screen 设计。
+验证物 `webview` service kind 落地，作为 operator 的**参考实现**：
 
-### 验证物: `webview` service kind
+| | 路径 |
+|---|---|
+| declaration / 运行状态 | `src/ghoshell_moss/services/webview/declaration.py` |
+| serve 侧 | `src/ghoshell_moss/services/webview/server.py` |
+| 消费侧 | `src/ghoshell_moss/services/webview/client.py` |
+| 协议测试 (7 条) | `tests/ghoshell_moss/services/test_webview.py` |
 
-一个 cell 声明"我提供一个 URL 能力"。待验证的形状：
+**设计结论不写回本文档**。形状、字段取舍、为什么没有 priority、快照为什么不能省，
+全部在代码的 module docstring 与注释里自解释 —— 这里是索引，不是权威
+（见 `moss features specification`）。
 
-```
-WebViewDeclaration(ServiceDeclaration):
-    url: str          # 必填 — 能力本体
-    title: str        # 面向人的标题
-    description: str  # 面向人的说明
-    icon: str | None  # 可选
-    priority: ...     # log-level 同构的优先级
-    kind() -> "webview"
-```
-
-### notify — IM 式机械状态回执
-
-webview 机械地更新自己的 **状态提示 + 时间戳**；client 侧订阅即可获得"被回调过"
-的感知机制。语义是回执（类似 IM 的已读 / 最后在线时间），不是业务事件。
-承载在 operator 的 pub/sub 原语上。
+下一个消费者是 screen node：它作为 client 接上这条线，自己决定整合策略（可变区排序、
+非交互冻结、固定区），client 的 `items()` 契约只给出默认顺序。
 
 ### 验证判据
 
