@@ -54,8 +54,21 @@ AEC、不需要自己接分布式进程、不需要手写装配代码。
 | # | 问题 | 证据 | 性质 |
 |---|------|------|------|
 | C1 | **`Speech.clear()` 不停止播放** | `core/speech/stream_tts_speech.py:319` 只 copy+clear `_outputted` 账本, 不碰 player; `BaseTTSSpeech` 不持 stream 注册表 | **bug** —— 任何不经 cancel 的 clear 路径都漏嘴 —— **已修 2026-09-19** |
-| C2 | **`types/audio.py` 未退役** | `topics/audio.py` (ClauseTopic/AudioSampleTopic, 活的) 与 `types/audio.py` (ConversationTopic/AudioPlaybackTopic, 死的) 并存; 而 `matrix/openbox/topics.py` 声明的恰是**死的那两个** | 沉默 todo —— 同一概念两份定义, 活的那份不在 canonical manifest |
-| C3 | **live topic 不在 canonical 清单** | `matrix/openbox/topics.py` 只导出 ConversationTopic/AudioPlaybackTopic | C2 的连带面 |
+| C2 | **两份 audio topic 定义并存** | `topics/audio.py` (ClauseTopic/AudioSampleTopic, 活的) 与 `types/audio.py` (ConversationTopic/AudioPlaybackTopic, 死的) 并存; 而 `matrix/openbox/topics.py` 声明的恰是**死的那两个** | 同一概念两份定义, 活的那份不在 canonical manifest —— **已清 2026-09-19** |
+| C3 | **live topic 不在 canonical 清单** | `matrix/openbox/topics.py` 只导出 ConversationTopic/AudioPlaybackTopic | C2 的连带面 —— **已清 2026-09-19** |
+
+C2/C3 的裁定方向 (2026-09-19, 人类架构师): **topics 不是 types 的兄弟层, 是 types 的下属**
+—— 全部 topic schema 收进 `types/topics/`, `types/audio.py` 删除。死的那一对
+(ConversationTopic/AudioPlaybackTopic) 从来没有 pub/sub 消费者: 前者只出现在清单的
+`__all__` 里, 后者只被 `cli/audio/render.py` 当局部 DTO 用 (已换成本地 `_SpectrumFrame`)。
+canonical manifest 现在导出的就是 live 的那几个 —— `moss manifests topics` 可见
+`audio/sample` / `clause` / `vision/face` 三个 schema 注册。
+
+同一波还清了 canonical 清单里最后一个"活的假象": `ErrorTopic` (docstring 自陈
+"A topic used for testing") 被当 shipped topic 声明了, 已从清单和
+`types/topics/__init__.py` 的双重全局导出里摘掉 —— 测试继续直接从
+`core.concepts.topic` 拿。判据写进了 `matrix/openbox/topics.py` 的头部注释:
+**注册即承诺该名字可跨进程解析, 只声明真有生产者的 topic**。
 
 C1 的机理值得记牢: 今天嘴能停, 纯粹是因为 `shell._clear()` (`ctml_shell.py:738`)
 里的 `tree.clear()` cancel 了 say 任务, CancelledError 沿 `SpeechStream.__aexit__`

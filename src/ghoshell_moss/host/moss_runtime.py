@@ -34,7 +34,7 @@ from ghoshell_moss.contracts.audio import AUDIO_SAMPLE_INTERVAL, LatestAudioWind
 from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 from ghoshell_moss.contracts.speech import Speech, SpeechClause, TTSSpeech, PlaybackSample
-from ghoshell_moss.topics import AudioSampleTopic, ClauseTopic
+from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 

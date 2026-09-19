@@ -40,7 +40,8 @@ from ghoshell_moss.project.manifests.resources import (
     search_resource_manifests,
 )
 from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
-from ghoshell_moss.core.concepts.topic import TopicSchema
+from ghoshell_moss.core.concepts.topic import TopicModel, TopicSchema
+from ghoshell_moss.matrix.openbox import topics as canonical_topics
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta, SignalSchema
 from ghoshell_moss.contracts.configs import ConfigType
@@ -460,13 +461,27 @@ class TestTopicManifest:
 
 class TestSearchTopicManifests:
     def test_finds_all_topic_classes(self):
-        """stub topics.py 有 3 个 TopicModel 子类."""
+        """stub topics 包扫出来的, 正是 canonical manifest 声明的那些 topic.
+
+        期望集从 canonical manifest 现算 —— 基线增删 topic 不该改测试; 测的是
+        "stub 的 `import *` 重导出链 + 扫描器的 respect_all 一起, 把声明的声明全捞出来".
+        """
+        declared = set()
+        for name in canonical_topics.__all__:
+            obj = getattr(canonical_topics, name)
+            if inspect.isclass(obj) and issubclass(obj, TopicModel):
+                declared.add(obj.topic_schema().topic_name)
+        assert declared, "canonical manifest 声明为空, 测试前提不成立"
+
         results = list(search_topic_manifests(STUB_MANIFESTS_TOPICS))
-        assert len(results) == 3
+
         for m in results:
             assert isinstance(m, TopicManifest)
             assert isinstance(m.value(), TopicSchema)
             assert m.name()
+            assert not m.is_error()
+
+        assert {m.name() for m in results} == declared
 
     def test_yields_error_manifest(self):
         results = list(search_topic_manifests(

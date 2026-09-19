@@ -22,8 +22,6 @@ __all__ = [
     "Publisher",
     "TopicClosedError",
     "TopicName",
-    "LogTopic",
-    "ErrorTopic",
     "TopicNamePattern",
     "TopicSchema",
     "TopicWindow",
@@ -232,6 +230,14 @@ class TopicModel(BaseModel, ABC, WithAdditional):
             data=data,
             additional=additional,
         )
+
+
+# -- Test fixtures ---------------------------------------------------------
+# Sample TopicModels the test suites publish to exercise the topic system.
+# Deliberately NOT in __all__ and NOT declared in the shipped openbox topic
+# manifest: nothing in production publishes them, and a name registered in the
+# manifest is a promise that it resolves cross-process. Tests import them by
+# explicit path.
 
 
 class LogTopic(TopicModel):

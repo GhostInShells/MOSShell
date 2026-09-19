@@ -85,7 +85,7 @@ import ghoshell_moss.llms.pydantic_ai_adapter.funcs as llms_funcs
 # ============================================================================
 
 import ghoshell_moss.message as message
-import ghoshell_moss.topics as system_topics
+import ghoshell_moss.types.topics as system_topics
 
 # ============================================================================
 # Openbox — 预制能力清单

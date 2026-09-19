@@ -14,6 +14,7 @@
 - **不测框架默认值。** `assert model.field == default_value` 测的是 pydantic / Python 运行时行为，不是项目逻辑。
 - **不测实现内部专属逻辑。** "我知道它是这么实现的所以加一条"是交付幻觉 —— 测试绑死实现，重构即炸。
 - 注意区分：`assert result == 'expected_output'` 如果那个 literal 是协议契约的一部分（预期输出），完全合法。问题在于 `_private_attr == literal` —— 被测对象是私有实现细节，断言值是已知当前值。
+- **不测开箱 node。** `nodes/` 下的 node 是独立包、独立 venv，测试归属在各自的包里 —— 系统单测不收集它们。（曾出现过 `tests/ghoshell_moss/nodes/`，已删。）
 
 ## 私有成员
 

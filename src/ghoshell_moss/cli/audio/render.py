@@ -9,25 +9,35 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_info, print_simple_panel
-from ghoshell_moss.types.audio import AudioPlaybackTopic
 
 
-def _render_frame(topic, first: bool = False) -> bool:
+@dataclass(frozen=True)
+class _SpectrumFrame:
+    """One frame of spectrum summary — a render-layer view model, not a topic."""
+
+    sample_rate: int = 0
+    rms_db: float = 0.0
+    peak: float = 0.0
+    spectrum_bins: list[float] = field(default_factory=list)
+
+
+def _render_frame(frame: _SpectrumFrame, first: bool = False) -> bool:
     """Render spectrum as horizontal bars — one row per frequency bin.
 
     Each row: [freq_label] [bar] dB_value.
     X axis = intensity (dB), Y axis = frequency (Hz, low→high top→bottom).
     """
-    bins = topic.spectrum_bins
+    bins = frame.spectrum_bins
     if not bins:
         return first
 
     n_bins = len(bins)
-    nyquist = topic.sample_rate / 2 if topic.sample_rate else 22050
+    nyquist = frame.sample_rate / 2 if frame.sample_rate else 22050
     bin_hz = nyquist / n_bins  # Hz per bin
 
     bar_width = 40
@@ -47,7 +57,7 @@ def _render_frame(topic, first: bool = False) -> bool:
         bar = "█" * width + "░" * (bar_width - width)
         sys.stdout.write(f"\r {label} {bar} {db:+.1f}dB\n")
 
-    sys.stdout.write(f"\r       peak {topic.peak:.2f}  rms {topic.rms_db:+.1f}dB\n")
+    sys.stdout.write(f"\r       peak {frame.peak:.2f}  rms {frame.rms_db:+.1f}dB\n")
     sys.stdout.flush()
     return False
 
@@ -72,12 +82,11 @@ async def _render_from_queue(queue: asyncio.Queue, first_frame_timeout: float = 
 
         rendered = True
         bins = _spectrum_bins(sample, n_bins=16)
-        frame = AudioPlaybackTopic(
+        frame = _SpectrumFrame(
             sample_rate=sample.sample_rate,
             rms_db=sample.rms_db,
             peak=sample.peak,
             spectrum_bins=bins,
-            n_spectrum_bins=16,
         )
         first = _render_frame(frame, first=first)
 

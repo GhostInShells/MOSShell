@@ -22,7 +22,7 @@ import asyncio
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 from ghoshell_moss.core.concepts.topic import TopicService
-from ghoshell_moss.topics import AudioSampleTopic
+from ghoshell_moss.types.topics import AudioSampleTopic
 
 from .avatar import Avatar
 

@@ -1,8 +1,7 @@
 """
 Audio and speech topic models.
 
-These are implementation-layer topics (like channels/bridges), not contracts.
-They are published/consumed via TopicService at runtime.
+Published/consumed via TopicService at runtime. Pure schemas — no wiring.
 """
 from typing import Literal
 
@@ -59,7 +58,7 @@ class AudioSampleTopic(TopicModel):
       - ``waveform`` → 心跳线/ECG (单帧即画, 无需 window)
       - ``rms_db`` → 分贝轨迹 (TopicWindow 累积历史)
       - ``spectrum_bins`` → 柱状跳跃 (最新帧)
-    每个 topic 自包含、无 delta. 无原始 PCM (对齐 AudioPlaybackTopic 的 no-PCM 惯例).
+    每个 topic 自包含、无 delta. 无原始 PCM (no-PCM 惯例).
     生产 cadence 约 5Hz (``contracts.audio.AUDIO_SAMPLE_INTERVAL``).
     """
 

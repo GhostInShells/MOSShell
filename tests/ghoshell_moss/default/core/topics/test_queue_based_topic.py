@@ -1,8 +1,8 @@
 import asyncio
 
 import ghoshell_moss.core.concepts.topic as topic_concepts
-from ghoshell_moss.core.concepts.topic import Topic, TopicMeta
-from ghoshell_moss.core.topic import QueueBasedTopicService, ErrorTopic, Subscriber
+from ghoshell_moss.core.concepts.topic import Topic, TopicMeta, ErrorTopic
+from ghoshell_moss.core.topic import QueueBasedTopicService, Subscriber
 import pytest
 
 

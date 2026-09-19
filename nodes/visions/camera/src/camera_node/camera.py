@@ -14,7 +14,7 @@ from typing import Optional
 
 from PIL import Image
 
-from ghoshell_moss.topics.vision import FaceTopic
+from ghoshell_moss.types.topics.vision import FaceTopic
 
 _DEFAULT_FPS = 10.0
 

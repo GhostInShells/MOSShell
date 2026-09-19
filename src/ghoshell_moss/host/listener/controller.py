@@ -51,7 +51,7 @@ from ghoshell_moss.host.listener.etiquette import (
     new_once_spec,
 )
 from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
-from ghoshell_moss.topics import AudioSampleTopic, ClauseTopic
+from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
 
 __all__ = [
     "ListenerController",
