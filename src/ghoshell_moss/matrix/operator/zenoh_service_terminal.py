@@ -258,8 +258,11 @@ class ZenohServiceTerminal(ServiceProvider):
         await self._query_dispatcher.aclose()
         await self._listen_dispatcher.aclose()
 
-        # 2. drain + stop the outbound worker (bounded)
-        self._outbound.close()
+        # 2. drain + stop the outbound worker (bounded).  ``close`` blocks up
+        # to its timeout on a full queue / a stuck write, so it runs off the
+        # loop like the undeclare below — the worker exists to absorb exactly
+        # those stalls, and shutdown must not inherit them.
+        await asyncio.to_thread(self._outbound.close)
 
         # 3. undeclare all zenoh entities off the loop
         def _undeclare() -> None:

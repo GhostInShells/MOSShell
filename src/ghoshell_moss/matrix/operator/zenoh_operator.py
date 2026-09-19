@@ -474,8 +474,11 @@ class ZenohOperator(ServiceOperator):
         await self._sub_dispatcher.aclose()
         await self._liveness_dispatcher.aclose()
 
-        # 4. stop the outbound worker (drain bounded)
-        self._outbound.close()
+        # 4. stop the outbound worker (drain bounded).  ``close`` blocks up to
+        # its timeout on a full queue / a stuck write — off the loop, so a
+        # stuck worker cannot stall shutdown (the loop-blocking it exists to
+        # prevent must not be reintroduced here).
+        await asyncio.to_thread(self._outbound.close)
 
         self._start_callbacks.clear()
         self._stop_callbacks.clear()
