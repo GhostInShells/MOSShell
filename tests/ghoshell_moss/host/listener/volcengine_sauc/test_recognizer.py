@@ -15,7 +15,7 @@ import pytest
 import websockets
 
 from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase, RecognitionSegment
-from ghoshell_moss.contracts.audio import AudioChunk
+from ghoshell_moss.contracts.audio import AudioChunk, AudioFrameMeta
 from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
 from ghoshell_moss.host.listener.volcengine_sauc import recognizer as sauc_recognizer
 
@@ -133,6 +133,11 @@ async def _audio(*chunks: np.ndarray):
         yield AudioChunk(samples=chunk)
 
 
+async def _chunks(*chunks: AudioChunk):
+    for chunk in chunks:
+        yield chunk
+
+
 @pytest.mark.asyncio
 async def test_segment_archives_the_clauses_it_emitted(monkeypatch):
     """audio axis 归档带 clause 细节: 段携带本段吐出的 clause (text + timing), 不只在 event 里."""
@@ -189,3 +194,59 @@ async def test_clause_frame_emits_no_trailing_partial(monkeypatch):
     phases = [e.phase for e in events]
     assert phases.count(RecognitionPhase.CLAUSE) == 1
     assert RecognitionPhase.PARTIAL not in phases
+
+
+# ── 输入门控 (gate_factory → Callable[[AudioChunk], AudioChunk | None]) ──
+
+
+@pytest.mark.asyncio
+async def test_silence_gate_blocks_silent_stream(monkeypatch):
+    """默认门控: 纯静音流被拦, 不 init 不开 WS."""
+    connected: list[str] = []
+
+    async def _connect(config, request_id: str = ""):
+        connected.append(request_id)
+        return _FakeWS([])
+
+    monkeypatch.setattr(sauc_recognizer, "connect", _connect)
+
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    silent = AudioChunk(
+        samples=np.zeros(160, dtype=np.int16),
+        meta=AudioFrameMeta(rms_db=-96.0, is_silent=True),
+    )
+    stream = asr.recognize(_chunks(silent))
+
+    events = [e async for e in stream]
+    assert events == []
+    assert connected == []
+
+
+@pytest.mark.asyncio
+async def test_gate_drops_silent_then_releases_on_voice(monkeypatch):
+    """门控: 静音帧丢弃不 init, 首个非静音帧放行并 init."""
+    frames = [
+        _server_frame({"result": {
+            "text": "你好",
+            "utterances": [{"text": "你好", "definite": True, "start_time": 0, "end_time": 100}],
+        }}),
+        _server_frame({"result": {"text": "你好"}}, is_last=True),
+    ]
+    ws = _FakeWS(frames)
+    monkeypatch.setattr(sauc_recognizer, "connect", _connect_to(ws))
+
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    silent = AudioChunk(
+        samples=np.zeros(160, dtype=np.int16),
+        meta=AudioFrameMeta(rms_db=-96.0, is_silent=True),
+    )
+    loud = AudioChunk(
+        samples=np.zeros(160, dtype=np.int16),
+        meta=AudioFrameMeta(rms_db=-20.0, is_silent=False),
+    )
+
+    stream = asr.recognize(_chunks(silent, loud))  # 默认门控
+    events = [e async for e in stream]
+
+    clauses = [e for e in events if e.phase == RecognitionPhase.CLAUSE]
+    assert [c.clause.text for c in clauses] == ["你好"]

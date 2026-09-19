@@ -318,6 +318,10 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 - 门控活在两个 segment 之间。宽窄: 叫名字 (wake word) 太窄太蠢; 纯拦静音太宽 (放回声); 正确宽度 = 拦静音 + 拦回声。
 - **AEC 是门控"拦回声"那一格的实现, 不是独立东西。**
 
+> 2026-09-19 后续对齐推翻上一条: 门控只做**人声检测 (VAD)**, 回声是 AEC 的独立职责 (已落地),
+> 不是门控的一格。机制也从「滑动窗口 + onset 侦测」简化为**静音阈值**: `meta.rms_db < k → None
+> (不 init), 否则放行`。最终形状见上方工作项 #2。
+
 ### 前置修复 (存量 bug + 机制)
 
 1. **`Speech.clear()` bug** (= interleaved-voice C1): `TTSSpeech.clear()` 只清 `_outputted`
@@ -326,6 +330,14 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
    stream (停嘴) 并返回其 `buffered()`; 删死账本 `_outputted` + `outputted()` (已不在 ABC)。
    测试 `test_stream_tts_speech.py::test_clear_stops_playback` 复现旧 bug、锁定新行为。
 2. **recognizer 注册门控 + 生命周期**: recognizer 支持注册拦路门控, 并给出正确生命周期。
+   **已做 2026-09-19** — 形状收窄为 `AudioGate = Callable[[AudioChunk], AudioChunk | None]` +
+   `AudioGateFactory = Callable[[], AudioGate]` (工厂每 segment 产新鲜门控), 默认
+   `silence_gate_factory(threshold_db=-50.0)` 读 capture 预计算的 `meta.rms_db`, 不重算能量。
+   门控拦在 `_run_session` 的 init 之前: None → 不 init 继续缓冲; 非 None → 放行 + init,
+   本 segment 内不再拦。测试锚定两条契约: 纯静音流不 init; 静音丢弃后首个人声帧放行。
+   前置两条 refactor (同 wave 独立 commit, 可 review):
+   - consumer 声明消费格式: `new_sequential_consumer(target_sample_rate=...)`, resample 下沉进 consumer (生产侧 fan-out 可复用、消费侧重采样不再各写一遍)。
+   - recognizer 吃 `AudioChunk` (非 `np.ndarray`), listener 的 ad-hoc 拆包/resample 桥删除。
 3. **AEC 屏蔽细节**: AEC 在两个接口表面 (near/far) 屏蔽实现, 启动时注册;**对齐延迟不能是
    "事后 hack 对齐"** (脚本里互相关/能量起点那种), 要在抽象上有机制。
    留档脚本 (调研 + offline 实测结论 + live 判据): [aec_alignment_probe.py](aec_alignment_probe.py)。

@@ -24,11 +24,14 @@ from ghoshell_common.helpers import uuid
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
+    AudioGate,
+    AudioGateFactory,
     RecognitionClause,
     RecognitionStream,
     RecognitionPhase,
     RecognitionEvent,
     RecognitionSegment,
+    silence_gate_factory,
 )
 
 from ghoshell_moss.contracts.audio import AudioChunk
@@ -90,6 +93,7 @@ class VolcengineSaucASR(ASR):
             audio_chunks: AsyncIterable[AudioChunk],
             *,
             stream_id: str | None = None,
+            gate_factory: AudioGateFactory | None = None,
     ) -> RecognitionStream:
         if self._closed:
             raise RuntimeError("ASR is closed")
@@ -98,6 +102,7 @@ class VolcengineSaucASR(ASR):
             corpus=self._corpus,
             audio_chunks=audio_chunks,
             stream_id=stream_id,
+            gate_factory=gate_factory or silence_gate_factory(),
             logger=self._logger,
             log_prefix=self._log_prefix,
             error_callback=self._error_callback,
@@ -132,8 +137,9 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             self,
             *,
             config: VolcengineSaucConfig,
-            audio_chunks: AsyncIterable[np.ndarray],
+            audio_chunks: AsyncIterable[AudioChunk],
             stream_id: str | None,
+            gate_factory: AudioGateFactory,
             logger: LoggerItf,
             log_prefix: str,
             error_callback: Callable[[Exception], None] | None,
@@ -142,6 +148,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         self._config = config
         self._corpus = corpus if corpus is not None else VolcengineSaucCorpus()
         self._audio_chunks = audio_chunks
+        self._gate_factory = gate_factory
         self._logger = logger
         self._log_prefix = log_prefix
         self._error_callback = error_callback
@@ -229,7 +236,10 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         try:
             while not self._closed and not self._input_done:
                 self._commit_event.clear()
-                if await self._run_turn():
+                first = await self._next_gated_chunk()
+                if first is None:
+                    break
+                if await self._run_turn(first):
                     self._advance_segment()
                     backoff = self._config.connect_backoff_initial
                     consecutive = 0
@@ -251,7 +261,23 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         finally:
             await self._queue.put(None)
 
-    async def _run_turn(self) -> bool:
+    async def _next_gated_chunk(self) -> AudioChunk | None:
+        """读下一段首个「过门控」的 chunk; 音频耗尽且未过门控时返回 None.
+
+        门控每 segment 一个新鲜实例 (工厂产), 拦在 init 之前 — 返回 None 就不开
+        WS、不 init; 一旦放行, 本 segment 内不再拦.
+        """
+        gate = self._gate_factory()
+        async for chunk in self._audio_chunks:
+            if self._closed:
+                return None
+            out = gate(chunk)
+            if out is not None:
+                return out
+        self._input_done = True
+        return None
+
+    async def _run_turn(self, first_chunk: AudioChunk) -> bool:
         """跑一个 turn: 开 WS → init → send/receive 并发 → 尾包后切段退出.
 
         返回 True=正常跑完; connect/init 失败返回 False (由 _run_session 退避重试).
@@ -262,7 +288,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         try:
             async with await connect(self._config, self._request_id) as ws:
                 await ws.send(create_init_request(self._segment_id, self._config, self._corpus))
-                send_task = asyncio.create_task(self._send_loop(ws))
+                send_task = asyncio.create_task(self._send_loop(ws, first_chunk))
                 receive_task = asyncio.create_task(self._receive_loop(ws))
                 await receive_task
         except asyncio.CancelledError:
@@ -295,18 +321,18 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
 
     # ── loops ──
 
-    async def _send_loop(self, ws) -> None:
+    async def _send_loop(self, ws, first_chunk: AudioChunk) -> None:
         # init (create_init_request) 已占用 seq=1, 音频从 seq=2 起递增.
         seq = 2
         committed = False
         try:
+            # 门控放行的首 chunk 先发, 再续喂剩余 (本 segment 内不再拦).
+            await self._send_audio(ws, first_chunk, seq)
+            seq += 1
             async for audio in self._audio_chunks:
                 if self._closed:
                     break
-                arr = np.asarray(audio.samples).ravel()
-                self._current_audio.append(arr)
-                self._total_samples += arr.size
-                await ws.send(create_audio_only_request(nparray_to_bytes(arr), seq, is_last=False))
+                await self._send_audio(ws, audio, seq)
                 seq += 1
                 if self._commit_event.is_set():
                     self._commit_event.clear()
@@ -328,6 +354,12 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             raise
         except Exception as e:
             self._report_error(e)
+
+    async def _send_audio(self, ws, audio: AudioChunk, seq: int) -> None:
+        arr = np.asarray(audio.samples).ravel()
+        self._current_audio.append(arr)
+        self._total_samples += arr.size
+        await ws.send(create_audio_only_request(nparray_to_bytes(arr), seq, is_last=False))
 
     async def _receive_loop(self, ws) -> None:
         try:

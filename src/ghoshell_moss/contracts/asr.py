@@ -29,7 +29,29 @@ __all__ = [
     "RecognitionClause",
     "RecognitionEvent",
     "RecognitionSegment",
+    "AudioGate",
+    "AudioGateFactory",
+    "silence_gate_factory",
 ]
+
+
+AudioGate = Callable[[AudioChunk], AudioChunk | None]
+"""输入门控: 吃 AudioChunk, 返回放行 chunk 或 None (丢弃/继续缓冲)."""
+
+AudioGateFactory = Callable[[], AudioGate]
+"""门控工厂: 每 segment 产一个新鲜门控 (门控有状态, 不能跨 segment 复用)."""
+
+
+def silence_gate_factory(threshold_db: float = -50.0) -> AudioGateFactory:
+    """默认输入门控: rms_db < threshold_db 的静音帧丢弃 (返回 None), 否则放行.
+
+    静音判据来自 capture 侧预计算的 ``AudioChunk.meta.rms_db``, 门控不重算能量.
+    """
+    def factory() -> AudioGate:
+        def gate(chunk: AudioChunk) -> AudioChunk | None:
+            return None if chunk.meta.rms_db < threshold_db else chunk
+        return gate
+    return factory
 
 
 class RecognitionPhase(str, Enum):
@@ -283,8 +305,12 @@ class ASR(ABC):
             audio_chunks: AsyncIterable[AudioChunk],
             *,
             stream_id: str | None = None,
+            gate_factory: AudioGateFactory | None = None,
     ) -> RecognitionStream:
-        """Start a continuous recognition loop consuming the audio stream; returns a RecognitionStream."""
+        """Start a continuous recognition loop consuming the audio stream; returns a RecognitionStream.
+
+        ``gate_factory`` 是输入门控工厂, None 时用默认静音门控 (``silence_gate_factory``).
+        """
 
     async def recognize_once(self, audio_chunks: AsyncIterable[AudioChunk]) -> str:
         """Recognize a complete audio stream, return the accumulated text. Default implementation."""
