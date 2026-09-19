@@ -29,7 +29,10 @@ from ghoshell_screen_manager.surface import ScreenSurface  # noqa: E402
 _INDEX_HTML = _NODE_DIR / "index.html"
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = 8766
+DEFAULT_PORT = 0
+"""0 = bind an ephemeral port; the real port is reported back to the model. A fixed
+default collides with sibling nodes (artifacts also wants 8766), so the surface
+never claims one unless ``--port`` / ``MOSS_SCREEN_MANAGER_PORT`` asks it to."""
 
 
 def resolve_port() -> int:
@@ -54,7 +57,9 @@ async def main(matrix: Matrix) -> None:
         port=resolve_port(),
         html_path=_INDEX_HTML,
     )
-    channel = build_screen_channel(model, surface=surface, audio=audio)
+    channel = build_screen_channel(
+        model, surface=surface, audio=audio, surface_url=lambda: surface.url
+    )
 
     await surface.start()
     print(f"[screen_manager] surface at {surface.url}", flush=True)

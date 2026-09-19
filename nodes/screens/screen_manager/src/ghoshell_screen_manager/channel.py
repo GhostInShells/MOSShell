@@ -14,6 +14,7 @@ Frames go out through an injected ``surface`` (headless = a no-op) rather than t
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
@@ -45,6 +46,7 @@ def build_screen_channel(
     *,
     surface: _Surface | None = None,
     audio: MockAudioSource | None = None,
+    surface_url: str | Callable[[], str] | None = None,
     name: str = "screen_manager",
     description: str | None = None,
 ) -> Channel:
@@ -53,8 +55,16 @@ def build_screen_channel(
     :param model: window state — the single source of truth, shared with the surface.
     :param surface: the web broadcaster. None = headless (tests).
     :param audio: the audio source the mock commands drive. None = no audio knob.
+    :param surface_url: where the human surface lives, surfaced as a warm notice
+        fragment so the model can discover it without a fixed port. May be a
+        callable (resolved lazily, after the surface binds its ephemeral port).
     """
     surface = surface or _NoSurface()
+
+    def _url() -> str:
+        if surface_url is None:
+            return ""
+        return surface_url() if callable(surface_url) else surface_url
 
     async def _emit(frame: dict[str, Any]) -> None:
         await surface.broadcast(frame)
@@ -231,22 +241,23 @@ def build_screen_channel(
 
     @chan.build.named_notices
     def notices() -> dict[str, str]:
+        out: dict[str, str] = {}
+        url = _url()
+        if url:
+            out["url"] = url
         groups = " ".join(
             f"#{g}({len(model.group_items(g))})" for g in model.groups()
         )
+        out["groups"] = groups or "(none)"
         active = model.active()
         if not active:
-            return {
-                "screen": "no active group — activate() one",
-                "groups": groups or "(none)",
-            }
-        order = ", ".join(model.active_items())
-        fullscreen = f" · fullscreen #{model.fullscreen()}" if model.fullscreen() else ""
-        return {
-            "screen": (
+            out["screen"] = "no active group — activate() one"
+        else:
+            order = ", ".join(model.active_items())
+            fullscreen = f" · fullscreen #{model.fullscreen()}" if model.fullscreen() else ""
+            out["screen"] = (
                 f"active #{active} [{order}] {model.family()} {model.dir()}{fullscreen}"
-            ),
-            "groups": groups,
-        }
+            )
+        return out
 
     return chan

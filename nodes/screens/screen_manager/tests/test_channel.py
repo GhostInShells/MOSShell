@@ -124,3 +124,17 @@ async def test_open_refuses_a_duplicate_id():
         await runtime.execute_command("open", args=("a", "http://a"), kwargs={"group": "g"})
         with pytest.raises(Exception):
             await runtime.execute_command("open", args=("a", "http://b"), kwargs={"group": "g"})
+
+
+@pytest.mark.asyncio
+async def test_notice_carries_the_surface_url_when_provided():
+    model = ScreenModel()
+    chan = build_screen_channel(
+        model,
+        surface=Recorder(),
+        audio=MockAudioSource(),
+        surface_url=lambda: "http://127.0.0.1:54321",
+    )
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["url"] == "http://127.0.0.1:54321"
