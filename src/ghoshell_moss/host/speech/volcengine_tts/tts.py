@@ -365,8 +365,9 @@ class VolcengineTTS(TTS):
             connection_id = unique_id()
             header = self._conf.gen_header(connection_id=connection_id, resource_id=resource_id)
             url = self._conf.url
-            # 创建初始连接.
-            self.logger.info("%s prepare to connect to %s with header %s", self._log_prefix, url, header)
+            # 创建初始连接. header 含 app-key / access-key, 日志必须脱敏.
+            redacted = {k: ("***" if "key" in k.lower() else v) for k, v in header.items()}
+            self.logger.info("%s prepare to connect to %s with header %s", self._log_prefix, url, redacted)
             async with connect(url, additional_headers=header) as ws:
                 # 建连确认.
                 await start_connection(ws)
