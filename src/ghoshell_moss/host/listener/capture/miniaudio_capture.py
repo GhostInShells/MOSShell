@@ -28,6 +28,7 @@ from ghoshell_moss.contracts.audio import (
     AudioFrameMeta,
     AudioPullLatest,
     AudioSequentialConsumer,
+    resample,
 )
 from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_common.contracts import LoggerItf
@@ -182,10 +183,15 @@ class MiniAudioCaptureSource(AudioCaptureSource):
             logger=self._logger,
         )
 
-    def new_sequential_consumer(self, max_queue_frames: int = 128) -> AudioSequentialConsumer:
+    def new_sequential_consumer(
+        self,
+        max_queue_frames: int = 128,
+        target_sample_rate: int | None = None,
+    ) -> AudioSequentialConsumer:
         return MiniAudioSequentialConsumer(
             capture=self,
             maxsize=max_queue_frames,
+            target_sample_rate=target_sample_rate,
             logger=self._logger,
         )
 
@@ -270,9 +276,17 @@ class MiniAudioSequentialConsumer(AudioSequentialConsumer):
     ``__anext__`` 在 event loop 侧 ``async_q.get()``, 永不阻塞 loop.
     """
 
-    def __init__(self, *, capture: MiniAudioCaptureSource, maxsize: int, logger):
+    def __init__(
+        self,
+        *,
+        capture: MiniAudioCaptureSource,
+        maxsize: int,
+        target_sample_rate: int | None,
+        logger,
+    ):
         self._capture = capture
         self._maxsize = maxsize
+        self._target_sample_rate = target_sample_rate
         self._logger = logger
         self._queue: janus.Queue | None = None
         self._dispose: Callable[[], None] | None = None
@@ -314,4 +328,19 @@ class MiniAudioSequentialConsumer(AudioSequentialConsumer):
         item = await self._queue.async_q.get()
         if item is None or self._shutdown:
             raise StopAsyncIteration
-        return item
+        return self._maybe_resample(item)
+
+    def _maybe_resample(self, chunk: AudioChunk) -> AudioChunk:
+        """声明了 target_sample_rate 且 != capture 原生率时, 在消费侧重采样.
+
+        运行在 event loop 侧 (__anext__), 不碰采集线程 — 采集线程只能入队, 不能做活.
+        """
+        if self._target_sample_rate is None or self._target_sample_rate == self._capture.sample_rate:
+            return chunk
+        samples = np.asarray(chunk.samples).ravel().astype(np.int16)
+        samples = resample(
+            samples,
+            origin_rate=self._capture.sample_rate,
+            target_rate=self._target_sample_rate,
+        )
+        return chunk.model_copy(update={"samples": samples})

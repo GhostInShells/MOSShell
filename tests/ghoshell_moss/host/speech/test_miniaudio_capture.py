@@ -192,3 +192,31 @@ class TestAudioSequentialConsumer:
             await consumer.__anext__()
 
         await consumer.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
+    async def test_resamples_when_target_rate_differs(self):
+        """声明 target_sample_rate != capture 率时, 消费侧重采样."""
+        source = _make_source()  # capture sample_rate = 16000
+        consumer = source.new_sequential_consumer(max_queue_frames=32, target_sample_rate=8000)
+        await consumer.__aenter__()
+
+        source._fan_out(AudioChunk(seq=1, timestamp=1.0, samples=np.zeros(160, dtype=np.int16)))
+
+        chunk = await consumer.__anext__()
+        assert chunk.samples.size == 80  # 160 * 8000/16000
+
+        await consumer.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
+    async def test_passthrough_when_target_rate_matches(self):
+        """target_sample_rate == capture 率时不重采样 (原样透传)."""
+        source = _make_source()  # capture sample_rate = 16000
+        consumer = source.new_sequential_consumer(max_queue_frames=32, target_sample_rate=16000)
+        await consumer.__aenter__()
+
+        source._fan_out(AudioChunk(seq=1, timestamp=1.0, samples=np.zeros(160, dtype=np.int16)))
+
+        chunk = await consumer.__anext__()
+        assert chunk.samples.size == 160
+
+        await consumer.__aexit__(None, None, None)

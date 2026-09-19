@@ -195,8 +195,13 @@ class AudioCaptureSource(ABC):
         ...
 
     @abstractmethod
-    def new_sequential_consumer(self, max_queue_frames: int = 128) -> "AudioSequentialConsumer":
-        """"""
+    def new_sequential_consumer(
+        self,
+        max_queue_frames: int = 128,
+        target_sample_rate: int | None = None,
+    ) -> "AudioSequentialConsumer":
+        """创建有序消费者. ``target_sample_rate`` 非 None 且 != capture 原生率时,
+        消费者内部重采样 — 消费格式声明在实例化处, 重采样不再由各消费方手写."""
         ...
 
     @abstractmethod

@@ -25,7 +25,6 @@ from ghoshell_moss.contracts.audio import (
     AudioCaptureSource,
     AudioChunk,
     AudioSequentialConsumer,
-    resample,
 )
 from ghoshell_moss.contracts.listener import ASRListener, Discard, ListenerState
 
@@ -160,8 +159,7 @@ class HostListenerState(ListenerState):
         self._logger = logger
         self._log_prefix = "[HostListenerState]"
 
-        # 采样率桥接: capture 产出率 vs asr 期望率.
-        self._capture_rate = capture.sample_rate
+        # ASR 期望率 — 声明给 consumer, 重采样由 consumer 在消费侧完成.
         self._asr_rate = asr.get_info().sample_rate
 
         self._consumer: Optional[AudioSequentialConsumer] = None
@@ -184,7 +182,7 @@ class HostListenerState(ListenerState):
         self._started = True
         self._running = True
 
-        self._consumer = self._capture.new_sequential_consumer()
+        self._consumer = self._capture.new_sequential_consumer(target_sample_rate=self._asr_rate)
         await self._consumer.__aenter__()
         self._recognition = self._asr.recognize(self._audio_gen())
         self._recognition.on_segment(self._dispatch_segment)
@@ -245,14 +243,12 @@ class HostListenerState(ListenerState):
     # ── internals ──
 
     async def _audio_gen(self) -> AsyncIterable[np.ndarray]:
-        """consumer (AudioChunk) → resample → np.ndarray 的桥."""
+        """consumer (AudioChunk, 已按 asr_rate 重采样) → np.ndarray 的桥."""
         async for chunk in self._consumer:
             self._dispatch_audio(chunk)
             samples = np.asarray(chunk.samples).ravel().astype(np.int16)
             if samples.size == 0:
                 continue
-            if self._capture_rate != self._asr_rate:
-                samples = resample(samples, origin_rate=self._capture_rate, target_rate=self._asr_rate)
             yield samples
 
     async def _pump(self) -> None:
