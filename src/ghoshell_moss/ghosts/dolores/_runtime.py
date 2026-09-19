@@ -1,6 +1,9 @@
 import asyncio
 import contextlib
+import json
 import logging
+import os
+import re
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
@@ -38,6 +41,60 @@ from ._prompts import (
 
 # ego 轨迹索引的根目录 (相对 ghost_home); branch 名由 memento config 决定.
 _EGO_MEMENTO_DIR = ".memento/ego"
+
+# dsh 默认模型 — 读 ghost_home/.env (见 stubs/.env.example), 启动时压进 DSH_HOME/settings.yaml.
+# 必须是**有视觉**的模型 id: dsh 对纯文本 id 会在出站前把每张图投影成文本占位
+# ([image omitted because this model accepts text only; ...]), ghost 于是"看不见"图.
+_ENV_DEFAULT_MODEL = "DOLORES_DEFAULT_MODEL"
+_ENV_DEFAULT_MODEL_PROVIDER = "DOLORES_DEFAULT_MODEL_PROVIDER"
+_DEFAULT_MODEL = "deepseek-flash"
+_DEFAULT_MODEL_PROVIDER = "deepseek-official"
+# settings.yaml 里承载默认模型的 section 名 (dsh-agent-default-model 的 settings namespace).
+_SETTINGS_MODEL_SECTION = "agent-default-model"
+_SETTINGS_FILE = "settings.yaml"
+# 可安全写成 YAML plain scalar 的形状; 其余转成 JSON 双引号串 (合法 YAML 标量).
+_PLAIN_SCALAR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _yaml_scalar(value: str) -> str:
+    return value if _PLAIN_SCALAR.fullmatch(value) else json.dumps(value)
+
+
+def _assert_model_section(text: str, provider: str, model: str) -> str:
+    """Set provider/model inside the ``agent-default-model`` section of a settings document.
+
+    Textual on purpose. The document is owned by dsh: its YAML 1.2 emitter writes it, and its
+    own writes are leaf-level diffs that keep comments and formatting. A PyYAML round-trip
+    (YAML 1.1) would read `reasoningEffort: off` as a bool and write `false` back — which fails
+    dsh's string schema and takes the whole section down with it. Only the two leaves we own are
+    rewritten here; every other byte is carried through.
+    """
+    header = f"{_SETTINGS_MODEL_SECTION}:"
+    values = {"provider": provider, "model": model}
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.rstrip() == header), None)
+    if start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(header)
+        lines.extend(f"  {key}: {_yaml_scalar(value)}" for key, value in values.items())
+        return "\n".join(lines) + "\n"
+    # 段落范围 = header 之后所有空行或缩进行.
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
+        end += 1
+    body: list[str] = []
+    seen: set[str] = set()
+    for line in lines[start + 1:end]:
+        key = next((k for k in values if line.startswith(f"  {k}:")), None)
+        if key is None:
+            body.append(line)
+        else:
+            body.append(f"  {key}: {_yaml_scalar(values[key])}")
+            seen.add(key)
+    body.extend(f"  {key}: {_yaml_scalar(values[key])}" for key in values if key not in seen)
+    lines[start + 1:end] = body
+    return "\n".join(lines) + "\n"
 
 
 class Dolores(Ghost):
@@ -254,6 +311,9 @@ class Dolores(Ghost):
         # the source of startup-time config items (dsh web auto-open, etc.). The ghost owns this file.
         if self._home is not None:
             self._load_env()
+        # assert the configured default model into the dsh settings document — dsh reads it at
+        # startup, so it must land before the spawn below (and after .env, which carries the config).
+        await asyncio.to_thread(self._sync_default_model)
         # open and hold the root ground (ghost_home cognitive field). Stub sync runs first (GROUND.md
         # already written); the GroundSet lifecycle is managed by the exit stack; the memory ground
         # section must render before ego creation.
@@ -510,6 +570,37 @@ class Dolores(Ghost):
             self._home / ".dsh" / ".agent-presets",
             dirs_exist_ok=True,
         )
+
+    def _sync_default_model(self) -> tuple[str, str] | None:
+        """Assert the configured default model into the dsh settings document (DSH_HOME/settings.yaml).
+
+        dsh resolves ``agent-default-model`` from its settings document live, and that document
+        overrides the default shipped by dsh-base — it is the same seam the dsh web Models page
+        writes. Asserting it here makes the ghost's model owned by the ghost home (see
+        ``stubs/.env.example``) rather than by whatever the UI last wrote, so a text-only model
+        picked there cannot silently turn the ghost blind to images.
+
+        Returns the applied (provider, model), or None when there is no ghost home / no usable
+        config.
+        """
+        if self._home is None:
+            return None
+        provider = os.environ.get(_ENV_DEFAULT_MODEL_PROVIDER, _DEFAULT_MODEL_PROVIDER).strip()
+        model = os.environ.get(_ENV_DEFAULT_MODEL, _DEFAULT_MODEL).strip()
+        if not provider or not model:
+            self.logger.warning(
+                "dsh default model config is empty (%s/%s) — leaving %s untouched",
+                provider, model, _SETTINGS_FILE,
+            )
+            return None
+        path = self._resolve_dsh_home(self._load_config().dsh.home) / _SETTINGS_FILE
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        patched = _assert_model_section(text, provider, model)
+        if patched != text:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(patched, encoding="utf-8")
+            self.logger.info("dsh default model set to %s/%s", provider, model)
+        return provider, model
 
     def _resolve_dsh_home(self, home: str | Path | None) -> Path:
         if home is None:

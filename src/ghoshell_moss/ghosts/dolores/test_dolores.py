@@ -188,6 +188,82 @@ class TestStubsSync:
         assert session.outputs == []
 
 
+class TestDoloresDefaultModel:
+    """dsh 的默认模型归 ghost home 所有: 启动时压进 .dsh/settings.yaml 的 agent-default-model.
+
+    这一层不做 UI 的对手 —— 它是权威. 无它, 网页 Models 面挑一个纯文本模型就会让 dsh 在
+    出站前把每张图投影成文本占位, ghost 于是"看不见"图.
+    """
+
+    @staticmethod
+    def _boot(home: Path) -> None:
+        ghost = _dolores(home=home, session=MockSession())
+
+        async def run():
+            async with ghost:
+                pass
+
+        asyncio.run(run())
+
+    @staticmethod
+    def _settings(home: Path) -> dict:
+        return yaml.safe_load((home / ".dsh" / "settings.yaml").read_text(encoding="utf-8"))
+
+    def test_creates_settings_with_vision_capable_default(self, tmp_path: Path, monkeypatch):
+        # 没有 settings.yaml 的首次启动: 落一份, 默认模型必须是有视觉的 id.
+        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
+
+        self._boot(tmp_path)
+
+        section = self._settings(tmp_path)["agent-default-model"]
+        assert section == {"provider": "deepseek-official", "model": "deepseek-flash"}
+
+    def test_overwrites_a_text_only_model(self, tmp_path: Path, monkeypatch):
+        # 网页 Models 面挑了纯文本模型 (deepseek-v4-flash) → 启动时必须被换回有视觉的默认.
+        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
+        (tmp_path / ".dsh").mkdir()
+        (tmp_path / ".dsh" / "settings.yaml").write_text(
+            "agent-default-model:\n"
+            "  provider: deepseek-official\n"
+            "  model: deepseek-v4-flash\n"
+            "  reasoningEffort: off\n",
+            encoding="utf-8",
+        )
+
+        self._boot(tmp_path)
+
+        # 文本级 patch: 换掉 model, 其余叶子 (含 `reasoningEffort: off`) 逐字保留.
+        text = (tmp_path / ".dsh" / "settings.yaml").read_text(encoding="utf-8")
+        assert "model: deepseek-flash\n" in text
+        assert "model: deepseek-v4-flash\n" not in text
+        assert "reasoningEffort: off\n" in text
+
+    def test_preserves_other_settings_sections(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
+        (tmp_path / ".dsh").mkdir()
+        (tmp_path / ".dsh" / "settings.yaml").write_text(
+            "ui-onboarding:\n  welcomeNoticeVersion: 2026-08-13.1\n",
+            encoding="utf-8",
+        )
+
+        self._boot(tmp_path)
+
+        settings = self._settings(tmp_path)
+        assert settings["ui-onboarding"]["welcomeNoticeVersion"] == "2026-08-13.1"
+        assert settings["agent-default-model"]["model"] == "deepseek-flash"
+
+    def test_env_selects_the_model(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("DOLORES_DEFAULT_MODEL", "deepseek-v4-flash-vision-exp")
+        monkeypatch.setenv("DOLORES_DEFAULT_MODEL_PROVIDER", "deepseek-official")
+
+        self._boot(tmp_path)
+
+        assert self._settings(tmp_path)["agent-default-model"]["model"] == "deepseek-v4-flash-vision-exp"
+
+
 class TestDolores:
     def test_is_ghost_abc(self):
         assert isinstance(_dolores(), Ghost)
