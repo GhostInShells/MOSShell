@@ -33,6 +33,19 @@ class TTSManagerConfig(ConfigType):
     def conf_name(cls) -> str:
         return 'tts_factory'
 
+    def validate(self) -> None:
+        """resolved 后自校验: 关键鉴权 key 非空 (env 缺失时 resolve 保留 $VAR 占位)."""
+        if self.use == 'volcengine_stream_tts_model':
+            conf = self.volcengine_stream_tts_model_config
+            missing = [
+                name for name, value in (
+                    ("app_key", conf.app_key),
+                    ("access_token", conf.access_token),
+                ) if not value or value.startswith("$")
+            ]
+            if missing:
+                raise ValueError(f"Volcengine TTS env not set: {', '.join(missing)}")
+
 
 class TTSServiceProvider(Provider[TTS]):
     """tts service provider"""
@@ -43,6 +56,7 @@ class TTSServiceProvider(Provider[TTS]):
     def factory(self, con: IoCContainer) -> INSTANCE:
         store = con.force_fetch(ConfigStore)
         manager_conf = store.get_or_create(TTSManagerConfig())
+        manager_conf.validate()
 
         if manager_conf.use == 'volcengine_stream_tts_model':
             return self._factory_volcengine_stream_tts_model(

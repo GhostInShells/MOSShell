@@ -114,7 +114,7 @@ class _SpeechCommandFactory:
             except asyncio.CancelledError:
                 # stream 已随 play 的上下文退出关闭, 但 batch 的 clause 还留着 — 对齐结果仍可读.
                 CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
-            return played_message(samples)
+            return played_message(samples) or chunks__.played_text() or None
 
         return PyCommand(func=__content__, partial=_content_partial, name=name, blocking=True)
 

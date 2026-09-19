@@ -361,7 +361,19 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 5. **moss runtime 启动 flag** (可能进 host 表面): 默认 speech; 可选 speech + listener 的
    interleaved voice 状态机 (或改名叫 AEC, 对齐行业); 可选择空。
 6. **config type 加 `validate` 函数**: per-config 自校验 (如环境变量实际为空时 raise)。
+   **已做 2026-09-20 (approach 2, 不做 ConfigStore 机制)**: 仅这几个 config 加 `validate()`,
+   provider 显式调用 (非 ConfigStore 读时自动):
+   - `TTSManagerConfig.validate()` — volcengine 分支检查 `app_key`/`access_token` 非空非 `$`;
+     `TTSServiceProvider.factory` `get_or_create` 后调用.
+   - `VolcengineSaucConfig.validate()` — 检查 `api_key` (listener 侧后接).
+   **待做**: ConfigType 基类 `validate()` + ConfigStore 读时调用一次的机制 (可选, 用户判可跳过).
 7. **provider 降级**: speech / listener provider 据 config validate 降级 (null speech / null listener)。
+   **已做 2026-09-20 (speech 侧)**: `TTSSpeechServiceProvider.factory` catch `force_fetch(TTS)`
+   异常 → `logger.warning` + 返回 `NullSpeech()`. `NullSpeech` 现在有不可用信号:
+   `_NullSpeechStream.played_text()` 返回 `"speech 注册不可用"`, `__content__` 返回
+   `played_message(samples) or chunks__.played_text() or None` 让消息浮出.
+   于是 `speech=True`+缺 env → say 挂载但返回"注册不可用"; `speech=False` → 不挂 say.
+   **待做**: listener provider 降级 (listener 未装线).
 8. **SystemError / SystemBootstrap 模块**: 注册为 Project 默认依赖, provider 可获取它记录
    启动异常; 封装成 channel (moss 运行后 ghost 可看系统级异常, 可 pull 最近 n 条); 甚至考虑作 logger handler。
 

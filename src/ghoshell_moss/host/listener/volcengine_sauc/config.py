@@ -115,3 +115,8 @@ class VolcengineSaucConfig(ConfigType):
     @classmethod
     def conf_name(cls) -> str:
         return 'seed_asr_config'
+
+    def validate(self) -> None:
+        """resolved 后自校验: api_key 非空 (env 缺失时 resolve 保留 $VAR 占位)."""
+        if not self.api_key or self.api_key.startswith("$"):
+            raise ValueError("Volcengine ASR env not set: api_key")
