@@ -1,24 +1,51 @@
-// ghost-in-bilibili: 可拖拽球(灰=停/绿=运行) + 垂直面板(状态/输入/输出/JS审批)
+// ghost-in-bilibili content script.
+//
+// 页面侧:主球(灰=停 / 绿=授权感知本页)+ 环绕卫星(每颗=一项能力,绿=授权)。
+// 内容变化(B 站自动播放换视频)靠"url 变化 + video src 变化"双信号检测,不只盯 url。
+// 模型下发的 cmd 只走枚举动作表,绝不在页面里 eval —— CSP 禁 unsafe-eval,这也是
+// 安全性质:ghost 对页面的权力恰好是这张表。
+
 (function () {
-  if (document.getElementById('moss-root')) return;
+  if (document.getElementById('moss-gib-root')) return;
 
-  const BALL = 48, PANEL_W = 300, GAP = 8;
-  let running = false;
-  let pollTimer = null;
-  const page = () => ({
-    url: location.href,
-    title: document.title,
-    bvid: (location.href.match(/BV[0-9A-Za-z]{10}/) || [])[0] || null,
-  });
+  const BALL = 44;
+  const SAT = 20;
+  const GROUPS = [
+    { key: 'sense', label: '状态' },
+    { key: 'control', label: '控制' },
+    { key: 'subtitle', label: '字幕' },
+    { key: 'interact', label: '弹幕' },
+  ];
 
-  const send = (msg) => new Promise((resolve) => {
-    try { chrome.runtime.sendMessage(msg, (r) => resolve(r || {})); }
-    catch (e) { resolve({ error: e.message }); }
-  });
+  let presence = false;
+  const grants = { sense: false, control: false, subtitle: false, interact: false };
+  let lastHref = location.href;
+  let lastSrc = '';
 
-  // ---- ball ----
+  const bvid = () => (location.href.match(/BV[0-9A-Za-z]{10}/) || [])[0] || null;
+  const title = () => document.title;
+
+  function send(msg) {
+    try { chrome.runtime.sendMessage(msg, () => void chrome.runtime.lastError); } catch (e) {}
+  }
+
+  function findVideo() {
+    let v = document.querySelector('video');
+    if (v) return v;
+    for (const sel of ['bwp-video', 'bilibili-player', '.bpx-player-video-wrap']) {
+      const el = document.querySelector(sel);
+      if (el && el.shadowRoot) {
+        v = el.shadowRoot.querySelector('video');
+        if (v) return v;
+      }
+    }
+    return null;
+  }
+
+  // ---- UI ---------------------------------------------------------------
+
   const ball = document.createElement('div');
-  ball.id = 'moss-root';
+  ball.id = 'moss-gib-root';
   ball.textContent = '·';
   Object.assign(ball.style, {
     position: 'fixed', top: '16px', left: (window.innerWidth - BALL - 16) + 'px',
@@ -30,13 +57,70 @@
     transition: 'background .2s',
   });
   document.body.appendChild(ball);
-  send({ type: 'config' }).then((r) => { if (r && r.ghostName) ball.textContent = r.ghostName; });
 
-  // ---- panel: 状态 → 输入 → 输出 → JS ----
+  // 卫星:四颗小球围着主球排成十字
+  const satWrap = document.createElement('div');
+  satWrap.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;';
+  document.body.appendChild(satWrap);
+  const sats = GROUPS.map((g, i) => {
+    const s = document.createElement('div');
+    s.textContent = g.label[0];
+    s.title = `${g.label} (未授权)`;
+    Object.assign(s.style, {
+      position: 'absolute', width: SAT + 'px', height: SAT + 'px', borderRadius: '50%',
+      background: '#444', color: '#fff', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', cursor: 'pointer', pointerEvents: 'auto',
+      fontSize: '10px', fontFamily: 'ui-monospace, monospace', userSelect: 'none',
+      transition: 'background .2s',
+    });
+    s.addEventListener('click', () => {
+      grants[g.key] = !grants[g.key];
+      paintSat(s, grants[g.key]);
+      s.title = `${g.label} (${grants[g.key] ? '已授权' : '未授权'})`;
+      send({ type: 'auth', group: g.key, on: grants[g.key] });
+    });
+    satWrap.appendChild(s);
+    return s;
+  });
+
+  function paintSat(s, on) { s.style.background = on ? '#3ddc8f' : '#444'; }
+
+  function placeSats() {
+    const r = ball.getBoundingClientRect();
+    const cx = r.left + BALL / 2, cy = r.top + BALL / 2;
+    const orbit = BALL / 2 + SAT / 2 + 6;
+    const pts = [
+      [cx, cy - orbit], [cx + orbit, cy], [cx, cy + orbit], [cx - orbit, cy],
+    ];
+    sats.forEach((s, i) => {
+      s.style.left = (pts[i][0] - SAT / 2) + 'px';
+      s.style.top = (pts[i][1] - SAT / 2) + 'px';
+    });
+  }
+  placeSats();
+
+  // ---- drag vs click ----
+  let drag = null, dragged = false;
+  ball.addEventListener('mousedown', (e) => {
+    const r = ball.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    dragged = false;
+    ball.style.cursor = 'grabbing';
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    if (Math.abs(e.clientX - drag.dx - ball.getBoundingClientRect().left) +
+        Math.abs(e.clientY - drag.dy - ball.getBoundingClientRect().top) > 2) dragged = true;
+    ball.style.left = (e.clientX - drag.dx) + 'px';
+    ball.style.top = (e.clientY - drag.dy) + 'px';
+    placeSats();
+  });
+  document.addEventListener('mouseup', () => { drag = null; ball.style.cursor = 'grab'; });
+
+  // ---- panel:状态 → 输入 → 输出 ----
   const panel = document.createElement('div');
-  panel.id = 'moss-panel';
-  panel.style.cssText = 'position:fixed;z-index:2147483647;width:' + PANEL_W + 'px;' +
-    'background:#0f1318;border:1px solid #2a3340;border-radius:6px;padding:10px;display:none;' +
+  panel.style.cssText = 'position:fixed;z-index:2147483647;width:300px;background:#0f1318;' +
+    'border:1px solid #2a3340;border-radius:6px;padding:10px;display:none;' +
     'font-family:ui-monospace,monospace;font-size:12px;color:#ddd;box-shadow:0 3px 14px rgba(0,0,0,.5);';
   document.body.appendChild(panel);
 
@@ -53,145 +137,109 @@
       const text = input.value.trim();
       send({ type: 'input', text });
       input.value = '';
-      say('→ 已发送: ' + text);
+      output.textContent = '→ 已发送: ' + text;
     }
   });
   panel.appendChild(input);
 
   const output = document.createElement('div');
-  output.style.cssText = 'margin-top:6px;color:#8b97a6;font-size:11px;min-height:14px;max-height:80px;' +
-    'overflow:auto;word-break:break-all;';
+  output.style.cssText = 'margin-top:6px;color:#8b97a6;font-size:11px;min-height:14px;' +
+    'max-height:80px;overflow:auto;word-break:break-all;';
   panel.appendChild(output);
-
-  const jsArea = document.createElement('div');
-  panel.appendChild(jsArea);
 
   function say(text) { output.textContent = text; }
 
   function updateStatus() {
-    status.innerHTML = running
-      ? `<span style="color:#3ddc8f">●</span> 感知中 · ${page().bvid || '非视频页'}`
+    status.innerHTML = presence
+      ? '<span style="color:#3ddc8f">●</span> 感知中 · ' + (bvid() || '非视频页')
       : '<span style="color:#555">●</span> 已停';
   }
   updateStatus();
 
-  function positionPanel() {
+  function placePanel() {
     const r = ball.getBoundingClientRect();
-    const estH = 260;
-    let top = r.bottom + GAP;
-    let left = r.left;
-    if (left + PANEL_W > window.innerWidth - GAP) left = window.innerWidth - PANEL_W - GAP;
-    if (left < GAP) left = GAP;
-    if (top + estH > window.innerHeight - GAP) top = Math.max(GAP, r.top - estH - GAP);
+    let top = r.bottom + 8;
+    let left = r.left - (300 - BALL) / 2;
+    if (left + 300 > window.innerWidth - 8) left = window.innerWidth - 300 - 8;
+    if (left < 8) left = 8;
+    if (top + 120 > window.innerHeight - 8) top = Math.max(8, r.top - 120 - 8);
     panel.style.left = left + 'px';
     panel.style.top = top + 'px';
   }
-  function showPanel() { positionPanel(); panel.style.display = 'block'; }
-  function hidePanel() { panel.style.display = 'none'; }
-
-  // ---- drag vs click ----
-  let drag = null, dragged = false;
-  ball.addEventListener('mousedown', (e) => {
-    const r = ball.getBoundingClientRect();
-    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-    dragged = false;
-    ball.style.cursor = 'grabbing';
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!drag) return;
-    if (Math.abs(e.clientX - drag.dx - ball.getBoundingClientRect().left) +
-        Math.abs(e.clientY - drag.dy - ball.getBoundingClientRect().top) > 2) dragged = true;
-    ball.style.left = (e.clientX - drag.dx) + 'px';
-    ball.style.top = (e.clientY - drag.dy) + 'px';
-    positionPanel();
-  });
-  document.addEventListener('mouseup', () => { drag = null; ball.style.cursor = 'grab'; });
 
   ball.addEventListener('click', () => {
     if (dragged) return;
-    running = !running;
-    ball.style.background = running ? '#3ddc8f' : '#555';
+    presence = !presence;
+    ball.style.background = presence ? '#3ddc8f' : '#555';
     updateStatus();
-    send({ type: 'toggle', state: running ? 'on' : 'off', ...page() });
-    if (running) { showPanel(); startPoll(); } else { hidePanel(); stopPoll(); }
+    send({ type: 'auth', group: null, on: presence });
+    panel.style.display = presence ? 'block' : 'none';
+    if (presence) placePanel();
   });
 
-  // ---- predefined actions (no eval — bilibili CSP blocks 'unsafe-eval') ----
-  function findVideo() {
-    let v = document.querySelector('video');
-    if (v) return v;
-    for (const sel of ['bwp-video', 'bilibili-player', '.bpx-player-video-wrap']) {
-      const el = document.querySelector(sel);
-      if (el && el.shadowRoot) {
-        v = el.shadowRoot.querySelector('video');
-        if (v) return v;
-      }
-    }
-    return null;
-  }
-
+  // ---- cmd + say(from SW via tabs.sendMessage) ----
   const ACTIONS = {
-    play: () => { const v = findVideo(); if (!v) throw new Error('video not found'); return v.play(); },
+    play: async () => { const v = findVideo(); if (!v) throw new Error('video not found'); await v.play(); return 'playing'; },
     pause: () => { const v = findVideo(); if (!v) throw new Error('video not found'); v.pause(); return 'paused'; },
     seek: (sec) => { const v = findVideo(); if (!v) throw new Error('video not found'); v.currentTime = sec; return 'seeked ' + sec; },
     speed: (r) => { const v = findVideo(); if (!v) throw new Error('video not found'); v.playbackRate = r; return 'speed ' + r; },
-    getTime: () => { const v = findVideo(); if (!v) throw new Error('video not found'); return v.currentTime; },
   };
 
-  function execAction(cmd) {
+  async function execAction(cmd) {
     const fn = ACTIONS[cmd.action];
     if (!fn) return { ok: false, error: 'unknown action ' + cmd.action };
     try {
-      const result = fn(cmd.value);
-      return { ok: true, result: result === undefined ? '(undefined)' : String(result) };
+      const result = await fn(cmd.value);
+      return { ok: true, result: result === undefined ? '(done)' : String(result) };
     } catch (e) {
       return { ok: false, error: e.name + ': ' + e.message };
     }
   }
 
-  function renderCmd(cmd) {
-    jsArea.innerHTML = '';
-    const pre = document.createElement('pre');
-    pre.textContent = cmd.action + (cmd.value !== undefined && cmd.value !== null ? ' ' + cmd.value : '');
-    pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto;' +
-      'background:#06080b;border:1px solid #2a3340;border-radius:4px;padding:6px;margin:0 0 6px;';
-    jsArea.appendChild(pre);
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.type === 'cmd') {
+      execAction(msg).then((result) => {
+        send({ type: 'result', cid: msg.cid, ...result });
+      });
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (msg.type === 'say') {
+      say(msg.text);
+      sendResponse({ ok: true });
+      return false;
+    }
+  });
 
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:6px;';
-    const mkBtn = (label, bg) => {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.style.cssText = `flex:1;background:${bg};color:#fff;border:0;border-radius:4px;` +
-        'padding:6px;cursor:pointer;font:inherit;';
-      return b;
-    };
-    const accept = mkBtn('accept', '#1d6b45');
-    const deny = mkBtn('deny', '#6b1d2a');
-    accept.onclick = async () => {
-      const result = execAction(cmd);
-      await send({ type: 'js_result', id: cmd.id, page: cmd.page, ...result });
-      say(result.ok ? '✓ ' + result.result : '✗ ' + result.error);
-      jsArea.innerHTML = '';
-    };
-    deny.onclick = async () => {
-      await send({ type: 'js_result', id: cmd.id, page: cmd.page, denied: true });
-      say('已拒绝');
-      jsArea.innerHTML = '';
-    };
-    row.appendChild(accept); row.appendChild(deny);
-    jsArea.appendChild(row);
+  // ---- reporting ---------------------------------------------------------
+
+  function reportContent() {
+    send({ type: 'content', bvid: bvid(), title: title(), url: location.href });
   }
 
-  const jsQueue = [];
-  async function poll() {
-    if (jsArea.children.length) return;  // 正在审批,等结果
-    if (jsQueue.length) { renderCmd(jsQueue.shift()); return; }
-    const r = await send({ type: 'poll', page: page().url });
-    if (Array.isArray(r)) jsQueue.push(...r);
-    if (jsQueue.length) renderCmd(jsQueue.shift());
+  function reportState() {
+    const v = findVideo();
+    if (!v) return;
+    send({
+      type: 'state', t: v.currentTime, paused: v.paused,
+      rate: v.playbackRate, duration: (v.duration || 0),
+    });
   }
 
-  function startPoll() { stopPoll(); pollTimer = setInterval(poll, 500); }
-  function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+  function watchContent() {
+    setInterval(() => {
+      const v = findVideo();
+      const src = v ? (v.currentSrc || v.src) : '';
+      if (location.href !== lastHref || src !== lastSrc) {
+        lastHref = location.href;
+        lastSrc = src;
+        reportContent();
+        updateStatus();
+      }
+    }, 1000);
+  }
+
+  reportContent();
+  watchContent();
+  setInterval(reportState, 2000);
 })();

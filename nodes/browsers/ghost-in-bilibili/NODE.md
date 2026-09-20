@@ -1,6 +1,6 @@
 ---
 name: 'ghost-in-bilibili'
-description: 'bilibili shared-watching component — a Chrome extension + local HTTP node for human and ghost to watch video together'
+description: 'bilibili shared-watching — a Chrome extension + local WS node for human and ghost to watch video together'
 category: browsers
 singleton: true
 exec:
@@ -8,14 +8,17 @@ exec:
   args: main.py
 ---
 
-ghost-in-bilibili is a bilibili-specific shared-watching component: a Chrome extension
-(`extension/`) injects a draggable ghost ball into video pages, and a local HTTP node
-receives its events and serves dispatch commands back. The ghost perceives the page,
-pulls subtitles, and — once authorized — controls playback and runs reviewed JS.
+ghost-in-bilibili is a bilibili shared-watching body: a Chrome extension (`extension/`)
+injects a ghost ball + authorization satellites into video pages, and a local WS node
+receives its frames and serves dispatch commands back. The ghost perceives the page,
+reads subtitles, and — once authorized — controls playback.
 
-The node writes each payload to a temp file, reads it back, deletes it, and logs it —
-the "dump to file, node reads, delete" boundary. The browser never displays content.
+One WS per browser session: the extension's service worker holds it, every tab of that
+session multiplexes over it. Identity: `label` (p1/p2) is the only persistent page
+identity, bound to a window; `bvid` is a mutable attribute (bilibili auto-plays).
 
-Port is **fixed** (uncommon): the extension hardcodes the node URL in its manifest
-and background script, so an ephemeral port would desync.
+Port is **fixed** at 23880 — the extension hardcodes the node URL, so an ephemeral port
+would desync. Pin `MOSS_GHOST_IN_BILIBILI_ORIGINS` to the extension id to keep other
+pages out of the localhost WS (empty = allow all, dev only).
 
+Design: `.ai_partners/features/workstreams/2026/09/bilibili-shared-webview/`.
