@@ -212,6 +212,15 @@ class Dolores(Ghost):
         view = await self._root_ground.render()
         return str(view)
 
+    def _frame_root(self) -> "Path | None":
+        """Frame 发现根目录 — 边界锁在 project home 的 .ai_partners/frames.
+
+        无 matrix (纯测试 / 未入网) 时返回 None, channel() 不挂 frame 器官.
+        """
+        if self._matrix is None:
+            return None
+        return self._matrix.env.project_path / ".ai_partners" / "frames"
+
     def channel(self) -> "MutableChannel | None":
         """The ghost's reflexive control channel — its own organs as sub-channels.
 
@@ -230,6 +239,7 @@ class Dolores(Ghost):
                 workspace_root=self._home,
                 memento_manager=self._memento_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
+                frame_root=self._frame_root(),
             )
         return self._channel
 

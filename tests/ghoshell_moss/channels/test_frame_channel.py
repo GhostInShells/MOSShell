@@ -161,3 +161,43 @@ async def test_spec_returns_convention():
         result = await runtime.execute_command("spec")
         assert "frontmatter" in result
         assert ".frame.md" in result
+
+
+@pytest.mark.asyncio
+async def test_list_marks_loaded_vs_available():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _write_root(Path(tmp))
+        chan = new_frame_channel(root=root, entry="orientation.frame.md")
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command("list")
+            assert "2 frame(s)" in result
+            assert "loaded" in result
+            assert "orientation" in result
+            assert "env" in result
+
+
+@pytest.mark.asyncio
+async def test_reload_rereads_edited_questions_and_resets():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _write_root(Path(tmp))
+        chan = new_frame_channel(root=root, entry="orientation.frame.md")
+        async with chan.bootstrap() as runtime:
+            await runtime.execute_command("resolve", args=("orientation", 0, "a"))
+            # edit the frame file: add a question, then re-read
+            (root / "orientation.frame.md").write_text(
+                _FRAME + "\nA brand new question?\n", encoding="utf-8"
+            )
+            result = await runtime.execute_command("reload", args=("orientation.frame.md",))
+            assert "reloaded [orientation]" in result
+            assert "0/4" in result
+            status = await runtime.execute_command("status", args=("orientation",))
+            assert "A brand new question?" in status
+
+
+@pytest.mark.asyncio
+async def test_template_returns_starter():
+    chan = new_frame_channel(root="frames")
+    async with chan.bootstrap() as runtime:
+        result = await runtime.execute_command("template")
+        assert "description:" in result
+        assert "<question" in result

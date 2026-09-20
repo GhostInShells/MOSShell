@@ -50,8 +50,20 @@ your blind spots, and they are the point.
 
 The loaded frames and their answers are shown below. Resolve questions as they become
 answerable; overwrite them as your understanding sharpens. Frames are plain files:
-find more by listing the frame root, and author your own — the format spec is available
-on demand.
+`list` discovers them under the root, `template` emits a starter to author your own,
+and `reload` re-reads an edited file from disk. The format spec is available on demand.
+"""
+
+_FRAME_TEMPLATE = """\
+---
+description: <one line — what this frame orients>
+nexts:
+  - <relative path to a follow-up frame, optional>
+---
+
+<question — answerable from context>
+
+<question — answerable from context>
 """
 
 
@@ -189,6 +201,24 @@ def new_frame_channel(
         state["current"] = frame.label
         return frame, True
 
+    def _reload(path_like: str | Path) -> _Frame:
+        path = _resolve_path(path_like)
+        if not path.is_file():
+            raise ValueError(f"no such frame file: {path}")
+        frame = _read_frame(path, root_path)
+        frames[frame.label] = frame
+        state["current"] = frame.label
+        return frame
+
+    def _discover() -> list[str]:
+        if not root_path.is_dir():
+            return []
+        return sorted(
+            _label_of(path, root_path)
+            for path in root_path.rglob(f"*{FRAME_SUFFIX}")
+            if path.is_file()
+        )
+
     if entry is not None:
         try:
             _load(entry)
@@ -218,6 +248,28 @@ def new_frame_channel(
 
     chan.build.instruction(_render_instruction)
 
+    @chan.build.command(name="list", always_observe=True)
+    async def list_frames() -> str:
+        """List frame files under the root — loaded vs available.
+
+        Loaded frames show their resolution progress; available-but-unloaded frames are
+        shown bare. Load what you are about to work on.
+
+        :return: every ``*.frame.md`` under the root.
+        """
+        discovered = await asyncio.to_thread(_discover)
+        if not discovered:
+            return f"[frame] no frames under {root_path}"
+        loaded = set(frames)
+        lines = [f"[frame] {len(discovered)} frame(s) under root; {len(loaded)} loaded"]
+        for label in discovered:
+            if label in loaded:
+                frame = frames[label]
+                lines.append(f"  loaded   {label}  ({frame.resolved_count}/{len(frame.questions)})")
+            else:
+                lines.append(f"  {label}")
+        return "\n".join(lines)
+
     @chan.build.command(name="load", always_observe=False)
     async def load(path: str) -> str:
         """Load a frame file and make it the current frame.
@@ -232,6 +284,29 @@ def new_frame_channel(
         if not is_new:
             return f"[{frame.label}] already loaded"
         return f"loaded [{frame.label}] 0/{len(frame.questions)}"
+
+    @chan.build.command(name="reload", always_observe=False)
+    async def reload(path: str) -> str:
+        """Re-read a frame file from disk, discarding its resolution state.
+
+        Use after editing a frame's questions: the file is the index, so an edited file
+        is picked up by re-reading. Answers reset — they are working state; the questions
+        are the asset.
+
+        :param path: the frame file to re-read (absolute, or relative to the root).
+        """
+        frame = await asyncio.to_thread(_reload, path)
+        return f"reloaded [{frame.label}] 0/{len(frame.questions)}"
+
+    @chan.build.command(name="template", always_observe=True)
+    async def template() -> str:
+        """Return a starter ``*.frame.md`` template to author a new frame.
+
+        Copy it into a new file under the root, fill the description and questions, then
+        ``load`` it. Questions are blank-line-separated paragraphs — see ``spec`` for the
+        full format.
+        """
+        return _FRAME_TEMPLATE
 
     @chan.build.command(name="resolve", always_observe=False)
     async def resolve(label: str, question_index: int, answer: str) -> str:

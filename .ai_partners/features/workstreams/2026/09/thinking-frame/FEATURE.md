@@ -5,9 +5,9 @@ description: 问题集即思维框架 — 以一组问题从上下文抽取结�
 milestone: null
 priority: P2
 status: completed
-status_note: frame channel + kernel instruction re-render landed; dolores wiring deferred
+status_note: frame channel + kernel instruction re-render landed; list/reload/template + dolores wiring landed (2026-09-21)
 title: Thinking Frame
-updated: '2026-09-15'
+updated: '2026-09-21'
 ---
 
 # Thinking Frame — 问题集即思维框架
@@ -52,9 +52,9 @@ blackout 实验是它的智力检验器：失忆但保留认知能力时，重�
 
 ## Deferred (not this feature)
 
-channel 本体 + 内核改动已落地（9 项测试）。以下延后，dolores 接线可能不走 feature：
+channel 本体 + 内核改动已落地（9 项测试）。以下延后：
 
-- **dolores 接线** — 把 `new_frame_channel(...)` 挂进 dolores ghost 树，让 ghost 里的"你"自己改帧。
+- ~~**dolores 接线**~~ — 2026-09-21 已接线：`build_dolores_channel` 挂 `new_frame_channel(root=project_home/.ai_partners/frames)`，边界锁 project home。
 - **真实会话 dogfooding** — 挂上后在一个真实 session 里 resolve、compact、验证答案存活。
 - **命名未定** — "frame" 是否够自解释存疑。若改名，动 feature 名 / channel 名 / 后缀 / 标签，成本低。
 - **框架库** — 目前只有 `orientation` 一个种子帧。真正的价值在问题框架的积累与复用。
@@ -67,8 +67,15 @@ channel 本体 + 内核改动已落地（9 项测试）。以下延后，dolores
 
 ## Implementation Notes
 
-- **命令面**: `load(path)` / `resolve(label, index, answer)` / `status(label)` / `spec()`。
+- **命令面**: `list` / `load(path)` / `reload(path)` / `resolve(label, index, answer)` / `status(label)` / `spec()` / `template()`。
 - **呈现分层**: 答案 + 礼仪都走 `instruction`（cold，经内核改造每 refresh 重渲染，跨 compact 经 `epoch_start_point` 重供）。无 notice——未压缩上下文里答案已在 transcript，不需要温数据重发。
 - **entry 在构造期加载**（同步读文件，失败时错误进 instruction，不炸 channel 树），对齐 ground 的"构造期即物化"。
 - **nexts 存储为 root-relative**，这样完成的 hint 直接可喂给 `load`。
-- 测试: `tests/ghoshell_moss/channels/test_frame_channel.py`（9 项，覆盖问题形状解析 / 最小 ack / 完成 hint 单次 / unknown 一等答案 / unresolved 优先 / 多帧 load / 坏 frontmatter 报错 / spec）。
+- 测试: `tests/ghoshell_moss/channels/test_frame_channel.py`（12 项，覆盖问题形状解析 / 最小 ack / 完成 hint 单次 / unknown 一等答案 / unresolved 优先 / 多帧 load / 坏 frontmatter 报错 / spec / list / reload / template）。
+
+## 2026-09-21 追加：发现 / 重读 / 模板 + dolores 接线
+
+- **`list` 发现面** — 补上 instruction 里"listing the frame root"的承诺：glob `*.frame.md`，标注 loaded（带进度）vs available。
+- **`reload` 重读** — 帧文件即索引，编辑问题后 `reload` 重读磁盘并重置答案（答案是工作态，问题是资产）。"问题可修改"走文件编辑 + reload，不引入写命令——与 KD5/KD8（文件即真相）一致。
+- **`template` 导出** — 返回起步模板，`spec()` → `template()` → 写新帧 → `load` 的自迭代闭环补齐。
+- **dolores 接线** — `build_dolores_channel(frame_root=...)`；`_runtime.py` 传 `project_home/.ai_partners/frames`，边界锁 project home，无 matrix 时不挂。

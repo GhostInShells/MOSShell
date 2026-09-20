@@ -1517,3 +1517,42 @@ class TestDoloresMemories:
     def test_returns_empty_when_nothing_to_remember(self):
         ghost = _dolores()
         assert ghost.memories() == []
+
+
+class TestBuildChannel:
+    @pytest.mark.asyncio
+    async def test_mounts_frame_channel_when_frame_root_given(self, tmp_path: Path):
+        from ghoshell_moss.ground import DefaultGroundSet
+
+        from .channel import build_dolores_channel
+
+        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        frame_root = tmp_path / "frames"
+        frame_root.mkdir()
+        (frame_root / "orientation.frame.md").write_text(
+            "---\n---\n\nWhat am I doing?\n", encoding="utf-8"
+        )
+        chan = build_dolores_channel(
+            groundset=gs, workspace_root=tmp_path, frame_root=frame_root
+        )
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            names = {m.name for m in runtime.metas().values()}
+            assert "frame" in names
+            assert "ground" in names
+
+    @pytest.mark.asyncio
+    async def test_no_frame_channel_without_frame_root(self, tmp_path: Path):
+        from ghoshell_moss.ground import DefaultGroundSet
+
+        from .channel import build_dolores_channel
+
+        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            names = {m.name for m in runtime.metas().values()}
+            assert "frame" not in names
+            assert "ground" in names

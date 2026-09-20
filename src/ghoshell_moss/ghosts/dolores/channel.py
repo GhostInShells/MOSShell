@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ghoshell_moss.channels.frame_channel import new_frame_channel
 from ghoshell_moss.channels.ground_channel import new_ground_channel
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.ground import GroundSet
@@ -33,6 +34,7 @@ def build_dolores_channel(
     workspace_root: str | Path,
     memento_manager: EgoMementoManager | None = None,
     memento_root: str | Path | None = None,
+    frame_root: str | Path | None = None,
     name: str = "ghost",
     description: str | None = None,
 ) -> MutableChannel:
@@ -44,6 +46,8 @@ def build_dolores_channel(
     :param memento_manager: ghost 持有的 memento 服务 — memento 子 channel 读它. None
         = 不挂记忆器官 (memento 未启用时).
     :param memento_root: 轨迹的磁盘位置 (进自解释). None = 不复述路径.
+    :param frame_root: 思维框架 (frame) 的发现根目录, 边界 = project home. None = 不挂
+        frame 器官.
     :param name: channel 名 (runtime 以 ``ghost`` 为键注册, 同名保持一致).
     :param description: 覆盖默认描述.
     """
@@ -74,6 +78,17 @@ def build_dolores_channel(
             ),
         )
     )
+    if frame_root is not None:
+        chan.import_channels(
+            new_frame_channel(
+                root=frame_root,
+                name="frame",
+                description=(
+                    "Your thinking framework — a question set you resolve from context to hold "
+                    "a stable self-model across context loss."
+                ),
+            )
+        )
     if memento_manager is not None:
         chan.import_channels(
             build_memento_channel(memento_manager, storage_root=memento_root)
