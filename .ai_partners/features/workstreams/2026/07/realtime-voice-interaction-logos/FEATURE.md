@@ -8,10 +8,10 @@ description: 前瞻方案锁定：当实时语音模型的工具调用足够强�
   interleaved CTML + mindflow 硬打断实现实时理解。
 milestone: null
 priority: P2
-status: design-locked
-status_note: 前瞻方案锁定：行业判据未满足，落码时机未到
+status: parked
+status_note: '前瞻设计锁定: 行业判据(§2.1 三条)未满足, 落码无意义; 设计+缺口表(G1-G11)留档, 重开判据见 §9.'
 title: Realtime Voice Interaction Logos — 音频为第一公民的流式知觉 + CTML 控制
-updated: '2026-07-28'
+updated: '2026-09-20'
 ---
 
 # Realtime Voice Interaction Logos

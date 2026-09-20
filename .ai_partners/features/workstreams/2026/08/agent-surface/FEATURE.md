@@ -1,19 +1,20 @@
 ---
-title: Agent Surface — memento agent 表面化：Agent 驱动兼容契约 + 全自然语言控制面
-status: draft
-priority: P1
 created: 2026-08-06
-updated: 2026-08-06
 depends:
-  - memento-cli-and-agent
-  - model-func
-  - cognitive-anchor
-  - claude-code-in-moss
-milestone:
-description: >-
-  把 memento agent 表面化为 moss 驱动世界的兼容契约。concrete agent 保留自己的原生
-  接口，Agent 表面（create + __call__ + context + 4 控制函数）由 agent 自实现或
-  adapter 提供。loop 是验收场景。与 claude-code-in-moss 走同一条协议骨架。
+- memento-cli-and-agent
+- model-func
+- cognitive-anchor
+- claude-code-in-moss
+description: 把 memento agent 表面化为 moss 驱动世界的兼容契约。concrete agent 保留自己的原生 接口，Agent 表面（create
+  + __call__ + context + 4 控制函数）由 agent 自实现或 adapter 提供。loop 是验收场景。与 claude-code-in-moss
+  走同一条协议骨架。
+milestone: null
+priority: P1
+status: parked
+status_note: '设计已定案(薄表面+4控制函数), 暂无施工时机: 与 claude-code-in-moss 同骨架, 待 memento agent
+  表面化排期.'
+title: Agent Surface — memento agent 表面化：Agent 驱动兼容契约 + 全自然语言控制面
+updated: '2026-09-20'
 ---
 
 # Agent Surface

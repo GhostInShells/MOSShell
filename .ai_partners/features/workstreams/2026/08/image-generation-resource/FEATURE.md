@@ -1,14 +1,15 @@
 ---
-title: Image Generation Resource
-status: draft
-priority: P2
 created: 2026-08-05
-updated: 2026-08-05
-depends: [matrix-resources]
-milestone:
-description: >-
-  将火山引擎 doubao-seedream 生图能力封装为可查询的 Matrix resource — 文本可查的
-  生成记录存储 (generation log), 图是挂在记录上的可选 payload, 经引用解析.
+depends:
+- matrix-resources
+description: 将火山引擎 doubao-seedream 生图能力封装为可查询的 Matrix resource — 文本可查的 生成记录存储 (generation
+  log), 图是挂在记录上的可选 payload, 经引用解析.
+milestone: null
+priority: P2
+status: parked
+status_note: 'P2 非当前重点: 作为 matrix-resources 协议面的最小完整样例留底, 待资源协议落地后择机实现.'
+title: Image Generation Resource
+updated: '2026-09-20'
 ---
 
 # Image Generation Resource

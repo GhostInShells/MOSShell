@@ -17,7 +17,13 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 # Open vocabulary: free-form statuses are allowed; these reserved values are the stability contract.
-RESERVED_STATUSES = {"draft", "in-progress", "completed", "dropped"}
+RESERVED_STATUSES = {"draft", "in-progress", "completed", "dropped", "parked"}
+
+# A parked workstream is a *formed proposal deliberately set aside* — a technical plan kept on
+# file for reference, carrying no attention debt. Quiet statuses are dropped from the listing
+# unless explicitly requested by status filter, so they neither pollute the default view nor
+# reach the pre-commit `check`. Retrieve them with `--status parked`.
+QUIET_STATUSES = {"parked"}
 
 # Default listing window ("last 2 months") is a rolling 60-day lookback. A naive
 # month-bucket count reaches back too shallowly: on the 1st of a month it spans
@@ -118,6 +124,10 @@ def list_features(
     Returns (features, parse_errors) — features sorted by updated date descending,
     parse_errors is a list of dicts with feature_dir, path, error, and hint keys.
 
+    Quiet statuses (see QUIET_STATUSES) are excluded unless status_filter names
+    one explicitly — a parked proposal is retrieved by asking for it, not by
+    browsing. all_months widens the time window only; it does not lift this filter.
+
     Features whose FEATURE.md frontmatter fails to parse are NOT included in the
     feature list — they appear in parse_errors instead.
     """
@@ -148,7 +158,11 @@ def list_features(
                 continue
         meta["_feature_dir"] = feat_dir.name
         meta["_feature_path"] = str(feat_dir.relative_to(workstreams_dir))
-        if status_filter and meta.get("status") != status_filter:
+        status = meta.get("status")
+        if status_filter:
+            if status != status_filter:
+                continue
+        elif status in QUIET_STATUSES:
             continue
         results.append(meta)
 

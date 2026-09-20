@@ -1,16 +1,16 @@
 ---
-title: Matrix Resources
-status: design-locked
-priority: P1
 created: 2026-07-23
-updated: 2026-08-13
-depends: [resource-http-endpoint]
-milestone:
-description: >-
-  Matrix 层的资源投影, 统一寻址 scheme://{cell-address-short}/uri-path — host 位是 cell 身份.
-  解析本地先查 (scheme, host), miss 走 zenoh. manifest 静态资源保持任意 host 不迁移 (向前兼容);
+depends:
+- resource-http-endpoint
+description: 'Matrix 层的资源投影, 统一寻址 scheme://{cell-address-short}/uri-path — host 位是
+  cell 身份. 解析本地先查 (scheme, host), miss 走 zenoh. manifest 静态资源保持任意 host 不迁移 (向前兼容);
   动态资源经 provide_resource 纯声明入网. 协议极薄: 主路径 get (uri → messages), 全局 list/recall/query
-  全部 channel 治理. 交换物为 Message, 默认渲染 meta JSON. 第一 milestone: text resource 跨场景获取.
+  全部 channel 治理. 交换物为 Message, 默认渲染 meta JSON. 第一 milestone: text resource 跨场景获取.'
+milestone: null
+priority: P1
+status: draft
+title: Matrix Resources
+updated: '2026-09-20'
 ---
 
 # Matrix Resources

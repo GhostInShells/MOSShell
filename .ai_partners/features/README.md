@@ -165,7 +165,9 @@ how to apply it.
 ```yaml
 ---
 title: Human-readable title
-status: draft              # reserved: draft | in-progress | completed | dropped (free-form allowed)
+status: draft              # reserved: draft | in-progress | completed | dropped | parked (free-form allowed)
+status_note: >-            # Optional: one line on the current state (why dropped/parked, what's next)
+  Context for the current status.
 priority: P1               # P0 | P1 | P2 | P3 — importance within the current stage, not urgency
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -206,13 +208,33 @@ its body. The split is free; the cross-reference keeps the index connected.
 
 ```
 draft → in-progress → completed
-  ↓         ↓
-  └──── dropped
+  ↓         ↓  ↑ resume
+  └──── parked / dropped
 ```
+
+- **`dropped`** — abandoned. The judgment is closed; the workstream remains only as a trace.
+- **`parked`** — a **formed proposal deliberately set aside**: a technical plan kept on file for
+  reference, optional to ever build, carrying no attention debt. This is the state for work that is
+  worth writing down but not worth doing now — "keep the design, drop the commitment."
+
+`parked` is a **quiet status**. Quiet statuses are dropped from the query unless named explicitly,
+so a parked workstream neither pollutes the default listing nor raises the pre-commit `check`
+reminder. Retrieve them deliberately:
+
+```
+moss features list --status parked
+```
+
+`--all` widens the time window only; it does not lift the quiet filter. The listing still honors the
+60-day window, so a full parked census across all time is `moss features list --status parked --all`.
+Resuming means setting the
+status back to `in-progress` — nothing moves on disk. A status_note is the place to record *why* it
+was parked and *what would reopen it*; that note is the whole value of the state, so write it when
+parking (`set-status -m`).
 
 Status is an open vocabulary. The reserved values above are a stability contract —
 they will not be removed; the CLI warns on non-reserved values and accepts them.
-A dropped workstream with discussion value stays in the tree; git keeps every anchor
+A dropped or parked workstream with discussion value stays in the tree; git keeps every anchor
 regardless. Status is a coarse signal — don't over-invest.
 
 ## CLI Reference
@@ -220,7 +242,7 @@ regardless. Status is a coarse signal — don't over-invest.
 | Command | Behavior |
 |---------|----------|
 | `moss features specification` | Render this README.md |
-| `moss features list [--status] [--all]` | List workstreams (default: last 2 months) |
+| `moss features list [--status] [--all]` | List workstreams (default: last 2 months; parked hidden) |
 | `moss features create <name>` | Create workstream from template |
 | `moss features set-status <name> <status> [-m]` | Update status + updated date in-place |
 | `moss features status [name]` | Show detailed status |

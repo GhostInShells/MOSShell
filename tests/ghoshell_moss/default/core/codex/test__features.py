@@ -13,14 +13,14 @@ from datetime import date, timedelta
 from pathlib import Path
 
 
-def _write_feature(features_dir: Path, created: date, updated: date) -> str:
+def _write_feature(features_dir: Path, created: date, updated: date, status: str = "draft") -> str:
     name = f"ws-{created.isoformat()}-{updated.isoformat()}"
     feat_dir = features_dir / "workstreams" / str(created.year) / f"{created.month:02d}" / name
     feat_dir.mkdir(parents=True, exist_ok=True)
     (feat_dir / "FEATURE.md").write_text(
         f"""---
 title: {name}
-status: draft
+status: {status}
 priority: P2
 created: {created.isoformat()}
 updated: {updated.isoformat()}
@@ -52,3 +52,29 @@ def test_recent_window_is_rolling_60_days_by_activity(tmp_path):
 
     all_time, _ = list_features(str(fd), all_months=True)
     assert {f["_feature_dir"] for f in all_time} == {name_active, name_recent, name_stale}
+
+
+def test_parked_is_quiet_unless_named(tmp_path):
+    """A parked workstream is hidden from the listing unless asked for by status.
+
+    Protocol commitment: `parked` marks a formed proposal set aside — quiet by
+    default. It is dropped from both the recent window and the all-time view,
+    and surfaces only when status_filter names it. This is what keeps parked
+    proposals out of the default list and out of the pre-commit `check`.
+    """
+    from ghoshell_moss.core.codex._features import list_features
+
+    today = date.today()
+    fd = tmp_path / "features"
+
+    name_draft = _write_feature(fd, today, today - timedelta(days=1), status="draft")
+    name_parked = _write_feature(fd, today - timedelta(days=2), today - timedelta(days=2), status="parked")
+
+    recent, _ = list_features(str(fd))
+    all_time, _ = list_features(str(fd), all_months=True)
+    only_parked, _ = list_features(str(fd), status_filter="parked", all_months=True)
+
+    assert name_parked not in {f["_feature_dir"] for f in recent}
+    assert name_parked not in {f["_feature_dir"] for f in all_time}
+    assert {f["_feature_dir"] for f in only_parked} == {name_parked}
+    assert name_draft in {f["_feature_dir"] for f in recent}

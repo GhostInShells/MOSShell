@@ -1,15 +1,14 @@
 ---
-title: MCP App Adoption — 评估 mcp-app 生态的引入价值与集成路径
-status: draft
-priority: P2
 created: 2026-08-05
-updated: 2026-08-05
 depends: []
-milestone:
-description: >-
-  独立于 mcp-fusion-point 的引入价值评估 workstream。核心问题：mcp-app（MCP Apps /
-  mcp-ui）体系对 MOSS 怎么用、哪些项目值得引入。融合点裁决只影响集成成本，不影响引入
-  价值的判断——高价值时即使不走 MCP 融合也用别的机制集成。
+description: 独立于 mcp-fusion-point 的引入价值评估 workstream。核心问题：mcp-app（MCP Apps / mcp-ui）体系对
+  MOSS 怎么用、哪些项目值得引入。融合点裁决只影响集成成本，不影响引入 价值的判断——高价值时即使不走 MCP 融合也用别的机制集成。
+milestone: null
+priority: P2
+status: parked
+status_note: '调研完成: 开放 MCP Apps 生态暂无重资产/独占交互对象, 不做 host node. 重开条件见 K5.'
+title: MCP App Adoption — 评估 mcp-app 生态的引入价值与集成路径
+updated: '2026-09-20'
 ---
 
 # MCP App Adoption — 评估 mcp-app 生态的引入价值与集成路径

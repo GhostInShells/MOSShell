@@ -1,14 +1,14 @@
 ---
-title: Openmontage Integration
-status: draft
-priority: P2
 created: 2026-08-12
-updated: 2026-08-12
 depends: []
+description: 开箱集成 OpenMontage (agentic 视频生产系统). 调研完成、设计落定、目标确认; 排入 8 月下半开发计划. 单一有状态
+  conductor channel + 大量动用 JobSupervisor 做后台任务管理
 milestone: Aug-2H
-description: >-
-  开箱集成 OpenMontage (agentic 视频生产系统). 调研完成、设计落定、目标确认;
-  排入 8 月下半开发计划. 单一有状态 conductor channel + 大量动用 JobSupervisor 做后台任务管理
+priority: P2
+status: parked
+status_note: '调研+设计已落定(D1-D7), 排期未落地: 集成成本与 AGPL 许可兼容性待重新评估.'
+title: Openmontage Integration
+updated: '2026-09-20'
 ---
 
 # Openmontage Integration

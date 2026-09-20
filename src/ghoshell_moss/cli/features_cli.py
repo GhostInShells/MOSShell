@@ -37,9 +37,11 @@ _STATUS_HINTS = {
     ("in-progress", "draft"): "Update the Motivation section if context has changed.",
 }
 _DROPPED_HINT = "Record why in -m 'reason' for future reference. The workstream stays in place."
+_PARKED_HINT = ("Record why in -m 'reason' and what would reopen it. Parked workstreams are hidden "
+                "from 'list' and 'check'; retrieve with: moss features list --status parked")
 
 # Canonical display order for status stats; free-form statuses aggregate under 'others'.
-_STATUS_ORDER = ["draft", "in-progress", "completed", "dropped"]
+_STATUS_ORDER = ["draft", "in-progress", "completed", "dropped", "parked"]
 
 
 def _status_label(stat: str) -> str:
@@ -52,6 +54,8 @@ def _status_label(stat: str) -> str:
         return f"[bold cyan]{stat}[/bold cyan]"
     if stat == "dropped":
         return f"[dim red]{stat}[/dim red]"
+    if stat == "parked":
+        return f"[dim yellow]{stat}[/dim yellow]"
     return stat
 
 
@@ -147,11 +151,11 @@ def specification(
 def list_cmd(
     status: Optional[str] = typer.Option(
         None, "--status", "-s",
-        help="Filter by status. Reserved: draft, in-progress, completed, dropped; free-form values match exactly.",
+        help="Filter by status. Reserved: draft, in-progress, completed, dropped, parked; free-form values match exactly.",
     ),
     all_months: bool = typer.Option(
         False, "--all",
-        help="List features from all time (default: last 60 days only).",
+        help="Widen to all time (default: last 60 days only). Parked stay hidden — use --status parked.",
     ),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -161,7 +165,9 @@ def list_cmd(
     """
     List active development workstreams with status and priority.
 
-    Defaults to workstreams touched in the last 60 days. Use --all to see everything.
+    Defaults to workstreams touched in the last 60 days. Use --all to widen the
+    time window. Parked workstreams stay hidden either way — ask for them
+    explicitly with --status parked.
     """
     fd = _resolve_dir(features_dir)
     features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
@@ -434,6 +440,8 @@ def set_status_cmd(
         hint = None
         if status == "dropped":
             hint = _DROPPED_HINT
+        elif status == "parked":
+            hint = _PARKED_HINT
         else:
             hint = _STATUS_HINTS.get((old_status, status))
         if hint:
@@ -481,6 +489,9 @@ def check_cmd(
 ):
     """
     List workstreams that are NOT in a terminal state (completed/dropped).
+
+    Parked workstreams never appear here — the query already drops quiet
+    statuses, so a parked proposal raises no pre-commit reminder.
 
     Intended as a non-blocking pre-commit hook — always exits 0.
     If you're committing code for any listed feature, run:
