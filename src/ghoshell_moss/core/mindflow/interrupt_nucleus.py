@@ -16,7 +16,7 @@ Structure:
 
 Reverse suppress (victory-side cooldown, dual to InputSignalNucleus's loss-side):
 - attended starts the cooldown, preventing repeated interrupts from churning the
-  shell (stop_interpretation + attention rebuild, DDOS-like)
+  shell (shell.clear + attention rebuild, DDOS-like)
 - within the cooldown add_signal silently drops — interrupts have no accumulation
   semantics, several are equivalent to one
 """
@@ -63,7 +63,7 @@ class InterruptNucleus(Nucleus):
     Mechanism: last-wins cache. ``add_signal`` writes ``_impulse``, mindflow pulls
     via ``peek`` and confirms via ``attended`` (which starts the cooldown). Multiple
     interrupts arriving before consumption are equivalent — each preempts with
-    FATAL and triggers shell.stop_interpretation.
+    FATAL and triggers shell.clear at the new attention's first frame.
 
     Reverse suppress (victory-side, dual to InputSignalNucleus's loss-side): the
     cooldown starts on attended, not on losing. FATAL only "loses" to same-id

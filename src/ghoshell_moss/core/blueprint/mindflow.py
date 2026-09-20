@@ -418,7 +418,8 @@ class Impulse(BaseModel):
     )
     interrupt: bool = Field(
         default=False,
-        description="高级系统特性, 会在思维决策前停止所有执行中的 logos."
+        description="高级系统特性: 该 impulse 获得 attention 后, runtime 在其首个思考帧前"
+                    "调用 shell.clear(), 停掉所有执行中与排队的命令. 只对首帧生效."
                     "如果整个躯体体系有平滑过度逻辑 (Idle), stop first 看起来像停止 (呆了一下). "
                     "如果没有任何平滑过度逻辑, 会产生类似 Shock/Frozen 的 震惊效果."
                     "如果为 False, 实际上 Ghost 仍然可以走快速决策 -> 详细回复, 通过快速决策做机制."
@@ -1429,8 +1430,8 @@ class ImpulsePrimitive:
         fatal_command 带 logos 走 attention 立即执行.
 
         对偶: ``interrupt`` — 同样 FATAL + effort=none, 但用 notify 模式接管
-        attention 并通过 ``interrupt`` 字段触发 shell.stop_interpretation, 表达"中断"
-        而非"补充".
+        attention 并通过 ``interrupt`` 字段让 runtime 在新 attention 首帧前
+        ``shell.clear()``, 表达"中断"而非"补充".
         """
         impulse.thinking_effort = 'none'
         impulse.priority = Priority.FATAL.value
@@ -1446,8 +1447,8 @@ class ImpulsePrimitive:
 
         FATAL 保证抢占成功, notify 走 default 成功路径创建新 attention,
         effort='none' 让 ghost.articulate 提前返回, ``interrupt=True`` 让
-        ``ghost_runtime._run_articulator`` 在新 attention 起步时调
-        ``shell.stop_interpretation()`` 清干净旧 logos.
+        runtime (MindflowInShell) 在新 attention 首帧前调 ``shell.clear()``
+        清干净旧 logos.
 
         本原语就是"打断" 的本质形态: 新 attention 起来, 旧 logos 停, ghost
         不发表任何新意见 — 等下一个真正的 impulse 进来.

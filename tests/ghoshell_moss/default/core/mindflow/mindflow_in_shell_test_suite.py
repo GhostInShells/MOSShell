@@ -136,8 +136,9 @@ class MindflowInShellTestSuite(MindflowInShell):
     def _bind_shell_clear_counter(self) -> None:
         """观测 shell.clear() 调用 — action abort → clear 协议的反推依据.
 
-        interrupt 协议的 clear 已由 interrupt_clear_calls 语义级计数, 这里只数
-        原始 shell.clear() 调用次数 (涵盖 action abort / 异常兜底两条路径).
+        interrupt 协议的 clear 由 ``_on_interrupt_clear`` hook 计数
+        (interrupt_clear_calls), 这里只数原始 shell.clear() 调用次数
+        (涵盖 interrupt / stop_reason / action abort / 异常兜底所有路径).
         """
         original_clear = self._shell.clear
 
@@ -210,8 +211,10 @@ class MindflowInShellTestSuite(MindflowInShell):
             self.attention_started.set()
             self.attention_stopped.clear()
             asyncio.create_task(self._attention_monitor(att))
-            if impulse.interrupt:
-                self.interrupt_clear_calls += 1
+
+    def _on_interrupt_clear(self, thinking: Thinking) -> None:
+        # interrupt 协议真实触发 clear 时计数 — 断言的是行为, 不是 impulse flag.
+        self.interrupt_clear_calls += 1
 
     def _on_thinking_exited(self, thinking: Thinking, err: BaseException | None) -> None:
         self.articulation_done_count += 1

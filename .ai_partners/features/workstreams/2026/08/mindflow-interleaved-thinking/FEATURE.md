@@ -1,14 +1,16 @@
 ---
-title: Mindflow Interleaved Thinking — 三循环解耦 + 观测缝合, 定版 v0.1.0
-status: in-progress
-priority: P0
 created: 2026-08-26
-updated: 2026-08-28
-depends: [interleaved-ctml-thinking, shell-trajectory, ghost-prototype-dolores]
+depends:
+- interleaved-ctml-thinking
+- shell-trajectory
+- ghost-prototype-dolores
+description: 恢复 mindflow 第一版的 interleaved thinking, 缝合 shell trajectory 与 mindflow
+  的 观测平面, 三循环解耦为可独立测试的单元, 定版 MOSS v0.1.0。
 milestone: MOSS v0.1.0
-description: >-
-  恢复 mindflow 第一版的 interleaved thinking, 缝合 shell trajectory 与 mindflow 的
-  观测平面, 三循环解耦为可独立测试的单元, 定版 MOSS v0.1.0。
+priority: P0
+status: completed
+title: Mindflow Interleaved Thinking — 三循环解耦 + 观测缝合, 定版 v0.1.0
+updated: '2026-09-21'
 ---
 
 # Mindflow Interleaved Thinking
@@ -233,6 +235,10 @@ shell / shell_trajectory / logger）+ 少量 hook（safe_mode `_approve_logos` /
 > 2026-08-28, 人类架构师与 deepseek-v4-flash-vision-exp 讨论收敛。**已定方案, 未实现。**
 > 由 echo + `moss-ghost send` 实测引出: 测 input/notify/interrupt/silent 四种 signal 时,
 > 发现 interrupt 的"停"效果与抢占重叠, 追下去发现 interrupt 信号把三条正交语义缠在了一起。
+>
+> **2026-09-21 验收更正（人类架构师 + claude-fable-5）**: 本节的"收敛方案"是 deepseek
+> 补文档时按自己理解写的事后推演, **不是已定决策**。人类只关心两件事: 自解释正确 +
+> 契约不漏接。验收结论与处置见文末「2026-09-21 验收」一节。
 
 ### 问题: 三条同名 "interrupt" 缠在一起
 
@@ -299,3 +305,36 @@ interrupt 是"只要 action 不要 thinking"的退化情形（ActionOnlyAttentio
   当前 `shell.clear()` 只做到第二层, 第一、三层未落。
 - **嘴停手停 vs 嘴停手不停**: interrupt flag 原意是为"嘴停手不停"留口子, 当前没区分。
   命名反直觉（interrupt=True 本意是"不停手"）是它一路被误解成冗余 clear 标记的根因。
+
+## 2026-09-21 验收（claude-fable-5, 收尾）
+
+对照代码验收 interleaved thinking, 判据是人类给的两条: **自解释正确 + 契约不漏接**。
+上文「收敛（简化路径）」按事后推演处理, 不作为验收基线。
+
+### 契约漏接 → 已修（bug）
+
+- **interrupt flag 运行时断路**: `mindflow_in_shell._thinking_loop` 里 `last_attention`
+  初始 None 且只在 `if last_attention and ...` 分支内赋值 → 永远 None →
+  `interrupt_first` 永假, interrupt 协议整条死路（比"被 previous_stop_reason 遮蔽"更彻底,
+  interrupt 实际靠抢占 abort 的 stop_reason 通路在生效）。
+  修复: 追踪 `last_attention_id`, attention 首帧 `draw_from().interrupt` → `shell.clear()`;
+  `previous_stop_reason` 通路保留（抢占即停的历史行为）。
+- **测试断言绑 flag 不绑行为**: `MindflowInShellTestSuite.interrupt_clear_calls` 原来数
+  `impulse.interrupt` 标志, 断路 bug 下测试照样绿。新增 `MindflowInShell._on_interrupt_clear`
+  hook（与既有 hook 同风格）, suite 改在 hook 里计数 — 断言的是 clear 真的发生。
+
+### 自解释腐化 → 已修
+
+三处 docstring 仍宣称 interrupt 触发 `shell.stop_interpretation` / 引用已不存在的
+`ghost_runtime._run_articulator`, 与真实通路（runtime 在 attention 首帧前 `shell.clear()`,
+只对首帧生效）不符: `blueprint/mindflow.py` 的 `Impulse.interrupt` field 描述、
+`ImpulsePrimitive.broadcast` / `interrupt` docstring, 及 `interrupt_nucleus.py` 两处。均已改为真实通路。
+
+### 归入未来迭代（机制, 非契约）
+
+- effort='none' 空壳 attention + 空 moment 帧（仲裁期建好、`_run_thinking` 才短路）。
+- replaned → interpreter kind='clear' 与手动 clear 的取舍。
+- interrupt 默认值 / 首帧语义等 flag 组合 — 协议化, 归 ghost 装线层决定。
+- 「保留的语义张力」两条原样有效。
+
+验证: mindflow 389 / core 全量 1085 单测全绿, 历史兼容。本 feature 以此验收 completed。

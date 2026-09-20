@@ -8,7 +8,7 @@ from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.mindflow import (
     Mindflow, Thinking, Action, Signal, StatementExitedException,
-    Attention, NucleusMeta
+    NucleusMeta
 )
 from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
@@ -110,6 +110,10 @@ class MindflowInShell(ABC):
     def _on_logos_delta(self, delta: str) -> None:
         pass
 
+    def _on_interrupt_clear(self, thinking: Thinking) -> None:
+        """interrupt 协议触发 shell.clear 前回调 — 观测挂点, 与 stop_reason 的 clear 区分."""
+        pass
+
     def _on_mindflow_error(self, error: BaseException | str) -> None:
         pass
 
@@ -199,12 +203,14 @@ class MindflowInShell(ABC):
         await self.shell.refresh_metas()
         try:
             while mindflow.is_running():
-                last_attention: Attention | None = None
+                last_attention_id: str | None = None
                 async for thinking in self.mindflow.thinking_loop():
-                    interrupt_first = False
-                    if last_attention and thinking.attention.id != last_attention.id:
-                        last_attention = thinking.attention
-                        interrupt_first = last_attention.draw_from().interrupt
+                    is_first_frame = thinking.attention.id != last_attention_id
+                    last_attention_id = thinking.attention.id
+                    # interrupt 协议: 只对 attention 首帧生效, 思考前先停身体.
+                    interrupt_first = is_first_frame and thinking.attention.draw_from().interrupt
+                    if interrupt_first:
+                        self._on_interrupt_clear(thinking)
                     # 按规则中断.
                     if interrupt_first or thinking.moment.previous_stop_reason():
                         await self.shell.clear()
