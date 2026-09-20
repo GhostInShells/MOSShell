@@ -10,7 +10,7 @@ priority: P1
 status: completed
 status_note: virtual children + edit-mode folding implemented, dogfooded via MCP
 title: Ground Channel — 认知场的运行时落点
-updated: '2026-08-27'
+updated: '2026-09-21'
 ---
 
 # Ground Channel — 认知场的运行时落点
@@ -77,3 +77,23 @@ pin_ls / pin_exec / pin_law / spec / validate / templates`。
 
 早期"薄 channel、无子 channel、pin 降 CLI"设计后被 virtual children 取代；完整推演轨迹见
 `git log -- .ai_partners/features/workstreams/2026/08/ground-channel/FEATURE.md`。
+
+## 设计结论（2026-09-21 追加）：帧缓存 + 显式 refresh，meta 落点迁移
+
+> 演进（非推翻）上文的「设计结论（当前形态）」。其中「场开合 = virtual children」一条的
+> 「子 `instruction=meta`、`help=帧`、每 refresh 重算」被替换；其余锚点不变。上一段的
+> 「冷/温/热」表 warm 行（帧 → 子 channel help）同步失效，新形态见下。
+
+- **meta 从 instruction 迁到 named notice**。`instruction` 没有 delta 载体 —— shell
+  trajectory 的 `diff_facade` 只比 states / notice / commands，放 instruction 等于每 epoch
+  只发一次、之后永不更新（实测：virtual 子节点在 `make_static_block` 还被显式排除）。子
+  channel 改为 `named_notices`，`meta` 分片（身份 + pin TOC）+ `frame` 分片（body + pins
+  内容），逐片段 diff 增量重供。
+- **帧缓存**：`_cached[label] = {meta, frame}`，只在 `startup` / `open` / `refresh` 三个
+  显式点重渲染；`notice` / `named_notices` 只读缓存。场里的 exec pin 因此不再随每次
+  `refresh_metas` 反复起进程（此前实测每次 refresh 起一次进程、~25ms，而读缓存 ~1.3ms）。
+- **新增 `refresh` 命令**（`always_observe=False`）：重读法（`ground.load()`，脏场跳过以
+  保留未落盘改动）+ 重渲染，返回 ack，新内容走下一帧 facade delta 送达。`render` 仍是
+  无状态 peek，不入缓存。
+- **代价是显式纪律**：场不再随刷新自更新 —— 模型改了场文件（含 GROUND.md 本身的
+  pins/body）必须调 `refresh` 才看到。这是把"每刷新自动成本"换成"按需付费"。

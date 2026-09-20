@@ -85,8 +85,10 @@ async def test_open_adds_virtual_child_with_meta_and_frame(ground):
         await runtime.refresh_metas()
         child = _meta_by_name(runtime, "sub")
         assert child is not None
-        assert "cd " in child.instruction            # meta 在 instruction
-        assert "# Sub Ground" in child.notice          # 帧在 help
+        # 冷数据 (身份) 与热数据 (帧) 都在 named notice — instruction 无 delta 载体, 不放这里.
+        assert "cd " in child.named_notices.get("meta", "")
+        assert "# Sub Ground" in child.named_notices.get("frame", "")
+        assert "cd " not in (child.instruction or "")
 
 
 @pytest.mark.asyncio
@@ -279,7 +281,40 @@ async def test_groundset_children_mounted_on_start(ground):
         await runtime.refresh_metas()
         child = _meta_by_name(runtime, "child")
         assert child is not None
-        assert "# Child Ground" in child.notice
+        assert "# Child Ground" in child.named_notices.get("frame", "")
+
+
+@pytest.mark.asyncio
+async def test_child_frame_cached_until_refresh(ground):
+    """帧缓存契约: 只 refresh_metas 不重渲染 (吃缓存), 显式 refresh 才重读."""
+    (ground / "sub").mkdir()
+    (ground / "sub" / "note.md").write_text("v1\n")
+    (ground / "sub" / "GROUND.md").write_text(
+        "---\nname: sub\npins:\n"
+        "- label: note\n  verb: file\n  arguments:\n    path: note.md\n"
+        "---\n# Sub Ground\n"
+    )
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        await runtime.execute_command("open", kwargs={"directory": "sub"})
+        await runtime.refresh_metas()
+        child = _meta_by_name(runtime, "sub")
+        assert "v1" in child.named_notices.get("frame", "")
+
+        # 磁盘变了, 但只 refresh_metas → 帧仍是缓存值
+        (ground / "sub" / "note.md").write_text("v2\n")
+        await runtime.refresh_metas()
+        child = _meta_by_name(runtime, "sub")
+        assert "v2" not in child.named_notices.get("frame", "")
+        assert "v1" in child.named_notices.get("frame", "")
+
+        # 显式 refresh → 帧更新, 缓存重读
+        await runtime.execute_command("refresh", kwargs={"label": "sub"})
+        await runtime.refresh_metas()
+        child = _meta_by_name(runtime, "sub")
+        assert "v2" in child.named_notices.get("frame", "")
+        assert "v1" not in child.named_notices.get("frame", "")
 
 
 @pytest.mark.asyncio

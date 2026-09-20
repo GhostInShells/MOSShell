@@ -3,9 +3,18 @@
 Ground 是 Ghost 的目录级认知场: 一个被 GROUND.md 标记的目录就是场
 (frontmatter 身份 + body 法 + pins 注视). 本 channel 持有 GroundSet, root 场与
 ``groundset:`` 字段声明的子场在构造期即物化, 子场挂成 virtual child —— 子 channel
-无命令, instruction 只放 meta (身份 + pin TOC), 帧 (body + pins 内容) 放 notice
-(每 refresh 重算, 由 shell trajectory diff 增量重供). root 的 body 上行到 ghost
-instruction (render_root 默认 False, 不在这里重复).
+无命令, 身份 (meta) 与帧 (body + pins 内容) 都放 named notice, 由 shell trajectory
+逐片段 diff 增量重供. root 的 body 上行到 ghost instruction (render_root 默认
+False, 不在这里重复).
+
+**帧是缓存的**: 场帧只在 startup / open / ``refresh`` 三个显式点重渲染, 其余
+每一轮 refresh_metas 都只读内存 —— 场里的 exec pin 因此不会随刷新反复起进程.
+``refresh`` 同时重读 GROUND.md (法) 与重渲染 (帧), 所以 ghost 自改场文件后调它
+即可看到新内容; ``render`` 仍是无状态 peek, 不入缓存.
+
+冷数据 (身份 + pin TOC) 走 notice 而非 instruction: instruction 没有 delta 载体
+(shell trajectory 的 diff_facade 只比 states / notice / commands), 放它那里等于
+每 epoch 只发一次、之后永不更新.
 
 Example:
     from ghoshell_moss import new_shell_main_channel
@@ -146,8 +155,9 @@ def _instruction_prose() -> str:
         "## Ground (认知场)\n"
         "场 = 一个被 GROUND.md 标记的目录: frontmatter (身份 + pins) + body (法).\n"
         "本 channel 持有一个场集: 锚点场 (root) 的 body 上行到 ghost instruction 呈现, 这里只挂 "
-        "root 用 ``groundset:`` 字段声明展开的子场. 子场 meta 在各自 instruction, 帧在各自 "
-        "notice (每 refresh diff 重供); pin 内容不预置."
+        "root 用 ``groundset:`` 字段声明展开的子场. 子场身份与帧都在各自 notice, 且**只在 "
+        "startup / open / refresh 时重渲染** (refresh 即显式付费重读法+帧); 其余每轮吃缓存, "
+        "不读盘. 改了场文件后调 `refresh` 才能看到新内容."
     )
 
 
@@ -295,6 +305,10 @@ def new_ground_channel(
     """
     workspace = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
     children: dict[str, Channel] = {}
+    # 场帧缓存 — label -> {"meta": 身份+pin TOC, "frame": body+pins 内容}.
+    # notice 只读缓存: 帧只在 startup / open / refresh 时重渲染, 其余每轮 refresh_metas
+    # 都吃内存, 场里的 exec pin 不会随刷新反复起进程.
+    _cached: dict[str, dict[str, str]] = {}
     # 编辑模式闸门: pin_*/spec/validate/templates 折叠在其后, edit 命令开关.
     # command 级 available 在每次 meta refresh 重算, 折叠/展开随 _edit_mode 变化.
     _edit_mode = edit
@@ -302,21 +316,27 @@ def new_ground_channel(
     if description is None:
         description = (
             "Ground — 认知场: GROUND.md 标记的目录, 法链跨 compact 存活. "
-            "open/close 挂场为子 channel, render 无状态 peek, pin_*/spec/validate/templates."
+            "open/close 挂场为子 channel, render 无状态 peek, refresh 显式重渲染, "
+            "pin_*/spec/validate/templates."
         )
 
     chan = new_channel(name=name, description=description)
 
+    async def _refresh_ground(ground: Ground) -> None:
+        """重读法 (GROUND.md) + 重渲染帧, 一起写进缓存. 脏场跳过 load, 保留未落盘改动."""
+        if not ground.dirty:
+            await ground.load()
+        _cached[ground.label] = {
+            "meta": await _ground_meta(ground),
+            "frame": str(await ground.render()),
+        }
+
     def _build_child(ground: Ground) -> Channel:
         child = new_channel(name=ground.label, description=f"ground field {ground.label}", uid=ground.id)
 
-        @child.build.instruction
-        async def _child_instruction() -> str:
-            return await _ground_meta(ground)
-
-        @child.build.notice
-        async def _child_help() -> str:
-            return str(await ground.render())
+        @child.build.named_notices
+        async def _child_parts() -> dict[str, str | None]:
+            return dict(_cached.get(ground.label, {}))
 
         return child
 
@@ -324,14 +344,21 @@ def new_ground_channel(
         ground = await groundset.open(directory, label=label, doc=doc, template=template)
         if ground is not groundset.root:
             children[ground.label] = _build_child(ground)
+            await _refresh_ground(ground)
+        elif render_root:
+            await _refresh_ground(ground)
         return ground
 
     @chan.build.startup
     async def _startup() -> None:
-        # root 与 `groundset` 子场在 GroundSet 构造期已物化; 这里只把它们挂成子 channel.
+        # root 与 `groundset` 子场在 GroundSet 构造期已物化; 这里挂子 channel 并 seed 帧缓存.
         for ground in groundset.active().values():
-            if ground is not groundset.root:
-                children[ground.label] = _build_child(ground)
+            if ground is groundset.root:
+                if render_root:
+                    await _refresh_ground(ground)
+                continue
+            children[ground.label] = _build_child(ground)
+            await _refresh_ground(ground)
         for d in (open_on_start or []):
             await _open_ground(d, None, None, None)
 
@@ -345,7 +372,7 @@ def new_ground_channel(
     async def _notice() -> str:
         parts = [f"[ground] {e}" for e in groundset.materialize_errors()]
         if render_root:
-            parts.append(str(await groundset.root.render()))
+            parts.append(_cached.get(groundset.root.label, {}).get("frame", ""))
         return "\n\n".join(parts)
 
     @chan.build.virtual_children
@@ -354,7 +381,7 @@ def new_ground_channel(
 
     @chan.build.command(name="open", always_observe=True)
     async def open(directory: str, label: str | None = None, doc: str | None = None, template: str | None = None) -> str:
-        """打开一个场, 挂成子 channel (meta 进子 instruction, 帧进子 notice).
+        """打开一个场, 挂成子 channel (身份 + 帧都在子 notice, seed 缓存).
 
         :param directory: 场目录 (相对 root 或绝对).
         :param label: 本 channel 内唯一标识. None = 目录 basename.
@@ -374,7 +401,29 @@ def new_ground_channel(
             return f"[ground] no such open ground: {label}"
         await groundset.close(label)
         children.pop(label, None)
+        _cached.pop(label, None)
         return f"[ground] closed {label}"
+
+    @chan.build.command(name="refresh", always_observe=False)
+    async def refresh(label: str | None = None) -> str:
+        """重读场的法 (GROUND.md) 并重渲染其帧 — 显式刷新认知场.
+
+        场帧是缓存的: 只在 startup / open / 本命令时重渲染, 其余每轮都是内存读.
+        改了场里的文件 (或 GROUND.md 的 pins/body) 之后调它, 下一帧 facade delta
+        会带上新内容 (冷 meta + 热帧一起更).
+
+        :param label: 场标识. None = 刷新全部已挂场 (含 root, 若本 channel 渲染 root).
+        """
+        if label is None:
+            targets = [g for g in groundset.active().values() if g is not groundset.root or render_root]
+        else:
+            ground = groundset.get(label)
+            if ground is None:
+                return f"[ground] no such field: {label}"
+            targets = [ground]
+        for ground in targets:
+            await _refresh_ground(ground)
+        return f"[ground] refreshed {', '.join(g.label for g in targets)}"
 
     @chan.build.command(name="render", always_observe=True)
     async def render(directory: str, meta: bool = False) -> str:
