@@ -18,6 +18,7 @@ class AudioASRProvider(Provider[ASR]):
         return ASR
 
     def factory(self, con: IoCContainer) -> ASR:
+        from ghoshell_moss.core.asr import NullASR
         from ghoshell_moss.host.listener.volcengine_sauc import (
             VolcengineSaucASR,
             VolcengineSaucConfig,
@@ -25,4 +26,9 @@ class AudioASRProvider(Provider[ASR]):
 
         logger = con.force_fetch(LoggerItf)
         config = get_or_create_conf(con, VolcengineSaucConfig())
+        try:
+            config.validate()
+        except ValueError as e:
+            logger.warning("ASR degraded to NullASR: %s", e)
+            return NullASR()
         return VolcengineSaucASR(config=config, logger=logger)

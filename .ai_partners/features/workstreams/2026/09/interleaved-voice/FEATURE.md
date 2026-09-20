@@ -379,7 +379,10 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
    `_NullSpeechStream.played_text()` 返回 `"speech 注册不可用"`, `__content__` 返回
    `played_message(samples) or chunks__.played_text() or None` 让消息浮出.
    于是 `speech=True`+缺 env → say 挂载但返回"注册不可用"; `speech=False` → 不挂 say.
-   **待做**: listener provider 降级 (listener 未装线).
+   **已做 2026-09-20 (listener 侧)**: `AudioASRProvider.factory` 调 `config.validate()`,
+   `ValueError` 时 `logger.warning` + 返回 `NullASR()` (core/asr/null.py). NullASR 空转消费
+   音频、不产 event — 对称 NullSpeech 但不带"不可用"信号 (没耳朵就听不到, 无需向模型报错).
+   listener 装线后 (见 #5) 缺 env → 耳朵空转、不产识别结果.
 8. **SystemError / SystemBootstrap 模块**: 注册为 Project 默认依赖, provider 可获取它记录
    启动异常; 封装成 channel (moss 运行后 ghost 可看系统级异常, 可 pull 最近 n 条); 甚至考虑作 logger handler。
 
