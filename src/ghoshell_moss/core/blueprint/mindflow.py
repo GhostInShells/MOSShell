@@ -1285,6 +1285,25 @@ class Mindflow(ABC):
         ...
 
     @abstractmethod
+    def claim_impulse(self, nucleus_name: str) -> Impulse | None:
+        """
+        Claim the impulse a named nucleus currently holds, into the next thought.
+
+        Claiming consumes the impulse (``Nucleus.attended``) and routes it into the
+        observation pipeline — the payload is folded into the next frame via the pending
+        buffer and ``need_observe`` is set, so the next thinking round is guaranteed to
+        read it. It does NOT reinforce the current attention (no ``absorb_impulse``).
+
+        The claim survives the current attention's abort: it is buffered on the mindflow,
+        not on the attention, and is folded into the next attention's first frame.
+
+        :param nucleus_name: the nucleus's name.
+        :return: the claimed Impulse; ``None`` if the nucleus is unknown, not running, or
+                 holds nothing claimable.
+        """
+        pass
+
+    @abstractmethod
     def attention(self) -> Attention | None:
         """
         返回当前的 Attention.

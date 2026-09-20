@@ -620,22 +620,21 @@ async def test_interpret_error_surfaces_to_model_in_next_moment():
 
 
 @pytest.mark.asyncio
-async def test_mindflow_channel_help_delivered_at_epoch_zero_not_echo():
-    """mindflow 反身 channel 的 facade 在第零帧 (epoch baseline) 交付, 不泄漏进帧 echo.
+async def test_mindflow_channel_facade_delivered_at_epoch_baseline():
+    """mindflow 反身 channel 的命令面 (facade) 在第零帧 (epoch baseline) 交付, 不进 recap.
 
-    协议契约 (修正原 test_mindflow_channel_help_not_duplicated_across_frames):
-        - 原测试从不建 observer epoch, trajectory 用 ``__aenter__`` 旧 baseline (无 mindflow
-          channel), 于是 mindflow facade "泄漏"进首帧 echo — 那是"缺 epoch"的伪像, 不是
-          channel 首次进场 (thinking_loop 启动时已挂 channel).
-        - 真实运行时首次 enter 会建立 observer epoch → 反向绑定 ``trajectory.new_epoch``
-          重快照 baseline (含 mindflow channel) → 全量 facade 走 ``epoch.baseline['facade']``
-          (第零帧), 帧 facade_delta 经 ``diff_facade`` 去重为空.
-        - 本测试先等 mindflow channel 进 metas, 再建 observer epoch, 断言: mindflow facade 在
-          epoch baseline (第零帧交付), 且不进任何 frame echo (反泄漏 / 反全量重渲染).
+    协议契约:
+        - mindflow channel 没有 instruction / notice / context (见
+          ``test_no_instruction_notice_or_context``), 它的 facade 就是命令面.
+        - 命令面是 shell 的 live 表面, 走 ``epoch.baseline['facade']`` 交付一次,
+          不进 ``recap`` (recap 是前情提要, 命令面不是).
+
+    注意: 命令面含动态可用性 (``set-priority`` 只在 attention 活跃时可见), 帧间
+    facade_delta 会随 attention 状态合法变化 — 这里只钉住"命令面在第零帧交付一次、
+    不进 recap"这个稳定契约, 不反向断言帧 echo 里没有 facade (那会绑死动态行为).
     """
     suite = MindflowInShellTestSuite()
 
-    # 用 probe 命令驱动帧: frame1 返回 observe → 触发第二帧 (若有).
     chan = new_channel(name="probe")
 
     @chan.build.command()
@@ -648,17 +647,14 @@ async def test_mindflow_channel_help_delivered_at_epoch_zero_not_echo():
 
     suite.shell.main_channel.import_channels(chan)
 
-    frame_moments: list = []
+    frame_idx = 0
 
     async def articulate(thinking: Thinking) -> None:
+        nonlocal frame_idx
         art = thinking.articulator()
         async with art:
-            idx = len(frame_moments)
-            frame_moments.append(thinking.moment)
-            if idx == 0:
-                art.send_nowait("<probe:frame1/>")
-            else:
-                art.send_nowait("<probe:frame2/>")
+            art.send_nowait("<probe:frame1/>" if frame_idx == 0 else "<probe:frame2/>")
+            frame_idx += 1
             if not thinking.is_aborted():
                 await art.wait_action_done()
 
@@ -679,22 +675,12 @@ async def test_mindflow_channel_help_delivered_at_epoch_zero_not_echo():
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
 
-    # 第零帧交付: mindflow facade (notice 温数据) 在 epoch baseline, 不在 recap.
+    # 命令面在第零帧 (epoch baseline) 交付, 不进 recap.
     facade = epoch.baseline.get("facade", "")
-    assert "signal bar" in facade, "mindflow facade 未在第零帧 (epoch baseline) 交付"
+    assert "specification" in facade, "mindflow facade 未在第零帧 (epoch baseline) 交付"
+    assert "peek" in facade
+    assert "claim" in facade
     assert epoch.recap == []
-
-    # 反泄漏用静态面 (instruction) 做标记: 温数据 notice 会因 attention 起停合法差分,
-    # 但 instruction 是冷面, 帧 echo 若重发它, 就是全量 facade 重渲染 (泄漏).
-    def _static_facade_present(moment) -> bool:
-        return any(
-            "reflexive surface" in m.to_content_string()
-            for m in moment.previous_echoes_messages()
-        )
-
-    assert frame_moments, "没有驱动任何 frame"
-    assert not any(_static_facade_present(m) for m in frame_moments), \
-        "mindflow 静态 facade (instruction) 泄漏进 frame echo — 全量 facade 应由第零帧 (epoch baseline) 交付"
 
 
 @pytest.mark.asyncio

@@ -2,15 +2,14 @@
 created: 2026-07-23
 depends: []
 description: Mindflow 反身控制 Channel — 将 mindflow 从 opaque 调度器变为 ghost 可感知、 可操纵的透明面.
-  自解释 + 注意力管理 + 优先级干预 + nucleus pull.
+  自解释 + 注意力管理 + 优先级干预 + nucleus claim.
 milestone: 0.1.0
 priority: P1
-status: in_progress
-status_note: '回退 attention 子通道: attention 是 mindflow 自身持有的状态, 名字错位; 治理能力
-  是常驻一等能力, 折叠进 gate 模型不会用. 治理命令回父 channel, nucleus 讯息折叠进
-  nuclei 方法, 治理状态走 notice(温数据). gate 默认 true 只折叠 nucleus 子通道.'
+status: completed
+status_note: 'v3 收口: claim_impulse 上 Mindflow ABC, 命令面去 instruction/notice/context, 收敛为
+  nuclei/peek/claim/specification + set-* 治理命令; InputSignalNucleus 补 NAME 常量.'
 title: Mindflow Channel
-updated: '2026-09-14'
+updated: '2026-09-21'
 ---
 
 # Mindflow Channel
@@ -333,3 +332,30 @@ CTML 寻址回 ``<mindflow:set-*/>``. 测试 ``test_mindflow_channel.py`` / ctml
 - **bar getter 上接口**: ``signal_priority_bar()`` / ``impulse_priority_bar()`` 原本只挂在
   实现 ``AbsMindflow``, 是纯 hack. 已补进 blueprint ``Mindflow`` ABC (默认 ``BACKGROUND``,
   与 setter 同款 "反身性 channel 准备" 面).
+
+### v3 收口 (2026-09-21): claim 上接口 + 命令面去 instruction/notice/context
+
+把上一轮删掉的 pull 用正确形态重做, 并收敛命令面到「无 instruction / 无 notice / 无 context」。
+
+- **``claim_impulse`` 上 ``Mindflow`` ABC** (权威契约), ``_mindflow.py`` 实现:
+  ``peek`` → ``attended`` (物化 stub → full) → ``_pending_frame_impulses`` + ``need_observe``.
+  不 ``absorb_impulse`` (不强化当前 attention); 缓冲在 mindflow 层, attention abort 不清它,
+  折进下一个 attention 首帧. 返回 ``None`` 当 nucleus 未知 / 未运行 / 无可 claim.
+- **命令面收敛** (``build_mindflow_channel``):
+  - 删 ``instruction`` (「最好的 instruction 就是源代码」)、删 ``notice``、删 ``status`` /
+    ``active attention`` (注意力自解释, 再报一遍是 100% 冗余)、删 ``context``。
+  - 常驻命令: ``nuclei`` (拓扑, 不带 message 内容) / ``peek`` (n 个持有单元 + 状态摘要 +
+    head 预览, 不带全文) / ``claim`` (消费 → 下一轮读) / ``specification`` (返回 blueprint
+    源码模块路径) / ``set-priority`` ``set-signal-bar`` ``set-impulse-bar`` (注意力治理,
+    一等能力常驻父 channel)。
+  - ``set-priority`` 门控 = ``enable_priority AND mindflow.attention() is not None`` (attention
+    活跃才可见); ``set-signal-bar`` / ``set-impulse-bar`` 由 ``enable_bar`` flag 门控。
+  - gate 只折叠各 running nucleus 的子通道 (默认开), mindflow 自身控制面不折叠。
+- **``InputSignalNucleus`` 补 ``NAME`` 常量** (此前是唯一缺 ``NAME`` 的 nucleus), 并修
+  ``InputNucleusMeta.factory`` 的 ``name=self._target_signal`` (signal 名 'input') →
+  ``name=self._name`` (nucleus 名) — 原实现会让 factory 产出的 nucleus 命名成 'input',
+  ``nuclei()['input_signal_nucleus']`` 查不到。
+- **测试**: ``test_claim_impulse.py`` 新增 (mindflow 层, 走标准 ``thinking_loop`` 消费, 用
+  ``InputSignalNucleus`` 「输后保留」语义, 不 hack 接口); ``test_mindflow_channel.py`` 收敛
+  命令面断言; epoch facade 测试改钉「命令面第零帧交付、不进 recap」(原「facade 不泄漏进
+  echo」断言绑死旧静态 instruction 面, 已作废)。mindflow 389 全绿。

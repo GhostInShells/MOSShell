@@ -2,14 +2,16 @@
 
 把 mindflow 从 opaque 调度器变成 ghost 可感知、可操纵的透明面.
 
-常驻能力面直接挂在 mindflow 父 channel 上, 不折叠: 自解释 + 注意力治理 + 自省.
-注意力治理是这里的一等能力 —— 运行时提升/降低当前 attention 的优先级、抬高全局水位.
-它必须常驻可见: 一旦折叠进 gate, 模型不会主动 mount, 能力等于不存在.
+常驻能力面直接挂在 mindflow 父 channel 上, 不折叠. 全部是命令, 没有 instruction /
+notice / context —— 注意力状态本身就在 ghost 的上下文里, 再报一遍是冗余; 需要理解
+mindflow 语义时, 走 ``specification`` 拉 blueprint 源码, 而不是常驻展开机制说明.
+
+命令面:
+- ``peek`` / ``claim`` / ``nuclei`` — 感知自身的读面 (看 / 取 / 拓扑).
+- ``set-priority`` / ``set-signal-bar`` / ``set-impulse-bar`` — 注意力治理 (常驻一等能力).
+- ``specification`` — 指向 mindflow 权威契约的模块路径, 平时不用.
 
 gate 只折叠各 nucleus 的子通道 —— 那是"按需展开的细节", 不是 mindflow 自身的控制面.
-
-治理状态 (当前 attention / 水位) 是状态级变更 (温数据), 走 notice, 不占每帧的
-context_messages (热面). nucleus 讯息走 ``nuclei`` 方法, 不散在 notice/status 里重复罗列.
 
 这是 core 内部面, 经 ``Mindflow.as_channel()`` 挂进 shell, 而非随包分发的
 app channel. 反身控制原则: 刻意自省, 不做每帧轮询.
@@ -17,11 +19,17 @@ app channel. 反身控制原则: 刻意自省, 不做每帧轮询.
 
 from __future__ import annotations
 
+import time
+
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Priority
 from ghoshell_moss.core.blueprint.states_channel import new_prime_channel, PrimeChannel
 from ghoshell_moss.core.concepts.channel import Channel
 
 __all__ = ["build_mindflow_channel"]
+
+_SPECIFICATION_PATH = "ghoshell_moss.core.blueprint.mindflow"
+
+_HEAD_LIMIT = 40
 
 
 def _parse_priority(value: str) -> Priority:
@@ -34,19 +42,38 @@ def _parse_priority(value: str) -> Priority:
         )
 
 
-def _impulse_text(impulse) -> str:
-    """impulse 的短文表示: 优先 messages, 退化到 description."""
-    if impulse.messages:
-        return " ".join(m.to_content_string() for m in impulse.messages)
-    return impulse.description or ""
+def _impulse_head(impulse) -> str:
+    """message 载荷的短预览 — 只提示大概内容, 完整载荷经 claim 才出."""
+    if not impulse.messages:
+        return ""
+    text = " ".join(m.to_content_string() for m in impulse.messages)
+    text = " ".join(text.split())
+    if len(text) > _HEAD_LIMIT:
+        return text[:_HEAD_LIMIT] + "…"
+    return text
 
 
-def _attention_line(attn) -> str:
-    imp = attn.draw_from()
-    return (
-        f"source={imp.source} priority={attn.priority().name} "
-        f"protected={attn.is_protected()} abort_reason={attn.abort_reason()!r}"
-    )
+def _impulse_state_line(name: str, impulse) -> str:
+    """impulse 的校验状态摘要: source / priority / strength / age / expires.
+
+    age 与 expires 是相对当前的可读时间; message 只给 head 预览, 不展全文.
+    """
+    age = time.time() - impulse.created_at.timestamp()
+    if impulse.stale_timeout > 0:
+        remaining = impulse.stale_timeout - age
+        expires = "expired" if remaining < 0 else f"in {remaining:.1f}s"
+    else:
+        expires = "never"
+    parts = [
+        f"{name} {impulse.priority.name}",
+        f"strength={impulse.strength}",
+        f"age={age:.1f}s",
+        f"expires={expires}",
+    ]
+    head = _impulse_head(impulse)
+    if head:
+        parts.append(f'"{head}"')
+    return "  " + " ".join(parts)
 
 
 def build_mindflow_channel(
@@ -59,48 +86,26 @@ def build_mindflow_channel(
 ) -> PrimeChannel:
     """构建 mindflow 反身控制 channel.
 
-    常驻能力面 (注意力治理 + 自省) 全部挂在父 channel 上, 不进 gate ——
-    这些是 mindflow 自身的控制面, 折叠后模型不会用到. gate 只折叠各 nucleus 的子通道.
+    常驻能力面全部挂在父 channel 上, 不进 gate —— 这些是 mindflow 自身的控制面,
+    折叠后模型不会用到. gate 只折叠各 nucleus 的子通道.
 
-    :param enable_priority: 暴露 set-priority (改当前 attention 优先级).
+    :param enable_priority: 暴露 set-priority (改当前 attention 优先级), 仅在
+        attention 活跃时可见.
     :param enable_bar: 暴露 set-signal-bar / set-impulse-bar (全局水位).
     :param gate: 开启后各 nucleus 的子通道默认关闭, 由 mount_child 披露.
     """
     channel = new_prime_channel(name, description=mindflow.description(), gate=gate)
 
-    # --- 静态心智模型 (instruction): 绝不重复罗列命令签名 --- #
-    @channel.build.instruction
-    def instruction() -> str:
-        return (
-            "## mindflow channel\n"
-            "This is the reflexive surface of your own mind — the control plane over "
-            "your parallel sensing and thinking units (nuclei). You are not merely a "
-            "passive receiver of impulses: you can see what your sensory units currently "
-            "hold and deliberately steer your own attention.\n"
-            "Raise the current attention's priority to hold your focus; lower it to yield. "
-            "`nuclei` shows what each unit holds, `status` inspects the current attention. "
-            "Do not poll every frame; react to signals, not to your own relay."
-        )
-
-    # --- notice: 温数据 (状态级变更), 不占每帧 context --- #
-    @channel.build.notice
-    def notice() -> str:
-        lines: list[str] = []
-        if enable_priority:
-            if attn := mindflow.attention():
-                lines.append(f"active attention: {_attention_line(attn)}")
-        if enable_bar:
-            lines.append(f"signal bar: {mindflow.signal_priority_bar().name}")
-            lines.append(f"impulse bar: {mindflow.impulse_priority_bar().name}")
-        return "\n".join(lines)
-
     # --- 注意力治理 (常驻一等能力) --- #
 
-    @channel.build.command(name="set-priority", available=lambda: enable_priority)
+    @channel.build.command(
+        name="set-priority",
+        available=lambda: enable_priority and mindflow.attention() is not None,
+    )
     async def set_priority(priority: str) -> str:
         """Raise or lower the priority of the current attention (raise to hold, lower to yield).
 
-        Only meaningful while an attention is active (a nucleus is being attended).
+        Only available while an attention is active.
         """
         value = _parse_priority(priority)
         attn = mindflow.attention()
@@ -123,29 +128,63 @@ def build_mindflow_channel(
         mindflow.set_impulse_priority_bar(value)
         return f"impulse bar set to {value.name}"
 
-    # --- 自省面 --- #
-
-    @channel.build.command(name="status", always_observe=True)
-    async def status() -> str:
-        """Inspect the current attention (deliberate self-introspection)."""
-        if attn := mindflow.attention():
-            return f"active attention: {_attention_line(attn)}"
-        return "no active attention"
+    # --- 感知读面 --- #
 
     @channel.build.command(name="nuclei")
     async def nuclei() -> str:
-        """List your sensing units (nuclei): name, running state, description, top impulse.
+        """List your sensing units (nuclei): name, running state, description.
 
-        Use this to see what your sensory units currently hold before tuning the floors.
+        This is the topology of your senses — not what they currently hold.
         """
         lines = ["mindflow nuclei:"]
         for nucleus_name, nucleus in mindflow.nuclei().items():
             state = "running" if nucleus.is_running() else "idle"
-            line = f"  {nucleus_name} ({state}): {nucleus.description()}"
-            if impulse := nucleus.peek():
-                line += f" | peek: {_impulse_text(impulse)}"
-            lines.append(line)
+            lines.append(f"  {nucleus_name} ({state}): {nucleus.description()}")
         return "\n".join(lines)
+
+    @channel.build.command(name="peek")
+    async def peek() -> str:
+        """See every sensing unit that holds something, without taking it.
+
+        Lists each held impulse's state — source, priority, strength, age, expiry —
+        plus a short message preview. The full content only leaves a unit through
+        `claim`.
+        """
+        lines = ["peek (units holding something):"]
+        for nucleus_name, nucleus in mindflow.nuclei().items():
+            if not nucleus.is_running():
+                continue
+            if impulse := nucleus.peek():
+                lines.append(_impulse_state_line(nucleus_name, impulse))
+        if len(lines) == 1:
+            return "peek: nothing held"
+        return "\n".join(lines)
+
+    @channel.build.command(name="claim")
+    async def claim(nucleus: str) -> str:
+        """Take what a sensing unit holds into your next thought.
+
+        If it holds something, the content is queued for your next observation — you
+        read it there, not here. A try: never waits for a new impulse. Does not
+        reinforce the current attention.
+        """
+        if mindflow.nuclei().get(nucleus) is None:
+            return f"no nucleus {nucleus!r}"
+        claimed = mindflow.claim_impulse(nucleus)
+        if claimed is None:
+            return f"{nucleus}: nothing to claim"
+        return f"{nucleus}: claimed — read it in your next thought"
+
+    # --- 权威契约 --- #
+
+    @channel.build.command(name="specification")
+    async def specification() -> str:
+        """Return the module path of the authoritative mindflow contract.
+
+        Read it (via introspect / get-source) only when you need to steer attention
+        deliberately — not for routine use.
+        """
+        return _SPECIFICATION_PATH
 
     # --- gate 唯一折叠的对象: 各 running nucleus 的子通道 --- #
     @channel.build.virtual_children

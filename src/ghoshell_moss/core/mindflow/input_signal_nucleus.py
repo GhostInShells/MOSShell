@@ -43,10 +43,12 @@ class InputSignalNucleus(Nucleus):
     ``attended`` materializes the full impulse from the sorted buffer and returns it.
     """
 
+    NAME = "input_signal_nucleus"
+
     def __init__(
             self,
             *,
-            name: str = "input_signal_nucleus",
+            name: str = NAME,
             description: str = "user text input — aggregate buffer, turn toward the user when it wins",
             default_prompt: str = '',
             suppress_seconds: float = 5.0,
@@ -335,7 +337,7 @@ class InputNucleusMeta(NucleusMeta):
     def __init__(
             self,
             *,
-            name: str = "input_signal_nucleus",
+            name: str = InputSignalNucleus.NAME,
             description: str = "user text input — aggregate buffer, turn toward the user when it wins",
             default_prompt: str = '',
             suppress_seconds: float = 5.0,
@@ -362,7 +364,7 @@ class InputNucleusMeta(NucleusMeta):
     def factory(self, container: IoCContainer) -> Nucleus:
         logger = container.get(LoggerItf)
         return InputSignalNucleus(
-            name=self._target_signal,
+            name=self._name,
             description=self._description,
             default_prompt=self._default_prompt,
             suppress_seconds=self._suppress_seconds,

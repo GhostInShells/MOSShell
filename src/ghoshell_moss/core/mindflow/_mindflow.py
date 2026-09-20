@@ -818,6 +818,22 @@ class AbsMindflow(Mindflow, ABC):
                 impulse.source = nucleus.name()
                 yield nucleus, impulse
 
+    def claim_impulse(self, nucleus_name: str) -> Impulse | None:
+        """见 blueprint ``Mindflow.claim_impulse`` 契约. """
+        nucleus = self._nuclei.get(nucleus_name, None)
+        if nucleus is None or not nucleus.is_running():
+            return None
+        impulse = nucleus.peek()
+        if impulse is None:
+            return None
+        replaced = self._notify_impulse_attended(impulse)
+        if replaced is not None:
+            impulse = replaced
+        # 折进观测管线: 载荷进 pending 缓冲 (下一帧 update_moment), 并强制下一轮观察.
+        self._pending_frame_impulses.append(impulse)
+        self._moments_observer.add_echoes([], need_observe=True)
+        return impulse
+
     def _rank_best_impulse_from_nuclei(self, best_impulse: Impulse = None) -> Impulse | None:
         """从所有的 nuclei 中获取最重要的 impulse. """
         best_impulse = best_impulse

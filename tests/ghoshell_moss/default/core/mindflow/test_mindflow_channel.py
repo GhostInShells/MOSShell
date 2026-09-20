@@ -1,10 +1,12 @@
 """Tests for the mindflow channel — 反身控制面 (reflexive mindflow control surface).
 
 Covers ``build_mindflow_channel``:
-- 常驻能力面直接挂在父 channel: ``set-priority`` / ``set-signal-bar`` /
-  ``set-impulse-bar`` (注意力治理) + ``status`` / ``nuclei`` (自省).
-- 治理状态是温数据, 走 ``notice``, 不进每帧 ``context_messages``.
-- nucleus 讯息收敛进 ``nuclei`` 命令, 不在 notice 里重复罗列.
+- 常驻命令面: ``set-priority`` / ``set-signal-bar`` / ``set-impulse-bar`` (注意力治理)
+  + ``nuclei`` / ``peek`` / ``claim`` / ``specification`` (感知读面).
+- 无 instruction / notice / context: 注意力状态自解释, 不常驻展开; 需要语义时走
+  ``specification`` 拉 blueprint 源码.
+- ``set-priority`` 只在 attention 活跃时可见 (flag AND 运行时谓词).
+- ``peek`` / ``claim`` 不把 message 内容带出 nucleus (内容只经 ``claim`` 进下一帧).
 - gate 只折叠各 nucleus 的子通道 (默认开启), mindflow 自身的控制面不折叠.
 """
 
@@ -44,28 +46,41 @@ def _command_names(runtime) -> set[str]:
     return {c.name for c in runtime.self_meta().commands}
 
 
-def _notice_text(runtime) -> str:
-    return runtime.self_meta().notice or ""
-
-
-# ── 常驻能力面 ────────────────────────────────────────────────
+# ── 常驻命令面 ────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_attention_governance_is_resident_on_parent():
+async def test_governance_and_perception_resident_on_parent():
     mf = BaseMindflow()
     chan = build_mindflow_channel(mf)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         names = _command_names(runtime)
-        # 注意力治理是常驻一等能力, 直接挂在父 channel.
-        assert "set-priority" in names
+        # 注意力治理是常驻一等能力.
         assert "set-signal-bar" in names
         assert "set-impulse-bar" in names
-        assert "status" in names
+        # 感知读面.
         assert "nuclei" in names
-        # 没有 attention 子通道.
+        assert "peek" in names
+        assert "claim" in names
+        assert "specification" in names
+        # set-priority 只在 attention 活跃时可见 (无 attention → 不可见).
+        assert "set-priority" not in names
+        # 无 status / 无 attention 子通道.
+        assert "status" not in names
         assert "attention" not in runtime.virtual_sub_channels()
+
+
+@pytest.mark.asyncio
+async def test_set_priority_visible_only_with_active_attention():
+    mf = BaseMindflow()
+    chan = build_mindflow_channel(mf, enable_priority=True)
+    async with mf:
+        mf.set_impulse(_impulse(priority=Priority.FATAL))
+        await _wait_until(lambda: mf.attention() is not None)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            assert "set-priority" in _command_names(runtime)
 
 
 @pytest.mark.asyncio
@@ -74,67 +89,155 @@ async def test_set_priority_gated_by_flag():
     chan = build_mindflow_channel(mf, enable_priority=False)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        names = _command_names(runtime)
-        assert "set-priority" not in names
-        assert "set-signal-bar" in names  # enable_bar 仍开
+        assert "set-priority" not in _command_names(runtime)
+        assert "set-signal-bar" in _command_names(runtime)  # enable_bar 仍开
 
 
-# ── 自省面: status / nuclei ───────────────────────────────────
+# ── 无 instruction / notice / context ─────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_nuclei_reports_nucleus_and_peek():
+async def test_no_instruction_notice_or_context():
+    mf = BaseMindflow()
+    chan = build_mindflow_channel(mf)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert not runtime.self_meta().instruction
+        assert not runtime.self_meta().notice
+        assert not runtime.self_meta().context
+
+
+# ── 感知读面: nuclei / peek / claim / specification ───────────
+
+
+@pytest.mark.asyncio
+async def test_nuclei_reports_topology_not_content():
     nuc = CachedNucleus()
     mf = BaseMindflow(nuc)
-    nuc.set_impulse(_impulse())
+    nuc.set_impulse(_impulse(text="secret_payload"))
     chan = build_mindflow_channel(mf)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         result = await runtime.execute_command("nuclei")
         assert NUCLEUS_NAME in result
         assert "test cache nucleus" in result
-        assert "hello" in result
+        assert "secret_payload" not in result  # 拓扑, 不带 message 内容
 
 
 @pytest.mark.asyncio
-async def test_status_reports_current_attention():
-    mf = BaseMindflow()
+async def test_peek_reports_held_units_with_state_and_preview():
+    nuc = CachedNucleus()
+    mf = BaseMindflow(nuc)
+    nuc.set_impulse(_impulse(text="secret_payload"))
     chan = build_mindflow_channel(mf)
-    async with mf:
-        mf.set_impulse(_impulse(priority=Priority.FATAL))
-        await _wait_until(lambda: mf.attention() is not None)
+    async with nuc:  # nucleus running, mindflow idle → impulse 不被 rank 消费.
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
-            result = await runtime.execute_command("status")
-            assert "active attention" in result
-
-
-# ── 治理状态走 notice (温数据), 不进 context ────────────────────
+            result = await runtime.execute_command("peek")
+            assert NUCLEUS_NAME in result
+            assert "NOTICE" in result
+            assert "strength=" in result
+            assert "age=" in result
+            assert "expires=" in result
+            # message 只给 head 预览, 短消息原样出现.
+            assert "secret_payload" in result
 
 
 @pytest.mark.asyncio
-async def test_set_impulse_bar_reflected_in_notice():
+async def test_peek_truncates_long_message_head():
+    nuc = CachedNucleus()
+    mf = BaseMindflow(nuc)
+    long_text = "START_" + "m" * 200 + "_END"
+    nuc.set_impulse(_impulse(text=long_text))
+    chan = build_mindflow_channel(mf)
+    async with nuc:
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            result = await runtime.execute_command("peek")
+            assert long_text[:40] + "…" in result
+            assert "_END" not in result  # 尾部被截断
+
+
+@pytest.mark.asyncio
+async def test_peek_empty_reports_nothing():
+    mf = BaseMindflow()
+    chan = build_mindflow_channel(mf)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.execute_command("peek")
+        assert "nothing" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_claim_consumes_and_forces_observe():
+    nuc = CachedNucleus()
+    mf = BaseMindflow(nuc)
+    nuc.set_impulse(_impulse(text="payload"))
+    chan = build_mindflow_channel(mf)
+    async with nuc:  # nucleus running, mindflow idle → impulse 不会被 rank 消费.
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            result = await runtime.execute_command("claim", kwargs={"nucleus": NUCLEUS_NAME})
+            assert "claimed" in result
+            assert nuc.peek() is None  # 消费 (attended)
+            assert mf.moments.need_observe()  # 强制下一轮观察
+
+
+@pytest.mark.asyncio
+async def test_claim_nothing_held():
+    nuc = CachedNucleus()
+    mf = BaseMindflow(nuc)
+    chan = build_mindflow_channel(mf)
+    async with nuc:
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            result = await runtime.execute_command("claim", kwargs={"nucleus": NUCLEUS_NAME})
+            assert "nothing to claim" in result
+
+
+@pytest.mark.asyncio
+async def test_claim_no_such_nucleus():
+    mf = BaseMindflow()
+    chan = build_mindflow_channel(mf)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.execute_command("claim", kwargs={"nucleus": "missing"})
+        assert "no nucleus" in result
+
+
+@pytest.mark.asyncio
+async def test_specification_returns_module_path():
+    mf = BaseMindflow()
+    chan = build_mindflow_channel(mf)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.execute_command("specification")
+        assert "ghoshell_moss.core.blueprint.mindflow" in result
+
+
+# ── 注意力治理 ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_set_impulse_bar_command():
     mf = BaseMindflow()
     chan = build_mindflow_channel(mf, enable_bar=True)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        assert "impulse bar" in _notice_text(runtime).lower()
-        assert not runtime.self_meta().context  # 温数据不进每帧 context
-
-        await runtime.execute_command("set-impulse-bar", kwargs={"priority": "CRITICAL"})
-        await runtime.refresh_metas()
-        assert "CRITICAL" in _notice_text(runtime)
+        result = await runtime.execute_command("set-impulse-bar", kwargs={"priority": "CRITICAL"})
+        assert "CRITICAL" in result
+        assert mf.impulse_priority_bar() == Priority.CRITICAL
 
 
 @pytest.mark.asyncio
-async def test_set_signal_bar_reflected_in_notice():
+async def test_set_signal_bar_command():
     mf = BaseMindflow()
     chan = build_mindflow_channel(mf, enable_bar=True)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("set-signal-bar", kwargs={"priority": "WARNING"})
-        await runtime.refresh_metas()
-        assert "WARNING" in _notice_text(runtime)
+        result = await runtime.execute_command("set-signal-bar", kwargs={"priority": "WARNING"})
+        assert "WARNING" in result
+        assert mf.signal_priority_bar() == Priority.WARNING
 
 
 @pytest.mark.asyncio
@@ -149,44 +252,6 @@ async def test_set_priority_operates_on_current_attention():
             result = await runtime.execute_command("set-priority", kwargs={"priority": "CRITICAL"})
             assert "CRITICAL" in result
             assert mf.attention().priority() == Priority.CRITICAL
-
-
-@pytest.mark.asyncio
-async def test_set_priority_without_attention_is_noop():
-    mf = BaseMindflow()
-    chan = build_mindflow_channel(mf, enable_priority=True)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("set-priority", kwargs={"priority": "CRITICAL"})
-        assert "no active attention" in result.lower()
-
-
-# ── instruction / nuclei 不重复罗列 ────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_instruction_explains_but_does_not_list_commands():
-    mf = BaseMindflow()
-    chan = build_mindflow_channel(mf)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        instruction = runtime.self_meta().instruction
-        assert "mindflow" in instruction.lower()
-        # red line: instruction 不重复罗列命令
-        assert "set-priority(" not in instruction
-
-
-@pytest.mark.asyncio
-async def test_nuclei_not_listed_in_notice():
-    nuc = CachedNucleus()
-    mf = BaseMindflow(nuc)
-    chan = build_mindflow_channel(mf)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        # nucleus 讯息收敛进 `nuclei` 命令, notice 不再罗列 nucleus 目录.
-        assert NUCLEUS_NAME not in runtime.self_meta().notice
-        result = await runtime.execute_command("nuclei")
-        assert NUCLEUS_NAME in result
 
 
 async def _wait_until(cond, *, timeout: float = 1.0) -> None:
@@ -207,7 +272,6 @@ async def test_gated_mindflow_lists_and_mounts_nucleus_child():
         channel = mf.as_channel()
         async with channel.bootstrap() as runtime:
             await runtime.refresh_metas()
-            # gate 开启: nucleus channel 默认关闭, 只在 gated_children 片段里可见.
             catalog = runtime.self_meta().named_notices["gated_children"]
             assert "listener_nucleus (closed)" in catalog
             assert "listener_nucleus" not in runtime.virtual_sub_channels()
@@ -226,6 +290,5 @@ async def test_mindflow_defaults_to_gate_on():
         channel = mf.as_channel()
         async with channel.bootstrap() as runtime:
             await runtime.refresh_metas()
-            # nucleus 子通道默认关闭, 需 mount_child 披露.
             assert "listener_nucleus" not in runtime.virtual_sub_channels()
             assert "gated_children" in runtime.self_meta().named_notices
