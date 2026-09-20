@@ -420,7 +420,45 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
     (`enabled` 开关 + `history` 容量)。开时 notice 暴露 `last_heard` (最近一条定稿全文),
     `get_transcript(n)` 命令拉 current + recent + forgotten; commit 拉接口已有。
 
+### 出口位点组件化 (2026-09-21, 人类架构师驱动)
+
+**诊断**: `StopJudge` 的概念被写反了 —— 不是"判停"这个生命周期单位, 而是"边判定边
+行动"的合成体, 且 `MossLLMCaller` 出现在它的构造签名里 (`stop_judge.py:120`), 说明单元
+形状是按一种实现长出来的。同病两处:
+
+- `StopSpec` 把生命周期参数 (`segment_vad`) 和 LLM 实现旋钮 (`judge`/`judge_delay`/
+  `threshold`) 混在一个 bag 里 —— 配置在读起来像"判停就是 LLM"。
+- `first_packet.barge_in` 是 FIRST 上的**打断通告策略**, 不是闸口 (`controller.py:476-488`
+  一个 if)。真正的入口闸口是 `AudioGate` (音频层, 在 recognizer 内部), 两者同名不同物。
+- `once()` 走 `_run_once` 手写 commit, **完全绕过出口位点** —— 同一个槽位长出两份实现。
+
+**本轮落地**:
+
+- `JudgeSpec` 独立: LLM 判停是出口位点上一个**可组装件**, `StopSpec.judge: JudgeSpec | None`,
+  None 即不挂。caller 未注入时该件静默缺席, 礼仪退回纯 segment_vad/keywords。
+- caller 从子类注入改**构造注入** (`ListenerController(stop_caller=...)`);
+  `ModelListenerController` 删除 (它存在的唯一理由就是 LLM 被塞进了类层级)。
+  替换面另给 `with_stop_detector(factory)` (`StopDetectorFactory`), container 在 runtime get 一次塞入。
+- `once` 收回同一条出口位点: 差别只剩礼仪配置 (`segment_vad=0` → 首 clause 即端点) 与
+  会话结束策略 (`run_etiquette(until_tail=True)`) —— 不再有平行实现。删 `_run_once`。
+- `StopJudge` 源码保持不动 (它有自己的语义), 只补 `segment_vad <= 0` 立即 commit。
+
+**未决 / 下一轮**: 入口侧仍不对称 —— `AudioGate` 埋在 recognizer 里、listener 未转发
+(`listener.py:186` 调 `recognize()` 不传 `gate_factory`), 因此它没有 session 级挂载点;
+出口有 (`on_event_creating` + `commit`), 入口没有。人类架构师判定 AudioGate 留在
+recognizer 内部可接受, 需要时再开接线口。
+
 ### 明确不做 / 现状
 
-- **"大模型改写 segment"不做** (唯一明确排除项)。
+**本期范围收窄 (2026-09-21, 人类架构师决定)**: 这一期**只做礼仪** —— 把礼仪配置里的
+每个位点正确下发到运行时。做完即关闭本 workstream。以下高阶能力**本期全部不做, 不排期**:
+
+- **短命令** — 独立于 turn-taking 的短语直通路径。
+- **声纹** — 说话人识别 / 按人分流聆听。
+- **旁路声音检测** — 主语音流之外的旁路音频事件检测。
+- **聆听条件反射** — 绕开判停的即时反应式聆听。
+
+其他已排除 / 无需设计项:
+
+- **"大模型改写 segment"不做**。
 - "ASR 完成 + 人类手动发送"机制: 有现成实现可参考, 无需从零设计。

@@ -1,4 +1,8 @@
-"""StopJudge — per-segment stop-detection cycle (智能判停).
+"""StopJudge — per-segment stop-detection cycle (出口位点的判停单元).
+
+这是出口位点上一个 **openbox 降级实现**, 不是默认实现: 默认出口只有 segment_vad /
+keywords, LLM 打分件必须显式声明 (``StopSpec.judge``) 并且环境能注入 caller 才组装得起来.
+将来专用端点模型进来时替换掉的就是本类所在的这一格, 槽位形状不变.
 
 Translates the recognition event stream into commit decisions:
 - clause: accumulate, spawn the debounced llm judge, arm the segment_vad timer
@@ -6,8 +10,8 @@ Translates the recognition event stream into commit decisions:
 - judge score >= threshold → commit (early); segment_vad expiry → commit (fallback)
 - keyword hit → commit immediately (explicit endpoint, no scoring)
 
-Holds a MossLLMCaller (externally assembled). Independently testable: drive ``feed``
-with a mock caller and assert commit timing.
+Holds a MossLLMCaller (externally assembled — the model dependency). Independently
+testable: drive ``feed`` with a mock caller and assert commit timing.
 """
 import asyncio
 import logging
@@ -170,6 +174,9 @@ class StopJudge:
             self._try_commit()
             return
         self._clauses.append(text)
+        if self._segment_vad <= 0:
+            self._try_commit()  # segment_vad=0 → 首个 clause 即端点, 不起定时器
+            return
         self._last_clause_at = time.monotonic()
         self._start_vad()
         if self._judge:

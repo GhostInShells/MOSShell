@@ -12,7 +12,7 @@ import pytest
 from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
-from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
+from ghoshell_moss.host.listener.controller import ListenerController
 from ghoshell_moss.host.listener.etiquette import new_always_spec
 
 
@@ -306,7 +306,7 @@ def test_no_signal_broadcast_registers_no_emitter():
 
 
 # ============================================================
-# 智能判停 (llm judge) — ModelListenerController + StopJudge 装线
+# 智能判停 (llm judge) — caller 注入 + StopJudge 装线
 # ============================================================
 
 class _MockCaller:
@@ -320,9 +320,9 @@ class _MockCaller:
 @pytest.mark.asyncio
 async def test_llm_judge_commits_when_judge_confident():
     listener = _MockListener()
-    controller = ModelListenerController(
+    controller = ListenerController(
         listener=listener, asr=_MockASR(),
-        caller=_MockCaller([9]),
+        stop_caller=_MockCaller([9]),
     )
     task, state = await _start_controller(
         controller, controller.llm_judge, judge_delay=0, timeout=5.0,
@@ -340,9 +340,9 @@ async def test_llm_judge_commits_when_judge_confident():
 @pytest.mark.asyncio
 async def test_llm_judge_keeps_waiting_when_judge_unsure():
     listener = _MockListener()
-    controller = ModelListenerController(
+    controller = ListenerController(
         listener=listener, asr=_MockASR(),
-        caller=_MockCaller([1]),
+        stop_caller=_MockCaller([1]),
     )
     task, state = await _start_controller(
         controller, controller.llm_judge, judge_delay=0, timeout=5.0,
@@ -353,6 +353,61 @@ async def test_llm_judge_keeps_waiting_when_judge_unsure():
     for _ in range(3):
         await asyncio.sleep(0)
     assert state.committed == 0  # 打分 1 < threshold 7 → 不 commit
+
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_llm_judge_degrades_without_caller():
+    """caller 未注入 → judge 件静默缺席, 礼仪退回纯 segment_vad (不炸)."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    assert controller.can_stop_judge() is False
+
+    task, state = await _start_controller(
+        controller, controller.llm_judge,
+        segment_vad=0.1, judge_delay=0, timeout=5.0,
+    )
+
+    for cb in state.event_creating:
+        await cb(_clause("我觉得应该这样"))
+    await asyncio.sleep(0.2)
+    assert state.committed == 1  # segment_vad 兜底仍生效
+
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_with_stop_detector_replaces_assembly():
+    """出口位点可整段替换: 注入的 factory 拿到 (礼仪, commit), 自行决定判停单元."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    seen: list[str] = []
+
+    class _Replace:
+        def __init__(self, name, commit):
+            self._name = name
+            self._commit = commit
+
+        async def feed(self, event):
+            self._commit()
+
+        def close(self):
+            pass
+
+    def factory(etiquette, commit):
+        seen.append(etiquette.name)
+        return _Replace(etiquette.name, commit)
+
+    controller.with_stop_detector(factory)
+    task, state = await _start_controller(
+        controller, controller.always, segment_vad=5.0, timeout=5.0,
+    )
+
+    for cb in state.event_creating:
+        await cb(_clause("你好"))
+    assert seen == ["always"]  # 装配走的是注入的 factory
+    assert state.committed == 1
 
     await _stop(task)
 

@@ -24,6 +24,7 @@ from ghoshell_moss.core.blueprint.mindflow import Priority
 __all__ = [
     "FirstPacketSpec",
     "DeliverSpec",
+    "JudgeSpec",
     "StopSpec",
     "PerceiveSpec",
     "EtiquetteSpec",
@@ -61,23 +62,38 @@ class DeliverSpec(BaseModel):
     mode: str = Field(default="notify", description="loss-side semantics: notify / aside / ''(default)")
 
 
+class JudgeSpec(BaseModel):
+    """LLM 判停组件参数 — 出口位点上的一个降级实现 (openbox).
+
+    它声明"挂不挂这个组件 + 它自己的参数", 不是"判停是什么". 将来专用端点
+    模型进来时, 换掉的是这个组件, ``StopSpec`` 的槽位形状不变.
+    """
+
+    threshold: int = Field(default=7, description="llm judge score threshold")
+    judge_delay: float = Field(default=0.3, description="llm judge debounce seconds")
+
+
 class StopSpec(BaseModel):
-    """判停 — when to commit (the trigger of the deliver signal).
+    """判停 — 出口协议: 声明出口位点上组装了哪些判停组件.
 
-    Orthogonal params, not an enum:
+    通用槽位参数 (任何实现都认):
 
-    - ``segment_vad == 0`` → commit immediately on the first clause (once).
-    - ``segment_vad > 0`` → commit after that many seconds of quiet.
-    - ``judge`` → score clauses with an llm caller (llm_judge); commit early when
-      score >= threshold, segment_vad as fallback.
-    - ``keywords`` → explicit endpoint, commits immediately on a hit.
+    - ``segment_vad == 0`` → 首个 clause 立刻 commit (once).
+    - ``segment_vad > 0`` → 该秒数静默后 commit (展期: 新 clause 前移 deadline).
+    - ``keywords`` → 显式端点, 命中立刻 commit.
+
+    可组装件 (声明式, None = 不挂):
+
+    - ``judge`` → 挂一个 LLM 打分实现 (降级; 依赖外部注入的 caller).
+      caller 缺席时该组件静默不生效, 礼仪退回纯 segment_vad/keywords.
     """
 
     segment_vad: float = Field(default=1.5, description="silence fallback seconds; 0 = commit on first clause")
-    judge: bool = Field(default=False, description="whether to llm-judge clause completion")
-    judge_delay: float = Field(default=0.3, description="llm judge debounce seconds")
-    threshold: int = Field(default=7, description="llm judge score threshold")
     keywords: list[str] = Field(default_factory=list, description="explicit endpoint keywords")
+    judge: JudgeSpec | None = Field(
+        default=None,
+        description="openbox fallback component — off by default; needs a caller injected at construction",
+    )
 
 
 class PerceiveSpec(BaseModel):
@@ -169,10 +185,21 @@ def new_always_spec(segment_vad: float = 1.5) -> EtiquetteSpec:
     )
 
 
-def new_llm_judge_spec(segment_vad: float = 3.0, threshold: int = 7) -> EtiquetteSpec:
-    """智能判停: 判停 = llm 打分 >= threshold 提前 commit, segment_vad 兜底."""
+def new_llm_judge_spec(
+        segment_vad: float = 3.0,
+        threshold: int = 7,
+        judge_delay: float = 0.3,
+) -> EtiquetteSpec:
+    """降级判停: 出口位点挂 LLM 打分件, 打分 >= threshold 提前 commit, segment_vad 兜底.
+
+    不是默认路径 —— 默认出口只有 segment_vad/keywords. 挂上本件要求环境配了模型
+    (caller 能注入), 拿不到时该件静默缺席, 礼仪退回默认行为.
+    """
     return EtiquetteSpec(
         name="llm_judge",
-        description="llm-judged stop detection with segment_vad fallback",
-        stop=StopSpec(segment_vad=segment_vad, judge=True, threshold=threshold),
+        description="openbox fallback — llm-scored stop detection over the segment_vad baseline",
+        stop=StopSpec(
+            segment_vad=segment_vad,
+            judge=JudgeSpec(threshold=threshold, judge_delay=judge_delay),
+        ),
     )

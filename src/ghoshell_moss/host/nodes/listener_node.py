@@ -15,7 +15,7 @@ from ghoshell_moss.contracts.configs import ConfigStore, get_or_create_conf
 from ghoshell_moss.contracts.listener import ASRListener
 from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
+from ghoshell_moss.host.listener.controller import ListenerController
 from ghoshell_moss.host.listener.stop_judge import STOP_JUDGE_INSTRUCTION
 
 __all__ = ["assemble_controller", "listener_node", "listener_controller_node"]
@@ -42,17 +42,11 @@ async def assemble_controller(
     capture = con.get(AudioCaptureSource)
     sample_rate = capture.sample_rate if capture is not None else asr.get_info().sample_rate
     caller = _try_build_stop_judge_caller(con, matrix.logger)
-    if caller is not None:
-        controller = ModelListenerController(
-            listener=listener, asr=asr, logger=matrix.logger,
-            signal_broadcast=matrix.session.add_signal if emit_signals else None,
-            caller=caller,
-        )
-    else:
-        controller = ListenerController(
-            listener=listener, asr=asr, logger=matrix.logger,
-            signal_broadcast=matrix.session.add_signal if emit_signals else None,
-        )
+    controller = ListenerController(
+        listener=listener, asr=asr, logger=matrix.logger,
+        signal_broadcast=matrix.session.add_signal if emit_signals else None,
+        stop_caller=caller,
+    )
     await controller.with_topic_service(matrix.session.topics)
     await controller.with_audio_sample_service(matrix.session.topics, sample_rate=sample_rate)
     config_store = con.get(ConfigStore)
@@ -63,7 +57,11 @@ async def assemble_controller(
 
 
 def _try_build_stop_judge_caller(con, logger) -> Optional[MossLLMCaller]:
-    """有 moss 消息协议引擎时构建判停 caller, 否则 None (base controller, 无 llm_judge)."""
+    """出口位点降级件的依赖: 模型环境可用时才构建, 否则 None.
+
+    None 不是错误 —— 默认出口本就不依赖模型; 拿到 None 时 judge 件静默缺席,
+    礼仪退回 segment_vad/keywords.
+    """
     funcs = con.get(LLMFuncs)
     if not isinstance(funcs, MossLLMFuncs):
         return None

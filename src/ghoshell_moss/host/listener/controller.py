@@ -46,7 +46,6 @@ from ghoshell_moss.host.listener.etiquette import (
     EtiquetteConfig,
     EtiquetteSpec,
     FirstPacketSpec,
-    PerceiveSpec,
     new_always_spec,
     new_llm_judge_spec,
     new_once_spec,
@@ -57,10 +56,16 @@ from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
 
 __all__ = [
     "ListenerController",
-    "ModelListenerController",
     "ListenEtiquette",
     "ListenerSnapshot",
+    "StopDetectorFactory",
 ]
+
+
+#: 出口位点的装配面: 吃 (礼仪, commit 开关), 返回该 session 的判停单元.
+#: 默认实现由 ``ListenerController`` 按 ``StopSpec`` + 注入的 caller 组装;
+#: 注入自定义 factory 即可整段替换 (container 在 runtime get 一次后塞进来).
+StopDetectorFactory = Callable[[EtiquetteSpec, Callable[[], None]], StopJudge]
 
 
 class ListenEtiquette(str, Enum):
@@ -113,6 +118,7 @@ class ListenerController(ListenLifecycle):
             asr: ASR,
             logger: Optional[LoggerItf] = None,
             signal_broadcast: Optional[Callable[[Signal], None]] = None,
+            stop_caller: Optional[MossLLMCaller] = None,
     ):
         self._listener = listener
         self._asr = asr
@@ -120,6 +126,11 @@ class ListenerController(ListenLifecycle):
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
         self._owns_listener = False
+        # 出口位点的降级件依赖: llm caller 外部装配注入 (instruction/model/输出约束已绑定).
+        # 没有它时 judge 组件静默缺席, 礼仪退回纯 segment_vad/keywords.
+        self._stop_caller = stop_caller
+        self._stop_detector_factory: Optional[StopDetectorFactory] = None
+        self._score_observers: list[Callable[[StopScoreObservation], None]] = []
         # 信号发射: 存在 sink 时注册一条 listener 级观察者 (跨 session 稳定), 机械地把
         # 每个识别事件翻译成 listener signal 并广播. 无 sink 则只做判停, 不发 signal.
         self._signal_broadcast = signal_broadcast
@@ -170,6 +181,27 @@ class ListenerController(ListenLifecycle):
         self._config_store = store
         return self
 
+    def with_stop_detector(self, factory: StopDetectorFactory) -> Self:
+        """替换出口位点的默认装配 (整段换掉判停单元, 含降级件的注册方式)."""
+        self._stop_detector_factory = factory
+        return self
+
+    def can_stop_judge(self) -> bool:
+        """出口位点的 LLM 降级件是否可用 (caller 已注入)."""
+        return self._stop_caller is not None
+
+    def on_score(self, callback: Callable[[StopScoreObservation], None]) -> Callable[[], None]:
+        """注册判停打分观察者 (跨 session) — 每次 llm 打分回调请求+结果, 返回 disposer."""
+        self._score_observers.append(callback)
+        return lambda: self._score_observers.remove(callback)
+
+    def _notify_score(self, obs: StopScoreObservation) -> None:
+        for callback in list(self._score_observers):
+            try:
+                callback(obs)
+            except Exception:
+                self._logger.exception("on_score observer failed")
+
     def _etiquette_config(self) -> EtiquetteConfig:
         """当前礼仪配置: 有 store 则 get_or_create, 否则内存实例."""
         if self._etiquette_config_cache is None:
@@ -208,11 +240,18 @@ class ListenerController(ListenLifecycle):
             etiquette: EtiquetteSpec,
             *,
             timeout: float | None = None,
+            until_tail: bool = False,
     ) -> asyncio.Future:
-        """传入礼仪配置, 启动持续监听状态机 (由首包/尾包/判停三层驱动)."""
+        """传入礼仪配置, 启动持续监听状态机 (由首包/尾包/判停三层驱动).
+
+        ``until_tail=True`` 时会话在尾包处理后结束 (听一次); 否则常驻到 timeout /
+        被新礼仪取消.
+        """
         self._set_active_etiquette(etiquette)
         self._cancel_active()
-        task = asyncio.create_task(self._run_etiquette(etiquette, timeout=timeout))
+        task = asyncio.create_task(
+            self._run_etiquette(etiquette, timeout=timeout, until_tail=until_tail)
+        )
         self._active_task = task
         return task
 
@@ -226,13 +265,35 @@ class ListenerController(ListenLifecycle):
             config.activate(spec.name)
         return self.run_etiquette(spec)
 
-    async def _run_etiquette(self, etiquette: EtiquetteSpec, *, timeout: float | None) -> None:
+    async def _run_etiquette(
+            self,
+            etiquette: EtiquetteSpec,
+            *,
+            timeout: float | None,
+            until_tail: bool = False,
+    ) -> None:
         state = await self._listener.listen()
         judge = self._make_stop_judge(etiquette, state.commit)
         state.on_event_creating(judge.feed)
+        done = asyncio.Event()
+        if until_tail:
+            # 结束条件 = 尾包 (TAIL) 已处理, 不是 segment 切分 — segment 切分早于
+            # TAIL 经 _pump 从 queue 取出, 用 segment 判结束会丢尾包 signal.
+            def _on_result(result: RecognitionEvent) -> None:
+                if result.phase == RecognitionPhase.TAIL:
+                    done.set()
+
+            state.on_recognition_result(_on_result)
         async with state:
             try:
-                if timeout is None:
+                if until_tail:
+                    try:
+                        await asyncio.wait_for(done.wait(), timeout)
+                    except asyncio.TimeoutError:
+                        self._logger.warning(
+                            "%s no tail within %s — session ends", self._log_prefix, timeout,
+                        )
+                elif timeout is None:
                     await asyncio.Event().wait()
                 else:
                     await asyncio.sleep(timeout)
@@ -240,16 +301,29 @@ class ListenerController(ListenLifecycle):
                 judge.close()
 
     def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
-        """判停组件: judge=False 纯 segment_vad, judge=True llm 打分. Model 覆盖加 caller."""
+        """出口位点装配: 按 StopSpec 组装判停单元 + 注入降级件依赖 (caller)."""
+        if self._stop_detector_factory is not None:
+            return self._stop_detector_factory(etiquette, commit)
         stop = etiquette.stop
+        judge = stop.judge if (stop.judge is not None and self._stop_caller is not None) else None
+        if judge is None:
+            return StopJudge(
+                caller=None,
+                judge=False,
+                segment_vad=stop.segment_vad,
+                commit=commit,
+                keywords=stop.keywords,
+                logger=self._logger,
+            )
         return StopJudge(
-            caller=None,
-            judge=stop.judge,
-            threshold=stop.threshold,
+            caller=self._stop_caller,
+            judge=True,
+            threshold=judge.threshold,
+            judge_delay=judge.judge_delay,
             segment_vad=stop.segment_vad,
-            judge_delay=stop.judge_delay,
             commit=commit,
             keywords=stop.keywords,
+            on_score=self._notify_score,
             logger=self._logger,
         )
 
@@ -264,18 +338,15 @@ class ListenerController(ListenLifecycle):
     ) -> asyncio.Future:
         """半双工: 拿 clause 立刻 commit, 尾包后结束一次聆听.
 
-        command 语义: 立即返回 Future (外部可 await 阻塞或忽略), 内部 spawn 状态机.
-        新 method 调用 cancel 旧的状态机 (同一时刻至多一条 session).
-
-        clause_vad 覆盖 ASR 分句判停时间 (end_window_size). keywords 在 once 语义下
-        冗余 (clause 即 commit), 仅为接口一致保留.
+        与 ``always`` 走同一条出口位点, 差别只在礼仪配置 (segment_vad=0 → 首个 clause
+        即端点) 与会话结束策略 (尾包后收). 立即返回 Future; 新 method 取消旧的状态机.
         """
         self._mode = ListenEtiquette.ONCE
-        self._set_active_etiquette(new_once_spec())
-        self._cancel_active()
-        task = asyncio.create_task(self._run_once(clause_vad=clause_vad, keywords=keywords, timeout=timeout))
-        self._active_task = task
-        return task
+        self._apply_clause_vad(clause_vad)
+        spec = new_once_spec()
+        if keywords:
+            spec.stop.keywords = list(keywords)
+        return self.run_etiquette(spec, timeout=timeout, until_tail=True)
 
     def always(
             self,
@@ -293,6 +364,27 @@ class ListenerController(ListenLifecycle):
         self._mode = ListenEtiquette.ALWAYS
         self._apply_clause_vad(clause_vad)
         spec = new_always_spec(segment_vad)
+        if keywords:
+            spec.stop.keywords = list(keywords)
+        return self.run_etiquette(spec, timeout=timeout)
+
+    def llm_judge(
+            self,
+            *,
+            clause_vad: Optional[int] = None,
+            segment_vad: float = 3.0,
+            judge_delay: float = 0.3,
+            keywords: Optional[list[str]] = None,
+            threshold: int = 7,
+            timeout: Optional[float] = None,
+    ) -> asyncio.Future:
+        """智能判停礼仪: 出口位点挂 LLM 打分件 + segment_vad 兜底.
+
+        需要构造时注入了 ``stop_caller``, 否则 judge 件静默缺席 (退化为 always).
+        """
+        self._mode = ListenEtiquette.LLM_JUDGE
+        self._apply_clause_vad(clause_vad)
+        spec = new_llm_judge_spec(segment_vad, threshold, judge_delay)
         if keywords:
             spec.stop.keywords = list(keywords)
         return self.run_etiquette(spec, timeout=timeout)
@@ -423,41 +515,6 @@ class ListenerController(ListenLifecycle):
         if self._audio_sample_publisher is not None:
             await self._audio_sample_publisher.__aexit__(None, None, None)
             self._audio_sample_publisher = None
-
-    # ── 状态机 (内部, 每个 method 一个) ──
-
-    async def _run_once(
-            self,
-            *,
-            clause_vad: Optional[int],
-            keywords: Optional[list[str]],
-            timeout: float,
-    ) -> None:
-        self._apply_clause_vad(clause_vad)
-        state = await self._listener.listen()
-        committed = False
-        done = asyncio.Event()
-
-        async def on_event(event: RecognitionEvent) -> None:
-            nonlocal committed
-            if event.phase == RecognitionPhase.CLAUSE and not committed:
-                committed = True
-                state.commit()
-
-        def on_result(result: RecognitionEvent) -> None:
-            # 结束条件 = 尾包 (TAIL) 已处理, 不是 segment 切分 — segment 切分早于
-            # TAIL 经 _pump 从 queue 取出, 用 segment 判结束会丢尾包 signal.
-            if result.phase == RecognitionPhase.TAIL:
-                done.set()
-
-        state.on_event_creating(on_event)
-        state.on_recognition_result(on_result)
-
-        async with state:
-            try:
-                await asyncio.wait_for(done.wait(), timeout)
-            except asyncio.TimeoutError:
-                self._logger.warning("%s once: no tail within %.1fs", self._log_prefix, timeout)
 
     # ── 信号发射 (RecognitionEvent → listener signal) ──
 
@@ -648,66 +705,3 @@ class ListenerController(ListenLifecycle):
             return "asr configured"
 
 
-class ModelListenerController(ListenerController):
-    """ListenerController + llm func caller — 智能判停 (llm judge) 高阶礼仪.
-
-    持 MossLLMCaller (外部装配, instruction/model/输出约束已绑定). ``llm_judge``
-    是第四种聆听礼仪: clause 后由 llm 打分判「论述讲完了吗」, 打分 >= threshold
-    即 commit, segment_vad 静默兜底。第五种 (快捷响应) 是后续礼仪, 不在本类。
-    """
-
-    def __init__(self, *, caller: MossLLMCaller, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._caller = caller
-        self._score_observers: list[Callable[[StopScoreObservation], None]] = []
-
-    def on_score(self, callback: Callable[[StopScoreObservation], None]) -> Callable[[], None]:
-        """注册判停打分观察者 (跨 session) — 每次 llm 打分回调请求+结果, 返回 disposer."""
-        self._score_observers.append(callback)
-        return lambda: self._score_observers.remove(callback)
-
-    def _notify_score(self, obs: StopScoreObservation) -> None:
-        for callback in list(self._score_observers):
-            try:
-                callback(obs)
-            except Exception:
-                self._logger.exception("on_score observer failed")
-
-    def llm_judge(
-            self,
-            *,
-            clause_vad: Optional[int] = None,
-            segment_vad: float = 3.0,
-            judge_delay: float = 0.3,
-            keywords: Optional[list[str]] = None,
-            threshold: int = 7,
-            timeout: Optional[float] = None,
-    ) -> asyncio.Future:
-        """LLM-judged stop detection: a segment_vad timer (fallback) + a debounced llm judge.
-
-        Commit when the judge scores >= ``threshold`` (early) or after ``segment_vad``
-        seconds of quiet past the last clause (baseline). Returns immediately;
-        ``timeout=None`` means run until ``stop()`` or another etiquette cancels it.
-        """
-        self._mode = ListenEtiquette.LLM_JUDGE
-        self._apply_clause_vad(clause_vad)
-        spec = new_llm_judge_spec(segment_vad, threshold)
-        spec.stop.judge_delay = judge_delay
-        if keywords:
-            spec.stop.keywords = list(keywords)
-        return self.run_etiquette(spec, timeout=timeout)
-
-    def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
-        """判停组件: 带 llm caller + 打分观察者 (base 无 caller)."""
-        stop = etiquette.stop
-        return StopJudge(
-            caller=self._caller,
-            judge=stop.judge,
-            threshold=stop.threshold,
-            segment_vad=stop.segment_vad,
-            judge_delay=stop.judge_delay,
-            commit=commit,
-            keywords=stop.keywords,
-            on_score=self._notify_score,
-            logger=self._logger,
-        )

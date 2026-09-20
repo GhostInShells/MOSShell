@@ -30,7 +30,7 @@ from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, p
 from ghoshell_moss.contracts.asr import RecognitionPhase, RecognitionEvent
 from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
+from ghoshell_moss.host.listener.controller import ListenerController
 from ghoshell_moss.host.nodes.listener_node import assemble_controller
 
 _MODES = ("once", "always", "enter", "llm_judge")
@@ -204,7 +204,7 @@ async def _run_llm_judge(ctx: _Ctx) -> _Stats | None:
     stats = _Stats()
     on_result = partial(_handle_result, json_mode=ctx.json_mode, stats=stats)
 
-    if not isinstance(ctx.controller, ModelListenerController):
+    if not ctx.controller.can_stop_judge():
         print_error("llm_judge requires the llm func engine — is LLMFuncs configured?")
         return None
     if "not started" in ctx.capture.device_explain():
