@@ -17,7 +17,6 @@ import tempfile
 from pathlib import Path
 
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
 from ghoshell_moss.deepseek_harness.channel import new_dsh_runtime_channel
 from ghoshell_moss.deepseek_harness.launcher import DshConnection, DshConnectionConfig
 from ghoshell_moss.deepseek_harness.runtime import DshRuntime
@@ -50,13 +49,10 @@ async def main(matrix: Matrix) -> None:
     if fd is None:
         raise RuntimeError(f"another dsh node already connected to {args.host}:{args.port}")
 
-    def _on_background_done(result: str, next_flag: bool) -> None:
-        matrix.send_signal_to_ghost(new_notify_signal(result, next=next_flag))
-
     connection = DshConnection(
         DshConnectionConfig(host=args.host, port=args.port, token=args.token)
     )
-    runtime = DshRuntime(connection, on_background_done=_on_background_done)
+    runtime = DshRuntime(connection, send_signal=matrix.send_signal_to_ghost)
     channel = new_dsh_runtime_channel(runtime)
     # fd 保持打开 → 进程生命周期内持有 flock, 进程退出时 OS 释放.
     await matrix.provide_channel(channel)

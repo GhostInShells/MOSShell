@@ -7,10 +7,12 @@ description: 'dsh 融合 — DeepSeek Harness (dsh) 作为 MOSS 核心推理组�
   推理。本 workstream 决策融合本身, 落点分两条路径: gui 管理的 agent 与 dolores ghost。'
 milestone: 0.1.0
 priority: P0
-status: in-progress
-status_note: '基建完成: DshConnection(连接层基类)+DshLauncher(进程层,继承) 拆分; DshClient(管理面); DshSession(会话级 facade: run() 单轮对话 + cancel, 对齐官方 SDK Session.run, 经活 dsh 验证); DshSessionRef 扩为 span 坐标 + trajectory(seed 截断/fold); message_mapper + types。dolores plugin 拆成 dolores-ego-tools/ghost-bridge/state 三文件。agent platform vs generic facade 边界已定 (见 research_2026-09-09); ref span/seed/run 方案已定 (见 research_2026-09-10); 单轮 run 落地见 research_2026-09-11。meta channel 落地: channels/dsh_channel.py 父→connection→session 三层 virtual tree + exec 代码驱动, 注册 meta mode, 经活 shell 实测。2026-09-19 追至 dsh 0.1.5-rc.2: rc.1→rc.2 传输面无差异; connection/launcher/session 与 plugin 的 ctx 面核对全部通过; plugin 的 agent-start 装配语义化为 installEgoAgentStart (双载体 + payload 校验), 为 0.1.6 的 session-start 合并预置。'
+status: completed
+status_note: 'node 控制面落地: flat 单 channel + send/wait/interrupt/status/read + watch(level)
+  感知面 + 注意力铁律(默认 silent/next 显式升档/拓扑写 code); 废弃 channels/dsh_channel.py, meta mode
+  断线已修. 未对活 dsh 验证: source.kind 人类/模型判别 + approval agentId→session 映射, 后续在基础上迭代.'
 title: DSH Fusion
-updated: '2026-09-19'
+updated: '2026-09-20'
 ---
 
 # DSH Fusion
@@ -103,13 +105,15 @@ research/ 调研轨迹。
    `_run.py` 用 `DshSession`, plugin 拆成 `dolores-ego-tools.ts`(ego moss_* tools +
    identity/persona, agent scope)+ `dolores-ghost-bridge.ts`(web 侧 RPC 桥 + perStep 锁
    + shared state)+ `dolores-state.ts`(共享 DoloresState)。具体方案读源码 docstring。
-5. **meta channel** — `channels/dsh_channel.py`(父→connection→session 三层 virtual tree):
-   模型经 CTML 把 dsh 当有状态的代码驱动运行时。`connect()` 挂一个 DshConnection 子
-   channel, `open()` 挂 DshSession 孙 channel; 两层各有 `exec()` 编译模型 Python 并注入
-   现场对象(`main(connection)`/`main(session)`)。virtual child 生命周期由 shell runtime
-   托管(startup/close enter/exit 连接); connection 依赖注入(测试注入 fake, 不碰网络)。
-   注册于 meta mode, 经活 shell 实测 connect→open→exec loop→teardown 全链路。这是
-   「可以 loop 一个 dsh session」的 CTML 面落点。
+5. **node 控制面** — `nodes/deepseek-harness/`(node)+ `deepseek_harness/channel.py` +
+   `runtime.py`(flat 单 channel):
+   把 dsh 当 agent 控制面, 借 IM 会话列表的感知形态。会话按 name 寻址(不物化子 channel),
+   最常用的 send/wait/interrupt/status/read 拎出来, 其余走 `run(code)` 代码逃生口。
+   感知面: notice 单行计数 + named_notices 只放 watched 会话; watch(level) 把账本变更
+   外发成 typed notify signal。**注意力铁律**(100 个并行 agent 也成立): 默认 silent(只进
+   runs() 账本 + notice 计数), next 是显式升档、绝不默认; 拓扑依赖写 code、控制面不提供
+   编排动词。经 tests 覆盖; 未对活 dsh 验证的判别: 人类/模型 user/message (source.kind)
+   与 approval 的 agentId→session 映射。
 
 ## Key Decisions
 
@@ -164,9 +168,10 @@ research/ 调研轨迹。
   - `plugin-api-session-event/` — 已验证:「dsh web 内置 `/api/events.mux` WS 下行 +
     plugin 注册 HTTP 回调」构成零依赖伪双工, ghost runtime 不开对外接口
 - **基建源码锚点**: `src/ghoshell_moss/deepseek_harness/`(launcher/client/session/
-  message_mapper/types)+ `tests/ghoshell_moss/deepseek_harness/`。meta channel:
-  `src/ghoshell_moss/channels/dsh_channel.py` + `tests/ghoshell_moss/channels/
-  test_dsh_channel.py`。plugin 面:
+  message_mapper/types)+ `tests/ghoshell_moss/deepseek_harness/`。node 控制面:
+  `nodes/deepseek-harness/` + `src/ghoshell_moss/deepseek_harness/channel.py` +
+  `runtime.py` + `tests/ghoshell_moss/deepseek_harness/test_channel.py`/`test_runtime.py`。
+  plugin 面:
   `ghosts/dolores/dsh_plugin/`(dolores-ego-tools.ts / dolores-ghost-bridge.ts /
   dolores-state.ts)。dsh 官方源码在
   `research/source/deepseek-harness/`(`python/sdk` 仅参考锚点、`packages/acp` 权限仲裁、
