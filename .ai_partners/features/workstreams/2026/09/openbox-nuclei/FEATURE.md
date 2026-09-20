@@ -1,15 +1,17 @@
 ---
-title: Openbox Nuclei — 基础感知核的机制治理
-status: in-progress
-priority: P1
 created: 2026-09-16
-updated: 2026-09-17
-depends: [moss-openbox-modes, mindflow-interleaved-thinking]
-milestone:
-description: >-
-  治理 openbox 默认 nuclei 的机制面: 把 win/lose 两侧的策略显式化, 补 inject / knock
-  两个缺口, 把 FIFO / PriorityQueue 作为独立的交付粒度纪律立项, 并把 signal meta 的
-  docstring 改成非机制的自然语言 (英文).
+depends:
+- moss-openbox-modes
+- mindflow-interleaved-thinking
+description: '治理 openbox 默认 nuclei 的机制面: 把 win/lose 两侧的策略显式化, 补 inject / knock 两个缺口,
+  把 FIFO / PriorityQueue 作为独立的交付粒度纪律立项, 并把 signal meta 的 docstring 改成非机制的自然语言 (英文).'
+milestone: null
+priority: P1
+status: completed
+status_note: 落地清单 1-8 全部有终局 (1/2/4/7 已落, 3/5 dropped, 6 缓, 8 另起); 3 个已知问题随关闭带走 (injected_percepts
+  无上限/quiet 无 drain, aside suppress 重拼重复注入, hint 未落 buffered 路径)
+title: Openbox Nuclei — 基础感知核的机制治理
+updated: '2026-09-20'
 ---
 
 # Openbox Nuclei — 基础感知核的机制治理
@@ -335,3 +337,37 @@ drain `_injected_percepts`**，它只 `extend` 不消费（`moment.py:808`），
 - **`knock` 的必要性** — **是独立 nucleus**，不做 `command` 的变体。理由：`CommandSignalMeta.logos`
   必填、`CommandNucleus.build_impulse` 无 logos 直接返回 None，`command` 在结构上就载不动
   knock；且一个名字不能同时装"别想直接做"与"来想想"。signal name 是总线路由键，调用方靠名字读意图。
+
+## 收口（2026-09-20）
+
+落地清单 1–8 已全部有终局，逐条核验过代码：
+
+| # | 终局 | 证据 |
+|---|---|---|
+| 1 改名 `silent`→`aside` | ✅ | `b822bdbc` + `98ee34a8`；级联点（SignalName / helper / ChallengeMode / openbox 清单 / tests）全落 |
+| 2 六条 SignalMeta docstring | ✅ | 逐条比对决策 3 草稿一致；meta 字段描述与 `CellTransition` 已英文化 |
+| 3 新增 `inject` | ⛔ dropped | 有了 `notify` + `next` 后无独立用例 |
+| 4 新增 `knock` | ✅ | `c754c6dd`；`KnockNucleus` + `KnockSignalMeta`（无字段 marker，无消息体即丢） |
+| 5 补 `aside` / `default` 原语具名 | ⛔ dropped | `default` = 不设 mode；`aside` 原语只服务调试路径 |
+| 6 弱提示落 buffered 路径 | ⏸ 不做 | 人类裁定先看实际效果（`_mindflow.py` 的 `inject_percepts` 仍只送 messages） |
+| 7 重验 `input` 输侧语义 | ✅ | `e7012505`；结论 = pending，理由换成 `peek` 契约 + 挑战闸门 |
+| 8 FIFO / PriorityQueue | 另起 | 只立了形状，未实装 |
+
+清单外的两处"待清"已清：`aside_nucleus.py` 抄的 "FIFO 保留" 假账已重写为
+"聚合 buffer + 优先级提取" 的对称说明；`_is_useful_frame` 与 buffered 路径的
+`hint` 缺口保持一致（都是决策 6 的已知留白）。
+
+**随关闭带走（已知问题，不阻塞）**：
+
+1. `_injected_percepts` 无 `max_size`，且 quiet 态（无 attention）没有东西 drain 它 ——
+   `observe()` 只在 attention 生命周期内被调用（`moment.py:815` 只 extend）。
+2. `aside` 输侧不清 buffer，冷静期过后重拼会把已注入过的消息再注入一次
+   （`aside_nucleus.py:142` 的 `suppress` 只设 `_suppress_until`，`_signals` 留到下次
+   `add_signal` 的 `_rebuild_impulse` 里重拼；`attended` 路径无此问题）。
+
+`notify` 的 burst 丢消息已由 `6bac6850` 修掉（后到 signal 的 messages 合并进 pending
+impulse 而非覆盖），不再是遗留项。
+
+**关联去向**：插队机制（`ChallengeMode.next` + `ChallengeVerdict.queued` +
+`NotifySignalMeta.next: bool`）已随 `c754c6dd` 落在 mindflow core，见
+`mindflow-interleaved-thinking`。
