@@ -1,16 +1,16 @@
 ---
-title: Node Migration — .moss_ws/apps → nodes/ 开箱架构
-status: in-progress
-priority: P0
 created: 2026-07-21
-updated: 2026-08-14
 depends:
-  - matrix-cell-governance
-  - cells-cli
+- matrix-cell-governance
+- cells-cli
+description: 将旧 .moss_ws/apps 体系迁移到新 nodes/ 目录。轻依赖归并共享 venv、 重依赖独立；NODE.md 声明、适配新
+  Matrix API。
 milestone: 0.1.0
-description: >-
-  将旧 .moss_ws/apps 体系迁移到新 nodes/ 目录。轻依赖归并共享 venv、
-  重依赖独立；NODE.md 声明、适配新 Matrix API。
+priority: P0
+status: completed
+status_note: nodes/ 开箱架构全量落地, 迁移收口; .moss_ws/apps 余档留原地待清
+title: Node Migration — .moss_ws/apps → nodes/ 开箱架构
+updated: '2026-09-20'
 ---
 
 # Node Migration — 开箱架构
@@ -53,6 +53,8 @@ screen-node / g1 / text-blocks 各自建了新目录。**保留现状，不重�
 
 ## 迁移状态清单
 
+> 已被 2026-09-20 的「收口」取代 —— 下表是当时的计划，别当现状读，保留只为对齐历史决策。
+
 ### 已开箱（nodes/ 内，6 个）
 
 | node | 路径 | 来源 | 状态 |
@@ -93,10 +95,40 @@ git log -p -- .ai_partners/features/workstreams/2026/07/node-migration/FEATURE.m
 操作约定已固化在 `src/ghoshell_moss/stubs/node/` 模板与共享组 INSTALL.md 中，
 无需重复记录。
 
-## 下一步（可推进）
+## 收口（2026-09-20）
 
-1. **tools 共享组收尾**：迁入 screen_capture（pyproject 追加 mss+Pillow）、
-   image_importer、video_importer
-2. **sensors 共享组**：audio_capture / waveform / ptt_listener 并入 `nodes/sensors/`
-3. **vision 独立** + 复杂 app（feishu/games/bodies/ui）人工评估
-4. **全部迁完后**：删除 `.moss_ws/apps/`
+**完成。** nodes/ 开箱架构落地并稳定运行 —— 迁移不再是进行中的工程，而是既成事实的目录约定。
+
+固化下来的约定（本 feature 长出来的，现在自立）：
+
+- 一个 node = 一个目录 + `NODE.md`（声明 + 给运行中 ghost 的 instruction 正文）+ 入口脚本。
+  `INSTALL.md` 存在与否推导 `installed` 语义（有则靠 `.installed` 标记，无则天然已装）。
+- 轻依赖归并**共享 venv 组**（`nodes/tools`、`nodes/visions`：父目录持 `pyproject.toml` +
+  `.venv` + 权威 `INSTALL.md`，子 node 用 `exec.command: ../.venv/bin/python`）；
+  重依赖独立 venv（`live2d/avatar`、`os/*`、`screens/*`、`browsers/playwright`）。
+- 不分发资产（模型、专有 SDK）走 node 内 `INSTALL.md` + gitignore，不进仓库。
+
+**现实与当初规划的偏差**（记下来，免得下次再按旧表读）：
+
+- 六分类从未执行。最终按域落位：`browsers / deepseek-harness / live2d / os / screens /
+  tools / unitree / visions / webview_apps`。
+- **sensors 共享组从未成立**：`nodes/sensors/listener` 随 voice 收编进 host 内核后删除
+  （`f4fbdc68`），`nodes/sensors/` 目录空置。
+- **tools 共享组只落了一个成员**（trafilatura）。共享组的价值是"多个轻依赖 node 共用一个
+  venv"，不是目录美学 —— 没有第二个成员时它就不该存在。
+- 当初开箱清单里的 `desktop_gui` / `text_blocks` 都没留在原目录：前者并入 MOSS OS Control
+  （`nodes/os/*`），后者被 artifacts 吸收（`a39c95c1`）。
+
+`.moss_ws/apps/` 余档（96 个 git 文件）**无待迁项**：
+
+| 余档 | 归宿 |
+|---|---|
+| bodies/g1 | → `nodes/unitree/g1/control` + `contrib/unitree/g1` |
+| bodies/reachymini | → `contrib/moss_in_reachy_mini` |
+| ui/reflex | → 被 webview artifacts 取代（text_blocks 曾用 reflex，已删） |
+| tools/screen_capture | → `contrib/channels/screen_capture.py`（通道，不是 node） |
+| genkits/image | 已确认不迁 |
+| bodies/g1_sim | 废弃实验（仓库内无任何引用） |
+| im/feishu | 不在本 feature：归 `feishu-channel-integration` workstream（pending） |
+
+`.moss_ws/` 已整体删除（2026-09-20，人类拍板）—— 要捞从 git 历史捞。

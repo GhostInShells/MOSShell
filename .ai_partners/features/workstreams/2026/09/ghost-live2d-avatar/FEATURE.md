@@ -1,22 +1,21 @@
 ---
-title: Ghost Live2D Avatar
-status: draft
-# priority: importance within the current stage (iteration cycle) — not development urgency
-priority: P1
 created: 2026-09-13
-updated: 2026-09-15
 depends: []
+description: 给 ghost 一个可交互的 live2d 看伴娘躯体：一个 live2d node 做驱动，按目录发现模型包， 能用 cdi3.json
+  自动映射出 channel，也允许单个模型包用显式 channel 目录覆盖。 模型资产不外分发（gitignore），背板大图可换。
 milestone: beta-release
-description: >-
-  给 ghost 一个可交互的 live2d 看伴娘躯体：一个 live2d node 做驱动，按目录发现模型包，
-  能用 cdi3.json 自动映射出 channel，也允许单个模型包用显式 channel 目录覆盖。
-  模型资产不外分发（gitignore），背板大图可换。
+priority: P1
+status: completed
+status_note: '人类验收通过 2026-09-20: 目录发现 / 自动映射+显式 channel / 时间轨迹 / build.idle 待机仲裁 /
+  animations 轨迹编程全线可用 (hiyori+miku 本地实跑); 参数遮挡/权重问题另立'
+title: Ghost Live2D Avatar
+updated: '2026-09-20'
 ---
 
 # Ghost Live2D Avatar
 
-> Use `moss features set-status ghost-live2d-avatar <status> -m "note"` to update state.
-> See [TOPOLOGY.md](TOPOLOGY.md) for directory layout and [README.md](README.md) for the full convention.
+> 已收口 (2026-09-20)。范式真相在 `nodes/live2d/CLAUDE.md`，节点机制在 `nodes/live2d/avatar/NODE.md`，
+> 实现轨迹看 `git log -- nodes/live2d`。本文件保留设计决策的来路。
 
 ## Motivation
 
@@ -104,6 +103,11 @@ Hiyori 是 `顔 / 目 / 目玉 / 眉 / 口 / 体 / 腕 / 揺れ`）。映射器�
 
 **原则（沿用 vision-first-class KD 的同一条）**：argument = "我是谁 / 绑在哪"，env = "我怎么行为"。
 模型名是身份 → 走 argument。
+
+**已推翻（2026-09-20）**：运行期 `switch_model` **不做**。形象的状态太重（页面连接、物理、
+当前 channel 树与 animation module），切换成本高于重启 node，而"身份"本就不该运行期漂移。
+最终只有 `--avatar`（优先级 CLI > `LIVE2D_AVATAR` > 第一个可用套件）；换形象 = 重启 node。
+argument / env 的分工原则不变。
 
 ### KD6. `background` 是页面自己的背板层，与 screen node 的 background 槽同名不同物
 
@@ -223,26 +227,31 @@ pose、眨眼、唇动参数全套自带。
 `nodes/live2d/miku/miku_channels/` 的参数词表（`ParamMouthOpenY`、`ParamAngleX/Y/Z` 等）
 与 `motions.py` 的 `open_close()` 补间思路可继承；模型资产（MIKU）与 native 渲染栈不继承。
 
-### 渲染 / 驱动选型（倾向，未锁定）
+### 渲染 / 驱动选型（已决：pixi-live2d-display）
 
-渲染层倾向**官方 Cubism Web SDK + 薄 wrapper**：无 Pixi 依赖，眨眼 / 物理 / pose 由
-`model3.json` 声明 + framework 直接处理，参数全可控。需要鼠标跟随 / hit-test 时可退到
-`pixi-live2d-display`（Kalidokit 的 live2d 模板即用它）。参考实现：Open-LLM-VTuber
-（Python 后端 WS 发 `{type:"audio", volumes:[...], expressions:[...]}` → 前端按切片驱动嘴部参数）。
+实现走 **pixi + `pixi-live2d-display`（cubism4）**，不是当初倾向的官方 CubismWebFramework ——
+后者要多一步 esbuild 打包，前者 MIT 可 curl。代价是渲染层停在简化的第一版（见
+`nodes/live2d/CLAUDE.md` 已知问题）。对外只暴露 WS 协议，换库只改 `web/app.js`。
+`vendor/` 里 `pixi.min.js` / `cubism4.min.js` 可随仓库，`live2dcubismcore.min.js` 是专有库、
+必须手动下载（KD7）。
 
 **Kalidokit 不可作依赖**（2022 起官方废弃、单人维护）；且它的 Pose/Hand 求解器输出的是
 VRM 3D 骨骼旋转，**不是** Live2D 手臂参数 —— "骨骼动画驱动 Live2D 肢体"不是它现成能做的。
 可借鉴的只有它的中间结构 `{eye:{l,r}, mouth:{x,y,shape:{A,E,I,O,U}}, head:{x,y,z}, brow, pupil}`，
 作为 ghost 侧"动作意图"的规范形态。
 
-## Open Questions
+## Open Questions（已随实现收口，2026-09-20）
 
-- 显式 channel 目录的格式：yaml 声明式，还是 py 可编程？（倾向 yaml —— 声明式才符合"约定"）
-- 启动 argument 的命名与默认值；默认 pack 是 Haru、Hiyori 还是让 INSTALL 决定"有什么用什么"。
-- backdrop 由 ws 设置还是 URL query 设置；大图的尺寸/格式边界。
-- 是否/如何挂进 screen node 的 background 槽（跨 node 依赖，与 text_blocks "不依赖 screen-node"
-  的独立性相反）—— 还是 node 自持 PySide 窗口（`QWebEngineView`）。
-- 自动映射对非标准模型的失败面：`cdi3.json` 缺失时的降级策略（无分组 → 单一扁平 channel？）。
+- 显式 channel 目录的格式：yaml 声明式，还是 py 可编程？→ **py**（`channel.py`）。命令面要带
+  instruction 与逻辑，声明式 yaml 表达不了；"模型是唯一作者"也要求它是代码。
+- 启动 argument 的命名与默认值 → **`--avatar <name>`**，优先级 CLI > `LIVE2D_AVATAR` env >
+  第一个可用套件。没有默认 pack —— 资产不入库（KD7），"有什么用什么"由 INSTALL 决定。
+- backdrop 的入口与边界 → **WS 命令**（`set_backdrop`），不是 URL query；默认取
+  `backdrop/default.<ext>`，扩展名白名单 png/jpg/jpeg/webp（`main.py`）。
+- 是否挂进 screen node 的 background 槽 → **不挂**。node 自持 aiohttp 同源 server（页面 / 资产 /
+  WS 全由它提供），页面地址以 `url` notice 报给模型。与 screen node 零依赖。
+- 自动映射的降级 → `cdi3.json` 缺失（或同级找不到）时 `cubism.py` 返回空分组，`mapper.py`
+  不再建 group 子 channel，参数直接落根 channel（扁平降级），仍可驱动。
 
 ## Out of Scope（不在本 feature，另立）
 
@@ -251,3 +260,23 @@ VRM 3D 骨骼旋转，**不是** Live2D 手臂参数 —— "骨骼动画驱动 
 - **模型二次编辑**（改色 / 改服装）：被 Hiyori 条款禁止（"No changes of any kind to the design"），
   且需要 Cubism Editor，不是运行时能力。
 - **模型资产进入仓库分发**：被 license 禁止（见 KD7），永久排除。
+
+## 验收与收口（2026-09-20）
+
+人类验收通过，判定"整套机制可用"。实跑两条路径：`--avatar hiyori`（显式套件：`AVATAR.md`
++ `animations.py`，命令面走自动映射）与 `--avatar miku`（纯模型包，纯自动映射），都能被
+浏览器里的页面真实驱动。
+
+KD1–KD4、KD6–KD12 按设计落地 —— 范式真相在 `nodes/live2d/CLAUDE.md`，代码轨迹看
+`git log -- nodes/live2d`。唯一被推翻的是 KD5 的后半条（运行期 `switch_model` 不做，见该条注）。
+留两个已知问题，随 feature 关闭、不阻塞验收：
+
+1. **待机动作无条件覆写它驱动的参数**（参数遮挡 / 权重）—— 未做。
+2. **页面在视口变化时自适应错误**（2026-09-20 实测）—— `web/app.js` 的 `computeFit` 拿 PIXI 的
+   `model.width/height` 反推缩放，而这两个值已是**缩放后**的显示尺寸；算出的 scale 又写回
+   `model.scale`，于是每次 resize 都在旧结果上再乘一次。实测：冷启动 800x1000 正确
+   （scale 0.2275，模型 677x950 居中），resize 到 1280x800 后 scale 变 0.8（应为 ~0.18，
+   模型 2380x3340 溢出视口），往返一次回 800x1000 得 245x999，而非冷启动的 199x853 ——
+   不幂等，只有重载能恢复。修法是把未缩放的基准尺寸缓存一次（首次 `computeFit` 时 scale
+   仍是 1）。screen-manager 的 `web_manager.md` 记过同一现象（"窗口变动身体位置炸"），
+   按嵌入契约属本 node 的修法。
