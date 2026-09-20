@@ -448,6 +448,36 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 出口有 (`on_event_creating` + `commit`), 入口没有。人类架构师判定 AudioGate 留在
 recognizer 内部可接受, 需要时再开接线口。
 
+### 礼仪表面重写 (2026-09-21, deepseek-flash 落地)
+
+上一轮出口位点组件化后, 人类架构师要求把礼仪本身做成**模型自解释的 code-as-prompt 表面**:
+"合法的是数据构成 + 开箱案例 + 每个案例的 comments 画配置项和预期"; 不合法的是决策史、外部常量、
+技术实现解释。本轮落地:
+
+- **四层改名** (坐标空间形状不变, 词表更自解释): `first_packet→onset` (字段 `barge_in→emit`)、
+  `segment_vad→silence`、`judge→classifier` (`JudgeSpec→ClassifierSpec`, `judge_delay→delay`)、
+  `perceive→retain`。`deliver` 补了 `emit` (与 onset 对称, 尾包也可不发)。
+- **删工厂, 改实例化**: `new_once_spec/new_always_spec/new_llm_judge_spec` 删除, 换成 module 级
+  实例 `once/always/aside/notify/scribe/observer/keyword_end/scored` 八个开箱礼仪, 每个带一行
+  comment 画"坐标 → 预期"。默认 `EtiquetteConfig.etiquettes` 注册这八个 (deep copy)。
+- **classifier 的 instruction 内联**: 外部常量 `STOP_JUDGE_INSTRUCTION` 删除, 指令成为
+  `ClassifierSpec.instruction` (礼仪自持)。注入面从预建 caller 改为
+  `stop_caller_factory: (instruction) -> caller`, controller 按礼仪指令现建 caller。
+- **`llm_judge` → `scored`**: 方法 / CLI mode / `ListenEtiquette` 成员全部改名 (挂件名不再冒充位点名)。
+- `once/always/scored` 方法改为 copy 开箱实例再改字段 (单一真值)。
+
+**覆盖的交互** (六条用户故事 + 基线): 打断式对话 (always)、闲时响应 (notify)、书记员/翻译官
+(scribe, `mode=next`)、旁听不接管 (aside)、只录不答 (observer)、对讲机关键词 (keyword_end)、
+长论述判停 (scored)、半双工一次 (once)。
+
+**未做 (本期不排, 留待下一轮)**:
+- `onset` 保护期 (时间/持续维度) — 现 `interrupt` 是布尔, 表达不了"声音即中断 + 保护期"。
+- `stop` 外部触发件 (push 按钮提交, story 4) — 现只有 silence/keywords/classifier 三个内部件。
+- `deliver.mode` 仍是 `str` (值对齐 mindflow ChallengeMode, 未强类型)。
+- `ListenEtiquette` 枚举仍是第二真值 (`run_etiquette` 不写 `_mode` → snapshot 报 off 而实际在听)。
+- export/import 到可发现文件空间 (ground 承载) — 礼仪作为模型资产的持久化路径。
+- `.moss/system_test_nodes/llm_judge_probe/` 已陈旧 (引用已删的 `ModelListenerController`), 待清理。
+
 ### 明确不做 / 现状
 
 **本期范围收窄 (2026-09-21, 人类架构师决定)**: 这一期**只做礼仪** —— 把礼仪配置里的

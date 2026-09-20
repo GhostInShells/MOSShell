@@ -33,12 +33,12 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.host.listener.controller import ListenerController
 from ghoshell_moss.host.nodes.listener_node import assemble_controller
 
-_MODES = ("once", "always", "enter", "llm_judge")
+_MODES = ("once", "always", "enter", "scored")
 
 
 @audio_app.command("listen")
 def listen_cmd(
-    listen_mode: str = typer.Option("once", "--listen-mode", "-m", help="State machine: once | always | enter | llm_judge."),
+    listen_mode: str = typer.Option("once", "--listen-mode", "-m", help="State machine: once | always | enter | scored."),
     timeout: float = typer.Option(60.0, "--timeout", "-t", help="Overall session timeout in seconds."),
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Capture device name pattern."),
     emit_signals: bool = typer.Option(True, "--signals/--no-signals", help="Broadcast listener signals to the session bus."),
@@ -200,19 +200,19 @@ async def _run_enter(ctx: _Ctx) -> _Stats | None:
     return stats
 
 
-async def _run_llm_judge(ctx: _Ctx) -> _Stats | None:
+async def _run_scored(ctx: _Ctx) -> _Stats | None:
     stats = _Stats()
     on_result = partial(_handle_result, json_mode=ctx.json_mode, stats=stats)
 
     if not ctx.controller.can_stop_judge():
-        print_error("llm_judge requires the llm func engine — is LLMFuncs configured?")
+        print_error("scored requires the classifier engine — is LLMFuncs configured?")
         return None
     if "not started" in ctx.capture.device_explain():
         print_error("capture device not started — may be locked by another process")
         return None
-    _banner(ctx, "llm_judge", "listening with llm stop-detection — Ctrl+C to stop.\n")
+    _banner(ctx, "scored", "listening with classifier stop-detection — Ctrl+C to stop.\n")
     ctx.controller.on_recognition_result(on_result)
-    await ctx.controller.llm_judge(timeout=ctx.timeout)
+    await ctx.controller.scored(timeout=ctx.timeout)
     print_warning("session timeout")
     return stats
 
@@ -221,7 +221,7 @@ _RUNNERS = {
     "once": _run_once,
     "always": _run_always,
     "enter": _run_enter,
-    "llm_judge": _run_llm_judge,
+    "scored": _run_scored,
 }
 
 

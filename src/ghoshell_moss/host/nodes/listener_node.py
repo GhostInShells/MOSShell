@@ -8,7 +8,7 @@ node 函数签名统一为 ``async def xxx(matrix: Matrix, ...)``, 由 ``Matrix.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
 from ghoshell_moss.contracts.configs import ConfigStore, get_or_create_conf
@@ -16,7 +16,6 @@ from ghoshell_moss.contracts.listener import ASRListener
 from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.host.listener.controller import ListenerController
-from ghoshell_moss.host.listener.stop_judge import STOP_JUDGE_INSTRUCTION
 
 __all__ = ["assemble_controller", "listener_node", "listener_controller_node"]
 
@@ -41,11 +40,11 @@ async def assemble_controller(
     asr = listener.asr()
     capture = con.get(AudioCaptureSource)
     sample_rate = capture.sample_rate if capture is not None else asr.get_info().sample_rate
-    caller = _try_build_stop_judge_caller(con, matrix.logger)
+    caller_factory = _try_build_stop_caller_factory(con)
     controller = ListenerController(
         listener=listener, asr=asr, logger=matrix.logger,
         signal_broadcast=matrix.session.add_signal if emit_signals else None,
-        stop_caller=caller,
+        stop_caller_factory=caller_factory,
     )
     await controller.with_topic_service(matrix.session.topics)
     await controller.with_audio_sample_service(matrix.session.topics, sample_rate=sample_rate)
@@ -56,24 +55,24 @@ async def assemble_controller(
     return controller
 
 
-def _try_build_stop_judge_caller(con, logger) -> Optional[MossLLMCaller]:
-    """出口位点降级件的依赖: 模型环境可用时才构建, 否则 None.
+def _try_build_stop_caller_factory(con) -> Optional[Callable[[str], MossLLMCaller]]:
+    """出口位点 classifier 的依赖: 模型环境可用时返回 (instruction) -> caller 装配函数, 否则 None.
 
-    None 不是错误 —— 默认出口本就不依赖模型; 拿到 None 时 judge 件静默缺席,
-    礼仪退回 segment_vad/keywords.
+    None 不是错误 —— 默认出口本就不依赖模型; 拿到 None 时 classifier 静默缺席,
+    礼仪退回纯 silence/keywords.
     """
     funcs = con.get(LLMFuncs)
     if not isinstance(funcs, MossLLMFuncs):
         return None
-    try:
+
+    def _factory(instruction: str) -> MossLLMCaller:
         return funcs.caller(
-            instruction=STOP_JUDGE_INSTRUCTION,
+            instruction=instruction,
             tag="small_fast_model",
             settings=CallSettings(max_output_tokens=1),
         )
-    except Exception as exc:
-        logger.warning("stop judge caller unavailable — llm_judge disabled: %s", exc)
-        return None
+
+    return _factory
 
 
 async def listener_node(

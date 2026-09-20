@@ -1,18 +1,16 @@
-"""Conversation etiquette — the config-driven listening state machine model.
+"""Etiquette — the interaction styles a model programs at runtime.
 
-An etiquette is "another always": a continuous listening session whose behavior
-is defined by three orthogonal layers of config, not by a code branch:
+One etiquette configures one listening session. It has four independent layers,
+and an interaction style is a point in their product space — not a code branch:
 
-- **first_packet** (首包协议) — what happens the moment speech begins (barge-in).
-- **deliver** (尾包协议) — what the send signal carries once stop is decided.
-- **stop** (判停) — when to commit (the send trigger). llm_judge is one instance
-  of this layer, not a separate machine.
+- **onset** (起话) — what to signal the instant speech begins.
+- **stop** (判停) — how the turn end is decided.
+- **deliver** (交付) — what the committed turn sends.
+- **retain** (留存) — whether heard segments stay pullable.
 
-The config is independent of the listener organ (ASR params live elsewhere): it
-belongs to ListenerController, is resolved via the config store, and can be
-overridden at ghost/node level via ``with_config``. An array carries multiple
-named etiquettes so the model can perceive the available interaction styles and
-pull their details on demand (skill-like), rather than having them hard-coded.
+The examples below are out-of-box points in this space. Copy one, change a field,
+and you have a new interaction style — no code. Register it on ``EtiquetteConfig``
+to make it selectable by name.
 """
 from __future__ import annotations
 
@@ -22,115 +20,253 @@ from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.core.blueprint.mindflow import Priority
 
 __all__ = [
-    "FirstPacketSpec",
+    "OnsetSpec",
     "DeliverSpec",
-    "JudgeSpec",
+    "ClassifierSpec",
     "StopSpec",
-    "PerceiveSpec",
+    "RetainSpec",
     "EtiquetteSpec",
     "EtiquetteConfig",
-    "new_once_spec",
-    "new_always_spec",
-    "new_llm_judge_spec",
+    "once",
+    "always",
+    "aside",
+    "notify",
+    "scribe",
+    "observer",
+    "keyword_end",
+    "scored",
 ]
 
 
-class FirstPacketSpec(BaseModel):
-    """首包协议 — the barge-in behavior when speech first arrives.
+class OnsetSpec(BaseModel):
+    """起话协议 — what happens the instant speech begins (barge-in)."""
 
-    ``barge_in`` is the on/off switch for the first-packet interrupt signal;
-    ``interrupt`` decides whether to also stop the current behavior (logos);
-    ``priority`` is the preempt tier used to win attention.
-    """
-
-    barge_in: bool = Field(default=True, description="whether to emit a first-packet barge-in signal")
-    interrupt: bool = Field(default=True, description="whether to stop current behavior before attending")
-    priority: Priority = Field(default=Priority.WARNING, description="preempt tier of the barge-in signal")
+    emit: bool = Field(
+        default=True,
+        description="emit a signal when speech begins",
+    )
+    interrupt: bool = Field(
+        default=True,
+        description="that signal stops the current behavior",
+    )
+    priority: Priority = Field(
+        default=Priority.WARNING,
+        description="preempt tier of the onset signal",
+    )
 
 
 class DeliverSpec(BaseModel):
-    """尾包协议 — what the send signal carries once stop is decided.
+    """交付协议 — what the committed turn sends."""
 
-    ``interrupt`` stops current behavior; ``priority`` is the preempt tier
-    (default INFO — same tier as a running attention, so it does not interrupt
-    but still responds when idle); ``mode`` is the loss-side semantics
-    (notify / aside / '').
+    emit: bool = Field(
+        default=True,
+        description="emit a signal when the turn is committed",
+    )
+    interrupt: bool = Field(
+        default=False,
+        description="that signal stops the current behavior",
+    )
+    priority: Priority = Field(
+        default=Priority.INFO,
+        description="preempt tier of the deliver signal",
+    )
+    mode: str = Field(
+        default="notify",
+        description="loss-side behavior when the signal cannot preempt: "
+                    "notify (buffer — answer when idle) / aside (deliver without taking over) / '' (default)",
+    )
+
+
+class ClassifierSpec(BaseModel):
+    """A programmable streaming classifier mounted on the turn-end slot.
+
+    The slot decides only that a classifier runs here; ``instruction`` decides
+    what it judges and how it scores. ``threshold`` is the score at which the
+    turn commits early.
     """
 
-    interrupt: bool = Field(default=False, description="whether to stop current behavior on deliver")
-    priority: Priority = Field(default=Priority.INFO, description="preempt tier of the deliver signal")
-    mode: str = Field(default="notify", description="loss-side semantics: notify / aside / ''(default)")
-
-
-class JudgeSpec(BaseModel):
-    """LLM 判停组件参数 — 出口位点上的一个降级实现 (openbox).
-
-    它声明"挂不挂这个组件 + 它自己的参数", 不是"判停是什么". 将来专用端点
-    模型进来时, 换掉的是这个组件, ``StopSpec`` 的槽位形状不变.
-    """
-
-    threshold: int = Field(default=7, description="llm judge score threshold")
-    judge_delay: float = Field(default=0.3, description="llm judge debounce seconds")
+    instruction: str = Field(
+        default="",
+        description="the classifier's own instruction — what to judge and how to score",
+    )
+    threshold: int = Field(
+        default=7,
+        description="score >= threshold commits the turn early",
+    )
+    delay: float = Field(
+        default=0.3,
+        description="debounce before scoring; a clause superseded within it costs no call",
+    )
 
 
 class StopSpec(BaseModel):
-    """判停 — 出口协议: 声明出口位点上组装了哪些判停组件.
+    """判停 — how the turn end is decided. Three composable commit paths:
 
-    通用槽位参数 (任何实现都认):
-
-    - ``segment_vad == 0`` → 首个 clause 立刻 commit (once).
-    - ``segment_vad > 0`` → 该秒数静默后 commit (展期: 新 clause 前移 deadline).
-    - ``keywords`` → 显式端点, 命中立刻 commit.
-
-    可组装件 (声明式, None = 不挂):
-
-    - ``judge`` → 挂一个 LLM 打分实现 (降级; 依赖外部注入的 caller).
-      caller 缺席时该组件静默不生效, 礼仪退回纯 segment_vad/keywords.
+    - ``silence``: commit N seconds after the last clause (0 = commit on the first clause).
+    - ``keywords``: an explicit endpoint — a hit commits immediately.
+    - ``classifier``: a score-based early commit; None = not mounted.
     """
 
-    segment_vad: float = Field(default=1.5, description="silence fallback seconds; 0 = commit on first clause")
-    keywords: list[str] = Field(default_factory=list, description="explicit endpoint keywords")
-    judge: JudgeSpec | None = Field(
+    silence: float = Field(
+        default=1.5,
+        description="commit after N seconds of quiet; 0 = commit on the first clause",
+    )
+    keywords: list[str] = Field(
+        default_factory=list,
+        description="explicit endpoint keywords — a hit commits immediately",
+    )
+    classifier: ClassifierSpec | None = Field(
         default=None,
-        description="openbox fallback component — off by default; needs a caller injected at construction",
+        description="score-based early commit; None = not mounted",
     )
 
 
-class PerceiveSpec(BaseModel):
-    """感知协议 — 是否把语音流保留成可拉读的槽位 (segment buffer).
+class RetainSpec(BaseModel):
+    """留存 — whether heard segments stay pullable after the fact."""
 
-    ``enabled`` 是开/关 (off = signal-only, 默认); ``history`` 是跨 session 保留的
-    最近 n 轮 segment 环形容量. 与 first_packet/deliver/stop 平级: 前三层决定"何时
-    判停 + 首尾包怎么发", 这一层决定"模型能否在 signal 之外拉读听到的内容".
-    """
-
-    enabled: bool = Field(default=False, description="on = retain + expose recent segments for pull; off = signal-only")
-    history: int = Field(default=8, description="recent n segments retained in the ring buffer")
+    enabled: bool = Field(
+        default=False,
+        description="on = keep recent segments readable via the pull slot; off = signal-only",
+    )
+    history: int = Field(
+        default=8,
+        description="recent segments kept in the ring",
+    )
 
 
 class EtiquetteSpec(BaseModel):
-    """一种礼仪 — name + description + the four layers of config."""
+    """一种礼仪 — name + description + the four layers."""
 
-    name: str = Field(description="etiquette name, referenced by EtiquetteConfig.default")
-    description: str = Field(default="", description="one-line self-description for model perception")
-    first_packet: FirstPacketSpec = Field(default_factory=FirstPacketSpec)
-    deliver: DeliverSpec = Field(default_factory=DeliverSpec)
+    name: str = Field(
+        description="etiquette name; referenced by EtiquetteConfig.default",
+    )
+    description: str = Field(
+        default="",
+        description="one-line self-description, for model perception",
+    )
+    onset: OnsetSpec = Field(default_factory=OnsetSpec)
     stop: StopSpec = Field(default_factory=StopSpec)
-    perceive: PerceiveSpec = Field(default_factory=PerceiveSpec)
+    deliver: DeliverSpec = Field(default_factory=DeliverSpec)
+    retain: RetainSpec = Field(default_factory=RetainSpec)
+
+
+# ── 开箱礼仪 — 每个是一个坐标; 复制一个改字段就是新礼仪, 注册到 Config 即可选用 ──
+
+
+# 一次: 说一句立刻交付 (silence=0 → 首个 clause 即端点); 不起话, 不听中途.
+once = EtiquetteSpec(
+    name="once",
+    description="one utterance — commit on the first clause",
+    onset=OnsetSpec(emit=False),
+    stop=StopSpec(silence=0.0),
+)
+
+
+# 默认: 打断式自由对话. 起话即打断 (barge-in), 静默 1.5s 交付; 抢不到注意力则 buffer, 闲了再答.
+always = EtiquetteSpec(
+    name="always",
+    description="interruptible turn-taking — commit after 1.5s of quiet",
+    onset=OnsetSpec(emit=True, interrupt=True, priority=Priority.WARNING),
+    stop=StopSpec(silence=1.5),
+    deliver=DeliverSpec(mode="notify"),
+)
+
+
+# 旁听: 起话发信号但绝不打断; 你干你的, 我不接管 (aside).
+aside = EtiquetteSpec(
+    name="aside",
+    description="listen without interrupting — annotate, never take over",
+    onset=OnsetSpec(emit=True, interrupt=False, priority=Priority.NOTICE),
+    stop=StopSpec(silence=1.5),
+    deliver=DeliverSpec(interrupt=False, mode="aside"),
+)
+
+
+# 闲时回应: 起话不打断, 你说的都收着; 我忙就继续忙, 闲了才回应 (低优 + notify).
+notify = EtiquetteSpec(
+    name="notify",
+    description="keep working — answer only when idle",
+    onset=OnsetSpec(emit=True, interrupt=False, priority=Priority.INFO),
+    stop=StopSpec(silence=2.0),
+    deliver=DeliverSpec(interrupt=False, priority=Priority.INFO, mode="notify"),
+)
+
+
+# 书记员/翻译官: 大段论述, 我一直听一直做事, 但不打断手头; 下轮一定轮到我 (next).
+scribe = EtiquetteSpec(
+    name="scribe",
+    description="long dictation — keep working, take the next turn",
+    onset=OnsetSpec(emit=True, interrupt=False, priority=Priority.INFO),
+    stop=StopSpec(silence=2.5),
+    deliver=DeliverSpec(interrupt=False, mode="next"),
+)
+
+
+# 只录不答: 不发任何信号, 只把听到的留存, 事后可拉读 (转写 / 会议记录).
+observer = EtiquetteSpec(
+    name="observer",
+    description="transcribe only — never signal, keep recent heard text",
+    onset=OnsetSpec(emit=False),
+    stop=StopSpec(silence=2.0),
+    deliver=DeliverSpec(emit=False),
+    retain=RetainSpec(enabled=True, history=16),
+)
+
+
+# 对讲机: 显式端点, 说完喊 over 才交付, 不靠静默.
+keyword_end = EtiquetteSpec(
+    name="keyword_end",
+    description="walkie-talkie — commit only on an explicit end keyword",
+    stop=StopSpec(silence=30.0, keywords=["over", "完毕"]),
+)
+
+
+# 长论述判停: 挂一个可编程分类器判"这段说完没有", 打分到阈值提前交付, 静默兜底.
+scored = EtiquetteSpec(
+    name="scored",
+    description="classifier-decided endpoint over a silence fallback",
+    stop=StopSpec(
+        silence=3.0,
+        classifier=ClassifierSpec(
+            instruction=(
+                "Rate how complete the speaker's thought is, from one utterance of a live "
+                "speech transcript, as a single integer 0-9.\n"
+                "0-3 = clearly unfinished — cut mid-phrase, ends on a trailing conjunction "
+                "or an open condition (because…, if…, 如果…, 因为…), or is only fillers.\n"
+                "4-6 = uncertain — could honestly stop here or continue.\n"
+                "7-9 = clearly finished — a complete statement, an answerable question, a "
+                "greeting, or a closed short answer (yes / no / okay).\n"
+                "Judge by meaning: ASR renders homophones and near-sounds (谐音); never trust "
+                "surface spelling. If <context> declares an explicit end signal, hearing it is "
+                "strong evidence of completion. Output ONLY the digit, no punctuation, no prose."
+            ),
+            threshold=7,
+            delay=0.3,
+        ),
+    ),
+)
 
 
 class EtiquetteConfig(ConfigType):
-    """对话礼仪配置 — an array of named etiquettes plus the default activation.
-
-    Owned by ListenerController (not the listener organ). The array makes the
-    available interaction styles perceivable; ``default`` names the active one.
-    """
+    """对话礼仪配置 — the defined etiquettes plus the active one."""
 
     etiquettes: list[EtiquetteSpec] = Field(
-        default_factory=lambda: [new_once_spec(), new_always_spec(), new_llm_judge_spec()],
-        description="the defined etiquettes (name + description + three layers)",
+        default_factory=lambda: [
+            once.model_copy(deep=True),
+            always.model_copy(deep=True),
+            aside.model_copy(deep=True),
+            notify.model_copy(deep=True),
+            scribe.model_copy(deep=True),
+            observer.model_copy(deep=True),
+            keyword_end.model_copy(deep=True),
+            scored.model_copy(deep=True),
+        ],
+        description="the defined etiquettes (name + description + the four layers)",
     )
-    default: str = Field(default="always", description="the active etiquette name")
+    default: str = Field(
+        default="always",
+        description="the active etiquette name",
+    )
 
     # ── 辅助接口 (供 controller / command 使用) ──
 
@@ -162,44 +298,3 @@ class EtiquetteConfig(ConfigType):
     @classmethod
     def conf_name(cls) -> str:
         return "listener_etiquette"
-
-
-# ── 预组装基线 (once / always / llm_judge) ──
-
-
-def new_once_spec() -> EtiquetteSpec:
-    """主动听一次: 判停 = clause 立刻 commit (segment_vad=0)."""
-    return EtiquetteSpec(
-        name="once",
-        description="hear one utterance — commit on the first clause",
-        stop=StopSpec(segment_vad=0.0),
-    )
-
-
-def new_always_spec(segment_vad: float = 1.5) -> EtiquetteSpec:
-    """打断式 turn-taking: 判停 = segment_vad 静默 commit. 启动默认."""
-    return EtiquetteSpec(
-        name="always",
-        description="keep listening — commit after segment_vad seconds of quiet",
-        stop=StopSpec(segment_vad=segment_vad),
-    )
-
-
-def new_llm_judge_spec(
-        segment_vad: float = 3.0,
-        threshold: int = 7,
-        judge_delay: float = 0.3,
-) -> EtiquetteSpec:
-    """降级判停: 出口位点挂 LLM 打分件, 打分 >= threshold 提前 commit, segment_vad 兜底.
-
-    不是默认路径 —— 默认出口只有 segment_vad/keywords. 挂上本件要求环境配了模型
-    (caller 能注入), 拿不到时该件静默缺席, 礼仪退回默认行为.
-    """
-    return EtiquetteSpec(
-        name="llm_judge",
-        description="openbox fallback — llm-scored stop detection over the segment_vad baseline",
-        stop=StopSpec(
-            segment_vad=segment_vad,
-            judge=JudgeSpec(threshold=threshold, judge_delay=judge_delay),
-        ),
-    )

@@ -45,10 +45,10 @@ from ghoshell_moss.host.listener.etiquette import (
     DeliverSpec,
     EtiquetteConfig,
     EtiquetteSpec,
-    FirstPacketSpec,
-    new_always_spec,
-    new_llm_judge_spec,
-    new_once_spec,
+    OnsetSpec,
+    always as ALWAYS,
+    once as ONCE,
+    scored as SCORED,
 )
 from ghoshell_moss.host.listener.segment_buffer import SegmentBuffer
 from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
@@ -74,7 +74,7 @@ class ListenEtiquette(str, Enum):
     OFF = "off"
     ONCE = "once"
     ALWAYS = "always"
-    LLM_JUDGE = "llm_judge"
+    SCORED = "scored"
 
 
 @dataclass
@@ -118,7 +118,7 @@ class ListenerController(ListenLifecycle):
             asr: ASR,
             logger: Optional[LoggerItf] = None,
             signal_broadcast: Optional[Callable[[Signal], None]] = None,
-            stop_caller: Optional[MossLLMCaller] = None,
+            stop_caller_factory: Optional[Callable[[str], MossLLMCaller]] = None,
     ):
         self._listener = listener
         self._asr = asr
@@ -126,9 +126,9 @@ class ListenerController(ListenLifecycle):
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
         self._owns_listener = False
-        # 出口位点的降级件依赖: llm caller 外部装配注入 (instruction/model/输出约束已绑定).
-        # 没有它时 judge 组件静默缺席, 礼仪退回纯 segment_vad/keywords.
-        self._stop_caller = stop_caller
+        # 出口位点的 classifier 依赖: 一个 (instruction) -> caller 的装配函数.
+        # 没有它时 classifier 静默缺席, 礼仪退回纯 silence/keywords.
+        self._stop_caller_factory = stop_caller_factory
         self._stop_detector_factory: Optional[StopDetectorFactory] = None
         self._score_observers: list[Callable[[StopScoreObservation], None]] = []
         # 信号发射: 存在 sink 时注册一条 listener 级观察者 (跨 session 稳定), 机械地把
@@ -152,7 +152,7 @@ class ListenerController(ListenLifecycle):
         self._audio_sample_disposer: Optional[Callable[[], None]] = None
         self._audio_sample_publisher: Optional[Publisher] = None
         # segment buffer (感知协议): 跨 session 订阅 text/segment, 拉模式读.
-        # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 perceive.enabled 门控.
+        # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 retain.enabled 门控.
         self._buffer = SegmentBuffer()
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
@@ -187,8 +187,8 @@ class ListenerController(ListenLifecycle):
         return self
 
     def can_stop_judge(self) -> bool:
-        """出口位点的 LLM 降级件是否可用 (caller 已注入)."""
-        return self._stop_caller is not None
+        """出口位点的 classifier 是否可用 (caller factory 已注入)."""
+        return self._stop_caller_factory is not None
 
     def on_score(self, callback: Callable[[StopScoreObservation], None]) -> Callable[[], None]:
         """注册判停打分观察者 (跨 session) — 每次 llm 打分回调请求+结果, 返回 disposer."""
@@ -228,10 +228,10 @@ class ListenerController(ListenLifecycle):
             self._config_store.save(config)
 
     def _set_active_etiquette(self, spec: EtiquetteSpec | None) -> None:
-        """设当前激活礼仪, 并让 segment buffer 容量跟随 spec.perceive.history."""
+        """设当前激活礼仪, 并让 segment buffer 容量跟随 spec.retain.history."""
         self._active_etiquette = spec
         if spec is not None:
-            self._buffer.resize(spec.perceive.history)
+            self._buffer.resize(spec.retain.history)
 
     # ── 礼仪驱动状态机 (纯配置, 持续监听 = 另一种 always) ──
 
@@ -260,7 +260,7 @@ class ListenerController(ListenLifecycle):
         config = self._etiquette_config()
         spec = config.active()
         if spec is None:
-            spec = new_always_spec()
+            spec = ALWAYS.model_copy(deep=True)
             config.upsert(spec)
             config.activate(spec.name)
         return self.run_etiquette(spec)
@@ -301,26 +301,29 @@ class ListenerController(ListenLifecycle):
                 judge.close()
 
     def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
-        """出口位点装配: 按 StopSpec 组装判停单元 + 注入降级件依赖 (caller)."""
+        """出口位点装配: 按 StopSpec 组装判停单元 + 按 classifier.instruction 建 caller."""
         if self._stop_detector_factory is not None:
             return self._stop_detector_factory(etiquette, commit)
         stop = etiquette.stop
-        judge = stop.judge if (stop.judge is not None and self._stop_caller is not None) else None
-        if judge is None:
+        classifier = stop.classifier
+        caller = None
+        if classifier is not None and self._stop_caller_factory is not None:
+            caller = self._stop_caller_factory(classifier.instruction)
+        if caller is None:
             return StopJudge(
                 caller=None,
                 judge=False,
-                segment_vad=stop.segment_vad,
+                segment_vad=stop.silence,
                 commit=commit,
                 keywords=stop.keywords,
                 logger=self._logger,
             )
         return StopJudge(
-            caller=self._stop_caller,
+            caller=caller,
             judge=True,
-            threshold=judge.threshold,
-            judge_delay=judge.judge_delay,
-            segment_vad=stop.segment_vad,
+            threshold=classifier.threshold,
+            judge_delay=classifier.delay,
+            segment_vad=stop.silence,
             commit=commit,
             keywords=stop.keywords,
             on_score=self._notify_score,
@@ -338,12 +341,12 @@ class ListenerController(ListenLifecycle):
     ) -> asyncio.Future:
         """半双工: 拿 clause 立刻 commit, 尾包后结束一次聆听.
 
-        与 ``always`` 走同一条出口位点, 差别只在礼仪配置 (segment_vad=0 → 首个 clause
+        与 ``always`` 走同一条出口位点, 差别只在礼仪配置 (silence=0 → 首个 clause
         即端点) 与会话结束策略 (尾包后收). 立即返回 Future; 新 method 取消旧的状态机.
         """
         self._mode = ListenEtiquette.ONCE
         self._apply_clause_vad(clause_vad)
-        spec = new_once_spec()
+        spec = ONCE.model_copy(deep=True)
         if keywords:
             spec.stop.keywords = list(keywords)
         return self.run_etiquette(spec, timeout=timeout, until_tail=True)
@@ -352,39 +355,43 @@ class ListenerController(ListenLifecycle):
             self,
             *,
             clause_vad: Optional[int] = None,
-            segment_vad: float = 1.5,
+            silence: float = 1.5,
             keywords: Optional[list[str]] = None,
             timeout: Optional[float] = None,
     ) -> asyncio.Future:
-        """持续聆听: clause 后等待 segment_vad, 活动信号 reset, 静默到 segment_vad commit.
+        """持续聆听: clause 后等待 silence 秒静默 commit.
 
         立即返回 Future; ``timeout=None`` 表示常驻 (直到 ``stop()`` 或新礼仪取消).
         命中 keywords 的 clause 立刻 commit (不等静默).
         """
         self._mode = ListenEtiquette.ALWAYS
         self._apply_clause_vad(clause_vad)
-        spec = new_always_spec(segment_vad)
+        spec = ALWAYS.model_copy(deep=True)
+        spec.stop.silence = silence
         if keywords:
             spec.stop.keywords = list(keywords)
         return self.run_etiquette(spec, timeout=timeout)
 
-    def llm_judge(
+    def scored(
             self,
             *,
             clause_vad: Optional[int] = None,
-            segment_vad: float = 3.0,
-            judge_delay: float = 0.3,
+            silence: float = 3.0,
+            delay: float = 0.3,
             keywords: Optional[list[str]] = None,
             threshold: int = 7,
             timeout: Optional[float] = None,
     ) -> asyncio.Future:
-        """智能判停礼仪: 出口位点挂 LLM 打分件 + segment_vad 兜底.
+        """分类器判停: 出口位点挂一个 classifier, 打分到阈值提前 commit, silence 兜底.
 
-        需要构造时注入了 ``stop_caller``, 否则 judge 件静默缺席 (退化为 always).
+        需要构造时注入了 ``stop_caller_factory``, 否则 classifier 静默缺席 (退化为 always).
         """
-        self._mode = ListenEtiquette.LLM_JUDGE
+        self._mode = ListenEtiquette.SCORED
         self._apply_clause_vad(clause_vad)
-        spec = new_llm_judge_spec(segment_vad, threshold, judge_delay)
+        spec = SCORED.model_copy(deep=True)
+        spec.stop.silence = silence
+        spec.stop.classifier.threshold = threshold
+        spec.stop.classifier.delay = delay
         if keywords:
             spec.stop.keywords = list(keywords)
         return self.run_etiquette(spec, timeout=timeout)
@@ -531,48 +538,50 @@ class ListenerController(ListenLifecycle):
             self._emit_deliver(result)
 
     def _emit_interrupt(self, result: RecognitionEvent) -> None:
-        """首包打断: 按当前礼仪的 first_packet 协议发射 (barge_in 关则不发射)."""
-        fp = self._active_etiquette.first_packet if self._active_etiquette else FirstPacketSpec()
-        if not fp.barge_in:
+        """首包打断: 按当前礼仪的 onset 协议发射 (emit 关则不发射)."""
+        onset = self._active_etiquette.onset if self._active_etiquette else OnsetSpec()
+        if not onset.emit:
             return
         self._signal_broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
-            interrupt=fp.interrupt,
+            interrupt=onset.interrupt,
             complete=False,
-            priority=fp.priority,
-            description="listener:barge-in",
+            priority=onset.priority,
+            description="listener:onset",
         ))
 
     def _emit_deliver(self, result: RecognitionEvent) -> None:
-        """尾包发送: 按当前礼仪的 deliver 协议发射."""
-        dv = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
+        """尾包发送: 按当前礼仪的 deliver 协议发射 (emit 关则不发射)."""
+        deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
+        if not deliver.emit:
+            return
         self._signal_broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
-            interrupt=dv.interrupt,
-            mode=dv.mode,
+            interrupt=deliver.interrupt,
+            mode=deliver.mode,
             complete=True,
-            priority=dv.priority,
+            priority=deliver.priority,
             description="listener:deliver",
         ))
 
-    # ── segment buffer 感知 (perceive 协议门控) ──
+    # ── segment buffer 留存 (retain 协议门控) ──
 
-    def _perceive_enabled(self) -> bool:
-        """当前激活礼仪是否开启感知槽位 (perceive.enabled)."""
+    def _retain_enabled(self) -> bool:
+        """当前激活礼仪是否开启留存槽位 (retain.enabled)."""
         spec = self._active_etiquette
-        return spec is not None and spec.perceive.enabled
+        return spec is not None and spec.retain.enabled
 
     def _on_buffer_event(self, event: RecognitionEvent) -> None:
-        """text axis 观察者: 感知开时更新当前增长全文, 关时不做任何事."""
-        if not self._perceive_enabled():
+        """text axis 观察者: 留存开时更新当前增长全文, 关时不做任何事."""
+        if not self._retain_enabled():
             return
         self._buffer.on_event(event)
 
     def _on_buffer_segment(self, segment: RecognitionSegment) -> None:
-        """segment 签发观察者: 感知开时定稿入历史, 关时不做任何事."""
-        if not self._perceive_enabled():
+        """segment 签发观察者: 留存开时定稿入历史, 关时不做任何事."""
+        if not self._retain_enabled():
             return
         self._buffer.on_segment(segment)
 
@@ -624,8 +633,8 @@ class ListenerController(ListenLifecycle):
             # 一个占位空值 — 空串在这里表示"不变", 会让模型一直以为旧礼仪还激活着.
             active = self._active_etiquette
             notice: dict[str, str | None] = {"etiquette": active.name if active else None}
-            # 感知槽位: 开时暴露最近一条定稿 segment 的全文 (变了才重发); 关/空时 None 墓碑.
-            if active is not None and active.perceive.enabled:
+            # 留存槽位: 开时暴露最近一条定稿 segment 的全文 (变了才重发); 关/空时 None 墓碑.
+            if active is not None and active.retain.enabled:
                 recent = self._buffer.peek_recent(1)
                 notice["last_heard"] = recent[-1].text if recent else None
             else:
@@ -677,14 +686,14 @@ class ListenerController(ListenLifecycle):
         async def get_transcript(n: int = 0) -> str:
             """Pull the segment buffer: current growing text + recent n heard segments.
 
-            `n=0` uses the active etiquette's perceive.history; returns JSON with
-            `enabled` (perceive switch), `current`, `recent` (tail-n) and `forgotten`.
-            Empty current/recent when perceive is off or nothing heard yet.
+            `n=0` uses the active etiquette's retain.history; returns JSON with
+            `enabled` (retain switch), `current`, `recent` (tail-n) and `forgotten`.
+            Empty current/recent when retain is off or nothing heard yet.
             """
             active = self._active_etiquette
-            enabled = active is not None and active.perceive.enabled
+            enabled = active is not None and active.retain.enabled
             if n <= 0:
-                n = active.perceive.history if active else 8
+                n = active.retain.history if active else 8
             current = self._buffer.peek_current() if enabled else None
             recent = self._buffer.peek_recent(n) if enabled else []
             return json.dumps(

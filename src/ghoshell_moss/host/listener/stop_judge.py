@@ -1,17 +1,14 @@
 """StopJudge — per-segment stop-detection cycle (出口位点的判停单元).
 
-这是出口位点上一个 **openbox 降级实现**, 不是默认实现: 默认出口只有 segment_vad /
-keywords, LLM 打分件必须显式声明 (``StopSpec.judge``) 并且环境能注入 caller 才组装得起来.
-将来专用端点模型进来时替换掉的就是本类所在的这一格, 槽位形状不变.
-
 Translates the recognition event stream into commit decisions:
-- clause: accumulate, spawn the debounced llm judge, arm the segment_vad timer
-- first/partial: cancel the in-flight judge
-- judge score >= threshold → commit (early); segment_vad expiry → commit (fallback)
+- clause: accumulate, spawn the debounced classifier, arm the silence timer
+- first/partial: cancel the in-flight classifier
+- classifier score >= threshold → commit (early); silence expiry → commit (fallback)
 - keyword hit → commit immediately (explicit endpoint, no scoring)
 
-Holds a MossLLMCaller (externally assembled — the model dependency). Independently
-testable: drive ``feed`` with a mock caller and assert commit timing.
+Holds a MossLLMCaller (assembled externally from the etiquette's classifier
+instruction). Independently testable: drive ``feed`` with a mock caller and assert
+commit timing.
 """
 import asyncio
 import logging
@@ -24,55 +21,7 @@ from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase
 from ghoshell_moss.contracts.llms import LLMFuncResult, MossLLMCaller
 from ghoshell_moss.message import Message
 
-__all__ = ["STOP_JUDGE_INSTRUCTION", "StopJudge", "StopScoreObservation", "parse_stop_score"]
-
-STOP_JUDGE_INSTRUCTION = """\
-You are running a single multi-class classification task, not holding a
-conversation and not using tools.
-
-Goal: read one utterance from a live speech transcript and rate how complete
-the speaker's thought is, as an integer 0-9. The score drives a turn-taking
-decision: the system responds on a high score and keeps listening on a low one.
-
-Mechanism: after the input you emit exactly ONE token — a bare digit 0-9.
-The digit is read directly by a parser; any other output (a sentence, a word,
-punctuation, an explanation) is a hard failure. End your reply immediately
-after the digit.
-
-Scale:
-0-3 = clearly unfinished — cut mid-word or mid-phrase, ends on a trailing
-      conjunction or dangling condition, or only fillers/discourse markers.
-4-6 = uncertain — could honestly stop here or continue.
-7-9 = clearly finished — a complete statement, an answerable question, a
-      standalone greeting, or a closed short answer (yes / no / okay).
-
-Strategy for judging a long, live session. The transcript may be Chinese,
-English, or mixed — apply the same rules:
-- ASR is unreliable and often renders homophones or near-sounds (谐音). Judge
-  by meaning and intent, never by surface spelling.
-- If the <context> declares an explicit end signal (for example the speaker
-  ends each turn with "over"), hearing that signal is strong positive
-  evidence of completion.
-- Fillers and trailing phrases split into three states:
-  * Still composing — "um…", "you know…", "how should I put it…", 嗯…, 啊…,
-    那个…, 就是…, 怎么说呢…, 然后… The thought has not landed. Score 0-3.
-  * Wants brief acknowledgment — "you understand?", "right?", "okay?",
-    你明白吗?, 是吧?, 对吧? The point is made; it only asks for a nod, not a
-    full reply. Score 7-9.
-  * Wants an answer now — "what do you think?", a direct question, 你觉得呢?,
-    怎么办?, 对不对? Clearly finished and awaiting a reply. Score 7-9.
-- A trailing conjunction or open condition (because…, if…, 如果…的话, 因为…,
-  虽然…) means the sentence is grammatically open: score 0-3.
-
-Behavior:
-- This is classification, not deliberation. Trust your first impression.
-- Output only one integer 0-9, no punctuation, no prose.
-
-Input format: you receive one message per clause of the live transcript, in
-order. An optional first message wrapped in <context>…</context> carries
-prior turns or a listening etiquette; clause messages themselves are raw
-text. After the last clause, output nothing but your score.\
-"""
+__all__ = ["StopJudge", "StopScoreObservation", "parse_stop_score"]
 
 
 def parse_stop_score(raw: str) -> int | None:
@@ -98,12 +47,12 @@ class StopScoreObservation:
 
 
 class StopJudge:
-    """Per-segment stop-detection cycle — segment_vad timer + llm judge, mutually exclusive.
+    """Per-segment stop-detection cycle — segment_vad timer + classifier, mutually exclusive.
 
     One cycle per segment (turn). Two commit paths race to end the turn:
     - ``segment_vad`` timer: commits `segment_vad` seconds after the last clause
       (renewed by each new clause — 展期). This is the baseline fallback.
-    - llm judge: debounced by ``judge_delay`` (安全期) so a clause superseded within
+    - classifier: debounced by ``judge_delay`` (安全期) so a clause superseded within
       that window never costs a call; commits early when score >= ``threshold``.
 
     Whichever fires first commits exactly once — a single ``_committed`` flag plus

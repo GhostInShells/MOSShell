@@ -1,7 +1,7 @@
 """ListenerController — 判停逻辑契约行为.
 
 验证三种聆听礼仪表面: once 拿 clause 立刻 commit; always 命中关键字立刻 commit /
-静默 segment_vad commit / 活动信号 (partial) reset 等待不 commit.
+静默 silence commit / 活动信号 (partial) reset 等待不 commit.
 """
 import asyncio
 import contextlib
@@ -13,7 +13,7 @@ from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionE
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
-from ghoshell_moss.host.listener.etiquette import new_always_spec
+from ghoshell_moss.host.listener.etiquette import always
 
 
 class _MockState:
@@ -148,30 +148,30 @@ async def test_always_commits_on_keyword():
     controller = ListenerController(listener=listener, asr=_MockASR())
     task, state = await _start_controller(
         controller, controller.always,
-        segment_vad=5.0, keywords=["我说完了"], timeout=5.0,
+        silence=5.0, keywords=["我说完了"], timeout=5.0,
     )
 
     for cb in state.event_creating:
         await cb(_clause("我说完了"))
-    assert state.committed == 1  # 命中关键字立刻 commit, 不等 segment_vad
+    assert state.committed == 1  # 命中关键字立刻 commit, 不等 silence
 
     await _stop(task)
 
 
 @pytest.mark.asyncio
-async def test_always_commits_after_segment_vad():
+async def test_always_commits_after_silence():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
     task, state = await _start_controller(
         controller, controller.always,
-        segment_vad=0.1, timeout=5.0,
+        silence=0.1, timeout=5.0,
     )
 
     for cb in state.event_creating:
         await cb(_clause("你好"))
-    assert state.committed == 0  # clause 后未到 segment_vad
+    assert state.committed == 0  # clause 后未到 silence
 
-    await asyncio.sleep(0.2)  # 超过 segment_vad (0.1s)
+    await asyncio.sleep(0.2)  # 超过 silence (0.1s)
     assert state.committed == 1  # 静默超时 commit
 
     await _stop(task)
@@ -182,14 +182,14 @@ async def test_new_method_cancels_active():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
 
-    task1 = controller.always(segment_vad=5.0, timeout=5.0)
+    task1 = controller.always(silence=5.0, timeout=5.0)
     await listener.listened.wait()
     state1 = listener.state
     await state1.entered.wait()
     await asyncio.sleep(0)
 
     # 新 method 调用 → cancel 旧的状态机.
-    task2 = controller.always(segment_vad=5.0, timeout=5.0)
+    task2 = controller.always(silence=5.0, timeout=5.0)
     with contextlib.suppress(asyncio.CancelledError):
         await task1  # 等旧状态机真正结束 (cancel 传播 + __aexit__)
 
@@ -227,19 +227,19 @@ async def test_controller_borrows_listener_when_running():
 
 @pytest.mark.asyncio
 async def test_always_commits_after_clause_silence():
-    """clause 后 segment_vad 静默 commit; partial 不重置静默计时 (clause-based)."""
+    """clause 后 silence 静默 commit; partial 不重置静默计时 (clause-based)."""
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
     task, state = await _start_controller(
         controller, controller.always,
-        segment_vad=0.1, timeout=5.0,
+        silence=0.1, timeout=5.0,
     )
 
     for cb in state.event_creating:
         await cb(_clause("你好"))
         await cb(_partial("你好啊"))  # partial 不重置静默计时
 
-    await asyncio.sleep(0.2)  # 超过 segment_vad (0.1s)
+    await asyncio.sleep(0.2)  # 超过 silence (0.1s)
     assert state.committed == 1  # clause 后静默超时 commit
 
     await _stop(task)
@@ -301,7 +301,7 @@ def test_signal_broadcast_interrupt_then_deliver():
 def test_no_signal_broadcast_registers_no_emitter():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR())
-    # 无 sink → 不注册发射观察者 (只剩 segment buffer 观察者, 由 perceive 门控).
+    # 无 sink → 不注册发射观察者 (只剩 segment buffer 观察者, 由 retain 门控).
     assert len(listener.result_observers) == 1
 
 
@@ -318,14 +318,14 @@ class _MockCaller:
 
 
 @pytest.mark.asyncio
-async def test_llm_judge_commits_when_judge_confident():
+async def test_scored_commits_when_judge_confident():
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(),
-        stop_caller=_MockCaller([9]),
+        stop_caller_factory=lambda instruction: _MockCaller([9]),
     )
     task, state = await _start_controller(
-        controller, controller.llm_judge, judge_delay=0, timeout=5.0,
+        controller, controller.scored, delay=0, timeout=5.0,
     )
 
     for cb in state.event_creating:
@@ -338,14 +338,14 @@ async def test_llm_judge_commits_when_judge_confident():
 
 
 @pytest.mark.asyncio
-async def test_llm_judge_keeps_waiting_when_judge_unsure():
+async def test_scored_keeps_waiting_when_judge_unsure():
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(),
-        stop_caller=_MockCaller([1]),
+        stop_caller_factory=lambda instruction: _MockCaller([1]),
     )
     task, state = await _start_controller(
-        controller, controller.llm_judge, judge_delay=0, timeout=5.0,
+        controller, controller.scored, delay=0, timeout=5.0,
     )
 
     for cb in state.event_creating:
@@ -358,21 +358,21 @@ async def test_llm_judge_keeps_waiting_when_judge_unsure():
 
 
 @pytest.mark.asyncio
-async def test_llm_judge_degrades_without_caller():
-    """caller 未注入 → judge 件静默缺席, 礼仪退回纯 segment_vad (不炸)."""
+async def test_scored_degrades_without_caller():
+    """caller 未注入 → judge 件静默缺席, 礼仪退回纯 silence (不炸)."""
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
     assert controller.can_stop_judge() is False
 
     task, state = await _start_controller(
-        controller, controller.llm_judge,
-        segment_vad=0.1, judge_delay=0, timeout=5.0,
+        controller, controller.scored,
+        silence=0.1, delay=0, timeout=5.0,
     )
 
     for cb in state.event_creating:
         await cb(_clause("我觉得应该这样"))
     await asyncio.sleep(0.2)
-    assert state.committed == 1  # segment_vad 兜底仍生效
+    assert state.committed == 1  # silence 兜底仍生效
 
     await _stop(task)
 
@@ -401,7 +401,7 @@ async def test_with_stop_detector_replaces_assembly():
 
     controller.with_stop_detector(factory)
     task, state = await _start_controller(
-        controller, controller.always, segment_vad=5.0, timeout=5.0,
+        controller, controller.always, silence=5.0, timeout=5.0,
     )
 
     for cb in state.event_creating:
@@ -421,7 +421,7 @@ async def test_with_stop_detector_replaces_assembly():
 async def test_pause_stops_active_session():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
-    task, state = await _start_controller(controller, controller.always, segment_vad=5.0, timeout=5.0)
+    task, state = await _start_controller(controller, controller.always, silence=5.0, timeout=5.0)
 
     controller.pause(True)
     with contextlib.suppress(asyncio.CancelledError):
@@ -435,7 +435,7 @@ async def test_pause_stops_active_session():
 async def test_pause_resumes_default_etiquette():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
-    task, state = await _start_controller(controller, controller.always, segment_vad=5.0, timeout=5.0)
+    task, state = await _start_controller(controller, controller.always, silence=5.0, timeout=5.0)
 
     controller.pause(True)
     with contextlib.suppress(asyncio.CancelledError):
@@ -451,7 +451,7 @@ async def test_pause_resumes_default_etiquette():
 
 
 # ============================================================
-# segment buffer 感知 (perceive 协议) — notice 门控
+# segment buffer 感知 (retain 协议) — notice 门控
 # ============================================================
 
 def _segment(text: str, segment_id: str = "g") -> RecognitionSegment:
@@ -459,11 +459,11 @@ def _segment(text: str, segment_id: str = "g") -> RecognitionSegment:
 
 
 @pytest.mark.asyncio
-async def test_perceive_off_no_last_heard():
+async def test_retain_off_no_last_heard():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
 
-    # 无激活礼仪 (perceive 默认 off) → 事件不入 buffer, notice 无 last_heard.
+    # 无激活礼仪 (retain 默认 off) → 事件不入 buffer, notice 无 last_heard.
     listener.result_observers[0](_partial("你好"))
     listener.segment_observers[0](_segment("你好"))
 
@@ -472,12 +472,12 @@ async def test_perceive_off_no_last_heard():
 
 
 @pytest.mark.asyncio
-async def test_perceive_on_notice_reflects_last_heard():
+async def test_retain_on_notice_reflects_last_heard():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
 
-    spec = new_always_spec()
-    spec.perceive.enabled = True
+    spec = always.model_copy(deep=True)
+    spec.retain.enabled = True
     task = controller.run_etiquette(spec, timeout=5.0)
 
     listener.result_observers[0](_partial("你好"))
