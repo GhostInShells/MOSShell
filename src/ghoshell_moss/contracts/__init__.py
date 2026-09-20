@@ -14,3 +14,4 @@ from .system_prompter import SystemPrompter, BaseSystemPrompter
 from .resource import (
     ResourceStorageFactoryBootstrapper, ResourceItem, ResourceInfo, ResourceRegistry, ResourceStorage,
 )
+from .runtime_error import RuntimeErrorLog, RuntimeErrorRecord

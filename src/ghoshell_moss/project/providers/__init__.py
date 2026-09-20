@@ -1,4 +1,5 @@
 from .configs_provider import EnvConfigStoreProvider
 from .job_supervisor_provider import ProjectJobSupervisorProvider
 from .llms_provider import ProjectLLMFuncsProvider
+from .runtime_error_provider import RuntimeErrorLogProvider
 from .subprocesses_provider import ProjectSubprocessesProvider

@@ -25,6 +25,7 @@ from ghoshell_moss.project.providers import (
     ProjectSubprocessesProvider,
     ProjectJobSupervisorProvider,
     ProjectLLMFuncsProvider,
+    RuntimeErrorLogProvider,
 )
 from ghoshell_moss.resources.memory_registry import InMemoryResourceRegistryProvider
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
@@ -39,6 +40,7 @@ __all__ = [
     'config_store_provider',
     'topic_service_provider',
     'logger_provider',
+    'runtime_error_log_provider',
     'resources_provider',
     'qa_manager_provider',
     'warrant_provider',
@@ -64,6 +66,9 @@ topic_service_provider = ZenohTopicServiceProvider()
 
 # workspace logger — returns moss root logger with TimedRotatingFileHandler
 logger_provider = MatrixLoggerProvider()
+
+# runtime error collector — bounded ERROR+ tail pullable by the model
+runtime_error_log_provider = RuntimeErrorLogProvider()
 
 # in-memory resource registry
 resources_provider = InMemoryResourceRegistryProvider()

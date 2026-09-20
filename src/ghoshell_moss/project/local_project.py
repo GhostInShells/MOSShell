@@ -3,7 +3,8 @@ from typing import Iterable, Iterator
 
 from ghoshell_container import IoCContainer, Container, Provider
 
-from ghoshell_moss.contracts import Workspace, LoggerItf
+from ghoshell_moss.contracts import Workspace, LoggerItf, RuntimeErrorLog
+from ghoshell_moss.core.runtime_error import RuntimeErrorLogImpl
 from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.core.blueprint.cell import CellRuntimeInfo, NodeManager
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
@@ -51,6 +52,11 @@ class LocalProject(Project):
         container.set(Environment, self._env)
         container.set(Project, self)
         container.set(Workspace, self.workspace)
+        # RuntimeErrorLog 早设 + 早 attach — 先于 provider 注册与工厂期错误 (NodeManager
+        # 那行 get 会触发 provider 工厂). logger 用 Project 自身 logger.
+        error_log = RuntimeErrorLogImpl()
+        container.set(RuntimeErrorLog, error_log)
+        error_log.attach(self.logger)
 
         project_manifests = self.project_manifests()
         for manifest in project_manifests.providers():
