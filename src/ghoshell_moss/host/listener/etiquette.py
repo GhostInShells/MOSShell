@@ -25,6 +25,7 @@ __all__ = [
     "FirstPacketSpec",
     "DeliverSpec",
     "StopSpec",
+    "PerceiveSpec",
     "EtiquetteSpec",
     "EtiquetteConfig",
     "new_once_spec",
@@ -79,14 +80,27 @@ class StopSpec(BaseModel):
     keywords: list[str] = Field(default_factory=list, description="explicit endpoint keywords")
 
 
+class PerceiveSpec(BaseModel):
+    """感知协议 — 是否把语音流保留成可拉读的槽位 (segment buffer).
+
+    ``enabled`` 是开/关 (off = signal-only, 默认); ``history`` 是跨 session 保留的
+    最近 n 轮 segment 环形容量. 与 first_packet/deliver/stop 平级: 前三层决定"何时
+    判停 + 首尾包怎么发", 这一层决定"模型能否在 signal 之外拉读听到的内容".
+    """
+
+    enabled: bool = Field(default=False, description="on = retain + expose recent segments for pull; off = signal-only")
+    history: int = Field(default=8, description="recent n segments retained in the ring buffer")
+
+
 class EtiquetteSpec(BaseModel):
-    """一种礼仪 — name + description + the three layers of config."""
+    """一种礼仪 — name + description + the four layers of config."""
 
     name: str = Field(description="etiquette name, referenced by EtiquetteConfig.default")
     description: str = Field(default="", description="one-line self-description for model perception")
     first_packet: FirstPacketSpec = Field(default_factory=FirstPacketSpec)
     deliver: DeliverSpec = Field(default_factory=DeliverSpec)
     stop: StopSpec = Field(default_factory=StopSpec)
+    perceive: PerceiveSpec = Field(default_factory=PerceiveSpec)
 
 
 class EtiquetteConfig(ConfigType):

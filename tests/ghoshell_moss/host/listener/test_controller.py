@@ -9,10 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase
+from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController, ModelListenerController
+from ghoshell_moss.host.listener.etiquette import new_always_spec
 
 
 class _MockState:
@@ -49,12 +50,17 @@ class _MockListener:
         self.state = None
         self.listened = asyncio.Event()
         self.result_observers = []
+        self.segment_observers = []
         self.running = False
         self.entered = False
         self.exited = False
 
     def on_recognition_result(self, cb):
         self.result_observers.append(cb)
+        return lambda: None
+
+    def on_recognition_segment(self, cb):
+        self.segment_observers.append(cb)
         return lambda: None
 
     def is_running(self):
@@ -262,7 +268,7 @@ def test_signal_broadcast_clause_not_emitted():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
 
-    assert len(listener.result_observers) == 1  # 有 sink → 注册发射观察者
+    assert len(listener.result_observers) == 2  # 发射观察者 (首个) + buffer 观察者
     listener.result_observers[0](_clause("你好"))
 
     assert emitted == []  # CLAUSE 不上行 — 判停已在 listener 侧消化
@@ -292,10 +298,11 @@ def test_signal_broadcast_interrupt_then_deliver():
     assert deliver_sig.priority == Priority.INFO
 
 
-def test_no_signal_broadcast_registers_no_observer():
+def test_no_signal_broadcast_registers_no_emitter():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR())
-    assert listener.result_observers == []  # 无 sink → 不注册, 只做判停
+    # 无 sink → 不注册发射观察者 (只剩 segment buffer 观察者, 由 perceive 门控).
+    assert len(listener.result_observers) == 1
 
 
 # ============================================================
@@ -386,3 +393,44 @@ async def test_pause_resumes_default_etiquette():
     assert listener.state is not state  # 恢复 → 新 session
 
     controller.stop()
+
+
+# ============================================================
+# segment buffer 感知 (perceive 协议) — notice 门控
+# ============================================================
+
+def _segment(text: str, segment_id: str = "g") -> RecognitionSegment:
+    return RecognitionSegment(id=segment_id, stream_id="s", text=text)
+
+
+@pytest.mark.asyncio
+async def test_perceive_off_no_last_heard():
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+
+    # 无激活礼仪 (perceive 默认 off) → 事件不入 buffer, notice 无 last_heard.
+    listener.result_observers[0](_partial("你好"))
+    listener.segment_observers[0](_segment("你好"))
+
+    notices = await controller.as_channel().build.get_named_notices()
+    assert notices["last_heard"] is None
+
+
+@pytest.mark.asyncio
+async def test_perceive_on_notice_reflects_last_heard():
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+
+    spec = new_always_spec()
+    spec.perceive.enabled = True
+    task = controller.run_etiquette(spec, timeout=5.0)
+
+    listener.result_observers[0](_partial("你好"))
+    listener.segment_observers[0](_segment("你好"))
+
+    notices = await controller.as_channel().build.get_named_notices()
+    assert notices["last_heard"] == "你好"
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task

@@ -26,7 +26,7 @@ import numpy as np
 from typing_extensions import Self
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts.asr import ASR, RecognitionEvent, RecognitionPhase
+from ghoshell_moss.contracts.asr import ASR, RecognitionEvent, RecognitionPhase, RecognitionSegment
 from ghoshell_moss.contracts.audio import (
     AUDIO_SAMPLE_INTERVAL,
     AudioChunk,
@@ -46,10 +46,12 @@ from ghoshell_moss.host.listener.etiquette import (
     EtiquetteConfig,
     EtiquetteSpec,
     FirstPacketSpec,
+    PerceiveSpec,
     new_always_spec,
     new_llm_judge_spec,
     new_once_spec,
 )
+from ghoshell_moss.host.listener.segment_buffer import SegmentBuffer
 from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
 from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
 
@@ -138,6 +140,11 @@ class ListenerController(ListenLifecycle):
         self._audio_sample_task: Optional[asyncio.Task] = None
         self._audio_sample_disposer: Optional[Callable[[], None]] = None
         self._audio_sample_publisher: Optional[Publisher] = None
+        # segment buffer (感知协议): 跨 session 订阅 text/segment, 拉模式读.
+        # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 perceive.enabled 门控.
+        self._buffer = SegmentBuffer()
+        self._listener.on_recognition_result(self._on_buffer_event)
+        self._listener.on_recognition_segment(self._on_buffer_segment)
 
     # ── 生命周期: listener 未启动则托管, 已启动则只借用 ──
 
@@ -188,6 +195,12 @@ class ListenerController(ListenLifecycle):
         if save and self._config_store is not None:
             self._config_store.save(config)
 
+    def _set_active_etiquette(self, spec: EtiquetteSpec | None) -> None:
+        """设当前激活礼仪, 并让 segment buffer 容量跟随 spec.perceive.history."""
+        self._active_etiquette = spec
+        if spec is not None:
+            self._buffer.resize(spec.perceive.history)
+
     # ── 礼仪驱动状态机 (纯配置, 持续监听 = 另一种 always) ──
 
     def run_etiquette(
@@ -197,7 +210,7 @@ class ListenerController(ListenLifecycle):
             timeout: float | None = None,
     ) -> asyncio.Future:
         """传入礼仪配置, 启动持续监听状态机 (由首包/尾包/判停三层驱动)."""
-        self._active_etiquette = etiquette
+        self._set_active_etiquette(etiquette)
         self._cancel_active()
         task = asyncio.create_task(self._run_etiquette(etiquette, timeout=timeout))
         self._active_task = task
@@ -258,7 +271,7 @@ class ListenerController(ListenLifecycle):
         冗余 (clause 即 commit), 仅为接口一致保留.
         """
         self._mode = ListenEtiquette.ONCE
-        self._active_etiquette = new_once_spec()
+        self._set_active_etiquette(new_once_spec())
         self._cancel_active()
         task = asyncio.create_task(self._run_once(clause_vad=clause_vad, keywords=keywords, timeout=timeout))
         self._active_task = task
@@ -487,6 +500,25 @@ class ListenerController(ListenLifecycle):
             description="listener:deliver",
         ))
 
+    # ── segment buffer 感知 (perceive 协议门控) ──
+
+    def _perceive_enabled(self) -> bool:
+        """当前激活礼仪是否开启感知槽位 (perceive.enabled)."""
+        spec = self._active_etiquette
+        return spec is not None and spec.perceive.enabled
+
+    def _on_buffer_event(self, event: RecognitionEvent) -> None:
+        """text axis 观察者: 感知开时更新当前增长全文, 关时不做任何事."""
+        if not self._perceive_enabled():
+            return
+        self._buffer.on_event(event)
+
+    def _on_buffer_segment(self, segment: RecognitionSegment) -> None:
+        """segment 签发观察者: 感知开时定稿入历史, 关时不做任何事."""
+        if not self._perceive_enabled():
+            return
+        self._buffer.on_segment(segment)
+
     # ── internals ──
 
     def _cancel_active(self) -> None:
@@ -534,7 +566,14 @@ class ListenerController(ListenLifecycle):
             # 没有激活礼仪时片段缺席 (None): 模型收到 <etiquette removed/> 墓碑, 而不是
             # 一个占位空值 — 空串在这里表示"不变", 会让模型一直以为旧礼仪还激活着.
             active = self._active_etiquette
-            return {"etiquette": active.name if active else None}
+            notice: dict[str, str | None] = {"etiquette": active.name if active else None}
+            # 感知槽位: 开时暴露最近一条定稿 segment 的全文 (变了才重发); 关/空时 None 墓碑.
+            if active is not None and active.perceive.enabled:
+                recent = self._buffer.peek_recent(1)
+                notice["last_heard"] = recent[-1].text if recent else None
+            else:
+                notice["last_heard"] = None
+            return notice
 
         @chan.build.command()
         async def set_etiquette_spec(text__: str, save: bool = False) -> str:
@@ -576,6 +615,30 @@ class ListenerController(ListenLifecycle):
         async def get_asr_params() -> str:
             """Read ASR params (cold data, pulled on demand — not in notice)."""
             return json.dumps(self._asr.get_info().params, ensure_ascii=False)
+
+        @chan.build.command()
+        async def get_transcript(n: int = 0) -> str:
+            """Pull the segment buffer: current growing text + recent n heard segments.
+
+            `n=0` uses the active etiquette's perceive.history; returns JSON with
+            `enabled` (perceive switch), `current`, `recent` (tail-n) and `forgotten`.
+            Empty current/recent when perceive is off or nothing heard yet.
+            """
+            active = self._active_etiquette
+            enabled = active is not None and active.perceive.enabled
+            if n <= 0:
+                n = active.perceive.history if active else 8
+            current = self._buffer.peek_current() if enabled else None
+            recent = self._buffer.peek_recent(n) if enabled else []
+            return json.dumps(
+                {
+                    "enabled": enabled,
+                    "current": current.to_dict() if current else None,
+                    "recent": [s.to_dict() for s in recent],
+                    "forgotten": self._buffer.forgotten() if enabled else 0,
+                },
+                ensure_ascii=False,
+            )
 
         @chan.build.command()
         async def configure_asr(params: dict) -> str:

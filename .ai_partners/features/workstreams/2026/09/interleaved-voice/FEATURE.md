@@ -403,13 +403,22 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 ### 最关键的改造
 
 13. **单进程听/说分句交错进统一历史**: 统一 `on_clause` 回调 (供 GUI), 可直接用 topic (已对齐过)。
+    **听侧已做 2026-09-21 (segment buffer 听侧半部分)**: `SegmentBuffer` 保留最近 n 轮定稿
+    segment (text + clause 分解), 跨 session 存续, 拉模式读。说侧统一历史 (speech clause →
+    同构 buffer) 仍待做。
 
 ### recognition 交互
 
 14. **recognition 返回可自增的未发送数据**: commit 默认发 signal 被拦截后, 界面 buffer
     未发送对话、点击提交; 尾句可触发 llm func 重写 (避免差 ASR 物料)。
+    **已做 2026-09-21 (增长文本槽位)**: `SegmentBuffer.peek_current()` 拉当前 segment 的
+    增长全文 (FIRST/PARTIAL/CLAUSE full-replace 累积), 未 commit 前可自增。尾句 llm func
+    重写是独立机制, 未做。
 15. **尾包未发送时进 channel notice**: 模型思考可看 last clause 等信息, 有拉接口;
     相当于模型可自己给自己 commit。
+    **已做 2026-09-21 (perceive 协议)**: `EtiquetteSpec` 加第 4 层 `PerceiveSpec`
+    (`enabled` 开关 + `history` 容量)。开时 notice 暴露 `last_heard` (最近一条定稿全文),
+    `get_transcript(n)` 命令拉 current + recent + forgotten; commit 拉接口已有。
 
 ### 明确不做 / 现状
 
