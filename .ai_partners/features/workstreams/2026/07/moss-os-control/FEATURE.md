@@ -3,7 +3,7 @@ title: MOSS OS Control — 操作系统的统一能力域
 status: in-progress
 priority: P1
 created: 2026-09-13
-updated: 2026-09-15
+updated: 2026-09-20
 milestone: beta-release
 description: >-
   把操作系统当作一个整体能力域来校准。nodes/os/ 下每个 node 管一个 OS 原生面，
@@ -113,6 +113,20 @@ read(文档 → 内存)
 | screen | 已移出本域 (2026-09-15) | → feature `vision-stream` |
 | osascript | 待建 | — |
 | file_editor | 已实现 v1（卡片机制，同 terminal） | [file_editor.md](file_editor.md) |
+
+## 吸收记录
+
+- **text-blocks**（2026-07 workstream，原 `nodes/webview_apps/text_blocks/`）——"共享载体"命题的
+  第一次专职推导：模型经 `chunks__` 流式写编号文本块，人类编辑产生 unified diff 上行。
+  其定位被 KD5 的 `file_editor` 取代，实现是 **100% 直系**——`file_editor` 是这条线的继续，
+  不是平行方案。已于 2026-09-20 删除：孤儿节点（仅 S1 骨架，无任何引用）+ workstream 文档。
+  - 哲学锚点仍在 `.design/2026-07-24-shared_carrier_collaboration_philosophy.md`。
+  - 被有意换掉的模型：块编号（id 作共享坐标系 / 生成史即共享记忆）——`file_editor` 改用
+    thread/version；延后实现的那部分（人类就地编辑 diff + anchor）记在 `file_editor.md`
+    的「未决 / 待办」。
+  - 全文见 `git log -- .ai_partners/features/workstreams/2026/07/text-blocks/`。
+  - **治理判例**：典型"只新建、不迁移，再批评项目文档过期"案例。feature specification 待补
+    `absorbed` 语义（absorbed → 删文档 + 吸收方记 lineage），动机见本次删除 commit。
 
 ## 当前状态
 
