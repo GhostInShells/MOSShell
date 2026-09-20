@@ -25,3 +25,30 @@
 - 落 ground: 一个 field (如 `self-iteration`), 走 fields 索引自发现.
 - prompt: 五大支柱收成「脊」(每支柱一两行), 加一行指针指向 ground 的这张图.
 - 字段名别用 `unsorted` —— 自解释体系不接受杂物抽屉.
+
+## 自驱 idle 方案 (2026-09-21 裁决)
+
+ghost 永久自驱 (自己写的 loop) 的反身性机制. 三种候选——① nucleus 低优 impulse ② mindflow idle 的 python 驱动 ③ 旁路 agent 同上下文想一帧——**选 nucleus 触发 + idle 回调**; 机制 ② 明确否掉: 反身性自驱应是 ghost 在上下文里"想"要不要动, 不是执行一段脚本 (脚本把自驱外部化, 与 harness/状态机同形状, 只是搬进自己的 sandbox).
+
+### 机制 (大部分已落地, 不默认开启, ghost 自己调)
+
+| 部件 | 现成件 |
+|---|---|
+| 反身性 channel | `DoloresEgoNucleus` (self-wake 信号) |
+| idle 回调 | `Mindflow.when_idle(callback)` (`_mindflow.py:267`, 转入 idle 时触发) |
+| 闲时逻辑按 startup 同理 | `startup/` 场 (ground 治理 + 文件加载 + ghost 自改) |
+| 低优信号 | nucleus impulse 路径 (BACKGROUND → attended → INFO 注意力) |
+
+**唯一新件 = N 秒节流**: `when_idle` 在"转入 idle 那一刻"触发, 不是"持续 idle N 秒"才触发. 回调挂延迟任务——N 秒后检查"是否仍 idle", 是才发一次低优 signal, 发完不重发 (每段 idle 只 poke 一次, 不是持续发). N 秒可加随机 jitter, 避免固定节律. 单个阈值不是参数化状态机.
+
+### 配置形态 = 固有发现场
+
+闲时逻辑 (连同 startup / frame) 收成一个 ground 场, 简单解释机制, **不自动枚举、非唯一、允许自建子目录**——"固有发现场" = 默认发现点, 不是唯一目录. macro / skill / feature 同性质: 把整个 moss 迭代协作机制 (三元工程第三元) 往 ghost 里搬. 本期 skills / macro 可以有 (标定), features 等治理完再说.
+
+### 边界
+
+所有 dolores ghost channel 能约束 scope 的, 边界一律 = **project home**, 不做默认泄漏. frame 已接线为 `project_home/.ai_partners/frames`.
+
+### 未来升级
+
+闲时逻辑升级到 exec 脚本时, 复用 ground 的 exec pin 协议 (SPEC §5.5)——脚本配置在别处 (被引用的场件, 不内联), 协议一致, 不新开协议.
