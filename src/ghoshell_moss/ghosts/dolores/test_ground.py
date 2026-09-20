@@ -3,6 +3,7 @@
 覆盖 ground 装配的协议承诺:
 - root 场渐进披露子件类别身份 (frontmatter pin 扫 */GROUND.md), 不穿透进子件内部
 - existence 场 @ 装载 purpose/behaviors (冷层法), file pin 装载 identity (warm 帧)
+- journal 场 exec pin 物化 Y/M/D 占位 + 分层呈现 (years/months 存在性, today 展开)
 """
 
 import asyncio
@@ -31,10 +32,13 @@ class TestRootGroundDisclosure:
                 return str(await ground.render())
 
         text = run(scenario())
-        # 三个子件类别身份被渐进披露.
+        # 子件类别身份被渐进披露.
         assert "existence/GROUND.md" in text
         assert "people/GROUND.md" in text
         assert "skills/GROUND.md" in text
+        assert "journal/GROUND.md" in text
+        assert "startup/GROUND.md" in text
+        assert "features/GROUND.md" in text
         # root 不穿透进 people 子场, 不披露具体人物.
         assert "thirdgerb" not in text
 
@@ -56,36 +60,58 @@ class TestExistenceGroundDisclosure:
         assert "# Behaviors" in text
 
 
-TIMELINE = STUBS / "existence" / "timeline.py"
+TIMELINE = STUBS / "journal" / "timeline.py"
 
 
-class TestTimelineScript:
-    def _seed(self, tmp_path):
-        daily = tmp_path / "memory" / "daily"
-        monthly = tmp_path / "memory" / "monthly"
-        daily.mkdir(parents=True)
-        monthly.mkdir(parents=True)
-        today = date.today().isoformat()
-        (daily / f"{today}.md").write_text(
-            "---\ndescription: today\n---\n\nbody today\n"
-        )
-        (daily / "2026-08-31.md").write_text(
-            "---\ndescription: yesterday\n---\n\nbody yesterday\n"
-        )
-        (monthly / "2026-08.md").write_text(
-            "---\ndescription: august\n---\n\nbody august\n"
-        )
-
-    def test_outputs_today_full_and_recent_summaries(self, tmp_path):
-        """timeline 视图: 今天全文, 最近 N 天/月只出 description, 倒序."""
-        self._seed(tmp_path)
-        out = subprocess.run(
+class TestJournalTimelineScript:
+    def _run(self, tmp_path) -> str:
+        return subprocess.run(
             [sys.executable, str(TIMELINE)],
             env=dict(os.environ, GROUND=str(tmp_path)),
             capture_output=True, text=True,
         ).stdout
 
-        assert "body today" in out               # 今天全文
-        assert "2026-08-31: yesterday" in out     # 最近 N 天摘要
-        assert "2026-08: august" in out           # 最近 N 月摘要
-        assert "body yesterday" not in out        # 昨天只出摘要, 不出全文
+    def test_layered_view(self, tmp_path):
+        """分层呈现: years/months 存在性, today 展开全文."""
+        today = date.today()
+        day_dir = tmp_path / f"Y{today.year}" / f"M{today.month:02d}" / f"D{today.day:02d}"
+        day_dir.mkdir(parents=True)
+        (day_dir / "daily.md").write_text(
+            "---\nsummary: today\nstatus: writing\n---\n\nbody today\n"
+        )
+        # 去年 + 上月: 只应有存在性, 不应展开全文.
+        prior_year = tmp_path / f"Y{today.year - 1}"
+        prior_year.mkdir(parents=True)
+        (prior_year / "yearly.md").write_text(
+            "---\nsummary: last year\nstatus: closed\n---\n\nbody last year\n"
+        )
+        prior_month = tmp_path / f"Y{today.year}" / f"M{max(1, today.month - 1):02d}"
+        prior_month.mkdir(parents=True)
+        (prior_month / "monthly.md").write_text(
+            "---\nsummary: last month\nstatus: closed\n---\n\nbody last month\n"
+        )
+
+        out = self._run(tmp_path)
+
+        assert f"Y{today.year}" in out           # 今年存在性
+        assert f"Y{today.year - 1}" in out       # 去年存在性
+        assert f"M{today.month:02d}" in out      # 本月存在性
+        assert "body today" in out               # 今天展开全文
+        assert "body last year" not in out       # 去年不展开
+        assert "body last month" not in out      # 上月不展开
+
+    def test_materializes_missing_placeholders(self, tmp_path):
+        """空场: 脚本物化当天/当月/当年占位, status=pending, 只建不写已存在的."""
+        today = date.today()
+        out = self._run(tmp_path)
+
+        day = tmp_path / f"Y{today.year}" / f"M{today.month:02d}" / f"D{today.day:02d}" / "daily.md"
+        month = tmp_path / f"Y{today.year}" / f"M{today.month:02d}" / "monthly.md"
+        year = tmp_path / f"Y{today.year}" / "yearly.md"
+
+        assert day.is_file()
+        assert month.is_file()
+        assert year.is_file()
+        assert "status: pending" in day.read_text(encoding="utf-8")
+        # 占位内容进入 today 展开段.
+        assert "(尚未撰写)" in out

@@ -1,3 +1,8 @@
+---
+name: startup
+description: 开机启动文档 — 按 mode 命名的预热 / 首动作
+---
+
 # Startup
 
 dolores 的开机启动机制。ghost runtime 装线完成后回调 `Ghost.startup()`，

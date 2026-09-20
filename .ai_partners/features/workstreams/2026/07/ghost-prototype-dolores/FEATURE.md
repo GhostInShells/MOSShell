@@ -29,6 +29,7 @@ updated: '2026-09-12'
 
 > Use `moss features set-status ghost-prototype-dolores <status> -m "note"` to update state.
 > Ground 子任务（ghost_home 认知场装配）→ [dolores-ground.md](dolores-ground.md)。
+> ghost_home 治理（场拓扑 + 两档可见性 + journal 时间线）→ [dolores-ghost-home-governance.md](dolores-ghost-home-governance.md)。
 > Ego 装线 dogfood 评审与下一步 → [dolores-ego-wiring.md](dolores-ego-wiring.md)。
 > **旁路单轮机制（perStep 第二阶段）— 下一步实现** → [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
 > Dolores × Memento 全貌（commit / note / compact / branch）→ [dolores-memento-plan.md](dolores-memento-plan.md)。

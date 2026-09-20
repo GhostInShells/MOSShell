@@ -67,6 +67,7 @@
 | W2 | open | Ghost 反身 channel — 以 `ghost` 名注册 channel，感知/操纵自身唯一入口 | — |
 | W3 | open | 独立思维模块 — 并行化身（fork）+ 关键帧自测（checkpoint self-eval） | — |
 | W4 | open | 模型自感知切换 — `ghost.model` channel 暴露 current/list/switch-model/window-status | — |
+| W5 | open | 读自身 channel facade 的两个 tool — 让 ghost 能拉取某个 channel 的当前开放面 (操作表面), 看清自己此刻能做什么. 与 O6 (Matrix 能力声明) 同源 | — |
 
 ## 设计问题
 
