@@ -1,27 +1,51 @@
-"""ListenerNucleus — 把 listener 侧已决定的意图协议化成 listener impulse.
+"""ListenerNucleus — maps listener-side intent into listener impulses.
 
-listener 侧 (ListenerController) 已经自己组织好"何时打断 / 何时发送 / 什么优先级 /
-什么失败侧模式", 本 nucleus 的角色是**听觉**的协议映射: 把一条 listener signal 机械
-映射成 impulse, 不做理解.
+The listener side (ListenerController) already decides when to speak up, when to
+deliver, at which priority, and with which loss-side mode. This nucleus is the
+**hearing** protocol mapping: it turns one listener signal into one impulse,
+mechanically, without interpreting anything.
 
-两条映射 (以 ``Signal.complete`` 区分):
+Two mappings, split by ``Signal.complete``:
 
-- ``complete=False`` → 打断包: ``interrupt`` + 高强 + ``thinking_effort='none'`` 抢占
-  注意力占坑. 抢占失败 (suppress) 丢弃 — 首包不携带内容, 丢弃不丢信息. 冷却期
-  (suppress 或 attended) 内不发射, 防多源/单源连续抢占风暴.
-- ``complete=True`` → 发送包: ``mode=notify`` (默认) + 端侧配 priority (默认 INFO)
-  完整响应. 抢占失败 buffer 进历史 (notify) — 内容绝不丢, 不受冷却约束.
+- ``complete=False`` → onset: high strength + ``thinking_effort='none'`` preempts
+  attention and holds the slot, which the deliver packet then fills via same-id
+  absorb. The preempt tier itself comes from ``signal.priority``; strength only
+  arbitrates at equal priority. Losing the challenge (mode defaults to ``''``)
+  suppresses it — an onset carries no content, so dropping it loses nothing. Onset
+  is not emitted during cooldown (suppress or attended), keeping multi-source or
+  repeated barge-ins from storming the attention.
+- ``complete=True`` → deliver: falls back to ``notify`` when mode is empty,
+  carries the caller-configured priority (INFO by default), and answers in full.
+  Losing the challenge buffers the messages into the mindflow (notify) — the
+  content is never lost, and cooldown does not apply to it.
 
-same-id 链: 首包与发送包共享 ``segment_id`` (asr 的 segment id) 作为 impulse id,
-让 mindflow 走 same-id absorb (首包占坑 → 发送包填充), 构成"打断 → 响应"的连续语义.
-跨 listener 实例也靠 segment_id 天然区分.
+``complete`` and ``interrupt`` are two orthogonal axes, not one thing:
 
-冷却双档: ``suppress`` (仲裁失败) 大冷却, ``attended`` (抢占成功) 小冷却 — 后者防
-同一源抢到之后立刻被自己下一个包再抢.
+- ``complete`` chooses between holding the slot and delivering;
+- ``interrupt`` decides whether the attention the packet wins calls
+  ``shell.clear()`` before it starts thinking (see ``Impulse.interrupt`` /
+  ``ImpulsePrimitive.interrupt``). Onset and deliver each read it from their own
+  signal; False by default.
 
-消息体包在 ``<listen source="..." created="...">`` 里: 来源由 ``source`` 区分
-(asr / wake_word ...), ``created`` 是 signal 到达墙钟. 说话人 / 声纹等附加信息是
-impulse 不具备的字段, 由端侧组织进消息体.
+Winning the challenge already tears the previous attention down, and the action
+loop clears the shell's pending commands along that abort path. What ``interrupt``
+adds is an unconditional clear at the new attention's first frame, before any new
+logos runs: stopping the body stops depending on what the previous attention
+happened to be doing.
+
+Same-id chain: onset and deliver share ``segment_id`` (the ASR segment id) as the
+impulse id, so mindflow takes the same-id absorb path (onset holds the slot →
+deliver fills it) — "speak up → deliver" reads as one continuous turn. Distinct
+listener instances stay apart through segment_id as well.
+
+Two-tier cooldown: ``suppress`` (lost the challenge) is the long one, ``attended``
+(won the challenge) the short one — the latter keeps one source from being
+preempted by its own next packet right after winning.
+
+Messages are wrapped in ``<listen source="..." created="...">``: ``source`` tells
+the origin (asr / wake_word ...), ``created`` is the signal's arrival wall clock.
+Speaker, voiceprint and similar extras are fields an impulse does not have — the
+listener side organizes them into the message body.
 """
 from __future__ import annotations
 
@@ -48,30 +72,38 @@ __all__ = [
 
 
 class ListenerSignal(SignalMeta):
-    """Listener 感知 signal — 退化为一种, meta 全量自解释.
+    """Listener perception signal — a single degenerate form, meta fully self-explaining.
 
-    listener 侧已决定好意图, 本 signal 只表达这些意图, nucleus 机械映射成 impulse.
-    ``complete`` / ``priority`` / ``hint`` / ``description`` 是 Signal 通用字段 (不进
-    metadata), 端侧经 ``to_signal(complete=..., priority=..., hint=...)`` 直接设.
+    The listener side has already decided the intent; this signal only states it, and
+    the nucleus maps it mechanically into an impulse. ``complete`` / ``priority`` /
+    ``hint`` / ``description`` are generic ``Signal`` fields (not part of metadata):
+    the listener side sets them directly through
+    ``to_signal(complete=..., priority=..., hint=...)``.
 
-    metadata 字段 (nucleus 读它们填 impulse):
+    Metadata fields (read by the nucleus to fill the impulse):
 
-    - ``source``: 聆听来源 (asr / wake_word ...), 递送消息 ``<listen>`` tag 的
-      source attribute.
-    - ``segment_id``: same-id 键, 对应 asr 的 segment_id (tail 界定). 首包
-      (complete=False) 与发送包 (complete=True) 共享此 id → same-id absorb.
-    - ``interrupt``: 模型 attended 这个 signal 前是否停下当前行为 (barge_in). 端侧可配.
-    - ``mode``: 失败侧模式 (notify / aside / ''). 端侧可配, 发送包默认 notify.
-    - ``logos``: command logos 条件反射, 端侧可配.
+    - ``source``: where the listening came from (asr / wake_word ...), the ``source``
+      attribute of the delivered ``<listen>`` tag.
+    - ``segment_id``: the same-id key, matching the ASR segment id (tail-delimited).
+      The onset (complete=False) and the deliver (complete=True) share it → same-id
+      absorb.
+    - ``interrupt``: whether the attention this packet wins stops the body first via
+      ``shell.clear()`` — the ``Impulse.interrupt`` protocol. Listener-configurable,
+      False by default; it is about stopping the body, not about barge-in.
+    - ``mode``: the loss-side mode (notify / aside / next / ''). Listener-configurable.
+      An onset defaults to ``''`` (losing suppresses it), a deliver falls back to
+      ``notify`` when empty.
+    - ``logos``: a conditioned-reflex command logos, listener-configurable.
 
-    文本 / 说话人 / 声纹等附加信息是 impulse 不具备的字段, 端侧组织进消息体.
+    Text, speaker, voiceprint and similar extras are fields an impulse does not have —
+    the listener side organizes them into the message body.
     """
 
-    source: str = Field(default="asr", description="聆听来源 — 产出该包的上游感知源 (asr / wake_word ...)")
-    segment_id: str = Field(default="", description="same-id 键 — 对应 asr 的 segment_id, 首包与发送包共享")
-    interrupt: bool = Field(default=False, description="模型 attended 前是否停下当前行为 (barge_in)")
-    mode: str = Field(default="", description="失败侧模式: notify / aside / ''(default). 发送包默认 notify")
-    logos: str = Field(default="", description="command logos 条件反射, 随 impulse 发送")
+    source: str = Field(default="asr", description="where the listening came from — the upstream source producing the packet (asr / wake_word ...)")
+    segment_id: str = Field(default="", description="same-id key — the ASR segment id, shared by the onset and the deliver packet")
+    interrupt: bool = Field(default=False, description="whether the attention won by this packet calls shell.clear() first (Impulse.interrupt)")
+    mode: str = Field(default="", description="loss-side mode: notify / aside / next / ''(default). An onset defaults to '' (suppress on loss); a deliver falls back to notify when empty")
+    logos: str = Field(default="", description="conditioned-reflex command logos, sent with the impulse")
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -83,19 +115,26 @@ class ListenerSignal(SignalMeta):
 
     @classmethod
     def xml_tag(cls) -> str:
-        """递送消息的 xml tag 名 — 所有聆听包共用一个 tag, 来源由 ``source`` attribute 区分."""
+        """The xml tag wrapping delivered messages — every listening packet shares one tag, told apart by the ``source`` attribute."""
         return "listen"
 
 
 class ListenerNucleus(Nucleus):
-    """Listener 感知单元 — listener signal → impulse 的纯协议映射.
+    """Listener perception unit — a pure protocol mapping from listener signal to impulse.
 
-    只做两件事: 首包打断 (complete=False → interrupt impulse) 与发送包 notify
-    (complete=True → notify impulse). 不累积分句、不做 diff、不管理递送范式 —
-    那些理解都在 listener 侧.
+    It does exactly two things: an onset (complete=False → slot-holding impulse) and a
+    deliver (complete=True → content impulse). It does not accumulate clauses, diff
+    them, or manage delivery etiquette — all of that understanding lives on the
+    listener side.
 
-    冷却 (cooldown) 双档: ``suppress`` 大冷却 + ``attended`` 小冷却, 只压打断包
-    发射, 不压发送包 (内容绝不丢). same-id = ``segment_id``.
+    ``interrupt`` belongs to neither packet type exclusively: onset and deliver each
+    read the field from their own signal (listener-configured, False by default) to
+    decide whether the attention they win stops the body. See the module docstring
+    for the orthogonal axes.
+
+    Two-tier cooldown: ``suppress`` (long) + ``attended`` (short), both holding back
+    onset emission only — deliver is never held back (the content must not be lost).
+    same-id = ``segment_id``.
     """
 
     NAME = "listener_nucleus"
@@ -113,7 +152,7 @@ class ListenerNucleus(Nucleus):
         self._name = name
         self._logger = logger or get_moss_logger()
 
-        self._first_strength = first_strength        # 首包高强, 赢得预占
+        self._first_strength = first_strength        # 首包强度 — 同级强度仲裁时用于抢占
         self._normal_strength = normal_strength      # attended 后降回 (运行强度)
         self._suppress_seconds = suppress_seconds    # 仲裁失败大冷却
         self._attended_seconds = attended_seconds    # 抢占成功小冷却
@@ -135,8 +174,8 @@ class ListenerNucleus(Nucleus):
         return self._name
 
     def description(self) -> str:
-        return ("listener sense nucleus — 首包打断 (interrupt impulse) 与发送包 "
-                "notify impulse 的纯协议映射")
+        return ("listener sense nucleus — onset (complete=False) and deliver "
+                "(complete=True) packets mapped verbatim into impulses")
 
     def status(self) -> str:
         if self._impulse_cache:
@@ -162,7 +201,7 @@ class ListenerNucleus(Nucleus):
         if signal.complete:
             self._on_deliver(meta, signal)
         else:
-            self._on_interrupt(meta, signal)
+            self._on_onset(meta, signal)
 
     def with_bus(
             self,
@@ -172,7 +211,7 @@ class ListenerNucleus(Nucleus):
         self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # 仲裁失败: 丢弃缓存, 进入大冷却 — 只压打断包发射, 发送包不受约束.
+        # 仲裁失败: 丢弃缓存, 进入大冷却 — 只压首包发射, 发送包不受约束.
         self._impulse_cache = None
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
@@ -183,8 +222,9 @@ class ListenerNucleus(Nucleus):
         self._attended_until = time.monotonic() + self._attended_seconds
         if impulse is None:
             return None
-        # challenge → run 参数分离: 抢到 attention 后降为运行优先级(INFO) + 运行强度,
-        # 让下一句可靠打断 (优先级直接赢, 不靠强度衰减).
+        # challenge → run 参数分离: 抢到 attention 后降为运行优先级(INFO) + 运行强度.
+        # 运行中的 listener attention 停在最低一档, 下一个包才进得来 — 优先级更高的
+        # 包按优先级直接赢, 同为 INFO 级则靠强度仲裁 (同源 challenger ×1.1 加权).
         if impulse.priority != Priority.INFO or impulse.strength != self._normal_strength:
             impulse.priority = Priority.INFO
             impulse.strength = self._normal_strength
@@ -217,8 +257,9 @@ class ListenerNucleus(Nucleus):
 
     # ── 两套协议映射 ──
 
-    def _on_interrupt(self, meta: ListenerSignal, signal: Signal) -> None:
-        # 打断包: 冷却期 (suppress 或 attended) 内不发射 — 防抢占风暴.
+    def _on_onset(self, meta: ListenerSignal, signal: Signal) -> None:
+        # 首包 (onset): 占坑 impulse — complete=False 供 same-id absorb; interrupt
+        # 由端侧配. 冷却期 (suppress 或 attended) 内不发射 — 防抢占风暴.
         if self._in_cooldown():
             return
         impulse = Impulse(
@@ -237,7 +278,8 @@ class ListenerNucleus(Nucleus):
         self._fire(impulse)
 
     def _on_deliver(self, meta: ListenerSignal, signal: Signal) -> None:
-        # 发送包: notify (默认) + 端侧配 priority. 不受冷却约束 — 内容绝不丢.
+        # 发送包 (deliver): mode 为空兜底 notify + 端侧配 priority. 不受冷却约束 —
+        # 内容绝不丢.
         impulse = Impulse(
             source=self.name(),
             trace_id=meta.segment_id or unique_id(),
@@ -266,14 +308,14 @@ class ListenerNucleus(Nucleus):
             self._fire_impulse(impulse)
 
     def _wrap_messages(self, signal: Signal, source: str) -> list[Message]:
-        """把 signal 的文本消息包进 ``<listen source=... created=...>`` tag."""
+        """Wrap the signal's text messages into one ``<listen source=... created=...>`` tag."""
         data = self._signal_text(signal)
         if not data:
             return []
         return [self._listen_message(data, source, signal.created_at)]
 
     def _signal_text(self, signal: Signal) -> str:
-        """汇总 signal 所有消息体的文本 content."""
+        """Collect the text content of every message body in the signal."""
         texts: list[str] = []
         for msg in signal.messages:
             for c in msg.contents:
@@ -282,7 +324,7 @@ class ListenerNucleus(Nucleus):
         return '\n'.join(texts)
 
     def _listen_message(self, data: str, source: str, created_at) -> Message:
-        """一条 <listen source=... created=...> 包裹的消息. created 取 signal 到达墙钟."""
+        """One ``<listen source=... created=...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
         attributes = {"source": source} if source else None
         message = Message.new(tag=ListenerSignal.xml_tag(), attributes=attributes, timestamp=True)
         message.meta.created = created_at
@@ -305,7 +347,7 @@ class ListenerNucleus(Nucleus):
                 suppress_seconds: float | None = None,
                 attended_seconds: float | None = None,
         ) -> str:
-            """Dynamically tune the barge-in parameters (first-packet strength / cooldowns)."""
+            """Dynamically tune the barge-in parameters (onset strength / cooldowns)."""
             if first_strength is not None:
                 self._first_strength = first_strength
             if suppress_seconds is not None:
@@ -321,13 +363,14 @@ class ListenerNucleus(Nucleus):
 
 
 class ListenerNucleusMeta(NucleusMeta):
-    """Factory meta — 让 ``moss manifests nuclei`` 可发现 ListenerNucleus."""
+    """Factory meta — lets ``moss manifests nuclei`` discover ListenerNucleus."""
 
     def name(self) -> str:
         return ListenerNucleus.NAME
 
     def description(self) -> str:
-        return ("listener nucleus — 首包打断 (interrupt) 与发送包 notify 的纯协议映射")
+        return ("listener nucleus that maps onset (complete=False) and deliver "
+                "(complete=True) packets into impulses")
 
     def signals(self) -> Iterable[type[SignalMeta]]:
         yield ListenerSignal
@@ -350,11 +393,13 @@ def new_listener_signal(
         description: str = "",
         hint: str = "",
 ) -> Signal:
-    """Helper — 构造一条 ``listener`` signal.
+    """Helper — construct one ``listener`` signal.
 
-    打断包: ``complete=False`` + ``interrupt`` + 高 priority (端侧配, 默认由 nucleus 用
-    signal.priority). 发送包: ``complete=True`` + ``mode=notify`` (默认) + INFO priority.
-    ``segment_id`` 是首包/发送包的 same-id 键.
+    ``complete=False`` is an onset (holds the attention slot), ``complete=True`` a
+    deliver (carries the content). ``interrupt`` / ``mode`` / ``priority`` are
+    listener-configured and orthogonal to that split — only ``interrupt=True`` makes
+    the attention the packet wins call ``shell.clear()`` (False by default).
+    ``segment_id`` is the same-id key shared by onset and deliver.
     """
     return ListenerSignal(
         source=source,
