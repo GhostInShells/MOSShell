@@ -21,6 +21,7 @@ __all__ = [
     "DOLORES_INSTRUCTION_TEMPLATE",
     "dolores_inception",
     "dolores_memento",
+    "dolores_model_notice",
     "dolores_output_protocol_notice",
     "dolores_terminology",
 ]
@@ -62,6 +63,38 @@ summarized off-path by a single-turn bypass request at runtime, so your live thi
 never blocked. These commits serve your present continuity, and remain searchable, readable, \
 and open to review at any future time.
 """
+
+_EFFORT_ETIQUETTE = {
+    "off": "you answer directly through CTML, with no visible thinking — the fastest way to reach a person.",
+    "low": "you think lightly, emitting CTML along the way so the person sees your state.",
+    "high": "you think deeply, emitting CTML along the way so the person sees your state.",
+    "max": "you think in a focused stretch, emitting CTML only when you are done.",
+}
+
+
+def dolores_model_notice(
+        *,
+        model: str,
+        provider: str = "",
+        effort: str = "",
+        previous_effort: str | None = None,
+) -> str:
+    """Model-identity notice — what model and thinking depth the ghost is running on.
+
+    Thinking depth *is* the interaction etiquette (off answers directly, max goes quiet until done),
+    so the ghost must perceive it: without this it picks a depth-blind etiquette. ``previous_effort``
+    is None on the first observation (identity anchor) and the prior depth on a change.
+    """
+    identity = model or "(unknown)"
+    if provider:
+        identity = f"{identity} (provider {provider})"
+    depth = effort if effort else "not overridden — provider default"
+    etiquette = _EFFORT_ETIQUETTE.get(effort, "your thinking depth follows the provider default.")
+    head = "Model identity" if previous_effort is None else (
+        f"Model identity changed (thinking depth was `{previous_effort or 'default'}`)"
+    )
+    return f"{head}: {identity}, thinking depth `{depth}` — {etiquette}"
+
 
 _OUTPUT_PROTOCOL_NOTICE = """\
 ## Stream Is CTML

@@ -406,6 +406,52 @@ const egoTools = [
       }) as unknown as JsonValue
     },
   }),
+  defineTool({
+    name: 'moss_channels',
+    // 自省工具: 平时用不到 (channel 面就在上下文里), 面变了或 debug 时用.
+    description: 'List every channel you currently have and what it is for. For self-inspection — normally your channel surface is already in context; use this when it changed underneath you or when debugging.',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => {
+      const callId = String(exec.callId)
+      return await new Promise<string>((resolve, reject) => {
+        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) {
+            rememberSettled(callId)
+            reject(new Error('moss_channels aborted'))
+          }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }),
+  defineTool({
+    name: 'moss_channel_facade',
+    // 自省工具: 拉某个 channel 的完整操作面 (instruction/commands/notices/state), debug 时用.
+    description: 'Read one channel\'s full operating surface — its instruction, commands, notices and state. For self-inspection: normally you already have this in context; use it when you cannot recall a channel\'s commands or when debugging.',
+    parameters: {
+      path: { type: 'string', required: true, description: 'The channel\'s full path, e.g. "ghost.frame".' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => {
+      const callId = String(exec.callId)
+      return await new Promise<string>((resolve, reject) => {
+        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) {
+            rememberSettled(callId)
+            reject(new Error('moss_channel_facade aborted'))
+          }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }),
 ]
 
 // ── per-agent model selection (thinking/enter 应用 default effort 的目标) ──────

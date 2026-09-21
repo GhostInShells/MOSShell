@@ -641,6 +641,70 @@ class TestDoloresEgoCommit:
         assert len(commits) == 2
         assert (commits[1].metadata["ref"]["start_turn"], commits[1].metadata["ref"]["end_turn"]) == (1, 3)
 
+    @staticmethod
+    def _request_header(turn: int, *, provider: str, model: str, effort: str = ""):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+
+        config = {"provider": provider, "model": model}
+        if effort:
+            config["reasoningEffort"] = effort
+        return SessionEvent.from_dict({
+            "type": "request/header", "seq": turn * 10,
+            "data": {
+                "header": {"config": config},
+                "reason": "change",
+            },
+        })
+
+    @pytest.mark.asyncio
+    async def test_first_request_header_queues_identity_notice(self, tmp_path: Path):
+        """首次观测必发: 思考档决定交互礼仪, 模型开局就得知道自己在哪一档."""
+        ego, _ = self._set_up(tmp_path)
+        assert ego._notices == []
+
+        await ego._on_request_header(self._request_header(1, provider="deepseek", model="m", effort="off"))
+
+        notices = [n for n in ego._notices if n.meta.tag == "model_notice"]
+        assert len(notices) == 1
+        text = notices[0].to_content_string()
+        assert "deepseek" in text and "m" in text
+        assert "off" in text
+        assert "directly" in text  # off 的礼仪提示
+
+    @pytest.mark.asyncio
+    async def test_unchanged_header_queues_nothing(self, tmp_path: Path):
+        """同一身份重复上报不重复排队."""
+        ego, _ = self._set_up(tmp_path)
+        await ego._on_request_header(self._request_header(1, provider="deepseek", model="m", effort="high"))
+        await ego._on_request_header(self._request_header(2, provider="deepseek", model="m", effort="high"))
+
+        assert len([n for n in ego._notices if n.meta.tag == "model_notice"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_effort_change_queues_notice_naming_previous(self, tmp_path: Path):
+        """思考档切换 → 再排一条, 并点明从哪一档变来 (礼仪随之切换)."""
+        ego, _ = self._set_up(tmp_path)
+        await ego._on_request_header(self._request_header(1, provider="deepseek", model="m", effort="high"))
+        await ego._on_request_header(self._request_header(2, provider="deepseek", model="m", effort="max"))
+
+        notices = [n for n in ego._notices if n.meta.tag == "model_notice"]
+        assert len(notices) == 2
+        text = notices[1].to_content_string()
+        assert "high" in text and "max" in text
+        assert "changed" in text
+
+    @pytest.mark.asyncio
+    async def test_identity_notice_drains_into_enter_payload(self, tmp_path: Path):
+        """notice 经每帧 enter 排空 — 模型在下一轮思考里看到自己的身份."""
+        ego, _ = self._set_up(tmp_path)
+        await ego._on_request_header(self._request_header(1, provider="deepseek", model="m", effort="low"))
+
+        drained = ego._drain_notices()
+
+        assert len(drained) == 1
+        assert "deepseek" in drained[0]
+        assert ego._notices == []  # 排空后不残留
+
 
 class TestEgoMementoSidecar:
     """旁路 note 生产 — run 路由的 fake: 回 message 写 note; 异常/空 → 终态留空."""
@@ -1111,6 +1175,69 @@ class TestDoloresRun:
             {"turn": 1, "step": 1, "chunk": {"type": "text-delta", "text": text}},
             seq=seq,
         )
+
+    @staticmethod
+    def _tool_call(name: str, arguments: str = "{}", call_id: str = "call_x"):
+        from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
+
+        return ToolCallEvent(callId=call_id, name=name, arguments=arguments)
+
+    @pytest.mark.asyncio
+    async def test_self_inspection_tools_read_the_facade(self):
+        """moss_channels / moss_channel_facade 走 facade 读自身操作面 (自省工具, 不产生 moment)."""
+        from ._run import DoloresRun
+
+        class _Facade:
+            def channels_description(self):
+                return "ghost: the ghost's own organs"
+
+            def get_channel_full_facade(self, path):
+                return f"<{path}>full surface</{path}>" if path == "ghost" else ""
+
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        run = DoloresRun(
+            ego=ego,
+            thinking=FakeRunThinking(),
+            thinking_event=asyncio.Event(),
+            facade=_Facade(),
+        )
+
+        await run._handle_tool_use_event(self._tool_call("moss_channels"))
+        await run._handle_tool_use_event(
+            self._tool_call("moss_channel_facade", '{"path": "ghost"}', call_id="call_y")
+        )
+
+        results = {call_id: result for call_id, result, _ in ego.rpc_calls}
+        assert "ghost" in results["call_x"]
+        assert "full surface" in results["call_y"]
+
+    @pytest.mark.asyncio
+    async def test_channel_facade_reports_unknown_path(self):
+        """未知 path 报错不抛 (工具结果回给模型, 不烧整轮)."""
+        from ._run import DoloresRun
+
+        class _Facade:
+            def channels_description(self):
+                return ""
+
+            def get_channel_full_facade(self, path):
+                return ""
+
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        run = DoloresRun(
+            ego=ego,
+            thinking=FakeRunThinking(),
+            thinking_event=asyncio.Event(),
+            facade=_Facade(),
+        )
+
+        await run._handle_tool_use_event(
+            self._tool_call("moss_channel_facade", '{"path": "nope"}')
+        )
+
+        assert "no such channel" in ego.rpc_calls[0][1]
 
     @pytest.mark.asyncio
     async def test_aenter_binds_listener_and_aexit_cleans_up(self):

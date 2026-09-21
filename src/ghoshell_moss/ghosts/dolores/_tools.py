@@ -13,7 +13,14 @@ from typing_extensions import Self
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 
-__all__ = ["WaitActionDoneToolCall", "InterleavedCtmlToolCall", "ObserveStatusToolCall", "ReasoningToolCall"]
+__all__ = [
+    "WaitActionDoneToolCall",
+    "InterleavedCtmlToolCall",
+    "ObserveStatusToolCall",
+    "ReasoningToolCall",
+    "ChannelsToolCall",
+    "ChannelFacadeToolCall",
+]
 
 _ResultType = dict | list | str | None
 
@@ -134,6 +141,32 @@ class ObserveStatusToolCall(ToolCallParameter):
     @classmethod
     def tool_name(cls) -> str:
         return "moss_observe_status"
+
+
+class ChannelsToolCall(ToolCallParameter):
+    """moss_channels — list every channel and its description, to see what you currently have.
+
+    A self-inspection tool: normally your channels and their commands are already in your context;
+    reach for this when the surface changed underneath you or when you are debugging.
+    """
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_channels"
+
+
+class ChannelFacadeToolCall(ToolCallParameter):
+    """moss_channel_facade — read one channel's full operating surface (instruction, commands, notices, state).
+
+    A self-inspection tool: normally the surface is already in your context; reach for this when you
+    need the detail of a channel whose commands you cannot recall, or when debugging.
+    """
+
+    path: str = Field(default="", description="the channel's full path, e.g. 'ghost.frame'.")
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_channel_facade"
 
 
 class ReasoningToolCall(ToolCallParameter):

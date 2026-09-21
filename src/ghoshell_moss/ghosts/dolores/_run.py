@@ -26,7 +26,15 @@ from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
 from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk, TurnEnd
 
-from ._tools import WaitActionDoneToolCall, InterleavedCtmlToolCall, ObserveStatusToolCall, ReasoningToolCall, ToolCallResult
+from ._tools import (
+    WaitActionDoneToolCall,
+    InterleavedCtmlToolCall,
+    ObserveStatusToolCall,
+    ReasoningToolCall,
+    ChannelsToolCall,
+    ChannelFacadeToolCall,
+    ToolCallResult,
+)
 
 _logger = get_moss_logger()
 
@@ -222,6 +230,14 @@ class DoloresRun:
         if result is not None:
             await self._dispatch_tool_result(result)
             return
+        result = await ChannelsToolCall.run_tool(event, self._handle_channels)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
+        result = await ChannelFacadeToolCall.run_tool(event, self._handle_channel_facade)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
         if (call := ReasoningToolCall.from_tool_call(event)) is not None:
             self._ego.default_effort = call.effort
 
@@ -241,6 +257,17 @@ class DoloresRun:
     async def _handle_observe_status(self, call: ObserveStatusToolCall) -> str:
         """observe_status handler — observe Shell running status for replan; returns the status description, produces no moment."""
         return self._facade.status().description()
+
+    async def _handle_channels(self, call: ChannelsToolCall) -> str:
+        """moss_channels handler — the channel catalog (path → description), for discovery or debugging."""
+        return self._facade.channels_description()
+
+    async def _handle_channel_facade(self, call: ChannelFacadeToolCall) -> str:
+        """moss_channel_facade handler — one channel's full operating surface; unknown path is reported, not raised."""
+        text = self._facade.get_channel_full_facade(call.path)
+        if not text:
+            return f"no such channel: {call.path!r}"
+        return text
 
     async def _handle_interleaved_ctml(self, call: InterleavedCtmlToolCall) -> str:
         """interleaved_ctml handler — emit CTML mid-thought, thinking ahead of behavior (interleaved).

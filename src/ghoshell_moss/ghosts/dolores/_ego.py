@@ -36,11 +36,17 @@ from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.mindflow import Signal, Thinking
 from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
 from ghoshell_moss.deepseek_harness.session import DshSession
-from ghoshell_moss.deepseek_harness.types.session_events import AssistantMessageEvent, SessionEvent, TurnEnd
+from ghoshell_moss.deepseek_harness.types.session_events import (
+    AssistantMessageEvent,
+    RequestHeader,
+    SessionEvent,
+    TurnEnd,
+)
 from ghoshell_moss.message import Content, Message
 from ghoshell_moss.memento.abcd import CommitRef
 
 from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
+from ._prompts import dolores_model_notice
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
@@ -182,6 +188,9 @@ class DoloresEgo:
         self._moment_epoch: str | None = None
         # model 自选的默认思考档 (moss_reasoning 声明 → 下一轮 enter 携带 reasoning_effort). '' = 未设 (走 UI 权威).
         self.default_effort: str = ""
+        # 预期模型身份 (provider, model, reasoning_effort) — request/header 观测值与之不符时排一条
+        # notice. None = 尚未观测过 (首次观测也算变化: 开局就得知道自己在哪一档).
+        self._model_identity: tuple[str, str, str] | None = None
         # commit 运行时状态 (ego 持有; manager 不托管): 最后一个已完成 turn + 窗口基准 + 每窗口提醒位.
         self._last_turn: int = 0
         self._window_size: int = 0
@@ -251,6 +260,8 @@ class DoloresEgo:
         self._session.on_session_event("turn/end", self._on_turn_end)
         # 窗口大小: assistant/message 带 usage, 记下最近一次调用的 prompt 大小 (_maybe_commit 求增量).
         self._session.on_session_event("assistant/message", self._on_assistant_message)
+        # 模型身份: request/header 是变更时记录的下一次请求配置 (provider/model/reasoningEffort).
+        self._session.on_session_event("request/header", self._on_request_header)
         return self._ego_session_id
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -345,6 +356,30 @@ class DoloresEgo:
         if message is None or message.usage is None:
             return
         self._window_size = self._memento_manager.window_size(message.usage)
+
+    async def _on_request_header(self, event: SessionEvent) -> None:
+        """request/header 回调 — 感知模型身份与思考档, 变化时排一条 notice (下一帧 enter 带出).
+
+        首次观测也发: 思考档决定交互礼仪 (off 直答 / max 憋到最后), 模型开局就得知道自己在哪一档,
+        否则会按错误的档位选礼仪. 上下文压缩后模型自己声明过的 effort 也不复记忆, 这条 notice 补上.
+        """
+        header = RequestHeader.from_session_event(event)
+        if header is None:
+            return
+        config = header.header.config
+        observed = (config.provider, config.model, config.reasoningEffort or "")
+        previous = self._model_identity
+        if observed == previous:
+            return
+        self._model_identity = observed
+        self._notices.append(Message.new(tag="model_notice").with_content(
+            dolores_model_notice(
+                provider=observed[0],
+                model=observed[1],
+                effort=observed[2],
+                previous_effort=None if previous is None else previous[2],
+            )
+        ))
 
     async def _on_turn_end(self, event: SessionEvent) -> None:
         """turn/end 回调 — 推进 last_turn, 再按阈值决定是否强制提交."""
