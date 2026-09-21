@@ -521,6 +521,8 @@ class ShellRuntimeImpl(MOSShellRuntime):
             listener=listener,
             asr=listener.asr(),
             logger=self._matrix.logger,
+            signal_broadcast=self._matrix.session.add_signal,
+            cell_name=self._matrix.this.name,
         )
         # 单例注册: TUI voice state / 其它消费面从 container 拿同一个 controller.
         self._matrix.container.set(ListenerController, self._listen_controller)

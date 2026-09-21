@@ -45,6 +45,7 @@ async def assemble_controller(
         listener=listener, asr=asr, logger=matrix.logger,
         signal_broadcast=matrix.session.add_signal if emit_signals else None,
         stop_caller_factory=caller_factory,
+        cell_name=matrix.this.name,
     )
     await controller.with_topic_service(matrix.session.topics)
     await controller.with_audio_sample_service(matrix.session.topics, sample_rate=sample_rate)

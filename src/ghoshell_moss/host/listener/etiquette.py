@@ -1,12 +1,11 @@
 """Etiquette — the interaction styles a model programs at runtime.
 
-One etiquette configures one listening session. It has four independent layers,
+One etiquette configures one listening session. It has three independent layers,
 and an interaction style is a point in their product space — not a code branch:
 
 - **onset** (起话) — what to signal the instant speech begins.
 - **stop** (判停) — how the turn end is decided.
-- **deliver** (交付) — what the committed turn sends.
-- **retain** (留存) — whether heard segments stay pullable.
+- **deliver** (交付) — the single delivery knob: emit a signal or keep in buffer.
 
 The examples below are out-of-box points in this space. Copy one, change a field,
 and you have a new interaction style — no code. Register it on ``EtiquetteConfig``
@@ -27,7 +26,6 @@ __all__ = [
     "DeliverMode",
     "ClassifierSpec",
     "StopSpec",
-    "RetainSpec",
     "EtiquetteSpec",
     "EtiquetteConfig",
     "once",
@@ -38,6 +36,7 @@ __all__ = [
     "observer",
     "keyword_end",
     "scored",
+    "murmur",
 ]
 
 
@@ -68,24 +67,37 @@ class OnsetSpec(BaseModel):
 
 
 class DeliverSpec(BaseModel):
-    """交付协议 — what the committed turn sends."""
+    """交付协议 — the single delivery knob.
+
+    ``emit`` 是唯一交付旋钮: True = 判停后把这一轮发成 listener signal 推给模型;
+    False = 不发 signal, 强制走 buffer 留存, 模型经 ``get_transcript`` drain. 没有
+    「既不发送也不留存」的组合 —— ``emit=False`` 必然留存 (留存不再是独立正交参数).
+
+    ``interrupt`` / ``priority`` / ``mode`` 只在 ``emit=True`` 时有意义 (信号怎么发);
+    ``history`` 只在 ``emit=False`` 时有意义 (buffer 环形容量).
+    """
 
     emit: bool = Field(
         default=True,
-        description="emit a signal when the turn is committed",
+        description="delivery knob: True = emit a listener signal (push); "
+                    "False = keep in buffer for model pull (forces retention)",
+    )
+    history: int = Field(
+        default=8,
+        description="buffer ring capacity — effective only when emit=False",
     )
     interrupt: bool = Field(
         default=False,
-        description="that signal stops the current behavior",
+        description="the signal stops the current behavior (emit=True only)",
     )
     priority: Priority = Field(
         default=Priority.INFO,
-        description="preempt tier of the deliver signal",
+        description="preempt tier of the deliver signal (emit=True only)",
     )
     mode: DeliverMode = Field(
         default="notify",
         description="loss-side behavior when the deliver signal cannot preempt "
-                    "(aligns with mindflow ChallengeMode): "
+                    "(emit=True only; aligns with mindflow ChallengeMode): "
                     "'notify' (buffer — answer when idle) / "
                     "'aside' (inject without taking over) / "
                     "'next' (buffer + take next turn) / "
@@ -149,21 +161,8 @@ class StopSpec(BaseModel):
     )
 
 
-class RetainSpec(BaseModel):
-    """留存 — whether heard segments stay pullable after the fact."""
-
-    enabled: bool = Field(
-        default=False,
-        description="on = keep recent segments readable via the pull slot; off = signal-only",
-    )
-    history: int = Field(
-        default=8,
-        description="recent segments kept in the ring",
-    )
-
-
 class EtiquetteSpec(BaseModel):
-    """一种礼仪 — name + description + the four layers."""
+    """一种礼仪 — name + description + the three layers."""
 
     name: str = Field(
         description="etiquette name; referenced by EtiquetteConfig.default",
@@ -175,7 +174,6 @@ class EtiquetteSpec(BaseModel):
     onset: OnsetSpec = Field(default_factory=OnsetSpec)
     stop: StopSpec = Field(default_factory=StopSpec)
     deliver: DeliverSpec = Field(default_factory=DeliverSpec)
-    retain: RetainSpec = Field(default_factory=RetainSpec)
 
 
 # ── 开箱礼仪 — 每个是一个坐标; 复制一个改字段就是新礼仪, 注册到 Config 即可选用 ──
@@ -236,8 +234,7 @@ observer = EtiquetteSpec(
     description="transcribe only — never signal, keep recent heard text",
     onset=OnsetSpec(emit=False),
     stop=StopSpec(silence=2.0),
-    deliver=DeliverSpec(emit=False),
-    retain=RetainSpec(enabled=True, history=16),
+    deliver=DeliverSpec(emit=False, history=16),
 )
 
 
@@ -246,6 +243,16 @@ keyword_end = EtiquetteSpec(
     name="keyword_end",
     description="walkie-talkie — commit only on an explicit end keyword",
     stop=StopSpec(silence=30.0, keywords=["over", "完毕"]),
+)
+
+
+# 低语旁听: 持续听, 每句一交付, 但绝不打断模型 — 模型干活时人说话, 人只被 aside 知会.
+murmur = EtiquetteSpec(
+    name="murmur",
+    description="keep working — commit each clause, annotate without interrupting",
+    onset=OnsetSpec(emit=True, interrupt=False, priority=Priority.NOTICE),
+    stop=StopSpec(silence=0.0),
+    deliver=DeliverSpec(interrupt=False, mode="aside"),
 )
 
 
@@ -288,8 +295,9 @@ class EtiquetteConfig(ConfigType):
             observer.model_copy(deep=True),
             keyword_end.model_copy(deep=True),
             scored.model_copy(deep=True),
+            murmur.model_copy(deep=True),
         ],
-        description="the defined etiquettes (name + description + the four layers)",
+        description="the defined etiquettes (name + description + the three layers)",
     )
     default: str = Field(
         default="always",

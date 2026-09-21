@@ -111,6 +111,7 @@ class ListenerController(ListenLifecycle):
             logger: Optional[LoggerItf] = None,
             signal_broadcast: Optional[Callable[[Signal], None]] = None,
             stop_caller_factory: Optional[Callable[[str], MossLLMCaller]] = None,
+            cell_name: str = "",
     ):
         self._listener = listener
         self._asr = asr
@@ -118,11 +119,22 @@ class ListenerController(ListenLifecycle):
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
         self._owns_listener = False
+        # cell 标识 (matrix.this.name) — expect 超时 signal 的 source, 让模型区分
+        # "这是某 cell 的 listener 系统提示" 与 "asr 识别结果" (source="asr").
+        self._cell_name = cell_name
+        # expect 状态机 — 纯异步超时提醒. 模型调 expect 立刻拿回执 index, 超时后
+        # listener 主动发 notify signal 告知"预期语音输入没发生". 不打断模型行为.
+        self._expect_seq = 0
+        self._expect_events: dict[str, asyncio.Event] = {}
+        self._expect_tasks: set[asyncio.Task] = set()
         # 出口位点的 classifier 依赖: 一个 (instruction) -> caller 的装配函数.
         # 没有它时 classifier 静默缺席, 礼仪退回纯 silence/keywords.
         self._stop_caller_factory = stop_caller_factory
         self._stop_detector_factory: Optional[StopDetectorFactory] = None
         self._score_observers: list[Callable[[StopScoreObservation], None]] = []
+        # signal 发射观测 (TUI/debug 面, 非模型 notice): 每次 FIRST/TAIL 触发时回调
+        # 一行 hint (发没发 / 发什么), 供观测"为什么 signal 没到" — 与 snapshot 分离.
+        self._signal_observers: list[Callable[[str], None]] = []
         # 信号发射: 存在 sink 时注册一条 listener 级观察者 (跨 session 稳定), 机械地把
         # 每个识别事件翻译成 listener signal 并广播. 无 sink 则只做判停, 不发 signal.
         self._signal_broadcast = signal_broadcast
@@ -149,10 +161,13 @@ class ListenerController(ListenLifecycle):
         self._audio_sample_disposer: Optional[Callable[[], None]] = None
         self._audio_sample_publisher: Optional[Publisher] = None
         # segment buffer (感知协议): 跨 session 订阅 text/segment, 拉模式读.
-        # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 retain.enabled 门控.
+        # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 deliver.emit=False 门控.
         self._buffer = SegmentBuffer()
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
+        # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
+        # expect events, 让"期待输入"立刻满足 (取消超时). 不依赖 signal_broadcast.
+        listener.on_recognition_result(self._on_expect_voice)
 
     # ── 生命周期: listener 未启动则托管, 已启动则只借用 ──
 
@@ -225,10 +240,10 @@ class ListenerController(ListenLifecycle):
             self._config_store.save(config)
 
     def _set_active_etiquette(self, spec: EtiquetteSpec | None) -> None:
-        """设当前激活礼仪, 并让 segment buffer 容量跟随 spec.retain.history."""
+        """设当前激活礼仪, 并让 segment buffer 容量跟随 spec.deliver.history."""
         self._active_etiquette = spec
         if spec is not None:
-            self._buffer.resize(spec.retain.history)
+            self._buffer.resize(spec.deliver.history)
 
     def activate_etiquette(self, name: str = "") -> str:
         """按 name 激活礼仪并启动聆听; 空 name 用当前 default. 返回人类可读结果.
@@ -438,9 +453,10 @@ class ListenerController(ListenLifecycle):
         return self.run_etiquette(spec, timeout=timeout)
 
     def stop(self) -> None:
-        """停止聆听: 取消活跃 session."""
+        """停止聆听: 取消活跃 session + 清空 pending expect (超时提醒不再发)."""
         self._set_active_etiquette(None)
         self._cancel_active()
+        self._clear_expects()
 
     def pause(self, toggle: bool = True) -> None:
         """人类锁 (ListenLifecycle 表面): True 上锁 + 停听, False 释放 + 恢复默认礼仪.
@@ -582,6 +598,30 @@ class ListenerController(ListenLifecycle):
 
     # ── 信号发射 (RecognitionEvent → listener signal) ──
 
+    def on_signal_emit(self, callback: Callable[[str], None]) -> Callable[[], None]:
+        """注册 signal 发射观测者 (TUI/debug 面) — 每次 FIRST/TAIL 触发回调一行 hint.
+
+        跨 session 稳定; 返回 disposer. hint 形如 ``onset interrupt=True priority=WARNING``
+        或 ``onset suppressed (emit=False)``. 独立于 snapshot (不进模型 notice).
+        """
+        self._signal_observers.append(callback)
+        return lambda: self._signal_observers.remove(callback)
+
+    def signal_wired(self) -> bool:
+        """signal 发射面是否接通 (signal_broadcast 注入与否) — TUI/debug 读, 不进 snapshot.
+
+        启动装配时即定、运行中不变; False 时 listener signal 静默不产, 只有 clause topic
+        走通. 因为不变量而非温数据, 不放入模型 notice 的 snapshot.
+        """
+        return self._signal_broadcast is not None
+
+    def _notify_signal(self, hint: str) -> None:
+        for callback in list(self._signal_observers):
+            try:
+                callback(hint)
+            except Exception:
+                self._logger.exception("signal emit observer failed")
+
     def _emit_event(self, result: RecognitionEvent) -> None:
         """识别事件 → 打断包/发送包 signal → 广播. 仅在有 sink 时注册本观察者.
 
@@ -598,6 +638,7 @@ class ListenerController(ListenLifecycle):
         """首包打断: 按当前礼仪的 onset 协议发射 (emit 关则不发射)."""
         onset = self._active_etiquette.onset if self._active_etiquette else OnsetSpec()
         if not onset.emit:
+            self._notify_signal("onset suppressed (emit=False)")
             return
         self._signal_broadcast(new_listener_signal(
             result.text,
@@ -607,11 +648,13 @@ class ListenerController(ListenLifecycle):
             priority=onset.priority,
             description="listener:onset",
         ))
+        self._notify_signal(f"onset interrupt={onset.interrupt} priority={onset.priority.name}")
 
     def _emit_deliver(self, result: RecognitionEvent) -> None:
         """尾包发送: 按当前礼仪的 deliver 协议发射 (emit 关则不发射)."""
         deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
         if not deliver.emit:
+            self._notify_signal("deliver suppressed (emit=False)")
             return
         self._signal_broadcast(new_listener_signal(
             result.text,
@@ -622,23 +665,96 @@ class ListenerController(ListenLifecycle):
             priority=deliver.priority,
             description="listener:deliver",
         ))
+        self._notify_signal(
+            f"deliver mode={deliver.mode or 'notify'} priority={deliver.priority.name}"
+        )
 
-    # ── segment buffer 留存 (retain 协议门控) ──
+    # ── expect 语音输入超时提醒 (纯异步, 不打断模型) ──
 
-    def _retain_enabled(self) -> bool:
-        """当前激活礼仪是否开启留存槽位 (retain.enabled)."""
+    def expect(self, timeout: float = 10.0) -> str:
+        """期待一段语音输入在 ``timeout`` 秒内发生; 立刻返回回执 index.
+
+        纯异步: 不阻塞调用方 (非 observe), 不打断模型当前行为. 若超时前有任何语音
+        识别结果到达, 期待即满足 (自动取消, 不发任何 signal); 若超时仍未收到语音,
+        listener 主动发一条 notify signal 告知"预期语音输入没发生", source 标记为
+        本 cell 名 (``cell_name``), 与 asr 识别结果 (source="asr") 区分.
+
+        回执 index 单调递增, 供模型关联"哪次 expect 超时". 返回字符串形如 ``"#3"``.
+        """
+        self._expect_seq += 1
+        index = str(self._expect_seq)
+        event = asyncio.Event()
+        self._expect_events[index] = event
+        task = asyncio.create_task(self._expect_wait(index, event, timeout))
+        self._expect_tasks.add(task)
+        task.add_done_callback(self._expect_tasks.discard)
+        return index
+
+    async def _expect_wait(self, index: str, event: asyncio.Event, timeout: float) -> None:
+        """等语音 (event set) 或超时; 超时发 notify signal, 未超时静默退出."""
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+            # 语音已到 → 期待满足, 不发任何 signal.
+        except asyncio.TimeoutError:
+            self._emit_expect_timeout(index, timeout)
+        finally:
+            # 移除自己的 event; 若语音回调已 discard 过 (见 _on_expect_voice), 这里幂等.
+            self._expect_events.pop(index, None)
+
+    def _on_expect_voice(self, result: RecognitionEvent) -> None:
+        """语音识别结果到达 → set 所有 pending expect events (期待满足).
+
+        挂 listener 级观察者 (跨 session 稳定). 任何 phase (FIRST/CLAUSE/PARTIAL/TAIL)
+        都算"有语音", 因为期待的是"用户开口了", 不是"一句完整的话".
+        """
+        for event in list(self._expect_events.values()):
+            event.set()
+
+    def _clear_expects(self) -> None:
+        """清空所有 pending expect (stop/暂停时): 取消 task + 清 event 表.
+
+        不逐个 await — 取消即把 wait 从事件循环摘掉, 超时 signal 不再发.
+        """
+        for task in list(self._expect_tasks):
+            if not task.done():
+                task.cancel()
+        self._expect_tasks.clear()
+        self._expect_events.clear()
+
+    def _emit_expect_timeout(self, index: str, timeout: float) -> None:
+        """超时: 发一条 notify signal, 告知模型"预期语音输入没发生".
+
+        source = cell_name (不是 "asr"), complete=True + interrupt=False + mode=notify —
+        只旁路知会, 不打断模型. signal_broadcast 未注入时静默跳过.
+        """
+        if self._signal_broadcast is None:
+            return
+        self._signal_broadcast(new_listener_signal(
+            f"expected voice input (expect #{index}) timed out after {timeout:g}s",
+            source=self._cell_name or "listener",
+            complete=True,
+            interrupt=False,
+            mode="notify",
+            description="listener:expect-timeout",
+        ))
+        self._notify_signal(f"expect #{index} timed out after {timeout:g}s")
+
+    # ── segment buffer 留存 (deliver.emit=False 门控) ──
+
+    def _retaining(self) -> bool:
+        """当前激活礼仪是否留存 (deliver.emit=False 强制留存)."""
         spec = self._active_etiquette
-        return spec is not None and spec.retain.enabled
+        return spec is not None and not spec.deliver.emit
 
     def _on_buffer_event(self, event: RecognitionEvent) -> None:
         """text axis 观察者: 留存开时更新当前增长全文, 关时不做任何事."""
-        if not self._retain_enabled():
+        if not self._retaining():
             return
         self._buffer.on_event(event)
 
     def _on_buffer_segment(self, segment: RecognitionSegment) -> None:
         """segment 签发观察者: 留存开时定稿入历史, 关时不做任何事."""
-        if not self._retain_enabled():
+        if not self._retaining():
             return
         self._buffer.on_segment(segment)
 
@@ -681,6 +797,9 @@ class ListenerController(ListenLifecycle):
             info = self._asr.get_info()
             return (
                 f"ASR audio contract: {info.sample_rate}Hz, {info.bits}-bit, {info.channel}ch.\n"
+                f"Voice input is ASR transcription — it may contain homophones and near-sounds "
+                f"(谐音). Judge by meaning and context, infer what the user likely said, and "
+                f"ask for clarification when unsure.\n"
                 f"ASR tunable params schema:\n"
                 f"{json.dumps(info.params_schema, ensure_ascii=False)}\n"
                 f"EtiquetteSpec json schema (for set_etiquette_spec):\n"
@@ -695,7 +814,7 @@ class ListenerController(ListenLifecycle):
             active = self._active_etiquette
             notice: dict[str, str | None] = {"etiquette": active.name if active else None}
             # 留存槽位: 开时暴露最近一条定稿 segment 的全文 (变了才重发); 关/空时 None 墓碑.
-            if active is not None and active.retain.enabled:
+            if active is not None and not active.deliver.emit:
                 recent = self._buffer.peek_recent(1)
                 notice["last_heard"] = recent[-1].text if recent else None
             else:
@@ -722,6 +841,18 @@ class ListenerController(ListenLifecycle):
             self.stop()
             return "stopped"
 
+        @chan.build.command(blocking=False)
+        async def expect(timeout: float = 10.0) -> str:
+            """Expect voice input within `timeout` seconds; returns a receipt index immediately.
+
+            Pure async — does not block or interrupt your current behavior. If any voice
+            arrives before timeout, the expectation is satisfied silently. If it times out,
+            the listener sends you a notify signal (`source` = this cell name, not "asr")
+            saying the expected voice input did not happen. The receipt index lets you
+            correlate which `expect` timed out (e.g. a later signal referencing "#3").
+            """
+            return self.expect(timeout)
+
         @chan.build.command()
         async def get_etiquette(name: str = "") -> str:
             """Read etiquette config: empty = names of all, non-empty = one full spec json."""
@@ -740,14 +871,14 @@ class ListenerController(ListenLifecycle):
         async def get_transcript(n: int = 0) -> str:
             """Pull the segment buffer: current growing text + recent n heard segments.
 
-            `n=0` uses the active etiquette's retain.history; returns JSON with
-            `enabled` (retain switch), `current`, `recent` (tail-n) and `forgotten`.
-            Empty current/recent when retain is off or nothing heard yet.
+            `n=0` uses the active etiquette's deliver.history; returns JSON with
+            `enabled` (deliver.emit=False), `current`, `recent` (tail-n) and `forgotten`.
+            Empty current/recent when emit=True or nothing heard yet.
             """
             active = self._active_etiquette
-            enabled = active is not None and active.retain.enabled
+            enabled = active is not None and not active.deliver.emit
             if n <= 0:
-                n = active.retain.history if active else 8
+                n = active.deliver.history if active else 8
             current = self._buffer.peek_current() if enabled else None
             recent = self._buffer.peek_recent(n) if enabled else []
             return json.dumps(

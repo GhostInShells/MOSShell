@@ -182,6 +182,10 @@ class Utterance(BaseModel):
     definite=true 表示该分句最终确定 (仅 enable_nonstream=true 时二次识别结果携带)。
     additions 承载火山返回的丰富概念 (说话人/情绪/性别/年龄/语种/语速/音量/来源...),
     这些是可选槽位 —— 未开启对应能力时缺省为空/None。
+
+    TODO 观测点: 上面「definite 仅 enable_nonstream=true 时携带」是文档推断, 未经实测.
+    实测 enable_nonstream=false 时界面仍逐条出现 clause (ClauseTopic 只由 definite 分句
+    驱动), 说明该注释与真实行为有出入. 待用观测面实证 definite 的真实来源后修正注释.
     """
 
     additions: dict = Field(default_factory=dict)

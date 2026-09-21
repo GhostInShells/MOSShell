@@ -42,6 +42,7 @@ class VoiceState(TUIState):
         self._controller: ListenerController | None = None
         self._sub = None
         self._sub_task: asyncio.Task | None = None
+        self._signal_disposer = None
 
     def name(self) -> str:
         return self._name
@@ -99,6 +100,10 @@ class VoiceState(TUIState):
             self._controller = self._moss.matrix.container.get(ListenerController)
         except Exception:
             self._controller = None
+        if self._controller is not None:
+            # signal 发射观测 (debug hint) — 每次 FIRST/TAIL 触发打印一行, 观测
+            # "signal 没到" 是 emit=False 还是没接通.
+            self._signal_disposer = self._controller.on_signal_emit(self._render_signal)
         topics = self._moss.matrix.session.topics
         self._sub = topics.subscribe_model(ClauseTopic)
         await self._sub.__aenter__()
@@ -106,6 +111,9 @@ class VoiceState(TUIState):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._signal_disposer is not None:
+            self._signal_disposer()
+            self._signal_disposer = None
         if self._sub_task is not None and not self._sub_task.done():
             self._sub_task.cancel()
             try:
@@ -134,8 +142,10 @@ class VoiceState(TUIState):
             self._print_unavailable()
             return
         snap = self._controller.snapshot()
+        wired = "wired" if self._controller.signal_wired() else "NOT wired"
         self.console.info(
-            f"etiquette={snap.etiquette}  listening={snap.listening}  paused={snap.paused}"
+            f"etiquette={snap.etiquette}  listening={snap.listening}  "
+            f"paused={snap.paused}  signal={wired}"
         )
 
     async def _consume_clauses(self) -> None:
@@ -156,4 +166,10 @@ class VoiceState(TUIState):
         text = Text()
         text.append(f"[{role}] ", style=style)
         text.append(clause.text or "")
+        self.console.rprint(text)
+
+    def _render_signal(self, hint: str) -> None:
+        text = Text()
+        text.append("[signal] ", style="bold magenta")
+        text.append(hint)
         self.console.rprint(text)

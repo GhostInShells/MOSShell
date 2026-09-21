@@ -268,7 +268,7 @@ def test_signal_broadcast_clause_not_emitted():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
 
-    assert len(listener.result_observers) == 2  # 发射观察者 (首个) + buffer 观察者
+    assert len(listener.result_observers) == 3  # 发射 + buffer + expect 观察者
     listener.result_observers[0](_clause("你好"))
 
     assert emitted == []  # CLAUSE 不上行 — 判停已在 listener 侧消化
@@ -301,8 +301,150 @@ def test_signal_broadcast_interrupt_then_deliver():
 def test_no_signal_broadcast_registers_no_emitter():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR())
-    # 无 sink → 不注册发射观察者 (只剩 segment buffer 观察者, 由 retain 门控).
-    assert len(listener.result_observers) == 1
+    # 无 sink → 不注册发射观察者 (只剩 buffer + expect 观察者).
+    assert len(listener.result_observers) == 2
+
+
+def test_signal_wired_reflects_broadcast_injection():
+    """signal 发射面是否接通 = signal_broadcast 注入与否 (静态事实, 不进 snapshot)."""
+    listener = _MockListener()
+    wired = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None)
+    not_wired = ListenerController(listener=listener, asr=_MockASR())
+
+    assert wired.signal_wired() is True
+    assert not_wired.signal_wired() is False
+
+
+def test_on_signal_emit_observes_first_and_tail():
+    """FIRST/TAIL 触发时回调 hint — 发没发、发什么, 供 TUI 观测."""
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None,
+    )
+    hints: list[str] = []
+    controller.on_signal_emit(hints.append)
+    cb = listener.result_observers[0]
+
+    cb(_first("你", segment_id="t1"))
+    cb(_tail("你好", segment_id="t1"))
+
+    assert hints[0].startswith("onset interrupt=True")
+    assert hints[1].startswith("deliver mode=")
+
+
+@pytest.mark.asyncio
+async def test_on_signal_emit_observes_suppressed_emit():
+    """emit=False 的礼仪: onset/deliver 被抑制时也回调 hint (不静默)."""
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None,
+    )
+    hints: list[str] = []
+    controller.on_signal_emit(hints.append)
+    cb = listener.result_observers[0]
+
+    spec = always.model_copy(deep=True)
+    spec.onset.emit = False
+    spec.deliver.emit = False
+    task = controller.run_etiquette(spec, timeout=5.0)
+
+    cb(_first("你", segment_id="t1"))
+    cb(_tail("你好", segment_id="t1"))
+
+    assert hints[0] == "onset suppressed (emit=False)"
+    assert hints[1] == "deliver suppressed (emit=False)"
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+# ============================================================
+# expect 语音输入超时提醒 — 纯异步, 不打断模型
+# ============================================================
+
+def _expect_voice_observer(listener):
+    """expect 回调是最后一个 result observer (在 buffer 之后注册)."""
+    return listener.result_observers[-1]
+
+
+@pytest.mark.asyncio
+async def test_expect_returns_incrementing_index():
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None,
+    )
+    i1 = controller.expect(timeout=10.0)
+    i2 = controller.expect(timeout=10.0)
+    assert i1 == "1"
+    assert i2 == "2"
+    controller.stop()  # 清空 pending expect
+
+
+@pytest.mark.asyncio
+async def test_expect_timeout_emits_notify_signal():
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+        cell_name="ghost_cell",
+    )
+    index = controller.expect(timeout=0.05)
+    await asyncio.sleep(0.1)
+
+    assert len(emitted) == 1
+    sig = emitted[0]
+    assert sig.complete is True
+    meta = ListenerSignal.from_signal(sig)
+    assert meta.source == "ghost_cell"  # 不是 "asr" — 系统提示, 与识别结果区分
+    assert meta.interrupt is False
+    assert f"#{index}" in sig.description or f"#{index}" in _signal_text(sig)
+
+
+def _signal_text(sig) -> str:
+    texts = []
+    for msg in sig.messages:
+        for c in msg.contents:
+            if isinstance(c, dict) and c.get("type") == "text":
+                texts.append(c.get("text", ""))
+    return "\n".join(texts)
+
+
+@pytest.mark.asyncio
+async def test_expect_satisfied_by_voice_silently():
+    """语音到达 → expect 满足, 不发任何 signal."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    controller.expect(timeout=0.2)
+    voice_cb = _expect_voice_observer(listener)
+
+    await asyncio.sleep(0.05)
+    voice_cb(_first("你", segment_id="t1"))  # 语音到达 → set 所有 pending events
+    await asyncio.sleep(0.3)  # 超过 timeout
+
+    assert emitted == []  # 期待已满足, 不发超时 signal
+
+
+@pytest.mark.asyncio
+async def test_expect_voice_sets_all_pending():
+    """一次语音到达满足所有 pending expect (各自超时都取消)."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    controller.expect(timeout=0.2)
+    controller.expect(timeout=0.2)
+    voice_cb = _expect_voice_observer(listener)
+
+    await asyncio.sleep(0.05)
+    voice_cb(_clause("你好"))
+    await asyncio.sleep(0.3)
+
+    assert emitted == []  # 语音到达, 两个 expect 都静默满足, 不发超时 signal
 
 
 # ============================================================
@@ -495,7 +637,7 @@ async def test_paused_reflected_in_snapshot():
 
 
 # ============================================================
-# segment buffer 感知 (retain 协议) — notice 门控
+# segment buffer 感知 (deliver.emit=False 强制留存) — notice 门控
 # ============================================================
 
 def _segment(text: str, segment_id: str = "g") -> RecognitionSegment:
@@ -503,11 +645,11 @@ def _segment(text: str, segment_id: str = "g") -> RecognitionSegment:
 
 
 @pytest.mark.asyncio
-async def test_retain_off_no_last_heard():
+async def test_emit_true_no_last_heard():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
 
-    # 无激活礼仪 (retain 默认 off) → 事件不入 buffer, notice 无 last_heard.
+    # 无激活礼仪 → 事件不入 buffer, notice 无 last_heard.
     listener.result_observers[0](_partial("你好"))
     listener.segment_observers[0](_segment("你好"))
 
@@ -516,12 +658,13 @@ async def test_retain_off_no_last_heard():
 
 
 @pytest.mark.asyncio
-async def test_retain_on_notice_reflects_last_heard():
+async def test_emit_false_retains_and_reflects_last_heard():
     listener = _MockListener()
     controller = ListenerController(listener=listener, asr=_MockASR())
 
+    # deliver.emit=False → 强制留存 (单一旋钮), notice 暴露 last_heard.
     spec = always.model_copy(deep=True)
-    spec.retain.enabled = True
+    spec.deliver.emit = False
     task = controller.run_etiquette(spec, timeout=5.0)
 
     listener.result_observers[0](_partial("你好"))
