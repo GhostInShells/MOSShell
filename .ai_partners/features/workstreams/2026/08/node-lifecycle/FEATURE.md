@@ -6,10 +6,9 @@ description: Node 生命周期治理，从 node-migration 独立。四层方案�
 milestone: 0.1.0
 priority: P1
 status: completed
-status_note: '启动面治理落地: parallel bringup + probe timeout + bringup failure event; smoke
-  验证通过'
+status_note: stub 三面归位 + 英文 + CLI 引导收敛到 README 已落地并验证; 存量 node 治理怀疑已记录待 ghost 自迭代时处理
 title: Node Lifecycle — 身份、入口、验证与记忆
-updated: '2026-09-13'
+updated: '2026-09-22'
 ---
 
 # Node Lifecycle
@@ -184,6 +183,44 @@ spawn 面**单喉唯一** = `NodeManager.spawn_node`（`node_manager.py:159`）�
   `level=40`（ERROR）事件，content 带 target + reason（"bringup node failed: ... probe failed"）。
 
 复现配方已留在 `system_test/HOST.md` 注释里（`bringup_nodes: []` + 注释掉的列表）。
+
+## Node 提示词三面治理（2026-09-22 重开）
+
+发版前的 stub 整理。触发：node 变多，`moss nodes create` 的产出（stub 默认提示词）
+自解释不清，且中英混杂，而 node 已是模型自迭代的主要载体。
+
+### 三面边界（本轮确立）
+
+| 文件 | 读者 | 内容边界 |
+|------|------|----------|
+| README.md | 开发者（含开发者模型） | **为什么** + 迭代；可关联其它文档；没得写可留空 |
+| NODE.md | 运行时 Ghost-Agent（用之前读的总提示） | **能力自解释**，与 SKILL.md 同位面；不泄漏技术决策、不关联 concrete 实现；强调必读 channel builder / Matrix；讲 node 在模型 shell 里被发现、经 channel 打开后自动挂载（引 Matrix / Matrix channel，**不给路径**）|
+| INSTALL.md | 安装者（运行时模型自迭代 / 开发者模型引第三方） | 只谈**如何安装** + `.installed` 标记（per-environment）；开发时用不上就删 |
+
+三面绝对分开。此前把"同一约定写在多个文件"当成漂移在报，是把位面差当病灶——收回。
+
+### 落地
+
+- **stub 四文件英文重写**（`src/ghoshell_moss/stubs/node/`）：`NODE.md` 去掉 frontmatter 里的技术注释、body 换成能力自解释的默认提示；`README.md` 承载开发者面并映射 NODE / INSTALL；`INSTALL.md` 收敛到安装 + 标记机制；`main.py` 去掉 codex 路径，改用文档名。
+- **CLI `create` 引导收敛**（`nodes_cli.py:233-236`）：原一次报 README / NODE / INSTALL / run 四条，改为只指 README（+ run）；由 README 再分流到 INSTALL + NODE。
+- **附带修复**：`_copy_stub` 只跳 `__init__.py`，会把 stub 目录里遗留的 `__pycache__/` 一并复制进新 node；加 guard。
+- **验证**：`moss nodes create <tmp>` → 产出无 `__pycache__`、frontmatter 干净、`nodes show` verbatim 正常、install 闸门触发正确。
+
+### 存量 node 治理怀疑（只标不治）
+
+存量 node 不在本轮治理范围。下列 `NODE.md` **疑似**把实现 / 技术决策写进了运行时面
+（怀疑，非结论；待逐个复核）：
+
+| node | 疑似越位处 |
+|------|-----------|
+| `screens/screen_manager/NODE.md` | "zero-dependency webview backend"、"iframe compositor"、"Two faces share one store" |
+| `webview_apps/artifacts/NODE.md` | `websockets`、`index.html`、`new Function(...)`、`read(label)/history(n)` 实现面 |
+| `visions/camera/NODE.md` | `cv2`、`FaceTopic`、`/stream` MJPEG、`.env.example` cell 级 env |
+| `webview_apps/zhihu/NODE.md` | "web 主体 + channel + store"、"node 下发函数源码 + 数据，前端执行" |
+
+**反例（不是病灶）**：`deepseek-harness/NODE.md` 结尾指向
+`moss codex get-interface ghoshell_moss.deepseek_harness.surfaces` —— 那是它自身的
+code eval 面，属于能力自解释的一部分，不算泄漏实现。
 
 ## Current Consensus
 

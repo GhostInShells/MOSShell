@@ -232,20 +232,14 @@ def create_node(
 
     print_success(f"Node '{name}' created at {target_dir}")
     echo("")
-    print_info(f"  Read {target_dir / 'README.md'} — what to fill in before running or sharing.")
-    print_info(f"  Edit {target_dir / NodeManifest.MANIFEST_FILENAME} — name, exec, instruction body.")
-    install_md = target_dir / NodeManifest.INSTALL_FILENAME
-    if install_md.exists():
-        print_info(f"  Read {install_md} — declares install steps.")
-        print_info(f"       Delete it if no install is needed (then the node is installed by default).")
-        print_info(f"       Otherwise run the steps, then: moss nodes install {path}")
+    print_info(f"  Read {target_dir / 'README.md'} — it maps the files in this node and what each one is for.")
     print_info(f"  Run: moss nodes run {path}")
 
 
 def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:
     """Copy stub files into target_dir, replacing {name} placeholders in text files."""
     for item in stub_node.iterdir():
-        if item.name == "__init__.py":
+        if item.name in ("__init__.py", "__pycache__"):
             continue
         target_item = target_dir / item.name
         if item.is_dir():
