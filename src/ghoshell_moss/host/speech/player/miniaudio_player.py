@@ -33,6 +33,7 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         channels: int = 1,
         logger: LoggerItf | None = None,
         safety_delay: float = 0.1,
+        device_pattern: str = "",
     ):
         super().__init__(
             sample_rate=sample_rate,
@@ -40,7 +41,21 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
             logger=logger,
             safety_delay=safety_delay,
         )
+        self._device_pattern = device_pattern
         self._playback: Optional[miniaudio.PlaybackDevice] = None
+
+    def _find_device(self):
+        """按 ``device_pattern`` (名字子串) 匹配输出设备; 空则用 miniaudio 默认."""
+        pattern = self._device_pattern.strip().lower()
+        if not pattern:
+            return None
+        try:
+            for d in miniaudio.Devices().get_playbacks():
+                if pattern in d['name'].lower():
+                    return d['id']
+        except Exception as e:
+            self.logger.warning("Playback device enumeration failed: %s, using default", e)
+        return None
 
     def _make_generator(self):
         """创建 audio generator，每次 yield 精确 frame_count 的字节。"""
@@ -76,6 +91,7 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
             output_format=miniaudio.SampleFormat.SIGNED16,
             nchannels=self.channels,
             sample_rate=self.sample_rate,
+            device_id=self._find_device(),
         )
         self._playback.start(gen)
 

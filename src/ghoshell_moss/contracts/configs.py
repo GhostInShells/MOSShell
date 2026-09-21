@@ -45,6 +45,7 @@ class ConfigType(BaseModel, ABC):
     实际存储则考虑由 ConfigStore 决定.
     """
     RESOLVE_ENV_KEY: ClassVar[bool] = True
+    DefaultEnvValues: ClassVar[dict[str, Any] | None] = None
 
     @classmethod
     @abstractmethod
@@ -63,7 +64,7 @@ class ConfigType(BaseModel, ABC):
         if not self.RESOLVE_ENV_KEY:
             return self
         data = self.model_dump()
-        data = _resolve_config_data_from_env(data, environ=environ)
+        data = _resolve_config_data_from_env(data, environ=environ, default_env=self.DefaultEnvValues)
         return self.model_validate(data, strict=False)
 
     @classmethod
@@ -392,6 +393,7 @@ class LocalConfigStore(ConfigStore, ABC):
 def _resolve_config_data_from_env(
         data: dict[str, Any],
         environ: dict[str, str] | None = None,
+        default_env: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     recursively replace environment variables with their respective values.
@@ -399,17 +401,19 @@ def _resolve_config_data_from_env(
     if environ is None:
         environ = os.environ
     resolved_data = {}
+    default_env = default_env or {}
     for key, value in data.items():
         if isinstance(value, dict):
-            resolved_data[key] = _resolve_config_data_from_env(value, environ=environ)
+            resolved_data[key] = _resolve_config_data_from_env(value, environ=environ, default_env=default_env)
         elif isinstance(value, list):
             resolved_data[key] = [
-                _resolve_config_data_from_env(item, environ=environ)
+                _resolve_config_data_from_env(item, environ=environ, default_env=default_env)
                 if isinstance(item, dict) else item
                 for item in value
             ]
         elif isinstance(value, str) and value.startswith('$'):
-            resolved_data[key] = environ.get(value[1:], value)
+            env_key = value[1:]
+            resolved_data[key] = environ.get(env_key, default_env.get(env_key, value))
         else:
             resolved_data[key] = value
     return resolved_data

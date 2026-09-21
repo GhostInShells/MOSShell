@@ -159,11 +159,15 @@ class AudioChunk(BaseModel):
 class AudioCaptureConfig(ConfigType):
     """Format consensus — consumers read this to know stream parameters."""
 
+    DefaultEnvValues = {"MOSS_AUDIO_CAPTURE_DEVICE": ""}
+
     sample_rate: int = 16000
     channels: int = 1
     format: str = "pcm_s16le"
     frame_duration_ms: int = 50
-    device_pattern: str = "blackhole"
+    #: 输入设备名子串匹配; 空 = 交给 miniaudio 默认发现. 经 $MOSS_AUDIO_CAPTURE_DEVICE
+    #: 环境变量配置, 未设置时回退 DefaultEnvValues (空).
+    device_pattern: str = "$MOSS_AUDIO_CAPTURE_DEVICE"
 
     @classmethod
     def conf_name(cls) -> str:

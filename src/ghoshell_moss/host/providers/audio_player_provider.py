@@ -8,6 +8,8 @@ __all__ = ["AudioPlayerProvider", "AudioPlayerConfig"]
 
 
 class AudioPlayerConfig(ConfigType):
+    DefaultEnvValues = {"MOSS_AUDIO_PLAYER_DEVICE": ""}
+
     samplerate: int = Field(
         default=16000,
         description="Sample rate of audio player stream",
@@ -15,6 +17,12 @@ class AudioPlayerConfig(ConfigType):
     safety_delay: float = Field(
         default=0.1,
         description="Delay for time calculation after player finishes a stream",
+    )
+    #: 输出设备名子串匹配; 空 = 交给 miniaudio 默认发现. 经 $MOSS_AUDIO_PLAYER_DEVICE
+    #: 环境变量配置, 未设置时回退 DefaultEnvValues (空).
+    device_pattern: str = Field(
+        default="$MOSS_AUDIO_PLAYER_DEVICE",
+        description="Output device name substring; empty = miniaudio default discovery",
     )
 
     @classmethod
@@ -38,4 +46,5 @@ class AudioPlayerProvider(Provider[StreamAudioPlayer]):
             channels=1,
             logger=logger,
             safety_delay=conf.safety_delay,
+            device_pattern=conf.device_pattern,
         )
