@@ -510,7 +510,7 @@ class TestDoloresEgoCommit:
         return SessionEvent.from_dict({"type": "turn/end", "seq": turn, "data": {"turn": turn}})
 
     @staticmethod
-    def _set_up(tmp_path: Path, *, force_tokens: int = 0):
+    def _set_up(tmp_path: Path, *, force_tokens: int = 0, warn_tokens: int = 50_000):
         from ghoshell_moss.ghosts.dolores._ego import DoloresEgo, DoloresEgoContext
         from ghoshell_moss.ghosts.dolores._ego_memento import EgoMementoConfig, EgoMementoManager
         from ghoshell_moss.memento import new_local_memento
@@ -518,7 +518,8 @@ class TestDoloresEgoCommit:
         memento = new_local_memento(tmp_path / "owner")
         memento.create_branch("main")
         manager = EgoMementoManager(
-            connection=None, memento=memento, config=EgoMementoConfig(force_tokens=force_tokens)
+            connection=None, memento=memento,
+            config=EgoMementoConfig(force_tokens=force_tokens, warn_tokens=warn_tokens),
         )
         ego = DoloresEgo(
             launcher=None,  # commit 路径不触 dsh
@@ -587,6 +588,58 @@ class TestDoloresEgoCommit:
 
         # 异常退出不管: 锚点数不变.
         assert len(memento.get_branch("main").commits()) == committed
+
+    @staticmethod
+    def _assistant_message(turn: int, *, input_tokens: int, cache_read: int = 0):
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent
+
+        return SessionEvent.from_dict({
+            "type": "assistant/message", "seq": turn * 10,
+            "data": {
+                "turn": turn, "step": 1, "message": {"role": "assistant"},
+                "usage": {"inputTokens": input_tokens, "cacheReadTokens": cache_read},
+            },
+        })
+
+    @pytest.mark.asyncio
+    async def test_usage_drives_warn_notice_once_per_window(self, tmp_path: Path):
+        """assistant/message 的 usage 刷新窗口 → 达 K 排一次 warn notice (每窗口一次)."""
+        ego, memento = self._set_up(tmp_path, force_tokens=10 ** 9, warn_tokens=100)
+        await ego._on_assistant_message(self._assistant_message(1, input_tokens=80, cache_read=70))
+        assert ego._window_size == 150
+        await ego._on_turn_end(self._turn_end(1))
+
+        assert memento.get_branch("main").commits() == []  # 未到 T, 不落锚点
+        warns = [n for n in ego._notices if n.meta.attributes.get("kind") == "warn"]
+        assert len(warns) == 1
+
+        # 同窗口再涨也只提醒一次.
+        await ego._on_assistant_message(self._assistant_message(2, input_tokens=200))
+        await ego._on_turn_end(self._turn_end(2))
+        warns = [n for n in ego._notices if n.meta.attributes.get("kind") == "warn"]
+        assert len(warns) == 1
+
+    @pytest.mark.asyncio
+    async def test_usage_drives_force_commit_and_resets_window(self, tmp_path: Path):
+        """达 T 强制落锚点; 提交后窗口基准重置, 增量不足则不再触发."""
+        ego, memento = self._set_up(tmp_path, force_tokens=200, warn_tokens=100)
+        await ego._on_assistant_message(self._assistant_message(1, input_tokens=250))
+        await ego._on_turn_end(self._turn_end(1))
+        commits = memento.get_branch("main").commits()
+        assert len(commits) == 1
+        assert commits[0].metadata["ref"]["end_turn"] == 1
+
+        # 基准已重置到 250: 窗口 300 → 增量 50, 不触发.
+        await ego._on_assistant_message(self._assistant_message(2, input_tokens=300))
+        await ego._on_turn_end(self._turn_end(2))
+        assert len(memento.get_branch("main").commits()) == 1
+
+        # 窗口 500 → 增量 250 ≥ T, 再次强制, 区间接续 (1,3].
+        await ego._on_assistant_message(self._assistant_message(3, input_tokens=500))
+        await ego._on_turn_end(self._turn_end(3))
+        commits = memento.get_branch("main").commits()
+        assert len(commits) == 2
+        assert (commits[1].metadata["ref"]["start_turn"], commits[1].metadata["ref"]["end_turn"]) == (1, 3)
 
 
 class TestEgoMementoSidecar:
@@ -1260,6 +1313,27 @@ class TestCtmlParser:
             await parser.add("<|Markdown|>")
             await parser.add("</|Mark")
         assert self._sent(art) == ""
+
+    @pytest.mark.asyncio
+    async def test_doubled_open_char_still_opens_wrap(self):
+        """mismatch 的 char 要重扫: '<<|Markdown|>' 的第二个 '<' 是真 marker 起始."""
+        parser, art = self._parser()
+        assert await parser.add("A<<|Markdown|>hidden</|Markdown|>B") == "A<B"
+        assert self._sent(art) == "A<B"
+
+    @pytest.mark.asyncio
+    async def test_doubled_close_char_still_closes_wrap(self):
+        """plain 区 mismatch 的 char 同样重扫, 否则 close marker 被漏掉后永久 drop."""
+        parser, art = self._parser()
+        assert await parser.add("<|Markdown|>x<</|Markdown|>after") == "after"
+        assert self._sent(art) == "after"
+
+    @pytest.mark.asyncio
+    async def test_broken_prefix_then_real_marker(self):
+        """半截 marker 失配后, 紧跟的真 marker 仍要被识别."""
+        parser, art = self._parser()
+        assert await parser.add("<|Mar<|Markdown|>hidden</|Markdown|>ok") == "<|Marok"
+        assert self._sent(art) == "<|Marok"
 
 
 class TestDoloresMomentPayload:

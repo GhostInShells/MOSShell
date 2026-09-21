@@ -36,7 +36,7 @@ from ghoshell_moss.core.blueprint.moment import Moment
 from ghoshell_moss.core.blueprint.mindflow import Signal, Thinking
 from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
 from ghoshell_moss.deepseek_harness.session import DshSession
-from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, TurnEnd
+from ghoshell_moss.deepseek_harness.types.session_events import AssistantMessageEvent, SessionEvent, TurnEnd
 from ghoshell_moss.message import Content, Message
 from ghoshell_moss.memento.abcd import CommitRef
 
@@ -249,6 +249,8 @@ class DoloresEgo:
         self._session.on_session_event("user/message", self._on_session_activity)
         # commit: 在 completed turn 边界推进 last_turn, 并按阈值决定是否强制提交锚点.
         self._session.on_session_event("turn/end", self._on_turn_end)
+        # 窗口大小: assistant/message 带 usage, 记下最近一次调用的 prompt 大小 (_maybe_commit 求增量).
+        self._session.on_session_event("assistant/message", self._on_assistant_message)
         return self._ego_session_id
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -334,6 +336,15 @@ class DoloresEgo:
             self._signal_broadcast(signal)
 
     # ── commit (锚点; 慢的 message 生产归 manager 的 sidecar) ──────────
+
+    async def _on_assistant_message(self, event: SessionEvent) -> None:
+        """assistant/message 回调 — 用 usage 刷新窗口大小 (覆盖, 非累加: 语义是最近一次调用的 prompt 大小)."""
+        if self._memento_manager is None:
+            return
+        message = AssistantMessageEvent.from_session_event(event)
+        if message is None or message.usage is None:
+            return
+        self._window_size = self._memento_manager.window_size(message.usage)
 
     async def _on_turn_end(self, event: SessionEvent) -> None:
         """turn/end 回调 — 推进 last_turn, 再按阈值决定是否强制提交."""

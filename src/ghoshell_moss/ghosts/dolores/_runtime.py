@@ -470,14 +470,16 @@ class Dolores(Ghost):
         launcher = self._build_dsh_launcher()
         self._dsh_launcher = launcher
         launcher.on_exit(self._on_dsh_exit)
-        self._session.output("system", log="starting dsh")
+        if self._session is not None:
+            self._session.output("system", log="starting dsh")
         async with launcher:
             url = launcher.web_url() or f"{launcher.config.base_url}/?token={launcher.token()}"
-            self._session.output(
-                "system",
-                f"dsh ready at {url}",
-                log="dsh ready",
-            )
+            if self._session is not None:
+                self._session.output(
+                    "system",
+                    f"dsh ready at {url}",
+                    log="dsh ready",
+                )
             yield
 
     def _on_dsh_exit(self, exit_info) -> None:

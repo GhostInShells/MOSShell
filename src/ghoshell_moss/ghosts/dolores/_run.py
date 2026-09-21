@@ -111,12 +111,14 @@ class _CtmlParser:
                 self._in_logos = not self._in_logos
                 self._buffer = ''
             return None
-        if self._in_logos:
-            out = self._buffer + char
-            self._buffer = ''
-            return out
+        # mismatch: flush the buffered prefix, then re-run the char through the empty-buffer
+        # path — it may itself start a marker (e.g. the second '<' in '<<|Markdown|>').
+        out = self._buffer if self._in_logos else None
         self._buffer = ''
-        return None
+        rest = self._add_char(char)
+        if out is None:
+            return rest
+        return out + rest if rest is not None else out
 
     async def __aenter__(self) -> Self:
         await self._articulator.__aenter__()
