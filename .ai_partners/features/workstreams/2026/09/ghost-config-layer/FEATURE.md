@@ -75,3 +75,11 @@ per-ghost 覆盖默认配置是**常态需求**, 不是特例。最典型的一�
 ## Implementation Notes
 
 <!-- Gotchas, non-obvious behaviors, reasons for rejecting simpler alternatives. -->
+
+- **`get_or_create` 的层间下探不能受 `fallback` 约束** (2026-09-22 修复)。首版实现写成
+  `if fallback and self._inherit is not None`, 而 `ConfigInstanceRegisterBootstrapper`
+  正是以 `fallback=False` 调用 (它的默认值) → ghost 层既不下探也不物化, 直接
+  `RuntimeError`, `moss-ghost` 起不来。这正是 Terminology 里预警的歧义: `fallback` 只
+  管层内 mode → 通用, 层间结构归 `inherit`。现 `get_or_create` 无条件下探 (仍把
+  `fallback` 传给下一层); `get` 保持原样 —— 读侧"本层无则 raise"是合法结果, 创建侧在
+  非物化层只能下探。回归测试: `test_create_descends_even_with_fallback_false`。

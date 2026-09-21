@@ -157,8 +157,11 @@ class ConfigStore(ABC):
 
         :param conf: 目标类型的默认值实例. 文件不存在时以此写入磁盘.
         :param mode: 同 get.
-        :param fallback: 同 get. 注意 fallback=True 且 base 文件存在时, 返回值
-                         来自 base, 但后续 save 仍写 mode 文件 (mode-aware 写入).
+        :param fallback: 层内的 mode → 通用回退, 同 get. 层间下探 (inherit) 与它
+                         无关: 本层 miss 时无条件问下一层, 由第一个 materialize=True
+                         的层落盘. 否则非物化层将无值可给, 只能抛错.
+                         注意 fallback=True 且 base 文件存在时, 返回值来自 base,
+                         但后续 save 仍写 mode 文件 (mode-aware 写入).
         """
         pass
 
@@ -379,7 +382,11 @@ class LocalConfigStore(ConfigStore, ABC):
             return self.get(conf_type, mode=mode, fallback=fallback)
 
         # 本层没有: 先问下一层 (连同它的 mode 解析), 让它决定物化在哪.
-        if fallback and self._inherit is not None:
+        # 下探不受 fallback 约束 —— fallback 管的是层内 mode → 通用, 层间结构归
+        # inherit (见类 docstring "层优先级高于 mode 优先级"). 卡在这里的话,
+        # materialize=False 的层 (ghost 层) 既不下探也不物化, 只能抛错, "创建下沉
+        # 到第一个物化层" 永远走不到.
+        if self._inherit is not None:
             return self._inherit.get_or_create(conf, mode=mode, fallback=fallback)
 
         if not self._materialize:

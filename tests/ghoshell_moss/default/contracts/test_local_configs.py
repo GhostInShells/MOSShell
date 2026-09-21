@@ -639,6 +639,18 @@ class TestNonMaterializingLayer:
         assert result.name == "lower-val"
         assert not (tmp_path / "upper").exists()
 
+    def test_create_descends_even_with_fallback_false(self, layered, tmp_path):
+        """fallback=False 仍下探: 非物化层不能给值, 创建必须落到物化层.
+
+        `ConfigInstanceRegisterBootstrapper` 就是以 fallback=False 调 get_or_create
+        的 — 若下探被 fallback 卡住, 非物化层既不下探也不物化, 直接抛错.
+        """
+        upper, lower = layered
+        result = upper.get_or_create(AppConfig(name="fresh"), fallback=False)
+        assert result.name == "fresh"
+        assert _raw_exists(lower, "app_config.desktop.yml")
+        assert not (tmp_path / "upper").exists()
+
     def test_explicit_save_writes_upper(self, layered):
         """显式写入不受 materialize 影响, 永远落本层."""
         upper, lower = layered
