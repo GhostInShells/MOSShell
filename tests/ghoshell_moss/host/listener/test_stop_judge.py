@@ -159,6 +159,39 @@ async def test_accumulates_clauses_as_message_blocks():
 
 
 @pytest.mark.asyncio
+async def test_context_prepends_before_clauses():
+    """context 非空时作为首消息进入 prompt, clauses 追加其后 (前缀缓存友好)."""
+    caller = _MockCaller(scores=[9])
+    judge = _mk_judge(
+        caller, threshold=7, commit=lambda: None,
+        context="user announced: stop on 'over'",
+    )
+    await judge.feed(_clause("okay over"))
+    await _pump()
+
+    assert len(caller.prompts) == 1
+    prompt = caller.prompts[0]
+    assert len(prompt) == 2  # <context> block + clause
+    ctx_text = prompt[0].to_content_string()
+    assert "<context>" in ctx_text
+    assert "stop on 'over'" in ctx_text
+    assert prompt[1].to_content_string() == "okay over"
+    judge.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_context_omits_block():
+    """context 空时不发 <context> 消息 (与旧行为等价, 无冗余)."""
+    caller = _MockCaller(scores=[9])
+    judge = _mk_judge(caller, threshold=7, commit=lambda: None, context="")
+    await judge.feed(_clause("done"))
+    await _pump()
+
+    assert len(caller.prompts[0]) == 1  # 只有 clause, 无 <context> 前缀
+    judge.close()
+
+
+@pytest.mark.asyncio
 async def test_segment_switch_resets_state():
     committed = []
     caller = _MockCaller(scores=[1, 9])

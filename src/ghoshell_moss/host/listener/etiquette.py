@@ -97,13 +97,25 @@ class ClassifierSpec(BaseModel):
     """A programmable streaming classifier mounted on the turn-end slot.
 
     The slot decides only that a classifier runs here; ``instruction`` decides
-    what it judges and how it scores. ``threshold`` is the score at which the
-    turn commits early.
+    what it judges and how it scores. ``context`` carries volatile hints the
+    model wants the classifier to consider (e.g. an explicit end signal the
+    user just announced). ``threshold`` is the score at which the turn commits
+    early.
+
+    Cache shape: ``instruction`` is stable and rides the caller-level cache;
+    ``context`` is the first user message, so the accumulated clause prefix
+    hits the prompt cache within a segment.
     """
 
     instruction: str = Field(
         default="",
         description="the classifier's own instruction — what to judge and how to score",
+    )
+    context: str = Field(
+        default="",
+        description="volatile hints for the classifier (e.g. explicit end signals the "
+                    "user announced, task background); referenced from instruction via "
+                    "the ``<context>`` block. Empty = no context block sent.",
     )
     threshold: int = Field(
         default=7,

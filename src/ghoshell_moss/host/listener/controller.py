@@ -321,6 +321,7 @@ class ListenerController(ListenLifecycle):
             segment_vad=stop.silence,
             commit=commit,
             keywords=stop.keywords,
+            context=classifier.context,
             on_score=self._notify_score,
             logger=self._logger,
         )
