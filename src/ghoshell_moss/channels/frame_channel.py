@@ -40,18 +40,13 @@ _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", re.DOTAL
 _PARAGRAPH_RE = re.compile(r"\n[ \t]*\n")
 
 _INSTRUCTION = """\
-## Frame — 问题集即思维框架
+## Frame
 
-Your situation, held as a set of questions you resolve from your own context. Asking
-the right question makes an answer that already exists in your context explicit and
-ready to reason on. A frame is an extraction device: every question is answerable from
-context, and `unknown` is a valid, useful resolution — the unresolved questions are
-your blind spots, and they are the point.
-
-The loaded frames and their answers are shown below. Resolve questions as they become
-answerable; overwrite them as your understanding sharpens. Frames are plain files:
-`list` discovers them under the root, `template` emits a starter to author your own,
-and `reload` re-reads an edited file from disk. The format spec is available on demand.
+A frame is a question set you resolve from your own context, to hold a stable
+situational understanding across context loss. Every question is answerable from
+context; `unknown` is a valid resolution — the unresolved set is your blind spots.
+Loaded frames and answers are shown below; resolving again overwrites. Frames are
+plain `*.frame.md` files under the root — read `spec` before authoring one.
 """
 
 _FRAME_TEMPLATE = """\
@@ -252,10 +247,7 @@ def new_frame_channel(
     async def list_frames() -> str:
         """List frame files under the root — loaded vs available.
 
-        Loaded frames show their resolution progress; available-but-unloaded frames are
-        shown bare. Load what you are about to work on.
-
-        :return: every ``*.frame.md`` under the root.
+        :return: every ``*.frame.md`` under the root; loaded ones show progress.
         """
         discovered = await asyncio.to_thread(_discover)
         if not discovered:
@@ -272,13 +264,9 @@ def new_frame_channel(
 
     @chan.build.command(name="load", always_observe=False)
     async def load(path: str) -> str:
-        """Load a frame file and make it the current frame.
+        """Load a frame file and make it the current frame. Load only what you are about to work on.
 
-        A frame is a ``*.frame.md`` file. The path may be absolute or relative to the
-        frame root. Find frames by listing the root; load only what you are about to
-        work on.
-
-        :param path: the frame file to load.
+        :param path: the frame file, absolute or relative to the frame root.
         """
         frame, is_new = await asyncio.to_thread(_load, path)
         if not is_new:
@@ -287,34 +275,33 @@ def new_frame_channel(
 
     @chan.build.command(name="reload", always_observe=False)
     async def reload(path: str) -> str:
-        """Re-read a frame file from disk, discarding its resolution state.
+        """Re-read a frame file from disk after editing it. Answers reset — they are working state.
 
-        Use after editing a frame's questions: the file is the index, so an edited file
-        is picked up by re-reading. Answers reset — they are working state; the questions
-        are the asset.
-
-        :param path: the frame file to re-read (absolute, or relative to the root).
+        :param path: the frame file, absolute or relative to the root.
         """
         frame = await asyncio.to_thread(_reload, path)
         return f"reloaded [{frame.label}] 0/{len(frame.questions)}"
 
-    @chan.build.command(name="template", always_observe=True)
-    async def template() -> str:
-        """Return a starter ``*.frame.md`` template to author a new frame.
+    @chan.build.command(name="unload", always_observe=False)
+    async def unload(label: str) -> str:
+        """Unload a loaded frame, dropping it (and its answers) from your view.
 
-        Copy it into a new file under the root, fill the description and questions, then
-        ``load`` it. Questions are blank-line-separated paragraphs — see ``spec`` for the
-        full format.
+        The file stays on disk; load it again anytime.
+
+        :param label: the frame's label — its path under the root, suffix stripped.
         """
-        return _FRAME_TEMPLATE
+        frame = _find(label)
+        if frame is None:
+            raise ValueError(f"no such frame: {label!r}")
+        del frames[frame.label]
+        if state["current"] == frame.label:
+            state["current"] = ""
+        return f"unloaded [{frame.label}]"
 
     @chan.build.command(name="resolve", always_observe=False)
     async def resolve(label: str, question_index: int, answer: str) -> str:
-        """Resolve one question of a loaded frame.
-
-        Write the answer as a short statement extracted from your context. When the
-        context does not answer the question, write ``unknown`` — an explicit unknown
-        is a valid, useful resolution. Resolving again overwrites.
+        """Resolve one question of a loaded frame with a short statement extracted from
+        your context; ``unknown`` is a valid answer. Resolving again overwrites.
 
         :param label: the frame's label — its path under the root, suffix stripped
             (e.g. ``orientation`` or ``debug/concurrency``). Empty = the current frame.
@@ -338,10 +325,7 @@ def new_frame_channel(
 
     @chan.build.command(name="status", always_observe=True)
     async def status(label: str = "") -> str:
-        """Show a frame's resolution status.
-
-        Unresolved questions are listed first — they are the frame's blind spots, the
-        most useful part of the reading.
+        """Show a frame's resolution status, unresolved questions first.
 
         :param label: frame label — its path under the root, suffix stripped. Empty = the current frame.
         """
@@ -365,11 +349,12 @@ def new_frame_channel(
 
     @chan.build.command(name="spec", always_observe=True)
     async def spec() -> str:
-        """Return the ``.frame.md`` format specification.
+        """Return the ``.frame.md`` format specification plus a starter template.
 
-        Read this before authoring a frame of your own. Frames are plain files: create
-        one with your file tools, then load it.
+        Read this before authoring a frame: create the file with your file tools,
+        then ``load`` it.
         """
-        return await asyncio.to_thread(_read_spec)
+        text = await asyncio.to_thread(_read_spec)
+        return f"{text}\n\n## Starter template\n\n```\n{_FRAME_TEMPLATE}```"
 
     return chan

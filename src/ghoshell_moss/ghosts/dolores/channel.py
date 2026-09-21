@@ -60,10 +60,9 @@ def build_dolores_channel(
     async def _instruction() -> str:
         return (
             "## Ghost (reflexive)\n"
-            "This channel is your own control surface: its sub-channels are your organs, not "
-            "external tools.\n"
-            "Their state and content refresh with your cognitive field; command signatures are "
-            "reflected from the interface, so they are not restated here."
+            "Your own control surface: the sub-channels are your organs, not external tools. "
+            "Their state refreshes with your cognitive field; command signatures are reflected, "
+            "not restated here."
         )
 
     chan.import_channels(

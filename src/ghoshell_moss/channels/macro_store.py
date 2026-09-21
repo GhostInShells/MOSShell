@@ -144,12 +144,10 @@ class MacroStoreModule(ChannelModule):
                 "`macro_save` registers a label; `<macro ref=\"x\"/>` expands it in place."
             )
         return (
-            f"Macro store — CTML procedures as files and session labels.\n"
-            f"Micro files are `*{MICRO_SUFFIX}`: YAML frontmatter with `{FM_NAME}` + `{FM_DESCRIPTION}`,\n"
-            f"then the raw CTML body (plain text, no wrapper).\n"
-            f"File paths resolve relative to the permission root {self._root} —\n"
-            f"absolute paths must stay under it. Session labels come from `macro_save` or `macro_load`.\n"
-            f"Nested CDATA inside a body: write {CDATA_START} / {CDATA_END}."
+            f"Macro store — CTML procedures as session labels and micro files\n"
+            f"(`*{MICRO_SUFFIX}` under the root {self._root}).\n"
+            f"`macro_save` registers a label; `<macro ref=\"x\"/>` expands it in place.\n"
+            f"File format and nested-CDATA details are in the command docs."
         )
 
     async def get_named_notices(self) -> dict[str, str | None]:
@@ -183,7 +181,10 @@ class MacroStoreModule(ChannelModule):
             file: str | None = None,
     ) -> str:
         """Save a CTML procedure as a session label; with `file`, write it as a micro file.
-        `text__`: the CTML body (open-close tag body, CDATA-wrapped by CTML syntax).
+        `text__`: the CTML body (open-close tag body, CDATA-wrapped by CTML syntax). To nest
+        real CDATA inside the body, write the placeholders MACRO_CDATA_START / MACRO_CDATA_END.
+        `file`: a `*.ctml_micro.md` path, relative to the store root (absolute paths must stay
+        under it); the file gets YAML frontmatter (`name` + `description`) then the raw body.
         """
         body = _to_storage(text__)
         if not body.strip():
@@ -240,7 +241,10 @@ class MacroStoreModule(ChannelModule):
         return "\n".join(lines)
 
     async def _micro(self, file: str = ".", recursive: bool = False) -> str:
-        """List micro files under a root-relative path, with their frontmatter descriptions."""
+        """List micro files under a root-relative path, with their frontmatter descriptions.
+        A micro file is `*.ctml_micro.md`: YAML frontmatter (`name` + `description`), then the
+        raw CTML body — plain text, no wrapper.
+        """
         base = self._resolve_micro_path(file)
         if not base.is_dir():
             raise ValueError(f"micro path '{file}' is not a directory under root")

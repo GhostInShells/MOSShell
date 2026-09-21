@@ -195,9 +195,25 @@ async def test_reload_rereads_edited_questions_and_resets():
 
 
 @pytest.mark.asyncio
-async def test_template_returns_starter():
+async def test_spec_carries_starter_template():
     chan = new_frame_channel(root="frames")
     async with chan.bootstrap() as runtime:
-        result = await runtime.execute_command("template")
+        result = await runtime.execute_command("spec")
         assert "description:" in result
         assert "<question" in result
+
+
+@pytest.mark.asyncio
+async def test_unload_drops_frame_from_view():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _write_root(Path(tmp))
+        chan = new_frame_channel(root=root, entry="orientation.frame.md")
+        async with chan.bootstrap() as runtime:
+            await runtime.execute_command("resolve", args=("orientation", 0, "a"))
+            result = await runtime.execute_command("unload", args=("orientation",))
+            assert "unloaded [orientation]" in result
+            await runtime.refresh_metas()
+            assert "What environment am I in?" not in runtime.self_meta().instruction
+            # the file stays on disk: it can be loaded again, fresh
+            result2 = await runtime.execute_command("load", args=("orientation.frame.md",))
+            assert "loaded [orientation] 0/3" in result2
