@@ -1,14 +1,18 @@
 """The model-facing channel: window semantics over one store.
 
-The model owns layout and ordering; the human owns where to look. Every command that
-moves the screen lands immediately and returns a receipt; nothing here waits on a
-person. The one place time is a first-class argument is the veil — a gesture declares
-its duration, and the command resolves when that duration ends, so a gesture and a
-spoken clause can share one clock.
+The model owns arrangement; the human owns where to look. Items materialize into
+one pool. Arranging picks a subset of the pool into a named group and shows it;
+everything not in a group floats on the desktop. So the model's main move is
+``arrange(group, ids)`` — pick and place in one step.
 
-Frames go out through an injected ``surface`` (headless = a no-op) rather than through
-``CommandUtil``, for the same reason the store is injected: the node wires both to
-``Matrix`` and tests wire both to a recorder.
+Every command that moves the screen lands immediately and returns a receipt;
+nothing here waits on a person. The one place time is a first-class argument is
+the veil — a gesture declares its duration, and the command resolves when that
+duration ends, so a gesture and a spoken clause can share one clock.
+
+Frames go out through an injected ``surface`` (headless = a no-op) rather than
+through ``CommandUtil``, for the same reason the store is injected: the node wires
+both to ``Matrix`` and tests wire both to a recorder.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from . import projection as P
 from .audio import MockAudioSource
 from .mock import demo_items
-from .model import ScreenModel
+from .model import ScreenModel, compute_layout
 
 __all__ = ["build_screen_channel"]
 
@@ -47,7 +51,8 @@ def build_screen_channel(
     surface: _Surface | None = None,
     audio: MockAudioSource | None = None,
     surface_url: str | Callable[[], str] | None = None,
-    name: str = "screen_manager",
+    views_notice: Callable[[], str] | None = None,
+    name: str = "webview_screen",
     description: str | None = None,
 ) -> Channel:
     """Compose the screen channel over a store.
@@ -58,6 +63,9 @@ def build_screen_channel(
     :param surface_url: where the human surface lives, surfaced as a warm notice
         fragment so the model can discover it without a fixed port. May be a
         callable (resolved lazily, after the surface binds its ephemeral port).
+    :param views_notice: an optional fragment supplier for adopted web views,
+        called on each notice refresh (bound to the webview bridge). Returns ''
+        to omit the fragment.
     """
     surface = surface or _NoSurface()
 
@@ -77,106 +85,130 @@ def build_screen_channel(
         name=name,
         description=description
         or (
-            "the screen body: windows (items) grouped and laid out on a stage, with a "
-            "veil for gestures and a background for MOSS presence"
+            "the screen body: windows (items) materialize into a pool, arranged "
+            "into groups on a stage; unarranged items float on a desktop. Gestures "
+            "ride a veil; MOSS presence rides the background."
         ),
     )
 
     @chan.build.instruction
     def instruction() -> str:
         return (
-            "You own how the screen is arranged; the human owns where to look. Items "
-            "are windows you materialize into groups; exactly one group is active and "
-            "lays its items out on the stage. open() materializes, arrange() sets the "
-            "order and the layout family, activate() switches the active group, "
-            "fullscreen() makes one item fill the stage. The human can switch groups "
-            "and toggle fullscreen too — the notice tells you when that happened. "
-            "Veil gestures (mark / arrow / text) are the only time-aware commands: "
-            "they resolve when their declared duration ends, so a gesture and a spoken "
-            "clause share one clock."
+            "You own how the screen is arranged; the human owns where to look. "
+            "open() materializes a window into the pool — by default it floats on "
+            "the desktop. arrange(group, ids) is your main move: it pulls the items "
+            "you name into a group, in order, with a layout family, and shows it. "
+            "Everything you leave out stays floating on the desktop. activate() "
+            "switches the view between groups and the desktop; dismiss() sends an "
+            "item back to the desktop; fullscreen() makes one item fill the stage. "
+            "The human can switch views and toggle fullscreen too — the notice tells "
+            "you when that happened. Veil gestures (mark / arrow / text) are the "
+            "only time-aware commands: they resolve when their declared duration "
+            "ends, so a gesture and a spoken clause share one clock."
         )
+
+    # -- materialization ---------------------------------------------------
 
     @chan.build.command(name="open")
     async def open_window(
-        id: str, url: str, label: str = "", group: str = ""
+        id: str, url: str, label: str = "", group: str = "", icon: str = ""
     ) -> str:
-        """Materialize a window into a group (default: the active group).
+        """Materialize a window. By default it floats on the desktop.
 
         ``id`` is your handle for every later command; ``url`` is the window's
-        content (a local node surface or any http page). A fresh ``group`` is created
-        on first use.
+        content (a local node surface or any http page). Pass ``group`` to land it
+        directly in a group; otherwise it waits on the desktop until you arrange it.
         """
         try:
-            item = model.open(id, url, label=label, group=group)
+            item = model.open(
+                id, url, label=label, group=group, icon=icon or None
+            )
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
         await _emit(P.open_frame(item))
-        if item.group == model.active():
-            await _emit(P.arrange_frame(model))
-        n = len(model.group_items(item.group))
-        return f"[screen] opened #{id} → #{item.group} ({n} item(s))"
+        await _emit(P.state_frame(model))
+        where = f"#{item.group}" if item.group else "desktop"
+        return f"[screen] opened #{id} → {where}"
 
-    @chan.build.command(name="close")
-    async def close_window(id: str) -> str:
-        """Remove a window. An emptied group is deleted automatically."""
-        was_active = model.group_of(id) == model.active()
+    @chan.build.command(name="arrange")
+    async def arrange(ids: str, group: str, family: str = "grid", dir: str = "lr") -> str:
+        """Pull items into a group, in order, and show it. Your main move.
+
+        ``ids`` is a comma-separated list of item ids in display order — any subset
+        of the pool, including items already in another group (they move here).
+        ``group`` names the arrangement (created on first use). ``family`` is grid
+        (equal split) or stack (one master + a strip); ``dir`` is lr or tb. The
+        shape is derived from the count — you never give sizes.
+        """
         try:
-            model.close(id)
-        except KeyError as e:
+            layout = model.arrange(
+                group, _split_ids(ids), family=family, dir=dir
+            )
+        except (ValueError, KeyError) as e:
             CommandUtil.raise_observe(str(e))
-        await _emit(P.close_frame(id))
-        if was_active:
-            await _emit(P.arrange_frame(model))
-        return f"[screen] closed #{id}"
+        await _emit(P.state_frame(model))
+        return (
+            f"[screen] #{group} ← [{', '.join(_split_ids(ids))}] "
+            f"{family} {dir} ({layout.cols}x{layout.rows})"
+        )
 
     @chan.build.command(name="activate")
-    async def activate_group(group: str) -> str:
-        """Switch the active group (you may switch too, not only the human)."""
+    async def activate(group: str = "") -> str:
+        """Show a group, or the desktop (empty ``group``). You may switch too."""
         try:
             model.activate(group)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
         await _emit(P.activate_frame(model, by_model=True))
-        return f"[screen] active #{group} ({len(model.active_items())} item(s))"
+        where = f"#{group}" if group else "desktop"
+        return f"[screen] showing {where}"
 
-    @chan.build.command(name="arrange")
-    async def arrange(ids: str, family: str = "grid", dir: str = "lr") -> str:
-        """Set the active group's order and layout.
+    @chan.build.command(name="dismiss")
+    async def dismiss(id: str) -> str:
+        """Send an item back to the desktop — off its group, still in the pool."""
+        _require(id)
+        item = model.dismiss(id)
+        await _emit(P.state_frame(model))
+        return f"[screen] #{id} → desktop" if item else f"[screen] #{id} is already floating"
 
-        ``ids`` is a comma-separated list of the active group's items, in display
-        order. ``family`` is grid (equal split) or stack (one master + a strip);
-        ``dir`` is lr or tb. The shape is derived from the item count — you never give
-        sizes, only the order and the family.
-        """
-        try:
-            layout = model.arrange(_split_ids(ids), family=family, dir=dir)
-        except ValueError as e:
-            CommandUtil.raise_observe(str(e))
-        await _emit(P.arrange_frame(model))
-        return f"[screen] #{model.active()} → {family} {dir} ({layout.cols}x{layout.rows})"
+    @chan.build.command(name="destroy")
+    async def destroy(id: str) -> str:
+        """Remove an item from the pool. An adopted item is tombstoned, not revived."""
+        _require(id)
+        model.destroy(id)
+        await _emit(P.close_frame(id))
+        await _emit(P.state_frame(model))
+        return f"[screen] removed #{id}"
 
     @chan.build.command(name="fullscreen")
     async def fullscreen(id: str = "") -> str:
-        """Make one item fill the stage; ``id`` empty exits fullscreen."""
+        """Make one active-group item fill the stage; ``id`` empty exits."""
         target = id or None
         try:
             model.set_fullscreen(target)
-        except KeyError as e:
+        except (KeyError, ValueError) as e:
             CommandUtil.raise_observe(str(e))
         await _emit(P.fullscreen_frame(target))
         return (
             f"[screen] fullscreen #{target}" if target else "[screen] fullscreen exited"
         )
 
+    @chan.build.command(name="float")
+    async def float_group() -> str:
+        """Send the whole active group back to the desktop."""
+        freed = model.float_all()
+        await _emit(P.state_frame(model))
+        return f"[screen] {len(freed)} item(s) → desktop" if freed else "[screen] nothing to float"
+
     @chan.build.command(name="pool", always_observe=True)
     async def pool() -> str:
-        """List the whole materialization pool — groups and their items in order."""
-        lines = [f"active: #{model.active() or '-'}"]
+        """List the whole pool — the desktop, and every group in order."""
+        arena = model.arena() or "desktop"
+        lines = [f"showing: #{arena}", f"desktop: {', '.join(model.desktop_items()) or '-'}"]
         for g in model.groups():
-            mark = "*" if g == model.active() else " "
-            lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}")
-        if model.fullscreen():
-            lines.append(f"fullscreen: #{model.fullscreen()}")
+            mark = "*" if g == model.arena() else " "
+            fs = " [fullscreen]" if g == model.arena() and model.fullscreen() else ""
+            lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}{fs}")
         return "\n".join(lines)
 
     # -- veil gestures (time-aware) ----------------------------------------
@@ -213,16 +245,13 @@ def build_screen_channel(
 
     @chan.build.command(name="mock_scene")
     async def mock_scene() -> str:
-        """Materialize the demo scene and activate #code. Debug aid — not the product."""
+        """Materialize the demo scene into groups. Debug aid — not the product."""
         for spec in demo_items():
-            try:
+            if model.get(spec["id"]) is None:
                 model.open(
-                    spec["id"], spec["url"], label=spec["label"], group=spec["group"]
+                    spec["id"], spec["url"],
+                    label=spec["label"], group=spec["group"],
                 )
-            except ValueError:
-                continue
-        if model.active() not in model.groups():
-            model.activate(model.groups()[0])
         await _emit(P.snapshot(model))
         return f"[screen] demo scene: {', '.join(model.groups())}"
 
@@ -249,14 +278,21 @@ def build_screen_channel(
             f"#{g}({len(model.group_items(g))})" for g in model.groups()
         )
         out["groups"] = groups or "(none)"
-        active = model.active()
-        if not active:
-            out["screen"] = "no active group — activate() one"
+        desktop = model.desktop_items()
+        if desktop:
+            out["desktop"] = f"{len(desktop)} floating: {', '.join(desktop)}"
+        if views_notice is not None:
+            fragment = views_notice()
+            if fragment:
+                out["views"] = fragment
+        arena = model.arena()
+        if not arena:
+            out["screen"] = f"desktop ({len(desktop)} floating)"
         else:
-            order = ", ".join(model.active_items())
-            fullscreen = f" · fullscreen #{model.fullscreen()}" if model.fullscreen() else ""
+            order = ", ".join(model.arena_items())
+            fs = f" · fullscreen #{model.fullscreen()}" if model.fullscreen() else ""
             out["screen"] = (
-                f"active #{active} [{order}] {model.family()} {model.dir()}{fullscreen}"
+                f"#{arena} [{order}] {model.family()} {model.dir()}{fs}"
             )
         return out
 

@@ -7,6 +7,10 @@ Port:   --port N, else MOSS_SCREEN_MANAGER_PORT, else an ephemeral port (0)
 One process, two faces over one store: the channel (the ghost's control surface) and
 the web surface (the human's window view and steering). The human's moves reach the
 ghost through ``matrix.send_signal_to_ghost``.
+
+On the mesh, the screen is also a **consumer**: it watches the ``webview`` service
+kind and adopts every live view onto the desktop, so a node that serves a page
+appears on screen with no manual ``open``.
 """
 
 from __future__ import annotations
@@ -20,8 +24,10 @@ _NODE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_NODE_DIR / "src"))
 
 from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
+from ghoshell_moss.services.webview import WebViewClient  # noqa: E402
 
 from ghoshell_screen_manager.audio import MockAudioSource  # noqa: E402
+from ghoshell_screen_manager.bridge import WebViewBridge  # noqa: E402
 from ghoshell_screen_manager.channel import build_screen_channel  # noqa: E402
 from ghoshell_screen_manager.model import ScreenModel  # noqa: E402
 from ghoshell_screen_manager.surface import ScreenSurface  # noqa: E402
@@ -57,12 +63,22 @@ async def main(matrix: Matrix) -> None:
         port=resolve_port(),
         html_path=_INDEX_HTML,
     )
-    channel = build_screen_channel(
-        model, surface=surface, audio=audio, surface_url=lambda: surface.url
-    )
-
     await surface.start()
-    print(f"[screen_manager] surface at {surface.url}", flush=True)
+    print(f"[webview_screen] surface at {surface.url}", flush=True)
+
+    # Mesh consumer: adopt live web views onto the desktop. Optional — a screen
+    # with no mesh peers just never adopts anything.
+    client = await matrix.connect_service(WebViewClient)
+    bridge = WebViewBridge(model, client, emit=surface.broadcast)
+    await bridge.start()
+
+    channel = build_screen_channel(
+        model,
+        surface=surface,
+        audio=audio,
+        surface_url=lambda: surface.url,
+        views_notice=bridge.notice,
+    )
     await matrix.provide_channel(channel)
 
 

@@ -21,6 +21,8 @@ updated: '2026-09-19'
 > 细节写进来就是第二次手工维护，必然漂移。三类读者的入口见文末「注意力分配」。
 >
 > 沿革：旧设计（Decision 1–11 + S1–S3）见 [FEATURE.legacy.md](FEATURE.legacy.md)。
+>
+> 问题清单（单一事实源）→ [screen-todo.md](screen-todo.md)。
 
 ## Motivation
 
@@ -128,6 +130,7 @@ z 序只描述层，**不描述物料**：物料之间的先后只体现为分�
 
 | 你想知道 | 去哪 |
 |---|---|
+| 有哪些已知问题、修到哪了 | [screen-todo.md](screen-todo.md)（单一事实源） |
 | 设计是什么、为什么 | 本文 + 对应后端子文档 |
 | 这个假设成立吗 | 打开对应**验证页**跑一下；事实在代码里，动机在注释里 |
-| 实现怎么改 | `nodes/screens/screen/`（webview）· `nodes/screens/qt_screen/`（原型） |
+| 实现怎么改 | web 档 → `nodes/screens/screen_manager/`；qt 档 → 待定（另起 node）；os 窗口档 → `moss-os-control` 的 `window_control` |

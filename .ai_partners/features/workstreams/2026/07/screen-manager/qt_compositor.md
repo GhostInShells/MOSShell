@@ -1,6 +1,6 @@
 ---
 title: QT Compositor — 自有合成器后端
-node: nodes/screens/screen
+node: 待定（qt 档落点未决 —— 见 KD13）
 created: 2026-09-13
 updated: 2026-09-19
 status: design-locked
@@ -13,7 +13,7 @@ status: design-locked
 > KD5–KD6、KD8–KD9、KD12 是**自有合成器特有**的实现约束。
 > 其余：旧设计见 [FEATURE.legacy.md](FEATURE.legacy.md)；碰撞轨迹见
 > `discuss/2026-09-13_screen_formal_design_collision.md`；
-> 运行原型 `nodes/screens/qt_screen` **不改不删**，新版 node 从头开始。
+> 运行原型 `nodes/screens/qt_screen` **不改不删**（它是**旧设计**的原型，不是本档的起点）。
 
 ## Motivation
 
@@ -191,10 +191,20 @@ screen
 - module_eval_channel 的**子进程隔离不适用于 Qt**（Qt 对象不可跨进程）。eval 面按域分裂：QML 场景走 JS/主线程，
   非 Qt Python 域（playwright/pywinctl）走 module_eval 原样。
 
-### KD13 新版 node 名
+### KD13 三档并列，不互相取代
 
-新版 node = **`nodes/screens/screen`**（一眼看懂，canonical）。旧 `nodes/screens/qt_screen` 保留不改
-（legacy 原型，S1–S3 实现 + `demo/` 继续在那）。
+`window` 语义一套，躯体三档**并列共存**，各自独立成 node：
+
+| 档 | 实现 | node | 状态 |
+|---|---|---|---|
+| web | iframe 池合成器 | `nodes/screens/screen_manager` | 当前施工面 |
+| qt | QML 场景图合成器（本文） | **待定** —— 另起 node，不复用 `qt_screen` | 设计定稿、实现待开工 |
+| os window | 真实 OS 窗口（枚举/摆位/激活） | `moss-os-control` 的 `window_control` | 待建，不在本 feature |
+
+- **`nodes/screens/qt_screen` 不是 qt 档的实现**，它是**旧设计**（「web 合成器 + WebEngineView 塞进 QML」）
+  的原型（S1–S3 + `demo/`）。**不改不删**，留着做轨迹；qt 档另起目录从头写。
+- 三档选哪档由部署场景定（零依赖开箱 / 自有美学 / 接管真实窗口），不是替代关系。
+  语义同构 → 上层（channel 面 / 模型认知）不因换档而改。
 
 ## Implementation Notes
 

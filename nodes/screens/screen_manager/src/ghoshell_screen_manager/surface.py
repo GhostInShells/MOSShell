@@ -1,13 +1,16 @@
 """The human-facing web surface: window frames down, steering up.
 
 One port serves the page and the WebSocket. Downlink carries the window stream
-(``open`` / ``close`` / ``arrange`` / ``activate`` / ``fullscreen`` / ``veil``), the
-5Hz audio samples, and a full ``snapshot`` on connect. Uplink carries the human's two
-moves — switch group, toggle fullscreen.
+(``snapshot`` on connect, then ``state`` / ``open`` / ``close`` / ``activate`` /
+``fullscreen`` / ``veil``), the 5Hz audio samples, and a ``notice`` line for the
+human's activity log.
+
+Uplink carries the human's moves: switch to a group or the desktop, toggle
+fullscreen on an item, and dismiss (send a window back to the desktop).
 
 A human move is handed to the store; the store stays the only authority, and this
-module re-broadcasts the change so every client stays in step. The move also reaches
-the ghost as an aside — a fact it notices when free, not an interruption.
+module re-broadcasts the change so every client stays in step. The move also
+reaches the ghost as an aside — a fact it notices when free, not an interruption.
 """
 
 from __future__ import annotations
@@ -73,33 +76,45 @@ class ScreenSurface:
 
     # -- uplink -------------------------------------------------------------
 
-    async def _switch_group(self, group: str) -> None:
+    async def _switch_view(self, group: str) -> None:
         try:
             self._model.activate(group)
         except (KeyError, ValueError) as e:
             await self.broadcast({"type": "error", "text": str(e)})
             return
         await self.broadcast(P.activate_frame(self._model, by_model=False))
-        self._aside(f"human switched to #{group}")
+        where = f"#{group}" if group else "the desktop"
+        self._aside(f"human switched to {where}")
 
     async def _toggle_fullscreen(self, item_id: str) -> None:
         current = self._model.fullscreen()
         new = None if (not item_id or current == item_id) else item_id
         try:
             self._model.set_fullscreen(new)
-        except KeyError as e:
+        except (KeyError, ValueError) as e:
             await self.broadcast({"type": "error", "text": str(e)})
             return
         await self.broadcast(P.fullscreen_frame(new))
         what = f"#{new}" if new else "off"
         self._aside(f"human toggled fullscreen {what}")
 
+    async def _dismiss(self, item_id: str) -> None:
+        if self._model.dismiss(item_id) is None:
+            return
+        await self.broadcast(P.state_frame(self._model))
+        self._aside(f"human sent #{item_id} to the desktop")
+
+    async def _tap(self, item_id: str) -> None:
+        """A human tapped a desktop proxy — interest, not a move. Reach the ghost
+        as an aside so it can decide whether to arrange; nothing on screen changes."""
+        self._aside(f"human tapped #{item_id} on the desktop")
+
     def _aside(self, text: str) -> None:
         if self._send_signal is None:
             return
         signal = AsideSignalMeta().to_signal(
-            Message.new(tag="screen_manager", name=self._identity).with_content(
-                f"[screen_manager] {text}"
+            Message.new(tag="webview_screen", name=self._identity).with_content(
+                f"[webview_screen] {text}"
             ),
             description=text[:120],
         )
@@ -143,10 +158,14 @@ class ScreenSurface:
                 except (TypeError, ValueError):
                     continue
                 kind = frame.get("type")
-                if kind == "switch_group":
-                    await self._switch_group(str(frame.get("group", "")))
+                if kind == "switch_view":
+                    await self._switch_view(str(frame.get("group", "")))
                 elif kind == "fullscreen":
                     await self._toggle_fullscreen(str(frame.get("id", "")))
+                elif kind == "dismiss":
+                    await self._dismiss(str(frame.get("id", "")))
+                elif kind == "tap":
+                    await self._tap(str(frame.get("id", "")))
         finally:
             self._clients.discard(connection)
 

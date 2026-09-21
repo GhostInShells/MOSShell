@@ -1,5 +1,5 @@
 ---
-name: 'screen_manager'
+name: 'webview_screen'  # 档位必须进名字: `screen` 是三档躯体(webview/qt/os window)共用的抽象, 裸 screen 会互相占位
 description: 'screen body — window semantics (item / group / arrange / fullscreen / veil / background) as an iframe compositor, zero-dependency webview backend'
 category: screens
 singleton: true

@@ -1,153 +1,166 @@
 ---
 title: Web Manager — 零依赖 webview 后端
-node: nodes/screens/screen
+node: nodes/screens/screen_manager
 created: 2026-09-19
-updated: 2026-09-19
+updated: 2026-09-21
 status: in-progress
 ---
 
 # Web Manager
 
-> screen-manager 的子文档：**零依赖 webview 后端**，当前施工面。
-> 语义见 [FEATURE.md](FEATURE.md)；qt 后端见 [qt_compositor.md](qt_compositor.md)。
-> 视觉效果的实现细节**不写在这里** —— 它们落在验证页代码的注释里，本文只索引。
+> screen-manager 的子文档：**零依赖 webview 后端**，当前施工面。语义见
+> [FEATURE.md](FEATURE.md)；qt 后端见 [qt_compositor.md](qt_compositor.md)。
+> 本文是这套后端的**通用交互策略** —— 层栈、桌面、物理、自动物化、关闭协议。
+> 历史版本（WD1–WD6）由 git 保存，本文是一次重写而非增量。
+>
+> 视觉细节不写在这里，落在验证页与 `index.html` 的注释里；本文只放剪枝判断。
 
 ## 定位
 
-一个 node = 一个 HTTP 服务 + 一个 ws + 一个单文件 index.html，**与 terminal / file_editor
-完全同构**。物料是 iframe（各 node 自己的本地页面），合成器只是摆位。
+一个 node = 一个 HTTP 服务 + 一个 ws + 一个单文件 `index.html`，**与 terminal /
+file_editor 完全同构**。物料是 iframe（各 node 自己的本地页面），合成器只是摆位。
 
 **零依赖是硬约束**：node 无 `.venv`，`NODE.md` 的 `exec.command = python`（父进程
-`sys.executable` 驱动），只依赖 `moss[host]`。terminal / file_editor 已证明此形态可行，
-screen 只是在其上再叠 Matrix + ws。
+`sys.executable` 驱动），只依赖 `moss[host]`。
 
 playwright 是高阶用法，不是另一套 screen —— 它驱动同一个页面，补页面内做不到的两件事：
 真外部 web 内容（绕不开 X-Frame-Options 的站）与「接管人类已开的浏览器」。
 
-## 关键决策
+## 层栈：四层，每层都有默认
 
-### WD1 iframe 池：永不 reparent，只写样式
+```
+前景  veil     纯 canvas。模型的「手」：箭头、高亮、大字。
+                不接收指针。它画的是动作，不是窗口。
+─────────────────────────────────────────────────────────────
+中景  chrome   可迭代交互面。侧边拉出，默认收起。
+      stage    group 分格 ← 全屏是它的模式，不是另一层
+      desktop  空屏默认。可编程 item 动画的舞台，指针落点。
+─────────────────────────────────────────────────────────────
+背景  bg       全屏 canvas。声音感知 + MOSS 文字。
+                它是既定的可编程对象，不是物料层，不收指针。
+```
 
-普通 `appendChild` 搬 iframe = 重载（WebKit bug 32848 的原始行为；Chrome 133 才引入
-atomic `moveBefore()`）。**物料池是扁平的，iframe 一旦创建永不换父节点**；所有视觉变化
-都是改样式。需要跨层时 `moveBefore()` 是逃生口，但主线设计不需要它 —— 需要它 = 分层写歪了。
+**背景透明是关键**：中景各层不画自己的底色，透出背景。所以「空屏」不是黑屏，
+是 MOSS 的底色显出来。
 
-### WD2 动画：动 wrapper 的裁剪，不动 iframe 的尺寸
+**没有「空屏」这个状态。** 空屏 = 四层都在默认态（bg 渲染 + desktop 渲染 +
+stage 空 + chrome 收起）。代码里不该再出现 `if (items 为空)` 这类分支；那个分支的
+存在本身就是旧模型「空是特殊状态」的残留。
 
-iframe 改 width/height 会让内部文档 reflow（与 WebEngineView 同病）。每个物料外套
-`overflow:hidden` 的 wrapper：过渡动画只动 wrapper 几何（clip/reveal），iframe 保持最终
-尺寸。动 transform 不 scale（scale 会糊）。
+## Store 形状（本版唯一的结构改动）
 
-**嵌入契约：被嵌入页面必须监听 `resize` 自适应。** 合成器只改 iframe 的 viewport，
-不负责内部重排 —— 不监听的页面在切布局 / 全屏时会被裁切或拉伸。实测 avatar（Live2D）
-不自适应（窗口变动身体位置炸）、terminal / file_editor 同样不自适应，三者是各自节点的
-修法，不是本合成器的职责。
+| 规则 | 说明 |
+|---|---|
+| 每个 item 在**至多**一个 group | 不在任何 group = **在桌面**。它仍是 item，仍在池子里 |
+| 屏幕同时只显示**一个东西** | 要么一个 group，要么桌面。二者互斥 |
+| group 可以不存在 | 系统里可以只有桌面、一个 group、或任意多个 group |
+| 空 group 自动删除 | 组里最后一个 item 离开即删组（组本身不是容器，是排列） |
+| 桌面永远存在 | 它不是 group，没有名字，不在组列表里 |
 
-三档工具：重排走 **View Transitions**（快照旧态交叉淡入 + 自动 FLIP，Chrome 111+ /
-Safari 18+ / Firefox 144+，降级为瞬时）；物化/退出全屏走 **WAAPI**（`finished` promise
-即 await 边界）；hover/徽标走原生 `transition`。
+**桌面是透明的、可编程的中景状态。** 它上面放的物料就是所有的 item —— 用 item 的
+数据结构物化每个窗口，不是「先 iframe 再摆」。**点击 item 即全屏**（不影响分组）。
 
-### WD3 层栈落地
+### 用户故事（本设计的判据）
 
-`background`（shader/canvas，`pointer-events:none`）→ `stage`（分格，唯一接收指针）→
-`chrome`（group rail、topbar）→ `veil`（遮罩/指向）。
+> 你是法官。你把所有证物、交互界面都打开成 item，**不进 group** —— 它们就是桌面上
+> 漂着的东西，你想让它们怎么飘就怎么飘。比如你让人在 n 个 item 里选一个；选完，
+> 你规划一个 group，把它们排进去即可。
 
-- **全屏不是搬运，是插 scrim**：给物料高 z，scrim 插在它之下、其余物料之上，DOM 结构不动。
-- **分组切换 = `display:none`**：不重载 iframe，状态保留，后台被 Chromium 自动节流。
-- **不给子 iframe 开 `allowfullscreen`**：否则子页能抢走整块屏幕绕过合成器。
-- **全屏后焦点在 iframe 内，父页收不到 Esc**：退出按钮必须是 scrim 上的 DOM。
+也就是说：**模型可以编程控制的 windows 桌面图标，日常在动。** 挑选 → 成组 → 排列，
+是这一屏的主循环。
 
-### WD4 veil 两级
+## 桌面的物理系统
 
-| 级别 | 语义 | await | 改模型状态 |
-|---|---|---|---|
-| **block** | 手势：高亮 / 箭头 / 大字 / 临时交互 | 是（时长即边界） | 否 |
-| **idle** | 闲时自跑脚本 | 否 | 否（纯表现） |
+物料不是「一个 iframe 在漂」，是 **item 的代理**。iframe 一旦创建永不换父节点
+（WD1 的硬约束延续），所以：
 
-**抢占规则**：block 进场 idle 让位，结束后恢复。**帧预算护栏必需**：idle 脚本可被模型写，
-坏脚本会被降频或杀掉。
+- 漂的是**轻量代理圆盘**（label + icon），不是 iframe；
+- 点代理 → 真 iframe 原地物化，代理消失；退出 → iframe 收回，代理回来。
 
-veil = **姿态层**（stage = 内容层）：它是唯一能跨物料作画的地方，Ghost 因此有了"指"的
-能力。坐标语义为主（`item` + `region`），像素为边界（靶子在 iframe 内部时，来自截图，
-需合成器吐出 stage 几何做桥）。
+**默认行为态**：布朗（随机力）/ 花束（向心 + 分离）/ 环绕（切向力）—— 模型可切，
+可以有时间函数（如按语音节奏变向）。它们是**力场的不同组合**，不是不同的代码路径。
 
-### WD5 background：数据面已在仓库
+**有序性是可扫性的来源**：代理的稳定位置是 recency 的函数（最近的靠中心），布朗
+抖动只是队形之上的噪声。没有这条，「随机飘的球」不可扫，人无从知道开了哪些东西 ——
+这是上一版被拍死的真实原因，不是「球不该出现在空屏」。
 
-- **语音视效消费 `types/topics/audio.py` 的 `AudioSampleTopic`**（双边 `role`、5Hz、
-  `rms_db`/`peak`/`spectrum_bins`/`waveform`，no PCM）—— 零新协议。聆听 = 底部 ECG 锯齿
-  （`waveform`）+ 超阈红（`spectrum_bins`）；说话 = 字符雨。
-- **不做状态驱动**（idle/thinking/speaking → uniform）：`types/topics/ghost.py` 那条协议
-  **尚未定案**，为一个没有生产者的 schema 做设计是它明说该避免的事。第一版只靠
-  `role` + `rms_db` 区分在说话 / 被听到。
-- **MOSS 文字"活过来"**：文字是遮罩，动的是它背后的东西（canvas 内
-  `destination-in` 文字遮罩，或 `background-clip: text`）。
-- **字符雨**：头部下落 + 定长尾迹，不是无限加长。canvas 2D + 预渲染字形图集，尾迹用
-  半透明黑覆盖层；只在说话时活动 → 守空闲冻结。底噪不发（`rms_db` 阈值）。
-- **输入框两个位置**：空屏时是主角（屏中下），有物料时退成细带。层属 chrome（background
-  不接收指针）。topbar 是人发起，与 QA（系统发起）别合流。
-- **常驻微指示器**：全幅视效在 background，但「人在说话被听到了」必须始终可感知 —— 否则
-  物料上屏时人以为自己没被听到。
+**性能**：全部进 background 的同一张 canvas、同一个 rAF 循环。判据沿用既有那条线
+（75fps；掉到 30fps 以下换 WebGL）。无变化时冻结。
 
-### WD6 group rail（左侧）
+## 自动物化（webview service 接入）
 
-**左侧是 group，不是 item** —— item 上屏 = 布局写权 = 模型专属，人点 item 上屏是主权倒挂。
+`matrix-operator` 的 `webview` kind 就是为这一屏设计的消费对象（见其
+`services/webview/client.py`）。screen node **作为 client 接上这条线**，不需要新协议：
 
-tile = name 卡片 + 数量角标 n + notify 位 + activate 效果。**不做缩略图骨架**：它站在
-中间态，既不如实时缩略图有信息，又不如文本可扫，且对切组决策无增量。
+```
+discovery  谁在     — liveness，静态身份在 meta 里
+snapshot   什么状态 — 每个 view 拉一次
+stream     什么变了 — 之后一直跟
+```
 
-activate 效果是必需品：模型切组时人可能在看别处，绿点/边框轮转 n 秒是"谁干的"的可读信号。
-人自己点 = 立即生效，不需要提示。
+**落点**：
 
-## 待验假设与验证页（按依赖排序）
+1. `main.py` 在已有 Matrix 上 `connect_service(WebViewClient)`，注册进 lifecycle；
+2. `client.on_change(...)` → 与 store 做 diff：
+   - 新地址 → 物化一个 item（**落桌面**，不进任何 group）；
+   - 消失的地址 → 释放该 item。
+3. 模型侧**不加命令**，只加通知：notice 里多一个 fragment（如「未知窗口 2 个」）。
 
-| 页 | 假设 | 哑掉它的判据 |
+**两个必答问题**：
+
+- **解散 vs 销毁**。池子与桌面要求把「关掉」和「杀掉」分开：
+  | 动作 | 效果 | 谁发起 |
+  |---|---|---|
+  | `dismiss` | item 离屏（回桌面或移出活跃面），**服务仍在**，可再物化 | 人或模型 |
+  | node shutdown | 服务下线 → `on_service_stop` → screen 自动释放 item | **node 自己** |
+
+  **screen 永远不 kill node。** 窗口的生死归窗口管理器，进程的生死归进程自己 ——
+  这是桌面 OS 用了四十年才划清的线，也是跨 mesh 越权的边界。如果未来某个 node 想被
+  **从屏上**关掉，那是它**声明**出来的能力（opt-in），screen 只对声明了的 view 显示
+  关闭入口。
+
+- **墓碑**。模型手动 dismiss 的 item，不能被下一次自动物化复活 —— 需记 `dismissed`
+  集合，直到该服务下线重上、或模型显式重新物化才清除。
+
+**上下线 log**：人需要看到「什么东西冒出来了」。右上角角标 + 可展开的 log，只记三件
+事：服务上线、服务下线、模型动了它。**它是 screen 自己的生命周期流水，不是 mesh 的
+通用状态面板** —— 否则会膨胀成谁都往里塞的抽屉。
+
+## 主权与交互
+
+**人管「看哪」，模型管「怎么排」** —— 这条不变。但「看哪」现在包含：切 group、
+切到桌面、全屏开关、点击桌面上某个代理把它放大。
+
+**切换必须有过渡动画。** 切 group、桌面 / group 互切、全屏进出、重排 —— 全部不能
+瞬变。闪屏对人眼不友好，而 rail 常驻会放大这种抖动。三档工具沿用：重排走 View
+Transitions（降级为瞬时）、物化与全屏走 WAAPI、hover 与徽标走原生 transition。
+
+### chrome：侧边，可迭代
+
+交互面放侧边，**鼠标拉到极右伸出，或常驻最左**；默认收起。它**不是 nodes 管理器**
+（不列 item），未来在这里放交互组件：文字输入框（配合语音输入法）、通知、历史。
+
+- 左侧窄条管「看哪个 group」，拉出面板管「和 MOSS 交互」—— 同侧，职责分开。
+- **输入框**：游离图标 → 点击展开 → 点击关闭。它必须在**全屏之上**（WD3 的焦点
+  死结：全屏时键盘在 iframe 内，父页收不到 Esc）。语音输入法绕开了这个死结 ——
+  声音不需要焦点在父页。
+- **输入走 QA 那条系统发起的路**，不与 topbar 的人发起合流。
+
+### 强交互用浏览器原生框
+
+`confirm` / `prompt` / `alert` 直接用浏览器原生提示框，不需要自绘。理由不是省事：
+原生框是**浏览器级模态**，iframe 拦不住，键盘一定进得去 —— 它是这一层里唯一**保证**
+能拿到人输入的通道。
+
+纪律：原生框**阻塞式**，会冻结 veil 循环与物料物理。所以它只用于**模型真要等一个
+答案**的地方；**通知绝不能用它**（通知走 veil 的 text 或 chrome 的 log）。
+
+## 三层实现的归属
+
+| 层 | 实现 | 状态 |
 |---|---|---|
-| **`stage.html`** | 不 reparent + 只改样式 → 换格/换组**不重载** | 计时器 + 输入框状态丢失 = 假设死（这是地基，先验） |
-| `veil.html` | canvas 上 block / idle 两种生命周期能干净共存 | block 进场出现 idle 残影/擦除 = 抢占规则没定对 |
-| `background.html` | 文字遮罩够廉价；字符雨 canvas 2D 能 60fps | 掉到 30fps 以下 = 该换 WebGL backend |
+| webview | iframe 池 + 分组 + 桌面 + veil | **当前施工面**（本 node） |
+| qt compositor | QML 场景图合成器 | 设计定稿、实现待开工 |
+| os window | 真实 OS 窗口 | `moss-os-control` 的 `window_control`，**不在本 node** |
 
-`stage.html` 同时验 rail。页面是**验证假设的载体**，不是一次性 demo —— 被验证的结论进
-本文，代码将来搬进 node，不重写。
-
-### 验证方法论（dogfood，也是本 workstream 的判据）
-
-不写 mock 单测去模拟浏览器；**用 playwright node 驱动同一个验证页**，headed 窗口 + `say`
-语音解说，人机共同观察。这本身就是 screen-manager 要交付的能力（模型驱动屏幕 + 轨道协同）
-—— 用产品验证产品。bash 只能跑 headless 脚本再读输出，MCP 要手写 plumbing；这里 playwright
-/say/nodes 已经是 first-class channel，模型在 turn 内 emit→observe→调整。
-
-- **保活探针**：srcdoc iframe 内跑计时器 + 输入框，操作后看值是否保留。
-- **序位探针**：页面 `readout` 同时打印 DOM 顺序与按 grid 坐标排序的视觉顺序，两者分叉 = 重排没动 DOM。
-- **轨道协同**：每个 block 动作带声明时长，`say` 与之同轴 —— 语音和动作的相位差肉眼可判。
-
-### stage.html 已验证（2026-09-19）
-
-- ✅ 6 item → `cols=ceil(sqrt(6))` 的 3×2 大分屏
-- ✅ swap 重排不动 DOM（`视觉:` 变、`DOM:` 不变）
-- ✅ 全屏 = scrim 插层 + z-index，不改结构
-- ❌→✅ **全屏退出入口必须在 scrim 之上**（WD3）—— 首版把退出按钮放控制条，被 scrim
-  盖住点不到，dogfood 当场暴露
-
-### veil.html 已验证（2026-09-19）
-
-- ✅ 单 canvas 上 block / idle 两级生命周期干净共存（单 rAF 循环 + 每帧 `clearRect` → 无残影）
-- ✅ 抢占规则：block 进场 idle 让位、结束恢复；恢复不重放（idle 是时间函数，block 期间不推进）
-- ✅ await 边界：`block()` 按时长 resolve（mark→arrow→text 顺序解析 1200/1200/1500ms）
-- ✅ 语义坐标桥：`geometry()` 返回 item rect，`mark(item, region)` / `arrow(from, to)`
-  用语义坐标 —— 模型不算像素，这条桥是将来 vision 截图 → veil 绘制的地基
-
-### background.html 已验证（2026-09-19）
-
-- ✅ 字符雨 canvas 2D + 字形图集：ghost 说话时 **75fps**（判据：30fps 换 WebGL，目标 60fps）
-- ✅ MOSS 文字遮罩（`background-clip: text`）：单 DOM + GPU 合成，成本可忽略
-- ✅ 底噪不发：`rms_db` 低于阈值不产生字符 → 静默时冻结（KD6）
-- ✅ 数据面 = mock `AudioSampleTopic`（5Hz，`role`/`rms_db`/`spectrum_bins`/`waveform`）；
-  真实数据由 node 订阅 `types/topics/audio.py` 的 topic，页面零改动
-
-## 并行两条线
-
-- **页面线**（浏览器）验躯体；**Python 线**（`ScreenModel` + channel + notice/回执的纯单测）
-  不依赖浏览器，可并行。
-- 两线在 **ws 协议**处汇合，协议**复用 terminal / file_editor 的帧协议**（不发明），要早钉。
-- 「零依赖」不在页面里验：单独一步最小 `main.py` + HTTP 服务，确认父进程
-  `sys.executable` 下可跑。
+三者**语义同构、实现分层**。本文的四层栈、桌面、物理系统是**语义**，三档各自实现。
