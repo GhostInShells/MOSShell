@@ -506,9 +506,14 @@ class Dolores(Ghost):
           ghost's own edits (identity / purpose / behaviors / GROUND.md) are never clobbered.
         - plugin (``dsh_plugin`` / ``dsh_preset``) → always override, handled separately and not
           version-gated.
+
+        The home directory itself is materialized first: a deleted/never-created ghost home is the
+        normal way to reset an instance (delete the dir, restart → re-seed), so every write below
+        must find its parent in place rather than fail on a missing path.
         """
         if self._home is None:
             return None
+        self._home.mkdir(parents=True, exist_ok=True)
         target = self._meta.VERSION
         current = self._load_config().version
         if current == target:
@@ -553,7 +558,7 @@ class Dolores(Ghost):
         """Read-rewrite the version marker; every other ``.dolores.yml`` field is preserved.
 
         Seeds the stub config on a fresh home (init): the stub carries non-default config
-        (``dirs``, ``memento.force_tokens=0``) that the pydantic defaults must not substitute.
+        (``dirs``, ``memento.force_tokens``) that the pydantic defaults must not substitute.
         """
         marker = self._home / ".dolores.yml"
         if not marker.exists():

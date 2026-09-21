@@ -129,6 +129,28 @@ class TestStubsSync:
         assert len(session.outputs) == 1
         assert session.outputs[0].role == "system"
 
+    def test_init_materializes_missing_home(self, tmp_path: Path):
+        """home 目录本身不存在时也要能 init.
+
+        删掉 ghost home 目录重启是重建实例的正常路径 (比逐个删文件干净), 此时
+        .dolores.yml 缺失应当直接由 stub 种下 —— 但它的父目录得先被建出来, 否则
+        copy2 直接 FileNotFoundError.
+        """
+        home = tmp_path / "ghost_home"   # 刻意不创建
+        session = MockSession()
+        ghost = _dolores(home=home, session=session)
+
+        async def run():
+            async with ghost:
+                pass
+
+        asyncio.run(run())
+
+        assert home.is_dir()
+        config = yaml.safe_load((home / ".dolores.yml").read_text())
+        assert config["version"] == ghost._meta.VERSION
+        assert (home / "GROUND.md").exists()
+
     def test_load_startup_fallback_and_parse(self, tmp_path: Path):
         # matrix=None 时 mode_name 为空 → 回退 default.startup.yml.
         (tmp_path / "startup").mkdir(parents=True)

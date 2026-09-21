@@ -12,6 +12,7 @@ dsh:
   # home 省略 → 默认 ghost_home/.dsh
 
 memento:
-  # 验证期: force_tokens=0 → 每 turn commit (方便检测锚点数据). 稳定后调回正常阈值 (如 100000).
-  force_tokens: 0
+  # 距上次 commit 的窗口增量 token: 达 warn_tokens 提醒一次, 达 force_tokens 强制建锚点.
+  # 调试锚点数据时可临时置 force_tokens=0 (每 turn commit) —— 那只是本地临时开关, 不随仓库发布.
+  force_tokens: 100000
   warn_tokens: 50000
