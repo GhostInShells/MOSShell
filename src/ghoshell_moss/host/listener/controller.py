@@ -9,8 +9,8 @@
 注册一条 listener 级 on_recognition_result 观察者, 机械地把每个识别事件翻译成 listener
 signal 并广播.
 
-第三职责是运行时自解释: 追踪当前礼仪 (off/once/always), 提供合成快照 (``snapshot()``)
-与随身 channel (``as_channel()``), 让模型能判断"耳朵开没开、什么模式".
+第三职责是运行时自解释: 当前礼仪 = ``_active_etiquette`` 单一真值, 提供合成快照
+(``snapshot()``) 与随身 channel (``as_channel()``), 让模型能判断"耳朵开没开、什么礼仪".
 """
 import asyncio
 import contextlib
@@ -18,7 +18,6 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass
-from enum import Enum
 from typing import Callable, Optional
 
 import janus
@@ -56,7 +55,6 @@ from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
 
 __all__ = [
     "ListenerController",
-    "ListenEtiquette",
     "ListenerSnapshot",
     "StopDetectorFactory",
 ]
@@ -68,23 +66,16 @@ __all__ = [
 StopDetectorFactory = Callable[[EtiquetteSpec, Callable[[], None]], StopJudge]
 
 
-class ListenEtiquette(str, Enum):
-    """聆听礼仪 — 判停策略, 决定"什么时候算说完"."""
-
-    OFF = "off"
-    ONCE = "once"
-    ALWAYS = "always"
-    SCORED = "scored"
-
-
 @dataclass
 class ListenerSnapshot:
-    """合成快照 — 状态 (mode/listening) + ASR 当前参数值.
+    """合成快照 — 当前激活礼仪 + listening + ASR 当前参数值.
 
-    温数据, 进 notice, 变了才重发. 参数 schema 是冷数据 (进 instruction), 不在此.
+    ``etiquette`` 是当前激活礼仪的 name (无则 "off"); 与 ``_active_etiquette`` 同源,
+    不新增第二真值. 温数据, 进 notice, 变了才重发. 参数 schema 是冷数据 (进 instruction),
+    不在此.
     """
 
-    mode: str
+    etiquette: str
     listening: bool
     asr_params: dict
 
@@ -137,9 +128,10 @@ class ListenerController(ListenLifecycle):
         if signal_broadcast is not None:
             listener.on_recognition_result(self._emit_event)
 
-        self._mode: ListenEtiquette = ListenEtiquette.OFF
         self._channel: Optional[Channel] = None
         # 礼仪配置化: 当前激活礼仪 (首包/尾包协议读它) + config store (持久化).
+        # ``_active_etiquette`` 是"当前礼仪"的唯一真值 — snapshot / notice / signal
+        # 发射都从这里读, 不设第二真值.
         self._active_etiquette: Optional[EtiquetteSpec] = None
         self._config_store: Optional[ConfigStore] = None
         self._etiquette_config_cache: Optional[EtiquetteConfig] = None
@@ -299,6 +291,9 @@ class ListenerController(ListenLifecycle):
                     await asyncio.sleep(timeout)
             finally:
                 judge.close()
+                # 只在自己仍是当前礼仪时清 — 避免被下一次 run_etiquette 已切走后误清.
+                if self._active_etiquette is etiquette:
+                    self._set_active_etiquette(None)
 
     def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
         """出口位点装配: 按 StopSpec 组装判停单元 + 按 classifier.instruction 建 caller."""
@@ -332,6 +327,15 @@ class ListenerController(ListenLifecycle):
 
     # ── 聆听礼仪 ──
 
+    def _resolve_spec(self, name: str, fallback: EtiquetteSpec) -> EtiquetteSpec:
+        """按 name 从 config 取礼仪 (支持用户 upsert 的自定义版本), 缺则回退开箱 global.
+
+        便利方法 (once/always/scored) 与 activate command 共用同一份配置真值 —— 用户
+        用 set_etiquette_spec 改过的礼仪, 便利方法也读得到.
+        """
+        spec = self._etiquette_config().get(name)
+        return (spec if spec is not None else fallback).model_copy(deep=True)
+
     def once(
             self,
             *,
@@ -343,10 +347,11 @@ class ListenerController(ListenLifecycle):
 
         与 ``always`` 走同一条出口位点, 差别只在礼仪配置 (silence=0 → 首个 clause
         即端点) 与会话结束策略 (尾包后收). 立即返回 Future; 新 method 取消旧的状态机.
+
+        Base 走 config.get("once"), 缺则回退开箱 ``once``; ``keywords`` 覆盖 stop.keywords.
         """
-        self._mode = ListenEtiquette.ONCE
         self._apply_clause_vad(clause_vad)
-        spec = ONCE.model_copy(deep=True)
+        spec = self._resolve_spec("once", ONCE)
         if keywords:
             spec.stop.keywords = list(keywords)
         return self.run_etiquette(spec, timeout=timeout, until_tail=True)
@@ -363,10 +368,12 @@ class ListenerController(ListenLifecycle):
 
         立即返回 Future; ``timeout=None`` 表示常驻 (直到 ``stop()`` 或新礼仪取消).
         命中 keywords 的 clause 立刻 commit (不等静默).
+
+        Base 走 config.get("always"), 缺则回退开箱 ``always``; ``silence`` / ``keywords``
+        覆盖 stop 对应字段.
         """
-        self._mode = ListenEtiquette.ALWAYS
         self._apply_clause_vad(clause_vad)
-        spec = ALWAYS.model_copy(deep=True)
+        spec = self._resolve_spec("always", ALWAYS)
         spec.stop.silence = silence
         if keywords:
             spec.stop.keywords = list(keywords)
@@ -385,20 +392,23 @@ class ListenerController(ListenLifecycle):
         """分类器判停: 出口位点挂一个 classifier, 打分到阈值提前 commit, silence 兜底.
 
         需要构造时注入了 ``stop_caller_factory``, 否则 classifier 静默缺席 (退化为 always).
+
+        Base 走 config.get("scored"), 缺则回退开箱 ``scored``; classifier 缺席时
+        ``threshold`` / ``delay`` 无处覆盖, 静默忽略 (退化即接受).
         """
-        self._mode = ListenEtiquette.SCORED
         self._apply_clause_vad(clause_vad)
-        spec = SCORED.model_copy(deep=True)
+        spec = self._resolve_spec("scored", SCORED)
         spec.stop.silence = silence
-        spec.stop.classifier.threshold = threshold
-        spec.stop.classifier.delay = delay
+        if spec.stop.classifier is not None:
+            spec.stop.classifier.threshold = threshold
+            spec.stop.classifier.delay = delay
         if keywords:
             spec.stop.keywords = list(keywords)
         return self.run_etiquette(spec, timeout=timeout)
 
     def stop(self) -> None:
-        """停止聆听: 取消活跃 session, 回到 off."""
-        self._mode = ListenEtiquette.OFF
+        """停止聆听: 取消活跃 session."""
+        self._set_active_etiquette(None)
         self._cancel_active()
 
     def pause(self, toggle: bool = True) -> None:
@@ -409,10 +419,15 @@ class ListenerController(ListenLifecycle):
             self.start_default_etiquette()
 
     def snapshot(self) -> ListenerSnapshot:
-        """合成当前状态快照 (mode + listening + ASR 参数值)."""
+        """合成当前状态快照 (active etiquette name + listening + ASR 参数值).
+
+        ``etiquette`` = 当前激活礼仪 name, 无激活则 ``"off"`` — 与 ``_active_etiquette``
+        同源, 无第二真值.
+        """
         info = self._asr.get_info()
+        active = self._active_etiquette
         return ListenerSnapshot(
-            mode=self._mode.value,
+            etiquette=active.name if active is not None else "off",
             listening=self._listener.is_listening(),
             asr_params=dict(info.params),
         )

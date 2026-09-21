@@ -14,6 +14,8 @@ to make it selectable by name.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from ghoshell_moss.contracts.configs import ConfigType
@@ -22,6 +24,7 @@ from ghoshell_moss.core.blueprint.mindflow import Priority
 __all__ = [
     "OnsetSpec",
     "DeliverSpec",
+    "DeliverMode",
     "ClassifierSpec",
     "StopSpec",
     "RetainSpec",
@@ -36,6 +39,15 @@ __all__ = [
     "keyword_end",
     "scored",
 ]
+
+
+#: Deliver mode — the loss-side behavior when the deliver signal cannot preempt.
+#: Values align 1:1 with :class:`ghoshell_moss.core.blueprint.mindflow.ChallengeMode`:
+#: - ``""`` — default: buffer suppressed on preempt failure
+#: - ``"aside"`` — inject messages only, never take over attention
+#: - ``"notify"`` — buffer instead of suppress on preempt failure (answer when idle)
+#: - ``"next"`` — buffer + force next-frame observation (take the next turn)
+DeliverMode = Literal["", "aside", "notify", "next"]
 
 
 class OnsetSpec(BaseModel):
@@ -70,10 +82,14 @@ class DeliverSpec(BaseModel):
         default=Priority.INFO,
         description="preempt tier of the deliver signal",
     )
-    mode: str = Field(
+    mode: DeliverMode = Field(
         default="notify",
-        description="loss-side behavior when the signal cannot preempt: "
-                    "notify (buffer — answer when idle) / aside (deliver without taking over) / '' (default)",
+        description="loss-side behavior when the deliver signal cannot preempt "
+                    "(aligns with mindflow ChallengeMode): "
+                    "'notify' (buffer — answer when idle) / "
+                    "'aside' (inject without taking over) / "
+                    "'next' (buffer + take next turn) / "
+                    "'' (default — suppress on preempt failure)",
     )
 
 

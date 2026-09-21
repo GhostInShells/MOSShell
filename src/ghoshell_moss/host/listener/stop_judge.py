@@ -74,7 +74,6 @@ class StopJudge:
             judge_delay: float = 0.3,
             commit: Callable[[], None],
             keywords: Sequence[str] | None = None,
-            context: str = "",
             on_score: Callable[[StopScoreObservation], None] | None = None,
             logger: LoggerItf | None = None,
     ) -> None:
@@ -85,7 +84,6 @@ class StopJudge:
         self._judge_delay = judge_delay
         self._commit = commit
         self._keywords = list(keywords) if keywords else []
-        self._context = context
         self._on_score = on_score
         self._logger = logger or logging.getLogger("moss")
         self._segment_id: str | None = None
@@ -203,9 +201,4 @@ class StopJudge:
 
     def _build_messages(self, clauses: list[str]) -> list[Message]:
         """One content block per clause — the accumulated prefix hits the prompt cache."""
-        messages: list[Message] = []
-        if self._context:
-            messages.append(Message.new().with_content(f"<context>\n{self._context}\n</context>"))
-        for clause in clauses:
-            messages.append(Message.new().with_content(clause))
-        return messages
+        return [Message.new().with_content(clause) for clause in clauses]
