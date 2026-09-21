@@ -8,5 +8,5 @@ cd nodes/visions
 uv sync
 ```
 
-当前服务的 node：camera（首批）。后续 vision node 加入时，在 `pyproject.toml` 追加
-对应依赖，无需新建 venv。（屏幕截屏不是 vision，归 `nodes/os/`。）
+当前服务的 node：camera、stream、push。后续 vision node 加入时，在 `pyproject.toml` 追加
+对应依赖，无需新建 venv。

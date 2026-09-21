@@ -8,8 +8,10 @@ vision 是一级开箱能力：主力模型能直接消费图像 —— 图像�
 
 ## 家族契约（每个 vision node 遵循）
 
-1. **设备归属在 node 生命周期**：一个 node = 一个设备，多设备 = 多 node 实例。设备 open 于
-   node start、close 于 node stop，不惰性开关。占用指示（如摄像头绿灯）因此是诚实的。
+1. **设备归属按 node 形态分两种**：单设备 node（如 `camera`）一个 node = 一个设备，设备 open
+   于 node start、close 于 node stop；supervisor node（如 `push`）一个 producer 子进程 = 一个设备，
+   node 只持有进程和流地址。占用指示（如摄像头绿灯）因此都诚实 —— 绿灯亮 = 设备确实被某个
+   producer / node 开着。不惰性开关。
 
 2. **config 三类分开**：node config（可调参数，ghost 在安全边界内自配、校验；走 node 级 env，
    dotenv 原生加载）、persistent config（授权 / 知情同意，落在 warrant 的存储，不进 node env）、
@@ -30,16 +32,23 @@ vision 是一级开箱能力：主力模型能直接消费图像 —— 图像�
 
 ## 授权（知情同意）
 
-摄像头、截屏是隐私敏感感知。授权状态是 **persistent config**（契约 2），持久化但不可由
-ghost 自行调。当前的 `authorize` 命令与启动 announce 是轻量种子，**不阻断感知** —— 作用是让
-双方都知道发生了什么（`qa` 交互 + 事件通知），不是审查。完整机制挂在 warrant 抽象上
-（`moss codex blueprint warrant`），是已知扩展点。
+摄像头、截屏是隐私敏感感知。家族内两套姿态并存：
+
+- **`push`（已落地）**：把知情同意做成**第一等机制** —— 模型 `request` 一路流，人类在 node
+  自带页面上 accept / deny，活着的流双方都能停。审批是流出生的那一刻，活着和可关闭才是它的
+  一生。这是**交互式审批闸口，不是安全边界**（warrant 同款语义：模型可自我迭代，边界是声明的、
+  非强制的）。
+- **`camera`（未完成）**：当前只有 `authorize` 命令 + 启动 announce 作为轻量种子，**不阻断感知**，
+  作用仅是让双方都知道发生了什么，不是审查。**权限治理尚未补齐** —— 可参考 `push` 的审批闸口
+  （accept / deny / 双方可停）作为对照，落 warrant 存储（`moss codex blueprint warrant`）是
+  已知扩展点。
 
 ## 子 node
 
 | node | 路径 | 感知面 |
 |---|---|---|
-| camera | `nodes/visions/camera` | 相机流生产者（cv2 → MJPEG 流，供 stream node 消费）+ 人脸 FaceTopic，无 channel |
+| camera | `nodes/visions/camera` | 相机常驻感知（cv2 → MJPEG 流）+ 人脸 FaceTopic（面向关联设备，不进模型 context），无 channel |
+| push | `nodes/visions/push` | 统一本机视觉推流（screen / camera）—— 申请→审批→可停的一等对象，supervisor 持有 ffmpeg producer 子进程，人类页面预览 + 关闭 |
 | stream | `nodes/visions/stream` | 流感知（ffmpeg ingest 任意地址：RTMP/RTSP/SRT/MJPEG）+ 尾帧 + 发射点阈值门 |
 
 ## 依赖分组备注
@@ -48,6 +57,6 @@ ghost 自行调。当前的 `authorize` 命令与启动 announce 是轻量种子
 能力，共用家族 venv 是合理取舍。
 
 注：摄像头与屏幕截屏在流感知视角下**都是推流模块**（producer）—— 一个把设备、一个把
-屏幕推成地址；`stream` node 消费任意地址。屏幕截屏的"能力"由"stream node + 屏幕推流模块"
-组合而来，不再是 `nodes/os/` 的独立控制面（见 feature `vision-stream`，取代
-`moss-os-control` KD4）。
+屏幕推成地址；`stream` node 消费任意地址。`camera`（常驻感知，含人脸）与 `push`（按需、
+consent-gated 推流）是**两种不同生命周期**，并存不互斥（见 feature `vision-push` 与
+`vision-stream`）。
