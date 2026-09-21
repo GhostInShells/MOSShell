@@ -55,8 +55,11 @@ class MOSSRuntimeREPLState(REPLState):
 
 class MossRuntimeTUI(MossHostTUI[MOSShellRuntime]):
 
+    def __init__(self, host=None, *, speech: bool = False, listen: bool = False):
+        super().__init__(host=host, speech=speech, listen=listen)
+
     def _get_runtime(self) -> MOSShellRuntime:
-        return self.host.run()
+        return self.host.run(speech=self._speech, listen=self._listen)
 
     def _get_session(self):
         return self.runtime.session
@@ -66,6 +69,8 @@ class MossRuntimeTUI(MossHostTUI[MOSShellRuntime]):
 
     def create_states(self) -> Iterable[TUIState]:
         yield MOSSRuntimeREPLState(self.host, self.runtime)
+        from ghoshell_moss.host.tui_entries.voice_state import VoiceState
+        yield VoiceState(self.runtime)
 
 
 if __name__ == "__main__":

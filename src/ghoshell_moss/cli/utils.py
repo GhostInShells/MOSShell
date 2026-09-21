@@ -32,6 +32,8 @@ __all__ = [
     'set_ai_mode',
     'is_ai_mode',
     'show_status',
+    'VOICE_CHOICES',
+    'voice_flags',
 ]
 
 _ai_mode = False
@@ -154,6 +156,24 @@ def show_status(message: str):
     else:
         with _real_console.status(f"[dim]{message}[/dim]") as status:
             yield status
+
+
+VOICE_CHOICES = ("none", "speak", "listen", "all")
+"""--voice 取值: none=关, speak=只说, listen=只听, all=交错 (听+说)."""
+
+
+def voice_flags(voice: str) -> tuple[bool, bool]:
+    """Map ``--voice`` to the ``(speech, listen)`` runtime axes.
+
+    Listening is a privacy-sensitive action, so the out-of-box default (``none``)
+    enables neither; ``speak`` is output-only and safe on its own.
+    """
+    return {
+        "none": (False, False),
+        "speak": (True, False),
+        "listen": (False, True),
+        "all": (True, True),
+    }[voice]
 
 
 def echo(message: str):

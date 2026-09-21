@@ -26,14 +26,22 @@ from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
 from ghoshell_moss.core.mindflow.aside_nucleus import new_aside_signal
 from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.host import Host
+from ghoshell_moss.cli.utils import voice_flags
 
 
 @click.group(invoke_without_command=True)
 @click.option("--mode", default="default", help="MOSS runtime mode.")
 @click.option("--scope", default="default", help="Network scope for session isolation.")
 @click.option("--network", default="local", help="Network driver.")
+@click.option(
+    "--voice",
+    type=click.Choice(["none", "speak", "listen", "all"]),
+    default="none",
+    show_default=True,
+    help="Voice wiring: none=off, speak=output only, listen=input only, all=interleaved.",
+)
 @click.pass_context
-def ghost_run_main(ctx, mode, scope, network):
+def ghost_run_main(ctx, mode, scope, network, voice):
     """Launch a Ghost and inject input signals.
 
     Without a subcommand, lists all available Ghosts.
@@ -42,6 +50,7 @@ def ghost_run_main(ctx, mode, scope, network):
     ctx.obj["mode"] = mode
     ctx.obj["scope"] = scope
     ctx.obj["network"] = network
+    ctx.obj["voice"] = voice
     if ctx.invoked_subcommand is None:
         _resolve(ctx.obj, None)
 
@@ -72,7 +81,7 @@ def run_cmd(ctx, ghost, surface):
     if surface == "tui":
         _run_tui(host, ghost_name, ctx.obj)
     elif surface == "output":
-        _run_output(host, ghost_name)
+        _run_output(host, ghost_name, ctx.obj)
     else:  # log
         _run_log(host, ghost_name, ctx.obj)
 
@@ -220,12 +229,14 @@ def _run_tui(host: Host, ghost_name: str, ctx: dict) -> None:
     )
     from ghoshell_moss.host.tui_entries.ghost_ui import GhostTUI
 
-    GhostTUI(host=host).run()
+    speech, listen = voice_flags(ctx["voice"])
+    GhostTUI(host=host, speech=speech, listen=listen).run()
 
 
-def _run_output(host: Host, ghost_name: str) -> None:
+def _run_output(host: Host, ghost_name: str, ctx: dict) -> None:
     _print_env_header(host)
-    ghost_runtime = host.run_ghost(ghost_name)
+    speech, listen = voice_flags(ctx["voice"])
+    ghost_runtime = host.run_ghost(ghost_name, speech=speech, listen=listen)
     queue: janus.Queue = janus.Queue()
 
     async def _main() -> None:
@@ -254,7 +265,8 @@ def _run_log(host: Host, ghost_name: str, ctx: dict) -> None:
 
     _print_env_header(host)
     get_console_logger(logging.INFO)
-    ghost_runtime = host.run_ghost(ghost_name)
+    speech, listen = voice_flags(ctx["voice"])
+    ghost_runtime = host.run_ghost(ghost_name, speech=speech, listen=listen)
     ghost_runtime.moss.matrix.logger.info(
         "MOSS ghost log mode running (ghost=%s mode=%s scope=%s network=%s)",
         ghost_name, ctx["mode"], ctx["scope"], ctx["network"],

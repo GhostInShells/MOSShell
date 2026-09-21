@@ -307,12 +307,16 @@ class GhostTUI(MossHostTUI[IGhostRuntime]):
     Start with ``moss-ghost run <name>`` or configure via Environment.
     """
 
-    def __init__(self, host: IHost | None = None):
-        super().__init__(host=host or IHost.discover())
+    def __init__(self, host: IHost | None = None, *, speech: bool = False, listen: bool = False):
+        super().__init__(host=host or IHost.discover(), speech=speech, listen=listen)
         self._safe_mode_wired: bool = False
 
     def _get_runtime(self) -> IGhostRuntime:
-        return self.host.run_ghost(self.host.env.ghost_name)
+        return self.host.run_ghost(
+            self.host.env.ghost_name,
+            speech=self._speech,
+            listen=self._listen,
+        )
 
     def _get_session(self):
         return self.runtime.moss.session
@@ -407,6 +411,8 @@ class GhostTUI(MossHostTUI[IGhostRuntime]):
         yield GhostOutputState(self.runtime)
         from ghoshell_moss.host.tui_entries.moss_runtime_ui import MOSSRuntimeREPLState
         yield MOSSRuntimeREPLState(self.host, self.runtime.moss, name="shell")
+        from ghoshell_moss.host.tui_entries.voice_state import VoiceState
+        yield VoiceState(self.runtime.moss)
 
 
 if __name__ == "__main__":

@@ -31,10 +31,17 @@ import click
     default='local',
     help='Network driver.',
 )
+@click.option(
+    '--voice',
+    type=click.Choice(['none', 'speak', 'listen', 'all']),
+    default='none',
+    show_default=True,
+    help='Voice wiring: none=off, speak=output only, listen=input only, all=interleaved.',
+)
 @click.pass_context
-def moss_shell_main(ctx, mode: str, scope: str, network: str):
+def moss_shell_main(ctx, mode: str, scope: str, network: str, voice: str):
     """MOSS Shell runtime — interactive TUI debug, MCP server, or headless log."""
-    ctx.obj = {'mode': mode, 'scope': scope, 'network': network}
+    ctx.obj = {'mode': mode, 'scope': scope, 'network': network, 'voice': voice}
     if ctx.invoked_subcommand is None:
         ctx.invoke(tui)
 
@@ -61,9 +68,11 @@ def tui(ctx):
     )
     from ghoshell_moss.host import Host
     from ghoshell_moss.host.tui_entries.moss_runtime_ui import MossRuntimeTUI
+    from ghoshell_moss.cli.utils import voice_flags
 
+    speech, listen = voice_flags(ctx.obj['voice'])
     host = Host(env=_build_env(ctx))
-    ui = MossRuntimeTUI(host=host)
+    ui = MossRuntimeTUI(host=host, speech=speech, listen=listen)
     ui.run()
 
 
@@ -112,9 +121,11 @@ def log(ctx):
 
     from ghoshell_moss.core.helpers.logger import get_console_logger
     from ghoshell_moss.host import Host
+    from ghoshell_moss.cli.utils import voice_flags
 
+    speech, listen = voice_flags(ctx.obj['voice'])
     host = Host(env=_build_env(ctx))
-    runtime = host.run()
+    runtime = host.run(speech=speech, listen=listen)
 
     # project.bootstrap 已挂 moss.log file handler; 此时补 console handler.
     get_console_logger(logging.INFO)

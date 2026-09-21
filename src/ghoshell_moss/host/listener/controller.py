@@ -68,15 +68,16 @@ StopDetectorFactory = Callable[[EtiquetteSpec, Callable[[], None]], StopJudge]
 
 @dataclass
 class ListenerSnapshot:
-    """合成快照 — 当前激活礼仪 + listening + ASR 当前参数值.
+    """合成快照 — 当前激活礼仪 + listening + 人类锁 + ASR 当前参数值.
 
-    ``etiquette`` 是当前激活礼仪的 name (无则 "off"); 与 ``_active_etiquette`` 同源,
-    不新增第二真值. 温数据, 进 notice, 变了才重发. 参数 schema 是冷数据 (进 instruction),
-    不在此.
+    ``etiquette`` = 当前激活礼仪 name (无则 "off") 与 ``_active_etiquette`` 同源;
+    ``paused`` = 人类锁 (True 时 channel 从模型面消失, run_etiquette 被门控). 温数据,
+    进 notice, 变了才重发. 参数 schema 是冷数据 (进 instruction), 不在此.
     """
 
     etiquette: str
     listening: bool
+    paused: bool
     asr_params: dict
 
     def render_notice(self) -> str:
@@ -133,6 +134,10 @@ class ListenerController(ListenLifecycle):
         # ``_active_etiquette`` 是"当前礼仪"的唯一真值 — snapshot / notice / signal
         # 发射都从这里读, 不设第二真值.
         self._active_etiquette: Optional[EtiquetteSpec] = None
+        # 人类锁 — pause(True) 设置, pause(False) 释放. 只 TUI/人类主权面写.
+        # 锁着时: run_etiquette 门控 (log + no-op) + as_channel() 的 chan.available
+        # 返回 False → 整个 channel 从模型面消失 (无残留 affordance).
+        self._human_paused: bool = False
         self._config_store: Optional[ConfigStore] = None
         self._etiquette_config_cache: Optional[EtiquetteConfig] = None
         # clause → topic 装线 (懒, 由 with_topic_service 启动).
@@ -225,6 +230,21 @@ class ListenerController(ListenLifecycle):
         if spec is not None:
             self._buffer.resize(spec.retain.history)
 
+    def activate_etiquette(self, name: str = "") -> str:
+        """按 name 激活礼仪并启动聆听; 空 name 用当前 default. 返回人类可读结果.
+
+        channel 的 ``activate`` command 与 TUI 控制面共用此单一真值 — 都走
+        ``run_etiquette``, 且受人类锁 (``_human_paused``) 门控.
+        """
+        config = self._etiquette_config()
+        spec = config.get(name) if name else config.active()
+        if spec is None:
+            return f"etiquette {name!r} not defined"
+        if name:
+            config.activate(name)
+        self.run_etiquette(spec)
+        return f"activated '{spec.name}'"
+
     # ── 礼仪驱动状态机 (纯配置, 持续监听 = 另一种 always) ──
 
     def run_etiquette(
@@ -238,7 +258,17 @@ class ListenerController(ListenLifecycle):
 
         ``until_tail=True`` 时会话在尾包处理后结束 (听一次); 否则常驻到 timeout /
         被新礼仪取消.
+
+        人类锁 (``_human_paused``) 门控: 锁着时记 warning + 返回已完成 future,
+        不真启动 —— 保证模型侧 channel 消失的 same-truth 与运行时行为一致.
         """
+        if self._human_paused:
+            self._logger.warning(
+                "%s run_etiquette blocked — listener is paused by human", self._log_prefix,
+            )
+            fut: asyncio.Future = asyncio.get_event_loop().create_future()
+            fut.set_result(None)
+            return fut
         self._set_active_etiquette(etiquette)
         self._cancel_active()
         task = asyncio.create_task(
@@ -413,23 +443,33 @@ class ListenerController(ListenLifecycle):
         self._cancel_active()
 
     def pause(self, toggle: bool = True) -> None:
-        """急停/恢复 (ListenLifecycle 表面): True 停听, False 恢复默认礼仪."""
+        """人类锁 (ListenLifecycle 表面): True 上锁 + 停听, False 释放 + 恢复默认礼仪.
+
+        锁着期间 ``run_etiquette`` 被门控 + ``as_channel()`` 的 available 返回 False
+        → 整个 listener channel 从模型面消失. TUI / 人类主权路径独占, 不给模型钥匙.
+        """
+        self._human_paused = toggle
         if toggle:
             self.stop()
         else:
             self.start_default_etiquette()
 
-    def snapshot(self) -> ListenerSnapshot:
-        """合成当前状态快照 (active etiquette name + listening + ASR 参数值).
+    def is_paused(self) -> bool:
+        """当前是否被人类锁定 (channel 消失, run_etiquette 被门控)."""
+        return self._human_paused
 
-        ``etiquette`` = 当前激活礼仪 name, 无激活则 ``"off"`` — 与 ``_active_etiquette``
-        同源, 无第二真值.
+    def snapshot(self) -> ListenerSnapshot:
+        """合成当前状态快照 (active etiquette name + listening + paused + ASR 参数值).
+
+        ``etiquette`` = 当前激活礼仪 name, 无激活则 ``"off"``; ``paused`` = 人类锁 —
+        与 ``_active_etiquette`` / ``_human_paused`` 同源, 无第二真值.
         """
         info = self._asr.get_info()
         active = self._active_etiquette
         return ListenerSnapshot(
             etiquette=active.name if active is not None else "off",
             listening=self._listener.is_listening(),
+            paused=self._human_paused,
             asr_params=dict(info.params),
         )
 
@@ -449,7 +489,8 @@ class ListenerController(ListenLifecycle):
         """懒装线: 把识别到的 CLAUSE 发布成 ClauseTopic 到 ``service``.
 
         启动一个内部持有的 drain task: ``listener.on_recognition_result`` 的回调把 CLAUSE
-        结果线程安全入队, task 出队 pub. 说话人身份 role 固定 user (听侧).
+        结果线程安全入队, task 出队 pub. 听侧固定 ``role="user"``; speaker_id /
+        speaker_name 留空 (声纹预留, 启动时未知, 不 mock).
         """
         publisher = service.model_publisher(creator="listener", model=ClauseTopic)
         queue: janus.Queue = janus.Queue()
@@ -631,6 +672,10 @@ class ListenerController(ListenLifecycle):
         return chan
 
     def _register_channel_commands(self, chan: MutableChannel) -> None:
+        # 人类锁门控 — 锁着时整个 channel 从模型面消失 (无残留命令 / notice), 不给
+        # 模型撤销人类主权的路径; 解锁后完整回归.
+        chan.build.available(lambda: not self._human_paused)
+
         @chan.build.instruction
         def instruction() -> str:
             info = self._asr.get_info()
@@ -669,14 +714,7 @@ class ListenerController(ListenLifecycle):
         @chan.build.command(blocking=False)
         async def activate(name: str = "") -> str:
             """Run an etiquette — empty name runs the active/default one."""
-            config = self.etiquette_config()
-            spec = config.get(name) if name else config.active()
-            if spec is None:
-                return f"etiquette {name!r} not defined"
-            if name:
-                config.activate(name)
-            self.run_etiquette(spec)
-            return f"activated '{spec.name}'"
+            return self.activate_etiquette(name)
 
         @chan.build.command(blocking=False)
         async def stop() -> str:

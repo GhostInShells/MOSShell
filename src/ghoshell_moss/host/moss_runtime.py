@@ -522,6 +522,11 @@ class ShellRuntimeImpl(MOSShellRuntime):
             asr=listener.asr(),
             logger=self._matrix.logger,
         )
+        # 单例注册: TUI voice state / 其它消费面从 container 拿同一个 controller.
+        self._matrix.container.set(ListenerController, self._listen_controller)
+        # 听侧 channel 挂进 shell main — 模型看到"一个语音面"的命令 (activate/stop/
+        # get_etiquette/get_transcript/configure_asr), 受 pause 人类锁的 available 门控.
+        self._ctml_shell.main_channel.import_channels(self._listen_controller.as_channel())
 
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):
@@ -680,10 +685,12 @@ class ShellRuntimeImpl(MOSShellRuntime):
 
     @contextlib.asynccontextmanager
     async def _listen_lifecycle(self):
-        """听侧治理: enter ListenerController (启动 capture+asr) + wire AEC far 桥.
+        """听侧治理: enter ListenerController (启动 capture+asr) + wire AEC far 桥 + clause topic.
 
         仅当 listener resolve 成功 (controller 非 None) 时激活. AEC far 桥在 controller
-        之前 wire, 保证 capture 启动的首帧就已消回声.
+        之前 wire, 保证 capture 启动的首帧就已消回声. clause topic 装线在 controller
+        生命周期内, 识别到的 CLAUSE 广播成 ClauseTopic(role=user), 与说侧桥的
+        role=ghost 汇成同一条交错对话轨迹.
         """
         controller = self._listen_controller
         if controller is None:
@@ -692,6 +699,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
         aec_cleanup = self._wire_aec_far()
         try:
             async with controller:
+                await controller.with_topic_service(self._matrix.session.topics)
                 yield
         finally:
             aec_cleanup()

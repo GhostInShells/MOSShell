@@ -384,10 +384,17 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             self,
             host: IHost | None = None,
             prompt_style: Style = None,
+            *,
+            speech: bool = False,
+            listen: bool = False,
     ):
         self.kb: KeyBindingsBase | None = None
         self._style = prompt_style or DEFAULT_PROMPT_STYLE
         self.host: IHost | None = host or IHost.discover()
+        # voice 配置 — CLI --voice 映射到 (speech, listen) 两轴. 默认全关: 音频聆听
+        # 是隐私敏感动作, 开箱最小配置下不自动开麦. 子类 _get_runtime 用它装线.
+        self._speech = speech
+        self._listen = listen
         self.runtime: RUNTIME = self._get_runtime()
         self._closing_event = ThreadSafeEvent()
         self._event_loop: asyncio.AbstractEventLoop | None = None

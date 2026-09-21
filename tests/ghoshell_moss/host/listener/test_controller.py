@@ -451,6 +451,50 @@ async def test_pause_resumes_default_etiquette():
 
 
 # ============================================================
+# 人类锁 (pause) — channel 消失 + run_etiquette 门控
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_paused_run_etiquette_is_gated():
+    """锁着时 run_etiquette 返回已完成 future, 不启动 listener session."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    controller.pause(True)  # 上锁
+
+    fut = controller.always(silence=5.0)
+    await fut  # 已完成 future, 立刻返回
+    assert not listener.listened.is_set()  # listener.listen() 未被调用
+    assert controller.active_etiquette() is None  # 未激活任何礼仪
+
+
+@pytest.mark.asyncio
+async def test_paused_channel_is_unavailable_to_model():
+    """锁着时 channel available=False → 整个 channel 从模型面消失."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    channel = controller.as_channel()
+
+    assert channel.build.is_available() is True  # 未锁, 模型可见
+    controller.pause(True)
+    assert channel.build.is_available() is False  # 锁后消失
+
+
+@pytest.mark.asyncio
+async def test_paused_reflected_in_snapshot():
+    """人类锁进入 snapshot — TUI / 日志与 controller 同源."""
+    listener = _MockListener()
+    # snapshot 读 listener.is_listening; mock 补上 default False.
+    listener.is_listening = lambda: False  # type: ignore[method-assign]
+    controller = ListenerController(listener=listener, asr=_MockASR())
+
+    assert controller.snapshot().paused is False
+    controller.pause(True)
+    assert controller.snapshot().paused is True
+    assert controller.is_paused() is True
+
+
+# ============================================================
 # segment buffer 感知 (retain 协议) — notice 门控
 # ============================================================
 
