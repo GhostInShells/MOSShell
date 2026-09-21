@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost In Zhihu</title>
+<style>
+  :root {
+    --bg:#0b0e14; --panel:#121722; --panel-2:#0e131c; --border:#232a38; --border-2:#2c3547;
+    --fg:#dbe2ee; --dim:#7d8aa0; --faint:#59657a;
+    --accent:#2f7cff; --accent-2:#37d1d1; --owner:#e8a33d; --blue:#4da3ff;
+    --green:#3ddc8f; --red:#ff5c6b; --amber:#e8a33d;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  button { font:inherit; cursor:pointer; }
+  .mono, .atype, .aid, .json, .code, .arg { font-family:ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .dim { color:var(--dim); }
+
+  /* ---- header ---- */
+  header.head { display:flex; align-items:center; gap:14px; padding:14px 22px;
+    border-bottom:1px solid var(--border); background:linear-gradient(180deg,#11161f,#0b0e14); }
+  .logo { width:40px; height:40px; border-radius:11px; flex:0 0 auto;
+    display:grid; place-items:center; color:#fff; font-size:21px; font-weight:700;
+    background:linear-gradient(135deg,#0f6fff,#37d1d1);
+    box-shadow:0 0 0 1px rgba(55,209,209,.35), 0 0 18px rgba(47,124,255,.35); }
+  .brand { display:flex; flex-direction:column; line-height:1.15; }
+  .title { font-size:16px; font-weight:700; letter-spacing:.2px; }
+  .subtitle { font-size:11px; color:var(--dim); letter-spacing:.4px; margin-top:2px; }
+  .head-right { margin-left:auto; display:flex; align-items:center; gap:14px; }
+  .chip { padding:4px 11px; border-radius:999px; font-size:12px; border:1px solid var(--border-2);
+    background:var(--panel-2); color:var(--dim); white-space:nowrap; }
+  .chip.authed { color:var(--green); border-color:rgba(61,220,143,.4); background:rgba(61,220,143,.08); }
+  .mode-wrap { display:flex; align-items:center; gap:8px; }
+  .mode-label { font-size:12px; color:var(--dim); }
+  .mode-label.on { color:var(--green); }
+  .mode-label.off { color:var(--amber); }
+
+  /* toggle switch */
+  .switch { position:relative; width:40px; height:22px; display:inline-block; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; inset:0; border-radius:22px; background:#232a38; border:1px solid var(--border-2);
+    transition:.2s; }
+  .slider:before { content:""; position:absolute; left:2px; top:2px; width:16px; height:16px;
+    border-radius:50%; background:var(--dim); transition:.2s; }
+  .switch input:checked + .slider { background:rgba(232,163,61,.25); border-color:rgba(232,163,61,.5); }
+  .switch input:checked + .slider:before { transform:translateX(18px); background:var(--amber); }
+
+  /* ---- main ---- */
+  .wrap { max-width:920px; margin:0 auto; padding:20px 22px 60px; }
+  .banner { display:none; margin-bottom:16px; padding:11px 14px; border-radius:8px;
+    background:rgba(232,163,61,.08); border:1px solid rgba(232,163,61,.35); color:var(--amber); font-size:13px; }
+  body.disabled .banner { display:block; }
+  body.disabled #actions, body.disabled #auth { opacity:.4; pointer-events:none; }
+
+  /* auth card */
+  .auth-card { background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    padding:22px; margin-bottom:18px; }
+  .auth-title { font-size:15px; font-weight:700; margin:0 0 8px; }
+  .auth-desc { color:var(--dim); font-size:13px; margin:0 0 16px; line-height:1.6; }
+  .row { display:flex; gap:10px; align-items:center; }
+  input[type=password], input[type=text] { flex:1; background:#080b12; color:var(--fg);
+    border:1px solid var(--border-2); border-radius:8px; padding:9px 12px; font:inherit; }
+  input:focus { outline:none; border-color:var(--accent); }
+  button.ok { background:#123d28; border:1px solid rgba(61,220,143,.5); color:var(--green); }
+  button.no { background:#3a1d22; border:1px solid rgba(255,92,107,.5); color:var(--red); }
+  button.run { background:#12263f; border:1px solid rgba(47,124,255,.5); color:var(--blue); }
+  button { background:#1a2130; color:var(--fg); border:1px solid var(--border-2);
+    border-radius:8px; padding:7px 14px; font-size:13px; }
+  button:hover { filter:brightness(1.12); }
+
+  /* action cards */
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:center; gap:9px; padding:12px 16px;
+    border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .aid { color:var(--faint); font-size:12px; }
+  .atype { font-weight:600; font-size:14px; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:9px; font-size:11px;
+    border:1px solid var(--border-2); }
+  .tag.platform { color:var(--blue); background:rgba(77,163,255,.08); border-color:rgba(77,163,255,.3); }
+  .tag.owner { color:var(--owner); background:rgba(232,163,61,.08); border-color:rgba(232,163,61,.3); }
+  .state { display:inline-block; padding:1px 8px; border-radius:9px; font-size:11px;
+    border:1px solid var(--border-2); }
+  .state.pending { color:var(--amber); background:rgba(232,163,61,.1); border-color:rgba(232,163,61,.35); }
+  .state.running { color:var(--blue); background:rgba(77,163,255,.1); border-color:rgba(77,163,255,.35); }
+  .state.done { color:var(--green); background:rgba(61,220,143,.1); border-color:rgba(61,220,143,.35); }
+  .state.rejected, .state.error { color:var(--red); background:rgba(255,92,107,.1); border-color:rgba(255,92,107,.35); }
+  .card-meta { padding:8px 16px 0; display:flex; flex-wrap:wrap; gap:6px; }
+  .arg { font-size:11.5px; color:var(--dim); background:var(--panel-2);
+    border:1px solid var(--border); border-radius:6px; padding:1px 7px; }
+  .card-error { margin:8px 16px 0; padding:8px 10px; border-radius:7px; font-size:12px;
+    color:var(--red); background:rgba(255,92,107,.07); border:1px solid rgba(255,92,107,.3); }
+  .card-actions { padding:10px 16px 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .auto { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); cursor:pointer; }
+  .auto input { accent-color:var(--accent); }
+
+  /* tabs */
+  .tabs { display:flex; gap:2px; padding:0 12px; border-bottom:1px solid var(--border);
+    background:var(--panel-2); }
+  .tab { background:none; border:none; border-bottom:2px solid transparent; color:var(--dim);
+    padding:9px 13px; font-size:12.5px; border-radius:0; }
+  .tab:hover { color:var(--fg); }
+  .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .panes { padding:14px 16px; }
+  .pane { display:none; }
+  .pane.active { display:block; animation:fade .18s ease; }
+  @keyframes fade { from{opacity:0} to{opacity:1} }
+
+  /* data views */
+  .json { background:#080b12; padding:12px; border-radius:8px; overflow:auto;
+    max-height:420px; font-size:12px; margin:0; border:1px solid var(--border); }
+  .code { width:100%; min-height:120px; background:#080b12; color:var(--fg);
+    border:1px solid var(--border-2); border-radius:8px; padding:10px 12px; font-size:12.5px;
+    resize:vertical; line-height:1.5; }
+  .code:focus { outline:none; border-color:var(--accent); }
+  .run-row { margin-top:8px; }
+
+  .rlist { display:flex; flex-direction:column; gap:8px; }
+  .ritem { display:flex; gap:10px; align-items:flex-start; border:1px solid var(--border);
+    border-radius:9px; padding:10px 12px; background:var(--panel-2); }
+  .rbody { flex:1; min-width:0; }
+  .ritem-head { display:flex; align-items:baseline; gap:9px; }
+  .ridx { color:var(--faint); font-size:11px; font-family:ui-monospace, monospace; flex:0 0 auto; }
+  .rtitle { font-size:13.5px; font-weight:600; color:var(--fg); word-break:break-word; }
+  .rtitle.dim { font-weight:400; }
+  .rdesc { color:var(--dim); font-size:12px; margin-top:3px; line-height:1.5; word-break:break-word; }
+  .thumb { width:56px; height:56px; border-radius:6px; object-fit:cover; flex:0 0 auto;
+    border:1px solid var(--border); background:var(--bg); }
+  .rmeta { display:flex; flex-wrap:wrap; gap:5px 14px; margin-top:7px; font-size:12px; }
+  .rk { color:var(--faint); margin-right:4px; }
+  .rv { color:var(--dim); word-break:break-all; }
+
+  .rkv { display:flex; flex-direction:column; gap:0; border:1px solid var(--border); border-radius:9px; overflow:hidden; }
+  .rkv.nested { margin-left:14px; border:none; border-left:2px solid var(--border-2); border-radius:0; }
+  .rkv-row { display:flex; justify-content:space-between; gap:16px; padding:8px 12px;
+    background:var(--panel-2); border-bottom:1px solid var(--border); }
+  .rkv-row:last-child { border-bottom:none; }
+  .rkv-row .rk { color:var(--dim); }
+  .rkv-row .rv { color:var(--fg); font-weight:600; text-align:right; }
+  .rkv-row .rv .num { color:var(--accent-2); font-variant-numeric:tabular-nums; }
+
+  .empty { text-align:center; color:var(--faint); padding:46px 0; font-size:13px; }
+</style>
+</head>
+<body>
+<header class="head">
+  <div class="logo">知</div>
+  <div class="brand">
+    <div class="title">Ghost In Zhihu</div>
+    <div class="subtitle">MOSS · 知乎内容 node</div>
+  </div>
+  <div class="head-right">
+    <div id="identity" class="chip">未授权</div>
+    <div class="mode-wrap">
+      <label class="switch">
+        <input type="checkbox" id="disableToggle">
+        <span class="slider"></span>
+      </label>
+      <span id="disableLabel" class="mode-label on">运行中</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="banner">本 node 已被禁用 —— ghost 掉出知乎 channel，重新启用后恢复。</div>
+
+  <div id="auth" class="auth-card" style="display:none">
+    <h3 class="auth-title">接入知乎</h3>
+    <p class="auth-desc">
+      打开
+      <a href="https://developer.zhihu.com/profile" target="_blank" rel="noopener noreferrer">developer.zhihu.com/profile</a>，
+      申请 Access Secret 后粘贴到下面。凭证只进 macOS Keychain，不落盘、不回显、不写入本页。
+    </p>
+    <div class="row">
+      <input id="secret" type="password" placeholder="粘贴 Access Secret">
+      <button id="submit" class="ok">授权</button>
+    </div>
+  </div>
+
+  <div id="actions"></div>
+  <div id="empty" class="empty">暂无 action —— ghost 签发读数据意图后，会在这里出现。</div>
+</main>
+
+<script>
+"use strict";
+
+// ---- websocket ----
+let ws;
+let autoSet = new Set();
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (ev) => { try { handle(JSON.parse(ev.data)); } catch (e) {} };
+  ws.onclose = () => { setTimeout(connect, 2000); };
+}
+connect();
+
+function send(kind, id, name, on) {
+  const f = { type: kind, id };
+  if (name !== undefined) { f.name = name; f.on = on; }
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(f));
+}
+
+// ---- frame dispatch ----
+function handle(f) {
+  switch (f.type) {
+    case 'snapshot': renderSnapshot(f); break;
+    case 'auth_state': setAuth(f.configured, f.identity, f.error); break;
+    case 'action': renderAction(f.action); break;
+    case 'auto': markAuto(f.auto); break;
+    case 'mode': setDisabled(f.disabled); break;
+    case 'error': console.warn(f.text); break;
+  }
+}
+
+// ---- safe DOM helper (no innerHTML injection) ----
+function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') el.className = v;
+      else if (k === 'style') el.style.cssText = v;
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+      else if (v === true) el.setAttribute(k, '');
+      else if (v !== false && v != null) el.setAttribute(k, v);
+    }
+  }
+  const append = (c) => {
+    if (c == null || c === false) return;
+    if (c instanceof Node) el.appendChild(c);
+    else if (Array.isArray(c)) c.forEach(append);
+    else el.appendChild(document.createTextNode(String(c)));
+  };
+  children.forEach(append);
+  return el;
+}
+
+function truncate(s, n) { s = String(s); return s.length > n ? s.slice(0, n) + '…' : s; }
+
+function sanitize(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = String(html);
+  const forbidden = new Set(['script','iframe','object','embed','style','link','meta','base','form']);
+  const walk = (node) => {
+    if (node.nodeType === 1) {
+      const tag = node.tagName.toLowerCase();
+      if (forbidden.has(tag)) { node.remove(); return; }
+      for (const attr of [...node.attributes]) {
+        const n = attr.name.toLowerCase();
+        if (n.startsWith('on')) node.removeAttribute(attr.name);
+        else if ((n === 'src' || n === 'href' || n === 'xlink:href') && /^\s*javascript:/i.test(attr.value)) node.removeAttribute(attr.name);
+      }
+    }
+    [...node.childNodes].forEach(walk);
+  };
+  walk(tpl.content);
+  return tpl.content;
+}
+
+// ---- header / auth / disable ----
+function setAuth(on, identity, err) {
+  const el = document.getElementById('identity');
+  if (on) { el.textContent = '已授权 · ' + (identity || ''); el.className = 'chip authed'; }
+  else { el.textContent = '未授权' + (err ? ' · ' + err : ''); el.className = 'chip'; }
+  document.getElementById('auth').style.display = on ? 'none' : 'block';
+}
+
+let disabled = false;
+function setDisabled(on) {
+  disabled = !!on;
+  document.body.classList.toggle('disabled', disabled);
+  const t = document.getElementById('disableToggle');
+  if (t.checked !== disabled) t.checked = disabled;
+  const lbl = document.getElementById('disableLabel');
+  lbl.textContent = disabled ? '已禁用' : '运行中';
+  lbl.className = 'mode-label ' + (disabled ? 'off' : 'on');
+}
+
+function markAuto(list) {
+  autoSet = new Set(list || []);
+  document.querySelectorAll('.auto input').forEach(el => {
+    el.checked = autoSet.has(el.dataset.type);
+  });
+}
+
+// ---- card state ----
+const cardState = new Map(); // id -> { root, top, body, tabsBuilt }
+
+function renderSnapshot(f) {
+  setAuth(f.auth_configured, f.identity);
+  setDisabled(f.disabled);
+  markAuto(f.auto || []);
+  const ids = new Set((f.actions || []).map(a => a.id));
+  for (const [id, c] of cardState) {
+    if (!ids.has(id)) { c.root.remove(); cardState.delete(id); }
+  }
+  for (const a of (f.actions || [])) renderAction(a);
+  document.getElementById('empty').style.display = cardState.size ? 'none' : 'block';
+}
+
+const STATE = {
+  pending: ['pending', '待授权'],
+  running: ['running', '执行中'],
+  done: ['done', '完成'],
+  rejected: ['rejected', '已拒绝'],
+  error: ['error', '出错'],
+};
+function stateInfo(s) {
+  const e = STATE[s] || ['', s];
+  return { cls: e[0], label: e[1] };
+}
+function identityInfo(id) {
+  if (id === 'platform') return { cls: 'platform', label: '公共' };
+  if (id === 'access_secret_owner') return { cls: 'owner', label: '私域' };
+  return { cls: 'owner', label: id || '私域' };
+}
+
+function renderAction(a) {
+  let c = cardState.get(a.id);
+  if (!c) {
+    c = { root: null, top: null, body: null, tabsBuilt: false };
+    c.root = h('div', { class: 'card' });
+    c.top = h('div', { class: 'card-top' });
+    c.body = h('div', { class: 'card-body' });
+    c.root.append(c.top, c.body);
+    document.getElementById('actions').prepend(c.root);
+    cardState.set(a.id, c);
+  }
+  updateCardTop(c, a);
+  if (a.state === 'done' && a.result) {
+    ensureTabs(c, a);
+  }
+  document.getElementById('empty').style.display = cardState.size ? 'none' : 'block';
+}
+
+function updateCardTop(c, a) {
+  const top = c.top;
+  top.textContent = '';
+  const idc = identityInfo(a.identity);
+  const st = stateInfo(a.state);
+
+  top.append(h('div', { class: 'card-head' },
+    h('span', { class: 'aid' }, '#' + a.id),
+    h('span', { class: 'atype' }, a.type || '(type)'),
+    h('span', { class: 'tag ' + idc.cls }, idc.label),
+    h('span', { class: 'state ' + st.cls }, st.label)
+  ));
+
+  const meta = [];
+  for (const [k, v] of Object.entries(a.args || {})) meta.push(h('span', { class: 'arg' }, k + '=' + String(v)));
+  if (a.result && a.result.count != null) meta.push(h('span', { class: 'arg dim' }, a.result.count + ' rows'));
+  if (a.result && a.result.data_ref) meta.push(h('span', { class: 'arg dim' }, 'data: ' + a.result.data_ref));
+  if (meta.length) top.append(h('div', { class: 'card-meta' }, ...meta));
+
+  if (a.error) top.append(h('div', { class: 'card-error' }, String(a.error)));
+
+  if (a.state === 'pending') {
+    const ok = h('button', { class: 'ok' }, '通过');
+    ok.addEventListener('click', () => send('approve', a.id));
+    const no = h('button', { class: 'no' }, '拒绝');
+    no.addEventListener('click', () => send('reject', a.id));
+    const cb = h('input', { type: 'checkbox', 'data-type': a.type });
+    cb.checked = autoSet.has(a.type);
+    cb.addEventListener('change', () => send('auto', a.id, a.type, cb.checked));
+    const lbl = h('label', { class: 'auto' }, cb, '这个 type 自动放行');
+    top.append(h('div', { class: 'card-actions' }, ok, no, lbl));
+  }
+}
+
+// ---- tabs: 源数据 -> 默认渲染 -> 加工 -> 结果 -> 渲染代码 -> 渲染 ----
+function ensureTabs(c, a) {
+  if (c.tabsBuilt) return;
+  c.tabsBuilt = true;
+  const body = c.body;
+  body.textContent = '';
+
+  const result = a.result || {};
+  const raw = result.raw !== undefined ? result.raw : null;
+
+  const tabbar = h('div', { class: 'tabs' });
+  const panes = h('div', { class: 'panes' });
+  const pane = () => { const p = h('div', { class: 'pane' }); panes.append(p); return p; };
+  const addTab = (label, p) => {
+    const btn = h('button', { class: 'tab' }, label);
+    btn.addEventListener('click', () => activate(tabbar, panes, btn, p));
+    tabbar.append(btn);
+  };
+
+  // 1 源数据
+  const pSrc = pane(); pSrc.append(jsonPanel(raw)); addTab('源数据', pSrc);
+  // 2 默认渲染
+  const pDef = pane(); pDef.append(renderDefault(raw)); addTab('默认渲染', pDef);
+  // 3 加工代码
+  const pTCode = pane();
+  const tTa = h('textarea', { class: 'code', spellcheck: 'false',
+    placeholder: '例如: (data, deps) => data.slice(0, 10)' });
+  tTa.value = a.transform || '';
+  pTCode.append(tTa);
+  addTab('加工代码', pTCode);
+  // 4 结果
+  const pTRes = pane(); addTab('结果', pTRes);
+  // 5 渲染代码
+  const pRCode = pane();
+  const rTa = h('textarea', { class: 'code', spellcheck: 'false',
+    placeholder: "例如: (processed, deps) => deps.h('div', {class:'mine'}, '共 ' + processed.length + ' 条')" });
+  rTa.value = a.render || '';
+  pRCode.append(rTa);
+  addTab('渲染代码', pRCode);
+  // 6 渲染
+  const pROut = pane(); addTab('渲染', pROut);
+
+  function recompute() {
+    const tOut = runTransform(tTa.value, raw);
+    pTRes.textContent = ''; pTRes.append(jsonPanel(tOut));
+    const rOut = runRender(rTa.value, tOut);
+    pROut.textContent = '';
+    if (rOut == null) {
+      if (tTa.value.trim()) pROut.append(renderDefault(tOut));
+      else pROut.append(h('div', { class: 'dim' }, '未提供 render —— 见「默认渲染」tab。'));
+    } else {
+      mountResult(pROut, rOut);
+    }
+  }
+  const rb1 = h('button', { class: 'run' }, '运行');
+  rb1.addEventListener('click', recompute);
+  pTCode.append(h('div', { class: 'run-row' }, rb1));
+  const rb2 = h('button', { class: 'run' }, '运行');
+  rb2.addEventListener('click', recompute);
+  pRCode.append(h('div', { class: 'run-row' }, rb2));
+
+  recompute();
+
+  body.append(tabbar, panes);
+  activate(tabbar, panes, tabbar.firstChild, panes.firstChild);
+}
+
+function activate(tabbar, panes, btn, pane) {
+  [...tabbar.children].forEach(b => b.classList.remove('active'));
+  [...panes.children].forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  pane.classList.add('active');
+}
+
+// ---- transform / render execution ----
+const deps = {
+  escape: (s) => String(s ?? '').replace(/[&<>"']/g, c => (
+    { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])),
+  h,
+  json: (v) => JSON.stringify(v, null, 2),
+};
+
+function runTransform(code, data) {
+  if (!code || !code.trim()) return data;
+  try {
+    const fn = new Function('data', 'deps', `"use strict"; return (${code})(data, deps);`);
+    return fn(data, deps);
+  } catch (e) {
+    return { __error: String(e && e.message || e) };
+  }
+}
+
+function runRender(code, processed) {
+  if (!code || !code.trim()) return null;
+  try {
+    const fn = new Function('processed', 'deps', `"use strict"; return (${code})(processed, deps);`);
+    return fn(processed, deps);
+  } catch (e) {
+    return { __error: String(e && e.message || e) };
+  }
+}
+
+function mountResult(container, out) {
+  container.textContent = '';
+  if (out == null) { container.append(h('div', { class: 'dim' }, '（无输出）')); return; }
+  if (out && out.__error) { container.append(h('pre', { class: 'json', style: 'color:var(--red)' }, out.__error)); return; }
+  if (out instanceof Node) { container.append(out); return; }
+  if (typeof out === 'string') { container.append(sanitize(out)); return; }
+  container.append(h('pre', { class: 'json' }, JSON.stringify(out, null, 2)));
+}
+
+function jsonPanel(v) {
+  if (v === undefined || v === null) return h('div', { class: 'dim' }, '（无数据）');
+  return h('pre', { class: 'json' }, JSON.stringify(v, null, 2));
+}
+
+// ---- default renderers ----
+const TITLE_KEYS = ['Title','title','question_title','questionTitle','question','Question',
+  'name','Name','headline','subject'];
+const DESC_KEYS = ['Summary','summary','Excerpt','excerpt','Description','description','digest'];
+const LINK_KEYS = ['Url','url','Link','link','share_url','url_token','UrlToken','target','Target',
+  'zhuanlan_url','sourceUrl','source_url'];
+const THUMB_KEYS = ['ThumbnailUrl','thumbnailUrl','thumbnail_url','thumbnail','Cover','cover',
+  'Image','image','Avatar','avatar','image_url','imageUrl'];
+const SKIP_META = new Set([...TITLE_KEYS, ...DESC_KEYS, ...LINK_KEYS, ...THUMB_KEYS,
+  'content','Content','body','Body','html','Html','text','Text','id','Id','type','Type','token','Token']);
+
+function renderDefault(raw) {
+  if (raw == null) return h('div', { class: 'dim' }, '（空）');
+  if (Array.isArray(raw)) return renderList(raw);
+  if (typeof raw === 'object') {
+    if (Array.isArray(raw.Items)) {
+      const wrap = h('div', {});
+      const extra = Object.entries(raw).filter(([k]) => k !== 'Items');
+      if (extra.length) wrap.append(renderKV(Object.fromEntries(extra)));
+      wrap.append(renderList(raw.Items));
+      return wrap;
+    }
+    return renderKV(raw);
+  }
+  return jsonPanel(raw);
+}
+
+function renderList(items) {
+  const wrap = h('div', { class: 'rlist' });
+  if (!items.length) { wrap.append(h('div', { class: 'dim' }, '（0 条）')); return wrap; }
+  items.forEach((it, i) => wrap.append(renderItem(it, i)));
+  return wrap;
+}
+
+function pickText(it, keys) {
+  for (const k of keys) {
+    const v = it && it[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+function pickLink(it) {
+  for (const k of LINK_KEYS) {
+    const v = it && it[k];
+    if (typeof v === 'string' && v.trim() && /^https?:\/\//i.test(v.trim())) return v.trim();
+  }
+  return null;
+}
+function pickMeta(it) {
+  if (typeof it !== 'object' || it == null || Array.isArray(it)) return [];
+  const out = [];
+  for (const [k, v] of Object.entries(it)) {
+    if (SKIP_META.has(k) || v == null) continue;
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    if (s.length > 200) continue;
+    out.push([k, truncate(s, 60)]);
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+function pickThumb(it) {
+  for (const k of THUMB_KEYS) {
+    const v = it && it[k];
+    if (typeof v === 'string' && v.trim() && /^https?:\/\//i.test(v.trim())) return v.trim();
+  }
+  return null;
+}
+
+function renderItem(it, i) {
+  const card = h('div', { class: 'ritem' });
+  const idx = h('span', { class: 'ridx' }, String(i + 1));
+  if (typeof it === 'object' && it != null && !Array.isArray(it)) {
+    const title = pickText(it, TITLE_KEYS);
+    const desc = pickText(it, DESC_KEYS);
+    const link = pickLink(it);
+    const thumb = pickThumb(it);
+    const body = h('div', { class: 'rbody' });
+    const head = h('div', { class: 'ritem-head' }, idx);
+    if (title) {
+      if (link) head.append(h('a', { class: 'rtitle', href: link, target: '_blank', rel: 'noopener noreferrer' }, truncate(title, 140)));
+      else head.append(h('span', { class: 'rtitle' }, truncate(title, 140)));
+    } else {
+      head.append(h('span', { class: 'rtitle dim' }, '（无标题）'));
+    }
+    body.append(head);
+    if (desc) body.append(h('div', { class: 'rdesc' }, truncate(desc, 160)));
+    const meta = pickMeta(it);
+    if (meta.length) {
+      const m = h('div', { class: 'rmeta' });
+      meta.forEach(([k, v]) => { m.append(h('span', { class: 'rk' }, k), h('span', { class: 'rv' }, v)); });
+      body.append(m);
+    }
+    if (thumb) {
+      const img = h('img', { class: 'thumb', src: thumb, loading: 'lazy' });
+      img.addEventListener('error', () => img.remove());
+      card.append(body, img);
+    } else {
+      card.append(body);
+    }
+  } else {
+    card.append(idx, h('span', { class: 'rtitle' }, truncate(String(it), 140)));
+  }
+  return card;
+}
+
+function renderKV(obj, depth = 0) {
+  const grid = h('div', { class: 'rkv' + (depth > 0 ? ' nested' : '') });
+  for (const [k, v] of Object.entries(obj)) {
+    grid.append(h('div', { class: 'rkv-row' },
+      h('span', { class: 'rk' }, k),
+      h('span', { class: 'rv' }, renderValue(v, depth))));
+  }
+  return grid;
+}
+function renderValue(v, depth) {
+  if (v == null) return h('span', { class: 'dim' }, '—');
+  if (typeof v === 'number') return h('span', { class: 'num' }, v.toLocaleString());
+  if (typeof v === 'boolean') return h('span', {}, String(v));
+  if (typeof v === 'string') return h('span', {}, truncate(v, 300));
+  if (Array.isArray(v)) {
+    if (!v.length) return h('span', { class: 'dim' }, '[]');
+    if (depth >= 3) return h('span', { class: 'dim' }, '[' + v.length + ' items]');
+    if (typeof v[0] === 'object' && v[0] != null && !Array.isArray(v[0])) return renderList(v);
+    return h('span', {}, v.map(String).join(' · '));
+  }
+  if (typeof v === 'object') {
+    if (depth >= 3) return h('span', { class: 'dim' }, '{' + Object.keys(v).length + ' keys}');
+    return renderKV(v, depth + 1);
+  }
+  return h('span', {}, String(v));
+}
+
+// ---- bindings ----
+document.getElementById('submit').onclick = () => {
+  const s = document.getElementById('secret').value;
+  if (!s.trim()) return;
+  ws.send(JSON.stringify({ type: 'auth', secret: s }));
+  document.getElementById('secret').value = '';
+};
+document.getElementById('disableToggle').onchange = (e) => {
+  ws.send(JSON.stringify({ type: 'disable', on: e.target.checked }));
+};
+</script>
+</body>
+</html>
