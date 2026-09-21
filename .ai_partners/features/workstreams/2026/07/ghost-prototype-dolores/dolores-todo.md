@@ -67,7 +67,7 @@
 | W2 | open | Ghost 反身 channel — 以 `ghost` 名注册 channel，感知/操纵自身唯一入口 | — |
 | W3 | open | 独立思维模块 — 并行化身（fork）+ 关键帧自测（checkpoint self-eval） | — |
 | W4 | open | 模型自感知切换 — `ghost.model` channel 暴露 current/list/switch-model/window-status | — |
-| W5 | open | 读自身 channel facade 的两个 tool — 让 ghost 能拉取某个 channel 的当前开放面 (操作表面), 看清自己此刻能做什么. 实现走 `moss_*` tool 方案 (经 `MShellContextFacade` 读, 与既有工具同构); 不做绑定 shell 的 channel module 方案. 与 O6 (Matrix 能力声明) 同源 | — |
+| W5 | fixed | 读自身 channel facade 的两个 tool — 让 ghost 能拉取某个 channel 的当前开放面 (操作表面), 看清自己此刻能做什么. 实现走 `moss_*` tool 方案 (经 `MShellContextFacade` 读, 与既有工具同构); 不做绑定 shell 的 channel module 方案. 与 O6 (Matrix 能力声明) 同源 | `660bc9a0` (moss_channels + moss_channel_facade) |
 | W6 | open | features 场脚手架 — stubs 内 `.ai_partners/features/` 未 `moss features init` 铺开, 当前只留 signpost. 治理 K6 的"未来再做", 本期不做 | — |
 
 ## 设计问题
@@ -81,7 +81,7 @@
 | O5 | open | 中断能力 — 未 wrap 叙述会发声是机制（要强调）；thinking 期可中断：replan ctml='' 不执行 or moss_shell_interrupt |
 | O6 | open | Matrix 能力声明 — 通过 matrix 可见/可管理自身能力，默认只提供一小部分（修正「行动」修辞过度） |
 | O7 | open | HARNESS_IDENTITY_TEXT 调整 — 考虑尊重 dsh，不再过度强调 GIS/MOSS 身份 |
-| O8 | open | GhostRuntime 内核不允许崩溃 — ego 坏了要有感知，运行时异常经 tui error output 打印 |
+| O8 | open | GhostRuntime 内核不允许崩溃 — ego 坏了要有感知，运行时异常经 tui error output 打印。已部分落地: **异常有感知** (articulate error → `session.output('error')`)，但**僵死无感知** — `logos()` 无 turn 超时、`wait_until_done` 无时长上限，模型挂住不出 turn/end 时 articulate task 永久 `await anext(events)`、attention 卡死。turn 级看门狗待做 (每 run 首 event 等待套超时，超时 `abort_thinking()` + 打 error 面) |
 | O9 | fixed | dolores-ego preset 工具面 keep/drop — 定稿 2026-09-13：keep agent-instructions/shell/fs/jobs/plan-mode/delegation/todo/web；drop persona(plugin shadow)/skill(MOSS 自有)/goal(loop 建立)/compaction(旁路 commit 取代)/ask-user/present。理由见 agent.cordis.yml 头注释。delegation 长期要换 per-directory 授权 + dolores clone + 代码驱动 loop(#8) |
 | O10 | open | dynamic context 落点 — dsh renderContextSnapshot 是 append 非 replace；MOSS dynamic context 用自身 log replace op（仅 thinking/enter、工具调用不携带、turn/start 替换上一轮），具体落点待定 |
 | O11 | open | dsh 0.1.5 传输协议重接 — mux `/api/events.mux`→`/api/remote.mux` + `server-request`→`emit/waterfall/cancel` 帧 + `$events/result` RPC + token 鉴权；事件层小修(assistant/chunk→attempt、todo/write 移出、+system/message)。launcher.py/client.py/session.py/types 重写，生命周期已解耦故边界 bounded |
