@@ -140,10 +140,11 @@ ghost_home/
 
 ## Implementation Notes
 
-- **VERSION bump 遗留 todo**: 骨架同步机制要区分"从零创建拷贝 (seed)" vs "硬机制升级
-  (machine upgrade)"。`copytree` + version gate 全量覆写会吞 ghost 的自改 (identity /
-  behaviors / GROUND.md 等)。plugin 复制做成旁路 (always override 的开发件) 就是这层
-  意思; dsh 运行时加环境变量 option 是为后续铺路。
+- **VERSION bump 同步契约（已落地，三类数据）**: ① 配置 `.dolores.yml` **读后改写**——
+  只动 `version`, 其余字段 ghost/user 自持; ② 认知场 (stubs 其余文件) **seed-once**——
+  目标不存在才 copy, ghost 自改 (identity / behaviors / GROUND.md 等) 不被版本重建覆盖;
+  ③ 插件 (dsh_plugin / dsh_preset) **always override**, 不走 version gate。此前
+  `copytree` + version gate 全量覆写会吞 ghost 自改, 已按三类拆开修复。
 - **exec 每次 render 跑一次进程** (compute-on-observe 无跨 render 缓存) — 脚本须便宜
   + 幂等; payload 缓存 / materialize-read 分离是下一阶段优化。
 - **timeline.py 已迁出 existence/** → 落 `journal/` 场 (exec pin); existence 只留

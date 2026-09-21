@@ -498,8 +498,14 @@ class Dolores(Ghost):
     def _sync_stubs(self) -> str | None:
         """Sync the skeleton into ghost home. Returns 'init' | 'override' | None (no-op).
 
-        No-op when VERSION matches; init when missing, override when mismatched (fully overwrites the
-        skeleton files, never touches dynamic data files in home). Also materializes dirs + dsh_home.
+        Three-way data contract (see dolores-ghost-home-governance.md):
+
+        - config (``.dolores.yml``) → read-then-rewrite: only ``version`` is sync-owned; every other
+          field is the ghost/user's and survives a version bump.
+        - ground (the rest of ``stubs/``) → seed-once: a file is copied only when absent, so the
+          ghost's own edits (identity / purpose / behaviors / GROUND.md) are never clobbered.
+        - plugin (``dsh_plugin`` / ``dsh_preset``) → always override, handled separately and not
+          version-gated.
         """
         if self._home is None:
             return None
@@ -508,11 +514,25 @@ class Dolores(Ghost):
         if current == target:
             return None
         action = "override" if current else "init"
-        shutil.copytree(self._meta.stubs_dir(), self._home, dirs_exist_ok=True)
+        self._write_version(target)   # seeds .dolores.yml on init, then read-rewrite version only
+        self._seed_ground()
         self._materialize_dirs()
         self._sync_dsh_home()
-        self._write_version(target)
         return action
+
+    def _seed_ground(self) -> None:
+        """Seed-once the ground skeleton — copy every stub file except ``.dolores.yml``, only when absent."""
+        stubs = self._meta.stubs_dir()
+        for src in stubs.rglob("*"):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(stubs)
+            if rel.as_posix() == ".dolores.yml":
+                continue
+            dst = self._home / rel
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
 
     def _load_env(self) -> None:
         """Load ``<ghost_home>/.env`` into the process environment (override=False, outer env wins)."""
@@ -530,10 +550,16 @@ class Dolores(Ghost):
         return DoloresConfig(**data)
 
     def _write_version(self, version: str) -> None:
-        """Write back the version (stub-sync marker); the rest of the config is reloaded from the current file and kept as-is."""
+        """Read-rewrite the version marker; every other ``.dolores.yml`` field is preserved.
+
+        Seeds the stub config on a fresh home (init): the stub carries non-default config
+        (``dirs``, ``memento.force_tokens=0``) that the pydantic defaults must not substitute.
+        """
+        marker = self._home / ".dolores.yml"
+        if not marker.exists():
+            shutil.copy2(self._meta.stubs_dir() / ".dolores.yml", marker)
         config = self._load_config()
         config.version = version
-        marker = self._home / ".dolores.yml"
         marker.write_text(
             yaml.safe_dump(
                 config.model_dump(mode="json", exclude_defaults=True, exclude_none=True),

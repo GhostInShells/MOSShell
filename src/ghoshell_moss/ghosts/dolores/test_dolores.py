@@ -160,6 +160,41 @@ class TestStubsSync:
         assert len(session.outputs) == 1
         assert "override" in session.outputs[0].messages_string()
 
+    def test_override_preserves_ghost_authored_ground(self, tmp_path: Path):
+        """版本重建不得覆盖 ghost 自治内容: 已存在的 identity 保留, 缺失的骨架文件照常补种."""
+        (tmp_path / "existence").mkdir(parents=True)
+        (tmp_path / "existence" / "identity.md").write_text("ghost 自己提炼的 identity", encoding="utf-8")
+        (tmp_path / ".dolores.yml").write_text("version: dev_0\n")
+        session = MockSession()
+        ghost = _dolores(home=tmp_path, session=session)
+
+        async def run():
+            async with ghost:
+                pass
+
+        asyncio.run(run())
+
+        assert (tmp_path / "existence" / "identity.md").read_text() == "ghost 自己提炼的 identity"
+        # 缺失的骨架文件 (GROUND.md) 仍 seed-once 补种.
+        assert (tmp_path / "GROUND.md").exists()
+
+    def test_override_preserves_dolores_yml_user_fields(self, tmp_path: Path):
+        """配置是读后改写: 只动 version, 用户字段 (memento.force_tokens) 保留."""
+        (tmp_path / ".dolores.yml").write_text(
+            "version: dev_0\nmemento:\n  force_tokens: 12345\n", encoding="utf-8"
+        )
+        ghost = _dolores(home=tmp_path)
+
+        async def run():
+            async with ghost:
+                pass
+
+        asyncio.run(run())
+
+        config = yaml.safe_load((tmp_path / ".dolores.yml").read_text())
+        assert config["version"] == ghost._meta.VERSION
+        assert config["memento"]["force_tokens"] == 12345
+
     def test_noop_when_version_matches(self, tmp_path: Path):
         (tmp_path / ".dolores.yml").write_text(f"version: {_dolores_meta().VERSION}\n")
         (tmp_path / "GROUND.md").write_text("already here")
