@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>push — 视觉推流</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem;
+    background: #101418; color: #d8dee6;
+    font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0 0 1rem; font-weight: 600; }
+  section { margin-bottom: 2rem; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+       color: #6b7683; margin: 0 0 .75rem; font-weight: 600; }
+  .bar { display: flex; gap: .75rem; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; }
+  button {
+    background: #1c232b; color: #d8dee6; border: 1px solid #2a3440;
+    padding: .45rem .9rem; border-radius: 6px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: #4a5768; }
+  button.primary { background: #2f6f4f; border-color: #2f6f4f; }
+  button.danger { background: #6f2f3a; border-color: #6f2f3a; }
+  button:disabled { opacity: .4; cursor: default; }
+  label.toggle { display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; }
+  .card {
+    background: #171d24; border: 1px solid #26313d; border-radius: 8px;
+    padding: .9rem 1rem; margin-bottom: .75rem;
+  }
+  .card .row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+  .card .meta { color: #8b96a3; font-size: 12px; }
+  .card .title { font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
+  .tile { background: #171d24; border: 1px solid #26313d; border-radius: 8px; overflow: hidden; }
+  .tile img { width: 100%; height: 160px; object-fit: contain; background: #000; display: block; }
+  .tile .foot { padding: .6rem .8rem; display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  .tile .name { font-weight: 600; }
+  .pill { font-size: 11px; padding: .1rem .5rem; border-radius: 10px; border: 1px solid #2a3440; color: #8b96a3; }
+  .pill.live { color: #57c27a; border-color: #2f6f4f; }
+  .pill.pending { color: #d9a75a; border-color: #6f5f2f; }
+  .empty { color: #55606c; font-style: italic; }
+  .openbar { display: flex; gap: .75rem; }
+  select, input { background: #1c232b; color: #d8dee6; border: 1px solid #2a3440;
+                  padding: .45rem .6rem; border-radius: 6px; font: inherit; }
+  a { color: #6fb3e0; text-decoration: none; }
+</style>
+</head>
+<body>
+  <h1>push — 视觉推流</h1>
+  <div class="bar">
+    <label class="toggle">
+      <input type="checkbox" id="acceptAll">
+      全部自动通过
+    </label>
+    <button id="stopAll" class="danger">关闭全部</button>
+    <span id="status" class="pill"></span>
+  </div>
+
+  <section>
+    <h2>待审批</h2>
+    <div id="pending"></div>
+  </section>
+
+  <section>
+    <h2>正在推流</h2>
+    <div id="live" class="grid"></div>
+  </section>
+
+  <section>
+    <h2>直接开一路</h2>
+    <div class="openbar">
+      <select id="source">
+        <option value="screen">screen</option>
+        <option value="camera">camera</option>
+      </select>
+      <input id="label" placeholder="label（可选）">
+      <button id="open" class="primary">开</button>
+    </div>
+  </section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let sessions = [];
+
+function render() {
+  const pending = sessions.filter(s => s.state === "pending");
+  const live = sessions.filter(s => s.state === "live");
+
+  $("pending").innerHTML = pending.length
+    ? pending.map(s => `
+      <div class="card">
+        <div class="row">
+          <span class="title">${esc(s.label || s.source)}</span>
+          <span class="pill pending">pending</span>
+          <span class="meta">#${s.id} · ${esc(s.source)}${s.description ? " · " + esc(s.description) : ""}</span>
+        </div>
+        <div class="row" style="margin-top:.6rem">
+          <button class="primary" onclick="act('accept', ${s.id})">通过</button>
+          <button class="danger" onclick="act('deny', ${s.id})">拒绝</button>
+        </div>
+      </div>`).join("")
+    : `<div class="empty">没有待审批的请求</div>`;
+
+  $("live").innerHTML = live.length
+    ? live.map(s => `
+      <div class="tile">
+        <img src="/stream/${s.id}" alt="${esc(s.label || s.source)}">
+        <div class="foot">
+          <span class="name">${esc(s.label || s.source)} <span class="meta">#${s.id} · ${esc(s.owner)}</span></span>
+          <button class="danger" onclick="act('stop', ${s.id})">关闭</button>
+        </div>
+      </div>`).join("")
+    : `<div class="empty">没有正在推的流</div>`;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (ev) => {
+    const frame = JSON.parse(ev.data);
+    if (frame.type === "snapshot") {
+      sessions = frame.sessions;
+      $("acceptAll").checked = !!frame.accept_all;
+      render();
+    } else if (frame.type === "session") {
+      const i = sessions.findIndex(s => s.id === frame.session.id);
+      if (i >= 0) sessions[i] = frame.session; else sessions.push(frame.session);
+      render();
+    } else if (frame.type === "accept_all") {
+      $("acceptAll").checked = frame.enabled;
+    }
+  };
+  ws.onclose = () => { $("status").textContent = "disconnected"; $("status").className = "pill pending"; setTimeout(connect, 1000); };
+  ws.onopen = () => { $("status").textContent = "connected"; $("status").className = "pill live"; };
+}
+
+function act(kind, id) { ws.send(JSON.stringify({ type: kind, id })); }
+
+$("acceptAll").onchange = (e) => ws.send(JSON.stringify({ type: "accept_all", enabled: e.target.checked }));
+$("stopAll").onclick = () => ws.send(JSON.stringify({ type: "stop_all" }));
+$("open").onclick = () => {
+  const source = $("source").value;
+  const label = $("label").value.trim();
+  ws.send(JSON.stringify({ type: "open", source, label }));
+};
+
+connect();
+</script>
+</body>
+</html>

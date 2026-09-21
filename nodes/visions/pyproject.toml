@@ -10,8 +10,14 @@ dependencies = [
     "ghoshell-moss[matrix]",          # 所有 mesh node 的公共底座
     "opencv-python-headless>=4.9,<5", # camera — Haar 人脸检测 (5.0 移除 CascadeClassifier), MJPEG 推流
     "numpy>=1.26",                    # camera
-    "aiohttp>=3.9",                   # camera — MJPEG viewer (HTTP 推流)
+    "aiohttp>=3.9",                   # camera / push — MJPEG viewer + web surface (HTTP 推流)
     "Pillow>=10.0",                   # camera — PIL Image
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.1.0",
 ]
 
 [tool.uv.sources]
