@@ -172,13 +172,13 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         logger.debug("%r step 4/5: entering ghost", self)
         await self._async_exit_stack.enter_async_context(self._ghost_instance)
         if channel := self._ghost_instance.channel():
-            self._runtime_channels['ghost'] = channel
+            self._runtime_channels[channel.name()] = channel
 
         # 5. Mindflow wiring
         logger.debug("%r step 5/5: wiring mindflow", self)
         await self._wire_mindflow()
         if mindflow_channel := self._mindflow.as_channel():
-            self._runtime_channels['mindflow'] = mindflow_channel
+            self._runtime_channels[mindflow_channel.name()] = mindflow_channel
 
         # 急停级联控制器 — mindflow 和 shell 都已就绪
         self._pause_ctrl.bind(self._mindflow, self.moss.shell)

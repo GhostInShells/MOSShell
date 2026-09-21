@@ -67,7 +67,8 @@
 | W2 | open | Ghost 反身 channel — 以 `ghost` 名注册 channel，感知/操纵自身唯一入口 | — |
 | W3 | open | 独立思维模块 — 并行化身（fork）+ 关键帧自测（checkpoint self-eval） | — |
 | W4 | open | 模型自感知切换 — `ghost.model` channel 暴露 current/list/switch-model/window-status | — |
-| W5 | open | 读自身 channel facade 的两个 tool — 让 ghost 能拉取某个 channel 的当前开放面 (操作表面), 看清自己此刻能做什么. 与 O6 (Matrix 能力声明) 同源 | — |
+| W5 | open | 读自身 channel facade 的两个 tool — 让 ghost 能拉取某个 channel 的当前开放面 (操作表面), 看清自己此刻能做什么. 实现走 `moss_*` tool 方案 (经 `MShellContextFacade` 读, 与既有工具同构); 不做绑定 shell 的 channel module 方案. 与 O6 (Matrix 能力声明) 同源 | — |
+| W6 | open | features 场脚手架 — stubs 内 `.ai_partners/features/` 未 `moss features init` 铺开, 当前只留 signpost. 治理 K6 的"未来再做", 本期不做 | — |
 
 ## 设计问题
 

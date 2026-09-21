@@ -112,6 +112,10 @@ class Matrix(Facade):
 
     When developing a Cell, follow the capability map Matrix exposes: pick what you need,
     then expand your exploration from there.
+
+    Matrix itself is exposed as a Channel for Ghost or Logos control surfaces.
+    Concrete Channel implementations may compose over the Matrix surface, be
+    designed independently, or be driven purely by code through the Logos mechanism.
     """
 
     # -- session facade -- #
