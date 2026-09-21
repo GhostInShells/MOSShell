@@ -4,7 +4,7 @@ import yaml
 from abc import ABC, abstractmethod
 from typing import TypeVar, Type, Optional, Any, ClassVar, Callable
 from typing_extensions import Self
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from ghoshell_common.helpers import generate_import_path
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_container import IoCContainer, Provider, Bootstrapper
@@ -46,6 +46,15 @@ class ConfigType(BaseModel, ABC):
     """
     RESOLVE_ENV_KEY: ClassVar[bool] = True
     DefaultEnvValues: ClassVar[dict[str, Any] | None] = None
+
+    # 解析来源 — 由 ConfigStore 在 get/save 命中时 attach, 非配置值本身.
+    # PrivateAttr 不进 schema / model_dump / round-trip, 只在进程内伴生.
+    _source_path: str | None = PrivateAttr(default=None)
+
+    @property
+    def source_path(self) -> str | None:
+        """本实例从哪个文件解析而来. 未读自磁盘 (纯声明默认实例) 为 None."""
+        return self._source_path
 
     @classmethod
     @abstractmethod
@@ -218,6 +227,20 @@ class LocalConfigStore(ConfigStore, ABC):
         不变量, 避免多 mode 共享同一 conf_name 缓存槽产生脏读.
       - fallback=False → 严格只读指定 mode 文件, 缺就抛 FileNotFoundError.
         用于 mode 层必须自持配置的场景.
+
+    递归解析 (inherit / materialize):
+      一个 store 可以有下一层 store (``inherit``). 本层文件检查完全没命中时, 读
+      递归下探到 inherit 层; 层与层之间没有 mode 语义差异 —— 每一层内部跑的都是
+      上面那条 mode → 通用的检查, 所以**层优先级高于 mode 优先级**: 本层的通用
+      文件压过下一层的 mode 文件.
+
+      ``materialize`` 决定 ``get_or_create`` 在本地物化, 还是把创建递归交给下一层:
+      - True (默认) → 全链都没有时在本层落盘. 终端层 (无 inherit) 只能是 True.
+      - False → 本层只做覆盖, 不落种子; 创建下沉到第一个 materialize=True 的层.
+
+      显式写入 (``save`` / ``set_config(override=True)``) 不受 materialize 影响,
+      永远写本层 —— 这是"这层的覆盖"的落点. store 不提供跨层写路由: 要改别的层的
+      配置, 直接改那个文件.
     """
 
     def __init__(
@@ -227,12 +250,16 @@ class LocalConfigStore(ConfigStore, ABC):
             on_save: Callable[[str], None] | None = None,
             *,
             mode_name: str = '',
+            inherit: 'ConfigStore | None' = None,
+            materialize: bool = True,
     ) -> None:
         self._storage = storage
         self._cache: dict[_ConfName, ConfigType] = {}
         self._environ = environ  # None means use os.environ at resolve time
         self._on_save = on_save
         self._mode_name = mode_name
+        self._inherit = inherit
+        self._materialize = materialize
 
     # -- path helpers -------------------------------------------------
 
@@ -292,6 +319,10 @@ class LocalConfigStore(ConfigStore, ABC):
         effective_mode = self._effective_mode(mode)
         path = self._resolve_read_path(conf_name, effective_mode, fallback)
         if not path.exists():
+            if fallback and self._inherit is not None:
+                # 本层没命中 → 递归到下一层. 结果不进本层缓存: 保 "层缓存 == 层文件",
+                # 否则人手工往本层放个文件会被上一层读到的旧值遮住.
+                return self._inherit.get(conf_type, mode=mode, fallback=fallback)
             raise FileNotFoundError(
                 f"Config file not found: {conf_type} "
                 f"(expected {path})"
@@ -301,6 +332,8 @@ class LocalConfigStore(ConfigStore, ABC):
         data = self._unmarshal(content)
         instance = conf_type(**data)
         resolved = instance.resolve(environ=self._environ)
+        # 谁解析到, 谁把来源路径 attach 到实例上 (resolve 重建了新实例, 故塞在 resolved 上).
+        resolved._source_path = str(path)
         if use_cache:
             self._cache[conf_name] = resolved
         return resolved
@@ -345,13 +378,23 @@ class LocalConfigStore(ConfigStore, ABC):
         if read_path.exists():
             return self.get(conf_type, mode=mode, fallback=fallback)
 
+        # 本层没有: 先问下一层 (连同它的 mode 解析), 让它决定物化在哪.
+        if fallback and self._inherit is not None:
+            return self._inherit.get_or_create(conf, mode=mode, fallback=fallback)
+
+        if not self._materialize:
+            raise RuntimeError(
+                f"Config {conf_name!r} exists in no layer and store "
+                f"{self.__class__.__name__} does not materialize "
+                f"(materialize=False without an inherit store to create in)."
+            )
         return self._save(conf, mode=mode)
 
     def _save(self, conf: ConfigType, *, mode: str | None = None) -> ConfigType:
         """保存配置到磁盘并同步缓存 (若适用)."""
         conf_type = type(conf)
         conf_name = conf_type.conf_name()
-        data = conf.model_dump(exclude_none=True)
+        data = conf.model_dump(exclude_none=True, mode='json')
         marshaled = self._marshal(data, conf_type)
 
         effective_mode = self._effective_mode(mode)
@@ -359,6 +402,7 @@ class LocalConfigStore(ConfigStore, ABC):
         self._storage.put(filename, marshaled)
 
         resolved = conf.resolve(environ=self._environ)
+        resolved._source_path = str(self._storage.abspath() / filename)
         if self._uses_cache(mode):
             self._cache[conf_name] = resolved
             if self._on_save is not None:

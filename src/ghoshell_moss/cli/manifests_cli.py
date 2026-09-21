@@ -323,7 +323,7 @@ def _config_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
     return rows, len(rows)
 
 
-def _display_config_detail(manifest: Manifest) -> None:
+def _display_config_detail(manifest: Manifest, project: Project) -> None:
     """Show a single config: YAML defaults, JSON Schema, source."""
     if manifest.is_error():
         print_error(f"Config scan error: {manifest.error()}")
@@ -350,6 +350,26 @@ def _display_config_detail(manifest: Manifest) -> None:
             yaml_str = str(cfg)
     echo("")
     print_simple_panel(yaml_str, title="Default Values (YAML)")
+
+    # 生效值 + 来源 — 经 store 解析 (ghost 覆盖层在此可见).
+    try:
+        effective = project.configs.get(type(cfg))
+        echo("")
+        print_simple_table(
+            data=[
+                ["Source Path", effective.source_path or "—"],
+                ["Conf Name", cfg.conf_name()],
+            ],
+            headers=["Property", "Value"],
+            title="Effective Config",
+        )
+        echo("")
+        print_simple_panel(effective.to_yaml(), title="Effective Values (YAML)")
+    except FileNotFoundError:
+        echo("")
+        print_warning("No effective config — not found in any layer.")
+    except Exception:
+        pass
 
     try:
         schema = cfg.to_config_schema().json_schema
@@ -385,14 +405,14 @@ def list_configs(
         host_raw = _filter_manifests(host_raw, search) if host_raw else []
         all_matches = project_raw + matrix_raw + host_raw
         if len(all_matches) == 1:
-            _display_config_detail(all_matches[0])
+            _display_config_detail(all_matches[0], project)
             return
         if not all_matches:
             print_warning(f"No configs matching '{search}'.")
             return
 
     if detail and len(host_raw) == 1:
-        _display_config_detail(host_raw[0])
+        _display_config_detail(host_raw[0], project)
         return
 
     p_rows, p_count = _config_rows(project_raw)

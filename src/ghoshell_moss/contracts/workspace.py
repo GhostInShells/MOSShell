@@ -360,11 +360,13 @@ class LocalStorage(Storage):
     local storage by gemini 3.
     """
 
-    def __init__(self, root_path: Union[str, Path]):
+    def __init__(self, root_path: Union[str, Path], create: bool = True):
         # 转换为绝对路径以确保校验准确
         self._root = Path(root_path).resolve().absolute()
-        # 确保根目录存在
-        self._root.mkdir(parents=True, exist_ok=True)
+        # 确保根目录存在. create=False 供"根目录缺失是正常态"的消费者 (如 ghost 配置层):
+        # 读路径容忍缺失, 写路径 (put/append) 各自按需建中间目录, 不依赖这里.
+        if create:
+            self._root.mkdir(parents=True, exist_ok=True)
 
     def _safe_path(self, relative_path: Union[str, Path]) -> Path:
         """

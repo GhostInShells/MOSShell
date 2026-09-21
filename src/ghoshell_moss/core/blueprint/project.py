@@ -824,10 +824,12 @@ class Project(ABC):
 
     @property
     def configs(self) -> ConfigStore:
-        """mode 专属 ConfigStore — workspace configs/ 目录的唯一构造出口, 懒加载.
+        """ConfigStore 唯一构造出口, 懒加载 — workspace configs/ 目录 + ghost 覆盖层.
 
         Project 级只构造一次, CLI / matrix 的 ConfigStore provider 共享同一实例,
-        避免多路构造漂移. 默认取 env 推导的 mode, 无预注册.
+        避免多路构造漂移. mode 与 ghost 都取 env 推导值, 无预注册. 实际构造在
+        EnvConfigStoreProvider: 有 ghost 身份时叠一层 <ghost_home>/configs (只覆盖,
+        不落种子), 无 ghost 身份时就是 workspace 单层.
         """
         return self.container.force_fetch(ConfigStore)
 
