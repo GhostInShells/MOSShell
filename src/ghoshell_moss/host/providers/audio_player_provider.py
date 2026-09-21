@@ -33,7 +33,7 @@ class AudioPlayerConfig(ConfigType):
 class AudioPlayerProvider(Provider[StreamAudioPlayer]):
 
     def singleton(self) -> bool:
-        return False
+        return True
 
     def factory(self, con: IoCContainer) -> StreamAudioPlayer:
         from ghoshell_moss.host.speech.player.miniaudio_player import MiniAudioStreamPlayer
