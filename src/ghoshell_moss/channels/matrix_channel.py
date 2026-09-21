@@ -8,13 +8,16 @@
 - matrix: 集成点. 静态挂 nodes/mesh. 本轮无 own commands.
 
 表面分层 (cold=instruction / warm=notice / hot=context, 见 channel_builder):
-本文件没有 perception 级数据, 不占热面. 所有运行时状态都是**状态级**变更, 走 notice:
-nodes 的 running/dead, mesh 的事件尾部. 内核按文本差分投递 notice, 变了才重发,
-所以两件事必须守住:
-- 尾部必须有上界 (show_running / show_dead / show_events), 否则 transcript 单调膨胀;
-- 文本必须**稳定**: 行内不得出现 uptime / "N ago" 这类每次渲染都变的字段,
-  那会永久击穿差分, 退化成每轮全文重发. 实时量 (精确 uptime / 更长事件历史)
-  交 status() / events() 主动拉取.
+本文件没有 perception 级数据, 不占热面. 所有运行时状态都是**状态级**变更, 走 warm 面:
+- nodes: 有生命周期的表面拆成 named_notices 片段 (running / exited / installed),
+  各自独立差分, 一个片段变动不拖其余. running/exited 尾部有上界
+  (show_running / show_dead); installed 只报计数, 目录交 list(). 实时量
+  (精确 uptime / 更长事件历史) 交 status() / read_output() 主动拉取.
+- mesh: auto_accept 策略走无名 notice (常驻), 事件尾部有上界 (show_events),
+  历史交 events() 主动拉取.
+
+两条纪律: 尾部必须有上界, 否则 transcript 单调膨胀; 行内文本必须**稳定**, 不得出现
+uptime / "N ago" 这类每次渲染都变的字段, 否则击穿差分退化成每轮全文重发.
 
 OS 工具 (bash / file_editor) 已迁至 desktop channel, 与 matrix 平级.
 
@@ -493,42 +496,43 @@ def new_nodes_channel(
             return f'[{short}] {stream} empty.'
         return f'[{short}] {stream} tail:\n{body.rstrip()}'
 
-    # -- notice -------------------------------------------------------
+    # -- notice (named fragments) -------------------------------------
 
-    @chan.build.notice
-    def nodes_notice() -> str:
-        """Warm state: what is running now, plus the installed node catalog.
+    @chan.build.named_notices
+    def nodes_notices() -> dict[str, str | None]:
+        """Warm state, split by lifecycle so one fragment moving does not re-send the rest.
 
-        Everything here is state-level, so it rides notice (diffed by text) instead
-        of the hot context band. Rows are rendered without uptime / "N ago" — a
-        field that moves every second would defeat the diff and force a full
-        re-emission on every refresh. Live numbers come from status().
+        ``running`` / ``exited`` keep a bounded tail of rows (absent when nothing is in
+        that state, which reads as "removed"); ``installed`` is a bare count — the catalog
+        itself is a deliberate pull via list(). Rows carry pid / exit code only, never
+        uptime / "N ago", so the text is byte-stable between refreshes and the facade diff
+        stays quiet. Live detail comes from status() / read_output().
         """
-        lines: list[str] = []
+        out: dict[str, str | None] = {}
+
         handled = matrix.handled_cells()
-        dead = list(matrix.dead_cells())
         if handled:
-            lines.append(f'running ({len(handled)}):')
-            for h in list(handled.values())[:show_running]:
-                lines.append(_fmt_notice_running(h))
+            lines = [f'{len(handled)} running:']
+            lines += [_fmt_notice_running(h) for h in list(handled.values())[:show_running]]
             if len(handled) > show_running:
-                extra = len(handled) - show_running
-                lines.append(f'  ...+{extra} more, status() for full list')
+                lines.append(f'  ...+{len(handled) - show_running} more, status() for full list')
+            out['running'] = '\n'.join(lines)
+
+        dead = list(matrix.dead_cells())
         if dead:
             recent = dead[-show_dead:]
-            lines.append(f'recently exited ({len(recent)}):')
-            for h in recent:
-                lines.append(_fmt_notice_dead(h))
-        # refresh=False: notice re-renders on every meta refresh; never rescan
-        # the filesystem here (cache fills on first call, list(refresh=True) refreshes).
+            out['exited'] = '\n'.join(
+                [f'{len(recent)} recently exited:'] + [_fmt_notice_dead(h) for h in recent]
+            )
+
+        # refresh=False: never rescan the filesystem here (cache fills on first call,
+        # list(refresh=True) refreshes). A bare count keeps the catalog out of the warm
+        # band — descriptions and paths are what list() is for.
         found = matrix.project.nodes.list_nodes(refresh=False, installed=True)
         if found:
-            lines.append(f'installed nodes ({len(found)}):')
-            for rel_path, manifest in sorted(found.items()):
-                label = _node_ident(rel_path, manifest)
-                desc = manifest.description or ''
-                lines.append(f'  {label} — {desc}' if desc else f'  {label}')
-        return '\n'.join(lines)
+            out['installed'] = str(len(found))
+
+        return out
 
     # -- instruction --------------------------------------------------
 
@@ -538,7 +542,8 @@ def new_nodes_channel(
             'Local node cell governance. All verbs are nonblocking. run() '
             'returns immediately — the spawned organ surfaces on the network '
             'once it announces. read(target) before running: the declaration '
-            'carries how the node wants to be used.'
+            'carries how the node wants to be used. The warm notice carries only '
+            'counts and a short tail — status() / list() pull the detail.'
         )
 
     return chan

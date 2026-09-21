@@ -1,12 +1,14 @@
 """Tests for matrix channel — surface tiers (cold / warm / hot).
 
 matrix_channel owns the local + network cell governance surface. What is pinned
-here is the delivery tier of each surface, not the governance verbs. Both
-channels are all-warm: state rides notice, which the kernel diffs by text.
+here is the delivery tier of each surface, not the governance verbs. All state
+is warm; nothing rides the hot context band.
 
-- nodes: running / recently-exited cells. The notice text must be byte-stable
-  between refreshes — a drifting field (uptime, age) would defeat the diff and
-  re-emit the whole section every refresh.
+- nodes: state rides named_notices fragments, each diffed independently, so one
+  fragment moving does not re-send the others. The text must be byte-stable
+  between refreshes — a drifting field (uptime, age) would defeat the diff.
+  running / exited keep a bounded tail; installed is a bare count (the catalog
+  is a pull via list()).
 - mesh: a bounded tail of recent cell events. The tail must be capped, and it
   must not re-emit while no new event has arrived.
 """
@@ -52,14 +54,20 @@ def _handle(uid: str, pid: int, *, exit_code=None):
     )
 
 
+def _manifest(name, category, description=""):
+    return SimpleNamespace(
+        name=name, category=category, installed=True, description=description,
+    )
+
+
 class _NodesCatalog:
-    def list_nodes(self, refresh=False, paths=None, installed=None):
-        return {
-            "nodes/visions/camera": SimpleNamespace(
-                name="camera", category="vision", installed=True,
-                description="camera stream",
-            ),
+    def __init__(self, nodes=None):
+        self._nodes = nodes or {
+            "nodes/visions/camera": _manifest("camera", "vision", description="camera stream"),
         }
+
+    def list_nodes(self, refresh=False, paths=None, installed=None):
+        return self._nodes
 
 
 class _StubMatrix:
@@ -123,8 +131,9 @@ async def test_nodes_state_rides_notice_not_context():
         meta = runtime.self_meta()
 
         assert meta.context == []
-        assert "running (1)" in meta.notice
-        assert "installed nodes (1)" in meta.notice
+        assert meta.notice == ""  # no unnamed notice — state is all fragments now
+        assert meta.named_notices["running"].startswith("1 running:")
+        assert meta.named_notices["installed"] == "1"
 
 
 @pytest.mark.asyncio
@@ -135,12 +144,12 @@ async def test_nodes_notice_text_is_stable_across_refreshes():
         handle = _handle(_UID_A, pid=4242)
         matrix.handled[handle.address] = handle
         await runtime.refresh_metas()
-        first = runtime.self_meta().notice
+        first = runtime.self_meta().named_notices
 
         await runtime.refresh_metas()
-        second = runtime.self_meta().notice
+        second = runtime.self_meta().named_notices
         assert first == second, (
-            "notice text drifted without a state change — the facade diff "
+            "fragment text drifted without a state change — the facade diff "
             "would re-emit it on every refresh"
         )
 
@@ -152,12 +161,31 @@ async def test_nodes_notice_reports_exit_without_age_text():
     async with chan.bootstrap() as runtime:
         matrix.dead.append(_handle(_UID_B, pid=4243, exit_code=1))
         await runtime.refresh_metas()
-        notice = runtime.self_meta().notice
+        exited = runtime.self_meta().named_notices["exited"]
 
-        assert "recently exited (1)" in notice
-        assert "exit=1" in notice
-        assert "ago" not in notice, "a drifting age field defeats the facade diff"
-        assert "uptime" not in notice
+        assert "recently exited" in exited
+        assert "exit=1" in exited
+        assert "ago" not in exited, "a drifting age field defeats the facade diff"
+        assert "uptime" not in exited
+
+
+@pytest.mark.asyncio
+async def test_nodes_installed_is_count_only():
+    matrix = _StubMatrix()
+    matrix.project.nodes = _NodesCatalog({
+        f"nodes/n{i}": _manifest(f"node{i}", "tools", description=f"desc {i}")
+        for i in range(20)
+    })
+    chan = new_nodes_channel(matrix)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        meta = runtime.self_meta()
+
+        assert meta.named_notices["installed"] == "20"
+        # the catalog's descriptions and paths never ride the warm band
+        warm = "\n".join(meta.named_notices.values())
+        assert "desc " not in warm
+        assert "nodes/n0" not in warm
 
 
 # ---- mesh: the event tail is warm state, capped ---- #
