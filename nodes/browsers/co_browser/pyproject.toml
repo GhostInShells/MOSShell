@@ -1,0 +1,19 @@
+[project]
+name = "node-co-browser"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[host,matrix]",
+    "playwright>=1.40",
+    "websockets>=13",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../..", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ghoshell_co_browser"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
