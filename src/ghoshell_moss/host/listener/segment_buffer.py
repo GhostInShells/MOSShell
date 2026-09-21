@@ -124,3 +124,21 @@ class SegmentBuffer:
     def forgotten(self) -> int:
         """环形溢出累计被挤掉的 segment 数."""
         return self._forgotten
+
+    def drain(self) -> list[HeardSegment]:
+        """取出并清空当前所有留存 (current + recent), 返回被取出的 segment 列表.
+
+        供「人类强发送」用 (输入法语义): 点发送 = 把输入框内容一次性取走. 清空后
+        当前 segment 复位, recent 环形清空; forgotten 计数保留 (历史溢出已发生).
+        """
+        items: list[HeardSegment] = []
+        if self._current_segment_id is not None and self._current_text:
+            items.append(HeardSegment(
+                segment_id=self._current_segment_id,
+                text=self._current_text,
+            ))
+        items.extend(self._recent)
+        self._recent.clear()
+        self._current_segment_id = None
+        self._current_text = ""
+        return items

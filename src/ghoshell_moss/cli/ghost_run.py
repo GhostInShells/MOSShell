@@ -36,7 +36,7 @@ from ghoshell_moss.cli.utils import voice_flags
 @click.option(
     "--voice",
     type=click.Choice(["none", "speak", "listen", "all"]),
-    default="none",
+    default="speak",
     show_default=True,
     help="Voice wiring: none=off, speak=output only, listen=input only, all=interleaved.",
 )

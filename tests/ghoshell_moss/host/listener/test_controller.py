@@ -676,3 +676,98 @@ async def test_emit_false_retains_and_reflects_last_heard():
     controller.stop()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+# ============================================================
+# 人类强发送 (send_now) — 输入法语义
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_send_now_drains_buffer_when_retaining():
+    """emit=False (输入法): send_now drain buffer 并发一条 deliver signal."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver.emit = False
+    task = controller.run_etiquette(spec, timeout=5.0)
+
+    listener.result_observers[0](_partial("你好"))
+    listener.segment_observers[0](_segment("你好"))
+
+    result = controller.send_now()
+    assert result == "sent"
+    assert len(emitted) == 1
+    sig = emitted[0]
+    assert sig.complete is True
+    assert ListenerSignal.from_signal(sig).interrupt is False
+    assert "你好" in _signal_text(sig)
+
+    # 已 drain → 再 send 为空, 不发 signal.
+    result2 = controller.send_now()
+    assert result2 == "buffer empty — nothing to send"
+    assert len(emitted) == 1
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_send_now_empty_buffer_sends_nothing():
+    """buffer 空 → 提示空, 不发送任何东西."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver.emit = False
+    task = controller.run_etiquette(spec, timeout=5.0)
+
+    result = controller.send_now()
+    assert result == "buffer empty — nothing to send"
+    assert emitted == []
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_send_now_force_commits_when_auto_send():
+    """emit=True (自动): send_now 强 commit, 走现有 commit 链路, 不自己发 signal."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    # 直接启动 always (emit=True 默认), 拿当前 session.
+    task, state = await _start_controller(controller, controller.always, silence=5.0, timeout=5.0)
+
+    result = controller.send_now()
+    assert result == "committed"
+    assert state.committed == 1  # 强 commit 切段
+
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_send_now_no_sink_drains_only():
+    """无 signal sink → send_now 只 drain, 不发 signal (副作用只有 drain)."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    spec = always.model_copy(deep=True)
+    spec.deliver.emit = False
+    task = controller.run_etiquette(spec, timeout=5.0)
+
+    listener.result_observers[0](_partial("你好"))
+    listener.segment_observers[0](_segment("你好"))
+
+    result = controller.send_now()  # 无 sink, 不发 signal 但 drain
+    assert result == "sent"
+    result2 = controller.send_now()
+    assert result2 == "buffer empty — nothing to send"  # 已 drain
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task

@@ -739,6 +739,71 @@ class ListenerController(ListenLifecycle):
         ))
         self._notify_signal(f"expect #{index} timed out after {timeout:g}s")
 
+    # ── 人类强发送 (输入法语义) ──
+
+    def send_now(self) -> str:
+        """人类强发送按钮 — 现在就把该交的交出去. 按当前是否自动发送分两种形态.
+
+        - emit=False (留存/输入法): drain buffer, 有 sink 时发一条 deliver signal;
+          空 buffer 提示空, 不发任何东西.
+        - emit=True (自动发送): 强 commit, 走现有 commit 链路 (判停 → TAIL → deliver),
+          不替代它自己去发 signal.
+
+        无 signal sink 时副作用只有 drain (清空 buffer), 不发 signal. pause 门控无需
+        额外处理 — pause 时 listener 已 stop, state 为 None, 调了也空转.
+        """
+        if self._retaining():
+            return self._drain_and_send()
+        return self._force_commit()
+
+    def _drain_and_send(self) -> str:
+        """emit=False: 取出 buffer 内容, 有 sink 时发 deliver signal."""
+        items = self._buffer.drain()
+        if not items:
+            return "buffer empty — nothing to send"
+        # 发送形状: 当前只拼 text. 未来 clause 会带 speaker_id / speaker_name (声纹),
+        # 发送时要能按 speaker 组织, 不要把形状写死成"只有 text".
+        text = "\n".join(s.text for s in items if s.text).strip()
+        if not text:
+            return "buffer empty — nothing to send"
+        if self._signal_broadcast is not None:
+            self._signal_broadcast(new_listener_signal(
+                text,
+                source="asr",
+                complete=True,
+                interrupt=False,
+                mode="notify",
+                priority=Priority.INFO,
+                description="listener:send-now",
+            ))
+        return "sent"
+
+    def _force_commit(self) -> str:
+        """emit=True: 强 commit, 让现有 commit 链路自己发 deliver signal."""
+        state = self._listener.state
+        if state is None:
+            return "no active listening session"
+        state.commit()
+        return "committed"
+
+    def buffer_status(self) -> str:
+        """buffer 里待发送内容的轻量摘要 — TUI 提示用 (非模型 notice).
+
+        返回空串表示 buffer 空; 否则返回当前增长全文 + 定稿条数的单行摘要.
+        """
+        if not self._retaining():
+            return ""
+        current = self._buffer.peek_current()
+        recent = self._buffer.peek_recent()
+        parts: list[str] = []
+        if current is not None and current.text:
+            parts.append(current.text)
+        if recent:
+            parts.extend(s.text for s in recent if s.text)
+        if not parts:
+            return ""
+        return " | ".join(parts)
+
     # ── segment buffer 留存 (deliver.emit=False 门控) ──
 
     def _retaining(self) -> bool:
@@ -852,6 +917,17 @@ class ListenerController(ListenLifecycle):
             correlate which `expect` timed out (e.g. a later signal referencing "#3").
             """
             return self.expect(timeout)
+
+        @chan.build.command(blocking=False)
+        async def send_now() -> str:
+            """Human-style strong send — commit what should be sent right now.
+
+            When the etiquette does not auto-send (deliver.emit=False, input-method mode),
+            this drains the retained buffer and sends it as one signal (empty buffer = no
+            signal, just "buffer empty"). When auto-send is on, this force-commits the
+            current turn early (before stop judging), letting the normal commit path deliver.
+            """
+            return self.send_now()
 
         @chan.build.command()
         async def get_etiquette(name: str = "") -> str:

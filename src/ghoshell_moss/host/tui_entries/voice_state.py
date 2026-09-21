@@ -28,6 +28,7 @@ _VOICE_COMMANDS = {
     "stop": "stop listening (human lock — channel hidden from model)",
     "resume": "resume listening (unlock + default etiquette)",
     "etiquette": "switch etiquette: /etiquette <name>",
+    "send": "strong send — drain buffer / force commit (empty input + Enter does the same)",
     "status": "show listener status",
     "clear": "clear the voice view",
 }
@@ -54,7 +55,8 @@ class VoiceState(TUIState):
         if alive:
             self.console.info(
                 "Voice control — clause stream (user / ghost) + listener commands.\n"
-                "/stop  /resume  /etiquette <name>  /status  /clear"
+                "/stop  /resume  /etiquette <name>  /send  /status  /clear\n"
+                "empty input + Enter = strong send (drain buffer / force commit)"
             )
             self._print_status()
         else:
@@ -63,6 +65,24 @@ class VoiceState(TUIState):
     def on_interrupt(self, event) -> None:
         # voice state 无长运行操作可打断; 中断不动作.
         pass
+
+    def key_bindings(self):
+        """绑定 enter: 输入区为空时触发 send_now (人类强发送), 有内容时走默认提交."""
+        from prompt_toolkit.key_binding import KeyBindings
+
+        kb = KeyBindings()
+
+        @kb.add("enter")
+        def _enter(event) -> None:
+            buffer = event.current_buffer
+            if buffer and buffer.text.strip():
+                # 有内容 → 正常提交 (命令 / 文本), 不劫持.
+                buffer.validate_and_handle()
+                return
+            # 空输入 → 人类强发送.
+            self._do_send_now()
+
+        return kb
 
     def handle_input(self, console_input: str) -> None:
         text = console_input.strip()
@@ -84,13 +104,15 @@ class VoiceState(TUIState):
                 self.console.info(f"available etiquettes: {', '.join(names)}")
             else:
                 self.console.info(self._controller.activate_etiquette(arg))
+        elif head == "/send":
+            self._do_send_now()
         elif head == "/status":
             self._print_status()
         elif head == "/clear":
             self.console.clear()
         else:
             self.console.info(
-                f"unknown voice command: {text} — try /stop /resume /etiquette <name> /status /clear"
+                f"unknown voice command: {text} — try /stop /resume /etiquette <name> /send /status /clear"
             )
 
     async def __aenter__(self):
@@ -134,6 +156,16 @@ class VoiceState(TUIState):
         action(self._controller)
         self.console.info(ok_msg)
 
+    def _do_send_now(self) -> None:
+        if self._controller is None:
+            self._print_unavailable()
+            return
+        result = self._controller.send_now()
+        if result == "buffer empty — nothing to send":
+            self.console.hint("buffer empty — nothing to send")
+        else:
+            self.console.notice(result)
+
     def _print_unavailable(self) -> None:
         self.console.info("listener not available — run with --voice listen (or all)")
 
@@ -147,6 +179,9 @@ class VoiceState(TUIState):
             f"etiquette={snap.etiquette}  listening={snap.listening}  "
             f"paused={snap.paused}  signal={wired}"
         )
+        buf = self._controller.buffer_status()
+        if buf:
+            self.console.hint(f"buffer: {buf}")
 
     async def _consume_clauses(self) -> None:
         try:

@@ -4,13 +4,13 @@ depends: []
 description: '全功能交错语音对话体系: 听说两轴的组件化与分布式部署 (听 / 说 / 听+说 节点), 回声消除与单进程听说共存, moss runtime
   自带听说拉起, 听说一体化的 channel 控制面. 判据是开箱体验 —— macOS 及不自带回声消除的系统上的对话可用性。'
 milestone: null
-# priority: importance within the current stage (iteration cycle) — not development urgency
 priority: P1
-status: in-progress
-status_note: 'implementation underway: 工作项 #4-8 committed (listen flag, AEC surface,
-  listener lifecycle, provider degradation, runtime error log); remaining #9-15'
+status: completed
+status_note: 'stage2 shipped: voice default speak, listener auto-start etiquette,
+  send_now strong-send + buffer drain, expect-timeout reminder, single delivery knob
+  (deliver.emit), murmur etiquette, signal wiring + TUI observation'
 title: Interleaved Voice
-updated: '2026-09-20'
+updated: '2026-09-22'
 ---
 
 # Interleaved Voice

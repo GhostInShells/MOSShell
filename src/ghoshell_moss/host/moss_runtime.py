@@ -517,6 +517,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             self._listen_controller = None
             return
         from ghoshell_moss.host.listener.controller import ListenerController
+        from ghoshell_moss.contracts.configs import ConfigStore
         self._listen_controller = ListenerController(
             listener=listener,
             asr=listener.asr(),
@@ -524,6 +525,9 @@ class ShellRuntimeImpl(MOSShellRuntime):
             signal_broadcast=self._matrix.session.add_signal,
             cell_name=self._matrix.this.name,
         )
+        config_store = self._matrix.container.get(ConfigStore)
+        if config_store is not None:
+            self._listen_controller.with_config_store(config_store)
         # 单例注册: TUI voice state / 其它消费面从 container 拿同一个 controller.
         self._matrix.container.set(ListenerController, self._listen_controller)
         # 听侧 channel 挂进 shell main — 模型看到"一个语音面"的命令 (activate/stop/
@@ -702,6 +706,8 @@ class ShellRuntimeImpl(MOSShellRuntime):
         try:
             async with controller:
                 await controller.with_topic_service(self._matrix.session.topics)
+                # 启动即听: 默认礼仪常驻, 而不是停在 stop 状态等模型/人类手动 activate.
+                controller.start_default_etiquette()
                 yield
         finally:
             aec_cleanup()

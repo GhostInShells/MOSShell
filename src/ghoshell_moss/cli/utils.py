@@ -165,8 +165,8 @@ VOICE_CHOICES = ("none", "speak", "listen", "all")
 def voice_flags(voice: str) -> tuple[bool, bool]:
     """Map ``--voice`` to the ``(speech, listen)`` runtime axes.
 
-    Listening is a privacy-sensitive action, so the out-of-box default (``none``)
-    enables neither; ``speak`` is output-only and safe on its own.
+    Out-of-box default is ``speak`` (output-only, safe on its own). Listening is a
+    privacy-sensitive action, so ``listen``/``all`` are opt-in; ``none`` disables both.
     """
     return {
         "none": (False, False),
