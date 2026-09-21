@@ -24,7 +24,7 @@ The runtime model drives a channel through CTML: `moss ctml read`.
 from abc import ABC, abstractmethod
 
 from PIL import Image
-from typing import Union, Callable, Coroutine, Any, Optional, TypeVar, AsyncIterable, Type
+from typing import Union, Callable, Coroutine, Any, Optional, TypeVar, AsyncIterable, Type, Literal, TypeAlias
 
 from ghoshell_container import IoCContainer
 from typing_extensions import Self
@@ -43,7 +43,7 @@ Facade = ABC
 
 __all__ = [
     "Channel", "ChannelFactory",
-    "CommandFunction", "MessageFunction", "StringType", "StringDictType", "LifecycleFunction",
+    "CommandFunction", "MessageFunction", "StringType", "NamedNoticesFunc", "LifecycleFunction",
     "Message",
     "MessageType",
     "Builder",
@@ -54,6 +54,7 @@ __all__ = [
 
     # Implementation styles kept as examples.
     "ChannelInterface", "ChannelCreator",
+    "NAMED_NOTICE_UNCHANGED", "NAMED_NOTICE_REMOVED",
 ]
 
 ChannelFactory = Callable[[IoCContainer], Channel | None]
@@ -88,9 +89,33 @@ StringType = Union[
     Callable[[], str],
     Callable[[], Coroutine[None, None, str]],
 ]
-StringDictType = Union[
-    Callable[[], dict[str, str | None]],
-    Callable[[], Coroutine[None, None, dict[str, str | None]]],
+
+NAMED_NOTICE_REMOVED = "removed"
+"""The tombstone of a named fragment that is gone: the framework emits ``<name removed/>``.
+
+A syntax mark on the framework's side, never a legal producer value — to announce that a
+fragment is gone, leave it out of ``named_notices`` or set its value to ``None``. A fragment
+whose text is literally ``"removed"`` is still content: the tombstone is an attribute on a
+self-closing tag, while that text renders as an element's content (``<name>removed</name>``).
+"""
+
+NAMED_NOTICE_UNCHANGED = ""
+"""The "nothing new" value — the producer asserts this fragment has no new text.
+
+Renders as zero tokens, and the model keeps the last text it read for the fragment. This is
+the only zero-cost encoding of "no news": an explicit ``<name unchanged/>`` would spend
+tokens every frame to say what the model already holds in its own context.
+
+It does not mean "blank right now" — to express a blank state, the channel defines a
+non-empty zero of its own (``"empty"``), which compares like any other text, so that
+entering and leaving that state are both announced by the delta.
+"""
+
+NOTICE_VALUE: TypeAlias = Literal[''] | str | None
+
+NamedNoticesFunc = Union[
+    Callable[[], dict[str, NOTICE_VALUE]],
+    Callable[[], Coroutine[None, None, dict[str, NOTICE_VALUE]]],
 ]
 
 LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[..., None]]
@@ -469,7 +494,7 @@ class Builder(Facade):
         pass
 
     @abstractmethod
-    def named_notices(self, func: StringDictType) -> StringDictType:
+    def named_notices(self, func: NamedNoticesFunc) -> NamedNoticesFunc:
         """
         decorator
         Register a function that produces this channel's named notice fragments: a

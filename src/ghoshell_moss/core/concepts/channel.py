@@ -62,27 +62,7 @@ __all__ = [
     "ChannelNamePattern",
     # scope 语法
     "ChannelScope", "ChannelScopeType", "ChannelScopeDefaultType",
-    # named notice 取值约定
-    "NAMED_NOTICE_REMOVED", "NAMED_NOTICE_UNCHANGED",
 ]
-
-
-NAMED_NOTICE_REMOVED = "removed"
-"""named notice 的墓碑标记 — 片段消亡时, 框架代发 ``<name removed/>``.
-
-这是框架发出的语法记号, 不是生产者的合法取值: 生产者要宣告片段消亡, 让它在
-``named_notices`` 里缺席, 或把它的值置为 ``None`` 即可.
-"""
-
-NAMED_NOTICE_UNCHANGED = ""
-"""named notice 的"不变"取值 — 生产者断言该片段没有新内容.
-
-渲染层零输出 (0 token), 模型保留上次读到的那份内容. 这是"没有新消息"的唯一零成本编码:
-显式的 ``<name unchanged/>`` 会每帧花 token, 且说的都是模型上下文里已有的东西.
-
-注意它不表示"此刻是空的" —— 要表达空态, 业务须自定义一个非空零值 (如 ``"empty"``),
-它与普通文本同等参与比较, 这样进入 / 离开空态都能被 delta 宣告.
-"""
 
 
 class ChannelMeta(BaseModel):

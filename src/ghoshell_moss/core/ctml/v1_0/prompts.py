@@ -2,7 +2,10 @@ import os
 
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.channel import (
-    ChannelMeta, ChannelFullPath, NAMED_NOTICE_REMOVED, NAMED_NOTICE_UNCHANGED,
+    ChannelMeta, ChannelFullPath
+)
+from ghoshell_moss.core.blueprint.channel_builder import (
+    NAMED_NOTICE_REMOVED, NAMED_NOTICE_UNCHANGED
 )
 from ghoshell_moss.core.concepts.command import Command
 from .constants import MOSS_DYNAMIC, MOSS_STATIC, MAIN_CHANNEL_NAME, CONTENT_COMMAND_NAME

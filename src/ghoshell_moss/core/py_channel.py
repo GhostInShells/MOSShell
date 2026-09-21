@@ -30,7 +30,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     MessageType,
     LifecycleFunction,
     StringType,
-    ChannelFactory, StringDictType,
+    ChannelFactory, NamedNoticesFunc,
 )
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 import time
@@ -68,7 +68,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
         self._notice_fn: StringType | None = None
-        self._named_notice_fn: StringDictType | None = None
+        self._named_notice_fn: NamedNoticesFunc | None = None
         self._sustain_children: dict[str, Channel | ChannelFactory] = {}
         self._sustain_children_factories: list[Callable] = []
         self._virtual_children: dict[str, Channel] = {}
@@ -192,7 +192,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
             self._dynamic = True
         return func
 
-    def named_notices(self, func: StringDictType) -> StringDictType:
+    def named_notices(self, func: NamedNoticesFunc) -> NamedNoticesFunc:
         self._named_notice_fn = func
         self._dynamic = True
         return func
