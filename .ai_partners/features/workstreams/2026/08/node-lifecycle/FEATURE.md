@@ -6,9 +6,9 @@ description: Node 生命周期治理，从 node-migration 独立。四层方案�
 milestone: 0.1.0
 priority: P1
 status: completed
-status_note: stub 三面归位 + 英文 + CLI 引导收敛到 README 已落地并验证; 存量 node 治理怀疑已记录待 ghost 自迭代时处理
+status_note: stub 三面归位 + 英文 + CLI 引导收敛到 README 已落地并验证; 存量 node 治理怀疑已记录待 ghost 自迭代时处理; 2026-09-23 增 --simple 极简创建形态
 title: Node Lifecycle — 身份、入口、验证与记忆
-updated: '2026-09-22'
+updated: '2026-09-23'
 ---
 
 # Node Lifecycle
@@ -205,6 +205,41 @@ spawn 面**单喉唯一** = `NodeManager.spawn_node`（`node_manager.py:159`）�
 - **CLI `create` 引导收敛**（`nodes_cli.py:233-236`）：原一次报 README / NODE / INSTALL / run 四条，改为只指 README（+ run）；由 README 再分流到 INSTALL + NODE。
 - **附带修复**：`_copy_stub` 只跳 `__init__.py`，会把 stub 目录里遗留的 `__pycache__/` 一并复制进新 node；加 guard。
 - **验证**：`moss nodes create <tmp>` → 产出无 `__pycache__`、frontmatter 干净、`nodes show` verbatim 正常、install 闸门触发正确。
+
+### 极简创建形态 `--simple <STEM>`（2026-09-23）
+
+完整 stub 是给有开发者面 / 安装面的 node 的。node 变多后，大量是"一条 channel + 一个
+main.py"的 scratch 节点，六个文件里四个没内容可填。增第二形态：
+
+```
+moss nodes create <path> --simple my_node      # → my_node.py + NODE.md
+```
+
+关键点：
+
+- **stem 即身份**。取值须是 python 标识符，同时当节点名与模块文件名——不用目录名。
+  理由：目录名要 normalize（`CellNamePattern` 只收 `[a-zA-Z0-9_.-]`，空格 / 中文直接炸），
+  而标识符天生是合法文件名 + 合法 YAML 标量 + `CellNamePattern` 子集，全链零转换。
+  校验取 `[a-zA-Z_][a-zA-Z0-9_]*`（比 `CellNamePattern` 严）：stem 无引号写进
+  `exec.args`，且要当脚本路径执行。
+- **复用 stub 的 main.py**，拷贝时把文档里写死的 `main.py` 换成 `<STEM>.py`；不另存模板，
+  免得两形态漂移。
+- **`exec.command: python`** → `NodeLauncher.from_manifest` 改写成 spawner 的
+  `sys.executable` → 共享跑 moss 的 venv，不独立建环境。
+- **不声明 `persist` / `singleton`** → `NodeManifest` 默认（都 True）即"常驻 + 事件可见"，
+  正合提供 channel 的 node。
+- **不产出 README / INSTALL / .gitignore / runtime**。三面治理描述的是完整 stub 那一形态；
+  `--simple` 是有意的第二形态，README / INSTALL 位面在它下面不存在——不是 create 的 bug。
+- **NODE.md 是模板，body 留空**：create 产出脚手架，创建了 ≠ 可以用，body 由作者写。
+- **不做** run 侧"无 NODE.md 就跑 main.py"的目录 fallback：极简 NODE.md 落地后它收益只剩
+  "跑非 CLI 建的目录"，却要自造命名规则，且 `list_nodes` 只扫 NODE.md → run 认它 / list
+  不认它，两侧对"什么是一个 node"不一致。另：`from_script` 的 ad-hoc 身份是
+  `persist=False`，复用会把常驻 node 静默降级为一次性。
+
+验证（实跑）：manifest 反射为 `persist=True / singleton=True / installed=True /
+exec=python [<STEM>.py]`；非法 stem 在 `mkdir` 前拒绝（不留空目录）；默认形态 6 项回归
+未变；真实 spawn argv `.../.venv/bin/python3 <STEM>.py`、cwd 正确、singleton 锁名 = stem、
+子进程干净退出 0。
 
 ### 存量 node 治理怀疑（只标不治）
 

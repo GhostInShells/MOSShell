@@ -30,6 +30,7 @@ Design record: .ai_partners/features/workstreams/2026/06/cells-cli/plan.md
 
 import asyncio
 import os
+import re
 import signal
 import sys
 from importlib import resources
@@ -55,6 +56,24 @@ nodes_app = typer.Typer(
 
 _NODE_STUB_PACKAGE = 'ghoshell_moss.stubs.node'
 _RUN_GRACE_SECONDS = 5.0      # SIGTERM → wait → SIGKILL when CLI (owner) exits
+
+# --simple: a python identifier becomes both the node name and the module filename.
+# Stricter than CellNamePattern (which also allows -/. digits) on purpose — the stem
+# is written unquoted into the manifest and executed as a script path.
+_PYTHON_STEM_RE = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+
+# Minimal manifest for --simple. exec.command 'python' → the spawner's sys.executable,
+# so a simple node shares the venv that runs moss (no environment of its own).
+# persist/singleton are omitted → NodeManifest defaults (both True) → resident node.
+_SIMPLE_NODE_MANIFEST = """\
+---
+name: '{name}'
+description: ''
+exec:
+  command: python
+  args: {script}
+---
+"""
 
 
 # ===========================================================================
@@ -212,14 +231,27 @@ def create_node(
     path: Path = typer.Argument(
         help="Target directory for the new node (e.g. '.moss/nodes/tools/my-node').",
     ),
+    simple: str = typer.Option(
+        "", "--simple",
+        help="Minimal node instead of the full stub: '<STEM>.py' + NODE.md only "
+             "(no README / INSTALL.md / .gitignore). STEM is a python identifier; "
+             "it becomes both the node name and the module filename.",
+    ),
 ):
     """Create a new node from the stub template at the given path.
 
-    The directory's last component becomes the node name. All other commands
-    (run, show, install, link) already use path — this one does too.
+    Two shapes. Default: the full stub (NODE.md + README.md + INSTALL.md + main.py);
+    the directory's last component becomes the node name. `--simple <STEM>`: only
+    '<STEM>.py' + a minimal NODE.md, both named by STEM — for scratch nodes that need
+    no docs and no install steps. All other commands (run, show, install, link)
+    already use path — this one does too.
     """
+    if simple and not _PYTHON_STEM_RE.fullmatch(simple):
+        print_error(f"--simple expects a python identifier, got {simple!r}.")
+        print_info("  e.g. --simple my_node  ->  my_node.py + NODE.md")
+        raise typer.Exit(code=1)
+
     target_dir = path.resolve()
-    name = target_dir.name
 
     if target_dir.exists():
         print_error(f"Directory already exists: {target_dir}")
@@ -228,12 +260,39 @@ def create_node(
     target_dir.mkdir(parents=True, exist_ok=False)
 
     stub_resources = resources.files(_NODE_STUB_PACKAGE)
+
+    if simple:
+        script = _copy_simple_node(stub_resources, target_dir, stem=simple)
+        print_success(f"Node '{simple}' created at {target_dir}")
+        echo("")
+        print_info(f"  Files: {script} + {NodeManifest.MANIFEST_FILENAME}")
+        print_info(f"  Run: moss nodes run {path}")
+        return
+
+    name = target_dir.name
     _copy_stub(stub_resources, target_dir, name=name)
 
     print_success(f"Node '{name}' created at {target_dir}")
     echo("")
     print_info(f"  Read {target_dir / 'README.md'} — it maps the files in this node and what each one is for.")
     print_info(f"  Run: moss nodes run {path}")
+
+
+def _copy_simple_node(stub_node, target_dir: Path, *, stem: str) -> str:
+    """--simple: '<stem>.py' + a minimal NODE.md. Returns the script filename.
+
+    Reuses the stub's main.py rather than carrying a second copy, so the two
+    node shapes cannot drift apart. No README / INSTALL.md / .gitignore — a simple
+    node has no developer face and no install steps, and its name comes from the
+    stem, not the directory.
+    """
+    script = f'{stem}.py'
+    text = (stub_node / 'main.py').read_text(encoding='utf-8')
+    # The stub docstring names the file 'main.py'; rename it to match this node.
+    target_dir.joinpath(script).write_text(text.replace('main.py', script), encoding='utf-8')
+    manifest = _SIMPLE_NODE_MANIFEST.format(name=stem, script=script)
+    target_dir.joinpath(NodeManifest.MANIFEST_FILENAME).write_text(manifest, encoding='utf-8')
+    return script
 
 
 def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:
