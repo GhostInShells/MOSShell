@@ -16,7 +16,16 @@ token it knows; `--token` is optional if `DSH_WEB_TOKEN` is set):
 
     moss nodes run nodes/deepseek-harness -- --host 127.0.0.1 --port 3080 --token <token>
 
-Drive via CTML — a few lifted verbs, everything else is code:
+Drive via CTML — a few lifted verbs, everything else is code. The tags below
+name the channel as it names itself; from the ghost's **host cell** the same
+channel mounts as a child of the mesh projection, so the tag carries the mount
+path — `<matrix.mesh.<alias>:...>`. `<alias>` is reserved at spawn: pass
+`name="dsh"` to `nodes:run(target, name)`, or declare `{target: ..., alias: dsh}`
+in the mode's `bringup_nodes`, and the path is exactly `matrix.mesh.dsh`. A node
+started without one — CLI `moss nodes run`, a `bringup_nodes` entry with no
+alias, or a re-mount after the host restarted — falls back to the cell's
+uid-suffixed short address (`matrix.mesh.dsh_<uid6>`), whose suffix changes on
+every spawn.
 
     <dsh:new name="p1"/>                       # create + attach a session
     <dsh:send name="p1" text="看下 runtime.py"/>

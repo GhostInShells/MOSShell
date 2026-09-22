@@ -49,6 +49,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
 from ghoshell_moss.core.blueprint.cell import (
     AutoAcceptPolicy,
     CELL_EVENT_CHANNEL_ADDED,
+    CellAliasRegistry,
     CellEvent,
     CellAddress,
     CellAddressCodec,
@@ -78,44 +79,6 @@ _DEFAULT_SHOW_EVENTS = 8
 _EVENT_BUFFER = 128
 _STDERR_TAIL_LINES = 5
 _ONE_SHOT_OUTPUT_TAIL = 200
-
-
-# ==== cell alias registry ========================================
-
-
-class CellAliasRegistry:
-    """Process-local alias bookkeeping shared by the nodes and mesh channels.
-
-    Naming is a channel-tree concern, not a Matrix identity concern — it lives
-    here rather than on the facade. Two pieces:
-
-    - counter: base name → next suffix. Monotonic (never reused), so a name in
-      the transcript refers to exactly one spawn forever.
-    - pending: address → final name. Reserved at ``run``, consumed (popped) at
-      mount, pruned when the process dies without providing a channel.
-    """
-
-    def __init__(self) -> None:
-        self._counter: dict[str, int] = {}
-        self._pending: dict[CellAddress, str] = {}
-
-    def reserve(self, address: CellAddress, base: str) -> str:
-        """Mint the real name for ``base`` and record it as pending for ``address``."""
-        n = self._counter.get(base, 0)
-        self._counter[base] = n + 1
-        name = base if n == 0 else f'{base}_{n + 1}'
-        self._pending[address] = name
-        return name
-
-    def consume(self, address: CellAddress) -> str | None:
-        """Pop and return the pending name at mount time; None if never reserved."""
-        return self._pending.pop(address, None)
-
-    def prune(self, live_addresses: set[CellAddress]) -> None:
-        """Drop pending entries whose process is gone (never provided a channel)."""
-        for address in list(self._pending):
-            if address not in live_addresses:
-                del self._pending[address]
 
 
 # ==== helpers ====================================================
@@ -262,7 +225,8 @@ def new_nodes_channel(
 ) -> Channel:
     """本地 node 治理 channel. 五动词全 nonblocking, 数据源来自 matrix."""
 
-    aliases = aliases or CellAliasRegistry()
+    # 挂载名归 matrix 治理 (与 nodes:run / mode bringup 同一本账); 显式传入仅供测试.
+    aliases = aliases or matrix.cell_aliases()
 
     default_desc = (
         'Local node governance — list/read/run/stop/status/read_output.'
@@ -608,7 +572,8 @@ def new_mesh_channel(
     """网络投影 channel. virtual_children 镜像 mesh.channel_proxies(),
     CellEvent 生产侧订阅 mesh.on_event 双扇出 (事件 ring + Signal)."""
 
-    aliases = aliases or CellAliasRegistry()
+    # 挂载名归 matrix 治理 (与 nodes:run / mode bringup 同一本账); 显式传入仅供测试.
+    aliases = aliases or matrix.cell_aliases()
 
     default_desc = (
         'Network projection — accepted cells surface as matrix.mesh.<name>.'
@@ -691,8 +656,6 @@ def new_mesh_channel(
         # 计算增删差异
         current = set(proxy_aliases.keys())
         target = set(proxies.keys())
-        # 剪枝: 进程已死且从未 provide channel 的 pending 名字 (一次性信箱清垃圾).
-        aliases.prune(set(matrix.handled_cells().keys()))
         # remove: 掉线的 accepted cells
         for gone_addr in current - target:
             alias = proxy_aliases.pop(gone_addr, None)
@@ -862,10 +825,10 @@ def new_matrix_channel(
     )
     chan = new_channel(name=name, description=description or default_desc)
 
-    # 静态挂 nodes + mesh (composed inline, share matrix reference + alias registry)
-    aliases = CellAliasRegistry()
-    nodes = new_nodes_channel(matrix, aliases=aliases)
-    mesh = new_mesh_channel(matrix, aliases=aliases)
+    # 静态挂 nodes + mesh. 两者各自从 matrix 取同一本挂载名账 (matrix.cell_aliases),
+    # 所以 run 时 reserve 的名字, mesh 挂载时一定消费得到.
+    nodes = new_nodes_channel(matrix)
+    mesh = new_mesh_channel(matrix)
     chan.import_channels(nodes, mesh, *extra_children)
 
     @chan.build.instruction

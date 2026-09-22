@@ -25,7 +25,7 @@ from ghoshell_moss.core.blueprint.host import (
     MOSShellRuntime, MossSystemPrompter,
 )
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.project import HostMode
+from ghoshell_moss.core.blueprint.project import BringupNode, HostMode
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.cell import CellEventLevel
 from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
@@ -269,15 +269,22 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 ResourceStorageFactoryBootstrapper(r.value()),
             )
 
-    async def _bringup_one(self, target: str) -> None:
+    async def _bringup_one(self, entry: BringupNode) -> None:
         """发起单个 node 的拉起; 失败记日志 + 广播事件, 不带倒其余 node.
 
         matrix 已启动时运行, run_node 依赖 matrix 运行态. mode bringup 是启动面, 没有
         直接调用方拿返回 (channel 侧 nodes:run 已用 raise_observe 兜底), 故失败额外
         publish 一个 ERROR 级 CellEvent 通知启动中的 ghost.
+
+        entry.alias 非空时给 cell 预留挂载名 — 和 CTML nodes:run(target, name) 同一本账
+        (matrix.cell_aliases), 于是该 cell 的 channel 稳定挂在 matrix.mesh.<alias>,
+        不带每次 spawn 都变的 uid 短标.
         """
+        target = entry.target
         try:
-            await self._matrix.run_node(Path(target))
+            handle = await self._matrix.run_node(Path(target))
+            if entry.alias:
+                self._matrix.cell_aliases().reserve(handle.address, entry.alias)
         except Exception as e:
             self._matrix.logger.exception("bringup node failed: %s", target)
             await self._publish_bringup_failure(target, e)
@@ -302,10 +309,10 @@ class ShellRuntimeImpl(MOSShellRuntime):
         排在 matrix teardown 之前.
         """
         loop = asyncio.get_running_loop()
-        for target in self._mode.meta.bringup_nodes:
+        for entry in self._mode.meta.bringup_nodes:
             task = loop.create_task(
-                self._bringup_one(target),
-                name=f'bringup:{self._mode.name}:{target}',
+                self._bringup_one(entry),
+                name=f'bringup:{self._mode.name}:{entry.target}',
             )
             # _bringup_one 吞掉 Exception (CancelledError 是 BaseException, 不吞), 故 task
             # 不抛、无需 done callback 记异常; 只借它把完成的 task 移出 set.

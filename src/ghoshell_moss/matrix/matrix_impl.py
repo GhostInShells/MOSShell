@@ -25,6 +25,7 @@ from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.cell import (
     CellAddress, Cell, CellRuntimeInfo, CellPresence, CellNetwork,
     CellEventLevel, NodeManager, normalize,
+    CellAliasRegistry,
     enter_cell_lifecycle,
 )
 from ghoshell_moss.core.blueprint.session import Session
@@ -106,6 +107,11 @@ class MatrixImpl(Matrix):
         # 死掉的进 FIFO (bounded). on_exit callback 完成 dict → deque 转移.
         self._handled_cells: dict[CellAddress, CellHandle] = {}
         self._dead_cells: deque[CellHandle] = deque(maxlen=128)
+
+        # -- 命名: 给 node cell 的挂载名 (matrix.mesh.<alias>) -- #
+        # 进程内唯一, 与 handled_cells 同寿命. 生产者 (nodes:run / mode bringup)
+        # reserve, mesh 投影 consume; 进程先死由 _on_cell_exit 丢弃.
+        self._cell_aliases = CellAliasRegistry()
 
         # -- 生命周期挂载对象 (承老代码) -- #
         # 运行前 register_lifecycle_object 塞入, __aenter__ async 阶段依次 enter.
@@ -392,6 +398,8 @@ class MatrixImpl(Matrix):
             handle = self._handled_cells.pop(address, None)
             if handle is not None:
                 self._dead_cells.append(handle)
+            # 进程先于挂载退出: 丢弃它的挂载名, 不让一个死 cell 的名字留在 pending 里.
+            self._cell_aliases.discard(address)
             self._logger.info(
                 "%s cell exited: address=%s exit_code=%s",
                 self._log_prefix, address, meta.exit_code,
@@ -406,6 +414,10 @@ class MatrixImpl(Matrix):
     def dead_cells(self) -> list[CellHandle]:
         """§YY: 最近死亡的 cell handle FIFO 快照, 最新在末尾."""
         return list(self._dead_cells)
+
+    def cell_aliases(self) -> CellAliasRegistry:
+        """node cell 的挂载名账 (matrix.mesh.<alias>): 生产者 reserve, mesh 投影 consume."""
+        return self._cell_aliases
 
     def _kill_orphan_cell(self, info: CellRuntimeInfo) -> None:
         """host 侧 clear_cell_runtimes 的 kill 回调 — 走 NodeManager.kill_cell. 幂等."""

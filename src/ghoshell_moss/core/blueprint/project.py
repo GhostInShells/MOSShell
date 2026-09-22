@@ -22,21 +22,24 @@ from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
+from ghoshell_moss.core.concepts.channel import ChannelNamePattern
 from ghoshell_moss.core.concepts.topic import TopicSchema
 from ghoshell_moss.contracts import Workspace, ConfigType, ConfigStore
 from ghoshell_moss.contracts.resource import ResourceStorageMeta
 from ghoshell_moss.contracts.logger import config_logger_from_yaml
 from ghoshell_moss.message import unique_id
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from ghoshell_moss.core.ctml.versions import (
     search_version_file_in_dir, default_moss_ctml_meta_instruction_directory,
     get_version_from_filename, CTML_VERSION,
 )
+import re
 import sys
 import logging
 import asyncio
 
 __all__ = [
+    'BringupNode',
     'HostModeMeta',
     'HostMode',
     'Manifest', 'HostModeManifests', 'ProjectManifest',
@@ -67,6 +70,34 @@ def register_control_flow_exit(exc_type: type[BaseException]) -> None:
     边界, 但语义是"按退出码结束", 不是崩溃.
     """
     _CONTROL_FLOW_EXITS.add(exc_type)
+
+
+class BringupNode(BaseModel):
+    """One node a mode starts on bringup, plus the name it should be addressed by.
+
+    ``alias`` is the mount name the cell's channel gets under the mesh projection —
+    the same name CTML ``nodes:run(target, name)`` reserves. Leave it empty (or
+    declare the entry as a bare path string) to keep the cell's own address short
+    form, which carries a per-spawn uid.
+    """
+
+    target: str = Field(
+        description="相对 project.root 的 node 路径: 目录 (找 NODE.md) / NODE.md 文件 / 脚本.",
+    )
+    alias: str = Field(
+        default='',
+        description="该 cell 提供 channel 后 matrix.mesh.<alias> 的名字. 空 = 回落到地址短标.",
+    )
+
+    @field_validator('alias')
+    @classmethod
+    def _alias_is_a_channel_name(cls, value: str) -> str:
+        if value and not re.fullmatch(ChannelNamePattern, value):
+            raise ValueError(
+                f"alias {value!r} is not a valid channel path segment "
+                f"(pattern {ChannelNamePattern})"
+            )
+        return value
 
 
 class HostModeMeta(BaseModel):
@@ -112,10 +143,13 @@ class HostModeMeta(BaseModel):
         default_factory=lambda: [],
         description="排除掉 nodes 的路径, 匹配规则从 project 出发的相对路径, 以 fnmatch 语法为准过滤. "
     )
-    bringup_nodes: list[str] = Field(
+    bringup_nodes: list[BringupNode] = Field(
         default_factory=list,
-        description="mode 启动时自动拉起的 node 列表. 每项是相对 project.root 的路径, "
-                    "支持目录 (找 NODE.md)、NODE.md 文件或脚本. 单个失败记日志, 不阻断 mode 启动.",
+        description="mode 启动时自动拉起的 node 列表. 每项可以是一个相对 project.root 的路径字符串 "
+                    "(向前兼容: 等价于 {target: <path>}), 或 {target, alias} mapping. "
+                    "target 支持目录 (找 NODE.md)、NODE.md 文件或脚本; alias 是该 cell 提供 channel "
+                    "后挂在 matrix.mesh 下的名字 (与 CTML `nodes:run(target, name)` 同源), 缺省则回落到 "
+                    "cell 自己的地址短标. 单个失败记日志, 不阻断 mode 启动.",
     )
 
     # --- 运行时的动态生成字段 --- #
@@ -123,6 +157,17 @@ class HostModeMeta(BaseModel):
         default="",
         description="配置自身发现的位置."
     )
+
+    @field_validator('bringup_nodes', mode='before')
+    @classmethod
+    def _accept_bare_bringup_targets(cls, value: Any) -> Any:
+        """向前兼容: 一个裸字符串条目 = 只声明 target 的 BringupNode."""
+        if isinstance(value, list):
+            return [
+                {'target': item} if isinstance(item, str) else item
+                for item in value
+            ]
+        return value
 
     @classmethod
     def read_from_directory(cls, directory: Path) -> 'HostModeMeta | None':

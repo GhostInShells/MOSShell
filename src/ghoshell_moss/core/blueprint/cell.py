@@ -59,6 +59,7 @@ __all__ = [
     'Cell',
     'CellEvent',
     'CELL_EVENT_CHANNEL_ADDED',
+    'CellAliasRegistry',
     'CellPresence',
     'CellNetwork',
     'AutoAcceptPolicy',
@@ -870,6 +871,46 @@ class CellAddressCodec:
                 scored.append((score, addr))
         scored.sort(key=lambda t: (-t[0], t[1]))
         return [addr for _, addr in scored[:limit]]
+
+
+class CellAliasRegistry:
+    """Mount-name bookkeeping for the node cells one process spawns.
+
+    The name a cell's channel mounts under (``matrix.mesh.<alias>``) is chosen
+    while spawning, before the cell can announce anything: the mesh projection
+    only learns it by asking this registry when the channel shows up. Two callers
+    reserve a name — the CTML ``nodes:run(target, name)`` command and a mode's
+    ``bringup_nodes`` declaration — so the counters must be shared between them.
+
+    - ``counter``: base name → next suffix. Monotonic, never reused, so a name in
+      the transcript refers to exactly one spawn forever.
+    - ``pending``: address → final name. Reserved at spawn, consumed (popped) when
+      the mesh mounts the channel, discarded when the process exits first.
+    """
+
+    def __init__(self) -> None:
+        self._counter: dict[str, int] = {}
+        self._pending: dict[CellAddress, str] = {}
+
+    def reserve(self, address: CellAddress, base: str) -> str:
+        """Mint the mount name for ``base`` and remember it for ``address``.
+
+        The first allocation keeps the bare name; duplicates get ``_2``, ``_3``…
+        (never ``_1``). Reserving the same address again replaces its pending name.
+        """
+        n = self._counter.get(base, 0)
+        self._counter[base] = n + 1
+        name = base if n == 0 else f'{base}_{n + 1}'
+        self._pending[address] = name
+        return name
+
+    def consume(self, address: CellAddress) -> str | None:
+        """Pop and return the reserved name at mount time; None if none was reserved."""
+        return self._pending.pop(address, None)
+
+    def discard(self, address: CellAddress) -> None:
+        """Drop an address's reserved name — its process exited before mounting."""
+        self._pending.pop(address, None)
 
 
 def build_cell_from_node(

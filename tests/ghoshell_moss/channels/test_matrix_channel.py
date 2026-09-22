@@ -67,6 +67,7 @@ class _StubMatrix:
         self.project = SimpleNamespace(nodes=_NodesCatalog())
         self.handled: dict = {}
         self.dead: list = []
+        self.aliases = CellAliasRegistry()
 
     def handled_cells(self):
         return self.handled
@@ -74,18 +75,22 @@ class _StubMatrix:
     def dead_cells(self):
         return self.dead
 
+    def cell_aliases(self):
+        return self.aliases
+
 
 class _StubMesh:
     def __init__(self):
         self._on_event = None
         self._policy = AutoAcceptPolicy(local=True, foreign=False)
+        self.proxies: dict = {}
 
     def on_event(self, callback):
         self._on_event = callback
         return lambda: None
 
     def channel_proxies(self):
-        return {}
+        return self.proxies
 
     def auto_accept(self):
         return self._policy
@@ -163,12 +168,14 @@ async def test_nodes_notice_reports_exit_without_age_text():
 # ---- mesh: the event tail is warm state, capped ---- #
 
 def _net(stub):
-    """Mesh channel needs ``matrix.network()`` at startup + refresh, and
-    ``matrix.handled_cells()`` to prune pending names."""
+    """Mesh channel needs ``matrix.network()`` at startup + refresh, and the matrix's
+    alias registry (shared with the nodes channel) to mount accepted proxies."""
+    aliases = CellAliasRegistry()
+
     async def _network():
         return stub
 
-    return SimpleNamespace(network=_network, handled_cells=lambda: {})
+    return SimpleNamespace(network=_network, cell_aliases=lambda: aliases)
 
 
 @pytest.mark.asyncio
@@ -293,20 +300,28 @@ def test_alias_registry_consume_is_one_shot():
     assert reg.consume("node/vision/a") is None, "consumed at mount, not re-readable"
 
 
-def test_alias_registry_prunes_dead_addresses():
+def test_alias_registry_discards_dead_addresses():
     reg = CellAliasRegistry()
     reg.reserve("node/vision/a", "vision")
     reg.reserve("node/sensor/b", "sensor")
 
-    reg.prune({"node/sensor/b"})
-    assert reg.consume("node/vision/a") is None, "dead process → name pruned"
-    assert reg.consume("node/sensor/b") == "sensor", "live process → name kept"
+    reg.discard("node/vision/a")
+    assert reg.consume("node/vision/a") is None, "a process that died before mounting drops its name"
+    assert reg.consume("node/sensor/b") == "sensor", "a live process keeps its name"
 
 
 class _RunMatrix:
-    def __init__(self):
+    def __init__(self, mesh=None):
         self.project = SimpleNamespace(nodes=_NodesCatalog())
+        self.aliases = CellAliasRegistry()
+        self.mesh = mesh
         self._spawns = 0
+
+    def cell_aliases(self):
+        return self.aliases
+
+    async def network(self):
+        return self.mesh
 
     async def run_node(self, target, *, extra_args=None):
         self._spawns += 1
@@ -320,6 +335,9 @@ class _RunMatrix:
             ),
         )
         meta = SimpleNamespace(pid=1000 + self._spawns, exit_code=None, cwd="/tmp")
+        if self.mesh is not None:
+            # 该 cell 一挂载 channel, mesh 投影就能把它 expose 出来.
+            self.mesh.proxies[runtime.address] = SimpleNamespace(name="dsh")
         return SimpleNamespace(
             runtime=runtime, address=runtime.address,
             process=SimpleNamespace(meta=meta, output=None),
@@ -341,6 +359,28 @@ async def test_run_mints_and_reports_alias():
             "run", kwargs={"target": "nodes/visions/camera", "name": "vision"},
         )
         assert "alias=vision_2" in second, "a duplicate base name is suffixed"
+
+
+@pytest.mark.asyncio
+async def test_name_reserved_at_spawn_is_the_name_mesh_mounts():
+    """Spawn-time naming and mount-time naming read one ledger on the matrix, so a name
+    reserved by any spawn caller (CTML nodes:run, mode bringup) is the path the channel
+    actually surfaces under."""
+    matrix = _RunMatrix(mesh=_StubMesh())
+    nodes = new_nodes_channel(matrix)
+    mesh = new_mesh_channel(matrix)
+
+    async with nodes.bootstrap() as nodes_runtime:
+        receipt = await nodes_runtime.execute_command(
+            "run", kwargs={"target": "nodes/visions/camera", "name": "dsh"},
+        )
+        assert "matrix.mesh.dsh" in receipt
+
+    async with mesh.bootstrap() as mesh_runtime:
+        await mesh_runtime.refresh_metas()
+        assert "dsh" in mesh_runtime.virtual_sub_channels(), (
+            "the accepted channel mounts under the name reserved at spawn"
+        )
 
 
 @pytest.mark.asyncio

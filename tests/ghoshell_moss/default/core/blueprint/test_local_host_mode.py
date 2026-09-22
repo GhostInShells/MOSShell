@@ -163,3 +163,54 @@ class TestLocalHostModeNameConstraint:
         for bad in ['bad-name', 'bad.name', 'bad name', '2bad', 'bad/name']:
             with pytest.raises(Exception):
                 HostModeMeta(name=bad)
+
+
+class TestBringupNodes:
+    """bringup_nodes 的声明形态.
+
+    一条声明 = 要拉起的 node + 它提供 channel 后的挂载名. 向前的裸路径写法保持
+    原义 (只声明 target, 不预留名字); 需要稳定挂载名时用 mapping 写 alias.
+    """
+
+    def test_bare_path_entries_keep_their_meaning(self):
+        meta = HostModeMeta(bringup_nodes=['nodes/os/terminal', 'nodes/visions/camera'])
+
+        assert [e.target for e in meta.bringup_nodes] == [
+            'nodes/os/terminal', 'nodes/visions/camera',
+        ]
+        assert [e.alias for e in meta.bringup_nodes] == ['', ''], (
+            "a bare path declares no mount name — the pre-alias behaviour is unchanged"
+        )
+
+    def test_mapping_entry_declares_the_mount_name(self):
+        meta = HostModeMeta(
+            bringup_nodes=[{'target': 'nodes/deepseek-harness', 'alias': 'dsh'}]
+        )
+
+        assert [(e.target, e.alias) for e in meta.bringup_nodes] == [
+            ('nodes/deepseek-harness', 'dsh'),
+        ]
+
+    def test_from_file_accepts_both_forms(self, tmp_path):
+        host_md = tmp_path / HOST_MODE_FILE
+        host_md.write_text(
+            '---\n'
+            'name: testmode\n'
+            'bringup_nodes:\n'
+            '  - nodes/os/terminal\n'
+            '  - target: nodes/deepseek-harness\n'
+            '    alias: dsh\n'
+            '---\n'
+        )
+
+        meta = HostModeMeta.from_file(host_md)
+
+        assert [(e.target, e.alias) for e in meta.bringup_nodes] == [
+            ('nodes/os/terminal', ''),
+            ('nodes/deepseek-harness', 'dsh'),
+        ]
+
+    def test_alias_must_be_a_channel_name(self):
+        for bad in ['bad-alias', 'bad.alias', 'bad alias', '2bad', 'bad/name']:
+            with pytest.raises(Exception):
+                HostModeMeta(bringup_nodes=[{'target': 'nodes/os/terminal', 'alias': bad}])

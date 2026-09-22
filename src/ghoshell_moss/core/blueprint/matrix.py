@@ -24,7 +24,9 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.core.blueprint.warrant import Warrant
 from ghoshell_moss.core.blueprint.parameter import Parameters
-from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo, CellEventLevel
+from ghoshell_moss.core.blueprint.cell import (
+    Cell, CellNetwork, CellAddress, CellRuntimeInfo, CellEventLevel, CellAliasRegistry,
+)
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.service import ServiceOperator, ServiceClient, ServiceServer
@@ -409,6 +411,23 @@ class Matrix(Facade):
         on overflow. For debugging: get the exit code and stderr tail via ``handle.process``.
 
         :return: a list snapshot, newest last; callers must not mutate it.
+        """
+        ...
+
+    @abstractmethod
+    def cell_aliases(self) -> CellAliasRegistry:
+        """
+        Mount-name bookkeeping for the node cells this matrix spawns.
+
+        A name reserved here is how the cell is addressed once it exposes a channel:
+        ``matrix.mesh.<alias>``. Callers that spawn a node under a name they want to
+        keep (``nodes:run(target, name)``, a mode's ``bringup_nodes``) reserve it
+        right after ``run_node`` returns the handle. The mesh projection consumes the
+        name when it mounts the channel. The registry is process-local and lives as
+        long as this matrix — a name never survives a restart, and a process that
+        exits before exposing a channel drops its reservation.
+
+        :return: the live registry; callers reserve / consume / discard through it.
         """
         ...
 

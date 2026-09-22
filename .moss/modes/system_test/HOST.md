@@ -9,6 +9,10 @@ bringup_nodes: []
 # - .moss/system_test_nodes/probe_hang
 # - .moss/system_test_nodes/probe_fail
 # - .moss/system_test_nodes/hello_world
+# An entry can also name the mount alias the cell's channel gets under the mesh
+# projection — the same name CTML `nodes:run(target, name)` reserves:
+# - target: .moss/system_test_nodes/hello_world
+#   alias: hello
 description: system test mode — dogfood nodes CLI in isolation
 exclude_node_paths: []
 manifest_package: HOST
