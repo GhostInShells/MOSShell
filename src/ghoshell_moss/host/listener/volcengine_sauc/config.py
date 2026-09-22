@@ -74,10 +74,10 @@ class VolcengineSaucConfig(ConfigType):
     可变部分: params (行为旋钮)。热词/上下文 (corpus) 是动态的, 不在此, 在 ASR 实例火山面上配置。
 
     环境变量:
-        SEEDASR_API_KEY  — 新控制台 API Key (X-Api-Key)
+        SEED_API_KEY  — 新控制台 API Key (X-Api-Key)
     """
 
-    api_key: str = Field(default="$SEEDASR_API_KEY", description="新控制台 API Key (X-Api-Key)")
+    api_key: str = Field(default="$SEED_API_KEY", description="新控制台 API Key (X-Api-Key)")
     url: str = Field(default="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
                      description="大模型流式识别地址")
     sample_rate: int = Field(default=16000, description="默认采样率")

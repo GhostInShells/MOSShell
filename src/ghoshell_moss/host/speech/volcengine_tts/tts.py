@@ -55,6 +55,8 @@ class VolcengineTTSBatch(TTSBatch):
             tone: str,
             logger: LoggerItf,
             callback: Optional[TTSAudioCallback] = None,
+            start_buffer_ms: float = 0.0,
+            tail_silence_ms: float = 0.0,
     ):
         self._speaker_conf = speaker
         self.callback = callback
@@ -63,6 +65,8 @@ class VolcengineTTSBatch(TTSBatch):
         self.channel = channels
         self.audio_format = audio_format
         self.sample_rate = sample_rate
+        self._start_buffer_ms = start_buffer_ms
+        self._tail_silence_ms = tail_silence_ms
         self.committed = False
         self.done = ThreadSafeEvent()
         self.text_buffer = ""
@@ -123,34 +127,55 @@ class VolcengineTTSBatch(TTSBatch):
     async def items(self) -> AsyncIterator[TTSItem]:
         if not self._started:
             return
-        # 拿不到 text-音频对齐时, 在最后一帧附上尾帧文本 (已喂文本的尾部), 供 stopped_message 消费.
+        chunks = self._chunks
+        # 预缓冲: 攒够 start_buffer_ms 的样本再吐出首块, 避免起播断流劈音.
+        start_samples = int(self.sample_rate * self._start_buffer_ms / 1000)
+        buffered: list[np.ndarray] = []
+        buffered_n = 0
+        while buffered_n < start_samples:
+            audio = await chunks.get()
+            if audio is None:
+                # 流短于预缓冲窗口 — 整体放一帧, 附尾文本 + 尾静音.
+                if buffered:
+                    yield self._make_item(np.concatenate(buffered), tail_text=True)
+                return
+            buffered.append(audio)
+            buffered_n += len(audio)
+
+        for audio in buffered:
+            yield self._make_item(audio, tail_text=False)
+
+        # 正常 one-chunk lookahead; 最后一帧附尾文本 + 尾静音 (拿不到 text-音频对齐时).
         prev_audio = None
         while True:
-            audio = await self._chunks.get()
+            audio = await chunks.get()
             if audio is None:
                 if prev_audio is not None:
-                    yield TTSItem(
-                        tone=self.tone,
-                        voice=self.voice,
-                        audio_format=self.audio_format,
-                        channels=self.channel,
-                        sample_rate=self.sample_rate,
-                        audio=prev_audio,
-                        text=speech_tail(self.text_buffer),
-                    )
+                    yield self._make_item(prev_audio, tail_text=True)
                 return
             if prev_audio is not None:
-                yield TTSItem(
-                    tone=self.tone,
-                    voice=self.voice,
-                    audio_format=self.audio_format,
-                    channels=self.channel,
-                    sample_rate=self.sample_rate,
-                    audio=prev_audio,
-                    text="",
-                )
+                yield self._make_item(prev_audio, tail_text=False)
             prev_audio = audio
-        return
+
+    def _make_item(self, audio: np.ndarray, *, tail_text: bool) -> TTSItem:
+        if tail_text:
+            audio = self._pad_tail(audio)
+        return TTSItem(
+            tone=self.tone,
+            voice=self.voice,
+            audio_format=self.audio_format,
+            channels=self.channel,
+            sample_rate=self.sample_rate,
+            audio=audio,
+            text=speech_tail(self.text_buffer) if tail_text else "",
+        )
+
+    def _pad_tail(self, audio: np.ndarray) -> np.ndarray:
+        n = int(self.sample_rate * self._tail_silence_ms / 1000)
+        if n <= 0:
+            return audio
+        pad = np.zeros(n if audio.ndim == 1 else (n, audio.shape[1]), dtype=audio.dtype)
+        return np.concatenate([audio, pad])
 
     def with_callback(self, callback: TTSAudioCallback) -> None:
         self.callback = callback
@@ -304,6 +329,8 @@ class VolcengineTTS(TTS):
             audio_format=self._default_tts_info.audio_format,
             channels=self._default_tts_info.channels,
             sample_rate=self._default_tts_info.sample_rate,
+            start_buffer_ms=self._conf.start_buffer_ms,
+            tail_silence_ms=self._conf.tail_silence_ms,
         )
         return tts_batch
 

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Awaitable, Callable
 from typing_extensions import Self
-
+from ghoshell_moss.core.concepts.channel import Channel
 from .asr import ASR, RecognitionEvent, RecognitionSegment
 from .audio import AudioChunk
 
@@ -139,6 +139,10 @@ class ListenLifecycle(ABC):
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         ...
+
+    def as_channel(self) -> Channel | None:
+        """if the listener can be controlled by channel"""
+        return None
 
     @abstractmethod
     def pause(self, toggle: bool = True) -> None:

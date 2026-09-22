@@ -35,6 +35,7 @@ class TTSSpeechStream(SpeechStream):
         clause_callbacks: Optional[list[Callable[[SpeechClause], None]]] = None,
         segment_callbacks: Optional[list[Callable[[SpeechSegment], None]]] = None,
         on_close: Optional[Callable[[], None]] = None,
+        last_stream: Optional[SpeechStream] = None,
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
@@ -63,6 +64,7 @@ class TTSSpeechStream(SpeechStream):
         self._sample_disposer: Optional[Callable[[], None]] = None
         self._audio_chunks: list[np.ndarray] = []
         self._on_close = on_close
+        self._last_stream = last_stream
 
     def _buffer(self, text: str) -> None:
         self._text_buffer += text
@@ -208,6 +210,8 @@ class TTSSpeechStream(SpeechStream):
             return
         self.logger.info("%s Starting playing TTS stream", self._log_prefix)
         self._playing = True
+        if self._last_stream is not None and not self._last_stream.is_closed():
+            await self._last_stream.close()
         # 内部订阅真实播放样本, 累加 played_duration 供 clause 结果融合.
         self._sample_disposer = self.on_sample(self._accumulate_sample)
         self._playing_loop_task = asyncio.create_task(self._play_loop())
@@ -268,6 +272,7 @@ class BaseTTSSpeech(TTSSpeech):
         self._closed_event = ThreadSafeEvent()
         self._clause_callbacks: list[Callable[[SpeechClause], None]] = []
         self._segment_callbacks: list[Callable[[SpeechSegment], None]] = []
+        self._last_stream: Optional[SpeechStream] = None
 
     def tts(self) -> TTS:
         return self._tts
@@ -312,8 +317,10 @@ class BaseTTSSpeech(TTSSpeech):
             clause_callbacks=self._clause_callbacks,
             segment_callbacks=self._segment_callbacks,
             on_close=lambda: self._streams.pop(stream.id, None),
+            last_stream=self._last_stream,
         )
         self._streams[stream.id] = stream
+        self._last_stream = stream
         return stream
 
     def is_running(self) -> bool:
@@ -332,6 +339,7 @@ class BaseTTSSpeech(TTSSpeech):
         if streams:
             await asyncio.gather(*(s.close() for s in streams), return_exceptions=True)
         self._streams.clear()
+        self._last_stream = None
         return outputted
 
     async def start(self) -> None:

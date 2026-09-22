@@ -114,6 +114,10 @@ class _SpeechCommandFactory:
             except asyncio.CancelledError:
                 # stream 已随 play 的上下文退出关闭, 但 batch 的 clause 还留着 — 对齐结果仍可读.
                 CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
+            finally:
+                # 命令退出/中断都要终结 stream — 否则 feed task 继续喂文本、TTS 继续合成,
+                # 无界 _chunks 堆音频导致内存泄漏. close() 幂等.
+                await chunks__.close()
             return played_message(samples) or chunks__.played_text() or None
 
         return PyCommand(func=__content__, partial=_content_partial, name=name, blocking=True)
@@ -181,6 +185,9 @@ class _SpeechCommandFactory:
                 await chunks__.play(samples)
             except asyncio.CancelledError:
                 CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
+            finally:
+                # 命令退出/中断都要终结 stream (见 __content__ 同理). close() 幂等.
+                await chunks__.close()
             return played_message(samples)
 
         return PyCommand(
@@ -259,4 +266,6 @@ class SpeechChannelModule(ChannelModule):
         self._own_commands = commands
 
     async def on_close(self) -> None:
+        if self._speech:
+            await self._speech.clear()
         self._speech = None

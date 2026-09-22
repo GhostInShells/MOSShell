@@ -80,9 +80,9 @@ class ShellRuntimeImpl(MOSShellRuntime):
         self._name = name or env.moss_meta.name
         # 描述发现三级优先: 传参 > mode > env moss_meta.
         self._description = (
-            description
-            or mode.meta.description
-            or env.moss_meta.description
+                description
+                or mode.meta.description
+                or env.moss_meta.description
         )
         self._run_shell_on_start = run_shell_on_start
         # speech 开关 (bool): True 时在 __aenter__ resolve Speech 实例注入 shell.
@@ -514,21 +514,22 @@ class ShellRuntimeImpl(MOSShellRuntime):
             return
         from ghoshell_moss.host.listener.controller import ListenerController
         from ghoshell_moss.contracts.configs import ConfigStore
+        config_store = self._matrix.container.get(ConfigStore)
         self._listen_controller = ListenerController(
             listener=listener,
             asr=listener.asr(),
             logger=self._matrix.logger,
             signal_broadcast=self._matrix.session.add_signal,
             cell_name=self._matrix.this.name,
+            config_store=config_store,
+            topic_service=self._matrix.session.topics,
         )
-        config_store = self._matrix.container.get(ConfigStore)
-        if config_store is not None:
-            self._listen_controller.with_config_store(config_store)
         # 单例注册: TUI voice state / 其它消费面从 container 拿同一个 controller.
         self._matrix.container.set(ListenerController, self._listen_controller)
         # 听侧 channel 挂进 shell main — 模型看到"一个语音面"的命令 (activate/stop/
         # get_etiquette/get_transcript/configure_asr), 受 pause 人类锁的 available 门控.
-        self._ctml_shell.main_channel.import_channels(self._listen_controller.as_channel())
+        if channel := self._listen_controller.as_channel():
+            self._ctml_shell.main_channel.import_channels(channel)
 
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):
@@ -667,9 +668,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             yield
             return
         async with controller:
-            await controller.with_topic_service(self._matrix.session.topics)
             # 启动即听: 默认礼仪常驻, 而不是停在 stop 状态等模型/人类手动 activate.
-            controller.start_default_etiquette()
             yield
 
     async def __aenter__(self) -> Self:

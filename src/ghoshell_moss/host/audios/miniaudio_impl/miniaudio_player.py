@@ -132,16 +132,11 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         self._start_playback()
 
     async def clear(self) -> None:
-        """清空播放队列并立即停止音频输出。"""
-        # 停止 miniaudio 设备 → 立即中断所有音频输出
-        if self._playback is not None:
-            self._playback.stop()
-            self._playback = None
-        # 清空内部缓冲区
+        """清空未播放的缓存音频, 不重启设备 (已播放的不管)."""
+        # 只换队列, 不 stop/restart 设备 — 设备重启的瞬态会导致乱音. 设备继续跑,
+        # generator 下一轮会读到新的空队列/空缓冲, 直到新音频进来.
         self._data_queue = queue.Queue()
         self._buf = b""
-        # 重启设备，准备接收新音频
-        self._start_playback()
         # 父类清空 _audio_queue 并重置时间估算
         await super().clear()
 

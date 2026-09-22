@@ -360,10 +360,15 @@ class VolcengineTTSConf(BaseModel):
 
     app_key: str = Field(default="$VOLCENGINE_STREAM_TTS_APP")
     access_token: str = Field(default="$VOLCENGINE_STREAM_TTS_ACCESS_TOKEN")
-    api_key: str = Field(default="$VOLCENGINE_STREAM_TTS_API_KEY", description="新版控制台 API Key")
+
+    api_key: str = Field(default="$SEED_API_KEY", description="新版控制台 API Key")
     resource_id: str = Field(default="seed-tts-2.0", description="官方的默认资源")
     sample_rate: int = Field(default=16000, description="生成音频的采样率要求.")
     audio_format: Literal["pcm"] = Field(default="pcm", description="默认可用的数据格式")
+    #: 开播前预缓冲的音频时长 (ms) — 攒够这段再吐出首块, 避免起播断流劈音.
+    start_buffer_ms: float = Field(default=200, description="Pre-roll buffer before first audio emit (ms).")
+    #: 句尾补静音时长 (ms) — 防止最后一个音节被播放设备关闭截断.
+    tail_silence_ms: float = Field(default=200, description="Silence appended after the final audio (ms).")
 
     disconnect_on_idle: int = Field(
         default=300,
@@ -405,12 +410,8 @@ class VolcengineTTSConf(BaseModel):
 
     def gen_header(self, *, connection_id: str = "", resource_id: Optional[str] = None) -> _Head:
         connection_id = connection_id or unique_id()
-        app_key = self.unwrap_env(self.app_key)
         # 旧版鉴权 header 始终发送（兼容新旧控制台）
         ws_header = {
-            "X-Api-App-Key": app_key,
-            "X-Api-App-Id": app_key,
-            "X-Api-Access-Key": self.unwrap_env(self.access_token),
             "X-Api-Resource-Id": resource_id or self.resource_id,
             "X-Api-Request-Id": unique_id(),
             "X-Api-Connect-Id": connection_id,
@@ -419,6 +420,11 @@ class VolcengineTTSConf(BaseModel):
         api_key = self.unwrap_env(self.api_key)
         if api_key:
             ws_header["X-Api-Key"] = api_key
+        else:
+            app_key = self.unwrap_env(self.app_key)
+            app_access_token = self.unwrap_env(self.access_token)
+            ws_header["X-App-Id"] = app_key
+            ws_header["X-Api-Access-Key"] = app_access_token
         return ws_header
 
     def to_session(self, speaker: SpeakerConf) -> Session:

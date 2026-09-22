@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import time
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
@@ -112,6 +111,8 @@ class ListenerController(ListenLifecycle):
             signal_broadcast: Optional[Callable[[Signal], None]] = None,
             stop_caller_factory: Optional[Callable[[str], MossLLMCaller]] = None,
             cell_name: str = "",
+            config_store: Optional[ConfigStore] = None,
+            topic_service: Optional[TopicService] = None,
     ):
         self._listener = listener
         self._asr = asr
@@ -150,7 +151,7 @@ class ListenerController(ListenLifecycle):
         # 锁着时: run_etiquette 门控 (log + no-op) + as_channel() 的 chan.available
         # 返回 False → 整个 channel 从模型面消失 (无残留 affordance).
         self._human_paused: bool = False
-        self._config_store: Optional[ConfigStore] = None
+        self._config_store: Optional[ConfigStore] = config_store
         self._etiquette_config_cache: Optional[EtiquetteConfig] = None
         # clause → topic 装线 (懒, 由 with_topic_service 启动).
         self._topic_task: Optional[asyncio.Task] = None
@@ -165,6 +166,8 @@ class ListenerController(ListenLifecycle):
         self._buffer = SegmentBuffer()
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
+        # 注册 topic service.
+        self.with_topic_service(topic_service)
         # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
         # expect events, 让"期待输入"立刻满足 (取消超时). 不依赖 signal_broadcast.
         listener.on_recognition_result(self._on_expect_voice)
