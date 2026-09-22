@@ -77,9 +77,10 @@ __all__ = [
 
 CellRole = Literal['host', 'node']
 """
-描述 Cell 在 Matrix 网络拓扑中的位置角色.
-- 'host': 网络的中心节点, 将所有能力组织在一起供躯体或智能体驱动.
-- 'node': 功能性节点. 可能控制躯体, 提供 gui, 有独立的应用能力等等.
+Role of a cell in the Matrix network topology.
+
+- 'host': the network's central node — organizes all capabilities for a body or agent to drive.
+- 'node': a functional node — may control a body, provide a GUI, run an independent app, etc.
 """
 HOST_ROLE: CellRole = 'host'
 NODE_ROLE: CellRole = 'node'
@@ -88,13 +89,13 @@ ROLES = frozenset({HOST_ROLE, NODE_ROLE})
 
 
 class CellEventLevel(IntEnum):
-    """cell 生命周期事件的感知级别 — 对齐 logging level 风格 (不发明新概念).
+    """Perception level of a cell lifecycle event — aligned to logging levels.
 
-    感知判决采用 logging 过滤语义:
-      event_level >= 阈值 (INFO) → send_signal (感知)
-      event_level <  阈值          → 不调用 send_signal (零值), 保留 event_buffer (可拉取)
+    Perception follows logging filter semantics:
+      event_level >= INFO (threshold) -> send_signal (perceivable)
+      event_level <  INFO             -> no send_signal (zero-cost); kept in event_buffer (pullable)
 
-    映射 (一处): DEBUG→不调用, INFO→BACKGROUND, WARNING→WARNING, ERROR→ERROR, CRITICAL→CRITICAL.
+    Mapping: DEBUG->drop, INFO->BACKGROUND, WARNING->WARNING, ERROR->ERROR, CRITICAL->CRITICAL.
     """
 
     DEBUG = 10
@@ -105,46 +106,45 @@ class CellEventLevel(IntEnum):
 
     @classmethod
     def resolve(cls, level: 'CellEventLevel | None') -> 'CellEventLevel':
-        """None (系统约定) 归一化为 INFO — 感知判决的单一入口."""
+        """Normalize None (system default) to INFO — the single entry point for the perception check."""
         return level if level is not None else cls.INFO
 
     @classmethod
     def is_perceivable(cls, level: 'CellEventLevel | None') -> bool:
-        """低于感知阈值 (INFO) 的档位不产生 ghost signal (零值/不调用)."""
+        """Whether this level produces a ghost signal (below the INFO threshold it does not)."""
         return cls.resolve(level) >= cls.INFO
 
 CellProtocol = Literal['channel']
 """
-Cell 提供的 MOSS 双工通讯协议名. 封闭集: 每个值对应 duplex/ 里一整套 Provider/Proxy
-角色对 + 事件词汇 (见 duplex/protocol.py). 未来加协议 = 加一套 Provider/Proxy 实现,
-且在此 type alias 追加值 — 不是自由字符串, 不能靠约定加名字.
+A MOSS duplex protocol a cell provides. Closed set — each value maps to a Provider/Proxy
+role pair + event vocabulary in duplex/. Adding a protocol means adding that implementation
+and appending the value here; it is not a free string.
 """
 
 CellAddress = str
 """
-cell 在网络上的唯一地址: address = CellRole / unique_name / uid
+The cell's unique network address: CellRole / unique_name / uid
 """
 
 ProjectRelativePath = str
 AbsolutePath = str
 MatchPattern = str
-"""通配符模式: group/name, group/*, *, */*, */name"""
+"""Wildcard pattern: group/name, group/*, *, */*, */name"""
 
 CellName = str
 # 不硬约束 -/. : from_script 从文件名 (moss-ghost 等) 导出的 name 会反复炸.
 CellNamePattern = r"^[a-zA-Z0-9_.-]+$"
-"""cell name 是治理域路径段, 允许 -/. 连字符.
+"""A cell name is a governance-domain path segment, allowing ``-`` ``.``.
 
-address 生成时 (make_address) 把 -/. 归一化为 _ 保持标识符安全,
-Cell.name 仍保留原始值.
+``make_address`` normalizes ``-``/``.`` to ``_`` for identifier safety; ``Cell.name``
+keeps the original value.
 """
 
 
 class Cell(BaseModel):
     """
-    Cell 是 Matrix 网络中 **运行中** 节点的声明讯息.
-    可以把 Matrix 想象成一个大楼, 里的一个房间就是 Cell.
-    通常是一个独立的进程.
+    The declaration of a **running** node in the Matrix network — a room in the building
+    that is Matrix. Usually one process.
     """
     role: CellRole = Field(
         description="cell role"
@@ -159,22 +159,22 @@ class Cell(BaseModel):
     )
     singleton: bool = Field(
         default=False,
-        description="声明本 cell 在治理域内是否保持唯一实例. "
-                    "True: 同名 cell 已在运行时, 重复拉起会被拒绝 (DuplicatedError). "
-                    "适合有硬件独占 (麦克风/摄像头/机器人) 或状态独占 (数据库连接) 的场景. "
-                    "False (默认): 可多实例并行, 各自有独立 uid.",
+        description="Whether this cell keeps a single instance within the governance domain. "
+                    "True: a live same-name cell rejects a duplicate launch (DuplicatedError) — "
+                    "for hardware-exclusive (mic/camera/robot) or state-exclusive (database) cases. "
+                    "False (default): multiple instances run in parallel, each with its own uid.",
     )
     category: Literal['ghost', 'shell', 'script'] | str = Field(
         default='',
         pattern=r"^[a-zA-Z0-9_]*$",
-        description='cell 的分类.'
+        description="The cell's category.",
     )
     event_level: CellEventLevel | None = Field(
         default=None,
-        description="本 cell 生命周期事件对监听者的感知级别 (cell event level). "
-                    "None = 系统约定 (常驻 node→INFO 感知, 一次性→DEBUG 静默). "
-                    "低于感知阈值 (INFO) 的档位不产生 ghost signal —— "
-                    "事件保留在 event_buffer (可拉取), 但不进 attention.",
+        description="Perception level of this cell's lifecycle events for listeners. "
+                    "None = system default (resident node -> INFO perceivable, one-shot -> DEBUG silent). "
+                    "Below the INFO threshold no ghost signal is produced — the event stays "
+                    "in event_buffer (pullable) but does not enter attention.",
     )
     description: str = Field(
         default='',
@@ -182,31 +182,31 @@ class Cell(BaseModel):
     )
     project_id: str = Field(
         default='',
-        description="cell 所属治理域 (project) 标识. 可以用于判别是否本地的 cell. ",
+        description="Governance-domain (project) id of this cell; used to tell local from foreign cells.",
     )
     project_name: str = Field(
         default='',
-        description='cell 所在项目的名字.'
+        description="Name of the project this cell belongs to.",
     )
     providing: list[CellProtocol] = Field(
         default_factory=list,
-        description="本 cell 当前运行状态提供的 MOSS 双工通讯协议. "
-                    "只标记协议名, 内容靠各自 Provider/Proxy 桥拉取. "
-                    "值域受 CellProtocol 封闭 — 加协议要先在 duplex/ 落地对应角色.",
+        description="The MOSS duplex protocols this cell currently provides. "
+                    "Marks protocol names only — content is pulled through each Provider/Proxy bridge. "
+                    "Value domain is closed by CellProtocol; adding one requires landing the role pair in duplex/.",
     )
     updated: AwareDatetime = Field(
         default_factory=lambda: datetime.datetime.now(dateutil.tz.gettz()),
-        description="本 cell 最后更新的时间戳.",
+        description="Timestamp of this cell's last update.",
     )
     home: str = Field(
-        description="进程工作目录, 绝对路径.",
+        description="Process working directory, absolute path.",
     )
     persist: bool = Field(
         default=False,
     )
     parent_address: str = Field(
         default='',
-        description="运行当前 Cell 的父节点讯息.",
+        description="The parent node running this cell.",
     )
 
     def update(self) -> None:
@@ -228,7 +228,7 @@ class Cell(BaseModel):
 
     @property
     def is_host(self) -> bool:
-        """本 cell 是否是网络的 host — 从 address[0] 推断 (§ZZ-10)."""
+        """Whether this cell is the network's host."""
         return self.role == HOST_ROLE
 
     def is_local(self, env: Environment) -> bool:
@@ -241,25 +241,26 @@ class Cell(BaseModel):
 
 class ExecSpec(BaseModel):
     """
-    运行一个进程 (主要是 Node) 的声明.
+    Declaration of a process to run (usually a Node).
     """
     command: Literal['python'] | str = Field(
         default='python',
-        description="不为空时, 作为启动命令 argv[0]. "
-                    "应当是 cwd 的相对路径. ",
+        description="When non-empty, argv[0] of the launch command. "
+                    "Should be a path relative to cwd.",
     )
     args: str = Field(
         default='main.py',
-        description="启动命令的参数列表.",
+        description="Argument list of the launch command.",
     )
     env: dict[str, str] = Field(
         default_factory=dict,
-        description="额外注入的环境变量. 也可以考虑在启动脚本内部通过 dotenv 等方式自行加载. ",
+        description="Extra environment variables to inject. The launch script may also load its own via dotenv.",
     )
     timeout: float | None = Field(
         default=None,
-        description="进程运行超时(秒). 当前只被 NodeManifest.check 探针消费: 超时即判 "
-                    "broken 并终止探针进程组. None = 不限时. (exec 主脚本路径暂不消费.)",
+        description="Process timeout in seconds. Currently consumed only by the NodeManifest.check "
+                    "probe: on timeout it is judged broken and its process group is terminated. "
+                    "None = unlimited. (Not consumed by the main exec path yet.)",
     )
 
     @property
@@ -272,72 +273,74 @@ NodeScriptCategory = 'script'
 
 class NodeManifest(BaseModel):
     """
-    Node 类型的 Cell 节点的声明信息.
-    通过声明文件完成定义, 也兼容没有声明文件的脚本启动场景.
+    Declaration of a Node-type cell — defined through a declaration file, and also
+    supporting script-launch scenarios without one.
     """
     MANIFEST_FILENAME: ClassVar[str] = 'NODE.md'
-    """声明文件的约定文件, 可以理解为 windows 的快捷方式. """
+    """The conventional declaration file — think of it as a Windows shortcut. """
 
     INSTALL_FILENAME: ClassVar[str] = 'INSTALL.md'
-    """如何完成安装的文件, 如果存在, 则需要配套 INSTALLED_FILE 描述安装的状态. 
-    node 可能拥有独立的项目依赖, 这时需要定义 INSTALL_FILENAME. 如果未完成安装则应该返回该文件地址. """
+    """The file describing how to install. When present, it pairs with INSTALLED_FILE to
+    mark install state — a node with its own project dependencies declares its steps here."""
 
     INSTALLED_FILE: ClassVar[str] = '.installed'
-    """通过文件标记一个 Node 是否完成了安装. """
+    """A file marker recording whether a node has completed installation."""
 
     name: str = Field(
-        description="Node 的名字. 治理域内的身份锚.",
+        description="The node's name — its identity anchor within the governance domain.",
         pattern=CellNamePattern,
     )
     description: str = Field(
         default='',
-        description="Node 的一句话描述.",
+        description="One-line description of the node.",
     )
     category: str = Field(
         default='',
-        description="纯分类标签 (如 sensors / bodies / scripts / tools), 自由命名, 不驱动任何机制.",
+        description="A free-form category label (e.g. sensors / bodies / scripts / tools) that drives no mechanism.",
         pattern=r"^[a-zA-Z0-9_]*$",
     )
     singleton: bool = Field(
         default=True,
-        description="声明本 cell 在治理域内是否保持唯一实例. "
-                    "True (默认): 同名 cell 已在运行时, 重复拉起会被拒绝. "
-                    "适合有硬件独占 (麦克风/摄像头/机器人) 或状态独占 (数据库连接) 的场景. "
-                    "False: 可多实例并行, 各自有独立 uid.",
+        description="Whether this cell keeps a single instance within the governance domain. "
+                    "True (default): a live same-name cell rejects a duplicate launch — "
+                    "for hardware-exclusive (mic/camera/robot) or state-exclusive (database) cases. "
+                    "False: multiple instances run in parallel, each with its own uid.",
     )
     persist: bool = Field(
         default=True,
-        description="声明本 node 是否常驻. "
-                    "True (默认): 常驻 node cell, provide channel 长期运行, "
-                    "生命周期事件进 ghost 感知 (event_level 系统约定 INFO). "
-                    "False: 一次性 run-to-completion, 事件静默 (event_level=DEBUG), "
-                    "不 provide channel, 结果通过 nodes:run 阻塞拿 stdout/stderr/exitcode.",
+        description="Whether this node is resident. "
+                    "True (default): resident node cell — provides a channel long-running, "
+                    "lifecycle events are perceivable (event_level INFO by convention). "
+                    "False: one-shot run-to-completion — events silent (event_level=DEBUG), "
+                    "no channel provided, results read via a blocking nodes:run for stdout/stderr/exitcode.",
     )
     exec: 'ExecSpec' = Field(
         default_factory=ExecSpec,
-        description="默认启动入口 (frontmatter `run:` 声明). "
-                    "无声明的 cell 只能以显式脚本路径拉起.",
+        description="Default launch entry (frontmatter `run:` declaration). "
+                    "A cell without one can only be launched by an explicit script path.",
     )
     check: 'ExecSpec | None' = Field(
         default=None,
-        description="启动前探针 (frontmatter `check:` 声明), 独立进程, 目标零配合. "
-                    "exit 0 → 通过后拉起主脚本; nonzero + stderr → 返回 broken reason, "
-                    "不拉起. 验证的是'环境现在能不能跑'(import 真依赖/smoke 调用), "
-                    "比 on-bootstrap 强一个量级. 不声明则跳过探针.",
+        description="Pre-launch probe (frontmatter `check:` declaration), an independent process "
+                    "requiring zero cooperation from the target. "
+                    "exit 0 -> pass, launch the main script; nonzero + stderr -> broken reason, do not launch. "
+                    "Verifies whether the environment can run now (real dependency import / smoke call). "
+                    "Omitted -> probe skipped.",
     )
     instruction: str = Field(
         default='',
-        description="节点详细的使用说明",
+        description="Detailed usage instructions for the node.",
     )
     installed: bool = Field(
         default=True,
-        description="是否已完成安装. 未安装的 cell 可被发现但拒绝拉起, "
-                    "错误信息会给出 INSTALL.md 路径. 由文件系统推导, 不在 frontmatter 中.",
+        description="Whether installation is complete. An uninstalled cell is discoverable but "
+                    "refuses to launch; the error points at the INSTALL.md path. Derived from the "
+                    "filesystem, not from frontmatter.",
     )
 
     file: AbsolutePath = Field(
         default='',
-        description="当前 NodeManifest 生成时的文件绝对路径地址.",
+        description="Absolute path of the file this NodeManifest was generated from.",
     )
 
     @property
@@ -367,7 +370,7 @@ class NodeManifest(BaseModel):
 
     @classmethod
     def read_from_directory(cls, directory: Path) -> 'NodeManifest | None':
-        """从目录中获取 manifest"""
+        """Read the manifest from a directory."""
         file = directory.joinpath(cls.MANIFEST_FILENAME)
         if file.is_file():
             return cls.read_from_file(file)
@@ -426,7 +429,8 @@ class NodeManifest(BaseModel):
 
     @classmethod
     def from_proc(cls) -> 'NodeManifest':
-        """从当前进程自述身份: 以 __main__ 脚本向上认亲, 找不到则降级临时身份."""
+        """Build identity from the current process: walk up from the __main__ script; degrade
+        to a temporary identity when none is found."""
         from importlib import import_module
         import inspect
         main = import_module('__main__')
@@ -442,7 +446,7 @@ class NodeManifest(BaseModel):
             description: str = '',
             category: str = '',
     ) -> 'NodeManifest':
-        """在当前进程中创建一个 node manifest"""
+        """Create a node manifest in the current process."""
         manifest = cls.from_proc()
         manifest.name = name
         manifest.description = description
@@ -452,8 +456,8 @@ class NodeManifest(BaseModel):
 
 class CellRuntimeInfo(BaseModel):
     """
-    MOSS Project 管理 Cell 进程时的数据.
-    包含运维面信息: 只有能对该进程直接行动的一侧 (owner / 本机 CLI) 才应消费这些字段.
+    Runtime data MOSS Project keeps for a cell process — the operational surface: only the
+    side that can act directly on the process (owner / local CLI) should consume these fields.
     """
 
     # -- 运行时文件命名约定 -- #
@@ -463,22 +467,22 @@ class CellRuntimeInfo(BaseModel):
     SUFFIX_STDERR: ClassVar[str] = '.stderr.log'
 
     address: CellAddress = Field(
-        description="cell 的网络地址.",
+        description="The cell's network address.",
     )
     pid: int = Field(
         default=0,
-        description="进程 id. 为 0 的话表示还没启动过. ",
+        description="Process id; 0 means not yet started.",
     )
     pgid: int = Field(
         default=0,
-        description="进程组 id (start_new_session 后即进程自身的组). killpg 的作用对象.",
+        description="Process group id (the process's own group after start_new_session); the target of killpg.",
     )
     start_time: float = Field(
         default_factory=time.time,
-        description="进程启动时间戳. 与 pid 一起构成防 pid 复用的核对依据.",
+        description="Process start timestamp; combined with pid as a guard against pid reuse.",
     )
     cell: Cell = Field(
-        description="cell 运行时用于重建和广播的数据.",
+        description="The cell's runtime data, used to rebuild and broadcast identity.",
     )
 
     @classmethod
@@ -553,7 +557,7 @@ class CellRuntimeInfo(BaseModel):
 
     @classmethod
     def clear_dead_runtimes(cls, runtime_dir: Path) -> int:
-        """扫 runtime_dir 里所有 ledger, 进程已死的连日志文件一起清. 返回清理数."""
+        """Scan all ledgers in runtime_dir; clear dead processes together with their log files. Returns the cleared count."""
         cleaned = 0
         for info in cls.iter_runtime_info(runtime_dir):
             if info.is_alive():
@@ -571,11 +575,12 @@ class CellRuntimeInfo(BaseModel):
 
     def locker_name(self) -> str:
         """
-        本 cell 的锁名 — singleton 排他机制的唯一权威出口.
+        This cell's lock name — the single authority for the singleton exclusion mechanism.
 
-        锁真相载体 = env.workspace.lock(locker_name()) 文件锁.
-        名字用 fullname (category_name 或 name), 治理域内 fullname 唯一即锁唯一.
-        uid 不进锁名: 不同 uid 的同名 cell 才需要互斥, 加 uid 就退化成"永远拿得到锁".
+        The lock's carrier is the file lock env.workspace.lock(locker_name()). The name is
+        the fullname (category_name or name); within a governance domain fullname uniqueness
+        is lock uniqueness. The uid is deliberately not in the lock name — same-name cells
+        across different uids are the ones that must exclude each other.
         """
         return normalize(self.cell.fullname)
 
@@ -590,38 +595,40 @@ producer's self-report — the consumer filters this out of the signal path.
 
 class CellEvent(BaseModel):
     """
-    网络上的 on-change 通知: 一个 cell 广播的变更 hint (推拉结合的推侧).
+    An on-change notification on the network: the change hint a cell broadcasts (the push
+    side of push-pull).
 
-    事件本身是廉价的推送信号 ("我变了"), 具体内容永远由消费侧按需拉:
-      refetch=True → 消费方 refetch Cell 更新缓存 (推拉的拉)
-      refetch=False → 消费方仅记事件, 不动缓存 (纯 signal/debug 信号)
+    The event itself is a cheap push ("I changed"); the concrete content is always pulled
+    on demand by the consumer:
+      refetch=True  -> consumer refetches the Cell to update its cache (the pull)
+      refetch=False -> consumer only records the event, cache untouched (pure signal/debug)
 
-    双重消费面 (Watcher 上的两个订阅点分别服务):
-      结构变化 → Watcher.on_change (Cell 快照消费者: cache 视图 / CLI 展示)
-      注意力候选 → Watcher.on_event (nucleus 消费者: 转 Signal 送 mindflow)
+    Two consumption surfaces (two subscription points on the Watcher):
+      structural change -> Watcher.on_change (Cell snapshot consumers: cache view / CLI display)
+      attention candidate -> Watcher.on_event (nucleus consumers: turn into Signal for mindflow)
     """
     address: CellAddress = Field(
-        description="事件来源 cell 的 address.",
+        description="Address of the cell the event came from.",
     )
     content: str = Field(
         default='',
-        description="事件的自由文本 hint. 可空. 消费方作参考, 不作调度依据.",
+        description="Free-text hint of the event; may be empty. A reference for the consumer, not a scheduling criterion.",
     )
     created: AwareDatetime = Field(
         default_factory=lambda: datetime.datetime.now(dateutil.tz.gettz()),
-        description="时间签发时间.",
+        description="Time the event was issued.",
     )
     refetch: bool = Field(
         default=True,
-        description="True → 消费方应 refetch Cell 更新缓存 "
-                    "(cell 状态/膜类型可能变了); "
-                    "False → 仅追加事件缓冲, 缓存不动 (纯 signal/debug).",
+        description="True -> the consumer should refetch the Cell to update its cache "
+                    "(cell state / membrane type may have changed); "
+                    "False -> only append the event buffer, cache untouched (pure signal/debug).",
     )
     event_level: CellEventLevel | None = Field(
         default=None,
-        description="事件来源 cell 的感知级别 (CellEventLevel). "
-                    "监听侧据此判决是否产生 ghost signal: "
-                    "低于阈值 (INFO) 不 send_signal, 保留可拉取.",
+        description="Perception level (CellEventLevel) of the source cell. "
+                    "The listener decides whether to produce a ghost signal: "
+                    "below the INFO threshold no send_signal, kept pullable.",
     )
 
     @property
@@ -632,11 +639,12 @@ class CellEvent(BaseModel):
 @dataclasses.dataclass
 class NodeLauncher:
     """
-    一个 Node cell 的启动参数打包.
+    The launch parameters of a node cell, packaged.
 
-    只描述"怎么起一个进程", 不描述"谁负责起". 生产环境由 spawner
-    (通常是 Subprocesses.execute) 消费本 dataclass, 用 start_new_session=True
-    起进程, 起完后回填 runtime.pid / runtime.pgid, 再 write_to_runtime_dir.
+    Describes only "how to start a process", not "who starts it". The spawner (usually
+    Subprocesses.execute) consumes this dataclass, starts the process with
+    start_new_session=True, then backfills runtime.pid / runtime.pgid and writes to
+    the runtime dir.
     """
     cwd: Path
     env: dict[str, str]
@@ -650,7 +658,7 @@ class NodeLauncher:
             env: Environment,
             manifest: NodeManifest,
     ) -> 'NodeLauncher':
-        """筹备运行一个 Cell 节点. """
+        """Prepare the launch of a node cell."""
         cell = build_cell_from_node(env, manifest)
         cwd = manifest.cwd
         # pid/pgid 留 0, 由 spawner 起进程后回填.
@@ -673,11 +681,11 @@ class NodeLauncher:
 
 def make_address(role: CellRole, name: CellName, uid: str) -> str:
     """
-    构造 address (§ZZ-10 三段结构).
+    Build an address from three segments.
 
-    :param role: address[0] 保留字, 必须是 CellRole 值域之一.
-    :param name: address[1] 治理域路径
-    :param uid: address[-1] 唯一性来源, 短随机字符串.
+    :param role: address[0] — a reserved word, one of the CellRole values.
+    :param name: address[1] — the governance-domain path.
+    :param uid: address[-1] — the uniqueness source, a short random string.
     """
     # name 是治理域路径, -/. 归一化为 _ 保持 address 标识符安全;
     # 原始值留在 Cell.name, 此处是 address 生成的唯一落点.
@@ -687,24 +695,25 @@ def make_address(role: CellRole, name: CellName, uid: str) -> str:
 
 def parse_address(address: CellAddress) -> tuple[CellRole, CellName, str]:
     """
-    拆解 address 到三 slice: (kind, middle_path, uid).
+    Split an address into three slices: (role, name, uid).
 
-    :raise ValueError: address 段数 < 3 或 kind 不在 CellRole 值域.
+    :raise ValueError: fewer than 3 segments, or role not in CellRole.
     """
     return CellAddressCodec.parse(address)
 
 
 def normalize(name_or_address: str) -> str:
-    """将名称或 address 归一化为可作文件名 / python 标识符的形式."""
+    """Normalize a name or address into a filename / python-identifier-safe form."""
     return CellAddressCodec.normalize(name_or_address)
 
 
 class CellAddressCodec:
-    """CellAddress (str) 的形式转换与校验.
+    """Form conversion and validation for CellAddress (str).
 
-    address 保持 str 表示 (type alias), 本类提供唯一的转换/展示/匹配入口.
-    持有 address 的类型 (Cell / CellEvent) 通过 ``.address_codec``
-    暴露本类实例, 不再各自手工解析 address 字符串.
+    The address stays a str representation (type alias); this class is the single entry
+    point for converting, displaying and matching it. Types that hold an address
+    (Cell / CellEvent) expose an instance via ``.address_codec`` instead of parsing the
+    address string themselves.
     """
 
     SHORT_UID_LEN = 6
@@ -745,29 +754,29 @@ class CellAddressCodec:
 
     @property
     def dot_address(self) -> str:
-        """点分隔形式: ``role.name.uid``."""
+        """Dot-separated form: ``role.name.uid``."""
         return self.address.replace('/', '.')
 
     @classmethod
     def from_dot_address(cls, dot_address: str) -> 'CellAddressCodec':
-        """从点分隔形式反向构造 (尽力)."""
+        """Rebuild from the dot-separated form (best effort)."""
         return cls(dot_address.replace('.', '/'), validate=True)
 
     @property
     def normalized(self) -> str:
-        """文件系统安全形式: ``/`` ``.`` ``-`` 替换为 ``__``."""
+        """Filesystem-safe form: ``/`` ``.`` ``-`` replaced with ``__``."""
         return self.normalize(self.address)
 
     @classmethod
     def from_normalized(cls, normalized: str) -> 'CellAddressCodec':
-        """从 normalize 输出反向构造 (尽力). validate 失败即 ValueError."""
+        """Rebuild from normalize output (best effort); a validate failure raises ValueError."""
         return cls(normalized.replace('__', '/'), validate=True)
 
     # -- from / to ---------------------------------------------
 
     @classmethod
     def make(cls, role: CellRole, name: CellName, uid: str) -> 'CellAddressCodec':
-        """从三段构造 address (role/name/uid)."""
+        """Build an address from three segments (role/name/uid)."""
         if not name:
             raise ValueError(
                 f'address must have at least one middle segment (kind={role!r}, uid={uid!r})'
@@ -783,7 +792,7 @@ class CellAddressCodec:
 
     @classmethod
     def parse(cls, address: CellAddress) -> tuple[CellRole, CellName, str]:
-        """反查三段 (role, name, uid)."""
+        """Parse the three segments (role, name, uid)."""
         parts = address.split('/')
         if len(parts) != 3:
             raise ValueError(
@@ -800,7 +809,7 @@ class CellAddressCodec:
 
     @classmethod
     def normalize(cls, name_or_address: str) -> str:
-        """归一化为文件系统安全名: ``/`` ``.`` ``-`` → ``__``."""
+        """Normalize into a filesystem-safe name: ``/`` ``.`` ``-`` -> ``__``."""
         return (name_or_address.replace('/', '__').replace('\\', '__').
                 replace('.', '__').replace('-', '__'))
 
@@ -813,11 +822,11 @@ class CellAddressCodec:
     # -- 匹配 -------------------------------------------------
 
     def match(self, query: str) -> bool:
-        """query 是否命中本 address.
+        """Whether ``query`` matches this address.
 
-        五路, 按优先级: 精确全名 → 精确 short → 精确 name 段 → uid 前缀
-        (≥3 字符) → address 前缀 (≥3 字符). 空串/单双字符不命中 —
-        语义门槛避免误匹配.
+        Five paths, by priority: exact full address -> exact short -> exact name segment
+        -> uid prefix (>= 3 chars) -> address prefix (>= 3 chars). An empty / one-two
+        char query never matches — a semantic threshold against false matches.
         """
         if not query:
             return False
@@ -842,10 +851,11 @@ class CellAddressCodec:
             *,
             limit: int = 3,
     ) -> list[CellAddress]:
-        """did you want? — 从候选里收集近似命中 (name 前缀/子串, uid 前缀).
+        """did you want? — collect approximate hits from candidates (name prefix/substring,
+        uid prefix).
 
-        用于解析失败/歧义时的兜底提示, 让模糊输入变成可纠正的对话.
-        返回候选的 address 全名列表.
+        A fallback hint for a parse failure or ambiguity, turning fuzzy input into a
+        correctable dialog. Returns the full addresses of the candidates.
         """
         if not query:
             return []
@@ -879,10 +889,10 @@ def build_cell_from_node(
         name: str = '',
 ) -> 'Cell':
     """
-    基于 Node 的声明来构造一个 Cell 实例.
-    :param env: 环境载体
-    :param manifest: 本 cell 的 NodeManifest.
-    :param name: 给 node 赋予的别名.
+    Build a Cell instance from a Node declaration.
+    :param env: the environment carrier.
+    :param manifest: this cell's NodeManifest.
+    :param name: an alias to give the node.
     """
     # node uid 每次 spawn 独立生成, 保证 address 全局唯一.
     # 不用 env.run_id: 同一父进程连续 spawn 多个 node 时 run_id 相同会撞.
@@ -921,12 +931,12 @@ def build_host_cell(
         env: Environment,
 ) -> 'Cell':
     """
-    构建一个 host 类型的 cell 节点.
+    Build a host-type cell.
 
     host address = host / {moss_name} / {project_id}
-    - moss_name 来自 MOSS.md.name (workspace 静态声明).
-    - project_id 作 uid, 一个 project 内唯一.
-    - singleton=True: 同一 project 只能起一个 host.
+    - moss_name comes from MOSS.md.name (the workspace static declaration).
+    - project_id acts as the uid, unique within one project.
+    - singleton=True: a project can run at most one host.
     """
     return Cell(
         role=HOST_ROLE,
@@ -944,14 +954,14 @@ def build_host_cell(
 def discover_this_node(
         env: Environment,
 ) -> CellRuntimeInfo:
-    """从当前运行时中发现正在运行的 cell runtime info.
+    """Discover the running cell runtime info from the current runtime.
 
-    路径:
-    1. env.this_cell_address 有值 → 从 runtime dir 读父进程写的文件 (spawn 路径).
-    2. runtime file 缺失或损坏 → 降级为从当前进程自述 (from_proc + build).
-    3. env.this_cell_address 为空 → 直接走 from_proc 分支 (裸脚本运行).
+    Paths:
+    1. env.this_cell_address set -> read the file the parent wrote into the runtime dir (spawn path).
+    2. runtime file missing or corrupt -> degrade to self-description from the current process (from_proc + build).
+    3. env.this_cell_address empty -> go straight to the from_proc branch (bare script run).
 
-    最后统一用当前进程 pid 覆盖 runtime_info.pid.
+    Finally, override runtime_info.pid with the current process pid.
     """
     address = env.this_cell_address
     cell_runtime_info: CellRuntimeInfo | None = None
@@ -1026,7 +1036,7 @@ def enter_cell_lifecycle(
 
 
 def _current_pgid(pid: int) -> int | None:
-    """当前进程组 id — 系统支持 (POSIX getpgid) 时返回, 否则 None (Windows 降级)."""
+    """The current process group id — returned when the system supports it (POSIX getpgid), else None (Windows fallback)."""
     if not hasattr(os, 'getpgid'):
         return None
     try:
@@ -1038,22 +1048,23 @@ def _current_pgid(pid: int) -> int | None:
 
 class CellPresence(ABC):
     """
-    cell 的入网侧: 让自己在网络上可被发现、可被查询、可提供 channel.
+    A cell's network-facing side: making itself discoverable, queryable and channel-providing
+    on the network.
 
-    一个 cell 只 announce 一个 presence, 生命周期 = 本对象生命周期.
+    A cell announces exactly one presence; its lifecycle equals this object's lifecycle.
     """
 
     @property
     @abstractmethod
     def this(self) -> Cell:
-        """本 cell 当前宣告的 presence 内容."""
+        """The presence content this cell currently announces."""
         ...
 
     @abstractmethod
     async def provide_channel(self, channel: Channel) -> ChannelProvider:
         """
-        立刻将 Channel 提供到网络中. 同时广播更新.
-        返回 provider 实例作为可操作句柄.
+        Provide the Channel to the network immediately, broadcasting an update.
+        Returns the provider instance as an operable handle.
         """
         ...
 
@@ -1065,9 +1076,9 @@ class CellPresence(ABC):
             updated: bool = True,
             event_level: CellEventLevel | None = None,
     ) -> None:
-        """向网络广播一个本 cell 的轻量事件 (CellEvent).
+        """Broadcast a lightweight event (CellEvent) of this cell to the network.
 
-        event_level: 覆盖本 cell 默认感知级别; None = 沿用 cell.event_level.
+        event_level: override this cell's default perception level; None = use cell.event_level.
         """
         ...
 
@@ -1086,11 +1097,13 @@ class CellPresence(ABC):
 
 @dataclasses.dataclass(frozen=True)
 class AutoAcceptPolicy:
-    """auto-accept 默认策略的两个开关 (与 ``CellNetwork.set_auto_accept`` 对称的读侧).
+    """The two switches of the auto-accept default policy (the read side, symmetric to
+    ``CellNetwork.set_auto_accept``).
 
-    显式 accept / reject 表覆盖本策略, 不受其影响 —— 本策略只决定"没被显式表态的
-    cell 默认怎么处理". 两个开关全开时, 网络默认承认一切资源, 显式的
-    accept / reject 命令失去意义.
+    The explicit accept / reject tables override this policy — it only decides how cells
+    that have not been explicitly stated are treated by default. When both switches are
+    on, the network accepts all resources by default and explicit accept / reject become
+    meaningless.
     """
     local: bool
     foreign: bool
@@ -1098,8 +1111,8 @@ class AutoAcceptPolicy:
 
 class CellNetwork(ABC):
     """
-    Matrix 网络的观测与连接层.
-    用于发现 Cell 存在与连接 Cell 的能力.
+    The observation and connection layer of the Matrix network — discovers cell presence
+    and connects cell capabilities.
     """
 
     @abstractmethod
@@ -1109,14 +1122,14 @@ class CellNetwork(ABC):
             project_id: str | None = None,
     ) -> dict[CellAddress, Cell]:
         """
-        从缓存中获取最新的 Cell 试图.
-        :param project_id: 仅返回指定治理域的 cell (local/foreign 过滤的原料).
+        Get the latest Cell view from the cache.
+        :param project_id: only return cells of the given governance domain (the raw material for local/foreign filtering).
         """
         ...
 
     @abstractmethod
     async def refresh(self, address: CellAddress | None = None) -> dict[CellAddress, Cell]:
-        """拉取指定 cell (None=全量) 的最新 presence 并更新视图."""
+        """Fetch the latest presence of the given cell (None = all) and update the view."""
         ...
 
     @abstractmethod
@@ -1125,9 +1138,9 @@ class CellNetwork(ABC):
             callback: Callable[[Cell, bool], None],
     ) -> Callable[[], None]:
         """
-        注册 (Cell, online) 结构变化回调, 返回 unsubscribe 函数.
-        触发时机: cell 有增删或 refetch 后内容变化.
-        回调可能在网络后台线程触发, 调用方负责线程安全.
+        Register a (Cell, online) structural-change callback; returns the unsubscribe function.
+        Fires when: a cell is added/removed, or its content changes after a refetch.
+        The callback may fire on a network background thread; the caller owns thread safety.
         """
         ...
 
@@ -1137,9 +1150,9 @@ class CellNetwork(ABC):
             callback: Callable[['CellEvent'], None],
     ) -> Callable[[], None]:
         """
-        注册 CellEvent 到达回调, 返回 unsubscribe 函数.
-        触发时机: 网络上任何一条 CellEvent 到达 (无论 refetch 值).
-        消费者: 将回调事件纳入决策, 或记录日志.
+        Register a CellEvent-arrival callback; returns the unsubscribe function.
+        Fires when: any CellEvent arrives on the network (regardless of its refetch value).
+        Consumers: fold the event into decisions, or log it.
         """
         ...
 
@@ -1151,18 +1164,18 @@ class CellNetwork(ABC):
             timeout: float = 30,
     ) -> Cell | None:
         """
-        等待某个 cell 的 presence 出现
-        :return: cell, 或超时 None.
+        Wait for a cell's presence to appear.
+        :return: the cell, or None on timeout.
         """
         ...
 
     @abstractmethod
     def has_host(self) -> bool:
         """
-        本 network 是否有 host 在运行 (view 层判断).
+        Whether this network has a host running (decided at the view layer).
 
-        host 在 network 级别唯一 — 无需按 project_id 过滤. 消费者 (通常是
-        worker cell 或 CLI) 判断组网状态的 code as prompt.
+        A host is unique at the network level — no project_id filtering needed. Consumers
+        (usually a worker cell or the CLI) use this as code-as-prompt to judge group state.
         """
         ...
 
@@ -1183,65 +1196,69 @@ class CellNetwork(ABC):
             foreign: bool | None = None,
     ) -> None:
         """
-        切换 auto-accept 默认策略. None 表示不改动.
+        Toggle the auto-accept default policy. None means no change.
 
-        触发即扫: 调用后立即按新策略扫一遍当前视图 —
-          - 新纳入策略 (原不接受, 现接受) 的 cell 会补加进 accept 表 + 组装句柄
-          - 移出策略 (原接受, 现不接受) 的 cell 会撤销句柄
-        显式 accept/reject 表覆盖默认策略, toggle 不动它们.
+        Fires a scan: immediately re-scans the current view under the new policy —
+          - cells newly brought into policy (was not accepted, now is) get added to the accept table + handle assembled
+          - cells moved out of policy (was accepted, now not) get their handle revoked
+        The explicit accept/reject tables override the default policy; toggling does not touch them.
 
-        典型使用: 上层 channel (如 mesh channel) 通过 command 暴露给模型,
-        运行时可自主开关是否自动接纳 foreign cell 的资源.
+        Typical use: an upper channel (like the mesh channel) exposes this to the model via a
+        command, toggling at runtime whether foreign cells' resources are auto-accepted.
 
-        :param local: is_local(env) 的 cell 是否自动 accept. None=不改.
-        :param foreign: 非 local 的 cell 是否自动 accept. None=不改.
+        :param local: whether is_local(env) cells are auto-accepted. None = no change.
+        :param foreign: whether non-local cells are auto-accepted. None = no change.
         """
         ...
 
     @abstractmethod
     def auto_accept(self) -> AutoAcceptPolicy:
         """
-        当前 auto-accept 默认策略 —— set_auto_accept 的读侧.
+        The current auto-accept default policy — the read side of set_auto_accept.
 
-        没有读侧, 消费方就只能把自己的"读不到"写成常量 (策略状态无从判断),
-        策略可见性也就无从谈起. 与 set_auto_accept 必须成对实现.
+        Without a read side, consumers can only hardcode their own "can't read" constant (the
+        policy state becomes unknowable) and policy visibility is lost. Must be implemented
+        in pair with set_auto_accept.
 
-        只读策略本身; cell 是否已被接受属于 accept/reject 表, 看 channel_proxies.
+        Reads the policy only; whether a cell has been accepted lives in the accept/reject
+        tables, see channel_proxies.
         """
         ...
 
     @abstractmethod
     async def accept(self, address: CellAddress, *, lookup: bool = False) -> None:
         """
-        承认远端 cell 的资源: 加入 accept 表, 若 cell 已 present 立即组装资源句柄.
+        Acknowledge a remote cell's resources: add to the accept table, and assemble the
+        resource handle immediately if the cell is already present.
 
-        :param lookup: True 时若视图中无该 address 会先 refresh 一次再判断;
-                      False 时依赖当前视图, 视图中无则等下次 present 时自动生效.
-        :raise LookupError: lookup=True 且 refresh 后仍不在网络上.
+        :param lookup: if True, refresh once first when the address is not in the view;
+                      if False, rely on the current view, taking effect on the next presence.
+        :raise LookupError: lookup=True and still not on the network after refresh.
         """
         ...
 
     @abstractmethod
     async def reject(self, address: CellAddress) -> None:
         """
-        拒绝远端 cell 的资源: 加入 reject 表, 已存在的句柄立即撤回.
-        与 accept 对称, 语义是资源承认与否, 不影响对方在线状态.
+        Reject a remote cell's resources: add to the reject table and revoke any existing
+        handle immediately. Symmetric to accept — it is about resource acknowledgement, not
+        the other side's online status.
         """
         ...
 
     @abstractmethod
     def channel_proxies(self) -> dict[CellAddress, ChannelProxy]:
-        """当前已 accept 且 present 的 cell 对应的 channel proxy."""
+        """The channel proxies of the cells that are currently accepted and present."""
         ...
 
     @abstractmethod
     def recent_events(self, *, limit: int = 20) -> list[CellEvent]:
-        """最近的网络轻量事件窗口 (ring buffer, 最新优先)."""
+        """The recent network lightweight-event window (ring buffer, newest first)."""
         ...
 
     @abstractmethod
     def cell_events(self, address: CellAddress, *, limit: int = 20) -> list[CellEvent]:
-        """某个 cell 的最新事件. """
+        """The latest events of a specific cell."""
         ...
 
     @abstractmethod
@@ -1255,7 +1272,7 @@ class CellNetwork(ABC):
 
 class NodeManager(ABC):
     """
-    管理所有 Node 的抽象.
+    Abstraction managing all nodes.
     """
 
     @abstractmethod
@@ -1269,18 +1286,18 @@ class NodeManager(ABC):
             exclude: list[MatchPattern] | None = None,
     ) -> dict[ProjectRelativePath, NodeManifest]:
         """
-        列出领地内发现的全部 Cell 声明.
-        :param refresh: 重新扫描文件系统.
-        :param paths: 指定扫描的根目录, 否则使用默认的.
-        :param installed: None=全部; True=仅已安装; False=仅未安装.
-        :param include: 匹配模式筛选.
-        :param exclude: 排除模式筛选.
+        List all cell declarations discovered in the territory.
+        :param refresh: re-scan the filesystem.
+        :param paths: roots to scan; default roots when omitted.
+        :param installed: None = all; True = installed only; False = uninstalled only.
+        :param include: include-match filter.
+        :param exclude: exclude-match filter.
         """
         ...
 
     @abstractmethod
     def get_node(self, relative_path: 'str | Path') -> 'NodeManifest | None':
-        """获取指定目录路径的 Cell 声明. 目录路径用 '/' 分割."""
+        """Get the cell declaration at a given directory path (segments separated by '/')."""
         ...
 
     @abstractmethod
@@ -1289,12 +1306,13 @@ class NodeManager(ABC):
 
     @abstractmethod
     def resolve_node(self, target: 'str | Path') -> 'NodeManifest':
-        """解析 target → NodeManifest.
+        """Resolve target -> NodeManifest.
 
-        相对路径相对 project root 解析并绝对化; 指向 NODE.md 直接读; 指向目录找目录下
-        NODE.md; 指向脚本 NodeManifest.from_script 向上认亲.
-        :raise FileNotFoundError: target 不存在.
-        :raise LookupError: 目录下无 NODE.md.
+        A relative path resolves against project root and is made absolute; a NODE.md path is
+        read directly; a directory looks for NODE.md inside; a script uses
+        NodeManifest.from_script to walk up and claim its parent.
+        :raise FileNotFoundError: target does not exist.
+        :raise LookupError: no NODE.md in the directory.
         """
         ...
 
@@ -1305,7 +1323,7 @@ class NodeManager(ABC):
             *,
             exclude: list[MatchPattern] | None = None,
     ) -> Iterable[tuple[ProjectRelativePath, NodeManifest]]:
-        """基于 fnmatch 通配符筛选 Cell. include 为空时返回全部 (仅受 exclude 约束)."""
+        """Filter cells by fnmatch wildcards. Empty include returns all (only constrained by exclude)."""
         include_patterns = set(include) if include else set()
         exclude_patterns = set(exclude or [])
 
@@ -1328,59 +1346,60 @@ class NodeManager(ABC):
             capture: Callable[[CellRuntimeInfo], CaptureSpec] | None = None,
     ) -> tuple[CellRuntimeInfo, ManagedProcess]:
         """
-        拉起一个 node cell — 唯一 spawn 咽喉.
+        Launch a node cell — the single spawn choke point.
 
-        只做: installed 校验 → NodeLauncher 打包 → probe 闸门 (manifest.check) →
-        singleton 预检 (read-only is_locked, 撞锁抛 DuplicatedError) → 写第一笔账本
-        (身份 uid, pid/pgid 占位 0) → Subprocesses.execute 拉起.
-        不做: 持有 singleton 锁 / 账本清理 / pid·pgid 回填 — 归 child
-        enter_cell_lifecycle.
+        Only does: installed check -> NodeLauncher packing -> probe gate (manifest.check) ->
+        singleton pre-check (read-only is_locked; raises DuplicatedError on collision) -> write
+        the first ledger entry (identity uid, pid/pgid placeholder 0) -> Subprocesses.execute.
+        Does not do: holding the singleton lock / ledger cleanup / pid·pgid backfill — those
+        belong to the child enter_cell_lifecycle.
 
         extra_args: extra argv tokens appended after the declared ``exec.args`` —
         for per-instance identity/binding (device index, stream address, ...).
         Append-only; ``exec.args`` is never replaced. The pre-launch probe does
         not receive them.
 
-        capture: 可选 factory, 传打包后的 CellRuntimeInfo, 返回 CaptureSpec
-        (落盘路径可用 runtime.address). None = 不捕获 (继承终端).
+        capture: an optional factory taking the packed CellRuntimeInfo and returning a
+        CaptureSpec (the on-disk path can use runtime.address). None = no capture (inherit terminal).
 
-        probe (manifest.check) 失败抛 NodeProbeError; singleton 撞锁抛 DuplicatedError;
-        installed 未过抛 RuntimeError. 返回 (runtime, managed) — runtime 供 caller
-        组装 CellHandle / 追踪.
+        A failed probe (manifest.check) raises NodeProbeError; a singleton lock collision raises
+        DuplicatedError; a failed installed check raises RuntimeError. Returns (runtime, managed)
+        — runtime lets the caller assemble a CellHandle / track.
         """
         ...
 
     @abstractmethod
     def list_runtimes(self) -> list[CellRuntimeInfo]:
-        """读账本, 返回本治理域内已拉起的全部 cell runtime (host + node)."""
+        """Read the ledger and return all launched cell runtimes in this governance domain (host + node)."""
         ...
 
     @abstractmethod
     def get_runtime(self, address: CellAddress) -> CellRuntimeInfo | None:
-        """按 address 读单个 runtime. 不在账本返回 None."""
+        """Read a single runtime by address; None when not in the ledger."""
         ...
 
     @abstractmethod
     def kill_cell(self, address: CellAddress, *, force: bool = False) -> bool:
-        """终止一个 cell 进程 (SIGTERM → grace → SIGKILL) 并清账本.
+        """Terminate a cell process (SIGTERM -> grace -> SIGKILL) and clear its ledger.
 
-        :return: True = address 在本治理域账本内, 已尝试终止 + 清账;
-                 False = 不在账本, 无操作.
+        :return: True = address is in this domain's ledger, termination + cleanup attempted;
+                 False = not in the ledger, no-op.
         """
         ...
 
     @abstractmethod
     def prune(self, *, keep_alive: bool = False, force: bool = False) -> tuple[int, int, int]:
-        """清孤儿 runtime 账本. 返回 (removed, killed, skipped).
+        """Clear orphan runtime ledgers. Returns (removed, killed, skipped).
 
-        默认 kill 活着的孤儿 (它们持有 singleton 锁); keep_alive=True 只删死账本.
+        By default kills live orphans (they hold singleton locks); keep_alive=True removes only
+        dead ledgers.
         """
         ...
 
 
 class DuplicatedError(RuntimeError):
-    """cell 重复启动异常. singleton 声明的执法产物, 错误信息应引用声明原文."""
+    """Duplicate cell-launch error, produced by singleton enforcement; the message should quote the declaration."""
 
 
 class NodeProbeError(RuntimeError):
-    """cell 启动前探针 (check:) 失败 — broken reason 承载在消息中, 闸门不放行拉起."""
+    """Pre-launch probe (check:) failure — the broken reason is carried in the message; the gate does not launch."""
