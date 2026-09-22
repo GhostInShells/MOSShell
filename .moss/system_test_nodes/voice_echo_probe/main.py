@@ -1,46 +1,43 @@
-"""voice_echo_probe — 单进程 听+说 共存与回声实测 node (跑完即退, 纯观测).
+"""voice_echo_probe — 单进程 听+说 并发, 纯观测回声 (跑完即退).
 
-一个进程里同时拉起两个器官, 启动 → 说一句 → 观测一个窗口 → **退出**. 不做常驻,
-不做 singleton idle — 纯测试不持久运行.
+AEC 已由 miniaudio factory 在两条 stream 都产出时自动装好 (见
+``ghoshell_moss.host.audios.miniaudio_impl.factory``), 本 node 不再手动装线,
+也不走 listener controller. 所以这里就是两个并发 task:
 
-回答两个问题:
+- 嘴说: TTS 播放一句话 (``_speak``).
+- 耳朵听: capture 顺序消费, 逐帧打印 rms (``_listen``).
 
-1. **共存**: 麦克风 (capture) 与扬声器 (playback) 同进程起来会不会打架 —
-   device 争用 / stream 冲突 / 生命周期. `[boot] both up` 出现即两者共存成立.
-2. **回声**: 起来之后让嘴说一句, 看耳朵有没有听见自己说的话. 听见了就是回声,
-   识别事件打印里的 Δ 就是回声延迟 (相对"说话起点").
+耳朵打印的是**消回声后**的信号 (capture 在算 meta 前就过了 AEC), 因此:
 
-耳朵全程 ``always`` 礼仪 (纯 segment_vad), 不让 LLM 进观测链路. 每个事件带
-``seg=`` 后四位, 好分得清"切段"还是"只认一半".
+- 说话期间耳朵侧 rms 低 / SILENT = 回声被消掉;
+- 说话期间耳朵侧 rms 跳高 = 回声漏进来了.
 
-**外放跑** — 要测的就是扬声器 → 麦克风这条路. 戴耳机测到的是"没回声".
+判据是时间轴上的对照: 静默基线 → ``[say]`` 标记 → 说话窗口 → ``[say done]``
+标记 → 尾巴窗口. 说话窗口里耳朵若仍是 SILENT 就是好的.
+
+**外放跑** — 要测的就是扬声器 → 麦克风这条路, 戴耳机测到的是"没回声".
 
 用法:
 
     moss --mode system_test nodes run .moss/system_test_nodes/voice_echo_probe/ -- "要说的一句话"
 
-句子可省, 缺省用内置测试句. 设备选择走 node 自身的 dotenv (MOSS_AUDIO_CAPTURE_DEVICE).
+句子可省, 缺省用内置测试句; 控制句子长度可观察 AEC 收敛期与稳态的不同.
+设备选择走 node 自身的 dotenv (MOSS_AUDIO_CAPTURE_DEVICE).
 """
 
 import asyncio
 import sys
 import time
-from typing import Optional
 
-from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase
 from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.contracts.speech import PlaybackSample, Speech, TTSSpeech
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.nodes.listener_node import assemble_controller
 
-#: 两个器官都起来之后, 等这么久再说第一句话 — 留给设备/ASR 连接稳定.
-_SETTLE_SECONDS = 3.0
+#: 说话前留一段静默基线 — 确认说话前耳朵是 SILENT 的.
+_SETTLE_SECONDS = 1.5
 
-#: 等 listening session 真正起来的上限.
-_READY_TIMEOUT_SECONDS = 15.0
-
-#: 说完之后观测多久 (覆盖 clause/tail 的回声尾巴), 然后退出.
-_OBSERVE_SECONDS = 8.0
+#: 说完之后观测多久 (覆盖回声尾巴), 再收尾.
+_TAIL_SECONDS = 3.0
 
 _DEFAULT_SENTENCE = "你好，这是一句测试。听一听，耳朵能不能听见我自己说话。"
 
@@ -51,109 +48,73 @@ def _parse_argv() -> str:
     return args[0] if len(args) > 0 and args[0] else _DEFAULT_SENTENCE
 
 
-class _SayClock:
-    """说话时间轴 — 识别事件的 Δ 一律相对它算."""
-
-    def __init__(self) -> None:
-        self.started_at: Optional[float] = None
-        self.ended_at: Optional[float] = None
-
-    def delta(self, now: float) -> str:
-        if self.started_at is None:
-            return "  --  "
-        return f"+{now - self.started_at:5.2f}s"
-
-
-async def _wait_listening(controller, timeout: float) -> bool:
-    """轮询到 listening session 真的打开 (capture + asr 都活了)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if controller.snapshot().listening:
-            return True
-        await asyncio.sleep(0.1)
-    return False
-
-
 async def main(matrix: Matrix):
     sentence = _parse_argv()
-    clock = _SayClock()
-    log = matrix.logger
+    con = matrix.container
 
-    print("[boot] listener: assembling (capture + asr) ...", flush=True)
-    controller = await assemble_controller(matrix, emit_signals=False)
-
-    speech = matrix.container.get(Speech)
+    speech = con.get(Speech)
     if not isinstance(speech, TTSSpeech):
-        print(f"[boot] FATAL: Speech is {type(speech).__name__}, not TTSSpeech — 无法出声", flush=True)
+        print(f"[fatal] Speech 不是 TTSSpeech ({type(speech).__name__}), 无法出声", flush=True)
         return
 
-    print("[boot] speech: starting (player + tts) ...", flush=True)
+    capture = con.get(AudioCaptureSource)
+    if capture is None:
+        print("[fatal] AudioCaptureSource 未注册", flush=True)
+        return
+
+    # 取到 player + capture 后, factory 已在两条 stream 齐时自动装好 AEC.
     await speech.start()
+    await capture.start()
     player = speech.player()
     print(
-        f"[boot] speech: started — player={type(player).__name__} "
-        f"{player.sample_rate}Hz/{player.channels}ch",
+        f"[boot] player={type(player).__name__} {player.sample_rate}Hz/{player.channels}ch  "
+        f"capture={capture.device_explain()}",
         flush=True,
     )
 
-    capture = matrix.container.get(AudioCaptureSource)
-    capture_explain = capture.device_explain() if capture is not None else "<not provided>"
-    print(f"[boot] capture: {capture_explain}", flush=True)
-    print("[boot] both up", flush=True)
+    consumer = capture.new_sequential_consumer()
 
-    def _on_result(result: RecognitionEvent) -> None:
-        now = time.monotonic()
-        if result.phase is RecognitionPhase.CLAUSE and result.clause is not None:
-            text = result.clause.text
-        else:
-            text = result.text
-        sid = result.segment_id[-4:] if result.segment_id else "????"
-        print(f"[{result.phase.value:<7} {clock.delta(now)} seg={sid}] {text}", flush=True)
+    async def _speak() -> None:
+        samples: list[PlaybackSample] = []
+        stream = speech.new_segment()
+        stream.feed(sentence, complete=True)
+        await stream.play(samples)
+        played = sum(s.duration for s in samples)
+        print(f"[say done] played {played:.2f}s over {len(samples)} samples", flush=True)
 
-    controller.on_recognition_result(_on_result)
+    async def _listen() -> None:
+        t0 = time.monotonic()
+        async with consumer:
+            async for chunk in consumer:
+                m = chunk.meta
+                tag = "SILENT" if m.is_silent else "     "
+                print(f"[ear] +{time.monotonic() - t0:6.2f}s rms={m.rms_db:6.1f}dB {tag}", flush=True)
 
-    print("[boot] listener: opening listening session (always) ...", flush=True)
-    controller.always(timeout=None)
-    if await _wait_listening(controller, _READY_TIMEOUT_SECONDS):
-        print("[boot] listener: listening", flush=True)
-    else:
-        print(
-            f"[boot] WARN: listener 未在 {_READY_TIMEOUT_SECONDS}s 内 listening — "
-            f"继续, 但耳朵可能是哑的",
-            flush=True,
-        )
+    listen_task = asyncio.create_task(_listen())
 
+    # 静默基线: 说话前耳朵应当是 SILENT.
     await asyncio.sleep(_SETTLE_SECONDS)
 
-    clock.started_at = time.monotonic()
     print(f'[say] "{sentence}"', flush=True)
-    samples: list[PlaybackSample] = []
-    stream = speech.new_segment()
-    stream.feed(sentence, complete=True)
+    speak_task = asyncio.create_task(_speak())
     try:
-        await stream.play(samples)
+        await speak_task
     except Exception as exc:
-        log.exception("say failed: %s", exc)
-    finally:
-        clock.ended_at = time.monotonic()
+        print(f"[say] failed: {exc}", flush=True)
 
-    played = sum(sample.duration for sample in samples)
-    print(
-        f"[say done] played {played:.2f}s over {len(samples)} samples "
-        f"(播放窗口 = Δ 0.00s → {clock.delta(clock.ended_at)})",
-        flush=True,
-    )
+    print(f"[observe] 再听 {_TAIL_SECONDS:.0f}s 收尾 (看回声尾巴) ...", flush=True)
+    await asyncio.sleep(_TAIL_SECONDS)
 
-    # 观测窗口: 覆盖 clause/tail 的回声尾巴, 然后退出.
-    print(f"[observe] 再听 {_OBSERVE_SECONDS:.0f}s 收尾, 之后自动退出", flush=True)
-    await asyncio.sleep(_OBSERVE_SECONDS)
-    print("[done] observation complete — exiting", flush=True)
+    listen_task.cancel()
+    speak_task.cancel()
+    await asyncio.gather(listen_task, speak_task, return_exceptions=True)
 
-    controller.stop()
+    await capture.close()
     try:
         await speech.close()
     except BaseException:
         pass
+    print("[done] exiting", flush=True)
 
 
 if __name__ == "__main__":
