@@ -392,6 +392,67 @@ async def test_virtual_child_removal_emits_tombstone():
 
 
 @pytest.mark.asyncio
+async def test_unavailable_channel_emits_tombstone_then_reappears():
+    """available 临时中断 ⟹ 有 -> 移除 -> 出现 (端到端).
+
+    channel 的 available 函数返回 False 表示"临时不可用" — 表面必须从模型面消失,
+    否则模型会继续对着一个已经关掉的 channel 讲话 (残留 affordance). available 恢复
+    之后表面必须完整回来. 帧差分: 不可用那帧 emit 墓碑, 恢复那帧 emit 全量 facade,
+    之后无变化不再重发.
+
+    生产者只需翻转 available 函数, 不产出任何 "removed" 文本 — 墓碑由 facade_delta
+    对 "上一帧有、当前帧没有" 的 path 自动生成.
+    """
+    from ghoshell_moss.core.blueprint.channel_builder import new_channel
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell("traj_available")
+    chan = new_channel(name="chan")
+    available = {"ok": True}
+    chan.build.available(lambda: available["ok"])
+
+    @chan.build.command()
+    async def hello() -> str:
+        return "world"
+
+    shell.main_channel.import_channels(chan)
+
+    async def _advance():
+        # 推进 tracer 事件索引, 让帧能被 commit (见 commit 的 index > last_index 守卫).
+        async with shell.interpreter_in_ctx() as i:
+            i.feed("<noop />")
+            i.commit()
+            await i.wait_tasks(timeout=2)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            # 有: 基线里它在.
+            assert 'path="chan"' in trajectory.epoch_start_point(refresh=True)
+
+            # 第一次刷新: available false -> 移除.
+            available["ok"] = False
+            await shell.refresh_metas()
+            await _advance()
+            frame = trajectory.pop_frame()
+            assert '<channel path="chan" removed/>' in frame.facade_delta()
+
+            # 第二次刷新: available true -> 出现.
+            available["ok"] = True
+            await shell.refresh_metas()
+            await _advance()
+            frame = trajectory.pop_frame()
+            delta = frame.facade_delta()
+            assert '<channel path="chan">' in delta
+            assert 'hello' in delta  # 命令界面重新出现
+
+            # 第三次刷新: 无变化 -> 不再重发该 channel.
+            await shell.refresh_metas()
+            await _advance()
+            frame = trajectory.pop_frame()
+            assert 'path="chan"' not in frame.facade_delta()
+
+
+@pytest.mark.asyncio
 async def test_instruction_re_renders_at_epoch_start_point():
     """instruction 不再 startup 冻结 — refresh 重渲染, 新 epoch 的全量 facade 带新内容.
 

@@ -375,13 +375,14 @@ class ShellKeyFrame:
     """ Shell 运行时的关键帧数据, 它记录了 shell 的瞬间状态. """
 
     epoch_index: int  # 在一个 shell trajectory 中的第几个 epoch.
-    index: int  # 在一个 trajectory epoch 中的位置.
+    index: int  # 帧序号 (在 trajectory epoch 中的位置), 由 commit 递增; 推进 diff 基线用.
     events: list[MShellEvent]  # 这一帧 会要提取出来的 shell events
     need_observe: bool
     status: MShellStatus  # 生产 Frame 瞬间的状态.
     previous_metas: dict[ChannelFullPath, ChannelMeta]  # 上一帧持有的关键帧 shell metas.
     metas: dict[ChannelFullPath, ChannelMeta]  # 当前帧获取时的 shell 状态.
     created: float  # 创建的 timestamp
+    tracer_index: int = 0  # 抓帧瞬间的事件水位, 仅用于 tracer.drain; 与帧序号 index 正交.
     committed: bool = False  # 是否已经完成了确认. 如果没有完成确认, 缓冲不会更新.
 
     def facade_delta(self) -> str:
@@ -581,6 +582,9 @@ class MShellTrajectory:
         # peek/commit 前均有 _check_running (要求已 aenter), 而 aenter -> new_epoch
         # 才真正初始化 _last_frame; 此处留 None 即可, 无需制造 dummy 帧.
         self._last_frame: ShellKeyFrame | None = None
+        # 帧序号游标 (ack_id 语义) — 每 commit 一帧递增, 驱动 diff 基线推进;
+        # 与 tracer 的事件水位 (_last_event_index) 正交, 见 ShellKeyFrame.index/tracer_index.
+        self._frame_index: int = 0
         # epoch 起点的 metas 快照 — epoch_start_point 与首帧 diff 的同源基准.
         self._baseline_metas: dict[ChannelFullPath, ChannelMeta] = {}
         # need_observe 订阅 — 归属轨迹生命周期, 不随 epoch 重建丢失.
@@ -613,14 +617,17 @@ class MShellTrajectory:
         # 新 tracer 重新挂上轨迹级 dispatcher; 否则 need_observe 订阅在新 epoch 静默失效.
         self._tracer.when_need_observe(self._dispatch_need_observe)
         self._baseline_metas = self.facade.channel_metas(available_only=True)
+        # 新 epoch 重置帧序号游标; 第零帧 (baseline) 帧号 = 0.
+        self._frame_index = 0
         self._last_frame: ShellKeyFrame = ShellKeyFrame(
-            index=self._tracer.index,
+            index=0,
             events=[],
             previous_metas=self._baseline_metas,
             status=self.facade.status(),
             metas=self._baseline_metas,
             created=time.time(),
             epoch_index=self._epoch_index,
+            tracer_index=self._tracer.index,
             need_observe=False,
         )
 
@@ -655,33 +662,39 @@ class MShellTrajectory:
         return _disposer
 
     def peek(self) -> ShellKeyFrame:
-        """生成一个当前帧的快照. """
+        """生成一个当前帧的快照. 非破坏: 不推进帧序号, 也不 drain 事件."""
         self._check_running()
-        events, index = self._tracer.peek()
+        events, event_index = self._tracer.peek()
         need_observe = False
         for e in events:
             if e.need_observe:
                 need_observe = True
                 break
         return ShellKeyFrame(
-            index=index,
+            # 帧序号是"待 commit"的下一帧; 只有 commit 才真正推进游标.
+            index=self._frame_index + 1,
             epoch_index=self._epoch_index,
             events=events,
             previous_metas=self._last_frame.metas,
             status=self.facade.status(),
             metas=self.facade.channel_metas(available_only=True),
             created=time.time(),
+            tracer_index=event_index,
             need_observe=need_observe,
         )
 
     def commit(self, frame: ShellKeyFrame) -> bool:
-        """ack 一个 snapshot"""
+        """ack 一个 snapshot: drain 事件 + 无条件推进 diff 基线.
+
+        返回 False 仅表示该帧已过时 (帧号 ≤ 上次已 ack 帧号), 重复 ack 同一帧或更旧的帧.
+        """
         self._check_running()
         if frame.index <= self._last_frame.index:
             return False
-        _ = self._tracer.drain(frame.index)
+        _ = self._tracer.drain(frame.tracer_index)
         frame.committed = True
         self._last_frame = frame
+        self._frame_index = frame.index
         return True
 
     def pop_frame(self) -> ShellKeyFrame:

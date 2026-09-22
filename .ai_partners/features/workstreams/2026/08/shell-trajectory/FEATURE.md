@@ -73,6 +73,11 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
 ## Implementation Notes
 
 - 事件 index 记账: `_append_event` 独占计数器, 回调不碰游标。
+- **帧序号 ≠ 事件水位** (2026-09-23 修复): `ack 纪律` 的「推进 baseline」由 `ShellKeyFrame.index`
+  驱动 — 帧序号在 `commit` 时递增, 每帧无条件推进 diff 基线; `tracer_index` 只是抓帧瞬间的
+  事件水位, 仅供 `tracer.drain`。二者早期被混用 (帧号误接成事件 index), 导致纯 meta 变化
+  (如 channel `available` 翻转) 不产生命令事件时, `commit` 因 index 未 +1 而 no-op、基线不前进,
+  于是「移除→出现」的 delta 链条里, 恢复帧 diff 不到变化被吞掉。
 - `on_channel_metas_generation` 回调 + discard 句柄 (set 存回调)。
 - `facade_body` 的 states 必须走 `state_text()` (str); 直接 `states_message()` (Message)
   会 join TypeError。
