@@ -1,5 +1,6 @@
 from typing import Iterable, Type, TYPE_CHECKING
 
+from ghoshell_moss.core.blueprint.cell import Cell
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.qa import QAManager
@@ -42,6 +43,7 @@ class MatrixZenohSessionProvider(Provider[Session]):
         topic_service = con.force_fetch(TopicService)
         qa_manager = con.force_fetch(QAManager)
         zenoh_session = con.force_fetch(zenoh.Session)
+        cell = con.force_fetch(Cell)
 
         return MatrixZenohSession(
             project=project,
@@ -49,4 +51,5 @@ class MatrixZenohSessionProvider(Provider[Session]):
             topic_service=topic_service,
             qa_manager=qa_manager,
             zenoh_session=zenoh_session,
+            cell=cell,
         )

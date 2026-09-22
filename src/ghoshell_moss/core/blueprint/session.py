@@ -11,6 +11,7 @@ from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.qa import QAManager
+from ghoshell_moss.core.blueprint.parameter import Parameters
 from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignalMeta
 from typing import Iterable, Literal
 from abc import ABC, abstractmethod
@@ -248,6 +249,16 @@ class Session(ABC):
     def qa(self) -> QAManager:
         """
         QA broadcast question/answer protocol — the cross-cell ask/answer bus.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def parameters(self) -> Parameters:
+        """
+        Network shared state service.  The host node owns the truth and broadcasts;
+        workers read truth and report local writes.  Without a host, a worker's
+        local value is the truth.  See ``Parameters``.
         """
         pass
 

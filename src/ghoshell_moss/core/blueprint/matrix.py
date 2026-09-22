@@ -436,16 +436,6 @@ class Matrix(Facade):
         """
         pass
 
-    @abstractmethod
-    async def parameters(self) -> Parameters:
-        """
-        Matrix-level parameter service — declare (become a writer) and subscribe (become a
-        reader), point to point.
-
-        Single declarer, no arbitration: declared keys are namespaced by cell address, and
-        subscribe targets a peer by address. Lazy gate — constructed on the first call.
-        """
-        ...
 
     # @abstractmethod
     async def service_operator(self) -> ServiceOperator:

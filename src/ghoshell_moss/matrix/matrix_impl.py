@@ -29,15 +29,12 @@ from ghoshell_moss.core.blueprint.cell import (
 )
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.warrant import Warrant
-from ghoshell_moss.core.blueprint.parameter import Parameters
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_moss.core.parameter import TruthHostParameters, WorkerParameters
 
 from ghoshell_moss.matrix.adapter import MatrixNetworkAdapter
 from ghoshell_moss.matrix.operator import ZenohOperator
-from ghoshell_moss.matrix.parameters import ZenohParametersBroadcaster
 from ghoshell_moss.matrix.zenoh_helper import MatrixEnvNamespace
 
 __all__ = ['MatrixImpl']
@@ -100,7 +97,6 @@ class MatrixImpl(Matrix):
         self._presence: CellPresence | None = None  # adapter.new_presence 产物
         self._operator: 'ZenohOperator | None' = None  # service_operator() 惰性创建
         self._watcher: CellNetwork | None = None  # mesh() 惰性创建
-        self._parameters: Parameters | None = None  # parameters() 惰性创建
 
         # -- 治理: run_node 拉起的所有 cell handle (§YY handled_cells 契约) -- #
         # 与 Subprocesses.executing/executed 同构: 活着的 handle 在 dict,
@@ -296,35 +292,6 @@ class MatrixImpl(Matrix):
         self._operator = operator
         self._logger.debug("%s operator lazily created", self._log_prefix)
         return operator
-
-    # ==================================================================
-    # parameter: 惰性门 — host 真值 + 广播, worker 收真值 (matrix 面)
-    # ==================================================================
-
-    async def parameters(self) -> Parameters:
-        """
-        惰性门: 首次调用时按角色构造 TruthHostParameters / WorkerParameters
-        (共享一个 ZenohParametersBroadcaster), 后续返回同一实例.
-        纯 worker cell 不调即不付 liveness / 发布循环成本.
-        """
-        self._check_running()
-        if self._parameters is not None:
-            return self._parameters
-        import zenoh
-        session = self._container.force_fetch(zenoh.Session)
-        broadcaster = ZenohParametersBroadcaster(
-            session,
-            MatrixEnvNamespace(self._env),
-            logger=self._logger,
-        )
-        if self.this.is_host:
-            parameters = TruthHostParameters(self.this.address, broadcaster, logger=self._logger)
-        else:
-            parameters = WorkerParameters(self.this.address, broadcaster, logger=self._logger)
-        await self._async_exit_stack.enter_async_context(parameters)
-        self._parameters = parameters
-        self._logger.debug("%s parameters lazily created", self._log_prefix)
-        return parameters
 
     # ==================================================================
     # 治理咽喉: run_node (六动词的 run, §YY blueprint/matrix.py L204+)

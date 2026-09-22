@@ -14,10 +14,14 @@ from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputBuffer, OutputItem, StreamSubscriber,
     Sample
 )
+from ghoshell_moss.core.blueprint.parameter import Parameters
+from ghoshell_moss.core.parameter import TruthHostParameters, WorkerParameters
 from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace, MatrixEnvNamespace
+from ghoshell_moss.matrix.parameters import ZenohParametersBroadcaster
 from ghoshell_moss.depends import depend_matrix
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.core.session.utils import SimpleOutputBuffer
+from ...core.blueprint.cell import Cell
 
 depend_matrix()
 from .zenoh_stream_subscriber import ZenohStreamSubscriber
@@ -58,6 +62,7 @@ class MossSessionWithZenoh(Session):
             cell_address: str = '',
             parent_cell_address: str = '',
             run_id: str | None = None,
+            is_host: bool = False,
     ):
         """
         :param session_scope: Moss Matrix 运行时, 所有通讯都围绕同一个 session scope.
@@ -81,6 +86,7 @@ class MossSessionWithZenoh(Session):
         self._input_signal_expr = self._namespace.signal_ns
         self._stream_key_expr_prefix = self._namespace.stream_ns
         self._received_signal_index: int = 0
+        self._is_host = is_host
 
         self._zenoh_session = zenoh_session
         if zenoh_session.is_closed():
@@ -101,6 +107,7 @@ class MossSessionWithZenoh(Session):
 
         self._sessions_storage_dir = sessions_storage_dir
         self._session_scope_storage: Storage | None = None
+        self._parameters: Parameters | None = None
 
     @classmethod
     def make_session_scope(cls, env: Environment) -> str:
@@ -146,6 +153,22 @@ class MossSessionWithZenoh(Session):
     @property
     def qa(self) -> QAManager | None:
         return self._qa_manager
+
+    @property
+    def parameters(self) -> Parameters:
+        """network 共享状态服务 — host 持真值广播, worker 收真值. 生命周期随 session."""
+        if self._parameters is None:
+            raise RuntimeError("session parameters not started (session not entered)")
+        return self._parameters
+
+    def _new_parameters(self) -> Parameters:
+        broadcaster = ZenohParametersBroadcaster(
+            self._zenoh_session, self._namespace, logger=self._logger,
+        )
+        address = self._metadata.cell_address
+        if self._is_host:
+            return TruthHostParameters(address, broadcaster, logger=self._logger)
+        return WorkerParameters(address, broadcaster, logger=self._logger)
 
     def _check_running(self) -> None:
         if self._zenoh_session.is_closed():
@@ -311,9 +334,15 @@ class MossSessionWithZenoh(Session):
         self._logger.info("%s session started", self._log_prefix)
         # 记录 jsonl
         await asyncio.to_thread(self.storage.append_model, "sessions", self._metadata)
+        # host 即监听广播; worker 惰性到首个 subscriber (WorkerParameters.__aenter__ 只置位).
+        self._parameters = self._new_parameters()
+        await self._parameters.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._parameters is not None:
+            await self._parameters.__aexit__(exc_type, exc_val, exc_tb)
+            self._parameters = None
         self._closing_event.set()
         self._logger.info("%s session closed", self._log_prefix)
 
@@ -328,10 +357,14 @@ class MatrixZenohSession(MossSessionWithZenoh):
             topic_service: TopicService,
             qa_manager: QAManager | None = None,
             logger: logging.Logger | None = None,
+            cell: Cell | None = None,
     ):
         session_scope = MossSessionWithZenoh.make_session_scope(project.env)
         run_id = project.env.run_id
         namespace = MatrixEnvNamespace(project.env)
+
+        cell_address = cell.address if cell else project.env.this_cell_address
+        is_host = cell.is_host if cell else False
 
         super().__init__(
             session_scope=session_scope,
@@ -341,7 +374,8 @@ class MatrixZenohSession(MossSessionWithZenoh):
             topic_service=topic_service,
             qa_manager=qa_manager,
             logger=logger,
-            cell_address=project.env.this_cell_address,
+            cell_address=cell_address,
             parent_cell_address=project.env.parent_cell_address,
             sessions_storage_dir=project.sessions_dir,
+            is_host=is_host,
         )

@@ -14,9 +14,11 @@ from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.workspace import Storage, LocalStorage
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.qa import QAManager
+from ghoshell_moss.core.blueprint.parameter import Parameters
 from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputItem, OutputBuffer, Sample, StreamSubscriber,
 )
+from ghoshell_moss.core.parameter import MemoryBus, MemoryParametersBroadcaster, TruthHostParameters
 from ghoshell_moss.core.session.utils import SimpleOutputBuffer
 
 __all__ = ["MockSession", "SimpleOutputBuffer"]
@@ -109,6 +111,10 @@ class MockSession(Session):
         self.outputs: list[OutputItem] = []
         self.stream_pubs: dict[str, list[bytes]] = {}
 
+        # parameters — 进程内 host 真值 (无 zenoh), 生命周期随 session.
+        self._parameter_bus = MemoryBus()
+        self._parameters: Parameters | None = None
+
     @property
     def storage(self) -> Storage:
         return self._session_root_storage
@@ -130,6 +136,12 @@ class MockSession(Session):
     @property
     def qa(self) -> QAManager | None:
         return self._qa_manager
+
+    @property
+    def parameters(self) -> Parameters:
+        if self._parameters is None:
+            raise RuntimeError("parameters not started (session not entered)")
+        return self._parameters
 
     # ── signal ──────────────────────────────────
 
@@ -217,9 +229,16 @@ class MockSession(Session):
 
     async def __aenter__(self):
         self._running = True
+        self._parameters = TruthHostParameters(
+            "mock", MemoryParametersBroadcaster(self._parameter_bus),
+        )
+        await self._parameters.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._parameters is not None:
+            await self._parameters.__aexit__(exc_type, exc_val, exc_tb)
+            self._parameters = None
         self._running = False
         # 通知所有 stream subscriber 结束
         for subs in self._stream_queues.values():
