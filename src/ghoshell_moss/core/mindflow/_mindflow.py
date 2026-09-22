@@ -244,8 +244,9 @@ class AbsMindflow(Mindflow, ABC):
 
         self._attention_created_callbacks: set[Callable[[Attention], None]] = set()
 
-        # 测试专用逻辑.
-        self._action_loop_queue: janus.Queue[Action] = janus.Queue(maxsize=10)
+        # 无界: 模型超前身体发 action 是合法状态 (interleaved 思维超前), 不能因队列满
+        # 就抛 QueueFull 把 action 变成"已登记、永不运行"的孤儿 (那会让 wait_actions_done 卡死).
+        self._action_loop_queue: janus.Queue[Action] = janus.Queue()
         self._is_looping_action = False
 
         # 观测轨迹: 帧中到达的 impulse (absorb 续包) 暂存于此, 下一帧生成时折进 moment.
@@ -961,8 +962,11 @@ class AbsMindflow(Mindflow, ABC):
         def _put_action(action: Action) -> None:
             try:
                 self._action_loop_queue.sync_q.put_nowait(action)
-            except janus.SyncQueueShutDown:
-                # janus 关停语义不应泄漏到 action 协议层, 统一转成 statement exit.
+            except (janus.SyncQueueShutDown, asyncio.QueueFull):
+                # 入队失败 (关停 / 满): action 进不了 action 循环, 就地 abort 使其 stop event 落位 ——
+                # 否则它就是"已登记、永不运行"的孤儿, wait_actions_done / wait_action_done 会永久卡死.
+                # abort 幂等 (attention 已 abort 时直接 return), 关停路径同样安全; 再按 statement exit 上抛.
+                action.abort('action loop queue unavailable')
                 raise ActionExitedException()
 
         # 把上一轮(或上一 attention)的 abort reason 织进这一帧的接缝, 并统一消费.
