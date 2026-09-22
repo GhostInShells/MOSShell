@@ -448,6 +448,67 @@ async def test_expect_voice_sets_all_pending():
 
 
 # ============================================================
+# 空闲超时 — 长时间无识别事件自动结束 (发 signal + 关闭)
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_always_idle_timeout_emits_signal_and_ends():
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+        cell_name="ghost_cell",
+    )
+    spec = always.model_copy(deep=True)
+    spec.idle_timeout = 0.05
+    task = controller.run_etiquette(spec)
+    await listener.listened.wait()
+    state = listener.state
+    await state.entered.wait()
+    await asyncio.sleep(0)
+
+    await asyncio.sleep(0.1)  # 超过 idle_timeout, 无任何识别事件
+    assert len(emitted) == 1
+    sig = emitted[0]
+    assert sig.complete is True
+    meta = ListenerSignal.from_signal(sig)
+    assert meta.source == "ghost_cell"  # 系统提示, 与 asr 识别结果 (source="asr") 区分
+    assert meta.interrupt is False
+    assert "idle-timeout" in sig.description
+
+    await task
+    assert state.exited  # 空闲超时后会话结束
+
+
+@pytest.mark.asyncio
+async def test_always_activity_resets_idle_timeout():
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    spec = always.model_copy(deep=True)
+    spec.idle_timeout = 0.05
+    task = controller.run_etiquette(spec)
+    await listener.listened.wait()
+    state = listener.state
+    await state.entered.wait()
+    await asyncio.sleep(0)
+
+    # 持续有识别事件 → 空闲计时不断重置, 不超时.
+    for _ in range(5):
+        for cb in state.result:
+            cb(_partial("你好"))
+        await asyncio.sleep(0.03)  # < idle_timeout
+    assert emitted == []
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+# ============================================================
 # 智能判停 (llm judge) — caller 注入 + StopJudge 装线
 # ============================================================
 

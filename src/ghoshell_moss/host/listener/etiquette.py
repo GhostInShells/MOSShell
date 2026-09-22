@@ -174,6 +174,12 @@ class EtiquetteSpec(BaseModel):
     onset: OnsetSpec = Field(default_factory=OnsetSpec)
     stop: StopSpec = Field(default_factory=StopSpec)
     deliver: DeliverSpec = Field(default_factory=DeliverSpec)
+    idle_timeout: float = Field(
+        default=300.0,
+        description="seconds without any recognition event before the session ends "
+                    "itself (emit a notify signal to the model, then stop); "
+                    "0 = never end on idle (stay on indefinitely)",
+    )
 
 
 # ── 开箱礼仪 — 每个是一个坐标; 复制一个改字段就是新礼仪, 注册到 Config 即可选用 ──

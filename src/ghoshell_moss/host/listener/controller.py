@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
@@ -316,32 +317,61 @@ class ListenerController(ListenLifecycle):
         judge = self._make_stop_judge(etiquette, state.commit)
         state.on_event_creating(judge.feed)
         done = asyncio.Event()
-        if until_tail:
-            # 结束条件 = 尾包 (TAIL) 已处理, 不是 segment 切分 — segment 切分早于
-            # TAIL 经 _pump 从 queue 取出, 用 segment 判结束会丢尾包 signal.
-            def _on_result(result: RecognitionEvent) -> None:
-                if result.phase == RecognitionPhase.TAIL:
-                    done.set()
+        # 活动标记: 任何识别事件到达都 set, 供空闲超时重置计时 (until_tail 时顺带判 TAIL).
+        activity = asyncio.Event()
 
-            state.on_recognition_result(_on_result)
+        def _on_result(result: RecognitionEvent) -> None:
+            activity.set()
+            if until_tail and result.phase == RecognitionPhase.TAIL:
+                done.set()
+
+        state.on_recognition_result(_on_result)
         async with state:
             try:
                 if until_tail:
+                    # 结束条件 = 尾包 (TAIL) 已处理, 不是 segment 切分 — segment 切分早于
+                    # TAIL 经 _pump 从 queue 取出, 用 segment 判结束会丢尾包 signal.
                     try:
                         await asyncio.wait_for(done.wait(), timeout)
                     except asyncio.TimeoutError:
                         self._logger.warning(
                             "%s no tail within %s — session ends", self._log_prefix, timeout,
                         )
-                elif timeout is None:
-                    await asyncio.Event().wait()
                 else:
-                    await asyncio.sleep(timeout)
+                    await self._wait_for_idle(activity, etiquette.idle_timeout, timeout)
             finally:
                 judge.close()
                 # 只在自己仍是当前礼仪时清 — 避免被下一次 run_etiquette 已切走后误清.
                 if self._active_etiquette is etiquette:
                     self._set_active_etiquette(None)
+
+    async def _wait_for_idle(
+            self,
+            activity: asyncio.Event,
+            idle_timeout: float,
+            timeout: float | None,
+    ) -> None:
+        """常驻会话等待: idle_timeout 秒无识别事件 → 发 signal 并结束; timeout 为总时长上限.
+
+        ``idle_timeout <= 0`` 退回旧的常驻 (timeout=None) / 固定总时长 (timeout=值) 语义 —
+        空闲超时是叠加在常驻之上的可选层, 不改变旧行为.
+        """
+        if idle_timeout <= 0:
+            if timeout is None:
+                await asyncio.Event().wait()
+            else:
+                await asyncio.sleep(timeout)
+            return
+        start = time.monotonic()
+        while True:
+            if timeout is not None and time.monotonic() - start >= timeout:
+                return
+            activity.clear()
+            try:
+                await asyncio.wait_for(activity.wait(), idle_timeout)
+            except asyncio.TimeoutError:
+                self._emit_idle_timeout(idle_timeout)
+                return
 
     def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
         """出口位点装配: 按 StopSpec 组装判停单元 + 按 classifier.instruction 建 caller."""
@@ -741,6 +771,24 @@ class ListenerController(ListenLifecycle):
             description="listener:expect-timeout",
         ))
         self._notify_signal(f"expect #{index} timed out after {timeout:g}s")
+
+    def _emit_idle_timeout(self, idle_timeout: float) -> None:
+        """空闲超时: 发一条 notify signal, 告知模型"长时间无语音, 停止聆听".
+
+        source = cell_name (不是 "asr"), complete=True + interrupt=False + mode=notify —
+        只旁路知会, 不打断模型. signal_broadcast 未注入时静默跳过.
+        """
+        if self._signal_broadcast is None:
+            return
+        self._signal_broadcast(new_listener_signal(
+            f"listening stopped — no speech heard for {idle_timeout:g}s",
+            source=self._cell_name or "listener",
+            complete=True,
+            interrupt=False,
+            mode="notify",
+            description="listener:idle-timeout",
+        ))
+        self._notify_signal(f"idle timeout after {idle_timeout:g}s")
 
     # ── 人类强发送 (输入法语义) ──
 

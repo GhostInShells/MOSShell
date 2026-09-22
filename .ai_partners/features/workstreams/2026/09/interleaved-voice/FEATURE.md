@@ -492,3 +492,28 @@ recognizer 内部可接受, 需要时再开接线口。
 
 - **"大模型改写 segment"不做**。
 - "ASR 完成 + 人类手动发送"机制: 有现成实现可参考, 无需从零设计。
+
+## 2026-09-23 后续补: 空闲超时 (idle timeout)
+
+> completed 之后补的决策 —— listener 常驻礼仪缺一个"没人说话就自己停"的上限。
+
+**根因**: `always` 礼仪 `timeout=None` → `_run_etiquette` 走 `await asyncio.Event().wait()`
+永挂。早上 7 点人类去睡觉, 一整天的房间说话数据全部正确进入 always 状态机 —— 从设计上
+"持续聆听"就没有结束条件, 这不是 bug, 是缺了上限。
+
+**决策**: `EtiquetteSpec` 加第 4 层 `idle_timeout: float` (默认 300.0, 对称 TTS 的
+`disconnect_on_idle=300`)。空闲 (无任何 RecognitionEvent) 超过这个秒数 → 发一条
+notify signal (`source=cell_name`, `description="listener:idle-timeout"`, 不打断) +
+结束会话 (清 `_active_etiquette`)。`0 = 常驻不超时`。
+
+**语义边界**:
+- `idle_timeout <= 0` 完全退回旧的常驻/固定总时长语义 —— 不改变 once/keyword_end 等
+  短会话礼仪的行为。
+- 空闲超时是"彻底结束会话", 不是"自动重启" —— 模型收到 signal 后自行决定是否 re-activate。
+- `once` 走 `until_tail` 分支 (有 `timeout` 总时长), 不消费 `idle_timeout`。
+
+**实现**: `controller.py` `_run_etiquette` 现在始终挂活动观察者 (任何识别事件 set
+`activity`), 非 until_tail 分支走 `_wait_for_idle`; `_emit_idle_timeout` 发 notify signal。
+测试 `test_always_idle_timeout_emits_signal_and_ends` /
+`test_always_activity_resets_idle_timeout` 锚定两条契约: 空闲超时发 signal + 结束; 有
+活动则计时重置不超时。
