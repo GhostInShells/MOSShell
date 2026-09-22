@@ -1,125 +1,142 @@
-"""ZenohParameters — matrix 层 point-to-point parameter 实现.
+"""
+ZenohParametersBroadcaster — Parameters 的 zenoh transport.
 
-单声明者, 无仲裁: 每个 cell 一个实例, declare 的 key 由 cell address 命名空间
-隔离, subscribe 按 address 点对点定向.
+与 MemoryParametersBroadcaster 同接口, 把参数 key 组映射到 zenoh key expr
+(prefix 由 ParameterNamespace 派生自 MatrixNamespace.param_ns):
 
-key 结构:  {param_ns}/{address}/{key}
-  - 声明者 declare 时, 挂一个 wildcard queryable ({param_ns}/{自己}/**) 服务初值查询;
-  - set 时 put 到 {param_ns}/{自己}/{key} 推给订阅者;
-  - 订阅者 subscribe 时, query 一次初值 + declare_subscriber 持续收推.
+    {param_ns}/host/truth/{key}          host 广播真值
+    {param_ns}/worker/declaration/{key}  节点发布声明 (声明即 require)
+    {param_ns}/host/liveness/{address}   host 上线令牌 (address 即化身)
+
+key 组 address-free — address 只活在 ParameterData.meta 里, 不参与寻址.
 """
 
-import asyncio
+import contextlib
 from typing import Callable
 
-from ghoshell_moss.contracts.logger import LoggerItf
-from ghoshell_moss.core.blueprint.parameter import ParameterModel
-from ghoshell_moss.core.parameter import AbsParameters
 from ghoshell_moss.depends import depend_matrix
-from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace
 
 depend_matrix()
 
 import zenoh
 
-__all__ = ["ZenohParameters"]
+from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
+from ghoshell_moss.core.blueprint.parameter import ParameterData
+from ghoshell_moss.core.parameter import ParametersBroadcaster
+from ghoshell_moss.matrix.zenoh_helper import MatrixNamespace, ZenohLivenessListener
+
+__all__ = ["ParameterNamespace", "ZenohParametersBroadcaster"]
 
 
-class ZenohParameters(AbsParameters):
+class ParameterNamespace:
+    """parameter 面 key 组 — address-free (见 ParametersBroadcaster).
+
+    只从 MatrixNamespace.param_ns 派生, 不污染 zenoh_helper.
+    """
+
+    def __init__(self, namespace: MatrixNamespace):
+        self._param_ns = namespace.param_ns
+        self.truth_ns = '/'.join([self._param_ns, 'host', 'truth'])
+        self.declaration_ns = '/'.join([self._param_ns, 'worker', 'declaration'])
+        self.liveness_ns = '/'.join([self._param_ns, 'host', 'liveness'])
+
+    def truth_key(self, key: str) -> str:
+        return '/'.join([self.truth_ns, key])
+
+    def declaration_key(self, key: str) -> str:
+        return '/'.join([self.declaration_ns, key])
+
+    def declaration_wildcard(self) -> str:
+        return f"{self.declaration_ns}/**"
+
+    def liveness_key(self, address: str) -> str:
+        return '/'.join([self.liveness_ns, address])
+
+
+class ZenohParametersBroadcaster(ParametersBroadcaster):
 
     def __init__(
             self,
-            zenoh_session: zenoh.Session,
+            session: zenoh.Session,
             namespace: MatrixNamespace,
-            address: str,
             *,
             logger: LoggerItf | None = None,
     ):
-        super().__init__(logger=logger)
-        self._session = zenoh_session
-        self._param_ns = namespace.param_ns
-        self._address = address.strip("/")
-        self._queryable: zenoh.Queryable | None = None
+        self._session = session
+        self._ns = ParameterNamespace(namespace)
+        self._logger = logger or get_moss_logger()
+        self._host_token: zenoh.LivelinessToken | None = None
+        self._liveness_listener: ZenohLivenessListener | None = None
 
-    # -- key expr -------------------------------------------------------
-
-    def _key_expr(self, address: str, key: str) -> str:
-        return "/".join([self._param_ns, address.strip("/"), key])
-
-    def _own_wildcard(self) -> str:
-        return f"{self._param_ns}/{self._address}/**"
-
-    def _extract_key(self, key_expr: str) -> str | None:
-        prefix = f"{self._param_ns}/{self._address}/"
-        if key_expr.startswith(prefix):
-            return key_expr[len(prefix):]
-        return None
-
-    # -- 生命周期 -------------------------------------------------------
+    # -- 生命周期 --------------------------------------------------------
 
     async def __aenter__(self):
-        await super().__aenter__()
-        self._queryable = self._session.declare_queryable(self._own_wildcard(), self._on_query)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._queryable is not None:
-            try:
-                self._queryable.undeclare()
-            except Exception:
-                pass
-            self._queryable = None
-        await super().__aexit__(exc_type, exc_val, exc_tb)
+        if self._host_token is not None:
+            with contextlib.suppress(Exception):
+                self._host_token.undeclare()
+            self._host_token = None
+        if self._liveness_listener is not None:
+            await self._liveness_listener.__aexit__(exc_type, exc_val, exc_tb)
+            self._liveness_listener = None
 
-    # -- transport ------------------------------------------------------
+    # -- 真值通道 --------------------------------------------------------
 
-    def _on_query(self, query: zenoh.Query) -> None:
-        key = self._extract_key(str(query.key_expr))
-        if key is None:
-            return
-        declaration = self._declarations.get(key)
-        if declaration is None:
-            return
-        query.reply(query.key_expr, declaration.value.model_dump_json())
-
-    async def _publish_declaration(self, key: str, parameter: ParameterModel) -> None:
-        key_expr = self._key_expr(self._address, key)
-        self._session.put(key_expr, parameter.model_dump_json())  # put 非阻塞 (zenoh 内部队列)
-
-    async def _subscribe_parameter(
-            self,
-            *,
-            key: str,
-            model,
-            address: str | None,
-            callback: Callable[[ParameterModel], None],
-    ) -> Callable[[], None]:
-        target = (address or self._address).strip("/")
-        key_expr = self._key_expr(target, key)
-
-        def _on_sample(sample: zenoh.Sample) -> None:
-            try:
-                value = model.model_validate_json(sample.payload.to_string())
-                callback(value)
-            except Exception:
-                self._logger.exception("parameter %s push decode failed", key)
-
-        # 先订阅再 query — 避免订阅与查询之间漏掉一次 push.
-        subscriber = self._session.declare_subscriber(key_expr, _on_sample)
-        initial = await asyncio.to_thread(self._query_initial, key_expr, model)
-        if initial is not None:
-            callback(initial)
+    async def subscribe_host_truth(self, key: str, callback: Callable[[ParameterData], None]) -> Callable[[], None]:
+        subscriber = self._session.declare_subscriber(
+            self._ns.truth_key(key), self._decode(callback),
+        )
 
         def dispose() -> None:
-            try:
+            with contextlib.suppress(Exception):
                 subscriber.undeclare()
-            except Exception:
-                pass
 
         return dispose
 
-    def _query_initial(self, key_expr: str, model) -> ParameterModel | None:
-        for reply in self._session.get(key_expr):
-            if reply.ok:
-                return model.model_validate_json(reply.ok.payload.to_string())
-        return None
+    async def publish_host_truth(self, parameter: ParameterData) -> None:
+        self._session.put(self._ns.truth_key(parameter.key), parameter.model_dump_json())
+
+    # -- 声明通道 --------------------------------------------------------
+
+    async def publish_declaration(self, parameter: ParameterData) -> None:
+        self._session.put(self._ns.declaration_key(parameter.key), parameter.model_dump_json())
+
+    async def subscribe_declarations(self, callback: Callable[[ParameterData], None]) -> Callable[[], None]:
+        subscriber = self._session.declare_subscriber(
+            self._ns.declaration_wildcard(), self._decode(callback),
+        )
+
+        def dispose() -> None:
+            with contextlib.suppress(Exception):
+                subscriber.undeclare()
+
+        return dispose
+
+    # -- host 化身 --------------------------------------------------------
+
+    def set_host(self, address: str, epoch: str) -> None:
+        # 存在性靠 liveness token (host 死则自动下线); 化身 = host 地址, 进 key 便于 debug.
+        # epoch == address (见 TruthHostParameters), 故只用 address.
+        self._host_token = self._session.liveliness().declare_token(self._ns.liveness_key(address))
+
+    async def on_host_alive(self, callback: Callable[[str, str], None]) -> None:
+        self._liveness_listener = ZenohLivenessListener(
+            liveness_prefix=self._ns.liveness_ns,
+            session=self._session,
+            logger=self._logger,
+            on_online=lambda address: callback(address, address),
+        )
+        await self._liveness_listener.__aenter__()
+
+    # -- 内部 -----------------------------------------------------------
+
+    def _decode(self, callback: Callable[[ParameterData], None]):
+        def _on_sample(sample: zenoh.Sample) -> None:
+            try:
+                callback(ParameterData.model_validate_json(sample.payload.to_string()))
+            except Exception:
+                self._logger.exception("parameter sample decode failed")
+
+        return _on_sample

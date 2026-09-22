@@ -1,3 +1,6 @@
-from ghoshell_moss.matrix.parameters.zenoh_parameters import ZenohParameters
+from ghoshell_moss.matrix.parameters.zenoh_parameters import (
+    ParameterNamespace,
+    ZenohParametersBroadcaster,
+)
 
-__all__ = ["ZenohParameters"]
+__all__ = ["ParameterNamespace", "ZenohParametersBroadcaster"]
