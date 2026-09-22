@@ -1,5 +1,6 @@
+import contextlib
 import queue
-from typing import Optional
+from typing import Callable, Optional
 
 from ghoshell_moss.depends import depend_host
 
@@ -21,9 +22,9 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
     miniaudio 1.x 使用 generator 模式：PlaybackDevice.start() 接受一个
     callback generator，内部线程通过 gen.send(frame_count) 请求音频帧。
 
-    Player 不依赖 topic 或 transport——它只通过 on_play / on_play_done /
-    observe 回调向外提供数据。装线层 (cell/node) 负责订阅回调、构造 topic、
-    通过 TopicService 发布。
+    Player 不依赖 topic 或 transport——它通过 on_play / on_play_done / observe /
+    on_emit 回调向外提供数据。on_emit 是设备消费时钟上的信号 (帧真正交给设备那一刻),
+    供 AEC far 参考; 其余由装线层 (cell/node) 订阅、构造 topic、发布。
     """
 
     def __init__(
@@ -43,6 +44,22 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         )
         self._device_pattern = device_pattern
         self._playback: Optional[miniaudio.PlaybackDevice] = None
+        self._on_emit_callbacks: list[Callable[[np.ndarray], None]] = []
+
+    def on_emit(self, callback: Callable[[np.ndarray], None]) -> Callable[[], None]:
+        """public-internal: 在帧真正交给设备 (generator yield) 那一刻回调.
+
+        供 AEC far 参考使用 —— 与 ``on_play`` (入队时刻) 不同, 这是设备消费时钟上
+        的信号, 相对出声只有一个设备缓冲的常量偏移. 回调运行在 miniaudio 设备线程,
+        必须非阻塞.
+        """
+        self._on_emit_callbacks.append(callback)
+
+        def _dispose() -> None:
+            with contextlib.suppress(ValueError):
+                self._on_emit_callbacks.remove(callback)
+
+        return _dispose
 
     def _find_device(self):
         """按 ``device_pattern`` (名字子串) 匹配输出设备; 空则用 miniaudio 默认."""
@@ -60,6 +77,17 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
     def _make_generator(self):
         """创建 audio generator，每次 yield 精确 frame_count 的字节。"""
         bytes_per_frame = self.channels * 2  # SIGNED16 = 2 bytes/sample
+        emit_callbacks = self._on_emit_callbacks
+
+        def _emit(data: bytes) -> None:
+            if not emit_callbacks:
+                return
+            arr = np.frombuffer(data, dtype=np.int16).copy()
+            for cb in list(emit_callbacks):
+                try:
+                    cb(arr)
+                except Exception:
+                    self.logger.exception("error in on_emit callback")
 
         def _audio_generator():
             frames_needed = yield b""  # prime
@@ -73,12 +101,15 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
                         break
 
                 if len(self._buf) >= bytes_needed and bytes_needed > 0:
-                    frames_needed = yield self._buf[:bytes_needed]
+                    chunk = self._buf[:bytes_needed]
                     self._buf = self._buf[bytes_needed:]
+                    _emit(chunk)
+                    frames_needed = yield chunk
                 else:
                     missing = max(bytes_needed - len(self._buf), 0)
                     result = self._buf + b"\x00" * missing
                     self._buf = b""
+                    _emit(result)
                     frames_needed = yield result
 
         return _audio_generator()

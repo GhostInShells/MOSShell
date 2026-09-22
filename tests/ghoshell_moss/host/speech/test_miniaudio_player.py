@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from ghoshell_moss.contracts.speech import AudioFormat
-from ghoshell_moss.host.speech.player import VirtualStreamPlayer
+from ghoshell_moss.core.speech.virtual_player import VirtualStreamPlayer
 
 
 def _make_sine(duration: float, sample_rate: int, freq: float = 440.0, amplitude: float = 0.3) -> np.ndarray:

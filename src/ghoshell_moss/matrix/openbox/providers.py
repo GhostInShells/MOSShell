@@ -30,8 +30,9 @@ from ghoshell_moss.project.providers import (
 from ghoshell_moss.resources.memory_registry import InMemoryResourceRegistryProvider
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
 from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
-from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerProvider
-from ghoshell_moss.host.providers.audio_capture_provider import AudioCaptureProvider
+from ghoshell_moss.host.audios.miniaudio_impl.factory import MiniAudioFactoryProvider
+from ghoshell_moss.host.providers.audio_player_provider import MiniAudioPlayerProvider
+from ghoshell_moss.host.providers.audio_capture_provider import MiniAudioCaptureProvider
 from ghoshell_moss.host.providers.audio_asr_provider import AudioASRProvider
 from ghoshell_moss.host.providers.listener_provider import ListenerProvider
 
@@ -49,6 +50,7 @@ __all__ = [
     'llm_funcs_provider',
     'tts_service_provider',
     'speech_service_provider',
+    'miniaudio_factory_provider',
     'player_service_provider',
     'audio_capture_provider',
     'asr_provider',
@@ -94,11 +96,15 @@ tts_service_provider = TTSServiceProvider()
 # speech service
 speech_service_provider = TTSSpeechServiceProvider()
 
+# miniaudio 设备 factory — 播放 + 采集一对 stream, AEC 在此装线.
+# 两个 provider 都向它取 stream; 它不在时才会降级到各自的构造路径.
+miniaudio_factory_provider = MiniAudioFactoryProvider()
+
 # audio player
-player_service_provider = AudioPlayerProvider()
+player_service_provider = MiniAudioPlayerProvider()
 
 # audio capture source
-audio_capture_provider = AudioCaptureProvider()
+audio_capture_provider = MiniAudioCaptureProvider()
 
 # asr (speech recognition)
 asr_provider = AudioASRProvider()

@@ -19,7 +19,7 @@ from ghoshell_moss.contracts.speech import (
     Word,
 )
 from ghoshell_moss.core.speech.stream_tts_speech import TTSSpeechStream
-from ghoshell_moss.host.speech.player import VirtualStreamPlayer
+from ghoshell_moss.core.speech.virtual_player import VirtualStreamPlayer
 
 
 def _pcm(seconds: float, sample_rate: int = 8000) -> np.ndarray:

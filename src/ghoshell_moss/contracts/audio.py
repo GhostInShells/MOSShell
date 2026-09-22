@@ -13,12 +13,9 @@ from pydantic import BaseModel, Field
 from typing import AsyncIterator, NamedTuple
 from typing_extensions import Self
 
-from ghoshell_moss.contracts.configs import ConfigType
-
 __all__ = [
     "AudioFrameMeta",
     "AudioChunk",
-    "AudioCaptureConfig",
     "AudioCaptureSource",
     "AudioPullLatest",
     "AudioSequentialConsumer",
@@ -156,24 +153,6 @@ class AudioChunk(BaseModel):
     meta: AudioFrameMeta = Field(default_factory=AudioFrameMeta)
 
 
-class AudioCaptureConfig(ConfigType):
-    """Format consensus — consumers read this to know stream parameters."""
-
-    DefaultEnvValues = {"MOSS_AUDIO_CAPTURE_DEVICE": ""}
-
-    sample_rate: int = 16000
-    channels: int = 1
-    format: str = "pcm_s16le"
-    frame_duration_ms: int = 50
-    #: 输入设备名子串匹配; 空 = 交给 miniaudio 默认发现. 经 $MOSS_AUDIO_CAPTURE_DEVICE
-    #: 环境变量配置, 未设置时回退 DefaultEnvValues (空).
-    device_pattern: str = "$MOSS_AUDIO_CAPTURE_DEVICE"
-
-    @classmethod
-    def conf_name(cls) -> str:
-        return "audio_capture"
-
-
 class AudioCaptureSource(ABC):
     """Singleton capture source. Owns the microphone, fans PCM out to in-process consumers."""
 
@@ -200,9 +179,9 @@ class AudioCaptureSource(ABC):
 
     @abstractmethod
     def new_sequential_consumer(
-        self,
-        max_queue_frames: int = 128,
-        target_sample_rate: int | None = None,
+            self,
+            max_queue_frames: int = 128,
+            target_sample_rate: int | None = None,
     ) -> "AudioSequentialConsumer":
         """创建有序消费者. ``target_sample_rate`` 非 None 且 != capture 原生率时,
         消费者内部重采样 — 消费格式声明在实例化处, 重采样不再由各消费方手写."""

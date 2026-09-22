@@ -3,6 +3,7 @@
 llms.*
 audio_player.*
 audio_capture.*
+miniaudio_factory.*
 mcp_hub.*
 tts_factory.*
 seed_asr_config.*

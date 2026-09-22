@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
-from ghoshell_moss.contracts.configs import ConfigStore, get_or_create_conf
+from ghoshell_moss.contracts.audio import AudioCaptureSource
+from ghoshell_moss.contracts.configs import ConfigStore
 from ghoshell_moss.contracts.listener import ASRListener
 from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -23,17 +23,17 @@ __all__ = ["assemble_controller", "listener_node", "listener_controller_node"]
 async def assemble_controller(
         matrix: Matrix,
         *,
-        device: Optional[str] = None,
         emit_signals: bool = True,
 ) -> ListenerController:
     """装配 capture + seedasr + controller, 返回 controller (它托管 listener 生命周期).
 
     完成两条输出装线: signal_broadcast 注入 ``matrix.session.add_signal`` (识别事件 →
     listener signal), 以及 clause → ClauseTopic (``with_topic_service``).
+
+    设备选择由 node 自身的 dotenv (``MOSS_AUDIO_CAPTURE_DEVICE``) 在启动前注入,
+    本函数不做任何具体设备加工 —— 全部依赖 IoC 提供.
     """
     con = matrix.container
-    if device is not None:
-        get_or_create_conf(con, AudioCaptureConfig()).device_pattern = device
     listener = con.get(ASRListener)
     if listener is None:
         raise RuntimeError("ASRListener not provided by IoC")
@@ -81,11 +81,10 @@ async def listener_node(
         *,
         mode: str = "always",
         timeout: float = 60.0,
-        device: Optional[str] = None,
         emit_signals: bool = True,
 ) -> None:
     """探测用: 跑一次 once/always 聆听, 不 provide channel. ``mode``: once | always."""
-    controller = await assemble_controller(matrix, device=device, emit_signals=emit_signals)
+    controller = await assemble_controller(matrix, emit_signals=emit_signals)
     if mode == "once":
         await controller.once(timeout=timeout)
     elif mode == "always":
@@ -97,7 +96,6 @@ async def listener_node(
 async def listener_controller_node(
         matrix: Matrix,
         *,
-        device: Optional[str] = None,
         emit_signals: bool = True,
 ) -> None:
     """常驻 listener node: 启动 always 持续聆听, 提供 listener 控制 channel.
@@ -105,6 +103,6 @@ async def listener_controller_node(
     clause → ClauseTopic 与 signal 广播已由 ``assemble_controller`` 装线.
     provide_channel 阻塞到 membrane 关闭 — 这是 node 的唯一入网动作.
     """
-    controller = await assemble_controller(matrix, device=device, emit_signals=emit_signals)
+    controller = await assemble_controller(matrix, emit_signals=emit_signals)
     controller.start_default_etiquette()
     await matrix.provide_channel(controller.as_channel())

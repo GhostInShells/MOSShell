@@ -12,7 +12,7 @@ def make_baseline_tts_speech(
     """
     基线示例.
     """
-    from ghoshell_moss.host.speech.player.miniaudio_player import MiniAudioStreamPlayer
+    from ghoshell_moss.host.audios.miniaudio_impl.miniaudio_player import MiniAudioStreamPlayer
     from ghoshell_moss.host.speech.volcengine_tts.tts import VolcengineTTS
 
     return BaseTTSSpeech(

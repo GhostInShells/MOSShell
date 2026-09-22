@@ -7,6 +7,7 @@ CLI 经 sequential consumer 拉取原始 PCM 切片.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -18,9 +19,9 @@ from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.audio.codec import _fragments, _write_wav
 from ghoshell_moss.cli.audio.render import _render_spectrogram, _report_spectrogram
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
-from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource
-from ghoshell_moss.contracts.configs import get_or_create_conf
+from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.contracts.speech import PlaybackSample
+from ghoshell_moss.core.blueprint.environment_options import ENV_AUDIO_CAPTURE_DEVICE_KEY
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
 
@@ -31,8 +32,10 @@ def capture(
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Capture device name pattern (empty for default)."),
 ) -> None:
     """Capture audio for N seconds, show waveform, optionally save to WAV."""
+    if device is not None:
+        os.environ[ENV_AUDIO_CAPTURE_DEVICE_KEY] = device
     matrix = Matrix.new("audio_capture", category="cli")
-    result = matrix.run(lambda m: _async_capture(m, seconds=seconds, save=save, device=device))
+    result = matrix.run(lambda m: _async_capture(m, seconds=seconds, save=save))
     if result is None:
         return
     pcm, rate, total, interrupted = result
@@ -43,13 +46,9 @@ def capture(
     _report_capture_spectrogram(pcm, rate, total)
 
 
-async def _async_capture(matrix, *, seconds: float, save: Optional[Path], device: Optional[str]):
+async def _async_capture(matrix, *, seconds: float, save: Optional[Path]):
     """Capture audio from the default input device."""
     con = matrix.container
-
-    if device is not None:
-        conf = get_or_create_conf(con, AudioCaptureConfig())
-        conf.device_pattern = device
 
     capture_source = con.get(AudioCaptureSource)
     if capture_source is None:

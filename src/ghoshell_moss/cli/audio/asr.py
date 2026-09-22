@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,8 +23,8 @@ from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.audio.codec import _write_wav
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
 from ghoshell_moss.contracts.asr import ASR, RecognitionPhase
-from ghoshell_moss.contracts.audio import AudioCaptureConfig, AudioCaptureSource, AudioChunk, resample
-from ghoshell_moss.contracts.configs import get_or_create_conf
+from ghoshell_moss.contracts.audio import AudioCaptureSource, AudioChunk, resample
+from ghoshell_moss.core.blueprint.environment_options import ENV_AUDIO_CAPTURE_DEVICE_KEY
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
 
@@ -35,8 +36,10 @@ def asr_cmd(
     json_mode: bool = typer.Option(False, "--json", help="Output RecognitionEvent records as JSON lines."),
 ) -> None:
     """Capture audio and stream through ASR — live transcript with cloud VAD clause boundaries."""
+    if device is not None:
+        os.environ[ENV_AUDIO_CAPTURE_DEVICE_KEY] = device
     matrix = Matrix.new("audio_asr", category="cli")
-    result = matrix.run(lambda m: _async_asr(m, timeout=timeout, save=save, device=device, json_mode=json_mode))
+    result = matrix.run(lambda m: _async_asr(m, timeout=timeout, save=save, json_mode=json_mode))
     if result is None:
         return
     total_duration, clause_count, interrupted = result
@@ -46,10 +49,8 @@ def asr_cmd(
         print_success(f"session done: {total_duration:.1f}s, {clause_count} clauses")
 
 
-async def _async_asr(matrix, *, timeout: float, save: Optional[Path], device: Optional[str], json_mode: bool):
+async def _async_asr(matrix, *, timeout: float, save: Optional[Path], json_mode: bool):
     con = matrix.container
-    if device is not None:
-        get_or_create_conf(con, AudioCaptureConfig()).device_pattern = device
 
     asr = con.get(ASR)
     if asr is None:

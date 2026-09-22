@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from ghoshell_moss.cli.audio import audio_app
 from ghoshell_moss.cli.utils import echo, is_ai_mode, print_error, print_info, print_success, print_warning
 from ghoshell_moss.contracts.asr import RecognitionPhase, RecognitionEvent
 from ghoshell_moss.contracts.audio import AudioCaptureSource
+from ghoshell_moss.core.blueprint.environment_options import ENV_AUDIO_CAPTURE_DEVICE_KEY
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.host.listener.controller import ListenerController
 from ghoshell_moss.host.nodes.listener_node import assemble_controller
@@ -49,12 +51,13 @@ def listen_cmd(
         print_error(f"unknown listen mode '{listen_mode}' — choose from {', '.join(_MODES)}")
         raise typer.Exit(code=2)
 
+    if device is not None:
+        os.environ[ENV_AUDIO_CAPTURE_DEVICE_KEY] = device
     matrix = Matrix.new("audio_listen", category="cli")
     result = matrix.run(lambda m: _async_listen(
         m,
         listen_mode=listen_mode,
         timeout=timeout,
-        device=device,
         emit_signals=emit_signals,
         json_mode=json_mode,
     ))
@@ -228,9 +231,9 @@ _RUNNERS = {
 # ── dispatcher ──
 
 
-async def _async_listen(matrix, *, listen_mode: str, timeout: float, device: Optional[str],
+async def _async_listen(matrix, *, listen_mode: str, timeout: float,
                         emit_signals: bool, json_mode: bool):
-    controller = await assemble_controller(matrix, device=device, emit_signals=emit_signals)
+    controller = await assemble_controller(matrix, emit_signals=emit_signals)
     capture = matrix.container.get(AudioCaptureSource)
     if capture is None:
         print_error("AudioCaptureSource not registered")

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Optional
 
@@ -18,6 +19,7 @@ from ghoshell_moss.cli.audio.codec import _fragments
 from ghoshell_moss.cli.audio.render import _render_from_queue
 from ghoshell_moss.cli.utils import is_ai_mode, print_error, print_success, print_warning
 from ghoshell_moss.contracts.speech import AudioFormat, StreamAudioPlayer
+from ghoshell_moss.core.blueprint.environment_options import ENV_AUDIO_CAPTURE_DEVICE_KEY
 from ghoshell_moss.core.blueprint.matrix import Matrix
 
 
@@ -27,8 +29,10 @@ def echo_cmd(
     device: Optional[str] = typer.Option(None, "--device", "-d", help="Capture device name pattern (empty for default)."),
 ) -> None:
     """Capture audio then play it back immediately with real-time spectrum."""
+    if device is not None:
+        os.environ[ENV_AUDIO_CAPTURE_DEVICE_KEY] = device
     matrix = Matrix.new("audio_echo", category="cli")
-    result = matrix.run(lambda m: _async_echo(m, seconds=seconds, device=device))
+    result = matrix.run(lambda m: _async_echo(m, seconds=seconds))
     if result is None:
         return
     total, interrupted = result
@@ -38,9 +42,9 @@ def echo_cmd(
         print_success(f"echo finished: {total:.2f}s")
 
 
-async def _async_echo(matrix, *, seconds: float, device: Optional[str]):
+async def _async_echo(matrix, *, seconds: float):
     """Capture audio then play back through StreamAudioPlayer."""
-    cap_result = await _async_capture(matrix, seconds=seconds, save=None, device=device)
+    cap_result = await _async_capture(matrix, seconds=seconds, save=None)
     if cap_result is None:
         return None
     pcm, rate, cap_total, interrupted = cap_result

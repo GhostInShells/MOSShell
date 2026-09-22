@@ -21,9 +21,9 @@ import janus
 import miniaudio
 import numpy as np
 
+from .configs import CaptureConfig
 from ghoshell_moss.contracts.audio import (
     AcousticEchoCanceller,
-    AudioCaptureConfig,
     AudioCaptureSource,
     AudioChunk,
     AudioFrameMeta,
@@ -81,7 +81,7 @@ class MiniAudioCaptureSource(AudioCaptureSource):
     def __init__(
             self,
             *,
-            config: AudioCaptureConfig,
+            config: CaptureConfig,
             workspace: Workspace,
             logger: LoggerItf | None = None,
     ):

@@ -12,16 +12,14 @@
 # 默认值可被 workspace configs/ 下的 YAML 覆盖。
 
 from ghoshell_moss.contracts.llms import LLMConfig
-from ghoshell_moss.contracts.audio import AudioCaptureConfig
-from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerConfig
+from ghoshell_moss.host.audios.miniaudio_impl.configs import MiniAudioFactoryConfig
 from ghoshell_moss.host.providers.tts_service_provider import TTSManagerConfig
 from ghoshell_moss.mcp.config import MCPHubConfig
 
 __all__ = [
     'llm_config',
     'tts_config',
-    'audio_player_config',
-    'audio_capture_config',
+    'miniaudio_factory_config',
     'mcp_hub_config',
 ]
 
@@ -31,11 +29,9 @@ llm_config = LLMConfig()
 # TTS 语音合成 (conf: tts_factory)
 tts_config = TTSManagerConfig()
 
-# audio player (conf: audio_player)
-audio_player_config = AudioPlayerConfig()
-
-# audio capture (conf: audio_capture)
-audio_capture_config = AudioCaptureConfig()
+# miniaudio 音频设备 (conf: miniaudio_factory) — 播放/采集是同一个 factory 的一对 stream,
+# 共享设备几何 (采样率等), 不再各自声明配置.
+miniaudio_factory_config = MiniAudioFactoryConfig()
 
 # MCP hub (conf: mcp_hub)
 mcp_hub_config = MCPHubConfig()

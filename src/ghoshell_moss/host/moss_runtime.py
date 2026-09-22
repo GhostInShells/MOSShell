@@ -9,8 +9,6 @@ wire-up 契约 (§ZZ):
 - main channel 从 mode.manifests().channel() 单 Manifest 拿; 无声明用 new_shell_main_channel 兜底.
 - static slot 在 shell 起来后接 ctml_shell.static_messages callable (dynamic leaf).
 """
-from typing import Callable
-
 from typing_extensions import Self
 
 from pathlib import Path
@@ -34,10 +32,8 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
 from ghoshell_moss.contracts.audio import (
     AUDIO_SAMPLE_INTERVAL,
-    AudioCaptureSource,
     LatestAudioWindow,
     compute_spectrum,
-    resample,
 )
 from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
 from ghoshell_moss.contracts.listener import ASRListener, ListenLifecycle
@@ -655,62 +651,26 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 pass
             await publisher.__aexit__(None, None, None)
 
-    def _wire_aec_far(self) -> Callable[[], None]:
-        """AEC far 桥: player.on_play → capture.set_aec 的 echo 参考 (near 在 capture 内).
-
-        仅当 speech 是 TTSSpeech (有 player 产 far) 时激活. AEC 采样率取 capture 原生率
-        (near 免重采样), far (player) 重采样到 AEC 率 + 归一化 [-1,1]. 返回 cleanup
-        (unmount AEC + dispose on_play 摘除 far 回调).
-        """
-        speech = self._speech
-        if not isinstance(speech, TTSSpeech):
-            return lambda: None
-        from ghoshell_moss.host.listener.capture.webrtc_aec import PyWebrtcEchoCanceller
-
-        capture = self._matrix.container.get(AudioCaptureSource)
-        aec = PyWebrtcEchoCanceller(sample_rate=capture.sample_rate, stream_delay_ms=0)
-        capture.set_aec(aec)
-
-        player = speech.player()
-        play_rate = player.sample_rate
-        aec_rate = aec.sample_rate
-
-        def _on_play(frame: np.ndarray) -> None:
-            arr = np.asarray(frame).ravel()
-            if play_rate != aec_rate:
-                arr = resample(arr.astype(np.int16), origin_rate=play_rate, target_rate=aec_rate)
-            aec.push_far(arr.astype(np.float32) / 32768.0)
-
-        dispose_on_play = player.on_play(_on_play)
-
-        def _cleanup() -> None:
-            capture.set_aec(None)
-            dispose_on_play()
-
-        return _cleanup
-
     @contextlib.asynccontextmanager
     async def _listen_lifecycle(self):
-        """听侧治理: enter ListenerController (启动 capture+asr) + wire AEC far 桥 + clause topic.
+        """听侧治理: enter ListenerController (启动 capture+asr) + clause topic.
 
-        仅当 listener resolve 成功 (controller 非 None) 时激活. AEC far 桥在 controller
-        之前 wire, 保证 capture 启动的首帧就已消回声. clause topic 装线在 controller
-        生命周期内, 识别到的 CLAUSE 广播成 ClauseTopic(role=user), 与说侧桥的
+        仅当 listener resolve 成功 (controller 非 None) 时激活. clause topic 装线在
+        controller 生命周期内, 识别到的 CLAUSE 广播成 ClauseTopic(role=user), 与说侧桥的
         role=ghost 汇成同一条交错对话轨迹.
+
+        AEC 不在这里装: 它属于音频设备层 —— miniaudio factory 在产出这一对 stream 时
+        就装好了 (见 host/audios/miniaudio_impl/factory.py), 比 controller 启动更早.
         """
         controller = self._listen_controller
         if controller is None:
             yield
             return
-        aec_cleanup = self._wire_aec_far()
-        try:
-            async with controller:
-                await controller.with_topic_service(self._matrix.session.topics)
-                # 启动即听: 默认礼仪常驻, 而不是停在 stop 状态等模型/人类手动 activate.
-                controller.start_default_etiquette()
-                yield
-        finally:
-            aec_cleanup()
+        async with controller:
+            await controller.with_topic_service(self._matrix.session.topics)
+            # 启动即听: 默认礼仪常驻, 而不是停在 stop 状态等模型/人类手动 activate.
+            controller.start_default_etiquette()
+            yield
 
     async def __aenter__(self) -> Self:
         if self._started:

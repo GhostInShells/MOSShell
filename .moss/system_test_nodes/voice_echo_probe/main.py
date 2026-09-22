@@ -17,10 +17,9 @@
 
 用法:
 
-    moss --mode system_test nodes run .moss/system_test_nodes/voice_echo_probe/ -- \\
-        <device_pattern> "要说的一句话"
+    moss --mode system_test nodes run .moss/system_test_nodes/voice_echo_probe/ -- "要说的一句话"
 
-两个参数都可省: 缺 device 走项目默认设备, 缺句子用内置测试句.
+句子可省, 缺省用内置测试句. 设备选择走 node 自身的 dotenv (MOSS_AUDIO_CAPTURE_DEVICE).
 """
 
 import asyncio
@@ -46,12 +45,10 @@ _OBSERVE_SECONDS = 8.0
 _DEFAULT_SENTENCE = "你好，这是一句测试。听一听，耳朵能不能听见我自己说话。"
 
 
-def _parse_argv() -> tuple[Optional[str], str]:
-    """``-- <device_pattern> "<sentence>"`` — 两者都可省."""
+def _parse_argv() -> str:
+    """``-- "<sentence>"`` — 可省, 缺省用内置测试句."""
     args = sys.argv[1:]
-    device = args[0] if len(args) > 0 and args[0] else None
-    sentence = args[1] if len(args) > 1 and args[1] else _DEFAULT_SENTENCE
-    return device, sentence
+    return args[0] if len(args) > 0 and args[0] else _DEFAULT_SENTENCE
 
 
 class _SayClock:
@@ -78,12 +75,12 @@ async def _wait_listening(controller, timeout: float) -> bool:
 
 
 async def main(matrix: Matrix):
-    device, sentence = _parse_argv()
+    sentence = _parse_argv()
     clock = _SayClock()
     log = matrix.logger
 
-    print(f"[boot] listener: assembling (capture + asr, device={device or '<default>'}) ...", flush=True)
-    controller = await assemble_controller(matrix, device=device, emit_signals=False)
+    print("[boot] listener: assembling (capture + asr) ...", flush=True)
+    controller = await assemble_controller(matrix, emit_signals=False)
 
     speech = matrix.container.get(Speech)
     if not isinstance(speech, TTSSpeech):

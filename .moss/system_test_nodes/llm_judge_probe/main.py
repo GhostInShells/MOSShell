@@ -6,13 +6,14 @@ per-segment 块打印: clause / llm 打分 (score + cast + token) / commit 机�
 验证智能判停在真实 ASR + LLM 下的判停时机: 长论述不该在句中误 commit, 停顿后应正常
 commit (由 judge 提前, 而非 segment_vad 兜底).
 
-用法 (可选设备名作为 argv, 缺省走项目默认设备):
+设备选择走 node 自身的 dotenv (``MOSS_AUDIO_CAPTURE_DEVICE``), 不做 argv 加工.
 
-    moss nodes run .moss/system_test_nodes/llm_judge_probe/ -- <device_pattern>
+用法:
+
+    moss nodes run .moss/system_test_nodes/llm_judge_probe/
 """
 
 import asyncio
-import sys
 import time
 
 from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase
@@ -37,8 +38,7 @@ def _fmt_score(obs: StopScoreObservation) -> str:
 
 
 async def main(matrix: Matrix):
-    device = sys.argv[1] if len(sys.argv) > 1 else None
-    controller = await assemble_controller(matrix, device=device, emit_signals=False)
+    controller = await assemble_controller(matrix, emit_signals=False)
     if not isinstance(controller, ModelListenerController):
         matrix.logger.error("[llm_judge_probe] LLMFuncs not available — llm_judge disabled")
         return

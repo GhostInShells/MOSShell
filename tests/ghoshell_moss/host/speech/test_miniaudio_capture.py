@@ -12,14 +12,14 @@ import pytest
 
 from ghoshell_moss.contracts.audio import (
     AcousticEchoCanceller,
-    AudioCaptureConfig,
     AudioCaptureSource,
     AudioChunk,
     AudioPullLatest,
     AudioSequentialConsumer,
 )
 from ghoshell_moss.contracts.workspace import Workspace
-from ghoshell_moss.host.listener.capture.miniaudio_capture import MiniAudioCaptureSource
+from ghoshell_moss.host.audios.miniaudio_impl.configs import CaptureConfig
+from ghoshell_moss.host.audios.miniaudio_impl.miniaudio_capture import MiniAudioCaptureSource
 
 
 # -- helpers --
@@ -32,7 +32,7 @@ def _make_workspace() -> Workspace:
 def _make_source(**config_kwargs) -> MiniAudioCaptureSource:
     return MiniAudioCaptureSource(
         workspace=_make_workspace(),
-        config=AudioCaptureConfig(**config_kwargs),
+        config=CaptureConfig(**config_kwargs),
     )
 
 
