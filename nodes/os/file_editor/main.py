@@ -68,7 +68,7 @@ async def main(matrix: Matrix) -> None:
     surface = FileEditorSurface(
         store,
         send_signal=matrix.send_signal_to_ghost,
-        self_identity=matrix.this.unique_name,
+        self_identity=matrix.this.address,
         on_toggle=lambda enabled: setattr(gate, "enabled", enabled),
         host=HOST,
         port=resolve_port(),

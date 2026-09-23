@@ -30,7 +30,7 @@ from ghoshell_moss.project.providers import (
 from ghoshell_moss.resources.memory_registry import InMemoryResourceRegistryProvider
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
 from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
-from ghoshell_moss.host.audios.miniaudio_impl.factory import MiniAudioFactoryProvider
+from ghoshell_moss.host.providers.audio_factory_provider import MiniAudioFactoryProvider
 from ghoshell_moss.host.providers.audio_player_provider import MiniAudioPlayerProvider
 from ghoshell_moss.host.providers.audio_capture_provider import MiniAudioCaptureProvider
 from ghoshell_moss.host.providers.audio_asr_provider import AudioASRProvider

@@ -17,6 +17,8 @@ Cell 运行时, 通过映射进入 Matrix 网络, Cell 之间的通讯可以通�
 """
 import contextlib
 import os
+import secrets
+import string
 import sys
 import time
 from enum import IntEnum
@@ -32,7 +34,6 @@ from pydantic import BaseModel, Field, AwareDatetime
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelProxy
 from ghoshell_moss.contracts.subprocesses import CaptureSpec, ManagedProcess
-from ghoshell_moss.message import unique_id
 from .environment import Environment
 import datetime
 import dateutil
@@ -113,6 +114,7 @@ class CellEventLevel(IntEnum):
         """Whether this level produces a ghost signal (below the INFO threshold it does not)."""
         return cls.resolve(level) >= cls.INFO
 
+
 CellProtocol = Literal['channel']
 """
 A MOSS duplex protocol a cell provides. Closed set — each value maps to a Provider/Proxy
@@ -122,7 +124,7 @@ and appending the value here; it is not a free string.
 
 CellAddress = str
 """
-The cell's unique network address: CellRole / unique_name / uid
+The cell's unique network address: CellRole / name / uid
 """
 
 ProjectRelativePath = str
@@ -140,6 +142,17 @@ keeps the original value.
 """
 
 
+def short_uid() -> str:
+    """Generate a 6-char short random uid — the address uniqueness source.
+
+    First char a letter, the rest letter/digit (no underscore), satisfying
+    ``ChannelNamePattern`` so the uid is safe as a channel path segment.
+    """
+    return secrets.choice(string.ascii_lowercase) + ''.join(
+        secrets.choice(string.ascii_lowercase + string.digits) for _ in range(5)
+    )
+
+
 class Cell(BaseModel):
     """
     The declaration of a **running** node in the Matrix network — a room in the building
@@ -153,8 +166,8 @@ class Cell(BaseModel):
         pattern=CellNamePattern,
     )
     uid: str = Field(
-        default_factory=unique_id,
-        description="cell uid",
+        default_factory=short_uid,
+        description="Short random uid — the address uniqueness source.",
     )
     singleton: bool = Field(
         default=False,
@@ -241,7 +254,8 @@ class ExecSpec(BaseModel):
     command: Literal['python'] | str = Field(
         default='python',
         description="When non-empty, argv[0] of the launch command. "
-                    "Should be a path relative to cwd.",
+                    "A bare 'python' resolves to the spawner's own interpreter "
+                    "(sys.executable); any other value is a path relative to cwd.",
     )
     args: str = Field(
         default='main.py',
@@ -255,7 +269,8 @@ class ExecSpec(BaseModel):
         default=None,
         description="Process timeout in seconds. Currently consumed only by the NodeManifest.check "
                     "probe: on timeout it is judged broken and its process group is terminated. "
-                    "None = unlimited. (Not consumed by the main exec path yet.)",
+                    "None = the system default probe ceiling — a probe never waits without bound. "
+                    "(Not consumed by the main exec path yet.)",
     )
 
     @property
@@ -648,9 +663,11 @@ class NodeLauncher:
             cls,
             env: Environment,
             manifest: NodeManifest,
+            *,
+            uid: str | None = None,
     ) -> 'NodeLauncher':
         """Prepare the launch of a node cell."""
-        cell = build_cell_from_node(env, manifest)
+        cell = build_cell_from_node(env, manifest, uid=uid)
         cwd = manifest.cwd
         # pid/pgid 留 0, 由 spawner 起进程后回填.
         runtime_info = CellRuntimeInfo(address=cell.address, cell=cell)
@@ -866,15 +883,16 @@ class CellAddressCodec:
 def build_cell_from_node(
         env: Environment,
         manifest: 'NodeManifest',
+        *,
+        uid: str | None = None,
 ) -> 'Cell':
     """
     Build a Cell instance from a Node declaration.
     :param env: the environment carrier.
     :param manifest: this cell's NodeManifest.
+    :param uid: the cell uid; a short random one is generated when None.
     """
-    # node uid 每次 spawn 独立生成, 保证 address 全局唯一.
-    # 不用 env.run_id: 同一父进程连续 spawn 多个 node 时 run_id 相同会撞.
-    uid = unique_id()
+    uid = uid or short_uid()
     cell_name = manifest.name
     if manifest.file:
         # 以发现 node 声明文件的位置作为 cell 的 workspace.
@@ -1206,7 +1224,7 @@ class CellNetwork(ABC):
     @abstractmethod
     def on_channel_provided(
             self,
-            callback:Callable[[CellAddress, ChannelProxy], None],
+            callback: Callable[[CellAddress, ChannelProxy], None],
     ) -> Callable[[], None]:
         """
         新 channel 上线通知. 返回 disposer

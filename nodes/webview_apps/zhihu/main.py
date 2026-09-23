@@ -60,7 +60,7 @@ async def main(matrix: Matrix) -> None:
         cli,
         signaler=matrix.send_signal_to_ghost,
         broadcast=surface.broadcast,
-        identity=matrix.this.unique_name,
+        identity=matrix.this.address,
     )
 
     await surface.start()

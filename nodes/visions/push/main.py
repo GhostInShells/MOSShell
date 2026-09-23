@@ -56,7 +56,7 @@ async def main(matrix: Matrix) -> None:
         store,
         accept_all,
         send_signal=matrix.send_signal_to_ghost,
-        self_identity=matrix.this.unique_name,
+        self_identity=matrix.this.address,
         host=HOST,
         port=resolve_port(),
         html_path=_INDEX_HTML,

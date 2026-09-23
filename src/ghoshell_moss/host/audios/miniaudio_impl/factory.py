@@ -15,17 +15,15 @@ from ghoshell_moss.depends import depend_host
 depend_host()
 
 from ghoshell_common.contracts import LoggerItf
-from ghoshell_container import IoCContainer, Provider
 
 from ghoshell_moss.contracts.audio import resample
-from ghoshell_moss.contracts.configs import ConfigStore
 from ghoshell_moss.contracts.workspace import Workspace
 
 from .configs import MiniAudioFactoryConfig
 from .miniaudio_capture import MiniAudioCaptureSource
 from .miniaudio_player import MiniAudioStreamPlayer
 
-__all__ = ["MiniAudioFactory", "MiniAudioFactoryProvider"]
+__all__ = ["MiniAudioFactory"]
 
 
 class MiniAudioFactory:
@@ -112,21 +110,3 @@ class MiniAudioFactory:
             aec.push_far(arr.astype(np.float32) / 32768.0)
 
         self._dispose_far = self._player.on_emit(_on_emit)
-
-
-class MiniAudioFactoryProvider(Provider[MiniAudioFactory]):
-
-    def singleton(self) -> bool:
-        return True
-
-    def contract(self) -> type[MiniAudioFactory]:
-        return MiniAudioFactory
-
-    def factory(self, con: IoCContainer) -> MiniAudioFactory:
-        store = con.force_fetch(ConfigStore)
-        conf = store.get_or_create(MiniAudioFactoryConfig())
-        workspace = con.force_fetch(Workspace)
-        logger = con.force_fetch(LoggerItf)
-        factory = MiniAudioFactory(config=conf, workspace=workspace, logger=logger)
-        con.add_shutdown(factory.shutdown)
-        return factory

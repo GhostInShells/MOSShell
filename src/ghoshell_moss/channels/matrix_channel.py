@@ -35,6 +35,7 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 from collections import deque
 from datetime import datetime, timezone
@@ -263,7 +264,8 @@ def new_nodes_channel(
             if not p.is_absolute():
                 p = matrix.project.root.abspath_of(p)
             scan_paths = [p]
-        found = nodes_mgr.list_nodes(
+        found = await asyncio.to_thread(
+            nodes_mgr.list_nodes,
             refresh=refresh, paths=scan_paths, installed=installed,
         )
 
@@ -304,7 +306,7 @@ def new_nodes_channel(
             CommandUtil.raise_observe(
                 "target required. Use list() to discover paths."
             )
-        manifest = matrix.project.nodes.get_node(target)
+        manifest = await asyncio.to_thread(matrix.project.nodes.get_node, target)
         if manifest is None:
             CommandUtil.raise_observe(
                 f"node {target!r} not found. list() shows available paths."
@@ -464,6 +466,24 @@ def new_nodes_channel(
             return f'[{label}] {stream} empty.'
         return f'[{label}] {stream} tail:\n{body.rstrip()}'
 
+    # -- startup: prime the catalog off the loop ----------------------
+
+    @chan.build.startup
+    async def _warm_node_catalog() -> None:
+        # 同步 notice 回调不得做 IO (见 channel.py on_refresh_meta 契约): nodes_notices
+        # 走 list_nodes(refresh=False), 而缓存未填时那一次全目录扫描会落在 event loop
+        # 线程上. 在这里先扫掉 — 之后 refresh=False 只命中缓存拷贝 (NodeManager._cache
+        # 一旦填上不会再被写回 None).
+        try:
+            await asyncio.to_thread(
+                matrix.project.nodes.list_nodes, refresh=False, installed=True,
+            )
+        except Exception:
+            # 预热是性能防御, 扫描失败不该拖垮 channel 启动.
+            logger = CommandUtil.logger()
+            if logger is not None:
+                logger.exception('nodes channel: node catalog warm-up failed')
+
     # -- notice (named fragments) -------------------------------------
 
     @chan.build.named_notices
@@ -493,9 +513,9 @@ def new_nodes_channel(
                 [f'{len(recent)} recently exited:'] + [_fmt_notice_dead(h) for h in recent]
             )
 
-        # refresh=False: never rescan the filesystem here (cache fills on first call,
-        # list(refresh=True) refreshes). A bare count keeps the catalog out of the warm
-        # band — descriptions and paths are what list() is for.
+        # refresh=False: reads the cache primed at startup; this path must never be the
+        # one that scans. A bare count keeps the catalog out of the warm band —
+        # descriptions and paths are what list() is for.
         found = matrix.project.nodes.list_nodes(refresh=False, installed=True)
         if found:
             out['installed'] = str(len(found))

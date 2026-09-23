@@ -15,6 +15,7 @@ is warm; nothing rides the hot context band.
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -71,6 +72,18 @@ class _NodesCatalog:
 
     def spawned_nodes(self):
         return {}
+
+
+class _RecordingCatalog(_NodesCatalog):
+    """Records (refresh, thread) per call — the channel must not scan on the loop."""
+
+    def __init__(self, nodes=None):
+        super().__init__(nodes)
+        self.calls: list[tuple[bool, str]] = []
+
+    def list_nodes(self, refresh=False, paths=None, installed=None):
+        self.calls.append((refresh, threading.current_thread().name))
+        return super().list_nodes(refresh=refresh, paths=paths, installed=installed)
 
 
 class _StubMatrix:
@@ -197,6 +210,27 @@ async def test_nodes_installed_is_count_only():
         warm = "\n".join(meta.named_notices.values())
         assert "desc " not in warm
         assert "nodes/n0" not in warm
+
+
+@pytest.mark.asyncio
+async def test_nodes_catalog_is_warmed_off_loop_at_startup():
+    """The warm band reads the catalog synchronously, so the scan must not land there.
+
+    Every read on the notice path has to be a cached, instant one — the first
+    filesystem scan is pulled forward to startup and runs off the event loop.
+    """
+    matrix = _StubMatrix()
+    matrix.project.nodes = catalog = _RecordingCatalog()
+    chan = new_nodes_channel(matrix)
+    async with chan.bootstrap() as runtime:
+        assert catalog.calls, "startup must prime the catalog"
+        assert catalog.calls[0][1] != threading.current_thread().name, (
+            "the scan ran on the event loop thread — the notice path would have blocked it"
+        )
+        await runtime.refresh_metas()
+        assert all(not refresh for refresh, _ in catalog.calls), (
+            "only startup may scan; the notice path reads the cache"
+        )
 
 
 # ---- mesh: the event tail is warm state, capped ---- #

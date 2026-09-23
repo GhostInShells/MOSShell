@@ -28,6 +28,14 @@ __all__ = ['ProjectNodeManager']
 _KILL_GRACE_SECONDS = 3.0
 """SIGTERM → wait → SIGKILL 的宽限窗口, kill/prune 共用."""
 
+_DEFAULT_PROBE_TIMEOUT = 30.0
+"""NODE.md 未声明 ``check.timeout`` 时的兜底上限.
+
+探针是 spawn 咽喉上唯一必须 await 的启动闸门: 它挂死就钉住整条 bringup 链路.
+声明了 ``check`` 却忘了写 ``timeout`` 不等于承诺无限期等待 — 需要更慢的探针在
+NODE.md 里抬高 ``check.timeout``.
+"""
+
 
 class ProjectNodeManager(NodeManager):
     """扫描指定目录集合, 生成 project-relative 路径到 NodeManifest 的字典视图."""
@@ -233,6 +241,9 @@ class ProjectNodeManager(NodeManager):
                 f"node {manifest.name!r} not installed. See {install_path} for install steps."
             )
         launcher = NodeLauncher.from_manifest(self._env, manifest)
+        while launcher.runtime.address in self._address_to_alias:
+            # 6 位 uid 撞上已活 cell 的 address (概率极低), 重新生成.
+            launcher = NodeLauncher.from_manifest(self._env, manifest)
         if extra_args:
             launcher.run.extend(extra_args)
 
@@ -315,7 +326,8 @@ class ProjectNodeManager(NodeManager):
         不发明 ready 状态机, 不加 CellRuntimeInfo 字段 (§ FEATURE node-lifecycle probe).
 
         check.timeout 声明超时: 探针在限时内不退出即判 broken 并终止其进程组, 避免
-        挂死探针钉住 bringup task / 泄漏子进程.
+        挂死探针钉住 bringup task / 泄漏子进程. 未声明时走 _DEFAULT_PROBE_TIMEOUT —
+        探针永远有界, 忘了写 timeout 不等于放弃防御.
         """
         check = manifest.check
         if check is None:
@@ -335,16 +347,15 @@ class ProjectNodeManager(NodeManager):
             with_os_env=False,
             capture=CaptureSpec(buffer_lines=200),
         )
-        if check.timeout is not None:
-            try:
-                meta = await asyncio.wait_for(
-                    self._await_exit(managed), timeout=check.timeout,
-                )
-            except asyncio.TimeoutError:
-                self._terminate_probe(managed)
-                return f'probe timed out after {check.timeout}s'
-        else:
-            meta = await self._await_exit(managed)
+        timeout = check.timeout if check.timeout is not None else _DEFAULT_PROBE_TIMEOUT
+        try:
+            meta = await asyncio.wait_for(
+                self._await_exit(managed), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            self._terminate_probe(managed)
+            ceiling = '' if check.timeout is not None else ' (default ceiling)'
+            return f'probe timed out after {timeout}s{ceiling}'
         if meta.exit_code == 0:
             return None
         stderr = stdout = ''

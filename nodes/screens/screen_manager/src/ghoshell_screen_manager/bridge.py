@@ -34,17 +34,8 @@ FrameSink = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def _item_id(address: str) -> str:
-    """A stable, unique handle for a mesh address.
-
-    Prefer the cell's short form (``name_uid[-6:]``) when the address is a strict
-    ``role/name/uid``; fall back to a safe normalization for anything else. The
-    mesh never guarantees the strict form on the wire, only that an address is
-    unique.
-    """
-    try:
-        return CellAddressCodec(address).short
-    except ValueError:
-        return CellAddressCodec.normalize(address)
+    """A stable, unique handle for a mesh address."""
+    return CellAddressCodec.normalize(address)
 
 
 class WebViewBridge:
