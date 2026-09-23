@@ -186,12 +186,69 @@ async def test_muted_say_is_refused_with_not_available():
         assert "mute(on=false)" in str(exc.value)
 
 
+class _ToggleSpeech(_FakeTTSSpeech):
+    """可切换运行状态的 speech, 用来验证可用性是持续谓词而非启动时的一次性分叉."""
+
+    def __init__(self, tts: TTS):
+        super().__init__(tts)
+        self.running = True
+
+    def is_running(self) -> bool:
+        return self.running
+
+
+def _new_bound_runtime(module: SpeechChannelModule, speech: Speech):
+    main = new_shell_main_channel()
+    main.with_module(module)
+    main.build.with_binding(Speech, speech)
+    return main
+
+
 @pytest.mark.asyncio
 async def test_module_without_speech_wires_nothing():
-    """无 speech (不注入、容器无 Speech) → 模块不装线, 不挂 say/mute."""
+    """无 speech (不注入、容器无 Speech) → 模块整个从表面下架: 命令、名字、notice 都不露."""
     main = new_shell_main_channel()
     main.with_module(SpeechChannelModule())
     async with main.bootstrap() as runtime:
-        names = {cmd.name for cmd in runtime.self_meta().commands}
-        assert "say" not in names
-        assert "mute" not in names
+        meta = runtime.self_meta()
+        assert {cmd.name for cmd in meta.commands} == set()
+        assert meta.modules == []
+        assert meta.named_notices == {}
+
+
+@pytest.mark.asyncio
+async def test_module_unavailable_is_also_uncallable():
+    """表面下架必须等于调用路径下架 — 否则模型看不见却调得到, 比看得见调不到更坏."""
+    speech = _ToggleSpeech(_FakeTTS())
+    runtime_channel = _new_bound_runtime(SpeechChannelModule(), speech)
+    async with runtime_channel.bootstrap() as runtime:
+        assert runtime.get_command("say") is not None
+
+        speech.running = False
+        await runtime.refresh_metas()
+
+        assert runtime.get_command("say") is None
+        assert runtime.get_command("mute") is None
+
+
+@pytest.mark.asyncio
+async def test_module_availability_is_continuous_not_a_startup_fork():
+    """语音停了, say/mute 连同 name/notice 一起下架; 回来了自动恢复."""
+    speech = _ToggleSpeech(_FakeTTS())
+    runtime_channel = _new_bound_runtime(SpeechChannelModule(), speech)
+    async with runtime_channel.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices["mute"] == "off"
+
+        speech.running = False
+        await runtime.refresh_metas()
+        meta = runtime.self_meta()
+        assert meta.modules == []
+        assert meta.named_notices == {}
+        assert {cmd.name for cmd in meta.commands} == set()
+
+        speech.running = True
+        await runtime.refresh_metas()
+        meta = runtime.self_meta()
+        assert meta.modules == ["speech"]
+        assert meta.named_notices["mute"] == "off"
+        assert "say" in {cmd.name for cmd in meta.commands}

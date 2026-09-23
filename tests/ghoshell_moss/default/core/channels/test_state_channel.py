@@ -4,8 +4,9 @@ import pytest
 
 from ghoshell_moss.core.blueprint.states_channel import (
     new_channel_state, new_channel_from_state, new_prime_channel,
-    new_stateful_channel,
+    new_stateful_channel, ChannelModule,
 )
+from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.message import Message
@@ -1150,3 +1151,51 @@ async def test_gate_off_registers_no_mount_commands():
         names = set(runtime.own_commands().keys())
         assert "mount_child" not in names
         assert "unmount_child" not in names
+
+
+@pytest.mark.asyncio
+async def test_unavailable_module_still_runs_its_lifecycle():
+    """is_available() 闸的是表面, 不是生命周期 — 否则"可用性由 startup 建立"的 module 永久不可用.
+
+    runtime 若因不可用而跳过 on_startup, 这个 module 的 ready 永远是 False, 死锁.
+    """
+    chan = PyChannel(name="main")
+
+    class Lazy(ChannelModule):
+        def __init__(self) -> None:
+            self.ready = False
+
+        def name(self) -> str:
+            return "lazy"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        def is_available(self) -> bool:
+            return self.ready
+
+        async def on_startup(self) -> None:
+            self.ready = True
+
+    mod = Lazy()
+    chan.with_module(mod)
+    async with chan.bootstrap() as runtime:
+        assert mod.ready is True
+        assert runtime.self_meta().modules == ["lazy"]
+
+
+@pytest.mark.asyncio
+async def test_module_without_is_available_is_always_wired():
+    """module 是结构子类型: 未声明 is_available() 的实现 (MacroStoreModule 等) 视为恒装线."""
+    chan = PyChannel(name="main")
+
+    class Bare:
+        def name(self) -> str:
+            return "bare"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+    chan.with_module(Bare())
+    async with chan.bootstrap() as runtime:
+        assert runtime.self_meta().modules == ["bare"]

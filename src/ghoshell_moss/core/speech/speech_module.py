@@ -201,8 +201,8 @@ class SpeechChannelModule(ChannelModule):
     """TTS speech capability module.
 
     Speech 来源二选一: 构造时显式传入 ``speech`` 实例, 或 startup 时从 IoC container
-    递归取. 两者都拿不到 (或拿到但未 ``is_running``) 时模块不装线 — 不挂 say/mute,
-    无副作用.
+    递归取. 两者都拿不到 (或拿到但未 ``is_running``) 时 ``is_available()`` 为 False,
+    模块整体从表面下架 — 不挂 say/mute, 也不报 mute notice.
     """
 
     def __init__(self, *, register_content_command: bool = False, speech: Speech | None = None):
@@ -217,6 +217,15 @@ class SpeechChannelModule(ChannelModule):
     def own_commands(self) -> dict[str, Command]:
         return self._own_commands
 
+    def is_available(self) -> bool:
+        """Speech 已 resolve 且正在运行.
+
+        命令 / notice / meta 以此为准 — 判定只写在这里, 由 on_startup 与
+        get_named_notices 调用, 不各自重抄条件. 语音中途停掉时模块自动下架,
+        恢复则自动回来.
+        """
+        return self._speech is not None and self._speech.is_running()
+
     async def get_named_notices(self) -> dict[str, str | None]:
         """此刻的状态 — 命令表面写契约, 状态由这里随 meta 刷新下发.
 
@@ -225,6 +234,8 @@ class SpeechChannelModule(ChannelModule):
         模型收到 ``<voice removed/>`` 墓碑, 不会残留上一次的音色. 两者只报状态, 不重复
         schema / tone 目录 (那些在命令文档里).
         """
+        if not self.is_available():
+            return {}
         result = {
             "mute": (
                 "on — speech is off: say/content will be refused until mute(on=false)"
@@ -232,7 +243,7 @@ class SpeechChannelModule(ChannelModule):
                 else "off"
             ),
         }
-        if isinstance(self._speech, TTSSpeech) and self._speech.is_running():
+        if isinstance(self._speech, TTSSpeech):
             tts = self._speech.tts()
             result["voice"] = f"Current voice: {json.dumps(tts.get_voice(), ensure_ascii=False)}"
             result["tone"] = f"Current tone: `{tts.current_tone()}`"
@@ -249,7 +260,7 @@ class SpeechChannelModule(ChannelModule):
     async def on_startup(self) -> None:
         if self._speech is None and CommandUtil.enabled():
             self._speech = CommandUtil.get_contract(Speech)
-        if self._speech is None or not self._speech.is_running():
+        if not self.is_available():
             self._own_commands = {}
             return
         factory = _SpeechCommandFactory(self._speech, is_muted=lambda: self._muted)

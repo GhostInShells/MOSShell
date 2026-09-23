@@ -56,6 +56,23 @@ class ChannelModule(Protocol):
 
     def own_commands(self) -> dict[str, Command]: ...
 
+    def is_available(self) -> bool:
+        """Whether this module is wired into the channel right now.
+
+        Sync by contract — the channel's structure refresh path reads it, so a module
+        whose availability needs an async probe caches the result in on_refresh_meta()
+        and returns it here.
+
+        Unlike the lifecycle hooks, False does not prevent on_startup / on_close /
+        on_refresh_meta — those always run, so this predicate may depend on state they
+        set up. It gates the module's *surface*: its commands, notices, context messages,
+        and whether its name appears in the channel meta. A module that is unavailable
+        is invisible and uncallable, but still alive.
+
+        Duck-typed modules that declare nothing are treated as always wired.
+        """
+        return True
+
     async def on_startup(self) -> None:
         # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
         pass

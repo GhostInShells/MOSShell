@@ -9,7 +9,7 @@ status: completed
 status_note: 2026-09-16 ClauseTopic 装线两侧落地 (说侧 moss_runtime / 听侧 controller.with_topic_service);
   收尾 D14 播放文本记账下沉 stream + say 表面/状态分离. 收口 completed.
 title: Speech Governance — 解耦、多后端、容错降级
-updated: '2026-09-16'
+updated: '2026-09-23'
 ---
 
 # Speech Governance
@@ -583,6 +583,56 @@ audio frame 上, 而打断时 `samples[-1]` 是**最后播出的那一帧**（�
 
 **未决**: mute 是否该随 session 结束自动复位（现在跨 turn 持久, 靠 notice 提醒）; 是否要
 "N 轮后自动解除"的保险。
+
+### D16: ChannelModule 补 available 轴 — `is_available()` (P2) — 2026-09-23
+
+**动机**: 裸起一个绑了 `SpeechChannelModule` 的主 channel（无 speech、容器也无 `Speech`）时,
+命令侧是干净的（say/mute 都不挂）, 但表面不干净:
+
+| 面 | 实测 |
+|----|------|
+| `meta.modules` | `['speech']` — 没装线却露名字 |
+| `named_notices` | `{"mute": "off"}` — 报了状态, 却没有对应命令 |
+| `meta.dynamic` | `True` — 空 module 让通道永不静态缓存（见下文: 这行有意不修） |
+根因不是"少个判断", 是**同一条件写在两处**: 命令闸在 `on_startup`（`speech_module.py:252`）,
+状态闸在 `get_named_notices`（`speech_module.py:228`）。D14 / D15 两轮优化各补了一侧,
+改这处漏那处 —— "这个模块此刻成不成立"隐式躺在其中一边, 抽象面上看不见。
+
+**决策**: `ChannelModule` Protocol 加 sync `is_available()`, 与 `ChannelState.is_available()`
+同名同形。**同步是关键**: `is_dynamic()` 是 sync 结构刷新路径, 直接读它即可, 不需要新造
+async 评估 + 缓存那一套。runtime 以它为唯一闸门过滤 `meta.modules` / `own_commands` /
+`get_command` / notice / named_notices / context messages —— 表面下架必须等于调用路径下架,
+否则模型看不见却调得到, 比看得见调不到更坏。
+
+**生命周期不在这条轴上**: `on_startup` / `on_close` / `on_refresh_meta` 仍遍历**全部** module,
+对齐 state（`_get_current_state()` 也只是把不可用 state 从 meta 剔掉, 不阻止其生命周期）。
+这是硬约束而非风格: `_speech` 是 `on_startup` 从 IoC resolve 出来的, 若闸住 startup,
+`_speech` 永远是 None → 永远不可用, 死锁。
+
+speech 侧谓词一句 `_speech is not None and _speech.is_running()`, 作为唯一真相源,
+`on_startup` 与 `get_named_notices` 都**调用**它而不再各自重抄条件。收益: 可用性成了持续谓词
+而非启动时的一次性分叉 —— 语音中途挂掉, say/mute 连同 notice 自动下架, 回来则恢复。
+
+**`meta.dynamic` 上表那行不修**: 它仍按注册的 module 数判定。改成按 `is_available()` 会让
+模块下架时整个 meta 被判为静态而进 `_static_meta_cache`, 之后恢复也读不回来（实现时先写成
+按 available 判定, 恢复路径当场测挂）。"注册即 dynamic" 正是让可用性保持活的代价。
+
+**与 D15 的边界**: D15 否决的是用**命令 meta 的 available** 做 mute 闸（每次切换重发全量界面）。
+这里是 **module 级**可用轴, 谓词是"speech 是否在跑"这类稀疏事件, 翻转时界面本就该变。
+
+**否决 `bootstrap(container) -> Self | None` 装线分叉**: `ChannelState` ABC 上已有
+`bootstrap(container) -> None`（`concepts/channel.py:367`）, 而 `states_channel.py:53` 明说
+PyChannelBuilder 与任意 ChannelState 自动满足 module Protocol —— `None = 不绑` 会把
+state-as-module 用**静默丢掉**（不报错, 能力凭空消失）; 救它要改 ABC 返回契约 + 所有 state 实现,
+远不止 py_channel。且一次性分叉表达不了上面那种"中途挂掉自动下架"。
+
+**变更文件**: `core/blueprint/states_channel.py`（Protocol + 默认体）、
+`core/py_channel.py`（`_available_modules()` + 7 个消费点）、`core/speech/speech_module.py`、
+测试 `tests/ghoshell_moss/channels/test_speech_module.py` 与
+`tests/ghoshell_moss/default/core/channels/test_state_channel.py`。
+
+**归属**: 契约是内核级（ChannelModule Protocol）, 但内核迭代通常不单开 feature —— 除 mindflow
+那类巨型重构外都是如此。故按触发场景归此, 契约沉淀在 Protocol docstring 上, 决策轨迹靠 `git log`。
 
 ## Implementation Plan
 

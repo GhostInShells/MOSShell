@@ -751,6 +751,20 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 virtual_channels[name] = child
         return virtual_channels
 
+    def _available_modules(self) -> dict[str, ChannelModule]:
+        """装线中的永久能力模块 — 命令 / notice / context / meta 的唯一取用口。
+
+        module 是结构子类型, 未声明 is_available 的实现 (MacroStoreModule 等) 视为恒装线。
+        on_startup / on_close / on_refresh_meta 不走这里: 可用性闸的是表面, 不是生命周期,
+        否则"可用性由 startup 决定"的 module 永远不可用。
+        """
+        available = {}
+        for name, module in self._modules.items():
+            is_available = getattr(module, 'is_available', None)
+            if is_available is None or is_available():
+                available[name] = module
+        return available
+
     def is_dynamic(self) -> bool:
         states = self._dynamic_states
         if len(states) > 0:
@@ -760,6 +774,8 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             return True
         if len(self._modules) > 0:
             # module 是永久能力单元, 其 notice/named_notices/context 可随时变.
+            # 按注册而非 is_available() 判断: 可用性是活的谓词, 认它会让模块下架时
+            # meta 被判为静态而缓存, 之后恢复也读不回来.
             return True
         return self._main_state.is_dynamic()
 
@@ -806,7 +822,7 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 description=description,
                 states=states_data,
                 current_state=self._current_state_name or '',
-                modules=list(self._modules.keys()),
+                modules=list(self._available_modules().keys()),
                 context=new_context_messages,
                 instruction=instruction,
                 notice=notice_text,
@@ -832,10 +848,9 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
 
     async def _get_context_messages(self) -> list[Message]:
         funcs = [self._main_state.get_context_messages()]
-        if len(self._modules) > 0:
-            for module in self._modules.values():
-                if hasattr(module, 'get_context_messages'):
-                    funcs.append(module.get_context_messages())
+        for module in self._available_modules().values():
+            if hasattr(module, 'get_context_messages'):
+                funcs.append(module.get_context_messages())
         # TODO: 考虑用 XML tag 包裹每个 module 的 context messages，
         # 避免自由合并产生的割裂感（模型不知道哪些内容来自哪个模块）。
         if current_state := self._get_current_state():
@@ -851,10 +866,9 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
 
     async def _get_notice(self) -> str:
         funcs = [self._main_state.get_notice()]
-        if len(self._modules) > 0:
-            for module in self._modules.values():
-                if hasattr(module, 'get_notice'):
-                    funcs.append(module.get_notice())
+        for module in self._available_modules().values():
+            if hasattr(module, 'get_notice'):
+                funcs.append(module.get_notice())
         if current_state := self._get_current_state():
             funcs.append(current_state.get_notice())
         parts = []
@@ -879,7 +893,7 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         sources = [
             ("main state", self._main_state.get_named_notices()),
         ]
-        for module in self._modules.values():
+        for module in self._available_modules().values():
             if hasattr(module, 'get_named_notices'):
                 sources.append(("module %r" % module.name(), module.get_named_notices()))
         if current_state := self._get_current_state():
@@ -957,11 +971,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 commands[self._unmount_child_command.name()] = self._unmount_child_command
 
         # modules — 永久能力模块，累积叠加。main_state 的命令优先。
-        if len(self._modules) > 0:
-            for module in self._modules.values():
-                for name, command in module.own_commands().items():
-                    if name not in commands:
-                        commands[name] = command
+        for module in self._available_modules().values():
+            for name, command in module.own_commands().items():
+                if name not in commands:
+                    commands[name] = command
 
         if self._current_state is not None:
             for name, command in self._current_state.own_commands().items():
@@ -1012,11 +1025,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         command = self._main_state.get_own_command(name)
         if command is not None:
             return command
-        if len(self._modules) > 0:
-            for module in self._modules.values():
-                cmd = module.own_commands().get(name)
-                if cmd is not None:
-                    return cmd
+        for module in self._available_modules().values():
+            cmd = module.own_commands().get(name)
+            if cmd is not None:
+                return cmd
         if self._current_state is None:
             return None
         return self._current_state.get_own_command(name)
