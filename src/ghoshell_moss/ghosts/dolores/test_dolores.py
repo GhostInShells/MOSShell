@@ -1150,11 +1150,16 @@ class FakeArticulator:
         self.sent: list[str] = []
         self.interpret_error: Exception | None = None
         self._log = log
+        # 生命周期痕迹: 展开是否发生, 是回归测试的核心判据 (见 test_ctml_append_opens_lifecycle).
+        self.entered = 0
+        self.exited = 0
 
     async def __aenter__(self):
+        self.entered += 1
         return self
 
     async def __aexit__(self, *args):
+        self.exited += 1
         return None
 
     async def send(self, delta: str):
@@ -1199,12 +1204,14 @@ class FakeDispatchEgo(FakeRunEgo):
     def __init__(self, session=None, *, raise_on_rpc: Exception | None = None):
         super().__init__(session)
         self.rpc_calls: list[tuple] = []
+        self.rpc_turns: list = []
         self.raise_on_rpc = raise_on_rpc
 
-    async def rpc_tool_result(self, call_id, result, moment=None, cancel=False):
+    async def rpc_tool_result(self, call_id, result, moment=None, cancel=False, turn=None):
         if self.raise_on_rpc is not None:
             raise self.raise_on_rpc
         self.rpc_calls.append((call_id, result, moment, cancel))
+        self.rpc_turns.append(turn)
 
     def moment_context_parts(self, moment, moment_id):
         return [{"type": "text", "text": f"moment:{moment_id}"}]
@@ -1637,6 +1644,25 @@ class TestDoloresRun:
         assert ego.rpc_calls == [("call_ctml", "ok", None, False)]
 
     @pytest.mark.asyncio
+    async def test_dispatch_tool_result_carries_the_call_turn(self):
+        """结果协议带上 tool 被调用时的 turn —— 插件据此把"早到结果"绑到正确的轮次, 并按轮清理.
+
+        插件侧 /tool-result 可能先于 dsh 派发该 tool 的 execute 到达 (MOSS 走 mux 事件流更快);
+        结果里的 turn 让插件在 execute 尚未注册时也能按轮归属, 而不是悬空.
+        """
+        from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
+
+        from ._tools import ToolCallResult
+
+        ego = FakeDispatchEgo()
+        run = self._run(ego=ego)
+        call = ToolCallEvent(callId="call_turn", turn=7)
+        result = ToolCallResult(call=call, result="ok")
+        await run._dispatch_tool_result(result)
+        assert ego.rpc_calls == [("call_turn", "ok", None, False)]
+        assert ego.rpc_turns == [7]
+
+    @pytest.mark.asyncio
     async def test_wait_next_moment_result_carries_cancel(self):
         """wait_next_moment 用结果协议里的 cancel flag 收线 — 不是 final answer, 也不用 abort."""
         from ._run import DoloresRun
@@ -1741,6 +1767,59 @@ class TestDoloresRun:
 
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
         assert ego.rpc_calls == [("c1", "compiled", None, False)]
+
+    @pytest.mark.asyncio
+    async def test_ctml_append_opens_and_closes_the_articulator_lifecycle(self):
+        """回归: ctml_append 必须展开 articulator 的 async-with 生命周期 (__aenter__/__aexit__ 各一次).
+
+        旧实现在 send + wait_compiled 后直接 return ToolCallResult, 从不退出边界 —— articulator 停在
+        _commit 之后, 收尾永不发生, 插件侧于是把 pending tool 判成 settled, 结果回执被丢弃
+        ("tool-result RPC dropped ... already settled plugin-side")。本用例锁住"边界被展开"。
+        """
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._ctml_delta("c1", name="moss_ctml_append", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", arguments_delta='hi</say>"}', seq=2))
+            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
+            await session.emit(self._turn_end(seq=4))
+            async for _ in run.logos():
+                pass
+
+        art = thinking.articulators[0]
+        assert art.entered == 1, "articulator 必须被展开一次"
+        assert art.exited == 1, "articulator 必须被收尾一次"
+        assert "".join(art.sent) == "<say>hi</say>"
+
+    @pytest.mark.asyncio
+    async def test_react_opens_and_closes_the_articulator_lifecycle(self):
+        """回归: moss_react 同样必须展开生命周期 —— 它曾从 ctml_append 复制了裸 send + wait_compiled 的形状."""
+        from ._react import React, ReactStore
+
+        class _ReactEgo(FakeDispatchEgo):
+            def __init__(self, session):
+                super().__init__(session)
+                self.react_store = ReactStore()
+                self.react_store.define([React(char="x", template="<say>%s</say>")])
+
+        session = FakeRunSession()
+        ego = _ReactEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._tool_call_event(
+                "moss_react", '{"char":"x","args":["hi"],"wait_next_moment":false}', "c2", seq=1,
+            ))
+            await session.emit(self._turn_end(seq=2))
+            async for _ in run.logos():
+                pass
+
+        art = thinking.articulators[0]
+        assert art.entered == 1, "articulator 必须被展开一次"
+        assert art.exited == 1, "articulator 必须被收尾一次"
+        assert "".join(art.sent) == "<say>hi</say>"
 
     @pytest.mark.asyncio
     async def test_ctml_stream_parse_error_returns_cancel(self):

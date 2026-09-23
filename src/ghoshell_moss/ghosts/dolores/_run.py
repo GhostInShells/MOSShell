@@ -71,17 +71,62 @@ class _StreamedCtml:
     sent straight to the call's articulator, so the model's output reaches the shell while it is still
     being generated. ``stream.value`` is the exact prefix decoded so far — the handler reconciles
     against the parsed ``tool/call`` argument to cover a shape-mismatch / whole-argument fallback.
+
+    Lifecycle: this object OWNS the articulator's async-with boundary, exactly as the older
+    ``_CtmlParser`` did. ``__aenter__`` opens it when the stream is created; ``__aexit__`` flushes the
+    decoded tail, waits for the actions to finish, and closes the articulator. The boundary is the
+    data — a stream region begins when the first delta arrives and ends when it is closed — never a
+    bare ``send`` + ``wait_compiled`` pair, which leaves ``__aexit__`` (commit + settle) unreached.
     """
 
     def __init__(self, call_id: str, articulator) -> None:
         self.call_id = call_id
         self.stream = CtmlArgumentStream()
         self.articulator = articulator
+        self._entered = False
+        self._closed = False
+
+    async def __aenter__(self) -> Self:
+        if not self._entered:
+            self._entered = True
+            await self.articulator.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._closed:
+            return None
+        self._closed = True
+        if self._entered:
+            await self.articulator.__aexit__(exc_type, exc_val, exc_tb)
 
     async def feed(self, delta: str | None) -> None:
+        if not self._entered:
+            await self.__aenter__()
         text = self.stream.add(delta)
         if text:
             await self.articulator.send(text)
+
+    async def finish(self, tail: str = "", wait_action_done: bool = False) -> None:
+        """Close the region: flush any decoded tail, then exit the articulator boundary.
+
+        ``tail`` carries the reconciliation remainder (``call.ctml`` beyond the decoded prefix) for a
+        whole-argument / shape-mismatch call that streamed nothing. ``wait_action_done`` waits for the
+        physical actions to finish before closing (the say-then-done shape).
+
+        :raise InterpretError: the CTML failed to compile. ``__aexit__`` settles but does not raise it,
+        so the check is re-run here — ``wait_compiled`` is safe to call after the boundary (commit and
+        approve are both idempotent) and is what surfaces the interpret error.
+        """
+        if tail:
+            # ``tail`` is already-decoded CTML (the reconciliation remainder of call.ctml), so it goes
+            # straight to the articulator — it is NOT a raw argumentsDelta and must not re-enter add().
+            if not self._entered:
+                await self.__aenter__()
+            await self.articulator.send(tail)
+        if wait_action_done:
+            await self.articulator.wait_action_done()
+        await self.__aexit__(None, None, None)
+        await self.articulator.wait_compiled(raise_interpret_error=True)
 
 
 class DoloresRun:
@@ -199,29 +244,29 @@ class DoloresRun:
             call: CtmlAppendToolCall,
             streams: dict[str, _StreamedCtml],
     ) -> ToolCallResult:
-        """ctml_append handler — the CTML already streamed into its own articulator; wait for compile.
+        """ctml_append handler — the CTML already streamed into its own articulator; close it.
 
-        ``wait_compiled(raise_interpret_error=True)`` turns an InterpretError into a one-line "ctml
-        syntax error" result + cancel: continuing on a broken output is pointless, and the detail
-        arrives in the next round's echoes. The stream's decoded prefix is reconciled against the
-        parsed argument — a shape-mismatch or whole-argument call streamed nothing, so the missing
-        tail is sent here as one shot.
+        The stream owns the articulator's async-with boundary (see ``_StreamedCtml``); this handler
+        only flushes the reconciliation tail and exits the boundary. The exit itself commits and waits
+        for compile — and an InterpretError surfaces from the commit, so the syntax error is caught here
+        rather than by a bare ``wait_compiled``. Continuing on a broken output is pointless; the detail
+        arrives in the next round's echoes.
         """
         stream = streams.pop(call.tool_call_event.callId, None)
         if stream is None:
             stream = _StreamedCtml(call.tool_call_event.callId, self._thinking.articulator())
         if stream.stream.failed:
             # the arguments stream was corrupt (a malformed escape) — nothing to trust, cut the turn.
+            await stream.__aexit__(None, None, None)
             return ToolCallResult(
                 call=call.tool_call_event,
                 result="ctml parse error",
                 cancel=True,
             )
         decoded = stream.stream.value
-        if decoded != call.ctml:
-            await stream.articulator.send(call.ctml[len(decoded):])
+        tail = call.ctml[len(decoded):]
         try:
-            await stream.articulator.wait_compiled(raise_interpret_error=True)
+            await stream.finish(tail=tail)
         except InterpretError:
             return ToolCallResult(
                 call=call.tool_call_event,
@@ -328,10 +373,11 @@ class DoloresRun:
                 call=call.tool_call_event,
                 result=f"react arg error: {error}",
             )
-        articulator = self._thinking.articulator()
-        await articulator.send(ctml)
+        # one whole shot (not streamed deltas, unlike ctml_append) — but the same owns-the-boundary
+        # shape: enter, send, optionally wait for the actions, then exit.
+        stream = _StreamedCtml(call.tool_call_event.callId, self._thinking.articulator())
         try:
-            await articulator.wait_compiled(raise_interpret_error=True)
+            await stream.finish(tail=ctml, wait_action_done=call.wait_next_moment)
         except InterpretError:
             return ToolCallResult(
                 call=call.tool_call_event,
@@ -339,7 +385,6 @@ class DoloresRun:
                 cancel=True,
             )
         if call.wait_next_moment:
-            await self._thinking.wait_actions_done()
             return ToolCallResult(call=call.tool_call_event, result=ctml, cancel=True)
         return ToolCallResult(call=call.tool_call_event, result=ctml)
 
@@ -375,6 +420,7 @@ class DoloresRun:
         try:
             await self._ego.rpc_tool_result(
                 result.call.callId, result.result, moment_parts, cancel=result.cancel,
+                turn=result.call.turn,
             )
         except Exception:
             _logger.warning(

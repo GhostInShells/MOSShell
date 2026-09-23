@@ -242,6 +242,13 @@ const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject
  * abort 时 reject 并登记墓碑, 使随后迟到的 /tool-result 被安静吞掉.
  */
 function awaitToolResult(toolName: string, callId: string, signal: AbortSignal): Promise<JsonValue> {
+  // 早到结果: 结果先于本 execute 到达 (见 earlyResults) — 直接兑现, 不进 pending.
+  // cancel 绑定到本 turn (activeTurn = 当前正在跑的 turn, 与 pending 路径同源).
+  const early = takeEarlyResult(callId)
+  if (early !== undefined) {
+    if (early.cancel && activeTurn !== null) cancelTurn = activeTurn
+    return Promise.resolve(early.result) as Promise<JsonValue>
+  }
   return new Promise<unknown>((resolve, reject) => {
     pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject, turn: activeTurn })
     signal.addEventListener('abort', () => {
@@ -298,6 +305,46 @@ function settlePendingCallsOnExit(): number {
     })
   }
   return entries.length
+}
+
+/**
+ * 早到结果暂存 — 结果先于 tool execute 到达时的落点 (不建依赖).
+ *
+ * 时序契约: tool 的 execute 与 MOSS 侧的结果 RPC 是两个方向. MOSS 走 mux 事件流, 可能在 dsh 派发
+ * tool execute (那一刻才 pendingCalls.set) 之前就把结果 POST 回来 — ctml_append 尤其如此: 它的
+ * CTML 经 tool-call-delta 流式执行, 模型还没出完 say 就已经跑完并回结果, 结果常常早于注册几毫秒
+ * 到几十毫秒. 没有这个暂存, 早到结果会撞上"号不存在" → 400 → MOSS 侧丢弃 → tool 永远等不到 →
+ * 整轮卡死 (runtime 观测到的 "moss_ctml_append aborted" 就是这么来的, 间歇性, 看谁先到).
+ *
+ * 不建依赖: handler 收到早到结果**不阻塞、不等** execute 何时派发, 就地存下 (带它被调用那一轮的
+ * turn, 由 MOSS 侧随结果带回); execute 注册前先查这里, 命中即兑现. 早到 ≠ 错号.
+ *
+ * per turn 清理安全: 一条早到结果只属于它被调用那一轮 (turn 一致), 新 turn 的 pre-step 到来即丢弃
+ * 上一轮的残留 — 不会误伤本轮; TTL 兜底极端情况.
+ */
+const earlyResults = new Map<string, { result: unknown; cancel: boolean; turn: number | null; at: number }>()
+
+/** 早到结果 TTL — 超过即视为 dsh 永不会派发对应 execute, 丢弃 (兜底, 非功能路径). */
+const EARLY_RESULT_TTL_MS = 60_000
+
+/** 取走并清掉一条早到结果 (execute 侧调用); 顺带做 TTL 清扫. */
+function takeEarlyResult(callId: string): { result: unknown; cancel: boolean; turn: number | null } | undefined {
+  const now = Date.now()
+  for (const [id, early] of earlyResults) {
+    if (now - early.at > EARLY_RESULT_TTL_MS) earlyResults.delete(id)
+  }
+  const early = earlyResults.get(callId)
+  if (early === undefined) return undefined
+  earlyResults.delete(callId)
+  return { result: early.result, cancel: early.cancel, turn: early.turn }
+}
+
+/** per-turn 清扫: 丢弃不属于当前 turn 的早到结果 (它们只属于自己那一轮, 已无 execute 会来取). */
+function pruneEarlyResults(turn: number | null): void {
+  if (turn === null) return
+  for (const [id, early] of earlyResults) {
+    if (early.turn !== null && early.turn !== turn) earlyResults.delete(id)
+  }
 }
 
 /** moment 的 wire content 段 — text 直传, image 为 base64 (dsh EncodedImageAttachment 形状). */
@@ -585,6 +632,8 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     // cancel_turn: 本 turn 的某个 tool 结果已带 cancel (wait_next_moment / react), 直接 cut.
     // 这个 turn/end (aborted) 就是 MOSS 侧 thinking 退出的信号 — MOSS 自己不主动 cancel.
     activeTurn = turn
+    // per-turn 清理: 上一轮残留的早到结果 (没有 execute 会再来取) 丢弃. 本轮结果 turn 一致, 不受影响.
+    pruneEarlyResults(turn)
     if (cancelTurn !== null && cancelTurn === turn) {
       cancelTurn = null
       stepAgent.cancel({ kind: 'hook', reason: 'moss cancel_turn' })
@@ -592,6 +641,16 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     }
     await thinkingGate.wait(undefined, signal)
     const decision = await next()
+    // cancel_turn (after next): 本步内跑完的 tool 可能刚设了 flag —— 正是 wait_next_moment / react
+    // 的形状: tool result 本身就是这一轮的结束. 上面的 pre-next 检查只能看到「进入本步前就欠着」
+    // 的 flag; 而 tool 在 next() 内返回时设的 flag 不会被消费, 因为 wait_next_moment 之后没有
+    // 下一个 pre-step —— turn 卡住, MOSS 侧 wait_actions_done 永不返回, thinking 永不退出.
+    // 这里 tool result 已落地, 再查一次.
+    if (cancelTurn !== null && cancelTurn === turn) {
+      cancelTurn = null
+      stepAgent.cancel({ kind: 'hook', reason: 'moss cancel_turn' })
+      return { kind: 'reject' }
+    }
     if (decision.kind === 'reject') return decision
     // perStep 挂载点: 把 enter 缓冲的 moment (epoch + context) 插到本步历史最前.
     if (pendingMoments.length > 0) {
@@ -960,7 +1019,26 @@ export function apply(ctx: Context) {
             res.end(JSON.stringify({ ok: true, dropped: 'already settled' }))
             return
           }
-          throw new Error(`no pending tool call for ${callId}`)
+          // 早到路径: 号还没注册 (dsh 尚未派发该 tool 的 execute). 不阻塞、不等 — 就地暂存结果
+          // (带 MOSS 侧随话带回的 turn), 由 execute 自取. 见 earlyResults 的注释.
+          if (Array.isArray(body.moment) && body.moment.length > 0 && doloresEgoSessionId !== null) {
+            // moment 仍立即注入 (agent 已存在), 与正常路径"先 inject 后 resolve"同序.
+            const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+            const blocks = await durableMomentContent(ctx, body.moment as MomentContentPart[])
+            agent.inject(createUserMessage({
+              content: blocks,
+              source: { kind: 'plugin', plugin: `${name}:moment` },
+            }))
+          }
+          earlyResults.set(callId, {
+            result: body.result,
+            cancel: body.cancel === true,
+            turn: typeof body.turn === 'number' ? body.turn : null,
+            at: Date.now(),
+          })
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, buffered: 'early' }))
+          return
         }
         if (doloresEgoSessionId === null) {
           throw new Error('no ego session — call ego/create first')
