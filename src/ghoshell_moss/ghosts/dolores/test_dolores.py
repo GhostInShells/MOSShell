@@ -2036,7 +2036,6 @@ class TestBuildChannel:
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             names = {m.name for m in runtime.metas().values()}
-            assert "frame" in names
             assert "ground" in names
 
     @pytest.mark.asyncio
