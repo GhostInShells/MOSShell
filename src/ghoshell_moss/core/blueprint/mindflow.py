@@ -953,8 +953,15 @@ class Action(AttentionStatement, ABC):
         ...
 
     @abstractmethod
-    async def wait_compiled(self):
-        """等待到 compiled. """
+    def set_interpret_error(self, error: Exception) -> None:
+        ...
+
+    @abstractmethod
+    async def wait_compiled(self, raise_interpret_error: bool = False) -> None:
+        """
+        等待到 compiled.
+        :raise InterpreterError: if compile failed on interpret error
+        """
         ...
 
     @abstractmethod

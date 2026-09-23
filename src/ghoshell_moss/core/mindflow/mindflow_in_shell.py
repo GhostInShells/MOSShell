@@ -402,6 +402,7 @@ class MindflowInShell(ABC):
                     # thinking 自然走到下一帧, 模型才能在下一轮 Moment 看到错误并自我纠正.
                     # 若在此 abort_thinking, 会抢在 close() 的 add_echoes(need_observe=True)
                     # 之前唤醒帧循环 — need_observe() 在 check 时刻仍是 False, 错误帧丢失.
+                    action.set_interpret_error(err)
                     self._on_mindflow_error(err)
                     return
                 except StatementExitedException:

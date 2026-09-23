@@ -11,7 +11,7 @@ from ghoshell_moss.core import NucleusMeta
 from ghoshell_moss.core.blueprint.host import IGhostRuntime, MOSShellRuntime, LoopHealth, LoopStatus, SafeMode
 from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
-from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
+from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostEvent
 from ghoshell_moss.core.blueprint.mindflow import (
     Mindflow, Thinking, Signal
 )
@@ -404,6 +404,13 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         if self._moss_runtime.session.is_running():
             self._moss_runtime.session.pub_logos(delta)
 
+    async def _on_ghost_event(self, event: GhostEvent) -> None:
+        if self._moss_runtime.session.is_running():
+            self._moss_runtime.session.output(
+                'ghost-event',
+                event.model_dump_json(indent=0, ensure_ascii=False),
+            )
+
     def _on_logos_end(self) -> None:
         """一段 logos (utterance) 结束 — 发 EOF 哨兵, 消费端据此冲刷尾段."""
         if self._moss_runtime.session.is_running():
@@ -421,8 +428,11 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         try:
             # 将权限移交给 ghost.
             async for delta in ghost.think(thinking):
-                self._on_logos_delta(delta)
-                logos_parts.append(delta)
+                if isinstance(delta, str):
+                    self._on_logos_delta(delta)
+                    logos_parts.append(delta)
+                elif isinstance(delta, GhostEvent):
+                    await self._on_ghost_event(delta)
         except asyncio.CancelledError:
             raise
         except Exception as e:

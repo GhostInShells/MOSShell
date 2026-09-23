@@ -1,14 +1,15 @@
 """Ghost agent blueprint — persistent intelligent agent with continuous memory and reflexivity."""
 
-from typing import AsyncIterable, Callable
+from typing import AsyncIterable, Callable, Any, Literal
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusMeta, Thinking
 from ghoshell_moss.core.blueprint.channel_builder import Channel, ChannelFactory
 from ghoshell_moss.message import Message
+from pydantic import BaseModel, Field
 
-__all__ = ['Ghost', 'GhostMeta']
+__all__ = ['Ghost', 'GhostMeta', 'GhostEvent']
 
 
 class GhostMeta(ABC):
@@ -91,6 +92,12 @@ class GhostMeta(ABC):
         """
         pass
 
+Logos = str
+
+class GhostEvent(BaseModel):
+    event: str = Field(description="event name")
+    payload: dict[str, Any] = Field(description="event payload")
+
 
 class Ghost(ABC):
     """
@@ -147,7 +154,7 @@ class Ghost(ABC):
         return None
 
     @abstractmethod
-    def think(self, thinking: Thinking) -> AsyncIterable[str]:
+    def think(self, thinking: Thinking) -> AsyncIterable[Logos | GhostEvent]:
         """
         articulate the logos from context
         :returns str: return the logos for publish stream

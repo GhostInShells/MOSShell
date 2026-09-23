@@ -38,6 +38,7 @@ updated: '2026-09-12'
 > ego 专属 preset + agent 级 nibble（非 ego session 可用，推翻 doloresSelectionRef）→ [dolores-ego-preset-nibble.md](dolores-ego-preset-nibble.md)。
 > 自迭代能力地图（下阶段 ground + 认知工具）→ [dolores-self-iteration-map.md](dolores-self-iteration-map.md)。
 > 全链路实机运行复盘（prompt 反转释放焦虑 + milestone 幻觉纠正）→ [dolores-full-chain-live-run-retro.md](dolores-full-chain-live-run-retro.md)。
+> 工具面设计（双重降级获得升级 + 精确工具面 + 决策依据）→ [dolores-tool-surface.md](dolores-tool-surface.md)。
 > 问题清单（单一事实源）→ [dolores-todo.md](dolores-todo.md)。
 
 ## Motivation

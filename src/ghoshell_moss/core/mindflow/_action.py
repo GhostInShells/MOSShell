@@ -8,6 +8,7 @@ import contextlib
 from typing import AsyncIterator, AsyncGenerator, Awaitable, Callable
 from typing_extensions import Self
 
+from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.blueprint.mindflow import (
     Attention, Action, ActionExitedException, Articulator, AttentionExitedException, StatementExitedException,
 )
@@ -191,6 +192,7 @@ class BaseAction(Action):
         self._prefetched_delta = ''
         self._terminated = False
         self._thinking_stop_event = thinking_stop_event
+        self._interpret_error: Exception | None = None
         self._started = False
         self._stopped = False
 
@@ -268,8 +270,14 @@ class BaseAction(Action):
     def set_compiled(self):
         self._compiled_event.set()
 
-    async def wait_compiled(self):
+    async def wait_compiled(self, raise_interpret_error: bool = False):
         await self._compiled_event.wait()
+        if self._interpret_error and raise_interpret_error:
+            raise InterpretError.from_error(self._interpret_error)
+
+    def set_interpret_error(self, error: Exception) -> None:
+        self._compiled_event.set()
+        self._interpret_error = error
 
     def logos(self) -> AsyncIterator[str]:
         return self._deliver_logos()
