@@ -22,13 +22,13 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from typing_extensions import Self
-from ghoshell_moss.core.blueprint.mindflow import Thinking, Articulator
+from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.contracts.logger import get_moss_logger
-from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, AssistantChunk, TurnEnd
+from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, TurnEnd
 
 from ._tools import (
-    WaitActionDoneToolCall,
-    InterleavedCtmlToolCall,
+    CtmlAppendToolCall,
+    WaitNextMomentToolCall,
     ObserveStatusToolCall,
     ReasoningToolCall,
     ChannelsToolCall,
@@ -53,93 +53,6 @@ _POISON = object()
 # interrupted **故意不在内**: dsh 已把 pending tool 结算成 interrupted, MOSS 照常轮转 —
 # 它与 aborted 同属"没跑完", 不能顺手一起打断. blocked 尚未观测, 同 interrupted 处理.
 _TURN_END_ABORT = frozenset({"aborted", "error", "max-tokens"})
-
-
-def _get_text_chunk(event: SessionEvent) -> str | None:
-    if assistant_chunk := AssistantChunk.from_session_event(event):
-        if assistant_chunk.chunk.type == 'text-delta':
-            return assistant_chunk.chunk.text
-    return None
-
-
-_LogosDelta = str
-
-
-def _close_marker(open_marker: str) -> str:
-    """Derive a wrap's close marker from its open marker: `<|X|>` → `</|X|>`."""
-    return open_marker[:1] + '/' + open_marker[1:]
-
-
-class _CtmlParser:
-    """Split a text stream into logos (CTML) and plain (markdown) regions.
-
-    CTML-first: the stream starts in logos. ``markdown_quoter`` (``<|Markdown|>``) opens a
-    plain region and its close marker (``</|Markdown|>``) closes it — a proper wrap with an
-    explicit close tag. Text inside the wrap is dropped; everything else is logos and is
-    forwarded to the articulator.
-
-    A partial marker is buffered across chunk boundaries; a partial match that fails is
-    flushed as content (logos when inside logos, dropped otherwise).
-    """
-
-    def __init__(
-            self,
-            articulator: Articulator,
-            markdown_quoter: str = '<|Markdown|>',
-    ) -> None:
-        self._articulator = articulator
-        self._in_logos = True
-        # markers that switch region: _to_plain_chars (seen in logos) opens the markdown
-        # region; _to_logos_chars (seen in plain) is its close marker.
-        self._to_plain_chars = list(markdown_quoter)
-        self._to_logos_chars = list(_close_marker(markdown_quoter))
-        self._buffer = ''
-
-    async def add(self, text: str) -> _LogosDelta:
-        logos = ''
-        for char in text:
-            delta = self._add_char(char)
-            if delta is not None:
-                logos += delta
-        if logos:
-            await self._articulator.send(logos)
-        return logos
-
-    def _add_char(self, char: str) -> _LogosDelta | None:
-        marker_chars = self._to_plain_chars if self._in_logos else self._to_logos_chars
-        if self._buffer == '':
-            if marker_chars and char == marker_chars[0]:
-                self._buffer = char
-                return None
-            return char if self._in_logos else None
-        index = len(self._buffer)
-        if index < len(marker_chars) and char == marker_chars[index]:
-            self._buffer += char
-            if len(self._buffer) == len(marker_chars):
-                self._in_logos = not self._in_logos
-                self._buffer = ''
-            return None
-        # mismatch: flush the buffered prefix, then re-run the char through the empty-buffer
-        # path — it may itself start a marker (e.g. the second '<' in '<<|Markdown|>').
-        out = self._buffer if self._in_logos else None
-        self._buffer = ''
-        rest = self._add_char(char)
-        if out is None:
-            return rest
-        return out + rest if rest is not None else out
-
-    async def __aenter__(self) -> Self:
-        await self._articulator.__aenter__()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        if self._in_logos and self._buffer:
-            await self._articulator.send(self._buffer)
-            self._buffer = ''
-
-        await self._articulator.wait_action_done()
-        await self._articulator.__aexit__(exc_type, exc_val, exc_tb)
-        return None
 
 
 class DoloresRun:
@@ -214,15 +127,15 @@ class DoloresRun:
     async def _handle_tool_use_event(self, event: ToolCallEvent) -> None:
         """tool/call dispatch — discriminate by name and route to the typed tool.
 
-        wait_action_done / interleaved_ctml / observe_status → run_tool produces a ToolCallResult,
+        ctml_append / wait_next_moment / observe_status → run_tool produces a ToolCallResult,
         returned via tool-result RPC. moss_reasoning (declaration) → records the default effort on
         the ego (applied next round), no tool-result.
         """
-        result = await WaitActionDoneToolCall.run_tool(event, self._handle_wait_action_done)
+        result = await CtmlAppendToolCall.run_tool(event, self._handle_ctml_append)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await InterleavedCtmlToolCall.run_tool(event, self._handle_interleaved_ctml)
+        result = await WaitNextMomentToolCall.run_tool(event, self._handle_wait_next_moment)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
@@ -241,18 +154,27 @@ class DoloresRun:
         if (call := ReasoningToolCall.from_tool_call(event)) is not None:
             self._ego.default_effort = call.effort
 
-    async def _handle_wait_action_done(self, call: WaitActionDoneToolCall) -> ToolCallResult:
-        """wait_action_done handler — wait for actions, refresh metas, produce a moment, return a structured {moment_ref} result, carry the moment."""
-        await self._thinking.wait_actions_done()
-        await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
+    async def _handle_ctml_append(self, call: CtmlAppendToolCall) -> ToolCallResult | str:
+        """ctml_append handler — append CTML mid-thought (segmented tool call).
 
-        moment = self._thinking.observe()
-        moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
-        return ToolCallResult(
-            call=call.tool_call_event,
-            result={"moment_ref": moment_ref},
-            moment=moment,
-        )
+        wait_done=False → wait only for compile and return the Shell status (no moment).
+        wait_done=True → wait for the actions to finish, observe the freshest moment, return
+        {moment_ref} and inject its context.
+        """
+        async with self._thinking.articulator(replan=call.replan) as articulator:
+            await articulator.send(call.ctml)
+            if call.wait_done:
+                await articulator.wait_action_done()
+                await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
+                moment = self._thinking.observe()
+                moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
+                return ToolCallResult(
+                    call=call.tool_call_event,
+                    result={"moment_ref": moment_ref},
+                    moment=moment,
+                )
+            await articulator.wait_compiled()
+            return self._facade.status().description()
 
     async def _handle_observe_status(self, call: ObserveStatusToolCall) -> str:
         """observe_status handler — observe Shell running status for replan; returns the status description, produces no moment."""
@@ -269,21 +191,14 @@ class DoloresRun:
             return f"no such channel: {call.path!r}"
         return text
 
-    async def _handle_interleaved_ctml(self, call: InterleavedCtmlToolCall) -> str:
-        """interleaved_ctml handler — emit CTML mid-thought, thinking ahead of behavior (interleaved).
+    async def _handle_wait_next_moment(self, call: WaitNextMomentToolCall) -> str:
+        """wait_next_moment handler — wait for all actions to finish, then yield the turn.
 
-        refresh_meta: refresh shell meta before execution.
-        wait_done: true → wait_action_done, false → wait_compiled (thinking ahead).
+        Returns "yielded": the plugin cancels the turn after this tool returns, so the next moment
+        wakes the ghost (nothing more to output in a voice/body interaction).
         """
-        if call.refresh_meta:
-            await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
-        async with self._thinking.articulator(replan=False, wait_action_done=call.wait_done) as articulator:
-            await articulator.send(call.ctml)
-            if call.wait_done:
-                await articulator.wait_action_done()
-            else:
-                await articulator.wait_compiled()
-        return "ok"
+        await self._thinking.wait_actions_done()
+        return "yielded"
 
     async def _dispatch_tool_result(self, result: ToolCallResult) -> None:
         """Return a ToolCallResult to the plugin via tool-result RPC: result unlocks the tool, moment injects.
@@ -309,11 +224,12 @@ class DoloresRun:
             )
 
     async def logos(self) -> "AsyncIterator[str]":
-        """Consume the event stream, extract logos deltas (split by the <|CTML|> marker), end on turn/end.
+        """Consume the event stream, dispatch tool calls, end on turn/end.
 
-        Single consumption: a run has at most one logos stream. Tool and other non-text events are
-        left empty (see _handle_tool_use_event). Ending (turn/end) is internal here — the consumer
-        needs no break.
+        Plain text is not governed here: the final answer is plain text that is never parsed into
+        CTML — the ghost acts through tool calls (moss_ctml_append etc.), not through the stream.
+        Single consumption: a run has at most one logos stream. Ending (turn/end) is internal —
+        the consumer needs no break.
         """
         if self._logos_started:
             raise RuntimeError("DoloresRun.logos() can only be consumed once")
@@ -322,29 +238,14 @@ class DoloresRun:
         try:
             while True:
                 event = await anext(events)
-                text = _get_text_chunk(event)
-                if text is not None:
-                    parser = _CtmlParser(
-                        self._thinking.articulator(replan=False, wait_action_done=True),
-                    )
-                    async with parser:
-                        while text is not None:
-                            delta = await parser.add(text)
-                            if delta:
-                                yield delta
-                            event = await anext(events)
-                            text = _get_text_chunk(event)
-                            if self._note_turn_end(event):
-                                # 必须在 parser 退出前处理: __aexit__ 的 wait_action_done 会等身体
-                                # 跑完, 等到那里再打断就晚了.
-                                break
-                # non-text event: tool left empty, turn/end ends the stream.
                 if self._note_turn_end(event):
                     return
                 if tool := ToolCallEvent.from_session_event(event):
                     await self._handle_tool_use_event(tool)
         finally:
             await events.aclose()
+        if False:  # 保持 async generator 语法: plain text 放弃治理后无实际 logos.
+            yield ""
 
     def _note_turn_end(self, event: SessionEvent) -> bool:
         """turn/end → 按 reason.kind 决定是否打断本轮 thinking; 返回该 event 是否为 turn/end.

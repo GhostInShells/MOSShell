@@ -14,8 +14,8 @@ from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 
 __all__ = [
-    "WaitActionDoneToolCall",
-    "InterleavedCtmlToolCall",
+    "CtmlAppendToolCall",
+    "WaitNextMomentToolCall",
     "ObserveStatusToolCall",
     "ReasoningToolCall",
     "ChannelsToolCall",
@@ -112,31 +112,36 @@ class ToolCallParameter(BaseModel, ABC):
         )
 
 
-class WaitActionDoneToolCall(ToolCallParameter):
-    """moss_wait_action_done — wait for actions to finish, refresh metas, then pull the freshest moment: return {moment_ref} and inject its context."""
+class CtmlAppendToolCall(ToolCallParameter):
+    """moss_ctml_append — append CTML mid-thought so the world can see your ongoing thinking (segmented tool call, not a stream).
 
-    @classmethod
-    def tool_name(cls) -> str:
-        return "moss_wait_action_done"
-
-
-class InterleavedCtmlToolCall(ToolCallParameter):
-    """moss_interleaved_ctml — emit CTML mid-thought so the world can perceive your ongoing thinking, without blocking further thought (interleaved).
-
-    Produces no moment — producing a moment is fetch_next_moment's job; the two don't mix.
+    Non-blocking by default: wait_done=False only waits for the CTML to compile and returns the Shell
+    status; wait_done=True waits for the actions to finish and produces a moment (the freshest frame).
     """
 
     ctml: str = Field(default="", description="the CTML command to execute.")
-    refresh_meta: bool = Field(default=False, description="refresh channel metas before execution.")
-    wait_done: bool = Field(default=False, description="true waits for the actions to finish, false waits only for the CTML to compile.")
+    replan: bool = Field(default=False, description="true replans the current action plan before executing.")
+    wait_done: bool = Field(default=False, description="false waits only for compile and returns Shell status; true waits for actions to finish and produces a moment.")
 
     @classmethod
     def tool_name(cls) -> str:
-        return "moss_interleaved_ctml"
+        return "moss_ctml_append"
+
+
+class WaitNextMomentToolCall(ToolCallParameter):
+    """moss_wait_next_moment — wait for all actions to finish, then yield the turn.
+
+    Returns "yielded": the turn is cancelled after this tool returns, so the next moment wakes you.
+    Use it in a voice/body interaction instead of emitting empty text nobody will read.
+    """
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_wait_next_moment"
 
 
 class ObserveStatusToolCall(ToolCallParameter):
-    """moss_observe_status — observe the Shell running status now (usually to decide replan); returns the status description, produces no moment."""
+    """moss_observe_status — observe the Shell running status now, for the thinking that precedes acting; returns the status description, produces no moment."""
 
     @classmethod
     def tool_name(cls) -> str:

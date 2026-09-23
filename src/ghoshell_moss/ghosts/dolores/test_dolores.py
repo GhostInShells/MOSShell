@@ -1144,7 +1144,7 @@ class FakeRunEgo:
 
 
 class FakeArticulator:
-    """_CtmlParser 的 articulator fake — send 累积 logos, 生命周期空操作."""
+    """articulator 的 fake — send 累积 logos, 生命周期空操作."""
 
     def __init__(self, log: list | None = None):
         self.sent: list[str] = []
@@ -1158,6 +1158,9 @@ class FakeArticulator:
 
     async def send(self, delta: str):
         self.sent.append(delta)
+
+    async def wait_compiled(self):
+        return None
 
     async def wait_action_done(self):
         if self._log is not None:
@@ -1311,20 +1314,20 @@ class TestDoloresRun:
         assert len(session.handlers) == 0  # 解绑
 
     @pytest.mark.asyncio
-    async def test_logos_yields_and_stops_on_turn_end(self):
-        """text chunk 经 CTML 解析产出 logos; turn/end 让 logos() 自止 (无需消费方 break)."""
+    async def test_logos_skips_text_and_stops_on_turn_end(self):
+        """plain text 跳过 (不解析为 CTML), turn/end 让 logos() 自止 (无需消费方 break)."""
         session = FakeRunSession()
         ego = FakeRunEgo(session)
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(self._text_chunk("plain text nobody reads", seq=1))
             await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
             collected = []
             async for delta in run.logos():
                 collected.append(delta)
-        assert "".join(collected) == "<say>hi</say>"
-        assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
+        assert collected == []  # plain text 不产出 logos
+        assert thinking.articulators == []  # 无 articulator 被创建
         assert thinking.abort_reasons == []  # completed → 不打断
 
     @pytest.mark.asyncio
@@ -1336,21 +1339,18 @@ class TestDoloresRun:
             ({"kind": "max-tokens"}, "max-tokens"),
         ],
     )
-    async def test_turn_end_aborts_thinking_before_wait_action_done(self, reason, expected):
-        """aborted/error/max-tokens → 打断 thinking, 且发生在 parser 的 wait_action_done 之前."""
-        log: list = []
+    async def test_turn_end_aborts_thinking(self, reason, expected):
+        """aborted/error/max-tokens → 打断 thinking."""
         session = FakeRunSession()
         ego = FakeRunEgo(session)
-        thinking = FakeRunThinking(log=log)
+        thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(self._text_chunk("plain text", seq=1))
             await session.emit(self._event("turn/end", {"turn": 1, "reason": reason}, seq=2))
             async for _ in run.logos():
                 pass
         assert thinking.abort_reasons == [expected]
-        # 关键顺序: 打断必须先于 wait_action_done — 否则 parser.__aexit__ 会先把身体等完.
-        assert log.index("abort") < log.index("wait_action_done")
 
     @pytest.mark.asyncio
     async def test_turn_end_interrupted_does_not_abort(self):
@@ -1430,94 +1430,6 @@ class TestDoloresRun:
         result = ToolCallResult(call=fake_tool_call("call_ctml"), result="ok")
         await run._dispatch_tool_result(result)
         assert ego.rpc_calls == [("call_ctml", "ok", None)]
-
-
-class TestCtmlParser:
-    """_CtmlParser — CTML 默认, <|Markdown|>…</|Markdown|> 成对 escape (articulator 用 AsyncMock 断言 send)."""
-
-    @staticmethod
-    def _parser():
-        from unittest.mock import AsyncMock
-
-        from ._run import _CtmlParser
-
-        art = AsyncMock()
-        return _CtmlParser(art), art
-
-    @staticmethod
-    def _sent(art) -> str:
-        return "".join(c.args[0] for c in art.send.await_args_list)
-
-    @pytest.mark.asyncio
-    async def test_default_is_logos(self):
-        parser, art = self._parser()
-        assert await parser.add("hello") == "hello"
-        assert self._sent(art) == "hello"
-
-    @pytest.mark.asyncio
-    async def test_markdown_wrap_drops_region(self):
-        parser, art = self._parser()
-        assert await parser.add("A<|Markdown|>text</|Markdown|>B") == "AB"
-        assert self._sent(art) == "AB"
-
-    @pytest.mark.asyncio
-    async def test_open_and_close_char_by_char(self):
-        parser, art = self._parser()
-        for ch in "<|Markdown|>":
-            assert await parser.add(ch) == ""
-        assert await parser.add("hidden") == ""
-        for ch in "</|Markdown|>":
-            assert await parser.add(ch) == ""
-        assert await parser.add("visible") == "visible"
-
-    @pytest.mark.asyncio
-    async def test_partial_close_across_chunk_boundary(self):
-        parser, art = self._parser()
-        await parser.add("<|Markdown|>")
-        assert await parser.add("text</|Mark") == ""
-        assert await parser.add("down|>after") == "after"
-
-    @pytest.mark.asyncio
-    async def test_open_without_close_drops_rest(self):
-        parser, art = self._parser()
-        assert await parser.add("before<|Markdown|>hidden") == "before"
-        assert self._sent(art) == "before"
-
-    @pytest.mark.asyncio
-    async def test_aexit_flushes_pending_logos_buffer(self):
-        parser, art = self._parser()
-        async with parser:
-            await parser.add("<|Mark")
-        assert self._sent(art) == "<|Mark"
-
-    @pytest.mark.asyncio
-    async def test_aexit_drops_pending_markdown_buffer(self):
-        parser, art = self._parser()
-        async with parser:
-            await parser.add("<|Markdown|>")
-            await parser.add("</|Mark")
-        assert self._sent(art) == ""
-
-    @pytest.mark.asyncio
-    async def test_doubled_open_char_still_opens_wrap(self):
-        """mismatch 的 char 要重扫: '<<|Markdown|>' 的第二个 '<' 是真 marker 起始."""
-        parser, art = self._parser()
-        assert await parser.add("A<<|Markdown|>hidden</|Markdown|>B") == "A<B"
-        assert self._sent(art) == "A<B"
-
-    @pytest.mark.asyncio
-    async def test_doubled_close_char_still_closes_wrap(self):
-        """plain 区 mismatch 的 char 同样重扫, 否则 close marker 被漏掉后永久 drop."""
-        parser, art = self._parser()
-        assert await parser.add("<|Markdown|>x<</|Markdown|>after") == "after"
-        assert self._sent(art) == "after"
-
-    @pytest.mark.asyncio
-    async def test_broken_prefix_then_real_marker(self):
-        """半截 marker 失配后, 紧跟的真 marker 仍要被识别."""
-        parser, art = self._parser()
-        assert await parser.add("<|Mar<|Markdown|>hidden</|Markdown|>ok") == "<|Marok"
-        assert self._sent(art) == "<|Marok"
 
 
 class TestDoloresMomentPayload:

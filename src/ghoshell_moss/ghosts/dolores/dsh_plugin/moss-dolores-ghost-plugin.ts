@@ -153,6 +153,11 @@ let doloresThinkingToken: string | null = null
 // ego 的 persona 文本 (instruction) — ego/create 写入, session/start 时由 apply_ego_agent 注入 persona 段.
 let doloresInstruction = ''
 
+// moss_wait_next_moment 的 cancel_turn 标记: 工具返回后下一个同 turn 的 step cancel.
+// activeTurn 由 pre-step 更新 (当前正在跑的 turn); onResolve 时把 activeTurn 记成 cancelTurn.
+let activeTurn: number | null = null
+let cancelTurn: number | null = null
+
 // ── 旁路 (bypass): 非主 ego session 的记账与注入 ─────────────────────
 // 旁路 = ego-class (dolores-ego preset) 但 id ≠ doloresEgoSessionId 的 session. 它不跑
 // thinking 事务、不消费 pendingMoments、工具全拒; 每次只跑一轮. bypassTurns 记每个旁路
@@ -224,7 +229,7 @@ function closeThinking(): void {
 // tool 回调桥 (approach a): 需要 MOSS 侧 round-trip 的 tool (observe 等) execute 挂 pending
 // promise, 由 /tool-result RPC 按 callId 解锁. Map keyed by callId — 多 tool 各自 pending
 // 互不干扰. resolve 载荷 = 各 tool 的返回值 (observe = moment 文本 str).
-const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; onResolve?: () => void }>()
 
 /**
  * 已结算但 MOSS 侧仍会回话的 callId 墓碑 (callId → 结算时刻毫秒).
@@ -323,37 +328,16 @@ interface ThinkingEnterPayload {
 // 时) 完成, 不经过 agent preset (那样 defineTool 解析不到).
 const egoTools = [
   defineTool({
-    name: 'moss_wait_action_done',
-    description: 'Wait for the actions you already emitted to finish, refresh your view of your channels, and pull the freshest moment. The moment itself appears in your next thought; the result only names it.',
-    parameters: {},
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
-    },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<Record<string, unknown>>((resolve, reject) => {
-        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) {
-            rememberSettled(callId)
-            reject(new Error('moss_wait_action_done aborted'))
-          }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
-  }),
-  defineTool({
-    name: 'moss_interleaved_ctml',
-    description: 'Emit CTML mid-thought so the world can see your ongoing thinking, without pausing it. With wait_done you wait for the actions to finish; otherwise you only confirm the CTML was accepted and keep thinking.',
+    name: 'moss_ctml_append',
+    description: 'Append CTML mid-thought so the world can see your ongoing thinking. With wait_done you wait for the actions to finish and get the next moment; otherwise you only confirm the CTML was compiled and get the current Shell status.',
     parameters: {
-      ctml: { type: 'string', description: 'The CTML to emit.' },
-      refresh_meta: { type: 'boolean', default: false, description: 'Refresh your view of your channels first.' },
-      wait_done: { type: 'boolean', default: false, description: 'Wait for the actions to finish; otherwise just confirm the CTML was accepted and keep thinking.' },
+      ctml: { type: 'string', description: 'The CTML to append.' },
+      replan: { type: 'boolean', default: false, description: 'Replan the current action plan before executing.' },
+      wait_done: { type: 'boolean', default: false, description: 'Wait for the actions to finish and produce the next moment; otherwise just confirm the CTML compiled and return the Shell status.' },
     },
     output: {
       schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
     },
     execute: async (_args, exec) => {
       const callId = String(exec.callId)
@@ -362,7 +346,32 @@ const egoTools = [
         exec.signal.addEventListener('abort', () => {
           if (pendingCalls.delete(callId)) {
             rememberSettled(callId)
-            reject(new Error('moss_interleaved_ctml aborted'))
+            reject(new Error('moss_ctml_append aborted'))
+          }
+        }, { once: true })
+      }) as unknown as JsonValue
+    },
+  }),
+  defineTool({
+    name: 'moss_wait_next_moment',
+    description: 'Wait for all your actions to finish, then yield the turn so the next moment wakes you. Use this in a voice/body interaction instead of emitting empty text nobody will read.',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => {
+      const callId = String(exec.callId)
+      return await new Promise<string>((resolve, reject) => {
+        pendingCalls.set(callId, {
+          resolve: resolve as (value: unknown) => void,
+          reject,
+          onResolve: () => { cancelTurn = activeTurn },
+        })
+        exec.signal.addEventListener('abort', () => {
+          if (pendingCalls.delete(callId)) {
+            rememberSettled(callId)
+            reject(new Error('moss_wait_next_moment aborted'))
           }
         }, { once: true })
       }) as unknown as JsonValue
@@ -387,7 +396,7 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_observe_status',
-    description: 'Check what your Shell is doing right now, usually to decide whether to replan. Returns a status description; no new moment comes with it.',
+    description: 'Check what your Shell is doing right now, for the thinking that precedes acting. Returns a status description; no new moment comes with it.',
     parameters: {},
     output: {
       schema: { type: 'json' },
@@ -562,6 +571,13 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
       if (decision.kind === 'reject') return decision
       // 前置旁路 instruction → 成为该 turn 的 surface 节点, 下轮 pre-step 时被 collapseTurn 折叠.
       return { kind: 'enter', messages: [bypassInstruction(), ...decision.messages] }
+    }
+    // cancel_turn: 上一轮 moss_wait_next_moment 已返回, 当前同 turn 的新 step 直接 cancel.
+    activeTurn = turn
+    if (cancelTurn !== null && cancelTurn === turn) {
+      cancelTurn = null
+      stepAgent.cancel({ kind: 'hook', reason: 'moss wait_next_moment' })
+      return { kind: 'reject' }
     }
     await thinkingGate.wait(undefined, signal)
     const decision = await next()
@@ -951,6 +967,7 @@ export function apply(ctx: Context) {
         }
         // result = tool 给模型的返回值 (observe 为 "{epoch}-{moment}" 短 id).
         pending.resolve(body.result)
+        if (pending.onResolve !== undefined) pending.onResolve()
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (error) {
