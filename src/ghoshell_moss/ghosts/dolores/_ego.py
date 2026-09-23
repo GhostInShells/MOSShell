@@ -444,17 +444,21 @@ class DoloresEgo:
             call_id: str,
             result: dict | list | str | None,
             moment: list[dict] | None = None,
+            cancel: bool = False,
     ) -> None:
-        """Unlock a pending tool: {callId, result, moment}.
+        """Unlock a pending tool: {callId, result, moment, cancel}.
 
         result = the tool's return value for the model (a "{epoch}-{moment}" short id for
         fetch_next_moment). moment = the moment content parts to inject into context (text + image);
         the plugin injects the moment then resolves the result. callId is passed through for routing.
+        cancel = cut the turn as soon as the result lands (the turn ends without a final answer; the
+        plugin binds it to the turn the tool was called in).
         """
         await self._launcher.call(_DOLORES_TOOL_RESULT, {
             "callId": call_id,
             "result": result,
             "moment": moment,
+            "cancel": cancel,
         })
 
     def moment_context_parts(self, moment: Moment, moment_id: str) -> list[dict]:

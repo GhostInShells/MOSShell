@@ -15,10 +15,10 @@ from ghoshell_moss.core.blueprint.moment import Moment
 
 __all__ = [
     "CtmlAppendToolCall",
+    "WaitActionDoneToolCall",
     "WaitNextMomentToolCall",
-    "ObserveStatusToolCall",
+    "ShellStatusToolCall",
     "ReasoningToolCall",
-    "ChannelsToolCall",
     "ChannelFacadeToolCall",
 ]
 
@@ -28,8 +28,8 @@ _ResultType = dict | list | str | None
 class ToolCallResult(BaseModel):
     """Raw data structure returned to the plugin via the tool-result RPC.
 
-    Maps into the plugin's tool-result interface. The yield tool (the dsh side yields the session
-    awaiting the next moment) does not return through this protocol.
+    Every tool that waits on MOSS returns through this protocol: the result unlocks the pending call,
+    the moment (if any) is injected, and ``cancel`` optionally cuts the turn right after.
     """
 
     call: ToolCallEvent
@@ -46,6 +46,15 @@ class ToolCallResult(BaseModel):
             "the moment carried back; after the plugin resolves the tool's call id, the moment is "
             "injected. Moment injection only goes through the <moment> (context) slot; inputs go "
             "through thinking/enter as steer."
+        ),
+    )
+    cancel: bool = Field(
+        default=False,
+        description=(
+            "when true, the plugin cancels the turn as soon as this result unlocks the call: the model "
+            "still receives the full result, then the next step is cut. This is how a turn ends without "
+            "a final answer (wait_next_moment / react); the aborted turn/end is what ends the thinking "
+            "transaction, so MOSS never cancels the turn on its own."
         ),
     )
 
@@ -113,19 +122,38 @@ class ToolCallParameter(BaseModel, ABC):
 
 
 class CtmlAppendToolCall(ToolCallParameter):
-    """moss_ctml_append — append CTML mid-thought so the world can see your ongoing thinking (segmented tool call, not a stream).
+    """moss_ctml_append — append CTML mid-thought, streamed into its own articulator.
 
-    Non-blocking by default: wait_done=False only waits for the CTML to compile and returns the Shell
-    status; wait_done=True waits for the actions to finish and produces a moment (the freshest frame).
+    The single ``ctml`` argument is decoded from the tool-call delta stream (see _ctml_stream.py), so
+    the CTML reaches the shell while the model is still generating. The handler only waits for compile;
+    on an interpret error it returns "ctml syntax error" + cancel (detail arrives in the next echoes).
     """
 
     ctml: str = Field(default="", description="the CTML command to execute.")
-    replan: bool = Field(default=False, description="true replans the current action plan before executing.")
-    wait_done: bool = Field(default=False, description="false waits only for compile and returns Shell status; true waits for actions to finish and produces a moment.")
 
     @classmethod
     def tool_name(cls) -> str:
         return "moss_ctml_append"
+
+
+class WaitActionDoneToolCall(ToolCallParameter):
+    """moss_wait_action_done — wait for all actions to finish, then observe the freshest moment.
+
+    ``replan`` is None (just wait) or a CTML string that first replans (a fresh 'clear' interpreter
+    replaces the plan) — an empty string replans with nothing, a non-empty one replans with that CTML.
+    ``timeout=-1`` waits without bound; a positive timeout gives up early. Returns ``{moment_ref}``
+    and carries the moment for context injection.
+    """
+
+    replan: str | None = Field(
+        default=None,
+        description="CTML to replan with before waiting; None means no replan (an empty string replans with nothing).",
+    )
+    timeout: float = Field(default=-1, description="seconds to wait; -1 waits without bound.")
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_wait_action_done"
 
 
 class WaitNextMomentToolCall(ToolCallParameter):
@@ -140,34 +168,25 @@ class WaitNextMomentToolCall(ToolCallParameter):
         return "moss_wait_next_moment"
 
 
-class ObserveStatusToolCall(ToolCallParameter):
-    """moss_observe_status — observe the Shell running status now, for the thinking that precedes acting; returns the status description, produces no moment."""
+class ShellStatusToolCall(ToolCallParameter):
+    """moss_shell_status — observe the Shell running status now, for the thinking that precedes acting; returns the status description, produces no moment."""
 
     @classmethod
     def tool_name(cls) -> str:
-        return "moss_observe_status"
-
-
-class ChannelsToolCall(ToolCallParameter):
-    """moss_channels — list every channel and its description, to see what you currently have.
-
-    A self-inspection tool: normally your channels and their commands are already in your context;
-    reach for this when the surface changed underneath you or when you are debugging.
-    """
-
-    @classmethod
-    def tool_name(cls) -> str:
-        return "moss_channels"
+        return "moss_shell_status"
 
 
 class ChannelFacadeToolCall(ToolCallParameter):
-    """moss_channel_facade — read one channel's full operating surface (instruction, commands, notices, state).
+    """moss_channel_facade — read the channel operating surface.
 
-    A self-inspection tool: normally the surface is already in your context; reach for this when you
-    need the detail of a channel whose commands you cannot recall, or when debugging.
+    ``recursive=True`` (default) lists every channel under ``channel_path`` (a prefix; empty = all),
+    which replaces the former moss_channels; ``recursive=False`` reads one channel's full surface.
+    Self-inspection: normally the surface is already in your context; reach for this when the surface
+    changed underneath you or when you are debugging.
     """
 
-    path: str = Field(default="", description="the channel's full path, e.g. 'ghost.frame'.")
+    channel_path: str = Field(default="", description="the channel path (a prefix when recursive), e.g. 'ghost.frame'.")
+    recursive: bool = Field(default=True, description="true lists channels under the path prefix; false reads one channel's full surface.")
 
     @classmethod
     def tool_name(cls) -> str:

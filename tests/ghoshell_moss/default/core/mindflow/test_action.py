@@ -226,6 +226,7 @@ async def test_articulator_send_nowait_streams_to_action_and_accumulates_moment(
         logos_queue=ev['logos_queue'],
         compiled_event=ev['compiled_event'],
         action_stop_event=ev['action_stop_event'],
+        action=action,
     )
     async with action:
         articulator.send_nowait('hello')
@@ -247,6 +248,7 @@ async def test_articulator_send_streams_to_action_and_accumulates_moment():
         logos_queue=ev['logos_queue'],
         compiled_event=ev['compiled_event'],
         action_stop_event=ev['action_stop_event'],
+        action=action,
     )
     async with action:
         await articulator.send('foo')
@@ -267,6 +269,7 @@ async def test_articulator_wait_compiled_unblocks_when_compiled():
         logos_queue=ev['logos_queue'],
         compiled_event=ev['compiled_event'],
         action_stop_event=ev['action_stop_event'],
+        action=action,
     )
     task = asyncio.create_task(asyncio.wait_for(articulator.wait_compiled(), 2.0))
     await asyncio.sleep(0)

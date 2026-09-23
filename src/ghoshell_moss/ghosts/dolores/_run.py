@@ -23,15 +23,22 @@ import contextlib
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.mindflow import Thinking
+from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.contracts.logger import get_moss_logger
-from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, ToolCallEvent, TurnEnd
+from ghoshell_moss.deepseek_harness.types.session_events import (
+    AssistantChunk,
+    SessionEvent,
+    ToolCallEvent,
+    TurnEnd,
+)
 
+from ._ctml_stream import CtmlArgumentStream
 from ._tools import (
     CtmlAppendToolCall,
+    WaitActionDoneToolCall,
     WaitNextMomentToolCall,
-    ObserveStatusToolCall,
+    ShellStatusToolCall,
     ReasoningToolCall,
-    ChannelsToolCall,
     ChannelFacadeToolCall,
     ToolCallResult,
 )
@@ -53,6 +60,26 @@ _POISON = object()
 # interrupted **故意不在内**: dsh 已把 pending tool 结算成 interrupted, MOSS 照常轮转 —
 # 它与 aborted 同属"没跑完", 不能顺手一起打断. blocked 尚未观测, 同 interrupted 处理.
 _TURN_END_ABORT = frozenset({"aborted", "error", "max-tokens"})
+
+
+class _StreamedCtml:
+    """One ``moss_ctml_append`` call as it streams in: the argument decoder + its own articulator.
+
+    The decoder reverses the JSON escaping of ``{"ctml": "…"}`` chunk by chunk; the decoded CTML is
+    sent straight to the call's articulator, so the model's output reaches the shell while it is still
+    being generated. ``stream.value`` is the exact prefix decoded so far — the handler reconciles
+    against the parsed ``tool/call`` argument to cover a shape-mismatch / whole-argument fallback.
+    """
+
+    def __init__(self, call_id: str, articulator) -> None:
+        self.call_id = call_id
+        self.stream = CtmlArgumentStream()
+        self.articulator = articulator
+
+    async def feed(self, delta: str | None) -> None:
+        text = self.stream.add(delta)
+        if text:
+            await self.articulator.send(text)
 
 
 class DoloresRun:
@@ -124,14 +151,21 @@ class DoloresRun:
                 return
             yield item
 
-    async def _handle_tool_use_event(self, event: ToolCallEvent) -> None:
+    async def _handle_tool_use_event(self, event: ToolCallEvent, streams: dict[str, _StreamedCtml]) -> None:
         """tool/call dispatch — discriminate by name and route to the typed tool.
 
-        ctml_append / wait_next_moment / observe_status → run_tool produces a ToolCallResult,
-        returned via tool-result RPC. moss_reasoning (declaration) → records the default effort on
-        the ego (applied next round), no tool-result.
+        ctml_append's CTML already arrived via the stream (see logos()); its handler only waits for
+        compile and returns the outcome. wait_action_done / wait_next_moment / shell_status →
+        run_tool produces a ToolCallResult, returned via tool-result RPC. moss_reasoning
+        (declaration) → records the default effort on the ego (applied next round), no tool-result.
         """
-        result = await CtmlAppendToolCall.run_tool(event, self._handle_ctml_append)
+        result = await CtmlAppendToolCall.run_tool(
+            event, lambda call: self._handle_ctml_append(call, streams),
+        )
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
+        result = await WaitActionDoneToolCall.run_tool(event, self._handle_wait_action_done)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
@@ -139,11 +173,7 @@ class DoloresRun:
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await ObserveStatusToolCall.run_tool(event, self._handle_observe_status)
-        if result is not None:
-            await self._dispatch_tool_result(result)
-            return
-        result = await ChannelsToolCall.run_tool(event, self._handle_channels)
+        result = await ShellStatusToolCall.run_tool(event, self._handle_shell_status)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
@@ -154,51 +184,116 @@ class DoloresRun:
         if (call := ReasoningToolCall.from_tool_call(event)) is not None:
             self._ego.default_effort = call.effort
 
-    async def _handle_ctml_append(self, call: CtmlAppendToolCall) -> ToolCallResult | str:
-        """ctml_append handler — append CTML mid-thought (segmented tool call).
+    async def _handle_ctml_append(
+            self,
+            call: CtmlAppendToolCall,
+            streams: dict[str, _StreamedCtml],
+    ) -> ToolCallResult:
+        """ctml_append handler — the CTML already streamed into its own articulator; wait for compile.
 
-        wait_done=False → wait only for compile and return the Shell status (no moment).
-        wait_done=True → wait for the actions to finish, observe the freshest moment, return
-        {moment_ref} and inject its context.
+        ``wait_compiled(raise_interpret_error=True)`` turns an InterpretError into a one-line "ctml
+        syntax error" result + cancel: continuing on a broken output is pointless, and the detail
+        arrives in the next round's echoes. The stream's decoded prefix is reconciled against the
+        parsed argument — a shape-mismatch or whole-argument call streamed nothing, so the missing
+        tail is sent here as one shot.
         """
-        async with self._thinking.articulator(replan=call.replan) as articulator:
-            await articulator.send(call.ctml)
-            if call.wait_done:
-                await articulator.wait_action_done()
-                await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
-                moment = self._thinking.observe()
-                moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
-                return ToolCallResult(
-                    call=call.tool_call_event,
-                    result={"moment_ref": moment_ref},
-                    moment=moment,
-                )
-            await articulator.wait_compiled()
-            return self._facade.status().description()
+        stream = streams.pop(call.tool_call_event.callId, None)
+        if stream is None:
+            stream = _StreamedCtml(call.tool_call_event.callId, self._thinking.articulator())
+        if stream.stream.failed:
+            # the arguments stream was corrupt (a malformed escape) — nothing to trust, cut the turn.
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result="ctml parse error",
+                cancel=True,
+            )
+        decoded = stream.stream.value
+        if decoded != call.ctml:
+            await stream.articulator.send(call.ctml[len(decoded):])
+        try:
+            await stream.articulator.wait_compiled(raise_interpret_error=True)
+        except InterpretError:
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result="ctml syntax error",
+                cancel=True,
+            )
+        return ToolCallResult(
+            call=call.tool_call_event,
+            result="compiled",
+        )
 
-    async def _handle_observe_status(self, call: ObserveStatusToolCall) -> str:
-        """observe_status handler — observe Shell running status for replan; returns the status description, produces no moment."""
+    async def _handle_wait_action_done(self, call: WaitActionDoneToolCall) -> ToolCallResult:
+        """wait_action_done handler — (optionally) replan, wait for the actions to finish, refresh
+        metas, then observe the freshest moment.
+
+        ``replan`` is None (just wait) or a CTML string that first replans — a fresh 'clear'
+        interpreter with that CTML (empty string = replan with nothing). A replan CTML that fails to
+        compile marks ``observe`` (so the next thinking frame carries the error echo) and cuts the
+        turn with "ctml syntax error" + cancel. ``timeout`` is -1 (wait without bound) or a positive
+        bound that gives up early but still observes.
+        """
+        if call.replan is not None:
+            async with self._thinking.articulator(replan=True) as articulator:
+                if call.replan:
+                    await articulator.send(call.replan)
+                try:
+                    await articulator.wait_compiled(raise_interpret_error=True)
+                except InterpretError:
+                    # replan ctml failed to compile — issue the next thinking frame so the model sees
+                    # the error in the next moment's echoes, then cut this turn.
+                    self._thinking.add_echoes(observe=True)
+                    return ToolCallResult(
+                        call=call.tool_call_event,
+                        result="ctml syntax error",
+                        cancel=True,
+                    )
+        if call.timeout < 0:
+            await self._thinking.wait_actions_done()
+        else:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._thinking.wait_actions_done(), timeout=call.timeout)
+        await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
+        moment = self._thinking.observe()
+        moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
+        return ToolCallResult(
+            call=call.tool_call_event,
+            result={"moment_ref": moment_ref},
+            moment=moment,
+        )
+
+    async def _handle_shell_status(self, call: ShellStatusToolCall) -> str:
+        """shell_status handler — observe the Shell running status now; returns the status description, produces no moment."""
         return self._facade.status().description()
 
-    async def _handle_channels(self, call: ChannelsToolCall) -> str:
-        """moss_channels handler — the channel catalog (path → description), for discovery or debugging."""
-        return self._facade.channels_description()
-
     async def _handle_channel_facade(self, call: ChannelFacadeToolCall) -> str:
-        """moss_channel_facade handler — one channel's full operating surface; unknown path is reported, not raised."""
-        text = self._facade.get_channel_full_facade(call.path)
-        if not text:
-            return f"no such channel: {call.path!r}"
-        return text
+        """moss_channel_facade handler — recursive lists channels under the path prefix; otherwise one channel's full surface."""
+        if not call.recursive:
+            text = self._facade.get_channel_full_facade(call.channel_path)
+            return text or f"no such channel: {call.channel_path!r}"
+        from ghoshell_common.helpers import yaml_pretty_dump
 
-    async def _handle_wait_next_moment(self, call: WaitNextMomentToolCall) -> str:
+        prefix = call.channel_path
+        kv = {
+            path: meta.description or "(no desc)"
+            for path, meta in self._facade.channel_metas(available_only=True).items()
+            if path.startswith(prefix)
+        }
+        return yaml_pretty_dump(kv)
+
+    async def _handle_wait_next_moment(self, call: WaitNextMomentToolCall) -> ToolCallResult:
         """wait_next_moment handler — wait for all actions to finish, then yield the turn.
 
-        Returns "yielded": the plugin cancels the turn after this tool returns, so the next moment
-        wakes the ghost (nothing more to output in a voice/body interaction).
+        cancel=True: this result is what replaces the final answer. The plugin cuts the turn the moment
+        it lands, so no further step runs; the turn/end that follows is what ends this thinking
+        transaction (MOSS never cancels the turn itself).
         """
         await self._thinking.wait_actions_done()
-        return "yielded"
+        return ToolCallResult(
+            call=call.tool_call_event,
+            result="yielded",
+            cancel=True,
+        )
 
     async def _dispatch_tool_result(self, result: ToolCallResult) -> None:
         """Return a ToolCallResult to the plugin via tool-result RPC: result unlocks the tool, moment injects.
@@ -216,7 +311,9 @@ class DoloresRun:
             if moment_ref is not None:
                 moment_parts = self._ego.moment_context_parts(result.moment, moment_ref)
         try:
-            await self._ego.rpc_tool_result(result.call.callId, result.result, moment_parts)
+            await self._ego.rpc_tool_result(
+                result.call.callId, result.result, moment_parts, cancel=result.cancel,
+            )
         except Exception:
             _logger.warning(
                 "tool-result RPC dropped (call %s already settled plugin-side); result discarded",
@@ -226,26 +323,51 @@ class DoloresRun:
     async def logos(self) -> "AsyncIterator[str]":
         """Consume the event stream, dispatch tool calls, end on turn/end.
 
-        Plain text is not governed here: the final answer is plain text that is never parsed into
-        CTML — the ghost acts through tool calls (moss_ctml_append etc.), not through the stream.
-        Single consumption: a run has at most one logos stream. Ending (turn/end) is internal —
-        the consumer needs no break.
+        The final answer is plain text that is never parsed into CTML — the ghost acts through tool
+        calls. ``moss_ctml_append`` is the one streaming tool: its ``tool-call-delta`` chunks are fed
+        into a per-call articulator as they arrive, so the CTML reaches the shell while the model is
+        still generating. Single consumption: a run has at most one logos stream. Ending (turn/end)
+        is internal — the consumer needs no break.
         """
         if self._logos_started:
             raise RuntimeError("DoloresRun.logos() can only be consumed once")
         self._logos_started = True
         events = self._events()
+        streams: dict[str, _StreamedCtml] = {}
         try:
             while True:
                 event = await anext(events)
                 if self._note_turn_end(event):
                     return
+                if chunk := AssistantChunk.from_session_event(event):
+                    await self._handle_ctml_delta(chunk.chunk, streams)
+                    continue
                 if tool := ToolCallEvent.from_session_event(event):
-                    await self._handle_tool_use_event(tool)
+                    await self._handle_tool_use_event(tool, streams)
         finally:
             await events.aclose()
         if False:  # 保持 async generator 语法: plain text 放弃治理后无实际 logos.
             yield ""
+
+    async def _handle_ctml_delta(self, chunk, streams: dict[str, _StreamedCtml]) -> None:
+        """tool-call-delta → feed the ctml tool's argument stream into its own articulator.
+
+        The tool name rides on the first delta; later deltas carry only the call id + argumentsDelta,
+        so we key by call id and create the stream lazily on the first sight of the ctml tool's name.
+        The decoded CTML is not yielded to the broadcast — execution goes through the articulator.
+        """
+        if chunk.type != 'tool-call-delta':
+            return
+        call_id = chunk.id
+        if call_id is None:
+            return
+        stream = streams.get(call_id)
+        if stream is None:
+            if chunk.name != CtmlAppendToolCall.tool_name():
+                return
+            stream = _StreamedCtml(call_id, self._thinking.articulator())
+            streams[call_id] = stream
+        await stream.feed(chunk.argumentsDelta)
 
     def _note_turn_end(self, event: SessionEvent) -> bool:
         """turn/end → 按 reason.kind 决定是否打断本轮 thinking; 返回该 event 是否为 turn/end.

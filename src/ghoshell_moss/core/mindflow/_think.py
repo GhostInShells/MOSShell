@@ -128,7 +128,7 @@ class BaseThinking(Thinking):
             compiled_event=compiled_event,
             action_stop_event=action_stop_event,
             warrant=self._warrant if gated else None,
-            action=action if gated else None,
+            action=action,
             put_action=self._put_action if gated else None,
             logger=self._logger,
         )

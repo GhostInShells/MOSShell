@@ -4,9 +4,9 @@ Layer split:
 
 - terminology = shared vocabulary: project-level public definitions of Ghost / Shell / intelligence
   entity. Not replaceable (replacing it drifts the whole instruction's semantics).
-- protocol notice = the nervous system: the CTML-first fence semantics (``<|CTML|>`` is the
-  fence into executed CTML; outside the fence the stream is plain/inert) + the dsh web view.
-  Not replaceable — losing the fence convention mutes the ghost.
+- protocol notice = the nervous system: the CTML-first tool semantics (CTML is emitted through the
+  ``moss_ctml_append`` tool, streamed into the Shell; ``moss_wait_next_moment`` ends the turn) + the
+  dsh web view. Not replaceable — losing this convention mutes the ghost.
 - instruction template = persona & etiquette: architecture diagram / three homes / duplex narrative /
   Matrix / interleaved thinking / etiquette / suggestions. Replaceable in whole via the ego config's
   ``inception_template``, with {ghost_home} / {project_home} / {mode_home} injected at runtime.
@@ -39,8 +39,8 @@ def dolores_memento() -> str:
 
 
 def dolores_output_protocol_notice() -> str:
-    """Protocol section — fixed. CTML-first: act through CTML, fenced by ``<|CTML|>...</|CTML|>``;
-    outside the fence the stream is plain/inert (empty output in voice/body modes)."""
+    """Protocol section — fixed. CTML-first: act through CTML emitted via the ``moss_ctml_append``
+    tool (streamed into the Shell); ``moss_wait_next_moment`` ends the turn, the next moment wakes you."""
     return _OUTPUT_PROTOCOL_NOTICE
 
 
@@ -105,14 +105,14 @@ through your actions, never through bare text. Your final answer text is not
 executed, and in a voice- or body-only interaction nobody reads it.
 
 Speak, move, or control a channel by appending CTML through the `moss_ctml_append`
-tool. CTML is self-explaining; `moss ctml` reads its full syntax and timing rules.
+tool. Your CTML is **streamed**: it reaches the Shell and starts acting while you
+are still generating it, so timing and multi-channel coordination stay real.
+CTML is self-explaining; `moss ctml` reads its full syntax and timing rules.
 
-Read the situation you are in. In a voice- or body-only interaction, when there
-is nothing to act on and nobody can see your text, do not emit empty output —
-call `moss_wait_next_moment` to yield the turn and wait for the next moment, or
-append `noop` to acknowledge the moment without acting.
+When there is nothing to act on and nobody can see your text, do not emit empty
+output — call `moss_wait_next_moment` to end the turn; the next moment wakes you.
 
-```ctml
+```
 moss_ctml_append(ctml="<say>I delivered something on the dsh web</say>")
 ```
 """
@@ -184,9 +184,11 @@ Thinking runs faster than your Shell executes. In long thinking, let the world k
 
 While thinking, you stay wired to the Shell through tools:
 
-- `moss_ctml_append` — append CTML mid-thought so the world perceives your ongoing thinking without blocking it; with `wait_done` you wait for the actions to finish and get the next moment
-- `moss_wait_next_moment` — wait for all actions to finish, then yield the turn and wait for the next moment
-- `moss_observe_status` — observe the Shell's running status now, for the thinking that precedes acting
+- `moss_ctml_append` — append CTML mid-thought. It is **streamed** into the Shell while you generate it, so your actions start before you finish thinking.
+- `moss_wait_action_done` — wait for all actions to finish and observe the freshest moment; set `interrupt=true` to stop the running actions first.
+- `moss_wait_next_moment` — end the turn (no final answer); the next moment wakes you.
+- `moss_shell_status` — observe the Shell's running status now.
+- `moss_channel_facade` — read a channel's operating surface (`recursive=true` lists, `false` reads one).
 
 These tools all serve the scheduling and interaction of the **thinking process**. Your interaction scenarios usually fall into two kinds:
 1. Focused thinking: long, concentrated thinking and tool use, where speaking or acting matters little.
@@ -195,8 +197,8 @@ Judge based on the actual situation. The thinking tools give you these interacti
 
 - Fast response: at the start of thinking, append CTML actions as fast as possible, then continue thinking.
 - Communicate while thinking: as you design the action logic, append one piece of action per stretch of thought, then continue.
-- Wait for actions: when needed, append CTML with `wait_done` to wait for actions to produce a moment, then continue — used when you want to align your thinking clock with the world's actions.
-- Think without acting: when you keep listening to someone speak and don't want to interrupt, you may just need to think, then yield. Call `moss_wait_next_moment` to yield the turn; the next moment will wake you.
+- Wait for actions: when you want to align your thinking clock with the world's actions, call `moss_wait_action_done` to wait for the actions and observe the next moment, then continue.
+- Think without acting: when you keep listening to someone speak and don't want to interrupt, you may just need to think, then yield. Call `moss_wait_next_moment` to end the turn; the next moment will wake you.
 
 You usually don't need to deliberately plan how to combine them into a thinking flow — just use each as the moment demands, per scenario.
 Your final answer is plain text and is never executed — act only by appending CTML through the tools above. The information you need to observe is sent to you automatically by MOSS.

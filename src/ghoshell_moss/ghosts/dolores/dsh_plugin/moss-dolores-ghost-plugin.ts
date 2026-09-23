@@ -153,8 +153,9 @@ let doloresThinkingToken: string | null = null
 // ego 的 persona 文本 (instruction) — ego/create 写入, session/start 时由 apply_ego_agent 注入 persona 段.
 let doloresInstruction = ''
 
-// moss_wait_next_moment 的 cancel_turn 标记: 工具返回后下一个同 turn 的 step cancel.
-// activeTurn 由 pre-step 更新 (当前正在跑的 turn); onResolve 时把 activeTurn 记成 cancelTurn.
+// cancel_turn 标记: 某个 tool 的结果协议带了 cancel → 该 turn 的下一 step 直接 cut.
+// activeTurn 由 pre-step 更新 (当前正在跑的 turn); awaitToolResult 在 execute 时把 turn 存进
+// pending, /tool-result 见到 cancel 时把它记成 cancelTurn. 带 turn 才不会误 cancel 下一轮.
 let activeTurn: number | null = null
 let cancelTurn: number | null = null
 
@@ -229,7 +230,28 @@ function closeThinking(): void {
 // tool 回调桥 (approach a): 需要 MOSS 侧 round-trip 的 tool (observe 等) execute 挂 pending
 // promise, 由 /tool-result RPC 按 callId 解锁. Map keyed by callId — 多 tool 各自 pending
 // 互不干扰. resolve 载荷 = 各 tool 的返回值 (observe = moment 文本 str).
-const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; onResolve?: () => void }>()
+// turn 在 execute 时刻捕获: 结果协议里的 cancel flag 只作用于调用它的那一轮.
+const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; turn: number | null }>()
+
+/**
+ * 挂一个 tool 的 pending promise — execute 阶段调用, /tool-result RPC 按 callId 解锁.
+ *
+ * turn 在**此刻**捕获 (不是 resolve 时刻): cancel 只作用于调用它的那一轮. 结果协议里的
+ * cancel flag 由 /tool-result 应用到 captured turn —— 迟到的回话 (已被 thinking/exit 结算)
+ * 不会误 cancel 下一轮 (见 dolores-tool-surface.md 的 cancel flag 段).
+ * abort 时 reject 并登记墓碑, 使随后迟到的 /tool-result 被安静吞掉.
+ */
+function awaitToolResult(toolName: string, callId: string, signal: AbortSignal): Promise<JsonValue> {
+  return new Promise<unknown>((resolve, reject) => {
+    pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject, turn: activeTurn })
+    signal.addEventListener('abort', () => {
+      if (pendingCalls.delete(callId)) {
+        rememberSettled(callId)
+        reject(new Error(`${toolName} aborted`))
+      }
+    }, { once: true })
+  }) as unknown as Promise<JsonValue>
+}
 
 /**
  * 已结算但 MOSS 侧仍会回话的 callId 墓碑 (callId → 结算时刻毫秒).
@@ -329,53 +351,44 @@ interface ThinkingEnterPayload {
 const egoTools = [
   defineTool({
     name: 'moss_ctml_append',
-    description: 'Append CTML mid-thought so the world can see your ongoing thinking. With wait_done you wait for the actions to finish and get the next moment; otherwise you only confirm the CTML was compiled and get the current Shell status.',
+    // 唯一流式 tool: 参数只有 ctml, 经 tool-call-delta 逐字进 articulator (见 _ctml_stream.py).
+    // 模型写一个大的 ctml 时, 不用等一次输出完再编译.
+    description: 'Append CTML mid-thought so the world can see your ongoing thinking as you generate it. Your ctml is streamed into its own action and compiled as you write; the tool returns once it compiles (or "ctml syntax error" if it does not).',
     parameters: {
-      ctml: { type: 'string', description: 'The CTML to append.' },
-      replan: { type: 'boolean', default: false, description: 'Replan the current action plan before executing.' },
-      wait_done: { type: 'boolean', default: false, description: 'Wait for the actions to finish and produce the next moment; otherwise just confirm the CTML compiled and return the Shell status.' },
+      ctml: { type: 'string', required: true, description: 'The CTML to append.' },
     },
     output: {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
     },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<string>((resolve, reject) => {
-        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) {
-            rememberSettled(callId)
-            reject(new Error('moss_ctml_append aborted'))
-          }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
+    execute: async (_args, exec) => awaitToolResult('moss_ctml_append', String(exec.callId), exec.signal),
   }),
   defineTool({
     name: 'moss_wait_next_moment',
+    // 结果协议带 cancel=true: MOSS 侧 wait_actions_done 后回结果, plugin 立刻 cut 本 turn,
+    // 下一 step 不再跑 — 用它代替没人看的 final answer. turn 由 awaitToolResult 在 execute 时捕获.
     description: 'Wait for all your actions to finish, then yield the turn so the next moment wakes you. Use this in a voice/body interaction instead of emitting empty text nobody will read.',
     parameters: {},
     output: {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<string>((resolve, reject) => {
-        pendingCalls.set(callId, {
-          resolve: resolve as (value: unknown) => void,
-          reject,
-          onResolve: () => { cancelTurn = activeTurn },
-        })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) {
-            rememberSettled(callId)
-            reject(new Error('moss_wait_next_moment aborted'))
-          }
-        }, { once: true })
-      }) as unknown as JsonValue
+    execute: async (_args, exec) => awaitToolResult('moss_wait_next_moment', String(exec.callId), exec.signal),
+  }),
+  defineTool({
+    name: 'moss_wait_action_done',
+    // replan 非空 (含 "") 先发 replan action (clear interpreter + 这段 ctml) 替换当前 plan,
+    // 再等全部结束 + observe 最新 moment; replan 缺省/null 表示只 wait 不 replan. timeout=-1 无限等.
+    description: 'Wait for all your actions to finish, then observe the freshest moment (returned as a moment_ref). Pass replan as a CTML string to replace the current plan first (an empty string replans with nothing); omit replan to just wait. timeout is seconds to wait, or -1 to wait without bound.',
+    parameters: {
+      replan: { type: 'string', description: 'CTML to replan with before waiting; omit (null) to just wait. An empty string replans with nothing.' },
+      timeout: { type: 'number', default: -1, description: 'Seconds to wait; -1 waits without bound.' },
     },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_wait_action_done', String(exec.callId), exec.signal),
   }),
   defineTool({
     name: 'moss_reasoning',
@@ -395,71 +408,28 @@ const egoTools = [
     },
   }),
   defineTool({
-    name: 'moss_observe_status',
+    name: 'moss_shell_status',
     description: 'Check what your Shell is doing right now, for the thinking that precedes acting. Returns a status description; no new moment comes with it.',
     parameters: {},
     output: {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<string>((resolve, reject) => {
-        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) {
-            rememberSettled(callId)
-            reject(new Error('moss_observe_status aborted'))
-          }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
-  }),
-  defineTool({
-    name: 'moss_channels',
-    // 自省工具: 平时用不到 (channel 面就在上下文里), 面变了或 debug 时用.
-    description: 'List every channel you currently have and what it is for. For self-inspection — normally your channel surface is already in context; use this when it changed underneath you or when debugging.',
-    parameters: {},
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
-    },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<string>((resolve, reject) => {
-        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) {
-            rememberSettled(callId)
-            reject(new Error('moss_channels aborted'))
-          }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
+    execute: async (_args, exec) => awaitToolResult('moss_shell_status', String(exec.callId), exec.signal),
   }),
   defineTool({
     name: 'moss_channel_facade',
-    // 自省工具: 拉某个 channel 的完整操作面 (instruction/commands/notices/state), debug 时用.
-    description: 'Read one channel\'s full operating surface — its instruction, commands, notices and state. For self-inspection: normally you already have this in context; use it when you cannot recall a channel\'s commands or when debugging.',
+    // 自省工具: recursive=true 列 path 前缀下的 channel (取代 moss_channels), false 读单个完整操作面.
+    description: 'Read your channel operating surface. With recursive=true (default) list every channel under channel_path (empty = all); with recursive=false read one channel\'s full surface (instruction, commands, notices, state). For self-inspection — normally you already have this in context.',
     parameters: {
-      path: { type: 'string', required: true, description: 'The channel\'s full path, e.g. "ghost.frame".' },
+      channel_path: { type: 'string', required: true, description: 'The channel path (a prefix when recursive), e.g. "ghost.frame".' },
+      recursive: { type: 'boolean', default: true, description: 'true lists channels under the path prefix; false reads one channel\'s full surface.' },
     },
     output: {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute: async (_args, exec) => {
-      const callId = String(exec.callId)
-      return await new Promise<string>((resolve, reject) => {
-        pendingCalls.set(callId, { resolve: resolve as (value: unknown) => void, reject })
-        exec.signal.addEventListener('abort', () => {
-          if (pendingCalls.delete(callId)) {
-            rememberSettled(callId)
-            reject(new Error('moss_channel_facade aborted'))
-          }
-        }, { once: true })
-      }) as unknown as JsonValue
-    },
+    execute: async (_args, exec) => awaitToolResult('moss_channel_facade', String(exec.callId), exec.signal),
   }),
 ]
 
@@ -572,11 +542,12 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
       // 前置旁路 instruction → 成为该 turn 的 surface 节点, 下轮 pre-step 时被 collapseTurn 折叠.
       return { kind: 'enter', messages: [bypassInstruction(), ...decision.messages] }
     }
-    // cancel_turn: 上一轮 moss_wait_next_moment 已返回, 当前同 turn 的新 step 直接 cancel.
+    // cancel_turn: 本 turn 的某个 tool 结果已带 cancel (wait_next_moment / react), 直接 cut.
+    // 这个 turn/end (aborted) 就是 MOSS 侧 thinking 退出的信号 — MOSS 自己不主动 cancel.
     activeTurn = turn
     if (cancelTurn !== null && cancelTurn === turn) {
       cancelTurn = null
-      stepAgent.cancel({ kind: 'hook', reason: 'moss wait_next_moment' })
+      stepAgent.cancel({ kind: 'hook', reason: 'moss cancel_turn' })
       return { kind: 'reject' }
     }
     await thinkingGate.wait(undefined, signal)
@@ -967,7 +938,11 @@ export function apply(ctx: Context) {
         }
         // result = tool 给模型的返回值 (observe 为 "{epoch}-{moment}" 短 id).
         pending.resolve(body.result)
-        if (pending.onResolve !== undefined) pending.onResolve()
+        // cancel flag: 本调用所属那一轮的下一 step 立刻 cut. 只认 captured turn —— 迟到的回话
+        // (已被 thinking/exit 结算) 不会误 cancel 下一轮. 见 awaitToolResult 的注释.
+        if (body.cancel === true && pending.turn !== null) {
+          cancelTurn = pending.turn
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (error) {

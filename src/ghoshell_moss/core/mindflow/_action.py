@@ -33,7 +33,7 @@ class BaseArticulator(Articulator):
             compiled_event: ThreadSafeEvent,
             action_stop_event: ThreadSafeEvent,
             warrant: ApproveCallback | None = None,
-            action: 'BaseAction | None' = None,
+            action: 'BaseAction',
             put_action: Callable[[Action], None] | None = None,
             logger: logging.Logger | None = None,
     ):
@@ -51,10 +51,14 @@ class BaseArticulator(Articulator):
         # gated 模式下被持有的审批 task, 供 wait 动作 await / __aexit__ 退出时 cancel.
         self._approve_task: asyncio.Task | None = None
 
-    async def wait_compiled(self) -> None:
+    async def wait_compiled(self, raise_interpret_error: bool = False) -> None:
         await self._commit()
         await self._await_approve()
         await self._compiled_event.wait()
+        if raise_interpret_error:
+            error = self._action.interpret_error
+            if error is not None:
+                raise InterpretError.from_error(error)
 
     async def wait_action_done(self) -> None:
         if not self._started:
@@ -278,6 +282,11 @@ class BaseAction(Action):
     def set_interpret_error(self, error: Exception) -> None:
         self._compiled_event.set()
         self._interpret_error = error
+
+    @property
+    def interpret_error(self) -> Exception | None:
+        """The interpreter's parse error, if this action's logos failed to compile."""
+        return self._interpret_error
 
     def logos(self) -> AsyncIterator[str]:
         return self._deliver_logos()

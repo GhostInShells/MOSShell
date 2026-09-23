@@ -796,8 +796,11 @@ class Articulator(ABC):
         ...
 
     @abstractmethod
-    async def wait_compiled(self) -> None:
-        """等待到 logos 编译完成."""
+    async def wait_compiled(self, raise_interpret_error: bool = False) -> None:
+        """等待到 logos 编译完成.
+
+        :param raise_interpret_error: 编译失败时抛 InterpretError, 否则静默.
+        """
         ...
 
     @abstractmethod
