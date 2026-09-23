@@ -431,6 +431,46 @@ const egoTools = [
     },
     execute: async (_args, exec) => awaitToolResult('moss_channel_facade', String(exec.callId), exec.signal),
   }),
+  defineTool({
+    name: 'moss_react',
+    // 快应答: char → 运行时定义的 ctml 模板 (%s 槽), args 填入后 stream 进 articulator.
+    // wait_next_moment=true (默认) 等 actions done 后 cancel turn —— 说完就退.
+    description: 'Fire a runtime-defined react: char keys a CTML template you defined with moss_define_reacts; args fill its %s slots to form the CTML, which executes. wait_next_moment=true (default) waits for it to finish, then ends the turn — say it, then done.',
+    parameters: {
+      char: { type: 'string', required: true, description: 'The single-character react key.' },
+      args: { type: 'array', items: { type: 'string' }, description: 'Positional args filling the template %s slots, in order.' },
+      wait_next_moment: { type: 'boolean', default: true, description: 'Wait for the CTML to finish, then end the turn.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_react', String(exec.callId), exec.signal),
+  }),
+  defineTool({
+    name: 'moss_define_reacts',
+    // 批量定义快应答: char → ctml 模板 (%s 槽), merge/覆盖, 纯内存. 返回定义了哪些 char.
+    description: 'Bulk define reacts: each item maps a single-character key to a CTML template with %s slots. Merge/overwrite, in-memory only. Returns the chars defined.',
+    parameters: {
+      reacts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            char: { type: 'string', required: true, description: 'Single-character key.' },
+            template: { type: 'string', required: true, description: 'CTML template; %s slots filled by args.' },
+          },
+        },
+        description: 'List of {char, template} reacts to define.',
+      },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_define_reacts', String(exec.callId), exec.signal),
+  }),
 ]
 
 // ── per-agent model selection (thinking/enter 应用 default effort 的目标) ──────

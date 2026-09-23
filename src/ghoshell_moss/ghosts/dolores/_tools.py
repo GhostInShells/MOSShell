@@ -13,6 +13,8 @@ from typing_extensions import Self
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 
+from ._react import React
+
 __all__ = [
     "CtmlAppendToolCall",
     "WaitActionDoneToolCall",
@@ -20,6 +22,8 @@ __all__ = [
     "ShellStatusToolCall",
     "ReasoningToolCall",
     "ChannelFacadeToolCall",
+    "ReactToolCall",
+    "DefineReactsToolCall",
 ]
 
 _ResultType = dict | list | str | None
@@ -206,3 +210,40 @@ class ReasoningToolCall(ToolCallParameter):
     @classmethod
     def tool_name(cls) -> str:
         return "moss_reasoning"
+
+
+class ReactToolCall(ToolCallParameter):
+    """moss_react — fire a runtime-defined react.
+
+    ``char`` keys a react defined via ``moss_define_reacts`` (char → CTML template). ``args`` fills
+    the template's ``%s`` slots to form the CTML, which executes. ``wait_next_moment=True`` (default)
+    waits for it to finish, then ends the turn — say it, then done.
+    """
+
+    char: str = Field(description="the single-character react key.")
+    args: list[str] | None = Field(
+        default=None,
+        description="positional args filling the template's %s slots, in order.",
+    )
+    wait_next_moment: bool = Field(
+        default=True,
+        description="wait for the CTML to finish, then end the turn.",
+    )
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_react"
+
+
+class DefineReactsToolCall(ToolCallParameter):
+    """moss_define_reacts — bulk define reacts (char → CTML template with %s slots).
+
+    Merge/overwrite, in-memory only. Returns the chars defined — the model defines what a scenario
+    needs, when it needs it; no seed, no notice, no persistence.
+    """
+
+    reacts: list[React] = Field(description="list of {char, template}.")
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_define_reacts"

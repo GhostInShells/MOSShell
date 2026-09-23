@@ -40,6 +40,8 @@ from ._tools import (
     ShellStatusToolCall,
     ReasoningToolCall,
     ChannelFacadeToolCall,
+    ReactToolCall,
+    DefineReactsToolCall,
     ToolCallResult,
 )
 
@@ -181,6 +183,14 @@ class DoloresRun:
         if result is not None:
             await self._dispatch_tool_result(result)
             return
+        result = await ReactToolCall.run_tool(event, self._handle_react)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
+        result = await DefineReactsToolCall.run_tool(event, self._handle_define_reacts)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
         if (call := ReasoningToolCall.from_tool_call(event)) is not None:
             self._ego.default_effort = call.effort
 
@@ -280,6 +290,58 @@ class DoloresRun:
             if path.startswith(prefix)
         }
         return yaml_pretty_dump(kv)
+
+    async def _handle_define_reacts(self, call: DefineReactsToolCall) -> ToolCallResult:
+        """moss_define_reacts handler — merge/overwrite reacts into the in-memory table."""
+        store = self._ego.react_store
+        if store is None:
+            return ToolCallResult(call=call.tool_call_event, result="react unavailable")
+        try:
+            defined = store.define(call.reacts)
+        except ValueError as error:
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result=f"react define error: {error}",
+            )
+        return ToolCallResult(call=call.tool_call_event, result={"defined": defined})
+
+    async def _handle_react(self, call: ReactToolCall) -> ToolCallResult:
+        """moss_react handler — resolve the char's template, substitute args, stream the CTML out.
+
+        A fast reply: ``template % args`` becomes CTML, appended through a fresh articulator (one
+        whole shot, not streamed deltas — unlike ctml_append). ``wait_next_moment`` waits for the
+        actions to finish and cuts the turn (the say-then-done shape). The result is the resolved
+        CTML itself, so the model can reconcile what it actually sent.
+        """
+        store = self._ego.react_store
+        if store is None:
+            return ToolCallResult(call=call.tool_call_event, result="react unavailable")
+        try:
+            ctml = store.render(call.char, call.args)
+        except KeyError:
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result=f"no react defined for {call.char!r}",
+            )
+        except ValueError as error:
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result=f"react arg error: {error}",
+            )
+        articulator = self._thinking.articulator()
+        await articulator.send(ctml)
+        try:
+            await articulator.wait_compiled(raise_interpret_error=True)
+        except InterpretError:
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result="ctml syntax error",
+                cancel=True,
+            )
+        if call.wait_next_moment:
+            await self._thinking.wait_actions_done()
+            return ToolCallResult(call=call.tool_call_event, result=ctml, cancel=True)
+        return ToolCallResult(call=call.tool_call_event, result=ctml)
 
     async def _handle_wait_next_moment(self, call: WaitNextMomentToolCall) -> ToolCallResult:
         """wait_next_moment handler — wait for all actions to finish, then yield the turn.

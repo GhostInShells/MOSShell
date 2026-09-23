@@ -33,7 +33,7 @@ markdown），这是重大问题。现在的解法不是对抗，而是**双重�
 | `moss_ctml_append` | `ctml` | 独立 articulator 追加，wait compiled 立即继续；interpret error 时 abort thinking | **是（唯一）** |
 | `moss_wait_action_done` | `interrupt=false`, `timeout=-1` | wait all actions done + observe；`interrupt=true` 发 replan action | 否 |
 | `moss_wait_next_moment` | — | 等所有 action done + cancel_turn，代替 final answer | 否 |
-| `moss_react` | `char`, `kwargs=None`, `wait_next_moment=True` | 单字符执行预设 template，command 不 observe | 否 |
+| `moss_react` | `char`, `args: list[str]|None=None`, `wait_next_moment=True` | 单字符执行运行时定义的 template（无 seed 无 notice，context-governed），command 不 observe | 否 |
 | `moss_shell_status` | — | 观测 shell 状态（改名自 moss_observe_status） | 否 |
 | `moss_reasoning` | `effort` | 声明思考深度，下一轮生效 | 否 |
 | `moss_channel_facade` | `channel_path`, `recursive=True` | 读 channel 操作面，recursive 取代 moss_channels | 否 |
@@ -66,6 +66,10 @@ cancel 会话。**建模方式：tool call 返回值协议里都带一个 cancel
 
 **cancel flag 必须带 turn**：界面上也可以 cancel（外部打断），不带 turn 号可能有「下一轮启动
 时误 cancel」的错误。带 turn 才能区分「本轮的 react cancel」和「下一轮的正常启动」。
+
+react 表是**运行时态**：启动不加载 preset、不挂 named notice，模型现场 `define_react`（ghost
+channel 命令），compaction 后重定义；`define_react` 的返回值即其自身的 notice。`import_reacts` /
+`export_reacts`（单文件 YAML）是唯一持久化缝。
 
 ### 4. interrupt 原语与 wait_action_done 的心智成本
 

@@ -47,6 +47,7 @@ from ghoshell_moss.memento.abcd import CommitRef
 
 from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
 from ._prompts import dolores_model_notice
+from ._react import ReactStore
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
@@ -153,6 +154,7 @@ class DoloresEgo:
             logger: LoggerItf | None = None,
             memories: Callable[[], list[Message]] | None = None,
             memento_manager: EgoMementoManager | None = None,
+            react_store: ReactStore | None = None,
     ) -> None:
         """Construct before the ghost enters its lifecycle; side-effect free (no httpx / session / matrix.processes).
 
@@ -173,6 +175,7 @@ class DoloresEgo:
         self._config = config or DoloresEgoConfig()
         self._memories = memories
         self._memento_manager = memento_manager
+        self._react_store = react_store
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
         # anti-bypass token: returned by ego/create, carried by thinking enter/exit, verified by the plugin to reject non-ego calls.
@@ -282,6 +285,11 @@ class DoloresEgo:
         if self._session is None:
             raise RuntimeError("ego session not started. Call __aenter__ first.")
         return self._session
+
+    @property
+    def react_store(self) -> ReactStore | None:
+        """The runtime react table (char → CTML template), shared with the ghost channel. None = react unavailable."""
+        return self._react_store
 
     # ── short-lived: run_thinking (transaction) ──────────────────────
 
