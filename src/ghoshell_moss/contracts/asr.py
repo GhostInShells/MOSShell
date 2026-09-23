@@ -24,6 +24,9 @@ from ghoshell_moss.contracts.audio import AudioChunk
 __all__ = [
     "ASR",
     "ASRInfo",
+    "Corpus",
+    "ASRWithCorpus",
+    "RecognitionWord",
     "RecognitionStream",
     "RecognitionPhase",
     "RecognitionClause",
@@ -107,6 +110,21 @@ class RecognitionPhase(str, Enum):
 
 
 @dataclass
+class RecognitionWord:
+    """One word (字) in a recognized clause — text + word-level confidence.
+
+    ``conf`` is the engine's per-word confidence; None = the engine did not report
+    it (treated as "unknown", not "low"). 说侧 ``SpeechClause.words`` carries
+    ``confidence`` (火山 TTS subtitle); 听侧这里 is ``conf`` (火山 ASR
+    ``utterances[].words[].conf``) — 两侧字段名不同, 时间单位也不同 (说侧秒 / 听侧毫秒),
+    契约层各持其名, 不强行统一.
+    """
+
+    text: str = ""
+    conf: float | None = None
+
+
+@dataclass
 class RecognitionClause:
     """A stable sentence finalized by the engine's VAD 判停 (text axis).
 
@@ -118,12 +136,16 @@ class RecognitionClause:
     ``start_ms``/``end_ms`` are stream-relative (audio axis); ``created`` is the
     wall-clock instant (epoch seconds, ``time.time()``) the recognizer finalized
     this clause.
+
+    ``words`` carries the word-level breakdown with per-word confidence (empty when
+    the engine does not report it) — 供 signal 携带低置信字, 不参与判停.
     """
 
     text: str = ""
     start_ms: int = 0
     end_ms: int = 0
     additional: dict = field(default_factory=dict)
+    words: list[RecognitionWord] = field(default_factory=list)
     created: float = field(default_factory=time.time)
 
 
@@ -215,6 +237,51 @@ class ASRInfo(BaseModel):
     params_schema: dict = Field(default_factory=dict,
                                 description="json schema of tunable behavior params (each implementation exposes its own BaseModel)")
     params: dict = Field(default_factory=dict, description="current behavior param values")
+
+
+class Corpus(BaseModel):
+    """Runtime corpus — the conditioning text handed to the recognition engine.
+
+    For a large-model ASR, context *is* a prompt: the engine does not branch its
+    transcription logic on what the context holds, it only shares one encoding. So
+    there is no role/speaker semantics here — only conditioning text.
+
+    Two axes:
+
+    - ``instruction``: the model-writable prompt. When non-empty it always leads, and
+      it never takes part in tail truncation.
+    - ``lines``: what the ghost itself has said (tail-kept). Projected from the
+      speaking-side clause stream; not writable through the command surface.
+
+    ``max_lines`` is the line budget declared on the generic surface. The **token
+    budget and the wire composition belong to each implementation** (engines differ in
+    their limits and in how they count).
+
+    Runtime state only — a corpus is not persisted. Durable word lists belong to the
+    vendor config layer, not here.
+    """
+
+    instruction: str = Field(
+        default="",
+        description="模型可写的条件提示词 — 非空时永远排在 lines 前面, 不参与 tail 截断",
+    )
+    lines: list[str] = Field(
+        default_factory=list,
+        description="ghost 自己说过的话 (尾部保留); 由说侧 clause 流投影填入, 不经 command 写",
+    )
+    max_lines: int = Field(
+        default=20,
+        description="lines 尾部保留上限 (真实 token 预算由实现另定)",
+    )
+
+    def tail(self, line: str) -> None:
+        """Append one ghost line, dropping the oldest beyond ``max_lines``."""
+        line = (line or "").strip()
+        if not line:
+            return
+        self.lines.append(line)
+        if len(self.lines) > self.max_lines:
+            del self.lines[: len(self.lines) - self.max_lines]
 
 
 class RecognitionStream(ABC):
@@ -331,3 +398,24 @@ class ASR(ABC):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+
+
+class ASRWithCorpus(ASR, ABC):
+    """An optional capability face of ASR — engines that take a runtime corpus implement it.
+
+    Shaped like ``Speech -> TTSSpeech``: the generic layer only ``isinstance``-checks the
+    capability to decide whether to expose the corpus control surface to the model. An ASR
+    without this face degrades naturally — the capability simply does not exist.
+
+    In-process contract: ``corpus()`` returns the live object, so the speaking-side
+    projection may ``tail()`` into it. Cross-process consumers go through the channel
+    command surface instead.
+    """
+
+    @abstractmethod
+    def corpus(self) -> Corpus:
+        """The current runtime corpus — self-describing (what a ``get`` shows is what will be sent)."""
+
+    @abstractmethod
+    def set_corpus_instruction(self, instruction: str) -> None:
+        """Replace the corpus prompt wholesale (set, not update). Takes effect at the next segment."""

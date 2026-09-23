@@ -565,3 +565,75 @@ knock 常驻 (idle_timeout=0) —— "睡不睡" (knock 之后彻底关) 是 min
 `on_sound_detected` / `start_sound_detection` / `stop_sound_detection` (contracts/listener.py
 默认 no-op); controller 订阅回调发 knock signal, `_run_knock` 走能量检测不启动 ASR。
 空闲降级经 `_degrade_to_knock` 延迟启动, 向前兼容: listener 不支持能量检测时退回彻底结束。
+
+## 2026-09-23 后续补: ASR corpus 公开协议 + 词级置信度 + 礼仪 set
+
+> 人类架构师定稿三块。第一条与第三条同源 —— 模型可编辑的运行时对象, 与落盘资产分开处置。
+
+### 一、Corpus 作可降级的公开协议
+
+**形状** (与 `Speech → TTSSpeech` 同构, 泛型层只 `isinstance` 判能力):
+
+```python
+class Corpus(BaseModel):        # 泛型建模
+    instruction: str            # 非空, tail 永不碰它
+    lines: list[str]            # 尾部保留, 只记 ghost 自己说过的话
+
+class ASRWithCorpus(ASR, ABC):
+    @abstractmethod
+    def corpus(self) -> Corpus: ...
+```
+
+- **泛型只声明语义, 不写 token**: instruction 优先 + lines 从尾部补 ghost 自己的行 +
+  行数上限。**token 预算与拼装 (含 `request.context` 的协议适配: `[{text}]` 从新到旧、
+  ≤800 token) 在 seed asr 实现里定** —— 只有它知道自己的上限与折算。
+- **lines 的来源是说侧**: ghost 自己刚说过的话 (用户多半在回应它), 在说侧广播 ghost
+  ClauseTopic 的**同一处**喂进 corpus (`controller.feed_ghost_clause`), **不订阅 topic、
+  不走听侧 `SegmentBuffer`**。现成通路, 不依赖 #13 的统一历史。
+- **热词不进接口**: 基础词表落 ghost home 火山配置 (文件)。模型能改 config 就读改,
+  不能改知道了也没意义。因此不存在"基础词表 × 运行时补充"的合并 / 100 token 截断顺序问题。
+  (直传热词上限 ~100 token, 从前往后保留末尾截断 —— 该约束只在配置层有意义。)
+- **runtime corpus 不落盘、无逃生门** (对齐礼仪: 运行时可改, 落盘是例外)。
+- command: listener channel 上**一条独立 command**, 不与礼仪合流
+  (`available = isinstance(asr, ASRWithCorpus)`, 没 corpus 的 ASR 不暴露)。
+
+**现存量修**:
+
+- corpus 现在**按流冻结** (`recognizer.py:102` 传副本 + `:290` 每次 init 读副本)。
+  `always` 礼仪一条流跑几小时 → 模型写的 prompt 当天不生效。改为每个 segment 的 init 现读。
+- `VolcengineSaucCorpus.context_data` 描述写 `[{speaker, text}]` 是**错的** (火山 `dialog_ctx`
+  只有 `[{text}]`, 无 role/speaker)。codec 内部化后该字段不再面向模型。
+- `configure_corpus()` 至今**零调用者、零测试** —— 开放项 (`voice-input-state-machine:893`
+  "ASR 开放词表 + 上下文 getter") 在这条里收口。
+
+### 二、词级置信度
+
+火山 ASR 只有**词级** `utterances[].words[].conf`, 无句级置信度。听侧现在 `Word` 无 conf、
+`_parse_result` 把 `words` 整个丢掉; 说侧 (火山 TTS subtitle) 早就带着
+`SpeechClause.words[].confidence` —— 两侧不对称。
+
+**这条推翻 `voice-input-state-machine:1190` #7 "分句三字段, confidence/words 不要"** (该
+workstream 已 completed, 已在原处留反向指针)。
+
+- 契约层 `RecognitionClause` 长出词级面 (统一名, 协议层各自 alias: 火山 ASR 是 `conf`,
+  火山 TTS 是 `confidence`); 协议 `Word` 补 `conf`。
+- 交付时按 `segment_id` 取回该段 clauses → 列 `conf < k` 的字。controller 已有回读路径
+  (`_on_buffer_segment` + `SegmentBuffer`, 且 `_last_finalized_id` 已处理 TAIL/segment 时序竞态)。
+- 携带面: `<listen source="asr" low_conf="...">` 属性 (与 `source` 同构), **不进正文**。
+- `k` 落在 deliver spec (礼仪 set 面)。
+
+### 三、礼仪: 先 set, 不做 update_from
+
+> 2026-09-23 人类架构师裁定, 推翻了此前"加 `update_from(mode, patch)`"的提议。
+
+**理由**: 人类思考远快于执行 → 倾向降低执行成本 (patch 式 update); 模型输出 logos 与
+输出全量几乎同价, 而 update 的合并语义 (深合并 / 缺省 / null 语义) 本身就是一层
+"这样改对不对" 的心智闸口, thinking 模式下多花的 token 反而更多。**先走 set (整份替换),
+未来再完善。**
+
+**set 的连带**:
+
+- 状态无隐藏 diff 历史 → 导出的 config 文件天然是完整快照, git 可 diff。
+- 代价: **读面变成承重墙** —— 模型必须先 get 再 set, 否则覆盖掉自己不知道的字段。
+  所以读面必须完整、自描述 (八/十种开箱礼仪的 Field 描述即是该面)。
+- **存储 = n 种 mode 的默认集**; 运行时改; import / export 是**逃生门** (非常规路径)。

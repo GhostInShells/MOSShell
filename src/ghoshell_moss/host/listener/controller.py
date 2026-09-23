@@ -25,7 +25,7 @@ import numpy as np
 from typing_extensions import Self
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts.asr import ASR, RecognitionEvent, RecognitionPhase, RecognitionSegment
+from ghoshell_moss.contracts.asr import ASR, ASRWithCorpus, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment
 from ghoshell_moss.contracts.audio import (
     AUDIO_SAMPLE_INTERVAL,
     AudioChunk,
@@ -33,7 +33,7 @@ from ghoshell_moss.contracts.audio import (
     compute_spectrum,
 )
 from ghoshell_moss.contracts.configs import ConfigStore
-from ghoshell_moss.contracts.llms import MossLLMCaller
+from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.contracts.listener import ListenLifecycle, Listener, ListenerState
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
@@ -60,6 +60,7 @@ __all__ = [
     "ListenerController",
     "ListenerSnapshot",
     "StopDetectorFactory",
+    "build_stop_caller_factory",
 ]
 
 
@@ -67,6 +68,26 @@ __all__ = [
 #: 默认实现由 ``ListenerController`` 按 ``StopSpec`` + 注入的 caller 组装;
 #: 注入自定义 factory 即可整段替换 (container 在 runtime get 一次后塞进来).
 StopDetectorFactory = Callable[[EtiquetteSpec, Callable[[], None]], StopJudge]
+
+
+def build_stop_caller_factory(container) -> Optional[Callable[[str], MossLLMCaller]]:
+    """出口位点 classifier 的依赖装配: 容器有模型环境 (MossLLMFuncs) 时返回
+    (instruction) -> caller 工厂, 否则 None.
+
+    None 不是错误 —— 默认出口本就不依赖模型; classifier 静默缺席, 礼仪退回
+    silence/keywords. runtime 与 listener_node 共用同一装配, 避免两处各写一遍.
+    """
+    funcs = container.get(LLMFuncs)
+    if not isinstance(funcs, MossLLMFuncs):
+        return None
+
+    def _factory(instruction: str) -> MossLLMCaller:
+        return funcs.caller(
+            instruction=instruction,
+            tag="small_fast_model",
+            settings=CallSettings(max_output_tokens=1),
+        )
+    return _factory
 
 
 @dataclass
@@ -145,6 +166,9 @@ class ListenerController(ListenLifecycle):
         self._signal_broadcast = signal_broadcast
         if signal_broadcast is not None:
             listener.on_recognition_result(self._emit_event)
+            # 词级置信度来源: 累积当前 segment 的 clause (emit 时才需要), TAIL 清零 —
+            # 注册在 _emit_event 之后, 保证 TAIL 上 _emit_deliver 先读累积值、再被清零.
+            listener.on_recognition_result(self._on_accumulate_clause)
 
         self._channel: Optional[Channel] = None
         # 礼仪配置化: 当前激活礼仪 (首包/尾包协议读它) + config store (持久化).
@@ -169,6 +193,7 @@ class ListenerController(ListenLifecycle):
         # segment buffer (感知协议): 跨 session 订阅 text/segment, 拉模式读.
         # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 deliver.emit=False 门控.
         self._buffer = SegmentBuffer()
+        self._current_clauses: list[RecognitionClause] = []
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
         # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
@@ -437,6 +462,11 @@ class ListenerController(ListenLifecycle):
         if classifier is not None and self._stop_caller_factory is not None:
             caller = self._stop_caller_factory(classifier.instruction)
         if caller is None:
+            if classifier is not None:
+                self._logger.warning(
+                    "%s classifier mounted (scored) but no stop caller — degrades to silence/keywords",
+                    self._log_prefix,
+                )
             return StopJudge(
                 caller=None,
                 judge=False,
@@ -587,6 +617,15 @@ class ListenerController(ListenLifecycle):
         return await self._listener.listen()
 
     # ── clause → topic 装线 ──
+
+    def feed_ghost_clause(self, text: str) -> None:
+        """说侧 ghost clause → corpus.tail (lines 投影入口).
+
+        由 moss runtime 的统一 clause 接线在广播 ghost ClauseTopic 的同一处调用; 非
+        corpus 能力的 ASR 静默 no-op (可降级)。
+        """
+        if isinstance(self._asr, ASRWithCorpus):
+            self._asr.corpus().tail(text)
 
     async def with_topic_service(self, service: TopicService) -> None:
         """懒装线: 把识别到的 CLAUSE 发布成 ClauseTopic 到 ``service``.
@@ -748,6 +787,7 @@ class ListenerController(ListenLifecycle):
             segment_id=result.segment_id,
             interrupt=deliver.interrupt,
             mode=deliver.mode,
+            low_conf=self._low_confidence_chars(deliver.low_confidence),
             complete=True,
             priority=deliver.priority,
             description="listener:deliver",
@@ -943,6 +983,28 @@ class ListenerController(ListenLifecycle):
             return
         self._buffer.on_segment(segment)
 
+    def _on_accumulate_clause(self, event: RecognitionEvent) -> None:
+        """累积当前 segment 的 clause (词级置信度来源), TAIL 时清零.
+
+        CLAUSE 与 TAIL 走同一条 FIFO queue (pump task), 故 TAIL 前本 segment 的 clause
+        已全部到达; ``_emit_deliver`` 在 TAIL 上读累积值后由本观察者清零, 供下一 segment.
+        """
+        if event.phase == RecognitionPhase.CLAUSE and event.clause is not None:
+            self._current_clauses.append(event.clause)
+        elif event.phase == RecognitionPhase.TAIL:
+            self._current_clauses = []
+
+    def _low_confidence_chars(self, threshold: float | None) -> str:
+        """当前 segment 里词级置信度 < threshold 的字 (拼接, 供 low_conf 属性); None → 空."""
+        if threshold is None:
+            return ""
+        chars: list[str] = []
+        for clause in self._current_clauses:
+            for w in clause.words:
+                if w.conf is not None and w.conf < threshold:
+                    chars.append(w.text)
+        return "".join(chars)
+
     # ── internals ──
 
     def _cancel_active(self) -> None:
@@ -1062,6 +1124,26 @@ class ListenerController(ListenLifecycle):
         async def get_asr_params() -> str:
             """Read ASR params (cold data, pulled on demand — not in notice)."""
             return json.dumps(self._asr.get_info().params, ensure_ascii=False)
+
+        # corpus 是 ASR 的可选能力面 — 没这能力的 ASR 整个 command 不暴露 (可降级).
+        @chan.build.command(available=lambda: isinstance(self._asr, ASRWithCorpus))
+        async def get_corpus() -> str:
+            """Read the runtime ASR corpus (conditioning text): instruction + the ghost
+            lines that will ride on the next segment. Cold data, pulled on demand.
+            """
+            if not isinstance(self._asr, ASRWithCorpus):
+                return "corpus not supported by this ASR"
+            return self._asr.corpus().model_dump_json()
+
+        @chan.build.command(available=lambda: isinstance(self._asr, ASRWithCorpus))
+        async def set_corpus_instruction(text__: str) -> str:
+            """Replace the corpus prompt wholesale (set, not update); takes effect at the
+            next segment. Runtime-only — not persisted across restarts.
+            """
+            if not isinstance(self._asr, ASRWithCorpus):
+                return "corpus not supported by this ASR"
+            self._asr.set_corpus_instruction(text__)
+            return "corpus instruction set"
 
         @chan.build.command()
         async def get_transcript(n: int = 0) -> str:

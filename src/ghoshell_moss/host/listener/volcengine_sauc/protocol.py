@@ -22,6 +22,8 @@ from ghoshell_common.helpers import uuid
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
 
+from ghoshell_moss.contracts.asr import Corpus
+
 from .config import VolcengineSaucConfig, VolcengineSaucCorpus
 
 __all__ = [
@@ -104,10 +106,58 @@ def _request_frame(message_type: int, flags: int, seq: int, payload: bytes, comp
     ])
 
 
-def create_init_request(uid: str, config: VolcengineSaucConfig, corpus: VolcengineSaucCorpus | None = None) -> bytes:
+# 火山 context 预算 (官方"热词与上下文"文档): ≤800 token. 中文 ~1 char ≈ 1 token,
+# 按字符数做保守上界。客户端自行裁剪, 不依赖服务端截断 (其"从新到旧、丢最旧"规则
+# 未经实跑验证, 保守起见自裁)。行数上限由 ``Corpus.max_lines`` 在泛型面声明, 不在此重复。
+_CONTEXT_TYPE = "dialog_ctx"
+_CONTEXT_MAX_TOKEN_CHARS = 800
+
+
+def _compose_context(boosting: VolcengineSaucCorpus, context: Corpus | None) -> dict | None:
+    """热词 (厂商配置) + 条件文本 (运行时 corpus) 折叠成 context 字段 (dict 或 None)。"""
+    data: dict = {}
+    hot = boosting.hotwords_payload()
+    if hot:
+        data.update(hot)
+    if context is not None:
+        entries = _clip_context(context.instruction, context.lines)
+        if entries:
+            data["context_type"] = _CONTEXT_TYPE
+            data["context_data"] = entries
+    return data or None
+
+
+def _clip_context(instruction: str, lines: list[str]) -> list[dict]:
+    """instruction 优先 + lines 尾部保留, 自行裁到 token 预算内。
+
+    线上顺序: instruction 打头 (index 0 = 服务端截断时最先保留的一端), lines 从新到旧跟随;
+    越界时从尾 (最旧) 开始丢 line。instruction 永不被裁 —— 它是否 fit 是模型自己的责任。
+    """
+    entries: list[dict] = []
+    budget = _CONTEXT_MAX_TOKEN_CHARS
+    if instruction:
+        entries.append({"text": instruction})
+        budget -= len(instruction)
+    for line in reversed(lines):  # 新→旧; 预算耗尽即停, 被丢的是最旧的
+        cost = len(line)
+        if budget - cost < 0:
+            break
+        entries.append({"text": line})
+        budget -= cost
+    return entries
+
+
+def create_init_request(
+        uid: str,
+        config: VolcengineSaucConfig,
+        *,
+        boosting: VolcengineSaucCorpus | None = None,
+        context: Corpus | None = None,
+) -> bytes:
     """构造 full client request。uid = segment_id, 每次识别流开局发一次。
 
-    corpus (热词/上下文) 是动态的, 从 ASR 实例传入, 不进 config。
+    ``boosting`` (热词/词表, 厂商配置) 与 ``context`` (条件文本, 运行时 corpus) 都是动态的,
+    从 ASR 实例传入, 不进 config —— 每个 segment 的 init 现读, 不在流创建时冻结。
     """
     p = config.params
     request: dict = {
@@ -122,13 +172,12 @@ def create_init_request(uid: str, config: VolcengineSaucConfig, corpus: Volcengi
         "force_to_speech_time": p.force_to_speech_time,
         "vad_segment_duration": p.vad_segment_duration,
     }
-    # 热词 / 上下文 (火山专属面, 动态, 不进 config)
-    c = corpus or VolcengineSaucCorpus()
+    c = boosting or VolcengineSaucCorpus()
     if c.boosting_table_name:
         request["boosting_table_name"] = c.boosting_table_name
     if c.boosting_table_id:
         request["boosting_table_id"] = c.boosting_table_id
-    ctx = c.context_payload()
+    ctx = _compose_context(c, context)
     if ctx:
         request["context"] = json.dumps(ctx, ensure_ascii=False)
 
@@ -170,10 +219,11 @@ class AudioInfo(BaseModel):
 
 
 class Word(BaseModel):
-    """词级时间戳 (ms, 流相对)。"""
+    """词级时间戳 (ms, 流相对) + 词级置信度。"""
     start_time: int = 0
     end_time: int = 0
     text: str = ""
+    conf: Optional[float] = None
 
 
 class Utterance(BaseModel):

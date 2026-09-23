@@ -44,27 +44,21 @@ class VolcengineSaucParams(BaseModel):
 
 
 class VolcengineSaucCorpus(BaseModel):
-    """热词 + 上下文 — 火山专属面, 不进 ASR 抽象。
+    """火山侧的 热词/词表 — 厂商配置面, 不进 ASR 抽象, 也不进模型接口。
 
-    通过 VolcengineSaucASR.configure_corpus() 配置; 修改后下一次 recognize() 的 init
-    会带上最新 corpus。
+    落盘在 ghost home 配置层; 模型能改 config 时读改即可, 所以不占 command 面。
+    上下文 (条件文本) 不走这里 — 见 ``contracts.asr.Corpus`` (运行时对象)。
     """
 
     hotwords: list[str] = Field(default_factory=list, description="直传热词列表")
     boosting_table_name: str = Field(default="", description="热词词表名称 (控制台自学习平台)")
     boosting_table_id: str = Field(default="", description="热词词表 id")
-    context_type: str = Field(default="", description="上下文类型, 目前仅 dialog_ctx")
-    context_data: list[dict] = Field(default_factory=list, description="历史对话上下文 [{speaker, text}]")
 
-    def context_payload(self) -> dict | None:
-        """把热词/上下文折叠成 init request 里的 context 字段 (dict 或 None)。"""
-        data: dict = {}
-        if self.hotwords:
-            data["hotwords"] = [{"word": w} for w in self.hotwords]
-        if self.context_type and self.context_data:
-            data["context_type"] = self.context_type
-            data["context_data"] = self.context_data
-        return data or None
+    def hotwords_payload(self) -> dict | None:
+        """热词折叠成 context 字段的子 dict (无热词则 None)。"""
+        if not self.hotwords:
+            return None
+        return {"hotwords": [{"word": w} for w in self.hotwords]}
 
 
 class VolcengineSaucConfig(ConfigType):

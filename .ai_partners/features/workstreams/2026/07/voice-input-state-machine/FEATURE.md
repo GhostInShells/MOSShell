@@ -1190,6 +1190,9 @@ commit 事件协议（trigger → ASR finalize 通道）、flag 作为 Parameter
 7. **分句三字段, confidence/words 不要。** utterance 有 `words[].conf` (词级), 无句级 confidence。
    分句只取 `text / start_time / end_time`。`clause_index` 不在 payload, 按 utterance 顺序在 ASR 层推导。
 
+   > **2026-09-23 已被推翻** (见 `interleaved-voice` 后续补第二条): 词级 conf 要进契约 ——
+   > signal 需要携带"置信度 < k 的字"。分句不再只取三字段。
+
 > 注: 本节"三相位"是 **ASR 结果层** (RecognitionResult); 09-01 节 B 的"四态 (首包/分句中/分句/尾包)"
 > 是 **signal 层** (ListenerNucleus)。"首包"由 ListenerNucleus 从 turn 开始合成, 不来自火山引擎。
 

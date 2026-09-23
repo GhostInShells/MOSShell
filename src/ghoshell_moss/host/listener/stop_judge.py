@@ -157,6 +157,7 @@ class StopJudge:
             await asyncio.sleep(self._judge_delay)  # 安全期: superseded → cancelled, no call spent
             result = await self._caller.run_messages(self._build_messages(clauses))
             score = parse_stop_score(result.content or "")
+            self._logger.info("stop judge scored %s over %d clauses", score, len(clauses))
         except asyncio.CancelledError:
             raise
         except Exception:

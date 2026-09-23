@@ -512,7 +512,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             self._matrix.logger.exception("%s resolve listener failed — degraded to no listen", self._log_prefix)
             self._listen_controller = None
             return
-        from ghoshell_moss.host.listener.controller import ListenerController
+        from ghoshell_moss.host.listener.controller import ListenerController, build_stop_caller_factory
         from ghoshell_moss.contracts.configs import ConfigStore
         config_store = self._matrix.container.get(ConfigStore)
         self._listen_controller = ListenerController(
@@ -520,6 +520,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             asr=listener.asr(),
             logger=self._matrix.logger,
             signal_broadcast=self._matrix.session.add_signal,
+            stop_caller_factory=build_stop_caller_factory(self._matrix.container),
             cell_name=self._matrix.this.name,
             config_store=config_store,
             topic_service=self._matrix.session.topics,
@@ -575,9 +576,16 @@ class ShellRuntimeImpl(MOSShellRuntime):
             ))
 
         async def _drain() -> None:
+            from ghoshell_moss.host.listener.controller import ListenerController
             while True:
                 topic = await queue.async_q.get()
                 publisher.pub(topic)
+                # corpus tail: ghost clause 在广播的同一处喂进听侧 ASR 的运行时 corpus
+                # (lines 投影)。将来这层 clause 统一接线 (说侧此处 + 听侧
+                # controller.with_topic_service) 会拆成独立 interleaved-voice 模块。
+                controller = self._listen_controller
+                if isinstance(controller, ListenerController):
+                    controller.feed_ghost_clause(topic.text)
 
         await publisher.__aenter__()
         disposer = speech.on_clause(_on_clause)

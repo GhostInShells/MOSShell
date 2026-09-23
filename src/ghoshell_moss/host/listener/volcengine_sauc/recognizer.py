@@ -24,9 +24,12 @@ from ghoshell_common.helpers import uuid
 from ghoshell_moss.contracts.asr import (
     ASR,
     ASRInfo,
+    ASRWithCorpus,
+    Corpus,
     AudioGate,
     AudioGateFactory,
     RecognitionClause,
+    RecognitionWord,
     RecognitionStream,
     RecognitionPhase,
     RecognitionEvent,
@@ -53,7 +56,7 @@ __all__ = ["VolcengineSaucASR"]
 _RECV_TIMEOUT = 1.0
 
 
-class VolcengineSaucASR(ASR):
+class VolcengineSaucASR(ASRWithCorpus):
     """豆包大模型流式识别。recognize() 返回一条识别流, 每流一条 WS。"""
 
     def __init__(
@@ -65,6 +68,7 @@ class VolcengineSaucASR(ASR):
         # ASR 实例私有副本 — 调参只改自己的副本, 不回流 config store.
         self._config = config.model_copy(deep=True)
         self._corpus = VolcengineSaucCorpus()
+        self._runtime_corpus = Corpus()
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[VolcengineSaucASR]"
         self._closed = False
@@ -99,7 +103,8 @@ class VolcengineSaucASR(ASR):
             raise RuntimeError("ASR is closed")
         return _VolcengineSaucRecognitionStream(
             config=self._config,
-            corpus=self._corpus,
+            boosting_provider=lambda: self._corpus,
+            context_provider=lambda: self._runtime_corpus,
             audio_chunks=audio_chunks,
             stream_id=stream_id,
             gate_factory=gate_factory or silence_gate_factory(),
@@ -118,10 +123,19 @@ class VolcengineSaucASR(ASR):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
+    # ── ASRWithCorpus 能力面 (运行时条件文本) ──
+
+    def corpus(self) -> Corpus:
+        return self._runtime_corpus
+
+    def set_corpus_instruction(self, instruction: str) -> None:
+        """整份替换 corpus 提示词 (set 而非 update); 下一个 segment 的 init 生效。"""
+        self._runtime_corpus.instruction = instruction
+
     # ── 火山专属面 (不进 ASR 抽象) ──
 
     def configure_corpus(self, corpus: VolcengineSaucCorpus) -> None:
-        """配置热词/上下文 (火山专属面)。修改后下一次 recognize() 的 init 带上最新 corpus。"""
+        """配置热词/词表 (火山厂商面)。修改后下一次 recognize() 的 init 带上最新 boosting。"""
         self._corpus = corpus.model_copy(deep=True)
 
 
@@ -143,10 +157,12 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
             logger: LoggerItf,
             log_prefix: str,
             error_callback: Callable[[Exception], None] | None,
-            corpus: VolcengineSaucCorpus | None = None,
+            boosting_provider: Callable[[], VolcengineSaucCorpus],
+            context_provider: Callable[[], Corpus],
     ):
         self._config = config
-        self._corpus = corpus if corpus is not None else VolcengineSaucCorpus()
+        self._boosting_provider = boosting_provider
+        self._context_provider = context_provider
         self._audio_chunks = audio_chunks
         self._gate_factory = gate_factory
         self._logger = logger
@@ -287,7 +303,12 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
         receive_task: asyncio.Task | None = None
         try:
             async with await connect(self._config, self._request_id) as ws:
-                await ws.send(create_init_request(self._segment_id, self._config, self._corpus))
+                await ws.send(create_init_request(
+                    self._segment_id,
+                    self._config,
+                    boosting=self._boosting_provider(),
+                    context=self._context_provider(),
+                ))
                 send_task = asyncio.create_task(self._send_loop(ws, first_chunk))
                 receive_task = asyncio.create_task(self._receive_loop(ws))
                 await receive_task
@@ -455,6 +476,7 @@ class _VolcengineSaucRecognitionStream(RecognitionStream):
                 start_ms=u.start_time,
                 end_ms=u.end_time,
                 additional=u.additions,
+                words=[RecognitionWord(text=w.text, conf=w.conf) for w in u.words],
             )
             # 同一个 clause 实例: 既进 event (text axis) 又进 segment (audio axis 归档).
             self._segment_clauses.append(clause)

@@ -105,6 +105,11 @@ class DeliverSpec(BaseModel):
                     "'next' (buffer + take next turn) / "
                     "'' (default — suppress on preempt failure)",
     )
+    low_confidence: float | None = Field(
+        default=None,
+        description="词级置信度阈值: 置信度 < 该值的字会在 deliver signal 的 low_conf "
+                    "属性里列出来 (供模型自查转写质量); None = 不列 (默认)。emit=True only",
+    )
 
 
 class ClassifierSpec(BaseModel):

@@ -14,10 +14,21 @@ import numpy as np
 import pytest
 import websockets
 
-from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase, RecognitionSegment
+from ghoshell_moss.contracts.asr import (
+    ASRWithCorpus,
+    Corpus,
+    RecognitionEvent,
+    RecognitionPhase,
+    RecognitionSegment,
+)
 from ghoshell_moss.contracts.audio import AudioChunk, AudioFrameMeta
-from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
+from ghoshell_moss.host.listener.volcengine_sauc import (
+    VolcengineSaucASR,
+    VolcengineSaucConfig,
+    VolcengineSaucCorpus,
+)
 from ghoshell_moss.host.listener.volcengine_sauc import recognizer as sauc_recognizer
+from ghoshell_moss.host.listener.volcengine_sauc.protocol import create_init_request
 
 # 与 protocol._Protocol 对齐的最小常量 (替身侧只用到这两个).
 _FULL_SERVER_RESPONSE = 0x09
@@ -250,3 +261,131 @@ async def test_gate_drops_silent_then_releases_on_voice(monkeypatch):
 
     clauses = [e for e in events if e.phase == RecognitionPhase.CLAUSE]
     assert [c.clause.text for c in clauses] == ["你好"]
+
+
+# ── ASRWithCorpus (可降级的 corpus 能力面) ──
+
+
+def _decode_init(data: bytes) -> dict:
+    """解 init 帧 (header4 + seq4 + len4 + gzip(json)) → {audio, request}."""
+    return json.loads(gzip.decompress(data[12:]).decode("utf-8"))
+
+
+def _context_from_init(data: bytes) -> dict | None:
+    """从 init 帧取出 request.context (JSON 字符串) 并反序列化; 无则 None."""
+    request = _decode_init(data)["request"]
+    return json.loads(request["context"]) if "context" in request else None
+
+
+@pytest.mark.asyncio
+async def test_clause_carries_word_confidence(monkeypatch):
+    """词级置信度: utterance.words[].conf 落进 clause.words (RecognitionWord)."""
+    frames = [
+        _server_frame({"result": {
+            "text": "你好",
+            "utterances": [
+                {"text": "你好", "definite": True, "start_time": 0, "end_time": 100,
+                 "words": [{"text": "你", "conf": 0.9}, {"text": "好", "conf": 0.3}]},
+            ],
+        }}),
+        _server_frame({"result": {"text": "你好"}}, is_last=True),
+    ]
+    monkeypatch.setattr(sauc_recognizer, "connect", _connect_to(_FakeWS(frames)))
+
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    stream = asr.recognize(_audio(np.zeros(1600, dtype=np.int16)))
+    events = [e async for e in stream]
+
+    clause = [e.clause for e in events if e.phase == RecognitionPhase.CLAUSE][0]
+    assert [(w.text, w.conf) for w in clause.words] == [("你", 0.9), ("好", 0.3)]
+
+
+def test_asr_is_corpus_capable():
+    """火山 ASR 实现 ASRWithCorpus 能力面 — 泛型层靠 isinstance 判能力/降级."""
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    assert isinstance(asr, ASRWithCorpus)
+
+
+def test_corpus_tail_keeps_instruction_and_newest_lines():
+    """Corpus.tail: instruction 永不参与截断, lines 只留最新的 max_lines 条, 空白不追加."""
+    c = Corpus(instruction="提示", max_lines=2)
+    c.tail("一")
+    c.tail("二")
+    c.tail("三")
+    assert c.instruction == "提示"
+    assert c.lines == ["二", "三"]
+    c.tail("   ")
+    assert c.lines == ["二", "三"]
+
+
+def test_init_request_composes_instruction_first_and_lines_newest_first():
+    """协议适配: instruction 打头, lines 从新到旧; 热词走厂商配置, 独立于条件文本."""
+    config = VolcengineSaucConfig()
+    boosting = VolcengineSaucCorpus(hotwords=["豆包"])
+    context = Corpus(instruction="我是提示词", lines=["旧话", "新话"])
+
+    data = create_init_request("u", config, boosting=boosting, context=context)
+    ctx = _context_from_init(data)
+
+    assert ctx["hotwords"] == [{"word": "豆包"}]
+    assert ctx["context_type"] == "dialog_ctx"
+    assert ctx["context_data"] == [
+        {"text": "我是提示词"},
+        {"text": "新话"},
+        {"text": "旧话"},
+    ]
+
+
+def test_init_request_drops_oldest_lines_over_budget():
+    """token 预算裁剪: instruction 优先, lines 从最旧开始丢."""
+    context = Corpus(instruction="提示", lines=[f"line-{i:03d}-" + "x" * 40 for i in range(100)])
+    data = create_init_request("u", VolcengineSaucConfig(), context=context)
+    ctx = _context_from_init(data)
+    # instruction 永在首位; lines 只保留预算内最靠前的 (最旧的被丢).
+    assert ctx["context_data"][0] == {"text": "提示"}
+    entries = ctx["context_data"][1:]
+    assert len(entries) < 100
+    kept = [int(e["text"].split("-")[1]) for e in entries]
+    assert min(kept) > 0  # 最旧 (0) 被丢
+    assert max(kept) == 99  # 最新 (99) 保留
+
+
+@pytest.mark.asyncio
+async def test_corpus_write_takes_effect_next_segment(monkeypatch):
+    """corpus 不按流冻结: 一个 turn 内改 instruction, 下一个 segment 的 init 就带新值."""
+    is_last = _server_frame({"result": {}}, is_last=True)
+    wss: list[_FakeWS] = []
+
+    async def _connect(config, request_id: str = ""):
+        ws = _FakeWS([is_last])
+        wss.append(ws)
+        return ws
+
+    monkeypatch.setattr(sauc_recognizer, "connect", _connect)
+
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    loud = AudioChunk(
+        samples=np.zeros(160, dtype=np.int16),
+        meta=AudioFrameMeta(rms_db=-20.0, is_silent=False),
+    )
+    holder: dict = {}
+
+    async def _audio():
+        yield loud
+        # turn1 内 (send loop 正从 generator 拉下一块): 改 corpus + commit 结束本 turn.
+        asr.set_corpus_instruction("新提示词")
+        holder["stream"].commit()
+        yield loud
+        yield loud  # turn2 的 first chunk; 之后耗尽.
+
+    asr.set_corpus_instruction("初始提示词")
+    stream = asr.recognize(_audio())
+    holder["stream"] = stream
+
+    [e async for e in stream]
+
+    assert len(wss) == 2
+    first = _context_from_init(wss[0].sent[0])
+    second = _context_from_init(wss[1].sent[0])
+    assert first["context_data"] == [{"text": "初始提示词"}]
+    assert second["context_data"] == [{"text": "新提示词"}]

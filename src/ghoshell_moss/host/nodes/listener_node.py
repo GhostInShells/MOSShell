@@ -8,14 +8,11 @@ node 函数签名统一为 ``async def xxx(matrix: Matrix, ...)``, 由 ``Matrix.
 """
 from __future__ import annotations
 
-from typing import Callable, Optional
-
 from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.contracts.configs import ConfigStore
 from ghoshell_moss.contracts.listener import ASRListener
-from ghoshell_moss.contracts.llms import CallSettings, LLMFuncs, MossLLMCaller, MossLLMFuncs
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.listener.controller import ListenerController
+from ghoshell_moss.host.listener.controller import ListenerController, build_stop_caller_factory
 
 __all__ = ["assemble_controller", "listener_node", "listener_controller_node"]
 
@@ -40,7 +37,7 @@ async def assemble_controller(
     asr = listener.asr()
     capture = con.get(AudioCaptureSource)
     sample_rate = capture.sample_rate if capture is not None else asr.get_info().sample_rate
-    caller_factory = _try_build_stop_caller_factory(con)
+    caller_factory = build_stop_caller_factory(con)
     controller = ListenerController(
         listener=listener, asr=asr, logger=matrix.logger,
         signal_broadcast=matrix.session.add_signal if emit_signals else None,
@@ -54,26 +51,6 @@ async def assemble_controller(
         controller.with_config_store(config_store)
     await matrix.add_lifecycle_object(controller)
     return controller
-
-
-def _try_build_stop_caller_factory(con) -> Optional[Callable[[str], MossLLMCaller]]:
-    """出口位点 classifier 的依赖: 模型环境可用时返回 (instruction) -> caller 装配函数, 否则 None.
-
-    None 不是错误 —— 默认出口本就不依赖模型; 拿到 None 时 classifier 静默缺席,
-    礼仪退回纯 silence/keywords.
-    """
-    funcs = con.get(LLMFuncs)
-    if not isinstance(funcs, MossLLMFuncs):
-        return None
-
-    def _factory(instruction: str) -> MossLLMCaller:
-        return funcs.caller(
-            instruction=instruction,
-            tag="small_fast_model",
-            settings=CallSettings(max_output_tokens=1),
-        )
-
-    return _factory
 
 
 async def listener_node(

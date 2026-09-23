@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment
+from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment, RecognitionWord
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
@@ -268,7 +268,7 @@ def test_signal_broadcast_clause_not_emitted():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
 
-    assert len(listener.result_observers) == 3  # 发射 + buffer + expect 观察者
+    assert len(listener.result_observers) == 4  # 发射 + 累积 + buffer + expect 观察者
     listener.result_observers[0](_clause("你好"))
 
     assert emitted == []  # CLAUSE 不上行 — 判停已在 listener 侧消化
@@ -921,3 +921,49 @@ async def test_always_idle_degrades_to_knock():
     controller.stop()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+def test_feed_ghost_clause_tails_corpus():
+    """feed_ghost_clause: corpus 能力 ASR 的 ghost clause 进 corpus.lines (lines 投影)."""
+    from ghoshell_moss.host.listener.volcengine_sauc import VolcengineSaucASR, VolcengineSaucConfig
+
+    asr = VolcengineSaucASR(config=VolcengineSaucConfig())
+    controller = ListenerController(listener=_MockListener(), asr=asr)
+
+    controller.feed_ghost_clause("你好呀")
+    assert asr.corpus().lines == ["你好呀"]
+
+
+def test_feed_ghost_clause_noop_without_corpus():
+    """feed_ghost_clause: 非 corpus 能力 ASR 静默 no-op (可降级)."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    controller.feed_ghost_clause("你好呀")  # 不抛, 无副作用
+
+
+def test_deliver_carries_low_confidence_chars():
+    """deliver signal 携带低置信字 (word conf < deliver.low_confidence) 作 low_conf."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    spec = always.model_copy(deep=True)
+    spec.deliver.low_confidence = 0.5
+    controller._set_active_etiquette(spec)  # 设 active 礼仪 (判停与本契约无关, 不跑状态机)
+
+    clause = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.CLAUSE, text="你好",
+        clause=RecognitionClause(
+            text="你好",
+            words=[RecognitionWord(text="你", conf=0.9), RecognitionWord(text="好", conf=0.3)],
+        ),
+    )
+    tail = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.TAIL, text="你好",
+    )
+    for cb in listener.result_observers:
+        cb(clause)
+    for cb in listener.result_observers:
+        cb(tail)
+
+    assert len(emitted) == 1
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.low_conf == "好"

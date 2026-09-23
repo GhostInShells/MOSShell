@@ -94,6 +94,10 @@ class ListenerSignal(SignalMeta):
       An onset defaults to ``''`` (losing suppresses it), a deliver falls back to
       ``notify`` when empty.
     - ``logos``: a conditioned-reflex command logos, listener-configurable.
+    - ``low_conf``: 缩写 = "low-confidence" (低置信度) 的字 — the characters whose
+      word-level confidence fell below the etiquette's ``deliver.low_confidence``
+      threshold. Rendered as the ``low_conf`` attribute of the delivered ``<listen>``
+      tag (deliver only). Empty = none.
 
     Text, speaker, voiceprint and similar extras are fields an impulse does not have —
     the listener side organizes them into the message body.
@@ -104,6 +108,7 @@ class ListenerSignal(SignalMeta):
     interrupt: bool = Field(default=False, description="whether the attention won by this packet calls shell.clear() first (Impulse.interrupt)")
     mode: str = Field(default="", description="loss-side mode: notify / aside / next / ''(default). An onset defaults to '' (suppress on loss); a deliver falls back to notify when empty")
     logos: str = Field(default="", description="conditioned-reflex command logos, sent with the impulse")
+    low_conf: str = Field(default="", description="缩写 = low-confidence (低置信度): 词级置信度低于阈值 (deliver.low_confidence) 的字, 渲染为 <listen> 的 low_conf 属性; 空 = 无")
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -291,7 +296,7 @@ class ListenerNucleus(Nucleus):
             mode=meta.mode or ChallengeMode.notify.value,
             logos=meta.logos,
             hint=signal.hint,
-            messages=self._wrap_messages(signal, meta.source),
+            messages=self._wrap_messages(signal, meta.source, meta.low_conf),
             description=signal.description,
         )
         self._fire(impulse)
@@ -307,12 +312,12 @@ class ListenerNucleus(Nucleus):
         if self._fire_impulse:
             self._fire_impulse(impulse)
 
-    def _wrap_messages(self, signal: Signal, source: str) -> list[Message]:
-        """Wrap the signal's text messages into one ``<listen source=... created=...>`` tag."""
+    def _wrap_messages(self, signal: Signal, source: str, low_conf: str = "") -> list[Message]:
+        """Wrap the signal's text messages into one ``<listen source=... low_conf=...>`` tag."""
         data = self._signal_text(signal)
         if not data:
             return []
-        return [self._listen_message(data, source, signal.created_at)]
+        return [self._listen_message(data, source, low_conf, signal.created_at)]
 
     def _signal_text(self, signal: Signal) -> str:
         """Collect the text content of every message body in the signal."""
@@ -323,10 +328,14 @@ class ListenerNucleus(Nucleus):
                     texts.append(c.get('text', ''))
         return '\n'.join(texts)
 
-    def _listen_message(self, data: str, source: str, created_at) -> Message:
-        """One ``<listen source=... created=...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
-        attributes = {"source": source} if source else None
-        message = Message.new(tag=ListenerSignal.xml_tag(), attributes=attributes, timestamp=True)
+    def _listen_message(self, data: str, source: str, low_conf: str, created_at) -> Message:
+        """One ``<listen source=... low_conf=... created=...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
+        attributes: dict[str, str] = {}
+        if source:
+            attributes["source"] = source
+        if low_conf:
+            attributes["low_conf"] = low_conf
+        message = Message.new(tag=ListenerSignal.xml_tag(), attributes=attributes or None, timestamp=True)
         message.meta.created = created_at
         return message.with_content(data)
 
@@ -388,6 +397,7 @@ def new_listener_signal(
         interrupt: bool = False,
         mode: str = "",
         logos: str = "",
+        low_conf: str = "",
         complete: bool = True,
         priority: Priority | None = None,
         description: str = "",
@@ -407,6 +417,7 @@ def new_listener_signal(
         interrupt=interrupt,
         mode=mode,
         logos=logos,
+        low_conf=low_conf,
     ).to_signal(
         text,
         description=description or (text[:40] or ("barge-in" if not complete else "deliver")),
