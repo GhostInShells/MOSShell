@@ -1111,7 +1111,7 @@ class ListenerController(ListenLifecycle):
             """
             return self.send_now()
 
-        @chan.build.command()
+        @chan.build.command(always_observe=True)
         async def get_etiquette(name: str = "") -> str:
             """Read etiquette config: empty = names of all, non-empty = one full spec json."""
             config = self.etiquette_config()
@@ -1120,13 +1120,13 @@ class ListenerController(ListenLifecycle):
                 return spec.model_dump_json() if spec else f"etiquette {name!r} not defined"
             return json.dumps([s.name for s in config.etiquettes], ensure_ascii=False)
 
-        @chan.build.command()
+        @chan.build.command(always_observe=True)
         async def get_asr_params() -> str:
             """Read ASR params (cold data, pulled on demand — not in notice)."""
             return json.dumps(self._asr.get_info().params, ensure_ascii=False)
 
         # corpus 是 ASR 的可选能力面 — 没这能力的 ASR 整个 command 不暴露 (可降级).
-        @chan.build.command(available=lambda: isinstance(self._asr, ASRWithCorpus))
+        @chan.build.command(available=lambda: isinstance(self._asr, ASRWithCorpus), always_observe=True)
         async def get_corpus() -> str:
             """Read the runtime ASR corpus (conditioning text): instruction + the ghost
             lines that will ride on the next segment. Cold data, pulled on demand.
@@ -1145,7 +1145,7 @@ class ListenerController(ListenLifecycle):
             self._asr.set_corpus_instruction(text__)
             return "corpus instruction set"
 
-        @chan.build.command()
+        @chan.build.command(always_observe=True)
         async def get_transcript(n: int = 0) -> str:
             """Pull the segment buffer: current growing text + recent n heard segments.
 
