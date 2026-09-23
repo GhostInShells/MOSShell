@@ -5,7 +5,7 @@ Scope:
   - 三域模型的数据契约 (NodeManifest / CellRuntimeInfo / Cell + CellEvent)
   - ExecSpec 字段与 arguments 拆分
   - NodeManifest 与文件系统往返 (write/read + INSTALL 状态推导 + from_script 匝道)
-  - Cell 派生 property (address / fullname / is_host / unique_name)
+  - Cell 派生 property (address / fullname / is_host)
   - build helpers (build_node_from_manifest / build_host_cell)
   - address 三段结构 (§ZZ-10) + normalize / parse_address
   - 历史锚点负向断言 (WW-3 no interpreter, WW-6 no exit, 契约中不该出现的字段)
@@ -307,16 +307,11 @@ class TestCell:
         assert _make_cell(role=HOST_ROLE, name='m').is_host is True
         assert _make_cell(role=NODE_ROLE, name='m').is_host is False
 
-    def test_unique_name_equals_short(self):
-        cell = Cell(role=NODE_ROLE, name='cam', uid='ABC12345XYZ', home='/tmp')
-        assert cell.unique_name == 'cam_345XYZ'
-
     def test_address_codec_property(self):
         cell = _make_cell(name='cam', uid='ABC12345XYZ')
         c = cell.address_codec
         assert isinstance(c, CellAddressCodec)
         assert c.address == cell.address
-        assert c.short == 'cam_345XYZ'
 
     def test_address_codec_consistency_with_address(self):
         cell = _make_cell(name='sensor', uid='ZZZZZZZZZZ')
@@ -424,12 +419,6 @@ class TestBuildHelpers:
         c2 = build_cell_from_node(env, manifest)
         assert c1.uid != c2.uid, "每次 spawn 独立 uid, 保证 address 全局唯一"
 
-    def test_build_node_alias_overrides_name(self, tmp_path: Path):
-        env = _mock_env(tmp_path)
-        manifest = NodeManifest(name='cam')
-        cell = build_cell_from_node(env, manifest, name='cam_alias')
-        assert cell.name == 'cam_alias'
-
     def test_build_host_uses_moss_meta(self, tmp_path: Path):
         env = _mock_env(tmp_path)
         env.project_id = 'proj-42'
@@ -510,7 +499,6 @@ class TestCellEvent:
     def test_address_codec_from_event(self):
         e = CellEvent(address='node/cam/ABC12345XYZ')
         assert isinstance(e.address_codec, CellAddressCodec)
-        assert e.address_codec.short == 'cam_345XYZ'
 
 
 # ── address 三段结构 (§ZZ-10) ─────────────────────────────────────────
@@ -607,25 +595,6 @@ class TestCellAddressCodec:
         assert c.name == 'cam'
         assert c.uid == 'uid8'
 
-    # -- short
-
-    def test_short_name_uid_tail(self):
-        addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
-        c = CellAddressCodec(addr)
-        assert c.short == 'counter_service_HB7G8Q'
-
-    def test_short_different_uid_yield_different_shorts(self):
-        a = make_address(NODE_ROLE, 'cam', 'AAAAAA1111')
-        b = make_address(NODE_ROLE, 'cam', 'AAAAAA2222')
-        assert CellAddressCodec(a).short != CellAddressCodec(b).short
-
-    def test_short_unique_for_same_time_uids(self):
-        # 回归: uid 是 ULID, 头部是毫秒时间戳. 同 name 多实例同时 spawn,
-        # 取头部切片会撞短标 (同毫秒内 `uid[:6]` 相同). short 必须取随机尾部.
-        a = make_address(NODE_ROLE, 'stream', unique_id())
-        b = make_address(NODE_ROLE, 'stream', unique_id())
-        assert CellAddressCodec(a).short != CellAddressCodec(b).short
-
     # -- dot_address / from_dot_address
 
     def test_dot_address(self):
@@ -684,10 +653,10 @@ class TestCellAddressCodec:
         c = CellAddressCodec(addr)
         assert c.match(addr)
 
-    def test_match_exact_short(self):
+    def test_match_exact_normalized(self):
         addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
         c = CellAddressCodec(addr)
-        assert c.match(c.short)                    # counter_service_HB7G8Q
+        assert c.match(c.normalized)
 
     def test_match_exact_name(self):
         addr = make_address(NODE_ROLE, 'cam', 'uid8')

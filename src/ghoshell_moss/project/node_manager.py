@@ -7,6 +7,7 @@ ProjectNodeManager — NodeManager 的只读 inventory 实现.
 import asyncio
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -15,7 +16,7 @@ from typing import Callable
 
 from ghoshell_moss.core.blueprint.cell import (
     CellRuntimeInfo, DuplicatedError, ExecSpec, MatchPattern, NodeLauncher,
-    NodeManager, NodeManifest, NodeProbeError, ProjectRelativePath,
+    NodeManager, NodeManifest, NodeProbeError, ProjectRelativePath, CellAddress,
 )
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts.subprocesses import (
@@ -47,6 +48,48 @@ class ProjectNodeManager(NodeManager):
         self._cache: dict[ProjectRelativePath, NodeManifest] | None = None
         self._subprocesses = subprocesses
         self._logger: logging.Logger = logger or logging.getLogger(__name__)
+        self._aliases_index: dict[str, int] = {}
+        self._address_to_alias: dict[str, str] = {}
+
+    def _validate_cell_alias(self, alias: str) -> None:
+        if not re.fullmatch(r'^[a-zA-Z_][a-zA-Z0-9_]*$', alias):
+            raise ValueError(
+                f"alias {alias!r} is not a valid channel name "
+                f"(pattern ^[a-zA-Z_][a-zA-Z0-9_]*$)"
+            )
+        if '__' in alias:
+            raise ValueError(
+                f"alias {alias!r} must not contain '__' "
+                f"(reserved for normalized addresses)"
+            )
+
+    def _resolve_alias(self, manifest: NodeManifest, alias: str | None) -> str:
+        # 有值取值, 无值用 node name; 统一 channel-name-safe 归一化 (node name
+        # 走 CellNamePattern, 允许 -/. 但 channel name 不允许).
+        base = alias if alias is not None else manifest.name
+        base = base.replace('-', '_').replace('.', '_')
+        self._validate_cell_alias(base)
+        return base
+
+    def _mint_alias(self, base: str) -> str:
+        # 安全闸门: 名字单调、不复用 — 同 base 第二次起后缀 _2/_3. 名字永不重绑,
+        # 下游 (proxy 缓存 / signal 去重 / transcript 引用) 不必查"名字被复用"的副作用.
+        n = self._aliases_index.get(base, 0)
+        self._aliases_index[base] = n + 1
+        return base if n == 0 else f'{base}_{n + 1}'
+
+    def _record_spawned(
+            self, address: CellAddress, process: ManagedProcess, alias: str,
+    ) -> None:
+        self._address_to_alias[address] = alias
+
+        def _dispose(_) -> None:
+            self._address_to_alias.pop(address, None)
+
+        process.add_done_callback(_dispose)
+
+    def spawned_nodes(self) -> dict[CellAddress, str]:
+        return dict(self._address_to_alias)
 
     @property
     def subprocesses(self) -> SubprocessFacade:
@@ -163,6 +206,7 @@ class ProjectNodeManager(NodeManager):
             extra_env: dict[str, str] | None = None,
             extra_args: list[str] | None = None,
             capture: Callable[[CellRuntimeInfo], CaptureSpec] | None = None,
+            alias: str | None = None,
     ) -> tuple[CellRuntimeInfo, ManagedProcess]:
         """
         拉起一个 node cell — spawn 咽喉 (唯一入口).
@@ -188,7 +232,6 @@ class ProjectNodeManager(NodeManager):
             raise RuntimeError(
                 f"node {manifest.name!r} not installed. See {install_path} for install steps."
             )
-
         launcher = NodeLauncher.from_manifest(self._env, manifest)
         if extra_args:
             launcher.run.extend(extra_args)
@@ -209,6 +252,11 @@ class ProjectNodeManager(NodeManager):
                     f"{launcher.runtime.locker_name()!r} held by another process; "
                     f"a live instance already exists."
                 )
+
+        # 命名权威在 spawn 侧: 有值取值、无值 node name, mint 出最终 alias (含重名
+        # 后缀) 随第一笔账本落盘 (本地 trace, 不参与网络身份). 名字单调不复用 — 见 _mint_alias.
+        final_alias = self._mint_alias(self._resolve_alias(manifest, alias))
+        launcher.runtime.alias = final_alias
 
         # 启动方先写账单 (单写记账第一笔): 写 launcher.runtime (uid/address/cell),
         # pid/pgid 先占位 0 — node 启动时 discover_this_node 从账本读回身份,
@@ -235,6 +283,9 @@ class ProjectNodeManager(NodeManager):
             with_os_env=False,  # launcher.env 已包含必要 env
             capture=capture_spec,
         )
+        # 记录本进程 spawn 的 address → alias (mesh channel 据此判 branch name).
+        # 进程退出时经 done callback 移除.
+        self._record_spawned(launcher.runtime.address, managed, final_alias)
 
         # 观察垫 (2026-08-29): 这里**故意不**注册 spawn 后的清账回调.
         #

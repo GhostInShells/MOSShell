@@ -69,12 +69,6 @@ class ZenohChannelHub:
         self._logger = logger or get_moss_logger()
         self._providers: dict[str, ZenohChannelProvider] = {}
         self._proxies: dict[str, ZenohProxyChannel] = {}
-        # name registry: 派生 proxy name 时保证 hub 内唯一.
-        # 策略: 无冲突用 hint 本身; 冲突则 hint_2/hint_3... counter 单调递增, 不复用.
-        # drop_proxy 释放 zenoh 资源但不回收 name — cell 走了再来 (即使同 hint) 也拿新编号.
-        # 语义: 编号是 "这个 hub 一生看过的第 N 个同名 cell", 不误认.
-        self._used_names: set[str] = set()
-        self._name_counter: dict[str, int] = {}
         self._records: list[HubRecord] = []
         self._lock = threading.Lock()
 
@@ -139,43 +133,36 @@ class ZenohChannelHub:
             self,
             address: str,
             *,
-            name_hint: str | None = None,
             description: str = '',
     ) -> ZenohProxyChannel:
         """获取或创建 address 对应的 proxy. 已存在则返回现有实例.
 
         与 provider() 不同, proxy() 允许多次 call 同 address — 多个 caller 共享同一 proxy.
 
-        name 派生: name_hint 无冲突 → 直接用; 冲突 → hint_2/hint_3... (hub 内计数单调).
-        drop_proxy 后 name 不复用: 同 hint 再来会拿下一个编号.
+        proxy 内部 name 由 address 派生 (address 全局唯一, 故 name 唯一, 无需去重).
+        该 name 只作 proxy 的装饰性身份; 挂载名 (branch name) 由 mesh channel 决定.
         """
         existing = self._proxies.get(address)
         if existing is not None:
             return existing
 
-        # 兜底 hint: 未传时用 normalize(address). 保证 hub 内部有派生源.
-        hint = name_hint or address.replace('/', '_')
-        with self._lock:
-            derived_name = self._derive_name_locked(hint)
-
-        if not Channel.validate_name(derived_name):
+        name = address.replace('/', '_')
+        if not Channel.validate_name(name):
             raise ValueError(
-                f"Invalid channel name {derived_name!r} derived from hint {hint!r} for proxy {address}"
+                f"Invalid channel name {name!r} derived from address {address!r}"
             )
 
         new_proxy = ZenohProxyChannel(
             zenoh_session=self._zenoh_session,
             address=address,
             scope=self._scope,
-            name=derived_name,
+            name=name,
             description=description,
             namespace=self._namespace,
         )
         with self._lock:
             existing = self._proxies.get(address)
             if existing is not None:
-                # 并发 race: 让 caller 拿到先到的. 已 add 的 derived_name 保留占位
-                # (单调策略不回滚, 下次同 hint 拿再下一个编号 — 少见但代价可接受).
                 return existing
             self._proxies[address] = new_proxy
         # proxy 创建 = "proxy online" 事件 fan-out (不依赖 liveness listener)
@@ -183,25 +170,6 @@ class ZenohChannelHub:
         # 而 provider online/offline 来自 ZenohLivenessListener 的 zenoh 后台线程回调.
         self._fan_out(self._cb_proxy_online, address)
         return new_proxy
-
-    def _derive_name_locked(self, hint: str) -> str:
-        """派生一个 hub 内唯一的 proxy name (调用方须持 self._lock).
-
-        无冲突 → hint 本身; 冲突 → hint_N (N 从 counter[hint] 起, 单调).
-        写入 self._used_names + 更新 self._name_counter[hint].
-        """
-        if hint not in self._used_names:
-            self._used_names.add(hint)
-            return hint
-        # 冲突: 从 counter 记录的下一个编号找起.
-        next_n = self._name_counter.get(hint, 2)
-        candidate = f"{hint}_{next_n}"
-        while candidate in self._used_names:
-            next_n += 1
-            candidate = f"{hint}_{next_n}"
-        self._name_counter[hint] = next_n + 1
-        self._used_names.add(candidate)
-        return candidate
 
     def get_proxy(self, address: str) -> ZenohProxyChannel | None:
         """按 address 取已注册 proxy. 不存在返回 None."""
@@ -287,9 +255,6 @@ class ZenohChannelHub:
         await self._liveness_listener.__aexit__(exc_type, exc_val, exc_tb)
         self._proxies.clear()
         self._providers.clear()
-        # hub 生命周期结束, name registry 归零 (下次启动重新计数).
-        self._used_names.clear()
-        self._name_counter.clear()
         self._cb_provider_online.clear()
         self._cb_provider_offline.clear()
         self._cb_proxy_online.clear()

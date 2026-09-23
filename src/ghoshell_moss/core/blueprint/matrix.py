@@ -12,7 +12,7 @@ philosophical substance. Matrix is not mesh, nor a mesh client — mesh is only 
 sources it projects from.
 """
 import dataclasses
-from typing import Literal, Callable, Awaitable, Any,  Protocol, TypeAlias, Type, TYPE_CHECKING
+from typing import Literal, Callable, Awaitable, Any, Protocol, TypeAlias, Type, TYPE_CHECKING
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -23,7 +23,6 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.mindflow import Signal
 from ghoshell_moss.core.blueprint.warrant import Warrant
-from ghoshell_moss.core.blueprint.parameter import Parameters
 from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo, CellEventLevel
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
@@ -99,6 +98,17 @@ async def _stop_run_tasks(*tasks: asyncio.Task) -> None:
         pass
 
 
+def new_host_matrix_channel() -> Callable[[IoCContainer], Channel]:
+    # 反范式提示, host 节点的 matrix 最终可以作为 channel 提供给使用它的模型.
+    # 此处是框架级反向索引.
+    from ghoshell_moss.channels.matrix_channel import new_matrix_channel
+    def _factory(container: IoCContainer) -> Channel:
+        matrix = container.force_fetch(Matrix)
+        return new_matrix_channel(matrix)
+
+    return _factory
+
+
 class Matrix(Facade):
     """
     This process's projection of the MOSS communication matrix. A process-level singleton that
@@ -137,6 +147,9 @@ class Matrix(Facade):
         Expose the current process's capabilities to the network through a moss channel, for a
         Ghost (persistent agent) to use. How channels expose capabilities: see channel_builder.
         How a model drives channels: see ctml.
+
+        the host cell may use a matrix duplex bridge connect this one, add it to the mesh channel,
+        the local channel name is irrelevant since mesh channel determine the branch name of it.
 
         A Cell can expose exactly one channel root (a tree), so this method may be called only
         once. Await it to block until the process is shut down externally. The exposure is
@@ -361,6 +374,7 @@ class Matrix(Facade):
             *,
             extra_env: dict[str, str] | None = None,
             extra_args: list[str] | None = None,
+            alias: str | None = None,
     ) -> CellHandle:
         """
         Start a node cell subprocess governed by this matrix.
@@ -376,6 +390,9 @@ class Matrix(Facade):
         :param extra_args: extra argv tokens appended after the node's declared entry
             args (``exec.args``). Append-only; per-instance identity/binding (device
             index, stream address, ...). The pre-launch probe does not receive them.
+        :param alias: the branch name this process promises for the node under
+            ``matrix.mesh.<alias>``. None → the node name is used. Local only: it is never
+            broadcast and never read back from the ledger for naming.
         :return CellHandle: cell identity + subprocess handle. wait/stop go through the handle.
             Whether the subprocess joins the network (runs matrix and announces) is observed
             on the network, not guaranteed here.
@@ -435,7 +452,6 @@ class Matrix(Facade):
         signal / ...) are the bridge between everything running inside the network.
         """
         pass
-
 
     # @abstractmethod
     async def service_operator(self) -> ServiceOperator:
@@ -703,6 +719,7 @@ class Matrix(Facade):
 
             matrix.serve_mcp(mcp, port=8080)
         """
+
         async def _run():
             async with self:
                 await self.aserve_mcp(mcp, host=host, port=port)

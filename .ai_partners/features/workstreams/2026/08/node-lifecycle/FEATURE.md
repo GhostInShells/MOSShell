@@ -327,6 +327,17 @@ zero-context reconcile review（`moss features review` 遗忘测试）抓出 1 �
 kill_cell 语义、probe stdout、spawn 签名），已全部修复并同步进本 FEATURE。这是"声明 vs
 交付"遗忘测试的实证价值。
 
+### 命名权威归 spawn 侧（2026-09-23）
+
+node 的 channel 在 mesh 上的挂载名（`matrix.mesh.<name>`）不再由 channel 层定，改由
+spawn 咽喉签发。动机与拓扑见 `cell-run-cycle/matrix-channel.md` §6（推翻 09-19 模型赋名版）。
+
+- `NodeManager.spawn_node(alias=)`：有值取值、无值用 `manifest.name`；重名进程内单调
+  后缀 `_2` / `_3`（不复用，安全闸门——名字永不重绑）。
+- `spawned_nodes()` 暴露 `address → alias`；mesh channel 据此判 branch name：命中 → alias，
+  否则 `CellAddressCodec(address).normalized`。
+- `CellRuntimeInfo.alias` 留账本作本地 trace，不参与命名（命名只读 `spawned_nodes()`）。
+
 ## Open Questions
 
 - **publish_event 级别（已解决 2026-09-13）**：`publish_event` 四层（Cell / Matrix /

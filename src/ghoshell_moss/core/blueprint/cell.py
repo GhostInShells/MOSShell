@@ -58,7 +58,6 @@ __all__ = [
     'CellRuntimeInfo',
     'Cell',
     'CellEvent',
-    'CELL_EVENT_CHANNEL_ADDED',
     'CellPresence',
     'CellNetwork',
     'AutoAcceptPolicy',
@@ -233,10 +232,6 @@ class Cell(BaseModel):
 
     def is_local(self, env: Environment) -> bool:
         return self.project_id == env.project_id
-
-    @property
-    def unique_name(self) -> str:
-        return self.address_codec.short
 
 
 class ExecSpec(BaseModel):
@@ -484,6 +479,10 @@ class CellRuntimeInfo(BaseModel):
     cell: Cell = Field(
         description="The cell's runtime data, used to rebuild and broadcast identity.",
     )
+    alias: str | None = Field(
+        default=None,
+        description="cell 启动时赋予的别名",
+    )
 
     @classmethod
     def from_cell(cls, cell: Cell) -> 'CellRuntimeInfo':
@@ -583,14 +582,6 @@ class CellRuntimeInfo(BaseModel):
         across different uids are the ones that must exclude each other.
         """
         return normalize(self.cell.fullname)
-
-
-CELL_EVENT_CHANNEL_ADDED = 'channel added'
-"""CellEvent content a cell publishes when it provides a channel.
-
-The channel dimension's truth lives on the observer side (mesh mount), not the
-producer's self-report — the consumer filters this out of the signal path.
-"""
 
 
 class CellEvent(BaseModel):
@@ -716,8 +707,6 @@ class CellAddressCodec:
     address string themselves.
     """
 
-    SHORT_UID_LEN = 6
-
     def __init__(self, address: CellAddress, *, validate: bool = True) -> None:
         self.address: CellAddress = address
         self._parts: tuple[CellRole, CellName, str] | None = None
@@ -743,14 +732,6 @@ class CellAddressCodec:
         return self.parts[2]
 
     # -- 别名 -------------------------------------------------
-
-    @property
-    def short(self) -> str:
-        """short 形态: ``name_uid[-6:]``, 全链统一的地址短标."""
-        # 取尾部随机段而非头部: uid 是 ULID, 头部 10 字符是毫秒时间戳,
-        # 同 name 多实例在 ~4.4 分钟内 `uid[:6]` 相同 → 短标撞车.
-        # 尾部落在 80 位随机段, 每个 spawn 唯一.
-        return f'{self.name}_{self.uid[-CellAddressCodec.SHORT_UID_LEN:]}'
 
     @property
     def dot_address(self) -> str:
@@ -824,15 +805,15 @@ class CellAddressCodec:
     def match(self, query: str) -> bool:
         """Whether ``query`` matches this address.
 
-        Five paths, by priority: exact full address -> exact short -> exact name segment
-        -> uid prefix (>= 3 chars) -> address prefix (>= 3 chars). An empty / one-two
-        char query never matches — a semantic threshold against false matches.
+        Five paths, by priority: exact full address -> exact normalized address -> exact
+        name segment -> uid prefix (>= 3 chars) -> address prefix (>= 3 chars). An empty /
+        one-two char query never matches — a semantic threshold against false matches.
         """
         if not query:
             return False
         if query == self.address:
             return True
-        if query == self.short:
+        if query == self.normalized:
             return True
         if query == self.name:
             return True
@@ -885,19 +866,16 @@ class CellAddressCodec:
 def build_cell_from_node(
         env: Environment,
         manifest: 'NodeManifest',
-        *,
-        name: str = '',
 ) -> 'Cell':
     """
     Build a Cell instance from a Node declaration.
     :param env: the environment carrier.
     :param manifest: this cell's NodeManifest.
-    :param name: an alias to give the node.
     """
     # node uid 每次 spawn 独立生成, 保证 address 全局唯一.
     # 不用 env.run_id: 同一父进程连续 spawn 多个 node 时 run_id 相同会撞.
     uid = unique_id()
-    cell_name = name or manifest.name
+    cell_name = manifest.name
     if manifest.file:
         # 以发现 node 声明文件的位置作为 cell 的 workspace.
         home = Path(manifest.file).parent.resolve()
@@ -1226,6 +1204,16 @@ class CellNetwork(ABC):
         ...
 
     @abstractmethod
+    def on_channel_provided(
+            self,
+            callback:Callable[[CellAddress, ChannelProxy], None],
+    ) -> Callable[[], None]:
+        """
+        新 channel 上线通知. 返回 disposer
+        """
+        ...
+
+    @abstractmethod
     async def accept(self, address: CellAddress, *, lookup: bool = False) -> None:
         """
         Acknowledge a remote cell's resources: add to the accept table, and assemble the
@@ -1344,6 +1332,7 @@ class NodeManager(ABC):
             extra_env: dict[str, str] | None = None,
             extra_args: list[str] | None = None,
             capture: Callable[[CellRuntimeInfo], CaptureSpec] | None = None,
+            alias: str | None = None,
     ) -> tuple[CellRuntimeInfo, ManagedProcess]:
         """
         Launch a node cell — the single spawn choke point.
@@ -1365,6 +1354,15 @@ class NodeManager(ABC):
         A failed probe (manifest.check) raises NodeProbeError; a singleton lock collision raises
         DuplicatedError; a failed installed check raises RuntimeError. Returns (runtime, managed)
         — runtime lets the caller assemble a CellHandle / track.
+        """
+        ...
+
+    @abstractmethod
+    def spawned_nodes(self) -> dict[CellAddress, str]:
+        """
+        Return the nodes this process spawned, keyed by address, each mapped to its
+        resolved alias (the given alias, or the node name when none was given). The alias
+        is a local naming promise — it is never broadcast and never read back for naming.
         """
         ...
 

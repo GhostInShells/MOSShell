@@ -40,7 +40,6 @@ from ghoshell_moss.core.blueprint.cell import (
     Cell,
     CellPresence,
     CellEventLevel,
-    CELL_EVENT_CHANNEL_ADDED,
 )
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss.matrix.networks._utils import CellsKeyspace, CellKeyExpr
@@ -145,15 +144,16 @@ class ZenohCellPresence(CellPresence):
 
         provider = self._hub.provider(self._cell_presence.address)
 
-        # 副作用: 更新 payload, 广播事件.
+        # 副作用: 更新 payload, 广播一条 refetch 提示.
+        # content 为空 = 纯结构变更提示 (观察者侧据此 refetch 并建 proxy), 不进 signal.
         if 'channel' not in self._cell_presence.providing:
             self._cell_presence.providing.append('channel')
         self._cell_presence.update()
         try:
-            await self.publish_event(CELL_EVENT_CHANNEL_ADDED, updated=True)
+            await self.publish_event('', updated=True)
         except Exception:
             self._logger.exception(
-                "publish 'channel added' event failed for %s",
+                "publish refetch event failed for %s",
                 self._cell_presence.address,
             )
         return provider
