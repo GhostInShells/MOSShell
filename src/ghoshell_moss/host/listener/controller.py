@@ -40,12 +40,15 @@ from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signa
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
 from ghoshell_moss.core.mindflow.listener_nucleus import new_listener_signal
+from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.host.listener.etiquette import (
     DeliverSpec,
+    DetectSpec,
     EtiquetteConfig,
     EtiquetteSpec,
     OnsetSpec,
     always as ALWAYS,
+    knock as KNOCK,
     once as ONCE,
     scored as SCORED,
 )
@@ -154,7 +157,8 @@ class ListenerController(ListenLifecycle):
         self._human_paused: bool = False
         self._config_store: Optional[ConfigStore] = config_store
         self._etiquette_config_cache: Optional[EtiquetteConfig] = None
-        # clause → topic 装线 (懒, 由 with_topic_service 启动).
+        # clause → topic 装线 (懒, 由 with_topic_service 在 __aenter__ 启动).
+        self._topic_service: Optional[TopicService] = topic_service
         self._topic_task: Optional[asyncio.Task] = None
         self._topic_disposer: Optional[Callable[[], None]] = None
         self._topic_publisher: Optional[Publisher] = None
@@ -167,8 +171,6 @@ class ListenerController(ListenLifecycle):
         self._buffer = SegmentBuffer()
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
-        # 注册 topic service.
-        self.with_topic_service(topic_service)
         # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
         # expect events, 让"期待输入"立刻满足 (取消超时). 不依赖 signal_broadcast.
         listener.on_recognition_result(self._on_expect_voice)
@@ -180,6 +182,9 @@ class ListenerController(ListenLifecycle):
         if not self._listener.is_running():
             await self._listener.__aenter__()
             self._owns_listener = True
+        # topic 装线 (clause → ClauseTopic): 构造时注入的 service 在 async with 里才 await 启动.
+        if self._topic_service is not None:
+            await self.with_topic_service(self._topic_service)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -313,6 +318,12 @@ class ListenerController(ListenLifecycle):
             timeout: float | None,
             until_tail: bool = False,
     ) -> None:
+        detect = etiquette.stop.detect
+        if detect is not None and detect.enabled:
+            # 能量检测礼仪 (knock): 不做 ASR, 只读 meta.rms_db, 检测到声音发 knock signal.
+            await self._run_knock(etiquette, detect)
+            return
+
         state = await self._listener.listen()
         judge = self._make_stop_judge(etiquette, state.commit)
         state.on_event_creating(judge.feed)
@@ -326,6 +337,7 @@ class ListenerController(ListenLifecycle):
                 done.set()
 
         state.on_recognition_result(_on_result)
+        idle_triggered = False
         async with state:
             try:
                 if until_tail:
@@ -338,40 +350,82 @@ class ListenerController(ListenLifecycle):
                             "%s no tail within %s — session ends", self._log_prefix, timeout,
                         )
                 else:
-                    await self._wait_for_idle(activity, etiquette.idle_timeout, timeout)
+                    idle_triggered = await self._wait_for_idle(activity, etiquette.idle_timeout, timeout)
             finally:
                 judge.close()
                 # 只在自己仍是当前礼仪时清 — 避免被下一次 run_etiquette 已切走后误清.
                 if self._active_etiquette is etiquette:
                     self._set_active_etiquette(None)
 
+        # 空闲超时 → 降级到 knock 中间态 (state 已退出, 当前 task 基本结束).
+        if idle_triggered:
+            self._degrade_to_knock()
+
     async def _wait_for_idle(
             self,
             activity: asyncio.Event,
             idle_timeout: float,
             timeout: float | None,
-    ) -> None:
+    ) -> bool:
         """常驻会话等待: idle_timeout 秒无识别事件 → 发 signal 并结束; timeout 为总时长上限.
 
         ``idle_timeout <= 0`` 退回旧的常驻 (timeout=None) / 固定总时长 (timeout=值) 语义 —
-        空闲超时是叠加在常驻之上的可选层, 不改变旧行为.
+        空闲超时是叠加在常驻之上的可选层, 不改变旧行为. 返回 True 表示空闲超时触发 (应降级到 knock).
         """
         if idle_timeout <= 0:
             if timeout is None:
                 await asyncio.Event().wait()
             else:
                 await asyncio.sleep(timeout)
-            return
+            return False
         start = time.monotonic()
         while True:
             if timeout is not None and time.monotonic() - start >= timeout:
-                return
+                return False
             activity.clear()
             try:
                 await asyncio.wait_for(activity.wait(), idle_timeout)
             except asyncio.TimeoutError:
                 self._emit_idle_timeout(idle_timeout)
-                return
+                return True
+
+    async def _run_knock(self, etiquette: EtiquetteSpec, detect: DetectSpec) -> None:
+        """knock 中间态: 轻量能量检测 (不做 ASR), 检测到声音发 knock signal.
+
+        listener 不支持能量检测时静默结束 (退化 — 保持旧"彻底结束"语义). 常驻, 直到被
+        下一次 run_etiquette (re-activate) cancel.
+        """
+        if not self._supports_sound_detection():
+            return
+        disposer = self._listener.on_sound_detected(lambda: self._emit_knock_signal(detect))
+        self._listener.start_sound_detection(threshold_db=detect.threshold_db, cooldown=detect.cooldown)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            disposer()
+            self._listener.stop_sound_detection()
+
+    def _degrade_to_knock(self) -> None:
+        """空闲超时后降级到 knock 中间态 (延迟一个 tick, 等当前 task 完全结束)."""
+        if not self._supports_sound_detection():
+            return
+
+        async def _degrade() -> None:
+            await asyncio.sleep(0)
+            self.run_etiquette(self._knock_spec())
+
+        asyncio.create_task(_degrade())
+
+    def _knock_spec(self) -> EtiquetteSpec:
+        return self._resolve_spec("knock", KNOCK)
+
+    def _supports_sound_detection(self) -> bool:
+        """listener 是否支持能量检测 (真实 HostListener 支持, mock/Null 不支持)."""
+        return (
+            hasattr(self._listener, "start_sound_detection")
+            and hasattr(self._listener, "stop_sound_detection")
+            and hasattr(self._listener, "on_sound_detected")
+        )
 
     def _make_stop_judge(self, etiquette: EtiquetteSpec, commit: Callable[[], None]) -> StopJudge:
         """出口位点装配: 按 StopSpec 组装判停单元 + 按 classifier.instruction 建 caller."""
@@ -773,7 +827,7 @@ class ListenerController(ListenLifecycle):
         self._notify_signal(f"expect #{index} timed out after {timeout:g}s")
 
     def _emit_idle_timeout(self, idle_timeout: float) -> None:
-        """空闲超时: 发一条 notify signal, 告知模型"长时间无语音, 停止聆听".
+        """空闲超时: 发一条 notify signal, 告知模型"长时间无语音, 降级到 knock 门铃".
 
         source = cell_name (不是 "asr"), complete=True + interrupt=False + mode=notify —
         只旁路知会, 不打断模型. signal_broadcast 未注入时静默跳过.
@@ -781,7 +835,7 @@ class ListenerController(ListenLifecycle):
         if self._signal_broadcast is None:
             return
         self._signal_broadcast(new_listener_signal(
-            f"listening stopped — no speech heard for {idle_timeout:g}s",
+            f"no speech for {idle_timeout:g}s — degrading to knock (sound detection)",
             source=self._cell_name or "listener",
             complete=True,
             interrupt=False,
@@ -789,6 +843,21 @@ class ListenerController(ListenLifecycle):
             description="listener:idle-timeout",
         ))
         self._notify_signal(f"idle timeout after {idle_timeout:g}s")
+
+    def _emit_knock_signal(self, detect: DetectSpec) -> None:
+        """检测到声音: 发一条 knock signal, 告知模型"有声音, 但 ASR 关闭中".
+
+        knock 语义 (losable): 模型忙时丢了也无所谓, 门铃的价值是"有空来应门".
+        signal_broadcast 未注入时静默跳过.
+        """
+        if self._signal_broadcast is None:
+            return
+        self._signal_broadcast(new_knock_signal(
+            "sound detected — ASR is off; re-activate listening to engage",
+            priority=detect.priority,
+            description="listener:knock",
+        ))
+        self._notify_signal(f"knock (sound detected, priority={detect.priority.name})")
 
     # ── 人类强发送 (输入法语义) ──
 

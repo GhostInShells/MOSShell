@@ -13,7 +13,7 @@ from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionE
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
-from ghoshell_moss.host.listener.etiquette import always
+from ghoshell_moss.host.listener.etiquette import always, knock
 
 
 class _MockState:
@@ -828,6 +828,95 @@ async def test_send_now_no_sink_drains_only():
     assert result == "sent"
     result2 = controller.send_now()
     assert result2 == "buffer empty — nothing to send"  # 已 drain
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+# ============================================================
+# knock 中间态 — 空闲降级 + 能量检测 (声音门铃)
+# ============================================================
+
+
+class _MockSoundListener(_MockListener):
+    """支持能量检测的 mock listener — 手动 trigger_sound 模拟"检测到声音". """
+
+    def __init__(self):
+        super().__init__()
+        self.sound_detected_callbacks = []
+        self.detection_started = asyncio.Event()
+        self.detection_stopped = asyncio.Event()
+        self.detection_params = {}
+
+    def on_sound_detected(self, callback):
+        self.sound_detected_callbacks.append(callback)
+        return lambda: self.sound_detected_callbacks.remove(callback)
+
+    def start_sound_detection(self, *, threshold_db, cooldown):
+        self.detection_params = {"threshold_db": threshold_db, "cooldown": cooldown}
+        self.detection_started.set()
+
+    def stop_sound_detection(self):
+        self.detection_stopped.set()
+
+    def trigger_sound(self):
+        for cb in list(self.sound_detected_callbacks):
+            cb()
+
+
+@pytest.mark.asyncio
+async def test_knock_etiquette_detects_sound_without_asr():
+    """knock 礼仪走能量检测, 不启动 ASR (listen 不被调用)."""
+    listener = _MockSoundListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task = controller.run_etiquette(knock.model_copy(deep=True))
+
+    await listener.detection_started.wait()
+    assert not listener.listened.is_set()  # 不做 ASR — listen() 未被调用
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_knock_emits_knock_signal_on_sound():
+    """检测到声音 → 发一条 knock signal."""
+    emitted = []
+    listener = _MockSoundListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    task = controller.run_etiquette(knock.model_copy(deep=True))
+    await listener.detection_started.wait()
+
+    listener.trigger_sound()
+    assert len(emitted) == 1
+    assert emitted[0].name == "knock"
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_always_idle_degrades_to_knock():
+    """always 空闲超时 → 降级到 knock 中间态 (不彻底结束)."""
+    listener = _MockSoundListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    spec = always.model_copy(deep=True)
+    spec.idle_timeout = 0.05
+    task = controller.run_etiquette(spec)
+    await listener.listened.wait()
+    state = listener.state
+    await state.entered.wait()
+    await asyncio.sleep(0)
+
+    await asyncio.sleep(0.1)  # 超过 idle_timeout → 降级
+    await listener.detection_started.wait()  # knock 启动能量检测
+
+    assert controller.active_etiquette().name == "knock"
 
     controller.stop()
     with contextlib.suppress(asyncio.CancelledError):

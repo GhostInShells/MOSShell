@@ -9,6 +9,7 @@
 import asyncio
 import contextlib
 import logging
+import time
 from typing import AsyncIterable, Awaitable, Callable, Optional
 
 from ghoshell_common.contracts import LoggerItf
@@ -23,6 +24,7 @@ from ghoshell_moss.contracts.asr import (
 from ghoshell_moss.contracts.audio import (
     AudioCaptureSource,
     AudioChunk,
+    AudioPullLatest,
     AudioSequentialConsumer,
 )
 from ghoshell_moss.contracts.listener import ASRListener, Discard, ListenerState
@@ -59,6 +61,10 @@ class HostListener(ASRListener):
         self._audio_observers: list[Callable[[AudioChunk], None]] = []
         self._result_observers: list[Callable[[RecognitionEvent], None]] = []
         self._segment_observers: list[Callable[[RecognitionSegment], None]] = []
+        # 能量检测 (knock 门铃): 空闲时挂 AudioPullLatest consumer 读 meta.rms_db, 不做 ASR.
+        self._sound_detected_callbacks: list[Callable[[], None]] = []
+        self._sound_detection_task: Optional[asyncio.Task] = None
+        self._sound_consumer: Optional[AudioPullLatest] = None
 
     @property
     def state(self) -> ListenerState | None:
@@ -92,6 +98,7 @@ class HostListener(ASRListener):
         if self._state is not None:
             await self._state.__aexit__(None, None, None)
             self._state = None
+        self.stop_sound_detection()
         await self._asr.close()
         if self._owns_capture:
             await self._capture.close()
@@ -126,6 +133,58 @@ class HostListener(ASRListener):
     def asr(self) -> ASR:
         """暴露内部 ASR (与识别流同源) — 供控制层调参/自解释."""
         return self._asr
+
+    # ── 轻量能量检测 (knock 门铃) — 空闲时读 capture 预计算的 meta.rms_db, 不做 ASR ──
+
+    def on_sound_detected(self, callback: Callable[[], None]) -> Discard:
+        self._sound_detected_callbacks.append(callback)
+        return _make_discard(self._sound_detected_callbacks, callback)
+
+    def start_sound_detection(self, *, threshold_db: float, cooldown: float) -> None:
+        """启动能量检测循环: 挂 AudioPullLatest, 周期读 meta.rms_db, 超阈值发回调."""
+        if self._sound_detection_task is not None:
+            return
+        consumer = self._capture.new_consumer()
+        self._sound_consumer = consumer
+        self._sound_detection_task = asyncio.create_task(
+            self._sound_detection_loop(consumer, threshold_db, cooldown)
+        )
+
+    def stop_sound_detection(self) -> None:
+        """停止能量检测循环: cancel task + close consumer (幂等)."""
+        if self._sound_detection_task is not None:
+            self._sound_detection_task.cancel()
+            self._sound_detection_task = None
+        if self._sound_consumer is not None:
+            self._sound_consumer.close()
+            self._sound_consumer = None
+
+    async def _sound_detection_loop(
+            self,
+            consumer: AudioPullLatest,
+            threshold_db: float,
+            cooldown: float,
+    ) -> None:
+        last_trigger = 0.0
+        try:
+            while True:
+                await asyncio.sleep(0.1)  # 10Hz 轮询最新帧
+                chunk = consumer.pull_latest()
+                if chunk is None or chunk.meta.rms_db < threshold_db:
+                    continue
+                now = time.monotonic()
+                if now - last_trigger < cooldown:
+                    continue
+                last_trigger = now
+                for cb in list(self._sound_detected_callbacks):
+                    try:
+                        cb()
+                    except Exception:
+                        self._logger.exception(
+                            "%s on_sound_detected callback failed", self._log_prefix,
+                        )
+        except asyncio.CancelledError:
+            pass
 
     async def __aenter__(self) -> Self:
         if not self._started:

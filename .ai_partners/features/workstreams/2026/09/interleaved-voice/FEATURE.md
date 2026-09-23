@@ -517,3 +517,51 @@ notify signal (`source=cell_name`, `description="listener:idle-timeout"`, 不打
 测试 `test_always_idle_timeout_emits_signal_and_ends` /
 `test_always_activity_resets_idle_timeout` 锚定两条契约: 空闲超时发 signal + 结束; 有
 活动则计时重置不超时。
+
+## 2026-09-23 后续补: knock 中间态 + DetectSpec (声音门铃)
+
+> 空闲超时的自然延伸 —— "彻底结束"缺了"怎么被重新叫醒"的入口。
+
+**动机**: 空闲超时后 `_active_etiquette = None`, listener 静默, 人开口说话没有任何
+东西把"有人在说话"递给模型 —— 模型知道关了 (idle-timeout signal 说了), 但没有
+"人 → 模型"的唤醒链路, 只能被动等。
+
+**方案**: 复用 `knock` nucleus (语义精确: "a free ghost comes and thinks it over;
+a busy ghost never hears it, and that is fine" — losable、不重试、不聚合)。空闲超时
+**降级**到 `knock` 中间态 (不是彻底结束): 中间态做轻量能量检测 (读 capture 预计算的
+`meta.rms_db`, 不做 ASR), 检测到声音发一条 knock signal, 模型自行决定是否 re-activate
+回 `always`/`scored`。
+
+**零成本 + AEC 兜底**: `meta.rms_db` 是 capture 每帧预计算的 (AudioFrameMeta), 声音
+检测只读一个 float 判阈值; AEC 在 meta 计算前消回声, 所以 `meta.rms_db` 是消回声后的
+信号 —— ghost 自己说话不会触发门铃, 只有外部声音会。
+
+**DetectSpec — stop 层第 4 格 (可组装件)**: 与 `classifier` 精确对称。
+
+| 判停件 | 可编程点 | 触发动作 |
+|---|---|---|
+| `silence` | — | commit |
+| `keywords` | — | commit |
+| `classifier` | `instruction` (LLM) | commit |
+| `detect` | `handler` (音频 sandbox) | 发 signal |
+
+`classifier` 是可编程 LLM 判停, `detect` 是可编程音频检测 —— 同一个"可组装件"范式,
+只是可编程载体从「文本 prompt」换成「音频函数」。`DetectSpec` 四要素 + 抗抖:
+
+- `enabled: bool` — 是否启用。
+- `threshold_db: float` — 阈值 (默认 -50.0, 对齐 AudioGate 的 silence_gate_factory)。
+- `handler: str | None` — 缺省 None = 简单能量检测 (读 meta.rms_db 判阈值); 非 None =
+  sandbox 音频检测函数 (未来可嵌入自定义音频事件检测, 如拍手/口哨)。
+- `priority: Priority` — 发 knock signal 的级别 (默认 NOTICE, 可降 BACKGROUND)。
+- `cooldown: float` — 触发后 N 秒不重复敲门 (抗环境噪音轰炸, 所有 handler 通用, 不进
+  每个 sandbox 函数自己写)。
+
+**语义变化**: 上一节的"空闲超时 = 彻底结束"改为"空闲超时 = 降级到 knock 中间态"。
+`_wait_for_idle` 的收尾从 `_set_active_etiquette(None)` 改为降级到 knock。
+knock 常驻 (idle_timeout=0) —— "睡不睡" (knock 之后彻底关) 是 mindflow `when_idle`
+的职责 (ghost idle 时自己决定干任何事, 包括睡觉), 不在 listener 层设上限。
+
+**实现 (已落地)**: knock 能量检测挂 `HostListener` 层 (持有 capture), 暴露
+`on_sound_detected` / `start_sound_detection` / `stop_sound_detection` (contracts/listener.py
+默认 no-op); controller 订阅回调发 knock signal, `_run_knock` 走能量检测不启动 ASR。
+空闲降级经 `_degrade_to_knock` 延迟启动, 向前兼容: listener 不支持能量检测时退回彻底结束。

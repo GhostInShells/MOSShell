@@ -25,6 +25,7 @@ __all__ = [
     "DeliverSpec",
     "DeliverMode",
     "ClassifierSpec",
+    "DetectSpec",
     "StopSpec",
     "EtiquetteSpec",
     "EtiquetteConfig",
@@ -37,6 +38,7 @@ __all__ = [
     "keyword_end",
     "scored",
     "murmur",
+    "knock",
 ]
 
 
@@ -139,12 +141,44 @@ class ClassifierSpec(BaseModel):
     )
 
 
+class DetectSpec(BaseModel):
+    """Audio detection — a composable slot that signals on sound, not a commit.
+
+    Symmetric to ``classifier``: ``classifier`` is a programmable LLM stop-judge
+    (``instruction``), ``detect`` is a programmable audio detector (``handler``).
+    The default handler is a simple energy threshold on the capture-precomputed
+    ``meta.rms_db``; ``handler`` is a future sandbox extension point.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="enable sound detection",
+    )
+    threshold_db: float = Field(
+        default=-50.0,
+        description="energy threshold (rms_db); frames below it are treated as silent",
+    )
+    handler: str | None = Field(
+        default=None,
+        description="optional sandbox audio-detection function; None = simple energy threshold",
+    )
+    priority: Priority = Field(
+        default=Priority.NOTICE,
+        description="priority of the knock signal emitted on detection",
+    )
+    cooldown: float = Field(
+        default=10.0,
+        description="seconds to suppress repeat knocks after a detection",
+    )
+
+
 class StopSpec(BaseModel):
-    """判停 — how the turn end is decided. Three composable commit paths:
+    """判停 — how the turn end is decided. Four composable commit paths:
 
     - ``silence``: commit N seconds after the last clause (0 = commit on the first clause).
     - ``keywords``: an explicit endpoint — a hit commits immediately.
     - ``classifier``: a score-based early commit; None = not mounted.
+    - ``detect``: an audio detector that signals on sound (knock) instead of committing; None = not mounted.
     """
 
     silence: float = Field(
@@ -158,6 +192,10 @@ class StopSpec(BaseModel):
     classifier: ClassifierSpec | None = Field(
         default=None,
         description="score-based early commit; None = not mounted",
+    )
+    detect: DetectSpec | None = Field(
+        default=None,
+        description="audio detector that signals on sound (knock) instead of committing; None = not mounted",
     )
 
 
@@ -288,6 +326,15 @@ scored = EtiquetteSpec(
 )
 
 
+# 门铃: 空闲降级后的轻量能量检测 — 不做 ASR, 检测到声音发 knock signal, 让模型决定是否 re-engage.
+knock = EtiquetteSpec(
+    name="knock",
+    description="idle gate — detect sound, knock, let the model decide whether to re-engage",
+    stop=StopSpec(detect=DetectSpec()),
+    idle_timeout=0.0,
+)
+
+
 class EtiquetteConfig(ConfigType):
     """对话礼仪配置 — the defined etiquettes plus the active one."""
 
@@ -302,6 +349,7 @@ class EtiquetteConfig(ConfigType):
             keyword_end.model_copy(deep=True),
             scored.model_copy(deep=True),
             murmur.model_copy(deep=True),
+            knock.model_copy(deep=True),
         ],
         description="the defined etiquettes (name + description + the three layers)",
     )

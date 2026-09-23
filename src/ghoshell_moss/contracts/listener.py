@@ -55,6 +55,18 @@ class Listener(ABC):
     def on_recognition_segment(self, callback: Callable[[RecognitionSegment], None]) -> Discard:
         ...
 
+    # ── 轻量能量检测 (knock 门铃) — 空闲时读 capture 预计算的 meta.rms_db, 不做 ASR ──
+
+    def on_sound_detected(self, callback: Callable[[], None]) -> Discard:
+        """注册"检测到声音"回调 — 能量检测触发时调用. 默认 no-op (无耳朵则无门铃)."""
+        return lambda: None
+
+    def start_sound_detection(self, *, threshold_db: float, cooldown: float) -> None:
+        """启动轻量能量检测循环 (读 meta.rms_db, 不做 ASR). 默认 no-op."""
+
+    def stop_sound_detection(self) -> None:
+        """停止能量检测循环. 默认 no-op."""
+
     @abstractmethod
     async def __aenter__(self) -> Self:
         ...
