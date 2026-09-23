@@ -1,8 +1,10 @@
 # Dolores TODO
 
 > dolores 的问题清单 —— **单一事实源**。dogfood 只负责发现与记录，状态在此维护。
-> 状态: `open`(待修) / `uncertain`(不确定) / `fixed`(已修, 带 commit) / `verified`(下轮 dogfood 验证) / `invalid`(判定非 bug)。
+> 状态: `open`(待修) / `uncertain`(不确定) / `fixed`(已修) / `verified`(下轮 dogfood 验证) / `invalid`(判定非 bug)。
 > 由 `ghost-prototype-dolores` FEATURE.md 关联索引。dogfood 发现新问题在此登记，修复/验证在此改状态。
+
+> **2026-09-23 全链路实机运行复盘**（见 [dolores-full-chain-live-run-retro.md](dolores-full-chain-live-run-retro.md)）：新增 D31–D34、方向 O12–O17、礼仪 W7。核心 = prompt 反转释放焦虑（ctml 显式围栏 + interleaved 默认 wait_action_done + moss_wait_action_done 拿掉）。最终回归在 dolores ghost 侧语音逐条试。
 
 > **状态快照 (2026-09-07 更新)**：D1/D5/D7/D21/D23/D26 → `fixed` 待回归（见归口 commit）；D24 → `open`(检查未启动)；D9/D17/D18 → `invalid`。下一轮 dogfood 优先跑 D1/D5/D7/D21/D23/D26 回归。
 
@@ -56,6 +58,10 @@
 | D28 | open | P1 | moment dynamic context 丢失 — 看 moment 疑似彻底丢了 dynamic context。未定位；**假说**：与 D22 同源——moment 带图且媒体类型错时 `durableMomentContent` 在 `thinking/enter` 中抛错 → 整个 enter 返 400 → context/inputs/epoch 全未注入。D22 修复可能一并解决；若 dynamic context 不含图则属另一机制，待下轮 dogfood 复现 | dogfood-3（D22 拆分） | — |
 | D29 | invalid | P1 | `session/frozen` 使 log 不可 resume — plugin 自造类型不在 `KNOWN_SESSION_EVENT_TYPES`，读取门拒整条 log；`Session.append` 无 `ignorable` 写入口。已随旁路机制删除 `notifySessionFrozen`（冻结被旁路取代） | dsh 调研（旁路机制） | — |
 | D30 | fixed | P0 | **打断即静默失效 — tool 结果迟到打穿整轮**：thinking 结束时 tool 仍在等 MOSS 回话（fetch/interleaved），exit 先 `agent.cancel` → abort 监听器 `pendingCalls.delete(callId)` 注销号 → MOSS 侧随后到达的 `/tool-result` 撞空号报 400 → 异常穿 `_dispatch_tool_result` → `logos()` → `_articulate` 整轮 articulate error。一次打断 = 一句 aborted + 一轮报废，且**该帧 moment 丢失**。实测同会话复现两次，均在「新输入抢占正在跑的 thinking」之后。修法（两层）：plugin 在非 yield 的 thinking/exit **先结算** pending tool（回普通结果 `{interrupted}`）再 cancel，并登记 settled-call 墓碑使迟到回话被安静吞掉（200 dropped）而非 400；abort 监听器改为 reject 但不删条目。MOSS 侧 `_dispatch_tool_result` 吸收 RPC 失败（warn + drop），迟到结果永不烧轮。**待回归**：重启 dsh 后复现「打断中含 fetch」场景，日志应见 `settled N pending tool call(s)` 且零 `no pending tool call` | 实机 dogfood（现场打断复现） | `e7924674` |
+| D31 | fixed | P0 | 中断回合后音频有时未中断 — clear player 不重启设备 + 终止流 + 统一 seed key | 全链路实机 | 待回归 |
+| D32 | open | P1 | AEC 回声 — 已找到原因并大规模重构（miniaudio factory 统一 player/capture、AEC 挂 emit clock），待实机测试；耳机+公放无问题，问题在特定接法 | 全链路实机 | 待实机 |
+| D33 | fixed | P1 | facade 反转不刷新 — shell trajectory frame index 与 tracer event index 解耦 | 全链路实机 | 待回归 |
+| D34 | open | P1 | harness waterfall 提示词丢失 — 模型没授权不会发申请 | 全链路实机 | — |
 
 > dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。
 
@@ -69,6 +75,8 @@
 | W4 | open | 模型自感知切换 — `ghost.model` channel 暴露 current/list/switch-model/window-status | — |
 | W5 | fixed | 读自身 channel facade 的两个 tool — 让 ghost 能拉取某个 channel 的当前开放面 (操作表面), 看清自己此刻能做什么. 实现走 `moss_*` tool 方案 (经 `MShellContextFacade` 读, 与既有工具同构); 不做绑定 shell 的 channel module 方案. 与 O6 (Matrix 能力声明) 同源 | `660bc9a0` (moss_channels + moss_channel_facade) |
 | W6 | open | features 场脚手架 — stubs 内 `.ai_partners/features/` 未 `moss features init` 铺开, 当前只留 signpost. 治理 K6 的"未来再做", 本期不做 | — |
+| W7 | open | 长程说话全程 buffer + 尾包发 signal 提示拉（礼仪，以后再说） | — |
+| W8 | open | 快速响应 — ghost channel define (char, desc, template) 三元组，出现在 channel 的 named notice（变化整体重发不增量）；tool `moss_react`(char, kwargs: dict[str,str]\|None, wait_next_moment=True)：单字符执行 template.format(**kwargs)，command 不 observe，wait_next_moment=True 立刻 yielded 否则继续；模型可自定义，startup 机制默认加载 | — |
 
 ## 设计问题
 
@@ -85,6 +93,12 @@
 | O9 | fixed | dolores-ego preset 工具面 keep/drop — 定稿 2026-09-13：keep agent-instructions/shell/fs/jobs/plan-mode/delegation/todo/web；drop persona(plugin shadow)/skill(MOSS 自有)/goal(loop 建立)/compaction(旁路 commit 取代)/ask-user/present。理由见 agent.cordis.yml 头注释。delegation 长期要换 per-directory 授权 + dolores clone + 代码驱动 loop(#8) |
 | O10 | open | dynamic context 落点 — dsh renderContextSnapshot 是 append 非 replace；MOSS dynamic context 用自身 log replace op（仅 thinking/enter、工具调用不携带、turn/start 替换上一轮），具体落点待定 |
 | O11 | open | dsh 0.1.5 传输协议重接 — mux `/api/events.mux`→`/api/remote.mux` + `server-request`→`emit/waterfall/cancel` 帧 + `$events/result` RPC + token 鉴权；事件层小修(assistant/chunk→attempt、todo/write 移出、+system/message)。launcher.py/client.py/session.py/types 重写，生命周期已解耦故边界 bounded |
+| O12 | open | final answer 必须支持 ctml — ctml 反转成 `<|CTML|>` 显式围栏 + `__content__` 语音反转 + 区分 say(高级)/普通，减少 token；对抗预训练「发出请求→等返回」本能 |
+| O13 | open | interleaved 反转 — 默认 wait_action_done，思维奔逸改特例，结果返回 observe，replan 拿掉 |
+| O14 | open | moss_wait_action_done 拿掉 — 提示用 ctml interrupt 在飞的行动 |
+| O15 | open | channel node 赋名 + 通知机制旁路大改（问题最大）；模型 ctml 出错转 bash 起 node 造成多管理面 |
+| O16 | open | 重启不从 last session 还原最后帧，与 compact 分开；「总痛苦守恒」反面，清空/折叠必要；考虑 clear 函数回 memento 态 |
+| O17 | open | 是否允许模型在 memento channel 自定义 commit instruction（未定论） |
 
 ## dsh 0.1.5 升级决策 (2026-09-12)
 

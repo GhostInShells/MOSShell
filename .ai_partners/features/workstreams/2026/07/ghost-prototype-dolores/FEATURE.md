@@ -37,6 +37,7 @@ updated: '2026-09-12'
 > ego 注册方案（单 plugin + session-start，推翻 agentPreset 拆分）→ [dolores-ego-plugin-split.md](dolores-ego-plugin-split.md)。
 > ego 专属 preset + agent 级 nibble（非 ego session 可用，推翻 doloresSelectionRef）→ [dolores-ego-preset-nibble.md](dolores-ego-preset-nibble.md)。
 > 自迭代能力地图（下阶段 ground + 认知工具）→ [dolores-self-iteration-map.md](dolores-self-iteration-map.md)。
+> 全链路实机运行复盘（prompt 反转释放焦虑 + milestone 幻觉纠正）→ [dolores-full-chain-live-run-retro.md](dolores-full-chain-live-run-retro.md)。
 > 问题清单（单一事实源）→ [dolores-todo.md](dolores-todo.md)。
 
 ## Motivation
