@@ -49,10 +49,6 @@ MShellState: TypeAlias = Literal[
 class MShellStatus(BaseModel):
     """shell 的运行状态"""
     state: MShellState = Field(description="state")
-    commands_count: int = Field(
-        default=0,
-        description="command count",
-    )
     executing: list[str] = Field(
         default_factory=list,
         description="executing command task callers",
@@ -106,9 +102,7 @@ class MShellStatus(BaseModel):
         progresses = {}
         pending = 0
         executing = []
-        commands_count = 0
         for task in interpreter.managing_tasks().values():
-            commands_count += 1
             if task.observe():
                 observe += 1
             if task.cancelled():
@@ -138,7 +132,7 @@ class MShellStatus(BaseModel):
     def description(self, tag: str = "status") -> str:
         if self.state != 'running':
             return f"<{tag} {self.state}/>"
-        body_lines = ["Commands: %d" % self.commands_count]
+        body_lines = []
         if self.cancelled:
             body_lines.append('cancelled: %d' % self.cancelled)
         if self.failed:
@@ -156,6 +150,8 @@ class MShellStatus(BaseModel):
             body_lines.append(f'last executing: {self.executing[-1]}')
         if self.pending:
             body_lines.append('pending: %d' % self.pending)
+        if not body_lines:
+            return f"<{tag} {self.state}/>"
         body = "\n".join(body_lines)
         return f"<{tag} {self.state}>\n{body}\n</{tag}>"
 
@@ -324,6 +320,13 @@ class ShellTaskDoneEvent(MShellEvent):
         return self.messages
 
 
+def _last_caller(callers: dict[str, str]) -> str:
+    """取 cid → caller_name 映射的最后一个 (插入序 = 编译序), 即模型最后写下的那条."""
+    if not callers:
+        return ""
+    return next(reversed(callers.values()))
+
+
 @dataclass
 class InterpreterStoppedEvent(MShellEvent):
     index: int
@@ -333,6 +336,8 @@ class InterpreterStoppedEvent(MShellEvent):
     completed: int = 0
     cancelled: int = 0
     failed: int = 0
+    last_cancelled: str = ""  # 最后被砍的 task 身份 (caller_name())
+    last_failed: str = ""  # 最后失败的 task 身份 (caller_name())
     need_observe: bool = False
 
     @classmethod
@@ -346,26 +351,33 @@ class InterpreterStoppedEvent(MShellEvent):
             completed=len(interpretation.success_tasks),
             cancelled=len(interpretation.cancelled_tasks),
             failed=len(interpretation.failed_tasks),
+            last_cancelled=_last_caller(interpretation.cancelled_tasks),
+            last_failed=_last_caller(interpretation.failed_tasks),
             need_observe=interpreter.interpretation().observe,
         )
 
     def as_messages(self) -> list[Message]:
         body_lines = []
         if self.completed:
-            body_lines.append(f"completed: {self.completed}")
+            body_lines.append(f"completed {self.completed}")
         if self.cancelled:
-            body_lines.append(f"cancelled: {self.cancelled}")
+            body_lines.append(f"cancelled {self.cancelled}")
+            if self.last_cancelled:
+                body_lines[-1] += f", last {self.last_cancelled}"
         if self.failed:
-            body_lines.append(f"failed: {self.failed}")
+            body_lines.append(f"failed {self.failed}")
+            if self.last_failed:
+                body_lines[-1] += f", last {self.last_failed}"
         if self.error:
             body_lines.append(f"error: {self.error}")
         if not body_lines:
             # 空结算 (无 completed/cancelled/failed/error) 无投影价值, 返回空列表.
             return []
-        at = format_timestamp(datetime.datetime.fromtimestamp(self.created, tz.gettz()))
+        # state 折进标签作裸词: <logos done|interrupted|error>. 空值属性渲染为裸词 (MessageMeta.gen_attributes_str).
         message = Message.new(
-            tag='interpreter',
-            attributes={'state': self.state, 'at': at},
+            tag='logos',
+            attributes={self.state: ''},
+            timestamp=False,
         ).with_content('\n'.join(body_lines))
         return [message]
 

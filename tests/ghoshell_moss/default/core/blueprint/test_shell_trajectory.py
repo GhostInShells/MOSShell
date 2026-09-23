@@ -139,7 +139,7 @@ def test_moss_status_idle_self_closes_without_counts():
 
 
 def test_interpreter_stopped_event_renders_counts():
-    """stop 事件渲染 completed/cancelled/failed 计数."""
+    """stop 事件渲染 completed/cancelled/failed 计数, state 折进标签作裸词."""
     event = InterpreterStoppedEvent(
         index=0,
         created=0.0,
@@ -147,13 +147,16 @@ def test_interpreter_stopped_event_renders_counts():
         completed=2,
         cancelled=1,
         failed=1,
+        last_cancelled='chan:slow',
+        last_failed='chan:boom',
     )
     messages = event.as_messages()
     assert len(messages) == 1
     content = messages[0].to_content_string()
-    assert 'completed: 2' in content
-    assert 'cancelled: 1' in content
-    assert 'failed: 1' in content
+    assert '<logos done>' in content
+    assert 'completed 2' in content
+    assert 'cancelled 1, last chan:slow' in content
+    assert 'failed 1, last chan:boom' in content
 
 
 def test_interpreter_stopped_event_renders_error():
@@ -230,7 +233,7 @@ async def test_trajectory_projects_interpreter_settlement_for_empty_result_comma
             assert stops[0].completed == 1
             # 帧投影必须携带结算, 而不是只剩 <status idle/>.
             texts = [m.to_content_string() for m in frame.project(with_dynamic=False)]
-            assert any("completed: 1" in t for t in texts)
+            assert any("completed 1" in t for t in texts)
 
 
 @pytest.mark.asyncio

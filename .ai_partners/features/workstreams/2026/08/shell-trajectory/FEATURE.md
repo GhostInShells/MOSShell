@@ -1,14 +1,14 @@
 ---
-title: Shell Trajectory — 观测轨迹取代上下文监控
-status: completed
-priority: P1
 created: 2026-08-19
-updated: 2026-09-04
 depends: []
-milestone:
-description: >-
-  ShellTrajectory 取代旧观测面 (ContextMonitor / ShellContext / InterleavedThinkingToolset),
-  以 pull 型帧轨迹承载上下文缓存经济学下的观测: 帧 = events + facade delta + dynamic messages.
+description: 'ShellTrajectory 取代旧观测面 (ContextMonitor / ShellContext / InterleavedThinkingToolset),
+  以 pull 型帧轨迹承载上下文缓存经济学下的观测: 帧 = events + facade delta + dynamic messages.'
+milestone: null
+priority: P1
+status: in-progress
+status_note: 'InterpreterStoppedEvent 展示优化 (KD8)'
+title: Shell Trajectory — 观测轨迹取代上下文监控
+updated: '2026-09-23'
 ---
 
 # Shell Trajectory
@@ -52,6 +52,15 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
    (如 speech) 的 `ShellTaskDoneEvent` 为空, 若再丢结算, 模型只剩 bare `<status idle/>`
    无法感知动作是否执行。规则内聚在 event: `as_messages` 空结算返回空列表, 帧遍历处
    统一 `extend`, 无投影价值的事件自然不产出帧。
+
+8. **InterpreterStoppedEvent 展示定稿 (2026-09-24)**: 结算事件渲染改为 `logos` 标签 + state 裸词,
+   去掉 `at` (帧头 `<moss at=>` 已锚时刻), 计数去冒号, cancelled/failed 带末尾 task 身份
+   (`caller_name()`), 形如 `<logos interrupted>\ncancelled 3, last chan:say\n</logos>`.
+   - **交接不展示**: append 交接 (`close(cancel_executing=False)`) 结算时计数全空、仅 `pending`
+     非零, 保持静默是对的 —— 模型不感知"交接"这个内部动作, 它感知的是连续签发 ctml 流. `pending`
+     非零只在交接出现, 所以不展示 pending 即不展示交接.
+   - `completed` 保留纯计数 (无值命令若不 raise observe, 计数是它唯一的痕迹); `error` 保留原文.
+   - 撤销: 2026-09-23 那版"观测点位"作废 (它把 command result 误读成要回显模型的 ctml tokens).
 
 ## 取代与撤销 (dead ends)
 
