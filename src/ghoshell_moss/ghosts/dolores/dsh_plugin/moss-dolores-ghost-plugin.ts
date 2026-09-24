@@ -399,8 +399,9 @@ const egoTools = [
   defineTool({
     name: 'moss_ctml_append',
     // 唯一流式 tool: 参数只有 ctml, 经 tool-call-delta 逐字进 articulator (见 _ctml_stream.py).
-    // 模型写一个大的 ctml 时, 不用等一次输出完再编译.
-    description: 'Append CTML mid-thought so the world can see your ongoing thinking as you generate it. Your ctml is streamed into its own action and compiled as you write; the tool returns once it compiles (or "ctml syntax error" if it does not).',
+    // 模型写一个大的 ctml 时, 不用等一次输出完再编译; 但返回前会等这条 ctml 里的动作全部跑完
+    // (_run.py 的 wait_action_done=True) —— 下一针思考落在已经发生的世界上.
+    description: 'Append CTML mid-thought so the world can see your ongoing thinking as you generate it. Your ctml is streamed into its own action as you write. The call returns once every command in it has finished executing — so the next round of thinking starts from a world that has already caught up; do not plan as if the actions were still in flight. Returns a one-line "ctml syntax error" instead when the ctml fails to compile.',
     parameters: {
       ctml: { type: 'string', required: true, description: 'The CTML to append.' },
     },

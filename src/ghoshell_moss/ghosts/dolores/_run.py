@@ -266,16 +266,31 @@ class DoloresRun:
         decoded = stream.stream.value
         tail = call.ctml[len(decoded):]
         try:
-            await stream.finish(tail=tail)
+            # block until every command in this CTML has finished, not merely compiled: the tool
+            # result IS the gate on the ghost's next thought, so the next round reasons about a
+            # world that has already caught up. An audio-only interlocutor hears nothing while the
+            # model generates between calls — waiting here keeps one act per audible round instead
+            # of letting the model outrun the ear.
+            await stream.finish(tail=tail, wait_action_done=True)
         except InterpretError:
             return ToolCallResult(
                 call=call.tool_call_event,
                 result="ctml syntax error",
                 cancel=True,
             )
+        # Sign the moment the ghost reads next, then hand its ref back with the tool result.
+        #
+        # Waiting for the commands alone is not enough: the interpreter's outcome reaches the next
+        # moment as echoes through the shell trajectory, so a snapshot taken before that lands comes
+        # back empty and the ghost plans against a world it cannot see. ``wait_actions_done`` waits
+        # for the *action* to stop — which is the interpreter closing, after the trajectory frame is
+        # recorded — so the ref below and the world agree.
+        await self._thinking.wait_actions_done()
+        moment = self._thinking.observe()
+        moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
         return ToolCallResult(
             call=call.tool_call_event,
-            result="compiled",
+            result={"moment_ref": moment_ref},
         )
 
     async def _handle_wait_action_done(self, call: WaitActionDoneToolCall) -> ToolCallResult:
