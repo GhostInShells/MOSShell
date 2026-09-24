@@ -624,6 +624,7 @@ class Interpreter(ABC):
             throw: bool = True,
             throw_task_error: bool = False,
             clear_undone: bool = True,
+            to_be_observed: bool = False,
     ) -> dict[str, CommandTask]:
         """
         Block until all generated tasks complete, returning by the return_when rule. Usually used for debugging.
@@ -632,6 +633,7 @@ class Interpreter(ABC):
         :param throw_task_error: whether to re-raise when a task hits an exception.
         :param return_when: when to exit the wait-for-execution-done.
         :param clear_undone: whether to mark unfinished Tasks as Cleared when this function exits.
+        :param to_be_observed: only wait for tasks to be observed.
         """
         pass
 

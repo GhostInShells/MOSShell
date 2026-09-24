@@ -31,6 +31,7 @@ class BaseArticulator(Articulator):
             moment: Moment,
             logos_queue: janus.Queue[str | None],
             compiled_event: ThreadSafeEvent,
+            observed_event: ThreadSafeEvent,
             action_stop_event: ThreadSafeEvent,
             warrant: ApproveCallback | None = None,
             action: 'BaseAction',
@@ -40,6 +41,7 @@ class BaseArticulator(Articulator):
         self._logos_queue = logos_queue
         self._moment = moment
         self._compiled_event = compiled_event
+        self._observed_event = observed_event
         self._warrant = warrant
         self._action = action
         self._put_action = put_action
@@ -59,6 +61,10 @@ class BaseArticulator(Articulator):
             error = self._action.interpret_error
             if error is not None:
                 raise InterpretError.from_error(error)
+
+    async def wait_observed(self, raise_interpret_error: bool = False) -> None:
+        await self.wait_compiled(raise_interpret_error)
+        await self._observed_event.wait()
 
     async def wait_action_done(self) -> None:
         if not self._started:
@@ -177,6 +183,7 @@ class BaseAction(Action):
             replaned: bool,
             logos_queue: janus.Queue[str | None],
             compiled_event: ThreadSafeEvent,
+            observed_event: ThreadSafeEvent,
             action_stop_event: ThreadSafeEvent,
             mindflow_stop_event: ThreadSafeEvent,
             thinking_stop_event: ThreadSafeEvent | None = None,
@@ -197,6 +204,7 @@ class BaseAction(Action):
         self._terminated = False
         self._thinking_stop_event = thinking_stop_event
         self._interpret_error: Exception | None = None
+        self._observed_done_event: ThreadSafeEvent = observed_event
         self._started = False
         self._stopped = False
 
@@ -212,6 +220,14 @@ class BaseAction(Action):
     @property
     def attention(self) -> Attention:
         return self._attention
+
+    def set_observed_done(self):
+        self._observed_done_event.set()
+
+    async def wait_observed_done(self):
+        await self._observed_done_event.wait()
+        if self._interpret_error:
+            raise InterpretError.from_error(self._interpret_error)
 
     async def wait_ready(self) -> None:
         if not self._started:
@@ -344,6 +360,8 @@ class BaseAction(Action):
         if self._action_stop_event.is_set():
             return
         self._action_stop_event.set()
+        self._compiled_event.set()
+        self._observed_done_event.set()
         if not self._logos_queue.sync_q.closed:
             self._logos_queue.sync_q.shutdown()
         # 关闭控制的生命周期.

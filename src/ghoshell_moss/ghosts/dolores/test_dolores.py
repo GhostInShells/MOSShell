@@ -1174,6 +1174,14 @@ class FakeArticulator:
             self._log.append("wait_action_done")
 
 
+class _FakeEpoch:
+    index = 3
+
+
+class _FakeObserver:
+    epoch = _FakeEpoch()
+
+
 class FakeRunThinking:
     def __init__(self, log: list | None = None):
         self.abort_reasons: list = []
@@ -1189,6 +1197,21 @@ class FakeRunThinking:
         art = FakeArticulator(self._log)
         self.articulators.append(art)
         return art
+
+    # ctml_append 的尾巴要经这两步: 等 action 停 (含解释器关闭与轨迹落盘) + 签发最新 moment.
+    async def wait_actions_done(self):
+        if self._log is not None:
+            self._log.append("wait_actions_done")
+
+    def observe(self):
+        from ghoshell_moss.core.blueprint.moment import Moment
+
+        self.observed = Moment(id="fake-moment", index=7)
+        return self.observed
+
+    @property
+    def observer(self):
+        return _FakeObserver()
 
 
 def fake_tool_call(call_id: str = "call_00_test"):
@@ -1726,7 +1749,7 @@ class TestDoloresRun:
 
         assert len(thinking.articulators) == 1
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
-        assert ego.rpc_calls == [("c1", "compiled", None, False)]
+        assert ego.rpc_calls == [("c1", {"moment_ref": "3-7"}, None, False)]
 
     @pytest.mark.asyncio
     async def test_ctml_interpret_error_returns_cancel(self):
@@ -1766,7 +1789,7 @@ class TestDoloresRun:
                 pass
 
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
-        assert ego.rpc_calls == [("c1", "compiled", None, False)]
+        assert ego.rpc_calls == [("c1", {"moment_ref": "3-7"}, None, False)]
 
     @pytest.mark.asyncio
     async def test_ctml_append_opens_and_closes_the_articulator_lifecycle(self):
@@ -1792,6 +1815,30 @@ class TestDoloresRun:
         assert art.entered == 1, "articulator 必须被展开一次"
         assert art.exited == 1, "articulator 必须被收尾一次"
         assert "".join(art.sent) == "<say>hi</say>"
+
+    @pytest.mark.asyncio
+    async def test_ctml_append_waits_for_actions_done(self):
+        """ctml_append 返回前必须等动作全部跑完 —— 不是只等编译完成.
+
+        对一个只用耳朵在场的人, 模型在两次调用之间生成的 token 是纯静音: 等在这里, 一个可听的
+        动作才对应一轮, 模型不会跑到耳朵前面; 下一针思考也因此落在已经发生的世界上.
+        """
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        log: list = []
+        thinking = FakeRunThinking(log)
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._ctml_delta("c1", name="moss_ctml_append", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", arguments_delta='hi</say>"}', seq=2))
+            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
+            await session.emit(self._turn_end(seq=4))
+            async for _ in run.logos():
+                pass
+
+        assert log.count("wait_action_done") == 1, "ctml_append 返回前必须等动作跑完"
+        assert log.count("wait_actions_done") == 1, "还必须等 action 停 —— 解释器关闭、轨迹落盘之后才签发"
+        assert ego.rpc_calls == [("c1", {"moment_ref": "3-7"}, None, False)], "签发 moment 并把 ref 随 tool 结果交回"
 
     @pytest.mark.asyncio
     async def test_react_opens_and_closes_the_articulator_lifecycle(self):

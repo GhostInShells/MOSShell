@@ -245,3 +245,78 @@ async def test_run_shell_raise_exception():
         async with shell:
             async with await shell.interpreter() as interpreter:
                 raise RuntimeError("failed")
+
+
+@pytest.mark.asyncio
+async def test_wait_tasks_to_be_observed_only_waits_observable_tasks():
+    """wait_tasks(to_be_observed=True) 只等 always_observe 的 task —
+    慢速普通 task 仍在执行时即可返回, 需观测的结果此时已就绪."""
+    shell = new_ctml_shell()
+    chan = PyChannel(name="a")
+    shell.main_channel.import_channels(chan)
+    slow_release = asyncio.Event()
+
+    @chan.build.command(always_observe=True)
+    async def read() -> str:
+        return "observed-result"
+
+    @chan.build.command(blocking=False)
+    async def slow() -> str:
+        await slow_release.wait()
+        return "slow-result"
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<a:read /><a:slow />")
+            interpreter.commit()
+            await asyncio.wait_for(
+                interpreter.wait_tasks(
+                    throw=False,
+                    throw_task_error=False,
+                    clear_undone=False,
+                    to_be_observed=True,
+                ),
+                2.0,
+            )
+            # 需观测 task 已完成, 慢 task 还没结束.
+            tasks = {t.caller_name(): t for t in interpreter.compiled_tasks().values()}
+            assert tasks["a:read"].done() is True
+            assert tasks["a:read"].result() == "observed-result"
+            assert tasks["a:slow"].done() is False
+            slow_release.set()
+            await asyncio.wait_for(interpreter.wait_tasks(throw=False), 2.0)
+            assert tasks["a:slow"].done() is True
+
+
+@pytest.mark.asyncio
+async def test_wait_tasks_to_be_observed_returns_when_no_observable_tasks():
+    """没有 always_observe task 时, wait_tasks(to_be_observed=True) 不等执行, 立即返回."""
+    shell = new_ctml_shell()
+    chan = PyChannel(name="a")
+    shell.main_channel.import_channels(chan)
+    slow_release = asyncio.Event()
+
+    @chan.build.command()
+    async def slow() -> str:
+        await slow_release.wait()
+        return "slow-result"
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<a:slow />")
+            interpreter.commit()
+            await asyncio.wait_for(
+                interpreter.wait_tasks(
+                    throw=False,
+                    throw_task_error=False,
+                    clear_undone=False,
+                    to_be_observed=True,
+                ),
+                2.0,
+            )
+            # 立即返回, 慢 task 不受影响仍在执行.
+            tasks = {t.caller_name(): t for t in interpreter.compiled_tasks().values()}
+            assert tasks["a:slow"].done() is False
+            slow_release.set()
+            await asyncio.wait_for(interpreter.wait_tasks(throw=False), 2.0)
+            assert tasks["a:slow"].done() is True

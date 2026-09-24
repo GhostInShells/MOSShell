@@ -103,6 +103,7 @@ class BaseThinking(Thinking):
         logos_queue: janus.Queue[str | None] = janus.Queue()
         compiled_event = ThreadSafeEvent()
         action_stop_event = ThreadSafeEvent()
+        observed_event = ThreadSafeEvent()
 
         action = BaseAction(
             attention=self._attention,
@@ -110,6 +111,7 @@ class BaseThinking(Thinking):
             replaned=replan,
             logos_queue=logos_queue,
             compiled_event=compiled_event,
+            observed_event=observed_event,
             action_stop_event=action_stop_event,
             mindflow_stop_event=self._mindflow_stop_event,
             thinking_stop_event=self._stop_event,
@@ -126,6 +128,7 @@ class BaseThinking(Thinking):
             moment=self.moment,
             logos_queue=logos_queue,
             compiled_event=compiled_event,
+            observed_event=observed_event,
             action_stop_event=action_stop_event,
             warrant=self._warrant if gated else None,
             action=action,

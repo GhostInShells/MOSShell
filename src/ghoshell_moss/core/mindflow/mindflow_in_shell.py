@@ -403,6 +403,7 @@ class MindflowInShell(ABC):
                     # 若在此 abort_thinking, 会抢在 close() 的 add_echoes(need_observe=True)
                     # 之前唤醒帧循环 — need_observe() 在 check 时刻仍是 False, 错误帧丢失.
                     action.set_interpret_error(err)
+                    action.add_echoes(observe=True)
                     self._on_mindflow_error(err)
                     return
                 except StatementExitedException:
@@ -416,7 +417,17 @@ class MindflowInShell(ABC):
                     return
 
                 # ── 阶段 3: wait stopped — 等待执行完成 ──
-                task = asyncio.create_task(interpreter.wait_stopped())
+                async def _wait_interpreter_done():
+                    await interpreter.wait_tasks(
+                        throw=False,
+                        throw_task_error=False,
+                        clear_undone=False,
+                        to_be_observed=True,
+                    )
+                    action.set_observed_done()
+                    await interpreter.wait_stopped()
+
+                task = asyncio.create_task(_wait_interpreter_done())
                 # 等待任务结束.
                 await action.wait_until_done(task)
 

@@ -804,6 +804,11 @@ class Articulator(ABC):
         ...
 
     @abstractmethod
+    async def wait_observed(self, raise_interpret_error: bool = False) -> None:
+        """等待所有生产的 task 中需要被观测的部分全部执行完."""
+        ...
+
+    @abstractmethod
     async def wait_action_done(self) -> None:
         """等待到 action 执行完毕. """
 
@@ -952,6 +957,20 @@ class Action(AttentionStatement, ABC):
     def set_compiled(self):
         """
         标记 logos 已经全部读取完, 并且已经完成了编译. 这样不等待 Action 运行结束, Think 可以继续执行.
+        """
+        ...
+
+    @abstractmethod
+    def set_observed_done(self):
+        """
+        标记 logos 生成的默认需要观测的 task 都执行完了.
+        """
+        ...
+
+    @abstractmethod
+    async def wait_observed_done(self):
+        """
+        等待 logos 中生成的需要观测 task 都执行完.
         """
         ...
 

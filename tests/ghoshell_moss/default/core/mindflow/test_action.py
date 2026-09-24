@@ -29,6 +29,7 @@ def _make_action(*, replaned: bool = False, attention=None, moments=None, thinki
     moments = moments or BaseMomentsObserver(max_size=10)
     logos_queue = janus.Queue()
     compiled_event = ThreadSafeEvent()
+    observed_event = ThreadSafeEvent()
     action_stop_event = ThreadSafeEvent()
     mindflow_stop_event = ThreadSafeEvent()
     action = BaseAction(
@@ -37,6 +38,7 @@ def _make_action(*, replaned: bool = False, attention=None, moments=None, thinki
         replaned=replaned,
         logos_queue=logos_queue,
         compiled_event=compiled_event,
+        observed_event=observed_event,
         action_stop_event=action_stop_event,
         mindflow_stop_event=mindflow_stop_event,
         thinking_stop_event=thinking_stop_event,
@@ -44,6 +46,7 @@ def _make_action(*, replaned: bool = False, attention=None, moments=None, thinki
     events = {
         'logos_queue': logos_queue,
         'compiled_event': compiled_event,
+        'observed_event': observed_event,
         'action_stop_event': action_stop_event,
         'mindflow_stop_event': mindflow_stop_event,
     }
@@ -225,6 +228,7 @@ async def test_articulator_send_nowait_streams_to_action_and_accumulates_moment(
         moment=moment,
         logos_queue=ev['logos_queue'],
         compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
         action_stop_event=ev['action_stop_event'],
         action=action,
     )
@@ -247,6 +251,7 @@ async def test_articulator_send_streams_to_action_and_accumulates_moment():
         moment=moment,
         logos_queue=ev['logos_queue'],
         compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
         action_stop_event=ev['action_stop_event'],
         action=action,
     )
@@ -268,6 +273,7 @@ async def test_articulator_wait_compiled_unblocks_when_compiled():
         moment=Moment(),
         logos_queue=ev['logos_queue'],
         compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
         action_stop_event=ev['action_stop_event'],
         action=action,
     )
@@ -276,3 +282,78 @@ async def test_articulator_wait_compiled_unblocks_when_compiled():
     assert task.done() is False
     ev['compiled_event'].set()
     await asyncio.wait_for(task, 2.0)
+
+
+# -- observed 生命周期节点: 需观测 task 全部执行完 -------------------------------------
+
+@pytest.mark.asyncio
+async def test_set_observed_done_unblocks_wait_observed_done():
+    """set_observed_done() 后 wait_observed_done() 解除阻塞 — 需观测 task 完成通知."""
+    action, _ = _make_action()
+    async with action:
+        task = asyncio.create_task(asyncio.wait_for(action.wait_observed_done(), 2.0))
+        await asyncio.sleep(0)
+        assert task.done() is False
+        action.set_observed_done()
+        await asyncio.wait_for(task, 2.0)
+
+
+@pytest.mark.asyncio
+async def test_wait_observed_done_raises_interpret_error():
+    """编译出错时, wait_observed_done() 抛 InterpretError — 错误必须传播给等待方."""
+    from ghoshell_moss.core.concepts.errors import InterpretError
+
+    action, _ = _make_action()
+    async with action:
+        action.set_interpret_error(ValueError('bad ctml'))
+        action.set_observed_done()
+        with pytest.raises(InterpretError):
+            await asyncio.wait_for(action.wait_observed_done(), 2.0)
+
+
+@pytest.mark.asyncio
+async def test_articulator_wait_observed_unblocks_when_action_observed_done():
+    """Articulator.wait_observed() 与 Action.set_observed_done() 共享同一事件 —
+    action 侧标记 observed 完成后, articulator 侧等待必须解除阻塞."""
+    action, ev = _make_action()
+    articulator = BaseArticulator(
+        moment=Moment(),
+        logos_queue=ev['logos_queue'],
+        compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
+        action_stop_event=ev['action_stop_event'],
+        action=action,
+    )
+    async with action:
+        task = asyncio.create_task(asyncio.wait_for(articulator.wait_observed(), 2.0))
+        await asyncio.sleep(0)
+        assert task.done() is False
+        # 只 compiled 不够 — observed 是 compiled 之后的独立节点.
+        action.set_compiled()
+        await asyncio.sleep(0)
+        assert task.done() is False
+        action.set_observed_done()
+        await asyncio.wait_for(task, 2.0)
+
+
+@pytest.mark.asyncio
+async def test_action_stop_unblocks_compiled_and_observed_waiters():
+    """action 退出 (stop) 时必须释放 compiled / observed 等待者, 不留永久挂起."""
+    action, ev = _make_action()
+    articulator = BaseArticulator(
+        moment=Moment(),
+        logos_queue=ev['logos_queue'],
+        compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
+        action_stop_event=ev['action_stop_event'],
+        action=action,
+    )
+    async with action:
+        compiled = asyncio.create_task(asyncio.wait_for(articulator.wait_compiled(), 2.0))
+        observed = asyncio.create_task(asyncio.wait_for(articulator.wait_observed(), 2.0))
+        await asyncio.sleep(0)
+        assert compiled.done() is False
+        assert observed.done() is False
+    # __aexit__ -> stop() 置位两个事件.
+    await asyncio.wait_for(compiled, 2.0)
+    await asyncio.wait_for(observed, 2.0)

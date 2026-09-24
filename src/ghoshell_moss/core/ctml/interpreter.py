@@ -649,6 +649,7 @@ class CTMLInterpreter(Interpreter):
             return_when: str = asyncio.ALL_COMPLETED,
             clear_undone: bool = True,
             throw_task_error: bool = False,
+            to_be_observed: bool = False,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)
@@ -661,13 +662,17 @@ class CTMLInterpreter(Interpreter):
 
         # 拿到编译完的 tasks.
         tasks = self._managing_tasks.copy()
+        tasks = {key: task for key, task in tasks.items() if task.meta.always_observe or not to_be_observed}
         if len(tasks) == 0:
             return tasks
 
         # 按约定等待所有 task.
         waiting_tasks = []
         for t in tasks.values():
-            waiting_tasks.append(asyncio.create_task(t.wait(throw=False)))
+            if t.meta.always_observe or not to_be_observed:
+                waiting_tasks.append(asyncio.ensure_future(t.wait(throw=False)))
+        if len(waiting_tasks) == 0:
+            return tasks
 
         err = None
         if not timeleft.alive():
