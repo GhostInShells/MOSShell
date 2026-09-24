@@ -87,7 +87,9 @@ class BaseArticulator(Articulator):
                 self._moment.logos += logos_delta
         except asyncio.QueueFull:
             raise
-        except janus.AsyncQueueShutDown:
+        except (janus.ShutDown, janus.QueueShutDown):
+            # sync put_nowait raises janus.ShutDown; async put raises janus.QueueShutDown.
+            # The two are unrelated classes — both must be caught.
             raise ActionExitedException()
 
     async def send(self, logos_delta: str) -> None:
@@ -104,7 +106,7 @@ class BaseArticulator(Articulator):
                 self._moment.logos += logos_delta
         except asyncio.QueueFull:
             raise
-        except janus.AsyncQueueShutDown:
+        except (janus.ShutDown, janus.QueueShutDown):
             raise ActionExitedException()
 
     async def _commit(self) -> None:
@@ -225,6 +227,13 @@ class BaseAction(Action):
         self._observed_done_event.set()
 
     async def wait_observed_done(self):
+        """Wait for the observed node to settle.
+
+        The node settles in one of three ways: the observable tasks finished
+        (:meth:`set_observed_done`), the action was aborted (preempted / stopped), or the
+        logos failed to compile. The last raises :class:`InterpretError`; the first two
+        both release the waiter, and the caller tells them apart with :meth:`is_aborted`.
+        """
         await self._observed_done_event.wait()
         if self._interpret_error:
             raise InterpretError.from_error(self._interpret_error)
@@ -281,6 +290,10 @@ class BaseAction(Action):
     def abort(self, reason: str | Exception | None) -> None:
         self._attention.abort(reason)
         self._action_stop_event.set()
+        # 终结 compiled / observed 两个生命周期节点: abort 之后不会再有 compile 或 observe,
+        # 释放等待方 (与 stop() 一致), 由 is_aborted() 判别干净退出还是异常.
+        self._compiled_event.set()
+        self._observed_done_event.set()
         if not self._logos_queue.sync_q.closed:
             self._logos_queue.sync_q.shutdown()
 
@@ -298,6 +311,9 @@ class BaseAction(Action):
     def set_interpret_error(self, error: Exception) -> None:
         self._compiled_event.set()
         self._interpret_error = error
+        # 终结 observed 节点: 编译失败的 action 不会再产生 observe, 释放 wait_observed_done()
+        # 让它在读 _interpret_error 时抛 InterpretError, 而不是挂到 stop().
+        self._observed_done_event.set()
 
     @property
     def interpret_error(self) -> Exception | None:
@@ -373,6 +389,7 @@ class BaseAction(Action):
     def is_running(self) -> bool:
         return (
                 self._started and not self._stopped
+                and not self._action_stop_event.is_set()
                 and not self._mindflow_stop_event.is_set()
                 and not self._attention.is_aborted()
                 and not (self._thinking_stop_event is not None and self._thinking_stop_event.is_set())

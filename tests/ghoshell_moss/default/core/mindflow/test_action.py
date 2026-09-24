@@ -357,3 +357,114 @@ async def test_action_stop_unblocks_compiled_and_observed_waiters():
     # __aexit__ -> stop() 置位两个事件.
     await asyncio.wait_for(compiled, 2.0)
     await asyncio.wait_for(observed, 2.0)
+
+
+# -- 防御: abort / 编译错误路径必须释放 observed 等待者 --------------------------------
+
+@pytest.mark.asyncio
+async def test_abort_releases_observed_waiter():
+    """abort() 后 wait_observed_done() 必须返回, 不能挂到 stop() 才释放.
+
+    abort 是"这个 action 被抢占/掐掉, 不会再有 observe" —— 等待方要被唤醒 (由 is_aborted()
+    判别干净退出), 而不是永久挂起等下一个人调 stop().
+    """
+    action, _ = _make_action()
+    async with action:
+        task = asyncio.create_task(asyncio.wait_for(action.wait_observed_done(), 2.0))
+        await asyncio.sleep(0)
+        assert task.done() is False
+        action.abort('preempted')
+        await asyncio.wait_for(task, 2.0)
+
+
+@pytest.mark.asyncio
+async def test_abort_releases_articulator_wait_observed():
+    """同样地, articulator.wait_observed() 在 action abort 后必须解除阻塞."""
+    action, ev = _make_action()
+    articulator = BaseArticulator(
+        moment=Moment(),
+        logos_queue=ev['logos_queue'],
+        compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
+        action_stop_event=ev['action_stop_event'],
+        action=action,
+    )
+    async with action:
+        task = asyncio.create_task(asyncio.wait_for(articulator.wait_observed(), 2.0))
+        await asyncio.sleep(0)
+        assert task.done() is False
+        action.abort('preempted')
+        await asyncio.wait_for(task, 2.0)
+
+
+@pytest.mark.asyncio
+async def test_interpret_error_releases_observed_waiter():
+    """编译错误后 wait_observed_done() 必须抛 InterpretError, 不是挂死.
+
+    编译失败的 action 若让 wait_observed_done() 一直等, 等待方永远拿不到错误. 错误一旦
+    成立, observe 节点就必须以"失败"结算 (抛异常), 而非"未完成".
+    """
+    from ghoshell_moss.core.concepts.errors import InterpretError
+
+    action, _ = _make_action()
+    async with action:
+        action.set_interpret_error(ValueError('bad ctml'))
+        with pytest.raises(InterpretError):
+            await asyncio.wait_for(action.wait_observed_done(), 2.0)
+
+
+# -- 防御: 队列关闭时 send 的异常转换 ------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_after_queue_shutdown_raises_action_exited():
+    """async send 在队列关闭时同样必须转成 ActionExitedException."""
+    from ghoshell_moss.core.blueprint.mindflow import ActionExitedException
+
+    action, ev = _make_action()
+    articulator = BaseArticulator(
+        moment=Moment(),
+        logos_queue=ev['logos_queue'],
+        compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
+        action_stop_event=ev['action_stop_event'],
+        action=action,
+    )
+    async with action:
+        ev['logos_queue'].shutdown(immediate=True)
+        with pytest.raises(ActionExitedException):
+            await articulator.send('hello')
+
+
+@pytest.mark.asyncio
+async def test_send_nowait_after_queue_shutdown_raises_action_exited_via_articulator():
+    """经 articulator.send_nowait 验证 sync 侧关闭的异常转换 (真实调用面)."""
+    from ghoshell_moss.core.blueprint.mindflow import ActionExitedException
+
+    action, ev = _make_action()
+    articulator = BaseArticulator(
+        moment=Moment(),
+        logos_queue=ev['logos_queue'],
+        compiled_event=ev['compiled_event'],
+        observed_event=ev['observed_event'],
+        action_stop_event=ev['action_stop_event'],
+        action=action,
+    )
+    async with action:
+        ev['logos_queue'].shutdown(immediate=True)
+        with pytest.raises(ActionExitedException):
+            articulator.send_nowait('hello')
+
+
+# -- 防御: is_running 反映 abort -----------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_is_running_false_after_abort():
+    """abort() 之后 is_running() 必须为 False — abort 就是"不再运行".
+
+    is_running 现在不看 _action_stop_event, abort 后仍可能返回 True, 调用方会继续消费.
+    """
+    action, _ = _make_action()
+    async with action:
+        assert action.is_running() is True
+        action.abort('preempted')
+        assert action.is_running() is False

@@ -971,6 +971,10 @@ class Action(AttentionStatement, ABC):
     async def wait_observed_done(self):
         """
         等待 logos 中生成的需要观测 task 都执行完.
+
+        三种结算都会被释放: 需观测 task 完成 (set_observed_done), action 被 abort/stop
+        (不再有 observe), 或 logos 编译失败 (抛 InterpretError). 前两者都返回, 调用方用
+        is_aborted() 区分"正常观测完成"与"被中断".
         """
         ...
 
