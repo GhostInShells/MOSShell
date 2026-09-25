@@ -95,8 +95,16 @@ class GhostMeta(ABC):
 Logos = str
 
 class GhostEvent(BaseModel):
-    event: str = Field(description="event name")
-    payload: dict[str, Any] = Field(description="event payload")
+    """An out-of-band event on the logos stream, interleaved with ``Logos`` (``str``) deltas.
+
+    ``event`` is a namespaced type name (e.g. ``dsh/tool/call``) so consumers can dispatch by name
+    without colliding across ghosts. ``payload`` is transport-opaque — the producer decides its
+    shape and the consumer (typically a debug surface) renders it. The runtime routes ``str`` to the
+    logos broadcast and ``GhostEvent`` to the structured ``'ghost-event'`` output; see ``Ghost.think``.
+    """
+
+    event: str = Field(description="namespaced event type name")
+    payload: dict[str, Any] = Field(description="transport-opaque, JSON-serializable event payload")
 
 
 class Ghost(ABC):
@@ -108,7 +116,7 @@ class Ghost(ABC):
     让模型知道"这个能力在框架中可被扩展"。
 
     必须实现的 abstractmethod 只有少数几个：
-    articulate(), system_prompt(), __aenter__, __aexit__.
+    think(), system_prompt(), __aenter__, __aexit__.
     """
 
     @property
@@ -155,9 +163,11 @@ class Ghost(ABC):
 
     @abstractmethod
     def think(self, thinking: Thinking) -> AsyncIterable[Logos | GhostEvent]:
-        """
-        articulate the logos from context
-        :returns str: return the logos for publish stream
+        """Drive one articulate cycle from the given ``thinking`` and stream its output.
+
+        Yields two kinds of items, interleaved: ``Logos`` (``str``) deltas — the ghost's
+        spoken/acted text, streamed to the logos broadcast — and ``GhostEvent`` out-of-band
+        events, routed to the structured ``'ghost-event'`` output.
         """
         pass
 
@@ -213,11 +223,10 @@ class Ghost(ABC):
             thinking: Thinking,
             error: BaseException | None,
     ) -> None:
-        """Called after articulate() completes, success or failure.
+        """Called after think() completes, success or failure.
 
-        logos is the full concatenated model output from one articulate cycle.
-        error is non-None if articulation raised. Together with the articulator's
-        moment, this is enough to replay the cycle for deterministic reproduction.
+        error is non-None if thinking raised. Together with the ``thinking`` context, this is
+        enough to replay the cycle for deterministic reproduction.
         """
         ...
 
@@ -245,7 +254,7 @@ class Ghost(ABC):
         """Last articulate context window snapshot.
 
         Returns the messages actually sent to the model in the most recent
-        articulate() call, as a serializable dict. Lets the debugger see
+        think() call, as a serializable dict. Lets the debugger see
         exactly what the model saw in a given cycle.
 
         Recommended structure (but not enforced):
@@ -254,8 +263,8 @@ class Ghost(ABC):
                 "messages": [...]       # conversation history / percepts as dicts
             }
 
-        Default returns {}. Ghost authors override in on_articulate_exit()
-        by capturing and storing the context before the model call.
+        Default returns {}. Ghost authors override this by capturing and storing the context
+        before the model call (see ``handle_thinking_exit``).
         """
         return {}
 

@@ -1,10 +1,11 @@
 """DoloresRun — the run object for a Dolores thinking transaction (async-with boundary + logos() stream).
 
-``async with`` is the transaction boundary (enter opens / exit closes); logos() yields logos deltas
-extracted from the raw session events:
+``async with`` is the transaction boundary (enter opens / exit closes); logos() forwards the dsh
+events a debugger needs to the observability surface (``moss-ghost run``'s output), so iterating a
+run tells you what happened without spelunking the dsh log:
 
     async with ego.run_thinking(thinking) as run:
-        async for delta in run.logos():
+        async for event in run.logos():
             ...
 
 Lifecycle contract:
@@ -22,6 +23,7 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 from typing_extensions import Self
+from ghoshell_moss.core.blueprint.ghost import GhostEvent
 from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.contracts.logger import get_moss_logger
@@ -48,6 +50,21 @@ _logger = get_moss_logger()
 
 # 流式 tool 集合: 这两个 tool 的参数经 tool-call-delta 逐字进 articulator, 边生成边执行.
 _STREAMING_TOOLS = frozenset({InterpretToolCall.tool_name(), ReactToolCall.tool_name()})
+
+# 转发到观测面的 dsh 事件 (moss-ghost run 的 output 直接可读, 迭代时不用反查 dsh log).
+# 只取**完整**事件, 不取逐 token 的流: assistant/chunk 的 reasoning/text delta 体量无界
+# (一次长思考几千条), 会把 output 面灌满. 留下的这几个每 turn/step 常数条, 各自也不与别处重复:
+# turn/* 给层级, tool/* 是行动脊椎, assistant/message 是组装好的输出 + usage (对阈值 debug 有用).
+_FORWARDED_DSH_EVENTS = frozenset({
+    "turn/start",
+    "turn/end",
+    "tool/call",
+    "tool/result",
+    "assistant/message",
+})
+
+# event 名前缀: 观测面是共享流, 不带命名空间会和别的 ghost 事件撞名.
+_DSH_EVENT_NAME_PREFIX = "dsh/"
 
 if TYPE_CHECKING:
     from ._ego import DoloresEgo
@@ -418,14 +435,18 @@ class DoloresRun:
                 result.call.callId,
             )
 
-    async def logos(self) -> "AsyncIterator[str]":
-        """Consume the event stream, dispatch tool calls, end on turn/end.
+    async def logos(self) -> "AsyncIterator[GhostEvent]":
+        """Consume the event stream, dispatch tool calls, forward debug events, end on turn/end.
 
         The final answer is plain text that is never parsed into CTML — the ghost acts through tool
         calls. ``moss_interpret`` and ``moss_react`` are the two streaming tools: their
         ``tool-call-delta`` chunks are fed into a per-call articulator as they arrive, so the CTML
         reaches the shell while the model is still generating. Single consumption: a run has at most
         one logos stream. Ending (turn/end) is internal — the consumer needs no break.
+
+        Yields one ``GhostEvent`` per dsh event in ``_FORWARDED_DSH_EVENTS``, in arrival order. The
+        raw envelope rides in ``payload`` untouched (``to_dict()``), so a dsh upgrade that adds
+        envelope fields reaches the surface without changing this code.
         """
         if self._logos_started:
             raise RuntimeError("DoloresRun.logos() can only be consumed once")
@@ -435,6 +456,12 @@ class DoloresRun:
         try:
             while True:
                 event = await anext(events)
+                # 转发先于 turn/end 判定: 那个判定会让本函数 return, turn/end 必须在它之前 yield 出去.
+                if event.meta.type in _FORWARDED_DSH_EVENTS:
+                    yield GhostEvent(
+                        event=f"{_DSH_EVENT_NAME_PREFIX}{event.meta.type}",
+                        payload=event.to_dict(),
+                    )
                 if self._note_turn_end(event):
                     return
                 if chunk := AssistantChunk.from_session_event(event):
@@ -444,8 +471,6 @@ class DoloresRun:
                     await self._handle_tool_use_event(tool, streams)
         finally:
             await events.aclose()
-        if False:  # 保持 async generator 语法: plain text 放弃治理后无实际 logos.
-            yield ""
 
     async def _handle_ctml_delta(self, chunk, streams: dict[str, _StreamedCtml]) -> None:
         """tool-call-delta → feed a streaming tool's argument stream into its own articulator.

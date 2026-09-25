@@ -12,9 +12,13 @@
   + 最近 N 条已就绪 message 作前文), 约束显式进载荷 (低思考 + maxTokens 硬 cap). **这些任务的
   生命周期与状态归 manager** (``bypass``): 关停时取消在飞的、不等 —— 缺 note 的 commit 就空着,
   内容仍可 read.
-  **不做重启补漏**: 空的就空着.
-- 未落: ``read`` (commit 区间 → 文本)、``chat_commit``, 以及 ego 的 inflight 替换 (当前只在 ego
-  开启/关闭时用 ``resume_ref()`` 重建).
+- **补漏**: ``backfill()`` 启动时回扫尾部 ``resume_tail`` 条 commit, 给**还没有 note** 的补派
+  旁路 (非阻塞, 与运行期同一条派发路径). 两条互补的路径产生空 note, 补漏按性质分别对待:
+  关停时被取消的旁路**留空** → 下次开机补上; 真失败 (传输异常 / 空文本) 写一条 **terminal error
+  note** (``_fail``) → 补漏据此不再重试, 读侧把它标成 broken. 幂等依据是 memento 里那条 Note
+  本身 (不是内存态) —— 所以失败必须落盘, 否则恒失败的 commit 每次开机都要白跑一遍.
+- 未落: ego 的 inflight 替换 —— 当前只在 ego 开启/关闭时用 ``resume_ref()`` 重建.
+  (``read`` / ``chat`` 已落, 见 ``memento_channel``.)
 
 dep 只有不可变项 (connection / memento / config / logger) —— 这些是它干活的工具, 不是 ego 状态.
 """
@@ -133,6 +137,10 @@ class EgoMementoConfig(BaseModel):
         default=800,
         description="note 摘要的输出上限 (maxTokens 硬 cap, 旁路单轮请求侧). 判定区间 500-1000, 取 800.",
     )
+    resume_tail: int = Field(
+        default=5,
+        description="启动补漏回扫的尾部 commit 数 (只补还没有 note 的). 0 = 关掉补漏.",
+    )
 
 
 class BypassState(str, Enum):
@@ -224,6 +232,7 @@ class EgoMementoManager:
 
         旁路 note 是 best-effort —— 缺 note 的 commit 就空着 (内容仍可 read), 为一个 LLM 调用把
         ghost 关闭拖住几秒不值得. 运行期排的旁路早就跑完了, 通常只有退出前刚排的那个会丢.
+        丢下的空 note 不是永久空洞: 下次开机 ``backfill()`` 会补 —— 这正是取消不写 error note 的原因.
         """
         running = [run for run in self._bypass.values() if run.task is not None and not run.task.done()]
         for run in running:
@@ -267,6 +276,36 @@ class EgoMementoManager:
 
     # ── 旁路 (慢腿: 排任务归 manager, 生命周期同 ghost) ───────────────
 
+    def backfill(self) -> int:
+        """启动补漏: 回扫尾部 ``resume_tail`` 条 commit, 给**还没有 note** 的补派旁路任务.
+
+        与 ``schedule_note`` 是同一条派发路径 —— 只排任务、立刻返回, 不等 (收尾归 drain / 关停).
+        关停时被取消的旁路留下的空 note 正是这里捡起来的: 改这里等于关掉了慢腿的补集, 空 note
+        就成了永久空洞.
+
+        幂等依据是 memento 里那条 Note **本身**, 不是内存态 —— 所以重启后依然成立: 一条 Note
+        无论已就绪还是 terminal error (``_fail`` 写的) 都算"有", 都不重补. 没有切点 ref 的 commit
+        (不是本 manager 落的) 静默跳过: 补不了, 不是异常. 返回本次派发的条数 (观测 / 测试用).
+        """
+        tail = self._config.resume_tail
+        if tail <= 0:
+            return 0
+        branch = self._memento.get_branch(self._config.branch_name)
+        if branch is None:
+            return 0
+        notes = branch.notes()
+        dispatched = 0
+        for commit in branch.commits()[-tail:]:
+            if commit.id in self._bypass or notes.get(commit.id) is not None:
+                continue
+            if self._ref_of(commit) is None:
+                continue
+            self.schedule_note(commit.id)
+            dispatched += 1
+        if dispatched:
+            self._logger.info("memento backfill: dispatched %d note run(s) for tail commits", dispatched)
+        return dispatched
+
     def schedule_note(self, commit_id: str) -> None:
         """commit 后调用: 排一个旁路任务 —— 源 session 冷 seed 跑一轮, 产 message 写回 note.
 
@@ -284,10 +323,12 @@ class EgoMementoManager:
         run.task = asyncio.create_task(self._run_bypass(run), name=f"memento-note-{commit_id}")
 
     async def _run_bypass(self, run: BypassCommit) -> None:
-        """跑一轮旁路并写 note. 空 message / 传输失败 → 终态留空, 不自动重试.
+        """跑一轮旁路并写 note.
 
-        prompt 轨迹接续 (前驱坐标 + 前文); 旁路约束显式进载荷 (低思考 + maxTokens), 不靠
-        plugin 的身份判定间接降级.
+        成功 → 写 message. 失败 (传输异常 / 空文本) → 写一条 **terminal error note** (``_fail``),
+        这是一条**有 Note** 的 commit: 读侧标 broken, 补漏也不再重试它.
+        **取消不算失败** —— 关停时 `CancelledError` 直接穿透, 不写 error: 那条 commit 留空,
+        下次开机由 ``backfill()`` 捡起来. 这正是"取消"与"失败"该有的分界.
         """
         try:
             result = await self._connection.call(
@@ -302,16 +343,30 @@ class EgoMementoManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            run.state = BypassState.FAILED
-            self._logger.warning("memento bypass failed, commit %s keeps an empty note: %s", run.commit_id, exc)
+            self._fail(run, f"run failed: {exc}")
             return
         message = str((result or {}).get("message", ""))
         if message == "":
-            run.state = BypassState.FAILED
-            self._logger.warning("memento bypass returned no text for commit %s", run.commit_id)
+            self._fail(run, "run returned no text")
             return
         self._branch().note(run.commit_id, message)
         run.state = BypassState.READY
+
+    def _fail(self, run: BypassCommit, reason: str) -> None:
+        """把一次失败的旁路写成终态: 落一条 error note (不是留空), 并记日志.
+
+        必须落盘: 补漏的幂等依据是"这条 commit 有没有 Note" (见 ``backfill``). 失败不写 Note 的话,
+        下次开机它会被当成"还没生产"再跑一遍 —— 一个恒失败的原因 (比如模型侧根本产不出摘要) 就成了
+        每次开机的固定开销. error note 是终态 (memento 契约: never retried), 同时让读侧
+        ``CommitView.is_broken`` 成立, view 会把连续的 broken commit 折起来.
+        写盘本身再失败就只能记日志了 —— 这已经是最后一道.
+        """
+        run.state = BypassState.FAILED
+        try:
+            self._branch().note(run.commit_id, message="", error=reason)
+        except Exception:
+            self._logger.exception("memento bypass: cannot mark commit %s broken", run.commit_id)
+        self._logger.warning("memento bypass failed, commit %s marked broken: %s", run.commit_id, reason)
 
     async def drain_bypass(self) -> None:
         """等所有在飞的旁路任务收尾 (观测/测试用)."""

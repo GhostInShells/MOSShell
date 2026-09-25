@@ -20,9 +20,11 @@ status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved
   先结算 pending tool + settled-call 墓碑 + MOSS 侧吸收 RPC 失败) 与 D25 (need_observe 亮着不思考:
   续帧被「inputs 为空不起 turn」挡成缓冲帧, 改 needsObserve 标记 + steer 开轮; 同根因解开帧顺序错乱
   与 fetch moment 迟到一轮). 两条均需重启 dsh 才生效, 待回归 (本轮只跑 test_dolores.py, 未做全量回归).
-  另: 平台提交署名正式叫 dsh in moss.'
+  另: 平台提交署名正式叫 dsh in moss. 2026-09-25 恢复启动补漏 (backfill) + 失败落盘 terminal
+  error note (D35): 根因是 fa97362d 在引入「关停取消在飞旁路」时把 resume()/resume_tail 一起
+  误删, 空 note 成永久空洞; 零有效工作区间是否 commit 立为 O18 (待第五轮回归拿数据).'
 title: Dolores Ghost
-updated: '2026-09-12'
+updated: '2026-09-25'
 ---
 
 # Dolores Ghost

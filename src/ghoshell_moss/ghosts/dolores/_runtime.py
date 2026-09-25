@@ -13,7 +13,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import get_moss_logger
 
-from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
+from ghoshell_moss.core.blueprint.ghost import Ghost, GhostEvent, GhostMeta, Logos
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Thinking
 from ghoshell_moss.core.blueprint.session import Session
@@ -285,12 +285,12 @@ class Dolores(Ghost):
             self._mindflow = new_default_mindflow(logger=self.logger)
         return self._mindflow
 
-    async def think(self, thinking: Thinking) -> AsyncIterator[str]:
+    async def think(self, thinking: Thinking) -> AsyncIterator[Logos | GhostEvent]:
         """Delegate to ego.run_thinking() to drive dsh reasoning — lifecycle/ending/CTML parsing all live in the run.
 
-        This side only holds the async-with boundary and passes logos through (for the mindflow
-        broadcast observability surface). Errors (enter/consume/cancel) propagate naturally through
-        async-with, governed by run.__aexit__.
+        This side only holds the async-with boundary and passes the stream through: ``GhostEvent``
+        (the forwarded dsh events) reaches the observability output, ``Logos`` the mindflow broadcast.
+        Errors (enter/consume/cancel) propagate naturally through async-with, governed by run.__aexit__.
 
         Opening the cognition epoch happens here, on the first thinking: the epoch's baseline comes
         from the shell facade, wired by the runtime *after* ghost.__aenter__ (ghost_runtime step 5),
@@ -380,6 +380,9 @@ class Dolores(Ghost):
                         logger=self.logger,
                     )
                 )
+                # 启动补漏: 上次运行留下的空 note (关停时被取消的旁路) 在这里补派任务. 只派发不等待,
+                # 与运行期旁路同一条非阻塞路径 —— 不拖慢 boot.
+                self._memento_manager.backfill()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
                     launcher=self.dsh_launcher,

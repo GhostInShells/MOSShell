@@ -16,3 +16,6 @@ memento:
   # 调试锚点数据时可临时置 force_tokens=0 (每 turn commit) —— 那只是本地临时开关, 不随仓库发布.
   force_tokens: 100000
   warn_tokens: 50000
+  # 启动补漏: 回扫尾部 N 条 commit, 给上次运行没产出 note 的补跑旁路 (主要是关停时被取消的那些).
+  # 0 = 关掉补漏.
+  resume_tail: 5

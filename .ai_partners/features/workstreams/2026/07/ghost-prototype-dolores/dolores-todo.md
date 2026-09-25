@@ -4,6 +4,8 @@
 > 状态: `open`(待修) / `uncertain`(不确定) / `fixed`(已修) / `verified`(下轮 dogfood 验证) / `invalid`(判定非 bug)。
 > 由 `ghost-prototype-dolores` FEATURE.md 关联索引。dogfood 发现新问题在此登记，修复/验证在此改状态。
 
+> **2026-09-25 上下文回顾（补漏恢复 + 失败落盘）**：见 D35。关键现场——`fa97362d`（2026-09-15「给旁路任务一个生命周期」）在引入"关停取消在飞旁路"的同时，把启动补漏 `resume()` 和它的配置 `resume_tail` 一起删了。删除给出的论据是"非阻塞 teardown"，但那只正当化**取消**，推不出删补漏；且当时冷读能力（`09bb8b94`）已就位，"源 session 已死也能补"的前置本就成立。`dolores-memento-plan.md:21` 的计划条目至今仍在，代码没了、docstring 反而写"不做重启补漏"——**属误删，不是记录在案的设计反转**。另立 O18（零有效工作的区间要不要 commit）留待数据。
+
 > **2026-09-23 全链路实机运行复盘**（见 [dolores-full-chain-live-run-retro.md](dolores-full-chain-live-run-retro.md)）：新增 D31–D34、方向 O12–O17、礼仪 W7。核心 = prompt 反转释放焦虑（ctml 显式围栏 + interleaved 默认 wait_action_done + moss_wait_action_done 拿掉）。最终回归在 dolores ghost 侧语音逐条试。
 
 > **状态快照 (2026-09-07 更新)**：D1/D5/D7/D21/D23/D26 → `fixed` 待回归（见归口 commit）；D24 → `open`(检查未启动)；D9/D17/D18 → `invalid`。下一轮 dogfood 优先跑 D1/D5/D7/D21/D23/D26 回归。
@@ -62,6 +64,8 @@
 | D32 | open | P1 | AEC 回声 — 已找到原因并大规模重构（miniaudio factory 统一 player/capture、AEC 挂 emit clock），待实机测试；耳机+公放无问题，问题在特定接法 | 全链路实机 | 待实机 |
 | D33 | fixed | P1 | facade 反转不刷新 — shell trajectory frame index 与 tracer event index 解耦 | 全链路实机 | 待回归 |
 | D34 | open | P1 | harness waterfall 提示词丢失 — 模型没授权不会发申请 | 全链路实机 | — |
+| D35 | fixed | P1 | **空 note 无补漏 + 失败不落盘** — 两条互补的空洞：① `__aexit__` 关停取消在飞旁路 → commit 的 note 留空（非阻塞设计使然，本身正确），但没有启动补漏把空 note 捡回来（`fa97362d` 误删 `resume()` + `resume_tail`，见文首 2026-09-25 注）。② 旁路失败（传输异常 / 空文本）只置内存态 `BypassState.FAILED`、**不写 Note** —— 重启即失忆，且留空会被补漏当成"还没生产"每次开机重跑。修法：恢复 `backfill()`（**非阻塞派发**，与运行期同一条 `schedule_note` 路径，不是旧的顺序 `await`；幂等依据是 memento 里那条 Note **本身**，ready 与 terminal error 都算"有"；无 ref 的外来 commit 静默跳过）；`_fail()` 在真失败时写 **terminal error note**（memento 早备好 `Note.error`，读侧标 broken、view 折叠），**取消不写** —— 留空好让下次开机补漏捡起来。`.dolores.yml` 暴露 `resume_tail`（0 = 关） | 2026-09-25 上下文回顾 | 本轮 |
+
 
 > dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。
 
@@ -99,6 +103,7 @@
 | O15 | open | channel node 赋名 + 通知机制旁路大改（问题最大）；模型 ctml 出错转 bash 起 node 造成多管理面 |
 | O16 | open | 重启不从 last session 还原最后帧，与 compact 分开；「总痛苦守恒」反面，清空/折叠必要；考虑 clear 函数回 memento 态 |
 | O17 | open | 是否允许模型在 memento channel 自定义 commit instruction（未定论） |
+| O18 | fixed | **"零有效工作的区间不 commit"** — 定论 2026-09-25：**先正常（照常 commit），未来再改，不做特殊机制**。理由：按"有没有意义"筛 span 会把判断调用塞进写入路径，与 memento 的设计前提（诚实 append-only 日志 + 读侧折叠）冲突；噪声在读面已被 `view_limit`/broken 折叠管住。若将来真要治，只能用客观量（如 `end_turn - start_turn > 2`）且只落在 exit 封尾路径 —— 稳态 commit 由 `force_tokens` 驱动，本以"真实 token 累积"为前提，再叠 turn 数守卫会与它打架 |
 
 ## dsh 0.1.5 升级决策 (2026-09-12)
 
