@@ -144,11 +144,11 @@ class InterpretToolCall(ToolCallParameter):
 
 
 class ReactToolCall(ToolCallParameter):
-    """moss_react — fire a fast reaction, streamed into its own articulator, wait for compiled only.
+    """moss_react — fire a fast reaction, streamed into its own articulator.
 
-    fire-and-await: the CTML streams in and compiles, then the turn is cut immediately (cancel). No
-    moment is signed and no actions are awaited — the CTML's commands keep running cross-frame. The
-    counterpart of ``moss_interpret`` (which waits for observed instead).
+    The CTML streams in and compiles, then the actions it started run to completion, then the turn is
+    cut (cancel). No moment is signed. The counterpart of ``moss_interpret`` (which waits for observed
+    and signs a moment instead).
     """
 
     ctml: str = Field(default="", description="the CTML command to execute.")

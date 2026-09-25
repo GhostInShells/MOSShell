@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Union, AsyncGenerator
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.ghost import GhostEvent
 from ghoshell_moss.core.blueprint.mindflow import Thinking
@@ -80,6 +80,8 @@ _POISON = object()
 # 曾经按 kind 调 Thinking.abort 来"退帧 + 停身体", 那是错的: abort 会冒泡到 attention,
 # 把 attention 一起杀掉, 而 need_observe 驱动的回声帧循环要求 attention 活着 —— 自续帧因此丢失.
 
+_LogosDelta = str
+
 
 class _StreamedCtml:
     """One streaming CTML tool call (``moss_interpret`` / ``moss_react``) as it streams in.
@@ -115,13 +117,16 @@ class _StreamedCtml:
         self._closed = True
         if self._entered:
             await self.articulator.__aexit__(exc_type, exc_val, exc_tb)
+        return None
 
-    async def feed(self, delta: str | None) -> None:
+    async def feed(self, delta: str | None) -> _LogosDelta | None:
         if not self._entered:
             await self.__aenter__()
         text = self.stream.add(delta)
         if text:
             await self.articulator.send(text)
+            return text
+        return None
 
     async def finish(self, tail: str = "", wait: str = "compiled") -> None:
         """Close the region: flush any decoded tail, exit the boundary, then wait for the requested node.
@@ -208,7 +213,7 @@ class DoloresRun:
 
     # ── event stream ─────────────────────────────────────────────────
 
-    async def _events(self) -> "AsyncIterator[SessionEvent]":
+    async def _events(self) -> "AsyncGenerator[SessionEvent]":
         """Pull raw session events from the queue. The poison pill raises _enter_error; the normal path ends via logos() aclose."""
         while True:
             item = await self._queue.get()
@@ -308,10 +313,12 @@ class DoloresRun:
             call: ReactToolCall,
             streams: dict[str, _StreamedCtml],
     ) -> ToolCallResult:
-        """moss_react handler — fire-and-await: settle compile only, then cut the turn.
+        """moss_react handler — settle compile, wait for the actions, then cut the turn.
 
-        Shares the streamed parse with ``moss_interpret`` but waits only for **compiled** — no moment
-        is signed, no actions awaited. The CTML's commands keep running cross-frame.
+        Shares the streamed parse with ``moss_interpret`` but signs no moment. It waits for **compiled**
+        (the CTML is valid), then ``wait_actions_done`` so the reaction's commands actually finish
+        before the turn is cut — without it, cancel=True cuts the turn with the react's own actions
+        still in flight.
         """
         stream = streams.pop(call.tool_call_event.callId, None)
         if stream is None:
@@ -333,6 +340,7 @@ class DoloresRun:
                 result="ctml syntax error",
                 cancel=True,
             )
+        await self._thinking.wait_actions_done()
         return ToolCallResult(
             call=call.tool_call_event,
             result="reacted",
@@ -435,7 +443,7 @@ class DoloresRun:
                 result.call.callId,
             )
 
-    async def logos(self) -> "AsyncIterator[GhostEvent]":
+    async def logos(self) -> "AsyncIterator[Union[GhostEvent, str]]":
         """Consume the event stream, dispatch tool calls, forward debug events, end on turn/end.
 
         The final answer is plain text that is never parsed into CTML — the ghost acts through tool
@@ -444,7 +452,7 @@ class DoloresRun:
         reaches the shell while the model is still generating. Single consumption: a run has at most
         one logos stream. Ending (turn/end) is internal — the consumer needs no break.
 
-        Yields one ``GhostEvent`` per dsh event in ``_FORWARDED_DSH_EVENTS``, in arrival order. The
+        Yields one ``GhostEvent`` per dsh event in ``_FORWARDED_DSH_EVENTS``, or logos delta in arrival order. The
         raw envelope rides in ``payload`` untouched (``to_dict()``), so a dsh upgrade that adds
         envelope fields reaches the surface without changing this code.
         """
@@ -465,14 +473,17 @@ class DoloresRun:
                 if self._note_turn_end(event):
                     return
                 if chunk := AssistantChunk.from_session_event(event):
-                    await self._handle_ctml_delta(chunk.chunk, streams)
+                    logos_delta = await self._handle_ctml_delta(chunk.chunk, streams)
+                    if logos_delta is not None:
+                        yield logos_delta
                     continue
                 if tool := ToolCallEvent.from_session_event(event):
                     await self._handle_tool_use_event(tool, streams)
         finally:
             await events.aclose()
 
-    async def _handle_ctml_delta(self, chunk, streams: dict[str, _StreamedCtml]) -> None:
+    async def _handle_ctml_delta(
+            self, chunk, streams: dict[str, _StreamedCtml]) -> _LogosDelta | None:
         """tool-call-delta → feed a streaming tool's argument stream into its own articulator.
 
         The tool name rides on the first delta; later deltas carry only the call id + argumentsDelta,
@@ -491,7 +502,7 @@ class DoloresRun:
                 return
             stream = _StreamedCtml(call_id, self._thinking.articulator())
             streams[call_id] = stream
-        await stream.feed(chunk.argumentsDelta)
+        return await stream.feed(chunk.argumentsDelta)
 
     def _note_turn_end(self, event: SessionEvent) -> bool:
         """turn/end → 收线本帧; 返回该 event 是否为 turn/end.

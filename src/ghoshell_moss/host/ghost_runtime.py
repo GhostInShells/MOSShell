@@ -408,7 +408,7 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         if self._moss_runtime.session.is_running():
             self._moss_runtime.session.output(
                 'ghost-event',
-                event.model_dump_json(indent=0, ensure_ascii=False),
+                event.model_dump_json(indent=2, ensure_ascii=False, exclude_none=True, exclude_defaults=True),
             )
 
     def _on_logos_end(self) -> None:

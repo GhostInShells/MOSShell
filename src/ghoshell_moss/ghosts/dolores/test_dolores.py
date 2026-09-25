@@ -2064,10 +2064,11 @@ class TestDoloresRun:
 
     @pytest.mark.asyncio
     async def test_react_streams_and_cuts_turn(self):
-        """moss_react: 共享流式解析, 只等 compiled 就 cancel 本回合, 不签发 moment."""
+        """moss_react: 共享流式解析, 等 compiled + action 停, 再 cancel 本回合, 不签发 moment."""
         session = FakeRunSession()
         ego = FakeDispatchEgo(session)
-        thinking = FakeRunThinking()
+        log: list = []
+        thinking = FakeRunThinking(log)
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
             await session.emit(self._ctml_delta("c2", name="moss_react", arguments_delta='{"ctml":"<say>', seq=1))
@@ -2081,6 +2082,7 @@ class TestDoloresRun:
         assert art.entered == 1, "articulator 必须被展开一次"
         assert art.exited == 1, "articulator 必须被收尾一次"
         assert "".join(art.sent) == "<say>hi</say>"
+        assert log.count("wait_actions_done") == 1, "react 必须先等 action 停再 cancel"
         assert ego.rpc_calls == [("c2", "reacted", None, True)]
 
     @pytest.mark.asyncio

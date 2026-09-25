@@ -414,9 +414,9 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_react',
-    // fire-and-await: 与 interpret 共享流式解析, 但只等 compiled 就 cut 本 turn. 不签发 moment,
-    // 不等 action — 这条 ctml 里的命令跨帧跑完. 一个真正"发完就走"的快速反应.
-    description: 'Fire a fast reaction as CTML, streamed like moss_interpret. The ctml must be one complete, closed unit. The call returns as soon as it compiles (not executed) and immediately ends the turn — the commands keep running across frames. Use it for a quick response that needs no moment to read back.',
+    // 与 interpret 共享流式解析, 但只等到 action 停就 cut 本 turn (不等 observed, 也不签发 moment).
+    // 这条 ctml 里的命令执行完才返回 — 一个"发完就走"的快速反应.
+    description: 'Fire a fast reaction as CTML, streamed like moss_interpret. The ctml must be one complete, closed unit. The call returns once its commands have finished, then the turn ends — no moment is produced. Use it for a quick response that needs no moment to read back.',
     parameters: {
       ctml: { type: 'string', required: true, description: 'One complete CTML unit to execute.' },
     },
