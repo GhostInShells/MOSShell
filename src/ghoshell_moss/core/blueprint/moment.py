@@ -512,7 +512,7 @@ class Moments(ABC):
 
     @abstractmethod
     def add_echoes(self, result: list[Message | str], need_observe: bool = False) -> None:
-        """Add echoes, which appear in the next Moment, and mark whether to observe."""
+        """Add echoes, which appear in the next Moment, and **mark** whether to observe."""
         ...
 
     @abstractmethod

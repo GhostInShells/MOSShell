@@ -980,6 +980,7 @@ class Action(AttentionStatement, ABC):
 
     @abstractmethod
     def set_interpret_error(self, error: Exception) -> None:
+        """记录不是运行异常, 而是 logos 解释异常."""
         ...
 
     @abstractmethod
@@ -1010,9 +1011,23 @@ class Action(AttentionStatement, ABC):
         ...
 
     @abstractmethod
-    def abort_thinking(self) -> None:
+    def abort_thinking(
+            self,
+            *,
+            reason: Message | None = None,
+            need_observe: bool = False,
+    ) -> None:
         """
-        Action 是 Thinking 派生出来的, 如果出现了行动不可执行异常, 应该要主动停止思考. 可以不释放注意力.
+        Action 是 Thinking 派生出来的, 如果出现了行动不可执行异常, 应该要主动停止思考.
+
+        停的是**当前** thinking: 置位 thinking 的 stop event, 使当前这一帧思考立刻退场;
+        但不释放 attention —— 同一个 attention 会继续产生下一帧 thinking.
+
+        ``need_observe`` 决定自愈点: 为 True 时, 本次 abort 自身提交一个 need_observe 回声,
+        下一帧 thinking 由**这个显式事件**驱动签发.
+
+        :param reason: 中止原因, 进入 echoes, 注意如果原因本身已经进入 echoes, 此处不用重复.
+        :param need_observe: 是否由本次 abort 显式驱动下一帧 (自愈).
         """
         ...
 
@@ -1174,6 +1189,10 @@ class Mindflow(ABC):
     3. think: 思维的单元.
     4. action: 行为的单元.
     5. moments: 可观测讯息的轨迹, 可以在多个 nucleus 中共享.
+
+    Signal 是选票而非事件: nucleus 把并行信号聚合成一个 impulse 去 challenge attention,
+    仲裁胜出才产生新 attention; 同一 attention 内可连续产生多帧 thinking (need_observe 驱动).
+    具体状态机接线详见 ``mindflow_in_shell`` 及相关单测.
     """
 
     @abstractmethod

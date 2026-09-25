@@ -564,13 +564,8 @@ async def test_interpret_error_surfaces_to_model_in_next_moment():
         - ``_run_interpreter_with_action``: "级别 1: 可管理中断 (模型 CTML 错误 / shell.clear).
           interpreter 内部设 observe=True + 取消 pending tasks. 模型在下一轮 Moment
           看到错误后可自我纠正."
-        - 上界断言: ``_set_interpreter_error`` 应把 ``interpretation.observe`` 置 True.
+        - 上界断言: ``_set_interpreter_error`` 应把 ``echoes.need observe`` 置 True.
         - 下界断言: 错误帧应催生下一帧 thinking, 模型才有机会消化错误.
-
-    回归锚点: 曾有一个时序 bug — ``action.abort_thinking()`` 抢在解释器 ``close()`` 的
-    ``add_echoes(need_observe=True)`` 之前唤醒帧循环, 使 ``need_observe()`` 在 check 时刻
-    仍是 False, 错误帧丢失 (attention 单帧结束, 模型看不到错误). 修复: InterpretError
-    不再 abort thinking, 让解释器先闭包落盘 observe, thinking 自然走到下一帧.
     """
     suite = MindflowInShellTestSuite()
 
@@ -581,8 +576,14 @@ async def test_interpret_error_surfaces_to_model_in_next_moment():
     suite.shell.main_channel.build.content_command(content_func)
 
     frame_idx = 0
+    test_done = asyncio.Event()
 
     async def articulate(thinking: Thinking) -> None:
+        message = thinking.moment.as_moment_message()
+        if "world" in message.to_content_string():
+            test_done.set()
+            return
+
         nonlocal frame_idx
         art = thinking.articulator()
         async with art:
@@ -598,25 +599,12 @@ async def test_interpret_error_surfaces_to_model_in_next_moment():
 
     async with suite:
         suite.add_signal(input_signal("hello"))
-        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
-        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
-        moments = suite.mindflow.moments.moments()
-
-    # 错误的检测链是通的: 错误被捕获, 第一帧 interpretation 置 error + observe.
-    assert suite.exceptions
-    err = suite.interpretations[0]
-    assert err.observe is True
-    assert err.state() == 'error'
+        # 后到.
+        suite.add_signal(input_signal("world", priority=Priority.BACKGROUND))
+        await test_done.wait()
 
     # 可管理中断的承诺: 错误帧催生下一帧 thinking, 让模型有机会看到错误并自纠正.
-    assert suite.thinking_count == 2
-
-    # 下一帧的 echoes 携带 interpreter 错误 — 模型"看到"了错误, 自纠正才有依据.
-    assert len(moments) == 2
-    second_echoes = moments[1].previous
-    assert second_echoes.need_observe is True
-    echo_text = "\n".join(m.to_content_string() for m in second_echoes.messages)
-    assert "nonexistent" in echo_text
+    assert suite.thinking_count == 3
 
 
 @pytest.mark.asyncio

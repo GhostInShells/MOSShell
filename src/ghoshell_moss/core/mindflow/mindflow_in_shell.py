@@ -117,6 +117,25 @@ class MindflowInShell(ABC):
     def _on_mindflow_error(self, error: BaseException | str) -> None:
         pass
 
+    # 连续 interpret error 阈值 — 达到后不再签发自愈帧, 避免模型反复吐错误 ctml 时空转.
+    # N=2: 模型 (deepseek v4.1 家族) 常碎碎念"我错在哪", 第二帧仍错; 第三帧预期不会更好.
+    # 类属性作默认; 运行期计数写实例属性, 不污染类.
+    _interpret_failure_limit: int = 2
+    _interpret_failure_count: int = 0
+
+    def _note_interpret_failure(self, error: Exception | None) -> bool:
+        """记录一次 interpret error; 返回异常计数是否在预期范围内 (未达阈值则签发自愈帧)."""
+        if error:
+            self._interpret_failure_count += 1
+        else:
+            self._interpret_failure_count = 0
+        if self._interpret_failure_count > 0:
+            self.logger.warning(
+                "interpret failure count %d/%d on error: %s",
+                self._interpret_failure_count, self._interpret_failure_limit, error,
+            )
+        return self._interpret_failure_count <= self._interpret_failure_limit
+
     async def _wire_mindflow(self) -> None:
         container = self.container
         mindflow = self.mindflow
@@ -392,18 +411,20 @@ class MindflowInShell(ABC):
                     logger.debug("logos stream committed, waiting compile")
                     # ── 阶段 2: wait compiled — 等待编译完成 ──
                     await interpreter.wait_compiled()
-                    # 通知编译已经完成.
+                    # 通知编译已经完成. 编译成功 = 模型这一帧 ctml 合法, 复位连续失败计数.
                     action.set_compiled()
+                    self._note_interpret_failure(None)
                 except InterpretError as err:
                     # 级别 1: 可管理中断 (模型 CTML 错误 / shell.clear). interpretation
                     # 已保留 partial results + observe=True, 同步产出到 output 总线.
                     #
-                    # 不 abort thinking: 让解释器经闭包 (close) 落盘 need_observe,
-                    # thinking 自然走到下一帧, 模型才能在下一轮 Moment 看到错误并自我纠正.
-                    # 若在此 abort_thinking, 会抢在 close() 的 add_echoes(need_observe=True)
-                    # 之前唤醒帧循环 — need_observe() 在 check 时刻仍是 False, 错误帧丢失.
+                    # 契约: 行动不可执行异常要主动停止思考 (Action.abort_thinking). 停当前
+                    # 这一帧思考, 并由本次 abort **显式**提交 need_observe 驱动下一帧 —— 下一帧
+                    # 携带错误, 模型看到并自愈. 入场券由 abort_thinking 自己发, 不依赖解释器
+                    # close() 落盘的时序 (那样 need_observe 的先后会随时间片抖动, 实机丢帧).
                     action.set_interpret_error(err)
-                    action.add_echoes(observe=True)
+                    allow_to_observe = self._note_interpret_failure(err)
+                    action.abort_thinking(need_observe=allow_to_observe)
                     self._on_mindflow_error(err)
                     return
                 except StatementExitedException:
@@ -418,14 +439,25 @@ class MindflowInShell(ABC):
 
                 # ── 阶段 3: wait stopped — 等待执行完成 ──
                 async def _wait_interpreter_done():
-                    await interpreter.wait_tasks(
-                        throw=False,
-                        throw_task_error=False,
-                        clear_undone=False,
-                        to_be_observed=True,
-                    )
-                    action.set_observed_done()
-                    await interpreter.wait_stopped()
+                    try:
+                        await interpreter.wait_tasks(
+                            throw=False,
+                            throw_task_error=False,
+                            clear_undone=False,
+                            to_be_observed=True,
+                        )
+                        action.set_observed_done()
+                        await interpreter.wait_stopped()
+                    except StatementExitedException:
+                        pass
+                    except asyncio.CancelledError:
+                        pass
+                    except asyncio.TimeoutError:
+                        pass
+                    except FatalError as e:
+                        raise e
+                    except Exception as e:
+                        self.logger.warning("wait interpreter done failed: %s", e)
 
                 task = asyncio.create_task(_wait_interpreter_done())
                 # 等待任务结束.

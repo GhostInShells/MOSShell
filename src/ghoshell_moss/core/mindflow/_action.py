@@ -9,6 +9,7 @@ from typing import AsyncIterator, AsyncGenerator, Awaitable, Callable
 from typing_extensions import Self
 
 from ghoshell_moss.core.concepts.errors import InterpretError
+from ghoshell_moss.message import Message
 from ghoshell_moss.core.blueprint.mindflow import (
     Attention, Action, ActionExitedException, Articulator, AttentionExitedException, StatementExitedException,
 )
@@ -323,9 +324,19 @@ class BaseAction(Action):
     def logos(self) -> AsyncIterator[str]:
         return self._deliver_logos()
 
-    def abort_thinking(self) -> None:
+    def abort_thinking(self, reason: Message | None = None, need_observe: bool = False) -> None:
+        """停当前 thinking, 并 (可选) 由本次 abort 显式驱动下一帧自愈.
+
+        置位 thinking 的 stop event → 当前帧思考退场 (attention 不释放, 仍会产生下一帧).
+        ``need_observe`` 为 True 时提交一个 need_observe 回声: 下一帧 thinking 的签发由
+        这个显式事件驱动, 不依赖解释器 close 落盘的时序 —— 这是 interpret error 自愈的机制。
+        """
         if self._thinking_stop_event and not self._thinking_stop_event.is_set():
             self._thinking_stop_event.set()
+        echo_result = []
+        if reason and isinstance(reason, Message):
+            echo_result.append(reason)
+        self._moments.add_echoes(echo_result, need_observe=need_observe)
 
     async def _deliver_logos(self) -> AsyncGenerator[str, None]:
         async for delta in self._logos():
