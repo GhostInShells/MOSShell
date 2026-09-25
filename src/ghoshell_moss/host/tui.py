@@ -391,8 +391,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self.kb: KeyBindingsBase | None = None
         self._style = prompt_style or DEFAULT_PROMPT_STYLE
         self.host: IHost | None = host or IHost.discover()
-        # voice 配置 — CLI --voice 映射到 (speech, listen) 两轴. 默认 speak (只说):
-        # 输出安全; 聆听是隐私敏感动作, listen/all 需显式 opt-in. 子类 _get_runtime 装线.
+        # voice 配置 — CLI --voice 映射到 (speech, listen) 两轴. 默认 none (开箱即净,
+        # 不依赖未配置的第三方 key); speak/listen/all 均需显式 opt-in. 子类 _get_runtime 装线.
         self._speech = speech
         self._listen = listen
         self.runtime: RUNTIME = self._get_runtime()

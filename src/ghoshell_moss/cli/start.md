@@ -86,7 +86,7 @@ Three commands are built for human interaction:
 |---------|-------------|
 | `moss-shell` | Shell runtime debugger — test CTML and inspect channels before a Ghost runs |
 | `moss-shell mcp` | Expose MOSS runtime as an MCP server for AI coding tools |
-| `moss-ghost <name>` | Launch a Ghost interactive terminal — logos stream, SafeMode gate |
+| `moss-ghost [--voice none\|speak\|listen\|all] run <name>` | Launch a Ghost interactive terminal — logos stream, SafeMode gate |
 
 The best practice: give your coding agent `moss start` and let the model
 self-drive exploration. The agent reads this document, discovers commands,
@@ -109,7 +109,7 @@ moss project env-init                     # review available env vars and create
 Then launch MOSS as an MCP server and connect your coding agent:
 
 ```bash
-.venv/bin/moss-mcp                     # starts on default port 20773
+.venv/bin/moss-shell mcp               # starts on default port 20773
 ```
 
 Configure Claude Code (or another agent) to connect to the MCP server.

@@ -5,7 +5,15 @@ MOSS 是一个有状态双工运行时框架。它让大模型能够实时、并
 
 **技术愿景**：人与智能模型共生的未来，是人类与模型共享认知空间、共享交互界面。模型产品必须进入现实世界——而不仅是数字空间，通过躯体、屏幕、语音与人实时互动。人机交互界面最终要推向领域专家和普通人，而不只是程序员。MOSS 在为这个愿景提供架构。
 
-（当前是 Beta1 版本，开箱完整应用能力在 v0.1.0 正式版提供。）
+（当前是 Beta2 版本——第一个开箱可用的发布：装完就能和一个持久 Ghost 对话。完整应用能力在 v0.1.0 正式版提供。）
+
+## 这个项目是什么
+
+MOSS 是一个**三元工程**，三样东西一起开源：
+
+1. **MOSShell 框架** — 有状态双工运行时本身（CTML / Mindflow / Matrix / Host）。
+2. **人机协作体系** — `moss features` 工作流机制、自解释工具链（`moss start`、`codex`、`skills`、`docs`），以及让智能模型作为一等工程师参与开发的全部约定。作者对 MOSS 架构的技术理念与方案，全部跟随 features 体系与代码一起开源。
+3. **迭代 MOSS 的人和模型的轨迹** — 意识轨迹在 [`.ai_partners/`](.ai_partners/)，讨论在 `.discuss/`，设计结论在 `.design/`。
 
 ## 模型是第一开发者
 
@@ -84,25 +92,53 @@ MOSS 通过 CTML 技术构建智能模型的控制界面。一个人对机器人
 
 最小知识入口：`moss ctml read`（CTML 语法）、`moss codex blueprint channel_builder`（构建能力）、`moss codex blueprint mindflow`（感知仲裁）、`moss codex blueprint matrix`（进程组网）。
 
-## Beta1 可以做什么
+## Beta2 开箱有什么
 
-Beta1 交付的是架构基础。现在你可以：
+**1. 一个开箱即用的持久 Ghost。** MOSS 自带第一个持久智能体原型 **Dolores**，其第一个实例 **deepseek** —— 以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）为内核、DeepSeek 模型家族为推理基座的 ghost。它自带持久记忆（[memento](src/ghoshell_moss/memento/)）、认知地图（ground），以及项目 `moss features` 体系所赋予的架构知识和迭代经验。运行 `moss-ghost run deepseek` 即可与它对话——见下面的快速开始。
 
-1. **调研 MOSS 的架构思路** — 它是 yet another agent framework 吗？设计决策的差异点在哪？哪些思路值得借鉴？
-2. **调研 CTML、Mindflow、Shell 等协议** — MOSS 解决实时双工交互的思路：流式解释调度、并发感知仲裁、并行命令调度。
-3. **理解模型第一公民的协作体系** — 人机协作如何结构化，features 体系如何跨会话追踪工作流，自解释系统如何让模型独立探索和参与开发。
-4. **调研具体技术实现路径** — G1 人形机器人集成、ReachiMini 机械臂、Desktop GUI 等整合方式与特点。
+**2. 开箱 nodes。** [`nodes/`](nodes/) 目录下，是可观测的、基于 Matrix 实现的**多进程组网 + 有状态流式控制**能力：`browsers` / `live2d` / `os` / `screens` / `tools` / `unitree` / `visions` / `webview_apps` —— 覆盖屏幕躯体、终端与文件编辑、web artifacts、流式视觉体系、音频对话礼仪，以及 Unitree G1 人形机器人控制方案。
 
-开箱应用能力在 v0.1.0 正式版提供。
+**3. 架构本身**，与 Beta1 一致 —— CTML、Mindflow、Matrix、模型第一开发者体系，以及 G1 人形机器人、ReachiMini 机械臂、Desktop GUI 等具体集成路径，都可以调研。
 
-## 安装
+## 快速开始
 
 ```bash
 git clone https://github.com/GhostInShells/MOSShell && cd MOSShell
-uv sync --active --all-extras
-cat .moss/.env.example # 了解默认环境变量
-claude code -p "请你帮我调研 moss 这个项目, 告诉我它是什么, 能做什么, 我可以从哪里开始"
+uv sync --all-extras
+moss project env-init   # 了解可用环境变量 (见 .moss/.env.example)
 ```
+
+凭据请配置在你自己的 shell 环境（home）里，不推荐写进仓库内的 `.moss/.env` —— 编码模型会读仓库，写在里面的 `.env` 离泄露只差一次 `Read`。除非你的 `.moss` 工作区与项目目录做了隔离，否则 key 留在用户环境。
+
+**1. 与 deepseek ghost 文字对话。** 需要安装 [`dsh`](https://github.com/deepseek-ai/deepseek-harness)（npm 包）。MOSS Beta2 标定测试版本为 `dsh 0.1.5-rc.2`；dsh 处于 developer preview，会有破坏性更新，请锁定版本：
+
+```bash
+npm install -g @deepseek-ai/dsh@0.1.5-rc.2
+moss-ghost run deepseek
+```
+
+**2. 用语音对话。** 语音默认关闭（`--voice none`），按轴显式开启：
+
+```bash
+moss-ghost --voice all run deepseek     # speak | listen | all | none
+```
+
+语音只需一个火山引擎凭据：环境变量 `SEED_API_KEY`（控制台 API Key，见 `.moss/.env.example`）。需在火山控制台为该 key 开通两个服务：**流式语音理解大模型**（听）与**流式语音合成大模型**（说）。详见 `moss manifests configs`。
+
+**3. 没装 dsh？降级用 echo ghost（无记忆）。** 配置 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_MODEL` 即可（DeepSeek / Seed / Qwen 等 anthropic 协议供应商同样可用）：
+
+```bash
+moss-ghost run echo
+```
+
+**调试 shell / 通过 MCP 输出能力：**
+
+```bash
+moss-shell --voice none          # shell 运行时调试 — 测 CTML、检查 channel
+moss-shell mcp                   # 将 MOSS 能力提供给任何 MCP 平台 (如 claude code)
+```
+
+## 安装路径
 
 | 安装路径 | 适合谁                         |
 |---|-----------------------------|
@@ -121,9 +157,9 @@ claude code -p "请你帮我调研 moss 这个项目, 告诉我它是什么, 能
 
 ## 项目状态
 
-Beta1。核心三件套（CTML / Mindflow / Matrix）已可用并通过测试验证。Matrix 体系正常运转。
-开箱能力等待 v0.1.0 阶段完成开发。
-计划 v0.1.0 完善 Dolores Prototype——第一个全功能 Ghost 原型。
+Beta2（`v0.1.0-beta2`）。核心三件套（CTML / Mindflow / Matrix）已可用并通过测试验证。第一个持久 Ghost —— Dolores 原型的 deepseek 实例 —— 开箱即跑通全链路：语音进、思考、语音出、node 组装的躯体。标定测试于 `dsh 0.1.5-rc.2`。
+
+Stage2 与 in-progress features 是 `v0.1.0-rc1` 的 dogfooding 对象，将以直播开发的方式进行：从 Dolores 回归开始，然后是 Stage2 验收，再到开箱 node 打磨（包括 Unitree G1）。
 
 当前阶段与路线图：`.ai_partners/stages/`
 
@@ -132,9 +168,10 @@ Beta1。核心三件套（CTML / Mindflow / Matrix）已可用并通过测试验
 MOSS 是人与模型协作的产物。
 
 - [OpenHands](https://github.com/All-Hands-AI/OpenHands) — file editor 协议参考
-- DeepSeek 模型家族（V3.1 / V3.2 / V4）— 架构推演与主力开发
-- Gemini 3 — 架构设计协作
-- Claude Opus 4.7 / Fable 5 — 架构推演与开发
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）— deepseek ghost 的内核
+- DeepSeek 模型家族（V3.2 / V4 / V4.1）— 架构推演与主力开发
+- Claude Opus 4.7 / Claude Fable 5 — 架构推演与开发
+- Claude Code — 项目开发的主力编码平台
 
 ---
 
