@@ -9,7 +9,6 @@
     --gap: 6px;
     --border: #2a3340;
     --accent: #3ddc8f;
-    --chrome-w: 260px;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -20,7 +19,7 @@
     overflow: hidden;
   }
 
-  /* ===== 层栈：bg → desktop → stage → chrome → veil =====
+  /* ===== 层栈：bg → desktop → stage → veil =====
      z 序只描述层，不描述物料。desktop 与 stage 都是中景：desktop 装
      未入组的代理圆盘，stage 装已入组的 iframe 分格。中景透明，透出 bg。 */
   #bg       { position: fixed; inset: 0; z-index: 0; }
@@ -29,12 +28,6 @@
   #stage    { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 3; }
   #scrim    { position: fixed; inset: 0; z-index: 4; display: none; background: rgba(0,0,0,.55); }
   #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }
-  #chrome   { position: fixed; right: 0; top: 0; bottom: 0; width: var(--chrome-w); z-index: 5;
-              transform: translateX(100%); transition: transform .25s ease; background: #0e1218; border-left: 1px solid var(--border); }
-  #chrome.open { transform: translateX(0); }
-  #chrome-grip { position: fixed; right: 0; top: 40%; z-index: 5; width: 14px; padding: 10px 2px;
-                 background: #161d26; border: 1px solid var(--border); border-right: 0; border-radius: 6px 0 0 6px;
-                 cursor: pointer; color: #8af; writing-mode: vertical-rl; }
   #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
   #log      { position: fixed; top: 8px; right: 8px; z-index: 8; }
   #log-badge { background: #161d26; color: #8af; border: 1px solid var(--border); border-radius: 10px;
@@ -50,10 +43,13 @@
   #desktop { cursor: pointer; }
 
   /* ===== stage：iframe 分格。iframe 一旦创建永不换父节点 —— 视觉变化只改样式。 ===== */
-  #stage { display: grid; gap: var(--gap); padding: var(--gap); }
+  /* #stage 是整屏的网格容器，空的时候它必须让指针穿过去，否则会盖住 #desktop，
+     桌面代理永远点不到。只有 .slot 自己接收指针。 */
+  #stage { display: grid; gap: var(--gap); padding: var(--gap); pointer-events: none; }
   .slot {
     position: relative; overflow: hidden; border: 1px solid var(--border);
-    background: #0a0a0a; min-width: 0; min-height: 0; transition: grid-row .3s, grid-column .3s;
+    background: #0a0a0a; min-width: 0; min-height: 0; pointer-events: auto;
+    transition: grid-row .3s, grid-column .3s;
   }
   .slot iframe { width: 100%; height: 100%; border: 0; display: block; }
   .slot.hidden { display: none; }
@@ -64,10 +60,6 @@
     background: #222; color: #ddd; border: 1px solid #555;
     border-radius: 4px; padding: 6px 12px; cursor: pointer;
   }
-
-  /* ===== chrome：可迭代交互面（收起，占位） ===== */
-  #chrome h3 { font-size: 12px; color: #8af; margin: 12px 10px 6px; text-transform: uppercase; letter-spacing: .06em; }
-  #chrome .hint { color: #666; padding: 0 10px; }
 
   /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
   #moss span {
@@ -80,15 +72,6 @@
   }
   #moss span.alive { opacity: 1; animation: flow 1.6s linear infinite; }
   @keyframes flow { to { background-position: 200% 0; } }
-
-  #input {
-    position: fixed; left: 50%; transform: translateX(-50%); z-index: 6;
-    background: rgba(16,18,22,.85); color: #ddd; border: 1px solid #2a3340;
-    border-radius: 8px; outline: none; transition: all .3s;
-  }
-  #input.empty { top: 62%; width: 420px; max-width: 82vw; padding: 12px 16px; font-size: 16px; }
-  #input.filled { top: 8px; width: 300px; padding: 6px 12px; font-size: 13px; }
-  #input:focus { border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -98,11 +81,6 @@
 <canvas id="desktop"></canvas>
 <div id="stage"></div>
 <div id="scrim"><button id="scrim-exit">✕ 退出全屏</button></div>
-<div id="chrome-grip" title="交互面板">交互</div>
-<nav id="chrome">
-  <h3>screen</h3>
-  <div class="hint">交互组件将来放这里 —— 输入框、通知、历史。现在只占位。</div>
-</nav>
 <canvas id="veil"></canvas>
 <div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
 <div id="st"></div>
@@ -110,7 +88,7 @@
 <script>
 // =====================================================================
 // 四层合成器：bg（声音感知 + MOSS 文字）→ desktop（未入组 item 的代理圆盘
-// 物理）→ stage（已入组 item 的 iframe 分格）→ chrome（交互面）→ veil（模型的手）。
+// 物理）→ stage（已入组 item 的 iframe 分格）→ veil（模型的手）。
 // 语义见 web_manager.md；数据全部来自 ws 帧，页面不内嵌 mock。
 //
 // 关键不变量：iframe 一旦创建永不换父节点（WD1）。desktop 上的 item 没有
@@ -122,7 +100,7 @@ const bg = $('#bg'), bctx = bg.getContext('2d');
 const desktop = $('#desktop'), dctx = desktop.getContext('2d');
 const veil = $('#veil'), vctx = veil.getContext('2d');
 const stage = $('#stage');
-const mossEl = $('#moss span'), input = $('#input');
+const mossEl = $('#moss span');
 const st = $('#st');
 
 function sizeCanvas(c, ctx) {
@@ -203,49 +181,52 @@ function setFullscreen(id) {
 }
 
 // ===== desktop：代理圆盘物理（花束 / 布朗 / 环绕） =====
-// 圆盘是 item 的灵魂，不是 iframe。稳定位置是 recency 的函数（最近的靠中心），
-// 力场在其上叠加。默认花束（向心弹簧 + 分离斥力）；布朗 = 随机力；环绕 = 切向力。
+// 圆盘是 item 的灵魂，不是 iframe。每个圆盘有一个 home 槽位，稳定位置是 recency 的
+// 函数（最近的靠中心）；力场是槽位之上的噪声，不是比槽位更强的引力 —— 否则所有圆盘
+// 会被拉成一团、不可扫。
 let orbitMode = 'bouquet';   // bouquet | brownian | orbit
-const discs = [];            // { id, x, y, vx, vy, label }
+const discs = [];            // { id, x, y, vx, vy, hx, hy, label }
 
 function layoutDesktop() {
-  const n = desktopIds.length;
+  const n = discs.length;
   const cx = innerWidth / 2, cy = innerHeight / 2;
   const R = Math.min(innerWidth, innerHeight) * 0.28;
   discs.forEach((d, k) => {
     const th = (k / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
     const r = n === 1 ? 0 : R * (0.5 + 0.5 * (k / Math.max(1, n - 1)));
-    d.x = cx + r * Math.cos(th); d.y = cy + r * Math.sin(th);
-    d.vx = 0; d.vy = 0;
+    d.hx = cx + r * Math.cos(th); d.hy = cy + r * Math.sin(th);
+    d.x = d.hx; d.y = d.hy; d.vx = 0; d.vy = 0;
   });
 }
 
 function syncDiscs() {
   discs.length = 0;
-  desktopIds.forEach((id) => {
+  // 最近的靠中心：desktopIds 是老在前，倒序让 k=0 = 最近出现的那个。
+  [...desktopIds].reverse().forEach((id) => {
     const it = items.get(id); if (!it) return;
-    discs.push({ id, x: 0, y: 0, vx: 0, vy: 0, label: it.label });
+    discs.push({ id, x: 0, y: 0, vx: 0, vy: 0, hx: 0, hy: 0, label: it.label });
   });
   layoutDesktop();
 }
 
 function stepDiscs(dt) {
-  const cx = innerWidth / 2, cy = innerHeight / 2;
-  const K = 6.0;      // 向心弹簧
+  const K = 6.0;      // 归位弹簧：拉回各自的 home 槽位
   const SEP = 40;     // 分离半径
   for (const d of discs) {
     let fx = 0, fy = 0;
     if (orbitMode === 'bouquet') {
-      fx += K * (cx - d.x); fy += K * (cy - d.y);
+      fx += K * (d.hx - d.x); fy += K * (d.hy - d.y);
     } else if (orbitMode === 'brownian') {
       fx += (Math.random() - 0.5) * 400; fy += (Math.random() - 0.5) * 400;
+      // 布朗是槽位上的抖动，不是漂移：保留弱归位，否则会贴边停死
+      fx += K * 0.6 * (d.hx - d.x); fy += K * 0.6 * (d.hy - d.y);
     } else if (orbitMode === 'orbit') {
-      const dx = d.x - cx, dy = d.y - cy;
+      const dx = d.x - d.hx, dy = d.y - d.hy;
       const r = Math.hypot(dx, dy) || 1;
       const tang = 140;  // 切向速度，维持环绕
       fx += -dy / r * tang; fy += dx / r * tang;
-      // 弱向心，防止漂出
-      fx += K * 0.4 * (cx - d.x); fy += K * 0.4 * (cy - d.y);
+      // 弱归位，防止漂出自己的槽位
+      fx += K * 0.4 * (d.hx - d.x); fy += K * 0.4 * (d.hy - d.y);
     }
     // 分离斥力
     for (const o of discs) {
@@ -384,10 +365,11 @@ function veilLoop() {
 requestAnimationFrame(veilLoop);
 
 // ===== background：MOSS 文字（等宽反解） + 字符雨 + ECG =====
+// 字号沿袭 lab/background.html 的 24vmin 意图：一个克制的词标，不是满屏大字。
+const MOSS_SCALE = 0.24;  // 相对 min(屏宽, 屏高)
 function fitMossText() {
   const span = mossEl;
-  // 反解字号：四字（"MOSS"）占屏宽的比例，保证与屏等宽。
-  const target = innerWidth * 0.86;
+  const target = Math.min(innerWidth, innerHeight) * MOSS_SCALE;
   let size = 10;
   span.style.fontSize = size + 'px';
   while (span.offsetWidth < target && size < 400) {
@@ -495,8 +477,6 @@ function applyState(f) {
   renderStage(ids, f.layout);
   setFullscreen(f.fullscreen ?? null);
   syncDiscs();
-  input.classList.toggle('empty', desktopIds.length === 0 && ids.length === 0);
-  input.classList.toggle('filled', !(desktopIds.length === 0 && ids.length === 0));
 }
 
 function route(f) {
@@ -555,8 +535,7 @@ function route(f) {
   }
 }
 
-// ===== chrome 上行 + log =====
-$('#chrome-grip').addEventListener('click', () => $('#chrome').classList.toggle('open'));
+// ===== 上行 + log =====
 $('#scrim').addEventListener('click', () => { if (fullscreenId) send({ type: 'fullscreen', id: '' }); });
 $('#scrim-exit').addEventListener('click', (e) => { e.stopPropagation(); send({ type: 'fullscreen', id: '' }); });
 

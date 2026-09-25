@@ -37,7 +37,7 @@
 |---|------|------|------|
 | W1 | open | **background 真实音频数据面** — 唯一生产者仍是 `MockAudioSource`；真实生产者 = 订阅 `types/topics/audio.py` 的 `AudioSampleTopic` | audio topic 发布方 |
 | W2 | open | **veil 视觉坐标桥** — 页面有 `geometry()`，模型侧无取几何/截图通道 | vision 通道 |
-| W3 | open | **chrome 交互面** — 侧边 `#chrome` 只占位，输入框（配合语音输入法）、通知、历史未落地 | O1 输入协议 |
+| W3 | superseded | **chrome 交互面** — 侧边 `#chrome` 已拆；输入框、通知、历史整体移交 `ghost-in-web` | ghost-in-web |
 | W4 | open | **被嵌入页面的 resize 自适应契约** — 合成器只改 iframe viewport，不负责内部重排；avatar/terminal/file_editor 不监听 resize | 各节点自查 |
 | W5 | open | **playwright 高阶面** — 真外部 web 内容（绕 X-Frame-Options）与接管浏览器 | playwright node |
 
@@ -45,6 +45,6 @@
 
 | # | 状态 | 问题 |
 |---|------|------|
-| O1 | open | **输入框未接线** — `#input` 只有外观，无上行帧类型；chrome 交互面（输入/通知/历史）整套未定 |
+| O1 | superseded | **输入框未接线** — `#input` 随侧边栏一并拆除；输入/通知/历史归 `ghost-in-web` |
 | O2 | open | **三档命名** — node 已定 `webview_screen`（档位进名字），但 qt/os 档命名、channel 命名是否跟档位绑定仍未定 |
 | O3 | open | **qt 档 node 落点** — `qt_compositor.md` 说另起目录，新目录名待定 |
