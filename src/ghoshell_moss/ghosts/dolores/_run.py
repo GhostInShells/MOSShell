@@ -26,7 +26,7 @@ from typing_extensions import Self
 from ghoshell_moss.core.blueprint.ghost import GhostEvent
 from ghoshell_moss.core.blueprint.mindflow import Thinking
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.contracts.logger import get_moss_logger
+from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.types.session_events import (
     AssistantChunk,
     SessionEvent,
@@ -45,8 +45,6 @@ from ._tools import (
     ChannelFacadeToolCall,
     ToolCallResult,
 )
-
-_logger = get_moss_logger()
 
 # 流式 tool 集合: 这两个 tool 的参数经 tool-call-delta 逐字进 articulator, 边生成边执行.
 _STREAMING_TOOLS = frozenset({InterpretToolCall.tool_name(), ReactToolCall.tool_name()})
@@ -169,10 +167,14 @@ class DoloresRun:
             thinking: "Thinking",
             thinking_event: asyncio.Event,
             facade: "MShellContextFacade",
+            logger: LoggerItf | None = None,
     ) -> None:
         self._ego = ego
         self._thinking = thinking
         self._facade = facade
+        # logger 由调用方逐层传下来 (matrix/shell → ghost → ego → run): 它是"当前 node 的 logger",
+        # 每层重建一个 get_moss_logger() 等于把日志从 node 语境里摘出去. None 只是兜底.
+        self._logger = logger or get_moss_logger()
         self._queue: "asyncio.Queue[Any]" = asyncio.Queue()
         self._dispose_listener: "Callable[[], None] | None" = None
         self._enter_task: "asyncio.Task[None] | None" = None
@@ -231,37 +233,45 @@ class DoloresRun:
         The rest run_tool → ToolCallResult, returned via tool-result RPC.
         """
         result = await InterpretToolCall.run_tool(
-            event, lambda call: self._handle_interpret(call, streams),
+            event, lambda call: self._handle_interpret(call, streams), logger=self._logger,
         )
         if result is not None:
             await self._dispatch_tool_result(result)
             return
         result = await ReactToolCall.run_tool(
-            event, lambda call: self._handle_react(call, streams),
+            event, lambda call: self._handle_react(call, streams), logger=self._logger,
         )
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await ObserveToolCall.run_tool(event, self._handle_observe)
+        result = await ObserveToolCall.run_tool(event, self._handle_observe, logger=self._logger)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await WaitNextToolCall.run_tool(event, self._handle_wait_next)
+        result = await WaitNextToolCall.run_tool(event, self._handle_wait_next, logger=self._logger)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await ShellStatusToolCall.run_tool(event, self._handle_shell_status)
+        result = await ShellStatusToolCall.run_tool(event, self._handle_shell_status, logger=self._logger)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await ChannelFacadeToolCall.run_tool(event, self._handle_channel_facade)
+        result = await ChannelFacadeToolCall.run_tool(event, self._handle_channel_facade, logger=self._logger)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        result = await ReasoningToolCall.run_tool(event, self._handle_reasoning)
+        result = await ReasoningToolCall.run_tool(event, self._handle_reasoning, logger=self._logger)
         if result is not None:
             await self._dispatch_tool_result(result)
             return
+        # No handler claimed this tool name — nothing is dispatched, so the call never gets an answer
+        # (the plugin can only settle it when the turn ends) and the log says nothing at all. That is
+        # D39's shape again: an action is promised and no mechanism performs it, silently. Leave a
+        # trace, or this exists only as "that call felt like it never happened" on the model side.
+        self._logger.warning(
+            "tool call %s (%s) matched no dolores tool — dropped unanswered",
+            event.callId, event.name,
+        )
 
     async def _handle_interpret(
             self,
@@ -281,6 +291,12 @@ class DoloresRun:
             stream = _StreamedCtml(call.tool_call_event.callId, self._thinking.articulator())
         if stream.stream.failed:
             # the arguments stream was corrupt (a malformed escape) — nothing to trust, cut the turn.
+            # The model sees "ctml parse error" but no interpreter ever saw this CTML, so the shell's
+            # own ERROR line never happens either: without this the log is empty on a cut turn.
+            self._logger.warning(
+                "CTML argument stream for call %s was corrupt (%s chars decoded) — turn cut",
+                stream.call_id, len(stream.stream.value),
+            )
             await stream.__aexit__(None, None, None)
             return ToolCallResult(
                 call=call.tool_call_event,
@@ -300,6 +316,13 @@ class DoloresRun:
         # The observed commands' results land as task-done events the moment each task finishes (see
         # ctml_shell's add_done_callback), so observing now carries them; non-observe commands keep
         # running cross-frame by the clear_after_exit=False protocol.
+        #
+        # Refresh the warm layer *before* signing the moment: the commands just awaited may have
+        # changed channel state (a resolve, a commit), and metas are otherwise refreshed only at the
+        # next interpreter dispatch — so without this the moment carries the world as it was *before*
+        # the action and the model perceives its own effect one frame late. Same step moss_observe
+        # already takes.
+        await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)
         moment = self._thinking.observe()
         moment_ref = f"{self._thinking.observer.epoch.index}-{moment.index}"
         return ToolCallResult(
@@ -324,6 +347,10 @@ class DoloresRun:
         if stream is None:
             stream = _StreamedCtml(call.tool_call_event.callId, self._thinking.articulator())
         if stream.stream.failed:
+            self._logger.warning(
+                "CTML argument stream for call %s was corrupt (%s chars decoded) — turn cut",
+                stream.call_id, len(stream.stream.value),
+            )
             await stream.__aexit__(None, None, None)
             return ToolCallResult(
                 call=call.tool_call_event,
@@ -403,14 +430,25 @@ class DoloresRun:
         )
 
     async def _handle_reasoning(self, call: ReasoningToolCall) -> ToolCallResult:
-        """moss_reasoning handler — declare a one-shot thinking depth, then sign a new thinking frame.
+        """moss_reasoning handler — declare a thinking depth, then end this turn.
 
-        Sets the ego's unconsumed default effort (consumed on the next enter), marks need_observe so
-        the next thinking frame starts now, and cuts the current turn. The depth applies exactly once
-        and never fights the dsh/UI-held depth afterwards.
+        Records the declaration (the next frame that is not already carrying its own effort hands it
+        to the plugin — a 'none' frame will not eat it), marks need_observe so that next thinking
+        frame is driven by this echo, drains in-flight actions, and returns cancel=True: the result
+        replaces the final answer, so no further step runs and the turn ends here.
+
+        Order is load-bearing: ``wait_actions_done`` BEFORE the cancel. The cancel tears the turn
+        down; anything still moving in the Shell is cut with it. A bookkeeping tool must never end a
+        turn faster than the world that turn was acting on.
+
+        ``add_echoes`` lives on the frame's **observer** (a ``Moments``), not on ``Thinking`` — the
+        latter has no such method. Calling it on the thinking raised AttributeError, which vanished
+        into ``run_tool``'s error path (result=None, cancel dropped), which is how this tool silently
+        stopped ending turns. Guarded by ``test_tool_surface_matches_production_thinking``.
         """
         self._ego.default_thinking_effort = call.effort
-        self._thinking.add_echoes(observe=True)
+        self._thinking.observer.add_echoes([], need_observe=True)
+        await self._thinking.wait_actions_done()
         return ToolCallResult(
             call=call.tool_call_event,
             result={"effort": call.effort},
@@ -438,7 +476,7 @@ class DoloresRun:
                 turn=result.call.turn,
             )
         except Exception:
-            _logger.warning(
+            self._logger.warning(
                 "tool-result RPC dropped (call %s already settled plugin-side); result discarded",
                 result.call.callId,
             )
@@ -481,6 +519,28 @@ class DoloresRun:
                     await self._handle_tool_use_event(tool, streams)
         finally:
             await events.aclose()
+            await self._close_leftover_streams(streams)
+
+    async def _close_leftover_streams(self, streams: dict[str, _StreamedCtml]) -> None:
+        """Settle CTML streams the turn never finished — a stream opened by a delta whose tool/call
+        event never arrived (interrupted generation, a cut turn).
+
+        Such a stream is a real failure mode that used to be perfectly silent: the articulator's
+        boundary was opened (``__aenter__``) and never closed, so nothing committed, nothing settled,
+        nothing logged. Closing is the correct cleanup — the turn is over, no delta can still feed it —
+        and the warning is what makes it visible.
+        """
+        leftover = list(streams.values())
+        streams.clear()
+        for stream in leftover:
+            self._logger.warning(
+                "CTML stream %s never settled (no tool/call arrived for it) — closing its articulator",
+                stream.call_id,
+            )
+            try:
+                await stream.__aexit__(None, None, None)
+            except Exception:
+                self._logger.exception("closing leftover CTML stream %s failed", stream.call_id)
 
     async def _handle_ctml_delta(
             self, chunk, streams: dict[str, _StreamedCtml]) -> _LogosDelta | None:
@@ -521,7 +581,7 @@ class DoloresRun:
         if not self._turn_end_noted:
             self._turn_end_noted = True
             cause = end.reason.reason
-            _logger.info(
+            self._logger.info(
                 "turn %s ended: %s",
                 end.turn,
                 end.reason.kind if cause is None else f"{end.reason.kind}/{cause.kind}",
@@ -548,5 +608,8 @@ class DoloresRun:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            # 失败经 poison pill 交给消费者, 一路都在"抛", 但没有任何一处写日志: 整轮被 abort,
+            # 而日志里查不到原因. 与 exit_thinking 对称, 这里也留痕.
+            self._logger.exception("thinking/enter failed — the turn will be aborted")
             self._enter_error = error
             self._queue.put_nowait(_POISON)

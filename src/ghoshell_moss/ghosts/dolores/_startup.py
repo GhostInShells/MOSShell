@@ -8,7 +8,7 @@ optional: an empty startup doc is a silent boot with no injected frame.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ghoshell_moss.channels.frame_channel import Frame
 
@@ -27,9 +27,28 @@ class StartupDoc(BaseModel):
     :param frame: A :class:`Frame` handed to the frame channel as its ``init_frame``.
         None = no seeded frame; the channel starts empty and the model loads/defines
         one when needed.
+    :param default_thinking_effort: The depth the ghost declares at boot (``off`` /
+        ``low`` / ``high`` / ``max``). Empty = declare nothing, leaving the depth to
+        dsh/UI (the deployment's default model selection). A declared depth is written
+        once and then lives in the request header — it does not pin the session, so
+        the UI can still change it later.
     """
 
     description: str = Field(default="", description="Free-form label.")
     command: str = Field(default="", description="Forced first CTML action.")
     instruction: str = Field(default="", description="Boot-time instruction.")
     frame: Frame | None = Field(default=None, description="Seed frame for the frame channel.")
+    default_thinking_effort: str = Field(
+        default="",
+        description="Boot-time thinking depth declaration (off/low/high/max). Empty = leave it to dsh/UI.",
+    )
+
+    @field_validator("default_thinking_effort", mode="before")
+    @classmethod
+    def _plain_off_is_a_depth(cls, value: object) -> object:
+        """YAML 1.1 reads an unquoted ``off`` as ``False``. Accept it as the depth, not as an error.
+
+        Guards the whole doc: a validation error here would be caught upstream and drop the entire
+        startup (frame + instruction included) over one hand-written scalar.
+        """
+        return "off" if value is False else value

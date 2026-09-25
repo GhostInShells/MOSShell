@@ -380,9 +380,13 @@ interface ThinkingEnterPayload {
   epoch?: MomentContentPart[]
   /** memento notice (commit 提醒等) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn. */
   notices?: string[]
+  /**
+   * 本帧的思考强度 (唯一字段) — 来自 impulse 的 ``thinking_effort``:
+   * ``'none'`` = 不驱动 turn (只注入背景); ``''`` = 不表态; 其余 = 合法档位 (off/low/high/max).
+   * 单字段是刻意的: turn 驱动与档位都从同一个 impulse 字段派生, 两个字段会互相打架 (见
+   * thinking/enter 里「档位解析」与「turn 驱动」两段分离的判定).
+   */
   effort: string
-  /** default effort (moss_reasoning 延迟生效): ego 记录 → 下一轮 enter 携带 → 应用到 selection. */
-  reasoning_effort?: string
   /**
    * observe 续帧标记 (python 侧判定): 这一帧是「上一轮的回声要求再看一眼」产生的自我延续,
    * 而不是外部输入. 这种帧常常 inputs 为空, 但它**必须开一轮** —— 见 thinking/enter 的 turn 驱动规则.
@@ -477,12 +481,12 @@ const egoTools = [
   }),
   defineTool({
     name: 'moss_reasoning',
-    // 一次性声明思考强度: ego 记下 default_thinking_effort → add_echoes(need_observe) 驱动下一帧
-    // → 回 tool result + cancel 中断本回合. 强度只作用于下一帧 (enter 时消费一次即置空), 之后
-    // 强度归 dsh/UI 持有, 不与界面竞争.
-    description: 'Declare a one-shot thinking depth (off / low / high / max) for the next frame only. The ego records it, the next thinking frame starts with this depth, then it reverts to the dsh/UI-held depth — it never permanently overrides your UI setting.',
+    // 声明思考档: ego 记下 → 下一帧 enter 随 effort 下发 → plugin 写一次性 pending → 下个请求生效.
+    // pending 被 request/header 采纳后即释放, 但档位已落 header —— 所以"写一次"就是"改到下一次变更",
+    // 既不会永久钉住, 也不会一轮就丢. 回 tool result + cancel 中断本回合.
+    description: 'Declare your thinking depth (off / low / high / max). The depth applies from the next turn and stays in effect until you or the UI changes it. Use it to think deeper when a task needs it, or shallower to save time.',
     parameters: {
-      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'How deeply to think for the next frame.' },
+      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'How deeply to think from the next turn on.' },
     },
     output: {
       schema: { type: 'json' },
@@ -492,39 +496,106 @@ const egoTools = [
   }),
 ]
 
-// ── per-agent model selection (thinking/enter 应用 default effort 的目标) ──────
+// ── per-agent model selection (thinking/enter 下落思考档的目标) ────────────────
 // 每个 ego agent 一份 selection, 装在它自己的 ctx 上 (installModelSelection), 不是模块单例.
-// moss_reasoning 是一次性声明: ego 记下 default_thinking_effort → 下一帧 enter 携带 reasoning_effort
-// → thinking/enter 咬 selection.current 的 reasoningEffort (turn 边界生效), 消费一次即置空.
-// provider/model 的权威始终是 canonical 链: picked → request/header(持久) → settings 默认;
-// 改 effort 由 agent/request 应用并落 request/header 日志, 界面自然同步.
-const egoSelections = new WeakMap<Agent, ModelSelectionRef>()
+//
+// 权威链: pending(picked) → request/header(持久) → agentDefaultModel(settings/UI).
+// pending 是**一次性**的: 写进去只为让"下一个到达 prompt assembly 的请求"用上新档位,
+// 该请求落 request/header 之后 pending 即释放 (releaseIfAdopted, 对标官方
+// `dsh-api-session-controller` 的 selection.consume). 释放是这条链的关键 ——
+// 不释放 = 一个持久覆盖, 会把 settings/UI 的选择永久压住, 界面改档位再也进不来.
+//
+// 反过来, 释放之后档位并不丢: 它已经落在 request/header 里, 成为 canonical 链的当前值,
+// 下一次 assembly 依然读到它. 所以"一次性写入 + 采纳即释放" = "改一次, 一直生效", 而不是"只生效一轮".
+const egoSelections = new WeakMap<Agent, EgoSelection>()
 
-function ensureEgoSelection(agent: Agent, ctx: Context): ModelSelectionRef {
+/**
+ * 合法思考档位 — 与 dsh 适配器真正接受的值域一致 (deepseek adapter 只认 off/low/high/max).
+ * `'none'` 不在其中: 它是 mindflow 的"不思考"语义 (不驱动 turn), 不是模型档位.
+ */
+const THINKING_DEPTHS: readonly string[] = ['off', 'low', 'high', 'max']
+
+interface EgoSelection {
+  /** 交给 installModelSelection 的引用 (它读 current / 写 assembled). */
+  ref: ModelSelectionRef
+  /** pending 已被 request/header 采纳则释放, 把权威交还 canonical 链. */
+  releaseIfAdopted(agent: Agent): void
+  /** 当前生效的档位 (pending 优先, 否则 canonical 链). */
+  effectiveEffort(agent: Agent): string | undefined
+  /** 为下一个请求写一个档位 (pending); 无 provider/model 可依时不动. */
+  declareEffort(agent: Agent, effort: string): void
+}
+
+/** request/header 里记为"适配器默认"而非显式选择的 effort — 不作为档位读数. */
+interface LoggedHeader {
+  config: { provider: string; model: string; reasoningEffort?: string }
+  adapterDefaults?: { reasoningEffort?: true }
+}
+
+function loggedEffort(header: LoggedHeader | undefined): string | undefined {
+  const effort = header?.config.reasoningEffort
+  if (effort === undefined) return undefined
+  if (header?.adapterDefaults?.reasoningEffort === true) return undefined
+  return effort
+}
+
+/**
+ * 装配一个 agent 的模型选择面 (幂等): 建 state + 把 ref 挂上 installModelSelection.
+ *
+ * 两件事绑在一起是刻意的 —— state 一旦存在就必须已经在 agent.ctx 上装好, 否则 thinking/enter
+ * 会往一个没人读的 ref 里写档位, 表面一切正常而实际毫无效果. 这正是本轮要根除的失效模式.
+ */
+function ensureEgoSelection(agent: Agent, ctx: Context): EgoSelection {
   const existing = egoSelections.get(agent)
   if (existing !== undefined) return existing
   const defaults: AgentDefaultModelConfig = ctx.agentDefaultModel
   let picked: ModelSelection | undefined
-  const selection: ModelSelectionRef = {
-    get current() {
-      if (picked !== undefined) return picked
-      const logged = agent.session.requestHeader()?.config
-      if (logged !== undefined) {
-        return {
-          provider: logged.provider,
-          model: logged.model,
-          ...(logged.reasoningEffort === undefined ? {} : { reasoningEffort: logged.reasoningEffort }),
+  const state: EgoSelection = {
+    ref: {
+      get current() {
+        if (picked !== undefined) return picked
+        const header = agent.session.requestHeader() as LoggedHeader | undefined
+        if (header !== undefined) {
+          const effort = loggedEffort(header)
+          return {
+            provider: header.config.provider,
+            model: header.config.model,
+            ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
+          }
         }
+        return defaults.currentSelection()
+      },
+      set current(next) {
+        picked = next
+      },
+      assembled: undefined,
+    },
+    releaseIfAdopted(target: Agent): void {
+      if (picked === undefined) return
+      const header = target.session.requestHeader() as LoggedHeader | undefined
+      if (header === undefined) return
+      // 适配器默认标记 = 我们写的 pending 没被采用; 若仍不放行就是永久覆盖, 直接释放.
+      if (header.adapterDefaults?.reasoningEffort === true) {
+        picked = undefined
+        return
       }
-      return defaults.currentSelection()
+      if (header.config.provider !== picked.provider || header.config.model !== picked.model) return
+      if (header.config.reasoningEffort !== picked.reasoningEffort) return
+      picked = undefined
     },
-    set current(next) {
-      picked = next
+    effectiveEffort(): string | undefined {
+      return state.ref.current?.reasoningEffort
     },
-    assembled: undefined,
+    declareEffort(_target: Agent, effort: string): void {
+      const current = state.ref.current
+      if (current === undefined) return
+      state.ref.current = { ...current, reasoningEffort: ReasoningEffortId(effort) }
+    },
   }
-  egoSelections.set(agent, selection)
-  return selection
+  egoSelections.set(agent, state)
+  // per-agent model selection — canonical 链读 provider/model, thinking/enter 写 pending 档位.
+  installModelSelection(agent.ctx, state.ref)
+  return state
 }
 
 /**
@@ -561,8 +632,9 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     order: agentCtx.systemPrompt.getSectionOrder('WEB_SURFACE'),
     text: '',
   }), 'dolores-ego-web-surface.section()')
-  // per-agent model selection — canonical 链读 provider/model, thinking/enter 应用 default effort.
-  installModelSelection(agentCtx, ensureEgoSelection(agent, ctx))
+  // per-agent model selection — canonical 链读 provider/model, thinking/enter 写 pending 档位.
+  // 装配与 state 创建绑在 ensureEgoSelection 里 (幂等), thinking/enter 走同一个入口.
+  ensureEgoSelection(agent, ctx)
   // ego tools 注册到 agent scope (scoped) — 只有 ego agent 可见.
   for (const tool of egoTools) {
     agentCtx.tools.register(tool)
@@ -832,8 +904,9 @@ export function apply(ctx: Context) {
 
   // ── 2. thinking/enter (点 2/3/5/6) ────────────────────────────────────
   // 入参 = moment 一条 user message + epoch + effort. handler 阻塞执行完才返回:
-  //   1. moment 投放 — idle → steer (turn 输入); 非 idle → append (注入已在跑的 turn).
-  //   2. openThinking — 释放 pre-step gate (外部唤醒路径的阻塞解除).
+  //   1. 执行档结算/下发 — 释放上一轮 pending + 本帧档位写 pending (turn 边界生效).
+  //   2. moment 投放 — idle → steer (turn 输入); 非 idle → append (注入已在跑的 turn).
+  //   3. openThinking — 释放 pre-step gate (外部唤醒路径的阻塞解除).
   ctx.webServer.register({
     kind: 'exact',
     path: DOLORES_THINKING_ENTER,
@@ -852,13 +925,17 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        // default effort (moss_reasoning 一次性生效): ego 记录 → 下一帧 enter 携带 → 应用到 selection.
-        // turn 边界生效 (上下文重编), 不在 perStep 改 — 避免思考模式中途切换报错.
-        if (body.reasoning_effort === 'off' || body.reasoning_effort === 'low' || body.reasoning_effort === 'high' || body.reasoning_effort === 'max') {
-          const selection = ensureEgoSelection(agent, ctx)
-          const current = selection.current
-          if (current !== undefined) {
-            selection.current = { ...current, reasoningEffort: ReasoningEffortId(body.reasoning_effort) }
+        // ── 思考档 (点 1): 单一字段 `effort`, 与 turn 驱动分开判定 ──────────────
+        // 1. 先结算上一轮: pending 已被 request/header 采纳 → 释放, 权威交回 canonical 链
+        //    (settings/UI 从此可改; 不释放 = 永久覆盖 —— 这就是"界面改档位不生效"的根).
+        // 2. 本帧是合法档位 → 写 pending, 在下一个进入 prompt assembly 的请求生效.
+        // 3. `''` (不表态) / `'none'` (不思考) → 不动档位.
+        const model = ensureEgoSelection(agent, ctx)
+        model.releaseIfAdopted(agent)
+        if (THINKING_DEPTHS.includes(body.effort)) {
+          if (model.effectiveEffort(agent) !== body.effort) {
+            // turn 边界生效 (下个请求重编 prompt), 不在 perStep 中途改 — 避免思考模式中途切换报错.
+            model.declareEffort(agent, body.effort)
           }
         }
         // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).

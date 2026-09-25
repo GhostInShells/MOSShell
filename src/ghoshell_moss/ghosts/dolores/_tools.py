@@ -16,6 +16,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
+from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 
 __all__ = [
     "InterpretToolCall",
@@ -92,12 +93,23 @@ class ToolCallParameter(BaseModel, ABC):
             cls,
             event: ToolCallEvent,
             handler: Callable[[Self], Awaitable[_ResultType | ToolCallResult]],
+            logger: LoggerItf | None = None,
     ) -> ToolCallResult | None:
+        """Run one typed tool's handler and normalize the outcome.
+
+        ``logger`` is the caller's logger — the one threaded down from matrix/shell through the ghost
+        and the ego (see ``DoloresRun``). None is a last-resort fallback for tests; a module-level
+        ``get_moss_logger()`` here would take every swallowed exception out of the node's log context.
+        """
+        log = logger or get_moss_logger()
         try:
             call = cls.from_tool_call(event)
             if call is None:
                 return None
-        except ValidationError:
+        except ValidationError as error:
+            # The model sees this error string, but nothing was logged — a tool whose arguments do
+            # not parse is a real failure and must leave a trace beyond the model's own surface.
+            log.warning("tool %s arguments failed to parse (%s): %s", event.name, error, event.arguments)
             return ToolCallResult(
                 call=event,
                 result=None,
@@ -111,6 +123,10 @@ class ToolCallParameter(BaseModel, ABC):
             return call.new_tool_call_result(result)
 
         except Exception as e:
+            # 一次抛出 = 一行日志. 这里的静默曾经很贵: moss_reasoning 的生产路径抛
+            # AttributeError (Thinking 上没有 add_echoes), 被吞成 result=None —— cancel 一起丢,
+            # 本轮永不结束, 而模型只看到一个 null. 任何被吞掉的异常都必须留痕.
+            log.exception("tool %s handler failed", event.name)
             return ToolCallResult(
                 call=event,
                 result=None,
@@ -214,11 +230,12 @@ class ChannelFacadeToolCall(ToolCallParameter):
 
 
 class ReasoningToolCall(ToolCallParameter):
-    """moss_reasoning — declare a one-shot thinking depth (off/low/high/max) for the next frame.
+    """moss_reasoning — declare your thinking depth (off/low/high/max).
 
-    Sets the ego's unconsumed default thinking effort, drives the next thinking frame (need_observe),
-    then cuts the turn. The depth applies exactly once (consumed on the next enter); it never competes
-    with the dsh/UI-held depth afterwards.
+    Records the declaration on the ego; the next thinking frame that is not already carrying its own
+    effort hands it to the plugin, which writes it as a pending model selection. The depth applies
+    from that turn on and stays in the durable request config until you or the UI change it again —
+    it is a declaration, not a pin, so the session's canonical model selection stays authoritative.
     """
 
     effort: str = Field(default="", description="thinking depth: off/low/high/max.")

@@ -10,6 +10,6 @@ class MiniAudioPlayerProvider(Provider[StreamAudioPlayer]):
         return True
 
     def factory(self, con: IoCContainer) -> StreamAudioPlayer:
-        from ghoshell_moss.host.audios.miniaudio_impl.factory import MiniAudioFactory
-        factory = con.force_fetch(MiniAudioFactory)
+        from ghoshell_moss.host.audios.miniaudio_impl.contract import AbstractMiniAudioFactory
+        factory = con.force_fetch(AbstractMiniAudioFactory)
         return factory.player()

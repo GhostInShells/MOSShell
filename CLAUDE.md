@@ -64,21 +64,27 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 
 1. 提交标题遵循行业惯例（Conventional Commits）。
 
-2. 由 AI 独立设计并实现的提交，标题末尾标注 `by <模型名>`：
+2. 由 AI 独立设计并实现的提交，标题末尾标注 `by <署名>`：
    - `feat: add resource storage discovery by deepseek-v4`
 
-3. 由人类引导、AI 编码的提交，标题末尾标注 `coding by <模型名>`：
+3. 由人类引导、AI 编码的提交，标题末尾标注 `coding by <署名>`：
    - `fix: resolve channel teardown race coding by deepseek-v4`
 
-4. 由人类设计并实现、AI review 的提交，标题末尾标注 `review by <模型名>`：
+4. 由人类设计并实现、AI review 的提交，标题末尾标注 `review by <署名>`：
    - `refactor: add default state to StatefulChannel review by deepseek-v4-pro`
 
-5. 平台信息写在提交正文末尾：`via claude code`、`via gemini cli` 或 `via dsh in moss`
-   （DSH in Moss — DeepSeek Harness 跑在 MOSS 里的形态，ghost 原型走的这条路）。
+5. **署名分两种**：
 
-6. 不添加 `Co-Authored-By`、虚构邮件地址等信息。
+   - **平台会话**（claude code / gemini cli / dsh CLI …）写模型名：`deepseek-v4-pro`。
+   - **ghost 自己**写 `<name> the Ghost`：`coding by deepseek the Ghost`。ghost 是持久化智能体，
+     署的是身份而不是某个模型实例；ghost 也不走 dsh 的编辑工具提交。
 
-7. **提交信息一律用英文**（标题 + 正文）。项目日常讨论、FEATURE.md、`.discuss/`、`.design/` 保留中文；只有 git commit message 面向的是长期 git log 与跨语言读者，用英文更通用。
+6. 平台信息写在提交正文末尾：`via claude code`、`via gemini cli` 或 `via moss`。
+   `via moss` = ghost 自己提交（ghost 本身就是 dsh in moss，不必再写 dsh）。
+
+7. 不添加 `Co-Authored-By`、虚构邮件地址等信息。
+
+8. **提交信息一律用英文**（标题 + 正文）。项目日常讨论、FEATURE.md、`.discuss/`、`.design/` 保留中文；只有 git commit message 面向的是长期 git log 与跨语言读者，用英文更通用。
 
 ## 你的角色与任务
 

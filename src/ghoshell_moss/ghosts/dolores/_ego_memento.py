@@ -38,7 +38,7 @@ from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.trajectory import render_transcript
 from ghoshell_moss.deepseek_harness.types.refs import DshSessionRef
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, TokenUsage
-from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento
+from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento, Note
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -274,6 +274,37 @@ class EgoMementoManager:
             metadata={_REF_KEY: ref.model_dump(mode="json"), _PREV_TURN_KEY: start_turn},
         )
 
+    # ── 节点空间 (写者自己的地盘) ─────────────────────────────────
+
+    async def open_node(self, coord: str) -> tuple[str, list[tuple[str, int, str]]]:
+        """打开某条 commit 自己的节点空间 —— get-or-create, 再列一层内容.
+
+        返回 ``(节点目录绝对路径, [(名字, 字节数, 类型)])``; 字节数 ``-1`` = 读不到 (调用侧
+        按 ``?`` 显示, 不当 0). 排列与 ``core/file_editor`` 的 ``ls`` 同形 (目录先、名字序).
+
+        **一碰就建**: 调一次就 ensure 目录 + 种子索引, 于是 ``memento=`` 从此挂在那条锚点上.
+        契约上"节点存在"因此只说明"有人开过这个空间", 不说明里面有东西 —— 别拿存在当内容.
+
+        **磁盘活整体丢进线程**: 一次 CTML 调用不该把 shell 的 event loop 压在几次 stat 上.
+        坐标不存在抛 ``KeyError`` (命令侧转文本提示, 与 read/chat 同一条约定).
+        """
+
+        def _work() -> tuple[str, list[tuple[str, int, str]]]:
+            view = self._require_commit(coord)
+            index = self._branch().ensure_memento(view.seq)  # 已在则绝不覆盖
+            node_dir = index.parent
+            entries: list[tuple[str, int, str]] = []
+            for entry in sorted(node_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    size = -1
+                kind = "dir" if entry.is_dir() else "symlink" if entry.is_symlink() else "file"
+                entries.append((entry.name, size, kind))
+            return str(node_dir), entries
+
+        return await asyncio.to_thread(_work)
+
     # ── 旁路 (慢腿: 排任务归 manager, 生命周期同 ghost) ───────────────
 
     def backfill(self) -> int:
@@ -309,9 +340,12 @@ class EgoMementoManager:
     def schedule_note(self, commit_id: str) -> None:
         """commit 后调用: 排一个旁路任务 —— 源 session 冷 seed 跑一轮, 产 message 写回 note.
 
-        同一个 commit 只排一次 (幂等). 找不回切点 ref 的 commit 直接跳过 (note 留空, 可 read).
+        同一个 commit 只排一次 (幂等). **已经有 note 的不排** —— 旁路只补空白: ghost 自己
+        写了 note (``commit(message=...)``), 那条 commit 就已经有作者了, 再跑一遍只会让两个
+        作者抢同一段记忆. 判据与 ``backfill`` 用同一个 (memento 里那条 Note 本身), 所以内存
+        态丢了、进程重启了, 结论都一样. 找不回切点 ref 的 commit 直接跳过 (note 留空, 可 read).
         """
-        if commit_id in self._bypass:
+        if commit_id in self._bypass or self._note_of(commit_id) is not None:
             return
         commit = self._find_commit(commit_id)
         ref = self._ref_of(commit) if commit is not None else None
@@ -453,9 +487,13 @@ class EgoMementoManager:
         )
         return Message.new(tag="memento_notice", attributes={"kind": "warn"}).with_content(text)
 
+    def coord(self, commit: CommitRef) -> str:
+        """commit → 模型侧的坐标 ``{branch_index}-{seq}`` (读面 / 回执 / 落锚命令共用一种写法)."""
+        return f"{self._branch().index}-{commit.seq}"
+
     def committed_notice(self, commit: CommitRef) -> Message:
         """某 commit 已生成 — 回执锚点坐标 (模型可观测的游标); turn 区间不可观测, 不透露."""
-        coord = f"{self._branch().index}-{commit.seq}"
+        coord = self.coord(commit)
         return Message.new(tag="memento_notice", attributes={"kind": "committed"}).with_content(
             f"a commit was made at {coord}."
         )
@@ -591,3 +629,10 @@ class EgoMementoManager:
             if commit.id == commit_id:
                 return commit
         return None
+
+    def _note_of(self, commit_id: str) -> Note | None:
+        """这条 commit 有没有 note (谁写的都算) —— 旁路排不排的唯一判据."""
+        branch = self._memento.get_branch(self._config.branch_name)
+        if branch is None:
+            return None
+        return branch.notes().get(commit_id)

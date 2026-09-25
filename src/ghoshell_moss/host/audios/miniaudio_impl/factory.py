@@ -22,11 +22,12 @@ from ghoshell_moss.contracts.workspace import Workspace
 from .configs import MiniAudioFactoryConfig
 from .miniaudio_capture import MiniAudioCaptureSource
 from .miniaudio_player import MiniAudioStreamPlayer
+from .contract import AbstractMiniAudioFactory
 
 __all__ = ["MiniAudioFactory"]
 
 
-class MiniAudioFactory:
+class MiniAudioFactory(AbstractMiniAudioFactory):
     """同一进程内的一对 miniaudio stream.
 
     两个器官各自按需取用; AEC 在**两条 stream 都到手**的那一刻装线 —— 与取用

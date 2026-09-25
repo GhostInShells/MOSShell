@@ -5,16 +5,24 @@ instruction: |
   or reply. Take one round to warm up: think briefly about where you are and
   what is around you, make no tool calls, then wait for the next moment.
 
+# Boot thinking depth declaration: off / low / high / max.
+# Empty = declare nothing — the depth stays whatever dsh/UI holds (the deployment's
+# default model selection, plus whatever the human set on the web page). That is the
+# intended default: the ghost should not silently overrule the human's setting.
+# A non-empty value here is a declaration, not a pin: it is written once into the
+# request header and the UI can still change it afterwards.
+default_thinking_effort: ""
+
 # The frame block is injected as ghost.frame's init_frame — a named notice
 # fragment that re-asserts itself on the refresh cadence. Edit the questions
 # to fit this mode's opening self-model, or drop the whole block to boot
 # without a seed.
 frame:
   label: orientation
-  description: Reconstruct the situation from context. Extraction questions only; nothing that cannot be answered from context.
+  description: Reconstitute *this session* from context — who is here, where we are speaking, what we are doing together. Extraction only, and only for what the ground, memento and the kernel prompt do not already state.
   questions:
-    - "What environment am I in? What is not in the prompt but I must keep track of?"
-    - "Who am I talking to?"
-    - "What style does the user prefer? What of that is not in the prompt?"
-    - "What am I doing right now?"
-    - "What information matters here — what must I not forget even when the context is compacted?"
+    - "Who is on the other side of this session — and what do I already know about them?"
+    - "What is this session's environment — where am I speaking, and what surface are they watching?"
+    - "What language and voice does this conversation call for?"
+    - "What are we doing together right now — the live task, not the project background?"
+    - "What has this session already established that must survive compaction?"

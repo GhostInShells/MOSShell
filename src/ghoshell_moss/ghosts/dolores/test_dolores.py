@@ -8,6 +8,8 @@
 """
 
 import asyncio
+import contextlib
+import logging
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -184,6 +186,27 @@ class TestStubsSync:
         assert doc.frame is not None
         assert doc.frame.label == "orient"
         assert doc.frame.questions == ["Where am I?", "Who is here?"]
+
+    def test_load_startup_parses_thinking_effort(self, tmp_path: Path):
+        """boot 思考档声明可读; 手写未加引号的 off (YAML 1.1 bool) 不能把整份 startup 打掉."""
+        (tmp_path / "startup").mkdir(parents=True)
+        (tmp_path / "startup" / "default.startup.yml").write_text(
+            'instruction: hi\ndefault_thinking_effort: off\n', encoding="utf-8"
+        )
+        ghost = _dolores(home=tmp_path)
+        doc = ghost._load_startup()
+        assert doc is not None
+        assert doc.instruction == "hi", "整份文档必须存活"
+        assert doc.default_thinking_effort == "off"
+
+    def test_load_startup_thinking_effort_defaults_empty(self, tmp_path: Path):
+        """缺省 = 不表态 (不覆盖 dsh/UI 持有的档位)."""
+        (tmp_path / "startup").mkdir(parents=True)
+        (tmp_path / "startup" / "default.startup.yml").write_text("instruction: hi\n", encoding="utf-8")
+        ghost = _dolores(home=tmp_path)
+        doc = ghost._load_startup()
+        assert doc is not None
+        assert doc.default_thinking_effort == ""
 
     def test_default_stub_parses_into_startup_doc(self):
         """The shipped default.startup.yml must validate — it is what every new ghost boots on."""
@@ -452,10 +475,10 @@ class TestDoloresEgoObserveContinuation:
 
 
 class TestDoloresEgoReasoningEffort:
-    """enter_thinking 的 reasoning_effort 一次性解析 — 帧 effort 优先, 否则用 ego 一次性声明, 消费即置空."""
+    """enter_thinking 的思考档解析 — 单一 effort 字段; 声明只在被真正采用的那一帧消费."""
 
     @staticmethod
-    def _ego(launcher):
+    def _ego(launcher, *, default_thinking_effort=""):
         from ._ego import DoloresEgo, DoloresEgoContext
 
         return DoloresEgo(
@@ -468,6 +491,7 @@ class TestDoloresEgoReasoningEffort:
                 instruction="i",
                 facade=None,
             ),
+            default_thinking_effort=default_thinking_effort,
         )
 
     @staticmethod
@@ -491,8 +515,8 @@ class TestDoloresEgoReasoningEffort:
             return {}
 
     @pytest.mark.asyncio
-    async def test_frame_effort_wins_over_default(self):
-        """帧自带明确 effort (非 '') → 一次性声明不施加, 帧 effort 直通 reasoning_effort."""
+    async def test_frame_effort_wins_and_declaration_survives(self):
+        """帧自带明确 effort → 直通; 未被采用的声明不消费 (留给下一个真正能带它的帧)."""
         launcher = self._Launcher()
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
@@ -501,12 +525,24 @@ class TestDoloresEgoReasoningEffort:
 
         payload = launcher.calls[0][1]
         assert payload["effort"] == "low"
-        assert payload["reasoning_effort"] == "low"
-        assert ego.default_thinking_effort is None  # 每轮消费完即置空
+        assert "reasoning_effort" not in payload, "档位只有一个字段, 不再两路下发"
+        assert ego.default_thinking_effort == "high"
 
     @pytest.mark.asyncio
-    async def test_default_effort_redefines_when_frame_is_default(self):
-        """帧 effort == '' → 用 ego 的一次性声明重定义 reasoning_effort, 消费即置空."""
+    async def test_none_frame_does_not_eat_the_declaration(self):
+        """'none' 帧不驱动 turn, 也不该把待采用的声明吃掉 —— 否则 moss_reasoning 会静默失效."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+        ego.default_thinking_effort = "high"
+
+        await ego.enter_thinking(self._thinking("none"))
+
+        assert launcher.calls[0][1]["effort"] == "none"
+        assert ego.default_thinking_effort == "high"
+
+    @pytest.mark.asyncio
+    async def test_default_declaration_is_consumed_when_used(self):
+        """帧 effort == '' → 采用 ego 的待定声明, 采用即消费 (只采用一次)."""
         launcher = self._Launcher()
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
@@ -514,25 +550,40 @@ class TestDoloresEgoReasoningEffort:
         await ego.enter_thinking(self._thinking(""))
 
         payload = launcher.calls[0][1]
-        assert payload["effort"] == ""
-        assert payload["reasoning_effort"] == "high"
+        assert payload["effort"] == "high"
         assert ego.default_thinking_effort is None
 
     @pytest.mark.asyncio
-    async def test_no_default_means_no_override(self):
-        """default 已消费 (None) → reasoning_effort 为 None, 不覆盖 dsh/UI 持有的强度.
-
-        ego 首帧消费掉初始 "off" 后 default 恒 None; 之后 enter 不再带 reasoning_effort,
-        强度归 dsh/UI. 此处显式置 None 模拟"已消费"的状态.
-        """
+    async def test_no_declaration_means_empty_effort(self):
+        """无声明 + 帧不表态 → effort 为空串: 不驱动档位变更, 档位归 dsh/UI."""
         launcher = self._Launcher()
         ego = self._ego(launcher)
-        ego.default_thinking_effort = None
 
         await ego.enter_thinking(self._thinking(""))
 
-        payload = launcher.calls[0][1]
-        assert payload["reasoning_effort"] is None
+        assert launcher.calls[0][1]["effort"] == ""
+        assert ego.default_thinking_effort is None
+
+    @pytest.mark.asyncio
+    async def test_startup_declaration_seeds_the_ego(self):
+        """startup 的 default_thinking_effort 落到 ego 的待定声明上 (boot 声明)."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher, default_thinking_effort="low")
+
+        assert ego.default_thinking_effort == "low"
+
+        await ego.enter_thinking(self._thinking(""))
+
+        assert launcher.calls[0][1]["effort"] == "low"
+        assert ego.default_thinking_effort is None
+
+    @pytest.mark.asyncio
+    async def test_empty_startup_declares_nothing(self):
+        """startup 空值 = 不表态: ego 不带初值, 不覆盖 dsh/UI 持有的档位."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        assert ego.default_thinking_effort is None
 
 
 class TestDoloresMemories:
@@ -1455,7 +1506,20 @@ class _FakeEpoch:
 
 
 class _FakeObserver:
+    """镜像生产的 Observer —— ``add_echoes`` 在**观测者**上, 不在 Thinking 上.
+
+    这不是风格问题: 替身曾经在 Thinking 上发明了一个生产不存在的 ``add_echoes``,
+    于是单测全绿而生产的 moss_reasoning 抛 AttributeError. 见 surface 对照测试.
+    """
+
     epoch = _FakeEpoch()
+
+    def __init__(self, log: list | None = None):
+        self._log = log
+
+    def add_echoes(self, result: list, need_observe: bool = False):
+        if self._log is not None:
+            self._log.append(f"observer.add_echoes:{need_observe}")
 
 
 class FakeRunThinking:
@@ -1474,10 +1538,6 @@ class FakeRunThinking:
         self.articulators.append(art)
         return art
 
-    def add_echoes(self, *messages, observe=False):
-        if self._log is not None:
-            self._log.append(f"add_echoes:{observe}")
-
     # interpret 的尾巴经这一步: 等 action 停 (含解释器关闭与轨迹落盘) + 签发最新 moment.
     async def wait_actions_done(self):
         if self._log is not None:
@@ -1491,7 +1551,21 @@ class FakeRunThinking:
 
     @property
     def observer(self):
-        return _FakeObserver()
+        return _FakeObserver(self._log)
+
+
+class _NoopShellFacade:
+    """最小 facade —— 只满足 handler 对 ``facade.shell.refresh_metas`` 的依赖.
+
+    生产里 facade 在 thinking 之前就已接线; 测试里用它把"不关心暖层"的用例保持在无关状态.
+    """
+
+    class _Shell:
+        async def refresh_metas(self, timeout=None, stale_time=None):
+            pass
+
+    def __init__(self):
+        self.shell = _NoopShellFacade._Shell()
 
 
 def fake_tool_call(call_id: str = "call_00_test"):
@@ -1523,7 +1597,7 @@ class FakeDispatchEgo(FakeRunEgo):
 class TestDoloresRun:
     """DoloresRun 生命周期 + 事件消费 — public 类, 轻量 fake 即可验证."""
 
-    def _run(self, session=None, ego=None, thinking=None):
+    def _run(self, session=None, ego=None, thinking=None, facade=None):
         from ._run import DoloresRun
 
         session = session or FakeRunSession()
@@ -1531,7 +1605,7 @@ class TestDoloresRun:
             ego=ego or FakeRunEgo(session),
             thinking=thinking or FakeRunThinking(),
             thinking_event=asyncio.Event(),
-            facade=None,
+            facade=facade or _NoopShellFacade(),
         )
 
     @staticmethod
@@ -1970,6 +2044,47 @@ class TestDoloresRun:
         ]
 
     @pytest.mark.asyncio
+    async def test_interpret_refreshes_metas_before_signing_the_moment(self):
+        """签 moment 之前必须把暖层刷到"动作之后" —— 否则模型看到的还是动作前的世界 (晚一拍)."""
+        from ._run import DoloresRun
+
+        log: list[str] = []
+
+        class _Shell:
+            async def refresh_metas(self, timeout=None, stale_time=None):
+                log.append("refresh_metas")
+
+        class _Facade:
+            def __init__(self):
+                self.shell = _Shell()
+
+        class _Thinking(FakeRunThinking):
+            def observe(self):
+                log.append("observe")
+                return super().observe()
+
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        run = DoloresRun(
+            ego=ego,
+            thinking=_Thinking(log=log),
+            thinking_event=asyncio.Event(),
+            facade=_Facade(),
+        )
+        async with run:
+            await session.emit(self._ctml_delta("c1", name="moss_interpret", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", arguments_delta='hi</say>"}', seq=2))
+            await session.emit(self._tool_call_event("moss_interpret", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
+            await session.emit(self._turn_end(seq=4))
+            async for _ in run.logos():
+                pass
+
+        assert log[-2:] == ["refresh_metas", "observe"]
+        assert ego.rpc_calls == [
+            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+        ]
+
+    @pytest.mark.asyncio
     async def test_interpret_error_returns_cancel(self):
         """interpret error → 一行 ctml syntax error + cancel (细节留给下一轮 echoes)."""
         from ghoshell_moss.core.concepts.errors import InterpretError
@@ -2086,8 +2201,8 @@ class TestDoloresRun:
         assert ego.rpc_calls == [("c2", "reacted", None, True)]
 
     @pytest.mark.asyncio
-    async def test_reasoning_sets_one_shot_effort_and_cancels(self):
-        """moss_reasoning: 设 ego 的一次性 effort + add_echoes(observe=True) 驱动下一帧 + cancel 中断."""
+    async def test_reasoning_records_depth_and_cancels(self):
+        """moss_reasoning: 记档 + need_observe 驱动下一帧 + 等 action 停 + cancel 中断本轮."""
         from ._run import DoloresRun
 
         session = FakeRunSession()
@@ -2098,8 +2213,27 @@ class TestDoloresRun:
         await run._handle_tool_use_event(self._tool_call("moss_reasoning", '{"effort": "high"}', call_id="c_r"), {})
 
         assert ego.default_thinking_effort == "high"
-        assert log == ["add_echoes:True"], "reasoning 必须 mark need_observe 驱动下一帧"
+        assert log == ["observer.add_echoes:True", "wait_actions_done"], (
+            "reasoning 必须先标 need_observe (在 observer 上) 驱动下一帧, 再等 action 停 —— "
+            "顺序反了就是让记账工具砍掉正在进行的动作"
+        )
         assert ego.rpc_calls == [("c_r", {"effort": "high"}, None, True)]
+
+    def test_tool_surface_matches_production_thinking(self):
+        """handlers 在 thinking 上用的每个 API, 生产类必须真的有.
+
+        回归防线. 这块曾经栽在哪: FakeRunThinking 发明了一个生产 ``Thinking`` 上不存在的
+        ``add_echoes``, 单测全绿, 而生产里 moss_reasoning 抛 AttributeError → 被
+        ``run_tool`` 吞成 result=None (cancel 随之丢失) → 本轮永不结束, 模型只看到 null.
+        教训不是"补一个断言", 而是: **替身不许发明生产没有的 API**.
+        """
+        from ghoshell_moss.core.blueprint.mindflow import Thinking
+
+        for name in ("articulator", "wait_actions_done", "observe", "observer", "abort"):
+            assert hasattr(Thinking, name), f"Thinking 上没有 {name} —— handler 会在运行期静默失败"
+        assert not hasattr(Thinking, "add_echoes"), (
+            "add_echoes 属于 observer (Moments), 不属于 Thinking —— 用错对象就是那个被吞掉的 AttributeError"
+        )
 
     @pytest.mark.asyncio
     async def test_interpret_stream_parse_error_returns_cancel(self):
@@ -2246,7 +2380,7 @@ class TestDoloresEpochPayload:
 
 
 class TestMementoChannel:
-    """memento channel — ghost 的记忆器官: 读面透传 + 坏 commit 失败 + notice 列 branch."""
+    """memento channel — ghost 的记忆器官: 读面透传 + 落锚写面 + 坏 commit 失败 + notice 列 branch."""
 
     class _Connection:
         def __init__(self, response):
@@ -2275,19 +2409,85 @@ class TestMementoChannel:
     def _coord(memento, seq: int) -> str:
         return memento.get_branch("main").get_commit(seq).coord
 
-    def _channel(self, tmp_path: Path, connection=None):
+    @staticmethod
+    def _committer(manager, spans=((0, 1),)):
+        """假 ego —— 每次调用封一段, 段用完后返回 None (= 没有新东西可封).
+
+        与 ego 同形: 落锚之后**照常**排旁路, 让开与否归 ``schedule_note`` 自己判 —— 约定
+        落在那一个判据上, 不落在调用方的小心翼翼上.
+        """
+        pending = list(spans)
+
+        def commit_anchor(note: str) -> str | None:
+            if not pending:
+                return None
+            start, end = pending.pop(0)
+            anchor = manager.commit(
+                session_id="s1", start_turn=start, end_turn=end, message=note
+            )
+            if anchor is None:
+                return None
+            manager.schedule_note(anchor.id)
+            return manager.coord(anchor)
+
+        return commit_anchor
+
+    def _channel(self, tmp_path: Path, connection=None, *, with_commit: bool = False):
         from .memento_channel import build_memento_channel
 
         manager, memento = self._manager(tmp_path, connection)
-        chan = build_memento_channel(manager, storage_root=tmp_path / "owner")
+        chan = build_memento_channel(
+            manager,
+            storage_root=tmp_path / "owner",
+            commit_anchor=self._committer(manager) if with_commit else None,
+        )
         return chan, manager, memento
 
     @pytest.mark.asyncio
     async def test_read_surface_is_exposed(self, tmp_path: Path):
         chan, _, _ = self._channel(tmp_path)
         async with chan.bootstrap() as runtime:
-            for name in ("view", "read", "history", "chat"):
+            for name in ("view", "read", "history", "chat", "node"):
                 assert runtime.get_command(name) is not None
+
+    @pytest.mark.asyncio
+    async def test_node_is_created_on_first_use(self, tmp_path: Path):
+        chan, manager, memento = self._channel(tmp_path)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        async with chan.bootstrap() as runtime:
+            listing = await runtime.execute_command(
+                "node", args=(self._coord(memento, anchor.seq),)
+            )
+        node_dir = (
+            memento.get_branch("main").get_commit(anchor.seq).memento_path(memento.root).parent
+        )
+        assert listing.startswith(f"Directory: {node_dir}")
+        assert "MEMENTO.md" in listing
+        assert (node_dir / "MEMENTO.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_node_lists_what_was_left_there_without_touching_it(self, tmp_path: Path):
+        """节点是写者的地盘 —— memento 只列, 不重写."""
+        chan, manager, memento = self._channel(tmp_path)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        coord = self._coord(memento, anchor.seq)
+        node_dir = (
+            memento.get_branch("main").get_commit(anchor.seq).memento_path(memento.root).parent
+        )
+        async with chan.bootstrap() as runtime:
+            await runtime.execute_command("node", args=(coord,))
+            (node_dir / "souvenir.md").write_text("for my future self", encoding="utf-8")
+            listing = await runtime.execute_command("node", args=(coord,))
+        assert "souvenir.md" in listing
+        assert "MEMENTO.md" in listing
+        assert (node_dir / "souvenir.md").read_text(encoding="utf-8") == "for my future self"
+
+    @pytest.mark.asyncio
+    async def test_node_on_unknown_coord_returns_hint(self, tmp_path: Path):
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command("node", args=("1-99",))
+        assert result == "[memento] no commit at `1-99`"
 
     @pytest.mark.asyncio
     async def test_read_returns_the_transcript(self, tmp_path: Path):
@@ -2344,6 +2544,49 @@ class TestMementoChannel:
         assert str((tmp_path / "owner").resolve()) in meta.instruction
         assert "main" in meta.notice
         assert "commits=1" in meta.notice
+
+    @pytest.mark.asyncio
+    async def test_commit_is_not_exposed_without_a_backend(self, tmp_path: Path):
+        """没有落锚后端就不挂命令 —— 挂一条只会答"做不了"的命令是在骗模型."""
+        chan, _, _ = self._channel(tmp_path)
+        async with chan.bootstrap() as runtime:
+            assert runtime.get_command("commit") is None
+
+    @pytest.mark.asyncio
+    async def test_own_note_makes_the_ghost_the_author(self, tmp_path: Path):
+        conn = self._Connection({"message": "the sidecar would have said this"})
+        chan, manager, memento = self._channel(tmp_path, conn, with_commit=True)
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command(
+                "commit", args=("D26 the fix holds\nverified after restart",)
+            )
+        assert result == "[memento] committed 1-1"
+        branch = memento.get_branch("main")
+        note = branch.notes()[branch.commits()[0].id]
+        assert note.message == "D26 the fix holds\nverified after restart"
+        # 自己写了 note = 有作者了, 旁路整条让开 (不是"排了但被跳过").
+        assert manager.bypass == {}
+        assert conn.calls == []
+
+    @pytest.mark.asyncio
+    async def test_empty_note_hands_the_summary_to_the_sidecar(self, tmp_path: Path):
+        conn = self._Connection({"message": "auto note"})
+        chan, manager, memento = self._channel(tmp_path, conn, with_commit=True)
+        async with chan.bootstrap() as runtime:
+            result = await runtime.execute_command("commit", args=("",))
+        assert result == "[memento] committed 1-1"
+        await manager.drain_bypass()
+        branch = memento.get_branch("main")
+        assert branch.notes()[branch.commits()[0].id].message == "auto note"
+
+    @pytest.mark.asyncio
+    async def test_commit_on_an_empty_span_returns_a_hint(self, tmp_path: Path):
+        chan, _, _ = self._channel(tmp_path, with_commit=True)
+        async with chan.bootstrap() as runtime:
+            first = await runtime.execute_command("commit", args=("one",))
+            second = await runtime.execute_command("commit", args=("two",))
+        assert first == "[memento] committed 1-1"
+        assert second == "[memento] nothing new since the last anchor — not committed"
 
 
 class TestDoloresMemories:
@@ -2429,3 +2672,216 @@ class TestBuildChannel:
             await runtime.refresh_metas()
             frame_meta = next(m for m in runtime.metas().values() if m.name == "frame")
         assert "Where am I?" in frame_meta.named_notices["orient"]
+
+
+class _RecordingHandler(logging.Handler):
+    """收 'moss' 下任意 logger 的记录 —— 生产的 logger 名由调用方传入, 传播不可假设."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def messages(self, level: int = logging.NOTSET) -> list[str]:
+        return [r.getMessage() for r in self.records if r.levelno >= level]
+
+    def has_traceback(self, level: int = logging.WARNING) -> bool:
+        return any(r.exc_info is not None for r in self.records if r.levelno >= level)
+
+
+@contextlib.contextmanager
+def captured_logs(logger: logging.Logger):
+    """挂一个 handler 到给定 logger 上收记录; 不改 propagate, 不动 root."""
+    handler = _RecordingHandler()
+    old_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield handler
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+
+class _NamedLogger(logging.Logger):
+    """显式命名的 logger —— 用来断言"日志落在了调用方给的那个 logger 上"."""
+
+
+class TestSilentFailureSurfaces:
+    """静默失败面: 被吞掉的异常 / 无人认领的调用 / 打开的边界没人关 —— 每一条都必须留痕.
+
+    这一组测试针对的不是行为正确性, 而是**可观测性**: 每条断言都问"出错时日志里有没有东西".
+    上一轮的教训正是反过来的 —— 行为错了但日志是空的, 于是整晚的推断都建在错误前提上.
+    """
+
+    @staticmethod
+    def _run(session=None, ego=None, thinking=None, facade=None, logger=None):
+        from ._run import DoloresRun
+
+        session = session or FakeRunSession()
+        return DoloresRun(
+            ego=ego or FakeRunEgo(session),
+            thinking=thinking or FakeRunThinking(),
+            thinking_event=asyncio.Event(),
+            facade=facade if facade is not None else _NoopShellFacade(),
+            logger=logger,
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_call_is_logged_not_silent(self):
+        """没有 handler 认领的 tool 名 = 这次调用永远等不到回话. 日志必须说话."""
+        run = self._run()
+        with captured_logs(run._logger) as logs:
+            await run._handle_tool_use_event(
+                TestDoloresRun._tool_call("read_file", "{}", "call_unknown"), {},
+            )
+        assert any("matched no dolores tool" in m and "call_unknown" in m
+                   for m in logs.messages(logging.WARNING)), logs.messages()
+
+    @pytest.mark.asyncio
+    async def test_tool_arguments_parse_failure_is_logged(self):
+        """参数解析失败: 模型看得到 error 字段, 但日志里原先一个字都没有."""
+        from ._tools import InterpretToolCall
+
+        event = TestDoloresRun._tool_call("moss_interpret", "{not json", "call_bad_args")
+        with captured_logs(logging.getLogger("moss")) as logs:
+            result = await InterpretToolCall.run_tool(event, lambda call: None)
+        assert result is not None and result.error == "invalid tool parameter"
+        assert any("failed to parse" in m and "moss_interpret" in m
+                   for m in logs.messages(logging.WARNING)), logs.messages()
+
+    @pytest.mark.asyncio
+    async def test_run_uses_the_logger_handed_down(self):
+        """run 不重建 logger: 记录必须落在调用方传进来的那个 logger 上.
+
+        每层再调一次 get_moss_logger() 会把整棵 ghost 的日志从当前 node 的语境里摘出去.
+        """
+        handed = _NamedLogger("moss.test.handed_down")
+        handed.propagate = False
+        run = self._run(logger=handed)
+        with captured_logs(handed) as logs:
+            await run._handle_tool_use_event(
+                TestDoloresRun._tool_call("nope", "{}", "call_x"), {},
+            )
+        assert logs.messages(logging.WARNING), "记录没有落在传下来的 logger 上"
+
+    @pytest.mark.asyncio
+    async def test_leftover_ctml_stream_is_closed_and_logged(self):
+        """delta 开了 articulator 而 tool/call 从未到达: 边界必须被关上, 且必须留痕."""
+        run = self._run()
+        streams: dict = {}
+        chunk = SimpleNamespace(type="tool-call-delta", id="call_orphan", name="moss_interpret",
+                                argumentsDelta='{"ctml": "<noop/>"}')
+        await run._handle_ctml_delta(chunk, streams)
+        assert streams, "delta 应已开出流"
+        articulator = streams["call_orphan"].articulator
+        with captured_logs(run._logger) as logs:
+            await run._close_leftover_streams(streams)
+        assert articulator.exited == 1, "残留流的 articulator 边界没有被关"
+        assert streams == {}
+        assert any("never settled" in m and "call_orphan" in m
+                   for m in logs.messages(logging.WARNING)), logs.messages()
+
+    @pytest.mark.asyncio
+    async def test_enter_failure_is_logged_with_traceback(self):
+        """enter 失败会把整轮 abort —— 一路都在抛, 但原先没有一处写日志."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        ego.enter_error = RuntimeError("plugin refused enter")
+        run = self._run(session=session, ego=ego)
+        thinking = run._thinking
+        with captured_logs(run._logger) as logs:
+            async with run:
+                await asyncio.sleep(0)
+        assert run._enter_error is not None
+        assert any("thinking/enter failed" in m for m in logs.messages(logging.ERROR)), logs.messages()
+        assert logs.has_traceback(logging.ERROR)
+        assert thinking.abort_reasons, "abort 仍应发生"
+
+    @pytest.mark.asyncio
+    async def test_corrupt_arguments_stream_is_logged(self):
+        """参数流损坏: 解释器根本没见到这段 CTML, 所以 shell 的 ERROR 不会出现 —— 只能在这里留痕."""
+        from ._tools import ToolCallResult
+
+        run = self._run()
+        streams: dict = {}
+        chunk = SimpleNamespace(type="tool-call-delta", id="call_broken", name="moss_interpret",
+                                argumentsDelta='{"ctml": "\\q"}')
+        await run._handle_ctml_delta(chunk, streams)
+        assert streams["call_broken"].stream.failed
+        call_event = TestDoloresRun._tool_call("moss_interpret", "{}", "call_broken")
+        with captured_logs(run._logger) as logs:
+            result = await run._handle_interpret(
+                SimpleNamespace(tool_call_event=call_event, ctml=""), streams,
+            )
+        assert isinstance(result, ToolCallResult) and result.result == "ctml parse error"
+        assert any("corrupt" in m and "call_broken" in m
+                   for m in logs.messages(logging.WARNING)), logs.messages()
+
+
+class TestEgoSilentFailureSurfaces:
+    """ego 侧同一纪律: 降级路径与"阈值说要落锚但什么都没落"都必须留痕."""
+
+    @pytest.mark.asyncio
+    async def test_commit_without_manager_is_logged(self):
+        from ._ego import DoloresEgo, DoloresEgoConfig, DoloresEgoContext
+
+        ego = DoloresEgo(
+            launcher=None,
+            ctx=DoloresEgoContext(
+                project_home=Path("/tmp"), project_name="t", name="t", mode="t",
+                instruction="", facade=None,
+            ),
+            config=DoloresEgoConfig(),
+            memento_manager=None,
+        )
+        with captured_logs(ego._logger) as logs:
+            assert ego._commit() is None
+        assert any("nothing anchored" in m for m in logs.messages(logging.WARNING)), logs.messages()
+
+    @pytest.mark.asyncio
+    async def test_missing_usage_warns_once(self):
+        """usage 一直缺失 = 自动落锚整体静默失效. 报一次, 不逐帧刷屏."""
+        from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, SessionEventMeta
+
+        from ._ego import DoloresEgo, DoloresEgoConfig, DoloresEgoContext
+
+        ego = DoloresEgo(
+            launcher=None,
+            ctx=DoloresEgoContext(
+                project_home=Path("/tmp"), project_name="t", name="t", mode="t",
+                instruction="", facade=None,
+            ),
+            config=DoloresEgoConfig(),
+            memento_manager=object(),  # 只要非 None: 走到 usage 判定即可
+        )
+        event = SessionEvent(
+            meta=SessionEventMeta(type="assistant/message", seq=1),
+            data={"turn": 1, "step": 1, "message": {"role": "assistant"}},
+        )
+        with captured_logs(ego._logger) as logs:
+            await ego._on_assistant_message(event)
+            await ego._on_assistant_message(event)
+        warned = [m for m in logs.messages(logging.WARNING) if "no usage" in m]
+        assert len(warned) == 1, f"应只报一次, 实得 {len(warned)}"
+
+    @pytest.mark.asyncio
+    async def test_self_wake_without_broadcast_warns_once(self):
+        """没接广播 = 自醒整体哑掉. 一次告警把它从"静默失效"变成"看得见的失效"."""
+        from ._ego import DoloresEgo, DoloresEgoConfig, DoloresEgoContext
+
+        ego = DoloresEgo(
+            launcher=None,
+            ctx=DoloresEgoContext(
+                project_home=Path("/tmp"), project_name="t", name="t", mode="t",
+                instruction="", facade=None,
+            ),
+            config=DoloresEgoConfig(),
+        )
+        with captured_logs(ego._logger) as logs:
+            ego._emit_self_wake()
+            ego._emit_self_wake()
+        warned = [m for m in logs.messages(logging.WARNING) if "self-wake dropped" in m]
+        assert len(warned) == 1, f"应只报一次, 实得 {len(warned)}"

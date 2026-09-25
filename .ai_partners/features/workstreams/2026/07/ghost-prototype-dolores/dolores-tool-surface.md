@@ -99,7 +99,22 @@ fire-and-await。把 CTML 送进独立 articulator, **等编译完成** 就返�
 - `moss_channel_facade` — **位置不动**。它做成 tool 就是要走 CTML 旁路供模型在决策时调用,
   不迁到 ghost channel。
 - `moss_shell_status` — 观测 shell 状态。
-- `moss_reasoning` — 声明思考深度, 下一轮生效。
+- `moss_reasoning` — 声明思考档位（off/low/high/max），下一轮生效并保持, 直到 ghost 或界面再改。
+
+### 记忆的写面: channel 而非内观 tool
+
+`ghost.memento:commit(text__)` —— 主动落锚做成 channel 命令, 不进内观 tool 面。理由: 记忆是
+ghost 的**器官**, 写面与 `read`/`chat`/`view`/`history` 同处一个 channel; 内观 tool 面只留
+"决策必需"的那几个。约定: **自己写 note 就不触发旁路**(判据 = 这条 commit 有没有 Note, 与
+`backfill` 共用), 留空则旁路代笔。区间上界 = 最后一个已完成 turn。
+
+`ghost.memento:node(coord)` —— 打开某条锚点自己的节点空间 (get-or-create, 底层
+`Branch.ensure_memento`) 并列一层内容, 格式抄 `core/file_editor` 的 `ls`。**一碰就建**, 所以
+"节点存在"只说明"有人开过这个空间", 不说明里面有东西。磁盘活整体走 `to_thread` —— 一次
+CTML 调用不该把 event loop 压在 stat 上。往里放东西仍归 ghost 自带的文件工具, channel 不新增
+写协议。
+
+`branches` 留给未来的应用。`compact` 的主动暴露同族, 未做 (顺序: 先落锚再压)。
 
 ## 流式解析是内核逻辑, 不是提速
 
@@ -156,10 +171,24 @@ fire-and-await。把 CTML 送进独立 articulator, **等编译完成** 就返�
   一起杀, 使 need_observe 驱动的回声帧循环 `while not attention.is_aborted() and need_observe()`
   永远起不来。现在 turn/end 只收线本帧走自然退出; 它不反向污染 moment —— 这轮怎么断的, tool
   调用侧已经知道, 不需要再往 moment 里塞 stop_reason。
-- **`moss_reasoning` = 一次性 effort**。ego 持 `default_thinking_effort: str | None = "off"`,
-  enter 解析 `reasoning_effort = frame_effort if frame_effort != '' else default_thinking_effort`,
-  消费后置 None。不覆盖 dsh/UI 持有的强度 (不与界面打架)。handler 设值 + `add_echoes(observe=True)`
-  + cancel, 驱动下一帧当场续跑。
+- **思考档链路（D36 重写）**。一个字段 : impulse 的 `thinking_effort` 是唯一的思考档来源, 三态 —
+  `'none'`（不思考：不驱动 turn, 只注入背景）、`''`（不表态）、`off|low|high|max`（合法档位）。
+  turn 驱动与档位解析分开判定：**档位解析每帧都做, steer 才看 `'none'`**。
+
+  | 位置 | 职责 |
+  |---|---|
+  | startup `default_thinking_effort` | boot 声明（空 = 不表态, 不覆盖 dsh/UI） |
+  | ego | 持**待采用的声明**（startup 初值 / `moss_reasoning` 现场声明）; enter 把"帧 effort, 否则声明"解析成**单一 `effort`** 下发。**声明只在被真正采用的那一帧消费** —— `'none'` 帧或自带档位的帧不会把它吃掉 |
+  | plugin | 写**一次性 pending** selection → 被 `request/header` 采纳即释放（对标官方 `dsh-api-session-controller` 的 `consume`） |
+  | `request/header` | 权威：档位落在持久请求配置里, 权威链 = pending → header → `agentDefaultModel`(settings/UI) |
+
+  **为什么必须有"释放"**：只写不释放 = 一个持久覆盖, 会永久压住 settings/UI 的选择（D36 实机：
+  开机钉 `off` 压掉了人类设的 `high`, 页面改档位再也进不来）。**释放不等于档位失效** —— 它已经落在
+  `request/header` 里成为 canonical 链的当前值, 下一次 assembly 依然读到。所以"写一次 + 采纳即释放"
+  = 「改一次, 一直生效」, 而不是「只生效一轮」。
+- 值域纪律：`deepseek` 适配器只认 `off/low/high/max`（`dsh-llm-deepseek` `serialize.d.ts`）;
+  `Mindflow` 的 `ThinkingEffort` 里的 `'medium'` 无对应档位, **当前被丢弃** —— 要么从值域去掉,
+  要么定显式映射, 不要让它静默消失。
 
 ## 待实机验证 (第五轮回归)
 

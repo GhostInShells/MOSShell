@@ -153,6 +153,7 @@ class DoloresEgo:
             logger: LoggerItf | None = None,
             memories: Callable[[], list[Message]] | None = None,
             memento_manager: EgoMementoManager | None = None,
+            default_thinking_effort: str = "",
     ) -> None:
         """Construct before the ghost enters its lifecycle; side-effect free (no httpx / session / matrix.processes).
 
@@ -166,6 +167,8 @@ class DoloresEgo:
         :param memories: closure returning the ghost's dynamic memory (existential layer); called on
             create_session for the freshest value. Clones share the same closure. None = no memory.
         :param memento_manager: ghost-held memento 旁路服务; 锚点写入与阈值判定都过它. None = 无 memento.
+        :param default_thinking_effort: boot-time thinking depth declaration (from startup doc). Empty =
+            declare nothing — the depth stays whatever dsh/UI holds.
         """
         self._launcher = launcher
         self._ctx = ctx
@@ -186,10 +189,11 @@ class DoloresEgo:
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
         # epoch tracking: remembers the last injected epoch id, compared on enter to decide whether to carry an <epoch> container.
         self._moment_epoch: str | None = None
-        # 一次性待消费的思考强度 (moss_reasoning 声明 → 下一帧 enter 携带 reasoning_effort).
-        # 每轮思考消费完即置 None; None 表示不覆盖, 强度归 dsh/GUI 持有. 初始 "off" 让 ego
-        # 首帧显式落在 off, 之后就不再干预 —— 不与界面上的思考档竞争, 只生效一次.
-        self.default_thinking_effort: str | None = "off"
+        # 待采用的思考档声明: startup 的 boot 声明 (或 moss_reasoning 的现场声明) 放这里,
+        # 由下一个**真正带上它**的思考帧下发, 采用即置回 None —— 没被采用的声明不会凭空蒸发.
+        # 声明只被消费一次, 但档位本身不会一轮即丢: plugin 把它写进 request/header 的持久配置,
+        # 后续帧仍从那里读到, 直到 ghost 或界面再改一次.
+        self.default_thinking_effort: str | None = default_thinking_effort or None
         # 预期模型身份 (provider, model, reasoning_effort) — request/header 观测值与之不符时排一条
         # notice. None = 尚未观测过 (首次观测也算变化: 开局就得知道自己在哪一档).
         self._model_identity: tuple[str, str, str] | None = None
@@ -200,6 +204,9 @@ class DoloresEgo:
         self._warned: bool = False
         # 待注入的 notice (warn / committed); thinking-enter 时排空, 与 moment 同级注入.
         self._notices: list[Message] = []
+        # 一次性告警位: 这两条都描述"整条功能静默失效", 报一次就够, 逐帧重报只会淹没日志.
+        self._usage_missing_warned: bool = False
+        self._self_wake_unwired_warned: bool = False
 
     # ── long-lived: lifecycle ────────────────────────────────────────
 
@@ -243,14 +250,25 @@ class DoloresEgo:
         except Exception:
             if "ref" not in payload:
                 raise
+            # 退一步建全新 session = 连续性的实际丢失 (内容退回 memory 层). 这不是普通告警:
+            # 只记一行 warning 而不带 traceback, 就等于把"为什么会退"永久丢掉.
             self._logger.warning(
                 "ego rebuild from memento 切点 failed (ref=%s/%s-%s) — falling back to a fresh session",
                 ref.session_id, ref.start_turn, ref.end_turn,
+                exc_info=True,
             )
             payload.pop("ref")
             result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
         self._ego_session_id = result["sessionId"]
         self._thinking_token = result.get("thinkingToken")
+        if self._thinking_token is None:
+            # 每个 enter/exit 都带这个 token, 插件用它拒绝非 ego 调用. 拿不到它时这里一切正常,
+            # 坏在下一步 —— 于是原因看不见, 只见症状. 现在就把它说出来.
+            self._logger.warning(
+                "ego/create returned no thinkingToken (session %s) — thinking enter/exit will "
+                "carry no anti-bypass token and the plugin may reject them",
+                self._ego_session_id,
+            )
         self._session = self._launcher.create_session(self._ego_session_id)
         await self._exit_stack.enter_async_context(self._session)
         # long-lived: subscribe to turn/start + user/message for silent self-wake.
@@ -297,7 +315,14 @@ class DoloresEgo:
         :param thinking: the mindflow Thinking — moment/effort/articulator/abort all come from it.
         """
         from ._run import DoloresRun
-        return DoloresRun(ego=self, thinking=thinking, thinking_event=self._thinking_event, facade=self._facade)
+        return DoloresRun(
+            ego=self,
+            thinking=thinking,
+            thinking_event=self._thinking_event,
+            facade=self._facade,
+            # 逐层传下去的 logger: 这个 run 属于当前 node, 日志也该落在当前 node 的 logger 上.
+            logger=self._logger,
+        )
 
     # ── context assembly ─────────────────────────────────────────────
 
@@ -343,10 +368,20 @@ class DoloresEgo:
         self._emit_self_wake()
 
     def _emit_self_wake(self) -> None:
-        """Emit a self-wake signal (silent when no broadcast is wired, for tests/pre-wiring)."""
+        """Emit a self-wake signal (silent when no broadcast is wired, for tests/pre-wiring).
+
+        Unwired is legitimate before host/mindflow wiring — but if it is *still* unwired at runtime,
+        self-wake is dead and nothing anywhere says so. One warning, once, on the first dropped wake.
+        """
         signal = new_dolores_ego_signal()
         if self._signal_broadcast is not None:
             self._signal_broadcast(signal)
+        elif not self._self_wake_unwired_warned:
+            self._self_wake_unwired_warned = True
+            self._logger.warning(
+                "self-wake dropped: no signal broadcast is wired — the ghost will not wake on "
+                "external session activity"
+            )
 
     # ── commit (锚点; 慢的 message 生产归 manager 的 sidecar) ──────────
 
@@ -355,7 +390,18 @@ class DoloresEgo:
         if self._memento_manager is None:
             return
         message = AssistantMessageEvent.from_session_event(event)
-        if message is None or message.usage is None:
+        if message is None:
+            self._logger.warning("assistant/message did not parse — window size unchanged")
+            return
+        if message.usage is None:
+            # usage 一直缺失 = 窗口大小永远是 0 = 增量永远是 0 = K/T 阈值永不触发, 自动落锚静默失效.
+            # 每轮都报会淹掉日志, 所以只报第一次; 这是一条"功能整体哑了"的告警, 不是逐帧噪声.
+            if not self._usage_missing_warned:
+                self._usage_missing_warned = True
+                self._logger.warning(
+                    "assistant/message carries no usage — the window size stays 0 and the K/T "
+                    "commit thresholds can never fire; automatic anchoring is silently dead"
+                )
             return
         self._window_size = self._memento_manager.window_size(message.usage)
 
@@ -411,7 +457,11 @@ class DoloresEgo:
         区间为空 (没有新追认的 turn, 如封尾时上一锚点就落在同一个 turn) → 不落锚点, 返回 None.
         """
         manager = self._memento_manager
-        if manager is None or self._ego_session_id is None:
+        if manager is None:
+            self._logger.warning("commit requested but no memento manager is wired — nothing anchored")
+            return None
+        if self._ego_session_id is None:
+            self._logger.warning("commit requested before the ego session exists — nothing anchored")
             return None
         anchor = manager.commit(
             session_id=self._ego_session_id,
@@ -420,12 +470,28 @@ class DoloresEgo:
             message=message,
         )
         if anchor is None:
+            self._logger.info(
+                "empty commit span (start=%s end=%s) — no anchor written",
+                self._session_start_turn(), self._last_turn,
+            )
             return None
         self._window_base = self._window_size
         self._warned = False
         self._notices.append(manager.committed_notice(anchor))
-        manager.schedule_note(anchor.id)  # 慢腿: message 归旁路 sidecar
+        manager.schedule_note(anchor.id)  # 慢腿: 空 note 归旁路 sidecar (已有 note 时它自己会让开)
         return anchor
+
+    def commit_anchor(self, note: str = "") -> str | None:
+        """主动落锚 (memento channel 的写面后端) —— 封一段, 返回坐标; 空区间返回 None.
+
+        ``note`` 非空 = 这条记忆由 ghost 自己写, 旁路不再代笔 (判据在 ``schedule_note``);
+        留空 = 只封段, 摘要照旧交给旁路. 区间上界是**最后一个已完成的 turn** —— 正在走的
+        这一轮不在里面, 落锚落不住脚下这一步.
+        """
+        anchor = self._commit(message=note)
+        if anchor is None or self._memento_manager is None:
+            return None
+        return self._memento_manager.coord(anchor)
 
     def _session_start_turn(self) -> int:
         """本 session 的区间下界 (**开**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.
@@ -491,29 +557,38 @@ class DoloresEgo:
         return bool(previous is not None and previous.need_observe)
 
     async def enter_thinking(self, thinking: "Thinking") -> None:
-        """Inject moment (context/inputs) + epoch + effort + reasoning_effort + thinkingToken to start a thinking turn.
+        """Inject moment (context/inputs) + epoch + effort + thinkingToken to start a thinking turn.
 
-        ``effort`` is the mindflow's turn-driving effort ('none' = no turn). ``reasoning_effort`` is the
-        DSH thinking depth (off/low/high/max) applied at this turn boundary, resolved as:
+        ``effort`` is the frame's single thinking effort, taken from the impulse's ``thinking_effort``
+        (``'none'`` = don't drive a turn, ``''`` = no opinion, a depth = apply it). Resolution:
 
-            reasoning_effort = thinking.effort() if thinking.effort() != '' else self.default_thinking_effort
+            effort = frame_effort if frame_effort != '' else pending declaration (if any)
 
-        A frame that carries its own explicit effort wins; otherwise the ego's one-shot declaration
-        redefines the depth once. ``default_thinking_effort`` is then consumed (set to None), so it
-        never lingers to fight the dsh/GUI-held depth — the declaration takes effect exactly once.
+        A frame that carries its own effort wins and the pending declaration is untouched; the
+        declaration is consumed only on the frame that actually **uses** it, so a ``'none'`` frame
+        (or any other frame with its own effort) can never silently eat it.
+
+        The depth travel is one-shot on this side but not one-turn on the model side: the plugin
+        writes it as a pending model selection and releases it once ``request/header`` adopts it,
+        which leaves the depth in the durable request config. The UI/settings can therefore change
+        it afterwards — the ghost never pins the session.
         """
         moment = thinking.moment
         moment_ref = f"{thinking.observer.epoch.index}-{moment.index}"
         frame_effort = thinking.effort()
-        reasoning_effort = frame_effort if frame_effort != '' else self.default_thinking_effort
-        self.default_thinking_effort = None
+        if frame_effort != "":
+            effort = frame_effort
+        elif self.default_thinking_effort is not None:
+            effort = self.default_thinking_effort
+            self.default_thinking_effort = None
+        else:
+            effort = ""
         payload = {
             "moment": self._moment_payload(moment, moment_ref),
             "epoch": self._epoch_payload(thinking),
             # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
             "notices": self._drain_notices(),
-            "effort": frame_effort,
-            "reasoning_effort": reasoning_effort,
+            "effort": effort,
             "thinkingToken": self._thinking_token,
             # observe continuation: empty inputs still drive a turn — see needs_observe().
             "needsObserve": self.needs_observe(thinking),

@@ -3,8 +3,10 @@ from ghoshell_container import IoCContainer, Provider
 
 from ghoshell_moss.contracts.configs import ConfigStore
 from ghoshell_moss.contracts.workspace import Workspace
+from ghoshell_moss.host.audios.miniaudio_impl.contract import AbstractMiniAudioFactory
 
 __all__ = ['MiniAudioFactoryProvider']
+
 
 class MiniAudioFactoryProvider(Provider):
 
@@ -12,8 +14,7 @@ class MiniAudioFactoryProvider(Provider):
         return True
 
     def contract(self):
-        from ghoshell_moss.host.audios.miniaudio_impl.factory import MiniAudioFactory
-        return MiniAudioFactory
+        return AbstractMiniAudioFactory
 
     def factory(self, con: IoCContainer):
         from ghoshell_moss.host.audios.miniaudio_impl.configs import MiniAudioFactoryConfig

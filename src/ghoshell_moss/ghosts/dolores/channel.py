@@ -15,6 +15,7 @@ Example:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from ghoshell_moss.channels.frame_channel import Frame, new_frame_channel
@@ -34,6 +35,7 @@ def build_dolores_channel(
     workspace_root: str | Path,
     memento_manager: EgoMementoManager | None = None,
     memento_root: str | Path | None = None,
+    commit_anchor: Callable[[str], str | None] | None = None,
     frame_root: str | Path | None = None,
     init_frame: Frame | None = None,
     name: str = "ghost",
@@ -47,6 +49,8 @@ def build_dolores_channel(
     :param memento_manager: ghost 持有的 memento 服务 — memento 子 channel 读它. None
         = 不挂记忆器官 (memento 未启用时).
     :param memento_root: 轨迹的磁盘位置 (进自解释). None = 不复述路径.
+    :param commit_anchor: 主动落锚的后端 (memento 子 channel 的写面透传; 收 note 返回坐标,
+        没有新东西可封时返回 None). None = 不挂 ``commit`` 命令.
     :param frame_root: 思维框架 (frame) 的发现根目录, 边界 = project home. None = 不挂
         frame 器官.
     :param init_frame: 开机注入的首帧 (来自 startup doc). None = frame channel 空启动,
@@ -82,7 +86,9 @@ def build_dolores_channel(
     )
     if memento_manager is not None:
         chan.import_channels(
-            build_memento_channel(memento_manager, storage_root=memento_root)
+            build_memento_channel(
+                memento_manager, storage_root=memento_root, commit_anchor=commit_anchor
+            )
         )
     if frame_root is not None:
         chan.import_channels(

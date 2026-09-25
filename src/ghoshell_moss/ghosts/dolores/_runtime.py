@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 __all__ = ["Dolores"]
 
 from ._prompts import (
-    dolores_inception, dolores_memento, dolores_output_protocol_notice, dolores_terminology,
+    dolores_inception, dolores_memory, dolores_output_protocol_notice, dolores_terminology,
     DOLORES_INSTRUCTION_END,
 )
 
@@ -167,7 +167,7 @@ class Dolores(Ghost):
             parts.append(self._moss_prompter.moss_meta_instruction())
 
         parts.append(dolores_terminology())
-        parts.append(dolores_memento())
+        parts.append(dolores_memory())
         parts.append(self._dolores_inception())
         parts.append(self._meta.prototype_instruction())
         parts.append(self._meta.identity_instruction())
@@ -224,6 +224,16 @@ class Dolores(Ghost):
             return None
         return self._matrix.env.project_path / ".ai_partners" / "frames"
 
+    def _commit_anchor(self, note: str) -> str | None:
+        """memento channel 的落锚后端 —— 封段归 ego (turn span 记账在它手里), 这里只透传.
+
+        ``channel()`` 在 ``__aenter__`` 之后才被调用, ego 一定已经在了; 真不在就是装配顺序被
+        改坏了, 直接抛 —— 静默返回 None 会被模型读成"没有新东西可封", 那是谎报.
+        """
+        if self._ego is None:
+            raise RuntimeError("commit_anchor called before the ego session was created")
+        return self._ego.commit_anchor(note)
+
     def channel(self) -> "MutableChannel | None":
         """The ghost's reflexive control channel — its own organs as sub-channels.
 
@@ -242,6 +252,7 @@ class Dolores(Ghost):
                 workspace_root=self._home,
                 memento_manager=self._memento_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
+                commit_anchor=self._commit_anchor,
                 frame_root=self._frame_root(),
                 init_frame=self._startup_doc.frame if self._startup_doc is not None else None,
             )
@@ -390,6 +401,13 @@ class Dolores(Ghost):
                     config=self._load_ego_config(),
                     memories=self.memories,
                     memento_manager=self._memento_manager,
+                    # logger 逐层传下去: ghost → ego → run → 每个 tool 调用. 不传 = ego 掉回兜底的
+                    # get_moss_logger(), 整个 ghost 的日志就从当前 node 的语境里漂走了.
+                    logger=self.logger,
+                    # boot 思考档声明: 来自 startup doc, 空 = 不表态 (档位归 dsh/UI).
+                    default_thinking_effort=(
+                        self._startup_doc.default_thinking_effort if self._startup_doc is not None else ""
+                    ),
                 )
             )
             # bind the self-wake signal outlet to the MOSS session — matrix.session.add_signal routes to mindflow.
