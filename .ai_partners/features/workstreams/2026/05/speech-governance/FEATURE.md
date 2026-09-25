@@ -1,14 +1,15 @@
 ---
-title: Speech Governance — 解耦、多后端、容错降级
-status: in-progress
-priority: P2
 created: 2026-05-25
-updated: 2026-05-29
 depends: []
-milestone:
-description: >-
-  Speech 体系治理：解耦 commands 权责泄漏，player 多后端轻量化，TTS 国际化多 provider，
-  自动容错降级，session logos stream 可选的跨进程流式。
+description: Speech 体系治理：解耦 commands 权责泄漏，player 多后端轻量化，TTS 国际化多 provider， 自动容错降级，session
+  logos stream 可选的跨进程流式。
+milestone: null
+priority: P2
+status: completed
+status_note: 2026-09-16 ClauseTopic 装线两侧落地 (说侧 moss_runtime / 听侧 controller.with_topic_service);
+  收尾 D14 播放文本记账下沉 stream + say 表面/状态分离. 收口 completed.
+title: Speech Governance — 解耦、多后端、容错降级
+updated: '2026-09-23'
 ---
 
 # Speech Governance
@@ -139,11 +140,11 @@ _runtime_context_manager   → module.on_startup() 从容器取 speech → 注�
 | `tests/.../test_wait_primitive.py` | 同上 |
 | `tests/.../test_elements.py` | `make_content_command_from_speech` → `build_content_command` |
 
-### 剩余 Phase
+### 已收口范围
 
-```
-Phase 2 ✅ → Phase 1 ✅ → Phase 5 (默认空 speech) → D6 (docstring 示例) → Phase 3 (多 provider) → Phase 4 (降级)
-```
+完成的线: 解耦 (Phase 1/D1), Player 轻量 (Phase 2/D2), 默认空 speech + 测试无副作用 (Phase 5/D7),
+docstring 示例 (D6), __content__ 可选化 (D10), 说侧可感知播放 (D11), cmd_task 交叉耦合清理。
+未做的多 provider / 降级链不再承诺于本 feature (见 Implementation Plan out-of-scope 标注)。
 
 ### Phase 5: 默认空 speech + 播放器中断修复 + 测试无副作用 (P0) — IN PROGRESS (2026-05-29)
 
@@ -299,16 +300,11 @@ class FallbackSpeech(Speech):
 
 **Why**: 容错逻辑集中在 wrapper 中，不污染每个具体实现。MockSpeech 是永远可用的最终兜底。
 
-### D5: 暂不做跨进程 speech (Out of Scope)
+### D5: 跨进程 speech 文本广播 (Out of Scope → 并入 D9)
 
-**决策**: Session logos stream 用于跨进程 speech 流式传输是合理方向，但本轮不实现。
-
-**Why**:
-- 第一版先完成解耦 + player/provider 治理，变更面已经很大
-- 跨进程 speech 需要定义额外的 stream 协议（音频帧格式、时序同步、背压），是一个独立设计问题
-- 当前优先级：让 speech 在单进程中正确、可靠、可扩展地工作
-
-**2026-05-29 更新**: D5 转为 Phase 5 的一部分。不再做跨进程音频流式，而是在 `build_content_command` 中懒获取 Session，通过 `pub_stream_delta(SPEECH_KEY, text)` 推送 speech 文本。接收端自行决定如何渲染（字幕、表情、日志等）。
+> 历史摘要：D5 最初将跨进程 speech 列为 out of scope（音频流式协议过重），
+> 2026-05-29 更新为只做文本广播（懒获取 Session 推送 speech 文本），最终定版见 D9。
+> 完整反复轨迹见 `git log -- .ai_partners/features/workstreams/2026/05/speech-governance/FEATURE.md`。
 
 ### D7: NullSpeech 替代 MockSpeech 作为生产兜底 (P0)
 
@@ -334,6 +330,309 @@ class FallbackSpeech(Speech):
 - 遵循现有 logos stream 模式，不引入新协议
 - 其他进程（GUI 字幕、机器人表情动画、日志系统）可订阅实时 speech 文本
 - 这是 D5 "跨进程 speech" 的轻量落地 — 不做音频流式，只做文本广播
+
+### D10: `__content__` 可选化，Shell 不默认注入 (P0) — 2026-09-04
+
+**决策**: 推翻 D1 的"Shell 始终拥有 `__content__` 内核命令"。`__content__` 降级为
+**可选机制**：Shell 不再无条件 `build_content_command()` + `add_command` 注入；唯一
+入口是 `SpeechChannelModule(register_content=False)` 的显式 flag，默认不组装。
+同时删除 `_feed_stream` 里的 `SpeechTopic` publisher 发布路径——说侧文本广播统一
+走 D5/D9 的 Session stream delta。
+
+**依据**（人类工程师 2026-09-04 重新同步）:
+
+1. LLM 默认把 plain-text 输出成 markdown 语法，但 CTML 不假设 GUI 存在，于是
+   plain-text 被当作语音；这需要额外 prompt 禁止 markdown 输出——默认语义与模型
+   习惯相悖。
+2. 模型要言说 CTML 本身时遇到自举困难（CDATA 里包裹 CDATA），`__content__` 输出
+   plain text 仍是降级路径（对 markdown 支持差）。
+3. 过去模型首 token 速度慢，3-5 token 承载语义有额外成本；现在模型输出 token
+   速度显著变快，语义承载成本下降。
+4. 模型在 coding agent 后训练中越来越倾向输出 markdown（视觉展示）而非"说话"，
+   默认绑定语音的 `__content__` 在对抗这个重力。
+5. Dolores Ghost Prototype 用 deepseek harness 做推理核 + dsh web 做 GUI，
+   plain-text 有了独立的视觉展示方式，不再必须走语音。
+6. 结合 `<|CTML|>` tag 可隔离多条 CTML 输出，与 markdown 输出不冲突。
+7. `__content__` 仍然有用——GUI 交互与语音同步场景——所以**保留但不默认**。
+
+**影响**:
+
+- `ctml_shell.py` `_speech_context_manager` 删除 `build_content_command` 注入。
+- `speech_module.py` 删除 `SpeechTopic` / `Publisher` 依赖及 `_feed_stream` 发布逻辑；
+  `role` / `name` / `publishing` 参数随之删除。
+- `SpeechChannelModule` 保留 `register_content` flag（默认 False），作为 `__content__`
+  的唯一显式入口；`speech_channel.py` 的 `register_content=True` 是显式用例。
+- `SpeechTopic` schema 本身待重设计（`topics/audio.py` 已有三个 todo：字段缺
+  description、timestamp 冗余、audio_key 未实现），后续单独治理。
+- 依赖"free text 默认变语音"的单测需显式注册 `__content__` 或改用 `say`。
+
+### D11: 说侧可感知播放 — 真实样本回调 + 返回描述秒数 + 中断 STOPPED (P2) — 2026-09-04
+
+**动机**: `say` / `__content__` 过去无返回值, 模型不知道"这句播了多久、说到哪被掐断"。
+`buffered()` 是喂入文本总量, cancel 时含未合成/未播放部分, 不可靠; 真实播放文本必须靠音频
+真正写入设备后的 `PlaybackSample` 对齐. 目标: 命令能感知真实播放进度并回报.
+
+**顺带清理**: 删 `contracts/speech.py` 的 `cmd_task` / `as_command_task()` (0.0 时代残留,
+contracts 反向依赖 core.concepts.command), mock / stream_tts_speech 同步清残留.
+
+**机制分层**:
+
+| 层 | 改动 |
+|----|------|
+| player | `StreamAudioPlayer.add(text)` → `PlaybackSample.text`, 样本自解释真实播放文本 |
+| stream | `SpeechStream.on_sample(callback) -> disposer` 暴露真实样本回调 (基类默认 no-op);
+  `TTSSpeechStream` 订阅 `player.observe` 过滤 `stream_id == self.id`; `say(samples)` 注册
+  `samples.append`, `finally` 摘除 — discard 兜底在 say |
+| command error | `CommandErrorCode.STOPPED = 301` (notify 档); `CommandUtil.reraise_stopped(message)` |
+| speech_module | `say` / `__content__` 收集 samples, 见返回契约 |
+
+**命令返回契约**:
+- 正常结束且有真实播放样本 → 返回描述字符串 `"played {n:.1f}s"`
+- 无播放样本 (MockSpeech / 尚未出声) → 返回 `None`, 不报误导性的 0.0s
+- 被中断 (cancel) → 捕获最后真实播放片段, `reraise_stopped("played {n}s, stopped at ...{tail}")`
+
+**Why**:
+- `buffered()` 不可靠 → 真实播放文本必须由写出设备的 PlaybackSample 提供, 故 player 透传 text.
+- `on_sample` 把对齐机制封装成回调, command 传 list 收样本即算秒数/取尾文本 — **command 内完成装线**,
+  不触碰 player / CommandTask 内部.
+- STOPPED(301) 落 notify 档 (is_notifiable 记录成可读 message, 不触发 observe/中断).
+- 正常/中断统一描述文案, 模型据此判断"续说 / 承认被打断 / 跳过".
+
+**变更文件**: `contracts/speech.py`, `core/speech/base_player.py`, `core/speech/stream_tts_speech.py`,
+`core/speech/mock.py`, `core/speech/speech_module.py`, `core/concepts/errors.py`,
+`core/blueprint/channel_builder.py`, 测试 (`test_player_playback_sample.py`, `test_mock.py`,
+`test_elements.py`, `test_command_task.py`).
+
+**后续未决**:
+- `SpeechChannel.say` (speech_channel.py) 仍走 `speak()`, 未接 samples — 是否统一待定.
+- 返回值对 channel / ghost 消费侧的观察 (dolores 装线 dogfood).
+
+**后续修订 (2026-09-05)**: 尾帧文本改为 backend 降级提供 — volcengine/mimo 拿不到
+text↔音频对齐时, 在最后一个 `PlaybackSample.text` 附上已喂文本尾部 (`speech_tail`,
+中英混排 token 切分); `stopped_message` 直接消费 `samples[-1].text` 而非 `[-_TAIL_LEN:]`
+切片段, 并补词数。`split_speech_tokens` / `speech_tail` 落在 `contracts/speech.py`。
+
+### D12: SpeechTopic → ClauseTopic，additional 上移，AudioNucleus 退役 (P2) — 2026-09-13
+
+**决策**: 本 workstream 声明的最后一个未收口项 (SpeechTopic schema 重设计) 于此落地。它不再
+等 voice-input-state-machine 完成——(语音) 话语 topic 的命名与结构在本线先定义，装线 (谁
+publish / subscribe) 另做。
+
+**命名: `ClauseTopic`**（`topic_type = "clause"`），不是 `ConversationTopic` / `UtteranceTopic`：
+
+- **和既有词汇同源**。`contracts/asr.py` 已把引擎的 `utterance (definite=true)` 重命名为
+  `Clause`（`asr.py:43`、`:59`）。`utterance` 是引擎词/输入粒度，`Clause` 是项目词/分句粒度。
+  用 `ClauseTopic` 是与既有 `Clause` 类型组合；用 `UtteranceTopic` 是把项目已抛弃的引擎词引回。
+- **粒度 = 分句级，不是 turn 级**。一个 turn 可含多个 clause，只有 clause 在说话人之间干净交错。
+  `TopicWindow[ClauseTopic]` 即交错对话轨迹。
+- **`ConversationTopic` 是拿容器命名单元**——对话是整个窗口的性质，不是单个元素的性质。
+- **双边**：听侧 ASR 定稿一个 clause、说侧 TTS 渲染一个 clause，都产出同一形状。
+
+**字段**（只承载 clause 的语义内容）：
+
+| 字段 | 说明 |
+|------|------|
+| `text` | clause 自身文本 |
+| `speaker_id` / `speaker_name` | 身份维度——谁说的 |
+| `role` | 功能维度——ghost / user。与身份**正交**：多个 speaker 可共享一个 role |
+| `lang` | 语种 |
+
+- **去 timestamp** → 走 `meta.created_at`（旧 todo）。
+- **去 audio_key** → 协议 / 存储细节不进字段，挂 `additional`（旧 todo）。旧 docstring 的
+  "每个属性都没有 description" todo 同时收口。
+
+**additional 机制修正**: 原设计把扩展槽放在 `Topic(BaseModel, WithAdditional)`（信封级），
+但 model → topic 转换时 model 自身的扩展无处安放。改为在 `TopicModel(BaseModel, ABC, WithAdditional)`
+——`to_topic()` 把 additional 从 `data` 提到信封、`from_topic()` 还原，wire 上只有一个 addition
+槽，与 publisher 级 additions（`Publisher.with_additions`）共用。`TopicMeta` 保持纯净，`Topic`
+保持 WithAdditional。（曾误置于 `TopicMeta`，已改正。）
+
+**退役**: `AudioNucleus` / `AudioSignal` / `AudioAction` 全删（`core/mindflow/audio_nucleus.py`、
+`audio_signal.py`、`signals.py` 条目）。这是旧 alpha listener 线（`.moss_ws/apps/sensors/listener`）
+的载体；该 app 已于 `15267d72` 删除，此后 `AudioSignal.speech_topic` 成为**只写不读**的死字段，
+`AudioNucleus` 也从未注册进 `matrix/openbox/nuclei.py`（活路径是 `ListenerNucleus` / `ListenerSignal`）。
+`nodes/sensors/listener` 一并删除。
+
+**未决**: 装线——ClauseTopic 的 publish / subscribe 方。**不动**: `BufferNucleus`（多测试依赖，非
+AudioNucleus 专属）。
+
+**变更文件**: `topics/audio.py`, `topics/__init__.py`, `core/concepts/topic.py`, `signals.py`,
+删除 `core/mindflow/audio_nucleus.py` / `audio_signal.py` / `nodes/sensors/listener/`。
+
+### D13: 说侧 clause/segment 双回调 + 对齐算法 (P0) — 2026-09-14
+
+**动机**: 装线——说侧 (ghost 说话) 也要产出分句级的 ClauseTopic。核心是"说侧真实播放情况"：
+分句边界、字级时序、实际播到哪、是否被打断。经实测火山 bidirection TTS 协议，真值都在服务端，
+当前 `tts.py` 全丢了 (`pass`)。
+
+**实测结论（`moss audio speak` 打点 + 逐字喂实验验证，非猜）**:
+
+| 事件 | event 值 | 粒度 | payload |
+|------|---------|------|---------|
+| `TTSSentenceStart` | 350 | 整个请求 | `{phonemes:[],text:"",words:[]}` |
+| `TTSResponse`（音频包） | 352 | 音频片段 | 纯 int16 PCM，`flag=WithEvent`，`seq=0`，无 text |
+| `TTSSentenceEnd` | 351 | 整个请求 | `{text:全文, words:[]}`（words 恒空） |
+| **`TTSSubtitle`** | **364** | **每句（分句）** | `{text:该句, words:[{word,startTime,endTime,confidence}]}` |
+
+- **subtitle 是分句级，不是音频片段级**：整段喂和逐字喂都出 N 句 N 个 subtitle（标点驱动分句）。
+- 字级时间戳需 `enable_subtitle=true`，否则 `words:[]`。时间单位是**秒**（float，服务端原值），
+  听侧 `Clause` 用**毫秒**——两侧单位不同，对齐时换算。
+- 音频包无 text、无 seq 尾标记——"播到哪"靠 subtitle 的 `words[].end_time` + 真实播放时长对齐。
+- **TTS 合成快于播放**：subtitle（分句）先于其音频播放到位，所以 clause 回调不能由"TTS 返回"触发。
+
+**对齐模型（对称听侧 `stream > segment > clause`）**:
+
+- 听侧 `stream = n*segment`，说侧 `stream = 1*segment`，两边 `segment = n*clause`。
+- `segment` 是**音频存储单位**（音频 + 完整 text + clauses 列表），`clause` 是一句。
+- 说侧 `segment = 1 say`，其 clause 边界由服务端标点分句给好（不自己做文本分句）。
+
+**两个回调（对齐听侧）**:
+
+| 回调 | 载荷 | 触发时机 | 对齐听侧 |
+|------|------|---------|---------|
+| `on_clause` | `SpeechClause`（文本） | **真实播放追到该句边界**（非 TTS 返回） | `RecognitionEvent.clause` |
+| `on_segment` | `SpeechSegment`（文本+音频） | segment 播放结束一次 | `RecognitionSegment` |
+
+**对齐算法（关键 trick）**: `on_clause` 不是 TTS 返回 clause 就触发，而是 **playsample 对齐 clause 生效**——
+TTS 返回 clause → 更新本地数组（含 `words[].end_time`）；每个 `PlaybackSample`（真实 `duration`）累加
+`played_duration`，当 `played_duration >= clause.words[-1].end_time` 时发 `on_clause`，游标前移。segment
+结束时发 `on_segment`（`interrupted = 游标 < len(clauses)`）。
+
+**数据结构（`contracts/speech.py`，去 TTS 前缀、去 Subtitle）**:
+
+- `Word`（word/start_time/end_time/confidence，秒，JSON camelCase 别名）
+- `SpeechClause`（text/words/timestamp）—— 一句
+- `SpeechSegment`（segment_id/timestamp/text/clauses/**audio**(int16 PCM 供存文件回放)/sample_rate/channels/interrupted）—— 音频存储单位
+
+**契约最小化**: `Speech.on_clause` + `Speech.on_segment` 默认 no-op；`TTSBatch.clauses() -> []` 默认空；
+融合逻辑在 `BaseTTSSpeech`/`TTSSpeechStream` 惰性计算。`NullSpeech`/`MockSpeech` 不受累。
+
+**变更文件**: `contracts/speech.py`, `core/speech/stream_tts_speech.py`,
+`host/speech/volcengine_tts/config.py` (enable_subtitle + `TTSSubtitle=364`),
+`host/speech/volcengine_tts/tts.py`（解析 subtitle 事件 → `SpeechClause` 累积到 batch）。
+
+**未决**: cancel 语义——被打断时 receive task 被 cancel，在途 subtitle 拿不到，`interrupted` 与 clause
+在 cancel 路径不完整。要"半句也成 clause"需改 cancel 时序（等流自然结束拿尾包），本次未做（tts 边界抠得细，
+先不动）。`phonemes` 音素级未返回，字级已够。`on_clause` 在 worker 线程回调（与 `on_sample` 一致），消费方
+需自行 marshal 到 event loop。
+
+### D14: 播放文本记账下沉到 stream + say 表面/状态分离 (P2) — 2026-09-16
+
+**动机（收尾两件）**: (1) 打断时报"说到哪"要真的有内容; (2) say 的命令表面混着此刻的
+voice/tone 状态, 状态一变整块接口就重发.
+
+**实测（`VirtualStreamPlayer` + 假后端复现，非推断）**: D11 的尾帧文本只附在**最后一个**
+audio frame 上, 而打断时 `samples[-1]` 是**最后播出的那一帧**（末尾帧根本还没播到, text 为空）。
+于是 `stopped at ...{tail}` 在实践中几乎不触发, 反而落到 "stopped before audible output"——
+明明已经出声。正常播完则完全不消费 tail。附带 bug: `speech_tail` 用 `" ".join(tokens)` 拼回
+文本, 中文逐字成 token → "已 经 听 到 了 ."。
+
+**决策 1 — 播放记账在 stream, 不在 sample**:
+
+| 层 | 改动 |
+|----|------|
+| `SpeechStream` | 新增 `played_text() -> str`, 默认空串: **只报对齐结果, 不做降级**——空串即"这个实现给不出", 由调用方决定近似 |
+| `TTSSpeechStream` | 用 D13 已有的对齐游标 `_clause_cursor` 拼 `clauses[:cursor].text`: 只有**整句播完**的 clause 计入（保守, 半句不报）; batch 无字幕能力 → 空串 |
+| `stopped_message` | `stopped_message(samples, played_text)`: 对齐优先 → 空则回落 `samples[-1].text`（无字幕后端的尾帧提示）→ 都没有只报秒数, 不再断言"没有出声"; 词数改为**已播出文本**的 token 数（原来数的是 ≤6 token 的 tail 本身, 无意义） |
+| `speech_tail` | 按 token 跨度**切原串**, 不再 join tokens（拼接会插入原文没有的空格） |
+
+**决策 2 — 命令表面写契约, 状态走 named notice**:
+
+- `say` 的 `doc` 从 callable 改成常量字符串: schema（voice_schema）/ tone 目录 / 参数语义都是
+  启动期静态内容。命令因此不再是 dynamic command, meta 不再逐轮重生成。
+- `SpeechChannelModule.get_named_notices()` 出两个片段: `voice`（此刻默认 voice 的 JSON）、
+  `tone`（此刻音色）。非 TTS speech (NullSpeech) 不产出。渲染层按 name delta 比对, 只有真的
+  变了才重发那一片——换音色不再触发整块命令接口重发。
+- 边界: **契约留在表面**（schema / tone 目录让模型不依赖 notice 就能看懂参数）, **只有此刻的状态进 notice**。
+
+**变更文件**: `contracts/speech.py`, `core/speech/stream_tts_speech.py`,
+`core/speech/speech_module.py`, `channels/speech_channel.py`,
+测试 `tests/.../host/speech/test_tts_stream_play.py`（played_text 只计已播 clause）、
+`tests/ghoshell_moss/channels/test_speech_module.py`（状态进 notice, 表面不动）。
+
+**未决**:
+- 正常播完是否也带 tail: 目前只报 `played N.Ns`（模型自己说了什么它知道, tail 只在被打断时有用）。
+- backend 尾帧 hack 对 volcengine 已冗余（它有 clause 对齐）, 是否删除待定; mimo 无字幕, 仍要靠它降级。
+- tail 精度受 D13 的 cancel 未决影响: 在途 subtitle 拿不到, 半句不成 clause, 报的是"最后播完的整句"。
+
+### D15: mute 命令 — 旁听模式的安全闸 (P1) — 2026-09-17
+
+**动机**: 旁听模式——会议 / 路演时人类说"等下你先别说话, 我要你说时再说", 之后人类对别人
+说的话照样喂给 ghost, ghost 仍可思考与行动, 但**零误说风险**。mute 是模型自控的 toggle, 对抗
+实机里"它会忘"的本能。
+
+**决策**:
+
+| 层 | 改动 |
+|----|------|
+| 真相 | `mute(on: bool)` 命令是唯一写入点, flag 在 `SpeechChannelModule` |
+| 状态 | 走 named notice `mute` 片段, **off/on 恒非空**（空串会被渲染层当静默, 模型残留旧记忆）; 不碰命令 surface |
+| 闸门 | mute 时 `say` / `__content__` 在 partial 就 raise `NOT_AVAILABLE(403)`, 不建 TTS batch、不 start_synthesis、不出声 |
+| 语义 | 用 `NOT_AVAILABLE` 而非新码——"这个命令此刻不可用"; message 写清可恢复: `mute(on=false)` |
+
+**为什么是 403 而不是软闸**: `NOT_AVAILABLE`(403) 落在 critical 档 (`is_critical` = code ≥ 400),
+会 cancel in-flight batch + stop interpreter。这是**故意的硬闸**——旁听模式下漏嘴就是违规, 要当场
+打断、迫使模型重新定向, 而不是让其余命令继续跑完（可能还带着那次误说的上下文）。代价是同一批
+里已排队的合法行动也会被冲掉, 接受——漏嘴本身就是该重新想一遍的信号。
+
+**为什么不用 available=false**: 它改的是命令 meta 的 availability → 整个 channel facade 重绘,
+每个 mute 切换都要重发全量界面, 不值。命令保持 available/可见, 只在运行时拒绝。
+
+**变更文件**: `core/speech/speech_module.py`,
+测试 `tests/ghoshell_moss/channels/test_speech_module.py`（toggle 进 notice + 静音 say 拒 403）。
+
+**未决**: mute 是否该随 session 结束自动复位（现在跨 turn 持久, 靠 notice 提醒）; 是否要
+"N 轮后自动解除"的保险。
+
+### D16: ChannelModule 补 available 轴 — `is_available()` (P2) — 2026-09-23
+
+**动机**: 裸起一个绑了 `SpeechChannelModule` 的主 channel（无 speech、容器也无 `Speech`）时,
+命令侧是干净的（say/mute 都不挂）, 但表面不干净:
+
+| 面 | 实测 |
+|----|------|
+| `meta.modules` | `['speech']` — 没装线却露名字 |
+| `named_notices` | `{"mute": "off"}` — 报了状态, 却没有对应命令 |
+| `meta.dynamic` | `True` — 空 module 让通道永不静态缓存（见下文: 这行有意不修） |
+根因不是"少个判断", 是**同一条件写在两处**: 命令闸在 `on_startup`（`speech_module.py:252`）,
+状态闸在 `get_named_notices`（`speech_module.py:228`）。D14 / D15 两轮优化各补了一侧,
+改这处漏那处 —— "这个模块此刻成不成立"隐式躺在其中一边, 抽象面上看不见。
+
+**决策**: `ChannelModule` Protocol 加 sync `is_available()`, 与 `ChannelState.is_available()`
+同名同形。**同步是关键**: `is_dynamic()` 是 sync 结构刷新路径, 直接读它即可, 不需要新造
+async 评估 + 缓存那一套。runtime 以它为唯一闸门过滤 `meta.modules` / `own_commands` /
+`get_command` / notice / named_notices / context messages —— 表面下架必须等于调用路径下架,
+否则模型看不见却调得到, 比看得见调不到更坏。
+
+**生命周期不在这条轴上**: `on_startup` / `on_close` / `on_refresh_meta` 仍遍历**全部** module,
+对齐 state（`_get_current_state()` 也只是把不可用 state 从 meta 剔掉, 不阻止其生命周期）。
+这是硬约束而非风格: `_speech` 是 `on_startup` 从 IoC resolve 出来的, 若闸住 startup,
+`_speech` 永远是 None → 永远不可用, 死锁。
+
+speech 侧谓词一句 `_speech is not None and _speech.is_running()`, 作为唯一真相源,
+`on_startup` 与 `get_named_notices` 都**调用**它而不再各自重抄条件。收益: 可用性成了持续谓词
+而非启动时的一次性分叉 —— 语音中途挂掉, say/mute 连同 notice 自动下架, 回来则恢复。
+
+**`meta.dynamic` 上表那行不修**: 它仍按注册的 module 数判定。改成按 `is_available()` 会让
+模块下架时整个 meta 被判为静态而进 `_static_meta_cache`, 之后恢复也读不回来（实现时先写成
+按 available 判定, 恢复路径当场测挂）。"注册即 dynamic" 正是让可用性保持活的代价。
+
+**与 D15 的边界**: D15 否决的是用**命令 meta 的 available** 做 mute 闸（每次切换重发全量界面）。
+这里是 **module 级**可用轴, 谓词是"speech 是否在跑"这类稀疏事件, 翻转时界面本就该变。
+
+**否决 `bootstrap(container) -> Self | None` 装线分叉**: `ChannelState` ABC 上已有
+`bootstrap(container) -> None`（`concepts/channel.py:367`）, 而 `states_channel.py:53` 明说
+PyChannelBuilder 与任意 ChannelState 自动满足 module Protocol —— `None = 不绑` 会把
+state-as-module 用**静默丢掉**（不报错, 能力凭空消失）; 救它要改 ABC 返回契约 + 所有 state 实现,
+远不止 py_channel。且一次性分叉表达不了上面那种"中途挂掉自动下架"。
+
+**变更文件**: `core/blueprint/states_channel.py`（Protocol + 默认体）、
+`core/py_channel.py`（`_available_modules()` + 7 个消费点）、`core/speech/speech_module.py`、
+测试 `tests/ghoshell_moss/channels/test_speech_module.py` 与
+`tests/ghoshell_moss/default/core/channels/test_state_channel.py`。
+
+**归属**: 契约是内核级（ChannelModule Protocol）, 但内核迭代通常不单开 feature —— 除 mindflow
+那类巨型重构外都是如此。故按触发场景归此, 契约沉淀在 Protocol docstring 上, 决策轨迹靠 `git log`。
 
 ## Implementation Plan
 
@@ -363,7 +662,10 @@ class FallbackSpeech(Speech):
 | 2.5 | 更新 workspace manifests/stubs | stubs + .moss_ws | ✅ |
 | 2.6 | 10 个单元测试 | `tests/ghoshell_moss/speech/test_miniaudio_player.py` | ✅ |
 
-### Phase 3: TTS 多 provider (P1)
+### Phase 3: TTS 多 provider (P1) — OUT OF SCOPE
+
+现状: `TTSServiceProvider.use` 已支持 `volcengine_stream_tts_model` / `mimo_tts` 配置切换;
+registry 抽象 / OpenAI / edge-tts 等扩展不在本 feature 迭代, 不再承诺.
 
 | # | 任务 | 影响文件 |
 |---|------|----------|
@@ -384,12 +686,15 @@ class FallbackSpeech(Speech):
 | 5.3 | MiniAudio clear() 中断修复 | `core/speech/player/miniaudio_player.py` | ✅ |
 | 5.4 | MockSpeech → NullSpeech 生产路径替换 | `ctml_shell.py`, `speech_module.py` | ✅ |
 | 5.5 | 测试改用 VirtualStreamPlayer + 中断测试 | `tests/.../test_miniaudio_player.py` | ✅ |
-| 5.6 | NullSpeech 打字机延时 | `core/speech/null.py` | pending |
-| 5.7 | Speech provider 配置化 delay | `host/providers/` | pending |
-| 5.8 | build_content_command 懒获取 Session → pub speech text | `core/speech/speech_module.py` | pending |
-| 5.9 | Session 抽象定义 SPEECH_KEY | `core/blueprint/session.py` | pending |
+| 5.6 | NullSpeech 打字机延时 | `core/speech/null.py` | out-of-scope (价值低; Mock 已有 typing_sleep) |
+| 5.7 | Speech provider 配置化 delay | `host/providers/` | out-of-scope |
+| 5.8 | build_content_command 懒获取 Session → pub speech text | `core/speech/speech_module.py` | 废弃 (D9 广播方向随 D10/D11 转向) |
+| 5.9 | Session 抽象定义 SPEECH_KEY | `core/blueprint/session.py` | 废弃 |
 
-### Phase 4: 容错降级 (P2)
+### Phase 4: 容错降级 (P2) — 未实现, 思路被现状替代
+
+现实: speech 是 player + tts 的组装物; 无 `Speech` 时 shell 层兜底 `NullSpeech` (D7 已做);
+provider 层 `force_fetch` 真组件, 无运行时 mock/null 降级; D4 `FallbackSpeech` wrapper 思路未采用.
 
 | # | 任务 | 影响文件 |
 |---|------|----------|

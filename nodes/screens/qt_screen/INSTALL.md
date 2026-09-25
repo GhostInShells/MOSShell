@@ -1,13 +1,23 @@
 # Screen Node — Installation
 
-Requires Qt6 with WebEngine (Chromium-based webview).
+This node has its own Python dependencies including PySide6 with QtWebEngine.
 
 ```bash
-uv pip install PySide6
+cd nodes/screens/qt_screen
+uv sync
 ```
 
-Verify:
+Verify WebEngine availability:
 ```bash
-python -c "from PySide6.QtWebEngineWidgets import QWebEngineView; print('ok')"
-python nodes/screens/main.py --standalone    # GUI smoke test
+.venv/bin/python -c "from PySide6.QtWebEngineQuick import QtWebEngineQuick; print('ok')"
+```
+
+Then mark as installed:
+```bash
+moss nodes install nodes/screens/qt_screen
+```
+
+GUI smoke test (standalone QML, no Matrix):
+```bash
+.venv/bin/python main.py --standalone
 ```

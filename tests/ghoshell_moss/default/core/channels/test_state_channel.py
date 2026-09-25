@@ -3,9 +3,10 @@ import asyncio
 import pytest
 
 from ghoshell_moss.core.blueprint.states_channel import (
-    new_channel_state, new_stateful_channel_from_main, new_prime_channel,
-    new_stateful_channel,
+    new_channel_state, new_channel_from_state, new_prime_channel,
+    new_stateful_channel, ChannelModule,
 )
+from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.message import Message
@@ -554,7 +555,7 @@ async def test_base_state_channel_from_builder():
     async def greet() -> str:
         return "hello"
 
-    chan = new_stateful_channel_from_main(builder)
+    chan = new_channel_from_state(builder)
     async with chan.bootstrap() as runtime:
         cmd = runtime.get_command("greet")
         assert cmd is not None
@@ -570,7 +571,7 @@ async def test_base_state_channel_with_switchable_states():
     async def root_cmd() -> str:
         return "root"
 
-    chan = new_stateful_channel_from_main(main_st)
+    chan = new_channel_from_state(main_st)
     alt_st = chan.new_state("alt", "alternative")
 
     @alt_st.command()
@@ -934,7 +935,7 @@ async def test_channel_meta_includes_modules():
 async def test_module_on_base_state_channel():
     """BaseStateChannel 也支持 with_module。"""
     main_st = new_channel_state(name="root")
-    chan = new_stateful_channel_from_main(main_st)
+    chan = new_channel_from_state(main_st)
     mod = new_channel_state(name="extra")
 
     @mod.command()
@@ -1035,3 +1036,166 @@ async def test_module_no_commands():
         meta = runtime.self_meta()
         assert "empty" in meta.modules
         assert len(meta.context) == 2
+
+
+# ============================================================
+# gate — 虚拟子通道渐进式披露
+# ============================================================
+
+
+def _gated_channel(*children: PyChannel) -> PyChannel:
+    """构造 gate 开启、以 children 为声明目录的 prime channel."""
+    chan = PyChannel(name="main", gate=True)
+
+    @chan.build.virtual_children
+    def _children() -> dict[str, PyChannel]:
+        return {child.name(): child for child in children}
+
+    return chan
+
+
+@pytest.mark.asyncio
+async def test_gate_off_mounts_all_virtual_children_and_no_notice():
+    """gate 关闭 (默认) 时虚拟子通道全部挂载, 不产出目录片段."""
+    chan = PyChannel(name="main")
+    sub = PyChannel(name="sub")
+
+    @chan.build.virtual_children
+    def _children() -> dict[str, PyChannel]:
+        return {"sub": sub}
+
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert "sub" in runtime.virtual_sub_channels()
+        assert "gated_children" not in runtime.self_meta().named_notices
+
+
+@pytest.mark.asyncio
+async def test_gate_on_children_closed_by_default_and_listed_in_notice():
+    """gate 开启时子通道默认全关; 目录以 gated_children 片段披露并标记 closed."""
+    chan = _gated_channel(PyChannel(name="attention"))
+
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert runtime.virtual_sub_channels() == {}
+        catalog = runtime.self_meta().named_notices["gated_children"]
+        assert "attention" in catalog
+        assert "closed" in catalog
+
+
+@pytest.mark.asyncio
+async def test_mount_child_mounts_and_marks_open():
+    """mount_child 挂载子通道, 目录片段标记 open; unmount 撤销."""
+    child = PyChannel(name="attention")
+
+    @child.build.command()
+    async def focus() -> str:
+        return "focused"
+
+    chan = _gated_channel(child)
+
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert "attention" not in runtime.virtual_sub_channels()
+
+        result = await runtime.mount_child("attention")
+        assert "mounted" in result
+        assert "attention" in runtime.virtual_sub_channels()
+        assert "open" in runtime.self_meta().named_notices["gated_children"]
+
+        result = await runtime.unmount_child("attention")
+        assert "unmounted" in result
+        assert "attention" not in runtime.virtual_sub_channels()
+
+
+@pytest.mark.asyncio
+async def test_mount_unknown_child_is_clean_noop():
+    """mount 一个未声明的 child 返回干净的错误文本."""
+    chan = _gated_channel(PyChannel(name="attention"))
+
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.mount_child("ghost")
+        assert "no gated child" in result
+        assert runtime.virtual_sub_channels() == {}
+
+
+@pytest.mark.asyncio
+async def test_gate_auto_registers_mount_and_unmount_commands():
+    """gate 开启时 mount_child 自动注册; 有打开项后 unmount_child 才可用."""
+    chan = _gated_channel(PyChannel(name="attention"))
+
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        names = set(runtime.own_commands().keys())
+        assert "mount_child" in names
+        assert "unmount_child" not in names
+
+        await runtime.mount_child("attention")
+        names = set(runtime.own_commands().keys())
+        assert "unmount_child" in names
+
+
+@pytest.mark.asyncio
+async def test_gate_off_registers_no_mount_commands():
+    """gate 关闭时不注册 mount/unmount 命令."""
+    chan = PyChannel(name="main")
+    sub = PyChannel(name="sub")
+
+    @chan.build.virtual_children
+    def _children() -> dict[str, PyChannel]:
+        return {"sub": sub}
+
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        names = set(runtime.own_commands().keys())
+        assert "mount_child" not in names
+        assert "unmount_child" not in names
+
+
+@pytest.mark.asyncio
+async def test_unavailable_module_still_runs_its_lifecycle():
+    """is_available() 闸的是表面, 不是生命周期 — 否则"可用性由 startup 建立"的 module 永久不可用.
+
+    runtime 若因不可用而跳过 on_startup, 这个 module 的 ready 永远是 False, 死锁.
+    """
+    chan = PyChannel(name="main")
+
+    class Lazy(ChannelModule):
+        def __init__(self) -> None:
+            self.ready = False
+
+        def name(self) -> str:
+            return "lazy"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        def is_available(self) -> bool:
+            return self.ready
+
+        async def on_startup(self) -> None:
+            self.ready = True
+
+    mod = Lazy()
+    chan.with_module(mod)
+    async with chan.bootstrap() as runtime:
+        assert mod.ready is True
+        assert runtime.self_meta().modules == ["lazy"]
+
+
+@pytest.mark.asyncio
+async def test_module_without_is_available_is_always_wired():
+    """module 是结构子类型: 未声明 is_available() 的实现 (MacroStoreModule 等) 视为恒装线."""
+    chan = PyChannel(name="main")
+
+    class Bare:
+        def name(self) -> str:
+            return "bare"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+    chan.with_module(Bare())
+    async with chan.bootstrap() as runtime:
+        assert runtime.self_meta().modules == ["bare"]

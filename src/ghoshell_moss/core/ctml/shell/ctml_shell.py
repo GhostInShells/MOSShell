@@ -34,13 +34,12 @@ from ghoshell_moss.core.ctml.versions import get_moss_ctml_meta_instruction, CTM
 from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan, default_primitive_map
 from ghoshell_moss.core.helpers import ThreadSafeEvent, ThreadSafeFuture
-from ghoshell_moss.core.speech.null import NullSpeech
 from ghoshell_moss.core.speech.speech_module import build_content_command
 from ghoshell_moss.contracts.speech import Speech
 from collections import deque
 import time
 
-__all__ = ["CTMLShell", "new_ctml_shell"]
+__all__ = ["CTMLShell", "new_ctml_shell", "ctml_shell_test"]
 
 
 class CTMLShell(MOSShell[PrimeChannel]):
@@ -58,10 +57,12 @@ class CTMLShell(MOSShell[PrimeChannel]):
             meta_instruction: str | None = None,
             refresh_moss_static: bool = True,
             capture_errors_on_exit: bool = False,
+            speech_as_content_command: bool = False,
     ):
         self._name = name
         self._desc = description
         self._capture_errors_on_exit = capture_errors_on_exit
+        self._channel_metas_generation_callbacks: set[Callable[[dict[ChannelFullPath, ChannelMeta]], None]] = set()
 
         self._container = Container(name=name, parent=parent_container)
         self._container.set(MOSShell, self)
@@ -84,6 +85,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
                     self._main_channel.build.add_command(primitive)
 
         self._speech: Speech = speech
+        self._speech_as_content_command = speech_as_content_command
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
         self._clearing_task: asyncio.Future[None] | None = None
 
@@ -128,6 +130,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
     def container(self) -> IoCContainer:
         return self._container
 
+    def set_speech(self, speech: Speech | None) -> None:
+        """host 层 resolve 出 Speech 实例后注入. 须在 ``__aenter__`` 之前调用.
+
+        shell 自身不 resolve Speech — 显式传入才算数, 传入 None 表示禁语音.
+        """
+        self._speech = speech
+
     def meta_instruction(self) -> str:
         return self._ctml_meta_instruction
 
@@ -171,6 +180,17 @@ class CTMLShell(MOSShell[PrimeChannel]):
         """monotonic time of last ``refresh_metas`` 完成时间."""
         return self._last_channel_metas_refreshed_at
 
+    def on_channel_metas_generation(
+            self,
+            callback: Callable[[dict[ChannelFullPath, ChannelMeta]], None],
+    ) -> Callable[[], None]:
+        self._channel_metas_generation_callbacks.add(callback)
+
+        def discard() -> None:
+            self._channel_metas_generation_callbacks.discard(callback)
+
+        return discard
+
     def dynamic_messages(
             self,
             available_only: bool = True,
@@ -186,7 +206,12 @@ class CTMLShell(MOSShell[PrimeChannel]):
         return self._moss_dynamic_cache
 
     def interpreting(self) -> Optional[Interpreter]:
-        return self._interpreter
+        if self._interpreter is None:
+            return None
+        elif self._interpreter.is_running():
+            return self._interpreter
+        else:
+            return None
 
     @property
     def name(self) -> str:
@@ -256,25 +281,25 @@ class CTMLShell(MOSShell[PrimeChannel]):
     async def _speech_context_manager(self):
         """
         启动关闭音频模块.
+
+        speech 显式注册: 构造时未传入 Speech 实例则不托管 — 不 set 进容器、
+        不启动、不挂 content command. 此时 shell 无语音交互能力.
         """
-        if self._speech:
-            self._container.set(Speech, self._speech)
-        else:
-            speech = self._container.get(Speech)
-            if speech is None:
-                speech = NullSpeech()
-                self._container.set(Speech, speech)
-            self._speech = speech
-
-        # 注册 __content__ 内核命令（shell 始终拥有说话能力）
-        content_cmd = build_content_command(self._speech)
-        self.main_channel.build.add_command(content_cmd, override=False)
-
-        await self._speech.start()
-        try:
+        if self._speech is None:
             yield
-        finally:
-            await self._speech.close()
+            return
+
+        self._container.set(Speech, self._speech)
+
+        if self._speech_as_content_command:
+            content_cmd = build_content_command(self._speech)
+            self.main_channel.build.add_command(content_cmd, override=False)
+
+        if self._speech.is_running():
+            yield
+        else:
+            async with self._speech:
+                yield
 
     @contextlib.asynccontextmanager
     async def _runtime_context_manager(self):
@@ -388,15 +413,19 @@ class CTMLShell(MOSShell[PrimeChannel]):
         callback = None
         interrupted_interpretation = None
         undone_tasks = None
+        on_close_callback = None
+        is_dry_run = False
         if kind == "clear":
             # clear 会先清空.
             await self.clear()
             # 清除当前存在的 interpretation.
             interrupted_interpretation = await self.stop_interpretation()
             callback = self._interpreter_callback_task
+            on_close_callback = self._fire_on_interpreter_stopped
         elif kind == "dry_run":
             # dry_run 不会对 shell 产生真实影响, 可以用来做纯解析.
             callback = None
+            is_dry_run = True
         elif kind == "append":
             # append 会追加命令, 而不是清除.
             callback = self._interpreter_callback_task
@@ -408,11 +437,12 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 undone_tasks = old_interpreter.incomplete_tasks()
                 interrupted_interpretation = await old_interpreter.close(cancel_executing=False)
             self._interpreter = None
+            on_close_callback = self._fire_on_interpreter_stopped
 
         # 阻塞等待刷新结果.
         if refresh_metas:
             await self.refresh_metas(timeout=prepare_timeout)
-        config = self.channel_metas(available_only=True, config=config)
+        config = self.channel_metas(available_only=True, selection=config)
         commands = self.commands(available_only=True, config=config)
         interpreter = CTMLInterpreter(
             kind=kind,
@@ -429,7 +459,8 @@ class CTMLShell(MOSShell[PrimeChannel]):
             clear_after_exit=clear_after_exit,
             moss_static=self._moss_static_cache,
             task_context=task_context,
-            on_close_callback=self._fire_on_interpreter_stopped,
+            on_close_callback=on_close_callback,
+            is_dry_run=is_dry_run,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.
@@ -465,7 +496,20 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if stale_time > 0.0 and now < (self._last_channel_metas_refreshed_at + stale_time):
             # 如果近期执行过刷新, 则在同样的时间内不反复触发.
             return True
-        return await self._refresh_channel_metas(timeout=timeout)
+        return await self._refresh_channel_metas_shared(timeout=timeout)
+
+    async def _refresh_channel_metas_shared(self, timeout: float | None) -> bool:
+        """并发 ``refresh_metas`` 的 in-flight 守卫.
+
+        底层 tree/runtime 各有 "一次只刷一次" 守卫, 但 shell 层此前只有 ``stale_time``
+        时间窗去重 (新鲜度优化, 非并发锁) —— 两个并发调用会各自跑一次 ``_update_channel
+        _metas``, 把 meta 生成回调 fire 两次. 本方法把并发调用合并到同一次
+        ``_refresh_channel_metas``.
+        """
+        if self._refresh_meta_future is not None and not self._refresh_meta_future.done():
+            return await self._refresh_meta_future
+        self._refresh_meta_future = asyncio.create_task(self._refresh_channel_metas(timeout=timeout))
+        return await self._refresh_meta_future
 
     async def _refresh_channel_metas(self, timeout: float | None) -> bool:
         # 等待运行结束.
@@ -480,7 +524,10 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 [refresh_meta_future],
                 timeout=timeout,
             )
-            return refresh_meta_future in done
+            result = refresh_meta_future in done
+            if result:
+                self._update_channel_metas()
+            return result
         finally:
             # 更新最后一次等待完刷新的时间.
             now = time.monotonic()
@@ -490,11 +537,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
     def _update_channel_metas(self):
         self._last_channel_metas = self._main_runtime.metas()
         self._last_channel_metas_built_at = time.monotonic()
+        for callback in list(self._channel_metas_generation_callbacks):
+            callback(self._last_channel_metas)
 
     def channel_metas(
             self,
             available_only: bool = False,
-            config: Optional[list[ChannelFullPath]] = None,
+            selection: Optional[list[ChannelFullPath]] = None,
             *,
             stale_time: float | None = None,
     ) -> dict[str, ChannelMeta]:
@@ -506,9 +555,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self._update_channel_metas()
 
         metas = self._last_channel_metas
-        if config:
+        if selection:
             result = {}
-            for path in config:
+            for path in selection:
                 if path in metas:
                     meta = metas[path]
                     if meta.available or not available_only:
@@ -693,8 +742,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
         return self._clearing_task
 
     async def _clear(self):
+        speech_clear = self._speech.clear() if self._speech is not None else self._noop()
         done = await asyncio.gather(
-            self._speech.clear(),
+            speech_clear,
             self._main_runtime.tree.clear(self._main_runtime),
             self.stop_interpretation(),
             return_exceptions=True,
@@ -715,6 +765,7 @@ def new_ctml_shell(
         meta_instruction: str | None = None,
         primitives: list[str | Command] | None = None,
         capture_errors_on_exit: bool = False,
+        speech_as_content_command: bool = False,
 ) -> CTMLShell:
     """系统默认提供的 shell"""
     return CTMLShell(
@@ -728,6 +779,7 @@ def new_ctml_shell(
         primitives=primitives,
         meta_instruction=meta_instruction,
         capture_errors_on_exit=capture_errors_on_exit,
+        speech_as_content_command=speech_as_content_command,
     )
 
 

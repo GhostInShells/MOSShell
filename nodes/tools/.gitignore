@@ -1,0 +1,12 @@
+# 共享组内无 per-node install 标记 — 状态由父 venv 是否 sync 决定
+.installed
+
+__pycache__/
+*.pyc
+
+# tools 组共享 venv
+.venv/
+
+# runtime artifacts (ledger, logs) — keep dir, ignore contents
+runtime/*
+!runtime/.gitignore

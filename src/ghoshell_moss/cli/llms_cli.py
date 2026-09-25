@@ -1,0 +1,560 @@
+"""moss llms — inspect and call LLM configs.
+
+- ``list``: model meta + config file path + key env var presence. Never
+  resolves env vars — no secret values on the command line.
+- ``call`` / ``test``: one-shot pydantic-ai calls for availability
+  verification. Registered only when the ``ghost`` extra (pydantic-ai) is
+  installed — commands with no dependency are not shown.
+"""
+
+import asyncio
+import os
+import re
+from pathlib import Path
+
+import typer
+
+from ghoshell_moss.contracts.llms import CallSettings, Effort, LLMConfig, LLMFuncs, ModelRef, ResolvedModel
+from ghoshell_moss.depends import available
+
+from .utils import (
+    print_simple_table,
+    print_error,
+    print_info,
+    print_success,
+    echo,
+)
+
+llms_app = typer.Typer(
+    help="Inspect and call LLM configs.",
+    no_args_is_help=True,
+)
+
+# image payload embedded in a provider error (e.g. anthropic block source)
+_DATA_URL_RE = re.compile(r"(data:[^,;]+(?:;base64)?,)([A-Za-z0-9+/=]{40,})")
+
+
+def _error_summary(e: Exception, limit: int = 600) -> str:
+    """Human-safe error text — collapse image payloads and cap length.
+
+    A pydantic-ai ``ModelHTTPError`` body embeds the full request, which for
+    an image call is megabytes of base64 (e.g. anthropic protocol 400:
+    ``invalid url: "data:image/png;base64,..."``). Dumping that verbatim
+    floods the terminal. Collapse long base64 blobs to a marker and bound the
+    rest so a failed call reports the cause, not the payload.
+    """
+    text = str(e)
+    text = _DATA_URL_RE.sub(lambda m: f"{m.group(1)}<{len(m.group(2))}B base64>", text)
+    if len(text) > limit:
+        return text[:limit] + f" ... (truncated {len(text)} -> {limit} chars)"
+    return text
+
+
+def _project_container():
+    """Bootstrap 项目并返回容器 — 轻路径, 无 matrix/cell/网络.
+
+    Project.bootstrap() 幂等: 载入 env + container.bootstrap (触发
+    ConfigInstanceRegisterBootstrapper 注册 config 实例). 环境坏时也大概率能拉起.
+    """
+    from ghoshell_moss.core.blueprint.project import Project
+    project = Project.discover()
+    project.bootstrap()
+    return project.container
+
+
+def _load_config() -> LLMConfig:
+    """Read LLMConfig from the project container — else the default. Read-only."""
+    try:
+        return _project_container().force_fetch(LLMConfig)
+    except Exception:
+        return LLMConfig()
+
+
+def _load_funcs() -> LLMFuncs:
+    """Read the LLMFuncs engine from the project container (decision A provider)."""
+    return _project_container().force_fetch(LLMFuncs)
+
+
+def _config_source_path() -> str | None:
+    try:
+        from ghoshell_moss.core.blueprint.project import Project
+        path = Path(Project.discover().configs.get_config_path(LLMConfig.conf_name()))
+        return path.as_posix()
+    except Exception:
+        return None
+
+
+def _collect_env_refs(conf: LLMConfig) -> list[str]:
+    """Collect ``$ENV_VAR`` references from the config (presence check only)."""
+    refs: set[str] = set()
+    for service in conf.services:
+        for field in (service.api_key, service.base_url):
+            if isinstance(field, str) and field.startswith("$"):
+                refs.add(field[1:])
+    return sorted(refs)
+
+
+def _display_base_url(base_url: str) -> str:
+    """Show base_url — if it's a ``$ENV_VAR`` ref, annotate presence (never the key)."""
+    if isinstance(base_url, str) and base_url.startswith("$"):
+        ref = base_url[1:]
+        status = "set" if os.environ.get(ref) else "missing"
+        return f"{base_url} ({status})"
+    return base_url
+
+
+def _model_head_rows(resolved: ResolvedModel) -> list[list[str]]:
+    """Key model facts for the head — never includes the api_key."""
+    service = resolved.service
+    m = resolved.model
+    rows = [
+        ["service", service.name],
+        ["protocol", service.protocol],
+        ["base_url", _display_base_url(service.base_url)],
+        ["model", m.model],
+    ]
+    if resolved.degraded_from:
+        rows.append(["degraded_from", resolved.degraded_from])
+    rows += [
+        ["description", m.description or "-"],
+        ["tags", ", ".join(f"{k}={v}" for k, v in m.tags.items()) or "-"],
+        ["content_types", ", ".join(m.content_types) or "-"],
+        ["converters", ", ".join(f"{k}: {v}" for k, v in m.converters.items()) or "-"],
+        ["max_output_tokens", str(m.max_output_tokens)],
+        ["context_window", str(m.context_window)],
+    ]
+    return rows
+
+
+def _print_model_head(provider: str, model: str, tag: str | None) -> None:
+    """Print the resolved model head before a call.
+
+    Shows exactly which model will run and, when the request fell back to a
+    default, what it degraded from (``degraded_from``). ``content_types`` is
+    displayed as plain info — no warning: with the head visible, the caller
+    can read for themselves whether a model sees images. The api_key is never
+    printed.
+    """
+    resolved = _load_config().get_model(provider=provider, model=model, tag=tag)
+    print_simple_table(
+        _model_head_rows(resolved),
+        headers=["key", "value"],
+        title="Model Head",
+    )
+
+
+@llms_app.command(
+    name="list",
+    short_help="List configured LLM providers/models (never resolves env vars).",
+)
+def list_models_cmd(
+        provider: str = typer.Option(
+            "", "--provider", help="Filter by provider/service name.",
+        ),
+) -> None:
+    """List configured LLM models — meta + file path + env presence only.
+
+    绝不 resolve 环境变量: api_key/base_url 的 $ENV_VAR 原样展示, 不打印解析值.
+    """
+    conf = _load_config()
+    models = conf.list_models(provider)
+
+    rows = []
+    for resolved in models:
+        ref = ModelRef.from_resolved(resolved)
+        rows.append([
+            ref.service,
+            ref.protocol,
+            ref.model,
+            ref.description or "-",
+            ",".join(sorted(ref.tags)) or "-",
+            ",".join(ref.content_types) or "*",
+            str(ref.max_output_tokens),
+        ])
+    print_simple_table(
+        rows,
+        headers=["service", "protocol", "model", "description", "tags", "content_types", "max_out"],
+        title="LLM Models",
+    )
+
+    env_rows = [
+        [ref, "set" if os.environ.get(ref) else "missing"]
+        for ref in _collect_env_refs(conf)
+    ]
+    if env_rows:
+        print_simple_table(
+            env_rows, headers=["env var", "status"],
+            title="Key Env Vars (presence only)",
+        )
+
+    source = _config_source_path()
+    if source:
+        print_info(f"Config source: {source}")
+    else:
+        print_info("Config source: default (env only, no workspace config file)")
+
+
+def _call(
+        funcs: LLMFuncs,
+        prompt: str,
+        *,
+        instruction: str | None = None,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
+        settings: CallSettings | None = None,
+        effort: Effort | None = None,
+        expose_file_meta: bool = False,
+) -> str:
+    """Plain-text call — 与结构化路径共用 call_prompt, @ 文件协议生效."""
+    inst = _read_instruction(instruction) if instruction else ""
+    result = asyncio.run(funcs.call_prompt(
+        text=prompt,
+        instruction=inst,
+        result_type=None,
+        provider=provider,
+        model=model,
+        tag=tag,
+        settings=settings,
+        effort=effort,
+        expose_file_meta=expose_file_meta,
+    ))
+    return result.content or ""
+
+
+def _call_structured(
+        funcs: LLMFuncs,
+        *,
+        prompt: str,
+        response_model: str,
+        instruction: str | None,
+        json_output: bool,
+        verbose: bool,
+        repeat: int,
+        provider: str = "",
+        model: str = "",
+        tag: str | None = None,
+        settings: CallSettings | None = None,
+        effort: Effort | None = None,
+        export_anchor: str | None = None,
+        input_anchor: str | None = None,
+        thinking: str | None = None,
+        expose_file_meta: bool = False,
+) -> None:
+    """Structured call via model-func engine (PydanticAIFuncs).
+
+    ``response_model`` is module:attr pointing to a BaseModel subclass.
+    ``instruction`` is auto-read from file if it is an existing path.
+    ``export_anchor`` — anchor target filename (no .anchor.yml suffix, may
+    embed a path); '' = auto-generate a uid-based name. Produced anchor file
+    paths are printed after the results.
+    ``input_anchor`` — anchor file to consume: its turns are injected as
+    message_history (introspection). Read via ``Anchor.from_file`` — the
+    data structure self-explains the protocol, the engine sees only the
+    Anchor constraint.
+    ``thinking`` — manual thinking block (string or file, auto-read),
+    injected as a ModelResponse(ThinkingPart) — introspection (内观).
+    ``expose_file_meta`` — @ file references render with the file meta layer
+    (path/type/size), off by default (bare content).
+    """
+    import json as _json
+
+    from ghoshell_common.helpers import import_from_path
+    from ghoshell_moss.anchor import Anchor
+
+    result_type = import_from_path(response_model)
+    inst = _read_instruction(instruction)
+    anchor = Anchor.from_file(input_anchor) if input_anchor else None
+    thinking_text = _read_instruction(thinking) if thinking else None
+
+    async def _run() -> tuple[list[dict], list[str]]:
+        results = []
+        anchor_paths: list[str] = []
+        for _ in range(repeat):
+            r = await funcs.call_prompt(
+                text=prompt,
+                instruction=inst,
+                result_type=result_type,
+                provider=provider,
+                model=model,
+                tag=tag,
+                settings=settings,
+                effort=effort,
+                export_anchor=export_anchor,
+                input_anchor=anchor,
+                thinking=thinking_text,
+                expose_file_meta=expose_file_meta,
+            )
+            if r.anchor is not None:
+                if export_anchor:
+                    anchor_paths.append(f"{export_anchor}.anchor.yml")
+                else:
+                    anchor_paths.append(f"{r.anchor.meta.name}.anchor.yml")
+            item = r.model_dump(exclude_none=True)
+            item.pop("anchor", None)
+            results.append(item)
+        return results, anchor_paths
+
+    items, anchor_paths = asyncio.run(_run())
+    if repeat == 1 and not json_output:
+        _print_single_result(items[0], verbose)
+    elif repeat == 1 and json_output:
+        echo(_json.dumps(items[0], indent=2, ensure_ascii=False))
+    elif json_output:
+        echo(_json.dumps(items, indent=2, ensure_ascii=False))
+    elif verbose:
+        for i, item in enumerate(items):
+            print_info(f"[{i + 1}/{repeat}]")
+            _print_single_result(item, verbose)
+    else:
+        for item in items:
+            echo(item.get("content", "") or str(item["result"]))
+    for p in anchor_paths:
+        print_success(f"anchor: {p}")
+
+
+def _print_single_result(item: dict, verbose: bool) -> None:
+    """Print a single LLMFuncResult dict — structured then optional verbose."""
+    result = item.get("result")
+    content = item.get("content")
+    if result:
+        echo(str(result))
+    elif content:
+        echo(content)
+    if verbose:
+        print_simple_table(
+            [
+                [
+                    _fmt_usage(item.get("usage")),
+                    f"{item.get('cast', 0):.2f}s",
+                    str(item.get("retries", 0)),
+                ]
+            ],
+            headers=["usage", "elapsed", "retries"],
+        )
+
+
+def _fmt_usage(usage: dict | None) -> str:
+    if not usage:
+        return "-"
+    inp = usage.get("input_tokens", 0)
+    out = usage.get("output_tokens", 0)
+    return f"in={inp} out={out}"
+
+
+# ── call / test — require the `ghost` extra (pydantic-ai). No dependency → hidden. ──
+# available() 走 depends 的 find_spec 门, 不 import (避免拖进 pydantic-ai + anthropic 全套).
+if available("pydantic_ai", "anthropic"):
+
+    def _read_instruction(value: str | None) -> str:
+        """If value is a file path that exists, read it; otherwise return as-is."""
+        if not value:
+            return ""
+        candidate = Path(value)
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        except OSError:
+            pass
+        return value
+
+    @llms_app.command(
+        name="call",
+        short_help="Send a one-shot prompt to a configured model.",
+    )
+    def call_cmd(
+            prompt: str = typer.Argument(..., help="Prompt to send."),
+            provider: str = typer.Option("", "--provider", help="Provider/service name."),
+            model: str = typer.Option("", "--model", help="Exact model name."),
+            tag: str = typer.Option(None, "--tag", help="Model tag (small_fast_model/flash/pro)."),
+            temperature: float = typer.Option(None, "--temperature", help="Sampling temperature."),
+            max_output_tokens: int = typer.Option(None, "--max-output-tokens", help="Max output tokens."),
+            instruction: str = typer.Option(
+                None, "--instruction", "-i",
+                help="Instruction (system prompt) — string or file path. File is auto-read.",
+            ),
+            json_output: bool = typer.Option(
+                False, "--json", "-j",
+                help="Output result as JSON (structured response).",
+            ),
+            verbose: bool = typer.Option(
+                False, "--verbose", "-v",
+                help="Show usage, timing, and retries alongside output.",
+            ),
+            response_model: str = typer.Option(
+                None, "--response-model", "-r",
+                help="module:attr of a BaseModel for structured output (e.g. mypkg.models:Score).",
+            ),
+            repeat: int = typer.Option(
+                1, "-n",
+                help="Number of in-process repetitions.",
+            ),
+            effort: Effort = typer.Option(
+                None, "--effort",
+                help="Thinking effort: none/minimal/low/medium/high/xhigh/max.",
+            ),
+            export_anchor: str = typer.Option(
+                None, "--export-anchor",
+                help=(
+                    "Anchor target filename (no .anchor.yml suffix, may embed a path). "
+                    "'' = auto-generate a uid-based name. Structured calls only."
+                ),
+            ),
+            input_anchor: str = typer.Option(
+                None, "--input-anchor",
+                help=(
+                    "Anchor file to consume — its turns are injected as "
+                    "message_history before this call (introspection). "
+                    "CallAnchor refs only. Structured calls only."
+                ),
+            ),
+            thinking: str = typer.Option(
+                None, "--thinking",
+                help=(
+                    "Manual thinking block (string or file, auto-read) — injected "
+                    "as a ModelResponse(ThinkingPart), introspection (内观). "
+                    "A/B vs putting the position in the prompt (外观). Structured calls only."
+                ),
+            ),
+            expose_file_meta: bool = typer.Option(
+                False, "--expose-file-meta",
+                help=(
+                    "@ file references render with the file meta layer "
+                    "(path/type/size). Off by default — bare content only."
+                ),
+            ),
+            headless: bool = typer.Option(
+                False, "--headless",
+                help=(
+                    "Suppress the model head that prints before the call — "
+                    "base_url, model, content_types, converters, core params, "
+                    "and any degradation (degraded_from). api_key never printed. "
+                    "Off by default: the head shows."
+                ),
+            ),
+    ) -> None:
+        """One-shot LLM call. Prompt + optional instruction and structured output.
+
+        Without ``-r``: plain-text call (built-in). With ``-r``: structured
+        call via model-func engine — instruction + prompt -> BaseModel result.
+        ``-n`` > 1 repeats in-process. ``-i`` auto-reads a file if the value
+        is an existing path. ``--effort`` maps per protocol (anthropic_effort /
+        openai_reasoning_effort). ``--export-anchor`` freezes each call as a
+        cognitive anchor file — name it for a stable address (re-run overwrites,
+        versions live in git), or pass ``''`` for an auto uid-based name.
+        ``--input-anchor`` consumes an anchor file: its turn chain becomes the
+        message history of this call — the new anchor chains onto the old.
+        ``--thinking`` injects a thinking block as the model's own prior
+        reasoning (introspection) — compare against the same position fed as
+        a user prompt (external) to A/B 内观 vs 外观.
+        Prompt lines starting with ``@`` are file references (the @ file
+        protocol) — text files splice their content, images become image
+        blocks. ``--expose-file-meta`` adds the file meta layer.
+        """
+        funcs = _load_funcs()
+        if not headless:
+            _print_model_head(provider, model, tag)
+        settings = CallSettings(
+            temperature=temperature, max_output_tokens=max_output_tokens,
+        ) if (temperature is not None or max_output_tokens is not None) else None
+        try:
+            if response_model:
+                _call_structured(
+                    funcs,
+                    prompt=prompt,
+                    response_model=response_model,
+                    instruction=instruction,
+                    json_output=json_output,
+                    verbose=verbose,
+                    repeat=repeat,
+                    provider=provider,
+                    model=model,
+                    tag=tag,
+                    settings=settings,
+                    effort=effort,
+                    export_anchor=export_anchor,
+                    input_anchor=input_anchor,
+                    thinking=thinking,
+                    expose_file_meta=expose_file_meta,
+                )
+            else:
+                output = _call(
+                    funcs, prompt,
+                    instruction=instruction,
+                    provider=provider,
+                    model=model,
+                    tag=tag,
+                    settings=settings,
+                    effort=effort,
+                    expose_file_meta=expose_file_meta,
+                )
+                echo(output)
+        except Exception as e:
+            print_error(f"call failed: {_error_summary(e)}")
+            raise typer.Exit(code=1)
+
+    @llms_app.command(
+        name="test",
+        short_help="Verify end-to-end llms availability with a tiny call.",
+    )
+    def test_cmd(
+            provider: str = typer.Option("", "--provider", help="Provider/service name."),
+            model: str = typer.Option("", "--model", help="Exact model name."),
+            tag: str = typer.Option(None, "--tag", help="Model tag (small_fast_model/flash/pro)."),
+    ) -> None:
+        """Integrated availability check — resolve, call, report. api_key never printed."""
+        funcs = _load_funcs()
+        try:
+            output = _call(
+                funcs, "Reply with exactly: pong",
+                provider=provider, model=model, tag=tag,
+            )
+        except Exception as e:
+            print_error(f"llms test FAILED: {_error_summary(e)}")
+            raise typer.Exit(code=1)
+        print_success(f"llms OK — replied: {output!r}")
+
+    @llms_app.command(
+        name="count",
+        short_help="Count tokens in a string (tiktoken estimate for non-OpenAI protocols).",
+    )
+    def count_cmd(
+            text: str = typer.Argument("", help="Text to count tokens for."),
+            file: Path = typer.Option(
+                None, "--file", "-f",
+                help="Read text from a file instead of the argument.",
+            ),
+            provider: str = typer.Option(
+                "", "--provider", help="Provider/service name (affects tokenizer).",
+            ),
+            model: str = typer.Option(
+                "", "--model", help="Exact model name (affects tokenizer).",
+            ),
+            tag: str = typer.Option(None, "--tag", help="Model tag."),
+            tokens: bool = typer.Option(
+                False, "--tokens", "-t",
+                help="Also print the tokenized ids.",
+            ),
+    ) -> None:
+        """Count tokens for a string. OpenAI protocols count exactly; others estimate."""
+        source = file.read_text(encoding="utf-8") if file is not None else text
+        if not source:
+            print_error("empty input — provide text or --file")
+            raise typer.Exit(code=1)
+        funcs = _load_funcs()
+        result = funcs.count_tokens(
+            source,
+            provider=provider, model=model, tag=tag,
+            include_tokens=tokens,
+        )
+
+        parts = [f"{result.count} tokens", f"encoding={result.encoding}"]
+        if result.service:
+            parts.append(f"service={result.service}")
+        if result.model:
+            parts.append(f"model={result.model}")
+        print_success(" | ".join(parts))
+        if result.estimate:
+            print_info("estimate — tiktoken is the OpenAI tokenizer (non-OpenAI protocol)")
+        if tokens and result.tokens:
+            echo(" ".join(str(t) for t in result.tokens))

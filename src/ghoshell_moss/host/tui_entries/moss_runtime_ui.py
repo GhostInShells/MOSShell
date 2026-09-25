@@ -1,6 +1,6 @@
 from typing import Iterable
 
-from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
+from ghoshell_moss.core.blueprint.host import IHost, MOSShellRuntime
 from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
@@ -15,8 +15,8 @@ class MOSSRuntimeREPLState(REPLState):
 
     def __init__(
             self,
-            host: MossHost,
-            moss: MossRuntime,
+            host: IHost,
+            moss: MOSShellRuntime,
             name: str = 'MOSS',
     ) -> None:
         self._host = host
@@ -29,7 +29,7 @@ class MOSSRuntimeREPLState(REPLState):
         return {
             "matrix": MatrixInspector(moss.matrix),
             "manifests": ManifestsInspector(
-                moss.project.matrix_manifests(),
+                moss.project.project_manifests(),
                 mode.manifests() if mode else None,
             ),
             "moss": MOSSRuntimeInspector(moss, self.console),
@@ -49,17 +49,28 @@ class MOSSRuntimeREPLState(REPLState):
             self.console.info("Leave MOSS runtime")
 
     async def _on_text_input(self, console_input: str) -> None:
-        result = await self._moss_runtime.moss_exec(console_input)
+        result = await self._moss_runtime.exec_logos(console_input)
         self.console.output(OutputItem.new("Shell", *result, log="execution done"))
 
 
-class MossRuntimeTUI(MossHostTUI[MossRuntime]):
+class MossRuntimeTUI(MossHostTUI[MOSShellRuntime]):
 
-    def _get_runtime(self) -> MossRuntime:
-        return self.host.run()
+    def __init__(self, host=None, *, speech: bool = False, listen: bool = False):
+        super().__init__(host=host, speech=speech, listen=listen)
+
+    def _get_runtime(self) -> MOSShellRuntime:
+        return self.host.run(speech=self._speech, listen=self._listen)
+
+    def _get_session(self):
+        return self.runtime.session
+
+    def _log_loop_exception(self, message: str, exception: BaseException | None) -> None:
+        self.runtime.matrix.logger.exception("%s: %s", message, exception)
 
     def create_states(self) -> Iterable[TUIState]:
         yield MOSSRuntimeREPLState(self.host, self.runtime)
+        from ghoshell_moss.host.tui_entries.voice_state import VoiceState
+        yield VoiceState(self.runtime)
 
 
 if __name__ == "__main__":

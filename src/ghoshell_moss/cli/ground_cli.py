@@ -1,4 +1,4 @@
-"""Ground command group — spec / init / frame / meta / observe / validate.
+"""Ground command group — spec / init / render / meta / observe / validate.
 
 Every invocation is stateless: open → act → sediment (via __aexit__) → exit.
 GROUND.md is the single source of truth across invocations.
@@ -18,7 +18,7 @@ import typer
 
 from ghoshell_moss.cli.utils import echo, print_error, print_info, print_simple_table, print_success
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet, GroundSet
-from ghoshell_moss.ground._hash import PinShadow, observe_sync
+from ghoshell_moss.ground._hash import observe_sync
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
 from ghoshell_moss.ground._render import render_meta
 from ghoshell_moss.ground.contract import Ground, GroundSet
@@ -29,7 +29,7 @@ ground_app = typer.Typer(
     short_help="Cognitive ground — pin addresses to a directory.",
     help=(
         "Cognitive ground: pin addresses (file/glob/frontmatter/ls) to a "
-        "directory, get a per-frame view of pinned content with change tracking. "
+        "directory, get a rendered view of pinned content with change tracking. "
         "State persists in GROUND.md per directory."
     ),
     no_args_is_help=True,
@@ -103,7 +103,7 @@ def _find_ancestor_ground(start: Path) -> Path | None:
 async def _run_one(root: Path, coro_fn):
     """open GroundSet + one Ground → act → sediment → exit."""
     workspace = _probe_workspace(root)
-    async with DefaultGroundSet(workspace_root=workspace) as gs:
+    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
         ground = await gs.open(root)
         await coro_fn(gs, ground)
 
@@ -111,9 +111,76 @@ async def _run_one(root: Path, coro_fn):
 async def _run_one_with_template(root: Path, coro_fn, template: str):
     """open GroundSet + one Ground with template → act → sediment → exit."""
     workspace = _probe_workspace(root)
-    async with DefaultGroundSet(workspace_root=workspace) as gs:
+    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
         ground = await gs.open(root, template=template)
         await coro_fn(gs, ground)
+
+
+async def _template_preview(root: Path, template: str, *, json_flag: bool = False) -> None:
+    """只读模板预览 — 用模板的 body + pins 渲染, 不写 GROUND.md.
+
+    兼容场景: 一个只有 CLAUDE.md 的 Claude 项目, 看它作为
+    claude-project 场会长什么样, 而不落任何盘.
+
+    从子目录预览时, 先向上搜寻模板的约定文件 (law pin 的 filename),
+    找到祖先场根, 再 walk 进去 — 保证 law 链不会因 boundary 太窄而空.
+    """
+    from ghoshell_moss.ground._render import render_walk
+    from ghoshell_moss.ground._l0 import load_l0
+
+    workspace = _probe_workspace(root)
+    gs = DefaultGroundSet(workspace_root=workspace, materialize=False)
+
+    names = [t.name for t in gs.templates()]
+    if template not in names:
+        print_error(f"template '{template}' not found")
+        if names:
+            print_info("available templates: " + ", ".join(names))
+        else:
+            print_info("no templates found (.grounds/ empty or missing)")
+        raise typer.Exit(code=2)
+
+    # 找出模板的 law filename(s), 向上搜寻真实的场根边界
+    tmpl_info = gs._find_template(template)
+    law_filenames: set[str] = set()
+    if tmpl_info is not None:
+        try:
+            tmpl_data = load_l0(tmpl_info.path.parent, filename=tmpl_info.path.name)
+            for p in tmpl_data.pins:
+                if hasattr(p, 'verb') and p.verb == 'law':
+                    law_filenames.add(p.arguments.filename)
+        except Exception:
+            pass
+
+    # 搜寻有约定文件的祖先目录做场根
+    ground_root = root.resolve()
+    if law_filenames:
+        current = ground_root.parent
+        while current != current.parent:
+            if any((current / fname).is_file() for fname in law_filenames):
+                ground_root = current
+            current = current.parent
+
+    ground = await gs.open(ground_root, template=template, override=True)
+
+    if root.resolve() == ground_root:
+        view = await ground.render()
+    else:
+        # 子目录预览: walk 从 root 在场根内
+        view = await render_walk(
+            cwd=root,
+            ground_root=ground_root,
+            doc_path=ground_root / DEFAULT_L0_FILENAME,
+            pins=ground.pins(),
+            label=ground.convention.name,
+            ignore=ground.ignore_spec,
+        )
+
+    if json_flag:
+        echo(view.model_dump_json(indent=2, exclude_none=True))
+    else:
+        echo(str(view))
+    # 只读: 不 close → 不触发 sediment → GROUND.md 不落盘
 
 
 # -- spec -----------------------------------------------------------------
@@ -153,18 +220,30 @@ def cmd_init(
         raise typer.Exit(code=1)
 
     if template is not None:
+        # 预检模板存在性 — 找不到时报错并列出可用模板, 不静默生成空场
+        workspace = _probe_workspace(root)
+        names = [t.name for t in DefaultGroundSet(workspace_root=workspace, materialize=False).templates()]
+        if template not in names:
+            print_error(f"template '{template}' not found")
+            if names:
+                print_info("available templates: " + ", ".join(names))
+            else:
+                print_info("no templates found (.grounds/ empty or missing)")
+            raise typer.Exit(code=2)
+
         async def _op(gs: GroundSet, ground: Ground) -> None:
             await ground.sediment()
 
         _run_async(_run_one_with_template(root, _op, template))
         print_success(f"initialized {target} from template '{template}'")
     else:
+        dir_name = root.resolve().name
         body = (
-            "# <label>\n"
+            f"# {dir_name}\n"
             "\n"
             "Ground body — free-form markdown.  Pins are declared in\n"
             "frontmatter above.  Available verbs: file, glob, frontmatter,\n"
-            "ls, exec.  Run `moss ground verbs` for argument reference.\n"
+            "ls, exec, law.  Run `moss ground verbs` for argument reference.\n"
             "Edit this file, then `moss ground validate` to check.\n"
         )
         dump_l0_pins(root, [], body=body)
@@ -178,7 +257,7 @@ def cmd_init(
 def cmd_templates() -> None:
     """List all templates discovered from .grounds/ directories."""
     workspace = _probe_workspace(Path.cwd())
-    gs = DefaultGroundSet(workspace_root=workspace)
+    gs = DefaultGroundSet(workspace_root=workspace, materialize=False)
     tmpls = gs.templates()
     if not tmpls:
         print_info("no templates found")
@@ -223,6 +302,11 @@ _VERB_HELP: dict[str, dict[str, str]] = {
         "timeout": "seconds. default 10, max 60.",
         "budget": "stdout char limit.",
     },
+    "law": {
+        "filename": "convention filename (CLAUDE.md, AGENT.md...). Collected upward from cwd to ground root (required).",
+        "budget": "total char limit across collected law, truncates with marker.",
+        "lines": "total line limit across collected law, truncates with marker.",
+    },
 }
 
 
@@ -235,29 +319,48 @@ def cmd_verbs() -> None:
         print_simple_table(rows, headers=["argument", "description"])
 
 
-# -- frame ----------------------------------------------------------------
+# -- render ---------------------------------------------------------------
 
 
-@ground_app.command("frame", short_help="Render the current frame.")
-def cmd_frame(
+@ground_app.command("render", short_help="Render the ground view.")
+def cmd_render(
     path: Path | None = typer.Argument(
         None, help="Directory to view from (defaults to cwd)."
+    ),
+    template: str | None = typer.Option(
+        None, "--template", "-t",
+        help="Read-only preview using a template's body + pins (no GROUND.md written).",
+    ),
+    json_flag: bool = typer.Option(
+        False, "-j", "--json",
+        help="Output as JSON (RenderedView schema) instead of markdown.",
     ),
 ) -> None:
     """Render the ground view for a directory.
 
-    - Directory has GROUND.md: field-root mode — body + all pins expanded.
-    - No GROUND.md but an ancestor has one: walk mode — law pointer,
-      cwd listing, $CWD-anchored pins expanded, other pins folded to TOC.
+    - Directory has GROUND.md: ground-root mode — body + all pins expanded.
+    - No GROUND.md but an ancestor has one: walk mode — $CWD-anchored pins
+      (e.g. ls/file) expanded, other pins folded to a TOC. No automatic
+      directory listing — that comes only from a $CWD-anchored ls pin.
     - No ground up to $HOME: hint to init.
+    - --template <name>: read-only preview — open with the template's body
+      and pins, render, and do NOT write GROUND.md.
+    - -j / --json: output RenderedView as JSON instead of markdown.
     """
     root = _resolve_root(path)
 
+    if template is not None:
+        asyncio.run(_template_preview(root, template, json_flag=json_flag))
+        return
+
     if (root / DEFAULT_L0_FILENAME).is_file():
-        # 场根模式
+        # ground-root mode
         async def _op(gs: GroundSet, ground: Ground) -> None:
-            text = await ground.context()
-            echo(text)
+            view = await ground.render()
+            if json_flag:
+                echo(view.model_dump_json(indent=2, exclude_none=True))
+            else:
+                echo(str(view))
 
         _run_async(_run_one(root, _op))
         return
@@ -268,23 +371,17 @@ def cmd_frame(
         print_info("run 'moss ground init' to create one here")
         raise typer.Exit(code=1)
 
-    # 场内移动模式 — 法来自祖先场根, 编辑权留在场根, 这里只有视角
+    # walk mode — render from ancestor ground, cwd = root
     async def _walk_op() -> None:
-        from ghoshell_moss.ground._render import render_walk
-
         doc_path = ground_root / DEFAULT_L0_FILENAME
         workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace) as gs:
+        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
             ground = await gs.open(root, doc=doc_path)
-            text = await render_walk(
-                cwd=root,
-                ground_root=ground_root,
-                doc_path=doc_path,
-                pins=ground.pins(),
-                shadows={},
-                label=ground.convention.label,
-            )
-            echo(text)
+            view = await ground.render(cwd=root)
+            if json_flag:
+                echo(view.model_dump_json(indent=2, exclude_none=True))
+            else:
+                echo(str(view))
 
     asyncio.run(_walk_op())
 
@@ -300,24 +397,38 @@ def cmd_meta(
 ) -> None:
     """Show ground location, law chain, $id, and pin table of contents.
 
-    Separated from ``frame`` so consumers who don't need ground protocol
-    get a clean content-only frame.
+    Separated from ``render`` so consumers who don't need ground protocol
+    get a clean content-only view.
     """
     root = _resolve_root(path)
 
-    async def _op(gs: GroundSet, ground: Ground) -> None:
-        chain = await ground.chain_text()
-        text = render_meta(
-            root=ground.root,
-            doc_path=ground.doc_path,
-            chain=chain,
-            pins=ground.pins(),
-            id_=ground.convention.id,
-            label=ground.label,
-        )
-        echo(text)
+    if (root / DEFAULT_L0_FILENAME).is_file():
+        ground_root = root
+    else:
+        ground_root = _find_ancestor_ground(root)
+        if ground_root is None:
+            print_info(f"no ground: no GROUND.md from {root} up to $HOME")
+            print_info("run 'moss ground init' to create one here")
+            raise typer.Exit(code=1)
 
-    asyncio.run(_run_one(root, _op))
+    doc_path = ground_root / DEFAULT_L0_FILENAME
+
+    async def _op() -> None:
+        workspace = _probe_workspace(root)
+        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
+            ground = await gs.open(root, doc=doc_path)
+            chain = await ground.chain_text()
+            text = render_meta(
+                root=ground.root,
+                doc_path=ground.doc_path,
+                chain=chain,
+                pins=ground.pins(),
+                id_=ground.convention.id,
+                label=ground.label,
+            )
+            echo(text)
+
+    asyncio.run(_op())
 
 
 # -- observe --------------------------------------------------------------
@@ -335,8 +446,8 @@ def cmd_observe(
     """Per-pin diagnostics — one line each: label, verb, status, resolved
     target, result size.  No raw mtime or hash values (shell domain, §6.1).
 
-    Runs in field-root mode when GROUND.md is present, walk mode otherwise
-    (same resolution as ``frame``).  Missing targets show the resolved
+    Runs in ground-root mode when GROUND.md is present, walk mode otherwise
+    (same resolution as ``render``).  Missing targets show the resolved
     absolute path so the failure is self-explanatory.
     """
     from ghoshell_moss.ground._addr import Anchor
@@ -355,7 +466,7 @@ def cmd_observe(
 
     async def _op() -> None:
         workspace = _probe_workspace(root)
-        async with DefaultGroundSet(workspace_root=workspace) as gs:
+        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
             ground = await gs.open(root, doc=doc_path)
             pins = ground.pins()
             if not pins:
@@ -379,8 +490,9 @@ def cmd_observe(
 def _pin_target_display(pin, anchor) -> str:
     """Resolved absolute path/spec — makes MISSING self-explanatory."""
     from ghoshell_moss.ground._addr import resolve_path
+    from ghoshell_moss.ground._chain import collect_law_files
     from ghoshell_moss.ground.contract import (
-        ExecPin, FilePin, FrontmatterPin, GlobPin, LsPin,
+        ExecPin, FilePin, FrontmatterPin, GlobPin, LawPin, LsPin,
     )
 
     try:
@@ -393,6 +505,11 @@ def _pin_target_display(pin, anchor) -> str:
             # missing 时用户一眼看清是哪个文件缺
             resolved = (anchor.ground / pin.arguments.ref).resolve()
             return str(resolved)
+        if isinstance(pin, LawPin):
+            files = collect_law_files(anchor, pin.arguments.filename)
+            if not files:
+                return f"{pin.arguments.filename} (none from cwd up to ground root)"
+            return f"{pin.arguments.filename} x{len(files)} (cwd → ground root)"
     except Exception as e:
         return f"[unresolved: {e}]"
     return "-"
@@ -432,6 +549,7 @@ _REQUIRED_ARGS: dict[str, frozenset[str]] = {
     "frontmatter": frozenset({"path"}),
     "ls": frozenset({"path"}),
     "exec": frozenset({"ref"}),
+    "law": frozenset({"filename"}),
 }
 _KNOWN_VERBS = frozenset(_REQUIRED_ARGS.keys())
 
@@ -471,12 +589,22 @@ def cmd_validate(
             raise typer.Exit(code=2)
     else:
         fm_data = {}
+        # 文件以 --- 开头但正则没匹配 → 大概率是未闭合 frontmatter
+        if text.lstrip().startswith("---"):
+            warnings.append(
+                "file starts with '---' but no closing '---' found — "
+                "frontmatter may be unclosed; all pins will be ignored"
+            )
         # no frontmatter is valid for bare-directory ground
 
     # --- pins ---
     pins_data = fm_data.get("pins")
     if pins_data is None:
-        print_info("no pins in frontmatter — valid")
+        if warnings:
+            for w in warnings:
+                print_info(f"[WARN] {w}")
+        else:
+            print_info("no pins in frontmatter — valid")
         return
 
     if not isinstance(pins_data, list):
@@ -534,10 +662,23 @@ def cmd_validate(
         # optional argument type checks
         if "range" in args and verb == "file":
             rv = args["range"]
-            if not isinstance(rv, str) and not isinstance(rv, int):
+            if isinstance(rv, int):
+                if rv < 1:
+                    errors.append(f"{idx}: range {rv} must be >= 1 (1-indexed)")
+            elif isinstance(rv, str):
+                if not re.match(r"^\d+(-\d+)?$", rv):
+                    errors.append(f"{idx}: 'range' '{rv}' does not match pattern N or N-M")
+                else:
+                    if "-" in rv:
+                        r_start, r_end = (int(x) for x in rv.split("-", 1))
+                    else:
+                        r_start = r_end = int(rv)
+                    if r_start < 1:
+                        errors.append(f"{idx}: range start {r_start} must be >= 1 (1-indexed)")
+                    elif r_start > r_end:
+                        errors.append(f"{idx}: range start {r_start} > end {r_end}")
+            else:
                 errors.append(f"{idx}: 'range' must be str or int, got {type(rv).__name__}")
-            elif isinstance(rv, str) and not re.match(r"^\d+(-\d+)?$", rv):
-                errors.append(f"{idx}: 'range' '{rv}' does not match pattern N or N-M")
         if "depth" in args and verb == "ls":
             if not isinstance(args["depth"], int):
                 errors.append(f"{idx}: 'depth' must be int, got {type(args['depth']).__name__}")

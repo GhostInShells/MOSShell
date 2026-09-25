@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ghost-in-bilibili",
+  "version": "0.2.0",
+  "description": "bilibili 共享观看:人和 ghost 一起看视频",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "sw.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.bilibili.com/video/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

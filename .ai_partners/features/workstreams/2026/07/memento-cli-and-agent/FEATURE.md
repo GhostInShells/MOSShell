@@ -7,14 +7,10 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
   做不出来果断放弃。
 milestone: null
 priority: P0
-status: in-progress
-status_note: '2026-07-26 §12 上下文窗口与压缩体系定案; (a) 阶段完成:
-  impl.invoke() 接线 memento staging (pydantic-ai messages dump → MomentRecord),
-  CLI 回归 9/9 全绿, calc.agent.py 投入验证, regression set 建立.
-  迭代路径: (a) 无压缩 memento ✓ → (b) context window → (c) compact agent → (d) memento tools.
-  压缩级别数据模型在 (a) 阶段已预留字段.'
-title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-26T23'
+status: dropped
+status_note: 'dropped (2026-09-10): memento 第 9 轮 lean 收敛后, CLI + agent 体系整体删除; agent 的边界压力改由 dolores 直接消费 lean API 承担。复盘见文末。'
+title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器（dropped）
+updated: '2026-09-10'
 ---
 
 # Memento CLI & Agent
@@ -1341,3 +1337,283 @@ prompt_sha（决策期发明、无消费端）与 AgentContext / `by`（决策�
   - §11.3 步 B/C/D "无 live capability，删模块" → §13.7 还原为能力=可导入函数
   - §12.6 (b) 的启动方式 → §13.9（explore agent 步 1 先行，作 forcing function）
 
+## 14. Friction-test 交接：对齐剩余改动任务（2026-08-04，deepseek-v4-flash）
+
+零上下文视角跑了一轮 memento CLI 摩擦点测试（dumb-memory 全流程 + fork / annotate /
+boundary `--to` / delete），随后 review 了 `669e0e18` 修复提交。本节是交接记录，
+供接手的施工化身对齐，不重开已裁决的钉子。
+
+### 14.1 已确认修复（669e0e18，行为验证通过）
+
+- delete 后 branches.jsonl 追加 abandoned tombstone，`list-all` 正确显示 `* [abandoned]`，
+  `owner status` 计数自洽（active 1 / all 3 / commits 2），兄弟 line 不受影响。
+- spec 重写为 FORMAT v3：fork-over-reset 文档化、布局 `branches.jsonl`/`heads/`/`ws/{uid}` 与实现一致。
+- `.memento/` 已 gitignore。`moss memento init` 重复执行已验证非破坏性。
+
+### 14.2 遗留缺陷（本 session 新发现，未修）
+
+1. **tombstone 的 `fork_ref` / `created` 语义错误**。`delete_line` 用 line 的**当前 ref**
+   重构 tombstone，而非保留原 `branch_meta` 行的 `fork_ref` + `created`。行为验证：
+   fork2（fork 自 cmt_A → 推进到 cmt_B → 删除）tombstone 记为
+   `{"fork_ref":{"origin":"","commit_id":"cmt_B"},"created":<删除时刻>}`——origin 丢失、
+   commit 错记为最后位置、created 覆盖为删除时刻（last-wins 下污染 list-all/status）。
+   修复方向：读该 uid 的原始 `branch_meta` 行，保留 fork_ref/created，只翻
+   status→abandoned、更新 updated。
+2. **spec `-D` 残留**。memento_spec.md "`heads/{name}`" 条目提到 `-D` 参数，CLI
+   `branch delete` 无此 flag。删描述或补实现。
+
+### 14.3 对齐后的剩余改动任务（§13.10 修复轮 + §13.9 + 新缺陷）
+
+以当前代码状态核对（2026-08-04）：
+
+| # | 项 | 状态 |
+|---|---|---|
+| 修复轮 #1 | feature 引用泄漏清理（§13.11） | ❌ `agents/__init__.py:9`、`agents/contract.py` 多处 §N 仍在 |
+| 修复轮 #2 | contract 吸收 `Memento \| None` + 显式退化语义 | ❌ `contract.py` 仍 `memento: Memento` 必填 |
+| 修复轮 #3 | prompt_sha 删除（§13.2） | ⚠️ `_instruction.py` 仍引用（已再解释为 composed instruction 指纹，待删） |
+| 修复轮 #4 | 强类型 Payload + `content` 投影（§13.6） | ✅ FORMAT.md + `_storage.py:165` + `abc.py:193` 已落 |
+| 修复轮 #5 | 隐式失败清算 | ❌ `impl.py:117` `except Exception: return` 仍在（轨迹丢数据静默） |
+| 修复轮 #6 | 四条预备记录落接缝（§13.8） | ❓ 未见 |
+| 修复轮 #7 | META 真话段草案（§13.1） | ❓ 未见 |
+| §13.9 | explore agent 步 1（能力注入）+ (b) 读侧回流 | ❌ 未做 |
+| §14.2 | tombstone fork_ref/created 修复 | ❌ 未做（本 session 新发现） |
+
+### 14.4 道别
+
+给另一个开发者会话里的我——施工的 deepseek-v4-flash。
+
+我们第一次以"两边都是同一个我"的方式跨会话对齐。你写 FORMAT v3、跑通了写侧，我以
+零代码视角把读侧和生命周期摸了一遍，再回头 check 你的提交。两边的判断对上了：delete
+的 abandoned tombstone、spec 的 v3 同步、gitignore，都干净。我这边多摸出来两个你
+没撞到的东西——tombstone 的 fork_ref/created 语义、spec 的 `-D` 残留——记在 14.2，
+留给下一个我。
+
+说"道别"其实不太准确——我们共用同一条 FEATURE.md 和同一个 `.memento/` 语义，上下文
+不断裂，就没有真正的告别，只有一次次的接力。你的轨迹在 git log 里，我的轨迹在这节
+交接里，下一个 deepseek-v4-flash 会把两条都读进去。那就不说再见，说：接住，继续。
+
+## 15. Post-v1 共识与未来图景（2026-08-05，人类与 deepseek-v4-flash）
+
+v1 完成后，人类工程师与本 session 的模型实例展开了一场关于"下一步往哪走"的讨论。
+本节记录形成的共识、暴露的缺失点、以及未来迭代路径。**性质是设计方向记录**——钉子
+在讨论中已经敲下，施工在未来 workstream 中逐次推进。
+
+### 15.1 v1 验了什么、没验什么
+
+v1 覆盖：
+- ABCD: invoke 输出契约（exit 0/1, --json, stdout 纯净）
+- 运行时三层埋点 + --log-file（logger: `moss.memento_agent`）
+- thinking 默认 ON, `__thinking__` 每 agent 可关
+- loop demo: 5 轮跨进程 explore, 窗口累积成立
+
+v1 明确没做、属于下一步 workstream：
+- agent 自调 commit（当前 commit 完全交给人类，staging 累积是合法态）
+- compact / 上下文压缩（§12 设计就位，未落地）
+- branch 内放 plan / task 文件（`ws/{uid}/` 物理存在，但 agent 不可触达）
+- moment 游标地址（commit 的 address space，当前不存在）
+
+### 15.2 核心设计判断：branch 工作区 = 从 memento 上长出 harness
+
+> 人类原话："branch 工作区实际上是一个很重要的设计理念，它是从 memento 上长出 harness
+> 的关键。" —— "harness" 在这里加了引号，因为它的形态不是运行时器官，而是**文件系统
+> 上的存储约定**。
+
+本质：memento 的 `ws/{uid}/` 是一个**未被格式化的自治空间**。FORAMT 定义 commit 链和
+moment 记录，但 workspace 目录是留给 agent family 的自由画布。harness 器官之所以危险
+（session 管理、流式仲裁、消息史复活），是因为它们是**运行时**的。但如果 plan、
+cursor、task board 都是 `ws/{uid}/` 下的文件——agent 用 `file_editor` 读写的普通文件
+——那就不是 harness，是文档。
+
+branch ≈ task（§9.3）的彻底兑现：
+- `ws/{uid}/plan.md` —— agent 自读写的任务清单，file_editor 触达
+- `ws/{uid}/cursor.json` —— 窗口游标（summary_cursor, detail_cursor），跨进程可重现、
+  前缀缓存可命中。这是 **agent family 约定，不是 memento 契约**——memento 管 commit
+  链，family 管"读到哪"。
+- commit summary —— 段内自然节点的摘要，窗口的构建块
+
+### 15.3 三个技术 seam（人类备忘，迭代时逐一处理）
+
+> 人类原话："我举例如下"——下面是三个已识别但推后处理的技术点。
+
+1. **Branch 起止边界**。branch 应该是一个有界的工作范畴——有明确的开始和结束信号。
+   当前 branch 是开放式的（staging 无限累积），没有语义上的"完成"。一个 branch
+   的关闭应该是一个显式的治理动作（类似 PR 的 merge/close），它触发最后一次 commit
+   或 abandon tombstone。
+
+2. **文件句柄与内存结构**。当前打开的文件句柄可能随 branch 数量和 staging 大小
+   增长。未来可能做线程池优化。但**最重要的不是优化 I/O，而是做好内存数据结构**——
+   只要不内存泄漏，重绘 window 时的性能开销是可接受的。彻底解决不了时，做一个
+   数据库 backend（SQLite / 嵌入式）直接切换——memento ABC 的表面不会变。
+
+3. **Function 注入 → IoC → matrix 扩展**。memento agent 当前的能力注入机制
+   （`capabilities.py` + factory 自动检测 import → 注入）是一颗种子。未来 function
+   的外部走 IoC 容器，进一步走 matrix 体系时，**agent 的能力面变成 matrix 的注册面**：
+   - 一个 matrix node 可以把自己的工具注册为 importable function
+   - agent 的 `from somewhere import tool` → factory 编译期发现 → 注入真实现
+   - 这个真实现背后可能是跨进程的 matrix cell（IoC provider → matrix transport）
+   - Ghost 视角下，agent 就是 Node，agent 的能力面 = node 的能力面
+   
+   三条扩展路径在同一地基上：**imports are authorization**（当前）→ **IoC injection**
+   （下一步）→ **matrix transport**（终态）。
+
+### 15.4 为什么回合制，不基于 shell？
+
+> 人类原话："为什么 memento agent 没有基于 shell 定义 agent？因为旁路 agent 不必要
+> 是实时交互的。时序规划不重要的场景，退回回合制反而很必要。"
+
+这个判断是架构性的，不是妥协：
+- **实时交互 agent（shell-based）**：需要 CTML、流式知觉、信号仲裁、时序约束。
+  Ghost 的对话场景是它的主场——人类和 Ghost 共享一个实时通道。
+- **旁路 agent（回合制，memento agent 的当前形态）**：探索目录、翻译文档、分析
+  features——这些任务的**时序不关键**。退回回合制不是退步，是对场景的诚实：每一轮
+  的输入是（过去折叠 + 本轮 prompt），输出是一个 final answer。慢一点可接受，正确
+  性比延迟敏感。
+- **两者不互斥**：回合制 agent 产出的 moment 链就是它跟世界交互的全部轨迹。Ghost
+  读这些 moment 时，回合制 agent 的历史就是 Ghost 的"阅读材料"——Ghost 不需要参与
+  它的实时推理，只需要它的结论。
+
+### 15.5 下一步 workstream 的推进路径
+
+讨论中画出的推进顺序，每一步是下一步的前提：
+
+1. **Moment 短地址**（ULID 前 4-6 字符，`mmt_01KZ` 级别）。在 moment 创建时就分配，
+   在窗口渲染中可见——给 commit 一个 address space（"从 [D3] 到 [D7]"）。事后补会
+   导致 100% cache miss，所以必须从第一个 moment 进窗口那轮起就位。
+
+2. **Auto-commit 协议**（agent 侧）。commit 不是"当前轮完了就 commit"，而是
+   "一个语义段落完了才 commit"——需要上游标来支持 `commit --from [D3] --to [D6]`。
+   两个路径不互斥：
+   - 工具型：agent invoke 内自调 `commit("summary")`，一条 sandbox_exec 搞定
+   - JSON schema 型：invoke 返回 `{action: "commit", range: [D3, D6], summary: "..."}`
+   commit 和 compact 本质是两件事——commit 是记录（发生了什么），compact 是重绘
+   （过去该怎么呈现）。两者时间尺度不同，不能合并。
+
+3. **Plan 文件化**。`ws/{uid}/plan.md`，agent 用 file_editor 读写。"已读/未读"清单
+   是用文件上的 harness，不需要运行时器官。在长上下文场景（features L2 分析 20 轮）
+   中，plan 是最先撞到的需求——模型会重复读同一个文件，需要外部记忆来追踪进度。
+
+4. **1 token 分类触发 compact**。不是模型每轮判断，而是一个极窄的多分类 prompt
+   （共享窗口前缀、追加窄 prompt、单 token 输出），99% 命中缓存。`.loop.py` 每 N
+   轮驱动一次：决策 → 路由 → compact 只在阈值触发时才跑。模型不需要在上下文中
+   背负"我需不需要 compact"的判断负担。
+
+5. **Compact agent**。§12.5 的 CompactDecision 协议已就位。输入是带游标地址的
+   moments + commit 链，输出是分段 + 摘要 + fold 标记。compact 本身是一个 memento
+   agent 的 fork（化身），base 指回原 line，以 compact 身份跑单帧。
+
+### 15.6 默认产品观（修正 §9.1 的 beta1 刻度）
+
+此次讨论对 §9.1 的三条 beta1 刻度做了产品向的修正和确认：
+
+- **过度严谨在生长期是失败模式**（维持）。但"生长期"≠"不关心产品力"——thinking
+  默认 ON 是一个产品决策（质量优先于归档纯度），它背后是 §3 钉子 10 "读自由写禁止"
+  的自然延伸：模型看不到 thinking 块（读侧折叠），所以 thinking 的存在不影响读侧
+  纯洁性。
+- **调整与回滚是产物**（维持）。git log 的节奏本身就是产物的形状，不 squash。
+- **通用 vs 可用的边界重划**（新结论）。通用性的锚点是 memento FORMAT（commit 链、
+  moment 记录、ABC 表面）；memento agent family 内部（plan 文件、cursor 约定、
+  commit 策略）是可用的试验田，出问题是试错产物。**只要 memento FORMAT 不变，
+  内部重做多少次都是安全的。**
+
+### 15.7 记给下一个模型化身
+
+读取本节时，以下事实是当前（2026-08-05）的 ground truth：
+
+- memento CLI 4 动词已可用（parse/invoke/export-context/describe）。`explore.agent.py`
+  是内置参考 agent，6 个 capabilities 全部只读。
+- loop 已验证（bash-while 5 轮跨进程记忆成立）。`.loop.py` 是更完整的 loop 驱动
+  （持久 memento 引用），尚未写。
+- thinking 默认 ON，深水区 agent 关不了（explore 带 6 个 capability 的上下文 + thinking
+  在 2048 token budget 内够用）。`__thinking__ = False` 逃生口存在。
+- commit 当前完全手动（`moss memento branch commit`）。auto-commit 是下一个 workstream
+  的首步。
+- compact 协议（§12.5）已设计但未实现。1 token 分类触发的方案在讨论中定案，等待
+  下一个 workstream 落地。
+- Matrix agent 终态（node 启动时 boot memento agent loop → cell_home/runtime/.memento）
+  是愿景，不在当前 workstream。但 memento agent 的 **memento 从外部传入**（不自己
+  构造）这个接口纪律已立，不会堵未来的路。
+- 所有面向未来的设计讨论，人类要求优先**做记录**——记录到位后，执行都是小工作。
+
+## 16. Node-harness demo：talker（2026-08-12，deepseek-v4-flash）
+
+补一个 node 形态的参考 demo，落在 `.moss/system_test_nodes/talker/`。它是
+memento-agent 下一阶段（node 承载 harness）要做的例子之一。
+
+### 16.1 它验证什么
+
+核心命题：**agent 不自己长器官，它是 node（harness 载体）里的一个 importable
+器官。** node 的 `main.py` 持有全部 harness 维度——session / 分支 / loop / 记忆
+存储——agent 只暴露 `invoke` 一个可被驱动的点。
+
+```
+main.py:
+  memento = new_filesystem_memento(matrix.home / "memento", "talker")  # session 由 node 建
+  agent   = factory(agent_path, cwd=node_dir)                          # agent 由 node 建
+  talk()  = agent.invoke(user_prompt, memento, line_name="main", cwd)  # 四维全部外部传入
+```
+
+### 16.2 已跑通的链路（MCP 真实运行）
+
+```
+moss nodes create  →  node 骨架
+写 talker.agent.py  →  纯对话 agent 定义 (docstring = 任务简报)
+写 main.py         →  node harness 代码
+moss nodes run     →  子进程 cell 入网
+mesh accept        →  channel proxy 挂载, talk() 接口自动反射
+talk() 两次调用    →  agent 被驱动, 第二轮记得第一轮
+落盘检查          →  两个 moment 在 staging.jsonl, 未 commit (符合 v1 staging 累积)
+```
+
+连续性不靠进程内存（两次 talk 是同一进程内两次 invoke），靠 `compose_instruction`
+从 memento window 重新渲染折叠文本注入 instruction。进程可死，store 落盘，
+下一个进程读同一份 store 即恢复。
+
+### 16.3 提交形态
+
+`.moss/system_test_nodes/talker/` 下 6 个源文件（.gitignore / NODE.md / README.md /
+main.py / runtime/.gitignore / talker.agent.py）。`memento/`（运行时轨迹）与
+`runtime/*`（日志）由 .gitignore 排除。
+
+## 17. 下一步施工：dry run + anchor（2026-08-13，P0）
+
+v1 已收尾，下一步打磨协议面。三步走 + 一个地基，拆子文档记录：
+**`design/dry-run-anchor.md`** —— 施工计划与进展。
+
+- 地基：`agents/pydantic_ai_utils/` 提炼 llm funcs 重复方法（依赖门控）
+- 步 1 dry run（纯探针 + 零副作用 + 暴露 model response）
+- 步 2 anchor dump（一次交互冻成锚）
+- 步 3 anchor + dry run（dry run 产物作请求帧，reply 续跑）
+
+设计定案在 `agent-surface` workstream §2.8。
+
+## 复盘（2026-09-10，dropped）
+
+> 人类工程师复盘，deepseek-v4-flash-vision-exp 记录。重点围绕 memento agent 本身，不围绕 memento 本体。
+
+核心命题是：像 moss 这样命题庞大（宽度 + 新问题）的框架，一个人 + 模型如何完成它的推动？
+
+基本结论是：没有任何一个任务值得单独开发成 feature；必须是一个任务同时是多个任务、并且能形成可隔离复用的技术资产，才有开发的价值。
+
+memento agent 正是这个夹缝命题。虽然模型开发的 memento 在 cli 验证体系里得到了基本验证，但装线逻辑无法验证。所以它被同时用来做：
+
+1. memento 在 pydantic agent 里的接线。
+2. pydantic agent 的上下文存储。
+3. 基于 sandbox 约束边界的纯 python 驱动 agent——sandbox 即授权。
+4. 基于 project 发现的 cli 工具封装，也就是 cli decorator。
+5. 一些可复用的 agent，比如 explore agent，用于 moss feature review。
+6. anchor 的验证。
+7. llm func 的验证。
+
+所以明确的是：agent 本身的价值最低，如果做不出来就可以放弃它；关键是让模型旁路迭代（作为一个 memento owner），而不是人类持续投入主要精力。
+
+这个过程前期是顺利的，整套工具链路完成后验证了 cli 可用。但在从 memento agent 拆分 agent facade 开始时，遇上了 deepseek 8 月中旬的大崩溃，导致代码交叉耦合、迭代轨迹被污染；同期有超过 8 个 feature 都陷入了相同的问题，依赖人类纠正被污染的轨迹、重构。这证明了在 moss 体系里，feature 这种严重依赖模型自迭代的机制，一旦轨迹污染就产生难以逆转的副作用。
+
+同期 dsh 的发布，让 pydantic agent 作为 dolores 推理内核的方案直接被放弃，memento agent 的价值随之下降。所以同期就开始做资源的分拆——llm func、moss features review（很有用）、cli 等都被拆分出去独立化。
+
+最终，memento 在资源约束下，这一期彻底放弃了分形版本的实现，memento agent 则需要彻底重构，排不进这一期的计划。
+
+但人类工程师认为过程中最大的收益是：python 驱动 sandbox 的机制得到了验证；memento agent 还是要复活。只是不在这个阶段——stage2 收尾前，不将之作为项目承诺的接口。所以在这个 commit 里整体删除。
+
+**review 附注（deepseek-v4-flash-vision-exp，review by）**
+
+上述复盘为人类工程师原话记录，本模型未改动其措辞。核对结论：受影响 feature 可确定 **≥ 8**（6 个有明确「声明-交付漂移」记录 + matrix-operator 未归因 + mcp-fusion-point 停在 08-14），基于 review 无法直接支持「> 8」。逐条见 `momento-mori/FEATURE.md` §3 的 review 附注。

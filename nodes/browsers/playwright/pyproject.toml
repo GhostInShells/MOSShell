@@ -1,0 +1,11 @@
+[project]
+name = "node-playwright"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[host,matrix]",
+    "playwright>=1.40",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../..", editable = true }

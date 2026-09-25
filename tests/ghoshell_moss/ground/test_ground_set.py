@@ -39,7 +39,8 @@ class TestOpenClose:
                 g = await gs.open(sub)
                 assert g.root == sub.resolve()
                 assert g.label == "sub"
-                assert list(gs.active().keys()) == ["sub"]
+                assert gs.active()["sub"] is g
+                assert gs.root is not g  # root (workspace_root) 独立于 open 的子场
 
         run(scenario())
 
@@ -75,9 +76,12 @@ class TestOpenClose:
         run(scenario())
 
     def test_open_explicit_label(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path, label="custom")
+                g = await gs.open(sub, label="custom")
                 assert g.label == "custom"
 
         run(scenario())
@@ -134,12 +138,15 @@ class TestOpenClose:
 
     def test_two_groundsets_independent(self, tmp_path):
         """Different GroundSet instances have independent label spaces."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+
         async def scenario():
             gs1 = DefaultGroundSet(workspace_root=tmp_path)
             gs2 = DefaultGroundSet(workspace_root=tmp_path)
             async with gs1, gs2:
-                g1 = await gs1.open(tmp_path, label="same-label")
-                g2 = await gs2.open(tmp_path, label="same-label")
+                g1 = await gs1.open(sub, label="same-label")
+                g2 = await gs2.open(sub, label="same-label")
                 assert g1.label == "same-label"
                 assert g2.label == "same-label"
                 assert g1 is not g2  # different instances
@@ -211,33 +218,6 @@ class TestPins:
 
         run(scenario())
 
-    def test_update_detects_change(self, tmp_path):
-        target = tmp_path / "a.md"
-        target.write_text("v1")
-
-        async def scenario():
-            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
-                target.write_text("v2")
-                result = await g.update("f")
-                assert result.changed is True
-                assert result.old_hash != result.new_hash
-
-        run(scenario())
-
-    def test_update_no_change(self, tmp_path):
-        target = tmp_path / "a.md"
-        target.write_text("v1")
-
-        async def scenario():
-            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
-                result = await g.update("f")
-                assert result.changed is False
-
-        run(scenario())
 
 
 # -- frame / context -------------------------------------------------------
@@ -251,24 +231,9 @@ class TestFrame:
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
                 g.pin(FilePin(label="greeting", arguments=FileArguments(path="hello.md"), description="welcome"))
-                frame = await g.context()
-                assert "line1" in frame
-                assert "<!-- ground:pin:greeting -->" in frame
-                assert "<!-- /ground:pin:greeting -->" in frame
-
-        run(scenario())
-
-    def test_frame_marks_changed_on_disk(self, tmp_path):
-        target = tmp_path / "shift.md"
-        target.write_text("before")
-
-        async def scenario():
-            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="s", arguments=FileArguments(path="shift.md")))
-                target.write_text("after — different")
-                frame = await g.context()
-                assert "changed on disk" in frame
+                text = await g.context()
+                assert "line1" in text
+                assert "<!-- file-greeting: welcome -->" in text
 
         run(scenario())
 
@@ -304,12 +269,10 @@ class TestFrame:
                 g = await gs.open(tmp_path)
                 g.pin(FilePin(label="entry", arguments=FileArguments(path="a.py", range="1"), description="start"))
                 g.pin(LsPin(label="layout", arguments=LsArguments(path=".")))
-                frame = await g.context()
-                # declaration block removed from frame; pin results use HTML comments
-                assert "<!-- ground:pin:entry -->" in frame
-                assert "<!-- /ground:pin:entry -->" in frame
-                assert "<!-- ground:pin:layout -->" in frame
-                assert "<!-- /ground:pin:layout -->" in frame
+                text = await g.context()
+                assert "<!-- file-entry: start -->" in text
+                assert "<!-- ls-layout -->" in text
+                assert "x" in text
 
         run(scenario())
 
@@ -411,16 +374,181 @@ class TestGroundSetForwarding:
 
         run(scenario())
 
-    def test_update_forwards(self, tmp_path):
-        target = tmp_path / "a.md"
-        target.write_text("v1")
+
+
+# -- template open ----------------------------------------------------------
+
+
+class TestTemplateOpen:
+    def _make_template(self, tmp_path, name="mytmpl"):
+        (tmp_path / ".grounds").mkdir(exist_ok=True)
+        (tmp_path / ".grounds" / f"{name}.md").write_text(
+            "---\n"
+            "pins:\n"
+            "- verb: ls\n"
+            "  label: tree\n"
+            "  arguments: {path: $CWD}\n"
+            "  description: 目录树\n"
+            "---\n"
+            "# My Template\n\n"
+            "body text\n"
+        )
+
+    def test_open_with_template_copies_body_and_pins(self, tmp_path):
+        self._make_template(tmp_path)
+        target = tmp_path / "proj"
+        target.mkdir()
 
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
-                g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
-                target.write_text("v2")
-                result = await gs.update(g.label, "f")
-                assert result.changed
+                g = await gs.open(target, template="mytmpl")
+                frame = await g.context()
+                assert "body text" in frame
+                assert any(p.label == "tree" for p in g.pins())
 
         run(scenario())
+
+    def test_open_unknown_template_raises(self, tmp_path):
+        target = tmp_path / "proj"
+        target.mkdir()
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                with pytest.raises(KeyError):
+                    await gs.open(target, template="nope")
+
+        run(scenario())
+
+    def test_template_init_sediments_on_close(self, tmp_path):
+        self._make_template(tmp_path)
+        target = tmp_path / "proj2"
+        target.mkdir()
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(target, template="mytmpl")
+                assert g.dirty  # 模板注入的 pins 未落盘 → close 触发 sediment
+                await gs.close(g.label)
+            assert (target / "GROUND.md").is_file()
+
+        run(scenario())
+
+
+class TestSnapshot:
+    """Ground.snapshot() — 渲染 + 感知 digest + 对账 (auto-advance)."""
+
+    @staticmethod
+    def _make_ground(tmp_path) -> Path:
+        root = tmp_path / "proj"
+        root.mkdir()
+        (root / "GROUND.md").write_text("---\nname: proj\npins: []\n---\n# body\n")
+        return root
+
+    def test_first_call_is_baseline(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                snap = await g.snapshot()
+                assert snap.changed is False
+                assert snap.hash
+                assert snap.view.header.ground_path == str(root.resolve())
+
+        run(scenario())
+
+    def test_unchanged_stays_silent(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                s1 = await g.snapshot()
+                s2 = await g.snapshot()
+                assert s2.changed is False
+                assert s2.hash == s1.hash
+
+        run(scenario())
+
+    def test_change_flags_once_then_acknowledges(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                s1 = await g.snapshot()
+                (root / "GROUND.md").write_text(
+                    "---\nname: proj\npins: []\n---\n# body changed\n"
+                )
+                await g.load()
+                s2 = await g.snapshot()
+                assert s2.changed is True
+                assert s2.hash != s1.hash
+                # 已承认 → 下一帧不变
+                s3 = await g.snapshot()
+                assert s3.changed is False
+                assert s3.hash == s2.hash
+
+        run(scenario())
+
+    def test_explicit_ack_hash_is_baseline(self, tmp_path):
+        root = self._make_ground(tmp_path)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(root)
+                s1 = await g.snapshot()
+                # ack 当前 hash → 无变化
+                assert (await g.snapshot(ack_hash=s1.hash)).changed is False
+                # ack 一个旧值 → 相对该基线变化
+                assert (await g.snapshot(ack_hash="0" * 64)).changed is True
+
+        run(scenario())
+
+
+# -- root + groundset 物化 ---------------------------------------------------
+
+
+class TestRootAndGroundset:
+    def test_root_is_workspace_root_ground(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\nname: root\n---\n# root body\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        assert gs.root.root == tmp_path.resolve()
+        assert gs.root.convention.name == "root"
+        # root 进入 grounds 注册表 (active 含 root)
+        assert gs.root.label in gs.active()
+
+    def test_root_materializes_declared_children(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\ngroundset: [a, b]\n---\n")
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "GROUND.md").write_text("---\nname: A\n---\n")
+        (tmp_path / "b").mkdir()
+        (tmp_path / "b" / "GROUND.md").write_text("---\nname: B\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        assert {"a", "b"} <= set(gs.active())
+        assert gs.materialize_errors() == []
+
+    def test_materialize_skips_non_ground_entry(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\ngroundset: [missing]\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        assert "missing" not in gs.active()
+        assert any("missing" in e for e in gs.materialize_errors())
+
+    def test_materialize_false_does_not_expand(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\ngroundset: [a]\n---\n")
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "GROUND.md").write_text("---\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path, materialize=False)
+        assert "a" not in gs.active()
+
+    def test_open_root_returns_root(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        g = run(gs.open(tmp_path))
+        assert g is gs.root
+
+    def test_ground_id_is_ulid(self, tmp_path):
+        (tmp_path / "GROUND.md").write_text("---\n---\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        gid = gs.root.id
+        assert len(gid) == 26  # ULID 定长

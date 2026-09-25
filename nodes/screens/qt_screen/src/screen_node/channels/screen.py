@@ -66,6 +66,8 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         :param url: full HTTP URL of the window content
         :param label: short human-readable label, used to generate the window ID
         """
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return f"unsupported URL scheme: {url}. only http:// and https:// URLs are supported."
         window_id = _next_id(label)
         f = bridge.submit("open_window", {"id": window_id, "url": url, "label": label})
         await asyncio.wrap_future(f)
@@ -133,27 +135,29 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
 
     @screen.build.context_messages
     async def screen_context() -> list[Message]:
-        bucket.start()
-
         snapshot = bridge.snapshot()
         if not snapshot:
             return [Message.new(tag="screen").with_content("screen not ready")]
 
         messages: list[Message] = []
 
-        # Window directory
+        # Window directory — compact: one line per window
         windows = snapshot.get("windows", {})
         if windows:
             lines = []
             for wid, win in windows.items():
-                parts = [wid, win.get("label", ""), win.get("url", "")]
+                url = win.get("url", "")
+                short_url = url.removeprefix("https://").removeprefix("http://")
+                label = win.get("label", wid)
                 badge = win.get("badge", 0)
                 title = win.get("title", "")
+                parts = [wid, label, short_url]
                 if badge:
-                    parts.append(f"badge={badge}")
+                    parts.append(f"({badge})")
                 if title:
-                    parts.append(f'"{title}"')
-                lines.append("  ".join(parts))
+                    short_title = title[:30] + "..." if len(title) > 30 else title
+                    parts.append(f'"{short_title}"')
+                lines.append(" ".join(parts))
             messages.append(
                 Message.new(tag="screen", attributes={"section": "windows"}).with_content(
                     "windows:\n" + "\n".join(f"  {l}" for l in lines)
@@ -175,8 +179,14 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         layout_lines = [f"layout: {layout_name}"]
         if bg:
             layout_lines.append(f"  background: {bg}")
-        focus_id = slots.get("focus", "")
-        layout_lines.append(f"  focus: {focus_id}" if focus_id else "  focus: -")
+        if layout_name == "split":
+            left_id = slots.get("focus_left", "")
+            right_id = slots.get("focus_right", "")
+            layout_lines.append(f"  left: {left_id}" if left_id else "  left: -")
+            layout_lines.append(f"  right: {right_id}" if right_id else "  right: -")
+        else:
+            focus_id = slots.get("focus", "")
+            layout_lines.append(f"  focus: {focus_id}" if focus_id else "  focus: -")
         front_ids = slots.get("front", [])
         layout_lines.append(
             f"  front: {' '.join(front_ids)}" if front_ids else "  front: -"
@@ -196,7 +206,7 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         events = bucket.peek(_PEEK_N)
         if events:
             event_lines = []
-            for ev in events[-5:]:
+            for ev in events[-3:]:
                 et = ev["type"]
                 wid = ev.get("window_id", "")
                 if et == "human_clicked":
@@ -292,7 +302,7 @@ def _register_split_state(screen, bridge: ScreenBridge) -> None:
     )
 
     @split.command(always_observe=True)
-    async def focus(id: str, slot: str = "focus") -> str:
+    async def focus(id: str, slot: str = "left") -> str:
         """Move a window into a focus slot.
 
         :param id: window short ID
@@ -324,7 +334,7 @@ def _register_split_state(screen, bridge: ScreenBridge) -> None:
         return f"floated {id}"
 
     @split.command(always_observe=True)
-    async def clear(slot: str = "focus") -> str:
+    async def clear(slot: str = "left") -> str:
         """Clear a slot, returning its window to the float layer.
 
         :param slot: 'left', 'right', 'front', or 'float'

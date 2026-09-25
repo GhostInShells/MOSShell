@@ -14,9 +14,8 @@
 
 ```toml
 moss       = "ghoshell_moss.cli:main_entry"
-moss-shell = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
+moss-shell = 'ghoshell_moss.cli.moss_debug_repl:moss_shell_main'
 moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
-moss-mcp   = 'ghoshell_moss.cli.moss_as_mcp:main'
 ```
 
 安装后 (`uv sync --active --all-extras`), 这些命令可在 `.venv/bin/` 下找到可执行文件。
@@ -34,29 +33,36 @@ moss-mcp   = 'ghoshell_moss.cli.moss_as_mcp:main'
   - `help [commands...]`: 批量获取命令帮助。无参数显示根帮助, 带参数按路径解析 (如 `moss --ai help codex get-interface codex concepts`)
   - `all-commands`: 一次性列出所有命令树。`--depth 1/2/3` 控制深度, `--group <name>` 限定子树。设计目标: 将 AI 的 CLI 发现从 40+ 轮压缩到 2 轮
 
-### 2. `moss-shell` — Shell 运行时调试 TUI
+### 2. `moss-shell` — Shell 运行时入口 (四模式: tui / mcp / log / fractalize)
 
-- **入口**: `moss_debug_repl.py` → `moss_debug_repl_main()`
-- **框架**: Click (简单参数解析) + Textual/prompt_toolkit
-- **用途**: 启动完整 MOSS Host Runtime (不含 Ghost), 进入 TUI 调试终端。人类在给模型 CTML 之前先在这里手动测试
-- **流程**: Environment.discover() → 设置 mode/scope → Host() → MossRuntimeTUI.run()
+- **入口**: `moss_debug_repl.py` → `moss_shell_main()` (Click group)
+- **框架**: Click (简单参数解析) + Textual/prompt_toolkit (tui 模式)
+- **模式**:
+  - `moss-shell` (无子命令) / `moss-shell tui` — 启动完整 MOSS Host Runtime (不含 Ghost), 进入 TUI 调试终端。人类在给模型 CTML 之前先在这里手动测试。流程: Environment 显式构造 + seal → Host() → MossRuntimeTUI.run()
+  - `moss-shell mcp` — 将 MOSS 运行时暴露为 MCP server (原独立 `moss-mcp` 二进制)。需要 `[host]` extra（含 mcp）, 经 `depend_mcp()` 惰性 gate
+  - `moss-shell log` — 无交互 headless 运行, 只输出日志, 供 CI/后台排障
+  - `moss-shell fractalize` — 进入 Matrix 网络作为一个 fractal cell, 只暴露本 mode 的 NodeManager (nodes channel) 一条能力。远程 host `mesh:accept` 后可远程治理本 mode 的 nodes (Mode as Cell, workstream: mode-as-cell)
 - Ghost 运行前调试 Shell 层的入口: 测 CTML、检 channels/matrix/manifests
 
-### 3. `moss-ghost` — Ghost 交互 TUI
+### 3. `moss-ghost` — Ghost 交互入口 (group: run / send)
 
-- **入口**: `ghost_run.py` → `ghost_run_main()`
+- **入口**: `ghost_run.py` → `ghost_run_main()` (Click group)
 - **框架**: Click + GhostTUI (Textual/prompt_toolkit)
-- **用途**: 启动一个 Ghost 并进入 TUI 交互终端。Logos 流式输出、output 结构化消息、SafeMode 审批闸口。Ghost 真正的交互界面在 nodes 体系里, TUI 是元控制面
+- **子命令**:
+  - `run <ghost> [--surface tui|output|log]` — 启动一个 Ghost。tui 交互终端 (logos 流式输出、output 结构化消息、SafeMode 审批闸口)；output/log 为 headless 观测面 (tail stdout / 日志)。Ghost 真正的交互界面在 nodes 体系里, TUI 是元控制面
+  - `send <text>` — 往同 scope 的 running ghost 注入一条 input signal (非持久化 Matrix 节点, `session.add_input_signal`)。signal 命名空间只含 network_scope, 故不传 --ghost
+- **全局 option** (`--mode/--scope/--network`, 放子命令前, 对齐 `moss` 主 CLI 惯例): 无子命令时列出可用 ghost
 
-### 4. `moss-mcp` — MOSS Runtime 作为 MCP Server
+### 4. `moss-shell mcp` — MOSS Runtime 作为 MCP Server
 
-- **入口**: `moss_as_mcp.py` → `main()`
-- **框架**: Click + FastMCP
+- **入口**: `moss_debug_repl.py` → `mcp` 子命令 → 惰性 import `moss_as_mcp.py` → `main_entry()`
+- **框架**: Click + mcp SDK (MCPServer)
 - **用途**: 将 MOSS 运行时暴露为 MCP (Model Context Protocol) 服务, 供 Claude Code 等 AI 工具调用
+- **依赖**: `[host]` extra（含 mcp, uvicorn）, 经 `depend_mcp()` 惰性 gate — 未安装时 `moss-shell mcp` 报清晰提示
 - **核心**:
-  - `ServerState`: 持有 `MossHost` 和 `MossRuntime` 引用
-  - `bootstrap()`: 注册 MCP tools (moss_instruction, get_moss_dynamic_info, execute_ctml, interrupt_execution)
-  - `FastMCPMessageAdapter`: 将 MOSS Message 转为 MCP ContentBlock
+  - `ServerState`: 持有 `MossHost` 和 `MossRuntime` 引用, server 级 watcher + fire-and-forget task 池
+  - `bootstrap()`: 注册 MCP tools (moss_instruction, get_moss_dynamic_info, ctml_append/exec/observe/replan/interrupt)
+  - `MCPMessageAdapter`: 将 MOSS Message 转为 MCP ContentBlock
 - **传输协议**: 支持 SSE (默认端口 20773), stdio, streamable_http
 - `--ai` flag 不适用于此命令, 因为它是 MCP 服务端, 输出遵从 MCP 协议
 
@@ -92,7 +98,7 @@ moss-mcp   = 'ghoshell_moss.cli.moss_as_mcp:main'
 ### 框架与风格
 
 1. **子命令用 Typer**, 不是 Click。每个文件是一个独立的 `typer.Typer()` instance, 在 `main.py` 中用 `app.add_typer()` 挂载
-2. **入口点用 Click**。`moss-shell`, `moss-ghost`, `moss-mcp` 这三个独立进程不需要 Typer 的 tree handling, 用 Click 参数解析即可
+2. **入口点用 Click**。`moss-shell`, `moss-ghost` 这两个独立进程不需要 Typer 的 tree handling, 用 Click 参数解析即可
 3. **输出统一走 `utils.py`**:
    - 表格用 `print_simple_table()`
    - 面板用 `print_simple_panel()` 或 `print_panel()`
@@ -115,22 +121,21 @@ moss-mcp   = 'ghoshell_moss.cli.moss_as_mcp:main'
 3. 在 `main.py` 中 import 并用 `app.add_typer(xxx_app, name="xxx")` 注册
 4. 所有输出函数从 `utils.py` import
 
-## How-To 知识库
+## Skills 知识库
 
-`howto_cli.py` + `how_tos/` 目录组成一个反身性知识库:
+`skills_cli.py` + `cli/skills/` 目录组成反身性知识库 (取代 howtos, moss-skills):
 
-- **存储**: `how_tos/` 目录下的 markdown 文件, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.core.resources.markdown_kb`) 做资源管理
-- **结构**: 扁平——`how_tos/README.md` (元规则 + help text) + `how_tos/*.md` (howto 文档)
+- **存储**: `cli/skills/<name>/SKILL.md`, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.resources.markdown_kb`, glob+frontmatter 参数化) 做资源管理
+- **结构**: `<name>/SKILL.md` (name + description frontmatter), `cli/skills/README.md` (skill 治理)
 - **命令**:
-  - `moss howtos list [-q keyword] [--json]`: 列出所有文档
-  - `moss howtos read <path>`: 读取文档 (带 syntax highlighting)
-  - `moss howtos recall <question>`: AI 语义召回 (需 `ANTHROPIC_SMALL_FAST_MODEL` 环境变量)
-- **元规则**: `how_tos/README.md` 承担——入口判定三问 + 反模式清单 + 写作纪律。写 howto 前必读
-- **当前定位**: 复合任务入口 ("师傅领进门"), 不是组件用法手册。历史上曾积累 16 篇混合内容, 2026-07-18 doc-governance 治理后收敛为 3 篇 (见 `.ai_partners/features/workstreams/2026/07/doc-governance/`)
+  - `moss skills list [-q keyword] [--json] [--root <path>]`: 发现技能
+  - `moss skills recall <question>`: 语义召回 (LLMFuncs 多标签分类, 需 LLM 配置)
+- **元规则**: `cli/skills/README.md` 承担——入口判定三问 + 反模式清单 + 写作纪律。写 skill 前必读
+- **当前定位**: 复合任务的行动导向技能。历史上 howtos 曾积累 16 篇混合内容, 2026-07-18 doc-governance 治理后收敛为 3 篇, 2026-08 moss-skills 迁移为 skills (见 `.ai_partners/features/workstreams/2026/08/moss-skills/`)
 
 ## 架构小贴士
 
 - `Environment.discover()` 在多个命令中独立调用 — 这是设计意图, 因为各命令可能在不同 mode 或 scope 下独立运行
 - `moss` CLI 子命令在独立的 Typer 子 app 中实现, 通过 `app.add_typer()` 挂载 — 隔离性好, 各子命令组可独立测试
 - `manifests_cli.py` 是最复杂的子命令组, 包含对 providers/topics/configs/channels/primitives/contracts/resources/ctml-versions 的完整自解释体系 — 这是 "code as prompt" 哲学的直接体现
-- `moss-mcp` 依赖 `fastmcp` 可选依赖 (`[project.optional-dependencies]` 中的 `host`), 未安装时无法运行
+- `moss-shell mcp` 模式依赖 `[host]` extra（含 mcp, uvicorn）, 经 `depend_mcp()` 惰性 gate — 未安装时 mcp 模式报提示, shell 其他模式不受影响

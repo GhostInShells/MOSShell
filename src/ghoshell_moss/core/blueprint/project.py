@@ -1,5 +1,13 @@
+"""Project — the governance-domain handle for a MOSS workspace.
+
+``Project`` is the handle over a governed domain; ``HostMode`` is the environment-
+discovery result for a MOSS host node. The manifest family (``ProjectManifest``,
+``HostModeManifests``, ``Manifest``) declares the capability discoverable in that domain,
+and ``NetworkMetadata`` / ``NetworkConfig`` describe the scopes communication may use.
+"""
+
 from abc import ABC, abstractmethod
-from typing import Iterable, Any, Generic, TypeVar, ClassVar, Iterator
+from typing import Iterable, Any, Generic, TypeVar, Iterator
 from typing_extensions import Self
 from pathlib import Path
 from ghoshell_container import IoCContainer, Provider
@@ -7,6 +15,7 @@ from ghoshell_moss.core.blueprint.environment import (
     DEFAULT_NETWORK_SCOPE, DEFAULT_NETWORK_NAME, Environment,
     DEFAULT_NODES_DIR, MOSS_NAME_PATTERN,
     ENV_WORKSPACE_DIR_KEY,
+    NODE_PATH_GHOST_KEY, NODE_PATH_MODE_KEY, resolve_node_dir,
 )
 from ghoshell_moss.core.blueprint.cell import NodeManager, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
@@ -14,7 +23,7 @@ from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.concepts.topic import TopicSchema
-from ghoshell_moss.contracts import Workspace, ConfigType
+from ghoshell_moss.contracts import Workspace, ConfigType, ConfigStore
 from ghoshell_moss.contracts.resource import ResourceStorageMeta
 from ghoshell_moss.contracts.logger import config_logger_from_yaml
 from ghoshell_moss.message import unique_id
@@ -25,21 +34,39 @@ from ghoshell_moss.core.ctml.versions import (
 )
 import sys
 import logging
+import asyncio
 
 __all__ = [
     'HostModeMeta',
     'HostMode',
-    'Manifest', 'ModeManifests', 'MatrixManifest',
+    'Manifest', 'HostModeManifests', 'ProjectManifest',
     'NetworkConfig', 'NetworkMetadata',
     'Project',
     'HOST_MODE_MANIFESTS_PACKAGE',
     'HOST_MODE_FILE',
+    'MODE_MATRIX_MANIFESTS_PACKAGE',
+    'register_control_flow_exit',
 ]
 
 T = TypeVar('T')
 
 HOST_MODE_MANIFESTS_PACKAGE = 'HOST'
 HOST_MODE_FILE = 'HOST.md'
+MODE_MATRIX_MANIFESTS_PACKAGE = 'MATRIX.manifests'
+
+# 控制流异常: 进程按预期路径结束 (以退出码退出 / 被中断), 不是故障.
+# 谁持有"这是正常退出"的知识, 谁登记 — CLI 框架的 Exit 由 CLI 层登记 (见 project 的 __exit__).
+# asyncio.CancelledError 同理: 在进程退出路径上它是协作取消信号 (被中断), 不是故障.
+_CONTROL_FLOW_EXITS: set[type[BaseException]] = {SystemExit, KeyboardInterrupt, asyncio.CancelledError}
+
+
+def register_control_flow_exit(exc_type: type[BaseException]) -> None:
+    """登记一种"正常退出路径"的异常类型, 使其不再被 Project.__exit__ 记成 ERROR 日志.
+
+    用于 CLI 框架的退出异常 (如 typer.Exit): 它们跨过 `with Project.discover()`
+    边界, 但语义是"按退出码结束", 不是崩溃.
+    """
+    _CONTROL_FLOW_EXITS.add(exc_type)
 
 
 class HostModeMeta(BaseModel):
@@ -76,6 +103,8 @@ class HostModeMeta(BaseModel):
         default_factory=lambda: [
             DEFAULT_NODES_DIR,
             f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_MODE_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_GHOST_KEY}/{DEFAULT_NODES_DIR}",
         ],
         description="以 project 为出发点, 发现 nodes 的路径. ",
     )
@@ -105,12 +134,8 @@ class HostModeMeta(BaseModel):
     def node_dirs(self, env: Environment) -> list[Path]:
         """基于 node_paths 解析为绝对路径."""
         result = []
-        project_dir = env.project_path
         for relative_path in self.node_paths:
-            relative_path = relative_path.replace(
-                f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
-            )
-            cell_dir = project_dir / relative_path
+            cell_dir = resolve_node_dir(relative_path, env)
             if cell_dir.exists():
                 result.append(cell_dir.absolute())
         return result
@@ -250,6 +275,11 @@ class Manifest(Generic[T], ABC):
         ...
 
     @abstractmethod
+    def source(self) -> str:
+        """发现相关的 source code."""
+        ...
+
+    @abstractmethod
     def value(self) -> T:
         """找到的值. 仅在 is_error() 为 False 时有效. """
         ...
@@ -280,7 +310,7 @@ class Manifest(Generic[T], ABC):
         ...
 
 
-class MatrixManifest(ABC):
+class ProjectManifest(ABC):
     """全局基线声明 — 扫描一个 Python 包的子包，发现所有能力声明."""
 
     @abstractmethod
@@ -337,8 +367,8 @@ class MatrixManifest(ABC):
         yield from []
 
 
-class ModeManifests(ABC):
-    """Mode 专属声明 — 继承 Matrix 全局基线，追加 mode 特有内容."""
+class HostModeManifests(ABC):
+    """Host Mode 专属声明 — 继承 Matrix 全局基线，追加 mode 特有内容."""
 
     @abstractmethod
     def root_package(self) -> str:
@@ -462,9 +492,19 @@ class HostMode(ABC):
         ...
 
     @abstractmethod
-    def manifests(self) -> ModeManifests:
+    def manifests(self) -> HostModeManifests:
         """
         模式自己的资源声明.
+        """
+        ...
+
+    @abstractmethod
+    def matrix_manifests(self) -> ProjectManifest:
+        """
+        mode 级环境能力声明 — MATRIX.manifests.
+
+        扫描 mode 包下的 MATRIX.manifests, 承载跨 cell 共享的环境能力
+        (如音频 provider). 初始全空, mode 按需追加.
         """
         ...
 
@@ -486,15 +526,6 @@ class Project(ABC):
     project 目录本身的内容对 MOSS 是动态可变的 (ghost 自管理的领地),
     目录 category 永不进内核 API (TT-7).
     """
-
-    # -- TT-7 保名判决: "Project" 不是名字被占, 而是治理域句柄的正名.
-    #    保名条件 = 契约按治理域句柄语义改写 (本 docstring) + category 禁入.
-    # -- TT-9 三目录松耦合: workspace = 治理真相存放地; project = 被治理领地
-    #    (薄句柄, 挂 Matrix 一级); cell 目录 = 代码出处 (治理归属仍是启动方).
-    #    cwd 只是发现起点, 不承载语义.
-    # -- A/B 动机: A 目录运行时拉起 B 目录 cell — B 只是代码出处,
-    #    治理归属 (日志/runtime/身份/网络) 全归 A. systemd 同构
-    #    (ExecStart 指向任意路径, journal/cgroup 归 init 域).
 
     @property
     def id(self) -> str:
@@ -518,34 +549,15 @@ class Project(ABC):
         """project 级别的日志位置. """
         return logging.getLogger('moss')
 
-    _LOG_HANDLER_NAME = 'moss_file_handler'
-
     def _ensure_log_file_handler(self) -> None:
-        """为 'moss' logger 添加运行时文件 handler.
+        """为 'moss' logger 添加运行时文件 handler — 首选装配点.
 
-        logging.yml 只配格式和等级, 文件路径是运行时确定的.
-        此方法在 bootstrap() 中调用, 幂等.
+        logging.yml 只配格式和等级, 文件路径由 self.log_file 决定 (per-cell 或 moss.log).
+        绑定逻辑收敛到 contracts.logger.bind_moss_file_handler, 与 MatrixLoggerProvider
+        (兜底) 共享同一 handler name 幂等去重.
         """
-        from logging.handlers import TimedRotatingFileHandler
-        from ghoshell_moss.contracts.logger import default_logger_formatter
-
-        moss_logger = logging.getLogger('moss')
-        for h in moss_logger.handlers:
-            if h.get_name() == self._LOG_HANDLER_NAME:
-                return
-
-        log_file = self.log_file
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        handler = TimedRotatingFileHandler(
-            filename=str(log_file),
-            when='d',
-            interval=1,
-            backupCount=5,
-        )
-        handler.set_name(self._LOG_HANDLER_NAME)
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(default_logger_formatter())
-        moss_logger.addHandler(handler)
+        from ghoshell_moss.contracts.logger import bind_moss_file_handler
+        bind_moss_file_handler(logging.getLogger('moss'), self.log_file)
 
     @classmethod
     def discover(
@@ -563,7 +575,11 @@ class Project(ABC):
         from ghoshell_moss.factory import create_project
         env = env or Environment.discover()
         project = create_project(env)
-        project.bootstrap()
+        # 注册 workspace source 到 sys.path — 项目级 manifests (MOSS.manifests)
+        # 无需 bootstrap 即可被 scan_package 发现. bootstrap 会再次幂等.
+        source_path = str(project.workspace_source_dir)
+        if source_path not in sys.path:
+            sys.path.append(source_path)
         return project
 
     def bootstrap(self):
@@ -591,6 +607,14 @@ class Project(ABC):
         if log_config_file.exists():
             config_logger_from_yaml(str(log_config_file.absolute()))
         self._ensure_log_file_handler()
+        container = self.container
+        container.bootstrap()
+
+    @property
+    @abstractmethod
+    def container(self) -> IoCContainer:
+        """project level ioc container"""
+        ...
 
     # --- manifests --- #
 
@@ -657,11 +681,11 @@ class Project(ABC):
         ...
 
     @abstractmethod
-    def matrix_manifests(self) -> MatrixManifest:
+    def project_manifests(self) -> ProjectManifest:
         """
-        workspace 级基线声明 (§ZZ-2, MOSS.manifests 包扫描产物).
+        workspace 级基线声明 (MOSS.manifests 包扫描产物).
 
-        matrix 层承接 MatrixManifest 而非 ModeManifests, 落实依赖分发轴:
+        project 层承接 ProjectManifest 而非 HostModeManifests, 落实依赖分发轴:
         `pip install ghoshell_moss[matrix]` = cell 最小依赖, 不含 mode 层重依赖
         (mindflow / nuclei / audio / ml). MossRuntime 才承接 mode.manifests()
         叠加 mode 专属.
@@ -679,19 +703,6 @@ class Project(ABC):
         与 cell_runtimes() 的分工:
         - nodes: 静态声明 (领地里"可以拉起什么", 只回答 node — host 不走声明).
         - cell_runtimes: 运行时事实 (领地里"已经拉起了什么", host + node 都在).
-        """
-        ...
-
-    @abstractmethod
-    def kill_cell(self, address: str) -> bool:
-        """
-        孤儿清理: 尝试终止本 project 治理域内已死或残留的 cell 进程.
-
-        典型场景是父进程崩溃后 ledger 残留, cell_runtimes() 迭代时按需清理.
-        active cell 的正常停止不走这里, 走 owner 的 Subprocesses.
-
-        :return: True = address 属于本 project 且 kill 尝试完成 (进程已死或成功 killpg);
-                 False = address 不在本地 ledger, 无治理权限, 无操作.
         """
         ...
 
@@ -790,8 +801,17 @@ class Project(ABC):
 
     @property
     def log_file(self) -> Path:
-        # 系统约定的日志文件名.
-        # 运行时所有的日志都会记录到这个文件中.
+        """当前进程写入的日志文件 — per-cell 命名在这里做默认裁决.
+
+        有 cell 身份 (spawner 注入 MOSS_CELL_ADDRESS) → moss.{role}__{name}.log
+        (稳定名, 不带 uid — uid 只区分同名并发实例, 带进文件名会无界膨胀);
+        否则 (host / CLI 一次性命令) → moss.log.
+        """
+        address = self.env.this_cell_address
+        if address:
+            from ghoshell_moss.core.blueprint.cell import CellAddressCodec
+            codec = CellAddressCodec(address)
+            return self.log_dir.joinpath(f'moss.{codec.role}__{codec.name}.log').absolute()
         return self.log_dir.joinpath('moss.log').absolute()
 
     @property
@@ -803,13 +823,29 @@ class Project(ABC):
         return self.workspace_dir.joinpath('configs').absolute()
 
     @property
+    def configs(self) -> ConfigStore:
+        """ConfigStore 唯一构造出口, 懒加载 — workspace configs/ 目录 + ghost 覆盖层.
+
+        Project 级只构造一次, CLI / matrix 的 ConfigStore provider 共享同一实例,
+        避免多路构造漂移. mode 与 ghost 都取 env 推导值, 无预注册. 实际构造在
+        EnvConfigStoreProvider: 有 ghost 身份时叠一层 <ghost_home>/configs (只覆盖,
+        不落种子), 无 ghost 身份时就是 workspace 单层.
+        """
+        return self.container.force_fetch(ConfigStore)
+
+    @property
     def workspace_source_dir(self) -> Path:
         """Project 自动加载的源码路径. """
         return self.workspace.source().abspath()
 
-    @property
-    def tmp(self) -> Path:
-        """
-        存储临时文件的位置. 约定在 runtime/tmp 下.
-        """
-        return self.workspace.runtime().sub_storage('tmp').abspath()
+    def __enter__(self) -> 'Project':
+        self.bootstrap()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            # 控制流退出不记 ERROR — 正常结束进程不该在 moss.log 里留 ERROR traceback.
+            if exc_val is not None and not isinstance(exc_val, tuple(_CONTROL_FLOW_EXITS)):
+                self.logger.exception(exc_val)
+        finally:
+            self.container.shutdown()

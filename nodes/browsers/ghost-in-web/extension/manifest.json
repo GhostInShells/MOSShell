@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "ghost-in-web",
+  "version": "0.1.0",
+  "description": "共享浏览:人和 ghost 共处同一个浏览器",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "sw.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "exclude_matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*",
+        "https://127.0.0.1/*",
+        "https://localhost/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
 from ghoshell_moss.core.blueprint.states_channel import (
-    new_prime_channel, new_stateful_channel_from_main, new_channel_state,
+    new_prime_channel, new_channel_from_state, new_channel_state,
 )
 from ghoshell_container import Container
 from ghoshell_moss.contracts.logger import LoggerItf
@@ -49,7 +49,7 @@ async def test_main_state_channel_startup():
     container = Container(name="test")
     container.set(LoggerItf, _created)
 
-    channel = new_stateful_channel_from_main(main_state)
+    channel = new_channel_from_state(main_state)
     async with channel.bootstrap(container=container):
         assert _logger is not None
         assert _logger is _created

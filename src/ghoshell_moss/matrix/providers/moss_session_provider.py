@@ -1,21 +1,23 @@
 from typing import Iterable, Type, TYPE_CHECKING
 
+from ghoshell_moss.core.blueprint.cell import Cell
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.topic import TopicService
+from ghoshell_moss.core.concepts.qa import QAManager
 from ghoshell_container import IoCContainer, Provider
 
 from ghoshell_moss.contracts import LoggerItf
 from ghoshell_moss.core.blueprint.project import Project
 
 if TYPE_CHECKING:
-    from ghoshell_moss.matrix.session.zenoh_session import ProjectZenohSession, MossSessionWithZenoh
+    from ghoshell_moss.matrix.session.zenoh_session import MatrixZenohSession, MossSessionWithZenoh
 
 __all__ = [
-    'ProjectZenohSessionProvider',
+    'MatrixZenohSessionProvider',
 ]
 
 
-class ProjectZenohSessionProvider(Provider[Session]):
+class MatrixZenohSessionProvider(Provider[Session]):
     """
     make session instance from workspace
     """
@@ -27,23 +29,27 @@ class ProjectZenohSessionProvider(Provider[Session]):
         return Session
 
     def aliases(self) -> Iterable[Type]:
-        from ghoshell_moss.matrix.session.zenoh_session import ProjectZenohSession, MossSessionWithZenoh
+        from ghoshell_moss.matrix.session.zenoh_session import MatrixZenohSession, MossSessionWithZenoh
         yield MossSessionWithZenoh
-        yield ProjectZenohSession
+        yield MatrixZenohSession
 
     def factory(self, con: IoCContainer) -> 'MossSessionWithZenoh':
         from ghoshell_moss.depends import depend_matrix
         depend_matrix()
         import zenoh
-        from ghoshell_moss.matrix.session.zenoh_session import ProjectZenohSession
+        from ghoshell_moss.matrix.session.zenoh_session import MatrixZenohSession
         logger = con.get(LoggerItf)
         project = con.force_fetch(Project)
         topic_service = con.force_fetch(TopicService)
+        qa_manager = con.force_fetch(QAManager)
         zenoh_session = con.force_fetch(zenoh.Session)
+        cell = con.force_fetch(Cell)
 
-        return ProjectZenohSession(
+        return MatrixZenohSession(
             project=project,
             logger=logger,
             topic_service=topic_service,
+            qa_manager=qa_manager,
             zenoh_session=zenoh_session,
+            cell=cell,
         )

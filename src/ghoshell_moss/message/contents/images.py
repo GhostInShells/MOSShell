@@ -2,17 +2,44 @@ import base64
 import io
 import mimetypes
 import pathlib
-from typing import Optional
+from typing import Optional, TypedDict
 
 from PIL import Image
 from typing_extensions import Self
 from ghoshell_moss.message.contents.abcd import ContentModel
-try:
-    from anthropic.types import Base64ImageSourceParam
-except ImportError:
-    Base64ImageSourceParam = dict
 
-__all__ = ["Base64Image"]
+__all__ = ["Base64Image", "sniff_media_type"]
+
+
+class Base64ImageSourceParam(TypedDict, total=False):
+    """
+    Anthropic Base64ImageSourceParam 协议的本地拷贝.
+    不 import anthropic — 那会拖进整个 SDK (启动 +0.69s). 运行时行为与 dict 等价.
+    """
+    type: str
+    media_type: str
+    data: str
+
+
+# 图片字节头 → media_type. 扩展名会撒谎 (截图重命名 / 爬取的资源), 而下游严格校验
+# 声明类型与字节是否一致 (dsh attachment admission 直接拒), 所以字节优先.
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def sniff_media_type(data: bytes) -> Optional[str]:
+    """从字节头识别图片格式; 不可识别返回 None (调用方退回扩展名猜测)."""
+    for magic, media_type in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return media_type
+    # WEBP: RIFF....WEBP
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 class Base64Image(ContentModel):
@@ -70,15 +97,17 @@ class Base64Image(ContentModel):
 
     @classmethod
     def from_file(cls, file_path: str | pathlib.Path) -> Self:
-        """从本地文件读取"""
+        """从本地文件读取. media_type 取自字节头, 扩展名仅在字节不可识别时兜底."""
         path = pathlib.Path(file_path)
-        media_type, _ = mimetypes.guess_type(path)
+        data = path.read_bytes()
+        media_type = sniff_media_type(data)
+        if media_type is None:
+            media_type, _ = mimetypes.guess_type(path)
         if not media_type:
             # 默认兜底
             media_type = f"image/{path.suffix.lstrip('.')}" or "image/png"
 
-        with open(path, "rb") as f:
-            return cls.from_binary(media_type, f.read())
+        return cls.from_binary(media_type, data)
 
     def to_pil_image(self) -> Image.Image:
         """还原回 PIL 对象，方便本地做图像处理或在 TUI/UI 中展示"""

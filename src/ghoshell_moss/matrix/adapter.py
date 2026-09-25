@@ -107,10 +107,16 @@ class MatrixNetworkAdapter(ABC):
         """
         driver-specific 默认 provider (如 zenoh 场景的 topic_service / session).
 
-        matrix 用 "if not bound" 兜底方式装配, workspace 用户在 MatrixManifest
+        matrix 用 "if not bound" 兜底方式装配, workspace 用户在 ProjectManifest
         里显式覆写即可覆盖 driver default.
         """
-        return []
+        from ghoshell_moss.matrix.providers.topic_provider import ZenohTopicServiceProvider
+        from ghoshell_moss.matrix.providers.moss_session_provider import MatrixZenohSessionProvider
+        from ghoshell_moss.matrix.providers.qa_provider import ZenohQAManagerProvider
+
+        yield ZenohTopicServiceProvider()
+        yield MatrixZenohSessionProvider()
+        yield ZenohQAManagerProvider()
 
     # ---- factory method hint (non-abstract, 各 driver 自己覆写) ----
 

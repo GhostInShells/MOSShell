@@ -37,6 +37,49 @@ _STATUS_HINTS = {
     ("in-progress", "draft"): "Update the Motivation section if context has changed.",
 }
 _DROPPED_HINT = "Record why in -m 'reason' for future reference. The workstream stays in place."
+_PARKED_HINT = ("Record why in -m 'reason' and what would reopen it. Parked workstreams are hidden "
+                "from 'list' and 'check'; retrieve with: moss features list --status parked")
+
+# Canonical display order for status stats; free-form statuses aggregate under 'others'.
+_STATUS_ORDER = ["draft", "in-progress", "completed", "dropped", "parked"]
+
+
+def _status_label(stat: str) -> str:
+    """Rich-markup status label, matching the list table coloring."""
+    if stat == "in-progress":
+        return f"[bold green]{stat}[/bold green]"
+    if stat == "draft":
+        return f"[dim]{stat}[/dim]"
+    if stat == "completed":
+        return f"[bold cyan]{stat}[/bold cyan]"
+    if stat == "dropped":
+        return f"[dim red]{stat}[/dim red]"
+    if stat == "parked":
+        return f"[dim yellow]{stat}[/dim yellow]"
+    return stat
+
+
+def _status_counts(features: list[dict]) -> dict[str, int]:
+    """Status distribution — reserved statuses keyed individually, free-form aggregated under 'others'."""
+    counts: dict[str, int] = {}
+    others = 0
+    for fm in features:
+        st = fm.get("status", "?")
+        if st in RESERVED_STATUSES:
+            counts[st] = counts.get(st, 0) + 1
+        else:
+            others += 1
+    if others:
+        counts["others"] = others
+    return counts
+
+
+def _ordered_statuses(*count_sets: dict[str, int]) -> list[str]:
+    """Union of statuses across count sets, reserved first then free-form alphabetically."""
+    seen: set[str] = set()
+    for counts in count_sets:
+        seen.update(counts)
+    return [s for s in _STATUS_ORDER if s in seen] + sorted(seen - set(_STATUS_ORDER))
 
 
 def _print_parse_errors(parse_errors: list[dict]) -> None:
@@ -108,11 +151,11 @@ def specification(
 def list_cmd(
     status: Optional[str] = typer.Option(
         None, "--status", "-s",
-        help="Filter by status. Reserved: draft, in-progress, completed, dropped; free-form values match exactly.",
+        help="Filter by status. Reserved: draft, in-progress, completed, dropped, parked; free-form values match exactly.",
     ),
     all_months: bool = typer.Option(
         False, "--all",
-        help="List features from all time (default: last 2 months only).",
+        help="Widen to all time (default: last 60 days only). Parked stay hidden — use --status parked.",
     ),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -122,18 +165,25 @@ def list_cmd(
     """
     List active development workstreams with status and priority.
 
-    Defaults to workstreams from the last 2 months. Use --all to see everything.
+    Defaults to workstreams touched in the last 60 days. Use --all to widen the
+    time window. Parked workstreams stay hidden either way — ask for them
+    explicitly with --status parked.
     """
     fd = _resolve_dir(features_dir)
     features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
+    # All-time (status-filtered) view — feeds the stats table and the empty-window hint.
+    total_features, _ = list_features(str(fd), status_filter=status, all_months=True)
     title = "Workstreams"
     if status:
         title += f" [status={status}]"
     if not all_months:
-        title += " (last 2 months)"
+        title += " (last 60 days)"
 
     if not features and not parse_errors:
-        print_info("No workstreams found.")
+        if not all_months and total_features:
+            print_info(f"No workstreams in the last 60 days — {len(total_features)} all-time (use --all).")
+        else:
+            print_info("No workstreams found.")
         return
 
     table_data = []
@@ -145,15 +195,7 @@ def list_cmd(
         updated = fm.get("updated", "")
         feat_path = f"workstreams/{fm.get('_feature_path', name)}"
 
-        status_display = stat
-        if stat == "in-progress":
-            status_display = f"[bold green]{stat}[/bold green]"
-        elif stat == "draft":
-            status_display = f"[dim]{stat}[/dim]"
-        elif stat == "completed":
-            status_display = f"[bold cyan]{stat}[/bold cyan]"
-        elif stat == "dropped":
-            status_display = f"[dim red]{stat}[/dim red]"
+        status_display = _status_label(stat)
 
         table_data.append([name, status_display, pri, title_str, updated, feat_path])
 
@@ -163,9 +205,36 @@ def list_cmd(
         title=title,
         column_ratios=[1, 0.7, 0.3, 1.5, 0.6, 1.5],
     )
+
+    console.print(
+        "[dim]Pri = importance within the current stage (iteration cycle), not development urgency.[/dim]"
+    )
+
+    if features or total_features:
+        listed_counts = _status_counts(features)
+        total_counts = _status_counts(total_features)
+        statuses = _ordered_statuses(listed_counts, total_counts)
+        stats_headers = [""] + statuses + ["Total"]
+        if listed_counts == total_counts:
+            stats_rows = [["total"] + [str(total_counts.get(s, 0)) for s in statuses] + [str(len(total_features))]]
+        else:
+            stats_rows = [
+                ["listed"] + [str(listed_counts.get(s, 0)) for s in statuses] + [str(len(features))],
+                ["total"] + [str(total_counts.get(s, 0)) for s in statuses] + [str(len(total_features))],
+            ]
+        print_simple_table(
+            data=stats_rows,
+            headers=stats_headers,
+            title="Workstream counts",
+            column_styles=["bold"] + [None] * len(statuses) + ["bold"],
+        )
+        console.print("")
+
     console.print(f"\n[dim]Features root: {fd.resolve()}/[/dim]")
     console.print(
-        "[dim]Read the convention: [/dim]"
+        "[dim]Workstreams are one part of [/dim]"
+        "[bold].ai_partners/features[/bold]"
+        "[dim]; read the convention: [/dim]"
         "[bold]moss features specification[/bold]"
     )
 
@@ -371,6 +440,8 @@ def set_status_cmd(
         hint = None
         if status == "dropped":
             hint = _DROPPED_HINT
+        elif status == "parked":
+            hint = _PARKED_HINT
         else:
             hint = _STATUS_HINTS.get((old_status, status))
         if hint:
@@ -419,6 +490,9 @@ def check_cmd(
     """
     List workstreams that are NOT in a terminal state (completed/dropped).
 
+    Parked workstreams never appear here — the query already drops quiet
+    statuses, so a parked proposal raises no pre-commit reminder.
+
     Intended as a non-blocking pre-commit hook — always exits 0.
     If you're committing code for any listed feature, run:
 
@@ -459,3 +533,222 @@ def check_cmd(
 
     echo("  moss features set-status <name> completed")
     echo("")
+
+
+# ---------------------------------------------------------------------------
+# review
+# ---------------------------------------------------------------------------
+
+def _load_review_doc(path: Path) -> Optional[tuple[dict, str]]:
+    """Load a review doc's (metadata, content). Returns None if unparseable."""
+    try:
+        import frontmatter
+        post = frontmatter.load(str(path))
+        return dict(post.metadata) if post.metadata else {}, post.content
+    except Exception:
+        return None
+
+
+def _discover_perspectives(
+    global_review_dir: Path, per_feature_review_dir: Path,
+) -> tuple[list[dict], list[Path]]:
+    """Discover review perspective docs under the two candidate dirs.
+
+    ``per_feature_review_dir`` overrides ``global_review_dir`` by same perspective
+    name. Returns ``(perspectives, broken)`` — perspectives is a list of
+    ``{name, when, description, content, path}``; broken is the list of review docs
+    whose frontmatter failed to parse or is missing ``when``/``description``
+    (surfaced, not silently skipped).
+    """
+    perspectives: dict[str, dict] = {}
+    broken: list[Path] = []
+
+    def _merge(review_dir: Path) -> None:
+        if not review_dir.is_dir():
+            return
+        for doc in sorted(review_dir.glob("*.md")):
+            loaded = _load_review_doc(doc)
+            if loaded is None:
+                broken.append(doc)
+                continue
+            meta, content = loaded
+            if not meta.get("when") or not meta.get("description"):
+                broken.append(doc)
+                continue
+            name = doc.stem
+            perspectives[name] = {
+                "name": name,
+                "when": meta.get("when", ""),
+                "description": meta.get("description", ""),
+                "content": content,
+                "path": doc,
+            }
+
+    _merge(global_review_dir)        # low precedence
+    _merge(per_feature_review_dir)   # high precedence (same-name override)
+    return sorted(perspectives.values(), key=lambda p: p["name"]), broken
+
+
+def _resolve_to_fm_path(raw: str) -> Optional[Path]:
+    """Resolve a feature dir or FEATURE.md file path to the FEATURE.md file."""
+    p = Path(raw).expanduser()
+    if p.is_file() and p.name == "FEATURE.md":
+        return p.resolve()
+    if p.is_dir() and (p / "FEATURE.md").is_file():
+        return (p / "FEATURE.md").resolve()
+    return None
+
+
+def _features_root_from_fm(fm_path: Path) -> Optional[Path]:
+    """Walk up from a FEATURE.md to the .ai_partners/features/ root."""
+    for parent in fm_path.parents:
+        if parent.name == "features" and (parent / "workstreams").is_dir():
+            return parent
+    return None
+
+
+def _resolve_review_feature(feature_part: str, features_dir: Optional[Path]) -> tuple[Path, dict, Path]:
+    """Resolve a feature name or path to (features_dir, meta, fm_path)."""
+    fd = _resolve_dir(features_dir)
+
+    # Name form — align with `moss features status/set-status`.
+    meta, err = get_feature(str(fd), feature_part)
+    if err is not None:
+        print_error(f"Workstream '{feature_part}' exists but FEATURE.md has a YAML parse error:")
+        _print_parse_errors([err])
+        raise typer.Exit(code=1)
+    if meta is None:
+        # Path form — a FEATURE.md or feature dir path.
+        fm_path = _resolve_to_fm_path(feature_part)
+        if fm_path is None:
+            print_error(f"Workstream '{feature_part}' not found.")
+            raise typer.Exit(code=1)
+        found_fd = _features_root_from_fm(fm_path)
+        if found_fd is None:
+            print_error(f"Could not locate .ai_partners/features/ for '{feature_part}'.")
+            raise typer.Exit(code=1)
+        fd = found_fd
+        meta, err = get_feature(str(fd), fm_path.parent.name)
+        if err is not None or meta is None:
+            print_error(f"Workstream '{feature_part}' not found.")
+            raise typer.Exit(code=1)
+    else:
+        fm_path = fd / "workstreams" / meta["_feature_path"] / "FEATURE.md"
+
+    return fd, meta, fm_path
+
+
+def _feature_basic_info(meta: dict, fm_path: Path) -> list[str]:
+    """Feature basic info — frontmatter only, not the FEATURE.md body (zero-context)."""
+    return [
+        f"- Name:       {meta.get('_feature_dir', '?')}",
+        f"- Title:      {meta.get('title', '')}",
+        f"- Status:     {meta.get('status', '?')} ({meta.get('priority', '?')})",
+        f"- Milestone:  {meta.get('milestone', '') or 'none'}",
+        f"- Depends:    {', '.join(meta.get('depends', [])) or 'none'}",
+        f"- Description: {meta.get('description', '') or 'none'}",
+        f"- FEATURE.md: {fm_path}",
+    ]
+
+
+@features_app.command("review", short_help="Generate a zero-context feature review prompt.")
+def review_cmd(
+    feature: str = typer.Argument(..., help="Feature name or FEATURE.md path. Optional '<name>@<perspective>'."),
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+    ),
+):
+    """
+    Generate a zero-context feature review prompt (forgetting test).
+
+    Without '@': the meta prompt — top-level review instruction + file discovery
+    (matched FEATURE.md + the review perspectives found) + how to dispatch a review.
+
+    With '<name>@<perspective>': the perspective prompt — feature basic info, the
+    perspective doc (path + content), and a report-back note.
+
+    Emit a command for a fresh sub-agent to run (it has the CLI), not a finished
+    brief: the sub-agent executes `moss features review '<feature>@<perspective>'`,
+    reads FEATURE.md and code from a zero-context standpoint, and reports back.
+    """
+    if "@" in feature:
+        feature_part, perspective = feature.rsplit("@", 1)
+        perspective = perspective.strip()
+    else:
+        feature_part, perspective = feature, None
+
+    fd, meta, fm_path = _resolve_review_feature(feature_part, features_dir)
+    feature_path = meta["_feature_path"]
+    perspectives, broken = _discover_perspectives(
+        fd / "review",
+        fd / "workstreams" / feature_path / "review",
+    )
+
+    if perspective is None:
+        lines = [
+            "# Zero-Context Feature Review — meta prompt",
+            "",
+            "You are about to review a feature from a zero-context standpoint "
+            "(the forgetting test). A fresh reviewer does NOT know the intent the",
+            "developer model held — so it can see gaps that intent blinded it to.",
+            "",
+            "## Feature to review",
+            *_feature_basic_info(meta, fm_path),
+            "",
+            "## Review principle",
+            "Read the declaration (FEATURE.md) and the delivery (code) from scratch.",
+            "Stand is reconstruct, not audit: 'I can't start here' IS a failure; a",
+            "declaration promising X while the code does Y — or never got to X — is drift.",
+            "",
+            "## Perspectives available",
+        ]
+        if perspectives:
+            for p in perspectives:
+                lines.append(f"- {p['name']} (when={p['when']}) — {p['description']}  [{p['path']}]")
+            lines += [
+                "",
+                "To do a perspective review, spawn a fresh sub-agent and tell it to run:",
+                f"    moss features review '{feature_part}@<perspective>'",
+                "That command emits the sub-agent's brief; it reads the FEATURE.md and code itself.",
+            ]
+        else:
+            lines.append("none — no review doc found under features/review/ or <feature>/review/.")
+        if broken:
+            lines += ["", "Broken review doc(s) skipped (unparseable or missing when/description):"]
+            for p in broken:
+                lines.append(f"  - {p}")
+        lines += [
+            "",
+            "Zero-context discipline: if a sub-agent is available, do NOT read the",
+            "FEATURE.md or code yourself first — stay out of the material, hand the",
+            "review to a fresh sub-agent, and only read it after the sub-agent reports back.",
+            "",
+            "You are not required to use the CLI. You may hand a sub-agent your own",
+            "review instruction instead — the point is a fresh, zero-context reviewer.",
+        ]
+        echo("\n".join(lines))
+        return
+
+    persp = next((p for p in perspectives if p["name"] == perspective), None)
+    if persp is None:
+        available = ", ".join(p["name"] for p in perspectives) or "none"
+        print_error(f"Perspective '{perspective}' not found for '{feature_part}'. Available: {available}")
+        raise typer.Exit(code=1)
+    when = f" ({persp['when']})" if persp["when"] else ""
+    lines = [
+        f"# Zero-Context Feature Review — {perspective}{when}",
+        "",
+        "## Feature (basic info)",
+        *_feature_basic_info(meta, fm_path),
+        f"- Perspective doc: {persp['path']}",
+        "",
+        "## Review brief",
+        persp["content"],
+        "",
+        "Read the FEATURE.md and its code yourself (you have the tools).",
+        "Report back when done — report what you found, not a verdict.",
+    ]
+    if broken:
+        lines += ["", "Note: broken review doc(s) skipped (unparseable or missing when/description):", *(f"  - {p}" for p in broken)]
+    echo("\n".join(lines))

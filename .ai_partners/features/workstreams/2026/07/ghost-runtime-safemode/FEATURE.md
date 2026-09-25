@@ -5,11 +5,13 @@ description: GhostRuntime 的极简安全模式：开启后 ghost 生成的 logo
   articulate→action 链路。
 milestone: null
 priority: P2
-status: in-progress
-status_note: gate landed at e60b4fda; round 2 = decisions 11-13 (turn-based UX + introspection
-  channel)
+status: completed
+status_note: 'all landed: gate @ e60b4fda, round 2 (turn-based UX + observe channel
+  + gate integration fix) @ 9851e654; 17 tests green. QA path decoupled from Safemode
+  — QA (zenoh/janus exchange) serves approval but at action/question granularity,
+  NOT logos-level; Safemode gate stays in-process Future-based.'
 title: Ghost Runtime Safemode — ghost 生成 logos 的人工审批闸口
-updated: '2026-07-26'
+updated: '2026-08-04'
 ---
 
 # Ghost Runtime Safemode
@@ -181,3 +183,25 @@ session.output('error', ...)` 静默模式在这里咬了自己。虽然 error �
 output，但 TUI 默认停在 logos state 看不到；日志用户不主动 grep 也不知道。
 下一次遇到"表面正常但功能未生效"，第一动作就应该是 `tail -f .moss/runtime/logs/moss.log`。
 架构上是否要把 articulate error 也 push 到 logos state 显眼位置，值得单开讨论。
+
+## Completed (2026-08-04)
+
+Round 1（gate @ e60b4fda）+ Round 2（回合制 UX、observe 内观通道、gate 集成修复
+@ 9851e654）全部落地，17 个 safemode 测试通过，feature 关闭。
+
+### QA 路径与 Safemode 解耦（边界锚点）
+
+QA Exchange（`core/concepts/qa.py` + `matrix/qa/zenoh_qa.py` / `core/qa/janus_qa.py`，
+另见 `qa-exchange` workstream）**不消费**本 feature 的 gate。两者的关系：
+
+- **粒度不同**。Safemode 闸的是 logos —— articulate 输出逐轮（per-articulate-round）
+  buffer 后等裁决，是 articulate→action 链路上的流级闸。QA 的 `ask_approval`
+  闸的是 action/question 粒度 —— 一个动作、一个任务是否放行，先到先得的裁定广播，
+  与 logos 流无关。
+- **实现不同**。Safemode gate 是进程内 `SafeModeImpl`（`concurrent.futures.Future`
+  + `asyncio.wrap_future`，TUI 同进程直接裁决）；QA 是广播交换协议，跨进程
+  （zenoh pub/sub）也可用。
+- **QA 服务 approval，但替代不了 Safemode 的 logos 级粒度**。若未来想把人工审批
+  从 logos 级升级到 action 级（批一个动作而不是一段 logos），那是 QA 的用武之地，
+  是新的审批层，不是本 feature 的扩展。两者通道不合并，理由同决策 13 的内观/外视
+  不合并。

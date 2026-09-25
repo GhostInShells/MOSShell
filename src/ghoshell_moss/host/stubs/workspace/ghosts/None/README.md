@@ -1,1 +1,0 @@
-Ghost 没有启动时, 仍然存在的 ghost home. 

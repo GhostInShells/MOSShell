@@ -30,7 +30,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     MessageType,
     LifecycleFunction,
     StringType,
-    ChannelFactory,
+    ChannelFactory, NamedNoticesFunc,
 )
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 import time
@@ -40,6 +40,14 @@ __all__ = ["PyChannel", "StatefulChannelRuntimeImpl", "PyChannelBuilder", "BaseS
 
 _ChannelNamePattern = re.compile(ChannelNamePattern)
 _ChannelName = str
+
+GATED_CHILDREN_NOTICE = "gated_children"
+"""Reserved named notice fragment published by the gate mechanism.
+
+Holds the declared catalog of gated virtual children, each marked ``open`` or
+``closed``. Unmounted children have no meta node, so this catalog is the only way the
+model learns they exist — see ``StatefulChannel.gate``.
+"""
 
 
 class PyChannelBuilder(MutableChannelState, ChannelState):
@@ -55,12 +63,16 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._on_stop_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_running_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_refresh_meta_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self._virtual_children_callback: Callable[[], dict[str, Channel]] | None = None
 
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
+        self._notice_fn: StringType | None = None
+        self._named_notice_fn: NamedNoticesFunc | None = None
         self._sustain_children: dict[str, Channel | ChannelFactory] = {}
         self._sustain_children_factories: list[Callable] = []
         self._virtual_children: dict[str, Channel] = {}
+        self._started = False
         self._providers: list[tuple[Provider, bool]] = []
 
         self._commands: dict[str, Command] = {}
@@ -137,7 +149,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
                         self._name, result,
                     )
                     continue
-                context_messages = result
+                context_messages = list(result)
                 messages.extend(context_messages)
         return self._wrap_messages(messages)
 
@@ -174,6 +186,33 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
             return await self._instruction_functions()
         return self._instruction_functions()
 
+    def notice(self, func: StringType) -> StringType:
+        self._notice_fn = func
+        if callable(func):
+            self._dynamic = True
+        return func
+
+    def named_notices(self, func: NamedNoticesFunc) -> NamedNoticesFunc:
+        self._named_notice_fn = func
+        self._dynamic = True
+        return func
+
+    async def get_named_notices(self) -> dict[str, str | None]:
+        if self._named_notice_fn is None:
+            return {}
+        if inspect.iscoroutinefunction(self._named_notice_fn):
+            return await self._named_notice_fn()
+        return self._named_notice_fn()
+
+    async def get_notice(self) -> str:
+        if self._notice_fn is None:
+            return ''
+        if isinstance(self._notice_fn, str):
+            return self._notice_fn
+        if inspect.iscoroutinefunction(self._notice_fn):
+            return await self._notice_fn()
+        return self._notice_fn()
+
     def add_command(
             self,
             command: Command,
@@ -206,6 +245,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
             always_observe: bool = False,
             timeout: Optional[float] = None,
             visible: bool = True,
+            macro: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
 
         def wrapper(func: CommandFunction) -> CommandFunction:
@@ -224,6 +264,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
                 always_observe=always_observe,
                 timeout=timeout,
                 visible=visible,
+                macro=macro,
             )
             self.add_command(command, override=override)
             if return_command:
@@ -265,14 +306,24 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
             else:
                 channel = value
                 name = channel.name()
-            self._sustain_children[name] = channel
+            # sustain children 只在 channel tree 的第一轮结构刷新里挂载. 启动之后再
+            # import 的 channel 若还写进 sustain children 就永远不会被挂上, 只能作为
+            # virtual children 交给后续刷新.
+            target = self._virtual_children if self._started else self._sustain_children
+            target[name] = channel
         return self
 
     def get_children(self) -> dict[_ChannelName, Channel]:
         return self._sustain_children
 
     def get_virtual_children(self) -> dict[_ChannelName, Channel]:
-        return self._virtual_children
+        if self._virtual_children_callback is not None:
+            result = self._virtual_children_callback()
+        else:
+            result = {}
+        if self._virtual_children:
+            result.update(self._virtual_children)
+        return result
 
     def own_commands(self) -> dict[str, Command]:
         return self._commands
@@ -295,6 +346,8 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
 
     async def on_startup(self) -> None:
         await self._run_funcs(self._on_start_up_funcs)
+        # startup 回调里 import 的 channel 仍在 tree 首轮刷新之前, 保持静态挂载.
+        self._started = True
 
     def close(self, func: LifecycleFunction) -> LifecycleFunction:
         is_coroutine = inspect.iscoroutinefunction(func)
@@ -318,6 +371,8 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
 
     async def on_close(self) -> None:
         await self._run_funcs(self._on_stop_funcs)
+        # 关闭后重新 import 的 channel 回到静态挂载: 下一次启动的 tree 首轮刷新会挂上它们.
+        self._started = False
 
     def running(self, running_func: LifecycleFunction) -> LifecycleFunction:
         self._on_running_funcs.append((running_func, inspect.iscoroutinefunction(running_func)))
@@ -330,6 +385,10 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         is_coroutine = inspect.iscoroutinefunction(func)
         self._on_refresh_meta_funcs.append((func, is_coroutine))
         self._dynamic = True
+        return func
+
+    def virtual_children(self, func: Callable[[], dict[str, Channel]]) -> Callable[[], dict[str, Channel]]:
+        self._virtual_children_callback = func
         return func
 
     async def on_refresh_meta(self) -> None:
@@ -383,6 +442,7 @@ class BaseStateChannel(StatefulChannel):
             modules: dict[str, ChannelModule] | None = None,
             default_state_name: str = '',
             bootstrap_callbacks: list[Callable[[Self, IoCContainer], None]] | None = None,
+            gate: bool = False,
     ) -> None:
         self._uid = uid or unique_id()
         self._main: ChannelState = main
@@ -390,6 +450,7 @@ class BaseStateChannel(StatefulChannel):
         self._default_state_name: str = default_state_name
         self._modules: dict[str, ChannelModule] = modules or {}
         self._boostrap_callbacks: list[Callable[[Self, IoCContainer], None]] = bootstrap_callbacks or []
+        self._gate = gate
 
     def on_bootstrap(self, bootstrapper: Callable[[StatefulChannel, IoCContainer], None]) -> None:
         self._boostrap_callbacks.append(bootstrapper)
@@ -425,6 +486,9 @@ class BaseStateChannel(StatefulChannel):
 
     def default_state_name(self) -> str:
         return self._default_state_name
+
+    def gate(self) -> bool:
+        return self._gate
 
     def with_module(self, module: ChannelModule) -> Self:
         """注册为永久能力模块。所有 module 同时激活、累积叠加 — 与 with_state() 的排他切换正交。"""
@@ -475,17 +539,19 @@ class PyChannel(PrimeChannel, BaseStateChannel):
             description: str = "",
             blocking: bool = True,
             uid: str | None = None,
+            gate: bool = False,
     ):
         """
         :param name: channel 的名称.
         :param description: channel 的静态描述, 给模型看的.
         :param blocking: 默认所有 command 序列执行 (blocking=True)。此参数是设计不佳的语法糖——阻塞语义应由 command 自身声明，而非 channel 统一施加。未来版本应移除。
+        :param gate: 开启后声明的虚拟子通道默认关闭, 由 mount_child 逐一披露; 关闭时行为不变.
         """
         matched = _ChannelNamePattern.fullmatch(name)
         if matched is None:
             raise ValueError("Channel name '%s' is not valid" % name)
         state = PyChannelBuilder(name=name, description=description, blocking=blocking, uid=uid)
-        super().__init__(state, uid=uid)
+        super().__init__(state, uid=uid, gate=gate)
         self._builder = state
 
     @property
@@ -533,7 +599,17 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             self.stop_current_state,
             available=lambda: self._current_state_name is not None and self._current_state_name != self._default_state_name,
         )
-        self._on_startup_instruction: str = ''
+        # gate: 虚拟子通道默认全关, 由 mount_child 逐一披露.
+        self._gate: bool = channel.gate()
+        self._opened_children: set[str] = set()
+        self._mount_child_command = PyCommand(
+            self.mount_child,
+            available=lambda: self._gate and len(self._gated_children()) > 0,
+        )
+        self._unmount_child_command = PyCommand(
+            self.unmount_child,
+            available=lambda: self._gate and len(self._opened_children) > 0,
+        )
         super().__init__(
             channel=channel,
             container=container,
@@ -592,6 +668,38 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 return True
         return False
 
+    def _gated_children(self) -> dict[str, Channel]:
+        """gate 开启时返回声明的虚拟子通道目录 (name -> channel), 否则为空."""
+        if not self._gate:
+            return {}
+        return self._main_state.get_virtual_children()
+
+    async def mount_child(self, name: str) -> str:
+        """Mount one of this channel's children so it becomes visible to you.
+
+        Only children this channel declares can be mounted. A mounted child
+        exposes its own instruction, notice and commands; an unmounted one is
+        listed in the notice catalog only. Mount what you are about to use.
+        """
+        if name not in self._gated_children():
+            return f"no gated child {name!r}"
+        if name in self._opened_children:
+            return f"child {name!r} is already mounted"
+        self._opened_children.add(name)
+        await self.refresh_metas()
+        return f"child {name!r} mounted"
+
+    async def unmount_child(self, name: str) -> str:
+        """Unmount a child mounted earlier, hiding it from your view again.
+
+        The child returns to the notice catalog and can be mounted again later.
+        """
+        if name not in self._opened_children:
+            return f"child {name!r} is not mounted"
+        self._opened_children.discard(name)
+        await self.refresh_metas()
+        return f"child {name!r} unmounted"
+
     async def stop_current_state(self) -> str:
         """
         stop current running state and return to default.
@@ -629,6 +737,12 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
 
     def virtual_sub_channels(self) -> dict[str, Channel]:
         virtual_channels = self._main_state.get_virtual_children().copy()
+        if self._gate:
+            # gate: 声明即入册, 只有 mount 过的子通道才真正挂载.
+            virtual_channels = {
+                name: child for name, child in virtual_channels.items()
+                if name in self._opened_children
+            }
         if self._current_state is not None:
             for name, child in self._current_state.get_children().copy().items():
                 # new virtual children.
@@ -637,9 +751,31 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 virtual_channels[name] = child
         return virtual_channels
 
+    def _available_modules(self) -> dict[str, ChannelModule]:
+        """装线中的永久能力模块 — 命令 / notice / context / meta 的唯一取用口。
+
+        module 是结构子类型, 未声明 is_available 的实现 (MacroStoreModule 等) 视为恒装线。
+        on_startup / on_close / on_refresh_meta 不走这里: 可用性闸的是表面, 不是生命周期,
+        否则"可用性由 startup 决定"的 module 永远不可用。
+        """
+        available = {}
+        for name, module in self._modules.items():
+            is_available = getattr(module, 'is_available', None)
+            if is_available is None or is_available():
+                available[name] = module
+        return available
+
     def is_dynamic(self) -> bool:
         states = self._dynamic_states
         if len(states) > 0:
+            return True
+        if self._gate and len(self._gated_children()) > 0:
+            # 目录 (或 open/closed 标记) 每次 mount/unmount 都会变.
+            return True
+        if len(self._modules) > 0:
+            # module 是永久能力单元, 其 notice/named_notices/context 可随时变.
+            # 按注册而非 is_available() 判断: 可用性是活的谓词, 认它会让模块下架时
+            # meta 被判为静态而缓存, 之后恢复也读不回来.
             return True
         return self._main_state.is_dynamic()
 
@@ -651,6 +787,7 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         # 通知所有 state/module: 即将重新生成 metas, 先做 async 状态同步
         await self.on_refresh_meta()
 
+        instruction = await self._main_state.get_instruction()
         dynamic = self.is_dynamic()
         name = self._name
         description = self.channel.description()
@@ -672,8 +809,11 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                     dynamic = True
                 command_metas.append(cmd_meta.model_copy())
 
-            context_message_task = asyncio.create_task(self._get_context_messages())
-            new_context_messages = await context_message_task
+            new_context_messages, notice_text, named_notices = await asyncio.gather(
+                self._get_context_messages(),
+                self._get_notice(),
+                self._get_named_notices(),
+            )
 
             meta = ChannelMeta(
                 name=name,
@@ -682,9 +822,11 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
                 description=description,
                 states=states_data,
                 current_state=self._current_state_name or '',
-                modules=list(self._modules.keys()),
+                modules=list(self._available_modules().keys()),
                 context=new_context_messages,
-                instruction=self._on_startup_instruction,
+                instruction=instruction,
+                notice=notice_text,
+                named_notices=named_notices,
             )
             meta.dynamic = dynamic
             meta.commands = command_metas
@@ -706,10 +848,9 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
 
     async def _get_context_messages(self) -> list[Message]:
         funcs = [self._main_state.get_context_messages()]
-        if len(self._modules) > 0:
-            for module in self._modules.values():
-                if hasattr(module, 'get_context_messages'):
-                    funcs.append(module.get_context_messages())
+        for module in self._available_modules().values():
+            if hasattr(module, 'get_context_messages'):
+                funcs.append(module.get_context_messages())
         # TODO: 考虑用 XML tag 包裹每个 module 的 context messages，
         # 避免自由合并产生的割裂感（模型不知道哪些内容来自哪个模块）。
         if current_state := self._get_current_state():
@@ -722,6 +863,60 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             else:
                 self.logger.error("%r get context messages receive invalid result %r", self, t)
         return list(self._wrap_messages(result))
+
+    async def _get_notice(self) -> str:
+        funcs = [self._main_state.get_notice()]
+        for module in self._available_modules().values():
+            if hasattr(module, 'get_notice'):
+                funcs.append(module.get_notice())
+        if current_state := self._get_current_state():
+            funcs.append(current_state.get_notice())
+        parts = []
+        done = await asyncio.gather(*funcs, return_exceptions=True)
+        for t in done:
+            if isinstance(t, str) and t:
+                parts.append(t)
+            elif isinstance(t, Exception):
+                self.logger.error("%r get notice receive error: %s", self, t)
+        return '\n'.join(parts)
+
+    async def _get_named_notices(self) -> dict[str, str | None]:
+        merged: dict[str, str | None] = {}
+        if catalog := self._gated_children():
+            # gate: 未挂载的子通道没有 meta 节点, 目录是模型知道它们存在的唯一入口.
+            # 目录随挂载变化重发; 全部卸载时 key 缺席, 模型收到 <gated_children removed/>.
+            merged[GATED_CHILDREN_NOTICE] = "\n".join(
+                f"- {name} ({'open' if name in self._opened_children else 'closed'}): {child.description()}"
+                for name, child in catalog.items()
+            )
+        # 带上来源, 重名时日志才能指出是谁和谁撞了.
+        sources = [
+            ("main state", self._main_state.get_named_notices()),
+        ]
+        for module in self._available_modules().values():
+            if hasattr(module, 'get_named_notices'):
+                sources.append(("module %r" % module.name(), module.get_named_notices()))
+        if current_state := self._get_current_state():
+            sources.append(("state %r" % current_state.name(), current_state.get_named_notices()))
+        done = await asyncio.gather(*(coro for _, coro in sources), return_exceptions=True)
+        for (origin, _), t in zip(sources, done):
+            if isinstance(t, Exception):
+                self.logger.error("%r get named notices from %s receive error: %s", self, origin, t)
+                continue
+            if not isinstance(t, dict):
+                self.logger.error(
+                    "%r get named notices from %s receive invalid result %r", self, origin, t
+                )
+                continue
+            for name, text in t.items():
+                if name in merged:
+                    self.logger.error(
+                        "%r duplicate named notice %r from %s, keeping the first one",
+                        self, name, origin,
+                    )
+                    continue
+                merged[name] = text
+        return merged
 
     def _wrap_messages(self, messages: Iterable[Message | str | Image]) -> Iterable[Message]:
         for msg in messages:
@@ -769,13 +964,17 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             commands[self._stop_current_command.name()] = self._stop_current_command
         if len(self._dynamic_states) > 0:
             commands[self._switch_state_command.name()] = self._switch_state_command
+        if self._gate:
+            if len(self._gated_children()) > 0:
+                commands[self._mount_child_command.name()] = self._mount_child_command
+            if len(self._opened_children) > 0:
+                commands[self._unmount_child_command.name()] = self._unmount_child_command
 
         # modules — 永久能力模块，累积叠加。main_state 的命令优先。
-        if len(self._modules) > 0:
-            for module in self._modules.values():
-                for name, command in module.own_commands().items():
-                    if name not in commands:
-                        commands[name] = command
+        for module in self._available_modules().values():
+            for name, command in module.own_commands().items():
+                if name not in commands:
+                    commands[name] = command
 
         if self._current_state is not None:
             for name, command in self._current_state.own_commands().items():
@@ -801,6 +1000,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             return self._stop_current_command
         if len(self._dynamic_states) > 0 and name == self._switch_state_command.name():
             return self._switch_state_command
+        if self._gate and len(self._gated_children()) > 0 and name == self._mount_child_command.name():
+            return self._mount_child_command
+        if self._gate and len(self._opened_children) > 0 and name == self._unmount_child_command.name():
+            return self._unmount_child_command
 
         path, name = Command.split_unique_name(name)
         if path:
@@ -815,14 +1018,17 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             return self._stop_current_command
         if len(self._dynamic_states) > 0 and name == self._switch_state_command.name():
             return self._switch_state_command
+        if self._gate and len(self._gated_children()) > 0 and name == self._mount_child_command.name():
+            return self._mount_child_command
+        if self._gate and len(self._opened_children) > 0 and name == self._unmount_child_command.name():
+            return self._unmount_child_command
         command = self._main_state.get_own_command(name)
         if command is not None:
             return command
-        if len(self._modules) > 0:
-            for module in self._modules.values():
-                cmd = module.own_commands().get(name)
-                if cmd is not None:
-                    return cmd
+        for module in self._available_modules().values():
+            cmd = module.own_commands().get(name)
+            if cmd is not None:
+                return cmd
         if self._current_state is None:
             return None
         return self._current_state.get_own_command(name)
@@ -869,7 +1075,6 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         # 准备 start up 的运行.
         main_state = self._main_state
         await main_state.on_startup()
-        self._on_startup_instruction = await main_state.get_instruction()
 
         # 启动所有永久能力模块。
         for module in self._modules.values():

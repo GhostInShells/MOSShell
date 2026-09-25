@@ -12,14 +12,13 @@ from typing import Callable
 
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.workspace import Storage, LocalStorage
-from ghoshell_moss.contracts.cache import Cache
-from ghoshell_moss.core.cache import SqliteCache
-from ghoshell_moss.core.blueprint.parameter import ParameterStore
-from ghoshell_moss.core.parameter import SessionParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
+from ghoshell_moss.core.concepts.qa import QAManager
+from ghoshell_moss.core.blueprint.parameter import Parameters
 from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputItem, OutputBuffer, Sample, StreamSubscriber,
 )
+from ghoshell_moss.core.parameter import MemoryBus, MemoryParametersBroadcaster, TruthHostParameters
 from ghoshell_moss.core.session.utils import SimpleOutputBuffer
 
 __all__ = ["MockSession", "SimpleOutputBuffer"]
@@ -79,15 +78,17 @@ class MockSession(Session):
             self,
             session_scope: str = "mock_scope",
             *,
-            session_id: str | None = None,
+            run_id: str | None = None,
             topics: TopicService | None = None,
+            qa_manager: QAManager | None = None,
             storage: Storage | None = None,
     ):
         from ghoshell_moss.message import unique_id
 
         self._session_scope = session_scope
-        self._session_id = session_id or unique_id()
+        self._run_id = run_id or unique_id()
         self._topics = topics
+        self._qa_manager = qa_manager
         self._running = True
         self._stream_key_prefix = f"MOSS/{session_scope}/streams"
 
@@ -110,28 +111,13 @@ class MockSession(Session):
         self.outputs: list[OutputItem] = []
         self.stream_pubs: dict[str, list[bytes]] = {}
 
+        # parameters — 进程内 host 真值 (无 zenoh), 生命周期随 session.
+        self._parameter_bus = MemoryBus()
+        self._parameters: Parameters | None = None
+
     @property
     def storage(self) -> Storage:
         return self._session_root_storage
-
-    @property
-    def tmp_storage(self) -> Storage:
-        return self._session_root_storage.sub_storage('tmp')
-
-    @property
-    def cache(self) -> Cache:
-        if not hasattr(self, '_cache'):
-            db_path = Path(self.tmp_storage.abspath()) / 'cache.db'
-            self._cache = SqliteCache(db_path)
-        return self._cache
-
-    @property
-    def parameters(self) -> ParameterStore:
-        if not hasattr(self, '_parameters'):
-            self._parameters = SessionParameterStore(self)
-        return self._parameters
-
-    # ── storages ──────────────────────────────
 
     # ── properties ──────────────────────────────
 
@@ -140,16 +126,22 @@ class MockSession(Session):
         return self._session_scope
 
     @property
-    def session_id(self) -> str:
-        return self._session_id
+    def run_id(self) -> str:
+        return self._run_id
 
     @property
     def topics(self) -> TopicService:
         return self._topics
 
-    def _make_session_level_storage(self, storage: Storage) -> Storage:
-        scope_level_storage = storage.sub_storage(self._session_scope)
-        return scope_level_storage.sub_storage(f"session-{self._session_id}")
+    @property
+    def qa(self) -> QAManager | None:
+        return self._qa_manager
+
+    @property
+    def parameters(self) -> Parameters:
+        if self._parameters is None:
+            raise RuntimeError("parameters not started (session not entered)")
+        return self._parameters
 
     # ── signal ──────────────────────────────────
 
@@ -191,7 +183,7 @@ class MockSession(Session):
         return (
             f"Session:\n"
             f"  scope: {self._session_scope}\n"
-            f"  session_id: {self._session_id}\n"
+            f"  run_id: {self._run_id}\n"
             f"  transport: mock (in-process)\n"
             f"  stream key prefix: {self._stream_key_prefix}\n"
         )
@@ -237,9 +229,16 @@ class MockSession(Session):
 
     async def __aenter__(self):
         self._running = True
+        self._parameters = TruthHostParameters(
+            "mock", MemoryParametersBroadcaster(self._parameter_bus),
+        )
+        await self._parameters.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._parameters is not None:
+            await self._parameters.__aexit__(exc_type, exc_val, exc_tb)
+            self._parameters = None
         self._running = False
         # 通知所有 stream subscriber 结束
         for subs in self._stream_queues.values():

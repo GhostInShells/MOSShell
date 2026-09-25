@@ -37,6 +37,7 @@ __all__ = [
     'reflect_imported_locals_by_modulename', 'reflect_class_with_public_methods',
     'join_prompt_lines', 'join_attr_prompts',
     'AttrPrompts',
+    'reflect_imported_attr',
 ]
 
 AttrPrompts = Iterable[Tuple[str, str]]

@@ -1,0 +1,8 @@
+# 挂本 skill 的 plugin. plugin.ts 与本 patch 同目录 (home/profiles/web/),
+# 相对路径 ./plugin.ts.
+#
+# 验证 mock LlmAdapter 产出 tool-use 的机制, 走 web profile 内置 apiproxy + agent-loop,
+# 不需要 sdk-jsonrpc-server, 不需要真实 LLM API key.
+- insert:
+    - id: mock-llm-frame
+      name: './plugin.ts'

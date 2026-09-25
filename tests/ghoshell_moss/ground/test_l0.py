@@ -12,6 +12,8 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
+    LawArguments,
+    LawPin,
     LsArguments,
     LsPin,
     Pin,
@@ -122,13 +124,13 @@ class TestLoadL0:
         (tmp_path / DEFAULT_L0_FILENAME).write_text(
             "---\n"
             '$id: "moss:ghost"\n'
-            "label: myground\n"
+            "name: myground\n"
             "---\n"
             "\nbody\n"
         )
         c = load_l0(tmp_path)
         assert c.convention.id == "moss:ghost"
-        assert c.convention.label == "myground"
+        assert c.convention.name == "myground"
 
 
 # -- dump ------------------------------------------------------------------
@@ -208,6 +210,40 @@ class TestDumpL0:
         assert "verb: file" in text
         assert "path: a.py" in text  # inside arguments
         assert "range: 1-5" in text  # inside arguments
+
+    def test_law_pin_roundtrip(self, tmp_path):
+        dump_l0_pins(
+            tmp_path,
+            [LawPin(label="claude", arguments=LawArguments(filename="CLAUDE.md", budget=500, lines=20))],
+        )
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "verb: law" in text
+        assert "filename: CLAUDE.md" in text
+        loaded = load_l0(tmp_path)
+        assert len(loaded.pins) == 1
+        pin = loaded.pins[0]
+        assert isinstance(pin, LawPin)
+        assert pin.arguments.filename == "CLAUDE.md"
+        assert pin.arguments.budget == 500
+        assert pin.arguments.lines == 20
+
+    def test_always_show_roundtrip(self, tmp_path):
+        dump_l0_pins(
+            tmp_path,
+            [LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"), always_show=True)],
+        )
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "always_show: true" in text
+        loaded = load_l0(tmp_path).pins
+        assert loaded[0].always_show is True
+
+    def test_always_show_defaults_false_and_omitted(self, tmp_path):
+        dump_l0_pins(
+            tmp_path,
+            [FilePin(label="f", arguments=FileArguments(path="a.py"))],
+        )
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "always_show" not in text
 
 
 class TestL0Contents:

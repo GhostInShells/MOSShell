@@ -7,16 +7,6 @@
 # --
 # Mode Provider 清单 — mode 专属 IoC 声明。
 # 在此定义 Provider 实例以扩展或覆盖全局 providers。
-
-from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
-from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
-from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerProvider
-
-# audio player
-player_service_provider = AudioPlayerProvider()
-
-# text-to-speech
-tts_service_provider = TTSServiceProvider()
-
-# speech service
-speech_service_provider = TTSSpeechServiceProvider()
+#
+# 音频/语音 provider (tts/speech/player/audio_capture) 已全部迁到 project 级
+# MOSS.manifests.providers (基线能力, CLI 经 Matrix.new 可见).

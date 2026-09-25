@@ -1,0 +1,15 @@
+{
+  "name": "dsh-profile-dolores",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}

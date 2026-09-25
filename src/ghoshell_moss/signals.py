@@ -1,22 +1,22 @@
 """
-MOSS 系统 Signal 地图 — 所有 SignalMeta 的策展入口.
+MOSS signal map — the curated entry point to every SignalMeta.
 
-本模块不定义实现, 只做重导出, 让 developer / ghost / channel 从单一入口
-即可了解系统内全部信号类型. 新的 SignalMeta 在此注册后, 通过
-architecture.py 加入认知地图.
+This module only re-exports; it does not define implementations. Developers,
+ghosts, and channels learn the full signal surface from one entry; a new
+SignalMeta is registered here and added to the cognitive map via architecture.py.
 
-**纪律**: SignalMeta 的实现随对应 Nucleus 同居 (`core/mindflow/xxx_nucleus.py`).
-本文件只 import + __all__. 不要在此就地 class body — 否则等于把两个抽象
-撕开放, 违反同伴原则.
+**Discipline**: a SignalMeta's implementation lives with its nucleus
+(`core/mindflow/xxx_nucleus.py`). This file only imports + __all__; do not define
+a class body here — that would tear the two abstractions apart.
 
-目录:
-  InputSignalMeta   — 用户输入 (优先级 NOTICE, default mode)
-  NotifySignalMeta  — 不丢消息 (优先级 NOTICE, notify mode)
-  InterruptSignalMeta — 急停中断 (优先级 FATAL, interrupt mode)
-  CommandSignalMeta — 命令执行 (优先级 NOTICE, command_only mode)
-  SilentSignalMeta  — 静默聚合 (优先级 NOTICE, silent mode)
-  AudioSignal       — 音频感知 (优先级 NOTICE)
-  CellEventSignalMeta — Cell 生命周期事件 (优先级 BACKGROUND)
+Directory:
+  InputSignalMeta      — user message (NOTICE, default: turn toward the user)
+  NotifySignalMeta     — must-not-lose message (NOTICE, notify: buffer on loss)
+  InterruptSignalMeta  — stop now (FATAL, interrupt: take attention then drop)
+  CommandSignalMeta    — execute logos directly (NOTICE, command_only)
+  KnockSignalMeta      — losable attention request (NOTICE, default mode, dropped on loss)
+  AsideSignalMeta      — notice without interrupting (NOTICE, aside: buffer without attention)
+  CellEventSignalMeta  — cell lifecycle event (BACKGROUND, background_notice)
 """
 from ghoshell_moss.core.blueprint.mindflow import (
     InputSignalMeta,
@@ -25,9 +25,9 @@ from ghoshell_moss.core.mindflow import (
     NotifySignalMeta,
     InterruptSignalMeta,
     CommandSignalMeta,
-    SilentSignalMeta,
+    KnockSignalMeta,
+    AsideSignalMeta,
 )
-from ghoshell_moss.core.mindflow.audio_signal import AudioSignal
 from ghoshell_moss.core.mindflow.cell_event_nucleus import (
     CellEventSignalMeta,
     CellTransition,
@@ -38,8 +38,8 @@ __all__ = [
     'NotifySignalMeta',
     'InterruptSignalMeta',
     'CommandSignalMeta',
-    'SilentSignalMeta',
-    'AudioSignal',
+    'KnockSignalMeta',
+    'AsideSignalMeta',
     'CellEventSignalMeta',
     'CellTransition',
 ]

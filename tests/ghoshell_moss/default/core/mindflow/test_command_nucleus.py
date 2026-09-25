@@ -126,12 +126,12 @@ def test_build_impulse_drops_wrong_signal_name():
 
 @pytest.mark.asyncio
 async def test_add_signal_fires_impulse_via_bus():
-    """add_signal 应立刻通过 impulse_notify 投递 (fire-and-forget)."""
+    """add_signal 应立刻通过 fire_impulse 投递 (fire-and-forget)."""
     notified: list[Impulse] = []
     async with CommandNucleus() as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(_signal('go'))
     assert len(notified) == 1
@@ -146,7 +146,7 @@ async def test_add_signal_does_not_fire_when_not_running():
     nuc = CommandNucleus()
     nuc.with_bus(
         signal_broadcast=lambda s: None,
-        impulse_notify=lambda imp: notified.append(imp),
+        fire_impulse=lambda imp: notified.append(imp),
     )
     # 不进入 __aenter__ → not running.
     nuc.add_signal(_signal('ghost'))
@@ -160,7 +160,7 @@ async def test_add_signal_does_not_fire_on_empty_logos():
     async with CommandNucleus() as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         empty = CommandSignalMeta(logos='').to_signal()
         nuc.add_signal(empty)
@@ -174,7 +174,7 @@ async def test_add_signal_does_not_fire_on_wrong_signal_name():
     async with CommandNucleus() as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(Signal.new('input'))
     assert notified == []
@@ -208,13 +208,13 @@ async def test_peek_returns_cached_impulse_after_signal():
 
 
 @pytest.mark.asyncio
-async def test_pop_impulse_clears_cache():
-    """pop_impulse 后 peek 应回到 None — 模拟 mindflow 仲裁后通知清状态."""
+async def test_attended_clears_cache():
+    """attended 后 peek 应回到 None — 模拟 mindflow 仲裁后通知清状态."""
     async with CommandNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: None)
         nuc.add_signal(_signal('cmd'))
         cached = nuc.peek()
-        nuc.pop_impulse(cached)
+        nuc.attended(cached)
         assert nuc.peek() is None
 
 

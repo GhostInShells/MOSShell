@@ -40,10 +40,11 @@ async def running_sp(cwd: Path):
 class TestLifecycle:
 
     @pytest.mark.asyncio
-    async def test_spawn_before_enter(self, sp_cwd, sp_output):
+    async def test_spawn_without_enter_lazy_start(self, sp_cwd, sp_output):
+        # 惰性启动: 无需 async with, 首次 spawn 自动进入启动态.
         sp = SubprocessesImpl(cwd=sp_cwd)
-        with pytest.raises(RuntimeError, match="not started"):
-            await sp.execute("true")
+        proc = await sp.execute("true")
+        assert await proc.process.wait() == 0
 
     @pytest.mark.asyncio
     async def test_spawn_after_exit(self, sp_cwd, sp_output):
@@ -55,11 +56,10 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_enter_exit(self, sp_cwd, sp_output):
         sp = SubprocessesImpl(cwd=sp_cwd)
-        assert sp._started is False
+        assert sp.is_running() is False
         async with sp:
-            assert sp._started is True
-            assert sp._stopped is False
-        assert sp._stopped is True
+            assert sp.is_running() is True
+        assert sp.is_running() is False
 
 
 # ============================================================
@@ -320,7 +320,7 @@ class TestOwnerShutdown:
             m1 = await sp.execute("sleep", "30")
             m2 = await sp.execute("sleep", "30")
             assert len(sp.executing()) >= 2
-        assert sp._stopped is True
+        assert sp.is_running() is False
         assert m1.process.returncode is not None
         assert m2.process.returncode is not None
 
@@ -352,7 +352,6 @@ class TestOnExit:
             await managed.process.wait()
             await asyncio.sleep(0.1)
             assert received == [0]
-            assert managed._exit_fired is True
 
     @pytest.mark.asyncio
     async def test_add_done_callback_after_exit_fires_immediately(self, sp_cwd, sp_output):
@@ -360,7 +359,6 @@ class TestOnExit:
             managed = await sp.execute("true")
             await managed.process.wait()
             await asyncio.sleep(0.1)
-            assert managed._exit_fired is True
 
             received: list = []
             managed.add_done_callback(lambda meta: received.append(meta.exit_code))
@@ -413,7 +411,7 @@ class TestConcurrency:
             for p in procs:
                 assert p.process.pid > 0
                 assert p.process.returncode is None
-        assert sp._stopped is True
+        assert sp.is_running() is False
         for p in procs:
             assert p.process.returncode is not None
 

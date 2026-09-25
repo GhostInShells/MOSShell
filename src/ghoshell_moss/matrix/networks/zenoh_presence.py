@@ -39,6 +39,7 @@ from ghoshell_moss.core.blueprint.cell import (
     CellEvent,
     Cell,
     CellPresence,
+    CellEventLevel,
 )
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss.matrix.networks._utils import CellsKeyspace, CellKeyExpr
@@ -132,17 +133,27 @@ class ZenohCellPresence(CellPresence):
                 f"call `async with presence: ...` before provide_channel"
             )
 
+        # 一次性 node (event_level 低于感知阈值 INFO) 不 provide channel —
+        # provide 的副作用就是 publish 'channel added' event, 静默 cell 提供
+        # 能力自相矛盾. 自洽闸口 (§10.6 轻闸口).
+        if not self._cell_presence.persist:
+            raise RuntimeError(
+                f"cell {self._cell_presence.address} is a one-shot node; "
+                f"it cannot provide channel."
+            )
+
         provider = self._hub.provider(self._cell_presence.address)
 
-        # 副作用: 更新 payload, 广播事件.
+        # 副作用: 更新 payload, 广播一条 refetch 提示.
+        # content 为空 = 纯结构变更提示 (观察者侧据此 refetch 并建 proxy), 不进 signal.
         if 'channel' not in self._cell_presence.providing:
             self._cell_presence.providing.append('channel')
         self._cell_presence.update()
         try:
-            await self.publish_event('channel added', updated=True)
+            await self.publish_event('', updated=True)
         except Exception:
             self._logger.exception(
-                "publish 'channel added' event failed for %s",
+                "publish refetch event failed for %s",
                 self._cell_presence.address,
             )
         return provider
@@ -152,6 +163,7 @@ class ZenohCellPresence(CellPresence):
             content: str,
             *,
             updated: bool = True,
+            event_level: CellEventLevel | None = None,
     ) -> None:
         if self._handles is None:
             raise RuntimeError(
@@ -162,6 +174,10 @@ class ZenohCellPresence(CellPresence):
             address=self._cell_presence.address,
             content=content,
             refetch=updated,
+            event_level=(
+                event_level if event_level is not None
+                else self._cell_presence.event_level
+            ),
         )
         payload = event.model_dump_json().encode('utf-8')
         try:

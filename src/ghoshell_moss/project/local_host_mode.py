@@ -3,9 +3,10 @@ import logging
 
 from ghoshell_moss.contracts import Workspace
 from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.core.blueprint.project import HostMode, HostModeMeta, ModeManifests
+from ghoshell_moss.core.blueprint.project import HostMode, HostModeMeta, HostModeManifests, ProjectManifest, MODE_MATRIX_MANIFESTS_PACKAGE
 from ghoshell_moss.contracts.workspace import LocalWorkspace
-from ghoshell_moss.project.manifests.mode_impl import ScannedModeManifests
+from ghoshell_moss.project.manifests.mode_impl import ScannedHostModeManifests
+from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
 
 __all__ = ['LocalHostMode']
 
@@ -30,7 +31,8 @@ class LocalHostMode(HostMode):
         self._logger = logger
 
         # 懒加载: 仅当 bootstrap() 调用后, manifests 才可用.
-        self._manifests: ModeManifests | None = None
+        self._manifests: HostModeManifests | None = None
+        self._matrix_manifests: ProjectManifest | None = None
 
     # -- 基础属性 -- #
 
@@ -67,8 +69,15 @@ class LocalHostMode(HostMode):
 
     # -- 能力声明 -- #
 
-    def manifests(self) -> ModeManifests:
+    def manifests(self) -> HostModeManifests:
         self._check_bootstrapped()
         if self._manifests is None:
-            self._manifests = ScannedModeManifests()
+            self._manifests = ScannedHostModeManifests()
         return self._manifests
+
+    def matrix_manifests(self) -> ProjectManifest:
+        """mode 级环境能力声明 — MATRIX.manifests, 初始全空."""
+        self._check_bootstrapped()
+        if self._matrix_manifests is None:
+            self._matrix_manifests = ScannedProjectManifest(MODE_MATRIX_MANIFESTS_PACKAGE)
+        return self._matrix_manifests

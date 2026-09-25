@@ -1,23 +1,19 @@
 ---
-title: AI Terminal — Ghost 的操作系统双手（Subprocesses rebase）
-status: in-progress
-status_note: >-
-  2026-07-19 Phase 2 复合 dogfooding 完成 (九动词全通: bash 4 + file_editor 5),
-  MOSS 首次用自己的 channel 能力写下 daily —— milestone
-  `.ai_partners/milestones/2026-07-19-moss-writes-its-own-daily.md`.
-  未闭环: `run` 退出 signal 在 CTML-as-tool 模式下不可观察 (等 cell-run-cycle
-  signal-watcher). project_home 改 default cwd 的三文件 diff 本地已 dogfood 通过,
-  但**未 commit**, 悬置等下一化身评估是否落地.
-priority: P0
 created: 2026-05-29
-updated: 2026-07-19
-depends: [cell-run-cycle, file-editor-contract]
+depends:
+- cell-run-cycle
+- file-editor-contract
+description: 'Ghost 最基础的操作系统工具链。Phase 1 (bash.exec/run + file.read/write, subprocess.run
+  后端) 已完成并 MCP 验证。Phase 2: read/write 移交 file_editor，exec/run rebase 到 Subprocesses（真后台进程
+  + 退出异步通知 + 进程可感知可查），两层构建。'
 milestone: prototype
-description: >-
-  Ghost 最基础的操作系统工具链。Phase 1 (bash.exec/run + file.read/write,
-  subprocess.run 后端) 已完成并 MCP 验证。Phase 2: read/write 移交
-  file_editor，exec/run rebase 到 Subprocesses（真后台进程 + 退出异步通知
-  + 进程可感知可查），两层构建。
+priority: P0
+status: completed
+status_note: '2026-07-19 Phase 2 (Subprocesses rebase) 实装 + 复合 dogfooding 九动词全通, MOSS
+  自举写 daily (milestone). 转交: run 退出 signal→cell-run-cycle signal-watcher; project_home
+  cwd 三文件 diff 悬置待跨 workstream 对齐; GUI 化→desktop-gui (命名待定). 2026-08-11 清理判定原型闭环'
+title: AI Terminal — Ghost 的操作系统双手（Subprocesses rebase）
+updated: '2026-08-11'
 ---
 
 # AI Terminal

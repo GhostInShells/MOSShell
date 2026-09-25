@@ -7,20 +7,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections import OrderedDict
 from pathlib import Path
 
+from pathspec import PathSpec
+from ulid import ULID
+
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._chain import collect_chain
-from ghoshell_moss.ground._hash import PinShadow, observe_sync
 from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
 from ghoshell_moss.ground._render import render_context
 from ghoshell_moss.ground.contract import (
     Ground,
     GroundConvention,
-    GlobPin,
     Pin,
-    UpdateResult,
+    RenderedView,
+    Snapshot,
 )
 
 __all__ = ["DefaultGround"]
@@ -30,9 +33,10 @@ class DefaultGround(Ground):
     """Ground ABC 的默认实现.
 
     Internal state:
-    - _pins: OrderedDict[label, Pin] — 最新 pin/update 在前
-    - _shadows: dict[label, PinShadow] — 运行时观察影子, 不进盘
+    - _id: 实例身份 ULID, 构造时固定 (render/meta 不暴露, 供消费方做 runtime 身份)
+    - _pins: OrderedDict[label, Pin] — 最新 pin 在前
     - _body: GROUND.md body, 每次 load 时更新
+    - _last_snapshot_hash: 上一帧感知 digest (进程内侧影, 不落盘)
     """
 
     def __init__(
@@ -44,17 +48,23 @@ class DefaultGround(Ground):
         *,
         workspace_root: Path | None = None,
     ) -> None:
+        self._id = str(ULID())
         self._label = label
         self._root = root.resolve()
         self._doc_path = doc_path.resolve()
         self._convention = convention
         self._workspace_root = workspace_root
         self._pins: OrderedDict[str, Pin] = OrderedDict()
-        self._shadows: dict[str, PinShadow] = {}
         self._body: str = ""
         self._dirty: bool = False
+        self._last_snapshot_hash: str | None = None
+        self._ignore_spec: PathSpec | None = self._make_ignore_spec()
 
     # -- 元信息 -----------------------------------------------------------
+
+    @property
+    def id(self) -> str:
+        return self._id
 
     @property
     def label(self) -> str:
@@ -81,52 +91,63 @@ class DefaultGround(Ground):
         self._pins[pin.label] = pin
         self._pins.move_to_end(pin.label, last=False)
         self._dirty = True
-
-        # 初始观察 — 建立 shadow 基线
-        anchor = self._make_anchor()
-        obs = observe_sync(pin, anchor)
-        self._shadows[pin.label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
         return pin
 
     def unpin(self, label: str) -> None:
         del self._pins[label]
-        self._shadows.pop(label, None)
         self._dirty = True
-
-    # -- 对账 -------------------------------------------------------------
-
-    async def update(self, label: str) -> UpdateResult:
-        pin = self._pins[label]  # KeyError if missing
-        old_shadow = self._shadows.get(label, PinShadow())
-
-        anchor = self._make_anchor()
-        obs = await asyncio.to_thread(observe_sync, pin, anchor)
-
-        changed = old_shadow.hash != obs.hash
-        self._shadows[label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
-        self._pins.move_to_end(label, last=False)
-        self._dirty = True
-
-        return UpdateResult(
-            label=label,
-            changed=changed,
-            old_hash=old_shadow.hash,
-            new_hash=obs.hash,
-            summary=_summary(pin, obs, changed),
-        )
 
     # -- 渲染 -------------------------------------------------------------
 
-    async def context(self) -> str:
-        return await render_context(
-            body=self._body,
+    async def render(self, *, cwd: Path | None = None) -> RenderedView:
+        """Render the ground → RenderedView.
+
+        cwd=None / cwd==doc_path 目录: ground-root mode. 其余: walk mode.
+        """
+        anchor = self._make_anchor(cwd=cwd)
+        if cwd is None or cwd.resolve() == self._doc_path.parent.resolve():
+            return await render_context(
+                body=self._body,
+                pins=list(self._pins.values()),
+                anchor=anchor,
+                ground_name=self._convention.name or self._root.name,
+                ground_description=self._convention.description,
+                ground_id=self._convention.id,
+                ignore=self._ignore_spec,
+            )
+        from ghoshell_moss.ground._render import render_walk
+
+        return await render_walk(
+            cwd=cwd,
+            ground_root=self._doc_path.parent,
+            doc_path=self._doc_path,
             pins=list(self._pins.values()),
-            shadows=dict(self._shadows),
-            anchor=self._make_anchor(),
+            label=self._convention.name or self._root.name,
+            ground_id=self._convention.id,
+            ignore=self._ignore_spec,
         )
 
+    async def snapshot(
+        self, *, ack_hash: str | None = None, cwd: Path | None = None,
+    ) -> Snapshot:
+        """渲染 + 感知对账 — 缓存推进语义见 ABC docstring."""
+        view = await self.render(cwd=cwd)
+        digest = hashlib.sha256(view.to_markdown().encode("utf-8")).hexdigest()
+        base = ack_hash if ack_hash is not None else self._last_snapshot_hash
+        changed = base is not None and base != digest
+        self._last_snapshot_hash = digest
+        return Snapshot(view=view, hash=digest, changed=changed)
+
+    async def context(self) -> str:
+        return str(await self.render())
+
+    @property
+    def ignore_spec(self) -> PathSpec | None:
+        """场级 ignore 规则 — 从 convention 的 ignore + ignore_file 合并."""
+        return self._ignore_spec
+
     async def chain_text(self) -> str:
-        """返回法链 body (供 meta / instruction 使用)."""
+        """返回本场 body (法), 供 meta / instruction 使用."""
         return await asyncio.to_thread(collect_chain, self._doc_path.parent)
 
     # -- 生命周期 ---------------------------------------------------------
@@ -140,10 +161,11 @@ class DefaultGround(Ground):
             load_l0, self._doc_path.parent, self._doc_path.name
         )
         self._body = contents.body
+        self._convention = contents.convention
         self._pins = OrderedDict(
             (p.label, p) for p in contents.pins
         )
-        self._shadows.clear()
+        self._ignore_spec = self._make_ignore_spec()
         self._dirty = False
 
     async def sediment(self) -> None:
@@ -160,21 +182,39 @@ class DefaultGround(Ground):
 
     # -- internal ---------------------------------------------------------
 
-    def _make_anchor(self) -> Anchor:
+    def _make_anchor(self, *, cwd: Path | None = None) -> Anchor:
         return Anchor(
             ground=self._doc_path.parent.resolve(),
-            cwd=self._root,
+            cwd=cwd or self._root,
         )
 
+    def _make_ignore_spec(self) -> PathSpec | None:
+        """Build a merged PathSpec from convention ignore + ignore_file.
 
-# -- helpers --------------------------------------------------------------
+        Inline ``ignore`` list and file content are merged — both use
+        .gitignore syntax.  Returns None if neither is configured.
+        """
+        patterns: list[str] = []
 
+        if self._convention.ignore:
+            patterns.extend(self._convention.ignore)
 
-def _summary(pin: Pin, obs, changed: bool) -> str:
-    if not changed:
-        return "no change"
-    if not obs.exists:
-        return "target removed"
-    if isinstance(pin, GlobPin):
-        return "glob hit set changed"
-    return "content changed"
+        if self._convention.ignore_file:
+            ignore_path = self._root / self._convention.ignore_file
+            if ignore_path.is_file():
+                try:
+                    file_patterns = ignore_path.read_text(
+                        encoding="utf-8", errors="replace",
+                    ).splitlines()
+                    # Strip comments and blanks, but keep negation (!) lines
+                    file_patterns = [
+                        ln for ln in file_patterns
+                        if ln.strip() and not ln.strip().startswith("#")
+                    ]
+                    patterns.extend(file_patterns)
+                except OSError:
+                    pass
+
+        if not patterns:
+            return None
+        return PathSpec.from_lines("gitignore", patterns)

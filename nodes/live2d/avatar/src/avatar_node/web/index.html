@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Live2D Avatar</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <!-- 加载顺序有依赖: pixi → core → framework(pixi-live2d-display). -->
+    <script src="/vendor/pixi.min.js"></script>
+    <script src="/vendor/live2dcubismcore.min.js"></script>
+    <script src="/vendor/cubism4.min.js"></script>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="status">连接中…</div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

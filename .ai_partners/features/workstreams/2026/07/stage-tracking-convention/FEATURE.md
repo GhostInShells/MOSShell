@@ -1,14 +1,13 @@
 ---
-title: Stage Tracking Convention
-status: in-progress
-priority: P1
 created: 2026-07-24
-updated: 2026-07-24
 depends: []
-milestone:
-description: >-
-  阶段级开发轨迹机制 (.ai_partners/stages/) — 承载一个时间段的方向、目标、
-  验收与复盘，填补 features(战术) 与 milestones(时刻) 之间的战略层空缺。
+description: 阶段级开发轨迹机制 (.ai_partners/stages/) — 承载一个时间段的方向、目标、 验收与复盘，填补 features(战术)
+  与 milestones(时刻) 之间的战略层空缺。
+milestone: null
+priority: P1
+status: completed
+title: Stage Tracking Convention
+updated: '2026-07-31'
 ---
 
 # Stage Tracking Convention

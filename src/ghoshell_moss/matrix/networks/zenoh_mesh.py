@@ -35,6 +35,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
 from ghoshell_moss.core.blueprint.cell import (
+    AutoAcceptPolicy,
     CellAddress,
     CellEvent,
     Cell,
@@ -115,6 +116,7 @@ class ZenohCellNetwork(CellNetwork):
 
         self._cell_subscriber: zenoh.Subscriber | None = None
         self._event_subscriber: zenoh.Subscriber | None = None
+        self._channel_provided_callbacks: set[Callable[[CellAddress, ChannelProxy], None]] = set()
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._started = False
@@ -292,6 +294,20 @@ class ZenohCellNetwork(CellNetwork):
             else:
                 self._try_drop_proxy(cell.address)
 
+    def auto_accept(self) -> AutoAcceptPolicy:
+        return AutoAcceptPolicy(
+            local=self._auto_accept_local,
+            foreign=self._auto_accept_foreign,
+        )
+
+    def on_channel_provided(self, callback: Callable[[CellAddress, ChannelProxy], None]) -> Callable[[], None]:
+        self._channel_provided_callbacks.add(callback)
+
+        def _unsub() -> None:
+            self._channel_provided_callbacks.discard(callback)
+
+        return _unsub
+
     async def accept(self, address: CellAddress, *, lookup: bool = False) -> None:
         # UU-8: accept 集 (承认表达, 与在线正交). 显式 accept 覆盖 reject.
         self._reject_set.discard(address)
@@ -352,24 +368,26 @@ class ZenohCellNetwork(CellNetwork):
         return self._auto_accept_foreign
 
     def _try_build_proxy(self, cell: Cell) -> None:
-        """幂等: 应建且未建时走 hub.proxy 建 (name_hint=fullname)."""
+        """幂等: 应建且未建时走 hub.proxy 建. 命名归 mesh channel, 这里只按 address 建."""
         address = cell.address
         if address in self._accepted:
             return
         if not self._should_build_proxy(cell):
             return
-        hint = cell.fullname or address.replace('/', '_')
         try:
-            proxy = self._hub.proxy(address, name_hint=hint)
+            proxy = self._hub.proxy(address)
         except Exception:
-            self._logger.exception(
-                "hub.proxy failed: address=%s hint=%s", address, hint,
-            )
+            self._logger.exception("hub.proxy failed: address=%s", address)
             return
         self._accepted[address] = proxy
-        self._logger.debug(
-            "proxy built: address=%s hint=%s", address, hint,
-        )
+        for callback in list(self._channel_provided_callbacks):
+            try:
+                callback(address, proxy)
+            except Exception:
+                self._logger.exception(
+                    "on_channel_provided callback failed: address=%s", address,
+                )
+        self._logger.debug("proxy built: address=%s", address)
 
     def _try_drop_proxy(self, address: CellAddress) -> None:
         """幂等: 从 _accepted pop + hub.drop_proxy 释放 zenoh 资源."""
@@ -381,12 +399,6 @@ class ZenohCellNetwork(CellNetwork):
         except Exception:
             self._logger.exception("hub.drop_proxy failed for %s", address)
         self._logger.debug("proxy dropped: address=%s", address)
-
-    def recent_events(self, *, limit: int = 20) -> list[CellEvent]:
-        # deque 单写者 (consumer task), 读快照免锁靠 CPython GIL 保护 list(deque).
-        snapshot = list(self._event_buffer)
-        snapshot.reverse()
-        return snapshot[:limit]
 
     def cell_events(
             self,
@@ -489,6 +501,8 @@ class ZenohCellNetwork(CellNetwork):
         # (reject 会往 _reject_set 加, 这里只是清资源).
         for addr in list(self._accepted.keys()):
             self._try_drop_proxy(addr)
+
+        self._channel_provided_callbacks.clear()
 
         with self._cache_lock:
             self._cache.clear()

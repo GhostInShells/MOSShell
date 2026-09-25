@@ -1,17 +1,15 @@
 """Ghost agent blueprint — persistent intelligent agent with continuous memory and reflexivity."""
 
-import pathlib
-from typing import AsyncIterable, Optional
+from typing import AsyncIterable, Callable, Any, Literal
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusMeta, Articulator
-from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_moss.contracts import Storage
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusMeta, Thinking
+from ghoshell_moss.core.blueprint.channel_builder import Channel, ChannelFactory
 from ghoshell_moss.message import Message
-from dataclasses import dataclass
+from pydantic import BaseModel, Field
 
-__all__ = ['Ghost', 'GhostMeta', 'GhostWorkspace']
+__all__ = ['Ghost', 'GhostMeta', 'GhostEvent']
 
 
 class GhostMeta(ABC):
@@ -94,6 +92,20 @@ class GhostMeta(ABC):
         """
         pass
 
+Logos = str
+
+class GhostEvent(BaseModel):
+    """An out-of-band event on the logos stream, interleaved with ``Logos`` (``str``) deltas.
+
+    ``event`` is a namespaced type name (e.g. ``dsh/tool/call``) so consumers can dispatch by name
+    without colliding across ghosts. ``payload`` is transport-opaque — the producer decides its
+    shape and the consumer (typically a debug surface) renders it. The runtime routes ``str`` to the
+    logos broadcast and ``GhostEvent`` to the structured ``'ghost-event'`` output; see ``Ghost.think``.
+    """
+
+    event: str = Field(description="namespaced event type name")
+    payload: dict[str, Any] = Field(description="transport-opaque, JSON-serializable event payload")
+
 
 class Ghost(ABC):
     """
@@ -104,7 +116,7 @@ class Ghost(ABC):
     让模型知道"这个能力在框架中可被扩展"。
 
     必须实现的 abstractmethod 只有少数几个：
-    articulate(), system_prompt(), __aenter__, __aexit__.
+    think(), system_prompt(), __aenter__, __aexit__.
     """
 
     @property
@@ -134,7 +146,7 @@ class Ghost(ABC):
         """
         return []
 
-    def channel(self) -> Channel | None:
+    def channel(self) -> Channel | ChannelFactory | None:
         """
         Ghost 反身性控制的 Channel
         如果提供出来, 会以 'ghost' 为 channel 名注册到 Shell 中.
@@ -150,9 +162,12 @@ class Ghost(ABC):
         return None
 
     @abstractmethod
-    def articulate(self, articulator: Articulator) -> AsyncIterable[str]:
-        """
-        articulate the logos from context
+    def think(self, thinking: Thinking) -> AsyncIterable[Logos | GhostEvent]:
+        """Drive one articulate cycle from the given ``thinking`` and stream its output.
+
+        Yields two kinds of items, interleaved: ``Logos`` (``str``) deltas — the ghost's
+        spoken/acted text, streamed to the logos broadcast — and ``GhostEvent`` out-of-band
+        events, routed to the structured ``'ghost-event'`` output.
         """
         pass
 
@@ -169,35 +184,62 @@ class Ghost(ABC):
         """结束自身生命周期."""
         pass
 
-    # ── observability hooks ────────────────────────────────
+    # ── lifecycle hooks ──────────────────────────────
+
+    async def startup(self) -> None:
+        """Lifecycle hook (born) — called by GhostRuntime after wiring is complete.
+
+        Fired after ``ghost.__aenter__`` and mindflow wiring (nuclei running, signal routing
+        registered, main loops started). The ghost may here self-activate — e.g. read a mode
+        startup document and emit a self-wake signal. Default no-op; overridden by ghosts
+        that boot with an initial action.
+        """
+        return None
+
+    # ── observability surface ──────────────────────────────
     #
-    # Two prefix conventions, one purpose: let debuggers see what the ghost sees.
+    # Three verbs, three directions — one purpose: let debuggers see what the ghost sees.
     #
-    #   on_*      — event callback. Pushed by GhostRuntime when something happens.
-    #               Default no-op. Ghost authors override to record internal state.
+    #   on_*      — register a callback. The ghost emits something; external code
+    #               registers to be notified (ghost is the source, pushes out).
+    #               e.g. on_error(cb): runtime registers to learn about internal failure.
+    #   handle_*  — notification hook. GhostRuntime calls it to tell the ghost
+    #               something happened (ghost is the sink). Default no-op; ghost
+    #               authors override to record internal state.
+    #               e.g. handle_thinking_exit(thinking, error).
     #   inspect_* — state query. Pulled by REPL / scripts / GhostRuntime itself.
     #               Ghost authors override to expose internals.
     #
     # These are NOT lifecycle hooks. Lifecycle hooks (born / wake / sleep / die)
-    # will carry semantic weight for ghost state transitions. Observability hooks
-    # are purely diagnostic — removing them changes no behavior.
+    # will carry semantic weight for ghost state transitions. Observability
+    # verbs are purely diagnostic — removing them changes no behavior.
     #
-    # Naming is deliberately constrained to these two prefixes. Before adding a
-    # new hook, ask: is it an event (on_*) or a query (inspect_*)? If neither,
-    # it does not belong here.
+    # Naming is deliberately constrained to these three prefixes. Before adding a
+    # new surface, ask: is it a callback registration (on_*), a notification hook
+    # (handle_*), or a state query (inspect_*)? If neither, it does not belong here.
 
-    def on_articulate_exit(
+    def handle_thinking_exit(
             self,
-            articulator: Articulator,
-            logos: str,
-            error: Exception | None,
+            thinking: Thinking,
+            error: BaseException | None,
     ) -> None:
-        """Called after articulate() completes, success or failure.
+        """Called after think() completes, success or failure.
 
-        logos is the full concatenated model output from one articulate cycle.
-        error is non-None if articulation raised. Together with the articulator's
-        moment, this is enough to replay the cycle for deterministic reproduction.
+        error is non-None if thinking raised. Together with the ``thinking`` context, this is
+        enough to replay the cycle for deterministic reproduction.
         """
+        ...
+
+    def on_error(self, callback: Callable[[Exception], None]) -> None:
+        """Register an error callback — the ghost fires it when it detects an internal error.
+
+        Prevents silent failure: internal faults (dsh process exit, RPC failure, ...)
+        are otherwise only visible in logs. The runtime registers here to surface them
+        as error output.
+
+        :param callback: invoked with the detected Exception.
+        """
+        ...
 
     def inspect_state(self) -> dict:
         """Ghost internal runtime state snapshot.
@@ -212,7 +254,7 @@ class Ghost(ABC):
         """Last articulate context window snapshot.
 
         Returns the messages actually sent to the model in the most recent
-        articulate() call, as a serializable dict. Lets the debugger see
+        think() call, as a serializable dict. Lets the debugger see
         exactly what the model saw in a given cycle.
 
         Recommended structure (but not enforced):
@@ -221,8 +263,8 @@ class Ghost(ABC):
                 "messages": [...]       # conversation history / percepts as dicts
             }
 
-        Default returns {}. Ghost authors override in on_articulate_exit()
-        by capturing and storing the context before the model call.
+        Default returns {}. Ghost authors override this by capturing and storing the context
+        before the model call (see ``handle_thinking_exit``).
         """
         return {}
 
@@ -245,22 +287,3 @@ class Ghost(ABC):
         has no side effects outside the TUI session.
         """
         return None
-
-    # ── end observability hooks ────────────────────────────
-
-
-@dataclass(frozen=True)
-class GhostWorkspace:
-    """ Host 运行一个 Ghost 时为它准备的运行环境. 在 IoC 中可以获取. """
-
-    home: pathlib.Path  # host 为 ghost 分配的持久化存储区域.
-    source: Optional[pathlib.Path]  # ghost 源代码所处的环境.
-
-# ── 三层抽象 ──────────────────────────────────────────────
-#
-#   GhostPrototype   = type[GhostMeta]    # class，一族 ghost 的"型号"
-#   GhostBootstrapper = GhostMeta(...)    # instance，文件即配置，自解释可注册单元
-#   GhostRuntime      = Ghost             # instance，由 bootstrapper.factory(container) 产出
-#
-# 一个文件 = 一个 GhostMeta 实例 = 一个 Ghost 注册。
-# 系统先发现 Bootstrapper（理解元信息/契约），运行时通过 factory() 生成 Runtime。

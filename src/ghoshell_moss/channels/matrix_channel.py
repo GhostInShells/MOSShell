@@ -7,6 +7,18 @@
   镜像 mesh.channel_proxies(). CellEvent -> Signal 生产侧归本 channel.
 - matrix: 集成点. 静态挂 nodes/mesh. 本轮无 own commands.
 
+表面分层 (cold=instruction / warm=notice / hot=context, 见 channel_builder):
+本文件没有 perception 级数据, 不占热面. 所有运行时状态都是**状态级**变更, 走 warm 面:
+- nodes: 有生命周期的表面拆成 named_notices 片段 (running / exited / installed),
+  各自独立差分, 一个片段变动不拖其余. running/exited 尾部有上界
+  (show_running / show_dead); installed 只报计数, 目录交 list(). 实时量
+  (精确 uptime / 更长事件历史) 交 status() / read_output() 主动拉取.
+- mesh: auto_accept 策略走无名 notice (常驻), 事件尾部有上界 (show_events),
+  历史交 events() 主动拉取.
+
+两条纪律: 尾部必须有上界, 否则 transcript 单调膨胀; 行内文本必须**稳定**, 不得出现
+uptime / "N ago" 这类每次渲染都变的字段, 否则击穿差分退化成每轮全文重发.
+
 OS 工具 (bash / file_editor) 已迁至 desktop channel, 与 matrix 平级.
 
 Example:
@@ -23,6 +35,8 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
+import shlex
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,13 +50,18 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     new_channel,
 )
 from ghoshell_moss.core.blueprint.cell import (
+    AutoAcceptPolicy,
     CellEvent,
     CellAddress,
-    DuplicatedError,
+    CellAddressCodec,
+    CellEventLevel,
+    CellNetwork,
+    DuplicatedError, NodeManifest, NodeProbeError,
 )
 from ghoshell_moss.core.blueprint.matrix import CellHandle, Matrix
-from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
-from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.blueprint.mindflow import Priority
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel, new_prime_channel
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy
 from ghoshell_moss.signals import CellEventSignalMeta, CellTransition
 
 __all__ = [
@@ -60,21 +79,30 @@ _DEFAULT_SHOW_DEAD = 3
 _DEFAULT_SHOW_EVENTS = 8
 _EVENT_BUFFER = 128
 _STDERR_TAIL_LINES = 5
+_ONE_SHOT_OUTPUT_TAIL = 200
 
 
 # ==== helpers ====================================================
+
+# cell event level → signal priority 映射 (一处). None (系统约定) 视同 INFO.
+_EVENT_LEVEL_PRIORITY = {
+    CellEventLevel.INFO: Priority.BACKGROUND,
+    CellEventLevel.WARNING: Priority.WARNING,
+    CellEventLevel.ERROR: Priority.ERROR,
+    CellEventLevel.CRITICAL: Priority.CRITICAL,
+}
+
+
+def _signal_priority_for(event_level: CellEventLevel | None) -> Priority:
+    # 调用方保证 event_level 已感知 (>= INFO); DEBUG 由 _dispatch_event 提前 return,
+    # 不经过本映射. fallback 到 BACKGROUND 只是 fail-safe (未知档按最低感知处理).
+    level = CellEventLevel.resolve(event_level)
+    return _EVENT_LEVEL_PRIORITY.get(level, Priority.BACKGROUND)
 
 
 def _now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
 
-
-def _uid_short(address: str) -> str:
-    # address = kind/name/uid, uid 取前 8 位作短标识
-    parts = address.split('/')
-    if len(parts) >= 3 and parts[-1]:
-        return parts[-1][:8]
-    return address
 
 
 def _fmt_uptime(seconds: float) -> str:
@@ -89,20 +117,17 @@ def _fmt_uptime(seconds: float) -> str:
 def _resolve_handled_address(
         target: str, handled: dict[CellAddress, CellHandle],
 ) -> CellHandle | None:
-    """target 是完整 address 或 fullname_uidprefix 短形式. 唯一匹配才返回."""
+    """target 唯一命中才返回: 完整 address / alias / normalized address / 名段 / uid 前缀."""
     if not target:
         return None
     if target in handled:
         return handled[target]
-    # 尝试短形式匹配: fullname 或 uid 前缀
     matches: list[CellHandle] = []
     for addr, handle in handled.items():
-        cell = handle.runtime.cell
-        if cell.fullname == target:
+        if handle.runtime.alias == target:
             matches.append(handle)
-        elif addr.endswith(target):
-            matches.append(handle)
-        elif cell.uid.startswith(target):
+            continue
+        if CellAddressCodec(addr).match(target):
             matches.append(handle)
     if len(matches) == 1:
         return matches[0]
@@ -121,31 +146,87 @@ def _find_handle_in_all(
     if not target:
         return None
     for h in dead:
-        cell = h.runtime.cell
-        if h.address == target or cell.fullname == target or cell.uid.startswith(target):
+        if h.runtime.alias == target:
+            return h
+        if CellAddressCodec(h.address).match(target):
             return h
     return None
 
 
-def _fmt_running_row(handle: CellHandle) -> str:
-    cell = handle.runtime.cell
+# 行渲染分两套, 消费者不同:
+#   _fmt_status_* — 命令主动拉取, 可以带 uptime / "N ago" 这类易变字段.
+#   _fmt_notice_* — 进 notice 参与文本差分, 必须逐字稳定, 否则每轮都被判为"已变更".
+def _cell_label(handle: CellHandle) -> str:
+    """展示标签 = alias (address). alias 是本进程的命名承诺, address 是身份."""
+    alias = handle.runtime.alias
+    if alias:
+        return f'{alias} ({handle.address})'
+    return handle.address
+
+
+def _cell_target(handle: CellHandle) -> str:
+    """可寻址标签 (read_output/stop 的 target): alias 优先, 否则 address."""
+    return handle.runtime.alias or handle.address
+
+
+def _fmt_status_running(handle: CellHandle) -> str:
     meta = handle.process.meta
+    label = _cell_label(handle)
     uptime = _fmt_uptime(_now_ts() - meta.created)
-    return (
-        f'  {cell.fullname:<24} uid={_uid_short(handle.address)} '
-        f'uptime={uptime} pid={meta.pid}'
-    )
+    return f'  {label}  uptime={uptime} pid={meta.pid}'
 
 
-def _fmt_dead_row(handle: CellHandle) -> str:
-    cell = handle.runtime.cell
+def _fmt_status_dead(handle: CellHandle) -> str:
     meta = handle.process.meta
+    label = _cell_label(handle)
     code = meta.exit_code
     when = _fmt_uptime(_now_ts() - meta.updated)
     tail = ''
     if code not in (0, None):
-        tail = f' — nodes:read_output({cell.fullname}) for stderr'
-    return f'  {cell.fullname:<24} exit={code} ({when} ago){tail}'
+        tail = f' — read_output({_cell_target(handle)}) for stderr'
+    return f'  {label}  exit={code} ({when} ago){tail}'
+
+
+def _fmt_notice_running(handle: CellHandle) -> str:
+    return f'  {_cell_label(handle)}  pid={handle.process.meta.pid}'
+
+
+def _fmt_notice_dead(handle: CellHandle) -> str:
+    meta = handle.process.meta
+    label = _cell_label(handle)
+    code = meta.exit_code
+    tail = ''
+    if code not in (0, None):
+        tail = f' — read_output({_cell_target(handle)}) for stderr'
+    return f'  {label}  exit={code}{tail}'
+
+
+def _render_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """Column-align a small table; only the last column is left unpadded."""
+    if not rows:
+        return []
+    widths = [
+        max(len(headers[i]), *(len(r[i]) for r in rows))
+        for i in range(len(headers))
+    ]
+
+    def line(cells: list[str]) -> str:
+        padded = [
+            c if i == len(widths) - 1 else c.ljust(widths[i])
+            for i, c in enumerate(cells)
+        ]
+        return ('  ' + '  '.join(padded)).rstrip()
+
+    return [line(headers)] + [line(r) for r in rows]
+
+
+def _node_ident(rel_path: str, manifest: NodeManifest) -> str:
+    """rel_path is the run/read target; the manifest name adds identity only when
+    it differs from the directory name (e.g. sensors/listener → voice)."""
+    base = Path(rel_path).name
+    if manifest.name and manifest.name != base:
+        return f'{rel_path} ({manifest.name})'
+    return rel_path
 
 
 # ==== nodes channel ==============================================
@@ -183,35 +264,38 @@ def new_nodes_channel(
             if not p.is_absolute():
                 p = matrix.project.root.abspath_of(p)
             scan_paths = [p]
-        found = nodes_mgr.list_nodes(
+        found = await asyncio.to_thread(
+            nodes_mgr.list_nodes,
             refresh=refresh, paths=scan_paths, installed=installed,
         )
-        if not found:
-            return '[nodes] (empty)'
 
-        # 数运行中的 cell (按 fullname 聚合)
-        handled = matrix.handled_cells()
-        running_count: dict[str, int] = {}
-        for h in handled.values():
-            fn = h.runtime.cell.fullname
-            running_count[fn] = running_count.get(fn, 0) + 1
+        # 数运行中的 cell — 按 (category, name) 聚合, 与 Cell.fullname 同源.
+        running_count: dict[tuple[str, str], int] = {}
+        for h in matrix.handled_cells().values():
+            cell = h.runtime.cell
+            key = (cell.category, cell.name)
+            running_count[key] = running_count.get(key, 0) + 1
 
-        lines = [f'[nodes] discovered ({len(found)}):']
-        for rel_path, manifest in found.items():
+        rows: list[list[str]] = []
+        for rel_path, manifest in sorted(found.items()):
             if category and manifest.category != category:
                 continue
-            marker_installed = 'installed' if manifest.installed else 'NOT installed'
-            running = running_count.get(manifest.name, 0)
-            running_hint = f' running={running}' if running else ''
-            cat_hint = f' [{manifest.category}]' if manifest.category else ''
-            desc = manifest.description or ''
-            if desc:
-                desc = f' — {desc}'
-            lines.append(
-                f'  {rel_path:<32}{cat_hint} {marker_installed}'
-                f'{running_hint}{desc}'
-            )
-        return '\n'.join(lines)
+            running = running_count.get((manifest.category, manifest.name), 0)
+            rows.append([
+                _node_ident(rel_path, manifest),
+                manifest.category or '-',
+                'yes' if manifest.installed else 'no',
+                str(running) if running else '-',
+                manifest.description or '',
+            ])
+        if not rows:
+            return '[nodes] (empty)'
+        scope = f' category={category}' if category else ''
+        head = f'[nodes] discovered ({len(rows)}{scope}):'
+        table = _render_table(
+            ['path', 'category', 'installed', 'running', 'description'], rows,
+        )
+        return '\n'.join([head] + table)
 
     # -- read ---------------------------------------------------------
 
@@ -220,12 +304,12 @@ def new_nodes_channel(
         """Read a node manifest — frontmatter + instruction body."""
         if not target:
             CommandUtil.raise_observe(
-                "target required. Use nodes:list() to discover paths."
+                "target required. Use list() to discover paths."
             )
-        manifest = matrix.project.nodes.get_node(target)
+        manifest = await asyncio.to_thread(matrix.project.nodes.get_node, target)
         if manifest is None:
             CommandUtil.raise_observe(
-                f"node {target!r} not found. nodes:list() shows available paths."
+                f"node {target!r} not found. list() shows available paths."
             )
         lines = [
             f'[nodes:read {target}]',
@@ -233,6 +317,7 @@ def new_nodes_channel(
             f'description={manifest.description}',
             f'category={manifest.category or "(none)"}',
             f'singleton={manifest.singleton}',
+            f'persist={manifest.persist}',
             f'installed={manifest.installed}',
             f'exec={manifest.exec.command} {manifest.exec.args}',
             f'file={manifest.file}',
@@ -249,26 +334,67 @@ def new_nodes_channel(
     # -- run ----------------------------------------------------------
 
     @chan.build.command(name='run', blocking=False, always_observe=True)
-    async def run_node(target: str) -> str:
-        """Spawn a node cell. Nonblocking — organ appears next frame under matrix.mesh."""
+    async def run_node(target: str, alias: str = '', extra_args: str | None = None) -> str:
+        """Spawn a node cell. Nonblocking for persist nodes; blocking for one-shot.
+
+        alias: the branch name this process promises under matrix.mesh.<alias>.
+        Empty → the node name is used; duplicates get _2/_3. A one-shot node never
+        mounts, so its alias is inert.
+
+        One-shot (persist=false) cells run to completion — this command blocks
+        until exit and returns stdout/stderr tail + exit code (standard bash call).
+
+        extra_args: shell-like extra argv appended after the node's declared entry
+        args, shlex-split here. Use it for per-instance binding, e.g.
+        run('nodes/visions/stream', extra_args='--address rtmp://127.0.0.1/live').
+        """
         if not target:
             CommandUtil.raise_observe(
-                "target required. nodes:list() to discover paths."
+                "target required. list() to discover paths."
             )
+        argv = shlex.split(extra_args) if extra_args else None
         try:
-            handle = await matrix.run_node(Path(target))
+            handle = await matrix.run_node(
+                Path(target), extra_args=argv, alias=alias or None,
+            )
         except DuplicatedError as e:
             CommandUtil.raise_observe(
-                f'Singleton conflict: {e}. nodes:status() to inspect; '
-                f'nodes:stop(<address>) to release.'
+                f'Singleton conflict: {e}. status() to inspect; '
+                f'stop(<address>) to release.'
+            )
+        except NodeProbeError as e:
+            CommandUtil.raise_observe(
+                f'Node probe (check: in NODE.md) failed — refusing to launch. '
+                f'{e}'
             )
         except FileNotFoundError as e:
             CommandUtil.raise_observe(f'target not found: {e}')
         except RuntimeError as e:
             CommandUtil.raise_observe(str(e))
+        label = _cell_label(handle)
+
+        # 一次性 node (persist=false → event_level 低于 INFO): 阻塞等退出拿结果.
+        if not CellEventLevel.is_perceivable(handle.runtime.cell.event_level):
+            meta = await handle.wait()
+            output = handle.process.output
+            code = meta.exit_code
+            lines = [f'[{label}] exited code={code}']
+            if output is not None:
+                stdout = output.stdout(limit=_ONE_SHOT_OUTPUT_TAIL)
+                stderr = output.stderr(limit=_ONE_SHOT_OUTPUT_TAIL)
+                if stdout:
+                    lines.append(f'--- stdout (tail {_ONE_SHOT_OUTPUT_TAIL}) ---\n{stdout.rstrip()}')
+                if stderr:
+                    lines.append(f'--- stderr (tail {_ONE_SHOT_OUTPUT_TAIL}) ---\n{stderr.rstrip()}')
+                # 完整输出落盘 — 提示文件路径, 供模型按需读全量.
+                full_files = [str(f) for f in (output.stdout_file, output.stderr_file) if f]
+                if full_files:
+                    lines.append('--- full output ---\n' + '\n'.join(full_files))
+            return '\n'.join(lines)
+
         return (
-            f'[{handle.address}] pid={handle.process.meta.pid} — '
-            f'organ appears next frame under matrix.mesh once announced.'
+            f'[{label}] pid={handle.process.meta.pid} — '
+            f'if it announces a channel: matrix.mesh.{_cell_target(handle)}'
         )
 
     # -- stop ---------------------------------------------------------
@@ -281,11 +407,11 @@ def new_nodes_channel(
         if handle is None:
             CommandUtil.raise_observe(
                 f'{address!r} does not uniquely match any running cell. '
-                f'nodes:status() shows current cells.'
+                f'status() shows current cells.'
             )
         await handle.stop(timeout=timeout)
         code = handle.process.meta.exit_code
-        return f'[{handle.address}] stopped, exit={code}'
+        return f'[{_cell_label(handle)}] stopped, exit={code}'
 
     # -- status -------------------------------------------------------
 
@@ -306,10 +432,10 @@ def new_nodes_channel(
         lines: list[str] = []
         if handled:
             lines.append(f'running ({len(handled)}):')
-            lines.extend(_fmt_running_row(h) for h in handled.values())
+            lines.extend(_fmt_status_running(h) for h in handled.values())
         if dead:
             lines.append(f'recently exited ({len(dead)}):')
-            lines.extend(_fmt_dead_row(h) for h in dead)
+            lines.extend(_fmt_status_dead(h) for h in dead)
         if not lines:
             return '[nodes:status] no cells running or recently exited.'
         return '[nodes:status]\n' + '\n'.join(lines)
@@ -329,51 +455,83 @@ def new_nodes_channel(
                 f'{address!r} not found in handled or dead cells.'
             )
         output = handle.process.output
+        label = _cell_label(handle)
         if output is None:
-            return f'[{handle.address}] no capture buffer (spawn without CaptureSpec).'
+            return f'[{label}] no capture buffer (spawn without CaptureSpec).'
         if stream == 'stdout':
             body = output.stdout(limit=limit)
         else:
             body = output.stderr(limit=limit)
         if not body:
-            return f'[{handle.address}] {stream} empty.'
-        return f'[{handle.address}] {stream} tail:\n{body.rstrip()}'
+            return f'[{label}] {stream} empty.'
+        return f'[{label}] {stream} tail:\n{body.rstrip()}'
 
-    # -- context messages --------------------------------------------
+    # -- startup: prime the catalog off the loop ----------------------
 
-    @chan.build.context_messages
-    def nodes_context() -> list[str]:
+    @chan.build.startup
+    async def _warm_node_catalog() -> None:
+        # 同步 notice 回调不得做 IO (见 channel.py on_refresh_meta 契约): nodes_notices
+        # 走 list_nodes(refresh=False), 而缓存未填时那一次全目录扫描会落在 event loop
+        # 线程上. 在这里先扫掉 — 之后 refresh=False 只命中缓存拷贝 (NodeManager._cache
+        # 一旦填上不会再被写回 None).
+        try:
+            await asyncio.to_thread(
+                matrix.project.nodes.list_nodes, refresh=False, installed=True,
+            )
+        except Exception:
+            # 预热是性能防御, 扫描失败不该拖垮 channel 启动.
+            logger = CommandUtil.logger()
+            if logger is not None:
+                logger.exception('nodes channel: node catalog warm-up failed')
+
+    # -- notice (named fragments) -------------------------------------
+
+    @chan.build.named_notices
+    def nodes_notices() -> dict[str, str | None]:
+        """Warm state, split by lifecycle so one fragment moving does not re-send the rest.
+
+        ``running`` / ``exited`` keep a bounded tail of rows (absent when nothing is in
+        that state, which reads as "removed"); ``installed`` is a bare count — the catalog
+        itself is a deliberate pull via list(). Rows carry pid / exit code only, never
+        uptime / "N ago", so the text is byte-stable between refreshes and the facade diff
+        stays quiet. Live detail comes from status() / read_output().
+        """
+        out: dict[str, str | None] = {}
+
         handled = matrix.handled_cells()
-        dead = list(matrix.dead_cells())
-        if not handled and not dead:
-            return []
-        lines: list[str] = []
         if handled:
-            lines.append(f'[nodes] running ({len(handled)}):')
-            for h in list(handled.values())[:show_running]:
-                lines.append(_fmt_running_row(h))
+            lines = [f'{len(handled)} running:']
+            lines += [_fmt_notice_running(h) for h in list(handled.values())[:show_running]]
             if len(handled) > show_running:
-                extra = len(handled) - show_running
-                lines.append(
-                    f'  ...+{extra} more, nodes:status() for full list'
-                )
+                lines.append(f'  ...+{len(handled) - show_running} more, status() for full list')
+            out['running'] = '\n'.join(lines)
+
+        dead = list(matrix.dead_cells())
         if dead:
             recent = dead[-show_dead:]
-            lines.append(f'recently exited ({len(recent)}):')
-            for h in recent:
-                lines.append(_fmt_dead_row(h))
-        return ['\n'.join(lines)]
+            out['exited'] = '\n'.join(
+                [f'{len(recent)} recently exited:'] + [_fmt_notice_dead(h) for h in recent]
+            )
+
+        # refresh=False: reads the cache primed at startup; this path must never be the
+        # one that scans. A bare count keeps the catalog out of the warm band —
+        # descriptions and paths are what list() is for.
+        found = matrix.project.nodes.list_nodes(refresh=False, installed=True)
+        if found:
+            out['installed'] = str(len(found))
+
+        return out
 
     # -- instruction --------------------------------------------------
 
     @chan.build.instruction
     def nodes_instruction() -> str:
         return (
-            'Local node cell governance. list/read/run/stop/status/read_output '
-            'are all nonblocking. run() returns immediately — the spawned '
-            'organ appears next frame under matrix.mesh once announced. '
-            'Read the NodeManifest with read(target) before running to know '
-            'how it wants to be used.'
+            'Local node cell governance. All verbs are nonblocking. run() '
+            'returns immediately — the spawned organ surfaces on the network '
+            'once it announces. read(target) before running: the declaration '
+            'carries how the node wants to be used. The warm notice carries only '
+            'counts and a short tail — status() / list() pull the detail.'
         )
 
     return chan
@@ -407,7 +565,7 @@ def _fmt_single_brief(handle: CellHandle, alive: bool) -> str:
     meta = handle.process.meta
     code = meta.exit_code
     lines = [
-        f'[{handle.address}] {"running" if alive else "dead"}',
+        f'[{_cell_label(handle)}] {"running" if alive else "dead"}',
         f'  fullname={cell.fullname}',
         f'  category={cell.category or "(none)"}',
         f'  pid={meta.pid}',
@@ -438,104 +596,128 @@ def new_mesh_channel(
         description: str | None = None,
         show_events: int = _DEFAULT_SHOW_EVENTS,
 ) -> Channel:
-    """网络投影 channel. virtual_children 镜像 mesh.channel_proxies(),
-    CellEvent 生产侧订阅 mesh.on_event 双扇出 (ring buffer + Signal)."""
+    """网络投影 channel. virtual_children 直接镜像 mesh.channel_proxies() (sync 直读),
+    CellEvent 生产侧订阅 mesh.on_event (事件 ring + Signal), on_channel_provided 发
+    connected signal."""
 
     default_desc = (
-        'Network projection — accepted cells surface as matrix.mesh.<fullname>.'
+        'Network projection — accepted cells surface as matrix.mesh.<name>.'
     )
-    chan: PrimeChannel = new_channel(name=name, description=description or default_desc)
+    chan: PrimeChannel = new_prime_channel(name=name, description=description or default_desc)
 
-    # 自持事件 ring buffer, 喂 context + events 命令
+    # 事件 ring (上界 _EVENT_BUFFER), 喂 notice 尾部. 只做有上界的"最近 N 条".
     event_buffer: deque[CellEvent] = deque(maxlen=_EVENT_BUFFER)
 
-    # unsub 句柄, on_close 时释放
-    unsub_holder: list[Callable[[], None] | None] = [None]
+    # mesh 引用在 startup 缓存 (matrix.network() 是 async, virtual_children 是 sync).
+    mesh: CellNetwork | None = None
+    # unsub 句柄, on_close 时释放.
+    unsubs: list[Callable[[], None]] = []
 
-    # virtual children 缓存: address → alias
-    proxy_aliases: dict[CellAddress, str] = {}
+    # auto_accept 策略缓存. available 谓词是 sync, 读缓存不每帧 re-await.
+    policy: AutoAcceptPolicy | None = None
 
-    # -- lifecycle: subscribe mesh.on_event 双扇出 --------------------
+    # -- branch name: 命名权威归 spawn 侧 ---------------------------------
+
+    def _branch_name(address: CellAddress, spawned: dict[CellAddress, str]) -> str:
+        # 本地 spawn → alias (本进程的命名承诺); 其余 → normalized address (全局唯一).
+        return spawned.get(address) or CellAddressCodec(address).normalized
+
+    def _resolve_mesh_address(query: str) -> CellAddress | None:
+        # _branch_name 的反向: accept/reject 的入参接受展示形态 (normalized address /
+        # alias), 归一化为网络身份 (raw CellAddress). 事件/notice 展示的正是 _branch_name.
+        if mesh is None:
+            return None
+        proxies = mesh.channel_proxies()
+        view = mesh.view()
+        if query in proxies or query in view:
+            return query
+        try:
+            codec = CellAddressCodec.from_normalized(query)
+            if codec.address in proxies or codec.address in view:
+                return codec.address
+        except ValueError:
+            pass
+        for addr, alias in matrix.project.nodes.spawned_nodes().items():
+            if alias == query:
+                return addr
+        matches = [a for a in view if CellAddressCodec(a).match(query)]
+        return matches[0] if len(matches) == 1 else None
+
+    # -- lifecycle: 订阅 mesh.on_event + mesh.on_channel_provided ---------
 
     def _dispatch_event(event: CellEvent) -> None:
-        # 1) 写自持 ring buffer (喂 context / events 命令)
+        # 空 content = 纯 refetch 提示, 不进 ring 也不进 signal.
+        if not event.content:
+            return
         event_buffer.append(event)
-        # 2) 转 Signal 送 CellEventNucleus (M7.5)
+        # 感知判决: 低于阈值 INFO (DEBUG) 不产生 signal (零值/不调用).
+        if not CellEventLevel.is_perceivable(event.event_level):
+            return
         try:
-            meta = CellEventSignalMeta(
-                address=event.address,
-                # 本轮 CellEvent 无 transition 字段, 统一 READY (§5.9 简化).
-                # 未来扩展 CellEvent 或 on_exit 补 exited/crashed 时再分档.
-                transition=CellTransition.READY,
-            )
-            content = event.content or f'cell {event.address} updated'
+            meta = CellEventSignalMeta(address=event.address, transition=CellTransition.READY)
+            name = _branch_name(event.address, matrix.project.nodes.spawned_nodes())
             signal = meta.to_signal(
-                content,
-                description=f'cell_event {event.address}',
+                event.content,
+                description=f'cell {name}',
+                priority=_signal_priority_for(event.event_level),
             )
             CommandUtil.send_signal(signal)
         except Exception:
-            # signal 送不出去不该阻塞 mesh 事件消费
+            # signal 送不出去不该阻塞 mesh 事件消费.
             logger = CommandUtil.logger()
             if logger is not None:
                 logger.exception('mesh channel: failed to dispatch cell_event')
 
+    def _on_channel_provided(address: CellAddress, proxy: ChannelProxy) -> None:
+        # channel 上线 → 发 connected signal. 契约: 在 network event loop 上调用.
+        name = _branch_name(address, matrix.project.nodes.spawned_nodes())
+        try:
+            meta = CellEventSignalMeta(address=address, transition=CellTransition.READY)
+            signal = meta.to_signal(
+                f'cell {name} connected',
+                description=f'cell {name}',
+                priority=Priority.BACKGROUND,
+            )
+            matrix.send_signal_to_ghost(signal)
+        except Exception:
+            logger = CommandUtil.logger()
+            if logger is not None:
+                logger.exception('mesh channel: failed to signal channel provided %s', address)
+
     @chan.build.startup
     async def _startup() -> None:
+        nonlocal mesh, policy
         mesh = await matrix.network()
-        unsub_holder[0] = mesh.on_event(_dispatch_event)
+        unsubs.append(mesh.on_event(_dispatch_event))
+        unsubs.append(mesh.on_channel_provided(_on_channel_provided))
+        policy = mesh.auto_accept()
 
     @chan.build.close
     async def _close() -> None:
-        unsub = unsub_holder[0]
-        unsub_holder[0] = None
-        if unsub is not None:
+        for unsub in unsubs:
             try:
                 unsub()
             except Exception:
                 pass
+        unsubs.clear()
 
-    # -- refresh_meta: 同步 virtual_children 到 mesh.channel_proxies() -
+    # -- virtual children: sync 直读 (树的 refresh 自己 diff 增删) --------
 
-    @chan.build.refresh_meta
-    async def _refresh() -> None:
-        mesh = await matrix.network()
-        proxies = mesh.channel_proxies()
-        # 计算增删差异
-        current = set(proxy_aliases.keys())
-        target = set(proxies.keys())
-        # remove: 掉线的 accepted cells
-        for gone_addr in current - target:
-            alias = proxy_aliases.pop(gone_addr, None)
-            if alias is not None:
-                try:
-                    chan.remove_virtual_channel(alias)
-                except Exception:
-                    pass
-        # add: 新 accept 的 cells
-        for new_addr in target - current:
-            proxy = proxies[new_addr]
-            # alias 用 cell.fullname (未来场景倒逼时可加 uid 后缀去冲突)
-            mesh_view = mesh.view()
-            cell = mesh_view.get(new_addr)
-            alias = cell.fullname if cell is not None else new_addr.replace('/', '_')
-            try:
-                chan.add_virtual_channel(proxy, alias=alias)
-                proxy_aliases[new_addr] = alias
-            except Exception:
-                logger = CommandUtil.logger()
-                if logger is not None:
-                    logger.exception(
-                        'mesh channel: failed to add virtual %s', new_addr,
-                    )
+    @chan.build.virtual_children
+    def _virtual_children() -> dict[str, Channel]:
+        if mesh is None:
+            return {}
+        spawned = matrix.project.nodes.spawned_nodes()
+        return {
+            _branch_name(address, spawned): proxy
+            for address, proxy in mesh.channel_proxies().items()
+        }
 
-    # -- auto_accept 状态查询 -----------------------------------------
+    # -- auto_accept 策略: accept/reject 的可见性由它决定 --------------
 
     def _auto_accept_covers_all() -> bool:
-        """auto_accept 全开时 accept/reject 命令不出现在 perspective."""
-        # CellNetwork ABC 没暴露 auto_accept 查询接口, 用一个"守卫函数"占位.
-        # 未来 mesh 加 get_auto_accept() 时替换掉 (matrix-channel.md §5.2).
-        return False
+        """策略全开 (local 与 foreign 都自动承认) 时, accept/reject 失去意义."""
+        return policy is not None and policy.local and policy.foreign
 
     def _accept_available() -> bool:
         return not _auto_accept_covers_all()
@@ -547,23 +729,39 @@ def new_mesh_channel(
         available=_accept_available,
     )
     async def accept_cell(address: str, lookup: bool = False) -> str:
-        """Trust a network cell — build channel proxy immediately."""
-        mesh = await matrix.network()
+        """Trust a network cell — build channel proxy immediately.
+
+        ``address`` accepts the display form shown by events()/notice (a local alias
+        or a normalized address) as well as the raw address.
+        """
+        resolved = _resolve_mesh_address(address)
+        if resolved is None:
+            CommandUtil.raise_observe(
+                f'{address!r} does not match any network cell. events() to inspect.'
+            )
         try:
-            await mesh.accept(address, lookup=lookup)
+            await mesh.accept(resolved, lookup=lookup)
         except LookupError as e:
             CommandUtil.raise_observe(str(e))
-        return f'[mesh:accept {address}] resource acknowledged.'
+        return f'[mesh:accept {resolved}] resource acknowledged.'
 
     @chan.build.command(
         name='reject', blocking=False, always_observe=False,
         available=_accept_available,
     )
     async def reject_cell(address: str) -> str:
-        """Refuse a network cell — tear down active proxy."""
-        mesh = await matrix.network()
-        await mesh.reject(address)
-        return f'[mesh:reject {address}] resource withdrawn.'
+        """Refuse a network cell — tear down active proxy.
+
+        ``address`` accepts the display form shown by events()/notice (a local alias
+        or a normalized address) as well as the raw address.
+        """
+        resolved = _resolve_mesh_address(address)
+        if resolved is None:
+            CommandUtil.raise_observe(
+                f'{address!r} does not match any network cell. events() to inspect.'
+            )
+        await mesh.reject(resolved)
+        return f'[mesh:reject {resolved}] resource withdrawn.'
 
     @chan.build.command(
         name='set_auto_accept', blocking=False, always_observe=False,
@@ -572,17 +770,18 @@ def new_mesh_channel(
             local: bool | None = None, foreign: bool | None = None,
     ) -> str:
         """Toggle auto-accept policy. None = keep current."""
-        mesh = await matrix.network()
+        nonlocal policy
         mesh.set_auto_accept(local=local, foreign=foreign)
+        # 报结果状态, 不是回显请求参数 (None 只表示"未改动该开关").
+        policy = mesh.auto_accept()
         return (
-            f'[mesh:set_auto_accept] applied '
-            f'(local={local}, foreign={foreign}).'
+            f'[mesh:set_auto_accept] local={policy.local} '
+            f'foreign={policy.foreign}'
         )
 
     @chan.build.command(name='events', blocking=False, always_observe=True)
     async def events_cmd(address: str = '', limit: int = 20) -> str:
         """Read recent cell events from network."""
-        mesh = await matrix.network()
         if address:
             events = mesh.cell_events(address, limit=limit)
         else:
@@ -590,38 +789,39 @@ def new_mesh_channel(
         if not events:
             return '[mesh:events] (empty)'
         lines = [f'[mesh:events {"@" + address if address else "all"}]']
+        spawned = matrix.project.nodes.spawned_nodes()
         for ev in events:
             when = ev.created.strftime('%H:%M:%S')
+            name = _branch_name(ev.address, spawned)
             content = ev.content or '(no content)'
-            lines.append(f'  {when}  {ev.address}  {content}')
+            lines.append(f'  {when}  {name}  {content}')
         return '\n'.join(lines)
 
-    # -- context messages --------------------------------------------
+    # -- notice: 事件尾部 (温数据) -----------------------------------
 
-    @chan.build.context_messages
-    def mesh_context() -> list[str]:
-        # 从自持 ring buffer 取尾 (mesh.recent_events 是并行数据源, 本 channel
-        # 消费自己 on_event 累积的 buffer, 保证与 signal 生产同步)
-        if not event_buffer:
-            return []
-        events = list(event_buffer)[-show_events:]
-        lines = [f'[mesh] recent events ({len(events)}):']
-        for ev in events:
-            when = ev.created.strftime('%H:%M:%S')
-            content = ev.content or 'updated'
-            lines.append(f'  {when}  {ev.address}  {content}')
-        # 网络概要
-        try:
-            # 若 mesh 尚未惰性 fetch 过, mesh.view() 无 await 也应能返回缓存
-            # (CellNetwork.view 是 sync). 但 mesh() 是 async factory, 需要
-            # await — context_messages 是 sync, 只能读上次 refresh 的缓存.
-            # 简化: mesh 概要只显示 accepted proxy 数量 (proxy_aliases 已同步)
-            lines.append(
-                f'network: {len(proxy_aliases)} cells accepted (proxies mounted)'
-            )
-        except Exception:
-            pass
-        return ['\n'.join(lines)]
+    @chan.build.notice
+    def mesh_notice() -> str:
+        """Current trust policy, then a bounded tail of recent cell events.
+
+        Warm, so it rides notice: the kernel re-sends it only when the text changes.
+        The tail window is capped at ``show_events``; the rest of the history is
+        pulled on demand by events() rather than replayed here every refresh.
+        """
+        lines: list[str] = []
+        if policy is not None:
+            lines.append(f'auto_accept: local={policy.local}, foreign={policy.foreign}')
+        if event_buffer:
+            shown = list(event_buffer)[-show_events:]
+            lines.append(f'recent events ({len(shown)}):')
+            spawned = matrix.project.nodes.spawned_nodes()
+            for ev in shown:
+                when = ev.created.strftime('%H:%M:%S')
+                name = _branch_name(ev.address, spawned)
+                content = ev.content or 'updated'
+                lines.append(f'  {when}  {name}  {content}')
+            if len(event_buffer) > len(shown):
+                lines.append(f'  ...+{len(event_buffer) - len(shown)} more, events() for the tail')
+        return '\n'.join(lines)
 
     # -- instruction --------------------------------------------------
 
@@ -629,10 +829,10 @@ def new_mesh_channel(
     def mesh_instruction() -> str:
         return (
             'Network cell mesh: accepted cells appear here as sub-channels '
-            '(matrix.mesh.<fullname>). accept/reject govern resource trust; '
-            'set_auto_accept toggles the default policy. events() reads the '
-            'recent event stream; live events also appear as background '
-            'hints when idle.'
+            '(matrix.mesh.<name>). accept/reject govern resource trust; '
+            'set_auto_accept toggles the default policy. A bounded tail of '
+            'recent cell events rides along with this channel\'s notice; '
+            'events() pulls the fuller history on demand.'
         )
 
     return chan
@@ -676,7 +876,7 @@ def new_matrix_channel(
     )
     chan = new_channel(name=name, description=description or default_desc)
 
-    # 静态挂 nodes + mesh (composed inline, share matrix reference)
+    # 静态挂 nodes + mesh (composed inline, share matrix reference).
     nodes = new_nodes_channel(matrix)
     mesh = new_mesh_channel(matrix)
     chan.import_channels(nodes, mesh, *extra_children)

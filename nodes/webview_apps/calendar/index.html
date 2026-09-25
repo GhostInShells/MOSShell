@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>calendar</title>
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --border:#232b36; --text:#e6edf3; --dim:#8b949e;
+    --accent:#4a90d9;
+    --l0:#6e7681; --l1:#4a90d9; --l2:#d29922; --l3:#d1242f;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; display:flex; flex-direction:column; overflow:hidden; }
+  header.bar { flex:0 0 auto; display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border); }
+  header.bar .title { font-weight:600; letter-spacing:.3px; }
+  header.bar .spacer { flex:1 1 auto; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#d1242f; transition:background .3s; }
+  .dot.on { background:#2ea043; }
+
+  .layout { flex:1 1 auto; display:flex; min-height:0; }
+  #calendar { flex:1 1 auto; min-width:0; padding:8px 12px; overflow:auto; }
+  aside.panel { flex:0 0 300px; border-left:1px solid var(--border); background:var(--panel); overflow:auto; padding:14px; }
+  aside.panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin-bottom:8px; }
+  aside.panel h2.mt { margin-top:20px; }
+
+  .armed { list-style:none; }
+  .armed li { display:flex; gap:8px; align-items:baseline; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px; }
+  .armed .when { color:var(--dim); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; flex:0 0 auto; }
+  .armed .in { color:var(--accent); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; margin-left:auto; flex:0 0 auto; }
+  .armed .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .log { list-style:none; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--dim); }
+  .log li { padding:3px 0; border-bottom:1px solid var(--border); }
+
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:18px; width:360px; }
+  dialog::backdrop { background:rgba(0,0,0,.55); }
+  dialog h3 { font-size:15px; margin-bottom:14px; }
+  dialog label { display:block; font-size:12px; color:var(--dim); margin:10px 0 4px; }
+  dialog input, dialog select, dialog textarea {
+    width:100%; background:var(--bg); color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:7px 9px; font:inherit; font-size:13px;
+  }
+  dialog .row { display:flex; gap:8px; }
+  dialog .row > * { flex:1 1 0; }
+  dialog .actions { display:flex; gap:8px; margin-top:18px; }
+  dialog button { flex:1 1 0; padding:8px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); font:inherit; cursor:pointer; }
+  dialog button.primary { background:var(--accent); border-color:var(--accent); color:#0e1116; font-weight:600; }
+  dialog button.danger { color:var(--l3); border-color:var(--l3); }
+
+  #toasts { position:fixed; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; z-index:50; }
+  .toast { background:var(--panel); border:1px solid var(--accent); border-left-width:3px; border-radius:8px; padding:10px 14px; font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.45); animation:rise .25s ease-out; }
+  .toast.critical { border-color:var(--l3); }
+  .toast .h { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  @keyframes rise { from { opacity:0; transform:translateY(8px); } }
+
+  .fc { --fc-border-color:var(--border); --fc-page-bg-color:var(--bg); --fc-neutral-bg-color:var(--panel); }
+  .fc .fc-toolbar-title { font-size:16px; }
+  .fc .fc-button { background:transparent; border-color:var(--border); color:var(--text); box-shadow:none; text-transform:capitalize; }
+  .fc .fc-button:hover { background:var(--panel); border-color:var(--accent); }
+  .fc .fc-button-primary:not(:disabled).fc-button-active { background:var(--accent); border-color:var(--accent); color:#0e1116; }
+  .fc .fc-col-header-cell-cushion, .fc .fc-daygrid-day-number, .fc a { color:var(--text); text-decoration:none; }
+  .fc-day-today { background:rgba(74,144,217,.08) !important; }
+  .fc-event { border:none; cursor:pointer; }
+  .fc-event.done { opacity:.45; text-decoration:line-through; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <span class="title">calendar</span>
+  <span class="spacer"></span>
+  <span class="dot" id="dot" title="page ↔ node"></span>
+</header>
+
+<div class="layout">
+  <div id="calendar"></div>
+  <aside class="panel">
+    <h2>armed reminders</h2>
+    <ul class="armed" id="armed"><li>none</li></ul>
+    <h2 class="mt">reminders fired</h2>
+    <ul class="log" id="log"><li>nothing yet</li></ul>
+  </aside>
+</div>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlg-title">new event</h3>
+    <label for="f-title">title</label>
+    <input id="f-title" required>
+    <div class="row">
+      <div><label for="f-start">start</label><input id="f-start" type="datetime-local" required></div>
+      <div><label for="f-end">end</label><input id="f-end" type="datetime-local"></div>
+    </div>
+    <div class="row">
+      <div><label for="f-level">level</label>
+        <select id="f-level">
+          <option value="0">low</option>
+          <option value="1" selected>normal</option>
+          <option value="2">high</option>
+          <option value="3">critical</option>
+        </select>
+      </div>
+      <div><label for="f-remind">remind</label>
+        <select id="f-remind">
+          <option value="">no reminder</option>
+          <option value="0">at the start</option>
+          <option value="300">5 min before</option>
+          <option value="600">10 min before</option>
+          <option value="900">15 min before</option>
+          <option value="1800">30 min before</option>
+          <option value="3600">1 hour before</option>
+          <option value="86400">1 day before</option>
+        </select>
+      </div>
+    </div>
+    <label for="f-notes">notes</label>
+    <textarea id="f-notes" rows="2"></textarea>
+    <div class="actions">
+      <button type="button" class="danger" id="btn-delete">delete</button>
+      <button type="button" id="btn-done">done</button>
+      <button type="button" class="primary" id="btn-save">save</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts"></div>
+
+<script>
+const LEVEL_COLOR = ["var(--l0)", "var(--l1)", "var(--l2)", "var(--l3)"];
+const LEVEL_CLASS = ["l0", "l1", "l2", "l3"];
+const LEVEL_NAME = ["low", "normal", "high", "critical"];
+
+const state = { events: new Map(), edits: [] };
+let editing = null;   // event id when the dialog is editing, null when creating
+let ws = null;
+
+// -- wire format <-> FullCalendar -------------------------------------------------
+
+function toFc(e) {
+  return {
+    id: String(e.id),
+    title: e.title,
+    start: new Date(e.start_ts * 1000),
+    end: e.end_ts ? new Date(e.end_ts * 1000) : null,
+    allDay: !!e.all_day,
+    backgroundColor: LEVEL_COLOR[e.level] || LEVEL_COLOR[1],
+    classNames: e.done_ts ? ["done"] : [],
+    extendedProps: e,
+  };
+}
+
+function localInput(ts) {
+  // datetime-local wants a local-time string with no zone suffix.
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function inputToTs(value) {
+  return value ? new Date(value).getTime() / 1000 : null;
+}
+
+// -- page ------------------------------------------------------------------------
+
+const calendar = new FullCalendar.Calendar(document.getElementById("calendar"), {
+  initialView: "timeGridWeek",
+  headerToolbar: { left: "prev,next today", center: "title", right: "dayGridMonth,timeGridWeek,timeGridDay,listWeek" },
+  height: "100%",
+  nowIndicator: true,
+  selectable: true,
+  editable: true,
+  dayMaxEvents: 4,
+  events: [],
+  dateClick: (info) => openDialog(null, info.date.getTime() / 1000),
+  eventClick: (info) => openDialog(info.event.id, null),
+  eventDrop: (info) => pushUpdate(info.event),
+  eventResize: (info) => pushUpdate(info.event),
+});
+calendar.render();
+
+function upsert(e) {
+  state.events.set(e.id, e);
+  const existing = calendar.getEventById(String(e.id));
+  if (existing) {
+    existing.setExtendedProp("_", e);
+    Object.assign(existing.extendedProps, e);
+    existing.setProp("title", e.title);
+    existing.setStart(new Date(e.start_ts * 1000));
+    existing.setEnd(e.end_ts ? new Date(e.end_ts * 1000) : null);
+    existing.setProp("backgroundColor", LEVEL_COLOR[e.level] || LEVEL_COLOR[1]);
+    existing.setProp("classNames", e.done_ts ? ["done"] : []);
+  } else {
+    calendar.addEvent(toFc(e));
+  }
+  renderPanel();
+}
+
+function drop(id) {
+  state.events.delete(id);
+  const existing = calendar.getEventById(String(id));
+  if (existing) existing.remove();
+  renderPanel();
+}
+
+// -- reminders panel ---------------------------------------------------------------
+
+function renderPanel() {
+  const now = Date.now() / 1000;
+  const armed = [...state.events.values()]
+    .filter((e) => e.remind_before != null && !e.fired_ts && !e.done_ts && e.start_ts > now)
+    .sort((a, b) => a.start_ts - b.start_ts);
+  const armedEl = document.getElementById("armed");
+  armedEl.innerHTML = armed.length
+    ? armed.map((e) => {
+        const mins = Math.round((e.start_ts - e.remind_before - now) / 60);
+        return `<li><span class="when">${fmtTime(e.start_ts)}</span>` +
+               `<span class="nm">${esc(e.title)}</span>` +
+               `<span class="in">${mins <= 0 ? "due" : mins >= 60 ? Math.round(mins / 60) + "h" : mins + "m"}</span></li>`;
+      }).join("")
+    : "<li>none</li>";
+
+  const logEl = document.getElementById("log");
+  logEl.innerHTML = state.edits.length
+    ? state.edits.map((line) => `<li>${esc(line)}</li>`).join("")
+    : "<li>nothing yet</li>";
+}
+
+// Re-render the countdowns once a second. This is page-local; the node pushes nothing
+// on a timer — a ticking clock is not an event.
+setInterval(renderPanel, 1000);
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function toast(kind, text) {
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "overdue" ? "critical" : "");
+  el.innerHTML = `<div class="h">reminder · ${esc(kind)}</div>${esc(text)}`;
+  document.getElementById("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 12000);
+}
+
+// -- dialog ------------------------------------------------------------------------
+
+const dlg = document.getElementById("dlg");
+const F = (id) => document.getElementById(id);
+
+function openDialog(id, defaultStartTs) {
+  editing = id;
+  const e = id ? state.events.get(id) : null;
+  F("dlg-title").textContent = e ? "edit event" : "new event";
+  F("f-title").value = e ? e.title : "";
+  F("f-start").value = localInput(e ? e.start_ts : (defaultStartTs ?? Date.now() / 1000));
+  F("f-end").value = e && e.end_ts ? localInput(e.end_ts) : "";
+  F("f-level").value = String(e ? e.level : 1);
+  F("f-remind").value = e && e.remind_before != null ? String(e.remind_before) : "";
+  F("f-notes").value = e ? e.notes : "";
+  F("btn-delete").style.display = e ? "" : "none";
+  F("btn-done").style.display = e ? "" : "none";
+  F("btn-done").textContent = e && e.done_ts ? "reopen" : "done";
+  dlg.showModal();
+}
+
+F("btn-save").onclick = () => {
+  const title = F("f-title").value.trim();
+  if (!title) return;
+  const start_ts = inputToTs(F("f-start").value);
+  if (!start_ts) return;
+  const remindRaw = F("f-remind").value;
+  const frame = {
+    title,
+    start_ts,
+    end_ts: inputToTs(F("f-end").value),
+    level: Number(F("f-level").value),
+    remind_before: remindRaw === "" ? null : Number(remindRaw),
+    notes: F("f-notes").value,
+  };
+  if (editing) send({ type: "event.update", id: Number(editing), ...frame });
+  else send({ type: "event.add", all_day: false, ...frame });
+  dlg.close();
+};
+
+F("btn-delete").onclick = () => {
+  if (editing) send({ type: "event.remove", id: Number(editing) });
+  dlg.close();
+};
+
+F("btn-done").onclick = () => {
+  const e = editing ? state.events.get(editing) : null;
+  if (e) send({ type: "event.done", id: Number(editing), done: !e.done_ts });
+  dlg.close();
+};
+
+// An event dragged on the grid is an edit like any other — same path as the form.
+function pushUpdate(ev) {
+  send({
+    type: "event.update",
+    id: Number(ev.id),
+    start_ts: ev.start.getTime() / 1000,
+    end_ts: ev.end ? ev.end.getTime() / 1000 : null,
+  });
+}
+
+// -- websocket ---------------------------------------------------------------------
+
+function send(frame) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => document.getElementById("dot").classList.add("on");
+  ws.onclose = () => {
+    document.getElementById("dot").classList.remove("on");
+    setTimeout(connect, 1500);   // the node may be restarting; keep trying
+  };
+  ws.onmessage = (msg) => {
+    const frame = JSON.parse(msg.data);
+    if (frame.type === "state") {
+      state.events.clear();
+      calendar.removeAllEvents();
+      for (const e of frame.events) { state.events.set(e.id, e); }
+      calendar.addEventSource(frame.events.map(toFc));
+      state.edits = frame.edits || [];
+      renderPanel();
+    } else if (frame.type === "event.upsert") {
+      upsert(frame.event);
+    } else if (frame.type === "event.remove") {
+      drop(frame.id);
+    } else if (frame.type === "reminder.fired") {
+      upsert(frame.event);
+      toast(frame.tier, `${fmtTime(frame.event.start_ts)} ${frame.event.title}`);
+    }
+  };
+}
+
+connect();
+</script>
+</body>
+</html>

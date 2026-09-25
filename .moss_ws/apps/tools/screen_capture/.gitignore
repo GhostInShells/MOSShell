@@ -1,7 +1,0 @@
-tmp.png
-*.log
-venv/
-.venv/
-uv.lock
-.idea
-.env

@@ -4,8 +4,9 @@ import time
 import pytest
 
 from ghoshell_moss.core.concepts.channel import ChannelCtx
-from ghoshell_moss.core.concepts.command import CommandTask, PyCommand
+from ghoshell_moss.core.concepts.command import Command, CommandTask, PyCommand
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
+from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.py_channel import PyChannel, PyChannelBuilder
 from ghoshell_moss.message import Message, Text
 
@@ -287,6 +288,7 @@ async def test_py_channel_idle() -> None:
             idled.append(2)
 
     async with main.bootstrap() as runtime:
+        await runtime.wait_idle()
         assert len(idled) == 1
         task = runtime.create_command_task("foo")
         runtime.push_task(task)
@@ -420,6 +422,71 @@ async def test_py_channel_parent_idle() -> None:
 
 
 @pytest.mark.asyncio
+async def test_py_channel_parent_idle_cleared_by_child_command() -> None:
+    """父 channel 的 idle 生命周期对子命令的感知: 子树一旦繁忙, 父应退出 idle.
+
+    channel builder 契约 (idle): on_idle 只在 "while idle, with no command input"
+    期间执行。子 channel 收到命令 = 整棵子树有了 command input, 父 channel 不应再
+    是 idle, 且它注册的 idle 函数必须已经退出。
+    """
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    idle_started = asyncio.Event()
+    idle_exited = asyncio.Event()
+    child_started = asyncio.Event()
+    child_done = asyncio.Event()
+
+    @child.build.command()
+    async def foo(sleep: float) -> None:
+        child_started.set()
+        await asyncio.sleep(sleep)
+        child_done.set()
+
+    @main.build.idle
+    async def idle() -> None:
+        idle_started.set()
+        idle_exited.clear()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            idle_exited.set()
+            idle_started.clear()
+
+    async with main.bootstrap() as runtime:
+        await runtime.wait_idle()
+        child_runtime = runtime.fetch_sub_runtime('child')
+        await idle_started.wait()
+        assert runtime.is_idle()
+        assert not idle_exited.is_set()
+        assert child_runtime.is_idle()
+
+        # 子 channel 命令让整棵子树繁忙: 父 channel 应不再 idle, idle 函数应随之退出.
+        task = runtime.create_command_task("child:foo", args=(0.3,))
+        runtime.push_task(task)
+        # 阻塞到 child 启动时.
+        await child_started.wait()
+        # idled 应该已经退出了.
+        assert not idle_started.is_set()
+        assert idle_exited.is_set()
+        # 确认还没有结束.
+        assert not child_done.is_set()
+        assert not child_runtime.is_idle()
+        assert not runtime.is_idle()
+        # 阻塞到命令执行完.
+        await task
+        # 判断执行完了.
+        assert child_done.is_set()
+        assert child_runtime.is_idle()
+        await asyncio.wait_for(idle_started.wait(), 0.05)
+        # idle 重开了.
+        assert idle_started.is_set()
+        assert not idle_exited.is_set()
+        assert runtime.is_idle()
+
+
+@pytest.mark.asyncio
 async def test_channel_fetch_level2():
     main = PyChannel(name="main")
     a_chan = PyChannel(name="a_chan")
@@ -442,7 +509,7 @@ def test_channel_split_path():
 
 @pytest.mark.asyncio
 async def test_py_channel_topics():
-    from ghoshell_moss.core import ErrorTopic
+    from ghoshell_moss.core.concepts.topic import ErrorTopic
 
     main = PyChannel(name="main")
     child = PyChannel(name="child")
@@ -743,6 +810,30 @@ async def test_py_channel_virtual_children():
         main.build.add_virtual_channel(sub_main)
         await runtime.refresh_metas()
         assert len(runtime.virtual_sub_channels()) == 1
+
+
+@pytest.mark.asyncio
+async def test_py_channel_import_after_startup():
+    """启动后 import 的 channel 走 virtual children.
+
+    sustain children 只在 tree 的第一轮结构刷新里挂载, 启动后再往里写就挂不上了。
+    """
+    main = PyChannel(name="channel")
+    early = PyChannel(name="early")
+    main.import_channels(early)
+
+    async with main.bootstrap() as runtime:
+        assert "early" in runtime.sub_channels()
+        assert runtime.virtual_sub_channels() == {}
+
+        late = PyChannel(name="late")
+        main.import_channels(late)
+        assert "late" in runtime.virtual_sub_channels()
+        assert "late" not in runtime.sub_channels()
+
+        # import 之后需要一轮刷新, 子 channel 才真正挂进 tree.
+        await runtime.refresh_metas()
+        assert runtime.fetch_sub_runtime("late") is not None
 
 
 @pytest.mark.asyncio
@@ -1158,7 +1249,6 @@ async def test_refresh_tick_detects_overdue():
         assert child_node.refresh_own_meta_success_count == 3
         assert done.is_set()
 
-
         # 准备新一轮测试. 这一轮设置窗口
         tree.config.node_refresh_interval = 0.0
         allow.clear()
@@ -1287,3 +1377,234 @@ async def test_failed_refresh_exits_quickly_and_metas_show_failure():
         assert child_meta.failure != ""
 
     hang.set()
+
+
+# --- notice ---
+
+
+@pytest.mark.asyncio
+async def test_notice_default_is_empty():
+    """Channel without notice registration has empty notice in meta."""
+    main = PyChannel(name="main")
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert meta.notice == ""
+
+
+@pytest.mark.asyncio
+async def test_notice_static_string():
+    """Static notice string appears in ChannelMeta.notice."""
+    main = PyChannel(name="main")
+
+    @main.build.notice
+    def hlp() -> str:
+        return "available: foo, bar"
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert "foo" in meta.notice
+        assert "bar" in meta.notice
+
+
+@pytest.mark.asyncio
+async def test_notice_async_function():
+    """Async notice function result appears in ChannelMeta.notice."""
+    main = PyChannel(name="main")
+
+    @main.build.notice
+    async def hlp() -> str:
+        return "async help"
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert meta.notice == "async help"
+
+
+@pytest.mark.asyncio
+async def test_notice_dynamic_refresh():
+    """Notice value updates when the registered function returns new values after refresh."""
+    main = PyChannel(name="main")
+
+    state = {"v": "initial"}
+
+    @main.build.notice
+    def hlp() -> str:
+        return state["v"]
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().notice == "initial"
+
+        state["v"] = "updated"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().notice == "updated"
+
+
+@pytest.mark.asyncio
+async def test_notice_appears_in_child_meta():
+    """Notice registered on a child channel appears in child meta, not parent."""
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    @child.build.notice
+    def hlp() -> str:
+        return "child help"
+
+    async with main.bootstrap() as runtime:
+        metas = runtime.metas()
+        assert metas[""].notice == ""
+        assert metas["child"].notice == "child help"
+
+
+@pytest.mark.asyncio
+async def test_notice_via_module_aggregates():
+    """Notice from modules (get_notice) is aggregated with main state notice.
+
+    锚定模块收集契约: module 提供 get_notice 必须被计入 meta.notice.
+    若回归成只认 get_help, 此测试的 "mod help" in meta.notice 会当场抓包, 避免静默丢弃.
+    """
+    main = PyChannel(name="main")
+
+    class Mod(ChannelModule):
+        def name(self) -> str:
+            return "mod"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        async def get_notice(self) -> str:
+            return "mod help"
+
+    main.with_module(Mod())
+
+    @main.build.notice
+    def hlp() -> str:
+        return "main help"
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.self_meta()
+        assert "main help" in meta.notice
+        assert "mod help" in meta.notice
+
+
+# --- named notices ---
+
+
+@pytest.mark.asyncio
+async def test_named_notices_reach_meta_verbatim():
+    """named notice 函数的返回字典原样进入 ChannelMeta.named_notices (含空值)."""
+    main = PyChannel(name="main")
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"vision": "camera open", "audio": ""}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices == {"vision": "camera open", "audio": ""}
+
+
+@pytest.mark.asyncio
+async def test_named_notices_async_function():
+    """async named notice 函数同样被等待并进入 meta."""
+    main = PyChannel(name="main")
+
+    @main.build.named_notices
+    async def notices() -> dict[str, str]:
+        return {"vision": "camera open"}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices == {"vision": "camera open"}
+
+
+@pytest.mark.asyncio
+async def test_named_notices_refresh_with_meta():
+    """named notice 随 meta refresh 重算, 不缓存在注册时刻的值."""
+    main = PyChannel(name="main")
+    state = {"v": "v1"}
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"vision": state["v"]}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices["vision"] == "v1"
+
+        state["v"] = "v2"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["vision"] == "v2"
+
+
+@pytest.mark.asyncio
+async def test_named_notices_merge_main_state_and_module():
+    """main state 与 module 的片段合并共存, 不同 name 互不覆盖."""
+    main = PyChannel(name="main")
+
+    class Mod(ChannelModule):
+        def name(self) -> str:
+            return "vision_mod"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        async def get_named_notices(self) -> dict[str, str]:
+            return {"vision": "camera open"}
+
+    main.with_module(Mod())
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"audio": "mic idle"}
+
+    async with main.bootstrap() as runtime:
+        assert runtime.self_meta().named_notices == {"audio": "mic idle", "vision": "camera open"}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_named_notice_keeps_first_and_spares_the_channel(caplog):
+    """重名是编程错误, 但不是系统故障: 保留先到者并记 error, channel 仍可用."""
+    main = PyChannel(name="main")
+
+    class Mod(ChannelModule):
+        def name(self) -> str:
+            return "mod"
+
+        def own_commands(self) -> dict[str, Command]:
+            return {}
+
+        async def get_named_notices(self) -> dict[str, str]:
+            return {"shared": "from mod"}
+
+    main.with_module(Mod())
+
+    @main.build.named_notices
+    def notices() -> dict[str, str]:
+        return {"shared": "from main"}
+
+    with caplog.at_level("ERROR"):
+        async with main.bootstrap() as runtime:
+            meta = runtime.self_meta()
+            assert meta.available
+            assert meta.failure == ""
+            assert meta.named_notices["shared"] == "from main"
+
+    assert "duplicate named notice" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_builder_with_virtual_children():
+    children = {}
+
+    main = PyChannel(name="main")
+
+    @main.build.virtual_children
+    def get_children():
+        nonlocal children
+        return children
+
+    async with main.bootstrap() as runtime:
+        assert len(main.virtual_children()) == 0
+        sub = PyChannel(name="sub")
+        children['sub'] = sub
+        await runtime.refresh_metas()
+        assert len(main.virtual_children()) == 1

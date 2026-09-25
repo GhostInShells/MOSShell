@@ -81,8 +81,6 @@ class MockSpeechStream(SpeechStream):
                 if item.strip() and self.typing_sleep > 0.0:
                     time.sleep(self.typing_sleep)
         finally:
-            if self.cmd_task is not None:
-                self.cmd_task.tokens = self.output_buffer
             self.output_done_event.set()
             self.speech_outputs.append("".join(self.outputs))
 
@@ -104,7 +102,7 @@ class MockSpeech(Speech):
         self._typing_sleep = typing_sleep
         self._uid = unique_id()
 
-    def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
+    def new_segment(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         stream = MockSpeechStream(
             self._outputs,
             id=batch_id,

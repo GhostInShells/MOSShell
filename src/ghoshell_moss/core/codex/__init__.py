@@ -18,6 +18,7 @@ from ._features import (
     update_feature_status,
     init_features,
     RESERVED_STATUSES,
+    QUIET_STATUSES,
 )
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     'update_feature_status',
     'init_features',
     'RESERVED_STATUSES',
+    'QUIET_STATUSES',
 ]
 
 

@@ -1,0 +1,18 @@
+# 共享组内无 per-node install 标记 — 状态由父 venv 是否 sync 决定
+.installed
+
+__pycache__/
+*.pyc
+
+# visions 组共享 venv
+.venv/
+
+# runtime artifacts (ledger, logs) — keep dir, ignore contents
+runtime/*
+!runtime/.gitignore
+
+# tmp frames written by nodes
+*.png
+
+# cell-level config — .env.example is the tracked template
+.env

@@ -10,32 +10,32 @@ import contextlib
 import logging
 from collections import deque
 from pathlib import Path
-from typing import Coroutine, Iterable, Type, Callable
+from typing import Coroutine, Iterable, Type, Callable, Awaitable
 from typing_extensions import Self
 
-from ghoshell_container import Container, IoCContainer, Provider
+from ghoshell_container import IoCContainer, Provider
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts import Workspace, LocalWorkspace, ConfigStore, ConfigInstanceRegisterBootstrapper, \
-    ResourceRegistry
-from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
+from ghoshell_moss.contracts import Workspace, LocalWorkspace, ResourceRegistry, ConfigStore
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
-from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 
 from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject, CellHandle
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.cell import (
-    CellAddress, Cell, NodeManifest, CellRuntimeInfo, CellPresence, CellNetwork,
-    NodeLauncher, normalize, DuplicatedError,
+    CellAddress, Cell, CellRuntimeInfo, CellPresence, CellNetwork,
+    CellEventLevel, NodeManager, normalize,
     enter_cell_lifecycle,
 )
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.blueprint.warrant import Warrant
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 
 from ghoshell_moss.matrix.adapter import MatrixNetworkAdapter
+from ghoshell_moss.matrix.operator import ZenohOperator
+from ghoshell_moss.matrix.zenoh_helper import MatrixEnvNamespace
 
 __all__ = ['MatrixImpl']
 
@@ -57,7 +57,6 @@ class MatrixImpl(Matrix):
             adapter: MatrixNetworkAdapter,
             network: NetworkMetadata,
             logger: logging.Logger | None = None,
-            container: IoCContainer | None = None,
     ):
         # runtime_info 是 Matrix 唯一的身份真相载体 — cell + pid/pgid/start_time
         # 全部由 caller (factory worker path / Host concrete) 显式构建后传入.
@@ -69,6 +68,8 @@ class MatrixImpl(Matrix):
             )
         self._env = env
         self._project = project
+        # set to current.
+        runtime_info.pid = self._env.pid
         self._runtime_info = runtime_info
         self._adapter = adapter
         self._network_metadata = network
@@ -90,10 +91,11 @@ class MatrixImpl(Matrix):
         self._event_loop: asyncio.AbstractEventLoop | None = None
 
         # -- container -- #
-        self._container: IoCContainer = self._prepare_container(container)
+        self._container: IoCContainer = self._prepare_container()
 
-        # -- 网络三件, __aenter__ async 阶段填 -- #
+        # -- 网络三件 + operator, __aenter__ async 阶段填 -- #
         self._presence: CellPresence | None = None  # adapter.new_presence 产物
+        self._operator: 'ZenohOperator | None' = None  # service_operator() 惰性创建
         self._watcher: CellNetwork | None = None  # mesh() 惰性创建
 
         # -- 治理: run_node 拉起的所有 cell handle (§YY handled_cells 契约) -- #
@@ -107,7 +109,7 @@ class MatrixImpl(Matrix):
         self._lifecycle_bound: list[MatrixLifecycleObject | Type[MatrixLifecycleObject]] = []
 
         # -- 任务组 -- #
-        self._task_group: set[asyncio.Task] = set()
+        self._binding_futures: set[asyncio.Future] = set()
         # provide_channel 的单槽任务 — 一个 cell 只提供一个根 channel (§UU-2).
         # 收尾时 cancel 触发 provider.arun_until_closed 走 finally.
         self._channel_provider_task: asyncio.Task | None = None
@@ -190,7 +192,7 @@ class MatrixImpl(Matrix):
            "另造一个 ready 信号 future", 实际原意是 "future = task 生命周期,
            走完 = 膜下线". 一字之差, 语义倒过来.
 
-        moss-mcp 的 TTS 之所以还能说话, 是因为外层 task 事实上跑起了
+        moss-shell mcp 的 TTS 之所以还能说话, 是因为外层 task 事实上跑起了
         `arun_until_closed`, provider 副作用生效; 只是所有 `await` 调用者
         拿到的 future 是坏的. 这种"表面工作 + 隐性坏 API"是最难诊断的漂移形态.
         """
@@ -229,12 +231,17 @@ class MatrixImpl(Matrix):
         self._channel_provider_task = task
         return task
 
-    async def publish_event(self, content: str) -> None:
+    async def publish_event(
+            self,
+            content: str,
+            *,
+            event_level: CellEventLevel | None = None,
+    ) -> None:
         """向网络广播 CellEvent (refetch=True). 委托 self._presence."""
         self._check_running()
         if self._presence is None:
             raise RuntimeError('Matrix presence not initialized')
-        await self._presence.publish_event(content)
+        await self._presence.publish_event(content, event_level=event_level)
 
     # ==================================================================
     # 观察: 惰性门 mesh() → Watcher (§UU-7 / §YY-1 第 3 条 opt-in by usage)
@@ -261,6 +268,32 @@ class MatrixImpl(Matrix):
         return watcher
 
     # ==================================================================
+    # service operator: 惰性门, 遵循 network() 的 lazy-gate 模式
+    # ==================================================================
+
+    async def service_operator(self) -> 'ZenohOperator':
+        """
+        惰性门: 首次调用时构造 ZenohOperator + enter_async_context;
+        后续调用返回同一实例. 纯 worker cell 不调即不付发现成本.
+        """
+        self._check_running()
+        if self._operator is not None:
+            return self._operator
+        import zenoh
+        session = self._container.force_fetch(zenoh.Session)
+        network_ns = MatrixEnvNamespace(self._env).network_ns
+        operator = ZenohOperator(
+            session=session,
+            network_ns=network_ns,
+            this_address=self.this.address,
+            logger=self._logger,
+        )
+        await self._async_exit_stack.enter_async_context(operator)
+        self._operator = operator
+        self._logger.debug("%s operator lazily created", self._log_prefix)
+        return operator
+
+    # ==================================================================
     # 治理咽喉: run_node (六动词的 run, §YY blueprint/matrix.py L204+)
     # ==================================================================
 
@@ -269,139 +302,64 @@ class MatrixImpl(Matrix):
             target: Path,
             *,
             extra_env: dict[str, str] | None = None,
+            extra_args: list[str] | None = None,
+            alias: str | None = None,
     ) -> CellHandle:
         """
-        拉起一个 node cell — 咽喉步骤 (§YY blueprint/matrix.py run_node docstring):
+        拉起一个 node cell — 唯一 spawn 咽喉收敛到 NodeManager.spawn_node.
 
-        1. 解析 target → NodeManifest (NODE.md / 目录 / 脚本)
-        2. installed 校验 (未装 raise, 错误指向 INSTALL.md)
-        3. NodeLauncher.from_manifest 打包 (Cell + env + argv + runtime info)
-        4. singleton 查重 (§UU-6 ledger 单一真相: 遍历 project.cell_runtimes 找活的同 fullname)
-        5. spawn cwd = runtime 子目录 (§TT-6 边界做成环境); processes.execute
-        6. 回填 runtime pid/pgid; 写 CellRuntimeInfo 到 env.cell_runtimes_dir (§UU-6 单写者)
-        7. 组装 CellHandle 入 _handled_cells; 注册 on_exit callback (dict→FIFO 转移 + 清 ledger 文件)
+        只做: resolve target → spawn_node (installed/probe/singleton 预检/execute)
+        → 组装 CellHandle.
+        singleton 预检已由 spawn_node 同步判定 (撞锁抛 DuplicatedError, 本层不再重复);
+        锁持有 / 账本清理 / pid·pgid 回填归 node 自身 (enter_cell_lifecycle) 或 host 清孤儿.
+
+        :param target: 路径 (NODE.md / 目录 / 脚本 / 相对 project.root).
+        :param extra_env: 追加注入子进程的环境变量.
+        :param extra_args: 追加在 node 声明入口参数 (``exec.args``) 之后的 argv token,
+            只追加不替换; 用于每实例的身份/绑定 (设备 index / 流地址 ...).
+            探针 (manifest.check) 不接收它们.
+        :param alias: 本进程承诺的挂载名 (matrix.mesh.<alias>); None → 用 node name.
+        :return CellHandle: cell 身份 + 子进程句柄, 由 matrix.handled_cells() 追踪.
         """
         self._check_running()
 
-        # -- 步骤 1-2: 解析 + installed 校验 -- #
-        # _resolve_target 读文件系统 (NODE.md / from_script 认亲) — to_thread 保护.
-        manifest = await asyncio.to_thread(self._resolve_target, target)
-        if not manifest.installed:
-            install_path = Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
-            raise RuntimeError(
-                f"node {manifest.name!r} not installed. See {install_path} for install steps."
-            )
+        node_manager = self._container.force_fetch(NodeManager)
+        manifest = await asyncio.to_thread(node_manager.resolve_node, target)
 
-        # -- 步骤 3: NodeLauncher 打包 (纯 in-memory) -- #
-        # from_manifest 内部走 build_node_from_manifest → Cell + CellRuntimeInfo,
-        # dump_cell_env 注入 parent_cell_address (§UU-6 身份传递).
-        launcher = NodeLauncher.from_manifest(self._env, manifest)
-        new_cell = launcher.runtime.cell
-        new_address = new_cell.address
-
-        # -- 步骤 4: singleton 查重 (§UU-6 ledger 单写者 + is_alive 核对) -- #
-        # 遍历 project.cell_runtimes() 直读 ledger 目录 — 整体走 to_thread.
-        if new_cell.singleton:
-            existing = await asyncio.to_thread(
-                self._find_singleton_conflict, new_cell,
-            )
-            if existing is not None:
-                raise DuplicatedError(
-                    f"node {manifest.name!r} declares singleton and is "
-                    f"already running (address={existing.address} pid={existing.pid}); "
-                    f"stop the existing instance before running a new one."
-                )
-
-        # -- 步骤 5: spawn cwd = cell.home (NODE.md 所在目录) -- #
-        spawn_cwd = Path(launcher.runtime.cell.home)
-        # runtime 子目录: 平铺 ledger json + stdout/stderr log, 同 stem 不同 suffix.
-        # 约定见 CellRuntimeInfo (cell.py).
-        runtime_dir = spawn_cwd / CellRuntimeInfo.RUNTIME_SUBDIR
-        await asyncio.to_thread(
-            runtime_dir.mkdir, parents=True, exist_ok=True,
-        )
-        # 前置维护: 扫 runtime_dir 里所有 ledger, 进程已死的连 stdout/stderr 一起清.
-        await asyncio.to_thread(
-            CellRuntimeInfo.clear_dead_runtimes, runtime_dir,
+        runtime, managed = await node_manager.spawn_node(
+            manifest,
+            extra_env=extra_env,
+            extra_args=extra_args,
+            alias=alias,
+            capture=self._cell_capture,
         )
 
-        # 环境: launcher.env (含 dump_cell_env 注入) + manifest.exec.env + 用户 extra_env
-        child_env = dict(launcher.env)
-        if manifest.exec.env:
-            child_env.update(manifest.exec.env)
-        if extra_env:
-            child_env.update(extra_env)
-
-        # -- 步骤 6: spawn -- #
-        # capture: 内存 ring buffer + 完整落盘到 cell.home/runtime/.
-        # stdout/stderr 路径由 CellRuntimeInfo 命名约定统一生成 (同 stem, suffix).
-        # 清理策略待 dogfood 定案 (cell-run-cycle matrix-channel.md §5.4).
-        managed = await self.processes.execute(
-            *launcher.run,
-            name=f'cell:{manifest.name}',
-            description=manifest.description or f'node cell {manifest.name}',
-            cwd=spawn_cwd,
-            extra_env=child_env,
-            with_os_env=False,  # launcher.env 已包含必要 env
-            capture=CaptureSpec(
-                buffer_lines=200,
-                stdout_file=CellRuntimeInfo.default_stdout_log(runtime_dir, new_address),
-                stderr_file=CellRuntimeInfo.default_stderr_log(runtime_dir, new_address),
-            ),
-            on_exit=self._on_cell_exit(new_address),
-        )
-
-        # 回填 runtime info 的 pid/pgid, 写 ledger (file IO → to_thread).
-        launcher.runtime.pid = managed.meta.pid
-        if managed.meta.pgid is not None:
-            launcher.runtime.pgid = managed.meta.pgid
-        # 双写: workspace ledger (CLI 发现用) + cell local runtime dir (清理扫描用).
-        try:
-            await asyncio.to_thread(
-                launcher.runtime.write_to_runtime_dir,
-                self._env.cell_runtimes_dir,
-            )
-            await asyncio.to_thread(
-                launcher.runtime.write_to_runtime_dir, runtime_dir,
-            )
-        except Exception:
-            self._logger.exception(
-                "%s failed to write CellRuntimeInfo for %s",
-                self._log_prefix, new_address,
-            )
-
-        # -- 步骤 7: 组装 CellHandle 入 _handled_cells -- #
-        handle = CellHandle(runtime=launcher.runtime, process=managed)
-        self._handled_cells[new_address] = handle
+        handle = CellHandle(runtime=runtime, process=managed)
+        self._handled_cells[runtime.address] = handle
+        managed.add_done_callback(self._on_cell_exit(runtime.address))
         self._logger.info(
             "%s run_node spawned: address=%s pid=%s home=%s",
-            self._log_prefix, new_address, managed.meta.pid, spawn_cwd,
+            self._log_prefix, runtime.address, managed.meta.pid, runtime.cell.home,
         )
         return handle
 
-    def _find_singleton_conflict(
-            self, new_cell: Cell,
-    ) -> CellRuntimeInfo | None:
-        """遍历 ledger 找活着的同 fullname cell (供 to_thread 调用).
-
-        分离出来是为了让 run_node 里的 async 路径可以整段 offload 到线程池 —
-        cell_runtimes 迭代 = glob + read_text + json parse, is_alive = psutil pid check,
-        每一项都是 syscall, 循环里累加超 1ms 是常态.
-        """
-        for existing in self._project.cell_runtimes():
-            if not existing.is_alive():
-                continue
-            if existing.cell.fullname == new_cell.fullname:
-                return existing
-        return None
+    @staticmethod
+    def _cell_capture(runtime: CellRuntimeInfo) -> CaptureSpec:
+        """capture factory — 落盘 stdout/stderr 到 cell.home/runtime/ (路径依赖 address)."""
+        runtime_dir = Path(runtime.cell.home) / CellRuntimeInfo.RUNTIME_SUBDIR
+        return CaptureSpec(
+            buffer_lines=200,
+            stdout_file=CellRuntimeInfo.default_stdout_log(runtime_dir, runtime.address),
+            stderr_file=CellRuntimeInfo.default_stderr_log(runtime_dir, runtime.address),
+        )
 
     def _on_cell_exit(
             self,
             address: CellAddress,
     ) -> Callable[[ProcessMeta], None]:
-        """构造 on_exit callback: 从 _handled_cells → _dead_cells FIFO + 清 ledger 文件.
+        """构造 on_exit callback: 从 _handled_cells → _dead_cells FIFO.
 
-        闭包捕捉 address, 避免 self._handled_cells 在同 address 复用时误清新条目.
+        账本清理归 node 自身 (enter_cell_lifecycle finally) 或 host 清孤儿, 此处不重复.
         callback 在 asyncio loop 线程触发 (Subprocesses 承诺), 无需线程安全.
         """
 
@@ -409,18 +367,6 @@ class MatrixImpl(Matrix):
             handle = self._handled_cells.pop(address, None)
             if handle is not None:
                 self._dead_cells.append(handle)
-            # 清 ledger runtime file (§UU-6 单写者: 咽喉写, 咽喉在 exit 时删).
-            info_path = CellRuntimeInfo.filepath(
-                self._env.cell_runtimes_dir, address,
-            )
-            try:
-                if info_path.exists():
-                    info_path.unlink()
-            except Exception:
-                self._logger.exception(
-                    "%s failed to clean ledger file for %s",
-                    self._log_prefix, address,
-                )
             self._logger.info(
                 "%s cell exited: address=%s exit_code=%s",
                 self._log_prefix, address, meta.exit_code,
@@ -437,9 +383,10 @@ class MatrixImpl(Matrix):
         return list(self._dead_cells)
 
     def _kill_orphan_cell(self, info: CellRuntimeInfo) -> None:
-        """host 侧 clear_cell_runtimes 的 kill 回调 — 走 project.kill_cell 统一入口. 幂等."""
+        """host 侧 clear_cell_runtimes 的 kill 回调 — 走 NodeManager.kill_cell. 幂等."""
         try:
-            self._project.kill_cell(info.address)
+            node_manager = self._container.force_fetch(NodeManager)
+            node_manager.kill_cell(info.address)
         except Exception:
             self._logger.exception(
                 "%s failed to kill orphan cell %s",
@@ -492,53 +439,14 @@ class MatrixImpl(Matrix):
         exc_name = exc_type.__name__ if exc_type is not None else 'Exception'
         return f'crash: {exc_name}: {msg}' if msg else f'crash: {exc_name}'
 
-    def _resolve_target(self, target: Path) -> NodeManifest:
-        """
-        解析 target → NodeManifest (§YY run_node docstring 步骤 1).
-
-        Path 相对路径 → 相对 project.root 解析并绝对化;
-        指向 NODE.md → 直接读; 指向目录 → 找目录下的 NODE.md;
-        指向脚本 → NodeManifest.from_script 向上认亲 (§WW-4).
-        """
-        if not isinstance(target, Path):
-            target = Path(target)
-        path = target.expanduser()
-        if not path.is_absolute():
-            path = (Path(self._project.root) / path).resolve()
-        if not path.exists():
-            raise FileNotFoundError(
-                f"node target path {target!r} does not exist "
-                f"(resolved to {path}). Check the path or provide a valid target."
-            )
-        if path.is_dir():
-            manifest = NodeManifest.read_from_directory(path)
-            if manifest is None:
-                raise LookupError(
-                    f"no {NodeManifest.MANIFEST_FILENAME} found in {path}. "
-                    f"Either add NODE.md or point to a script file directly."
-                )
-            return manifest
-        # 文件: NODE.md 直接读, 其他 (脚本) 向上认亲
-        if path.name == NodeManifest.MANIFEST_FILENAME:
-            return NodeManifest.read_from_file(path)
-        return NodeManifest.from_script(path)
-
     # ==================================================================
-    # 灶台 (§UU-2 / §YY: Subprocesses / JobSupervisor 从 IoC pull)
+    # 灶台 (Subprocesses 从 IoC pull)
     # ==================================================================
 
     @property
     def processes(self) -> Subprocesses:
         self._check_running()
         return self._container.force_fetch(Subprocesses)
-
-    @property
-    def jobs(self) -> JobSupervisor:
-        self._check_running()
-        return self._container.force_fetch(JobSupervisor)
-
-    def new_jobs(self) -> JobSupervisor:
-        return self.jobs.new()
 
     # ==================================================================
     # 门: session / workspace / home / container / logger
@@ -562,6 +470,11 @@ class MatrixImpl(Matrix):
     @property
     def resources(self) -> ResourceRegistry:
         return self._container.force_fetch(ResourceRegistry)
+
+    @property
+    def warrant(self) -> Warrant:
+        self._check_running()
+        return self._container.force_fetch(Warrant)
 
     @property
     def container(self) -> IoCContainer:
@@ -597,6 +510,9 @@ class MatrixImpl(Matrix):
     def close(self) -> None:
         self._closing_event.set()
 
+    async def wait_close(self) -> None:
+        await self._closing_event.wait()
+
     async def wait_closed(self) -> None:
         await self._closed_event.wait()
 
@@ -605,14 +521,14 @@ class MatrixImpl(Matrix):
 
     def create_task(
             self,
-            cor: Coroutine,
+            cor: Awaitable,
             *,
             stop_matrix_on_error: bool = False,
             name: str | None = None,
     ) -> asyncio.Task:
         self._check_running()
 
-        async def _wrap():
+        async def _ensure_future_done():
             try:
                 await cor
             except asyncio.CancelledError:
@@ -622,14 +538,14 @@ class MatrixImpl(Matrix):
                     "%s inner task %s exception: %r",
                     self._log_prefix, name, e,
                 )
-                if stop_matrix_on_error:
+                if stop_matrix_on_error and self.is_running():
                     self.close()
             finally:
                 self._logger.debug("%s inner task %s done", self._log_prefix, name)
 
-        task = self._event_loop.create_task(_wrap(), name=name)
-        self._task_group.add(task)
-        task.add_done_callback(self._task_group.discard)
+        task = self._event_loop.create_task(_ensure_future_done(), name=name)
+        self._binding_futures.add(task)
+        task.add_done_callback(lambda c: self._binding_futures.discard(c))
         return task
 
     def register_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
@@ -637,10 +553,9 @@ class MatrixImpl(Matrix):
         if self._closing_event.is_set():
             raise RuntimeError('Matrix already closing')
         if self.is_running():
-            raise RuntimeError(
-                'Matrix already running; use add_lifecycle_object for dynamic add'
-            )
-        self._lifecycle_bound.append(obj)
+            self._event_loop.create_task(self._async_exit_stack.enter_async_context(obj))
+        else:
+            self._lifecycle_bound.append(obj)
 
     async def add_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
         """运行时动态添加. 已在 exit_stack 中的对象跳过."""
@@ -656,36 +571,37 @@ class MatrixImpl(Matrix):
     # 装配: IoC 两阶段 (§ZZ-5)
     # ==================================================================
 
-    def _prepare_container(self, container: IoCContainer | None) -> Container:
+    def _prepare_container(self) -> IoCContainer:
         """
         sync 阶段: 注册全部 provider, 返回未 bootstrap 的 container.
 
-        §ZZ-5 装配次序: set (5 个已在实例) → matrix_manifests providers →
-        matrix default providers → adapter.bind_ioc → adapter.default_providers →
-        logger default → (caller 负责 bootstrap).
+        次序: project providers (MOSS.manifests) → matrix 实例 set →
+        MATRIX.manifests (环境能力, mode 激活时) → adapter driver 装配 →
+        matrix default providers → matrix 契约校验.
         """
-        container = container or Container(name=self.this.address)
-
-        # -- 5 个"实例已在"直接 set -- #
+        container = self.project.container
+        # -- matrix 自身实例 -- #
         container.set(Matrix, self)
         container.set(MatrixImpl, self)
         container.set(Environment, self._env)
         container.set(Project, self._project)
         container.set(Workspace, self._project.workspace)
         container.set(MatrixNetworkAdapter, self._adapter)
+        container.set(Cell, self._runtime_info.cell)
+        container.set(CellAddress, self._runtime_info.cell.address)
 
-        # -- matrix_manifests().providers 全 register (workspace baseline, §ZZ-2) -- #
-        matrix_manifests = self._project.matrix_manifests()
-        for provider_manifest in matrix_manifests.providers():
-            if provider_manifest.is_error():
-                self._logger.warning(
-                    "%s skip provider manifest with error: %s (%s)",
-                    self._log_prefix, provider_manifest.name(), provider_manifest.error(),
-                )
-                continue
-            container.register(provider_manifest.value())
+        # -- MATRIX.manifests: mode 环境能力 (mode 激活时, 初始全空) -- #
+        if not self._env.no_mode:
+            mode = self._project.current_mode()
+            if mode is not None:
+                mode.bootstrap()
+                matrix_m = mode.matrix_manifests()
+                for p in matrix_m.providers():
+                    if p.is_error():
+                        continue
+                    container.register(p.value())
 
-        # -- adapter driver-specific 装配 (§ZZ-5) -- #
+        # -- adapter driver-specific 装配 -- #
         # bind_ioc: 通常注册 lazy provider (如 zenoh.Session), 捕捉 adapter 引用,
         # 首次 fetch 时读 adapter._session (那时 adapter.__aenter__ 已完成).
         self._adapter.bind_ioc(container)
@@ -694,52 +610,26 @@ class MatrixImpl(Matrix):
                 continue
             container.register(provider)
 
-        # -- matrix default providers — if not bound (§ZZ-2 兜底) -- #
+        # -- matrix default providers — if not bound (default 兜底) -- #
         for provider in self._default_providers():
             if container.bound(provider.contract()):
                 continue
             container.register(provider)
 
-        # -- configs -- #
-        configs = []
-        for config_manifest in matrix_manifests.configs():
-            if config_manifest.is_error():
-                self._logger.warning(
-                    '%s skip config with error: %s (%s)',
-                    self._log_prefix, config_manifest.name(), config_manifest.error(),
-                )
-                continue
-            configs.append(config_manifest.value())
-        if len(configs) > 0:
-            bootstrapper = ConfigInstanceRegisterBootstrapper(*configs)
-            container.add_bootstrapper(bootstrapper)
-
-        # -- resources (matrix_manifests.resources → bootstrapper) -- #
-        for resource_manifest in matrix_manifests.resources():
-            if resource_manifest.is_error():
-                continue
-            storage_factory = resource_manifest.value()
-            bootstrapper = ResourceStorageFactoryBootstrapper(storage_factory)
-            container.add_bootstrapper(bootstrapper)
+        # -- matrix 装配契约校验 — 缺失任何一项即构造失败 (fail-fast) -- #
+        self.contracts().validate(container)
 
         return container
 
     def _default_providers(self) -> Iterable[Provider]:
         """
-        matrix 层的 default 接线 (§ZZ-2 default 兜底).
+        matrix 层的 default 接线 (default 兜底).
 
-        workspace 用户在 MatrixManifest 里显式覆写即可覆盖.
-        driver-specific 的 default (topic/session/zenoh.Session) 归 adapter.
+        仅剩 logger. 协议 default (topic/session/qa) 归 adapter;
+        子进程/任务等 project 级能力归 Project._default_providers.
         """
-        from ghoshell_moss.matrix.providers.configs_provider import EnvConfigStoreProvider
         from ghoshell_moss.matrix.providers.logger_provider import MatrixLoggerProvider
-        from ghoshell_moss.matrix.providers.subprocesses_provider import MatrixSubprocessesProvider
-        from ghoshell_moss.matrix.providers.job_supervisor_provider import MatrixJobSupervisorProvider
-
-        yield MatrixSubprocessesProvider()
-        yield MatrixJobSupervisorProvider()
         yield MatrixLoggerProvider()
-        yield EnvConfigStoreProvider()
 
     # ==================================================================
     # 生命周期 (承 host/matrix.py __aenter__/__aexit__ 骨架, 表面按 §ZZ-5)
@@ -753,6 +643,8 @@ class MatrixImpl(Matrix):
 
         # -- sync 阶段 -- #
         self._exit_stack.__enter__()
+        # bootstrap project first
+        self._exit_stack.enter_context(self._project)
 
         # 本 cell 生命周期先落地 (§UU-6 单写者原则):
         #   1. singleton → workspace.lock() 争抢 (host 一律 singleton)
@@ -767,12 +659,6 @@ class MatrixImpl(Matrix):
             self._runtime_info,
             kill=self._kill_orphan_cell,
         )
-
-        self._exit_stack.enter_context(
-            self._container_lifecycle_ctx()
-        )
-        # container.bootstrap 已在 _container_lifecycle_ctx 里完成.
-
         # pull LoggerItf from IoC 覆写 (§ZZ-6): 有覆写就用, 没有保 self._logger 兜底
         pulled = self._container.get(LoggerItf)
         if pulled is not None:
@@ -784,6 +670,14 @@ class MatrixImpl(Matrix):
         # -- async 阶段 -- #
         try:
             await self._async_exit_stack.__aenter__()
+
+            # 0. Subprocesses 生命周期接线 — 从 IoC 取出, 未运行则绑进 exit stack.
+            #    enter 越早, __aexit__ 越后反卷 → 它在 matrix 所有子进程之后做最后清场
+            #    (SIGINT→grace→SIGKILL), 兜住"子进程不比 owner 活得久"铁律.
+            #    空转无成本: __aenter__ 只置位, __aexit__ 对空 _executing/_tasks 是空循环.
+            subprocesses = self._container.force_fetch(Subprocesses)
+            if not subprocesses.is_running():
+                await self._async_exit_stack.enter_async_context(subprocesses)
 
             # channel provider tasks 收尾钩子 (承老 _ensure_channel_provider_task_cancelled)
             self._async_exit_stack.push_async_callback(self._cancel_channel_provider_tasks)
@@ -805,6 +699,11 @@ class MatrixImpl(Matrix):
 
             session = self._container.force_fetch(Session)
             await self._async_exit_stack.enter_async_context(session)
+
+            # 3.5 warrant 默认加载 (可选: 未注册 provider 则跳过, matrix.warrant 访问时再报错)
+            warrant = self._container.get(Warrant)
+            if warrant is not None:
+                await self._async_exit_stack.enter_async_context(warrant)
 
             # 4. lifecycle_bound 依次启动 (承老代码)
             enter_order: list[MatrixLifecycleObject] = []
@@ -838,15 +737,6 @@ class MatrixImpl(Matrix):
             self._closing_event.set()
             raise
 
-    @contextlib.contextmanager
-    def _container_lifecycle_ctx(self):
-        """container.bootstrap + shutdown 反卷."""
-        self._container.bootstrap()
-        try:
-            yield
-        finally:
-            self._container.shutdown()
-
     async def _cancel_channel_provider_tasks(self) -> None:
         task = self._channel_provider_task
         self._channel_provider_task = None
@@ -860,8 +750,8 @@ class MatrixImpl(Matrix):
             pass
 
     async def _cancel_task_group(self) -> None:
-        tasks = list(self._task_group)
-        self._task_group.clear()
+        tasks = list(self._binding_futures)
+        self._binding_futures.clear()
         for t in tasks:
             if not t.done():
                 t.cancel()
@@ -910,3 +800,5 @@ class MatrixImpl(Matrix):
         # sync stack 反卷 (container shutdown + enter_cell_lifecycle finally 触发 —
         # runtime file 删除在此)
         self._exit_stack.__exit__(exc_type, exc_val, exc_tb)
+        # discover 缓存复位 — 已关闭的 matrix 不再被 Matrix.discover() 返回.
+        Matrix.reset_discover_instance(self)

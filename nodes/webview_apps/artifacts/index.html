@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>artifacts</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --border:#232b36; --text:#e6edf3; --dim:#8b949e; --accent:#4a90d9; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; display:flex; flex-direction:column; overflow:hidden; }
+  header.bar { flex:0 0 auto; display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border); }
+  header.bar .title { font-weight:600; letter-spacing:.3px; }
+  #tabs { display:flex; gap:6px; overflow-x:auto; flex:1 1 auto; min-width:0; }
+  .tab { flex:0 0 auto; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim); background:transparent; border:1px solid var(--border); border-radius:999px; padding:2px 10px; cursor:pointer; white-space:nowrap; }
+  .tab:hover { color:var(--text); border-color:var(--accent); }
+  .tab.active { color:#0e1116; background:var(--accent); border-color:var(--accent); }
+  .tgl { flex:0 0 auto; font-size:12px; color:var(--dim); background:transparent; border:1px solid var(--border); border-radius:6px; padding:3px 10px; cursor:pointer; }
+  .tgl:hover { color:var(--text); border-color:var(--accent); }
+  .dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; background:#d1242f; transition:background .3s; }
+  .dot.on { background:#2ea043; }
+  .stage { flex:1 1 auto; display:flex; min-height:0; }
+  .source { flex:0 0 320px; border-right:1px solid var(--border); overflow:auto; padding:14px; background:var(--panel); }
+  .source.hidden { display:none; }
+  .source .cap { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
+  .src { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre-wrap; word-break:break-word; color:#c9d1d9; }
+  .src.cursor::after { content:"\258B"; color:var(--accent); animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .render { flex:1 1 auto; display:flex; align-items:center; justify-content:center; overflow:hidden; background:var(--bg); }
+  .render .pending { color:var(--dim); font-style:italic; }
+  .render canvas { border-radius:6px; background:#0b0e13; }
+  .render svg { display:block; }
+  .render img { max-width:100%; max-height:100%; border-radius:6px; }
+  .render video { max-width:100%; max-height:100%; border-radius:6px; }
+  .markdown { max-width:720px; width:100%; height:100%; overflow:auto; padding:28px; color:var(--text); font-size:15px; line-height:1.7; }
+  .markdown h1,.markdown h2,.markdown h3 { margin:18px 0 8px; }
+  .markdown p { margin:8px 0; }
+  .markdown code { background:#1f2328; padding:2px 6px; border-radius:4px; font-size:13px; }
+  .markdown pre { background:#1f2328; padding:12px; border-radius:6px; overflow:auto; }
+  .term { width:100%; height:100%; padding:24px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:15px; line-height:1.6; background:#0a120a; color:#3fb950; white-space:pre-wrap; overflow:auto; }
+  .dot.flash { animation:flash .45s; }
+  @keyframes flash { 0% { box-shadow:0 0 0 0 rgba(46,160,67,.8); } 100% { box-shadow:0 0 0 10px rgba(46,160,67,0); } }
+</style>
+</head>
+<body>
+<header class="bar">
+  <span class="title">artifacts</span>
+  <nav id="tabs"></nav>
+  <button id="src-toggle" class="tgl">source</button>
+  <span class="dot" id="dot"></span>
+</header>
+<div class="stage">
+  <aside id="source" class="source">
+    <div class="cap">source</div>
+    <pre id="src-code" class="src"></pre>
+  </aside>
+  <section id="render" class="render"><div class="pending">waiting for the first artifact…</div></section>
+</div>
+<script>
+const renderEl = document.getElementById('render');
+const sourceEl = document.getElementById('source');
+const srcCode = document.getElementById('src-code');
+const tabsEl = document.getElementById('tabs');
+const dot = document.getElementById('dot');
+
+const artifacts = new Map();   // label -> {kind, description, source, status, svg, canvasEl}
+const order = [];              // most-recent last
+let current = null;
+let sourceVisible = true;
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function updateTabs() {
+  tabsEl.innerHTML = '';
+  order.forEach((label) => {
+    const a = artifacts.get(label);
+    const b = document.createElement('button');
+    b.className = 'tab' + (label === current ? ' active' : '');
+    b.textContent = label;
+    b.onclick = () => { current = label; renderCurrent(); send({ type: 'user.action', action: 'display', detail: label }); };
+    tabsEl.appendChild(b);
+  });
+}
+
+function fitCanvas(cv) {
+  const scale = Math.min(renderEl.clientWidth / cv.width, renderEl.clientHeight / cv.height, 2);
+  cv.style.width = Math.floor(cv.width * scale) + 'px';
+  cv.style.height = Math.floor(cv.height * scale) + 'px';
+}
+
+function renderCanvas(a) {
+  if (!a.canvasEl) {
+    const cv = document.createElement('canvas');
+    cv.width = 480; cv.height = 300;
+    const ctx = cv.getContext('2d');
+    try { new Function('ctx', 'canvas', a.source)(ctx, cv); }
+    catch (e) { cv.remove(); renderEl.innerHTML = '<div class="pending">error: ' + esc(e.message) + '</div>'; return; }
+    a.canvasEl = cv;
+  }
+  renderEl.innerHTML = '';
+  renderEl.appendChild(a.canvasEl);
+  fitCanvas(a.canvasEl);
+}
+
+function renderMermaid(a) {
+  if (a.svg) { renderEl.innerHTML = a.svg; scaleSvg(); return; }
+  renderEl.innerHTML = '<div class="pending">rendering…</div>';
+  mermaid.render('m-' + a.kind + '-' + Date.now(), a.source)
+    .then(({ svg }) => { a.svg = svg; if (current === a.label) { renderEl.innerHTML = svg; scaleSvg(); } })
+    .catch((e) => { renderEl.innerHTML = '<div class="pending">mermaid error: ' + esc(e.message) + '</div>'; });
+}
+
+function scaleSvg() {
+  const s = renderEl.querySelector('svg');
+  if (s) { s.setAttribute('preserveAspectRatio', 'xMidYMid meet'); s.style.width = '100%'; s.style.height = '100%'; }
+}
+
+function renderHtml(a) {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+  iframe.srcdoc = a.source;
+  iframe.style.width = '100%';
+  iframe.style.height = '100%';
+  iframe.style.border = 'none';
+  renderEl.innerHTML = '';
+  renderEl.appendChild(iframe);
+}
+
+function renderMarkdown(a) {
+  const div = document.createElement('div');
+  div.className = 'markdown';
+  div.innerHTML = (window.marked && marked.parse) ? marked.parse(a.source || '') : esc(a.source || '');
+  renderEl.innerHTML = '';
+  renderEl.appendChild(div);
+}
+
+function renderImage(a) {
+  const img = document.createElement('img');
+  img.src = (a.source || '').trim();
+  img.alt = a.label;
+  renderEl.innerHTML = '';
+  renderEl.appendChild(img);
+}
+
+function renderHls(a) {
+  const video = document.createElement('video');
+  video.autoplay = true; video.muted = true; video.playsInline = true; video.controls = true;
+  renderEl.innerHTML = '';
+  renderEl.appendChild(video);
+  const src = (a.source || '').trim();
+  if (window.Hls && Hls.isSupported()) {
+    const hls = new Hls(); hls.loadSource(src); hls.attachMedia(video);
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = src;
+  } else {
+    renderEl.innerHTML = '<div class="pending">HLS not supported</div>';
+  }
+}
+
+function renderTerm(a) {
+  const pre = document.createElement('pre');
+  pre.className = 'term';
+  pre.textContent = a.source || '';
+  renderEl.innerHTML = '';
+  renderEl.appendChild(pre);
+}
+
+function renderCurrent() {
+  if (!current || !artifacts.has(current)) {
+    updateTabs();
+    renderEl.innerHTML = '<div class="pending">waiting for the first artifact…</div>';
+    srcCode.textContent = '';
+    return;
+  }
+  const a = artifacts.get(current);
+  updateTabs();
+  srcCode.textContent = a.source || '';
+  srcCode.classList.toggle('cursor', a.status === 'streaming');
+  if (a.status === 'streaming') {
+    renderEl.innerHTML = '<div class="pending">streaming…</div>';
+    return;
+  }
+  if (a.kind === 'canvas') renderCanvas(a);
+  else if (a.kind === 'mermaid') renderMermaid(a);
+  else if (a.kind === 'html') renderHtml(a);
+  else if (a.kind === 'markdown') renderMarkdown(a);
+  else if (a.kind === 'image') renderImage(a);
+  else if (a.kind === 'hls') renderHls(a);
+  else if (a.kind === 'term') renderTerm(a);
+}
+
+function startArtifact({ label, kind, description }) {
+  artifacts.set(label, { label, kind, description, source: '', status: 'streaming' });
+  if (kind === 'style') return; // meta: applies globally on end, never listed
+  if (!order.includes(label)) order.push(label);
+  current = label;
+  renderCurrent();
+}
+
+function chunk({ label, text }) {
+  const a = artifacts.get(label);
+  if (!a) return;
+  a.source += text;
+  if (a.kind !== 'style' && label === current) { srcCode.textContent = a.source; }
+}
+
+function endArtifact({ label, source }) {
+  const a = artifacts.get(label);
+  if (!a) return;
+  if (source !== undefined) a.source = source;
+  a.status = 'done';
+  if (a.kind === 'style') { applyStyle(label, a.source); return; }
+  if (label === current) renderCurrent();
+}
+
+function focusArtifact(label) {
+  const a = artifacts.get(label);
+  if (!a || a.kind === 'style') return;
+  current = label;
+  renderCurrent();
+}
+
+function applyStyle(label, source) {
+  let el = document.querySelector('style[data-label="' + CSS.escape(label) + '"]');
+  if (!el) { el = document.createElement('style'); el.dataset.label = label; document.head.appendChild(el); }
+  el.textContent = source;
+}
+
+function setSourceVisible(show) {
+  sourceVisible = show;
+  sourceEl.classList.toggle('hidden', !show);
+}
+
+function removeArtifact(label) {
+  const a = artifacts.get(label);
+  if (!a) return;
+  artifacts.delete(label);
+  if (a.kind === 'style') {
+    const el = document.querySelector('style[data-label="' + CSS.escape(label) + '"]');
+    if (el) el.remove();
+  } else {
+    const i = order.indexOf(label);
+    if (i >= 0) order.splice(i, 1);
+  }
+  if (current === label) current = order[order.length - 1] || null;
+  renderCurrent();
+}
+
+function handle(frame) {
+  switch (frame.type) {
+    case 'state':
+      artifacts.clear(); order.length = 0; current = null;
+      (frame.artifacts || []).forEach((a) => {
+        artifacts.set(a.label, { ...a, status: 'done' });
+        if (a.kind === 'style') applyStyle(a.label, a.source || '');
+        else order.push(a.label);
+      });
+      current = order[order.length - 1] || null;
+      renderCurrent();
+      break;
+    case 'artifact.start': startArtifact(frame); break;
+    case 'artifact.chunk': chunk(frame); break;
+    case 'artifact.end': endArtifact(frame); break;
+    case 'artifact.focus': focusArtifact(frame.label); break;
+    case 'artifact.remove': removeArtifact(frame.label); break;
+    case 'source': setSourceVisible(frame.show); break;
+    case 'clear':
+      artifacts.clear(); order.length = 0; current = null;
+      document.querySelectorAll('style[data-label]').forEach((e) => e.remove());
+      renderCurrent();
+      break;
+  }
+}
+
+function send(frame) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame)); }
+
+document.getElementById('src-toggle').onclick = () => {
+  const next = !sourceVisible;
+  setSourceVisible(next);
+  send({ type: 'user.action', action: 'source', detail: next ? 'show' : 'hide' });
+};
+
+let ws, retry = 0;
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.onopen = () => { dot.classList.add('on'); retry = 0; send({ type: 'user.action', action: 'connect' }); };
+  ws.onerror = () => ws.close();
+  ws.onclose = () => { dot.classList.remove('on'); setTimeout(connect, Math.min(4000, 400 * ++retry)); };
+  ws.onmessage = (ev) => { dot.classList.remove('flash'); void dot.offsetWidth; dot.classList.add('flash'); handle(JSON.parse(ev.data)); };
+}
+
+window.addEventListener('resize', () => { const a = current && artifacts.get(current); if (a && a.kind === 'canvas' && a.canvasEl) fitCanvas(a.canvasEl); else if (a && a.kind === 'mermaid') scaleSvg(); });
+
+mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+connect();
+</script>
+</body>
+</html>

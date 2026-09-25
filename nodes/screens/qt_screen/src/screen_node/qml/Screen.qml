@@ -8,6 +8,7 @@
 // (from Python side). Until then, web slots show colored placeholders.
 import QtQuick
 import QtQuick.Window
+import QtWebEngine
 
 Window {
     id: root
@@ -22,8 +23,7 @@ Window {
     readonly property int margin: 20
     readonly property int animMs: 1100
 
-    // Set from Python when QtWebEngine is ready.
-    property bool engineReady: false
+    // QtWebEngineQuick.initialize() runs before QApplication — always ready.
 
     // ---- window registry: {id: {url, label, title, badge, icon}} ----
     property var windows: ({})
@@ -32,8 +32,14 @@ Window {
     property string layoutName: "solo"
     property string backgroundId: ""
     property string focusId: ""
+    property string focusIdLeft: ""
+    property string focusIdRight: ""
     property var frontIds: []
     property var floatIds: []
+
+    // Curtain transition state
+    property string curtainTargetLayout: ""
+    property string curtainRid: ""
 
     // ---- helpers ----
     function win(id) {
@@ -46,6 +52,20 @@ Window {
         var bodyH = root.height - topBarH - bottomPad - margin;
         return { x: margin, y: topBarH + margin,
                  w: root.width - margin * 2, h: bodyH };
+    }
+
+    function focusRectLeft() {
+        var bodyH = root.height - topBarH - bottomPad - margin;
+        var halfW = (root.width - margin * 3) / 2;
+        return { x: margin, y: topBarH + margin,
+                 w: halfW, h: bodyH };
+    }
+
+    function focusRectRight() {
+        var bodyH = root.height - topBarH - bottomPad - margin;
+        var halfW = (root.width - margin * 3) / 2;
+        return { x: margin * 2 + halfW, y: topBarH + margin,
+                 w: halfW, h: bodyH };
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -64,18 +84,13 @@ Window {
 
     function close_window(id) {
         focusId = (focusId === id) ? "" : focusId;
+        focusIdLeft = (focusIdLeft === id) ? "" : focusIdLeft;
+        focusIdRight = (focusIdRight === id) ? "" : focusIdRight;
         backgroundId = (backgroundId === id) ? "" : backgroundId;
         frontIds = frontIds.filter(function(x) { return x !== id; });
         floatIds = floatIds.filter(function(x) { return x !== id; });
         if (windows) delete windows[id];
         windowsChanged();
-        focusIdChanged();
-        floatIdsChanged();
-    }
-
-    function focus_window(id, slot) {
-        _removeFromSlots(id);
-        focusId = id;
         focusIdChanged();
         floatIdsChanged();
     }
@@ -97,11 +112,20 @@ Window {
     }
 
     function clear_slot(slot) {
-        if (slot === "focus" && focusId) {
-            var old = focusId;
-            focusId = "";
-            focusIdChanged();
-            float_window(old);
+        if (slot === "focus") {
+            if (layoutName === "split") {
+                if (focusIdLeft) { var l = focusIdLeft; focusIdLeft = ""; focusIdLeftChanged(); float_window(l); }
+                if (focusIdRight) { var r = focusIdRight; focusIdRight = ""; focusIdRightChanged(); float_window(r); }
+            } else if (focusId) {
+                var old = focusId;
+                focusId = "";
+                focusIdChanged();
+                float_window(old);
+            }
+        } else if (slot === "left" && focusIdLeft) {
+            var left = focusIdLeft; focusIdLeft = ""; focusIdLeftChanged(); float_window(left);
+        } else if (slot === "right" && focusIdRight) {
+            var right = focusIdRight; focusIdRight = ""; focusIdRightChanged(); float_window(right);
         } else if (slot === "front") {
             while (frontIds.length > 0) float_window(frontIds[0]);
         }
@@ -111,12 +135,35 @@ Window {
         backgroundId = id;
     }
 
-    function switch_layout(name) {
-        layoutName = name;
+    function switch_layout(name, rid) {
+        // Trigger curtain transition. When animation completes,
+        // the curtain's onFinished calls bridge.animation_finished(rid).
+        curtainTargetLayout = name;
+        curtainRid = rid;
+        curtainIn.start();
+    }
+
+    function focus_window(id, slot) {
+        _removeFromSlots(id);
+        if (layoutName === "split") {
+            if (slot === "left") {
+                focusIdLeft = id;
+                focusIdLeftChanged();
+            } else {
+                focusIdRight = id;
+                focusIdRightChanged();
+            }
+        } else {
+            focusId = id;
+            focusIdChanged();
+        }
+        floatIdsChanged();
     }
 
     function _removeFromSlots(id) {
         if (focusId === id) focusId = "";
+        if (focusIdLeft === id) focusIdLeft = "";
+        if (focusIdRight === id) focusIdRight = "";
         frontIds = frontIds.filter(function(x) { return x !== id; });
         floatIds = floatIds.filter(function(x) { return x !== id; });
     }
@@ -133,6 +180,40 @@ Window {
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // Curtain — transition overlay between layout switches
+    // ═══════════════════════════════════════════════════════════════════
+
+    Rectangle {
+        id: curtain
+        anchors.fill: parent
+        color: "#0d1117"
+        opacity: 0
+        z: 100
+
+        // Phase 1: fade in over 300ms
+        NumberAnimation {
+            id: curtainIn
+            target: curtain; property: "opacity"
+            to: 1.0; duration: 300; easing.type: Easing.InOutQuad
+            onFinished: {
+                // Swap layout behind the opaque curtain
+                root.layoutName = root.curtainTargetLayout;
+                curtainOut.start();
+            }
+        }
+
+        // Phase 2: fade out over 300ms, then resolve Future
+        NumberAnimation {
+            id: curtainOut
+            target: curtain; property: "opacity"
+            to: 0.0; duration: 300; easing.type: Easing.InOutQuad
+            onFinished: {
+                bridge.animation_finished(root.curtainRid);
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // Scene layers
     // ═══════════════════════════════════════════════════════════════════
 
@@ -144,26 +225,24 @@ Window {
         }
     }
 
-    // ---- background slot ----
+    // ---- background slot (WebEngineView — passive ambient layer) ----
     Loader {
         id: backgroundLoader
         anchors.fill: parent
         active: backgroundId !== ""
-        sourceComponent: Item {
+        sourceComponent: WebEngineView {
+            id: backgroundView
             anchors.fill: parent
-            // When engineReady: WebEngineView { url: root.win(backgroundId).url }
-            // Placeholder: tinted rect
-            Rectangle {
-                anchors.fill: parent
-                color: Qt.rgba(0.06, 0.08, 0.14, 0.9)
-                opacity: 0.6
-            }
-            Text {
-                anchors.centerIn: parent
-                text: "[bg] " + (root.win(root.backgroundId).label || root.backgroundId)
-                    + "\n" + root.win(root.backgroundId).url
-                color: "#484f58"; font.pixelSize: 14
-                horizontalAlignment: Text.AlignHCenter
+            url: root.win(root.backgroundId).url || ""
+
+            webChannel: webChannel
+
+            onLoadingChanged: function(loadRequest) {
+                if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                    runJavaScript(
+                        'window.__screen_window_id = "' + root.backgroundId + '";'
+                    );
+                }
             }
         }
     }
@@ -190,45 +269,36 @@ Window {
         }
     }
 
-    // ---- focus slot ----
+    // ---- focus slot — solo mode (WebEngineView + close button overlay) ----
     Loader {
         id: focusLoader
-        active: focusId !== ""
-        sourceComponent: Rectangle {
-            id: focusPlaceholder
-            property alias windowId: focusPlaceholder.wwid
+        active: focusId !== "" && layoutName !== "split"
+        sourceComponent: Item {
+            id: focusContainer
             property string wwid: root.focusId
-            color: "#161b22"
-            border { color: root.win(windowId).label ? "#30363d" : "#1f6feb"; width: 2 }
-            radius: 14
 
             Behavior on x { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
             Behavior on y { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
             Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
             Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
 
-            Column {
-                anchors.centerIn: parent
-                spacing: 12
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.win(wwid).label || wwid
-                    color: "#c9d1d9"; font.pixelSize: 24; font.bold: true
-                }
-                Rectangle { width: 200; height: 1; color: "#30363d"; anchors.horizontalCenter: parent.horizontalCenter }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.win(wwid).url
-                    color: "#58a6ff"; font.pixelSize: 12
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: engineReady ? "" : "(WebEngine placeholder)"
-                    color: "#484f58"; font.pixelSize: 11
+            WebEngineView {
+                id: focusView
+                anchors.fill: parent
+                url: root.win(focusContainer.wwid).url || ""
+
+                webChannel: webChannel
+
+                onLoadingChanged: function(loadRequest) {
+                    if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                        runJavaScript(
+                            'window.__screen_window_id = "' + focusContainer.wwid + '";'
+                        );
+                    }
                 }
             }
 
-            // Close button → float
+            // Close button overlay (floats on top of WebEngineView)
             Rectangle {
                 anchors { right: parent.right; top: parent.top; margins: 8 }
                 width: 28; height: 28; radius: 14; color: "#30363d"
@@ -237,8 +307,8 @@ Window {
                 MouseArea {
                     anchors.fill: parent
                     onClicked: {
-                        root.float_window(wwid);
-                        bridge.human_clicked(wwid, "unfocus");
+                        root.float_window(focusContainer.wwid);
+                        bridge.human_clicked(focusContainer.wwid, "unfocus");
                     }
                 }
             }
@@ -246,6 +316,102 @@ Window {
 
         onLoaded: {
             var r = root.focusRect();
+            item.x = r.x; item.y = r.y;
+            item.width = r.w; item.height = r.h;
+        }
+    }
+
+    // ---- focus slot — split mode left ----
+    Loader {
+        id: focusLeftLoader
+        active: focusIdLeft !== "" && layoutName === "split"
+        sourceComponent: Item {
+            id: focusLeftContainer
+            property string wwid: root.focusIdLeft
+
+            Behavior on x { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on y { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+
+            WebEngineView {
+                id: focusLeftView
+                anchors.fill: parent
+                url: root.win(focusLeftContainer.wwid).url || ""
+                webChannel: webChannel
+                onLoadingChanged: function(loadRequest) {
+                    if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                        runJavaScript(
+                            'window.__screen_window_id = "' + focusLeftContainer.wwid + '";'
+                        );
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors { right: parent.right; top: parent.top; margins: 8 }
+                width: 28; height: 28; radius: 14; color: "#30363d"
+                z: 10
+                Text { anchors.centerIn: parent; text: "x"; color: "#c9d1d9" }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.float_window(focusLeftContainer.wwid);
+                        bridge.human_clicked(focusLeftContainer.wwid, "unfocus");
+                    }
+                }
+            }
+        }
+        onLoaded: {
+            var r = root.focusRectLeft();
+            item.x = r.x; item.y = r.y;
+            item.width = r.w; item.height = r.h;
+        }
+    }
+
+    // ---- focus slot — split mode right ----
+    Loader {
+        id: focusRightLoader
+        active: focusIdRight !== "" && layoutName === "split"
+        sourceComponent: Item {
+            id: focusRightContainer
+            property string wwid: root.focusIdRight
+
+            Behavior on x { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on y { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+
+            WebEngineView {
+                id: focusRightView
+                anchors.fill: parent
+                url: root.win(focusRightContainer.wwid).url || ""
+                webChannel: webChannel
+                onLoadingChanged: function(loadRequest) {
+                    if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                        runJavaScript(
+                            'window.__screen_window_id = "' + focusRightContainer.wwid + '";'
+                        );
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors { right: parent.right; top: parent.top; margins: 8 }
+                width: 28; height: 28; radius: 14; color: "#30363d"
+                z: 10
+                Text { anchors.centerIn: parent; text: "x"; color: "#c9d1d9" }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.float_window(focusRightContainer.wwid);
+                        bridge.human_clicked(focusRightContainer.wwid, "unfocus");
+                    }
+                }
+            }
+        }
+        onLoaded: {
+            var r = root.focusRectRight();
             item.x = r.x; item.y = r.y;
             item.width = r.w; item.height = r.h;
         }
@@ -384,7 +550,7 @@ Window {
                       verticalCenter: parent.verticalCenter }
             spacing: 10
             Repeater {
-                model: ["solo"]
+                model: ["solo", "split"]
                 delegate: Rectangle {
                     required property string modelData
                     width: 72; height: 28; radius: 14

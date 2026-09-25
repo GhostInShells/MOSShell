@@ -1,7 +1,9 @@
 """Contract tests for AudioCaptureSource and its consumers.
 
-Tests are written against the abstract interfaces and run against
-MiniAudioCaptureSource with a mocked AudioTransport — no Zenoh or hardware needed.
+Tests run against MiniAudioCaptureSource with a mocked Workspace — no hardware.
+Capture fans PCM out locally (no Zenoh), so the contract under test is:
+register an observer via ``on_audio_chunk``, dispose it, and consumers read
+chunks from an in-process queue.
 """
 from unittest.mock import MagicMock
 
@@ -9,36 +11,50 @@ import numpy as np
 import pytest
 
 from ghoshell_moss.contracts.audio import (
-    AudioCaptureConfig,
+    AcousticEchoCanceller,
     AudioCaptureSource,
     AudioChunk,
-    AudioFrameMeta,
     AudioPullLatest,
     AudioSequentialConsumer,
 )
-from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
-from ghoshell_moss.host.speech.capture.miniaudio_capture import (
-    MiniAudioCaptureSource,
-    pack_chunk,
-    unpack_chunk,
-)
+from ghoshell_moss.contracts.workspace import Workspace
+from ghoshell_moss.host.audios.miniaudio_impl.configs import CaptureConfig
+from ghoshell_moss.host.audios.miniaudio_impl.miniaudio_capture import MiniAudioCaptureSource
 
 
 # -- helpers --
 
-def _make_transport() -> AudioTransport:
-    t = MagicMock(spec=AudioTransport)
-    t.logger = MagicMock()
-    t.acquire_lock.return_value = True
-    t.sub_pcm_callback.return_value = lambda: None
-    return t
+def _make_workspace() -> Workspace:
+    ws = MagicMock(spec=Workspace)
+    return ws
 
 
 def _make_source(**config_kwargs) -> MiniAudioCaptureSource:
     return MiniAudioCaptureSource(
-        transport=_make_transport(),
-        config=AudioCaptureConfig(**config_kwargs),
+        workspace=_make_workspace(),
+        config=CaptureConfig(**config_kwargs),
     )
+
+
+def _make_chunk(seq: int = 1) -> AudioChunk:
+    return AudioChunk(
+        seq=seq,
+        timestamp=float(seq),
+        samples=np.zeros(16, dtype=np.int16),
+    )
+
+
+class _HalfAEC(AcousticEchoCanceller):
+    """测试用 AEC: process 返回半幅, 验证挂载后采集帧确实过了 process."""
+
+    sample_rate = 16000
+    stream_delay_ms = 0
+
+    def push_far(self, frame: np.ndarray) -> None:
+        pass
+
+    def process(self, near: np.ndarray) -> np.ndarray:
+        return near * 0.5
 
 
 # ── AudioCaptureSource contract ──────────────────────────────────────
@@ -75,6 +91,67 @@ class TestAudioCaptureSource:
         assert isinstance(consumer, AudioSequentialConsumer)
 
 
+# ── AEC 表面 ─────────────────────────────────────────────────────────
+
+
+class TestSetAEC:
+    """AudioCaptureSource.set_aec — near 侧挂载点: 挂载后采集帧经 process 消回声."""
+
+    def test_set_aec_transforms_frames(self):
+        source = _make_source()
+        source.set_aec(_HalfAEC())
+
+        samples = np.full((160, 1), 1000, dtype=np.int16)
+        out = source._apply_aec(samples)
+
+        assert out.dtype == np.int16
+        assert out.shape == samples.shape
+        assert out.ravel()[0] == 500  # 1000 * 0.5
+
+    def test_set_aec_none_unmounts(self):
+        source = _make_source()
+        source.set_aec(_HalfAEC())
+        source.set_aec(None)
+
+        samples = np.full((160, 1), 1000, dtype=np.int16)
+        assert np.array_equal(source._apply_aec(samples), samples)
+
+
+# ── local fan-out contract ───────────────────────────────────────────
+
+
+class TestLocalFanOut:
+    """capture 本地扇出: 注册 observer → 分发 → disposer 摘除."""
+
+    def test_observer_receives_fanned_out_chunk(self):
+        source = _make_source()
+        got: list[AudioChunk] = []
+        source.on_audio_chunk(got.append)
+
+        chunk = _make_chunk(seq=7)
+        source._fan_out(chunk)
+
+        assert len(got) == 1
+        assert got[0].seq == 7
+
+    def test_dispose_stops_future_dispatch(self):
+        source = _make_source()
+        got: list[AudioChunk] = []
+        dispose = source.on_audio_chunk(got.append)
+
+        source._fan_out(_make_chunk(1))
+        dispose()
+        source._fan_out(_make_chunk(2))
+
+        assert [c.seq for c in got] == [1]
+
+    def test_dispose_is_idempotent(self):
+        source = _make_source()
+        dispose = source.on_audio_chunk(lambda c: None)
+        dispose()
+        dispose()  # 不抛
+
+
 # ── AudioPullLatest contract ─────────────────────────────────────────
 
 
@@ -96,6 +173,15 @@ class TestAudioPullLatest:
         consumer.close()
         consumer.close()
 
+    def test_pull_latest_sees_fanned_out_chunk(self):
+        """扇出的帧能被 ring-buffer 消费者读到."""
+        source = _make_source()
+        consumer: AudioPullLatest = source.new_consumer(ring_buffer_frames=32)
+        source._fan_out(_make_chunk(seq=3))
+        latest = consumer.pull_latest()
+        assert latest is not None and latest.seq == 3
+        consumer.close()
+
 
 # ── AudioSequentialConsumer contract ─────────────────────────────────
 
@@ -111,53 +197,66 @@ class TestAudioSequentialConsumer:
             consumer.__aiter__()
 
     @pytest.mark.asyncio
-    async def test_close_before_start_is_safe(self):
-        """未 start 就 close 不抛异常."""
+    async def test_aexit_before_aenter_is_safe(self):
+        """未 enter 就 exit 不抛异常."""
         source = _make_source()
         consumer: AudioSequentialConsumer = source.new_sequential_consumer(max_queue_frames=32)
-        await consumer.close()
+        await consumer.__aexit__(None, None, None)
 
+    @pytest.mark.asyncio
+    async def test_receives_fanned_out_chunk_in_order(self):
+        """扇出的帧按序被顺序消费者读到."""
+        source = _make_source()
+        consumer: AudioSequentialConsumer = source.new_sequential_consumer(max_queue_frames=32)
+        await consumer.__aenter__()
 
-# ── Serialization contract ───────────────────────────────────────────
+        source._fan_out(_make_chunk(seq=1))
+        source._fan_out(_make_chunk(seq=2))
 
+        first = await consumer.__anext__()
+        second = await consumer.__anext__()
+        assert first.seq == 1
+        assert second.seq == 2
 
-class TestAudioChunkSerialization:
-    """AudioChunk 跨进程链路：capture 端 pack，consumer 端 unpack。"""
+        await consumer.__aexit__(None, None, None)
 
-    def test_roundtrip_preserves_all_fields(self):
-        """pack → unpack 后所有字段不变。这是跨进程传输的契约."""
-        rng = np.random.RandomState(42)
-        samples = (rng.randn(2205) * 8000).astype(np.int16)
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_iteration(self):
+        """shutdown 后迭代立即结束."""
+        source = _make_source()
+        consumer: AudioSequentialConsumer = source.new_sequential_consumer(max_queue_frames=32)
+        await consumer.__aenter__()
 
-        chunk = AudioChunk(
-            seq=42,
-            timestamp=1234567890.123,
-            samples=samples.copy(),
-            meta=AudioFrameMeta(
-                rms_db=-12.3,
-                bands={"bass": -20.1, "mid": -12.3, "high": -8.7},
-                is_silent=False,
-            ),
-        )
+        consumer.shutdown()
+        with pytest.raises(StopAsyncIteration):
+            await consumer.__anext__()
 
-        packed = pack_chunk(chunk)
-        unpacked = unpack_chunk(packed)
+        await consumer.__aexit__(None, None, None)
 
-        assert unpacked.seq == 42
-        assert unpacked.timestamp == pytest.approx(1234567890.123)
-        assert unpacked.meta.rms_db == -12.3
-        assert unpacked.meta.bands == {"bass": -20.1, "mid": -12.3, "high": -8.7}
-        assert unpacked.meta.is_silent is False
-        assert np.array_equal(unpacked.samples, samples)
+    @pytest.mark.asyncio
+    async def test_resamples_when_target_rate_differs(self):
+        """声明 target_sample_rate != capture 率时, 消费侧重采样."""
+        source = _make_source()  # capture sample_rate = 16000
+        consumer = source.new_sequential_consumer(max_queue_frames=32, target_sample_rate=8000)
+        await consumer.__aenter__()
 
-    def test_silent_frame_roundtrip(self):
-        """静音帧的 is_silent 标志在往返中正确保持."""
-        samples = np.zeros(100, dtype=np.int16)
-        chunk = AudioChunk(
-            seq=0, timestamp=0.0, samples=samples,
-            meta=AudioFrameMeta(rms_db=-96, bands={"bass": -96, "mid": -96, "high": -96}, is_silent=True),
-        )
-        unpacked = unpack_chunk(pack_chunk(chunk))
-        assert unpacked.meta.is_silent is True
-        assert unpacked.meta.rms_db == -96
-        assert np.array_equal(unpacked.samples, samples)
+        source._fan_out(AudioChunk(seq=1, timestamp=1.0, samples=np.zeros(160, dtype=np.int16)))
+
+        chunk = await consumer.__anext__()
+        assert chunk.samples.size == 80  # 160 * 8000/16000
+
+        await consumer.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
+    async def test_passthrough_when_target_rate_matches(self):
+        """target_sample_rate == capture 率时不重采样 (原样透传)."""
+        source = _make_source()  # capture sample_rate = 16000
+        consumer = source.new_sequential_consumer(max_queue_frames=32, target_sample_rate=16000)
+        await consumer.__aenter__()
+
+        source._fan_out(AudioChunk(seq=1, timestamp=1.0, samples=np.zeros(160, dtype=np.int16)))
+
+        chunk = await consumer.__anext__()
+        assert chunk.samples.size == 160
+
+        await consumer.__aexit__(None, None, None)

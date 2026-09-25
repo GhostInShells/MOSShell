@@ -1,15 +1,16 @@
 ---
-title: Ghost Playground — 多级隔离文件空间 → 缩并为 GhostWorkspace
-status: completed
-priority: P0
 created: 2026-05-22
-updated: 2026-06-02
-step: superseded_by_matrix_storage_declaration
 depends:
-  - first-ghost-prototype
-milestone:
-description: >-
-  原计划为 Ghost 提供统一多级隔离 Storage 入口。后因 Matrix 自身接管整套环境存储声明，缩并为 GhostWorkspace dataclass。
+- first-ghost-prototype
+description: 原计划为 Ghost 提供统一多级隔离 Storage 入口。后因 Matrix 自身接管整套环境存储声明，缩并为 GhostWorkspace
+  dataclass。
+milestone: null
+priority: P0
+status: dropped
+status_note: 2026-07 转向 ground (原 project-manager) 的实现，ghost-ground 取代了 playground 的认知定位。
+step: superseded_by_matrix_storage_declaration
+title: Ghost Playground — 多级隔离文件空间 → 缩并为 GhostWorkspace
+updated: '2026-08-11'
 ---
 
 # Ghost Playground → GhostWorkspace

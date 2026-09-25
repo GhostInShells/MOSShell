@@ -2,8 +2,8 @@ from typing import Literal
 from ghoshell_moss.contracts.speech import TTS
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore
-from ghoshell_moss.host.speech.volcengine_tts import VolcengineTTSConf, VolcengineTTS
-from ghoshell_moss.host.speech.mimo_tts import MiMoTTSConf, MiMoTTS
+from ghoshell_moss.host.speech.volcengine_tts.config import VolcengineTTSConf
+from ghoshell_moss.host.speech.mimo_tts.config import MiMoTTSConf
 from ghoshell_container import IoCContainer, Provider, INSTANCE
 from pydantic import Field
 
@@ -33,6 +33,19 @@ class TTSManagerConfig(ConfigType):
     def conf_name(cls) -> str:
         return 'tts_factory'
 
+    def validate(self) -> None:
+        """resolved 后自校验: 关键鉴权 key 非空 (env 缺失时 resolve 保留 $VAR 占位)."""
+        if self.use == 'volcengine_stream_tts_model':
+            conf = self.volcengine_stream_tts_model_config
+            missing = [
+                name for name, value in (
+                    ("app_key", conf.app_key),
+                    ("access_token", conf.access_token),
+                ) if not value or value.startswith("$")
+            ]
+            if missing:
+                raise ValueError(f"Volcengine TTS env not set: {', '.join(missing)}")
+
 
 class TTSServiceProvider(Provider[TTS]):
     """tts service provider"""
@@ -43,6 +56,7 @@ class TTSServiceProvider(Provider[TTS]):
     def factory(self, con: IoCContainer) -> INSTANCE:
         store = con.force_fetch(ConfigStore)
         manager_conf = store.get_or_create(TTSManagerConfig())
+        manager_conf.validate()
 
         if manager_conf.use == 'volcengine_stream_tts_model':
             return self._factory_volcengine_stream_tts_model(
@@ -62,6 +76,7 @@ class TTSServiceProvider(Provider[TTS]):
             con: IoCContainer,
             conf: VolcengineTTSConf,
     ) -> TTS:
+        from ghoshell_moss.host.speech.volcengine_tts.tts import VolcengineTTS
         logger = con.force_fetch(LoggerItf)
         return VolcengineTTS(
             conf=conf,
@@ -73,6 +88,7 @@ class TTSServiceProvider(Provider[TTS]):
             con: IoCContainer,
             conf: MiMoTTSConf,
     ) -> TTS:
+        from ghoshell_moss.host.speech.mimo_tts.tts import MiMoTTS
         logger = con.force_fetch(LoggerItf)
         return MiMoTTS(
             conf=conf,

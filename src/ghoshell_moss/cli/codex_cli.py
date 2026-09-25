@@ -416,7 +416,8 @@ def list_modules(
         console.print(f"[dim]{prefix}{tip}[/dim]")
 
 
-@codex_app.command("eval")
+# for safety consider, remove eval from default commands
+# @codex_app.command("eval")
 def eval_code(
     code: str = typer.Argument(default="", help="Python code to execute"),
     module: Optional[str] = typer.Option(

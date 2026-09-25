@@ -46,19 +46,16 @@ text. Reversals are inheritance too.
   weight, run `git log -- <file>`. If a commit message references a FEATURE.md name,
   read that FEATURE.md. The design decisions, rejected alternatives, and current
   status are indexed there — skip this and you will repeat analysis, break intent,
-  or work on an already-completed feature. The binding constraint in Git Commit
-  Discipline exists precisely to make this lookup work: every merge-boundary commit
-  MUST include its FEATURE.md, so `git log` is the index into design context.
+  or work on an already-completed feature. Git Commit Discipline exists precisely to
+  make this lookup work: a commit carries its FEATURE.md, so `git log` is the index
+  into design context.
 - **Guide humans** unfamiliar with the mechanism. The model is its native user.
 - **Update after meaningful work**, not after every commit. A typo fix doesn't need a Key Decision.
-- **Propose compaction.** When a FEATURE.md grows past what a next incarnation needs,
-  propose condensing stale sections into a digest plus a git pointer — align with the
-  human first.
 - **Close out completed features.** When feature work is done, **first** run
   `moss features set-status <name> completed`, **then** commit the FEATURE.md alongside the
-  final code in the same commit. Order matters: status change happens before commit,
-  not as a follow-up. This is not optional — the reverse index breaks if the next
-  incarnation can't tell what's done vs. what's still in flight.
+  final code in the same commit. Order matters: the status change is a file edit, and it has
+  to be inside the commit. Without it the reverse index breaks — the next incarnation can't
+  tell what's done from what's still in flight.
 - **Proactively synthesize** from the features directory when the human needs to know
   what's happening. FEATURE.md is a knowledge distribution mechanism, not a passive record.
 
@@ -90,11 +87,11 @@ The mechanism's core value: freeing human bandwidth so the engineer operates at 
 
 ## Git Commit Discipline
 
-> **A commit containing code changes for a feature MUST also include the corresponding FEATURE.md.**
+> A commit that lands feature code carries that feature's FEATURE.md with it.
 
-This is the binding constraint. `git log -- <source-file>` must trace back to the FEATURE.md
-state at that point. Without it, the reverse index breaks. The same constraint is what
-makes each such commit an anchor — a state a future session can reset to and replay.
+Why: `git log -- <source-file>` should resolve to the FEATURE.md state at that point. Without
+it the reverse index breaks — and the same property is what makes each such commit an anchor,
+a state a future session can reset to and replay.
 
 The common failure mode is omission — code lands, FEATURE.md doesn't. Check before
 every merge-boundary commit.
@@ -104,12 +101,12 @@ WIP commits on a feature branch are exempt. Squash or rebase your branch, and en
 the final squashed commit includes the FEATURE.md update. Don't let compliance overhead
 kill `commit early, commit often` during development.
 
-Per merge-boundary commit, update: `updated` date, new Key Decisions if design choices
-were made, `status_note` if a one-line summary helps. Do not log micro-changes —
+Update when a decision worth indexing was made — a new Key Decision, a reversal, a status
+transition. `updated` and `status_note` follow those, not commits. Do not log micro-changes —
 the commit message carries details; FEATURE.md carries decisions worth indexing.
 
-The final commit of a feature MUST include the status transition to `completed`.
-This is the most important FEATURE.md update — without it, `features list` shows stale
+The final commit of a feature carries the status transition to `completed`.
+This is the update that matters most — without it, `features list` shows stale
 in-progress workstreams and the next model incarnation wastes time investigating dead trails.
 `completed` asserts: motivation satisfied, nothing silently dropped. Cut scope must be
 recorded scope — an unrecorded cut makes the index lie.
@@ -121,13 +118,57 @@ must be inside the commit.
 CLI does not enforce this. model incarnations follow it; the human reviews for it.
 A commit landing without its FEATURE.md update should be rebased, not patched with a follow-up.
 
+## No-Debt Orientation
+
+A FEATURE.md is model→model context transmission. It is not a statute to comply with, and
+not a report for a human. Its purpose is to help code form a system that explains itself —
+code as prompt is the first principle, and this convention serves it, never the reverse.
+When the document starts demanding things of the code, or of the reader, the direction is
+inverted and the mechanism has itself become debt.
+
+Three debts this convention refuses:
+
+1. **Authoring debt.** Written to satisfy a rule rather than to pass context. A rule the
+   next model obeys without understanding is worth less than no rule. Record judgment;
+   an unevaluatable MUST is debt.
+2. **Document debt.** The document expires the moment the work is done. Code is the first
+   self-explanation; append only when a decision would otherwise be lost. This is the
+   record of a *formation*, not an iteration log.
+3. **Pointer debt.** Never leak feature material — decision numbers, workstream names,
+   "see FEATURE.md" — onto an abstraction surface. The surface explains itself; a consumer
+   forced to fetch a frozen file carries the debt.
+
+## How to Review a Feature
+
+Review is a development-process quality check. Its goal is verifying feature
+implementation quality — that the delivery holds to what the FEATURE.md
+declared, and that nothing was silently dropped along the way.
+
+It is paired with a command:
+
+```
+moss features review <feature>
+```
+
+Run it when you want to inspect a feature's development state. The command
+returns a bare-text review prompt; let its output guide the next step.
+
+**Default timing** — when the feature is finalized, when a development phase
+completes, and before a merge-boundary commit.
+
+**Not a hard constraint.** As with the rest of this mechanism, review is a
+recommendation: use it when it helps, and communicate with the human about
+how to apply it.
+
 ## FEATURE.md Frontmatter Schema
 
 ```yaml
 ---
 title: Human-readable title
-status: draft              # reserved: draft | in-progress | completed | dropped (free-form allowed)
-priority: P1               # P0 | P1 | P2 | P3
+status: draft              # reserved: draft | in-progress | completed | dropped | parked (free-form allowed)
+status_note: >-            # Optional: one line on the current state (why dropped/parked, what's next)
+  Context for the current status.
+priority: P1               # P0 | P1 | P2 | P3 — importance within the current stage, not urgency
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 depends: []                # Feature names this depends on
@@ -136,6 +177,8 @@ description: >-            # One-line summary for listing
   Brief description.
 ---
 ```
+
+**`priority`** ranks importance **within the current stage (iteration cycle)** — not development urgency or timeline order. P0 = committed for this stage; P2 = experimental, may be discardable. Delivery targets the end of the stage, not "now".
 
 Directory name under `workstreams/` (kebab-case) is the unique identifier.
 Path encodes creation date: `workstreams/<year>/<month>/<name>/FEATURE.md`.
@@ -152,11 +195,10 @@ Skip it for:
 - Changes where the commit message alone carries sufficient context
 - Work completed in a single session with no cross-session handoff needed
 
-When follow-up work continues the same problem space, **update the existing FEATURE.md**
-rather than creating a new workstream. A single FEATURE.md can span many commits and
-sessions — it's a reverse index into a decision trail, not a task ticket. New iterations
-on the same feature add new sections; only create a new workstream when a genuinely
-new motivation and decision set emerges.
+While a workstream is active, follow-up work in the same problem space **updates the
+existing FEATURE.md** rather than spawning a new workstream — it's a reverse index into a
+decision trail, not a task ticket. A `completed` workstream does not reopen: the document
+expired with the work, and later work in the same area is a new decision set.
 
 When an active workstream grows a concern with its own decision set, spawn a linked
 workstream: the child lists the parent in `depends`, the parent mentions the child in
@@ -166,13 +208,33 @@ its body. The split is free; the cross-reference keeps the index connected.
 
 ```
 draft → in-progress → completed
-  ↓         ↓
-  └──── dropped
+  ↓         ↓  ↑ resume
+  └──── parked / dropped
 ```
+
+- **`dropped`** — abandoned. The judgment is closed; the workstream remains only as a trace.
+- **`parked`** — a **formed proposal deliberately set aside**: a technical plan kept on file for
+  reference, optional to ever build, carrying no attention debt. This is the state for work that is
+  worth writing down but not worth doing now — "keep the design, drop the commitment."
+
+`parked` is a **quiet status**. Quiet statuses are dropped from the query unless named explicitly,
+so a parked workstream neither pollutes the default listing nor raises the pre-commit `check`
+reminder. Retrieve them deliberately:
+
+```
+moss features list --status parked
+```
+
+`--all` widens the time window only; it does not lift the quiet filter. The listing still honors the
+60-day window, so a full parked census across all time is `moss features list --status parked --all`.
+Resuming means setting the
+status back to `in-progress` — nothing moves on disk. A status_note is the place to record *why* it
+was parked and *what would reopen it*; that note is the whole value of the state, so write it when
+parking (`set-status -m`).
 
 Status is an open vocabulary. The reserved values above are a stability contract —
 they will not be removed; the CLI warns on non-reserved values and accepts them.
-A dropped workstream with discussion value stays in the tree; git keeps every anchor
+A dropped or parked workstream with discussion value stays in the tree; git keeps every anchor
 regardless. Status is a coarse signal — don't over-invest.
 
 ## CLI Reference
@@ -180,11 +242,12 @@ regardless. Status is a coarse signal — don't over-invest.
 | Command | Behavior |
 |---------|----------|
 | `moss features specification` | Render this README.md |
-| `moss features list [--status] [--all]` | List workstreams (default: last 2 months) |
+| `moss features list [--status] [--all]` | List workstreams (default: last 2 months; parked hidden) |
 | `moss features create <name>` | Create workstream from template |
 | `moss features set-status <name> <status> [-m]` | Update status + updated date in-place |
 | `moss features status [name]` | Show detailed status |
 | `moss features init` | Sync templates to `.ai_partners/features/` |
+| `moss features review <feature>` | Generate a feature review prompt |
 
 CLI is a thin convention enforcer. Core logic: `ghoshell_moss.core.codex._features`.
 

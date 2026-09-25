@@ -7,6 +7,8 @@ from enum import IntEnum
 
 import websockets
 
+from ghoshell_moss.host.speech.volcengine_tts.config import EventType
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -88,83 +90,6 @@ class CompressionBits(IntEnum):
     None_ = 0
     Gzip = 0b1
     Custom = 0b1111
-
-
-class EventType(IntEnum):
-    """Event type enumeration"""
-
-    None_ = 0  # Default event
-
-    # 1 ~ 49 Upstream Connection events
-    StartConnection = 1
-    StartTask = 1  # Alias of StartConnection
-    FinishConnection = 2
-    FinishTask = 2  # Alias of FinishConnection
-
-    # 50 ~ 99 Downstream Connection events
-    ConnectionStarted = 50  # Connection established successfully
-    TaskStarted = 50  # Alias of ConnectionStarted
-    ConnectionFailed = 51  # Connection failed (possibly due to authentication failure)
-    TaskFailed = 51  # Alias of ConnectionFailed
-    ConnectionFinished = 52  # Connection ended
-    TaskFinished = 52  # Alias of ConnectionFinished
-
-    # 100 ~ 149 Upstream Session events
-    StartSession = 100
-    CancelSession = 101
-    FinishSession = 102
-
-    # 150 ~ 199 Downstream Session events
-    SessionStarted = 150
-    SessionCanceled = 151
-    SessionFinished = 152
-    SessionFailed = 153
-    UsageResponse = 154  # Usage response
-    ChargeData = 154  # Alias of UsageResponse
-
-    # 200 ~ 249 Upstream general events
-    TaskRequest = 200
-    UpdateConfig = 201
-
-    # 250 ~ 299 Downstream general events
-    AudioMuted = 250
-
-    # 300 ~ 349 Upstream TTS events
-    SayHello = 300
-
-    # 350 ~ 399 Downstream TTS events
-    TTSSentenceStart = 350
-    TTSSentenceEnd = 351
-    TTSResponse = 352
-    TTSEnded = 359
-    PodcastRoundStart = 360
-    PodcastRoundResponse = 361
-    PodcastRoundEnd = 362
-
-    # 450 ~ 499 Downstream ASR events
-    ASRInfo = 450
-    ASRResponse = 451
-    ASREnded = 459
-
-    # 500 ~ 549 Upstream dialogue events
-    ChatTTSText = 500  # (Ground-Truth-Alignment) text for speech synthesis
-
-    # 550 ~ 599 Downstream dialogue events
-    ChatResponse = 550
-    ChatEnded = 559
-
-    # 650 ~ 699 Downstream dialogue events
-    # Events for source (original) language subtitle
-    SourceSubtitleStart = 650
-    SourceSubtitleResponse = 651
-    SourceSubtitleEnd = 652
-    # Events for target (translation) language subtitle
-    TranslationSubtitleStart = 653
-    TranslationSubtitleResponse = 654
-    TranslationSubtitleEnd = 655
-
-    def __str__(self) -> str:
-        return self.name or f"EventType({self.value})"
 
 
 @dataclass

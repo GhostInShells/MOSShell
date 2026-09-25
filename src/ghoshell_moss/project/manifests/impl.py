@@ -5,8 +5,8 @@ from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.contracts.resource import ResourceStorageMeta
 from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
-from ghoshell_moss.core.blueprint.project import Manifest, MatrixManifest
-from ghoshell_moss.core.blueprint.environment import MATRIX_MANIFESTS_PACKAGE
+from ghoshell_moss.core.blueprint.project import Manifest, ProjectManifest
+from ghoshell_moss.core.blueprint.environment import PROJECT_MANIFESTS_PACKAGE
 from ghoshell_moss.core.concepts.topic import TopicSchema
 from ghoshell_moss.project.manifests.providers import search_provider_manifests
 from ghoshell_moss.project.manifests.configs import search_config_manifests
@@ -16,16 +16,16 @@ from ghoshell_moss.project.manifests.parameters import search_parameter_manifest
 from ghoshell_moss.project.manifests.resources import search_resource_manifests
 from ghoshell_moss.project.manifests.nuclei import search_nucleus_manifests
 
-__all__ = ['ScannedMatrixManifest']
+__all__ = ['ScannedProjectManifest']
 
 
-class ScannedMatrixManifest(MatrixManifest):
-    """基于 Python 包扫描的 MatrixManifest 实现.
+class ScannedProjectManifest(ProjectManifest):
+    """基于 Python 包扫描的 ProjectManifest 实现.
 
     每个方法委托给对应的 scanner, 从约定的子包路径发现.
     """
 
-    def __init__(self, root_package: str = MATRIX_MANIFESTS_PACKAGE):
+    def __init__(self, root_package: str = PROJECT_MANIFESTS_PACKAGE):
         self._root = root_package
 
     def root_package(self) -> str:

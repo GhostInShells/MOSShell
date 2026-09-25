@@ -75,7 +75,7 @@ async def test_buffer_nucleus_suppress():
         assert notified_count == 1
 
         # 压制
-        nucleus.suppress(higher_impulse)
+        nucleus.suppress(higher_impulse, nucleus.peek())
 
         # 第二次信号，被压制，count 不应该增加
         nucleus.add_signal(create_mock_signal("test_signal"))
@@ -104,8 +104,8 @@ async def test_buffer_nucleus_buffer_limit():
 
 
 @pytest.mark.asyncio
-async def test_pop_clears_buffer():
-    """验证 pop_impulse 后缓冲会被清空"""
+async def test_attended_clears_buffer():
+    """验证 attended 后缓冲会被清空 — 下游 attention 已消费, 不重复."""
     nucleus = BufferNucleus(
         name="test_nucleus",
         description="test",
@@ -117,7 +117,7 @@ async def test_pop_clears_buffer():
         await asyncio.sleep(0.1)
         assert nucleus.peek() is not None
 
-        nucleus.pop_impulse(nucleus.peek())
+        nucleus.attended(nucleus.peek())
         await asyncio.sleep(0.1)
         assert nucleus.peek() is None
 
@@ -127,7 +127,7 @@ async def test_pop_clears_buffer():
 
 @pytest.mark.asyncio
 async def test_signal_and_impulse_stale():
-    """验证 pop_impulse 后缓冲会被清空"""
+    """信号与 impulse 过期后, peek() 与 peek(no_stale=False) 均不可见."""
     nucleus = BufferNucleus(
         name="test_nucleus",
         description="test",

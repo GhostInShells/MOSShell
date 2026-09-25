@@ -48,3 +48,35 @@ async def test_shell_execution_baseline():
 
         messages = interpreter.merge_messages([], [])
         assert len(messages) > 0
+
+
+@pytest.mark.asyncio
+async def test_channel_metas_generation_callback_count():
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+    a_chan = PyChannel(name="a")
+    shell.main_channel.import_channels(a_chan)
+
+    async with shell:
+        await shell.wait_connected()
+
+        calls = []
+
+        def on_generation(metas) -> None:
+            calls.append(metas)
+
+        discard = shell.on_channel_metas_generation(on_generation)
+
+        # 回归: refresh 完成后必须触发一次 metas 重建回调.
+        assert await shell.refresh_metas() is True
+        assert len(calls) == 1
+
+        # 每次 refresh 都触发一次.
+        assert await shell.refresh_metas() is True
+        assert len(calls) == 2
+
+        # discard 后不再触发.
+        discard()
+        assert await shell.refresh_metas() is True
+        assert len(calls) == 2

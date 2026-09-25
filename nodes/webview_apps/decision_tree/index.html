@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>decision tree</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+      display: flex; flex-direction: column;
+    }
+    header {
+      display: flex; gap: 6px; align-items: center;
+      padding: 8px 12px; border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header .tab {
+      padding: 4px 12px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--border); color: var(--muted); font-size: 13px;
+      max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    header .tab.active { color: var(--accent); border-color: var(--accent); }
+    #layout { flex: 1; display: flex; min-height: 0; }
+    #graph { flex: 1; min-width: 0; }
+    #detail {
+      width: 380px; border-left: 1px solid var(--border); overflow-y: auto;
+      padding: 16px; background: var(--panel);
+    }
+    #detail h2 { margin: 0 0 4px; font-size: 18px; }
+    #detail .meta { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+    .badge {
+      display: inline-block; padding: 1px 8px; border-radius: 10px;
+      font-size: 12px; border: 1px solid;
+    }
+    .pruned { text-decoration: line-through; opacity: .55; }
+    .section { margin-top: 14px; }
+    .section h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 6px; }
+    ul.plain { list-style: none; padding: 0; margin: 0; }
+    ul.plain li { padding: 4px 0; border-bottom: 1px solid #1e293b; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; color: var(--muted); }
+    button {
+      background: #1e293b; color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    #cards {
+      position: fixed; bottom: 12px; right: 12px; display: flex; flex-direction: column;
+      gap: 8px; max-width: 320px;
+    }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+    }
+    .card .action { color: var(--accent); font-size: 12px; }
+    .card .detail { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .markdown { font-size: 14px; }
+    .markdown h1, .markdown h2 { font-size: 16px; }
+    .markdown pre { background: #0f172a; padding: 8px; border-radius: 6px; overflow-x: auto; }
+    .linkish { cursor: pointer; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header id="tabs"></header>
+  <div id="layout">
+    <div id="graph"></div>
+    <div id="detail"></div>
+  </div>
+  <div id="cards"></div>
+
+  <script>
+    const LEVEL_COLOR = {
+      info: '#64748b',
+      success: '#22c55e',
+      warn: '#f59e0b',
+      error: '#ef4444',
+      muted: '#475569',
+    };
+
+    let ws = null;
+    let state = { trees: [] };   // {rel, snapshot}
+    let activeRel = '';
+    let selected = '';           // node name, '' = tree root
+    let chart = null;
+    let detailCache = {};        // `${rel}::${name}` -> {dir, ls}
+
+    // -- websocket -----------------------------------------------------------
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onmessage = (e) => {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch (_) { return; }
+        if (msg.type === 'state') onState(msg);
+        else if (msg.type === 'focus') onFocus(msg);
+        else if (msg.type === 'card') onCard(msg);
+        else if (msg.type === 'detail') onDetail(msg);
+      };
+      ws.onclose = () => setTimeout(connect, 1500);
+    }
+
+    function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+    // -- state ---------------------------------------------------------------
+    function onState(msg) {
+      state.trees = msg.trees || [];
+      if (!state.trees.length) { renderTabs(); renderDetailEmpty(); return; }
+      if (!activeRel || !state.trees.some(t => t.rel === activeRel)) {
+        activeRel = state.trees[0].rel;
+      }
+      renderTabs();
+      renderGraph();
+      renderDetail();
+    }
+
+    function onFocus(msg) {
+      if (msg.rel) activeRel = msg.rel;
+      selected = msg.name || '';
+      renderTabs();
+      renderGraph();
+      renderDetail();
+    }
+
+    function onDetail(msg) {
+      detailCache[msg.rel + '::' + msg.name] = { dir: msg.dir, ls: msg.ls || [] };
+      if (msg.rel === activeRel && msg.name === selected) renderDetail();
+    }
+
+    function selectNode(name) {
+      selected = name;
+      if (name) send({ type: 'user.action', action: 'select', rel: activeRel, name });
+      renderDetail();
+    }
+
+    function onCard(msg) {
+      const el = document.createElement('div');
+      el.className = 'card';
+      const action = document.createElement('div');
+      action.className = 'action';
+      action.textContent = `${msg.action} · ${msg.name || msg.rel}`;
+      el.appendChild(action);
+      const det = document.createElement('div');
+      det.className = 'detail';
+      det.textContent = summarize(msg.detail);
+      el.appendChild(det);
+      const btn = document.createElement('button');
+      btn.textContent = 'confirm';
+      btn.onclick = () => {
+        send({ type: 'user.action', action: 'confirm', rel: msg.rel, name: msg.name, detail: summarize(msg.detail) });
+        el.remove();
+      };
+      el.appendChild(btn);
+      document.getElementById('cards').appendChild(el);
+      setTimeout(() => el.remove(), 30000);
+    }
+
+    function summarize(ev) {
+      if (!ev) return '';
+      if (ev.ev === 'create') return `${ev.name} under ${ev.from_node || 'root'}`;
+      if (ev.ev === 'update') {
+        const parts = [];
+        if (ev.status) parts.push(ev.status);
+        if (ev.status_note) parts.push(ev.status_note);
+        if (ev.pruned) parts.push('pruned');
+        if (ev.title) parts.push('title→' + ev.title);
+        return parts.join(' · ');
+      }
+      return JSON.stringify(ev);
+    }
+
+    // -- tabs ----------------------------------------------------------------
+    function renderTabs() {
+      const tabs = document.getElementById('tabs');
+      tabs.innerHTML = '';
+      state.trees.forEach(t => {
+        const el = document.createElement('div');
+        el.className = 'tab' + (t.rel === activeRel ? ' active' : '');
+        el.title = t.rel;
+        el.textContent = t.snapshot.tree.title || t.snapshot.tree.name;
+        el.onclick = () => { activeRel = t.rel; selected = ''; renderTabs(); renderGraph(); renderDetail(); };
+        tabs.appendChild(el);
+      });
+    }
+
+    // -- graph ---------------------------------------------------------------
+    function activeSnapshot() {
+      const t = state.trees.find(t => t.rel === activeRel);
+      return t ? t.snapshot : null;
+    }
+
+    function buildTreeData(snap) {
+      const nodes = {};
+      snap.nodes.forEach(n => { nodes[n.name] = n; });
+      const children = snap.children || {};
+      const visited = new Set();
+      function nodeData(name) {
+        if (visited.has(name)) return null;
+        visited.add(name);
+        const n = nodes[name];
+        if (!n) return null;
+        const kids = (children[name] || []).map(c => nodeData(c.name)).filter(Boolean);
+        return {
+          name: n.title || n.name,
+          value: n.name,
+          level: n.level,
+          pruned: n.pruned,
+          status: n.status,
+          itemStyle: {
+            color: LEVEL_COLOR[n.level] || LEVEL_COLOR.info,
+            borderColor: n.pruned ? '#475569' : 'rgba(255,255,255,.2)',
+            borderWidth: n.pruned ? 1 : 0,
+            opacity: n.pruned ? 0.6 : 1,
+          },
+          children: kids.length ? kids : undefined,
+        };
+      }
+      const rootKids = (snap.roots || []).map(name => nodeData(name)).filter(Boolean);
+      return {
+        name: snap.tree.title || snap.tree.name,
+        value: '',
+        isRoot: true,
+        itemStyle: { color: '#0ea5e9' },
+        children: rootKids.length ? rootKids : undefined,
+      };
+    }
+
+    function renderGraph() {
+      const snap = activeSnapshot();
+      if (!snap) return;
+      if (!chart) {
+        chart = echarts.init(document.getElementById('graph'), 'dark');
+        chart.on('click', (p) => {
+          if (!p.data) return;
+          if (p.data.isRoot) { selectNode(''); return; }
+          if (typeof p.data.value === 'string') selectNode(p.data.value);
+        });
+      }
+      const option = {
+        tooltip: {
+          trigger: 'item', triggerOn: 'mousemove',
+          formatter: p => p.data && p.data.value !== undefined
+            ? `${p.name}<br/><span class="mono">${p.data.value}</span> · ${p.data.status || 'root'}`
+            : p.name,
+        },
+        series: [{
+          type: 'tree',
+          data: [buildTreeData(snap)],
+          layout: 'orthogonal',
+          orient: 'LR',
+          symbol: 'circle',
+          symbolSize: 10,
+          roam: true,
+          initialTreeDepth: -1,
+          label: { position: 'left', verticalAlign: 'middle', align: 'right', fontSize: 12, color: '#e2e8f0' },
+          leaves: { label: { position: 'right', verticalAlign: 'middle', align: 'left' } },
+          edgeShape: 'curve',
+          lineStyle: { color: '#475569', width: 1.2 },
+          animationDuration: 250,
+        }],
+      };
+      chart.setOption(option, true);
+    }
+
+    // -- detail --------------------------------------------------------------
+    function renderDetailEmpty() {
+      document.getElementById('detail').innerHTML = '<p class="meta">no trees — create one with create_tree</p>';
+    }
+
+    function renderDetail() {
+      const snap = activeSnapshot();
+      const el = document.getElementById('detail');
+      if (!snap) { renderDetailEmpty(); return; }
+      if (selected === '') return renderTreeDetail(el, snap);
+      const n = snap.nodes.find(x => x.name === selected);
+      if (!n) { el.innerHTML = `<p class="meta">no node '${selected}'</p>`; return; }
+      renderNodeDetail(el, snap, n);
+    }
+
+    function renderTreeDetail(el, snap) {
+      const t = snap.tree;
+      const statuses = Object.entries(t.statuses || {}).map(([k, v]) =>
+        `<span class="badge" style="color:${LEVEL_COLOR[v]||'#fff'};border-color:${LEVEL_COLOR[v]||'#fff'}">${esc(k)}</span>`
+      ).join(' ');
+      const edges = Object.entries(t.edges || {}).map(([k, v]) =>
+        `<li>${esc(k)} — ${esc(v)}</li>`
+      ).join('');
+      const body = (snap.tree_body || '').trim();
+      el.innerHTML = `
+        <h2>${esc(t.title)}</h2>
+        <div class="meta">${esc(t.description)}</div>
+        <div class="section"><h3>root</h3><span class="linkish mono" data-open="${esc(activeRel)}" style="word-break:break-all">${esc(activeRel)}</span></div>
+        ${body ? `<div class="section"><h3>plan</h3><div class="markdown">${md(body)}</div></div>` : ''}
+        <div class="section"><h3>statuses</h3>${statuses}</div>
+        <div class="section"><h3>edges</h3><ul class="plain">${edges}</ul></div>
+      `;
+      el.querySelectorAll('[data-open]').forEach(a => {
+        a.onclick = () => send({ type: 'user.action', action: 'open_path', path: a.dataset.open, rel: activeRel, name: '' });
+      });
+    }
+
+    function renderNodeDetail(el, snap, n) {
+      const levelColor = LEVEL_COLOR[n.level] || LEVEL_COLOR.info;
+      const stateLabel = `${n.status}${n.pruned ? ' · pruned' : ''}`;
+      const cache = detailCache[activeRel + '::' + n.name];
+      const dir = cache ? cache.dir : '';
+      let dirBody;
+      if (!cache) {
+        dirBody = '<p class="meta">loading…</p>';
+      } else if (!cache.exists) {
+        dirBody = '<p class="meta">(not exists)</p>';
+      } else if (!cache.ls.length) {
+        dirBody = '<p class="meta">(empty directory)</p>';
+      } else {
+        dirBody = '<ul class="plain">' + cache.ls.map(e =>
+          `<li class="row"><span class="linkish" data-open="${esc(e.path)}">${esc(e.name)}${e.dir ? '/' : ''}</span><span class="mono">${e.dir ? 'dir' : ''}</span></li>`
+        ).join('') + '</ul>';
+      }
+      const children = (snap.children[n.name] || []).map(c => {
+        const kid = snap.nodes.find(x => x.name === c.name);
+        return `<li class="row"><span class="linkish" data-node="${esc(c.name)}">${esc(kid ? kid.title : c.name)}</span><span class="mono">${esc(c.edge)}</span></li>`;
+      }).join('');
+      el.innerHTML = `
+        <h2 class="${n.pruned ? 'pruned' : ''}">${esc(n.title)}</h2>
+        <div class="meta">${esc(n.name)} · <span class="badge" style="color:${levelColor};border-color:${levelColor}">${esc(stateLabel)}</span></div>
+        ${n.status_note ? `<div class="section"><h3>note</h3>${esc(n.status_note)}</div>` : ''}
+        <div class="section"><h3>directory</h3>
+          ${(cache && cache.exists) ? `<span class="linkish mono" data-open="${esc(dir)}" style="word-break:break-all">${esc(dir)}</span>` : `<div class="mono" style="word-break:break-all">${esc(dir)}</div>`}
+          ${dirBody}
+        </div>
+        ${children ? `<div class="section"><h3>children</h3><ul class="plain">${children}</ul></div>` : ''}
+      `;
+      el.querySelectorAll('[data-node]').forEach(a => {
+        a.onclick = () => selectNode(a.dataset.node);
+      });
+      el.querySelectorAll('[data-open]').forEach(a => {
+        a.onclick = () => send({ type: 'user.action', action: 'open_path', path: a.dataset.open, rel: activeRel, name: n.name });
+      });
+    }
+
+    function md(text) {
+      if (window.marked && marked.parse) return marked.parse(text);
+      return esc(text);
+    }
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    window.addEventListener('resize', () => chart && chart.resize());
+    connect();
+  </script>
+</body>
+</html>

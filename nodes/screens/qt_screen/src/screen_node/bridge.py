@@ -21,6 +21,7 @@ from concurrent.futures import Future
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal, Slot, Qt
+from PySide6.QtQml import QJSValue
 
 from .bucket import EventBucket
 
@@ -29,6 +30,13 @@ logger = logging.getLogger("moss.screen.bridge")
 # Animation durations in milliseconds — must match QML Behavior/Animation values.
 ANIM_FOCUS_MS = 1100
 ANIM_TRANSITION_MS = 800
+
+# Sentinel returned by _execute for ops whose Future is resolved asynchronously
+# by a QML animation callback (animation_finished), not by _on_dispatch.
+_DEFERRED = object()
+
+# Ops whose Future is deferred — QML resolves via animation_finished(rid).
+_ANIMATED_OPS = {"switch_layout"}
 
 
 class ScreenBridge(QObject):
@@ -90,12 +98,15 @@ class ScreenBridge(QObject):
         args = data["args"]
 
         try:
-            result = self._execute(op, args)
+            result = self._execute(op, args, rid)
         except Exception as exc:
             logger.exception("bridge dispatch failed: op=%s args=%s", op, args)
             result = exc
 
         self._refresh_snapshot()
+
+        if result is _DEFERRED:
+            return  # Future stays in _futures, resolved by animation_finished(rid)
 
         with self._lock:
             f = self._futures.pop(rid, None)
@@ -110,15 +121,19 @@ class ScreenBridge(QObject):
         "open_window":     ("id", "url", "label"),
         "close_window":    ("id",),
         "set_background":  ("id",),
-        "switch_layout":   ("name",),
+        "switch_layout":   ("name", "rid"),
         "focus_window":    ("id", "slot"),
         "front_window":    ("id", "index"),
         "float_window":    ("id",),
         "clear_slot":      ("slot",),
     }
 
-    def _execute(self, op: str, args: dict) -> Any:
-        """Execute operation on QML scene. Runs on GUI thread only."""
+    def _execute(self, op: str, args: dict, rid: str) -> Any:
+        """Execute operation on QML scene. Runs on GUI thread only.
+
+        Returns _DEFERRED for animated ops — the Future stays in _futures
+        until QML calls bridge.animation_finished(rid).
+        """
         root = self._root
         if root is None:
             raise RuntimeError("ScreenBridge: QML root not set")
@@ -128,11 +143,18 @@ class ScreenBridge(QObject):
             raise ValueError(f"Unknown bridge op: {op}")
 
         # QML functions require positional args, not keyword args.
-        # Build positional args list from the dispatch signature.
         param_names = self._DISPATCH.get(op, ())
         if param_names:
-            pos_args = [args.get(name) for name in param_names]
-            return method(*pos_args)
+            pos_args = []
+            for name in param_names:
+                if name == "rid":
+                    pos_args.append(rid)
+                else:
+                    pos_args.append(args.get(name))
+            method(*pos_args)
+            if op in _ANIMATED_OPS:
+                return _DEFERRED
+            return None
         # Fallback for ops without explicit dispatch (e.g. future additions)
         return method(**args)
 
@@ -143,6 +165,22 @@ class ScreenBridge(QObject):
         with self._lock:
             return self._snapshot_cache.copy()
 
+    @staticmethod
+    def _to_native(v: Any) -> Any:
+        """Convert QJSValue to Python dict/list/str recursively.
+
+        PySide6 does NOT auto-convert QML property var returns to Python
+        types (unlike PyQt6). QML property var stores JS values wrapped
+        as QJSValue; toVariant() unwraps them for shiboken auto-conversion.
+        """
+        if isinstance(v, QJSValue):
+            v = v.toVariant()
+        if isinstance(v, dict):
+            return {k: ScreenBridge._to_native(val) for k, val in v.items()}
+        if isinstance(v, list):
+            return [ScreenBridge._to_native(item) for item in v]
+        return v
+
     def _refresh_snapshot(self) -> None:
         """GUI thread: read QML state into cache."""
         root = self._root
@@ -150,34 +188,31 @@ class ScreenBridge(QObject):
             return
 
         try:
-            windows_prop = root.property("windows")
+            windows_raw = root.property("windows")
+            layout_name_raw = root.property("layoutName")
+            background_id_raw = root.property("backgroundId")
+            focus_id_raw = root.property("focusId")
+            focus_id_left_raw = root.property("focusIdLeft")
+            focus_id_right_raw = root.property("focusIdRight")
+            front_ids_raw = root.property("frontIds")
+            float_ids_raw = root.property("floatIds")
         except Exception:
-            windows_prop = {}
+            logger.exception("_refresh_snapshot: QML property read failed")
+            return
 
-        windows = {}
-        if isinstance(windows_prop, dict):
-            windows = windows_prop
-
-        try:
-            layout_name = root.property("layoutName") or "solo"
-            background_id = root.property("backgroundId") or ""
-            focus_id = root.property("focusId") or ""
-            front_ids = list(root.property("frontIds") or [])
-            float_ids = list(root.property("floatIds") or [])
-        except Exception:
-            layout_name = "solo"
-            background_id = ""
-            focus_id = ""
-            front_ids = []
-            float_ids = []
+        windows = self._to_native(windows_raw) or {}
+        front_ids = self._to_native(front_ids_raw) or []
+        float_ids = self._to_native(float_ids_raw) or []
 
         snap = {
             "windows": windows,
             "layout": {
-                "name": layout_name,
-                "background": background_id,
+                "name": str(self._to_native(layout_name_raw) or "solo"),
+                "background": str(self._to_native(background_id_raw) or ""),
                 "slots": {
-                    "focus": focus_id,
+                    "focus": str(self._to_native(focus_id_raw) or ""),
+                    "focus_left": str(self._to_native(focus_id_left_raw) or ""),
+                    "focus_right": str(self._to_native(focus_id_right_raw) or ""),
                     "front": front_ids,
                     "float": float_ids,
                 },

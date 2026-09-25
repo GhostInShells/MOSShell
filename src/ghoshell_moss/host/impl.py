@@ -9,12 +9,11 @@ wire-up 契约:
 - Host 不缓存 matrix: 一个 Host 生命周期里 run / run_ghost 只调一次,
   返回的 matrix 由 MossRuntimeImpl / GhostRuntimeImpl 持有生命周期.
 """
-from typing_extensions import Self
 
 import pathlib
 from pathlib import Path
 
-from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime, GhostRuntime
+from ghoshell_moss.core.blueprint.host import IHost, MOSShellRuntime, IGhostRuntime
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project
@@ -25,13 +24,13 @@ from ghoshell_moss.contracts.workspace import LocalWorkspace
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 from ghoshell_moss.factory import create_project, resolve_matrix_adapter
 
-from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
+from ghoshell_moss.host.moss_runtime import ShellRuntimeImpl
 from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
 
 __all__ = ['Host']
 
 
-class Host(MossHost):
+class Host(IHost):
     """MOSS 顶层入口的 concrete.
 
     显式构造姿态 (§UU-1 seal 判决 + 用户 2026-07 明示"host 不走 discover 而是走正常 init"):
@@ -108,9 +107,11 @@ class Host(MossHost):
             self,
             *,
             run_shell: bool = True,
+            speech: bool = True,
+            listen: bool = False,
             name: str | None = None,
             description: str | None = None,
-    ) -> MossRuntime:
+    ) -> MOSShellRuntime:
         mode = self._project.current_mode()
         if mode is None:
             raise RuntimeError(
@@ -122,12 +123,14 @@ class Host(MossHost):
 
         cell = build_host_cell(self._env)
         matrix = self.new_matrix(cell)
-        return MossRuntimeImpl(
+        return ShellRuntimeImpl(
             env=self._env,
             workspace=self._workspace,
             mode=mode,
             matrix=matrix,
             run_shell_on_start=run_shell,
+            speech=speech,
+            listen=listen,
             name=name,
             description=description,
         )
@@ -137,7 +140,9 @@ class Host(MossHost):
             ghost: 'str | GhostMeta',
             *,
             run_shell: bool = True,
-    ) -> GhostRuntime:
+            speech: bool = True,
+            listen: bool = False,
+    ) -> IGhostRuntime:
         if isinstance(ghost, str):
             ghost_meta = self._project.get_ghost(ghost)
             source_path = self._find_ghost_source(ghost_meta)
@@ -154,7 +159,7 @@ class Host(MossHost):
         # (Environment.set_ghost_name 已删, seal 是一次性跃迁). host 侧无法在
         # 已 seal env 上改 ghost_name — Ghost 归属由 env 构造时决定.
         # ghost_name 必须在 seal 前设置; Host 不负责补全.
-        moss_runtime = self.run(run_shell=run_shell)
+        moss_runtime = self.run(run_shell=run_shell, speech=speech, listen=listen)
         return GhostRuntimeImpl(
             moss_runtime=moss_runtime,
             ghost_meta=ghost_meta,

@@ -1,21 +1,25 @@
-import signal
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from ghoshell_moss.contracts import Workspace
+from ghoshell_container import IoCContainer, Container, Provider
+
+from ghoshell_moss.contracts import Workspace, LoggerItf, RuntimeErrorLog
+from ghoshell_moss.core.runtime_error import RuntimeErrorLogImpl
+from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.core.blueprint.cell import CellRuntimeInfo, NodeManager
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.project import (
-    Project, HostMode, Manifest, MatrixManifest, HostModeMeta, HOST_MODE_FILE,
+    Project, HostMode, Manifest, ProjectManifest, HostModeMeta, HOST_MODE_FILE,
 )
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts.workspace import LocalWorkspace
-from ghoshell_moss.core.subprocesses._utils import killpg
 from ghoshell_moss.project.node_manager import ProjectNodeManager
 from ghoshell_moss.project.local_host_mode import LocalHostMode
 from ghoshell_moss.project.manifests.ghosts import search_ghost_manifests
-from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
+from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
 from ghoshell_moss.project.manifests.base import ScannedManifest
+from ghoshell_moss.contracts import ConfigInstanceRegisterBootstrapper
+from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 
 __all__ = ['LocalProject']
 
@@ -26,10 +30,10 @@ class LocalProject(Project):
         self._env = env
         self._workspace = LocalWorkspace(self._env.workspace_path)
 
-        self._nodes: NodeManager | None = None
-        self._ghosts_cache: dict[str, tuple[Path, GhostMeta]] | None = None
+        self._ghosts_cache: dict[str, tuple[Path, GhostMeta | Exception]] | None = None
         self._modes_cache: dict[str, tuple[Path, Manifest[HostModeMeta]]] | None = None
-        self._matrix_manifests: MatrixManifest | None = None
+        self._project_manifests: ProjectManifest | None = None
+        self._container: IoCContainer | None = None
 
     @property
     def env(self) -> Environment:
@@ -38,6 +42,88 @@ class LocalProject(Project):
     @property
     def workspace(self) -> Workspace:
         return self._workspace
+
+    @property
+    def container(self) -> IoCContainer:
+        if self._container is not None:
+            return self._container
+        container = Container(name=f"moss/project/{self.env.project_name}/{self.env.project_id}")
+        self._container = container
+        container.set(Environment, self._env)
+        container.set(Project, self)
+        container.set(Workspace, self.workspace)
+        # RuntimeErrorLog 早设 + 早 attach — 先于 provider 注册与工厂期错误 (NodeManager
+        # 那行 get 会触发 provider 工厂). logger 用 Project 自身 logger.
+        error_log = RuntimeErrorLogImpl()
+        container.set(RuntimeErrorLog, error_log)
+        error_log.attach(self.logger)
+
+        project_manifests = self.project_manifests()
+        for manifest in project_manifests.providers():
+            if manifest.is_error():
+                raise RuntimeError(f"Project provider manifest error: {manifest.error()} at {manifest.found_at()}")
+            provider = manifest.value()
+            if not isinstance(provider, Provider):
+                raise RuntimeError(f"Project provider manifest `{provider}` is not a Provider at {manifest.found_at()}")
+            # override default providers
+            container.register(provider)
+
+        for provider in self._default_providers():
+            contract = provider.contract()
+            if not container.bound(contract):
+                container.register(provider)
+
+        # nodes — 创建逻辑在 container 装配: 从 IoC 取 subprocesses/logger,
+        # 构造后 set 进 container (不进 provider); nodes property 直接 force_fetch.
+        container.set(NodeManager, ProjectNodeManager(
+            self._env,
+            node_dirs=self._resolve_node_dirs(),
+            subprocesses=container.get(Subprocesses),
+            logger=container.get(LoggerItf),
+        ))
+
+        # -- configs -- #
+        configs = []
+        for config_manifest in project_manifests.configs():
+            if config_manifest.is_error():
+                raise RuntimeError(
+                    "Config Manifest error: %s at %s" % (config_manifest.error(), config_manifest.found_at())
+                )
+            configs.append(config_manifest.value())
+        if len(configs) > 0:
+            bootstrapper = ConfigInstanceRegisterBootstrapper(*configs)
+            container.add_bootstrapper(bootstrapper)
+
+        # -- resources (project_manifests.resources → bootstrapper) -- #
+        for resource_manifest in project_manifests.resources():
+            if resource_manifest.is_error():
+                raise RuntimeError(
+                    "Resource Manifest error: %s at %s" % (resource_manifest.error(), resource_manifest.found_at()),
+                )
+            storage_factory = resource_manifest.value()
+            bootstrapper = ResourceStorageFactoryBootstrapper(storage_factory)
+            container.add_bootstrapper(bootstrapper)
+
+        return container
+
+    def _default_providers(self) -> Iterable[Provider]:
+        """
+        project 层的 default 接线 (default 兜底).
+
+        workspace 用户在 ProjectManifest.providers 里显式覆写即可覆盖.
+        driver-specific 的 default (topic/session/zenoh.Session) 归 adapter.
+        """
+        from ghoshell_moss.project.providers.configs_provider import EnvConfigStoreProvider
+        from ghoshell_moss.project.providers.subprocesses_provider import ProjectSubprocessesProvider
+        from ghoshell_moss.project.providers.job_supervisor_provider import ProjectJobSupervisorProvider
+        from ghoshell_moss.project.providers.llms_provider import ProjectLLMFuncsProvider
+        from ghoshell_moss.resources.memory_registry import InMemoryResourceRegistryProvider
+
+        yield ProjectSubprocessesProvider()
+        yield ProjectJobSupervisorProvider()
+        yield EnvConfigStoreProvider()
+        yield InMemoryResourceRegistryProvider()
+        yield ProjectLLMFuncsProvider()
 
     # -- ghosts -- #
 
@@ -119,14 +205,15 @@ class LocalProject(Project):
 
     @property
     def nodes(self) -> NodeManager:
-        if self._nodes is None:
-            try:
-                mode = self.current_mode()
-                node_dirs = mode.nodes_discover_paths() if mode else self._env.node_dirs()
-            except Exception:
-                node_dirs = self._env.node_dirs()
-            self._nodes = ProjectNodeManager(self._env, node_dirs=node_dirs)
-        return self._nodes
+        return self.container.force_fetch(NodeManager)
+
+    def _resolve_node_dirs(self) -> list[Path]:
+        try:
+            mode = self.current_mode()
+            return mode.nodes_discover_paths() if mode else self._env.node_dirs()
+        except Exception as e:
+            self.logger.exception("Failed to discover nodes: %s", e)
+            return self._env.node_dirs()
 
     def cell_runtimes(self) -> Iterator[CellRuntimeInfo]:
         # 直接读文件系统, 不做活性核对 — 活性判断由调用方按 info.is_alive() 自负.
@@ -136,28 +223,13 @@ class LocalProject(Project):
             return
         yield from CellRuntimeInfo.iter_runtime_info(runtime_dir)
 
-    def kill_cell(self, address: str) -> bool:
-        # 孤儿清理: 尝试对本 project ledger 里的 cell 进程发 signal + 清账本.
-        # ledger 里没有 = 不属本地治理域, 无操作 (契约 False).
-        # ledger 里有 = 属本地, 无论进程还活着与否都要清账本 (契约 True).
-        runtime_dir = self._env.cell_runtimes_dir
-        info = CellRuntimeInfo.read_from_runtime_dir(runtime_dir, address)
-        if info is None:
-            return False
-        if info.is_alive() and info.pgid:
-            # 对进程组发 SIGTERM — 孤儿场景没有 owner 走优雅退出, SIGTERM 一发即杀.
-            # killpg 内部吞 ProcessLookupError, 我们不 care 是否真正落地.
-            killpg(info.pgid, signal.SIGTERM)
-        info.delete_invalid(runtime_dir)
-        return True
-
     # -- matrix manifests -- #
 
-    def matrix_manifests(self) -> MatrixManifest:
+    def project_manifests(self) -> ProjectManifest:
         # 单例缓存 — scanner 是 lazy generator, 重复构造无副作用, 但缓存避免
         # 每次 fetch 都重新扫包.
-        if self._matrix_manifests is None:
-            self._matrix_manifests = ScannedMatrixManifest(
+        if self._project_manifests is None:
+            self._project_manifests = ScannedProjectManifest(
                 self._env.moss_meta.matrix_manifest_package,
             )
-        return self._matrix_manifests
+        return self._project_manifests

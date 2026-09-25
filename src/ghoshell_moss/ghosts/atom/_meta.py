@@ -7,7 +7,9 @@ from ghoshell_moss.depends import depend_ghost
 depend_ghost()
 from anthropic.types.beta import BetaThinkingConfigDisabledParam
 from ghoshell_container import IoCContainer
-from ghoshell_moss.core.blueprint.ghost import GhostMeta, GhostWorkspace
+from ghoshell_moss.core.blueprint.ghost import GhostMeta
+from ghoshell_moss.core.blueprint.channel_builder import Channel, ChannelFactory
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.contracts import SystemPrompter
 from pydantic_ai import Agent, RunContext
@@ -27,7 +29,7 @@ class AtomMeta(GhostMeta):
 
     Atom 演示了 Ghost ABC 的最小契约实现：
     - soul + model → build_agent() → factory() → Atom runtime
-    - 单轮 articulate() 循环，纯内存历史
+    - think() 循环，上下文由 mindflow Moments 轨迹承载
     """
 
     def __init__(
@@ -36,7 +38,8 @@ class AtomMeta(GhostMeta):
             description: str = (
                     "Atom is the minimal Ghost prototype — a reference baseline "
                     "for all Ghost implementations in MOSS. It demonstrates the "
-                    "Ghost ABC contract with a single-turn articulate() loop."
+                    "Ghost ABC contract with an interleaved think() loop over the "
+                    "mindflow Moments trajectory."
             ),
             soul_path: str | Path | None = None,
             soul_content: str | None = None,
@@ -44,6 +47,7 @@ class AtomMeta(GhostMeta):
             provider: Provider | None = None,
             on_agent_build: Callable[[Agent[IoCContainer]], None] | None = None,
             nuclei_metas: list[NucleusMeta] | None = None,
+            channel: Channel | ChannelFactory | None = None,
     ):
         self._name = name
         self._description = description
@@ -53,6 +57,7 @@ class AtomMeta(GhostMeta):
         self._provider = provider
         self._on_agent_build = on_agent_build
         self._nuclei_metas = nuclei_metas or []
+        self._channel = channel
 
     # ── GhostMeta ABC ──────────────────────────────
 
@@ -72,11 +77,11 @@ class AtomMeta(GhostMeta):
         """已加载的 soul 内容（由 _load_soul 或构造时直接传入)."""
         return self._soul_content or ""
 
-    def _load_soul(self, ghost_workspace: GhostWorkspace) -> None:
-        """从 ghost_workspace.home 加载 soul 文件. soul_content 非 None 时跳过.
+    def _load_soul(self, home: Path | None) -> None:
+        """从 ghost home 加载 soul 文件. soul_content 非 None 时跳过.
 
-        ghost_workspace.home = matrix.ghost_home = workspace/ghosts/{ghost_name}/
-        由 Host.run_ghost() 在 self.run() 之前通过 Environment(ghost=name).seal() 确保 ghost_name 已设置.
+        home = matrix.ghost_home = workspace/ghosts/{ghost_name}/
+        由 Host 在 ghost 启动前通过 Environment(ghost=name).seal() 确保 ghost_name 已设置.
         """
         if self._soul_content is not None:
             return
@@ -90,8 +95,8 @@ class AtomMeta(GhostMeta):
         elif self._soul_path is None:
             filename = 'soul.md'
 
-        if file_path is None and filename:
-            file_path = ghost_workspace.home.joinpath(filename)
+        if file_path is None and filename and home is not None:
+            file_path = home.joinpath(filename)
 
         if file_path and file_path.exists():
             self._soul_content = file_path.read_text(encoding="utf-8")
@@ -117,9 +122,10 @@ class AtomMeta(GhostMeta):
 
         model 为 None 时走 AnthropicModel + 环境变量.
         """
-        ghost_workspace = container.get(GhostWorkspace)
-        if ghost_workspace is not None:
-            self._load_soul(ghost_workspace)
+        matrix = container.get(Matrix) if container is not None else None
+        home = matrix.ghost_home if matrix is not None else None
+        if home is not None:
+            self._load_soul(home)
         model = self._model
         if model is None:
             model_name = os.environ.get("ANTHROPIC_MODEL")
@@ -155,4 +161,4 @@ class AtomMeta(GhostMeta):
         from ._runtime import Atom
 
         agent = self.build_agent(container)
-        return Atom(meta=self, agent=agent, container=container)
+        return Atom(meta=self, agent=agent, container=container, channel=self._channel)

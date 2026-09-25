@@ -3,13 +3,18 @@
 每个 GroundSet 实例有独立 label 空间 — 多实例, 非单例.
 不同 channel 各自创建自己的 GroundSet, label 冲突天然隔离.
 
-Template discovery (K63): 扫描 $CWD/.grounds/ → $HOME/.grounds/ →
-ghost 携带路径, 合并为模板清单. 同名模板项目属地优先.
+构造期即建 root (锚点场) 并按 root 的 ``groundset`` 字段物化子场 —
+GroundSet 本就有启动代价, 子场展开是它的一部分 (一层, 不递归).
+materialize=False 可关掉物化 (一次性 peek 场景)。
+
+Template discovery: 扫描 $HOME/.grounds/ → $CWD/.grounds/, 合并为模板清单.
+同名模板项目属地优先.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -25,8 +30,8 @@ _TEMPLATE_DIR = ".grounds"
 class DefaultGroundSet(GroundSet):
     """GroundSet ABC 的默认实现.
 
-    - workspace_root: 相对路径解析基点.
-    - _active: label → Ground 映射.
+    - workspace_root: 相对路径解析基点, 同时是锚点场 (root) 的目录.
+    - _active: label → Ground 映射 (含 root).
     - _label_by_path: abspath → label, 幂等 open 的快速查表.
     - _templates: 模板清单, __init__ 时扫描.
     """
@@ -35,15 +40,32 @@ class DefaultGroundSet(GroundSet):
         self,
         *,
         workspace_root: Path | None = None,
-        ghost_templates_dir: Path | None = None,
+        logger: logging.Logger | None = None,
+        materialize: bool = True,
     ) -> None:
         self._workspace_root = (
             workspace_root.resolve() if workspace_root else Path.cwd().resolve()
         )
+        self._logger = logger or logging.getLogger("moss")
         self._active: dict[str, Ground] = {}
         self._label_by_path: dict[str, str] = {}
         self._templates: list[TemplateInfo] = []
-        self._scan_templates(ghost_templates_dir)
+        self._materialize_errors: list[str] = []
+        self._scan_templates()
+        # 构造期建 root — 建场只读一个小 GROUND.md, 与 _scan_templates 的同步 IO 同量级.
+        self._root = self._construct(self._workspace_root)
+        if materialize:
+            self._materialize_children()
+
+    # -- root -------------------------------------------------------------
+
+    @property
+    def root(self) -> Ground:
+        return self._root
+
+    def materialize_errors(self) -> list[str]:
+        """物化子场时的可见诊断 (路径不是场 / 打开失败). 消费方用于呈现, 空 = 全部就位."""
+        return list(self._materialize_errors)
 
     # -- open/close -------------------------------------------------------
 
@@ -54,74 +76,19 @@ class DefaultGroundSet(GroundSet):
         label: str | None = None,
         doc: str | Path | None = None,
         template: str | None = None,
+        override: bool = False,
     ) -> Ground:
-        dir_path = Path(dir)
-        if not dir_path.is_absolute():
-            dir_path = self._workspace_root / dir_path
-        dir_abs = dir_path.resolve()
-
-        # 幂等
-        key = str(dir_abs)
-        if key in self._label_by_path:
-            return self._active[self._label_by_path[key]]
-
-        # doc 路径
-        doc_path = Path(doc).resolve() if doc else dir_abs / DEFAULT_L0_FILENAME
-
-        # template: 找到模板, 复制 body + pins
-        template_body = ""
-        template_pins: list = []
-        if template is not None:
-            tmpl = self._find_template(template)
-            if tmpl is not None:
-                contents = load_l0(tmpl.path.parent, filename=tmpl.path.name)
-                template_body = contents.body
-                template_pins = contents.pins
-
-        # 从 doc (法锚) 加载 convention — doc 缺省 = dir/GROUND.md,
-        # doc≠dir 时法来自别处 (场内移动/便携法单元, SPEC §7.1)
-        contents = await asyncio.to_thread(
-            load_l0, doc_path.parent, doc_path.name
+        dir_abs = self._resolve_dir(dir)
+        return await asyncio.to_thread(
+            self._construct, dir_abs, label=label, doc=doc, template=template, override=override,
         )
-        convention = contents.convention
-
-        # 模板的 body/pins 与本地 GROUND.md 合并: 本地优先
-        body = contents.body or template_body
-        pins = contents.pins if contents.pins else template_pins
-
-        # label 分配
-        base = label if label else dir_abs.name
-        final_label = base
-        suffix = 2
-        while final_label in self._active:
-            final_label = f"{base}-{suffix}"
-            suffix += 1
-
-        ground = DefaultGround(
-            label=final_label,
-            root=dir_abs,
-            doc_path=doc_path,
-            convention=convention,
-            workspace_root=self._workspace_root,
-        )
-        # 手动注入 body/pins 而不是走 load() — load 会覆盖模板内容
-        ground._body = body
-        for p in pins:
-            ground._pins[p.label] = p
-        # 模板注入的 pins 尚未落盘 → 标 dirty, 让 close 触发 sediment.
-        # 无模板时 open 只是加载既有 GROUND.md, 保持 clean.
-        if template_pins and pins is template_pins:
-            ground._dirty = True
-        self._active[final_label] = ground
-        self._label_by_path[key] = final_label
-        return ground
 
     async def close(self, label: str) -> None:
         if label not in self._active:
             raise KeyError(label)
         ground = self._active[label]
-        # 只在内存有未落盘变更时写盘 — 只读消费 (frame/meta/observe)
-        # 永不改写 GROUND.md.
+        # 只在内存有未落盘变更时写盘 — 只读消费 (render/meta/observe)
+        # 永不改写 GROUND.md. root 同样参与 sediment (锚点场的编辑要落盘).
         if ground.dirty:
             await ground.sediment()
         del self._active[label]
@@ -151,14 +118,131 @@ class DefaultGroundSet(GroundSet):
             try:
                 await self.close(label)
             except Exception:
-                pass
+                self._logger.exception("failed to close ground %r during __aexit__", label)
+
+    # -- 建场核心 (同步) --------------------------------------------------
+
+    def _resolve_dir(self, dir: str | Path) -> Path:
+        p = Path(dir)
+        if not p.is_absolute():
+            p = self._workspace_root / p
+        return p.resolve()
+
+    def _construct(
+        self,
+        dir_abs: Path,
+        *,
+        label: str | None = None,
+        doc: str | Path | None = None,
+        template: str | None = None,
+        override: bool = False,
+    ) -> Ground:
+        """同步建场 + 注册. 同目录幂等 (按 dir.resolve()).
+
+        构造期物化与 async open 共用这一条路径; async 侧只做线程卸载.
+        """
+        key = str(dir_abs)
+        if key in self._label_by_path:
+            return self._active[self._label_by_path[key]]
+
+        doc_path = Path(doc).resolve() if doc else dir_abs / DEFAULT_L0_FILENAME
+
+        # template: 找到模板, 复制 body + pins; 找不到显式报错, 不静默降级
+        template_body = ""
+        template_pins: list = []
+        if template is not None:
+            tmpl = self._find_template(template)
+            if tmpl is None:
+                avail = ", ".join(t.name for t in self._templates) or "none"
+                raise KeyError(
+                    f"template {template!r} not found in .grounds/ (available: {avail})"
+                )
+            contents = load_l0(tmpl.path.parent, filename=tmpl.path.name)
+            template_body = contents.body
+            template_pins = contents.pins
+
+        # 从 doc (法锚) 加载 convention — doc 缺省 = dir/GROUND.md,
+        # doc≠dir 时法来自别处 (场内移动/便携法单元, SPEC §7.1)
+        contents = load_l0(doc_path.parent, doc_path.name)
+        convention = contents.convention
+
+        # 模板的 body/pins 与本地 GROUND.md 合并: 本地优先.
+        # override=True (预览): 模板定义全权接管, 忽略现有 GROUND.md.
+        if override:
+            body = template_body
+            pins = template_pins
+        else:
+            body = contents.body or template_body
+            pins = contents.pins if contents.pins else template_pins
+
+        # label 分配
+        base = label if label else dir_abs.name
+        final_label = base
+        suffix = 2
+        while final_label in self._active:
+            final_label = f"{base}-{suffix}"
+            suffix += 1
+
+        ground = DefaultGround(
+            label=final_label,
+            root=dir_abs,
+            doc_path=doc_path,
+            convention=convention,
+            workspace_root=self._workspace_root,
+        )
+        # 手动注入 body/pins 而不是走 load() — load 会覆盖模板内容
+        ground._body = body
+        for p in pins:
+            ground._pins[p.label] = p
+        # 模板注入的 pins 尚未落盘 → 标 dirty, 让 close 触发 sediment.
+        # 无模板时 open 只是加载既有 GROUND.md, 保持 clean.
+        if template_pins and pins is template_pins:
+            ground._dirty = True
+        self._active[final_label] = ground
+        self._label_by_path[key] = final_label
+        return ground
+
+    # -- 子场物化 ---------------------------------------------------------
+
+    def _materialize_children(self) -> None:
+        """按 root 的 ``groundset`` 字段展开子场 (一层, 不递归).
+
+        字段值是相对 root 目录 ($GROUND) 的路径. 路径不是场或打开失败 →
+        记入 materialize_errors 并告警, 不抛 — 一个坏条目不该拖垮整个场集.
+        """
+        declared = self._root.convention.groundset
+        if not declared:
+            return
+        root_dir = self._root.root
+        for entry in declared:
+            rel = str(entry).strip()
+            if not rel:
+                continue
+            child_dir = (root_dir / rel).resolve()
+            if child_dir == root_dir:
+                self._note_error(f"groundset entry {rel!r} points at the root itself")
+                continue
+            if not (child_dir / DEFAULT_L0_FILENAME).is_file():
+                self._note_error(
+                    f"groundset entry {rel!r} is not a ground "
+                    f"(no {DEFAULT_L0_FILENAME} under {child_dir})"
+                )
+                continue
+            try:
+                self._construct(child_dir)
+            except Exception as e:
+                self._note_error(f"groundset entry {rel!r} failed to open: {e}")
+
+    def _note_error(self, message: str) -> None:
+        self._materialize_errors.append(message)
+        self._logger.warning("[ground] %s", message)
 
     # -- template discovery -----------------------------------------------
 
-    def _scan_templates(self, ghost_templates_dir: Path | None) -> None:
+    def _scan_templates(self) -> None:
         seen: dict[str, TemplateInfo] = {}
 
-        # 1. $HOME/.grounds/ — 最低优先级
+        # 1. $HOME/.grounds/ — 机器全局, 最低优先级
         home = os.environ.get("HOME")
         if home:
             self._collect_templates(Path(home) / _TEMPLATE_DIR, "user", seen)
@@ -167,10 +251,6 @@ class DefaultGroundSet(GroundSet):
         self._collect_templates(
             self._workspace_root / _TEMPLATE_DIR, "project", seen
         )
-
-        # 3. ghost 携带 — 最高优先级
-        if ghost_templates_dir is not None:
-            self._collect_templates(ghost_templates_dir, "ghost", seen)
 
         self._templates = sorted(seen.values(), key=lambda t: t.name)
 

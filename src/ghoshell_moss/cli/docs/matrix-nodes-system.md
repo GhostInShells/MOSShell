@@ -62,18 +62,19 @@ moss --ai nodes show <path>    # 查看声明原文 + 目录内容
 
 ### 2.3 三面控制 — 同一咽喉，不同入口
 
-Node 的生命周期有三个控制面，共享同一套 spawn 逻辑：
+Node 的生命周期只有一个治理咽喉（spawn 咽喉），三个控制面共享它：
 
 | 控制面 | 入口 | 场景 |
 |--------|------|------|
-| CLI | `moss nodes run/stop/kill` | 人类调试、脚本 |
-| Matrix API | `matrix.run_node(target)` | 父进程以本 Matrix 为治理域拉起子 Node |
-| 模型 (CTML) | `nodes:run` / `nodes:stop` 等命令 | Ghost 在运行时自迭代 |
+| CLI | `moss nodes` 命令组 | 人类调试、脚本 |
+| Matrix API | 父进程以本 Matrix 为治理域拉起子 Node | 程序内治理 |
+| 模型 (CTML) | nodes / mesh 治理面 | Ghost 在运行时自迭代 |
 
-三个面的差异只在"谁发起的"，治理逻辑是一套。
+三个面的差异只在"谁发起的"，治理逻辑是一套。命令面与 API 面分别指向：
 
 ```
-moss --ai all-commands --group nodes    # CLI 完整命令
+moss --ai all-commands --group nodes
+moss codex get-interface ghoshell_moss.core.blueprint.matrix
 ```
 
 ### 2.4 进程隔离 — 独立依赖，崩溃不传播
@@ -102,7 +103,7 @@ Node 不限于同一个 workspace、同一个 project、甚至同一台机器。
 moss --ai networks list    # local（单机） / lan（局域网）
 ```
 
-同 scope 内的 Node 共享 zenoh key namespace，自动发现。外来 Node 默认可见但不自动 accept——需要显式 `mesh:accept` 放行。
+同 scope 内的 Node 共享 zenoh key namespace，自动发现。外来 Node 默认可见但不自动信任——需要显式 accept 放行（mesh 治理面）。
 
 ---
 

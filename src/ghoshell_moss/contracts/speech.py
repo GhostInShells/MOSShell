@@ -1,29 +1,57 @@
 """Speech contract — audio capture, playback, and streaming speech interfaces."""
 
 import asyncio
+import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional, Callable, AsyncIterable
 from typing_extensions import TypedDict
 
 import numpy as np
 from pydantic import BaseModel, Field
-from typing_extensions import Self
-from ghoshell_moss.core.concepts.command import CommandTask, PyCommand, Command
-import json
 
 __all__ = [
     "AudioFormat",
     "Speech",
     "SpeechStream",
     "StreamAudioPlayer",
+    "PlaybackSample",
     "TTS",
     "TTSItem",
     "TTSAudioCallback",
     "TTSBatch",
     "TTSInfo",
     "TTSSpeech",
+    "Word",
+    "SpeechClause",
+    "SpeechSegment",
+    "split_speech_tokens",
+    "speech_tail",
 ]
+
+# 中文无空格, text.split() 会把整句中文当成 1 个 token; 用正则把英文单词 + 每个 CJK 字符拆开,
+# 中英混排都能得出合理计数. 供 backends 附"尾帧文本"与 stopped_message 计数共用.
+_WORD_RE = re.compile(r"[A-Za-z0-9]+|[^\sA-Za-z0-9]")
+_TAIL_WORDS = 6
+
+
+def split_speech_tokens(text: str) -> list[str]:
+    """切 token 只为计数 — 切完不再拼回文本, 拼接会改变原文. 要回显请用 speech_tail."""
+    return _WORD_RE.findall(text)
+
+
+def speech_tail(text: str, n: int = _TAIL_WORDS) -> str:
+    """取文本尾部的最后 n 个 token (中英混排, 中文按字符计), 原样切片保留原文.
+
+    token 只用来定位起点: 中文逐字成 token, 若按 token 重新拼接会插入原文本没有的空格
+    ("已经" → "已 经"), 所以这里切原串而不是 join tokens.
+    """
+    matches = list(_WORD_RE.finditer(text))
+    if not matches:
+        return ""
+    start = matches[-n].start() if n <= len(matches) else matches[0].start()
+    return text[start:].strip()
 
 
 class SpeechStream(ABC):
@@ -36,12 +64,15 @@ class SpeechStream(ABC):
     def __init__(
             self,
             id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
-            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+            *,
             committed: bool = False,  # 是否完成了这个 stream 的提交
     ):
         self.id = id
-        self.cmd_task = cmd_task
         self.committed = committed
+
+    @property
+    def stream_id(self) -> str:
+        return self.id
 
     def feed(self, text: str, *, complete: bool = False) -> None:
         """
@@ -58,9 +89,6 @@ class SpeechStream(ABC):
         if text:
             # 文本不为空.
             self._buffer(text)
-            if self.cmd_task is not None:
-                # buffer 到 cmd task
-                self.cmd_task.tokens = self.buffered()
         if complete:
             # 提交.
             self.commit()
@@ -93,51 +121,30 @@ class SpeechStream(ABC):
         """真实的结束 stream 讯号. 如果 stream 通过 tts 实现, 这个讯号会通知 tts 完成输出."""
         pass
 
-    def as_command_task(self, commit: bool = False, chan: str = "") -> Optional[CommandTask]:
-        """
-        将 speech stream 转化为一个 command task, 使之可以发送到 Shell 中阻塞.
-        这种使用方法, 假设 Stream 是独立在外部完成 feed & commit.
-        """
-        from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandMeta, CommandWrapper
-
-        if self.cmd_task is not None:
-            # 只生成一个 task.
-            return self.cmd_task
-
-        if commit:
-            # 是否要标记提交. stream 可能在生成 task 的时候, 还没有完成内容的提交.
-            self.commit()
-
-        meta = CommandMeta(
-            name="__speak__",
-            # 默认主轨运行.
-            blocking=True,
-        )
-        start_synthesis = self.start_synthesis
-
-        async def partial(*args, **kwargs) -> tuple[list, dict]:
-            # 启动 tts 合成.
-            nonlocal start_synthesis
-            await start_synthesis()
-            start_synthesis = None
-            return list(args), kwargs
-
-        command = CommandWrapper(meta, self.say, partial=partial)
-        task = BaseCommandTask.from_command(
-            command,
-            chan_=chan,
-            cid=self.id,
-        )
-        # 添加默认的 tokens.
-        self.cmd_task = task
-        return task
-
     @abstractmethod
     def buffered(self) -> str:
         """
         返回已经缓冲的文本内容, 可能经过了加工.
         """
         pass
+
+    def played_text(self) -> str:
+        """已经被真实播放出去的文本; 拿不到 text↔音频对齐时返回空串.
+
+        与 ``buffered()`` (已喂入文本, 领先于播放) 相对: 这里只算真的播出声的那部分,
+        因此可以当作"听者听到了什么"的记账。本方法只报对齐结果, 不做任何降级 —
+        空串即"这个实现给不出", 由调用方决定用什么近似替代.
+        """
+        return ""
+
+    def on_sample(self, callback: Callable[['PlaybackSample'], None]) -> Callable[[], None]:
+        """注册 sample 回调: 播放真实样本时回调 callback. 返回 disposer 移除回调.
+
+        默认 no-op (返回空 disposer, 不收样本): 不产生真实播放样本的实现
+        (如 NullSpeech) 无需覆盖; 产生样本的实现 (如 TTSSpeechStream) 应覆盖,
+        只回调属于本 stream (stream_id 匹配) 的样本.
+        """
+        return lambda: None
 
     @abstractmethod
     async def wait_played(self) -> None:
@@ -167,7 +174,7 @@ class SpeechStream(ABC):
         pass
 
     @abstractmethod
-    async def start_play(self) -> Self:
+    async def start_play(self) -> None:
         """
         允许播放声音. 在允许播放声音的同时, 上一个 Stream 必须被关闭.
         """
@@ -188,34 +195,54 @@ class SpeechStream(ABC):
         """
         pass
 
-    async def say(self) -> None:
+    async def play(self, samples: list['PlaybackSample'] | None = None) -> None:
         """
         播放文本的完整生命周期.
+
+        :param samples: 非空时, 真实播放样本会追加到此列表, 供调用方 (如 command)
+            读取"实际播出了什么、播了多久". play 结束 (正常/异常/取消) 都会摘除注册.
         """
         if self.is_closed():
             return
-        async with self:
-            # 不会主动 commit.
-            # 如果没有开始解析, 这时要开启.
-            await self.start_synthesis()
-            # 如果没有允许播放, 这时要允许播放.
-            await self.start_play()
-            await self.wait_played()
+        disposer = None
+        if samples is not None:
+            disposer = self.on_sample(samples.append)
+        try:
+            async with self:
+                # 不会主动 commit.
+                # 如果没有开始解析, 这时要开启.
+                await self.start_synthesis()
+                # 如果没有允许播放, 这时要允许播放.
+                await self.start_play()
+                await self.wait_played()
+        finally:
+            if disposer:
+                disposer()
 
-    async def speak(self, chunks__: AsyncIterable[str]) -> None:
+    async def speak(self, chunks__: AsyncIterable[str], samples: list['PlaybackSample'] | None = None) -> None:
         """
-        完整的生命周期展示.
+        完整的生命周期展示 (code as prompt): 从 iterable 喂文本并流式播放.
+
+        :param samples: 非空时, 真实播放样本会追加到此列表 (与 play() 同).
+            speak 结束 (正常/异常/取消) 都会摘除注册.
         """
-        async with self:
-            # 开启解析
-            await self.start_synthesis()
-            # 开启执行.
-            await self.start_play()
-            async for chunk in chunks__:
-                self.feed(chunk)
-            # speak 会保证 commit.
-            self.commit()
-            await self.wait_played()
+        disposer = None
+        if samples is not None:
+            disposer = self.on_sample(samples.append)
+        try:
+            async with self:
+                # 开启解析
+                await self.start_synthesis()
+                # 开启执行.
+                await self.start_play()
+                async for chunk in chunks__:
+                    self.feed(chunk)
+                # speak 会保证 commit.
+                self.commit()
+                await self.wait_played()
+        finally:
+            if disposer:
+                disposer()
 
     async def __aenter__(self):
         return self
@@ -239,11 +266,26 @@ class Speech(ABC):
     """
 
     @abstractmethod
-    def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
+    def new_segment(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         """
         创建一个新的输出流, 第一个 stream 应该设置为 play
         """
         pass
+
+    def on_clause(self, callback: Callable[['SpeechClause'], None]) -> Callable[[], None]:
+        """注册 clause 结果回调: 每句说出的 clause 播放完成时回调一次.
+
+        对齐听侧 ``RecognitionEvent.clause`` (文本). 默认 no-op (返回空 disposer).
+        产生 clause 结果的实现 (TTSSpeech) 覆写, 由真实播放样本对齐触发 (非 TTS 返回即触发).
+        """
+        return lambda: None
+
+    def on_segment(self, callback: Callable[['SpeechSegment'], None]) -> Callable[[], None]:
+        """注册 segment 结果回调: 一个 segment (一个 say) 播放结束时回调一次.
+
+        对齐听侧 ``RecognitionSegment`` (文本 + 音频存储单位). 默认 no-op.
+        """
+        return lambda: None
 
     @abstractmethod
     def is_running(self) -> bool:
@@ -280,10 +322,31 @@ class Speech(ABC):
             await self.wait_closed()
 
 
-
 class AudioFormat(Enum):
     PCM_S16LE = "s16le"
     PCM_F32LE = "float32le"
+
+
+@dataclass
+class PlaybackSample:
+    """Player 实际播放的可感知样本.
+
+    携带原始 PCM (int16 bytes)、拼接身份 (stream_id + fragment_id)、该片段对应的
+    文本 (text, 自解释真实播放内容)、时间/时长, 以及轻量响度摘要 (rms_db + peak).
+    消费方按需做 FFT / 频谱分析, 或用 text 对齐"当前真实播出的文本".
+
+    计算发生在音频真正写入设备的时刻 (_audio_worker 写路径), 不是 add 入队时刻.
+    """
+
+    pcm: bytes = b""
+    segment_id: str = ""
+    fragment_id: str = ""
+    text: str = ""
+    timestamp: float = 0.0
+    duration: float = 0.0
+    sample_rate: int = 0
+    rms_db: float = 0.0
+    peak: float = 0.0
 
 
 class StreamAudioPlayer(ABC):
@@ -331,13 +394,43 @@ class StreamAudioPlayer(ABC):
             audio_type: AudioFormat,
             rate: int,
             channels: int = 1,
+            stream_id: str = "",
+            fragment_id: str = "",
+            text: str = "",
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
 
         注意: 这个接口是非阻塞的, 通常会立刻返回. 方便提前把流式的音频片段都 buffer 好.
 
+        :param chunk: audio chunk
+        :param audio_type: audio type (for resample)
+        :param rate: audio rate (for resample)
+        :param channels: audio channels
+        :param stream_id: 可选的流标识. 相同 stream_id 的片段属于同一个播放流,
+            消费方 (如 speech_storage) 用它分组拼接. 缺省为空串.
+        :param fragment_id: 可选的片段身份 (通常是自增整数). 发送方传入, 消费方
+            用它对齐 observe() 回调, 判断哪些片段拼接到一起. 缺省为空串.
+        :param text: 该音频片段对应的文本. 随片段透传到 PlaybackSample.text,
+            让观察者能对齐"当前真实播出的文本"而不必在外部维护映射. 缺省为空串.
         :return: 返回一个 second 为单位的时间戳, 每一个音频片段插入后, 会根据音频播放的时间计算一个新的播放结束时间.
+        """
+        pass
+
+    @abstractmethod
+    def observe(
+            self,
+            callback: Callable[[PlaybackSample], None],
+    ) -> Callable[[], None]:
+        """
+        注册一个实际播放可感知观察者 (全局, 非 stream 作用域).
+
+        callback 会在任何音频片段真正写入设备时被调用, 携带 PlaybackSample —
+        其中 pcm 为原始 int16 bytes, stream_id / fragment_id / text 与 add() 时传入的一致,
+        供消费方对齐拼接, 或自行按需做 FFT/频谱分析 (CLI / Screen-node / speech_storage).
+
+        返回 unsubscribe 函数, 调用后观察者被移除. stream 生命周期不属于 player —
+        何时结束由明确知道它的治理层 (speech 或外层控制 clear 的节点) 管理.
         """
         pass
 
@@ -365,11 +458,13 @@ class StreamAudioPlayer(ABC):
         pass
 
     @abstractmethod
-    def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
+    def on_play(self, callback: Callable[[np.ndarray], None]) -> Callable[[], None]:
+        """注册播放参考帧回调 (真实写入设备的那一帧), 返回 disposer (调用即摘除)."""
         raise NotImplementedError
 
     @abstractmethod
-    def on_play_done(self, callback: Callable[[], None]) -> None:
+    def on_play_done(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """注册播放结束回调, 返回 disposer (调用即摘除)."""
         raise NotImplementedError
 
 
@@ -411,6 +506,49 @@ class TTSItem(TypedDict):
     channels: int  # 对齐 Channels.
     tone: str  # 对齐 tone
     voice: dict  # 对齐 voice
+
+
+class Word(BaseModel):
+    """一个字的时间戳: 文本 + 起止时间 + 置信度.
+
+    时间单位是秒 (float, 服务端原值). 字段走 snake_case, JSON 输入用 camelCase
+    别名 (服务端返回 startTime/endTime). 注意: 听侧 ``RecognitionClause`` 用毫秒 (start_ms/end_ms),
+    说侧这里用秒 — 两侧单位不同, 对齐时按需换算.
+    """
+
+    word: str = ""
+    start_time: float = Field(default=0.0, alias="startTime", description="开始时间 (秒)")
+    end_time: float = Field(default=0.0, alias="endTime", description="结束时间 (秒)")
+    confidence: float = 0.0
+
+
+class SpeechClause(BaseModel):
+    """说侧一句 clause — 文本 + 字级时序 + 时间戳.
+
+    由 TTS 服务端分句 (标点驱动) 产出, 一句一个. ``words[].start_time/end_time``
+    是 session 内连续时间 (秒), 可对齐真实播放时长 (见 SpeechSegment 的切分).
+    """
+
+    text: str = ""
+    words: list[Word] = Field(default_factory=list)
+    timestamp: float = Field(default=0.0, description="该句播放完成时的墙钟时间 (秒)")
+
+
+class SpeechSegment(BaseModel):
+    """说侧一个 segment 的结果 — 音频存储单位 (文本 + clauses + 音频 buffer + 中断标记).
+
+    ``stream = 1 segment``, ``segment = n clause``. ``audio`` 是 int16 PCM 字节,
+    供监听方按需存文件 / 回放 (例如"说一句, 存下来, 以后播放").
+    """
+
+    segment_id: str = ""
+    timestamp: float = Field(default=0.0, description="segment 播放结束时的墙钟时间 (秒)")
+    text: str = ""
+    clauses: list[SpeechClause] = Field(default_factory=list)
+    audio: bytes = Field(default=b"", description="合成音频 int16 PCM, 供存储/回放")
+    sample_rate: int = Field(default=0, description="audio 的采样率")
+    channels: int = Field(default=1, description="audio 的声道数")
+    interrupted: bool = False
 
 
 class TTSBatch(ABC):
@@ -501,6 +639,10 @@ class TTSBatch(ABC):
         :return AsyncIterable[TTSItem]: 音频片段.
         """
         pass
+
+    def clauses(self) -> list[SpeechClause]:
+        """本 batch 服务端分句产出的 clause (一句一个). 默认空 — 无字幕能力的实现不覆盖."""
+        return []
 
     @abstractmethod
     async def wait_done(self, timeout: float | None = None):

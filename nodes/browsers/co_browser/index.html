@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moss co_browser</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1b1f26;
+    --line: #2b313b;
+    --fg: #d8dee9;
+    --dim: #8b95a5;
+    --accent: #6ea8fe;
+    --run: #48b884;
+    --bad: #d9645f;
+    --done: #5c6675;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .brand { color: var(--accent); font-weight: 600; }
+  .spacer { flex: 1; }
+  .toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px;
+    cursor: pointer; user-select: none;
+  }
+  .toggle .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--done); }
+  .toggle.on .dot { background: var(--run); }
+  .toggle.off .dot { background: var(--bad); }
+  .conn { font-size: 12px; color: var(--dim); }
+  .conn.live { color: var(--run); }
+
+  main { flex: 1; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
+  .frame {
+    border: 1px solid var(--line); border-radius: 4px; background: var(--panel);
+    overflow: hidden;
+  }
+  .frame.state-running { border-left: 3px solid var(--accent); }
+  .frame.state-done { border-left: 3px solid var(--run); }
+  .frame.state-error { border-left: 3px solid var(--bad); }
+  .frame.latest {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(110, 168, 254, 0.3);
+  }
+
+  .divider {
+    display: flex; align-items: center; gap: 10px;
+    color: var(--done); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; margin: 10px 0 4px;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1; height: 1px; background: var(--line);
+  }
+  .new-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--run); box-shadow: 0 0 6px var(--run);
+  }
+  .new-dot.hidden { background: transparent; box-shadow: none; }
+
+  .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 10px; cursor: pointer; user-select: none;
+    font-size: 12px;
+  }
+  .row:hover { background: rgba(110, 168, 254, 0.08); }
+  .row .id { color: var(--dim); min-width: 3em; }
+  .row .kind { color: var(--accent); min-width: 4em; }
+  .row .state { min-width: 5em; }
+  .row.state-running .state { color: var(--accent); }
+  .row.state-done .state { color: var(--run); }
+  .row.state-error .state { color: var(--bad); }
+  .row .snippet {
+    flex: 1; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0.85;
+  }
+  .row .elapsed { color: var(--dim); font-size: 11px; min-width: 4em; text-align: right; }
+  .row .caret { color: var(--dim); font-size: 11px; width: 1em; text-align: center; transition: transform 0.15s; }
+  .frame.open .row .caret { transform: rotate(90deg); }
+
+  .body {
+    display: none;
+    border-top: 1px solid var(--line);
+  }
+  .frame.open .body { display: block; }
+  pre {
+    margin: 0; padding: 8px 12px; white-space: pre-wrap; word-break: break-word;
+    font: inherit; color: var(--fg);
+  }
+  pre.source { background: #0f1114; }
+  pre.result { color: var(--dim); border-top: 1px solid var(--line); }
+  pre.result:empty { display: none; }
+
+  .empty { color: var(--dim); text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">moss co_browser</span>
+  <span class="conn" id="conn">connecting…</span>
+  <span class="spacer"></span>
+  <div class="toggle" id="toggle" title="Master switch — off makes the channel disappear from the model's interface">
+    <span class="dot"></span>
+    <span id="toggle-label">enabled</span>
+  </div>
+</header>
+<main id="stream"><div class="empty">no frames yet</div></main>
+
+<script>
+(() => {
+  const stream = document.getElementById('stream');
+  const conn = document.getElementById('conn');
+  const toggle = document.getElementById('toggle');
+  const toggleLabel = document.getElementById('toggle-label');
+
+  let ws = null;
+  let enabled = true;
+  const frames = new Map();
+  const openIds = new Set();
+
+  function setEnabled(val) {
+    enabled = !!val;
+    toggle.classList.toggle('on', enabled);
+    toggle.classList.toggle('off', !enabled);
+    toggleLabel.textContent = enabled ? 'enabled' : 'disabled';
+  }
+
+  toggle.addEventListener('click', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'toggle', enabled: !enabled }));
+    }
+  });
+
+  function elapsed(f) {
+    const end = f.ended ?? (Date.now() / 1000);
+    return (end - f.created).toFixed(2) + 's';
+  }
+
+  function snippet(source) {
+    const first = source.split('\n').find(l => l.trim()) || '';
+    return first.trim();
+  }
+
+  function render() {
+    if (frames.size === 0) {
+      stream.innerHTML = '<div class="empty">no frames yet</div>';
+      return;
+    }
+    const sorted = Array.from(frames.values()).sort((a, b) => b.id - a.id);
+    const latestId = sorted[0].id;
+    stream.innerHTML = '';
+
+    const divider = document.createElement('div');
+    divider.className = 'divider';
+    divider.innerHTML = '<span class="new-dot"></span><span>latest</span>';
+    stream.appendChild(divider);
+
+    for (const f of sorted) {
+      stream.appendChild(renderFrame(f, f.id === latestId));
+      if (f.id === latestId && sorted.length > 1) {
+        const older = document.createElement('div');
+        older.className = 'divider';
+        older.innerHTML = '<span>older</span>';
+        stream.appendChild(older);
+      }
+    }
+  }
+
+  function renderFrame(f, isLatest) {
+    const el = document.createElement('div');
+    el.className = 'frame state-' + f.state + (openIds.has(f.id) ? ' open' : '')
+                   + (isLatest ? ' latest' : '');
+    const row = document.createElement('div');
+    row.className = 'row state-' + f.state;
+    row.innerHTML = `
+      <span class="new-dot${isLatest ? '' : ' hidden'}"></span>
+      <span class="id">#${f.id}</span>
+      <span class="kind">${f.kind}</span>
+      <span class="state">${f.state}</span>
+      <span class="snippet">${escapeHtml(snippet(f.source))}</span>
+      <span class="elapsed">${elapsed(f)}</span>
+      <span class="caret">▸</span>
+    `;
+    row.addEventListener('click', () => {
+      if (openIds.has(f.id)) openIds.delete(f.id);
+      else openIds.add(f.id);
+      render();
+    });
+    el.appendChild(row);
+    const body = document.createElement('div');
+    body.className = 'body';
+    const src = document.createElement('pre');
+    src.className = 'source';
+    src.textContent = f.source;
+    body.appendChild(src);
+    if (f.result) {
+      const res = document.createElement('pre');
+      res.className = 'result';
+      res.textContent = f.result;
+      body.appendChild(res);
+    }
+    el.appendChild(body);
+    return el;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function apply(frame) {
+    frames.set(frame.id, frame);
+  }
+
+  function connect() {
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    ws = new WebSocket(url);
+    ws.onopen = () => { conn.textContent = 'live'; conn.classList.add('live'); };
+    ws.onclose = () => {
+      conn.textContent = 'disconnected'; conn.classList.remove('live');
+      setTimeout(connect, 1000);
+    };
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'snapshot') {
+        frames.clear();
+        for (const f of msg.frames) frames.set(f.id, f);
+        setEnabled(msg.enabled);
+        render();
+      } else if (msg.type === 'frame.head' || msg.type === 'frame.full') {
+        apply(msg.frame);
+        render();
+      } else if (msg.type === 'enabled') {
+        setEnabled(msg.enabled);
+      }
+    };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

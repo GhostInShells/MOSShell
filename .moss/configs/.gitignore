@@ -1,0 +1,10 @@
+# Regenerable config dumps (from ConfigType class defaults) — recreated on startup.
+# Out-of-the-box configs meant to ship are added manually, not gitignored.
+llms.*
+audio_player.*
+audio_capture.*
+miniaudio_factory.*
+mcp_hub.*
+tts_factory.*
+seed_asr_config.*
+listener_etiquette.*

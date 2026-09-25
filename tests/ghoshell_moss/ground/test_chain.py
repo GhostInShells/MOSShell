@@ -23,7 +23,7 @@ class TestCollectChain:
         result = collect_chain(tmp_path)
         assert "law in root" in result
 
-    def test_walks_upward_root_first(self, tmp_path):
+    def test_returns_nearest_ground_only(self, tmp_path):
         outer = tmp_path
         inner = tmp_path / "sub" / "deep"
         inner.mkdir(parents=True)
@@ -31,11 +31,10 @@ class TestCollectChain:
         _write_ground(inner, "MARKER_INNER")
 
         result = collect_chain(inner, boundary=outer)
-        outer_pos = result.index("MARKER_OUTER")
-        inner_pos = result.index("MARKER_INNER")
-        assert outer_pos < inner_pos  # root-first
+        assert "MARKER_INNER" in result
+        assert "MARKER_OUTER" not in result  # 不向上合并祖先
 
-    def test_stops_at_boundary(self, tmp_path):
+    def test_stops_at_nearest_ground(self, tmp_path):
         a = tmp_path
         b = tmp_path / "sub_b"
         c = tmp_path / "sub_b" / "sub_c"
@@ -45,9 +44,9 @@ class TestCollectChain:
         _write_ground(c, "MARKER_CCC")
 
         result = collect_chain(c, boundary=b)
-        assert "MARKER_AAA" not in result
-        assert "MARKER_BBB" in result
         assert "MARKER_CCC" in result
+        assert "MARKER_BBB" not in result  # 不向上合并
+        assert "MARKER_AAA" not in result
 
     def test_ground_outside_boundary_only_self(self, tmp_path):
         outside = tmp_path / "outside"

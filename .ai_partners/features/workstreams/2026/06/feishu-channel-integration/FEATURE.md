@@ -6,9 +6,11 @@ description: 飞书 IM 集成。MOSS App（group=im）作为独立进程运行�
   MOSS 核心。
 milestone: null
 priority: P2
-status: pending
+status: parked
+status_note: '曾实现并验证(Phase 1: 收发+流式回复), 但账号绑定型集成: 需个人 FEISHU_APP_ID/SECRET + 租户平台配置,
+  非通用开箱能力. 按 D#7 等第二个 IM 再抽共性; 代码已随 .moss_ws 删除, 锚点 git d8a33843.'
 title: Feishu Channel Integration
-updated: '2026-07-19'
+updated: '2026-09-20'
 ---
 
 # Feishu Channel Integration

@@ -1,5 +1,12 @@
 """
-MOSS Host 层抽象 — 基于环境发现构建的高阶运行时门面.
+MOSS Host layer — the high-level runtime facade built on environment discovery.
+
+This module defines the Host-layer abstractions — ``IHost`` (discover project capability
+from environment conventions and create a runtime), ``MOSShellRuntime`` (the unified
+runtime facade over shell / interpreter / matrix), and ``IGhostRuntime`` (Ghost lifecycle
+orchestration layered over the runtime) — plus the SafeMode approval gate (``SafeMode``,
+``Verdict``, ``PendingApproval``) and the three-loop health snapshot (``LoopHealth``,
+``LoopStatus``).
 
 本模块定义 Host 层的三个核心抽象:
 
@@ -26,8 +33,8 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.blueprint.mindflow import Mindflow
+from ghoshell_moss.core.blueprint.session import Session, OutputItem
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, Signal
 from ghoshell_moss.core.blueprint.project import Project, HostMode
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -35,11 +42,12 @@ from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts import SystemPrompter
 from ghoshell_container import IoCContainer
+from .shell_trajectory import MShellTrajectory
 import logging
 
 __all__ = [
-    'MossRuntime', 'MossHost',
-    'MossSystemPrompter', 'GhostRuntime', 'LoopHealth', 'LoopStatus',
+    'MOSShellRuntime', 'IHost',
+    'MossSystemPrompter', 'IGhostRuntime', 'LoopHealth', 'LoopStatus',
     'SafeMode', 'PendingApproval', 'Verdict',
 ]
 
@@ -48,20 +56,21 @@ __all__ = [
 
 class MossSystemPrompter(SystemPrompter, ABC):
     """MOSS 约定的 instruction 层次 — 命名访问器.
-
-    四个标准层通过 children() 暴露, 命名方法是对 children key 的便捷包装.
-    不排斥开发者通过 with_prompter 添加任意其他 key.
+    通过组装的方式, 从环境 (workspace) 中生成 moss 的系统提示词. 通常包含三部分:
+    1. Logos: 提示模型输出的 text chunks 用何种方式 (比如 ctml) 驱动它所控制的躯体.
+    2. Project: moss workspace 下 MOSS.md 里定义的提示词, 用来告知模型处在 moss 系统内部.
+    3. Mode:
     """
 
     # 约定的 prompt slots.
-    CTML_SLOT = 'ctml'
+    MOSS_SLOT = 'logos'
     PROJECT_SLOT = 'project'
     MODE_SLOT = 'mode'
     MOSS_STATIC_SLOT = 'static'
 
-    def ctml_instruction(self) -> str:
-        """当前系统所使用的默认 ctml 提示词. 是 moss 运行基础."""
-        return self.child_instruction(self.CTML_SLOT)
+    def moss_meta_instruction(self) -> str:
+        """当前系统所使用的 Logos 语法本身的提示词(通常是 ctml). 是 moss 运行基础."""
+        return self.child_instruction(self.MOSS_SLOT)
 
     def project_instruction(self) -> str:
         """项目级提示词, 定义在 workspace 的 MOSS.md, 所有模式共享."""
@@ -71,15 +80,30 @@ class MossSystemPrompter(SystemPrompter, ABC):
         """模式级别的提示词. 定义在 workspace 的不同模式中 (MODE.md), 每个模式独有."""
         return self.child_instruction(self.MODE_SLOT)
 
+
     def moss_static_instruction(self) -> str:
         """moss 运行时的静态提示词. 来自 shell 构建后的 moss static."""
         return self.child_instruction(self.MOSS_STATIC_SLOT)
 
-    def default_instruction(self) -> str:
-        """建议使用的默认提示词组合方式. 供参考."""
-        # code as prompt — 提示如何使用.
+    def base_instruction(self) -> str:
+        """由 moss mode 决定的基础 instruction, 和运行时 channel 的组装情况无关."""
         return self.linear([
-            self.CTML_SLOT,
+            self.MOSS_SLOT,  # Logos 使用策略的提示词.
+            self.PROJECT_SLOT,  # moss 环境的根提示词.
+            self.MODE_SLOT,  # 每个模式下独有的提示词.
+        ])
+
+    def full_instruction(self) -> str:
+        """
+        Moss StaticMessages + DynamicMessages 组合上下文时, 使用的 instruction.
+        在 base instruction 之外, 增加了 moss static 讯息, 呈现所有 Channel 不变部分的讯息.
+        然后模型下每一帧请求前, 再提供 moss channel 树动态部分的讯息. 这部分信息不进入对话历史.
+
+        对话历史形如 (full_instruction + turns[without dynamic] + dynamic + input.
+        依赖 LLM Agent 有能力在每一轮请求时, 将上一轮历史消息中的动态部分拿掉.
+        """
+        return self.linear([
+            self.MOSS_SLOT,
             self.PROJECT_SLOT,
             self.MODE_SLOT,
             self.MOSS_STATIC_SLOT,
@@ -88,23 +112,9 @@ class MossSystemPrompter(SystemPrompter, ABC):
 
 # --- MossRuntime --- #
 
-class MossRuntime(ABC):
-    """MOSS 运行时门面 — 由 MossHost 基于环境发现构建后产出.
-
-    MossRuntime 是模型 / 调用方与 MOSS 交互的统一面, 屏蔽 shell / interpreter /
-    matrix 等底层抽象, 对外只暴露三组接口:
-
-    1. 指令面: ``moss_exec`` / ``moss_observe`` / ``moss_interrupt`` — 向运行时输入
-       CTML 并观察执行结果.
-    2. 信息面: ``moss_instruction`` / ``moss_dynamic_messages`` / ``moss_static_messages``
-       / ``moss_refresh_metas`` — 拿到组装 system prompt 所需的全部素材.
-    3. 直通面: ``shell`` / ``matrix`` / ``session`` / ``project`` / ``env`` /
-       ``container`` / ``logger`` — 让调用方按需穿透到下层做精细操作. 这些直通
-       属性都写在 ABC 上, 是有意的 code as prompt — 让读者一眼看清 runtime 由
-       什么组成.
-
-    生命周期由 ``__aenter__`` / ``__aexit__`` 守护, 并提供 ``wait_close*`` /
-    ``wait_closed*`` / ``close`` 一组方法供异步与同步两种阻塞场景使用.
+class MOSShellRuntime(ABC):
+    """MOSShell 运行时整体
+    完成 matrix / shell 等所有模块装线, 提供统一的交互界面.
     """
 
     @property
@@ -129,7 +139,7 @@ class MossRuntime(ABC):
         ...
 
     @abstractmethod
-    def moss_instruction(self, with_static: bool = True) -> str:
+    def instruction(self, with_static: bool = True) -> str:
         """返回所有的 instruction 信息, 可以加入到 agent 的 instruction.
 
         :param with_static: 是否包含 moss static messages.
@@ -137,40 +147,61 @@ class MossRuntime(ABC):
         ...
 
     @abstractmethod
-    async def moss_dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
-        """返回 moss 运行时的动态信息.
-
-        仅包含组件的 interface, context messages 等等.
-        """
+    def static_messages(self) -> str:
+        """返回 Shell 包含 Channel 体系在运行时不变的信息. 合适无 cache 的上下文组装.  和 dynamic messages 组成完成讯息."""
         ...
 
     @abstractmethod
-    async def moss_refresh_metas(self) -> None:
+    async def dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
+        """返回 Shell 运行时的变化信息. 适合无 cache 的上下文组装. 每轮变化, 和 static messages 组成完整讯息. """
+        ...
+
+    @abstractmethod
+    async def refresh_metas(self) -> None:
         """刷新 channel metas 缓存, 让 static / dynamic 消息反映最新状态."""
         ...
 
-    @abstractmethod
-    def moss_static_messages(self) -> str:
-        """返回 moss 运行时的静态信息."""
-        ...
+    def trajectory(self) -> MShellTrajectory:
+        """
+        创建 shell 运行时的轨迹讯息. 这是针对 LLM Agent 基于 append only 治理上下文时提供的策略.
+        用前缀缓存命中率, 代替动态上下文治理策略.
+
+        通过两部分更新 Shell Channel 树的上下文变化:
+        1. trajectory.epoch_start_point: 每次重建当前运行状态时, 返回全量信息. 通常在新上下文, 或 compact 之后刷新 epoch.
+        2. trajectory.pop_frame: 适合在多轮交互的每一帧返回 delta (shell 运行时返回值 + shell 状态 + facade 变更)
+
+        使用 trajectory 的场景不需要使用 static + dynamic 方式.
+        所有的 frame delta 都应该进入历史, 让 cache 命中.
+        需要 async with 的方式启动, 伪代码如下:
+
+        >>> async def append_only_agent_loop(trajectory: MShellTrajectory, llm_agent):
+        >>>     async with trajectory:
+        >>>         async for epoch in llm_agent:
+        >>>             llm_agent.inject_percepts(trajectory.epoch_start_point(refresh=True))  # 注入新上下文.
+        >>>             async for step_inputs in epoch:  # 周期性拿到请求.
+        >>>                 llm_agent.inject_percepts(trajectory.pop_frame().project_percepts())  # 注入每一帧的上下文.
+        >>>                 async for logos in llm_agent.run_step(step_inputs)
+        >>>                     yield logos   # 返回对躯体的控制.
+        """
+        return MShellTrajectory(self.shell)
 
     @abstractmethod
-    async def moss_exec(
+    async def exec_logos(
             self,
             logos: str,
             call_soon: bool = True,
             wait_done: bool = True,
     ) -> list[Message]:
-        """向 MOSS 的运行时添加新的指令. 通常是 CTML.
-
-        :param logos: 基于 ctml 语法提供的 command 字符串.
-        :param call_soon: 为 True 时立刻中断任何运行中的命令, 否则只追加新指令.
-        :param wait_done: 为 True 时阻塞到运行结束后, 拿到观察的结果.
+        """适合函数化地执行 logos. 适合调试, 正常的 logos 用法应该是流式的.
+        :param logos: 驱动躯体运行的字符串.
+        :param call_soon: 为 True 时立刻中断任何运行中的命令. 为 False 时将 logos 追加到执行序列后.
+        :param wait_done: 为 True 时阻塞到所有命令执行结束后.
+        :return: logos 的运行结果, 不包含 Shell 的状态.
         """
         ...
 
     @abstractmethod
-    async def moss_observe(
+    async def observe(
             self,
             timeout: float | None = None,
             with_dynamic: bool = True,
@@ -189,7 +220,7 @@ class MossRuntime(ABC):
         ...
 
     @abstractmethod
-    async def moss_interrupt(self) -> list[Message]:
+    async def interrupt(self) -> list[Message]:
         """立刻中断所有运行中的命令, 并且返回中断的情况."""
         ...
 
@@ -272,6 +303,39 @@ class MossRuntime(ABC):
         """异步阻塞等待关闭完成 (closed)."""
         ...
 
+    def run_until_closed(self) -> None:
+        """同步阻塞入口: 管理完整 MossRuntime 生命周期直到 close() 被调用.
+
+        对标 Matrix.run — code as prompt: 调用者无需手写 loop / AsyncExitStack /
+        cancel+gather. 内部 = runtime.__aenter__ → wait_close → runtime.__aexit__
+        + graceful teardown.
+
+        注册 SIGINT/SIGTERM handler → self.close() → _closing_event → wait_close()
+        自然唤醒 → async with 退出 → __aexit__ teardown. 不走 asyncio.run 的暴力取消,
+        __aexit__ 保证跑完.
+
+        适用场景: 命令行无交互运行 (moss-shell log 等); 也覆盖 headless 被 kill
+        (模型自迭代场景) 时的优雅退出.
+        """
+        import asyncio
+        import signal
+
+        loop = asyncio.new_event_loop()
+
+        async def _run() -> None:
+            async with self:
+                await self.wait_close()
+
+        handler = lambda signum, frame: self.close()
+        prev_int = signal.signal(signal.SIGINT, handler)
+        prev_term = signal.signal(signal.SIGTERM, handler)
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            signal.signal(signal.SIGINT, prev_int)
+            signal.signal(signal.SIGTERM, prev_term)
+            loop.close()
+
     @abstractmethod
     async def __aenter__(self) -> Self:
         """正式启动."""
@@ -292,8 +356,8 @@ LoopStatus = Literal["running", "stopped", "not_started"]
 class LoopHealth(TypedDict):
     """三循环健康状态快照, 三个 key 始终存在."""
 
-    main: LoopStatus
-    articulate: LoopStatus
+    mindflow: LoopStatus
+    thinking: LoopStatus
     action: LoopStatus
 
 
@@ -313,16 +377,19 @@ class PendingApproval(TypedDict):
 
 @dataclass(frozen=True)
 class Verdict:
-    """SafeMode 裁决结果 — 三态标签, 拦截点据此分派.
+    """SafeMode verdict — a three-state label the gate dispatches on.
 
-    - ``approved``: 通过. 拦截点回放 buffered logos → ``articulator.send_nowait``;
-      若 ``message`` 非空 (approve-with-note), 再 ``raise_observe`` 使人类补充意见
-      作为下一帧内观.
-    - ``rejected``: 否决. 拦截点走 ``articulator.raise_observe(message)``, message
-      作为否决理由随下一帧 Reaction 进 moment.
-    - ``cancelled``: 撤销. abort 到来时拦截点 finally 幂等 cancel; TUI 不主动产生.
+    - ``approved``: the gate replays the buffered logos into
+      ``articulator.send_nowait``; if ``message`` is non-empty (approve-with-note), it
+      then ``raise_observe``s so the human's added note enters the next frame as
+      introspection.
+    - ``rejected``: the gate calls ``articulator.raise_observe(message)``; the message
+      enters `moment` with the next frame's Echoes as the rejection reason.
+    - ``cancelled``: on abort the gate idempotently cancels in `finally`; the TUI never
+      produces this state.
 
-    ``message`` 语义在两态间共享 (决策 12/13): 都走 attention 内观通道, 不是外视 outcome.
+    ``message`` means the same thing in both live states: it always travels the attention
+    introspection channel, never the external outcome channel.
     """
 
     kind: Literal['approved', 'rejected', 'cancelled']
@@ -330,16 +397,20 @@ class Verdict:
 
 
 class SafeMode(ABC):
-    """GhostRuntime 的人工审批闸口 — 懒加载单例, 从 ``GhostRuntime.safe_mode()`` 取.
+    """The manual approval gate for a GhostRuntime — a lazily created singleton obtained
+    from ``GhostRuntime.safe_mode()``.
 
-    局部治理: 只闸 articulator 生成的 logos, 不闸输入 (输入通断是 pause 的职责).
-    ``moment.command_logos`` (impulse 反射弧) 绕行 gate. 详见 ghost-runtime-safemode FEATURE.
+    Scoped governance: it gates only the logos produced by the articulator, not input
+    (routing input through or off is pause's job). ``moment.command_logos`` — the impulse
+    reflex arc — bypasses the gate.
 
-    生命周期:
-      - ``enabled``: 开关. 只影响下一轮 articulation 的模式判定 (生成开始时判定一次),
-        不动在途逻辑. 已挂起的 pending 继续等人裁决完.
-      - ``pending``: 当前挂起的审批. 审批期间 articulate loop 串行阻塞,
-        任意时刻至多一个 pending, 因此 uuid 用于比对而非选择.
+    Lifecycle:
+      - ``enabled``: the switch. It only affects the next articulation round's mode check
+        (evaluated once when generation starts) and does not touch in-flight logic; an
+        already-pending approval stays pending until the human settles it.
+      - ``pending``: the currently suspended approval. While one is pending the articulate
+        loop blocks serially, and there is at most one pending at any time — which is why
+        the uuid is used for comparison, not selection.
     """
 
     @abstractmethod
@@ -375,12 +446,14 @@ class SafeMode(ABC):
 
     @abstractmethod
     def approve(self, uuid: str, note: str = '') -> bool:
-        """通过 uuid 匹配的 pending. 返回 True = 生效, False = uuid 不匹配 (stale, no-op).
+        """Approve the pending matching ``uuid``. True = applied, False = uuid mismatch
+        (stale, silent no-op).
 
-        决策 8: stale 静默 no-op, 绝不自动顺延到下一帧.
-        决策 12: ``note`` 非空时, 拦截点在回放 logos 之后 ``raise_observe(note)``,
-        使人类补充的意见作为下一帧内观进入 ghost 感知; 保持默认参数使无 note
-        的清洁通过路径不变.
+        A stale uuid is a silent no-op — it never rolls forward to the next frame.
+
+        When ``note`` is non-empty the gate ``raise_observe``s it *after* replaying the
+        logos, so the human's added note enters the ghost's perception as the next frame's
+        introspection. The default empty argument keeps the clean approve path unchanged.
         """
         ...
 
@@ -389,7 +462,7 @@ class SafeMode(ABC):
         """否决 uuid 匹配的 pending. 返回 True = 生效, False = uuid 不匹配 (stale, no-op).
 
         否决走 ``articulator.raise_observe(reason)`` 反馈, 不 abort attention.
-        reason 会随下一帧 Reaction 进 moment, ghost 感知后重新 articulate.
+        reason 会随下一帧 Echoes 进 moment, ghost 感知后重新 articulate.
         """
         ...
 
@@ -415,7 +488,7 @@ class SafeMode(ABC):
 
 # --- GhostRuntime --- #
 
-class GhostRuntime(ABC):
+class IGhostRuntime(ABC):
     """编排 MossRuntime + Ghost 的生命周期.
 
     GhostRuntime 持有 MossRuntime, 在其启动前后完成 Ghost 的注册和生命周期管理.
@@ -432,7 +505,7 @@ class GhostRuntime(ABC):
 
     @property
     @abstractmethod
-    def moss(self) -> MossRuntime:
+    def moss(self) -> MOSShellRuntime:
         """持有的 MossRuntime. 调用方通过 .moss 访问全部 Moss 能力."""
         ...
 
@@ -458,6 +531,25 @@ class GhostRuntime(ABC):
     def container(self) -> IoCContainer:
         """快捷路径: moss.matrix.container."""
         return self.moss.matrix.container
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """是否已完成启动 (__aenter__ 返回). 启动前 False, 启动后 True."""
+        ...
+
+    @abstractmethod
+    def on_output(self, callback: Callable[[OutputItem], None]) -> None:
+        """注册 output 监听 — 生命周期无关, 启动前可注册.
+
+        启动前注册: 缓冲, __aenter__ (matrix 就绪后) 优先装线到 session.
+        启动后注册: 直接挂到 session.
+        """
+        ...
+
+    @abstractmethod
+    def on_signal(self, callback: Callable[[Signal], None]) -> None:
+        """注册 signal 监听 — 生命周期无关, 启动前可注册. 语义同 on_output."""
+        ...
 
     @abstractmethod
     async def __aenter__(self) -> Self:
@@ -490,11 +582,12 @@ class GhostRuntime(ABC):
 
     @abstractmethod
     def safe_mode(self) -> SafeMode:
-        """SafeMode 懒加载单例入口 — articulator→action 之间的人工审批闸口.
+        """Lazy singleton entry for SafeMode — the manual approval gate between the
+        articulator and action.
 
-        每个 GhostRuntime 实例持有唯一一个 SafeMode; 未开启时零开销.
-        首次调用创建, 后续调用返回同一实例. 详见 ``SafeMode`` ABC 与
-        ghost-runtime-safemode FEATURE.
+        Each GhostRuntime instance holds exactly one SafeMode; disabled, it costs nothing.
+        The first call creates it and later calls return the same instance. See the
+        ``SafeMode`` ABC.
         """
         ...
 
@@ -513,7 +606,7 @@ class GhostRuntime(ABC):
 
 # --- MossHost --- #
 
-class MossHost(ABC):
+class IHost(ABC):
     """MOSS (model-oriented operating system shell) 基于环境发现的高阶抽象.
 
     如果不需要环境发现, 可以直接使用 ghoshell_moss.core.ctml.new_ctml_shell 来实例化 MOSShell.
@@ -568,7 +661,7 @@ class MossHost(ABC):
             run_shell: bool = True,
             name: str | None = None,
             description: str | None = None,
-    ) -> MossRuntime:
+    ) -> MOSShellRuntime:
         """启动并返回 MossRuntime.
 
         :param run_shell: 为 True 时, 在 runtime aenter 时启动 shell.
@@ -583,7 +676,7 @@ class MossHost(ABC):
             ghost: str | GhostMeta,
             *,
             run_shell: bool = True,
-    ) -> GhostRuntime:
+    ) -> IGhostRuntime:
         """启动并返回 GhostRuntime — 编排 MossRuntime + Ghost 的生命周期.
 
         :param ghost: ghost 名称 (从 all_ghost_manifests 查找) 或 GhostMeta 实例.

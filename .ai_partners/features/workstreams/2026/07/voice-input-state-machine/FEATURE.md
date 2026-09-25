@@ -1,18 +1,19 @@
 ---
-title: Voice Input State Machine — 语音输入全状态机与交互模式
-status: design-locked
-priority: P0
 created: 2026-07-28
-updated: 2026-07-28
 depends:
-  - audio-capture
-  - node-migration
-  - channel-meta-dyn-static
+- audio-capture
+- node-migration
+- channel-meta-dyn-static
+description: 将语音输入从"两个独立 app 拼接"重构为单一感知节点，基于四层分层状态机 统一交互模式、话语生命周期、发送闸口、打断粒度。端侧控人、Nucleus
+  侧控模型—— 以可编程协议对话取代隐式自由对话假设。
 milestone: 0.1.0
-description: >-
-  将语音输入从"两个独立 app 拼接"重构为单一感知节点，基于四层分层状态机
-  统一交互模式、话语生命周期、发送闸口、打断粒度。端侧控人、Nucleus 侧控模型——
-  以可编程协议对话取代隐式自由对话假设。
+priority: P0
+status: completed
+status_note: '2026-09-16 智能判停 (llm_judge) 落地: MossLLMCaller.run_messages 消息协议上提 + StopJudge
+  独立组件 + ModelListenerController.llm_judge (第四种礼仪) + on_score 观察面 + llm_judge_probe
+  实机 node. 详见文末.'
+title: Voice Input State Machine — 语音输入全状态机与交互模式
+updated: '2026-09-16'
 ---
 
 # Voice Input State Machine — 语音输入全状态机与交互模式
@@ -20,6 +21,9 @@ description: >-
 > 人类架构师 + claude-fable-5 (opus-4-7)。v0.1.0 语音输入能力的完整拓扑设计——
 > 不是再做一个 app，而是收束 audio-capture 之后沉淀的所有分层概念，建一个
 > 可迭代的架构槽位。
+
+> **下一步骨架（2026-09-13）**：判停逻辑上移为 listener controller（五种聆听礼仪 +
+> 两条信号通道 + command 裁决），见 [listener-controller-skeleton.md](listener-controller-skeleton.md)。
 
 ## Motivation
 
@@ -206,7 +210,7 @@ notify) 留痕。
 
 ### 节点边界
 
-`nodes/sensors/voice/` — 单一感知节点，模型通过 CTML (`<nodes:run_node>` /
+`nodes/sensors/listener/` — 单一感知节点，模型通过 CTML (`<nodes:run_node>` /
 `<nodes:stop_node>`) 或 matrix channel 命令开启/关闭/切换模式。
 
 内部聚合：
@@ -312,7 +316,7 @@ L2 流层感知 TTS 播放状态 (AudioRuntimeTopic)，在半双工模式下 gat
 
 ### KD8: voice 节点 = 单一进程，capture 保留为独立源
 
-`nodes/sensors/voice/` 在本进程内直持 capture pipeline，不经过 Zenoh PCM 流转发。
+`nodes/sensors/listener/` 在本进程内直持 capture pipeline，不经过 Zenoh PCM 流转发。
 模式切换需要同时改捕获时机和 ASR 送入时机——跨进程协调这两个维度的尝试
 (listener + audio_capture 分离) 是门控复杂度的根因。
 
@@ -470,24 +474,154 @@ class AudioSignal(SignalMeta):
     barge_in_target: str = "speech" # 新增: 打断粒度
 ```
 
+## 10 开关正交体系 (2026-08-04)
+
+> 会话决策：voice node 的配置面收敛为 **10 个正交开关**。不是 0.1 全做——是多轮优化的维度空间，每轮切一个子集。
+
+### 正交开关矩阵
+
+| # | 维度 | 取值空间 | 默认 | 控制者 | 承载 |
+|---|---|---|---|---|---|
+| 1 | 聆听开关 | on/off | on | 人 + ghost | L1 + `.start/.stop` |
+| 2 | 控制主权 | ghost/human/auto | auto | 移交机制 | 控制 channel 状态 + Topic |
+| 3 | 流上下文缓冲 | 数据面(非开关) | 常开 | 系统 | buffer |
+| 4 | 首包打断 | on/off (speech/all/none) | on | 模式配置 | `barge_in` → Preemptable |
+| 5 | 首包抢占 | on/off | on | 模式配置 | signal 高优 + Nucleus 响应 |
+| 6 | 音频存储 | on/off | off | 系统 | sink (matrix-resources 将来) |
+| 7 | 尾包闸口 | auto/manual | auto | 人点击/ghost | 门控策略 + staged 编辑块 |
+| 8 | 自动重写 | off/vad/stream | off | ghost 配置 | flash agent + 三份数据 |
+| 9 | 信号优先级 | 值 | high | 系统默认 | Signal priority |
+| 10 | 用户身份 | 文本 | 空 | 人填写 | Signal/Utterance meta |
+
+### 耦合点（非完全正交，说破）
+
+- **9 是 5 的前提参数**：attention 抢占靠高优首包/尾包供能。9 定值，5 决定抢不抢。
+- **3 是基座，7/8 是它的两个消费者**：7 要"可编辑 staged 块"就是缓冲区的可编辑面；8 的三份数据 (buffer/未修正/修正后) 是缓冲区的三个视图。修正后立刻修正 buffer。
+- **2 是元维度**：决定其它开关谁有写权。默认 auto (ghost 管)，人一点 UI 移交 human，ghost 经 channel 看到状态变更。
+
+### 承载面分两轴（2026-08-04 决策）
+
+| 轴 | 内容 | 载体 | 理由 |
+|---|---|---|---|
+| **启动模式** | headless / webview | argv args：`moss nodes run nodes/sensors/listener -- --mode X` | nodes_cli 已支持 append（`allow_extra_args` + `launcher.run.extend`），每轮可能不同 |
+| **持久配置** | 10 开关 + device + 身份 | node home `config.toml` + env | 稳定跨启动共享，不该每次传参 |
+
+**协议层不做 RPC**：按 ROS2 经验 parameter + topic 足够。voice node 表面 = config 文件 (持久) + `VoiceNodeRuntimeTopic` (运行时快照) + 控制 channel (ghost 反身性写) + UI ws (交互直连 node 本地服务，零矩阵跳数)。matrix 间通讯协议层与核心**解耦**——核心只暴露事件，协议层作为 adapter 消费广播（见「模块抽象约定」），由人类工程师并行推进。
+
+### 设备选择三级 (隐藏点)
+
+`AudioCaptureConfig.device_pattern` 默认写死 `"blackhole"`，`miniaudio_capture.py:191 _find_device` 按名字子串匹配、回退默认设备。voice node config 提供三级：
+
+1. `device_pattern: str` — 名字子串（现状语义，空 = 不匹配回退）
+2. `device_index: int | None` — 枚举 `miniaudio.Devices().capture` 按位置选（miniaudio 支持显式 `device_id`）
+3. default — 系统默认输入设备
+
+## 模块抽象约定 (2026-08-04)
+
+> 会话收敛：主体在 host 层，channel 从 IoC 拿实现，node 是薄壳。核心不感知 matrix，协议层可换。
+
+### 代码位置
+
+| 层 | 位置 | 内容 |
+|---|---|---|
+| 核心 | `ghoshell_moss/host/listener/` | VoiceController contract + 实现（两轴状态机 + capture + asr + buffer）。依赖方向干净：只依赖 contracts/audio、asr，不感知 channel/matrix |
+| channel | `ghoshell_moss/host/listener/channel.py` | VoiceChannel：`ChannelInterface.new(container)` 从 IoC 拉 VoiceController，command 内直调。channel 与核心同包——当前体量不足以独立成 channels 包 |
+| node | `nodes/sensors/listener/` | 薄壳：IoC 装配 + provide channel + GUI 入口（webview 模式） |
+
+IoC 机制已在 `channel_builder.py` 验证：`force_get_contract` (:108) / `with_binding` (:574) / `with_contract_factory` (:583) / `ChannelInterface.new` (:671)。
+
+### VoiceController 契约
+
+```python
+# 强类型生命周期事件
+class VoiceLifecycleEvent(BaseModel): ...
+class StreamStateChanged(VoiceLifecycleEvent):
+    state: StreamState
+class AsrPartial(VoiceLifecycleEvent):
+    utterance_id: str
+    text: str
+class AsrFinal(VoiceLifecycleEvent):
+    utterance_id: str
+    text: str
+class BufferUpdated(VoiceLifecycleEvent):
+    content: str
+
+class EventHandler(Protocol):
+    """每个事件类型一个方法，强类型投递，绝不 dict。"""
+    def on_stream_state_changed(self, e: StreamStateChanged) -> None: ...
+    def on_asr_partial(self, e: AsrPartial) -> None: ...
+    def on_asr_final(self, e: AsrFinal) -> None: ...
+    def on_buffer_updated(self, e: BufferUpdated) -> None: ...
+
+class VoiceController(ABC):
+    """语音输入核心契约。channel 从 IoC 获取，不感知 matrix/channel。"""
+
+    # 控制面（低频，channel command 直调）
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    async def set_mode(self, mode: VoiceMode) -> None: ...
+    async def set_config(self, config: VoiceConfig) -> None: ...
+
+    # 事件订阅（强类型 + 注册 handler）
+    def add_handler(self, handler: EventHandler) -> Disposer: ...
+
+    # 状态查询
+    def snapshot(self) -> VoiceNodeRuntime: ...
+```
+
+### 解耦到协议层（matrix 协议层并行推进，core 不动）
+
+core 不感知 matrix。协议层（或 node adapter）注册 EventHandler → 收到强类型事件 → 卸载到队列 → 有序消费 → 广播：
+
+- **出向（事件）**：`add_handler` → 入队 → 协议层有序消费 → SpeechTopic 广播 + AudioSignal 进 mindflow。首包 `complete=False` + 高优先级占座；尾包 `complete=True` + 同 utterance_id → same-id absorb（mindflow 机制已验证有单测：`test_attention_challenge.py:92`、`test_strength_zero_yield.py` 等）。
+- **入向（控制）**：channel command 直调 VoiceController 方法，低频，不走队列。
+- **顺序**：voice 核心是单一事件源，单 FIFO 队列天然保序；协议层单消费、不重排。
+
+### 采集边界与配置（维持前议）
+
+- 采集边界 = 节点自持：miniaudio 直采 16000，不经 transport/consumer/跨进程锁。
+- 配置 = 读 node 内 config：10 开关 + device 三级选择（pattern/index/default）。
+- 复用好件：miniaudio 设备枚举、VolcengineASR。不复用：transport 拆分、每帧 FFT、跨进程锁、44100→16000 resample。
+
+## 执行路径与 Round 1 计划 (2026-08-04)
+
+**迭代纪律（g1 式）**：node 创建 → 可用 → 模型可治理 → 多轮优化加功能。Round 1 只做"**不移交时仍然可用**"——控制主权默认 ghost（channel 治理），human 移交（#2）、manual gate 编辑块（#7）、自动重写（#8）、音频存储（#6）、webview GUI 全部后置。
+
+### Round 1 — host 核心 + IoC channel + 薄 node（今天可用）
+
+**目标**：`host/listener/` 核心可用（两轴状态机 + 采集 + asr），voice channel 模型可治理，真实语音一次 ASR 走通。
+
+| 步骤 | 内容 | 产物 |
+|---|---|---|
+| R1-1 | 核心契约 | `host/listener/` VoiceController contract + 强类型事件 + EventHandler |
+| R1-2 | 配置模块 | 读 node 内 config.toml：10 开关 + device 三级选择 |
+| R1-3 | 两轴状态机 | 话语生命周期（idle→capturing→finalizing）× 闸口/buffer（staged→committed/dropped） |
+| R1-4 | 采集/ASR 管道 | 采集边界自持（miniaudio 直采 16000）+ VolcengineASR（复用 listener 的 pump/silence-timeout/TTS gate 语义） |
+| R1-5 | 控制 channel | voice channel（IoC 拿 VoiceController）+ mode/config 子 channel |
+| R1-6 | 事件 adapter | 协议层注册 EventHandler → 队列 → 有序广播（SpeechTopic + AudioSignal 首包 complete=False / 尾包 complete=True 同 utterance_id） |
+| R1-7 | node 薄壳 | `nodes/sensors/listener/` NODE.md + provide channel + GUI 入口（--mode headless/webview） |
+| R1-8 | 验证 | `moss nodes run` 拉起 + moss-as-mcp 命令链路 + 真实语音一次 ASR |
+
+**Round 1 不做**：#2 human 移交、#6 音频存储、#7 manual gate、#8 自动重写、webview GUI。gate 默认 auto（passthrough）。
+
 ## Implementation Progress
 
 | Step | 内容 | 状态 |
 |------|------|------|
-| 1 | 四层状态机合约 — contracts/voice.py + AudioSignal 扩展 | pending |
-| 2 | L2 流层状态机 — idle→armed→capturing→finalizing→staged 核心循环 | pending |
+| 1 | 四层状态机合约 — contracts.py + AudioSignal 扩展 | completed (R1) |
+| 2 | L2 流层状态机 — idle→armed→capturing→finalizing→staged 核心循环 | completed (R1) |
 | 3 | 模式实现 — PTT / enter / turn-taking / duplex 四种触发策略 | pending |
 | 4 | commit 推回流层 — ASR is_final 与模式 commit 信号解耦 | pending |
 | 5 | L4 ASR Nucleus 重构 — barge_in / attention 双 flag + 打断粒度 | pending |
 | 6 | Preemptable 集成 — TTS channel 实现 Preemptable.attenuate/resume | pending |
 | 7 | 门控接口 + 三种零智能实现 (passthrough / VAD / duration) | pending |
 | 8 | 快捷指令 — 白名单匹配 + fatal_command 反射 + 安全约束 | pending |
-| 9 | 说/听联动 — 半双工 TTS gate (AudioRuntimeTopic 读取) | pending |
-| 10 | VoiceNodeRuntimeTopic — 四层状态快照 Topic | pending |
-| 11 | 控制 channel — voice/mode/gate/config 子 channel 树 | pending |
-| 12 | 可视化 — TUI 状态条 (最小形态) + qt_screen window (正式形态) | pending |
-| 13 | voice node 落地 — nodes/sensors/voice/ NODE.md + main.py | pending |
-| 14 | listener/ptt_listener 旧 app 退役 — 功能被 voice node 覆盖后删除 | pending |
+| 9 | 说/听联动 — 半双工 TTS gate (AudioRuntimeTopic 读取) | completed (R1) |
+| 10 | VoiceNodeRuntimeTopic — 四层状态快照 Topic | completed (R1) |
+| 11 | 控制 channel — voice/mode/config 子 channel 树 | completed (R1) |
+| 12 | 可视化 — TUI 状态条 (最小形态) + qt_screen window (正式形态) | pending (Round 2+) |
+| 13 | listener node 落地 — nodes/sensors/listener/ NODE.md + main.py | completed (R1) |
+| 14 | listener/ptt_listener 旧 app 退役 — 功能被 listener node 覆盖后删除 | pending (三触发模式等价验证后) |
 
 ### 0.1 不做
 
@@ -530,7 +664,7 @@ class AudioSignal(SignalMeta):
    可配置的双 flag 模式。
 
 4. **P0 — voice node 落地** (Step 7-13): 门控 + 快捷指令 + 半双工联动 +
-   Topic + channel + 可视化 + NODE.md。聚合所有组件为 nodes/sensors/voice/。
+   Topic + channel + 可视化 + NODE.md。聚合所有组件为 nodes/sensors/listener/。
 
 5. **P1 — 旧 app 退役** (Step 14): listener / ptt_listener 功能被 voice node
    覆盖后删除。需要 voice node 在三种触发模式下都通过功能等价性验证后再执行。
@@ -544,6 +678,836 @@ class AudioSignal(SignalMeta):
 - **单调安全**。快捷指令只降能量不升能量。没有例外。
 - **Preemptable 现在是 P0 件**。它是打断粒度机制的前提，已从 audio-capture
   的遗留 P2 升级为此 feature 的 P0。
+
+## 2026-08-06 会话决策
+
+### voice → listener 重命名
+
+voice 是介质名，不是行为名。sensors 下都是行为（camera、listener），保持叙事一致。
+重命名范围：
+- `host/voice/` → `host/listener/`（核心 + capture + volcengine_asr + channel）
+- `nodes/sensors/voice/` → `nodes/sensors/listener/`（薄壳 node）
+- FEATURE.md 所有路径引用
+
+channel 保留在同包（`host/listener/channel.py`），不独立为 `channels/` 包——当前体量不足以支撑独立包。
+
+### 后续执行路径 (6 步)
+
+1. 重命名 + FEATURE.md 修改 ← 本轮
+2. 音频输入/输出依赖统一为 `moss[host]`，关联节点不做独立 venv
+3. 相关能力 provider 进 **project 级 `MOSS.manifests.providers`**（基线能力，2026-08-09 修订）——
+   原计划"进 mode"，但 CLI 走 `Matrix.new` 只加载 project + MATRIX manifests、不加载 HOST/mode。
+   作为基线能力的 provider 必须进 project 级才能被 CLI 经 `Matrix.new` 看见。实现留在 host 作为依赖路径。
+4. 配套做全套无状态机调试工具：play / 音频采样 / tts / asr，根据 mode 配置项来，CLI 作为 moss 无关的底层调试工具
+5. 做 UI 无关的独立 listen node
+6. 最后做完整的交互模式与可视化
+
+---
+
+## 2026-08-09 会话决策 — 音频 provider project 级迁移 (为 CLI 准备)
+
+> 结对编程：人类架构师 + deepseek-v4-flash。对齐后动手——"执行计划以人的说法为准，FEATURE.md 里记录的是上一个模型实例的理解"。
+
+### 背景
+
+`moss audio contracts`（第一个 CLI 调试命令）需要经 `Matrix.new` 遍历核心音频抽象
+(capture / player / speech / tts / asr)，打印 `contract -> instance | importError`。
+但 `Matrix.new` 只加载 **project (MOSS.manifests) + MATRIX.manifests**，不加载 HOST/mode 层——
+此前 speech 三件套声明在 HOST.providers，`Matrix.new` 看不到。
+
+### 迁移内容（本轮完成）
+
+1. **speech 三件套声明迁到 project 级**：`TTSServiceProvider` / `TTSSpeechServiceProvider` /
+   `AudioPlayerProvider` 从 HOST.providers 移到 `MOSS.manifests.providers`（`.moss` + `stubs` 同步）。
+   实现文件留在 `ghoshell_moss/host/providers/`（host 作为依赖路径，不建 `ghoshell_moss.audio`）。
+2. **`audio_player_provider` 转 lazy**：`MiniAudioStreamPlayer` 和 `MatrixAudioTransport` 都移进 factory——
+   `MatrixAudioTransport` 看似 light，但 `host/listener/capture/__init__.py` 顶层 import `miniaudio_capture`，
+   顶层引用会经包 init 拉 miniaudio。全部 4 个 provider 模块顶层 import 链已轻（probe 验证无 miniaudio/websockets/httpx）。
+3. **HOST 层移除**：default / system_test 各留 `AudioCaptureProvider`；stubs HOST providers 变空 header + 注释。
+   避免 mode 后注册重复覆盖。
+4. **manifest CLI 可见性修复**：`Project.discover()` 注册 workspace source 到 sys.path——discover 即自足，
+   项目级 manifests 无需 bootstrap 可被 `scan_package` 发现。此前 `moss manifests providers` 对 MOSS.manifests
+   一直显示 0（基建 provider 也看不见），是 manifests CLI 重建时就有的设计缺口。删除了环境细节单测
+   `test_providers_inherited_from_matrix`（断言 stub mode 声明 ≥1 provider，属实现状态非协议契约）。
+
+### `moss audio contracts` 命令（执行路径第 4 步，已落地）
+
+`src/ghoshell_moss/cli/audio_cli.py` + 注册进 `main.py`（`depend_matrix` 守卫内）。
+
+- 以 cli 身份 `Matrix.new("audio_cli", category='cli')` 声明为 node，**只建容器不 join 网络**
+  （~0.22s，contracts 只需注册可用性）。全 sync，无需 asyncio。
+- 对每个槽位调 `container.get_provider(contract)` 打印 **Provider 类**（注册可用性），**不实例化实现**
+  ——不触发重 import、无副作用。tts/speech/player 已注册；capture/asr 返回 None 标 TODO
+  （capture 在 HOST 待迁移，asr 无 provider / 抽象待 listener 重构）。
+- 顺带修复 meta-help 解析器：单命令组（`registered_commands` 恰 1 个）时 typer `get_command`
+  返回 `TyperCommand` 非 Group，`_show_command_help` 此前对 `help <group> <cmd>` 报错。
+
+### 待办（下轮）——按优先级
+
+**当前主线：player 文章做完**（体感可验证 → 波形可见 → tts→play 链路）。capture 迁移后置。
+
+1. ~~**CLI `audio play`**~~ — completed (2026-08-09, 见下方会话决策)。
+2. ~~**波形展示**~~ — completed：`audio play --waveform` 按 100ms 片段喂入渲染文本波形
+   （human rich 面板 / `--ai` 纯文本行）。多帧波形依赖来源产出片段，与 tts→play 同构。
+3. **tts→play 链路**——把 speech 的其余概念做全：stream_id、片段存储
+   （`speech_storage` 拼接）、文本音频片段广播（PlaybackSample 是否 topic 化的第二层决定）。
+4. **audio CLI 拆分**——`audio_cli.py` 已见膨胀（contracts + play + 合成/读取/渲染 helpers）。
+   随 echo 等命令落地时拆 `cli/audio/` 子 package。
+5. **capture 迁移到 project 级**（后置）——capture 放 HOST 一开始就是错的，`Matrix.new` 路径
+   看不到 HOST。连同 listener 抽象一起处理。
+
+## 2026-08-09 会话决策 — player 实际播放可感知 (PlaybackSample + observe)
+
+> 结对编程：人类架构师 + deepseek-v4-flash。这是对"不满意的 audio topic"的两层拆分：
+> **第一层 (本轮)** = player 实际播放的可感知走回调，**第二层 (可选下一步)** = 如何消费
+> （用 topic 广播？）——技术上独立的决定，本轮不做。CLI 锚点：`moss audio echo`
+> （听 n 秒 → 播 n 秒 → CLI 画文本波形），两层最终都会出现在 CLI 里。
+
+### 设计修正（align 后落地，推翻了我最初的实现）
+
+我最初把 `observe` 做成 **stream 作用域 + 自动移除**（`_stream_pending` 计数，
+stream 片段播完即摘除观察者）。用户 review 指出这是过度设计，修正为：
+
+1. **player 不做 stream 生命周期追踪**。stream 真正的生命周期在**治理层**——明确知道
+   它的 speech 或外层控制 `clear()` 的节点。player 只提供简单订阅（`observe` 返回
+   unsubscribe），何时结束由治理层管理。
+2. **observe 是全局的，不是 stream 作用域**。stream 身份放进**数据**里（PlaybackSample
+   携带 stream_id），不做成注册作用域——否则逼 player 维护按 stream 的内部状态。
+3. **新增 fragment_id（拼接身份）**。发送方在 `add()` 传入（通常是自增整数），消费方
+   对齐回调判断哪些片段拼接到一起，方便存储。这是链路里更关键的一环——形如
+   `speech_storage` 专门负责拼接动作。
+4. **优化点**：无观察者注册时不计算 PlaybackSample（跳过频谱计算）。
+
+### 落地内容
+
+- `contracts/speech.py`：
+  - `PlaybackSample`（pydantic model，可序列化，未来可广播为 topic）：`stream_id /
+    fragment_id / timestamp / duration / rms_db / peak / bands{bass,mid,high}`。
+  - `StreamAudioPlayer.add(chunk, ..., stream_id="", fragment_id="")`。
+  - `StreamAudioPlayer.observe(callback) -> Callable[[], None]`（全局订阅，返回 unsubscribe）。
+- `core/speech/base_player.py`：队列项改为 `(pcm, stream_id, fragment_id)` 元组；
+  `_audio_worker` 写设备后 `_dispatch_playback_sample`（真正写入时刻，非入队时刻）；
+  `_compute_playback_sample` 计算轻量频谱摘要（rms/peak/3-band）。无观察者时跳过。
+- 测试 `tests/ghoshell_moss/host/speech/test_player_playback_sample.py`：触发、拼接身份
+  透传、全局观察、unsubscribe、无观察者不崩溃、多观察者。host+default 1282 全绿。
+
+### 下一步（待定，不是本轮 scope）
+
+- **第二层消费**：PlaybackSample 是否广播为 topic、怎么广播——独立决定。
+- **CLI `audio echo`**：听 n 秒 → 播 n 秒 → 文本波形图，同时消费两层。
+  此前会话的崩溃点就发生在这个操作上，迁移时先对齐再做。
+
+### 关键认知（避免未来重蹈覆辙）
+
+- **"不全局 import" 指 provider 模块顶层不拉重依赖**（concrete import 隔离），abstract import 隔离意义不大。
+- **三层 manifest 加载范围**：`Matrix.new`/CLI = project + MATRIX；Host runtime 额外叠加 HOST。
+  作为基线能力的 provider 必须进 project 级才能被无 Host 的 CLI 看见。
+
+## 2026-08-10 会话决策 — ASR 通用内核契约提炼
+
+> 结对编程：人类架构师 + deepseek-v4-flash。从 volcengine 实现提炼可迁移重实现的通用内核。
+
+### 动机
+现有 contracts/asr.py 只有薄 ASR ABC + ASRResult(text, is_final)。配置面（凭据、端点、音频格式、
+调参）全焊在 VolcengineASRConfig 里 — 任何非 volcengine 重实现、provider 注册、CLI asr 工具
+都无法脱离 VolcengineASRConfig 工作。TTS 侧有对称的 TTSInfo + TTSBatch + TTSItem，ASR 侧没有。
+
+### 提炼的内核
+
+1. **ASRInfo** — 镜像 TTSInfo 的反射面。sample_rate/bits/channel/model（音频输入契约 + 模型身份）+
+   params_schema/params（可调行为参数的 json schema 与当前值，各实现暴露自己的 params BaseModel，
+   契约只背 dict）。模型先 get_info() 自解释，再 configure() 调行为旋钮。
+
+2. **ASR.configure(params: dict)** — 会话级调参，作用于下一次 recognize()。校验与取值空间
+   留给各实现的 params BaseModel。火山引擎：每次 recognize() 新建 WS + init 下发全参 → configure()
+   只换 self._config.params，下次连接自然携带新参数，协议零改动。
+
+3. **VolcengineASRParams** — 火山引擎专属行为参数：end_window_size, force_to_speech_time（从
+   硬编码 1000 提进 config）, enable_punc, enable_ddc。model_name 不在此列 — 模型身份每实例
+   固定，模型选择由工厂/provider 负责（让有状态实现自己切换 model 会协议冲突）。
+
+4. **controller 不再硬编码 16000** — VoiceControllerImpl 的采样率从 asr.get_info().sample_rate
+   推导，ASR 创建移至 __init__（get_info() 先于 capture 以便 capture 取对采样率）。
+
+### 不做
+- model_name 不是 runtime 旋钮，不入 params。不同 model = 不同工厂实例，未来 ASRFactory.get(model)。
+- provider 注册延后 — 契约先立住，provider 是下游。
+- enable_ddc 在 params 但火山协议仍未发送（预存兼容，不发是因为当前 bigmodel 接口不需要）。
+
+## 2026-08-11 会话决策 — ASR Provider 注册 + CLI asr 命令
+
+> 结对编程：人类架构师 + claude-opus-4-7。Provider 注册 + CLI 命令 + 错误可观测性 + 协议修复。
+
+### 动机
+
+ASR 通用契约已在 08-10 提炼完成，但 contracts 的 asr 槽位仍是 "no provider registered"，
+CLI 的 asr 子命令尚未实现。本轮补齐这两块，使 `moss audio contracts` 五槽位全绿、
+`moss audio asr` 可用。
+
+### 交付
+
+1. **AudioASRProvider** (`host/providers/audio_asr_provider.py`) — singleton=True，
+   从 VolcengineASRConfig 解析环境变量创建 VolcengineASR。注册在 project 级
+   (`.moss/src/MOSS/manifests/providers/`)，CLI 无需 Host 即可看见。
+
+2. **`moss audio asr` 命令** (`cli/audio/asr.py`) — 三种输出模式：
+   - 人类模式：`\r` 就地更新 partial，final 换行提交，`---` 分隔 VAD turn
+   - `--ai` 模式：只输出 final + `---` 分隔符（bash 友好）
+   - `--json` 模式：每结果一行 JSON（text/is_final/elapsed/turn/error）
+   - 参数：`-t/--timeout` (默认 60s)，`-d/--device`，`-o/--save`，`--json`
+
+3. **ASRResult.error** — 新增 `error: str = ""` 字段。VolcengineASR server error 经此
+   传给 CLI 显式输出，不再仅藏于日志文件。`iter_with_silence_timeout` 遇 error 立即
+   透传，不等超时。
+
+4. **修复**：
+   - `create_audio_only_request`：空 payload 时不标 GZIP 压缩（服务端解压 EOF）
+   - bridge 跳过 `len(pcm) == 0` 的空 chunk
+   - `_audio_gen` 用 `wait_for(get(), 0.5s)` 防遗弃 waiter 污染下个 turn
+   - bridge 内 44100→16000 线性插值重采样（对齐 BaseAudioStreamPlayer.resample）
+
+### 关键决策
+
+- **CLI 不做 VAD** — 云端 VAD 判停本身就是 CLI 探测的协议行为。CLI 只收音→喂 ASR→流式显示。
+- **listener 无独立 CLI** — ASR 命令在 `moss audio` 子树下，作为协议探测面。感知节点
+  (voice-input node) 是下一阶段的事。
+- **Provider singleton=True** — VolcengineASR 每次 recognize() 独立建 WS，无累积状态，
+  单例安全。若未来有状态实现，改 False 即可。
+- **默认 60s timeout** — `-t` 是全局兜底，不设则 60s。用户停止说话后由 silence timeout
+  (5s patience) 结束 turn，新 turn 若无语音则快速过。
+
+---
+
+## 2026-08-12 会话决策 — audio 架构讨论清单（整理）
+
+> 人类工程师 + deepseek-v4-flash 对 audio 架构的收敛讨论。议题太具体，不落 `.design/`，只在此表列备忘。
+> 状态：✅ 定案 / 🔶 待定 / 🔴 开放。
+
+### 议题清单
+
+| # | 议题 | 结论 / 方向 | 状态 |
+|---|---|---|---|
+| 1 | **player 单例** | `AudioPlayerProvider` 改 `singleton=True`，对齐 capture（拥有输出设备）。speech 为单例锚点持有 player | ✅ 定案 |
+| 2 | **speech 开放观测接口** | speech 不直接耦合 topic——开放观测接口，topic 接线放外侧。speech stream 可持有父层传入的 callback。speech 拥有 player 回调并决定怎么用（折算/广播） | 🔶 待定（接口形态） |
+| 3 | **conversation / dialog topic** | 统一"听/说"双侧的话语 topic，全网可用数据结构，`TopicWindow` 可 buffer，对 ASR 特别重要。与现存 `SpeechTopic` 是演进/吸收关系（吸收范围待定） | 🔶 待定（吸收范围） |
+| 4 | **ASR 开放词表 + 上下文 getter** | 是否开放词表（hotword）与上下文 getter 两个接口 | 🔴 开放 |
+| 5 | **signal / topic 迁移 types** | 迁移到统一 types 目录合理（纯数据结构），迁移成本低。先记下，后移 | ✅ 方向认同（迁移后置） |
+| 6 | **AudioSignal 数据结构化** | 无 messages、纯结构化 SignalMeta。命名 `AudioSignalMeta`（可能直接 asr signal meta）。可扩展优先：未来声纹/用户识别/音频事件检测 | ✅ 定案（方向），实现后置 |
+| 7 | **listener 状态机** | 优先级最高，但先想通 3/4/5/6 再动手 | ✅ 排序 |
+
+### 补充议题（检查遗漏时补入）
+
+| # | 议题 | 说明 | 状态 |
+|---|---|---|---|
+| 8 | **中断折算语义** | 观测接口设计须包含：`clear()` 折算已播半句、被打断句带 interrupted 标记发布、cancelled task resolve。实现时别丢 | 🔴 待并入 #2 |
+| 9 | **说侧运行时状态 is_speaking** | 回声抑制/barge-in 依赖。conversation topic 是事件流，is_speaking 是状态快照——确认 #3 不吸收状态需求 | 🔴 待定 |
+| 10 | **AudioRuntimeTopic 双发布者拆解 + AudioPlaybackTopic 去留** | capture heartbeat 与 speaker gate 同 schema 压扁；AudioPlaybackTopic 目前 CLI-only、未导出。与 #3 一起定 | 🔴 待定 |
+| 11 | **分句器位置** | speech FEATURE 遗留开放问题，决定说侧进 conversation topic 的分句粒度 | 🔴 待定 |
+
+### 说侧四层对齐与基建盘点（自 speech-protocol-alignment 吸收, 2026-08-12）
+
+说侧 (output) 对齐骨架——与听侧四层分层状态机正交：
+
+```
+L1 interpreter 级    一轮 logos = 一个 Interpretation, 含 0..n speech command
+L2 command-stream 级 一个 say/__content__ = 一个 SpeechStream (batch_id = task.cid)
+L3 tts 分段级        句子 = TTSItem{text, audio, duration}, 携带 (cid, seq)
+L4 play 分段级       player chunk + 播放游标, observe/on_play 逐片回调
+```
+
+对齐本质：每层持上层引用，中断折算沿链向上折（L4 游标 → L3 已播句 → L2 已播文本 → L1 本轮真实 logos）。
+
+分层广播频率原则：
+
+| 层 | 频率 | 载体 |
+|---|---|---|
+| 帧级 (10~50ms) | 高频 | stream 协议，不进 Topic |
+| 句级 | 秒级 | TopicService |
+| 状态快照 | 持续覆盖 | TopicWindow(max_size=1) |
+| 轮次级 | 每轮 | Interpretation 记账 |
+
+说侧基建盘点（已核实，折算 #8 的实现依赖）：
+
+- `contracts/speech.py`：TTSItem 已是文本-音频对齐单元；`StreamAudioPlayer.add()` 返回播放结束时间戳；`observe(PlaybackSample)` 逐片回调（真正写入时刻）；`SpeechStream.feed` 写回 cmd_task.tokens——**"喂了什么"，不是"播了什么"**。
+- `Interpretation` 五本账 (compiled/pending/success/cancelled/failed)；`executed_inputs` 只累计成功 task；**`on_done_task` 的 result 合并对 cancelled task 同样生效**——被打断的 say task 可经 result messages 送进观察上下文，折算回报通道现成。
+- SpeechStream 生命周期四元门控 commit/synthesis/play/close 可乱序；新 stream 的 start_play 关闭上一个 stream。
+
+## 2026-08-12 会话补充(二) — topic 结构定案与状态/事件分家
+
+> 人类工程师 + deepseek-v4-flash 第二轮。上一轮列议题清单, 这一轮定案 topic 结构与载体。
+> 说侧设计 (四层对齐、折算) 已在「2026-08-12 会话决策 — audio 架构讨论清单」消化, 本轮补听侧 topic 面。
+
+### 三个跨侧协议 topic 定案
+
+| # | topic | 语义 | 载体 |
+|---|---|---|---|
+| 1 | **分句 topic** (SpeechTopic 改造, 命名候选 ConversationTopic) | 一句实际说出的话, 听/说双侧共享的会话句段。role/name/sentence_id/batch_id/text/lang/audio_key/timestamp/**interrupted**/seq; address = meta.sender | **Topic** (事件面) |
+| 2 | **AudioPlaybackTopic** | 说侧播放元数据广播 ~20Hz, **不含二进制** (无 PCM)。stream_id/fragment_id/sample_rate/rms/peak/spectrum_bins。数字人口型、ghost 声波 | **Topic** (事件面) |
+| 3 | **AudioRuntimeTopic** | listener ↔ speech 半双工门控。is_speaking(speaker)/is_capturing(mic), device_name 区分 | **Parameter** (状态面) |
+
+### 事件/状态分家原则 (本轮核心判据)
+
+**判据: 消费者是否需要"自己启动之前的值" (前值)。**
+
+- **依赖前值 → Parameter** (推, host 广播真值, 本地被覆盖; 启动时 query 一次拿到前值)。
+- **不依赖前值 (只要未来值) → Topic** (事件流)。
+
+状态面 (Parameter): VoiceNodeRuntimeTopic、AudioRuntimeTopic 门控。
+事件面 (Topic): 分句 topic、AudioPlaybackTopic。
+
+前值需求的具体场景: KD9 ghost 世界模型 (中途接入必须立刻知道"正在收音")、半双工门控
+(listener 在 ghost 已说话后接入须知道"在说", 否则 TTS 回声)、TUI (启动即渲染当前状态)。
+
+### VoiceNodeRuntimeTopic 生命周期判定
+
+依赖前值 → **parameter**。字段拆解:
+- queryable facts → Parameter: running / mode / stream_state / gate / device /
+  barge_in_target / staged_text / attention_occupied / buffer_depth。
+- asr_partial → **不是状态**, 瞬态实时转写 (sub-second 写, 只有未来值有意义),
+  走 AsrPartial 事件流, 不混入状态 Parameter。
+
+前置条件: **parameter 必须有变更回调 on_change**——当前接口只有 get/set/version/remove,
+缺失, 待补。独立 workstream: `parameter-host-truth`。
+
+### AudioPlaybackTopic 强约束
+
+**不含二进制是强要求** — 它和 PlaybackSample 不是一回事 (PlaybackSample 带 PCM, 本地
+observe 回调; AudioPlaybackTopic 是无 PCM 的广播元数据)。数字人动口型、ghost 声波是
+跨 cell/跨进程消费者, 所以必须 TopicService 广播, 不是本地回调。
+
+### signal 不算 topic
+
+AudioSignalMeta (#6) 是纵向协议 (shell→ghost, mindflow envelope), 和三个横向 topic 是
+两条协议轴。听侧用户句同时走两条: 广播进分句 topic (横向) + 进 signal (纵向进 ghost 感知)。
+
+### 两个观测方向 (设计定后最先落地)
+
+1. **topic 监听脚本**: 订阅三个 topic + declare 各 parameter 轮询版本, 实时 dump,
+   验证数据面通不通, 在场景装线前把协议面钉死。可做成 `moss audio watch` 类命令。
+2. **listener 极简 TUI**: 直接进命令行, 复用 shell/ghost TUI 基建, 渲染状态 (Parameter)
+   + 逐句流 (分句 topic) + 波形 (Playback)。
+
+### 清单状态更新
+
+- #3 conversation topic → ✅ 定案 (分句 topic, 事件面)。
+- #9 is_speaking 状态快照 → ✅ AudioRuntimeTopic 门控状态 → Parameter。
+- #10 AudioRuntimeTopic 双发布者 + AudioPlaybackTopic 去留 → ✅ AudioPlaybackTopic **保留**
+  (非二进制硬约束); AudioRuntimeTopic 双发布者 = 门控对称两侧, 归一为 Parameter。
+- #6 AudioSignalMeta → ✅ 方向 + 载体确认 (纵向协议, 不算 topic)。
+- 新增: VoiceNodeRuntimeTopic 判定 → Parameter, on_change 缺失 → parameter-host-truth。
+
+## 2026-08-13 会话决策 — flag 驱动 pipeline + 主干优先
+
+> 人类工程师 + deepseek-v4-flash。从"状态机丢决策"的失望中重捞设计，收敛为实现范式。
+
+### 命名
+
+- **`VoiceStateMachine` 弃用 → `listener`**。旧名用实现机制（状态机）命名，错了。
+  新名命名器官（一个会听的单元）。命名与实现范式是同一件事的两种表述。
+- **listener 不继承 `VoiceController` ABC**。那个 ABC 的形状（start/stop/set_mode/
+  set_config/add_handler/snapshot）是"状态机控制方法"的形状，本身就是旧范式。
+  继承它 = 保留了旧契约，只是改了实现类名，flag 驱动设计没有落地。
+
+### 核心判断：listener = flag 驱动的并行管线 (CSP)，不是中央状态机
+
+- listener 开放的**不是状态机切换，是若干控制接口**——每个接口可能是 bool、可能有参、
+  大部分是纯 flag（listening / mode / gate / barge_in...）。
+- **状态机没有消失，是被分布式了**。CSP 的 C 是 Sequential：每个环节是带局部状态的
+  顺序进程（ASR 环节内部：累积 → 收 commit → finalize → 发 signal）。但**不存在一个
+  中央的、试图协调一切的状态机对象**。
+- 变更 flag = cancel 某环节 task 重建，或改 flag（如关 listening 只让 capture 时间片
+  里暂停转发，麦克风设备生命周期不动）。
+
+### 协议化动机（最核心）
+
+**协议化让"环节"从"进程内一个步骤"变成"matrix 里的一个细胞"**——同进程/跨进程从
+代码决策降级为部署决策。每个环节的入口/出口若是协议（topic/stream），capture 在进程 A、
+ASR 在进程 B 对环节代码透明。这溶解了 KD8 的"单一进程"决定（KD8 要单进程是因"模式切换
+要协调捕获时机+送入时机，跨进程是门控复杂度根因"——flag 协议化恰好把这两者都变成
+协议化 flag，根因被消解）。
+
+### 主干优先（本轮实现范围）
+
+- **不做 3-5 层节点**。先做**主干**：capture → ASR → signal，同时在主干上广播 topic
+  （ASR final → ConversationTopic），旁路（声纹/声音事件）以后仿照装线。
+- **控制面先不做 Parameter**。先让 listener 自己有正确接口（start/stop/set_mode/
+  snapshot），协议控制（Parameter + on_change）另做（parameter-host-truth）。
+- **阶段**：listener 作为 CLI node 独立可跑 → 复刻逻辑成 node + 配 GUI。
+
+### KD3 关键：is_final 与 commit 分离（之前丢的核心）
+
+`is_final`（ASR 自己分句）与 `commit`（触发决定"说完了"）是**两个独立事件**：
+
+| 模式 | commit 触发 | is_final 行为 |
+|------|------------|--------------|
+| turn_taking | 云端 VAD（is_final 重合） | 触发 commit |
+| PTT | 松手 | is_final 不分句提交，松手才是唯一 commit |
+| enter | 回车 | is_final 不分句提交 |
+| duplex | VAD 静音（常开） | 触发 commit |
+
+当前 controller.py 把两者混为一谈（`if result.is_final: on_asr_final`），这是模式
+触发无法成立的根因。主干必须把"ASR 产出 is_final"与"触发发 commit 事件"拆开。
+
+### 装线难点（已盘点材料）
+
+装线难在：类型纪律（进程内 object vs 跨协议 bytes）、生命周期（慢消费者/崩溃/重连）、
+顺序（seq/commit 事件后于音频）。材料已备：AudioChunk / ConversationTopic /
+AudioPlaybackTopic / ASRResult 类型已定，AudioSequentialConsumer 背压已有。缺两件：
+commit 事件协议（trigger → ASR finalize 通道）、flag 作为 Parameter 的 on_change。
+
+### 失败模式记录（实现教训，2026-08-13）
+
+上一模型实例在讨论定稿后的**第一步实现**就犯下两个不可接受的错误，直接导致 listener
+抽象由人类工程师接手（本任务转为"人类做抽象 + 模型 review"）：
+
+1. **`Listener(VoiceController)` 继承旧 ABC**。`VoiceController` 的形状就是状态机控制
+   方法的形状，继承它等于保留旧范式、只改实现类名。正确做法是 listener 有自己独立的
+   公开面（flag 控制接口），与旧契约彻底脱钩。
+2. **`__import__("...", fromlist=[...])` 魔法 import**。在 dispatch 热路径里动态 import
+   契约类，是赶交付的屎山症状——没想清模块结构就动手。
+3. （同源）PTT 用同一个 commit_event 既当"按下"又当"松开"，语义过载。
+
+**根因**：从架构讨论（CSP / 协议化）直接跳到写代码，没有先把"listener 的具体公开面"
+定下来。这是 CLAUDE.md 记录的"交付优先堆屎山"失败模式，与 ground 开发的 silent todo
+同源——表面交付、设计未落地。
+
+**重建要点（给 review / 下一实现实例）**：
+- listener 的公开面 = flag（listening / mode / gate...），不是状态机方法，也不继承
+  `VoiceController`。
+- 先定"环节协议入口/出口 + flag 表面"，再写代码；协议未定不许动手。
+- KD3 的 is_final / commit 分离是模式触发的前提，云端 ASR 会话生命周期如何承载"松手
+  才 finalize"必须先想通，不许静默跳过或糊弄。
+
+## 2026-09-01 会话记录 — 当前理解（非决议）与协作方式调整
+
+> 本段记录本次会话的**技术理解**，性质是"当前理解"而非"已定决议"。实现将由人类架构师
+> 集中手改，后续模型实例据此提供协助并最终 review。本段只记技术目标上的关键点，不记情绪。
+
+### 协作方式调整（声明）
+
+- 本 workstream 的下一步实现由**人类架构师集中手改**，模型不主导实现。
+- 模型角色调整为：① 实现过程中对具体问题协助；② 最终 review 实现是否退回"capture→ASR 泵"
+  或漏掉下述已钉契约。
+- 本段价值：给后续模型实例提供 review 人类方案所需的上下文，而非一份待执行计划。
+
+### A. 命名（开放，未定）
+
+- `AudioSignal` 命名是错的——"audio" 是介质名不是行为名（同 voice→listener 教训）。
+- 候选：`ListenerSignal`（域=聆听感知单元，罩得住 wake_word/alert/shortcut 等非 ASR 动作）
+  或 `AsrSignal`（scoped 到 ASR turn，但非 ASR action 会无家可归）。
+
+### B. ASR signal 四态语义（理解已收敛；命名与编码未定）
+
+四态：**首包 / 分句中 / 分句 / 尾包**。
+
+| 态 | 语义 | text |
+|---|---|---|
+| 首包 | turn 开始 | 可空 |
+| 分句中 | partial，**全文 replace（非 delta）** | 当前最佳全文 |
+| 分句 | 引擎 definite（句稳定） | 该句最终文本 |
+| 尾包 | commit（完整提交的句子） | 该 turn 完整累积文本（自包含） |
+
+身份两层：
+- 1/2/3/4 共用一个 turn 级 id；命名候选 `turn`（非 `session`——MOSS 已占用；非 `batch`——撞 TTSBatch）。
+- 3/4 共用分句 `clause_index`（引擎 result_index）。
+
+**delta 已死**：ASR partial 非单调重写，partial 只能是"全文 replace"，不做 delta；分句 index + 对话 uid
+取代增量排序。
+
+编码方式未定：四态语义 enum（直观，consumer 一眼读懂）vs `turn_phase(start/middle/end)` × `is_final`
+两轴（更贴引擎原生字段）——本次倾向 enum，未拍板。
+
+时间戳：`start_ms`/`end_ms` 可拿到——火山 `result.utterances[].start_time/end_time`（ms，流相对），
+当前 `_parse_result` 丢弃了 utterances 数组。两时间概念别混：引擎相对（start/end）vs 到达墙钟（envelope `meta.created_at`）。
+
+### C. 当前 ASR 抽象的致命缺陷（已确认）
+
+"只出不入 + 直接耦合 capture"：`recognize(audio_chunks: AsyncIterable[np.ndarray]) -> AsyncIterable[ASRResult]`
+是单向拉取生成器，无控制通道（commit/stop 无法注入），输入是裸 numpy PCM。
+
+- 嘴（TTS/`TTSBatch`）已是会话对象（`feed/commit/items/close`）；耳朵应镜像：`ASRSession`（`feed(AudioChunk)/commit()/results()/close()`）。
+- commit 机制在 wire 层存在：`send_audio(is_last=True)` = 负序号 = 结当前轮、提前出 final（不等 VAD）。
+  但 `_send_loop` 只在流末发一次，抽象层无 commit 入口。
+
+### D. 当前代码把 Listener 实现成了 ASR（已确认）
+
+- `controller.py:_run()` 是 capture→ASR 泵，不是 Listener 状态机。
+- `is_final` 当 commit（`break`）+ `_drain_queue` 丢音频 → 多句 turn 丢。
+- 四 mode（PTT/ENTER/TURN_TAKING/DUPLEX）死配置：`set_mode` 只改字段，无转移逻辑读 mode。
+- L4 无 signal 发射进 mindflow。
+- KD3（is_final vs commit 解耦）未实现。
+
+### E. 写对状态机的三个前置（历次唯一被跳过的步骤）
+
+1. 转移表 + 每条边的事件触发（mode commit，**非** ASR is_final）。
+2. mode→commit 映射：PTT=松手 / ENTER=回车 / TURN_TAKING=VAD 静音 / DUPLEX=VAD 常开。
+3. ASR 会话边界：`feed/commit/results/close`，吃 `AudioChunk`，不吃裸 np.ndarray。
+
+### F. 本轮已落地的小改动
+
+- `Matrix.new` 加 `singleton: bool | None = None` 参数，去掉 `if not persist: singleton=False` 强制；
+  singleton 与 persist 正交。audio CLI 节点默认 singleton=True + persist=False（`core/blueprint/matrix.py`）。
+- 未修：`AudioPlayerProvider.singleton()` 仍返回 False（08-12 已定案改 True，见 `host/providers/audio_player_provider.py`）。
+
+### G. 关键澄清
+
+- 火山 `definite=true` = 句稳定，**不是**流结束；负序号（`is_last=True`）= commit 当前轮。
+- Realtime API（`v1/realtime?model=bigmodel`，OpenAI 兼容）有 `input_audio_buffer.commit` +
+  interim `result`（累计 replace），与四态 1:1 对应，是备选链路（非必需）。
+
+## 2026-09-10 会话决策 — ASR 连续 loop 契约与 RecognitionResult 三相位
+
+> 人类架构师 + opus-4-7。从 09-01 节 C「ASR 抽象致命缺陷」出发, 把 `contracts/asr.py`
+> 的 `ASRResult` 重构为 `Recognition` 连续 loop + `RecognitionResult` 三相位结果。
+> 契约先行 (保留破坏性), 实现随后。
+
+### 收敛的契约结论 (已写进 contracts/asr.py)
+
+1. **ASR = 连续 loop, 不是 per-turn。** `recognize(audio_chunks) -> Recognition`。`Recognition`
+   是一条连续音频流 → 一串 `RecognitionResult`; 音频断 → 自动 commit (发负包) → 拿 final →
+   吐 `phase=TAIL` → loop 结束。一个周期含多个 CLAUSE 分句。turn 是更上层概念
+   (Listener/ListenController), 不进 ASR。
+
+2. **三层相位 partial/clause/tail。** 对齐火山引擎响应: `partial` = utterance `definite=false`
+   (边说话边出字); `clause` = `definite=true` (稳定分句); `tail` = 帧级 `is_last_package`
+   (commit/音频断)。**`definite ≠ 流结束`** — recognizer 的 `_parse_result` 把 `any(definite)`
+   当 `is_final` 并 break, 是"一句就断"丢音频的 bug。终止信号是帧级 `is_last_package`
+   (protocol.py `parse_response` 的 bit1)。
+
+3. **RecognitionResult 平铺, 弃 "chunk" 命名。** `stream_id / phase / text / start_ms / end_ms / error`。
+   分句结构就是 `text + start_ms + end_ms` 三字段, 不做嵌套 clause (text 不再藏进 clause.text)。
+   "chunk" 的碎片语义误导了实现, 改用 `RecognitionResult`。
+
+4. **RecognitionSegment = audio 轴 (正交)。** `stream_id / text / sample_rate / bits / channel / audio`
+   (粘包 PCM)。与 text 轴 (RecognitionResult) 通过 stream_id 关联, 但走独立 `on_stream_done` 回调,
+   不混进 text 轴。
+
+5. **ASR.commit 删除。** commit 权威在 `Recognition` 层 (透传), `Listener`/`ListenerState` 透传。
+
+6. **ASRInfo.model 删除是对的。** model 是 ASRConfig (VolcengineASRConfig.model_name) 的事;
+   `ASRInfo` 只背 params_schema/params (模型反身性调参面)。
+
+7. **分句三字段, confidence/words 不要。** utterance 有 `words[].conf` (词级), 无句级 confidence。
+   分句只取 `text / start_time / end_time`。`clause_index` 不在 payload, 按 utterance 顺序在 ASR 层推导。
+
+   > **2026-09-23 已被推翻** (见 `interleaved-voice` 后续补第二条): 词级 conf 要进契约 ——
+   > signal 需要携带"置信度 < k 的字"。分句不再只取三字段。
+
+> 注: 本节"三相位"是 **ASR 结果层** (RecognitionResult); 09-01 节 B 的"四态 (首包/分句中/分句/尾包)"
+> 是 **signal 层** (ListenerNucleus)。"首包"由 ListenerNucleus 从 turn 开始合成, 不来自火山引擎。
+
+### 实现要点 (step 2 范围)
+
+- `VolcengineASR.recognize()` 从 async generator 迁到返回 `Recognition` 对象 (持 send/receive task)。
+- `_parse_result` 改为遍历 `utterances[]` 逐句吐 phase, 用帧级 `is_last_package` 判 TAIL, 不再 `any(definite)` break。
+- `commit()` 发负包前需等 pending 音频帧送达 (火山协议要求, 否则终止帧抢在尾随音频前)。
+- `Recognition.on_error` / `RecognitionResult.error` 兜连接断链 (不再静默丢字)。
+
+### 协作方式调整
+
+09-01 节曾声明"实现由人类架构师集中手改, 模型不主导"。本轮人类改契约草稿 + 模型 review 对齐后,
+0 (盘点)/1 (契约)/2 (实现) 由模型独立推进, 人类以契约提交为 review 闸口。
+
+## 2026-09-10 会话决策（二）— stream/segment 拆分 + commit 语义（修正上文 #4/#5/#7）
+
+> 人类架构师 + opus-4-7。上文「2026-09-10 会话决策」的 #4/#5/#7 有误——把 segment 当成了
+> per-clause、commit 当成了流结束。本轮钉死: segment 以**尾包**为分段, commit 是**可重复的讯号**,
+> 不关流。以下为准。
+
+### stream / segment / result 三层身份
+
+```
+RecognitionStream   1 条 WS 的连续识别会话（一次 recognize）
+  └─ segment        1 个 turn（由 tail/commit 界定），1 stream = n segment
+       └─ result    partial / clause / tail，1 segment = m result
+```
+
+- `stream_id` 标识 stream（`recognize()` 可传 `stream_id`）；`segment_id` 标识 segment。
+  `RecognitionResult` 同时带 `stream_id` + `segment_id`；`RecognitionSegment` 带 `id`(segment) + `stream_id`。
+- `segment_id` 是 UUID，**在每次 tail 时递增**（切一段，开新段）。所有 partial/clause/tail 共享当前 segment_id。
+
+### segment 以尾包为分段，不是分句
+
+- `_receive_loop` 收到帧级 `is_last_package`（tail）→ `_cut_segment()`（带走整段 audio + 累积 text）→ `segment_id` 递增。
+- `_parse_utterances` 只吐 partial/clause（带 segment_id + 累积 `_segment_text`），**不切段**。
+- `RecognitionSegment` = 文本 + 音频片段（按需存储）。`precise_cut()` 是下一步的精确切（当前等效返回整段 audio）。
+
+### commit = 负序号讯号，可重复，不关流
+
+- `RecognitionStream.commit()` 只设 flag。`_send_loop` 在音频帧粒度（~218ms）检查到 flag → 发负序号讯号（`is_last=True`），
+  **不 break**，继续喂下一段。`seq` 继续累加。
+- 一条 WS 可发多个负序号（每个 = 一个 commit/segment 边界）。服务端以尾包为准。
+- 音频 AsyncIterator 停止 → `_send_loop` 发最后一次负序号 → `_input_done=True` → 自然结束。
+
+### 自然 break 与保活
+
+- 自然 break = 「无音频输入」+「ws 尾包」。`_receive_loop` 用 `asyncio.wait_for(recv, timeout=1.0)` 周期性醒来判 `_input_done`，
+  不依赖服务端及时回尾包。
+- **无空闲断开（A 已定）**：音频输入本身是持续 alive 输入，consumer shutdown = 终止。保活 = WS 跨 commit 不关 + websockets 自带 ping/pong。
+- WS 在 `async with`（`__aexit__`）时 close；`ConnectionClosed` 收在 `_receive_loop`，不外冒。
+
+### 暂缓
+
+- **弱网断连感知 + 重启（容错）**：真正的需要，本轮不做。当前已有「断连感知」的一半——`ConnectionClosed` → `TAIL + error` +
+  `on_error` 回调，弱网断连至少不静默；「感知后重启 WS」defer。
+
+## 2026-09-11 会话决策 — Listener 契约定稿 + HostListener 实现 + 装线 hack 清理
+
+> 人类架构师 + deepseek-v4-flash。继 09-10 ASR 契约之后，定稿 Listener/ListenerState
+> 契约并实现 HostListener，清理 capture→ASR 装线里的 hack（私有 _config 直取 + 三份重复 resample）。
+
+### Listener 契约定稿（contracts/listener.py）
+
+- `Listener` = 缝合 capture + asr 的"耳朵"器官（对称 BaseTTSSpeech），持有两者生命周期；
+  `listen()` 产出一条 session，同一时刻至多一条（再次 listen 取消前一条）。
+- `ListenerState` = 独立 session 生命周期（对称 SpeechStream）：`async with state` 启动
+  后台 pump（consumer → resample → ASR recognition → 观察面 fan-out），`__aexit__` 优雅
+  收尾（shutdown consumer → 等最后尾包）。可重入（__aenter__/__aexit__ 幂等）。
+- 三个 `on_*` 两边都有：Listener 级自动装线到当前 session，State 级是 per-session 注册点。
+- 砍 `segments()`/`max_size`（无消费者滑动窗口）、`close_state`（冗余面）。
+- 实现 `HostListener`/`HostListenerState` 落在 `host/listener/listener.py`。
+
+### segment / turn / clause 三层语义对齐（e91fc810）
+
+- signal 层 `segment_index` → `clause_index`（索引分句，非 segment；segment = tail 界定的 turn）。
+- `turn_id` description 改指 asr 的 segment_id；`RecognitionSegment`/`RecognitionResult`
+  docstring 改 per-tail 语义，关联键 segment_id (即 id) + stream_id。
+- 装线映射：turn_id ← segment_id，clause_index ← 翻译器按 segment_id 计数。
+
+### 装线 hack 清理
+
+- `AudioCaptureSource` 补公开 `sample_rate`/`channels`；`resample` 抽到 `contracts/audio.py`
+  唯一实现，`BaseAudioStreamPlayer.resample` 委托，listener/CLI 共用（消三份重复）。
+- CLI 设备选择 hack 改正确做法：`get_or_create_conf` 读 config → 改 device_pattern →
+  `con.get` 实例化启动（先配置后实例化，不再事后 mutate `_config`）。
+- `cli/audio/capture.py` 的 `consumer.start()/close()` 旧 API → `async with consumer:`。
+
+### moss audio listen（下一轮）
+
+`once` = 监听第一个 TAIL 尾包即退出。四种 mode = mode → commit 触发映射（逻辑在 CLI，
+是 ListenController 的简化版）：once(云 VAD)/always(不 commit)/enter(回车 commit)/
+push-to-talk(按住聆听松开 commit，可 defer)。
+
+## 2026-09-12 会话决策 — seedasr 重构, 语音对话 Dolores
+
+> 人类架构师 + deepseek-v4-flash。用 seedasr（豆包 2.0 接口 bigmodel_async）
+> 重构 ASR，`moss audio listen -m once` 实机跑通，语音对话 Dolores 闭环。
+
+### 交付
+
+- 全新 `host/listener/volcengine_sauc/`（config / protocol / recognizer），按官方
+  SDK 对齐语义：
+  - 鉴权 `X-Api-Key` + `volc.seedasr.sauc.duration`（豆包 2.0）。
+  - 响应建模：header 三 flag（seq / is_last_package / event）+ PayloadMsg /
+    utterances / words，预留说话人/情绪/性别/年龄/语种/音量等可选槽位。
+  - 语义分层：`definite` = VAD 判停的分句；`is_last_package` = 流结束（端侧
+    commit 触发）。一条 WS = 一次说话（turn）。
+  - 请求序号 init=1、音频从 2 起递增。
+  - 热词/上下文 (corpus) 落在 `VolcengineSaucASR` 实例火山面，动态随下次
+    recognize 生效。
+- `RecognitionResult` 语义统一：`text` = 全文，`clause_text` + `last_clause_text`
+  承载分句。
+- `moss audio listen -m once` 实机：说一句 → commit → 切段 → 退出。
+
+### 下一步
+
+1. 删除旧实现 `host/listener/volcengine_asr/`（被 volcengine_sauc 取代）。
+2. 检查其它 CLI 命令可用（`moss audio asr` 等）。
+3. 类名/路径名手动改为 seedasr（由人类架构师执行）。
+
+## 2026-09-14 会话决策 — 听侧归档补齐: segment 带 clauses + 三处 created
+
+> 人类架构师 + deepseek-flash。契约层补齐音频输入的两处缺口, 并收敛 clause 命名。
+
+- `RecognitionSegment` 增 `clauses` —— 段 = audio + text + 逐句结构。此前 clause 的
+  text/timing/additional 只活在瞬时 event 上, 切段归档即丢; 现在与说侧 `SpeechSegment.clauses`
+  对称。两个 recognizer 累积同一批 clause 实例, 同值进 event 与段, 切段后重置。
+- `RecognitionEvent` / `RecognitionClause` / `RecognitionSegment` 各增 `created: float`
+  (epoch 秒, `time.time()`), 对齐 `SubprocessInfo.created` / `JobInfo.created` 惯例。
+  `start_ms`/`end_ms` 是音频轴相对时间, `created` 是墙钟 —— 段内延迟用 created 差算,
+  跨进程对齐同样用它, 不引入 stream-relative 冗余字段。
+- 命名: `Clause` → `RecognitionClause`, 与 RecognitionEvent / RecognitionSegment 家族对齐。
+- 证据: `tests/ghoshell_moss/host/listener/volcengine_sauc/test_recognizer.py` 用替身 WS
+  驱动完整 turn (audio → event → tail → 段归档), 断言段带本段吐出的 clause。
+
+## 2026-09-14 会话决策（二）— legacy ASR 退役 + 音频 provider openbox 收敛
+
+> 人类架构师 + deepseek-flash。听侧主干本轮只做两件事: 删到可运行, 把音频 provider
+> 在 openbox 定义到位。控制 channel 下一轮重建。
+
+### 退役与收敛
+
+- **删 `host/listener/volcengine_asr/`**(config / protocol / recognizer) 及其 protocol 测试。
+  端到端 ASR 已被 seedasr (`volcengine_sauc`) 取代, 但 provider 仍指向旧实现 —— 是活的错配,
+  不是死代码。
+- **`AudioASRProvider` 改指 `volcengine_sauc`**: factory 由 `VolcengineASRConfig().resolve_env()`
+  改为 `get_or_create_conf(con, VolcengineSaucConfig())`(配置走 ConfigStore, 与 CLI 同源)。
+- **ASR 默认 provider 改为非单例** (`AudioASRProvider.singleton()`: True → **False**):
+  ASR 实例上有每消费者的可变面 (热词/上下文 corpus、error 回调、关闭状态), 单例会把它们
+  跨消费者串起来; 耳朵按"一个使用者一个实例"装配。TTS (`TTSServiceProvider`) 本就非单例,
+  无需动; Speech (`TTSSpeechServiceProvider`) **保持单例**(shell 内"嘴"是共享的: say channel
+  与 clause bridge 都引用 shell 启动的那一个)。`moss manifests providers` 中 ASR 的 Type 由
+  Singleton 变 Factory, 已验。
+- g1 contrib (`ghoshell_moss_contrib/unitree/g1/runtime/listener.py`) 仍 import 旧实现, 人类
+  架构师裁定**本轮有意不管**。
+- `AudioPlayerProvider` (StreamAudioPlayer) 保持 False; 08-12 曾定案改 True, 与本轮方向相反,
+  待重新裁定。
+
+### channel 现状核实: 曾实现, 已删除, 需重建
+
+- 2026-08-05 (8885ab66) 实现过 `VoiceChannel` —— `start`/`stop`/`status` 根命令 + `mode` 子通道
+  (set/current) + `config` 子通道 (show/set), `ChannelInterface.new(container)` 从 IoC 取
+  `VoiceController`。随重命名迁到 `host/listener/channel.py`。
+- **2026-09-11 (95998e6b) 删除**, 与 VoiceController / VoiceStateMachine / VoiceCapture /
+  iter_with_silence_timeout 一同, commit 记 "superseded by this model"。
+- 现树无任何 listener channel; 当前 `ListenerController` 无 `as_channel`。
+  `ListenerNucleus.as_channel()` (set-mode / define-mode / default-mode / pull) 是 ghost 侧
+  mindflow 的核反身面, 不是 node provide 的那条。
+
+### 下一轮
+
+1. **重建 listener 控制 channel** —— 按现契约 (`ListenerController.once/always` + `Listener`),
+   命令面对齐聆听礼仪, 形制参考被删的 VoiceChannel。
+2. **`moss audio listen -m persist`** —— `Matrix.new(persist=True, singleton=True)` 起持续 node:
+   持续聆听 + `session.add_signal` 发 signal + clause 回调发 ClauseTopic + provide channel;
+   并设为 `-m` 默认。**ghost 侧无需新装线**: signal 经 session bus 由
+   `mindflow_in_shell._route_signal_to_mindflow` 路由进已声明的 `listener_nucleus`。
+
+## 2026-09-15 会话决策 — 智能判停（长程聆听）prompt 与架构收敛
+
+> 人类架构师 + deepseek-flash。本轮把判停的 LLM 侧从"猜 prompt"收敛到"基准 + 结论"，
+> 架构从"controller 内联 judge"收敛到"独立组件 + 可替换 caller"。只记结论，实现留待
+> 压缩上下文后开工；会话中写乱的 controller.py 改动已回退。
+
+### 命名
+
+- ghost 视角：**长程聆听**（状态机）；listener 开发者视角：**智能判停**（"VAD 提前"的实现机制）。
+- 判停是一个**通用 llm func**（model-func workstream 的"函数化单轮模型调用"），"话说完没"
+  只是它的一个实例。controller 持的是 **llm func caller**（model-agnostic 持久化句柄），
+  不写死 `small_fast_model` + instruction。
+- 五种聆听礼仪（`off`/不听不算礼仪）：`once` → `always` → 关键字 → **llm 校验（智能判停）** →
+  快捷响应。智能判停是**第四种**，第五种是快捷响应（端侧小模型快速响应，3 字符内 `<say>` 模板）。
+
+### prompt 结论（`.ai_partners/benchmarks/utterance-end-plain/`）
+
+- **输出绝不结构化、输入允许结构化**：结构化**输出**实际吐近百 token；plain-text 单 token =
+  n 输入 + 1 输出成本。输入侧 `context` 是可传入字段（xml 包裹），clause 逐条追加成多个
+  content block，逐句命中缓存。
+- **多分类不是多 agents**：明确任务 + 机制（输出不严格即出错）+ 分句策略 + 行为约束
+  （直觉>思考、只吐整数）+ prompt 结构（xml）。
+- **听觉礼仪**（长会话判别）：① ASR 谐音按义不按字；② context 显式判停信号（"over"）=
+  正向；③ 三类口语讯号：嗯/啊/那个=思考中(low)、你明白吗/对吧=要反馈(high)、
+  你觉得呢/怎么办=要回答(high)。
+- **成本不对称**：误判"说完"→ 提前回答 → 旁路打断（可恢复）；误判"没说完"→ segment-vad
+  兜底（只延迟）。故 threshold 默认 7 偏"没说完"。
+- **local 1.5B 是终局**：同时干掉网络延迟、token 成本、打断心疼；模型必须可替换 → 才要 caller。
+
+### 实测结论（deepseek-flash, n=1）
+
+- constraint 30/30 clean（100%）：plain-text 单 token 可靠。
+- band accuracy 26/30（87%）；谐音 5/5 全过；歧义中带（也许吧/可能可以）仍是难点。
+- **缓存命中 62%**（cache_read 11648 / in 18691）：固定 instruction（384 token）命中，变量 prompt 未缓存。
+- **latency 根因 = per-call agent rebuild**：`funcs.call` 每次重建 Agent（~3s），`funcs.caller`
+  复用（中位 0.84s）；网络抖动尖峰仍在（服务端侧）。
+
+### 下一步（压缩上下文后开工）
+
+1. **架构**：base `ListenerController` 不加模型能力；`ModelListenerController` 持引擎，
+   judge 是**独立可测的状态机组件**（持 llm func caller，instruction/prompt/解析随 caller 外部装配）。
+2. **prompt 结构进一步**：去掉 `<input>` tag、保留 `<context>`，**一个 clause 一个 content block**
+   —— 累积 clause 成稳定前缀，缓存命中随 turn 稳定上升；输出约束单 token（`max_output_tokens=1`）。
+3. **已定**：caller 契约名 `LLMCaller`（已提交）。"两个高阶方法"（需 llm func 引擎）=
+   llm 校验（智能判停）+ 快捷响应；均见骨架「五种聆听礼仪」表。
+
+## 2026-09-16 会话决策 — 智能判停（长程聆听）落地
+
+> 人类架构师 + deepseek-flash。把 09-15 的「下一步」收口：消息协议上提到 caller、
+> StopJudge 独立组件、ModelListenerController + llm_judge 落地、开放打分观察面、
+> 建实机测试 node。语音两个治理 workstream 收口 completed。
+
+### 落地
+
+- **消息协议上提**：`MossLLMCaller(LLMCaller).run_messages(list[Message])` —— 一个
+  clause 一个 content block（前缀缓存命中），`MossLLMFuncs.caller()` 返回它。judge 持
+  caller，不写死 small_fast_model + instruction（随 caller 外部装配）。
+- **`StopJudge`**（`host/listener/stop_judge.py`）：per-segment 判停周期，独立可测。
+  clause 累积成 `list[Message]` 后 spawn 打分 task（judge_delay 去抖，不 inline await）；
+  segment_vad 静默兜底计时；first/partial cancel 在飞打分；两边互斥 —— 先到者置
+  committed 并 cancel 另一个，commit 只做一次；keywords 显式终点；segment 切换拆周期。
+  判停输入 = in-flight 未 commit 的累积 clause，不是 segment 全文。
+- **`ModelListenerController`**：`llm_judge`（第四种礼仪）。clause 后由 llm 打分判停，
+  打分 >= threshold 即 commit，segment_vad 静默兜底。base `ListenerController` 不加模型能力。
+- **观察面**：`StopJudge.on_score` + `ModelListenerController.on_score` —— 每次打分回调
+  `StopScoreObservation(clauses, score, result)`，旁路监控 llm 判停的请求+结果。
+- **装线**：`assemble_controller` 取 `LLMFuncs`，`isinstance(MossLLMFuncs)` 才建 caller →
+  `ModelListenerController`，否则 base controller（优雅降级，无 LLM 也能 once/always）。
+- **CLI**：`moss audio listen -m llm_judge`。
+- **测试**：`test_stop_judge.py`（9 条，mock caller 驱动）+ `test_controller.py`（2 条
+  llm_judge 装线）+ `.moss/system_test_nodes/llm_judge_probe/` 实机测试 node。
+
+### 未落地（后续）
+
+- **快捷响应**（第五种礼仪）：端侧小模型快速响应，3 字符内 `<say>` 模板 —— 独立命题。
+- **ghost 侧组装 instruction** 识别「智能判停」并自写 caller instruction 的引导。
+
+## 2026-09-17 会话决策 — signal 协议化 + listener nucleus 协议化重构
+
+> 人类架构师 + deepseek-flash。上轮 llm_judge 落地证明 listener 侧做 llm func 判停
+> 效果更好（边缘时间敏感），据此把理解面从 nucleus 侧整体移到 listener 侧，signal
+> 协议化收口为「一种 Signal + meta 全量自解释」，listener nucleus 退化为纯协议映射。
+
+### 理解面归属：nucleus 侧 → listener 侧
+
+「理解面在 nucleus 还是 listener 侧」从治理最开始就反复讨论。最初 llmfun 逻辑考虑放
+nucleus 侧，第一期共同对出来是 nucleus 侧。现在证明 listener 侧更好——**边缘时间更
+敏感**，判停（llm_judge 尾包判停 / 首包判打断 / 间包多分类）在端侧做，不经过 nucleus
+仲裁往返。据此 signal 协议化：nucleus 全面协议化，只剩「打断注意力包 + 发送包」两条
+机械映射；间包语义 command 化。
+
+### 七种聆听礼仪（纠正 skeleton.md 的「五种」）
+
+listener-controller-skeleton.md 里的「五种聆听礼仪」是模型压缩错误。真实讨论是七种：
+
+1. 模型主动发起，听一次。
+2. 打断式 turn-taking：人说话就打断，一直到说完，模型才响应。
+3. 智能判停（llm_judge）：在 2 上延长 vad，让 llm func 判停。**已落地**（上轮）。
+4. 本地 buffer + 人工点击：默认完全不发送，界面呈现，人点击才发。
+5. 模型改写：在 4 上加 ASR 重写优化 + corpus 配置项。
+6. 快捷响应：端侧多分类 → command 到 ghost，只执行不思考（多分类含「说完了」选项）。
+7. 旁听模式：每分句都发送，模型云端只思考/做动作，除非被要求作答。
+
+「关键字」不是独立礼仪，是附加参数（叠加到任意礼仪）；skeleton.md 错摆成了一个礼仪。
+
+### signal 协议化：一种 Signal + meta 全量自解释
+
+signal 不再用 packet 枚举（FIRST/CLAUSE/TAIL）区分包型，退化为一种 Signal，正交字段
+自解释（凡是 impulse 不具备的字段——说话人/声纹等附加信息——进消息体）：
+
+- `complete`：是否抢占注意力（False = 打断包占坑，True = 发送包完整响应）。
+- `interrupt`（barge_in）：模型 attended 前是否停行为，端侧可配。
+- `priority`：抢占档，端侧可配（打断包默认 WARNING，发送包默认 INFO）。
+- `mode`：失败侧语义（notify / aside），发送包默认 notify。
+- `segment_id`：same-id 键，首包与发送包共享 → same-id absorb（打断 → 响应）。
+
+两条映射：打断包 `complete=False` + interrupt + 高强 + `thinking_effort='none'` 抢占占坑，
+失败丢弃（首包不携带内容）；发送包 `complete=True` + notify + INFO 完整响应，失败 buffer
+进历史（内容不丢）。INFO 的巧处：与运行中的 attention 同优先级，异源降权 → 不打断运行
+中的模型，但空闲时正常响应。
+
+### listener nucleus 协议化重构（落地）
+
+- `ListenerSignal` 退化为正交字段（删 packet/text/turn_id/clause_index/start_ms/end_ms/confidence）。
+- `ListenerNucleus` 删递送范式（interrupt/background/pull）、`first_packet_interrupt`/
+  `clause_response` 两开关、分句 FIFO、tail diff——这些理解全在 listener 侧。
+- 冷却双档：`suppress`（仲裁失败）大冷却 + `attended`（抢占成功）小冷却，只压打断包，
+  不压发送包。nucleus 是多通道「听觉」，cooldown 防多源/单源连续抢占风暴。
+- `as_channel` 最小化：删 set-mode/define-mode/default-mode/pull，留 notice + configure。
+- controller 发射：FIRST → 打断包，TAIL → 发送包，CLAUDE/PARTIAL 不上行（判停在端侧消化）。
+
+### 下一步
+
+1. 挑 listener 侧的 signal（正交配置项成型）。
+2. controller 拆出正交配置项，状态机开始配置化改造（礼仪由参数长出，不再 `ListenEtiquette` 常量化）。
 
 ---
 

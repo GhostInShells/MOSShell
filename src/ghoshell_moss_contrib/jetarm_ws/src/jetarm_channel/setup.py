@@ -28,8 +28,7 @@ setup(
     maintainer="ThirdGerb",
     maintainer_email="thirdgerb@gmail.com",
     description="TODO: Package description",
-    license="TODO: License declaration",
-    tests_require=["pytest"],
+    license="MIT",
     entry_points={
         "console_scripts": [
             "action_test = jetarm_channel.nodes.action_client_node:main",

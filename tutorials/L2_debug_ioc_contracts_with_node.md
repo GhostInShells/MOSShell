@@ -45,7 +45,7 @@ moss --ai manifests providers
 
 ```python
 # line 678-686: manifest providers 优先
-matrix_manifests = self._project.matrix_manifests()
+matrix_manifests = self._project.project_manifests()
 for provider_manifest in matrix_manifests.providers():
     container.register(provider_manifest.value())
 

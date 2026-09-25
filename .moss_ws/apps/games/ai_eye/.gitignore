@@ -1,7 +1,0 @@
-*.log
-venv/
-.venv/
-uv.lock
-runtime/
-.idea
-.env

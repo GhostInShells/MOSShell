@@ -85,8 +85,8 @@ Three commands are built for human interaction:
 | Command | What it does |
 |---------|-------------|
 | `moss-shell` | Shell runtime debugger — test CTML and inspect channels before a Ghost runs |
-| `moss-ghost <name>` | Launch a Ghost interactive terminal — logos stream, SafeMode gate |
-| `moss-mcp` | Expose MOSS runtime as an MCP server for AI coding tools |
+| `moss-shell mcp` | Expose MOSS runtime as an MCP server for AI coding tools |
+| `moss-ghost [--voice none\|speak\|listen\|all] run <name>` | Launch a Ghost interactive terminal — logos stream, SafeMode gate |
 
 The best practice: give your coding agent `moss start` and let the model
 self-drive exploration. The agent reads this document, discovers commands,
@@ -109,7 +109,7 @@ moss project env-init                     # review available env vars and create
 Then launch MOSS as an MCP server and connect your coding agent:
 
 ```bash
-.venv/bin/moss-mcp                     # starts on default port 20773
+.venv/bin/moss-shell mcp               # starts on default port 20773
 ```
 
 Configure Claude Code (or another agent) to connect to the MCP server.
@@ -144,7 +144,7 @@ when you need a minimal, un-reflected view of the code.
 ### Common friction
 
 - Using a moss command without knowing its arguments — `--help` and `all-commands` exist.
-- Proceeding without key knowledge — docs, howtos, codex, and architecture are the exploration toolkit.
+- Proceeding without key knowledge — docs, skills, codex, and architecture are the exploration toolkit.
 - Grepping or searching for a class/module location for more than a minute — run `moss codex architecture` first. If the path you need isn't there, add it.
 - Skipping the CLI `create` commands for features or modes — hand-made files miss conventions.
 - Forgetting `features set-status` before commit, or not reading `features specification`.
@@ -277,7 +277,7 @@ moss project where
 ```
 
 Add MOSS to an existing project. Full Host + Matrix + Environment discovery.
-Expose capabilities via MCP (`moss-mcp`) or instantiate Host directly:
+Expose capabilities via MCP (`moss-shell mcp`) or instantiate Host directly:
 
 ```python
 from ghoshell_moss import MossHost
@@ -338,21 +338,22 @@ Other commands (`create`, `set-status`, `init`) are discoverable via
 This mechanism is project-agnostic — use it in any workspace to track
 AI-assisted workstreams across sessions.
 
-### moss howtos and docs — MOSS project knowledge
+### moss skills and docs — MOSS project knowledge
 
 Two knowledge systems for the MOSS project itself:
 
 | Tool | Nature | Path |
 |------|--------|------|
-| `moss howtos list/read` | Task-oriented guides: build a channel, register manifests, wire up IoC | Doing an integration task → start here for minimum knowledge |
+| `moss skills list/recall` | Action-oriented skills: build a channel, register manifests, wire up IoC | Starting a task → `moss skills recall <你的任务>` for minimum knowledge |
 | `moss docs list/read` | Systematic exposition: architecture rationale, design decisions, conceptual overview | Researching or tackling a complex direction → start here for systematic understanding |
 
 There is no fixed order. Pick the entry point that matches your current
 goal — task execution or system comprehension.
 
-**Before diving into source code or tests to answer a question, run `moss docs list`
-and `moss howtos list` first.** Much of the knowledge you need may already be
-written. A 2-second list scan prevents wasted exploration.
+**Starting a task → run `moss skills recall <你的任务>` first.** Skills are the
+action-oriented entry; recall is the delivery — the model gets the right skill
+when the task starts, not only when it knows to ask. Then `moss docs list` if you
+need the "why" behind a design. A 2-second recall scan prevents wasted exploration.
 ---
 
 ## User Stories
@@ -374,7 +375,7 @@ moss codex blueprint mindflow         # perception/thought/action arbitration
 ```
 
 The three most-used entry points are ctml, channel_builder, and matrix.
-Extended knowledge lives in docs and howtos — explore them as needed
+Extended knowledge lives in docs and skills — explore them as needed
 rather than reading exhaustively upfront.
 
 ### Using MOSS with workspace
@@ -407,10 +408,10 @@ existing one, everything flows through the workspace. What you can do:
 Most commands accept global flags to override MOSS.md defaults:
 `--mode`, `--ghost`, `--network`, `--scope`, `--workspace`.
 See `moss --ai all-commands` for the full surface.
-For every specific development task, use `moss howtos list` or
+For every specific development task, use `moss skills recall <task>` or
 `moss docs list` to find the minimum necessary knowledge entry point.
 
-**Typical development flow:** Launch MOSS via `moss-mcp` with a specific
+**Typical development flow:** Launch MOSS via `moss-shell mcp` with a specific
 mode, connect a coding agent (Claude Code, etc.) to the MCP server, and let
 the model develop cells within the workspace — providing channels for its own
 use and debugging through the MCP loop. The result can be experienced via

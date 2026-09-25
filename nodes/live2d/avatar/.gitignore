@@ -1,0 +1,47 @@
+# .installed: local install-completion marker. Each environment installs on its own —
+# committing this would let one machine's install state leak into others.
+.installed
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Isolated venv (if this node owns its pyproject.toml + .venv)
+.venv/
+
+# runtime artifacts (ledger, logs) — keep dir, ignore contents.
+runtime/*
+!runtime/.gitignore
+
+# ---------------------------------------------------------------------------
+# 不可分发资产 (license 硬要求, 见 INSTALL.md)
+#
+# Live2D 条款: "may not redistribute all or part of the material to third
+# parties". 因此模型资产与 Cubism Core 都不入库 —— 每台机器本地自建。
+# ---------------------------------------------------------------------------
+
+# 每个 avatar 套件的模型资产, 只保留说明文件
+avatars/*/model/
+
+# Cubism Core (专有) + 打包后的 Framework bundle, 只保留 README
+vendor/*
+!vendor/README.md
+
+# 背板图 (本地测试资产, 非模型可分发物, 同样不入库), 只保留 README
+backdrop/*
+!backdrop/README.md
+
+# ---------------------------------------------------------------------------
+# 自包含 (不依赖根 .gitignore): 拆仓库 / 单独发布后这些规则依然成立
+# ---------------------------------------------------------------------------
+
+# cell 级配置 — 只提交模板
+.env
+
+# macOS 杂物
+.DS_Store
+
+# uv.lock 提交 (锁定依赖, 保证另一台机器 uv sync 可复现; 与兄弟 node 同例).
+# 根 .gitignore 全局 ignore 了 uv.lock, 这里用 ! 覆盖回来 —— 不能靠根.
+!uv.lock
+

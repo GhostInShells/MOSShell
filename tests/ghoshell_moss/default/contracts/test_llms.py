@@ -7,6 +7,7 @@ from ghoshell_moss.contracts.llms import (
     Provider,
     ResolvedModel,
     LLMConfig,
+    ModelRef,
     MessageContentConverter,
     register_converter,
     clear_converters,
@@ -394,6 +395,39 @@ class TestLLMConfig:
         )
         assert len(c.services) == 1
 
+    # ---- degradation marker ----
+
+    def test_get_model_provider_not_found_marks_degradation(self, config):
+        result = config.get_model(provider="nonexistent")
+        assert result.model.model == "claude-sonnet-4-6"
+        assert result.degraded_from is not None
+        assert "nonexistent" in result.degraded_from
+
+    def test_get_model_name_not_found_marks_degradation(self, config):
+        result = config.get_model(model="no-such-model")
+        assert result.degraded_from is not None
+        assert "no-such-model" in result.degraded_from
+
+    def test_get_model_provider_model_mismatch_marks_degradation(self, config):
+        """provider 命中但 model 不在其 models 里 → 回退到该 provider 默认。"""
+        result = config.get_model(provider="anthropic", model="gpt-5")
+        assert result.service.name == "anthropic"
+        assert result.model.model == "claude-sonnet-4-6"
+        assert result.degraded_from is not None
+        assert "gpt-5" in result.degraded_from
+
+    def test_get_model_exact_no_degradation(self, config):
+        assert config.get_model(provider="anthropic", model="opus").degraded_from is None
+
+    def test_get_model_default_no_degradation(self, config):
+        assert config.get_model().degraded_from is None
+
+    def test_modelref_carries_degradation(self, config):
+        resolved = config.get_model(model="no-such-model")
+        ref = ModelRef.from_resolved(resolved)
+        assert ref.degraded_from == resolved.degraded_from
+        assert "no-such-model" in ref.degraded_from
+
 
 # ---------------------------------------------------------------------------
 # LLMConfig + YamlConfigStore 集成
@@ -450,7 +484,7 @@ class TestLLMConfigIntegration:
         result = store.get_or_create(default_conf)
 
         assert isinstance(result, LLMConfig)
-        assert result.default.service.name == "anthropic"
+        assert result.default.service.name  # 默认 provider 有值 (具体家族会演进, 不钉死)
         # 确认文件已落盘
         path = store.get_config_path(LLMConfig.conf_name())
         import pathlib

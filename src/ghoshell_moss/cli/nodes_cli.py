@@ -28,12 +28,11 @@ spawn+lock+wait+cleanup, an address-query helper), collapse the glue here.
 Design record: .ai_partners/features/workstreams/2026/06/cells-cli/plan.md
 """
 
-import contextlib
+import asyncio
 import os
+import re
 import signal
-import subprocess
 import sys
-import time
 from importlib import resources
 from pathlib import Path
 
@@ -41,8 +40,8 @@ import typer
 
 from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.core.blueprint.cell import (
-    NodeManifest, NodeLauncher, CellRuntimeInfo, ExecSpec,
-    parse_address,
+    CellAddressCodec, CellRuntimeInfo, DuplicatedError, ExecSpec, NodeLauncher,
+    NodeManifest, NodeProbeError,
 )
 
 from .utils import (
@@ -56,18 +55,35 @@ nodes_app = typer.Typer(
 )
 
 _NODE_STUB_PACKAGE = 'ghoshell_moss.stubs.node'
-_KILL_GRACE_SECONDS = 3.0     # SIGTERM → wait → SIGKILL for kill/prune
 _RUN_GRACE_SECONDS = 5.0      # SIGTERM → wait → SIGKILL when CLI (owner) exits
+
+# --simple: a python identifier becomes both the node name and the module filename.
+# Stricter than CellNamePattern (which also allows -/. digits) on purpose — the stem
+# is written unquoted into the manifest and executed as a script path.
+_PYTHON_STEM_RE = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+
+# Minimal manifest for --simple. exec.command 'python' → the spawner's sys.executable,
+# so a simple node shares the venv that runs moss (no environment of its own).
+# persist/singleton are omitted → NodeManifest defaults (both True) → resident node.
+_SIMPLE_NODE_MANIFEST = """\
+---
+name: '{name}'
+description: ''
+exec:
+  command: python
+  args: {script}
+---
+"""
 
 
 # ===========================================================================
 # target resolve — path only, three-in-one (no name lookup)
 # ===========================================================================
 
-def _resolve_target(target: str | None) -> NodeManifest:
-    """Resolve target path to NodeManifest. Path only, no name lookup.
+def _resolve_target(project: Project, target: str | None) -> NodeManifest:
+    """Resolve target path to NodeManifest via node manager.
 
-    Priority: no-arg → find_upward(cwd) → directory → .py → NODE.md.
+    no-arg → find_upward(cwd) (CLI 特有); 有参 → node_manager.resolve_node.
     """
     if not target:
         found = NodeManifest.find_upward(Path.cwd())
@@ -79,30 +95,11 @@ def _resolve_target(target: str | None) -> NodeManifest:
             raise typer.Exit(code=1)
         return found
 
-    path = Path(target).resolve()
-    if not path.exists():
-        print_error(f"Path does not exist: {target}")
+    try:
+        return project.nodes.resolve_node(target)
+    except (FileNotFoundError, LookupError) as e:
+        print_error(str(e))
         raise typer.Exit(code=1)
-
-    if path.is_dir():
-        manifest = NodeManifest.read_from_directory(path)
-        if manifest is None:
-            print_error(f"No {NodeManifest.MANIFEST_FILENAME} found in directory: {path}")
-            print_info("  Create one with: moss nodes create <name>")
-            raise typer.Exit(code=1)
-        return manifest
-
-    if path.suffix == '.py':
-        return NodeManifest.from_script(path)
-
-    if path.name == NodeManifest.MANIFEST_FILENAME:
-        return NodeManifest.read_from_file(path)
-
-    print_error(f"Cannot resolve target: {target}")
-    print_info(
-        f"  Expected: directory, {NodeManifest.MANIFEST_FILENAME} file, or .py script."
-    )
-    raise typer.Exit(code=1)
 
 
 # ===========================================================================
@@ -111,6 +108,10 @@ def _resolve_target(target: str | None) -> NodeManifest:
 
 @nodes_app.command(name="list")
 def list_nodes(
+    path: str = typer.Argument(
+        None,
+        help="Optional directory to scan. Omit to scan the default node dirs.",
+    ),
     installed: bool = typer.Option(
         False, "--installed",
         help="Only show nodes marked as installed.",
@@ -124,34 +125,40 @@ def list_nodes(
         help="fnmatch pattern to exclude (repeatable).",
     ),
 ):
-    """List discovered node manifests (NODE.md scanning under project.nodes)."""
-    project = Project.discover()
-    manifests = project.nodes.list_nodes(
-        refresh=True,
-        installed=True if installed else None,
-        include=include or None,
-        exclude=exclude or None,
-    )
+    """List discovered node manifests (NODE.md scanning under project.nodes).
 
-    if not manifests:
-        print_warning("No nodes found.")
-        return
+    Pass a directory path to scan an arbitrary location (e.g. .moss/system_test_nodes);
+    omit to scan the default node dirs.
+    """
+    with Project.discover() as project:
+        manifests = project.nodes.list_nodes(
+            refresh=True,
+            paths=[Path(path).resolve()] if path else None,
+            installed=True if installed else None,
+            include=include or None,
+            exclude=exclude or None,
+        )
 
-    rows: list[list[str]] = []
-    for rel_path, m in manifests.items():
-        rows.append([
-            m.name,
-            str(rel_path),
-            "yes" if m.installed else "no",
-            (m.description or "")[:80],
-        ])
+        if not manifests:
+            print_warning("No nodes found.")
+            return
 
-    echo("")
-    print_simple_table(
-        data=rows,
-        headers=["Name", "Path", "Installed", "Description"],
-        title=f"Nodes ({len(rows)} found)",
-    )
+        rows: list[list[str]] = []
+        for rel_path, m in manifests.items():
+            rows.append([
+                m.name,
+                str(rel_path),
+                "persist" if m.persist else "one-shot",
+                "yes" if m.installed else "no",
+                (m.description or "")[:80],
+            ])
+
+        echo("")
+        print_simple_table(
+            data=rows,
+            headers=["Name", "Path", "Type", "Installed", "Description"],
+            title=f"Nodes ({len(rows)} found)",
+        )
 
 
 # ===========================================================================
@@ -171,47 +178,48 @@ def show_node(
 
         moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest
     """
-    manifest = _resolve_target(path)
+    with Project.discover() as project:
+        manifest = _resolve_target(project, path)
 
-    if not manifest.file:
-        print_warning(
-            f"Ad-hoc node from {path} (no NODE.md on disk). "
-            f"Nothing to show. Use 'moss nodes create' or 'moss nodes link'."
-        )
-        return
+        if not manifest.file:
+            print_warning(
+                f"Ad-hoc node from {path} (no NODE.md on disk). "
+                f"Nothing to show. Use 'moss nodes create' or 'moss nodes link'."
+            )
+            return
 
-    node_file = Path(manifest.file)
-    node_dir = node_file.parent
+        node_file = Path(manifest.file)
+        node_dir = node_file.parent
 
-    # Directory listing
-    entries = []
-    for item in sorted(node_dir.iterdir()):
-        marker = "/" if item.is_dir() else ""
-        entries.append(f"  {item.name}{marker}")
+        # Directory listing
+        entries = []
+        for item in sorted(node_dir.iterdir()):
+            marker = "/" if item.is_dir() else ""
+            entries.append(f"  {item.name}{marker}")
 
-    echo("")
-    print_info(f"[show] Node file: {node_file}")
-    print_info(f"       Directory: {node_dir}")
-    print_info("       Contents:")
-    for line in entries:
-        echo(line)
-
-    echo("")
-    print_simple_panel(
-        node_file.read_text(encoding='utf-8'),
-        title=f"{NodeManifest.MANIFEST_FILENAME} (verbatim)",
-    )
-
-    install_md = node_dir / NodeManifest.INSTALL_FILENAME
-    installed_marker = node_dir / NodeManifest.INSTALLED_FILE
-    if install_md.exists() and not installed_marker.exists():
         echo("")
-        print_warning(
-            f"Not installed. {NodeManifest.INSTALL_FILENAME} declares steps; "
-            f"'run' will refuse until installed."
+        print_info(f"[show] Node file: {node_file}")
+        print_info(f"       Directory: {node_dir}")
+        print_info("       Contents:")
+        for line in entries:
+            echo(line)
+
+        echo("")
+        print_simple_panel(
+            node_file.read_text(encoding='utf-8'),
+            title=f"{NodeManifest.MANIFEST_FILENAME} (verbatim)",
         )
-        print_info(f"  Read: {install_md}")
-        print_info(f"  Then: moss nodes install {path}")
+
+        install_md = node_dir / NodeManifest.INSTALL_FILENAME
+        installed_marker = node_dir / NodeManifest.INSTALLED_FILE
+        if install_md.exists() and not installed_marker.exists():
+            echo("")
+            print_warning(
+                f"Not installed. {NodeManifest.INSTALL_FILENAME} declares steps; "
+                f"'run' will refuse until installed."
+            )
+            print_info(f"  Read: {install_md}")
+            print_info(f"  Then: moss nodes install {path}")
 
 
 # ===========================================================================
@@ -223,14 +231,27 @@ def create_node(
     path: Path = typer.Argument(
         help="Target directory for the new node (e.g. '.moss/nodes/tools/my-node').",
     ),
+    simple: str = typer.Option(
+        "", "--simple",
+        help="Minimal node instead of the full stub: '<STEM>.py' + NODE.md only "
+             "(no README / INSTALL.md / .gitignore). STEM is a python identifier; "
+             "it becomes both the node name and the module filename.",
+    ),
 ):
     """Create a new node from the stub template at the given path.
 
-    The directory's last component becomes the node name. All other commands
-    (run, show, install, link) already use path — this one does too.
+    Two shapes. Default: the full stub (NODE.md + README.md + INSTALL.md + main.py);
+    the directory's last component becomes the node name. `--simple <STEM>`: only
+    '<STEM>.py' + a minimal NODE.md, both named by STEM — for scratch nodes that need
+    no docs and no install steps. All other commands (run, show, install, link)
+    already use path — this one does too.
     """
+    if simple and not _PYTHON_STEM_RE.fullmatch(simple):
+        print_error(f"--simple expects a python identifier, got {simple!r}.")
+        print_info("  e.g. --simple my_node  ->  my_node.py + NODE.md")
+        raise typer.Exit(code=1)
+
     target_dir = path.resolve()
-    name = target_dir.name
 
     if target_dir.exists():
         print_error(f"Directory already exists: {target_dir}")
@@ -239,24 +260,45 @@ def create_node(
     target_dir.mkdir(parents=True, exist_ok=False)
 
     stub_resources = resources.files(_NODE_STUB_PACKAGE)
+
+    if simple:
+        script = _copy_simple_node(stub_resources, target_dir, stem=simple)
+        print_success(f"Node '{simple}' created at {target_dir}")
+        echo("")
+        print_info(f"  Files: {script} + {NodeManifest.MANIFEST_FILENAME}")
+        print_info(f"  Run: moss nodes run {path}")
+        return
+
+    name = target_dir.name
     _copy_stub(stub_resources, target_dir, name=name)
 
     print_success(f"Node '{name}' created at {target_dir}")
     echo("")
-    print_info(f"  Read {target_dir / 'README.md'} — what to fill in before running or sharing.")
-    print_info(f"  Edit {target_dir / NodeManifest.MANIFEST_FILENAME} — name, exec, instruction body.")
-    install_md = target_dir / NodeManifest.INSTALL_FILENAME
-    if install_md.exists():
-        print_info(f"  Read {install_md} — declares install steps.")
-        print_info(f"       Delete it if no install is needed (then the node is installed by default).")
-        print_info(f"       Otherwise run the steps, then: moss nodes install {path}")
+    print_info(f"  Read {target_dir / 'README.md'} — it maps the files in this node and what each one is for.")
     print_info(f"  Run: moss nodes run {path}")
+
+
+def _copy_simple_node(stub_node, target_dir: Path, *, stem: str) -> str:
+    """--simple: '<stem>.py' + a minimal NODE.md. Returns the script filename.
+
+    Reuses the stub's main.py rather than carrying a second copy, so the two
+    node shapes cannot drift apart. No README / INSTALL.md / .gitignore — a simple
+    node has no developer face and no install steps, and its name comes from the
+    stem, not the directory.
+    """
+    script = f'{stem}.py'
+    text = (stub_node / 'main.py').read_text(encoding='utf-8')
+    # The stub docstring names the file 'main.py'; rename it to match this node.
+    target_dir.joinpath(script).write_text(text.replace('main.py', script), encoding='utf-8')
+    manifest = _SIMPLE_NODE_MANIFEST.format(name=stem, script=script)
+    target_dir.joinpath(NodeManifest.MANIFEST_FILENAME).write_text(manifest, encoding='utf-8')
+    return script
 
 
 def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:
     """Copy stub files into target_dir, replacing {name} placeholders in text files."""
     for item in stub_node.iterdir():
-        if item.name == "__init__.py":
+        if item.name in ("__init__.py", "__pycache__"):
             continue
         target_item = target_dir / item.name
         if item.is_dir():
@@ -361,21 +403,22 @@ def install_node(
     Does NOT run install steps. Read INSTALL.md, run the steps via bash, then
     call this command.
     """
-    manifest = _resolve_target(path)
-    if not manifest.file:
-        print_error("Cannot install an ad-hoc node (no NODE.md on disk).")
-        raise typer.Exit(code=1)
+    with Project.discover() as project:
+        manifest = _resolve_target(project, path)
+        if not manifest.file:
+            print_error("Cannot install an ad-hoc node (no NODE.md on disk).")
+            raise typer.Exit(code=1)
 
-    cell_dir = Path(manifest.file).parent
-    install_md = cell_dir / NodeManifest.INSTALL_FILENAME
-    if not install_md.exists():
-        print_warning(f"No {NodeManifest.INSTALL_FILENAME} in {cell_dir}.")
-        print_info("Node requires no installation — nothing to do.")
-        return
+        cell_dir = Path(manifest.file).parent
+        install_md = cell_dir / NodeManifest.INSTALL_FILENAME
+        if not install_md.exists():
+            print_warning(f"No {NodeManifest.INSTALL_FILENAME} in {cell_dir}.")
+            print_info("Node requires no installation — nothing to do.")
+            return
 
-    installed_file = cell_dir / NodeManifest.INSTALLED_FILE
-    installed_file.touch()
-    print_success(f"Node '{manifest.name}' marked as installed ({installed_file}).")
+        installed_file = cell_dir / NodeManifest.INSTALLED_FILE
+        installed_file.touch()
+        print_success(f"Node '{manifest.name}' marked as installed ({installed_file}).")
 
 
 # ===========================================================================
@@ -395,85 +438,120 @@ def run_node(
 ):
     """Launch a node cell in the foreground. CLI is owner (Ctrl+C stops cleanly).
 
-    Ctrl+C forwards SIGTERM to the child; 5s grace then SIGKILL bottom-line.
+    The spawn path is the single throat project.nodes.spawn_node — it enforces the
+    pre-launch probe (check: in NODE.md) and the installed gate before exec.
     Extra args after `--` are appended to the child argv:
 
         moss nodes run nodes/tools/foo -- --port 8000 --debug
     """
-    project = Project.discover()
-    env = project.env
-    manifest = _resolve_target(target)
+    with Project.discover() as project:
+        env = project.env
+        manifest = _resolve_target(project, target)
 
-    if not manifest.installed:
-        install_path = (
-            Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
-            if manifest.file else "(ad-hoc)"
-        )
-        print_error(f"Node '{manifest.name}' is not installed.")
-        print_info(f"  See {install_path}, run install steps, then:")
-        print_info("    moss nodes install <path>")
-        raise typer.Exit(code=1)
-
-    launcher = NodeLauncher.from_manifest(env, manifest)
-    if ctx.args:
-        launcher.run.extend(ctx.args)
-
-    _print_launch_debug(launcher, env)
-
-    try:
-        with contextlib.ExitStack() as stack:
-            # singleton 冲突: 只读探测给友好提示, 但**不抢锁** — 真锁归子进程
-            # (enter_cell_lifecycle fast-fail). 父子进程共抢同一锁曾在 M7 死锁
-            # (父抢 → 子等到超时), 见 cell-run-cycle FEATURE.md 与 workspace.py
-            # FileLocker 注释. is_locked 是只读探测: _flock_ex_nb 拿到就释放,
-            # 无 TOCTOU 死锁; 子进程 fast-fail 作兜底.
-            if launcher.runtime.cell.singleton:
-                probe = env.workspace.lock(launcher.runtime.locker_name())
-                if probe.is_locked():
-                    print_error(
-                        f"Singleton conflict for '{manifest.name}': lock "
-                        f"'{launcher.runtime.locker_name()}' held by another process."
-                    )
-                    print_info("  moss nodes status         # inspect what's running")
-                    print_info("  moss nodes kill <address> # stop the running instance")
-                    raise typer.Exit(code=1)
-
-            proc = subprocess.Popen(
-                launcher.run,
-                cwd=str(launcher.cwd),
-                env=launcher.env,
-                start_new_session=True,
-                # stdout/stderr default = inherit → directly to terminal
+        if not manifest.installed:
+            install_path = (
+                Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
+                if manifest.file else "(ad-hoc)"
             )
-            launcher.runtime.pid = proc.pid
-            launcher.runtime.pgid = os.getpgid(proc.pid)
-            launcher.runtime.write_to_runtime_dir(env.cell_runtimes_dir)
+            print_error(f"Node '{manifest.name}' is not installed.")
+            print_info(f"  See {install_path}, run install steps, then:")
+            print_info("    moss nodes install <path>")
+            raise typer.Exit(code=1)
 
-            _forward_signals(proc)
+        extra_args = list(ctx.args) if ctx.args else None
 
+        launcher = NodeLauncher.from_manifest(env, manifest)
+        if extra_args:
+            launcher.run.extend(extra_args)
+        _print_launch_debug(launcher, env)
+
+        try:
+            returncode = asyncio.run(_foreground_run(project, manifest, extra_args))
+        except NodeProbeError as e:
+            print_error(str(e))
+            raise typer.Exit(code=1)
+        except DuplicatedError as e:
+            print_error(str(e))
+            print_info("  moss nodes status         # inspect what's running")
+            print_info("  moss nodes kill <address> # stop the running instance")
+            raise typer.Exit(code=1)
+
+        if returncode != 0:
+            echo("")
+            print_error(
+                f"Node exited abnormally (returncode={returncode}). "
+                f"See child stderr above for cause."
+            )
+        sys.exit(returncode)
+
+
+async def _foreground_run(
+    project: Project,
+    manifest: NodeManifest,
+    extra_args: list[str] | None = None,
+) -> int:
+    """Spawn via the single throat, block in foreground, forward signals.
+
+    The child inherits stdout/stderr (capture=None), so logs reach the terminal.
+    SIGINT/SIGTERM → SIGTERM to the child; after _RUN_GRACE_SECONDS without exit,
+    SIGKILL the process group (bottom-line, same as the old Popen path).
+    """
+    loop = asyncio.get_running_loop()
+    _runtime, managed = await project.nodes.spawn_node(manifest, extra_args=extra_args)
+    proc = managed.process
+    pgid = managed.meta.pgid
+    grace_task: asyncio.Task | None = None
+
+    def _forward(_signum=None, _frame=None):
+        nonlocal grace_task
+        try:
+            proc.send_signal(signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        if grace_task is None:
+            grace_task = asyncio.ensure_future(_grace_kill_pgid(pgid))
+
+    loop.add_signal_handler(signal.SIGINT, _forward)
+    loop.add_signal_handler(signal.SIGTERM, _forward)
+    try:
+        return await proc.wait()
+    finally:
+        for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                proc.wait()
-            finally:
-                if proc.poll() is None:
-                    try:
-                        proc.wait(timeout=_RUN_GRACE_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            os.killpg(launcher.runtime.pgid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        proc.wait()
-                launcher.runtime.delete_invalid(env.cell_runtimes_dir)
-    except typer.Exit:
-        raise
+                loop.remove_signal_handler(sig)
+            except (ValueError, RuntimeError):
+                pass
+        if grace_task is not None and not grace_task.done():
+            grace_task.cancel()
 
-    if proc.returncode != 0:
-        echo("")
-        print_error(
-            f"Node exited abnormally (returncode={proc.returncode}). "
-            f"See child stderr above for cause."
-        )
-    sys.exit(proc.returncode)
+
+async def _grace_kill_pgid(pgid: int | None) -> None:
+    await asyncio.sleep(_RUN_GRACE_SECONDS)
+    if pgid:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+# ===========================================================================
+# usage: answer-node — headless QA answering terminal (no GUI)
+# ===========================================================================
+
+@nodes_app.command(name="answer-node")
+def answer_node(
+    namespace: str = typer.Option(
+        "", "--namespace", "-n",
+        help="QA namespace to watch. Default: public ('').",
+    ),
+):
+    """Answer QA questions broadcast on a namespace — headless, prompt-toolkit, no GUI.
+
+    Minimal standalone QA terminal: watches a namespace and answers questions as
+    they arrive. Runs in-process via Matrix.new (no subprocess, no node dir).
+    """
+    from ghoshell_moss.cli.nodes_answer import run_answer_node
+    run_answer_node(namespace)
 
 
 def _print_launch_debug(launcher: NodeLauncher, env) -> None:
@@ -502,50 +580,20 @@ def _print_launch_debug(launcher: NodeLauncher, env) -> None:
     print_info("--- child stdout/stderr below ---")
 
 
-def _forward_signals(proc: subprocess.Popen) -> None:
-    """SIGINT/SIGTERM → forward to child. Child owns graceful shutdown logic."""
-    def _handler(signum, frame):
-        try:
-            proc.send_signal(signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    signal.signal(signal.SIGINT, _handler)
-    signal.signal(signal.SIGTERM, _handler)
-
-
 def _match_address(info_address: str, query: str) -> bool:
-    """Match a query against a full cell address.
-
-    Two modes:
-      - Full address: exact match on 'role/name/uid'.
-      - UID prefix:   query matches the leading chars of the address's uid segment.
-                      Git short-hash style — operator can type a few chars of uid.
-
-    Ambiguity (multiple matches) is caller's problem — this function only judges
-    one-at-a-time. Callers should collect all matches, not break early.
-    """
-    if info_address == query:
-        return True
-    try:
-        _, _, uid = parse_address(info_address)
-    except ValueError:
-        return False
-    return bool(query) and uid.startswith(query)
+    return CellAddressCodec(info_address).match(query)
 
 
-def _find_runtime(runtime_dir: Path, query: str) -> list[CellRuntimeInfo]:
+def _find_runtime(infos: list[CellRuntimeInfo], query: str) -> list[CellRuntimeInfo]:
     """Collect all runtime infos matching query. Returns [] if none, [one] on unique."""
-    return [
-        info for info in CellRuntimeInfo.iter_runtime_info(runtime_dir)
-        if _match_address(info.address, query)
-    ]
+    return [info for info in infos if _match_address(info.address, query)]
 
 
 def _resolve_single_runtime(
-    runtime_dir: Path, query: str, *, action: str,
+    infos: list[CellRuntimeInfo], query: str, *, action: str,
 ) -> CellRuntimeInfo | None:
     """Resolve query to exactly one runtime. Print operator hint on ambiguity."""
-    matches = _find_runtime(runtime_dir, query)
+    matches = _find_runtime(infos, query)
     if not matches:
         print_error(f"No runtime entry found for '{query}'.")
         return None
@@ -570,18 +618,19 @@ def status_nodes(
         "", help="Node address to inspect. Omit to list all runtime entries.",
     ),
 ):
-    """Show runtime status of nodes (reads CellRuntimeInfo files, no matrix)."""
-    project = Project.discover()
-    runtime_dir = project.env.cell_runtimes_dir
+    """Show runtime status of nodes (reads CellRuntimeInfo ledger via node manager)."""
+    with Project.discover() as project:
+        manager = project.nodes
+        runtime_dir = project.env.cell_runtimes_dir
 
-    if address:
-        _show_runtime_detail(project, runtime_dir, address)
-    else:
-        _list_runtime(runtime_dir)
+        if address:
+            _show_runtime_detail(manager, runtime_dir, address)
+        else:
+            _list_runtime(manager)
 
 
-def _list_runtime(runtime_dir: Path) -> None:
-    infos = list(CellRuntimeInfo.iter_runtime_info(runtime_dir))
+def _list_runtime(manager) -> None:
+    infos = manager.list_runtimes()
     if not infos:
         print_info("No runtime entries found.")
         return
@@ -605,17 +654,17 @@ def _list_runtime(runtime_dir: Path) -> None:
     )
 
 
-def _show_runtime_detail(project: Project, runtime_dir: Path, address: str) -> None:
-    matched = _resolve_single_runtime(runtime_dir, address, action="inspect")
+def _show_runtime_detail(manager, runtime_dir: Path, address: str) -> None:
+    matched = _resolve_single_runtime(manager.list_runtimes(), address, action="inspect")
     if matched is None:
         return
 
     state = "alive" if matched.is_alive() else "stale"
 
-    # Best-effort NodeManifest.description reverse lookup via project.nodes
+    # Best-effort NodeManifest.description reverse lookup via node manager
     manifest_desc = "—"
     try:
-        for _, m in project.nodes.list_nodes(refresh=False).items():
+        for _, m in manager.list_nodes(refresh=False).items():
             if m.name == matched.cell.name and m.category == matched.cell.category:
                 manifest_desc = m.description or "—"
                 break
@@ -639,6 +688,7 @@ def _show_runtime_detail(project: Project, runtime_dir: Path, address: str) -> N
             ["home", matched.cell.home or "—"],
             ["parent", matched.cell.parent_address or "—"],
             ["providing", ", ".join(matched.cell.providing) or "—"],
+            ["event_level", matched.cell.event_level.name if matched.cell.event_level else "—"],
             ["ledger", str(CellRuntimeInfo.filepath(runtime_dir, matched.address))],
         ],
         headers=["Property", "Value"],
@@ -659,49 +709,15 @@ def kill_node(
     ),
 ):
     """Kill a running node. Default: SIGTERM → 3s grace → SIGKILL. --force: immediate SIGKILL."""
-    project = Project.discover()
-    runtime_dir = project.env.cell_runtimes_dir
+    with Project.discover() as project:
+        manager = project.nodes
 
-    matched = _resolve_single_runtime(runtime_dir, address, action="kill")
-    if matched is None:
-        raise typer.Exit(code=1)
+        matched = _resolve_single_runtime(manager.list_runtimes(), address, action="kill")
+        if matched is None:
+            raise typer.Exit(code=1)
 
-    if matched.pgid > 0:
-        _graceful_terminate(matched.pgid, force=force)
-
-    matched.delete_invalid(runtime_dir)
-    print_success(f"Killed {matched.address} (pid={matched.pid}).")
-
-
-def _graceful_terminate(pgid: int, *, force: bool) -> None:
-    """SIGTERM + short grace → SIGKILL, or --force = immediate SIGKILL.
-
-    Shared by kill and prune. Grace window is _KILL_GRACE_SECONDS.
-    """
-    if force:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        return
-
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-
-    deadline = time.time() + _KILL_GRACE_SECONDS
-    while time.time() < deadline:
-        try:
-            os.killpg(pgid, 0)   # signal 0 = liveness probe
-        except ProcessLookupError:
-            return
-        time.sleep(0.1)
-
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+        manager.kill_cell(matched.address, force=force)
+        print_success(f"Killed {matched.address} (pid={matched.pid}).")
 
 
 # ===========================================================================
@@ -723,29 +739,15 @@ def prune_nodes(
 
     --keep-alive: only remove dead entries.
     """
-    project = Project.discover()
-    runtime_dir = project.env.cell_runtimes_dir
+    with Project.discover() as project:
+        manager = project.nodes
 
-    infos = list(CellRuntimeInfo.iter_runtime_info(runtime_dir))
-    if not infos:
-        print_info("No runtime entries to prune.")
-        return
+        removed, killed, skipped = manager.prune(keep_alive=keep_alive, force=force)
+        if removed == 0 and skipped == 0:
+            print_info("No runtime entries to prune.")
+            return
 
-    killed = 0
-    removed = 0
-    skipped = 0
-    for info in infos:
-        if info.is_alive():
-            if keep_alive:
-                skipped += 1
-                continue
-            if info.pgid > 0:
-                _graceful_terminate(info.pgid, force=force)
-            killed += 1
-        info.delete_invalid(runtime_dir)
-        removed += 1
-
-    msg = f"Pruned {removed} entries ({killed} killed alive)"
-    if skipped:
-        msg += f", {skipped} live entries kept"
-    print_success(msg + ".")
+        msg = f"Pruned {removed} entries ({killed} killed alive)"
+        if skipped:
+            msg += f", {skipped} live entries kept"
+        print_success(msg + ".")

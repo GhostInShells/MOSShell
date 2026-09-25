@@ -1,17 +1,15 @@
-"""Logging contract — workspace-aware logger provider and formatter utilities."""
-
-from typing import Iterable, Type
+"""Logging contract — logger utilities and formatter helpers."""
 
 from ghoshell_common.contracts import LoggerItf, config_logger_from_yaml
-from ghoshell_container import Provider, IoCContainer, INSTANCE
-from .workspace import Workspace
-from logging import handlers
 import logging
 
 __all__ = [
-    "LoggerItf", 'config_logger_from_yaml', 'get_console_logger', 'WorkspaceLoggerProvider',
+    "LoggerItf", 'config_logger_from_yaml', 'get_console_logger',
     "get_moss_logger", "default_logger_formatter",
+    "MOSS_FILE_HANDLER_NAME", "bind_moss_file_handler",
 ]
+
+MOSS_FILE_HANDLER_NAME = 'moss_file_handler'
 
 
 def get_moss_logger() -> LoggerItf:
@@ -22,6 +20,41 @@ def default_logger_formatter() -> logging.Formatter:
     return logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s [%(filename)s:%(lineno)d]"
     )
+
+
+def bind_moss_file_handler(
+        logger: logging.Logger,
+        log_file,
+        *,
+        handler_name: str = MOSS_FILE_HANDLER_NAME,
+) -> None:
+    """把运行时文件 handler 绑到 logger 上 — 幂等 (按 handler name 去重).
+
+    logging.yml 只配格式/等级, 文件路径与轮换策略是运行时确定的, 由这里统一:
+    TimedRotatingFileHandler(when='midnight', backupCount=5) → log_file.
+
+    Project (首选装配点) 与 MatrixLoggerProvider (兜底) 都走这个函数, 共享同一
+    handler name 做幂等去重, 避免第二份真源 (曾因此漏改 when='d').
+    """
+    from logging.handlers import TimedRotatingFileHandler
+
+    for h in logger.handlers:
+        if h.get_name() == handler_name:
+            return
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    handler = TimedRotatingFileHandler(
+        filename=str(log_file),
+        # 'midnight' 按自然日边界算轮换点; 'd' 取的是 (文件 mtime + 24h),
+        # 而每个 moss 命令都是新建 handler 的短命进程 — 每天都用反而永远轮不到.
+        when='midnight',
+        interval=1,
+        backupCount=5,
+    )
+    handler.set_name(handler_name)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(default_logger_formatter())
+    logger.addHandler(handler)
 
 
 def get_console_logger(level=logging.ERROR, name: str = "ghost"):
@@ -35,78 +68,3 @@ def get_console_logger(level=logging.ERROR, name: str = "ghost"):
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
-
-
-class WorkspaceLoggerProvider(Provider[LoggerItf]):
-
-    def __init__(
-            self,
-            *,
-            name: str = 'moss',
-            default_handler_name: str = 'runtime_log',
-            log_config_file='logging.yaml',
-            runtime_log_dir: str = 'logs',
-            log_file_name: str = 'moss.log',
-            log_when: str = 'd',
-            log_interval: int = 1,
-            backup_count: int = 5,
-    ):
-        self.name = name
-        self.default_handler_name = default_handler_name
-        self.runtime_log_dir = runtime_log_dir
-        self.log_config_file = log_config_file
-        self.log_file_name = log_file_name
-        self.log_when = log_when
-        self.log_interval = log_interval
-        self.backup_count = backup_count
-
-    def singleton(self) -> bool:
-        return True
-
-    def aliases(self) -> Iterable[Type[INSTANCE]]:
-        # 同时可以被 logging.Logger 作为 Contract
-        yield logging.Logger
-
-    def factory(self, con: IoCContainer) -> LoggerItf:
-        workspace = con.get(Workspace)
-        if workspace is None:
-            # 容错, 如果 workspace 不存在, 则退回到通过 logging 返回日志.
-            return logging.getLogger(self.name)
-
-        # 1. 尝试从 YAML 加载全局配置
-        config_file = workspace.configs().abspath().joinpath(self.log_config_file)
-        if config_file.exists():
-            # 注意：config_logger_from_yaml 最好设置 disable_existing_loggers=False
-            config_logger_from_yaml(str(config_file.absolute()))
-
-        # 2. 获取 Logger 实例
-        logger = logging.getLogger(self.name)
-
-        # 3. 防止重复添加 Handler (关键修复)
-        # 检查是否已经有名为 'moss_file_handler' 的处理器，避免多次初始化容器导致日志翻倍
-        default_handler_name = self.default_handler_name
-        if not any(getattr(h, 'name', None) == default_handler_name for h in logger.handlers):
-            # 4. 确定日志文件路径并确保目录存在
-            log_dir_storage = workspace.runtime().sub_storage(self.runtime_log_dir)
-            log_dir_path = log_dir_storage.abspath()
-            log_dir_path.mkdir(parents=True, exist_ok=True)  # 兜底创建
-
-            filename_path = log_dir_path.joinpath(self.log_file_name)
-
-            # 5. 创建并配置 Handler
-            file_handler = handlers.TimedRotatingFileHandler(
-                filename=str(filename_path),
-                when=self.log_when,
-                interval=self.log_interval,
-                backupCount=self.backup_count,
-                encoding='utf-8',  # 建议显式指定编码，防止 Windows 下乱码
-            )
-            file_handler.name = default_handler_name  # 给 handler 命名以便检查
-
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s [%(filename)s:%(lineno)d]"
-            )
-            file_handler.setFormatter(formatter)
-
-            logger.addHandler(file_handler)
-        return logger

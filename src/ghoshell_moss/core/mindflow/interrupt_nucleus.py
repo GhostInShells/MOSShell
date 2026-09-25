@@ -1,24 +1,24 @@
 """InterruptNucleus — turns ``interrupt`` signals into interrupt-mode impulses.
 
-四元 nucleus (扩为五元) 之一: 配对 ``ImpulsePrimitive.interrupt`` 的"中断动作" 通道.
-监听 ``InterruptSignalMeta`` (signal name = ``"interrupt"``), 把 signal 包装成
-``FATAL + notify + thinking_effort='none' + interrupt=True`` 的 impulse.
+Functional intent: make the ghost stop whatever it is doing right now — no
+response, no thinking, just stop. Pairs ``ImpulsePrimitive.interrupt``.
 
-FATAL 保证抢占成功, notify 走 default 成功路径创建新 attention,
-effort='none' 让 ghost.articulate 提前返回, ``interrupt=True`` 让
-``ghost_runtime._run_articulator`` 在新 attention 起步时调
-``shell.stop_interpretation()`` 清干净旧 logos.
+Mechanism: wraps each signal into ``FATAL + notify + thinking_effort='none' +
+interrupt=True``. FATAL guarantees preemption, notify creates a new attention
+through the default success path, effort='none' makes articulate return early,
+and interrupt=True stops the shell's running logos at the new attention's start.
 
-结构对比:
-- 与 ``CommandNucleus`` 同构 (fire-and-forget, 无 buffer)
-- 与 ``BroadcastNucleus`` (未实现, 由 ImpulsePrimitive.broadcast 单原语承载) 对偶:
-  broadcast 用 silent 不接管, interrupt 用 notify 接管但立即放手
+Structure:
+- isomorphic to ``CommandNucleus`` (fire-and-forget, no buffer)
+- dual to broadcast (``ImpulsePrimitive.broadcast``, no dedicated nucleus):
+  broadcast uses aside to buffer without taking attention; interrupt uses notify
+  to take attention then drop it immediately
 
-反向 suppress 模型:
-- 与 ``InputSignalNucleus`` 的"失败 suppress" (输方反复试) 相反
-- interrupt 是 "胜利 suppress" — 仲裁胜利后进入冷静期, 防止短时间内反复 interrupt
-  导致 shell churn (反复 stop_interpretation + 重建 attention 的 DDOS-like 抖动)
-- 冷静期内 add_signal 静默丢 — interrupt 没有"累积" 语义, 多个等价于一个
+Reverse suppress (victory-side cooldown, dual to InputSignalNucleus's loss-side):
+- attended starts the cooldown, preventing repeated interrupts from churning the
+  shell (shell.clear + attention rebuild, DDOS-like)
+- within the cooldown add_signal silently drops — interrupts have no accumulation
+  semantics, several are equivalent to one
 """
 import time
 from typing import Callable, Iterable
@@ -40,13 +40,10 @@ __all__ = [
 
 
 class InterruptSignalMeta(SignalMeta):
-    """Signal meta for ``interrupt`` — must-deliver, must-interrupt.
+    """Signal meta for ``interrupt`` — stop, right now.
 
-    与 ``BroadcastSignalMeta`` (由 ImpulsePrimitive.broadcast 离散使用)
-    形成对偶: broadcast 不接管 attention 只 buffer messages;
-    interrupt 接管 attention 并打断 shell 执行, 但立即放手不思考.
-
-    priority 锁 FATAL — interrupt 没有"低优中断" 的语义.
+    The ghost drops what it is doing and starts nothing new — it just stops.
+    Asking again right away changes nothing.
     """
 
     @classmethod
@@ -61,20 +58,18 @@ class InterruptSignalMeta(SignalMeta):
 class InterruptNucleus(Nucleus):
     """Interrupt channel — last-impulse cache with victory-side cooldown.
 
-    Cache 模式: ``add_signal`` 写入 ``_impulse``, mindflow 通过 ``peek/pop_impulse``
-    拉取. interrupt 是离散事件, last-wins (新的覆盖旧的); 即便多个 interrupt
-    在 mindflow 消费前抵达, 仲裁结果都等价 — 都是 FATAL 抢占成功, 都触发
-    shell.stop_interpretation.
+    Functional intent: stop now, then drop the attention without thinking.
 
-    反向 suppress (与 InputSignalNucleus 等"失败侧 suppress" 对偶):
-    - pop_impulse 触发时启动冷静期 (impulse 被仲裁取出且执行, 视为胜利)
-    - 冷静期内 add_signal 静默丢 (不进 cache, 不通知)
-    - 冷静期到 → 自然恢复
+    Mechanism: last-wins cache. ``add_signal`` writes ``_impulse``, mindflow pulls
+    via ``peek`` and confirms via ``attended`` (which starts the cooldown). Multiple
+    interrupts arriving before consumption are equivalent — each preempts with
+    FATAL and triggers shell.clear at the new attention's first frame.
 
-    Why 反向: FATAL 仲裁只有 same-id absorb 或 stale 才会"失败", 这两种都不
-    需要冷静期; 真实 DOS 风险是反向 — 反复成功 interrupt 导致 shell churn.
-
-    Why 不聚合: 多个 interrupt 合并无语义价值, 第一个就够了.
+    Reverse suppress (victory-side, dual to InputSignalNucleus's loss-side): the
+    cooldown starts on attended, not on losing. FATAL only "loses" to same-id
+    absorb or stale — neither needs a cooldown; the real churn risk is repeated
+    successful interrupts. No aggregation: several interrupts carry no extra
+    meaning, the first suffices.
     """
 
     NAME = 'interrupt_nucleus'
@@ -88,7 +83,7 @@ class InterruptNucleus(Nucleus):
     ):
         self._name = name
         self._suppress_seconds = suppress_seconds
-        self._impulse_notify: Callable[[Impulse], None] | None = None
+        self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
         # 反向 suppress: 胜利后才设, 失败侧不动.
@@ -121,8 +116,8 @@ class InterruptNucleus(Nucleus):
         if impulse is None:
             return
         self._impulse = impulse
-        if self._impulse_notify:
-            self._impulse_notify(impulse)
+        if self._fire_impulse:
+            self._fire_impulse(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
         if not InterruptSignalMeta.match(signal):
@@ -135,17 +130,17 @@ class InterruptNucleus(Nucleus):
     def with_bus(
             self,
             signal_broadcast: Callable[[Signal], None],
-            impulse_notify: Callable[[Impulse], None],
+            fire_impulse: Callable[[Impulse], None],
     ) -> None:
-        self._impulse_notify = impulse_notify
+        self._fire_impulse = fire_impulse
 
-    def suppress(self, suppress_by: Impulse) -> None:
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
         # 失败侧不进冷静期 — FATAL 仲裁失败只可能是 same-id absorb 或 stale,
         # 这两种都不需要冷静期 (absorb 已被内部处理, stale 在入口丢).
         # 但 cache 仍要清, 让 nucleus 状态正确反映 "没有 pending impulse".
         self._impulse = None
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         # 反向 suppress: 仲裁胜利后启动冷静期, 防止 shell churn.
         if not self._is_running:
             return

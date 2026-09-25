@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>stage.html — 物料池 + 分组 + 布局 + 全屏 验证</title>
+<style>
+  :root {
+    --rail-w: 220px;
+    --gap: 6px;
+    --border: #334;
+    --accent: #4f6;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    font: 13px/1.4 ui-monospace, monospace;
+    background: #111;
+    color: #ddd;
+  }
+
+  /* ===== 左 rail：group 卡片 ===== */
+  #rail {
+    width: var(--rail-w);
+    border-right: 1px solid var(--border);
+    padding: 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: #161616;
+  }
+  .tile {
+    position: relative;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .tile .name { font-weight: 600; }
+  .tile .badge {
+    position: absolute; top: 8px; right: 10px;
+    background: #222; border-radius: 10px;
+    padding: 0 7px; color: #999; font-size: 11px;
+  }
+  .tile .notify { margin-top: 4px; color: #666; font-size: 11px; min-height: 14px; }
+  .tile.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent) inset;
+  }
+  /* activate 效果：模型切组时的 n 秒边框轮转（人自己点 = 不加这层，直接 active） */
+  .tile.activated {
+    animation: activate 3s linear infinite;
+  }
+  @keyframes activate {
+    0%   { outline: 2px solid var(--accent); outline-offset: 2px; }
+    50%  { outline: 2px solid #f5a; outline-offset: 2px; }
+    100% { outline: 2px solid var(--accent); outline-offset: 2px; }
+  }
+
+  /* ===== 中：stage（分格区）===== */
+  #stage-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  #stage {
+    flex: 1;
+    position: relative;
+    display: grid;
+    gap: var(--gap);
+    padding: var(--gap);
+  }
+  /* 每个物料 = wrapper（裁剪）+ iframe。iframe 尺寸只由 wrapper 决定，永不 reparent。 */
+  .slot {
+    position: relative;
+    overflow: hidden;          /* 裁剪 reveal 动画的载体，也是 WD2 的落点 */
+    border: 1px solid var(--border);
+    background: #0a0a0a;
+    min-width: 0; min-height: 0;
+    transition: box-shadow .2s;
+  }
+  .slot iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .slot.hidden { display: none; }   /* 分组切换：display:none 保活，不重载 */
+
+  /* ===== 全屏：scrim 插层（DOM 结构不动，只动 z） ===== */
+  #scrim {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,.55);
+    z-index: 9; display: none;
+  }
+  #scrim-exit {
+    position: absolute; top: 12px; right: 12px; z-index: 11;
+    background: #222; color: #ddd; border: 1px solid #555;
+    border-radius: 4px; padding: 6px 12px; cursor: pointer;
+  }
+  .slot.fullscreen { z-index: 10; }  /* 被全屏的物料盖在 scrim 之上 */
+
+  /* ===== 控制条（模拟模型的 arrange 命令，纯验证用） ===== */
+  #ctl {
+    border-top: 1px solid var(--border);
+    padding: 8px 12px;
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    background: #161616;
+  }
+  #ctl button {
+    background: #222; color: #ddd; border: 1px solid #334;
+    border-radius: 4px; padding: 4px 10px; cursor: pointer;
+  }
+  #ctl button:hover { border-color: var(--accent); }
+  #readout { margin-left: auto; color: #888; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<aside id="rail">
+  <!-- group 卡片：name + n 角标 + notify 位。无缩略图（骨架是中间态，见 web_manager.md WD6） -->
+  <div class="tile" data-group="code">
+    <span class="name">#code</span><span class="badge">3</span>
+    <div class="notify"></div>
+  </div>
+  <div class="tile" data-group="media">
+    <span class="name">#media</span><span class="badge">3</span>
+    <div class="notify"></div>
+  </div>
+  <div class="tile" data-group="docs">
+    <span class="name">#docs</span><span class="badge">2</span>
+    <div class="notify"></div>
+  </div>
+  <div class="tile" data-group="mon">
+    <span class="name">#mon</span><span class="badge">6</span>
+    <div class="notify"></div>
+  </div>
+</aside>
+
+<div id="stage-wrap">
+  <div id="stage"></div>
+  <div id="ctl">
+    <button data-cmd="grid-2-lr">grid n=2 lr</button>
+    <button data-cmd="grid-2-tb">grid n=2 tb</button>
+    <button data-cmd="grid-3-lr">grid n=3</button>
+    <button data-cmd="grid-4-lr">grid n=4</button>
+    <button data-cmd="stack-3-lr">stack n=3 lr</button>
+    <button data-cmd="stack-3-tb">stack n=3 tb</button>
+    <button data-cmd="swap">swap 顺序(0↔2)</button>
+    <button data-cmd="fullscreen">全屏 #0</button>
+    <button data-cmd="group-media">切到 #media</button>
+    <span id="readout"></span>
+  </div>
+</div>
+
+<div id="scrim"><button id="scrim-exit">✕ 退出全屏</button></div>
+
+<script>
+// =====================================================================
+// 设计动机（对应 web_manager.md WD1/WD2/WD3/WD6）：
+//   - 物料池是扁平的 iframe 数组；DOM 顺序 = 创建顺序，永不改变。
+//   - 「视觉序位」完全由每个 slot 的 grid-row/grid-column 决定，
+//     重排 = 改 grid 坐标，不 reparent（appendChild 搬 iframe 会重载）。
+//   - 分组切换 = display:none，不重载、状态保留、后台被浏览器节流。
+//   - 全屏 = 插 scrim + 调 z-index，DOM 结构不动。
+// 本页要回答的判据：换格 / 换组 / 全屏之后，iframe 里的计时器和输入框不丢。
+// =====================================================================
+
+const srcdoc = (label, color) => `<!DOCTYPE html>
+<html><body style="background:#0a0a0a;color:${color};font:12px ui-monospace;padding:10px">
+  <b>${label}</b> &nbsp; <span id="t">0</span>s &nbsp; <input placeholder="在这里打字测试保活" style="width:120px">
+  <script>
+    let n=0; setInterval(()=>{ document.getElementById('t').textContent = (++n/10).toFixed(1); },100);
+  <\/script>
+</body></html>`;
+
+// 物化池：6 个 item。跨源是本验的边界场景，这里用 srcdoc 作代理（同源/跨源的
+// display:none 保活语义一致；真正的跨源由 node 里的 127.0.0.1 多端口覆盖）。
+const POOL = [
+  { id: 'term', group: 'code',  color: '#5af' },
+  { id: 'edit', group: 'code',  color: '#5fa' },
+  { id: 'chat', group: 'code',  color: '#fa5' },
+  { id: 'dsh',  group: 'media', color: '#f5a' },
+  { id: 'cam1', group: 'media', color: '#5ff' },
+  { id: 'cam2', group: 'media', color: '#a5f' },
+  { id: 'cam3', group: 'media', color: '#0fa' },
+  { id: 'spec', group: 'docs',  color: '#ffa' },
+  { id: 'note', group: 'docs',  color: '#faa' },
+  { id: 'm1', group: 'mon', color: '#4af' },
+  { id: 'm2', group: 'mon', color: '#4fa' },
+  { id: 'm3', group: 'mon', color: '#fa4' },
+  { id: 'm4', group: 'mon', color: '#f4a' },
+  { id: 'm5', group: 'mon', color: '#4ff' },
+  { id: 'm6', group: 'mon', color: '#a4f' },
+];
+
+const stage = document.getElementById('stage');
+const slots = new Map();   // id -> { el, iframe }
+const domOrder = [];       // 创建顺序，永不改变
+
+POOL.forEach((it) => {
+  const slot = document.createElement('div');
+  slot.className = 'slot';
+  slot.dataset.id = it.id;
+  slot.dataset.group = it.group;
+  const fr = document.createElement('iframe');
+  fr.srcdoc = srcdoc(it.id, it.color);
+  slot.appendChild(fr);
+  stage.appendChild(slot);            // 一次性 append，此后永不搬
+  slots.set(it.id, { el: slot, iframe: fr });
+  domOrder.push(it.id);
+});
+
+let active = 'code';
+let layoutState = { family: 'grid', dir: 'lr' };
+let fullscreenId = null;
+
+// ---- 布局引擎：n + family + dir -> 每个 index 的 (r,c,rs,cs) ----
+// 形状 = f(n) 的派生量；模型只给有序 id 列表，这里把「有序」编码成数组下标。
+function computeLayout(ids, family, dir) {
+  const n = ids.length;
+  const cells = [];
+  if (family === 'stack' && n >= 2) {
+    // 一主 n 从：主 = index 0，从在条带里等分。dir 决定条带方位。
+    const m = n - 1;
+    cells.push({ r: 1, c: 1, rs: dir === 'lr' ? m : 1, cs: dir === 'lr' ? 1 : m });
+    for (let k = 0; k < m; k++) {
+      cells.push(dir === 'lr'
+        ? { r: 1 + k, c: 2, rs: 1, cs: 1 }
+        : { r: 2, c: 1 + k, rs: 1, cs: 1 });
+    }
+    const cols = dir === 'lr' ? 2 : m;
+    const rows = dir === 'lr' ? m : 2;
+    return { cols, rows, cells };
+  }
+  // grid 等分：cols = ceil(sqrt(n))；n=2 时 dir 决定 2列1行 vs 1列2行。
+  let cols, rows;
+  if (n === 1) { cols = 1; rows = 1; }
+  else if (n === 2) { cols = dir === 'lr' ? 2 : 1; rows = dir === 'lr' ? 1 : 2; }
+  else if (n === 3) { cols = dir === 'lr' ? 3 : 1; rows = dir === 'lr' ? 1 : 3; }
+  else { cols = Math.ceil(Math.sqrt(n)); rows = Math.ceil(n / cols); }
+  for (let k = 0; k < n; k++) {
+    const r = Math.floor(k / cols) + 1;
+    const c = (k % cols) + 1;
+    cells.push({ r, c, rs: 1, cs: 1 });
+  }
+  return { cols, rows, cells };
+}
+
+function arrange(ids, family, dir) {
+  layoutState = { family, dir };
+  const { cols, rows, cells } = computeLayout(ids, family, dir);
+  // stack 主从按 2:1 分（主格 2/3，条带 1/3）；grid 等分
+  if (family === 'stack') {
+    stage.style.gridTemplateColumns = dir === 'lr' ? '2fr 1fr' : `repeat(${cols}, 1fr)`;
+    stage.style.gridTemplateRows = dir === 'lr' ? `repeat(${rows}, 1fr)` : '2fr 1fr';
+  } else {
+    stage.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    stage.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  }
+  ids.forEach((id, k) => {
+    const { el } = slots.get(id);
+    const c = cells[k];
+    el.style.gridRow = `${c.r} / span ${c.rs}`;
+    el.style.gridColumn = `${c.c} / span ${c.cs}`;
+    el.classList.remove('hidden');
+  });
+  // 当前分组之外的 item 离屏（还在，display:none 保活）
+  slots.forEach(({ el }, id) => {
+    if (!ids.includes(id) && el.dataset.group === active) el.classList.add('hidden');
+  });
+  renderRail();
+}
+
+function groupItems(g) {
+  return POOL.filter((it) => it.group === g).map((it) => it.id);
+}
+
+function setActive(g, byHuman) {
+  active = g;
+  // 分组切换：非激活组的 slot 全部 display:none；激活组的按上次布局重排
+  slots.forEach(({ el }, id) => {
+    const it = POOL.find((p) => p.id === id);
+    el.classList.toggle('hidden', it.group !== g);
+  });
+  arrange(groupItems(g), layoutState.family, layoutState.dir);
+  // activate 效果：人自己点 = 直接 active，无轮转；模型切 = 3s 轮转提示
+  document.querySelectorAll('.tile').forEach((t) => {
+    t.classList.toggle('active', t.dataset.group === g);
+    t.classList.remove('activated');
+  });
+  if (!byHuman) {
+    const tile = [...document.querySelectorAll('.tile')].find((t) => t.dataset.group === g);
+    tile.classList.add('activated');
+    setTimeout(() => tile.classList.remove('activated'), 3000);
+  }
+  updateReadout();
+}
+
+function fullscreen(id) {
+  const scrim = document.getElementById('scrim');
+  if (fullscreenId) {
+    slots.get(fullscreenId).el.classList.remove('fullscreen');
+    scrim.style.display = 'none';
+    fullscreenId = null;
+  } else {
+    fullscreenId = id;
+    slots.get(id).el.classList.add('fullscreen');
+    scrim.style.display = 'block';
+  }
+}
+
+function renderRail() {
+  document.querySelectorAll('.tile').forEach((t) => {
+    const g = t.dataset.group;
+    const n = groupItems(g).length;
+    t.querySelector('.badge').textContent = n;
+    // 空 group 自动删除 —— 验证页里把空组置灰并隐藏（对应「空组删除」不变式）
+    t.style.opacity = n === 0 ? 0.35 : 1;
+  });
+}
+
+function updateReadout() {
+  // 关键验证输出：DOM 顺序 vs 视觉顺序。DOM 顺序应永远等于创建顺序；
+  // 视觉顺序按 grid 坐标 (row, col) 排序 —— 两者不同才证明「重排没动 DOM」。
+  const visual = [...stage.querySelectorAll('.slot:not(.hidden)')]
+    .sort((a, b) => {
+      const ra = parseInt(a.style.gridRow) || 1, rb = parseInt(b.style.gridRow) || 1;
+      const ca = parseInt(a.style.gridColumn) || 1, cb = parseInt(b.style.gridColumn) || 1;
+      return ra - rb || ca - cb;
+    })
+    .map((el) => el.dataset.id).join(', ');
+  document.getElementById('readout').textContent =
+    `DOM: ${domOrder.join(',')} | 视觉: ${visual}`;
+}
+
+// ---- 控制条（模拟模型命令）----
+document.getElementById('ctl').addEventListener('click', (e) => {
+  const cmd = e.target.dataset.cmd;
+  if (!cmd) return;
+  const cur = groupItems(active);
+  if (cmd === 'grid-2-lr') arrange(cur, 'grid', 'lr');
+  else if (cmd === 'grid-2-tb') arrange(cur, 'grid', 'tb');
+  else if (cmd === 'grid-3-lr') arrange(cur, 'grid', 'lr');
+  else if (cmd === 'grid-4-lr') arrange(cur.slice(0, 4), 'grid', 'lr');
+  else if (cmd === 'stack-3-lr') arrange(cur.slice(0, 3), 'stack', 'lr');
+  else if (cmd === 'stack-3-tb') arrange(cur.slice(0, 3), 'stack', 'tb');
+  else if (cmd === 'swap') {
+    const [a, b] = [cur[0], cur[2]];
+    cur[0] = b; cur[2] = a;           // 只改顺序数组，不碰 DOM
+    arrange(cur, layoutState.family, layoutState.dir);
+  }
+  else if (cmd === 'fullscreen') fullscreen(cur[0]);
+  else if (cmd === 'group-media') setActive('media', false);
+  updateReadout();
+});
+
+// ---- 人点 rail 切组（byHuman = true：立即，无 activate 轮转）----
+document.getElementById('rail').addEventListener('click', (e) => {
+  const tile = e.target.closest('.tile');
+  if (tile) setActive(tile.dataset.group, true);
+});
+
+// ---- 全屏退出：scrim 本身可点退出（含显式按钮）。WD3 铁律：退出入口必须在 scrim 之上 ----
+document.getElementById('scrim').addEventListener('click', () => {
+  if (fullscreenId) fullscreen(fullscreenId);
+});
+
+// 初始化
+setActive('code', false);
+updateReadout();
+</script>
+</body>
+</html>

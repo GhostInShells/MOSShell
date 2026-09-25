@@ -20,7 +20,10 @@ async def test_shell_with_output_channel_in_wait():
             assert interpretation.interrupted is False
             for msg in interpretation.executed_messages():
                 # 暴露了异常. 深层异常是 a:foo 不存在.
-                assert CommandErrorCode.INTERPRET_ERROR.name in msg.to_content_string()
+                content = msg.to_content_string()
+                # 解析异常必须归口 INTERPRET_ERROR (407), 不得被降级为 UNKNOWN_ERROR.
+                assert CommandErrorCode.INTERPRET_ERROR.name in content
+                assert CommandErrorCode.UNKNOWN_ERROR.name not in content
             assert len(interpretation.executed_messages()) == 1
             await asyncio.gather(*interpreter.incomplete_tasks(), return_exceptions=True)
 
@@ -28,7 +31,7 @@ async def test_shell_with_output_channel_in_wait():
 @pytest.mark.asyncio
 async def test_shell_speech_baseline_prepare():
     speech = MockSpeech(typing_sleep=0.0)
-    shell = new_ctml_shell(speech=speech)
+    shell = new_ctml_shell(speech=speech, speech_as_content_command=True)
     a_chan = new_channel(name="a")
 
     @a_chan.build.command()
@@ -38,7 +41,7 @@ async def test_shell_speech_baseline_prepare():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        stream = speech.new_stream()
+        stream = speech.new_segment()
         await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)
@@ -113,7 +116,7 @@ async def test_shell_speech_baseline():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        stream = speech.new_stream()
+        stream = speech.new_segment()
         await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)
@@ -136,7 +139,7 @@ async def test_shell_speech_baseline():
 @pytest.mark.asyncio
 async def test_shell_speech_10_times():
     speech = MockSpeech(typing_sleep=0.0)
-    shell = new_ctml_shell(speech=speech)
+    shell = new_ctml_shell(speech=speech, speech_as_content_command=True)
     a_chan = new_channel(name="a")
 
     @a_chan.build.command()
@@ -146,7 +149,7 @@ async def test_shell_speech_10_times():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        stream = speech.new_stream()
+        stream = speech.new_segment()
         await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)

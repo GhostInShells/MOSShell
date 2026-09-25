@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ghost-in-bilibili probe",
+  "version": "0.0.1",
+  "description": "probe #2: MV3 service worker 能否稳定持有 WebSocket",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "sw.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.bilibili.com/video/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

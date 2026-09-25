@@ -1,4 +1,4 @@
-from ghoshell_moss.core.blueprint.project import Manifest, MatrixManifest, ModeManifests
+from ghoshell_moss.core.blueprint.project import Manifest, ProjectManifest, HostModeManifests
 
 __all__ = ['ManifestsInspector']
 
@@ -45,7 +45,7 @@ def _walk_single(manifest: Manifest, *, safe: bool = True) -> dict | None:
 
 
 class ManifestsInspector:
-    """在 REPL 中观测 Manifest 资源的工具集 — 遍历 MatrixManifest + ModeManifests.
+    """在 REPL 中观测 Manifest 资源的工具集 — 遍历 ProjectManifest + HostModeManifests.
 
     Matrix 层是 workspace 全局基线 (MOSS.manifests);
     Mode 层是当前 mode 的有效视图 (HOST, 继承并可能覆盖 Matrix 层).
@@ -53,8 +53,8 @@ class ManifestsInspector:
 
     def __init__(
             self,
-            matrix_mf: MatrixManifest,
-            mode_mf: ModeManifests | None,
+            matrix_mf: ProjectManifest,
+            mode_mf: HostModeManifests | None,
     ):
         self._matrix = matrix_mf
         self._mode = mode_mf

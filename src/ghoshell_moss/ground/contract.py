@@ -5,7 +5,7 @@ Ground 一句话承诺: "在 context 表面钉住一组注视目标, 每帧重�
 结构:
 1. GroundSet — 容器. open/close 多个 Ground, CTML 接触面
 2. Ground   — 一个打开的场. 绑定目录 root, 持有 pin 集, 承担 frame 渲染
-3. Pin      — 一枚注视声明. 具体子类携带 verb + typed arguments (K55 envelope)
+3. Pin      — 一枚注视声明. 具体子类携带 verb + typed arguments
 
 不承担: 子进程执行 / 周期性 fold / 持久记忆 — 各自由独立 contract 负责.
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -31,49 +31,67 @@ __all__ = [
     "FrontmatterPin",
     "LsPin",
     "ExecPin",
+    "LawPin",
     "FileArguments",
     "GlobArguments",
     "FrontmatterArguments",
     "LsArguments",
     "ExecArguments",
+    "LawArguments",
     "GroundConvention",
-    "UpdateResult",
     "TemplateInfo",
     "GroundError",
     "PathOutsideRootError",
+    "ViewHeader",
+    "ViewBlock",
+    "RenderedView",
+    "Snapshot",
 ]
 
-# -- constants (K54: every magic number has a name + rationale) ---------------
+# -- constants ----------------------------------------------------------------
 
-# 1-byte length prefix + 64-char namespace convention; "看着够用" (K54).
+# 1-byte length prefix + 64-char namespace convention.
 PIN_LABEL_MAX_LEN = 63
 _PIN_LABEL_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{0,%d}$" % PIN_LABEL_MAX_LEN)
-
-# @-expansion: max nesting depth. 深了模型读不动, 浅了引用链断裂.
-AT_MAX_DEPTH = 3
-# @-expansion: total char budget. 24k = ~8k tokens, 留 75% 给 pins + 对话.
-AT_BUDGET = 24_000
 
 
 # -- frontmatter -------------------------------------------------------------
 
 
 class GroundConvention(BaseModel):
-    """L0 frontmatter — 场的身份声明 + pins 清单.
+    """L0 frontmatter — 场的身份声明 + pins 清单 + 场级 ignore 规则.
 
-    K56: frontmatter 是 MOSS 唯一的机器发明域. pins 作为机器声明的注视
+    frontmatter 是 MOSS 唯一的机器发明域. pins 作为机器声明的注视
     列表驻留在 frontmatter 中, body 保持纯粹的人/模型叙事域.
     未知 key 保留不拒 (extra="allow").
+
+    ignore / ignore_file 是场级规则 — 所有发现型 pin (glob, frontmatter
+    pattern, ls) 自动受约束, 无需 pin 级 opt-in. inline list 与文件引用
+    合并为最终规则集.
     """
 
     id: str | None = Field(default=None, alias="$id")
-    label: str | None = None
+    name: str | None = None
+    description: str | None = None
     pins: list[dict] = Field(default_factory=list)
+    groundset: list[str] | None = Field(
+        default=None,
+        description="要展开的子场 — 相对场根的目录路径清单, 每个目录自带 GROUND.md. "
+        "由 GroundSet 物化 (一层, 不递归), Ground 自身不消费.",
+    )
+    ignore: list[str] | None = Field(
+        default=None,
+        description="场级 ignore 规则清单 — .gitignore 语义, 相对场根.",
+    )
+    ignore_file: str | None = Field(
+        default=None,
+        description="场根下的 ignore 规则文件路径 (.gitignore / .groundignore).",
+    )
 
     model_config = {"extra": "allow"}
 
 
-# -- pin: verb arguments models (K55) ----------------------------------------
+# -- pin: verb arguments models -----------------------------------------------
 
 
 class FileArguments(BaseModel):
@@ -141,17 +159,45 @@ class ExecArguments(BaseModel):
     授权模型 = Makefile 级信任: ref 指向场根子树内可执行文件, 场作者背书.
     协议禁止内联 shell 字符串 (授权泄漏), 禁止跨场引用 (../, 绝对路径).
 
-    shebang 决定解释器 — 协议不管 sh/python/binary. Windows 无 chmod 位时
-    fallback 到扩展名 (未来实现).
+    mode 决定解释器: shebang(默认, 需 +x) / python(sys.executable) /
+    shell(sh). 非 shebang 模式用解释器显式执行, 不要求脚本 +x.
     """
     ref: str = Field(
         description="场根子树内的可执行文件相对路径. 不允许 ../, 不允许绝对路径.",
+    )
+    mode: str = Field(
+        default="shebang",
+        description="解释器模式: shebang(默认, 需 +x) | python(sys.executable) | shell(sh). 非 shebang 不要求 +x.",
     )
     timeout: float = Field(
         default=10.0, gt=0, le=60,
         description="秒. 超时渲染 [timeout] 标记, 不静默.",
     )
     budget: int | None = Field(default=None, ge=1, description="stdout 字符数上限.")
+
+    model_config = {"extra": "allow"}
+
+
+class LawArguments(BaseModel):
+    """law verb 的 arguments — 约定文件法链.
+
+    参数是文件名而非路径: 从 cwd 向上逐层收集该文件 (CLAUDE.md /
+    AGENT.md 等约定文件), 到场根为止. 收集到的是每个祖先目录里的
+    body 内容, 父级向下展示.
+    """
+    filename: str = Field(
+        description="约定文件名 (CLAUDE.md, AGENT.md...). 从 cwd 向上逐层收集.",
+    )
+    budget: int | None = Field(
+        default=None,
+        ge=1,
+        description="总字符数上限, 超限 truncate.",
+    )
+    lines: int | None = Field(
+        default=None,
+        ge=1,
+        description="总行数上限, 超限 truncate.",
+    )
 
     model_config = {"extra": "allow"}
 
@@ -172,13 +218,17 @@ def _register(verb: str):
 # -- pins --------------------------------------------------------------------
 
 
-class Pin(BaseModel):
+class Pin(BaseModel, ABC):
     """pin 基类 — 场里的一枚注视声明.
 
-    K55 envelope: {label, verb, arguments, description}.  具体子类携带
+    固定 envelope: {label, verb, arguments, description}.  具体子类携带
     typed arguments — verb 是 Literal discriminator, arguments 是多态载体.
     """
 
+    verb: str = Field(
+        default='',
+        description="verb of the pin"
+    )
     label: str = Field(
         min_length=1,
         max_length=PIN_LABEL_MAX_LEN,
@@ -190,8 +240,17 @@ class Pin(BaseModel):
         max_length=280,
         description="短评注 — 一行 '为什么盯这个'. 长解说走 body.",
     )
+    always_show: bool = Field(
+        default=False,
+        description="walk / --template 模式下也不折叠 — 永远展开内容. 默认折叠.",
+    )
 
     model_config = {"extra": "ignore"}
+
+    @property
+    def is_cwd_anchored(self) -> bool:
+        """是否随 $CWD 移动 — walk 时展开, 场根时也渲染. 默认 False."""
+        return False
 
 
 @_register("file")
@@ -238,6 +297,23 @@ class ExecPin(Pin):
     arguments: ExecArguments
 
 
+@_register("law")
+class LawPin(Pin):
+    """约定文件法链注视 — 兼容外部项目约定 (CLAUDE.md / AGENT.md).
+
+    拉的是文档, 参数是文件名而非路径: 从 cwd 向上逐层收集该文件,
+    到场根为止 (边界 = ground root). 父级向下展示, 最多一层 @ 解析,
+    有 budget/lines 截断语义. 位置依赖 cwd — walk 时随站立位置变化.
+    """
+
+    verb: Literal["law"] = "law"
+    arguments: LawArguments
+
+    @property
+    def is_cwd_anchored(self) -> bool:
+        return True
+
+
 # -- errors ------------------------------------------------------------------
 
 
@@ -249,22 +325,6 @@ class PathOutsideRootError(GroundError):
     """路径逃逸出锚点子树. SPEC §8 per-anchor confinement."""
 
 
-# -- update result -----------------------------------------------------------
-
-
-class UpdateResult(BaseModel):
-    """update(label) 的返回 — 变更摘要.
-
-    通过 CTML ``<result>`` 机制入对话历史. diff_preview 有界, 避免历史洪泛.
-    """
-
-    label: str = Field(description="被 update 的 pin label.")
-    changed: bool = Field(description="内容是否变化 (hash 判定).")
-    old_hash: str | None = Field(default=None, description="update 前的 seen_hash.")
-    new_hash: str | None = Field(default=None, description="update 后的 seen_hash.")
-    summary: str = Field(default="", description="变更摘要, 有界: 'lines +N -M', 'glob: +2 -1', etc.")
-
-
 # -- template info -----------------------------------------------------------
 
 
@@ -272,7 +332,7 @@ class TemplateInfo(BaseModel):
     """.grounds/ 中的一枚模板."""
 
     name: str = Field(description="模板名 — .grounds/ 下相对路径去掉 .md 后缀.")
-    source: str = Field(description="发现源: project / user / ghost.")
+    source: str = Field(description="发现源: project / user. 同名时 project 覆盖 user.")
     path: Path = Field(description="模板文件绝对路径.")
     description: str = Field(default="", description="模板 frontmatter 的 description, 或 body 首行.")
 
@@ -288,6 +348,15 @@ class Ground(ABC):
     """
 
     # -- 元信息 ---------------------------------------------------------------
+
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        """实例身份 — 实例化时生成的 ULID.
+
+        不是内容 hash (内容会变, 不构成身份). 用于把 Ground 身份透传给消费方
+        (如 channel 的 runtime 注册键), 使同一 Ground 实例跨 refresh 稳定.
+        """
 
     @property
     @abstractmethod
@@ -327,25 +396,42 @@ class Ground(ABC):
     def unpin(self, label: str) -> None:
         """撤掉一枚 pin. label 不存在抛 KeyError."""
 
-    # -- 对账 -----------------------------------------------------------------
-
-    @abstractmethod
-    async def update(self, label: str) -> UpdateResult:
-        """承认这枚 pin 的当前世界状态 — 重新观察, 推进 seen_* 基线.
-
-        update 不是"检查变更" (每帧 context() 自动做), 是 "我承认了" 的
-        第一人称动词. 承认后下一帧不再标 stale.
-        """
-
     # -- 渲染 -----------------------------------------------------------------
 
     @abstractmethod
+    async def render(self, *, cwd: Path | None = None) -> RenderedView:
+        """渲染场 — 返回结构化 RenderedView.
+
+        ``str(view)`` = self-explanatory markdown; ``view.model_dump_json()`` = JSON.
+        cwd=None 时用场根 (field-root 模式), 否则 walk 模式.
+        """
+
+    @abstractmethod
+    async def snapshot(
+        self,
+        *,
+        ack_hash: str | None = None,
+        cwd: Path | None = None,
+    ) -> Snapshot:
+        """渲染 + 感知对账 — 返回渲染对象与其全量 digest.
+
+        render() 保持纯内容; snapshot 是 render + digest + 变更标记.
+        对账目标是渲染文本全量 (view.to_markdown() 的 sha256), 不是源文件.
+
+        ack_hash: 调用方声明的已承认基线 (如 channel 持久化的旧值).
+        缺省用内部缓存的上一帧 hash. 调用后内部缓存推进到新 hash;
+        changed 相对基线计算 — 首次无基线为 False.
+
+        进程内运行时侧影, 不落盘 (seen_* 语义). 须单 owner: 缓存写入
+        不并发安全, channel 会话是唯一消费者.
+        """
+
     async def context(self) -> str:
         """渲染当前帧 — 消费给 virtual channel 的 context_messages.
 
-        SPEC §6: body verbatim + pin result blocks delimited by HTML comments.
-        async: 并行观察所有 pin + 读文件内容.
+        向后兼容委托到 ``render()``. 新调用方建议直接用 ``render()``.
         """
+        return str(await self.render())
 
     # -- 生命周期 -------------------------------------------------------------
 
@@ -360,7 +446,7 @@ class Ground(ABC):
 
     @abstractmethod
     async def load(self) -> None:
-        """从 GROUND.md 恢复 pin 集 + body. 无 L0 文件 = 空集. K14 startup 消费."""
+        """从 GROUND.md 恢复 pin 集 + body. 无 L0 文件 = 空集."""
 
     @abstractmethod
     async def sediment(self) -> None:
@@ -370,9 +456,18 @@ class Ground(ABC):
 
     # -- 法链 -----------------------------------------------------------------
 
+    @property
+    @abstractmethod
+    def ignore_spec(self) -> object | None:
+        """场级 ignore 规则 (pathspec.PathSpec | None).
+
+        所有发现型 pin 自动受约束. 由 GROUND.md frontmatter 的
+        ``ignore`` + ``ignore_file`` 合并生成.
+        """
+
     @abstractmethod
     async def chain_text(self) -> str:
-        """返回法链 body — 祖先 GROUND.md body 的 root-first 收集."""
+        """返回本场的 body (法) — 单层, 不向上合并祖先."""
 
 
 # -- GroundSet --------------------------------------------------------------
@@ -398,15 +493,18 @@ class GroundSet(ABC):
         label: str | None = None,
         doc: str | Path | None = None,
         template: str | None = None,
+        override: bool = False,
     ) -> Ground:
         """打开一个场.
 
         - dir: 场根目录 (pin 锚点). 相对路径按 workspace_root 解析.
         - label: 本 GroundSet 内唯一标识. None = dir basename, 冲突加 -2/-3.
-        - doc: 显式 GROU.md 路径 (法锚点). None = dir/GROUND.md.
-          doc ≠ dir/GROUND.md 时, law anchor 与 pin anchor 解耦 (K35 携带/属地).
+        - doc: 显式 GROUND.md 路径 (法锚点). None = dir/GROUND.md.
+          doc ≠ dir/GROUND.md 时, law anchor 与 pin anchor 解耦 — 法随 doc, pin 随 dir.
         - template: .grounds/ 中的模板名. 指定时用模板的 body + pins 初始化
           Ground. 模板内容复制, 非引用.
+        - override: template 定义全权接管 (body + pins), 忽略现有 GROUND.md
+          内容. 预览场景 (`frame --template`) 用 — 模板是镜头, 不是补丁.
 
         同目录幂等 (按 dir.resolve()): 返回已 active 的 Ground, 忽略传入参数.
         """
@@ -417,9 +515,20 @@ class GroundSet(ABC):
 
     # -- 查询 -----------------------------------------------------------------
 
+    @property
+    @abstractmethod
+    def root(self) -> Ground:
+        """锚点场 — 场集的根.
+
+        构造期即建立 (GroundSet 本就带启动代价), 是非 None 的一等成员。
+        它是 ``groundset`` 字段的声明来源, 物化子场的入口。
+        对外是"根"而非"被挂载的子场" —— 消费方 (如 channel) 按身份把它从
+        子场列表里排除。
+        """
+
     @abstractmethod
     def active(self) -> dict[str, Ground]:
-        """当前打开的全部场."""
+        """当前持有的全部场 (含 root)."""
 
     @abstractmethod
     def get(self, label: str) -> Ground | None:
@@ -436,9 +545,6 @@ class GroundSet(ABC):
 
     def unpin(self, ground: str, label: str) -> None:
         self._must_get(ground).unpin(label)
-
-    async def update(self, ground: str, label: str) -> UpdateResult:
-        return await self._must_get(ground).update(label)
 
     async def frame(self, ground: str) -> str:
         return await self._must_get(ground).context()
@@ -458,3 +564,106 @@ class GroundSet(ABC):
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """退出 GroundSet. 对全部 active 逐个 sediment, best-effort."""
+
+
+# -- RenderedView (新渲染数据模型) -------------------------------------------
+
+
+class ViewHeader(BaseModel):
+    """渲染视图的头部 — GROUND.md 身份 + 站立位置."""
+
+    id: str | None = Field(default=None, alias="$id", description="$id 身份声明, 存在才渲染.")
+    name: str | None = Field(default=None, description="场名, 来自 GROUND.md name 或目录 basename.")
+    description: str | None = Field(default=None, description="场描述, 来自 GROUND.md description.")
+    ground_path: str = Field(description="$GROUND — 场根绝对路径.")
+    cwd: str | None = Field(default=None, description="$CWD — walk 时的站立位置, field-root 时不出现.")
+
+
+class ViewBlock(BaseModel):
+    """渲染视图里的一个内容块 — body / pin / @-reference."""
+
+    kind: Literal["body", "pin", "at", "folded"] = Field(
+        description="块类型: body=场正文, pin=注视结果, at=@-引用展开, folded=walk 时折叠的 pin TOC."
+    )
+    label: str = Field(description="块标识: body / pin label / @文件名.")
+    verb: str | None = Field(
+        default=None,
+        description="pin 动词 (file|glob|frontmatter|ls|exec|law). kind=pin 时必选, 其余为 None.",
+    )
+    description: str | None = Field(
+        default=None,
+        description="pin 的一句话说明, 来自 GROUND.md pin description. 渲染为 markdown 注释的一部分.",
+    )
+    content: str = Field(default="", description="块内容. body 是 GROUND.md body 原文, pin 是观察结果.")
+    meta: dict | None = Field(default=None, description="附加上下文 (files count, budget 等).")
+
+
+class RenderedView(BaseModel):
+    """Ground.render() 的返回值 — header + blocks.
+
+    既可序列化 (``-j`` / ``--json``) 供程序消费, 也可 ``str()`` →
+    ``to_markdown()`` 供模型 / 人类直接阅读.
+    """
+
+    header: ViewHeader
+    blocks: list[ViewBlock] = Field(default_factory=list, description="渲染内容块, 按出现顺序.")
+
+    def to_markdown(self) -> str:
+        """序列化为自解释 markdown — HTML 注释承载语义标记, 纯文本可读.
+
+        头部是 YAML frontmatter, 正文直接承接, pin 结果用
+        ``<!-- verb-label: description -->`` 标记分隔.
+        """
+        lines: list[str] = []
+
+        # --- header (YAML frontmatter) ---
+        lines.append("---")
+        if self.header.id:
+            lines.append(f"$id: {self.header.id}")
+        if self.header.name:
+            lines.append(f"name: {self.header.name}")
+        if self.header.description:
+            lines.append(f"description: {self.header.description}")
+        lines.append(f"$GROUND: {self.header.ground_path}")
+        if self.header.cwd:
+            lines.append(f"$CWD: {self.header.cwd}")
+        lines.append("---")
+
+        # --- blocks ---
+        for block in self.blocks:
+            lines.append("")
+            if block.kind == "body":
+                lines.append(block.content.rstrip())
+            elif block.kind == "at":
+                lines.append("---")
+                lines.append(f"<!-- at: {block.label} -->")
+                lines.append(block.content.rstrip())
+            elif block.kind == "folded":
+                desc = f" — {block.description}" if block.description else ""
+                lines.append("---")
+                lines.append(f"<!-- pins{desc} -->")
+                lines.append(block.content.rstrip())
+            elif block.kind == "pin":
+                desc = f": {block.description}" if block.description else ""
+                lines.append("---")
+                lines.append(f"<!-- {block.verb}-{block.label}{desc} -->")
+                lines.append(block.content.rstrip())
+
+        return "\n".join(lines) + "\n"
+
+    def __str__(self) -> str:
+        return self.to_markdown()
+
+
+class Snapshot(BaseModel):
+    """一次渲染的感知快照 — 渲染对象 + 全量 digest + 相对基线是否变化.
+
+    Ground.snapshot() 的返回值. hash 覆盖 ``view.to_markdown()`` 全量
+    文本, 使 "channel 递给模型的那份文本" 与对账信号闭合.
+    """
+
+    view: RenderedView = Field(description="渲染对象, 与 render() 逐字等价.")
+    hash: str = Field(description="渲染文本全量的 sha256 digest.")
+    changed: bool = Field(
+        description="相对基线 (ack_hash 或内部缓存) 是否变化. 首次无基线为 False."
+    )

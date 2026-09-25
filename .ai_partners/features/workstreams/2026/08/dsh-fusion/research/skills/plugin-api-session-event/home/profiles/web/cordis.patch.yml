@@ -1,0 +1,8 @@
+# 挂本 skill 的 plugin. plugin.ts 与本 patch 同目录 (home/profiles/web/),
+# 相对路径 ./plugin.ts.
+#
+# session.event 走 dsh web 内置的 /api/events.mux WebSocket 下行流,
+# 不需要 sdk-jsonrpc-server.
+- insert:
+    - id: plugin-api-session-event
+      name: './plugin.ts'

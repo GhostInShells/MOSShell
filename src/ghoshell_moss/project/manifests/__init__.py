@@ -1,4 +1,4 @@
-from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
-from ghoshell_moss.project.manifests.mode_impl import ScannedModeManifests
+from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
+from ghoshell_moss.project.manifests.mode_impl import ScannedHostModeManifests
 
-__all__ = ['ScannedMatrixManifest', 'ScannedModeManifests']
+__all__ = ['ScannedProjectManifest', 'ScannedHostModeManifests']

@@ -9,7 +9,6 @@ from prompt_toolkit import PromptSession
 from typing_extensions import Self
 from rich.console import Console, RenderableType
 from rich.traceback import Traceback, Trace
-from rich.rule import Rule
 from rich.text import Text
 from rich.syntax import Syntax
 from rich.markdown import Markdown
@@ -21,20 +20,19 @@ from prompt_toolkit.key_binding import (
 from prompt_toolkit.completion import Completer, DummyCompleter, DynamicCompleter, Completion, merge_completers
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
-from ghoshell_moss.core.blueprint.session import OutputItem
-from ghoshell_moss.core.blueprint.host import MossHost
+from ghoshell_moss.core.blueprint.session import OutputItem, Session
+from ghoshell_moss.core.blueprint.host import IHost
+from ghoshell_moss.core.concepts.qa import QA, Watcher
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
 import sys
-if sys.platform != "win32":
-    import uvloop
+
 import contextlib
 import sys
 import time
 import threading
 import json
 import os
-import janus
 from queue import Queue, Empty
 from rich.panel import Panel
 from rich.table import Table
@@ -42,9 +40,10 @@ from rich.console import Group
 
 __all__ = [
     "TUIState", "MossHostTUI", 'Runtime', "RUNTIME", "TuiRender",
-    "Renderable", "OutputItem", "LiveStreamSink",
+    "Renderable", "OutputItem",
     "ConsoleOutput",  # backward compatibility
     'RenderableType',
+    "RichCaller",
 ]
 
 from prompt_toolkit.styles import Style
@@ -101,125 +100,26 @@ class Runtime(Protocol):
 RUNTIME = TypeVar("RUNTIME", bound=Runtime)
 
 
-class LiveStreamSink:
-    """跨 asyncio/sync 边界的流式文本输出槽.
+class RichCaller:
+    """卸载一个 console 调用动作到渲染线程.
 
-    asyncio 侧: await send(delta) / send_nowait(delta) → janus async_q
-    渲染线程: render(console) 被 _direct_print 通过 duck-type 调用
+    tui 只暴露这个通用解: 把任意 console 动作 (如 print(delta, end='')) 打包成
+    可入队对象, 由渲染线程单写者执行. 具体打印语义由调用方闭包决定, tui 不耦合.
 
-    首次 render 进入 live 模式: 实时消费 janus queue 并攒 Segment buffer,
-    粘字符串聚合减少 console.print 调用次数.
-    后续 render 直接回放 buffer (支持 re-render / state 切换后重建).
+    stop() 是可选生命周期钩子: 无状态的一次性 print 动作用默认 no-op; 有状态、
+    会阻塞渲染线程的 renderer (如原地重绘 panel 的 sink) override 它, 让外部
+    (interrupt) 能请求立即停止, 不依赖生成侧长链收线.
     """
 
-    def __init__(
-            self,
-            rich_print_kwargs: dict[str, Any] | None = None,
-    ):
-        self._queue = janus.Queue[str | None]()
-        self._rich_print_kwargs = rich_print_kwargs or {}
-        self._committed = False
-        self._render_count = 0
-        self._buffer: list[str] = []
+    def __call__(self, console: Console) -> None:
+        ...
 
-    async def __aenter__(self):
-        return self
-
-    async def send(self, delta: str) -> None:
-        if self._committed:
-            return
-        try:
-            await self._queue.async_q.put(delta)
-        except janus.AsyncQueueShutDown:
-            pass
-
-    def send_nowait(self, delta: str) -> None:
-        if self._committed:
-            return
-        try:
-            self._queue.sync_q.put_nowait(delta)
-        except janus.SyncQueueShutDown:
-            pass
-
-    def commit(self) -> None:
-        """标记流结束，发送 None sentinel 通知渲染端."""
-        if self._committed:
-            return
-        self._committed = True
-        try:
-            self._queue.sync_q.put_nowait(None)
-        except janus.SyncQueueShutDown:
-            pass
-
-    async def close(self) -> None:
-        """安全关闭: 确保 committed + sentinel 入队后排空."""
-        if not self._committed:
-            self._committed = True
-            try:
-                self._queue.sync_q.put_nowait(None)
-            except janus.SyncQueueShutDown:
-                pass
-        self._queue.shutdown(immediate=False)
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-    def render(self, console: Console) -> None:
-        if self._render_count > 0:
-            if self._buffer:
-                console.print(Panel(
-                    Text("".join(self._buffer)),
-                    title=" RESPONSE ",
-                    title_align="left",
-                    border_style="cyan",
-                ))
-            return
-
-        self._buffer: list[str] = []
-        pending: list[str] = []
-        rendered_lines = 0
-
-        def _render_panel() -> None:
-            nonlocal rendered_lines
-            if rendered_lines > 0:
-                # 光标上移到上一个 panel 的起始行 + 清屏
-                console.file.write(f"\033[{rendered_lines}F")
-                console.file.write("\033[J")
-            panel = Panel(
-                Text("".join(self._buffer)),
-                title=" RESPONSE ",
-                title_align="left",
-                border_style="cyan",
-            )
-            with console.capture() as capture:
-                console.print(panel)
-            output = capture.get()
-            rendered_lines = output.count('\n')
-            console.file.write(output)
-            console.file.flush()
-
-        try:
-            while True:
-                item = self._queue.sync_q.get()
-                if item is None:
-                    break
-                pending.append(item)
-                if self._queue.sync_q.empty():
-                    self._buffer.append("".join(pending))
-                    pending.clear()
-                    _render_panel()
-            if pending:
-                self._buffer.append("".join(pending))
-                pending.clear()
-            _render_panel()
-        except janus.SyncQueueShutDown:
-            pass
-        finally:
-            console.print("")
-            self._render_count += 1
+    def stop(self) -> None:
+        """请求停止当前渲染. 默认 no-op; 有状态 renderer override."""
+        pass
 
 
-Renderable: TypeAlias = RenderableType | OutputItem
+Renderable: TypeAlias = RenderableType | OutputItem | RichCaller
 
 
 class TuiRender:
@@ -289,7 +189,9 @@ class TuiRender:
             return
         # Drain pending items before replay
         self._clear_fn()
-        for items in self._buffer:
+        # 用快照遍历: 该 buffer 可能被 zenoh 线程并发 append, 直接遍历 deque 会抛
+        # "deque mutated during iteration" (RuntimeError) → 打到状态切换里炸掉 loop.
+        for items in list(self._buffer):
             self._queue.put_nowait(list(items))
 
     def buffer_clear(self) -> None:
@@ -480,12 +382,19 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
     def __init__(
             self,
-            host: MossHost | None = None,
+            host: IHost | None = None,
             prompt_style: Style = None,
+            *,
+            speech: bool = False,
+            listen: bool = False,
     ):
         self.kb: KeyBindingsBase | None = None
         self._style = prompt_style or DEFAULT_PROMPT_STYLE
-        self.host: MossHost | None = host or MossHost.discover()
+        self.host: IHost | None = host or IHost.discover()
+        # voice 配置 — CLI --voice 映射到 (speech, listen) 两轴. 默认 none (开箱即净,
+        # 不依赖未配置的第三方 key); speak/listen/all 均需显式 opt-in. 子类 _get_runtime 装线.
+        self._speech = speech
+        self._listen = listen
         self.runtime: RUNTIME = self._get_runtime()
         self._closing_event = ThreadSafeEvent()
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -493,6 +402,9 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         # 用子线程实现 print.
         self._renderable_queue: Queue[list[Renderable] | None] = Queue()
         self._console_print_thread = threading.Thread(target=self._main_render_loop, daemon=True)
+        # 渲染线程当前正在执行的 RichCaller (原地重绘 sink 等). close()/interrupt
+        # 时对它调 stop() 投毒丸, 让阻塞的渲染线程立即退出.
+        self._active_renderer: RichCaller | None = None
         self._states: dict[str, TUIState] = {}
         # 需要对应 states.
         self._current_state_name: str = ""
@@ -509,10 +421,21 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         )
         self._main_console_output = TuiRender("", lambda: True, self._renderable_queue, self.clear_console)
         self._bottom_toolbar_text: str = ""
+        self._qa_bottom_text: str = ""  # persistent QA count, separate from urgent notifications
         self._dummy_completer = DummyCompleter()
         self._switching_state: bool = False
         self._last_switch_at: float = 0.0
         self._switch_min_interval: float = 0.25  # 250ms debounce
+        self._last_ctrl_c_at: float = 0.0
+        self._ctrl_c_exit_debounce: float = 1.5  # 1.5s window: first c-c hints, second exits
+        # 标记 loop 是否因故障终止 (runtime 停 / 未处理异常). run() 据此决定退出码.
+        self._loop_failed: bool = False
+
+        # QA protocol — non-blocking notification center
+        self._qa_registry: dict[str, QA] = {}  # qid → QA (shared with QAState)
+        self._previous_state_name: str = ""  # for C-q toggle back
+        self._qa_watcher_started: bool = False
+        self._qa_watcher: Watcher | None = None
 
     def clear_console(self) -> None:
         """clear rich console"""
@@ -545,8 +468,22 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         pass
 
     @abstractmethod
+    def _get_session(self) -> Session | None:
+        """返回当前 runtime 的 session, 用于访问 session.qa 等协议."""
+        pass
+
+    @abstractmethod
     def create_states(self) -> Iterable[TUIState]:
         """返回当前 repl 拥有的 states. 其中应该包含 default """
+        pass
+
+    @abstractmethod
+    def _log_loop_exception(self, message: str, exception: BaseException | None) -> None:
+        """把 event loop 未处理异常记录到运行时 logger.
+
+        Concrete TUI 用自己 runtime 的 matrix 取 logger — host 不缓存 matrix.
+        实现方保证不抛异常 (handler 侧另有兜底).
+        """
         pass
 
     def _input_completer(self) -> Completer:
@@ -658,7 +595,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
         # 1. matrix baseline
         try:
-            mm = project.matrix_manifests()
+            mm = project.project_manifests()
             for it in (mm.providers, mm.configs, mm.topics, mm.signals, mm.resources):
                 for m in it():
                     if m.is_error():
@@ -718,8 +655,19 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         kb = KeyBindings()
 
         @kb.add('c-c')
-        def graceful_exit(event) -> None:
-            self.close()
+        def ctrl_c(event) -> None:
+            # 输入区有内容 → 清空 buffer, 不打断不退出.
+            buffer = event.current_buffer
+            if buffer and buffer.text:
+                buffer.reset()
+                return
+            # 空输入区 → 首按提示, debounce 内二按 exit. interrupt 由 escape 承担.
+            now = time.monotonic()
+            if now - self._last_ctrl_c_at < self._ctrl_c_exit_debounce:
+                self.close()
+                return
+            self._last_ctrl_c_at = now
+            self.console.hint("press c-c again to exit")
 
         # 添加 Shift+Enter 换行逻辑
         @kb.add('c-j')
@@ -730,6 +678,11 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         def toggle_state(event) -> None:
             if self._event_loop:
                 self._event_loop.call_soon_threadsafe(self._toggle_state)
+
+        @kb.add('c-q')
+        def toggle_qa_state(event) -> None:
+            if self._event_loop:
+                self._event_loop.call_soon_threadsafe(self._toggle_qa_state)
 
         @kb.add('escape')
         def interrupt(event) -> None:
@@ -764,9 +717,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
         动态拼接: state 切换提示 + urgent 通知.
         """
+
         def _build() -> str:
             parts: list[str] = []
-            names = list(self._states.keys())
+            names = [n for n in self._states if n != self.QA_STATE_NAME]
             if len(names) > 1:
                 current = self._current_state_name
                 state_parts = []
@@ -776,7 +730,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 parts.append("  C-t  ".join(state_parts))
             if self._bottom_toolbar_text:
                 parts.append(self._bottom_toolbar_text)
+            if self._qa_bottom_text:
+                parts.append(self._qa_bottom_text)
             return "  ▏ ".join(parts) if parts else ""
+
         return _build
 
     def _direct_print(self, obj: Renderable) -> None:
@@ -784,14 +741,19 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             if isinstance(obj, OutputItem):
                 for item in self.console.format_output(obj):
                     self._rich_console.print(item)
-            elif isinstance(obj, LiveStreamSink):
-                obj.render(self._rich_console)
+            elif isinstance(obj, RichCaller):
+                self._active_renderer = obj
+                try:
+                    obj(self._rich_console)
+                finally:
+                    self._active_renderer = None
             else:
                 self._rich_console.print(obj)
         except Exception:
             try:
                 self._rich_console.print_exception()
             except Exception:
+                # todo: 静默失败.
                 pass
 
     def _main_render_loop(self) -> None:
@@ -854,6 +816,65 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         next_idx = (current_idx + 1) % len(names)
         self._switch_state(names[next_idx])
 
+    QA_STATE_NAME = "qa"
+
+    def _toggle_qa_state(self) -> None:
+        """C-q: toggle QA state. If in QA, go back to previous. If not, enter QA."""
+        if self.QA_STATE_NAME not in self._states:
+            return
+        if self._current_state_name == self.QA_STATE_NAME:
+            target = self._previous_state_name or list(self._states.keys())[0]
+            if target == self.QA_STATE_NAME:
+                return
+            self._switch_state(target)
+        else:
+            self._previous_state_name = self._current_state_name
+            self._switch_state(self.QA_STATE_NAME)
+
+    def _start_qa_watcher(self) -> None:
+        """Start watching QA questions on the public namespace.
+
+        Schedules a watcher on the event loop.  New questions update
+        _qa_registry, refresh the bottom toolbar, and push a render
+        update into the QA state (if active).
+        """
+        if self._qa_watcher_started:
+            return
+        session = self._get_session()
+        if session is None or session.qa is None:
+            return
+        self._qa_watcher_started = True
+        watcher = session.qa.watch("")
+        self._qa_watcher = watcher
+
+        def _on_question(qa: QA) -> None:
+            qid = qa.question.meta.id if qa.question.meta else ""
+            self._qa_registry[qid] = qa
+            self._update_qa_bottom_text()
+            qa.on_answer(lambda _a: self._on_qa_resolved(qid))
+            qa.on_cancel(lambda _q: self._on_qa_resolved(qid))
+            # if QA state is active, trigger refresh
+            qa_state = self._states.get(self.QA_STATE_NAME)
+            if qa_state is not None and self._current_state_name == self.QA_STATE_NAME:
+                qa_state.refresh()
+
+        watcher.on_question(_on_question)
+
+    def _on_qa_resolved(self, qid: str) -> None:
+        """Remove resolved QA from registry and update UI."""
+        self._qa_registry.pop(qid, None)
+        self._update_qa_bottom_text()
+        # trigger refresh in QA state if active
+        qa_state = self._states.get(self.QA_STATE_NAME)
+        if qa_state is not None and self._current_state_name == self.QA_STATE_NAME:
+            qa_state.refresh()
+
+    def _update_qa_bottom_text(self) -> None:
+        """Refresh bottom toolbar QA count."""
+        n = len(self._qa_registry)
+        self._qa_bottom_text = f"[{n} Questions]" if n > 0 else ""
+        if self._prompt_session and self._prompt_session.app:
+            self._prompt_session.app.invalidate()
 
     async def _main_loop(self) -> None:
         try:
@@ -863,6 +884,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 await stack.enter_async_context(self.runtime)
                 # welcome after runtime initialized.
                 self.welcome()
+                # 启动 QA watcher — runtime 就绪后开始监听 public 命名空间的问题
+                self._start_qa_watcher()
                 # 启动所有的 state.
                 for state in self._states.values():
                     # 启动所有的状态面板.
@@ -870,9 +893,17 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 list(self._states.values())[0].on_switch(True)
                 # 发送一个初始讯号.
                 input_loop_task = asyncio.create_task(self._input_loop())
+                # 监控 runtime 生命周期 — 自发终止时触发退出, 而不是空转等输入.
+                runtime_watcher = asyncio.create_task(self._watch_runtime())
                 self.current_state().on_switch(True)
-                await input_loop_task
+                try:
+                    await input_loop_task
+                finally:
+                    runtime_watcher.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await runtime_watcher
         except Exception:
+            self._loop_failed = True
             self.console.print_exception()
         finally:
             self._closing_event.set()
@@ -916,7 +947,13 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                     bottom_toolbar=self.get_bottom_toolbar(),
                     placeholder=self._get_input_placeholder(),
                 )
-            if self._pre_handle_input(item):
+            try:
+                consumed = self._pre_handle_input(item)
+            except Exception:
+                # SafeMode 审批等 TUI 内部异常 — 打印并继续, 不炸掉整个会话.
+                self.console.print_exception()
+                consumed = False
+            if consumed:
                 continue
             if not item:
                 continue
@@ -929,13 +966,53 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 except Exception:
                     self.console.print_exception()
                 continue
-            self.current_state().handle_input(item)
+            try:
+                self.current_state().handle_input(item)
+            except Exception:
+                self.console.print_exception()
+
+    async def _watch_runtime(self) -> None:
+        """监控底层 runtime 生命周期.
+
+        close() 属用户主动退出; 若 runtime 自发终止 (session 关闭, ghost / mindflow
+        崩掉), 打印并触发 TUI 退出 — 避免 TUI 空转在一个已死的 runtime 上等输入.
+        """
+        try:
+            while not self._closing_event.is_set():
+                if self._runtime_stopped():
+                    self._loop_failed = True
+                    self.console.error("runtime stopped — exiting tui")
+                    self.close()
+                    return
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
+
+    def _runtime_stopped(self) -> bool:
+        """runtime 是否已停止 (底层 session 关闭). 子类可 override.
+
+        无 session 的 TUI 不断定; 判定失败一律按"未停止"处理, 防止误触发退出.
+        """
+        try:
+            session = self._get_session()
+        except Exception:
+            return False
+        if session is None:
+            return False
+        try:
+            return not session.is_running()
+        except Exception:
+            return False
 
     def close(self) -> None:
         """关闭系统. 可能在运行中被调用. """
         if self._closing_event.is_set():
             return
         self._closing_event.set()
+        # 立即停掉渲染线程正在执行的原地重绘 renderer, 否则它会一直阻塞在
+        # 毒丸前的 get(), join() 卡死; 且 close 的 print 会与它并发写 console.
+        if self._active_renderer is not None:
+            self._active_renderer.stop()
         if self._prompt_session and self._prompt_session.app:
             if self._prompt_session.app.is_running:
                 self._prompt_session.app.exit()
@@ -974,37 +1051,57 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
         if self._current_state_name not in self._states:
             raise RuntimeError(f"Default State {self._current_state_name} is not defined")
+        # 注册 QA state (不在 C-t 循环中, 通过 C-q 进入)
+        from ghoshell_moss.host.tui_entries.qa_state import QAState
+        qa_state = QAState(self._qa_registry, on_exit=lambda: self._toggle_qa_state())
+        self._states[qa_state.name()] = qa_state
+        qa_output = TuiRender(
+            qa_state.name(),
+            self._is_alive_func(qa_state.name()),
+            self._renderable_queue,
+            self._drain_render_queue,
+            on_urgent=self.set_bottom_toolbar,
+        )
+        qa_state.with_output(qa_output)
         # 创建 app.
-        if sys.platform == 'win32':
-            loop = asyncio.new_event_loop()
-        else:
-            loop = uvloop.new_event_loop()
+        loop = asyncio.new_event_loop()
         try:
-
-            loop.run_until_complete(self._main_loop())
+            # 前置 handler — 提前拦截 loop 内 task 的未处理异常, 而非跑完才装.
             loop.set_exception_handler(self.tui_exception_handler)
+            loop.run_until_complete(self._main_loop())
             # 等待运行结束
             self._closing_event.set()
             self._console_print_thread.join()
             self._rich_console.print("closed", style="green")
             self.farewell()
         except KeyboardInterrupt:
-            # 用来做退出?
+            # 用户强制退出 — 视为干净结束.
             pass
         except Exception:
+            self._loop_failed = True
             self._rich_console.print_exception()
         finally:
+            # 取消并等待剩余 pending tasks, 避免 loop.close() 时 "Task was destroyed" 噪音.
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
             self._closing_event.set()
-            raise SystemExit(0)
+            # 干净退出 / 用户强退 → 0; 运行时故障 → 1, 让失败可见而非伪装成成功.
+            raise SystemExit(1 if self._loop_failed else 0)
 
     def tui_exception_handler(self, loop: asyncio.AbstractEventLoop, context: dict):
-        # 1. 提取异常对象
+        # 异常处理器绝不能自己抛异常 — 否则 event loop 打印 "Unhandled error in exception handler".
         exception = context.get("exception")
         message = context.get("message", "Unhandled exception in event loop")
         self.console.error(message)
-        if self.host.matrix().is_running():
-            self.host.matrix().logger.exception("%s: %s", message, exception)
+        try:
+            self._log_loop_exception(message, exception)
+        except Exception:
+            # todo: 静默失败.
+            pass
 
 
 # backward compatibility

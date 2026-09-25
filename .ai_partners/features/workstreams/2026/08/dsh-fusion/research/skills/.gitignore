@@ -1,0 +1,3 @@
+# skill 运行时产物
+__pycache__/
+*.pyc

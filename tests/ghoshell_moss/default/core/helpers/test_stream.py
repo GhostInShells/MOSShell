@@ -1,8 +1,12 @@
 import asyncio
 import threading
+from collections import deque
 
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.core.helpers.stream import (
     create_sender_and_receiver,
+    ThreadSafeStreamReceiver,
+    ThreadSafeStreamSender,
 )
 import pytest
 
@@ -118,3 +122,80 @@ async def test_fractal_stream():
     await asyncio.gather(sender1_func(), sender2_func(), consume2())
 
     assert len(got) == len("hello")
+
+
+@pytest.mark.asyncio
+async def test_late_consumer_gets_text_in_one_chunk():
+    """流在消费者到达之前就已经完备: 一次性交付, 不逐 item 走一遍."""
+    sender, receiver = create_sender_and_receiver(merge="".join)
+    with sender:
+        for char in "hello world":
+            sender.append(char)
+
+    got = [chunk async for chunk in receiver]
+    assert got == ["hello world"]
+
+
+@pytest.mark.asyncio
+async def test_late_consumer_keeps_one_to_one_without_merge():
+    """没有装配 merge 的流, 行为与过去一致: N 个 item 逐一交付."""
+    sender, receiver = create_sender_and_receiver()
+    with sender:
+        for char in "hello world":
+            sender.append(char)
+
+    got = [chunk async for chunk in receiver]
+    assert got == list("hello world")
+
+
+@pytest.mark.asyncio
+async def test_streaming_consumer_keeps_one_to_one():
+    """消费者先到, 生产还在进行 —— 生成与消费重叠, 塌缩不生效."""
+    sender, receiver = create_sender_and_receiver(merge="".join)
+    sender.append("he")
+    assert await anext(receiver) == "he"
+    with sender:
+        sender.append("llo")
+    assert await anext(receiver) == "llo"
+    with pytest.raises(StopAsyncIteration):
+        await anext(receiver)
+
+
+@pytest.mark.asyncio
+async def test_collapse_does_not_swallow_failure():
+    """塌缩只合并普通 item, 失败仍按原语义抛出."""
+    sender, receiver = create_sender_and_receiver(merge="".join)
+    sender.append("he")
+    sender.append("llo")
+    sender.fail(ValueError("boom"))
+
+    assert await anext(receiver) == "hello"
+    with pytest.raises(ValueError):
+        await anext(receiver)
+
+
+class _AppendOnClear(ThreadSafeEvent):
+    """把 append 精确投放到 receiver "查到空队列" 与 clear 之间的窗口里."""
+
+    def __init__(self):
+        super().__init__()
+        self.on_clear = None
+
+    def clear(self) -> None:
+        callback, self.on_clear = self.on_clear, None
+        if callback is not None:
+            callback()
+        super().clear()
+
+
+@pytest.mark.asyncio
+async def test_append_during_clear_is_not_lost():
+    """落在 clear 之前的 append 不能被抹掉, 否则消费者会一直挂在这里."""
+    added = _AppendOnClear()
+    completed = ThreadSafeEvent()
+    queue = deque()
+    sender = ThreadSafeStreamSender(added, completed, queue)
+    receiver = ThreadSafeStreamReceiver(added, completed, queue)
+    added.on_clear = lambda: sender.append("x")
+
+    assert await asyncio.wait_for(anext(receiver), timeout=1.0) == "x"

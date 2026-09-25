@@ -10,10 +10,10 @@ import asyncio
 import contextlib
 
 import pytest
-from ghoshell_moss.core.blueprint.mindflow import Signal, Priority, Attention
+from ghoshell_moss.core.blueprint.mindflow import Signal, Priority, Attention, Thinking
 from ghoshell_moss.core.concepts.errors import PausedError
 from ghoshell_moss.core.ctml.shell import new_ctml_shell
-from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
+from ghoshell_moss.core.mindflow import BaseMindflow
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 from ghoshell_moss.host.pause_controller import PauseController
 
@@ -49,11 +49,13 @@ async def test_pause_cascades_to_mindflow():
         mindflow.add_signal(Signal.new(name="test_event", priority=Priority.NOTICE))
 
         # loop 不应产出 attention
-        got: list[Attention] = []
+        got: list[Thinking] = []
+
         async def _consume():
-            async for att in mindflow.loop():
-                got.append(att)
+            async for thinking in mindflow.thinking_loop():
+                got.append(thinking)
                 return
+
         task = asyncio.create_task(_consume())
         await asyncio.sleep(0.3)
         assert len(got) == 0
@@ -93,10 +95,12 @@ async def test_pause_cascades_to_both():
 
             mindflow.add_signal(Signal.new(name="test_event", priority=Priority.NOTICE))
             got: list[Attention] = []
+
             async def _consume():
-                async for att in mindflow.loop():
-                    got.append(att)
+                async for thinking in mindflow.thinking_loop():
+                    got.append(thinking.attention)
                     return
+
             task = asyncio.create_task(_consume())
             await asyncio.sleep(0.3)
             assert len(got) == 0
@@ -152,9 +156,10 @@ async def test_pause_resume():
 async def test_bind_after_construction():
     """通过 bind() 延迟注入 mindflow + shell, 然后 pause 生效."""
     shell = new_ctml_shell()
+    mindflow = _make_mindflow()
     async with shell:
         ctrl = PauseController()
-        ctrl.bind(mindflow=None, shell=shell)
+        ctrl.bind(mindflow=mindflow, shell=shell)
 
         ctrl.pause(True)
         with pytest.raises(PausedError):

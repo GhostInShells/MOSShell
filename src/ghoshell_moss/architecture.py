@@ -48,16 +48,12 @@ import ghoshell_moss.core.blueprint.ghost as ghost
 import ghoshell_moss.core.blueprint.environment as environment
 import ghoshell_moss.core.blueprint.session as session
 import ghoshell_moss.core.blueprint.states_channel as states_channel
-import ghoshell_moss.core.blueprint.memento as memento
-
-
 
 # ============================================================================
 # Contracts — 系统级依赖/抽象商场
 # ============================================================================
 
 import ghoshell_moss.contracts as contracts
-
 
 # ============================================================================
 # Implementations — 核心实现路径
@@ -74,14 +70,24 @@ import ghoshell_moss.bridges as bridges
 import ghoshell_moss.ghosts as ghosts
 import ghoshell_moss.core.topic as topic_service
 import ghoshell_moss.core.speech as speech_impl
+import ghoshell_moss.contracts.voice as voice_contract
+import ghoshell_moss.host.voice as voice_impl
 import ghoshell_moss.cli as cli
+
+# ============================================================================
+# LLMs — 模型配置与调用引擎 (model func)
+# ghoshell_moss.llms.pydantic_ai_adapter
+# ============================================================================
+
+import ghoshell_moss.llms.pydantic_ai_adapter.client as llms_client
+import ghoshell_moss.llms.pydantic_ai_adapter.funcs as llms_funcs
 
 # ============================================================================
 # Protocol — 系统协议
 # ============================================================================
 
 import ghoshell_moss.message as message
-import ghoshell_moss.topics as system_topics
+import ghoshell_moss.types.topics as system_topics
 
 # ============================================================================
 # Openbox — 预制能力清单

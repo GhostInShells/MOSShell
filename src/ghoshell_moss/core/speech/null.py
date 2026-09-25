@@ -4,7 +4,9 @@ from ghoshell_moss.message import unique_id
 
 from ghoshell_moss.contracts.speech import Speech, SpeechStream
 
-__all__ = ["NullSpeech"]
+__all__ = ["NullSpeech", "NULL_SPEECH_PLAYED_TEXT"]
+
+NULL_SPEECH_PLAYED_TEXT = "speech 注册不可用"
 
 
 class _NullSpeechStream(SpeechStream):
@@ -37,6 +39,9 @@ class _NullSpeechStream(SpeechStream):
     def buffered(self) -> str:
         return ""
 
+    def played_text(self) -> str:
+        return NULL_SPEECH_PLAYED_TEXT
+
     async def close(self):
         pass
 
@@ -51,7 +56,7 @@ class NullSpeech(Speech):
     零内存累积，不创建线程，所有操作即时返回。
     """
 
-    def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
+    def new_segment(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         return _NullSpeechStream(id=batch_id or unique_id())
 
     def is_running(self) -> bool:

@@ -1,0 +1,218 @@
+"""StopJudge — per-segment stop-detection cycle (出口位点的判停单元).
+
+Translates the recognition event stream into commit decisions:
+- clause: accumulate, spawn the debounced classifier, arm the silence timer
+- first/partial: cancel the in-flight classifier
+- classifier score >= threshold → commit (early); silence expiry → commit (fallback)
+- keyword hit → commit immediately (explicit endpoint, no scoring)
+
+Holds a MossLLMCaller (assembled externally from the etiquette's classifier
+instruction). Independently testable: drive ``feed`` with a mock caller and assert
+commit timing.
+"""
+import asyncio
+import logging
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+
+from ghoshell_common.contracts import LoggerItf
+from ghoshell_moss.contracts.asr import RecognitionEvent, RecognitionPhase
+from ghoshell_moss.contracts.llms import LLMFuncResult, MossLLMCaller
+from ghoshell_moss.message import Message
+
+__all__ = ["StopJudge", "StopScoreObservation", "parse_stop_score"]
+
+
+def parse_stop_score(raw: str) -> int | None:
+    """从原始输出提取 0-9 判停分. 无数字返回 None."""
+    s = raw.strip()
+    for ch in s:
+        if ch.isdigit():
+            return int(ch)
+    return None
+
+
+@dataclass
+class StopScoreObservation:
+    """一次判停打分的观测 — 请求 (clauses) + 结果 (score + LLMFuncResult).
+
+    供旁路监控 (测试 node / 日志) 观察 judge 实际发了什么、模型回了什么分、
+    花了多久 (``result.cast``) 与多少 token (``result.usage``).
+    """
+
+    clauses: list[str]
+    score: int | None
+    result: LLMFuncResult | None
+
+
+class StopJudge:
+    """Per-segment stop-detection cycle — segment_vad timer + classifier, mutually exclusive.
+
+    One cycle per segment (turn). Two commit paths race to end the turn:
+    - ``segment_vad`` timer: commits `segment_vad` seconds after the last clause
+      (renewed by each new clause — 展期). This is the baseline fallback.
+    - classifier: debounced by ``judge_delay`` (安全期) so a clause superseded within
+      that window never costs a call; commits early when score >= ``threshold``.
+
+    Whichever fires first commits exactly once — a single ``_committed`` flag plus
+    mutual task cancellation, with no ``await`` between flag-set and commit. A new
+    segment tears the cycle down (cancels both tasks, resets accumulation).
+
+    ``feed`` is async but never awaits scoring inline — a clause only spawns the judge
+    task and returns (``on_event_creating`` is the inline-await mount point; blocking
+    there blocks the receive loop).
+    """
+
+    def __init__(
+            self,
+            *,
+            caller: MossLLMCaller | None = None,
+            judge: bool = True,
+            threshold: int = 7,
+            segment_vad: float = 3.0,
+            judge_delay: float = 0.3,
+            commit: Callable[[], None],
+            keywords: Sequence[str] | None = None,
+            context: str = "",
+            on_score: Callable[[StopScoreObservation], None] | None = None,
+            logger: LoggerItf | None = None,
+    ) -> None:
+        self._caller = caller
+        self._judge = judge
+        self._threshold = threshold
+        self._segment_vad = segment_vad
+        self._judge_delay = judge_delay
+        self._commit = commit
+        self._keywords = list(keywords) if keywords else []
+        # volatile hints (etiquette.classifier.context) — first user message before
+        # clauses, so the accumulated clause prefix hits the prompt cache within a segment.
+        self._context = context
+        self._on_score = on_score
+        self._logger = logger or logging.getLogger("moss")
+        self._segment_id: str | None = None
+        self._clauses: list[str] = []
+        self._committed = False
+        self._last_clause_at: float | None = None
+        self._judge_task: asyncio.Task | None = None
+        self._vad_task: asyncio.Task | None = None
+        self._epoch = 0
+
+    async def feed(self, event: RecognitionEvent) -> None:
+        """Drive the cycle with a recognition event (FIRST/PARTIAL/CLAUSE). Non-blocking."""
+        if event.segment_id != self._segment_id:
+            self._teardown()
+            self._segment_id = event.segment_id
+            self._clauses = []
+            self._committed = False
+            self._last_clause_at = None
+        if self._committed:
+            return
+        if event.phase == RecognitionPhase.CLAUSE:
+            self._on_clause(event)
+        elif event.phase in (RecognitionPhase.FIRST, RecognitionPhase.PARTIAL):
+            self._cancel_judge()
+
+    def close(self) -> None:
+        """Cancel in-flight stop tasks (session teardown)."""
+        self._teardown()
+
+    # ── commit paths ──
+
+    def _on_clause(self, event: RecognitionEvent) -> None:
+        text = event.clause.text if event.clause else event.text
+        if self._keywords and any(k in text for k in self._keywords):
+            self._try_commit()
+            return
+        self._clauses.append(text)
+        if self._segment_vad <= 0:
+            self._try_commit()  # segment_vad=0 → 首个 clause 即端点, 不起定时器
+            return
+        self._last_clause_at = time.monotonic()
+        self._start_vad()
+        if self._judge:
+            self._start_judge()
+
+    def _start_vad(self) -> None:
+        self._cancel_vad()
+        self._vad_task = asyncio.create_task(self._vad_loop())
+
+    async def _vad_loop(self) -> None:
+        # deadline = last_clause_at + segment_vad; each new clause moves it forward (展期).
+        while True:
+            await asyncio.sleep(0.05)
+            if self._committed or self._last_clause_at is None:
+                return
+            if time.monotonic() - self._last_clause_at >= self._segment_vad:
+                self._try_commit()
+                return
+
+    def _start_judge(self) -> None:
+        self._cancel_judge()
+        epoch = self._epoch
+        self._judge_task = asyncio.create_task(self._judge_loop(list(self._clauses), epoch))
+
+    async def _judge_loop(self, clauses: list[str], epoch: int) -> None:
+        try:
+            await asyncio.sleep(self._judge_delay)  # 安全期: superseded → cancelled, no call spent
+            result = await self._caller.run_messages(self._build_messages(clauses))
+            score = parse_stop_score(result.content or "")
+            self._logger.info("stop judge scored %s over %d clauses", score, len(clauses))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("stop judge failed")
+            self._emit_score(clauses, None, None)  # surface the failure to observers
+            return
+        self._emit_score(clauses, score, result)
+        if epoch != self._epoch or self._committed:
+            return
+        if score is not None and score >= self._threshold:
+            self._try_commit()
+
+    def _emit_score(self, clauses: list[str], score: int | None, result: LLMFuncResult | None) -> None:
+        """Emit a score observation; a throwing observer must not kill the commit."""
+        if self._on_score is None:
+            return
+        try:
+            self._on_score(StopScoreObservation(clauses=list(clauses), score=score, result=result))
+        except Exception:
+            self._logger.exception("stop judge on_score observer failed")
+
+    def _try_commit(self) -> None:
+        if self._committed:
+            return
+        self._committed = True
+        self._cancel_vad()
+        self._cancel_judge()
+        self._commit()
+
+    # ── internals ──
+
+    def _cancel_judge(self) -> None:
+        if self._judge_task is not None and not self._judge_task.done():
+            self._judge_task.cancel()
+        self._judge_task = None
+        self._epoch += 1
+
+    def _cancel_vad(self) -> None:
+        if self._vad_task is not None and not self._vad_task.done():
+            self._vad_task.cancel()
+        self._vad_task = None
+
+    def _teardown(self) -> None:
+        self._cancel_vad()
+        self._cancel_judge()
+
+    def _build_messages(self, clauses: list[str]) -> list[Message]:
+        """One content block per clause — the accumulated prefix hits the prompt cache.
+
+        ``<context>`` block, when present, prepends before the clauses so it sits
+        inside the cached prefix (stable within a segment).
+        """
+        messages: list[Message] = []
+        if self._context:
+            messages.append(Message.new().with_content(f"<context>\n{self._context}\n</context>"))
+        for clause in clauses:
+            messages.append(Message.new().with_content(clause))
+        return messages

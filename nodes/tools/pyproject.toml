@@ -1,0 +1,14 @@
+[project]
+name = "nodes-tools"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+# nodes/tools/ 共享 venv — tools 类 node 共用这一个环境.
+# 子 node 加入时在此追加依赖, 注释标注归属 node, 保证依赖可溯源.
+dependencies = [
+    "ghoshell-moss[matrix]",          # 所有 mesh node 的公共底座
+    "trafilatura>=1.12,<2",           # trafilatura
+    "python-dotenv",                  # trafilatura / 通用
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../..", editable = true }

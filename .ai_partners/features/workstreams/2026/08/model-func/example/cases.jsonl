@@ -1,0 +1,7 @@
+{"label": "u1-complete-question", "prompt": "what time is it?", "expected": "complete question"}
+{"label": "u2-complete-statement", "prompt": "I think we should go tomorrow morning.", "expected": "complete statement"}
+{"label": "u3-mid-word", "prompt": "I think tomorr", "expected": "incomplete, mid-word cut-off"}
+{"label": "u4-incomplete-phrase", "prompt": "I was wondering if", "expected": "incomplete, trailing conjunction"}
+{"label": "u5-ambiguous", "prompt": "maybe we could", "expected": "ambiguous, could go either way"}
+{"label": "u6-fragment", "prompt": "so the thing is", "expected": "incomplete, discourse marker only"}
+{"label": "u7-greeting", "prompt": "hello", "expected": "complete greeting"}

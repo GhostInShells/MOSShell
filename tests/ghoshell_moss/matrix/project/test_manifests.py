@@ -39,8 +39,9 @@ from ghoshell_moss.project.manifests.resources import (
     ResourceManifest,
     search_resource_manifests,
 )
-from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
-from ghoshell_moss.core.concepts.topic import TopicSchema
+from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
+from ghoshell_moss.core.concepts.topic import TopicModel, TopicSchema
+from ghoshell_moss.matrix.openbox import topics as canonical_topics
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta, SignalSchema
 from ghoshell_moss.contracts.configs import ConfigType
@@ -52,7 +53,7 @@ STUB_MANIFESTS_CONFIGS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.confi
 STUB_MANIFESTS_SIGNALS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.signals'
 STUB_MANIFESTS_TOPICS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.topics'
 STUB_MANIFESTS_PARAMETERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.parameters'
-STUB_MANIFESTS_NUCLEI = 'ghoshell_moss.stubs.workspace.modes.default.src.HOST.nuclei'
+STUB_MANIFESTS_NUCLEI = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.nuclei'
 STUB_MANIFESTS_ROOT = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests'
 
 
@@ -266,14 +267,18 @@ class TestConfigManifest:
 
 class TestSearchConfigManifests:
     def test_finds_config_instances(self):
-        """stub configs.py 里是 LLMConfig() 实例."""
+        """stub configs.py 重导出 openbox 基线, 扫描应发现 ConfigType 实例并封装为 ConfigManifest."""
         results = list(search_config_manifests(STUB_MANIFESTS_CONFIGS))
-        assert len(results) == 1
-        m = results[0]
-        assert isinstance(m, ConfigManifest)
-        assert m.name() == 'llms'
-        assert isinstance(m.value(), ConfigType)
-        assert m.schema().name == 'llms'
+        # 仅逻辑断言: 该包确实导出了 Config 基线, 扫描应兜住至少一个, 且每个封装都是合法的.
+        # 禁止机械断言: 不断言具体数量 (数量随 openbox 基线演化而变),
+        # 也不依赖扫描顺序/首条结果的具体名称 — 这些是实现细节, 不是协议契约.
+        assert len(results) > 0
+        for m in results:
+            assert isinstance(m, ConfigManifest)
+            assert not m.is_error()
+            assert isinstance(m.value(), ConfigType)
+            assert m.name()
+            assert isinstance(m.schema(), ConfigSchema)
 
     def test_yields_error_manifest(self):
         results = list(search_config_manifests(
@@ -456,13 +461,27 @@ class TestTopicManifest:
 
 class TestSearchTopicManifests:
     def test_finds_all_topic_classes(self):
-        """stub topics.py 有 3 个 TopicModel 子类."""
+        """stub topics 包扫出来的, 正是 canonical manifest 声明的那些 topic.
+
+        期望集从 canonical manifest 现算 —— 基线增删 topic 不该改测试; 测的是
+        "stub 的 `import *` 重导出链 + 扫描器的 respect_all 一起, 把声明的声明全捞出来".
+        """
+        declared = set()
+        for name in canonical_topics.__all__:
+            obj = getattr(canonical_topics, name)
+            if inspect.isclass(obj) and issubclass(obj, TopicModel):
+                declared.add(obj.topic_schema().topic_name)
+        assert declared, "canonical manifest 声明为空, 测试前提不成立"
+
         results = list(search_topic_manifests(STUB_MANIFESTS_TOPICS))
-        assert len(results) == 3
+
         for m in results:
             assert isinstance(m, TopicManifest)
             assert isinstance(m.value(), TopicSchema)
             assert m.name()
+            assert not m.is_error()
+
+        assert {m.name() for m in results} == declared
 
     def test_yields_error_manifest(self):
         results = list(search_topic_manifests(
@@ -577,12 +596,17 @@ class TestNucleusManifest:
 
 class TestSearchNucleusManifests:
     def test_finds_nucleus_instances(self):
-        """host stubs nuclei.py 有 ExampleNucleusMeta 实例."""
+        """MOSS 全局基线 (project scope) 的 nuclei 包重导出 openbox, 扫描应发现 NucleusMeta 实例."""
         results = list(search_nucleus_manifests(STUB_MANIFESTS_NUCLEI))
-        assert len(results) >= 1
+        # 仅逻辑断言: 该有效扫描路径确实导出了 nucleus 基线, 扫描应兜住至少一个,
+        # 且每个封装都是合法的. 禁止机械断言: 不断言具体数量 (数量随基线演化而变),
+        # 也不依赖扫描顺序. 锚定的是迁移后的有效路径, 不是 stub 包的构成.
+        assert len(results) > 0
         for m in results:
             assert isinstance(m, NucleusManifest)
+            assert not m.is_error()
             assert isinstance(m.value(), NucleusMeta)
+            assert m.name()
 
     def test_empty_for_package_without_nuclei(self):
         results = list(search_nucleus_manifests(
@@ -628,7 +652,7 @@ class TestSearchResourceManifests:
 class TestScannedMatrixManifest:
     def test_all_stub_manifests_have_values(self):
         """stub manifests 根包扫描: 每个类别都有值，无异常."""
-        m = ScannedMatrixManifest(STUB_MANIFESTS_ROOT)
+        m = ScannedProjectManifest(STUB_MANIFESTS_ROOT)
 
         providers = list(m.providers())
         assert len(providers) >= 1

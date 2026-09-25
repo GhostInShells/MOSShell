@@ -21,6 +21,7 @@ __all__ = [
     "WithAdditional",
     "ContextType",
     "unique_id",
+    "format_timestamp",
 ]
 
 # 实现一个消息协议容器. 这个容器经过了几个阶段的改造:
@@ -48,6 +49,22 @@ default_unique_id_gen = lambda: str(ULID())
 
 def unique_id() -> str:
     return default_unique_id_gen()
+
+
+def format_timestamp(value: datetime) -> str:
+    """短时间戳, 形如 ``D19 00:01:17+8``.
+
+    只保留日 (跨天可辨), 年/月由会话的 "today" 概念承担. 无时区信息时省略 tz 后缀.
+    """
+    tz_str = ""
+    if (offset := value.utcoffset()) is not None:
+        total = int(offset.total_seconds())
+        sign = '+' if total >= 0 else '-'
+        total = abs(total)
+        hours, remainder = divmod(total, 3600)
+        minutes = remainder // 60
+        tz_str = f"{sign}{hours}" if minutes == 0 else f"{sign}{hours}:{minutes:02d}"
+    return f"D{value.strftime('%d')} {value.strftime('%H:%M:%S')}{tz_str}"
 
 
 class HasAdditional(Protocol):
@@ -78,12 +95,15 @@ class AdditionType(ABC):
         """
         从一个目标对象中读取 Addition 数据结构, 并加工为强类型.
         """
-        if not hasattr(target, "additional") or target.additional is None:
-            return None
-        if not isinstance(target.additional, dict):
+        additional = None
+        if hasattr(target, "additional"):
+            additional = getattr(target, "additional", None)
+        elif hasattr(target, "metadata"):
+            additional = getattr(target, "metadata", None)
+        if additional is None or not isinstance(additional, dict):
             return None
         keyword = cls.keyword()
-        data = target.additional.get(keyword, None)
+        data = additional.get(keyword, None)
         return cls.from_normalize(data, throw)
 
     @classmethod
@@ -249,10 +269,13 @@ class MessageMeta(BaseModel):
         for attr, value in attributes.items():
             # in case value has invalid mark
             if isinstance(value, datetime):
-                value = datetime.fromtimestamp(value.timestamp(), tz.gettz()).isoformat(timespec='seconds')
+                value = format_timestamp(datetime.fromtimestamp(value.timestamp(), tz.gettz()))
             value = str(value)
-            value = html.escape(value, quote=True)
-            parts.append(f'{attr}="{value}"')
+            if not value:
+                parts.append(attr)
+            else:
+                value = html.escape(value, quote=True)
+                parts.append(f'{attr}="{value}"')
         attr_str = ' '.join(parts)
         return attr_str
 
@@ -311,6 +334,8 @@ class Message(BaseModel, WithAdditional):
             data['attributes'] = attributes
         data['timestamp'] = timestamp
         meta = MessageMeta(**data)
+        if stale_time is not None:
+            meta.stale_time = stale_time
         return cls(meta=meta)
 
     def is_completed(self) -> bool:
@@ -383,7 +408,7 @@ class Message(BaseModel, WithAdditional):
         return self
 
     def is_empty(self) -> bool:
-        return len(self.contents) == 0
+        return len(self.contents) == 0 and not self.meta.tag
 
     def dump(self) -> dict[str, Any]:
         """
@@ -448,6 +473,9 @@ class Message(BaseModel, WithAdditional):
                 else:
                     last_text['text'] += content['text']
             else:
+                if last_text is not None:
+                    yield last_text
+                    last_text = None
                 yield content
         if last_text is not None:
             yield last_text

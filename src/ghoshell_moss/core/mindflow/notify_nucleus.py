@@ -1,15 +1,21 @@
 """NotifyNucleus — turns ``notify`` signals into ``notify``-mode impulses.
 
-四元 nucleus 之二: 配对 ``ImpulsePrimitive.notify`` 的"不丢消息"入口.
-监听 ``NotifySignalMeta`` (signal name = ``"notify"``), 把 signal 包装成
-``mode=notify`` 的 impulse — 抢占成功正常创建 attention, 失败时 messages
-进 mindflow buffer 而非 suppress (notify 在"抢占失败侧"偏离 default).
+The "must not be missed" perception nucleus, pairing ``ImpulsePrimitive.notify``.
+It listens to ``NotifySignalMeta`` (signal name ``"notify"``) and wraps each
+signal into an impulse carrying ``mode=notify``: winning the challenge creates a
+new attention as usual, while losing it routes the messages into the mindflow's
+next-frame percepts instead of suppressing them — notify deviates from
+``default`` on the losing side only.
 
-priority 完全继承 ``Signal.priority`` (调用方控制). 默认 ``NOTICE`` —
-典型用例是 "ghost 思考时用户说话", 不打断就留痕.
+priority is inherited verbatim from ``Signal.priority`` (caller-controlled),
+default ``NOTICE``. Canonical case: the user speaks while the ghost is thinking —
+no interruption, but the message leaves a trace.
 """
+import time
 from typing import Callable, Iterable
 from typing_extensions import Self
+
+from pydantic import Field
 
 from ghoshell_container import IoCContainer
 
@@ -17,19 +23,26 @@ from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.message import ContextType
 from ghoshell_moss.core.blueprint.mindflow import (
     SignalMeta, SignalName, Priority, Signal,
-    Nucleus, NucleusMeta, ImpulsePrimitive, Impulse
+    Nucleus, NucleusMeta, ImpulsePrimitive, Impulse, ChallengeMode,
 )
 
 __all__ = ['NotifyNucleus', 'NotifySignalMeta', 'NotifyNucleusMeta', 'new_notify_signal']
 
 
 class NotifySignalMeta(SignalMeta):
-    """Signal meta for ``notify`` — carries messages that must not be lost.
+    """Signal meta for ``notify`` — a message that must not be missed.
 
-    与 ``InputSignal`` 区别: input 走 default mode (抢占失败 suppress, 信丢);
-    notify 走 notify mode (抢占失败 buffer, 留痕). 用例确定要不要丢就选 input,
-    确定不能丢就选 notify.
+    If the ghost is free it becomes its next thought; if the ghost is busy the
+    message is not dropped — it is already there the next time the ghost looks.
+    With ``next``, the ghost is also guaranteed that next look: it finishes what
+    it is doing, then turns to this message.
     """
+
+    next: bool = Field(
+        default=False,
+        description="if true, the ghost is guaranteed the next turn — it finishes "
+                    "what it is doing and then turns to this message.",
+    )
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -41,30 +54,32 @@ class NotifySignalMeta(SignalMeta):
 
 
 class NotifyNucleus(Nucleus):
-    """Reflex-arc nucleus — turns each ``notify`` signal into a notify-mode
-    impulse, caches it as last-impulse for mindflow rank/challenge pull.
+    """Reflex-arc nucleus — turns each ``notify`` signal into a notify-mode impulse.
 
-    Last-impulse cache 模式: ``add_signal`` 写入 ``_impulse``, mindflow 通过
-    ``peek/pop_impulse`` 拉取/确认. 连续 signal 进入时 last-wins (最新覆盖旧),
-    notify 的语义是"最新消息为准" — 旧消息既然还没被消费, 说明 ghost 还没看到,
-    新消息合并掉它是合理的.
+    The impulse is held as the latest one for mindflow's rank/challenge pull:
+    mindflow pulls it via ``peek`` and confirms the outcome via ``attended``.
+    notify deviates from ``default`` on the losing side only — the messages are
+    buffered into the mindflow instead of being suppressed, so they are not lost.
 
-    与 ``InputSignalNucleus`` 的 FIFO 聚合差异: notify 视为 "每条都该被看到"
-    的独立消息, 但若 mindflow 还没拉取就被覆盖, 这是 mindflow 调度压力下的
-    自然 backpressure — 而非协议 bug. 若需绝对不丢, 应该用 ``SilentNucleus``
-    + 高优先级 (聚合保留所有 messages).
-
-    priority 完全继承 ``Signal.priority``.
+    priority is inherited verbatim from ``Signal.priority`` (caller-controlled).
     """
 
     NAME = 'notify_nucleus'
 
-    def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):
+    def __init__(
+            self,
+            *,
+            name: str = NAME,
+            logger: LoggerItf | None = None,
+            suppress_seconds: float = 0.5,
+    ):
         self._name = name
-        self._impulse_notify: Callable[[Impulse], None] | None = None
+        self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
         self._impulse: Impulse | None = None
+        self._suppress_seconds = suppress_seconds
+        self._suppress_until: float = 0.0
 
     def name(self) -> str:
         return self._name
@@ -80,6 +95,7 @@ class NotifyNucleus(Nucleus):
 
     def clear(self) -> None:
         self._impulse = None
+        self._suppress_until = 0.0
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
@@ -87,31 +103,46 @@ class NotifyNucleus(Nucleus):
         impulse = self.build_impulse(signal)
         if impulse is None:
             return
-        self._impulse = impulse
-        if self._impulse_notify:
-            self._impulse_notify(impulse)
+        if self._impulse is not None and not self._impulse.is_stale():
+            # notify 契约 "must not be missed": burst 里后到 signal 的 messages 合并进
+            # pending impulse 而非覆盖. 安全: attended() 在 inject_percepts() 之前清槽,
+            # 且两者间无 await, 已 peek 的 impulse 也会在注入前拿到合并后的 messages.
+            self._impulse.messages.extend(impulse.messages)
+            if impulse.priority > self._impulse.priority:
+                self._impulse.priority = impulse.priority
+            if impulse.mode == ChallengeMode.next.value:
+                self._impulse.mode = ChallengeMode.next.value
+        else:
+            self._impulse = impulse
+        # suppress 后的 cooldown 内不主动 fire — 由 _loop_attention 下一轮 re-rank 捞回.
+        if self._fire_impulse and time.monotonic() > self._suppress_until:
+            self._fire_impulse(self._impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
-        if not NotifySignalMeta.match(signal):
+        meta = NotifySignalMeta.from_signal(signal)
+        if meta is None:
             return None
         impulse = Impulse.from_signal(signal, source=self.name())
+        if meta.next:
+            return ImpulsePrimitive.next(impulse)
         return ImpulsePrimitive.notify(impulse)
 
     def with_bus(
             self,
             signal_broadcast: Callable[[Signal], None],
-            impulse_notify: Callable[[Impulse], None],
+            fire_impulse: Callable[[Impulse], None],
     ) -> None:
-        self._impulse_notify = impulse_notify
+        self._fire_impulse = fire_impulse
 
-    def suppress(self, suppress_by: Impulse) -> None:
-        # notify 抢占失败时, mindflow 已走 buffer 偏离路径, messages 进 buffer.
-        # suppress 只是兜底通知; 此时 cache 清掉, 等下一条 signal.
-        self._impulse = None
+    def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
+        # 契约: suppressed 后 impulse 仍保留、可 peek, 只是 cooldown 内不主动 fire —
+        # rank 输掉不等于完结, 由 _loop_attention 下一轮 re-rank 把它捞回.
+        self._suppress_until = time.monotonic() + self._suppress_seconds
 
-    def pop_impulse(self, impulse: Impulse) -> None:
+    def attended(self, impulse: Impulse) -> None:
         if self._impulse is impulse:
             self._impulse = None
+            self._suppress_until = 0.0
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
         if self._impulse is None:
@@ -131,6 +162,7 @@ class NotifyNucleus(Nucleus):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._is_running = False
         self._impulse = None
+        self._suppress_until = 0.0
 
 
 class NotifyNucleusMeta(NucleusMeta):
@@ -156,9 +188,13 @@ def new_notify_signal(
         description: str = '',
         stale_timeout: float = 0,
         hint: str = '',
+        next: bool = False,
 ) -> Signal:
-    """Helper — construct a ``notify`` signal in one call."""
-    return NotifySignalMeta().to_signal(
+    """Helper — construct a ``notify`` signal in one call.
+
+    ``next=True`` upgrades the delivery to a guaranteed next turn (queue-jump).
+    """
+    return NotifySignalMeta(next=next).to_signal(
         *messages,
         description=description,
         stale_timeout=stale_timeout,

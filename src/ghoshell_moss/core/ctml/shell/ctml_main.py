@@ -52,8 +52,8 @@ def inject_system_primitives(main: PrimeChannel, *, extended: bool = False) -> N
     """
     向 main channel 注入系统原语。这是原语列表的唯一权威来源。
 
-    标准原语 (始终注入): sleep, clear, observe, noop, loop, interrupt, thinking
-    扩展原语 (extended=True): wait, wait_idle, sample, branch
+    标准原语 (始终注入)
+    扩展原语 (extended=True)
 
     用法::
 
@@ -64,13 +64,13 @@ def inject_system_primitives(main: PrimeChannel, *, extended: bool = False) -> N
     # 标准原语
     main.build.add_command(new_command(sleep))
     main.build.add_command(new_command(clear))
-    main.build.add_command(new_command(observe))
     main.build.add_command(new_command(noop))
     main.build.add_command(new_command(loop))
     main.build.add_command(interrupt_command)  # interrupt 已经是 PyCommand
-    main.build.add_command(thinking_command)  # 兼容 thinking 原语.
 
     if extended:
+        main.build.add_command(thinking_command)  # 兼容 thinking 原语.
+        main.build.add_command(new_command(observe))
         main.build.add_command(new_command(wait))
         main.build.add_command(new_command(wait_idle))
         main.build.add_command(new_command(sample))

@@ -1,10 +1,10 @@
 ---
-name: 'screen'
+name: 'qt_screen'  # 档位必须进名字: `screen` 是三档躯体(webview/qt/os window)共用的抽象, 裸 screen 会互相占位
 description: 'screen body — multi-slot QML compositor for Ghost visual presence, macOS PySide6'
 category: skins
 singleton: true
 exec:
-  command: python
+  command: .venv/bin/python
   args: main.py
 ---
 

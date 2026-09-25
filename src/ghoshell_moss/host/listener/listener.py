@@ -1,0 +1,332 @@
+"""Host Listener — 缝合 audio capture + ASR 的"耳朵"器官实现.
+
+对称 core/speech/stream_tts_speech.py 的 BaseTTSSpeech:
+- ``HostListener`` 持有 capture (设备) + asr (注入), 拥有两者的生命周期.
+- ``HostListenerState`` 是一条 listening session, ``async with state`` 启动后台
+  pump (consumer → resample → ASR recognition → 三个观察面 fan-out), ``__aexit__``
+  优雅收尾 (shutdown consumer → 等最后尾包 → 退订).
+"""
+import asyncio
+import contextlib
+import logging
+import time
+from typing import AsyncIterable, Awaitable, Callable, Optional
+
+from ghoshell_common.contracts import LoggerItf
+from typing_extensions import Self
+
+from ghoshell_moss.contracts.asr import (
+    ASR,
+    RecognitionEvent,
+    RecognitionSegment,
+    RecognitionStream,
+)
+from ghoshell_moss.contracts.audio import (
+    AudioCaptureSource,
+    AudioChunk,
+    AudioPullLatest,
+    AudioSequentialConsumer,
+)
+from ghoshell_moss.contracts.listener import ASRListener, Discard, ListenerState
+
+__all__ = ["HostListener", "HostListenerState"]
+
+
+def _make_discard(observers: list, callback) -> Discard:
+    def _discard() -> None:
+        with contextlib.suppress(ValueError):
+            observers.remove(callback)
+    return _discard
+
+
+class HostListener(ASRListener):
+    """缝合 capture + asr 的耳朵器官. 同一时刻至多一条 session (再次 listen 取消前一条)."""
+
+    def __init__(
+        self,
+        *,
+        capture: AudioCaptureSource,
+        asr: ASR,
+        logger: Optional[LoggerItf] = None,
+    ):
+        self._capture = capture
+        self._asr = asr
+        self._logger = logger or logging.getLogger("moss")
+        self._log_prefix = "[HostListener]"
+        self._state: Optional[HostListenerState] = None
+        self._started = False
+        self._closed = False
+        self._owns_capture = False
+        # Listener 级观察者: 订阅即挂当前 session, 并留档给未来 session (listen 时自动装线).
+        self._audio_observers: list[Callable[[AudioChunk], None]] = []
+        self._result_observers: list[Callable[[RecognitionEvent], None]] = []
+        self._segment_observers: list[Callable[[RecognitionSegment], None]] = []
+        # 能量检测 (knock 门铃): 空闲时挂 AudioPullLatest consumer 读 meta.rms_db, 不做 ASR.
+        self._sound_detected_callbacks: list[Callable[[], None]] = []
+        self._sound_detection_task: Optional[asyncio.Task] = None
+        self._sound_consumer: Optional[AudioPullLatest] = None
+
+    @property
+    def state(self) -> ListenerState | None:
+        return self._state
+
+    async def listen(self) -> ListenerState:
+        if self._closed:
+            raise RuntimeError("listener is closed")
+        # 取消前一条 session (优雅: shutdown → 尾包 → 退出).
+        if self._state is not None:
+            await self._state.__aexit__(None, None, None)
+
+        state = HostListenerState(
+            capture=self._capture,
+            asr=self._asr,
+            logger=self._logger,
+        )
+        for cb in self._audio_observers:
+            state.on_audio_chunk(cb)
+        for cb in self._result_observers:
+            state.on_recognition_result(cb)
+        for cb in self._segment_observers:
+            state.on_recognition_segment(cb)
+        self._state = state
+        return state
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._state is not None:
+            await self._state.__aexit__(None, None, None)
+            self._state = None
+        self.stop_sound_detection()
+        await self._asr.close()
+        if self._owns_capture:
+            await self._capture.close()
+        self._logger.info("%s closed", self._log_prefix)
+
+    def is_listening(self) -> bool:
+        return self._state is not None and self._state.is_running()
+
+    def is_running(self) -> bool:
+        return self._started and not self._closed
+
+    # ── Listener 级观察者 (自动装线到当前 session) ──
+
+    def on_audio_chunk(self, callback: Callable[[AudioChunk], None]) -> Discard:
+        self._audio_observers.append(callback)
+        if self._state is not None:
+            self._state.on_audio_chunk(callback)
+        return _make_discard(self._audio_observers, callback)
+
+    def on_recognition_result(self, callback: Callable[[RecognitionEvent], None]) -> Discard:
+        self._result_observers.append(callback)
+        if self._state is not None:
+            self._state.on_recognition_result(callback)
+        return _make_discard(self._result_observers, callback)
+
+    def on_recognition_segment(self, callback: Callable[[RecognitionSegment], None]) -> Discard:
+        self._segment_observers.append(callback)
+        if self._state is not None:
+            self._state.on_recognition_segment(callback)
+        return _make_discard(self._segment_observers, callback)
+
+    def asr(self) -> ASR:
+        """暴露内部 ASR (与识别流同源) — 供控制层调参/自解释."""
+        return self._asr
+
+    # ── 轻量能量检测 (knock 门铃) — 空闲时读 capture 预计算的 meta.rms_db, 不做 ASR ──
+
+    def on_sound_detected(self, callback: Callable[[], None]) -> Discard:
+        self._sound_detected_callbacks.append(callback)
+        return _make_discard(self._sound_detected_callbacks, callback)
+
+    def start_sound_detection(self, *, threshold_db: float, cooldown: float) -> None:
+        """启动能量检测循环: 挂 AudioPullLatest, 周期读 meta.rms_db, 超阈值发回调."""
+        if self._sound_detection_task is not None:
+            return
+        consumer = self._capture.new_consumer()
+        self._sound_consumer = consumer
+        self._sound_detection_task = asyncio.create_task(
+            self._sound_detection_loop(consumer, threshold_db, cooldown)
+        )
+
+    def stop_sound_detection(self) -> None:
+        """停止能量检测循环: cancel task + close consumer (幂等)."""
+        if self._sound_detection_task is not None:
+            self._sound_detection_task.cancel()
+            self._sound_detection_task = None
+        if self._sound_consumer is not None:
+            self._sound_consumer.close()
+            self._sound_consumer = None
+
+    async def _sound_detection_loop(
+            self,
+            consumer: AudioPullLatest,
+            threshold_db: float,
+            cooldown: float,
+    ) -> None:
+        last_trigger = 0.0
+        try:
+            while True:
+                await asyncio.sleep(0.1)  # 10Hz 轮询最新帧
+                chunk = consumer.pull_latest()
+                if chunk is None or chunk.meta.rms_db < threshold_db:
+                    continue
+                now = time.monotonic()
+                if now - last_trigger < cooldown:
+                    continue
+                last_trigger = now
+                for cb in list(self._sound_detected_callbacks):
+                    try:
+                        cb()
+                    except Exception:
+                        self._logger.exception(
+                            "%s on_sound_detected callback failed", self._log_prefix,
+                        )
+        except asyncio.CancelledError:
+            pass
+
+    async def __aenter__(self) -> Self:
+        if not self._started:
+            self._started = True
+            if self._capture.is_running():
+                # capture 生命周期已由外部持有, 不重复 start/close.
+                self._owns_capture = False
+            else:
+                self._owns_capture = True
+                await self._capture.start()
+                self._logger.info("%s capture started", self._log_prefix)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+
+class HostListenerState(ListenerState):
+    """一条 listening session 的独立生命周期. 可重入: __aenter__/__aexit__ 幂等."""
+
+    def __init__(
+        self,
+        *,
+        capture: AudioCaptureSource,
+        asr: ASR,
+        logger: LoggerItf,
+    ):
+        self._capture = capture
+        self._asr = asr
+        self._logger = logger
+        self._log_prefix = "[HostListenerState]"
+
+        # ASR 期望率 — 声明给 consumer, 重采样由 consumer 在消费侧完成.
+        self._asr_rate = asr.get_info().sample_rate
+
+        self._consumer: Optional[AudioSequentialConsumer] = None
+        self._recognition: Optional[RecognitionStream] = None
+        self._pump_task: Optional[asyncio.Task] = None
+        self._started = False
+        self._closed = False
+        self._running = False
+
+        self._audio_observers: list[Callable[[AudioChunk], None]] = []
+        self._result_observers: list[Callable[[RecognitionEvent], None]] = []
+        self._segment_observers: list[Callable[[RecognitionSegment], None]] = []
+        self._event_creating_observers: list[Callable[[RecognitionEvent], Awaitable[None] | None]] = []
+
+    # ── ListenerState contract ──
+
+    async def __aenter__(self) -> Self:
+        if self._started:
+            return self
+        self._started = True
+        self._running = True
+
+        self._consumer = self._capture.new_sequential_consumer(target_sample_rate=self._asr_rate)
+        await self._consumer.__aenter__()
+        self._recognition = self._asr.recognize(self._audio_gen())
+        self._recognition.on_segment(self._dispatch_segment)
+        for cb in self._event_creating_observers:
+            self._recognition.on_event_creating(cb)
+        self._pump_task = asyncio.create_task(self._pump())
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._closed:
+            return
+        self._closed = True
+
+        # 停喂音频 → audio_gen 结束 → ASR 发最后一次负序号 → 尾包 → pump 自然结束.
+        if self._consumer is not None:
+            self._consumer.shutdown()
+        if self._pump_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._pump_task
+            self._pump_task = None
+        if self._consumer is not None:
+            await self._consumer.__aexit__(None, None, None)
+            self._consumer = None
+
+        self._recognition = None
+        self._running = False
+
+    def commit(self) -> None:
+        if self._recognition is not None:
+            self._recognition.commit()
+
+    def is_running(self) -> bool:
+        return self._running
+
+    # ── per-session 观察面 ──
+
+    def on_audio_chunk(self, callback: Callable[[AudioChunk], None]) -> Discard:
+        self._audio_observers.append(callback)
+        return _make_discard(self._audio_observers, callback)
+
+    def on_recognition_result(self, callback: Callable[[RecognitionEvent], None]) -> Discard:
+        self._result_observers.append(callback)
+        return _make_discard(self._result_observers, callback)
+
+    def on_recognition_segment(self, callback: Callable[[RecognitionSegment], None]) -> Discard:
+        self._segment_observers.append(callback)
+        return _make_discard(self._segment_observers, callback)
+
+    def on_event_creating(
+            self,
+            callback: Callable[[RecognitionEvent], Awaitable[None] | None],
+    ) -> None:
+        # recognition 懒开: 存 observer, __aenter__ 创建 recognition 后透传.
+        self._event_creating_observers.append(callback)
+        if self._recognition is not None:
+            self._recognition.on_event_creating(callback)
+
+    # ── internals ──
+
+    async def _audio_gen(self) -> AsyncIterable[AudioChunk]:
+        """consumer (AudioChunk, 已按 asr_rate 重采样) 直喂 recognizer, 顺带 fan-out 给音频观察者."""
+        async for chunk in self._consumer:
+            self._dispatch_audio(chunk)
+            yield chunk
+
+    async def _pump(self) -> None:
+        async for result in self._recognition:
+            self._dispatch_result(result)
+
+    def _dispatch_audio(self, chunk: AudioChunk) -> None:
+        for cb in list(self._audio_observers):
+            try:
+                cb(chunk)
+            except Exception:
+                self._logger.exception("%s on_audio_chunk callback failed", self._log_prefix)
+
+    def _dispatch_result(self, result: RecognitionEvent) -> None:
+        for cb in list(self._result_observers):
+            try:
+                cb(result)
+            except Exception:
+                self._logger.exception("%s on_recognition_result callback failed", self._log_prefix)
+
+    def _dispatch_segment(self, segment: RecognitionSegment) -> None:
+        for cb in list(self._segment_observers):
+            try:
+                cb(segment)
+            except Exception:
+                self._logger.exception("%s on_recognition_segment callback failed", self._log_prefix)

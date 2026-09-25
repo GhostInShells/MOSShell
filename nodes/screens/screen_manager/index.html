@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>MOSS screen</title>
+<style>
+  :root {
+    --rail-w: 200px;
+    --gap: 6px;
+    --border: #2a3340;
+    --accent: #3ddc8f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.4 ui-monospace, "PingFang SC", "Noto Sans CJK SC", monospace;
+    background: #0a0c10;
+    color: #ddd;
+    overflow: hidden;
+  }
+
+  /* ===== 层栈：bg → desktop → stage → veil =====
+     z 序只描述层，不描述物料。desktop 与 stage 都是中景：desktop 装
+     未入组的代理圆盘，stage 装已入组的 iframe 分格。中景透明，透出 bg。 */
+  #bg       { position: fixed; inset: 0; z-index: 0; }
+  #moss     { position: fixed; inset: 0; z-index: 1; display: grid; place-items: center; pointer-events: none; }
+  #desktop  { position: fixed; inset: 0; z-index: 2; }
+  #stage    { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 3; }
+  #scrim    { position: fixed; inset: 0; z-index: 4; display: none; background: rgba(0,0,0,.55); }
+  #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }
+  #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
+  #log      { position: fixed; top: 8px; right: 8px; z-index: 8; }
+  #log-badge { background: #161d26; color: #8af; border: 1px solid var(--border); border-radius: 10px;
+               padding: 3px 9px; cursor: pointer; font-size: 11px; }
+  #log-list  { display: none; position: absolute; top: 30px; right: 0; width: 260px; max-height: 320px;
+               overflow-y: auto; background: #0e1218; border: 1px solid var(--border); border-radius: 6px;
+               padding: 6px 10px; font-size: 11px; }
+  #log-list.open { display: block; }
+  #log-list div { padding: 3px 0; border-bottom: 1px solid #1a2230; }
+  #st       { position: fixed; top: 10px; left: 12px; z-index: 8; color: #8af; font-size: 11px; }
+
+  /* ===== desktop：代理圆盘（canvas 物理） ===== */
+  #desktop { cursor: pointer; }
+
+  /* ===== stage：iframe 分格。iframe 一旦创建永不换父节点 —— 视觉变化只改样式。 ===== */
+  /* #stage 是整屏的网格容器，空的时候它必须让指针穿过去，否则会盖住 #desktop，
+     桌面代理永远点不到。只有 .slot 自己接收指针。 */
+  #stage { display: grid; gap: var(--gap); padding: var(--gap); pointer-events: none; }
+  .slot {
+    position: relative; overflow: hidden; border: 1px solid var(--border);
+    background: #0a0a0a; min-width: 0; min-height: 0; pointer-events: auto;
+    transition: grid-row .3s, grid-column .3s;
+  }
+  .slot iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .slot.hidden { display: none; }
+
+  /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
+  .slot.fullscreen { position: fixed; inset: 0; z-index: 5; border: 0; }
+  #scrim-exit {
+    background: #222; color: #ddd; border: 1px solid #555;
+    border-radius: 4px; padding: 6px 12px; cursor: pointer;
+  }
+
+  /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
+  #moss span {
+    font-weight: 900; letter-spacing: .02em;
+    background: linear-gradient(90deg, #127a4b, #3ddc8f, #127a4b);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent; background-size: 200% 100%;
+    opacity: .35; transition: opacity .4s;
+    /* font-size 由 JS 反解：measureText 后按屏宽等比设定，保证四字等宽。 */
+  }
+  #moss span.alive { opacity: 1; animation: flow 1.6s linear infinite; }
+  @keyframes flow { to { background-position: 200% 0; } }
+</style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+<div id="moss"><span>MOSS</span></div>
+<canvas id="desktop"></canvas>
+<div id="stage"></div>
+<div id="scrim"><button id="scrim-exit">✕ 退出全屏</button></div>
+<canvas id="veil"></canvas>
+<div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
+<div id="st"></div>
+
+<script>
+// =====================================================================
+// 四层合成器：bg（声音感知 + MOSS 文字）→ desktop（未入组 item 的代理圆盘
+// 物理）→ stage（已入组 item 的 iframe 分格）→ veil（模型的手）。
+// 语义见 web_manager.md；数据全部来自 ws 帧，页面不内嵌 mock。
+//
+// 关键不变量：iframe 一旦创建永不换父节点（WD1）。desktop 上的 item 没有
+// iframe，只有 canvas 画的代理圆盘；入组后才物化 iframe。所有视觉变化改样式。
+// =====================================================================
+
+const $ = (s) => document.querySelector(s);
+const bg = $('#bg'), bctx = bg.getContext('2d');
+const desktop = $('#desktop'), dctx = desktop.getContext('2d');
+const veil = $('#veil'), vctx = veil.getContext('2d');
+const stage = $('#stage');
+const mossEl = $('#moss span');
+const st = $('#st');
+
+function sizeCanvas(c, ctx) {
+  c.width = innerWidth * devicePixelRatio;
+  c.height = innerHeight * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+addEventListener('resize', () => {
+  sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
+  fitMossText(); initRainCols(); layoutDesktop();
+});
+sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
+
+// ---- ws ----
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
+function send(f) { ws.send(JSON.stringify(f)); }
+
+// ---- store 镜像（与服务端 ScreenModel 同构） ----
+const items = new Map();   // id -> { el, iframe, url, label, group, icon, slot }
+let arena = '';            // 当前 group 名，'' = desktop
+let fullscreenId = null;   // active group 的全屏 item（per-group）
+let desktopIds = [];       // 未入组的 item id，顺序即 recency
+
+function item(id) { return items.get(id); }
+function slotEl(id) { return items.get(id)?.slot; }
+
+// ---- stage：slot 池（iframe 永不 reparent） ----
+function makeSlot(it) {
+  const slot = document.createElement('div');
+  slot.className = 'slot hidden'; slot.dataset.id = it.id;
+  const fr = document.createElement('iframe');
+  fr.src = it.url;
+  slot.appendChild(fr);
+  stage.appendChild(slot);
+  it.slot = slot; it.iframe = fr;
+}
+
+function destroySlot(id) {
+  const it = items.get(id); if (!it) return;
+  it.slot.remove();
+  if (fullscreenId === id) fullscreenId = null;
+}
+
+function gridTemplate(layout) {
+  if (!layout) return null;
+  if (layout.family === 'stack') {
+    if (layout.dir === 'lr') return ['2fr 1fr', `repeat(${layout.rows}, 1fr)`];
+    return [`repeat(${layout.cols}, 1fr)`, '2fr 1fr'];
+  }
+  return [`repeat(${layout.cols}, 1fr)`, `repeat(${layout.rows}, 1fr)`];
+}
+
+function renderStage(ids, layout) {
+  // 每个 item 的 slot 都挂在 stage；只有 active group 的 ids 显示并分格。
+  items.forEach((it) => {
+    const onStage = ids.includes(it.id);
+    it.slot.classList.toggle('hidden', !onStage);
+  });
+  const t = gridTemplate(layout);
+  if (!t) { stage.style.gridTemplateColumns = ''; stage.style.gridTemplateRows = ''; return; }
+  stage.style.gridTemplateColumns = t[0];
+  stage.style.gridTemplateRows = t[1];
+  ids.forEach((id, k) => {
+    const it = items.get(id); if (!it) return;
+    const c = layout.cells[k]; if (!c) return;
+    it.slot.style.gridRow = `${c.r} / span ${c.rs}`;
+    it.slot.style.gridColumn = `${c.c} / span ${c.cs}`;
+  });
+}
+
+// ---- fullscreen（per-group，插 scrim 不改 DOM 结构） ----
+function setFullscreen(id) {
+  if (fullscreenId && slotEl(fullscreenId)) slotEl(fullscreenId).classList.remove('fullscreen');
+  fullscreenId = id;
+  if (id && slotEl(id)) slotEl(id).classList.add('fullscreen');
+  $('#scrim').style.display = id ? 'block' : 'none';
+}
+
+// ===== desktop：代理圆盘物理（花束 / 布朗 / 环绕） =====
+// 圆盘是 item 的灵魂，不是 iframe。每个圆盘有一个 home 槽位，稳定位置是 recency 的
+// 函数（最近的靠中心）；力场是槽位之上的噪声，不是比槽位更强的引力 —— 否则所有圆盘
+// 会被拉成一团、不可扫。
+let orbitMode = 'bouquet';   // bouquet | brownian | orbit
+const discs = [];            // { id, x, y, vx, vy, hx, hy, label }
+
+function layoutDesktop() {
+  const n = discs.length;
+  const cx = innerWidth / 2, cy = innerHeight / 2;
+  const R = Math.min(innerWidth, innerHeight) * 0.28;
+  discs.forEach((d, k) => {
+    const th = (k / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
+    const r = n === 1 ? 0 : R * (0.5 + 0.5 * (k / Math.max(1, n - 1)));
+    d.hx = cx + r * Math.cos(th); d.hy = cy + r * Math.sin(th);
+    d.x = d.hx; d.y = d.hy; d.vx = 0; d.vy = 0;
+  });
+}
+
+function syncDiscs() {
+  discs.length = 0;
+  // 最近的靠中心：desktopIds 是老在前，倒序让 k=0 = 最近出现的那个。
+  [...desktopIds].reverse().forEach((id) => {
+    const it = items.get(id); if (!it) return;
+    discs.push({ id, x: 0, y: 0, vx: 0, vy: 0, hx: 0, hy: 0, label: it.label });
+  });
+  layoutDesktop();
+}
+
+function stepDiscs(dt) {
+  const K = 6.0;      // 归位弹簧：拉回各自的 home 槽位
+  const SEP = 40;     // 分离半径
+  for (const d of discs) {
+    let fx = 0, fy = 0;
+    if (orbitMode === 'bouquet') {
+      fx += K * (d.hx - d.x); fy += K * (d.hy - d.y);
+    } else if (orbitMode === 'brownian') {
+      fx += (Math.random() - 0.5) * 400; fy += (Math.random() - 0.5) * 400;
+      // 布朗是槽位上的抖动，不是漂移：保留弱归位，否则会贴边停死
+      fx += K * 0.6 * (d.hx - d.x); fy += K * 0.6 * (d.hy - d.y);
+    } else if (orbitMode === 'orbit') {
+      const dx = d.x - d.hx, dy = d.y - d.hy;
+      const r = Math.hypot(dx, dy) || 1;
+      const tang = 140;  // 切向速度，维持环绕
+      fx += -dy / r * tang; fy += dx / r * tang;
+      // 弱归位，防止漂出自己的槽位
+      fx += K * 0.4 * (d.hx - d.x); fy += K * 0.4 * (d.hy - d.y);
+    }
+    // 分离斥力
+    for (const o of discs) {
+      if (o === d) continue;
+      const dx = d.x - o.x, dy = d.y - o.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      if (dist < SEP) { const push = (SEP - dist) / SEP * 220; fx += dx / dist * push; fy += dy / dist * push; }
+    }
+    // 阻尼 + 积分（半隐式欧拉）
+    d.vx = (d.vx + fx * dt) * 0.9;
+    d.vy = (d.vy + fy * dt) * 0.9;
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    // 边界软反弹
+    const M = 40;
+    if (d.x < M) { d.x = M; d.vx = Math.abs(d.vx); }
+    if (d.x > innerWidth - M) { d.x = innerWidth - M; d.vx = -Math.abs(d.vx); }
+    if (d.y < M) { d.y = M; d.vy = Math.abs(d.vy); }
+    if (d.y > innerHeight - M) { d.y = innerHeight - M; d.vy = -Math.abs(d.vy); }
+  }
+}
+
+function drawDiscs() {
+  dctx.clearRect(0, 0, innerWidth, innerHeight);
+  for (const d of discs) {
+    const r = 26;
+    dctx.beginPath();
+    dctx.arc(d.x, d.y, r, 0, Math.PI * 2);
+    dctx.fillStyle = 'rgba(22,29,38,.92)';
+    dctx.fill();
+    dctx.strokeStyle = 'rgba(61,220,143,.5)';
+    dctx.lineWidth = 1.5;
+    dctx.stroke();
+    dctx.fillStyle = '#3ddc8f';
+    dctx.font = 'bold 13px ui-monospace, monospace';
+    dctx.textAlign = 'center'; dctx.textBaseline = 'middle';
+    const label = d.label.length > 6 ? d.label.slice(0, 6) : d.label;
+    dctx.fillText(label, d.x, d.y + r + 14);
+  }
+}
+
+function hitDisc(x, y) {
+  for (let i = discs.length - 1; i >= 0; i--) {
+    const d = discs[i];
+    if (Math.hypot(x - d.x, y - d.y) < 30) return d.id;
+  }
+  return null;
+}
+
+desktop.addEventListener('click', (e) => {
+  const id = hitDisc(e.clientX, e.clientY);
+  if (id) {
+    // 点击代理 = 人表达"我看这个"。主权仍在模型：它决定是否 arrange。
+    send({ type: 'tap', id });
+  }
+});
+
+// ---- 物理循环（desktop 与 bg 共享一个 rAF） ----
+let lastT = performance.now();
+function desktopLoop() {
+  requestAnimationFrame(desktopLoop);
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  if (discs.length) {
+    stepDiscs(dt);
+    drawDiscs();
+  } else {
+    dctx.clearRect(0, 0, innerWidth, innerHeight);
+  }
+}
+requestAnimationFrame(desktopLoop);
+
+// ===== veil：姿态层（block 手势，多块可叠加） =====
+const veilBlocks = [];
+function addBlock(draw, durMs) {
+  veilBlocks.push({ draw, start: performance.now(), dur: durMs });
+}
+function geometry() {
+  const out = {};
+  items.forEach((it) => {
+    const r = it.slot.getBoundingClientRect();
+    out[it.id] = { x: r.x, y: r.y, w: r.width, h: r.height };
+  });
+  return out;
+}
+const REGION = {
+  full:   (r) => [r.x, r.y, r.w, r.h],
+  left:   (r) => [r.x, r.y, r.w / 2, r.h],
+  right:  (r) => [r.x + r.w / 2, r.y, r.w / 2, r.h],
+  top:    (r) => [r.x, r.y, r.w, r.h / 2],
+  bottom: (r) => [r.x, r.y + r.h / 2, r.w, r.h / 2],
+};
+function fade(p) { const a = 0.15; if (p < a) return p / a; if (p > 1 - a) return (1 - p) / a; return 1; }
+
+function veilMark(item, region, durMs) {
+  addBlock((c, p) => {
+    const g = geometry()[item]; if (!g) return;
+    const [x, y, w, h] = REGION[region] ? REGION[region](g) : REGION.full(g);
+    const a = fade(p);
+    c.fillStyle = `rgba(80,255,150,${0.15 * a})`; c.fillRect(x, y, w, h);
+    c.strokeStyle = `rgba(80,255,150,${a})`; c.lineWidth = 3; c.strokeRect(x, y, w, h);
+  }, durMs);
+}
+function veilArrow(src, dst, durMs) {
+  addBlock((c, p) => {
+    const A = geometry()[src], B = geometry()[dst]; if (!A || !B) return;
+    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
+    const bx = B.x + B.w / 2, by = B.y + B.h / 2;
+    const a = fade(p);
+    c.strokeStyle = `rgba(255,130,80,${a})`; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+    const ang = Math.atan2(by - ay, bx - ax);
+    c.beginPath(); c.moveTo(bx, by);
+    c.lineTo(bx - 12 * Math.cos(ang - 0.4), by - 12 * Math.sin(ang - 0.4));
+    c.lineTo(bx - 12 * Math.cos(ang + 0.4), by - 12 * Math.sin(ang + 0.4));
+    c.closePath(); c.fillStyle = `rgba(255,130,80,${a})`; c.fill();
+  }, durMs);
+}
+function veilText(content, durMs) {
+  addBlock((c, p) => {
+    c.fillStyle = `rgba(255,255,255,${fade(p)})`;
+    c.font = 'bold 52px ui-monospace, monospace';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(content, innerWidth / 2, innerHeight / 2);
+  }, durMs);
+}
+function veilLoop() {
+  requestAnimationFrame(veilLoop);
+  const now = performance.now();
+  vctx.clearRect(0, 0, innerWidth, innerHeight);
+  for (let i = veilBlocks.length - 1; i >= 0; i--) {
+    const b = veilBlocks[i];
+    if (now - b.start >= b.dur) { veilBlocks.splice(i, 1); continue; }
+    b.draw(vctx, (now - b.start) / b.dur);
+  }
+}
+requestAnimationFrame(veilLoop);
+
+// ===== background：MOSS 文字（等宽反解） + 字符雨 + ECG =====
+// 字号沿袭 lab/background.html 的 24vmin 意图：一个克制的词标，不是满屏大字。
+const MOSS_SCALE = 0.24;  // 相对 min(屏宽, 屏高)
+function fitMossText() {
+  const span = mossEl;
+  const target = Math.min(innerWidth, innerHeight) * MOSS_SCALE;
+  let size = 10;
+  span.style.fontSize = size + 'px';
+  while (span.offsetWidth < target && size < 400) {
+    size += 1; span.style.fontSize = size + 'px';
+  }
+  span.style.fontSize = Math.max(10, size - 1) + 'px';
+}
+fitMossText();
+
+let feed = { role: 'ghost', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
+const GATE = -45;
+// 字符集：CJK 汉字为主（均匀采样），假名点缀，数字符号点缀 —— 不全是日文。
+const CHARSET = (() => {
+  const parts = [];
+  for (let i = 0; i < 48; i++) parts.push(String.fromCodePoint(0x4E00 + ((i * 2654435761) % 0x51A5)));
+  parts.push('アイウエオカキクケコサシスセソ');   // 片假名点缀
+  parts.push('あいうえおかきくけこ');               // 平假名点缀
+  parts.push('0123456789ABCDEFZ$@#%&*+=<>');      // 数字符号点缀
+  return parts.join('');
+})();
+const CW = 16, CH = 20;
+const atlas = document.createElement('canvas');
+atlas.width = CHARSET.length * CW; atlas.height = CH;
+const actx = atlas.getContext('2d');
+actx.font = 'bold 15px ui-monospace, "PingFang SC", monospace';
+actx.textAlign = 'center'; actx.textBaseline = 'middle';
+actx.fillStyle = '#0f0';
+for (let i = 0; i < CHARSET.length; i++) actx.fillText(CHARSET[i], i * CW + CW / 2, CH / 2);
+
+let cols = [];
+function initRainCols() {
+  const n = Math.ceil(innerWidth / CW);
+  cols = Array.from({ length: n }, (_, i) => ({
+    x: i * CW, head: Math.random() * innerHeight,
+    speed: 50 + Math.random() * 90, buf: [], next: 0,
+  }));
+}
+initRainCols();
+const TAIL = 18, EMIT_MS = 333;
+function pickChar(i) {
+  const bin = feed.spectrum_bins[i % feed.spectrum_bins.length];
+  const norm = Math.min(1, Math.max(0, (bin + 96) / 96));
+  return Math.min(CHARSET.length - 1, Math.floor(norm * CHARSET.length));
+}
+function stepRain(dt, now) {
+  for (const c of cols) {
+    c.head += c.speed * dt;
+    if (now >= c.next) {
+      c.buf.unshift(pickChar(c.x / CW));
+      if (c.buf.length > TAIL) c.buf.pop();
+      c.next = now + EMIT_MS + Math.random() * 200;
+    }
+    for (let k = 0; k < c.buf.length; k++) {
+      const y = c.head - k * CH;
+      if (y < 0 || y > innerHeight) continue;
+      bctx.globalAlpha = 1 - k / c.buf.length;
+      bctx.drawImage(atlas, c.buf[k] * CW, 0, CW, CH, c.x, y, CW, CH);
+    }
+  }
+  bctx.globalAlpha = 1;
+}
+function drawEcg() {
+  const baseY = innerHeight * 0.82, amp = innerHeight * 0.12;
+  const w = feed.waveform.length, th = 0.5;
+  bctx.lineWidth = 2;
+  bctx.beginPath();
+  for (let i = 0; i < w; i++) {
+    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
+    i === 0 ? bctx.moveTo(x, y) : bctx.lineTo(x, y);
+  }
+  bctx.strokeStyle = '#3d8'; bctx.stroke();
+  bctx.beginPath(); let drawing = false;
+  for (let i = 0; i < w; i++) {
+    const hot = Math.abs(feed.waveform[i]) > th;
+    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
+    if (hot && !drawing) { bctx.moveTo(x, y); drawing = true; }
+    else if (hot && drawing) bctx.lineTo(x, y);
+    else if (!hot && drawing) drawing = false;
+  }
+  bctx.strokeStyle = '#f44'; bctx.stroke();
+  const bw = innerWidth / 16;
+  for (let i = 0; i < 16; i++) {
+    const h = Math.max(0, (feed.spectrum_bins[i] + 96) / 96) * 26;
+    bctx.fillStyle = feed.spectrum_bins[i] > GATE ? '#f44' : '#3d8';
+    bctx.fillRect(i * bw, innerHeight - h, bw - 2, h);
+  }
+}
+let lastB = performance.now();
+function bgLoop() {
+  requestAnimationFrame(bgLoop);
+  const now = performance.now();
+  const dt = (now - lastB) / 1000; lastB = now;
+  bctx.clearRect(0, 0, innerWidth, innerHeight);
+  const speaking = feed.rms_db > GATE;
+  if (feed.role === 'ghost' && speaking) stepRain(dt, now);
+  else if (feed.role === 'user' && speaking) drawEcg();
+}
+requestAnimationFrame(bgLoop);
+
+// ===== 帧路由 =====
+function applyState(f) {
+  arena = f.arena || '';
+  const ids = f.ids || [];
+  desktopIds = f.desktop || [];
+  renderStage(ids, f.layout);
+  setFullscreen(f.fullscreen ?? null);
+  syncDiscs();
+}
+
+function route(f) {
+  switch (f.type) {
+    case 'snapshot': {
+      // 全量帧：reconcile（缺建、多删）。f.items 是所有 item 的详情（含桌面），
+      // 页面据此物化 iframe；桌面 item 的 iframe 隐藏，只画代理圆盘。
+      const seen = new Set();
+      f.items.forEach((it) => {
+        seen.add(it.id);
+        if (items.has(it.id)) {
+          const cur = items.get(it.id);
+          cur.label = it.label; cur.group = it.group; cur.url = it.url;
+        } else {
+          const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon };
+          items.set(it.id, entry); makeSlot(entry);
+        }
+      });
+      [...items.keys()].filter((id) => !seen.has(id)).forEach(destroySlot);
+      applyState(f);
+      break;
+    }
+    case 'state': applyState(f); break;
+    case 'open': {
+      const it = f.item;
+      if (!items.has(it.id)) {
+        const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon };
+        items.set(it.id, entry); makeSlot(entry);
+      } else {
+        // navigate：已存在的 item 换 url，iframe 原地重载（不 reparent）。
+        const cur = items.get(it.id);
+        cur.url = it.url;
+        if (cur.iframe) cur.iframe.src = it.url;
+      }
+      break;
+    }
+    case 'close': {
+      destroySlot(f.id); items.delete(f.id); break;
+    }
+    case 'activate': {
+      if (f.by_model) { /* 模型切组：可在此处做 activate 动画（WD6） */ }
+      applyState(f); break;
+    }
+    case 'fullscreen': setFullscreen(f.id); break;
+    case 'veil': {
+      const d = (f.duration || 2) * 1000;
+      if (f.gesture === 'mark') veilMark(f.item, f.region || 'full', d);
+      else if (f.gesture === 'arrow') veilArrow(f.src, f.dst, d);
+      else if (f.gesture === 'text') veilText(f.content, d);
+      break;
+    }
+    case 'audio': {
+      feed = f.sample;
+      mossEl.classList.toggle('alive', feed.role === 'ghost' && feed.rms_db > GATE);
+      st.textContent = `#${arena || 'desktop'} · ${feed.role} ${feed.rms_db.toFixed(0)}dB`;
+      break;
+    }
+    case 'notice': {
+      logLine(f.text); break;
+    }
+  }
+}
+
+// ===== 上行 + log =====
+$('#scrim').addEventListener('click', () => { if (fullscreenId) send({ type: 'fullscreen', id: '' }); });
+$('#scrim-exit').addEventListener('click', (e) => { e.stopPropagation(); send({ type: 'fullscreen', id: '' }); });
+
+let logCount = 0;
+function logLine(text) {
+  logCount++;
+  $('#log-badge').textContent = logCount;
+  const el = document.createElement('div');
+  el.textContent = text;
+  const list = $('#log-list');
+  list.prepend(el);
+  while (list.children.length > 50) list.lastChild.remove();
+}
+$('#log-badge').addEventListener('click', () => $('#log-list').classList.toggle('open'));
+</script>
+</body>
+</html>

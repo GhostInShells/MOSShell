@@ -5,6 +5,7 @@
   README.md              # Convention specification — "why" and "how"
   TOPOLOGY.md            # This file — "where"
   TEMPLATE.md            # Template for new features (source of `moss features create`)
+  review/                # Project-level review perspective docs (optional)
   workstreams/           # All workstreams in all states — never move, only update frontmatter
     <year>/              # Created year (features stay in place for entire lifecycle)
       <month>/           # Created month
@@ -12,12 +13,13 @@
           FEATURE.md     # REQUIRED: frontmatter + motivation + key decisions + design index
           discuss/       # Feature-specific discussion trails (optional)
           design/        # Design documents (optional)
+          review/        # Feature review perspective docs (optional; override global by same name)
 ```
 
 ## Path Semantics
 
 - **Path encodes creation date** at `create` time. Features stay in place for their entire
-  lifecycle — `completed`/`dropped` are just a `status` field update in frontmatter, no file move.
+  lifecycle — `completed`/`dropped`/`parked` are just a `status` field update in frontmatter, no file move.
   This preserves clean git history without path-forking from rename detection.
 - **`workstreams/` is the single source of truth** for all features in all states. There is no
   `archive/` or `completed/` sibling — terminal states live alongside active ones.

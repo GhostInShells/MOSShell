@@ -3,6 +3,7 @@
 2026-07-13 首轮定案 (cells-channel.md, claude-fable-5 + 人类)。
 2026-07-18 推翻重写 (本文件, claude-opus-4-7 + 人类)。
 2026-07-19 三 channel 拆分定案 (本次追加, claude-opus-4-7 + 人类) — 见 §5。
+2026-09-23 命名 / alias 定案 (推翻 09-19 版) — 见 §6。
 
 本文档以 **探索路径为主线**，KD 作路径终点标记。文档的价值不在具体 KD，
 而在留给下一位化身"我们如何走到这里、否掉过什么、为什么"的完整轨迹。
@@ -53,8 +54,9 @@ tutorial 走通时倒逼。
 - 单一根: `matrix` (main.import_channels 一次挂载)。
 - 承 cell 治理全部对外面: own commands + virtual children (proxies) + 治理
   context + CellEvent 生产侧。
-- 器官路径: `matrix.<cell.fullname>:command` — 前缀成本 (~2 tokens
-  "matrix.") 是常数税，换 code-as-prompt 语义清晰 (器官是网络资源)。
+- 器官路径: `matrix.mesh.<name>:command` — 前缀成本 (~2 tokens "matrix.mesh.")
+  是常数税，换 code-as-prompt 语义清晰 (器官是网络资源)。`<name>` 的判定见 §6
+  (本地 alias / 远程 normalized address)。
 - 子拓扑姿态待实装决: **flat** (所有治理动词直接挂 matrix own_commands) 或
   **`_nodes` sub-channel** (list/read/run/stop 聚 `_nodes`, matrix 只留网络
   面) 或 **ChannelModule 组装** (三者内聚度不同，实装体感为准)。
@@ -271,13 +273,20 @@ output 三处内部结构。
   (available 是动态 perspectives 语义，非 error text —— 2026-07-19 澄清)。
   幻觉调用得到通用 not_available error 即可，不附带 reason。
 - **virtual_children 覆写**: 返回 `mesh_impl.channel_proxies()` 快照，让
-  accepted cell 的 channel proxy 从 `matrix.mesh.<cell.fullname>` 寻址。
+  accepted cell 的 channel proxy 从 `matrix.mesh.<name>` 寻址（`<name>` 判定见 §6）。
 - **CellEvent 生产侧归 mesh channel** (原 §1.6 说归 matrix, 这里下沉到
   mesh —— 更内聚, mesh 本就是 mesh.on_event 订阅方):
   `mesh.on_startup` 一次 `mesh_impl.on_event` 订阅, 双扇出:
-  (a) 写自持 ring buffer (喂 context_messages);
+  (a) 写自持 ring buffer (喂 notice 尾部, 原为 context_messages);
   (b) `CommandUtil.send_signal(CellEventSignal(...))` → CellEventNucleus.
 - context_messages: 见 §5.4
+
+> **2026-09-16 补齐**: `mesh.auto_accept` 读接口当时只是占位（CellNetwork ABC
+> 无 getter，channel 里 `_auto_accept_covers_all` 硬编码 False）。本轮补上
+> `AutoAcceptPolicy` + `CellNetwork.auto_accept()`（ZenohCellNetwork 已有字段，
+> 只欠声明）。channel 里因 `available_fn` 是 sync 而 `network()` 是 async，
+> 策略在 refresh_meta 缓存一次（`nonlocal`），谓词读缓存。`set_auto_accept`
+> 现在返回**结果策略**而非回显请求参数。
 
 ### 5.3 matrix channel — 集成点 + 自我介绍
 
@@ -312,6 +321,16 @@ spawn cwd = `cell.home` (NODE.md 所在目录).
 - debug 期限倾向 "host 生命周期尺度", 但本轮不强定.
 
 ### 5.5 context_messages 具体形态 (三构造期可配数字)
+
+> **2026-09-16 推翻（表面分层返工）**: 本节两段 context 全部撤出热面。
+> cold/warm/hot 分层在 2026-08 落地后（shell-trajectory / mindflow-channel），
+> nodes 的 running/dead 与 mesh 的事件尾部都是**状态级变更（温数据）**，改走
+> notice，由内核文本差分投递。两个关键约束（钉）：
+> 1. notice 行内**不得带 `uptime` / `N ago`**——它们每次渲染都变，会让整段 notice
+>    差分永远命中、退化成每轮全文重发；实时量交 `status()` 主动拉。
+> 2. 事件尾部只做**有上界的"最近 N 条"**（`show_events`），超界给
+>    `...events() for the tail` 提示，不全量重放。
+> 原形态保留如下，作为当时结论备查。
 
 原 §1.3 5 大块过重. 本节收敛 —— **matrix 根 channel 无 context**，仅 nodes
 和 mesh 各自负责一部分:
@@ -405,6 +424,45 @@ metadata 只应有让 nucleus 做出正确判决的最小信息.
 
 CellEventSignalMeta 最终形态: `address + transition` 两字段. 诊断内容
 在 mesh channel 生产 signal 时通过 `messages / description` 塞进主体.
+
+## 6. Naming / alias — 命名权威归 spawn 侧 (2026-09-23)
+
+> 2026-09-19 版（模型赋名 + `CellAliasRegistry` + pending 一次性信箱）已推翻。
+> 轨迹见 `git log -- .ai_partners/features/workstreams/2026/07/cell-run-cycle/matrix-channel.md`。
+
+**动机**（为什么命名不能落在 channel 层，而必须归 spawn 侧）：
+
+- 回执在 spawn 时就给了模型；channel 层的名字却要到 mount 时才定。挂载后再定义
+  命名，必然和回执里的预期错位——名字必须 spawn 那一刻就固定，且与回执一致。
+- 友好名的唯一性需要有人对它负责。唯一能负责的是**拉起它的那个进程**：只有它
+  数得住自己的 spawn、发得出对应回执。远程 cell 的名字是这个进程**没承诺过的**，
+  无法校验——把它带进本地 mesh，等于让另一台机器/进程的命名泄漏进来（g1/mac 同
+  scope 时，remote 若携带自己的命名，两个 `camera` 无人可仲裁）。
+- 所以命名的权威是**进程内的一对一关系**，不是网络身份。唯一可信的本地身份关系
+  就是 `spawned_nodes()`。
+
+**拓扑**：
+
+- alias 的出生地是 spawn 咽喉（`NodeManager.spawn_node(alias=)`）：有值取值、无值
+  用 `manifest.name`；重名在进程内单调后缀 `_2` / `_3`（不复用，分隔符 `_`——
+  `-` 不合 `ChannelNamePattern`）。这条后缀不是给模型读的，是**安全闸门**：名字
+  永不重绑，proxy 缓存 / signal 去重 / transcript 引用都不用再查"名字被复用"的副作用。
+- branch name 判定：`address ∈ spawned_nodes()` → alias；否则
+  `CellAddressCodec(address).normalized`（远程 / 他进程一律地址）。
+- 展示 = alias + address（alias 是承诺，address 是身份）。
+- channel 层只消费、不命名：mesh channel 的 virtual children 用 sync 直读
+  （startup 缓存 mesh 引用 → `channel_proxies()` + `view()`）；`on_channel_provided`
+  只发 signal（走 `matrix.send_signal_to_ghost`，不经 `ChannelCtx` contextvar）。
+- `CellRuntimeInfo.alias` 留账本作本地 trace，**不参与命名**；命名只读
+  `spawned_nodes()` 内存。
+
+**删掉的**：`short` / `Cell.unique_name` / `CellAliasRegistry` / `proxy_aliases` /
+`nodes:run(name)` / `CELL_EVENT_CHANNEL_ADDED`（常量 + signal 过滤 + zenoh 字符串）。
+
+**边界**（不静默）：`match()` 要能认展示形态（normalized address + alias；alias 匹配
+留 channel 层查 `spawned_nodes()`，不进 codec）；alias 校验排掉形如 `node__x__01J…`
+的值，避免与 remote 地址跨命名空间撞；"确定性"承诺 = **同进程内、首次、从 spawn 起**，
+进程重启后 counter 归零、老 node 回落地址直到重新 spawn。
 
 ## A. 备查区 — 旧版方案要点 (2026-07-13 cells 单 channel)
 

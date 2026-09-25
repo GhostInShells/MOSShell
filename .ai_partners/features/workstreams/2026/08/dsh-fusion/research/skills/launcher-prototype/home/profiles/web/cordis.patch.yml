@@ -1,0 +1,8 @@
+# 挂本 skill 的 plugin. plugin.ts 与本 patch 同目录 (home/profiles/web/),
+# 相对路径 ./plugin.ts.
+#
+# 提供 /plugin-api/ping (就绪探针) + /plugin-api/echo (call 往返目标),
+# 供 launcher 的 readiness / call 原语验证.
+- insert:
+    - id: launcher-prototype
+      name: './plugin.ts'

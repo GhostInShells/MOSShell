@@ -1,7 +1,6 @@
 import threading
 import janus
 import asyncio
-import uvloop
 
 
 def test_janus_empty():
@@ -33,11 +32,9 @@ def test_janus_async_q_in_differ_thread():
             got.append(item)
 
     def _producer_thread():
-        asyncio.set_event_loop(uvloop.new_event_loop())
         asyncio.run(producer())
 
     def _consumer_thread():
-        asyncio.set_event_loop(uvloop.new_event_loop())
         asyncio.run(consumer())
 
     t1 = threading.Thread(target=_producer_thread)

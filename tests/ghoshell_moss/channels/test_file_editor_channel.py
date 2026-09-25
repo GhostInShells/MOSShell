@@ -220,3 +220,62 @@ async def test_build_factory_fallback_to_default(tmp_path):
     )
     assert tasks[0].exception() is None
     assert "factory fallback works" in tasks[0].result()
+
+
+# -- 9. file_list (v2 read-side) ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_file_list_directory(tmp_path, chan):
+    d = tmp_path / "tree"
+    (d / "a.py").mkdir(parents=True)
+    (d / "a.py" / "one.py").write_text("x\n")
+    (d / "b.txt").write_text("hi\n")
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml=f'<file_editor:file_list path="{d}"/>',
+    )
+    assert tasks[0].exception() is None, tasks[0].exception()
+    result = tasks[0].result()
+    assert "a.py" in result
+    assert "b.txt" in result
+
+
+# -- 10. glob (v2 read-side) -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_glob_recursive(tmp_path, chan):
+    d = tmp_path / "tree"
+    (d / "a.py").mkdir(parents=True)
+    (d / "a.py" / "one.py").write_text("x\n")
+    (d / "sub").mkdir()
+    (d / "sub" / "two.py").write_text("y\n")
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml=f'<file_editor:glob pattern="{d}/**/*.py"/>',
+    )
+    assert tasks[0].exception() is None, tasks[0].exception()
+    result = tasks[0].result()
+    assert "one.py" in result
+    assert "two.py" in result
+
+
+# -- 11. grep (v2 read-side) -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_grep_matching_lines(tmp_path, chan):
+    f = tmp_path / "greptext.txt"
+    f.write_text("alpha\nbeta one\nbeta two\n")
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml=f'<file_editor:grep path="{f}" pattern="beta"/>',
+    )
+    assert tasks[0].exception() is None, tasks[0].exception()
+    result = tasks[0].result()
+    assert "2: beta one" in result
+    assert "3: beta two" in result

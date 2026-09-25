@@ -1,6 +1,9 @@
 """
-MOSS 环境发现的关键常量.
-只保留几个最核心的常量.
+MOSS environment-discovery constants.
+
+The canonical filenames, directories, and environment-variable keys MOSS uses to
+discover a workspace, project, mode, ghost, and cell. Only the most core constants are
+kept here — everything a runtime needs to locate itself before it is wired up.
 """
 
 from typing import Literal, TypeAlias, Dict
@@ -32,7 +35,6 @@ __all__ = [
     'ENV_PROJECT_ID_KEY',
     'ENV_NETWORK_KEY',
     'ENV_NETWORK_SCOPE_KEY',
-    'ENV_SESSION_ID_KEY',
     'ENV_GHOST_NAME_KEY',
     'ENV_MOSS_MODE_KEY',
     'ENV_CELL_ADDRESS_KEY',
@@ -59,8 +61,11 @@ __all__ = [
 
     'WORKSPACE_CELL_RUNTIME_DIR',
     'DEFAULT_NODES_DIR',
+    'NODE_PATH_GHOST_KEY',
+    'NODE_PATH_MODE_KEY',
+    'resolve_node_dir',
 
-    'MATRIX_MANIFESTS_PACKAGE',
+    'PROJECT_MANIFESTS_PACKAGE',
     'GHOST_MANIFESTS_PACKAGE',
 
     'MOSS_NAME_PATTERN',
@@ -83,7 +88,14 @@ META_CONFIG_FILENAME = 'MOSS.md'
 WORKSPACE_ENV_FILENAME = '.env'
 WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 WORKSPACE_CELL_RUNTIME_DIR = 'runtime/cells'
+WORKSPACE_LOG_FILE = 'runtime/logs/moss.log'
 DEFAULT_NODES_DIR = 'nodes'
+
+# node_paths 里的路径前缀占位符 (非环境变量, 仅 node_paths 语法).
+# $MOSS_WORKSPACE 复用环境变量名 ENV_WORKSPACE_DIR_KEY;
+# $GHOST / $MODE 是纯路径语义, 解析到当前 ghost / mode 的 home.
+NODE_PATH_GHOST_KEY = 'GHOST'
+NODE_PATH_MODE_KEY = 'MODE'
 
 # --- stubs --- #
 # workspace 的原始文件所处的 package 路径.
@@ -111,9 +123,6 @@ DEFAULT_NETWORK_NAME = 'local'
 ENV_NETWORK_SCOPE_KEY = 'MOSS_NETWORK_SCOPE'
 DEFAULT_NETWORK_SCOPE = 'default'
 
-# 环境变量中获取 MOSS 运行时的 SESSION ID.
-ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
-
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
 NONE_MOSS_MODE = "none"
 DEFAULT_MODE_NAME = "default"
@@ -126,7 +135,7 @@ NONE_GHOST_NAME = "none"
 ENV_CELL_ADDRESS_KEY = 'MOSS_CELL_ADDRESS'
 ENV_PARENT_CELL_ADDRESS_KEY = 'MOSS_PARENT_CELL_ADDRESS'
 
-MATRIX_MANIFESTS_PACKAGE = 'MOSS.manifests'
+PROJECT_MANIFESTS_PACKAGE = 'MOSS.manifests'
 GHOST_MANIFESTS_PACKAGE = 'MOSS.ghosts'
 
 # 与运行配置项有关的 Env Key
@@ -159,6 +168,22 @@ def _is_stub_ignored(file: Path) -> bool:
         return first_line.startswith(STUB_IGNORE_MARK)
     except Exception:
         return False
+
+
+def resolve_node_dir(relative_path: str, env: 'Environment') -> Path:
+    """把 node_paths 里的前缀占位符解析为绝对路径.
+
+    四地址组合 (各前缀对应一个确认方):
+      无前缀            → project_dir   (使用者)
+      $MOSS_WORKSPACE   → workspace     (管理者)
+      $MODE             → mode home     (mode 开发)
+      $GHOST            → ghost home    (ghost 自己)
+    """
+    path = relative_path
+    path = path.replace(f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path))
+    path = path.replace(f'${NODE_PATH_GHOST_KEY}', str(env.ghost_home))
+    path = path.replace(f'${NODE_PATH_MODE_KEY}', str(env.mode_home))
+    return env.project_path / path
 
 
 class MossMeta(BaseModel):
@@ -195,7 +220,7 @@ class MossMeta(BaseModel):
         pattern=MOSS_NAME_PATTERN,
     )
     matrix_manifest_package: str = Field(
-        default=MATRIX_MANIFESTS_PACKAGE,
+        default=PROJECT_MANIFESTS_PACKAGE,
     )
     system_project: str = Field(
         default='',
@@ -205,6 +230,8 @@ class MossMeta(BaseModel):
         default_factory=lambda: [
             DEFAULT_NODES_DIR,
             f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_MODE_KEY}/{DEFAULT_NODES_DIR}",
+            f"${NODE_PATH_GHOST_KEY}/{DEFAULT_NODES_DIR}",
         ],
         description="以 project 为出发点, 发现 nodes 的路径.",
     )
@@ -232,12 +259,8 @@ class MossMeta(BaseModel):
     def node_dirs(self, env: 'Environment') -> list[Path]:
         """基于 node_paths 解析为绝对路径."""
         result = []
-        project_dir = env.project_path
         for relative_path in self.node_paths:
-            relative_path = relative_path.replace(
-                f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
-            )
-            cell_dir = project_dir / relative_path
+            cell_dir = resolve_node_dir(relative_path, env)
             if cell_dir.exists():
                 result.append(cell_dir.absolute())
         return result
@@ -307,8 +330,9 @@ class Environment:
         self._sealed = False
 
         self._mode_name = mode or os.environ.get(ENV_MOSS_MODE_KEY, self._meta.default_mode)
-        # 为当前启动的实例赋予一个 uid. 通常也可以设置在 cell 上.
-        self._session_id = os.environ.get(ENV_SESSION_ID_KEY) or unique_id()
+        # uid 赋予当前启动的实例. 没有 env 通道: 每个进程自带 run id, 刻意不下传
+        # (dump_runtime_scope 不含它), 否则同父进程连续 spawn 的多个 node 会撞.
+        self._run_id = unique_id()
         self._ghost_name = ghost or os.environ.get(ENV_GHOST_NAME_KEY, self._meta.default_ghost)
         self._cell_address = cell_address or os.environ.get(ENV_CELL_ADDRESS_KEY, '')
         self._parent_cell_address = parent_cell_address or os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
@@ -386,14 +410,11 @@ class Environment:
         global _environment
         if _environment is not None:
             return _environment
+        env = cls()
         if not bootstrap:
-            raise EnvironmentNotSealedError(
-                "Environment.discover(bootstrap=False) 被调用但进程内无已 seal 的单例. "
-                "构造路径 (CLI/Host) 必须先 Environment(...).seal(); "
-                "worker 路径 (cell main.py) 传 bootstrap=True 或直接调用 discover()."
-            )
-        cls().seal()
-        return _environment
+            return env
+        env.seal()
+        return env
 
     # --- 暴露属性. --- #
     # 单一信源: 一律读 self._*, os.environ 只在 seal 瞬间被写入, 不回读.
@@ -419,8 +440,8 @@ class Environment:
         return self._network_scope
 
     @property
-    def session_id(self) -> str:
-        return self._session_id
+    def run_id(self) -> str:
+        return self._run_id
 
     @property
     def project_id(self) -> str:
@@ -565,6 +586,16 @@ class Environment:
         return self.workspace_path.joinpath(DEFAULT_NODES_DIR)
 
     @property
+    def ghost_home(self) -> Path:
+        """当前 ghost 的 home 目录 (workspace/ghosts/<ghost_name>)."""
+        return self.workspace_path / 'ghosts' / self.ghost_name
+
+    @property
+    def mode_home(self) -> Path:
+        """当前 mode 的 home 目录 (workspace/modes/<mode_name>)."""
+        return self.workspace_path / 'modes' / self.mode_name
+
+    @property
     def cell_runtimes_dir(self) -> Path:
         """workspace 用来管理 cell 运行时状态的根目录. """
         return self.workspace_path.joinpath(WORKSPACE_CELL_RUNTIME_DIR)
@@ -583,6 +614,11 @@ class Environment:
     @property
     def log_config_file(self) -> Path:
         return self._workspace_path / 'configs' / 'logging.yml'
+
+    @property
+    def log_file(self) -> Path:
+        """运行时日志文件. 与 Project.log_file 同一约定地址. """
+        return self._workspace_path / WORKSPACE_LOG_FILE
 
     def dump_cell_env(
             self,

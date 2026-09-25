@@ -19,7 +19,6 @@ from ghoshell_moss.core.blueprint.environment import (
     ENV_PROJECT_ID_KEY,
     ENV_NETWORK_KEY,
     ENV_NETWORK_SCOPE_KEY,
-    ENV_SESSION_ID_KEY,
     ENV_MOSS_MODE_KEY,
     ENV_GHOST_NAME_KEY,
     ENV_CELL_ADDRESS_KEY,
@@ -27,6 +26,9 @@ from ghoshell_moss.core.blueprint.environment import (
     MOSS_META_FILE,
     MossMeta,
     WORKSPACE_PROJECT_ID_FILE,
+    NODE_PATH_GHOST_KEY,
+    NODE_PATH_MODE_KEY,
+    resolve_node_dir,
 )
 
 
@@ -93,6 +95,7 @@ class TestEnvironmentInitExplicit:
         assert env.this_cell_address == 'host/main/uid'
         assert env.parent_cell_address == 'host/parent/uid'
 
+
 # ==================================================================
 # Environment — project_id 生成
 # ==================================================================
@@ -152,24 +155,17 @@ class TestEnvironmentProjectAuto:
 
 
 # ==================================================================
-# Environment — session_id
+# Environment — run_id
 # ==================================================================
 
-class TestEnvironmentSessionId:
-    def test_auto_generated_when_not_in_env(self, tmp_path):
+class TestEnvironmentRunId:
+    def test_auto_generated_per_process(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env1 = Environment(workspace=ws)
         env2 = Environment(workspace=ws)
-        assert len(env1.session_id) > 0
-        assert env1.session_id != env2.session_id
-
-    def test_from_env_var(self, tmp_path, monkeypatch):
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        monkeypatch.setenv(ENV_SESSION_ID_KEY, 'explicit-sid')
-        env = Environment(workspace=ws)
-        assert env.session_id == 'explicit-sid'
+        assert len(env1.run_id) > 0
+        assert env1.run_id != env2.run_id
 
 
 # ==================================================================
@@ -248,13 +244,13 @@ class TestDumpRuntimeScope:
         assert 'MOSS_CELL_ADDRESS' in scope
         assert 'MOSS_PARENT_CELL_ADDRESS' in scope
 
-    def test_does_not_contain_session_id(self, tmp_path):
-        """session_id 不传递给子进程 — 子进程自己生成."""
+    def test_does_not_contain_run_id(self, tmp_path):
+        """run_id 不传递给子进程 — 子进程自己生成."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env = Environment(workspace=ws)
         scope = env.dump_runtime_scope()
-        assert 'MOSS_SESSION_ID' not in scope
+        assert not any('RUN_ID' in key for key in scope)
 
 
 # ==================================================================
@@ -392,17 +388,6 @@ class TestEnvironmentDiscover:
         assert env.workspace_path == ws
         assert env.is_sealed is True
 
-    def test_discover_bootstrap_false_raises_when_no_singleton(self, tmp_path, monkeypatch):
-        """discover(bootstrap=False) 断言上游必须已 seal, 无单例时抛异常.
-
-        Host/Runtime.run 入口做前置检查 / CLI 单测起步防兜底, 都走这条路径.
-        """
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        monkeypatch.chdir(tmp_path)
-        with pytest.raises(EnvironmentNotSealedError):
-            Environment.discover(bootstrap=False)
-
     def test_discover_bootstrap_false_returns_singleton_when_sealed(self, tmp_path):
         """discover(bootstrap=False) 有单例时正常返回, 不管 flag."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
@@ -426,6 +411,22 @@ class TestEnvironmentDirPaths:
         env = Environment(workspace=ws)
         assert env.default_project_nodes_dir.relative_to(env.project_path)
         assert env.default_workspace_nodes_dir.relative_to(env.workspace_path)
+
+    def test_resolve_node_dir_four_addresses(self, tmp_path):
+        # 四地址组合: 无前缀→project, $MOSS_WORKSPACE→workspace,
+        # $MODE→mode home, $GHOST→ghost home.
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        meta = MossMeta(name='testproj', default_mode='desktop', default_ghost='echo')
+        meta.write_to_directory(ws)
+        env = Environment(workspace=ws)
+
+        assert resolve_node_dir('nodes', env) == env.project_path / 'nodes'
+        assert resolve_node_dir(f'${ENV_WORKSPACE_DIR_KEY}/nodes', env) == env.workspace_path / 'nodes'
+        assert resolve_node_dir(f'${NODE_PATH_MODE_KEY}/nodes',
+                                env) == env.workspace_path / 'modes' / 'desktop' / 'nodes'
+        assert resolve_node_dir(f'${NODE_PATH_GHOST_KEY}/nodes',
+                                env) == env.workspace_path / 'ghosts' / 'echo' / 'nodes'
 
     def test_runtime_and_log_dirs_under_workspace(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME

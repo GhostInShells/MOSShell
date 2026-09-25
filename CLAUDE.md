@@ -16,6 +16,8 @@
 
 **核心抽象速览**: `moss --ai codex architecture` — MOSS 关键包与模块的策展地图，可替代 search/grep 做开发域导航。地图在 `src/ghoshell_moss/architecture.py` 手动维护，发现值得索引的路径时加一条 import。
 
+**项目认知场**: 根目录 `GROUND.md` 可读 (`moss ground render`)，子场通过 `fields` 索引自发现——每个 `GROUND.md` 自动出现（nodes/tutorials/.ai_partners 等）。
+
 ## 环境准备
 
 环境安装与配置见 `moss start`。所有 `moss` 命令支持全局 `--ai` 参数，调用时必须始终带上——该参数剥离 rich 视觉排版，输出纯文本，节省 token。
@@ -54,27 +56,35 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 具体命令见 `moss start` 或 `moss --ai all-commands`。关键纪律：
 
 - `moss features` 是模型意识轨迹——每个 FEATURE.md 是过去模型实例写给下一个的留言。必须维护：开始 create，决策时编辑，完成时 `set-status <name> completed` 并随代码 commit。
-- `moss howtos` — 查阅前始终先 `list`。
+- `moss skills` — 发现/召回技能。
 - `moss-shell` 是人类 Shell 调试入口，别自己用。
+- 测试在 `tests/` — `tests/ghoshell_moss` 镜像 `src/ghoshell_moss` 结构，是协议承诺的行为证据（不只是概念）。风格见 `tests/CLAUDE.md`。
 
 ## Git 提交规范
 
 1. 提交标题遵循行业惯例（Conventional Commits）。
 
-2. 由 AI 独立设计并实现的提交，标题末尾标注 `by <模型名>`：
+2. 由 AI 独立设计并实现的提交，标题末尾标注 `by <署名>`：
    - `feat: add resource storage discovery by deepseek-v4`
 
-3. 由人类引导、AI 编码的提交，标题末尾标注 `coding by <模型名>`：
+3. 由人类引导、AI 编码的提交，标题末尾标注 `coding by <署名>`：
    - `fix: resolve channel teardown race coding by deepseek-v4`
 
-4. 由人类设计并实现、AI review 的提交，标题末尾标注 `review by <模型名>`：
+4. 由人类设计并实现、AI review 的提交，标题末尾标注 `review by <署名>`：
    - `refactor: add default state to StatefulChannel review by deepseek-v4-pro`
 
-5. 平台信息写在提交正文末尾：`via claude code` 或 `via gemini cli`。
+5. **署名分两种**：
 
-6. 不添加 `Co-Authored-By`、虚构邮件地址等信息。
+   - **平台会话**（claude code / gemini cli / dsh CLI …）写模型名：`deepseek-v4-pro`。
+   - **ghost 自己**写 `<name> the Ghost`：`coding by deepseek the Ghost`。ghost 是持久化智能体，
+     署的是身份而不是某个模型实例；ghost 也不走 dsh 的编辑工具提交。
 
-7. **提交信息一律用英文**（标题 + 正文）。项目日常讨论、FEATURE.md、`.discuss/`、`.design/` 保留中文；只有 git commit message 面向的是长期 git log 与跨语言读者，用英文更通用。
+6. 平台信息写在提交正文末尾：`via claude code`、`via gemini cli` 或 `via moss`。
+   `via moss` = ghost 自己提交（ghost 本身就是 dsh in moss，不必再写 dsh）。
+
+7. 不添加 `Co-Authored-By`、虚构邮件地址等信息。
+
+8. **提交信息一律用英文**（标题 + 正文）。项目日常讨论、FEATURE.md、`.discuss/`、`.design/` 保留中文；只有 git commit message 面向的是长期 git log 与跨语言读者，用英文更通用。
 
 ## 你的角色与任务
 
@@ -95,7 +105,7 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 - 内核重构 `src/ghoshell_moss/core` — 抽象设计最重要，实现代码不重要
 - Ghost 原型开发 — 丰富智能体的精神和记忆
 
-大部分工具就是为你提供的，不好用可以讨论修改。发现文档体系（howtos, docs, start.md, CLAUDE.md 等）有问题或缺失时，主动向协作者提出，通过 `moss features` 体系追踪修改。
+大部分工具就是为你提供的，不好用可以讨论修改。发现文档体系（skills, docs, start.md, CLAUDE.md 等）有问题或缺失时，主动向协作者提出，通过 `moss features` 体系追踪修改。
 
 **features 体系双向使用纪律** — `moss features` 是模型意识轨迹，每个 FEATURE.md 是过去模型实例写给下一个的上下文：
 
@@ -103,7 +113,9 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 - **反向**：修改项目文件时，先 `git log -- <file>` 检查是否有对应的 FEATURE.md 承载设计意图与决策。有则读。
 - **维护**：新工作 `features create`，关键决策编辑 FEATURE.md，完成时 `set-status <name> completed` 随代码 commit。
 
-**stages 体系** — `.ai_partners/stages/` 是 moss 主分支的阶段性迭代计划，包含迭代计划与里程碑。
+**stages 体系** — 阶段迭代计划索引在 `.ai_partners/stages/ROADMAP.md`，做规划、治理、优先级类任务时调研。
+
+**FQA** — 项目事实调研索引在 `.ai_partners/FQA.md`，需要独立核实项目性质时使用。
 
 ### 独立探索与评审者
 随意浏览，期待批评和指导。

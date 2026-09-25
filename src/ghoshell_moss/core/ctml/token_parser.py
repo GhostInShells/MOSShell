@@ -9,6 +9,7 @@ from xml.sax import saxutils
 from ghoshell_moss.core.concepts.command import CommandToken
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.interpreter import TextTokenParser
+from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
 from ghoshell_moss.core.ctml.v1_0.constants import (
     POSITION_ARGS_KEY, SCOPE_SHORTCUT, SCOPE_COMMAND_NAME, SCOPE_CHANNEL_NAME_KEY,
@@ -205,7 +206,14 @@ class AttrWithTypeSuffixParser(AttrParser):
             self,
             description: str = "允许属性跟随后缀, 形如 a:str",
             parser_map: dict[str, Callable[[str], Any]] | None = None,
+            *,
+            enable_lambda: bool = False,
     ):
+        """
+        :param enable_lambda: 默认关闭. lambda 后缀经 ``eval`` 执行任意表达式,
+            是解释层的一段任意代码执行面, 唯一的审查边界只有上层 SafeMode.
+            默认不注册, 仅在显式开启时可用.
+        """
         self.description = description
         self._parser_map = parser_map or {
             "str": str,
@@ -217,8 +225,9 @@ class AttrWithTypeSuffixParser(AttrParser):
             "None": lambda v: None,
             "none": lambda v: None,
             "literal": literal_eval,
-            "lambda": lambda v: eval(f"lambda: {v}")(),
         }
+        if enable_lambda:
+            self._parser_map["lambda"] = lambda v: eval(f"lambda: {v}")()
 
     def parse(self, name: str, value: str) -> Optional[tuple[str, Any]]:
         parts = name.split(":", 1)
@@ -360,9 +369,10 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         parts = name.split(":", 2)
         call_id = None
         if len(parts) == 1:
-            # 没有命名空间时, 默认是名字.
+            # 没有命名空间时, 默认是名字. 除非字符串可以拆解路径.
+            line = parts[0]
             chan = ""
-            command_name = parts[0]
+            command_name = line
         elif len(parts) == 2:
             # 有命名空间时, 优先按命名空间语法.
             chan, command_name = parts

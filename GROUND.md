@@ -1,17 +1,15 @@
 ---
-$id: moss-project
-label: MOSS
+name: MOSS
+description: Ghost in Shells 架构的 Shell 层 — 认知场索引
 pins:
 - verb: frontmatter
-  label: fields
+  label: grounds
   arguments:
-    path: $GROUND/**/GROUND.md
+    path: $CWD/*/**/GROUND.md
     keys:
-    - $id
-    - label
+    - name
+    - description
   description: 项目中的认知场索引 — 每加一个 GROUND.md 自动出现
 ---
 
-# MOSS
-
-Ghost in Shells 架构的 Shell 层。工程入口: `moss start`。
+@claude.md

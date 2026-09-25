@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from ghoshell_moss.contracts.speech import AudioFormat
-from ghoshell_moss.host.speech.player import VirtualStreamPlayer
+from ghoshell_moss.core.speech.virtual_player import VirtualStreamPlayer
 
 
 def _make_sine(duration: float, sample_rate: int, freq: float = 440.0, amplitude: float = 0.3) -> np.ndarray:
@@ -196,3 +196,12 @@ def test_add_zero_duration_returns_float():
     result = player.add(audio, audio_type=AudioFormat.PCM_S16LE, rate=16000)
     assert isinstance(result, float)
     assert result >= 0.0
+
+
+def test_on_play_returns_disposer():
+    """on_play 返回 disposer (可摘除回调), 幂等 — 对称 observe."""
+    player = VirtualStreamPlayer(sample_rate=16000, channels=1)
+    dispose = player.on_play(lambda frame: None)
+    assert callable(dispose)
+    dispose()
+    dispose()  # 幂等, 不抛

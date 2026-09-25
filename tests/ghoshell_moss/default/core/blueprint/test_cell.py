@@ -5,7 +5,7 @@ Scope:
   - 三域模型的数据契约 (NodeManifest / CellRuntimeInfo / Cell + CellEvent)
   - ExecSpec 字段与 arguments 拆分
   - NodeManifest 与文件系统往返 (write/read + INSTALL 状态推导 + from_script 匝道)
-  - Cell 派生 property (address / fullname / is_host / unique_name)
+  - Cell 派生 property (address / fullname / is_host)
   - build helpers (build_node_from_manifest / build_host_cell)
   - address 三段结构 (§ZZ-10) + normalize / parse_address
   - 历史锚点负向断言 (WW-3 no interpreter, WW-6 no exit, 契约中不该出现的字段)
@@ -23,9 +23,13 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
+from ghoshell_moss.message import unique_id
+
 from ghoshell_moss.core.blueprint.cell import (
     Cell,
+    CellAddressCodec,
     CellEvent,
+    CellEventLevel,
     CellRuntimeInfo,
     DuplicatedError,
     ExecSpec,
@@ -36,7 +40,7 @@ from ghoshell_moss.core.blueprint.cell import (
     NodeScriptCategory,
     ROLES,
     build_host_cell,
-    build_node_from_manifest,
+    build_cell_from_node,
     make_address,
     normalize,
     parse_address,
@@ -72,6 +76,28 @@ class TestExecSpec:
         # 早期 ExecSpec.from_run/to_run 糖已收敛回字段直填 (frontmatter 层还有 `run:` 糖).
         assert not hasattr(ExecSpec, 'from_run')
         assert not hasattr(ExecSpec, 'to_run')
+
+
+# ── CellEventLevel ───────────────────────────────────────────────────
+
+
+class TestCellEventLevel:
+
+    def test_resolve_none_defaults_to_info(self):
+        # None = 系统约定, 归一化为 INFO — 感知判决的单一入口.
+        assert CellEventLevel.resolve(None) == CellEventLevel.INFO
+
+    def test_resolve_preserves_explicit(self):
+        assert CellEventLevel.resolve(CellEventLevel.DEBUG) == CellEventLevel.DEBUG
+        assert CellEventLevel.resolve(CellEventLevel.WARNING) == CellEventLevel.WARNING
+
+    def test_is_perceivable_threshold(self):
+        # 低于感知阈值 (INFO) 的档位不产生 ghost signal (零值/不调用).
+        assert CellEventLevel.is_perceivable(CellEventLevel.DEBUG) is False
+        assert CellEventLevel.is_perceivable(CellEventLevel.INFO) is True
+        assert CellEventLevel.is_perceivable(CellEventLevel.WARNING) is True
+        # None (系统约定) 视同 INFO → 感知.
+        assert CellEventLevel.is_perceivable(None) is True
 
 
 # ── NodeManifest ──────────────────────────────────────────────────────
@@ -173,6 +199,8 @@ class TestFromScript:
         m = NodeManifest.from_script(script)
         assert m.name == script.stem
         assert m.category == NodeScriptCategory
+        # 裸脚本 (无 NODE.md 声明) 默认一次性 → persist=False.
+        assert m.persist is False
         # 匝道降级: command = sys.executable 绝对路径.
         import sys
         assert m.exec.command == sys.executable
@@ -261,6 +289,12 @@ class TestCell:
         # §ZZ-10 三段结构.
         assert cell.address == f'{NODE_ROLE}/cam/ABC12345'
 
+    def test_name_keeps_raw_while_address_normalized(self):
+        cell = _make_cell(name='ghost-send', uid='ABC12345')
+        # Cell.name 保留原始值, address 归一化 -/. → _.
+        assert cell.name == 'ghost-send'
+        assert cell.address == f'{NODE_ROLE}/ghost_send/ABC12345'
+
     def test_fullname_without_category(self):
         cell = _make_cell(name='cam')
         assert cell.fullname == 'cam'
@@ -273,10 +307,15 @@ class TestCell:
         assert _make_cell(role=HOST_ROLE, name='m').is_host is True
         assert _make_cell(role=NODE_ROLE, name='m').is_host is False
 
-    def test_unique_name_combines_fullname_and_uid_prefix(self):
-        cell = Cell(role=NODE_ROLE, name='cam', uid='ABC12345XYZ', home='/tmp')
-        # unique_name = fullname + uid[:8]
-        assert cell.unique_name == f'cam_{"ABC12345"}'
+    def test_address_codec_property(self):
+        cell = _make_cell(name='cam', uid='ABC12345XYZ')
+        c = cell.address_codec
+        assert isinstance(c, CellAddressCodec)
+        assert c.address == cell.address
+
+    def test_address_codec_consistency_with_address(self):
+        cell = _make_cell(name='sensor', uid='ZZZZZZZZZZ')
+        assert cell.address_codec.address == cell.address
 
     def test_providing_default_empty(self):
         assert _make_cell().providing == []
@@ -358,7 +397,7 @@ class TestBuildHelpers:
             name='cam',
             file=str(manifest_dir / NodeManifest.MANIFEST_FILENAME),
         )
-        cell = build_node_from_manifest(env, manifest)
+        cell = build_cell_from_node(env, manifest)
         assert cell.role == NODE_ROLE
         assert cell.name == 'cam'
         assert cell.home == str(manifest_dir.resolve())
@@ -368,7 +407,7 @@ class TestBuildHelpers:
     def test_build_node_home_fallback_when_file_missing(self, tmp_path: Path):
         env = _mock_env(tmp_path)
         manifest = NodeManifest(name='cam', category='sensors')  # file=''
-        cell = build_node_from_manifest(env, manifest)
+        cell = build_cell_from_node(env, manifest)
         # 无 file → 临时 workspace 在 env.cell_runtimes_dir/{fullname}
         expected = (env.cell_runtimes_dir / cell.fullname).resolve()
         assert cell.home == str(expected)
@@ -376,15 +415,9 @@ class TestBuildHelpers:
     def test_build_node_uid_per_call(self, tmp_path: Path):
         env = _mock_env(tmp_path)
         manifest = NodeManifest(name='cam')
-        c1 = build_node_from_manifest(env, manifest)
-        c2 = build_node_from_manifest(env, manifest)
+        c1 = build_cell_from_node(env, manifest)
+        c2 = build_cell_from_node(env, manifest)
         assert c1.uid != c2.uid, "每次 spawn 独立 uid, 保证 address 全局唯一"
-
-    def test_build_node_alias_overrides_name(self, tmp_path: Path):
-        env = _mock_env(tmp_path)
-        manifest = NodeManifest(name='cam')
-        cell = build_node_from_manifest(env, manifest, name='cam_alias')
-        assert cell.name == 'cam_alias'
 
     def test_build_host_uses_moss_meta(self, tmp_path: Path):
         env = _mock_env(tmp_path)
@@ -397,6 +430,18 @@ class TestBuildHelpers:
         assert cell.home == str(tmp_path.absolute())
         # host address = host / {moss_name} / {project_id}
         assert cell.address == f'{HOST_ROLE}/{env.moss_meta.name}/proj-42'
+
+    def test_build_node_persist_default_event_level_none(self, tmp_path: Path):
+        # persist=True (默认) → event_level=None (系统约定, 监听侧视同 INFO).
+        env = _mock_env(tmp_path)
+        cell = build_cell_from_node(env, NodeManifest(name='cam'))
+        assert cell.event_level is None
+
+    def test_build_node_one_shot_event_level_debug(self, tmp_path: Path):
+        # persist=False (一次性) → event_level=DEBUG (低于感知阈值, 事件静默).
+        env = _mock_env(tmp_path)
+        cell = build_cell_from_node(env, NodeManifest(name='tool', persist=False))
+        assert cell.event_level == CellEventLevel.DEBUG
 
 
 # ── NodeLauncher ─────────────────────────────────────────────────────
@@ -451,6 +496,10 @@ class TestCellEvent:
         # cell 下线由 liveness 消失承载, 不在 event 上做 terminal 标记.
         assert 'terminal' not in CellEvent.model_fields
 
+    def test_address_codec_from_event(self):
+        e = CellEvent(address='node/cam/ABC12345XYZ')
+        assert isinstance(e.address_codec, CellAddressCodec)
+
 
 # ── address 三段结构 (§ZZ-10) ─────────────────────────────────────────
 
@@ -460,6 +509,12 @@ class TestAddress:
     def test_make_address_valid(self):
         assert make_address(NODE_ROLE, 'cam', 'uid8') == f'{NODE_ROLE}/cam/uid8'
         assert make_address(HOST_ROLE, 'moss', 'proj-1') == f'{HOST_ROLE}/moss/proj-1'
+
+    def test_make_address_normalizes_name_separators(self):
+        # name 的 -/. 归一化为 _ (标识符安全); uid 保留原样 (含 -).
+        assert make_address(NODE_ROLE, 'ghost-send', 'uid8') == f'{NODE_ROLE}/ghost_send/uid8'
+        assert make_address(NODE_ROLE, 'a.b', 'uid8') == f'{NODE_ROLE}/a_b/uid8'
+        assert make_address(NODE_ROLE, 'cam', 'proj-1') == f'{NODE_ROLE}/cam/proj-1'
 
     def test_make_address_rejects_unknown_role(self):
         with pytest.raises(ValueError):
@@ -500,8 +555,176 @@ class TestAddress:
 class TestNormalize:
 
     def test_replaces_all_separators(self):
-        # 覆盖 / \ . - 四种分隔符, 输出可作 filename + python identifier.
-        assert normalize('worker/cam.front-1\\sub') == 'worker_cam_front_1_sub'
+        assert normalize('worker/cam.front-1\\sub') == 'worker__cam__front__1__sub'
+
+    def test_normalize_roundtrip_via_from_normalized(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        norm = normalize(addr)
+        assert norm == f'{NODE_ROLE}__cam__uid8'
+        back = CellAddressCodec.from_normalized(norm)
+        assert back.address == addr
+
+
+# ── CellAddressCodec ─────────────────────────────────────────────────
+
+
+class TestCellAddressCodec:
+
+    # -- construct / validate
+
+    def test_construct_valid_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.address == addr
+
+    def test_construct_invalid_raises_value_error(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec('not-an-address')
+
+    def test_construct_no_validate(self):
+        c = CellAddressCodec('not/an/addr', validate=False)
+        assert c.address == 'not/an/addr'
+
+    # -- parts / role / name / uid
+
+    def test_parts_role_name_uid(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.parts == (NODE_ROLE, 'cam', 'uid8')
+        assert c.role == NODE_ROLE
+        assert c.name == 'cam'
+        assert c.uid == 'uid8'
+
+    # -- dot_address / from_dot_address
+
+    def test_dot_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.dot_address == f'{NODE_ROLE}.cam.uid8'
+
+    def test_dot_address_roundtrip(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec.from_dot_address(CellAddressCodec(addr).dot_address)
+        assert c.address == addr
+
+    # -- normalized / from_normalized
+
+    def test_normalized(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.normalized == f'{NODE_ROLE}__cam__uid8'
+
+    def test_from_normalized_roundtrip(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec.from_normalized(CellAddressCodec(addr).normalized)
+        assert c.address == addr
+
+    def test_from_normalized_rejects_invalid(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec.from_normalized('too__many__segments__here')
+
+    # -- make / parse / normalize (class-level)
+
+    def test_make_valid(self):
+        c = CellAddressCodec.make(NODE_ROLE, 'cam', 'uid8')
+        assert c.address == f'{NODE_ROLE}/cam/uid8'
+        assert type(c) is CellAddressCodec
+
+    def test_make_rejects_empty_name(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec.make(NODE_ROLE, '', 'uid')
+
+    def test_make_rejects_unknown_role(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec.make('bridge', 'x', 'uid')
+
+    def test_parse_roundtrip(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        assert CellAddressCodec.parse(addr) == (NODE_ROLE, 'cam', 'uid8')
+
+    def test_normalize_classmethod(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        assert CellAddressCodec.normalize(addr) == f'{NODE_ROLE}__cam__uid8'
+
+    # -- match
+
+    def test_match_exact_address(self):
+        addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
+        c = CellAddressCodec(addr)
+        assert c.match(addr)
+
+    def test_match_exact_normalized(self):
+        addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
+        c = CellAddressCodec(addr)
+        assert c.match(c.normalized)
+
+    def test_match_exact_name(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.match('cam')
+
+    def test_match_uid_prefix_ge_3(self):
+        addr = make_address(NODE_ROLE, 'cam', 'ABCDEFGH')
+        c = CellAddressCodec(addr)
+        assert c.match('ABC')                      # uid prefix ≥3
+        assert not c.match('AB')                   # uid prefix <3 —门槛
+
+    def test_match_address_prefix_ge_3(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.match(f'{NODE_ROLE}/cam')         # role/name, ≥3
+        assert not c.match('no')                   # <3
+
+    def test_match_empty_query(self):
+        c = CellAddressCodec(make_address(NODE_ROLE, 'cam', 'uid8'))
+        assert not c.match('')
+
+    # -- suggest
+
+    def test_suggest_finds_by_uid_prefix(self):
+        addrs = [
+            make_address(NODE_ROLE, 'cam', 'AAAABBBB'),
+            make_address(NODE_ROLE, 'sensor', 'BBBBCCCC'),
+            make_address(NODE_ROLE, 'motor', 'AAAACCCC'),
+        ]
+        hits = CellAddressCodec.suggest('AAAA', addrs)
+        assert len(hits) == 2
+        assert addrs[0] in hits
+        assert addrs[2] in hits
+
+    def test_suggest_prefers_exact_name(self):
+        addrs = [
+            make_address(NODE_ROLE, 'cam', 'AAA'),
+            make_address(NODE_ROLE, 'camera', 'BBB'),
+        ]
+        # 'cam' exact name match → higher score than 'camera' substring
+        hits = CellAddressCodec.suggest('cam', addrs)
+        assert hits[0] == addrs[0]
+
+    def test_suggest_empty_query(self):
+        addrs = [make_address(NODE_ROLE, 'cam', 'AAA')]
+        assert CellAddressCodec.suggest('', addrs) == []
+
+    def test_suggest_limit(self):
+        addrs = [
+            make_address(NODE_ROLE, 'cam', 'AAA'),
+            make_address(NODE_ROLE, 'cam', 'BBB'),
+            make_address(NODE_ROLE, 'cam', 'CCC'),
+            make_address(NODE_ROLE, 'cam', 'DDD'),
+        ]
+        assert len(CellAddressCodec.suggest('cam', addrs, limit=2)) == 2
+
+    # -- __str__ / __repr__
+
+    def test_str_returns_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        assert str(CellAddressCodec(addr)) == addr
+
+    def test_repr_contains_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        r = repr(CellAddressCodec(addr))
+        assert 'CellAddressCodec' in r
+        assert addr in r
 
 
 # ── DuplicatedError ──────────────────────────────────────────────────

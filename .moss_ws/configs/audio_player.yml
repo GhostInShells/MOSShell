@@ -1,4 +1,0 @@
-# dump from `ghoshell_moss.host.providers.audio_player_provider:AudioPlayerConfig` 
-backend: miniaudio
-samplerate: 44100
-safety_delay: 0.1

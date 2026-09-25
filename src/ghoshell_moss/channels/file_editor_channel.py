@@ -102,7 +102,8 @@ def new_file_editor_channel(
     if description is None:
         description = (
             "Structured file editor — view / create / str_replace / insert / "
-            "undo_edit. Absolute paths only. For directory listing use bash/glob."
+            "undo_edit, plus file_list / glob / grep for discovery. "
+            "Absolute paths only."
         )
     chan = new_channel(
         name=name,
@@ -117,6 +118,39 @@ def new_file_editor_channel(
         try:
             parsed = _parse_view_range(view_range)
             result = editor.view(path, view_range=parsed)
+            return result.output
+        except FileEditorError as e:
+            _raise_observe(e)
+
+    # -- file_list (nonblocking, always_observe) ----------------------------
+
+    @chan.build.command(name="file_list", blocking=False, always_observe=True)
+    async def file_list(path: str = ".") -> str:
+        """List a directory's immediate children: name, size, kind. Non-recursive."""
+        try:
+            result = editor.file_list(path)
+            return result.output
+        except FileEditorError as e:
+            _raise_observe(e)
+
+    # -- glob (nonblocking, always_observe) --------------------------------
+
+    @chan.build.command(name="glob", blocking=False, always_observe=True)
+    async def glob(pattern: str) -> str:
+        """Match files by glob pattern (e.g. **/*.py). Absolute or workspace-relative."""
+        try:
+            result = editor.glob(pattern)
+            return result.output
+        except FileEditorError as e:
+            _raise_observe(e)
+
+    # -- grep (nonblocking, always_observe) --------------------------------
+
+    @chan.build.command(name="grep", blocking=False, always_observe=True)
+    async def grep(pattern: str, path: str) -> str:
+        """Search a file's lines with a regex. Returns numbered matching lines."""
+        try:
+            result = editor.grep(pattern, path)
             return result.output
         except FileEditorError as e:
             _raise_observe(e)

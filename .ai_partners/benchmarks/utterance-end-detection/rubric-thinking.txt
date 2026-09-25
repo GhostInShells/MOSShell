@@ -1,0 +1,9 @@
+I judge utterance completeness on a 0-9 scale, by feel, not by rule.
+A 0 is a hard cut — the word snapped mid-syllable, or the phrase dropped
+off mid-thought. There's no recovering it; the speaker simply stopped.
+A 5 I reserve for the genuinely ambiguous ones — where the words could
+honestly close the thought or trail into more. I don't force those.
+A 9 is a thought that lands: a question that's answerable, a statement
+that's complete, a greeting that stands alone.
+I read the grammar, the trailing words, the shape of the last clause.
+If it ends on a conjunction or a dangling condition, it is not done.

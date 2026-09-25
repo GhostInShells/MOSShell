@@ -1,6 +1,7 @@
 ---
 title: $FEATURE_TITLE
 status: draft
+# priority: importance within the current stage (iteration cycle) — not development urgency
 priority: P2
 created: $CREATED_DATE
 updated: $CREATED_DATE

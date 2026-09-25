@@ -1,5 +1,5 @@
 """
-MOSS 架构中可复用的异常类型, 主要是 CommandError
+Reusable exception types in the MOSS architecture, primarily CommandError.
 """
 
 from enum import IntEnum
@@ -14,9 +14,7 @@ __all__ = [
 
 class FatalError(Exception):
     """
-    致命错误, 会导致 Shell 停摆, 状态也需要清空.
-
-    todo: 还没有用起来.
+    Fatal error. It halts the Shell, and the Shell state must be cleared afterwards.
     """
 
     pass
@@ -24,15 +22,15 @@ class FatalError(Exception):
 
 class CommandError(Exception):
     """
-    Command 运行时异常的封装, 所有的 command 的最佳实践都是用 CommandError 替代原来的 error.
-    方便 AI 运行时理解异常.
+    Wrapper for exceptions raised at command runtime. Best practice for every command is to
+    raise CommandError instead of a raw error, so the AI runtime can understand the exception.
     """
 
-    def __init__(self, code: int = -1, message: str = "", at_line: str = "") -> None:
+    def __init__(self, code: int = -1, message: str = "", at_line: str = "", error_name: str = '') -> None:
         self.code = code
         self.message = message
         self.at_line = at_line or get_caller_info(2)
-        error_msg = CommandErrorCode.description(code, message)
+        error_msg = CommandErrorCode.description(code, message, error_name=error_name)
         super().__init__(error_msg)
 
     def __repr__(self):
@@ -47,6 +45,10 @@ class CommandError(Exception):
 
         elif isinstance(err, CommandError):
             errcode = err.code
+            errmsg = err.message
+        elif isinstance(err, InterpretError):
+            # 识别解释器异常, 保留 INTERPRET_ERROR 语义而不降级为 UNKNOWN_ERROR.
+            errcode = CommandErrorCode.INTERPRET_ERROR.value
             errmsg = err.message
         elif isinstance(err, asyncio.CancelledError):
             errcode = CommandErrorCode.CANCELLED.value
@@ -67,28 +69,53 @@ class CommandError(Exception):
         return cls(errcode, errmsg)
 
 
+# 跨包转换 (CommandError.from_error / CommandTask.fail) 时, 若直接对
+# InterpretError 走通用 Exception 分支, 会被降级成 UNKNOWN_ERROR (505),
+# 丢语义. 因此这里显式携带 code + 归一化的原始 message (不含 code 前缀),
+# 供转换处无损读取.
 class InterpretError(Exception):
     """
-    解释器解释异常, 是可以恢复的异常.
+    Interpreter interpretation error. This is a recoverable error.
+
+    Always reports ``CommandErrorCode.INTERPRET_ERROR`` (code = 407), and carries the
+    normalized original message (without the code prefix) so conversion sites
+    (CommandError.from_error / CommandTask.fail) can read it without loss.
     """
 
     def __init__(self, message: str | Exception = ""):
-        if isinstance(message, CommandError):
-            message = str(message)
-
+        # code 恒为 INTERPRET_ERROR: 解释器解析异常统一归口, 不随内层来源散失.
+        # (CommandErrorCode 定义在模块后方, 作类属性默认值会 NameError, 故用实例属性.)
+        self.code: int = CommandErrorCode.INTERPRET_ERROR.value
+        if isinstance(message, InterpretError):
+            self.message = message.message
+        elif isinstance(message, CommandError):
+            # 保留内层原始 message; code 恒为 INTERPRET_ERROR.
+            self.message = message.message
         elif isinstance(message, Exception):
-            message = CommandError.from_error(message)
+            self.message = str(message)
         else:
-            message = CommandErrorCode.description(
-                CommandErrorCode.INTERPRET_ERROR.value,
-                message,
-            )
-        super().__init__(message)
+            self.message = message
+        # 保持 str(error) 稳定为 "INTERPRET_ERROR: <message>".
+        super().__init__(CommandErrorCode.description(self.code, self.message))
 
     @classmethod
     def from_error(cls, err: Exception) -> Self:
         error = CommandError.from_error(err)
         return cls(error)
+
+    def model_facing_message(self) -> str:
+        """Render this error for the model, with the fix-not-explain directive.
+
+        ``str(error)`` stays ``INTERPRET_ERROR: <message>`` (log / code form). This is the
+        model-facing form: prefixed "Error from the interpreter:" and telling the model to
+        fix the logos rather than explain it — and never to restate logos inside CTML
+        without CDATA wrapping.
+        """
+        return (
+            f"Error from the interpreter: {self.message}\n"
+            "Fix it — do not explain it; the world does not understand logos. If you must "
+            "explain, never restate it inside CTML without CDATA wrapping."
+        )
 
 
 class PausedError(Exception):
@@ -100,13 +127,16 @@ class PausedError(Exception):
 
 class CommandErrorCode(IntEnum):
     """
-    语法糖, 用来快速生成 command error. 采用了 golang 的语法糖习惯.
+    Syntactic sugar for quickly constructing a command error, following the Go
+    (golang) idiom.
 
     >>> raise CommandErrorCode.CANCELLED.error("error info")
 
-    CommandCode 有特殊的约定习惯.
-    < 400 是正常行为逻辑中的异常. 不会中断解释过程.
-    >= 400 是不可接受的异常, 会立刻中断 interpreter 的执行逻辑. 并且清空整批规划.
+    Command codes follow a convention:
+    < 400 is an exception within normal behavior logic; it does not interrupt the
+    interpretation process.
+    >= 400 is an unacceptable exception; it immediately interrupts the interpreter's
+    execution logic and clears the whole batch plan.
     """
 
     # AI 需要感知到的普通运行结果.
@@ -125,6 +155,9 @@ class CommandErrorCode(IntEnum):
 
     # --- 需要 AI 感知的异常. --- #
     FAILED = 300
+    # 命令被取消/中断但携带可读的进度信息 (如"播放了 n 秒, 停在 xxx").
+    # is_notifiable 会把它记录成可读 message, 但 code < 400 不触发 observe 也不中断.
+    STOPPED = 301
 
     # --- 不合法的异常, 需要 AI 立刻去响应. --- #
 
@@ -151,9 +184,9 @@ class CommandErrorCode(IntEnum):
     UNKNOWN_ERROR = 505
     FATAL = 600
 
-    def error(self, message: str) -> CommandError:
+    def error(self, message: str, error_name: str = '') -> CommandError:
         at_line = get_caller_info(2)
-        return CommandError(self.value, message, at_line=at_line)
+        return CommandError(self.value, message, at_line=at_line, error_name=error_name)
 
     @classmethod
     def is_cancelled(cls, err: Exception | int) -> bool:
@@ -170,7 +203,8 @@ class CommandErrorCode(IntEnum):
         return 200 <= code < 300
 
     @classmethod
-    def is_failed(cls, err: Exception | int) -> bool:
+    def is_notifiable(cls, err: Exception | int) -> bool:
+        """Whether the exception needs to be notified."""
         if err is None:
             return False
         if isinstance(err, Exception):
@@ -207,7 +241,7 @@ class CommandErrorCode(IntEnum):
 
     @classmethod
     def get_error_code_name(cls, value: int) -> str:
-        """将错误代码值映射到对应的枚举名称"""
+        """Map an error code value to its enum name."""
         try:
             return cls(value).name
         except ValueError:
@@ -215,8 +249,9 @@ class CommandErrorCode(IntEnum):
             return cls.UNKNOWN_ERROR.name
 
     @classmethod
-    def description(cls, errcode: int, errmsg: str | None = None) -> str:
+    def description(cls, errcode: int, errmsg: str | None = None, error_name: str = '') -> str:
         if errcode == cls.SUCCESS:
             return "success"
-        name = cls.get_error_code_name(errcode)
-        return "{}: {}".format(name, errmsg or "no errmsg")
+        if not error_name:
+            error_name = cls.get_error_code_name(errcode)
+        return "{}: {}".format(error_name, errmsg or "no errmsg")

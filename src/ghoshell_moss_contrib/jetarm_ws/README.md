@@ -1,5 +1,8 @@
 # 介绍
 
+> 这是 MOSS 的 ROS2 集成示例：展示如何把一个 ros2_control 驱动的硬件可操作系统，
+> 建模成 AI 模型可以直接通过 CTML 调用的对象（channel 命令级封装 ros2 action）。
+
 JetArm 是幻尔的6自由度机械臂实现.
 本项目重写了它的 ROS2 驱动, 实现了 ros2 control, moveit, 并基于轨迹动画能力实现硬件机械臂的操作.
 

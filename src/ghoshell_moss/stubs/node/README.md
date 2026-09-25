@@ -1,52 +1,26 @@
 # {name}
 
-If this node has nothing worth documenting for a human reader, delete this file.
-Otherwise fill in the sections below — what this node does, how to set it up,
-how to run and debug it.
+<!--
+Developer-facing, for humans and models alike. Say why this node exists, how it
+is meant to evolve, and what to know before changing it. Link out to other docs
+freely. If there is nothing worth writing, an empty README is fine.
+-->
 
-## What it does
+## Why
 
-<!-- One paragraph about what capabilities this node provides. -->
+<!-- The problem this node solves, and the shape it takes to solve it. -->
 
-## Setup
+## Files
 
 <!--
-Environment, dependencies, install steps.
-
-If this node needs its own venv or packages, create an INSTALL.md with
-the install steps. The presence of INSTALL.md triggers `moss nodes install`
-behavior — the model will read the file and run the steps before the node
-can be launched.
-
-When no install is needed, delete INSTALL.md — the node is then
-considered installed by default.
+  NODE.md    — the runtime prompt: what this node gives the Ghost and how the
+               Ghost drives it. Capability self-explanation only — internal
+               decisions belong here in the README, not there.
+  INSTALL.md — how to set this node up, plus the per-environment `.installed`
+               marker. Delete it if the node needs no install.
+  main.py    — entry point. Build the channel and provide it to Matrix.
 -->
 
-## Usage
-
-<!-- How to launch and interact with this node. Example:
-
-    moss nodes run .moss/nodes/tools/{name}/
-
-After launch, the node enters the Matrix network. Its channel commands
-appear in the model's context when accepted. Test via moss-shell.
--->
-
-## Development
-
-<!--
-Edit the files in this directory to change the node's behavior:
-
-  NODE.md       — node manifest: name, description, exec command, singleton flag,
-                  and the instruction body the model reads at runtime.
-                  Reference: moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest
-
-  main.py       — node entry point. Build channels, register into Matrix.
-                  Explore: moss codex blueprint channel_builder
-                           moss codex blueprint matrix
-                           moss ctml read
-
-  .gitignore    — sensible ignores for cell development. Add more as needed.
-
-  INSTALL.md    — (optional) install guide. Delete if not needed.
--->
+Before building or rewriting the channel, read the channel builder and Matrix —
+they define how a node's capability surface is expressed and mounted. See Matrix
+and Matrix channel.

@@ -1,20 +1,25 @@
 import asyncio
 import contextlib
-from typing import Callable, Type
+import logging
+from typing import Callable, Iterable
 
-import janus
+from ghoshell_container import IoCContainer
 from typing_extensions import Self
 
-from ghoshell_moss.core.blueprint.host import GhostRuntime, MossRuntime, LoopHealth, LoopStatus, SafeMode
+from ghoshell_moss import MOSShell, Channel
+from ghoshell_moss.core import NucleusMeta
+from ghoshell_moss.core.blueprint.host import IGhostRuntime, MOSShellRuntime, LoopHealth, LoopStatus, SafeMode
 from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
-from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
-from ghoshell_moss.core.blueprint.mindflow import Mindflow, Articulator, Action, Signal
-from ghoshell_moss.core.concepts.command import ObserveError
+from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostEvent
+from ghoshell_moss.core.blueprint.mindflow import (
+    Mindflow, Thinking, Signal
+)
+from ghoshell_moss.core.blueprint.session import OutputItem
+from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.core.concepts.errors import FatalError
-from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.concepts.command import CommandTask
-from ghoshell_container import Provider, IoCContainer
+from ghoshell_moss.core.concepts.interpreter import Interpretation
+from ghoshell_moss.core.mindflow.mindflow_in_shell import MindflowInShell
 from ghoshell_moss.message import Message
 import pathlib
 
@@ -23,7 +28,7 @@ __all__ = ["GhostRuntimeImpl"]
 _Observe = bool
 
 
-class GhostRuntimeImpl(GhostRuntime):
+class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
     """GhostRuntime 默认实现 — 编排 MossRuntime + Ghost 生命周期.
 
     wiring 顺序:
@@ -37,7 +42,7 @@ class GhostRuntimeImpl(GhostRuntime):
     def __init__(
             self,
             *,
-            moss_runtime: MossRuntime,
+            moss_runtime: MOSShellRuntime,
             ghost_meta: GhostMeta,
             source_path: pathlib.Path | None,
     ):
@@ -50,10 +55,10 @@ class GhostRuntimeImpl(GhostRuntime):
         # todo: 未来迁移到 config type 中.
         # 0.5s 是 refresh_metas 的 freshness 窗口 — 人类感知阈值内,
         # 同时大于典型 articulate 首句时长 (保证 action 出口预热在下一轮
-        # articulator 入口时命中 stale_time). 慢通道理论上应自行改推模式,
+        # articulator 入口时命中 _refresh_meta_stale_time). 慢通道理论上应自行改推模式,
         # 不该让 0.5s 阈值承担其延迟.
         self._default_shell_prepare_timeout: float = 0.5
-        self._refresh_meta_stale_time: float = 0.5
+        self._refresh_meta_stale_time: float = 1.0
         self._source_path = source_path
         self._ghost_meta = ghost_meta
         self._ghost_instance: Ghost | None = None
@@ -62,21 +67,26 @@ class GhostRuntimeImpl(GhostRuntime):
         self._safe_mode: SafeModeImpl | None = None  # 懒加载, 未开启时零开销
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
+        # 启动前注册的观察回调 — __aenter__ (matrix 就绪后) 优先装线到 session.
+        self._output_listeners: list[Callable] = []
+        self._signal_listeners: list[Callable] = []
         self._loop_status: LoopHealth = LoopHealth(
-            main="not_started",
-            articulate="not_started",
+            mindflow="not_started",
+            thinking="not_started",
             action="not_started",
         )
+        self._runtime_channels: dict[str, Channel] = {}
 
-        # 三循环队列: main loop → (articulate, action)
-        self._articulate_queue: janus.Queue[Articulator] = janus.Queue()
-        self._action_queue: janus.Queue[Action] = janus.Queue()
+        self._shell_trajectory: MShellTrajectory | None = None
         self._log_prefix: str = f"<GhostRuntime cls={self.__class__} ghost={ghost_meta.name()} mode={self._moss_runtime.mode.name}>"
+
+    def __repr__(self):
+        return self._log_prefix
 
     # ── GhostRuntime ABC ──────────────────────────
 
     @property
-    def moss(self) -> MossRuntime:
+    def moss(self) -> MOSShellRuntime:
         return self._moss_runtime
 
     @property
@@ -95,6 +105,23 @@ class GhostRuntimeImpl(GhostRuntime):
             raise RuntimeError("GhostRuntime not started. Call __aenter__ first.")
         return self._mindflow
 
+    def is_running(self) -> bool:
+        return self._started and self._moss_runtime.is_running()
+
+    def on_output(self, callback: Callable[[OutputItem], None]) -> None:
+        """注册 output 监听 — 生命周期无关. 启动前缓冲, 启动后直挂 session."""
+        if self._started:
+            self._moss_runtime.session.on_output(callback)
+        else:
+            self._output_listeners.append(callback)
+
+    def on_signal(self, callback: Callable[[Signal], None]) -> None:
+        """注册 signal 监听 — 生命周期无关. 语义同 on_output."""
+        if self._started:
+            self._moss_runtime.session.on_signal(callback)
+        else:
+            self._signal_listeners.append(callback)
+
     # ── 生命周期 ──────────────────────────────────
 
     async def __aenter__(self) -> Self:
@@ -105,50 +132,73 @@ class GhostRuntimeImpl(GhostRuntime):
         logger = self.moss.logger
 
         # 1. 预注入 ghost providers → container
-        logger.debug("%s step 1/5: registering ghost providers", self._log_prefix)
+        logger.debug("%r step 1/5: registering ghost providers", self)
         for provider in self._ghost_meta.providers():
             container.register(provider)
         # 校验 IoC 容器中注册依赖是否能满足 Ghost 的需要.
         self._ghost_meta.contracts().validate(container)
-        if not container.bound(GhostWorkspace):
-            container.register(GhostWorkspaceProvider(self._source_path))
 
         # 2. MossRuntime.__aenter__ (Matrix 从 IoC 注入 LoggerItf 或 fallthrough 到 project.logger)
-        logger.debug("%s step 2/5: entering MossRuntime", self._log_prefix)
+        logger.debug("%r step 2/5: entering MossRuntime", self)
         await self._async_exit_stack.__aenter__()
+        # 注册 runtime 自身的系统 channel. 每次刷新时都会更新.
+
         await self._async_exit_stack.enter_async_context(self._moss_runtime)
+        self._moss_runtime.shell.main_channel.build.virtual_children(self._get_runtime_channels)
+        # 默认注册 shell trajectory.
+        self._shell_trajectory = MShellTrajectory(self._moss_runtime.shell)
+        await self._async_exit_stack.enter_async_context(self._shell_trajectory)
+        self._moss_runtime.container.set(MShellTrajectory, self._shell_trajectory)
+
         logger = self.moss.logger
 
+        # 2.5: 装线启动前注册的观察回调 (matrix 已就绪) — 优先装, 先于 ghost.__aenter__,
+        # 才能捕获 ghost 启动阶段 (stubs sync / dsh 启动) 发出的 output/signal.
+        for callback in self._output_listeners:
+            self._moss_runtime.session.on_output(callback)
+        self._output_listeners.clear()
+        for callback in self._signal_listeners:
+            self._moss_runtime.session.on_signal(callback)
+        self._signal_listeners.clear()
+
         # 3. GhostMeta.factory(container) → ghost
-        logger.debug("%s step 3/5: building ghost instance", self._log_prefix)
+        logger.debug("%r step 3/5: building ghost instance", self)
         self._ghost_instance = self._ghost_meta.factory(container)
+        # 注册 ghost 错误观测 (on_error): ghost 内部检测到错误时 fire 回调 → 输出 error 讯息.
+        # 先于 ghost.__aenter__ 注册, 使 dsh 启动期 (ghost.__aenter__ 内) 的错误也能被捕获.
+        self._ghost_instance.on_error(self._on_ghost_error)
 
         # 4. ghost.__aenter__
-        logger.debug("%s step 4/5: entering ghost", self._log_prefix)
+        logger.debug("%r step 4/5: entering ghost", self)
         await self._async_exit_stack.enter_async_context(self._ghost_instance)
+        if channel := self._ghost_instance.channel():
+            self._runtime_channels[channel.name()] = channel
 
         # 5. Mindflow wiring
-        logger.debug("%s step 5/5: wiring mindflow", self._log_prefix)
+        logger.debug("%r step 5/5: wiring mindflow", self)
         await self._wire_mindflow()
+        if mindflow_channel := self._mindflow.as_channel():
+            self._runtime_channels[mindflow_channel.name()] = mindflow_channel
 
         # 急停级联控制器 — mindflow 和 shell 都已就绪
         self._pause_ctrl.bind(self._mindflow, self.moss.shell)
 
+        # 6. ghost startup — 装线完成后回调 born hook (如 dolores 读 startup 文档激活自己).
+        await self._ghost_instance.startup()
+
         self._started = True
-        # todo: hook — GhostRuntimeLifecycleHook.on_started(self)
-        logger.info("%s started", self._log_prefix)
+        logger.info("%r started", self)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # todo: hook — GhostRuntimeLifecycleHook.on_stopping(self, exc_type, exc_val)
         self._started = False
         try:
             await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
-        except Exception:
+        except Exception as e:
             self.moss.logger.exception(
-                "%s error during teardown", self._log_prefix,
+                "%s error during teardown: %s", self._log_prefix, e
             )
-        # todo: hook — GhostRuntimeLifecycleHook.on_stopped(self)
+        self._loop_status["mindflow"] = 'stopped'
 
     def is_paused(self) -> bool:
         return self._pause_ctrl.is_paused()
@@ -169,56 +219,44 @@ class GhostRuntimeImpl(GhostRuntime):
             self._safe_mode = SafeModeImpl()
         return self._safe_mode
 
+    def _is_thinking_gated(self) -> bool:
+        return self.safe_mode().is_enabled()
+
+    @property
+    def logger(self) -> logging.Logger:
+        return self._moss_runtime.logger
+
+    @property
+    def container(self) -> IoCContainer:
+        return self._moss_runtime.container
+
+    @property
+    def shell_trajectory(self) -> MShellTrajectory:
+        if self._shell_trajectory is None:
+            raise RuntimeError("ShellTrajectory not set")
+        return self._shell_trajectory
+
+    def _on_mindflow_loop_task(self, future: asyncio.Future, *, name: str | None = None) -> None:
+        self._moss_runtime.matrix.create_task(future, stop_matrix_on_error=True, name=name)
+
     def close(self) -> None:
         logger = self.moss.logger
-        logger.debug("%s closing moss runtime", self._log_prefix)
+        logger.debug("%r closing moss runtime", self)
         self._moss_runtime.close()
         if self._mindflow is not None:
-            logger.debug("%s closing mindflow", self._log_prefix)
+            logger.debug("%r closing mindflow", self)
             self._mindflow.close()
-        logger.debug("%s closed", self._log_prefix)
+            self._loop_status["mindflow"] = 'stopped'
+        logger.debug("%r closed", self)
 
     def inspect_loop_health(self) -> LoopHealth:
         return self._loop_status.copy()
 
     # ── Mindflow wiring ───────────────────────────
 
-    def _collect_nuclei_manifests(self):
-        """收集 matrix 和 mode 两层的 manifests, 用于 nuclei 发现."""
-        # matrix 层
-        try:
-            yield self._moss_runtime.matrix.project.matrix_manifests()
-        except Exception:
-            self.moss.logger.exception(
-                "%s failed to load matrix manifests, skipping matrix nuclei",
-                self._log_prefix,
-            )
-        # mode 层
-        try:
-            yield self._moss_runtime.mode.manifests()
-        except Exception:
-            self.moss.logger.exception(
-                "%s failed to load mode manifests, skipping mode nuclei",
-                self._log_prefix,
-            )
-
-    async def _wire_mindflow(self) -> None:
-        ghost = self._ghost_instance
-        matrix = self._moss_runtime.matrix
-        container = matrix.container
-
-        # 解析: ghost.mindflow() > IoC > new_default_mindflow()
-        mindflow = ghost.mindflow()
-        if mindflow is None:
-            mindflow = container.get(Mindflow)
-        if mindflow is None:
-            from ghoshell_moss.core.mindflow import new_default_mindflow
-            mindflow = new_default_mindflow(logger=self.moss.logger)
-
-        container.set(Mindflow, mindflow)
-
-        nuclei_factories = {}
+    def _collect_nuclei_metas(self) -> Iterable[NucleusMeta]:
         # 从 matrix manifests 和 mode manifests 一起收集 nuclei
+        nuclei_factories = {}
         for manifests in self._collect_nuclei_manifests():
             if manifests is None:
                 continue
@@ -234,88 +272,81 @@ class GhostRuntimeImpl(GhostRuntime):
         # 注册 nuclei — 从 meta 工厂生成，add 到 mindflow
         for ghost_nucleus_factory in self._ghost_meta.nuclei_metas():
             nuclei_factories[ghost_nucleus_factory.name] = ghost_nucleus_factory
+        return nuclei_factories.values()
 
-        for nucleus_meta in nuclei_factories.values():
-            try:
-                nucleus = nucleus_meta.factory(container)
-            except NotImplementedError:
-                self.moss.logger.warning(
-                    "%s nucleus %s is a stub (NotImplementedError), skipping",
-                    self._log_prefix, nucleus_meta.name(),
-                )
-                continue
-            except Exception:
-                self.moss.logger.exception(
-                    "%s failed to create nucleus %s, skipping",
-                    self._log_prefix, nucleus_meta.name(),
-                )
-                continue
-            mindflow.with_nucleus(nucleus, override=True)
+    def _collect_nuclei_manifests(self):
+        """收集 project / matrix / host 三层的 manifests, 用于 nuclei 发现."""
+        # project 层 (MOSS.manifests — 全模式装线)
+        try:
+            yield self._moss_runtime.matrix.project.project_manifests()
+        except Exception as e:
+            self.moss.logger.exception(
+                "%r failed to load project manifests, skipping project nuclei: %s",
+                self, e
+            )
+            self._send_error(e, 'moss project manifests error')
+        # matrix 层 (MATRIX.manifests — 跨 cell 环境能力)
+        try:
+            yield self._moss_runtime.mode.matrix_manifests()
+        except Exception as e:
+            self.moss.logger.exception(
+                "%s failed to load matrix manifests, skipping matrix nuclei: %s",
+                self, e
+            )
+            self._send_error(e, 'moss matrix manifests error')
+        # host 层 (HOST — host 节点专属)
+        try:
+            yield self._moss_runtime.mode.manifests()
+        except Exception as e:
+            self.moss.logger.exception(
+                "%s failed to load host manifests, skipping host nuclei: %s",
+                self, e
+            )
+            self._send_error(e, 'moss mode manifest error')
 
+    def _send_error(self, error: Exception | str, log: str = '') -> None:
+        if self._moss_runtime.session.is_running:
+            self._moss_runtime.session.output('error', str(error), log=log)
+
+    def _on_mindflow_error(self, error: BaseException | str) -> None:
+        self._send_error(str(error), 'mindflow-error')
+
+    def _on_ghost_error(self, error: Exception) -> None:
+        """ghost 内部错误观测出口 — ghost 经 on_error 注册, 检测到错误时 fire 本回调.
+
+        与 mindflow error 同走 session.output('error'), 但 log 标记 'ghost-error'
+        区分错误来源 (ghost 自身 vs mindflow 仲裁).
+        """
+        self._send_error(error, 'ghost-error')
+
+    async def _wire_mindflow(self) -> None:
+        ghost = self._ghost_instance
+        matrix = self._moss_runtime.matrix
+        container = matrix.container
+
+        # 解析: ghost.mindflow() > IoC > new_default_mindflow()
+        mindflow = ghost.mindflow()
+        if mindflow is None:
+            mindflow = container.get(Mindflow)
+        if mindflow is None:
+            from ghoshell_moss.core.mindflow import new_default_mindflow
+            mindflow = new_default_mindflow(logger=self.moss.logger)
+
+        container.set(Mindflow, mindflow)
         self._mindflow = mindflow
-        await self._async_exit_stack.enter_async_context(mindflow)
+        await super()._wire_mindflow()
+        # mindflow 生命周期绑定到全局 lifecycle, 启动即 running, 终止由 close/__aexit__ 置 stopped.
+        self._loop_status["mindflow"] = 'running'
 
-        # session signal → mindflow 路由.
-        # zenoh 存活周期比 ghost/mindflow 长, 关闭期间 session 仍可能收到信号,
-        # 所以闭包内检查 mindflow.is_running() 做兜底丢弃.
-        def _route_signal_to_mindflow(signal: Signal):
-            if mindflow.is_running():
-                mindflow.add_signal(signal)
+    def _when_signal_added(self, callback: Callable[[Signal], None]):
+        self._moss_runtime.session.on_signal(callback)
 
-        # 三循环托管给 matrix
-        matrix.create_task(self._main_loop(), stop_matrix_on_error=True)
-        matrix.create_task(self._articulate_loop(), stop_matrix_on_error=True)
-        matrix.create_task(self._action_loop(), stop_matrix_on_error=True)
-        # 等待应该发生在循环外侧.
-        await self._mindflow.wait_started()
-        # ignore any signals before started
-        matrix.session.on_signal(_route_signal_to_mindflow)
+    async def _enter_async_context(self, manager: contextlib.AbstractAsyncContextManager) -> None:
+        await self._async_exit_stack.enter_async_context(manager)
 
     # ── 三循环 ────────────────────────────────────
 
-    def _moss_dynamic_messages(self) -> list[Message]:
-        shell = self._moss_runtime.shell
-        # 闭包在 shell running 时才取，shell 未启动时返回空列表.
-        if shell.is_running():
-            return shell.dynamic_messages()
-        return []
-
-    async def _main_loop(self) -> None:
-        """mindflow.loop() → Attention → (Articulator, Action) → queues."""
-        status: LoopStatus = 'running'
-        self._loop_status["main"] = status
-        try:
-            async for attention in self._mindflow.loop():
-                # per-attention 注册: ghost runtime 决定绑什么上下文.
-                # mindflow 级注册留作将来更高层治理 (如多 ghost 共享 mindflow) 时设计.
-                try:
-                    impulse = attention.draw_from()
-                    # 实现 interrupt 协议: 停止所有执行中的 logos.
-                    # shell.clear() 是 stop_interpretation 的超集 —
-                    # 关闭当前 interpreter + 清空 speech 缓冲 + 取消 runtime tree
-                    # 上 pending 的 command tasks. 单调 stop_interpretation 只
-                    # 关 interpreter, 留下半截状态.
-                    if impulse.interrupt:
-                        await self.moss.shell.clear()
-                    async with attention:
-                        async for articulate, action in attention.loop():
-                            self._articulate_queue.sync_q.put_nowait(articulate)
-                            self._action_queue.sync_q.put_nowait(action)
-                except FatalError:
-                    self.moss.logger.exception("%s main loop fatal error", self._log_prefix)
-                    # todo: hook — MindflowErrorHook.on_fatal(error)
-                    raise
-                except Exception:
-                    self.moss.logger.exception("%s main loop attention error", self._log_prefix)
-                    # todo: hook — MindflowErrorHook.on_attention_error(error)
-                    # 长时间运行要做异常感知, 而不能轻易破坏生命周期. 继续下一个 attention.
-        finally:
-            status = 'stopped'
-            self._loop_status["main"] = status
-            self._articulate_queue.shutdown(immediate=True)
-            self._action_queue.shutdown(immediate=True)
-
-    async def _articulate_loop(self) -> None:
+    async def _thinking_loop(self) -> None:
         """queue → ghost.articulate(articulator) → send_nowait + pub_logos.
 
         output 时序:
@@ -323,334 +354,172 @@ class GhostRuntimeImpl(GhostRuntime):
           - delta 产出       → pub_logos(delta)           实时流, 外部通过 get_logos() 消费
           - 结束 (成功/失败) → ghost.on_articulate_exit()  调试附着点
         """
-        mindflow = self._mindflow
-        await mindflow.wait_started()
-        # 组装 mindflow channel.
-        if channel := self._mindflow.as_channel():
-            self.moss.shell.main_channel.add_virtual_channel(channel)
         status: LoopStatus = 'running'
-        self._loop_status["articulate"] = status
+        self._loop_status["thinking"] = status
         try:
-            while mindflow.is_running():
-                try:
-                    articulator = await self._articulate_queue.async_q.get()
-                except janus.AsyncQueueShutDown:
-                    break
-                try:
-                    await self._run_articulator(articulator)
-                except FatalError:
-                    self.moss.logger.exception("%s articulate fatal error", self._log_prefix)
-                    raise
-                except Exception:
-                    self.moss.logger.exception("%s articulate loop error", self._log_prefix)
-                    # 非关键路径异常 (session.output / on_articulate_exit 等). 不中断循环.
+            await super()._thinking_loop()
+        except FatalError as e:
+            self._send_error(e, 'thinking-loop-failed')
+            self.close()
         finally:
             status = 'stopped'
-            self._loop_status["articulate"] = status
+            self._loop_status["thinking"] = status
 
-    async def _run_articulator(self, articulator: Articulator) -> None:
+    async def _approve_logos(self, logos: str) -> tuple[bool, str]:
+        """SafeMode 裁决完整 logos (articulator commit 锁的回调). 返回 (approved, message).
+
+        approved 时若带附言 (approve-with-note), 直接落到 mindflow.moments 轨迹,
+        返回值 message 恒为空; rejected 时 message 作为 abort reason, 由 _commit
+        abort 掉 action; cancelled (abort 兜底) message 也为空。
+        """
+        verdict_future = self._safe_mode.submit(logos)
+        try:
+            verdict = await asyncio.wrap_future(verdict_future)
+            if verdict.kind == 'approved':
+                # 空 note (纯 Enter 放行) 不带附言 — 区别于 approve-with-note.
+                if verdict.message:
+                    note = (
+                        "<safemode-approval-note>\n"
+                        "Previous logos approved and executed. Human note:\n"
+                        f"{verdict.message}\n"
+                        "</safemode-approval-note>"
+                    )
+                    self.mindflow.moments.add_echoes([note])
+                return True, ''
+            if verdict.kind == 'cancelled':
+                # cancel 是 abort 兜底, 不是否决, 无 reason.
+                return False, ''
+            message = (
+                "<safemode-rejection>\n"
+                "Previous logos rejected by human review; body did not execute.\n"
+                f"Reason: {verdict.message}\n"
+                "</safemode-rejection>"
+            )
+            return False, message
+        finally:
+            # 幂等: 已被 approve/reject 结算时 no-op; abort/cancel 兜底清理 pending.
+            self._safe_mode.cancel_current()
+
+    def _on_logos_delta(self, delta: str) -> None:
+        if self._moss_runtime.session.is_running():
+            self._moss_runtime.session.pub_logos(delta)
+
+    async def _on_ghost_event(self, event: GhostEvent) -> None:
+        if self._moss_runtime.session.is_running():
+            self._moss_runtime.session.output(
+                'ghost-event',
+                event.model_dump_json(indent=2, ensure_ascii=False, exclude_none=True, exclude_defaults=True),
+            )
+
+    def _on_logos_end(self) -> None:
+        """一段 logos (utterance) 结束 — 发 EOF 哨兵, 消费端据此冲刷尾段."""
+        if self._moss_runtime.session.is_running():
+            self._moss_runtime.session.pub_logos(end=True)
+
+    def _get_runtime_channels(self) -> dict[str, Channel]:
+        return self._runtime_channels
+
+    async def _articulate_from_thinking(self, thinking: Thinking) -> None:
         session = self._moss_runtime.session
         ghost = self._ghost_instance
-        async with articulator:
-            prepare_timeout = self._default_shell_prepare_timeout
-            # 每次开始运行时必须刷新.
-            await self.moss.shell.refresh_metas(prepare_timeout, stale_time=self._refresh_meta_stale_time)
-            moment = articulator.moment
-            # 发送已经执行的命令.
-            if moment.command_logos:
-                articulator.send_nowait(moment.command_logos)
 
-            session.output(
-                'moment',
-                *moment.as_request_messages(),
-                log=f"moment {moment.id}: {len(moment.percepts)} percepts",
-            )
-
-            if articulator.thinking_effort() == 'none':
-                ghost.on_articulate_exit(articulator, '', None)
-                return
-
-            logos_parts: list[str] = []
-            error: Exception | None = None
-            # 等待刷新结束.
-            moment.with_perspective(
-                'moss_dynamic',
-                self.moss.shell.dynamic_messages(available_only=True, stale_time=self._refresh_meta_stale_time),
-            )
-            # SafeMode: 生成开始时判定一次 (决策 2), 决定本轮是否 gate.
-            # 未开启时零开销 — safe_mode() 首次调用才实例化, 且 gated_mode 分支跳过.
-            gated_mode = self._safe_mode is not None and self._safe_mode.is_enabled()
-            if gated_mode:
-                # 让 ghost 在 articulate 前就知道自己在 safemode 下 —— 否则 ghost
-                # 只能靠下一帧的 <safemode-rejection> percept 猜到"上一轮我说的
-                # 被拒了". 身份连续性依赖 ghost 感知当前语境.
-                moment.with_perspective(
-                    'safemode',
-                    [Message.new().with_content(
-                        "<safemode-active>\n"
-                        "Gate active on articulate→action path. Your logos is "
-                        "reviewed by a human before dispatch. Rejected logos will "
-                        "NOT be executed by the body; only your utterance stays "
-                        "in your own history. Feedback arrives next frame as "
-                        "<safemode-approval-note> or <safemode-rejection>.\n"
-                        "</safemode-active>"
-                    )],
-                )
-            try:
-                async for delta in ghost.articulate(articulator):
-                    if not gated_mode:
-                        articulator.send_nowait(delta)
-                    session.pub_logos(delta)
+        logos_parts: list[str] = []
+        error: Exception | None = None
+        try:
+            # 将权限移交给 ghost.
+            async for delta in ghost.think(thinking):
+                if isinstance(delta, str):
+                    self._on_logos_delta(delta)
                     logos_parts.append(delta)
-                if gated_mode:
-                    # 提交完整 logos 给 SafeMode gate, 等 TUI 裁决.
-                    # 挂到 articulator.create_task 上, abort 时 task 联动取消 (决策 4).
-                    # asyncio.wrap_future 返回 Future 而非 coroutine, 需再包一层
-                    # async 函数才能喂给 create_task (uvloop 严格要求 coroutine).
-                    verdict_future = self._safe_mode.submit("".join(logos_parts))
-
-                    async def _await_gate_verdict():
-                        return await asyncio.wrap_future(verdict_future)
-
-                    verdict = await articulator.create_task(_await_gate_verdict())
-                    if verdict.kind == 'approved':
-                        # 回放 buffered logos → 走原来的 send_nowait 路径.
-                        for delta in logos_parts:
-                            articulator.send_nowait(delta)
-                        if verdict.message:
-                            # approve-with-note: 非 raise 版 observe, 避免把 raise
-                            # 混进 "要保留 logos 完整执行" 的路径; note 走 attention
-                            # 内观通道, 下一帧作为 percept.
-                            articulator.observe(
-                                "<safemode-approval-note>\n"
-                                "Previous logos approved and executed. Human note:\n"
-                                f"{verdict.message}\n"
-                                "</safemode-approval-note>"
-                            )
-                    elif verdict.kind == 'rejected':
-                        # 否决反馈: 不回传被拒 logos (ghost 自己的 history 已有),
-                        # 只标记事实 + 理由, 靠 ghost 自身消化.
-                        articulator.observe(
-                            "<safemode-rejection>\n"
-                            "Previous logos rejected by human review; body did not execute.\n"
-                            f"Reason: {verdict.message}\n"
-                            "</safemode-rejection>"
-                        )
-                    # cancelled: abort 路径, 什么都不做, articulator.__aexit__ 自然收.
-            except ObserveError:
-                # ghost.articulate 内部 raise_observe (自我引发下一帧观察). 不 log
-                # error / session.output('error') — attention._catch 把 messages
-                # 拼进 _observe_messages, 下一帧作为 percepts.
-                raise
-            except Exception as e:
-                error = e
-                self.moss.logger.exception("%s articulate error: %s", self._log_prefix, e)
-                session.output('error', log=f"articulate error: {e}")
-            finally:
-                # 幂等: 已被 approve/reject 结算时 no-op; abort 兜底.
-                if self._safe_mode is not None:
-                    self._safe_mode.cancel_current()
-                logos = "".join(logos_parts)
-                articulator.moment.logos = logos
-                ghost.on_articulate_exit(
-                    articulator,
-                    logos,
-                    error,
-                )
-                session.pub_logos("\n\n")
+                elif isinstance(delta, GhostEvent):
+                    await self._on_ghost_event(delta)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            error = e
+            self.moss.logger.exception("%s articulate error: %s", self._log_prefix, e)
+            session.output('error', log=f"articulate error: {e}")
+            raise e
+        finally:
+            logos = "".join(logos_parts)
+            if logos:
+                # logos 同时发一条原子 OutputItem — headless 观测面 (on_output)
+                # 看不到 stream (get_logos), 这里补上 articulate 返回值的可观测出口.
+                session.output('logos', logos)
+                self._on_logos_end()
 
     async def _action_loop(self) -> None:
-        """queue → action.received_logos() → interpreter → action.outcome().
-
-        Interpreter 三阶段:
-          1. feed    — 流式送入 delta, throw=True 确保异常立刻打断循环
-          2. compile — commit() + wait_compiled() 检查 CTML 语法/语义
-          3. execute — wait_stopped() 等待所有 CommandTask 执行完毕
-
-        异常分级 (决定 as_messages 内容和 observe 返回值):
-          1. InterpretError — 可管理中断 (模型 CTML 错误 / shell.clear).
-             interpreter 内部设 observe=True + 取消 pending tasks.
-             模型在下一轮 Moment 看到错误后可自我纠正.
-          2. Task 级失败 — 单个命令执行异常. 捕获在 failed_tasks,
-             task_result().observe 决定是否触发观察. 不中断整体解释.
-          3. 静默失败 — 非关键组件异常. 应 log 到 matrix 但不呈现给模型.
-          4. 致命异常 — shell/matrix 崩溃. 向外传播, 由 matrix task 管理器处理.
-        """
-        mindflow = self._mindflow
-        status: LoopStatus = 'running'
-        self._loop_status["action"] = status
+        """封装 action loop"""
         try:
-            while mindflow.is_running():
-                try:
-                    action = await self._action_queue.async_q.get()
-                except janus.AsyncQueueShutDown:
-                    break
-                await self._run_action(action)
+            status: LoopStatus = 'running'
+            self._loop_status["action"] = status
+            await super()._action_loop()
+        except FatalError as e:
+            self._send_error(e, 'action-loop-failed')
+            self.close()
         finally:
             status = 'stopped'
             self._loop_status["action"] = status
 
-    async def _run_action(self, action: Action) -> None:
+    async def _fire_interpreter_result(
+            self,
+            interpretation: Interpretation
+    ) -> None:
         try:
-            # todo: hook — ActionHook.on_action_enter(action)
-            async with action:
-                await action.wait_ready()
-                if action.is_aborted():
-                    return
-                messages, observe = await self._stream_execute(action)
-                action.outcome(*messages, observe=observe)
-                # 时序契约: action 结束 fire-and-forget refresh_metas,
-                # 预热下一轮 articulator 入口的 stale_time 检查.
-                # 不 await — 让 action_loop 立即进下一轮.
-                asyncio.create_task(self._post_action_refresh())
-        except FatalError:
-            self.moss.logger.exception("%s action fatal error", self._log_prefix)
-            # todo: hook — MindflowErrorHook.on_fatal(error)
-            raise
-        except Exception:
-            self.moss.logger.exception("%s action loop error", self._log_prefix)
-            # 非关键路径异常. 不中断循环 — action 是消耗品, 丢掉当前 action 继续.
-
-    async def _post_action_refresh(self) -> None:
-        """fire-and-forget refresh, 内部捕获异常防 task 静默崩溃.
-
-        未来时序敏感点会加统一关键字 trace, 这里只做 warning 兜底.
-        """
-        try:
-            await self.moss.shell.refresh_metas(self._default_shell_prepare_timeout)
-        except Exception:
-            self.moss.logger.warning(
-                "%s post-action refresh_metas failed",
-                self._log_prefix,
-                exc_info=True,
+            self._moss_runtime.session.output(
+                'system',
+                *interpretation.as_messages(),
+                log=f"after interpreter {interpretation.id}",
             )
-
-    async def _stream_execute(self, action: Action) -> tuple[list[Message], _Observe]:
-        """流式执行: action.received_logos() → interpreter.feed(delta) → 结算.
-
-        返回 (as_messages, observe) 闭合 observe 回路.
-        logos 已走 session stream 实时广播, 此处只发射 command-output/result.
-        InterpretError 被捕获 — interpretation 已保留 partial results.
-
-        Attention abort 传播: 在 feed/compile/execute 各阶段结束后检查
-        action.is_aborted(), 发现后调用 shell.clear() 取消 pending command,
-        返回部分结果.
-        """
-        shell = self._moss_runtime.shell
-        if not shell.is_running():
-            self.moss.logger.error(
-                "%s ghost runtime received action but shell is not running",
-                self._log_prefix,
+            self._moss_runtime.logger.info(
+                "%r interpreter settled: %s",
+                self,
+                interpretation.id
             )
-            self.moss.session.output('error', 'received action but shell is not running')
-            return [], False
+        except Exception as e:
+            self.moss.logger.error("%s send interpreter frame failed: %s", self._log_prefix, e)
 
-        interpreter = await shell.interpreter(kind='append', clear_after_exit=False)
-        interpretation = interpreter.interpretation()
+    @property
+    def shell(self) -> MOSShell:
+        return self._moss_runtime.shell
 
-        logger = self.moss.logger
-        session = self._moss_runtime.session
-
-        def _on_task_done(task: CommandTask) -> None:
-            result = task.task_result()
-            caller = task.caller_name()
-
-            # command-output: 给人的消息
-            if result.output:
-                session.output('command-output', *result.output, log=f"{caller} output")
-
-            # command-result: 给模型的消息
-            msgs = result.as_messages()
-            if msgs:
-                session.output('command-result', *msgs, log=f"{caller} done")
-            else:
-                session.output('command-result', log=f"{caller} done")
-
-        interpreter.on_task_done(_on_task_done)
-
-        async def _check_abort_and_clear(phase: str) -> bool:
-            """检查 attention abort 并清理 shell. 返回 True 表示已 abort."""
-            if not action.is_aborted():
-                return False
-            logger.info(
-                "%s attention aborted during %s, clearing shell",
-                self._log_prefix, phase,
-            )
-            await shell.clear()
-            return True
-
-        async with interpreter:
-            try:
-                # ── 阶段 1: feed — 流式送入 ──
-                first_delta = True
-                async for delta in action.received_logos():
-                    if first_delta:
-                        logger.debug("action loop received first logos delta")
-                        first_delta = False
-                    interpreter.feed(delta)
-
-                # feed 阶段结束即检查: 此时 abort 表示 logos 流被中途截断,
-                # 已 fed 的 CTML 可能产生了 pending command, 需要 clear.
-                if await _check_abort_and_clear("feed"):
-                    return interpretation.as_messages(), interpretation.observe
-
-                # ── 阶段 2: compile — 标记结束, 等待解析完成 ──
-                interpreter.commit()
-                logger.debug("logos stream committed, waiting compile")
-                await interpreter.wait_compiled()
-
-                # compile 后检查: abort 可能发生在解析期间, 已编译的 task
-                # 未开始执行但已入队, clear 将它们标记为 INTERRUPTED.
-                if await _check_abort_and_clear("compile"):
-                    return interpretation.as_messages(), interpretation.observe
-
-                # ── 阶段 3: execute — 等待全部 task 执行完毕 ──
-                await interpreter.wait_stopped()
-
-                # execute 后检查: abort 发生在命令执行期间, 未完成的 task
-                # 被 clear 取消, 已完成的保留结果.
-                if await _check_abort_and_clear("execute"):
-                    return interpretation.as_messages(), interpretation.observe
-
-            except InterpretError:
-                # 级别 1: 可管理中断. interpretation 已保留 partial results +
-                # observe=True. 同步产出到 output 总线.
-                err = interpretation.exception or "interpret error"
-                session.output('error', log=str(err))
-                logger.warning(
-                    "interpret error during stream execute: %s",
-                    interpretation.exception,
-                )
-
-        # __aexit__ 已调 close(), interpretation.done = True
-        messages = interpretation.as_messages()
-        session.output('system', *interpretation.status_messages())
-        logger.info(
-            "interpreter settled: compiled=%d done=%d failed=%d cancelled=%d observe=%s",
-            len(interpretation.compiled_tasks),
-            len(interpretation.success_tasks),
-            len(interpretation.failed_tasks),
-            len(interpretation.cancelled_tasks),
-            interpretation.observe,
+    async def _refresh_shell(self) -> None:
+        await self.shell.refresh_metas(
+            timeout=self._default_shell_prepare_timeout,
+            stale_time=self._refresh_meta_stale_time,
         )
-        return messages, interpretation.observe
+
+    def _on_thinking_start(self, thinking: Thinking) -> None:
+        # 首帧提示: 把思维帧的 percepts 落到 output 总线, 供 headless 观测面消费.
+        moment = thinking.moment
+        if self._is_thinking_gated():
+            # 注入 safemode 动态上下文, 提示模型其 logos 将经人工审批.
+            moment.with_dynamic_context(
+                'safemode',
+                [Message.new().with_content(
+                    "<safemode-active>\n"
+                    "Gate active on thinking→action path. Your logos is "
+                    "reviewed by a human before dispatch. Rejected logos will "
+                    "NOT be executed by the body; only your utterance stays "
+                    "in your own history. Feedback arrives next frame as "
+                    "<safemode-approval-note> or <safemode-rejection>.\n"
+                    "</safemode-active>"
+                )],
+            )
+        if self._moss_runtime.session.is_running():
+            self._moss_runtime.session.output(
+                'moment',
+                *moment.percepts_messages(),
+                log=f"moment {moment.id}: {len(moment.percepts)} percepts",
+            )
+
+    def _on_thinking_exited(self, thinking: Thinking, err: BaseException | None) -> None:
+        if self._ghost_instance:
+            self._on_logos_end()
+            self._ghost_instance.handle_thinking_exit(
+                thinking,
+                err,
+            )
 
 
-class GhostWorkspaceProvider(Provider[GhostWorkspace]):
-
-    def __init__(self, source_path: pathlib.Path | None) -> None:
-        self._source_path = source_path
-
-    def singleton(self) -> bool:
-        return True
-
-    def contract(self) -> Type[GhostWorkspace]:
-        return GhostWorkspace
-
-    def factory(self, con: IoCContainer) -> GhostWorkspace:
-        from ghoshell_moss.core.blueprint.matrix import Matrix
-        matrix = con.force_fetch(Matrix)
-        # matrix.ghost_home 已删 (UU-10 首页收敛). ghost 归属挂 project (治理域句柄),
-        # 具体路径 = project.get_ghost_home(env.ghost_name) — TT-9 三目录松耦合的一环.
-        home_path = matrix.project.get_ghost_home(matrix.env.ghost_name)
-        return GhostWorkspace(home=home_path, source=self._source_path)
+GhostRuntimeImpl = GhostInShellDrivenByMindflow

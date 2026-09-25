@@ -2,39 +2,24 @@
 
 Subprocesses 的一句话承诺: "spawn 并治理一组不比 owner 活得久的子进程".
 
-两层结构:
+三层结构:
 
-1. Subprocesses    — 机制灶台. spawn (execute/shell) + 查询 (executing/executed/get)
-                     + 信号 (kill/killpg) + 生命周期 (async with).
-2. ManagedProcess  — 子进程富句柄. meta / process / output / stop / add_done_callback.
+1. SubprocessFacade — 纯 spawn (execute/shell). 消费者 spawn 面 — 不含查询/信号/生命周期,
+                     结构性杜绝误关共享实例.
+2. Subprocesses     — SubprocessFacade + 查询 (executing/get/executed) + 信号
+                     (kill/killpg) + 生命周期 (async with). owner 治理面 — 台账归此层.
+3. ManagedProcess   — 子进程富句柄. meta / process / output / stop / add_done_callback.
 
 输出捕获不是独立的任务抽象, 是 spawn 时的可选参数: ``capture=CaptureSpec(...)``.
-持续性后台任务见 ``ghoshell_moss.contracts.job_supervisor`` (JobSupervisor).
 """
-
-# 技术目标 (reviewer 上下文, 契约演进见 FEATURE.md matrix-cell-governance §TT-3):
-#
-# 本文件由 ProcessManager 契约收敛而来, 三个融合病灶的清除:
-# 1. ProcessTask/BackgroundTask 两层任务抽象解体 —
-#    ProcessTask (输出管理) 降级为 execute/shell 的 capture 参数,
-#    BackgroundTask 三分: once→普通 execute, loop→JobSupervisor,
-#    on_prompt→channel 的 get_context_messages().
-# 2. ProcessMeta 上的业务外键 (task_id/background_task_id) 删除 —
-#    机制层不长业务层的引用.
-# 3. cd/pwd 目录状态移出 — 机制层全收显式 cwd 参数,
-#    可变目录状态只钉在最靠近对话的叶子上 (具体 terminal session).
-#
-# 命名: 名词复数 = 拥有的一组东西, 无 Manager 抽象引力,
-# 与 asyncio.subprocess 相邻自解释 (UU-1.3).
 
 from __future__ import annotations
 
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -42,12 +27,13 @@ from typing_extensions import Self
 from ghoshell_moss.message.message import Additional
 
 __all__ = [
-    "Subprocesses",
+    "CaptureSpec",
+    "ErrorInfo",
     "ManagedProcess",
     "ProcessMeta",
-    "CaptureSpec",
     "ProcessOutput",
-    "ErrorInfo",
+    "SubprocessFacade",
+    "Subprocesses",
 ]
 
 ErrorInfo = str
@@ -172,8 +158,7 @@ class ProcessOutput(ABC):
 
 # -- 子进程富句柄 --
 
-@dataclass
-class ManagedProcess:
+class ManagedProcess(ABC):
     """子进程的富句柄.
 
     比裸 asyncio.subprocess.Process 多出:
@@ -187,37 +172,33 @@ class ManagedProcess:
     直接通过 ``process`` 字段使用, 和普通 asyncio 子进程一致.
     """
 
-    meta: ProcessMeta
-    """元信息."""
+    @property
+    @abstractmethod
+    def meta(self) -> ProcessMeta:
+        """元信息."""
+        ...
 
-    process: asyncio.subprocess.Process
-    """底层 asyncio 子进程. 可直接操作."""
+    @property
+    @abstractmethod
+    def process(self) -> asyncio.subprocess.Process:
+        """底层 asyncio 子进程. 可直接操作."""
+        ...
 
-    output: ProcessOutput | None = None
-    """输出捕获视图. spawn 时未声明 capture 则为 None."""
+    @property
+    @abstractmethod
+    def output(self) -> ProcessOutput | None:
+        """输出捕获视图. spawn 时未声明 capture 则为 None."""
+        ...
 
-    # 内部字段 — 由 Subprocesses 实现填充/触发, 使用方不要直接碰.
-    _stop_impl: Callable[[float], "asyncio.Future[None]"] | None = field(
-        default=None, repr=False,
-    )
-    _on_exit_callbacks: list[Callable[[ProcessMeta], None]] = field(
-        default_factory=list, repr=False,
-    )
-    _exit_fired: bool = field(default=False, repr=False)
-
+    @abstractmethod
     async def stop(self, timeout: float = 5.0) -> None:
         """优雅停止: 先温和信号 (SIGINT), 超时后升级 SIGKILL (覆盖进程组).
 
         进程已退出则立即返回. 幂等.
         """
-        # stop 语义与 owner 关停路径一致 (SIGINT → grace → SIGKILL killpg),
-        # 由实现注入 _stop_impl, 保证信号策略只有一份.
-        if self.process.returncode is not None:
-            return
-        if self._stop_impl is None:
-            raise NotImplementedError("stop() not wired by Subprocesses implementation")
-        await self._stop_impl(timeout)
+        ...
 
+    @abstractmethod
     def add_done_callback(self, callback: Callable[[ProcessMeta], None]) -> None:
         """注册进程退出的一次性回调.
 
@@ -226,46 +207,14 @@ class ManagedProcess:
         callback 在 asyncio loop 线程触发, 调用方不必 thread-safe.
         callback 异常被吞 (写 logger), 不影响其它 callback / 回收流程.
         """
-        if self._exit_fired:
-            try:
-                callback(self.meta)
-            except Exception:
-                # 与回收路径一致: 单 callback 异常隔离, 不抛
-                pass
-            return
-        self._on_exit_callbacks.append(callback)
+        ...
 
 
 # -- Subprocesses --
 
-class Subprocesses(ABC):
-    """子进程机制灶台 — spawn / 查询 / 信号 / 生命周期.
-
-    铁律: **子进程不比 owner 活得久**. 通过三件套保证:
-    1. start_new_session (setsid) + 关停时 killpg — 覆盖未主动脱离的子孙进程
-    2. pipe fencing — capture 模式下管道随 owner 关闭, 子进程写管道即收 SIGPIPE
-    3. 回收 polling — 每个 spawn 的进程都有 reclaim 协程 await 其退出
-
-    主动 setsid/setpgid 脱离的守护进程不在承诺内 — 那是子进程自己的责任.
-
-    使用方式::
-
-        async with SubprocessesImpl(...) as sp:
-            proc = await sp.execute("echo", "hello")
-            await proc.process.wait()
-
-            proc = await sp.execute("find", ".", capture=CaptureSpec())
-            await proc.output.wait_drained()
-            print(proc.output.stdout())
-
-    所有 spawn 收显式 cwd 参数; 本抽象不持有目录状态 (无 cd/pwd).
-    """
-
-    # 一 owner 一实例: Subprocesses 是 IoC 非单例工厂产物, owner 生命周期
-    # 为其所有子进程划界 (治理=所有权). 无全局进程板.
+class SubprocessFacade(ABC):
 
     # -- spawn --
-
     @abstractmethod
     async def execute(
             self,
@@ -281,7 +230,6 @@ class Subprocesses(ABC):
             start_new_session: bool = True,
             with_os_env: bool = True,
             on_exit: Callable[[ProcessMeta], None] | None = None,
-            **kwargs,
     ) -> ManagedProcess:
         """exec 模式启动子进程.
 
@@ -310,7 +258,6 @@ class Subprocesses(ABC):
             start_new_session: bool = True,
             with_os_env: bool = True,
             on_exit: Callable[[ProcessMeta], None] | None = None,
-            **kwargs,
     ) -> ManagedProcess:
         """shell 模式启动子进程.
 
@@ -318,6 +265,33 @@ class Subprocesses(ABC):
         其余参数同 execute.
         """
         ...
+
+
+class Subprocesses(SubprocessFacade, ABC):
+    """子进程机制灶台 — spawn / 查询 / 信号 / 生命周期.
+
+    铁律: **子进程不比 owner 活得久**. 通过三件套保证:
+    1. start_new_session (setsid) + 关停时 killpg — 覆盖未主动脱离的子孙进程
+    2. pipe fencing — capture 模式下管道随 owner 关闭, 子进程写管道即收 SIGPIPE
+    3. 回收 polling — 每个 spawn 的进程都有 reclaim 协程 await 其退出
+
+    主动 setsid/setpgid 脱离的守护进程不在承诺内 — 那是子进程自己的责任.
+
+    使用方式::
+
+        async with SubprocessesImpl(...) as sp:
+            proc = await sp.execute("echo", "hello")
+            await proc.process.wait()
+
+            proc = await sp.execute("find", ".", capture=CaptureSpec())
+            await proc.output.wait_drained()
+            print(proc.output.stdout())
+
+    所有 spawn 收显式 cwd 参数; 本抽象不持有目录状态 (无 cd/pwd).
+    """
+
+    # 一 owner 一实例: Subprocesses 是 IoC 非单例工厂产物, owner 生命周期
+    # 为其所有子进程划界 (治理=所有权). 无全局进程板.
 
     # -- 查询 --
 

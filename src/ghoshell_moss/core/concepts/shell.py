@@ -1,12 +1,14 @@
 """
-基于流式解释器实现的 Shell, 也是躯体的封装. 它负责理解躯体, 解释模型输出, 并行多轨调度 command 等.
+A Shell built on top of the streaming interpreter, and the encapsulation of the body.
+It understands the body, interprets model output, and schedules commands across
+parallel Channels (经络, "meridian").
 """
 
 import asyncio
-from typing import Callable, Protocol
+from typing import Callable
 import contextlib
 from abc import ABC, abstractmethod
-from typing import Literal, Optional, AsyncIterable, Generic, TypeVar, Any
+from typing import Literal, Optional, AsyncIterable, Generic, TypeVar, Any, Protocol
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
@@ -27,45 +29,52 @@ MAIN_CHANNEL = TypeVar("MAIN_CHANNEL", bound=Channel)
 
 class MOSShell(Generic[MAIN_CHANNEL], ABC):
     """
-    Model-Operated Operating System Shell
-    面向模型提供的 Shell, 让 AI 可以操作自身所处的系统.
+    Model-Operated Operating System Shell.
+    A Shell exposed to the model, letting an AI operate the system it inhabits.
 
-    这个技术实现的核心目标, 是通过一个双工运行的 Runtime, 为一个持久化智能体提供 Realtime 感知, 交互和控制能力. 以及提供几乎无限的反身性.
+    The core technical goal is a duplex runtime that gives a persistent agent
+    realtime perception, interaction and control, plus near-unlimited reflexivity.
 
-    Shell 设计的全双工交互的极简形式:
+    Minimal form of the Shell's full-duplex interaction:
 
-    创建一个 Shell 实例.
+    Create a Shell instance.
     >>> def create_shell(...) -> MOSShell:
     >>>     ...
 
-    为 Shell 赋予各种 Channel, 其中一些 Channel 是可以有 安装/卸载/打开/关闭 范式的.
+    Give the Shell various Channels; some Channels support an
+    install / uninstall / open / close paradigm.
 
     >>> def build_shell(shell: MOSShell, channels: list[Channel]) -> MOSShell:
     >>>     shell.main_channel.import_channels(*channels)
     >>>     return shell
 
-    在这个 Channels 的体系中应该要包含一个完整的 AIOS 范式, 包含:
-    + Instructions: AI 自身 instructions 模块的修改.
-    + Memories: AI 的记忆体系
-    + Mind: 思维管理控制
-        - Skills: AI 通过 Skill 管理的注意力机制, 可以专注于做不同的任务.
-        - TasksManager:  AI 的多任务管理, 支持树形嵌套, 可以在多个 Tasks 中切换, 并且可以为 task 维护独立上下文.
-    + Tools: 可以用的各种工具.
-        + Desktops:  AI 自己拥有的桌面软件, 操作它所在的操作系统.
-            - Apps: AI 可以管理的本地应用, 每个应用拥有独立的 Runtime.
-        - Terminal: AI 可以直接操作和修改的命令行.
-        + Assets: AI 可以管理的各种本地资源.
-        - Modules: AI 可以在自己的 Runtime 里管理所有可被调用的 python 模块.
-    + LAN: 局域网里可以使用的各种工具.
-        + HomeAssistant: 智能家居
-        + AI Assistants: 可以对话的各种 AI
-    + Sencors: 所有可被调用的感知模块.
-    + UserInterfaces: 可以和人类交互的各种界面.
-    + Bodies: 可以控制的各种物理躯体.
+    This Channels system should contain a complete AIOS paradigm:
 
-    然后 Shell 运行可以通过 Topic 来进行通讯, 用 CSP 范式来创建持久运行 Agent 逻辑:
-    在 Shell 能够持续, 稳定运行的情况下, AI (Ghost) 运行在 Shell 中, 持续地与现实世界交互.
+    + Instructions: modification of the AI's own instructions module.
+    + Memories: the AI's memory system.
+    + Mind: thought management and control.
+        - Skills: attention mechanisms the AI manages through Skills, to focus on different tasks.
+        - TasksManager: the AI's multi-task management; supports tree nesting, switching among
+          multiple Tasks, and maintaining an independent context per task.
+    + Tools: the various available tools.
+        + Desktops: desktop software the AI owns, to operate its host OS.
+            - Apps: local applications the AI can manage; each app has its own Runtime.
+        - Terminal: command lines the AI can directly operate and modify.
+        + Assets: various local resources the AI can manage.
+        - Modules: all invocable python modules the AI can manage within its own Runtime.
+    + LAN: the various tools available on the local network.
+        + HomeAssistant: smart home.
+        + AI Assistants: the various AIs it can converse with.
+    + Sencors: all invocable perception modules.
+    + UserInterfaces: the various interfaces for interacting with humans.
+    + Bodies: the various physical bodies it can control.
     """
+    # 设计意图（原文）:
+    # 这个技术实现的核心目标, 是通过一个双工运行的 Runtime, 为一个持久化智能体提供 Realtime 感知,
+    # 交互和控制能力. 以及提供几乎无限的反身性.
+    #
+    # 然后 Shell 运行可以通过 Topic 来进行通讯, 用 CSP 范式来创建持久运行 Agent 逻辑:
+    # 在 Shell 能够持续, 稳定运行的情况下, AI (Ghost) 运行在 Shell 中, 持续地与现实世界交互.
 
     @property
     @abstractmethod
@@ -87,9 +96,9 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     @abstractmethod
     def main_channel(self) -> MAIN_CHANNEL:
         """
-        Shell 自身的主轨. 主轨同时可以用来注册所有的子轨.
-        主轨的名称必须是空字符串.
-        定位类似于 python 的 __main__ 模块.
+        The Shell's own main channel (主轨). The main channel also registers all sub-channels.
+        Its name must be the empty string.
+        Positioned like python's __main__ module.
         """
         pass
 
@@ -101,9 +110,10 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             stale_time: float | None = None,
     ) -> bool:
         """
-        刷新所有 channel 的元信息.
-        :param timeout: 最大的等待时间, 超过等待时间直接返回, 可能有一些 channel 没有刷新完.
-        :param stale_time: 最近一次刷新的过期时间. 小于过期时间立刻返回, 不会重新刷新. 为 None 则不会比较.
+        Refresh meta for all channels.
+        :param timeout: maximum wait time; returns once exceeded, possibly with some channels unrefreshed.
+        :param stale_time: expiry of the most recent refresh. If that refresh is younger than this,
+                    returns immediately without refreshing. None disables the comparison.
         """
         pass
 
@@ -117,31 +127,31 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     @abstractmethod
     def pause(self, toggle: bool = True, callback: Callable[[], None] | None = None) -> None:
         """
-        急停, 立刻生效. 禁止新的命令输入, 除非取消 pause 状态.
+        Emergency stop, effective immediately. Forbids new command input until pause is cancelled.
 
-        callback 在 clear 完成时 fire (done 语义). 必须自行保证线程安全.
+        callback fires when clear completes (done semantics). The caller must ensure thread safety.
         """
         pass
 
     @abstractmethod
     def is_paused(self) -> bool:
         """
-        是否在 pause 状态.
+        Whether the shell is paused.
         """
         pass
 
     @abstractmethod
     def is_running(self) -> bool:
         """
-        shell 是否在运行中.
+        Whether the shell is running.
         """
         pass
 
     @abstractmethod
     async def wait_connected(self, *channel_paths: str) -> None:
         """
-        强行等待指定的轨道, 或者所有的轨道完成连接.
-        通常并不是必要的. 只是为了测试.
+        Force-wait for the given channels, or all channels, to finish connecting.
+        Usually unnecessary; mainly for tests.
         """
         pass
 
@@ -153,29 +163,29 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     @abstractmethod
     def is_closed(self) -> bool:
         """
-        是否已经关闭运行.
+        Whether the shell has been closed.
         """
         pass
 
     @abstractmethod
     def is_idle(self) -> bool:
         """
-        是否在闲置状态. 闲置状态指的是没有任何 command 在运行.
+        Whether the shell is idle. Idle means no command is running.
         """
         pass
 
     @abstractmethod
     async def wait_until_idle(self, timeout: float | None = None) -> None:
         """
-        等待到 shell 所有的 command 运行结束.
-        todo: 应该可以指定某个具体的 channel.
+        Wait until all commands in the shell have finished.
         """
+        # todo: 应该可以指定某个具体的 channel.
         pass
 
     @abstractmethod
     async def wait_until_closed(self) -> None:
         """
-        阻塞等到 Shell 被关闭.
+        Block until the Shell is closed.
         """
         pass
 
@@ -184,8 +194,9 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
-        当前运行时所有的可用的命令.
-        注意, key 是 channel path. 例如 foo.bar:baz 表示 command 来自 channel `foo.bar`, 名称是 'baz'
+        All available commands of the current runtime.
+        Note the key is a channel path. E.g. `foo.bar:baz` means the command comes from
+        channel `foo.bar` and is named 'baz'.
         """
         pass
 
@@ -193,16 +204,26 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     def channel_metas(
             self,
             available_only: bool = False,
-            config: Optional[list[ChannelFullPath]] = None,
+            selection: Optional[list[ChannelFullPath]] = None,
             *,
             stale_time: float | None = None,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
-        当前运行状态中的 Channel meta 信息.
-        key 是 channel path, 例如 foo.bar
-        如果为 '', 表示为主 channel.
+        Channel meta of the current running state.
+        :param available_only: only show runnable channels.
+        :param selection: the selected channel full paths.
+        :param stale_time: the method reads from cache; caches older than stale time are dropped
+                    and rebuilt from all channels.
         """
         pass
+
+    @abstractmethod
+    def on_channel_metas_generation(
+            self,
+            callback: Callable[[dict[ChannelFullPath, ChannelMeta]], None],
+    ) -> Callable[[], None]:
+        """Register a callback invoked when channel metas finish rebuilding. Returns an unregister handle."""
+        ...
 
     @abstractmethod
     def meta_instruction(self) -> str:
@@ -228,13 +249,14 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     @abstractmethod
     async def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         """
-        获取一个可以运行的 channel command.
-        这个语法可以理解为 from channel_path import command_name
+        Get a runnable channel command.
+        This syntax reads like `from channel_path import command_name`.
 
-        :param chan: channel 的 path, 例如 foo.bar
+        :param chan: the channel path, e.g. foo.bar
         :param name: command name
-        :param exec_in_chan: 表示这个 command 在像函数一样调用时, 仍然会发送 command task 到 channel 中.
-        :return: None 表示命令不存在.
+        :param exec_in_chan: when True, calling this command like a function still sends a
+                    command task into the channel.
+        :return: None means the command does not exist.
         """
         pass
 
@@ -242,6 +264,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
 
     @abstractmethod
     def interpreting(self) -> Optional[Interpreter]:
+        """The Interpreter currently running."""
         pass
 
     @contextlib.asynccontextmanager
@@ -257,7 +280,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             task_context: dict[str, Any] | None = None,
     ):
         """
-        简单的语法糖.
+        A small bit of syntactic sugar.
         """
         interpreter = await self.interpreter(
             kind=kind,
@@ -271,6 +294,12 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         async with interpreter:
             yield interpreter
 
+    # token_replacements 费用推导（原文）:
+    #             假设用 n 个代理 token, 平均每个代理 token 消耗是 m, 代理掉 v 个token, 在 t 次多轮对话中平均使用了 k 个代理 token.
+    #             t 轮 instruction 多消耗的 token: n * m * t
+    #             t 轮输出实际减少的 tokens:  (v - m) * k * t
+    #             所以 (v - m) * k * 3 > n * m    就有正收益.
+    #             假设 m = 1, v = 10, k=3, n=20,  每轮多消耗 20 个点,  每轮减少 80 个点开销. 大意如此.
     @abstractmethod
     async def interpreter(
             self,
@@ -287,37 +316,35 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             task_context: dict[str, Any] | None = None,
     ) -> Interpreter:
         """
-        实例化一个 interpreter 用来做解释.
-        :param kind: 实例化 Interpreter 时的前置行为:
-                    clear 表示清空所有运行中命令.
-                    defer_clear 表示延迟清空, 但一旦有新命令, 就会被清空.
-                    run 表示正常运行.
-                    dry_run 表示 interpreter 虽然会正常执行, 但不会把生成的 command task 推送给 shell.
+        Create an interpreter for interpretation.
+        :param kind: preamble behavior when creating the Interpreter:
+                    clear   - clear all running commands first.
+                    append  - append commands instead of clearing. Stops the previous interpreter
+                              from submitting new input, while its already-executing tasks keep running.
+                    dry_run - the interpreter still executes normally, but does NOT push the
+                              generated command tasks to the shell (pure parsing).
 
-        :param stream_id: 设置一个指定的 stream id,
-                     interpreter 整个运行周期生成的 command token 都会用它做标记.
+        :param stream_id: set an explicit stream id. Every command token generated during the
+                    interpreter's whole lifecycle is tagged with it.
 
-        :param config: 如果传入了动态的 channel metas,
-                    则运行时可用的命令由真实命令和这里传入的 channel metas 取交集.
-                    是一种动态修改运行时能力的办法.
+        :param config: when dynamic channel metas are passed, the commands available at runtime
+                    become the intersection of the real commands and the channel metas passed here.
+                    This is a way to dynamically change runtime capabilities.
 
-        :param prepare_timeout: 准备过度阶段允许的时间. 超过时间未完成, 就直接返回 interpreter.
+        :param prepare_timeout: time allowed for the preparation phase. If it is not done in time,
+                    the interpreter is returned directly.
 
-        :param ignore_wrong_command: 遇到了幻想的 command 也不会解析错误.
-        :param refresh_metas: 运行前刷新 shell.
+        :param ignore_wrong_command: do not raise a parse error on hallucinated commands.
+        :param refresh_metas: refresh the shell before running.
 
-        :param token_replacements: 根据 key 替换 interpreter feed 获得的一部分 token, 将之替换为 value.
-                    这种做法可以用 instruction 里的 token 置换输出时的 token. 响应速度和费用能够有调整.
-
-                    假设用 n 个代理 token, 平均每个代理 token 消耗是 m, 代理掉 v 个token, 在 t 次多轮对话中平均使用了 k 个代理 token.
-                    t 轮 instruction 多消耗的 token: n * m * t
-                    t 轮输出实际减少的 tokens:  (v - m) * k * t
-                    所以 (v - m) * k * 3 > n * m    就有正收益.
-                    假设 m = 1, v = 10, k=3, n=20,  每轮多消耗 20 个点,  每轮减少 80 个点开销. 大意如此.
+        :param token_replacements: replace part of the tokens obtained from the interpreter feed by
+                    key, substituting the value. This swaps tokens in the instruction for tokens in
+                    the output; response speed and cost can be tuned.
 
         :param clear_after_exit: clear undone tasks after exit.
-        :param meta_instruction: 可以用来替换系统默认的 moss 语法 prompt. 通常只在调试时需要修改.
-        :param task_context: 给所有的 command task 复制 task context
+        :param meta_instruction: can replace the system default moss syntax prompt. Usually only
+                    modified when debugging.
+        :param task_context: copy the task context into every command task.
         """
         pass
 
@@ -326,7 +353,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             text: str | AsyncIterable[str],
     ) -> AsyncIterable[CommandToken]:
         """
-        语法糖, 用来展示如何把文本生成 command tokens.
+        Syntactic sugar demonstrating how to turn text into command tokens.
         """
         interpreter = await self.interpreter("dry_run")
         if isinstance(text, str):
@@ -347,9 +374,14 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             tokens: AsyncIterable[CommandToken],
             *,
             ignore_wrong_command: bool = False,
+            run_macro: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
-        语法糖, 用来展示如何将 command tokens 生成 command tasks.
+        Syntactic sugar demonstrating how to turn command tokens into command tasks.
+
+        :param run_macro: whether to expand macro commands in place. Default False — 本方法
+            总是建 dry_run interpreter, 而 dry_run 不派发 task; 展开宏会 await 一个永不
+            完成的 task 而死锁. 需要展开的原语 (loop 等) 显式传 True.
         """
         _token_queue = asyncio.Queue[CommandToken | None]()
         _task_queue = asyncio.Queue[CommandTask | None | Exception]()
@@ -367,7 +399,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
 
         sender_task = asyncio.create_task(sender())
         consumer_task = asyncio.create_task(
-            interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue.put_nowait),
+            interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue.put_nowait, run_macro=run_macro),
         )
         try:
             while True:
@@ -396,9 +428,10 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             text: str | AsyncIterable[str] | list[str],
             *,
             ignore_wrong_command: bool = False,
+            run_macro: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
-        语法糖, 用来展示如何将 text 直接生成 command tasks
+        Syntactic sugar demonstrating how to turn text directly into command tasks.
         """
 
         async def generate_text():
@@ -414,7 +447,8 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
                     yield content
 
         tokens = self.parse_text_to_command_tokens(generate_text())
-        async for task in self.parse_tokens_to_command_tasks(tokens, ignore_wrong_command=ignore_wrong_command):
+        async for task in self.parse_tokens_to_command_tasks(
+                tokens, ignore_wrong_command=ignore_wrong_command, run_macro=run_macro):
             yield task
 
     # --- runtime methods --- #
@@ -422,35 +456,37 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     @abstractmethod
     def push_task(self, *tasks: CommandTask) -> None:
         """
-        添加 task 到运行时. 这些 task 会阻塞在 Channel Runtime 队列中直到获取执行机会.
+        Add tasks to the runtime. These tasks block in the Channel Runtime queue until they get
+        a chance to execute.
         """
         pass
 
     @abstractmethod
     async def stop_interpretation(self) -> Optional[Interpretation]:
         """
-        临时实现的中断方法. 原理设计有问题.
-        todo: 重新设计 shell 的中断逻辑.
+        Interrupt the running interpretation.
         """
+        # 临时实现的中断方法. 原理设计有问题.
+        # todo: 重新设计 shell 的中断逻辑.
         pass
 
     @abstractmethod
     def clear(self) -> asyncio.Future[None]:
         """
-        清空所有的命令.
-        注意 clear 是树形广播的, clear 一个 父 channel 也会 clear 所有的子 channel.
+        Clear all commands.
+        Note clear broadcasts in a tree: clearing a parent channel also clears all its sub-channels.
         """
         pass
 
     async def start(self) -> None:
         """
-        启动 Shell 的 runtime.
+        Start the Shell's runtime.
         """
         await self.__aenter__()
 
     async def close(self) -> None:
         """
-        shell 停止运行.
+        Stop the shell.
         """
         await self.__aexit__(None, None, None)
 
@@ -464,46 +500,49 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
 
     @abstractmethod
     def add_tracer(self, tracer: 'Tracer') -> None:
-        """注册一个 tracer 观察 shell 生命周期.
+        """Register a tracer to observe the shell lifecycle.
 
-        fire and forget 语义: shell 每次事件遍历 tracers, check is_closed / is_running
-        决定是否 fire, 无主动 unsubscribe API. tracer 自报 is_closed()=True 时 shell 会跳过.
+        Fire-and-forget semantics: on every event the shell iterates tracers and checks
+        is_closed / is_running to decide whether to fire. There is no active unsubscribe API;
+        the shell skips any tracer that reports is_closed() == True.
         """
         ...
 
 
 class Tracer(Protocol):
-    """对 shell 运行时的观察模块. shell 关键生命周期节点回调它.
+    """An observer of the shell runtime. The shell calls it back at key lifecycle points.
 
-    fire and forget: shell 遍历 tracers 时, is_closed() 或 not is_running() 都会跳过,
-    异常会被 shell 捕获并记 log, 不影响主流程.
+    Fire-and-forget: while iterating tracers the shell skips any with is_closed() or
+    not is_running(); exceptions are caught by the shell and logged, never affecting
+    the main flow.
 
-    实现要点:
-    - 所有 on_xxx 方法必须线程安全 (可能被 shell 线程 / channel 线程调用).
-    - 方法体保持轻量, 不阻塞 shell 主流程.
-    - is_closed()=True 是终态, 表示 tracer 已终结; shell 不再 fire.
+    Implementation notes:
+    - All on_xxx methods must be thread-safe (they may be called from the shell thread or a channel thread).
+    - Keep method bodies lightweight; do not block the shell's main flow.
+    - is_closed() == True is terminal: the tracer is finished and the shell stops firing at it.
     """
 
     def is_running(self) -> bool:
-        """是否处于活跃接收状态. False 时 shell 跳过本次 fire (可用于暂停)."""
+        """Whether the tracer is actively receiving. When False the shell skips this fire (useful for pausing)."""
         ...
 
     def is_closed(self) -> bool:
-        """是否已关闭. True 时 shell 永久跳过, 未来可能被 GC."""
+        """Whether the tracer is closed. When True the shell skips it forever; it may be GC'd later."""
         ...
 
     def on_task_pushed(self, task: CommandTask) -> None:
-        """一个 command task 被 push 到 shell 时回调."""
+        """Called back when a command task is pushed into the shell."""
         ...
 
     def on_task_done(self, task: CommandTask) -> None:
-        """一个 command task 完成时回调 (成功 / 失败 / 取消 都算 done)."""
+        """Called back when a command task finishes (success / failure / cancellation all count as done)."""
         ...
 
     def on_interpreter_stopped(self, interpreter: Interpreter) -> None:
-        """一个 interpreter close 完成时回调.
+        """Called back when an interpreter has finished closing.
 
-        可从 ``interpreter.exception()`` 拿到编译期异常 (INTERPRET_ERROR),
-        从 ``interpreter.interpretation()`` 拿到最终 Interpretation 快照.
+        The compile-time exception (INTERPRET_ERROR) is available via ``interpreter.exception()``,
+        and the final Interpretation snapshot via ``interpreter.interpretation()``.
         """
         ...
+#

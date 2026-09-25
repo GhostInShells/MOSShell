@@ -1,0 +1,10 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Isolated venv (if this node owns its pyproject.toml + .venv)
+.venv/
+
+# runtime artifacts (ledger, logs) — keep dir, ignore contents.
+runtime/*
+!runtime/.gitignore

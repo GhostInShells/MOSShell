@@ -14,28 +14,32 @@ from typing_extensions import Self
 from pathlib import Path
 import janus
 
+from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.message.message import Message
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell
 from ghoshell_moss.core.blueprint.host import (
-    MossRuntime, MossSystemPrompter,
+    MOSShellRuntime, MossSystemPrompter,
 )
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.project import HostMode
 from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.cell import CellEventLevel
 from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
 from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
+from ghoshell_moss.contracts.speech import Speech
+from ghoshell_moss.contracts.voice import Voice, VoiceLifecycle
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 
 import contextlib
 import asyncio
 
-__all__ = ['MossRuntimeImpl']
+__all__ = ['ShellRuntimeImpl']
 
 
 class _MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
@@ -45,7 +49,7 @@ class _MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
     pass
 
 
-class MossRuntimeImpl(MossRuntime):
+class ShellRuntimeImpl(MOSShellRuntime):
 
     def __init__(
             self,
@@ -55,6 +59,8 @@ class MossRuntimeImpl(MossRuntime):
             mode: HostMode,
             matrix: MatrixImpl,
             run_shell_on_start: bool = True,
+            speech: bool = True,
+            listen: bool = False,
             name: str | None = None,
             description: str | None = None,
     ):
@@ -67,11 +73,18 @@ class MossRuntimeImpl(MossRuntime):
         self._name = name or env.moss_meta.name
         # 描述发现三级优先: 传参 > mode > env moss_meta.
         self._description = (
-            description
-            or mode.meta.description
-            or env.moss_meta.description
+                description
+                or mode.meta.description
+                or env.moss_meta.description
         )
         self._run_shell_on_start = run_shell_on_start
+        # speech / listen 开关 (bool): 契约屏蔽层 — 未来不耦合 Voice 实现, 只在
+        # __aenter__ 转发给 voice.run(). True/False 决定启用哪一侧.
+        self._speech_enabled = speech
+        self._listen_enabled = listen
+        # Voice 总装 (IoC 里存在即启用, 缺席即无语音). __aenter__ 里 resolve.
+        self._voice: Voice | None = None
+        self._voice_lifecycle: VoiceLifecycle | None = None
 
         # --- mode 层 IoC 叠加 (§ZZ-5: mode providers/configs/resources 覆盖 baseline) --- #
         # container 已在 MatrixImpl.__init__ 创建并完成 baseline 注册,
@@ -86,11 +99,12 @@ class MossRuntimeImpl(MossRuntime):
         self._closed_event = ThreadSafeEvent()
         self._log_prefix = (
             f"<HostMossRuntime mode={self._mode.name} "
-            f"session_id={self._env.network_scope}>"
+            f"network_scope={self._env.network_scope}>"
         )
         self._interpreting_future: asyncio.Future | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._action_task: asyncio.Task | None = None
+        self._bringup_tasks: set[asyncio.Task] = set()
 
         # --- shell action loop --- #
         self._shell_logos_queue: janus.Queue = janus.Queue()
@@ -101,7 +115,7 @@ class MossRuntimeImpl(MossRuntime):
         self._system_prompter: _MossSystemPrompterImpl = self._build_system_prompter()
 
         # --- prepare shell --- #
-        # main channel 从 mode.manifests().channel() 单 Manifest 拿 (§ZZ-1 ModeManifests
+        # main channel 从 mode.manifests().channel() 单 Manifest 拿 (HostModeManifests
         # 由 MossRuntime 承接). 无声明用默认空白 main 兜底.
         manifests_main = self._discover_main_channel()
         if manifests_main is None:
@@ -131,27 +145,44 @@ class MossRuntimeImpl(MossRuntime):
         ctml_version = self._mode.meta.ctml_version or self._env.moss_meta.ctml_version
         ctml_prompt = self._load_ctml_prompt(ctml_version)
         prompter.with_prompter(
-            MossSystemPrompter.CTML_SLOT,
+            MossSystemPrompter.MOSS_SLOT,
             BaseSystemPrompter(
                 own_instruction=ctml_prompt,
                 description=f"CTML grammar prompt (version {ctml_version}).",
             ),
         )
-        # project slot: workspace 根 MOSS.md 声明的 project instruction
-        # (MossMeta.system_project 字段, 老代码写 system_prompt 是遗迹 bug —
-        # 老 host/matrix.py 里同一 typo, 只是从未跑通过).
+        # project slot: 环境身份帧 + workspace 根 MOSS.md 声明的 project instruction.
+        # 帧固定英文, 不读 MOSS.md 定制 — 隐式约定等于不存在.
+        project_meta = (
+            f"> Here is project `{self._env.moss_meta.name}` — "
+            f"an environment driven by the MOSS (ghoshell_moss) framework."
+        )
+        project_body = self._env.moss_meta.system_project
         prompter.with_prompter(
             MossSystemPrompter.PROJECT_SLOT,
             BaseSystemPrompter(
-                own_instruction=self._env.moss_meta.system_project,
+                own_instruction=(
+                    project_meta
+                    if not project_body
+                    else f"{project_meta}\n\n{project_body}"
+                ),
                 description="Workspace root MOSS.md project instruction.",
             ),
         )
-        # mode slot: 模式内 HOST.md 声明的 instruction
+        # mode slot: 环境身份帧 + 模式内 HOST.md 声明的 instruction.
+        mode_meta = (
+            f"> Here is `{self._mode.name}` mode — "
+            f"an isolated runtime of the MOSS (ghoshell_moss) framework."
+        )
+        mode_body = self._mode.meta.system_prompt
         prompter.with_prompter(
             MossSystemPrompter.MODE_SLOT,
             BaseSystemPrompter(
-                own_instruction=self._mode.meta.system_prompt,
+                own_instruction=(
+                    mode_meta
+                    if not mode_body
+                    else f"{mode_meta}\n\n{mode_body}"
+                ),
                 description=f"Mode '{self._mode.name}' instruction.",
             ),
         )
@@ -228,23 +259,65 @@ class MossRuntimeImpl(MossRuntime):
                 ResourceStorageFactoryBootstrapper(r.value()),
             )
 
-    async def _bringup_nodes(self) -> None:
-        """按 mode 声明顺序拉起 bringup_nodes, 单个失败记日志不阻断.
+    async def _bringup_one(self, target: str) -> None:
+        """发起单个 node 的拉起; 失败记日志 + 广播事件, 不带倒其余 node.
 
-        matrix 已启动时调用, run_node 依赖 matrix 运行态.
+        matrix 已启动时运行, run_node 依赖 matrix 运行态. mode bringup 是启动面, 没有
+        直接调用方拿返回 (channel 侧 nodes:run 已用 raise_observe 兜底), 故失败额外
+        publish 一个 ERROR 级 CellEvent 通知启动中的 ghost.
         """
+        try:
+            await self._matrix.run_node(Path(target))
+        except Exception as e:
+            self._matrix.logger.exception("bringup node failed: %s", target)
+            await self._publish_bringup_failure(target, e)
+
+    async def _publish_bringup_failure(self, target: str, exc: Exception) -> None:
+        """把 bringup 失败广播成 CellEvent — 事件是瞬态 best-effort, 失败只记日志."""
+        reason = str(exc).strip()[:200] or type(exc).__name__
+        content = f'bringup node failed: {target}: {reason}'
+        try:
+            await self._matrix.publish_event(content, event_level=CellEventLevel.ERROR)
+        except Exception:
+            self._matrix.logger.exception(
+                "publish bringup failure failed: %s", target,
+            )
+
+    def _start_bringup_tasks(self) -> None:
+        """mode 声明的 nodes 各起一个后台 task — 并行 fire, 不 await, 无顺序语义.
+
+        node 不做 DAG 启动图 (依赖组织未来交给特殊 node, 不在 bringup 里), 故这里逐条
+        独立发起、互不阻塞: 一个 node 的 probe 挂死或失败不拖累其余. spawn 之后的存活/
+        退出治理已归 matrix (handle 登记 + _on_cell_exit). 取消经 exit stack 回调,
+        排在 matrix teardown 之前.
+        """
+        loop = asyncio.get_running_loop()
         for target in self._mode.meta.bringup_nodes:
-            try:
-                await self._matrix.run_node(Path(target))
-            except Exception:
-                self._matrix.logger.exception(
-                    "bringup node failed: %s", target,
-                )
+            task = loop.create_task(
+                self._bringup_one(target),
+                name=f'bringup:{self._mode.name}:{target}',
+            )
+            # _bringup_one 吞掉 Exception (CancelledError 是 BaseException, 不吞), 故 task
+            # 不抛、无需 done callback 记异常; 只借它把完成的 task 移出 set.
+            self._bringup_tasks.add(task)
+            task.add_done_callback(self._bringup_tasks.discard)
+        if self._bringup_tasks:
+            self._async_exit_stack.push_async_callback(self._cancel_bringup_tasks)
+
+    async def _cancel_bringup_tasks(self) -> None:
+        tasks = list(self._bringup_tasks)
+        self._bringup_tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            # asyncio.wait 不抛 task 自身的 CancelledError; 外层若正被取消仍正常传播.
+            await asyncio.wait(tasks)
 
     def _discover_main_channel(self):
         """从 mode.manifests().channel() 拿 main channel Manifest.
 
-        新 ABC (§ZZ-1 ModeManifests): channel() -> Manifest[PrimeChannel] 单值.
+        新 ABC (HostModeManifests): channel() -> Manifest[PrimeChannel] 单值.
         老 API .channels().values() 已废, 老代码 next(...) 迭代形态一并作废.
         """
         try:
@@ -286,7 +359,7 @@ class MossRuntimeImpl(MossRuntime):
     def env(self) -> Environment:
         return self._env
 
-    def moss_instruction(self, with_static: bool = True) -> str:
+    def instruction(self, with_static: bool = True) -> str:
         self._check_shell_running()
         instructions = [self._ctml_shell.meta_instruction()]
 
@@ -295,19 +368,19 @@ class MossRuntimeImpl(MossRuntime):
                 instructions.append("# MOSS static\n\n" + static_messages)
         return "\n\n".join(instructions)
 
-    async def moss_dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
+    async def dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
         self._check_shell_running()
         await self._ctml_shell.refresh_metas(max_wait)
         return self._ctml_shell.dynamic_messages()
 
-    def moss_static_messages(self) -> str:
+    def static_messages(self) -> str:
         return self._ctml_shell.static_messages()
 
-    async def moss_refresh_metas(self, timeout: float = 2.0) -> None:
+    async def refresh_metas(self, timeout: float = 2.0) -> None:
         self._check_shell_running()
         await self._ctml_shell.refresh_metas(timeout)
 
-    async def moss_observe(
+    async def observe(
             self,
             timeout: float | None = None,
             with_dynamic: bool = True,
@@ -324,7 +397,7 @@ class MossRuntimeImpl(MossRuntime):
             messages.extend(dynamic_messages)
         return messages
 
-    async def moss_exec(
+    async def exec_logos(
             self,
             logos: str,
             call_soon: bool = True,
@@ -344,7 +417,7 @@ class MossRuntimeImpl(MossRuntime):
                 await interpreter.wait_stopped()
         return interpretation.as_messages()
 
-    async def moss_interrupt(self) -> list[Message]:
+    async def interrupt(self) -> list[Message]:
         self._check_running()
         await self._ctml_shell.clear()
         interpreter = self._ctml_shell.interpreting()
@@ -375,6 +448,8 @@ class MossRuntimeImpl(MossRuntime):
     def pause(self, toggle: bool = True) -> None:
         self._check_running()
         self._ctml_shell.pause(toggle)
+        if self._voice_lifecycle is not None:
+            self._voice_lifecycle.pause(toggle)
         self._paused = toggle
 
     @property
@@ -399,6 +474,50 @@ class MossRuntimeImpl(MossRuntime):
         self._matrix.container.set(SystemPrompter, self._system_prompter)
         self._matrix.container.set(MossSystemPrompter, self._system_prompter)
 
+    def _resolve_voice(self) -> None:
+        """resolve Voice 总装 (内核 contract) — IoC 里存在即启用.
+
+        从 container 取 Voice (缺席 → None, 无语音). 有则把 speech 装到 shell,
+        听侧 channel 挂进 main. 全部装线 (说侧桥 / 听侧 controller / 联动) 由
+        voice.run() 返回的 lifecycle 在 matrix 里托管, runtime 不再自己组装.
+
+        speech() / listener_channel() 必须在 lifecycle enter 之前可读 —— shell
+        set_speech / import_channels 是装配动作, 在 __aenter__ 的 setup 阶段完成.
+        """
+        try:
+            self._voice = self._matrix.container.get(Voice)
+        except Exception:
+            self._matrix.logger.exception(
+                "%s resolve voice failed — degraded to no voice", self._log_prefix,
+            )
+            self._voice = None
+
+        speech = self._voice.speech() if self._voice is not None else None
+        self._ctml_shell.set_speech(speech)
+
+        if self._voice is not None:
+            channel = self._voice.listener_channel()
+            if channel is not None:
+                self._ctml_shell.main_channel.import_channels(channel)
+
+    @contextlib.asynccontextmanager
+    async def _voice_lifecycle_ctx(self):
+        """Voice 生命周期: 前起 (在 shell 之前) 后关 (shell 之后).
+
+        voice.run(speech, listen) 无副作用, 只声明启用哪一侧; 这里把它作为
+        matrix lifecycle object 托管 —— 启动顺序 voice 前、shell 后 (speech 由
+        shell 启动), LIFO 退出保证 shell 关 (speech 停) 之后 voice 才拆桥/关 controller.
+        """
+        if self._voice is None:
+            yield
+            return
+        lifecycle = self._voice.run(
+            speech=self._speech_enabled, listen=self._listen_enabled,
+        )
+        self._voice_lifecycle = lifecycle
+        await self._matrix.add_lifecycle_object(lifecycle)
+        yield
+
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):
         if self._run_shell_on_start:
@@ -420,10 +539,18 @@ class MossRuntimeImpl(MossRuntime):
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 补 IoC 注册 (system prompter / MOSShell) — 之前挂 _app_store 的位置
         self._bootstrap_after_matrix()
-        # bringup: 按 mode 声明拉起 nodes, 单个失败记日志不阻断启动.
-        await self._bringup_nodes()
-        # 启动 ctml shell
+        # resolve Voice 总装 (内核 contract) — speech 装 shell / 听侧 channel 挂 main.
+        self._resolve_voice()
+        # voice 生命周期: 说侧桥 + 听侧 controller. 必须在 shell __aenter__ (启动
+        # speech) 之前进入 —— 桥的回调注册早于 speech 启动, 否则漏最早的 clause.
+        # LIFO 退出: shell 先退 (speech 关 + player 释放), voice 后退 (桥 disposer
+        # 已不再收到回调, controller 关).
+        await self._async_exit_stack.enter_async_context(self._voice_lifecycle_ctx())
+        # 启动 ctml shell (启动 speech — 此前注册的桥回调开始被触发)
         await self._async_exit_stack.enter_async_context(self._manager_shell_lifecycle())
+        # bringup: 后台 task 并行发起 mode 声明的 nodes, 不 await — 单个失败记日志,
+        # 挂死 (如 probe 不退出) 只钉住自己的 task, 不再阻塞 shell 启动.
+        self._start_bringup_tasks()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

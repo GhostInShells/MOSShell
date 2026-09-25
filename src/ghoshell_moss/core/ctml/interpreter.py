@@ -6,7 +6,7 @@ from typing_extensions import Self
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import Timeleft
 from ghoshell_moss.message import unique_id
-from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
+from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta, Channel
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken, CommandTaskContextKey
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
@@ -14,9 +14,8 @@ from ghoshell_moss.core.concepts.interpreter import (
     CommandTokenParser,
     TextTokenParser,
     Interpreter,
-    Interpretation, _TaskId,
+    Interpretation,
 )
-from ghoshell_moss.contracts.speech import Speech
 from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.versions import get_moss_ctml_meta_instruction
@@ -31,6 +30,7 @@ __all__ = [
     "CTMLInterpreter",
 ]
 
+_TaskId = str
 DEFAULT_META_PROMPT = get_moss_ctml_meta_instruction()
 
 _Title = str
@@ -65,6 +65,7 @@ class CTMLInterpreter(Interpreter):
             moss_dynamic: list[Message] | None = None,
             task_context: dict[str, Any] | None = None,
             on_close_callback: Optional[Callable[['CTMLInterpreter'], None]] = None,
+            is_dry_run: bool = False,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -83,6 +84,7 @@ class CTMLInterpreter(Interpreter):
         :param on_close_callback: 在 close() 完成清理后 fire 一次. 用于 shell 的 Tracer 机制
             感知 interpreter 生命周期的 exit 取值点. 保证 fire 时 interpreter 是稳态
             (_closed=True, interpretation.done=True, 未完成 tasks 已 fail). 幂等 close 只 fire 一次.
+        :param is_dry_run: 如果为 True, 会去掉解释逻辑中的副作用.
         """
         # 生成 stream id.
         self._id = stream_id or unique_id()
@@ -119,6 +121,7 @@ class CTMLInterpreter(Interpreter):
         self._root_tag = root_tag
         self._token_replacement = tokens_replacement or {}
         self._stopped_event = ThreadSafeEvent()
+        self._is_dry_run = is_dry_run
         self._closed = False
         self._parsing_exception: Optional[InterpretError] = None
         self._ignore_wrong_command = ignore_wrong_command
@@ -168,7 +171,7 @@ class CTMLInterpreter(Interpreter):
             return
         self._parsing_exception = error
         self._interpretation.observe = True
-        self._interpretation.exception = str(error)
+        self._interpretation.exception = error.model_facing_message()
         self._stopped_event.set()
         for task in self._managing_tasks.values():
             if not task.done():
@@ -344,14 +347,15 @@ class CTMLInterpreter(Interpreter):
     def on_task_done(self, *callbacks: CommandTaskCallback) -> None:
         self._on_task_done_callbacks.extend(callbacks)
 
-    def text_token_parser(self) -> TextTokenParser:
+    def text_token_parser(self, *, stream_id: str | None = None) -> TextTokenParser:
         """
         实现无副作用的 TokenParser 返回.
+        :param stream_id: 覆盖 stream id. 宏展开时传 lineage, 保证展开 token 的 cid 独立于主流.
         """
         # create token parser
         return CTML2CommandTokenParser(
             callback=None,
-            stream_id=self.id,
+            stream_id=stream_id or self.id,
             root_tag=self._root_tag,
             tokens_replacement=self._token_replacement,
             attr_parsers=self._ctml_attr_parser,
@@ -405,6 +409,7 @@ class CTMLInterpreter(Interpreter):
                 tokens_queue=self._text_to_parsed_tokens_queue,
                 task_callback=self._send_command_task,
                 stopped=self._stopped_event.is_set,
+                run_macro=not self._is_dry_run,
             )
         except asyncio.CancelledError:
             pass
@@ -451,16 +456,69 @@ class CTMLInterpreter(Interpreter):
             # 主循环如果发生错误, interpreter 会终止. 这时并不会结束所有的任务.
             self._parsing_loop_done.set()
 
+    async def parse_macro_logos(
+            self,
+            logos: str,
+            *,
+            root_channel: ChannelFullPath = '',
+            macro_id: str = '',
+            caller: str = '',
+            lineage: str = '',
+    ) -> list[CommandToken]:
+        try:
+            return await asyncio.to_thread(
+                self._parse_macro_logos, logos, root_channel=root_channel, lineage=lineage,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._logger.exception(
+                "%s Interpreter micro parsing loop from %r, caller %r, failed: %s",
+                self._log_prefix,
+                macro_id, caller,
+                e,
+            )
+            err = InterpretError(f"parse logos from macro `macro:{macro_id}#{caller}` failed: {e}")
+            self._set_interpreter_error(err)
+            raise e
+
+    def _parse_macro_logos(
+            self,
+            logos: str,
+            *,
+            root_channel: ChannelFullPath = '',
+            lineage: str = '',
+    ) -> list[CommandToken]:
+        tokens = []
+        # 展开 token 必须绑定独立的 stream_id (lineage), 否则与主流 token 的 cid 撞车,
+        # task 依赖 cid 去重 (managing_tasks / compiled_tasks 等).
+        stream_id = lineage or unique_id()
+
+        def _append_token(token: CommandToken):
+            if token is None:
+                return
+            if token.name == self._root_tag:
+                return
+            token.chan = Channel.join_channel_path(root_channel, token.chan)
+            tokens.append(token)
+
+        parser = self.text_token_parser(stream_id=stream_id)
+        parser.with_callback(_append_token)
+        with parser:
+            parser.feed(logos)
+            parser.commit()
+        return tokens
+
     async def __aenter__(self) -> Self:
         await self.start()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        cancel_executing = self._clear_after_exit if self._clear_after_exit is not None else True
+        await self.close(cancel_executing=cancel_executing)
         if exc_val is not None:
             capture = isinstance(exc_val, asyncio.CancelledError)
-            await self.close(cancel_executing=True)
             return capture or None
-        await self.close(cancel_executing=self._clear_after_exit if self._clear_after_exit is not None else True)
         return None
 
     def exception(self) -> Optional[Exception]:
@@ -511,7 +569,7 @@ class CTMLInterpreter(Interpreter):
         if self._interrupted and not self._parsing_exception:
             self._parsing_exception = InterpretError("Interpretation is interrupted")
         if self._parsing_exception:
-            self._interpretation.exception = str(self._parsing_exception)
+            self._interpretation.exception = self._parsing_exception.model_facing_message()
         self._interpretation.done = True
         r = self._interpretation
         # Exit 取值点: 到达这里时 interpreter 是稳态 (closed=True, interpretation.done=True,
@@ -591,6 +649,7 @@ class CTMLInterpreter(Interpreter):
             return_when: str = asyncio.ALL_COMPLETED,
             clear_undone: bool = True,
             throw_task_error: bool = False,
+            to_be_observed: bool = False,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)
@@ -603,13 +662,17 @@ class CTMLInterpreter(Interpreter):
 
         # 拿到编译完的 tasks.
         tasks = self._managing_tasks.copy()
+        tasks = {key: task for key, task in tasks.items() if task.meta.always_observe or not to_be_observed}
         if len(tasks) == 0:
             return tasks
 
         # 按约定等待所有 task.
         waiting_tasks = []
         for t in tasks.values():
-            waiting_tasks.append(asyncio.create_task(t.wait(throw=False)))
+            if t.meta.always_observe or not to_be_observed:
+                waiting_tasks.append(asyncio.ensure_future(t.wait(throw=False)))
+        if len(waiting_tasks) == 0:
+            return tasks
 
         err = None
         if not timeleft.alive():

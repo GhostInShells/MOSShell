@@ -8,7 +8,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
     MindflowHook, Signal, Priority, Impulse, Attention, ChallengeVerdict,
 )
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
-from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
+from ghoshell_moss.core.mindflow import BaseMindflow
 
 
 def make_base_mindflow() -> BaseMindflow:
@@ -46,9 +46,9 @@ async def test_pause_prevents_signal_from_producing_attention():
         got: list[Attention] = []
 
         async def _consume():
-            async for att in mindflow.loop():
+            async for att in mindflow.attention_loop():
                 got.append(att)
-                return
+                break
 
         task = asyncio.create_task(_consume())
         await asyncio.sleep(0.3)
@@ -69,13 +69,13 @@ async def test_pause_resume_signal_produces_attention():
         mindflow.pause(True)
         mindflow.pause(False)
 
+        loop = mindflow.attention_loop()
         mindflow.add_signal(Signal.new(name="test_event", priority=Priority.NOTICE))
 
-        async for attention in mindflow.loop():
-            async with attention:
-                impulse = attention.draw_from()
-                assert impulse.source == "test_sensor"
-                break
+        async for attention in loop:
+            impulse = attention.draw_from()
+            assert impulse.source == "test_sensor"
+            break
 
 
 # ── impulse: pause 后 add_impulse 不产生 attention ──
@@ -91,8 +91,7 @@ async def test_pause_prevents_add_impulse_from_producing_attention():
         mindflow.pause(True)
 
         imp = Impulse(source="test", priority=Priority.NOTICE)
-        result = mindflow.add_impulse(imp)
-        assert result is None
+        assert mindflow.add_impulse(imp) is None
         assert mindflow.attention() is None
 
 
@@ -109,11 +108,9 @@ async def test_pause_aborts_current_attention():
         await mindflow.wait_started()
         mindflow.add_signal(Signal.new(name="test_event", priority=Priority.NOTICE))
 
-        async for attention in mindflow.loop():
+        async for attention in mindflow.attention_loop():
             mindflow.pause(True)
             assert attention.is_aborted()
-            async with attention:
-                pass
             break
 
 
@@ -188,9 +185,8 @@ async def test_resume_allows_impulse_challenge():
         mindflow.pause(False)
 
         mindflow.add_signal(Signal.new(name="test_event", priority=Priority.NOTICE))
-        async for attention in mindflow.loop():
-            async with attention:
-                break
+        async for attention in mindflow.attention_loop():
+            break
 
         assert len(recorder.calls) > 0
 

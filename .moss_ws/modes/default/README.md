@@ -1,1 +1,0 @@
-MOSS Mode=='default' 的持久化存储空间. 作为示例. 

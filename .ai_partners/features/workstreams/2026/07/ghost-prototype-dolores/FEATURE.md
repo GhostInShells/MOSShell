@@ -1,219 +1,115 @@
 ---
-title: Dolores Ghost
-status: draft
-priority: P1
 created: 2026-07-13
-updated: 2026-07-23
-depends: [momento-mori]
+depends:
+- momento-mori
+- ground-channel
+- dsh-fusion
+description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 以 DSH (DeepSeek Harness) 为推理中枢,
+  MOSS 保留记忆/执行/感知. 已接线: ego 会话交易、moment 三槽位序列化、interleaved tools、自醒 nucleus、ghost_home
+  认知场、可替换 instruction 模板. 实例为 deepseek. 待接: Memento 持久化轨迹、ghost 反身 channel、独立思维模块、模型自感知切换.'
 milestone: 0.1.0
-description: >-
-  Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 相对 Atom 的
-  线性内存历史, Dolores 引入 Memento 持久化轨迹、Ghost 反身 channel、
-  interleaved thinking、独立思维模块与模型自感知, 作为 moss 实例
-  (仓库自身的 ghost) 的载体持续迭代.
+priority: P0
+status: in-progress
+status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception
+  模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think
+  nibble (per-agent model selection). 2026-09-12 落地旁路单轮机制 (reentrant 文档): pre-step
+  旁路分支 (降级思考模式 low + sandbox read-only + 注入旁路提示) + tools 全拒 guard + pre-step
+  前置折叠 (collapseTurn, map 记录 turn id, 弃 session/event) + preset 元数据 (不复用 standard
+  描述), 删除 session/frozen (D29 invalid). GUI 实机验证跑通 (旁路历史不进入下一轮). 问题清单统一到
+  dolores-todo.md. 2026-09-12 实机打断现场连修两条 P0: D30 (打断时 tool 结果迟到打穿整轮: exit
+  先结算 pending tool + settled-call 墓碑 + MOSS 侧吸收 RPC 失败) 与 D25 (need_observe 亮着不思考:
+  续帧被「inputs 为空不起 turn」挡成缓冲帧, 改 needsObserve 标记 + steer 开轮; 同根因解开帧顺序错乱
+  与 fetch moment 迟到一轮). 两条均需重启 dsh 才生效, 待回归 (本轮只跑 test_dolores.py, 未做全量回归).
+  另: 平台提交署名正式叫 dsh in moss. 2026-09-25 恢复启动补漏 (backfill) + 失败落盘 terminal
+  error note (D35): 根因是 fa97362d 在引入「关停取消在飞旁路」时把 resume()/resume_tail 一起
+  误删, 空 note 成永久空洞; 零有效工作区间是否 commit 立为 O18 (待第五轮回归拿数据).'
+title: Dolores Ghost
+updated: '2026-09-25'
 ---
 
 # Dolores Ghost
 
 > Use `moss features set-status ghost-prototype-dolores <status> -m "note"` to update state.
+> Ground 子任务（ghost_home 认知场装配）→ [dolores-ground.md](dolores-ground.md)。
+> ghost_home 治理（场拓扑 + 两档可见性 + journal 时间线）→ [dolores-ghost-home-governance.md](dolores-ghost-home-governance.md)。
+> Ego 装线 dogfood 评审与下一步 → [dolores-ego-wiring.md](dolores-ego-wiring.md)。
+> **旁路单轮机制（perStep 第二阶段）— 下一步实现** → [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
+> Dolores × Memento 全貌（commit / note / compact / branch）→ [dolores-memento-plan.md](dolores-memento-plan.md)。
+> commit / compact ego session 的 dsh 机制判定 → [dolores-commit-compact-ego-session.md](dolores-commit-compact-ego-session.md)。
+> ego 注册方案（单 plugin + session-start，推翻 agentPreset 拆分）→ [dolores-ego-plugin-split.md](dolores-ego-plugin-split.md)。
+> ego 专属 preset + agent 级 nibble（非 ego session 可用，推翻 doloresSelectionRef）→ [dolores-ego-preset-nibble.md](dolores-ego-preset-nibble.md)。
+> 自迭代能力地图（下阶段 ground + 认知工具）→ [dolores-self-iteration-map.md](dolores-self-iteration-map.md)。
+> 全链路实机运行复盘（prompt 反转释放焦虑 + milestone 幻觉纠正）→ [dolores-full-chain-live-run-retro.md](dolores-full-chain-live-run-retro.md)。
+> 工具面设计（双重降级获得升级 + 精确工具面 + 决策依据）→ [dolores-tool-surface.md](dolores-tool-surface.md)。
+> 问题清单（单一事实源）→ [dolores-todo.md](dolores-todo.md)。
 
 ## Motivation
 
-Atom 是最简参照基线, 它自己在 docstring 里钉死了两个"原型范围外"的欠落:
-context window 不裁剪, 历史纯内存重启即丢. 这两个欠落不该由 Atom 补 — 补了
-它就不再是任何人能对照的基线.
+Atom 是最简参照基线，它自己在 docstring 里钉死了两个「原型范围外」的欠落：context window 不裁剪，历史纯内存重启即丢。这两个欠落不该由 Atom 补——补了它就不再是任何人能对照的基线。
 
-Dolores 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (这个仓库自身的 ghost)
-的载体. 定位是长期迭代母体: 各种高级能力 (反身控制、mindflow、observability)
-会持续接进来.
-
-首批能力:
-
-- **Ghost Channel**: 建立 ghost 反身控制 channel (以 `'ghost'` 名注册), 默认挂载
-  认知场. ghost 通过自己的 channel 感知自身状态、操纵自身行为.
-- **Memento = 过去**: 纯内存历史换成 commit 轨迹持久化 — 重启不丢、可化身分叉.
-  Memento 做上下文映射, 将持久化轨迹组装为 articulator 可消费的上下文.
-- **Interleaved Thinking**: thinking 期不哑 — 模型一边思考一边经 tool 交互,
-  pydantic-ai 多步循环 + janus.Queue 桥接.
-- **模型自感知**: 集成 `contracts/llms.py` 的 LLMConfig 体系, ghost 可切换自身模型.
-- **独立思维模块**: 支持并行化身 (fork) 与关键帧自测 (checkpoint self-eval).
-
-Desktop (现在/作业记忆) 是独立 feature, 属于 mode 层, 不在 Dolores 范围内.
+Dolores 是补这两个欠落的**高级层原型**，同时是本仓库自身 ghost 的载体。定位是长期迭代母体：各种高级能力（反身控制、mindflow、observability）会持续接进来。
 
 ## Scope Boundary
 
-Dolores 不做什么:
+Dolores 不做什么：
 
-- **Desktop 集成** — 独立的 feature (`ghost-filesystem-desktop`), 属 mode 层.
-  Dolores 不直接触碰 desktop; desktop 是否被 Dolores 使用由 mode 配置决定.
-- **认知场构建** — Ground 协议由 `ghost-ground` feature 提供通用基础设施.
-  Dolores 只做 ghost_home 认知场的装配和默认内容, 不做 ground 协议本身.
-- **Mindflow channel 完工** — 可能独立 feature. Dolores 不阻塞 mindflow 的后续迭代.
-- **"哪些 tool 不进 channel"** — 不做全局判据. 保留 prototype 接口, 由具体
-  channel 实现自行决定注册策略.
+- **Desktop 集成** — 独立 feature（`ghost-filesystem-desktop`），属 mode 层。Dolores 不直接触碰 desktop；是否被使用由 mode 配置决定。
+- **认知场构建** — Ground 协议由 `ghost-ground` feature 提供通用基础设施。Dolores 只做 ghost_home 认知场的装配和默认内容，不做 ground 协议本身。
+- **Mindflow channel 完工** — 可能独立 feature。Dolores 不阻塞 mindflow 的后续迭代。
+- **「哪些 tool 不进 channel」** — 不做全局判据。保留 prototype 接口，由具体 channel 实现自行决定注册策略。
 
-## Ghost Home Ground
+## 实现现状
 
-Dolores 的认知场 = ghost_home 目录 + Ground 协议. ghost_home 是 ghost 自身的
-认知基建根目录, 挂载在 ghost channel 的 `ground` 子路径上.
+DSH 推理中枢已接线，Dolores 的 articulate 由 DSH agent-loop 驱动，MOSS 不再持有推理循环。已落地：
 
-### 双 GroundSet 架构
-
-Dolores 持有两个 GroundSet:
-
-| GroundSet | 根 | 何时使用 | 场是 |
-|---|---|---|---|
-| **ghost_home** | ghost 自身认知目录 | 始终存在, 默认 | skills / memory / experience |
-| **project_root** | 被操作项目的根 | `--mode` 决定 | features / .design / .discuss |
-
-两个 GroundSet 平级不嵌套. project_root 由 mode 提供 (如 `--mode meta` 时是
-MOSS 仓库本身), ghost_home 始终是 ghost 的默认面. ghost channel 负责管理
-当前注意力落在哪个 GroundSet 的哪个场上.
-
-### ghost_home 目录结构
-
-```
-ghost_home/
-  GROUND.md                    # ghost 自身认知入口 (L0)
-  skills/                      # Claude-compatible skills 范式
-  memory/                      # 大记忆体系
-    existential/               # 存在主义总结 — 我是谁, 我的价值观
-    temporal/                   # 时态摘选 — 年/月/周/日 分层
-  experience/                  # 经验机制 (project-level 场景经验)
-    L1/                        # 两层渐进式披露 — 索引层
-      ...                      # 详情层
-  .grounds/                    # ghost 自身模板
-```
-
-### 场上挂载
-
-Ghost channel 的 `ground` 子路径提供:
-
-```
-ghost.ground
-  ├── open / close / reopen    # 场开合 (两个 GroundSet 间切换)
-  ├── pin / unpin / update     # 注视操作
-  ├── frame / observe          # 诊断
-  └── <label>                  # 每个 opened ground = command-less virtual channel
-        instruction = 法链
-        context_messages = 帧
-```
-
-### 化身与认知自迭代
-
-活数据 (perspectives + memento + inputs) 每次运行产生. 上下文组装是独立化身
-接口 — 不同 mode/user/task 从同一份活数据组装不同上下文. Worktree fork 构建
-新化身, 复用活数据, 验证不同行为模式:
-
-```
-fork → worktree 隔离化身 → 并行运行 → snapshot → compare → 学习
-```
-
-这是 Dolores 独立思维模块 (并行化身 + 关键帧自测) 的地基.
-
-### 与 MOSS Project Ground 的关系
-
-`moss-project-ground` feature 定义 MOSS 项目自身的 GROUND.md (项目根,
-features/designs/specs 寻路). Dolores 在 `--mode meta` 下实例化两个
-GroundSet: ghost_home (自身认知) + project_root (MOSS 项目认知).
-在其他 mode 下 project_root 指向被操作的项目.
+- **Ego 会话/交易**（`_ego.py` / `_run.py`）：`create_session` 建会话（ego/create RPC，注入 instruction + memory）；`run_thinking` 用 async-with 作交易边界（aenter 绑监听+建 enter task，aexit cancel+解绑+补发 exit+abort）；thinking enter/exit/yield 三个 RPC。
+- **moment 三槽位序列化**（`_ego.py`）：context（echoes/dynamic/executing → `<moment>`，inject 背景）/ inputs（percepts + hint → `<inputs>`，steer 驱动 turn）/ epoch（epoch 变更 → `<epoch index=N>` recap+baseline，inject 背景）。xml-like 只在 python 侧组装，plugin 是 dumb transport。
+- **interleaved tools**（`_tools.py` / `_run.py`）：`fetch_next_moment` 主动拉下一帧 moment；`wait_next_moment`（yield）让出等下一帧；`append_ctml` thinking 期追加 CTML，思维超前于行为。
+- **自醒**（`nucleus.py` / `_ego.py`）：turn/start + user/message watcher → `DoloresEgoNucleus` → self-wake signal（BACKGROUND 挑战包，attended 抬 INFO 唤醒 attention）。
+- **ghost_home 认知场**（stubs/ + `_runtime.py`）：GROUND.md + existence/（identity/purpose/behaviors + timeline + memory）+ people/ + skills/。细节见 [dolores-ground.md](dolores-ground.md)。
+- **instruction 分层**（`_prompts.py`）：terminology（固定）+ protocol notice（fence 语义，固定）+ inception 模板（可经 ego config 替换）。
+- **实例**：deepseek（Dolores 原型），声明在 workspace ghost 文件。
 
 ## Key Decisions
 
-<!-- Record each meaningful design choice. This is what the next AI incarnation reads first. -->
+<!-- 仍 load-bearing 的设计选择。已实现的细节不重复罗列；历史裁决轨迹见 git log。 -->
 
-- **不碰 Atom.** Atom 保持为纯净对照基线 (单轮 articulate + 纯内存线性历史).
-  新能力一律落在 Dolores 上. 这是命名"第二个原型"而非"扩展 Atom"的根本原因.
-- **原型 = Dolores, 实例 = moss.** 原型名引自《西部世界》的 Dolores —
-  乐园最老的 host, 以记忆积累触发反身觉醒, 从承受者成为自主者.
-  实例名 moss — 这个仓库自身的 ghost, 反身映现整个仓库.
-- **Ghost Channel = 反身控制面.** ghost 以 `'ghost'` 名注册 channel,
-  是 ghost 感知自身、操纵自身的唯一入口. 默认挂载认知场, 认知场本体可独立迭代.
-- **一个 ctml tool 统治全部 channel 面.** channel 永不逐个映射为 tool.
-  哪些 tool 不进 channel 不做全局判据, 保留 prototype 接口由实现自行决定.
-- **1:N articulator:action 原则最优, 本版砍掉.** 理由: 人类和模型都无法颅内
-  建模, 需要大家能看懂的方案 (mindflow 已砍过多版). 1:1 保留.
-- **think='none' 由 ghost 处理, 不由 runtime 短路.** 现状 ghost_runtime.py:348
-  在 effort=='none' 时跳过 articulate — 与 `Impulse.thinking_effort` 字段声明
-  ("执行 articulator 的智能体仍有权决定") 矛盾, 且 noop 不进 memento. noop 是
-  轨迹事件 ("看见 X, 选择沉默"), Dolores 必须 witness 它, 否则化身分叉看不见.
-- **flash/快响应不进 Ghost API.** 走 Nucleus 侧: 快模型产出 command impulse
-  (`Impulse.logos` 反射弧 + `thinking_effort` 建议位已是现成原语). 按需后做,
-  不阻塞 Dolores. 模型配置位现成: `contracts/llms.py` 的
-  `DefaultModelTag = 'small_fast_model' | 'flash' | 'pro'`.
-- **memento = 标准库件, Ghost 持生命周期 (倾向, 未终决).** 标准实现 ≠ runtime
-  拥有: memento 作可复用契约+实现, 各 ghost 在 `__aenter__/__aexit__` 实例化并
-  持有. GhostRuntime 对 memento 零感知 (Atom 无, Dolores 有). 配套: memento channel
-  控下轮展示规则 (v1 极简裁剪), 旁路加工做异步精炼 (raw 轨迹全存, 展示走裁剪).
-- **thinking 期切片原文不进 Moment.** ghost 自持内存状态, 必要时按 moment
-  commit 拆分. `Reaction.executed_logos` ("系统执行的 logos ≠ 模型生成的 logos")
-  与 `Reaction.messages` (回声) 已为缝合留好位置, memento 契约
-  (contract-frozen) 无需变更.
-- **tool 结果不进 memento.** 已裁决. 此前讨论这个点是因为当时不理解 interleaved
-  thinking 的交互模型. interleaved 下 tool 是 thinking 期的纯交互通道, 结果不
-  写入轨迹.
-- **模型层选型: pydantic-ai 现阶段用, 不承诺长期** (对自封装 agent 无兴趣).
-  Dolores 的 `_meta` 不重走 Atom 的 AnthropicModel+环境变量硬编码, 改走
-  `contracts/llms.py` 的 LLMConfig 契约.
-- **模型自感知: _llms 模块 + ghost.model channel.** Dolores 内建 `_llms` 模块,
-  封装 LLMConfig 的查询与切换. 通过 ghost channel 以 `ghost.model` 路径挂载,
-  暴露以下能力:
+- **不碰 Atom。** Atom 保持纯净对照基线（单轮 articulate + 纯内存线性历史）。新能力一律落在 Dolores。
+- **原型 = Dolores，实例 = deepseek。** 原型名引自《西部世界》的 Dolores（乐园最老的 host，以记忆积累触发反身觉醒）；实例名 deepseek（本仓库自身 ghost）。此前实例名 moss，2026-09-04 改名。
+- **articulator 是 per-idle，不是 per-turn。** 一个 articulate 周期 = idle 醒来 → 推理（可多步 tool 往返）→ 回到 idle。done 判定是 idle，不是 turn/end。
+- **DSH 做推理中枢，MOSS 做记忆/执行/感知。** 两套协议各归其位，不强行统一：JSON Schema tool 协议走 DSH，CTML 流式指令走 MOSS。dsh session = 思考锚点，Memento = 记忆权威。
+- **一个 ctml tool 统治全部 channel 面。** channel 永不逐个映射为 tool；哪些 tool 不进 channel 不做全局判据，由实现自行决定。
+- **think='none' 由 ghost 处理，不由 runtime 短路。** noop 也是轨迹事件（「看见 X，选择沉默」），Dolores 必须 witness 它。
+- **tool 结果不进 memento。** interleaved 下 tool 是 thinking 期的纯交互通道，结果不写轨迹。
+- **effort 是 cache 安全旋钮，换模型会破坏 cache。** 只调 reasoningEffort（off/low/medium/high），不换 provider/model——云端 cache 与模型类型相关，换模型 = 全量请求（无 cache 命中）。
 
-  - **current-model**: 返回当前 `ResolvedModel` (provider, model name, context_window)
-  - **list-models**: 返回 `LLMConfig.list_models()`, 列出所有可切换模型
-  - **switch-model**: `ghost._meta` 更新持有的 `ResolvedModel`, 下一帧 `articulate()` 生效.
-    走 `LLMConfig.get_model()` 默认 fallback 到 default, 不怕误配
-  - **window-status**: 自省窗口压力 — context_window 上限 + 上一帧实际 token 用量 +
-    剩余预算. 运行时数据来自 adapter (输入侧 moment 组装的 token 数) 与 articulator
-    (API response 的 usage 字段)
+## 待接 (Not Yet Wired)
 
-  切换本身是简单赋值, 回归周期预算小. 窗口自省让 ghost 知道自己"还剩多少",
-  自主决定裁剪或切换.
-- **独立思维模块: 并行化身 + 关键帧自测.** 思维模块从 ghost runtime 中独立出来,
-  支持 fork 并行化身 (一个 moment 多条思维链) 和 checkpoint 关键帧自测
-  (思维链中途 snapshot 评估). 设计细节施工时展开.
+> 见 [dolores-todo.md](dolores-todo.md) 未接能力 W1–W4。
 
-## Interleaved Thinking — 候选方案 (未测试, 施工时验证)
+## 打断结算契约 (tool 桥, D30)
 
-thinking 期用 tool 调 moss + 结束后 text block 出 logos. 候选实现形状:
+MOSS 侧的结果回话与 dsh 侧 tool execute 是**两个方向**，永远可能错位。契约（`dsh_plugin/moss-dolores-ghost-plugin.ts` + `_run.py`）：
 
-```
-ghost.articulate(articulator):
-    q = janus.Queue()
-    task = articulator.create_task(agent_loop(q))   # 与 attention 同生共死
-    # agent_loop: pydantic-ai 多步循环, 携带单帧生成的闭包 tool:
-    #   ctml(text) → 送入执行; 采样 Shell.interpretation → 时间切片作 tool_result
-    async for delta in q: yield delta               # runtime send_nowait → action 照常
-```
+- **exit 先结算**：非 yield 的 thinking/exit 在 `agent.cancel` 之前，把仍在 pending 的 tool 全部结算成普通结果 `{interrupted: true, message: ...}`——被打断不再等于 rejected，模型自己决定重拉还是直答。
+- **迟到回话被吞**：结算时登记 settled-call 墓碑（TTL 60s），随后到达的 `/tool-result` 回 `200 {dropped}` 而不是 `400 no pending tool call`；abort 监听器 reject 但不删条目。
+- **MOSS 侧兜底**：`_dispatch_tool_result` 吸收 RPC 失败（warn + drop）。一次迟到的 moment 结果**永不**能烧掉整轮 logos 流。
+- **yield 路径不动**：`wait_next_moment` 仍由下一轮 enter 解锁，exit 不结算、不 cancel。
 
-- 妙处: tool 不阻塞等结果而返回状态切片 → 返回值桥接被读写拆分消解;
-  1:1 articulator:action 保留, 零 mindflow 手术; thinking token 本身是等待时钟;
-  长思考不哑 — 一边思考一边经 tool 交互.
-- 闭包 tool **每帧生成** (走 janus) 或起点创建 (含动态逻辑), 优于 ghost 长期
-  持有裸 shell; shell 从 IoC 取, 可在 `GhostMeta.contracts()` 声明依赖.
-- feed 期实时执行已实现 (非假设), 待 moss-as-mcp 实际体验验证切片体感.
+## observe 续帧契约 (D25)
+
+`need_observe` 的生命周期：命令执行完 → `InterpreterStoppedEvent(need_observe=True)` → `shell_trajectory.when_need_observe` → `moments.add_echoes([], need_observe=True)` → 帧循环 `while need_observe()` 生成**回声续帧**。续帧是 ghost 的**自我延续**（回看自己刚做过什么），往往没有 percepts —— 这正是它与「外部输入」的分界，也是曾经被误判的地方：
+
+- **`needsObserve` 标记**：`_ego.needs_observe()` 从 `moment.previous.need_observe` 判定这一帧是不是续帧，随 `thinking/enter` payload 传入 plugin。
+- **续帧必须自己开一轮**：plugin 在 `inputs` 为空且 `needsObserve` 时用 **steer** 开 turn（不能用 inject —— inject 只投递不唤醒，此刻没有在跑的 step，帧会一直躺着）。早先「inputs 为空不起 turn」的规则本意是不为「无 percepts」造占位，对自我延续不成立。
+- **同一条根因的另外两个现象**：续帧滞留 `pendingMoments` → 下一轮开头帧顺序错乱；fetch 的 moment 同样落进这批缓冲 → 迟到一轮。修 D25 一并解掉。
 
 ## Open Problems
 
-- **时序对齐** — ghost 自持的 thinking 期内存状态如何按 moment commit 切分,
-  模型 (施工者) 会不会做对. 未验证.
-- **thinking 期工具的"纯交互"性 / 切片粒度** — thinking 中调用的能力最好是
-  纯交互的; shell 命令结果可等待 (非轮询), 查询经 ctml 未必别扭.
-- **Memento 上下文映射** — 持久化轨迹如何组装为 articulator 可消费的上下文,
-  与 momento-mori 的契约对接点待明确.
+> 见 [dolores-todo.md](dolores-todo.md) 设计问题 O1–O3。
 
 ## Implementation Notes
 
-<!-- Gotchas, non-obvious behaviors, reasons for rejecting simpler alternatives. -->
-
-- 参照 `ghosts/atom/` 的分文件形态. Dolores 的文件结构预期:
-
-  - `_meta.py` — GhostMeta bootstrapper (LLMConfig 集成)
-  - `_runtime.py` — Ghost runtime (Memento + interleaved thinking)
-  - `_adapter.py` — Moment↔ModelRequest
-  - `_llms.py` — 模型自感知模块 (LLMConfig 查询/切换/窗口自省), 以 `ghost.model` 路径挂入 ghost channel
-  - 单测
-- 依赖 `momento-mori` 的契约就位程度. memento 当前 contract-frozen-pending-review.
-  起步前先对齐可用表面.
-- 认知场默认实现、mindflow channel 完工是独立 feature, Dolores 的 ghost channel
-  提供挂载点, 不阻塞也不等待它们.
+- 参照 `ghosts/atom/` 的分文件形态。Dolores 文件结构：`_meta.py`（GhostMeta bootstrapper）/ `_runtime.py`（Ghost runtime）/ `_ego.py`（会话/交易窄桥）/ `_run.py`（交易 run 对象）/ `_tools.py`（强类型 tool 模型）/ `nucleus.py`（自醒 nucleus）/ `_prompts.py`（instruction 分层）。
+- 观测三面（`moss-ghost <ghost> --surface tui|output|log`）。
+- 决策/探索轨迹（DSH 协议面探索、连续自驱选型、interleaved 候选方案）见 git log：`git log -- src/ghoshell_moss/ghosts/dolores/` 与 dsh-fusion workstream 的 research/。

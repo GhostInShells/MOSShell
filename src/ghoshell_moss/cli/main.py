@@ -10,15 +10,20 @@ from ghoshell_moss.cli.utils import (
 )
 from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
-    ctml_cli, howto_cli, features_cli, docs_cli,
+    ctml_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    ground_cli, memento_cli,
+    ground_cli, llms_cli, audio, mcp_cli, skills_cli,
 )
-from ghoshell_moss.depends import depend_matrix
+from ghoshell_moss.core.blueprint.project import register_control_flow_exit
+from ghoshell_moss.depends import depend_matrix, depend_mcp
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
 
 __version__ = "0.1.0-beta"
+
+# typer.Exit (click Exit) 是 CLI 的正常退出路径 — 它跨过 `with Project.discover()`
+# 边界, 但不该被记成 ERROR traceback. 登记一次, 全 CLI 生效.
+register_control_flow_exit(typer.Exit)
 
 # 创建 app 对象
 # help_option_names 依然有效
@@ -34,13 +39,13 @@ app.add_typer(start_cli.start_app, name="start", short_help="Orient yourself —
 app.add_typer(codex_cli.codex_app, name="codex", short_help="Runtime introspection and code evaluation tools")
 app.add_typer(project_cli.project_app, name="project", short_help="MOSS Project tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
-app.add_typer(howto_cli.howto_app, name="howtos", short_help="MOSS How-To knowledge base")
+app.add_typer(skills_cli.skills_app, name="skills", short_help="MOSS skills — 复合任务技能 (发现/召回)")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
 app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")
 app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
 app.add_typer(ground_cli.ground_app, name="ground", short_help="Cognitive ground — pin addresses to a directory")
-app.add_typer(memento_cli.memento_app, name="memento", short_help="Memento — cognitive-trajectory system (commit anchors, fork, annotate)")
+app.add_typer(llms_cli.llms_app, name="llms", short_help="Inspect and call LLM configs — list models, verify availability.")
 
 # Matrix-dependent groups: only register when zenoh is available.
 # All CLI modules import safely without zenoh — the check gates registration,
@@ -53,6 +58,15 @@ else:
     app.add_typer(nodes_cli.nodes_app, name="nodes", short_help="Discover, create, launch, and maintain node cells")
     app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
     app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
+    app.add_typer(audio.audio_app, name="audio", short_help="Audio capability probing — capture, playback, TTS, ASR")
+
+# MCP-dependent groups: only register when mcp is installed ([mcp] extra).
+try:
+    depend_mcp()
+except ImportError:
+    pass
+else:
+    app.add_typer(mcp_cli.mcp_app, name="mcp", short_help="MCP client/server management")
 
 
 @app.callback(invoke_without_command=True)
@@ -130,7 +144,7 @@ def _set_global_environment(
     丢失, 是 CLI 参数化不生效的根因. commit 4c75f76b 已 flag 本入口为"下一次
     fix pass" 待办, 本次修完.
 
-    workspace 不存在时静默返回 — 无 workspace 需求的命令 (codex, ctml, howtos,
+    workspace 不存在时静默返回 — 无 workspace 需求的命令 (codex, ctml, skills,
     features) 不需要 env; 需要的命令走 Environment.discover 会自触发裸构造并暴露
     具体错误.
     """
@@ -538,9 +552,14 @@ def _find_command(typer_app, name: str):
 def _show_command_help(typer_app, cmd_name: str, cmd_info):
     """Show Click-level help for a specific command."""
     try:
-        click_group = get_command(typer_app)
-        ctx = _click.Context(click_group, info_name=click_group.name)
-        sub_cmd = click_group.get_command(ctx, cmd_name)
+        click_command = get_command(typer_app)
+        if not hasattr(click_command, "get_command"):
+            # 单命令组: get_command 返回命令本体 (TyperCommand), 非 Group.
+            ctx = _click.Context(click_command, info_name=cmd_name)
+            echo(ctx.get_help())
+            return
+        ctx = _click.Context(click_command, info_name=click_command.name)
+        sub_cmd = click_command.get_command(ctx, cmd_name)
         if sub_cmd is None:
             print_warning(f"Cannot resolve Click command: {cmd_name}")
             return

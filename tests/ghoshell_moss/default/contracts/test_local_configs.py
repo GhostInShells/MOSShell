@@ -542,3 +542,159 @@ class TestExplicitModeCacheBypass:
         loaded = mode_store.get(AppConfig, mode="desktop")
         assert loaded.name == "val"
         assert "app_config" in mode_store._cache
+
+
+# ══════════════════════════════════════════════════════════════════
+# 17. 递归解析 — inherit / materialize
+# ══════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def layered(tmp_path):
+    """覆盖层 (mode_name='desktop', 只覆盖不物化) + 下一层 (同一个 mode).
+
+    形态对齐 ghost 层: ghost home/configs 叠在 workspace configs 之上.
+    覆盖层用 create=False 建 storage — 目录缺失是正常态, 不该被凭空造出来.
+    """
+    lower = YamlConfigStore(LocalStorage(tmp_path / "lower"), mode_name='desktop')
+    upper = YamlConfigStore(
+        LocalStorage(tmp_path / "upper", create=False),
+        mode_name='desktop',
+        inherit=lower,
+        materialize=False,
+    )
+    return upper, lower
+
+
+class TestRecursiveResolution:
+    def test_upper_mode_file_wins_over_upper_base(self, layered):
+        upper, _ = layered
+        _raw_write(upper, "app_config.yml",
+                   "name: upper-base\nversion: '1.0'\ndebug: false")
+        _raw_write(upper, "app_config.desktop.yml",
+                   "name: upper-mode\nversion: '1.0'\ndebug: false")
+        assert upper.get(AppConfig).name == "upper-mode"
+
+    def test_upper_base_wins_over_lower_mode(self, layered):
+        """层优先级高于 mode 优先级 — 本层通用文件压过下一层的 mode 文件."""
+        upper, lower = layered
+        _raw_write(upper, "app_config.yml",
+                   "name: upper-base\nversion: '1.0'\ndebug: false")
+        _raw_write(lower, "app_config.desktop.yml",
+                   "name: lower-mode\nversion: '1.0'\ndebug: false")
+        assert upper.get(AppConfig).name == "upper-base"
+
+    def test_falls_through_to_lower_mode(self, layered):
+        upper, lower = layered
+        _raw_write(lower, "app_config.desktop.yml",
+                   "name: lower-mode\nversion: '1.0'\ndebug: false")
+        _raw_write(lower, "app_config.yml",
+                   "name: lower-base\nversion: '1.0'\ndebug: false")
+        assert upper.get(AppConfig).name == "lower-mode"
+
+    def test_falls_through_to_lower_base(self, layered):
+        upper, lower = layered
+        _raw_write(lower, "app_config.yml",
+                   "name: lower-base\nversion: '1.0'\ndebug: false")
+        assert upper.get(AppConfig).name == "lower-base"
+
+    def test_raises_when_no_layer_has_it(self, layered):
+        upper, _ = layered
+        with pytest.raises(FileNotFoundError):
+            upper.get(AppConfig)
+
+    def test_fall_through_is_not_cached_in_upper(self, layered):
+        """D7: 落到下一层的值不进本层缓存, 人手工往本层放文件后立刻生效."""
+        upper, lower = layered
+        _raw_write(lower, "app_config.yml",
+                   "name: lower-val\nversion: '1.0'\ndebug: false")
+        assert upper.get(AppConfig).name == "lower-val"
+        _raw_write(upper, "app_config.yml",
+                   "name: upper-val\nversion: '1.0'\ndebug: false")
+        assert upper.get(AppConfig).name == "upper-val"
+
+    def test_fallback_false_does_not_descend(self, layered):
+        """fallback=False 只读本层, 不顺着 inherit 下探."""
+        upper, lower = layered
+        _raw_write(lower, "app_config.yml",
+                   "name: lower-val\nversion: '1.0'\ndebug: false")
+        with pytest.raises(FileNotFoundError):
+            upper.get(AppConfig, fallback=False)
+
+
+class TestNonMaterializingLayer:
+    def test_create_seeds_lower_not_upper(self, layered, tmp_path):
+        """全链都没有 → 种子落在下一层, 覆盖层不物化."""
+        upper, lower = layered
+        result = upper.get_or_create(AppConfig(name="fresh"))
+        assert result.name == "fresh"
+        assert _raw_exists(lower, "app_config.desktop.yml")
+        assert not (tmp_path / "upper").exists()
+
+    def test_create_returns_lower_existing_value(self, layered, tmp_path):
+        """下一层已有 → 直接返回它的值, 不往覆盖层复制一份."""
+        upper, lower = layered
+        _raw_write(lower, "app_config.yml",
+                   "name: lower-val\nversion: '1.0'\ndebug: false")
+        result = upper.get_or_create(AppConfig(name="ignored"))
+        assert result.name == "lower-val"
+        assert not (tmp_path / "upper").exists()
+
+    def test_create_descends_even_with_fallback_false(self, layered, tmp_path):
+        """fallback=False 仍下探: 非物化层不能给值, 创建必须落到物化层.
+
+        `ConfigInstanceRegisterBootstrapper` 就是以 fallback=False 调 get_or_create
+        的 — 若下探被 fallback 卡住, 非物化层既不下探也不物化, 直接抛错.
+        """
+        upper, lower = layered
+        result = upper.get_or_create(AppConfig(name="fresh"), fallback=False)
+        assert result.name == "fresh"
+        assert _raw_exists(lower, "app_config.desktop.yml")
+        assert not (tmp_path / "upper").exists()
+
+    def test_explicit_save_writes_upper(self, layered):
+        """显式写入不受 materialize 影响, 永远落本层."""
+        upper, lower = layered
+        upper.save(AppConfig(name="ghost-only"))
+        assert _raw_exists(upper, "app_config.desktop.yml")
+        assert not _raw_exists(lower, "app_config.desktop.yml")
+        assert upper.get(AppConfig).name == "ghost-only"
+
+    def test_missing_root_is_not_created_by_read(self, layered, tmp_path):
+        """覆盖层的根目录缺失是正常态 — 只读走过不该把它造出来."""
+        upper, _ = layered
+        with pytest.raises(FileNotFoundError):
+            upper.get(AppConfig)
+        assert not (tmp_path / "upper").exists()
+
+
+class TestSourcePath:
+    """解析来源随实例走 — 谁命中, 谁把 storage 根拼出的路径 attach 到实例上."""
+
+    def test_get_attaches_path(self, store):
+        store.save(AppConfig(name="x"))
+        loaded = store.get(AppConfig)
+        assert loaded.source_path is not None
+        assert loaded.source_path.endswith("app_config.yml")
+
+    def test_fall_through_attaches_lower_path(self, layered):
+        upper, lower = layered
+        _raw_write(lower, "app_config.yml",
+                   "name: lower-val\nversion: '1.0'\ndebug: false")
+        loaded = upper.get(AppConfig)
+        # 实际读到的是 lower 的 base 文件 (mode 文件不存在).
+        assert loaded.source_path == lower.get_config_path("app_config", mode="")
+
+    def test_upper_hit_attaches_upper_path(self, layered):
+        upper, lower = layered
+        _raw_write(upper, "app_config.yml",
+                   "name: upper-val\nversion: '1.0'\ndebug: false")
+        loaded = upper.get(AppConfig)
+        assert loaded.source_path == upper.get_config_path("app_config", mode="")
+
+    def test_save_attaches_written_path(self, store):
+        store.save(AppConfig(name="x"))
+        loaded = store.get(AppConfig)
+        assert loaded.source_path == store.get_config_path("app_config")
+
+    def test_declared_default_has_no_source(self):
+        assert AppConfig().source_path is None

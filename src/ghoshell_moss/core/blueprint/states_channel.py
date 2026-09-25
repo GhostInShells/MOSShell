@@ -1,3 +1,12 @@
+"""StatesChannel — channels that carry switchable state.
+
+``StatefulChannel`` can switch to one of multiple states; ``ChannelModule`` is a
+lifecycle-aware modular capability unit; ``PrimeChannel`` is a super channel with all
+abilities. The factories (``new_channel_from_state``, ``new_stateful_channel``,
+``new_prime_channel``, ``ChannelStateFactory``) build runtime channels from state class
+definitions.
+"""
+
 from abc import ABC, abstractmethod
 
 from typing import Protocol, Callable
@@ -11,16 +20,22 @@ from ghoshell_moss.core.blueprint.channel_builder import Builder, MutableChannel
 
 __all__ = [
     'ChannelState', 'MutableChannelState', 'StatefulChannel',
-    'new_channel_state', 'new_stateful_channel_from_main', 'new_stateful_channel',
+    'new_channel_state', 'new_channel_from_state', 'new_stateful_channel',
     'PrimeChannel', 'new_prime_channel', 'new_shell_main_channel',
     'ChannelModule',
-    'new_default_shell_main_channel',
+    'new_moss_main_channel',
     'StatefulChannelRuntime',
 ]
 
 """
 how to build a stateful channel
 """
+
+Facade = ABC
+"""Facade 标记"消费面"抽象 — 你持有并调用它, 而非继承它。"""
+
+Abstract = ABC
+"""Abstract 标记"扩展点"抽象 — 你继承它来实现新类型, 而非持有它调用。"""
 
 
 class ChannelModule(Protocol):
@@ -41,6 +56,23 @@ class ChannelModule(Protocol):
 
     def own_commands(self) -> dict[str, Command]: ...
 
+    def is_available(self) -> bool:
+        """Whether this module is wired into the channel right now.
+
+        Sync by contract — the channel's structure refresh path reads it, so a module
+        whose availability needs an async probe caches the result in on_refresh_meta()
+        and returns it here.
+
+        Unlike the lifecycle hooks, False does not prevent on_startup / on_close /
+        on_refresh_meta — those always run, so this predicate may depend on state they
+        set up. It gates the module's *surface*: its commands, notices, context messages,
+        and whether its name appears in the channel meta. A module that is unavailable
+        is invisible and uncallable, but still alive.
+
+        Duck-typed modules that declare nothing are treated as always wired.
+        """
+        return True
+
     async def on_startup(self) -> None:
         # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
         pass
@@ -60,8 +92,14 @@ class ChannelModule(Protocol):
         # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
         return []
 
+    async def get_named_notices(self) -> dict[str, str | None]:
+        return {}
 
-class MutableChannelState(Builder, ChannelState, ABC):
+    async def get_notice(self) -> str:
+        return ""
+
+
+class MutableChannelState(Builder, ChannelState, Facade):
     """
     Channel State which itself is mutable by extend builder
     """
@@ -91,7 +129,7 @@ def new_channel_state(name: str, description: str = "") -> MutableChannelState:
     return PyChannelBuilder(name=name, description=description)
 
 
-class StatefulChannelRuntime(ChannelRuntime, ABC):
+class StatefulChannelRuntime(ChannelRuntime, Facade):
 
     @abstractmethod
     async def switch_state(self, name: str) -> str:
@@ -110,7 +148,7 @@ class StatefulChannelRuntime(ChannelRuntime, ABC):
         pass
 
 
-class StatefulChannel(Channel, ABC):
+class StatefulChannel(Channel, Facade):
     """
     Stateful Channel which can switch to one of multiple states.
     """
@@ -162,6 +200,19 @@ class StatefulChannel(Channel, ABC):
     def default_state_name(self) -> str:
         pass
 
+    def gate(self) -> bool:
+        """
+        Whether this channel gates the disclosure of its virtual children.
+
+        Default ``False``: every declared virtual child is mounted and visible.
+
+        ``True``: declared virtual children stay closed; a child is mounted only
+        after the model mounts it by command, and the declared catalog is surfaced
+        through ``notice`` instead — progressive disclosure. Which children exist
+        is declared by ``Builder.virtual_children``.
+        """
+        return False
+
     @abstractmethod
     def on_bootstrap(self, bootstrapper: Callable[[Self, IoCContainer], None]) -> None:
         """
@@ -171,7 +222,7 @@ class StatefulChannel(Channel, ABC):
         pass
 
 
-class PrimeChannel(StatefulChannel, MutableChannel, ABC):
+class PrimeChannel(StatefulChannel, MutableChannel, Facade):
     """
     super channel with all abilities.
     """
@@ -198,7 +249,7 @@ class PrimeChannel(StatefulChannel, MutableChannel, ABC):
         self.build.remove_virtual_channel(name)
 
 
-def new_stateful_channel_from_main(state: ChannelState, id: str | None = None) -> StatefulChannel:
+def new_channel_from_state(state: ChannelState, id: str | None = None) -> StatefulChannel:
     """
     create new channel by state object
     """
@@ -214,9 +265,9 @@ def new_stateful_channel(name: str, description: str = "") -> StatefulChannel:
     return PyChannel(name=name, description=description)
 
 
-def new_prime_channel(name: str, description: str = "") -> PrimeChannel:
+def new_prime_channel(name: str, description: str = "", gate: bool = False) -> PrimeChannel:
     from ghoshell_moss.core.py_channel import PyChannel
-    return PyChannel(name=name, description=description)
+    return PyChannel(name=name, description=description, gate=gate)
 
 
 def new_shell_main_channel(description: str = "") -> PrimeChannel:
@@ -232,30 +283,35 @@ def new_shell_main_channel(description: str = "") -> PrimeChannel:
     return PyChannel(name="__main__", description=description, blocking=True)
 
 
-def new_default_shell_main_channel(
+def new_moss_main_channel(
         description: str = "",
+        register_speech_as_content: bool = False,
+        extended: bool = False,
 ) -> PrimeChannel:
     """
-    创建一个标准的, 默认的 shell main channel.
+    创建一个标准的, 支持默认能力的 moss main channel
     提示如何组建 Shell Main Channel.
     """
     from ghoshell_moss.core.ctml.shell.ctml_main import inject_system_primitives
+    from ghoshell_moss.channels.matrix_channel import build_matrix_channel
     from ghoshell_moss.core.speech import SpeechChannelModule
 
     main = new_shell_main_channel(description=description)
 
     # -- 系统原语 --------------------------------------------------
-    inject_system_primitives(main, extended=True)
+    inject_system_primitives(main, extended=extended)
 
     # -- Speech --------------------------------------------------
-    main.with_module(SpeechChannelModule())
+    main.with_module(SpeechChannelModule(register_content_command=register_speech_as_content))
 
+    # -- matrix
+    main.import_channels(build_matrix_channel())
     return main
 
 
 # ---- 面向对象使用思路示范 ---- #
 
-class ChannelStateFactory(ChannelState, ABC):
+class ChannelStateFactory(ChannelState, Abstract):
     """
     如何从 State 类定义开始, 获取一个运行时可以生成 Channel 的 ChannelFactory 对象.
 
@@ -273,4 +329,4 @@ class ChannelStateFactory(ChannelState, ABC):
     def factory(cls, container: IoCContainer) -> Channel:
         """factory 函数本身就是一个 channel factory, 所以可以被其它 channel import. """
         state = cls.new(container)
-        return new_stateful_channel_from_main(state)
+        return new_channel_from_state(state)

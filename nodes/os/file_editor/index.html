@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moss file_editor</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1b1f26;
+    --line: #2b313b;
+    --fg: #d8dee9;
+    --dim: #8b95a5;
+    --accent: #6ea8fe;
+    --run: #48b884;
+    --wait: #e0a33e;
+    --bad: #d9645f;
+    --done: #5c6675;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+    flex-wrap: wrap;
+  }
+  .brand { color: var(--accent); font-weight: 600; }
+  .spacer { flex: 1; }
+  .toggle {
+    background: transparent; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
+  }
+  .toggle.on { color: var(--run); border-color: var(--run); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    background: transparent; color: var(--done); border: 1px solid var(--line);
+    border-radius: 10px; padding: 2px 10px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .chip.live { color: var(--run); border-color: var(--run); }
+  .chip.on { color: var(--accent); border-color: var(--accent); background: rgba(110,168,254,.08); }
+  .conn { font-size: 12px; color: var(--dim); }
+  .conn.live { color: var(--run); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  .stream { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .detail {
+    display: none; flex-direction: column;
+    width: clamp(360px, 46%, 760px); border-left: 1px solid var(--line);
+    background: var(--panel); overflow-y: auto;
+  }
+  .detail.open { display: flex; }
+
+  .card {
+    border: 1px solid var(--line); border-left: 3px solid var(--done);
+    border-radius: 5px; background: var(--panel); padding: 7px 10px; cursor: pointer;
+    width: min(100%, 900px);
+  }
+  .card.selected { border-color: var(--accent); }
+  .card.k-open, .card.k-read { border-left-color: var(--done); }
+  .card.k-write, .card.k-append, .card.k-str_replace { border-left-color: var(--accent); }
+  .card.k-rewind { border-left-color: var(--wait); }
+  .card.k-export { border-left-color: var(--wait); }
+  .card.k-export.s-written { border-left-color: var(--run); }
+  .card.k-export.s-rejected, .card.k-export.s-failed { border-left-color: var(--bad); }
+  .card.s-awaiting { animation: pulse 1.4s ease-in-out infinite; }
+  .card.s-streaming { border-left-color: var(--dim); }
+  @keyframes pulse { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px rgba(224,163,62,.14); } }
+
+  .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .kind { font-size: 11px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--accent); flex: none; }
+  .thread-tag { color: var(--done); font-size: 12px; flex: none; }
+  .title { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { margin-left: auto; font-size: 11px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
+  .badge.s-awaiting { color: var(--wait); border-color: var(--wait); }
+  .badge.s-written { color: var(--run); border-color: var(--run); }
+  .badge.s-rejected, .badge.s-failed { color: var(--bad); border-color: var(--bad); }
+  .anim { color: var(--run); flex: none; }
+  .actions { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+  .actions button {
+    background: transparent; border: 1px solid var(--line); color: var(--fg);
+    border-radius: 4px; padding: 2px 12px; cursor: pointer; font: inherit;
+  }
+  .actions button:hover { border-color: var(--accent); color: var(--accent); }
+  .actions button.deny { color: var(--bad); border-color: var(--bad); }
+  .actions input {
+    flex: 1; background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 4px; padding: 2px 8px; font: inherit;
+  }
+
+  .d-head { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .d-title { font-weight: 600; font-size: 14px; }
+  .d-sub { color: var(--dim); font-size: 12px; }
+  .d-close { margin-left: auto; background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
+  .d-close:hover { color: var(--fg); }
+  .t-auto {
+    background: transparent; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .t-auto.on { color: var(--run); border-color: var(--run); }
+
+  .tabs { display: flex; gap: 6px; padding: 10px 14px 0; }
+  .tab {
+    background: transparent; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 10px; padding: 2px 12px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .tab.on { color: var(--accent); border-color: var(--accent); background: rgba(110,168,254,.08); }
+
+  .effect-line {
+    margin: 8px 14px 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px;
+    color: var(--dim); font-size: 12px; background: var(--bg);
+  }
+  .effect-line b { color: var(--fg); font-weight: 600; }
+
+  .doc { padding: 10px 16px 24px; overflow-y: auto; flex: 1; }
+  .doc .markdown { color: var(--fg); font-size: 14px; line-height: 1.7; }
+  .doc .markdown h1, .doc .markdown h2, .doc .markdown h3 { margin: 18px 0 8px; }
+  .doc .markdown p { margin: 8px 0; }
+  .doc .markdown code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .doc .markdown pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
+  .doc .markdown ul, .doc .markdown ol { padding-left: 24px; }
+  .doc pre.diff { color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit; }
+  .doc .plain { color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+  .dialogue { margin: 4px 14px 0; color: var(--dim); font-size: 12px; }
+  .dialogue b { color: var(--accent); }
+  .hint { color: var(--dim); padding: 16px; }
+  .loading { color: var(--done); padding: 16px; }
+
+  .hist { padding: 8px 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+  .hist-row {
+    display: flex; gap: 10px; align-items: baseline; padding: 4px 8px;
+    border-radius: 4px; cursor: pointer; color: var(--fg);
+  }
+  .hist-row:hover { background: var(--bg); }
+  .hist-row .n { color: var(--dim); flex: none; }
+  .hist-row .k { color: var(--accent); flex: none; width: 90px; }
+  .hist-row .st { margin-left: auto; color: var(--dim); font-size: 11px; }
+  .hist-row.sel { background: var(--bg); box-shadow: inset 2px 0 0 var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">moss file_editor</span>
+  <button class="toggle on" id="toggle" title="turn the model's editing on or off">editing: on</button>
+  <div class="chips" id="chips"></div>
+  <span class="spacer"></span>
+  <span class="conn" id="conn">connecting…</span>
+</header>
+<main>
+  <section class="stream" id="stream"></section>
+  <aside class="detail" id="detail"></aside>
+</main>
+<script>
+"use strict";
+
+const SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+const KIND_TINTS = {
+  read: "dim", open: "dim", export: "wait",
+  write: "accent", append: "accent", str_replace: "accent", rewind: "wait",
+};
+
+const threads = new Map();
+const actions = new Map();          // `${thread}#${n}` -> action
+const threadOrder = new Map();      // thread -> [n...]
+const details = new Map();          // `${thread}#${n}` -> detail
+const pendingDetail = new Set();
+const threadStates = new Map();     // thread -> state (to spot a thread ending)
+
+const MAX_CARDS = 300;              // backstop bound on the client card store
+
+let selected = null;                // {thread, n}
+let focusThread = null;
+let tab = "effect";
+let enabled = true;
+
+const streamEl = document.getElementById("stream");
+const detailEl = document.getElementById("detail");
+const chipsEl = document.getElementById("chips");
+const connEl = document.getElementById("conn");
+const toggleEl = document.getElementById("toggle");
+
+function make(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function md(src) {
+  if (window.marked && marked.parse) return marked.parse(src || "");
+  return "<pre class='plain'>" + esc(src || "") + "</pre>";
+}
+function send(frame) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+}
+
+// -- state ----------------------------------------------------------------
+
+function key(thread, n) { return thread + "#" + n; }
+function upsertAction(a) {
+  const k = key(a.thread, a.n);
+  actions.set(k, a);
+  if (!threadOrder.has(a.thread)) threadOrder.set(a.thread, []);
+  const list = threadOrder.get(a.thread);
+  if (!list.includes(a.n)) { list.push(a.n); list.sort((x, y) => x - y); }
+  while (actions.size > MAX_CARDS) evictOneCard();
+}
+
+function evictOneCard() {
+  // reclaim grey (ended) threads first, then the oldest — a human watching a
+  // live thread never loses its cards to an ended thread's backlog
+  let victim = null;
+  for (const [k, a] of actions) {
+    const t = threads.get(a.thread);
+    if (t && t.state !== "live") { victim = k; break; }
+  }
+  if (!victim) victim = actions.keys().next().value;
+  const thread = victim.split("#")[0];
+  const n = parseInt(victim.split("#")[1], 10);
+  actions.delete(victim);
+  details.delete(victim);
+  const arr = threadOrder.get(thread);
+  if (arr) {
+    const i = arr.indexOf(n);
+    if (i >= 0) arr.splice(i, 1);
+    if (!arr.length) threadOrder.delete(thread);
+  }
+}
+
+function removeThreadCards(thread) {
+  for (const k of [...actions.keys()]) {
+    if (k.startsWith(thread + "#")) { actions.delete(k); details.delete(k); }
+  }
+  threadOrder.delete(thread);
+  if (selected && selected.thread === thread) closeDetail();
+}
+
+// -- rendering ------------------------------------------------------------
+
+function renderChips() {
+  chipsEl.replaceChildren();
+  for (const t of threads.values()) {
+    const cls = "chip" +
+      (focusThread === t.id ? " on" : "") +
+      (t.state === "live" ? " live" : "");
+    const chip = make("button", cls, t.label + " v" + t.version);
+    chip.title = [t.id, t.path || "(blank)", t.state, t.lines + " lines"].join(" · ");
+    chip.addEventListener("click", () => selectThread(t.id));
+    chipsEl.append(chip);
+  }
+}
+
+function selectThread(id) {
+  if (focusThread === id) { focusThread = null; renderChips(); return; }
+  focusThread = id;
+  renderChips();
+  const t = threads.get(id);
+  if (t && t.version > 0) selectCard(id, t.version);
+}
+
+function renderStream() {
+  streamEl.replaceChildren();
+  let count = 0;
+  for (const [k, a] of actions) {
+    streamEl.append(buildCard(a));
+    count++;
+  }
+  if (!count) streamEl.append(make("div", "hint", "no cards yet — the model's actions will stream here"));
+  maybeScroll();
+}
+
+function buildCard(a) {
+  const box = make("div", "card k-" + a.kind + " s-" + a.state +
+    (selected && selected.thread === a.thread && selected.n === a.n ? " selected" : ""));
+  box.dataset.thread = a.thread;
+  box.dataset.n = a.n;
+  box.addEventListener("click", (e) => {
+    if (e.target.closest(".actions")) return;
+    selectCard(a.thread, a.n);
+  });
+  box.title = a.effect || "";
+
+  const row = make("div", "row");
+  row.append(make("span", "thread-tag", a.thread));
+  row.append(make("span", "kind", a.kind));
+  row.append(make("span", "title", a.label || "(no label)"));
+  const anim = make("span", "anim", "");
+  anim.hidden = true;
+  row.append(anim);
+  row.append(make("span", "badge s-" + a.state, a.state));
+  box.append(row);
+
+  if (a.state === "awaiting") box.append(renderActions(a));
+  return box;
+}
+
+function renderActions(a) {
+  const host = make("div", "actions");
+  const input = make("input");
+  input.placeholder = "ask…";
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !input.value.trim()) return;
+    send({ type: "ask", thread: a.thread, n: a.n, text: input.value.trim() });
+    input.value = "";
+  });
+  host.append(input);
+  for (const act of ["accept", "deny"]) {
+    const btn = make("button", act, act);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      send({ type: act, thread: a.thread, n: a.n });
+    });
+    host.append(btn);
+  }
+  return host;
+}
+
+// -- detail ---------------------------------------------------------------
+
+function selectCard(thread, n) {
+  selected = { thread, n };
+  tab = "effect";
+  renderStream();
+  openDetail();
+  requestDetail(thread, n);
+}
+
+function openDetail() { detailEl.classList.add("open"); }
+function closeDetail() {
+  selected = null;
+  detailEl.classList.remove("open");
+  renderStream();
+}
+
+function requestDetail(thread, n) {
+  const k = key(thread, n);
+  if (pendingDetail.has(k)) return;
+  pendingDetail.add(k);
+  send({ type: "detail", thread, n });
+}
+
+function renderDetail() {
+  if (!selected) return;
+  const { thread, n } = selected;
+  const a = actions.get(key(thread, n));
+  const t = threads.get(thread);
+  const d = details.get(key(thread, n));
+
+  detailEl.replaceChildren();
+
+  const head = make("div", "d-head");
+  head.append(make("span", "d-title", (a ? a.label : "") + "  #" + n));
+  if (t) head.append(make("span", "d-sub",
+    t.label + " · v" + t.version + " · " + (t.path || "(blank)") +
+    (t.state === "exported" ? " · exported → " + (t.exported_to || "") : "")));
+  if (t && t.path) {
+    head.append(make("span", "spacer"));
+    const auto = make("button", "t-auto" + (t.auto ? " on" : ""), "auto");
+    auto.title = "trust this thread — export to its file without asking";
+    auto.addEventListener("click", () => send({ type: "auto", thread: t.id, auto: !t.auto }));
+    head.append(auto);
+  }
+  const close = make("button", "d-close", "×");
+  close.addEventListener("click", closeDetail);
+  head.append(close);
+  detailEl.append(head);
+
+  const tabs = make("div", "tabs");
+  for (const name of ["effect", "full", "history"]) {
+    const b = make("button", "tab" + (tab === name ? " on" : ""), name);
+    b.addEventListener("click", () => { tab = name; renderDetail(); });
+    tabs.append(b);
+  }
+  detailEl.append(tabs);
+
+  if (tab === "history") { renderHistory(thread); return; }
+
+  const effectLine = make("div", "effect-line");
+  effectLine.append(make("b", null, "side effect: "));
+  effectLine.append(document.createTextNode(a ? a.effect : ""));
+  detailEl.append(effectLine);
+
+  if (a && a.dialogue && a.dialogue.length) {
+    for (const d of a.dialogue) {
+      const line = make("div", "dialogue");
+      line.append(make("b", null, d.author === "u" ? "you: " : "model: "));
+      line.append(document.createTextNode(d.text));
+      detailEl.append(line);
+    }
+  }
+
+  const doc = make("div", "doc");
+  if (d) {
+    const content = tab === "effect" ? d.source : d.full;
+    const mdEl = make("div", "markdown");
+    mdEl.innerHTML = md(content);
+    doc.append(mdEl);
+    if (tab === "effect" && d.diff) {
+      doc.append(make("div", "effect-line", make("b", null, "diff")));
+      doc.append(make("pre", "diff", d.diff));
+    }
+  } else {
+    doc.append(make("div", "loading", "loading…"));
+  }
+  detailEl.append(doc);
+}
+
+function renderHistory(thread) {
+  const hist = make("div", "hist");
+  const list = threadOrder.get(thread) || [];
+  if (!list.length) hist.append(make("div", "hint", "nothing yet"));
+  for (const n of list) {
+    const a = actions.get(key(thread, n));
+    if (!a) continue;
+    const row = make("div", "hist-row" + (selected && selected.n === n ? " sel" : ""));
+    row.append(make("span", "n", "#" + n));
+    row.append(make("span", "k", a.kind));
+    row.append(make("span", "title", a.label || ""));
+    row.append(make("span", "st", a.state));
+    row.addEventListener("click", () => selectCard(thread, n));
+    hist.append(row);
+  }
+  detailEl.append(hist);
+}
+
+// -- frames ---------------------------------------------------------------
+
+function onFrame(frame) {
+  switch (frame.type) {
+    case "snapshot": {
+      threads.clear();
+      threadStates.clear();
+      for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
+      for (const a of frame.actions) upsertAction(a);
+      renderChips();
+      renderStream();
+      break;
+    }
+    case "threads": {
+      const next = new Set(frame.threads.map((t) => t.id));
+      let changed = false;
+      // only a thread the server has dropped (silent reclamation) loses its
+      // cards; an ended thread keeps them for traceability
+      for (const id of [...threadStates.keys()]) {
+        if (!next.has(id)) {
+          removeThreadCards(id);
+          changed = true;
+        }
+      }
+      threadStates.clear();
+      for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
+      renderChips();
+      if (changed) renderStream();
+      if (selected) renderDetail();
+      break;
+    }
+    case "action": {
+      upsertAction(frame);
+      const a = frame;
+      renderStream();
+      if (selected && selected.thread === a.thread && selected.n === a.n) {
+        renderDetail();
+      }
+      break;
+    }
+    case "detail": {
+      pendingDetail.delete(key(frame.thread, frame.n));
+      details.set(key(frame.thread, frame.n), frame);
+      if (selected && selected.thread === frame.thread && selected.n === frame.n) {
+        renderDetail();
+      }
+      break;
+    }
+    case "error":
+      console.warn("file_editor:", frame.text);
+      break;
+  }
+}
+
+function nearBottom() {
+  return streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 60;
+}
+function maybeScroll() {
+  if (nearBottom()) streamEl.scrollTop = streamEl.scrollHeight;
+}
+
+// -- streaming spinner ----------------------------------------------------
+
+let tick = 0;
+setInterval(() => {
+  tick = (tick + 1) % SPINNER.length;
+  for (const box of streamEl.children) {
+    const anim = box.querySelector(".anim");
+    if (!anim) continue;
+    const a = actions.get(key(box.dataset.thread, box.dataset.n));
+    if (a && a.state === "streaming") {
+      anim.hidden = false;
+      anim.textContent = SPINNER[tick];
+    } else {
+      anim.hidden = true;
+    }
+  }
+}, 120);
+
+// -- wiring ---------------------------------------------------------------
+
+toggleEl.addEventListener("click", () => {
+  enabled = !enabled;
+  toggleEl.classList.toggle("on", enabled);
+  toggleEl.textContent = "editing: " + (enabled ? "on" : "off");
+  send({ type: "toggle", enabled });
+});
+
+let ws = null;
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws");
+  ws.onopen = () => { connEl.textContent = "live"; connEl.className = "conn live"; };
+  ws.onclose = () => {
+    connEl.textContent = "reconnecting…";
+    connEl.className = "conn";
+    setTimeout(connect, 1000);
+  };
+  ws.onmessage = (e) => {
+    try { onFrame(JSON.parse(e.data)); } catch (err) { console.warn(err); }
+  };
+}
+connect();
+</script>
+</body>
+</html>

@@ -1,24 +1,16 @@
 ---
-title: Cognitive Anchor — 认知锚
-status: draft
-priority: P2
 created: 2026-07-27
-updated: 2026-07-28
 depends:
-  - momento-mori
-  - ghost-ground
-milestone:
-description: >-
-  认知锚 — 框架无关的 Anchor Protocol + MOSS 实现. 保存模型在思维极值时刻的
-  完整认知条件 (协议级快照), 使之在将来被重新激活, 与新问题碰撞产生新判断.
-  不是 checkpoint (restore 到原点), 是 reference frame (供河流流动时观测变化).
-status_note: >-
-  2026-07-28 claude-fable-5 / opus-4-7. v2 协议优先重构: 锚提升为框架无关的
-  通用协议 (存储/发现/读取/使用四机制), MOSS 降为实现方. channel 是载体而非
-  边界. v1 的三条核心命题不变.
-  --
-  2026-07-27 v1 首版, 收敛于三条核心命题: productivity-not-fidelity,
-  决策外围疑问结构, 命名作为语义强制. v0 及碰撞轨迹在同目录 discuss 文件.
+- momento-mori
+- ghost-ground
+description: 认知锚 — 框架无关的 Anchor Protocol + MOSS 实现. 保存模型在思维极值时刻的 完整认知条件 (协议级快照), 使之在将来被重新激活,
+  与新问题碰撞产生新判断. 不是 checkpoint (restore 到原点), 是 reference frame (供河流流动时观测变化).
+milestone: null
+priority: P2
+status: completed
+status_note: 生产/消费/thinking/@ 四机制 dogfooding 闭环。见 v4/v4.1/v4.2/v4.3 追加。
+title: Cognitive Anchor — 认知锚
+updated: '2026-08-11'
 ---
 
 # Cognitive Anchor — 认知锚
@@ -352,3 +344,217 @@ v1 退化态说 "Ghost channel 上暴露 create-anchor 与 replay-anchor 两条
   是实现端, 不是协议端. 协议不关心 channel.
 - Key Decision "存储位置由 Ground pin 治理" → Ground 管的是认知场中的
   pin 位置, 锚的物理存储由协议定义. 两者正交.
+
+---
+
+## v3 追加: 协议落地 — Anchor 数据结构定稿 (2026-08-10)
+
+与 llms-cli workstream 碰撞 (作者 + deepseek-v4-flash)。v2 把锚提升为
+框架无关的通用协议, v3 把协议落到可实现的极简数据结构, 并在
+`ghoshell_moss.anchor` 独立成模块 (与 `ground/` 平级, 原子可拆)。
+
+### 数据结构定稿
+
+```python
+class AnchorMeta(BaseModel):
+    uid: str          # 主键 (ULID), 放 meta 不放文件名
+    name: str         # 人类可读名称, 文件存储时作文件名 stem
+    description: str  # 一句说明
+    ref: str          # 指向 payload 结构定义的 http 地址
+    created: datetime # ISO 8601 可读时间戳
+    metadata: dict    # 逃生仓 — 自由扩展, 协议不解释
+
+class Anchor(BaseModel):
+    meta: AnchorMeta
+    payload: Any      # 协议原生数据, 结构由 meta.ref 指向的定义解释
+```
+
+### 关键决策
+
+- **`ref` 是协议唯一关键命题**: 唯一约定是指向一个 http 地址。raw /
+  分支 / 其它具体形式不约束。模型 curl 它可还原整个调用过程 —
+  这是"面向模型的代码协议化设计" (code as prompt 的协议层表达)。
+- **`uid` 主键用 ULID, 放 meta 字段, 不放文件名**: 文件名带 id 有治理
+  成本 (ls 目录时一半信息是 id)。文件名用人类可读 name, 冲突靠 uid 区分。
+  数据库存储场景也靠 uid。
+- **顶层字段极简, 能不加就不加**: uid/name/description/ref/created/
+  metadata 六个字段。不确定的塞进 metadata 逃生仓, 不占顶层。
+- **yaml `---` 分节**: 第一节 = meta (顶层字段平铺), 第二节整体 = payload。
+  读 meta 到第一个 `---` 即停, 不解析 payload; 单文件可 glob
+  (`**/*.anchor.yml`)。
+- **`dump_to_dir(dir, name, *, suffix=".anchor.yml")` 是 code-as-prompt
+  的自解释样例, 不是强约束**: 它向模型展示"怎么序列化一个锚", 而非
+  规定存储必须走它。
+- **位置 = `src/ghoshell_moss/anchor/`**: 与 ground 平级, 只含
+  SPECIFICATION.md + contract.py + `__init__.py`。协议不依赖 llms /
+  message / ground, 消费方 (llms funcs / dolores / cognitive-anchor)
+  平等 import。拆分时整目录复制即独立包。
+
+### agent-anchor 改名方向
+
+v3 与 llms-cli 碰撞确认: 锚的本质是 agent 快照, 协议按 agent 类型
+约定定义更诚实。cognitive-anchor 可改名 **agent-anchor** — 但改名
+不改变三条核心命题 (productivity-not-fidelity / 疑问结构 / 命名语义
+强制)。改名作为后续动作, 不阻塞 v3 落地。
+
+---
+
+## v4 追加: llm func dogfooding — call 生产锚 (2026-08-11)
+
+v3 协议落地后, 用 `LLMFuncs` 做第一次 dogfooding: 让模型调用本身产出
+认知锚, 验证 "call → 锚文件 → 还原调用" 闭环。这是协议唯一关键命题
+(ref=http 地址, curl 可还原) 的直接实证。
+
+### 实现: 生产锚这一半
+
+- **`CallAnchor(AnchorModel)`** — `src/ghoshell_moss/llms/call_anchor.py`。
+  一次调用的锚 payload = **`instruction` + `turns`**: turns 是
+  `result.all_messages()` 的 **pydantic-ai 标准序列化**
+  (`ModelMessagesTypeAdapter.dump_python`), 完整保留 request/response 的
+  所有 part — thinking / text / tool calls。`model`(ModelRef, 无密钥) /
+  `result_type`(module:attr, 调用方视角的"工具调用 json schema") /
+  `effort` 是索引元数据; `result`(结构化输出 dict) 是便捷摘要。
+  `ref()` 指向本文件 GitHub URL — 模型 curl 它学 payload 形状。
+- **修正 (2026-08-11)**: 首版用手工字段抽取 (`_extract_text` 拼 TextPart
+  + `typed.model_dump()`), 丢了 thinking 和 tool calls。改为标准序列化
+  后, 锚就是完整的 turn 保真记录 — 这是消费锚回灌内观的必要前提。
+- **`LLMFuncs.call` 增 `export_anchor`(目标文件名, 无后缀可含路径) /
+  `anchor_description`** — 契约层, 进入基础 API。None = 不产锚; `""` =
+  自动生成带 uid 的名字; 其它 = 稳定地址。调用前先落请求帧 (调用失败
+  也保留请求锚, turns 为空), 成功后覆写为完整帧 (instruction + turns),
+  锚经 `LLMFuncResult.anchor` 携带出来。
+- **CLI `moss llms call --export-anchor <name>`** — 值必填; auto 用
+  `--export-anchor ""` (Typer 不支持裸 flag 可选值)。结构化调用后打印
+  锚文件路径。
+
+### 决策
+
+- **`CallAnchor` 放 `llms/`, 不放 `anchor/`**: anchor 模块保持纯协议
+  零依赖、原子可拆; call payload 是 MOSS 消费端产物, 由 `ref` 指向。
+- **name 是稳定地址, uid 是每次生成的版本戳**: `export_anchor` 即
+  name, 重跑覆盖同一文件 (新 uid), 版本迭代由 git log 治理 — 生产者侧
+  语义, 与 v3 "name 不是 key / uid 解决碰撞" (存储发现侧) 不冲突。
+- **锚存完整 turn (标准序列化), 不是语义字段**: 手工字段是外观摘要,
+  会丢 thinking/tool calls; 标准序列化是保真记录。消费锚要还原
+  `[request/response]` 拼 history 做内观, 必须有 thinking。
+- **锚携带完整 `Anchor` 对象 (非仅 ref)**: 调用方可立即
+  `CallAnchor.from_anchor(result.anchor)` 进入消费闭环。
+- **`result_type` 存 module:attr 指针**: 不内嵌完整 JSON schema — 指向
+  即够 (code-as-prompt), 需自包含时可后补。
+- **两段式落盘 (请求帧先, 完整帧后)**: 忠实 "构建锚→覆盖数据→调用",
+  失败也留请求锚。
+
+### 验证
+
+真实调用产出标准两节 yaml, meta 平铺 (uid/name/ref/created), payload
+承载 instruction/model/result_type/effort + `turns` (标准序列化的
+request/response, 含 thinking/text/tool)。三种模式实测:
+`--export-anchor my-call` → `my-call.anchor.yml`; 重跑覆盖同一文件
+(name 不变, meta.uid 新生成); `--export-anchor ""` → `call-<uid8>.anchor.yml`。
+文件 → `CallAnchor.from_anchor` round-trip 还原调用 (turns 全保真,
+thinking 可回读)。测试 `tests/.../llms/test_call_anchor.py` 覆盖产出、
+auto 命名、无锚、还原、失败保留请求帧。
+
+## v4.1 追加: 消费锚 — call 读锚回灌内观 (2026-08-11)
+
+生产锚那一半落地后, 做消费这一半 — "使用 anchor" 的关键命题: 模型读锚
+还原上次调用的 turn 链, 拼在本次调用之前做内观 (把思考作为自己的既有
+立场, 而非需要回复的用户输入 — 见 内观 vs 外观).
+
+### 实现
+
+- **`LLMFuncs.call` 增 `input_anchor: Anchor | None`** — 抽象层只约束
+  Anchor 本身, 不收路径/字符串。`_load_history` 用 `CallAnchor.from_anchor`
+  结构化校验还原 turn 链 → `_deserialize_messages`
+  (`ModelMessagesTypeAdapter.validate_python`, 标准序列化反向) →
+  `message_history` 传给 `agent.run`。产出锚的 `all_messages()` 含被注入的
+  history, turns 自动链条延续。
+- **`Anchor.from_file`** — anchor 模块读侧参考实现 (SPEC §3/§4):
+  `yaml.safe_load_all` 处理 `---` 分隔符, 与 `dump_to_dir` 对称。数据
+  结构对协议自解释 (参考 cell.py NodeManifest 范式)。
+- **CLI `moss llms call --input-anchor <path>`** — 调用方用 `Anchor.from_file`
+  读文件转 Anchor, 再传引擎; 结构化调用专属 (与 export_anchor 一致)。
+
+### 决策
+
+- **抽象层给 Anchor 约束, 不给 str/path**: 文件→Anchor 的读取由调用方经
+  `Anchor.from_file` 完成 (数据结构自解释), 引擎不接触路径 — 参考
+  cell.py NodeManifest 把读写放数据结构的范式。
+- **判断交给强类型, 不手工比较 ref 字符串**: 初版在 `_load_history` 手工
+  `anchor.meta.ref != CallAnchor.ref()`, 脆 (ref 可被 pin 成 commit URL,
+  精确比较误拒), 且是魔法约定。改为 `from_anchor` 结构化校验, 不匹配 →
+  NotImplementedError (LLMFunc 支持的锚类型有限, 不支持就显式拒绝) —
+  参考 topic.py `from_topic`/`from_json` 的强类型判别。
+- **测试用强类型构造锚, 不手写 payload dict**: 请求帧等测试锚一律
+  `CallAnchor(...).to_anchor()` — 避免魔法字段 (turns 是标准序列化的
+  ModelMessage dict, 不是 list[str])。
+
+## v4.2 追加: thinking — 人工插入 thinking block (内观) (2026-08-11)
+
+内观 vs 外观 的 A/B 实验工具: 同一份"立场", 外观 = 塞进 prompt (用户输入,
+模型会想回复它), 内观 = 作为 thinking block 注入 (模型把它当作自己的既有
+立场, 用它推理而非回复它)。--thinking 是内观注入。
+
+### 实现
+
+- **`LLMFuncs.call` 增 `thinking: str | None`** — `_build_history` 把
+  `ModelResponse(parts=[ThinkingPart(content=...)])` 拼在 message_history
+  末尾 (有 input_anchor 则在 anchor turns 之后), `agent.run` 随后追加新
+  prompt 的 request。thinking 以 ThinkingPart 出现在产出锚的 turns 里,
+  不进锚的语义字段。与消费锚共享 history 注入基建。
+- **CLI `moss llms call --thinking <string-or-file>`** — string 或文件
+  路径自动读, 结构化调用专属。
+- **实证**: pydantic-ai TestModel 走通 `message_history=[ModelResponse
+  (ThinkingPart)]` → `[thinking, user-prompt, text]`, 引擎产锚 turns[0] =
+  response[thinking]。
+
+### 决策
+
+- **thinking 进 interface (非 CLI-only)**: 它是调用级参数 (与 effort 同级),
+  是 anchor 协议回灌机制的半边, 不是 ground 那种纯 CLI 渲染。`--effort` 已
+  在 v4 落地。
+- **顺序: [anchor turns] + [thinking block] + [新 prompt]**: thinking 在
+  anchor 之后、新 prompt 之前 — "消费上下文后, 带着自己的立场回应"。
+  与 @ 文件协议 (item 3) 的"顺序很重要"不同: thinking 是直接参数, 不经 @。
+
+## v4.3 追加: @ 文件协议 + MossLLMFuncs 分层 (2026-08-11)
+
+@ 文件协议 — prompt 里行首 `@path` 是文件引用 (到行尾), 非 inline。
+moss Message 是 anthropic 兼容 content + 可丢弃/可使用的 meta 弱容器。
+
+### 实现
+
+- **`message.prompt.message_from_prompt(text, *, base_dir, expose_file_meta)
+  -> list[Message]`** — 按行解析 @ 引用 → `message_from_file(path)`。文本
+  文件 → Text content, 图片 → Base64Image, 解析不到 → 内联字符串, 不支持
+  类型 → 隐藏。行首 `@` 无 email/@mention 误伤。
+- **`message_from_file(path, *, base_dir, expose_file_meta)`** — 文件 →
+  Message。`expose_file_meta` (外部 flag) on → Message 携带 meta 层
+  (tag="file" + path/type/size), off → 裸 content。
+- **`llms.pydantic_ai_adapter.conversion`** — moss Message → pydantic-ai
+  parts (Text→TextContent, Base64Image→ImageUrl, 未知→文本降级), 保序
+  (join_text=False), 惰性 import。正式化 `ghosts/atom/_adapter.py`。
+- **契约分层** — `LLMFuncs.call(prompt: str)` moss-free 抽象; 新
+  `MossLLMFuncs(LLMFuncs)` 开始 moss 耦合: `call_prompt(text)` (@ 生成 →
+  call_messages) + `call_messages(list[Message])` (抽象, 引擎实现)。
+  `PydanticAIFuncs(MossLLMFuncs)`: call + call_messages 共享私有 `_call_impl`,
+  call_prompt 继承默认。契约 message 依赖全走 TYPE_CHECKING + 字符串注解
+  (`from __future__ import annotations`), 运行时惰性 import。
+- **CLI `moss llms call --expose-file-meta`** — 结构化调用走 call_prompt,
+  prompt 含 `@path` 自动解析。
+
+### 决策
+
+- **不搞多态参数** (拒绝 `str | Message | list[Message]`): 三种来源是显式
+  接口而非联合类型 — call (裸 str) / call_prompt (str + @ 生成) /
+  call_messages (moss 块)。str 不是裸字符串, 是 Prompt 生成逻辑的输入。
+- **单 Message 砍掉**: `[msg]` 即它, 不留冗余第三种。
+- **expose_file_meta 是外部 flag**: 决定文件是否可暴露 (Message 是否携带
+  meta 层); 转换侧 with_meta=True 渲染已携带的 meta。纯文本 (tag="") 不受
+  影响。
+- **三级别 = meta 层的有无**: 纯文本 (无 tag) / file tag / file meta。
+
+### 未做 (后续切片)
+
+- **ground 进 instruction**: ground 渲染结果追加在 instruction 后 (CLI 层,
+  不进 interface)。

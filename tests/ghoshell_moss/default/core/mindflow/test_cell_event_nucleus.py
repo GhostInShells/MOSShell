@@ -85,7 +85,7 @@ async def test_add_signal_fires_impulse_via_bus():
     async with CellEventNucleus() as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(_signal())
     assert len(notified) == 1
@@ -99,7 +99,7 @@ async def test_add_signal_does_not_fire_when_not_running():
     nuc = CellEventNucleus()
     nuc.with_bus(
         signal_broadcast=lambda s: None,
-        impulse_notify=lambda imp: notified.append(imp),
+        fire_impulse=lambda imp: notified.append(imp),
     )
     nuc.add_signal(_signal())
     assert notified == []
@@ -111,7 +111,7 @@ async def test_add_signal_drops_wrong_name():
     async with CellEventNucleus() as nuc:
         nuc.with_bus(
             signal_broadcast=lambda s: None,
-            impulse_notify=lambda imp: notified.append(imp),
+            fire_impulse=lambda imp: notified.append(imp),
         )
         nuc.add_signal(Signal.new('input'))
     assert notified == []
@@ -140,22 +140,58 @@ async def test_peek_returns_cached_impulse_after_signal():
 
 
 @pytest.mark.asyncio
-async def test_pop_impulse_clears_cache():
+async def test_attended_clears_cache():
     async with CellEventNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: None)
         nuc.add_signal(_signal())
         cached = nuc.peek()
-        nuc.pop_impulse(cached)
+        nuc.attended(cached)
         assert nuc.peek() is None
 
 
 @pytest.mark.asyncio
-async def test_add_signal_last_wins_overwrites_cache():
+async def test_suppress_retains_impulse_peekable():
+    """契约: suppressed 后 impulse 仍保留、可 peek — rank 输掉不等于完结 (不丢)."""
     async with CellEventNucleus() as nuc:
         nuc.with_bus(lambda s: None, lambda imp: None)
-        nuc.add_signal(_signal())
-        nuc.add_signal(_signal())
-        assert nuc.peek() is not None
+        nuc.add_signal(CellEventSignalMeta().to_signal('keep', description='cell A'))
+        nuc.suppress(Impulse(), None)
+        peeked = nuc.peek()
+        assert peeked is not None
+        texts = {c['text'] for m in peeked.messages for c in m.contents if 'text' in c}
+        assert 'keep' in texts
+
+
+@pytest.mark.asyncio
+async def test_suppress_cooldown_blocks_refire():
+    """suppress 后 cooldown 内 add_signal 只合并不主动 fire (防风暴, 由 re-rank 捞回)."""
+    async with CellEventNucleus() as nuc:
+        fired: list[Impulse] = []
+        nuc.with_bus(lambda s: None, lambda imp: fired.append(imp))
+        nuc.add_signal(CellEventSignalMeta().to_signal('first'))
+        nuc.suppress(Impulse(), None)
+        fired.clear()
+        nuc.add_signal(CellEventSignalMeta().to_signal('second'))
+        assert fired == []
+        peeked = nuc.peek()
+        texts = {c['text'] for m in peeked.messages for c in m.contents if 'text' in c}
+        assert {'first', 'second'} <= texts
+
+
+@pytest.mark.asyncio
+async def test_add_signal_burst_preserves_all_messages():
+    """burst 不丢消息: n 个 cell_event 同窗口到达, 全部 messages 保留.
+
+    n 个 node 同时上线时, 单槽覆盖会只留最后一条 'channel added'; 合并后全部保留.
+    """
+    async with CellEventNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(CellEventSignalMeta().to_signal('first', description='cell A'))
+        nuc.add_signal(CellEventSignalMeta().to_signal('second', description='cell B'))
+        peeked = nuc.peek()
+        assert peeked is not None
+        texts = {c['text'] for m in peeked.messages for c in m.contents if 'text' in c}
+        assert {'first', 'second'} <= texts
 
 
 # ============================================================
