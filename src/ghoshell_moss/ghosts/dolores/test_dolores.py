@@ -160,7 +160,44 @@ class TestStubsSync:
         ghost = _dolores(home=tmp_path)
 
         assert ghost._resolve_startup_doc() == tmp_path / "startup" / "default.startup.yml"
-        assert ghost._load_startup() == ("<say>hi</say>", "预热")
+        doc = ghost._load_startup()
+        assert doc is not None
+        assert doc.command == "<say>hi</say>"
+        assert doc.instruction == "预热"
+        assert doc.frame is None
+
+    def test_load_startup_parses_frame_block(self, tmp_path: Path):
+        (tmp_path / "startup").mkdir(parents=True)
+        (tmp_path / "startup" / "default.startup.yml").write_text(
+            "instruction: hi\n"
+            "frame:\n"
+            "  label: orient\n"
+            "  description: reconstruct\n"
+            "  questions:\n"
+            "    - Where am I?\n"
+            "    - Who is here?\n",
+            encoding="utf-8",
+        )
+        ghost = _dolores(home=tmp_path)
+        doc = ghost._load_startup()
+        assert doc is not None
+        assert doc.frame is not None
+        assert doc.frame.label == "orient"
+        assert doc.frame.questions == ["Where am I?", "Who is here?"]
+
+    def test_default_stub_parses_into_startup_doc(self):
+        """The shipped default.startup.yml must validate — it is what every new ghost boots on."""
+        from ._meta import DoloresMeta
+        from ._startup import StartupDoc
+
+        stub = DoloresMeta().stubs_dir() / "startup" / "default.startup.yml"
+        assert stub.is_file()
+        data = yaml.safe_load(stub.read_text(encoding="utf-8"))
+        doc = StartupDoc.model_validate(data)
+        # The shipped stub carries a seed orientation frame — regression-catch if we ever
+        # remove it silently.
+        assert doc.frame is not None
+        assert doc.frame.questions
 
     def test_override_on_version_mismatch(self, tmp_path: Path):
         (tmp_path / ".dolores.yml").write_text("version: dev_0\n")
@@ -2190,3 +2227,23 @@ class TestBuildChannel:
             names = {m.name for m in runtime.metas().values()}
             assert "frame" not in names
             assert "ground" in names
+
+    @pytest.mark.asyncio
+    async def test_init_frame_lands_in_notice(self, tmp_path: Path):
+        from ghoshell_moss.channels.frame_channel import Frame
+        from ghoshell_moss.ground import DefaultGroundSet
+
+        from .channel import build_dolores_channel
+
+        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        frame_root = tmp_path / "frames"
+        frame_root.mkdir()
+        seed = Frame(label="orient", questions=["Where am I?"])
+        chan = build_dolores_channel(
+            groundset=gs, workspace_root=tmp_path, frame_root=frame_root, init_frame=seed
+        )
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            frame_meta = next(m for m in runtime.metas().values() if m.name == "frame")
+        assert "Where am I?" in frame_meta.named_notices["orient"]

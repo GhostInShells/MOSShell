@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ._ego import DoloresConfig, DoloresEgo, DoloresEgoConfig
     from ._ego_memento import EgoMementoManager
     from ._meta import DoloresMeta
+    from ._startup import StartupDoc
 
 __all__ = ["Dolores"]
 
@@ -141,6 +142,8 @@ class Dolores(Ghost):
         self._mindflow: Mindflow | None = None
         # reflexive control channel — built lazily in channel(), registered by the runtime as 'ghost'.
         self._channel: MutableChannel | None = None
+        # startup doc (StartupDoc) — loaded once in __aenter__, read by channel() and startup().
+        self._startup_doc: "StartupDoc | None" = None
         # the cognition epoch is opened once, on the first thinking (see think()).
         self._epoch_opened: bool = False
 
@@ -240,6 +243,7 @@ class Dolores(Ghost):
                 memento_manager=self._memento_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
                 frame_root=self._frame_root(),
+                init_frame=self._startup_doc.frame if self._startup_doc is not None else None,
             )
         return self._channel
 
@@ -321,6 +325,10 @@ class Dolores(Ghost):
         # the source of startup-time config items (dsh web auto-open, etc.). The ghost owns this file.
         if self._home is not None:
             self._load_env()
+        # startup doc: read once, cache. channel() and startup() both read this snapshot —
+        # so the frame handed to build_dolores_channel and the signal handed to the ego
+        # boot come from the same file.
+        self._startup_doc = await asyncio.to_thread(self._load_startup)
         # assert the configured default model into the dsh settings document — dsh reads it at
         # startup, so it must land before the spawn below (and after .env, which carries the config).
         await asyncio.to_thread(self._sync_default_model)
@@ -393,23 +401,20 @@ class Dolores(Ghost):
     # ── startup (born) ───────────────────────────────
 
     async def startup(self) -> None:
-        """Lifecycle hook (born) — read the mode startup doc and emit a self-wake signal.
+        """Lifecycle hook (born) — emit the boot self-wake signal from the cached startup doc.
 
-        Called by GhostRuntime after mindflow wiring (signal routing registered, main loops
-        started). Reads ``startup/{mode}.startup.yml`` (fallback ``default.startup.yml``);
-        when both command and instruction are empty the boot is silent (no signal).
+        The doc is loaded once in ``__aenter__`` so both ``channel()`` (for ``init_frame``)
+        and ``startup()`` (for command + instruction) read the same snapshot. Boot is
+        silent when the doc is absent or when both command and instruction are empty.
         """
         if self._matrix is None:
             return
-        loaded = await asyncio.to_thread(self._load_startup)
-        if loaded is None:
-            return
-        command, instruction = loaded
-        if not command and not instruction:
+        doc = self._startup_doc
+        if doc is None or (not doc.command and not doc.instruction):
             return
         from .nucleus import new_dolores_ego_signal
 
-        signal = new_dolores_ego_signal(kind="startup", command=command, instruction=instruction)
+        signal = new_dolores_ego_signal(kind="startup", command=doc.command, instruction=doc.instruction)
         self._matrix.session.add_signal(signal)
 
     def _resolve_startup_doc(self) -> Path | None:
@@ -427,19 +432,23 @@ class Dolores(Ghost):
             return default
         return None
 
-    def _load_startup(self) -> tuple[str, str] | None:
-        """Parse the resolved startup doc into (command, instruction)."""
+    def _load_startup(self) -> "StartupDoc | None":
+        """Parse the resolved startup doc into a :class:`StartupDoc`.
+
+        Returns ``None`` when there is no doc or the file fails to parse — a broken
+        startup should never crash the ghost boot; missing fields default to empty.
+        """
+        from ._startup import StartupDoc
+
         doc = self._resolve_startup_doc()
         if doc is None:
             return None
         try:
             data = yaml.safe_load(doc.read_text(encoding="utf-8")) or {}
+            return StartupDoc.model_validate(data)
         except Exception as e:
             self.logger.warning("startup doc %s parse failed: %s", doc, e)
             return None
-        command = str(data.get("command") or "").strip()
-        instruction = str(data.get("instruction") or "").strip()
-        return command, instruction
 
     # ── dsh startup ─────────────────────────────────
 

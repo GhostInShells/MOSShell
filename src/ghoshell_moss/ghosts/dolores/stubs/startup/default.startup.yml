@@ -1,3 +1,15 @@
 description: 开机启动，激活 session
 created_at: "2026-09-18"
 instruction: "你已开机启动，session 已激活。向用户打个招呼，告诉 ta 你准备好了。"
+
+# The frame block is injected into ghost.frame as init_frame — a named notice
+# fragment that re-asserts itself on the refresh cadence. Edit the questions to
+# fit this mode's opening self-model, or drop the whole block to boot without one.
+frame:
+  label: orientation
+  description: reconstruct the situation after context loss
+  questions:
+    - What environment am I in?
+    - Who am I talking to right now?
+    - What am I in the middle of doing?
+    - What must I not forget even after the context is compacted?
