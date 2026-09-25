@@ -70,6 +70,8 @@ import ghoshell_moss.bridges as bridges
 import ghoshell_moss.ghosts as ghosts
 import ghoshell_moss.core.topic as topic_service
 import ghoshell_moss.core.speech as speech_impl
+import ghoshell_moss.contracts.voice as voice_contract
+import ghoshell_moss.host.voice as voice_impl
 import ghoshell_moss.cli as cli
 
 # ============================================================================

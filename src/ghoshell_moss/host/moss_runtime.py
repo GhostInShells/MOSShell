@@ -13,7 +13,6 @@ from typing_extensions import Self
 
 from pathlib import Path
 import janus
-import numpy as np
 
 from ghoshell_moss.core.blueprint.shell_trajectory import MShellTrajectory
 from ghoshell_moss.message.message import Message
@@ -30,16 +29,10 @@ from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
-from ghoshell_moss.contracts.audio import (
-    AUDIO_SAMPLE_INTERVAL,
-    LatestAudioWindow,
-    compute_spectrum,
-)
 from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
-from ghoshell_moss.contracts.listener import ASRListener, ListenLifecycle
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
-from ghoshell_moss.contracts.speech import Speech, SpeechClause, TTSSpeech, PlaybackSample
-from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
+from ghoshell_moss.contracts.speech import Speech
+from ghoshell_moss.contracts.voice import Voice, VoiceLifecycle
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 
@@ -85,12 +78,13 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 or env.moss_meta.description
         )
         self._run_shell_on_start = run_shell_on_start
-        # speech 开关 (bool): True 时在 __aenter__ resolve Speech 实例注入 shell.
+        # speech / listen 开关 (bool): 契约屏蔽层 — 未来不耦合 Voice 实现, 只在
+        # __aenter__ 转发给 voice.run(). True/False 决定启用哪一侧.
         self._speech_enabled = speech
-        self._speech: Speech | None = None
-        # listen 开关 (bool): True 时在 __aenter__ resolve ASRListener 并组装 controller.
         self._listen_enabled = listen
-        self._listen_controller: ListenLifecycle | None = None
+        # Voice 总装 (IoC 里存在即启用, 缺席即无语音). __aenter__ 里 resolve.
+        self._voice: Voice | None = None
+        self._voice_lifecycle: VoiceLifecycle | None = None
 
         # --- mode 层 IoC 叠加 (§ZZ-5: mode providers/configs/resources 覆盖 baseline) --- #
         # container 已在 MatrixImpl.__init__ 创建并完成 baseline 注册,
@@ -454,8 +448,8 @@ class ShellRuntimeImpl(MOSShellRuntime):
     def pause(self, toggle: bool = True) -> None:
         self._check_running()
         self._ctml_shell.pause(toggle)
-        if self._listen_controller is not None:
-            self._listen_controller.pause(toggle)
+        if self._voice_lifecycle is not None:
+            self._voice_lifecycle.pause(toggle)
         self._paused = toggle
 
     @property
@@ -480,57 +474,49 @@ class ShellRuntimeImpl(MOSShellRuntime):
         self._matrix.container.set(SystemPrompter, self._system_prompter)
         self._matrix.container.set(MossSystemPrompter, self._system_prompter)
 
-    def _resolve_speech(self) -> None:
-        """resolve Speech 实例 (内核 contract) — host 的 bool 开关决定是否启用.
+    def _resolve_voice(self) -> None:
+        """resolve Voice 总装 (内核 contract) — IoC 里存在即启用.
 
-        True → 从 matrix container resolve; 失败降 None (降级细节见工作项 #7).
-        False → None (禁语音). 结果注入 shell, 旁路桥复用同一实例.
+        从 container 取 Voice (缺席 → None, 无语音). 有则把 speech 装到 shell,
+        听侧 channel 挂进 main. 全部装线 (说侧桥 / 听侧 controller / 联动) 由
+        voice.run() 返回的 lifecycle 在 matrix 里托管, runtime 不再自己组装.
+
+        speech() / listener_channel() 必须在 lifecycle enter 之前可读 —— shell
+        set_speech / import_channels 是装配动作, 在 __aenter__ 的 setup 阶段完成.
         """
-        if not self._speech_enabled:
-            self._speech = None
-        else:
-            try:
-                self._speech = self._matrix.container.get(Speech)
-            except Exception:
-                self._matrix.logger.exception("%s resolve speech failed — degraded to no speech", self._log_prefix)
-                self._speech = None
-        self._ctml_shell.set_speech(self._speech)
-
-    def _resolve_listener(self) -> None:
-        """resolve ASRListener 并组装 ListenerController — host 的 bool 开关决定是否启用.
-
-        True → 从 matrix container resolve ASRListener, 组装 ListenerController
-        (仅生命周期表面 ListenLifecycle, 见工作项 #12). 失败降 None.
-        False → None (不听). AEC far 桥在 _listen_lifecycle.
-        """
-        if not self._listen_enabled:
-            self._listen_controller = None
-            return
         try:
-            listener = self._matrix.container.get(ASRListener)
+            self._voice = self._matrix.container.get(Voice)
         except Exception:
-            self._matrix.logger.exception("%s resolve listener failed — degraded to no listen", self._log_prefix)
-            self._listen_controller = None
+            self._matrix.logger.exception(
+                "%s resolve voice failed — degraded to no voice", self._log_prefix,
+            )
+            self._voice = None
+
+        speech = self._voice.speech() if self._voice is not None else None
+        self._ctml_shell.set_speech(speech)
+
+        if self._voice is not None:
+            channel = self._voice.listener_channel()
+            if channel is not None:
+                self._ctml_shell.main_channel.import_channels(channel)
+
+    @contextlib.asynccontextmanager
+    async def _voice_lifecycle_ctx(self):
+        """Voice 生命周期: 前起 (在 shell 之前) 后关 (shell 之后).
+
+        voice.run(speech, listen) 无副作用, 只声明启用哪一侧; 这里把它作为
+        matrix lifecycle object 托管 —— 启动顺序 voice 前、shell 后 (speech 由
+        shell 启动), LIFO 退出保证 shell 关 (speech 停) 之后 voice 才拆桥/关 controller.
+        """
+        if self._voice is None:
+            yield
             return
-        from ghoshell_moss.host.listener.controller import ListenerController, build_stop_caller_factory
-        from ghoshell_moss.contracts.configs import ConfigStore
-        config_store = self._matrix.container.get(ConfigStore)
-        self._listen_controller = ListenerController(
-            listener=listener,
-            asr=listener.asr(),
-            logger=self._matrix.logger,
-            signal_broadcast=self._matrix.session.add_signal,
-            stop_caller_factory=build_stop_caller_factory(self._matrix.container),
-            cell_name=self._matrix.this.name,
-            config_store=config_store,
-            topic_service=self._matrix.session.topics,
+        lifecycle = self._voice.run(
+            speech=self._speech_enabled, listen=self._listen_enabled,
         )
-        # 单例注册: TUI voice state / 其它消费面从 container 拿同一个 controller.
-        self._matrix.container.set(ListenerController, self._listen_controller)
-        # 听侧 channel 挂进 shell main — 模型看到"一个语音面"的命令 (activate/stop/
-        # get_etiquette/get_transcript/configure_asr), 受 pause 人类锁的 available 门控.
-        if channel := self._listen_controller.as_channel():
-            self._ctml_shell.main_channel.import_channels(channel)
+        self._voice_lifecycle = lifecycle
+        await self._matrix.add_lifecycle_object(lifecycle)
+        yield
 
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):
@@ -544,141 +530,6 @@ class ShellRuntimeImpl(MOSShellRuntime):
             if self._ctml_shell.is_running():
                 await self._ctml_shell.__aexit__(None, None, None)
 
-    @contextlib.asynccontextmanager
-    async def _clause_topic_bridge(self):
-        """说侧旁路生命周期: 把 speech 单例产出的 clause 发布成 ClauseTopic.
-
-        speech 的 on_clause 在 audio worker 线程回调 (与 on_sample 一致), 这里经
-        janus 队列 marshal 回事件循环, 再由 TopicService 的 publisher 广播. 仅当
-        speech 是 TTSSpeech (真产出 clause) 时激活 — NullSpeech/MockSpeech 无 clause,
-        直接跳过, 不为它们空转 queue / publisher.
-        """
-        speech = self._speech
-        if not isinstance(speech, TTSSpeech):
-            yield
-            return
-
-        speaker_id = self._env.project_id
-        speaker_name = self._env.ghost_name
-        publisher = self._matrix.session.topics.model_publisher(
-            creator=f"ghost/{speaker_name}",
-            model=ClauseTopic,
-        )
-        queue: janus.Queue = janus.Queue()
-
-        def _on_clause(clause: SpeechClause) -> None:
-            # on_clause 由 audio worker 线程触发, 走 sync_q 线程安全入队.
-            queue.sync_q.put_nowait(ClauseTopic(
-                text=clause.text,
-                speaker_id=speaker_id,
-                speaker_name=speaker_name,
-                role='ghost',
-            ))
-
-        async def _drain() -> None:
-            from ghoshell_moss.host.listener.controller import ListenerController
-            while True:
-                topic = await queue.async_q.get()
-                publisher.pub(topic)
-                # corpus tail: ghost clause 在广播的同一处喂进听侧 ASR 的运行时 corpus
-                # (lines 投影)。将来这层 clause 统一接线 (说侧此处 + 听侧
-                # controller.with_topic_service) 会拆成独立 interleaved-voice 模块。
-                controller = self._listen_controller
-                if isinstance(controller, ListenerController):
-                    controller.feed_ghost_clause(topic.text)
-
-        await publisher.__aenter__()
-        disposer = speech.on_clause(_on_clause)
-        drain_task = asyncio.create_task(_drain())
-        try:
-            yield
-        finally:
-            disposer()
-            drain_task.cancel()
-            try:
-                await drain_task
-            except asyncio.CancelledError:
-                pass
-            await publisher.__aexit__(None, None, None)
-
-    @contextlib.asynccontextmanager
-    async def _audio_sample_topic_bridge(self):
-        """说侧旁路生命周期: 把 player 实际播放的音频按 ~200ms 窗口广播成 AudioSampleTopic (role=ghost).
-
-        与 clause 桥对称, 但用 LatestAudioWindow (latest-value-wins, 无队列). player.observe
-        在 audio worker 线程回调, 经窗口的锁 marshal; 周期 task 在事件循环取走算频谱发布.
-        """
-        speech = self._speech
-        if not isinstance(speech, TTSSpeech):
-            yield
-            return
-
-        speaker_name = self._env.ghost_name
-        player = speech.player()
-        sample_rate = player.sample_rate
-        publisher = self._matrix.session.topics.model_publisher(
-            creator=f"ghost/{speaker_name}",
-            model=AudioSampleTopic,
-        )
-        window = LatestAudioWindow()
-
-        def _on_sample(sample: PlaybackSample) -> None:
-            if not sample.pcm:
-                return
-            window.append(np.frombuffer(sample.pcm, dtype=np.int16))
-
-        async def _emit() -> None:
-            while True:
-                await asyncio.sleep(AUDIO_SAMPLE_INTERVAL)
-                pcm = window.take()
-                if pcm is None:
-                    continue
-                spectrum = compute_spectrum(pcm)
-                publisher.pub(AudioSampleTopic(
-                    role="ghost",
-                    sample_rate=sample_rate,
-                    duration=len(pcm) / sample_rate if sample_rate else 0.0,
-                    rms_db=spectrum.rms_db,
-                    peak=spectrum.peak,
-                    spectrum_bins=spectrum.spectrum_bins,
-                    n_spectrum_bins=len(spectrum.spectrum_bins),
-                    waveform=spectrum.waveform,
-                    n_waveform=len(spectrum.waveform),
-                ))
-
-        await publisher.__aenter__()
-        disposer = player.observe(_on_sample)
-        emit_task = asyncio.create_task(_emit())
-        try:
-            yield
-        finally:
-            disposer()
-            emit_task.cancel()
-            try:
-                await emit_task
-            except asyncio.CancelledError:
-                pass
-            await publisher.__aexit__(None, None, None)
-
-    @contextlib.asynccontextmanager
-    async def _listen_lifecycle(self):
-        """听侧治理: enter ListenerController (启动 capture+asr) + clause topic.
-
-        仅当 listener resolve 成功 (controller 非 None) 时激活. clause topic 装线在
-        controller 生命周期内, 识别到的 CLAUSE 广播成 ClauseTopic(role=user), 与说侧桥的
-        role=ghost 汇成同一条交错对话轨迹.
-
-        AEC 不在这里装: 它属于音频设备层 —— miniaudio factory 在产出这一对 stream 时
-        就装好了 (见 host/audios/miniaudio_impl/factory.py), 比 controller 启动更早.
-        """
-        controller = self._listen_controller
-        if controller is None:
-            yield
-            return
-        async with controller:
-            # 启动即听: 默认礼仪常驻, 而不是停在 stop 状态等模型/人类手动 activate.
-            yield
-
     async def __aenter__(self) -> Self:
         if self._started:
             raise RuntimeError('MossRuntime is already started')
@@ -688,20 +539,15 @@ class ShellRuntimeImpl(MOSShellRuntime):
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 补 IoC 注册 (system prompter / MOSShell) — 之前挂 _app_store 的位置
         self._bootstrap_after_matrix()
-        # resolve Speech 实例 (内核 contract) 注入 shell — 须在 shell __aenter__ 之前.
-        self._resolve_speech()
-        # resolve ASRListener 实例 (内核 contract) — 治理在 voice listen manager.
-        self._resolve_listener()
-        # 启动 ctml shell
+        # resolve Voice 总装 (内核 contract) — speech 装 shell / 听侧 channel 挂 main.
+        self._resolve_voice()
+        # voice 生命周期: 说侧桥 + 听侧 controller. 必须在 shell __aenter__ (启动
+        # speech) 之前进入 —— 桥的回调注册早于 speech 启动, 否则漏最早的 clause.
+        # LIFO 退出: shell 先退 (speech 关 + player 释放), voice 后退 (桥 disposer
+        # 已不再收到回调, controller 关).
+        await self._async_exit_stack.enter_async_context(self._voice_lifecycle_ctx())
+        # 启动 ctml shell (启动 speech — 此前注册的桥回调开始被触发)
         await self._async_exit_stack.enter_async_context(self._manager_shell_lifecycle())
-        # 说侧旁路: speech 单例的 clause 结果 → ClauseTopic 广播 (在 shell 起、speech 已
-        # start 之后进入; exit stack LIFO 保证它在 shell/speech 关闭之前先退出).
-        await self._async_exit_stack.enter_async_context(self._clause_topic_bridge())
-        # 说侧旁路: player 实际播放的音频 → AudioSampleTopic 广播 (对称 clause 桥).
-        await self._async_exit_stack.enter_async_context(self._audio_sample_topic_bridge())
-        # 听侧旁路: enter ListenerController (启动 capture+asr) + AEC far 桥 — 说侧桥之后
-        # 进入, LIFO 先退出 (AEC 拆线时 player 仍活着).
-        await self._async_exit_stack.enter_async_context(self._listen_lifecycle())
         # bringup: 后台 task 并行发起 mode 声明的 nodes, 不 await — 单个失败记日志,
         # 挂死 (如 probe 不退出) 只钉住自己的 task, 不再阻塞 shell 启动.
         self._start_bringup_tasks()
