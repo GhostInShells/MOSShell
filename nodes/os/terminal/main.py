@@ -26,6 +26,7 @@ sys.path.insert(0, str(_NODE_DIR / "src"))
 from ghoshell_moss.contracts.llms import LLMFuncs  # noqa: E402
 from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
 from ghoshell_moss.ground import DefaultGroundSet  # noqa: E402
+from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer  # noqa: E402
 
 from ghoshell_terminal.channel import build_terminal_channel  # noqa: E402
 from ghoshell_terminal.store import CardStore, Mode  # noqa: E402
@@ -89,6 +90,12 @@ async def main(matrix: Matrix) -> None:
 
     await surface.start()
     print(f"[terminal] cards at {surface.url} — root {store.root}", flush=True)
+    # Announce this node's page on the mesh so any screen adopts it as a window.
+    # The url is runtime data (an ephemeral port), so the declaration is built here.
+    await WebViewServer.serve(
+        matrix,
+        WebViewDeclaration(url=surface.url, title="terminal", icon="terminal"),
+    )
     await matrix.provide_channel(channel)
 
 

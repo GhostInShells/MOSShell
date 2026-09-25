@@ -26,6 +26,7 @@ _NODE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_NODE_DIR / "src"))
 
 from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
+from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer  # noqa: E402
 
 from ghoshell_file_editor.channel import build_file_editor_channel  # noqa: E402
 from ghoshell_file_editor.store import DocStore  # noqa: E402
@@ -84,6 +85,11 @@ async def main(matrix: Matrix) -> None:
 
     await surface.start()
     print(f"[file_editor] cards at {surface.url} — drafts {store.drafts_dir}", flush=True)
+    # Announce this node's page on the mesh so any screen adopts it as a window.
+    await WebViewServer.serve(
+        matrix,
+        WebViewDeclaration(url=surface.url, title="file editor", icon="editor"),
+    )
     await matrix.provide_channel(channel)
 
 

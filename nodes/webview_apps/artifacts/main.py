@@ -24,6 +24,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
 
 _NODE_DIR = Path(__file__).resolve().parent
 _INDEX_HTML = _NODE_DIR / "index.html"
@@ -215,7 +216,7 @@ class SurfaceServer:
             self._server = None
 
 
-def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer):
+def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer, matrix: Matrix):
     chan = new_channel(
         name="artifacts",
         description=(
@@ -367,6 +368,12 @@ def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer):
     @chan.build.startup
     async def _startup() -> None:
         await server.start()
+        # Announce this node's page on the mesh so any screen adopts it as a window.
+        # The url is runtime data (an ephemeral port), so it is only known here.
+        await WebViewServer.serve(
+            matrix,
+            WebViewDeclaration(url=server.url, title="artifacts", icon="artifacts"),
+        )
 
     @chan.build.close
     async def _close() -> None:
@@ -378,7 +385,7 @@ def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer):
 async def main(matrix: Matrix) -> None:
     store = ArtifactStore()
     server = SurfaceServer(store, host=HOST, port=PORT, html_path=_INDEX_HTML)
-    channel = new_artifacts_channel(store, server)
+    channel = new_artifacts_channel(store, server, matrix)
     await matrix.provide_channel(channel)
 
 
