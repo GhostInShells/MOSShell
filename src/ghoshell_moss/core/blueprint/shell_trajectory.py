@@ -189,23 +189,10 @@ class MShellContextFacade:
         self._selected_channels = _selected_channels
         self._selected_channel_wildcards = _selected_channel_wildcards
         self._accept_all = len(self._selected_channels) == 0 and len(self._selected_channel_wildcards) == 0
-        self._cached_channel_metas: dict[ChannelFullPath, ChannelMeta] = {}
-        # 更新 channels.
-        self._on_channel_metas_generation(shell.channel_metas())
-        # 注册更新监听, 持有 discard 句柄.
-        self._discard = shell.on_channel_metas_generation(self._on_channel_metas_generation)
 
-    def discard(self) -> None:
-        """注销 channel metas 重建监听. 幂等."""
-        if self._discard is not None:
-            self._discard()
-            self._discard = None
-
-    def _on_channel_metas_generation(self, metas: dict[ChannelFullPath, ChannelMeta]) -> None:
-        """监听 channel_metas 被重新构建完. """
+    def _select(self, metas: dict[ChannelFullPath, ChannelMeta]) -> dict[ChannelFullPath, ChannelMeta]:
         if self._accept_all:
-            self._cached_channel_metas = dict(sorted(metas.items(), key=lambda item: item[0]))
-            return
+            return dict(sorted(metas.items(), key=lambda item: item[0]))
         result = {}
         for path in self._selected_channels:
             if path in metas:
@@ -219,22 +206,26 @@ class MShellContextFacade:
                         result[path] = metas[path]
                         break
         # 确保排序符合预期.
-        metas = dict(sorted(result.items(), key=lambda item: item[0]))
-        self._cached_channel_metas = metas
+        return dict(sorted(result.items(), key=lambda item: item[0]))
 
     def meta_instruction(self) -> str:
         """返回 shell 自己的 meta instruction, 通常主要是 ctml (logos) 语法"""
         return self.shell.meta_instruction()
 
     def channel_metas(self, available_only: bool = True) -> dict[ChannelFullPath, ChannelMeta]:
-        """有序排列 metas. """
+        """有序排列 metas. 每次向 shell 动态取活数据."""
+        # 不走快照: shell 的 meta 重生成不止发生在 shell 层的 refresh_metas 上 ——
+        # node/tree 级刷新、virtual children 变化、channel 自刷都会改 tree 里的 meta,
+        # 快照会漏掉这些变化, 让帧差分把已经变了的表面当成未变而吞掉.
+        metas = self.shell.channel_metas(available_only=False)
+        result = self._select(metas)
         if available_only:
-            return {key: meta for key, meta in self._cached_channel_metas.items() if meta.available}
-        return self._cached_channel_metas
+            return {key: meta for key, meta in result.items() if meta.available}
+        return result
 
     def get_channel_meta(self, path: ChannelFullPath) -> ChannelMeta | None:
         """获取指定的 channel meta"""
-        return self._cached_channel_metas.get(path)
+        return self._select(self.shell.channel_metas(available_only=False)).get(path)
 
     @staticmethod
     def render_full_facade(metas: dict[ChannelFullPath, ChannelMeta]) -> str:
@@ -727,7 +718,6 @@ class MShellTrajectory:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.facade.discard()
         if self._tracer:
             self._tracer.close()
             self._tracer = None

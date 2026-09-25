@@ -397,8 +397,6 @@ class Dolores(Ghost):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._facade is not None:
-            self._facade.discard()
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
     # ── startup (born) ───────────────────────────────

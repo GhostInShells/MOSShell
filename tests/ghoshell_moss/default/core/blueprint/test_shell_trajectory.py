@@ -456,6 +456,51 @@ async def test_unavailable_channel_emits_tombstone_then_reappears():
 
 
 @pytest.mark.asyncio
+async def test_frame_delta_sees_metas_regenerated_outside_shell_layer():
+    """meta 在 shell 层之外重生成 (tree 级刷新) 时, 帧差分必须照样看见变化.
+
+    facade 曾持有 meta 快照, 只在 shell 层的生成回调里更新; 而 channel 自刷 / virtual
+    children 变化走的是 tree 级刷新, 不 fire 那个回调. 快照与活数据一分叉, 上一帧与当前帧
+    就同源, notice 与 named notice 的变化会被 ``created`` 闸门一起吞掉. 这里用 tree 级
+    refresh 复现该路径: 同一个 channel 的无名 notice 与有名片段同时变, 两者必须分别签发.
+    """
+    from ghoshell_moss.core.blueprint.channel_builder import new_channel
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell("traj_meta_outside_shell")
+    chan = new_channel(name="chan")
+    state = {"notice": "n0", "vision": "v0"}
+
+    @chan.build.notice
+    def _notice() -> str:
+        return state["notice"]
+
+    @chan.build.named_notices
+    def _named() -> dict[str, str | None]:
+        return {"vision": state["vision"]}
+
+    @chan.build.command()
+    async def hello() -> str:
+        return "world"
+
+    shell.main_channel.import_channels(chan)
+
+    async with shell:
+        async with MShellTrajectory(shell) as trajectory:
+            assert "n0" in trajectory.epoch_start_point(refresh=True)
+
+            state["notice"] = "n1"
+            state["vision"] = "v1"
+            # 不走 shell.refresh_metas: 直接在 tree 上重生成这个节点的 meta.
+            await shell.runtime.tree.refresh(chan.id(), wait=True)
+
+            delta = trajectory.pop_frame().facade_delta()
+            assert "<notice>" in delta
+            assert "n1" in delta  # 无名 notice
+            assert "<vision>v1</vision>" in delta  # 有名片段
+
+
+@pytest.mark.asyncio
 async def test_instruction_re_renders_at_epoch_start_point():
     """instruction 不再 startup 冻结 — refresh 重渲染, 新 epoch 的全量 facade 带新内容.
 
