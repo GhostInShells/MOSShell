@@ -414,6 +414,90 @@ class TestDoloresEgoObserveContinuation:
         assert DoloresEgo.needs_observe(None, self._thinking(None)) is False
 
 
+class TestDoloresEgoReasoningEffort:
+    """enter_thinking 的 reasoning_effort 一次性解析 — 帧 effort 优先, 否则用 ego 一次性声明, 消费即置空."""
+
+    @staticmethod
+    def _ego(launcher):
+        from ._ego import DoloresEgo, DoloresEgoContext
+
+        return DoloresEgo(
+            launcher=launcher,
+            ctx=DoloresEgoContext(
+                project_home=Path("."),
+                project_name="pytest",
+                name="dolores",
+                mode="pytest",
+                instruction="i",
+                facade=None,
+            ),
+        )
+
+    @staticmethod
+    def _thinking(effort):
+        from ghoshell_moss.core.blueprint.moment import Moment
+
+        return SimpleNamespace(
+            moment=Moment(index=0),
+            observer=SimpleNamespace(
+                epoch=SimpleNamespace(id="0", index=0, recap=[], baseline={}),
+            ),
+            effort=lambda: effort,
+        )
+
+    class _Launcher:
+        def __init__(self):
+            self.calls = []
+
+        async def call(self, path, payload=None, *, timeout=None):
+            self.calls.append((path, payload))
+            return {}
+
+    @pytest.mark.asyncio
+    async def test_frame_effort_wins_over_default(self):
+        """帧自带明确 effort (非 '') → 一次性声明不施加, 帧 effort 直通 reasoning_effort."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+        ego.default_thinking_effort = "high"
+
+        await ego.enter_thinking(self._thinking("low"))
+
+        payload = launcher.calls[0][1]
+        assert payload["effort"] == "low"
+        assert payload["reasoning_effort"] == "low"
+        assert ego.default_thinking_effort is None  # 每轮消费完即置空
+
+    @pytest.mark.asyncio
+    async def test_default_effort_redefines_when_frame_is_default(self):
+        """帧 effort == '' → 用 ego 的一次性声明重定义 reasoning_effort, 消费即置空."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+        ego.default_thinking_effort = "high"
+
+        await ego.enter_thinking(self._thinking(""))
+
+        payload = launcher.calls[0][1]
+        assert payload["effort"] == ""
+        assert payload["reasoning_effort"] == "high"
+        assert ego.default_thinking_effort is None
+
+    @pytest.mark.asyncio
+    async def test_no_default_means_no_override(self):
+        """default 已消费 (None) → reasoning_effort 为 None, 不覆盖 dsh/UI 持有的强度.
+
+        ego 首帧消费掉初始 "off" 后 default 恒 None; 之后 enter 不再带 reasoning_effort,
+        强度归 dsh/UI. 此处显式置 None 模拟"已消费"的状态.
+        """
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+        ego.default_thinking_effort = None
+
+        await ego.enter_thinking(self._thinking(""))
+
+        payload = launcher.calls[0][1]
+        assert payload["reasoning_effort"] is None
+
+
 class TestDoloresMemories:
     """Dolores.memories — ground 渲染为第一条存在主义记忆."""
 
@@ -1169,6 +1253,12 @@ class FakeArticulator:
         if raise_interpret_error and self.interpret_error is not None:
             raise self.interpret_error
 
+    async def wait_observed(self, raise_interpret_error: bool = False):
+        if raise_interpret_error and self.interpret_error is not None:
+            raise self.interpret_error
+        if self._log is not None:
+            self._log.append("wait_observed")
+
     async def wait_action_done(self):
         if self._log is not None:
             self._log.append("wait_action_done")
@@ -1198,7 +1288,11 @@ class FakeRunThinking:
         self.articulators.append(art)
         return art
 
-    # ctml_append 的尾巴要经这两步: 等 action 停 (含解释器关闭与轨迹落盘) + 签发最新 moment.
+    def add_echoes(self, *messages, observe=False):
+        if self._log is not None:
+            self._log.append(f"add_echoes:{observe}")
+
+    # interpret 的尾巴经这一步: 等 action 停 (含解释器关闭与轨迹落盘) + 签发最新 moment.
     async def wait_actions_done(self):
         if self._log is not None:
             self._log.append("wait_actions_done")
@@ -1351,8 +1445,8 @@ class TestDoloresRun:
         assert ego.rpc_calls == [("call_s", "idle, 2 actions running", None, False)]
 
     @pytest.mark.asyncio
-    async def test_wait_action_done_observes_moment(self):
-        """moss_wait_action_done 等动作完 + observe 最新 moment (返回 moment_ref 并注入)."""
+    async def test_observe_observes_moment(self):
+        """moss_observe 等动作完 + observe 最新 moment (返回 moment_ref 并注入)."""
         from ghoshell_moss.core.blueprint.moment import Moment
 
         from ._run import DoloresRun
@@ -1388,14 +1482,14 @@ class TestDoloresRun:
         run = DoloresRun(
             ego=ego, thinking=thinking, thinking_event=asyncio.Event(), facade=_Facade(),
         )
-        await run._handle_tool_use_event(self._tool_call("moss_wait_action_done", call_id="call_w"), {})
+        await run._handle_tool_use_event(self._tool_call("moss_observe", call_id="call_w"), {})
         assert ego.rpc_calls == [
             ("call_w", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
         ]
 
     @pytest.mark.asyncio
-    async def test_wait_action_done_replan_empty(self):
-        """replan="" → replan articulator (空 ctml, 不发内容) 先换 plan, 再 wait + observe."""
+    async def test_observe_interrupt_replans_then_observes(self):
+        """interrupt=true → 先空 replan (kind='clear') 中止当前行动, 等它落地, 再 wait + observe."""
         from ghoshell_moss.core.blueprint.moment import Moment
 
         from ._run import DoloresRun
@@ -1440,99 +1534,12 @@ class TestDoloresRun:
             ego=ego, thinking=thinking, thinking_event=asyncio.Event(), facade=_Facade(),
         )
         await run._handle_tool_use_event(
-            self._tool_call("moss_wait_action_done", '{"replan": ""}', call_id="call_i"), {},
+            self._tool_call("moss_observe", '{"interrupt": true}', call_id="call_i"), {},
         )
 
         assert thinking.replans == [True]
-        assert thinking.articulators[0].sent == []  # 空 ctml, 没发内容
+        assert thinking.articulators[0].sent == []  # 空 replan, 没发内容
         assert ego.rpc_calls[0][1] == {"moment_ref": "3-9"}
-
-    @pytest.mark.asyncio
-    async def test_wait_action_done_replan_ctml(self):
-        """replan="<say>hi</say>" → replan articulator 发这段 ctml, 再 wait + observe."""
-        from ghoshell_moss.core.blueprint.moment import Moment
-
-        from ._run import DoloresRun
-
-        class _Epoch:
-            index = 3
-
-        class _Observer:
-            epoch = _Epoch()
-
-        class _Shell:
-            async def refresh_metas(self, timeout=None, stale_time=None):
-                pass
-
-        class _Facade:
-            def __init__(self):
-                self.shell = _Shell()
-
-        class _Thinking(FakeRunThinking):
-            def __init__(self):
-                super().__init__()
-                self.replans: list[bool] = []
-
-            def articulator(self, replan=False, wait_action_done=False):
-                self.replans.append(replan)
-                return super().articulator(replan=replan, wait_action_done=wait_action_done)
-
-            async def wait_actions_done(self):
-                pass
-
-            def observe(self):
-                return Moment(id="m", index=9)
-
-            @property
-            def observer(self):
-                return _Observer()
-
-        session = FakeRunSession()
-        ego = FakeDispatchEgo(session)
-        thinking = _Thinking()
-        run = DoloresRun(
-            ego=ego, thinking=thinking, thinking_event=asyncio.Event(), facade=_Facade(),
-        )
-        await run._handle_tool_use_event(
-            self._tool_call("moss_wait_action_done", '{"replan": "<say>hi</say>"}', call_id="call_i"), {},
-        )
-
-        assert thinking.replans == [True]
-        assert thinking.articulators[0].sent == ["<say>hi</say>"]
-        assert ego.rpc_calls[0][1] == {"moment_ref": "3-9"}
-
-    @pytest.mark.asyncio
-    async def test_wait_action_done_replan_interpret_error(self):
-        """replan ctml 编译失败 → add_echoes(observe=True) 签发下一帧 + "ctml syntax error" + cancel."""
-        from ghoshell_moss.core.concepts.errors import InterpretError
-
-        from ._run import DoloresRun
-
-        class _Thinking(FakeRunThinking):
-            def __init__(self):
-                super().__init__()
-                self.observes: list[bool] = []
-
-            def articulator(self, replan=False, wait_action_done=False):
-                art = super().articulator(replan=replan, wait_action_done=wait_action_done)
-                art.interpret_error = InterpretError("bad replan")
-                return art
-
-            def add_echoes(self, *messages, observe=False):
-                self.observes.append(observe)
-
-        session = FakeRunSession()
-        ego = FakeDispatchEgo(session)
-        thinking = _Thinking()
-        run = DoloresRun(
-            ego=ego, thinking=thinking, thinking_event=asyncio.Event(), facade=None,
-        )
-        await run._handle_tool_use_event(
-            self._tool_call("moss_wait_action_done", '{"replan": "<bad>"}', call_id="call_i"), {},
-        )
-
-        assert thinking.observes == [True]
-        assert ego.rpc_calls == [("call_i", "ctml syntax error", None, True)]
 
     @pytest.mark.asyncio
     async def test_aenter_binds_listener_and_aexit_cleans_up(self):
@@ -1567,38 +1574,30 @@ class TestDoloresRun:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("reason", "expected"),
+        "reason",
         [
-            ({"kind": "aborted", "reason": {"kind": "user"}}, "aborted/user"),
-            ({"kind": "error"}, "error"),
-            ({"kind": "max-tokens"}, "max-tokens"),
+            {"kind": "aborted", "reason": {"kind": "user"}},
+            {"kind": "error"},
+            {"kind": "max-tokens"},
+            {"kind": "interrupted"},
+            {"kind": "completed"},
         ],
     )
-    async def test_turn_end_aborts_thinking(self, reason, expected):
-        """aborted/error/max-tokens → 打断 thinking."""
-        session = FakeRunSession()
-        ego = FakeRunEgo(session)
-        thinking = FakeRunThinking()
-        run = self._run(session=session, ego=ego, thinking=thinking)
-        async with run:
-            await session.emit(self._text_chunk("plain text", seq=1))
-            await session.emit(self._event("turn/end", {"turn": 1, "reason": reason}, seq=2))
-            async for _ in run.logos():
-                pass
-        assert thinking.abort_reasons == [expected]
+    async def test_turn_end_never_aborts_thinking(self, reason):
+        """turn/end 只收线本帧, 绝不冒泡 abort — 无论 reason.kind 是什么.
 
-    @pytest.mark.asyncio
-    async def test_turn_end_interrupted_does_not_abort(self):
-        """interrupted → 不打断: dsh 已 settle, MOSS 照常轮转."""
+        冒泡 (Thinking.abort → attention.abort) 会连 attention 一起杀掉, 使 need_observe 驱动的
+        回声帧循环 `while not attention.is_aborted() and need_observe()` 永远起不来 —— interpret
+        error 自愈帧 / moss_reasoning 续帧全丢. 本帧的退出走自然路径: logos() 在此返回 → run
+        收线 → articulate 返回 → 帧自己结束; run 退出时另 cancel dsh, 双向对齐.
+        """
         session = FakeRunSession()
         ego = FakeRunEgo(session)
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
             await session.emit(self._text_chunk("<say>hi</say>", seq=1))
-            await session.emit(
-                self._event("turn/end", {"turn": 1, "reason": {"kind": "interrupted"}}, seq=2),
-            )
+            await session.emit(self._event("turn/end", {"turn": 1, "reason": reason}, seq=2))
             async for _ in run.logos():
                 pass
         assert thinking.abort_reasons == []
@@ -1686,8 +1685,8 @@ class TestDoloresRun:
         assert ego.rpc_turns == [7]
 
     @pytest.mark.asyncio
-    async def test_wait_next_moment_result_carries_cancel(self):
-        """wait_next_moment 用结果协议里的 cancel flag 收线 — 不是 final answer, 也不用 abort."""
+    async def test_wait_next_result_carries_cancel(self):
+        """moss_wait_next 用结果协议里的 cancel flag 收线 — 不是 final answer, 也不用 abort."""
         from ._run import DoloresRun
 
         class _Thinking:
@@ -1703,7 +1702,7 @@ class TestDoloresRun:
         run = DoloresRun(
             ego=ego, thinking=thinking, thinking_event=asyncio.Event(), facade=None,
         )
-        await run._handle_tool_use_event(self._tool_call("moss_wait_next_moment", call_id="call_w"), {})
+        await run._handle_tool_use_event(self._tool_call("moss_wait_next", call_id="call_w"), {})
 
         assert thinking.actions_done == 1
         assert ego.rpc_calls == [("call_w", "yielded", None, True)]
@@ -1733,26 +1732,28 @@ class TestDoloresRun:
         return TestDoloresRun._event("turn/end", {"turn": 1, "reason": {"kind": "completed"}}, seq=seq)
 
     @pytest.mark.asyncio
-    async def test_ctml_delta_streams_into_articulator_then_returns_compiled(self):
-        """流式 ctml: delta 逐片进 articulator, tool/call 只收线 (wait_compiled → "compiled")."""
+    async def test_interpret_delta_streams_into_articulator_then_returns_moment(self):
+        """流式 ctml: delta 逐片进 articulator, tool/call 收线 → 等 observed → 签发并注入 moment."""
         session = FakeRunSession()
         ego = FakeDispatchEgo(session)
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._ctml_delta("c1", name="moss_ctml_append", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", name="moss_interpret", arguments_delta='{"ctml":"<say>', seq=1))
             await session.emit(self._ctml_delta("c1", arguments_delta='hi</say>"}', seq=2))
-            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
+            await session.emit(self._tool_call_event("moss_interpret", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
             await session.emit(self._turn_end(seq=4))
             async for _ in run.logos():
                 pass
 
         assert len(thinking.articulators) == 1
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
-        assert ego.rpc_calls == [("c1", {"moment_ref": "3-7"}, None, False)]
+        assert ego.rpc_calls == [
+            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+        ]
 
     @pytest.mark.asyncio
-    async def test_ctml_interpret_error_returns_cancel(self):
+    async def test_interpret_error_returns_cancel(self):
         """interpret error → 一行 ctml syntax error + cancel (细节留给下一轮 echoes)."""
         from ghoshell_moss.core.concepts.errors import InterpretError
 
@@ -1767,8 +1768,8 @@ class TestDoloresRun:
         thinking = _ErrorThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._ctml_delta("c1", name="moss_ctml_append", arguments_delta='{"ctml":"<bad>"}', seq=1))
-            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<bad>"}', "c1", seq=2))
+            await session.emit(self._ctml_delta("c1", name="moss_interpret", arguments_delta='{"ctml":"<bad>"}', seq=1))
+            await session.emit(self._tool_call_event("moss_interpret", '{"ctml":"<bad>"}', "c1", seq=2))
             await session.emit(self._turn_end(seq=3))
             async for _ in run.logos():
                 pass
@@ -1776,24 +1777,26 @@ class TestDoloresRun:
         assert ego.rpc_calls == [("c1", "ctml syntax error", None, True)]
 
     @pytest.mark.asyncio
-    async def test_ctml_append_without_deltas_sends_whole_argument(self):
+    async def test_interpret_without_deltas_sends_whole_argument(self):
         """无 delta (形状不符/整段回退): tool/call 一次性发完整 ctml."""
         session = FakeRunSession()
         ego = FakeDispatchEgo(session)
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<say>hi</say>"}', "c1", seq=1))
+            await session.emit(self._tool_call_event("moss_interpret", '{"ctml":"<say>hi</say>"}', "c1", seq=1))
             await session.emit(self._turn_end(seq=2))
             async for _ in run.logos():
                 pass
 
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
-        assert ego.rpc_calls == [("c1", {"moment_ref": "3-7"}, None, False)]
+        assert ego.rpc_calls == [
+            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+        ]
 
     @pytest.mark.asyncio
-    async def test_ctml_append_opens_and_closes_the_articulator_lifecycle(self):
-        """回归: ctml_append 必须展开 articulator 的 async-with 生命周期 (__aenter__/__aexit__ 各一次).
+    async def test_interpret_opens_and_closes_the_articulator_lifecycle(self):
+        """回归: interpret 必须展开 articulator 的 async-with 生命周期 (__aenter__/__aexit__ 各一次).
 
         旧实现在 send + wait_compiled 后直接 return ToolCallResult, 从不退出边界 —— articulator 停在
         _commit 之后, 收尾永不发生, 插件侧于是把 pending tool 判成 settled, 结果回执被丢弃
@@ -1804,9 +1807,9 @@ class TestDoloresRun:
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._ctml_delta("c1", name="moss_ctml_append", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", name="moss_interpret", arguments_delta='{"ctml":"<say>', seq=1))
             await session.emit(self._ctml_delta("c1", arguments_delta='hi</say>"}', seq=2))
-            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
+            await session.emit(self._tool_call_event("moss_interpret", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
             await session.emit(self._turn_end(seq=4))
             async for _ in run.logos():
                 pass
@@ -1817,11 +1820,10 @@ class TestDoloresRun:
         assert "".join(art.sent) == "<say>hi</say>"
 
     @pytest.mark.asyncio
-    async def test_ctml_append_waits_for_actions_done(self):
-        """ctml_append 返回前必须等动作全部跑完 —— 不是只等编译完成.
+    async def test_interpret_waits_for_observed_not_actions_done(self):
+        """interpret 只等 observed 命令落地, 不等动作全部跑完 —— 非 observe 命令跨帧继续跑.
 
-        对一个只用耳朵在场的人, 模型在两次调用之间生成的 token 是纯静音: 等在这里, 一个可听的
-        动作才对应一轮, 模型不会跑到耳朵前面; 下一针思考也因此落在已经发生的世界上.
+        这是第五轮的关键语义转向: 等什么由 CTML 里的 @observe 声明, 而非"所有动作跑完".
         """
         session = FakeRunSession()
         ego = FakeDispatchEgo(session)
@@ -1829,37 +1831,32 @@ class TestDoloresRun:
         thinking = FakeRunThinking(log)
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._ctml_delta("c1", name="moss_ctml_append", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", name="moss_interpret", arguments_delta='{"ctml":"<say>', seq=1))
             await session.emit(self._ctml_delta("c1", arguments_delta='hi</say>"}', seq=2))
-            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
+            await session.emit(self._tool_call_event("moss_interpret", '{"ctml":"<say>hi</say>"}', "c1", seq=3))
             await session.emit(self._turn_end(seq=4))
             async for _ in run.logos():
                 pass
 
-        assert log.count("wait_action_done") == 1, "ctml_append 返回前必须等动作跑完"
-        assert log.count("wait_actions_done") == 1, "还必须等 action 停 —— 解释器关闭、轨迹落盘之后才签发"
-        assert ego.rpc_calls == [("c1", {"moment_ref": "3-7"}, None, False)], "签发 moment 并把 ref 随 tool 结果交回"
+        assert log.count("wait_observed") == 1, "interpret 等 observed 命令落地"
+        assert log.count("wait_action_done") == 0, "interpret 不再等动作全部跑完"
+        assert log.count("wait_actions_done") == 0, "interpret 不再等 action 停 (跨帧继续)"
+        assert ego.rpc_calls == [
+            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+        ]
 
     @pytest.mark.asyncio
-    async def test_react_opens_and_closes_the_articulator_lifecycle(self):
-        """回归: moss_react 同样必须展开生命周期 —— 它曾从 ctml_append 复制了裸 send + wait_compiled 的形状."""
-        from ._react import React, ReactStore
-
-        class _ReactEgo(FakeDispatchEgo):
-            def __init__(self, session):
-                super().__init__(session)
-                self.react_store = ReactStore()
-                self.react_store.define([React(char="x", template="<say>%s</say>")])
-
+    async def test_react_streams_and_cuts_turn(self):
+        """moss_react: 共享流式解析, 只等 compiled 就 cancel 本回合, 不签发 moment."""
         session = FakeRunSession()
-        ego = _ReactEgo(session)
+        ego = FakeDispatchEgo(session)
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._tool_call_event(
-                "moss_react", '{"char":"x","args":["hi"],"wait_next_moment":false}', "c2", seq=1,
-            ))
-            await session.emit(self._turn_end(seq=2))
+            await session.emit(self._ctml_delta("c2", name="moss_react", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c2", arguments_delta='hi</say>"}', seq=2))
+            await session.emit(self._tool_call_event("moss_react", '{"ctml":"<say>hi</say>"}', "c2", seq=3))
+            await session.emit(self._turn_end(seq=4))
             async for _ in run.logos():
                 pass
 
@@ -1867,17 +1864,34 @@ class TestDoloresRun:
         assert art.entered == 1, "articulator 必须被展开一次"
         assert art.exited == 1, "articulator 必须被收尾一次"
         assert "".join(art.sent) == "<say>hi</say>"
+        assert ego.rpc_calls == [("c2", "reacted", None, True)]
 
     @pytest.mark.asyncio
-    async def test_ctml_stream_parse_error_returns_cancel(self):
+    async def test_reasoning_sets_one_shot_effort_and_cancels(self):
+        """moss_reasoning: 设 ego 的一次性 effort + add_echoes(observe=True) 驱动下一帧 + cancel 中断."""
+        from ._run import DoloresRun
+
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        log: list = []
+        thinking = FakeRunThinking(log)
+        run = DoloresRun(ego=ego, thinking=thinking, thinking_event=asyncio.Event(), facade=None)
+        await run._handle_tool_use_event(self._tool_call("moss_reasoning", '{"effort": "high"}', call_id="c_r"), {})
+
+        assert ego.default_thinking_effort == "high"
+        assert log == ["add_echoes:True"], "reasoning 必须 mark need_observe 驱动下一帧"
+        assert ego.rpc_calls == [("c_r", {"effort": "high"}, None, True)]
+
+    @pytest.mark.asyncio
+    async def test_interpret_stream_parse_error_returns_cancel(self):
         """流式解析出错 (非法转义) → 回 "ctml parse error" + cancel (不 fallback)."""
         session = FakeRunSession()
         ego = FakeDispatchEgo(session)
         thinking = FakeRunThinking()
         run = self._run(session=session, ego=ego, thinking=thinking)
         async with run:
-            await session.emit(self._ctml_delta("c1", name="moss_ctml_append", arguments_delta='{"ctml":"<say>\\x', seq=1))
-            await session.emit(self._tool_call_event("moss_ctml_append", '{"ctml":"<say>"}', "c1", seq=2))
+            await session.emit(self._ctml_delta("c1", name="moss_interpret", arguments_delta='{"ctml":"<say>\\x', seq=1))
+            await session.emit(self._tool_call_event("moss_interpret", '{"ctml":"<say>"}', "c1", seq=2))
             await session.emit(self._turn_end(seq=3))
             async for _ in run.logos():
                 pass
@@ -2153,15 +2167,13 @@ class TestBuildChannel:
         gs = DefaultGroundSet(workspace_root=tmp_path)
         frame_root = tmp_path / "frames"
         frame_root.mkdir()
-        (frame_root / "orientation.frame.md").write_text(
-            "---\n---\n\nWhat am I doing?\n", encoding="utf-8"
-        )
         chan = build_dolores_channel(
             groundset=gs, workspace_root=tmp_path, frame_root=frame_root
         )
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             names = {m.name for m in runtime.metas().values()}
+            assert "frame" in names
             assert "ground" in names
 
     @pytest.mark.asyncio

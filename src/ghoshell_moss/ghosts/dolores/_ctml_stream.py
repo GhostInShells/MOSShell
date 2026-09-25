@@ -1,4 +1,4 @@
-"""Streaming extractor for the ``moss_ctml_append`` tool's single string argument.
+"""Streaming extractor for the streaming CTML tools' (``moss_interpret`` / ``moss_react``) single string argument.
 
 The tool's arguments are the JSON object ``{"ctml": "<the CTML>"}``. dsh streams the argument text
 token by token (``tool-call-delta.argumentsDelta``); this object turns that raw JSON fragment stream

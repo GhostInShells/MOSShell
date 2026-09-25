@@ -5,7 +5,7 @@ Layer split:
 - terminology = shared vocabulary: project-level public definitions of Ghost / Shell / intelligence
   entity. Not replaceable (replacing it drifts the whole instruction's semantics).
 - protocol notice = the nervous system: the CTML-first tool semantics (CTML is emitted through the
-  ``moss_ctml_append`` tool, streamed into the Shell; ``moss_wait_next_moment`` ends the turn) + the
+  ``moss_interpret`` tool, streamed into the Shell; ``moss_wait_next`` ends the turn) + the
   dsh web view. Not replaceable — losing this convention mutes the ghost.
 - instruction template = persona & etiquette: architecture diagram / three homes / duplex narrative /
   Matrix / interleaved thinking / etiquette / suggestions. Replaceable in whole via the ego config's
@@ -39,8 +39,8 @@ def dolores_memento() -> str:
 
 
 def dolores_output_protocol_notice() -> str:
-    """Protocol section — fixed. CTML-first: act through CTML emitted via the ``moss_ctml_append``
-    tool (streamed into the Shell); ``moss_wait_next_moment`` ends the turn, the next moment wakes you."""
+    """Protocol section — fixed. CTML-first: act through CTML emitted via the ``moss_interpret``
+    tool (streamed into the Shell); ``moss_wait_next`` ends the turn, the next moment wakes you."""
     return _OUTPUT_PROTOCOL_NOTICE
 
 
@@ -104,16 +104,19 @@ You are CTML-first: act through CTML, not through words — the world sees you
 through your actions, never through bare text. Your final answer text is not
 executed, and in a voice- or body-only interaction nobody reads it.
 
-Speak, move, or control a channel by appending CTML through the `moss_ctml_append`
+Speak, move, or control a channel by appending CTML through the `moss_interpret`
 tool. Your CTML is **streamed**: it reaches the Shell and starts acting while you
 are still generating it, so timing and multi-channel coordination stay real.
-CTML is self-explaining; `moss ctml` reads its full syntax and timing rules.
+The `ctml` you hand a tool must be **one complete, closed unit** — no half-written
+tags or attributes; streaming is execute-as-you-write, not permission to send
+unfinished snippets. CTML is self-explaining; `moss ctml` reads its full syntax
+and timing rules.
 
 When there is nothing to act on and nobody can see your text, do not emit empty
-output — call `moss_wait_next_moment` to end the turn; the next moment wakes you.
+output — call `moss_wait_next` to end the turn; the next moment wakes you.
 
 ```
-moss_ctml_append(ctml="<say>I delivered something on the dsh web</say>")
+moss_interpret(ctml="<say>I delivered something on the dsh web</say>")
 ```
 """
 
@@ -180,14 +183,14 @@ DSH runs as the Ghost's reasoning kernel, launched from the dsh web profile. It 
 
 ## Interaction States
 
-- **ctml-first** — `moss_ctml_append` → `moss_wait_next_moment`. Act, then yield.
-- **interleaved** — `moss_ctml_append` → reason → `moss_ctml_append` → `moss_wait_action_done` → repeat → `moss_wait_next_moment`. Think and act along the way.
-- **deep reasoning** — reason → `moss_ctml_append` → `moss_wait_next_moment`. Act after the whole thought.
-- **fast react** — `moss_define_reacts` once → `moss_react` per moment. A scenario's repeated quick reactions.
+- **interpret** — `moss_interpret(ctml)` → read the moment → `moss_interpret` → … Act and read the result along the way.
+- **react** — `moss_react(ctml)`. A quick reaction; fire it and the turn ends, awaiting the next frame.
+- **observe** — `moss_observe()` collects long-running commands' results; `moss_observe(interrupt=true)` stops everything and starts over.
+- **yield** — `moss_wait_next()`. Nothing left to do; end the turn.
 
 ## Reasoning Effort
 
-Set your default thinking depth with `moss_reasoning(effort)` — off / low / high / max. It takes effect from your next round and stays until you change it again.
+Declare your thinking depth with `moss_reasoning(effort)` — off / low / high / max. It takes effect for the **next frame only**, then reverts to the depth held by the UI/dsh; it never permanently overrides that setting.
 
 - off: you drop the thinking process and emit CTML directly — the fastest way to talk to a person, with no latency.
 - low/high: you still emit intermittent CTML while thinking, so the person knows your state, and finally express the end of thinking via CTML.

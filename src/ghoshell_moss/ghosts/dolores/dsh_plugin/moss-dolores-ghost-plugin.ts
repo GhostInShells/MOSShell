@@ -311,10 +311,11 @@ function settlePendingCallsOnExit(): number {
  * 早到结果暂存 — 结果先于 tool execute 到达时的落点 (不建依赖).
  *
  * 时序契约: tool 的 execute 与 MOSS 侧的结果 RPC 是两个方向. MOSS 走 mux 事件流, 可能在 dsh 派发
- * tool execute (那一刻才 pendingCalls.set) 之前就把结果 POST 回来 — ctml_append 尤其如此: 它的
- * CTML 经 tool-call-delta 流式执行, 模型还没出完 say 就已经跑完并回结果, 结果常常早于注册几毫秒
- * 到几十毫秒. 没有这个暂存, 早到结果会撞上"号不存在" → 400 → MOSS 侧丢弃 → tool 永远等不到 →
- * 整轮卡死 (runtime 观测到的 "moss_ctml_append aborted" 就是这么来的, 间歇性, 看谁先到).
+ * tool execute (那一刻才 pendingCalls.set) 之前就把结果 POST 回来 — 流式工具 (moss_interpret /
+ * moss_react) 尤其如此: 它们的 CTML 经 tool-call-delta 流式执行, 模型还没出完 say 就已经跑完并回
+ * 结果, 结果常常早于注册几毫秒到几十毫秒. 没有这个暂存, 早到结果会撞上"号不存在" → 400 → MOSS 侧
+ * 丢弃 → tool 永远等不到 → 整轮卡死 (runtime 观测到的 "moss_interpret aborted" 就是这么来的,
+ * 间歇性, 看谁先到).
  *
  * 不建依赖: handler 收到早到结果**不阻塞、不等** execute 何时派发, 就地存下 (带它被调用那一轮的
  * turn, 由 MOSS 侧随结果带回); execute 注册前先查这里, 命中即兑现. 早到 ≠ 错号.
@@ -397,22 +398,49 @@ interface ThinkingEnterPayload {
 // 时) 完成, 不经过 agent preset (那样 defineTool 解析不到).
 const egoTools = [
   defineTool({
-    name: 'moss_ctml_append',
-    // 唯一流式 tool: 参数只有 ctml, 经 tool-call-delta 逐字进 articulator (见 _ctml_stream.py).
-    // 模型写一个大的 ctml 时, 不用等一次输出完再编译; 但返回前会等这条 ctml 里的动作全部跑完
-    // (_run.py 的 wait_action_done=True) —— 下一针思考落在已经发生的世界上.
-    description: 'Append CTML mid-thought so the world can see your ongoing thinking as you generate it. Your ctml is streamed into its own action as you write. The call returns once every command in it has finished executing — so the next round of thinking starts from a world that has already caught up; do not plan as if the actions were still in flight. Returns a one-line "ctml syntax error" instead when the ctml fails to compile.',
+    name: 'moss_interpret',
+    // 流式 tool: 参数只有 ctml, 经 tool-call-delta 逐字进 articulator (见 _ctml_stream.py).
+    // 返回前等这条 ctml 里所有 @observe 命令跑完 (不是所有动作 — 非 observe 命令跨帧继续跑),
+    // 再签发最新 moment. 若想"这些必须跑完再返回", 用 ctml 的 <all> 作用域显式声明.
+    description: 'Append CTML mid-thought so the world sees your ongoing thinking as you generate it. Your ctml is streamed into its own action as you write; it must be one complete, closed unit (no half-written tags or attributes). The call returns once every command marked @observe in it has finished — not every command — so long-running non-observed actions keep running across frames. Want it to wait for everything? Declare an <all> scope in the ctml. Returns a moment_ref you can read from next; returns "ctml syntax error" instead when the ctml fails to compile.',
     parameters: {
-      ctml: { type: 'string', required: true, description: 'The CTML to append.' },
+      ctml: { type: 'string', required: true, description: 'One complete CTML unit to execute.' },
     },
     output: {
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
     },
-    execute: async (_args, exec) => awaitToolResult('moss_ctml_append', String(exec.callId), exec.signal),
+    execute: async (_args, exec) => awaitToolResult('moss_interpret', String(exec.callId), exec.signal),
   }),
   defineTool({
-    name: 'moss_wait_next_moment',
+    name: 'moss_react',
+    // fire-and-await: 与 interpret 共享流式解析, 但只等 compiled 就 cut 本 turn. 不签发 moment,
+    // 不等 action — 这条 ctml 里的命令跨帧跑完. 一个真正"发完就走"的快速反应.
+    description: 'Fire a fast reaction as CTML, streamed like moss_interpret. The ctml must be one complete, closed unit. The call returns as soon as it compiles (not executed) and immediately ends the turn — the commands keep running across frames. Use it for a quick response that needs no moment to read back.',
+    parameters: {
+      ctml: { type: 'string', required: true, description: 'One complete CTML unit to execute.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_react', String(exec.callId), exec.signal),
+  }),
+  defineTool({
+    name: 'moss_observe',
+    // interrupt=true 先空 replan (kind='clear') 中止当前所有行动, 再等全部落地; false 只等.
+    description: 'Wait for all your actions to finish, then observe the freshest moment (returned as a moment_ref). Pass interrupt=true to first cancel the current plan (stop everything running) before waiting; interrupt=false just waits. Use it to collect the results of long-running commands that moss_interpret did not wait for.',
+    parameters: {
+      interrupt: { type: 'boolean', default: false, description: 'true cancels the current plan before waiting; false just waits.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_observe', String(exec.callId), exec.signal),
+  }),
+  defineTool({
+    name: 'moss_wait_next',
     // 结果协议带 cancel=true: MOSS 侧 wait_actions_done 后回结果, plugin 立刻 cut 本 turn,
     // 下一 step 不再跑 — 用它代替没人看的 final answer. turn 由 awaitToolResult 在 execute 时捕获.
     description: 'Wait for all your actions to finish, then yield the turn so the next moment wakes you. Use this in a voice/body interaction instead of emitting empty text nobody will read.',
@@ -421,39 +449,7 @@ const egoTools = [
       schema: { type: 'json' },
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute: async (_args, exec) => awaitToolResult('moss_wait_next_moment', String(exec.callId), exec.signal),
-  }),
-  defineTool({
-    name: 'moss_wait_action_done',
-    // replan 非空 (含 "") 先发 replan action (clear interpreter + 这段 ctml) 替换当前 plan,
-    // 再等全部结束 + observe 最新 moment; replan 缺省/null 表示只 wait 不 replan. timeout=-1 无限等.
-    description: 'Wait for all your actions to finish, then observe the freshest moment (returned as a moment_ref). Pass replan as a CTML string to replace the current plan first (an empty string replans with nothing); omit replan to just wait. timeout is seconds to wait, or -1 to wait without bound.',
-    parameters: {
-      replan: { type: 'string', description: 'CTML to replan with before waiting; omit (null) to just wait. An empty string replans with nothing.' },
-      timeout: { type: 'number', default: -1, description: 'Seconds to wait; -1 waits without bound.' },
-    },
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
-    },
-    execute: async (_args, exec) => awaitToolResult('moss_wait_action_done', String(exec.callId), exec.signal),
-  }),
-  defineTool({
-    name: 'moss_reasoning',
-    description: 'Set your default thinking depth (off / low / high / max). The ego records it and applies it from the next round; it stays until you change it again.',
-    parameters: {
-      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'How deeply to think.' },
-    },
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: String(value) }],
-    },
-    execute(args, _exec) {
-      // 纯声明: 只返回 effort, 不立刻改 selection.current (perStep 会让下一 LLM call 在上下文未重编时
-      // 换思考模式 → DeepSeek 报错). ego (MOSS) 监听 tool/call 记下 default effort, 下一轮
-      // enter_thinking 携带 reasoning_effort, 由 thinking/enter 应用到 selection — turn 边界生效.
-      return mapThinkingEffort(args.effort)
-    },
+    execute: async (_args, exec) => awaitToolResult('moss_wait_next', String(exec.callId), exec.signal),
   }),
   defineTool({
     name: 'moss_shell_status',
@@ -480,51 +476,26 @@ const egoTools = [
     execute: async (_args, exec) => awaitToolResult('moss_channel_facade', String(exec.callId), exec.signal),
   }),
   defineTool({
-    name: 'moss_react',
-    // 快应答: char → 运行时定义的 ctml 模板 (%s 槽), args 填入后 stream 进 articulator.
-    // wait_next_moment=true (默认) 等 actions done 后 cancel turn —— 说完就退.
-    description: 'Fire a runtime-defined react: char keys a CTML template you defined with moss_define_reacts; args fill its %s slots to form the CTML, which executes. wait_next_moment=true (default) waits for it to finish, then ends the turn — say it, then done.',
+    name: 'moss_reasoning',
+    // 一次性声明思考强度: ego 记下 default_thinking_effort → add_echoes(need_observe) 驱动下一帧
+    // → 回 tool result + cancel 中断本回合. 强度只作用于下一帧 (enter 时消费一次即置空), 之后
+    // 强度归 dsh/UI 持有, 不与界面竞争.
+    description: 'Declare a one-shot thinking depth (off / low / high / max) for the next frame only. The ego records it, the next thinking frame starts with this depth, then it reverts to the dsh/UI-held depth — it never permanently overrides your UI setting.',
     parameters: {
-      char: { type: 'string', required: true, description: 'The single-character react key.' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Positional args filling the template %s slots, in order.' },
-      wait_next_moment: { type: 'boolean', default: true, description: 'Wait for the CTML to finish, then end the turn.' },
+      effort: { type: 'string', required: true, enum: ['off', 'low', 'high', 'max'], description: 'How deeply to think for the next frame.' },
     },
     output: {
       schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
-    execute: async (_args, exec) => awaitToolResult('moss_react', String(exec.callId), exec.signal),
-  }),
-  defineTool({
-    name: 'moss_define_reacts',
-    // 批量定义快应答: char → ctml 模板 (%s 槽), merge/覆盖, 纯内存. 返回定义了哪些 char.
-    description: 'Bulk define reacts: each item maps a single-character key to a CTML template with %s slots. Merge/overwrite, in-memory only. Returns the chars defined.',
-    parameters: {
-      reacts: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            char: { type: 'string', required: true, description: 'Single-character key.' },
-            template: { type: 'string', required: true, description: 'CTML template; %s slots filled by args.' },
-          },
-        },
-        description: 'List of {char, template} reacts to define.',
-      },
-    },
-    output: {
-      schema: { type: 'json' },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
-    },
-    execute: async (_args, exec) => awaitToolResult('moss_define_reacts', String(exec.callId), exec.signal),
+    execute: async (_args, exec) => awaitToolResult('moss_reasoning', String(exec.callId), exec.signal),
   }),
 ]
 
 // ── per-agent model selection (thinking/enter 应用 default effort 的目标) ──────
 // 每个 ego agent 一份 selection, 装在它自己的 ctx 上 (installModelSelection), 不是模块单例.
-// moss_reasoning 是纯声明 (不改 selection), ego 记下 default effort → 下一轮 enter 携带
-// reasoning_effort → thinking/enter 咬 selection.current 的 reasoningEffort (turn 边界生效).
+// moss_reasoning 是一次性声明: ego 记下 default_thinking_effort → 下一帧 enter 携带 reasoning_effort
+// → thinking/enter 咬 selection.current 的 reasoningEffort (turn 边界生效), 消费一次即置空.
 // provider/model 的权威始终是 canonical 链: picked → request/header(持久) → settings 默认;
 // 改 effort 由 agent/request 应用并落 request/header 日志, 界面自然同步.
 const egoSelections = new WeakMap<Agent, ModelSelectionRef>()
@@ -630,7 +601,7 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
       // 前置旁路 instruction → 成为该 turn 的 surface 节点, 下轮 pre-step 时被 collapseTurn 折叠.
       return { kind: 'enter', messages: [bypassInstruction(), ...decision.messages] }
     }
-    // cancel_turn: 本 turn 的某个 tool 结果已带 cancel (wait_next_moment / react), 直接 cut.
+    // cancel_turn: 本 turn 的某个 tool 结果已带 cancel (moss_wait_next / moss_react / moss_reasoning), 直接 cut.
     // 这个 turn/end (aborted) 就是 MOSS 侧 thinking 退出的信号 — MOSS 自己不主动 cancel.
     activeTurn = turn
     // per-turn 清理: 上一轮残留的早到结果 (没有 execute 会再来取) 丢弃. 本轮结果 turn 一致, 不受影响.
@@ -642,9 +613,9 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     }
     await thinkingGate.wait(undefined, signal)
     const decision = await next()
-    // cancel_turn (after next): 本步内跑完的 tool 可能刚设了 flag —— 正是 wait_next_moment / react
+    // cancel_turn (after next): 本步内跑完的 tool 可能刚设了 flag —— 正是 moss_wait_next / moss_react
     // 的形状: tool result 本身就是这一轮的结束. 上面的 pre-next 检查只能看到「进入本步前就欠着」
-    // 的 flag; 而 tool 在 next() 内返回时设的 flag 不会被消费, 因为 wait_next_moment 之后没有
+    // 的 flag; 而 tool 在 next() 内返回时设的 flag 不会被消费, 因为 moss_wait_next 之后没有
     // 下一个 pre-step —— turn 卡住, MOSS 侧 wait_actions_done 永不返回, thinking 永不退出.
     // 这里 tool result 已落地, 再查一次.
     if (cancelTurn !== null && cancelTurn === turn) {
@@ -881,7 +852,7 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        // default effort (moss_reasoning 延迟生效): ego 记录 → 下一轮 enter 携带 → 应用到 selection.
+        // default effort (moss_reasoning 一次性生效): ego 记录 → 下一帧 enter 携带 → 应用到 selection.
         // turn 边界生效 (上下文重编), 不在 perStep 改 — 避免思考模式中途切换报错.
         if (body.reasoning_effort === 'off' || body.reasoning_effort === 'low' || body.reasoning_effort === 'high' || body.reasoning_effort === 'max') {
           const selection = ensureEgoSelection(agent, ctx)
@@ -1484,19 +1455,6 @@ function flushPendingMoments(agent: Agent): void {
     for (const message of frame.messages) {
       agent.inject(message)
     }
-  }
-}
-
-/** python ThinkingEffort → dsh reasoningEffort 档位. none 由调用方特判 (no turn);
- *  off / '' (default) → off; low/high/max 直传 (DeepSeek 不支持 medium). */
-function mapThinkingEffort(effort: string | undefined): string {
-  switch (effort) {
-    case 'low':
-    case 'high':
-    case 'max':
-      return effort
-    default:
-      return 'off'
   }
 }
 

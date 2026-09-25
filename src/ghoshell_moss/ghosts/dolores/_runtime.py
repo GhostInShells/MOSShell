@@ -38,7 +38,6 @@ from ._prompts import (
     dolores_inception, dolores_memento, dolores_output_protocol_notice, dolores_terminology,
     DOLORES_INSTRUCTION_END,
 )
-from ._react import ReactStore
 
 # ego 轨迹索引的根目录 (相对 ghost_home); branch 名由 memento config 决定.
 _EGO_MEMENTO_DIR = ".memento/ego"
@@ -142,8 +141,6 @@ class Dolores(Ghost):
         self._mindflow: Mindflow | None = None
         # reflexive control channel — built lazily in channel(), registered by the runtime as 'ghost'.
         self._channel: MutableChannel | None = None
-        # react: runtime char→CTML-template table (fast reply), context-governed (no seed/notice).
-        self._react_store = ReactStore()
         # the cognition epoch is opened once, on the first thinking (see think()).
         self._epoch_opened: bool = False
 
@@ -382,7 +379,6 @@ class Dolores(Ghost):
                     config=self._load_ego_config(),
                     memories=self.memories,
                     memento_manager=self._memento_manager,
-                    react_store=self._react_store,
                 )
             )
             # bind the self-wake signal outlet to the MOSS session — matrix.session.add_signal routes to mindflow.

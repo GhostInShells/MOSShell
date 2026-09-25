@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ghoshell_moss.channels.frame_channel import new_frame_channel
 from ghoshell_moss.channels.ground_channel import new_ground_channel
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.ground import GroundSet
@@ -79,5 +80,16 @@ def build_dolores_channel(
     if memento_manager is not None:
         chan.import_channels(
             build_memento_channel(memento_manager, storage_root=memento_root)
+        )
+    if frame_root is not None:
+        chan.import_channels(
+            new_frame_channel(
+                root=frame_root,
+                name="frame",
+                description=(
+                    "Your thinking frame — a question set you resolve from context "
+                    "to hold a stable self-model across context loss."
+                ),
+            )
         )
     return chan

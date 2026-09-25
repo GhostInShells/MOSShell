@@ -47,7 +47,6 @@ from ghoshell_moss.memento.abcd import CommitRef
 
 from ._ego_memento import CommitDecision, EgoMementoConfig, EgoMementoManager
 from ._prompts import dolores_model_notice
-from ._react import ReactStore
 from .nucleus import new_dolores_ego_signal
 
 if TYPE_CHECKING:
@@ -154,7 +153,6 @@ class DoloresEgo:
             logger: LoggerItf | None = None,
             memories: Callable[[], list[Message]] | None = None,
             memento_manager: EgoMementoManager | None = None,
-            react_store: ReactStore | None = None,
     ) -> None:
         """Construct before the ghost enters its lifecycle; side-effect free (no httpx / session / matrix.processes).
 
@@ -175,7 +173,6 @@ class DoloresEgo:
         self._config = config or DoloresEgoConfig()
         self._memories = memories
         self._memento_manager = memento_manager
-        self._react_store = react_store
         self._session: "DshSession | None" = None
         self._ego_session_id: str | None = None
         # anti-bypass token: returned by ego/create, carried by thinking enter/exit, verified by the plugin to reject non-ego calls.
@@ -189,8 +186,10 @@ class DoloresEgo:
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
         # epoch tracking: remembers the last injected epoch id, compared on enter to decide whether to carry an <epoch> container.
         self._moment_epoch: str | None = None
-        # model 自选的默认思考档 (moss_reasoning 声明 → 下一轮 enter 携带 reasoning_effort). '' = 未设 (走 UI 权威).
-        self.default_effort: str = ""
+        # 一次性待消费的思考强度 (moss_reasoning 声明 → 下一帧 enter 携带 reasoning_effort).
+        # 每轮思考消费完即置 None; None 表示不覆盖, 强度归 dsh/GUI 持有. 初始 "off" 让 ego
+        # 首帧显式落在 off, 之后就不再干预 —— 不与界面上的思考档竞争, 只生效一次.
+        self.default_thinking_effort: str | None = "off"
         # 预期模型身份 (provider, model, reasoning_effort) — request/header 观测值与之不符时排一条
         # notice. None = 尚未观测过 (首次观测也算变化: 开局就得知道自己在哪一档).
         self._model_identity: tuple[str, str, str] | None = None
@@ -285,11 +284,6 @@ class DoloresEgo:
         if self._session is None:
             raise RuntimeError("ego session not started. Call __aenter__ first.")
         return self._session
-
-    @property
-    def react_store(self) -> ReactStore | None:
-        """The runtime react table (char → CTML template), shared with the ghost channel. None = react unavailable."""
-        return self._react_store
 
     # ── short-lived: run_thinking (transaction) ──────────────────────
 
@@ -500,18 +494,26 @@ class DoloresEgo:
         """Inject moment (context/inputs) + epoch + effort + reasoning_effort + thinkingToken to start a thinking turn.
 
         ``effort`` is the mindflow's turn-driving effort ('none' = no turn). ``reasoning_effort`` is the
-        model's self-chosen default DSH thinking depth (off/low/high/max), recorded from moss_reasoning
-        and applied at this turn boundary; empty = no override (UI/canonical authority).
+        DSH thinking depth (off/low/high/max) applied at this turn boundary, resolved as:
+
+            reasoning_effort = thinking.effort() if thinking.effort() != '' else self.default_thinking_effort
+
+        A frame that carries its own explicit effort wins; otherwise the ego's one-shot declaration
+        redefines the depth once. ``default_thinking_effort`` is then consumed (set to None), so it
+        never lingers to fight the dsh/GUI-held depth — the declaration takes effect exactly once.
         """
         moment = thinking.moment
         moment_ref = f"{thinking.observer.epoch.index}-{moment.index}"
+        frame_effort = thinking.effort()
+        reasoning_effort = frame_effort if frame_effort != '' else self.default_thinking_effort
+        self.default_thinking_effort = None
         payload = {
             "moment": self._moment_payload(moment, moment_ref),
             "epoch": self._epoch_payload(thinking),
             # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
             "notices": self._drain_notices(),
-            "effort": thinking.effort(),
-            "reasoning_effort": self.default_effort,
+            "effort": frame_effort,
+            "reasoning_effort": reasoning_effort,
             "thinkingToken": self._thinking_token,
             # observe continuation: empty inputs still drive a turn — see needs_observe().
             "needsObserve": self.needs_observe(thinking),

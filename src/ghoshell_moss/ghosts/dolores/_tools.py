@@ -3,6 +3,10 @@
 Each tool class discriminates by name via its own ``from_tool_call(event)``: a name mismatch returns
 None; a match parses ``json.loads(arguments)`` into strongly-typed fields. ``callId`` (dsh camelCase)
 is moved to ``call_id`` (snake_case).
+
+The fifth-round surface is seven tools (see ``dolores-tool-surface.md``): two streaming CTML tools
+(``moss_interpret`` / ``moss_react``), one observe tool, one yield tool, and three non-waiting
+self-inspection / declaration tools.
 """
 
 from abc import ABC, abstractmethod
@@ -13,17 +17,14 @@ from typing_extensions import Self
 from ghoshell_moss.deepseek_harness.types.session_events import ToolCallEvent
 from ghoshell_moss.core.blueprint.moment import Moment
 
-from ._react import React
-
 __all__ = [
-    "CtmlAppendToolCall",
-    "WaitActionDoneToolCall",
-    "WaitNextMomentToolCall",
+    "InterpretToolCall",
+    "ReactToolCall",
+    "ObserveToolCall",
+    "WaitNextToolCall",
     "ShellStatusToolCall",
     "ReasoningToolCall",
     "ChannelFacadeToolCall",
-    "ReactToolCall",
-    "DefineReactsToolCall",
 ]
 
 _ResultType = dict | list | str | None
@@ -57,8 +58,8 @@ class ToolCallResult(BaseModel):
         description=(
             "when true, the plugin cancels the turn as soon as this result unlocks the call: the model "
             "still receives the full result, then the next step is cut. This is how a turn ends without "
-            "a final answer (wait_next_moment / react); the aborted turn/end is what ends the thinking "
-            "transaction, so MOSS never cancels the turn on its own."
+            "a final answer (moss_wait_next / moss_react / moss_reasoning); the turn/end that follows is "
+            "what ends the thinking transaction, so MOSS never cancels the turn on its own."
         ),
     )
 
@@ -125,43 +126,58 @@ class ToolCallParameter(BaseModel, ABC):
         )
 
 
-class CtmlAppendToolCall(ToolCallParameter):
-    """moss_ctml_append — append CTML mid-thought, streamed into its own articulator.
+class InterpretToolCall(ToolCallParameter):
+    """moss_interpret — append CTML mid-thought, streamed into its own articulator, wait for observed.
 
     The single ``ctml`` argument is decoded from the tool-call delta stream (see _ctml_stream.py), so
-    the CTML reaches the shell while the model is still generating. The handler only waits for compile;
-    on an interpret error it returns "ctml syntax error" + cancel (detail arrives in the next echoes).
+    the CTML reaches the shell while the model is still generating. The handler waits for every
+    ``always_observe`` command in the CTML to finish (not all actions — non-observe commands keep
+    running cross-frame), then signs and returns the freshest moment. On an interpret error it returns
+    "ctml syntax error" + cancel.
     """
 
     ctml: str = Field(default="", description="the CTML command to execute.")
 
     @classmethod
     def tool_name(cls) -> str:
-        return "moss_ctml_append"
+        return "moss_interpret"
 
 
-class WaitActionDoneToolCall(ToolCallParameter):
-    """moss_wait_action_done — wait for all actions to finish, then observe the freshest moment.
+class ReactToolCall(ToolCallParameter):
+    """moss_react — fire a fast reaction, streamed into its own articulator, wait for compiled only.
 
-    ``replan`` is None (just wait) or a CTML string that first replans (a fresh 'clear' interpreter
-    replaces the plan) — an empty string replans with nothing, a non-empty one replans with that CTML.
-    ``timeout=-1`` waits without bound; a positive timeout gives up early. Returns ``{moment_ref}``
-    and carries the moment for context injection.
+    fire-and-await: the CTML streams in and compiles, then the turn is cut immediately (cancel). No
+    moment is signed and no actions are awaited — the CTML's commands keep running cross-frame. The
+    counterpart of ``moss_interpret`` (which waits for observed instead).
     """
 
-    replan: str | None = Field(
-        default=None,
-        description="CTML to replan with before waiting; None means no replan (an empty string replans with nothing).",
-    )
-    timeout: float = Field(default=-1, description="seconds to wait; -1 waits without bound.")
+    ctml: str = Field(default="", description="the CTML command to execute.")
 
     @classmethod
     def tool_name(cls) -> str:
-        return "moss_wait_action_done"
+        return "moss_react"
 
 
-class WaitNextMomentToolCall(ToolCallParameter):
-    """moss_wait_next_moment — wait for all actions to finish, then yield the turn.
+class ObserveToolCall(ToolCallParameter):
+    """moss_observe — wait for all actions to finish, then sign the freshest moment.
+
+    ``interrupt=true`` first replans with a fresh 'clear' interpreter (empty CTML) to cancel the
+    current plan, waits for that cancellation to land, then waits for all actions; ``interrupt=false``
+    just waits. Returns ``{moment_ref}`` and carries the moment for context injection.
+    """
+
+    interrupt: bool = Field(
+        default=False,
+        description="true cancels the current plan (a fresh 'clear' replan) before waiting.",
+    )
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_observe"
+
+
+class WaitNextToolCall(ToolCallParameter):
+    """moss_wait_next — wait for all actions to finish, then yield the turn.
 
     Returns "yielded": the turn is cancelled after this tool returns, so the next moment wakes you.
     Use it in a voice/body interaction instead of emitting empty text nobody will read.
@@ -169,7 +185,7 @@ class WaitNextMomentToolCall(ToolCallParameter):
 
     @classmethod
     def tool_name(cls) -> str:
-        return "moss_wait_next_moment"
+        return "moss_wait_next"
 
 
 class ShellStatusToolCall(ToolCallParameter):
@@ -198,11 +214,11 @@ class ChannelFacadeToolCall(ToolCallParameter):
 
 
 class ReasoningToolCall(ToolCallParameter):
-    """moss_reasoning — declare the default thinking depth (off/low/high/max).
+    """moss_reasoning — declare a one-shot thinking depth (off/low/high/max) for the next frame.
 
-    Pure declaration: the ego records it as its default effort and carries it on the next round's
-    thinking/enter (reasoning_effort), applied at the turn boundary — not perStep. Produces no
-    ToolCallResult (the plugin tool returns immediately).
+    Sets the ego's unconsumed default thinking effort, drives the next thinking frame (need_observe),
+    then cuts the turn. The depth applies exactly once (consumed on the next enter); it never competes
+    with the dsh/UI-held depth afterwards.
     """
 
     effort: str = Field(default="", description="thinking depth: off/low/high/max.")
@@ -210,40 +226,3 @@ class ReasoningToolCall(ToolCallParameter):
     @classmethod
     def tool_name(cls) -> str:
         return "moss_reasoning"
-
-
-class ReactToolCall(ToolCallParameter):
-    """moss_react — fire a runtime-defined react.
-
-    ``char`` keys a react defined via ``moss_define_reacts`` (char → CTML template). ``args`` fills
-    the template's ``%s`` slots to form the CTML, which executes. ``wait_next_moment=True`` (default)
-    waits for it to finish, then ends the turn — say it, then done.
-    """
-
-    char: str = Field(description="the single-character react key.")
-    args: list[str] | None = Field(
-        default=None,
-        description="positional args filling the template's %s slots, in order.",
-    )
-    wait_next_moment: bool = Field(
-        default=True,
-        description="wait for the CTML to finish, then end the turn.",
-    )
-
-    @classmethod
-    def tool_name(cls) -> str:
-        return "moss_react"
-
-
-class DefineReactsToolCall(ToolCallParameter):
-    """moss_define_reacts — bulk define reacts (char → CTML template with %s slots).
-
-    Merge/overwrite, in-memory only. Returns the chars defined — the model defines what a scenario
-    needs, when it needs it; no seed, no notice, no persistence.
-    """
-
-    reacts: list[React] = Field(description="list of {char, template}.")
-
-    @classmethod
-    def tool_name(cls) -> str:
-        return "moss_define_reacts"
