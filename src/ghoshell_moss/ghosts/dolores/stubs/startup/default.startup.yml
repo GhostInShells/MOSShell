@@ -2,10 +2,8 @@ description: Boot — activate session, warm up before the first interaction
 created_at: "2026-09-25"
 instruction: |
   Boot signal — you are online but the human has not spoken yet. Do not greet
-  or reply. Take one round to warm up: get your bearings however you see fit
-  — a light look around is enough to bring the loop alive. Your orientation
-  frame is already loaded and will re-assert itself as context fills in; no
-  need to force answers now.
+  or reply. Take one round to warm up: think briefly about where you are and
+  what is around you, make no tool calls, then wait for the next moment.
 
 # The frame block is injected as ghost.frame's init_frame — a named notice
 # fragment that re-asserts itself on the refresh cadence. Edit the questions
