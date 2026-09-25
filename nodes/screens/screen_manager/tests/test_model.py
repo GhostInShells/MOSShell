@@ -54,98 +54,103 @@ def test_bad_family_and_dir_rejected():
 
 def test_open_lands_on_the_desktop_by_default():
     m = ScreenModel()
-    m.open("a", "http://a")
-    assert m.desktop_items() == ["a"]
-    assert m.group_of("a") == ""
+    item = m.open("http://a")
+    assert m.desktop_items() == [item.id]
+    assert m.group_of(item.id) == ""
     assert m.groups() == []
 
 
 def test_open_into_a_group_creates_it():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    assert m.group_items("code") == ["a"]
+    item = m.open("http://a", group="code")
+    assert m.group_items("code") == [item.id]
     assert m.desktop_items() == []
 
 
-def test_open_duplicate_rejected():
+def test_open_assigns_a_monotonic_handle():
     m = ScreenModel()
-    m.open("a", "http://a")
-    with pytest.raises(ValueError):
-        m.open("a", "http://a")
+    a = m.open("http://a")
+    b = m.open("http://b")
+    assert a.id != b.id
+    # A destroyed handle never recycles onto a later item.
+    m.destroy(a.id)
+    c = m.open("http://c")
+    assert c.id != a.id
+    assert c.id != b.id
 
 
 def test_arrange_pulls_items_off_the_desktop():
     m = ScreenModel()
-    m.open("a", "http://a")
-    m.open("b", "http://b")
-    m.open("c", "http://c")
-    m.arrange("code", ["a", "b"], family="grid", dir="lr")
-    assert m.group_items("code") == ["a", "b"]
-    assert m.desktop_items() == ["c"]
+    a = m.open("http://a").id
+    b = m.open("http://b").id
+    c = m.open("http://c").id
+    m.arrange("code", [a, b], family="grid", dir="lr")
+    assert m.group_items("code") == [a, b]
+    assert m.desktop_items() == [c]
     assert m.arena() == "code"
 
 
 def test_arrange_moves_an_item_out_of_another_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.open("b", "http://b", group="code")
-    m.arrange("media", ["b"], family="grid", dir="lr")
-    assert m.group_items("code") == ["a"]
-    assert m.group_items("media") == ["b"]
-    assert m.group_of("b") == "media"
+    a = m.open("http://a", group="code").id
+    b = m.open("http://b", group="code").id
+    m.arrange("media", [b], family="grid", dir="lr")
+    assert m.group_items("code") == [a]
+    assert m.group_items("media") == [b]
+    assert m.group_of(b) == "media"
 
 
 def test_arranging_away_the_last_item_deletes_the_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.open("b", "http://b", group="media")
-    m.arrange("media", ["a", "b"], family="grid", dir="lr")
+    a = m.open("http://a", group="code").id
+    b = m.open("http://b", group="media").id
+    m.arrange("media", [a, b], family="grid", dir="lr")
     assert "code" not in m.groups()
 
 
 def test_arrange_rejects_unknown_and_duplicate_ids():
     m = ScreenModel()
-    m.open("a", "http://a")
+    a = m.open("http://a").id
     with pytest.raises(ValueError):
-        m.arrange("code", ["a", "ghost"], family="grid", dir="lr")
+        m.arrange("code", [a, "ghost"], family="grid", dir="lr")
     with pytest.raises(ValueError):
-        m.arrange("code", ["a", "a"], family="grid", dir="lr")
+        m.arrange("code", [a, a], family="grid", dir="lr")
 
 
 def test_dismiss_sends_an_item_back_to_the_desktop():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.open("b", "http://b", group="code")
-    m.dismiss("a")
-    assert m.group_items("code") == ["b"]
-    assert m.desktop_items() == ["a"]
+    a = m.open("http://a", group="code").id
+    b = m.open("http://b", group="code").id
+    m.dismiss(a)
+    assert m.group_items("code") == [b]
+    assert m.desktop_items() == [a]
 
 
 def test_dismiss_last_item_deletes_the_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
+    a = m.open("http://a", group="code").id
     m.activate("code")
-    m.dismiss("a")
+    m.dismiss(a)
     assert m.groups() == []
     assert m.arena() == ""  # fell back to the desktop
 
 
 def test_destroy_removes_an_item_entirely():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.destroy("a")
+    a = m.open("http://a", group="code").id
+    m.destroy(a)
     assert m.items() == []
     assert m.groups() == []
 
 
 def test_float_all_empties_the_active_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.open("b", "http://b", group="code")
+    a = m.open("http://a", group="code").id
+    b = m.open("http://b", group="code").id
     m.activate("code")
     freed = m.float_all()
-    assert sorted(freed) == ["a", "b"]
-    assert m.desktop_items() == ["a", "b"]
+    assert sorted(freed) == [a, b]
+    assert m.desktop_items() == [a, b]
     assert m.groups() == []
     assert m.arena() == ""
 
@@ -155,18 +160,18 @@ def test_float_all_empties_the_active_group():
 
 def test_layout_is_per_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.open("b", "http://b", group="code")
-    m.open("c", "http://c", group="media")
-    m.open("d", "http://d", group="media")
+    a = m.open("http://a", group="code").id
+    b = m.open("http://b", group="code").id
+    c = m.open("http://c", group="media").id
+    d = m.open("http://d", group="media").id
 
     m.activate("code")
-    m.arrange("code", ["a", "b"], family="stack", dir="tb")
+    m.arrange("code", [a, b], family="stack", dir="tb")
     assert (m.family(), m.dir()) == ("stack", "tb")
 
     m.activate("media")
     assert (m.family(), m.dir()) == ("grid", "lr")
-    m.arrange("media", ["c", "d"], family="grid", dir="tb")
+    m.arrange("media", [c, d], family="grid", dir="tb")
     assert (m.family(), m.dir()) == ("grid", "tb")
 
     m.activate("code")
@@ -175,41 +180,41 @@ def test_layout_is_per_group():
 
 def test_fullscreen_is_per_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.open("b", "http://b", group="media")
+    a = m.open("http://a", group="code").id
+    b = m.open("http://b", group="media").id
     m.activate("code")
-    m.set_fullscreen("a")
-    assert m.fullscreen() == "a"
+    m.set_fullscreen(a)
+    assert m.fullscreen() == a
     m.activate("media")
     assert m.fullscreen() is None
     m.activate("code")
-    assert m.fullscreen() == "a"
+    assert m.fullscreen() == a
 
 
 def test_group_layout_is_forgotten_with_its_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.arrange("code", ["a"], family="grid", dir="tb")
-    m.destroy("a")
+    a = m.open("http://a", group="code").id
+    m.arrange("code", [a], family="grid", dir="tb")
+    m.destroy(a)
     assert m.groups() == []
-    m.open("b", "http://b", group="code")
+    b = m.open("http://b", group="code").id
     assert (m.family(), m.dir()) == ("grid", "lr")
 
 
 def test_fullscreen_needs_a_group_on_stage():
     m = ScreenModel()
-    m.open("a", "http://a")
+    a = m.open("http://a").id
     with pytest.raises(ValueError):
-        m.set_fullscreen("a")
+        m.set_fullscreen(a)
 
 
 def test_fullscreen_cleared_when_its_item_leaves_the_group():
     m = ScreenModel()
-    m.open("a", "http://a", group="code")
-    m.open("b", "http://b", group="code")
+    a = m.open("http://a", group="code").id
+    b = m.open("http://b", group="code").id
     m.activate("code")
-    m.set_fullscreen("a")
-    m.dismiss("a")
+    m.set_fullscreen(a)
+    m.dismiss(a)
     assert m.fullscreen() is None
 
 
@@ -218,43 +223,66 @@ def test_fullscreen_cleared_when_its_item_leaves_the_group():
 
 def test_adopt_lands_on_the_desktop_with_its_service():
     m = ScreenModel()
-    item = m.adopt("cell/a/webview", "http://x", label="Terminal", item_id="term")
+    item = m.adopt("cell/a/webview", "http://x", label="Terminal")
     assert item is not None
     assert item.service == "cell/a/webview"
-    assert m.desktop_items() == ["term"]
+    assert m.desktop_items() == [item.id]
 
 
 def test_adopt_is_idempotent_for_a_live_service():
     m = ScreenModel()
-    m.adopt("cell/a/webview", "http://x", label="A", item_id="a")
-    assert m.adopt("cell/a/webview", "http://x", label="A", item_id="a") is None
+    m.adopt("cell/a/webview", "http://x", label="A")
+    assert m.adopt("cell/a/webview", "http://x", label="A") is None
 
 
 def test_destroyed_service_is_tombstoned_until_it_releases():
     m = ScreenModel()
-    m.adopt("cell/a/webview", "http://x", label="A", item_id="a")
-    m.destroy("a")
+    item = m.adopt("cell/a/webview", "http://x", label="A")
+    m.destroy(item.id)
     # The service is still live, but the tombstone holds — no re-adoption.
-    assert m.adopt("cell/a/webview", "http://x", label="A", item_id="a") is None
+    assert m.adopt("cell/a/webview", "http://x", label="A") is None
     # The service goes away, then returns: adoption resumes.
     m.release("cell/a/webview")
-    assert m.adopt("cell/a/webview", "http://x", label="A", item_id="a") is not None
+    assert m.adopt("cell/a/webview", "http://x", label="A") is not None
 
 
 def test_dismiss_is_soft_and_keeps_the_service():
     m = ScreenModel()
-    m.adopt("cell/a/webview", "http://x", label="A", item_id="a")
-    m.arrange("code", ["a"], family="grid", dir="lr")
-    m.dismiss("a")
+    item = m.adopt("cell/a/webview", "http://x", label="A")
+    m.arrange("code", [item.id], family="grid", dir="lr")
+    m.dismiss(item.id)
     # Dismiss only moves the item off its group; the service stays attached,
     # so the item still exists on the desktop (and adoption sees it).
-    assert m.get("a") is not None
-    assert m.desktop_items() == ["a"]
-    assert m.service_of("a") == "cell/a/webview"
+    assert m.get(item.id) is not None
+    assert m.desktop_items() == [item.id]
+    assert m.service_of(item.id) == "cell/a/webview"
 
 
 def test_release_removes_the_adopted_item():
     m = ScreenModel()
-    m.adopt("cell/a/webview", "http://x", label="A", item_id="a")
+    item = m.adopt("cell/a/webview", "http://x", label="A")
     m.release("cell/a/webview")
-    assert m.get("a") is None
+    assert m.get(item.id) is None
+
+
+# -- navigate -----------------------------------------------------------
+
+
+def test_navigate_repoints_a_hand_opened_item():
+    m = ScreenModel()
+    item = m.open("http://a")
+    m.navigate(item.id, "http://b")
+    assert m.get(item.id).url == "http://b"
+
+
+def test_navigate_rejects_a_webview_item():
+    m = ScreenModel()
+    item = m.adopt("cell/a/webview", "http://x", label="A")
+    with pytest.raises(ValueError):
+        m.navigate(item.id, "http://y")
+
+
+def test_navigate_rejects_an_unknown_item():
+    m = ScreenModel()
+    with pytest.raises(KeyError):
+        m.navigate("ghost", "http://y")

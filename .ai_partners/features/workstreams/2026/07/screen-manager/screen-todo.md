@@ -30,6 +30,7 @@
 | V5 | `mock_scene` 连调两次 → 不叠 iframe（snapshot reconcile） |
 | V6 | 字符雨字符集：CJK 均匀采样 + 假名点缀，不全是日文；图集渲染正常 |
 | V7 | 桌面代理点击 → aside 到达模型（`tap` uplink） |
+| V8 | `open` 返回 index 句柄；`navigate` 改自建 item url 且 iframe 原地重载；对 webview item navigate 越权中断 |
 
 ## 未接能力
 

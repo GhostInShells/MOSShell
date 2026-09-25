@@ -505,6 +505,11 @@ function route(f) {
       if (!items.has(it.id)) {
         const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon };
         items.set(it.id, entry); makeSlot(entry);
+      } else {
+        // navigate：已存在的 item 换 url，iframe 原地重载（不 reparent）。
+        const cur = items.get(it.id);
+        cur.url = it.url;
+        if (cur.iframe) cur.iframe.src = it.url;
       }
       break;
     }

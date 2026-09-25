@@ -51,7 +51,6 @@ def build_screen_channel(
     surface: _Surface | None = None,
     audio: MockAudioSource | None = None,
     surface_url: str | Callable[[], str] | None = None,
-    views_notice: Callable[[], str] | None = None,
     name: str = "webview_screen",
     description: str | None = None,
 ) -> Channel:
@@ -63,9 +62,6 @@ def build_screen_channel(
     :param surface_url: where the human surface lives, surfaced as a warm notice
         fragment so the model can discover it without a fixed port. May be a
         callable (resolved lazily, after the surface binds its ephemeral port).
-    :param views_notice: an optional fragment supplier for adopted web views,
-        called on each notice refresh (bound to the webview bridge). Returns ''
-        to omit the fragment.
     """
     surface = surface or _NoSurface()
 
@@ -95,40 +91,54 @@ def build_screen_channel(
     def instruction() -> str:
         return (
             "You own how the screen is arranged; the human owns where to look. "
-            "open() materializes a window into the pool — by default it floats on "
-            "the desktop. arrange(group, ids) is your main move: it pulls the items "
-            "you name into a group, in order, with a layout family, and shows it. "
-            "Everything you leave out stays floating on the desktop. activate() "
-            "switches the view between groups and the desktop; dismiss() sends an "
-            "item back to the desktop; fullscreen() makes one item fill the stage. "
-            "The human can switch views and toggle fullscreen too — the notice tells "
-            "you when that happened. Veil gestures (mark / arrow / text) are the "
-            "only time-aware commands: they resolve when their declared duration "
-            "ends, so a gesture and a spoken clause share one clock."
+            "open(url) materializes a window into the pool and returns its handle — "
+            "an index you keep for every later command. arrange(group, ids) is your "
+            "main move: it pulls the items you name into a group, in order, with a "
+            "layout family, and shows it. navigate(handle, url) re-points a window "
+            "you opened yourself; webview windows (listed under the views notice) "
+            "belong to their nodes and cannot be navigated. Everything you leave "
+            "out stays floating on the desktop. activate() switches the view "
+            "between groups and the desktop; dismiss() sends an item back to the "
+            "desktop; fullscreen() makes one item fill the stage. The human can "
+            "switch views and toggle fullscreen too — the notice tells you when "
+            "that happened. Veil gestures (mark / arrow / text) are the only "
+            "time-aware commands: they resolve when their declared duration ends, "
+            "so a gesture and a spoken clause share one clock."
         )
 
     # -- materialization ---------------------------------------------------
 
     @chan.build.command(name="open")
-    async def open_window(
-        id: str, url: str, label: str = "", group: str = "", icon: str = ""
-    ) -> str:
+    async def open_window(url: str, label: str = "", group: str = "", icon: str = "") -> str:
         """Materialize a window. By default it floats on the desktop.
 
-        ``id`` is your handle for every later command; ``url`` is the window's
-        content (a local node surface or any http page). Pass ``group`` to land it
-        directly in a group; otherwise it waits on the desktop until you arrange it.
+        ``url`` is the window's content (a local node surface or any http page).
+        The store assigns the item's handle — the return value names it, keep it
+        for later commands. Pass ``group`` to land it directly in a group;
+        otherwise it waits on the desktop until you arrange it.
         """
         try:
-            item = model.open(
-                id, url, label=label, group=group, icon=icon or None
-            )
+            item = model.open(url, label=label, group=group, icon=icon or None)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
         await _emit(P.open_frame(item))
         await _emit(P.state_frame(model))
         where = f"#{item.group}" if item.group else "desktop"
-        return f"[screen] opened #{id} → {where}"
+        return f"[screen] opened #{item.id} → {where}"
+
+    @chan.build.command(name="navigate")
+    async def navigate(id: str, url: str) -> str:
+        """Point a hand-opened item at a new url — a ``page.goto``-style move.
+
+        Only items you opened yourself can be re-pointed. A webview window's url
+        belongs to its node, so navigating one is rejected.
+        """
+        try:
+            item = model.navigate(id, url)
+        except (ValueError, KeyError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _emit(P.open_frame(item))
+        return f"[screen] #{item.id} → {url}"
 
     @chan.build.command(name="arrange")
     async def arrange(ids: str, group: str, family: str = "grid", dir: str = "lr") -> str:
@@ -247,11 +257,9 @@ def build_screen_channel(
     async def mock_scene() -> str:
         """Materialize the demo scene into groups. Debug aid — not the product."""
         for spec in demo_items():
-            if model.get(spec["id"]) is None:
-                model.open(
-                    spec["id"], spec["url"],
-                    label=spec["label"], group=spec["group"],
-                )
+            model.open(
+                spec["url"], label=spec["label"], group=spec["group"],
+            )
         await _emit(P.snapshot(model))
         return f"[screen] demo scene: {', '.join(model.groups())}"
 
@@ -278,13 +286,17 @@ def build_screen_channel(
             f"#{g}({len(model.group_items(g))})" for g in model.groups()
         )
         out["groups"] = groups or "(none)"
+        # 索引视角：两类 item 的 handle → label。views 是 webview 来源（url 归
+        # node，不能 navigate），items 是模型自建（url 可 navigate）。
+        views = [i for i in model.items() if i.service]
+        hand = [i for i in model.items() if not i.service]
+        if views:
+            out["views"] = " ".join(f"#{i.id}={i.label}" for i in views)
+        if hand:
+            out["items"] = " ".join(f"#{i.id}={i.label}" for i in hand)
         desktop = model.desktop_items()
         if desktop:
             out["desktop"] = f"{len(desktop)} floating: {', '.join(desktop)}"
-        if views_notice is not None:
-            fragment = views_notice()
-            if fragment:
-                out["views"] = fragment
         arena = model.arena()
         if not arena:
             out["screen"] = f"desktop ({len(desktop)} floating)"

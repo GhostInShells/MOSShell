@@ -30,16 +30,16 @@ def demo_page(label: str, color: str) -> str:
 def demo_items() -> list[dict]:
     """A pre-built scene mirroring the verified lab pool: three groups, several items.
 
-    Ids are ``demo_``-prefixed so a mock window never steals the name a real node
-    would claim (``term`` / ``edit`` collide with terminal / file_editor).
+    Handles are assigned by the store, not named here — the store's monotonic
+    index never collides with a real node's item.
     """
     return [
-        {"id": "demo_term", "url": demo_page("term", "#5af"), "label": "terminal", "group": "code"},
-        {"id": "demo_edit", "url": demo_page("edit", "#5fa"), "label": "editor", "group": "code"},
-        {"id": "demo_chat", "url": demo_page("chat", "#fa5"), "label": "chat", "group": "code"},
-        {"id": "demo_dsh", "url": demo_page("dsh", "#f5a"), "label": "dashboard", "group": "media"},
-        {"id": "demo_cam1", "url": demo_page("cam1", "#5ff"), "label": "cam 1", "group": "media"},
-        {"id": "demo_cam2", "url": demo_page("cam2", "#a5f"), "label": "cam 2", "group": "media"},
-        {"id": "demo_spec", "url": demo_page("spec", "#ffa"), "label": "spec", "group": "docs"},
-        {"id": "demo_note", "url": demo_page("note", "#faa"), "label": "note", "group": "docs"},
+        {"url": demo_page("term", "#5af"), "label": "terminal", "group": "code"},
+        {"url": demo_page("edit", "#5fa"), "label": "editor", "group": "code"},
+        {"url": demo_page("chat", "#fa5"), "label": "chat", "group": "code"},
+        {"url": demo_page("dsh", "#f5a"), "label": "dashboard", "group": "media"},
+        {"url": demo_page("cam1", "#5ff"), "label": "cam 1", "group": "media"},
+        {"url": demo_page("cam2", "#a5f"), "label": "cam 2", "group": "media"},
+        {"url": demo_page("spec", "#ffa"), "label": "spec", "group": "docs"},
+        {"url": demo_page("note", "#faa"), "label": "note", "group": "docs"},
     ]

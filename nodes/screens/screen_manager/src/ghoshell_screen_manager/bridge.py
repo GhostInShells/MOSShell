@@ -22,7 +22,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ghoshell_moss.core.blueprint.cell import CellAddressCodec
 from ghoshell_moss.services.webview import WebViewClient
 
 from . import projection as P
@@ -31,11 +30,6 @@ from .model import ScreenModel
 __all__ = ["WebViewBridge"]
 
 FrameSink = Callable[[dict[str, Any]], Awaitable[None]]
-
-
-def _item_id(address: str) -> str:
-    """A stable, unique handle for a mesh address."""
-    return CellAddressCodec.normalize(address)
 
 
 class WebViewBridge:
@@ -77,7 +71,6 @@ class WebViewBridge:
                 address,
                 item.declaration.url,
                 label=item.declaration.title,
-                item_id=_item_id(address),
                 icon=item.declaration.icon,
             )
             if adopted is not None:
@@ -93,15 +86,3 @@ class WebViewBridge:
 
         if changed:
             await self._emit(P.state_frame(self._model))
-
-    # -- notice ------------------------------------------------------------
-
-    def notice(self) -> str:
-        """A warm fragment: how many views are floating with nothing arranged."""
-        floating = [
-            i for i in self._model.desktop_items()
-            if self._model.service_of(i)
-        ]
-        if not floating:
-            return ""
-        return f"{len(floating)} view(s) floating: {', '.join(floating)}"

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from ghoshell_screen_manager.bridge import WebViewBridge, _item_id
+from ghoshell_screen_manager.bridge import WebViewBridge
 from ghoshell_screen_manager.model import ScreenModel
 
 from fakes import Recorder
@@ -110,16 +110,3 @@ async def test_a_destroyed_view_is_not_resurrected():
     await client.fire()
     assert model.adopted() == {}
     assert model.desktop_items() == []
-
-
-@pytest.mark.asyncio
-async def test_notice_reports_floating_views():
-    model = ScreenModel()
-    client = _client("cell/a/webview")
-    bridge = WebViewBridge(model, client, emit=Recorder().broadcast)
-    await bridge.start()
-    assert "floating" in bridge.notice()
-
-
-def test_item_id_is_the_cell_short():
-    assert _item_id("cell/a/webview") != _item_id("cell/b/webview")

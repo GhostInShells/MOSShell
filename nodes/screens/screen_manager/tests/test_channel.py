@@ -20,8 +20,9 @@ async def test_channel_exposes_the_command_set():
     chan, _ = _channel()
     async with chan.bootstrap() as runtime:
         for name in (
-            "open", "arrange", "activate", "dismiss", "destroy", "fullscreen",
-            "float", "pool", "mark", "arrow", "text", "mock_scene", "mock_audio",
+            "open", "navigate", "arrange", "activate", "dismiss", "destroy",
+            "fullscreen", "float", "pool", "mark", "arrow", "text", "mock_scene",
+            "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -31,11 +32,22 @@ async def test_open_emits_open_then_state():
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("term", "http://x"))
-        assert rec.of("open")[-1]["item"]["id"] == "term"
+        await runtime.execute_command("open", args=("http://x",))
+        item_id = rec.of("open")[-1]["item"]["id"]
         state = rec.of("state")[-1]
-        assert state["desktop"] == ["term"]
+        assert state["desktop"] == [item_id]
         assert state["arena"] == ""
+
+
+@pytest.mark.asyncio
+async def test_open_assigns_monotonic_handles():
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        ids = [f["item"]["id"] for f in rec.of("open")]
+        assert ids[0] != ids[1]
 
 
 @pytest.mark.asyncio
@@ -43,14 +55,15 @@ async def test_arrange_emits_state_with_order_and_layout():
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("a", "http://a"))
-        await runtime.execute_command("open", args=("b", "http://b"))
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        a, b = [f["item"]["id"] for f in rec.of("open")]
         await runtime.execute_command(
-            "arrange", args=("b,a",), kwargs={"group": "code", "family": "stack", "dir": "lr"}
+            "arrange", args=(f"{b},{a}",), kwargs={"group": "code", "family": "stack", "dir": "lr"}
         )
         state = rec.of("state")[-1]
         assert state["arena"] == "code"
-        assert state["ids"] == ["b", "a"]
+        assert state["ids"] == [b, a]
         assert state["layout"]["family"] == "stack"
         assert state["layout"]["cols"] == 2
         assert state["desktop"] == []
@@ -61,11 +74,12 @@ async def test_dismiss_emits_state():
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("a", "http://a"))
-        await runtime.execute_command("arrange", args=("a",), kwargs={"group": "code"})
-        await runtime.execute_command("dismiss", args=("a",))
+        await runtime.execute_command("open", args=("http://a",))
+        a = rec.of("open")[-1]["item"]["id"]
+        await runtime.execute_command("arrange", args=(a,), kwargs={"group": "code"})
+        await runtime.execute_command("dismiss", args=(a,))
         state = rec.of("state")[-1]
-        assert state["desktop"] == ["a"]
+        assert state["desktop"] == [a]
         assert state["arena"] == ""
 
 
@@ -74,9 +88,10 @@ async def test_destroy_emits_close_then_state():
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("a", "http://a"))
-        await runtime.execute_command("destroy", args=("a",))
-        assert rec.of("close")[-1]["id"] == "a"
+        await runtime.execute_command("open", args=("http://a",))
+        a = rec.of("open")[-1]["item"]["id"]
+        await runtime.execute_command("destroy", args=(a,))
+        assert rec.of("close")[-1]["id"] == a
         assert rec.of("state")[-1]["desktop"] == []
 
 
@@ -85,10 +100,11 @@ async def test_fullscreen_emits_a_fullscreen_frame():
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("a", "http://a"))
-        await runtime.execute_command("arrange", args=("a",), kwargs={"group": "code"})
-        await runtime.execute_command("fullscreen", args=("a",))
-        assert rec.of("fullscreen")[-1]["id"] == "a"
+        await runtime.execute_command("open", args=("http://a",))
+        a = rec.of("open")[-1]["item"]["id"]
+        await runtime.execute_command("arrange", args=(a,), kwargs={"group": "code"})
+        await runtime.execute_command("fullscreen", args=(a,))
+        assert rec.of("fullscreen")[-1]["id"] == a
 
 
 @pytest.mark.asyncio
@@ -105,28 +121,67 @@ async def test_mark_emits_a_veil_frame():
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("term", "http://x"))
+        await runtime.execute_command("open", args=("http://x",))
+        item_id = rec.of("open")[-1]["item"]["id"]
         await runtime.execute_command(
-            "mark", args=("term",), kwargs={"region": "right", "duration": 0.01}
+            "mark", args=(item_id,), kwargs={"region": "right", "duration": 0.01}
         )
         frame = rec.of("veil")[-1]
         assert frame["gesture"] == "mark"
-        assert frame["item"] == "term"
+        assert frame["item"] == item_id
         assert frame["region"] == "right"
+
+
+@pytest.mark.asyncio
+async def test_navigate_repoints_a_hand_opened_item():
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        item_id = rec.of("open")[-1]["item"]["id"]
+        await runtime.execute_command("navigate", args=(item_id, "http://b"))
+        assert model.get(item_id).url == "http://b"
+        assert rec.of("open")[-1]["item"]["url"] == "http://b"
+
+
+@pytest.mark.asyncio
+async def test_navigate_rejects_a_webview_item():
+    model = ScreenModel()
+    item = model.adopt("cell/a/webview", "http://x", label="A")
+    chan, _ = _channel(model)
+    async with chan.bootstrap() as runtime:
+        with pytest.raises(Exception):
+            await runtime.execute_command("navigate", args=(item.id, "http://y"))
 
 
 @pytest.mark.asyncio
 async def test_notice_carries_active_group_and_layout():
     model = ScreenModel()
-    chan, _ = _channel(model)
+    chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("term", "http://x"))
-        await runtime.execute_command("arrange", args=("term",), kwargs={"group": "code"})
+        await runtime.execute_command("open", args=("http://x",))
+        item_id = rec.of("open")[-1]["item"]["id"]
+        await runtime.execute_command("arrange", args=(item_id,), kwargs={"group": "code"})
         await runtime.refresh_metas()
         notices = runtime.self_meta().named_notices
-        assert "term" in notices["screen"]
+        assert item_id in notices["screen"]
         assert "code" in notices["screen"]
         assert "code" in notices["groups"]
+
+
+@pytest.mark.asyncio
+async def test_notices_separate_views_and_items():
+    model = ScreenModel()
+    model.adopt("cell/a/webview", "http://x", label="Terminal")
+    chan, _ = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a", "hand"))
+        await runtime.refresh_metas()
+        notices = runtime.self_meta().named_notices
+        assert "views" in notices
+        assert "items" in notices
+        assert "Terminal" in notices["views"]
+        assert "hand" in notices["items"]
 
 
 @pytest.mark.asyncio
@@ -137,16 +192,6 @@ async def test_mock_scene_populates_groups():
         await runtime.execute_command("mock_scene")
         assert len(model.groups()) >= 3
         assert rec.types()[-1] == "snapshot"
-
-
-@pytest.mark.asyncio
-async def test_open_refuses_a_duplicate_id():
-    model = ScreenModel()
-    chan, _ = _channel(model)
-    async with chan.bootstrap() as runtime:
-        await runtime.execute_command("open", args=("a", "http://a"))
-        with pytest.raises(Exception):
-            await runtime.execute_command("open", args=("a", "http://b"))
 
 
 @pytest.mark.asyncio
@@ -161,17 +206,3 @@ async def test_notice_carries_the_surface_url_when_provided():
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         assert runtime.self_meta().named_notices["url"] == "http://127.0.0.1:54321"
-
-
-@pytest.mark.asyncio
-async def test_views_notice_fragment_when_supplied():
-    model = ScreenModel()
-    chan = build_screen_channel(
-        model,
-        surface=Recorder(),
-        audio=MockAudioSource(),
-        views_notice=lambda: "1 view(s) floating: term",
-    )
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        assert runtime.self_meta().named_notices["views"] == "1 view(s) floating: term"

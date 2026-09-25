@@ -165,6 +165,9 @@ class ScreenModel:
         self._dismissed: dict[str, float] = {}
         """service address → the item id a human/model dismissed; a tombstone so
         auto-adoption does not resurrect it until the service stops and returns."""
+        self._next_index: int = 0
+        """Monotonic item handle. Never recycled — an id must stay stable so a
+        handle the model holds does not drift onto a later item after a destroy."""
 
     # -- queries -----------------------------------------------------------
 
@@ -244,7 +247,6 @@ class ScreenModel:
 
     def open(
         self,
-        item_id: str,
         url: str,
         *,
         label: str = "",
@@ -252,20 +254,20 @@ class ScreenModel:
         service: str = "",
         icon: str | None = None,
     ) -> Item:
-        """Materialize a window into the pool.
+        """Materialize a window into the pool; the store assigns its handle.
 
-        Default resting place is the desktop. Pass ``group`` to land it directly
-        in a group (creating the group on first use). ``service`` records the mesh
+        The returned item's ``id`` is a monotonic index the caller uses as the
+        handle for every later command — the model never invents a name. Default
+        resting place is the desktop. Pass ``group`` to land it directly in a
+        group (creating the group on first use). ``service`` records the mesh
         address it was adopted from, when it came from a webview service.
         """
-        if not item_id:
-            raise ValueError("item id is required")
-        if item_id in self._items:
-            raise ValueError(f"item {item_id!r} already exists")
         if not url:
             raise ValueError("url is required")
         if group and group not in self._groups:
             self._groups[group] = Group(name=group)
+        item_id = str(self._next_index)
+        self._next_index += 1
         item = Item(
             id=item_id, url=url, label=label or item_id, group=group,
             service=service, icon=icon,
@@ -278,13 +280,30 @@ class ScreenModel:
             self._dismissed.pop(service, None)
         return item
 
+    def navigate(self, item_id: str, url: str) -> Item:
+        """Point a hand-opened item at a new url. Rejected for adopted views.
+
+        An adopted item's url is owned by its node — repointing it here would
+        make the screen lie about what that node is. Only hand-opened items
+        (``service`` empty) may be re-pointed; a ``page.goto``-style move.
+        """
+        item = self._require(item_id)
+        if item.service:
+            raise ValueError(
+                f"#{item_id} is a webview window — its url belongs to its node, "
+                f"not the screen"
+            )
+        if not url:
+            raise ValueError("url is required")
+        item.url = url
+        return item
+
     def adopt(
         self,
         address: str,
         url: str,
         *,
         label: str,
-        item_id: str,
         icon: str | None = None,
     ) -> Item | None:
         """Materialize a window discovered on the mesh (webview service).
@@ -293,18 +312,12 @@ class ScreenModel:
         arranged things would be choosing layout, which is the model's job.
         Returns None when the address is tombstoned or already present; the
         caller treats that as "nothing to do".
-
-        ``item_id`` is the caller's stable handle for the service (the bridge
-        derives it from the cell address); the store does not know mesh
-        addressing.
         """
         if address in self._dismissed:
             return None
         if self.item_of_service(address) is not None:
             return None
-        return self.open(
-            item_id, url, label=label, service=address, icon=icon,
-        )
+        return self.open(url, label=label, service=address, icon=icon)
 
     def release(self, address: str) -> Item | None:
         """Drop the item adopted from a service that went away.

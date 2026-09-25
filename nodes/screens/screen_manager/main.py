@@ -77,7 +77,6 @@ async def main(matrix: Matrix) -> None:
         surface=surface,
         audio=audio,
         surface_url=lambda: surface.url,
-        views_notice=bridge.notice,
     )
     await matrix.provide_channel(channel)
 
