@@ -6,11 +6,10 @@ description: '全功能交错语音对话体系: 听说两轴的组件化与分�
 milestone: null
 priority: P1
 status: completed
-status_note: 'stage2 shipped: voice default speak, listener auto-start etiquette,
-  send_now strong-send + buffer drain, expect-timeout reminder, single delivery knob
-  (deliver.emit), murmur etiquette, signal wiring + TUI observation'
+status_note: Voice contract extracted from moss_runtime; listener_node dedup left
+  for next wave
 title: Interleaved Voice
-updated: '2026-09-22'
+updated: '2026-09-26'
 ---
 
 # Interleaved Voice
@@ -637,3 +636,78 @@ workstream 已 completed, 已在原处留反向指针)。
 - 代价: **读面变成承重墙** —— 模型必须先 get 再 set, 否则覆盖掉自己不知道的字段。
   所以读面必须完整、自描述 (八/十种开箱礼仪的 Field 描述即是该面)。
 - **存储 = n 种 mode 的默认集**; 运行时改; import / export 是**逃生门** (非常规路径)。
+## 2026-09-25 后续补: Voice contract — 语音总装从 moss_runtime 拆出
+
+> completed 之后重开. 装线代码散落在 `host/moss_runtime.py`, 与 listener_node 的
+> `assemble_controller` 是两份并行装配 (FEATURE 585 行注释早就埋了坑). 本波把
+> 说侧桥 + 听侧 controller + 联动 收口成 `Voice` contract, IoC 里存在即启用.
+
+**契约** (`contracts/voice.py`):
+
+```python
+class Voice(ABC):
+    def speech() -> Speech | None                    # runtime 装 shell 的引用
+    def listener_channel() -> Channel | None         # runtime 挂 shell.main 的 channel
+    def run(*, speech: bool, listen: bool) -> VoiceLifecycle   # 无副作用, 返回 lifecycle
+```
+
+`VoiceLifecycle` 继承 `MatrixLifecycleObject`, 额外一个 `pause(bool)` 表面.
+
+**装线时机对齐** — 关键决策 (2026-09-25 讨论):
+
+- Voice 构造在 IoC factory 里完成 (runtime `__aenter__` 里 `container.get(Voice)` 触发),
+  此刻 matrix 已 bootstrap, controller 可组装 (需要 `session.topics` / `session.add_signal`
+  / `this.name`). `speech()` / `listener_channel()` 构造完即可读.
+- `run(speech, listen)` **无副作用**, 只声明启用哪一侧, 返回 lifecycle. 装线全部在
+  lifecycle `__aenter__`.
+- **voice 前起, shell 后起**: lifecycle 在 shell `__aenter__` (启动 speech) **之前**
+  enter — 桥的回调 (on_clause/observe) 是空转注册, speech 未起时不触发; shell 起
+  speech 之后回调才被激活. 反过来会漏最早的 clause. LIFO 退出: shell 先退
+  (speech 停 / player 释放), voice 后退 (桥 disposer 已不再收回调, controller 关).
+
+**flag 语义** (runtime 的 `speech: bool` / `listen: bool` 转发给 `voice.run`):
+
+- `(True, True)` → 完整交错 (说侧桥 + 听侧 controller + feed_ghost_clause 联动)
+- `(True, False)` → 说侧独立 (clause 桥 / audio sample 桥装; 无 controller, 无 feed)
+- `(False, True)` → 只听 (无说侧桥, 无 feed)
+- `(False, False)` → 空 lifecycle (无副作用, 但仍可 enter/exit)
+
+runtime 保留两个 bool flag 作为**契约屏蔽层** — 未来不耦合 Voice 实现.
+
+**runtime 剩下的责任** (`host/moss_runtime.py`):
+
+- 转发 `speech: bool` / `listen: bool` 给 `voice.run()`
+- 拿 `voice.speech()` / `voice.listener_channel()` 装到 shell (前于 shell.__aenter__)
+- `pause(bool)` 级联到 `voice_lifecycle.pause`
+
+**降级面**: Voice provider IoC 未注册 → runtime `container.get(Voice)` 拿 None →
+`shell.set_speech(None)`, 无 listener channel, 无 lifecycle. Voice 内部对 None
+speech / None listener 各自静默降级 (Voice 自己判 `isinstance(speech, TTSSpeech)`
+决定是否装说侧桥, controller 缺席则无听侧).
+
+**落点**:
+
+- `contracts/voice.py` — Voice ABC + VoiceLifecycle ABC (`pause` 表面)
+- `host/voice/interleaved.py` — `InterleavedVoice` + `InterleavedVoiceLifecycle`,
+  收口说侧 clause topic 桥 / audio sample topic 桥 / feed_ghost_clause 联动 /
+  listener controller enter + `start_default_etiquette` (e3041d2c 语义)
+- `host/providers/voice_provider.py` — VoiceProvider singleton, factory 从
+  container 拿 Speech / ASRListener / Matrix / ConfigStore / LoggerItf 装配 Voice
+- `matrix/openbox/providers.py` — `voice_provider` 加进 baseline `__all__`
+- `host/moss_runtime.py` — 移除 `_resolve_speech` / `_resolve_listener` /
+  `_clause_topic_bridge` / `_audio_sample_topic_bridge` / `_listen_lifecycle`
+  (200+ 行), 换成 `_resolve_voice` + `_voice_lifecycle_ctx` (~40 行)
+- `tests/ghoshell_moss/host/test_voice.py` — 8 条契约锚定 (fake matrix / fake TTSSpeech
+  + MockSpeech 基类, 无真实 audio 设备)
+
+**未收敛 (下一波)**:
+
+- `listener_node.assemble_controller` (在 `host/nodes/listener_node.py`) 仍是自己装 controller
+  的第二份路径 —— 应改为 `container.get(Voice)` + `voice.run(listen=True)`. 本波保留兼容 (Voice
+  的 IoC 单例注册 `container.set(ListenerController, ...)` 迁移期不摘), 下一波拆.
+- CLI `--voice` flag 已存在 (`none/speak/listen/all` → `voice_flags` → `(speech, listen)` bool),
+  本波复用, 无改动.
+
+**判据**: `moss-shell --voice all log` headless 起得来 —
+capture started → Voice lifecycle add → shell started → speech started; LIFO 关闭
+(shell exited → player closed → BaseTTSSpeech closed → HostListener closed).

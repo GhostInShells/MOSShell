@@ -35,6 +35,7 @@ from ghoshell_moss.host.providers.audio_player_provider import MiniAudioPlayerPr
 from ghoshell_moss.host.providers.audio_capture_provider import MiniAudioCaptureProvider
 from ghoshell_moss.host.providers.audio_asr_provider import AudioASRProvider
 from ghoshell_moss.host.providers.listener_provider import ListenerProvider
+from ghoshell_moss.host.providers.voice_provider import VoiceProvider
 
 __all__ = [
     'moss_session_provider',
@@ -55,6 +56,7 @@ __all__ = [
     'audio_capture_provider',
     'asr_provider',
     'listener_provider',
+    'voice_provider',
 ]
 
 # zenoh session provider
@@ -111,3 +113,6 @@ asr_provider = AudioASRProvider()
 
 # listener (耳朵 — 缝合 capture + asr)
 listener_provider = ListenerProvider()
+
+# voice (听说交错总装 — 说侧桥 + 听侧 controller + 联动)
+voice_provider = VoiceProvider()
