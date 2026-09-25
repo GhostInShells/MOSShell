@@ -5,10 +5,10 @@ description: 'ShellTrajectory 取代旧观测面 (ContextMonitor / ShellContext 
   以 pull 型帧轨迹承载上下文缓存经济学下的观测: 帧 = events + facade delta + dynamic messages.'
 milestone: null
 priority: P1
-status: in-progress
-status_note: 'InterpreterStoppedEvent 展示优化 (KD8)'
+status: completed
+status_note: ShellTrajectory 取代旧观测面; KD8 InterpreterStoppedEvent 展示定稿; 32 测试绿
 title: Shell Trajectory — 观测轨迹取代上下文监控
-updated: '2026-09-23'
+updated: '2026-09-25'
 ---
 
 # Shell Trajectory

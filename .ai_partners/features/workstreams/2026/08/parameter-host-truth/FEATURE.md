@@ -2,16 +2,15 @@
 created: 2026-08-12
 depends:
 - session-communication-bus
-description: 'Parameter 重做为 host-truth 广播: host 持真值并广播, worker 读真值上报本地写; declare 即 require
-  (version -1/0/>=1), version 按 epoch(host 地址)作用域、host 重启从头算; key 组 address-free;
+description: 'Parameter 重做为 host-truth 广播: host 持真值并广播, worker 读真值上报本地写; declare 即
+  require (version -1/0/>=1), version 按 epoch(host 地址)作用域、host 重启从头算; key 组 address-free;
   Memory/Zenoh 双 transport; parameter 回到 session.'
 milestone: null
 priority: P1
-status: in-progress
-status_note: 'host-truth 广播收敛: host/worker 分派 + 三值 version + epoch 作用域版本 + session 面装线完成,
-  15 测试绿 + 实机同步验证. 余: zenoh liveness 跨 session 集成测试 (host 重启)'
+status: completed
+status_note: host-truth 广播; 16 测试 (memory 13 + zenoh 3) 绿, 含跨 session host 重启 (新化身续值/版本从头算)
 title: Parameter Host Truth
-updated: '2026-09-23'
+updated: '2026-09-25'
 ---
 
 # Parameter Host Truth
@@ -74,9 +73,9 @@ session 是聚合面 (持 zenoh session), parameter 一开始就该挂 session�
 - [x] Memory transport (`MemoryBus` / `MemoryParametersBroadcaster`)
 - [x] Zenoh transport (`ParameterNamespace` / `ZenohParametersBroadcaster`)
 - [x] session 面装线 (`session.parameters` + is_host 分派)
-- [x] 15 测试 (memory 13 + zenoh 2)
+- [x] 16 测试 (memory 13 + zenoh 3)
 - [x] 实机同步验证 (parameter_probe declarer/subscriber)
-- [ ] zenoh liveness 跨 session 集成测试 (host 重启)
+- [x] zenoh liveness 跨 session 集成测试 (host 重启) — `test_host_restart_over_zenoh_extends_value_with_new_epoch`
 
 ## 复盘
 
