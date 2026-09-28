@@ -341,5 +341,6 @@ Three debts this convention refuses:
 The CLI is a thin convention enforcer; `moss features --help` is the authoritative surface. Implementation
 lives in `ghoshell_moss.core.codex`.
 
-Commands are grouped by axis: `moss features workstreams …` (also available flat, e.g. `moss features
-list`), `moss features stages …`, `moss features regressions …`, and `moss features surface …`.
+Workstream verbs (`list`, `status`, `create`, `set-status`, `check`, `review`) sit flat under
+`moss features`; the other axes are single commands — `moss features stages`, `moss features regressions`,
+and `moss features surface`.
