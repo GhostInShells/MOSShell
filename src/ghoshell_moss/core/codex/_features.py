@@ -1,5 +1,5 @@
 """
-AI-Native Feature Tracking core functions.
+Model-native feature tracking core functions.
 
 File-system-based feature tracking using FEATURE.md + YAML frontmatter.
 This is the logic layer — the CLI is a thin convention enforcer that wraps these functions.
@@ -330,15 +330,15 @@ def update_feature_status(
 _PKG_ROOT = Path(__file__).resolve().parents[2]  # ghoshell_moss/
 
 
-def _find_templates_dir() -> Optional[Path]:
-    """Find the bundled features template files.
+def _find_stubs_dir() -> Optional[Path]:
+    """Find the bundled feature stubs (scaffolding files).
 
     Priority:
     1. Packaged sibling dir — always available (source or installed).
-    2. Source checkout .ai_partners/ — additional fallback for MOSShell dev.
+    2. Source checkout .ai_partners/features/ — additional fallback for MOSShell dev.
     """
     # 1. Packaged alongside _features.py — most reliable
-    p = Path(__file__).resolve().parent / "_features_templates"
+    p = Path(__file__).resolve().parent / "_features_stubs"
     if (p / "README.md").is_file():
         return p
     # 2. Source checkout: repo/.ai_partners/features/
@@ -352,36 +352,28 @@ def _find_templates_dir() -> Optional[Path]:
 # Init
 # ---------------------------------------------------------------------------
 
-def init_features(project_root: str | Path) -> Path:
+def init_features(features_dir: str | Path | None = None) -> Path:
     """
-    Create the `.ai_partners/features/` skeleton in the given project root.
+    Create the features/ skeleton at the given directory (default `$CWD/features`).
 
-    Copies README.md, TOPOLOGY.md, and TEMPLATE.md from the bundled templates
-    if available, otherwise generates minimal versions.
+    Copies the bundled stubs (full overwrite) and ensures workstreams/ exists.
 
     Returns the path to the created features directory.
     """
     import shutil
 
-    project_root = Path(project_root)
-    features_dir = project_root / ".ai_partners" / "features"
+    features_dir = Path(features_dir) if features_dir is not None else Path.cwd() / "features"
+    features_dir.mkdir(parents=True, exist_ok=True)
 
-    (features_dir / "workstreams").mkdir(parents=True, exist_ok=True)
-
-    templates_dir = _find_templates_dir()
-
-    readme_src = templates_dir / "README.md" if templates_dir else None
-    if readme_src and readme_src.is_file():
-        shutil.copy2(str(readme_src), str(features_dir / "README.md"))
-    else:
-        (features_dir / "README.md").write_text(
-            "# MOSS Features\n\nAI-Native Feature Tracking Convention.\n",
-            encoding="utf-8",
-        )
-
-    template_src = templates_dir / "TEMPLATE.md" if templates_dir else None
-    if template_src and template_src.is_file():
-        shutil.copy2(str(template_src), str(features_dir / "TEMPLATE.md"))
+    stubs_dir = _find_stubs_dir()
+    if stubs_dir is not None:
+        # Full overwrite: copy every stub file/dir into the target.
+        for item in stubs_dir.iterdir():
+            dst = features_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(str(item), str(dst))
     else:
         (features_dir / "TEMPLATE.md").write_text(
             DEFAULT_TEMPLATE.format(
@@ -392,10 +384,7 @@ def init_features(project_root: str | Path) -> Path:
             encoding="utf-8",
         )
 
-    topology_src = templates_dir / "TOPOLOGY.md" if templates_dir else None
-    if topology_src and topology_src.is_file():
-        shutil.copy2(str(topology_src), str(features_dir / "TOPOLOGY.md"))
-
+    (features_dir / "workstreams").mkdir(parents=True, exist_ok=True)
     return features_dir
 
 

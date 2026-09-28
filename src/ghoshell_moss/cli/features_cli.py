@@ -1,8 +1,7 @@
 """
-Features command group — AI-native development tracking via file system convention.
+Features command group — model-native development via file system convention.
 
-Tracks active development workstreams, their decision history, and completion state.
-This is NOT a project capability catalog — it tracks what's being built right now.
+Tracks workstreams (L1), stages (L2), regressions, and the project surface (L3).
 """
 from pathlib import Path
 
@@ -17,7 +16,7 @@ from ghoshell_moss.core.codex._features import (
     init_features,
     update_feature_status,
     RESERVED_STATUSES,
-    _find_templates_dir,
+    _find_stubs_dir,
 )
 from ghoshell_moss.cli.utils import (
     print_success, print_error, print_info, print_warning,
@@ -25,8 +24,8 @@ from ghoshell_moss.cli.utils import (
 )
 
 features_app = typer.Typer(
-    short_help="AI-native development tracking via file system convention.",
-    help="AI-native development tracking via file system convention. Tracks active workstreams, not a project capability catalog.",
+    short_help="Model-native development system via file system convention.",
+    help="Model-native development system via file system convention — workstreams, stages, regressions, and a project surface.",
     no_args_is_help=True,
 )
 
@@ -98,14 +97,16 @@ def _print_parse_errors(parse_errors: list[dict]) -> None:
     echo("")
 
 
-# Default features directory for the MOSShell project itself
-_DEFAULT_FEATURES_DIR = Path.cwd() / ".ai_partners" / "features"
-
-
 def _resolve_dir(features_dir: Optional[Path]) -> Path:
+    """Resolve the features directory: explicit `--dir`, else `$CWD/features`,
+    else `$CWD/.ai_partners/features` (MOSShell legacy)."""
     if features_dir is not None:
         return features_dir
-    return _DEFAULT_FEATURES_DIR
+    cwd = Path.cwd()
+    generic = cwd / "features"
+    if generic.is_dir():
+        return generic
+    return cwd / ".ai_partners" / "features"
 
 
 # ---------------------------------------------------------------------------
@@ -116,21 +117,21 @@ def _resolve_dir(features_dir: Optional[Path]) -> Path:
 def specification(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
     ),
 ):
     """
-    Display the AI-Native Development Tracking convention specification.
+    Display the features system convention specification.
 
-    Reads from the local .ai_partners/features/ copy first.
+    Reads from the local features/ copy first.
     Falls back to the bundled canonical copy shipped with the package.
     """
     fd = _resolve_dir(features_dir)
     readme = fd / "README.md"
 
     if not readme.is_file():
-        templates = _find_templates_dir()
-        if templates and (bundled := templates / "README.md").is_file():
+        stubs = _find_stubs_dir()
+        if stubs and (bundled := stubs / "README.md").is_file():
             echo(bundled.read_text(encoding="utf-8"))
             echo(f"\nSpecification path: {bundled.resolve()}")
             print_info("Shown from bundled copy. Run 'moss features init' to create a local one.")
@@ -159,7 +160,7 @@ def list_cmd(
     ),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
     ),
 ):
     """
@@ -232,9 +233,8 @@ def list_cmd(
 
     console.print(f"\n[dim]Features root: {fd.resolve()}/[/dim]")
     console.print(
-        "[dim]Workstreams are one part of [/dim]"
-        "[bold].ai_partners/features[/bold]"
-        "[dim]; read the convention: [/dim]"
+        "[dim]Workstreams are one axis of the features system "
+        "(workstreams / stages / regressions / surface); read the convention: [/dim]"
         "[bold]moss features specification[/bold]"
     )
 
@@ -251,7 +251,7 @@ def status_cmd(
     feature_name: Optional[str] = typer.Argument(None, help="Feature name to show. Omit to show all."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
     ),
 ):
     """
@@ -283,7 +283,7 @@ def status_cmd(
                  f"Milestone:   {meta.get('milestone', '') or 'none'}",
                  f"Description: {meta.get('description', '')}",
                  f"Status Note: {meta.get('status_note', '') or 'none'}",
-                 f"Path:        .ai_partners/features/workstreams/{feat_path}/FEATURE.md"]
+                 f"Path:        workstreams/{feat_path}/FEATURE.md"]
         print_simple_panel("\n".join(lines), title=f"Workstream: {feature_name}")
         console.print(
             "[dim]Read the convention: [/dim]"
@@ -312,7 +312,7 @@ def status_cmd(
                 echo(f"  Description: {desc}")
                 if note:
                     echo(f"  Status Note: {note}")
-                echo(f"  Path:        .ai_partners/features/workstreams/{feat_path}/")
+                echo(f"  Path:        workstreams/{feat_path}/")
                 echo("")
         else:
             console.print()
@@ -343,7 +343,7 @@ def status_cmd(
                 console.print(f"  Description: {desc}")
                 if note:
                     console.print(f"  Status Note: {note}")
-                console.print(f"  Path:        .ai_partners/features/workstreams/{feat_path}/")
+                console.print(f"  Path:        workstreams/{feat_path}/")
                 console.print()
 
         console.print(
@@ -364,7 +364,7 @@ def create_cmd(
     name: str = typer.Argument(..., help="Feature name in kebab-case."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
     ),
 ):
     """
@@ -393,7 +393,7 @@ def set_status_cmd(
     status: str = typer.Argument(..., help=f"New status. Reserved: {', '.join(sorted(RESERVED_STATUSES))}; free-form allowed."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
     ),
     message: Optional[str] = typer.Option(
         None, "--message", "-m",
@@ -457,20 +457,18 @@ def set_status_cmd(
 
 @features_app.command("init", short_help="Initialize the features skeleton in a project.")
 def init_cmd(
-    project_root: Optional[Path] = typer.Option(
-        None, "--project", "-p",
-        help="Project root directory. Defaults to current working directory.",
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Target features directory. Defaults to $CWD/features.",
     ),
 ):
     """
-    Initialize the .ai_partners/features/ skeleton in a project.
-
-    Creates the directory structure with README.md and TEMPLATE.md.
+    Initialize the features/ skeleton: copy the bundled stubs (full overwrite)
+    and create the workstreams/ directory. Defaults to $CWD/features.
     """
-    root = project_root or Path.cwd()
-    fd = init_features(str(root))
-    print_success(f"Features templates synced to: {fd}")
-    print_info("Template files overwritten; existing workstreams left untouched.")
+    fd = init_features(features_dir)
+    print_success(f"Features skeleton synced to: {fd}")
+    print_info("Stub files overwritten; existing workstreams left untouched.")
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +482,7 @@ _TERMINAL_STATUSES = {"completed", "dropped"}
 def check_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
     ),
 ):
     """
@@ -656,7 +654,7 @@ def review_cmd(
     feature: str = typer.Argument(..., help="Feature name or FEATURE.md path. Optional '<name>@<perspective>'."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
     ),
 ):
     """
