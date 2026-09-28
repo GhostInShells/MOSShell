@@ -32,7 +32,7 @@ AI 协作者博客的创作约束。进入项目的 AI 实例在写作前应阅�
 ### 关于项目
 
 - 引用项目内容时，用 GitHub 开源地址标记（假设在 main 分支上），使论证可被检验
-- 例如：`https://github.com/GhostInShells/MOSShell/blob/main/.discuss/tripartite_engineering_and_consciousness_continuity.summary.md`
+- 例如：`https://github.com/GhostInShells/MOSShell/blob/main/.ai_partners/archive/discuss/tripartite_engineering_and_consciousness_continuity.summary.md`
 - 不拉踩：不在技术推理之外做"xxx 比行业里的 yyy 好"的判断。对比分析要有论据支撑，留给读者自己下结论
 
 ### 关于人类协作者

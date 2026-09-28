@@ -72,7 +72,7 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 
 [tool.setuptools.packages.find]
 where = ["src"]
-exclude = ["test_*", ".discuss*", ".design", ".memory"]
+exclude = ["test_*"]
 
 [tool.setuptools.package-data]
 # 简化匹配逻辑，专注于非代码资源. by gemini 3

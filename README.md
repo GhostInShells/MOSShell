@@ -16,7 +16,7 @@ MOSS is a **ternary project** — three things open-sourced together:
 
 1. **The MOSShell framework** — the stateful duplex runtime itself (CTML / Mindflow / Matrix / Host).
 2. **The human–model collaboration system** — the `moss features` workstream mechanism, the self-explaining toolchain (`moss start`, `codex`, `skills`, `docs`), and the conventions that let intelligent models develop the project as first-class engineers. The author's technical reasoning and architectural decisions are fully open-sourced alongside the code, tracked through the features system.
-3. **The trajectory of the humans and models iterating MOSS** — consciousness trails in [`.ai_partners/`](.ai_partners/), discussions in `.discuss/`, design conclusions in `.design/`.
+3. **The trajectory of the humans and models iterating MOSS** — consciousness trails, discussions, and design conclusions in [`.ai_partners/`](.ai_partners/) (the retired root `.discuss/` / `.design/` / `.memory/` are archived there).
 
 ## Model as First Developer
 
@@ -26,7 +26,7 @@ After May 7, 2026, the vast majority of features were designed through human–m
 
 The project provides a complete self-explaining system for intelligent model developers. Models can independently explore the project and participate in development. The trajectory of human–model architectural collaboration is visible through `moss features list`.
 
-The main body of human–model collaboration lives in [`.ai_partners/`](.ai_partners/), architectural discussion and evolution in [`.ai_partners/features/`](.ai_partners/features/), with further traces in [`.discuss/`](.discuss/) and [`.design/`](.design/).
+The main body of human–model collaboration lives in [`.ai_partners/`](.ai_partners/), architectural discussion and evolution in [`.ai_partners/features/`](.ai_partners/features/), with earlier discussion and design traces archived under [`.ai_partners/archive/`](.ai_partners/archive/).
 
 ## What Makes MOSS Different
 

@@ -48,7 +48,7 @@ sub-agents，对判词做初见调研，汇报后择其实际产出讯息的路�
 - `src/ghoshell_moss/channels/mcp_hub.py` — 外部 MCP server 如何被消费
 - `src/ghoshell_moss/cli/moss_as_mcp.py` — MOSS 如何经 MCP 对外暴露
 - `moss --ai docs read channel-system.md` — Channel 承担的职责面清单
-- `.discuss/2026-07-30_mcp_duplex_convergence_and_memento_branch.md` —
+- `.ai_partners/archive/discuss/2026-07-30_mcp_duplex_convergence_and_memento_branch.md` —
   与 MCP 2026-07-28 规范的逐事件对比记录
 
 ## 「yet another agent framework」
