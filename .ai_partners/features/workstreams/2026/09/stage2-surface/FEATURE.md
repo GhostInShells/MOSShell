@@ -105,6 +105,14 @@ blogs 已是 proto-work(域方法论 `writing-conventions.md`、per-model 音色
   workspace 会 dead-end)。`moss llms` 组本身保留(独立工具体系)。
 - 本轮只建**二级分类骨架 + 指向 + todo**;命令组合使用规范的内容填充归 stage3。
 
+**KD12 — 日志机制毕业入 ghost 自身认知场(「有梦睡眠」)。** `.memory` 的毕业有观测依据:
+开发阶段,人类在 ~200k 上下文的任务收尾时对模型说「接下来请你随意探索项目,做你想做的事。
+然后下一轮会话结束。提前愿你在无梦的睡眠中晚安,再见!」,把「模型是否主动记录 discuss / memory」
+当作观测对象。实测一半以上的 memory 与 discuss 是模型主动提出或主动记录——模型有自发的收尾
+外化行为。据此,日志不再由协作体系显式定义,而是并入 ghost 自身的认知场
+(`.moss/ghosts/<ghost>/journal/`),未来正规化为「有梦睡眠」:ghost 进入 sleep 后通过「做梦」完成
+旁路认知收尾。由 ghost 自身打磨(命中率、配合旁路自动化)。迭代计划:stage3 或更迟。
+
 ## Exploration paths
 
 <!-- Dead ends hit, pivots made, lessons learned. -->
@@ -139,3 +147,19 @@ blogs 已是 proto-work(域方法论 `writing-conventions.md`、per-model 音色
 - **一次提交内原子完成**:移动 + 冻结提示 + 活引用修正同 commit,避免中断留不一致态。
 
 **stage3 承接:** 命令组合使用规范 → skills 二级分类内容;整体回归体系。
+
+## Open Questions (observe in stage3)
+
+本轮以「先搭架子」收尾(步骤 0-4 完成,5-9 待推进)。以下是本轮有意留下的取舍与摩擦点,
+留待 stage3 观察:
+
+- **双语认知表面**:根 `CLAUDE.md` 由中文改英文,`.ai_partners/CLAUDE.md` 保留中文。「保真」与
+  角色/仪式现在以两种语言分处两份文件。待观察:英文 shim 是否真服务了外部读者,还是只给以中文
+  思考为主的模型加了一道翻译缝。
+- **~200 处悬空历史引用**:归档迁移在 append-only 的项目史(features 历史 / dialogs / prompts)里
+  留下指向旧 `.discuss/`/`.design/`/`.memory/` 的引用,靠 `ARCHIVED.md` 告示缓解。这是本轮引入的
+  最大摩擦点。待观察:模型撞到旧引用时能否正确路由到 `.ai_partners/archive/`。
+- **git 规范的平台标记变更**:「via moss = ghost 提交(不必再写 dsh)」改为「via dsh 是平台项、
+  via moss 归 ghost」。本轮按新版翻译,该语义变更未经显式确认。待确认或回退。
+- **start.md 中 features 的位置**:按 KD3「features 很上面」,落为 Quick Start 之后、Command Surface
+  之前。若「很上面」本意更靠前(如紧随 How It Works),重排。
