@@ -3,7 +3,7 @@
 ## What
 
 A **stage** is a declared development period with an explicit start, direction,
-and delivery target. Each stage is a directory under `.ai_partners/stages/`,
+and delivery target. Each stage is a directory under `features/stages/`,
 anchored by a `STAGE.md` file that carries:
 
 - **Background** — where this stage comes from, prior context
@@ -50,7 +50,7 @@ read time — never copied into the stage file, where they would rot.
 ### Create a stage
 
 ```bash
-cp -r .ai_partners/stages/_template .ai_partners/stages/YYYY-MM-identifier
+cp -r features/stages/_template features/stages/YYYY-MM-identifier
 # edit STAGE.md: frontmatter + all sections except Retrospective
 # add an entry to ROADMAP.md under Planned
 ```

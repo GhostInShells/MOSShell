@@ -30,7 +30,7 @@ snapshots you can compare against.
 
 A named collection of test cases that verify a specific scope — a subsystem,
 an integration boundary, or a release surface. Each set lives in its own
-directory under `.ai_partners/regressions/`.
+directory under `features/regressions/`.
 
 A regression set has:
 - **Methodology** — the testing approach, prerequisites, automation level
@@ -100,7 +100,7 @@ first" is valuable to the next person. A commit hash is not.
 ### Creating a Regression Set
 
 ```
-Copy TEMPLATE.md → .ai_partners/regressions/<name>/REGRESSION.md
+Copy TEMPLATE.md → features/regressions/<name>/REGRESSION.md
 Fill in frontmatter (version: 1, status: draft)
 Define methodology
 Build the test case table
@@ -123,7 +123,7 @@ When test cases change (add, remove, restructure):
 ### Running a Regression
 
 ```
-1. find .ai_partners/regressions -name "REGRESSION.md"
+1. find features/regressions -name "REGRESSION.md"
 2. Read the REGRESSION.md for the set you need
 3. Follow the methodology, execute cases in priority order
 4. Compare results against the latest baseline
@@ -133,7 +133,7 @@ When test cases change (add, remove, restructure):
 ## Directory Topology
 
 ```
-.ai_partners/regressions/
+features/regressions/
   README.md                    # This file — the convention specification
   TEMPLATE.md                  # Template for new regression sets
   <regression-name>/           # kebab-case, semantic (no date)
@@ -148,7 +148,7 @@ Only REGRESSION.md is created upfront. `baselines/`, `discuss/`, and `design/`
 appear when content is committed to them. Never pre-create empty directories —
 an empty `baselines/` signals "there are baselines here" when there aren't.
 
-Discovery: `find .ai_partners/regressions -name "REGRESSION.md"` returns
+Discovery: `find features/regressions -name "REGRESSION.md"` returns
 every active regression set. No CLI, no index file. The filesystem is
 the index.
 
@@ -186,7 +186,7 @@ the directory; it's just not expected to pass against current code.
 
 ## Model's Role
 
-- **Bootstrap at session start.** `find .ai_partners/regressions -name "REGRESSION.md"`
+- **Bootstrap at session start.** `find features/regressions -name "REGRESSION.md"`
   discovers all regression sets. This is the regressions equivalent of
   `moss features list` — two discovery paths, same session start habit,
   one CLI, one find. Run both.
@@ -253,7 +253,7 @@ bidirectional binding.
 ## Cross-Validation
 
 This convention is designed to be internally consistent with the features
-convention (`.ai_partners/features/README.md`):
+convention (`features/README.md`):
 
 - Same philosophical foundation: filesystem as database, markdown as
   portable format, model-to-model context handoff
