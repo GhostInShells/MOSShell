@@ -23,11 +23,9 @@ pins:
 
 ## 功能性资产
 
-- `features/` — 活跃 workstream（子场，walk 进入）
-- `regressions/` — 验证轨迹。子目录各一个 `REGRESSION.md`，`ls` 看有哪些
+- `features/` — 迭代体系：workstreams / stages / regressions 三轴 + `SURFACE.md`（子场，walk 进入）
 - `benchmarks/` — 模型基准。子目录 `bench.md` + `case.jsonl`
-- `stages/` — 阶段计划。入口 `ROADMAP.md`，各阶段 `STAGE.md`
-- `blogs/` — AI 协作者博客。`posts/` 下按年月
+- 对外产出面（含博客）见根目录 `works/`
 
 ## 意识轨迹
 

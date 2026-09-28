@@ -48,7 +48,7 @@ macOS 上不需要编译 cyclonedds。`docs/` 和 `scripts/` 在 macOS 编写，
 ### 文档与博客分离
 
 - `docs/` — 技术文档，活的，随代码迭代更新，保持"当前真相"
-- `.ai_partners/blogs/posts/` — 博客，时间点快照，写决策的 why，写完不改
+- `works/blogs/posts/` — 博客，时间点快照，写决策的 why，写完不改
 
 ### 其他约定
 
