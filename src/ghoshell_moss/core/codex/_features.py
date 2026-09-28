@@ -196,6 +196,38 @@ def get_feature(features_dir: str | Path, feature_id: str) -> tuple[Optional[dic
     return meta, None
 
 
+def list_stages(features_dir: str | Path) -> list[dict]:
+    """List stages from stages/*/STAGE.md, reading each STAGE.md frontmatter."""
+    stages_dir = Path(features_dir) / "stages"
+    if not stages_dir.is_dir():
+        return []
+    results = []
+    for st_path in sorted(stages_dir.glob("*/STAGE.md")):
+        if st_path.parent.name == "_template":
+            continue
+        meta, _ = parse_frontmatter_with_error(st_path)
+        if meta is None:
+            continue
+        meta["_stage_dir"] = st_path.parent.name
+        results.append(meta)
+    return results
+
+
+def list_regressions(features_dir: str | Path) -> list[dict]:
+    """List regression sets from regressions/*/REGRESSION.md, reading frontmatter."""
+    regressions_dir = Path(features_dir) / "regressions"
+    if not regressions_dir.is_dir():
+        return []
+    results = []
+    for r_path in sorted(regressions_dir.glob("*/REGRESSION.md")):
+        meta, _ = parse_frontmatter_with_error(r_path)
+        if meta is None:
+            continue
+        meta["_regression_dir"] = r_path.parent.name
+        results.append(meta)
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Mutate
 # ---------------------------------------------------------------------------

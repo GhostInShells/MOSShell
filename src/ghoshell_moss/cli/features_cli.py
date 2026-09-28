@@ -15,6 +15,8 @@ from ghoshell_moss.core.codex._features import (
     create_feature,
     init_features,
     update_feature_status,
+    list_stages,
+    list_regressions,
     RESERVED_STATUSES,
     _find_stubs_dir,
 )
@@ -28,6 +30,12 @@ features_app = typer.Typer(
     help="Model-native development system via file system convention — workstreams, stages, regressions, and a project surface.",
     no_args_is_help=True,
 )
+
+# Axis sub-groups, mounted under `moss features` at the bottom of this file.
+workstreams_app = typer.Typer(help="Workstreams (L1) — iteration-task context.", no_args_is_help=True)
+stages_app = typer.Typer(help="Stages (L2) — development periods.", no_args_is_help=True)
+regressions_app = typer.Typer(help="Regressions — verification sets.", no_args_is_help=True)
+surface_app = typer.Typer(help="Surface (L3) — the project's outward face.", no_args_is_help=True)
 
 # Next-step hints per status transition
 _STATUS_HINTS = {
@@ -149,6 +157,7 @@ def specification(
 # ---------------------------------------------------------------------------
 
 @features_app.command("list", short_help="List active workstreams with status and priority.")
+@workstreams_app.command("list")
 def list_cmd(
     status: Optional[str] = typer.Option(
         None, "--status", "-s",
@@ -247,6 +256,7 @@ def list_cmd(
 # ---------------------------------------------------------------------------
 
 @features_app.command("status", short_help="Show detailed status of workstreams.")
+@workstreams_app.command("status")
 def status_cmd(
     feature_name: Optional[str] = typer.Argument(None, help="Feature name to show. Omit to show all."),
     features_dir: Optional[Path] = typer.Option(
@@ -360,6 +370,7 @@ def status_cmd(
 # ---------------------------------------------------------------------------
 
 @features_app.command("create", short_help="Create a new workstream from the template.")
+@workstreams_app.command("create")
 def create_cmd(
     name: str = typer.Argument(..., help="Feature name in kebab-case."),
     features_dir: Optional[Path] = typer.Option(
@@ -388,6 +399,7 @@ def create_cmd(
 # ---------------------------------------------------------------------------
 
 @features_app.command("set-status", short_help="Set workstream status without opening the file.")
+@workstreams_app.command("set-status")
 def set_status_cmd(
     feature_name: str = typer.Argument(..., help="Feature name to update."),
     status: str = typer.Argument(..., help=f"New status. Reserved: {', '.join(sorted(RESERVED_STATUSES))}; free-form allowed."),
@@ -479,6 +491,7 @@ _TERMINAL_STATUSES = {"completed", "dropped"}
 
 
 @features_app.command("check", short_help="List unfinished workstreams — pre-commit reminder.")
+@workstreams_app.command("check")
 def check_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -650,6 +663,7 @@ def _feature_basic_info(meta: dict, fm_path: Path) -> list[str]:
 
 
 @features_app.command("review", short_help="Generate a zero-context feature review prompt.")
+@workstreams_app.command("review")
 def review_cmd(
     feature: str = typer.Argument(..., help="Feature name or FEATURE.md path. Optional '<name>@<perspective>'."),
     features_dir: Optional[Path] = typer.Option(
@@ -750,3 +764,96 @@ def review_cmd(
     if broken:
         lines += ["", "Note: broken review doc(s) skipped (unparseable or missing when/description):", *(f"  - {p}" for p in broken)]
     echo("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# stages
+# ---------------------------------------------------------------------------
+
+@stages_app.command("list", short_help="List stages (L2 development periods).")
+def stages_list_cmd(
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+    ),
+):
+    """List stages from stages/*/STAGE.md with status, period, and delivery."""
+    fd = _resolve_dir(features_dir)
+    stages = list_stages(str(fd))
+    if not stages:
+        print_info("No stages found under stages/.")
+        return
+    table_data = [
+        [st.get("_stage_dir", "?"), st.get("status", "?"), st.get("delivery", "—"), st.get("period", "—")]
+        for st in stages
+    ]
+    print_simple_table(
+        data=table_data,
+        headers=["Stage", "Status", "Delivery", "Period"],
+        title="Stages",
+        column_ratios=[1.6, 0.6, 0.8, 1],
+    )
+    console.print("\n[dim]See stages/README.md for the convention; ROADMAP.md is the cross-stage index.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# regressions
+# ---------------------------------------------------------------------------
+
+@regressions_app.command("list", short_help="List regression sets.")
+def regressions_list_cmd(
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+    ),
+):
+    """List regression sets from regressions/*/REGRESSION.md."""
+    fd = _resolve_dir(features_dir)
+    regs = list_regressions(str(fd))
+    if not regs:
+        print_info("No regression sets found under regressions/.")
+        return
+    table_data = [
+        [r.get("_regression_dir", "?"), r.get("title", r.get("_regression_dir", "?")),
+         r.get("version", "?"), r.get("status", "?")]
+        for r in regs
+    ]
+    print_simple_table(
+        data=table_data,
+        headers=["Set", "Title", "Ver", "Status"],
+        title="Regressions",
+        column_ratios=[1, 1.5, 0.3, 0.6],
+    )
+    console.print("\n[dim]See regressions/README.md for the convention.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# surface
+# ---------------------------------------------------------------------------
+
+@surface_app.command("show", short_help="Render the project surface (L3).")
+def surface_show_cmd(
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+    ),
+):
+    """Render SURFACE.md — the project's L3 deliverables checklist."""
+    fd = _resolve_dir(features_dir)
+    surface = fd / "SURFACE.md"
+    if not surface.is_file():
+        print_error(f"SURFACE.md not found at {surface}")
+        print_info("Run 'moss features init' to scaffold it, or create it manually.")
+        raise typer.Exit(code=1)
+    echo(surface.read_text(encoding="utf-8"))
+    echo(f"\nSurface path: {surface.resolve()}")
+
+
+# ---------------------------------------------------------------------------
+# Mount axis sub-groups
+# ---------------------------------------------------------------------------
+
+features_app.add_typer(workstreams_app, name="workstreams")
+features_app.add_typer(stages_app, name="stages")
+features_app.add_typer(regressions_app, name="regressions")
+features_app.add_typer(surface_app, name="surface")
