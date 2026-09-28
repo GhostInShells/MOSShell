@@ -1,6 +1,6 @@
 # Features Directory Topology
 
-The features system is the project's human–AI collaboration layer (pillar 2).
+The features system is the project's human–model collaboration layer (pillar 2).
 Three axes plus one surface index live under `features/`.
 
 ```
@@ -15,9 +15,11 @@ features/
       <month>/           # Created month
         <feature-name>/  # kebab-case, unique across the entire tree
           FEATURE.md     # REQUIRED: frontmatter + motivation + key decisions + design index
-          discuss/       # Feature-specific discussion trails (optional)
+          discuss/       # Discussion collision records (optional, when content exists)
           design/        # Design documents (optional)
           review/        # Feature review perspective docs (optional; override global)
+          research/      # Investigated data and conclusions (optional)
+          skills/        # Tools or techniques the development needs (optional)
   stages/                # L2 intent axis — development periods (forward-facing)
     ROADMAP.md           # Cross-stage index (active/planned/completed/cancelled)
     _template/           # Stage + milestone templates

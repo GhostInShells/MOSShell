@@ -68,7 +68,8 @@ produced it.
 A subtlety worth naming: the levels build *upward* — the project literally accumulates infrastructure
 level by level — but *governance flows downward*. L3 vision is realized through L2 stages, which decompose
 into L1 workstreams. Because an upper level faces forward (it holds intent, not facts), the *governance*
-of an upper level is carried by the level below it.
+of an upper level is carried by the level below it. Concretely, a workstream joins a stage by being listed,
+by name, in that stage's `Associated Workstreams` (see Stages).
 
 The endpoint of a features document is context, discussion, and decisions — never a restatement of the
 facts themselves. The only truth is the artifacts stored in git; the context documents are not truth.
@@ -99,20 +100,9 @@ The content that restores working context, such as:
 Fine-grained status tracking, checklists, progress percentages — skip them. A messy FEATURE.md with the
 right decision beats a pristine one that says nothing.
 
-No strict structure. Two hard requirements:
-
-1. **Include original dialogue fragments verbatim.** Do not paraphrase. The exact wording of a position or
-   refutation carries nuance that summaries lose. Attribute each fragment to its speaker.
-2. **The recording model appends a first-person perspective at the end.** Reflection on the collision —
-   what was learned, what surprised, what remains uncertain. Clearly separated from the factual record.
-
-All discuss entries can be verified and appended later with follow-up conclusions.
-Without it, a future model incarnation reading Key Decisions cannot reconstruct *why* A beat B,
-or whether the conditions that favored B have since changed.
-
-For L2 (architecture design) and L3 (requirement-driven architecture), discuss preserves the reasoning
-chain. For L4 (problem definition), it preserves the original questions, assumptions, and refutations that
-shaped the problem framing.
+A `discuss/` entry is worth writing when the details of a discussion matter: record a context summary,
+verbatim excerpts of key sentences, and viewpoint commentary — in a third-person scribe voice. FEATURE.md
+carries the conclusions; discuss/ carries the arguments behind them.
 
 ### FEATURE.md Schema
 
@@ -141,13 +131,14 @@ Directory name under `workstreams/` (kebab-case) is the unique identifier. Path 
 
 ### Workstream directory
 
-A workstream is a directory anchored by `FEATURE.md`; it may hold any development-related material. Common
-subdirectories:
+A workstream is a directory anchored by `FEATURE.md`. `moss features create` writes only `FEATURE.md`; any
+subdirectory is optional and created only when it has content. Common ones:
 
-- `discuss/` — the detail collision that produced the decisions, include the key sentences.
+- `discuss/` — the collision that produced the decisions.
+- `design/` — design documents.
+- `review/` — feature-level review perspectives (override the global `review/` by the same name).
 - `research/` — investigated data and conclusions, to avoid re-investigation.
 - `skills/` — tools or techniques the development itself needs.
-- or more.
 
 Sub-tasks may be created directly as `.md` documents inside the directory, linked to FEATURE.md so they
 are discoverable.
@@ -246,15 +237,16 @@ Cut scope must be recorded scope — an unrecorded cut makes the index lie.
 **Execution order**: `set-status completed` first (modifies FEATURE.md), then `git commit` with workstream modifications
 included.
 
+`moss features check` lists unfinished workstreams as a non-blocking pre-commit reminder (parked workstreams
+never appear). It is a reminder, not an enforcer — the human reviews for it.
+
 ### How to Review
 
-Review is a development-process quality check. Its goal is verifying feature implementation quality — that
-the delivery holds to what the FEATURE.md declared, and that nothing was silently dropped along the way.
+Review is a development-process quality check: verifying that the delivery holds to what the FEATURE.md
+declared and that nothing was silently dropped. It is built on the zero-context principle — the party
+launching a review should not read the details in advance.
 
-It is paired with a command: `moss features review <feature>`.
-
-Run it when you or others want to inspect a feature's development state. The command returns a bare-text review
-prompt; let its output guide the next step.
+When the timing applies, call it directly: `moss features review <feature>`.
 
 **Default timing** — when the feature is finalized, when a development phase completes, and before a
 merge-boundary commit.
@@ -346,5 +338,8 @@ Three debts this convention refuses:
 
 ## CLI Reference
 
-The CLI is a thin convention enforcer; `moss features --help` is the
-authoritative surface. Implementation lives in `ghoshell_moss.core.codex`.
+The CLI is a thin convention enforcer; `moss features --help` is the authoritative surface. Implementation
+lives in `ghoshell_moss.core.codex`.
+
+Commands are grouped by axis: `moss features workstreams …` (also available flat, e.g. `moss features
+list`), `moss features stages …`, `moss features regressions …`, and `moss features surface …`.

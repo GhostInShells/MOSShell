@@ -5,10 +5,11 @@ description: 将 features 目录从 workstream 追踪器升格为完整体系（
   规范 + 一键初始化 + CLI + works/ 对外产出面。
 milestone: null
 priority: P0
-status: in-progress
-status_note: decision ledger recorded from stage2 discussion
+status: completed
+status_note: four axes + spec + CLI + stubs done; root三件 migration / works/ / moss
+  start deferred
 title: Features System Formalization
-updated: '2026-09-28'
+updated: '2026-09-29'
 ---
 
 # Features System Formalization
@@ -126,3 +127,20 @@ features/surface（工具无关）。这是"从 claude code 进入 → 在 ghost
 
 **待定：** `works/` 是否有"毕业进框架"路径（在 works 原型 → 证明有用 → 取得某领域命题的 few-shot 身份 +
 workstream）。有则 works 与 features 有耦合，否则完全隔离——定性不同，需人类定。
+
+## Retrospective
+
+**这一轮怎么走通的（实施经验）：**
+
+1. **先沟通、定死目标** —— 完整计划 + 实施步骤先讨论清楚，并因"破坏性副作用"（移动目录、改写体系对自身的描述）明确"一个会话内完成"的目标。会话不可中断，否则体系自相矛盾、比不改更坏。
+2. **无副作用的事先做** —— SURFACE.md 模板 + 实例、FEATURE.md 决策台账先落地（纯新增），再动目录与 CLI。
+3. **README 改写五段** —— 人类手写草稿 → 模型重写 → 逐段粗修 → 模型第二轮重写 → 精修细节。人类主导方向与取舍，模型补英文、一致性与去重。
+4. **旁路零上下文 review** —— deepseek-flash + claude 双模型旁路 review 规范，抓到目录拓扑矛盾、TEMPLATE 缺节、review 不可发现等硬伤；核心 features list 无破坏性改动。
+5. **大规模改造 + 回归验证** —— CLI 四组、stubs 全量脚手架、路径解析；每步 `moss features list` / `init --dir` 回归验证。
+
+**遗留交接：**
+
+1. **长期打磨摩擦点** —— features 每次改造都需长时间反复修改优化，是非只有实践知道。
+2. **`moss start` 命令体系调整** —— 拆到另一个任务：基于当前 features，新上下文建 `moss-openbox-cli-v0-1` 之类，优化 CLI + `CLAUDE.md`。
+3. **KD8 root 三件（`.design`/`.discuss`/`.memory`）冻结迁移** —— 本会话未做，属"最后一步"，待单独推进。
+4. **KD10 `works/` 根场** —— 未建（含"毕业进框架"路径定性），待推进。

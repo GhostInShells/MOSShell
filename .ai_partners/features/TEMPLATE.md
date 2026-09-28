@@ -27,7 +27,15 @@ What problem does this workstream solve? Why now? (This is a development track, 
 
 ## Key Decisions
 
-<!-- Record each meaningful design choice. This is what the next AI incarnation reads first. -->
+<!-- Record each meaningful design choice. This is what the next model incarnation reads first. -->
+
+## Exploration paths
+
+<!-- Dead ends hit, pivots made, lessons learned. -->
+
+## Methods
+
+<!-- Non-obvious implementation patterns. -->
 
 ## Implementation Notes
 

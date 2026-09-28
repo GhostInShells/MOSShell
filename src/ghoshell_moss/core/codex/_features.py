@@ -262,7 +262,7 @@ Why does this feature need to exist? What gap does it fill?
 
 ## Key Decisions
 
-<!-- Record each meaningful design choice. This is what the next AI incarnation reads first. -->
+<!-- Record each meaningful design choice. This is what the next model incarnation reads first. -->
 
 ## Implementation Notes
 
