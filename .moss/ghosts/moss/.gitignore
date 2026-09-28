@@ -7,3 +7,4 @@
 # people I know — privacy-bearing, keep only the directory index
 people/
 !people/GROUND.md
+.dolores.yml
