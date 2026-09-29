@@ -114,68 +114,10 @@ def _deny(import_path: str) -> str:
 
 
 def _architecture_map() -> str:
-    """策展架构地图 —— 从 ghoshell_moss.architecture 的 import 清单反射出分区表."""
-    import re
-    from ghoshell_moss.core.codex import from_module
-    import ghoshell_moss.architecture as arch
+    """Return the curated architecture map as plain text."""
+    from ghoshell_moss.architecture import render
 
-    source = inspect.getsource(arch)
-    chunks = re.split(r"^# =+\n", source, flags=re.MULTILINE)
-    sections: list[tuple[str, str, list[tuple[str, object]]]] = []
-    pending_title = ""
-    pending_path = ""
-
-    def _manifest(value: object) -> object:
-        try:
-            return from_module(value)
-        except Exception:
-            return None
-
-    for chunk in chunks:
-        lines = [ln for ln in chunk.strip().split("\n") if ln.strip()]
-        if not lines:
-            continue
-        has_imports = any(ln.startswith("import ") and " as " in ln for ln in lines)
-        if not has_imports:
-            for line in lines:
-                if line.startswith("# ") and not pending_title:
-                    pending_title = line[2:].strip()
-                elif line.startswith("# ") and pending_title and not pending_path:
-                    pending_path = line[2:].strip()
-            continue
-        title, pkg_path = pending_title, pending_path
-        pending_title, pending_path = "", ""
-        entries = []
-        for line in lines:
-            if line.startswith("import ") and " as " in line:
-                parts = line[len("import "):].split(" as ")
-                if len(parts) == 2:
-                    value = getattr(arch, parts[1].strip(), None)
-                    if value is not None and inspect.ismodule(value):
-                        m = _manifest(value)
-                        if m is not None:
-                            entries.append((parts[1].strip(), m))
-        if entries:
-            sections.append((title, pkg_path, entries))
-    if sections:
-        total = sum(len(e) for _, _, e in sections)
-        out = [f"MOSS architecture map — {total} entries in {len(sections)} sections."]
-        for title, pkg_path, entries in sections:
-            out.append(f"\n## {title}")
-            out.append(f"  {pkg_path}")
-            for alias, m in entries:
-                kind = "pkg" if _is_package_manifest(m) else "mod"
-                desc = (getattr(m, "short_doc", "") or "").split("\n")[0].strip()
-                out.append(f"| {kind} {alias} | {getattr(m, 'module_path', alias)} | {desc} |")
-        return "\n".join(out)
-    return source
-
-
-def _is_package_manifest(m: object) -> bool:
-    try:
-        return bool(getattr(m, "is_package", False))
-    except Exception:
-        return False
+    return render()
 
 
 def new_introspect_channel(

@@ -161,8 +161,8 @@ async def test_architecture_map():
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         result = await runtime.execute_command("architecture")
-        assert "MOSS architecture map" in result
         assert "ghoshell_moss.core.concepts" in result
+        assert "from ghoshell_moss.core.concepts import channel" in result
 
 
 @pytest.mark.asyncio
