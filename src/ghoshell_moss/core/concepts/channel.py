@@ -1,6 +1,6 @@
-"""
-Channel (经络, "meridian"): an abstraction for components organized by a
-streaming interpreter — tree-shaped, stateful, and stream-controllable.
+"""Channel (经络, "meridian") — an abstraction for components organized by a streaming interpreter.
+
+Tree-shaped, stateful, and stream-controllable.
 """
 
 import asyncio

@@ -1,6 +1,4 @@
-"""
-Strongly-typed data (Topic) broadcast system implemented within the Shell layer,
-used to build complex implementations.
+"""Strongly-typed data (Topic) broadcast system implemented within the Shell layer, used to build complex implementations.
 """
 
 from abc import ABC, abstractmethod

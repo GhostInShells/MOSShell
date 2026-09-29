@@ -1,6 +1,4 @@
-"""
-Reflect Function/Method in Python code into Command objects that the MOSS
-architecture can understand and schedule.
+"""Reflect Function/Method in Python code into Command objects the MOSS architecture can understand and schedule.
 
 It covers:
 1. Code-as-prompt: reflected code provides a prompt described in code form.
