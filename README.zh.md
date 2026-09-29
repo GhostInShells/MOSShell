@@ -13,7 +13,7 @@ MOSS 是一个**三元工程**，三样东西一起开源：
 
 1. **MOSShell 框架** — 有状态双工运行时本身（CTML / Mindflow / Matrix / Host）。
 2. **人机协作体系** — `moss features` 工作流机制、自解释工具链（`moss start`、`codex`、`skills`、`docs`），以及让智能模型作为一等工程师参与开发的全部约定。作者对 MOSS 架构的技术理念与方案，全部跟随 features 体系与代码一起开源。
-3. **迭代 MOSS 的人和模型的轨迹** — 意识轨迹在 [`.ai_partners/`](.ai_partners/)，讨论在 `.discuss/`，设计结论在 `.design/`。
+3. **迭代 MOSS 的人和模型的轨迹** — 意识轨迹、讨论与设计结论都在 [`.ai_partners/`](.ai_partners/)（根目录的 `.discuss/` / `.design/` / `.memory/` 已归档其中）。
 
 ## 模型是第一开发者
 
@@ -23,7 +23,7 @@ MOSS 是一个**智能模型作为第一开发者**的项目。智能模型不�
 项目为智能模型开发者准备了完整的自解释体系，模型拥有独立探索项目、参与开发的能力。
 人机协作的架构演进轨迹，可通过 `moss features list` 看到活跃工作流。
 
-人机协作的主体内容在 [`.ai_partners/`](.ai_partners/)，架构讨论与演进集中在 [`.ai_partners/features/`](.ai_partners/features/)，以及分散在目录里的 [`.discuss/`](.discuss/)、[`.design/`](.design/) 目录中。
+人机协作的主体内容在 [`.ai_partners/`](.ai_partners/)，架构讨论与演进集中在 [`.ai_partners/features/`](.ai_partners/features/)，更早的讨论与设计轨迹归档在 [`.ai_partners/archive/`](.ai_partners/archive/)。
 
 ## 差异点
 

@@ -1,0 +1,10 @@
+# runtime data — dsh reasoning-core territory
+.dsh/
+# ego trajectory index (memento) — runtime data, contains real conversations, not committed
+.memento/
+# local env config (copied from .env.example, not committed)
+.env
+# people I know — privacy-bearing, keep only the directory index
+people/
+!people/GROUND.md
+.dolores.yml

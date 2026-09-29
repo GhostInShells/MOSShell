@@ -1,3 +1,6 @@
+"""Question/Answer protocol — typed question and answer models exchanged through namespaced askers and watchers.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Literal, Callable
 

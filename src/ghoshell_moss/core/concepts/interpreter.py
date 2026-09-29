@@ -1,6 +1,4 @@
-"""
-Streaming interpreter: interprets tokens from a model's output into the runtime
-topology of Commands and dispatches them immediately.
+"""Streaming interpreter: interprets tokens from a model's output into the runtime topology of Commands and dispatches them immediately.
 """
 
 import asyncio

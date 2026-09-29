@@ -1,4 +1,4 @@
-"""语音交互：整合 TTS 与音频播放器 | 交互能力 | beta
+"""Speech interaction — integrates TTS with the audio player | interaction | beta
 
 Example:
     from ghoshell_moss.channels.speech_channel import SpeechChannel

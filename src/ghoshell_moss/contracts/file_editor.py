@@ -1,4 +1,4 @@
-"""File editor contract — MOSS 的结构化文件编辑动作层.
+"""File editor contract — MOSS's structured file-editing action layer.
 
 一句话承诺: "在文件上做 5 个模型都会用的动作 — view / create / str_replace /
 insert / undo_edit — 语义骑 Anthropic text_editor 血统, 契约不做加法".

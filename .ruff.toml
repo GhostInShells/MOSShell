@@ -93,6 +93,10 @@ ignore = [
     "F401", # unused-import
     "F811", # redefined-while-unused
 ]
+"src/ghoshell_moss/architecture.py" = [
+    "F401", # TYPE_CHECKING imports exist only as the curated map + IDE navigation
+    "I001", # hand-curated map: grouping is semantic, not alphabetical
+]
 "configs/*" = [
     "N802", # invalid-function-name
 ]

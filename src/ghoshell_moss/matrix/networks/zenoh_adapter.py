@@ -72,6 +72,10 @@ class ZenohAdapter(MatrixNetworkAdapter):
         self._started = False
         self._closed = False
 
+        # sync bind_ioc 阶段绑定的本 cell matrix 容器; __aenter__ 时转交 hub,
+        # 让本 cell 的通道运行时容器以它为父 (见 bind_ioc).
+        self._container: IoCContainer | None = None
+
     @classmethod
     def driver_name(cls) -> str:
         return ZENOH_DRIVER
@@ -123,6 +127,7 @@ class ZenohAdapter(MatrixNetworkAdapter):
         self._hub = ZenohChannelHub(
             zenoh_session=session,
             scope=self._scope,
+            container=self._container,
             logger=self._logger,
             namespace=self._namespace,
         )
@@ -193,7 +198,13 @@ class ZenohAdapter(MatrixNetworkAdapter):
     # ---- IoC hooks (§ZZ-5) ------------------------------------------------
 
     def bind_ioc(self, container: IoCContainer) -> None:
-        """注册 lazy zenoh.Session provider (§ZZ-5 provide 语法糖场景).
+        """留存本 cell matrix 容器 + 注册 lazy zenoh.Session provider (§ZZ-5 provide 语法糖场景).
+
+        留存容器是为了 hub: hub 把它传给每个 ``ZenohChannelProvider``, 于是本 cell
+        通道运行时的容器 (duplex provider 容器) 以本 cell matrix 容器为父 —— 通道命令里
+        ``CommandUtil.force_get_contract`` 才能取到本 cell 注册的契约与 provider
+        (与宿主主通道 ``moss_runtime.py`` 的 ``parent_container=self.matrix.container``
+        同一跳). 每个 cell 拿到的是它自己的容器; 跨进程不可见是正确语义.
 
         闭包捕捉 self, 首次 fetch 时读 self._session — 那时 __aenter__ 已完成
         (matrix 装配次序: sync bind_ioc → sync bootstrap → async adapter.__aenter__
@@ -201,6 +212,7 @@ class ZenohAdapter(MatrixNetworkAdapter):
         """
         import zenoh
 
+        self._container = container
         adapter_ref = self
 
         def _fetch_zenoh_session(_container: IoCContainer) -> zenoh.Session:

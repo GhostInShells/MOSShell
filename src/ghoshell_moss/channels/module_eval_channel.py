@@ -1,4 +1,4 @@
-"""Module 求值 — 可复用的 module 级别有状态运行时 | 元能力 | alpha
+"""Module evaluation — a reusable module-level stateful runtime | meta-capability | alpha
 
 把 Python 模块 .py 文件包装为 live runtime——子进程执行, 模型通过 exec/aexec
 直接在持久化命名空间写代码, 副作用持续累积 (有状态, 无 undo)。域对象 (浏览器/

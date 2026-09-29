@@ -1,4 +1,4 @@
-"""Shell 操作面的 OS 工具组织层 | 系统管理 | alpha
+"""OS tooling hub of the MOSS Shell surface | system-management | alpha
 
 desktop 是 MOSS Shell 操作面的工具集成点。挂载 bash / file_editor（未来 + ground），
 与 matrix (cell 治理) 平级。无 own commands，极简自我介绍。

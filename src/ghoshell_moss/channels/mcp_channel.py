@@ -1,4 +1,4 @@
-"""MCP Hub Channel — 把外部 MCP server 的工具集接入 MOSS | 集成 | beta
+"""MCP hub channel — brings external MCP servers' tools into MOSS | integration | beta
 
 ``MCPHub`` 是本源对象：持有 N 个 MCP server session，从 ConfigStore 读配置，
 由模型通过 CTML 主动 ``open`` / ``close``。每个已打开的 server 投影为一个虚拟子

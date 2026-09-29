@@ -1,5 +1,4 @@
-"""
-资源管理抽象 (Resource Management Abstraction) — 验证版.
+"""Resource management abstraction — scheme-addressed resources (scheme://host/path) with self-describing metadata and cross-scheme routing.
 
 从 contracts/resource.py 复制, 加上讨论的改动:
   - host: 实例级标识, 同一 scheme 下的不同数据集
