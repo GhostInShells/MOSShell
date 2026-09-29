@@ -1,6 +1,5 @@
 """
-Cell — a unit node in the MOSS communication network, projected into the Matrix under an
-address.
+Cell — a unit node in the MOSS communication network, addressed and projected into the Matrix.
 
 This module defines the Cell abstraction (``Cell``, ``CellAddress``, ``CellProtocol``),
 the node manifest that declares a cell (``NodeManifest``), and the entry points that
