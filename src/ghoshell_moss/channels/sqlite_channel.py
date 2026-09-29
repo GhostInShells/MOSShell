@@ -1,4 +1,4 @@
-"""sqlite3 数据库作为"文件资源协议" — 给模型 file editor 式的手段理解数据库 | 认知模块 | beta
+"""sqlite3 as a file-resource protocol — file-editor-style access to databases | cognition | beta
 
 单 channel 内部持有多个 sqlite 连接, SQL 只走 query.
 

@@ -1,4 +1,4 @@
-"""Matrix 治理集成: nodes/mesh/matrix 三 channel 单文件 | 系统管理 | alpha
+"""Matrix governance — nodes / mesh / matrix channels in one module | system-management | alpha
 
 三 channel 分工 (matrix-channel.md §5):
 - nodes: 本地治理 (list/read/run/stop/status/read_output). 数据源 =

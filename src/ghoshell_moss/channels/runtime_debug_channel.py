@@ -1,4 +1,4 @@
-"""Runtime 超级 debug — 编译临时 module, 手动 await 其 main(container) | 集成 | alpha
+"""Runtime debug — compile an ad-hoc module and await its main(container) by hand | integration | alpha
 
 给模型一把"在运行时调试 MOSS 自身"的直通钥匙: 把一段 Python 源码编译成临时
 module, 拿到里面的 ``main`` 函数, 直接调用 ``main(container)`` —— 其中 ``container``

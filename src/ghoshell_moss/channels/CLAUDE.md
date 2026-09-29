@@ -7,22 +7,37 @@
 
 ### 1.1 Docstring 范式
 
-每个模块第一行 docstring 采用机器可解析格式：
+每个模块第一行 docstring 采用机器可解析格式（`moss codex channeltypes` 的索引表只反射这一行）：
 
 ```python
-"""一句话功能描述 | 功能类型 | 状态
+"""One self-contained English summary | type | status
 """
 ```
 
-- `功能类型` 与 `状态` 由各 channel 自行声明（自由取值）
-- 由 `ast.get_docstring` 读取，对接 `moss codex channeltypes` 的索引表
+- **描述**：一句自包含英文摘要，不折行。
+- **功能类型**：受控英文词表（不再自由取值）：
+
+  | type | 含义 |
+  |------|------|
+  | `system-management` | 系统级治理面（进程 / 网络 / 资源组织） |
+  | `system-control` | 直接控制 OS / 机器（终端、脚本、按键） |
+  | `integration` | 把外部系统或能力接入 MOSS |
+  | `interaction` | 面向人的交互输出（图形 / 语音） |
+  | `meta` | 反身 / 自模型面（思维帧） |
+  | `meta-capability` | 元能力：构造其它能力的运行时 |
+  | `memory` | 记忆基座（宏、数据存储） |
+  | `cognition` | 供模型认知 / 理解某类资源的手段 |
+  | `diagnostics` | 自诊断 |
+
+- **状态**：`alpha` → `beta` → `active`（见 §2）。
+- 由 `inspect.getdoc` 读取（`short_doc` = 第一行），对接 `moss codex channeltypes` 的索引表。
 
 ### 1.2 Example 段
 
 docstring 后续段落可追加 Example 段，只给**一种**推荐集成方式：
 
 ```python
-"""反射 Python 模块为 Channel 命令集 | 集成 | beta
+"""Reflects a Python module into a Channel command set | integration | beta
 
 Example:
     from ghoshell_moss import new_shell_main_channel

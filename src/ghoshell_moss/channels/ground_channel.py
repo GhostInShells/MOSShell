@@ -1,4 +1,4 @@
-"""把 GROUND.md 认知场反射成 Channel 命令集与子 channel 树 | 集成 | beta
+"""Reflects a GROUND.md cognitive ground into commands and a child-channel tree | integration | beta
 
 Ground 是 Ghost 的目录级认知场: 一个被 GROUND.md 标记的目录就是场
 (frontmatter 身份 + body 法 + pins 注视). 本 channel 持有 GroundSet, root 场与

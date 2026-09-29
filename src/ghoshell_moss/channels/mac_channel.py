@@ -1,4 +1,4 @@
-"""macOS JXA 脚本执行控制 | 系统控制 | alpha
+"""macOS JXA script execution and control | system-control | alpha
 
 Example:
     from ghoshell_moss import new_shell_main_channel

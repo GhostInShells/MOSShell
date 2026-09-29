@@ -1,4 +1,4 @@
-"""结构化文件编辑 — Anthropic text_editor tool 血统 | 集成 | alpha
+"""Structured file editing — Anthropic text_editor lineage | integration | alpha
 
 Example:
     # workspace-integrated: registered via manifests providers

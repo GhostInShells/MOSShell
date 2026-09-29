@@ -1,4 +1,4 @@
-"""Introspect — 运行时反射,读取正在运行的 MOSS 自身源码 | 集成 | alpha
+"""Introspect — runtime reflection of the running MOSS itself | integration | alpha
 
 读取的是 **运行中的活对象**,不是磁盘上的源码文本:import 解析到
 ``sys.modules[name]``(同一个在内存里活着的模块),反射它的 ``__dict__`` /

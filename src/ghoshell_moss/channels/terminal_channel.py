@@ -1,4 +1,4 @@
-"""进程控制: bash.exec / bash.run / bash.read_output / bash.stop | 系统控制 | alpha
+"""Process control — bash.exec / bash.run / bash.read_output / bash.stop | system-control | alpha
 
 Example:
     # workspace-integrated: registered via manifests providers

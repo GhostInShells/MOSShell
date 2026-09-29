@@ -1,4 +1,4 @@
-"""宏存储 — 文件态与会话态的程序性记忆基座 | 记忆 | beta
+"""Macro store — a procedural-memory substrate for file- and session-scoped macros | memory | beta
 
 Example:
     from ghoshell_moss import new_shell_main_channel

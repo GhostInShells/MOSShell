@@ -1,4 +1,4 @@
-"""在浏览器中渲染 Mermaid 图表 | 交互能力 | alpha
+"""Renders Mermaid diagrams in the browser | interaction | alpha
 
 Example:
     from ghoshell_moss import new_shell_main_channel

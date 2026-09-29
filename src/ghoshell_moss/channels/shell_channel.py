@@ -1,4 +1,4 @@
-"""Persistent interactive terminal session | 系统控制 | alpha
+"""Persistent interactive terminal session | system-control | alpha
 
 Example:
     from ghoshell_moss import new_shell_main_channel

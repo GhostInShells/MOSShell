@@ -1,4 +1,4 @@
-"""Runtime error self-diagnosis — pull the bounded error tail | 诊断 | beta
+"""Runtime error self-diagnosis — pull the bounded error tail | diagnostics | beta
 
 A pull-only surface over ``RuntimeErrorLog``: the model reads recent ERROR+ / CRITICAL records
 to self-diagnose startup and runtime degradations (NullSpeech / NullASR and the like). Pull

@@ -1,4 +1,4 @@
-"""Moss CLI 自举 channel — 去授权暴露 moss 自身 CLI | 集成 | beta
+"""Moss CLI bootstrap channel — exposes the moss CLI itself, ungated | integration | beta
 
 exec 命令用 @cli decorator 局部糖形式: 执行机器交给 decorator, channel 保留注入的
 Subprocesses (facade=processes) 与生命周期, 展示格式化 (exit tail / friendly-empty)

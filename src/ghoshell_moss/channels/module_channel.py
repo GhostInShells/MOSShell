@@ -1,4 +1,4 @@
-"""反射 Python 模块为 Channel 命令集 | 集成 | beta
+"""Reflects a Python module into a Channel command set | integration | beta
 
 Example:
     from ghoshell_moss import new_shell_main_channel
