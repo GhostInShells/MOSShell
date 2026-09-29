@@ -18,9 +18,15 @@ description: ghost instances, roles, and naming conventions of this repository
 
 ## Naming
 
-- prototype = mythic character name (Atom / Dolores); instance = model name (deepseek).
-- the project's own ghost is an **individual** (era-bound): `moss` is the first generation's individual
-  name; it is not reused across generations — the next generation takes a new name.
+- **prototype** = mythic character name (Atom / Dolores) — the architecture slot.
+- **instance** naming has two regimes, following the openbox / project-own split (KD1):
+  - **openbox samples: the model name** — `deepseek` (Dolores), an honest description of what runs it;
+    `echo` (Atom) predates this convention.
+  - **the project's own ghost: an individual name** — `moss` is the first generation's individual name,
+    era-bound: it is neither a model name (an individual may change its base within one lifetime) nor a
+    project name. It is not reused across generations — the next generation takes a new name.
+
+Reasoning and the rejected alternative (imposed sameness): KD1–KD4 of the `openbox-ghosts` workstream.
 
 ## Privacy
 
