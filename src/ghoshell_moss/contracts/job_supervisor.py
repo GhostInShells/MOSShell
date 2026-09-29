@@ -1,4 +1,4 @@
-"""JobSupervisor contract — 短命进程的重复执行与可观测 fold.
+"""JobSupervisor contract — scheduled repetition of short-lived processes, folded into one observable Job.
 
 JobSupervisor 的一句话承诺: "按声明的调度重复执行短命进程, 并把 N 次执行
 fold 成一个可观测的 Job".

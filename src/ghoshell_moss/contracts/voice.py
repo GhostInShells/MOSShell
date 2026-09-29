@@ -1,4 +1,4 @@
-"""Voice contract — 语音总装表面 (听说交错的可插拔总装点).
+"""Voice contract — the voice assembly surface: a pluggable point wiring speaking and listening together.
 
 Voice 收口了以下装线逻辑, 它们在 stage 1 散落在 ``host/moss_runtime.py``:
 - 说侧 clause → ClauseTopic 桥 (广播 ghost 自己的话)

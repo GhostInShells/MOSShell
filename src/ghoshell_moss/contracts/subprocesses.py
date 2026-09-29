@@ -1,4 +1,4 @@
-"""Subprocesses contract — 子进程的纯机制层治理.
+"""Subprocesses contract — pure mechanism-layer governance of child processes.
 
 Subprocesses 的一句话承诺: "spawn 并治理一组不比 owner 活得久的子进程".
 

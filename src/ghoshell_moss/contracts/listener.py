@@ -1,3 +1,9 @@
+"""Listener contract — the "ear" organ that stitches a capture source to an ASR backend.
+
+Symmetric to Speech (the "mouth"): holds one capture source and one ASR, owns both
+lifecycles, and keeps at most one active listening session at a time.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Awaitable, Callable
 from typing_extensions import Self

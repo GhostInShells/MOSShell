@@ -222,6 +222,38 @@ contracts 被最多模块引用；blueprint 的 matrix 与 mindflow 承载最重
 
 新增。判据是目标的易腐性，不是"有没有指针"。
 
+### KD-D: 模块 docstring 第一行 = 自包含摘要（2026-09-29）
+
+新增。`moss codex {blueprint,concepts,contracts,channeltypes}` 的列表行描述不是整段
+docstring，而是 `short_doc`：
+
+```python
+# core/codex/discover.py
+return self.docstring.split('\n')[0]   # 只取第一行
+```
+
+由此产生三条显示契约，治理抽象面时必须满足：
+
+1. **模块层必须有 docstring**——描述写在 class 上不算，列表会渲染成空行。
+2. **第一行须是自包含摘要**——导言若写成折行段落，第一行会被截成半句
+   （`cell.py` 曾渲染为 "…projected into the Matrix under an"）。
+3. **第一行须是英文**——含中文即列表语言混杂。
+
+本 KD 修正上一轮 L1 的缺口：09-12 / 09-13 的 L1 导言按"加一段可读英文导言"写，
+**未定义第一行的角色**，于是 `short_doc` 契约被绕过（concepts/blueprint 多数模块
+第一行仍是折行碎片）。此后写模块 docstring 采用：
+
+```
+"""One self-contained English summary sentence, no wrapping.
+
+Longer intro / Chinese 正文 follows after a blank line (L3 may stay Chinese).
+"""
+```
+
+**channeltypes 附加**：其模块 docstring 是机器可解析格式 `描述 | 类型 | status`，
+"类型"字段须用受控英文词表（避免 `meta` 与 `系统管理` 混排），翻译时只翻描述与类型，
+保留格式。
+
 ### 不做的事
 
 - **不重构代码**。不修改接口签名、不调整逻辑、不重新组织模块结构。
