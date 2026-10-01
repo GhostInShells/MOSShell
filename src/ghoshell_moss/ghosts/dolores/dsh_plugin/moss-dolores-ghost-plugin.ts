@@ -119,7 +119,7 @@ const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
 const DOLORES_EGO_PRESET = 'dolores-ego'
 
 // dolores-ego 的 composition — 0.2.0 起程序化 register(PresetDefinition)，替代 .agent-presets/ 目录。
-// 内容 = 原 dsh_preset/dolores-ego/agent.cordis.yml (YAML → JS)，`!!js` 表达式退化为普通 JS 表达式。
+// 内容 = 原 0.1.5 的 agent.cordis.yml composition (YAML → JS)，`!!js` 表达式退化为普通 JS 表达式。
 const DOLORES_EGO_PRESET_PLUGINS = [
   { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
   { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash', disabled: process.platform === 'win32' },

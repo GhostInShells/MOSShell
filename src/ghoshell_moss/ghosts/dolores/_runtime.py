@@ -324,8 +324,6 @@ class Dolores(Ghost):
         action = await asyncio.to_thread(self._sync_stubs)
         # always override the plugin stub (active dev artifact, not version-gated) so the latest lands in ghost home.
         await asyncio.to_thread(self._sync_dsh_plugin)
-        # always override the ego preset (independent composition, follows dsh 升级 rebase).
-        await asyncio.to_thread(self._sync_dsh_preset)
         if action is not None and self._session is not None:
             self._session.output(
                 "system",
@@ -532,8 +530,7 @@ class Dolores(Ghost):
           field is the ghost/user's and survives a version bump.
         - ground (the rest of ``stubs/``) → seed-once: a file is copied only when absent, so the
           ghost's own edits (identity / purpose / behaviors / GROUND.md) are never clobbered.
-        - plugin (``dsh_plugin`` / ``dsh_preset``) → always override, handled separately and not
-          version-gated.
+        - plugin (``dsh_plugin``) → always override, handled separately and not version-gated.
 
         The home directory itself is materialized first: a deleted/never-created ghost home is the
         normal way to reset an instance (delete the dir, restart → re-seed), so every write below
@@ -627,20 +624,6 @@ class Dolores(Ghost):
         target = self._home / ".dsh" / "profiles" / "web" / "moss-dolores-ghost-plugin.ts"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self._meta.dsh_plugin_stub(), target)
-
-    def _sync_dsh_preset(self) -> None:
-        """Copy the repo-owned dolores-ego preset into ghost home — always override.
-
-        The preset is the independent (non-standard) agent composition, authored in-repo under
-        dsh_preset/. Copied fresh every startup so dsh 升级 rebase 落在仓库文件上, 不在运行态.
-        """
-        if self._home is None:
-            return
-        shutil.copytree(
-            self._meta.dsh_preset_dir(),
-            self._home / ".dsh" / ".agent-presets",
-            dirs_exist_ok=True,
-        )
 
     def _sync_default_model(self) -> tuple[str, str] | None:
         """Assert the configured default model into the dsh settings document (DSH_HOME/settings.yaml).
