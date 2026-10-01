@@ -12,7 +12,12 @@ import json
 
 import pytest
 
-from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
+from ghoshell_moss.deepseek_harness.launcher import (
+    DSH_BINARY_ENV,
+    DshLauncher,
+    DshLauncherConfig,
+    resolve_dsh_binary,
+)
 from ghoshell_moss.deepseek_harness.session import DshSession
 
 
@@ -256,3 +261,50 @@ async def test_follow_snapshot_and_end_feed_no_events():
         await _drain(session)
 
     assert seen == []
+
+
+# ── dsh 可执行解析契约: 显式 env 值 → DSH_BINARY → PATH, 解析失败点名请求值 ──────────
+
+def _fake_exe(tmp_path, name: str) -> str:
+    """在 tmp_path 造一个可执行文件, 返回其绝对路径 (让 which 可命中, 不依赖宿主二进制)."""
+    exe = tmp_path / name
+    exe.write_text("")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_resolve_dsh_binary_explicit_wins_over_env(tmp_path, monkeypatch):
+    """显式 config 值优先于环境变量 — 被钉住的 ghost 不被误设的 env 改写."""
+    explicit = _fake_exe(tmp_path, "pinned-dsh")
+    monkeypatch.setenv(DSH_BINARY_ENV, _fake_exe(tmp_path, "env-dsh"))
+    assert resolve_dsh_binary(explicit) == explicit
+
+
+def test_resolve_dsh_binary_env_when_unset(tmp_path, monkeypatch):
+    """config 未指定时, DSH_BINARY 生效 (把单个 ghost 钉到特定 dsh 而不动全局安装)."""
+    env_dsh = _fake_exe(tmp_path, "env-dsh")
+    monkeypatch.setenv(DSH_BINARY_ENV, env_dsh)
+    assert resolve_dsh_binary("") == env_dsh
+
+
+def test_resolve_dsh_binary_path_default(tmp_path, monkeypatch):
+    """显式值与 env 都缺省时, 落到 PATH 上的 `dsh`."""
+    path_dsh = _fake_exe(tmp_path, "dsh")
+    monkeypatch.delenv(DSH_BINARY_ENV, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert resolve_dsh_binary("") == path_dsh
+
+
+def test_resolve_dsh_binary_missing_names_requested(monkeypatch):
+    """解析失败时报错点名请求值及其来源 — 拼写错误当场暴露, 不留到 spawn 的裸 FileNotFoundError."""
+    monkeypatch.setenv(DSH_BINARY_ENV, "/nope/definitely-missing-dsh")
+    with pytest.raises(RuntimeError) as ei:
+        resolve_dsh_binary("")
+    assert "/nope/definitely-missing-dsh" in str(ei.value)
+
+
+def test_launcher_construction_does_not_touch_path(monkeypatch):
+    """构造不该解析 dsh — 不 spawn 的构造 (如测试) 不依赖 PATH 上有 dsh; 解析推迟到 spawn."""
+    monkeypatch.delenv(DSH_BINARY_ENV, raising=False)
+    monkeypatch.setenv("PATH", "")
+    DshLauncher(DshLauncherConfig())
