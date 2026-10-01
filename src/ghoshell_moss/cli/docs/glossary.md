@@ -172,5 +172,5 @@ moss codex get-source tests.ghoshell_moss.core.mindflow.test_buffer_nucleus     
 - **查阅**:
   ```bash
   moss docs read glossary.md
-  moss skills recall "什么是化身"
+  moss skills list -q 化身
   ```
