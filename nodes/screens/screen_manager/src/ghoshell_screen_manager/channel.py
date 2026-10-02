@@ -18,6 +18,7 @@ both to ``Matrix`` and tests wire both to a recorder.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -25,7 +26,7 @@ from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channe
 from ghoshell_moss.core.concepts.channel import Channel
 
 from . import projection as P
-from .audio import MockAudioSource
+from .audio import AudioSource
 from .mock import demo_items
 from .model import ScreenModel, compute_layout
 
@@ -49,7 +50,7 @@ def build_screen_channel(
     model: ScreenModel,
     *,
     surface: _Surface | None = None,
-    audio: MockAudioSource | None = None,
+    audio: AudioSource | None = None,
     surface_url: str | Callable[[], str] | None = None,
     name: str = "webview_screen",
     description: str | None = None,
@@ -263,11 +264,27 @@ def build_screen_channel(
         await _emit(P.snapshot(model))
         return f"[screen] demo scene: {', '.join(model.groups())}"
 
+    @chan.build.command(name="probe_audio")
+    async def probe_audio() -> str:
+        """这帧音频的原始读数：桶数、各桶分贝、到达延迟。
+
+        可视化出问题时，先把"数据是什么"和"画法做了什么"分开 —— 这个探针只回答前者，
+        让模型不必靠人去念屏幕上的调试数字。
+        """
+        if audio is None or not hasattr(audio, "stats"):
+            CommandUtil.raise_observe("audio source has no stats")
+        return json.dumps(audio.stats(), ensure_ascii=False)
+
     @chan.build.command(name="mock_audio")
     async def mock_audio(role: str = "idle") -> str:
-        """Set the demo audio feed's mode — idle / ghost / user. Debug aid."""
+        """Set the demo audio feed's mode — idle / ghost / user. Debug aid; only the
+        mock source has modes. On the live source the bus decides — speak and it shows."""
         if audio is None:
             CommandUtil.raise_observe("no audio source wired")
+        if not hasattr(audio, "set_mode"):
+            CommandUtil.raise_observe(
+                "live audio source — no demo mode to set (restart with --mock-audio)"
+            )
         try:
             audio.set_mode(role)
         except ValueError as e:

@@ -141,6 +141,9 @@ class ScreenSurface:
             response = connection.respond(200, html)
             del response.headers["Content-Type"]
             response.headers["Content-Type"] = "text/html; charset=utf-8"
+            # 这个页面在开发期一直在改：绝不能让浏览器吃缓存，
+            # 否则"刷新"看起来生效了、其实加载的还是旧版本。
+            response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
         if path == "/ws":
             return None

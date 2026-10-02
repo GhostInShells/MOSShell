@@ -26,7 +26,11 @@ sys.path.insert(0, str(_NODE_DIR / "src"))
 from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
 from ghoshell_moss.services.webview import WebViewClient  # noqa: E402
 
-from ghoshell_screen_manager.audio import MockAudioSource  # noqa: E402
+from ghoshell_screen_manager.audio import (  # noqa: E402
+    AudioSource,
+    MockAudioSource,
+    TopicAudioSource,
+)
 from ghoshell_screen_manager.bridge import WebViewBridge  # noqa: E402
 from ghoshell_screen_manager.channel import build_screen_channel  # noqa: E402
 from ghoshell_screen_manager.model import ScreenModel  # noqa: E402
@@ -50,9 +54,24 @@ def resolve_port() -> int:
     return int(os.getenv("MOSS_SCREEN_MANAGER_PORT", DEFAULT_PORT))
 
 
+def wants_mock_audio() -> bool:
+    """``--mock-audio`` swaps the live bus for the fabricated demo feed."""
+    return "--mock-audio" in sys.argv[1:]
+
+
 async def main(matrix: Matrix) -> None:
     model = ScreenModel()
-    audio = MockAudioSource()
+
+    # The live bus is the default: the background is driven by real speech, and
+    # speech arriving *is* the switch. ``--mock-audio`` is the demo/headless escape.
+    audio: AudioSource
+    if wants_mock_audio():
+        audio = MockAudioSource()
+        print("[webview_screen] audio: mock (--mock-audio)", flush=True)
+    else:
+        audio = TopicAudioSource(matrix.session.topics)
+        await audio.start()
+        print("[webview_screen] audio: live (AudioSampleTopic)", flush=True)
 
     surface = ScreenSurface(
         model,

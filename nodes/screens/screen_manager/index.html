@@ -38,6 +38,9 @@
   #log-list.open { display: block; }
   #log-list div { padding: 3px 0; border-bottom: 1px solid #1a2230; }
   #st       { position: fixed; top: 10px; left: 12px; z-index: 8; color: #8af; font-size: 11px; }
+  /* 连接状态：断线必须可见 —— 页面不许假装自己还活着 */
+  #link     { position: fixed; top: 26px; left: 12px; z-index: 8; font-size: 11px; color: #3d8; }
+  #link.down { color: #f66; font-weight: 700; }
 
   /* ===== desktop：代理圆盘（canvas 物理） ===== */
   #desktop { cursor: pointer; }
@@ -84,8 +87,15 @@
 <canvas id="veil"></canvas>
 <div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
 <div id="st"></div>
+<div id="link"></div>
 
 <script>
+// 加载期/运行期脚本错误必须可见：否则整个画面静悄悄死掉，人只会以为"没生效"。
+// （教训：一次 const/let 的暂时性死区错误就让整页脚本停摆，而我只能靠用户反馈才发现。）
+window.addEventListener('error', (e) => {
+  const el = document.getElementById('link');
+  if (el) { el.textContent = '脚本错误：' + (e.message || 'unknown'); el.classList.add('down'); }
+});
 // =====================================================================
 // 四层合成器：bg（声音感知 + MOSS 文字）→ desktop（未入组 item 的代理圆盘
 // 物理）→ stage（已入组 item 的 iframe 分格）→ veil（模型的手）。
@@ -102,6 +112,7 @@ const veil = $('#veil'), vctx = veil.getContext('2d');
 const stage = $('#stage');
 const mossEl = $('#moss span');
 const st = $('#st');
+const link = $('#link');
 
 function sizeCanvas(c, ctx) {
   c.width = innerWidth * devicePixelRatio;
@@ -114,10 +125,53 @@ addEventListener('resize', () => {
 });
 sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
 
-// ---- ws ----
-const ws = new WebSocket(`ws://${location.host}/ws`);
-ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
-function send(f) { ws.send(JSON.stringify(f)); }
+// ---- ws：断线要自愈，也要说出来 ----
+// 只在加载时开一条连接是不够的：弱网 / 休眠 / node 重启都会让它静默死掉，而页面会
+// 继续拿最后一帧当"现在"，看起来一切正常。所以两件事一起做 ——
+//   恢复：close / error → 指数退避重连（服务端每次连接都会补发 snapshot，状态自己长回来）
+//   传导：给音频帧打时间戳，超时即当静音（雨停、心率持平）并在角上标出"已断开"
+const FEED_STALE_MS = 1000;
+let ws = null, wsOpen = false, retryMs = 500, feedAt = 0;
+let linkText = '在线', fps = 0;
+
+function setLink(text, down) {
+  linkText = text;
+  link.classList.toggle('down', !!down);
+  renderLink();
+}
+
+// 状态行顺带报帧率：密度/行距这些参数改完到底掉不掉帧，得有数，不靠感觉。
+function renderLink() {
+  link.textContent = fps ? `${linkText} · ${fps}fps` : linkText;
+}
+
+function scheduleRetry() {
+  const wait = retryMs;
+  retryMs = Math.min(retryMs * 2, 8000);
+  setTimeout(connect, wait);
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { wsOpen = true; retryMs = 500; setLink('在线', false); };
+  ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
+  ws.onerror = () => { try { ws.close(); } catch (_) {} };
+  ws.onclose = () => {
+    if (!wsOpen) return setLink('连接失败，重试中…', true);
+    wsOpen = false;
+    setLink('已断开，重连中…', true);
+    scheduleRetry();
+  };
+}
+connect();
+
+function send(f) {
+  if (!wsOpen) return;            // 未连接就丢弃，别让一次点击把整个脚本抛死
+  ws.send(JSON.stringify(f));
+}
+
+// 音频帧还新鲜吗？不新鲜 = 链路断了，画面按静音处理。
+function feedFresh() { return performance.now() - feedAt < FEED_STALE_MS; }
 
 // ---- store 镜像（与服务端 ScreenModel 同构） ----
 const items = new Map();   // id -> { el, iframe, url, label, group, icon, slot }
@@ -381,52 +435,348 @@ fitMossText();
 
 let feed = { role: 'ghost', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
 const GATE = -45;
-// 字符集：CJK 汉字为主（均匀采样），假名点缀，数字符号点缀 —— 不全是日文。
+// 字符集：数字（最低）→ 小写 → 大写 → 希腊（最高）。映射按分贝从低到高走一遍，
+// 所以常见语音电平应该落在字母段。换字符集只动这一处。
 const CHARSET = (() => {
   const parts = [];
-  for (let i = 0; i < 48; i++) parts.push(String.fromCodePoint(0x4E00 + ((i * 2654435761) % 0x51A5)));
-  parts.push('アイウエオカキクケコサシスセソ');   // 片假名点缀
-  parts.push('あいうえおかきくけこ');               // 平假名点缀
-  parts.push('0123456789ABCDEFZ$@#%&*+=<>');      // 数字符号点缀
+  parts.push('0123456789');
+  for (let c = 0x61; c <= 0x7A; c++) parts.push(String.fromCharCode(c));     // a-z
+  for (let c = 0x41; c <= 0x5A; c++) parts.push(String.fromCharCode(c));     // A-Z
+  for (let c = 0x3B1; c <= 0x3C9; c++) parts.push(String.fromCharCode(c));   // α-ω
+  for (let c = 0x391; c <= 0x3A9; c++) parts.push(String.fromCharCode(c));   // Α-Ω
   return parts.join('');
 })();
-const CW = 16, CH = 20;
+const GW = 16, GH = 20;                 // 字形图集单元尺寸（固定，与屏宽无关）
+const GLYPH_PX = 12;                    // 字形大小 —— 越小字越细
 const atlas = document.createElement('canvas');
-atlas.width = CHARSET.length * CW; atlas.height = CH;
+atlas.width = CHARSET.length * GW; atlas.height = GH;
 const actx = atlas.getContext('2d');
-actx.font = 'bold 15px ui-monospace, "PingFang SC", monospace';
+actx.font = `bold ${GLYPH_PX}px ui-monospace, "PingFang SC", monospace`;
 actx.textAlign = 'center'; actx.textBaseline = 'middle';
 actx.fillStyle = '#0f0';
-for (let i = 0; i < CHARSET.length; i++) actx.fillText(CHARSET[i], i * CW + CW / 2, CH / 2);
+for (let i = 0; i < CHARSET.length; i++) actx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
 
+// 头字用的亮字图集：Matrix 的"雨头"是白亮的，尾是绿的。同一套字形，两遍上色。
+const headAtlas = document.createElement('canvas');
+headAtlas.width = atlas.width; headAtlas.height = atlas.height;
+const hactx = headAtlas.getContext('2d');
+hactx.font = actx.font;
+hactx.textAlign = 'center'; hactx.textBaseline = 'middle';
+hactx.fillStyle = '#d8ffe4';
+for (let i = 0; i < CHARSET.length; i++) hactx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
+
+// 横向格数固定（不随屏宽变），格距 = 屏宽 / 格数；字形只占格距里的一小块，
+// 所以"格多"只意味着落点更细，不意味着字更大。
+const RAIN_COLS = 60;
+let pitch = 0;
 let cols = [];
 function initRainCols() {
-  const n = Math.ceil(innerWidth / CW);
-  cols = Array.from({ length: n }, (_, i) => ({
-    x: i * CW, head: Math.random() * innerHeight,
-    speed: 50 + Math.random() * 90, buf: [], next: 0,
+  pitch = innerWidth / RAIN_COLS;
+  cols = Array.from({ length: RAIN_COLS }, (_, i) => ({
+    x: i * pitch + (pitch - GW) / 2,
+    parts: [],                                   // 这一列自己的字符：{ g, y }，最老的在前
+    e: 0,                                        // 这一列此刻的能量（平滑后）
+    nextAt: 0,                                   // 下一次落字的时刻
+    jitter: 0.75 + Math.random() * 0.5,          // 每列自己的快慢，避免相邻列同步
   }));
 }
 initRainCols();
-const TAIL = 18, EMIT_MS = 333;
-function pickChar(i) {
-  const bin = feed.spectrum_bins[i % feed.spectrum_bins.length];
-  const norm = Math.min(1, Math.max(0, (bin + 96) / 96));
-  return Math.min(CHARSET.length - 1, Math.floor(norm * CHARSET.length));
+
+// ===== 字符雨 = 频谱瀑布 =====
+// 语义：这不是"按内容写字"，是**声音的另一种呈现**。ECG 把同一份信号画成一条横线，
+// 这里把它画成从上往下走的字符：
+//   - **生产由前端时钟驱动**（5Hz，每 200ms 产出一行）；到点就去看"手上最新拿到的那帧
+//     topic 是什么"，用它的频谱算这一行；手上没有（没声音 / 链路断了）就产一行 null。
+//     所以纵向是**时间轴**，节奏恒定连贯，跟 topic 的到达率无关 —— topic 丢帧只是
+//     丢一行内容，不会让画面卡顿或错位。
+//   - 横向每一格 = 一个频点，16 个 bin 线性插值铺满整屏宽度（低频在左）。
+//   - 该格这一帧的分贝决定它**发不发字、发哪种字**；不发的格子是这一行里的 null 占位，
+//     随行一起往下走（空隙是属于行的，不是漂在屏幕上的）。
+//   - 队列容量 = 一屏，所以屏幕展示的是**最近约十秒**的录音带；静音时录带继续往下走，
+//     内容被空白行顶出去，而不是当场消失。
+const FRAME_MS = 200;              // 前端生产时钟：5Hz，跟 AudioSampleTopic 同拍
+const ROW_PX = GH;                 // 一行字占的高度
+const ROW_STEP = 2;                // 每产一行整片下落几行 —— 行与行之间空出呼吸的缝
+const ROW_PITCH = ROW_PX * ROW_STEP;
+const CATCHUP_MAX = 25;            // 一帧 rAF 里最多补产多少行（防后台标签页回来时爆量）
+const FADE_BOTTOM = 0.3;           // 屏幕底部保留的透明度（1 = 不渐隐）
+const BREATH_MIN = 0.4;            // 最安静时的亮度（呼吸的底）
+const BREATH_SCALE = 0.3;          // 呼吸时字形最多放大多少比例
+
+// ── 画法 ────────────────────────────────────────────────────────────────
+// 'columns'（默认）：**致敬 Matrix 的列雨**。每一列是独立的 —— 它有自己的头、自己的
+//         速度、自己的落字节奏、自己的尾长。列的横坐标 = 一个频点，所以这一列有多活跃
+//         完全由它对应的那个频带此刻的能量决定：
+//             能量高 → 落得勤、落得快、尾巴长（像雨）
+//             能量低 → 偶尔滴一颗，甚至停住
+//         元音一变，活跃的列就换一批。整片因此是"声音的雨"，而不是一排排的波形。
+//         代价（要说清）：列的纵向不再等于时间轴 —— 每列有自己的速度，位置表达的是
+//         "这一列的能量×时间"。这是为了列感付的价。
+// 'hybrid'：行式画法（帧内归一 + 白化），纵向 = 时间轴，做对照用。
+// 想对比画法不用改代码：地址后面加 ?mode=hybrid / ?mode=bars / ?mode=edge 即可。
+const RAIN_MODE = new URLSearchParams(location.search).get('mode') || 'columns';
+const SPEED_MIN = 14;              // px/s：最弱时的下落速度（几乎停住）
+const SPEED_MAX = 260;             // px/s：最强时
+const SPACE_MIN = GH * 1.5;        // 最强的列：字与字之间隔 1.5 格
+const SPACE_MAX = GH * 4.5;        // 最弱的列：隔 4.5 格（稀疏的滴）
+const TAIL_LIT = 10;               // 尾迹点亮多少个字，再往上就淡尽了
+const TAIL_DIM = 0.12;             // 尾巴最末端的透明度
+const EMIT_EPS = 0.10;             // 能量低于此值：这一列不落字（越大，参与下雨的列越少）
+// 逐频带自动增益（AGC）：每个频带按**它自己的**历史最高/最低来归一。
+// 不这么做的话，语音能量天然堆在低频，屏幕左边永远在下暴雨、右边永远是干的。
+const AGC_DECAY_DB = 2.0;          // 每秒衰减多少 dB（最高往下掉、最低往上抬）
+const AGC_ABS_FLOOR = -50;         // 这一带的峰值低于它 → 从来没出过声，不参与
+const AGC_MIN_RANGE = 8;           // 自己的最高最低差不到这个数 → 全是噪声，不参与
+const LOUD_SMOOTH = 8;             // 呼吸的平滑速率（每秒收敛多少）—— 不平滑就会 5Hz 闪
+const BAND_TILT = 0.7;             // 带宽分配：权重 ∝ 1/(k+1)^BAND_TILT（越大越偏向低频）
+const GATE_DROP_DB = 12;           // 比"衰减峰值"低这么多 → 这一行不画（自动门限，不标定绝对值）
+const RMS_FLOOR = -45;             // 兜底门限：低于它一定是底噪
+const PEAK_DECAY_DB = 0.25;        // 每行峰值衰减（≈1.25 dB/s）
+const EMA_ALPHA = 0.08;            // 每频带慢速均值的更新率（≈2.5s 时间常数）
+const DEV_FLOOR = 2.5;             // 白化门限：高出自己均值这么多分贝才出声（越高越疏）
+const DEV_FULL = 12.0;             // 高出这么多分贝 = 满亮度
+const CELL_STRIDE = 1;             // 段内每 N 列画一个字（密度旋钮）
+const GLYPH_TRIES = 6;             // 同一条内不重复，最多重抽几次
+
+let rows = [];                     // rows[0] = 最新一行：{ g: 字形或 null, a: 透明度 }
+let rowTickAt = 0;                 // 上一次产出时刻 = 前端时钟的相位
+let ema = [];                      // 每个频带自己的慢速均值（白化基线）
+let rmsPeak = -120;                // 衰减峰值：门限拿它当参照
+let bmax = [], bmin = [];          // 每频带的衰减最高/抬升最低（逐带 AGC 的两端）
+let loudSmooth = 0;                // 平滑后的"呼吸量"：直接用它会让整片 5Hz 闪
+
+// 逐频带 AGC：每个频带按**它自己的**历史区间归一，所以"能量天然堆在低频"这件事
+// 不再把整屏压到左边。返回每个频带 0..1 的能量。
+function agcEnergies(bins, dt) {
+  const nb = bins.length;
+  if (bmax.length !== nb) { bmax = bins.slice(); bmin = bins.slice(); }
+  const out = new Array(nb);
+  for (let k = 0; k < nb; k++) {
+    const db = bins[k];
+    bmax[k] = Math.max(db, bmax[k] - AGC_DECAY_DB * dt);
+    bmin[k] = Math.min(db, bmin[k] + AGC_DECAY_DB * dt);
+    const range = bmax[k] - bmin[k];
+    out[k] = (bmax[k] > AGC_ABS_FLOOR && range >= AGC_MIN_RANGE)
+      ? Math.min(1, Math.max(0, (db - bmin[k]) / range))
+      : 0;                          // 这一带从来没出过声 / 只有噪声：不参与
+  }
+  return out;
 }
-function stepRain(dt, now) {
-  for (const c of cols) {
-    c.head += c.speed * dt;
-    if (now >= c.next) {
-      c.buf.unshift(pickChar(c.x / CW));
-      if (c.buf.length > TAIL) c.buf.pop();
-      c.next = now + EMIT_MS + Math.random() * 200;
+
+function rainCapacity() { return Math.floor(innerHeight / ROW_PITCH) + 2; }
+
+// 频带 → 列区间的分配表：累计权重取整，保证每段至少一列、末段收在总宽上。
+function bandSpans(nb, total) {
+  const raw = [];
+  let sum = 0;
+  for (let k = 0; k < nb; k++) { const v = 1 / Math.pow(k + 1, BAND_TILT); raw.push(v); sum += v; }
+  const spans = [];
+  let acc = 0, prev = 0;
+  for (let k = 0; k < nb; k++) {
+    acc += raw[k];
+    let end = Math.round((total * acc) / sum);
+    if (end < prev + 1) end = prev + 1;
+    if (end > total) end = total;
+    spans.push({ lo: prev, hi: end });
+    prev = end;
+  }
+  if (spans.length) spans[spans.length - 1].hi = total;   // 收尾对齐右边界
+  return spans;
+}
+let bands = bandSpans((feed.spectrum_bins || []).length || 16, RAIN_COLS);
+
+const randGlyph = () => Math.floor(Math.random() * CHARSET.length);
+
+// 同一条（段）内不重复：重抽几次，抽不到就用最后一次，避免退化成死循环。
+function glyphUniqueIn(used) {
+  let g = randGlyph();
+  for (let t = 0; t < GLYPH_TRIES && used.has(g); t++) g = randGlyph();
+  used.add(g);
+  return g;
+}
+
+// 帧内相对高低：每帧摊满 0..1，跟绝对分贝无关。
+function frameShape(bins) {
+  const lo = Math.min(...bins), hi = Math.max(...bins);
+  const span = Math.max(1e-6, hi - lo);
+  return (db) => (db - lo) / span;
+}
+
+// 'hybrid'：白化决定出声与亮度，帧内归一决定段长。
+function fillHybrid(g, a, bins) {
+  const shape = frameShape(bins);
+  for (let k = 0; k < bins.length && k < bands.length; k++) {
+    const dev = bins[k] - ema[k];
+    if (dev < DEV_FLOOR) continue;                 // 不比自己的基线响：这一行这段不出声
+    const sp = bands[k], width = sp.hi - sp.lo;
+    const len = Math.max(1, Math.round(shape(bins[k]) * width));
+    const alpha = 0.5 + 0.5 * Math.min(1, dev / DEV_FULL);
+    const used = new Set();
+    for (let c = sp.lo; c < sp.lo + len && c < g.length; c += CELL_STRIDE) {
+      g[c] = glyphUniqueIn(used);
+      a[c] = alpha;
     }
-    for (let k = 0; k < c.buf.length; k++) {
-      const y = c.head - k * CH;
-      if (y < 0 || y > innerHeight) continue;
-      bctx.globalAlpha = 1 - k / c.buf.length;
-      bctx.drawImage(atlas, c.buf[k] * CW, 0, CW, CH, c.x, y, CW, CH);
+  }
+}
+
+// 'bars'：帧内归一的条形图，不做白化。
+function fillBars(g, a, bins) {
+  const shape = frameShape(bins);
+  for (let k = 0; k < bins.length && k < bands.length; k++) {
+    const sp = bands[k], width = sp.hi - sp.lo;
+    const len = Math.round(shape(bins[k]) * width);
+    const used = new Set();
+    for (let c = sp.lo; c < sp.lo + len && c < g.length; c += CELL_STRIDE) {
+      g[c] = glyphUniqueIn(used);
+      a[c] = 1;
+    }
+  }
+}
+
+// 'edge'：每段只落一个点，位置由帧内归一决定。
+function fillEdge(g, a, bins) {
+  const shape = frameShape(bins);
+  for (let k = 0; k < bins.length && k < bands.length; k++) {
+    const sp = bands[k], width = sp.hi - sp.lo;
+    const col = sp.lo + Math.min(width - 1, Math.floor(shape(bins[k]) * width));
+    g[col] = randGlyph();
+    a[col] = 1;
+  }
+}
+
+// 产出一行：门限开着就按当前这帧 topic 算字，否则整行空。
+function produceRow(now) {
+  const n = RAIN_COLS;
+  const g = new Array(n).fill(null);
+  const a = new Array(n).fill(0);
+  const bins = feed.spectrum_bins;
+  if (bins.length && ema.length !== bins.length) ema = new Array(bins.length).fill(null);
+
+  // 白化基线始终跟着更新（静音也更新），否则声音回来时基线是旧的，会误判成"变化"
+  for (let k = 0; k < bins.length; k++) {
+    ema[k] = ema[k] === null ? bins[k] : ema[k] + EMA_ALPHA * (bins[k] - ema[k]);
+  }
+  rmsPeak = Math.max(feed.rms_db, rmsPeak - PEAK_DECAY_DB);
+
+  const fresh = feed.role === 'ghost' && now - feedAt <= FRAME_MS * 1.5;
+  const gateFloor = Math.max(RMS_FLOOR, rmsPeak - GATE_DROP_DB);
+  const gateOpen = fresh && feed.rms_db > gateFloor;
+  // 这一行的"呼吸量"：0 = 刚到门限，1 = 达到最近峰值。整片的亮度与字的大小都跟着它。
+  const loud = Math.min(1, Math.max(0, (feed.rms_db - gateFloor) / GATE_DROP_DB));
+  if (gateOpen && bins.length) {
+    if (bands.length !== bins.length) bands = bandSpans(bins.length, RAIN_COLS);
+    if (RAIN_MODE === 'hybrid') fillHybrid(g, a, bins);
+    else if (RAIN_MODE === 'bars') fillBars(g, a, bins);
+    else fillEdge(g, a, bins);
+  }
+
+  rows.unshift({ g, a, loud });
+  while (rows.length > rainCapacity()) rows.pop();
+  rowTickAt = now;
+}
+
+// ── 'columns'：逐列独立的 Matrix 列雨 ──────────────────────────────────
+// 每一列一个粒子队列。列的横坐标 t ∈ [0,1] 映射到一个频点（16 个桶线性插值），
+// 该频点此刻的能量 e 决定这一列的一切：
+//     下落速度  v = SPEED_MIN + (SPEED_MAX-SPEED_MIN) * e
+//     落字间隔  T = 字距 / v，字距 = 从一格到三格随 e 变（强列密，弱列疏）
+//     尾迹长度  点亮 TAIL_LIT 个字，再往上的尾部淡到 TAIL_DIM
+// 于是"哪几列在下雨"就是"哪几个频带在出声"，元音一变活跃的列就换一批。
+function stepRainColumns(dt, now, loud, gateOpen) {
+  const bins = feed.spectrum_bins;
+  const nb = bins.length;
+  const colE = nb ? agcEnergies(bins, dt) : [];
+  const n = cols.length;
+  for (let i = 0; i < n; i++) {
+    const c = cols[i];
+    const t = n > 1 ? i / (n - 1) : 0;
+    let target = 0;
+    if (gateOpen && nb) {
+      // 这一列的横坐标落在哪两个频带之间 → 把两带的能量插值给它
+      const pos = t * (nb - 1), bi = Math.floor(pos), fr = pos - bi;
+      const e0 = colE[Math.min(bi, nb - 1)], e1 = colE[Math.min(bi + 1, nb - 1)];
+      target = (e0 + (e1 - e0) * fr) * (0.15 + 0.85 * loud);
+    }
+    c.e += (target - c.e) * Math.min(1, dt * 6);      // 平滑：能量抖动不该让列抽筋
+
+    const v = (SPEED_MIN + (SPEED_MAX - SPEED_MIN) * c.e) * c.jitter;
+    const fall = v * dt;
+
+    if (c.e > EMIT_EPS) {
+      const spacing = SPACE_MIN + (SPACE_MAX - SPACE_MIN) * (1 - c.e);
+      if (now >= c.nextAt) {
+        c.parts.push({ g: randGlyph(), y: -GH });
+        c.nextAt = now + (spacing / Math.max(1, v)) * 1000;
+      }
+    } else {
+      c.nextAt = now;                                  // 停了就随时可以从头开始下
+    }
+
+    for (const p of c.parts) p.y += fall;
+    let alive = 0;
+    for (let k = 0; k < c.parts.length; k++) {          // 淘汰出屏的（最老的在前）
+      if (c.parts[k].y <= innerHeight) break;
+      alive++;
+    }
+    if (alive) c.parts.splice(0, alive);
+    if (c.parts.length > TAIL_LIT * 2) c.parts.splice(0, c.parts.length - TAIL_LIT * 2);
+
+    const base = BREATH_MIN + (1 - BREATH_MIN) * loud;  // 呼吸：整片随音量亮暗
+    const zoom = 1 + BREATH_SCALE * loud;
+    const w = GW * zoom, h = GH * zoom;
+    const cnt = c.parts.length;
+    for (let k = 0; k < cnt; k++) {
+      const p = c.parts[k];
+      const age = cnt - 1 - k;                          // 0 = 最新的那颗（雨头）
+      const fade = age === 0 ? 1 : Math.max(TAIL_DIM, 1 - age / TAIL_LIT);
+      bctx.globalAlpha = Math.min(1, base * fade);
+      const img = age === 0 ? headAtlas : atlas;        // 雨头白亮，尾绿
+      bctx.drawImage(img, p.g * GW, 0, GW, GH,
+        c.x + (GW - w) / 2, p.y + (GH - h) / 2, w, h);
+    }
+  }
+  bctx.globalAlpha = 1;
+}
+
+function stepRain(dt, now) {
+  if (RAIN_MODE === 'columns') {
+    const gateFloor = Math.max(RMS_FLOOR, rmsPeak - GATE_DROP_DB);
+    rmsPeak = Math.max(feed.rms_db, rmsPeak - PEAK_DECAY_DB * (dt * 5));
+    const fresh = feed.role === 'ghost' && now - feedAt <= FEED_STALE_MS;
+    const gateOpen = fresh && feed.rms_db > gateFloor;
+    const loud = gateOpen ? Math.min(1, Math.max(0, (feed.rms_db - gateFloor) / GATE_DROP_DB)) : 0;
+    // 平滑：topic 是 5Hz 来的，直接用会让整片亮度每秒跳五次 —— 那就是看到的"闪"
+    loudSmooth += (loud - loudSmooth) * Math.min(1, dt * LOUD_SMOOTH);
+    stepRainColumns(dt, now, loudSmooth, gateOpen);
+    return;
+  }
+
+  if (!rowTickAt) rowTickAt = now - FRAME_MS;
+  let produced = 0;
+  while (now - rowTickAt >= FRAME_MS && produced < CATCHUP_MAX) {
+    produceRow(rowTickAt + FRAME_MS);     // 按时间轴补产：补出来的行多为空白（手上没有新帧）
+    produced++;
+  }
+
+  // 分数位移：一行的间距在一整个 200ms 里平滑铺开，所以 5Hz 的生产看起来是连续下落
+  const shift = Math.min(1, (now - rowTickAt) / FRAME_MS) * ROW_PITCH;
+  const cap = rows.length;
+  const zoom = 1 + BREATH_SCALE * (rows.length ? rows[0].loud : 0);   // 呼吸：整片随音量微微胀缩
+  const w = GW * zoom, h = GH * zoom;
+  for (let r = 0; r < cap; r++) {
+    const y = (r - 1) * ROW_PITCH + shift;   // 最新一行从屏幕上方一格滑入
+    if (y > innerHeight) break;
+    const row = rows[r];
+    // 渐隐（位置越靠下越淡，但不归零：位置仍是时间） × 呼吸（整片随当前音量亮暗）
+    const base = (FADE_BOTTOM + (1 - FADE_BOTTOM) * Math.max(0, 1 - y / innerHeight))
+      * (BREATH_MIN + (1 - BREATH_MIN) * row.loud);
+    if (base <= 0.01) continue;
+    for (let i = 0; i < row.g.length; i++) {
+      const gg = row.g[i];
+      if (gg === null) continue;
+      bctx.globalAlpha = Math.min(1, base * (row.a[i] || 1));
+      bctx.drawImage(atlas, gg * GW, 0, GW, GH,
+        cols[i].x + (GW - w) / 2, y + (GH - h) / 2, w, h);
     }
   }
   bctx.globalAlpha = 1;
@@ -458,14 +808,27 @@ function drawEcg() {
   }
 }
 let lastB = performance.now();
+let fpsFrames = 0, fpsAt = performance.now();
 function bgLoop() {
   requestAnimationFrame(bgLoop);
   const now = performance.now();
   const dt = (now - lastB) / 1000; lastB = now;
+
+  fpsFrames++;
+  if (now - fpsAt >= 500) {
+    fps = Math.round((fpsFrames * 1000) / (now - fpsAt));
+    fpsFrames = 0; fpsAt = now;
+    renderLink();
+  }
+
   bctx.clearRect(0, 0, innerWidth, innerHeight);
-  const speaking = feed.rms_db > GATE;
-  if (feed.role === 'ghost' && speaking) stepRain(dt, now);
-  else if (feed.role === 'user' && speaking) drawEcg();
+  const speaking = feed.rms_db > GATE && feedFresh();
+  // MOSS 文字吃断线判定：链路死了它就不该继续发光（传导，不是恢复）
+  mossEl.classList.toggle('alive', speaking && feed.role === 'ghost');
+  // 雨永远在画：它是"最近约十秒的录音带"，静音只是让空白行把旧内容顶出去，
+  // 而不是让画面停住或当场清空。
+  stepRain(dt, now);
+  if (feed.role === 'user' && speaking) drawEcg();
 }
 requestAnimationFrame(bgLoop);
 
@@ -530,6 +893,7 @@ function route(f) {
     }
     case 'audio': {
       feed = f.sample;
+      feedAt = performance.now();          // 断线判定用：这一帧是什么时候到的
       mossEl.classList.toggle('alive', feed.role === 'ghost' && feed.rms_db > GATE);
       st.textContent = `#${arena || 'desktop'} · ${feed.role} ${feed.rms_db.toFixed(0)}dB`;
       break;
