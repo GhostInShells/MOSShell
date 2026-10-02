@@ -11,8 +11,10 @@ status: in-progress
 status_note: >-
   2026-09-19 工作名 screen-node → screen-manager：语义模型提升为脊柱，qt 与 webview 是两个
   实现。当前施工面 = 零依赖 webview manager（验证页先行）。qt 设计已定稿，实现待开工。
+  2026-10-02 background 的音频数据面接通（W1 关闭）：雨改由真实 AudioSampleTopic 逐列驱动，
+  见 web_manager.md 的「background：声音数据面」；产品化收尾项见 screen-todo.md 的 W6–W8。
 title: Screen Manager — MOSS 开箱的标准可扩展屏幕躯体
-updated: '2026-09-19'
+updated: '2026-10-02'
 ---
 
 # Screen Manager
@@ -117,6 +119,7 @@ z 序只描述层，**不描述物料**：物料之间的先后只体现为分�
 ## Design Index
 
 - 后端子文档：[qt_compositor.md](qt_compositor.md) · web_manager.md
+  （background 的声音数据面与雨的模型 → web_manager.md「background」一节）
 - 旧设计（被取代）：[FEATURE.legacy.md](FEATURE.legacy.md)
 - 碰撞轨迹：`discuss/2026-07-24_screen_body_design_collision.md` ·
   `discuss/2026-09-13_screen_formal_design_collision.md`
