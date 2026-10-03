@@ -173,7 +173,7 @@ class BaseThinking(Thinking):
         self._attention.abort(reason)
         self._stop_event.set()
 
-    def abort_reason(self) -> str:
+    def abort_reason(self) -> str | None:
         return self._attention.abort_reason()
 
     async def stop(self) -> None:

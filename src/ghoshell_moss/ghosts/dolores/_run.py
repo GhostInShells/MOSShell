@@ -13,6 +13,9 @@ Lifecycle contract:
 - aenter: bind the session catch-all listener first (so no enter broadcast is lost), then start the enter task.
 - aexit: cancel the enter task, unbind the listener, re-send thinking/exit (even if enter failed, with a
   fail-safe timeout), then abort on error.
+- turn/end: 自然收线 (completed / max-tokens) 只结束本帧; 中断类 (其它 cause, 见 _turn_end_abort_reason)
+  额外 ``Thinking.abort(reason)`` —— 在**入队前**落地, 不等消费 (消费可能正被 tool handler 占住),
+  让 mindflow 在 thinking 退出时急停身体, 并让 attention 一起收掉 (人喊停 / 故障都该是"整个体系停").
 - _events(): queue consumption; the poison pill carries only the enter error (the normal path ends via
   turn/end break in logos()).
 """
@@ -49,6 +52,12 @@ from ._tools import (
 # 流式 tool 集合: 这两个 tool 的参数经 tool-call-delta 逐字进 articulator, 边生成边执行.
 _STREAMING_TOOLS = frozenset({InterpretToolCall.tool_name(), ReactToolCall.tool_name()})
 
+# 只有 moss* 命名空间的 tool 归本 run 管. 会话流 (on_session_event("*")) 里还有 host 自己的内环工具
+# (bash / read / write / edit / subagent ...), 它们由 dsh 侧自行结算 —— 我们既不该回答, 也不该报警告.
+# 早先把它们也当"等我们回答的 tool"逐条 warning, 一次排查刷出几百行噪音, 把真正的 D39 信号
+# (我们自己的 tool 没 handler) 埋掉了.
+_DOLORES_TOOL_NAMESPACE_PREFIX = "moss"
+
 # 转发到观测面的 dsh 事件 (moss-ghost run 的 output 直接可读, 迭代时不用反查 dsh log).
 # 只取**完整**事件, 不取逐 token 的流: assistant/chunk 的 reasoning/text delta 体量无界
 # (一次长思考几千条), 会把 output 面灌满. 留下的这几个每 turn/step 常数条, 各自也不与别处重复:
@@ -74,9 +83,42 @@ __all__ = ["DoloresRun"]
 # never enqueued on the normal path — logos() ends itself on turn/end; the pill only carries enter errors.
 _POISON = object()
 
-# turn/end 的 reason.kind 只用于观测记录 (debug 时能看出这轮怎么收的), 不驱动任何中断.
-# 曾经按 kind 调 Thinking.abort 来"退帧 + 停身体", 那是错的: abort 会冒泡到 attention,
-# 把 attention 一起杀掉, 而 need_observe 驱动的回声帧循环要求 attention 活着 —— 自续帧因此丢失.
+# turn/end 的 kind 分两类: 自然收线 (帧自己退出, 绝不 abort) 与 中断 (显式 abort, 带 reason).
+# 旧注释写的是"turn/end 一律只做观测, 不驱动任何中断" —— 那是把一个方向的判据当成了通性:
+# 它只对下面"我们自己的 hook cancel"那一类成立 (tool 结果带 cancel, 身体在返回前已 drain);
+# UI 点停与运行时故障若也走自然退出, 身体会继续跑 (语音照旧播完), 故障则自续成环.
+_TURN_END_END_KINDS = frozenset({"completed", "max-tokens"})
+_TURN_END_INTERRUPT_KINDS = frozenset({"aborted", "interrupted", "blocked", "error"})
+
+# 我们自己收轮时 plugin 用的 cause (dsh_plugin: ``stepAgent.cancel({kind:'hook', reason:'moss cancel_turn'})``).
+# 判据必须挂在 cause 上, 不能挂在 turn 号上: moss_react / moss_wait_next / moss_reasoning 的结果**常态**
+# 就带 ``cancel=True``, 所以"记下 turn 号 = 自己人"等于把每一轮都记成自己人 —— 人在这一轮里点的
+# user abort 会被一起豁免. 2026-10-04 D04 实测: turn/end aborted/user 被吞, 语音照旧 41.3 秒播完.
+_OUR_TURN_CANCEL_CAUSE_KINDS = frozenset({"hook"})
+
+
+def _turn_end_abort_reason(end: TurnEnd) -> str | None:
+    """turn/end → 需要显式退出 thinking 时的 reason; None 表示这次收线走自然路径.
+
+    - ``completed`` / ``max-tokens``: 模型说完了或被截断 —— 帧自己退出, 身体不动.
+    - ``aborted`` / ``interrupted`` / ``blocked``: 别人打断的 (dsh 界面点停 / 抢占 / plugin 拒绝运行
+      这个动作) —— 显式 abort, 由 mindflow 在 thinking 退出时急停身体.
+    - ``error``: 运行时故障 —— 同样显式 abort; 不这么做就会自续成环 (弱网 / 断连).
+    - 例外: cause 是我们自己的 hook cancel (``kind='hook'``) —— 那是我们自己让 plugin 收的轮
+      (moss_react / moss_wait_next / moss_reasoning), 身体在返回结果前已经 drain 过, 不算外部打断.
+      判据只认 cause, 不认 turn 号 (理由见上面的常量注释).
+    - 未知 kind: dsh 的 kind 是 merge-extensible, 不认识的按自然收线处理 (上游日志里仍留痕).
+    """
+    kind = end.reason.kind
+    if kind in _TURN_END_END_KINDS or kind not in _TURN_END_INTERRUPT_KINDS:
+        return None
+    cause = end.reason.reason
+    if kind != "error" and cause is not None and cause.kind in _OUR_TURN_CANCEL_CAUSE_KINDS:
+        return None
+    if cause is None:
+        return f"turn/end {kind}"
+    detail = f": {cause.reason}" if cause.reason else ""
+    return f"turn/end {kind} ({cause.kind}{detail})"
 
 _LogosDelta = str
 
@@ -184,6 +226,11 @@ class DoloresRun:
         self._logos_started = False
         # turn/end 只结算一次: 文本循环内与循环外各有一个 call site, 同一 event 会被看见两次.
         self._turn_end_noted = False
+        # 我们自己让 plugin 切的 turn (tool 结果带 cancel=True): 那一轮的 turn/end 不是"被打断".
+        # 只用于日志 (谁先动手), 不参与判定 —— 判据看 cause.
+        self._expected_cancel_turn: int | None = None
+        # 中断类 abort 只落地一次 (入队前落地, 消费者侧兜一次).
+        self._interrupt_aborted = False
 
     # ── transaction boundary ─────────────────────────────────────────
 
@@ -232,6 +279,9 @@ class DoloresRun:
         stream (see logos()); their handlers flush the reconciliation tail and settle the articulator.
         The rest run_tool → ToolCallResult, returned via tool-result RPC.
         """
+        if not event.name.startswith(_DOLORES_TOOL_NAMESPACE_PREFIX):
+            # 不是我们的 tool: 静默略过 —— host 内环工具由 dsh 自己结算, 我们连痕都不必留.
+            return
         result = await InterpretToolCall.run_tool(
             event, lambda call: self._handle_interpret(call, streams), logger=self._logger,
         )
@@ -264,7 +314,8 @@ class DoloresRun:
         if result is not None:
             await self._dispatch_tool_result(result)
             return
-        # No handler claimed this tool name — nothing is dispatched, so the call never gets an answer
+        # 名字是我们的 (moss*), 却没有任何 handler 认领 — nothing is dispatched, so the call never gets
+        # an answer
         # (the plugin can only settle it when the turn ends) and the log says nothing at all. That is
         # D39's shape again: an action is promised and no mechanism performs it, silently. Leave a
         # trace, or this exists only as "that call felt like it never happened" on the model side.
@@ -470,6 +521,10 @@ class DoloresRun:
             moment_ref = result.result.get("moment_ref")
             if moment_ref is not None:
                 moment_parts = self._ego.moment_context_parts(result.moment, moment_ref)
+        if result.cancel:
+            # 这一轮的 turn/end 会由 plugin 在下一个 pre-step 切出来 (cancel_turn): 记下 turn 号,
+            # 让 _note_turn_end 能把它与"外部打断"区分开.
+            self._expected_cancel_turn = result.call.turn
         try:
             await self._ego.rpc_tool_result(
                 result.call.callId, result.result, moment_parts, cancel=result.cancel,
@@ -565,15 +620,19 @@ class DoloresRun:
         return await stream.feed(chunk.argumentsDelta)
 
     def _note_turn_end(self, event: SessionEvent) -> bool:
-        """turn/end → 收线本帧; 返回该 event 是否为 turn/end.
+        """turn/end → 收线本帧 (返回该 event 是否为 turn/end); 中断类在入队前 abort.
 
-        只退出当前 thinking 帧, **绝不冒泡到 attention**: 本帧的退出走自然路径 —— logos()
-        在此返回 → run 收线 → articulate 返回 → 帧自己结束. 冒泡 (``Thinking.abort``) 会把
-        attention 一起杀掉, 而 need_observe 驱动的回声帧循环
-        (``while not attention.is_aborted() and need_observe()``) 要求 attention 活着, 自续帧
-        因此丢失. run 退出时同时 cancel dsh —— 双向对齐, 看谁先到, 不互相反复 cancel.
+        本帧的退出始终走自然路径 —— logos() 在此 return → run 收线 → articulate 返回 → 帧自己结束;
+        但"这次收线是自然还是被打断"必须分类, 见 ``_turn_end_abort_reason``:
 
-        reason 只做观测记录 (debug 时能看出这轮怎么收的), 原样带 kind (+ cause), 不归一成散文.
+        - 自然 (completed / max-tokens): 什么都不做, attention 留着 (need_observe 的回声帧循环
+          ``while not attention.is_aborted() and need_observe()`` 要求它活着, 自续帧靠它).
+        - 中断 (其它 cause): abort 并带 reason, 级联到 attention, 回声帧循环随之停止 (人喊停 / 故障
+          都该是"整个体系停"), 而 reason 落到 mindflow 的 thinking 退出点, 由那里急停身体
+          (``mindflow_in_shell._run_thinking`` 的 finally). **这一步不在这里做** —— 见 _predispatch_abort.
+        - 我们自己的 hook cancel 例外 (见 ``_turn_end_abort_reason``): 那一类已经 drain 过.
+
+        reason 是调用方自己的话 (对齐 ``Future.cancel(msg)``), 不当词汇表用; 日志里只带 kind (+ cause).
         """
         end = TurnEnd.from_session_event(event)
         if end is None:
@@ -586,13 +645,49 @@ class DoloresRun:
                 end.turn,
                 end.reason.kind if cause is None else f"{end.reason.kind}/{cause.kind}",
             )
+        # 中断类本该早在入队时落地 (_predispatch_abort); 这里兜一次, 防有人在队列上直投事件.
+        self._predispatch_abort(event)
         return True
 
     # ── internals ────────────────────────────────────────────────────
 
     async def _on_event(self, event: "SessionEvent") -> None:
-        """catch-all callback: enqueue (async-wrapped — the on_session_event consumer awaits)."""
+        """catch-all callback: 入队前处理, 再入队 (async-wrapped — the on_session_event consumer awaits)."""
+        self._predispatch_abort(event)
         self._queue.put_nowait(event)
+
+    def _predispatch_abort(self, event: "SessionEvent") -> None:
+        """turn/end 的中断类在**入队前**落地 (同步, 幂等).
+
+        不能等消费: 消费是单线程顺序的 (logos() 里 ``await self._handle_tool_use_event(...)``),
+        一个 tool handler 可能正占着循环 —— ``_handle_react`` 的 ``wait_actions_done()`` 就是在等身体
+        把动作跑完, **而人点停要停的正是那具身体**. 2026-10-04 D04 实测: dsh 侧已把 moss_react 正确
+        中断, 我们这边 turn/end 却排在队列里 41 秒, 等语音自己播完才被消费 —— 那时它已经没有可停的
+        东西了. ``Attention.abort`` 是同步立即生效的, 所以这里能直接调; abort 级联下去, 那个 handler
+        也很快返回 (动作被取消 → wait_actions_done 满足).
+        """
+        if self._interrupt_aborted:
+            return
+        end = TurnEnd.from_session_event(event)
+        if end is None:
+            return
+        reason = _turn_end_abort_reason(end)
+        if reason is None:
+            return
+        cause = end.reason.reason
+        if (self._expected_cancel_turn == end.turn
+                and (cause is None or cause.kind not in _OUR_TURN_CANCEL_CAUSE_KINDS)):
+            # 我们约好的切轮还没到, 别人先动手了 (人点了停 / 运行时故障) —— 值得单独留痕.
+            self._logger.info(
+                "turn %s was cut by %s while our own cancel_turn was still pending",
+                end.turn, "no cause" if cause is None else cause.kind,
+            )
+        self._interrupt_aborted = True
+        self._logger.info(
+            "turn %s ended by interruption (%s) — aborting this thinking frame before the consumer runs",
+            end.turn, reason,
+        )
+        self._thinking.abort(reason)
 
     async def _drive_enter(self) -> None:
         """enter task: thinking/enter RPC. Enqueues the poison pill only on error.

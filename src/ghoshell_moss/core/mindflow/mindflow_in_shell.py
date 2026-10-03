@@ -230,8 +230,12 @@ class MindflowInShell(ABC):
                     interrupt_first = is_first_frame and thinking.attention.draw_from().interrupt
                     if interrupt_first:
                         self._on_interrupt_clear(thinking)
-                    # 按规则中断.
-                    if interrupt_first or thinking.moment.previous_stop_reason():
+                    # interrupt 协议触发: 思考前先停身体.
+                    # 这里**不再**带 previous_stop_reason() —— 那条是状态机想通之前写的, 正是
+                    # "cancel 之后没有下一帧来 clear" 漏掉的那类. 现在"身体该不该停"统一在 thinking
+                    # 运行退出时按 abort reason 判定 (见 _run_thinking 的 finally); 模型侧的感知仍走
+                    # moment.previous.stop_reason, 与这里无关.
+                    if interrupt_first:
                         await self.shell.clear()
                     # thinking effort == none 仍然会传入.
                     await self._run_thinking(thinking)
@@ -283,6 +287,23 @@ class MindflowInShell(ABC):
             self.logger.error("%r thinking loop error: %s", self, e)
             self._on_mindflow_error(e)
         finally:
+            # thinking 运行退出: 若这次退出意味着"身体不该再跑", 在这里急停一次.
+            # 判据是电平 — attention 已被 abort 且带 reason (interrupt / error / user cancel);
+            # shell.clear() 自身用 _clearing_task 合流, 重复调用安全.
+            # 不做在 _on_thinking_exited 上: 那是通知位点, 不是生命周期位点.
+            # todo: 区分 done / fail / cancel / abort / preempted 的退出语义
+            #      (回归: features/regressions/dolores-ghost-prototype TC-003)
+            abort_reason = thinking.attention.abort_reason()
+            if thinking.attention.is_aborted() and abort_reason is not None:
+                # 判据可见性 (regressions/dolores-ghost-prototype TC-000 / TC-003):
+                # 这次急停必须能从日志读出来 — 否则"语音到底停没停"没有可复核的外部证据.
+                self.logger.info(
+                    "thinking exited on abort (%s) — clearing the shell", abort_reason,
+                )
+                try:
+                    await self.shell.clear()
+                except Exception as e:
+                    self.logger.warning("%r shell.clear on thinking exit failed: %s", self, e)
             self._on_thinking_exited(thinking, err)
 
     async def _action_loop(self) -> None:
@@ -387,14 +408,17 @@ class MindflowInShell(ABC):
         logger = self.logger
 
         async def _abort_clear() -> bool:
-            """action 已 abort 时 clear shell, 取消 pending command. 返回是否触发.
+            """action 已 abort 时取消**本动作范围**持有的命令. 返回是否触发.
 
-            interpreter 以 ``clear_after_exit=False`` 退出, 不会取消运行中的 task;
-            取消 pending command 是 action loop 的责任 — 由本函数显式触发 shell.clear.
+            interpreter 以 ``clear_after_exit=False`` 退出, 不会取消运行中的 task; 取消是 action loop
+            的责任 —— 但粒度归 interpreter: ``close(cancel_managing=True)`` 只清它自己 managed_tasks
+            里的命令, 不动 shell 里别处在跑的东西. ``shell.clear()`` 是"整具身体"的粒度, 留在 thinking
+            退出那一处 (见 _run_thinking 的 finally): 那里才是"该不该停整个身体"的位点, 未来 shell 支持
+            多路 interpreter 时也不会误伤别的轨道.
             """
             if not action.is_aborted():
                 return False
-            await shell.clear()
+            await interpreter.close(cancel_managing=True)
             return True
 
         try:
@@ -469,6 +493,8 @@ class MindflowInShell(ABC):
         except asyncio.CancelledError:
             raise
         finally:
+            # 这里**不做** clear: "身体该不该停"是 thinking 级的事 (见 _run_thinking 的 finally).
+            # 中途取消本范围 pending command 仍归上面的 _abort_clear() —— 它同时是控制流, 不能删.
             # fire and forget
             asyncio.create_task(self._post_action_refresh())
             asyncio.create_task(self._fire_interpreter_result(interpretation))

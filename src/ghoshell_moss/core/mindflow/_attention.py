@@ -57,7 +57,7 @@ class AbsAttention(Attention, ABC):
         self._started: bool = False
         self._closing: bool = False
         self._closed_event = ThreadSafeEvent()
-        self._abort_reason = ''
+        self._abort_reason: str | None = None
         # update the impulse
         self._log_prefix = f"<Attention id={self._draw_from_impulse.id}>"
         self._current_impulse: Impulse = impulse
@@ -204,7 +204,7 @@ class AbsAttention(Attention, ABC):
             elif isinstance(error, str):
                 self._abort_reason = error
 
-    def abort_reason(self) -> str:
+    def abort_reason(self) -> str | None:
         return self._abort_reason
 
     async def wait_abort(self) -> None:

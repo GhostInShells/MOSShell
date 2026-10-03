@@ -24,7 +24,7 @@ status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved
   error note (D35): 根因是 fa97362d 在引入「关停取消在飞旁路」时把 resume()/resume_tail 一起
   误删, 空 note 成永久空洞; 零有效工作区间是否 commit 立为 O18 (待第五轮回归拿数据).'
 title: Dolores Ghost
-updated: '2026-09-25'
+updated: '2026-10-04'
 ---
 
 # Dolores Ghost
@@ -95,6 +95,27 @@ MOSS 侧的结果回话与 dsh 侧 tool execute 是**两个方向**，永远可�
 - **迟到回话被吞**：结算时登记 settled-call 墓碑（TTL 60s），随后到达的 `/tool-result` 回 `200 {dropped}` 而不是 `400 no pending tool call`；abort 监听器 reject 但不删条目。
 - **MOSS 侧兜底**：`_dispatch_tool_result` 吸收 RPC 失败（warn + drop）。一次迟到的 moment 结果**永不**能烧掉整轮 logos 流。
 - **yield 路径不动**：`wait_next_moment` 仍由下一轮 enter 解锁，exit 不结算、不 cancel。
+
+## 人喊停的可达性契约 (D04)
+
+**命题**：人在 dsh 界面点停时，物理身体必须在**点击那一刻**停，而不是等这一轮自己走完。
+
+- **修前实测（2026-10-04 00:29）**：`moss_react` 已被 dsh 正确中断，语音却 **41.3 秒播满**。三处根因：
+  ① 豁免按 **turn 号**记 —— `moss_react` / `moss_wait_next` 的结果**常态**带 `cancel=True`，等于把每一轮都
+  记成"自己人"，人点的 `user` abort 被一起吞掉；② `logos()` **单线程顺序**消费，`_handle_react` 的
+  `wait_actions_done()` 正占着循环等身体跑完，turn/end 排队 41 秒才被消费 —— 信号到了没人开门；
+  ③ `on_session_event("*")` 把 host 内环工具（bash / read / write / edit / subagent）也当"等我们回答的
+  tool"，warning 刷屏，把真正的 D39 信号埋掉。
+- **修法（P1–P4）**：中断类 abort 挪到**入队前**（`_predispatch_abort`，同步幂等，不等消费）；
+  判据挂 **cause**（`hook` = 我们自己的 hook cancel 才豁免，`user` / 无 cause / 其它 = 中断，`error` 永远中断）；
+  事件按 `moss*` 命名空间过滤；action 退出改 `interpreter.close(cancel_managing=True)`（只清本动作范围持有的
+  命令），`shell.clear()` 收在 thinking 退出那一处 —— 那是"整具身体"的粒度，多路 interpreter 时不会误伤别的轨道。
+- **配套内核修正**：`abort_reason: str | None`（对齐 `Future.cancel(msg)`，reason 不当词汇表用）；
+  `cancel_executing` → `cancel_managing`（这个参数管的是 parsed tasks，不是"执行"本身）。
+- **修后实测（2026-10-04 01:06）**：语音在 3.1 秒处被掐断；探针早于消费者 20ms，整树 clear 在 22ms 内完成。
+- **未闭环**：`moss_react` tool 入口**本身**仍未实测（复现走的是 `moss_interpret` + `moss_wait_next`，
+  死锁形状相同）；`_abort_clear` 的 interpreter 级 close 还没有 mindflow 集成用例。
+  回归入口：`.ai_partners/features/regressions/dolores-ghost-prototype/REGRESSION.md`（TC-000..005）。
 
 ## observe 续帧契约 (D25)
 

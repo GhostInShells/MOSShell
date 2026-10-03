@@ -1865,22 +1865,27 @@ class TestDoloresRun:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "reason",
+        "reason, expected",
         [
-            {"kind": "aborted", "reason": {"kind": "user"}},
-            {"kind": "error"},
-            {"kind": "max-tokens"},
-            {"kind": "interrupted"},
-            {"kind": "completed"},
+            ({"kind": "completed"}, None),
+            ({"kind": "max-tokens"}, None),
+            ({"kind": "brand-new-kind"}, None),
+            ({"kind": "aborted", "reason": {"kind": "hook", "reason": "moss cancel_turn"}}, None),
+            ({"kind": "aborted", "reason": {"kind": "user"}}, "turn/end aborted (user)"),
+            ({"kind": "interrupted"}, "turn/end interrupted"),
+            ({"kind": "blocked", "reason": {"kind": "user"}}, "turn/end blocked (user)"),
+            ({"kind": "error"}, "turn/end error"),
         ],
     )
-    async def test_turn_end_never_aborts_thinking(self, reason):
-        """turn/end 只收线本帧, 绝不冒泡 abort — 无论 reason.kind 是什么.
+    async def test_turn_end_classifies_before_ending_the_frame(self, reason, expected):
+        """turn/end 分两类: 自然收线不动 attention, 中断类 abort 并带 reason.
 
-        冒泡 (Thinking.abort → attention.abort) 会连 attention 一起杀掉, 使 need_observe 驱动的
-        回声帧循环 `while not attention.is_aborted() and need_observe()` 永远起不来 —— interpret
-        error 自愈帧 / moss_reasoning 续帧全丢. 本帧的退出走自然路径: logos() 在此返回 → run
-        收线 → articulate 返回 → 帧自己结束; run 退出时另 cancel dsh, 双向对齐.
+        旧版这条叫 `test_turn_end_never_aborts_thinking`, 断言"无论 kind 都绝不 abort" —— 那是把一个
+        方向的判据当成了通性: 它只对"我们自己让 plugin 切的 turn"成立 (cause=hook, 身体在返回前已
+        drain). UI 点停与运行时故障若也走自然退出, 身体会继续跑 (语音照旧播完), 故障还会自续成环.
+        现在判据挂在 cause 上 (不挂 turn 号), 见 ``_run._turn_end_abort_reason``.
+
+        端到端判据 (语音是否真停) 不在单测里: 见 regressions/dolores-ghost-prototype TC-003.
         """
         session = FakeRunSession()
         ego = FakeRunEgo(session)
@@ -1891,6 +1896,52 @@ class TestDoloresRun:
             await session.emit(self._event("turn/end", {"turn": 1, "reason": reason}, seq=2))
             async for _ in run.logos():
                 pass
+        if expected is None:
+            assert thinking.abort_reasons == []
+        else:
+            assert thinking.abort_reasons == [expected]
+
+    @pytest.mark.asyncio
+    async def test_turn_end_interrupt_lands_before_the_consumer_can_run(self):
+        """中断在**入队前**落地: 消费被 tool handler 占住时, 人点停也要立刻生效.
+
+        2026-10-04 D04 实测的根: ``_handle_react`` 在 logos() 里 await wait_actions_done() 等身体跑完,
+        期间的 turn/end 只能排队 —— 人点的停 (aborted/user) 在队列里等了 41 秒, 语音自己播完才被消费.
+        判据是入队时就 abort (Attention.abort 同步立即生效), 不等消费.
+        """
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(
+                self._event(
+                    "turn/end",
+                    {"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "user"}}},
+                    seq=2,
+                )
+            )
+            # 关键: 这里**不消费** logos() —— 消费正被占住, 模拟 D04 的真实时序.
+        assert thinking.abort_reasons == ["turn/end aborted (user)"]
+
+    @pytest.mark.asyncio
+    async def test_our_own_hook_cancel_does_not_abort_on_enqueue(self):
+        """正常收轮 (cause=hook) 不得因为入了队就 abort —— 否则每次 react 一开口就被自己清掉."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(
+                self._event(
+                    "turn/end",
+                    {"turn": 1, "reason": {"kind": "aborted",
+                                           "reason": {"kind": "hook", "reason": "moss cancel_turn"}}},
+                    seq=2,
+                )
+            )
         assert thinking.abort_reasons == []
 
     @pytest.mark.asyncio
@@ -2730,15 +2781,30 @@ class TestSilentFailureSurfaces:
         )
 
     @pytest.mark.asyncio
-    async def test_unknown_tool_call_is_logged_not_silent(self):
-        """没有 handler 认领的 tool 名 = 这次调用永远等不到回话. 日志必须说话."""
+    async def test_unknown_moss_tool_call_is_logged_not_silent(self):
+        """名字是我们的 (moss*), 却没有 handler 认领 = 这次调用永远等不到回话. 日志必须说话."""
         run = self._run()
         with captured_logs(run._logger) as logs:
             await run._handle_tool_use_event(
-                TestDoloresRun._tool_call("read_file", "{}", "call_unknown"), {},
+                TestDoloresRun._tool_call("moss_mystery", "{}", "call_unknown"), {},
             )
         assert any("matched no dolores tool" in m and "call_unknown" in m
                    for m in logs.messages(logging.WARNING)), logs.messages()
+
+    @pytest.mark.asyncio
+    async def test_foreign_tool_calls_are_ignored_silently(self):
+        """host 内环工具 (bash / read / edit / subagent ...) 由 dsh 自己结算 —— 我们连痕都不该留.
+
+        2026-10-04 D04: 早先它们被当成"等我们回答的 tool"逐条 warning, 一次排查刷出几百行噪音,
+        把真正的 D39 信号 (我们自己的 tool 没 handler) 埋掉了.
+        """
+        run = self._run()
+        with captured_logs(run._logger) as logs:
+            for name in ("bash", "read", "edit", "subagent"):
+                await run._handle_tool_use_event(
+                    TestDoloresRun._tool_call(name, "{}", f"call_{name}"), {},
+                )
+        assert logs.messages(logging.WARNING) == [], logs.messages()
 
     @pytest.mark.asyncio
     async def test_tool_arguments_parse_failure_is_logged(self):
@@ -2763,7 +2829,7 @@ class TestSilentFailureSurfaces:
         run = self._run(logger=handed)
         with captured_logs(handed) as logs:
             await run._handle_tool_use_event(
-                TestDoloresRun._tool_call("nope", "{}", "call_x"), {},
+                TestDoloresRun._tool_call("moss_nope", "{}", "call_x"), {},
             )
         assert logs.messages(logging.WARNING), "记录没有落在传下来的 logger 上"
 
@@ -2885,3 +2951,64 @@ class TestEgoSilentFailureSurfaces:
             ego._emit_self_wake()
         warned = [m for m in logs.messages(logging.WARNING) if "self-wake dropped" in m]
         assert len(warned) == 1, f"应只报一次, 实得 {len(warned)}"
+
+
+class TestTurnEndClassification:
+    """turn/end → 要不要显式退出 thinking 的判定表 (纯函数, 不依赖替身).
+
+    这是 cancel 治理的判据面: 自然收线绝不动 attention, 中断类才 abort —— 唯一例外是 cause 属于我们自己
+    的 hook cancel (moss_react / moss_wait_next / moss_reasoning 自己收的轮), 身体在返回结果前已 drain.
+    2026-10-04 D04 的教训: 判据曾经挂在 turn 号上, 于是每一个 react 轮都被算成"自己人", 人点的
+    aborted/user 被一起豁免, 41.3 秒语音全量播完. 端到端行为 (语音是否真停) 归
+    features/regressions/dolores-ghost-prototype TC-003, 不在单测里.
+    """
+
+    @staticmethod
+    def _end(kind: str, turn: int = 7, cause=None):
+        from ghoshell_moss.deepseek_harness.types.session_events import TurnEnd, TurnEndReason
+        return TurnEnd(turn=turn, reason=TurnEndReason(kind=kind, reason=cause))
+
+    @staticmethod
+    def _cause(kind: str, reason: str = ""):
+        from ghoshell_moss.deepseek_harness.types.session_events import AgentCancelCause
+        return AgentCancelCause(kind=kind, reason=reason or None)
+
+    def test_natural_ends_do_not_touch_the_body(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(self._end("completed")) is None
+        assert _turn_end_abort_reason(self._end("max-tokens")) is None
+
+    def test_unknown_kind_is_treated_as_natural(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(self._end("something-new-from-dsh")) is None
+
+    def test_interruption_kinds_abort_with_a_reason(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(self._end("aborted")) == "turn/end aborted"
+        assert _turn_end_abort_reason(self._end("interrupted")) == "turn/end interrupted"
+        assert _turn_end_abort_reason(self._end("blocked")) == "turn/end blocked"
+        assert _turn_end_abort_reason(self._end("error")) == "turn/end error"
+
+    def test_cause_rides_along_when_dsh_provides_one(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(
+            self._end("aborted", cause=self._cause("user"))
+        ) == "turn/end aborted (user)"
+        assert _turn_end_abort_reason(
+            self._end("blocked", cause=self._cause("user"))
+        ) == "turn/end blocked (user)"
+
+    def test_our_own_hook_cancel_is_not_an_interruption(self):
+        """cause=hook: moss_react / moss_wait_next / moss_reasoning 自己收的轮 — 不得 abort."""
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(
+            self._end("aborted", cause=self._cause("hook", "moss cancel_turn"))
+        ) is None
+        assert _turn_end_abort_reason(self._end("blocked", cause=self._cause("hook"))) is None
+
+    def test_error_wins_over_a_hook_cause(self):
+        """故障优先: 即便这轮也被我们标过收轮, 运行时错误仍然要 abort (否则自续成环)."""
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(
+            self._end("error", cause=self._cause("hook"))
+        ) == "turn/end error (hook)"

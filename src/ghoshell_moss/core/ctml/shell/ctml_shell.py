@@ -248,7 +248,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self._interpreter = None
             if outstanding.is_running() or not outstanding.is_closed():
                 try:
-                    await outstanding.close(cancel_executing=True)
+                    await outstanding.close(cancel_managing=True)
                 except Exception:
                     self.logger.exception("%s close outstanding interpreter failed", self._log_prefix)
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
@@ -435,7 +435,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 # (fire on_interpreter_stopped 由 old_interpreter.close 的 on_close_callback 触发,
                 # 不在这里显式 fire)
                 undone_tasks = old_interpreter.incomplete_tasks()
-                interrupted_interpretation = await old_interpreter.close(cancel_executing=False)
+                interrupted_interpretation = await old_interpreter.close(cancel_managing=False)
             self._interpreter = None
             on_close_callback = self._fire_on_interpreter_stopped
 
@@ -629,7 +629,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if not old.is_running():
             return None
         # 考虑线程安全问题. 先简单做一层防御.
-        stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
+        stop_task = self._event_loop.create_task(old.close(cancel_managing=True))
         # 防止交叉感染. (on_interpreter_stopped fire 由 old.close 的 on_close_callback 触发, 不在这里显式 fire)
         future = asyncio.get_running_loop().create_future()
 

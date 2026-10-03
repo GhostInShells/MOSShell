@@ -554,7 +554,7 @@ CommandNucleus / NotifyNucleus / InterruptNucleus 三个 nucleus 在 add_signal 
 **关键设计原则** (反哺中确认):
 
 - **shell.clear ⊃ stop_interpretation**: `clear()` 是 `stop_interpretation + speech.clear + tree.clear` 的超集. interrupt 协议要求"停止所有执行中的 logos", 必须用 clear.
-- **append 模式跨帧延续依赖 `clear_after_exit=False`**: interpreter `__aexit__` 走 `close(cancel_executing=self._clear_after_exit)`, 默认 False 才能让运行态 task 跨帧存活. mindflow 体系永远用 `kind='append', clear_after_exit=False`.
+- **append 模式跨帧延续依赖 `clear_after_exit=False`**: interpreter `__aexit__` 走 `close(cancel_managing=self._clear_after_exit)`, 默认 False 才能让运行态 task 跨帧存活. mindflow 体系永远用 `kind='append', clear_after_exit=False`.
 - **0.5s freshness window**: 人类感知边界 + LLM 首句最短时间, 是 refresh_metas 时序契约的合理上限. 慢通道理论上应自行改推模式, 不该让该阈值承担其延迟.
 - **Command Task 是编译态 AST 节点**: 不是 asyncio task. 跨帧延续测试必须用 `asyncio.Event` 钉死 "进入运行态" 前提.
 

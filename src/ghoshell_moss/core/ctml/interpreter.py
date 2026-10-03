@@ -514,8 +514,8 @@ class CTMLInterpreter(Interpreter):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        cancel_executing = self._clear_after_exit if self._clear_after_exit is not None else True
-        await self.close(cancel_executing=cancel_executing)
+        cancel_managing = self._clear_after_exit if self._clear_after_exit is not None else True
+        await self.close(cancel_managing=cancel_managing)
         if exc_val is not None:
             capture = isinstance(exc_val, asyncio.CancelledError)
             return capture or None
@@ -536,13 +536,13 @@ class CTMLInterpreter(Interpreter):
         self._main_parsing_loop_task = task
         self._tasks_done_then_stop_task = asyncio.create_task(self._wait_task_done_then_stop())
 
-    async def close(self, cancel_executing: bool = True) -> Interpretation | None:
+    async def close(self, cancel_managing: bool = True) -> Interpretation | None:
         if not self._started:
             return None
         if self._closed:
             return None
         self._closed = True
-        if cancel_executing or self._clear_after_exit:
+        if cancel_managing or self._clear_after_exit:
             self._interpretation.interrupted = not self._stopped_event.is_set()
         self._stopped_event.set()
         self._logger.info("%s interpreter stopping", self._log_prefix)
@@ -559,7 +559,7 @@ class CTMLInterpreter(Interpreter):
         except asyncio.CancelledError:
             pass
 
-        if cancel_executing or self._clear_after_exit:
+        if cancel_managing or self._clear_after_exit:
             for t in self._managing_tasks.values():
                 if not t.done():
                     t.fail(CommandErrorCode.INTERRUPTED.error("interpreter stopped"))

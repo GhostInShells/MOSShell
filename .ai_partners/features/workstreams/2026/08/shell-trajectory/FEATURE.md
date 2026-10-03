@@ -56,7 +56,7 @@ interleaved thinking 主流化 + 前缀 KV 缓存经济学, 要求调整上下�
 8. **InterpreterStoppedEvent 展示定稿 (2026-09-24)**: 结算事件渲染改为 `logos` 标签 + state 裸词,
    去掉 `at` (帧头 `<moss at=>` 已锚时刻), 计数去冒号, cancelled/failed 带末尾 task 身份
    (`caller_name()`), 形如 `<logos interrupted>\ncancelled 3, last chan:say\n</logos>`.
-   - **交接不展示**: append 交接 (`close(cancel_executing=False)`) 结算时计数全空、仅 `pending`
+   - **交接不展示**: append 交接 (`close(cancel_managing=False)`) 结算时计数全空、仅 `pending`
      非零, 保持静默是对的 —— 模型不感知"交接"这个内部动作, 它感知的是连续签发 ctml 流. `pending`
      非零只在交接出现, 所以不展示 pending 即不展示交接.
    - `completed` 保留纯计数 (无值命令若不 raise observe, 计数是它唯一的痕迹); `error` 保留原文.
