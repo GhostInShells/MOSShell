@@ -377,6 +377,10 @@ class MindflowInShell(ABC):
             # 未兜底异常需要清空状态.
             await self.shell.clear()
 
+    # 执行期提权心跳的节拍 (秒). 强度顶平台长 min(strength_decay_seconds * 0.2, 3.0) 秒,
+    # 一拍就足够让强度一直停在平台值上; 再密只是徒增调度噪声.
+    _escalation_interval: float = 1.0
+
     async def _run_interpreter_with_action(self, action: Action) -> None:
         """流式执行: action.received_logos() → interpreter.feed(delta) → 结算.
 
@@ -462,7 +466,27 @@ class MindflowInShell(ABC):
                     return
 
                 # ── 阶段 3: wait stopped — 等待执行完成 ──
+                async def _escalation_heartbeat() -> None:
+                    """执行期心跳 — 命令在跑 = 有动静, 按节拍为 attention 保持强度.
+
+                    feed 阶段结束后不再有 logos delta, Action._deliver_logos 这条唯一的提权
+                    来源已经停了. 不提权, 强度就按衰减曲线一路归零, 同优先级的 deliver 包
+                    (INFO, 强度 100) 在顶平台过去之后就能抢占当前 attention —— 表现为
+                    "动作还在跑, 却被一句话打断".
+
+                    Impulse.strength_decay_seconds 的契约是"如果没有任何动静, 最迟这个时间
+                    强度归零"; 执行期有动静, 所以由这里替它说话.
+
+                    生命周期跟着 _wait_interpreter_done 走: 它正常退出或被取消, 都在下面的
+                    finally 里 cancel 掉; 循环条件本身也只看 "action 还活着", 所以 action
+                    被抢占/中止之后它就自己停, 不再为一个已经不属于自己的 attention 保持强度.
+                    """
+                    while not action.is_aborted():
+                        await asyncio.sleep(self._escalation_interval)
+                        action.attention.escalate()
+
                 async def _wait_interpreter_done():
+                    heartbeat = asyncio.create_task(_escalation_heartbeat())
                     try:
                         await interpreter.wait_tasks(
                             throw=False,
@@ -482,6 +506,8 @@ class MindflowInShell(ABC):
                         raise e
                     except Exception as e:
                         self.logger.warning("wait interpreter done failed: %s", e)
+                    finally:
+                        heartbeat.cancel()
 
                 task = asyncio.create_task(_wait_interpreter_done())
                 # 等待任务结束.
