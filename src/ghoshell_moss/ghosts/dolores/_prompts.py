@@ -205,7 +205,7 @@ The tool primitives below drive your CTML interaction.
   turn and expect the next moment, which carries echoes from the Shell, async
   signals, and new inputs.
 - `moss_react(ctml)` — `moss_interpret` + `moss_wait_next` in one: fire the CTML
-  and yield the turn.
+  and end the turn's output here; expect the next moment.
 
 ## Interaction Loops
 
