@@ -186,7 +186,7 @@ class ListenerController(ListenLifecycle):
         self._topic_task: Optional[asyncio.Task] = None
         self._topic_disposer: Optional[Callable[[], None]] = None
         self._topic_publisher: Optional[Publisher] = None
-        # audio sample → topic 装线 (懒, 由 with_audio_sample_service 启动).
+        # audio sample → topic 装线 (跟随 clause 桥一起 enter, 见 __aenter__).
         self._audio_sample_task: Optional[asyncio.Task] = None
         self._audio_sample_disposer: Optional[Callable[[], None]] = None
         self._audio_sample_publisher: Optional[Publisher] = None
@@ -210,6 +210,12 @@ class ListenerController(ListenLifecycle):
         # topic 装线 (clause → ClauseTopic): 构造时注入的 service 在 async with 里才 await 启动.
         if self._topic_service is not None:
             await self.with_topic_service(self._topic_service)
+            # 说侧发帧、听侧也要发帧 —— 两边共用一条 AudioSampleTopic 总线, 靠 role 区分.
+            # 这条约定归 voice 模块自己履行: 装线跟着 clause 桥一起走, 谁组装 controller
+            # 都不必记得再补一句 (漏一次就是听侧的雨永远不下).
+            await self.with_audio_sample_service(
+                self._topic_service, sample_rate=self._asr.get_info().sample_rate
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -675,7 +681,12 @@ class ListenerController(ListenLifecycle):
 
         与 clause 装线不同: 这是 latest-value-wins, 用 LatestAudioWindow 累积 + stale,
         一个周期 task 取走当前窗口算频谱发布, 无队列.
+
+        __aenter__ 已经装过(装线归 voice 模块自己); 重复调用是 no-op —— 显式调它
+        仍是合法入口 (listener_node 就这么用), 但两条路走同一次装线, 不会双发.
         """
+        if self._audio_sample_publisher is not None:
+            return
         publisher = service.model_publisher(creator="listener", model=AudioSampleTopic)
         window = LatestAudioWindow()
 

@@ -45,8 +45,39 @@
 | W4 | open | **被嵌入页面的 resize 自适应契约** — 合成器只改 iframe viewport，不负责内部重排；avatar/terminal/file_editor 不监听 resize | 各节点自查 |
 | W5 | open | **playwright 高阶面** — 真外部 web 内容（绕 X-Frame-Options）与接管浏览器 | playwright node |
 | W6 | open | **调试面退役** — 打磨期加的东西必须在产品化前收口：`probe_audio` 命令、每 10 帧一行 stdout 频谱、`?mode=hybrid\|bars\|edge` 对照画法、`mock_scene`/`mock_audio`。目标：默认面只剩产品本身，调试面挂在 `--debug`（或一个显式开关）下 | 本 feature |
-| W7 | open | **听侧（用户音频）的呈现与接线** — 现在人说话只在底部画一条 ECG，跟 ghost 侧那套雨是两个世界；且听侧链路（ASR）在弱网下的故障恢复/传导缺失（另一条账）。产品化要求：人也在场上，而不只是背景里的一条线 | listener / 本 feature |
+| W7 | **fixed** | **听侧（用户音频）的呈现与接线** — 见下方「W7 听侧」。 | listener / 本 feature |
 | W8 | open | **多屏机制未验证** — 一台机器上多个 screen node、或多显示面之间的分工与主权（谁排布、谁全屏、人怎么看）今日未测 | 本 feature |
+
+## W7 听侧（用户音频）
+
+**三个 bug 叠在一起**（D04 夜发现，前两个是断的、第三个才轮到画法）：
+
+1. **总线断的**：`role=user` 的 `AudioSampleTopic` 从来没被发布过。说侧桥在
+   `host/voice/interleaved.py` 里装了，听侧音频桥 `with_audio_sample_service` 却只有
+   `host/nodes/listener_node.py` 那条路调 —— 幽灵走的 interleaved 路径漏了。
+   修法：装线收进 `ListenerController.__aenter__`，跟 clause 桥并排（**这条约定归
+   voice 模块自己履行**，谁组装 controller 都不必记得补一句）；`with_audio_sample_service`
+   补幂等，`listener_node` 那条显式路径不双发。
+2. **判据错的**：页面把整段 `rms_db` 当门限，而远场 / 骨传导下 rms 轻易掉到 −60，
+   频谱里却有 −17dB 的低频。改用 bins 的最强值判"活"。
+3. **画法不搭**：第一版是底部频谱柱，横向满格扫一条，跟上面的雨是两个世界。
+
+**最终画法（他定方向、我定实现）**：把频谱柱换成**从底部长上来的字** —— 同一套字形、
+同一套配色，方向相反。我的声音从上往下掉，人的声音从下往上长。一层 = 一个 `GH`，
+`RISE_ROWS` 层封顶。关键几笔：
+
+- **钟形包络**（`RISE_BELL`）：字不该挤在某一侧，乘一条 σ≈屏宽 32% 的正态曲线，
+  中段最盛、两侧渐稀。这是**画法不是数据** —— 频谱本身长什么样仍由 bins 决定。
+- **横向平滑**（`RISE_SMOOTH`）：16 个 bin 抽到 28 列后做两遍扩散，把频带跳变的锯齿
+  抹成一道连绵的浪。
+- **与雨错开半格**（`RISE_OFFSET = GH/2`）：两条浪不落在同一行上，视觉上不打架。
+- **dB 窗口固定**（`BAR_DB_FLOOR = -52`、`BAR_DB_CEIL = -20`）：不用自适应 —— 自适应会把
+  安静时的底噪放大成满格。地板定在 −52 是因为静音底噪落在 −55 上下，低了会留一排矮字。
+- **两侧分家存**（`feed` / `userFeed`）：共用一条总线，谁说话谁发帧；按 role 分家，
+  另一侧说话时不会把这一侧抹掉。
+
+**未验**：`RISE_*` 与 `BAR_DB_*` 的数值是照他现场反馈调的，尚未做跨设备的独立回归。
+听侧链路（ASR）弱网下的故障恢复/传导缺失仍是另一条账（见 D02 journal、`REGRESSION.md`）。
 
 ## 设计问题
 

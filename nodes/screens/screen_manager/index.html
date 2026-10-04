@@ -433,7 +433,28 @@ function fitMossText() {
 }
 fitMossText();
 
+// 字形单元尺寸：升字区高度、雨的排布都以它为单位，必须先于一切使用点。
+const GW = 16, GH = 20;                 // 字形图集单元尺寸（固定，与屏宽无关）
+
 let feed = { role: 'ghost', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
+
+// ===== 听侧：从底部长上来的字 =====
+// 同一套字形、同一套配色，方向相反 —— 我的声音从上往下掉，人的声音从下往上长。
+// 这样两层共用一种材质（都是字），却一眼分得出谁在说；也不像频谱柱那样横向横扫。
+// 常量与状态提到这里：雨的容量和升字区都要用，必须先于一切函数。
+const BAR_CELLS = 48;              // 格数固定：与屏宽无关，格宽才是柔软量
+const BAR_DB_FLOOR = -52;          // 低于此分贝 = 全空。静音底噪落在 -55 上下，地板得抬到
+                                   // 这儿，"没声音"才真的读成零；低了会留一排矮字。
+const BAR_DB_CEIL = -20;           // 高于此分贝 = 全满
+const RISE_ROWS = 7;               // 一格最多长几层字（层 = 字高）
+const RISE_DECAY = 0.80;           // 未更新时的回落速度
+const RISE_ZONE = RISE_ROWS * GH;  // 升字区总高（像素）
+const BAR_FLOOR_Y = () => Math.max(0, innerHeight - RISE_ZONE - 8);
+let barSrc = [];                   // 16 bin → 48 格，0..1
+let riseHeights = [];              // 每格当前高度（0..RISE_ROWS），按帧衰减
+let riseGlyphs = [];               // 每格每层的字（换字只换这里）
+let userFeed = { role: 'user', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
+let userAt = 0;   // 人那一侧最后一帧的时刻，独立于 ghost 侧
 const GATE = -45;
 // 字符集：数字（最低）→ 小写 → 大写 → 希腊（最高）。映射按分贝从低到高走一遍，
 // 所以常见语音电平应该落在字母段。换字符集只动这一处。
@@ -446,7 +467,6 @@ const CHARSET = (() => {
   for (let c = 0x391; c <= 0x3A9; c++) parts.push(String.fromCharCode(c));   // Α-Ω
   return parts.join('');
 })();
-const GW = 16, GH = 20;                 // 字形图集单元尺寸（固定，与屏宽无关）
 const GLYPH_PX = 12;                    // 字形大小 —— 越小字越细
 const atlas = document.createElement('canvas');
 atlas.width = CHARSET.length * GW; atlas.height = GH;
@@ -563,7 +583,12 @@ function agcEnergies(bins, dt) {
   return out;
 }
 
-function rainCapacity() { return Math.floor(innerHeight / ROW_PITCH) + 2; }
+// 雨只铺到升字区上沿：两层各占各的地，谁也不盖谁。升字区高度固定，所以这个界限
+// 只跟窗口高度有关，与列数无关。
+function rainCapacity() {
+  const floorY = Math.max(0, BAR_FLOOR_Y());
+  return Math.max(1, Math.floor(floorY / ROW_PITCH) + 2);
+}
 
 // 频带 → 列区间的分配表：累计权重取整，保证每段至少一列、末段收在总宽上。
 function bandSpans(nb, total) {
@@ -763,9 +788,10 @@ function stepRain(dt, now) {
   const cap = rows.length;
   const zoom = 1 + BREATH_SCALE * (rows.length ? rows[0].loud : 0);   // 呼吸：整片随音量微微胀缩
   const w = GW * zoom, h = GH * zoom;
+  const floorY = BAR_FLOOR_Y();   // 升字区上沿：雨到这儿为止，不盖住人说话那层
   for (let r = 0; r < cap; r++) {
     const y = (r - 1) * ROW_PITCH + shift;   // 最新一行从屏幕上方一格滑入
-    if (y > innerHeight) break;
+    if (y > floorY) break;
     const row = rows[r];
     // 渐隐（位置越靠下越淡，但不归零：位置仍是时间） × 呼吸（整片随当前音量亮暗）
     const base = (FADE_BOTTOM + (1 - FADE_BOTTOM) * Math.max(0, 1 - y / innerHeight))
@@ -781,32 +807,97 @@ function stepRain(dt, now) {
   }
   bctx.globalAlpha = 1;
 }
-function drawEcg() {
-  const baseY = innerHeight * 0.82, amp = innerHeight * 0.12;
-  const w = feed.waveform.length, th = 0.5;
-  bctx.lineWidth = 2;
-  bctx.beginPath();
-  for (let i = 0; i < w; i++) {
-    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
-    i === 0 ? bctx.moveTo(x, y) : bctx.lineTo(x, y);
+// 16 个频带 → 48 格：线性插值铺满。0dB 的绝对电平没有意义，所以用固定窗口
+// (floor..ceil) 而不是自适应 —— 自适应会让安静时的底噪被放大成满格。
+function resampleBins(bins) {
+  const n = bins.length;
+  if (barSrc.length !== BAR_CELLS) barSrc = new Array(BAR_CELLS).fill(0);
+  if (!n) { for (let i = 0; i < BAR_CELLS; i++) barSrc[i] = 0; return barSrc; }
+  for (let i = 0; i < BAR_CELLS; i++) {
+    const pos = (i / (BAR_CELLS - 1)) * (n - 1);
+    const lo = Math.floor(pos), hi = Math.min(lo + 1, n - 1), fr = pos - lo;
+    const db = bins[lo] + (bins[hi] - bins[lo]) * fr;
+    const t = (db - BAR_DB_FLOOR) / (BAR_DB_CEIL - BAR_DB_FLOOR);
+    barSrc[i] = Math.max(0, Math.min(1, t));
   }
-  bctx.strokeStyle = '#3d8'; bctx.stroke();
-  bctx.beginPath(); let drawing = false;
-  for (let i = 0; i < w; i++) {
-    const hot = Math.abs(feed.waveform[i]) > th;
-    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
-    if (hot && !drawing) { bctx.moveTo(x, y); drawing = true; }
-    else if (hot && drawing) bctx.lineTo(x, y);
-    else if (!hot && drawing) drawing = false;
-  }
-  bctx.strokeStyle = '#f44'; bctx.stroke();
-  const bw = innerWidth / 16;
-  for (let i = 0; i < 16; i++) {
-    const h = Math.max(0, (feed.spectrum_bins[i] + 96) / 96) * 26;
-    bctx.fillStyle = feed.spectrum_bins[i] > GATE ? '#f44' : '#3d8';
-    bctx.fillRect(i * bw, innerHeight - h, bw - 2, h);
-  }
+  return barSrc;
 }
+
+// 每一格 = 一个频点：这一格此刻有多响，就决定它长出多高的一串字。
+// 一层 = 一格字高。想让浪更连续，密的是列、不是层：层数固定，宽度用来铺满。
+const RISE_COLS = 28;              // 升字列数 —— 比雨的 60 列疏，浪才看得出形状
+const RISE_SMOOTH = 0.35;          // 相邻列的能量平滑：锯齿来自频带跳变，不是声音本身
+const RISE_BELL = 0.62;            // 钟形包络强度：0 = 平坦，1 = 完全按正态分布压
+
+function drawListenerRise() {
+  const now = performance.now();
+  const bins = userFeed.spectrum_bins || [];
+  let loudest = -96;
+  for (let i = 0; i < bins.length; i++) if (bins[i] > loudest) loudest = bins[i];
+  const live = loudest > GATE && now - userAt <= FEED_STALE_MS;
+  resampleBins(live ? bins : []);
+
+  if (riseHeights.length !== RISE_COLS) {
+    riseHeights = new Array(RISE_COLS).fill(0);
+    riseGlyphs = Array.from({ length: RISE_COLS }, () =>
+      Array.from({ length: RISE_ROWS }, () => randGlyph()));
+  }
+
+  // 把 48 格的 barSrc 再抽到 RISE_COLS 列，并做一次横向平滑 —— 浪要连成起伏，
+  // 不是一排各自独立的钉子。
+  const colV = [];
+  for (let i = 0; i < RISE_COLS; i++) {
+    const pos = (i / (RISE_COLS - 1)) * (BAR_CELLS - 1);
+    const lo = Math.floor(pos), hi = Math.min(lo + 1, BAR_CELLS - 1), fr = pos - lo;
+    colV.push(barSrc[lo] + (barSrc[hi] - barSrc[lo]) * fr);
+  }
+  const colS = colV.slice();
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 1; i < RISE_COLS - 1; i++) {
+      colS[i] += (colV[i - 1] + colV[i + 1] - 2 * colV[i]) * RISE_SMOOTH;
+    }
+  }
+
+  // 钟形包络：字不该挤在某一侧，而该像正态分布 —— 中段最盛、两侧渐稀。
+  // 这是**画法**不是数据：频谱本身长什么样仍由 colS 决定，钟形只给它一个重心。
+  const mid = (RISE_COLS - 1) / 2;
+  for (let i = 0; i < RISE_COLS; i++) {
+    const z = (i - mid) / (RISE_COLS * 0.32);   // 标准差 ≈ 屏宽的 32%
+    const bell = Math.exp(-0.5 * z * z);
+    colS[i] = colS[i] * ((1 - RISE_BELL) + bell * RISE_BELL);
+  }
+
+  // 列宽 = 屏宽 / 列数，但字形按格距居中：字比格窄，所以列与列之间自然有缝，
+  // 而那点缝正好让浪看起来是"一串字"而不是一堵墙。
+  const colW = innerWidth / RISE_COLS;
+  const baseY = innerHeight - 2;
+  const RISE_OFFSET = GH / 2;        // 与雨错开半格：两条浪不落在同一行上
+  // 每列的字横坐标：整列共用，避免逐层算出来错位
+  for (let i = 0; i < RISE_COLS; i++) {
+    const want = Math.max(0, Math.min(1, colS[i])) * RISE_ROWS;
+    riseHeights[i] = want > riseHeights[i] ? want : riseHeights[i] * RISE_DECAY;
+    const h = riseHeights[i];
+    const full = Math.floor(h);
+    const frac = h - full;
+    const x = i * colW + colW / 2;
+    const energy = Math.max(0, Math.min(1, colS[i]));
+    // 真静音时一格都不画。此前 k <= full 在 full=0 时会留下一层底痕 —— 那让"没声音"
+    // 也看着有字，正是要避免的。层的存在必须完全由高度决定。
+    for (let k = 0; k < full && k < RISE_ROWS; k++) {
+      if (Math.random() < 0.10 * energy) riseGlyphs[i][k] = randGlyph();
+      const y = baseY - (k + 1) * GH - RISE_OFFSET;
+      const dim = k / RISE_ROWS;                      // 越高越淡：尾部渐隐
+      const top = k === Math.min(full, RISE_ROWS) - 1;  // 最上面那格才是"浪头"
+      bctx.globalAlpha = (0.35 + 0.65 * (1 - dim)) * (0.30 + 0.70 * energy);
+      bctx.drawImage(
+        top && frac > 0.2 ? headAtlas : atlas,
+        riseGlyphs[i][k] * GW, 0, GW, GH,
+        x - GW / 2, y, GW, GH);
+    }
+  }
+  bctx.globalAlpha = 1;
+}
+
 let lastB = performance.now();
 let fpsFrames = 0, fpsAt = performance.now();
 function bgLoop() {
@@ -828,7 +919,8 @@ function bgLoop() {
   // 雨永远在画：它是"最近约十秒的录音带"，静音只是让空白行把旧内容顶出去，
   // 而不是让画面停住或当场清空。
   stepRain(dt, now);
-  if (feed.role === 'user' && speaking) drawEcg();
+  // 听侧常画：静音时只剩一格底痕，但那一层始终在 —— 人不需要先出声才发现自己被听着。
+  drawListenerRise();
 }
 requestAnimationFrame(bgLoop);
 
@@ -892,10 +984,17 @@ function route(f) {
       break;
     }
     case 'audio': {
-      feed = f.sample;
+      // 两侧共用一条总线，谁说话谁发帧。雨只认 ghost，升字只认 user —— 所以按角色
+      // 分家存，另一侧说话时不会把这一侧抹掉。
       feedAt = performance.now();          // 断线判定用：这一帧是什么时候到的
-      mossEl.classList.toggle('alive', feed.role === 'ghost' && feed.rms_db > GATE);
-      st.textContent = `#${arena || 'desktop'} · ${feed.role} ${feed.rms_db.toFixed(0)}dB`;
+      if (f.sample.role === 'user') {
+        userFeed = f.sample;
+        userAt = feedAt;
+      } else {
+        feed = f.sample;
+        mossEl.classList.toggle('alive', feed.rms_db > GATE);
+      }
+      st.textContent = `#${arena || 'desktop'} · ${f.sample.role} ${f.sample.rms_db.toFixed(0)}dB`;
       break;
     }
     case 'notice': {
