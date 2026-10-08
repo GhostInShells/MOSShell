@@ -8,10 +8,12 @@ model can ask to stream.
 argv is a list of strings, never a shell line, so nothing here can grow into a
 `bash -c` by accident.
 
-The capture device index is node-side config (env), not a model argument. On
-macOS both screen and camera come through avfoundation; the screen is a distinct
-capture index from the cameras, and which index it lands on depends on what is
-plugged in, so it is configured rather than hard-coded.
+Which capture device to read comes in as a parameter (``index``); when the caller
+does not name one, it falls back to node-side config (``PUSH_SCREEN_INDEX`` /
+``PUSH_CAMERA_INDEX``) whose defaults match a stock Mac. On macOS both screen and
+camera come through avfoundation; the screen is a distinct capture index from the
+cameras, and which index it lands on depends on what is plugged in — so the
+default stays generic and pinning one display is a per-machine escape hatch.
 
 macOS gate: the ``screen`` source needs Screen Recording permission (TCC) granted
 to whatever process runs ffmpeg. Without it the capture does not error — it
@@ -31,9 +33,15 @@ _SOURCES: dict[str, str] = {
     "camera": "the local camera device",
 }
 
-DEFAULT_FPS = 10.0
-"""Capture rate for the pushed stream. The human preview is the most demanding
-consumer — 10–15fps reads as smooth there, and nothing else needs more."""
+_SOURCE_FPS: dict[str, float] = {
+    "screen": 10.0,
+    "camera": 30.0,
+}
+"""Per-source capture rate — avfoundation is a *discrete-rate* device family: a rate the
+device does not advertise fails the open outright instead of being clamped, so a default
+has to be a rate the source actually offers. Camera hardware advertises 30 (often also
+15); screen capture is synthetic and takes any rate, and 10 keeps a JPEG near 100KB. A
+human preview is the most demanding consumer — nothing here needs more than 30."""
 
 DEFAULT_MAX_WIDTH = 1280
 """Downscale ceiling. The screen is the only source that can exceed it (Retina
@@ -71,9 +79,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 def capture_index_for(source: str) -> int:
-    """The avfoundation capture index this node streams for ``source``.
+    """The avfoundation capture index this node streams for ``source`` by default.
 
-    Node-side identity, so it comes from env rather than a model argument. The
+    Node-side identity, so it comes from env rather than the request. The
     defaults match a stock Mac: index 0 is the built-in camera, index 1 is the
     main display.
     """
@@ -82,10 +90,20 @@ def capture_index_for(source: str) -> int:
     return _env_int("PUSH_SCREEN_INDEX", 1)
 
 
+def default_fps_for(source: str) -> float:
+    """The capture rate this node streams ``source`` at when the model omits ``fps``."""
+    if source not in _SOURCES:
+        raise ValueError(
+            f"unknown source {source!r} (one of: {', '.join(sorted(_SOURCES))})"
+        )
+    return _SOURCE_FPS[source]
+
+
 def build_argv(
     source: str,
     *,
-    fps: float = DEFAULT_FPS,
+    index: int | None = None,
+    fps: float | None = None,
     max_width: int = DEFAULT_MAX_WIDTH,
     quality: int = DEFAULT_QUALITY,
 ) -> list[str]:
@@ -93,7 +111,9 @@ def build_argv(
 
     Raises ``ValueError`` for an unknown source so the caller can reject the
     request before a human ever sees it. Numeric knobs are clamped, not
-    rejected — a model asking for 60fps gets 30, not an error.
+    rejected — a model asking for 60fps gets 30, not an error. ``fps`` None means
+    "this source's default" (see ``default_fps_for``); ``index`` None means
+    "whatever this node is configured for" (see ``capture_index_for``).
     """
     if source not in _SOURCES:
         raise ValueError(
@@ -103,10 +123,13 @@ def build_argv(
         raise ValueError(
             f"push capture is implemented for macOS only (running on {sys.platform})"
         )
-    fps = _clamp(float(fps), *_FPS_BOUNDS)
+    fps = _clamp(float(default_fps_for(source) if fps is None else fps), *_FPS_BOUNDS)
     quality = int(_clamp(int(quality), *_QUALITY_BOUNDS))
     max_width = int(_clamp(int(max_width), *_WIDTH_BOUNDS))
-    index = capture_index_for(source)
+    if index is None:
+        index = capture_index_for(source)
+    else:
+        index = int(index)
     argv = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-f", "avfoundation",

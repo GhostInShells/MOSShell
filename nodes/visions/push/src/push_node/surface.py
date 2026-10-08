@@ -46,7 +46,7 @@ class PushHandles:
     def __init__(self) -> None:
         self.stop: Callable[[int], Awaitable[None]] | None = None
         self.stop_all: Callable[[], Awaitable[None]] | None = None
-        self.open_human: Callable[[str, str], Awaitable[int]] | None = None
+        self.open_human: Callable[[str, str, int | None], Awaitable[int]] | None = None
 
 
 class PushSurface:
@@ -126,9 +126,9 @@ class PushSurface:
         if self._handles.stop_all is not None:
             await self._handles.stop_all()
 
-    async def _open(self, source: str, label: str) -> None:
+    async def _open(self, source: str, label: str, index: int | None = None) -> None:
         if self._handles.open_human is not None:
-            session_id = await self._handles.open_human(source, label)
+            session_id = await self._handles.open_human(source, label, index)
             self._notify(f"[push #{session_id}] human opened a {source} stream", next_=True)
 
     async def _set_accept_all(self, enabled: bool) -> None:
@@ -209,7 +209,12 @@ class PushSurface:
                 elif kind == "stop_all":
                     await self._stop_all()
                 elif kind == "open":
-                    await self._open(str(frame.get("source", "")), str(frame.get("label", "")))
+                    requested = frame.get("index")
+                    await self._open(
+                        str(frame.get("source", "")),
+                        str(frame.get("label", "")),
+                        int(requested) if requested not in (None, "") else None,
+                    )
                 elif kind == "accept_all":
                     await self._set_accept_all(bool(frame.get("enabled")))
         finally:

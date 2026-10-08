@@ -47,6 +47,7 @@ class PushStore:
         self,
         source: str,
         *,
+        index: int | None = None,
         label: str = "",
         owner: str = "model",
         description: str = "",
@@ -58,6 +59,7 @@ class PushStore:
         session = PushSession(
             id=self._counter,
             source=source,
+            index=index,
             label=label,
             owner=owner,
             description=description,
