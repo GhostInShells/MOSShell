@@ -114,16 +114,53 @@ const mossEl = $('#moss span');
 const st = $('#st');
 const link = $('#link');
 
+// 视图尺寸 —— 这个数决定"贴底"的画在哪一行，所以必须取"真正看得见的那块"。
+//
+// 踩过的坑：window.innerHeight（516）与 documentElement.clientHeight（812）会不一致 ——
+// 分屏 / 缩放 / 内嵌 webview 下，clientHeight 报的是布局视口，可以比实际可见区高一截。
+// 之前把它当基准，贴底那层就画到了可视区下方（y≈810 > 516），肉眼即"什么都没画"。
+// 三个候选里取最小的那个：小的那个总是更接近"真正看得见"的一侧，
+// 而画在可见区里稍微靠上，永远好过画在可见区外什么都看不见。
+function viewSize() {
+  const cands = [window.innerHeight, document.documentElement.clientHeight];
+  if (window.visualViewport) cands.push(window.visualViewport.height);
+  const h = Math.min(...cands.filter((v) => v > 0)) || window.innerHeight;
+  const w = window.innerWidth || document.documentElement.clientWidth;
+  return { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
+}
 function sizeCanvas(c, ctx) {
-  c.width = innerWidth * devicePixelRatio;
-  c.height = innerHeight * devicePixelRatio;
+  const v = viewSize();
+  c.width = v.w * devicePixelRatio;
+  c.height = v.h * devicePixelRatio;
+  // 必须显式写 CSS 尺寸。canvas 是替换元素：`position: fixed; inset: 0` 里的
+  // `width: auto` 会解析成*固有尺寸*（也就是 width/height 属性），而不是被
+  // 上下左右四个偏移撑开。于是在 dpr=2 的 Retina 屏上，画布元素变成视口的
+  // 两倍大（1686×1624 对 843×812），画面被放大两倍、右下四分之三落到屏幕外，
+  // 贴底画的那层（升字浪）就永远看不见。
+  // dpr=1 时属性值恰好等于视口，所以它在非 Retina 下一直是"能用"的 —— 这也
+  // 正是 Playwright（dpr=1）正常、他的 Chrome（dpr=2）一直不正常的原因。
+  c.style.width = v.w + 'px';
+  c.style.height = v.h + 'px';
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
-addEventListener('resize', () => {
+// 视图尺寸：所有"贴底"的画法都读它，而不是读 innerHeight。
+let viewW = innerWidth, viewH = innerHeight;
+function syncViewport() {
+  const v = viewSize();
+  viewW = v.w; viewH = v.h;
   sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
   fitMossText(); initRainCols(); layoutDesktop();
-});
-sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
+}
+addEventListener('resize', syncViewport);
+if (window.visualViewport) {
+  // visualViewport 的 resize 比 window 的更贴近"看得见的那块变了"——
+  // 分屏、缩放常常只动它，不动 window 的 resize。
+  window.visualViewport.addEventListener('resize', syncViewport);
+  window.visualViewport.addEventListener('scroll', syncViewport);
+}
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(syncViewport).observe(document.documentElement);
+}
 
 // ---- ws：断线要自愈，也要说出来 ----
 // 只在加载时开一条连接是不够的：弱网 / 休眠 / node 重启都会让它静默死掉，而页面会
@@ -140,9 +177,12 @@ function setLink(text, down) {
   renderLink();
 }
 
-// 状态行顺带报帧率：密度/行距这些参数改完到底掉不掉帧，得有数，不靠感觉。
+// 状态行顺带报帧率与几何：密度/行距这些参数改完到底掉不掉帧、贴底那层到底
+// 画在哪个高度上，都得有数。分屏里"看不到"这种问题，先前只能靠人念屏幕，
+// 现在这两个数自己写在这儿 —— 模型读它，不读人的眼睛。
 function renderLink() {
-  link.textContent = fps ? `${linkText} · ${fps}fps` : linkText;
+  const geo = ` · ${viewW}×${viewH}@${devicePixelRatio}`;
+  link.textContent = (fps ? `${linkText} · ${fps}fps` : linkText) + geo;
 }
 
 function scheduleRetry() {
@@ -153,7 +193,7 @@ function scheduleRetry() {
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { wsOpen = true; retryMs = 500; setLink('在线', false); };
+  ws.onopen = () => { wsOpen = true; retryMs = 500; setLink('在线', false); startDebugReport(); };
   ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
   ws.onclose = () => {
@@ -168,6 +208,35 @@ connect();
 function send(f) {
   if (!wsOpen) return;            // 未连接就丢弃，别让一次点击把整个脚本抛死
   ws.send(JSON.stringify(f));
+}
+
+// 自查上报：每 2 秒把"我量到的几何 + 画法状态"报给服务端，落在它的 stdout 上。
+// 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
+// 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
+let debugTimer = null;
+function debugPayload() {
+  const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
+    ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
+  return {
+    viewW, viewH,
+    innerH: Math.round(window.innerHeight),
+    clientH: document.documentElement.clientHeight,
+    visualH: window.visualViewport ? Math.round(window.visualViewport.height) : null,
+    dpr: devicePixelRatio,
+    bgH: bg.height,
+    baseY: viewH - 2,
+    rms: typeof userFeed !== 'undefined' ? userFeed.rms_db : null,
+    loudest: (typeof userFeed !== 'undefined' && userFeed.spectrum_bins?.length)
+      ? Math.max(...userFeed.spectrum_bins) : null,
+    riseMax,
+    userAge: typeof userAt !== 'undefined' ? Math.round(performance.now() - userAt) : null,
+  };
+}
+function startDebugReport() {
+  if (debugTimer) return;
+  const tick = () => send({ type: 'debug', payload: debugPayload() });
+  tick();
+  debugTimer = setInterval(tick, 2000);
 }
 
 // 音频帧还新鲜吗？不新鲜 = 链路断了，画面按静音处理。
@@ -243,8 +312,8 @@ const discs = [];            // { id, x, y, vx, vy, hx, hy, label }
 
 function layoutDesktop() {
   const n = discs.length;
-  const cx = innerWidth / 2, cy = innerHeight / 2;
-  const R = Math.min(innerWidth, innerHeight) * 0.28;
+  const cx = viewW / 2, cy = viewH / 2;
+  const R = Math.min(viewW, viewH) * 0.28;
   discs.forEach((d, k) => {
     const th = (k / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
     const r = n === 1 ? 0 : R * (0.5 + 0.5 * (k / Math.max(1, n - 1)));
@@ -296,14 +365,14 @@ function stepDiscs(dt) {
     // 边界软反弹
     const M = 40;
     if (d.x < M) { d.x = M; d.vx = Math.abs(d.vx); }
-    if (d.x > innerWidth - M) { d.x = innerWidth - M; d.vx = -Math.abs(d.vx); }
+    if (d.x > viewW - M) { d.x = viewW - M; d.vx = -Math.abs(d.vx); }
     if (d.y < M) { d.y = M; d.vy = Math.abs(d.vy); }
-    if (d.y > innerHeight - M) { d.y = innerHeight - M; d.vy = -Math.abs(d.vy); }
+    if (d.y > viewH - M) { d.y = viewH - M; d.vy = -Math.abs(d.vy); }
   }
 }
 
 function drawDiscs() {
-  dctx.clearRect(0, 0, innerWidth, innerHeight);
+  dctx.clearRect(0, 0, viewW, viewH);
   for (const d of discs) {
     const r = 26;
     dctx.beginPath();
@@ -347,7 +416,7 @@ function desktopLoop() {
     stepDiscs(dt);
     drawDiscs();
   } else {
-    dctx.clearRect(0, 0, innerWidth, innerHeight);
+    dctx.clearRect(0, 0, viewW, viewH);
   }
 }
 requestAnimationFrame(desktopLoop);
@@ -403,13 +472,13 @@ function veilText(content, durMs) {
     c.fillStyle = `rgba(255,255,255,${fade(p)})`;
     c.font = 'bold 52px ui-monospace, monospace';
     c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.fillText(content, innerWidth / 2, innerHeight / 2);
+    c.fillText(content, viewW / 2, viewH / 2);
   }, durMs);
 }
 function veilLoop() {
   requestAnimationFrame(veilLoop);
   const now = performance.now();
-  vctx.clearRect(0, 0, innerWidth, innerHeight);
+  vctx.clearRect(0, 0, viewW, viewH);
   for (let i = veilBlocks.length - 1; i >= 0; i--) {
     const b = veilBlocks[i];
     if (now - b.start >= b.dur) { veilBlocks.splice(i, 1); continue; }
@@ -423,7 +492,7 @@ requestAnimationFrame(veilLoop);
 const MOSS_SCALE = 0.24;  // 相对 min(屏宽, 屏高)
 function fitMossText() {
   const span = mossEl;
-  const target = Math.min(innerWidth, innerHeight) * MOSS_SCALE;
+  const target = Math.min(viewW, viewH) * MOSS_SCALE;
   let size = 10;
   span.style.fontSize = size + 'px';
   while (span.offsetWidth < target && size < 400) {
@@ -446,12 +515,24 @@ const BAR_CELLS = 48;              // 格数固定：与屏宽无关，格宽才
 const BAR_DB_FLOOR = -52;          // 低于此分贝 = 全空。静音底噪落在 -55 上下，地板得抬到
                                    // 这儿，"没声音"才真的读成零；低了会留一排矮字。
 const BAR_DB_CEIL = -20;           // 高于此分贝 = 全满
-const RISE_ROWS = 7;               // 一格最多长几层字（层 = 字高）
-const RISE_DECAY = 0.80;           // 未更新时的回落速度
-const RISE_ZONE = RISE_ROWS * GH;  // 升字区总高（像素）
-const BAR_FLOOR_Y = () => Math.max(0, innerHeight - RISE_ZONE - 8);
+const RISE_TARGET_FRAC = 0.25;     // 听侧升字浪的高度 = 屏高的这个比例（thirdgerb 定的）
+let RISE_ROWS = 22;                // 一格最多长几层字（层 = 字高）；随屏高重算
+const RISE_PEAK_TARGET = 0.95;     // 归一化后最强的列长到 RISE_ROWS 的几成
+const RISE_ATTACK_S = 0.06;        // 涨上去的时间常数（秒）
+const RISE_RELEASE_S = 0.55;       // 回落的时间常数（秒）。原来是按帧 ×0.80 —— 一帧就掉两成，
+                                   // 浪头一直在跳，看起来就是"最上面那颗字在疯狂闪烁"
+const RISE_ENV_ATTACK_S = 0.15;    // 列能量的时间平滑：涨
+const RISE_ENV_RELEASE_S = 0.40;   // 列能量的时间平滑：落
+const RISE_REF_FALL_S = 2.5;       // 归一化参考峰的回落时间常数（秒）
+const RISE_REF_FLOOR = 0.22;       // 参考峰低于它就不再放大：静音不该被拉成满格
+// 雨落到屏高的 55% 为止 —— 和听侧的 30% 是两个独立的数，不再由升字区反推。
+const RAIN_BOTTOM = 0.55;
+const BAR_FLOOR_Y = () => Math.max(0, viewH * RAIN_BOTTOM);
 let barSrc = [];                   // 16 bin → 48 格，0..1
-let riseHeights = [];              // 每格当前高度（0..RISE_ROWS），按帧衰减
+let riseHeights = [];              // 每格当前高度（0..RISE_ROWS），按时间常数平滑
+let riseFilled = [];               // 每格上一帧已经长到第几层 —— 换字只换"刚长出来"的那几层
+let riseEnv = [];                  // 每列能量的时间平滑值（5Hz 的帧不能直接当高度用）
+let riseRef = 0;                   // 归一化参考峰：让"浪的平均高度"钉在屏高的一定比例上
 let riseGlyphs = [];               // 每格每层的字（换字只换这里）
 let userFeed = { role: 'user', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
 let userAt = 0;   // 人那一侧最后一帧的时刻，独立于 ghost 侧
@@ -485,13 +566,17 @@ hactx.textAlign = 'center'; hactx.textBaseline = 'middle';
 hactx.fillStyle = '#d8ffe4';
 for (let i = 0; i < CHARSET.length; i++) hactx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
 
-// 横向格数固定（不随屏宽变），格距 = 屏宽 / 格数；字形只占格距里的一小块，
-// 所以"格多"只意味着落点更细，不意味着字更大。
-const RAIN_COLS = 60;
+// 横向格数：60 是**上限**，不是定值。字形宽 GW 固定 16px，而格距 = 屏宽 / 格数 ——
+// 屏一窄，60 列的格距就小于字形宽，相邻列的字互相压住，看起来就是"挤在一起"。
+// 所以格数跟着屏宽走：先保证格距放得下一个字（×1.2 留缝），再封顶到 60。
+// 宽屏仍是 60 列；窄屏少几列，但字不重叠，照样均匀铺满整宽。
+const RAIN_COLS_MAX = 60;
+let RAIN_COLS = RAIN_COLS_MAX;
 let pitch = 0;
 let cols = [];
 function initRainCols() {
-  pitch = innerWidth / RAIN_COLS;
+  RAIN_COLS = Math.max(12, Math.min(RAIN_COLS_MAX, Math.floor(viewW / (GW * 1.2))));
+  pitch = viewW / RAIN_COLS;
   cols = Array.from({ length: RAIN_COLS }, (_, i) => ({
     x: i * pitch + (pitch - GW) / 2,
     parts: [],                                   // 这一列自己的字符：{ g, y }，最老的在前
@@ -535,13 +620,17 @@ const BREATH_SCALE = 0.3;          // 呼吸时字形最多放大多少比例
 // 'hybrid'：行式画法（帧内归一 + 白化），纵向 = 时间轴，做对照用。
 // 想对比画法不用改代码：地址后面加 ?mode=hybrid / ?mode=bars / ?mode=edge 即可。
 const RAIN_MODE = new URLSearchParams(location.search).get('mode') || 'columns';
-const SPEED_MIN = 14;              // px/s：最弱时的下落速度（几乎停住）
+const SPEED_MIN = 70;              // px/s：最弱时的下落速度。原为 14 —— 声音一停，空中的字要爬半分钟才走完，
+                                   // 看着像"声音停了还在掉个不停"。抬到 70，一屏约六秒走完，"慢"靠字距不靠爬。
 const SPEED_MAX = 260;             // px/s：最强时
 const SPACE_MIN = GH * 1.5;        // 最强的列：字与字之间隔 1.5 格
 const SPACE_MAX = GH * 4.5;        // 最弱的列：隔 4.5 格（稀疏的滴）
 const TAIL_LIT = 10;               // 尾迹点亮多少个字，再往上就淡尽了
 const TAIL_DIM = 0.12;             // 尾巴最末端的透明度
 const EMIT_EPS = 0.10;             // 能量低于此值：这一列不落字（越大，参与下雨的列越少）
+// 雨的底线跟着升字区走（BAR_FLOOR_Y）：两层各占各的地，屏幕一高带宽一点就自己让开，
+// 不再用两个写死的比例互相打架。
+const RAIN_FLOOR_FADE = GH * 3;    // 底线前这几像素渐隐，免得雨在中间被硬切出一条边
 // 逐频带自动增益（AGC）：每个频带按**它自己的**历史最高/最低来归一。
 // 不这么做的话，语音能量天然堆在低频，屏幕左边永远在下暴雨、右边永远是干的。
 const AGC_DECAY_DB = 2.0;          // 每秒衰减多少 dB（最高往下掉、最低往上抬）
@@ -725,6 +814,13 @@ function stepRainColumns(dt, now, loud, gateOpen) {
     c.e += (target - c.e) * Math.min(1, dt * 6);      // 平滑：能量抖动不该让列抽筋
 
     const v = (SPEED_MIN + (SPEED_MAX - SPEED_MIN) * c.e) * c.jitter;
+
+    // **一列一个速度**：整列的字一起落，速度听这一列此刻的能量。
+    // 试过"每颗字在出生时定死速度"（想让声音停了以后旧字赶紧走完），代价是快的会追上慢的：
+    // 要么穿过去（同一处被不同字形反复覆盖 = 闪），要么加一道最小间距闸——但那样快的字
+    // 会**堆在慢的后面**，整列退化成跟着最慢那颗走。两个都不是雨该有的样子。
+    // 现在回到整列同速：不可能追尾（间距就是落字时的间距），速度也照样跟着声音走。
+    // 声音停了旧字会一起慢下来这件事，靠把 SPEED_MIN 抬高解决（见常量）。
     const fall = v * dt;
 
     if (c.e > EMIT_EPS) {
@@ -738,9 +834,10 @@ function stepRainColumns(dt, now, loud, gateOpen) {
     }
 
     for (const p of c.parts) p.y += fall;
+    const rainFloor = Math.max(0, BAR_FLOOR_Y());
     let alive = 0;
-    for (let k = 0; k < c.parts.length; k++) {          // 淘汰出屏的（最老的在前）
-      if (c.parts[k].y <= innerHeight) break;
+    for (let k = 0; k < c.parts.length; k++) {          // 淘汰过底线的（最老的在前）
+      if (c.parts[k].y <= rainFloor) break;
       alive++;
     }
     if (alive) c.parts.splice(0, alive);
@@ -753,8 +850,12 @@ function stepRainColumns(dt, now, loud, gateOpen) {
     for (let k = 0; k < cnt; k++) {
       const p = c.parts[k];
       const age = cnt - 1 - k;                          // 0 = 最新的那颗（雨头）
+      // 雨头就是最新那颗，直接给满亮度、用白字。曾试过按年龄淡入（想压掉顶端那点闪），
+      // 但闪的是**听侧**那一波浪，不是雨这边 —— 那一下只是把白雨头压暗了，观感反而变差。
+      // 恢复原样：雨头干脆、白亮。
       const fade = age === 0 ? 1 : Math.max(TAIL_DIM, 1 - age / TAIL_LIT);
-      bctx.globalAlpha = Math.min(1, base * fade);
+      const edge = Math.max(0, Math.min(1, (rainFloor - p.y) / RAIN_FLOOR_FADE));
+      bctx.globalAlpha = Math.min(1, base * fade * edge);
       const img = age === 0 ? headAtlas : atlas;        // 雨头白亮，尾绿
       bctx.drawImage(img, p.g * GW, 0, GW, GH,
         c.x + (GW - w) / 2, p.y + (GH - h) / 2, w, h);
@@ -794,7 +895,7 @@ function stepRain(dt, now) {
     if (y > floorY) break;
     const row = rows[r];
     // 渐隐（位置越靠下越淡，但不归零：位置仍是时间） × 呼吸（整片随当前音量亮暗）
-    const base = (FADE_BOTTOM + (1 - FADE_BOTTOM) * Math.max(0, 1 - y / innerHeight))
+    const base = (FADE_BOTTOM + (1 - FADE_BOTTOM) * Math.max(0, 1 - y / viewH))
       * (BREATH_MIN + (1 - BREATH_MIN) * row.loud);
     if (base <= 0.01) continue;
     for (let i = 0; i < row.g.length; i++) {
@@ -829,16 +930,26 @@ const RISE_COLS = 28;              // 升字列数 —— 比雨的 60 列疏，
 const RISE_SMOOTH = 0.35;          // 相邻列的能量平滑：锯齿来自频带跳变，不是声音本身
 const RISE_BELL = 0.62;            // 钟形包络强度：0 = 平坦，1 = 完全按正态分布压
 
-function drawListenerRise() {
-  const now = performance.now();
+function drawListenerRise(dt, now) {
   const bins = userFeed.spectrum_bins || [];
-  let loudest = -96;
-  for (let i = 0; i < bins.length; i++) if (bins[i] > loudest) loudest = bins[i];
-  const live = loudest > GATE && now - userAt <= FEED_STALE_MS;
+  // 门限与画法必须同尺度：GATE 是 rms_db 的门（-45），而 bins 是各帧自归一化后的
+  // 相对值（安静时最强桶也只到 -20 上下）。拿 GATE 去比 bins，等于用一把尺量另一把
+  // 尺的量出的数——人说话时两侧都过门，一静下来 bin 落回 -25 就误判成"没声音"，
+  // 一层字都不画。所以这里按 rms_db 判活，画幅交给 BAR_DB_FLOOR..BAR_DB_CEIL。
+  // 门就取 BAR_DB_FLOOR：显示窗口的下沿才定义"这帧能不能长出字"，两个门没必要分开。
+  const live = userFeed.rms_db > BAR_DB_FLOOR && now - userAt <= FEED_STALE_MS;
   resampleBins(live ? bins : []);
 
+  // 层数 = 屏高 × 目标比例 ÷ 字高。原来写死 7 层 —— 812 高的屏上只有 140px ≈ 17%，
+  // 浪只像底部一层毛边，而且"一格最多长 7 层"这件事跟屏多大无关，本来就不该写死。
+  const needRows = Math.max(6, Math.round((viewH * RISE_TARGET_FRAC) / GH));
+  if (RISE_ROWS !== needRows) {
+    RISE_ROWS = needRows;
+    riseHeights = []; riseFilled = []; riseGlyphs = [];
+  }
   if (riseHeights.length !== RISE_COLS) {
     riseHeights = new Array(RISE_COLS).fill(0);
+    riseFilled = new Array(RISE_COLS).fill(0);
     riseGlyphs = Array.from({ length: RISE_COLS }, () =>
       Array.from({ length: RISE_ROWS }, () => randGlyph()));
   }
@@ -867,30 +978,51 @@ function drawListenerRise() {
     colS[i] = colS[i] * ((1 - RISE_BELL) + bell * RISE_BELL);
   }
 
+  // 列能量的**时间**平滑。频谱帧是 5Hz 来的：每一帧直接拿来当高度，等于让整个浪头
+  // 每秒上下抖五次 —— 横向平滑解决不了这个，那是空间上的锯齿，这是时间上的。
+  // 涨得快、落得慢，浪才是"起伏"，而不是一排各自跳动的钉子。
+  if (riseEnv.length !== RISE_COLS) riseEnv = new Array(RISE_COLS).fill(0);
+  for (let i = 0; i < RISE_COLS; i++) {
+    const tau = colS[i] > riseEnv[i] ? RISE_ENV_ATTACK_S : RISE_ENV_RELEASE_S;
+    riseEnv[i] += (colS[i] - riseEnv[i]) * Math.min(1, dt / tau);
+  }
+
+  // 归一化：让**最强的列**长到 RISE_ROWS 的 RISE_PEAK_TARGET 那么高。这样"浪的平均高度"
+  // 钉在屏高的一定比例上，不会随话筒电平、说话远近整体上下漂 —— 形状仍由 colS 决定，
+  // 归一化只决定它画多大。参考峰慢慢回落（不是每帧重算），所以它不会自己抖。
+  let peak = 0;
+  for (let i = 0; i < RISE_COLS; i++) peak = Math.max(peak, riseEnv[i]);
+  riseRef = Math.max(peak, riseRef - (dt / RISE_REF_FALL_S) * riseRef);
+  const norm = RISE_PEAK_TARGET / Math.max(riseRef, RISE_REF_FLOOR);
+
   // 列宽 = 屏宽 / 列数，但字形按格距居中：字比格窄，所以列与列之间自然有缝，
   // 而那点缝正好让浪看起来是"一串字"而不是一堵墙。
-  const colW = innerWidth / RISE_COLS;
-  const baseY = innerHeight - 2;
+  const colW = viewW / RISE_COLS;
+  const baseY = viewH - 2;
   const RISE_OFFSET = GH / 2;        // 与雨错开半格：两条浪不落在同一行上
   // 每列的字横坐标：整列共用，避免逐层算出来错位
   for (let i = 0; i < RISE_COLS; i++) {
-    const want = Math.max(0, Math.min(1, colS[i])) * RISE_ROWS;
-    riseHeights[i] = want > riseHeights[i] ? want : riseHeights[i] * RISE_DECAY;
+    const want = Math.max(0, Math.min(1, riseEnv[i] * norm)) * RISE_ROWS;
+    // 按**时间常数**逼近期望高度，而不是每帧按固定比例衰减：帧率一变，观感就变。
+    const tau = want > riseHeights[i] ? RISE_ATTACK_S : RISE_RELEASE_S;
+    riseHeights[i] += (want - riseHeights[i]) * Math.min(1, dt / tau);
     const h = riseHeights[i];
     const full = Math.floor(h);
-    const frac = h - full;
     const x = i * colW + colW / 2;
     const energy = Math.max(0, Math.min(1, colS[i]));
+    // 换字只换**这一帧刚长出来的**那几层。原来每帧对每一层都掷 10%×energy 的骰子，
+    // 浪头那颗字一秒钟要换好几次 —— 那才是"疯狂闪烁"的直接来源。
+    for (let k = riseFilled[i]; k < full && k < RISE_ROWS; k++) riseGlyphs[i][k] = randGlyph();
+    riseFilled[i] = Math.min(full, RISE_ROWS);
     // 真静音时一格都不画。此前 k <= full 在 full=0 时会留下一层底痕 —— 那让"没声音"
     // 也看着有字，正是要避免的。层的存在必须完全由高度决定。
     for (let k = 0; k < full && k < RISE_ROWS; k++) {
-      if (Math.random() < 0.10 * energy) riseGlyphs[i][k] = randGlyph();
       const y = baseY - (k + 1) * GH - RISE_OFFSET;
       const dim = k / RISE_ROWS;                      // 越高越淡：尾部渐隐
       const top = k === Math.min(full, RISE_ROWS) - 1;  // 最上面那格才是"浪头"
       bctx.globalAlpha = (0.35 + 0.65 * (1 - dim)) * (0.30 + 0.70 * energy);
       bctx.drawImage(
-        top && frac > 0.2 ? headAtlas : atlas,
+        top ? headAtlas : atlas,
         riseGlyphs[i][k] * GW, 0, GW, GH,
         x - GW / 2, y, GW, GH);
     }
@@ -912,7 +1044,7 @@ function bgLoop() {
     renderLink();
   }
 
-  bctx.clearRect(0, 0, innerWidth, innerHeight);
+  bctx.clearRect(0, 0, viewW, viewH);
   const speaking = feed.rms_db > GATE && feedFresh();
   // MOSS 文字吃断线判定：链路死了它就不该继续发光（传导，不是恢复）
   mossEl.classList.toggle('alive', speaking && feed.role === 'ghost');
@@ -920,7 +1052,7 @@ function bgLoop() {
   // 而不是让画面停住或当场清空。
   stepRain(dt, now);
   // 听侧常画：静音时只剩一格底痕，但那一层始终在 —— 人不需要先出声才发现自己被听着。
-  drawListenerRise();
+  drawListenerRise(dt, now);
 }
 requestAnimationFrame(bgLoop);
 
@@ -1018,6 +1150,10 @@ function logLine(text) {
   while (list.children.length > 50) list.lastChild.remove();
 }
 $('#log-badge').addEventListener('click', () => $('#log-list').classList.toggle('open'));
+
+// 首次同步放在这里，不放在定义处：syncViewport 会读 MOSS_SCALE 等 const，
+// 在它们初始化之前调用会撞上暂时性死区（TDZ）。此刻所有 const 已就位。
+syncViewport();
 </script>
 </body>
 </html>

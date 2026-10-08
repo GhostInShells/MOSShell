@@ -169,6 +169,16 @@ class ScreenSurface:
                     await self._dismiss(str(frame.get("id", "")))
                 elif kind == "tap":
                     await self._tap(str(frame.get("id", "")))
+                elif kind == "debug":
+                    # 前端自报几何与画法状态。
+                    # 动机：分屏下"贴底那层看不见"这类问题，根因在客户端，而服务端够不着
+                    # 客户端。先前只能让人念控制台 —— 人不该当模型的眼睛。让页面自己把
+                    # 数报回来，落在 stdout 上，模型读 read_output 就行。
+                    payload = frame.get("payload")
+                    print(
+                        f"[client] {json.dumps(payload, ensure_ascii=False)}",
+                        flush=True,
+                    )
         finally:
             self._clients.discard(connection)
 
