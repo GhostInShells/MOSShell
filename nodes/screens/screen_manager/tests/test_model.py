@@ -178,17 +178,24 @@ def test_layout_is_per_group():
     assert (m.family(), m.dir()) == ("stack", "tb")
 
 
-def test_fullscreen_is_per_group():
+def test_focus_is_a_view_and_picking_a_place_ends_it():
+    """Focus is about *looking*, and choosing a place cancels it.
+
+    The old per-group fullscreen failed both halves of this: a desktop item (no
+    group) could not be shown at all, and clicking home while focused left you
+    staring at the same item.
+    """
     m = ScreenModel()
     a = m.open("http://a", group="code").id
-    b = m.open("http://b", group="media").id
-    m.activate("code")
-    m.set_fullscreen(a)
-    assert m.fullscreen() == a
-    m.activate("media")
-    assert m.fullscreen() is None
-    m.activate("code")
-    assert m.fullscreen() == a
+    b = m.open("http://b").id            # 未入组：只在桌面上
+
+    m.set_focus(b, by="human")
+    assert m.focus() == b                # 桌面的 item 一样能整屏
+    assert m.view_by() == "human"        # 来源属于状态，不靠可能丢的消息
+
+    m.activate("code", by="human")
+    assert m.focus() is None             # 选一个新地方 = 撤销覆盖
+    assert a in m.group_items("code")    # 而分组没有被这件事碰到
 
 
 def test_group_layout_is_forgotten_with_its_group():
@@ -201,21 +208,25 @@ def test_group_layout_is_forgotten_with_its_group():
     assert (m.family(), m.dir()) == ("grid", "lr")
 
 
-def test_fullscreen_needs_a_group_on_stage():
+def test_focus_clears_when_its_item_is_destroyed():
+    """The item is gone — the view cannot keep pointing at nothing."""
     m = ScreenModel()
     a = m.open("http://a").id
-    with pytest.raises(ValueError):
-        m.set_fullscreen(a)
+    m.set_focus(a)
+    assert m.focus() == a
+    m.destroy(a)
+    assert m.focus() is None
 
 
-def test_fullscreen_cleared_when_its_item_leaves_the_group():
+def test_focus_survives_a_membership_change_and_rejects_unknown_items():
+    """Focus is about *looking*, so leaving a group must not clear it."""
     m = ScreenModel()
     a = m.open("http://a", group="code").id
-    b = m.open("http://b", group="code").id
-    m.activate("code")
-    m.set_fullscreen(a)
-    m.dismiss(a)
-    assert m.fullscreen() is None
+    m.set_focus(a)
+    m.dismiss(a)                       # 退回桌面
+    assert m.focus() == a
+    with pytest.raises(KeyError):
+        m.set_focus("nope")
 
 
 # -- adoption / tombstones ----------------------------------------------

@@ -21,7 +21,7 @@ async def test_channel_exposes_the_command_set():
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
-            "fullscreen", "float", "pool", "mark", "arrow", "text", "mock_scene",
+            "focus", "float", "pool", "mark", "arrow", "text", "mock_scene",
             "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
@@ -96,15 +96,15 @@ async def test_destroy_emits_close_then_state():
 
 
 @pytest.mark.asyncio
-async def test_fullscreen_emits_a_fullscreen_frame():
+async def test_focus_emits_a_focus_frame_for_any_pooled_item():
+    """Focus needs no group: a desktop item is enough (that is the whole point)."""
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
         await runtime.execute_command("open", args=("http://a",))
         a = rec.of("open")[-1]["item"]["id"]
-        await runtime.execute_command("arrange", args=(a,), kwargs={"group": "code"})
-        await runtime.execute_command("fullscreen", args=(a,))
-        assert rec.of("fullscreen")[-1]["id"] == a
+        await runtime.execute_command("focus", args=(a,))
+        assert rec.of("focus")[-1]["id"] == a
 
 
 @pytest.mark.asyncio
@@ -211,6 +211,31 @@ async def test_notice_carries_the_human_side_rail_state():
         rec.rail = "expanded"
         await runtime.refresh_metas()
         assert runtime.self_meta().named_notices["rail"] == "expanded"
+
+
+@pytest.mark.asyncio
+async def test_notice_carries_the_view_and_who_moved_it():
+    """人的视图动作是**状态**，不是一条可能丢的消息。
+
+    所以它必须出现在 notice 上：``focus`` 说看的是哪一个，``view_by`` 说是谁动的。
+    两者都是 named 片段，且没人动过时不许编默认值 —— 与 ``rail`` 同一条规矩。
+    """
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        a = rec.of("open")[-1]["item"]["id"]
+
+        await runtime.refresh_metas()
+        notices = runtime.self_meta().named_notices
+        assert "focus" not in notices            # 还没人看
+        assert "view_by" not in notices          # 也还没人动
+
+        await runtime.execute_command("focus", args=(a,))
+        await runtime.refresh_metas()
+        notices = runtime.self_meta().named_notices
+        assert notices["focus"] == f"#{a}"
+        assert notices["view_by"] == "model"     # 命令是我下的
 
 
 @pytest.mark.asyncio

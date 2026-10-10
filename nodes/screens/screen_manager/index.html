@@ -12,6 +12,8 @@
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
+  /* 池子在场时水印压暗：它是背景，不该和瓷砖抢中间那块地方 */
+  body.pool-on { --moss-dim: .14; }
   body {
     font: 13px/1.4 ui-monospace, "PingFang SC", "Noto Sans CJK SC", monospace;
     background: #0a0c10;
@@ -25,9 +27,9 @@
   #bg       { position: fixed; inset: 0; z-index: 0; }
   #moss     { position: fixed; inset: 0; z-index: 1; display: grid; place-items: center; pointer-events: none; }
   #desktop  { position: fixed; inset: 0; z-index: 2; }
-  #stage    { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 3; }
-  #scrim    { position: fixed; inset: 0; z-index: 4; display: none; background: rgba(0,0,0,.55); }
-  #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }
+  #stage    { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 4; }
+  #scrim    { position: fixed; inset: 0; z-index: 3; display: none; background: rgba(0,0,0,.55); }
+  #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }  /* 按钮必须在页面之上 */
   #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
   #log      { position: fixed; top: 8px; right: 8px; z-index: 8; }
   #log-badge { background: #161d26; color: #8af; border: 1px solid var(--border); border-radius: 10px;
@@ -64,10 +66,14 @@
   /* 心跳：在线时水位标极慢呼吸，说话时亮起（.alive），断线时灰掉且静止。
      水位标是 background 层 —— 舞台上有 item 时它被盖住，所以它表达的只是
      "空屏时我在不在"；断线在任何情况下都看得见的那一份，挂在侧栏顶上那颗点。 */
-  @keyframes breathe { 0%, 100% { opacity: .30 } 50% { opacity: .54 } }
+  /* 呼吸帧自己带乘数：animation 的 opacity 盖掉普通声明，只改 #moss span 不会生效。 */
+  @keyframes breathe {
+    0%, 100% { opacity: calc(.30 * var(--moss-dim, 1)) }
+    50%      { opacity: calc(.54 * var(--moss-dim, 1)) }
+  }
   #moss span { animation: breathe 4.5s ease-in-out infinite; }
   body.link-down #moss span {
-    animation: none; background: none; opacity: .45;
+    animation: none; background: none; opacity: calc(.45 * var(--moss-dim, 1));
     -webkit-text-fill-color: #4a5560; color: #4a5560;
   }
   /* 心跳点长在 home 上：home 是"回到我们说话的地方"，我在不在就是那里的状态。
@@ -107,6 +113,13 @@
   body.rail-collapsed #rail-foot { display: none; }
   /* 收起后必须**看得出哪儿能点** —— 只留一条光边，人不知道点哪里。
      整条边条都是热区，这个符号只是把"热区在这儿"说出来。 */
+  /* 收起成边条时，那颗"我在不在"的点改挂在边条上：进焦点会强制收起，
+     而"我在不在"不能因为进了焦点就消失。 */
+  #rail-dot { display: none; }
+  body.rail-collapsed #rail-dot {
+    display: block; width: 7px; height: 7px; border-radius: 50%;
+    background: #3ddc8f; margin: 8px auto 0; animation: beat 2.6s ease-in-out infinite;
+  }
   #rail-hint { display: none; }
   body.rail-collapsed #rail-hint {
     display: flex; flex: 1; align-items: center; justify-content: center;
@@ -150,10 +163,55 @@
   .slot.hidden { display: none; }
 
   /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
-  .slot.fullscreen { position: fixed; inset: 0; z-index: 5; border: 0; }
+  /* 焦点：同一个 slot 换一套样式，不是搬容器、不是复制 iframe。
+     左边让开栏宽 —— 它是接收指针的层，按判据必须让，"被侧栏挡住"是违反判据的 bug。 */
+  .slot.focused { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; border: 0; }
   #scrim-exit {
     background: #222; color: #ddd; border: 1px solid #555;
     border-radius: 4px; padding: 6px 12px; cursor: pointer;
+    /* 弱：你读内容时它不该抢注意力；但也不能弱到看不见 —— 它是"怎么出去"的唯一提示。
+       0.3 在黑底上几乎不可见，0.45 加一点底色刚好"在但不吵"。 */
+    opacity: .45; transition: opacity .18s; background: rgba(34, 34, 34, .8);
+  }
+  #scrim-exit:hover { opacity: 1; }
+
+  /* ===== pool：home 的池子 —— 所有 item 的陈列（前景 / 中景 / 远景） ===== */
+  /* home 不再是一片虚空：所有开着的 item 都在这层里，按 recency 排成三档深度。
+     深度里只放"画像"（标签 + 状态点），**不放 iframe** —— 活体在深处会把帧率吃掉，
+     而且它接收指针，会和"谁在焦点"这件事打架。 */
+  #pool {
+    position: fixed; top: 0; right: 0; bottom: 0; left: var(--rail-w);
+    z-index: 2; display: none; pointer-events: none;
+  }
+  #pool.on { display: block; }
+  .tile {
+    position: absolute; left: 0; top: 0; width: 264px; height: 164px;
+    /* 没有画像的时候，标签就是瓷砖的"脸" —— 所以它居中，不是页脚。 */
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 7px; padding: 10px; box-sizing: border-box; text-align: center;
+    border: 1px solid transparent; border-radius: 6px;
+    /* 双背景：内层是瓷砖本体，外层只画边框（padding-box / border-box 各取一层） */
+    background:
+      linear-gradient(165deg, #24332b, #101713) padding-box,
+      linear-gradient(135deg, rgba(61, 220, 143, .55), rgba(61, 220, 143, .07) 45%, rgba(61, 220, 143, .38)) border-box;
+    color: #cff7e2; font-size: 12.5px; letter-spacing: .02em;
+    pointer-events: auto; cursor: pointer; transform-origin: 50% 50%;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, .55),
+                inset 0 1px 0 rgba(120, 255, 190, .07);
+  }
+  .tile .tile-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: #3ddc8f;
+    flex: 0 0 auto; opacity: .85;
+  }
+  .tile .tile-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%; font-size: 16px; font-weight: 500;
+    color: #a8d8bf; transition: color .18s;
+  }
+  .tile.lit .tile-name { color: #eafff3; }
+  .tile.sel {
+    border-color: #3ddc8f;
+    box-shadow: 0 0 0 1px #3ddc8f, 0 18px 44px rgba(0, 0, 0, .6);
   }
 
   /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
@@ -162,10 +220,10 @@
     background: linear-gradient(90deg, #127a4b, #3ddc8f, #127a4b);
     -webkit-background-clip: text; background-clip: text;
     color: transparent; background-size: 200% 100%;
-    opacity: .35; transition: opacity .4s;
+    transition: opacity .4s;
     /* font-size 由 JS 反解：measureText 后按屏宽等比设定，保证四字等宽。 */
   }
-  #moss span.alive { opacity: 1; animation: flow 1.6s linear infinite; }
+  #moss span.alive { opacity: calc(1 * var(--moss-dim, 1)); animation: flow 1.6s linear infinite; }
   @keyframes flow { to { background-position: 200% 0; } }
 </style>
 </head>
@@ -174,11 +232,13 @@
 <canvas id="bg"></canvas>
 <div id="moss"><span>MOSS</span></div>
 <canvas id="desktop"></canvas>
+<div id="pool"></div>
 <div id="stage"></div>
 <div id="scrim"><button id="scrim-exit">✕ exit fullscreen</button></div>
 <canvas id="veil"></canvas>
 <aside id="rail">
   <div id="rail-hint" title="expand">›</div>
+  <div id="rail-dot" class="dot"></div>
   <div id="rail-groups"></div>
   <div id="rail-diagnostics">
     <div id="st"></div>
@@ -361,8 +421,25 @@ function debugPayload() {
     collapsed: railCollapsed(),
     groups: groupNames.length,
     arena,
+    // 池子的两个相位：rot 只在"没人"时累加，spin 是缓动后的角速度。
+    // 这一条是为了让"停没停"可读 —— 判断从屏幕上看不出来（漂移一直在动）。
+    poolRot: Math.round(poolRot * 1000) / 1000,
+    poolSpin: Math.round(poolSpin * 1000) / 1000,
+    poolTiles: tiles.size,
   };
 }
+// 版本指纹：开发期页面一直在改，而开着的旧窗口会在"旧世界"里继续跑（我们为此白查过一轮
+// stdout 里的旧字段）。客户端每 3 秒问一次服务端；版本一变就自己刷新 —— 不需要任何人记得按刷新。
+let pageVer = null;
+setInterval(async () => {
+  try {
+    const d = await (await fetch('/__ver', { cache: 'no-store' })).json();
+    if (!d.ver) return;
+    if (pageVer === null) { pageVer = d.ver; return; }
+    if (d.ver !== pageVer) location.reload();
+  } catch (e) { /* 服务还没起来：下一拍再问 */ }
+}, 3000);
+
 function startDebugReport() {
   if (debugTimer) return;
   const tick = () => send({ type: 'debug', payload: debugPayload() });
@@ -378,7 +455,9 @@ const items = new Map();   // id -> { el, iframe, url, label, group, icon, slot 
 let arena = '';            // 当前 group 名，'' = desktop
 let groupNames = [];       // 全部 group（创建序）—— 侧栏读它。delta 帧也带，
                            // 否则新起的组要等下一次刷新才看得见。
-let fullscreenId = null;   // active group 的全屏 item（per-group）
+let focusId = null;        // 焦点视图：被"单独看"的那一个 item（与分组无关）
+let stageIds = [];         // 最近一次 state 的舞台 ids —— focus 变化时要重算可见性
+let stageLayout = null;
 let desktopIds = [];       // 未入组的 item id，顺序即 recency
 
 function item(id) { return items.get(id); }
@@ -398,7 +477,7 @@ function makeSlot(it) {
 function destroySlot(id) {
   const it = items.get(id); if (!it) return;
   it.slot.remove();
-  if (fullscreenId === id) fullscreenId = null;
+  if (focusId === id) focusId = null;
 }
 
 function gridTemplate(layout) {
@@ -411,11 +490,16 @@ function gridTemplate(layout) {
 }
 
 function renderStage(ids, layout) {
-  // 每个 item 的 slot 都挂在 stage；只有 active group 的 ids 显示并分格。
+  stageIds = ids; stageLayout = layout;
+  // 每个 item 的 slot 都挂在 stage；active group 的 ids 显示并分格。
+  // 焦点视图是**第三件**事：正在被看的那一个，即使不在任何组里也上舞台 ——
+  // 整屏是"呈现"，与"它属于哪个组"无关（旧的 per-group fullscreen 把两者绑死了）。
   items.forEach((it) => {
-    const onStage = ids.includes(it.id);
-    it.slot.classList.toggle('hidden', !onStage);
+    const focused = !!focusId && it.id === focusId;
+    it.slot.classList.toggle('hidden', !ids.includes(it.id) && !focused);
+    it.slot.classList.toggle('focused', focused);
   });
+  syncScrim();
   const t = gridTemplate(layout);
   if (!t) { stage.style.gridTemplateColumns = ''; stage.style.gridTemplateRows = ''; return; }
   stage.style.gridTemplateColumns = t[0];
@@ -429,12 +513,25 @@ function renderStage(ids, layout) {
 }
 
 // ---- fullscreen（per-group，插 scrim 不改 DOM 结构） ----
-function setFullscreen(id) {
-  if (fullscreenId && slotEl(fullscreenId)) slotEl(fullscreenId).classList.remove('fullscreen');
-  fullscreenId = id;
-  if (id && slotEl(id)) slotEl(id).classList.add('fullscreen');
-  $('#scrim').style.display = id ? 'block' : 'none';
+// 焦点视图：一个 item 单独占满舞台。它**不动任何分组**，也不复制 iframe ——
+// 只是给同一个 slot 换一套样式（.fullscreen = position:fixed; inset:0）。
+function syncScrim() { $('#scrim').style.display = focusId ? 'block' : 'none'; }
+
+let railBeforeFocus = false;   // 进焦点前的栏状态，离开时原样还回去
+
+function setFocus(id) {
+  const wasOn = !!focusId, on = !!id;
+  focusId = id || null;
+  // 进焦点：栏自动收成边条 —— 页面几乎整屏，而"栏在哪"仍然可预测（焦点 = 窄条）。
+  // 这是动人家的家具，所以只做可逆的一步：离开时原样还原。
+  if (on && !wasOn) { railBeforeFocus = railCollapsed(); setRailCollapsed(true); }
+  if (!on && wasOn) { setRailCollapsed(railBeforeFocus); }
+  renderStage(stageIds, stageLayout);
+  syncPool();
 }
+
+// Esc = 离开焦点：浏览器里唯一的"退出"直觉
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && focusId) send({ type: 'focus', id: '' }); });
 
 // ===== desktop：代理圆盘物理（花束 / 布朗 / 环绕） =====
 // 圆盘是 item 的灵魂，不是 iframe。每个圆盘有一个 home 槽位，稳定位置是 recency 的
@@ -549,7 +646,7 @@ function desktopLoop() {
   requestAnimationFrame(desktopLoop);
   const now = performance.now();
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
-  if (discs.length) {
+  if (discs.length && !poolEl.classList.contains('on')) {
     stepDiscs(dt);
     drawDiscs();
   } else {
@@ -1190,8 +1287,127 @@ function bgLoop() {
   stepRain(dt, now);
   // 听侧常画：静音时只剩一格底痕，但那一层始终在 —— 人不需要先出声才发现自己被听着。
   drawListenerRise(dt, now);
+  // 池子：home 空闲时，所有 item 的那片场（缓慢漂移，视差分档）
+  stepPool(dt);
 }
 requestAnimationFrame(bgLoop);
+
+// ===== pool：home 的池子 =====
+// home = 舞台空闲。空闲时不该是一片虚空：**所有开着的 item**（含已入组的）都在这里，
+// 按 recency 排成前景 / 中景 / 远景 —— 越老越远、越小、越糊，糊就是"现在不是说它"
+// （这个语法取自《极限审判》里 AI 法官开场那一片物料）。
+//
+// 只画画像（标签 + 状态点），不画 iframe。深层放活体会同时输掉帧率和指针。
+const poolEl = $('#pool');
+const tiles = new Map();     // id -> { el, band, bl }
+let poolHover = null;        // 指针正停在哪一张上（焦点拉伸系数的来源）
+let poolPhase = 0;           // 漂移相位（一直在走：那是"活着"）
+let poolRot = 0;             // 螺旋的整体转角
+const POOL_SPIN = 0.055;     // 约 2 分钟一圈：慢到不打扰，快到看得见
+let poolSpin = POOL_SPIN;    // 当前角速度（rad/s）—— 缓动，不是开关
+let poolSpinWant = POOL_SPIN;
+
+const POOL_MAX = 14;         // 再老的不画 —— 不活跃的东西不该占视野
+const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向日葵螺旋的种子序
+
+function poolOrder() { return [...items.keys()].reverse(); }  // 插入序最老在前
+
+function makeTile(it) {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  const name = document.createElement('span'); name.className = 'tile-name';
+  name.textContent = it.label || it.id;
+  el.append(name);
+  // hover = 焦点拉伸的入口。只做"变大变清"，**绝不移动**（理由见 layoutPool）。
+  el.addEventListener('pointerenter', () => { poolHover = it.id; });
+  el.addEventListener('pointerleave', () => { if (poolHover === it.id) poolHover = null; });
+  // 一下点击 = 看它整屏（一次视图动作，服务端回广播 + 给我一条 aside）。
+  el.addEventListener('click', () => { send({ type: 'focus', id: it.id }); });
+  poolEl.appendChild(el);
+  tiles.set(it.id, { el, bl: -1, hk: 0 });
+}
+
+function dropTile(id) {
+  const t = tiles.get(id); if (!t) return;
+  t.el.remove(); tiles.delete(id);
+}
+
+// 池子只在 home 且没有焦点时在场：焦点视图要独占舞台。
+function poolOn() { return arena === '' && tiles.size > 0 && !focusId; }
+
+function layoutPool(dt = 0.016) {
+  const x0 = railWidth(), w = Math.max(1, viewW - x0);
+  // 旋心略低于中线、偏左三分：正中是墓碑位，偏一点才像有人在构图。
+  const cx = x0 + w * 0.46, cy = viewH * 0.60;
+  const RY = 0.56;                       // 竖直压扁 = 伪透视（把圆摊成一片"地"）
+  const rmax = Math.min(w * 0.50, viewH * 0.50);
+  const ids = poolOrder().slice(0, POOL_MAX);
+  const n = Math.max(1, ids.length);
+  // hover 系数逐帧缓动（不用 CSS transition：位置本来每帧都在写，两套动画会打架）。
+  // 缓动让"升起来"是呼吸，不是抽搐。
+  ids.forEach((id) => {
+    const t = tiles.get(id); if (!t) return;
+    const want = poolHover === id ? 1 : 0;
+    t.hk = t.hk + (want - t.hk) * Math.min(1, dt * 9);
+  });
+  const anyHover = ids.reduce((m, id) => Math.max(m, tiles.get(id)?.hk || 0), 0);
+  ids.forEach((id, k) => {
+    const t = tiles.get(id); if (!t) return;
+    const el = t.el;
+    // 黄金回旋：半径 ∝ √序号，角度 ∝ 序号 —— 不重叠、有机、增删不必重排全场
+    const u = Math.sqrt((k + 0.6) / (n + 0.6));      // 0（旋心/最近）→ 1（边缘/最老）
+    const rad = rmax * u, ang = k * GOLDEN + poolRot;
+    // 远近由半径算出：越靠边越小、越糊、越淡、越往上抬（灭点在三分线上）
+    const sc = 1.06 - u * 0.44;
+    // 双八度漂移：低频大摆 + 高频小抖；近的动得多，远的几乎不动（视差）
+    const amp = (1 - u) * 11 + 2.5;
+    const drx = (Math.sin(poolPhase * .31 + k * .9) * .7 + Math.sin(poolPhase * .83 + k * 2.3) * .3) * amp;
+    const dry = (Math.cos(poolPhase * .27 + k * .7) * .7 + Math.cos(poolPhase * .71 + k * 1.9) * .3) * amp * .6;
+    const x = cx + rad * Math.cos(ang) + drx;
+    const y = cy + rad * Math.sin(ang) * RY - u * 46 + dry;
+    const sel = false;
+    const hk = t.hk || 0;
+    // 焦点拉伸**原地**放大：transform-origin 是中心，所以光标永远还在它里面。
+    // 一旦平移，光标会掉出边界 → enter/leave 互相打架 → 画面抽搐。
+    // 邻居不让位，只降一点亮度："退到后面"用明暗说，不用位移说。
+    const sc2 = sc * (1 + 0.26 * hk);
+    el.style.transform = `translate(-50%,-50%) translate3d(${x}px, ${y}px, 0) scale(${sel ? sc2 * 1.16 : sc2})`;
+    el.style.opacity = (sel ? 1 : (1 - u * 0.28)) * (1 - 0.20 * anyHover * (1 - hk));
+    el.style.zIndex = String(200 - k + (sel ? 50 : 0) + Math.round(hk * 400));
+    // 模糊只做"一点点霜"：瓷砖是**可点的目标**，糊到认不出字就等于没做交互。
+    // 远近的感觉主要交给缩放、压暗和漂移幅度，不是交给失焦。
+    const bl = +((sel ? 0 : u * 1.1) * (1 - hk)).toFixed(2);
+    if (t.bl !== bl) { el.style.filter = bl ? `blur(${bl}px)` : ''; t.bl = bl; }
+    el.classList.toggle('sel', sel);
+    el.classList.toggle('lit', hk > 0.4);
+  });
+}
+
+function syncPool() {
+  const keep = new Set(poolOrder().slice(0, POOL_MAX));
+  [...tiles.keys()].forEach((id) => { if (!keep.has(id)) dropTile(id); });
+  keep.forEach((id) => { if (!tiles.has(id) && items.has(id)) makeTile(items.get(id)); });
+  const on = poolOn();
+  poolEl.classList.toggle('on', on);
+  document.body.classList.toggle('pool-on', on);
+  desktop.style.display = on ? 'none' : '';   // 圆盘那一套退役：它的职责搬到池子
+  if (on) layoutPool();
+}
+
+function stepPool(dt) {
+  if (!poolEl.classList.contains('on')) return;
+  poolPhase += dt;                                   // 漂移一直在走：它不打扰任何人
+  // 自转只在"没人"的时候走，而且**缓动到停**，不是开关 —— 指针进来时它是"回头看你"，
+  // 不是"啪地刹住"。这也是唯一允许整体移动的时刻：没人正瞄着某一张。
+  poolSpin += (poolSpinWant - poolSpin) * Math.min(1, dt * 2.5);
+  poolRot += poolSpin * dt;
+  layoutPool(dt);
+}
+
+// 指针进屏 = 注意状态：停转。出屏 = 回到呼吸。
+addEventListener('mousemove', (e) => {
+  poolSpinWant = (e.clientX > railWidth()) ? 0 : POOL_SPIN;
+});
 
 // ===== 帧路由 =====
 function applyState(f) {
@@ -1199,10 +1415,11 @@ function applyState(f) {
   if (f.groups) groupNames = f.groups;
   const ids = f.ids || [];
   desktopIds = f.desktop || [];
+  focusId = f.focus || null;
   renderStage(ids, f.layout);
-  setFullscreen(f.fullscreen ?? null);
   renderRail();
   syncDiscs();
+  syncPool();
 }
 
 // ---- rail：人切组的唯一入口 ----
@@ -1284,16 +1501,17 @@ function route(f) {
         cur.url = it.url;
         if (cur.iframe) cur.iframe.src = it.url;
       }
+      syncPool();
       break;
     }
     case 'close': {
-      destroySlot(f.id); items.delete(f.id); break;
+      destroySlot(f.id); items.delete(f.id); syncPool(); break;
     }
     case 'activate': {
       if (f.by_model) { /* 模型切组：可在此处做 activate 动画（WD6） */ }
       applyState(f); break;
     }
-    case 'fullscreen': setFullscreen(f.id); break;
+    case 'focus': setFocus(f.id); break;
     case 'veil': {
       const d = (f.duration || 2) * 1000;
       if (f.gesture === 'mark') veilMark(f.item, f.region || 'full', d);
@@ -1322,8 +1540,7 @@ function route(f) {
 }
 
 // ===== 上行 + log =====
-$('#scrim').addEventListener('click', () => { if (fullscreenId) send({ type: 'fullscreen', id: '' }); });
-$('#scrim-exit').addEventListener('click', (e) => { e.stopPropagation(); send({ type: 'fullscreen', id: '' }); });
+$('#scrim-exit').addEventListener('click', (e) => { e.stopPropagation(); send({ type: 'focus', id: '' }); });
 
 let logCount = 0;
 function logLine(text) {

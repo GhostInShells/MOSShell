@@ -2,11 +2,11 @@
 
 One port serves the page and the WebSocket. Downlink carries the window stream
 (``snapshot`` on connect, then ``state`` / ``open`` / ``close`` / ``activate`` /
-``fullscreen`` / ``veil``), the 5Hz audio samples, and a ``notice`` line for the
+``focus`` / ``veil``), the 5Hz audio samples, and a ``notice`` line for the
 human's activity log.
 
 Uplink carries the human's moves: switch to a group or the desktop, toggle
-fullscreen on an item, and dismiss (send a window back to the desktop).
+focus on an item, and dismiss (send a window back to the desktop).
 
 A human move is handed to the store; the store stays the only authority, and this
 module re-broadcasts the change so every client stays in step. The move also
@@ -16,6 +16,7 @@ reaches the ghost as an aside — a fact it notices when free, not an interrupti
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -91,36 +92,45 @@ class ScreenSurface:
         self._rail = "collapsed" if collapsed else "expanded"
 
     async def _switch_view(self, group: str) -> None:
+        """A human picked a place to look. No aside: the fact is *state* (``arena``
+        + ``view_by``), and it also cancels any focus — two view-setters must not
+        stack, or clicking home while focused looks like a dead button."""
         try:
-            self._model.activate(group)
+            self._model.activate(group, by="human")
         except (KeyError, ValueError) as e:
             await self.broadcast({"type": "error", "text": str(e)})
             return
         await self.broadcast(P.activate_frame(self._model, by_model=False))
-        where = f"#{group}" if group else "the desktop"
-        self._aside(f"human switched to {where}")
 
-    async def _toggle_fullscreen(self, item_id: str) -> None:
-        current = self._model.fullscreen()
-        new = None if (not item_id or current == item_id) else item_id
+    async def _focus(self, item_id: str) -> None:
+        """The human looked at one item alone (or left it).
+
+        A *view* event: it never touches groups. Same item_id twice = leave, so a
+        second click on the tile you are looking at closes it.
+        """
+        new = None if (not item_id or self._model.focus() == item_id) else item_id
         try:
-            self._model.set_fullscreen(new)
+            self._model.set_focus(new, by="human")
         except (KeyError, ValueError) as e:
             await self.broadcast({"type": "error", "text": str(e)})
             return
-        await self.broadcast(P.fullscreen_frame(new))
-        what = f"#{new}" if new else "off"
-        self._aside(f"human toggled fullscreen {what}")
+        await self.broadcast(P.focus_frame(new))
+        await self.broadcast(P.state_frame(self._model))
 
     async def _dismiss(self, item_id: str) -> None:
         if self._model.dismiss(item_id) is None:
             return
+        self._model.note_view_by("human")
         await self.broadcast(P.state_frame(self._model))
-        self._aside(f"human sent #{item_id} to the desktop")
 
     async def _tap(self, item_id: str) -> None:
-        """A human tapped a desktop proxy — interest, not a move. Reach the ghost
-        as an aside so it can decide whether to arrange; nothing on screen changes."""
+        """A human tapped a desktop proxy — interest, not a move.
+
+        This is the one human move that changes **no** state, so there is nothing
+        for a state fragment to carry: the aside is the only channel it has. Keep
+        it as a tap on the shoulder, knowing it may be dropped while the ghost is
+        busy — which is exactly what "aside" means.
+        """
         self._aside(f"human tapped #{item_id} on the desktop")
 
     def _aside(self, text: str) -> None:
@@ -159,9 +169,28 @@ class ScreenSurface:
             # 否则"刷新"看起来生效了、其实加载的还是旧版本。
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
+        if path == "/__ver":
+            response = connection.respond(200, json.dumps({"ver": self._page_ver()}))
+            del response.headers["Content-Type"]
+            response.headers["Content-Type"] = "application/json"
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
         if path == "/ws":
             return None
         return connection.respond(404, "not found")
+
+    def _page_ver(self) -> str:
+        """The page's fingerprint — so an open window can tell it runs old code.
+
+        A window left open across an edit keeps reporting the old world: we spent a
+        round reading stale ``[client]`` lines that came from an old tab. Pull-based
+        and cheap: the client asks, the server hashes the file, nobody has to
+        remember to hit refresh.
+        """
+        try:
+            return hashlib.sha1(self._html_path.read_bytes()).hexdigest()[:10]
+        except OSError:
+            return ""
 
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)
@@ -177,8 +206,8 @@ class ScreenSurface:
                 kind = frame.get("type")
                 if kind == "switch_view":
                     await self._switch_view(str(frame.get("group", "")))
-                elif kind == "fullscreen":
-                    await self._toggle_fullscreen(str(frame.get("id", "")))
+                elif kind == "focus":
+                    await self._focus(str(frame.get("id", "")))
                 elif kind == "dismiss":
                     await self._dismiss(str(frame.get("id", "")))
                 elif kind == "tap":

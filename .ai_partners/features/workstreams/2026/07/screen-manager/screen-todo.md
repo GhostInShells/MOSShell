@@ -28,11 +28,16 @@
 |---|------|
 | V1 | `open` 落桌面 → 代理圆盘出现，iframe 隐藏；`arrange` 拉入组 → 圆盘消失、iframe 分格 |
 | V2 | 切组 / 桌面↔组 有过渡，不闪屏（当前 `.slot` 有 CSS `grid-row/column` transition，是否够用待验） |
-| V3 | 全屏某 item → 切组 → 回来仍全屏（per-group fullscreen 记忆） |
-| V4 | 桌面代理圆盘物理（花束/布朗/环绕）不抖不漂出，点击命中准确 |
+| V3 | superseded — per-group fullscreen 已删，换成**视图** `focus`；**切组即撤销焦点**（判据：选一个基础视图 = 撤销覆盖） |
+| V4 | superseded — 桌面圆盘那一套退役，home 改成**池子**（螺旋铺位，见 V9） |
 | V5 | `mock_scene` 连调两次 → 不叠 iframe（snapshot reconcile） |
 | V6 | 字符雨字符集：**2026-10-02 已按需求换掉** —— 现在是拉丁字母 + 希腊字母（原来那版 CJK+假名）。留此条只为记住"字符集是一处常量、随时可换" |
-| V7 | 桌面代理点击 → aside 到达模型（`tap` uplink） |
+| V7 | superseded（**并附一条诊断**）—— 圆盘点击那条路随圆盘一起消失。附带结论：`aside` 是旁路、**忙的时候会丢且不报错**，不能承载"人做了什么"；人的视图动作现在写**状态**（`view_by`），见 FEATURE「呈现模型」 |
+
+| # | 状态 | 判据 |
+|---|------|------|
+| V9 | **verified 2026-10-10** | **池子**：螺旋铺位不重叠；指针进舞台 → 自转缓动到停；hover **原地**放大（207→281px，z 198→599，停 3 秒不抖）；点瓷砖 → 整屏（`elementFromPoint` 命中 IFRAME）；点侧边栏 / Esc → 退出焦点、池子回来、栏还原 188 |
+| V10 | open | 池子在 **14 张以上**时的密度与标签可读性（当前 cap = 14，远端只留缩略） |
 | V8 | `open` 返回 index 句柄；`navigate` 改自建 item url 且 iframe 原地重载；对 webview item navigate 越权中断 |
 
 ## 未接能力
@@ -46,6 +51,11 @@
 | W5 | open | **playwright 高阶面** — 真外部 web 内容（绕 X-Frame-Options）与接管浏览器 | playwright node |
 | W6 | **fixed** | **调试面退役** — 2026-10-10 落地：node 加 `--debug`（自开窗带 `?debug=1`），页面按它决定；`#st`（组·role·dB）、帧率与几何、活动日志一律**收进侧栏底部**，默认全隐藏（隐藏走 CSS，绘制逻辑不变）。`?mode=` 画法对照同开关。**一处例外**：断线常驻可见（侧栏顶上的点 + 收起时边条变红；水位标同步灰掉）。**另一处例外**：stdout 的 `[client]` 自查**不进**这个开关——它不到屏幕上，是模型的探针 | 本 feature |
 | W7 | **fixed** | **听侧（用户音频）的呈现与接线** — 见下方「W7 听侧」。 | listener / 本 feature |
+| W9 | open | **face：节点自报"脸"** — 协议加 `face: {line≤24, art}`；无 face = 标题+icon，有 line = 那行字，有 art = 图（**先只允许静图**）。摘要优于截图：缩略图里的字读不出来 | 各节点 |
+| W10 | open | **别名累加** — 重启即涨（`screen` → `screen_2` → `screen_3`），今天第三次撞上；人机都在用别名索引，涨到 `_9` 会难读 | 本 feature |
+| W11 | open | **池子的 show 模式** — 今天只做了 home 的静止场；"我要讲一件事"时把场**推近**（电影参考）留作第二步 | 本 feature |
+| W12 | uncertain | `arrange` 现在也会**撤销焦点**（按"选一个基础视图 = 撤销覆盖"推出，不是特例）。若判定过强，一处回调 | 本 feature |
+| W13 | **fixed** | **页面版本指纹** — `/__ver` 返回 index.html 的 sha1 前 10 位；页面每 3 秒问一次，**版本一变自己刷新**。动机：开着的旧窗口会把"旧世界"的数据混进同一份 stdout（2026-10-10 白查过一轮） | 本 feature |
 | W8 | open | **多屏机制未验证** — 一台机器上多个 screen node、或多显示面之间的分工与主权（谁排布、谁全屏、人怎么看）今日未测 | 本 feature |
 
 ## W7 听侧（用户音频）

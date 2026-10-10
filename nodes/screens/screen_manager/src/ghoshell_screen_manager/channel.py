@@ -198,18 +198,20 @@ def build_screen_channel(
         await _emit(P.state_frame(model))
         return f"[screen] removed #{id}"
 
-    @chan.build.command(name="fullscreen")
-    async def fullscreen(id: str = "") -> str:
-        """Make one active-group item fill the stage; ``id`` empty exits."""
+    @chan.build.command(name="focus")
+    async def focus(id: str = "") -> str:
+        """Show one item alone, full stage; ``id`` empty leaves the focus.
+
+        A *view*, not a layout: any pooled item will do, grouped or not. It never
+        moves an item between groups.
+        """
         target = id or None
         try:
-            model.set_fullscreen(target)
+            model.set_focus(target)
         except (KeyError, ValueError) as e:
             CommandUtil.raise_observe(str(e))
-        await _emit(P.fullscreen_frame(target))
-        return (
-            f"[screen] fullscreen #{target}" if target else "[screen] fullscreen exited"
-        )
+        await _emit(P.focus_frame(target))
+        return f"[screen] focus #{target}" if target else "[screen] focus exited"
 
     @chan.build.command(name="float")
     async def float_group() -> str:
@@ -225,8 +227,7 @@ def build_screen_channel(
         lines = [f"showing: #{arena}", f"desktop: {', '.join(model.desktop_items()) or '-'}"]
         for g in model.groups():
             mark = "*" if g == model.arena() else " "
-            fs = " [fullscreen]" if g == model.arena() and model.fullscreen() else ""
-            lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}{fs}")
+            lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}")
         return "\n".join(lines)
 
     # -- veil gestures (time-aware) ----------------------------------------
@@ -315,6 +316,12 @@ def build_screen_channel(
             f"#{g}({len(model.group_items(g))})" for g in model.groups()
         )
         out["groups"] = groups or "(none)"
+        # 视图 = 什么 + 谁动的。两个片段都是 named 状态：不抢注意力、只在变化时随 delta
+        # 出现，也不存在"我忙它就丢"这回事 —— 人做的事对我首先是状态。
+        if model.focus():
+            out["focus"] = f"#{model.focus()}"
+        if model.view_by():
+            out["view_by"] = model.view_by()
         # 索引视角：两类 item 的 handle → label，名字要读出区别 —— 这两种窗口的
         # 归属不同（adopted 的 url 归 node、不可 navigate；opened 的是模型自建、可
         # navigate），所以不能叫 views / items 那种只有作者才懂的名字。
@@ -332,10 +339,7 @@ def build_screen_channel(
             out["screen"] = f"desktop ({len(desktop)} floating)"
         else:
             order = ", ".join(model.arena_items())
-            fs = f" · fullscreen #{model.fullscreen()}" if model.fullscreen() else ""
-            out["screen"] = (
-                f"#{arena} [{order}] {model.family()} {model.dir()}{fs}"
-            )
+            out["screen"] = f"#{arena} [{order}] {model.family()} {model.dir()}"
         return out
 
     return chan

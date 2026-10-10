@@ -8,7 +8,7 @@ connect.
 Two surfaces to keep in step:
 
 * the **stage** — the active group's items, in order, with their resolved layout
-  and fullscreen. Rendered by the ``stage`` frame.
+  and the focus. Rendered by the ``stage`` frame.
 * the **desktop** — items in the pool but in no group, floating. Rendered by the
   ``desktop`` frame.
 
@@ -31,7 +31,7 @@ __all__ = [
     "open_frame",
     "close_frame",
     "activate_frame",
-    "fullscreen_frame",
+    "focus_frame",
     "veil_frame",
     "audio_frame",
     "notice_frame",
@@ -62,7 +62,7 @@ def _layout_view(model: ScreenModel) -> dict | None:
 
 
 def _state(model: ScreenModel) -> dict:
-    """The 'render this' set: what is on stage, what floats, what is fullscreen.
+    """The 'render this' set: what is on stage, what floats, what is focused.
 
     ``groups`` rides along because it is a **place list the human reads**, not a
     model-side arrangement: the sidebar must stay correct when a group appears or
@@ -74,7 +74,8 @@ def _state(model: ScreenModel) -> dict:
         "arena": model.arena(),
         "ids": model.arena_items(),
         "layout": _layout_view(model),
-        "fullscreen": model.fullscreen(),
+        "focus": model.focus(),
+        "view_by": model.view_by(),
         "desktop": model.desktop_items(),
         "groups": model.groups(),
     }
@@ -112,8 +113,9 @@ def activate_frame(model: ScreenModel, *, by_model: bool) -> dict:
     return {"type": "activate", "by_model": by_model, **_state(model)}
 
 
-def fullscreen_frame(item_id: str | None) -> dict:
-    return {"type": "fullscreen", "id": item_id}
+def focus_frame(item_id: str | None) -> dict:
+    """The view moved to one item (or left it) — a view event, not a layout one."""
+    return {"type": "focus", "id": item_id}
 
 
 def veil_frame(gesture: str, **fields: object) -> dict:
