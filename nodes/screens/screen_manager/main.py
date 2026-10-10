@@ -12,7 +12,9 @@ findable at a known address, so this node claims a fixed port from the 2038 seri
 
 Open:   the surface opens in the system browser on start (``--no-open`` for a
 headless run). A windowless screen is one nobody can see; and because the port is
-fixed, a restart re-points an already-open tab rather than stranding it.
+fixed, a restart re-points an already-open tab rather than stranding it. Pass
+``--debug`` to keep the on-screen instruments (status line, frame rate, geometry,
+activity log) docked at the bottom of the sidebar — off by default.
 
 One process, two faces over one store: the channel (the ghost's control surface) and
 the web surface (the human's window view and steering). The human's moves reach the
@@ -76,6 +78,17 @@ def wants_mock_audio() -> bool:
     return "--mock-audio" in sys.argv[1:]
 
 
+def wants_debug() -> bool:
+    """``--debug`` keeps the on-screen instruments: the status line, frame rate,
+    geometry and the activity log, docked at the bottom of the sidebar.
+
+    Off by default — a screen the human watches shows the product, not the
+    instruments behind it. The page's self-report to stdout is *not* this switch:
+    it never reaches the screen, and it is how the model sees what the page does.
+    """
+    return "--debug" in sys.argv[1:]
+
+
 async def main(matrix: Matrix) -> None:
     model = ScreenModel()
 
@@ -106,12 +119,13 @@ async def main(matrix: Matrix) -> None:
         # Open just after the surface is listening, so the first request finds a
         # live server. A failure here is a fact to report, never a reason to die:
         # the screen is still usable from the url in the notice.
+        url = surface.url + ("?debug=1" if wants_debug() else "")
         try:
-            opened = await asyncio.to_thread(webbrowser.open, surface.url)
+            opened = await asyncio.to_thread(webbrowser.open, url)
             if not opened:
                 print(
                     f"[webview_screen] no browser accepted the url — "
-                    f"open {surface.url} by hand",
+                    f"open {url} by hand",
                     flush=True,
                 )
         except Exception as e:  # noqa: BLE001 — never let a window kill the body

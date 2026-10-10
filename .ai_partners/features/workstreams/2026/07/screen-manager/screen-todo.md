@@ -44,7 +44,7 @@
 | W3 | superseded | **chrome 交互面** — 侧边 `#chrome` 已拆；输入框、通知、历史整体移交 `ghost-in-web` | ghost-in-web |
 | W4 | open | **被嵌入页面的 resize 自适应契约** — 合成器只改 iframe viewport，不负责内部重排；avatar/terminal/file_editor 不监听 resize | 各节点自查 |
 | W5 | open | **playwright 高阶面** — 真外部 web 内容（绕 X-Frame-Options）与接管浏览器 | playwright node |
-| W6 | open | **调试面退役** — 打磨期加的东西必须在产品化前收口：`probe_audio` 命令、每 10 帧一行 stdout 频谱、`?mode=hybrid\|bars\|edge` 对照画法、`mock_scene`/`mock_audio`。目标：默认面只剩产品本身，调试面挂在 `--debug`（或一个显式开关）下 | 本 feature |
+| W6 | **fixed** | **调试面退役** — 2026-10-10 落地：node 加 `--debug`（自开窗带 `?debug=1`），页面按它决定；`#st`（组·role·dB）、帧率与几何、活动日志一律**收进侧栏底部**，默认全隐藏（隐藏走 CSS，绘制逻辑不变）。`?mode=` 画法对照同开关。**一处例外**：断线常驻可见（侧栏顶上的点 + 收起时边条变红；水位标同步灰掉）。**另一处例外**：stdout 的 `[client]` 自查**不进**这个开关——它不到屏幕上，是模型的探针 | 本 feature |
 | W7 | **fixed** | **听侧（用户音频）的呈现与接线** — 见下方「W7 听侧」。 | listener / 本 feature |
 | W8 | open | **多屏机制未验证** — 一台机器上多个 screen node、或多显示面之间的分工与主权（谁排布、谁全屏、人怎么看）今日未测 | 本 feature |
 
@@ -93,4 +93,4 @@
 | # | 状态 | 问题 |
 |---|------|------|
 | T1 | open | **CTML 参数被隐式转换就炸** — `matrix.nodes:read_output limit:str="25"` 直接报 `'>' not supported between instances of 'str' and 'int'`；同一族里 `arrange(ids)` 传 int / list 也炸（D03 撞 int、D08 撞 list）。签名即契约：要么容错，要么错得说清"这里要什么类型"。跨 node 工具链的共性问题，暂记此处（归属待裁） |
-| T2 | open | **平台侧几何自报已在线上** — 屏幕页每 2s 落一行 `[client]`（viewW/H、dpr、baseY、rms、riseMax），模型可自查，不必再让人念屏幕。Retina 画布那处修复（`f9504cc2`→`7723cc86`）在 dpr=2 下复现通过。待做：把它写成 V 列的判据，别留在口头 |
+| T2 | open | **平台侧几何自报已在线上** — 屏幕页每 2s 落一行 `[client]`（viewW/H、dpr、baseY、rms、riseMax），模型可自查，不必再让人念屏幕。Retina 画布那处修复（`f9504cc2`→`7723cc86`）在 dpr=2 下复现通过。**它不是"调试面"**（W6）：那条线上不了屏幕，是模型的眼睛，所以默认开着、另给开关。待做：把它写成 V 列的判据，别留在口头 |

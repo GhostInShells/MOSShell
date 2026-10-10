@@ -39,8 +39,50 @@
   #log-list div { padding: 3px 0; border-bottom: 1px solid #1a2230; }
   #st       { position: fixed; top: 10px; left: 12px; z-index: 8; color: #8af; font-size: 11px; }
   /* 连接状态：断线必须可见 —— 页面不许假装自己还活着 */
-  #link     { position: fixed; top: 26px; left: 12px; z-index: 8; font-size: 11px; color: #3d8; }
-  #link.down { color: #f66; font-weight: 700; }
+  /* ===== 人在看的那一面：默认只有产品本身 =====
+     仪表（状态行 / 帧率 / 几何 / 活动日志）默认全藏，只有 --debug 时才挂在侧栏
+     底部 —— 它们不该浮在舞台上，更不该跟栏重叠。 */
+  #st, #link, #log, #rail-state-text { display: none; }
+  body.debug #st, body.debug #link { display: block; }
+  body.debug #log { display: block; }
+  body.debug #rail-state-text { display: inline; }
+  #rail-diagnostics { display: none; }
+  body.debug #rail-diagnostics {
+    display: block; padding: 6px 9px; border-top: 1px solid var(--border);
+    color: #8af; font-size: 11px; max-height: 40%; overflow-y: auto;
+  }
+  #rail-diagnostics #log-list { display: block; position: static; width: auto; border: 0;
+    background: transparent; padding: 0; max-height: none; }
+  #rail-diagnostics #log-badge { display: none; }
+  #rail-diagnostics #log-list div { border-bottom: 1px solid #1a2230; }
+  #log { position: static; }
+  /* 仪表一律进栏、不进浮层：#st 原本是 fixed 在左上角，那正好压在栏上 ——
+     默认藏起来只是让它不出现，--debug 时还得把它挪进栏里。 */
+  #st { position: static; top: auto; left: auto; }
+  #link { position: static; margin-top: 2px; color: #3d8; }
+
+  /* 心跳：在线时水位标极慢呼吸，说话时亮起（.alive），断线时灰掉且静止。
+     水位标是 background 层 —— 舞台上有 item 时它被盖住，所以它表达的只是
+     "空屏时我在不在"；断线在任何情况下都看得见的那一份，挂在侧栏顶上那颗点。 */
+  @keyframes breathe { 0%, 100% { opacity: .30 } 50% { opacity: .54 } }
+  #moss span { animation: breathe 4.5s ease-in-out infinite; }
+  body.link-down #moss span {
+    animation: none; background: none; opacity: .45;
+    -webkit-text-fill-color: #4a5560; color: #4a5560;
+  }
+  /* 心跳点长在 home 上：home 是"回到我们说话的地方"，我在不在就是那里的状态。
+     它替掉了原先单独一行 —— 一行只放一颗点，本来就多余。 */
+  .rail-home .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: #3ddc8f;
+    display: inline-block; margin-right: 7px; vertical-align: middle;
+    animation: beat 2.6s ease-in-out infinite;
+  }
+  @keyframes beat { 0%, 100% { opacity: .45 } 50% { opacity: 1 } }
+  .rail-home .dot.down { background: #f66; animation: none; }
+  body.link-down #rail { border-right-color: #f66; }
+  body.link-down.rail-collapsed #rail { background: #2a1010; }
+  /* 脚本错误时状态行必须现身，不管是不是 --debug */
+  body.page-error #rail-state-text { display: inline; color: #f66; }
 
   /* ===== rail：人切组的侧栏（第一层只放"地方"） =====
      主权：人管"看哪" —— 这个面就是那句话的实体。常驻、可手动收起；
@@ -73,6 +115,7 @@
   body.rail-collapsed #rail:hover #rail-hint { color: #3ddc8f; }
   #rail.idle { opacity: .42; }
   #rail.idle:hover { opacity: 1; }
+  #rail-idle { display: none; }
   #rail-groups { flex: 1; overflow-y: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
   #rail-sep { height: 1px; background: var(--border); margin: 5px 4px; }
   .rail-item {
@@ -132,23 +175,30 @@
 <div id="moss"><span>MOSS</span></div>
 <canvas id="desktop"></canvas>
 <div id="stage"></div>
-<div id="scrim"><button id="scrim-exit">✕ 退出全屏</button></div>
+<div id="scrim"><button id="scrim-exit">✕ exit fullscreen</button></div>
 <canvas id="veil"></canvas>
 <aside id="rail">
-  <div id="rail-hint" title="展开">›</div>
+  <div id="rail-hint" title="expand">›</div>
   <div id="rail-groups"></div>
-  <div id="rail-foot"><button id="rail-toggle" title="收起 / 展开">‹</button></div>
+  <div id="rail-diagnostics">
+    <div id="st"></div>
+    <div id="link"></div>
+    <div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
+  </div>
+  <div id="rail-foot"><button id="rail-toggle" title="collapse / expand">‹</button></div>
 </aside>
-<div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
-<div id="st"></div>
-<div id="link"></div>
 
 <script>
 // 加载期/运行期脚本错误必须可见：否则整个画面静悄悄死掉，人只会以为"没生效"。
 // （教训：一次 const/let 的暂时性死区错误就让整页脚本停摆，而我只能靠用户反馈才发现。）
 window.addEventListener('error', (e) => {
   const el = document.getElementById('link');
-  if (el) { el.textContent = '脚本错误：' + (e.message || 'unknown'); el.classList.add('down'); }
+  if (el) { el.textContent = 'script error: ' + (e.message || 'unknown'); el.classList.add('down'); }
+  // 这条**不受 --debug 影响**：脚本整个死掉时，屏幕上必须留下痕迹，
+  // 否则人只会以为"没生效"。
+  const label = document.getElementById('rail-state-text');
+  if (label) { label.textContent = 'script error'; }
+  document.body.classList.add('page-error');
 });
 // =====================================================================
 // 四层合成器：bg（声音感知 + MOSS 文字）→ desktop（未入组 item 的代理圆盘
@@ -168,6 +218,12 @@ const mossEl = $('#moss span');
 const st = $('#st');
 const link = $('#link');
 const rail = $('#rail'), railGroups = $('#rail-groups');
+
+// 调试面：默认关。开启的唯一入口是 node 的 --debug（自开窗时它会把 ?debug=1 带上）——
+// 屏幕上给人看的是产品，仪表在关掉时不该占一个像素。页面自己往 stdout 报的自查
+// 不受它影响：那条线从不进人眼，是模型的眼睛。
+const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+if (DEBUG) document.body.classList.add('debug');
 
 // 栏宽的唯一源在这里，CSS 变量由它推出来（两边各写一个 188 迟早会漂）。
 const RAIL_OPEN = 188, RAIL_STRIP = 14;
@@ -231,20 +287,24 @@ if (typeof ResizeObserver !== 'undefined') {
 //   传导：给音频帧打时间戳，超时即当静音（雨停、心率持平）并在角上标出"已断开"
 const FEED_STALE_MS = 1000;
 let ws = null, wsOpen = false, retryMs = 500, feedAt = 0;
-let linkText = '在线', fps = 0;
+let linkText = 'online', linkDown = false, fps = 0;
 
 function setLink(text, down) {
   linkText = text;
   link.classList.toggle('down', !!down);
+  // 断线是**唯一必须常驻可见**的状态：页面不许假装自己还活着（D02 的账）。
+  // 它挂在侧栏顶上那颗点上（收起成边条时边条自己变红），水位标同步表现。
+  linkDown = !!down;
+  document.body.classList.toggle('link-down', !!down);
+  document.querySelectorAll('#rail .dot').forEach((d) => d.classList.toggle('down', !!down));
+  const label = $('#rail-state-text');
+  if (label) label.textContent = text;
   renderLink();
 }
 
-// 状态行顺带报帧率与几何：密度/行距这些参数改完到底掉不掉帧、贴底那层到底
-// 画在哪个高度上，都得有数。分屏里"看不到"这种问题，先前只能靠人念屏幕，
-// 现在这两个数自己写在这儿 —— 模型读它，不读人的眼睛。
+// 仪表行（只在 --debug 下可见）：帧率与几何。诊断自己要读的数，不该让人念。
 function renderLink() {
-  const geo = ` · ${viewW}×${viewH}@${devicePixelRatio}`;
-  link.textContent = (fps ? `${linkText} · ${fps}fps` : linkText) + geo;
+  link.textContent = (fps ? `${fps}fps · ` : '') + `${viewW}×${viewH}@${devicePixelRatio}`;
 }
 
 function scheduleRetry() {
@@ -256,7 +316,7 @@ function scheduleRetry() {
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => {
-    wsOpen = true; retryMs = 500; setLink('在线', false); startDebugReport();
+    wsOpen = true; retryMs = 500; setLink('online', false); startDebugReport();
     // 重连（或首次连接）后补报一次人侧状态：服务端不持久化它，断线期间的面板
     // 变动不能丢。
     send({ type: 'rail', collapsed: railCollapsed() });
@@ -264,9 +324,9 @@ function connect() {
   ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
   ws.onclose = () => {
-    if (!wsOpen) return setLink('连接失败，重试中…', true);
+    if (!wsOpen) return setLink('connect failed — retrying…', true);
     wsOpen = false;
-    setLink('已断开，重连中…', true);
+    setLink('link down — reconnecting…', true);
     scheduleRetry();
   };
 }
@@ -1154,20 +1214,38 @@ function railButton(label, group, extraClass) {
   b.className = 'rail-item' + (extraClass ? ' ' + extraClass : '')
     + (group === arena ? ' active' : '');
   b.textContent = label;
-  b.title = group || '空屏';
+  b.title = group || 'home';
   b.addEventListener('click', () => send({ type: 'switch_view', group }));
+  return b;
+}
+
+// home 那一行和别的组不同：它前面挂一颗心跳点（在线呼吸 / 断线红且静止），
+// 后面在错误或调试时带一行字。它表达的是"我在不在"，而不是"有哪些地方"。
+function homeButton() {
+  const b = document.createElement('button');
+  b.className = 'rail-item rail-home' + (arena === '' ? ' active' : '');
+  b.title = 'home';
+  const dot = document.createElement('span');
+  dot.className = 'dot' + (linkDown ? ' down' : '');
+  const label = document.createElement('span');
+  label.textContent = 'home';
+  const note = document.createElement('span');
+  note.id = 'rail-state-text';
+  note.textContent = linkText;
+  b.append(dot, label, note);
+  b.addEventListener('click', () => send({ type: 'switch_view', group: '' }));
   return b;
 }
 
 function renderRail() {
   railGroups.textContent = '';
-  // "空屏"= 把舞台交还给我（arena = desktop）。它不是组，所以单独一行、隔开。
-  railGroups.appendChild(railButton('◌ 空屏', ''));
+  // "home" = 把舞台交还给我（arena = desktop）。它不是组，所以单独一行、隔开。
+  railGroups.appendChild(homeButton());
   railGroups.appendChild(Object.assign(document.createElement('div'), { id: 'rail-sep' }));
   if (!groupNames.length) {
     const empty = document.createElement('div');
     empty.className = 'rail-empty';
-    empty.textContent = '还没有组';
+    empty.textContent = 'no groups yet';
     railGroups.appendChild(empty);
     return;
   }
