@@ -5,9 +5,10 @@ Runs an aiohttp server in the matrix event loop. A browser opening
 stream of JPEG frames pulled from the controller's rolling cache. No frontend
 build: an ``<img src="/stream">`` or a direct page nav works.
 
-This is the view-only baseline of the family contract's "minimal GUI". If we
-later want the viewer to host interactive events (e.g. authorization clicks),
-that's a heavier build (reflex/streamlit) and a separate decision.
+This is the view-only baseline of the family contract's "minimal GUI", and it is
+**announced on the mesh as a webview** (see main.py): a human can put the live
+picture in a window without anyone opening a url. Hosting interactive events
+(e.g. authorization clicks) is still a heavier build and a separate decision.
 """
 from __future__ import annotations
 

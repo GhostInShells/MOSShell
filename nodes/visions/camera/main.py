@@ -8,6 +8,11 @@ The camera is a producer, not a perception node: it owns the device, runs a
 continuous capture loop, and serves the MJPEG stream a stream node consumes.
 It exposes no channel — the ghost learns the stream address from the alive
 event, then opens a stream node on that address.
+
+It *does* announce its viewer page as a **webview**: a human can put the live
+picture in a window on the screen, and the screen adopts it by itself. That
+announcement is a claim about the page ("a person can watch this"), not about
+the node — the channel-less design above is unchanged.
 """
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv(_NODE_DIR / ".env")
 
 from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
 
 from camera_node.camera import CameraProducer
 from camera_node.source import OpenCVSource, make_face_detector
@@ -82,6 +88,26 @@ async def main(matrix: Matrix) -> None:
         port=cfg["viewer_port"],
     )
     await viewer.start()
+
+    # Announce the page so the screen adopts it like any other window. The url is
+    # the page, not the raw /stream feed: a window is a page a person can watch.
+    view = await WebViewServer.serve(
+        matrix,
+        WebViewDeclaration(
+            url=f"http://{cfg['viewer_host']}:{cfg['viewer_port']}/",
+            title="camera",
+            description="live camera preview — what the ghost can see",
+            icon="camera",
+        ),
+    )
+    # The face: a line anyone can read, and a picture. The picture is this node's
+    # own feed — a *live* one, which is a deliberate exception to "a still image":
+    # there is exactly one such tile, and a single live tile is worth one decoder.
+    # (The rule exists to keep a wall of tiles from becoming a wall of decoders.)
+    view.set_face(
+        line=f"live · {cfg['width']}×{cfg['height']}",
+        art=f"http://{cfg['viewer_host']}:{cfg['viewer_port']}/stream",
+    )
 
     stream_url = f"http://{cfg['viewer_host']}:{cfg['viewer_port']}/stream"
     try:

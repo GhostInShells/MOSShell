@@ -21,6 +21,7 @@ _NODE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_NODE_DIR / "src"))
 
 from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
+from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
 
 from ghoshell_co_browser.channel import build_co_browser_channel  # noqa: E402
 from ghoshell_co_browser.store import FrameStore  # noqa: E402
@@ -69,6 +70,17 @@ async def main(matrix: Matrix) -> None:
 
     await surface.start()
     print(f"[co_browser] frames at {surface.url}", flush=True)
+    # Announce the page on the mesh: a screen adopts it as a window by itself, so
+    # "the human can watch what I ran" stops depending on someone opening a url.
+    await WebViewServer.serve(
+        matrix,
+        WebViewDeclaration(
+            url=surface.url,
+            title="co_browser",
+            description="what the ghost ran, and what came back",
+            icon="browser",
+        ),
+    )
     if _auto_open():
         try:
             webbrowser.open(surface.url)
