@@ -257,30 +257,6 @@ exec=python [<STEM>.py]`；非法 stem 在 `mkdir` 前拒绝（不留空目录�
 `moss codex get-interface ghoshell_moss.deepseek_harness.surfaces` —— 那是它自身的
 code eval 面，属于能力自解释的一部分，不算泄漏实现。
 
-### 待做：节点的启动许可（2026-10-10 定案，未实现）
-
-**从"我开了摄像头却没先问"推出来的一条**：节点**自己兜自己的闸**——闸长在**它自己的页面**里，
-不在 webview 协议里，也不在屏幕里。
-
-```
-① 节点起 → 页面服务先起，渲染"要打开摄像头吗？"   ← **此刻设备没开**
-   脸写 "在等你确认"
-② 人：池子里看到瓷砖 → 点进整屏 → 点 accept
-③ 节点：收到 → **才开设备** → 页面切成实时画面 → 脸变 "live"
-④ 被拒 / 超时 → 干净退出
-```
-
-- **和本 workstream 的 probe 是同一族**（都是"启动前的闸"），但 probe 是**环境**的判据、
-  这个是**人**的判据；probe 是自动的、这个是交互的。
-- **不是安全边界**（`warrant.py`：declared, not enforced）。真正的授权在 `node manager` 的启动闸
-  （warrant 的位置），与这条不冲突也不重叠。
-- 写成 skill 的家：`moss skills/node-development/{node-defined-interaction, node-startup-permission}`
-  （随包；样式/物料留 `nodes/` 本地）。**故意推迟**：写它要用更好的工具，且要配一条可拷贝片段。
-- 第一个实例：**camera**（`nodes/visions/camera/`）——它的页面已经是 web，把那段 HTML 换成"问 + 确认"即可。
-
-**为什么、以及被否掉的三个方案**（把确认焊进 webview 协议 / 屏幕侧做行为授权 / warrant 接进节点）
-在 `.moss/ghosts/moss/journal/Y2026/M10/D10/daily.md` 第十二节与锚点 **1-120**（含物证文件）。
-
 ## Current Consensus
 
 ### 四地址组合 — node 发现路径前缀

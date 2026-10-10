@@ -103,6 +103,7 @@ read(文档 → 内存)
 | ~~`screen`~~ | ~~截屏~~ | **已移出本域 (2026-09-15, 见 KD4)** → feature `vision-stream` |
 | `osascript` | mac 原生 | 按控制语言原名,不发明 "app" 中间名词 |
 | `file_editor` | 文档 | 见 KD5 |
+| `camera` | 视觉 | 生产者(无 channel);宣布查看页为 webview。见 [camera.md](camera.md) |
 
 ## 子文档
 
@@ -113,6 +114,7 @@ read(文档 → 内存)
 | screen | 已移出本域 (2026-09-15) | → feature `vision-stream` |
 | osascript | 待建 | — |
 | file_editor | 已实现 v1（卡片机制，同 terminal） | [file_editor.md](file_editor.md) |
+| camera | 已实现 v1（查看页/脸）;启动两段待做 | [camera.md](camera.md) |
 
 ## 吸收记录
 
