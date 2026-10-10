@@ -433,8 +433,28 @@ class Dolores(Ghost):
             return
         from .nucleus import new_dolores_ego_signal
 
-        signal = new_dolores_ego_signal(kind="startup", command=doc.command, instruction=doc.instruction)
+        signal = new_dolores_ego_signal(
+            kind="startup",
+            command=doc.command,
+            instruction=self._with_dsh_surface(doc.instruction),
+        )
         self._matrix.session.add_signal(signal)
+
+    def _with_dsh_surface(self, instruction: str) -> str:
+        """Append the dsh web surface URL to the boot instruction.
+
+        The URL carries a per-launch token, so it is only known after the launcher has
+        spawned dsh — it can never live in the startup doc. Without it the ghost cannot
+        reach its own web surface (where the human reads its messages), which is exactly
+        what happened before this line existed.
+        """
+        try:
+            launcher = self.dsh_launcher
+        except RuntimeError:
+            return instruction
+        url = launcher.web_url() or f"{launcher.config.base_url}/?token={launcher.token()}"
+        line = f"dsh web surface: {url}"
+        return f"{instruction}\n\n{line}" if instruction else line
 
     def _resolve_startup_doc(self) -> Path | None:
         """Resolve the current mode's startup doc, falling back to the default."""
