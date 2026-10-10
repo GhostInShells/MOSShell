@@ -67,6 +67,10 @@ class Item:
     group: str = ""
     service: str = ""
     icon: str | None = None
+    face_line: str | None = None
+    """What the tile says about itself right now — a node's own words, when it has any."""
+    face_art: str | None = None
+    """A still image for the tile, when the node offers one."""
 
 
 @dataclass(frozen=True)
@@ -360,6 +364,23 @@ class ScreenModel:
         if self.item_of_service(address) is not None:
             return None
         return self.open(url, label=label, service=address, icon=icon)
+
+    def set_face(self, item_id: str, line: str | None, art: str | None) -> Item | None:
+        """Record what an item says about itself — a face, not a move.
+
+        Belongs to the item's *identity in the pool*, not to any arrangement: the
+        same face shows whichever view is looking, grouped or on the desktop.
+        Returns the item when something actually changed, else None — callers use
+        that to decide whether a frame is worth sending.
+        """
+        item = self._items.get(item_id)
+        if item is None:
+            return None
+        if item.face_line == line and item.face_art == art:
+            return None
+        item.face_line = line
+        item.face_art = art
+        return item
 
     def release(self, address: str) -> Item | None:
         """Drop the item adopted from a service that went away.

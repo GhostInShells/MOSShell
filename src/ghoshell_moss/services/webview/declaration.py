@@ -33,6 +33,29 @@ What the condition is, and what it deliberately is not:
   Both are statements of fact about the view, never a message to a consumer.
   They are method calls on the serve side, not wire messages: only the *result*
   travels, and only once.
+
+* **A face is a condition too, and it is a *line* plus a *still image address*.**
+  ``face_line`` is what the tile says; ``face_art`` is a url the consumer draws,
+  when it draws at all.  Both are conditions rather than identity for the same
+  structural reason as everything else here: what a view looks like *right now*
+  changes while the view lives, and a declaration is frozen at provide time.
+  Consequences worth stating, because each one was a decision:
+
+  - **Words first, pixels optional.**  Any cell can produce a line with no
+    rendering ability whatsoever; an image needs one.  A consumer must therefore
+    be able to draw a useful tile from ``face_line`` alone, and treat
+    ``face_art`` as an upgrade, never a requirement.
+  - **The image is an address, not a payload.**  Inlining bytes would put a
+    picture on the wire every time a condition is published, and would force the
+    producer to render even when nobody is looking.  A url lets the consumer
+    decide when to fetch — lazily, only for a tile that is actually visible.
+  - **Dynamism is the producer's business, not the protocol's.**  The contract
+    promises *a still image*; it promises neither animation nor freshness.  A
+    cell that wants its picture to change changes the address (or serves it
+    uncached).  This is what keeps a wall of tiles from becoming N decoders:
+    the cost the pool exists to avoid.
+  - **A summary beats a screenshot** — text inside a thumbnail is unreadable at
+    tile size, one line is not.  That is why the line is the primary face.
 """
 
 import time
@@ -106,6 +129,24 @@ class WebViewState(BaseModel):
     """The most recent thing said about this view, for tooltips.
 
     Survives being read: having seen it does not erase what it was.
+    """
+
+    face_line: str | None = None
+    """One line about what this view is doing right now — what a tile says.
+
+    A *condition*, not an identity: it changes as the thing behind the view
+    changes, which is exactly why it cannot live in the declaration (frozen at
+    provide time, stale for its whole life). Keep it short — a phrase someone
+    reads at a glance, not a sentence they read.
+    """
+
+    face_art: str | None = None
+    """A still image for the tile — a url, resolved by whoever renders.
+
+    Deliberately **still**: an animated one turns a wall of quiet tiles into N
+    decoders and N contenders for attention, which is the cost a pool exists to
+    avoid. A summary beats a screenshot: text in a thumbnail is unreadable,
+    one line is not.
     """
 
     def encode(self) -> bytes:

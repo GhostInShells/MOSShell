@@ -35,6 +35,7 @@ __all__ = [
     "veil_frame",
     "audio_frame",
     "notice_frame",
+    "face_frame",
 ]
 
 
@@ -45,6 +46,10 @@ def item_view(item: Item) -> dict:
         "label": item.label,
         "group": item.group,
         "icon": item.icon,
+        # The face travels with the item's identity: the same node speaks the same
+        # line in every view, so it is not a property of an arrangement.
+        "face_line": item.face_line,
+        "face_art": item.face_art,
     }
 
 
@@ -124,6 +129,21 @@ def veil_frame(gesture: str, **fields: object) -> dict:
 
 def audio_frame(sample: AudioSampleTopic) -> dict:
     return {"type": "audio", "sample": sample.model_dump(exclude={"meta"})}
+
+
+def face_frame(item: Item) -> dict:
+    """A tile's own line / picture changed — a delta, not a whole state.
+
+    Faces change on their own clock (a card appears, a stream starts), so they
+    get their own frame: re-sending the arrangement to deliver one line would
+    make every node's idle chatter repaint the stage.
+    """
+    return {
+        "type": "face",
+        "id": item.id,
+        "face_line": item.face_line,
+        "face_art": item.face_art,
+    }
 
 
 def notice_frame(text: str) -> dict:

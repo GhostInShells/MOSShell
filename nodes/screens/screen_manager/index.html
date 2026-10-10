@@ -209,6 +209,23 @@
     color: #a8d8bf; transition: color .18s;
   }
   .tile.lit .tile-name { color: #eafff3; }
+  /* 脸：一行字是主面，名字退成底下的小字。有图的时候图铺满，字压在图上。 */
+  .tile .tile-line {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%; font-size: 14px; font-weight: 500;
+    color: #dff7ea; letter-spacing: .01em;
+  }
+  .tile.faced .tile-name { font-size: 11px; opacity: .62; }
+  .tile .tile-art {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; border-radius: 5px; opacity: .92;
+  }
+  .tile.arted { justify-content: flex-end; }
+  .tile.arted .tile-caption {
+    position: relative; width: 100%; padding: 5px 6px;
+    background: linear-gradient(transparent, rgba(6, 12, 9, .88) 42%);
+    border-radius: 0 0 5px 5px;
+  }
   .tile.sel {
     border-color: #3ddc8f;
     box-shadow: 0 0 0 1px #3ddc8f, 0 18px 44px rgba(0, 0, 0, .6);
@@ -1312,19 +1329,45 @@ const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向�
 
 function poolOrder() { return [...items.keys()].reverse(); }  // 插入序最老在前
 
+function tileFace(id) {
+  const t = tiles.get(id); if (!t) return;
+  const it = items.get(id); if (!it) return;
+  const art = it.face_art, line = it.face_line;
+  el_setText(t.name, it.label || it.id);
+  el_setText(t.line, line || '');
+  t.line.style.display = line ? '' : 'none';
+  t.el.classList.toggle('faced', !!line);
+  // 图是可选项：节点不给，就不画 —— 一行字加一个名字已经是一张能认的脸。
+  if (art) {
+    if (t.art.getAttribute('src') !== art) t.art.setAttribute('src', art);
+    t.art.style.display = ''; t.el.classList.add('arted');
+  } else {
+    t.art.removeAttribute('src'); t.art.style.display = 'none';
+    t.el.classList.remove('arted');
+  }
+}
+
+function el_setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
 function makeTile(it) {
   const el = document.createElement('div');
   el.className = 'tile';
+  const art = document.createElement('img'); art.className = 'tile-art';
+  art.alt = ''; art.style.display = 'none';
+  const line = document.createElement('span'); line.className = 'tile-line';
   const name = document.createElement('span'); name.className = 'tile-name';
-  name.textContent = it.label || it.id;
-  el.append(name);
+  const caption = document.createElement('div'); caption.className = 'tile-caption';
+  caption.append(line, name);
+  el.append(art, caption);
   // hover = 焦点拉伸的入口。只做"变大变清"，**绝不移动**（理由见 layoutPool）。
   el.addEventListener('pointerenter', () => { poolHover = it.id; });
   el.addEventListener('pointerleave', () => { if (poolHover === it.id) poolHover = null; });
-  // 一下点击 = 看它整屏（一次视图动作，服务端回广播 + 给我一条 aside）。
+  // 一下点击 = 看它整屏。这是一次**视图动作**：服务端回广播，并把 view_by 写进
+  // notice 的状态面 —— 不再走 aside（旁路会丢，见 FEATURE「呈现模型」）。
   el.addEventListener('click', () => { send({ type: 'focus', id: it.id }); });
   poolEl.appendChild(el);
-  tiles.set(it.id, { el, bl: -1, hk: 0 });
+  tiles.set(it.id, { el, bl: -1, hk: 0, line, name, art });
+  tileFace(it.id);
 }
 
 function dropTile(id) {
@@ -1354,15 +1397,27 @@ function layoutPool(dt = 0.016) {
   ids.forEach((id, k) => {
     const t = tiles.get(id); if (!t) return;
     const el = t.el;
-    // 黄金回旋：半径 ∝ √序号，角度 ∝ 序号 —— 不重叠、有机、增删不必重排全场
-    const u = Math.sqrt((k + 0.6) / (n + 0.6));      // 0（旋心/最近）→ 1（边缘/最老）
+    // 黄金回旋：半径 ∝ √序号，角度 ∝ 序号 —— 不重叠、有机、增删不必重排全场。
+    const u = n === 1
+      // 只有一件东西时，螺旋没有"场"可铺：它落在眼睛所在的地方（旋心、最近、最大）。
+      // 通用公式会把它推到半径的六成处，一个孤零零的小瓷砖浮在大空白里。
+      ? 0
+      : Math.sqrt((k + 0.6) / (n + 0.6));      // 0（旋心/最近）→ 1（边缘/最老）
     const rad = rmax * u, ang = k * GOLDEN + poolRot;
     // 远近由半径算出：越靠边越小、越糊、越淡、越往上抬（灭点在三分线上）
     const sc = 1.06 - u * 0.44;
-    // 双八度漂移：低频大摆 + 高频小抖；近的动得多，远的几乎不动（视差）
-    const amp = (1 - u) * 11 + 2.5;
-    const drx = (Math.sin(poolPhase * .31 + k * .9) * .7 + Math.sin(poolPhase * .83 + k * 2.3) * .3) * amp;
-    const dry = (Math.cos(poolPhase * .27 + k * .7) * .7 + Math.cos(poolPhase * .71 + k * 1.9) * .3) * amp * .6;
+    // 双八度漂移：低频大摆 + 高频小抖；近的动得多，远的几乎不动（视差）。
+    //
+    // 幅度按**视口**算，不按固定像素：13px 在 1280 宽的屏上是呼吸，在 2560 宽上
+    // 是一根头发 —— 同一份代码在两种屏上不该表现成两种性格。
+    //
+    // 而且只要有人把指针放在场上，整个**运动场**就缓动停住（不只是自转）：
+    // 判据还是那条——**指针不许改变靶子的位置**。一个在你瞄准线下继续漂的场，
+    // 就是把靶子从光标底下挪走。
+    const amp = ((1 - u) * 0.022 * Math.min(w, viewH)) + 5;
+    const motion = 1 - anyHover;
+    const drx = (Math.sin(poolPhase * .7 + k * .9) * .7 + Math.sin(poolPhase * 1.9 + k * 2.3) * .3) * amp * motion;
+    const dry = (Math.cos(poolPhase * .6 + k * .7) * .7 + Math.cos(poolPhase * 1.7 + k * 1.9) * .3) * amp * .6 * motion;
     const x = cx + rad * Math.cos(ang) + drx;
     const y = cy + rad * Math.sin(ang) * RY - u * 46 + dry;
     const sel = false;
@@ -1480,8 +1535,11 @@ function route(f) {
         if (items.has(it.id)) {
           const cur = items.get(it.id);
           cur.label = it.label; cur.group = it.group; cur.url = it.url;
+          cur.face_line = it.face_line; cur.face_art = it.face_art;
+          tileFace(it.id);
         } else {
-          const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon };
+          const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon,
+                          face_line: it.face_line, face_art: it.face_art };
           items.set(it.id, entry); makeSlot(entry);
         }
       });
@@ -1493,7 +1551,8 @@ function route(f) {
     case 'open': {
       const it = f.item;
       if (!items.has(it.id)) {
-        const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon };
+        const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon,
+                        face_line: it.face_line, face_art: it.face_art };
         items.set(it.id, entry); makeSlot(entry);
       } else {
         // navigate：已存在的 item 换 url，iframe 原地重载（不 reparent）。
@@ -1512,6 +1571,12 @@ function route(f) {
       applyState(f); break;
     }
     case 'focus': setFocus(f.id); break;
+    case 'face': {
+      const it = items.get(f.id); if (!it) break;
+      it.face_line = f.face_line; it.face_art = f.face_art;
+      tileFace(f.id);
+      break;
+    }
     case 'veil': {
       const d = (f.duration || 2) * 1000;
       if (f.gesture === 'mark') veilMark(f.item, f.region || 'full', d);
