@@ -36,10 +36,23 @@ __all__ = ["build_screen_channel"]
 class _Surface(Protocol):
     async def broadcast(self, frame: dict[str, Any]) -> None: ...
 
+    def rail_state(self) -> str:
+        """How the human's sidebar currently stands — ``expanded`` / ``collapsed``.
+
+        One of the few facts the surface owns rather than the store: the human
+        folds the sidebar in the browser, and the materialized area of the stage
+        changes with it. The model needs it because that area is what it arranges
+        into — arranging blind puts items where the human cannot see or click them.
+        """
+        ...
+
 
 class _NoSurface:
     async def broadcast(self, frame: dict[str, Any]) -> None:
         return None
+
+    def rail_state(self) -> str:
+        return ""
 
 
 def _split_ids(raw: str) -> list[str]:
@@ -90,21 +103,15 @@ def build_screen_channel(
 
     @chan.build.instruction
     def instruction() -> str:
+        # 只写 interface 说不出的东西。命令各自做什么，签名和 docstring 已经反射给
+        # 模型了；在这里再复述一遍会随代码漂移成谎话（channel_builder 的明写红线）。
         return (
-            "You own how the screen is arranged; the human owns where to look. "
-            "open(url) materializes a window into the pool and returns its handle — "
-            "an index you keep for every later command. arrange(group, ids) is your "
-            "main move: it pulls the items you name into a group, in order, with a "
-            "layout family, and shows it. navigate(handle, url) re-points a window "
-            "you opened yourself; webview windows (listed under the views notice) "
-            "belong to their nodes and cannot be navigated. Everything you leave "
-            "out stays floating on the desktop. activate() switches the view "
-            "between groups and the desktop; dismiss() sends an item back to the "
-            "desktop; fullscreen() makes one item fill the stage. The human can "
-            "switch views and toggle fullscreen too — the notice tells you when "
-            "that happened. Veil gestures (mark / arrow / text) are the only "
-            "time-aware commands: they resolve when their declared duration ends, "
-            "so a gesture and a spoken clause share one clock."
+            "You own how the screen is arranged; the human owns where to look and "
+            "whether a node lives — the sidebar, whose state the notice carries, is how "
+            "they switch groups. Two kinds of windows share the pool: ones a node "
+            "adopted (its url belongs to that node and cannot be re-pointed) and ones "
+            "you opened yourself. A group's shape is derived from how many ids it "
+            "holds — sizes are never yours to give."
         )
 
     # -- materialization ---------------------------------------------------
@@ -299,18 +306,24 @@ def build_screen_channel(
         url = _url()
         if url:
             out["url"] = url
+        # 人侧的那条状态：侧栏展开 / 收起。舞台的可用区 = 视口 − 栏宽，所以它是
+        # 排布的前提，不是装饰 —— 不知道就会把 item 排到人点不到的地方。
+        rail = surface.rail_state() if surface is not None else ""
+        if rail:
+            out["rail"] = rail
         groups = " ".join(
             f"#{g}({len(model.group_items(g))})" for g in model.groups()
         )
         out["groups"] = groups or "(none)"
-        # 索引视角：两类 item 的 handle → label。views 是 webview 来源（url 归
-        # node，不能 navigate），items 是模型自建（url 可 navigate）。
-        views = [i for i in model.items() if i.service]
-        hand = [i for i in model.items() if not i.service]
-        if views:
-            out["views"] = " ".join(f"#{i.id}={i.label}" for i in views)
-        if hand:
-            out["items"] = " ".join(f"#{i.id}={i.label}" for i in hand)
+        # 索引视角：两类 item 的 handle → label，名字要读出区别 —— 这两种窗口的
+        # 归属不同（adopted 的 url 归 node、不可 navigate；opened 的是模型自建、可
+        # navigate），所以不能叫 views / items 那种只有作者才懂的名字。
+        adopted = [i for i in model.items() if i.service]
+        opened = [i for i in model.items() if not i.service]
+        if adopted:
+            out["adopted"] = " ".join(f"#{i.id}={i.label}" for i in adopted)
+        if opened:
+            out["opened"] = " ".join(f"#{i.id}={i.label}" for i in opened)
         desktop = model.desktop_items()
         if desktop:
             out["desktop"] = f"{len(desktop)} floating: {', '.join(desktop)}"

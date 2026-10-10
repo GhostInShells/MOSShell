@@ -86,3 +86,11 @@
 | O1 | superseded | **输入框未接线** — `#input` 随侧边栏一并拆除；输入/通知/历史归 `ghost-in-web` |
 | O2 | open | **三档命名** — node 已定 `webview_screen`（档位进名字），但 qt/os 档命名、channel 命名是否跟档位绑定仍未定 |
 | O3 | open | **qt 档 node 落点** — `qt_compositor.md` 说另起目录，新目录名待定 |
+| O4 | open | **人切组 / 顶部导航栏的归属** — FEATURE 写"输入·通知·历史整体移交 `ghost-in-web`"，但按第三轮讨论，人"管看哪"（切组、全屏开关）的入口要留在屏幕页顶栏。两者边界未定，需裁决：切组 UI 住哪、通知住哪、扩展还剩下什么 |
+
+## 2026-10-10 新登记（现场）
+
+| # | 状态 | 问题 |
+|---|------|------|
+| T1 | open | **CTML 参数被隐式转换就炸** — `matrix.nodes:read_output limit:str="25"` 直接报 `'>' not supported between instances of 'str' and 'int'`；同一族里 `arrange(ids)` 传 int / list 也炸（D03 撞 int、D08 撞 list）。签名即契约：要么容错，要么错得说清"这里要什么类型"。跨 node 工具链的共性问题，暂记此处（归属待裁） |
+| T2 | open | **平台侧几何自报已在线上** — 屏幕页每 2s 落一行 `[client]`（viewW/H、dpr、baseY、rms、riseMax），模型可自查，不必再让人念屏幕。Retina 画布那处修复（`f9504cc2`→`7723cc86`）在 dpr=2 下复现通过。待做：把它写成 V 列的判据，别留在口头 |

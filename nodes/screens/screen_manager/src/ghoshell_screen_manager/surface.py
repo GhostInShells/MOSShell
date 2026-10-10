@@ -56,6 +56,8 @@ class ScreenSurface:
         self._clients: set[ServerConnection] = set()
         self._server: Any = None
         self._audio_task: asyncio.Task | None = None
+        self._rail = ""
+        """The human's sidebar state, reported by the page. Empty until it says."""
         self.port = port
 
     @property
@@ -75,6 +77,18 @@ class ScreenSurface:
                 self._clients.discard(client)
 
     # -- uplink -------------------------------------------------------------
+
+    def rail_state(self) -> str:
+        """How the human's sidebar stands — the channel reflects this as a notice.
+
+        Value domain is two non-empty zeros (``expanded`` / ``collapsed``), never
+        ``""``: in a named fragment ``""`` means *unchanged*, so a blank state has
+        to be said out loud to be announced when it is entered or left.
+        """
+        return self._rail
+
+    async def _set_rail(self, collapsed: bool) -> None:
+        self._rail = "collapsed" if collapsed else "expanded"
 
     async def _switch_view(self, group: str) -> None:
         try:
@@ -169,6 +183,10 @@ class ScreenSurface:
                     await self._dismiss(str(frame.get("id", "")))
                 elif kind == "tap":
                     await self._tap(str(frame.get("id", "")))
+                elif kind == "rail":
+                    # 侧栏的展开/收起由人在页面里做，服务端看不到 —— 所以由页面上报。
+                    # 这条不是 debug：它改变舞台的可用区，是要进 notice 的状态。
+                    await self._set_rail(bool(frame.get("collapsed")))
                 elif kind == "debug":
                     # 前端自报几何与画法状态。
                     # 动机：分屏下"贴底那层看不见"这类问题，根因在客户端，而服务端够不着

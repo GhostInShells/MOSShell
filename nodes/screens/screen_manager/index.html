@@ -25,7 +25,7 @@
   #bg       { position: fixed; inset: 0; z-index: 0; }
   #moss     { position: fixed; inset: 0; z-index: 1; display: grid; place-items: center; pointer-events: none; }
   #desktop  { position: fixed; inset: 0; z-index: 2; }
-  #stage    { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 3; }
+  #stage    { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 3; }
   #scrim    { position: fixed; inset: 0; z-index: 4; display: none; background: rgba(0,0,0,.55); }
   #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }
   #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
@@ -41,6 +41,55 @@
   /* 连接状态：断线必须可见 —— 页面不许假装自己还活着 */
   #link     { position: fixed; top: 26px; left: 12px; z-index: 8; font-size: 11px; color: #3d8; }
   #link.down { color: #f66; font-weight: 700; }
+
+  /* ===== rail：人切组的侧栏（第一层只放"地方"） =====
+     主权：人管"看哪" —— 这个面就是那句话的实体。常驻、可手动收起；
+     不做自动隐藏：自动隐藏会让控件先消失、再等人想起它存在，而我们正在治的
+     恰恰是"人看不见我在干什么"这个病。闲置只淡不隐（留一条边条）。
+     指针预算：**接收指针的层都要让开这一列**（stage / desktop），不接收指针的层
+     可以铺满（bg / veil）。否则栏底下的可交互区域会点不到，而且这种错在结构上
+     不可见。 */
+  :root { --rail-open-w: 188px; --rail-strip: 14px; --rail-w: var(--rail-open-w); }
+  body.rail-collapsed { --rail-w: var(--rail-strip); }
+  #rail {
+    position: fixed; top: 0; bottom: 0; left: 0; width: var(--rail-w);
+    z-index: 9; display: flex; flex-direction: column;
+    background: rgba(11, 15, 21, .92); border-right: 1px solid var(--border);
+    transition: width .18s ease, opacity .35s ease;
+  }
+  /* 收起后**不靠悬停展开**。悬停展开在这套布局里是错的：点下"收起"的那一刻鼠标
+     还在栏上，浏览器把 :hover 留在栏上，栏当场自己弹回来 —— 表现就是"这个按钮
+     没用"。所以收起态的边条本身就是一个按钮：点它展开，行为确定、不猜指针。 */
+  body.rail-collapsed #rail { cursor: pointer; }
+  body.rail-collapsed #rail-groups,
+  body.rail-collapsed #rail-foot { display: none; }
+  /* 收起后必须**看得出哪儿能点** —— 只留一条光边，人不知道点哪里。
+     整条边条都是热区，这个符号只是把"热区在这儿"说出来。 */
+  #rail-hint { display: none; }
+  body.rail-collapsed #rail-hint {
+    display: flex; flex: 1; align-items: center; justify-content: center;
+    color: #5c6a76; font-size: 12px; user-select: none;
+  }
+  body.rail-collapsed #rail:hover #rail-hint { color: #3ddc8f; }
+  #rail.idle { opacity: .42; }
+  #rail.idle:hover { opacity: 1; }
+  #rail-groups { flex: 1; overflow-y: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+  #rail-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+  .rail-item {
+    display: block; width: 100%; text-align: left; font: inherit;
+    background: transparent; color: #9fb0c0; border: 0; border-radius: 6px;
+    padding: 6px 9px; cursor: pointer; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .rail-item:hover { background: rgba(61,220,143,.10); color: #dfe9f2; }
+  .rail-item.active { background: rgba(61,220,143,.16); color: #3ddc8f; }
+  .rail-empty { color: #55636f; font-size: 11px; padding: 6px 9px; }
+  #rail-foot { padding: 6px; border-top: 1px solid var(--border); }
+  #rail-toggle {
+    width: 100%; background: transparent; color: #6b7c8c; border: 0; cursor: pointer;
+    font: inherit; padding: 4px; border-radius: 6px;
+  }
+  #rail-toggle:hover { background: rgba(255,255,255,.06); color: #dfe9f2; }
 
   /* ===== desktop：代理圆盘（canvas 物理） ===== */
   #desktop { cursor: pointer; }
@@ -85,6 +134,11 @@
 <div id="stage"></div>
 <div id="scrim"><button id="scrim-exit">✕ 退出全屏</button></div>
 <canvas id="veil"></canvas>
+<aside id="rail">
+  <div id="rail-hint" title="展开">›</div>
+  <div id="rail-groups"></div>
+  <div id="rail-foot"><button id="rail-toggle" title="收起 / 展开">‹</button></div>
+</aside>
 <div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
 <div id="st"></div>
 <div id="link"></div>
@@ -113,6 +167,14 @@ const stage = $('#stage');
 const mossEl = $('#moss span');
 const st = $('#st');
 const link = $('#link');
+const rail = $('#rail'), railGroups = $('#rail-groups');
+
+// 栏宽的唯一源在这里，CSS 变量由它推出来（两边各写一个 188 迟早会漂）。
+const RAIL_OPEN = 188, RAIL_STRIP = 14;
+document.documentElement.style.setProperty('--rail-open-w', RAIL_OPEN + 'px');
+document.documentElement.style.setProperty('--rail-strip', RAIL_STRIP + 'px');
+function railCollapsed() { return document.body.classList.contains('rail-collapsed'); }
+function railWidth() { return railCollapsed() ? RAIL_STRIP : RAIL_OPEN; }
 
 // 视图尺寸 —— 这个数决定"贴底"的画在哪一行，所以必须取"真正看得见的那块"。
 //
@@ -193,7 +255,12 @@ function scheduleRetry() {
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { wsOpen = true; retryMs = 500; setLink('在线', false); startDebugReport(); };
+  ws.onopen = () => {
+    wsOpen = true; retryMs = 500; setLink('在线', false); startDebugReport();
+    // 重连（或首次连接）后补报一次人侧状态：服务端不持久化它，断线期间的面板
+    // 变动不能丢。
+    send({ type: 'rail', collapsed: railCollapsed() });
+  };
   ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
   ws.onclose = () => {
@@ -230,6 +297,10 @@ function debugPayload() {
       ? Math.max(...userFeed.spectrum_bins) : null,
     riseMax,
     userAge: typeof userAt !== 'undefined' ? Math.round(performance.now() - userAt) : null,
+    railW: railWidth(),
+    collapsed: railCollapsed(),
+    groups: groupNames.length,
+    arena,
   };
 }
 function startDebugReport() {
@@ -245,6 +316,8 @@ function feedFresh() { return performance.now() - feedAt < FEED_STALE_MS; }
 // ---- store 镜像（与服务端 ScreenModel 同构） ----
 const items = new Map();   // id -> { el, iframe, url, label, group, icon, slot }
 let arena = '';            // 当前 group 名，'' = desktop
+let groupNames = [];       // 全部 group（创建序）—— 侧栏读它。delta 帧也带，
+                           // 否则新起的组要等下一次刷新才看得见。
 let fullscreenId = null;   // active group 的全屏 item（per-group）
 let desktopIds = [];       // 未入组的 item id，顺序即 recency
 
@@ -312,8 +385,12 @@ const discs = [];            // { id, x, y, vx, vy, hx, hy, label }
 
 function layoutDesktop() {
   const n = discs.length;
-  const cx = viewW / 2, cy = viewH / 2;
-  const R = Math.min(viewW, viewH) * 0.28;
+  // 舞台的可用区 = 整屏 − 栏宽。桌面圆盘是**接收点击**的物料，所以它必须待在
+  // 让开栏的那一侧；否则圆盘会漂到栏底下，看着在、点不到。
+  const x0 = railWidth();
+  const w = Math.max(1, viewW - x0);
+  const cx = x0 + w / 2, cy = viewH / 2;
+  const R = Math.min(w, viewH) * 0.28;
   discs.forEach((d, k) => {
     const th = (k / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
     const r = n === 1 ? 0 : R * (0.5 + 0.5 * (k / Math.max(1, n - 1)));
@@ -362,9 +439,9 @@ function stepDiscs(dt) {
     d.vx = (d.vx + fx * dt) * 0.9;
     d.vy = (d.vy + fy * dt) * 0.9;
     d.x += d.vx * dt; d.y += d.vy * dt;
-    // 边界软反弹
-    const M = 40;
-    if (d.x < M) { d.x = M; d.vx = Math.abs(d.vx); }
+    // 边界软反弹（左边界让开侧栏：那一列接收指针的是栏，不是桌面）
+    const M = 40, XL = railWidth() + M;
+    if (d.x < XL) { d.x = XL; d.vx = Math.abs(d.vx); }
     if (d.x > viewW - M) { d.x = viewW - M; d.vx = -Math.abs(d.vx); }
     if (d.y < M) { d.y = M; d.vy = Math.abs(d.vy); }
     if (d.y > viewH - M) { d.y = viewH - M; d.vy = -Math.abs(d.vy); }
@@ -1059,11 +1136,42 @@ requestAnimationFrame(bgLoop);
 // ===== 帧路由 =====
 function applyState(f) {
   arena = f.arena || '';
+  if (f.groups) groupNames = f.groups;
   const ids = f.ids || [];
   desktopIds = f.desktop || [];
   renderStage(ids, f.layout);
   setFullscreen(f.fullscreen ?? null);
+  renderRail();
   syncDiscs();
+}
+
+// ---- rail：人切组的唯一入口 ----
+// 人点一下 = 一次 switch_view 上行；服务端 activate 后回 broadcast，并把这件事
+// 作为 aside 回流给模型（"human switched to #x"）—— 所以这里不需要模型参与，
+// 也不需要页面自己维护"当前在哪"：arena 永远从帧里来。
+function railButton(label, group, extraClass) {
+  const b = document.createElement('button');
+  b.className = 'rail-item' + (extraClass ? ' ' + extraClass : '')
+    + (group === arena ? ' active' : '');
+  b.textContent = label;
+  b.title = group || '空屏';
+  b.addEventListener('click', () => send({ type: 'switch_view', group }));
+  return b;
+}
+
+function renderRail() {
+  railGroups.textContent = '';
+  // "空屏"= 把舞台交还给我（arena = desktop）。它不是组，所以单独一行、隔开。
+  railGroups.appendChild(railButton('◌ 空屏', ''));
+  railGroups.appendChild(Object.assign(document.createElement('div'), { id: 'rail-sep' }));
+  if (!groupNames.length) {
+    const empty = document.createElement('div');
+    empty.className = 'rail-empty';
+    empty.textContent = '还没有组';
+    railGroups.appendChild(empty);
+    return;
+  }
+  groupNames.forEach((g) => railGroups.appendChild(railButton('#' + g, g)));
 }
 
 function route(f) {
@@ -1150,6 +1258,39 @@ function logLine(text) {
   while (list.children.length > 50) list.lastChild.remove();
 }
 $('#log-badge').addEventListener('click', () => $('#log-list').classList.toggle('open'));
+
+// ---- rail 的两个人侧行为：收起、闲置淡出 ----
+// 收起是**手动**的（人不点，它不消失）；闲置只是淡，不停用，也不隐藏。
+
+let railIdle = null;
+function railPoke() {
+  rail.classList.remove('idle');
+  clearTimeout(railIdle);
+  railIdle = setTimeout(() => {
+    if (!rail.matches(':hover') && !railCollapsed()) rail.classList.add('idle');
+  }, 4000);
+}
+rail.addEventListener('pointerenter', railPoke);
+rail.addEventListener('pointermove', railPoke);
+rail.addEventListener('pointerleave', railPoke);
+railPoke();
+
+function setRailCollapsed(v) {
+  document.body.classList.toggle('rail-collapsed', v);
+  $('#rail-toggle').textContent = v ? '›' : '‹';
+  rail.classList.remove('idle');
+  // 上报给人侧状态面：栏宽改变的是舞台的**可用区**，模型排布时得知道。
+  // （它不进 debug 面 —— debug 面是要退役的，这是语义状态。）
+  send({ type: 'rail', collapsed: v });
+  // 栏宽变了 → 舞台可用区变了 → 画布与桌面圆盘重新对齐（贴底那层最容易在这里出血）
+  syncViewport();
+}
+$('#rail-toggle').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setRailCollapsed(!railCollapsed());
+});
+// 收起后整条边条就是"展开"的按钮 —— 收起是手动的，展开也是。
+rail.addEventListener('click', () => { if (railCollapsed()) setRailCollapsed(false); });
 
 // 首次同步放在这里，不放在定义处：syncViewport 会读 MOSS_SCALE 等 const，
 // 在它们初始化之前调用会撞上暂时性死区（TDZ）。此刻所有 const 已就位。

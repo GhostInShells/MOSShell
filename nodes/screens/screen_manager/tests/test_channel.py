@@ -170,7 +170,7 @@ async def test_notice_carries_active_group_and_layout():
 
 
 @pytest.mark.asyncio
-async def test_notices_separate_views_and_items():
+async def test_notices_separate_adopted_and_opened_windows():
     model = ScreenModel()
     model.adopt("cell/a/webview", "http://x", label="Terminal")
     chan, _ = _channel(model)
@@ -178,10 +178,10 @@ async def test_notices_separate_views_and_items():
         await runtime.execute_command("open", args=("http://a", "hand"))
         await runtime.refresh_metas()
         notices = runtime.self_meta().named_notices
-        assert "views" in notices
-        assert "items" in notices
-        assert "Terminal" in notices["views"]
-        assert "hand" in notices["items"]
+        assert "adopted" in notices
+        assert "opened" in notices
+        assert "Terminal" in notices["adopted"]
+        assert "hand" in notices["opened"]
 
 
 @pytest.mark.asyncio
@@ -192,6 +192,25 @@ async def test_mock_scene_populates_groups():
         await runtime.execute_command("mock_scene")
         assert len(model.groups()) >= 3
         assert rec.types()[-1] == "snapshot"
+
+
+@pytest.mark.asyncio
+async def test_notice_carries_the_human_side_rail_state():
+    """侧栏的展开/收起是排布的前提：舞台可用区 = 视口 − 栏宽。它由页面上报，
+    所以它必须真的走到 notice 里；没上报时不许编一个默认值出来。"""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert "rail" not in runtime.self_meta().named_notices
+
+        rec.rail = "collapsed"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["rail"] == "collapsed"
+
+        rec.rail = "expanded"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["rail"] == "expanded"
 
 
 @pytest.mark.asyncio

@@ -62,13 +62,21 @@ def _layout_view(model: ScreenModel) -> dict | None:
 
 
 def _state(model: ScreenModel) -> dict:
-    """The 'render this' set: what is on stage, what floats, what is fullscreen."""
+    """The 'render this' set: what is on stage, what floats, what is fullscreen.
+
+    ``groups`` rides along because it is a **place list the human reads**, not a
+    model-side arrangement: the sidebar must stay correct when a group appears or
+    empties itself, and the group list otherwise travels only once, in the
+    ``snapshot`` on connect — a fresh group would be invisible until a reload.
+    Names in creation order; membership is derivable from each item's ``group``.
+    """
     return {
         "arena": model.arena(),
         "ids": model.arena_items(),
         "layout": _layout_view(model),
         "fullscreen": model.fullscreen(),
         "desktop": model.desktop_items(),
+        "groups": model.groups(),
     }
 
 
@@ -80,19 +88,15 @@ def state_frame(model: ScreenModel) -> dict:
 def snapshot(model: ScreenModel) -> dict:
     """The full state a connecting surface needs to render.
 
-    ``items`` carries every pooled item's identity (url/label/icon), so the page
-    can materialize an iframe for a desktop item it has never seen before — the
-    ``desktop`` list alone is just ids.
+    ``items`` carries every pooled item's identity (url/label/icon and its
+    ``group``), so the page can materialize an iframe for a desktop item it has
+    never seen before — the ``desktop`` list alone is just ids. Group membership
+    comes from those items; the group list itself is in ``groups``.
     """
-    groups = [
-        {"name": g, "items": [item_view(model.get(i)) for i in model.group_items(g)]}
-        for g in model.groups()
-    ]
     return {
         "type": "snapshot",
         **_state(model),
         "items": [item_view(i) for i in model.items()],
-        "groups": groups,
     }
 
 
