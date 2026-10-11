@@ -174,6 +174,9 @@
       linear-gradient(135deg, rgba(61,220,143,.55), rgba(61,220,143,.07) 45%, rgba(61,220,143,.38)) border-box;
     box-shadow: 0 18px 48px rgba(0,0,0,.6), inset 0 1px 0 rgba(120,255,190,.07);
   }
+  /* 出现是"活过来"，不是"弹出来"：硬切会在划过时读成一次闪，
+     淡入即使误触也只是一次柔和的呼吸。 */
+  .slot.peek.fade { transition: opacity .18s ease-out; }
 
   /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
   /* 焦点：同一个 slot 换一套样式，不是搬容器、不是复制 iframe。
@@ -1340,12 +1343,17 @@ const POOL_SPIN = 0.055;     // 约 2 分钟一圈：慢到不打扰，快到看
 let poolSpin = POOL_SPIN;    // 当前角速度（rad/s）—— 缓动，不是开关
 let poolSpinWant = POOL_SPIN;
 let tileSeed = 0;            // 每块砖出生时领一个稳定序号（漂移相位的身份，不是池序）
-// peek：hover 到一块砖上、等场真正停稳之后，把它那块已经物化的 slot 原地亮出来。
-// PEEK_DWELL 不是"防误触的经验值"——它就是场停稳所需的时间（anyHover 把漂移压到 0
-// 用 dt*9 的缓动，约 0.25s）。"定住才呈现"因此是个能算的判据，不是我拍的数。
-const PEEK_DWELL = 260;
-let peekId = null;           // 此刻亮着的那一块（一次只有一块）
-let peekTimer = 0;
+// peek：hover 到一块砖上、等**它真的停住**之后，把那块已经物化的 slot 原地亮出来。
+//
+// 门槛不能只是"待够时间"：停在那里和路过，在时间上会长得一样。所以判据是
+// **在这块砖上、且最近 PEEK_DWELL 毫秒内总共没走够 PEEK_TRAVEL 像素**。
+// 连续划过去永远不会满足它；手停在那里才会。
+const PEEK_DWELL = 260;     // 同时等于场停稳所需的时间（anyHover 把漂移压到 0 约 0.25s）
+const PEEK_TRAVEL = 8;      // 这段时间里允许的累计位移（px）——超过就重新起算
+let peekId = null;          // 此刻亮着的那一块（一次只有一块）
+let hoverSince = 0;         // 指针停在这块砖上、且没走动的起点
+let hoverTravel = 0;        // 从那个起点起累计走过的距离
+let ptrX = -1, ptrY = -1;
 
 const POOL_MAX = 14;         // 再老的不画 —— 不活跃的东西不该占视野
 const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向日葵螺旋的种子序
@@ -1390,12 +1398,11 @@ function makeTile(it) {
   // 停稳之后再把活页亮出来 —— 顺序不能反：先亮再停，等于让一个活窗口在漂。
   el.addEventListener('pointerenter', () => {
     poolHover = it.id;
-    clearTimeout(peekTimer);
-    peekTimer = setTimeout(() => showPeek(it.id), PEEK_DWELL);
+    hoverSince = performance.now();
+    hoverTravel = 0;
   });
   el.addEventListener('pointerleave', () => {
     if (poolHover === it.id) poolHover = null;
-    clearTimeout(peekTimer);
     if (peekId === it.id) hidePeek();
   });
   // 一下点击 = 看它整屏。这是一次**视图动作**：服务端回广播，并把 view_by 写进
@@ -1425,14 +1432,30 @@ function showPeek(id) {
   const it = items.get(id), t = tiles.get(id);
   if (!it || !it.slot || !t) return;
   hidePeek();
-  it.slot.classList.remove('hidden');
-  it.slot.classList.add('peek');
+  const s = it.slot;
+  s.classList.remove('hidden');
+  s.classList.add('peek', 'fade');
   peekId = id;
   syncPeekRect();
+  // 淡入：先把 0 写进去、逼一次重排让它成为起点，再放开 —— 否则它和 display 的切换
+  // 落在同一帧，transition 根本不会跑。
+  s.style.opacity = '0';
+  void s.offsetWidth;
+  s.style.opacity = '1';
 }
 
 // 框跟着砖走，而不是在亮出那一刻拍一张尺寸照：hover 的放大本身就是缓动的，
 // 一次性量下来的矩形会比砖最终的位置小一圈，看起来像"贴歪了"。
+//
+// 两种"变小"是两件事，取决于页面照什么尺寸排版：
+//   PEEK_SCALE=true  光学缩小 —— 页面按 PEEK_BASE 倍渲染，再整体 scale 下去。
+//                    看到的是**完整的原构图被拍扁**，像一张缩略图/海报。
+//   PEEK_SCALE=false 重排 —— 盒子直接设成砖的矩形，页面按这个视口重新布局。
+//                    看到的是**它真的变小之后长什么样**（响应式布局的真实结果）。
+const PEEK_SCALE = true;
+const PEEK_BASE = 4;         // 光学缩小时，页面按瓷砖的几倍尺寸渲染
+const TILE_W = 264, TILE_H = 164;
+
 function syncPeekRect() {
   if (!peekId) return;
   const it = items.get(peekId), t = tiles.get(peekId);
@@ -1440,7 +1463,15 @@ function syncPeekRect() {
   const r = t.el.getBoundingClientRect();
   const s = it.slot;
   s.style.left = `${r.left}px`; s.style.top = `${r.top}px`;
-  s.style.width = `${r.width}px`; s.style.height = `${r.height}px`;
+  if (PEEK_SCALE) {
+    const bw = TILE_W * PEEK_BASE, bh = TILE_H * PEEK_BASE;
+    s.style.width = `${bw}px`; s.style.height = `${bh}px`;
+    s.style.transformOrigin = '0 0';
+    s.style.transform = `scale(${(r.width / bw).toFixed(4)})`;
+  } else {
+    s.style.width = `${r.width}px`; s.style.height = `${r.height}px`;
+    s.style.transform = '';
+  }
 }
 
 function hidePeek() {
@@ -1449,8 +1480,10 @@ function hidePeek() {
   peekId = null;
   if (!it || !it.slot) return;
   const s = it.slot;
-  s.classList.remove('peek');
+  s.classList.remove('peek', 'fade');
+  s.style.opacity = '';
   s.style.left = s.style.top = s.style.width = s.style.height = '';
+  s.style.transform = '';
   // 回到它本来该在的位置：还在舞台上或正被看着的留可见，其余收回 hidden。
   if (!stageIds.includes(it.id) && focusId !== it.id) s.classList.add('hidden');
 }
@@ -1549,12 +1582,18 @@ function stepPool(dt) {
   poolSpin += (poolSpinWant - poolSpin) * Math.min(1, dt * 2.5);
   poolRot += poolSpin * dt;
   layoutPool(dt);
+  // 停稳才亮：手还在走，就不算"指"。这一条挡掉的是"划过去"和"指着"看起来一样。
+  if (poolHover && !peekId && performance.now() - hoverSince > PEEK_DWELL) showPeek(poolHover);
   syncPeekRect();          // 亮着的那块跟着砖走（hover 放大是缓动的）
 }
 
 // 指针进屏 = 注意状态：停转。出屏 = 回到呼吸。
-addEventListener('mousemove', (e) => {
+// 同时累计"在砖上走了多远" —— peek 的判据要的是"没在走"，不只是"待够时间"。
+addEventListener('pointermove', (e) => {
   poolSpinWant = (e.clientX > railWidth()) ? 0 : POOL_SPIN;
+  if (ptrX >= 0) hoverTravel += Math.abs(e.clientX - ptrX) + Math.abs(e.clientY - ptrY);
+  ptrX = e.clientX; ptrY = e.clientY;
+  if (hoverTravel > PEEK_TRAVEL) { hoverSince = performance.now(); hoverTravel = 0; }
 });
 
 // ===== 帧路由 =====

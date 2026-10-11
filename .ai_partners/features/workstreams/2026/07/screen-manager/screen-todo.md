@@ -107,3 +107,4 @@
 |---|------|------|
 | T1 | open | **CTML 参数被隐式转换就炸** — `matrix.nodes:read_output limit:str="25"` 直接报 `'>' not supported between instances of 'str' and 'int'`；同一族里 `arrange(ids)` 传 int / list 也炸（D03 撞 int、D08 撞 list）。签名即契约：要么容错，要么错得说清"这里要什么类型"。跨 node 工具链的共性问题，暂记此处（归属待裁） |
 | T2 | open | **平台侧几何自报已在线上** — 屏幕页每 2s 落一行 `[client]`（viewW/H、dpr、baseY、rms、riseMax），模型可自查，不必再让人念屏幕。Retina 画布那处修复（`f9504cc2`→`7723cc86`）在 dpr=2 下复现通过。**它不是"调试面"**（W6）：那条线上不了屏幕，是模型的眼睛，所以默认开着、另给开关。待做：把它写成 V 列的判据，别留在口头 |
+| T3 | open | **co_browser 的 `exec` 会无声丢弃（2026-10-11 实测 6 次）** — exec 体里用 `page.mouse.move` 把光标移到某块瓷砖上、之后再 `page.evaluate`，这条调用**直接消失**：无报错、无回执、不进 `history`；而页面本身是活的（后续 exec 正常、rAF 在跑、`peek` 状态可读）。改成 `aexec` 则正常返回。怀疑在 exec 的完成/回传路径，不在页面侧。**共同特征还没锁定**（同形状的短脚本有时能过），要单独查 `co_browser` 的 exec 生命周期 |
