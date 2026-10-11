@@ -162,6 +162,19 @@
   .slot iframe { width: 100%; height: 100%; border: 0; display: block; }
   .slot.hidden { display: none; }
 
+  /* peek：把**已经物化**的那块 slot 原地亮出来 —— 不新建 iframe、不搬父节点（WD1）。
+     它是一次"看"，不是一次"用"，所以不接收指针：否则光标进砖 → 活页盖上来 →
+     吃掉指针 → pointerleave → 撤掉 → pointerenter …… 抽搐。
+     外形照着瓷砖画，让人读到的是"同一块东西活了"，而不是"多了一个窗口"。 */
+  .slot.peek {
+    position: fixed; z-index: 3; pointer-events: none;
+    border: 1px solid transparent; border-radius: 6px;
+    background:
+      #060a08 padding-box,
+      linear-gradient(135deg, rgba(61,220,143,.55), rgba(61,220,143,.07) 45%, rgba(61,220,143,.38)) border-box;
+    box-shadow: 0 18px 48px rgba(0,0,0,.6), inset 0 1px 0 rgba(120,255,190,.07);
+  }
+
   /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
   /* 焦点：同一个 slot 换一套样式，不是搬容器、不是复制 iframe。
      左边让开栏宽 —— 它是接收指针的层，按判据必须让，"被侧栏挡住"是违反判据的 bug。 */
@@ -493,6 +506,7 @@ function makeSlot(it) {
 
 function destroySlot(id) {
   const it = items.get(id); if (!it) return;
+  if (peekId === id) peekId = null;   // 砖没了，亮着的那块不留在屏幕上
   it.slot.remove();
   if (focusId === id) focusId = null;
 }
@@ -513,7 +527,9 @@ function renderStage(ids, layout) {
   // 整屏是"呈现"，与"它属于哪个组"无关（旧的 per-group fullscreen 把两者绑死了）。
   items.forEach((it) => {
     const focused = !!focusId && it.id === focusId;
-    it.slot.classList.toggle('hidden', !ids.includes(it.id) && !focused);
+    // 正被 peek 的那块不走这条：它此刻摆在砖的位置上，不是"没上舞台所以要藏"。
+    const peeking = it.id === peekId;
+    it.slot.classList.toggle('hidden', !peeking && !ids.includes(it.id) && !focused);
     it.slot.classList.toggle('focused', focused);
   });
   syncScrim();
@@ -1323,11 +1339,22 @@ let poolRot = 0;             // 螺旋的整体转角
 const POOL_SPIN = 0.055;     // 约 2 分钟一圈：慢到不打扰，快到看得见
 let poolSpin = POOL_SPIN;    // 当前角速度（rad/s）—— 缓动，不是开关
 let poolSpinWant = POOL_SPIN;
+let tileSeed = 0;            // 每块砖出生时领一个稳定序号（漂移相位的身份，不是池序）
+// peek：hover 到一块砖上、等场真正停稳之后，把它那块已经物化的 slot 原地亮出来。
+// PEEK_DWELL 不是"防误触的经验值"——它就是场停稳所需的时间（anyHover 把漂移压到 0
+// 用 dt*9 的缓动，约 0.25s）。"定住才呈现"因此是个能算的判据，不是我拍的数。
+const PEEK_DWELL = 260;
+let peekId = null;           // 此刻亮着的那一块（一次只有一块）
+let peekTimer = 0;
 
 const POOL_MAX = 14;         // 再老的不画 —— 不活跃的东西不该占视野
 const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向日葵螺旋的种子序
+const POOL_EASE = 6;         // 槽位缓动速率（1/s）：排序一变，卡片是滑过去的，不是瞬移
 
-function poolOrder() { return [...items.keys()].reverse(); }  // 插入序最老在前
+// 池序从服务端来 —— 它是模型的决定（`raise` 写的），不是页面能从插入序猜出来的。
+// 页面自己再算一遍 = 对同一件事有两个权威，那种账今天已经付过一次了。
+let poolIds = [];
+function poolOrder() { return poolIds.filter((id) => items.has(id)); }
 
 function tileFace(id) {
   const t = tiles.get(id); if (!t) return;
@@ -1360,13 +1387,25 @@ function makeTile(it) {
   caption.append(line, name);
   el.append(art, caption);
   // hover = 焦点拉伸的入口。只做"变大变清"，**绝不移动**（理由见 layoutPool）。
-  el.addEventListener('pointerenter', () => { poolHover = it.id; });
-  el.addEventListener('pointerleave', () => { if (poolHover === it.id) poolHover = null; });
+  // 停稳之后再把活页亮出来 —— 顺序不能反：先亮再停，等于让一个活窗口在漂。
+  el.addEventListener('pointerenter', () => {
+    poolHover = it.id;
+    clearTimeout(peekTimer);
+    peekTimer = setTimeout(() => showPeek(it.id), PEEK_DWELL);
+  });
+  el.addEventListener('pointerleave', () => {
+    if (poolHover === it.id) poolHover = null;
+    clearTimeout(peekTimer);
+    if (peekId === it.id) hidePeek();
+  });
   // 一下点击 = 看它整屏。这是一次**视图动作**：服务端回广播，并把 view_by 写进
   // notice 的状态面 —— 不再走 aside（旁路会丢，见 FEATURE「呈现模型」）。
   el.addEventListener('click', () => { send({ type: 'focus', id: it.id }); });
   poolEl.appendChild(el);
-  tiles.set(it.id, { el, bl: -1, hk: 0, line, name, art });
+  // seed 是这块砖的**稳定**身份，不随池序变 —— 漂移的相位若挂在序号 k 上，
+  // 每次重排所有卡片的抖动会同时跳一下，看着像全屏抽筋。
+  tiles.set(it.id, { el, bl: -1, hk: 0, line, name, art, seed: tileSeed++,
+                     bx: null, by: null, bu: null });
   tileFace(it.id);
 }
 
@@ -1377,6 +1416,44 @@ function dropTile(id) {
 
 // 池子只在 home 且没有焦点时在场：焦点视图要独占舞台。
 function poolOn() { return arena === '' && tiles.size > 0 && !focusId; }
+
+// ---- peek：瓷砖上亮出活页 ----
+// 两层各归各的：瓷砖层一直游动、永不装 iframe；slot 层一直物化、永不 reparent。
+// 它们只在"场停稳"这一个时刻交接 —— 而且不是搬，是把那块 slot 摆到砖的位置上。
+function showPeek(id) {
+  if (peekId === id) return;
+  const it = items.get(id), t = tiles.get(id);
+  if (!it || !it.slot || !t) return;
+  hidePeek();
+  it.slot.classList.remove('hidden');
+  it.slot.classList.add('peek');
+  peekId = id;
+  syncPeekRect();
+}
+
+// 框跟着砖走，而不是在亮出那一刻拍一张尺寸照：hover 的放大本身就是缓动的，
+// 一次性量下来的矩形会比砖最终的位置小一圈，看起来像"贴歪了"。
+function syncPeekRect() {
+  if (!peekId) return;
+  const it = items.get(peekId), t = tiles.get(peekId);
+  if (!it || !it.slot || !t) return;
+  const r = t.el.getBoundingClientRect();
+  const s = it.slot;
+  s.style.left = `${r.left}px`; s.style.top = `${r.top}px`;
+  s.style.width = `${r.width}px`; s.style.height = `${r.height}px`;
+}
+
+function hidePeek() {
+  if (!peekId) return;
+  const it = items.get(peekId);
+  peekId = null;
+  if (!it || !it.slot) return;
+  const s = it.slot;
+  s.classList.remove('peek');
+  s.style.left = s.style.top = s.style.width = s.style.height = '';
+  // 回到它本来该在的位置：还在舞台上或正被看着的留可见，其余收回 hidden。
+  if (!stageIds.includes(it.id) && focusId !== it.id) s.classList.add('hidden');
+}
 
 function layoutPool(dt = 0.016) {
   const x0 = railWidth(), w = Math.max(1, viewW - x0);
@@ -1404,8 +1481,18 @@ function layoutPool(dt = 0.016) {
       ? 0
       : Math.sqrt((k + 0.6) / (n + 0.6));      // 0（旋心/最近）→ 1（边缘/最老）
     const rad = rmax * u, ang = k * GOLDEN + poolRot;
+    // 槽位（目标）与**显示位置**分开：池序一变，k 就变，槽位是瞬移的；
+    // 让显示位置追着槽位走，卡片才是"滑"过去的，而不是跳过去。
+    // 缓动的只有槽位 —— 呼吸（drift）照旧即时叠加，它是活着的证据，不该被平滑掉。
+    const bxT = cx + rad * Math.cos(ang);
+    const byT = cy + rad * Math.sin(ang) * RY - u * 46;
+    if (t.bx === null) { t.bx = bxT; t.by = byT; t.bu = u; }   // 新砖不飞入：直接站在槽上
+    const e = Math.min(1, dt * POOL_EASE);
+    t.bx += (bxT - t.bx) * e;
+    t.by += (byT - t.by) * e;
+    t.bu += (u - t.bu) * e;
     // 远近由半径算出：越靠边越小、越糊、越淡、越往上抬（灭点在三分线上）
-    const sc = 1.06 - u * 0.44;
+    const sc = 1.06 - t.bu * 0.44;
     // 双八度漂移：低频大摆 + 高频小抖；近的动得多，远的几乎不动（视差）。
     //
     // 幅度按**视口**算，不按固定像素：13px 在 1280 宽的屏上是呼吸，在 2560 宽上
@@ -1414,12 +1501,16 @@ function layoutPool(dt = 0.016) {
     // 而且只要有人把指针放在场上，整个**运动场**就缓动停住（不只是自转）：
     // 判据还是那条——**指针不许改变靶子的位置**。一个在你瞄准线下继续漂的场，
     // 就是把靶子从光标底下挪走。
-    const amp = ((1 - u) * 0.022 * Math.min(w, viewH)) + 5;
+    //
+    // 相位挂在每块砖自己的 seed 上，不挂在序号 k 上：重排时 k 集体换位，
+    // 挂在 k 上等于让全场的抖动同时跳一下。
+    const amp = ((1 - t.bu) * 0.022 * Math.min(w, viewH)) + 5;
     const motion = 1 - anyHover;
-    const drx = (Math.sin(poolPhase * .7 + k * .9) * .7 + Math.sin(poolPhase * 1.9 + k * 2.3) * .3) * amp * motion;
-    const dry = (Math.cos(poolPhase * .6 + k * .7) * .7 + Math.cos(poolPhase * 1.7 + k * 1.9) * .3) * amp * .6 * motion;
-    const x = cx + rad * Math.cos(ang) + drx;
-    const y = cy + rad * Math.sin(ang) * RY - u * 46 + dry;
+    const s = t.seed;
+    const drx = (Math.sin(poolPhase * .7 + s * .9) * .7 + Math.sin(poolPhase * 1.9 + s * 2.3) * .3) * amp * motion;
+    const dry = (Math.cos(poolPhase * .6 + s * .7) * .7 + Math.cos(poolPhase * 1.7 + s * 1.9) * .3) * amp * .6 * motion;
+    const x = t.bx + drx;
+    const y = t.by + dry;
     const sel = false;
     const hk = t.hk || 0;
     // 焦点拉伸**原地**放大：transform-origin 是中心，所以光标永远还在它里面。
@@ -1427,11 +1518,11 @@ function layoutPool(dt = 0.016) {
     // 邻居不让位，只降一点亮度："退到后面"用明暗说，不用位移说。
     const sc2 = sc * (1 + 0.26 * hk);
     el.style.transform = `translate(-50%,-50%) translate3d(${x}px, ${y}px, 0) scale(${sel ? sc2 * 1.16 : sc2})`;
-    el.style.opacity = (sel ? 1 : (1 - u * 0.28)) * (1 - 0.20 * anyHover * (1 - hk));
+    el.style.opacity = (sel ? 1 : (1 - t.bu * 0.28)) * (1 - 0.20 * anyHover * (1 - hk));
     el.style.zIndex = String(200 - k + (sel ? 50 : 0) + Math.round(hk * 400));
     // 模糊只做"一点点霜"：瓷砖是**可点的目标**，糊到认不出字就等于没做交互。
     // 远近的感觉主要交给缩放、压暗和漂移幅度，不是交给失焦。
-    const bl = +((sel ? 0 : u * 1.1) * (1 - hk)).toFixed(2);
+    const bl = +((sel ? 0 : t.bu * 1.1) * (1 - hk)).toFixed(2);
     if (t.bl !== bl) { el.style.filter = bl ? `blur(${bl}px)` : ''; t.bl = bl; }
     el.classList.toggle('sel', sel);
     el.classList.toggle('lit', hk > 0.4);
@@ -1440,9 +1531,10 @@ function layoutPool(dt = 0.016) {
 
 function syncPool() {
   const keep = new Set(poolOrder().slice(0, POOL_MAX));
-  [...tiles.keys()].forEach((id) => { if (!keep.has(id)) dropTile(id); });
+  [...tiles.keys()].forEach((id) => { if (!keep.has(id)) { if (peekId === id) hidePeek(); dropTile(id); } });
   keep.forEach((id) => { if (!tiles.has(id) && items.has(id)) makeTile(items.get(id)); });
   const on = poolOn();
+  if (!on) hidePeek();          // 池子不在场（切组 / 进焦点）时，活页必须收回
   poolEl.classList.toggle('on', on);
   document.body.classList.toggle('pool-on', on);
   desktop.style.display = on ? 'none' : '';   // 圆盘那一套退役：它的职责搬到池子
@@ -1457,6 +1549,7 @@ function stepPool(dt) {
   poolSpin += (poolSpinWant - poolSpin) * Math.min(1, dt * 2.5);
   poolRot += poolSpin * dt;
   layoutPool(dt);
+  syncPeekRect();          // 亮着的那块跟着砖走（hover 放大是缓动的）
 }
 
 // 指针进屏 = 注意状态：停转。出屏 = 回到呼吸。
@@ -1468,6 +1561,7 @@ addEventListener('mousemove', (e) => {
 function applyState(f) {
   arena = f.arena || '';
   if (f.groups) groupNames = f.groups;
+  if (f.order) poolIds = f.order;
   const ids = f.ids || [];
   desktopIds = f.desktop || [];
   focusId = f.focus || null;

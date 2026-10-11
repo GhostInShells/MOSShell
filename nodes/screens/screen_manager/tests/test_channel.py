@@ -21,8 +21,8 @@ async def test_channel_exposes_the_command_set():
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
-            "focus", "float", "pool", "mark", "arrow", "text", "mock_scene",
-            "mock_audio",
+            "focus", "float", "raise", "pool", "mark", "arrow", "text",
+            "mock_scene", "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -152,6 +152,45 @@ async def test_navigate_rejects_a_webview_item():
     async with chan.bootstrap() as runtime:
         with pytest.raises(Exception):
             await runtime.execute_command("navigate", args=(item.id, "http://y"))
+
+
+@pytest.mark.asyncio
+async def test_raise_emits_state_with_the_new_order():
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        a, b = [f["item"]["id"] for f in rec.of("open")]
+        # 新开的落在最前 —— 池序是状态，就随 state 帧发出去。
+        assert rec.of("state")[-1]["order"] == [b, a]
+        receipt = await runtime.execute_command("raise", args=(a,))
+        assert rec.of("state")[-1]["order"] == [a, b]
+        assert a in str(receipt)
+
+
+@pytest.mark.asyncio
+async def test_raise_rejects_an_unknown_id():
+    model = ScreenModel()
+    chan, _ = _channel(model)
+    async with chan.bootstrap() as runtime:
+        with pytest.raises(Exception):
+            await runtime.execute_command("raise", args=("nope",))
+
+
+@pytest.mark.asyncio
+async def test_notice_carries_the_pool_order():
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        a, b = [f["item"]["id"] for f in rec.of("open")]
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["order"] == f"{b} {a}"
+        await runtime.execute_command("raise", args=(a,))
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["order"] == f"{a} {b}"
 
 
 @pytest.mark.asyncio

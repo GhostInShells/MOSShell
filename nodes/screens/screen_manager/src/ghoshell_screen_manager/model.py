@@ -182,6 +182,17 @@ class ScreenModel:
         desktop (in no group), yet one click must show it full stage. Focus says
         where the human looks; it never says which group the item belongs to.
         """
+        self._order: list[str] = []
+        """The pool order, front (nearest the eye) → back.
+
+        Explicit *state*, not a view derived from insertion time. The spiral on
+        home reads this list: the front is the biggest, sharpest tile, and with
+        more items than the pool can show, the front is also who stays visible.
+        "What is near the eye" is a decision the model gets to make, so the list
+        is the one thing ``raise`` writes — no per-item rank field (that would
+        reintroduce ties, and with them a second authority over the same fact).
+        A newly materialized item lands at the front.
+        """
         self._next_index: int = 0
         """Monotonic item handle. Never recycled — an id must stay stable so a
         handle the model holds does not drift onto a later item after a destroy."""
@@ -218,6 +229,10 @@ class ScreenModel:
     def desktop_items(self) -> list[str]:
         """Ids on the desktop — in the pool but in no group."""
         return [i.id for i in self._items.values() if not i.group]
+
+    def pool_order(self) -> list[str]:
+        """Every pooled item, front → back — the order the pool spirals through."""
+        return [i for i in self._order if i in self._items]
 
     def focus(self) -> str | None:
         """The single item shown full stage, or None. Orthogonal to groups."""
@@ -319,6 +334,8 @@ class ScreenModel:
             service=service, icon=icon,
         )
         self._items[item_id] = item
+        # 新的落在最前面：池子是"我正在看的东西"，刚出现的东西本来就该离眼睛最近。
+        self._order.insert(0, item_id)
         if group:
             self._groups[group].ids.append(item_id)
         # A hand-opened item is never tombstoned — it is a deliberate act.
@@ -343,6 +360,27 @@ class ScreenModel:
             raise ValueError("url is required")
         item.url = url
         return item
+
+    def raise_to_front(self, item_ids: list[str]) -> list[str]:
+        """Pull items to the front of the pool, in the order given; the rest follow.
+
+        A pure reordering of the current list: the named ids end up at the front
+        in exactly the order they were passed, everything else keeps its relative
+        order behind them. No rank field, no ties, no incremental drift — calling
+        it again with the same ids changes nothing.
+
+        Returns the resulting order, so a caller can report what it now shows.
+        """
+        if not item_ids:
+            raise ValueError("raise needs at least one id")
+        if len(set(item_ids)) != len(item_ids):
+            raise ValueError(f"duplicate ids in {item_ids!r}")
+        for item_id in item_ids:
+            self._require(item_id)
+        for item_id in reversed(item_ids):
+            self._order.remove(item_id)
+            self._order.insert(0, item_id)
+        return self.pool_order()
 
     def adopt(
         self,
@@ -522,6 +560,8 @@ class ScreenModel:
         item = self._items.pop(item_id, None)
         if item is None:
             return None
+        if item_id in self._order:
+            self._order.remove(item_id)
         if self._focus == item_id:
             self._focus = None
         if item.group:

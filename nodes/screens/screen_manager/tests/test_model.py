@@ -297,3 +297,62 @@ def test_navigate_rejects_an_unknown_item():
     m = ScreenModel()
     with pytest.raises(KeyError):
         m.navigate("ghost", "http://y")
+
+
+# -- pool order ---------------------------------------------------------------
+
+
+def test_a_new_item_lands_at_the_front_of_the_pool():
+    m = ScreenModel()
+    a = m.open("http://a").id
+    b = m.open("http://b").id
+    assert m.pool_order() == [b, a]
+
+
+def test_raise_moves_items_to_the_front_and_the_rest_follow():
+    m = ScreenModel()
+    ids = [m.open(f"http://{k}").id for k in range(4)]
+    assert m.pool_order() == [ids[3], ids[2], ids[1], ids[0]]
+    assert m.raise_to_front([ids[0], ids[1]]) == [ids[0], ids[1], ids[3], ids[2]]
+
+
+def test_raise_keeps_the_order_of_the_ids_it_names():
+    m = ScreenModel()
+    ids = [m.open(f"http://{k}").id for k in range(4)]
+    assert m.raise_to_front([ids[1], ids[0]])[:2] == [ids[1], ids[0]]
+
+
+def test_raise_is_idempotent():
+    m = ScreenModel()
+    ids = [m.open(f"http://{k}").id for k in range(3)]
+    once = m.raise_to_front([ids[0]])
+    assert m.raise_to_front([ids[0]]) == once
+
+
+def test_raise_rejects_unknown_empty_and_duplicate_ids():
+    m = ScreenModel()
+    a = m.open("http://a").id
+    with pytest.raises(ValueError):
+        m.raise_to_front([])
+    with pytest.raises(ValueError):
+        m.raise_to_front([a, a])
+    with pytest.raises(KeyError):
+        m.raise_to_front(["ghost"])
+
+
+def test_pool_order_drops_items_that_left_the_pool():
+    m = ScreenModel()
+    a = m.open("http://a").id
+    b = m.open("http://b").id
+    m.destroy(a)
+    assert m.pool_order() == [b]
+
+
+def test_raise_does_not_care_about_groups():
+    """Order is about distance from the eye, not about where an item is arranged."""
+    m = ScreenModel()
+    a = m.open("http://a").id
+    b = m.open("http://b").id
+    m.arrange("code", [a], family="grid", dir="lr")
+    assert m.raise_to_front([a]) == [a, b]
+    assert m.group_items("code") == [a]

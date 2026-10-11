@@ -220,11 +220,34 @@ def build_screen_channel(
         await _emit(P.state_frame(model))
         return f"[screen] {len(freed)} item(s) → desktop" if freed else "[screen] nothing to float"
 
+    @chan.build.command(name="raise")
+    async def raise_items(ids: str) -> str:
+        """Pull items to the front of the pool — nearest the eye.
+
+        ``ids`` is a comma-separated list in the order you want them to end up
+        showing: your first id becomes the closest. Everything else keeps its
+        relative order behind them. The pool is what home shows when nothing is
+        arranged: items nearer the front are bigger, sharper and drawn on top,
+        and when the pool holds more than it can show, the front is also who
+        stays visible. A newly opened window lands at the front on its own.
+        """
+        wanted = _split_ids(ids)
+        try:
+            order = model.raise_to_front(wanted)
+        except (ValueError, KeyError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _emit(P.state_frame(model))
+        return f"[screen] front: {' '.join(order[: len(wanted)])}"
+
     @chan.build.command(name="pool", always_observe=True)
     async def pool() -> str:
         """List the whole pool — the desktop, and every group in order."""
         arena = model.arena() or "desktop"
-        lines = [f"showing: #{arena}", f"desktop: {', '.join(model.desktop_items()) or '-'}"]
+        lines = [
+            f"showing: #{arena}",
+            f"order: {' '.join(model.pool_order()) or '-'}",
+            f"desktop: {', '.join(model.desktop_items()) or '-'}",
+        ]
         for g in model.groups():
             mark = "*" if g == model.arena() else " "
             lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}")
@@ -322,6 +345,11 @@ def build_screen_channel(
             out["focus"] = f"#{model.focus()}"
         if model.view_by():
             out["view_by"] = model.view_by()
+        # 池序：home 的螺旋读的就是它 —— 最前 = 离眼睛最近。它是**我的决定**
+        # （raise 写的），所以它得是一条我能读到的状态，而不是只在我眼前那一屏上。
+        order = model.pool_order()
+        if order:
+            out["order"] = " ".join(order)
         # 索引视角：两类 item 的 handle → label，名字要读出区别 —— 这两种窗口的
         # 归属不同（adopted 的 url 归 node、不可 navigate；opened 的是模型自建、可
         # navigate），所以不能叫 views / items 那种只有作者才懂的名字。

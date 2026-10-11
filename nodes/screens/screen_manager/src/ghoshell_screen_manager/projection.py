@@ -83,6 +83,10 @@ def _state(model: ScreenModel) -> dict:
         "view_by": model.view_by(),
         "desktop": model.desktop_items(),
         "groups": model.groups(),
+        # The pool order travels with the state rather than being re-derived on the
+        # page: "what is near the eye" is the model's decision (``raise``), and a
+        # page-side guess from insertion time would be a second authority over it.
+        "order": model.pool_order(),
     }
 
 
