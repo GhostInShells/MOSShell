@@ -418,7 +418,7 @@ class Dolores(Ghost):
     # ── startup (born) ───────────────────────────────
 
     async def startup(self) -> None:
-        """Lifecycle hook (born) — emit the boot self-wake signal from the cached startup doc.
+        """Lifecycle hook (born) — announce the ghost's own web face, then boot-wake.
 
         The doc is loaded once in ``__aenter__`` so both ``channel()`` (for ``init_frame``)
         and ``startup()`` (for command + instruction) read the same snapshot. Boot is
@@ -426,13 +426,71 @@ class Dolores(Ghost):
         """
         if self._matrix is None:
             return
+        # The surface is an organ, not a reading of the startup doc: it is announced
+        # whether or not a boot doc exists.
+        await self._serve_dsh_webview()
         doc = self._startup_doc
         if doc is None or (not doc.command and not doc.instruction):
             return
         from .nucleus import new_dolores_ego_signal
 
-        signal = new_dolores_ego_signal(kind="startup", command=doc.command, instruction=doc.instruction)
+        signal = new_dolores_ego_signal(
+            kind="startup",
+            command=doc.command,
+            instruction=self._with_dsh_surface(doc.instruction),
+        )
         self._matrix.session.add_signal(signal)
+
+    def _dsh_surface_url(self) -> str | None:
+        """The dsh web surface URL (its per-launch token included), or None before it is up.
+
+        One resolver for two consumers — the boot instruction and the webview
+        declaration.  Two copies of "where the surface lives" would be two
+        authorities over the same fact, and they would drift.
+        """
+        try:
+            launcher = self.dsh_launcher
+        except RuntimeError:
+            return None
+        return launcher.web_url() or f"{launcher.config.base_url}/?token={launcher.token()}"
+
+    async def _serve_dsh_webview(self) -> None:
+        """Announce the dsh web surface on the mesh, so a screen adopts it by itself.
+
+        The ghost's reasoning surface is an organ like any node's — not something a
+        human has to open, nor something the model has to materialize by hand with
+        ``open(url=...)``.  Left unannounced, "the reasoning is on stage" depends on
+        someone *remembering* to do it, which is exactly the kind of thing that
+        silently stops happening.
+        """
+        from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
+
+        url = self._dsh_surface_url()
+        if not url:
+            return
+        await WebViewServer.serve(
+            self._matrix,
+            WebViewDeclaration(
+                url=url,
+                title="dsh",
+                description="what the ghost is thinking, as it thinks it",
+                icon="brain",
+            ),
+        )
+
+    def _with_dsh_surface(self, instruction: str) -> str:
+        """Append the dsh web surface URL to the boot instruction.
+
+        The URL carries a per-launch token, so it is only known after the launcher has
+        spawned dsh — it can never live in the startup doc. Without it the ghost cannot
+        reach its own web surface (where the human reads its messages), which is exactly
+        what happened before this line existed.
+        """
+        url = self._dsh_surface_url()
+        if not url:
+            return instruction
+        line = f"dsh web surface: {url}"
+        return f"{instruction}\n\n{line}" if instruction else line
 
     def _resolve_startup_doc(self) -> Path | None:
         """Resolve the current mode's startup doc, falling back to the default."""

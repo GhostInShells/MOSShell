@@ -18,6 +18,7 @@ both to ``Matrix`` and tests wire both to a recorder.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -25,7 +26,7 @@ from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channe
 from ghoshell_moss.core.concepts.channel import Channel
 
 from . import projection as P
-from .audio import MockAudioSource
+from .audio import AudioSource
 from .mock import demo_items
 from .model import ScreenModel, compute_layout
 
@@ -35,10 +36,23 @@ __all__ = ["build_screen_channel"]
 class _Surface(Protocol):
     async def broadcast(self, frame: dict[str, Any]) -> None: ...
 
+    def rail_state(self) -> str:
+        """How the human's sidebar currently stands — ``expanded`` / ``collapsed``.
+
+        One of the few facts the surface owns rather than the store: the human
+        folds the sidebar in the browser, and the materialized area of the stage
+        changes with it. The model needs it because that area is what it arranges
+        into — arranging blind puts items where the human cannot see or click them.
+        """
+        ...
+
 
 class _NoSurface:
     async def broadcast(self, frame: dict[str, Any]) -> None:
         return None
+
+    def rail_state(self) -> str:
+        return ""
 
 
 def _split_ids(raw: str) -> list[str]:
@@ -49,7 +63,7 @@ def build_screen_channel(
     model: ScreenModel,
     *,
     surface: _Surface | None = None,
-    audio: MockAudioSource | None = None,
+    audio: AudioSource | None = None,
     surface_url: str | Callable[[], str] | None = None,
     name: str = "webview_screen",
     description: str | None = None,
@@ -89,21 +103,15 @@ def build_screen_channel(
 
     @chan.build.instruction
     def instruction() -> str:
+        # 只写 interface 说不出的东西。命令各自做什么，签名和 docstring 已经反射给
+        # 模型了；在这里再复述一遍会随代码漂移成谎话（channel_builder 的明写红线）。
         return (
-            "You own how the screen is arranged; the human owns where to look. "
-            "open(url) materializes a window into the pool and returns its handle — "
-            "an index you keep for every later command. arrange(group, ids) is your "
-            "main move: it pulls the items you name into a group, in order, with a "
-            "layout family, and shows it. navigate(handle, url) re-points a window "
-            "you opened yourself; webview windows (listed under the views notice) "
-            "belong to their nodes and cannot be navigated. Everything you leave "
-            "out stays floating on the desktop. activate() switches the view "
-            "between groups and the desktop; dismiss() sends an item back to the "
-            "desktop; fullscreen() makes one item fill the stage. The human can "
-            "switch views and toggle fullscreen too — the notice tells you when "
-            "that happened. Veil gestures (mark / arrow / text) are the only "
-            "time-aware commands: they resolve when their declared duration ends, "
-            "so a gesture and a spoken clause share one clock."
+            "You own how the screen is arranged; the human owns where to look and "
+            "whether a node lives — the sidebar, whose state the notice carries, is how "
+            "they switch groups. Two kinds of windows share the pool: ones a node "
+            "adopted (its url belongs to that node and cannot be re-pointed) and ones "
+            "you opened yourself. A group's shape is derived from how many ids it "
+            "holds — sizes are never yours to give."
         )
 
     # -- materialization ---------------------------------------------------
@@ -190,18 +198,20 @@ def build_screen_channel(
         await _emit(P.state_frame(model))
         return f"[screen] removed #{id}"
 
-    @chan.build.command(name="fullscreen")
-    async def fullscreen(id: str = "") -> str:
-        """Make one active-group item fill the stage; ``id`` empty exits."""
+    @chan.build.command(name="focus")
+    async def focus(id: str = "") -> str:
+        """Show one item alone, full stage; ``id`` empty leaves the focus.
+
+        A *view*, not a layout: any pooled item will do, grouped or not. It never
+        moves an item between groups.
+        """
         target = id or None
         try:
-            model.set_fullscreen(target)
+            model.set_focus(target)
         except (KeyError, ValueError) as e:
             CommandUtil.raise_observe(str(e))
-        await _emit(P.fullscreen_frame(target))
-        return (
-            f"[screen] fullscreen #{target}" if target else "[screen] fullscreen exited"
-        )
+        await _emit(P.focus_frame(target))
+        return f"[screen] focus #{target}" if target else "[screen] focus exited"
 
     @chan.build.command(name="float")
     async def float_group() -> str:
@@ -210,15 +220,37 @@ def build_screen_channel(
         await _emit(P.state_frame(model))
         return f"[screen] {len(freed)} item(s) → desktop" if freed else "[screen] nothing to float"
 
+    @chan.build.command(name="raise")
+    async def raise_items(ids: str) -> str:
+        """Pull items to the front of the pool — nearest the eye.
+
+        ``ids`` is a comma-separated list in the order you want them to end up
+        showing: your first id becomes the closest. Everything else keeps its
+        relative order behind them. The pool is what home shows when nothing is
+        arranged: items nearer the front are bigger, sharper and drawn on top,
+        and when the pool holds more than it can show, the front is also who
+        stays visible. A newly opened window lands at the front on its own.
+        """
+        wanted = _split_ids(ids)
+        try:
+            order = model.raise_to_front(wanted)
+        except (ValueError, KeyError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _emit(P.state_frame(model))
+        return f"[screen] front: {' '.join(order[: len(wanted)])}"
+
     @chan.build.command(name="pool", always_observe=True)
     async def pool() -> str:
         """List the whole pool — the desktop, and every group in order."""
         arena = model.arena() or "desktop"
-        lines = [f"showing: #{arena}", f"desktop: {', '.join(model.desktop_items()) or '-'}"]
+        lines = [
+            f"showing: #{arena}",
+            f"order: {' '.join(model.pool_order()) or '-'}",
+            f"desktop: {', '.join(model.desktop_items()) or '-'}",
+        ]
         for g in model.groups():
             mark = "*" if g == model.arena() else " "
-            fs = " [fullscreen]" if g == model.arena() and model.fullscreen() else ""
-            lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}{fs}")
+            lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}")
         return "\n".join(lines)
 
     # -- veil gestures (time-aware) ----------------------------------------
@@ -263,11 +295,27 @@ def build_screen_channel(
         await _emit(P.snapshot(model))
         return f"[screen] demo scene: {', '.join(model.groups())}"
 
+    @chan.build.command(name="probe_audio")
+    async def probe_audio() -> str:
+        """这帧音频的原始读数：桶数、各桶分贝、到达延迟。
+
+        可视化出问题时，先把"数据是什么"和"画法做了什么"分开 —— 这个探针只回答前者，
+        让模型不必靠人去念屏幕上的调试数字。
+        """
+        if audio is None or not hasattr(audio, "stats"):
+            CommandUtil.raise_observe("audio source has no stats")
+        return json.dumps(audio.stats(), ensure_ascii=False)
+
     @chan.build.command(name="mock_audio")
     async def mock_audio(role: str = "idle") -> str:
-        """Set the demo audio feed's mode — idle / ghost / user. Debug aid."""
+        """Set the demo audio feed's mode — idle / ghost / user. Debug aid; only the
+        mock source has modes. On the live source the bus decides — speak and it shows."""
         if audio is None:
             CommandUtil.raise_observe("no audio source wired")
+        if not hasattr(audio, "set_mode"):
+            CommandUtil.raise_observe(
+                "live audio source — no demo mode to set (restart with --mock-audio)"
+            )
         try:
             audio.set_mode(role)
         except ValueError as e:
@@ -282,18 +330,35 @@ def build_screen_channel(
         url = _url()
         if url:
             out["url"] = url
+        # 人侧的那条状态：侧栏展开 / 收起。舞台的可用区 = 视口 − 栏宽，所以它是
+        # 排布的前提，不是装饰 —— 不知道就会把 item 排到人点不到的地方。
+        rail = surface.rail_state() if surface is not None else ""
+        if rail:
+            out["rail"] = rail
         groups = " ".join(
             f"#{g}({len(model.group_items(g))})" for g in model.groups()
         )
         out["groups"] = groups or "(none)"
-        # 索引视角：两类 item 的 handle → label。views 是 webview 来源（url 归
-        # node，不能 navigate），items 是模型自建（url 可 navigate）。
-        views = [i for i in model.items() if i.service]
-        hand = [i for i in model.items() if not i.service]
-        if views:
-            out["views"] = " ".join(f"#{i.id}={i.label}" for i in views)
-        if hand:
-            out["items"] = " ".join(f"#{i.id}={i.label}" for i in hand)
+        # 视图 = 什么 + 谁动的。两个片段都是 named 状态：不抢注意力、只在变化时随 delta
+        # 出现，也不存在"我忙它就丢"这回事 —— 人做的事对我首先是状态。
+        if model.focus():
+            out["focus"] = f"#{model.focus()}"
+        if model.view_by():
+            out["view_by"] = model.view_by()
+        # 池序：home 的螺旋读的就是它 —— 最前 = 离眼睛最近。它是**我的决定**
+        # （raise 写的），所以它得是一条我能读到的状态，而不是只在我眼前那一屏上。
+        order = model.pool_order()
+        if order:
+            out["order"] = " ".join(order)
+        # 索引视角：两类 item 的 handle → label，名字要读出区别 —— 这两种窗口的
+        # 归属不同（adopted 的 url 归 node、不可 navigate；opened 的是模型自建、可
+        # navigate），所以不能叫 views / items 那种只有作者才懂的名字。
+        adopted = [i for i in model.items() if i.service]
+        opened = [i for i in model.items() if not i.service]
+        if adopted:
+            out["adopted"] = " ".join(f"#{i.id}={i.label}" for i in adopted)
+        if opened:
+            out["opened"] = " ".join(f"#{i.id}={i.label}" for i in opened)
         desktop = model.desktop_items()
         if desktop:
             out["desktop"] = f"{len(desktop)} floating: {', '.join(desktop)}"
@@ -302,10 +367,7 @@ def build_screen_channel(
             out["screen"] = f"desktop ({len(desktop)} floating)"
         else:
             order = ", ".join(model.arena_items())
-            fs = f" · fullscreen #{model.fullscreen()}" if model.fullscreen() else ""
-            out["screen"] = (
-                f"#{arena} [{order}] {model.family()} {model.dir()}{fs}"
-            )
+            out["screen"] = f"#{arena} [{order}] {model.family()} {model.dir()}"
         return out
 
     return chan

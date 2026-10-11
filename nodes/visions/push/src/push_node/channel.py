@@ -26,7 +26,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 from ghoshell_moss.signals import NotifySignalMeta
 
-from .ffmpeg import source_summary
+from .ffmpeg import default_fps_for, source_summary
 from .producer import ProducerManager
 from .session import PushSession, SessionState
 from .store import AcceptAll, PushStore
@@ -129,8 +129,11 @@ def build_push_channel(
     @chan.build.instruction
     def instruction() -> str:
         return (
-            "There is a local push surface (its URL is in this channel's `url` notice) "
-            "where a human approves and watches every visual stream. request() returns a "
+            "A push surface carries the human's approval and watch page; it announces "
+            "itself as a web view, so a screen takes it in with nobody opening a URL — "
+            "it lands floating on that screen's desktop, and **you must arrange it into "
+            "a group** before a human can click it. "
+            "request() returns a "
             "receipt at once and never waits on a person — the verdict reaches you as a "
             f"signal. Sources: {source_summary()}. When a stream goes live you are told its "
             "MJPEG URL; open a *separate* stream node on that address to see it (this node "
@@ -144,7 +147,8 @@ def build_push_channel(
         source: str,
         label: str = "",
         description: str = "",
-        fps: float = 10.0,
+        index: int | None = None,
+        fps: float | None = None,
         max_width: int = 1280,
         quality: int = 5,
     ) -> str:
@@ -152,9 +156,14 @@ def build_push_channel(
 
         ``source`` is one of the enumerated sources (see instruction). ``label``
         is your handle for it; ``description`` is a one-line caption for the human.
+        ``index`` names which capture device to read (the macOS avfoundation
+        index) — omit it and this node's configured default applies; pinning one
+        display is a per-machine setting (``PUSH_SCREEN_INDEX``), not a request.
         ``fps`` / ``max_width`` / ``quality`` tune the stream (clamped to safe
-        bounds). The human approves or denies on the push surface; you are
-        signalled either way. When approved, the stream URL is signalled so you
+        bounds); omitting ``fps`` takes the source's own default — screen 10,
+        camera 30 — because a capture device only opens at a rate it advertises.
+        The human approves or denies on the push surface; you are signalled
+        either way. When approved, the stream URL is signalled so you
         can consume it with a stream node.
         """
         try:
@@ -163,7 +172,8 @@ def build_push_channel(
                 label=label,
                 owner="model",
                 description=description,
-                fps=fps,
+                index=index,
+                fps=default_fps_for(source) if fps is None else fps,
                 max_width=max_width,
                 quality=quality,
             )
@@ -255,8 +265,8 @@ def build_push_channel(
             await _emit_session(s)
         _signal(f"[{name}] human stopped every live stream")
 
-    async def _human_open(source: str, label: str) -> int:
-        session = store.request(source, label=label, owner="human")
+    async def _human_open(source: str, label: str, index: int | None = None) -> int:
+        session = store.request(source, label=label, owner="human", index=index)
         await _spawn_live(session)
         return session.id
 

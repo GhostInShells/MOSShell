@@ -21,8 +21,8 @@ async def test_channel_exposes_the_command_set():
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
-            "fullscreen", "float", "pool", "mark", "arrow", "text", "mock_scene",
-            "mock_audio",
+            "focus", "float", "raise", "pool", "mark", "arrow", "text",
+            "mock_scene", "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -96,15 +96,15 @@ async def test_destroy_emits_close_then_state():
 
 
 @pytest.mark.asyncio
-async def test_fullscreen_emits_a_fullscreen_frame():
+async def test_focus_emits_a_focus_frame_for_any_pooled_item():
+    """Focus needs no group: a desktop item is enough (that is the whole point)."""
     model = ScreenModel()
     chan, rec = _channel(model)
     async with chan.bootstrap() as runtime:
         await runtime.execute_command("open", args=("http://a",))
         a = rec.of("open")[-1]["item"]["id"]
-        await runtime.execute_command("arrange", args=(a,), kwargs={"group": "code"})
-        await runtime.execute_command("fullscreen", args=(a,))
-        assert rec.of("fullscreen")[-1]["id"] == a
+        await runtime.execute_command("focus", args=(a,))
+        assert rec.of("focus")[-1]["id"] == a
 
 
 @pytest.mark.asyncio
@@ -155,6 +155,45 @@ async def test_navigate_rejects_a_webview_item():
 
 
 @pytest.mark.asyncio
+async def test_raise_emits_state_with_the_new_order():
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        a, b = [f["item"]["id"] for f in rec.of("open")]
+        # 新开的落在最前 —— 池序是状态，就随 state 帧发出去。
+        assert rec.of("state")[-1]["order"] == [b, a]
+        receipt = await runtime.execute_command("raise", args=(a,))
+        assert rec.of("state")[-1]["order"] == [a, b]
+        assert a in str(receipt)
+
+
+@pytest.mark.asyncio
+async def test_raise_rejects_an_unknown_id():
+    model = ScreenModel()
+    chan, _ = _channel(model)
+    async with chan.bootstrap() as runtime:
+        with pytest.raises(Exception):
+            await runtime.execute_command("raise", args=("nope",))
+
+
+@pytest.mark.asyncio
+async def test_notice_carries_the_pool_order():
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        a, b = [f["item"]["id"] for f in rec.of("open")]
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["order"] == f"{b} {a}"
+        await runtime.execute_command("raise", args=(a,))
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["order"] == f"{a} {b}"
+
+
+@pytest.mark.asyncio
 async def test_notice_carries_active_group_and_layout():
     model = ScreenModel()
     chan, rec = _channel(model)
@@ -170,7 +209,7 @@ async def test_notice_carries_active_group_and_layout():
 
 
 @pytest.mark.asyncio
-async def test_notices_separate_views_and_items():
+async def test_notices_separate_adopted_and_opened_windows():
     model = ScreenModel()
     model.adopt("cell/a/webview", "http://x", label="Terminal")
     chan, _ = _channel(model)
@@ -178,10 +217,10 @@ async def test_notices_separate_views_and_items():
         await runtime.execute_command("open", args=("http://a", "hand"))
         await runtime.refresh_metas()
         notices = runtime.self_meta().named_notices
-        assert "views" in notices
-        assert "items" in notices
-        assert "Terminal" in notices["views"]
-        assert "hand" in notices["items"]
+        assert "adopted" in notices
+        assert "opened" in notices
+        assert "Terminal" in notices["adopted"]
+        assert "hand" in notices["opened"]
 
 
 @pytest.mark.asyncio
@@ -192,6 +231,50 @@ async def test_mock_scene_populates_groups():
         await runtime.execute_command("mock_scene")
         assert len(model.groups()) >= 3
         assert rec.types()[-1] == "snapshot"
+
+
+@pytest.mark.asyncio
+async def test_notice_carries_the_human_side_rail_state():
+    """侧栏的展开/收起是排布的前提：舞台可用区 = 视口 − 栏宽。它由页面上报，
+    所以它必须真的走到 notice 里；没上报时不许编一个默认值出来。"""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert "rail" not in runtime.self_meta().named_notices
+
+        rec.rail = "collapsed"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["rail"] == "collapsed"
+
+        rec.rail = "expanded"
+        await runtime.refresh_metas()
+        assert runtime.self_meta().named_notices["rail"] == "expanded"
+
+
+@pytest.mark.asyncio
+async def test_notice_carries_the_view_and_who_moved_it():
+    """人的视图动作是**状态**，不是一条可能丢的消息。
+
+    所以它必须出现在 notice 上：``focus`` 说看的是哪一个，``view_by`` 说是谁动的。
+    两者都是 named 片段，且没人动过时不许编默认值 —— 与 ``rail`` 同一条规矩。
+    """
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        a = rec.of("open")[-1]["item"]["id"]
+
+        await runtime.refresh_metas()
+        notices = runtime.self_meta().named_notices
+        assert "focus" not in notices            # 还没人看
+        assert "view_by" not in notices          # 也还没人动
+
+        await runtime.execute_command("focus", args=(a,))
+        await runtime.refresh_metas()
+        notices = runtime.self_meta().named_notices
+        assert notices["focus"] == f"#{a}"
+        assert notices["view_by"] == "model"     # 命令是我下的
 
 
 @pytest.mark.asyncio

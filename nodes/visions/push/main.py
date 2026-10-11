@@ -5,9 +5,11 @@ Debug:  ../.venv/bin/python main.py
 Port:   --port N, else MOSS_PUSH_PORT, else an ephemeral port (0)
 
 One process, two faces over one store: the channel (the ghost's request/stop
-surface) and the web surface (the human's approval and watch surface). A live
-stream is an ffmpeg child the node owns and serves as MJPEG; the human's actions
-reach the ghost through ``matrix.send_signal_to_ghost``.
+surface) and the page (the human's approval and watch surface). The page
+announces itself as a web view, so a screen adopts it as a window on its own —
+nobody opens a URL by hand. A live stream is an ffmpeg child the node owns and
+serves as MJPEG; the human's actions reach the ghost through
+``matrix.send_signal_to_ghost``.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(_NODE_DIR / ".env")
 
 from ghoshell_moss.core.blueprint.matrix import Matrix  # noqa: E402
+from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer  # noqa: E402
 
 from push_node.channel import build_push_channel  # noqa: E402
 from push_node.store import AcceptAll, PushStore  # noqa: E402
@@ -75,6 +78,16 @@ async def main(matrix: Matrix) -> None:
 
     await surface.start()
     print(f"[push] surface at {surface.url}", flush=True)
+    # Announce the page on the mesh: a screen adopts it as a window by itself.
+    await WebViewServer.serve(
+        matrix,
+        WebViewDeclaration(
+            url=surface.url,
+            title="push",
+            description="approve and watch a local screen / camera stream",
+            icon="camera",
+        ),
+    )
     await matrix.provide_channel(channel)
 
 

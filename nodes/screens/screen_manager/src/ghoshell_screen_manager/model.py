@@ -67,6 +67,10 @@ class Item:
     group: str = ""
     service: str = ""
     icon: str | None = None
+    face_line: str | None = None
+    """What the tile says about itself right now — a node's own words, when it has any."""
+    face_art: str | None = None
+    """A still image for the tile, when the node offers one."""
 
 
 @dataclass(frozen=True)
@@ -98,7 +102,6 @@ class Group:
     ids: list[str] = field(default_factory=list)
     family: str = DEFAULT_LAYOUT[0]
     dir: str = DEFAULT_LAYOUT[1]
-    fullscreen: str | None = None
 
 
 def compute_layout(n: int, family: str, dir: str) -> Layout:
@@ -153,7 +156,7 @@ def grid_template(layout: Layout) -> tuple[str, str]:
 
 
 class ScreenModel:
-    """Window state: the pool, the groups, the active arena, desktop, fullscreen."""
+    """Window state: the pool, the groups, the active arena, and the focus."""
 
     DESKTOP = ""
     """The desktop arena — no group. ``arena()`` returns this when the desktop shows."""
@@ -165,6 +168,31 @@ class ScreenModel:
         self._dismissed: dict[str, float] = {}
         """service address → the item id a human/model dismissed; a tombstone so
         auto-adoption does not resurrect it until the service stops and returns."""
+        self._view_by: str = ""
+        """Who last moved the view — ``human`` or ``model`` (empty = nobody yet).
+
+        Provenance belongs to the state, not to a message: a signal can be dropped
+        while the ghost is busy, and then "who did it" silently disappears. A field
+        cannot be dropped.
+        """
+        self._focus: str | None = None
+        """The item the human looks at *alone* — a view, not a layout.
+
+        Deliberately independent of groups: a tile in the pool lives on the
+        desktop (in no group), yet one click must show it full stage. Focus says
+        where the human looks; it never says which group the item belongs to.
+        """
+        self._order: list[str] = []
+        """The pool order, front (nearest the eye) → back.
+
+        Explicit *state*, not a view derived from insertion time. The spiral on
+        home reads this list: the front is the biggest, sharpest tile, and with
+        more items than the pool can show, the front is also who stays visible.
+        "What is near the eye" is a decision the model gets to make, so the list
+        is the one thing ``raise`` writes — no per-item rank field (that would
+        reintroduce ties, and with them a second authority over the same fact).
+        A newly materialized item lands at the front.
+        """
         self._next_index: int = 0
         """Monotonic item handle. Never recycled — an id must stay stable so a
         handle the model holds does not drift onto a later item after a destroy."""
@@ -202,10 +230,43 @@ class ScreenModel:
         """Ids on the desktop — in the pool but in no group."""
         return [i.id for i in self._items.values() if not i.group]
 
-    def fullscreen(self) -> str | None:
-        """The fullscreen item of the active group (per-group state)."""
-        g = self.active_group()
-        return g.fullscreen if g is not None else None
+    def pool_order(self) -> list[str]:
+        """Every pooled item, front → back — the order the pool spirals through."""
+        return [i for i in self._order if i in self._items]
+
+    def focus(self) -> str | None:
+        """The single item shown full stage, or None. Orthogonal to groups."""
+        return self._focus
+
+    def view_by(self) -> str:
+        """Who moved the view last: ``human`` / ``model`` / ``""`` (nobody yet)."""
+        return self._view_by
+
+    def set_focus(self, item_id: str | None, *, by: str = "model") -> None:
+        """Point the view at one item (None = leave focus). Any pooled item will do."""
+        if item_id is not None:
+            self._require(item_id)
+        self._focus = item_id
+        self._view_by = by
+
+    def note_view_by(self, by: str) -> None:
+        """Record *who* moved the view without moving it.
+
+        For human moves that change something else (sending an item back to the
+        desktop): the provenance is still a fact worth keeping in the state.
+        """
+        self._view_by = by
+
+    def _choosing_a_view_drops_the_override(self, by: str) -> None:
+        """Picking a base view cancels the focus.
+
+        Two view-setters must not stack: the rail says "show me this group", the
+        focus says "show me this one item". The later one wins — otherwise clicking
+        home while focused leaves you staring at the same item, which reads as a
+        broken button.
+        """
+        self._focus = None
+        self._view_by = by
 
     def family(self) -> str:
         g = self.active_group()
@@ -273,6 +334,8 @@ class ScreenModel:
             service=service, icon=icon,
         )
         self._items[item_id] = item
+        # 新的落在最前面：池子是"我正在看的东西"，刚出现的东西本来就该离眼睛最近。
+        self._order.insert(0, item_id)
         if group:
             self._groups[group].ids.append(item_id)
         # A hand-opened item is never tombstoned — it is a deliberate act.
@@ -298,6 +361,27 @@ class ScreenModel:
         item.url = url
         return item
 
+    def raise_to_front(self, item_ids: list[str]) -> list[str]:
+        """Pull items to the front of the pool, in the order given; the rest follow.
+
+        A pure reordering of the current list: the named ids end up at the front
+        in exactly the order they were passed, everything else keeps its relative
+        order behind them. No rank field, no ties, no incremental drift — calling
+        it again with the same ids changes nothing.
+
+        Returns the resulting order, so a caller can report what it now shows.
+        """
+        if not item_ids:
+            raise ValueError("raise needs at least one id")
+        if len(set(item_ids)) != len(item_ids):
+            raise ValueError(f"duplicate ids in {item_ids!r}")
+        for item_id in item_ids:
+            self._require(item_id)
+        for item_id in reversed(item_ids):
+            self._order.remove(item_id)
+            self._order.insert(0, item_id)
+        return self.pool_order()
+
     def adopt(
         self,
         address: str,
@@ -318,6 +402,23 @@ class ScreenModel:
         if self.item_of_service(address) is not None:
             return None
         return self.open(url, label=label, service=address, icon=icon)
+
+    def set_face(self, item_id: str, line: str | None, art: str | None) -> Item | None:
+        """Record what an item says about itself — a face, not a move.
+
+        Belongs to the item's *identity in the pool*, not to any arrangement: the
+        same face shows whichever view is looking, grouped or on the desktop.
+        Returns the item when something actually changed, else None — callers use
+        that to decide whether a frame is worth sending.
+        """
+        item = self._items.get(item_id)
+        if item is None:
+            return None
+        if item.face_line == line and item.face_art == art:
+            return None
+        item.face_line = line
+        item.face_art = art
+        return item
 
     def release(self, address: str) -> Item | None:
         """Drop the item adopted from a service that went away.
@@ -367,6 +468,7 @@ class ScreenModel:
         *,
         family: str,
         dir: str,
+        by: str = "model",
     ) -> Layout:
         """Put ``ids`` into ``group``, in that order, with that layout, and show it.
 
@@ -406,16 +508,16 @@ class ScreenModel:
         ]
         target.family = family
         target.dir = dir
-        if target.fullscreen and target.fullscreen not in wanted:
-            target.fullscreen = None
         for item_id in ids:
             self._items[item_id].group = group
         self._prune_empty_groups()
+        self._choosing_a_view_drops_the_override(by)
         self._arena = group
         return layout
 
-    def activate(self, group: str) -> None:
-        """Show a group, or the desktop (``""``)."""
+    def activate(self, group: str, *, by: str = "model") -> None:
+        """Show a group, or the desktop (``""``). Cancels any focus."""
+        self._choosing_a_view_drops_the_override(by)
         if group == self.DESKTOP:
             self._arena = self.DESKTOP
             return
@@ -423,8 +525,9 @@ class ScreenModel:
             raise ValueError(f"no group {group!r} — groups(): {self.groups()}")
         self._arena = group
 
-    def float_all(self) -> list[str]:
+    def float_all(self, *, by: str = "model") -> list[str]:
         """Send the active group's items back to the desktop; show the desktop."""
+        self._choosing_a_view_drops_the_override(by)
         freed = self.group_items(self._arena)
         for item_id in freed:
             item = self._items.get(item_id)
@@ -433,35 +536,19 @@ class ScreenModel:
         g = self._groups.get(self._arena)
         if g is not None:
             g.ids = []
-            g.fullscreen = None
         self._prune_empty_groups()
         self._arena = self.DESKTOP
         return freed
 
-    def set_fullscreen(self, item_id: str | None) -> None:
-        """Set the active group's fullscreen item (None exits)."""
-        g = self.active_group()
-        if g is None:
-            raise ValueError("no active group — fullscreen needs a group on stage")
-        if item_id is not None:
-            self._require(item_id)
-            if item_id not in g.ids:
-                raise ValueError(
-                    f"#{item_id} is not in the active group #{g.name}"
-                )
-        g.fullscreen = item_id
-
     # -- internals ---------------------------------------------------------
 
     def _detach(self, item_id: str, group: str) -> None:
-        """Pull an item out of ``group``'s order (and its fullscreen claim)."""
+        """Pull an item out of ``group``'s order."""
         g = self._groups.get(group)
         if g is None:
             return
         if item_id in g.ids:
             g.ids.remove(item_id)
-        if g.fullscreen == item_id:
-            g.fullscreen = None
 
     def _prune_empty_groups(self) -> None:
         for name in [n for n, g in self._groups.items() if not g.ids]:
@@ -473,12 +560,14 @@ class ScreenModel:
         item = self._items.pop(item_id, None)
         if item is None:
             return None
+        if item_id in self._order:
+            self._order.remove(item_id)
+        if self._focus == item_id:
+            self._focus = None
         if item.group:
             g = self._groups.get(item.group)
             if g is not None and item_id in g.ids:
                 g.ids.remove(item_id)
-                if g.fullscreen == item_id:
-                    g.fullscreen = None
         self._prune_empty_groups()
         return item
 

@@ -39,7 +39,7 @@ app.add_typer(start_cli.start_app, name="start", short_help="Orient yourself —
 app.add_typer(codex_cli.codex_app, name="codex", short_help="Runtime introspection and code evaluation tools")
 app.add_typer(project_cli.project_app, name="project", short_help="MOSS Project tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
-app.add_typer(skills_cli.skills_app, name="skills", short_help="MOSS skills — 复合任务技能 (发现/召回)")
+app.add_typer(skills_cli.skills_app, name="skills", short_help="MOSS skills — 复合任务技能 (发现/读取)")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
 app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")

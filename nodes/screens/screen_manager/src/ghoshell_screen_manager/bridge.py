@@ -65,7 +65,16 @@ class WebViewBridge:
         changed = False
 
         for address, item in live.items():
-            if self._model.item_of_service(address) is not None:
+            existing = self._model.item_of_service(address)
+            if existing is not None:
+                # Already here: the only thing a change can carry now is its face.
+                # Faces change on their own clock, so they travel as their own delta
+                # instead of dragging the whole arrangement along.
+                faced = self._model.set_face(
+                    existing.id, item.state.face_line, item.state.face_art
+                )
+                if faced is not None:
+                    await self._emit(P.face_frame(faced))
                 continue
             adopted = self._model.adopt(
                 address,
@@ -74,7 +83,10 @@ class WebViewBridge:
                 icon=item.declaration.icon,
             )
             if adopted is not None:
-                await self._emit(P.open_frame(adopted))
+                face = self._model.set_face(
+                    adopted.id, item.state.face_line, item.state.face_art
+                ) or adopted
+                await self._emit(P.open_frame(face))
                 changed = True
 
         known = self._model.adopted()

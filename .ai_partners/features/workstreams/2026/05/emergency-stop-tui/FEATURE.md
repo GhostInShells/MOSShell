@@ -37,7 +37,7 @@ input signal → mindflow → articulate_loop → action_loop
 |------|-----------|---------|------|
 | **Mindflow** | `BaseMindflow.pause()` | abort attention, 清空 signal 队列, nuclei.clear() | ✅ 已完备 |
 | **Shell** | `CTMLShell.pause()` → `clear()` | `speech.clear()` + `main_runtime.tree.clear()` | ❌ 不调 `stop_interpretation()`，in-flight interpreter 继续跑 |
-| **Interpreter** | 无独立 pause | 只能通过 `Shell.stop_interpretation(cancel_executing=True)` 中断 | Shell.clear() 漏调 |
+| **Interpreter** | 无独立 pause | 只能通过 `Shell.stop_interpretation(cancel_managing=True)` 中断 | Shell.clear() 漏调 |
 | **Speech** | `Speech.clear()` | 清空活跃 TTS/音频输出流 | ✅ 被 Shell.clear() 调到 |
 | **articulate_loop** | 无 pause | GhostRuntimeImpl 的 janus queue consumer | ❌ 模型 API 调用无法中断 |
 | **action_loop** | 无 pause | GhostRuntimeImpl 的 janus queue consumer | ❌ 已在跑的 action 无法中断 |
@@ -76,7 +76,7 @@ pause(False) 逆序恢复。
 ## Implementation Notes
 
 - mindflow 的 pause 已完备，本次主要补 shell 侧缺口
-- `Shell.stop_interpretation()` 已存在且调 `old.close(cancel_executing=True)`，直接复用
+- `Shell.stop_interpretation()` 已存在且调 `old.close(cancel_managing=True)`，直接复用
 - REPL 已有 `/ghost.pause()` 和 `/ghost.resume()`（GhostInspector），快捷键是对它的 TUI 级补充
 
 ## Design Revision (2026-06-02)

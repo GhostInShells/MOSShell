@@ -298,7 +298,7 @@ class BaseAction(Action):
         if not self._logos_queue.sync_q.closed:
             self._logos_queue.sync_q.shutdown()
 
-    def abort_reason(self) -> str:
+    def abort_reason(self) -> str | None:
         return self._attention.abort_reason()
 
     def set_compiled(self):

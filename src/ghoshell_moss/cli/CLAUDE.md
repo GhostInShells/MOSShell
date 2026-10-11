@@ -125,12 +125,13 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 
 `skills_cli.py` + `cli/skills/` 目录组成反身性知识库 (取代 howtos, moss-skills):
 
-- **存储**: `cli/skills/<name>/SKILL.md`, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.resources.markdown_kb`, glob+frontmatter 参数化) 做资源管理
-- **结构**: `<name>/SKILL.md` (name + description frontmatter), `cli/skills/README.md` (skill 治理)
+- **存储**: `cli/skills/<category>/<name>/SKILL.md`, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.resources.markdown_kb`, glob+frontmatter 参数化) 做资源管理
+- **结构**: `<category>/<name>/SKILL.md` (name + description frontmatter), `cli/skills/AGENTS.md` (skill 治理)
 - **命令**:
   - `moss skills list [-q keyword] [--json] [--root <path>]`: 发现技能
-  - `moss skills recall <question>`: 语义召回 (LLMFuncs 多标签分类, 需 LLM 配置)
-- **元规则**: `cli/skills/README.md` 承担——入口判定三问 + 反模式清单 + 写作纪律。写 skill 前必读
+  - `moss skills read <path>`: 读取技能
+  - 无 LLM 依赖 — 旧 `recall` 需 LLMFuncs 配置, 已移除
+- **元规则**: `cli/skills/AGENTS.md` 承担——入口判定三问 + 反模式清单 + 写作纪律。写 skill 前必读
 - **当前定位**: 复合任务的行动导向技能。历史上 howtos 曾积累 16 篇混合内容, 2026-07-18 doc-governance 治理后收敛为 3 篇, 2026-08 moss-skills 迁移为 skills (见 `.ai_partners/features/workstreams/2026/08/moss-skills/`)
 
 ## 架构小贴士

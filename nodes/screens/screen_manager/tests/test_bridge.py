@@ -24,9 +24,22 @@ class FakeDeclaration:
 
 
 @dataclass
+class FakeState:
+    """The condition fields the bridge reads. Defaults mirror the real ones."""
+
+    face_line: str | None = None
+    face_art: str | None = None
+
+
+@dataclass
 class FakeItem:
     address: str
     declaration: FakeDeclaration
+    state: FakeState = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.state is None:
+            self.state = FakeState()
 
 
 class FakeClient:
@@ -110,3 +123,62 @@ async def test_a_destroyed_view_is_not_resurrected():
     await client.fire()
     assert model.adopted() == {}
     assert model.desktop_items() == []
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_view_arrives_with_its_face():
+    """A view that already has something to say says it at birth.
+
+    Otherwise the tile shows a bare title until the node happens to speak again —
+    and a node that speaks once, at start, would never grow a face at all.
+    """
+    model = ScreenModel()
+    rec = Recorder()
+    item = FakeItem("cell/a/webview", FakeDeclaration("http://x/a", "a"))
+    item.state = FakeState(face_line="2 cards waiting", face_art="http://x/a/still.png")
+    bridge = WebViewBridge(model, FakeClient([item]), emit=rec.broadcast)
+
+    await bridge.start()
+
+    opened = rec.of("open")[-1]["item"]
+    assert opened["face_line"] == "2 cards waiting"
+    assert opened["face_art"] == "http://x/a/still.png"
+
+
+@pytest.mark.asyncio
+async def test_a_face_change_sends_a_face_frame_not_the_whole_arrangement():
+    """A face moves on its own clock, so it travels as its own delta.
+
+    Re-sending the arrangement to deliver one line would make every node's idle
+    chatter repaint the stage — and the stage is what someone is looking at.
+    """
+    model = ScreenModel()
+    rec = Recorder()
+    item = FakeItem("cell/a/webview", FakeDeclaration("http://x/a", "a"))
+    client = FakeClient([item])
+    bridge = WebViewBridge(model, client, emit=rec.broadcast)
+    await bridge.start()
+    rec.frames.clear()
+
+    item.state = FakeState(face_line="streaming")
+    await client.fire()
+
+    assert rec.types() == ["face"]
+    assert rec.frames[-1]["face_line"] == "streaming"
+
+
+@pytest.mark.asyncio
+async def test_the_same_face_again_sends_nothing():
+    """Idle chatter is not a change: re-asserting one face is not news."""
+    model = ScreenModel()
+    rec = Recorder()
+    item = FakeItem("cell/a/webview", FakeDeclaration("http://x/a", "a"))
+    item.state = FakeState(face_line="idle")
+    client = FakeClient([item])
+    bridge = WebViewBridge(model, client, emit=rec.broadcast)
+    await bridge.start()
+    rec.frames.clear()
+
+    await client.fire()
+
+    assert rec.frames == []

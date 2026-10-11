@@ -77,6 +77,7 @@ __all__ = [
 _DEFAULT_SHOW_RUNNING = 8
 _DEFAULT_SHOW_DEAD = 3
 _DEFAULT_SHOW_EVENTS = 8
+_DEFAULT_SHOW_BRANCHES = 8
 _EVENT_BUFFER = 128
 _STDERR_TAIL_LINES = 5
 _ONE_SHOT_OUTPUT_TAIL = 200
@@ -114,91 +115,134 @@ def _fmt_uptime(seconds: float) -> str:
     return f'{s // 3600}h{(s % 3600) // 60}m'
 
 
-def _resolve_handled_address(
-        target: str, handled: dict[CellAddress, CellHandle],
+def _live_aliases(matrix: Matrix) -> dict[CellAddress, str]:
+    """address → alias for cells THIS process spawned — the naming authority's map.
+
+    ``NodeManager`` mints every alias at spawn and drops the entry the moment the
+    process exits: **an alias names a live cell and nothing else.** The address is
+    the identity (read-only truth); the ledger's ``runtime.alias`` is the spawn-time
+    trace it was written as, and no surface reads it back.
+    """
+    return matrix.project.nodes.spawned_nodes()
+
+
+def _alias_index(aliases: dict[CellAddress, str]) -> dict[str, list[CellAddress]]:
+    """alias → addresses, derived from the naming authority — never from the ledger.
+
+    An alias is a naming promise, an address is an identity: they are two
+    namespaces, so an alias is never looked up *in* an address-keyed ledger.
+    """
+    index: dict[str, list[CellAddress]] = {}
+    for address, alias in aliases.items():
+        if alias:
+            index.setdefault(alias, []).append(address)
+    return index
+
+
+def _match_pid(handle: CellHandle, target: str) -> bool:
+    """pid is the debug handle: a plain integer, meaningful inside this process only."""
+    if not target.isdigit():
+        return False
+    pid = handle.process.meta.pid
+    return pid is not None and str(pid) == target
+
+
+def _resolve_live(
+        target: str,
+        handled: dict[CellAddress, CellHandle],
+        aliases: dict[CellAddress, str],
 ) -> CellHandle | None:
-    """target 唯一命中才返回: 完整 address / alias / normalized address / 名段 / uid 前缀."""
+    """Resolve a target to a live handle — three forms, and only the ones a row prints.
+
+    The address, the pid, the alias. A shorthand cut from an address (a name segment,
+    a uid prefix) is **not** a form here: what a row shows is what a call takes, which
+    is what keeps the facade free of "which shape does this command want" inferences.
+
+    A target that is all digits is a **pid** and nothing else — an alias can never be
+    numeric (``_validate_cell_alias`` demands a leading letter), so the two cannot
+    collide. An alias resolves through the naming authority, and only when exactly one
+    live cell owns it. Nothing resolves when the target is ambiguous.
+    """
     if not target:
         return None
     if target in handled:
         return handled[target]
-    matches: list[CellHandle] = []
-    for addr, handle in handled.items():
-        if handle.runtime.alias == target:
-            matches.append(handle)
-            continue
-        if CellAddressCodec(addr).match(target):
-            matches.append(handle)
-    if len(matches) == 1:
-        return matches[0]
+    if target.isdigit():
+        owned = [h for h in handled.values() if _match_pid(h, target)]
+        return owned[0] if len(owned) == 1 else None
+    owned_alias = _alias_index(aliases).get(target)
+    if owned_alias is not None:
+        return handled.get(owned_alias[0]) if len(owned_alias) == 1 else None
     return None
 
 
-def _find_handle_in_all(
+def _resolve_cell(
         target: str,
         handled: dict[CellAddress, CellHandle],
         dead: list[CellHandle],
-) -> CellHandle | None:
-    """先查活的, 再查死的. 供 read_output / status 用."""
-    handle = _resolve_handled_address(target, handled)
+        aliases: dict[CellAddress, str],
+) -> tuple[CellHandle, bool] | None:
+    """Resolve a target to ``(handle, running)``.
+
+    Live first (see ``_resolve_live``). An exited cell answers to the **pid or the
+    whole address** it was printed with — never to a name: an alias names a live cell,
+    and it does not outlive the process that minted it. Liveness is decided by
+    **which ledger the handle came from**, never by whether the target happens to be
+    a key of the live ledger.
+    """
+    handle = _resolve_live(target, handled, aliases)
     if handle is not None:
-        return handle
+        return handle, True
     if not target:
         return None
-    for h in dead:
-        if h.runtime.alias == target:
-            return h
-        if CellAddressCodec(h.address).match(target):
-            return h
+    for h in reversed(dead):  # newest first: a reused pid must name its latest owner
+        if _match_pid(h, target) or h.address == target:
+            return h, False
     return None
 
 
 # 行渲染分两套, 消费者不同:
 #   _fmt_status_* — 命令主动拉取, 可以带 uptime / "N ago" 这类易变字段.
 #   _fmt_notice_* — 进 notice 参与文本差分, 必须逐字稳定, 否则每轮都被判为"已变更".
-def _cell_label(handle: CellHandle) -> str:
-    """展示标签 = alias (address). alias 是本进程的命名承诺, address 是身份."""
-    alias = handle.runtime.alias
-    if alias:
-        return f'{alias} ({handle.address})'
-    return handle.address
+# 每行统一三件套, 让模型拿到句柄时不看文档就能用对:
+#   名字 (alias) — 只在活着时有, 取自命名权威; 身份 (address) — 永远有效; 手柄 (pid) — 本地 debug.
+def _live_label(handle: CellHandle, alias: str | None) -> str:
+    """A live cell's row: ``alias (address) pid=N``."""
+    head = f'{alias} ({handle.address})' if alias else handle.address
+    return f'{head} pid={handle.process.meta.pid}'
 
 
-def _cell_target(handle: CellHandle) -> str:
-    """可寻址标签 (read_output/stop 的 target): alias 优先, 否则 address."""
-    return handle.runtime.alias or handle.address
+def _dead_label(handle: CellHandle) -> str:
+    """An exited cell's row: ``address pid=N`` — the alias died with the process."""
+    return f'{handle.address} pid={handle.process.meta.pid}'
 
 
-def _fmt_status_running(handle: CellHandle) -> str:
-    meta = handle.process.meta
-    label = _cell_label(handle)
-    uptime = _fmt_uptime(_now_ts() - meta.created)
-    return f'  {label}  uptime={uptime} pid={meta.pid}'
+def _stderr_hint(handle: CellHandle) -> str:
+    """The debug pointer for an exited cell: its pid (or its address) — a name does
+    not outlive the process that minted it."""
+    return f' — read_output(target={handle.process.meta.pid}) for stderr'
+
+
+def _fmt_status_running(handle: CellHandle, alias: str | None = None) -> str:
+    uptime = _fmt_uptime(_now_ts() - handle.process.meta.created)
+    return f'  {_live_label(handle, alias)}  uptime={uptime}'
 
 
 def _fmt_status_dead(handle: CellHandle) -> str:
     meta = handle.process.meta
-    label = _cell_label(handle)
-    code = meta.exit_code
     when = _fmt_uptime(_now_ts() - meta.updated)
-    tail = ''
-    if code not in (0, None):
-        tail = f' — read_output({_cell_target(handle)}) for stderr'
-    return f'  {label}  exit={code} ({when} ago){tail}'
+    tail = _stderr_hint(handle) if meta.exit_code not in (0, None) else ''
+    return f'  {_dead_label(handle)}  exit={meta.exit_code} ({when} ago){tail}'
 
 
-def _fmt_notice_running(handle: CellHandle) -> str:
-    return f'  {_cell_label(handle)}  pid={handle.process.meta.pid}'
+def _fmt_notice_running(handle: CellHandle, alias: str | None = None) -> str:
+    return f'  {_live_label(handle, alias)}'
 
 
 def _fmt_notice_dead(handle: CellHandle) -> str:
     meta = handle.process.meta
-    label = _cell_label(handle)
-    code = meta.exit_code
-    tail = ''
-    if code not in (0, None):
-        tail = f' — read_output({_cell_target(handle)}) for stderr'
-    return f'  {label}  exit={code}{tail}'
+    tail = _stderr_hint(handle) if meta.exit_code not in (0, None) else ''
+    return f'  {_dead_label(handle)}  exit={meta.exit_code}{tail}'
 
 
 def _render_table(headers: list[str], rows: list[list[str]]) -> list[str]:
@@ -218,6 +262,17 @@ def _render_table(headers: list[str], rows: list[list[str]]) -> list[str]:
         return ('  ' + '  '.join(padded)).rstrip()
 
     return [line(headers)] + [line(r) for r in rows]
+
+
+def _branch_name(address: CellAddress, spawned: dict[CellAddress, str]) -> str:
+    """A mesh branch's name — simultaneously its CTML path segment.
+
+    A locally spawned cell is named by the alias it promised to the model; anything
+    else by its normalized address. Because this string *is* the lookup key (the tree
+    joins it into ``matrix.mesh.<name>``), it must stay a single token: never decorate
+    it with the address for display — surfacing the address is the notice's job.
+    """
+    return spawned.get(address) or CellAddressCodec(address).normalized
 
 
 def _node_ident(rel_path: str, manifest: NodeManifest) -> str:
@@ -260,9 +315,9 @@ def new_nodes_channel(
         nodes_mgr = matrix.project.nodes
         scan_paths: list[Path] | None = None
         if path:
-            p = Path(path)
+            p = Path(path).expanduser()
             if not p.is_absolute():
-                p = matrix.project.root.abspath_of(p)
+                p = (matrix.project.root / p).resolve()
             scan_paths = [p]
         found = await asyncio.to_thread(
             nodes_mgr.list_nodes,
@@ -360,7 +415,7 @@ def new_nodes_channel(
         except DuplicatedError as e:
             CommandUtil.raise_observe(
                 f'Singleton conflict: {e}. status() to inspect; '
-                f'stop(<address>) to release.'
+                f'stop(target) to release.'
             )
         except NodeProbeError as e:
             CommandUtil.raise_observe(
@@ -371,7 +426,9 @@ def new_nodes_channel(
             CommandUtil.raise_observe(f'target not found: {e}')
         except RuntimeError as e:
             CommandUtil.raise_observe(str(e))
-        label = _cell_label(handle)
+        # 三件套回执: 名字 / 身份 / debug 手柄 —— 拿到任一个都能马上用.
+        aliases = _live_aliases(matrix)
+        label = _live_label(handle, aliases.get(handle.address))
 
         # 一次性 node (persist=false → event_level 低于 INFO): 阻塞等退出拿结果.
         if not CellEventLevel.is_perceivable(handle.runtime.cell.event_level):
@@ -393,46 +450,57 @@ def new_nodes_channel(
             return '\n'.join(lines)
 
         return (
-            f'[{label}] pid={handle.process.meta.pid} — '
-            f'if it announces a channel: matrix.mesh.{_cell_target(handle)}'
+            f'[{label}] — if it announces a channel: '
+            f'matrix.mesh.{_branch_name(handle.address, aliases)}'
         )
 
     # -- stop ---------------------------------------------------------
 
     @chan.build.command(name='stop', blocking=False, always_observe=False)
-    async def stop_node(address: str, timeout: float = 5.0) -> str:
-        """Stop a running node (SIGTERM -> grace -> killpg)."""
+    async def stop_node(target: str, timeout: float = 5.0) -> str:
+        """Stop a running node (SIGTERM -> grace -> killpg).
+
+        ``target``: a pid, the address, or the alias of a live cell.
+        """
         handled = matrix.handled_cells()
-        handle = _resolve_handled_address(address, handled)
+        aliases = _live_aliases(matrix)
+        handle = _resolve_live(target, handled, aliases)
         if handle is None:
             CommandUtil.raise_observe(
-                f'{address!r} does not uniquely match any running cell. '
+                f'{target!r} does not uniquely match any running cell. '
                 f'status() shows current cells.'
             )
         await handle.stop(timeout=timeout)
         code = handle.process.meta.exit_code
-        return f'[{_cell_label(handle)}] stopped, exit={code}'
+        return f'[{_live_label(handle, aliases.get(handle.address))}] stopped, exit={code}'
 
     # -- status -------------------------------------------------------
 
     @chan.build.command(name='status', blocking=False, always_observe=True)
-    async def status_node(address: str = '') -> str:
-        """Inspect running + recently exited cells. address='' = all."""
+    async def status_node(target: str = '') -> str:
+        """Inspect running + recently exited cells. target='' = all.
+
+        ``target``: a pid, the address, or the alias of a live cell.
+        """
         handled = matrix.handled_cells()
         dead = list(matrix.dead_cells())
+        aliases = _live_aliases(matrix)
 
-        if address:
-            handle = _find_handle_in_all(address, handled, dead)
-            if handle is None:
+        if target:
+            found = _resolve_cell(target, handled, dead, aliases)
+            if found is None:
                 CommandUtil.raise_observe(
-                    f'{address!r} not found in handled or dead cells.'
+                    f'{target!r} not found in handled or dead cells.'
                 )
-            return _fmt_single_brief(handle, address in handled)
+            handle, running = found
+            return _fmt_single_brief(handle, running, aliases.get(handle.address))
 
         lines: list[str] = []
         if handled:
             lines.append(f'running ({len(handled)}):')
-            lines.extend(_fmt_status_running(h) for h in handled.values())
+            lines.extend(
+                _fmt_status_running(h, aliases.get(h.address)) for h in handled.values()
+            )
         if dead:
             lines.append(f'recently exited ({len(dead)}):')
             lines.extend(_fmt_status_dead(h) for h in dead)
@@ -444,18 +512,26 @@ def new_nodes_channel(
 
     @chan.build.command(name='read_output', blocking=False, always_observe=True)
     async def read_output(
-            address: str, stream: str = 'stderr', limit: int = 50,
+            target: str, stream: str = 'stderr', limit: int = 50,
     ) -> str:
-        """Read stdout/stderr tail from memory ring buffer."""
+        """Read stdout/stderr tail from memory ring buffer — the debug read.
+
+        ``target``: a pid, the address, or the alias of a live cell.
+        """
         handled = matrix.handled_cells()
         dead = list(matrix.dead_cells())
-        handle = _find_handle_in_all(address, handled, dead)
-        if handle is None:
+        aliases = _live_aliases(matrix)
+        found = _resolve_cell(target, handled, dead, aliases)
+        if found is None:
             CommandUtil.raise_observe(
-                f'{address!r} not found in handled or dead cells.'
+                f'{target!r} not found in handled or dead cells.'
             )
+        handle, running = found
         output = handle.process.output
-        label = _cell_label(handle)
+        label = (
+            _live_label(handle, aliases.get(handle.address)) if running
+            else _dead_label(handle)
+        )
         if output is None:
             return f'[{label}] no capture buffer (spawn without CaptureSpec).'
         if stream == 'stdout':
@@ -497,11 +573,15 @@ def new_nodes_channel(
         stays quiet. Live detail comes from status() / read_output().
         """
         out: dict[str, str | None] = {}
+        aliases = _live_aliases(matrix)
 
         handled = matrix.handled_cells()
         if handled:
             lines = [f'{len(handled)} running:']
-            lines += [_fmt_notice_running(h) for h in list(handled.values())[:show_running]]
+            lines += [
+                _fmt_notice_running(h, aliases.get(h.address))
+                for h in list(handled.values())[:show_running]
+            ]
             if len(handled) > show_running:
                 lines.append(f'  ...+{len(handled) - show_running} more, status() for full list')
             out['running'] = '\n'.join(lines)
@@ -560,15 +640,15 @@ def build_nodes_channel(
 # ==== helpers for status brief ====================================
 
 
-def _fmt_single_brief(handle: CellHandle, alive: bool) -> str:
+def _fmt_single_brief(handle: CellHandle, alive: bool, alias: str | None = None) -> str:
     cell = handle.runtime.cell
     meta = handle.process.meta
     code = meta.exit_code
+    head = _live_label(handle, alias) if alive else _dead_label(handle)
     lines = [
-        f'[{_cell_label(handle)}] {"running" if alive else "dead"}',
+        f'[{head}] {"running" if alive else "dead"}',
         f'  fullname={cell.fullname}',
         f'  category={cell.category or "(none)"}',
-        f'  pid={meta.pid}',
         f'  providing={cell.providing}',
         f'  spawn_cwd={meta.cwd}  (stderr.log/stdout.log persist here)',
     ]
@@ -595,6 +675,7 @@ def new_mesh_channel(
         name: str = 'mesh',
         description: str | None = None,
         show_events: int = _DEFAULT_SHOW_EVENTS,
+        show_branches: int = _DEFAULT_SHOW_BRANCHES,
 ) -> Channel:
     """网络投影 channel. virtual_children 直接镜像 mesh.channel_proxies() (sync 直读),
     CellEvent 生产侧订阅 mesh.on_event (事件 ring + Signal), on_channel_provided 发
@@ -616,15 +697,12 @@ def new_mesh_channel(
     # auto_accept 策略缓存. available 谓词是 sync, 读缓存不每帧 re-await.
     policy: AutoAcceptPolicy | None = None
 
-    # -- branch name: 命名权威归 spawn 侧 ---------------------------------
-
-    def _branch_name(address: CellAddress, spawned: dict[CellAddress, str]) -> str:
-        # 本地 spawn → alias (本进程的命名承诺); 其余 → normalized address (全局唯一).
-        return spawned.get(address) or CellAddressCodec(address).normalized
+    # -- branch name: 命名权威归 spawn 侧 (module-level `_branch_name`) ----
 
     def _resolve_mesh_address(query: str) -> CellAddress | None:
-        # _branch_name 的反向: accept/reject 的入参接受展示形态 (normalized address /
-        # alias), 归一化为网络身份 (raw CellAddress). 事件/notice 展示的正是 _branch_name.
+        # _branch_name 的反向: accept/reject 的入参接受**展示形态** (raw / normalized
+        # address / alias) —— 也就是 mesh 的 notice 与事件里印出来的那几种, 而不是任何
+        # 打字简写. 归一化完就只剩地址.
         if mesh is None:
             return None
         proxies = mesh.channel_proxies()
@@ -640,8 +718,7 @@ def new_mesh_channel(
         for addr, alias in matrix.project.nodes.spawned_nodes().items():
             if alias == query:
                 return addr
-        matches = [a for a in view if CellAddressCodec(a).match(query)]
-        return matches[0] if len(matches) == 1 else None
+        return None
 
     # -- lifecycle: 订阅 mesh.on_event + mesh.on_channel_provided ---------
 
@@ -728,16 +805,16 @@ def new_mesh_channel(
         name='accept', blocking=False, always_observe=False,
         available=_accept_available,
     )
-    async def accept_cell(address: str, lookup: bool = False) -> str:
+    async def accept_cell(target: str, lookup: bool = False) -> str:
         """Trust a network cell — build channel proxy immediately.
 
-        ``address`` accepts the display form shown by events()/notice (a local alias
-        or a normalized address) as well as the raw address.
+        ``target``: any form the notice/events() prints — the raw address, its
+        normalized form, or a local alias.
         """
-        resolved = _resolve_mesh_address(address)
+        resolved = _resolve_mesh_address(target)
         if resolved is None:
             CommandUtil.raise_observe(
-                f'{address!r} does not match any network cell. events() to inspect.'
+                f'{target!r} does not match any network cell. events() to inspect.'
             )
         try:
             await mesh.accept(resolved, lookup=lookup)
@@ -749,16 +826,16 @@ def new_mesh_channel(
         name='reject', blocking=False, always_observe=False,
         available=_accept_available,
     )
-    async def reject_cell(address: str) -> str:
+    async def reject_cell(target: str) -> str:
         """Refuse a network cell — tear down active proxy.
 
-        ``address`` accepts the display form shown by events()/notice (a local alias
-        or a normalized address) as well as the raw address.
+        ``target``: the same forms accept() takes — the raw address, its normalized
+        form, or a local alias.
         """
-        resolved = _resolve_mesh_address(address)
+        resolved = _resolve_mesh_address(target)
         if resolved is None:
             CommandUtil.raise_observe(
-                f'{address!r} does not match any network cell. events() to inspect.'
+                f'{target!r} does not match any network cell. events() to inspect.'
             )
         await mesh.reject(resolved)
         return f'[mesh:reject {resolved}] resource withdrawn.'
@@ -801,15 +878,17 @@ def new_mesh_channel(
 
     @chan.build.notice
     def mesh_notice() -> str:
-        """Current trust policy, then a bounded tail of recent cell events.
+        """Current trust policy, then the branch names, then a bounded event tail.
 
         Warm, so it rides notice: the kernel re-sends it only when the text changes.
-        The tail window is capped at ``show_events``; the rest of the history is
-        pulled on demand by events() rather than replayed here every refresh.
+        Both tails are capped — the branch table at ``show_branches`` (the rest is a
+        pull via status()), the event window at ``show_events`` (the rest via
+        events()) — rather than replayed here every refresh.
         """
         lines: list[str] = []
         if policy is not None:
             lines.append(f'auto_accept: local={policy.local}, foreign={policy.foreign}')
+        lines.extend(_alias_lines())
         if event_buffer:
             shown = list(event_buffer)[-show_events:]
             lines.append(f'recent events ({len(shown)}):')
@@ -822,6 +901,31 @@ def new_mesh_channel(
             if len(event_buffer) > len(shown):
                 lines.append(f'  ...+{len(event_buffer) - len(shown)} more, events() for the tail')
         return '\n'.join(lines)
+
+    def _alias_lines() -> list[str]:
+        """``alias = address`` for the branches a local spawn named — bounded.
+
+        Mesh is the one surface where the alias is load-bearing: ``matrix.mesh.<name>``
+        *is* the alias while the cell lives. So the branch table spells both namespaces
+        out side by side. Foreign cells need no line; their branch name already *is*
+        their address. Rows are capped like every other warm tail — the rest is a pull
+        (status()).
+        """
+        spawned = matrix.project.nodes.spawned_nodes()
+        proxied = mesh.channel_proxies() if mesh is not None else {}
+        rows = [
+            [spawned[address], address]
+            for address in sorted(proxied)
+            if address in spawned
+        ]
+        if not rows:
+            return []
+        shown = rows[:show_branches]
+        lines = [f'branches ({len(rows)}):']
+        lines += _render_table(['alias', 'address'], shown)
+        if len(rows) > len(shown):
+            lines.append(f'  ...+{len(rows) - len(shown)} more, status() for full list')
+        return lines
 
     # -- instruction --------------------------------------------------
 
@@ -843,6 +947,7 @@ def build_mesh_channel(
         name: str = 'mesh',
         description: str | None = None,
         show_events: int = _DEFAULT_SHOW_EVENTS,
+        show_branches: int = _DEFAULT_SHOW_BRANCHES,
 ) -> ChannelFactory:
     """High-order factory: config → ChannelFactory. Resolves Matrix from container."""
 
@@ -851,6 +956,7 @@ def build_mesh_channel(
         return new_mesh_channel(
             matrix,
             name=name, description=description, show_events=show_events,
+            show_branches=show_branches,
         )
 
     return factory

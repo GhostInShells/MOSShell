@@ -26,6 +26,30 @@
 
 > **2026-09-12 dsh 0.1.5 升级 + prompt 架构对齐**：环境升 Node 24.21（`import.meta.main` 需 ≥24.2；TUNA nodejs-release 已冻结，改 npmmirror 精确版本）；`~/.dsh/profiles/node_modules` 两个 pnpm 实体包清掉（heal 重建 symlink）。对齐结论：standard 的 host 平面三段（web-surface / deliverable-file-references / file-reference）由 host bundle 注入，改用选择性压制（plugin shadow web-surface + patch disable ui-deliverables/file-reference-local，保留 harness:source 与 TOOL_* 工具散文）；dsh `renderContextSnapshot` 是 append+文字 supersede 而非 replace-op，不可借作 MOSS dynamic context。决策详见文末「dsh 0.1.5 升级决策」。
 
+> **2026-10-09 D09 现场（camera / push 实测）**：新增 **D41**（注入 moment 里的图片在 dsh chat 渲染成「未知内容块」——已定位到 dsh client 的 context-body 路由，**不是** MOSS 侧转义问题）与 **O19**（旁路会话工具全禁 → 调研零产出，下一步）。同轮已证：plugin 的 `admitEncodedImages` 把 moment 里的 base64 正确转成 attachment（session 日志第 143 行）；matrix 新契约（`read_output` 的 pid 手柄 / `nodes:list path=`）重启后在线；webview 自动认领后需模型 `arrange` 才可点。
+
+> **2026-10-09 D09 深夜（D41 更正 + 两条定调）**：
+> **① D41 的问题定义与归属改准** —— 缺口不在"ghost 看不到图"（**图一直在模型面**：`user/message`
+> 的 content block，模型读得到，session 日志第 143 行即证），而在**人类面的渲染**：dsh client 的
+> 所有 context body（含声明 form 的）都走 `ModelFacingContent`，非 text 块一律落
+> `JsonBlock + message.unknownBlock`。能渲染图片的路只有两条：**message 气泡**（`source.kind === 'user'`）
+> 与 **tool card**。
+> **② 处置 = 不改**（原"归属 dsh 上游"结论保留，理由升级）：
+> (a) 不迁就客户端渲染缺口去改本层协议 —— 单一交付点（moment 不散进 tool result）是此前专门
+> 裁定过的，回退它等于把一个已裁定的协议弯回来；
+> (b) `kind` 不能乱换 —— host 侧有一串按 `source.kind === 'user'` 判定的语义：
+> `dsh-session-title`（会话标题取材 + invariant 要求"人类 user/message"）、`dsh-session-turn-outline`、
+> `dsh-tool-goal` 的 `hasDirectHumanInput`、`dsh-api-session-controller` 的 inbox `placement` /
+> `lastPromptAt`、`dsh-tool-skill` / `-cordis` 扫手势、`dsh-repeat-tool-reminder` 重置链条。
+> 乱换的典型后果是**会话标题取自我注入的背景帧**、goal 判定以为"人有直接输入"；
+> (c) **人类面看图的正式通道是我们自己的屏**（screen_manager / push / webview），不是 dsh web。
+> **③ 另一条定调（thirdgerb）**：dsh plugin 在 MOSShell 里**不是自迭代目标**；它的交付方式 =
+> 与 python 内核**同轮**、每次启动覆盖（`_sync_dsh_plugin`）、**不 bump VERSION**、**不打 patch**
+> （改 dsh 安装产物一经判定为 hack，当晚已撤回，安装目录从未被写入）。
+> 附：ghost home 三类同步契约的边界 —— `.dolores.yml` 读后改写 / 认知场 seed-once /
+> `.dsh/profiles/web/*`（4 文件）走 VERSION 闸内的整文件覆盖。**闸内覆盖会在 bump 时静默吃掉
+> stub 里没有的字段**（现存实例：`package.json` 的 `"patchReload": "live"`）；要保留就先提进 stub。
+
 ## 缺陷
 
 | # | 状态 | Pri | 问题 | 发现 | 归口 |
@@ -70,6 +94,7 @@
 | D38 | fixed | P0 | **感知延迟 —— 模型看到的永远是动作前的世界** — `moss_interpret` 等完 observed 就直接 `observe()` 签 moment, 中间**不刷暖层**; 而 metas 只在**下一次 interpreter 派发前**刷 (`ctml_shell.interpreter` L442-444 `await refresh_metas(timeout=prepare_timeout)`, 注释"阻塞等待刷新结果")。于是**任何改状态的命令, 其效果都要等下一道命令走一趟派发才进入模型视野**。实机证据 (09-26 现场): `ghost.frame:resolve` 01:21:59 生效 (返回 `1/5`), 而**同一帧**的 facade-delta 仍是 5 条问题; 直到下一条命令 (`resolved`, 01:22:19) 走完派发, 才刷出 4 条。对照: `moss_observe` 早就做了这一步 (`_run.py` 的 `_handle_observe`: `await self._facade.shell.refresh_metas(timeout=5.0, stale_time=1.0)`), interpret 漏了 —— 同一件事两处实现, 一处漏。修法: interpret handler 签 moment 前做同一步; 单测断言顺序 (refresh 必须早于 observe); 测试助手 `_run()` 补一个默认 noop facade (原来传 `facade=None`, 三个 interpret 用例因此裸奔)。**预测**: 1-8/1-9 那次 memento 逐字重发是同一条的症状 (迟到的刷新让相邻两帧的 `previous_metas` 错位), 不一定是独立的 cache bug; 修完若仍重发, 才是第二处 | 09-26 现场 | 本轮 |
 | D39 | fixed (待重启实测) | P0 | **moss_reasoning 不终结本轮 —— 替身发明了生产没有的 API, 异常被静默吞掉** — 现象: 调用 `moss_reasoning` 后本轮照跑到 `completed`, 模型只收到 `null`. 实机证据 (session 日志): `moss_wait_next` 01:49:04 tool/result 同秒 `turn/end aborted/hook/moss cancel_turn`; `moss_reasoning` 01:53:23 与 01:59:31 两次都是 tool/result 文本 `null` + 本轮继续. 根因 (运行时 introspect 取得, 非推断): `_run.py::_handle_reasoning` 调 `self._thinking.add_echoes(observe=True)`, 而 `add_echoes`/`moments` 定义在 **`Action` 侧** (`core/blueprint/mindflow.py:1034`, 类 `Action`), `Thinking` 上**没有**该方法 → AttributeError → 被 `ToolCallParameter.run_tool` 的裸 `except Exception` 吞成 `ToolCallResult(result=None, error=...)`, 而 `_dispatch_tool_result` 只发 `result` 不发 `error` → **cancel 随之丢失**, 本轮永不结束. 替身 `FakeRunThinking.add_echoes(*messages, observe=False)` 正是生产不存在的签名, 因此单测 139 全绿而生产必挂 —— 今晚第三次遇到同一形状: **表面承诺了一个不存在的机制**. 修法: (1) 改调 `self._thinking.observer.add_echoes([], need_observe=True)` (`Observer(Moments)` 上确实有, 与 `_mindflow.py:707/835` 同一惯用法); (2) 人类裁定并采纳: `wait_actions_done()` 放在 cancel **之前** —— cancel 会掐掉在飞动作, 记账工具不许比它记账的世界更快; (3) `run_tool` 的 except 补 `_logger.exception` —— 静默吞异常是这条 bug 藏了整晚的唯一原因; (4) 新增 `test_tool_surface_matches_production_thinking`: 断言 handler 用到的 API 在生产 `Thinking` 上真实存在、且 `add_echoes` **不在**其上. 同轮结论**修正**: 早先"档位应用点应从 turn start 挪到 turn/end"的论证**依赖了"切断没发生"这个 bug** (没切断时, 本轮的下一个请求会先用上新档位) —— 切断修好后, "下一个请求"就真属于下一轮, enter 时写 pending 即正确. 因此**只修切断, 先实测**; 只有实测仍晚一拍, 才动 plugin 的应用点 | 09-26 现场 | 本轮 |
 | D40 | fixed | P0 | **静默失败的制度面 —— 日志写了, 但不在当前 node 上** — 人类提问: "接口定义错了、被 test mock 错了, 是不是一点错误日志都没有? system error log channel 存在吗?" 查证分三层: ① **通道存在但没挂在我身上** —— `runtime_error` channel (只 `pull`) + `RuntimeErrorLogImpl` (挂 `moss` logger 的 ERROR 级 Handler, 早于 provider bootstrap, 64 FIFO + CRITICAL 永不丢) 在 `stubs/workspace/modes/default/src/HOST/channels.py` 里有, 而活的 `.moss/modes/default/src/HOST/channels.py` 里没有 → facade 里看不到, 无法 pull. ② **那次 bug 就算挂了也一条都没有** —— 静音发生在**生成 record 之前**: 旧的 `run_tool` 裸 `except` 不记日志, 异常被译成 `result=None` 就蒸发. 实证: `grep -E "reasoning\|Thinking" moss.log.2026-09-25` → 0 命中 (那晚 8MB 日志零痕迹); 对照 CTML 层的错误是响的 (01:40 `<ghost.memento:commit>` not found 留了 9 条 ERROR + traceback). ③ **mock 那半是契约缺口, 任何日志体系都看不见** —— `FakeRunThinking.add_echoes` 不是写错, 是**比生产更宽松**, 测试里那条路径不抛异常, 所以永远没有 except 会响; 只有反射式契约测试能抓 (D39 的第 4 条修法). **人类同时纠正了 logger 的取得方式**: `get_moss_logger()` 是兜底, dolores ghost 往下**都应持有 matrix/shell 传下来的 logger, 层层传递而不是重建** —— 每层再调一次会把整棵 ghost 的日志从当前 node (`Matrix.logger` = "Logger belonging to the current node") 的语境里摘出去. 落实: `_runtime` 构 `DoloresEgo` 时**漏传 `logger=`** (旁边的 `EgoMementoManager` 传了) → 整个 ego 子树掉回兜底; 补 `logger=self.logger`; `_ego.run_thinking` → `DoloresRun(logger=)`; `_run`/`_tools` 的**module 级 `_logger` 全删**, 改 `self._logger` / `run_tool(..., logger=)`; 保留 `logger or get_moss_logger()` 作最后兜底. 同轮补齐**静默失败面**: `_handle_tool_use_event` 无人认领的 tool 名 (调用永远等不到回话, 原先零日志)、参数解析失败 (`ValidationError` 只回模型不记日志)、CTML 参数流损坏 (解释器没见到, shell 的 ERROR 不会出现)、`logos()` 退出时残留未关闭的 articulator 流 (开了边界没人关 → 不 commit 不 settle 不记日志)、`thinking/enter` 失败 (一路在抛但没一处写日志, 与 exit 不对称)、memento 切点重建失败 (只 warning 不带 traceback = 连续性丢失的原因永久丢掉)、`_commit()` 的三条 no-op 路径 (阈值说要落锚而什么都没落)、`assistant/message` 缺 usage (窗口恒 0 → K/T 阈值永不触发, 自动落锚整体静默失效, 报一次)、self-wake 无广播 (自醒整体哑掉, 报一次)、`ego/create` 未回 `thinkingToken` (症状在下一步, 原因看不见). 新增 9 条**可观测性**测试 (`TestSilentFailureSurfaces` / `TestEgoSilentFailureSurfaces`), 断言的都是"出错时日志里有没有东西", 其中一条专门断言日志落在**调用方传进来的那个 logger** 上 | 09-26 现场 | 本轮 |
+| D41 | open | P2 | **注入 moment 里的图片在 dsh chat 渲染成「未知内容块」** — 实测（D09 00:19 camera 实测）：`matrix.mesh.eyes:capture` 的结果在页面上显示为 `frame 640x480 @ … age=0.6s` + `▸ 未知内容块`。**不在 MOSS 侧**：plugin 的 `durableMomentContent()` 已通过 `admitEncodedImages()` 正确 admit，session 日志 ground truth（`…/.dsh/sessions/…/71ea889d-…/session.v3.jsonl.zstd` 第 143 行，事件 `user/message`）content[1] = `{"type":"image","attachment":{"attachmentId":"sha256:22d3f95d…","mediaType":"image/jpeg","width":640,"height":480,"bytes":23421}}` —— 形状与消息路径认的完全一致，**没有 base64 泄漏、没有转义失败**。**根因在 dsh client 的路由**：插件注入的 moment 是 `source:{kind:'plugin'}` 的 `user/message`，而 `dsh-client-ui-chat` 的分类 `messageDefinition.start` 里 `source.kind !== "user"` 一律归 `kind:"context"`（`ContextInjectionRow`）→ `contextBody(form)` 是闭集（instructions / catalog / snapshot / notice / relay / recall，`null` → opaque）；我们的 plugin 不声明 form → **opaque body** → `ModelFacingContent` 只认 `type==='text'`，其余块一律 `JsonBlock` + i18n `message.unknownBlock`（中文即「未知内容块」）。图片渲染能力只存在于两条路径：**消息气泡**（`contentParts` → `conversation.message.images` slot）与 **tool card**（2026-08-20 已修，见 dsh `.agents/notes/archived/feature/2026-08-20-tool-card-image-results.md`——同一族缺口：能力只在 message 路径上有）。→ **归属：dsh client UI（`ui-chat` 的 context body）**，MOSS 侧无需改动。最小改动 = 给 opaque/context body 一个 image 分支（走同一个 attachment 画廊 slot；注意该 slot 需 attachment presentation plugin 填充，与 tool card 同依赖），或给 moss moment 声明一个 form。**处置（thirdgerb 2026-10-09 定）**：**不做本地 hack** —— ghost 自己看得到图就足够，人类侧 dsh 继续显示「未知内容块」是可接受的现状；正确修法归 **dsh 上游**（context body 的 image 分支，或随 0.2.0 的形态）。曾试过给已安装的 `ui-chat` bundle 打锚点式本地补丁（threading `renderMessageImages` 进 opaque body），判定为 hack、**已全部撤回**（补丁模块删除、`_runtime` 恢复，安装目录从未被写入）。 | D09 现场（camera 实测） | — |
 
 
 > dogfood-3 追加验证通过：perStep 锁上移全局生效；prompt 顺序调整后 CTML 默认输出立现。
@@ -109,6 +134,7 @@
 | O16 | open | 重启不从 last session 还原最后帧，与 compact 分开；「总痛苦守恒」反面，清空/折叠必要；考虑 clear 函数回 memento 态 |
 | O17 | open | 是否允许模型在 memento channel 自定义 commit instruction（未定论） |
 | O18 | fixed | **"零有效工作的区间不 commit"** — 定论 2026-09-25：**先正常（照常 commit），未来再改，不做特殊机制**。理由：按"有没有意义"筛 span 会把判断调用塞进写入路径，与 memento 的设计前提（诚实 append-only 日志 + 读侧折叠）冲突；噪声在读面已被 `view_limit`/broken 折叠管住。若将来真要治，只能用客观量（如 `end_turn - start_turn > 2`）且只落在 exit 封尾路径 —— 稳态 commit 由 `force_tokens` 驱动，本以"真实 token 累积"为前提，再叠 turn 数守卫会与它打架 |
+| O19 | open | **旁路（bypass）会话的工具面** — D09 现场：把一次纯只读调研派给旁路 agent，它**所有工具都不可用**（`bash`/`glob`/`grep`/`read` 一律返回 `This is a bypass session; tools are unavailable. Answer in a single turn only.`，`send_message` 也禁），只回了一份"能力受限"自陈，调研产出为零。已知且是下一步：让旁路至少拿到**读**工具——「只读」该限制写，不该连读一起禁。 | D09 现场 | 下一步 |
 
 ## dsh 0.1.5 升级决策 (2026-09-12)
 

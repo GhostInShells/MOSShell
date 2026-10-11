@@ -8,7 +8,7 @@ connect.
 Two surfaces to keep in step:
 
 * the **stage** — the active group's items, in order, with their resolved layout
-  and fullscreen. Rendered by the ``stage`` frame.
+  and the focus. Rendered by the ``stage`` frame.
 * the **desktop** — items in the pool but in no group, floating. Rendered by the
   ``desktop`` frame.
 
@@ -31,10 +31,11 @@ __all__ = [
     "open_frame",
     "close_frame",
     "activate_frame",
-    "fullscreen_frame",
+    "focus_frame",
     "veil_frame",
     "audio_frame",
     "notice_frame",
+    "face_frame",
 ]
 
 
@@ -45,6 +46,10 @@ def item_view(item: Item) -> dict:
         "label": item.label,
         "group": item.group,
         "icon": item.icon,
+        # The face travels with the item's identity: the same node speaks the same
+        # line in every view, so it is not a property of an arrangement.
+        "face_line": item.face_line,
+        "face_art": item.face_art,
     }
 
 
@@ -62,13 +67,26 @@ def _layout_view(model: ScreenModel) -> dict | None:
 
 
 def _state(model: ScreenModel) -> dict:
-    """The 'render this' set: what is on stage, what floats, what is fullscreen."""
+    """The 'render this' set: what is on stage, what floats, what is focused.
+
+    ``groups`` rides along because it is a **place list the human reads**, not a
+    model-side arrangement: the sidebar must stay correct when a group appears or
+    empties itself, and the group list otherwise travels only once, in the
+    ``snapshot`` on connect — a fresh group would be invisible until a reload.
+    Names in creation order; membership is derivable from each item's ``group``.
+    """
     return {
         "arena": model.arena(),
         "ids": model.arena_items(),
         "layout": _layout_view(model),
-        "fullscreen": model.fullscreen(),
+        "focus": model.focus(),
+        "view_by": model.view_by(),
         "desktop": model.desktop_items(),
+        "groups": model.groups(),
+        # The pool order travels with the state rather than being re-derived on the
+        # page: "what is near the eye" is the model's decision (``raise``), and a
+        # page-side guess from insertion time would be a second authority over it.
+        "order": model.pool_order(),
     }
 
 
@@ -80,19 +98,15 @@ def state_frame(model: ScreenModel) -> dict:
 def snapshot(model: ScreenModel) -> dict:
     """The full state a connecting surface needs to render.
 
-    ``items`` carries every pooled item's identity (url/label/icon), so the page
-    can materialize an iframe for a desktop item it has never seen before — the
-    ``desktop`` list alone is just ids.
+    ``items`` carries every pooled item's identity (url/label/icon and its
+    ``group``), so the page can materialize an iframe for a desktop item it has
+    never seen before — the ``desktop`` list alone is just ids. Group membership
+    comes from those items; the group list itself is in ``groups``.
     """
-    groups = [
-        {"name": g, "items": [item_view(model.get(i)) for i in model.group_items(g)]}
-        for g in model.groups()
-    ]
     return {
         "type": "snapshot",
         **_state(model),
         "items": [item_view(i) for i in model.items()],
-        "groups": groups,
     }
 
 
@@ -108,8 +122,9 @@ def activate_frame(model: ScreenModel, *, by_model: bool) -> dict:
     return {"type": "activate", "by_model": by_model, **_state(model)}
 
 
-def fullscreen_frame(item_id: str | None) -> dict:
-    return {"type": "fullscreen", "id": item_id}
+def focus_frame(item_id: str | None) -> dict:
+    """The view moved to one item (or left it) — a view event, not a layout one."""
+    return {"type": "focus", "id": item_id}
 
 
 def veil_frame(gesture: str, **fields: object) -> dict:
@@ -118,6 +133,21 @@ def veil_frame(gesture: str, **fields: object) -> dict:
 
 def audio_frame(sample: AudioSampleTopic) -> dict:
     return {"type": "audio", "sample": sample.model_dump(exclude={"meta"})}
+
+
+def face_frame(item: Item) -> dict:
+    """A tile's own line / picture changed — a delta, not a whole state.
+
+    Faces change on their own clock (a card appears, a stream starts), so they
+    get their own frame: re-sending the arrangement to deliver one line would
+    make every node's idle chatter repaint the stage.
+    """
+    return {
+        "type": "face",
+        "id": item.id,
+        "face_line": item.face_line,
+        "face_art": item.face_art,
+    }
 
 
 def notice_frame(text: str) -> dict:

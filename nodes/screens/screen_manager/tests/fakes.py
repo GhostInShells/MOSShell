@@ -10,9 +10,14 @@ class Recorder:
     def __init__(self) -> None:
         self.frames: list[dict] = []
         self.signals: list[object] = []
+        self.rail: str = ""
 
     async def broadcast(self, frame: dict) -> None:
         self.frames.append(frame)
+
+    def rail_state(self) -> str:
+        """Stand in for the human-side sidebar state the surface reports."""
+        return self.rail
 
     def __call__(self, signal: object) -> None:
         self.signals.append(signal)

@@ -24,7 +24,7 @@
 两层契约对齐:
 
     1. **kind='append' 不调 shell.clear()** (ctml_shell.py:342-349):
-       旧 interpreter 用 ``close(cancel_executing=False)`` 关掉, 已进入运行态的
+       旧 interpreter 用 ``close(cancel_managing=False)`` 关掉, 已进入运行态的
        task 留在 channel runtime 跑.
 
     2. **clear_after_exit 控制 interpreter __aexit__ 时是否 cancel 跑着的 task**:
@@ -50,7 +50,7 @@ async def test_append_cross_frame_long_task_survives_interpreter_exit():
     协议契约:
         - 帧 1 CTML: ``<slow:long_task/>``. long_task 内置 started + release 双 event,
           测试代码 await ``started`` 才退出 with-block, 钉死"运行态已建立".
-        - clear_after_exit 默认 False → __aexit__ 走 ``cancel_executing=False``,
+        - clear_after_exit 默认 False → __aexit__ 走 ``cancel_managing=False``,
           运行态 task 不被 cancel.
         - 帧 2 跑 ``<fast:short_task/>`` (异通道, 立刻完成).
         - 释放 release event, long_task 自然跑完.
@@ -105,7 +105,7 @@ async def test_append_clear_after_exit_true_cancels_running_task():
     """append + clear_after_exit=True: interpreter 退出时运行态 task 被打断.
 
     协议契约 (CTMLInterpreter.close):
-        close cancel 的触发条件是 ``cancel_executing or self._clear_after_exit``.
+        close cancel 的触发条件是 ``cancel_managing or self._clear_after_exit``.
         ``clear_after_exit=True`` 让 __aexit__ 走 cancel 路径,
         managing_tasks 里运行态 task 被 fail (INTERRUPTED), 协程收到 CancelledError.
     """

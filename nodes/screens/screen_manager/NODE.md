@@ -26,6 +26,15 @@ what is fullscreen. **veil** is the top gesture layer (mark / arrow / text); the
 ```
 
 Two faces share one store: this channel (the ghost's side) and a web surface (the
-human's side). The surface binds an **ephemeral port by default**; read its live
-URL from this channel's `url` notice — never assume a fixed port. To pin one,
-start with `--port N` (or set `MOSS_SCREEN_MANAGER_PORT`).
+human's side). The surface opens in the system browser on start (`--no-open` for a
+headless run) and binds a **fixed port: 20381** — a screen is a *place*, so the human's
+window has to be findable at a known address. 20381 sits in the 2038 series, next to the
+zenoh mesh endpoint (20380). The live URL is still on this channel's `url` notice; pass
+`--port N` (or set `MOSS_SCREEN_MANAGER_PORT`) to run a second screen beside the first.
+Ports are documented per-node, the way `ghost-in-bilibili` pins 23880.
+
+The **background** is two layers over one audio bus: the ghost's voice falls as the
+character rain, the human's voice rises as a symmetric glyph wave from the floor.
+Both read `AudioSampleTopic` (`role=ghost` / `role=user`) and share one glyph set —
+who is speaking is told by direction, not by colour. See
+`.ai_partners/features/workstreams/2026/07/screen-manager/screen-todo.md` (W7).

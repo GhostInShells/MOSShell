@@ -20,6 +20,14 @@ on start, closed on stop). It exposes **no channel** — it only produces: a
 continuous capture loop, a device-facing FaceTopic, and an MJPEG stream served
 at `/stream`. Perception happens in a `stream` node consuming that address.
 
+It **does announce a webview**: the viewer page is a window a human can watch
+("what the ghost can see"), adopted by the screen like any other. The page is a
+claim about the picture, not about the node — the channel-less design above is
+unchanged.
+
+**待做**：它该在开设备**之前**先问一句（"要打开摄像头吗？"），在人点过 accept 之后才开设备——
+节点自己兜自己的闸，范式见 `node-lifecycle` FEATURE 的「待做：节点的启动许可」。
+
 ## Stream
 
 The stream address is announced on start. Consume it:

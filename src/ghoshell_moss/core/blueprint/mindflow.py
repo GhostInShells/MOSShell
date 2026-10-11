@@ -766,7 +766,7 @@ class AttentionStatement(ABC):
         ...
 
     @abstractmethod
-    def abort_reason(self) -> str:
+    def abort_reason(self) -> str | None:
         ...
 
     @abstractmethod
