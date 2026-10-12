@@ -698,7 +698,7 @@ class DuplexChannelContext:
 
     async def _handle_command_done_event(self, event: CommandDoneEvent) -> None:
         cid = event.cid
-        task = self._pending_provider_command_tasks.pop(cid)
+        task = self._pending_provider_command_tasks.pop(cid, None)
         if task is None:
             self.logger.info("receive command done event %s match no command", event)
             return
