@@ -499,9 +499,8 @@ class MatrixImpl(Matrix):
         if not self.is_running():
             raise RuntimeError(f'Matrix is not running (address={self.this.address})')
 
-    # is_host_running 从 Matrix ABC 拿掉 (2026-07 review): sync 依赖惰性 mesh
-    # 是设计瑕疵 (worker 未 mesh() 就无从判). 消费者需要判组网状态时走
-    # `(await matrix.mesh()).has_host()` — host 在 network 级唯一, 不需 project_id 过滤.
+    # 本类不提供同步的 host 判活: 组网状态走 `(await matrix.network()).has_host()`,
+    # host 在 network 级唯一, 不需 project_id 过滤.
 
     # ==================================================================
     # 生命周期基础 (承 host/matrix.py)

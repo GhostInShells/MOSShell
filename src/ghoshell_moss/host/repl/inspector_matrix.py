@@ -34,7 +34,6 @@ class MatrixInspector:
         return {
             "is_running": self._matrix.is_running(),
             "is_host": self._matrix.is_host(),
-            "is_host_running": self._matrix.is_host_running(),
         }
 
     def network(self) -> dict:

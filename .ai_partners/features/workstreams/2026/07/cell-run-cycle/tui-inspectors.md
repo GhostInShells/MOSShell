@@ -1,5 +1,12 @@
 # TUI Inspector 体系重整 — M4a 规划
 
+> **已过期 (2026-10)**：本规划写于命名定稿之前，后续 API 已改名/收敛。
+> 以 `src/ghoshell_moss/host/repl/inspector_*.py` 实码为准。与下文冲突处：
+> - Matrix 表面积：`this` / `network()` / `processes` / `home`（**无** `mesh()` / `jobs`）
+> - manifest ABC 定名：`ProjectManifest` / `HostModeManifests`（非 `MatrixManifest` / `ModeManifests`）
+> - `MatrixInspector.info()` **不含** `is_host_running`（该方法已从 Matrix ABC 移除；
+>   判组网状态走 `(await matrix.network()).has_host()`）
+
 cell-run-cycle 的 TUI inspector 体系重整。背景：matrix-cell-governance 闭合后，
 Matrix / Manifests / Cell / Project / Host ABC 全部重绘，现有 4 个 inspector 中
 2 个需要修或重写。
