@@ -34,7 +34,7 @@ from ghoshell_moss.core.ctml.versions import get_moss_ctml_meta_instruction, CTM
 from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan, default_primitive_map
 from ghoshell_moss.core.helpers import ThreadSafeEvent, ThreadSafeFuture
-from ghoshell_moss.core.speech.speech_module import build_content_command
+from ghoshell_moss.core.speech.speech_module import SpeechChannelModule
 from ghoshell_moss.contracts.speech import Speech
 from collections import deque
 import time
@@ -85,6 +85,8 @@ class CTMLShell(MOSShell[PrimeChannel]):
                     self._main_channel.build.add_command(primitive)
 
         self._speech: Speech = speech
+        # 裸文本是否走语音: True 时 main channel 的 __content__ 由 speech 承接, 主轨上的
+        # 文本直接出声, 不必包 <say>. 只在真有 Speech 时生效 (见 _speech_context_manager).
         self._speech_as_content_command = speech_as_content_command
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
         self._clearing_task: asyncio.Future[None] | None = None
@@ -282,8 +284,12 @@ class CTMLShell(MOSShell[PrimeChannel]):
         """
         启动关闭音频模块.
 
-        speech 显式注册: 构造时未传入 Speech 实例则不托管 — 不 set 进容器、
-        不启动、不挂 content command. 此时 shell 无语音交互能力.
+        speech 显式注册: 构造时未传入 Speech 实例则不托管 — 不 set 进容器、不启动、
+        不挂语音命令面. 此时 shell 无语音交互能力.
+
+        拿到 Speech 时把 ``SpeechChannelModule`` 挂到 main channel: say / mute /
+        named notice, 以及 ``speech_as_content_command`` 时的 ``__content__``, 都由它
+        随 speech 一起上架、一起下架 —— shell 只判一件事: 手上有没有 Speech.
         """
         if self._speech is None:
             yield
@@ -291,9 +297,10 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
         self._container.set(Speech, self._speech)
 
-        if self._speech_as_content_command:
-            content_cmd = build_content_command(self._speech)
-            self.main_channel.build.add_command(content_cmd, override=False)
+        self.main_channel.with_module(SpeechChannelModule(
+            speech=self._speech,
+            register_content_command=self._speech_as_content_command,
+        ))
 
         if self._speech.is_running():
             yield

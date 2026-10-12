@@ -168,3 +168,21 @@ async def test_shell_speech_10_times():
                 outputted = speech.outputted()
                 print(outputted)
                 assert outputted[1] == "你好，我是MOSS。"
+
+
+@pytest.mark.asyncio
+async def test_content_command_off_speaks_nothing():
+    """speech_as_content_command 默认关: 有 Speech 也不会让裸文本出声.
+
+    这就是这个 flag 的含义 —— 关掉时主轨文本不是语音, 只有显式 <say> 才出声.
+    """
+    speech = MockSpeech(typing_sleep=0.0)
+    shell = new_ctml_shell(speech=speech)  # 默认 speech_as_content_command=False
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("hello, this is bare text")
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            interpreter.raise_exception()
+            assert speech.outputted() == []
