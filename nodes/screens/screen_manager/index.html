@@ -876,6 +876,43 @@ function veilArrow(id, src, srcRegion, dst, dstRegion, durMs, color, width) {
     c.closePath(); c.fillStyle = veilColor('arrow', color); c.fill();
   }, durMs);
 }
+
+// 手绘层：脚本每一帧被调一次，拿到画布、目标砖的框、以及"它活了多久"。
+// 不给积木式的动画 —— 动画由脚本自己算。这和 co_browser / artifacts 里直接下代码
+// 是同一件事：这一层要动，就得是我写的。
+//
+// 生命周期与其它手势完全一致（duration / clear_veil / 绑 item）：动的东西也必须
+// 收得回来，否则它会在我看不见的地方一直跑。
+const paintCache = new Map();
+function compilePaint(src) {
+  let fn = paintCache.get(src);
+  if (!fn) {
+    fn = new Function('ctx', 'box', 't', 'dpr', src);
+    paintCache.set(src, fn);
+  }
+  return fn;
+}
+function veilPaint(id, script, item, durMs, color) {
+  addBlock(id, (c, a, t) => {
+    const g = item ? geometry()[item] : null;
+    const box = g ? { x: g.x, y: g.y, w: g.w, h: g.h }
+                  : { x: 0, y: 0, w: viewW, h: viewH };
+    c.globalAlpha = a;
+    c.fillStyle = veilColor('paint', color);
+    c.strokeStyle = veilColor('paint', color);
+    try {
+      compilePaint(script)(c, box, t, devicePixelRatio);
+    } catch (e) {
+      // 脚本错了要说出来 —— 静默失败比崩溃坏：屏上"什么都没画"看起来像没生效。
+      c.globalAlpha = a;
+      c.fillStyle = '#ff5f56';
+      c.font = '13px ui-monospace, monospace';
+      c.fillText('paint error: ' + e.message, box.x + 10, box.y + 20);
+    }
+    c.globalAlpha = 1;
+  }, durMs);
+}
+
 function veilText(id, content, durMs, color) {
   addBlock(id, (c, a) => {
     c.globalAlpha = a;
@@ -890,8 +927,11 @@ function veilLoop() {
   const now = performance.now();
   vctx.clearRect(0, 0, viewW, viewH);
   veilBlocks.forEach((b, id) => {
-    if (now - b.start >= b.dur) { veilBlocks.delete(id); return; }
-    b.draw(vctx, veilAlpha(b, now));
+    const age = now - b.start;
+    if (age >= b.dur) { veilBlocks.delete(id); return; }
+    // 第三个参数是"这个块活了多久"：静态块不看它，动态块靠它算位置 —— 所以
+    // 动画是时间的函数，不是累积状态，掉帧也不会走样。
+    b.draw(vctx, veilAlpha(b, now), age);
   });
   vctx.globalAlpha = 1;
 }
@@ -1896,6 +1936,7 @@ function route(f) {
         veilArrow(id, f.src, f.src_region || 'full', f.dst, f.dst_region || 'full',
                   d, f.color, w);
       } else if (f.gesture === 'text') veilText(id, f.content, d, f.color);
+      else if (f.gesture === 'paint') veilPaint(id, f.script || '', f.item || '', d, f.color);
       else if (f.gesture === 'remove') removeBlock(id);
       else if (f.gesture === 'clear') veilBlocks.clear();
       break;

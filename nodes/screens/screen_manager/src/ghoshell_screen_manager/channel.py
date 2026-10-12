@@ -117,9 +117,21 @@ def build_screen_channel(
     async def _emit(frame: dict[str, Any]) -> None:
         await surface.broadcast(frame)
 
-    def _require(item_id: str) -> None:
+    def _as_id(value: Any) -> str:
+        """Coerce an item handle to the string the store keys on.
+
+        ``item="2"`` reaches us as the int 2 — CTML runs attribute values through
+        ``literal_eval`` and the annotation is not binding (the T1 family). Handles
+        are strings everywhere else, so normalize here instead of making every
+        caller remember to write ``:str``.
+        """
+        return str(value)
+
+    def _require(item_id: Any) -> str:
+        item_id = _as_id(item_id)
         if model.get(item_id) is None:
             CommandUtil.raise_observe(f"no item {item_id!r} — pool() lists them")
+        return item_id
 
     chan = new_channel(
         name=name,
@@ -336,6 +348,9 @@ def build_screen_channel(
     def _where(g: dict[str, Any]) -> str:
         if g["gesture"] == "arrow":
             return f"#{g['src']}.{g['src_region']} → #{g['dst']}.{g['dst_region']}"
+        if g["gesture"] == "paint":
+            first = str(g.get("script", "")).strip().splitlines()
+            return f"paint {first[0][:32]!r}" if first else "paint (empty)"
         if g["gesture"] == "text":
             text = str(g["content"])
             return text if len(text) <= 24 else text[:23] + "…"
@@ -374,7 +389,7 @@ def build_screen_channel(
         clause it belongs to end together. ``color`` empty = the veil's default (green).
         ``width`` is the border in pixels.
         """
-        _require(item)
+        item = _require(item)
         await _gesture("mark", duration, item=item, region=_rect_of(item, region),
                        color=color, width=width)
         return f"[screen] mark #{item}.{region} ({_dur_txt(duration)})"
@@ -389,7 +404,7 @@ def build_screen_channel(
         ``"x,y,w,h"`` as fractions of the item (e.g. ``"0,0,1,0.035"`` for a header
         strip) — measured, not guessed, and it survives a resize.
         """
-        _require(item)
+        item = _require(item)
         await _gesture("box", duration, item=item, region=_rect_of(item, region),
                        color=color, width=width)
         return f"[screen] box #{item}.{region} ({_dur_txt(duration)})"
@@ -402,7 +417,7 @@ def build_screen_channel(
         Same arguments as ``box``. A fraction rect makes a precise circle: ``circle``
         inscribes the ellipse in whatever area ``region`` names.
         """
-        _require(item)
+        item = _require(item)
         await _gesture("circle", duration, item=item, region=_rect_of(item, region),
                        color=color, width=width)
         return f"[screen] circle #{item}.{region} ({_dur_txt(duration)})"
@@ -418,13 +433,38 @@ def build_screen_channel(
         of that region). So the arrow keeps pointing at the right thing after the pool
         is rearranged — something a painted pixel cannot promise.
         """
-        _require(src)
-        _require(dst)
+        src, dst = _require(src), _require(dst)
         await _gesture(
             "arrow", duration, src=src, dst=dst, src_region=src_region,
             dst_region=dst_region, color=color, width=width,
         )
         return f"[screen] arrow #{src}.{src_region} → #{dst}.{dst_region} ({_dur_txt(duration)})"
+
+    @chan.build.command(name="paint", blocking=False)
+    async def paint(script: str, item: str = "", duration: float = 3.0,
+                    color: str = "") -> str:
+        """Hand-draw on the veil: ``script`` is JavaScript, called once per frame.
+
+        It receives ``(ctx, box, t, dpr)`` — the veil's 2D context, the target item's
+        box in page pixels (or the whole stage when ``item`` is empty), how long this
+        block has been alive in ms, and the device pixel ratio. Whatever it draws
+        rides the veil, so it can be aimed at a window and it moves with the pool.
+
+        There is no library of canned animations on purpose: an animation here is
+        something I write, the same way a page in co_browser or an artifact is. The
+        lifetime is *not* mine to invent though — ``duration`` and ``clear_veil``
+        apply exactly as they do to the shapes, because something that moves must
+        still be something I can take back.
+
+        A draw that throws paints its error where the block is, instead of failing
+        silently: "nothing appeared" and "the script is broken" must not look alike.
+        """
+        if item:
+            item = _require(item)
+        await _gesture("paint", duration, script=script, item=item, color=color)
+        first = script.strip().splitlines()[0] if script.strip() else ""
+        where = f"#{item}" if item else "the stage"
+        return f"[screen] paint over {where} ({_dur_txt(duration)}) — {first[:48]}"
 
     @chan.build.command(name="text", blocking=False)
     async def text(content: str, duration: float = 2.5, color: str = "") -> str:

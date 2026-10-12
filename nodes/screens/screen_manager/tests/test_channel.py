@@ -24,7 +24,7 @@ async def test_channel_exposes_the_command_set():
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
             "focus", "float", "raise", "pool", "mark", "box", "circle", "arrow",
-            "text", "veil", "clear_veil",
+            "text", "paint", "veil", "clear_veil",
             "mock_scene", "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
@@ -172,14 +172,18 @@ async def test_every_gesture_carries_an_id_and_a_place():
             ("circle", (b,), {"region": "bottom"}),
             ("arrow", (a, b), {"src_region": "right", "dst_region": "left"}),
             ("text", ("hello",), {}),
+            ("paint", ("ctx.fillRect(box.x, box.y, 4, 4)",), {}),
         ):
             await runtime.execute_command(
                 name, args=args, kwargs={**kwargs, "duration": 0.01}
             )
         frames = rec.of("veil")
-        assert [f["gesture"] for f in frames] == ["mark", "box", "circle", "arrow", "text"]
+        assert [f["gesture"] for f in frames] == [
+            "mark", "box", "circle", "arrow", "text", "paint",
+        ]
         ids = [f["id"] for f in frames]
         assert len(set(ids)) == len(ids), "each block needs its own handle"
+        assert frames[5]["script"].startswith("ctx.fillRect")
         arrow = frames[3]
         assert (arrow["src"], arrow["src_region"]) == (a, "right")
         assert (arrow["dst"], arrow["dst_region"]) == (b, "left")
