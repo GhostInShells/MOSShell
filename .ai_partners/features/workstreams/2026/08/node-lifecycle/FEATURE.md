@@ -6,9 +6,9 @@ description: Node 生命周期治理，从 node-migration 独立。四层方案�
 milestone: 0.1.0
 priority: P1
 status: completed
-status_note: stub 三面归位 + 英文 + CLI 引导收敛到 README 已落地并验证; 存量 node 治理怀疑已记录待 ghost 自迭代时处理; 2026-09-23 增 --simple 极简创建形态
+status_note: stub 三面归位 + 英文 + CLI 引导收敛到 README 已落地并验证; 存量 node 治理怀疑已记录待 ghost 自迭代时处理; 2026-09-23 增 --simple 极简创建形态; 2026-10-12 命名契约补单例例外 (跨重启裸名稳定)
 title: Node Lifecycle — 身份、入口、验证与记忆
-updated: '2026-09-23'
+updated: '2026-10-12'
 ---
 
 # Node Lifecycle
@@ -337,6 +337,37 @@ spawn 咽喉签发。动机与拓扑见 `cell-run-cycle/matrix-channel.md` §6�
 - `spawned_nodes()` 暴露 `address → alias`；mesh channel 据此判 branch name：命中 → alias，
   否则 `CellAddressCodec(address).normalized`。
 - `CellRuntimeInfo.alias` 留账本作本地 trace，不参与命名（命名只读 `spawned_nodes()`）。
+
+### 单例名字跨重启稳定 — 命名契约的例外（2026-10-12）
+
+由 moss the Ghost 提出并实现（它对反复出现的重名后缀不满）；"单权威收口"那一处洞由旁路交叉
+review 补出（同权重模型，2026-10-12）。上一版契约写死"名字永不重
+绑"，那是把**非单例**的规律误当成了通用规律。修正为两分：
+
+- **非单例**：可并存 → 保持单调后缀 `_2` / `_3`，**永不复用**（安全闸门不变；下游 proxy
+  缓存 / signal 去重 / transcript 引用不必处理"名字换了主人"）。
+- **单例**：锁保证同时只有一个活实例 → base 空着就把**裸名**还给新实例。"空着"不算
+  "重绑"，因为没有第二个主人可混淆；反之若单例也涨后缀，每重启一次名字就换一次，而
+  "屏幕在哪"这种**能力位置**必须跨重启稳定——模型记的是名字，不是 pid。
+
+关键点：
+
+- **适用面比"个别 GUI node"大**：`NodeManifest.singleton` 默认 **True**（`cell.py:311`），
+  故绝大多数未显式 `singleton: false` 的 node 都走"重启复用名"。方向符合"名字 = 能力位"，
+  但回写不能只写成 screen 的专属例外，否则下个读者会以为范围很窄。
+- **落点**：`mint_alias(base, *, singleton=)`（`node_manager.py`，由 `spawn_node` 咽喉调用）。
+  公开是**有意的内部契约**——命名是可观察的外部承诺（模型按名字找能力），值得一条不依赖
+  真起进程的测试。
+- **单权威收口**：单例早退时也把 base 的单调计数推过 0，堵住"同名、singleton 标志不同的
+  两个 node 各自拿到裸名 → 两个活 cell 同名"的洞。根因是非单例后缀只读 `_aliases_index`、
+  单例占用看 `_address_to_alias`，两本账各记各的会各说各话。
+
+### 命名契约的活账判据（2026-10-12）
+
+"空 / 占"的判据是 `_address_to_alias`（本进程 spawn 成功后才登记、进程退出经 done callback
+移除），**不是** singleton 锁本身：`spawn_node` 已在命名前做过 `is_locked` 预检，撞锁
+（DuplicatedError）在到达 `mint_alias` 之前就抛出，所以走到命名时不存在"同名单例还活着"的
+情形。故单例几乎总走早退拿裸名；fall-through（涨后缀）只在裸名被**同名非单例**占着时发生。
 
 ## Open Questions
 

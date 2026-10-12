@@ -79,16 +79,43 @@ class ProjectNodeManager(NodeManager):
         self._validate_cell_alias(base)
         return base
 
-    def _mint_alias(self, base: str) -> str:
-        # 安全闸门: 名字单调、不复用 — 同 base 第二次起后缀 _2/_3. 名字永不重绑,
-        # 下游 (proxy 缓存 / signal 去重 / transcript 引用) 不必查"名字被复用"的副作用.
+    def mint_alias(self, base: str, *, singleton: bool = False) -> str:
+        """签发一个 cell 的 mesh 挂载名 (branch name).
+
+        命名契约是外部承诺 —— 模型按名字找能力, 所以名字必须可预期:
+
+        - 非单例可并存 → 同 base 单调后缀 ``_2`` / ``_3``, **永不复用**; 下游 (proxy
+          缓存 / signal 去重 / transcript 引用) 不必处理"名字换了主人"。
+        - 单例同时只有一个活实例 (锁保证) → base 空着就把**裸名**还给新实例, 让"能力
+          位置"跨重启稳定: 模型记的是名字, 不是 pid。
+
+        调用方须在 spawn 成功后把 ``address → alias`` 记进 ``record_spawned`` ——
+        本方法的"空 / 占"判定依赖那张活账 (``_address_to_alias``)。
+        """
+        # 安全闸门: 名字单调、不复用, 下游不必查"名字被复用"的副作用 (见 docstring)。
+        #
+        # 单例是这条规矩的**例外**, 而且例外得有理: singleton 锁保证同时只有一个活着的
+        # 实例, 所以 base 空着的时候, 那不是"名字被复用", 是"这个名字本来就归它" ——
+        # 没有第二个主人可混淆. 反过来, 单例若也涨后缀, 每重启一次名字就换一次, 而一个
+        # **能力位置**必须跨重启稳定: 模型记的是名字, 不是 pid.
+        if singleton and base not in self._address_to_alias.values():
+            # 顺手把 base 的单调计数推过 0: 非单例后缀逻辑只读 _aliases_index (不看活账),
+            # 若单例占了裸名却不留痕, 同名非单例随后又会发一次裸名 → 两个活 cell 同名.
+            # 两本账独立会各说各话, 这里让"裸名被占"在单调轴上留一个痕迹.
+            if self._aliases_index.get(base, 0) == 0:
+                self._aliases_index[base] = 1
+            return base
         n = self._aliases_index.get(base, 0)
         self._aliases_index[base] = n + 1
         return base if n == 0 else f'{base}_{n + 1}'
 
-    def _record_spawned(
+    def record_spawned(
             self, address: CellAddress, process: ManagedProcess, alias: str,
     ) -> None:
+        """Public-internal: 由 spawn_node 调用, 也被测试用来驱动命名契约.
+
+        命名契约("空 / 占")读的就是这本活账, 所以它需要一个不依赖真起进程就能写的入口.
+        """
         self._address_to_alias[address] = alias
 
         def _dispose(_) -> None:
@@ -265,8 +292,11 @@ class ProjectNodeManager(NodeManager):
                 )
 
         # 命名权威在 spawn 侧: 有值取值、无值 node name, mint 出最终 alias (含重名
-        # 后缀) 随第一笔账本落盘 (本地 trace, 不参与网络身份). 名字单调不复用 — 见 _mint_alias.
-        final_alias = self._mint_alias(self._resolve_alias(manifest, alias))
+        # 后缀) 随第一笔账本落盘 (本地 trace, 不参与网络身份). 名字单调不复用 — 见 mint_alias;
+        # 单例是例外 (同时只有一个, 空着就把名字还给它).
+        final_alias = self.mint_alias(
+            self._resolve_alias(manifest, alias), singleton=bool(manifest.singleton),
+        )
         launcher.runtime.alias = final_alias
 
         # 启动方先写账单 (单写记账第一笔): 写 launcher.runtime (uid/address/cell),
@@ -296,7 +326,7 @@ class ProjectNodeManager(NodeManager):
         )
         # 记录本进程 spawn 的 address → alias (mesh channel 据此判 branch name).
         # 进程退出时经 done callback 移除.
-        self._record_spawned(launcher.runtime.address, managed, final_alias)
+        self.record_spawned(launcher.runtime.address, managed, final_alias)
 
         # 观察垫 (2026-08-29): 这里**故意不**注册 spawn 后的清账回调.
         #

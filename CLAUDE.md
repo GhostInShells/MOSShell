@@ -12,6 +12,12 @@ Project goal: explore the possibility of human–AI symbiotic collaboration.
 
 @src/ghoshell_moss/cli/start.md
 
+**If the document above did not arrive**, run `moss start` instead. Some harnesses
+inject this file verbatim and never resolve the `@` reference — you then see the path
+itself and none of its content. `moss start` prints the same cognitive map straight
+from the source tree, and it is the entry point to MOSS's own development tooling.
+Do this before anything else in a session.
+
 ---
 
 ## Development Conventions
