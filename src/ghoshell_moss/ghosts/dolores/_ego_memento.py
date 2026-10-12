@@ -207,6 +207,16 @@ def _input_size(usage: TokenUsage) -> int:
     return usage.inputTokens + (usage.cacheReadTokens or 0)
 
 
+def _is_unsupported_session_format(exc: Exception) -> bool:
+    """旁路读源 session 时, 源是比当前 harness 更新的日志格式 (v4 vs v3) 抛出的错.
+
+    这是**版本漂移**, 不是旁路失败 —— 读不了而已, commit 内容没坏. 判定只认错误文本里的
+    稳定关键字, 不对照词汇表 (dsh 那边错误码不可控).
+    """
+    text = str(exc)
+    return "SessionFormatUnsupported" in text or "log format v4" in text or "reads only v3" in text
+
+
 class EgoMementoManager:
     """ghost 级的 memento 旁路服务. 见模块 docstring."""
 
@@ -384,7 +394,10 @@ class EgoMementoManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._fail(run, f"run failed: {exc}")
+            if _is_unsupported_session_format(exc):
+                self._skip(run, str(exc))
+            else:
+                self._fail(run, f"run failed: {exc}")
             return
         message = str((result or {}).get("message", ""))
         if message == "":
@@ -408,6 +421,19 @@ class EgoMementoManager:
         except Exception:
             self._logger.exception("memento bypass: cannot mark commit %s broken", run.commit_id)
         self._logger.warning("memento bypass failed, commit %s marked broken: %s", run.commit_id, reason)
+
+    def _skip(self, run: BypassCommit, reason: str) -> None:
+        """源 session 格式比当前 harness 新 (v4 vs v3), 读不了 —— 不是旁路失败, 是版本漂移.
+
+        写一条空 note (无 error) 防止 ``backfill`` 反复重试, 但**不标 broken**: 坏的是"读不了",
+        不是"commit 内容坏了". 读侧不折它, 只当它没摘要 (``view.message`` 空).
+        """
+        run.state = BypassState.FAILED
+        try:
+            self._branch().note(run.commit_id, message="", error="")
+        except Exception:
+            self._logger.exception("memento bypass: cannot write skip note for commit %s", run.commit_id)
+        self._logger.info("memento bypass skipped (source session format newer than harness): %s", reason)
 
     async def drain_bypass(self) -> None:
         """等所有在飞的旁路任务收尾 (观测/测试用)."""
