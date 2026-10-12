@@ -27,7 +27,7 @@ class AudioASRProvider(Provider[ASR]):
         logger = con.force_fetch(LoggerItf)
         config = get_or_create_conf(con, VolcengineSaucConfig())
         try:
-            config.validate()
+            config.validate_configuration()
         except ValueError as e:
             logger.warning("ASR degraded to NullASR: %s", e)
             return NullASR()

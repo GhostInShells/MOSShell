@@ -371,6 +371,10 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
    - `TTSManagerConfig.validate()` — volcengine 分支检查 `app_key`/`access_token` 非空非 `$`;
      `TTSServiceProvider.factory` `get_or_create` 后调用.
    - `VolcengineSaucConfig.validate()` — 检查 `api_key` (listener 侧后接).
+   **已修 2026-10-11**: `validate` 撞 pydantic v2 `BaseModel.validate` (deprecated classmethod),
+   两个 config 一并改名 `validate_configuration()`. 且 TTS 侧原只认旧版 `app_key`+`access_token`,
+   与 `gen_header` (优先 `api_key`) 及单凭据 `SEED_API_KEY` 文档相悖 — 只配 `SEED_API_KEY` 时被误判
+   降级. 改为与 `gen_header` 同选路: 有 `api_key` 即通过, 否则要 `app_key`+`access_token` 成对.
    **待做**: ConfigType 基类 `validate()` + ConfigStore 读时调用一次的机制 (可选, 用户判可跳过).
 7. **provider 降级**: speech / listener provider 据 config validate 降级 (null speech / null listener)。
    **已做 2026-09-20 (speech 侧)**: `TTSSpeechServiceProvider.factory` catch `force_fetch(TTS)`
