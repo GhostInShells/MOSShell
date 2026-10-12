@@ -38,6 +38,7 @@ __all__ = [
     "keyword_end",
     "scored",
     "murmur",
+    "cue",
     "knock",
 ]
 
@@ -295,13 +296,27 @@ keyword_end = EtiquetteSpec(
 )
 
 
-# 低语旁听: 持续听, 每句一交付, 但绝不打断模型 — 模型干活时人说话, 人只被 aside 知会.
+# 低语旁听: 持续听, 每句一交付, 绝不打断模型 — 忙时被动进 percepts (notify), 闲了才唤醒.
+# 逐句接话: 同为每句一交付, 但用 next — 忙时强制当前 attention 多看一帧 (插队), 不打断身体.
+# 已知陷阱: notify/next 只保证"忙时不抢占"; 一旦某条 clause 最终抢占成功 (attention 衰减到阈值以下),
+# preempt 仍带 abort reason "interrupted" 触发 shell.clear() 停身体. "preempt 中性化"是独立 mindflow 待办
+# (preempt / error / end / cancel 四相区分), 落地前这两条在"模型正忙"时不清身体, 但"衰减后被抢占"仍会停身体.
 murmur = EtiquetteSpec(
     name="murmur",
-    description="keep working — commit each clause, annotate without interrupting",
-    onset=OnsetSpec(emit=True, interrupt=False, priority=Priority.NOTICE),
+    description="keep working — every clause reaches you without interrupting; respond or ignore",
+    onset=OnsetSpec(emit=False),
     stop=StopSpec(silence=0.0),
-    deliver=DeliverSpec(interrupt=False, mode="aside"),
+    deliver=DeliverSpec(interrupt=False, mode="notify"),
+)
+
+
+# 逐句接话: 每句自成一段, 每句强制下一轮轮到你 (next), 但绝不打断身体.
+cue = EtiquetteSpec(
+    name="cue",
+    description="continuous input — each clause takes a turn, without stopping your body",
+    onset=OnsetSpec(emit=False),
+    stop=StopSpec(silence=0.0),
+    deliver=DeliverSpec(interrupt=False, mode="next"),
 )
 
 
@@ -354,6 +369,7 @@ class EtiquetteConfig(ConfigType):
             keyword_end.model_copy(deep=True),
             scored.model_copy(deep=True),
             murmur.model_copy(deep=True),
+            cue.model_copy(deep=True),
             knock.model_copy(deep=True),
         ],
         description="the defined etiquettes (name + description + the three layers)",
