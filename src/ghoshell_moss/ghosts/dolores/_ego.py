@@ -208,8 +208,9 @@ class DoloresEgo:
         self._pending_compact: bool = False
         # 待注入的 notice (warn / committed); thinking-enter 时排空, 与 moment 同级注入.
         self._notices: list[Message] = []
-        # 一次性告警位: 这两条都描述"整条功能静默失效", 报一次就够, 逐帧重报只会淹没日志.
-        self._usage_missing_warned: bool = False
+        # 连续缺 usage 计数: 首帧 (warm-up) 的 usage 是收尾才补, live 流里常缺一条, 属预期瞬态;
+        # 连续两条都缺才说明窗口增量真喂不进来. 出现 usage 即清零.
+        self._usage_missing_count: int = 0
         self._self_wake_unwired_warned: bool = False
 
     # ── long-lived: lifecycle ────────────────────────────────────────
@@ -381,16 +382,17 @@ class DoloresEgo:
             self._logger.warning("assistant/message did not parse — window size unchanged")
             return
         if message.usage is None:
-            # usage 一直缺失 = 窗口大小永远是 0 = 增量永远是 0 = K/T 阈值永不触发, 自动落锚静默失效.
-            # 每轮都报会淹掉日志, 所以只报第一次; 这是一条"功能整体哑了"的告警, 不是逐帧噪声.
-            if not self._usage_missing_warned:
-                self._usage_missing_warned = True
+            # 首帧 (warm-up) 的 usage 是收尾才补的, live 流里常缺一条, 属预期瞬态, 不当故障.
+            # 连续两条都缺 usage 才说明窗口增量真的喂不进来 (K/T 阈值会静默失效), 此时才告警.
+            self._usage_missing_count += 1
+            if self._usage_missing_count == 2:
                 self._logger.warning(
-                    "assistant/message carries no usage — the window size stays 0 and the K/T "
-                    "commit thresholds can never fire; automatic anchoring is silently dead"
+                    "assistant/message carried no usage twice in a row — the window size stays 0 "
+                    "and the K/T commit thresholds can never fire; automatic anchoring is silently dead"
                 )
             return
         self._window_size = self._memento_manager.window_size(message.usage)
+        self._usage_missing_count = 0
 
     async def _on_request_header(self, event: SessionEvent) -> None:
         """request/header 回调 — 感知模型身份与思考档, 变化时排一条 notice (下一帧 enter 带出).
