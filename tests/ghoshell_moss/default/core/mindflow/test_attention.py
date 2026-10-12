@@ -249,3 +249,57 @@ def test_draw_from_returns_seed_impulse():
     attention = BaseAttention(impulse=init)
     assert attention.draw_from() is init
     assert attention.draw_from().id == 'abc'
+
+
+# -- abort 回调通道 -----------------------------------------------------------
+#
+# 契约: 同步、最多一次、不会丢. 用 task 去等一个事件的写法有个洞 —— 那个 task 可能在
+# 还没被调度前就被取消, 于是"该传导的退出"永远没人置位.
+
+def test_on_abort_fires_in_the_abort_call_stack_and_only_once():
+    attention = BaseAttention(impulse=Impulse(source='a', priority=Priority.INFO))
+    fired = []
+    attention.on_abort(lambda: fired.append('first'))
+    attention.on_abort(lambda: fired.append('second'))
+
+    assert fired == []
+    attention.abort('preempted')
+    assert fired == ['first', 'second']
+    # abort 幂等: 不重复回调.
+    attention.abort('again')
+    assert fired == ['first', 'second']
+
+
+def test_on_abort_registered_after_abort_fires_immediately():
+    """已退出时注册要当场回调 —— 否则注册方在等一个不会再发生的事件."""
+    attention = BaseAttention(impulse=Impulse(source='a', priority=Priority.INFO))
+    attention.abort('done')
+
+    fired = []
+    attention.on_abort(lambda: fired.append('late'))
+    assert fired == ['late']
+
+
+def test_on_abort_disposer_unregisters():
+    attention = BaseAttention(impulse=Impulse(source='a', priority=Priority.INFO))
+    fired = []
+    dispose = attention.on_abort(lambda: fired.append('x'))
+    dispose()
+
+    attention.abort('done')
+    assert fired == []
+
+
+def test_on_abort_bad_callback_does_not_eat_the_others():
+    attention = BaseAttention(impulse=Impulse(source='a', priority=Priority.INFO))
+    fired = []
+
+    def _boom() -> None:
+        raise RuntimeError('bad callback')
+
+    attention.on_abort(_boom)
+    attention.on_abort(lambda: fired.append('ok'))
+
+    attention.abort('done')
+    assert attention.is_aborted()
+    assert fired == ['ok']

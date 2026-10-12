@@ -729,12 +729,35 @@ class AbsMindflow(Mindflow, ABC):
             return None
         return self._current_attention
 
+    def _spawn(self, coro: Awaitable, *, name: str) -> asyncio.Task:
+        """创建一个**有主**的后台任务: 它的结局一定进日志.
+
+        裸 ``create_task`` 的异常要等到 GC 才可能被 asyncio 打印, 长驻进程里可能永远不打印 ——
+        现象就是"某个循环悄悄不跑了, 日志里什么都没有". 这里的任务不允许这样消失.
+        """
+        task = self._event_loop.create_task(coro, name=name)
+
+        def _log_outcome(finished: asyncio.Task) -> None:
+            if finished.cancelled():
+                self._logger.debug("%s background task %s cancelled", self._log_prefix, name)
+                return
+            error = finished.exception()
+            if error is not None:
+                self._logger.error(
+                    "%s background task %s died: %r", self._log_prefix, name, error, exc_info=error,
+                )
+
+        task.add_done_callback(_log_outcome)
+        return task
+
     def set_impulse(self, impulse: Impulse) -> None:
         if impulse.is_stale():
             return None
         if not self.is_running():
             return None
-        self._event_loop.create_task(self._create_attention_from_impulse(impulse))
+        # 抢占 (abort 老 attention / 建新 attention) 全在这个任务里. 它必须可见:
+        # 它一丢, 症状就是"信号收到了, 但什么都不跑", 而且一行日志都没有.
+        self._spawn(self._create_attention_from_impulse(impulse), name="mindflow-create-attention")
         return None
 
     async def _create_attention_from_impulse(self, impulse: Impulse) -> None:
@@ -1167,7 +1190,7 @@ class AbsMindflow(Mindflow, ABC):
     async def _attention_generation_task_ctx(self):
         task = None
         try:
-            task = self._event_loop.create_task(self._generate_thinking())
+            task = self._spawn(self._generate_thinking(), name="mindflow-generate-thinking")
             yield
         finally:
             if task is not None and not task.done():
@@ -1195,7 +1218,9 @@ class AbsMindflow(Mindflow, ABC):
     @contextlib.asynccontextmanager
     async def _signal_consuming_task_ctx_manager(self):
         try:
-            self._consuming_signal_task = asyncio.create_task(self._on_signal_consuming_loop())
+            self._consuming_signal_task = self._spawn(
+                self._on_signal_consuming_loop(), name="mindflow-signal-consumer",
+            )
             yield
         finally:
             if self._consuming_signal_task and not self._consuming_signal_task.done():
@@ -1209,7 +1234,9 @@ class AbsMindflow(Mindflow, ABC):
     @contextlib.asynccontextmanager
     async def _impulse_consuming_task_ctx_manager(self):
         try:
-            self._consuming_impulse_task = asyncio.create_task(self._on_impulse_consuming_loop())
+            self._consuming_impulse_task = self._spawn(
+                self._on_impulse_consuming_loop(), name="mindflow-impulse-consumer",
+            )
             yield
         finally:
             if self._consuming_impulse_task and not self._consuming_impulse_task.done():

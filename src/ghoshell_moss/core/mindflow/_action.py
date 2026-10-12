@@ -210,6 +210,10 @@ class BaseAction(Action):
         self._observed_done_event: ThreadSafeEvent = observed_event
         self._started = False
         self._stopped = False
+        # stop() 的"清理只做一次"标记 (停止位与清理分开, 见 stop()).
+        self._cleaned = False
+        # attention 的 abort 回调撤销函数.
+        self._dispose_attention_abort: Callable[[], None] | None = None
 
     @property
     def logos_queue(self) -> janus.Queue[str | None]:
@@ -384,13 +388,16 @@ class BaseAction(Action):
         return self._moments
 
     async def stop(self) -> None:
-        if self._action_stop_event.is_set():
-            return
+        # 停止位与清理分开 (同 BaseThinking.stop): 停止位可能已被 abort() 或 abort 回调
+        # **同步**置位, 但等待中的 future 仍然要有人取消一次, 所以不能因为 event 已置位就早退.
         self._action_stop_event.set()
         self._compiled_event.set()
         self._observed_done_event.set()
         if not self._logos_queue.sync_q.closed:
             self._logos_queue.sync_q.shutdown()
+        if self._cleaned:
+            return
+        self._cleaned = True
         # 关闭控制的生命周期.
         if len(self._waiting_futures) > 0:
             for t in self._waiting_futures:
@@ -407,20 +414,35 @@ class BaseAction(Action):
         )
 
     async def _lifecycle_aborted_monitor(self) -> None:
-        await asyncio.wait(
-            [
-                asyncio.create_task(self._attention.wait_abort()),
-                asyncio.create_task(self._action_stop_event.wait()),
-                asyncio.create_task(self._mindflow_stop_event.wait()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        """等"该收线"的两路来源, 到了就把这一帧收干净.
+
+        不再等 attention: attention 的 abort 由 ``on_abort`` 回调**同步**置位
+        ``_action_stop_event`` (见 ``_on_attention_aborted``), 这里只是在同一事件上补做异步清理.
+        """
+        stop_waiter = asyncio.create_task(self._action_stop_event.wait(), name="action-stop-event")
+        mindflow_waiter = asyncio.create_task(self._mindflow_stop_event.wait(), name="mindflow-stop-event")
+        try:
+            await asyncio.wait(
+                {stop_waiter, mindflow_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            # asyncio.wait 不管被取消时的遗留: 取消 monitor 不能把这两个 waiter 漏在循环里.
+            for waiter in (stop_waiter, mindflow_waiter):
+                if not waiter.done():
+                    waiter.cancel()
         await self.stop()
+
+    def _on_attention_aborted(self) -> None:
+        """attention 退出 → 本帧停止位. 必须是同步的 (abort 回调线程内执行)."""
+        self._action_stop_event.set()
 
     async def __aenter__(self) -> Self:
         if self._started:
             return self
         self._started = True
+        # 关键传导走回调而不是 task: 一个还没被调度就被取消的 waiter, 会让这次退出永远传不到.
+        self._dispose_attention_abort = self._attention.on_abort(self._on_attention_aborted)
         self._lifecycle_task = asyncio.create_task(self._lifecycle_aborted_monitor())
         return self
 
@@ -455,3 +477,7 @@ class BaseAction(Action):
             self._has_meaningful_logos.set()
             self._action_stop_event.set()
             self._compiled_event.set()
+            # 撤牌: 这一帧已收线, 之后的 abort 不该再回调到它.
+            if self._dispose_attention_abort is not None:
+                self._dispose_attention_abort()
+                self._dispose_attention_abort = None
