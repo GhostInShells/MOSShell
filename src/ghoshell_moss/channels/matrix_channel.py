@@ -165,6 +165,8 @@ def _resolve_live(
     """
     if not target:
         return None
+    if not isinstance(target, str):
+        target = str(target)  # defensive: pid hint 可以把 int 直接喂进来
     if target in handled:
         return handled[target]
     if target.isdigit():
@@ -190,11 +192,13 @@ def _resolve_cell(
     **which ledger the handle came from**, never by whether the target happens to be
     a key of the live ledger.
     """
+    if not target:
+        return None
+    if not isinstance(target, str):
+        target = str(target)  # defensive: pid hint 可以把 int 直接喂进来
     handle = _resolve_live(target, handled, aliases)
     if handle is not None:
         return handle, True
-    if not target:
-        return None
     for h in reversed(dead):  # newest first: a reused pid must name its latest owner
         if _match_pid(h, target) or h.address == target:
             return h, False
