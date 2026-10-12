@@ -152,6 +152,7 @@ class ListenerNucleus(Nucleus):
             normal_strength: int = 100,
             suppress_seconds: float = 0.5,
             attended_seconds: float = 0.1,
+            strength_decay_seconds: float = 120.0,
             logger: LoggerItf | None = None,
     ):
         self._name = name
@@ -161,6 +162,7 @@ class ListenerNucleus(Nucleus):
         self._normal_strength = normal_strength      # attended 后降回 (运行强度)
         self._suppress_seconds = suppress_seconds    # 仲裁失败大冷却
         self._attended_seconds = attended_seconds    # 抢占成功小冷却
+        self._strength_decay_seconds = strength_decay_seconds  # 赢得 attention 后的强度 TTL
 
         self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
@@ -273,6 +275,7 @@ class ListenerNucleus(Nucleus):
             id=meta.segment_id or unique_id(),
             priority=signal.priority,
             strength=self._first_strength,
+            strength_decay_seconds=self._strength_decay_seconds,
             complete=False,
             interrupt=meta.interrupt,
             mode=meta.mode,
@@ -291,6 +294,7 @@ class ListenerNucleus(Nucleus):
             id=meta.segment_id or unique_id(),
             priority=signal.priority,
             strength=self._normal_strength,
+            strength_decay_seconds=self._strength_decay_seconds,
             complete=True,
             interrupt=meta.interrupt,
             mode=meta.mode or ChallengeMode.notify.value,
@@ -355,17 +359,21 @@ class ListenerNucleus(Nucleus):
                 first_strength: int | None = None,
                 suppress_seconds: float | None = None,
                 attended_seconds: float | None = None,
+                strength_decay_seconds: float | None = None,
         ) -> str:
-            """Dynamically tune the barge-in parameters (onset strength / cooldowns)."""
+            """Dynamically tune the barge-in parameters (onset strength / cooldowns / attention TTL)."""
             if first_strength is not None:
                 self._first_strength = first_strength
             if suppress_seconds is not None:
                 self._suppress_seconds = suppress_seconds
             if attended_seconds is not None:
                 self._attended_seconds = attended_seconds
+            if strength_decay_seconds is not None:
+                self._strength_decay_seconds = strength_decay_seconds
             return (
                 f"configured: first_strength={self._first_strength} "
-                f"suppress={self._suppress_seconds}s attended={self._attended_seconds}s"
+                f"suppress={self._suppress_seconds}s attended={self._attended_seconds}s "
+                f"decay={self._strength_decay_seconds}s"
             )
 
         return channel
