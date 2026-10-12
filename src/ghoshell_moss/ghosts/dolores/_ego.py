@@ -60,6 +60,8 @@ _DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
 _DOLORES_THINKING_ENTER = "/moss-api/ghost/dolores/thinking/enter"
 _DOLORES_THINKING_EXIT = "/moss-api/ghost/dolores/thinking/exit"
 _DOLORES_TOOL_RESULT = "/moss-api/ghost/dolores/tool-result"
+# compact: 原地把 surface 前缀替换成 memory (ground + memento view), cut 到 cut_turn 边界.
+_DOLORES_COMPACT = "/moss-api/ghost/dolores/compact"
 
 # thinking/exit confirmation timeout (fail-safe): degrade instead of hanging the exit if the plugin stalls.
 _EXIT_RPC_TIMEOUT = 5.0
@@ -202,6 +204,8 @@ class DoloresEgo:
         self._window_size: int = 0
         self._window_base: int = 0
         self._warned: bool = False
+        # 待执行的 compact (上一有效 run 决定, 下一 run 启动执行) — 只在 run 边界写入/清空.
+        self._pending_compact: bool = False
         # 待注入的 notice (warn / committed); thinking-enter 时排空, 与 moment 同级注入.
         self._notices: list[Message] = []
         # 一次性告警位: 这两条都描述"整条功能静默失效", 报一次就够, 逐帧重报只会淹没日志.
@@ -223,10 +227,9 @@ class DoloresEgo:
         creation, establishing an initial surface below the instruction and above the conversation.
         Returns the ego session id.
 
-        With a memento 切点 (``resume_ref()``) the plugin rebuilds the surface instead: memory first,
-        then the source session's surface tail after the cut, so the ego resumes mid-conversation
-        instead of starting blank. 源头 session 通常已不在本进程 (上次运行留下的 commit), 冷读兜底.
-        切点失效 (源 log 已轮转/清掉) 不能拖死启动 —— 退一步建全新 session, 内容退回 memory 层.
+        启动**不再回放源 session 的原文 tail**：seed 只有 memory (ground + memento view)。这样 dsh
+        历史消息协议再变，启动都不碰（防「升级后 ghost 永远起不来」）。跨重启的连续性由 memento
+        视图 + read/chat 承担。
         """
         payload = {
             "project_home": str(self._ctx.project_home),
@@ -242,23 +245,7 @@ class DoloresEgo:
         if self._ctx.ghost_home is not None:
             payload["ghost_home"] = str(self._ctx.ghost_home)
             payload["home_title"] = f"{self._ctx.name} @ home"
-        ref = self._memento_manager.resume_ref() if self._memento_manager is not None else None
-        if ref is not None:
-            payload["ref"] = ref.model_dump(mode="json")
-        try:
-            result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
-        except Exception:
-            if "ref" not in payload:
-                raise
-            # 退一步建全新 session = 连续性的实际丢失 (内容退回 memory 层). 这不是普通告警:
-            # 只记一行 warning 而不带 traceback, 就等于把"为什么会退"永久丢掉.
-            self._logger.warning(
-                "ego rebuild from memento 切点 failed (ref=%s/%s-%s) — falling back to a fresh session",
-                ref.session_id, ref.start_turn, ref.end_turn,
-                exc_info=True,
-            )
-            payload.pop("ref")
-            result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
+        result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
         self._ego_session_id = result["sessionId"]
         self._thinking_token = result.get("thinkingToken")
         if self._thinking_token is None:
@@ -492,6 +479,65 @@ class DoloresEgo:
         if anchor is None or self._memento_manager is None:
             return None
         return self._memento_manager.coord(anchor)
+
+    # ── compact (原地 surface replace; 上一有效 run 决定, 下一 run 启动执行) ──
+
+    def on_run_exit(self, valid: bool) -> None:
+        """run 边界回调 —— 只在**有效** run (无异常 / 无中断 abort) 之后确认是否要 compact.
+
+        valid=False 时清空待执行位（异常 run 的上下文状态不可信，不能据此压）。valid=True 时按
+        **绝对**窗口阈值 ``compact_tokens`` 判定：`window_size`（最近一次 assistant/message 的 usage）
+        达标且存在 SCS（至少两个 commit）→ 置位，交给下一个 run 启动时执行。
+        """
+        if not valid:
+            self._pending_compact = False
+            return
+        manager = self._memento_manager
+        if manager is None:
+            return
+        if self._window_size >= manager.config.compact_tokens and manager.compact_cut_turn() is not None:
+            self._pending_compact = True
+
+    async def compact_if_pending(self) -> None:
+        """run 启动时调用：有 pending 就原地 compact（surface 替换成 memory），无则 no-op.
+
+        执行放在请求之前（下一 run 的 enter 尚未注入帧），surface 处于 idle，replace 安全。失败降级
+        为告警 —— 主动 compact 是防溢出，不该反过来把一个 run 的启动拖死。
+        """
+        if not self._pending_compact:
+            return
+        self._pending_compact = False
+        manager = self._memento_manager
+        if manager is None:
+            return
+        cut_turn = manager.compact_cut_turn()
+        if cut_turn is None:
+            return
+        memory = self._compact_memory_payload()
+        if not memory:
+            return
+        try:
+            await self._launcher.call(_DOLORES_COMPACT, {"memory": memory, "cut_turn": cut_turn})
+            self._logger.info("dolores compact at turn %s (window=%s)", cut_turn, self._window_size)
+        except Exception:
+            self._logger.exception("dolores compact failed — degraded")
+
+    def _compact_memory_payload(self) -> list[dict]:
+        """当前 memory + 一条 compact 说明 → 替换内容（``{"text": ...}`` 列表，与 create 的 messages 同形）."""
+        if self._memories is None:
+            return []
+        memory = [
+            {"text": msg.to_content_string()}
+            for msg in self._memories()
+            if not msg.is_empty()
+        ]
+        if not memory:
+            return []
+        notice = (
+            "Your context was compacted to stay within the model window. The memory view below is the "
+            "compressed history (ground + memento commits); the recent turns after it are the live tail."
+        )
+        return [{"text": notice}, *memory]
 
     def _session_start_turn(self) -> int:
         """本 session 的区间下界 (**开**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.

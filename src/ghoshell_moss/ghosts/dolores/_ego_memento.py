@@ -4,7 +4,8 @@
 
 - **锚点**: ``commit()`` 组 ``DshSessionRef`` + 写 memento. metadata = ``{ref, prev_turn}``,
   memento 只存不解析. 区间取「已完成的 turn」(追认): 签发时 turn/end 已知, usage 齐整.
-- **view / 切点**: ``view_message()`` 给 ghost 的 memories; ``resume_ref()`` 给 ego 重建的切点.
+- **view / 切点**: ``view_message()`` 给 ghost 的 memories; ``compact_cut_turn()`` 给 compact 的
+  安全切点 (SCS = tip commit 的 start_turn).
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
 - **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个旁路任务 (身份旁路 session, seed = 源
@@ -17,8 +18,6 @@
   关停时被取消的旁路**留空** → 下次开机补上; 真失败 (传输异常 / 空文本) 写一条 **terminal error
   note** (``_fail``) → 补漏据此不再重试, 读侧把它标成 broken. 幂等依据是 memento 里那条 Note
   本身 (不是内存态) —— 所以失败必须落盘, 否则恒失败的 commit 每次开机都要白跑一遍.
-- 未落: ego 的 inflight 替换 —— 当前只在 ego 开启/关闭时用 ``resume_ref()`` 重建.
-  (``read`` / ``chat`` 已落, 见 ``memento_channel``.)
 
 dep 只有不可变项 (connection / memento / config / logger) —— 这些是它干活的工具, 不是 ego 状态.
 """
@@ -132,6 +131,14 @@ class EgoMementoConfig(BaseModel):
     force_tokens: int = Field(
         default=100_000,
         description="T: 达此值强制建锚点. 置 0 = 每 turn commit (验证期用).",
+    )
+    compact_tokens: int = Field(
+        default=600_000,
+        description=(
+            "C: 上下文**绝对**窗口上限 (最近一次调用的 prompt 大小). 达此值且上一 run 有效时, "
+            "下一个 run 启动前做 compact (原地 surface replace, 替换内容 = memory 视图). "
+            "应设成实际模型 context window 的某比例 (架构师量级 400k-800k, 取中位). 0 = 关闭自动 compact."
+        ),
     )
     note_max_tokens: int = Field(
         default=800,
@@ -578,22 +585,17 @@ class EgoMementoManager:
         """坐标 (如 ``1-27``) → CommitView; 格式错 / 不存在返回 None. read / chat 的入口."""
         return self._memento.resolve_commit(coord)
 
-    def resume_ref(self) -> DshSessionRef | None:
-        """ego 重建的切点: 最后一个**摘要已就绪**的 commit 的 ref; 没有则 None (= 全新 session).
+    def compact_cut_turn(self) -> int | None:
+        """安全 compact 位点 (SCS): 倒数第二个 commit 的 end_turn, 即 tip commit 的 start_turn.
 
-        只认 `note.message` 非空的 commit —— 摘要区靠它, 没有它就退化成"整段原文再带一遍" (无效还原).
-        更晚的 commit 若 note 还没生产出来, 它到切点之间的原文就作为 raw 尾巴带过去, 不丢内容.
+        tip commit ``n`` 的 ``start_turn`` = ``end_turn(n-1)`` (半开区间 (start, end]), 所以切到它
+        意味着「压到 n-1、保留最新一个 commit 的 span 作原文 tail」——「不丢最近几轮」是结构保证,
+        不靠算。返回 ``None`` 表示无可压 (没有 tip / tip 就是第一个 commit, 无 n-1)。
         """
-        branch = self._memento.get_branch(self._config.branch_name)
-        if branch is None:
+        ref = self.latest_ref()
+        if ref is None or ref.start_turn <= 0:
             return None
-        notes = branch.notes()
-        cut: DshSessionRef | None = None
-        for commit in branch.commits():
-            note = notes.get(commit.id)
-            if note is not None and note.message:
-                cut = self._ref_of(commit)
-        return cut
+        return ref.start_turn
 
     # ── 渲染 ─────────────────────────────────────────────────────
 

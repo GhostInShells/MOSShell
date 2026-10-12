@@ -16,6 +16,10 @@ memento:
   # 调试锚点数据时可临时置 force_tokens=0 (每 turn commit) —— 那只是本地临时开关, 不随仓库发布.
   force_tokens: 100000
   warn_tokens: 50000
+  # 上下文**绝对**窗口上限 (最近一次调用的 prompt 大小). 达此值且上一 run 有效时, 下一个 run
+  # 启动前原地 compact (surface replace 成 memory 视图), 保留最新一个 commit 的 span 作原文 tail.
+  # deepseek-flash 窗口 1M, 取 ~60% 留输出/思维余量. 0 = 关闭自动 compact.
+  compact_tokens: 600000
   # 启动补漏: 回扫尾部 N 条 commit, 给上次运行没产出 note 的补跑旁路 (主要是关停时被取消的那些).
   # 0 = 关掉补漏.
   resume_tail: 5

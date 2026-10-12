@@ -1380,8 +1380,8 @@ class TestMementoCommitSpan:
         assert memento.get_branch("main").commits() == []
 
 
-class TestEgoMementoResumeRef:
-    """ego 重建切点的选择 — 纯逻辑 (真 memento), 只认摘要已就绪的 commit."""
+class TestEgoMementoCompactCut:
+    """SCS (安全 compact 位点) = tip commit 的 start_turn = 倒数第二个 commit 的 end_turn."""
 
     @staticmethod
     def _manager(tmp_path: Path):
@@ -1394,34 +1394,21 @@ class TestEgoMementoResumeRef:
 
     def test_none_without_commits(self, tmp_path: Path):
         manager, _ = self._manager(tmp_path)
-        assert manager.resume_ref() is None
+        assert manager.compact_cut_turn() is None
 
-    def test_none_when_no_note_ready(self, tmp_path: Path):
+    def test_none_with_a_single_commit(self, tmp_path: Path):
+        # 只有一个 commit = 没有 n-1, 无可压 (tip.start_turn == 0).
         manager, _ = self._manager(tmp_path)
         manager.commit(session_id="s1", start_turn=0, end_turn=3)
-        assert manager.resume_ref() is None
+        assert manager.compact_cut_turn() is None
 
-    def test_none_when_only_note_is_empty(self, tmp_path: Path):
-        manager, memento = self._manager(tmp_path)
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=3)
-        memento.get_branch("main").note(anchor.id, "")
-
-        assert manager.resume_ref() is None
-
-    def test_falls_back_to_last_commit_with_ready_note(self, tmp_path: Path):
-        manager, memento = self._manager(tmp_path)
-        branch = memento.get_branch("main")
-        first = manager.commit(session_id="s1", start_turn=0, end_turn=3)
-        second = manager.commit(session_id="s1", start_turn=3, end_turn=7)
-        branch.note(first.id, "first")
-        branch.note(second.id, "second")
-        # 尾巴上还有一个摘要没产出来的 commit: 切点回退到已就绪的那个, 它之后的原文当 raw 尾巴带过去.
+    def test_returns_second_newest_end_turn(self, tmp_path: Path):
+        # (0,3] (3,7] (7,9] → tip 是 (7,9], 其 start_turn=7 = 倒数第二个 commit 的 end_turn.
+        manager, _ = self._manager(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=3)
+        manager.commit(session_id="s1", start_turn=3, end_turn=7)
         manager.commit(session_id="s1", start_turn=7, end_turn=9)
-
-        ref = manager.resume_ref()
-
-        assert ref is not None
-        assert (ref.session_id, ref.start_turn, ref.end_turn) == ("s1", 3, 7)
+        assert manager.compact_cut_turn() == 7
 
 
 # ── DoloresRun — thinking 交易 run 对象 (public + 可测) ─────────────
@@ -1447,13 +1434,15 @@ class FakeRunSession:
 
 
 class FakeRunEgo:
-    """DoloresRun 的 ego fake — Duck-typed (session/enter_thinking/exit_thinking)."""
+    """DoloresRun 的 ego fake — Duck-typed (session/enter_thinking/exit_thinking/compact)."""
 
     def __init__(self, session):
         self.session = session
         self.enter_calls = 0
         self.exit_calls = 0
         self.enter_error: Exception | None = None
+        self.compact_calls = 0
+        self.run_exits: list[bool] = []
 
     async def enter_thinking(self, thinking):
         self.enter_calls += 1
@@ -1462,6 +1451,12 @@ class FakeRunEgo:
 
     async def exit_thinking(self):
         self.exit_calls += 1
+
+    async def compact_if_pending(self):
+        self.compact_calls += 1
+
+    def on_run_exit(self, valid: bool):
+        self.run_exits.append(valid)
 
 
 class FakeArticulator:

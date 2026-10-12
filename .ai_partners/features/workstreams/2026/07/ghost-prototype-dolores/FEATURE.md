@@ -22,9 +22,13 @@ status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved
   与 fetch moment 迟到一轮). 两条均需重启 dsh 才生效, 待回归 (本轮只跑 test_dolores.py, 未做全量回归).
   另: 平台提交署名正式叫 dsh in moss. 2026-09-25 恢复启动补漏 (backfill) + 失败落盘 terminal
   error note (D35): 根因是 fa97362d 在引入「关停取消在飞旁路」时把 resume()/resume_tail 一起
-  误删, 空 note 成永久空洞; 零有效工作区间是否 commit 立为 O18 (待第五轮回归拿数据).'
+  误删, 空 note 成永久空洞; 零有效工作区间是否 commit 立为 O18 (待第五轮回归拿数据). 2026-10-12 落地
+  上下文压缩 (compact) 机制: 原地 surface replace (替换内容 = memory 视图 + 一条说明), SCS = 倒数第二个
+  commit 的 end_turn (不丢最近几轮是结构保证), 绝对阈值 compact_tokens=600k (deepseek-flash 窗口 1M),
+  上一有效 run 判定 + 下一 run 启动执行, 启动不再回放源 session 原文 tail (resume_ref 退役), request-error
+  溢出兜底 (模型无关有损压缩). 实机冒烟通过 (compact 触发 + notice 注入 + 活尾巴保留).'
 title: Dolores Ghost
-updated: '2026-10-04'
+updated: '2026-10-12'
 ---
 
 # Dolores Ghost

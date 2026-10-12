@@ -237,6 +237,8 @@ class DoloresRun:
     async def __aenter__(self) -> Self:
         """Open the transaction. Bind the listener first (so no enter broadcast is lost), then start the enter task."""
         self._thinking_event.set()
+        # 上一有效 run 决定的 compact 在本 run 启动时执行 (surface idle, 请求之前) — 防上下文溢出.
+        await self._ego.compact_if_pending()
         self._dispose_listener = self._ego.session.on_session_event("*", self._on_event)
         self._enter_task = asyncio.create_task(self._drive_enter())
         return self
@@ -244,6 +246,8 @@ class DoloresRun:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Close the transaction. Cancel the enter task → unbind → re-send exit → abort (on error)."""
         self._thinking_event.clear()
+        # 本 run 是否有效 (无异常且无中断 abort) 只在**收尾**落地 —— 供 compact 判定 (下一 run 才执行).
+        self._ego.on_run_exit(valid=exc_type is None and not self._interrupt_aborted)
         task = self._enter_task
         if task is not None and not task.done():
             task.cancel()
