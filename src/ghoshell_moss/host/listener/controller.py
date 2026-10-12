@@ -771,13 +771,25 @@ class ListenerController(ListenLifecycle):
         elif result.phase == RecognitionPhase.TAIL:
             self._emit_deliver(result)
 
+    def _broadcast(self, signal) -> None:
+        """广播一条 listener signal; host session 已关闭时静默丢弃 (teardown 竞态)."""
+        if self._signal_broadcast is None:
+            return
+        try:
+            self._signal_broadcast(signal)
+        except RuntimeError as exc:
+            if "closed" in str(exc).lower():
+                self._logger.debug("%s signal dropped (host session closed)", self._log_prefix)
+                return
+            raise
+
     def _emit_interrupt(self, result: RecognitionEvent) -> None:
         """首包打断: 按当前礼仪的 onset 协议发射 (emit 关则不发射)."""
         onset = self._active_etiquette.onset if self._active_etiquette else OnsetSpec()
         if not onset.emit:
             self._notify_signal("onset suppressed (emit=False)")
             return
-        self._signal_broadcast(new_listener_signal(
+        self._broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
             interrupt=onset.interrupt,
@@ -793,7 +805,7 @@ class ListenerController(ListenLifecycle):
         if not deliver.emit:
             self._notify_signal("deliver suppressed (emit=False)")
             return
-        self._signal_broadcast(new_listener_signal(
+        self._broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
             interrupt=deliver.interrupt,
@@ -867,7 +879,7 @@ class ListenerController(ListenLifecycle):
         """
         if self._signal_broadcast is None:
             return
-        self._signal_broadcast(new_listener_signal(
+        self._broadcast(new_listener_signal(
             f"expected voice input (expect #{index}) timed out after {timeout:g}s",
             source=self._cell_name or "listener",
             complete=True,
@@ -885,7 +897,7 @@ class ListenerController(ListenLifecycle):
         """
         if self._signal_broadcast is None:
             return
-        self._signal_broadcast(new_listener_signal(
+        self._broadcast(new_listener_signal(
             f"no speech for {idle_timeout:g}s — degrading to knock (sound detection)",
             source=self._cell_name or "listener",
             complete=True,
@@ -903,7 +915,7 @@ class ListenerController(ListenLifecycle):
         """
         if self._signal_broadcast is None:
             return
-        self._signal_broadcast(new_knock_signal(
+        self._broadcast(new_knock_signal(
             "sound detected — ASR is off; re-activate listening to engage",
             priority=detect.priority,
             description="listener:knock",
@@ -938,7 +950,7 @@ class ListenerController(ListenLifecycle):
         if not text:
             return "buffer empty — nothing to send"
         if self._signal_broadcast is not None:
-            self._signal_broadcast(new_listener_signal(
+            self._broadcast(new_listener_signal(
                 text,
                 source="asr",
                 complete=True,
