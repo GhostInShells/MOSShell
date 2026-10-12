@@ -70,6 +70,27 @@ async def test_arrange_emits_state_with_order_and_layout():
 
 
 @pytest.mark.asyncio
+async def test_id_lists_accept_pipe_comma_and_a_real_sequence():
+    """``|`` is the spelling to write; the other two are tolerated, not advertised.
+
+    A comma list arrives as a *tuple*: CTML runs ``ast.literal_eval`` on an attribute
+    with no type suffix, so ``ids="0,1"`` never reaches the command as the string the
+    caller typed. ``|`` is not a Python literal, so it survives as written. Both
+    spellings must mean the same thing, and a caller that passes a real sequence must
+    not blow up either.
+    """
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        a, b = [f["item"]["id"] for f in rec.of("open")]
+        for raw in (f"{b}|{a}", f"{b},{a}", (b, a)):
+            await runtime.execute_command("arrange", args=(raw,), kwargs={"group": "code"})
+            assert rec.of("state")[-1]["ids"] == [b, a], raw
+
+
+@pytest.mark.asyncio
 async def test_dismiss_emits_state():
     model = ScreenModel()
     chan, rec = _channel(model)

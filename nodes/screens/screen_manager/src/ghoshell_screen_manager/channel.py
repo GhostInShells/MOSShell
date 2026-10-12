@@ -55,8 +55,21 @@ class _NoSurface:
         return ""
 
 
-def _split_ids(raw: str) -> list[str]:
-    return [s.strip() for s in raw.split(",") if s.strip()]
+def _split_ids(raw: Any) -> list[str]:
+    """Split an id list. ``|`` is the separator to write — ``arrange``/``raise``.
+
+    Why not ``,``: CTML runs ``ast.literal_eval`` on an attribute that carries no
+    type suffix, and ``"0,1"`` is a valid Python literal — it arrives here as the
+    *tuple* ``(0, 1)``, so every caller has to remember ``ids:str=...`` or the call
+    dies on ``'tuple' object has no attribute 'split'``. ``"0|1"`` is not a
+    literal, so it stays the string it looks like and the call is written plainly.
+
+    A real sequence is still accepted (a caller may pass one, and the comma path
+    parsed into a tuple before this existed): both spellings mean the same thing.
+    """
+    if isinstance(raw, (list, tuple, set)):
+        return [str(s).strip() for s in raw if str(s).strip()]
+    return [s.strip() for s in str(raw).replace("|", ",").split(",") if s.strip()]
 
 
 def build_screen_channel(
@@ -152,8 +165,10 @@ def build_screen_channel(
     async def arrange(ids: str, group: str, family: str = "grid", dir: str = "lr") -> str:
         """Pull items into a group, in order, and show it. Your main move.
 
-        ``ids`` is a comma-separated list of item ids in display order — any subset
+        ``ids`` is a ``|``-separated list of item ids in display order — any subset
         of the pool, including items already in another group (they move here).
+        Write ``ids="0|1|2"``; do NOT write a comma list (``"0,1"`` is a Python
+        literal, so CTML hands it over as a tuple instead of the string you meant).
         ``group`` names the arrangement (created on first use). ``family`` is grid
         (equal split) or stack (one master + a strip); ``dir`` is lr or tb. The
         shape is derived from the count — you never give sizes.
@@ -224,7 +239,7 @@ def build_screen_channel(
     async def raise_items(ids: str) -> str:
         """Pull items to the front of the pool — nearest the eye.
 
-        ``ids`` is a comma-separated list in the order you want them to end up
+        ``ids`` is a ``|``-separated list in the order you want them to end up
         showing: your first id becomes the closest. Everything else keeps its
         relative order behind them. The pool is what home shows when nothing is
         arranged: items nearer the front are bigger, sharper and drawn on top,

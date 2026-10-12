@@ -19,11 +19,18 @@ what is fullscreen. **veil** is the top gesture layer (mark / arrow / text); the
 **background** shows MOSS presence and audio visuals when the screen is empty.
 
 ```
-<screen_manager:open id="term" url="http://127.0.0.1:PORT" group="code" label="terminal"/>
-<screen_manager:arrange ids="term,edit,chat" family="grid" dir="lr"/>
+<screen_manager:open url="http://127.0.0.1:PORT" group="code" label="terminal"/>
+<screen_manager:arrange ids="term|edit|chat" family="grid" dir="lr"/>
 <screen_manager:mark item="term" region="right" duration="2"/>
 <screen_manager:text content="HELLO MOSS" duration="2.5"/>
 ```
+
+Id lists are written with `|`. A comma list is a Python literal: CTML runs
+`ast.literal_eval` on an attribute with no type suffix, so `ids="0,1"` arrives as the
+*tuple* `(0, 1)` instead of the string you typed, and the call dies. `"0|1"` is not a
+literal, so it stays the string it looks like. Single ids are the same story from the
+other side: `destroy id="2"` parses into the *int* `2` — either write `id:str="2"`, or
+name the item something that is not a number.
 
 Two faces share one store: this channel (the ghost's side) and a web surface (the
 human's side). The surface opens in the system browser on start (`--no-open` for a
