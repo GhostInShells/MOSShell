@@ -1,20 +1,19 @@
 ---
-title: Bypass Channel
+title: Shell Bypass — 单 runtime 内脱离主路时序的旁路命令通道
 status: draft
 # priority: importance within the current stage (iteration cycle) — not development urgency
 priority: P2
 created: 2026-09-21
-updated: 2026-09-21
+updated: 2026-10-12
 depends: []
 milestone:
 description: >-
-  单 runtime 内的治理分离：在 __main__ 上开一条旁路通道，其签发独立于主路时序，
-  主路打断不影响旁路。感知面合并，执行面可分离。
+  口停手不停：主路打断不影响旁路签发，感知面合并、执行面可分离。
 ---
 
-# Bypass Channel
+# Shell Bypass
 
-> Use `moss features set-status bypass-channel <status> -m "note"` to update state.
+> Use `moss features set-status shell-bypass <status> -m "note"` to update state.
 > See [TOPOLOGY.md](TOPOLOGY.md) for directory layout and [README.md](README.md) for the full convention.
 
 ## Motivation
