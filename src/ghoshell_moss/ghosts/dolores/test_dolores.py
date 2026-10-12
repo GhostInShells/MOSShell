@@ -2843,7 +2843,7 @@ class TestSilentFailureSurfaces:
         assert articulator.exited == 1, "残留流的 articulator 边界没有被关"
         assert streams == {}
         assert any("never settled" in m and "call_orphan" in m
-                   for m in logs.messages(logging.WARNING)), logs.messages()
+                   for m in logs.messages(logging.INFO)), logs.messages()
 
     @pytest.mark.asyncio
     async def test_enter_failure_is_logged_with_traceback(self):

@@ -587,12 +587,13 @@ class DoloresRun:
         Such a stream is a real failure mode that used to be perfectly silent: the articulator's
         boundary was opened (``__aenter__``) and never closed, so nothing committed, nothing settled,
         nothing logged. Closing is the correct cleanup — the turn is over, no delta can still feed it —
-        and the warning is what makes it visible.
+        and an interrupted turn (abort) legitimately leaves a stream behind, so this is INFO, not a
+        warning: the log line aids debugging a cut turn, not alarming.
         """
         leftover = list(streams.values())
         streams.clear()
         for stream in leftover:
-            self._logger.warning(
+            self._logger.info(
                 "CTML stream %s never settled (no tool/call arrived for it) — closing its articulator",
                 stream.call_id,
             )
