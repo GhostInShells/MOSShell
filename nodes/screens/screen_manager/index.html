@@ -31,6 +31,18 @@
   #scrim    { position: fixed; inset: 0; z-index: 3; display: none; background: rgba(0,0,0,.55); }
   #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }  /* 按钮必须在页面之上 */
   #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
+  /* 遮罩：不是当前屏的页面留在这一层 —— 它仍连着线，但只有一句话和一个按钮。
+     为什么需要它：同一个 url 可以开在很多标签里，而每个标签的窗口尺寸不同；
+     "谁在画、画在哪一块"必须只有一个答案，否则模型画的手势会落在人没看的那块。 */
+  #mask     { position: fixed; inset: 0; z-index: 20; display: none;
+              background: rgba(4,10,6,.94); color: #cfe8d8; place-items: center; }
+  body.masked #mask { display: grid; }
+  #mask-box { max-width: 34em; padding: 24px; text-align: center;
+              font: 15px/1.7 ui-monospace, Menlo, monospace; }
+  #mask-box p { margin: 0 0 16px; opacity: .8; }
+  #mask-claim { font: inherit; padding: 8px 18px; color: #6fd6a0; cursor: pointer;
+                background: transparent; border: 1px solid #3d8; border-radius: 4px; }
+  #mask-claim:hover { background: rgba(51, 221, 136, .12); }
   #log      { position: fixed; top: 8px; right: 8px; z-index: 8; }
   #log-badge { background: #161d26; color: #8af; border: 1px solid var(--border); border-radius: 10px;
                padding: 3px 9px; cursor: pointer; font-size: 11px; }
@@ -289,6 +301,10 @@
 <div id="stage"></div>
 <div id="scrim"><button id="scrim-exit">✕ exit fullscreen</button></div>
 <canvas id="veil"></canvas>
+<div id="mask"><div id="mask-box">
+  <p id="mask-line">another window is the screen</p>
+  <button id="mask-claim">use this window</button>
+</div></div>
 <aside id="rail">
   <div id="rail-hint" title="expand">›</div>
   <div id="rail-dot" class="dot"></div>
@@ -338,6 +354,32 @@ const rail = $('#rail'), railGroups = $('#rail-groups');
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 if (DEBUG) document.body.classList.add('debug');
 
+// ---- 我是哪块屏 ----
+// 同一个 url 可以开在多个标签里，而每个标签的窗口尺寸不同：几块屏同时画，
+// 模型画的手势就会落在人没在看的那一块。所以页面先自报身份（uid 存
+// sessionStorage —— 刷新不变、换标签变），由节点指派*一块*为当前屏，其余挂遮罩。
+// `?claim=1` 是节点启动时自己开的那扇窗：它带着认领意图进来，不必等人点按钮。
+const SCREEN_UID_KEY = 'moss-screen-uid';
+const screenUid = (() => {
+  let u = sessionStorage.getItem(SCREEN_UID_KEY);
+  if (!u) {
+    u = 'p' + Math.random().toString(36).slice(2, 10);
+    sessionStorage.setItem(SCREEN_UID_KEY, u);
+  }
+  return u;
+})();
+const WANTS_CLAIM = new URLSearchParams(location.search).get('claim') === '1';
+let isCurrent = false;
+
+function setMasked(on, reason) {
+  isCurrent = !on;
+  document.body.classList.toggle('masked', !!on);
+  const line = $('#mask-line');
+  if (line) line.textContent = reason || 'another window is the screen';
+  // 拿到屏幕的那一刻就报一次画幅：节点那边是"人换了屏"，我这边是"我该按哪个尺寸画"。
+  if (isCurrent) reportViewport();
+}
+
 // 栏宽的唯一源在这里，CSS 变量由它推出来（两边各写一个 188 迟早会漂）。
 const RAIL_OPEN = 188, RAIL_STRIP = 14;
 document.documentElement.style.setProperty('--rail-open-w', RAIL_OPEN + 'px');
@@ -381,6 +423,7 @@ function syncViewport() {
   viewW = v.w; viewH = v.h;
   sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
   fitMossText(); initRainCols(); layoutDesktop();
+  reportViewport();
 }
 addEventListener('resize', syncViewport);
 if (window.visualViewport) {
@@ -430,6 +473,9 @@ function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => {
     wsOpen = true; retryMs = 500; setLink('online', false); startDebugReport();
+    // 先自报身份：节点据此指派当前屏，其余的挂遮罩。认领意图随第一次 hello 带上 ——
+    // 节点重启后，它自己开的那扇窗要自己拿回屏幕，不该等人再点一次。
+    send({ type: 'hello', uid: screenUid, claim: WANTS_CLAIM });
     // 重连（或首次连接）后补报一次人侧状态：服务端不持久化它，断线期间的面板
     // 变动不能丢。
     send({ type: 'rail', collapsed: railCollapsed() });
@@ -448,6 +494,21 @@ connect();
 function send(f) {
   if (!wsOpen) return;            // 未连接就丢弃，别让一次点击把整个脚本抛死
   ws.send(JSON.stringify(f));
+}
+
+// 遮罩上的那颗按钮：人在这一页按一下，就是在说"屏幕是这块"。
+$('#mask-claim').addEventListener('click', () => send({ type: 'claim' }));
+
+// 画幅自报（只报"当前屏"）：它同时是两件事 —— 我画手势要用的尺寸，以及
+// "屏幕换了人"的可读形式。只有当前屏在上报，所以这个数一变，就是人在另一个
+// 窗口上按了按钮。变了才报，不是每帧都报。
+let lastViewport = '';
+function reportViewport() {
+  if (!isCurrent || !wsOpen) return;
+  const v = `${viewW}x${viewH}@${devicePixelRatio}`;
+  if (v === lastViewport) return;
+  lastViewport = v;
+  send({ type: 'viewport', w: viewW, h: viewH, dpr: devicePixelRatio });
 }
 
 // 自查上报：每 2 秒把"我量到的几何 + 画法状态"报给服务端，落在它的 stdout 上。
@@ -495,7 +556,9 @@ setInterval(async () => {
 
 function startDebugReport() {
   if (debugTimer) return;
-  const tick = () => send({ type: 'debug', payload: debugPayload() });
+  // 只报"当前屏"：被遮罩的页面没在画，它的几何不是屏幕的几何 —— 报上去只会
+  // 让我在 stdout 里读到两块屏的数、分不清哪块算。
+  const tick = () => { if (isCurrent) send({ type: 'debug', payload: debugPayload() }); };
   tick();
   debugTimer = setInterval(tick, 2000);
 }
@@ -1711,6 +1774,8 @@ function renderRail() {
 
 function route(f) {
   switch (f.type) {
+    case 'current': setMasked(false, ''); break;
+    case 'mask': setMasked(true, f.reason); break;
     case 'snapshot': {
       // 全量帧：reconcile（缺建、多删）。f.items 是所有 item 的详情（含桌面），
       // 页面据此物化 iframe；桌面 item 的 iframe 隐藏，只画代理圆盘。

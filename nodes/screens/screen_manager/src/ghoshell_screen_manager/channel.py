@@ -46,12 +46,26 @@ class _Surface(Protocol):
         """
         ...
 
+    def viewport_state(self) -> str:
+        """The current screen window's size — ``1815x1352@1``, empty until said.
+
+        Which window is *the* screen is a human decision (they press a button on
+        the masked page), and this number is how that decision becomes visible:
+        the page that holds the screen is the only one reporting, so the fragment
+        changing means the screen moved. Size is also the input a gesture needs —
+        see the region-based veil gestures, which are size-free by design.
+        """
+        ...
+
 
 class _NoSurface:
     async def broadcast(self, frame: dict[str, Any]) -> None:
         return None
 
     def rail_state(self) -> str:
+        return ""
+
+    def viewport_state(self) -> str:
         return ""
 
 
@@ -350,6 +364,12 @@ def build_screen_channel(
         rail = surface.rail_state() if surface is not None else ""
         if rail:
             out["rail"] = rail
+        # 当前屏的画幅。页面开在几个标签里都说得通，但"哪一块算屏"是人的决定
+        # （在遮罩上按一下按钮）—— 而这条数就是那个决定的可读形式：只有当前屏在
+        # 上报，所以它一变就说明屏幕换了人。它同时是画手势要用的输入。
+        viewport = surface.viewport_state() if surface is not None else ""
+        if viewport:
+            out["viewport"] = viewport
         groups = " ".join(
             f"#{g}({len(model.group_items(g))})" for g in model.groups()
         )

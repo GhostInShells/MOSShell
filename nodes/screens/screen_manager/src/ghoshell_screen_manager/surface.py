@@ -11,6 +11,16 @@ focus on an item, and dismiss (send a window back to the desktop).
 A human move is handed to the store; the store stays the only authority, and this
 module re-broadcasts the change so every client stays in step. The move also
 reaches the ghost as an aside — a fact it notices when free, not an interruption.
+
+**One window is the screen at a time.** Any tab pointed at this url connects, and
+with more than one live the page stops being *a* place: the same frames render at
+two different window sizes, and a gesture the ghost draws lands somewhere the
+human is not looking. So a page announces itself (``hello`` with a per-tab uid) and
+this surface appoints exactly one *current* window; every other one is told it is
+not the screen and masks itself. The page that opens from ``?claim=1`` — the one
+the node opened at startup — takes the screen when it says hello, so the human
+never has to pick after a restart; every other page holds a button that claims the
+screen by hand. Uplink from a masked page is refused, not silently obeyed.
 """
 
 from __future__ import annotations
@@ -55,10 +65,19 @@ class ScreenSurface:
         self._host = host
         self._html_path = html_path
         self._clients: set[ServerConnection] = set()
+        self._current: ServerConnection | None = None
+        """The one window that *is* the screen. Every other page is told to mask."""
+        self._uids: dict[ServerConnection, str] = {}
+        """Per-tab identity, as the page reported it. Lets us name the current tab
+        without pretending a connection object is a place."""
         self._server: Any = None
         self._audio_task: asyncio.Task | None = None
         self._rail = ""
         """The human's sidebar state, reported by the page. Empty until it says."""
+        self._viewport = ""
+        """The current window's size, as ``WxH@dpr`` — reported by the page that
+        holds the screen. Empty until it says; because only the current page gets
+        through, a change in this value *is* the human moving the screen."""
         self.port = port
 
     @property
@@ -68,14 +87,41 @@ class ScreenSurface:
     # -- downlink -----------------------------------------------------------
 
     async def broadcast(self, frame: dict[str, Any]) -> None:
-        if not self._clients:
+        """Downlink goes to the one current window — never to a masked page.
+
+        A masked page receiving frames would draw the same scene at its own size,
+        which is exactly the confusion the current-screen rule exists to remove.
+        """
+        await self._send(self._current, frame)
+
+    async def _send(self, connection: ServerConnection | None, frame: dict[str, Any]) -> None:
+        if connection is None:
             return
-        payload = json.dumps(frame, ensure_ascii=False)
+        try:
+            await connection.send(json.dumps(frame, ensure_ascii=False))
+        except Exception:
+            # A dead socket is not worth a traceback here; the connection's own
+            # finally-clause clears the registry.
+            if connection is self._current:
+                self._current = None
+
+    async def _set_current(self, connection: ServerConnection) -> None:
+        """Appoint the screen, and demote whoever held it."""
+        previous = self._current
+        self._current = connection
+        await self._send(connection, {"type": "current"})
+        # The winner needs the whole world, not the delta it never saw.
+        await self._send(connection, P.snapshot(self._model))
+        if previous is not None and previous is not connection:
+            await self._mask(previous, "another window took over as the screen")
+
+    async def _mask(self, connection: ServerConnection | None, reason: str) -> None:
+        await self._send(connection, {"type": "mask", "reason": reason})
+
+    async def _mask_everyone_but(self, keeper: ServerConnection | None, reason: str) -> None:
         for client in list(self._clients):
-            try:
-                await client.send(payload)
-            except Exception:
-                self._clients.discard(client)
+            if client is not keeper:
+                await self._mask(client, reason)
 
     # -- uplink -------------------------------------------------------------
 
@@ -90,6 +136,26 @@ class ScreenSurface:
 
     async def _set_rail(self, collapsed: bool) -> None:
         self._rail = "collapsed" if collapsed else "expanded"
+
+    def viewport_state(self) -> str:
+        """The current window's size — what the human chose to look through.
+
+        One fragment, two meanings: the size a gesture has to fit, and the fact
+        that the screen moved (only the current page reports, so the value
+        changing means someone pressed the button on another window).
+        """
+        return self._viewport
+
+    async def _set_viewport(self, frame: dict[str, Any]) -> None:
+        try:
+            w = int(frame.get("w", 0))
+            h = int(frame.get("h", 0))
+        except (TypeError, ValueError):
+            return
+        if w <= 0 or h <= 0:
+            return
+        dpr = frame.get("dpr", 1)
+        self._viewport = f"{w}x{h}@{dpr}"
 
     async def _switch_view(self, group: str) -> None:
         """A human picked a place to look. No aside: the fact is *state* (``arena``
@@ -149,7 +215,7 @@ class ScreenSurface:
     async def _audio_loop(self) -> None:
         while True:
             await asyncio.sleep(1 / _AUDIO_HZ)
-            if not self._clients:
+            if self._current is None:
                 continue
             await self.broadcast(P.audio_frame(self._audio.sample()))
 
@@ -195,15 +261,29 @@ class ScreenSurface:
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)
         try:
-            await connection.send(
-                json.dumps(P.snapshot(self._model), ensure_ascii=False)
-            )
             async for raw in connection:
                 try:
                     frame = json.loads(raw)
                 except (TypeError, ValueError):
                     continue
                 kind = frame.get("type")
+                if kind == "hello":
+                    await self._hello(
+                        connection,
+                        str(frame.get("uid", "")),
+                        bool(frame.get("claim")),
+                    )
+                    continue
+                if kind == "claim":
+                    # Before the guard below: the one page that must be able to talk
+                    # is the masked one asking to become the screen.
+                    await self._set_current(connection)
+                    continue
+                if connection is not self._current:
+                    # A masked page keeps talking — its moves must not land. Answer
+                    # with the mask again so it settles back where it belongs.
+                    await self._mask(connection, "this window is not the screen")
+                    continue
                 if kind == "switch_view":
                     await self._switch_view(str(frame.get("group", "")))
                 elif kind == "focus":
@@ -216,6 +296,9 @@ class ScreenSurface:
                     # 侧栏的展开/收起由人在页面里做，服务端看不到 —— 所以由页面上报。
                     # 这条不是 debug：它改变舞台的可用区，是要进 notice 的状态。
                     await self._set_rail(bool(frame.get("collapsed")))
+                elif kind == "viewport":
+                    # 当前屏的画幅同理：也只有页面知道。它一变就说明屏幕换了人。
+                    await self._set_viewport(frame)
                 elif kind == "debug":
                     # 前端自报几何与画法状态。
                     # 动机：分屏下"贴底那层看不见"这类问题，根因在客户端，而服务端够不着
@@ -228,6 +311,26 @@ class ScreenSurface:
                     )
         finally:
             self._clients.discard(connection)
+            self._uids.pop(connection, None)
+            if connection is self._current:
+                # The screen left the room. Nobody is promoted behind the human's
+                # back — the others show their button and wait to be told.
+                self._current = None
+                await self._mask_everyone_but(None, "the screen window closed")
+
+    async def _hello(self, connection: ServerConnection, uid: str, claim: bool) -> None:
+        """A page says who it is. Exactly one of them gets to be the screen.
+
+        ``claim`` comes from the url the node opened itself with: the window we just
+        asked the human to look at wins without anyone clicking. Everything else is
+        masked until a human presses its button — an old tab must never quietly
+        steal the screen.
+        """
+        self._uids[connection] = uid
+        if claim or self._current is None:
+            await self._set_current(connection)
+        else:
+            await self._mask(connection, "another window is the screen")
 
     async def start(self) -> None:
         self._server = await serve(

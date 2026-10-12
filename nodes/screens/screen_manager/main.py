@@ -119,7 +119,10 @@ async def main(matrix: Matrix) -> None:
         # Open just after the surface is listening, so the first request finds a
         # live server. A failure here is a fact to report, never a reason to die:
         # the screen is still usable from the url in the notice.
-        url = surface.url + ("?debug=1" if wants_debug() else "")
+        # `claim=1` marks the window *we* opened as the screen: this node just told
+        # the human to look here, so it takes the screen on hello instead of showing
+        # the mask. Tabs left over from earlier runs carry no claim and stay masked.
+        url = surface.url + "?claim=1" + ("&debug=1" if wants_debug() else "")
         try:
             opened = await asyncio.to_thread(webbrowser.open, url)
             if not opened:
