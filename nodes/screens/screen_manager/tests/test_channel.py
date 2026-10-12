@@ -223,6 +223,31 @@ async def test_veil_reads_back_what_is_still_drawn():
 
 
 @pytest.mark.asyncio
+async def test_a_region_can_be_a_measured_fraction_of_the_item():
+    """五档粗区域之外，还能给"这块砖里的哪一条"——比例矩形。比例而不是像素：
+    砖会重排、窗口会缩放，像素的正确性只在画下那一瞬成立。"""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        item_id = rec.of("open")[-1]["item"]["id"]
+        await runtime.execute_command(
+            "box", args=(item_id, "0,0,1,0.035"), kwargs={"duration": 0.05}
+        )
+        assert rec.of("veil")[-1]["region"] == "0,0,1,0.035"
+        # 写字符串、还是被 CTML 解成 list，都收 —— 注解不是权威（T1）。
+        await runtime.execute_command(
+            "box", args=(item_id, [0, 0, 1, 0.035]), kwargs={"duration": 0.05}
+        )
+        assert rec.of("veil")[-1]["region"] == "0,0,1,0.035"
+        for bad in ("0,0,1", "0,0,1,1.5", "0,0,0,0.1", "left,top"):
+            with pytest.raises(Exception):
+                await runtime.execute_command(
+                    "box", args=(item_id, bad), kwargs={"duration": 0.05}
+                )
+
+
+@pytest.mark.asyncio
 async def test_navigate_repoints_a_hand_opened_item():
     model = ScreenModel()
     chan, rec = _channel(model)

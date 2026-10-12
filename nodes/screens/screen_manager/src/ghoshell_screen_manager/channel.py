@@ -300,6 +300,39 @@ def build_screen_channel(
     def _dur_txt(duration: float) -> str:
         return f"{duration}s" if duration > 0 else "hold"
 
+    def _rect_of(item: str, region: str) -> str:
+        """The drawing area: a named region, or ``"x,y,w,h"`` fractions of the item.
+
+        Fractions rather than pixels because the pool rearranges: a pixel rect is a
+        lie the moment the window moves, while a fraction scales with the tile. The
+        numbers are still *measured* — open the page and ask the DOM, or read them off
+        a screenshot; they are an address with a scale, not a guess.
+        """
+        if isinstance(region, str) and region in ("full", "left", "right", "top", "bottom"):
+            return region
+        # `region: str` 只是注解，CTML 走的是 literal_eval：`region="0,0,1,0.03"` 到这里
+        # 是 list，不是字符串（T1 那条老病）。收下两种写法，别让调用者猜。
+        if isinstance(region, str):
+            parts: list[Any] = [p.strip() for p in region.split(",")]
+        elif isinstance(region, (list, tuple)):
+            parts = list(region)
+        else:
+            CommandUtil.raise_observe(f"region must be a name or fractions, got {region!r}")
+        if len(parts) != 4:
+            CommandUtil.raise_observe(
+                f"region must be full/left/right/top/bottom or 'x,y,w,h' fractions of "
+                f"the item, got {region!r}"
+            )
+        try:
+            vals = [float(p) for p in parts]
+        except (TypeError, ValueError):
+            CommandUtil.raise_observe(f"region fractions must be numbers: {region!r}")
+        if any(v < 0 or v > 1 for v in vals):
+            CommandUtil.raise_observe(f"region fractions run 0..1: {region!r}")
+        if vals[2] <= 0 or vals[3] <= 0:
+            CommandUtil.raise_observe(f"region width/height must be > 0: {region!r}")
+        return ",".join(f"{v:g}" for v in vals)
+
     def _where(g: dict[str, Any]) -> str:
         if g["gesture"] == "arrow":
             return f"#{g['src']}.{g['src_region']} → #{g['dst']}.{g['dst_region']}"
@@ -342,7 +375,8 @@ def build_screen_channel(
         ``width`` is the border in pixels.
         """
         _require(item)
-        await _gesture("mark", duration, item=item, region=region, color=color, width=width)
+        await _gesture("mark", duration, item=item, region=_rect_of(item, region),
+                       color=color, width=width)
         return f"[screen] mark #{item}.{region} ({_dur_txt(duration)})"
 
     @chan.build.command(name="box", blocking=False)
@@ -351,10 +385,13 @@ def build_screen_channel(
         """Draw a rectangle around a region of an item — the screenshot-tool box.
 
         Same arguments as ``mark``; the difference is what it says: ``mark`` fills
-        (look here), ``box`` outlines (this thing / this area).
+        (look here), ``box`` outlines (this thing / this area). ``region`` also takes
+        ``"x,y,w,h"`` as fractions of the item (e.g. ``"0,0,1,0.035"`` for a header
+        strip) — measured, not guessed, and it survives a resize.
         """
         _require(item)
-        await _gesture("box", duration, item=item, region=region, color=color, width=width)
+        await _gesture("box", duration, item=item, region=_rect_of(item, region),
+                       color=color, width=width)
         return f"[screen] box #{item}.{region} ({_dur_txt(duration)})"
 
     @chan.build.command(name="circle", blocking=False)
@@ -362,10 +399,12 @@ def build_screen_channel(
                      color: str = "", width: float = 3) -> str:
         """Draw an ellipse inside a region of an item — a circled detail.
 
-        Same arguments as ``box``.
+        Same arguments as ``box``. A fraction rect makes a precise circle: ``circle``
+        inscribes the ellipse in whatever area ``region`` names.
         """
         _require(item)
-        await _gesture("circle", duration, item=item, region=region, color=color, width=width)
+        await _gesture("circle", duration, item=item, region=_rect_of(item, region),
+                       color=color, width=width)
         return f"[screen] circle #{item}.{region} ({_dur_txt(duration)})"
 
     @chan.build.command(name="arrow", blocking=False)

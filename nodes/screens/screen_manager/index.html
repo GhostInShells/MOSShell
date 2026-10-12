@@ -804,7 +804,14 @@ const REGION = {
   bottom: (r) => [r.x, r.y + r.h / 2, r.w, r.h / 2],
 };
 function regionRect(g, region) {
-  return (REGION[region] || REGION.full)(g);
+  if (REGION[region]) return REGION[region](g);
+  // "x,y,w,h" —— 相对这块砖的比例。比例而不是像素：砖会重排、窗口会缩放，
+  // 像素矩形的正确性只在画下的那一瞬成立，比例跟着砖走。
+  const p = String(region || '').split(',').map(Number);
+  if (p.length === 4 && p.every((v) => !Number.isNaN(v))) {
+    return [g.x + p[0] * g.w, g.y + p[1] * g.h, p[2] * g.w, p[3] * g.h];
+  }
+  return REGION.full(g);
 }
 // 端点在**区域中心**上：arrow 的"起点/终点"因此也是地址，不是裸坐标。
 function anchor(g, region) {
