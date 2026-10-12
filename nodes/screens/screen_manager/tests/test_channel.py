@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from ghoshell_screen_manager.audio import MockAudioSource
@@ -21,7 +23,8 @@ async def test_channel_exposes_the_command_set():
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
-            "focus", "float", "raise", "pool", "mark", "arrow", "text",
+            "focus", "float", "raise", "pool", "mark", "box", "circle", "arrow",
+            "text", "veil", "clear_veil",
             "mock_scene", "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
@@ -151,6 +154,72 @@ async def test_mark_emits_a_veil_frame():
         assert frame["gesture"] == "mark"
         assert frame["item"] == item_id
         assert frame["region"] == "right"
+
+
+@pytest.mark.asyncio
+async def test_every_gesture_carries_an_id_and_a_place():
+    """The drawing tools are one family: each frame names a block so it can be
+    taken back, and each end is an address (item + region), never a coordinate."""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        await runtime.execute_command("open", args=("http://b",))
+        a, b = [f["item"]["id"] for f in rec.of("open")]
+        for name, args, kwargs in (
+            ("mark", (a,), {"region": "left"}),
+            ("box", (a,), {"region": "top"}),
+            ("circle", (b,), {"region": "bottom"}),
+            ("arrow", (a, b), {"src_region": "right", "dst_region": "left"}),
+            ("text", ("hello",), {}),
+        ):
+            await runtime.execute_command(
+                name, args=args, kwargs={**kwargs, "duration": 0.01}
+            )
+        frames = rec.of("veil")
+        assert [f["gesture"] for f in frames] == ["mark", "box", "circle", "arrow", "text"]
+        ids = [f["id"] for f in frames]
+        assert len(set(ids)) == len(ids), "each block needs its own handle"
+        arrow = frames[3]
+        assert (arrow["src"], arrow["src_region"]) == (a, "right")
+        assert (arrow["dst"], arrow["dst_region"]) == (b, "left")
+
+
+@pytest.mark.asyncio
+async def test_veil_reads_back_what_is_still_drawn():
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        item_id = rec.of("open")[-1]["item"]["id"]
+        assert "clear" in await runtime.execute_command("veil")
+
+        # 手势并行放着，读也不该排在后面：一个在放，另一个照发，arrange 照落。
+        arrow = asyncio.ensure_future(
+            runtime.execute_command("arrow", args=(item_id, item_id), kwargs={"duration": 5})
+        )
+        box = asyncio.ensure_future(
+            runtime.execute_command("box", args=(item_id,), kwargs={"duration": 5})
+        )
+        await asyncio.sleep(0.05)
+        await runtime.execute_command("arrange", args=(item_id,), kwargs={"group": "g"})
+        assert model.groups() == ["g"]
+        line = await runtime.execute_command("veil")
+        assert "arrow" in line and "box" in line
+
+        # 收也是一个动作：给 clear 一个时长，到点它自己收；被取消时 finally 也收。
+        assert "cleared (2)" in await runtime.execute_command("clear_veil")
+        assert "clear" in await runtime.execute_command("veil")
+        await runtime.execute_command("box", args=(item_id,), kwargs={"duration": 5})
+        await runtime.execute_command("clear_veil", kwargs={"duration": 0.05})
+        assert "clear" in await runtime.execute_command("veil")
+
+        for t in (arrow, box):
+            t.cancel()
+            try:
+                await t
+            except BaseException:      # 收尾：这里只关心任务不再挂着
+                pass
 
 
 @pytest.mark.asyncio

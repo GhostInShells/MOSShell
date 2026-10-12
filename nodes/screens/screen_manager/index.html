@@ -774,11 +774,20 @@ function desktopLoop() {
 }
 requestAnimationFrame(desktopLoop);
 
-// ===== veil：姿态层（block 手势，多块可叠加） =====
-const veilBlocks = [];
-function addBlock(draw, durMs) {
-  veilBlocks.push({ draw, start: performance.now(), dur: durMs });
+// ===== veil：姿态层（手势块，多块可叠加） =====
+// 一个块 = 一次手势。块带 id，所以能被单独撤掉，也能被一次清空；几何**每帧现查**，
+// 所以窗口一动，我指的仍是那块砖，而不是我当初按下的那个像素 —— 这是"说名字"和
+// "画坐标"的区别：坐标会过期，名字不会。
+const veilBlocks = new Map();   // id -> {draw, start, dur}
+const VEIL_DEFAULT = {
+  mark: 'rgba(80,255,150,1)', box: 'rgba(80,255,150,1)',
+  circle: 'rgba(80,255,150,1)', arrow: 'rgba(255,130,80,1)',
+  text: 'rgba(255,255,255,1)',
+};
+function addBlock(id, draw, durMs) {
+  veilBlocks.set(id, { draw, start: performance.now(), dur: durMs });
 }
+function removeBlock(id) { veilBlocks.delete(id); }
 function geometry() {
   const out = {};
   items.forEach((it) => {
@@ -794,35 +803,76 @@ const REGION = {
   top:    (r) => [r.x, r.y, r.w, r.h / 2],
   bottom: (r) => [r.x, r.y + r.h / 2, r.w, r.h / 2],
 };
+function regionRect(g, region) {
+  return (REGION[region] || REGION.full)(g);
+}
+// 端点在**区域中心**上：arrow 的"起点/终点"因此也是地址，不是裸坐标。
+function anchor(g, region) {
+  const [x, y, w, h] = regionRect(g, region);
+  return [x + w / 2, y + h / 2];
+}
 function fade(p) { const a = 0.15; if (p < a) return p / a; if (p > 1 - a) return (1 - p) / a; return 1; }
+// durMs = Infinity 表示常驻（由撤除命令收），淡入淡出仍走同一条曲线。
+function veilAlpha(b, now) {
+  if (b.dur === Infinity) return 1;
+  return fade((now - b.start) / b.dur);
+}
+function veilColor(kind, color) {
+  return color || VEIL_DEFAULT[kind] || 'rgba(255,255,255,1)';
+}
 
-function veilMark(item, region, durMs) {
-  addBlock((c, p) => {
+function veilMark(id, item, region, durMs, color, width) {
+  addBlock(id, (c, a) => {
     const g = geometry()[item]; if (!g) return;
-    const [x, y, w, h] = REGION[region] ? REGION[region](g) : REGION.full(g);
-    const a = fade(p);
-    c.fillStyle = `rgba(80,255,150,${0.15 * a})`; c.fillRect(x, y, w, h);
-    c.strokeStyle = `rgba(80,255,150,${a})`; c.lineWidth = 3; c.strokeRect(x, y, w, h);
+    const [x, y, w, h] = regionRect(g, region);
+    c.globalAlpha = a;
+    c.fillStyle = veilColor('mark', color); c.globalAlpha = a * 0.15;
+    c.fillRect(x, y, w, h);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('mark', color); c.lineWidth = width;
+    c.strokeRect(x, y, w, h);
   }, durMs);
 }
-function veilArrow(src, dst, durMs) {
-  addBlock((c, p) => {
+function veilBox(id, item, region, durMs, color, width) {
+  addBlock(id, (c, a) => {
+    const g = geometry()[item]; if (!g) return;
+    const [x, y, w, h] = regionRect(g, region);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('box', color); c.lineWidth = width;
+    c.strokeRect(x, y, w, h);
+  }, durMs);
+}
+function veilCircle(id, item, region, durMs, color, width) {
+  addBlock(id, (c, a) => {
+    const g = geometry()[item]; if (!g) return;
+    const [x, y, w, h] = regionRect(g, region);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('circle', color); c.lineWidth = width;
+    c.beginPath();
+    c.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    c.stroke();
+  }, durMs);
+}
+function veilArrow(id, src, srcRegion, dst, dstRegion, durMs, color, width) {
+  addBlock(id, (c, a) => {
     const A = geometry()[src], B = geometry()[dst]; if (!A || !B) return;
-    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
-    const bx = B.x + B.w / 2, by = B.y + B.h / 2;
-    const a = fade(p);
-    c.strokeStyle = `rgba(255,130,80,${a})`; c.lineWidth = 3;
+    // 两端各缩一点，箭头不压在目标框上 —— 指过去，不是糊上去。
+    const [ax, ay] = anchor(A, srcRegion), [bx, by] = anchor(B, dstRegion);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('arrow', color); c.lineWidth = width;
     c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
     const ang = Math.atan2(by - ay, bx - ax);
+    const head = 6 + width * 2;
     c.beginPath(); c.moveTo(bx, by);
-    c.lineTo(bx - 12 * Math.cos(ang - 0.4), by - 12 * Math.sin(ang - 0.4));
-    c.lineTo(bx - 12 * Math.cos(ang + 0.4), by - 12 * Math.sin(ang + 0.4));
-    c.closePath(); c.fillStyle = `rgba(255,130,80,${a})`; c.fill();
+    c.lineTo(bx - head * Math.cos(ang - 0.4), by - head * Math.sin(ang - 0.4));
+    c.lineTo(bx - head * Math.cos(ang + 0.4), by - head * Math.sin(ang + 0.4));
+    c.closePath(); c.fillStyle = veilColor('arrow', color); c.fill();
   }, durMs);
 }
-function veilText(content, durMs) {
-  addBlock((c, p) => {
-    c.fillStyle = `rgba(255,255,255,${fade(p)})`;
+function veilText(id, content, durMs, color) {
+  addBlock(id, (c, a) => {
+    c.globalAlpha = a;
+    c.fillStyle = veilColor('text', color);
     c.font = 'bold 52px ui-monospace, monospace';
     c.textAlign = 'center'; c.textBaseline = 'middle';
     c.fillText(content, viewW / 2, viewH / 2);
@@ -832,11 +882,11 @@ function veilLoop() {
   requestAnimationFrame(veilLoop);
   const now = performance.now();
   vctx.clearRect(0, 0, viewW, viewH);
-  for (let i = veilBlocks.length - 1; i >= 0; i--) {
-    const b = veilBlocks[i];
-    if (now - b.start >= b.dur) { veilBlocks.splice(i, 1); continue; }
-    b.draw(vctx, (now - b.start) / b.dur);
-  }
+  veilBlocks.forEach((b, id) => {
+    if (now - b.start >= b.dur) { veilBlocks.delete(id); return; }
+    b.draw(vctx, veilAlpha(b, now));
+  });
+  vctx.globalAlpha = 1;
 }
 requestAnimationFrame(veilLoop);
 
@@ -1828,10 +1878,19 @@ function route(f) {
       break;
     }
     case 'veil': {
-      const d = (f.duration || 2) * 1000;
-      if (f.gesture === 'mark') veilMark(f.item, f.region || 'full', d);
-      else if (f.gesture === 'arrow') veilArrow(f.src, f.dst, d);
-      else if (f.gesture === 'text') veilText(f.content, d);
+      // duration<=0 = 常驻（Infinity），交给撤除命令收；有 id 才能被单独撤掉。
+      const d = f.duration > 0 ? f.duration * 1000 : Infinity;
+      const id = f.id;
+      const w = f.width || 3;
+      if (f.gesture === 'mark') veilMark(id, f.item, f.region || 'full', d, f.color, w);
+      else if (f.gesture === 'box') veilBox(id, f.item, f.region || 'full', d, f.color, w);
+      else if (f.gesture === 'circle') veilCircle(id, f.item, f.region || 'full', d, f.color, w);
+      else if (f.gesture === 'arrow') {
+        veilArrow(id, f.src, f.src_region || 'full', f.dst, f.dst_region || 'full',
+                  d, f.color, w);
+      } else if (f.gesture === 'text') veilText(id, f.content, d, f.color);
+      else if (f.gesture === 'remove') removeBlock(id);
+      else if (f.gesture === 'clear') veilBlocks.clear();
       break;
     }
     case 'audio': {

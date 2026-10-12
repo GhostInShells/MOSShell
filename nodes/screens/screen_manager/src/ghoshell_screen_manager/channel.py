@@ -18,7 +18,10 @@ both to ``Matrix`` and tests wire both to a recorder.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import itertools
 import json
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -283,34 +286,149 @@ def build_screen_channel(
         return "\n".join(lines)
 
     # -- veil gestures (time-aware) ----------------------------------------
+    #
+    # 一次手势 = 一个块：有 id、有 duration，几何由页面每帧现查 —— 所以窗口一动，它仍指着
+    # 同一块砖（"说名字"而不是"画坐标"：坐标会过期，名字不会）。duration<=0 是常驻，等
+    # scope 关掉或 clear_veil 收：画面不该比它自己的时间片活得更久。
+    #
+    # 画出去的东西必须读得回来（veil()）—— 否则两秒后我就不知道屏上还剩什么，
+    # 而"状态"应当是我读得到的，不是我记得住的。
 
-    @chan.build.command(name="mark")
-    async def mark(item: str, region: str = "full", duration: float = 2.0) -> str:
-        """Highlight a region of an item — a veil gesture. Resolves after ``duration``.
+    _veil_seq = itertools.count(1)
+    _veil: dict[int, dict[str, Any]] = {}
 
-        ``region`` is full / left / right / top / bottom.
+    def _dur_txt(duration: float) -> str:
+        return f"{duration}s" if duration > 0 else "hold"
+
+    def _where(g: dict[str, Any]) -> str:
+        if g["gesture"] == "arrow":
+            return f"#{g['src']}.{g['src_region']} → #{g['dst']}.{g['dst_region']}"
+        if g["gesture"] == "text":
+            text = str(g["content"])
+            return text if len(text) <= 24 else text[:23] + "…"
+        return f"#{g['item']}.{g['region']}"
+
+    async def _gesture(kind: str, duration: float, **fields: Any) -> None:
+        gid = next(_veil_seq)
+        _veil[gid] = {
+            "gesture": kind,
+            "duration": duration,
+            "until": None if duration <= 0 else time.monotonic() + duration,
+            **fields,
+        }
+        await _emit(P.veil_frame(kind, id=gid, duration=duration, **fields))
+        try:
+            if duration > 0:
+                await asyncio.sleep(duration)
+            else:
+                await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # 时间片先关，画面跟着收 —— 这就是"动作、话、截图落在同一个 scope"的那半句。
+            _veil.pop(gid, None)
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(_emit(P.veil_frame("remove", id=gid)))
+            raise
+        finally:
+            _veil.pop(gid, None)
+
+    @chan.build.command(name="mark", blocking=False)
+    async def mark(item: str, region: str = "full", duration: float = 2.0,
+                   color: str = "", width: float = 3) -> str:
+        """Fill-highlight a region of an item. Resolves after ``duration``.
+
+        ``region``: full / left / right / top / bottom. ``duration`` > 0 is the block's
+        life; a scope that closes earlier takes it away, which is how a drawing and the
+        clause it belongs to end together. ``color`` empty = the veil's default (green).
+        ``width`` is the border in pixels.
         """
         _require(item)
-        await _emit(P.veil_frame("mark", item=item, region=region, duration=duration))
-        await asyncio.sleep(duration)
-        return f"[screen] mark #{item}.{region} ({duration}s)"
+        await _gesture("mark", duration, item=item, region=region, color=color, width=width)
+        return f"[screen] mark #{item}.{region} ({_dur_txt(duration)})"
 
-    @chan.build.command(name="arrow")
-    async def arrow(src: str, dst: str, duration: float = 2.0) -> str:
-        """Draw an arrow from one item to another — a veil gesture. Resolves after
-        ``duration``."""
+    @chan.build.command(name="box", blocking=False)
+    async def box(item: str, region: str = "full", duration: float = 2.0,
+                  color: str = "", width: float = 3) -> str:
+        """Draw a rectangle around a region of an item — the screenshot-tool box.
+
+        Same arguments as ``mark``; the difference is what it says: ``mark`` fills
+        (look here), ``box`` outlines (this thing / this area).
+        """
+        _require(item)
+        await _gesture("box", duration, item=item, region=region, color=color, width=width)
+        return f"[screen] box #{item}.{region} ({_dur_txt(duration)})"
+
+    @chan.build.command(name="circle", blocking=False)
+    async def circle(item: str, region: str = "full", duration: float = 2.0,
+                     color: str = "", width: float = 3) -> str:
+        """Draw an ellipse inside a region of an item — a circled detail.
+
+        Same arguments as ``box``.
+        """
+        _require(item)
+        await _gesture("circle", duration, item=item, region=region, color=color, width=width)
+        return f"[screen] circle #{item}.{region} ({_dur_txt(duration)})"
+
+    @chan.build.command(name="arrow", blocking=False)
+    async def arrow(src: str, dst: str, duration: float = 2.0, color: str = "",
+                    width: float = 3, src_region: str = "full",
+                    dst_region: str = "full") -> str:
+        """Draw an arrow from one item to another. Resolves after ``duration``.
+
+        Both ends are *addresses*, not coordinates: ``src`` / ``dst`` are item ids and
+        ``src_region`` / ``dst_region`` pick where on the item the end lands (the centre
+        of that region). So the arrow keeps pointing at the right thing after the pool
+        is rearranged — something a painted pixel cannot promise.
+        """
         _require(src)
         _require(dst)
-        await _emit(P.veil_frame("arrow", src=src, dst=dst, duration=duration))
-        await asyncio.sleep(duration)
-        return f"[screen] arrow #{src} → #{dst} ({duration}s)"
+        await _gesture(
+            "arrow", duration, src=src, dst=dst, src_region=src_region,
+            dst_region=dst_region, color=color, width=width,
+        )
+        return f"[screen] arrow #{src}.{src_region} → #{dst}.{dst_region} ({_dur_txt(duration)})"
 
-    @chan.build.command(name="text")
-    async def text(content: str, duration: float = 2.5) -> str:
-        """Show big text over the screen — a veil gesture. Resolves after ``duration``."""
-        await _emit(P.veil_frame("text", content=content, duration=duration))
-        await asyncio.sleep(duration)
-        return f"[screen] text ({duration}s)"
+    @chan.build.command(name="text", blocking=False)
+    async def text(content: str, duration: float = 2.5, color: str = "") -> str:
+        """Show big text over the whole screen. Resolves after ``duration``."""
+        await _gesture("text", duration, content=content, color=color)
+        return f"[screen] text ({_dur_txt(duration)})"
+
+    @chan.build.command(name="veil", blocking=False)
+    async def veil() -> str:
+        """Read back what is on the veil right now — gesture, address, time left.
+
+        ``[screen] veil clear`` when nothing is drawn. Use it instead of remembering:
+        the veil is state, and state is something you read.
+        """
+        now = time.monotonic()
+        for gid in [g for g, v in _veil.items() if v["until"] is not None and v["until"] <= now]:
+            _veil.pop(gid, None)
+        if not _veil:
+            return "[screen] veil clear"
+        parts = []
+        for gid, g in _veil.items():
+            left = "hold" if g["until"] is None else f"{max(0.0, g['until'] - now):.1f}s"
+            parts.append(f"#{gid} {g['gesture']} {_where(g)} ({left})")
+        return "[screen] veil: " + "; ".join(parts)
+
+    @chan.build.command(name="clear_veil", blocking=False)
+    async def clear_veil(duration: float = 0.0) -> str:
+        """Take every veil gesture off the screen — now, or after ``duration`` seconds.
+
+        The sweep is an action like the drawing is, so it belongs on the same clock:
+        open it with a duration and the picture ends exactly when the moment does.
+        Cancel it — the scope it was emitted in closing, an interrupt — and the
+        ``finally`` still clears: nothing I drew outlives the moment it was for.
+        """
+        try:
+            if duration > 0:
+                await asyncio.sleep(duration)
+        finally:
+            n = len(_veil)
+            _veil.clear()
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(_emit(P.veil_frame("clear")))
+        return f"[screen] veil cleared ({n})"
 
     # -- mock / debug -------------------------------------------------------
 
