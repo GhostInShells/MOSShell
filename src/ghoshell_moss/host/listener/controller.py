@@ -69,6 +69,11 @@ __all__ = [
 #: 注入自定义 factory 即可整段替换 (container 在 runtime get 一次后塞进来).
 StopDetectorFactory = Callable[[EtiquetteSpec, Callable[[], None]], StopJudge]
 
+#: 听觉故障自愈: 连续故障重启当前礼仪的次数上限. 达上限停手, 交回模型 re-activate.
+#: Why 有界: ASR 自身 ``max_connect_retries`` 默认 10 (退避 0.5→8s, 约 50s) 才 fatal —
+#: 无界重启会退化成每 ~50s 一次的 signal 风暴. 有界只为真正的瞬断留自愈窗口.
+_MAX_FAULT_RESTARTS = 3
+
 
 def build_stop_caller_factory(container) -> Optional[Callable[[str], MossLLMCaller]]:
     """出口位点 classifier 的依赖装配: 容器有模型环境 (MossLLMFuncs) 时返回
@@ -196,9 +201,17 @@ class ListenerController(ListenLifecycle):
         self._current_clauses: list[RecognitionClause] = []
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
+        # 听到即恢复 → 复位故障重启计数 (自愈窗口内重新听到声音即清零).
+        listener.on_recognition_result(self._on_fault_activity_reset)
         # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
         # expect events, 让"期待输入"立刻满足 (取消超时). 不依赖 signal_broadcast.
+        # (保持在 result_observers 末位 — 测试按 [-1] 取它.)
         listener.on_recognition_result(self._on_expect_voice)
+        # 耳朵故障观察 (跨 session 稳定, 对称 ASR.on_error): pump 崩溃 / ASR 上报 →
+        # 发感知 signal + 有界自愈. 此前无消费者 → 耳朵静默变聋、无人知.
+        listener.on_error(self._on_listener_fault)
+        self._fault_restarts = 0
+        self._restart_task: Optional[asyncio.Task] = None
 
     # ── 生命周期: listener 未启动则托管, 已启动则只借用 ──
 
@@ -580,6 +593,11 @@ class ListenerController(ListenLifecycle):
         self._set_active_etiquette(None)
         self._cancel_active()
         self._clear_expects()
+        # 停听也停掉排期中的故障重启, 并复位计数 — 勿在停止后复活会话 (停机竞态).
+        if self._restart_task is not None and not self._restart_task.done():
+            self._restart_task.cancel()
+        self._restart_task = None
+        self._fault_restarts = 0
 
     def pause(self, toggle: bool = True) -> None:
         """人类锁 (ListenLifecycle 表面): True 上锁 + 停听, False 释放 + 恢复默认礼仪.
@@ -921,6 +939,72 @@ class ListenerController(ListenLifecycle):
             description="listener:knock",
         ))
         self._notify_signal(f"knock (sound detected, priority={detect.priority.name})")
+
+    # ── 耳朵故障 (pump 崩溃 / ASR 上报) — 感知 + 有界自愈 ──
+
+    def _on_listener_fault(self, error: Exception) -> None:
+        """耳朵级故障: 发感知 signal + 有界重启当前礼仪.
+
+        在识别/ASR 线程或事件循环内被调用 — 只做标记与排期; 重启经 ``create_task`` 延迟
+        一拍 (不在 pump 协程内自取消). 无激活礼仪 (如 knock 中间态) 时只发 signal 不自愈.
+        """
+        self._logger.error("%s listener fault: %s", self._log_prefix, error)
+        self._emit_listener_error(error)
+        spec = self._active_etiquette
+        if spec is None:
+            return
+        if self._fault_restarts >= _MAX_FAULT_RESTARTS:
+            self._emit_listener_degraded()
+            return
+        self._fault_restarts += 1
+        if self._restart_task is None or self._restart_task.done():
+            self._restart_task = asyncio.create_task(self._restart_after_fault(spec))
+
+    async def _restart_after_fault(self, spec: EtiquetteSpec) -> None:
+        await asyncio.sleep(0)
+        # 重启前复核: 仍未被人类锁 / 未被切走 / 仍是同一礼仪 (故障与重启之间可能已 stop).
+        if self._human_paused or self._active_etiquette is not spec:
+            return
+        # deep copy: 新礼仪对象与旧 task 持有的 spec 非同实例 — 旧 task 被 cancel 时其
+        # finally 的身份判断 (``_active_etiquette is etiquette``) 不会误清新激活.
+        self.run_etiquette(spec.model_copy(deep=True))
+
+    def _on_fault_activity_reset(self, result: RecognitionEvent) -> None:
+        """任一识别事件到达 → 听觉已恢复, 复位故障重启计数 (清空自愈窗口)."""
+        if self._fault_restarts:
+            self._fault_restarts = 0
+
+    def _emit_listener_error(self, error: Exception) -> None:
+        """耳朵故障: 发一条 notify signal, 告知模型"听觉循环挂了"及原因.
+
+        source = cell_name (不是 "asr"), 与 expect-timeout / idle-timeout 同形.
+        """
+        if self._signal_broadcast is None:
+            return
+        self._broadcast(new_listener_signal(
+            f"listener fault: {error}",
+            source=self._cell_name or "listener",
+            complete=True,
+            interrupt=False,
+            mode="notify",
+            description="listener:error",
+        ))
+        self._notify_signal(f"listener fault: {error}")
+
+    def _emit_listener_degraded(self) -> None:
+        """连续故障达上限: 停止自动重启, 告知模型需手动 re-activate."""
+        if self._signal_broadcast is None:
+            return
+        self._broadcast(new_listener_signal(
+            f"listener failed to recover after {_MAX_FAULT_RESTARTS} restarts — "
+            f"re-activate listening manually",
+            source=self._cell_name or "listener",
+            complete=True,
+            interrupt=False,
+            mode="notify",
+            description="listener:degraded",
+        ))
+        self._notify_signal("listener degraded (restart budget exhausted)")
 
     # ── 人类强发送 (输入法语义) ──
 

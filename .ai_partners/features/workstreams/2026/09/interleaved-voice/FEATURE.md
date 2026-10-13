@@ -715,3 +715,23 @@ speech / None listener 各自静默降级 (Voice 自己判 `isinstance(speech, T
 **判据**: `moss-shell --voice all log` headless 起得来 —
 capture started → Voice lifecycle add → shell started → speech started; LIFO 关闭
 (shell exited → player closed → BaseTTSSpeech closed → HostListener closed).
+
+## 2026-10-13 后续补: 听觉链路的静默失败与无感知/无自愈故障
+
+> 人类架构师要求从 interleaved voice 起排查音频模块的静默失败, 以及"听觉循环异常导致
+> 崩溃、却无感知渠道、无自愈渠道"的问题。详细发现 + 修复方案 + 决策见
+> [2026-10-13_hearing-loop-silent-faults.md](2026-10-13_hearing-loop-silent-faults.md)。
+
+**发现两类, 且互锁**:
+
+- **静默失败**: S1 采集队列满 → 无声丢帧(连日志都没有, `miniaudio_capture.py:337-340`);
+  S2 设备锁争用 → 假装起动无设备(`:144-149`); S3 AEC 逐帧失败 → 全丢帧不自愈。
+- **无感知/无自愈 (核心)**: `HostListenerState._pump` 崩溃后 `is_running()` 撒谎、无人监督;
+  既有感知契约 `ASR.on_error` **全仓零注册**(死契约); 无重启/看门狗。默认 `always` 礼仪的
+  `idle_timeout=300` 会在 300s 后发**误导性** "no speech" 信号归因错误, 再降级 knock(不做 ASR)。
+
+**修复方向** (本 commit 内): 接活故障感知面(`Listener.on_error` + session pump 崩溃上行 →
+controller 发 `listener:error` signal), `is_running()` 说真话, controller **有界自动重启**
+(封顶后交回模型 re-activate); 三个静默失败各自补观测/自愈。
+
+**状态**: 修复落地 + 契约测试锚定, 待人类架构师确认后提交。

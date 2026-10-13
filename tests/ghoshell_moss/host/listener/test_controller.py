@@ -51,9 +51,11 @@ class _MockListener:
         self.listened = asyncio.Event()
         self.result_observers = []
         self.segment_observers = []
+        self.error_observers = []
         self.running = False
         self.entered = False
         self.exited = False
+        self.listen_count = 0
 
     def on_recognition_result(self, cb):
         self.result_observers.append(cb)
@@ -63,10 +65,20 @@ class _MockListener:
         self.segment_observers.append(cb)
         return lambda: None
 
+    def on_error(self, cb):
+        self.error_observers.append(cb)
+        return lambda: None
+
+    def trigger_error(self, error):
+        """测试钩子: 模拟耳朵级故障 (pump 崩溃 / ASR 上报) 扇出."""
+        for cb in list(self.error_observers):
+            cb(error)
+
     def is_running(self):
         return self.running
 
     async def listen(self):
+        self.listen_count += 1
         self.state = _MockState()
         self.listened.set()
         return self.state
@@ -268,7 +280,7 @@ def test_signal_broadcast_clause_not_emitted():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
 
-    assert len(listener.result_observers) == 4  # 发射 + 累积 + buffer + expect 观察者
+    assert len(listener.result_observers) == 5  # 发射 + 累积 + buffer + 故障复位 + expect 观察者
     listener.result_observers[0](_clause("你好"))
 
     assert emitted == []  # CLAUSE 不上行 — 判停已在 listener 侧消化
@@ -301,8 +313,8 @@ def test_signal_broadcast_interrupt_then_deliver():
 def test_no_signal_broadcast_registers_no_emitter():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR())
-    # 无 sink → 不注册发射观察者 (只剩 buffer + expect 观察者).
-    assert len(listener.result_observers) == 2
+    # 无 sink → 不注册发射观察者 (只剩 buffer + 故障复位 + expect 观察者).
+    assert len(listener.result_observers) == 3
 
 
 def test_signal_wired_reflects_broadcast_injection():
@@ -967,3 +979,121 @@ def test_deliver_carries_low_confidence_chars():
     assert len(emitted) == 1
     meta = ListenerSignal.from_signal(emitted[0])
     assert meta.low_conf == "好"
+
+
+# ============================================================
+# 耳朵故障 (pump 崩溃 / ASR 上报) — 感知 + 有界自愈
+# ============================================================
+
+
+async def _spin(n: int = 5) -> None:
+    for _ in range(n):
+        await asyncio.sleep(0)
+
+
+def _descriptions(emitted) -> list[str]:
+    return [getattr(s, "description", "") for s in emitted]
+
+
+@pytest.mark.asyncio
+async def test_listener_fault_emits_error_signal():
+    """耳朵故障 (无激活礼仪时) → 发一条 listener:error signal, 不重启."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append, cell_name="ear",
+    )
+
+    listener.trigger_error(RuntimeError("asr connect failed"))
+    await _spin()
+
+    assert _descriptions(emitted) == ["listener:error"]
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.source == "ear"
+    assert listener.listen_count == 0
+
+
+@pytest.mark.asyncio
+async def test_listener_fault_restarts_active_etiquette():
+    """有激活礼仪时, 耳朵故障 → 重启同一礼仪 (新起一条 session)."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    task = controller.run_etiquette(always.model_copy(deep=True))
+    await listener.listened.wait()
+    await listener.state.entered.wait()
+    await _spin()
+    assert listener.listen_count == 1
+
+    listener.trigger_error(RuntimeError("asr dropped"))
+    await _spin()
+
+    assert listener.listen_count == 2  # 重启: 又听了一次
+    assert "listener:error" in _descriptions(emitted)
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_listener_fault_restart_is_bounded_then_degrades():
+    """连续故障: 最多重启 _MAX_FAULT_RESTARTS 次, 之后发 listener:degraded 且不再重启."""
+    from ghoshell_moss.host.listener.controller import _MAX_FAULT_RESTARTS
+
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    task = controller.run_etiquette(always.model_copy(deep=True))
+    await listener.listened.wait()
+    await listener.state.entered.wait()
+    await _spin()
+
+    for _ in range(_MAX_FAULT_RESTARTS + 1):
+        listener.trigger_error(RuntimeError("asr down"))
+        await _spin()
+
+    # 初次 + 封顶次数的重启; 超出后不再重启.
+    assert listener.listen_count == 1 + _MAX_FAULT_RESTARTS
+    assert _descriptions(emitted).count("listener:degraded") == 1
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_listener_activity_resets_fault_budget():
+    """听到声音即复位故障自愈窗口: 曾消耗预算后, 新一轮故障仍能重启 (不降级)."""
+    from ghoshell_moss.host.listener.controller import _MAX_FAULT_RESTARTS
+
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    task = controller.run_etiquette(always.model_copy(deep=True))
+    await listener.listened.wait()
+    await listener.state.entered.wait()
+    await _spin()
+
+    for _ in range(_MAX_FAULT_RESTARTS):
+        listener.trigger_error(RuntimeError("flaky"))
+        await _spin()
+    # 听觉恢复: 一条识别结果复位自愈窗口.
+    for cb in listener.result_observers:
+        cb(_partial("你好"))
+    await _spin()
+
+    listener.trigger_error(RuntimeError("flaky again"))
+    await _spin()
+
+    assert "listener:degraded" not in _descriptions(emitted)
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
