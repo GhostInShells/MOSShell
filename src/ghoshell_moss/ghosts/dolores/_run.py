@@ -130,10 +130,12 @@ class _VoidCtmlError(Exception):
     ``_handle_interpret`` 里的 ``pop`` / ``finish`` 都不会发生, 而 delta 早就开出了 articulator。
     那条 action 永远等不到 commit, 会占住 mindflow 的 action loop (见 ``DoloresRun._void_stream``)。
 
-    为什么必须是**非 ``StatementExitedException``** 的普通异常: ``BaseArticulator.__aexit__`` 只对
-    "非 StatementExitedException 的异常退出" 落 ``_action_stop_event``; 而 ActionExitedException /
-    StatementExitedException 走的是"attention 已经 abort"那一支, 什么都不做。这里 attention 是好的
-    —— 要放弃的只是这一个 action, 不是整帧。
+    为什么走"异常退出"而不是 commit: ``BaseArticulator.__aexit__`` 收到异常退出会落
+    ``BaseAction.close_lifecycle()`` —— stop / compiled / observed 三个端点一起落地, 于是 action loop
+    那次 ``wait_compiled()`` 被放行; 而正常退出 (commit) 会去等一个不会再有人生产的编译位, 把整条
+    消费链拖住。用本模块自己的异常而不是 ActionExitedException, 是为了让这次退出在语义上读成
+    "这一单没有被受理", 而不是"attention 已经 abort" —— 这里 attention 是好的, 要放弃的只是这一个
+    action, 不是整帧。
 
     为什么"作废"而不是 commit: arguments 被拒 = 这一单没有被受理, 那份半截 CTML 只是流式预览,
     一个命令都还没执行 (执行发生在 commit 之后)。commit 它等于执行模型没有承诺过的东西。

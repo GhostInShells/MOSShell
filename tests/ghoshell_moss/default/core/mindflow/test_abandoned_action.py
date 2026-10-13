@@ -1,20 +1,23 @@
-"""一条"开了却没收尾"的 action, 能不能冻住整个 action loop?
+"""一条 action 被弃掉时, 该由谁、以什么方式放它走?
 
 线上背景 (2026-10-13, moss-in-reachy-mini):
 一次 ``moss_interpret`` 的参数解析失败, 它的 ``tool-call-delta`` 已经在 MOSS 侧开出了
-articulator, 但没有任何人去关它 —— 于是这条 action 永不 commit, 全厨房唯一一口灶被它占死,
-紧随其后的第二条 ``moss_interpret`` 永久阻塞, 整帧冻结 (只能重启 host 才解).
+articulator, 但没有任何人去关它 —— 于是这条 action 永不 commit, 厨房唯一一口灶被它占死,
+紧随其后的第二条 ``moss_interpret`` 永久阻塞, 整帧冻结 (只能靠人打断才解).
 
-这个文件不用替身, 只跑生产的 ``MindflowInShell`` 三循环 (经 ``MindflowInShellTestSuite``
-装线), 把那条 kernel 规则单独立住:
+**修它在"弃它的人"那一侧, 不在 kernel**: Dolores 的 ``_void_stream`` 在参数被拒的那一刻
+作废这条流, 骑的就是本文件钉住的那条 kernel 路 ——
 
-    **一条被抛弃的 action, 不得让 action loop 停摆.**
+    **弃掉一条 action, 是以"异常退出"收它的边界; 不是提交, 也不是等一个钟.**
 
-- 复现 (现在就是红的): ``articulate`` 里开一个 articulator、喂点 logos、**永不 commit**;
-  然后照常开第二个并等它跑完。现在第二个等不到 —— 因为 action loop 停在第一个身上。
-- 这个文件测的是 **kernel 的鲁棒性**, 和"Dolores 的参数解析失败分支该不该收尾"是两个决定:
-  即使 Dolores 侧补上了收尾, 这里仍然是红的; 反过来如果给 kernel 的等待加了界, 这里会自动变绿。
-  两边都该有测试, 互不替代。
+本文件只留这一条契约. 同一份 PR 里还有过一条
+``test_abandoned_articulator_does_not_freeze_the_action_loop`` (要求"没人收尾的 action 也不许
+让 action loop 停摆"), 已移除 —— 那是在要求 kernel 去猜"没人会来了", 而 kernel 猜不到:
+唯一能"猜"的办法是给那次等待设一个上限, 而它等的是模型自己生成 arguments 的那一段时间
+(第一个 delta → arguments 到位), 天然没有上界. 给它加钟, 等于给整帧的生命周期加钟;
+按设计, 能结束一帧的只有 attention 与 abort. 所以这条要求归**开边界的人**, 不归 kernel.
+
+不用替身, 只跑生产的 ``MindflowInShell`` 三循环 (经 ``MindflowInShellTestSuite`` 装线).
 """
 import asyncio
 
@@ -26,57 +29,13 @@ from .mindflow_in_shell_test_suite import MindflowInShellTestSuite, input_signal
 
 
 @pytest.mark.asyncio
-async def test_abandoned_articulator_does_not_freeze_the_action_loop():
-    """第一个 articulator 永不收尾时, 第二个必须还能跑完."""
-    suite = MindflowInShellTestSuite()
-
-    seen: list[str] = []
-
-    async def content_func(chunks__):
-        async for chunk in chunks__:
-            seen.append(chunk)
-
-    suite.shell.main_channel.build.content_command(content_func)
-
-    second_done = asyncio.Event()
-    text_articulator = suite.text_articulator("second frame")
-
-    async def articulate(thinking: Thinking) -> None:
-        # ① 被抛弃的那一条: 边界打开、logos 送进去了, 但永不 commit / 永不 __aexit__。
-        #    这就是线上"delta 开了流而收尾的人没来"的 kernel 侧形状。
-        abandoned = thinking.articulator()
-        await abandoned.__aenter__()
-        abandoned.send_nowait("abandoned frame ")
-
-        # ② 紧接着的第二帧: 它和线上那条重发的 moss_interpret 一样, 必须能做出来。
-        await text_articulator(thinking)
-        second_done.set()
-
-    suite.articulate = articulate
-
-    async with suite:
-        suite.add_signal(input_signal("hello"))
-        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
-        try:
-            await asyncio.wait_for(second_done.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
-            pytest.fail(
-                "第二帧卡死了: 上一条 action 没有 commit, 而 action loop 一次只服务一个 action "
-                "(mindflow_in_shell.py:342 await action.wait_compiled()), 所以它永远轮不到 —— "
-                "这就是线上整帧冻结在 kernel 侧的根因"
-            )
-        assert not suite.exceptions, suite.exceptions
-    assert "second frame" in "".join(seen)
-
-
-@pytest.mark.asyncio
 async def test_voiding_an_articulator_releases_the_action_loop():
     """同一条戏, 但第一帧**被作废** —— 第二帧必须能跑完.
 
-    这是 kernel 给出的那条"只放弃这一个 action、不 abort 整帧"的路: 以**非 StatementExitedException**
-    的异常退出 ``BaseArticulator.__aexit__``, 它才会落 action 的 stop event。若传
-    ActionExitedException / StatementExitedException, 走的是"attention 已经 abort"那一支, 什么都不做
-    —— 那样等于没有放行。
+    这是 kernel 给出的那条"只放弃这一个 action、不 abort 整帧"的路: ``BaseArticulator.__aexit__``
+    收到异常退出时落 ``BaseAction.close_lifecycle()`` —— stop / compiled / observed 三个端点一起
+    落地, 于是 action loop 那次 ``await action.wait_compiled()`` 被放行; 走正常退出(commit) 反而会
+    去等一个不会再有人生产的编译位, 把整条消费链拖住。
 
     Dolores 侧 ``_void_stream`` (参数被拒时作废 CTML 流) 骑的就是这条路, 这里在生产装线上把它钉住。
     """
@@ -114,7 +73,7 @@ async def test_voiding_an_articulator_releases_the_action_loop():
             await asyncio.wait_for(second_done.wait(), timeout=1.0)
         except asyncio.TimeoutError:
             pytest.fail(
-                "作废之后 action loop 仍然没放行 —— 异常退出这条路没有落 action 的 stop event"
+                "作废之后 action loop 仍然没放行 —— 异常退出这条路没有落地 action 的生命周期端点"
             )
         assert not suite.exceptions, suite.exceptions
     assert "second frame" in "".join(seen)
