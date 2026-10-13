@@ -784,15 +784,37 @@ class ListenerController(ListenLifecycle):
         TAIL → 发送包 (complete=True + notify + INFO);
         CLAUSE/PARTIAL 不上行 (判停已在 listener 侧消化).
         """
+        # 探针 (D13 丢尾包排查): FIRST/TAIL 各自留一行 — 回答"尾包到底有没有被生产".
         if result.phase == RecognitionPhase.FIRST:
+            self._logger.info(
+                "%s recognition FIRST segment=%s len=%d → onset",
+                self._log_prefix, result.segment_id, len(result.text or ''),
+            )
             self._emit_interrupt(result)
         elif result.phase == RecognitionPhase.TAIL:
+            self._logger.info(
+                "%s recognition TAIL segment=%s len=%d → deliver",
+                self._log_prefix, result.segment_id, len(result.text or ''),
+            )
             self._emit_deliver(result)
+        else:
+            self._logger.info(
+                "%s recognition %s segment=%s — not upstreamed",
+                self._log_prefix, result.phase, result.segment_id,
+            )
 
     def _broadcast(self, signal) -> None:
         """广播一条 listener signal; host session 已关闭时静默丢弃 (teardown 竞态)."""
+        # 探针 (D13 丢尾包排查): 每条真的出门的 listener signal 留一行 — 分清"没生成"与"生成了没送到".
         if self._signal_broadcast is None:
+            self._logger.warning(
+                "%s signal dropped — no broadcast sink wired", self._log_prefix,
+            )
             return
+        self._logger.info(
+            "%s broadcast signal complete=%s priority=%s desc=%s",
+            self._log_prefix, signal.complete, signal.priority, signal.description,
+        )
         try:
             self._signal_broadcast(signal)
         except RuntimeError as exc:

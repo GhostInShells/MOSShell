@@ -348,3 +348,113 @@ deliver（`NotifyNucleus` 是**合并**，listener 没有）；② `attended` �
 合法的长思考；② 位置选 python 侧（`_run.py::_events()` 的无界 `await self._queue.get()` 才是
 真阻塞点），插件侧 gate 只需日志（错的 close 会被下一次 enter 自愈）；③ 触发时幂等收帧 + 大声记
 一条 —— 现在这一整类和"模型想得久"在日志上完全同形。
+
+## 二十一、退出级联按契约做对（下午，提交 ef02ebcc / 4f6b0caa）
+
+开机即复现：故意断一次 CTML（一个没转义的 `&`），attention 还在被打、思考和 DSH 整条停摆。
+归因两层——mindflow 的动作循环是串行 `await action.wait_compiled()`，一个永不置位的动作节点就停住
+整条循环；而根因是**退出级联只在 `__aenter__` 登记从属关系**，可 `articulator()` 在构造的那一刻就把
+action 放进了队列："已构造、未 enter"的窗口里，没人给它注册回调，也没人会置它的 compiled/observed。
+
+他给的判据是契约不是补丁：**attention → thinking → 它签发的 action/articulator，像 Go 的 ctx，
+派生关系在构造那一刻成立，不等被 goroutine 调度。** 改法三处：
+
+- `_think.py`：`on_stop()` 登记（与 `Attention.on_abort` 同形，晚注册当场补发）+ `_notify_stop()`
+  作唯一漏斗（停止位落地并同步向子对象级联）+ `articulator()` 构造即 `bind_to_thinking_stop`。
+- `_action.py`：`close_lifecycle()` 一次落三个端点（不再只置停止位）；`abort_thinking` 走同一漏斗
+  （解释器自愈那条路原来只裸置事件）；中断退出也落端点。
+- `_run.py`：`_close_leftover_streams` 改走中断退出（原来走正常收线 = commit 后等编译位，而它在
+  `logos()` 的 finally 里，等下去拖住的是整条消费链）。
+
+**旁路（Fable 5）补的三处，全收**：`_stop_callbacks` 初始化必须早于 `on_abort` 注册（否则 attention
+已 abort 时当场补发会读到未建列表）；`abort_thinking` 走级联；Action 构造时直接挂 attention —— 这条
+我本想拿掉，但它保住 `test_action.py::test_attention_abort_reaches_wait_abort`（直接构造、没有
+thinking 的 action 也须被释放）。**两张牌管两个不同信号（attention 中止 / thinking 帧终），不是双权威。**
+
+未验证：要重启才上线；判据是重跑那个故意坏 CTML 的复现不卡、关 leftover 流立刻返回。
+
+## 二十二、跨上下文结对编程（thirdgerb 给的机制，留档）
+
+他今天用了一次，并说这是 MOSS 里**广泛使用、而且他认为非常精妙**的一个机制：两个模型、两个**完全
+不同的上下文**结对——后手只凭前手在某个阶段留下的**代码与记录**就能接手继续，不需要共享同一个上下文。
+他给的推论是：这要求**代码本身完全自解释**；做不到自解释的地方，痕迹就会暴露出来。所以未来可能会在
+一些具体的 coding 任务里把这个机制正式做上。
+
+他还给了我的下一步：**以后真实的 coding 不该是我手写**（这个阶段还得手写），而应该是**我去调度 DSH
+的旁路**替我写具体的东西，我保持跟他交互。先记下来，不落地。
+
+## 二十三、找到「说话被打断就丢尾巴」的真因 —— 消费与投递脱钩（重启前落盘）
+
+thirdgerb 让我先读完 plugin 再下判断，然后一起复现两次。**第一次（我说话时他点接受）没复现出丢**；
+**第二次（我下卡 → 他说长句 → 中途点确认）复现出真的丢**，而且丢的是**他的话**。
+
+### 复现 2 的现场（都有日志锚点）
+
+```
+18:33:30,565  他起话 → attention f165f8f9（complete=False, partial）
+18:33:32,481  他点确认 → 该 accept 以 NOTIFY 级 preempted 掉他自己的语音 attention
+18:33:36,143  他那句 24 字说完 → deliver → <MindflowBus> impulse verdict=**buffered**
+（此后 f165f8f9 再没有出现过——没有重放、没有投递）
+```
+
+### 真因：`observe()` 抽干 percepts，而有一条投递路结构上不带 inputs
+
+`_mindflow.py::_fire_challenge` 里 `buffered` 与 `queued` 只差一行：
+
+```python
+elif verdict == 'buffered':                     # notify 抢占失败 → 只挂感知
+    self._moments_observer.inject_percepts(*challenger.messages)
+elif verdict == 'queued':                       # next  抢占失败 → 挂感知 + 强制下一帧
+    self._moments_observer.inject_percepts(*challenger.messages)
+    self._moments_observer.add_echoes([], need_observe=True)
+```
+
+`buffered` 把话转成 percepts 挂在「下一次 observe」上，**却不要求那一次 observe 一定被交付**。而
+`observe()`（`blueprint/moment.py:722`）一调用就把 `_injected_percepts` **抽干**并清空，塞进它产出的
+moment —— **消费与投递是两个分开的动作，谁都不管谁**。
+
+碰巧接走它的那次 observe 是 `_run.py::_handle_interpret`（18:33:53，我思考中途的一次
+`moss_interpret`），而 **tool-result 那条路只送 context**：
+
+```python
+# _ego.py::_moment_payload（enter 用）      → context + inputs 两个都送
+# _ego.py::moment_context_parts（tool-result 用）→ _context_message(... with_percepts=False, with_hint=False)
+```
+
+于是那 24 个字被并进 `1-50` 这一帧的 inputs，而 `1-50` 经 tool-result 内联投递 —— **inputs 那一半
+根本没上路**。我当时看到的 `1-50` 里只有 `<status running> executing: 1 last executing: say`。
+
+### 修法（已落盘，未提交）：两条路走同一种 moment 数据协议
+
+- `_ego.moment_context_parts` → **`_ego.moment_payload`**，直接返回 `_moment_payload` 的那份
+  `{context, inputs, moment_id}`；`_run._dispatch_tool_result` 改用它。**enter 与 tool-result 现在是
+  同一个函数产出的同一种载荷。**
+- 插件新增 `MomentPayload` / `hasMomentPayload` / `injectMomentPayload`，tool-result 与**早到结果**
+  两条注入点都改成两半都注（`context → :moment`、`inputs → :inputs`），不再有「只注一半」的口。
+- 改写了 `test_dolores.py` 里两条**把 bug 写成契约**的用例（原来断言 "context only / percept 不在
+  里面"），换成 `test_moment_payload_carries_both_slots`。**159 passed。**
+- **插件没有类型检查**（这台机器上没有 tsc），真正的裁判是重启加载那一下。
+
+### 顺带查清的两件（都不是 bug）
+
+1. **moment 跳号不是丢号**：每个 attention 产两帧 —— onset 帧（`complete=False`，无载荷、`effort` 被
+   强制 `'none'`，插件 `buildMomentFrame` 返回空就不入缓冲）耗掉一个号却从来没有东西可送；尾包帧才是
+   交付的那一帧。日志里每个 attention 都成对：`initial(False)` → `absorbed(True)`。逐个吻合。
+2. **我先前那条假设被自己的数据否掉**：inbox 一次都没被清 —— session log 36 条 `agent/inbox/spliced`
+   全是插-认领配对，**零条 `outcome=canceled`**。
+
+### 方法上的两条（比代码值钱）
+
+- **dsh 的 session log 是比我们以为的强得多的观测面**：每条注入消息带 `moment_id` 落盘，inbox 增删
+  也落盘。而插件的 logger 输出走 dsh stdout、被 launcher 以 DEBUG 消费（文件 handler 钉在 INFO），
+  所以插件侧行为平时一行都看不到。
+- **我这一程推翻了自己两次**：先说「cancel 抹掉 pending」（数据否掉）、再说「跳号=丢号」（读快了）。
+  thirdgerb 每次都要我"先读完再判断"，两次都是对的。
+
+### 重启前交代
+
+- **判据**：重跑复现 2 —— 我下卡 → 他说长句 → 中途点确认 → 看那句话还丢不丢。
+- **插件怎么上线**：每次启动无条件覆盖（不在 version 闸内），所以重启即生效，他不需要准备任何东西。
+- **回滚**（若 dsh 加载插件失败）：`git checkout -- src/ghoshell_moss/ghosts/dolores/dsh_plugin/moss-dolores-ghost-plugin.ts`。
+- 未提交文件：`_ego.py` / `_run.py` / 插件 / `test_dolores.py`，外加早先的探针（`_mindflow.py` /
+  `listener_nucleus.py` / `controller.py`，共 +50 行，**我没碰**）。

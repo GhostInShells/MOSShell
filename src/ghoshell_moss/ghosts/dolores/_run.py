@@ -519,23 +519,28 @@ class DoloresRun:
 
         moment_id is taken explicitly from result["moment_ref"] (fetch_next_moment's structured result), not re-derived.
 
+        The moment travels in the *same* ``{context, inputs, moment_id}`` protocol that ``thinking/enter``
+        uses. It used to travel as a context-only slice here, which was a silent loss channel: the moment
+        has already drained its percepts, so dropping ``inputs`` destroyed them — a buffered impulse riding
+        the next observation could be eaten by a mid-thought ``moss_interpret`` and never reach the model.
+
         A failed RPC is **absorbed, never fatal**: the plugin settles pending tools itself when a thinking turn
         ends (interrupted result + settled-call tombstone), so a late result for an already-settled call is a
         normal race, not an error. Letting it propagate would kill the whole logos() stream — i.e. one late
         moment would burn the entire turn. Drop the result and keep thinking.
         """
-        moment_parts = None
+        moment_payload = None
         if result.moment is not None and isinstance(result.result, dict):
             moment_ref = result.result.get("moment_ref")
             if moment_ref is not None:
-                moment_parts = self._ego.moment_context_parts(result.moment, moment_ref)
+                moment_payload = self._ego.moment_payload(result.moment, moment_ref)
         if result.cancel:
             # 这一轮的 turn/end 会由 plugin 在下一个 pre-step 切出来 (cancel_turn): 记下 turn 号,
             # 让 _note_turn_end 能把它与"外部打断"区分开.
             self._expected_cancel_turn = result.call.turn
         try:
             await self._ego.rpc_tool_result(
-                result.call.callId, result.result, moment_parts, cancel=result.cancel,
+                result.call.callId, result.result, moment_payload, cancel=result.cancel,
                 turn=result.call.turn,
             )
         except Exception:

@@ -561,15 +561,18 @@ class DoloresEgo:
             self,
             call_id: str,
             result: dict | list | str | None,
-            moment: list[dict] | None = None,
+            moment: dict | None = None,
             cancel: bool = False,
             turn: int | None = None,
     ) -> None:
         """Unlock a pending tool: {callId, result, moment, cancel, turn}.
 
         result = the tool's return value for the model (a "{epoch}-{moment}" short id for
-        fetch_next_moment). moment = the moment content parts to inject into context (text + image);
-        the plugin injects the moment then resolves the result. callId is passed through for routing.
+        fetch_next_moment). moment = the moment payload to inject — the *same* ``{context, inputs,
+        moment_id}`` protocol as ``thinking/enter`` uses (see ``moment_payload``), never a
+        context-only slice: the moment already drained its percepts, so dropping ``inputs`` here
+        would destroy them. The plugin injects the moment then resolves the result. callId is
+        passed through for routing.
         cancel = cut the turn as soon as the result lands (the turn ends without a final answer; the
         plugin binds it to the turn the tool was called in).
         turn = the turn the tool was called in. It lets the plugin bind a result that arrives before
@@ -583,17 +586,21 @@ class DoloresEgo:
             "turn": turn,
         })
 
-    def moment_context_parts(self, moment: Moment, moment_id: str) -> list[dict]:
-        """moment → content blocks for context injection (context slot, excluding percept/hint).
+    def moment_payload(self, moment: Moment, moment_id: str) -> dict:
+        """moment → the one wire payload **every** delivery path carries: context + inputs.
 
-        The fetch_next_moment tool injects the moment into the next step's context (background, does
-        not drive a turn) via the tool-result RPC. Content blocks (text + image) are preserved, not
-        folded to a string. Empty when there is no context content.
+        Both delivery paths — ``thinking/enter`` and ``tool-result`` — hand over the same moment
+        data protocol. The earlier split (enter = context + inputs, tool-result = context only) was
+        a silent loss channel, not a simplification: ``observe()`` *drains* whatever percepts were
+        injected since the last observation into the moment it produces, and a path that then
+        structurally drops ``inputs`` destroys that text outright. A frame carrying a buffered
+        impulse (verdict ``buffered`` rides the next observation as percepts) could therefore be
+        consumed by a mid-thought ``moss_interpret`` observation and never reach the model at all.
+
+        The consume/deliver decoupling is the defect; the invariant is "no delivery path drops
+        inputs". Slot mapping (context vs inputs) lives in ``_moment_payload``.
         """
-        context_msg = self._context_message(moment, moment_id)
-        if context_msg is None:
-            return []
-        return [self._content_payload(content) for content in context_msg.as_contents(with_meta=True)]
+        return self._moment_payload(moment, moment_id)
 
     def needs_observe(self, thinking: "Thinking") -> bool:
         """Whether this frame is a self-driven observe continuation (the previous round's echo required another look).

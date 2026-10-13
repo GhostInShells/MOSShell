@@ -1123,14 +1123,10 @@ export function apply(ctx: Context) {
           }
           // 早到路径: 号还没注册 (dsh 尚未派发该 tool 的 execute). 不阻塞、不等 — 就地暂存结果
           // (带 MOSS 侧随话带回的 turn), 由 execute 自取. 见 earlyResults 的注释.
-          if (Array.isArray(body.moment) && body.moment.length > 0 && doloresEgoSessionId !== null) {
+          if (hasMomentPayload(body.moment) && doloresEgoSessionId !== null) {
             // moment 仍立即注入 (agent 已存在), 与正常路径"先 inject 后 resolve"同序.
             const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-            const blocks = await durableMomentContent(ctx, body.moment as MomentContentPart[])
-            agent.inject(createUserMessage({
-              content: blocks,
-              source: { kind: 'plugin', plugin: `${name}:moment` },
-            }))
+            await injectMomentPayload(ctx, agent, body.moment)
           }
           earlyResults.set(callId, {
             result: body.result,
@@ -1148,13 +1144,10 @@ export function apply(ctx: Context) {
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         pendingCalls.delete(callId)
         // moment 注入 (先 inject 后 resolve): 观察到的 moment 进下一个 step 的上下文.
-        // 无 moment (缺省/空数组) 则不注入 — result 单独回给模型.
-        if (Array.isArray(body.moment) && body.moment.length > 0) {
-          const blocks = await durableMomentContent(ctx, body.moment as MomentContentPart[])
-          agent.inject(createUserMessage({
-            content: blocks,
-            source: { kind: 'plugin', plugin: `${name}:moment` },
-          }))
+        // context 与 inputs 两半都注 — 见 injectMomentPayload 的契约注释: 两条投递路 (enter /
+        // tool-result) 走同一种 moment 数据协议, 少一半就是一次静默丢字.
+        if (hasMomentPayload(body.moment)) {
+          await injectMomentPayload(ctx, agent, body.moment)
         }
         // result = tool 给模型的返回值 (observe 为 "{epoch}-{moment}" 短 id).
         pending.resolve(body.result)
@@ -1500,6 +1493,49 @@ async function durableMomentContent(ctx: Context, contents: readonly MomentConte
   return contents.map(part => part.type === 'text'
     ? { type: 'text', text: part.text }
     : { type: 'image', attachment: refs[next++] as ImageAttachmentRef })
+}
+
+/**
+ * 一次投递的 moment 载荷 — **两条投递路共用同一种数据协议**: `thinking/enter` 与 `tool-result`.
+ *
+ * 为什么必须同一种: MOSS 侧 `observe()` 产出的 moment 已经把挂起的 percepts **抽干**放进自己
+ * 的 inputs 里 —— 消费与投递是分开的两个动作. 所以任何一条投递路只要结构上不带 inputs, 就会
+ * 把那一帧已经消费掉的文字直接蒸发 (曾发生: verdict=buffered 的语音被思考中途一次
+ * moss_interpret 的观察接走, 而那条路只送 context, 人的话再没出现过).
+ *
+ * 不变式: **没有任何一条投递路可以丢掉 inputs.** 这里是插件侧的守卫 —— MOSS 送什么注什么,
+ * 但"少了一半"要先被认出来, 而不是安静地注一条只有背景的消息.
+ */
+interface MomentPayload {
+  context: MomentContentPart[]
+  inputs: MomentContentPart[]
+  moment_id?: string
+}
+
+/** 载荷形状判定 — 缺省 / 空载荷 (没有 context 也没有 inputs) 视为"无 moment". */
+function hasMomentPayload(moment: unknown): boolean {
+  if (moment === null || typeof moment !== 'object' || Array.isArray(moment)) return false
+  const { context, inputs } = moment as { context?: unknown; inputs?: unknown }
+  return (Array.isArray(context) && context.length > 0) || (Array.isArray(inputs) && inputs.length > 0)
+}
+
+/** 注入一次投递的 moment: context 与 inputs 各成一条消息, 两半都注, 绝不只注一半. */
+async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown): Promise<void> {
+  const { context, inputs } = moment as MomentPayload
+  const contextBlocks = Array.isArray(context) ? await durableMomentContent(ctx, context) : []
+  if (contextBlocks.length > 0) {
+    agent.inject(createUserMessage({
+      content: contextBlocks,
+      source: { kind: 'plugin', plugin: `${name}:moment` },
+    }))
+  }
+  const inputBlocks = Array.isArray(inputs) ? await durableMomentContent(ctx, inputs) : []
+  if (inputBlocks.length > 0) {
+    agent.inject(createUserMessage({
+      content: inputBlocks,
+      source: { kind: 'plugin', plugin: `${name}:inputs` },
+    }))
+  }
 }
 
 /**

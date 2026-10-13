@@ -697,6 +697,12 @@ class AbsMindflow(Mindflow, ABC):
             defender: Impulse | None,
             verdict: ChallengeVerdict,
     ) -> None:
+        # 探针 (D13 丢尾包排查): 每个 impulse 的仲裁结局留一行 — complete 区分首包/尾包.
+        self._logger.info(
+            "%s impulse verdict=%s source=%s id=%s complete=%s mode=%s priority=%s",
+            self._log_prefix, verdict, challenger.source, challenger.id,
+            challenger.complete, challenger.mode, challenger.priority,
+        )
         if verdict == 'suppressed':
             self._suppress_impulse(challenger, defender)
         elif verdict == 'preempted':

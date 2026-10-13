@@ -1589,8 +1589,13 @@ class FakeDispatchEgo(FakeRunEgo):
         self.rpc_calls.append((call_id, result, moment, cancel))
         self.rpc_turns.append(turn)
 
-    def moment_context_parts(self, moment, moment_id):
-        return [{"type": "text", "text": f"moment:{moment_id}"}]
+    def moment_payload(self, moment, moment_id):
+        # 两条投递路共用同一种协议 — fake 也按同一形状给 (context + inputs + moment_id).
+        return {
+            "context": [{"type": "text", "text": f"moment:{moment_id}"}],
+            "inputs": [],
+            "moment_id": moment_id,
+        }
 
 
 class TestDoloresRun:
@@ -1743,7 +1748,7 @@ class TestDoloresRun:
         )
         await run._handle_tool_use_event(self._tool_call("moss_observe", call_id="call_w"), {})
         assert ego.rpc_calls == [
-            ("call_w", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("call_w", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -1982,7 +1987,7 @@ class TestDoloresRun:
             moment=Moment(id="1-7"),
         )
         await run._dispatch_tool_result(result)
-        assert ego.rpc_calls == [("call_ok", {"moment_ref": "1-7"}, [{"type": "text", "text": "moment:1-7"}], False)]
+        assert ego.rpc_calls == [("call_ok", {"moment_ref": "1-7"}, {"context": [{"type": "text", "text": "moment:1-7"}], "inputs": [], "moment_id": "1-7"}, False)]
 
     @pytest.mark.asyncio
     async def test_dispatch_tool_result_absorbs_rpc_failure(self):
@@ -2090,7 +2095,7 @@ class TestDoloresRun:
         assert len(thinking.articulators) == 1
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -2131,7 +2136,7 @@ class TestDoloresRun:
 
         assert log[-2:] == ["refresh_metas", "observe"]
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -2173,7 +2178,7 @@ class TestDoloresRun:
 
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -2224,7 +2229,7 @@ class TestDoloresRun:
         assert log.count("wait_action_done") == 0, "interpret 不再等动作全部跑完"
         assert log.count("wait_actions_done") == 0, "interpret 不再等 action 停 (跨帧继续)"
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -2348,7 +2353,12 @@ class TestDoloresMomentPayload:
         assert payload["context"] == []
         assert payload["inputs"] == []
 
-    def test_moment_context_parts_contains_context_only(self):
+    def test_moment_payload_carries_both_slots(self):
+        """一条 moment 投递必须同时带 context 与 inputs —— 少一半就是一次静默丢字.
+
+        病根: ``observe()`` 把挂起的 percepts 抽干塞进它产出的 moment, 而投递走哪条路由别人决定.
+        所以任何一条路只要结构上不带 inputs, 就会把已消费的文字蒸发 (D13 的 buffered 语音)。
+        """
         from ghoshell_moss.core.blueprint.moment import Echoes, Moment
         from ghoshell_moss.message import Message
 
@@ -2356,15 +2366,19 @@ class TestDoloresMomentPayload:
             previous=Echoes(messages=[Message.new().with_content("echo")]),
             percepts={"test": [Message.new().with_content("percept")]},
         )
-        parts = self._ego().moment_context_parts(moment, "0-1")
-        text = "".join(c["text"] for c in parts if c.get("type") == "text")
-        assert "echo" in text
-        assert "percept" not in text
+        payload = self._ego().moment_payload(moment, "0-1")
+        assert payload["moment_id"] == "0-1"
+        context_text = "".join(c["text"] for c in payload["context"] if c.get("type") == "text")
+        assert "echo" in context_text
+        inputs_text = "".join(c["text"] for c in payload["inputs"] if c.get("type") == "text")
+        assert "percept" in inputs_text
 
-    def test_moment_context_parts_empty_when_no_content(self):
+    def test_moment_payload_empty_when_no_content(self):
         from ghoshell_moss.core.blueprint.moment import Moment
 
-        assert self._ego().moment_context_parts(Moment(), "0-0") == []
+        payload = self._ego().moment_payload(Moment(), "0-0")
+        assert payload["context"] == []
+        assert payload["inputs"] == []
 
 
 class TestDoloresEpochPayload:

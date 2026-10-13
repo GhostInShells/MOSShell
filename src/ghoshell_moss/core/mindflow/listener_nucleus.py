@@ -202,9 +202,17 @@ class ListenerNucleus(Nucleus):
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
+            # 探针 (D13 丢尾包排查): nucleus 没在跑时信号是静默丢的, 这里让它出声.
+            self._logger.info(
+                "%s signal dropped — nucleus not running (complete=%s)",
+                self._name, signal.complete,
+            )
             return
         meta = ListenerSignal.from_signal(signal)
         if meta is None:
+            self._logger.info(
+                "%s signal dropped — meta parse failed (complete=%s)", self._name, signal.complete,
+            )
             return
         if signal.complete:
             self._on_deliver(meta, signal)
@@ -272,7 +280,15 @@ class ListenerNucleus(Nucleus):
         # 首包 (onset): 占坑 impulse — complete=False 供 same-id absorb; interrupt
         # 由端侧配. 冷却期 (suppress 或 attended) 内不发射 — 防抢占风暴.
         if self._in_cooldown():
+            # 探针 (D13 丢尾包排查): 冷却期丢掉的 onset 必须看得见 — 它决定后面还有没有槽可吸收.
+            self._logger.info(
+                "%s onset dropped in cooldown segment=%s", self._name, meta.segment_id,
+            )
             return
+        self._logger.info(
+            "%s onset ← segment=%s priority=%s interrupt=%s",
+            self._name, meta.segment_id, signal.priority, meta.interrupt,
+        )
         impulse = Impulse(
             source=self.name(),
             trace_id=meta.segment_id or unique_id(),
@@ -292,6 +308,12 @@ class ListenerNucleus(Nucleus):
     def _on_deliver(self, meta: ListenerSignal, signal: Signal) -> None:
         # 发送包 (deliver): mode 为空兜底 notify + 端侧配 priority. 不受冷却约束 —
         # 内容绝不丢.
+        # 探针 (D13 丢尾包排查): 尾包到达 nucleus 的那一刻留一行.
+        self._logger.info(
+            "%s deliver ← segment=%s len=%d priority=%s mode=%s",
+            self._name, meta.segment_id, len(self._signal_text(signal)),
+            signal.priority, meta.mode or ChallengeMode.notify.value,
+        )
         impulse = Impulse(
             source=self.name(),
             trace_id=meta.segment_id or unique_id(),
