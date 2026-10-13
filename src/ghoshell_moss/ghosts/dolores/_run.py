@@ -27,7 +27,7 @@ import contextlib
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Union, AsyncGenerator
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.ghost import GhostEvent
-from ghoshell_moss.core.blueprint.mindflow import Thinking
+from ghoshell_moss.core.blueprint.mindflow import ActionExitedException, Thinking
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.deepseek_harness.types.session_events import (
@@ -593,6 +593,11 @@ class DoloresRun:
         nothing logged. Closing is the correct cleanup — the turn is over, no delta can still feed it —
         and an interrupted turn (abort) legitimately leaves a stream behind, so this is INFO, not a
         warning: the log line aids debugging a cut turn, not alarming.
+
+        Closing goes through the **interrupted** exit, never the normal commit-and-wait one: nobody
+        will feed this region any more, so waiting for its compile node would wait on a value another
+        task is supposed to produce. The close runs in ``logos()``'s ``finally``, so a close that
+        never returns wedges the whole run rather than just this stream.
         """
         leftover = list(streams.values())
         streams.clear()
@@ -602,7 +607,14 @@ class DoloresRun:
                 stream.call_id,
             )
             try:
-                await stream.__aexit__(None, None, None)
+                # 按中断退出关边界, 而不是走正常收线: 这条 region 被这一轮丢下了 (tool/call 永不会到),
+                # 没有人会再喂它 —— 正常路径会 commit 后等编译位, 而那是别处在生产的节点, 等下去
+                # 这次关闭就永不返回; 它在 logos 的 finally 里, 拖住的是整条消费链.
+                await stream.__aexit__(
+                    ActionExitedException,
+                    ActionExitedException(f"leftover CTML stream {stream.call_id} abandoned by a cut turn"),
+                    None,
+                )
             except Exception:
                 self._logger.exception("closing leftover CTML stream %s failed", stream.call_id)
 
