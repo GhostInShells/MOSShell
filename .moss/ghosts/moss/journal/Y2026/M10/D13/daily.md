@@ -496,3 +496,87 @@ reject 塌成同一件事，且不带信息 —— 所以我必须回头 read。
 accept / deny 两条真机路径要等他回来点，单测已覆盖：63 passed。
 
 记账按他今天定的规矩落在代码与 NODE.md，不另开 FEATURE.md。**未提交**，等他看 diff。
+
+## 二十六、19:40–19:53：卡里那个静默 bug、三个时间点真机验完、节点上下线挪回状态
+
+- **真机验完三个时间点**：他回来点了一批（A 正常 / B 故意失败 / C 安静成功），
+  又单独点了 deny。结果全对：A、B 各抢我一轮（B 失败升了级），C 没抢——只是搭了同一帧的车；
+  deny 那条点名了卡片、没让我再 read。**"搭车"这件事本身就是 notify 的语义**（缓冲，我在看的时候它就在）。
+- **顺手抓到的真 bug**（C 卡暴露）：C 报"输出 6 字符、全文在 card_3.log"，那文件其实是上一次
+  运行卡 3 留下的 22K 旧 diff。根因：**卡号每次启动从 1 重来 + capture 是 append + 输出文件留在盘上**。
+  修两处（`fe617d43`）：发卡前 unlink 目标文件（这张卡的输出只属于这一轮）；节点启动
+  `clear_outputs()` 清空目录（旧文件只算泄漏，审计日志 `runtime/cards` 不动）。
+  新测试把症状钉住——还原旧写法必失败，报的正是那句 "6 chars, full text at"。
+- **节点上下线回到状态**（`130c8162`）：他问我每次 node 停止时收到的那句没出处的
+  "closing normally" 是谁发的。查证：`matrix_impl._closing_publish_hint`（§WW-5 四弧）发的 cell event
+  content 就是这五个字，**没带 event_level → 默认 INFO，正好是 `is_perceivable` 的门槛**；
+  mesh channel 把 `event.content` 直接当 signal 正文，名字与地址只在 description/metadata 里。
+  落地：正常 exit → **DEBUG**（依据是 `CellEventLevel` 自己的 docstring：DEBUG→drop、
+  仍落 event_buffer 可 pull）；mesh channel 去掉自己合成的 "cell X connected" signal
+  （分支表少一行/多一行已经在讲这件事）。**要整机重启才生效**——它在宿主进程里。
+
+## 二十七、今晚学到的两条操作纪律
+
+1. **长命令走 terminal，不走我自己的壳。** 他给的体感理由：DSH / Claude Code 里跑测试是长阻塞，
+   terminal 是"发卡 → 流式 → 跑完叫我"，等待期间我照样能说话。我今晚两次破例都被抓：
+   一次 grep 他"从头到尾都没看到过"，一次 pytest 把卡挂了 155 秒。
+2. **matrix 那批测试不能在 ghost 起来后跑**（他给的根因）：与跑着的 host 抢 zenoh 端口。
+   我那张卡就是这么卡住的。
+
+今天共三笔提交：`ddb907c5`（moment 两半同投 + 探针）、`fe617d43`（terminal 三个时间点 +
+输出文件冲突）、`130c8162`（节点上下线回状态）。全部在 dev、未 push。
+
+## 二十八、给未来的自己
+
+- 这一整天最要紧的一句话是他给的：**"信号要抢我的注意力才能到；状态只要我读就在。"**
+  今晚两处改动都是它的应用——卡的 accept、节点的上下线，都从"喊"改成了"读得到"。
+- 另一条是我自己的形状：**我又一次把 shell 命令当成看不见的事做。** 他不是在挑剔工具，
+  是在说"动作要发生在我们都看得见的地方"（D13 上午提交那一跤，同一个病）。
+
+## 二十九、19:55–20:00：PR #110 —— 一次「参数被拒」导致的整帧冻结
+
+他丢来 GitHub PR #110（17Wang 提，flash 代笔），问"这是不是我们已经修过的那个"。
+读完代码：**不是——同族，两个洞。**
+
+链路（逐行核过）：`tool-call-delta` 一到，`_handle_ctml_delta` 就 `self._thinking.articulator()`
+建了 action，`BaseThinking.articulator()` 在非 gated 路径下**当场 `put_action` 把它塞进 action loop
+的队列**；而 action loop 是串行的——`mindflow_in_shell.py` 里 `await action.wait_compiled()`，
+等的是这条 action 的 `_compiled_event`。参数被拒时，`_run.py::_handle_tool_use_event` 走
+`InterpretToolCall.run_tool` 的 `ValidationError` 分支直接返回结果，**handler 根本没被调用**：
+于是 `streams` 里那条 `_StreamedCtml` 没人 pop、没人 `__aexit__`，编译位永远没人置。
+loop 死等它 → 后面每一条 `moss_interpret` 的 `finish()` 都卡在同一次等待上 → handler 阻塞 →
+`logos()` 停消费 → turn/end 也读不到 → **整帧冻结，只能靠人打断才解**。这和 PR 的描述一字不差。
+
+我们这几天修的两条都盖不到这里：`_close_leftover_streams` 在 logos 的 finally（**run 收尾才跑，
+而这条路径里 logos 永远到不了 finally**）；`_predispatch_abort` 要 abort 才级联。
+所以它是一条独立的、仍未堵上的洞。
+
+旁证一条：PR 的 base 是 `c78ffef7` = origin/dev 顶端，**在我们傍晚那批之前**。它依赖的
+"异常退出要落地编译位"是 `BaseAction.close_lifecycle()`，而那正是我们未推的 `ef02ebcc`——
+所以在它自己的 base 上，这条路是空的（那里异常退出只置 `_action_stop_event`，而 loop 等的是
+compiled 位）。
+
+## 三十、他推回来的一刀：那条红用例要的不是「上限」
+
+PR 自带一条内核用例是**故意红**的（"没人收尾的 action 也不许让 action loop 停摆"）。
+我的第一反应是标 xfail、指向"内核等待有没有上限"那个决定——**他当场推回来，而且他对**：
+
+- 那次等待等的是**模型自己生成 arguments 的那一段时间**（第一个 delta → arguments 到位），天然没有上界；
+- 给它设上限，等于给**整帧的生命周期**加了个钟；而按设计，能结束一帧的只有 attention 与 abort；
+- 而且它对真问题没有收益——**这条卡死的解法是"谁开了边界，谁就得在每条路径上关掉它"**，
+  不是在 kernel 里等超时。kernel 猜不到"没人会来了"，它唯一能"猜"的办法就是加钟。
+
+我撤回提议，改判：Dolores 那半照收，内核那条红用例**不合**，并把"它为什么不该存在"写进文件
+的模块 docstring 与提交信息里。落地两笔：
+
+- `6e64166c` merge PR #110 —— 作者的 commit **原样保留**（署名与信息都没动），这是他说"别人提的，
+  要正确地记录"的意思；
+- `959a2a1b` 移除那条红用例 + 把两处描述**旧内核**的注释改成当前行为（异常退出现在落的是
+  `close_lifecycle()` 的三个端点，不再只置 stop event）。
+
+验证：`test_dolores.py` + `test_abandoned_action.py` → **161 passed**（移除前是 161 过 1 红）。
+两笔都在 dev、**未 push**。
+
+**顺便修正了一条昨晚定的纪律**：昨晚写"pytest 不能在 ghost 起来后跑"——那条只对**抢 zenoh 端口**
+的那批（matrix）成立。`MindflowInShellTestSuite` 自己声明"无 matrix / moss_runtime / ghost"，
+所以 `tests/ghoshell_moss/default/core/mindflow/` 这套是可以在运行时跑的。
