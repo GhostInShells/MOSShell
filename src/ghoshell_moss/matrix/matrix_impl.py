@@ -416,28 +416,34 @@ class MatrixImpl(Matrix):
 
     def _closing_publish_hint(
             self, exc_type, exc_val,
-    ) -> str | None:
-        """决定关闭时 publish 的 content — §WW-5 四弧发送侧.
+    ) -> tuple[str, CellEventLevel] | None:
+        """决定关闭时 publish 的 (content, event_level) — §WW-5 四弧发送侧.
 
         None 表示不 publish (罕见, 目前 always publish).
-        - 正常 exit → 弧④ "closing normally"
-        - KeyboardInterrupt → 弧①的一种 "closing on keyboard interrupt"
-        - CancelledError → "closing on cancel"
-        - 其他 Exception → 弧② "crash: {type}: {msg}"
+
+        **级别按 CellEventLevel 的日志式语义给**: < INFO 不入感知 (零成本),
+        但仍落 event_buffer 供 pull。一个 cell 正常下线是**状态**不是感知 —— 分支表
+        少一行已经在讲这件事, 正常退出不该占模型的注意力; 真正需要打断的只有 crash。
+
+        - 正常 exit → 弧④ "closing normally" (DEBUG: 只进状态)
+        - KeyboardInterrupt → 弧① "closing on keyboard interrupt" (INFO)
+        - CancelledError → "closing on cancel" (INFO)
+        - 其他 Exception → 弧② "crash: {type}: {msg}" (ERROR)
 
         content 里带 exc_type 名, 让远端 mesh 消费者在生成 signal 时有分类依据
         (event → signal → mindflow 的转换归 channel 层, 不在本 matrix 层做).
         """
         if exc_val is None:
-            return 'closing normally'
+            return 'closing normally', CellEventLevel.DEBUG
         if isinstance(exc_val, KeyboardInterrupt):
-            return 'closing on keyboard interrupt'
+            return 'closing on keyboard interrupt', CellEventLevel.INFO
         if isinstance(exc_val, asyncio.CancelledError):
-            return 'closing on cancel'
+            return 'closing on cancel', CellEventLevel.INFO
         # 其他 exception: crash 弧②. 截 200 字符防超长 payload.
         msg = str(exc_val)[:200] if str(exc_val) else ''
         exc_name = exc_type.__name__ if exc_type is not None else 'Exception'
-        return f'crash: {exc_name}: {msg}' if msg else f'crash: {exc_name}'
+        content = f'crash: {exc_name}: {msg}' if msg else f'crash: {exc_name}'
+        return content, CellEventLevel.ERROR
 
     # ==================================================================
     # 灶台 (Subprocesses 从 IoC pull)
@@ -773,10 +779,13 @@ class MatrixImpl(Matrix):
         # 否则 presence 已 close, publisher 已释放.
         # updated=False: cell 即将下线, mesh 消费者 refetch 无意义, 只推送信号.
         if self._presence is not None:
-            content = self._closing_publish_hint(exc_type, exc_val)
-            if content is not None:
+            hint = self._closing_publish_hint(exc_type, exc_val)
+            if hint is not None:
+                content, event_level = hint
                 try:
-                    await self._presence.publish_event(content, updated=False)
+                    await self._presence.publish_event(
+                        content, updated=False, event_level=event_level,
+                    )
                 except asyncio.CancelledError:
                     self._logger.info(
                         "%s publish closing event cancelled: %s",

@@ -682,8 +682,12 @@ def new_mesh_channel(
         show_branches: int = _DEFAULT_SHOW_BRANCHES,
 ) -> Channel:
     """网络投影 channel. virtual_children 直接镜像 mesh.channel_proxies() (sync 直读),
-    CellEvent 生产侧订阅 mesh.on_event (事件 ring + Signal), on_channel_provided 发
-    connected signal."""
+    CellEvent 生产侧订阅 mesh.on_event (事件 ring + 按级入感知的 Signal).
+
+    一个 cell 的**上下线是状态不是感知**: 分支表 (notice) 少一行/多一行已经在讲这件事,
+    所以这里不为 connected 合成 signal。会打断模型的只有事件自己的级别 —— crash 那条
+    (ERROR) 进来, 正常退出 (DEBUG) 只落 event ring 供 pull。
+    """
 
     default_desc = (
         'Network projection — accepted cells surface as matrix.mesh.<name>.'
@@ -724,14 +728,15 @@ def new_mesh_channel(
                 return addr
         return None
 
-    # -- lifecycle: 订阅 mesh.on_event + mesh.on_channel_provided ---------
+    # -- lifecycle: 订阅 mesh.on_event ------------------------------------
 
     def _dispatch_event(event: CellEvent) -> None:
         # 空 content = 纯 refetch 提示, 不进 ring 也不进 signal.
         if not event.content:
             return
         event_buffer.append(event)
-        # 感知判决: 低于阈值 INFO (DEBUG) 不产生 signal (零值/不调用).
+        # 感知判决: 低于阈值 INFO (DEBUG) 不产生 signal (零值/不调用) —— 正常关闭
+        # (DEBUG) 由此只进 event ring, 分支表的变化已经在通知"它下线了".
         if not CellEventLevel.is_perceivable(event.event_level):
             return
         try:
@@ -749,28 +754,11 @@ def new_mesh_channel(
             if logger is not None:
                 logger.exception('mesh channel: failed to dispatch cell_event')
 
-    def _on_channel_provided(address: CellAddress, proxy: ChannelProxy) -> None:
-        # channel 上线 → 发 connected signal. 契约: 在 network event loop 上调用.
-        name = _branch_name(address, matrix.project.nodes.spawned_nodes())
-        try:
-            meta = CellEventSignalMeta(address=address, transition=CellTransition.READY)
-            signal = meta.to_signal(
-                f'cell {name} connected',
-                description=f'cell {name}',
-                priority=Priority.BACKGROUND,
-            )
-            matrix.send_signal_to_ghost(signal)
-        except Exception:
-            logger = CommandUtil.logger()
-            if logger is not None:
-                logger.exception('mesh channel: failed to signal channel provided %s', address)
-
     @chan.build.startup
     async def _startup() -> None:
         nonlocal mesh, policy
         mesh = await matrix.network()
         unsubs.append(mesh.on_event(_dispatch_event))
-        unsubs.append(mesh.on_channel_provided(_on_channel_provided))
         policy = mesh.auto_accept()
 
     @chan.build.close
