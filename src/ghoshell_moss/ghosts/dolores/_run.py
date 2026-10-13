@@ -220,6 +220,8 @@ class DoloresRun:
         self._queue: "asyncio.Queue[Any]" = asyncio.Queue()
         self._dispose_listener: "Callable[[], None] | None" = None
         self._enter_task: "asyncio.Task[None] | None" = None
+        # 本帧的 thinking 配对序 — __aenter__ 就铸好, enter/exit 带同一个 (见 _ego.next_thinking_seq).
+        self._thinking_seq: int = 0
         self._enter_error: Exception | None = None
         self._thinking_event: asyncio.Event = thinking_event
         # logos() single-consumption guard — a run has at most one logos stream (more would split the queue).
@@ -236,6 +238,8 @@ class DoloresRun:
 
     async def __aenter__(self) -> Self:
         """Open the transaction. Bind the listener first (so no enter broadcast is lost), then start the enter task."""
+        # 序在起 enter 任务**之前**铸: enter 会被取消, 而 exit 必须能带上同一个序.
+        self._thinking_seq = self._ego.next_thinking_seq()
         self._thinking_event.set()
         # 上一有效 run 决定的 compact 在本 run 启动时执行 (surface idle, 请求之前) — 防上下文溢出.
         await self._ego.compact_if_pending()
@@ -256,7 +260,7 @@ class DoloresRun:
         if self._dispose_listener is not None:
             self._dispose_listener()
         # re-send exit — even if enter failed (to clean up plugin-side state), blocking with a fail-safe timeout.
-        await self._ego.exit_thinking()
+        await self._ego.exit_thinking(self._thinking_seq)
         if isinstance(exc_val, asyncio.CancelledError):
             return None
         reason = exc_val if exc_val is not None else self._enter_error
@@ -704,7 +708,7 @@ class DoloresRun:
         returns before the model has generated a frame.
         """
         try:
-            await self._ego.enter_thinking(self._thinking)
+            await self._ego.enter_thinking(self._thinking, self._thinking_seq)
         except asyncio.CancelledError:
             raise
         except Exception as error:

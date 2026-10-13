@@ -183,20 +183,36 @@ type GateOutcome = 'open' | 'aborted' | 'timeout'
 class ThinkingGate {
   private _open = false
   private _waiters: Array<() => void> = []
+  // 配对序: enter 开、exit 关, 两边带同一个 thinkingSeq. enter 是**可取消的在飞请求** —— 取消收不回
+  // 已经发出的 HTTP, 所以插件侧的到达顺序不保证与发起顺序一致. 只认序号更大的 open (迟到的无视),
+  // exit 只在序号等于当前时才关. 于是 exit(N) 不可能关掉 enter(N+1) 开的那道门 —— 那正是把
+  // "一次错配"变成"永久阻塞"的路径.
+  private _seq = 0
 
   get isOpen(): boolean {
     return this._open
   }
 
-  open(): void {
+  get seq(): number {
+    return this._seq
+  }
+
+  /** 只认更大的序: 迟到的 enter (更小的 seq) 一律无视 — 否则它会把已关上的门重新推开. */
+  open(seq: number): boolean {
+    if (seq <= this._seq) return false
+    this._seq = seq
     this._open = true
     const waiters = this._waiters
     this._waiters = []
     for (const resolve of waiters) resolve()
+    return true
   }
 
-  close(): void {
+  /** 只关自己那一次的 gate; 别的序号一律无视. */
+  close(seq: number): boolean {
+    if (seq !== this._seq) return false
     this._open = false
+    return true
   }
 
   async wait(timeoutMs?: number, signal?: AbortSignal): Promise<GateOutcome> {
@@ -224,12 +240,25 @@ class ThinkingGate {
 
 const thinkingGate = new ThinkingGate()
 
-function openThinking(): void {
-  thinkingGate.open()
+/**
+ * thinkingSeq — enter/exit 的配对序 (见 ThinkingGate).
+ *
+ * 缺失或非法一律拒绝: 配不上对就保证不了"exit 只关自己那一次", 而那正是这道门能把系统关死的路径.
+ */
+function readThinkingSeq(body: { thinkingSeq?: unknown }): number {
+  const seq = body.thinkingSeq
+  if (typeof seq !== 'number' || !Number.isInteger(seq) || seq <= 0) {
+    throw new Error('invalid thinkingSeq — enter and exit must pair by index')
+  }
+  return seq
 }
 
-function closeThinking(): void {
-  thinkingGate.close()
+function openThinking(seq: number): boolean {
+  return thinkingGate.open(seq)
+}
+
+function closeThinking(seq: number): boolean {
+  return thinkingGate.close(seq)
 }
 
 // tool 回调桥 (approach a): 需要 MOSS 侧 round-trip 的 tool (observe 等) execute 挂 pending
@@ -399,6 +428,8 @@ interface ThinkingEnterPayload {
   needsObserve?: boolean
   /** 防旁路 (点 4): ego/create 返回的 token, 校验失败直接拒绝. */
   thinkingToken?: string
+  /** 配对序 (点 4): 与本次 enter 的 exit 同值 — 插件只关自己那一次的 gate (见 ThinkingGate). */
+  thinkingSeq?: number
 }
 
 // ── ego tools (module-level, 构建一次) ──────────────────────────────────
@@ -937,6 +968,7 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        const thinkingSeq = readThinkingSeq(body)
         // ── 思考档 (点 1): 单一字段 `effort`, 与 turn 驱动分开判定 ──────────────
         // 1. 先结算上一轮: pending 已被 request/header 采纳 → 释放, 权威交回 canonical 链
         //    (settings/UI 从此可改; 不释放 = 永久覆盖 —— 这就是"界面改档位不生效"的根).
@@ -982,7 +1014,11 @@ export function apply(ctx: Context) {
         if (frame.length > 0) {
           pendingMoments.push({ messages: frame })
         }
-        openThinking()
+        const gateOpened = openThinking(thinkingSeq)
+        ctx.logger.info(
+          'dolores: thinking/enter seq=%d gate=%s open=%s',
+          thinkingSeq, gateOpened ? 'opened' : 'ignored-stale', thinkingGate.isOpen,
+        )
         if (inputs.length > 0) {
           // 正常 enter: steer inputs 驱动 turn. inputs 为空则不起 turn — turn 由真实输入驱动,
           // 不再为「无 percepts」造 'thinking' 占位.
@@ -1033,7 +1069,12 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        closeThinking()
+        const thinkingSeq = readThinkingSeq(body)
+        const gateClosed = closeThinking(thinkingSeq)
+        ctx.logger.info(
+          'dolores: thinking/exit seq=%d gate=%s open=%s',
+          thinkingSeq, gateClosed ? 'closed' : 'ignored-not-owner', thinkingGate.isOpen,
+        )
         // 先结算 (再 cancel). 这一轮思考已经结束, 仍在等 MOSS 侧回话的 tool 不会再拿到这一轮的
         // moment. 与其等 cancel 的 abort 把它变成 rejected, 不如现在给一个**普通结果** (interrupted),
         // 让模型自己决定下一步. 结算同时登记墓碑, 使 MOSS 侧随后到的 /tool-result 被安静吞掉.

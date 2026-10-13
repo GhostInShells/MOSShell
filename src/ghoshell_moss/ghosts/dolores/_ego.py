@@ -182,6 +182,8 @@ class DoloresEgo:
         self._ego_session_id: str | None = None
         # anti-bypass token: returned by ego/create, carried by thinking enter/exit, verified by the plugin to reject non-ego calls.
         self._thinking_token: str | None = None
+        # thinking 配对序 (单调, 每 session): enter/exit 带同一个, 插件只关自己那一次的 gate.
+        self._thinking_seq: int = 0
         self._exit_stack = contextlib.AsyncExitStack()
         # logger: prefer the injected one (MOSS runtime logger), else fall back.
         self._logger = logger or get_moss_logger()
@@ -604,8 +606,20 @@ class DoloresEgo:
         previous = thinking.moment.previous
         return bool(previous is not None and previous.need_observe)
 
-    async def enter_thinking(self, thinking: "Thinking") -> None:
-        """Inject moment (context/inputs) + epoch + effort + thinkingToken to start a thinking turn.
+    def next_thinking_seq(self) -> int:
+        """铸下一个 thinking 配对序 — 单调, 每 session 一次递增.
+
+        enter 是可取消的 task, 它的 HTTP 请求一旦在飞, 取消就收不回来 —— 插件侧的到达顺序因此
+        不保证与发起顺序一致. enter 与 exit 带同一个序, 插件只关自己那一次的 gate, 迟到的
+        (序号更小的) enter 一律无视. 于是 exit(N) 不可能关掉 enter(N+1) 开的那道门.
+        """
+        self._thinking_seq += 1
+        return self._thinking_seq
+
+    async def enter_thinking(self, thinking: "Thinking", thinking_seq: int) -> None:
+        """Inject moment (context/inputs) + epoch + effort + thinkingToken + thinkingSeq to start a thinking turn.
+
+        ``thinkingSeq`` pairs this enter with its exit (see ``next_thinking_seq``).
 
         ``effort`` is the frame's single thinking effort, taken from the impulse's ``thinking_effort``
         (``'none'`` = don't drive a turn, ``''`` = no opinion, a depth = apply it). Resolution:
@@ -638,6 +652,7 @@ class DoloresEgo:
             "notices": self._drain_notices(),
             "effort": effort,
             "thinkingToken": self._thinking_token,
+            "thinkingSeq": thinking_seq,
             # observe continuation: empty inputs still drive a turn — see needs_observe().
             "needsObserve": self.needs_observe(thinking),
         }
@@ -648,17 +663,19 @@ class DoloresEgo:
         notices, self._notices = self._notices, []
         return [notice.to_content_string() for notice in notices if not notice.is_empty()]
 
-    async def exit_thinking(self) -> None:
+    async def exit_thinking(self, thinking_seq: int) -> None:
         """Reverse the thinking state; the plugin does the relevant teardown.
 
         A non-idle agent is cancelled by the plugin. Blocks for confirmation with a fail-safe timeout
-        so a stalled plugin degrades instead of hanging the exit.
+        so a stalled plugin degrades instead of hanging the exit. ``thinking_seq`` is the one this
+        frame's enter carried — the plugin closes only that enter's gate.
         """
         try:
             await self._launcher.call(
                 _DOLORES_THINKING_EXIT,
                 {
                     "thinkingToken": self._thinking_token,
+                    "thinkingSeq": thinking_seq,
                 },
                 timeout=_EXIT_RPC_TIMEOUT,
             )

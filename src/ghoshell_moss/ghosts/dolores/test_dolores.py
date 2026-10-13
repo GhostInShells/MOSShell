@@ -521,7 +521,7 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
 
-        await ego.enter_thinking(self._thinking("low"))
+        await ego.enter_thinking(self._thinking("low"), 1)
 
         payload = launcher.calls[0][1]
         assert payload["effort"] == "low"
@@ -535,7 +535,7 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
 
-        await ego.enter_thinking(self._thinking("none"))
+        await ego.enter_thinking(self._thinking("none"), 1)
 
         assert launcher.calls[0][1]["effort"] == "none"
         assert ego.default_thinking_effort == "high"
@@ -547,7 +547,7 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
 
-        await ego.enter_thinking(self._thinking(""))
+        await ego.enter_thinking(self._thinking(""), 1)
 
         payload = launcher.calls[0][1]
         assert payload["effort"] == "high"
@@ -559,7 +559,7 @@ class TestDoloresEgoReasoningEffort:
         launcher = self._Launcher()
         ego = self._ego(launcher)
 
-        await ego.enter_thinking(self._thinking(""))
+        await ego.enter_thinking(self._thinking(""), 1)
 
         assert launcher.calls[0][1]["effort"] == ""
         assert ego.default_thinking_effort is None
@@ -572,7 +572,7 @@ class TestDoloresEgoReasoningEffort:
 
         assert ego.default_thinking_effort == "low"
 
-        await ego.enter_thinking(self._thinking(""))
+        await ego.enter_thinking(self._thinking(""), 1)
 
         assert launcher.calls[0][1]["effort"] == "low"
         assert ego.default_thinking_effort is None
@@ -1444,12 +1444,16 @@ class FakeRunEgo:
         self.compact_calls = 0
         self.run_exits: list[bool] = []
 
-    async def enter_thinking(self, thinking):
+    def next_thinking_seq(self):
+        self.enter_seq = getattr(self, 'enter_seq', 0) + 1
+        return self.enter_seq
+
+    async def enter_thinking(self, thinking, thinking_seq):
         self.enter_calls += 1
         if self.enter_error is not None:
             raise self.enter_error
 
-    async def exit_thinking(self):
+    async def exit_thinking(self, thinking_seq):
         self.exit_calls += 1
 
     async def compact_if_pending(self):
