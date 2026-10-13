@@ -75,7 +75,7 @@ class _NoSurface:
         return mode
 
     def layout_state(self) -> tuple[str, str]:
-        return ("split", "default")
+        return ("page", "default")
 
 
 def _notice_name(thread: str) -> str:

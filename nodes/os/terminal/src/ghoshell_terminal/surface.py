@@ -41,7 +41,9 @@ _LAYOUTS = ("split", "page")
 
 ``split`` keeps the list beside the open card; ``page`` gives the card the whole
 window. Which card is open is the human's click; this decides only how big it
-opens, and ``_layout_by`` records who chose it so the page can say so.
+opens, and ``_layout_by`` records who chose it so the page can say so. The default
+is ``page``: an open card is the subject, and the list is not worth sharing room
+with it. ``split`` is what the model reaches for when the window is roomy.
 """
 
 _ANALYZE_INSTRUCTION = (
@@ -139,7 +141,7 @@ class TerminalSurface:
         self._server: Any = None
         self._settled: set[int] = set()
         self._last_action: dict[tuple[int, str], float] = {}
-        self._layout = "split"
+        self._layout = "page"
         self._layout_by = "default"
         self.port = port
 

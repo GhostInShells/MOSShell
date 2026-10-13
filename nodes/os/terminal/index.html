@@ -42,7 +42,6 @@
   }
   .modes button + button { border-left: 1px solid var(--line); }
   .modes button.on { background: var(--accent); color: #10131a; }
-  .mode-hint { color: var(--dim); font-size: 14px; max-width: 280px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button.bulk {
     background: transparent; color: var(--fg); border: 1px solid var(--line);
     border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
@@ -107,8 +106,6 @@
   @container (max-width: 800px) {
     .detail { position: absolute; inset: 0; width: auto; border-left: 0; }
     header { gap: 6px; padding: 6px 10px; }
-    .brand { white-space: nowrap; }
-    .mode-hint { display: none; }
     .modes button, button.bulk, button.danger { padding: 4px 7px; white-space: nowrap; }
     .conn { white-space: nowrap; }
   }
@@ -164,6 +161,10 @@
   }
 
   .d-head { display: flex; align-items: baseline; gap: 8px; }
+  .d-facts { display: flex; align-items: center; gap: 12px; margin: 8px 0 2px; }
+  .d-facts .badge { margin-left: 0; }
+  .detail .actions { margin: 12px 0 2px; }
+  .detail .actions input { max-width: 320px; }
   .d-title { font-weight: 600; font-size: 16px; }
   .d-close { margin-left: auto; background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
   .d-close:hover { color: var(--fg); }
@@ -176,8 +177,16 @@
     letter-spacing: .06em; border-top: 1px solid var(--line); padding-top: 10px;
   }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
-  .d-cmd { color: var(--fg); }
-  .d-out { color: var(--dim); max-height: 46vh; overflow-y: auto; }
+  /* The two blocks that carry a shell's own voice use the shell's palette: a
+     near-black screen, a phosphor prompt, and a foreground dim enough that a page
+     of output does not glare. Panel grey was the wrong room for either of them. */
+  .d-cmd, .d-out {
+    background: #0b0e10; border: 1px solid #1d232a; border-radius: 4px;
+    padding: 8px 10px;
+  }
+  .d-cmd { color: #cbd7cd; }
+  .d-cmd::before { content: "❯ "; color: #6fbf73; }
+  .d-out { color: #b3bfb5; max-height: 46vh; overflow-y: auto; }
   .d-analyze { display: flex; flex-direction: column; gap: 6px; }
   .a-hist { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }
   .a-q { color: var(--accent); }
@@ -202,7 +211,6 @@
     <button data-mode="approval" title="every command waits for your click">approval</button>
     <button data-mode="disabled" title="commands leave the model's interface; this terminal goes quiet">disabled</button>
   </div>
-  <span class="mode-hint" id="mode-hint"></span>
   <span class="layout-mark" id="layout-mark"></span>
   <span class="spacer"></span>
   <button class="bulk" id="accept-all" title="accept every command still waiting">accept all</button>
@@ -217,10 +225,6 @@
 <script>
 "use strict";
 
-const MODE_HINTS = {
-  approval: "you approve each command",
-  disabled: "commands are off",
-};
 const SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 
 const cards = new Map();
@@ -238,7 +242,6 @@ const streamEl = document.getElementById("stream");
 const detailEl = document.getElementById("detail");
 const connEl = document.getElementById("conn");
 const modesEl = document.getElementById("modes");
-const hintEl = document.getElementById("mode-hint");
 const layoutMark = document.getElementById("layout-mark");
 
 function make(tag, cls, text) {
@@ -356,6 +359,25 @@ function renderDetail(card) {
   close.addEventListener("click", () => closeDetail());
   head.append(close);
   detailEl.append(head);
+
+  // An open card covers the list, so it has to carry what the list showed: state,
+  // exit, how long it ran, and how much output it has.
+  const facts = make("div", "d-facts");
+  facts.append(make("span", "badge s-" + card.state, card.state));
+  if (card.exit_code !== null && card.exit_code !== undefined) {
+    facts.append(make("span", "d-meta", "exit " + card.exit_code));
+  }
+  const ended = card.ended || Date.now() / 1000;
+  facts.append(make("span", "d-meta", Math.max(0, ended - card.created).toFixed(1) + "s"));
+  if (card.output_chars) facts.append(make("span", "d-meta", card.output_chars + " chars"));
+  detailEl.append(facts);
+
+  // The verdict belongs with the card: an open card covers the list, so leaving the
+  // decision only in the list means the human cannot answer what they are reading.
+  // Same renderer as the list — one place decides what actions a card offers.
+  const verdicts = make("div", "actions");
+  renderActions(verdicts, card);
+  if (verdicts.childElementCount) detailEl.append(verdicts);
 
   if (card.description) detailEl.append(make("div", "d-desc", card.description));
 
@@ -476,7 +498,6 @@ function setMode(mode) {
   for (const btn of modesEl.querySelectorAll("button")) {
     btn.classList.toggle("on", btn.dataset.mode === mode);
   }
-  hintEl.textContent = MODE_HINTS[mode] || "";
 }
 
 // How an open card is shown is the model's call; the page says who chose it.
