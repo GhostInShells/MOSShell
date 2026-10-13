@@ -91,6 +91,7 @@ async def test_serves_the_page_and_snapshots_on_connect(store, signals, stops):
     try:
         page = await _http_get(surface.port)
         assert b"moss terminal" in page
+        assert b"cache-control: no-store" in page.lower(), "a reload must not serve a stale page"
 
         card = _pending(store)
         async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:

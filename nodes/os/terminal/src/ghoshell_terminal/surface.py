@@ -383,6 +383,9 @@ class TerminalSurface:
             response = connection.respond(200, html)
             del response.headers["Content-Type"]
             response.headers["Content-Type"] = "text/html; charset=utf-8"
+            # A reload must show the page as it is on disk. Without this the browser
+            # may keep the old one, and a change looks like it never happened.
+            response.headers["Cache-Control"] = "no-store"
             return response
         if path == "/ws":
             return None
