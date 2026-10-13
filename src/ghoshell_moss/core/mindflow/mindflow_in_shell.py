@@ -161,7 +161,17 @@ class MindflowInShell(ABC):
         # 所以闭包内检查 mindflow.is_running() 做兜底丢弃.
         def _route_signal_to_mindflow(signal: Signal):
             if mindflow.is_running():
-                mindflow.add_signal(signal)
+                try:
+                    mindflow.add_signal(signal)
+                except Exception:
+                    # 信号入口是**没有兜底**的一环: 这里的异常会直接漏进调用方 (session 的
+                    # 信号接收链路), 而此前一句日志都没有 — 一次"信号进来后引擎安静停摆"
+                    # 因此完全不可归因 (2026-10-13 11:37 的判据)。
+                    # 只补日志、不吞异常: 行为不变, 复现路径不变。
+                    self.logger.exception(
+                        "routing signal to mindflow failed: %r", signal
+                    )
+                    raise
 
         # mindflow 装线 shell trajectory, 注册观测函数.
         def _on_moments_observing(moment: Moment) -> None:
@@ -326,6 +336,7 @@ class MindflowInShell(ABC):
         mindflow = self.mindflow
         await mindflow.wait_started()
         last_task = None
+        exit_error: BaseException | None = None
         try:
             while mindflow.is_running():
                 async for action in mindflow.action_loop():
@@ -340,18 +351,29 @@ class MindflowInShell(ABC):
                     last_task = asyncio.create_task(self._run_action(action))
                     # 由于是队列逻辑, 仍然要在编译完成后就开始拉下一帧.
                     await action.wait_compiled()
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as e:
+            exit_error = e
             raise
-        except FatalError:
+        except FatalError as e:
+            exit_error = e
             self.logger.error("%r action loop fatal error", self)
             raise
         except Exception as e:
+            exit_error = e
             self.logger.exception("%sr action loop error: %s", self, e)
             self._on_mindflow_error(e)
         finally:
             if last_task is not None and not last_task.done():
                 with contextlib.suppress(asyncio.CancelledError):
                     await last_task
+            # 与 _thinking_loop 的 "thinking loop finished" 对称: 此前 action loop 结束时
+            # 一行日志都没有, 而它的结束同样会停掉整个引擎 (host 侧注册为
+            # stop_matrix_on_error=True)。缺这一行时, "哪个循环先退出"无法从日志区分 ——
+            # 一次静默停摆的因果与回声就此不可分辨 (2026-10-13 11:37 的判据)。
+            self.logger.info(
+                "%r action loop finished — error=%r, mindflow_running=%s",
+                self, exit_error, mindflow.is_running(),
+            )
 
     async def _run_action(self, action: Action) -> None:
         try:

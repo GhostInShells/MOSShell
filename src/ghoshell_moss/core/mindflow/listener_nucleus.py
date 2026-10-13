@@ -11,9 +11,10 @@ Two mappings, split by ``Signal.complete``:
   attention and holds the slot, which the deliver packet then fills via same-id
   absorb. The preempt tier itself comes from ``signal.priority``; strength only
   arbitrates at equal priority. Losing the challenge (mode defaults to ``''``)
-  suppresses it — an onset carries no content, so dropping it loses nothing. Onset
-  is not emitted during cooldown (suppress or attended), keeping multi-source or
-  repeated barge-ins from storming the attention.
+  suppresses it: the impulse stays peekable and is picked up by a later re-rank —
+  only ``attended`` clears the slot. Onset is not emitted during cooldown (suppress
+  or attended), keeping multi-source or repeated barge-ins from storming the
+  attention.
 - ``complete=True`` → deliver: falls back to ``notify`` when mode is empty,
   carries the caller-configured priority (INFO by default), and answers in full.
   Losing the challenge buffers the messages into the mindflow (notify) — the
@@ -218,8 +219,11 @@ class ListenerNucleus(Nucleus):
         self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # 仲裁失败: 丢弃缓存, 进入大冷却 — 只压首包发射, 发送包不受约束.
-        self._impulse_cache = None
+        # 契约 (``Nucleus.peek``): suppressed 后 impulse **仍保留、可被 peek**, 只是冷却期内不再
+        # 主动 fire —— rank 输掉不等于完结, 由下一轮 re-rank 捞回.
+        # 这里不能清缓存: ``_rank_best_impulse_from_nuclei`` 对同一轮里**任何**落选者都调 suppress,
+        # 落选的若是携带内容的发送包, 清缓存就把它整包抹掉, 而它占着的那个 attention 永远等不到
+        # complete (尾包补不齐 → thinking 通路停摆).
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def attended(self, impulse: Impulse) -> Impulse | None:

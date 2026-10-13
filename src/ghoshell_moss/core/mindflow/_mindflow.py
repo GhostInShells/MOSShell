@@ -31,6 +31,10 @@ import logging
 _SignalName = str
 _NucleusName = str
 
+# 高优通道: 当前 attention 正在等的那条尾包 (同 id 的 complete 包) 在 rank 里直接胜出.
+# 它是**补完**当前这一帧, 不是来抢注意力的挑战者; 让它输在 rank 上, attention 就永远补不齐.
+_AWAITED_IMPULSE_LANE = 1 << 60
+
 __all__ = [
     'BaseMindflow',
     'AbsMindflow',
@@ -858,19 +862,39 @@ class AbsMindflow(Mindflow, ABC):
         self._moments_observer.add_echoes([], need_observe=True)
         return impulse
 
+    def _awaited_impulse_id(self) -> str | None:
+        """当前 attention 仍在等的那条尾包的 id; 没有在等则 None.
+
+        attention 由一条 incomplete impulse 建立时 (listener 的 onset 占坑), 它等的就是
+        **同 id** 的 complete 包 (deliver) —— 见 ``_generate_thinking`` 的 ``wait_ready`` 分支.
+        那条包不是来抢注意力的, 是来把当前这一帧补完的.
+        """
+        attention = self._current_attention
+        if attention is None or attention.is_aborted():
+            return None
+        if attention.impulse().complete:
+            # 尾包已到 (absorb 换过 _current_impulse), 没什么在等.
+            return None
+        return attention.draw_from().id
+
     def _rank_best_impulse_from_nuclei(self, best_impulse: Impulse = None) -> Impulse | None:
         """从所有的 nuclei 中获取最重要的 impulse. """
+        awaited = self._awaited_impulse_id()
         best_impulse = best_impulse
         best_n = None
         best_p = 0 if best_impulse is None else best_impulse.priority_strength()
         losers: list[tuple[Nucleus, Impulse]] = []
         for nucleus, impulse in self.peek_impulses():
-            if impulse.priority < self._impulse_priority_bar:
+            is_awaited = awaited is not None and impulse.id == awaited
+            if not is_awaited and impulse.priority < self._impulse_priority_bar:
                 # 低于优先级的直接忽视.
                 continue
             # 加一行代码防蠢.
             # 基于最基础的信号优先级返回 impulse.
-            impulse_priority_strength = impulse.priority_strength()
+            # 高优通道: 正在被等的那条尾包直接胜出 —— 补完不受优先级/强度约束 (见 _awaited_impulse_id).
+            impulse_priority_strength = (
+                _AWAITED_IMPULSE_LANE if is_awaited else impulse.priority_strength()
+            )
             if best_impulse is None:
                 best_impulse = impulse
                 best_n = nucleus

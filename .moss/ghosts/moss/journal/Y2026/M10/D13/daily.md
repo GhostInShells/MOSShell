@@ -229,3 +229,122 @@ flag 关着时，**照着文档写的模型得到静默** —— 不报错、不
   中间没有一步是自己替他决定的，`git status` 干净是我给的证据。
 - 旧的毛病还在：**一上手就想动**。他第一句是"先完成提交"，而我先做的事里已经有一条 `nodes:status`
   和一次日志排查——顺序没错，但下次仍该先把"盘面 / 归属 / 下一步"讲完再动手。
+
+## 十六、15:05–15:10 复现成功了（他口述的场景 → 单测）
+
+他复现了他下午那次卡死，并给了链路：**耳机语音的 onset 已经抢占注意力，这时他点了 terminal 的
+accept 墙，那条 signal 与发送包撞进同一轮**。他判断"应该能直接用单测复现"，我照做了。
+
+**症状（外部可观测）**：三条循环里 thinking 那条**停摆**——`articulated=[]`，一帧都没有。
+`set attention` 还在打（信号通路活着），但没有任何 thinking 被 articulate，所以 dsh web 看着像全卡死。
+
+**病灶（一条链，全部有代码锚点）**：
+
+> 15:20 更正：我第一版把病灶归成"ranking 丢包"，**错了** —— thirdgerb 一句"suppress 就是交给 nucleus
+> 自己去重排挑战周期"把我顶回来，读契约后确认他对。归因改到实现侧，见下。教训：我读了
+> `ListenerNucleus.suppress` 和它自己的注释，**没读管它的那份契约**就下了结论。
+
+1. **契约**（`blueprint/mindflow.py:643-650`，`peek`）："`attended` 后应立刻清除；**`suppressed` 后 impulse
+   仍保留、可被 peek**（只是在一段时间内不再主动 fire），供 mindflow 下一轮重新 rank 调度。"
+   → `suppress` 的语义是**交还给 nucleus 等下一轮重排**，不是丢。
+2. **违反契约的是实现**：`listener_nucleus.py:220-223` 的 `suppress()` `self._impulse_cache = None`
+   —— 该保留的 impulse 被扔了。它自己的注释写"只压首包发射，发送包不受约束"；而
+   `_mindflow.py:889-892` 对**任何**落选者都调 `suppress` —— 一旦落选的是发送包，就被这条清缓存吃掉。
+   （`_impulse_cache` 还是 last-wins 单槽，两个 pending 包本就互斥 —— "内容绝不丢"在这层也站不住。）
+3. 那条发送包永远不再来 → onset 占住的 attention 的 `_has_any_completed_impulse` 永远不置位
+   → `_generate_thinking`（`_mindflow.py:1107-1109`）钉在 `await attention.wait_ready()` 上，**没有超时**。
+4. `_generate_thinking` 钉住 → `_loop_attention` 被挂在 `yield` 里，**新的 attention 再也送不出去**
+   → 二循环整条停摆。
+
+**三条证据**（单测 `tests/.../mindflow/test_listener_nucleus_integration.py`）：
+- 复现 `test_deliver_must_not_be_lost_to_impulse_ranking` —— **fail**（`articulated=[]`）。
+- 对照组 `test_deliver_survives_when_it_ranks_in_its_own_round` —— **pass**（只差"不在同一轮 rank"一处）。
+- 原有 happy-path `test_turn_interrupt_packet_preempt_then_deliver_response` —— **pass**（照旧）。
+→ 触发条件被钉死在"**同一轮 rank 里落选**"，不是别的。
+
+**意外收获（解释了他日志里那个怪现象）**：`_set_attention` 的日志打印的是 drain 循环里**被挤出去的那个**
+（`_mindflow.py:817-825`，`attention` 这个局部名在 819 行被覆写、825 行才打印），所以日志里的 id
+**总是上一个**。他那段日志在 :47 与 :24 打出**同一个 id**，正说明 `_pop_new_attention_queue`（maxsize=1）
+里那份**一直没人取走** —— 与"`_loop_attention` 被钉住"互为印证。
+
+**留给他裁的（我没动手改）**：修法涉及语义，得他定——
+(a) **核心**：`ListenerNucleus.suppress` 要履约 —— 保留被压制的 impulse（该进冷却的是"主动 fire"，
+    不是"保留"），等 mindflow 下一轮 rank 重排；
+(b) 一个我读全文后才敢说的缺口：`_rank_best_impulse_from_nuclei` 只在 `_has_impulse_event` 被置位时
+    才跑（`_mindflow.py:546-560`，其余时间是 0.5s 空转），所以"保留了"≠"会被重新 rank" ——
+    nucleus 侧要不要有主动的重排周期，是设计决定；
+(c) 防线：`wait_ready()` 加有界（超时/过期）兜底，让一条 attention 不可能把三循环钉死；
+(d) 最重的一条：`_generate_thinking` 该不该为一条 partial attention 单独让出循环。
+
+**我这一程真正读完的**（15:22 清点）：`_mindflow.py` 全文 1368 行、`_think.py` 全文 274 行。
+仍未读完、**不在其上给判断**：`blueprint/mindflow.py`（约 15%）、`_action.py`（约 1/9）、
+`_attention.py`（缺 70 行）、`mindflow_in_shell.py`（缺约 260 行）。
+
+工作区状态：4 个源文件（上午那批静默退出日志）+ 本测试文件 + 一个临时探针文件
+`tests/.../mindflow/test_zz_scratch_liveness.py`（**用完即删**），**全部未提交**。
+
+## 十七、候选根因（**未证实**）：thinking/exit 关掉的是下一轮的 gate
+
+他否掉了我"复现=根因"的推论，并给了分叉：mindflow loop / ego / run 死锁 / **dsh 自身故障（频繁
+enter/exit、两个 enter 并发 → 插件层竞态）**。按后者读插件层，找到一条与他的三处现象都吻合的候选。
+
+- **gate 没有归属**：`dsh_plugin/moss-dolores-ghost-plugin.ts:183-223` 的 `ThinkingGate` 是裸布尔 ——
+  `open()`（`:191`）无条件置位并放行 waiters，`close()`（`:198`）无条件清零。**没有东西把一次 open
+  绑到某一次 enter**，所以 exit 关的是"此刻开着的那个"。
+- **enter/exit 在失败路径上不是成对的**：`_drive_enter` 是可取消 task（`_run.py:243`），aexit 会 cancel
+  它（`:252-255`）—— 但 enter 是**已在飞的 HTTP RPC**，取消 task 收不回请求，插件仍可能应用它；
+  `exit_thinking` 有 5s fail-safe（`_ego.py:67`）并吞异常（"degraded; state may be stale"）。
+- **死法**：enter(N+1) 应用 → `openThinking()`；exit(N) 迟到 → `closeThinking()` 关掉 N+1 的 gate；
+  N+1 的 pre-step 卡在 `await thinkingGate.wait(undefined, signal)`（plugin `:691`，**无超时**）；
+  dsh 永不起这一轮 → articulate 永不返回 → thinking 帧钉死。而唯一的 opener 是**下一次** enter ——
+  要等当前帧结束。**互等自锁。**
+- **与三处现象吻合**：信号通路独立（`set attention` 照打）／thinking 停在 articulate（无响应）／
+  MOSS 认为 thinking 开着而插件侧那一轮没起（dsh↔ego 账不一致）。
+- **与第十六节的关系**：`wait_ready` 那条是另一个真缺陷，但它解释不了"set attention 还在继续"，
+  所以**倾向不是线上根因**。
+- **待做（择一）**：① 把插件 exit handler 拖过 5s 做可控复现；② 先补 gate 的观测 —— 今天插件对
+  gate **一行日志都没有**，enter/exit 顺序与冻结时的 `isOpen` 全读不到（D02/D13 同一个静默病）。
+- **范围声明**：插件 1634 行，我读过 `1-120`（部分）、`176-290`、`648-717`、`917-1046`；**其余未读，
+  不在其上判断**。他明确要求：**根因没定位前不挂账**。
+
+## 十八、Bug 1 修复：给"被等的尾包"一条高优通道（未提交，等他 review）
+
+他定方向：**"给 attention 正在等待的 impulse 一个高优通道，让它直接胜出即可"**。判据落成一句话：
+**补完不是挑战。**
+
+- `_mindflow.py` 新增 `_awaited_impulse_id()`：当前 attention 未 abort 且 `attention.impulse()` 还不是
+  complete → 它等的就是 `attention.draw_from().id`。
+- `_rank_best_impulse_from_nuclei`：同 id 的走 `_AWAITED_IMPULSE_LANE = 1 << 60` 直接胜出，
+  并**豁免 priority 水位**（补完不该被水位拦）。
+- 证据：复现那条 **fail → pass**；对照组与 happy-path 仍 pass；`tests/.../core/mindflow/` 全目录
+  **409 passed / 14.5s**。**未提交**，真实生效要重启。
+
+仍挂着（都没碰）：① `ListenerNucleus.suppress` 清缓存仍违反 `peek` 契约（这条通道之后够不到了，
+不是必须）；② `_impulse_cache` last-wins 单槽 —— 后来的 onset 会覆盖未到的 deliver，是另一个洞；
+③ Bug 2 的 gate（计数归属 + wait 上界 + 观测）等他点头。
+
+## 十九、Bug 1 第二刀：ListenerNucleus 按契约履约（未提交）
+
+他定：**ListenerNucleus 不符合 nucleus 契约，实现不对；丢包不合法。**
+
+- `listener_nucleus.py::suppress` 不再 `self._impulse_cache = None`，只设冷却 —— 契约
+  （`Nucleus.peek`）要求 suppressed 后 **仍保留、可被 peek**，由下一轮 re-rank 捞回。
+- 顺手改掉模块 docstring 里那条**错的假设**：第 13-16 行原写"onset 无内容，丢掉不损失"，
+  但真实路径上 `_rank_best_impulse_from_nuclei` 对**任何**落选者都调 suppress，落选的可以是
+  携带内容的 deliver。
+- 补兄弟核同名测试 `test_suppress_retains_impulse_peekable`。`tests/.../core/mindflow/` **410 passed**。
+
+**隔离实验（做了，值得记）**：把 `_AWAITED_IMPULSE_LANE` 临时归零 → 复现**重新变红**。
+→ **高优通道才是解死锁的那一刀**；契约修复管的是"这一轮不是它"的场合（保留但等下一轮 re-rank，
+而那一轮已经过去，所以单靠它救不了这个复现）。这条区分我原本只是推断，现在是实测。
+
+仍开着的两个洞（都没碰）：① `_impulse_cache` last-wins 单槽 —— 后来的 onset 会**覆盖**未到的
+deliver（`NotifyNucleus` 是**合并**，listener 没有）；② `attended` 不复位长冷却
+（`NotifyNucleus.attended` 会 `_suppress_until = 0`，listener 不会）。
+
+**gate 我的意见（他问的）**：同意「循环 + 周期超时 + 观测、不做计数归属」。理由：归属是**跨进程
+配对不变量**，本地无法验证、每加一条 RPC 路径都要重新维持；循环是在本地把"永久阻塞"整类删掉。
+三处补充：① 周期检查的是「这一帧还要不要」（attention 是否还活着），**节奏不是截止**，否则误杀
+合法的长思考；② 位置选 python 侧（`_run.py::_events()` 的无界 `await self._queue.get()` 才是
+真阻塞点），插件侧 gate 只需日志（错的 close 会被下一次 enter 自愈）；③ 触发时幂等收帧 + 大声记
+一条 —— 现在这一整类和"模型想得久"在日志上完全同形。

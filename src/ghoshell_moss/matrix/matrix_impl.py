@@ -528,11 +528,13 @@ class MatrixImpl(Matrix):
         self._check_running()
 
         async def _ensure_future_done():
+            outcome = "returned"
             try:
                 await cor
             except asyncio.CancelledError:
-                pass
+                outcome = "cancelled"
             except Exception as e:
+                outcome = f"exception {e!r}"
                 self._logger.error(
                     "%s inner task %s exception: %r",
                     self._log_prefix, name, e,
@@ -540,7 +542,14 @@ class MatrixImpl(Matrix):
                 if stop_matrix_on_error and self.is_running():
                     self.close()
             finally:
-                self._logger.debug("%s inner task %s done", self._log_prefix, name)
+                # 托管任务的"正常结束"此前只写 debug — 而 mindflow 的两个主循环就是经这里
+                # 托管的 (ghost_runtime 传 stop_matrix_on_error=True): 它们的结束可能意味着
+                # 整个引擎停摆。留 info 一行 (含结束形态), 才分得清"哪个循环先退出" —
+                # 否则一次静默停摆的因果与回声不可分辨 (2026-10-13 11:37 的判据)。
+                self._logger.info(
+                    "%s inner task %s done — %s (stop_matrix_on_error=%s)",
+                    self._log_prefix, name, outcome, stop_matrix_on_error,
+                )
 
         task = self._event_loop.create_task(_ensure_future_done(), name=name)
         self._binding_futures.add(task)

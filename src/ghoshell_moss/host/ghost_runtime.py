@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import traceback
 from typing import Callable, Iterable
 
 from ghoshell_container import IoCContainer
@@ -240,14 +241,23 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         self._moss_runtime.matrix.create_task(future, stop_matrix_on_error=True, name=name)
 
     def close(self) -> None:
+        """关闭 runtime.
+
+        **入口日志必须是 INFO 且带调用栈**: 关闭路径上没有其它可复核的痕迹 ——
+        信号 handler 与内部 close 走的都是这里, 而"谁关的"此前只写 debug (默认不输出).
+        一次静默停摆 (2026-10-13 11:37) 因此无法与"人为重启"区分, 这条日志就是判据.
+        """
         logger = self.moss.logger
-        logger.debug("%r closing moss runtime", self)
+        logger.info(
+            "%r close() called — caller stack:\n%s",
+            self, "".join(traceback.format_stack(limit=12)[:-1]),
+        )
         self._moss_runtime.close()
         if self._mindflow is not None:
-            logger.debug("%r closing mindflow", self)
+            logger.info("%r closing mindflow", self)
             self._mindflow.close()
             self._loop_status["mindflow"] = 'stopped'
-        logger.debug("%r closed", self)
+        logger.info("%r closed", self)
 
     def inspect_loop_health(self) -> LoopHealth:
         return self._loop_status.copy()

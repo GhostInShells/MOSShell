@@ -18,7 +18,7 @@ import pytest
 from ghoshell_container import Container
 
 from ghoshell_moss.contracts.logger import LoggerItf
-from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
+from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Impulse, Priority, Signal
 from ghoshell_moss.core.mindflow.listener_nucleus import (
     ListenerNucleus, ListenerNucleusMeta, ListenerSignal,
     new_listener_signal,
@@ -200,6 +200,26 @@ async def test_interrupt_gated_by_suppress_cooldown():
         nuc.suppress(notified[0])
         nuc.add_signal(new_listener_signal(segment_id='t2', interrupt=True, complete=False, priority=Priority.WARNING))
         assert len(notified) == 1  # 冷却期内打断包不 fire
+
+
+@pytest.mark.asyncio
+async def test_suppress_retains_impulse_peekable():
+    """契约: suppressed 后 impulse 仍保留、可 peek — rank 输掉不等于完结 (不丢).
+
+    落选的若是**携带内容**的发送包, 清缓存会把内容整包抹掉; 更硬的是它占着的那个 attention
+    从此永远等不到 complete (尾包补不齐), thinking 通路会停摆.
+    """
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(new_listener_signal('你好', segment_id='t1', complete=True))
+        nuc.suppress(Impulse(), None)
+        peeked = nuc.peek()
+        assert peeked is not None, "suppress 后 impulse 仍应可 peek"
+        assert peeked.complete is True
+        joined = ' '.join(
+            c['text'] for m in peeked.messages for c in m.contents if isinstance(c, dict) and 'text' in c
+        )
+        assert '你好' in joined, f"发送包内容不得因 rank 落选而丢失 — {joined!r}"
 
 
 # ============================================================
