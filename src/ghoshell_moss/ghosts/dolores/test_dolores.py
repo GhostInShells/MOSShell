@@ -1473,6 +1473,9 @@ class FakeArticulator:
         # 生命周期痕迹: 展开是否发生, 是回归测试的核心判据 (见 test_ctml_append_opens_lifecycle).
         self.entered = 0
         self.exited = 0
+        # 退出时收到的 (exc_type, exc_val, exc_tb) —— 判"是 commit 收尾还是异常退出",
+        # 这两条在 kernel 里换来完全不同的结果 (见 TestMalformedInterpretStreamSettlement).
+        self.exit_args: tuple | None = None
 
     async def __aenter__(self):
         self.entered += 1
@@ -1480,6 +1483,7 @@ class FakeArticulator:
 
     async def __aexit__(self, *args):
         self.exited += 1
+        self.exit_args = args
         return None
 
     async def send(self, delta: str):
@@ -2898,6 +2902,117 @@ class TestSilentFailureSurfaces:
         assert isinstance(result, ToolCallResult) and result.result == "ctml parse error"
         assert any("corrupt" in m and "call_broken" in m
                    for m in logs.messages(logging.WARNING)), logs.messages()
+
+
+class TestMalformedInterpretStreamSettlement:
+    """参数解析失败的 ``moss_interpret`` 必须当场了结它由 delta 开出来的 stream.
+
+    这场戏只有几个角色, 一句一句看就懂了.
+
+    ============ 角色 ============
+
+    模型     一个词一个词地说出它要执行的 CTML; 说完了还要正式交一份"菜单"
+             (tool/call 的 arguments)。
+    delta    模型吐出的每个词 (tool-call-delta)。**MOSS 收到第一个词就把灶点着了。**
+    菜单     模型最后交上来的完整 arguments。只有它能解析, 这一单才算真正受理。
+    灶       这一单的执行位 (articulator + 它在 mindflow 里排的那个 action)。
+
+    ============ 顺序 (就是线上 17:20:34 的顺序) ============
+
+    1. 模型吐第一个词            → ``_handle_ctml_delta``      → 灶点着了
+    2. 模型把 CTML 吐完          → ``_handle_ctml_delta``      → 菜已经在锅里
+    3. 模型交上来的菜单是坏的     → ``_handle_tool_use_event``  → 只回一句"参数不对", 然后就结束了
+
+    **第 3 步曾是一个 bug**: 菜单坏了可以不接这一单, 但**灶必须关** —— 不关, 这个执行位就一直占着。
+    当时的代码不关: ``_handle_interpret`` 里的 ``streams.pop`` / ``__aexit__`` 只在 handler 被调用时
+    才发生, 而参数解析失败这一支根本没走到 handler (2026-10-13 线上整帧冻结的触发点)。
+    现在由 ``DoloresRun._void_stream`` 在 ``_handle_tool_use_event`` 里当场作废。
+
+    这里立的是**两条不变量**: (1) 必须关, 且只能关一次; (2) 必须走"异常退出"那一支 ——
+    见本文件末尾对 ``exit_args`` 的断言。
+
+    ============ 不关灶会怎样, 不在这里断言 ============
+
+    "灶一直被占着 → 下一位客人永远轮不到 → 整帧冻结" 是 **kernel 的鲁棒性**问题, 不由本文件断言。
+    那条在 ``tests/ghoshell_moss/default/core/mindflow/test_abandoned_action.py``: 用生产装线
+    (真三循环) 复现, 不含任何替身 —— 两层各自一条, 互不替代。
+
+    ============ 为什么"坏菜单"还能把灶点着 ============
+
+    因为切词的人不需要菜谱的句号。``_ctml_stream.py`` 的注释写得很直白:
+    "The closing quote needs no prediction"。所以 ``{"ctml": "<noop/>`` 这种
+    "开了头、没收尾"的坏串, 前半段照样能把 ``<noop/>`` 解出来下锅 —— 这就是线上那条的形状
+    (moss.log 里 pydantic 报的正是 ``EOF while parsing a string``)。
+    """
+
+    #: 线上那条坏菜单的最小等价物: 开了头, 永远不收尾。
+    _BROKEN_ARGS = '{"ctml": "<noop/>'
+    #: 同一个字符串的逐词分片 —— 模型是先吐词、最后才交菜单的。
+    _BROKEN_DELTAS = ('{"ctml": "', '<noop/>')
+
+    @staticmethod
+    def _run(thinking):
+        from ._run import DoloresRun
+
+        session = FakeRunSession()
+        return DoloresRun(
+            ego=FakeDispatchEgo(session),
+            thinking=thinking,
+            thinking_event=asyncio.Event(),
+            facade=_NoopShellFacade(),
+        )
+
+    @staticmethod
+    def _delta(call_id: str, arguments_delta: str):
+        return SimpleNamespace(type="tool-call-delta", id=call_id, name="moss_interpret",
+                               argumentsDelta=arguments_delta)
+
+    @classmethod
+    async def _stream_arguments(cls, run, call_id: str, pieces: tuple, streams: dict) -> None:
+        """按碎片顺序喂一条 arguments 的 argumentsDelta 流 (dsh 就是逐 token 推的)."""
+        for piece in pieces:
+            await run._handle_ctml_delta(cls._delta(call_id, piece), streams)
+
+    @pytest.mark.asyncio
+    async def test_malformed_interpret_settles_its_delta_stream(self):
+        """只问第 3 步: 菜单坏了、这一单不接了, 灶关了没有?"""
+        run = self._run(FakeRunThinking())
+        streams: dict = {}          # 场上"还开着的灶"
+
+        # 模型吐词 (第 1、2 步): 第一个词就该点着灶, 后面的词是菜。
+        await self._stream_arguments(run, "call_bad", self._BROKEN_DELTAS, streams)
+        stream = streams["call_bad"]
+        assert stream.articulator.entered == 1, "第一个词到了, 灶就该点着"
+        assert stream.stream.matched, (
+            "词本身没问题: 它按 {\"ctml\": \"… 前缀匹配、正常解码 —— 坏的只是最后交上来的那份菜单"
+        )
+        assert not stream.stream.failed, "参数流没有损坏 (损坏是另一条分支: stream.failed)"
+        assert stream.stream.value == "<noop/>", "菜已经在锅里了"
+
+        # 模型交菜单 (第 3 步): 同一份内容拼出来的串是坏 JSON, 所以 MOSS 只回一句"参数不对"。
+        await run._handle_tool_use_event(
+            TestDoloresRun._tool_call("moss_interpret", self._BROKEN_ARGS, "call_bad"), streams,
+        )
+
+        # 这一单可以不接, 但灶必须关。
+        assert "call_bad" not in streams, "灶还留在场上: 没有任何人会再来关它"
+        assert stream.articulator.exited == 1, "灶没关 (articulator 的边界没有收尾)"
+
+        # 收尾的**方式**也是契约的一部分: 必须走"异常退出"那一支, 不能 commit。
+        #   - commit (exc_val is None) 会让解释器执行这份半截 CTML —— 而它的参数刚被拒;
+        #   - 但如果传 ActionExitedException / StatementExitedException, kernel 走的是
+        #     "attention 已经 abort" 那一支, 什么都不做 —— 灶照样占着, 等于没修。
+        # 只有普通异常能落 action 的 stop event、放行 action loop, 又不惊动整帧。
+        # 机制的生产验证在 tests/ghoshell_moss/default/core/mindflow/test_abandoned_action.py。
+        from ghoshell_moss.core.blueprint.mindflow import StatementExitedException
+
+        exit_args = stream.articulator.exit_args
+        assert exit_args is not None, "边界没被收尾"
+        assert exit_args[1] is not None, "commit 收尾会执行这份参数刚被拒的半截 CTML"
+        assert not isinstance(exit_args[1], StatementExitedException), (
+            "StatementExitedException 那一支假定 attention 已 abort, 在这里什么都不做 —— "
+            "action 不会被放行, 卡死照旧"
+        )
 
 
 class TestEgoSilentFailureSurfaces:
