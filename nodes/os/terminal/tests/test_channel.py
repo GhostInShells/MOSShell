@@ -7,6 +7,8 @@ from ghoshell_terminal.card import CardState, CardType
 from ghoshell_terminal.channel import build_terminal_channel
 from ghoshell_terminal.store import CardStore, Mode
 
+from ghoshell_moss.core.blueprint.mindflow import Priority
+
 from fakes import FakeSubprocesses, Recorder, chunks
 
 
@@ -93,7 +95,7 @@ async def test_exec_returns_a_receipt_before_the_human_decides(store):
 
 
 @pytest.mark.asyncio
-async def test_accept_runs_it_and_signals_the_outcome(store):
+async def test_accept_is_state_and_the_completion_is_the_signal(store):
     processes = FakeSubprocesses(lines=["hello\n"], exit_code=0)
     chan, rec = _channel(store, processes)
     async with chan.bootstrap() as runtime:
@@ -108,23 +110,30 @@ async def test_accept_runs_it_and_signals_the_outcome(store):
         assert processes.spawned[0].meta.command == "echo hi"
         assert [f["type"] for f in rec.of("card.output")] == ["card.output"]
         assert rec.of("card.output")[0]["lines"] == ["hello\n"]
-        assert len(rec.signals) == 2, "batch notify + completion signal"
-        assert "decided" in str(rec.signals[0].messages[0].to_content_string())
-        assert "done" in str(rec.signals[1].messages[0].to_content_string())
+        assert len(rec.signals) == 1, (
+            "an accept is state — the completion is the only signal"
+        )
+        text = rec.signals[0].messages[0].to_content_string()
+        assert "done" in text and "exit=0" in text
 
 
 @pytest.mark.asyncio
 async def test_deny_is_terminal_and_runs_nothing(store):
     processes = FakeSubprocesses()
-    chan, _ = _channel(store, processes)
+    chan, rec = _channel(store, processes)
     async with chan.bootstrap() as runtime:
         await runtime.execute_command("open", args=("dev", "."))
-        await runtime.execute_command("exec", args=("dev", chunks(["rm -rf /"])))
+        await runtime.execute_command(
+            "exec", args=("dev", chunks(["rm -rf /"])), kwargs={"desc": "dangerous"}
+        )
         card = store.cards()[-1]
 
         store.settle(card.id, "deny")
         await _until(lambda: card.state is CardState.REJECTED)
         assert processes.spawned == []
+        assert len(rec.signals) == 1, "a denial is a signal — a plan changed"
+        text = rec.signals[0].messages[0].to_content_string()
+        assert "denied" in text and "dangerous" in text
 
 
 @pytest.mark.asyncio
@@ -216,12 +225,71 @@ async def test_a_rule_proposal_decides_nothing_until_accepted(store):
 
 
 @pytest.mark.asyncio
+async def test_an_accepted_rule_reports_itself_live(store):
+    """A rule card has no process, so its verdict *is* its last moment — an accepted
+    rule that stayed silent would leave the model guessing whether trust went live."""
+    chan, rec = _channel(store, FakeSubprocesses())
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("rule", args=("reads", r"^cat\b"))
+        card = store.cards()[-1]
+
+        store.settle(card.id, "accept")
+        await _until(lambda: card.state is CardState.DONE)
+
+        assert len(rec.signals) == 1
+        text = rec.signals[0].messages[0].to_content_string()
+        assert "live" in text and "reads" in text
+
+
+@pytest.mark.asyncio
+async def test_a_denied_rule_reports_a_denial_not_a_launch(store):
+    chan, rec = _channel(store, FakeSubprocesses())
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("rule", args=("reads", r"^cat\b"))
+        card = store.cards()[-1]
+
+        store.settle(card.id, "deny")
+        await _until(lambda: card.state is CardState.REJECTED)
+
+        assert len(rec.signals) == 1
+        assert "denied" in rec.signals[0].messages[0].to_content_string()
+        assert store.match_rule("cat x") is None
+
+
+@pytest.mark.asyncio
 async def test_a_broken_regex_never_becomes_a_card(store):
     chan, _ = _channel(store, FakeSubprocesses())
     async with chan.bootstrap() as runtime:
         with pytest.raises(Exception):
             await runtime.execute_command("rule", args=("bad", "("))
         assert store.cards() == []
+
+
+@pytest.mark.asyncio
+async def test_a_card_never_inherits_a_previous_runs_output_file(store):
+    """Card ids restart at 1 in every process while the output directory outlives
+    the process. The capture writer *appends*, so without a guard a new card would
+    adopt an old run's file and report its path as this run's output — the model
+    would read someone else's text and have no way to tell."""
+    stale = store.output_path(1)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("x" * 20000)
+
+    processes = FakeSubprocesses(lines=["fresh\n"], exit_code=0)
+    chan, rec = _channel(store, processes)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("dev", "."))
+        await runtime.execute_command("exec", args=("dev", chunks(["echo fresh"])))
+        card = store.cards()[-1]
+        assert card.id == 1, "the stale file sits exactly on the id we are about to use"
+
+        store.settle(card.id, "accept")
+        await _until(lambda: card.state is CardState.DONE)
+
+        text = rec.signals[0].messages[0].to_content_string()
+        assert "output:\nfresh" in text
+        assert "full text at" not in text, "6 chars is not a file-backed result"
+        assert not stale.exists(), "a short run leaves no file, old or new"
 
 
 @pytest.mark.asyncio
@@ -303,7 +371,9 @@ async def test_notice_carries_counts_and_thread_flags(store):
 
 
 @pytest.mark.asyncio
-async def test_a_batch_notify_fires_once_when_the_last_card_settles(store):
+async def test_each_denial_is_signalled_on_its_own(store):
+    """No batch knock: a denial names the card it killed, so two denials are two
+    signals — the model never has to read back to learn which one died."""
     processes = FakeSubprocesses()
     chan, rec = _channel(store, processes)
     async with chan.bootstrap() as runtime:
@@ -314,12 +384,54 @@ async def test_a_batch_notify_fires_once_when_the_last_card_settles(store):
 
         store.settle(a.id, "deny")
         await _until(lambda: a.state is CardState.REJECTED)
-        assert rec.signals == [], "one verdict left — no batch knock yet"
+        assert len(rec.signals) == 1, "the first denial reports itself, not the batch"
+        assert f"#{a.id}" in rec.signals[0].messages[0].to_content_string()
 
         store.settle(b.id, "deny")
         await _until(lambda: b.state is CardState.REJECTED)
-        assert len(rec.signals) == 1, "one batch knock for the whole round"
-        assert "decided" in rec.signals[0].messages[0].to_content_string()
+        assert len(rec.signals) == 2
+        assert f"#{b.id}" in rec.signals[1].messages[0].to_content_string()
+
+
+@pytest.mark.asyncio
+async def test_level_is_the_model_s_loudness_and_a_failure_escalates(store):
+    """``level`` is the freedom the model has over a completion it will not wait
+    for: background buffers it without claiming a turn. A failure is never quiet."""
+    processes = FakeSubprocesses(lines=["x\n"], exit_code=0)
+    chan, rec = _channel(store, processes)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("dev", "."))
+        await runtime.execute_command(
+            "exec", args=("dev", chunks(["quiet"])), kwargs={"level": "background"}
+        )
+        card = store.cards()[-1]
+        store.settle(card.id, "accept")
+        await _until(lambda: card.state is CardState.DONE)
+
+        assert len(rec.signals) == 1
+        assert rec.signals[0].metadata.get("next") is not True, (
+            "a clean background run does not claim the model's next turn"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_background_run_escalates_one_step(store):
+    processes = FakeSubprocesses(lines=["boom\n"], exit_code=1)
+    chan, rec = _channel(store, processes)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("dev", "."))
+        await runtime.execute_command(
+            "exec", args=("dev", chunks(["boom"])), kwargs={"level": "background"}
+        )
+        card = store.cards()[-1]
+        store.settle(card.id, "accept")
+        await _until(lambda: card.state is CardState.ERROR)
+
+        assert len(rec.signals) == 1
+        assert rec.signals[0].metadata.get("next") is True, (
+            "tell me quietly when it works must not mean quiet when it breaks"
+        )
+        assert rec.signals[0].priority == Priority.INFO, "background → info"
 
 
 @pytest.mark.asyncio

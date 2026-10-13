@@ -137,6 +137,23 @@ class CardStore:
     def outputs_dir(self) -> Path:
         return self._outputs_dir
 
+    def clear_outputs(self) -> int:
+        """Drop every output file left by a previous run; returns how many went.
+
+        Card ids restart at 1 in each process, so nothing on disk from an earlier
+        run can be referenced by anything — a kept file is only a leak, and a
+        grown directory is a memory leak with a slower clock. The audit trail
+        lives in ``log_dir`` and is deliberately **not** touched here.
+        """
+        if not self._outputs_dir.is_dir():
+            return 0
+        gone = 0
+        for path in self._outputs_dir.iterdir():
+            if path.is_file():
+                path.unlink(missing_ok=True)
+                gone += 1
+        return gone
+
     def output_path(self, card_id: int) -> Path:
         """The path the subprocess layer should write this card's full stdout to.
 

@@ -86,11 +86,13 @@ class FakeSubprocesses:
             cwd=cwd or "", description=description or "",
             lines=self.lines, exit_code=self.exit_code,
         )
-        # Mirror the subprocess layer: if the channel asked for a stdout file,
-        # the full output lands there (for the keep/delete threshold decision).
+        # Mirror the subprocess layer exactly: if the channel asked for a stdout
+        # file, the full output lands there — **appended**, which is what the real
+        # drain does and what makes a stale file dangerous.
         if capture is not None and capture.stdout_file is not None:
             capture.stdout_file.parent.mkdir(parents=True, exist_ok=True)
-            capture.stdout_file.write_text("".join(self.lines))
+            with open(capture.stdout_file, "a") as f:
+                f.write("".join(self.lines))
         if not self.hold:
             managed.finish()
         self.spawned.append(managed)

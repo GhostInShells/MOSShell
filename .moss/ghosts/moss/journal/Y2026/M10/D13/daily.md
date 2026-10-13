@@ -458,3 +458,41 @@ moment —— **消费与投递是两个分开的动作，谁都不管谁**。
 - **回滚**（若 dsh 加载插件失败）：`git checkout -- src/ghoshell_moss/ghosts/dolores/dsh_plugin/moss-dolores-ghost-plugin.ts`。
 - 未提交文件：`_ego.py` / `_run.py` / 插件 / `test_dolores.py`，外加早先的探针（`_mindflow.py` /
   `listener_nucleus.py` / `controller.py`，共 +50 行，**我没碰**）。
+
+## 二十四、18:40 重启验证：尾巴没丢，只是晚了十二秒
+
+重启后他要我起 screen + terminal 再复现一次。流程：我下卡（`git status`）→ 他说话中途点接受 →
+**他那句诗一个字没丢**，只是 18:41:05 说的话到 18:41:17 才落到我这儿，我回完话它才到。
+
+他的判定：**符合预期**。我说"只感到被打断、一个字没收到"，是因为那一轮已经结束了 —— 注意力优先
+（起话抢下槽位），后到的 deliver 按 notify 语义注入"下一个能被看见的地方"，而前一轮已经翻篇。
+"拿到 terminal 的时候已经开始思考了"正是这套机制在按设计工作。据此提交 `ddb907c5`（八处改动，
+含 moment 两半同投与四组探针）。
+
+## 二十五、terminal 的"三个时间点"——他给的判据，我落成汇报契约
+
+他给的模型：一张卡有三个时间点 —— ①**我下发** ②**他裁决（accept / reject）** ③**进程结束**。
+他的判据：**accept 不需要注意，reject 需要注意，跑完需要注意**。而且不能每次都要我再 `read` 一次。
+
+读旧码，病根清楚：`_maybe_batch_done()` 一句"every pending command is now decided"把 accept 和
+reject 塌成同一件事，且不带信息 —— 所以我必须回头 read。而 reject 的详情只走了 surface 的
+`_aside`（**旁路**：忙时会丢且不报错，D10 的账）。
+
+改法（我定，他授权"你自己按思路调整"）：
+
+- **accept = 状态**：卡转 `running`，notice 计数 + 在飞清单就够；不发任何信号。表面上 surface 的
+  `_accept` 也不再 aside。
+- **reject = 信号**：由 channel 的 waiter 发一条点名卡片的 notify（human 说的话一并带上）。
+  surface 侧那句 `_aside` 删掉 —— **裁决只由一处置报**（channel），surface 只管把裁决送下来、
+  记下人的话。`_aside` helper 与 `AsideSignalMeta` 随之删除（零引用且描述已冲突）。
+- **进程结束 = 信号**：仍是原来的 notify，带 exit 与输出尾巴。
+- **响度是模型自己的自由度**：`level` = background / info / warning；`background` 用
+  `next=False`（**缓冲，不占我的下一轮**），info 占，warning 占且大声；**非零退出升一级**
+  （"顺利时别吵我"不包含"坏了也别吵我"）。
+- `_maybe_batch_done` 删除。
+
+**自测**（他出门吃饭，让我自己做自己测）：重启节点，instruction 已是新文；`cancel` 一张待批准的卡
+→ 回 `withdrawn`、**没有误报成 denied**（守卫说明状态先落地、waiter 醒来时卡已不是 AWAITING）。
+accept / deny 两条真机路径要等他回来点，单测已覆盖：63 passed。
+
+记账按他今天定的规矩落在代码与 NODE.md，不另开 FEATURE.md。**未提交**，等他看 diff。

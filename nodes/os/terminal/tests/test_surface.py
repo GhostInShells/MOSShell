@@ -104,7 +104,11 @@ async def test_serves_the_page_and_snapshots_on_connect(store, signals, stops):
 
 
 @pytest.mark.asyncio
-async def test_accept_settles_and_tells_the_ghost(store, signals, stops):
+async def test_accept_settles_and_leaves_the_reporting_to_the_channel(
+    store, signals, stops
+):
+    """A verdict is handed down, not announced: the channel's waiter is the one
+    that reports it, so the surface says nothing for an accept."""
     surface = await _surface(store, signals, stops)
     try:
         card = _pending(store)
@@ -114,9 +118,7 @@ async def test_accept_settles_and_tells_the_ghost(store, signals, stops):
             await asyncio.sleep(0.1)
 
         assert store.waiter(card.id).result() == "accept"
-        assert len(signals) == 1
-        assert signals[0].name == "aside"
-        assert "accepted" in signals[0].messages[0].to_content_string()
+        assert signals == [], "the surface never speaks for a card"
     finally:
         await surface.stop()
 
@@ -133,8 +135,8 @@ async def test_a_second_verdict_on_the_same_card_is_swallowed(store, signals, st
             await ws.send(json.dumps({"type": "accept", "id": card.id}))
             await asyncio.sleep(0.1)
 
-        assert len(signals) == 1, "one card, one decision"
-        assert store.waiter(card.id).result() == "accept"
+        assert store.waiter(card.id).result() == "accept", "one card, one decision"
+        assert signals == []
     finally:
         await surface.stop()
 
@@ -330,8 +332,7 @@ async def test_accept_all_settles_every_pending_card(store, signals, stops):
             await ws.send(json.dumps({"type": "accept_all"}))
             await asyncio.sleep(0.1)
         assert [store.waiter(c.id).result() for c in cards] == ["accept"] * 3
-        assert len(signals) == 3
-        assert [s.name for s in signals] == ["aside", "aside", "aside"]
+        assert signals == [], "a batch of accepts is state, not a batch of signals"
     finally:
         await surface.stop()
 
@@ -346,8 +347,7 @@ async def test_deny_all_settles_every_pending_card(store, signals, stops):
             await ws.send(json.dumps({"type": "deny_all"}))
             await asyncio.sleep(0.1)
         assert [store.waiter(c.id).result() for c in cards] == ["deny"] * 3
-        assert len(signals) == 3
-        assert [s.name for s in signals] == ["aside", "aside", "aside"]
+        assert signals == [], "the channel reports each denial — the surface only hands it down"
     finally:
         await surface.stop()
 

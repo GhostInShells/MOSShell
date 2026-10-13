@@ -7,9 +7,11 @@ human's three actions (``accept`` / ``deny`` / ``ask``), the two stops, and the
 mode switch.
 
 Verdicts are handed down, never written here: ``store.settle`` wakes the channel's
-waiter, and the channel is the only place card state moves. What this module does
-own is the signal to the ghost — the human's action is a fact the model must
-learn, and it travels as a must-not-lose notify that guarantees a turn.
+waiter, and the channel is the only place card state moves — and the only place a
+verdict is reported to the model. This module keeps the human's side whole: it
+broadcasts the card stream and it records what the human said (the ``ask`` box's
+dialogue), which is where the channel reads a denial's reason from. Its own signal
+to the ghost is the ``ask`` question — a question, not a decision.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME
 from ghoshell_moss.message import Message
-from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
+from ghoshell_moss.signals import NotifySignalMeta
 
 from .card import CardState
 from .store import CardStore
@@ -212,9 +214,6 @@ class TerminalSurface:
         if text:
             self._store.add_dialogue(card_id, "human", text)
             await self.broadcast({"type": "card.full", "card": card.view()})
-        self._aside(
-            f"[terminal #{card_id}] accepted '{card.title}' — it is running now"
-        )
 
     async def _deny(self, card_id: int, text: str = "") -> None:
         if card_id in self._settled or self._debounced(card_id, "deny"):
@@ -226,9 +225,6 @@ class TerminalSurface:
         if text:
             self._store.add_dialogue(card_id, "human", text)
             await self.broadcast({"type": "card.full", "card": card.view()})
-        self._aside(
-            f"[terminal #{card_id}] denied '{card.title}' — do not re-issue this one"
-        )
 
     async def _ask(self, card_id: int, text: str) -> None:
         if self._debounced(card_id, "ask"):
@@ -357,17 +353,6 @@ class TerminalSurface:
         if self._send_signal is None:
             return
         signal = NotifySignalMeta(next=next_).to_signal(
-            Message.new(tag="terminal", name=self._identity).with_content(text),
-            description=text[:120],
-        )
-        self._send_signal(signal)
-
-    def _aside(self, text: str) -> None:
-        """A decision the ghost notices without being interrupted. Verdicts are
-        facts, not questions — they buffer until the ghost is free."""
-        if self._send_signal is None:
-            return
-        signal = AsideSignalMeta().to_signal(
             Message.new(tag="terminal", name=self._identity).with_content(text),
             description=text[:120],
         )
