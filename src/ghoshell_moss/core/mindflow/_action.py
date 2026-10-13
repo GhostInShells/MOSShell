@@ -152,19 +152,19 @@ class BaseArticulator(Articulator):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # 仅正常退出 (无异常) 时才 commit + 等编译; 异常退出 (含 CancelledError) 不 commit/
-        # approve 也不等 compiled_event, 避免 action 不会 set_compiled 时的 articulate 互锁.
+        # 仅正常退出 (无异常) 时才 commit + 等编译; 异常退出 (含 CancelledError) 既不 commit /
+        # approve, 也不等 compiled_event —— 这个 region 不会再被喂, 编译/观测位不会有人生产,
+        # 等它们的一方会被永远挂在这里 (articulate 互锁). 中断退出因此要把三个端点直接落地.
         try:
             if exc_val is None:
                 await self._commit()
                 await self._await_approve()
                 if not self._action_stop_event.is_set():
                     await self._compiled_event.wait()
-            if exc_val:
+            else:
+                self._action.close_lifecycle()
                 if isinstance(exc_val, ActionExitedException):
                     return True
-                elif not isinstance(exc_val, StatementExitedException):
-                    self._action_stop_event.set()
             return None
         finally:
             # 退出时若审批 task 仍未裁决, cancel 掉, 避免泄漏阻塞下一轮.
@@ -190,6 +190,7 @@ class BaseAction(Action):
             action_stop_event: ThreadSafeEvent,
             mindflow_stop_event: ThreadSafeEvent,
             thinking_stop_event: ThreadSafeEvent | None = None,
+            notify_thinking_stop: Callable[[], None] | None = None,
             logger: logging.Logger | None = None,
     ):
         self._attention = attention
@@ -206,14 +207,24 @@ class BaseAction(Action):
         self._prefetched_delta = ''
         self._terminated = False
         self._thinking_stop_event = thinking_stop_event
+        # 走 thinking 的 _notify_stop (而非裸置 _thinking_stop_event): 这样 abort_thinking
+        # 也会同帧向本 thinking 的其它 action/articulator 级联 close_lifecycle, 不再漏窗口.
+        self._notify_thinking_stop = notify_thinking_stop
         self._interpret_error: Exception | None = None
         self._observed_done_event: ThreadSafeEvent = observed_event
         self._started = False
         self._stopped = False
         # stop() 的"清理只做一次"标记 (停止位与清理分开, 见 stop()).
         self._cleaned = False
-        # attention 的 abort 回调撤销函数.
-        self._dispose_attention_abort: Callable[[], None] | None = None
+        # thinking 停止回调的撤销函数 —— 由 BaseThinking.articulator() 在**构造时**挂牌
+        # (见 bind_to_thinking_stop); None 表示这一帧没挂上, 退出时无需撤牌.
+        self._dispose_thinking_stop: Callable[[], None] | None = None
+        # attention 的 abort 回调撤销函数 —— 契约: Action 持有 attention, attention 退出
+        # 时它也应该退出. 构造即从属, 不等 enter (与 thinking 同形), 保证直接构造 action
+        # (无签发 thinking) 的场景下 wait_abort 仍能被 attention.abort() 释放.
+        self._dispose_attention_abort: Callable[[], None] | None = self._attention.on_abort(
+            self.close_lifecycle
+        )
 
     @property
     def logos_queue(self) -> janus.Queue[str | None]:
@@ -335,7 +346,11 @@ class BaseAction(Action):
         ``need_observe`` 为 True 时提交一个 need_observe 回声: 下一帧 thinking 的签发由
         这个显式事件驱动, 不依赖解释器 close 落盘的时序 —— 这是 interpret error 自愈的机制。
         """
-        if self._thinking_stop_event and not self._thinking_stop_event.is_set():
+        # 优先走 thinking 的回调: 同帧向其它 action/articulator 级联 close_lifecycle,
+        # 不止是置自己的停止位 (裸事件会漏掉"已构造未 enter"的子对象).
+        if self._notify_thinking_stop is not None:
+            self._notify_thinking_stop()
+        elif self._thinking_stop_event and not self._thinking_stop_event.is_set():
             self._thinking_stop_event.set()
         echo_result = []
         if reason and isinstance(reason, Message):
@@ -416,8 +431,8 @@ class BaseAction(Action):
     async def _lifecycle_aborted_monitor(self) -> None:
         """等"该收线"的两路来源, 到了就把这一帧收干净.
 
-        不再等 attention: attention 的 abort 由 ``on_abort`` 回调**同步**置位
-        ``_action_stop_event`` (见 ``_on_attention_aborted``), 这里只是在同一事件上补做异步清理.
+        不再等 attention: 本帧的终止由 thinking 的停止回调**同步**置位 ``_action_stop_event``
+        (见 ``close_lifecycle``), 这里只是在同一事件上补做异步清理.
         """
         stop_waiter = asyncio.create_task(self._action_stop_event.wait(), name="action-stop-event")
         mindflow_waiter = asyncio.create_task(self._mindflow_stop_event.wait(), name="mindflow-stop-event")
@@ -433,16 +448,35 @@ class BaseAction(Action):
                     waiter.cancel()
         await self.stop()
 
-    def _on_attention_aborted(self) -> None:
-        """attention 退出 → 本帧停止位. 必须是同步的 (abort 回调线程内执行)."""
+    def bind_to_thinking_stop(self, register: Callable[[Callable[[], None]], Callable[[], None]]) -> None:
+        """把本 action 的生命周期终结点挂到**签发它的 thinking** 的停止事件上.
+
+        由 ``BaseThinking.articulator()`` 在构造时调用, 不等 ``__aenter__``: articulator()
+        在构造的同一刻就把 action 放进了动作队列, 于是"已构造、还没被 enter"是一段真实存在的
+        窗口 —— 窗口里的 action 没有生命周期任务, 若也没挂上这张牌, 就没有任何人会置它的
+        compiled/observed, 任何在它身上等的人会被永远挂住 (2026-10-13 的卡死).
+
+        从属层次按契约: attention 级联到 thinking, thinking 再级联到它签发的 action / articulator
+        (Go ctx 的语义: 派生关系在构造那一刻成立, 不等 goroutine 被调度).
+        """
+        self._dispose_thinking_stop = register(self.close_lifecycle)
+
+    def close_lifecycle(self) -> None:
+        """本帧终止 → 三个生命周期端点全部落地. 同步, 跑在停止方的调用栈上.
+
+        只置停止位不够: 没被 enter 过的 action 没有生命周期任务, 这一步是它唯一的终点.
+        形状与 :meth:`abort` 一致 —— 释放等待方, 退出性质由 ``is_aborted()`` /
+        ``abort_reason()`` 判别, 不靠事件值区分.
+        """
         self._action_stop_event.set()
+        self._compiled_event.set()
+        self._observed_done_event.set()
 
     async def __aenter__(self) -> Self:
         if self._started:
             return self
         self._started = True
-        # 关键传导走回调而不是 task: 一个还没被调度就被取消的 waiter, 会让这次退出永远传不到.
-        self._dispose_attention_abort = self._attention.on_abort(self._on_attention_aborted)
+        # 牌已在构造时挂好 (构造即从属); 这里只起异步收尾的监视任务.
         self._lifecycle_task = asyncio.create_task(self._lifecycle_aborted_monitor())
         return self
 
@@ -477,7 +511,10 @@ class BaseAction(Action):
             self._has_meaningful_logos.set()
             self._action_stop_event.set()
             self._compiled_event.set()
-            # 撤牌: 这一帧已收线, 之后的 abort 不该再回调到它.
+            # 撤牌: 这一帧已收线, 之后的停止不该再回调到它. 两张都要撤 (thinking 和 attention).
+            if self._dispose_thinking_stop is not None:
+                self._dispose_thinking_stop()
+                self._dispose_thinking_stop = None
             if self._dispose_attention_abort is not None:
                 self._dispose_attention_abort()
                 self._dispose_attention_abort = None
