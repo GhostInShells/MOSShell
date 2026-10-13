@@ -62,10 +62,20 @@ _TAG_SAFE = re.compile(r"[^A-Za-z0-9_]")
 class _Surface(Protocol):
     async def broadcast(self, frame: dict[str, Any]) -> None: ...
 
+    async def set_layout(self, mode: str) -> str: ...
+
+    def layout_state(self) -> tuple[str, str]: ...
+
 
 class _NoSurface:
     async def broadcast(self, frame: dict[str, Any]) -> None:
         return None
+
+    async def set_layout(self, mode: str) -> str:
+        return mode
+
+    def layout_state(self) -> tuple[str, str]:
+        return ("split", "default")
 
 
 def _notice_name(thread: str) -> str:
@@ -493,6 +503,20 @@ def build_terminal_channel(
     if stops is not None:
         stops.stop = _stop_card
         stops.stop_all = _stop_all
+
+    @chan.build.command(name="layout", always_observe=True, available=enabled)
+    async def layout(mode: str = "") -> str:
+        """How an open card is shown — my half of the presentation contract.
+
+        ``split`` keeps the list beside it; ``page`` gives it the whole window.
+        Which card is open is the human's click; this decides only how big it
+        opens, and the page says who chose it. Empty = read the mode back.
+        """
+        if not mode:
+            current, by = surface.layout_state()
+            return f"[{name}] layout: {current} (chosen by {by})"
+        chosen = await surface.set_layout(mode)
+        return f"[{name}] layout: {chosen} (chosen by model)"
 
     @chan.build.command(name="stop", always_observe=False, available=enabled)
     async def stop(card_id: int) -> str:

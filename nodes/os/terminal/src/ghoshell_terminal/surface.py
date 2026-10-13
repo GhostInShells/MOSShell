@@ -2,7 +2,7 @@
 
 One port serves the page and the WebSocket. Downlink carries the card stream
 (``card.head`` / ``card.delta`` / ``card.tail`` / ``card.output`` / ``card.full``)
-plus a full snapshot on connect and the global ``mode``. Uplink carries the
+plus a full snapshot on connect, the global ``mode`` and the layout mode. Uplink carries the
 human's three actions (``accept`` / ``deny`` / ``ask``), the two stops, and the
 mode switch.
 
@@ -35,6 +35,14 @@ __all__ = ["TerminalSurface", "StopHandles"]
 _DEBOUNCE_SECONDS = 0.4
 """A verdict is one decision. Repeated clicks inside this window are the same
 decision arriving twice, not a second one."""
+
+_LAYOUTS = ("split", "page")
+"""How an open card is shown — the model's half of the presentation contract.
+
+``split`` keeps the list beside the open card; ``page`` gives the card the whole
+window. Which card is open is the human's click; this decides only how big it
+opens, and ``_layout_by`` records who chose it so the page can say so.
+"""
 
 _ANALYZE_INSTRUCTION = (
     "You are a second-opinion shell reviewer. The prompt is an XML document: a "
@@ -131,6 +139,8 @@ class TerminalSurface:
         self._server: Any = None
         self._settled: set[int] = set()
         self._last_action: dict[tuple[int, str], float] = {}
+        self._layout = "split"
+        self._layout_by = "default"
         self.port = port
 
     @property
@@ -153,10 +163,31 @@ class TerminalSurface:
         return {
             "type": "snapshot",
             "mode": self._store.mode,
+            "layout": self._layout,
+            "layout_by": self._layout_by,
             "root": str(self._store.root),
             "threads": [t.model_dump(mode="json") for t in self._store.threads()],
             "cards": [c.view() for c in self._store.cards()],
         }
+
+    # -- layout (the model's side of the presentation contract) -------------
+
+    def layout_state(self) -> tuple[str, str]:
+        return self._layout, self._layout_by
+
+    async def set_layout(self, mode: str) -> str:
+        """Set how an open card is shown, and remember who chose it.
+
+        The human owns the click that opens a card; the model owns this. Every page
+        is told, so the marker can name its author instead of hiding the decision.
+        """
+        chosen = (mode or "").strip().lower()
+        if chosen not in _LAYOUTS:
+            raise ValueError(f"layout must be one of {_LAYOUTS}, got {mode!r}")
+        self._layout = chosen
+        self._layout_by = "model"
+        await self.broadcast({"type": "layout", "layout": chosen, "by": self._layout_by})
+        return chosen
 
     # -- uplink -------------------------------------------------------------
 

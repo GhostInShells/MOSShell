@@ -376,6 +376,28 @@ async def test_stop_buttons_reach_the_channel_handles(store, signals, stops):
 
 
 @pytest.mark.asyncio
+async def test_layout_is_the_model_side_of_the_presentation_contract(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        assert surface.layout_state() == ("split", "default")
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            snap = await _recv(ws, "snapshot")
+            assert snap["layout"] == "split"
+            assert snap["layout_by"] == "default"
+
+            assert await surface.set_layout("page") == "page"
+            frame = await _recv(ws, "layout")
+            assert frame["layout"] == "page"
+            assert frame["by"] == "model"
+
+        assert surface.layout_state() == ("page", "model")
+        with pytest.raises(ValueError):
+            await surface.set_layout("cinema")
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
 async def test_disconnect_is_survivable(store, signals, stops):
     surface = await _surface(store, signals, stops)
     try:

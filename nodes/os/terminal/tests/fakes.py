@@ -103,9 +103,18 @@ class Recorder:
     def __init__(self) -> None:
         self.frames: list[dict] = []
         self.signals: list[object] = []
+        self.layout = "split"
 
     async def broadcast(self, frame: dict) -> None:
         self.frames.append(frame)
+
+    async def set_layout(self, mode: str) -> str:
+        """The channel hands the mode over; the real surface owns the broadcast."""
+        self.layout = mode
+        return mode
+
+    def layout_state(self) -> tuple[str, str]:
+        return self.layout, "model"
 
     def __call__(self, signal: object) -> None:
         self.signals.append(signal)

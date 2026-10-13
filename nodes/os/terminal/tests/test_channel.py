@@ -41,7 +41,7 @@ async def test_channel_exposes_the_command_set(store):
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "threads", "exec", "rule", "read", "cards",
-            "stop", "stop_all", "cancel",
+            "stop", "stop_all", "cancel", "layout",
         ):
             assert runtime.get_command(name) is not None, name
 
