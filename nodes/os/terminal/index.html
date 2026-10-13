@@ -30,7 +30,6 @@
     display: flex; align-items: center; gap: 10px;
     padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  .brand { color: var(--accent); font-weight: 600; white-space: nowrap; }
   /* A label is one label: a control must never break in the middle of itself. */
   header button { white-space: nowrap; }
   .spacer { flex: 1; }
@@ -187,18 +186,19 @@
 </head>
 <body>
 <header>
-  <span class="brand">moss terminal</span>
-  <div class="modes" id="modes">
-    <button data-mode="approval">approval</button>
-    <button data-mode="disabled">disabled</button>
+  <!-- No brand: the screen tile that holds this window already names it, and the
+       label was costing room the controls needed. -->
+  <div class="modes" id="modes" title="who approves a command — you, or the thread you trust">
+    <button data-mode="approval" title="every command waits for your click">approval</button>
+    <button data-mode="disabled" title="commands leave the model's interface; this terminal goes quiet">disabled</button>
   </div>
   <span class="mode-hint" id="mode-hint"></span>
   <span class="layout-mark" id="layout-mark"></span>
   <span class="spacer"></span>
-  <button class="bulk" id="accept-all">accept all</button>
-  <button class="bulk" id="deny-all">deny all</button>
-  <button class="danger" id="stop-all">stop all</button>
-  <span class="conn" id="conn">connecting…</span>
+  <button class="bulk" id="accept-all" title="accept every command still waiting">accept all</button>
+  <button class="bulk" id="deny-all" title="deny every command still waiting">deny all</button>
+  <button class="danger" id="stop-all" title="kill every command still running">stop all</button>
+  <span class="conn" id="conn" title="live link to this terminal">connecting…</span>
 </header>
 <main>
   <section class="stream" id="stream"></section>
@@ -208,8 +208,8 @@
 "use strict";
 
 const MODE_HINTS = {
-  approval: "manual unless thread auto",
-  disabled: "commands off",
+  approval: "you approve each command",
+  disabled: "commands are off",
 };
 const SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 
@@ -342,6 +342,7 @@ function renderDetail(card) {
   const head = make("div", "d-head");
   head.append(make("span", "d-title", "#" + card.id + "  " + (card.title || "")));
   const close = make("button", "d-close", "×");
+  close.title = "close this card and go back to the list";
   close.addEventListener("click", () => closeDetail());
   head.append(close);
   detailEl.append(head);
@@ -409,6 +410,7 @@ function renderDetail(card) {
     };
     aInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
     const aBtn = make("button", null, pending ? "…" : "analyze");
+    aBtn.title = "ask a second, zero-context model about this command";
     aBtn.disabled = pending;
     aBtn.addEventListener("click", ask);
     aRow.append(aInput);
@@ -471,7 +473,10 @@ function setMode(mode) {
 function setLayout(mode, by) {
   const layout = mode === "page" ? "page" : "split";
   document.body.dataset.layout = layout;
-  layoutMark.textContent = "layout: " + layout + (by === "model" ? " · model" : "");
+  layoutMark.textContent =
+    (layout === "page" ? "detail: full window" : "detail: side panel") +
+    (by === "model" ? " · moss" : "");
+  layoutMark.title = "how an open card is shown — moss chooses; click a card to open one";
   layoutMark.classList.toggle("model", by === "model");
 }
 
