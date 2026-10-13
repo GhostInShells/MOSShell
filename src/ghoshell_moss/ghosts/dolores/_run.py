@@ -123,6 +123,23 @@ def _turn_end_abort_reason(end: TurnEnd) -> str | None:
 _LogosDelta = str
 
 
+class _VoidCtmlError(Exception):
+    """这条 CTML 流作废 —— 传给 articulator 的 ``__aexit__``: 只让 action 出栈, 不 commit.
+
+    为什么需要它: ``tool/call`` 的 arguments 没解析通过时 handler 不会被调用, 于是
+    ``_handle_interpret`` 里的 ``pop`` / ``finish`` 都不会发生, 而 delta 早就开出了 articulator。
+    那条 action 永远等不到 commit, 会占住 mindflow 的 action loop (见 ``DoloresRun._void_stream``)。
+
+    为什么必须是**非 ``StatementExitedException``** 的普通异常: ``BaseArticulator.__aexit__`` 只对
+    "非 StatementExitedException 的异常退出" 落 ``_action_stop_event``; 而 ActionExitedException /
+    StatementExitedException 走的是"attention 已经 abort"那一支, 什么都不做。这里 attention 是好的
+    —— 要放弃的只是这一个 action, 不是整帧。
+
+    为什么"作废"而不是 commit: arguments 被拒 = 这一单没有被受理, 那份半截 CTML 只是流式预览,
+    一个命令都还没执行 (执行发生在 commit 之后)。commit 它等于执行模型没有承诺过的东西。
+    """
+
+
 class _StreamedCtml:
     """One streaming CTML tool call (``moss_interpret`` / ``moss_react``) as it streams in.
 
@@ -290,12 +307,14 @@ class DoloresRun:
             event, lambda call: self._handle_interpret(call, streams), logger=self._logger,
         )
         if result is not None:
+            await self._void_stream(event, streams)
             await self._dispatch_tool_result(result)
             return
         result = await ReactToolCall.run_tool(
             event, lambda call: self._handle_react(call, streams), logger=self._logger,
         )
         if result is not None:
+            await self._void_stream(event, streams)
             await self._dispatch_tool_result(result)
             return
         result = await ObserveToolCall.run_tool(event, self._handle_observe, logger=self._logger)
@@ -327,6 +346,28 @@ class DoloresRun:
             "tool call %s (%s) matched no dolores tool — dropped unanswered",
             event.callId, event.name,
         )
+
+    async def _void_stream(self, event: ToolCallEvent, streams: dict[str, _StreamedCtml]) -> None:
+        """handler 没认领这次流式 tool/call —— 当场作废 delta 开出来的那条 CTML 流.
+
+        ``pop`` 到东西时只有一种可能: 参数没解析通过 (``run_tool`` 的 ValidationError 分支),
+        handler 根本没被调用。handler 正常跑完时 ``_handle_interpret`` / ``_handle_react`` 已经把
+        stream 取走了, 这里 pop 不到, 是 no-op。
+
+        不作废的后果 (2026-10-13 线上): articulator 永不 commit → mindflow 的 action loop 停在
+        那条 action 上 → 下一条 ``moss_interpret`` 的 handler 永久阻塞 → ``logos()`` 停止消费
+        session 事件 → turn/end 收不到 → 整帧冻结, 只能重启 host。
+        """
+        stream = streams.pop(event.callId, None)
+        if stream is None:
+            return
+        self._logger.info(
+            "streaming tool call %s (%s) never reached its handler — voiding its CTML stream %s "
+            "(the arguments were rejected, so what it decoded must not execute)",
+            event.callId, event.name, stream.call_id,
+        )
+        void = _VoidCtmlError(f"{event.name} {event.callId}: arguments rejected")
+        await stream.__aexit__(type(void), void, None)
 
     async def _handle_interpret(
             self,
