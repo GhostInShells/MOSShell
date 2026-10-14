@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moss file_editor</title>
-<script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
 <style>
   :root {
     --bg: #14161a;
@@ -190,6 +189,19 @@
   .doc .markdown code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
   .doc .markdown pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
   .doc .markdown ul, .doc .markdown ol { padding-left: 24px; }
+  /* The pieces our own renderer emits beyond prose. A table is a table, not a row
+     of pipes; a rule is a division, not three dashes. */
+  .doc .markdown table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+  .doc .markdown th, .doc .markdown td {
+    border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+  .doc .markdown th { color: var(--dim); font-weight: 600; background: #1f2328; }
+  .doc .markdown blockquote {
+    margin: 10px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--dim);
+  }
+  .doc .markdown hr.rule { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+  .doc .markdown a { color: var(--accent); }
   .doc pre.diff { color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit; }
   .doc .plain { color: var(--dim); white-space: pre-wrap; word-break: break-word; }
   /* The file's header, shown as a header: a ruled block of key: value lines, not
@@ -291,18 +303,116 @@ function md(src) {
   const front = leadingFrontmatter(text);
   let html = "";
   if (front) html += "<pre class='frontmatter'>" + esc(front) + "</pre>";
-  const body = front ? text.slice(front.length) : text;
-  if (window.marked && marked.parse) return html + marked.parse(body);
-  return html + "<pre class='plain'>" + esc(body) + "</pre>";
+  return html + renderDoc(front ? text.slice(front.length) : text);
 }
 
-// A leading YAML block is not markdown, and handing it to the renderer is how
+// A leading YAML block is not markdown, and handing it to a renderer is how
 // three key: value lines came out as one bold line: three dashes under a
 // paragraph is a setext heading. Keep it out of the renderer and show it as
 // what it is — the file's header, not its prose.
 function leadingFrontmatter(text) {
   const m = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/.exec(text);
   return m ? m[0] : "";
+}
+
+// Our own renderer, deliberately small. Two reasons, both practical: the page
+// must not depend on a CDN (offline it degraded to plain text), and where we
+// know more than markdown does — the file header, a diff, a table that is really
+// a table — we want to say so ourselves.
+//
+// Safety is by construction: the whole document is escaped first, then structure
+// is wrapped around the escaped text. A file can therefore never inject markup
+// we did not intend, without needing a sanitiser.
+function renderDoc(src) {
+  const lines = String(src || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  const para = [];
+  const flush = () => {
+    if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para.length = 0; }
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = /^\s*```/.exec(line);
+    if (fence) {
+      flush();
+      const buf = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { buf.push(lines[i]); i += 1; }
+      i += 1;
+      out.push("<pre class='code'><code>" + esc(buf.join("\n")) + "</code></pre>");
+      continue;
+    }
+    if (/^\s*$/.test(line)) { flush(); i += 1; continue; }
+    const head = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (head) {
+      flush();
+      const n = head[1].length;
+      out.push("<h" + n + ">" + inline(head[2]) + "</h" + n + ">");
+      i += 1;
+      continue;
+    }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flush(); out.push("<hr class='rule'>"); i += 1; continue; }
+    if (isTableStart(lines, i)) {
+      flush();
+      const cols = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|")) { rows.push(splitRow(lines[i])); i += 1; }
+      out.push(
+        "<table><thead><tr>" + cols.map((c) => "<th>" + inline(c) + "</th>").join("") + "</tr></thead><tbody>" +
+        rows.map((r) => "<tr>" + r.map((c) => "<td>" + inline(c) + "</td>").join("") + "</tr>").join("") +
+        "</tbody></table>");
+      continue;
+    }
+    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+      flush();
+      const ordered = /^\s*\d+\./.test(line);
+      const items = [];
+      const re = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/;
+      while (i < lines.length && re.test(lines[i])) { items.push(inline(lines[i].replace(re, ""))); i += 1; }
+      const tag = ordered ? "ol" : "ul";
+      out.push("<" + tag + ">" + items.map((t) => "<li>" + t + "</li>").join("") + "</" + tag + ">");
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      flush();
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i += 1; }
+      out.push("<blockquote>" + inline(buf.join(" ")) + "</blockquote>");
+      continue;
+    }
+    para.push(line.trim());
+    i += 1;
+  }
+  flush();
+  return out.join("");
+}
+
+function isTableStart(lines, i) {
+  if (!lines[i].includes("|")) return false;
+  const sep = lines[i + 1];
+  return !!sep && sep.includes("-") && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(sep);
+}
+
+function splitRow(line) {
+  return line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
+}
+
+function inline(text) {
+  let t = esc(text);
+  t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+  t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
+    // Relative targets are allowed on purpose: a file's links point at its
+    // neighbours, and this page is read by the people writing those files.
+    const ok = /^(https?:|\.{0,2}\/|#|\/)/.test(href) && !/["'<>]/.test(href);
+    return ok
+      ? "<a href='" + href + "' target='_blank' rel='noreferrer'>" + label + "</a>"
+      : label;
+  });
+  return t;
 }
 function send(frame) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
