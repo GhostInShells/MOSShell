@@ -146,3 +146,25 @@ async def test_toggle_reaches_the_gate(store, signals):
         assert toggles == [False]
     finally:
         await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_layout_is_the_model_side_of_the_presentation_contract(store, signals):
+    surface = await _surface(store, signals)
+    try:
+        # the default is stated, not implied — the page can always name its author
+        assert surface.layout_state() == ("page", "default")
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            snap = await _recv(ws, "snapshot")
+            assert snap["layout"] == "page"
+            assert snap["layout_by"] == "default"
+            # every connected page learns the change, so the marker cannot lie
+            assert await surface.set_layout("split") == "split"
+            frame = await _recv(ws, "layout")
+            assert frame["layout"] == "split"
+            assert frame["by"] == "model"
+        assert surface.layout_state() == ("split", "model")
+        with pytest.raises(ValueError):
+            await surface.set_layout("cinema")
+    finally:
+        await surface.stop()

@@ -63,7 +63,7 @@ async def test_disabled_mode_takes_the_commands_off_the_interface(store):
 
 @pytest.mark.asyncio
 async def test_open_registers_a_thread_and_refuses_an_escape(store, tmp_path):
-    chan, _ = _channel(store, FakeSubprocesses())
+    chan, rec = _channel(store, FakeSubprocesses())
     async with chan.bootstrap() as runtime:
         out = await runtime.execute_command(
             "open", args=("dev", "."), kwargs={"description": "build"}
@@ -71,6 +71,9 @@ async def test_open_registers_a_thread_and_refuses_an_escape(store, tmp_path):
         assert "dev" in out
         listed = await runtime.execute_command("threads")
         assert "dev" in listed
+        # an open page learns the thread list only when it is pushed — without
+        # this, every card in the new thread loses its thread row there
+        assert rec.thread_syncs == 1
 
         with pytest.raises(Exception):
             await runtime.execute_command("open", args=("bad", "../outside"))

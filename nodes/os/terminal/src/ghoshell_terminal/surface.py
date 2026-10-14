@@ -304,7 +304,7 @@ class TerminalSurface:
         except KeyError:
             await self.broadcast({"type": "error", "text": f"no thread {name!r}"})
             return
-        await self._broadcast_threads()
+        await self.sync_threads()
         # Trusting a thread also settles what is already waiting in it — the
         # human's "auto" means "run everything here", including cards that were
         # issued before the switch was flipped.
@@ -342,7 +342,15 @@ class TerminalSurface:
             return
         await self.broadcast({"type": "ground", "thread": thread, "text": str(view)})
 
-    async def _broadcast_threads(self) -> None:
+    async def sync_threads(self) -> None:
+        """Push the thread list to every open page.
+
+        A page only learns the threads from the snapshot it connected with, so
+        anything that *adds* a thread — the channel's ``open()``, the human's
+        auto switch — has to say so. Without this the detail panel silently
+        drops a card's thread row (name, cwd, auto, ground), because the page
+        looks the thread up in a map that was never updated.
+        """
         await self.broadcast({
             "type": "threads",
             "threads": [t.model_dump(mode="json") for t in self._store.threads()],

@@ -282,6 +282,7 @@ class DocStore:
         text: str = "",
         payload: str = "",
         state: str = "applied",
+        fact: str = "",
     ) -> Action:
         n = thread.actions[-1].n + 1 if thread.actions else 1
         action = Action(
@@ -289,6 +290,7 @@ class DocStore:
             kind=kind,
             author=author,
             label=label,
+            fact=fact,
             state=state,
             text=text,
             payload=payload,
@@ -313,6 +315,7 @@ class DocStore:
         payload: str = "",
         author: Author = "g",
         state: str = "applied",
+        fact: str = "",
     ) -> Action:
         """Append an action that carries no content change (open / read / export).
 
@@ -322,7 +325,14 @@ class DocStore:
         """
         thread = self._require_live(thread_id)
         return self._add(
-            thread, kind, label, author, text=text, payload=payload, state=state
+            thread,
+            kind,
+            label,
+            author,
+            text=text,
+            payload=payload,
+            state=state,
+            fact=fact,
         )
 
     # -- streaming mutations (write / append) -------------------------------
@@ -371,6 +381,7 @@ class DocStore:
         ops: list[tuple[str, str]],
         label: str = "",
         author: Author = "g",
+        fact: str = "",
     ) -> list[Action]:
         """Apply str_replace ops in order — one card per op.
 
@@ -391,13 +402,21 @@ class DocStore:
                 author,
                 text=new,
                 payload=json.dumps({"old_str": old, "new_str": new}, ensure_ascii=False),
+                fact=fact,
             )
             action.effect = effect_of(before, after)
             out.append(action)
         self._mirror(thread)
         return out
 
-    def rewind(self, thread_id: str, target: int, author: Author = "g") -> Action:
+    def rewind(
+        self,
+        thread_id: str,
+        target: int,
+        author: Author = "g",
+        label: str = "",
+        fact: str = "",
+    ) -> Action:
         """Append an ordinary action that puts the text back where ``target`` left it.
 
         ``0`` means the baseline. The target must be an action that actually moved
@@ -409,9 +428,10 @@ class DocStore:
         action = self._add(
             thread,
             "rewind",
-            f"rewind to v{target}",
+            label or f"rewind to v{target}",
             author,
             payload=str(target),
+            fact=fact or f"→ v{target}",
         )
         action.effect = effect_of(before, after)
         self._mirror(thread)

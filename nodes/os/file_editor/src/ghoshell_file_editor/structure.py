@@ -100,7 +100,17 @@ class Action:
     kind: Kind
     author: Author
     label: str = ""
-    """The human-facing name of what this action did — the card's title."""
+    """The human-facing name of what this action did — the card's title.
+
+    Two readers, one card: ``label`` is *why* — the model's motive, written by the
+    model and empty when it gave none. ``fact`` is *what* — the mechanics, always
+    filled in by the channel, never by hand. A card that shows only the mechanics
+    ("read all") tells the human nothing about whether it is worth opening; a card
+    that shows only a motive hides what actually happened.
+    """
+
+    fact: str = ""
+    """The mechanical summary: lines read, ``+a −r`` for an edit, ``→ path``."""
 
     state: ActionState = "applied"
     text: str = ""
@@ -251,6 +261,34 @@ def side_effect(action: Action) -> str:
     if action.kind == "export" and action.payload:
         return f"disk — writes {action.payload}"
     return base
+
+
+def change_stat(effect: Effect | None) -> str:
+    """How much text moved: ``+3 −1 lines``, or ``no change``.
+
+    Counted from the unified diff, so a rewrite that touches everything reads
+    differently from one that touches one line — which is the whole reason the
+    number is on the card.
+    """
+    if effect is None:
+        return ""
+    lines = effect.diff.splitlines()
+    # Drop the two file headers positionally: a *content* line that happens to
+    # start with "---" arrives as "----" and must still count.
+    if len(lines) >= 2 and lines[0].startswith("---") and lines[1].startswith("+++"):
+        lines = lines[2:]
+    added = removed = 0
+    for line in lines:
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    parts = []
+    if added:
+        parts.append(f"+{added}")
+    if removed:
+        parts.append(f"−{removed}")
+    return (" ".join(parts) + " lines") if parts else "no change"
 
 
 def line_count(text: str) -> int:

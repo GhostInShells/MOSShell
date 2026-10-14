@@ -191,6 +191,28 @@ async def test_thread_auto_toggle_reaches_the_store(store, signals, stops):
 
 
 @pytest.mark.asyncio
+async def test_sync_threads_reaches_an_already_connected_page(store, signals, stops):
+    """A page connected before the thread existed must still learn about it.
+
+    The detail panel looks a card's thread up by name to draw its row (cwd, auto,
+    ground). If nothing pushes the list, that lookup misses and the row silently
+    vanishes — which is exactly what a thread opened mid-session used to do.
+    """
+    surface = await _surface(store, signals, stops)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            snap = await _recv(ws, "snapshot")
+            assert all(t["name"] != "late" for t in snap["threads"])
+
+            store.open_thread("late", ".")
+            await surface.sync_threads()
+            frame = await _recv(ws, "threads")
+            assert any(t["name"] == "late" for t in frame["threads"])
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
 async def test_auto_toggle_approves_pending_cards_in_the_thread(store, signals, stops):
     surface = await _surface(store, signals, stops)
     try:

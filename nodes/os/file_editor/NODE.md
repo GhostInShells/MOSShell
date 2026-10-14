@@ -39,6 +39,14 @@ leaves a card showing the same text — the human sees exactly what you saw.
 `str_replace`, `rewind`) land the moment the tag closes; nothing waits on a
 person.
 
+**Every card has two readers.** The mechanics are the node's to fill in —
+which region, how many lines, `+2 −1` for an edit, where an export lands. The
+motive is only ever the model's: the `label` on `read` / `rewind` / `export`
+(the edits already took one). Both ride the card, because a card that says only
+"read all" leaves the human unable to tell whether it is worth opening, and a
+card that shows only a motive hides what actually happened. Leave the label out
+and the title falls back to the mechanics — nothing goes blank.
+
 **The only gate is `export()`.** It returns a receipt immediately; the human
 decides on the surface, and you learn the outcome as a signal. Accepting writes
 the file and ends the thread — open a new one to keep editing that file. One
@@ -51,6 +59,12 @@ row per action with its verdict; use it to pick `n` for `rewind(n)`, which puts
 the text back where action `n` left it (`0` = the baseline) by appending an
 ordinary action, never erasing. The current version of each thread is always in
 the notice.
+
+**Presentation is split down the middle.** Which card is open is the human's
+click. How big it opens is mine: `layout()` reads the mode back, `layout("page")`
+gives the open card the whole window, `layout("split")` keeps it a side panel
+beside the list. The page carries a marker naming who chose, so a card opened at
+the wrong size never reads as an accident. Same contract as the terminal node.
 
 Boundaries worth knowing: the working copy is text-only, and only a live thread
 takes actions — after `export` it is frozen, and a thread opened with no file

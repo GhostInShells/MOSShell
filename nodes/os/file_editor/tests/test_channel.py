@@ -53,7 +53,7 @@ async def test_channel_exposes_the_command_set(store):
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "close", "read", "write", "append", "str_replace",
-            "rewind", "export", "threads", "history",
+            "rewind", "export", "threads", "history", "layout",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -221,3 +221,49 @@ async def test_notice_carries_the_current_version(store):
         notices = runtime.self_meta().named_notices
         assert "v1" in notices["thread_t"]
         assert "readme" in notices["thread_t"]
+
+
+@pytest.mark.asyncio
+async def test_layout_is_readable_and_settable(store):
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        # reading it back says who chose: the default is stated, never implied
+        out = await runtime.execute_command("layout", args=())
+        assert "page" in out and "default" in out
+
+        out = await runtime.execute_command("layout", args=("split",))
+        assert "split" in out and "model" in out
+        assert rec.layout_state() == ("split", "model")
+
+
+@pytest.mark.asyncio
+async def test_a_card_carries_the_motive_and_the_mechanics(store):
+    """Two readers, one card.
+
+    The mechanics are the node's to fill in (which region, how many lines); the
+    motive is only ever the model's. A card with just the mechanics tells the
+    human nothing about whether to open it.
+    """
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",), kwargs={"label": "doc"})
+        await runtime.execute_command("write", args=("t", chunks(["alpha\n", "beta\n"])))
+
+        await runtime.execute_command(
+            "read", args=("t",), kwargs={"label": "confirm the header"}
+        )
+        card = rec.of("action")[-1]
+        assert card["kind"] == "read"
+        assert card["label"] == "confirm the header"
+        assert card["fact"] == "all · 2 lines"
+
+        # no motive: the title falls back to the mechanics, and the fact still
+        # says what happened rather than going blank
+        await runtime.execute_command("read", args=("t",))
+        card = rec.of("action")[-1]
+        assert card["label"] == "read all"
+        assert card["fact"] == "all · 2 lines"
+
+        # an edit's fact is the size of the change, known only once it lands
+        edit = [f for f in rec.of("action") if f["kind"] == "write"][-1]
+        assert edit["fact"] == "+2 lines"

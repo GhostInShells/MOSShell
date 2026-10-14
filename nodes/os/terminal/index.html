@@ -411,6 +411,14 @@ function renderDetail(card) {
       if (groundCache.has(t.name)) {
         detailEl.append(make("pre", "t-ground-text", groundCache.get(t.name)));
       }
+    } else {
+      // A card can name a thread this page has not heard of — the list is pushed,
+      // not inferred. Say the name and say what is missing; a row that simply
+      // does not appear reads as "this card has no thread at all".
+      const tRow = make("div", "t-row");
+      tRow.append(make("span", "name", card.thread));
+      tRow.append(make("span", "cwd", "(thread not in this page's list)"));
+      detailEl.append(tRow);
     }
   }
 

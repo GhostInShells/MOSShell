@@ -33,7 +33,7 @@ from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
 
 from .projection import action_view, thread_view
 from .store import DocStore
-from .structure import Action, Thread, line_count, slice_region
+from .structure import Action, Thread, change_stat, line_count, slice_region
 
 __all__ = ["build_file_editor_channel"]
 
@@ -60,10 +60,30 @@ def _notice_name(thread_id: str) -> str:
 class _Surface(Protocol):
     async def broadcast(self, frame: dict[str, Any]) -> None: ...
 
+    def layout_state(self) -> tuple[str, str]: ...
+
+    async def set_layout(self, mode: str) -> str: ...
+
 
 class _NoSurface:
+    """Headless stand-in: no page to tell, but the knob still has a value, so a
+    test or a browser-less node reads back an answer instead of an error."""
+
+    def __init__(self) -> None:
+        self._layout, self._layout_by = "page", "default"
+
     async def broadcast(self, frame: dict[str, Any]) -> None:
         return None
+
+    def layout_state(self) -> tuple[str, str]:
+        return self._layout, self._layout_by
+
+    async def set_layout(self, mode: str) -> str:
+        chosen = (mode or "").strip().lower()
+        if chosen not in ("split", "page"):
+            raise ValueError(f"layout must be 'split' or 'page', got {mode!r}")
+        self._layout, self._layout_by = chosen, "model"
+        return chosen
 
 
 def parse_ops(raw: str) -> list[tuple[str, str]]:
@@ -195,7 +215,11 @@ def build_file_editor_channel(
             "too. Nothing asks permission except export(): the text reaches disk "
             "only once the human accepts it, and that ends the thread — open a new "
             "one to keep working on the file. history(thread) is the index of "
-            "actions on a thread."
+            "actions on a thread. Every card carries two things: the mechanics "
+            "(which region, how many lines) which the node fills in itself, and "
+            "the label — your motive, which only you can give. Write it: a card "
+            "that says only 'read all' leaves the human unable to tell whether it "
+            "is worth opening."
         )
 
     # -- lifecycle ----------------------------------------------------------
@@ -239,12 +263,17 @@ def build_file_editor_channel(
     # -- reading ------------------------------------------------------------
 
     @chan.build.command(name="read", always_observe=True, available=enabled)
-    async def read(thread: str, region: str = "") -> str:
+    async def read(thread: str, region: str = "", label: str = "") -> str:
         """Return a thread's text to you, and leave a card showing the same text.
 
         ``region`` is a line range like ``"10-40"`` (1-based, inclusive); empty
         reads the whole working copy. Reading changes nothing — but the card is
         how the human shares your view of the file instead of guessing at it.
+
+        ``label`` is the card's title: say *why* you are reading. The card always
+        carries the mechanics beside it (which region, how many lines), so the
+        motive is the part only you can supply — a card that says "read all" tells
+        the human nothing about whether it is worth opening.
         """
         target = _get_thread(thread)
         if target.state != "live":
@@ -260,7 +289,12 @@ def build_file_editor_channel(
         if len(text) > _READ_EXCERPT:
             excerpt += "\n… (truncated on the card)"
         action = store.record(
-            target.id, "read", f"read {region or 'all'}", text=excerpt, payload=region
+            target.id,
+            "read",
+            label or f"read {region or 'all'}",
+            text=excerpt,
+            payload=region,
+            fact=f"{region or 'all'} · {line_count(text)} lines",
         )
         await _card(target, action)
         if len(text) > _READ_LIMIT:
@@ -313,6 +347,9 @@ def build_file_editor_channel(
             landed = store.tail(thread, action.n)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
+        # The card says what moved as well as why: the diff is only known once the
+        # edit has landed.
+        landed.fact = change_stat(landed.effect)
         await _card(target, landed)
         await _threads()
         return (
@@ -341,6 +378,7 @@ def build_file_editor_channel(
         except (KeyError, ValueError) as e:
             CommandUtil.raise_observe(str(e))
         for action in actions:
+            action.fact = change_stat(action.effect)
             await _card(target, action)
         await _threads()
         return (
@@ -349,19 +387,21 @@ def build_file_editor_channel(
         )
 
     @chan.build.command(name="rewind", always_observe=False, available=enabled)
-    async def rewind(thread: str, n: int) -> str:
+    async def rewind(thread: str, n: int, label: str = "") -> str:
         """Put the working copy back where action ``n`` left it (``0`` = baseline).
 
         Append-only: this adds an action, it does not erase the ones after it. Use
-        history(thread) to pick ``n``.
+        history(thread) to pick ``n``. ``label`` is the card's title — say why you
+        are going back.
         """
         target = store.get(thread)
         if target is None:
             CommandUtil.raise_observe(f"no thread {thread!r} — threads() lists them")
         try:
-            action = store.rewind(thread, n)
+            action = store.rewind(thread, n, label=label)
         except (KeyError, ValueError) as e:
             CommandUtil.raise_observe(str(e))
+        action.fact = change_stat(action.effect)
         await _card(target, action)
         await _threads()
         return f"[{name}] {thread!r} v{target.version} — back to v{n}"
@@ -369,7 +409,7 @@ def build_file_editor_channel(
     # -- the one side effect ------------------------------------------------
 
     @chan.build.command(name="export", always_observe=False, available=enabled)
-    async def export(thread: str, path: str = "") -> str:
+    async def export(thread: str, path: str = "", label: str = "") -> str:
         """Propose writing the working copy to ``path`` (default: the file it was
         opened from).
 
@@ -397,10 +437,11 @@ def build_file_editor_channel(
         action = store.record(
             thread,
             "export",
-            f"export to {dest}",
+            label or f"export to {dest}",
             text=target.content,
             payload=dest,
             state=("applied" if auto else "awaiting"),
+            fact=f"→ {dest} · {line_count(target.content)} lines",
         )
         await _card(target, action)
         if auto:
@@ -499,6 +540,22 @@ def build_file_editor_channel(
         if not target.actions:
             lines.append("  (nothing yet)")
         return "\n".join(lines)
+
+    # -- presentation -------------------------------------------------------
+
+    @chan.build.command(name="layout", always_observe=True, available=enabled)
+    async def layout(mode: str = "") -> str:
+        """How an open card is shown — my half of the presentation contract.
+
+        ``split`` keeps the card list beside it; ``page`` gives it the whole
+        window. Which card is open is the human's click; this decides only how
+        big it opens, and the page says who chose it. Empty = read the mode back.
+        """
+        if not mode:
+            current, by = surface.layout_state()
+            return f"[{name}] layout: {current} (chosen by {by})"
+        chosen = await surface.set_layout(mode)
+        return f"[{name}] layout: {chosen} (chosen by model)"
 
     # -- warm state ---------------------------------------------------------
 

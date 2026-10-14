@@ -36,6 +36,11 @@ _DEBOUNCE_SECONDS = 0.4
 """A verdict is one decision. Repeated clicks inside this window are the same
 decision arriving twice, not a second one."""
 
+_LAYOUTS = ("split", "page")
+"""How an open card is shown: a side panel beside the card list, or the whole
+window. This is the model's half of the presentation contract — the human owns
+the click that opens a card, the model owns how big it opens."""
+
 
 class FileEditorSurface:
     def __init__(
@@ -59,6 +64,8 @@ class FileEditorSurface:
         self._server: Any = None
         self._decided: set[tuple[str, int]] = set()
         self._last: dict[tuple[str, int, str], float] = {}
+        self._layout = "page"
+        self._layout_by = "default"
         self.port = port
 
     @property
@@ -76,6 +83,33 @@ class FileEditorSurface:
                 await client.send(payload)
             except Exception:
                 self._clients.discard(client)
+
+    def snapshot(self) -> dict[str, Any]:
+        """The full state a connecting page needs — store plus surface-owned knobs."""
+        frame = snapshot(self._store)
+        frame["layout"] = self._layout
+        frame["layout_by"] = self._layout_by
+        return frame
+
+    # -- layout (the model's side of the presentation contract) -------------
+
+    def layout_state(self) -> tuple[str, str]:
+        return self._layout, self._layout_by
+
+    async def set_layout(self, mode: str) -> str:
+        """Set how an open card is shown, and remember who chose it.
+
+        Every page is told, so the marker can name its author instead of hiding
+        the decision — a card opened in the wrong size must not look like an
+        accident.
+        """
+        chosen = (mode or "").strip().lower()
+        if chosen not in _LAYOUTS:
+            raise ValueError(f"layout must be one of {_LAYOUTS}, got {mode!r}")
+        self._layout = chosen
+        self._layout_by = "model"
+        await self.broadcast({"type": "layout", "layout": chosen, "by": self._layout_by})
+        return chosen
 
     # -- uplink -------------------------------------------------------------
 
@@ -183,7 +217,7 @@ class FileEditorSurface:
         self._clients.add(connection)
         try:
             await connection.send(
-                json.dumps(snapshot(self._store), ensure_ascii=False)
+                json.dumps(self.snapshot(), ensure_ascii=False)
             )
             async for raw in connection:
                 try:

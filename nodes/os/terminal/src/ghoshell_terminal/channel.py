@@ -81,6 +81,8 @@ class _Surface(Protocol):
 
     def layout_state(self) -> tuple[str, str]: ...
 
+    async def sync_threads(self) -> None: ...
+
 
 class _NoSurface:
     async def broadcast(self, frame: dict[str, Any]) -> None:
@@ -91,6 +93,9 @@ class _NoSurface:
 
     def layout_state(self) -> tuple[str, str]:
         return ("page", "default")
+
+    async def sync_threads(self) -> None:
+        return None
 
 
 def _notice_name(thread: str) -> str:
@@ -393,6 +398,9 @@ def build_terminal_channel(
             t = store.open_thread(thread, cwd, description)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
+        # A page only knows the threads it saw at connect: say it out loud, or
+        # every card in this thread loses its thread row on an open page.
+        await surface.sync_threads()
         return f"thread {t.name!r} opened @ {t.cwd}"
 
     @chan.build.command(name="threads", always_observe=True, available=enabled)

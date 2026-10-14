@@ -106,9 +106,16 @@ class Recorder:
         self.frames: list[dict] = []
         self.signals: list[object] = []
         self.layout = "split"
+        # how many times the channel asked the page to re-read the thread list
+        self.thread_syncs = 0
 
     async def broadcast(self, frame: dict) -> None:
         self.frames.append(frame)
+
+    async def sync_threads(self) -> None:
+        """The channel says "the thread list changed"; the real surface owns the
+        frame, so the stand-in only counts the request."""
+        self.thread_syncs += 1
 
     async def set_layout(self, mode: str) -> str:
         """The channel hands the mode over; the real surface owns the broadcast."""

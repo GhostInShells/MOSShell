@@ -29,12 +29,18 @@ def _dialogue_view(action: Action) -> list[dict[str, Any]]:
 
 
 def action_view(action: Action) -> dict[str, Any]:
-    """A card: identity plus the mechanical effect line. No content."""
+    """A card: identity, the mechanical fact, and the model's motive. No content.
+
+    ``label`` is why (the model's, may be empty), ``fact`` is what (the machine's,
+    always filled) — the card needs both, or the human is asked to open something
+    without knowing whether it is worth opening.
+    """
     return {
         "n": action.n,
         "kind": action.kind,
         "author": action.author,
         "label": action.label,
+        "fact": action.fact,
         "state": action.state,
         "effect": side_effect(action),
         "at": action.at,

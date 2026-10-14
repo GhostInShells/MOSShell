@@ -26,3 +26,7 @@ frame:
     - "What language and voice does this conversation call for?"
     - "What are we doing together right now — the live task, not the project background?"
     - "What has this session already established that must survive compaction?"
+    # D14: silence is paid for out loud. Speech runs slower than my tokens, so a
+    # spoken line buys the quiet stretch I work in — this question is the check
+    # that asks whether I bought enough of it before going heads-down.
+    - "What was the last thing they heard from me, and how long have I been working without saying anything since?"
