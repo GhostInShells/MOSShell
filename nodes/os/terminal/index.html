@@ -54,14 +54,27 @@
   .conn { font-size: 14px; color: var(--dim); }
   .conn.live { color: var(--run); }
 
-  .t-row { display: flex; align-items: center; gap: 6px; }
-  .t-row .name { color: var(--fg); font-weight: 600; }
-  .t-row .cwd { color: var(--done); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .t-row button {
+  /* A thread is not one more fact about the card: it is the space the command
+     belongs to, so it is named in the same breath as the directory it points at
+     rather than announced by a section header of its own. The rule on the left
+     marks it as one thing; the word "thread" says what that thing is. */
+  .t-dir {
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px;
+    border-left: 3px solid var(--line); padding: 2px 0 2px 10px;
+  }
+  .t-dir .label { color: var(--dim); font-size: 14px; text-transform: uppercase; letter-spacing: .06em; }
+  .t-dir .name { color: var(--fg); font-weight: 600; font-size: 16px; }
+  .t-dir .cwd { color: var(--done); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .t-dir .gone { color: var(--dim); font-size: 14px; }
+  /* One action per line: a control and the words that explain it stay a unit. */
+  .t-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; }
+  .t-act { display: inline-flex; align-items: baseline; gap: 8px; }
+  .t-act button {
     background: transparent; border: 1px solid var(--line); color: var(--dim);
     border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: 14px;
   }
-  .t-row button.on { color: var(--run); border-color: var(--run); }
+  .t-act button.on { color: var(--run); border-color: var(--run); }
+  .t-act .t-note { color: var(--dim); font-size: 14px; }
   .t-ground { margin-top: 4px; }
   .t-ground-text {
     color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit;
@@ -87,6 +100,11 @@
     background: var(--panel); overflow-y: auto; padding: 14px;
   }
   .detail.open { display: flex; flex: 1 1 auto; }
+  /* Every block keeps its own size and the panel is what scrolls. Letting flex
+     squeeze instead was worse: with ground and analyze both open, the command
+     and the output were flattened to a few lines each — the two blocks that
+     carry the evidence became unreadable exactly when there was most to read. */
+  .detail > * { flex: none; }
   /* A selected card is the subject of the window: it takes the room, and the list
      shrinks to just enough to switch cards. Selection decides this, not width. */
   main:has(> .detail.open) > .stream { flex: 0 0 clamp(220px, 26%, 340px); }
@@ -168,14 +186,26 @@
   .d-title { font-weight: 600; font-size: 16px; }
   .d-close { margin-left: auto; background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
   .d-close:hover { color: var(--fg); }
+  /* An open card can cover the list, so the detail has to carry the one thing the
+     list would have told you: more commands arrived while you were reading. State,
+     not a signal — the page already has every card; this only counts the ones that
+     came after this one, and turns loud when one of them is waiting on a verdict. */
+  .d-new {
+    margin-left: auto; background: transparent; border: 1px solid var(--line);
+    color: var(--dim); border-radius: 8px; padding: 0 8px; cursor: pointer;
+    font: inherit; font-size: 14px; white-space: nowrap;
+  }
+  .d-new:hover { color: var(--fg); }
+  .d-new.ask { color: var(--wait); border-color: var(--wait); }
+  /* Close and the new-cards chip share the right end as one group, so the × keeps
+     its place whether or not the chip is showing — anchored by the group, not by
+     whichever of the two happens to be visible. */
+  .d-right { margin-left: auto; display: flex; align-items: baseline; gap: 6px; }
+  .d-right .d-close { margin-left: 0; }
   .d-desc { color: var(--dim); margin: 2px 0 10px; }
   .d-meta { color: var(--dim); font-size: 14px; }
   .d-meta b { color: var(--fg); font-weight: 600; }
   .d-meta div { margin: 1px 0; }
-  .d-section {
-    margin: 14px 0 4px; color: var(--dim); font-size: 14px; text-transform: uppercase;
-    letter-spacing: .06em; border-top: 1px solid var(--line); padding-top: 10px;
-  }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
   /* The two blocks that carry a shell's own voice use the shell's palette: a
      near-black screen, a phosphor prompt, and a foreground dim enough that a page
@@ -184,9 +214,33 @@
     background: #0b0e10; border: 1px solid #1d232a; border-radius: 4px;
     padding: 8px 10px;
   }
-  .d-cmd { color: #cbd7cd; }
+  /* Both blocks are bounded: a block that carries the shell's own voice can be
+     any length, so without a ceiling a long command would push the verdict, the
+     thread row and the output clean off the panel — the block that needs reading
+     most is the one that got scrolled away. Cap each and let it scroll inside. */
+  /* flex:none so the cap is what bounds it, not the panel squeezing it flat:
+     the command is the thing under review and must keep showing several lines,
+     while the panel as a whole scrolls if the rest does not fit. */
+  .d-cmd { color: #cbd7cd; max-height: 30vh; overflow-y: auto; flex: none; }
   .d-cmd::before { content: "❯ "; color: #6fbf73; }
   .d-out { color: #b3bfb5; max-height: 46vh; overflow-y: auto; }
+  /* Three lenses on one card — output / analyze / ground — as peers that take
+     turns instead of stacking. Room here is scarce and the three are never wanted
+     at once: reading the folder's notes, or asking a second model, is exactly when
+     the output stops mattering. The command and the thread above stay put, because
+     they are what all three read. */
+  .tabs { display: flex; gap: 4px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .tabs button {
+    background: transparent; border: 1px solid var(--line); border-radius: 3px;
+    color: var(--dim); padding: 1px 10px; cursor: pointer; font: inherit; font-size: 14px;
+  }
+  .tabs button:hover { color: var(--fg); }
+  .tabs button.on { color: var(--accent); border-color: var(--accent); }
+  /* The body of the open tab is the one part that grows: it takes what is left
+     below the pinned blocks and scrolls inside, so a long output and a long
+     conversation never resize the things above them. */
+  .detail > .tab-body { flex: 1 1 auto; min-height: 160px; overflow-y: auto; margin-top: 8px; }
+  .tab-hint { color: var(--dim); }
   .d-analyze { display: flex; flex-direction: column; gap: 6px; }
   .a-hist { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }
   .a-q { color: var(--accent); }
@@ -231,6 +285,29 @@ const cards = new Map();
 const nodes = new Map();
 const threads = new Map();
 const groundCache = new Map();
+// Threads we have already asked for notes but not yet heard back from — without
+// this the tab would re-send on every re-render while the answer is in flight.
+const groundPending = new Set();
+// Which of the card's three lenses is showing. Output is the default because the
+// output is why the card exists; the other two are things you go and look at.
+let detailTab = "output";
+// The cards that already existed when this detail opened. Everything else came in
+// while the human was reading — the chip in the header is that difference.
+let detailOpenedIds = new Set();
+let newChip = null;
+
+// Kept in one place so a card arriving and a card re-rendering agree on the count.
+function updateNewChip() {
+  if (!newChip) return;
+  const fresh = [...cards.keys()].filter((id) => !detailOpenedIds.has(id));
+  const asking = fresh.filter((id) => (cards.get(id) || {}).state === "awaiting").length;
+  newChip.hidden = fresh.length === 0;
+  newChip.textContent = "+" + fresh.length + " new";
+  newChip.classList.toggle("ask", asking > 0);
+  newChip.title = asking > 0
+    ? fresh.length + " command(s) arrived since you opened this card, " + asking + " waiting for your verdict — click to go back to the list"
+    : fresh.length + " command(s) arrived since you opened this card — click to go back to the list";
+}
 const analyzeHistory = new Map();
 const analyzePending = new Set();
 let analyzeAvailable = true;
@@ -311,6 +388,9 @@ function renderCard(card) {
   box.querySelector(".cmd .txt").textContent = card.content ? card.content : "(empty)";
   renderActions(box.querySelector(".actions"), card);
   if (selectedId === card.id) renderDetail(card);
+  // Another card moved while this one is open: the header chip is the only place
+  // that can say so, and it costs a text update instead of a re-render.
+  else if (selectedId != null) updateNewChip();
 }
 
 function renderActions(host, card) {
@@ -354,10 +434,16 @@ function renderDetail(card) {
 
   const head = make("div", "d-head");
   head.append(make("span", "d-title", "#" + card.id + "  " + (card.title || "")));
+  newChip = make("button", "d-new", "");
+  newChip.title = "commands that arrived while you were reading this card — click to go back to the list";
+  newChip.addEventListener("click", () => closeDetail());
+  newChip.hidden = true;
   const close = make("button", "d-close", "×");
   close.title = "close this card and go back to the list";
   close.addEventListener("click", () => closeDetail());
-  head.append(close);
+  const right = make("div", "d-right");
+  right.append(newChip, close);
+  head.append(right);
   detailEl.append(head);
 
   // An open card covers the list, so it has to carry what the list showed: state,
@@ -381,55 +467,75 @@ function renderDetail(card) {
 
   if (card.description) detailEl.append(make("div", "d-desc", card.description));
 
-  // command first — the thing under review
-  detailEl.append(make("div", "d-section", "command"));
+  // The command leads the card and needs no banner over it: the ❯ prompt and the
+  // shell colour already say "this is the command". A section header here was one
+  // more line of furniture above the thing the human came to read.
   detailEl.append(make("pre", "d-cmd", card.content || "(empty)"));
 
-  // thread controls — visible actions, not buried in the collapsed meta
+  // thread — the space this command belongs to. Named inline (the word next to the
+  // directory is what carries the concept), then the one thing you can do to it.
   if (card.thread) {
     const t = threads.get(card.thread);
-    if (t) {
-      const tRow = make("div", "t-row");
-      tRow.append(make("span", "name", t.name));
-      if (t.cwd) tRow.append(make("span", "cwd", t.cwd));
-      const auto = make("button", t.auto ? "on" : "", "auto");
-      auto.title = "auto-approve this thread's commands";
-      auto.addEventListener("click", () => send({ type: "thread_auto", name: t.name, auto: !t.auto }));
-      tRow.append(auto);
-      const ground = make("button", "", "ground");
-      ground.title = "view this thread's cognitive field";
-      ground.addEventListener("click", () => {
-        if (groundCache.has(t.name)) {
-          groundCache.delete(t.name);
-        } else {
-          send({ type: "ground", thread: t.name });
-        }
-        renderDetail(card);
-      });
-      tRow.append(ground);
-      detailEl.append(tRow);
-      if (groundCache.has(t.name)) {
-        detailEl.append(make("pre", "t-ground-text", groundCache.get(t.name)));
-      }
-    } else {
+    const dir = make("div", "t-dir");
+    dir.append(make("span", "label", "thread"));
+    dir.append(make("span", "name", card.thread));
+    if (t && t.cwd) {
+      const cwd = make("span", "cwd", t.cwd);
+      cwd.title = t.cwd;
+      dir.append(cwd);
+    }
+    if (!t) {
       // A card can name a thread this page has not heard of — the list is pushed,
-      // not inferred. Say the name and say what is missing; a row that simply
+      // not inferred. Say the name and say what is missing; a block that simply
       // does not appear reads as "this card has no thread at all".
-      const tRow = make("div", "t-row");
-      tRow.append(make("span", "name", card.thread));
-      tRow.append(make("span", "cwd", "(thread not in this page's list)"));
-      detailEl.append(tRow);
+      dir.append(make("span", "gone", "— not in this page's list yet"));
+    }
+    detailEl.append(dir);
+    if (t) {
+      const acts = make("div", "t-actions");
+      const autoAct = make("div", "t-act");
+      const auto = make("button", t.auto ? "on" : "", t.auto ? "auto-approve: on" : "auto-approve: off");
+      auto.title = "when on, commands in this thread run without asking you";
+      auto.addEventListener("click", () => send({ type: "thread_auto", name: t.name, auto: !t.auto }));
+      autoAct.append(auto, make("span", "t-note", "run here without asking"));
+      acts.append(autoAct);
+      detailEl.append(acts);
     }
   }
 
-  // analyze — collapsible, sits between command and output
-  if (analyzeAvailable) {
-    const aDetails = makeCollapsible("analyze (By LLM Func)");
+  // Take turns, not a stack: output / analyze / ground. Nothing below the pins
+  // changes size because of what is open — the open tab owns the leftover room.
+  const tabDefs = [["output", "what the command printed"]];
+  if (analyzeAvailable) tabDefs.push(["analyze", "ask a second, zero-context model about this command"]);
+  if (card.thread) tabDefs.push(["ground", "the notes attached to this thread's folder"]);
+  // Ground belongs to the folder and survives closing the card, so it is the one
+  // tab whose content can already be stale-but-known: reuse it, do not re-ask.
+  if (detailTab === "ground" && !card.thread) detailTab = "output";
+  if (!tabDefs.some(([k]) => k === detailTab)) detailTab = "output";
+  if (tabDefs.length > 1) {
+    const strip = make("div", "tabs");
+    for (const [key, hint] of tabDefs) {
+      const b = make("button", key === detailTab ? "on" : "", key);
+      b.title = hint;
+      b.addEventListener("click", () => {
+        detailTab = key;
+        renderDetail(card);
+      });
+      strip.append(b);
+    }
+    detailEl.append(strip);
+  }
+
+  const body = make("div", "tab-body");
+  if (detailTab === "analyze" && analyzeAvailable) {
     const aBox = make("div", "d-analyze");
     const aHist = make("div", "a-hist");
     for (const turn of analyzeHistory.get(card.id) || []) {
       if (turn.q) aHist.append(make("div", "a-q", "you: " + turn.q));
       if (turn.a) aHist.append(make("div", "a-a", turn.a));
+    }
+    if (!aHist.childElementCount) {
+      aHist.append(make("div", "tab-hint", "no question yet — ask below; the answer comes from a model with no other context"));
     }
     aBox.append(aHist);
     const pending = analyzePending.has(card.id);
@@ -456,13 +562,23 @@ function renderDetail(card) {
     aRow.append(aInput);
     aRow.append(aBtn);
     aBox.append(aRow);
-    aDetails.append(aBox);
-    detailEl.append(aDetails);
+    body.append(aBox);
+  } else if (detailTab === "ground" && card.thread) {
+    if (groundCache.has(card.thread)) {
+      body.append(make("pre", "t-ground-text", groundCache.get(card.thread)));
+    } else {
+      body.append(make("div", "tab-hint", "asking this thread's folder for its notes…"));
+      // Ask once per thread: the page may re-render (a new card, a verdict) while
+      // the answer is in flight, and re-asking every time would be a loop.
+      if (!groundPending.has(card.thread)) {
+        groundPending.add(card.thread);
+        send({ type: "ground", thread: card.thread });
+      }
+    }
+  } else {
+    body.append(make("pre", "d-out", (card.output_tail || []).join("") || "(none yet)"));
   }
-
-  // output
-  detailEl.append(make("div", "d-section", "output (tail)"));
-  detailEl.append(make("pre", "d-out", (card.output_tail || []).join("") || "(none yet)"));
+  detailEl.append(body);
 
   // meta — collapsed, tagged
   const mDetails = makeCollapsible("meta");
@@ -476,9 +592,14 @@ function renderDetail(card) {
   mDetails.append(tags);
   detailEl.append(mDetails);
 
-  // latest analyze content sits at the bottom — keep it in view after re-render
-  const hist = detailEl.querySelector(".a-hist");
-  if (hist) hist.scrollTop = hist.scrollHeight;
+  // The open tab keeps its own scroll at the newest line.
+  if (detailTab === "analyze") {
+    const hist = detailEl.querySelector(".a-hist");
+    if (hist) hist.scrollTop = hist.scrollHeight;
+  } else if (detailTab === "output") {
+    body.scrollTop = body.scrollHeight;
+  }
+  updateNewChip();
 }
 
 function toggle(id) {
@@ -490,6 +611,11 @@ function toggle(id) {
 }
 function openDetail(id) {
   selectedId = id;
+  // A new card starts on its output: the lenses belong to a card, not to the page.
+  detailTab = "output";
+  // What the list showed at this moment is "already seen" — the chip counts only
+  // what arrives after, so opening a card never starts with a backlog.
+  detailOpenedIds = new Set(cards.keys());
   for (const [cid, box] of nodes) box.classList.toggle("selected", cid === id);
   const card = cards.get(id);
   if (card) renderDetail(card);
@@ -497,6 +623,7 @@ function openDetail(id) {
 }
 function closeDetail() {
   selectedId = null;
+  newChip = null;
   for (const [, box] of nodes) box.classList.remove("selected");
   detailEl.classList.remove("open");
 }
@@ -576,6 +703,7 @@ function onFrame(frame) {
       break;
     case "ground": {
       groundCache.set(frame.thread, frame.text);
+      groundPending.delete(frame.thread);
       if (selectedId != null) {
         const card = cards.get(selectedId);
         if (card && card.thread === frame.thread) renderDetail(card);
