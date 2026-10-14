@@ -146,6 +146,20 @@
   .card.s-done { border-left-color: var(--done); }
   .card.s-error, .card.s-rejected { border-left-color: var(--bad); }
   .card.s-cancelled { border-left-color: var(--done); opacity: .6; }
+  /* The list is a window on the newest work, not an archive: cards older than the
+     newest few collapse behind one line. The record is the store's audit log, so
+     nothing is lost by not drawing it — and a three-hour session must not grow a
+     list that can only be scrolled. */
+  .card.aged { display: none; }
+  .aged-more {
+    flex: none; width: min(100%, 900px); background: var(--bg);
+    border: 1px dashed var(--line); border-radius: 4px; color: var(--dim);
+    padding: 3px 10px; cursor: pointer; font: inherit; font-size: 14px;
+    /* Sticky: the list follows the newest card, so a fold marker that scrolled
+       away with the oldest ones would be an affordance nobody can reach. */
+    position: sticky; top: 0; z-index: 2;
+  }
+  .aged-more:hover { color: var(--fg); }
   @keyframes pulse { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px rgba(224,163,62,.14); } }
 
   .row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
@@ -308,6 +322,37 @@ function updateNewChip() {
     ? fresh.length + " command(s) arrived since you opened this card, " + asking + " waiting for your verdict — click to go back to the list"
     : fresh.length + " command(s) arrived since you opened this card — click to go back to the list";
 }
+
+// How many of the newest cards stay in the list. Older settled ones fold behind a
+// single line; a card still waiting for a verdict is never folded away, however
+// old — it is the one thing in the list that needs the human.
+const AGED_KEEP = 12;
+const LIVE_STATES = new Set(["awaiting", "running"]);
+let showEarlier = false;
+let agedEl = null;
+
+function refreshAged() {
+  const ids = [...nodes.keys()];
+  const cutoff = Math.max(0, ids.length - AGED_KEEP);
+  let folded = 0;
+  ids.forEach((id, i) => {
+    const card = cards.get(id) || {};
+    const foldable = i < cutoff && !LIVE_STATES.has(card.state);
+    if (foldable) folded += 1;
+    const box = nodes.get(id);
+    if (box) box.classList.toggle("aged", foldable && !showEarlier);
+  });
+  if (!agedEl) {
+    agedEl = make("button", "aged-more", "");
+    agedEl.addEventListener("click", () => {
+      showEarlier = !showEarlier;
+      refreshAged();
+    });
+    streamEl.prepend(agedEl);
+  }
+  agedEl.hidden = folded === 0;
+  agedEl.textContent = showEarlier ? "hide the earlier " + folded + " — back to the top" : "earlier: " + folded + " — show";
+}
 const analyzeHistory = new Map();
 const analyzePending = new Set();
 let analyzeAvailable = true;
@@ -377,6 +422,10 @@ function buildCard(card) {
 
 function renderCard(card) {
   let box = nodes.get(card.id);
+  // Follow the newest card only if the human was already at the bottom: yanking a
+  // reader who scrolled up is worse than letting them find it (the header chip and
+  // this list's own bottom are how they get told).
+  const stick = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 48;
   if (!box) {
     box = buildCard(card);
     nodes.set(card.id, box);
@@ -387,6 +436,8 @@ function renderCard(card) {
   box.querySelector(".badge").textContent = card.state;
   box.querySelector(".cmd .txt").textContent = card.content ? card.content : "(empty)";
   renderActions(box.querySelector(".actions"), card);
+  refreshAged();
+  if (stick) streamEl.scrollTop = streamEl.scrollHeight;
   if (selectedId === card.id) renderDetail(card);
   // Another card moved while this one is open: the header chip is the only place
   // that can say so, and it costs a text update instead of a re-render.
