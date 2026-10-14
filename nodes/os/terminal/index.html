@@ -836,6 +836,20 @@ function connect() {
   };
 }
 connect();
+
+// A window left open across an edit keeps running the old page — the change looks
+// like it never happened, and the human cannot easily refresh a frame that lives
+// inside the screen as an adopted window. So ask the server for the page's
+// fingerprint instead: pull-based, cheap, and the window updates itself.
+let pageVer = null;
+setInterval(async () => {
+  try {
+    const d = await (await fetch("/__ver", { cache: "no-store" })).json();
+    if (!d.ver) return;
+    if (pageVer === null) { pageVer = d.ver; return; }
+    if (d.ver !== pageVer) location.reload();
+  } catch (e) { /* the server is not up yet — ask again next tick */ }
+}, 3000);
 </script>
 </body>
 </html>
