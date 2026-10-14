@@ -16,12 +16,18 @@
     --wait: #e0a33e;
     --bad: #d9645f;
     --done: #5c6675;
+    /* Type tokens: one scale, named, shared with the terminal node. Nothing here
+       should be a bare pixel value again — a page we may tune at runtime has to
+       state its sizes somewhere readable. */
+    --fs-body: 15px;
+    --fs-small: 14px;
+    --fs-title: 16px;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; height: 100vh; display: flex; flex-direction: column;
     background: var(--bg); color: var(--fg);
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: var(--fs-body)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   header {
     display: flex; align-items: center; gap: 10px;
@@ -38,7 +44,7 @@
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip {
     background: transparent; color: var(--done); border: 1px solid var(--line);
-    border-radius: 10px; padding: 2px 10px; cursor: pointer; font: inherit; font-size: 12px;
+    border-radius: 10px; padding: 2px 10px; cursor: pointer; font: inherit; font-size: var(--fs-small);
   }
   .chip.live { color: var(--run); border-color: var(--run); }
   .chip.on { color: var(--accent); border-color: var(--accent); background: rgba(110,168,254,.08); }
@@ -55,26 +61,26 @@
     display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px;
     border-left: 3px solid var(--line); padding: 2px 0 2px 10px; margin: 10px 0 0;
   }
-  .t-dir .label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .t-dir .label { color: var(--dim); font-size: var(--fs-small); text-transform: uppercase; letter-spacing: .06em; }
   .t-dir .name { color: var(--fg); font-weight: 600; }
   .t-dir .path {
-    color: var(--done); font-size: 12px; min-width: 0;
+    color: var(--done); font-size: var(--fs-small); min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .t-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; }
   .t-act { display: inline-flex; align-items: baseline; gap: 8px; }
   .t-act button {
     background: transparent; border: 1px solid var(--line); color: var(--dim);
-    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: 12px;
+    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: var(--fs-small);
   }
   .t-act button.on { color: var(--run); border-color: var(--run); }
-  .t-act .t-note { color: var(--dim); font-size: 12px; }
+  .t-act .t-note { color: var(--dim); font-size: var(--fs-small); }
   .t-act .t-note.unsaved { color: var(--wait); }
   /* Where the file stands, one fact per line: a horizontal run of them put a long
      path in charge of the width, and the words at the other end fell off. */
   .t-state { display: flex; flex-direction: column; gap: 2px; }
   .t-state .t-note { overflow-wrap: anywhere; }
-  .conn { font-size: 12px; color: var(--dim); }
+  .conn { font-size: var(--fs-small); color: var(--dim); }
   .conn.live { color: var(--run); }
 
   main { flex: 1; display: flex; min-height: 0; position: relative; }
@@ -91,7 +97,7 @@
     position: absolute; inset: 0; width: auto; border-left: 0; z-index: 3;
   }
   .layout-mark {
-    color: var(--dim); font-size: 12px; min-width: 0;
+    color: var(--dim); font-size: var(--fs-small); min-width: 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .layout-mark.model { color: var(--accent); }
@@ -109,7 +115,7 @@
   .aged-more {
     flex: none; width: min(100%, 900px); background: var(--bg);
     border: 1px dashed var(--line); border-radius: 4px; color: var(--dim);
-    padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+    padding: 3px 10px; cursor: pointer; font: inherit; font-size: var(--fs-small);
     position: sticky; top: 0; z-index: 2;
   }
   .aged-more:hover { color: var(--fg); }
@@ -124,16 +130,16 @@
   @keyframes pulse { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px rgba(224,163,62,.14); } }
 
   .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .kind { font-size: 11px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--accent); flex: none; }
-  .thread-tag { color: var(--done); font-size: 12px; flex: none; }
+  .kind { font-size: var(--fs-small); padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--accent); flex: none; }
+  .thread-tag { color: var(--done); font-size: var(--fs-small); flex: none; }
   .title { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Two readers on one card: the title is the model's motive, the fact line is
      what actually happened. Neither replaces the other. */
   .fact {
-    color: var(--dim); font-size: 12px; margin-top: 3px;
+    color: var(--dim); font-size: var(--fs-small); margin-top: 3px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .badge { margin-left: auto; font-size: 11px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
+  .badge { margin-left: auto; font-size: var(--fs-small); padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
   .badge.s-awaiting { color: var(--wait); border-color: var(--wait); }
   .badge.s-written { color: var(--run); border-color: var(--run); }
   .badge.s-rejected, .badge.s-failed { color: var(--bad); border-color: var(--bad); }
@@ -153,8 +159,8 @@
   /* The title gives way, never the close button: a long label used to push the ×
      off the panel, and the × is the one control that gets you back to the list. */
   .d-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-  .d-title { font-weight: 600; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .d-sub { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+  .d-title { font-weight: 600; font-size: var(--fs-title); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .d-sub { color: var(--dim); font-size: var(--fs-small); overflow-wrap: anywhere; }
   .d-head .d-close { flex: none; margin-left: auto; }
   .d-close { margin-left: auto; background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
   .d-close:hover { color: var(--fg); }
@@ -162,13 +168,13 @@
   .tabs { display: flex; gap: 6px; padding: 10px 14px 0; }
   .tab {
     background: transparent; color: var(--dim); border: 1px solid var(--line);
-    border-radius: 10px; padding: 2px 12px; cursor: pointer; font: inherit; font-size: 12px;
+    border-radius: 10px; padding: 2px 12px; cursor: pointer; font: inherit; font-size: var(--fs-small);
   }
   .tab.on { color: var(--accent); border-color: var(--accent); background: rgba(110,168,254,.08); }
 
   .effect-line {
     margin: 8px 14px 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px;
-    color: var(--dim); font-size: 12px; background: var(--bg);
+    color: var(--dim); font-size: var(--fs-small); background: var(--bg);
   }
   .effect-line b { color: var(--fg); font-weight: 600; }
 
@@ -176,17 +182,17 @@
   /* The document is the only thing here that is *content*: it gets a frame and a
      name, so nothing has to be guessed at from its weight on the page. */
   .doc .doc-label {
-    color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); font-size: var(--fs-small); text-transform: uppercase; letter-spacing: .06em;
     margin: 0 0 6px;
   }
   .doc .markdown {
-    color: var(--fg); font-size: 14px; line-height: 1.7;
+    color: var(--fg); font-size: var(--fs-body); line-height: 1.7;
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
     padding: 12px 14px;
   }
   .doc .markdown h1, .doc .markdown h2, .doc .markdown h3 { margin: 18px 0 8px; }
   .doc .markdown p { margin: 8px 0; }
-  .doc .markdown code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .doc .markdown code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-small); }
   .doc .markdown pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
   .doc .markdown ul, .doc .markdown ol { padding-left: 24px; }
   /* The pieces our own renderer emits beyond prose. A table is a table, not a row
@@ -208,9 +214,9 @@
      prose, and not a heading. */
   .doc .frontmatter {
     color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit;
-    font-size: 13px; border-left: 3px solid var(--line); padding: 6px 0 6px 10px; margin: 0 0 12px;
+    font-size: var(--fs-small); border-left: 3px solid var(--line); padding: 6px 0 6px 10px; margin: 0 0 12px;
   }
-  .dialogue { margin: 4px 14px 0; color: var(--dim); font-size: 12px; }
+  .dialogue { margin: 4px 14px 0; color: var(--dim); font-size: var(--fs-small); }
   .dialogue b { color: var(--accent); }
   .hint { color: var(--dim); padding: 16px; }
   .loading { color: var(--done); padding: 16px; }
@@ -223,7 +229,7 @@
   .hist-row:hover { background: var(--bg); }
   .hist-row .n { color: var(--dim); flex: none; }
   .hist-row .k { color: var(--accent); flex: none; width: 90px; }
-  .hist-row .st { margin-left: auto; color: var(--dim); font-size: 11px; }
+  .hist-row .st { margin-left: auto; color: var(--dim); font-size: var(--fs-small); }
   .hist-row.sel { background: var(--bg); box-shadow: inset 2px 0 0 var(--accent); }
 </style>
 </head>
