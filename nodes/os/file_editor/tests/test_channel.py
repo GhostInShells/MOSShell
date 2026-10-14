@@ -149,8 +149,13 @@ async def test_export_returns_a_receipt_and_waits_for_approval(store, tmp_path):
         store.settle("t", exp.n, "accept")
         await _until(target.exists)
         assert target.read_text() == "final\n"
-        assert store.get("t").state == "exported"
-        assert "exported" in _signal_text(rec)
+        # The thread stays open, and the notice says which version is on disk —
+        # "I already exported" is the belief that goes stale otherwise.
+        t = store.get("t")
+        assert t.state == "live"
+        assert t.exported_at == t.version
+        assert not t.unsaved
+        assert "wrote v" in _signal_text(rec)
 
 
 @pytest.mark.asyncio
@@ -164,9 +169,10 @@ async def test_auto_export_writes_without_asking(store, tmp_path):
         store.set_thread_auto("t", True)
         out = await runtime.execute_command("export", args=("t",))
         assert "auto-exporting" in out
-        await _until(lambda: store.get("t").state == "exported")
+        await _until(lambda: store.get("t").exported_at == store.get("t").version)
         assert target.read_text() == "base\nx\n"
-        assert "exported" in _signal_text(rec)
+        assert store.get("t").state == "live", "auto-export does not close the thread"
+        assert "wrote v" in _signal_text(rec)
 
 
 @pytest.mark.asyncio

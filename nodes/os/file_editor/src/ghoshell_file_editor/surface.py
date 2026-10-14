@@ -16,6 +16,7 @@ is free rather than an interruption.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections.abc import Callable
@@ -208,10 +209,28 @@ class FileEditorSurface:
             response = connection.respond(200, html)
             del response.headers["Content-Type"]
             response.headers["Content-Type"] = "text/html; charset=utf-8"
+            # A reload must show the page as it is on disk. Without this the browser
+            # may keep the old one, and a change looks like it never happened.
+            response.headers["Cache-Control"] = "no-store"
             return response
         if path == "/ws":
             return None
+        if path == "/__ver":
+            # The page's fingerprint, so an open window can tell it runs old code.
+            # Pull-based and cheap: the client asks, the server hashes the file,
+            # nobody has to remember to refresh. Same mechanism as the screen.
+            response = connection.respond(200, json.dumps({"ver": self._page_ver()}))
+            del response.headers["Content-Type"]
+            response.headers["Content-Type"] = "application/json"
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
         return connection.respond(404, "not found")
+
+    def _page_ver(self) -> str:
+        try:
+            return hashlib.sha1(self._html_path.read_bytes()).hexdigest()[:10]
+        except OSError:
+            return ""
 
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)

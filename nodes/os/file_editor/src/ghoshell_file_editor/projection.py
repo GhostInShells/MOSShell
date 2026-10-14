@@ -60,6 +60,8 @@ def thread_view(thread: Thread) -> dict[str, Any]:
         "lines": line_count(thread.content),
         "chars": len(thread.content),
         "exported_to": thread.exported_to,
+        "exported_at": thread.exported_at,
+        "unsaved": thread.unsaved,
     }
 
 
@@ -90,4 +92,6 @@ def snapshot(store: DocStore) -> dict[str, Any]:
         "type": "snapshot",
         "threads": [thread_view(t) for t in store.threads()],
         "actions": actions[-SNAPSHOT_ACTIONS:],
+        # Unclaimed working copies the human can see for themselves.
+        "drafts": store.recoverable(),
     }

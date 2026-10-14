@@ -162,9 +162,14 @@ def build_file_editor_channel(
         )
 
     async def _threads() -> None:
-        await _emit(
-            {"type": "threads", "threads": [thread_view(t) for t in store.threads()]}
-        )
+        await _emit({
+            "type": "threads",
+            "threads": [thread_view(t) for t in store.threads()],
+            # Working copies nobody owns — a crash's leftovers. They are the
+            # model's to adopt, but the human should not have to hear about them
+            # second-hand: the chip in their header is the same list.
+            "drafts": store.recoverable(),
+        })
 
     def _notify(text: str, level: str = "info", *, next_: bool = True) -> None:
         """A must-not-lose message. ``next`` guarantees the ghost a turn."""
@@ -213,8 +218,8 @@ def build_file_editor_channel(
             "the human sees the same thing; every edit (write / append / "
             "str_replace / rewind) lands in memory immediately and becomes a card "
             "too. Nothing asks permission except export(): the text reaches disk "
-            "only once the human accepts it, and that ends the thread — open a new "
-            "one to keep working on the file. history(thread) is the index of "
+            "only once the human accepts it, and the thread stays yours after "
+            "that — keep editing and export again. history(thread) is the index of "
             "actions on a thread. Every card carries two things: the mechanics "
             "(which region, how many lines) which the node fills in itself, and "
             "the label — your motive, which only you can give. Write it: a card "
@@ -415,8 +420,9 @@ def build_file_editor_channel(
 
         Nothing reaches the disk until the human accepts — unless the thread is
         auto-trusted and this export goes to its established target, in which case
-        it writes at once. Accepting ends the thread; open a new one to keep
-        editing that file. Returns a receipt at once.
+        it writes at once. The thread stays live afterwards: an export records
+        which version is on disk, not the end of the object, so keep editing and
+        export again. Returns a receipt at once.
         """
         target = _get_thread(thread)
         if target.state != "live":
@@ -480,12 +486,12 @@ def build_file_editor_channel(
             _notify(f"export of {target.id!r} to {dest} failed: {e}", level="warning")
             return
         landed = store.finish_export(target.id, action.n, "written")
-        store.mark_exported(target.id, dest)
+        store.note_export(target.id, dest, target.version)
         await _card(target, landed)
         await _threads()
         _notify(
-            f"thread {target.id!r} exported to {dest} "
-            f"({line_count(text)} lines) — the thread is closed"
+            f"thread {target.id!r} wrote v{target.version} to {dest} "
+            f"({line_count(text)} lines) — still open, keep editing or export again"
         )
 
     async def _maybe_batch_done() -> None:
@@ -502,9 +508,11 @@ def build_file_editor_channel(
         out = []
         for t in store.threads():
             loc = t.exported_to or t.path or "(blank)"
+            written = f"wrote v{t.exported_at}" if t.exported_to else "nothing written"
             out.append(
                 f"- {t.id} [{t.state}] v{t.version} | {t.label} | "
-                f"{line_count(t.content)} lines | {loc}"
+                f"{line_count(t.content)} lines | {loc} | {written}"
+                + (" | unsaved changes" if t.unsaved else "")
             )
         return "\n".join(out) if out else "(no threads — open() one)"
 
@@ -570,8 +578,8 @@ def build_file_editor_channel(
         pending = store.pending_exports()
         out = {
             "file_editor": (
-                f"live: {len(store.live())} | exported: "
-                f"{sum(1 for t in store.threads() if t.state == 'exported')} | "
+                f"live: {len(store.live())} | closed: "
+                f"{sum(1 for t in store.threads() if t.state != 'live')} | "
                 f"export pending: {len(pending)}"
             )
         }
@@ -584,8 +592,12 @@ def build_file_editor_channel(
                 tid == t.id for tid, _ in pending
             ) else ""
             flag = " [auto]" if t.auto else ""
+            # Where the disk stands relative to the working copy — a thread that
+            # has moved past what was written says so, because "I already
+            # exported" is exactly the belief that goes stale.
+            written = f" | wrote v{t.exported_at}" if t.exported_to else ""
             out[_notice_name(t.id)] = (
-                f"v{t.version} | {t.label} | {line_count(t.content)} lines | "
+                f"v{t.version}{written} | {t.label} | {line_count(t.content)} lines | "
                 f"{loc}{waiting}{flag}"
             )
         drafts = store.recoverable()

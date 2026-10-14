@@ -49,10 +49,12 @@ and the title falls back to the mechanics — nothing goes blank.
 
 **The only gate is `export()`.** It returns a receipt immediately; the human
 decides on the surface, and you learn the outcome as a signal. Accepting writes
-the file and ends the thread — open a new one to keep editing that file. One
-exception: a thread the human has *auto-trusted* exports to its own file without
-asking — but only back to the file it was opened from; writing anywhere new is a
-new target and still asks.
+the file — and the thread stays open, because the write is a *position* on the
+line, not the end of it: keep editing the same working copy and export again.
+What landed is always readable as `exported_at`, and every thread that has moved
+past it says so. One exception to the asking: a thread the human has
+*auto-trusted* exports to its own file without asking — but only back to the file
+it was opened from; writing anywhere new is a new target and still asks.
 
 **Versions are positions, not snapshots.** `history(thread)` is the index — one
 row per action with its verdict; use it to pick `n` for `rewind(n)`, which puts

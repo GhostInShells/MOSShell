@@ -44,9 +44,10 @@ it has landed in memory; ``awaiting`` only for an export proposal; then
 mid-stream."""
 
 ThreadState = Literal["live", "exported", "closed"]
-"""``live`` while it can still be edited; ``exported`` once its text landed on
-disk (the final chapter — but the line stays traceable); ``closed`` when
-abandoned."""
+"""``live`` while it can still be edited — which is every thread that has not been
+closed, including ones already written to disk (a write records a position, not
+an ending); ``exported`` is kept only for records written before that changed;
+``closed`` when abandoned."""
 
 STREAMING_KINDS: frozenset[str] = frozenset({"write", "append"})
 """The kinds whose payload the model writes token by token."""
@@ -128,6 +129,11 @@ class Thread:
     thread that was never bound to a file (an editable object does not have to
     come from a document). ``draft`` is the working copy's name under the
     drafts directory — the crash net.
+
+    A thread outlives its exports. Writing the working copy to disk records a
+    *position* on the line (``exported_at``) rather than ending anything: the
+    file is one version among many, and the working copy keeps moving. A thread
+    ends only when it is closed.
     """
 
     id: str
@@ -144,8 +150,24 @@ class Thread:
     """The text at open time — what v0 of the line holds."""
 
     exported_to: str = ""
+    """Where the working copy was last written. Empty = never written."""
+
+    exported_at: int = 0
+    """The version that last landed on disk — a position, not a copy.
+
+    ``0`` means the baseline is what is on disk (or that nothing was written).
+    Keeping it as a version is what lets a thread stay useful after an export:
+    the file is one position on this line, and the working copy may have moved
+    past it since.
+    """
+
     actions: list[Action] = field(default_factory=list)
     created: float = field(default_factory=time.time)
+
+    @property
+    def unsaved(self) -> bool:
+        """True when the working copy has moved past what is on disk."""
+        return self.exported_at != self.version
 
     @property
     def head(self) -> Action | None:

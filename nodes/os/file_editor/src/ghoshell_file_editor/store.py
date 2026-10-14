@@ -18,10 +18,12 @@ There is deliberately no append-only log: the durable artifact is the draft, not
 the history, so the filesystem stays bounded (one small file per live thread,
 unlinked when the thread ends).
 
-A thread ends one of two ways — ``mark_exported`` after the text lands on disk
-(the final chapter) and ``close`` when it is abandoned. Ended threads keep their
-line for the human's traceability; reclamation is a separate, silent step that
-drops the oldest ended thread once they outgrow a bounded window.
+A thread ends one way — ``close``, when it is abandoned. An export does not end
+it: ``note_export`` records which version reached the disk and leaves the thread
+live, so the same working copy can keep moving and be written again. Closed
+threads keep their line for the human's traceability; reclamation is a separate,
+silent step that drops the oldest closed thread once they outgrow a bounded
+window.
 """
 
 from __future__ import annotations
@@ -51,8 +53,9 @@ MAX_LIVE_THREADS = 16
 state, not an error: the model is told to export or close."""
 
 MAX_ENDED_THREADS = 8
-"""How many ended (exported/closed) threads stay in memory for reference. Their
-durable record is the file on disk, not the line."""
+"""How many closed threads stay in memory for reference. Their durable record is
+the file on disk, not the line. Exported-but-live threads are not counted here:
+they are still open for business."""
 
 DRAFT_TTL_SECONDS = 7 * 24 * 3600
 """How long an unclaimed draft survives a crash before the sweep removes it."""
@@ -203,20 +206,17 @@ class DocStore:
         self._trim_ended()
         return thread
 
-    def mark_exported(self, thread_id: str, path: str) -> Thread:
-        """The final chapter: the text is on disk now.
+    def note_export(self, thread_id: str, path: str, n: int) -> Thread:
+        """Record that version ``n`` is now on disk. The thread stays live.
 
-        The line stays intact — the human can still trace every action that led
-        to the export. Reclamation is a separate, silent step: once ended
-        threads exceed the window, the oldest is dropped whole, not emptied in
-        place.
+        An export is a position on the line, not the end of one: the human can
+        keep working, the working copy keeps its draft, and the next export
+        writes a later version. Nothing here ends a thread — only :meth:`close`
+        does.
         """
         thread = self._require(thread_id)
         thread.exported_to = path
-        thread.state = "exported"
-        self._unlink_draft(thread)
-        self._forget_verdicts(thread_id)
-        self._trim_ended()
+        thread.exported_at = n
         return thread
 
     def _trim_ended(self) -> None:
