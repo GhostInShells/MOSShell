@@ -43,3 +43,60 @@
 - 老 ego session 被 resume 仍是 phase 2 (reentrant, 见 dolores-reentrant-ego-session.md), 今天只解了
   「非 ego session 可用」。
 - effort 持久化语义变化 (不再 enter 重置) 待实测确认。
+
+---
+
+## 后续 (2026-10-15)：决策 2 里那句「界面自然同步」没有成立
+
+> 2026-10-15 与人类架构师对齐。追查「思考档切换」的时序时回到本文档，
+> 发现决策 2 的因果链断在最后一环。
+
+**决策 2 当时的判据（原文）：**
+
+> 模型/effort 权威始终在 canonical (settings `agent-default-model` / `requestHeader`), 改 effort 由
+> `agent/request` 应用并落 `request/header` 日志, **界面自然同步** — 「每一步吃一丁点」。
+
+**核对结果：这一句不成立。** DSH Web 的界面状态不会因为我们改 agent 的 selection 而更新。
+
+### 原因：官方在 session 层还有一层，我们绕过了它
+
+读 vendor 源码（`research/source/deepseek-harness`，0.1.5-rc.2）：
+
+- `session.selectModel` 是 session controller 上的**官方 Remote RPC**
+  （`packages/api/session-controller/src/index.ts`，`@Remote('selectModel')`）。
+- 入参就是整份选择：`SessionSelectModelRequest extends ModelSelection { provider, model, reasoningEffort? }`
+  （`packages/api/session-controller/src/types.ts`）——**reasoningEffort 是模型选择的一部分**，
+  不是另一条通道。
+- 官方时序（`packages/client/ui-model-selection/README.zh.md`）：
+  「Host 会在下一次提示词组装边界为完整的 `ModelSelection` 创建快照，并负责使其对模型生效；
+  **运行中的步骤则保留已组装的选择**。」
+- UI 能同步，靠的是 Host 折叠出的**投影**：
+  `ModelSelectionProjectionState { lastUsed, pending }` → `ModelSelectionProjection { lastUsed, next }`
+  （同文件）。Web 的两个入口（`/model` 弹窗与 composer 的 model 位）共用同一份 `ModelDirectory`，
+  都经 `session.selectModel` 提交——所以文档原话是"任一入口所做的切换正是另一个入口接下来显示的"。
+
+**我们走的是 agent 层**：`installModelSelection` + plugin 自己的 `egoSelections` WeakMap，由
+`moss_reasoning` → ego 的私有 pending → `thinking/enter.effort` → plugin `declareEffort` → 请求头注入。
+整条链**在官方投影之外**，所以 UI 读不到"用户意图"那一半。
+
+### 现状：官方路已经铺好，只是没人走
+
+```
+deepseek_harness/session.py     select_model(...)  →  session/selectModel   ✅ 已实现
+deepseek_harness/surfaces.py    wrapper                                     ✅
+全仓调用者：无                                                               ❌
+```
+
+### 待对齐的判据（未决，不要当结论）
+
+1. **改走 `session.selectModel`**：让 `moss_reasoning` 与 Web UI 用同一条生效机制。代价是碰到
+   ego / plugin / client 三处，且"下一轮才生效"的时序要重新对齐一次。
+2. **只改 effort 时官方是静默的**：`packages/core/agent/src/model-selection.ts` 的 `sameRoute()`
+   只比 `provider + model` —— **只换档不会发那条 `[model changed: …]` notice**。要可见性得自己补。
+3. **未验**：UI 的"意图"半边我们碰不到；但 `lastUsed` 是"最新一次模型请求消费的选择"，
+   理论上能事后看到我们的改动。**没读 `client/ui-model-selection` 的实现，标为未验。**
+
+### 同一文档里另一条没人收的旧账
+
+本文档 Open seams 自己写着"effort 持久化语义变化（不再 enter 重置）待实测确认"——
+本次**没有**验它。
