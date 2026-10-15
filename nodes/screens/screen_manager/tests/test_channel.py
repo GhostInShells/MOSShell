@@ -24,7 +24,7 @@ async def test_channel_exposes_the_command_set():
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
             "focus", "float", "raise", "pool", "mark", "box", "circle", "arrow",
-            "text", "paint", "veil", "clear_veil",
+            "danmaku", "paint", "veil", "clear_veil",
             "mock_scene", "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
@@ -171,7 +171,7 @@ async def test_every_gesture_carries_an_id_and_a_place():
             ("box", (a,), {"region": "top"}),
             ("circle", (b,), {"region": "bottom"}),
             ("arrow", (a, b), {"src_region": "right", "dst_region": "left"}),
-            ("text", ("hello",), {}),
+            ("danmaku", ("hello",), {"motion": "orbit"}),
             ("paint", ("ctx.fillRect(box.x, box.y, 4, 4)",), {}),
         ):
             await runtime.execute_command(
@@ -179,7 +179,7 @@ async def test_every_gesture_carries_an_id_and_a_place():
             )
         frames = rec.of("veil")
         assert [f["gesture"] for f in frames] == [
-            "mark", "box", "circle", "arrow", "text", "paint",
+            "mark", "box", "circle", "arrow", "danmaku", "paint",
         ]
         ids = [f["id"] for f in frames]
         assert len(set(ids)) == len(ids), "each block needs its own handle"

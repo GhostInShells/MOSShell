@@ -351,9 +351,10 @@ def build_screen_channel(
         if g["gesture"] == "paint":
             first = str(g.get("script", "")).strip().splitlines()
             return f"paint {first[0][:32]!r}" if first else "paint (empty)"
-        if g["gesture"] == "text":
+        if g["gesture"] == "danmaku":
             text = str(g["content"])
-            return text if len(text) <= 24 else text[:23] + "…"
+            where = f"#{g['item']}" if g.get("item") else "stage"
+            return f"{g.get('motion', 'rtl')} @{where} {text[:20]}"
         return f"#{g['item']}.{g['region']}"
 
     async def _gesture(kind: str, duration: float, **fields: Any) -> None:
@@ -466,11 +467,40 @@ def build_screen_channel(
         where = f"#{item}" if item else "the stage"
         return f"[screen] paint over {where} ({_dur_txt(duration)}) — {first[:48]}"
 
-    @chan.build.command(name="text", blocking=False)
-    async def text(content: str, duration: float = 2.5, color: str = "") -> str:
-        """Show big text over the whole screen. Resolves after ``duration``."""
-        await _gesture("text", duration, content=content, color=color)
-        return f"[screen] text ({_dur_txt(duration)})"
+    @chan.build.command(name="danmaku", blocking=False)
+    async def danmaku(content: str, duration: float = 6.0, motion: str = "rtl",
+                      color: str = "", size: float = 30, lane: int = 0,
+                      item: str = "", turns: float = 1.0) -> str:
+        """Send one line of text flying across the screen — a danmaku bullet.
+
+        Not a caption: a line with a direction, a lane and its own time slice.
+
+        ``motion``: ``rtl`` (right → left, the classic) / ``ltr`` (left → right) /
+        ``orbit`` (a circle around the centre of the box, one lap per ``turns``).
+        ``duration`` is the line's life, and the line covers its path exactly once
+        in that time — so ``duration`` is the speed knob too, one clock, not two.
+        ``size`` is the font size in px; ``lane`` 1..N pins a lane, 0 lets the page
+        pick a free one; ``item`` confines the flight to that item's box (default:
+        the whole stage); ``color`` empty = the veil's default.
+
+        Lanes are *assigned*, not hoped for: a lane is held for as long as its
+        occupant is alive, and a line whose lane is still busy waits its turn
+        instead of stacking on top — "stacked" and "flashing by" are different
+        things, and only one of them is readable.
+        """
+        if motion not in ("rtl", "ltr", "orbit"):
+            CommandUtil.raise_observe(
+                f"motion must be rtl / ltr / orbit, got {motion!r}"
+            )
+        if size <= 0:
+            CommandUtil.raise_observe(f"size must be > 0, got {size!r}")
+        if item:
+            item = _require(item)
+        await _gesture("danmaku", duration, content=content, motion=motion,
+                       color=color, size=size, lane=lane, item=item, turns=turns)
+        tail = f"#{item}" if item else "stage"
+        return (f"[screen] danmaku {motion} @{tail} lane={lane or 'auto'} "
+                f"({_dur_txt(duration)}) — {content[:24]}")
 
     @chan.build.command(name="veil", blocking=False)
     async def veil() -> str:
