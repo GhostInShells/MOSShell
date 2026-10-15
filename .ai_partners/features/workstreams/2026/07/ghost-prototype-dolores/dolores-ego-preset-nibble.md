@@ -100,3 +100,42 @@ deepseek_harness/surfaces.py    wrapper                                     ✅
 
 本文档 Open seams 自己写着"effort 持久化语义变化（不再 enter 重置）待实测确认"——
 本次**没有**验它。
+
+### 离线实验（2026-10-15）：官方路确实会让投影动
+
+工具是 `nodes/deepseek-harness` 的 `run(code)` 逃生口（指向 127.0.0.1:3083）——**一行代码没写**，
+开了一条**一次性 session** 做，主 session 全程没碰。
+
+- 在一次性 session 上调官方 `select_model(provider, model, reasoning_effort="off")`。
+- 它的投影随即变成 **`{lastUsed: null, next: off}`** —— `pending` 被写上了，而 `lastUsed` 还是空
+  （还没发过请求）。
+- 同一时刻，**主 session 的投影全程是 `{lastUsed: low, next: low}`**，一动没动。
+
+结论：**官方路确实会让投影动，而 UI 读的就是这份投影。** 我们那条私有链不产生 `model/selection`
+事件，所以 UI 永远不会动——这就是"界面状态老是改不过来"的机制。
+
+### 两条直接影响实现的实测事实
+
+1. **`session/selectModel` 会顺手改掉全局默认档。** 两次都对上：调 `off` → 不带 session 的
+   `session/modelCatalog.default` 变成 `off`；调回 `low` → 又变回 `low`。
+   也就是说**改一次会话选择，同时改掉"新 session 的默认档"**；上游请求体里**没有**"只改本会话"的开关。
+   当前只有单个 ego session，人类判定该副作用可接受。
+2. **`model_selection()` 不是 session 选择的权威读法。** 它读的就是上面那个全局 catalog default
+   （见第 1 条）。session 自己的选择只能从 **projection**（`lastUsed` / `next`）读；会话内真正
+   可靠的是 **`request/header`**。
+   —— 写代码时若拿 `model_selection()` 去填 provider/model，会把人在 UI 里改过的路由**静默改写**。
+
+### 落地（已写、未验证、未提交）
+
+- `_ego.model_route` —— 从 `request/header` 取本 session 真实用过的 `(provider, model)`。
+- `_run._push_effort_officially` —— `moss_reasoning` 在原有私有声明之外，**再走一次官方
+  `session/select_model`**；失败只记日志、降级旧路，绝不炸掉这一轮。
+- **旧路暂时留着**（一次只换一个变量）。真机验过"UI 跟着动"之后，`ego.default_thinking_effort` →
+  `thinking/enter.effort` → plugin `declareEffort` 那条链应**整体删除**，而不是当兜底留下——
+  两条路同时活着，迟早会分叉成两个权威。
+
+### 重启后的验收判据（一次就够）
+
+打开 DSH Web 的 `/model` 看当前显示 → 说一句 `moss_reasoning(high)` → 再看一眼。
+同时读投影：**`next.reasoningEffort` 应变成 `high`，而 `lastUsed` 仍是 `low`** —— 那就是 pending，
+正是 UI 该显示的那个值。
