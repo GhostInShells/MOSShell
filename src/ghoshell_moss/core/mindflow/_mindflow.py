@@ -1145,6 +1145,12 @@ class AbsMindflow(Mindflow, ABC):
                             await think.wait_abort()
 
                         # 回声帧: 只折帧中到达的 absorb 续包 (创建 impulse 已在首帧折过).
+                        # 观测探针 (D15 档位切换排查): 环的入口判据, 决定这一帧之后还有没有下一帧.
+                        self._logger.info(
+                            "%s echo-loop check: attention_aborted=%s need_observe=%s",
+                            self._log_prefix, attention.is_aborted(),
+                            self._moments_observer.need_observe(),
+                        )
                         while not attention.is_aborted() and self._moments_observer.need_observe():
                             moment = self._moments_observer.observe()
                             self._fold_frame_impulses(moment, impulse)

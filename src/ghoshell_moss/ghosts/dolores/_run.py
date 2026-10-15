@@ -252,6 +252,8 @@ class DoloresRun:
         self._expected_cancel_turn: int | None = None
         # 中断类 abort 只落地一次 (入队前落地, 消费者侧兜一次).
         self._interrupt_aborted = False
+        # 本轮声明了新档位 → 收尾时要自己提交一条 need_observe, 驱动下一帧 (见 __aexit__).
+        self._need_switch_thinking_effort: str | None = None
 
     # ── transaction boundary ─────────────────────────────────────────
 
@@ -264,6 +266,17 @@ class DoloresRun:
         await self._ego.compact_if_pending()
         self._dispose_listener = self._ego.session.on_session_event("*", self._on_event)
         self._enter_task = asyncio.create_task(self._drive_enter())
+        self._ego.logger.info(
+            "Dolores ego run entered: seq=%s thinking=%s moment_index=%s previous_moment_id=%s "
+            "need_observe=%s inputs=%s percepts=%s",
+            self._thinking_seq,
+            self._thinking.attention.id,
+            self._thinking.moment.index,
+            self._thinking.moment.last_moment_id(),
+            self._thinking.observer.need_observe(),
+            len(list(self._thinking.moment.inputs_messages())),
+            len(list(self._thinking.moment.percepts_messages())),
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -280,11 +293,41 @@ class DoloresRun:
             self._dispose_listener()
         # re-send exit — even if enter failed (to clean up plugin-side state), blocking with a fail-safe timeout.
         await self._ego.exit_thinking(self._thinking_seq)
+        # 观测探针 (D15 档位切换排查): 这三样决定"下一帧由谁签发".
+        self._logger.info(
+            "run exit: exc=%s enter_error=%s effort_marker=%s",
+            type(exc_val).__name__ if exc_val is not None else 'None',
+            self._enter_error, self._need_switch_thinking_effort,
+        )
         if isinstance(exc_val, asyncio.CancelledError):
+            self._logger.info("run exit: cancelled — no effort pushed, no echo declared")
             return None
         reason = exc_val if exc_val is not None else self._enter_error
         if reason is not None:
+            self._logger.info("run exit: aborting this frame (%s) — echo is not declared here", reason)
             self._thinking.abort(reason)
+        elif self._need_switch_thinking_effort is not None:
+            # 等身体跑完再收线: 记账工具不能比它所作用的世界先结束.
+            self._logger.info("run exit: draining actions before declaring the effort switch")
+            await self._thinking.wait_actions_done()
+            self._logger.info("run exit: actions drained — pushing effort %s", self._need_switch_thinking_effort)
+            # 帧结束前最后写下的两件事: 推档位 (官方 selectModel), 再补 need_observe 回声驱动
+            # 下一帧. 入口写下的标记会被这一轮任何一次 observe() 换容器带走, 只有这里写才算数.
+            await self._push_effort_officially(self._need_switch_thinking_effort)
+            self._thinking.observer.add_echoes([], need_observe=True)
+            moment = self._thinking.moment
+            self._logger.info(
+                "run exit: echo declared — need_observe=%s moment_index=%s attention=%s "
+                "previous_moment_id=%s inputs=%s percepts=%s",
+                self._thinking.observer.need_observe(),
+                moment.index,
+                self._thinking.attention.id,
+                moment.last_moment_id(),
+                len(list(moment.inputs_messages())),
+                len(list(moment.percepts_messages())),
+            )
+        # 无论走哪条路都清掉: 错误 / 取消路径不下发档位, 也不留一个悬着的声明.
+        self._need_switch_thinking_effort = None
         return None
 
     # ── event stream ─────────────────────────────────────────────────
@@ -532,26 +575,23 @@ class DoloresRun:
         )
 
     async def _handle_reasoning(self, call: ReasoningToolCall) -> ToolCallResult:
-        """moss_reasoning handler — declare a thinking depth, then end this turn.
+        """moss_reasoning handler — mark a thinking-depth switch, then end this turn.
 
-        Records the declaration (the next frame that is not already carrying its own effort hands it
-        to the plugin — a 'none' frame will not eat it), marks need_observe so that next thinking
-        frame is driven by this echo, drains in-flight actions, and returns cancel=True: the result
-        replaces the final answer, so no further step runs and the turn ends here.
+        Marks it, and does nothing else: the depth is pushed and the next frame is driven at run
+        exit, never here (see ``__aexit__``). Returns cancel=True, so the result replaces the final
+        answer and no further step of this turn runs.
 
-        Order is load-bearing: ``wait_actions_done`` BEFORE the cancel. The cancel tears the turn
-        down; anything still moving in the Shell is cut with it. A bookkeeping tool must never end a
-        turn faster than the world that turn was acting on.
+        The marker carries a value, not a flag: 'which depth to switch to' is state, and state
+        survives the ``observe()`` calls this turn does on its way out.
 
         ``add_echoes`` lives on the frame's **observer** (a ``Moments``), not on ``Thinking`` — the
         latter has no such method. Calling it on the thinking raised AttributeError, which vanished
         into ``run_tool``'s error path (result=None, cancel dropped), which is how this tool silently
         stopped ending turns. Guarded by ``test_tool_surface_matches_production_thinking``.
         """
+        # default_thinking_effort 是插件那条私有路 (下一帧 enter 携带这个值).
         self._ego.default_thinking_effort = call.effort
-        await self._push_effort_officially(call.effort)
-        self._thinking.observer.add_echoes([], need_observe=True)
-        await self._thinking.wait_actions_done()
+        self._need_switch_thinking_effort = call.effort
         return ToolCallResult(
             call=call.tool_call_event,
             result={"effort": call.effort},

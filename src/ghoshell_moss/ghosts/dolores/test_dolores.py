@@ -1593,6 +1593,15 @@ class FakeDispatchEgo(FakeRunEgo):
         self.rpc_calls.append((call_id, result, moment, cancel))
         self.rpc_turns.append(turn)
 
+    @property
+    def model_route(self):
+        """(provider, model) 的真实路由 — 生产里读最后一次 request/header, 这里给固定值.
+
+        有了它, ``_push_effort_officially`` 才不会退到 ``session.model_selection()`` 的兜底
+        (那条兜底会读 catalog 默认值, 生产里是被刻意避开的路径).
+        """
+        return ("deepseek-official", "deepseek-flash")
+
     def moment_payload(self, moment, moment_id):
         # 两条投递路共用同一种协议 — fake 也按同一形状给 (context + inputs + moment_id).
         return {
@@ -2261,7 +2270,7 @@ class TestDoloresRun:
 
     @pytest.mark.asyncio
     async def test_reasoning_records_depth_and_cancels(self):
-        """moss_reasoning: 记档 + need_observe 驱动下一帧 + 等 action 停 + cancel 中断本轮."""
+        """moss_reasoning: 入口只标记 + cancel 收轮; 等身体/推档位/补回声都在 run 收尾."""
         from ._run import DoloresRun
 
         session = FakeRunSession()
@@ -2272,11 +2281,17 @@ class TestDoloresRun:
         await run._handle_tool_use_event(self._tool_call("moss_reasoning", '{"effort": "high"}', call_id="c_r"), {})
 
         assert ego.default_thinking_effort == "high"
-        assert log == ["observer.add_echoes:True", "wait_actions_done"], (
-            "reasoning 必须先标 need_observe (在 observer 上) 驱动下一帧, 再等 action 停 —— "
-            "顺序反了就是让记账工具砍掉正在进行的动作"
-        )
+        assert run._need_switch_thinking_effort == "high", "入口只把要换的档位记成状态"
+        assert log == [], "工具入口不执行副作用: 不等动作、不推档位、不提交回声"
         assert ego.rpc_calls == [("c_r", {"effort": "high"}, None, True)]
+
+        # 副作用全部在 run 收尾落地, 顺序: 等身体 → 推档位 → 补回声 (都在 exit_thinking 之前).
+        # 替身上没有 select_model, 于是走 _push_effort_officially 的"永不致命"退路.
+        await run.__aexit__(None, None, None)
+        assert log == ["wait_actions_done", "observer.add_echoes:True"], (
+            "收尾必须先把身体等完, 再补 need_observe —— 少哪一步, 档位换了下一帧也没人签发"
+        )
+        assert run._need_switch_thinking_effort is None, "pending 收尾后必须清掉, 不留悬声明"
 
     def test_tool_surface_matches_production_thinking(self):
         """handlers 在 thinking 上用的每个 API, 生产类必须真的有.

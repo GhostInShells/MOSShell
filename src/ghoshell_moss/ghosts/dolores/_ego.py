@@ -215,6 +215,10 @@ class DoloresEgo:
         self._usage_missing_count: int = 0
         self._self_wake_unwired_warned: bool = False
 
+    @property
+    def logger(self) -> LoggerItf:
+        return self._logger or get_moss_logger()
+
     # ── long-lived: lifecycle ────────────────────────────────────────
 
     async def __aenter__(self) -> Self:

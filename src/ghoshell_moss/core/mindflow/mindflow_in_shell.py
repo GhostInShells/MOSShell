@@ -180,7 +180,10 @@ class MindflowInShell(ABC):
                 # 将轨迹中保存的数据作为回声插入.
                 messages = frame.project(with_dynamic=False)
                 moment.previous.add_echoes(messages, frame.need_observe)
-                moment.previous.need_observe = frame.need_observe
+                # 不在这里再赋值 need_observe: add_echoes 已在 frame.need_observe 为真时置位,
+                # 且从不清除; 而无条件赋值会把这**同一轮里别人写下的**标记抹成 False —
+                # run 收尾的回声帧 (以及 abort_thinking 的自愈) 正是在这一轮内写的,
+                # 它们会被这一行吃掉, 于是下一帧读 previous.need_observe 永远是 false。
                 moment.with_dynamic_context("ShellTrajectoryDynamicContext", frame.dynamic_context_messages())
 
         def _notify_moments_need_observe(e):
@@ -234,6 +237,7 @@ class MindflowInShell(ABC):
             while mindflow.is_running():
                 last_attention_id: str | None = None
                 async for thinking in self.mindflow.thinking_loop():
+                    self.logger.info("%r start to run thinking with moment id %s", self, thinking.moment.id)
                     is_first_frame = thinking.attention.id != last_attention_id
                     last_attention_id = thinking.attention.id
                     # interrupt 协议: 只对 attention 首帧生效, 思考前先停身体.
@@ -249,6 +253,7 @@ class MindflowInShell(ABC):
                         await self.shell.clear()
                     # thinking effort == none 仍然会传入.
                     await self._run_thinking(thinking)
+                    self.logger.info("%r run thinking with moment id %s end", self, thinking.moment.id)
         finally:
             self.logger.info("%r thinking loop finished", self)
 
