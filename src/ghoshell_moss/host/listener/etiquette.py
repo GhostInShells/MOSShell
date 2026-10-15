@@ -304,7 +304,7 @@ keyword_end = EtiquetteSpec(
 murmur = EtiquetteSpec(
     name="murmur",
     description="keep working — every clause reaches you without interrupting; respond or ignore",
-    onset=OnsetSpec(emit=False),
+    onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=0.0),
     deliver=DeliverSpec(interrupt=False, mode="notify"),
 )
@@ -314,7 +314,7 @@ murmur = EtiquetteSpec(
 cue = EtiquetteSpec(
     name="cue",
     description="continuous input — each clause takes a turn, without stopping your body",
-    onset=OnsetSpec(emit=False),
+    onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=0.0),
     deliver=DeliverSpec(interrupt=False, mode="next"),
 )

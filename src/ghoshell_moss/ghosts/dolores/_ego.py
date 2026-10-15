@@ -293,6 +293,23 @@ class DoloresEgo:
             raise RuntimeError("ego session not started. Call __aenter__ first.")
         return self._session
 
+    @property
+    def model_route(self) -> "tuple[str, str] | None":
+        """(provider, model) this session actually requested with — the last ``request/header``.
+
+        Deliberately **not** ``session.model_selection()``: that reads the model *catalog
+        default*, and the catalog default is not session state — ``session/selectModel``
+        rewrites it globally in the background. Measured 2026-10-15: one ``selectModel`` on a
+        throwaway session moved the default every session reads, while the live session's own
+        projection stayed put. So the catalog default must never be used to fill in "the
+        session's current model": it would silently rewrite a route the human changed in the UI.
+
+        None = no request observed yet (a session that has never run).
+        """
+        if self._model_identity is None:
+            return None
+        return (self._model_identity[0], self._model_identity[1])
+
     # ── short-lived: run_thinking (transaction) ──────────────────────
 
     def run_thinking(self, thinking: "Thinking") -> "DoloresRun":
