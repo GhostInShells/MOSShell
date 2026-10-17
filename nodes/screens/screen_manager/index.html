@@ -895,8 +895,10 @@ function compilePaint(src) {
 function veilPaint(id, script, item, durMs, color) {
   addBlock(id, (c, a, t) => {
     const g = item ? geometry()[item] : null;
-    const box = g ? { x: g.x, y: g.y, w: g.w, h: g.h }
-                  : { x: 0, y: 0, w: viewW, h: viewH };
+    const full = g ? { x: g.x, y: g.y, w: g.w, h: g.h }
+                   : { x: 0, y: 0, w: viewW, h: viewH };
+    const box = { x: full.x + reg[0] * full.w, y: full.y + reg[1] * full.h,
+                  w: full.w * reg[2], h: full.h * reg[3] };
     c.globalAlpha = a;
     c.fillStyle = veilColor('paint', color);
     c.strokeStyle = veilColor('paint', color);
@@ -926,8 +928,9 @@ function veilPaint(id, script, item, durMs, color) {
 // 而是"哪条带什么时候空出来"，所以它只是排班，不是第二份画面真相。
 const danmakuLanes = new Map();   // key -> Array<freeAt>，下标就是轨道号
 
-// 排一条带：want>0 是指定轨道（1 起数），want<=0 是自动 —— 优先捡已经空出来的，
-// 都占着就挑最早空出来的那条（宁可延后出发，也不叠上去）。
+// 排一条带：want>0 是指定轨道（1 起数），want<=0 是自动 —— 在空出来的带里按
+// 「中间密、两头疏」的权重随机挑一条，像人真的在打弹幕；都占着就挑最早空出来的
+// 那条（宁可延后出发，也不叠上去）。
 function danmakuLane(key, lanes, want, now, busyMs) {
   let arr = danmakuLanes.get(key);
   if (!arr || arr.length !== lanes) { arr = new Array(lanes).fill(0); danmakuLanes.set(key, arr); }
@@ -935,9 +938,27 @@ function danmakuLane(key, lanes, want, now, busyMs) {
   if (want > 0) {
     li = Math.min(want, lanes) - 1;
   } else {
+    // 权重 = 1 + 2·(1 − 距竖直中线的归一化距离)：中线 3，上下边缘 1。
+    // 随机的是轨道，不是"有没有空"——空了才有资格被抽到。
+    const mid = (lanes - 1) / 2;
+    const span = Math.max(mid, 0.5);
+    const free = [];
+    let total = 0;
     for (let i = 0; i < lanes; i++) {
-      if (arr[i] <= now) { li = i; break; }
-      if (arr[i] < arr[li]) li = i;
+      if (arr[i] > now) continue;
+      const w = 1 + 2 * (1 - Math.abs(i - mid) / span);
+      free.push(i);
+      total += w;
+    }
+    if (free.length === 0) {
+      for (let i = 0; i < lanes; i++) if (arr[i] < arr[li]) li = i;
+    } else {
+      let r = Math.random() * total;
+      li = free[free.length - 1];
+      for (let k = 0; k < free.length; k++) {
+        r -= 1 + 2 * (1 - Math.abs(free[k] - mid) / span);
+        if (r <= 0) { li = free[k]; break; }
+      }
     }
   }
   // 这条带最早什么时候空出来 —— 排到后面就晚一点出发，但绝不叠上去。
@@ -946,7 +967,7 @@ function danmakuLane(key, lanes, want, now, busyMs) {
   return { li: li, startAt: startAt };
 }
 
-function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns) {
+function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns, atX, atY, angle, region) {
   const font = 'bold ' + size + 'px ui-monospace, monospace';
   vctx.font = font;
   const tw = vctx.measureText(content).width;
@@ -954,15 +975,30 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns)
   const hold = (durMs === Infinity);
   // 常驻（hold）也得有个穿越速度，否则它会僵在边上；8 秒一趟是默认节奏。
   const travel = hold ? 8000 : durMs;
+  // region：只在一半里飞 —— 左右各占半屏、各自朝中间走，靠的就是这一格。
+  const REG = { left: [0, 0, 0.5, 1], right: [0.5, 0, 0.5, 1],
+                top: [0, 0, 1, 0.5], bottom: [0, 0.5, 1, 0.5] };
+  const reg = REG[region] || [0, 0, 1, 1];
   const box0 = item ? geometry()[item] : null;
-  const h0 = box0 ? box0.h : viewH;
+  const h0 = (box0 ? box0.h : viewH) * reg[3];
   const lanes = Math.max(1, Math.floor(h0 / laneH));
   const now = performance.now();
-  const key = (item || 'stage') + '|' + Math.round(h0) + '|' + Math.round(size);
-  const slot = danmakuLane(key, lanes, lane, now, hold ? 1e9 : travel);
+  // at_x / at_y（0..1 的比例，两个数）把这行钉在那个点上：不排队、不横穿，
+  // 寿命就是它留在那儿的时长。比例而不是像素 —— 窗口一动它还在那个相对位置上。
+  const pinned = (typeof atX === 'number' && typeof atY === 'number'
+                  && atX >= 0 && atY >= 0);
+  let slot = { li: 0, startAt: now };
+  if (!pinned) {
+    const key = (item || 'stage') + '|' + (region || '-') + '|' +
+                Math.round(h0) + '|' + Math.round(size);
+    slot = danmakuLane(key, lanes, lane, now, hold ? 1e9 : travel);
+  }
   const li = slot.li;
   // 轨道排到后面了就先等 —— 这条延迟和它的寿命一样是真的，不是"看起来没叠"。
-  const delay = hold ? 0 : Math.max(0, slot.startAt - now);
+  const delay = (hold || pinned) ? 0 : Math.max(0, slot.startAt - now);
+  // 斜角：角度归我（正负都行），默认随机 ±(17°..30°)；0 就是"随你"。
+  const deg = angle || (17 + Math.random() * 13) * (Math.random() < 0.5 ? -1 : 1);
+  const aRad = deg * Math.PI / 180;
   addBlock(id, (c, a, age) => {
     const t = age - delay;
     if (t < 0) return;
@@ -975,12 +1011,30 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns)
     c.fillStyle = veilColor('danmaku', color);
     c.font = font;
     c.textBaseline = 'middle';
+    if (pinned) {
+      c.textAlign = 'center';
+      c.fillText(content, box.x + atX * box.w, box.y + atY * box.h);
+      return;
+    }
     if (motion === 'orbit') {
       const R = Math.max(0, Math.min(box.w, box.h) / 2 - size);
       const th = p * turns * Math.PI * 2 - Math.PI / 2;
       c.textAlign = 'center';
       c.fillText(content, box.x + box.w / 2 + R * Math.cos(th),
                           box.y + box.h / 2 + R * Math.sin(th));
+      return;
+    }
+    if (motion === 'diag') {
+      // 字自己转过来躺在斜线上，再沿那条斜线走过去 —— 转的是字，不是屏幕。
+      const ca = Math.cos(aRad), sa = Math.sin(aRad);
+      const L = (box.w + tw) / Math.max(Math.abs(ca), 0.2) + Math.abs(box.h * Math.tan(aRad)) + size * 2;
+      const mx = box.x + box.w / 2, my = box.y + box.h / 2;
+      c.save();
+      c.translate(mx - ca * L / 2 + ca * L * p, my - sa * L / 2 + sa * L * p);
+      c.rotate(aRad);
+      c.textAlign = 'center';
+      c.fillText(content, 0, 0);
+      c.restore();
       return;
     }
     const span = box.w + tw;
@@ -2004,8 +2058,9 @@ function route(f) {
         veilArrow(id, f.src, f.src_region || 'full', f.dst, f.dst_region || 'full',
                   d, f.color, w);
       } else if (f.gesture === 'danmaku') {
-        veilDanmaku(id, f.content || '', f.motion || 'rtl', d, f.color,
-                    f.size || 30, f.lane || 0, f.item || '', f.turns || 1);
+        veilDanmaku(id, f.content || '', f.motion || '', d, f.color,
+                    f.size || 30, f.lane || 0, f.item || '', f.turns || 1,
+                    f.at_x, f.at_y, f.angle || 0, f.region || '');
       } else if (f.gesture === 'paint') veilPaint(id, f.script || '', f.item || '', d, f.color);
       else if (f.gesture === 'remove') removeBlock(id);
       else if (f.gesture === 'clear') veilBlocks.clear();

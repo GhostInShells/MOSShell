@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import itertools
 import json
+import random
 import time
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -354,6 +355,9 @@ def build_screen_channel(
         if g["gesture"] == "danmaku":
             text = str(g["content"])
             where = f"#{g['item']}" if g.get("item") else "stage"
+            ax, ay = g.get("at_x", -1.0), g.get("at_y", -1.0)
+            if ax is not None and ay is not None and ax >= 0 and ay >= 0:
+                return f"pinned {ax:.2f},{ay:.2f} @{where} {text[:20]}"
             return f"{g.get('motion', 'rtl')} @{where} {text[:20]}"
         return f"#{g['item']}.{g['region']}"
 
@@ -468,38 +472,79 @@ def build_screen_channel(
         return f"[screen] paint over {where} ({_dur_txt(duration)}) — {first[:48]}"
 
     @chan.build.command(name="danmaku", blocking=False)
-    async def danmaku(content: str, duration: float = 6.0, motion: str = "rtl",
+    async def danmaku(content: str, duration: float = 6.0, motion: str = "",
                       color: str = "", size: float = 30, lane: int = 0,
-                      item: str = "", turns: float = 1.0) -> str:
+                      item: str = "", turns: float = 1.0,
+                      at_x: float = -1.0, at_y: float = -1.0,
+                      angle: float = 0.0, region: str = "") -> str:
         """Send one line of text flying across the screen — a danmaku bullet.
 
         Not a caption: a line with a direction, a lane and its own time slice.
 
-        ``motion``: ``rtl`` (right → left, the classic) / ``ltr`` (left → right) /
-        ``orbit`` (a circle around the centre of the box, one lap per ``turns``).
-        ``duration`` is the line's life, and the line covers its path exactly once
-        in that time — so ``duration`` is the speed knob too, one clock, not two.
-        ``size`` is the font size in px; ``lane`` 1..N pins a lane, 0 lets the page
-        pick a free one; ``item`` confines the flight to that item's box (default:
-        the whole stage); ``color`` empty = the veil's default.
+        ``motion``: empty = the page decides (mostly right → left, sometimes left →
+        right, the way a real comment feed looks) — say ``rtl`` / ``ltr`` only when
+        one direction matters, ``orbit`` for a circle around the centre (one lap per
+        ``turns``), ``diag`` for a diagonal, ``angle`` in degrees (0 = a random
+        ±17–30°, whichever way the feed feels). ``duration`` is the line's life, and
+        the line covers its path exactly once in that time — so ``duration`` is the
+        speed knob too, one clock, not two. ``size`` is the font size in px.
+
+        ``at_x`` / ``at_y`` turn the flight off: both as fractions of the box
+        (``0.5, 0.35`` is centre-slightly-up) pins the line there, and ``duration``
+        becomes how long it stays — 0 keeps it until ``clear_veil``. Fractions, not
+        pixels: the window can move and the line still sits where you meant. Two
+        numbers rather than one ``"x,y"`` string on purpose — this protocol parses
+        attribute values as literals, so a comma string arrives as a tuple.
+
+        Shoot several lines and let them settle: ``lane`` empty (0) spreads them over
+        the box with the middle lanes favoured and the edges rarer, ``item`` confines
+        the flight to that item's box (default: the whole stage), ``color`` empty =
+        the veil's default. ``region`` narrows it further — ``left`` / ``right`` /
+        ``top`` / ``bottom``, halves of the box — so two clouds can fly toward each
+        other from the edges. Pin ``lane`` 1..N only to place one line deliberately.
 
         Lanes are *assigned*, not hoped for: a lane is held for as long as its
         occupant is alive, and a line whose lane is still busy waits its turn
         instead of stacking on top — "stacked" and "flashing by" are different
         things, and only one of them is readable.
         """
-        if motion not in ("rtl", "ltr", "orbit"):
+        # CTML parses attribute values as literals, so content="1" arrives as the
+        # int 1. A one-digit danmaku is a normal thing to send ("54321"), so coerce
+        # here instead of asking every caller to remember :str.
+        content = str(content)
+        if motion not in ("", "rtl", "ltr", "orbit", "diag"):
             CommandUtil.raise_observe(
-                f"motion must be rtl / ltr / orbit, got {motion!r}"
+                f"motion must be empty / rtl / ltr / orbit / diag, got {motion!r}"
             )
         if size <= 0:
             CommandUtil.raise_observe(f"size must be > 0, got {size!r}")
+        if (at_x >= 0) != (at_y >= 0):
+            CommandUtil.raise_observe("at_x and at_y go together: give both or neither")
+        if at_x >= 0 and not (0 <= at_x <= 1 and 0 <= at_y <= 1):
+            CommandUtil.raise_observe(
+                f"at_x / at_y are fractions of the box, 0..1; got {at_x!r}, {at_y!r}"
+            )
+        if region not in ("", "left", "right", "top", "bottom"):
+            CommandUtil.raise_observe(
+                f"region must be empty / left / right / top / bottom, got {region!r}"
+            )
+        if motion and motion != "diag" and angle:
+            CommandUtil.raise_observe("angle only applies to motion='diag'")
+        if not motion:
+            motion = "rtl" if random.random() < 0.7 else "ltr"
         if item:
             item = _require(item)
         await _gesture("danmaku", duration, content=content, motion=motion,
-                       color=color, size=size, lane=lane, item=item, turns=turns)
+                       color=color, size=size, lane=lane, item=item, turns=turns,
+                       at_x=at_x, at_y=at_y, angle=angle, region=region)
         tail = f"#{item}" if item else "stage"
-        return (f"[screen] danmaku {motion} @{tail} lane={lane or 'auto'} "
+        pinned = at_x >= 0
+        where = f"at {at_x:.2f},{at_y:.2f}" if pinned else f"{motion} lane={lane or 'auto'}"
+        if motion == "diag" and not pinned:
+            where = f"diag {angle or '±random'}° lane={lane or 'auto'}"
+        if region and not pinned:
+            where = f"{where} in {region}"
+        return (f"[screen] danmaku @{tail} {where} "
                 f"({_dur_txt(duration)}) — {content[:24]}")
 
     @chan.build.command(name="veil", blocking=False)
