@@ -21,9 +21,9 @@ MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
 Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 自己的配置
 (provider/model/prompt/tools 是 dsh 的 config 域, 由 dsh 从文件/env 自发现).
 
-dsh 可执行路径: ``config.dsh.binary`` 显式值 → ``DSH_BINARY`` 环境变量 → PATH 上的
-``dsh`` (见 ``resolve_dsh_binary``; spawn 时惰性解析). 可用它把单个 ghost 钉到特定
-dsh 安装 (如本地某个版本) 做验证, 而不动全局安装.
+dsh 可执行路径: ``DSH_BINARY`` 环境变量 → PATH 上的 ``dsh`` (见 ``resolve_dsh_binary``;
+spawn 时惰性解析). 可用它把单个 ghost 钉到特定 dsh 安装 (如本地某个版本) 做验证,
+而不动全局安装. 只留一条机制: 可执行路径属"启动期配置", 归 ghost home 的 ``.env``.
 """
 
 # ── 协作模式 (人类结对) ──────────────────────────────────────
@@ -57,9 +57,10 @@ dsh 安装 (如本地某个版本) 做验证, 而不动全局安装.
 #     follow 快照喂 cursor + header (cwd/agentPreset) 给 session (page 的 throughSeq 来源).
 
 # ── 阶段性 (2026-09-30, dsh 可执行路径可指定) ───────────────
-# 11. config.dsh.binary 显式值 → DSH_BINARY 环境变量 → PATH 上的 `dsh` (resolve_dsh_binary),
-#     spawn 时惰性解析 + info 日志. 用于把单个 ghost 钉到特定 dsh 安装 (如本地 0.2.0) 做
-#     版本验证, 不动全局安装 (0.2.0 会把 session 从 v3 迁到 v4, 上游不承诺可降级).
+# 11. DSH_BINARY 环境变量 → PATH 上的 `dsh` (resolve_dsh_binary), spawn 时惰性解析 + info 日志.
+#     用于把单个 ghost 钉到特定 dsh 安装 (如本地 0.2.0) 做版本验证, 不动全局安装
+#     (0.2.0 会把 session 从 v3 迁到 v4, 上游不承诺可降级).
+#     注: 曾有 config.dsh.binary 字段 + env 两条机制, 已砍掉配置字段 —— 路径只从 .env 来.
 
 # ── 修复 (2026-10-15, mux 入站上限) ────────────────────────
 # 12. mux 入站不限: 库默认 1 MiB 打不过长会话重连的整份下发物 (越线即 1009 断链).
@@ -115,7 +116,7 @@ DSH_WEB_TOKEN_ENV = "DSH_WEB_TOKEN"
 # dsh web 是否自动打开浏览器 (真值 → --no-open). 由 ghost home 的 .env 决定, 默认开.
 DSH_WEB_NO_OPEN_ENV = "DSH_WEB_NO_OPEN"
 
-# dsh 可执行的环境变量兜底来源: 当 config.dsh.binary 未显式指定时用它 (见 resolve_dsh_binary).
+# dsh 可执行的环境变量来源: 未设置时落到 PATH 上的 `dsh` (见 resolve_dsh_binary).
 # 可用它把单个 ghost 钉到特定 dsh 安装 (如本地 0.2.0), 而不动全局安装.
 DSH_BINARY_ENV = "DSH_BINARY"
 
@@ -137,26 +138,22 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def resolve_dsh_binary(binary: str) -> str:
-    """把 dsh 可执行解析成绝对路径: 显式值 → ``DSH_BINARY`` 环境变量 → PATH 上的 ``dsh``.
+def resolve_dsh_binary() -> str:
+    """把 dsh 可执行解析成绝对路径: ``DSH_BINARY`` 环境变量 → PATH 上的 ``dsh``.
 
-    显式值优先于环境变量 (config > env > 默认): ghost 若显式钉住 ``binary``, 就
-    不会被误设的环境变量改写. 纯函数, 不 spawn — 找不到时抛错并指明请求值及其来源,
-    让拼写错误当场暴露, 而不是等到 spawn 得到一句无上下文的 ``FileNotFoundError``.
+    只有一条来源链 (没有 config 字段): 可执行路径属启动期配置, 归 ghost home 的 ``.env``.
+    纯函数, 不 spawn — 找不到时抛错并指明请求值及其来源, 让拼写错误当场暴露, 而不是等到
+    spawn 得到一句无上下文的 ``FileNotFoundError``.
     """
-    explicit = binary.strip()
-    if explicit:
-        requested, source = explicit, "config dsh.binary"
-    else:
-        requested = os.environ.get(DSH_BINARY_ENV, "").strip()
-        source = f"{DSH_BINARY_ENV} env"
-        if not requested:
-            requested, source = "dsh", "PATH default"
+    requested = os.environ.get(DSH_BINARY_ENV, "").strip()
+    source = f"{DSH_BINARY_ENV} env"
+    if not requested:
+        requested, source = "dsh", "PATH default"
     resolved = shutil.which(requested)
     if resolved is None:
         raise RuntimeError(
             f"dsh executable not found: {requested!r} (from {source}); "
-            f"set {DSH_BINARY_ENV} or DshLauncherConfig.binary to an executable path"
+            f"set {DSH_BINARY_ENV} to an absolute executable path"
         )
     return resolved
 
@@ -198,10 +195,6 @@ class DshLauncherConfig(DshConnectionConfig):
     自发现, 这里不复刻. 可扩展靠"嵌套子配置 + 子类化", forbid 让拼写错当场失败.
     """
 
-    binary: str = Field(
-        default="",
-        description="dsh 可执行的显式路径; 空 → DSH_BINARY 环境变量 → PATH 上的 `dsh`. 解析见 resolve_dsh_binary.",
-    )
     home: Path | None = Field(default=None, description="DSH_HOME; None → 在 cwd 启动, 让 dsh 自发现 profile/config.")
     profile: str = Field(default="web", description="进程层 profile 选择, 不是 dsh 配置.")
     args: list[str] = Field(default_factory=list, description="启动器 flag 之后的 verbatim 参数.")
@@ -809,7 +802,7 @@ class DshLauncher(DshConnection):
     def _resolve_binary(self) -> str:
         """惰性解析并缓存 dsh 可执行路径 — 不在 ``__init__`` 解析, 让不 spawn 的构造 (如测试) 不依赖 PATH."""
         if self._resolved_binary is None:
-            self._resolved_binary = resolve_dsh_binary(self.config.binary)
+            self._resolved_binary = resolve_dsh_binary()
             self._logger.info("%sdsh binary: %s", self._log_prefix, self._resolved_binary)
         return self._resolved_binary
 

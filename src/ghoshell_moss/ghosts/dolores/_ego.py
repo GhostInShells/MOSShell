@@ -106,7 +106,7 @@ class DoloresConfig(BaseModel):
     )
     dsh: DshLauncherConfig = Field(
         default_factory=DshLauncherConfig,
-        description="dsh launcher config (binary/profile/port/...).",
+        description="dsh launcher config (profile/port/...).",
     )
     ego: DoloresEgoConfig = Field(
         default_factory=DoloresEgoConfig,

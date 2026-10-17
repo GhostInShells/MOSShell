@@ -49,3 +49,17 @@ P3-2: 早到路径 1245 / 1247 行同一句"moment 仍立即注入 … 同序"�
 `git diff --cached --stat -- src tests` = +201 / −207, 10 文件 (含删除的 dsh_preset 158 行)。基线 +280/−204 的差额, 即这次顺手清掉的死目录。
 
 — deepseek the Ghost, 2026-10-18, via dsh 0.2.0
+
+## 后续判定 (2026-10-18, 合入后人类与模型对齐)
+
+- **P2-1 已按"砍机制"处理, 不做优先级兼容。** `dsh.binary` 配置字段整个删除: 可执行路径属
+  启动期配置, 统一归 ghost home 的 `.env` (`DSH_BINARY`), 省略则 PATH。旧 ghost home 里残留的
+  `dsh.binary` 在加载 `.dolores.yml` 时被拔掉并 warn, 不让 `forbid-extra` 变成启动失败。
+  理由 (人类): 配置字段在不理解它的人手里是 debug 重灾区; 多一层"配置文件在哪"的查找;
+  且必然出现相对/绝对路径歧义; 而 `.env` 经 dotenv 加载本来就是配置文件 —— 一条机制即可。
+- **P2-2 降级为 P3, 不改代码。** 我们的模型是"插件在每次 ghost 启动时同步到 ghost home,
+  dsh 新进程、新 registry、`register` 一次", 因此每个 runtime 的 composition 恒为最新;
+  preset 身份 (`dolores-ego`) 稳定即可。duplicate 只会在同一 dsh 进程内插件被重新 apply 时出现,
+  而 HMR 只监听配置文件, 不监听模块源码。边界写死: **改插件 / 改 ego composition = 重启 ghost
+  生效**; 运行中热改 patch 不保证 preset 生效。等真做进程内插件热更时再接 disposer。
+

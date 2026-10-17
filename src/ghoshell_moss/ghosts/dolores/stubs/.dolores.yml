@@ -6,9 +6,7 @@ dirs:
   - skills    # Claude-compatible skills
 
 dsh:
-  # binary 省略 → 优先读 DSH_BINARY 环境变量 (ghost_home/.env 亦可), 再落到 PATH 上的 dsh.
-  # 钉路径 (如本地某个 dsh 版本) 时取消注释; 显式值会压过环境变量.
-  # binary: /path/to/dsh
+  # dsh 可执行路径不在这里配 — 属启动期配置, 归 ghost_home/.env 的 DSH_BINARY (见 .env.example).
   profile: web
   port: 3083
   # home 省略 → 默认 ghost_home/.dsh

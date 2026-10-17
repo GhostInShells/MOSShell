@@ -674,6 +674,17 @@ class Dolores(Ghost):
         if not marker.exists():
             return DoloresConfig()
         data = yaml.safe_load(marker.read_text(encoding="utf-8")) or {}
+        # 旧 stub 曾把 dsh 可执行路径写进 dsh.binary; 该机制已删除 (统一走 DSH_BINARY env).
+        # 老 ghost home 若还留着这个键, 拔掉并 warn, 而不是让 forbid-extra 把它变成启动失败.
+        dsh_section = data.get("dsh")
+        if isinstance(dsh_section, dict) and "binary" in dsh_section:
+            legacy = dsh_section.pop("binary")
+            self.logger.warning(
+                "ignoring legacy dsh.binary=%r in %s; pin the dsh binary with DSH_BINARY "
+                "in the ghost's .env instead",
+                legacy,
+                marker,
+            )
         return DoloresConfig(**data)
 
     def _write_version(self, version: str) -> None:

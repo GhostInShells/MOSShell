@@ -1,17 +1,15 @@
 ---
-title: DSH 版本追踪 — 追 / 降级 / 丢弃的周期判定
-status: in-progress
-status_note: >-
-  本期唯一验收 = 将 track/dsh-020 合并进 dev（对齐 0.2.0）。判定框架与阈值已落盘；合并完成后
-  转 parked，此后每次上游发版或每 6 周周期复开，保留单一条判定轨迹。
-priority: P0
 created: 2026-10-18
-updated: 2026-10-18
-depends: [dsh-fusion]
-milestone: '0.2.0'
-description: >-
-  dsh 是外部运行时，其产品面演进会持续改变我们的适配成本。本 workstream 建立长期判定框架：
-  什么时候继续追、什么时候降级到 gateway-only、什么时候丢弃或 fork；本期完成 0.2.0 合并。
+depends:
+- dsh-fusion
+description: dsh 是外部运行时，其产品面演进会持续改变我们的适配成本。本 workstream 建立长期判定框架： 什么时候继续追、什么时候降级到
+  gateway-only、什么时候丢弃或 fork；本期完成 0.2.0 合并。
+milestone: 0.2.0
+priority: P0
+status: completed
+status_note: 'stage2 验收达成: 0.2.0 已合并进 dev (771faa64). 判定框架保留, 后续追版周期复开.'
+title: DSH 版本追踪 — 追 / 降级 / 丢弃的周期判定
+updated: '2026-10-18'
 ---
 
 # DSH 版本追踪 — 追 / 降级 / 丢弃的周期判定
