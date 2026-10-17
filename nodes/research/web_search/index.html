@@ -1,0 +1,1355 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MOSS Research · web search</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #111820;
+    --panel-2: #151e27;
+    --line: #1f2c39;
+    --line-2: #2a3a4a;
+    --text: #d9e2ea;
+    --muted: #7f90a0;
+    --faint: #52616f;
+    --accent: #4fd1c5;
+    --accent-dim: #2c6f6a;
+    --amber: #f6ad55;
+    --indigo: #818cf8;
+    --purple: #c084fc;
+    --rose: #fb7185;
+    --mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 700px at 18% -10%, rgba(79, 209, 197, .07), transparent 60%),
+      radial-gradient(900px 600px at 95% 110%, rgba(129, 140, 248, .06), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Segoe UI", sans-serif;
+    overflow: hidden;
+  }
+  button, input { font: inherit; }
+  .app {
+    height: 100vh;
+    display: grid;
+    grid-template-rows: 58px minmax(0, 1fr) 34px;
+  }
+
+  /* ── top bar ─────────────────────────────────────────────── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(11, 15, 20, .82);
+    backdrop-filter: blur(8px);
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+  .brand-mark {
+    font-weight: 700; letter-spacing: .18em; font-size: 13px; color: var(--accent);
+  }
+  .brand-sub { font-size: 11px; color: var(--faint); letter-spacing: .12em; }
+  .proto {
+    font-size: 10px; letter-spacing: .1em; color: var(--amber);
+    border: 1px solid rgba(246, 173, 85, .35);
+    background: rgba(246, 173, 85, .08);
+    padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+  }
+  .title {
+    min-width: 0; flex: 1;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .title h1 {
+    margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .01em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .title p {
+    margin: 0; font-size: 11px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .stats { display: flex; gap: 16px; align-items: center; white-space: nowrap; }
+  .stat { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+  .stat b { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 9px; letter-spacing: .12em; color: var(--faint); text-transform: uppercase; }
+  .live {
+    display: flex; align-items: center; gap: 7px; font-size: 10px;
+    letter-spacing: .14em; color: var(--accent); border-left: 1px solid var(--line);
+    padding-left: 16px; white-space: nowrap;
+  }
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(79, 209, 197, .5);
+    animation: pulse 2.4s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(79, 209, 197, .45); }
+    70% { box-shadow: 0 0 0 7px rgba(79, 209, 197, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(79, 209, 197, 0); }
+  }
+
+  /* ── main ────────────────────────────────────────────────── */
+  .main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 432px;
+    min-height: 0;
+  }
+  .graph-pane {
+    position: relative; min-width: 0; min-height: 0;
+    border-right: 1px solid var(--line);
+    background:
+      linear-gradient(rgba(31, 44, 57, .32) 1px, transparent 1px) 0 0 / 44px 44px,
+      linear-gradient(90deg, rgba(31, 44, 57, .32) 1px, transparent 1px) 0 0 / 44px 44px;
+  }
+  #graph { position: absolute; inset: 0; }
+  #graph svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  #graph svg:active { cursor: grabbing; }
+
+  .graph-toolbar {
+    position: absolute; top: 14px; right: 14px; z-index: 4;
+    display: flex; gap: 6px;
+  }
+  .ghost-btn {
+    background: rgba(17, 24, 32, .9); color: var(--muted);
+    border: 1px solid var(--line-2); border-radius: 6px;
+    padding: 5px 9px; font-size: 11px; cursor: pointer;
+    transition: .15s border-color, .15s color, .15s background;
+  }
+  .ghost-btn:hover { color: var(--text); border-color: var(--faint); }
+  .ghost-btn.on { color: var(--accent); border-color: var(--accent-dim); background: rgba(79, 209, 197, .08); }
+
+  .legend {
+    position: absolute; left: 16px; top: 14px; z-index: 4;
+    background: rgba(17, 24, 32, .78); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; backdrop-filter: blur(6px);
+    display: flex; flex-direction: column; gap: 7px;
+    font-size: 10px; color: var(--muted);
+  }
+  .legend-row { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+  .legend-swatch { width: 16px; height: 2px; background: var(--line-2); }
+  .legend-swatch.dash { background: repeating-linear-gradient(90deg, var(--line-2) 0 4px, transparent 4px 7px); }
+  .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .legend-sep { height: 1px; background: var(--line); margin: 1px 0; }
+
+  .timeline {
+    position: absolute; left: 16px; right: 16px; bottom: 14px; z-index: 4;
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(17, 24, 32, .9); border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px 12px; backdrop-filter: blur(8px);
+  }
+  .playbtn {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 1px solid var(--accent-dim); background: rgba(79, 209, 197, .1);
+    color: var(--accent); cursor: pointer; font-size: 11px; flex: none;
+  }
+  .playbtn:hover { background: rgba(79, 209, 197, .18); }
+  .timeline input[type=range] {
+    flex: 1; accent-color: var(--accent); height: 3px; cursor: pointer;
+  }
+  .step-label { font-size: 11px; color: var(--muted); min-width: 180px; text-align: right; white-space: nowrap; }
+  .step-label b { color: var(--text); font-weight: 500; }
+
+  /* ── side pane ───────────────────────────────────────────── */
+  .side-pane {
+    display: flex; flex-direction: column; min-height: 0; background: var(--panel);
+  }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
+  .tab {
+    flex: 1; padding: 12px 0 11px; background: none; border: 0;
+    color: var(--faint); font-size: 11px; letter-spacing: .06em; cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .tab:hover { color: var(--muted); }
+  .tab.on { color: var(--text); border-bottom-color: var(--accent); }
+  .panel { display: none; overflow-y: auto; padding: 18px; flex: 1; min-height: 0; }
+  .panel.on { display: block; }
+  .panel::-webkit-scrollbar, .log-list::-webkit-scrollbar { width: 8px; }
+  .panel::-webkit-scrollbar-thumb, .log-list::-webkit-scrollbar-thumb {
+    background: var(--line-2); border-radius: 8px;
+  }
+
+  .task-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .task-id { font-family: var(--mono); font-size: 10px; color: var(--faint); letter-spacing: .06em; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .status-dot.closed { background: var(--accent); }
+  .status-dot.running { background: var(--amber); animation: pulse 1.8s infinite; }
+  .status-dot.open { background: var(--faint); }
+  .chip {
+    font-size: 9px; letter-spacing: .08em; color: var(--muted);
+    border: 1px solid var(--line-2); border-radius: 999px; padding: 2px 7px;
+  }
+  .task-title { margin: 0 0 6px; font-size: 19px; font-weight: 600; line-height: 1.35; }
+  .meta-line { font-size: 11px; color: var(--faint); margin-bottom: 18px; }
+  .meta-line b { color: var(--muted); font-weight: 500; }
+
+  .block { margin-bottom: 18px; }
+  .block-label {
+    font-size: 9px; letter-spacing: .16em; color: var(--faint);
+    text-transform: uppercase; margin-bottom: 7px; display: flex; gap: 7px; align-items: center;
+  }
+  .block-label .count { color: var(--accent); letter-spacing: 0; }
+  .block p { margin: 0; font-size: 12.5px; line-height: 1.7; color: var(--text); }
+  .block p.question { color: #e8eef4; border-left: 2px solid var(--accent-dim); padding-left: 11px; }
+
+  .actions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .action {
+    display: flex; gap: 9px; align-items: flex-start;
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 10px;
+  }
+  .kind {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .04em;
+    color: var(--accent); background: rgba(79, 209, 197, .08);
+    border-radius: 4px; padding: 2px 5px; flex: none; margin-top: 1px;
+  }
+  .kind.fetch { color: var(--indigo); background: rgba(129, 140, 248, .09); }
+  .kind.compute { color: var(--amber); background: rgba(246, 173, 85, .09); }
+  .kind.plan, .kind.synth { color: var(--purple); background: rgba(192, 132, 252, .09); }
+  .action-body { min-width: 0; }
+  .action-text { font-size: 12px; line-height: 1.5; word-break: break-word; }
+  .action-result { font-size: 10px; color: var(--faint); margin-top: 2px; }
+
+  .source-list { display: flex; flex-direction: column; gap: 6px; }
+  .source {
+    border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px;
+    cursor: pointer; transition: border-color .15s, background .15s;
+    background: var(--panel-2);
+  }
+  .source:hover { border-color: var(--accent-dim); background: #17212b; }
+  .source-host { font-size: 9.5px; color: var(--accent); letter-spacing: .03em; margin-bottom: 3px; }
+  .source-title { font-size: 12px; line-height: 1.45; margin-bottom: 3px; }
+  .source-snippet { font-size: 10.5px; line-height: 1.5; color: var(--muted); }
+
+  .artifact {
+    border-left: 2px solid var(--accent);
+    background: linear-gradient(90deg, rgba(79, 209, 197, .07), transparent 70%);
+    padding: 10px 12px; border-radius: 0 7px 7px 0;
+  }
+  .artifact-kicker { font-size: 9px; letter-spacing: .12em; color: var(--accent); margin-bottom: 4px; }
+  .artifact-title { font-size: 12.5px; font-weight: 500; margin-bottom: 4px; }
+  .artifact-summary { font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+  .artifact-empty { font-size: 11.5px; color: var(--faint); font-style: italic; }
+
+  .row-btns { display: flex; gap: 7px; margin-top: 20px; flex-wrap: wrap; }
+
+  .empty-state {
+    height: 100%; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 8px; color: var(--faint); font-size: 12px;
+  }
+  .empty-state b { color: var(--muted); font-weight: 500; }
+
+  /* reader */
+  .reader-host { font-size: 10.5px; color: var(--accent); letter-spacing: .04em; margin-bottom: 5px; }
+  .reader-title { margin: 0 0 10px; font-size: 17px; line-height: 1.4; font-weight: 600; }
+  .reader-link {
+    display: inline-block; font-size: 11px; color: var(--muted); text-decoration: none;
+    border-bottom: 1px solid var(--line-2); margin-bottom: 16px;
+  }
+  .reader-link:hover { color: var(--accent); border-color: var(--accent-dim); }
+  .untrusted {
+    font-size: 9.5px; letter-spacing: .08em; color: var(--amber);
+    border: 1px solid rgba(246, 173, 85, .28); background: rgba(246, 173, 85, .06);
+    border-radius: 5px; padding: 5px 8px; margin-bottom: 13px;
+  }
+  .reader-body { font-size: 12.5px; line-height: 1.8; color: var(--text); margin: 0 0 20px; }
+  .provenance {
+    border-top: 1px solid var(--line); padding-top: 12px;
+    font-size: 10.5px; line-height: 1.7; color: var(--faint);
+  }
+  .provenance b { color: var(--muted); font-weight: 500; }
+
+  /* artifacts tab */
+  .artifact-list { display: flex; flex-direction: column; gap: 10px; }
+  .artifact-card {
+    border: 1px solid var(--line); border-radius: 8px; padding: 13px;
+    background: var(--panel-2);
+  }
+  .artifact-card .artifact-kicker { margin-bottom: 7px; }
+  .artifact-card h3 { margin: 0 0 6px; font-size: 13.5px; font-weight: 600; }
+  .artifact-card p { margin: 0; font-size: 11.5px; line-height: 1.65; color: var(--muted); }
+  .exit-role { margin-top: 9px; font-size: 9.5px; color: var(--accent); letter-spacing: .08em; }
+
+  /* ── footer log ──────────────────────────────────────────── */
+  .activity {
+    display: flex; align-items: stretch; border-top: 1px solid var(--line);
+    background: rgba(11, 15, 20, .9); overflow: hidden;
+  }
+  .activity-label {
+    flex: none; display: flex; align-items: center; gap: 8px; padding: 0 14px;
+    font-size: 9px; letter-spacing: .14em; color: var(--faint);
+    border-right: 1px solid var(--line);
+  }
+  .log-list {
+    flex: 1; display: flex; align-items: center; gap: 22px; padding: 0 14px;
+    overflow-x: auto; white-space: nowrap; scrollbar-width: none;
+  }
+  .log-list::-webkit-scrollbar { display: none; }
+  .log-entry { font-size: 10.5px; color: var(--muted); display: flex; gap: 7px; align-items: center; }
+  .log-entry .who {
+    font-size: 8.5px; letter-spacing: .1em; color: var(--faint);
+    border: 1px solid var(--line-2); border-radius: 3px; padding: 1px 4px;
+  }
+  .log-entry.human .who { color: var(--amber); border-color: rgba(246, 173, 85, .3); }
+  .log-entry.model .who { color: var(--accent); border-color: var(--accent-dim); }
+
+  /* ── graph elements ──────────────────────────────────────── */
+  .node-label {
+    font-size: 10.5px; fill: var(--muted); pointer-events: none;
+    text-anchor: middle; paint-order: stroke; stroke: var(--bg); stroke-width: 3px;
+  }
+  .node-label.root { fill: var(--text); font-weight: 600; }
+  .node-circle { stroke: var(--bg); stroke-width: 2px; cursor: pointer; transition: opacity .15s; }
+  .node-ring { fill: none; stroke-width: 1.5px; pointer-events: none; }
+  .node.dim, .link.dim { opacity: .16; }
+  .node-badge {
+    font-family: var(--mono); font-size: 8px; fill: var(--bg); pointer-events: none;
+    text-anchor: middle; font-weight: 700;
+  }
+  .edge-label { font-size: 8.5px; fill: var(--faint); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 2.5px; text-anchor: middle; }
+  .link { fill: none; }
+
+  .tooltip {
+    position: fixed; z-index: 20; pointer-events: none; max-width: 300px;
+    background: rgba(8, 12, 17, .96); border: 1px solid var(--line-2);
+    border-radius: 7px; padding: 9px 11px; font-size: 11px; line-height: 1.55;
+    color: var(--text); box-shadow: 0 8px 30px rgba(0, 0, 0, .45);
+    opacity: 0; transform: translateY(4px); transition: opacity .12s, transform .12s;
+  }
+  .tooltip.on { opacity: 1; transform: translateY(0); }
+  .tooltip .tt-kicker { font-size: 9px; letter-spacing: .1em; color: var(--accent); margin-bottom: 3px; }
+  .tooltip .tt-basis { color: var(--muted); margin-top: 5px; }
+
+  @media (max-width: 1100px) {
+    .main { grid-template-columns: minmax(0, 1fr) 380px; }
+    .stats .stat:nth-child(2), .stats .stat:nth-child(3) { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">MOSS</span>
+      <span class="brand-sub">RESEARCH</span>
+    </div>
+    <span class="proto">PROTOTYPE · 演示数据</span>
+    <div class="title">
+      <h1 id="research-title"></h1>
+      <p id="research-subtitle"></p>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="stat-tasks">0</b><span>tasks</span></div>
+      <div class="stat"><b id="stat-queries">0</b><span>queries</span></div>
+      <div class="stat"><b id="stat-sources">0</b><span>sources</span></div>
+      <div class="stat"><b id="stat-tokens">0</b><span>tokens</span></div>
+    </div>
+    <div class="live"><span class="live-dot"></span>SHARED SURFACE</div>
+  </header>
+
+  <main class="main">
+    <section class="graph-pane">
+      <div class="legend">
+        <div class="legend-row"><span class="legend-dot" style="background:var(--accent)"></span>任务完成</div>
+        <div class="legend-row"><span class="legend-dot" style="background:var(--amber)"></span>正在搜索</div>
+        <div class="legend-row"><span class="legend-dot" style="background:var(--faint)"></span>任务开放</div>
+        <div class="legend-sep"></div>
+        <div class="legend-row"><span class="legend-swatch dash"></span>展开 / 子任务</div>
+        <div class="legend-row"><span class="legend-swatch" style="background:var(--accent)"></span>支撑</div>
+        <div class="legend-row"><span class="legend-swatch" style="background:var(--indigo)"></span>派生</div>
+        <div class="legend-row"><span class="legend-swatch" style="background:var(--amber)"></span>对比</div>
+        <div class="legend-row"><span class="legend-swatch" style="background:var(--purple)"></span>修订</div>
+      </div>
+      <div class="graph-toolbar">
+        <button class="ghost-btn" id="btn-expand">全部展开</button>
+        <button class="ghost-btn" id="btn-fit">适配视图</button>
+        <button class="ghost-btn" id="btn-path">关联路径</button>
+      </div>
+      <div id="graph"></div>
+      <div class="timeline">
+        <button class="playbtn" id="btn-play" title="播放研究过程">▶</button>
+        <input type="range" id="step-range" min="0" max="0" step="1" value="0">
+        <div class="step-label" id="step-label"></div>
+      </div>
+    </section>
+
+    <aside class="side-pane">
+      <div class="tabs">
+        <button class="tab on" data-tab="task">任务详情</button>
+        <button class="tab" data-tab="reader">来源阅读</button>
+        <button class="tab" data-tab="artifacts">产物</button>
+      </div>
+      <div class="panel on" id="panel-task"></div>
+      <div class="panel" id="panel-reader"></div>
+      <div class="panel" id="panel-artifacts"></div>
+    </aside>
+  </main>
+
+  <footer class="activity">
+    <div class="activity-label">ACTIVITY</div>
+    <div class="log-list" id="log-list"></div>
+  </footer>
+</div>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+"use strict";
+
+/* ────────────────────────────────────────────────────────────
+   演示数据：产品终态的形状。
+   每个 SearchTask 是图上的一个节点；queries / fetches / sources
+   是节点内部的动作与证据；artifacts + exits 是节点的结果出口。
+   edges 是任务之间的关联路径，basis 说明这条边为什么存在。
+   ──────────────────────────────────────────────────────────── */
+
+const RESEARCH = {
+  title: "DSH web search：成本结构与研究路径",
+  subtitle: "一次关于 provider 取舍、fanout 成本与共享视觉面的研究",
+  motivation: "ghost 需要判断搜索是否继续留在 dsh 内部，以及搜索行为怎样变成人和 ghost 共享的视觉面。",
+  question: "现有 web search 的调用结构、成本上界、替代 provider 和可视化落点分别是什么？",
+  tasks: [
+    {
+      id: "t0", parent: null, short: "根任务", builtAt: 0, closedAt: 7,
+      title: "评估 dsh web search 方案",
+      motivation: "搜索目前发生在 dsh 内部，人看不见 fanout 与中间来源；同时 fanout 成本不透明。",
+      question: "是否把搜索执行迁出 dsh，并给它一个共享研究面？",
+      actions: [
+        { at: 0, kind: "plan", text: "拆分为计费、实现、替代、可视化四条支线", result: "" },
+        { at: 7, kind: "synth", text: "汇总四条支线，形成决策备忘录", result: "1 artifact" }
+      ],
+      sources: [],
+      artifacts: [{
+        id: "a0", kind: "decision", at: 7,
+        title: "搜索执行应迁出 dsh",
+        summary: "保留 dsh 作为 agent-loop；MOSS 拥有搜索执行与观测面。首版先做事件镜像，不重写 provider。"
+      }],
+      exits: [{ role: "conclusion", artifact: "a0" }],
+      estimate: { tokens: 4200, calls: 2 }
+    },
+    {
+      id: "t1", parent: "t0", short: "官方计费", builtAt: 1, closedAt: 4,
+      title: "官方计费与调用结构",
+      motivation: "先确认 DeepSeek 原生搜索到底按什么计费：token、按次，还是两者都有。",
+      question: "一次 web_search 在账面上由哪些部分构成？",
+      actions: [
+        { at: 1, kind: "query", text: "DeepSeek API pricing web search", result: "6 sources" },
+        { at: 2, kind: "fetch", text: "api-docs.deepseek.com/quick_start/pricing", result: "200 · 18k chars" },
+        { at: 3, kind: "query", text: "Anthropic web_search tool pricing per 1000 searches", result: "5 sources" }
+      ],
+      sources: ["s1", "s2"],
+      artifacts: [{
+        id: "a1", kind: "finding", at: 4,
+        title: "计费结论",
+        summary: "原生搜索没有独立端点：成本 = 一次 Messages turn 的输入/输出 tokens；服务端 web_search 是否另有按次费，需以官方账单为准。"
+      }],
+      exits: [{ role: "evidence", artifact: "a1" }],
+      estimate: { tokens: 6800, calls: 3 }
+    },
+    {
+      id: "t2", parent: "t1", short: "原生实现", builtAt: 2, closedAt: 4,
+      title: "deepseek-official 的实现方式",
+      motivation: "看清协议形状，才能判断哪些中间态可以被观测。",
+      question: "provider 如何把一次 query 变成结果？",
+      actions: [
+        { at: 2, kind: "query", text: "deepseek-harness web-search-deepseek provider", result: "4 sources" },
+        { at: 2, kind: "fetch", text: "github.com/.../packages/web/web-search-deepseek", result: "200 · source" },
+        { at: 3, kind: "query", text: "web_search_20250305 max_uses", result: "3 sources" }
+      ],
+      sources: ["s3", "s4"],
+      artifacts: [{
+        id: "a2", kind: "finding", at: 4,
+        title: "一次 query = 一个完整 turn",
+        summary: "model=deepseek-v4-flash，max_tokens=4096，max_uses=5。服务端搜索内部没有事件，中间态不可见。"
+      }],
+      exits: [{ role: "evidence", artifact: "a2" }],
+      estimate: { tokens: 5200, calls: 3 }
+    },
+    {
+      id: "t3", parent: "t0", short: "Exa", builtAt: 2, closedAt: 4,
+      title: "Exa：专用检索端点的取舍",
+      motivation: "如果搜索执行迁到 MOSS，需要知道专用 provider 的成本和返回形状。",
+      question: "Exa 是否适合作为可视化研究的主 provider？",
+      actions: [
+        { at: 2, kind: "query", text: "Exa pricing per search", result: "5 sources" },
+        { at: 3, kind: "query", text: "exa highlights API numResults", result: "4 sources" }
+      ],
+      sources: ["s5", "s6"],
+      artifacts: [{
+        id: "a3", kind: "finding", at: 4,
+        title: "Exa 取舍",
+        summary: "按次计费、返回 highlights；无生成答案，拓扑更干净，但需要 MOSS 自己做结果综合。"
+      }],
+      exits: [{ role: "lead", artifact: "a3" }],
+      estimate: { tokens: 3900, calls: 2 }
+    },
+    {
+      id: "t4", parent: "t3", short: "Perplexity", builtAt: 3, closedAt: 5,
+      title: "Perplexity：答案 + 引用",
+      motivation: "对照一个自带答案生成的 provider。",
+      question: "Perplexity 的一次调用买到什么？",
+      actions: [
+        { at: 3, kind: "query", text: "Perplexity sonar pricing", result: "4 sources" },
+        { at: 4, kind: "fetch", text: "docs.perplexity.ai/getting-started/pricing", result: "200 · 11k chars" }
+      ],
+      sources: ["s7"],
+      artifacts: [{
+        id: "a4", kind: "comparison", at: 5,
+        title: "一次调用 = 答案 + 引用",
+        summary: "成本随 sonar 输出增长；生成答案不可作为可信来源直接入图，需与原始来源分离。"
+      }],
+      exits: [{ role: "comparison", artifact: "a4" }],
+      estimate: { tokens: 2600, calls: 2 }
+    },
+    {
+      id: "t5", parent: "t2", short: "fanout", builtAt: 3, closedAt: 5,
+      title: "fanout 放大系数",
+      motivation: "tool-web 允许一次调用带多个 query，原生 search 又允许 max_uses；两个上限会相乘。",
+      question: "单次模型工具调用最坏会触发多少次原生搜索？",
+      actions: [
+        { at: 3, kind: "query", text: "tool-web searchMaxQueries default", result: "3 sources" },
+        { at: 4, kind: "compute", text: "4 queries × 5 max_uses", result: "= 20" },
+        { at: 4, kind: "query", text: "tool-web searchMaxResults default", result: "3 sources" }
+      ],
+      sources: ["s8"],
+      artifacts: [{
+        id: "a5", kind: "finding", at: 5,
+        title: "20 次原生搜索上界",
+        summary: "默认 searchMaxQueries=4、maxUses=5：单次工具调用最坏 20 次原生搜索 + 4×4096 输出 tokens；provider 走裸 fetch，不进 token meter。"
+      }],
+      exits: [{ role: "constraint", artifact: "a5" }],
+      estimate: { tokens: 3100, calls: 3 }
+    },
+    {
+      id: "t6", parent: "t2", short: "版本差异", builtAt: 4, closedAt: 5,
+      title: "0.2.0-rc.2 的版本差异",
+      motivation: "vendor 已从记录的 0.1.5-rc.2 拉到 0.2.0-rc.2，需要确认搜索面是否变化。",
+      question: "跨版本后 web 族是否有断点？",
+      actions: [
+        { at: 4, kind: "fetch", text: "github.com/deepseek-ai/deepseek-harness/releases", result: "200" },
+        { at: 4, kind: "query", text: "dsh 0.2.0 rc.2 release notes", result: "2 sources" }
+      ],
+      sources: ["s9"],
+      artifacts: [{
+        id: "a6", kind: "finding", at: 5,
+        title: "web 族接口未见断点",
+        summary: "搜索 provider 的接口面稳定；但 vendor 版本记录不一致，消费侧需要钉死版本。"
+      }],
+      exits: [{ role: "evidence", artifact: "a6" }],
+      estimate: { tokens: 1800, calls: 2 }
+    },
+    {
+      id: "t7", parent: "t0", short: "视觉化", builtAt: 3, closedAt: 6,
+      title: "视觉化承载方案",
+      motivation: "目标不是画一张图，而是让搜索动作本身成为共享面。",
+      question: "三档粒度分别落在哪些现有机制上？",
+      actions: [
+        { at: 3, kind: "query", text: "d3 force graph cluster collapse", result: "5 sources" },
+        { at: 4, kind: "query", text: "MOSS screen manager item group", result: "3 sources" },
+        { at: 5, kind: "query", text: "webview artifacts append semantics", result: "2 sources" }
+      ],
+      sources: ["s10", "s11"],
+      artifacts: [{
+        id: "a7", kind: "design", at: 6,
+        title: "三档粒度共享一个 SearchRun",
+        summary: "L1 detail 走 typed 物料；L2 任务走工作台；L3 拓扑走 d3。图是 append-only 事件日志的投影。"
+      }],
+      exits: [{ role: "design", artifact: "a7" }],
+      estimate: { tokens: 4400, calls: 3 }
+    },
+    {
+      id: "t8", parent: "t0", short: "迁移落点", builtAt: 5, closedAt: 7,
+      title: "迁移落点：preset + plugin",
+      motivation: "要迁出搜索，必须先确认 dsh 侧能否禁用内置工具、注册新工具。",
+      question: "最小迁移面是什么？",
+      actions: [
+        { at: 5, kind: "query", text: "dsh preset disable tool-web", result: "3 sources" },
+        { at: 6, kind: "query", text: "dsh plugin ctx.tools.register", result: "2 sources" },
+        { at: 6, kind: "fetch", text: "dolores-ego/agent.cordis.yml", result: "200" }
+      ],
+      sources: ["s12", "s13"],
+      artifacts: [{
+        id: "a8", kind: "decision", at: 7,
+        title: "最小迁移面",
+        summary: "在 dolores-ego preset 禁用 tool-web；plugin 用 agentCtx.tools.register 注册 MOSS 工具。L2/L3 还需要显式的 task frame 工具。"
+      }],
+      exits: [{ role: "conclusion", artifact: "a8" }],
+      estimate: { tokens: 5400, calls: 3 }
+    }
+  ],
+  edges: [
+    { id: "e01", from: "t0", to: "t1", type: "expands", at: 1, basis: "先拆出成本这一支：不知道账怎么算，就无法判断是否迁出。" },
+    { id: "e02", from: "t0", to: "t3", type: "expands", at: 1, basis: "并行核对专用检索 provider，避免只看到 DeepSeek 一条路。" },
+    { id: "e03", from: "t0", to: "t7", type: "expands", at: 3, basis: "视觉化不是附属品，而是这次研究的产出形态。" },
+    { id: "e04", from: "t0", to: "t8", type: "expands", at: 5, basis: "成本与可视化的结论最终要落到迁移面。" },
+    { id: "e05", from: "t1", to: "t2", type: "expands", at: 2, basis: "计费页只给单价；要理解成本必须看 provider 的实现形状。" },
+    { id: "e06", from: "t2", to: "t5", type: "expands", at: 3, basis: "实现里发现 max_uses，fanout 放大值得单独算一次。" },
+    { id: "e07", from: "t2", to: "t6", type: "expands", at: 4, basis: "vendor 版本已漂移，实现结论需要一个版本锚点。" },
+    { id: "e08", from: "t3", to: "t4", type: "expands", at: 3, basis: "Exa 对照之后，另一个形态是自带答案的 Perplexity。" },
+    { id: "e09", from: "t1", to: "t0", type: "supports", at: 4, basis: "计费结构直接回答总成本问题。" },
+    { id: "e10", from: "t3", to: "t0", type: "supports", at: 4, basis: "替代 provider 证明迁出后有可选的执行路径。" },
+    { id: "e11", from: "t2", to: "t1", type: "supports", at: 4, basis: "实现形状证实了计费页的推断：一次 query 就是一个 turn。" },
+    { id: "e12", from: "t5", to: "t1", type: "supports", at: 5, basis: "fanout 系数把 token 成本放大成可计算的上界。" },
+    { id: "e13", from: "t4", to: "t3", type: "compares", at: 5, basis: "同一问题的两种返回形状：纯检索 vs 生成答案。" },
+    { id: "e14", from: "t6", to: "t2", type: "supersedes", at: 5, basis: "把实现结论锚到 0.2.0-rc.2，修订旧版本的假设。" },
+    { id: "e15", from: "t7", to: "t0", type: "derives", at: 6, basis: "视觉化方案是根任务的产品形态出口。" },
+    { id: "e16", from: "t8", to: "t0", type: "derives", at: 7, basis: "迁移面是根任务的最终动作出口。" }
+  ],
+  sources: {
+    s1: {
+      title: "DeepSeek API 定价", host: "api-docs.deepseek.com",
+      url: "https://api-docs.deepseek.com/quick_start/pricing",
+      at: 2, publishedAt: "2026-09",
+      snippet: "按输入 / 输出 token 分别计价；缓存命中与未命中不同价。",
+      body: "演示数据：定价页给出模型的输入、输出 token 单价，并说明缓存命中的折扣。这里没有单独的 web search 计价条目——原生搜索被描述为一次模型请求的一部分。"
+    },
+    s2: {
+      title: "Web search tool — Anthropic API", host: "docs.anthropic.com",
+      url: "https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool",
+      at: 3, publishedAt: "2026-08",
+      snippet: "web_search 使用次数与模型 token 分别计费。",
+      body: "演示数据：服务端 web_search 工具按使用次数计费，同时返回结果会作为输入 token 计入请求。DeepSeek 的 Anthropic 兼容端点是否沿用同一计费口径，需要以账单为准。"
+    },
+    s3: {
+      title: "dsh-web-search-deepseek", host: "github.com",
+      url: "https://github.com/deepseek-ai/deepseek-harness/tree/main/packages/web/web-search-deepseek",
+      at: 2, publishedAt: "2026-08",
+      snippet: "Each search costs a model turn, but returns structured result blocks.",
+      body: "演示数据：provider 用一次 Messages 调用挂载 web_search_20250305 服务端工具，从 web_search_tool_result 块提取来源；没有独立检索端点，也不走 ctx.llm。"
+    },
+    s4: {
+      title: "web_search_20250305 · server tool", host: "docs.anthropic.com",
+      url: "https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool",
+      at: 3, publishedAt: "2026-07",
+      snippet: "max_uses 限制一次请求内服务端搜索次数。",
+      body: "演示数据：服务端工具在同一轮模型生成内可以发起多次搜索，max_uses 是请求级上限；这些内部搜索不会作为独立事件暴露给调用方。"
+    },
+    s5: {
+      title: "Exa pricing", host: "docs.exa.ai", url: "https://docs.exa.ai/reference/pricing",
+      at: 2, publishedAt: "2026-09",
+      snippet: "按搜索与内容抓取用量计价。",
+      body: "演示数据：Exa 把搜索和内容检索分开计价，单次搜索返回结构化结果；没有生成答案，调用方自己决定如何综合。"
+    },
+    s6: {
+      title: "Exa contents & highlights", host: "docs.exa.ai",
+      url: "https://docs.exa.ai/reference/contents-retrieval",
+      at: 3, publishedAt: "2026-09",
+      snippet: "highlights 为每条结果返回最相关的句子。",
+      body: "演示数据：highlights 提供每条结果的摘录句，适合直接作为证据卡渲染；没有匹配摘录的结果会被丢弃，因此返回数量可能少于请求数量。"
+    },
+    s7: {
+      title: "Perplexity pricing", host: "docs.perplexity.ai",
+      url: "https://docs.perplexity.ai/getting-started/pricing",
+      at: 3, publishedAt: "2026-08",
+      snippet: "sonar 模型按 token 计费，回答附引用。",
+      body: "演示数据：一次 chat/completions 调用返回生成答案与引用来源，成本随生成 token 增长。引用可以作为来源，但生成答案本身不应被当成原始证据。"
+    },
+    s8: {
+      title: "dsh-tool-web", host: "github.com",
+      url: "https://github.com/deepseek-ai/deepseek-harness/tree/main/packages/web/tool-web",
+      at: 4, publishedAt: "2026-08",
+      snippet: "searchMaxQueries=4, searchMaxResults=8, searchTimeoutMs=30000.",
+      body: "演示数据：web_search 接受 queries 数组，扇出为独立的 ctx.web.search 调用；默认上限 4 条 query，合并后最多返回 8 条来源。base bundle 把搜索超时提高到 60s。"
+    },
+    s9: {
+      title: "deepseek-harness releases", host: "github.com",
+      url: "https://github.com/deepseek-ai/deepseek-harness/releases",
+      at: 4, publishedAt: "2026-10",
+      snippet: "dsh-v0.2.0-rc.2",
+      body: "演示数据：vendor checkout 标记为 dsh-v0.2.0-rc.2；web 族的包与 provider 接口在 0.1.x 到 0.2.x 之间未见断点。"
+    },
+    s10: {
+      title: "d3-force", host: "d3js.org", url: "https://d3js.org/d3-force",
+      at: 3, publishedAt: "2026-01",
+      snippet: "Force-directed graph layout using velocity Verlet integration.",
+      body: "演示数据：forceLink / forceManyBody / forceCenter 足以支撑任务图的初始布局；分组、折叠和路径高亮属于渲染层的交互，不应反向污染数据模型。"
+    },
+    s11: {
+      title: "MOSShell · screen manager", host: "github.com",
+      url: "https://github.com/GhostInShells/MOSShell/tree/main/nodes/screens/screen_manager",
+      at: 4, publishedAt: "2026-10",
+      snippet: "item / group / focus / background",
+      body: "演示数据：screen manager 把研究面拆成多个 item，人的切组与焦点不改变模型拥有的布局；研究与阅读可以作为同一组里的不同 item。"
+    },
+    s12: {
+      title: "dsh agent presets", host: "github.com",
+      url: "https://github.com/deepseek-ai/deepseek-harness",
+      at: 5, publishedAt: "2026-08",
+      snippet: "Presets compose tools per agent.",
+      body: "演示数据：dsh 的 preset 可以按 agent 组合工具；内置 tool-web 可以在 Dolores 的 preset 中禁用，由 plugin 注册的 MOSS 工具替代。"
+    },
+    s13: {
+      title: "moss-dolores-ghost-plugin.ts", host: "github.com",
+      url: "https://github.com/GhostInShells/MOSShell",
+      at: 6, publishedAt: "2026-10",
+      snippet: "agentCtx.tools.register(tool)",
+      body: "演示数据：plugin 已经通过 agentCtx.tools.register 注册 moss_* 工具，并通过 HTTP 把调用转给 MOSS；新增 web_search 工具可以复用同一条通路。"
+    }
+  },
+  steps: [
+    { label: "建立根任务", active: "t0", log: "ghost 打开根任务：先写动机与问题，再拆支线。" },
+    { label: "拆分支线", active: "t1", log: "展开三条支线：官方计费、替代 provider、视觉化承载。" },
+    { label: "计费核对", active: "t1", log: "t1 拉取定价页；从实现文档拆出 t2，t3 开始核对 Exa。" },
+    { label: "fanout 发现", active: "t5", log: "t2 发现 max_uses；新增子任务 t5 计算放大系数。Perplexity 对照开始。" },
+    { label: "交叉验证", active: "t6", log: "t6 核对 vendor 版本；t1 / t2 / t3 关闭并支撑根任务。" },
+    { label: "成本上界", active: "t5", log: "t5 给出 4×5=20 的最坏上界；t4 / t5 / t6 关闭。" },
+    { label: "可视化收敛", active: "t7", log: "t7 收敛：三档粒度共享 SearchRun；图是事件日志的投影。" },
+    { label: "决策出口", active: "t8", log: "t8 确认 preset + plugin 迁移面；根任务产出决策备忘录。" }
+  ]
+};
+
+const byId = Object.fromEntries(RESEARCH.tasks.map(t => [t.id, t]));
+const maxStep = RESEARCH.steps.length - 1;
+
+const state = {
+  step: maxStep,
+  selected: "t0",
+  reader: null,
+  tab: "task",
+  collapsed: new Set(),
+  highlightPath: false,
+  playing: false,
+  playTimer: null,
+  humanActions: []
+};
+
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+}[c]));
+const fmt = (n) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+
+/* ── 可见性 / 状态推导 ─────────────────────────────────────── */
+
+function hiddenIds() {
+  const hidden = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const t of RESEARCH.tasks) {
+      if (hidden.has(t.id)) continue;
+      if (state.collapsed.has(t.id) && RESEARCH.tasks.some(c => c.parent === t.id && !hidden.has(c.id))) {
+        for (const c of RESEARCH.tasks) if (c.parent === t.id) { hidden.add(c.id); changed = true; }
+      }
+      if (t.parent && hidden.has(t.parent) && !hidden.has(t.id)) { hidden.add(t.id); changed = true; }
+    }
+  }
+  return hidden;
+}
+
+function taskStatus(t) {
+  if (t.builtAt > state.step) return "hidden";
+  if (t.closedAt <= state.step) return "closed";
+  const hasAction = t.actions.some(a => a.at <= state.step);
+  return hasAction ? "running" : "open";
+}
+
+function visibleSources(t) {
+  return (t.sources || []).map(id => RESEARCH.sources[id]).filter(s => s && s.at <= state.step);
+}
+
+function visibleActions(t) {
+  return t.actions.filter(a => a.at <= state.step);
+}
+
+function visibleArtifacts(t) {
+  return (t.artifacts || []).filter(a => a.at <= state.step);
+}
+
+function model() {
+  const hidden = hiddenIds();
+  const nodes = RESEARCH.tasks
+    .filter(t => t.builtAt <= state.step && !hidden.has(t.id))
+    .map(t => ({ ...t, status: taskStatus(t) }));
+  const nodeIds = new Set(nodes.map(n => n.id));
+  const links = RESEARCH.edges
+    .filter(e => e.at <= state.step && nodeIds.has(e.from) && nodeIds.has(e.to))
+    .map(e => ({ ...e }));
+  return { nodes, links };
+}
+
+/* ── 统计 ──────────────────────────────────────────────────── */
+
+function updateStats() {
+  const m = model();
+  let queries = 0, sources = 0, tokens = 0;
+  for (const t of m.nodes) {
+    queries += visibleActions(t).filter(a => a.kind === "query" || a.kind === "fetch").length;
+    sources += visibleSources(t).length;
+    tokens += t.estimate?.tokens || 0;
+  }
+  $("#stat-tasks").textContent = m.nodes.length;
+  $("#stat-queries").textContent = queries;
+  $("#stat-sources").textContent = sources;
+  $("#stat-tokens").textContent = fmt(tokens);
+}
+
+/* ── 详情面板 ──────────────────────────────────────────────── */
+
+const KIND_LABEL = { query: "query", fetch: "fetch", compute: "compute", plan: "plan", synth: "synth" };
+
+function renderTaskPanel() {
+  const t = byId[state.selected];
+  const panel = $("#panel-task");
+  if (!t) {
+    panel.innerHTML = `<div class="empty-state"><b>选择一个任务</b><span>点击左侧节点查看动机、动作、来源与产物。</span></div>`;
+    return;
+  }
+  const status = taskStatus(t);
+  const actions = visibleActions(t);
+  const sources = visibleSources(t);
+  const artifacts = visibleArtifacts(t);
+  const children = RESEARCH.tasks.filter(c => c.parent === t.id && c.builtAt <= state.step);
+  const parent = t.parent ? byId[t.parent] : null;
+
+  const actionsHtml = actions.length ? actions.map(a => `
+    <li class="action">
+      <span class="kind ${esc(a.kind)}">${esc(KIND_LABEL[a.kind] || a.kind)}</span>
+      <div class="action-body">
+        <div class="action-text">${esc(a.text)}</div>
+        ${a.result ? `<div class="action-result">${esc(a.result)}</div>` : ""}
+      </div>
+    </li>`).join("") : `<li class="action"><div class="action-text" style="color:var(--faint)">还没有可见动作</div></li>`;
+
+  const sourcesHtml = sources.length ? sources.map(s => `
+    <div class="source" data-source="${esc(s.url)}" data-sid="${esc(Object.keys(RESEARCH.sources).find(k => RESEARCH.sources[k] === s))}">
+      <div class="source-host">${esc(s.host)}</div>
+      <div class="source-title">${esc(s.title)}</div>
+      <div class="source-snippet">${esc(s.snippet)}</div>
+    </div>`).join("") : `<div class="artifact-empty">还没有可见来源</div>`;
+
+  const artifactsHtml = artifacts.length ? artifacts.map(a => `
+    <div class="artifact">
+      <div class="artifact-kicker">${esc(a.kind.toUpperCase())}</div>
+      <div class="artifact-title">${esc(a.title)}</div>
+      <div class="artifact-summary">${esc(a.summary)}</div>
+    </div>`).join("") : `<div class="artifact-empty">任务关闭后在这里留下产物</div>`;
+
+  const parentHtml = parent ? `父任务 ${esc(parent.id)} · ` : "";
+  panel.innerHTML = `
+    <div class="task-head">
+      <span class="status-dot ${status}"></span>
+      <span class="task-id">${esc(t.id)}</span>
+      <span class="chip">${children.length ? "含子任务" : "叶子任务"}</span>
+      ${status === "running" ? `<span class="chip" style="color:var(--amber);border-color:rgba(246,173,85,.35)">搜索中</span>` : ""}
+    </div>
+    <h2 class="task-title">${esc(t.title)}</h2>
+    <div class="meta-line">${parentHtml}<b>${actions.length}</b> 次动作 · <b>${sources.length}</b> 条来源 · <b>${artifacts.length}</b> 个产物</div>
+
+    <section class="block">
+      <div class="block-label">动机</div>
+      <p>${esc(t.motivation)}</p>
+    </section>
+    <section class="block">
+      <div class="block-label">问题</div>
+      <p class="question">${esc(t.question)}</p>
+    </section>
+    <section class="block">
+      <div class="block-label">动作 <span class="count">${actions.length}</span></div>
+      <ol class="actions">${actionsHtml}</ol>
+    </section>
+    <section class="block">
+      <div class="block-label">来源 <span class="count">${sources.length}</span></div>
+      <div class="source-list">${sourcesHtml}</div>
+    </section>
+    <section class="block">
+      <div class="block-label">产物出口</div>
+      ${artifactsHtml}
+    </section>
+
+    <div class="row-btns">
+      ${children.length ? `<button class="ghost-btn" id="btn-collapse">${state.collapsed.has(t.id) ? "展开子任务" : "折叠子任务"}</button>` : ""}
+      <button class="ghost-btn" id="btn-focus-task">在图里定位</button>
+    </div>
+  `;
+
+  panel.querySelectorAll(".source").forEach(el => {
+    el.addEventListener("click", () => {
+      const sid = el.dataset.sid;
+      state.reader = sid;
+      switchTab("reader");
+      renderReader();
+      logHuman(`人打开来源 ${RESEARCH.sources[sid].host}`);
+    });
+  });
+  const collapseBtn = panel.querySelector("#btn-collapse");
+  if (collapseBtn) collapseBtn.addEventListener("click", () => {
+    if (state.collapsed.has(t.id)) state.collapsed.delete(t.id);
+    else state.collapsed.add(t.id);
+    renderAll();
+  });
+  const focusBtn = panel.querySelector("#btn-focus-task");
+  if (focusBtn) focusBtn.addEventListener("click", () => {
+    focusNode(t.id);
+    logHuman(`人定位到任务 ${t.id}`);
+  });
+}
+
+function renderReader() {
+  const panel = $("#panel-reader");
+  const s = state.reader ? RESEARCH.sources[state.reader] : null;
+  if (!s) {
+    panel.innerHTML = `<div class="empty-state"><b>还没有打开来源</b><span>从任务详情里点击一条来源，在这里阅读。</span></div>`;
+    return;
+  }
+  const owner = RESEARCH.tasks.find(t => (t.sources || []).includes(state.reader));
+  const query = owner?.actions.find(a => a.kind === "query" || a.kind === "fetch");
+  panel.innerHTML = `
+    <div class="reader-host">${esc(s.host)}</div>
+    <h2 class="reader-title">${esc(s.title)}</h2>
+    <a class="reader-link" href="${esc(s.url)}" target="_blank" rel="noreferrer">在浏览器打开原始链接 →</a>
+    <div class="untrusted">外部内容 · UNTRUSTED DATA · 只作为证据阅读</div>
+    <p class="reader-body">${esc(s.body)}</p>
+    <div class="provenance">
+      <div><b>来源路径</b></div>
+      <div>${esc(owner ? owner.id + " / " + owner.title : "未知任务")}</div>
+      <div>${query ? esc(query.kind + " · " + query.text) : ""}</div>
+      <div>${esc(s.publishedAt || "")} · 演示数据，非真实抓取</div>
+    </div>
+    <div class="row-btns">
+      <button class="ghost-btn" id="btn-back-task">回到任务 ${esc(owner ? owner.id : "")}</button>
+    </div>
+  `;
+  const back = panel.querySelector("#btn-back-task");
+  if (back) back.addEventListener("click", () => {
+    if (owner) state.selected = owner.id;
+    switchTab("task");
+    renderAll();
+  });
+}
+
+function renderArtifacts() {
+  const panel = $("#panel-artifacts");
+  const t = byId[state.selected];
+  if (!t) {
+    panel.innerHTML = `<div class="empty-state"><b>没有选中任务</b><span>产物出口挂在任务节点上。</span></div>`;
+    return;
+  }
+  const artifacts = visibleArtifacts(t);
+  if (!artifacts.length) {
+    panel.innerHTML = `<div class="empty-state"><b>${esc(t.id)} 还没有产物</b><span>搜索任务关闭时，结论、证据集或线索会从这里出口。</span></div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <div class="block-label">${esc(t.id)} · 产物 <span class="count">${artifacts.length}</span></div>
+    <div class="artifact-list">
+      ${artifacts.map(a => `
+        <div class="artifact-card">
+          <div class="artifact-kicker">${esc(a.kind.toUpperCase())}</div>
+          <h3>${esc(a.title)}</h3>
+          <p>${esc(a.summary)}</p>
+          ${(t.exits || []).filter(e => e.artifact === a.id).map(e => `<div class="exit-role">EXIT · ${esc(e.role)}</div>`).join("")}
+        </div>`).join("")}
+    </div>
+  `;
+}
+
+/* ── tabs / log ────────────────────────────────────────────── */
+
+function switchTab(name) {
+  state.tab = name;
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("on", p.id === "panel-" + name));
+  if (name === "task") renderTaskPanel();
+  if (name === "reader") renderReader();
+  if (name === "artifacts") renderArtifacts();
+}
+
+let surfaceSocket = null;
+
+function logHuman(text) {
+  state.humanActions.push({ who: "human", text, at: Date.now() });
+  if (state.humanActions.length > 12) state.humanActions.shift();
+  if (surfaceSocket && surfaceSocket.readyState === WebSocket.OPEN) {
+    surfaceSocket.send(JSON.stringify({ type: "user.action", action: text, task_id: state.selected }));
+  }
+  renderLog();
+}
+
+function connectSurface() {
+  if (!/^https?:$/.test(location.protocol)) return;
+  try {
+    surfaceSocket = new WebSocket(`ws://${location.host}/ws`);
+  } catch (_) {
+    return;
+  }
+  surfaceSocket.addEventListener("message", (event) => {
+    let frame;
+    try { frame = JSON.parse(event.data); } catch (_) { return; }
+    if (frame.type === "focus" && frame.task_id) {
+      state.highlightPath = false;
+      $("#btn-path").classList.remove("on");
+      focusNode(frame.task_id);
+      logHuman(`ghost 指向任务 ${frame.task_id}`);
+    } else if (frame.type === "step" && Number.isFinite(Number(frame.step))) {
+      if (state.playing) { clearInterval(state.playTimer); state.playing = false; $("#btn-play").textContent = "▶"; }
+      setStep(Number(frame.step));
+    } else if (frame.type === "view" && ["task", "reader", "artifacts"].includes(frame.name)) {
+      switchTab(frame.name);
+    }
+  });
+}
+
+function renderLog() {
+  const entries = [];
+  for (let i = 0; i <= state.step; i++) {
+    entries.push({ who: "model", text: RESEARCH.steps[i].log });
+  }
+  for (const a of state.humanActions) entries.push(a);
+  $("#log-list").innerHTML = entries.slice(-10).map(e => `
+    <div class="log-entry ${e.who}">
+      <span class="who">${e.who === "model" ? "GHOST" : "HUMAN"}</span>
+      <span>${esc(e.text)}</span>
+    </div>`).join("");
+  const list = $("#log-list");
+  list.scrollLeft = list.scrollWidth;
+}
+
+/* ── graph ─────────────────────────────────────────────────── */
+
+const EDGE_COLOR = {
+  expands: "#3b4a5a", supports: "#4fd1c5", derives: "#818cf8",
+  compares: "#f6ad55", supersedes: "#c084fc", contradicts: "#fb7185"
+};
+const EDGE_LABEL = {
+  expands: "展开", supports: "支撑", derives: "派生",
+  compares: "对比", supersedes: "修订", contradicts: "冲突"
+};
+const NODE_COLOR = { closed: "#4fd1c5", running: "#f6ad55", open: "#64748b" };
+
+let svg, rootG, linkLayer, nodeLayer, sim, zoomBehavior;
+let graphNodes = [], graphLinks = [];
+let pathIds = new Set();
+let hasD3 = typeof d3 !== "undefined";
+
+function nodeRadius(d) {
+  const count = visibleSources(d).length;
+  return 13 + Math.min(8, count * 2) + (d.id === "t0" ? 5 : 0);
+}
+
+function initGraph() {
+  const el = document.getElementById("graph");
+  if (!hasD3) {
+    el.innerHTML = `<div class="empty-state" style="height:100%"><b>d3 未能加载</b><span>检查网络后刷新；右侧面板仍可独立使用。</span></div>`;
+    return;
+  }
+  svg = d3.select(el).append("svg");
+  const defs = svg.append("defs");
+  for (const [type, color] of Object.entries(EDGE_COLOR)) {
+    defs.append("marker")
+      .attr("id", "arrow-" + type)
+      .attr("viewBox", "0 -5 10 10")
+      .attr("refX", 13).attr("refY", 0)
+      .attr("markerWidth", 5).attr("markerHeight", 5)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,-4L9,0L0,4")
+      .attr("fill", color)
+      .attr("opacity", type === "expands" ? 0.5 : 0.8);
+  }
+  rootG = svg.append("g");
+  linkLayer = rootG.append("g");
+  nodeLayer = rootG.append("g");
+
+  zoomBehavior = d3.zoom().scaleExtent([0.25, 2.6]).on("zoom", (event) => {
+    rootG.attr("transform", event.transform);
+  });
+  svg.call(zoomBehavior);
+
+  sim = d3.forceSimulation()
+    .force("link", d3.forceLink().id(d => d.id)
+      .distance(l => l.type === "expands" ? 74 : 170)
+      .strength(l => l.type === "expands" ? 0.9 : 0.18))
+    .force("charge", d3.forceManyBody().strength(-520))
+    .force("center", d3.forceCenter(el.clientWidth / 2, el.clientHeight / 2))
+    .force("collide", d3.forceCollide(d => nodeRadius(d) + 22))
+    .force("x", d3.forceX(el.clientWidth / 2).strength(0.035))
+    .force("y", d3.forceY(el.clientHeight / 2).strength(0.05))
+    .alphaDecay(0.035)
+    .on("tick", ticked);
+
+  new ResizeObserver(() => {
+    sim.force("center", d3.forceCenter(el.clientWidth / 2, el.clientHeight / 2));
+    sim.force("x", d3.forceX(el.clientWidth / 2).strength(0.035));
+    sim.force("y", d3.forceY(el.clientHeight / 2).strength(0.05));
+    sim.alpha(0.3).restart();
+  }).observe(el);
+}
+
+function computePath() {
+  pathIds = new Set();
+  if (!state.highlightPath) return;
+  const start = state.selected;
+  if (!start) return;
+  const adj = new Map();
+  for (const t of RESEARCH.tasks) adj.set(t.id, new Set());
+  for (const e of RESEARCH.edges) {
+    adj.get(e.from)?.add(e.to);
+    adj.get(e.to)?.add(e.from);
+  }
+  const queue = [start];
+  const seen = new Set([start]);
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const nxt of adj.get(cur) || []) {
+      if (seen.has(nxt)) continue;
+      seen.add(nxt);
+      queue.push(nxt);
+    }
+  }
+  pathIds = seen;
+}
+
+function renderGraph() {
+  if (!hasD3) return;
+  computePath();
+  const m = model();
+  const prev = new Map(graphNodes.map(n => [n.id, n]));
+  graphNodes = m.nodes.map(n => {
+    const old = prev.get(n.id);
+    return old ? Object.assign(old, n) : { ...n };
+  });
+  const nodeById = new Map(graphNodes.map(n => [n.id, n]));
+  graphLinks = m.links.map(l => ({ ...l, source: nodeById.get(l.from), target: nodeById.get(l.to) }));
+
+  const link = linkLayer.selectAll("line.link").data(graphLinks, d => d.id);
+  link.exit().remove();
+  link.enter().append("line")
+    .attr("class", "link")
+    .attr("stroke-linecap", "round")
+    .merge(link)
+    .attr("stroke", d => EDGE_COLOR[d.type] || EDGE_COLOR.expands)
+    .attr("stroke-width", d => d.type === "expands" ? 1.1 : 1.5)
+    .attr("stroke-dasharray", d => d.type === "expands" ? "3 5" : null)
+    .attr("marker-end", d => `url(#arrow-${d.type})`)
+    .attr("opacity", d => d.type === "expands" ? 0.55 : 0.8)
+    .classed("dim", d => state.highlightPath && !(pathIds.has(d.from) && pathIds.has(d.to)))
+    .on("mousemove", (event, d) => showTooltip(event, EDGE_LABEL[d.type] || d.type, d.basis))
+    .on("mouseleave", hideTooltip);
+
+  const node = nodeLayer.selectAll("g.node").data(graphNodes, d => d.id);
+  node.exit().remove();
+  const enter = node.enter().append("g")
+    .attr("class", "node")
+    .call(d3.drag()
+      .on("start", (event, d) => {
+        if (!event.active) sim.alphaTarget(0.25).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on("end", (event, d) => {
+        if (!event.active) sim.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      }))
+    .on("click", (event, d) => {
+      event.stopPropagation();
+      selectTask(d.id);
+      logHuman(`人查看了任务 ${d.id} · ${d.title}`);
+    })
+    .on("dblclick", (event, d) => {
+      event.stopPropagation();
+      if (RESEARCH.tasks.some(c => c.parent === d.id)) {
+        if (state.collapsed.has(d.id)) state.collapsed.delete(d.id);
+        else state.collapsed.add(d.id);
+        renderAll();
+      }
+    })
+    .on("mousemove", (event, d) => {
+      const n = visibleSources(d).length;
+      showTooltip(event, `${d.id} · ${d.title}`, `${n} 条可见来源 · 双击折叠/展开子任务`);
+    })
+    .on("mouseleave", hideTooltip);
+
+  enter.append("circle").attr("class", "node-ring");
+  enter.append("circle").attr("class", "node-circle");
+  enter.append("text").attr("class", "node-badge");
+  enter.append("text").attr("class", "node-label");
+
+  const merged = enter.merge(node);
+  merged.classed("dim", d => state.highlightPath && !pathIds.has(d.id));
+  merged.select(".node-circle")
+    .attr("r", d => nodeRadius(d))
+    .attr("fill", d => d.id === "t0" ? "rgba(79,209,197,.16)" : "rgba(17,24,32,.95)")
+    .attr("stroke", d => NODE_COLOR[d.status] || NODE_COLOR.open)
+    .attr("stroke-width", d => d.id === state.selected ? 2.4 : 1.6);
+  merged.select(".node-ring")
+    .attr("r", d => nodeRadius(d) + 5)
+    .attr("stroke", d => d.status === "running" ? "rgba(246,173,85,.45)" :
+                        d.id === state.selected ? "rgba(217,226,234,.45)" : "transparent");
+  merged.select(".node-badge")
+    .attr("y", 3)
+    .text(d => visibleSources(d).length || "");
+  merged.select(".node-label")
+    .attr("y", d => nodeRadius(d) + 15)
+    .attr("class", d => "node-label" + (d.id === "t0" ? " root" : ""))
+    .text(d => d.short);
+
+  sim.nodes(graphNodes);
+  sim.force("link").links(graphLinks);
+  sim.alpha(0.65).restart();
+}
+
+function ticked() {
+  linkLayer.selectAll("line.link")
+    .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+    .attr("x2", d => shorten(d).x).attr("y2", d => shorten(d).y);
+  nodeLayer.selectAll("g.node")
+    .attr("transform", d => `translate(${d.x},${d.y})`);
+}
+
+function shorten(d) {
+  const dx = d.target.x - d.source.x;
+  const dy = d.target.y - d.source.y;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  const pad = nodeRadius(d.target) + 3;
+  return { x: d.target.x - dx / dist * pad, y: d.target.y - dy / dist * pad };
+}
+
+function selectTask(id) {
+  state.selected = id;
+  if (state.reader) {
+    const owner = RESEARCH.tasks.find(t => (t.sources || []).includes(state.reader));
+    if (owner && owner.id !== id) state.reader = null;
+  }
+  renderGraph();
+  renderTaskPanel();
+  renderArtifacts();
+  if (state.tab === "reader" && !state.reader) renderReader();
+}
+
+function focusNode(id) {
+  if (!hasD3 || !svg) return;
+  const node = graphNodes.find(n => n.id === id);
+  if (!node || node.x == null) return;
+  const el = document.getElementById("graph");
+  const transform = d3.zoomIdentity
+    .translate(el.clientWidth / 2, el.clientHeight / 2)
+    .scale(1.35)
+    .translate(-node.x, -node.y);
+  svg.transition().duration(450).call(zoomBehavior.transform, transform);
+  state.selected = id;
+  renderGraph();
+  renderTaskPanel();
+}
+
+/* ── tooltip ───────────────────────────────────────────────── */
+
+const tooltip = document.getElementById("tooltip");
+function showTooltip(event, title, basis) {
+  tooltip.innerHTML = `<div class="tt-kicker">${esc(title)}</div><div class="tt-basis">${esc(basis || "")}</div>`;
+  tooltip.classList.add("on");
+  const pad = 14;
+  let x = event.clientX + pad;
+  let y = event.clientY + pad;
+  const rect = tooltip.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth - 10) x = event.clientX - rect.width - pad;
+  if (y + rect.height > window.innerHeight - 10) y = event.clientY - rect.height - pad;
+  tooltip.style.left = x + "px";
+  tooltip.style.top = y + "px";
+}
+function hideTooltip() { tooltip.classList.remove("on"); }
+
+/* ── replay ────────────────────────────────────────────────── */
+
+function setStep(n) {
+  state.step = Math.max(0, Math.min(maxStep, n));
+  $("#step-range").value = state.step;
+  $("#step-label").innerHTML = `<b>${esc(RESEARCH.steps[state.step].label)}</b> · step ${state.step + 1}/${maxStep + 1}`;
+  if (state.selected) {
+    const t = byId[state.selected];
+    if (t && t.builtAt > state.step) state.selected = "t0";
+  }
+  renderAll();
+}
+
+function play() {
+  if (state.playing) {
+    clearInterval(state.playTimer);
+    state.playing = false;
+    $("#btn-play").textContent = "▶";
+    return;
+  }
+  if (state.step >= maxStep) setStep(0);
+  state.playing = true;
+  $("#btn-play").textContent = "❚❚";
+  state.playTimer = setInterval(() => {
+    if (state.step >= maxStep) {
+      clearInterval(state.playTimer);
+      state.playing = false;
+      $("#btn-play").textContent = "▶";
+      return;
+    }
+    setStep(state.step + 1);
+  }, 1400);
+}
+
+/* ── all ───────────────────────────────────────────────────── */
+
+function renderAll() {
+  updateStats();
+  renderGraph();
+  renderTaskPanel();
+  renderReader();
+  renderArtifacts();
+  renderLog();
+}
+
+function init() {
+  $("#research-title").textContent = RESEARCH.title;
+  $("#research-subtitle").textContent = RESEARCH.subtitle;
+  $("#step-range").max = maxStep;
+  $("#step-range").value = state.step;
+  $("#step-label").innerHTML = `<b>${esc(RESEARCH.steps[state.step].label)}</b> · step ${state.step + 1}/${maxStep + 1}`;
+
+  document.querySelectorAll(".tab").forEach(btn => {
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  });
+  $("#btn-play").addEventListener("click", play);
+  $("#step-range").addEventListener("input", (e) => {
+    if (state.playing) { clearInterval(state.playTimer); state.playing = false; $("#btn-play").textContent = "▶"; }
+    setStep(Number(e.target.value));
+  });
+  $("#btn-expand").addEventListener("click", () => {
+    if (state.collapsed.size) {
+      state.collapsed.clear();
+      $("#btn-expand").classList.remove("on");
+    } else {
+      for (const t of RESEARCH.tasks) if (RESEARCH.tasks.some(c => c.parent === t.id)) state.collapsed.add(t.id);
+      $("#btn-expand").classList.add("on");
+    }
+    renderAll();
+  });
+  $("#btn-path").addEventListener("click", () => {
+    state.highlightPath = !state.highlightPath;
+    $("#btn-path").classList.toggle("on", state.highlightPath);
+    renderGraph();
+  });
+  $("#btn-fit").addEventListener("click", () => {
+    if (!hasD3 || !svg) return;
+    svg.transition().duration(450).call(zoomBehavior.transform, d3.zoomIdentity);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT") return;
+    if (e.key === "ArrowRight") setStep(state.step + 1);
+    if (e.key === "ArrowLeft") setStep(state.step - 1);
+    if (e.key === " ") { e.preventDefault(); play(); }
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!tooltip.classList.contains("on")) return;
+    if (!e.target.closest("svg")) hideTooltip();
+  });
+
+  initGraph();
+  renderAll();
+  connectSurface();
+}
+
+init();
+</script>
+</body>
+</html>
