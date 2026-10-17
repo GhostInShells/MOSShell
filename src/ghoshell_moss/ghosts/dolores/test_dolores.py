@@ -95,9 +95,6 @@ class TestDoloresMeta:
         assert (dsh_stubs / "profiles/web/package.json").exists()
         # plugin 源在独立 stub, 创建时复制进 dsh profile.
         assert _dolores_meta().dsh_plugin_stub().is_file()
-        # ego preset 源在独立 dir, 创建时复制进 .agent-presets.
-        assert _dolores_meta().dsh_preset_dir().is_dir()
-        assert (_dolores_meta().dsh_preset_dir() / "dolores-ego/agent.cordis.yml").is_file()
 
 
 class TestStubsSync:
@@ -123,8 +120,6 @@ class TestStubsSync:
         assert (tmp_path / ".dsh").is_dir()
         assert (tmp_path / "skills").is_dir()
         assert (tmp_path / ".dsh/profiles/web/moss-dolores-ghost-plugin.ts").exists()
-        # ego preset 复制进 .agent-presets.
-        assert (tmp_path / ".dsh/.agent-presets/dolores-ego/agent.cordis.yml").exists()
         # startup 目录 (开机启动文档) 随 stubs 同步.
         assert (tmp_path / "startup" / "default.startup.yml").exists()
         assert (tmp_path / "startup" / "GROUND.md").exists()

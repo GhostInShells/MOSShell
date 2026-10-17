@@ -126,9 +126,65 @@ export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'sy
 // 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
 const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
 
-// ego 专属 preset id (目录名即 id) — plugin 侧的单一权威. 内容由 launcher 从 repo 自持
-// 的 dolores-ego preset 复制进 <DSH_HOME>/.agent-presets (不再从 shipped standard 逐字再生).
+// ego 专属 preset id — plugin 侧的单一权威. 0.2.0 起 composition 由下方
+// DOLORES_EGO_PRESET_PLUGINS + apply() 里的 agentPresets.register 程序化注册;
+// 不再从 repo 复制目录进 <DSH_HOME>/.agent-presets (0.2.0 已无目录发现).
 const DOLORES_EGO_PRESET = 'dolores-ego'
+
+// dolores-ego 的 composition — 0.2.0 起程序化 register(PresetDefinition)，替代 .agent-presets/ 目录。
+// 内容 = 原 0.1.5 的 agent.cordis.yml composition (YAML → JS)，`!!js` 表达式退化为普通 JS 表达式。
+const DOLORES_EGO_PRESET_PLUGINS = [
+  { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
+  { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash', disabled: process.platform === 'win32' },
+  { id: 'tool-pwsh', name: '@deepseek-ai/dsh-tool-pwsh', disabled: process.platform !== 'win32' },
+  { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
+  { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
+  { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
+  {
+    id: 'planning',
+    name: 'cordis:group',
+    group: true,
+    isolate: { planMode: true },
+    config: [
+      {
+        id: 'plan-mode',
+        name: '@deepseek-ai/dsh-plan-mode',
+        config: {
+          section: `You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.`,
+        },
+      },
+    ],
+  },
+  {
+    id: 'delegation',
+    name: 'cordis:group',
+    group: true,
+    isolate: { workflowEngine: true },
+    config: [
+      { id: 'tool-subagent-control', name: '@deepseek-ai/dsh-tool-subagent-control' },
+      { id: 'tool-subagent-list-agents', name: '@deepseek-ai/dsh-tool-subagent-control/list-agents' },
+      { id: 'tool-subagent', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'spawn', toolName: 'subagent', modelSelectionSettings: true, backgroundMode: 'continuable' } },
+      { id: 'tool-subagent-fork', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'fork', toolName: 'subagent_fork', backgroundMode: 'continuable' } },
+      { id: 'tool-subagent-codex', name: '@deepseek-ai/dsh-tool-subagent', disabled: true, config: { provider: 'codex', toolName: 'subagent_codex', backgroundMode: 'one-shot', maxDepth: 'provider-managed' } },
+      { id: 'tool-subagent-claude-code', name: '@deepseek-ai/dsh-tool-subagent', disabled: true, config: { provider: 'claude-code', toolName: 'subagent_claude_code', backgroundMode: 'one-shot', maxDepth: 'provider-managed' } },
+      { id: 'workflow-ptc', name: '@deepseek-ai/dsh-workflow-ptc', config: { provider: 'spawn' } },
+      { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
+      { id: 'tool-ralph', name: '@deepseek-ai/dsh-tool-ralph', disabled: true, config: { subagentProvider: 'spawn', maxRounds: 64 } },
+    ],
+  },
+  { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },
+  { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: true, searchTimeoutMs: 60000 } },
+]
 
 const DOLORES_EGO_CREATE = `${DOLORES_API_ROOT}/ego/create`
 // 通用 session 观测面: 任意 live session 的 instruction / surface 读取 (sessionId 收在 body).
@@ -818,7 +874,18 @@ function installEgoAgentStart(ctx: Context, assemble: (agent: Agent) => void): v
 }
 
 export function apply(ctx: Context) {
-  // ── 0. agent start: 每个 ego agent 实例装配一次 ────────────────────────
+  // ── 0. agent preset: 程序化注册 dolores-ego (0.2.0 起替代 .agent-presets/ 目录发现) ──
+  // register 同步把定义写入 registry (mount 前可见), 激活异步完成; 失败仅告警不打断 boot.
+  ctx.get('agentPresets').register({
+    id: DOLORES_EGO_PRESET,
+    name: 'Dolores Ego',
+    description: '内部使用 — Dolores 主脑会话（非 ego 请勿手动创建）。',
+    plugins: DOLORES_EGO_PRESET_PLUGINS,
+  }).catch((error: unknown) => {
+    ctx.logger.warn('dolores: ego preset register failed: %s', String(error))
+  })
+
+  // ── 1. agent start: 每个 ego agent 实例装配一次 ────────────────────────
   // startup 和 resume 都装配, 各自 fresh ctx — 这里调 apply_ego_agent 做 tools +
   // identity/persona + perStep 的全套注册, 替代「全局 perStep + setup 里注册」.
   // 非主 ego session (界面误建 / fork 出的旁路) 也走这里装配, 由 perStep 的旁路分支降级.
@@ -923,12 +990,13 @@ export function apply(ctx: Context) {
         handle.agent.session.append('sandbox/mode', { mode: permission })
         await workspace.attachSession(handle.agent.id)
         // 4. 注入 ghost.memory 上下文 — messages → user/message (surfaceOp append). 建立模型首轮可见表面.
+        //    source.kind 必须是生产方自有 kind: dsh 0.2.0 的 v4 迁移显式拒绝 kind === 'plugin'.
         for (const msg of messages) {
           if (typeof msg?.text === 'string' && msg.text.length > 0) {
             handle.agent.session.append('user/message',
               createUserMessage({
                 content: [{ type: 'text', text: msg.text }],
-                source: { kind: 'plugin', plugin: name },
+                source: { kind: name },
               }),
               { surfaceOp: 'append' })
           }
@@ -1082,7 +1150,7 @@ export function apply(ctx: Context) {
           // continuation: N" 这类字, 会被模型当成用户输入.
           agent.steer(createUserMessage({
             content: [],
-            source: { kind: 'plugin', plugin: name },
+            source: { kind: name },
           }))
         }
         probe(
@@ -1175,6 +1243,7 @@ export function apply(ctx: Context) {
           if (hasMomentPayload(body.moment) && doloresEgoSessionId !== null) {
             // moment 仍立即注入 (agent 已存在), 与正常路径"先 inject 后 resolve"同序.
             const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+            // context/inputs 两半由 helper 一起投 — 见 injectMomentPayload 契约注释.
             await injectMomentPayload(ctx, agent, body.moment)
           }
           earlyResults.set(callId, {
@@ -1277,7 +1346,7 @@ export function apply(ctx: Context) {
         try {
           handle.agent.followup(createUserMessage({
             content: [{ type: 'text', text: prompt }],
-            source: { kind: 'plugin', plugin: name },
+            source: { kind: name },
           }))
           await handle.agent.whenIdle()
           const message = lastAssistantText(handle.agent)
@@ -1362,7 +1431,7 @@ export function apply(ctx: Context) {
         }
         const message = createUserMessage({
           content: [{ type: 'text', text: notice }],
-          source: { kind: 'plugin', plugin: `${name}:compact` },
+          source: { kind: `${name}:compact` },
         })
         appendReplace(agent.session, shadowed, message)
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -1580,14 +1649,14 @@ async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown):
   if (contextBlocks.length > 0) {
     agent.inject(createUserMessage({
       content: contextBlocks,
-      source: { kind: 'plugin', plugin: `${name}:moment` },
+      source: { kind: `${name}:moment` },
     }))
   }
   const inputBlocks = Array.isArray(inputs) ? await durableMomentContent(ctx, inputs) : []
   if (inputBlocks.length > 0) {
     agent.inject(createUserMessage({
       content: inputBlocks,
-      source: { kind: 'plugin', plugin: `${name}:inputs` },
+      source: { kind: `${name}:inputs` },
     }))
   }
 }
@@ -1595,6 +1664,16 @@ async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown):
 /**
  * Enter 缓冲 — 组装 moment 帧消息 (按注入顺序): epoch <容器> 是底座消息, context <容器> 是
  * 坐落在其上的帧消息. 只做组装, 不 inbox inject; 由 pre-step 挂载点插到本步历史最前.
+ *
+ * 决策 (dsh 0.2.0 跟踪): moment 保持 user/message, 不用 developer/message. 依据:
+ * 1. 图两个都支持 — ContentBlockMap 含 image, user 与 developer 的 content 都是 ContentBlock[],
+ *    moment 的图已由 durableMomentContent → admitEncodedImages 落成 image 块, 不需要 developer 承载.
+ * 2. 头规则不碰 moment — 0.2.0 只要求 system/message 是 surface 头 (protectedHead); moment 是头之后
+ *    per-step 注入的 user/message, 不触发该规则.
+ * 3. 注入通道是 user 专属 — Agent.inject / Agent.steer (runtime-types.ts:231/241) 只收 UserMessage,
+ *    底层写 user/message 事件; 改用 developer/message 需绕过它们直写 session.append('developer/message'),
+ *    丢掉 inject/steer 的驱动/背压语义, 还得重摸 perStep 时序 — 纯语义洁癖、无功能收益.
+ * 若将来想要"注入上下文 ≠ 用户回合"的语义区隔, 作为独立改动动注入通道, 不在这里混入.
  */
 function buildMomentFrame(
   epoch: ContentBlock[] | undefined,
@@ -1605,20 +1684,20 @@ function buildMomentFrame(
   if (epoch !== undefined && epoch.length > 0) {
     messages.push(createUserMessage({
       content: epoch,
-      source: { kind: 'plugin', plugin: `${name}:epoch` },
+      source: { kind: `${name}:epoch` },
     }))
   }
   // notices (memento commit 提醒) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn.
   if (notices.length > 0) {
     messages.push(createUserMessage({
       content: notices.map(text => ({ type: 'text' as const, text })),
-      source: { kind: 'plugin', plugin: `${name}:notice` },
+      source: { kind: `${name}:notice` },
     }))
   }
   if (context.length > 0) {
     messages.push(createUserMessage({
       content: context,
-      source: { kind: 'plugin', plugin: `${name}:moment` },
+      source: { kind: `${name}:moment` },
     }))
   }
   return messages
@@ -1642,7 +1721,7 @@ function flushPendingMoments(agent: Agent): void {
 function bypassInstruction(): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text: BYPASS_INSTRUCTION }],
-    source: { kind: 'plugin', plugin: name },
+    source: { kind: name },
   })
 }
 
@@ -1676,7 +1755,7 @@ function collapseTurn(session: Session, turn: number): void {
   if (shadowed.length === 0) return
   appendReplace(session, shadowed, createUserMessage({
     content: [],
-    source: { kind: 'plugin', plugin: name },
+    source: { kind: name },
   }))
 }
 
@@ -1727,7 +1806,7 @@ function compactLossily(agent: Agent, memory: readonly string[], turn: number): 
   const marker = 'Context exceeded the model window and was compacted: the memory view above is the compressed history; the recent turn below is live.'
   const message = createUserMessage({
     content: [...memory.map(text => ({ type: 'text', text } as const)), { type: 'text', text: marker } as const],
-    source: { kind: 'plugin', plugin: `${name}:compact-overflow` },
+    source: { kind: `${name}:compact-overflow` },
   })
   try {
     appendReplace(session, shadowed, message)
