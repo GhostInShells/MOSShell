@@ -104,7 +104,16 @@ class GhostEvent(BaseModel):
     """
 
     event: str = Field(description="namespaced event type name")
-    payload: dict[str, Any] = Field(description="transport-opaque, JSON-serializable event payload")
+    content: str = Field(
+        default="",
+        description="one-line human-readable summary of this event — the only field a "
+                    "surface needs if all it does is say what is happening",
+    )
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description="transport-opaque, JSON-serializable event payload; empty when the "
+                    "event carries nothing but its own name and summary",
+    )
 
 
 class Ghost(ABC):

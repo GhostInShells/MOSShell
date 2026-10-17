@@ -13,6 +13,7 @@ from ghoshell_moss.core.blueprint.host import IGhostRuntime, MOSShellRuntime, Lo
 from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostEvent
+from ghoshell_moss.types.topics.ghost import GhostEventTopic
 from ghoshell_moss.core.blueprint.mindflow import (
     Mindflow, Thinking, Signal
 )
@@ -419,6 +420,22 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
             self._moss_runtime.session.output(
                 'ghost-event',
                 event.model_dump_json(indent=2, ensure_ascii=False, exclude_none=True, exclude_defaults=True),
+            )
+        # Same event, second surface: the session output is for whoever is reading
+        # *this* session; the bus is for everyone else — the screen, a status bar, a
+        # panel that is not a session at all. Fire and forget: an event must never
+        # take the ghost down with it.
+        self._publish_ghost_event(event)
+
+    def _publish_ghost_event(self, event: GhostEvent) -> None:
+        try:
+            self._moss_runtime.session.topics.pub(
+                GhostEventTopic(**event.model_dump()),
+                creator='ghost',
+            )
+        except Exception:  # noqa: BLE001 — a bus that is down is not a ghost failure
+            self.moss.logger.exception(
+                "%s could not publish ghost event %r", self._log_prefix, event.event
             )
 
     def _on_logos_end(self) -> None:
