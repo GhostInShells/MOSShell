@@ -52,6 +52,10 @@ Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 
 # 10. workspace 列表改走 workspace/follow 流 baseline (0.1.5 已无 workspace.list 动词);
 #     follow 快照喂 cursor + header (cwd/agentPreset) 给 session (page 的 throughSeq 来源).
 
+# ── 修复 (2026-10-15, mux 入站上限) ────────────────────────
+# 11. mux 入站不限: 库默认 1 MiB 打不过长会话重连的整份下发物 (越线即 1009 断链).
+#     宿主侧工具 (CTML) 只走这条 mux —— 链路静默死 = CTML 静默死, 而 bash 照常.
+
 # ── 已知问题 (随改随记, 最后一起删) ─────────────────────────
 # 1. `_owns_sp` 手动 __aexit__ 与 exit stack 重复回收 subprocess manager (第二次 no-op, 待合).
 # 2. __aenter__ except 块的清理被注释, 中途失败会漏孤儿进程 (启动超时使该路径可达, 需补).
@@ -256,7 +260,12 @@ class DshConnection:
             try:
                 await self._authorize()
                 headers = {"Cookie": self._cookie_header} if self._cookie_header else None
-                async with websockets.connect(self.config.mux_url, additional_headers=headers) as ws:
+                async with websockets.connect(
+                        self.config.mux_url,
+                        additional_headers=headers,
+                        # 入站不限: 库默认 1 MiB 会被长会话的整份重下发打穿 (1009). 见 #11.
+                        max_size=None,
+                ) as ws:
                     self._ws = ws
                     self._dsh_started.set()
                     self._logger.info("%smux connected", self._log_prefix)

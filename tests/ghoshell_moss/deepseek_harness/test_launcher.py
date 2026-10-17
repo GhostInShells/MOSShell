@@ -9,10 +9,17 @@ session/follow 摄取面:
 
 import asyncio
 import json
+import time
 
 import pytest
+import websockets
 
-from ghoshell_moss.deepseek_harness.launcher import DshLauncher, DshLauncherConfig
+from ghoshell_moss.deepseek_harness.launcher import (
+    DshConnection,
+    DshConnectionConfig,
+    DshLauncher,
+    DshLauncherConfig,
+)
 from ghoshell_moss.deepseek_harness.session import DshSession
 
 
@@ -256,3 +263,53 @@ async def test_follow_snapshot_and_end_feed_no_events():
         await _drain(session)
 
     assert seen == []
+
+
+# ---- mux 入站上限 (2026-10-15 CTML 静默失效回归) ---- #
+# 超过库默认 1 MiB 的重连下发物必须能进来 —— 吃默认值就会 1009 断链, 宿主侧工具 (CTML)
+# 随之静默失效, 而 bash 不走 mux 所以看起来一切正常. 用真实 WS 钉住这条.
+
+
+async def _wait_until(predicate, timeout: float = 5.0):
+    """轮询等条件成立并返回其真值; 超时即失败 (不用固定 sleep 猜时序)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met before timeout")
+
+
+@pytest.mark.asyncio
+async def test_mux_delivers_inbound_frame_over_library_default(monkeypatch):
+    """不设入站上限时, 超过 websockets 默认 1 MiB 的重连下发物必须能进来并分派."""
+    monkeypatch.delenv("DSH_WEB_TOKEN", raising=False)
+    huge = "x" * (2 * 2**20)
+    frame = json.dumps({
+        "type": "item", "streamId": "moss-events",
+        "value": {"type": "emit", "event": "api-session/status", "args": [huge]},
+    })
+    assert len(frame) > 2**20, "测试帧必须真的越线, 否则证明不了什么"
+
+    async def handler(ws) -> None:
+        """假 mux: 收到第一条 open 就下发越线帧, 之后保持连接."""
+        sent = False
+        async for _raw in ws:
+            if sent:
+                continue
+            sent = True
+            await ws.send(frame)
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    try:
+        port = server.sockets[0].getsockname()[1]
+        conn = DshConnection(DshConnectionConfig(host="127.0.0.1", port=port))
+        seen: list[tuple[str, list]] = []
+        conn.on_remote_emit(lambda event, args: seen.append((event, args)))
+        async with conn:
+            await _wait_until(lambda: seen)
+            assert seen[0][1] == [huge]
+    finally:
+        server.close()
+        await server.wait_closed()
