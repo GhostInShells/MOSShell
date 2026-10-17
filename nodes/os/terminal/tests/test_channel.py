@@ -198,6 +198,26 @@ async def test_an_auto_thread_runs_without_asking(store):
 
 
 @pytest.mark.asyncio
+async def test_trust_on_the_whole_terminal_runs_everything_without_asking(store):
+    """The hand-over sits above the per-thread and per-rule scopes: with it on,
+    a command nobody would have trusted otherwise just runs."""
+    processes = FakeSubprocesses(lines=["ok\n"])
+    chan, _ = _channel(store, processes)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("dev", "."))
+        store.set_global_trust(True)
+        receipt = await runtime.execute_command("exec", args=("dev", chunks(["rm -rf /tmp/x"])))
+        assert "auto-approved" in receipt and "whole terminal" in receipt
+        card = store.cards()[-1]
+        await _until(lambda: card.state is CardState.DONE)
+        assert len(processes.spawned) == 1
+
+        store.set_global_trust(False)
+        receipt = await runtime.execute_command("exec", args=("dev", chunks(["ls"])))
+        assert "awaiting approval" in receipt
+
+
+@pytest.mark.asyncio
 async def test_exec_defaults_to_the_root_thread(store):
     processes = FakeSubprocesses()
     chan, _ = _channel(store, processes)

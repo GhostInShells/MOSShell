@@ -25,8 +25,10 @@ __all__ = ["CardStore", "CardLog", "Mode"]
 class Mode:
     """The two global postures. Plain constants — the wire format is the string.
 
-    Trust is scoped per-thread (``Thread.auto``) and per-pattern (accepted
-    rules), not by a global auto switch — that was blanket trust, so it is gone.
+    Approval is the default; trust is scoped (``Thread.auto`` per thread, accepted
+    rules per pattern) and, above both, a whole-terminal hand-over the human can
+    flip. That last one is not a third mode: it is the same posture with the
+    question already answered, and only the human's surface can set it.
     """
 
     APPROVAL = "approval"
@@ -93,6 +95,7 @@ class CardStore:
         self._cards: dict[int, Card] = {}
         self._order: list[int] = []
         self._rules: list[Card] = []
+        self._global_trust = False
         self._mode = Mode.APPROVAL
         self._waiters: dict[int, asyncio.Future] = {}
         self._verdicts: dict[int, str] = {}
@@ -122,6 +125,15 @@ class CardStore:
     @property
     def mode(self) -> str:
         return self._mode
+
+    def global_trust(self) -> bool:
+        """Whether the human has handed every approval on this terminal over."""
+        return self._global_trust
+
+    def set_global_trust(self, on: bool) -> bool:
+        """Flip that hand-over. Only the human's surface calls this."""
+        self._global_trust = bool(on)
+        return self._global_trust
 
     def set_mode(self, mode: str) -> str:
         if mode not in Mode.ALL:

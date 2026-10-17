@@ -47,6 +47,7 @@
     border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
   }
   button.bulk:hover { border-color: var(--accent); color: var(--accent); }
+  button.bulk.on { color: var(--run); border-color: var(--run); }
   button.danger {
     background: transparent; color: var(--bad); border: 1px solid var(--bad);
     border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
@@ -279,7 +280,7 @@
     <button data-mode="approval" title="every command waits for your click">approval</button>
     <button data-mode="disabled" title="commands leave the model's interface; this terminal goes quiet">disabled</button>
   </div>
-  <span class="layout-mark" id="layout-mark"></span>
+  <button class="bulk" id="trust-global" title="hand every approval on this terminal to the model">trust: off</button>
   <span class="spacer"></span>
   <button class="bulk" id="accept-all" title="accept every command still waiting">accept all</button>
   <button class="bulk" id="deny-all" title="deny every command still waiting">deny all</button>
@@ -364,7 +365,6 @@ const streamEl = document.getElementById("stream");
 const detailEl = document.getElementById("detail");
 const connEl = document.getElementById("conn");
 const modesEl = document.getElementById("modes");
-const layoutMark = document.getElementById("layout-mark");
 
 function make(tag, cls, text) {
   const node = document.createElement(tag);
@@ -679,6 +679,21 @@ function closeDetail() {
   detailEl.classList.remove("open");
 }
 
+// Trust here is one question: does every command run without asking? The switch
+// is the human's; the model reads it and says what it means, nothing more.
+let globalTrust = false;
+const trustEl = document.getElementById("trust-global");
+function setGlobalTrust(on) {
+  globalTrust = on;
+  trustEl.textContent = "trust: " + (on ? "on" : "off");
+  trustEl.classList.toggle("on", on);
+  trustEl.title = on
+    ? "trust is on — every command runs without asking; click to take it back"
+    : "trust is off — commands wait for your click unless their thread or a rule is trusted";
+}
+trustEl.addEventListener("click", () => send({ type: "global_trust", on: !globalTrust }));
+setGlobalTrust(false);
+
 function setMode(mode) {
   currentMode = mode;
   for (const btn of modesEl.querySelectorAll("button")) {
@@ -686,15 +701,12 @@ function setMode(mode) {
   }
 }
 
-// How an open card is shown is the model's call; the page says who chose it.
+// How an open card is shown is the model's call. The header used to say which one
+// was in force and who chose it; the layout says that itself, so the label is gone.
 function setLayout(mode, by) {
   const layout = mode === "page" ? "page" : "split";
   document.body.dataset.layout = layout;
-  layoutMark.textContent =
-    (layout === "page" ? "detail: full window" : "detail: side panel") +
-    (by === "model" ? " · moss" : "");
-  layoutMark.title = "how an open card is shown — moss chooses; click a card to open one";
-  layoutMark.classList.toggle("model", by === "model");
+  document.body.dataset.layoutBy = by === "model" ? "model" : "human";
 }
 
 function updateThreads(list) {
@@ -714,6 +726,7 @@ function applyCard(card) {
 function onFrame(frame) {
   switch (frame.type) {
     case "snapshot": {
+      if (typeof frame.global_trust === "boolean") setGlobalTrust(frame.global_trust);
       streamEl.replaceChildren();
       nodes.clear();
       cards.clear();
@@ -744,6 +757,9 @@ function onFrame(frame) {
     }
     case "mode":
       setMode(frame.mode);
+      break;
+    case "trust":
+      setGlobalTrust(!!frame.global_trust);
       break;
     case "threads":
       updateThreads(frame.threads);

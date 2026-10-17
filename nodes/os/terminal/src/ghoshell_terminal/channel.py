@@ -484,12 +484,18 @@ def build_terminal_channel(
                 f"[{name} #{card.id}] empty command — put the shell line in the tag body"
             )
 
-        auto = t.auto or store.match_rule(card.content) is not None
+        everything = store.global_trust()
+        auto = everything or t.auto or store.match_rule(card.content) is not None
         if auto:
             store.set_state(card.id, CardState.RUNNING)
             await _tail(card)
             CommandUtil.create_task(_run(card))
-            return f"[{name} #{card.id}] {thread} running (auto-approved)"
+            why = (
+                "trust is on for this whole terminal" if everything
+                else "the thread is trusted" if t.auto
+                else "a rule covers it"
+            )
+            return f"[{name} #{card.id}] {thread} running (auto-approved — {why})"
         store.set_state(card.id, CardState.AWAITING)
         await _tail(card)
         CommandUtil.create_task(_await_verdict(card))

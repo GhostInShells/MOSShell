@@ -168,6 +168,7 @@ class TerminalSurface:
         return {
             "type": "snapshot",
             "mode": self._store.mode,
+            "global_trust": self._store.global_trust(),
             "layout": self._layout,
             "layout_by": self._layout_by,
             "root": str(self._store.root),
@@ -290,6 +291,14 @@ class TerminalSurface:
     async def _stop_all(self) -> None:
         if self._stops.stop_all is not None:
             await self._stops.stop_all()
+
+    async def _set_global_trust(self, on: bool) -> None:
+        """Hand every approval over, or take it back — the human's switch.
+
+        State only: the notice carries it, and a signal here would only interrupt.
+        """
+        store_on = self._store.set_global_trust(on)
+        await self.broadcast({"type": "trust", "global_trust": store_on})
 
     async def _set_mode(self, mode: str) -> None:
         try:
@@ -433,6 +442,8 @@ class TerminalSurface:
                     await self._stop(card_id)
                 elif kind == "stop_all":
                     await self._stop_all()
+                elif kind == "global_trust":
+                    await self._set_global_trust(bool(frame.get("on")))
                 elif kind == "mode":
                     await self._set_mode(str(frame.get("mode", "")))
                 elif kind == "thread_auto":
