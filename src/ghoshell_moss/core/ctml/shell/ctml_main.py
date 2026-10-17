@@ -67,10 +67,10 @@ def inject_system_primitives(main: PrimeChannel, *, extended: bool = False) -> N
     main.build.add_command(new_command(noop))
     main.build.add_command(new_command(loop))
     main.build.add_command(interrupt_command)  # interrupt 已经是 PyCommand
+    main.build.add_command(new_command(observe))
 
     if extended:
         main.build.add_command(thinking_command)  # 兼容 thinking 原语.
-        main.build.add_command(new_command(observe))
         main.build.add_command(new_command(wait))
         main.build.add_command(new_command(wait_idle))
         main.build.add_command(new_command(sample))
