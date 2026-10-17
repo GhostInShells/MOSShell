@@ -336,3 +336,63 @@ async def test_edit_replaces_the_named_lines_without_quoting_them(store):
         )
         assert store.get("t").content == "one\nTWO\nthree\n"
         assert rec.of("action")[-1]["kind"] == "edit"
+
+
+@pytest.mark.asyncio
+async def test_orphans_lists_unclaimed_copies_and_discard_clears_them(store, tmp_path):
+    """A leftover working copy is pulled on demand, and can be acted on.
+
+    Previously the names were pushed into the notice every turn and there was no
+    verb for them — state I could read and could not touch. Now the notice carries
+    a count, ``orphans()`` names them, and ``discard`` removes the file and the
+    human's chip in one move.
+    """
+    drafts = tmp_path / "drafts"
+    drafts.mkdir(parents=True)
+    (drafts / "old-probe.txt").write_text("stale\n", encoding="utf-8")
+    store.sweep()
+
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        listed = await runtime.execute_command("orphans")
+        assert "old-probe.txt" in listed and "bytes" in listed
+
+        out = await runtime.execute_command("discard", args=("old-probe.txt",))
+        assert "discarded" in out
+
+    assert not (drafts / "old-probe.txt").exists()
+    assert store.recoverable() == []
+    assert rec.of("threads")[-1]["drafts"] == [], "the human's chip follows the delete"
+
+
+@pytest.mark.asyncio
+async def test_discard_refuses_a_live_threads_working_copy(store):
+    """A live thread's draft is that thread's text — deleting it would cut the
+    crash net under an edit in progress."""
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",), kwargs={"label": "doc"})
+        name = store.get("t").draft
+        with pytest.raises(Exception) as err:
+            await runtime.execute_command("discard", args=(name,))
+    assert "live thread" in str(err.value)
+    assert (store.drafts_dir / name).exists()
+
+
+@pytest.mark.asyncio
+async def test_the_notice_carries_a_count_not_the_names(store, tmp_path):
+    """Eleven stale names pushed every turn bury the one that matters; a count is
+    the part that can change a decision."""
+    drafts = tmp_path / "drafts"
+    drafts.mkdir(parents=True)
+    (drafts / "a.txt").write_text("x", encoding="utf-8")
+    (drafts / "b.txt").write_text("y", encoding="utf-8")
+    store.sweep()
+
+    chan, _ = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",), kwargs={"label": "doc"})
+        await runtime.refresh_metas()
+        notice = runtime.self_meta().named_notices.get("drafts", "")
+    assert "2 unclaimed" in notice
+    assert "a.txt" not in notice

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -644,6 +645,54 @@ def build_file_editor_channel(
             )
         return "\n".join(out) if out else "(no threads — open() one)"
 
+    def _age(seconds: float) -> str:
+        if seconds < 3600:
+            return f"{int(seconds // 60)}m"
+        if seconds < 86400:
+            return f"{int(seconds // 3600)}h"
+        return f"{int(seconds // 86400)}d"
+
+    @chan.build.command(name="orphans", always_observe=True, available=enabled)
+    async def orphans() -> str:
+        """List the working copies nobody owns — what a crash left behind.
+
+        One line each: name, size, age. Pass one to ``open(draft=...)`` to carry on
+        from it, or to ``discard`` to throw it away. Pull it when you are about to
+        need it; the notice carries only a count, because a stale name repeated
+        every turn is noise and noise is what buries the one that matters.
+        """
+        names = store.recoverable()
+        if not names:
+            return "(no unclaimed working copies)"
+        now = time.time()
+        lines = []
+        for draft in names:
+            try:
+                st = (store.drafts_dir / draft).stat()
+            except OSError:
+                lines.append(f"- {draft} (gone)")
+                continue
+            lines.append(f"- {draft} | {st.st_size} bytes | {_age(now - st.st_mtime)} old")
+        return "\n".join(lines)
+
+    @chan.build.command(name="discard", available=enabled)
+    async def discard(draft: str) -> str:
+        """Throw an unclaimed working copy away.
+
+        Only a draft no thread owns — a live thread's copy is that thread's text, so
+        close the thread first if that is what you mean. ``orphans()`` lists what
+        there is to discard. The human's header chip refreshes with it.
+        """
+        try:
+            gone = store.discard(str(draft))
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        await _threads()
+        return (
+            f"[{name}] draft {draft} discarded"
+            if gone else f"[{name}] draft {draft} was already gone"
+        )
+
     @chan.build.command(name="history", always_observe=True, available=enabled)
     async def history(thread: str) -> str:
         """The index of a thread: every action with its verdict, and the head.
@@ -749,9 +798,10 @@ def build_file_editor_channel(
             )
         drafts = store.recoverable()
         if drafts:
-            out["drafts"] = "unclaimed working copies — open(draft=...): " + ", ".join(
-                drafts
-            )
+            # 名单不进 notice: 一份没人认领的旧工作副本每轮重复出现只是噪音，而噪音会
+            # 把真正的异常淹掉。改成 orphans() 按需拉、discard() 当场删 —— 状态留给我读,
+            # 不该持续推给我看。
+            out["drafts"] = f"{len(drafts)} unclaimed working copies — orphans() lists them"
         return out
 
     return chan

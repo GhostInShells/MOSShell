@@ -634,10 +634,29 @@ class DocStore:
     def recoverable(self) -> list[str]:
         """The drafts the last :meth:`sweep` kept — work a crash left behind.
 
-        Cached rather than rescanned: the notice renders on every meta refresh,
-        and a directory listing has no business on that path.
+        Cached rather than rescanned: the page asks for this on every connect, and
+        a directory listing has no business on that path.
         """
         return list(self._recoverable)
+
+    def discard(self, name: str) -> bool:
+        """Throw an unclaimed working copy away. Returns whether it was there.
+
+        Only an orphan can go. A draft a live thread still owns *is* that thread's
+        text, so deleting it would cut the crash net under an edit in progress —
+        close the thread first if that is what you mean.
+        """
+        if name != Path(name).name or name in ("", ".gitignore"):
+            raise ValueError(f"{name!r} is not a draft name")
+        owned = {t.draft for t in self._threads.values() if t.draft and t.live}
+        if name in owned:
+            raise ValueError(f"{name!r} belongs to a live thread — close it first")
+        self._recoverable = [d for d in self._recoverable if d != name]
+        try:
+            (self._drafts_dir / name).unlink()
+        except FileNotFoundError:
+            return False
+        return True
 
     def sweep(self) -> list[str]:
         """Remove expired orphans; keep the ones still young enough to adopt.

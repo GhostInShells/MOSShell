@@ -23,9 +23,10 @@ Run `moss --ai start`.]]></file_editor:edit>
 ```
 
 A thread is an editable object: it can come from a file, from a working copy a
-previous session left behind (`open(draft=...)`, listed in the notice), or from
-nothing at all. Threads outlive their exports — writing records a *position* on
-the line (`exported_at`), which is why you can keep editing and export again.
+previous session left behind (`open(draft=...)`; `orphans()` lists them, `discard`
+throws one away), or from nothing at all. Threads outlive their exports — writing
+records a *position* on the line (`exported_at`), which is why you can keep
+editing and export again.
 
 **Finding your way in.** `find()` answers with line numbers, never with text.
 Line numbers are the coordinate everything else takes: `read(region=)` returns
