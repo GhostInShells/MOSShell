@@ -132,7 +132,7 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
   - `moss skills read <path>`: 读取技能
   - 无 LLM 依赖 — 旧 `recall` 需 LLMFuncs 配置, 已移除
 - **元规则**: `cli/skills/AGENTS.md` 承担——入口判定三问 + 反模式清单 + 写作纪律。写 skill 前必读
-- **当前定位**: 复合任务的行动导向技能。历史上 howtos 曾积累 16 篇混合内容, 2026-07-18 doc-governance 治理后收敛为 3 篇, 2026-08 moss-skills 迁移为 skills (见 `.ai_partners/features/workstreams/2026/08/moss-skills/`)
+- **当前定位**: 两类技能 —— **task skill** (复合任务的行动流程) 与 **mechanism skill** (核心机制的方向性理解, 可指路开箱实现作参考方向, 但不复制实现)。最小知识面归框架 `blueprint` / `matrix` / `channel_builder` / `moss codex`, skill 只补易漏的概念钥匙。历史上 howtos 曾积累 16 篇混合内容, 2026-07-18 doc-governance 治理后收敛为 3 篇, 2026-08 moss-skills 迁移为 skills (见 `.ai_partners/features/workstreams/2026/08/moss-skills/`)
 
 ## 架构小贴士
 
