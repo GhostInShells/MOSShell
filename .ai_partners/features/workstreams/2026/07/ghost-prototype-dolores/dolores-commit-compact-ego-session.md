@@ -199,3 +199,42 @@ POST /moss-api/ghost/dolores/compact
 - `surfaceOp` 字段名跨版本分歧（0.1.5-rc.1 要 `{op,startSeq,endSeq}`）已在 plugin 封装层解决，python 侧无感。
 - 旁路「多档（角色）」是后续方向（subagent / commit / clone 并行化身），本设计不涉及；见
   [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
+
+## 修订：memory 改为 epoch recap 槽（2026-10-17）
+
+原设计让 compact 的**替换内容 = memory 视图 + 说明**。实机问题：memory 从头到尾只是 `ego/create`
+时追加的普通 `user/message`，没有任何"可更新槽位"的身份。它虽然被 compact 重新写回 surface，但：
+
+1. 压缩换了模型可见的头部，却没有开新 epoch —— `Dolores.think()` 的 `_epoch_opened` 是首次 thinking
+   一次性标志，ego 侧 `_moment_epoch` 不变，`<cognition_epoch>` 不再注入，recap/baseline 永不复位；
+2. memory 住进 surface 历史，每次压缩都被整段卷掉再补写，始终不是"槽"。
+
+修订（两件事是同一个动作的两个面）：
+
+- **compact 后必须开新 epoch**。执行点从 `DoloresRun.__aenter__` 移到 `Dolores.think()`：compact →
+  `moments.new_epoch()` → 本帧 enter 携带新的 `<cognition_epoch>`。新 epoch 顺带刷新 shell baseline
+  （`on_epoch_creating → ShellTrajectory.new_epoch`）。
+- **memory 由 epoch recap 槽交付**。首次 compact 起注册
+  `moments.with_epoch_recap("memory", runtime.memories)`；此后每个新 epoch 都重新交付 memory。
+  surface 替换内容**只剩一条说明**，避免同一份 memory 在 surface 与 epoch 里出现两次。
+  首次 epoch 不注册 recap —— `create_session` 已经把 memory 作为 surface 头注入，不重复。
+
+协议相应变为：
+
+```
+POST /moss-api/ghost/dolores/compact
+  { memory: <content blocks>, notice: <str>, cut_turn: <int> }
+```
+
+`memory` 不再写进 surface，只用于更新 plugin 的溢出兜底缓存；替换内容 = `notice`。
+
+### 实机 review 补的三条（deepseek ghost 审出，同上日期）
+
+1. **epoch 打戳移到送达之后**。`_epoch_payload` 改为纯 peek；`enter_thinking` 在 enter RPC 成功
+   返回后才写 `_moment_epoch`（并按 index 单调，迟到的旧 enter 不回退）。否则一次 enter 丢失就
+   burn 掉本 epoch，而 memory 已只剩 recap 一条腿 → 静默失忆。
+2. **memory 在 compact 前先行取值并缓存**，recap 闭包直接返回这份快照。`new_epoch` 里 recap func
+   的异常会被吞掉，二次读取失败 = memory 静默消失；先取值还能在取不到时安全放弃压缩（surface
+   不动，退回旧语义）。
+3. **取消跨过 compact RPC**。插件可能已换 surface 而调用方没拿到返回值；memory 暂存在 ego 上
+   （`_compact_memory`），下一帧 `take_compact_memory()` 取走并补开 epoch。

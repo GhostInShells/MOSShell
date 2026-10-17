@@ -10,25 +10,12 @@ description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception
-  模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think
-  nibble (per-agent model selection). 2026-09-12 落地旁路单轮机制 (reentrant 文档): pre-step
-  旁路分支 (降级思考模式 low + sandbox read-only + 注入旁路提示) + tools 全拒 guard + pre-step
-  前置折叠 (collapseTurn, map 记录 turn id, 弃 session/event) + preset 元数据 (不复用 standard
-  描述), 删除 session/frozen (D29 invalid). GUI 实机验证跑通 (旁路历史不进入下一轮). 问题清单统一到
-  dolores-todo.md. 2026-09-12 实机打断现场连修两条 P0: D30 (打断时 tool 结果迟到打穿整轮: exit
-  先结算 pending tool + settled-call 墓碑 + MOSS 侧吸收 RPC 失败) 与 D25 (need_observe 亮着不思考:
-  续帧被「inputs 为空不起 turn」挡成缓冲帧, 改 needsObserve 标记 + steer 开轮; 同根因解开帧顺序错乱
-  与 fetch moment 迟到一轮). 两条均需重启 dsh 才生效, 待回归 (本轮只跑 test_dolores.py, 未做全量回归).
-  另: 平台提交署名正式叫 dsh in moss. 2026-09-25 恢复启动补漏 (backfill) + 失败落盘 terminal
-  error note (D35): 根因是 fa97362d 在引入「关停取消在飞旁路」时把 resume()/resume_tail 一起
-  误删, 空 note 成永久空洞; 零有效工作区间是否 commit 立为 O18 (待第五轮回归拿数据). 2026-10-12 落地
-  上下文压缩 (compact) 机制: 原地 surface replace (替换内容 = memory 视图 + 一条说明), SCS = 倒数第二个
-  commit 的 end_turn (不丢最近几轮是结构保证), 绝对阈值 compact_tokens=600k (deepseek-flash 窗口 1M),
-  上一有效 run 判定 + 下一 run 启动执行, 启动不再回放源 session 原文 tail (resume_ref 退役), request-error
-  溢出兜底 (模型无关有损压缩). 实机冒烟通过 (compact 触发 + notice 注入 + 活尾巴保留).'
+status_note: '2026-10-17 修 compact 头部重建: memory 改由 epoch recap 槽交付 + compact 后开新 epoch.
+  _epoch_payload 送达后打戳 (index 单调), memory 先取值缓存, 取消跨 RPC 用 take_compact_memory 补开 epoch,
+  plugin 侧 epochIndex 去重 + 新 session 重置 lastEpochIndex/pendingMoments. moss the ghost 实机三轮
+  review 硬化 (P0/P1 全收), test 226 passed.'
 title: Dolores Ghost
-updated: '2026-10-12'
+updated: '2026-10-17'
 ---
 
 # Dolores Ghost

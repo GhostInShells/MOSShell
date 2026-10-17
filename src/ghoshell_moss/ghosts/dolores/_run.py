@@ -262,8 +262,8 @@ class DoloresRun:
         # 序在起 enter 任务**之前**铸: enter 会被取消, 而 exit 必须能带上同一个序.
         self._thinking_seq = self._ego.next_thinking_seq()
         self._thinking_event.set()
-        # 上一有效 run 决定的 compact 在本 run 启动时执行 (surface idle, 请求之前) — 防上下文溢出.
-        await self._ego.compact_if_pending()
+        # 上一有效 run 决定的 compact 由 runtime 在进入本 run 之前执行 (见 Dolores.think): 它同时要开
+        # 新 epoch 让 memory 走 recap 槽, 两个动作必须按序发生在请求之前.
         self._dispose_listener = self._ego.session.on_session_event("*", self._on_event)
         self._enter_task = asyncio.create_task(self._drive_enter())
         self._ego.logger.info(

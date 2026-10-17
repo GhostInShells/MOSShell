@@ -144,7 +144,7 @@ class Dolores(Ghost):
         self._channel: MutableChannel | None = None
         # startup doc (StartupDoc) — loaded once in __aenter__, read by channel() and startup().
         self._startup_doc: "StartupDoc | None" = None
-        # the cognition epoch is opened once, on the first thinking (see think()).
+        # the cognition epoch is opened on the first thinking and again after every compact (see think()).
         self._epoch_opened: bool = False
 
     # ── Ghost ABC ──────────────────────────────────
@@ -307,16 +307,55 @@ class Dolores(Ghost):
         from the shell facade, wired by the runtime *after* ghost.__aenter__ (ghost_runtime step 5),
         so opening it earlier would snapshot an empty baseline. The epoch is then delivered by the
         ego's own epoch slot on the first frame.
+
+        A compact decided by the previous valid run is executed first, and a new epoch is opened
+        right after it: compaction rewrites the model-visible head, so the cognition must restart on
+        a new epoch too. The ghost memory rides that epoch's recap slot — it is no longer written
+        into the surface history, which the compact would shadow.
         """
-        if not self._epoch_opened:
+        memory: list[Message] | None = None
+        if self._ego is not None:
+            # 遗留优先: 它意味着「上次 compact 可能已经换了 surface、epoch 还没开」, 比本帧再压
+            # 一次更急. 先取走它, 取不到才发起本帧的 compact —— 否则本帧失败的 compact 会把遗留
+            # 清成 None, memory 在模型视野里彻底消失.
+            memory = self._ego.take_compact_memory()
+            if memory is not None:
+                # 上次 compact 在 RPC 中间被取消, 本帧补上: 这是一条可观测的恢复路径, 不能静默.
+                self.logger.warning(
+                    "dolores: completing a compact cancelled mid-flight — opening epoch with "
+                    "%d memory messages",
+                    len(memory),
+                )
+            else:
+                memory = await self._ego.compact_if_pending()
+        if memory is not None:
             self._epoch_opened = True
-            self.mindflow().moments.new_epoch([])
+            self._open_cognition_epoch(memory=memory)
+        elif not self._epoch_opened:
+            self._epoch_opened = True
+            self._open_cognition_epoch(memory=None)
         if self._ego is not None:
             async with self._ego.run_thinking(thinking) as run:
                 async for delta in run.logos():
                     yield delta
         else:
             yield ""
+
+    def _open_cognition_epoch(self, memory: "list[Message] | None") -> None:
+        """Open a new cognition epoch, optionally carrying the ghost memory in its recap slot.
+
+        The first epoch passes ``memory=None`` — create_session already seeded the memory as the
+        surface head there. From the first compact on, memory lives only in the epoch recap: every
+        later epoch re-delivers it, so the compact shadow can never drop it.
+
+        The memory is captured **before** ``new_epoch`` and replayed through a closure: recap funcs
+        run inside ``BaseMomentsObserver.new_epoch``, which swallows their exceptions — re-reading
+        the memory there could silently lose it after the compact already dropped it from surface.
+        """
+        moments = self.mindflow().moments
+        if memory is not None:
+            moments.with_epoch_recap("memory", lambda: memory)
+        moments.new_epoch([])
 
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()

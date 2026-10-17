@@ -585,6 +585,42 @@ class TestDoloresEgoReasoningEffort:
 
         assert ego.default_thinking_effort is None
 
+    @pytest.mark.asyncio
+    async def test_lost_enter_does_not_burn_the_epoch(self):
+        """enter RPC 丢了不能打戳 —— 否则 recap (压缩后 memory 的唯一通路) 永不重发."""
+        from ghoshell_moss.message import Message
+
+        class _FlakyLauncher(self._Launcher):
+            fail = False
+
+            async def call(self, path, payload=None, *, timeout=None):
+                if self.fail:
+                    raise RuntimeError("enter lost")
+                return await super().call(path, payload, timeout=timeout)
+
+        launcher = _FlakyLauncher()
+        ego = self._ego(launcher)
+        thinking = self._thinking("")
+        thinking.observer.epoch = SimpleNamespace(
+            id="e1", index=1,
+            recap=[Message.new(tag="memory").with_content("ground")],
+            baseline={"facade": "<facade/>"},
+        )
+
+        launcher.fail = True
+        with pytest.raises(RuntimeError):
+            await ego.enter_thinking(thinking, 1)
+        assert ego._moment_epoch is None
+
+        launcher.fail = False
+        await ego.enter_thinking(thinking, 2)
+        assert launcher.calls[0][1]["epoch"] is not None
+        assert ego._moment_epoch == "e1"
+
+        # 送达后同 epoch 不再重复.
+        await ego.enter_thinking(thinking, 3)
+        assert launcher.calls[1][1]["epoch"] is None
+
 
 class TestDoloresMemories:
     """Dolores.memories — ground 渲染为第一条存在主义记忆."""
@@ -605,6 +641,238 @@ class TestDoloresMemories:
             assert len(memories) == 1
             text = memories[0].to_content_string()
             assert "<ground>" in text and "</ground>" in text
+
+
+class _FakeCompactManager:
+    """Duck-typed EgoMementoManager — compact 只读阈值配置与 SCS."""
+
+    def __init__(self, cut_turn=7, compact_tokens=0):
+        self.config = SimpleNamespace(compact_tokens=compact_tokens)
+        self._cut_turn = cut_turn
+
+    def compact_cut_turn(self):
+        return self._cut_turn
+
+
+class _FakeCompactLauncher:
+    def __init__(self, replaced: int = 1):
+        self._replaced = replaced
+        self.calls: list[tuple[str, dict]] = []
+
+    async def call(self, path, payload):
+        self.calls.append((path, payload))
+        return {"replaced": self._replaced}
+
+
+class _CancellingLauncher:
+    """取消落在 compact RPC 中间 — 插件可能已经换了 surface."""
+
+    async def call(self, path, payload):
+        raise asyncio.CancelledError()
+
+
+def _compact_ego(*, memories, memento_manager=None, launcher=None):
+    from ._ego import DoloresEgo, DoloresEgoContext
+
+    ego = DoloresEgo(
+        launcher=launcher,
+        ctx=DoloresEgoContext(
+            project_home=Path("."),
+            project_name="pytest",
+            name="dolores",
+            mode="pytest",
+            instruction="i",
+            facade=None,
+        ),
+        memories=memories,
+        memento_manager=memento_manager,
+    )
+    ego._ego_session_id = "s1"
+    return ego
+
+
+class TestDoloresEgoCompact:
+    """compact 的 payload 拆分 — memory 走 epoch recap, surface 只留说明."""
+
+    @staticmethod
+    def _memory_message():
+        from ghoshell_moss.message import Message
+
+        return Message.new(tag="memory").with_content("ground")
+
+    @pytest.mark.asyncio
+    async def test_payload_splits_memory_from_notice(self):
+        ego = _compact_ego(memories=lambda: [self._memory_message()])
+
+        memory, notice = ego._compact_memory_payload()
+
+        assert "<memory>" in memory[0].to_content_string()
+        assert "compacted" in notice
+        assert "<memory>" not in notice
+
+    @pytest.mark.asyncio
+    async def test_compact_if_pending_returns_memory_and_sends_notice(self):
+        launcher = _FakeCompactLauncher()
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memento_manager=_FakeCompactManager(cut_turn=7),
+            launcher=launcher,
+        )
+        ego._pending_compact = True
+
+        memory = await ego.compact_if_pending()
+
+        assert memory is not None and "<memory>" in memory[0].to_content_string()
+        path, payload = launcher.calls[0]
+        assert path.endswith("/compact")
+        assert payload["cut_turn"] == 7
+        assert "<memory>" in payload["memory"][0]["text"]
+        assert "compacted" in payload["notice"]
+        assert ego._pending_compact is False
+        # 成功返回即交付, 不留下跨帧暂存.
+        assert ego.take_compact_memory() is None
+
+    @pytest.mark.asyncio
+    async def test_nothing_shadowed_is_not_a_compact(self):
+        """plugin 返回 replaced=0 → 实际没压, 不开新 epoch."""
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memento_manager=_FakeCompactManager(cut_turn=7),
+            launcher=_FakeCompactLauncher(replaced=0),
+        )
+        ego._pending_compact = True
+
+        assert await ego.compact_if_pending() is None
+        assert ego.take_compact_memory() is None
+
+    @pytest.mark.asyncio
+    async def test_compact_if_pending_noop_without_pending(self):
+        ego = _compact_ego(
+            memories=lambda: [],
+            memento_manager=_FakeCompactManager(),
+            launcher=_FakeCompactLauncher(),
+        )
+
+        assert await ego.compact_if_pending() is None
+
+    @pytest.mark.asyncio
+    async def test_cancelled_compact_leaves_memory_for_the_next_frame(self):
+        """取消落在 RPC 窗口: 插件可能已换 surface —— memory 必须留给下一帧补开 epoch."""
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memento_manager=_FakeCompactManager(cut_turn=7),
+            launcher=_CancellingLauncher(),
+        )
+        ego._pending_compact = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await ego.compact_if_pending()
+
+        memory = ego.take_compact_memory()
+        assert memory is not None and "<memory>" in memory[0].to_content_string()
+        assert ego.take_compact_memory() is None  # 取走即清
+
+
+class _FakeMoments:
+    """moments 的录制替身 — epoch 次数 / recap 注册 / recap 产物."""
+
+    def __init__(self):
+        self.epochs = 0
+        self.recap_funcs: dict = {}
+        self.epoch_recaps: list[list] = []
+
+    def with_epoch_recap(self, key, recap_func):
+        self.recap_funcs[key] = recap_func
+
+    def new_epoch(self, recap):
+        self.epochs += 1
+        self.epoch_recaps.append([msg for func in self.recap_funcs.values() for msg in func()])
+
+
+class _FakeRunContext:
+    def __init__(self, logos: list[str]):
+        self._logos = logos
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def logos(self):
+        for delta in self._logos:
+            yield delta
+
+
+class _FakeThinkEgo:
+    def __init__(self, *, memory=None, leftover=None):
+        self._memory = memory
+        self._leftover = leftover
+        self.compact_calls = 0
+        self.take_calls = 0
+
+    async def compact_if_pending(self):
+        self.compact_calls += 1
+        return self._memory
+
+    def take_compact_memory(self):
+        self.take_calls += 1
+        memory, self._leftover = self._leftover, None
+        return memory
+
+    def run_thinking(self, thinking):
+        return _FakeRunContext(["x"])
+
+
+class TestDoloresEpoch:
+    """epoch 周期 — 首次 thinking 开 epoch; compact 后开新 epoch 并交付 memory recap."""
+
+    @staticmethod
+    def _ghost():
+        ghost = _dolores()
+        moments = _FakeMoments()
+        ghost._mindflow = SimpleNamespace(moments=moments)
+        return ghost, moments
+
+    @staticmethod
+    def _memory_message():
+        from ghoshell_moss.message import Message
+
+        return Message.new(tag="memory").with_content("ground")
+
+    @pytest.mark.asyncio
+    async def test_first_epoch_has_no_memory_recap(self):
+        ghost, moments = self._ghost()
+        ghost._ego = _FakeThinkEgo()
+
+        assert [delta async for delta in ghost.think(None)] == ["x"]
+
+        assert moments.epochs == 1
+        assert moments.recap_funcs == {}
+
+    @pytest.mark.asyncio
+    async def test_compact_opens_epoch_with_memory_recap(self):
+        ghost, moments = self._ghost()
+        ghost._ego = _FakeThinkEgo(memory=[self._memory_message()])
+
+        assert [delta async for delta in ghost.think(None)] == ["x"]
+
+        assert ghost._ego.compact_calls == 1
+        assert moments.epochs == 1
+        assert "memory" in moments.recap_funcs
+        assert "<memory>" in moments.epoch_recaps[0][0].to_content_string()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_compact_is_completed_on_the_next_frame(self):
+        """上次 think 在 compact RPC 窗口被取消 → 本帧取走遗留 memory 补开 epoch."""
+        ghost, moments = self._ghost()
+        ghost._ego = _FakeThinkEgo(leftover=[self._memory_message()])
+
+        assert [delta async for delta in ghost.think(None)] == ["x"]
+
+        assert ghost._ego.take_calls == 1
+        assert "memory" in moments.recap_funcs
+        assert "<memory>" in moments.epoch_recaps[0][0].to_content_string()
 
 
 class TestDoloresEgoNucleus:
@@ -1434,14 +1702,15 @@ class FakeRunSession:
 
 
 class FakeRunEgo:
-    """DoloresRun 的 ego fake — Duck-typed (session/enter_thinking/exit_thinking/compact)."""
+    """DoloresRun 的 ego fake — Duck-typed (session/enter_thinking/exit_thinking)."""
 
     def __init__(self, session):
         self.session = session
+        # production ego exposes .logger (run 的 __aenter__ 用它记进入日志).
+        self.logger = logging.getLogger("pytest.dolores")
         self.enter_calls = 0
         self.exit_calls = 0
         self.enter_error: Exception | None = None
-        self.compact_calls = 0
         self.run_exits: list[bool] = []
 
     def next_thinking_seq(self):
@@ -1455,9 +1724,6 @@ class FakeRunEgo:
 
     async def exit_thinking(self, thinking_seq):
         self.exit_calls += 1
-
-    async def compact_if_pending(self):
-        self.compact_calls += 1
 
     def on_run_exit(self, valid: bool):
         self.run_exits.append(valid)
@@ -1524,12 +1790,20 @@ class _FakeObserver:
         if self._log is not None:
             self._log.append(f"observer.add_echoes:{need_observe}")
 
+    def need_observe(self) -> bool:
+        return False
+
 
 class FakeRunThinking:
     def __init__(self, log: list | None = None):
+        from ghoshell_moss.core.blueprint.moment import Moment
+
         self.abort_reasons: list = []
         self.articulators: list[FakeArticulator] = []
         self._log = log
+        # run 的进入日志读 attention/moment —— 与生产 Thinking 同名.
+        self.attention = SimpleNamespace(id="fake-attention")
+        self.moment = Moment(id="fake-moment", index=7)
 
     def abort(self, reason):
         self.abort_reasons.append(reason)

@@ -60,7 +60,7 @@ _DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
 _DOLORES_THINKING_ENTER = "/moss-api/ghost/dolores/thinking/enter"
 _DOLORES_THINKING_EXIT = "/moss-api/ghost/dolores/thinking/exit"
 _DOLORES_TOOL_RESULT = "/moss-api/ghost/dolores/tool-result"
-# compact: 原地把 surface 前缀替换成 memory (ground + memento view), cut 到 cut_turn 边界.
+# compact: 原地把 surface 前缀替换成一条说明, cut 到 cut_turn 边界; memory 由新 epoch 的 recap 交付.
 _DOLORES_COMPACT = "/moss-api/ghost/dolores/compact"
 
 # thinking/exit confirmation timeout (fail-safe): degrade instead of hanging the exit if the plugin stalls.
@@ -191,8 +191,10 @@ class DoloresEgo:
         self._thinking_event = asyncio.Event()
         # self-wake signal outlet — injected by host/mindflow after bus wiring; this side never touches the nucleus directly.
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
-        # epoch tracking: remembers the last injected epoch id, compared on enter to decide whether to carry an <epoch> container.
+        # epoch tracking: remembers the last **delivered** epoch id/index, compared on enter to decide
+        # whether to carry an <cognition_epoch> container. Stamped only after the enter RPC succeeds.
         self._moment_epoch: str | None = None
+        self._moment_epoch_index: int = -1
         # 待采用的思考档声明: startup 的 boot 声明 (或 moss_reasoning 的现场声明) 放这里,
         # 由下一个**真正带上它**的思考帧下发, 采用即置回 None —— 没被采用的声明不会凭空蒸发.
         # 声明只被消费一次, 但档位本身不会一轮即丢: plugin 把它写进 request/header 的持久配置,
@@ -208,6 +210,9 @@ class DoloresEgo:
         self._warned: bool = False
         # 待执行的 compact (上一有效 run 决定, 下一 run 启动执行) — 只在 run 边界写入/清空.
         self._pending_compact: bool = False
+        # compact 已发往 plugin、epoch 尚未开启时的 memory 暂存. 取消可能落在 RPC 中间:
+        # 插件可能已经换了 surface, 而调用方还没拿到返回值 —— 由下一帧取走并补开 epoch.
+        self._compact_memory: list[Message] | None = None
         # 待注入的 notice (warn / committed); thinking-enter 时排空, 与 moment 同级注入.
         self._notices: list[Message] = []
         # 连续缺 usage 计数: 首帧 (warm-up) 的 usage 是收尾才补, live 流里常缺一条, 属预期瞬态;
@@ -523,46 +528,91 @@ class DoloresEgo:
         if self._window_size >= manager.config.compact_tokens and manager.compact_cut_turn() is not None:
             self._pending_compact = True
 
-    async def compact_if_pending(self) -> None:
-        """run 启动时调用：有 pending 就原地 compact（surface 替换成 memory），无则 no-op.
+    async def compact_if_pending(self) -> list[Message] | None:
+        """run 启动前调用：有 pending 就原地 compact，无则 no-op.
 
-        执行放在请求之前（下一 run 的 enter 尚未注入帧），surface 处于 idle，replace 安全。失败降级
-        为告警 —— 主动 compact 是防溢出，不该反过来把一个 run 的启动拖死。
+        返回**本次压缩实际使用的 memory 消息**（供调用方开新 epoch 时作 recap），没压则 None。
+        memory 不再写进 surface 历史，而是随新 epoch 的 recap 槽交付；调用方不在成功返回后紧接着
+        开 epoch，ego 侧 epoch id 不变，recap 根本不会注入。
+
+        memory 在这里**先行取值并缓存**：一来决定是否值得压（取不到就不压，memory 仍留在 surface，
+        安全退回旧语义），二来若 compact 的 RPC 窗口被取消，下一帧可以取走缓存补开 epoch。
+        失败降级为告警 —— 主动 compact 是防溢出，不该反过来把一个 run 的启动拖死。
         """
         if not self._pending_compact:
-            return
+            return None
         self._pending_compact = False
         manager = self._memento_manager
         if manager is None:
-            return
+            return None
         cut_turn = manager.compact_cut_turn()
         if cut_turn is None:
-            return
-        memory = self._compact_memory_payload()
-        if not memory:
-            return
+            return None
         try:
-            await self._launcher.call(_DOLORES_COMPACT, {"memory": memory, "cut_turn": cut_turn})
-            self._logger.info("dolores compact at turn %s (window=%s)", cut_turn, self._window_size)
+            memory, notice = self._compact_memory_payload()
         except Exception:
-            self._logger.exception("dolores compact failed — degraded")
-
-    def _compact_memory_payload(self) -> list[dict]:
-        """当前 memory + 一条 compact 说明 → 替换内容（``{"text": ...}`` 列表，与 create 的 messages 同形）."""
-        if self._memories is None:
-            return []
-        memory = [
-            {"text": msg.to_content_string()}
-            for msg in self._memories()
-            if not msg.is_empty()
-        ]
+            # 取 memory 就失败 = 还没动 surface, 直接放弃本次压缩 (旧语义下 memory 还在头部).
+            self._logger.exception("dolores compact skipped — memory unavailable")
+            return None
         if not memory:
-            return []
+            return None
+        # 请求发出前先暂存: 取消落在 RPC 中间时, 插件可能已经换了 surface, 而调用方还没拿到返回值.
+        self._compact_memory = memory
+        try:
+            result = await self._launcher.call(
+                _DOLORES_COMPACT,
+                {
+                    "memory": [{"text": msg.to_content_string()} for msg in memory],
+                    "notice": notice,
+                    "cut_turn": cut_turn,
+                },
+            )
+            if not (result or {}).get("replaced"):
+                # 没有可遮蔽的节点 = 实际没压 —— 不开新 epoch, 不白复位一次 cognition.
+                self._compact_memory = None
+                return None
+            self._compact_memory = None
+            self._logger.info("dolores compact at turn %s (window=%s)", cut_turn, self._window_size)
+            return memory
+        except asyncio.CancelledError:
+            # 取消落在 RPC 中间: 插件可能已经 appendReplace 了、结果未知. memory 保留在 _compact_memory,
+            # 下一帧 take_compact_memory() 取走补开 epoch. 这里只记一条, 不清理, 原样上抛.
+            self._logger.warning(
+                "dolores compact cancelled mid-flight at turn %s — surface state unknown; "
+                "keeping memory for the next frame",
+                cut_turn,
+            )
+            raise
+        except Exception:
+            # 普通异常(连接失败/参数错)维持清理: 若保留 memory 会让 on_run_exit 每轮重武装 pending,
+            # 形成「压一次失败 → 开 epoch → 再压失败」的每两帧一次全量复位回环, 比丢 memory 更糟.
+            self._compact_memory = None
+            self._logger.exception("dolores compact failed — degraded")
+            return None
+
+    def take_compact_memory(self) -> list[Message] | None:
+        """取走 compact 跨取消遗留的 memory —— 调用方据此补开 epoch; 无遗留则 None."""
+        memory, self._compact_memory = self._compact_memory, None
+        return memory
+
+    def _compact_memory_payload(self) -> tuple[list[Message], str]:
+        """compact 的两块内容：memory 消息 + 一条 compact 说明.
+
+        memory 不随 surface 替换交付（替换内容只有说明）—— 它由新 epoch 的 recap 槽重新注入，
+        避免同一份 memory 在 surface 与 epoch 里出现两次。memory 仍然上行给 plugin，只作溢出
+        兜底的缓存（plugin 在 request-error 时用它重建头部）。
+        """
+        if self._memories is None:
+            return [], ""
+        memory = [msg for msg in self._memories() if not msg.is_empty()]
+        if not memory:
+            return [], ""
         notice = (
-            "Your context was compacted to stay within the model window. The memory view below is the "
-            "compressed history (ground + memento commits); the recent turns after it are the live tail."
+            "Your context was compacted to stay within the model window. The memory view arrives "
+            "later in this window as the recap of this cognition epoch; the turns after this notice "
+            "are the live tail."
         )
-        return [{"text": notice}, *memory]
+        return memory, notice
 
     def _session_start_turn(self) -> int:
         """本 session 的区间下界 (**开**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.
@@ -673,9 +723,14 @@ class DoloresEgo:
             self.default_thinking_effort = None
         else:
             effort = ""
+        epoch = thinking.observer.epoch
+        epoch_payload = self._epoch_payload(thinking)
         payload = {
             "moment": self._moment_payload(moment, moment_ref),
-            "epoch": self._epoch_payload(thinking),
+            "epoch": epoch_payload,
+            # epoch 幂等键: plugin 据此丢弃迟到/重复的 epoch 帧 (epochIndex <= 已见到的最大 index).
+            # 送达后打戳必然允许重发, 重发与乱序到达都由这一键去重.
+            "epochIndex": epoch.index if epoch_payload is not None else None,
             # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
             "notices": self._drain_notices(),
             "effort": effort,
@@ -685,6 +740,11 @@ class DoloresEgo:
             "needsObserve": self.needs_observe(thinking),
         }
         await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
+        # 送达后才打戳: enter 丢失/被取消时, 下一帧必须能重发 epoch (含唯一的 memory recap).
+        # index 单调, 迟到的旧 enter 不会把戳退回去.
+        if epoch_payload is not None and epoch.index >= self._moment_epoch_index:
+            self._moment_epoch = epoch.id
+            self._moment_epoch_index = epoch.index
 
     def _drain_notices(self) -> list[str]:
         """排空 notice 队列 → 纯文本 (与 moment 同级, 由 plugin 挂载到本步历史; notice 无图)."""
@@ -777,11 +837,14 @@ class DoloresEgo:
         guess what an "epoch" is. The plugin is a dumb transport — it only receives content blocks,
         it does not parse structure. Returns on the first frame and on every epoch change; None when
         unchanged.
+
+        Pure peek: it does not stamp ``_moment_epoch``. The stamp happens only after the enter RPC
+        succeeds (see ``enter_thinking``) — a lost enter must not burn the epoch, or the recap (now
+        the only delivery path for ghost memory after a compact) would never be re-sent.
         """
         epoch = thinking.observer.epoch
         if epoch.id == self._moment_epoch:
             return None
-        self._moment_epoch = epoch.id
         children: list[Message] = []
         if epoch.recap:
             children.append(Message.new(tag="recap").with_messages(*epoch.recap))

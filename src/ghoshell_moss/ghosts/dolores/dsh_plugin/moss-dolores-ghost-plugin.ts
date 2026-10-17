@@ -114,10 +114,8 @@ function probe(message: string): void {
  * 契约细节见 settlePendingCallsOnExit / settledCallIds. MOSS 侧同样兜底吸收 RPC 失败.
  *
  * ── 遗留问题 ────────────────────────────────────────────────────────
- * 1. **epoch 周期接线**: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact 压上下文)
- *    尚未装线 — recap/baseline 的生产接在 compact 上.
- * 2. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
- * 3. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
+ * 1. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
+ * 2. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
  *    instruction 里 prompt 模型不要重复它 (待接).
  */
 
@@ -140,7 +138,7 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
-// compact: 原地把 surface 前缀 [head, cut_turn) 替换成 memory (ground + memento view), 保留其后原文 tail.
+// compact: 原地把 surface 前缀 [head, cut_turn) 替换成一条说明, 保留其后原文 tail; memory 由新 epoch 的 recap 交付.
 const DOLORES_COMPACT = `${DOLORES_API_ROOT}/compact`
 // 旁路原语: 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路 session (id ≠
 // doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠), 不走 subagent,
@@ -415,6 +413,31 @@ interface MomentFrame {
  */
 const pendingMoments: MomentFrame[] = []
 
+/**
+ * epoch 去重 (幂等键): 送达后打戳意味着 python 侧可能重发同一 epoch, 也可能在 cancel/重试下乱序
+ * 到达. 记录已接受的最大 epochIndex, 遇到 ``index <= last`` 的帧就丢弃其 epoch 内容 (context/notices
+ * 仍照常投递) — 避免同一份 memory + 全量 facade 在 budget 最紧的压缩后一帧里出现两次.
+ */
+let lastEpochIndex = -1
+
+/** 是否接受这个 epoch 帧; 接受即推进 lastEpochIndex. 只对真正携带 epoch 内容的帧调用. */
+function acceptEpochIndex(index: number): boolean {
+  if (index <= lastEpochIndex) return false
+  lastEpochIndex = index
+  return true
+}
+
+/** 解析本帧的 epoch 内容: 迟到/重复的 epochIndex 直接丢弃, 只对真正携带内容的帧调用. */
+async function resolveEpoch(ctx: Context, body: ThinkingEnterPayload): Promise<ContentBlock[] | undefined> {
+  if (!Array.isArray(body.epoch) || body.epoch.length === 0) return undefined
+  // 先干活再认领: durable 若失败 (以后 epoch 混入非文本附件), 不能先把 index 推进再丢内容 ——
+  // 那样 python 侧会以为是送达了, 同 index 重发却被丢弃, 静默丢失.
+  const content = await durableMomentContent(ctx, body.epoch)
+  const index = typeof body.epochIndex === 'number' ? body.epochIndex : undefined
+  if (index !== undefined && !acceptEpochIndex(index)) return undefined
+  return content
+}
+
 /** thinking/enter 入参 (点 3). 阻塞执行完: handler 完成注入 + 开锁才返回. */
 interface ThinkingEnterPayload {
   /** moment 拆两条 (python 侧映射): context (inject) + inputs (steer). */
@@ -427,6 +450,8 @@ interface ThinkingEnterPayload {
   }
   /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
   epoch?: MomentContentPart[]
+  /** epoch 幂等键 — 与 epoch 内容一起下发, 用于丢弃迟到/重复的 epoch 帧 (送达后打戳必然允许重发). */
+  epochIndex?: number | null
   /** memento notice (commit 提醒等) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn. */
   notices?: string[]
   /**
@@ -888,6 +913,11 @@ export function apply(ctx: Context) {
         })
         doloresEgoSessionId = handle.agent.id
         doloresThinkingToken = randomUUID()
+        // 新 session 重开一个 epoch 序列: python 侧 epoch.index 从 1 重数, 而 lastEpochIndex 是模块级
+        // 跨 session 遗留 —— 不重置会让新 session 的 epoch 全被当成「迟到」丢掉, 首次压缩后 memory
+        // recap 静默消失. pendingMoments 同理 (旧 session 的残帧不能进新 session 的 surface).
+        lastEpochIndex = -1
+        pendingMoments.length = 0
         // 3. title + sandbox mode + workspace membership (log-only events + account).
         handle.agent.session.append('session/title', { title: sessionTitle, messageSeqs: [], source: { kind: 'user' } })
         handle.agent.session.append('sandbox/mode', { mode: permission })
@@ -1007,9 +1037,7 @@ export function apply(ctx: Context) {
         // none: 只吸收背景不驱动 turn — epoch/context 缓冲到 perStep 挂载点, 不 openThinking 不
         // steer, 等下一次真实 pre-step 消费. inputs 属 turn 驱动, none 帧不送.
         if (body.effort === 'none') {
-          const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
-            ? await durableMomentContent(ctx, body.epoch)
-            : undefined
+          const epoch = await resolveEpoch(ctx, body)
           const frame = buildMomentFrame(epoch, context, notices)
           if (frame.length > 0) {
             pendingMoments.push({ messages: frame })
@@ -1022,9 +1050,7 @@ export function apply(ctx: Context) {
         // 到 pendingMoments, 由 pre-step 在 next() 后插到本步历史最前 — 本 turn 生效.
         // 必须先 push 再 openThinking — gate 的 resolve 会同步调度 pre-step 续体为 microtask,
         // 若在 openThinking 后又 await, 续体可能在 push 落地前就 fold pendingMoments (丢帧).
-        const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
-          ? await durableMomentContent(ctx, body.epoch)
-          : undefined
+        const epoch = await resolveEpoch(ctx, body)
         const frame = buildMomentFrame(epoch, context, notices)
         if (frame.length > 0) {
           pendingMoments.push({ messages: frame })
@@ -1294,9 +1320,11 @@ export function apply(ctx: Context) {
     },
   })
 
-  // ── compact: 原地把 surface 前缀 [head, cut_turn) 替换成 memory, 保留其后原文 tail ─────
-  // 入参 {memory: [{text}], cut_turn}. 由 MOSS 在下一个 run 启动时调用 (surface idle), 语义化 cut
-  // 由 MOSS 给 (SCS = 倒数第二个 commit 的 end_turn), turn→seq 解析 + replace 形状都留在这里.
+  // ── compact: 原地把 surface 前缀 [head, cut_turn) 替换成一条 compact 说明, 保留其后原文 tail ─
+  // 入参 {memory: [{text}], notice, cut_turn}. memory 不写进 surface —— MOSS 同时开新 epoch, 由
+  // epoch 的 recap 槽重新注入; 这里只拿它更新溢出兜底的缓存. 由 MOSS 在下一个 run 之前调用
+  // (surface idle), 语义化 cut 由 MOSS 给 (SCS = 倒数第二个 commit 的 end_turn), turn→seq 解析 +
+  // replace 形状都留在这里.
   ctx.webServer.register({
     kind: 'exact',
     path: DOLORES_COMPACT,
@@ -1320,6 +1348,9 @@ export function apply(ctx: Context) {
           .map(message => (message as { text?: unknown }).text)
           .filter((text): text is string => typeof text === 'string' && text !== '')
         if (memory.length === 0) throw new Error('memory must contain at least one text block')
+        const notice = typeof body.notice === 'string' ? body.notice : ''
+        if (notice === '') throw new Error('notice must be a non-empty string')
+        // memory 只更新兜底缓存; surface 替换内容只有说明 —— memory 由新 epoch 的 recap 交付.
         cachedMemory = memory
         const events = agent.session.snapshotEvents()
         const cut = resolveCut(events, { session_id: sessionId, start_turn: 0, end_turn: cutTurn })
@@ -1330,7 +1361,7 @@ export function apply(ctx: Context) {
           return
         }
         const message = createUserMessage({
-          content: memory.map(text => ({ type: 'text', text })),
+          content: [{ type: 'text', text: notice }],
           source: { kind: 'plugin', plugin: `${name}:compact` },
         })
         appendReplace(agent.session, shadowed, message)
