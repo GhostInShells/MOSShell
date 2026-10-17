@@ -477,8 +477,10 @@ def build_screen_channel(
         if role == "ghost":
             # Fired, not awaited: a bullet lives seconds, and a mirror that awaits
             # each one makes every later sentence arrive seconds late.
+            # One band, not the whole stage: my lines arriving from the right are
+            # a second voice, and a voice that shows up everywhere is noise.
             bullet = asyncio.create_task(_send_danmaku(
-                text, duration=8.0, motion="rtl", size=26, overlap=True,
+                text, duration=8.0, motion="rtl", size=26, overlap=True, lane=3,
             ))
             _live_bullets.add(bullet)
             bullet.add_done_callback(_live_bullets.discard)
@@ -513,6 +515,11 @@ def build_screen_channel(
                 await clauses.start(_on_clause)
             elif mode == "off" and clauses.running:
                 await clauses.stop()
+            if mode == "off":
+                # Turning the mirror off takes the lines with it: a transcript
+                # left frozen on the stage is a picture of a conversation that is
+                # no longer happening.
+                await _emit({"type": "talk", "clear": True})
             stage_flags["talk"] = mode
         shown = ", ".join(f"{k}={v}" for k, v in stage_flags.items())
         return f"[{name}] stage: {shown}"

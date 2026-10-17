@@ -44,17 +44,21 @@
        and read like a scarecrow. A clean sans, sized for reading off a stream. */
     font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
       "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
-    font-weight: 600; letter-spacing: .02em;
+    font-weight: 700;
   }
   /* Yellow on black outliner: the broadcast convention, and the one style that
      survives whatever is underneath. Fixed on purpose — a knob here would only be
      something else to get wrong; a second case earns a second style. */
+  #talk .line.gone { opacity: 0; transition: opacity 1.4s ease-out; }
   #talk .line {
     max-width: 80%; padding: 1px 10px; border-radius: 3px; text-align: center;
     background: rgba(6, 8, 7, .55); color: #ffd24a; white-space: pre-wrap;
-    -webkit-text-stroke: 1px rgba(0, 0, 0, .9);
-    text-shadow: 0 2px 3px rgba(0, 0, 0, .85);
+    text-shadow:
+      -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000,
+      -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000,
+      0 3px 8px rgba(0, 0, 0, .95);
     animation: talk-in .16s ease-out;
+    transition: opacity .9s ease-out;
   }
   @keyframes talk-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
   #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
@@ -1019,10 +1023,13 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns,
                   && atX >= 0 && atY >= 0);
   let slot = { li: 0, startAt: now };
   if (overlap) {
-    // A conversation overlaps itself: pick a lane at random and go now, rather
-    // than waiting for one to free up. Readability is not the point here; being
-    // in step with the voice is.
-    slot = { li: Math.floor(Math.random() * lanes), startAt: now };
+    // A conversation overlaps itself: never wait for a free lane, go now. With a
+    // lane given, stay on it — scattered everywhere reads as noise, and one band
+    // reads as "this is the other side talking".
+    const want = (typeof lane === 'number' && lane > 0)
+      ? Math.min(lane, lanes) - 1
+      : Math.floor(Math.random() * lanes);
+    slot = { li: want, startAt: now };
   } else if (!pinned) {
     const key = (item || 'stage') + '|' + (region || '-') + '|' +
                 Math.round(h0) + '|' + Math.round(size);
@@ -2035,12 +2042,17 @@ function route(f) {
     case 'talk': {
       const box = document.getElementById('talk');
       if (!box) break;
+      if (f.clear) { box.replaceChildren(); break; }
       const line = document.createElement('div');
       line.className = 'line';
       line.textContent = f.text || '';
       box.append(line);
-      while (box.children.length > 8) box.firstElementChild.remove();
-      setTimeout(() => line.remove(), 18000);
+      // New lines push the old ones up; the oldest fade out rather than vanish.
+      // One line: the history lives in the DSH surface. This line is for whoever
+      // is watching the stream, and for me to see how ASR parsed what was said.
+      while (box.children.length > 1) box.firstElementChild.remove();
+      setTimeout(() => line.classList.add('gone'), 16000);
+      setTimeout(() => line.remove(), 17500);
       break;
     }
     case 'current': setMasked(false, ''); break;
