@@ -515,8 +515,10 @@ async def test_stage_talk_mirrors_the_conversation_legibly():
     )
 
     async with chan.bootstrap() as runtime:
-        assert "talk=off" in await runtime.execute_command("stage")
-        assert not feed.running
+        # 默认就是开着的, 而且 bootstrap 时走的是与命令同一条路 —— 一块屏不该因为
+        # 没人记得去拨开关而沉默, 那从观众那边看就是一块坏掉的屏.
+        assert "talk=ghost" in await runtime.execute_command("stage")
+        assert feed.running
 
         assert "talk=both" in await runtime.execute_command(
             "stage", kwargs={"talk": "both"}

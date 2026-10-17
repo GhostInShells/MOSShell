@@ -30,6 +30,23 @@
   #stage    { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 4; }
   #scrim    { position: fixed; inset: 0; z-index: 3; display: none; background: rgba(0,0,0,.55); }
   #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }  /* 按钮必须在页面之上 */
+  /* The state light: 2px on the top edge, moving only while I am thinking.
+     It answers "is it working on something" without a single glyph, and it is
+     the one thing that changes when the ghost goes quiet — so the screen never
+     looks frozen when it is only silent. */
+  #think {
+    position: fixed; left: 0; right: 0; top: 0; height: 2px; z-index: 9;
+    pointer-events: none; opacity: 0; transition: opacity .35s ease;
+    background-image: linear-gradient(90deg, transparent, #6ea8fe 35%, #ffd24a 50%, #6ea8fe 65%, transparent);
+    background-size: 45% 100%; background-repeat: no-repeat;
+    background-position: -45% 0;
+  }
+  #think.on { opacity: 1; animation: think-sweep 1.8s linear infinite; }
+  @keyframes think-sweep {
+    from { background-position: -45% 0; }
+    to   { background-position: 145% 0; }
+  }
+  body.think-dim #think { opacity: .35; }
   /* The conversation, legibly: one line per clause, newest at the bottom, pushed
      up by the next. Reading order is the whole point — a line that flies across
      shows its tail first, which is fine for a comment feed and wrong for a
@@ -1023,13 +1040,18 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns,
                   && atX >= 0 && atY >= 0);
   let slot = { li: 0, startAt: now };
   if (overlap) {
-    // A conversation overlaps itself: never wait for a free lane, go now. With a
-    // lane given, stay on it — scattered everywhere reads as noise, and one band
-    // reads as "this is the other side talking".
-    const want = (typeof lane === 'number' && lane > 0)
-      ? Math.min(lane, lanes) - 1
-      : Math.floor(Math.random() * lanes);
-    slot = { li: want, startAt: now };
+    // Avoid overlap, but never at the price of being late. The lane scheduler
+    // already knows which bands are still occupied — ask it *where* to go, then
+    // ignore its answer to "when". A mirror that queues its own sentences arrives
+    // after the moment they describe; a mirror that stacks them stays in time and
+    // only occasionally rides over its predecessor.
+    const key = (item || 'stage') + '|' + (region || '-') + '|' +
+                Math.round(h0) + '|' + Math.round(size);
+    // A band is occupied only until the previous line's *tail* is in, not until
+    // it leaves — that is what makes a dense feed look even instead of slotted.
+    const enterMs = Math.max(300, travel * Math.min(0.5, (tw + 80) / (viewW + tw)));
+    const picked = danmakuLane(key, lanes, lane, now, hold ? 1e9 : enterMs);
+    slot = { li: picked.li, startAt: now };
   } else if (!pinned) {
     const key = (item || 'stage') + '|' + (region || '-') + '|' +
                 Math.round(h0) + '|' + Math.round(size);
@@ -2039,6 +2061,12 @@ function renderRail() {
 function route(f) {
   switch (f.type) {
     // The conversation itself: one line per clause, newest at the bottom.
+    // The state light: one bit, drawn as an edge. Deliberately not a word.
+    case 'state': {
+      const bar = document.getElementById('think');
+      if (bar) bar.classList.toggle('on', !!f.thinking);
+      break;
+    }
     case 'talk': {
       const box = document.getElementById('talk');
       if (!box) break;

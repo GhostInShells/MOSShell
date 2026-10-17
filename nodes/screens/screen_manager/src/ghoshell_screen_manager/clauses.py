@@ -22,13 +22,15 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ghoshell_moss.types.topics.audio import ClauseTopic
+from ghoshell_moss.types.topics.ghost import GhostEventTopic
 
 if TYPE_CHECKING:
     from ghoshell_moss.core.concepts.topic import TopicService
 
-__all__ = ["TopicClauseFeed"]
+__all__ = ["TopicClauseFeed", "TopicEventFeed"]
 
 ClauseHandler = Callable[[ClauseTopic], Awaitable[None]]
+EventHandler = Callable[[GhostEventTopic], Awaitable[None]]
 
 
 class TopicClauseFeed:
@@ -84,3 +86,57 @@ class TopicClauseFeed:
                 if self._on_clause is not None:
                     with contextlib.suppress(BaseException):
                         await self._on_clause(clause)
+
+
+class TopicEventFeed:
+    """Subscribe ``GhostEventTopic`` off the bus — the ghost's own state and actions.
+
+    The other half of the mirror. A clause says what was *said*; this says what is
+    *happening*: thinking started, a tool was called, the answer finished. Both are
+    published by the reasoning kernel in its own process, so both ride the bus.
+
+    Deliberately the same shape as the clause feed — subscribe, poll, hand each
+    item to the owner — because two feeds that differ in plumbing are two things
+    to learn. What differs is only what the consumer does with an event.
+    """
+
+    def __init__(self, topics: "TopicService") -> None:
+        self._topics = topics
+        self._on_event: EventHandler | None = None
+        self._task: asyncio.Task | None = None
+        self._seen = 0
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def stats(self) -> dict:
+        return {"subscribed": self.running, "events": self._seen}
+
+    async def start(self, on_event: EventHandler) -> None:
+        self._on_event = on_event
+        if self._task is None:
+            self._task = asyncio.create_task(self._run(), name="screen-manager-events")
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+        self._task = None
+
+    async def _run(self) -> None:
+        subscriber = self._topics.subscribe_model(GhostEventTopic, maxsize=64)
+        async with subscriber:
+            while True:
+                try:
+                    event = await subscriber.poll_model(timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                if event is None:
+                    continue
+                self._seen += 1
+                if self._on_event is not None:
+                    with contextlib.suppress(BaseException):
+                        await self._on_event(event)

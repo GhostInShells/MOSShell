@@ -2151,7 +2151,84 @@ class TestDoloresRun:
         assert collected[1].payload["seq"] == 3
         # content 是给表面的那一行: 摘要由我们自己拼, 不指望 dsh 给.
         assert collected[0].content == "thinking"
-        assert collected[1].content.startswith("mystery_tool(")
+        assert collected[1].content == "mystery_tool"
+
+    @pytest.mark.asyncio
+    async def test_tool_event_summary_prefers_the_callers_own_description(self):
+        """观测面上那一行取调用方自己写的 description, 不是参数原文."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._event(
+                "tool/call",
+                {"callId": "c1", "name": "bash",
+                 "arguments": '{"command": "git status", "description": "Show working tree status"}'},
+                seq=1,
+            ))
+            await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
+            collected = []
+            async for delta in run.logos():
+                collected.append(delta)
+        assert collected[1].content == "bash: Show working tree status"
+
+    @pytest.mark.asyncio
+    async def test_tool_event_summary_never_leaks_argument_text(self):
+        """没有 description 就只报工具名 —— 参数里可能有文件正文/路径/口令, 不许上总线."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._event(
+                "tool/call",
+                {"callId": "c1", "name": "write",
+                 "arguments": '{"file_path": "/tmp/secret.md", "content": "private text"}'},
+                seq=1,
+            ))
+            await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
+            collected = []
+            async for delta in run.logos():
+                collected.append(delta)
+        assert collected[1].content == "write"
+        assert "private" not in collected[1].payload.get("content", "")
+        assert "secret" not in str(collected[1].content)
+
+    @pytest.mark.asyncio
+    async def test_own_tool_calls_never_reach_the_surface(self):
+        """moss_interpret / moss_react 是管道不是行动: 不上观测面."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._event(
+                "tool/call",
+                {"callId": "c1", "name": "moss_surface_probe",
+                 "arguments": '{"ctml": "<say>hi</say>"}'},
+                seq=1,
+            ))
+            await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
+            collected = []
+            async for delta in run.logos():
+                collected.append(delta)
+        assert [getattr(d, "event", None) for d in collected] == ["ghost/lifecycle/thinking"]
+
+    def test_is_own_tool_call_discriminates_by_namespace(self):
+        """判据挂在 moss 命名空间上 —— 与 tool 分发用的是同一条前缀."""
+        from ghoshell_moss.ghosts.dolores._run import _is_own_tool_call
+
+        def call(name: str):
+            return self._event(
+                "tool/call",
+                {"callId": "c1", "name": name, "arguments": "{}"},
+            )
+
+        assert _is_own_tool_call(call("moss_interpret")) is True
+        assert _is_own_tool_call(call("moss_react")) is True
+        assert _is_own_tool_call(call("bash")) is False
+        assert _is_own_tool_call(call("read")) is False
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

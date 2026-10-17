@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Union, AsyncGenerator
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.ghost import GhostEvent
@@ -71,9 +72,58 @@ _FORWARDED_DSH_EVENTS = frozenset({
 # event 名前缀: 观测面是共享流, 不带命名空间会和别的 ghost 事件撞名.
 _DSH_EVENT_NAME_PREFIX = "dsh/"
 
-# 事件上总线时只带一句话摘要: 原文留在 session 的 output 面. tool 的完整参数/结果一旦上总线,
-# 一次长命令就够把订阅方淹掉 —— 摘要由我们自己拼, 不指望 dsh 提供.
+# 事件上总线时只带一句话摘要: 原文留在 session 的 output 面. 摘要有两条硬约束, 都不是风格问题.
+#
+# 1. **只读调用方自己写的那一行 description**, 参数原文一律不上总线. 参数里可能装着文件正文、
+#    绝对路径、口令一类东西, 而这个事件会被镜像到屏上、屏又会推给观众 —— 摘要取"人写的那行",
+#    原文留在 session log 里给要查的人查.
+# 2. **没有 description 就只报工具名.** 当初这里退而取"前两个参数", 屏幕上就飞过
+#    ``moss_interpret({"ctml": "<matrix.mesh.eyes:exec>..."`` —— 观众看到的是管道, 不是行动.
+#    少说一句, 好过把管道投出去.
 _TOOL_KINDS = frozenset({"tool/call", "tool/result"})
+
+# dsh 工具的调用参数里那一行给人看的描述; 有的工具写 description, 有的写 desc.
+_TOOL_DESCRIPTION_KEYS = ("description", "desc")
+
+
+def _tool_payload(event: Any) -> dict:
+    """tool 事件的 data 体 —— 信封形状随 dsh 版本变, 取到 dict 为止."""
+    envelope = event.to_dict()
+    data = envelope.get("data")
+    return data if isinstance(data, dict) else envelope
+
+
+def _tool_name(payload: dict) -> str:
+    """工具名; 拿不到就给一个中性词, 别把整个 payload 当名字."""
+    return str(payload.get("toolName") or payload.get("tool") or payload.get("name") or "tool")
+
+
+def _tool_description(payload: dict) -> str:
+    """调用方自己写的那一行人话; 没有就是空串 —— 绝不退回去读参数原文."""
+    args = payload.get("arguments") or payload.get("input") or payload.get("args") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except ValueError:
+            return ""
+    if not isinstance(args, dict):
+        return ""
+    for key in _TOOL_DESCRIPTION_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return ""
+
+
+def _is_own_tool_call(event: Any) -> bool:
+    """我们自己那几个工具面 (moss_interpret / moss_react / moss_wait_next ...).
+
+    它们是**管道**, 不是**行动**: 观众要看的是我说了什么、画了什么, 而那些效果自己会出现在
+    屏上. 把调用本身也投到观测面, 屏幕就只剩一串没人能读的参数.
+    """
+    if event.meta.type not in _TOOL_KINDS:
+        return False
+    return _tool_name(_tool_payload(event)).startswith(_DOLORES_TOOL_NAMESPACE_PREFIX)
 
 
 def _event_content(event: Any) -> str:
@@ -81,18 +131,15 @@ def _event_content(event: Any) -> str:
     kind = event.meta.type
     if kind not in _TOOL_KINDS:
         return kind
-    envelope = event.to_dict()
-    payload = envelope.get("data") if isinstance(envelope.get("data"), dict) else envelope
-    name = (
-        payload.get("toolName") or payload.get("tool") or payload.get("name") or "tool"
-    )
-    args = payload.get("arguments") or payload.get("input") or payload.get("args") or {}
-    if isinstance(args, dict):
-        args = " ".join(f"{k}={v}" for k, v in list(args.items())[:2])
-    text = " ".join(str(args).split())
-    if len(text) > 60:
-        text = text[:57] + "..."
-    return f"{name}({text})" if text else f"{name}()"
+    payload = _tool_payload(event)
+    desc = _tool_description(payload)
+    name = _tool_name(payload)
+    if not desc:
+        return name
+    if len(desc) > 60:
+        desc = desc[:57] + "..."
+    return f"{name}: {desc}"
+
 
 if TYPE_CHECKING:
     from ._ego import DoloresEgo
@@ -734,7 +781,7 @@ class DoloresRun:
             while True:
                 event = await anext(events)
                 # 转发先于 turn/end 判定: 那个判定会让本函数 return, turn/end 必须在它之前 yield 出去.
-                if event.meta.type in _FORWARDED_DSH_EVENTS:
+                if event.meta.type in _FORWARDED_DSH_EVENTS and not _is_own_tool_call(event):
                     yield GhostEvent(
                         event=f"{_DSH_EVENT_NAME_PREFIX}{event.meta.type}",
                         content=_event_content(event),

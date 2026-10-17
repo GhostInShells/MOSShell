@@ -46,6 +46,21 @@ class _ClauseFeed(Protocol):
     async def stop(self) -> None: ...
 
 
+class _EventFeed(Protocol):
+    """Whatever the node wires to the bus — the ghost's own state and actions.
+
+    Same shape as ``_ClauseFeed`` on purpose: one protocol per feed would mean the
+    caller's code says "start the clause feed" and "start the event feed" with two
+    different verbs for the same gesture. What differs is the callback, not the
+    plumbing — so only the payload type differs here.
+    """
+
+    @property
+    def running(self) -> bool: ...
+    async def start(self, on_event: Callable[[Any], Awaitable[None]]) -> None: ...
+    async def stop(self) -> None: ...
+
+
 class _Surface(Protocol):
     async def broadcast(self, frame: dict[str, Any]) -> None: ...
 
@@ -99,12 +114,18 @@ def _split_ids(raw: Any) -> list[str]:
     return [s.strip() for s in str(raw).replace("|", ",").split(",") if s.strip()]
 
 
+# 字幕默认那一档: 只投我自己的句子. ``off`` 与 ``both`` 都是显式动作 —— 前者是"这块屏
+# 现在不出门", 后者是"对面那些话也一起投", 两者都不该由默认值替我决定.
+DEFAULT_TALK = "ghost"
+
+
 def build_screen_channel(
     model: ScreenModel,
     *,
     surface: _Surface | None = None,
     audio: AudioSource | None = None,
     clauses: "_ClauseFeed | None" = None,
+    events: "_EventFeed | None" = None,
     surface_url: str | Callable[[], str] | None = None,
     name: str = "webview_screen",
     description: str | None = None,
@@ -114,11 +135,16 @@ def build_screen_channel(
     :param model: window state — the single source of truth, shared with the surface.
     :param surface: the web broadcaster. None = headless (tests).
     :param audio: the audio source the mock commands drive. None = no audio knob.
+    :param events: the ghost's own feed (``GhostEventTopic`` in) — its state light
+        and its tool calls. None = the stage cannot show what the ghost is doing.
     :param clauses: the conversation feed (``ClauseTopic`` in). None = the stage
         cannot mirror the conversation, so ``stage`` stays off and says so.
     :param surface_url: where the human surface lives, surfaced as a warm notice
         fragment so the model can discover it without a fixed port. May be a
         callable (resolved lazily, after the surface binds its ephemeral port).
+
+    The stage's mirror (``stage(talk=...)``) starts on at ``DEFAULT_TALK`` — see
+    ``_open_the_mirror``; the command is how you change it, not how you turn it on.
     """
     surface = surface or _NoSurface()
 
@@ -454,7 +480,12 @@ def build_screen_channel(
     # arrives as a flag here, not as another verb.
     # ``talk`` is one flag with three values, not two booleans: two booleans would
     # encode "his but not mine", which nobody wants, and one meaningless pair.
-    stage_flags: dict[str, str] = {"talk": "off"}
+    #
+    # On by default, and never ``both``: a stage that waits for somebody to remember
+    # the switch reads, from the audience's side, as a broken stage rather than a
+    # quiet one. Keeping the other side's words out is the part that stays a
+    # deliberate act — those are not mine to broadcast.
+    stage_flags: dict[str, str] = {"talk": DEFAULT_TALK}
     _live_bullets: set[asyncio.Task] = set()
 
     async def _on_clause(clause: Any) -> None:
@@ -480,12 +511,67 @@ def build_screen_channel(
             # One band, not the whole stage: my lines arriving from the right are
             # a second voice, and a voice that shows up everywhere is noise.
             bullet = asyncio.create_task(_send_danmaku(
-                text, duration=8.0, motion="rtl", size=26, overlap=True, lane=3,
+                text, duration=8.0, motion="rtl", size=26, overlap=True,
             ))
             _live_bullets.add(bullet)
             bullet.add_done_callback(_live_bullets.discard)
             return
         await _emit({"type": "talk", "text": text, "role": role or "user"})
+
+    async def _on_event(event: Any) -> None:
+        """What I am doing, mirrored: a state light and the actions.
+
+        Two very different things arrive here and they get different shapes. A
+        lifecycle event is a *state* — the stage holds one bit (thinking or not)
+        and draws it as an edge, so the top of the screen is the answer to "is it
+        working on something" without a single glyph. A tool call is an *event* —
+        it happened, once — so it rides the same band my sentences do, and reads
+        as one more thing I did.
+        """
+        mode = stage_flags["talk"]
+        if mode == "off":
+            return
+        kind = str(getattr(event, "event", "") or "")
+        if kind.startswith("ghost/lifecycle/"):
+            await _emit({"type": "state", "thinking": kind.endswith("thinking")})
+            return
+        # ``ghost`` mode is the audience-facing one: my own speech only. My actions
+        # are mine to show — they are what I am doing on the stage's behalf.
+        if kind != "dsh/tool/call":
+            return
+        text = str(getattr(event, "content", "") or "").strip()
+        if not text:
+            return
+        bullet = asyncio.create_task(_send_danmaku(
+            f"▸ {text}", duration=8.0, motion="rtl", size=22, overlap=True,
+            color="#8fe3a1",
+        ))
+        _live_bullets.add(bullet)
+        bullet.add_done_callback(_live_bullets.discard)
+
+    async def _apply_stage(mode: str) -> None:
+        """The switch itself — one path for the command and for startup.
+
+        Startup goes through the same code on purpose: a default that takes a
+        different road than the command is a default nobody has ever exercised.
+        """
+        if clauses is not None:
+            if mode != "off" and not clauses.running:
+                await clauses.start(_on_clause)
+            elif mode == "off" and clauses.running:
+                await clauses.stop()
+        if events is not None:
+            if mode != "off" and not events.running:
+                await events.start(_on_event)
+            elif mode == "off" and events.running:
+                await events.stop()
+        if mode == "off":
+            # Turning the mirror off takes the lines with it: a transcript
+            # left frozen on the stage is a picture of a conversation that is
+            # no longer happening.
+            await _emit({"type": "talk", "clear": True})
+            await _emit({"type": "state", "thinking": False})
+        stage_flags["talk"] = mode
 
     @chan.build.command(name="stage")
     async def stage(talk: str | None = None) -> str:
@@ -506,21 +592,12 @@ def build_screen_channel(
                 CommandUtil.raise_observe(
                     f"talk must be off / both / ghost, got {talk!r}"
                 )
-            if clauses is None:
+            if mode != "off" and clauses is None:
                 CommandUtil.raise_observe(
                     "no conversation feed is wired on this node — stage(talk) needs "
                     "the ClauseTopic subscription"
                 )
-            if mode != "off" and not clauses.running:
-                await clauses.start(_on_clause)
-            elif mode == "off" and clauses.running:
-                await clauses.stop()
-            if mode == "off":
-                # Turning the mirror off takes the lines with it: a transcript
-                # left frozen on the stage is a picture of a conversation that is
-                # no longer happening.
-                await _emit({"type": "talk", "clear": True})
-            stage_flags["talk"] = mode
+            await _apply_stage(mode)
         shown = ", ".join(f"{k}={v}" for k, v in stage_flags.items())
         return f"[{name}] stage: {shown}"
 
@@ -804,5 +881,15 @@ def build_screen_channel(
             order = ", ".join(model.arena_items())
             out["screen"] = f"#{arena} [{order}] {model.family()} {model.dir()}"
         return out
+
+    @chan.build.startup
+    async def _open_the_mirror() -> None:
+        """A default, not a ritual: the stage mirrors from the first sentence on.
+
+        ``stage(talk=...)`` still turns it off (or opens the other half); what this
+        removes is the state where a screen is silent only because nobody remembered
+        to switch it on — which nobody watching can tell apart from a broken screen.
+        """
+        await _apply_stage(stage_flags["talk"])
 
     return chan

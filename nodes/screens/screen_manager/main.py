@@ -46,7 +46,7 @@ from ghoshell_screen_manager.audio import (  # noqa: E402
     TopicAudioSource,
 )
 from ghoshell_screen_manager.bridge import WebViewBridge  # noqa: E402
-from ghoshell_screen_manager.clauses import TopicClauseFeed  # noqa: E402
+from ghoshell_screen_manager.clauses import TopicClauseFeed, TopicEventFeed  # noqa: E402
 from ghoshell_screen_manager.channel import build_screen_channel  # noqa: E402
 from ghoshell_screen_manager.model import ScreenModel  # noqa: E402
 from ghoshell_screen_manager.surface import ScreenSurface  # noqa: E402
@@ -100,6 +100,9 @@ async def main(matrix: Matrix) -> None:
     # samples carries every finished clause. Subscribed only when stage(talk=...)
     # asks for it — see the channel's `stage` command.
     clauses = TopicClauseFeed(matrix.session.topics)
+    # The other half of the mirror: what the ghost is doing (a state light, its
+    # tool calls). Same bus, same switch — ``stage(talk=...)`` runs both.
+    events = TopicEventFeed(matrix.session.topics)
     if wants_mock_audio():
         audio = MockAudioSource()
         print("[webview_screen] audio: mock (--mock-audio)", flush=True)
@@ -150,6 +153,7 @@ async def main(matrix: Matrix) -> None:
         surface=surface,
         audio=audio,
         clauses=clauses,
+        events=events,
         surface_url=lambda: surface.url,
     )
     await matrix.provide_channel(channel)
