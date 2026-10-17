@@ -93,6 +93,12 @@ class DocStore:
         self._waiters: dict[str, asyncio.Future] = {}
         self._verdicts: dict[str, str] = {}
         self._recoverable: list[str] = []
+        # Trust is granted, never taken: the model reads these, only the human's
+        # surface writes them. A directory grant and the whole-feature switch are
+        # two different questions — "this area is mine to approve" and "I hand the
+        # approvals over" — so they are two different pieces of state.
+        self._trusted: list[str] = []
+        self._global_trust = False
 
     @property
     def drafts_dir(self) -> Path:
@@ -124,6 +130,46 @@ class DocStore:
     @staticmethod
     def _inside(p: Path, root: Path) -> bool:
         return p == root or root in p.parents
+
+    # -- trust --------------------------------------------------------------
+
+    def global_trust(self) -> bool:
+        """Whether the human has handed the approvals for this whole surface over."""
+        return self._global_trust
+
+    def set_global_trust(self, on: bool) -> bool:
+        """Flip that hand-over. The human's surface only."""
+        self._global_trust = bool(on)
+        return self._global_trust
+
+    def trusted(self) -> list[str]:
+        """Directories whose exports go through without asking."""
+        return list(self._trusted)
+
+    def set_dir_trust(self, path: str, trusted: bool) -> list[str]:
+        """Grant or withdraw trust for a directory — the human's move only.
+
+        Stored by directory, not by file: the question is "may writes under here
+        stop asking", and a file named here is only one write.
+        """
+        resolved = Path(self.resolve_target(path))
+        directory = str(resolved if resolved.is_dir() else resolved.parent)
+        if trusted:
+            if directory not in self._trusted:
+                self._trusted.append(directory)
+        else:
+            self._trusted = [d for d in self._trusted if d != directory]
+        return list(self._trusted)
+
+    def is_trusted(self, dest: str) -> bool:
+        """Whether a write to ``dest`` needs no approval."""
+        if self._global_trust:
+            return True
+        try:
+            target = Path(dest).expanduser().resolve()
+        except OSError:
+            return False
+        return any(self._inside(target, Path(d)) for d in self._trusted)
 
     # -- threads ------------------------------------------------------------
 

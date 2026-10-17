@@ -223,6 +223,29 @@ class FileEditorSurface:
             "threads": [thread_view(t) for t in self._store.threads()],
         })
 
+    async def _set_dir_trust(self, path: str, trusted: bool) -> None:
+        """The human flips trust for a directory — the model never does."""
+        try:
+            self._store.set_dir_trust(path, trusted)
+        except ValueError as e:
+            await self.broadcast({"type": "error", "text": str(e)})
+            return
+        # State only: the notice carries `trust` / `[auto]`, and a signal here
+        # would interrupt the model mid-sentence to tell it something it reads
+        # every turn anyway.
+        await self.broadcast(
+            {"type": "trusted", "trusted": self._store.trusted()}
+        )
+
+    async def _set_global_trust(self, on: bool) -> None:
+        """Hand the approvals over, or take them back — the human's switch."""
+        store_on = self._store.set_global_trust(on)
+        await self.broadcast({
+            "type": "trusted",
+            "trusted": self._store.trusted(),
+            "global_trust": store_on,
+        })
+
     async def _set_enabled(self, enabled: bool) -> None:
         if self._on_toggle is not None:
             self._on_toggle(enabled)
@@ -315,6 +338,12 @@ class FileEditorSurface:
                         pass
                 elif kind == "auto":
                     await self._set_thread_auto(thread, bool(frame.get("auto")))
+                elif kind == "global_trust":
+                    await self._set_global_trust(bool(frame.get("on")))
+                elif kind == "trust_dir":
+                    await self._set_dir_trust(
+                        str(frame.get("path", "")), bool(frame.get("trusted"))
+                    )
                 elif kind == "toggle":
                     await self._set_enabled(bool(frame.get("enabled", True)))
         finally:

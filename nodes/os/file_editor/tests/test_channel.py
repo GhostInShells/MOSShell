@@ -396,3 +396,61 @@ async def test_the_notice_carries_a_count_not_the_names(store, tmp_path):
         notice = runtime.self_meta().named_notices.get("drafts", "")
     assert "2 unclaimed" in notice
     assert "a.txt" not in notice
+
+
+@pytest.mark.asyncio
+async def test_a_trusted_directory_exports_without_asking(store, tmp_path):
+    """Trust is the human's grant, and it is scoped: the same write that asked a
+    moment ago goes straight through once the directory it lands in is trusted.
+
+    There is deliberately no command to grant it — the model can read `trusted`
+    and point at the switch, but the switch is the human's hand.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    target = work / "out.md"
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command("append", args=("t", chunks(["final\n"])))
+
+        first = await runtime.execute_command("export", args=("t",), kwargs={"path": str(target)})
+        assert "awaiting approval" in first
+        store.settle("t", store.get("t").actions[-1].n, "accept")
+        await _until(target.exists)
+
+        # The human trusts the directory on their own surface.
+        store.set_dir_trust(str(work), True)
+        await runtime.execute_command("append", args=("t", chunks(["more\n"])))
+        out = await runtime.execute_command("export", args=("t",), kwargs={"path": str(target)})
+        assert "auto-exporting" in out and "directory is trusted" in out
+        await _until(lambda: target.read_text() == "final\nmore\n")
+
+    assert target.read_text() == "final\nmore\n"
+
+
+def test_directory_trust_covers_files_below_and_stops_at_the_edge(store, tmp_path):
+    work = tmp_path / "work"
+    other = tmp_path / "other"
+    work.mkdir()
+    other.mkdir()
+    store.set_dir_trust(str(work), True)
+    assert store.is_trusted(str(work / "a.md"))
+    assert store.is_trusted(str(work / "deep" / "b.md"))
+    assert not store.is_trusted(str(other / "c.md"))
+    store.set_dir_trust(str(work), False)
+    assert not store.is_trusted(str(work / "a.md"))
+
+
+@pytest.mark.asyncio
+async def test_the_notice_reports_which_directories_are_trusted(store, tmp_path):
+    """I have to be able to read whether the gate is open — otherwise "it wrote
+    by itself" and "somebody approved it" look the same from here."""
+    work = tmp_path / "work"
+    work.mkdir()
+    store.set_dir_trust(str(work), True)
+    chan, _ = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        notice = runtime.self_meta().named_notices.get("trust", "")
+    assert str(work) in notice

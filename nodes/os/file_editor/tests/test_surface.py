@@ -170,3 +170,24 @@ async def test_layout_is_the_model_side_of_the_presentation_contract(store, sign
             await surface.set_layout("cinema")
     finally:
         await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_flipping_trust_is_state_not_a_signal(store, signals, tmp_path):
+    """Trusting a directory must not reach out and interrupt: it is in the notice
+    every turn already, and a push here aborted whatever the model was saying."""
+    work = tmp_path / "work"
+    work.mkdir()
+    surface = FileEditorSurface(
+        store,
+        send_signal=signals.append,
+        self_identity="cell:test",
+        host="127.0.0.1",
+        port=0,
+        html_path=_INDEX_HTML,
+    )
+    await surface._set_dir_trust(str(work), True)
+    await surface._set_global_trust(True)
+    assert store.trusted() == [str(work)]
+    assert store.global_trust() is True
+    assert signals == [], "state is read, not announced"

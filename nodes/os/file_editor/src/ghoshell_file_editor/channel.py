@@ -565,10 +565,15 @@ def build_file_editor_channel(
             dest = store.resolve_target(dest)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
-        # Auto only when there is an established target and this export goes to
-        # it — writing somewhere new is establishing a new target, and that still
-        # asks. A pathless thread can never be auto (trust without an object).
-        auto = target.auto and bool(target.path) and dest == target.path
+        # Two ways a write goes through without asking, and both are the human's
+        # grant, never mine: the thread is auto-trusted and this is its established
+        # target, or the destination sits in a directory the human trusted. Writing
+        # somewhere new is establishing a new target, and that still asks.
+        everything = store.global_trust()
+        directory_trust = store.is_trusted(dest)
+        auto = directory_trust or (
+            target.auto and bool(target.path) and dest == target.path
+        )
         action = store.record(
             thread,
             "export",
@@ -581,9 +586,14 @@ def build_file_editor_channel(
         await _card(target, action)
         if auto:
             CommandUtil.create_task(_do_export(target, action, dest))
+            why = (
+                "trust is on for this whole surface"
+                if everything else "the directory is trusted"
+                if directory_trust else "the thread is trusted"
+            )
             return (
-                f"[{name}] {thread!r} auto-exporting to {dest} — the thread is "
-                f"trusted; you will be signalled"
+                f"[{name}] {thread!r} auto-exporting to {dest} — {why}; "
+                f"you will be signalled"
             )
         CommandUtil.create_task(_await_verdict(target, action, dest))
         return (
@@ -618,9 +628,13 @@ def build_file_editor_channel(
         store.note_export(target.id, dest, target.version)
         await _card(target, landed)
         await _threads()
+        # A finished export is not news that deserves the floor: it is buffered
+        # and rides the next moment. Only a refusal or a failure claims a turn.
         _notify(
             f"thread {target.id!r} wrote v{target.version} to {dest} "
-            f"({line_count(text)} lines) — still open, keep editing or export again"
+            f"({line_count(text)} lines) — still open, keep editing or export again",
+            level="background",
+            next_=False,
         )
 
     async def _maybe_batch_done() -> None:
@@ -795,6 +809,12 @@ def build_file_editor_channel(
             out[_notice_name(t.id)] = (
                 f"v{t.version}{written} | {t.label} | {line_count(t.content)} lines | "
                 f"{loc}{waiting}{flag}"
+            )
+        if store.global_trust():
+            out["trust"] = "on — every export here writes at once"
+        elif store.trusted():
+            out["trust"] = "exports write without asking under: " + ", ".join(
+                store.trusted()
             )
         drafts = store.recoverable()
         if drafts:

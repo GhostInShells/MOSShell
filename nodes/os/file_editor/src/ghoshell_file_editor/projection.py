@@ -94,4 +94,8 @@ def snapshot(store: DocStore) -> dict[str, Any]:
         "actions": actions[-SNAPSHOT_ACTIONS:],
         # Unclaimed working copies the human can see for themselves.
         "drafts": store.recoverable(),
+        # What the human has granted. Read-only for the model: the switch that
+        # writes this lives on the surface, not in the command set.
+        "trusted": store.trusted(),
+        "global_trust": store.global_trust(),
     }

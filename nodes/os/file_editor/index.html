@@ -69,6 +69,29 @@
   }
   .t-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; }
   .t-act { display: inline-flex; align-items: baseline; gap: 8px; }
+  /* A toggle gets its own line: label, one sentence of what it means, the button
+     at the far end. */
+  /* A toggle has to look like something you can push: a knob, a border, a hover.
+     A bare "off" at the end of a row reads as a caption. */
+  .switch { display: inline-flex; align-items: center; gap: 7px; background: transparent;
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px 3px 4px;
+    color: var(--dim); font: inherit; font-size: var(--fs-small); cursor: pointer; }
+  .switch::before { content: ""; width: 12px; height: 12px; border-radius: 50%;
+    background: #5a5f63; margin-right: 1px; }
+  .switch.on { color: var(--run); border-color: var(--run); }
+  .switch.on::before { background: var(--run); }
+  .switch:hover { border-color: var(--accent); color: var(--accent); }
+  /* A toggle: what it is on one line with its switch at the end, then one
+     sentence saying what turning it on would mean. */
+  .meta-toggle { display: flex; flex-direction: column; gap: 3px; padding: 9px 0;
+    border-bottom: 1px solid var(--line); }
+  .mt-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .mt-head .k { color: var(--fg); font-size: var(--fs-small); letter-spacing: .04em;
+    overflow-wrap: anywhere; }
+  .mt-note { color: var(--dim); font-size: var(--fs-small); }
+  .meta-toggle.on .mt-note { color: var(--run); }
+  .meta-toggle { cursor: pointer; }
+  .meta-toggle.on { background: rgba(80, 200, 120, .04); }
   .t-act button {
     background: transparent; border: 1px solid var(--line); color: var(--dim);
     border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: var(--fs-small);
@@ -362,9 +385,8 @@
 <header>
   <span class="brand">moss file_editor</span>
   <button class="toggle on" id="toggle" title="turn the model's editing on or off">editing: on</button>
-  <button class="chip drafts" id="drafts" hidden></button>
+  <button class="switch" id="trust-global" title="hand every approval on this surface to the model">trust: off</button>
   <span class="spacer"></span>
-  <span class="layout-mark" id="layout-mark"></span>
   <span class="conn" id="conn">connecting…</span>
 </header>
 <main>
@@ -417,8 +439,9 @@ let tab = "effect";
 let enabled = true;
 let showEarlier = false;            // the fold line's own state, page-local
 let agedEl = null;
-let drafts = [];                    // unclaimed working copies, from the server
-let draftsEl = null;
+let drafts = [];
+let trusted = [];   // directories the human trusted: exports there write at once
+let globalTrust = false;  // the whole surface handed over: every export writes at once                    // unclaimed working copies, from the server
 
 const streamEl = document.getElementById("stream");
 const detailEl = document.createElement("div");
@@ -433,20 +456,15 @@ scrimEl.className = "scrim";
 scrimEl.hidden = true;
 document.body.append(scrimEl);
 const vnoteEl = document.getElementById("vnote");
-draftsEl = document.getElementById("drafts");
 const connEl = document.getElementById("conn");
 const toggleEl = document.getElementById("toggle");
-const layoutMark = document.getElementById("layout-mark");
 
-// How an open card is shown is the model's call; the page says who chose it.
+// How an open card is shown is the model's call. It used to announce itself with a
+// label in the header; the layout is visible on its own face, so the label is gone.
 function setLayout(mode, by) {
   const layout = mode === "page" ? "page" : "split";
   document.body.dataset.layout = layout;
-  layoutMark.textContent =
-    (layout === "page" ? "detail: full window" : "detail: side panel") +
-    (by === "model" ? " · moss" : "");
-  layoutMark.title = "how an open card is shown — moss chooses; click a card to open one";
-  layoutMark.classList.toggle("model", by === "model");
+  document.body.dataset.layoutBy = by === "model" ? "model" : "human";
 }
 
 // The thread's facts, in one place: what it is, where it points, how far the
@@ -478,7 +496,6 @@ function renderMeta() {
   } else {
     add("on disk", "nothing written yet", "dim");
   }
-  add("trust", t.auto ? "auto-export on — writes to its own file without asking" : "auto-export off", t.auto ? "" : "dim");
   for (const [k, v, cls] of rows) {
     const row = make("div", "meta-row");
     row.append(make("span", "k", k));
@@ -486,14 +503,71 @@ function renderMeta() {
     metaEl.append(row);
   }
   if (t.path && t.state === "live") {
-    const row = make("div", "meta-row");
-    row.append(make("span", "k", ""));
-    const auto = make("button", t.auto ? "chip on" : "chip", t.auto ? "turn auto-export off" : "turn auto-export on");
+    // Two scopes of trust, both the human's: this thread, or the whole directory
+    // it lives in. Nothing here is reachable from the model's command set — it
+    // can read `trusted` and say "click that one", which is the point.
+    const dir = t.path.slice(0, t.path.lastIndexOf("/")) || "/";
+    const dirTrusted = trusted.some(
+      (d) => t.path === d || t.path.startsWith(d.endsWith("/") ? d : d + "/"),
+    );
+    // One switch per row: a squeezed row turned two controls into a block of
+    // wrapped text, and a control nobody can read is a control nobody uses.
+    // The sentence says what the *current* state means, and the whole row is the
+    // hit area: a switch whose only feedback is a knob moving reads as inert.
+    const addToggle = (key, on, label, button) => {
+      const row = make("div", "meta-toggle" + (on ? " on" : ""));
+      const head = make("div", "mt-head");
+      head.append(make("span", "k", key));
+      head.append(button);
+      row.append(head);
+      row.append(make("div", "mt-note", label));
+      row.addEventListener("click", (ev) => {
+        if (ev.target !== button) button.click();
+      });
+      metaEl.append(row);
+    };
+    const auto = make("button", t.auto ? "switch on" : "switch", t.auto ? "on" : "off");
+    auto.setAttribute("aria-pressed", t.auto ? "true" : "false");
     auto.addEventListener("click", () => send({ type: "auto", thread: t.id, auto: !t.auto }));
-    row.append(auto);
-    metaEl.append(row);
+    addToggle(
+      "auto-export",
+      t.auto,
+      t.auto
+        ? "on — writing this thread's own file needs no approval"
+        : "off — exports to this thread's file ask first",
+      auto,
+    );
+    const dirBtn = make("button", dirTrusted ? "switch on" : "switch", dirTrusted ? "on" : "off");
+    dirBtn.setAttribute("aria-pressed", dirTrusted ? "true" : "false");
+    dirBtn.id = "trust-dir";
+    dirBtn.title = "trust every write under " + dir;
+    dirBtn.addEventListener("click", () =>
+      send({ type: "trust_dir", path: dir, trusted: !dirTrusted }),
+    );
+    addToggle(
+      "trust " + dir,
+      dirTrusted,
+      dirTrusted
+        ? "on — every write under this directory lands without asking"
+        : "off — writes under this directory ask first",
+      dirBtn,
+    );
   }
 }
+
+const trustGlobalEl = document.getElementById("trust-global");
+function renderTrust() {
+  trustGlobalEl.textContent = "trust: " + (globalTrust ? "on" : "off");
+  trustGlobalEl.classList.toggle("on", globalTrust);
+  trustGlobalEl.setAttribute("aria-pressed", globalTrust ? "true" : "false");
+  trustGlobalEl.title = globalTrust
+    ? "trust is on — every export writes without asking; click to take it back"
+    : "trust is off — exports ask, unless their directory is trusted";
+}
+trustGlobalEl.addEventListener("click", () =>
+  send({ type: "global_trust", on: !globalTrust }),
+);
+renderTrust();
 
 document.getElementById("vtab-doc").addEventListener("click", () => {
   setView("document");
@@ -902,16 +976,10 @@ function renderRail() {
   }
 }
 
-// Working copies nobody owns — a crash's leftovers, listed in the model's notice
-// too. The human sees the same thing, and can ask for one to be picked up.
-function renderDrafts() {
-  if (!draftsEl) return;
-  draftsEl.hidden = drafts.length === 0;
-  draftsEl.textContent = "unclaimed drafts: " + drafts.length;
-  draftsEl.title =
-    "working copies no thread owns — " + drafts.join(", ") +
-    ". Ask the model to pick one up with open(draft=…); it can also read it and tell you what is in it.";
-}
+// Unclaimed working copies are the model's bookkeeping: its notice carries the
+// count and orphans() lists them. On the page a number nobody can act on is one
+// more thing to read past, so the chip is gone.
+function renderDrafts() {}
 
 function selectThread(id) {
   focusThread = id;
@@ -1174,6 +1242,9 @@ function onFrame(frame) {
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
       for (const a of frame.actions) upsertAction(a);
       if (frame.drafts) drafts = frame.drafts;
+      if (frame.trusted) trusted = frame.trusted;
+      if (typeof frame.global_trust === "boolean") globalTrust = frame.global_trust;
+      renderTrust();
       if (frame.view) {
         view = frame.view;
         viewBy = frame.view_by || "default";
@@ -1190,6 +1261,13 @@ function onFrame(frame) {
       if (focusThread) requestText(focusThread);
       setView(view);
       renderRail();
+      break;
+    }
+    case "trusted": {
+      trusted = frame.trusted || [];
+      if (typeof frame.global_trust === "boolean") globalTrust = frame.global_trust;
+      renderTrust();
+      if (view === "meta") renderMeta();
       break;
     }
     case "layout": {
@@ -1215,10 +1293,16 @@ function onFrame(frame) {
       threadStates.clear();
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
       if (frame.drafts) drafts = frame.drafts;
+      if (frame.trusted) trusted = frame.trusted;
+      if (typeof frame.global_trust === "boolean") globalTrust = frame.global_trust;
+      renderTrust();
       renderRail();
       renderDrafts();
       if (changed) renderStream();
       if (selected) renderDetail();
+      // The meta page is made of these thread facts — flipping auto there rewrites
+      // them, and without this the switch keeps showing the state it had before.
+      if (view === "meta") renderMeta();
       break;
     }
     case "action": {
