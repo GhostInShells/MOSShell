@@ -110,6 +110,9 @@
       box-shadow: 2px 0 12px rgba(0,0,0,.4);
     }
     .rail.open { transform: none; }
+    /* Open, the handle sits on the drawer's outer edge: at left:0 it lay on top of
+       the list and swallowed the first characters of every row. */
+    .rail.open + .rail-handle { left: 230px; border-right: 0; border-left: 1px solid var(--line); }
     .rail-handle { display: block; }
     .centre { padding-left: 16px; }
   }
@@ -845,6 +848,9 @@ function setDrawer(open) {
   const show = open && narrow();
   railEl.classList.toggle("open", show);
   scrimEl.hidden = !show;
+  // The button travels with the drawer's edge, so its arrow has to point back.
+  handleEl.textContent = show ? "‹" : "›";
+  handleEl.title = show ? "hide threads" : "threads";
 }
 
 handleEl.addEventListener("click", () => setDrawer(!railEl.classList.contains("open")));
