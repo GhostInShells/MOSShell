@@ -84,17 +84,109 @@
   .conn.live { color: var(--run); }
 
   main { flex: 1; display: flex; min-height: 0; position: relative; }
-  .stream { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
-  .detail {
-    display: none; flex-direction: column;
-    width: clamp(360px, 46%, 760px); border-left: 1px solid var(--line);
-    background: var(--panel); overflow-y: auto;
+  /* The three faces of one object: which threads exist, what they did, and what
+     one action carried. Threads used to live in the header as chips, which could
+     carry a name and nothing else — no path, no version, no activity. A thread is
+     the object an edit belongs to, so it gets a column of its own. */
+  .rail {
+    flex: none; width: 230px; overflow-y: auto; background: var(--panel);
+    border-right: 1px solid var(--line); display: flex; flex-direction: column;
   }
-  .detail.open { display: flex; }
+  .rail-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+    text-align: left; background: transparent; color: var(--fg);
+    border: 0; border-bottom: 1px solid var(--line); border-left: 2px solid transparent;
+    padding: 8px 10px; font: inherit; cursor: pointer;
+  }
+  .rail-row:hover { background: var(--bg); }
+  .rail-row.sel { border-left-color: var(--accent); background: var(--bg); }
+  .rail-row .t-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail-row .t-path { grid-column: 1 / -1; color: var(--dim); font-size: var(--fs-small);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .rail-row .t-meta { grid-column: 1 / -1; font-size: var(--fs-small); color: var(--wait); }
+  .rail-row .t-meta.unread { color: var(--accent); font-weight: 600; }
+  .rail-row.sel .t-meta.unread { color: var(--accent); }
+  .rail-row .t-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--run);
+    align-self: center; animation: pulse 1.4s ease-in-out infinite; }
+  .rail-row.all { color: var(--dim); font-size: var(--fs-small); padding: 6px 10px; }
+  .centre { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .views {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px 0; border-bottom: 1px solid var(--line);
+  }
+  .vtab {
+    background: transparent; color: var(--dim); border: 0; border-bottom: 2px solid transparent;
+    padding: 5px 10px; font: inherit; cursor: pointer;
+  }
+  .vtab.on { color: var(--fg); border-bottom-color: var(--accent); }
+  .vnote { color: var(--dim); font-size: var(--fs-small); padding-right: 4px; }
+  /* The document is the reading surface: the working copy itself, line by line,
+     with a gutter to address it by. Cards are its history, one view over. */
+  /* A gate belongs to the document, not to a line in a log: the working copy is
+     what is about to cross into the file, and this is the page it lives on. The
+     history card shows the same gate, so neither view can approve behind the other. */
+  .gate {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; flex: none;
+    padding: 8px 14px; border-bottom: 1px solid var(--line);
+    background: rgba(240,193,90,.07); color: var(--wait); align-items: center;
+  }
+  .gate .g-what { grid-column: 1; grid-row: 1; }
+  .gate .g-btns { grid-column: 2; grid-row: 1 / span 2; }
+  .gate[hidden] { display: none; }
+  .gate .g-what { color: var(--fg); }
+  .gate .g-path { color: var(--dim); font-size: var(--fs-small); word-break: break-all;
+    grid-column: 1; grid-row: 2; }
+  .gate .g-btns { display: flex; gap: 6px; flex: none; }
+  .gate button {
+    background: transparent; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 3px 10px; font: inherit; cursor: pointer;
+  }
+  .gate button.accept { color: var(--run); border-color: var(--run); }
+  .gate button.deny { color: var(--dim); }
+  .doc { flex: 1; min-height: 0; overflow: auto; padding: 10px 0 40px; }
+  .doc-line { display: grid; grid-template-columns: 56px 1fr; white-space: pre-wrap;
+    word-break: break-word; padding: 0 14px; }
+  .doc-line .ln { color: var(--dim); text-align: right; padding-right: 14px; user-select: none; }
+  .doc-line.hit { background: rgba(110,168,254,.10); box-shadow: inset 2px 0 0 var(--accent); }
+  .doc-line.hit .ln { color: var(--accent); }
+  .stream { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .stream[hidden] { display: none; }
+  /* The thread's own facts, once. Every card used to repeat them; a question
+     you ask about the object belongs to the object, not to each action on it. */
+  .meta { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px; }
+  .meta[hidden] { display: none; }
+  .meta-row { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; padding: 5px 0;
+    border-bottom: 1px solid var(--line); align-items: baseline; }
+  .meta-row .k { color: var(--dim); font-size: var(--fs-small); }
+  .meta-row .v { color: var(--fg); word-break: break-all; }
+  .meta-row .v.warn { color: var(--wait); }
+  .meta-row .v.dim { color: var(--dim); }
+  /* The detail is not a column of its own — it opens *under the card it belongs
+     to*. A third column competed with the document for width and said nothing
+     when empty; inside the card, the content keeps the company of its siblings. */
+  .detail {
+    display: flex; flex-direction: column;
+    border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px;
+    background: var(--panel);
+  }
+  .detail:empty { display: none; }
+  .detail .d-empty { color: var(--dim); font-size: var(--fs-small); }
+  .detail .d-jump {
+    background: transparent; color: var(--accent); border: 1px solid var(--line);
+    border-radius: 4px; padding: 2px 8px; font: inherit; font-size: var(--fs-small); cursor: pointer;
+  }
+  @media (max-width: 1180px) {
+    .rail { width: 44px; }
+    .rail-row .t-name, .rail-row .t-path, .rail-row .t-meta { display: none; }
+    .rail-row { grid-template-columns: 1fr; justify-items: center; padding: 10px 4px; }
+    .rail-row .t-dot { grid-column: 1; }
+    .detail { width: clamp(240px, 42%, 520px); }
+  }
   /* The other view: the model may give the open card the whole window instead of a
      side panel. Which card is open stays the human's click; only its size is ours. */
-  body[data-layout="page"] .detail.open {
-    position: absolute; inset: 0; width: auto; border-left: 0; z-index: 3;
+  body[data-layout="page"] .detail.has-card {
+    position: fixed; inset: 0; width: auto; z-index: 3; margin: 0; padding: 12px 16px;
+    overflow-y: auto; background: var(--bg);
   }
   .layout-mark {
     color: var(--dim); font-size: var(--fs-small); min-width: 0;
@@ -237,15 +329,26 @@
 <header>
   <span class="brand">moss file_editor</span>
   <button class="toggle on" id="toggle" title="turn the model's editing on or off">editing: on</button>
-  <div class="chips" id="chips"></div>
   <button class="chip drafts" id="drafts" hidden></button>
   <span class="spacer"></span>
   <span class="layout-mark" id="layout-mark"></span>
   <span class="conn" id="conn">connecting…</span>
 </header>
 <main>
-  <section class="stream" id="stream"></section>
-  <aside class="detail" id="detail"></aside>
+  <nav class="rail" id="rail"></nav>
+  <div class="centre">
+    <div class="views">
+      <button class="vtab on" data-view="document" id="vtab-doc">document</button>
+      <button class="vtab" data-view="history" id="vtab-hist">history</button>
+      <button class="vtab" data-view="meta" id="vtab-meta">meta</button>
+      <span class="spacer"></span>
+      <span class="vnote" id="vnote"></span>
+    </div>
+    <div class="gate" id="gate" hidden></div>
+    <section class="doc" id="doc"></section>
+    <section class="stream" id="stream" hidden></section>
+    <section class="meta" id="meta" hidden></section>
+  </div>
 </main>
 <script>
 "use strict";
@@ -268,6 +371,13 @@ const AGED_KEEP = 12;               // newest cards kept in the list; older ones
 
 let selected = null;                // {thread, n}
 let focusThread = null;
+let view = "document";              // document | history — two readings of one thread
+const docText = new Map();          // thread -> {version, lines, text}
+// Which action each thread has been read up to. Unread is a fact about the
+// human's attention, not about the thread: it lives here, in their browser.
+const seen = new Map(
+  Object.entries(JSON.parse(localStorage.getItem("fe.seen") || "{}")),
+);
 let tab = "effect";
 let enabled = true;
 let showEarlier = false;            // the fold line's own state, page-local
@@ -276,8 +386,13 @@ let drafts = [];                    // unclaimed working copies, from the server
 let draftsEl = null;
 
 const streamEl = document.getElementById("stream");
-const detailEl = document.getElementById("detail");
-const chipsEl = document.getElementById("chips");
+const detailEl = document.createElement("div");
+detailEl.className = "detail";
+const railEl = document.getElementById("rail");
+const docEl = document.getElementById("doc");
+const metaEl = document.getElementById("meta");
+const gateEl = document.getElementById("gate");
+const vnoteEl = document.getElementById("vnote");
 draftsEl = document.getElementById("drafts");
 const connEl = document.getElementById("conn");
 const toggleEl = document.getElementById("toggle");
@@ -293,6 +408,56 @@ function setLayout(mode, by) {
   layoutMark.title = "how an open card is shown — moss chooses; click a card to open one";
   layoutMark.classList.toggle("model", by === "model");
 }
+
+// The thread's facts, in one place: what it is, where it points, how far the
+// working copy has moved past the file. Every card used to carry a copy of this.
+function renderMeta() {
+  metaEl.replaceChildren();
+  if (!focusThread) {
+    metaEl.append(make("div", "hint", "pick a thread on the left"));
+    return;
+  }
+  const t = threads.get(focusThread);
+  const d = docText.get(focusThread);
+  if (!t) return;
+  const rows = [];
+  const add = (k, v, cls) => rows.push([k, v, cls || ""]);
+  add("thread", t.id);
+  add("label", t.label);
+  add("path", t.path || "(not bound to a file)", t.path ? "" : "dim");
+  add("state", t.state);
+  add("version", "v" + t.version);
+  add("lines", String(d ? d.lines : t.lines));
+  if (t.exported_to) {
+    add("on disk", "v" + t.exported_at + " → " + t.exported_to);
+    add(
+      "unsaved",
+      t.unsaved ? "the file is behind the working copy" : "nothing since the last export",
+      t.unsaved ? "warn" : "dim",
+    );
+  } else {
+    add("on disk", "nothing written yet", "dim");
+  }
+  add("trust", t.auto ? "auto-export on — writes to its own file without asking" : "auto-export off", t.auto ? "" : "dim");
+  for (const [k, v, cls] of rows) {
+    const row = make("div", "meta-row");
+    row.append(make("span", "k", k));
+    row.append(make("span", "v" + (cls ? " " + cls : ""), v));
+    metaEl.append(row);
+  }
+  if (t.path && t.state === "live") {
+    const row = make("div", "meta-row");
+    row.append(make("span", "k", ""));
+    const auto = make("button", t.auto ? "chip on" : "chip", t.auto ? "turn auto-export off" : "turn auto-export on");
+    auto.addEventListener("click", () => send({ type: "auto", thread: t.id, auto: !t.auto }));
+    row.append(auto);
+    metaEl.append(row);
+  }
+}
+
+document.getElementById("vtab-doc").addEventListener("click", () => setView("document"));
+document.getElementById("vtab-meta").addEventListener("click", () => setView("meta"));
+document.getElementById("vtab-hist").addEventListener("click", () => setView("history"));
 
 function make(tag, cls, text) {
   const node = document.createElement(tag);
@@ -467,23 +632,191 @@ function removeThreadCards(thread) {
 
 // -- rendering ------------------------------------------------------------
 
-function renderChips() {
-  chipsEl.replaceChildren();
+// The thread rail: every live object with the facts a chip could not carry —
+// where it points, which version it is at, whether the file is behind it, and
+// whether it is doing something right now. The selected row is the one the card
+// list below is showing; "all threads" is the unfiltered view.
+function threadBusy(id) {
+  for (const a of actions.values()) {
+    if (a.thread === id && (a.state === "streaming" || a.state === "awaiting")) return true;
+  }
+  return false;
+}
+
+// Two readings of one thread, and only one of them is the object: the document
+// is what we are both editing, the card list is how it got here. Switching views
+// is the human's click (both are their surface); which thread is shown is
+// shared — clicking a thread in the rail or a card in the history moves both.
+function setView(next) {
+  view = next === "history" ? "history" : next === "meta" ? "meta" : "document";
+  document.getElementById("vtab-doc").classList.toggle("on", view === "document");
+  document.getElementById("vtab-hist").classList.toggle("on", view === "history");
+  document.getElementById("vtab-meta").classList.toggle("on", view === "meta");
+  docEl.hidden = view !== "document";
+  streamEl.hidden = view !== "history";
+  metaEl.hidden = view !== "meta";
+  if (view === "document") renderDoc();
+  if (view === "meta") renderMeta();
+}
+
+function requestText(thread) {
+  if (!thread) return;
+  const known = docText.get(thread);
+  const t = threads.get(thread);
+  if (known && t && known.version === t.version) return;   // already current
+  send({ type: "text", thread });
+}
+
+// The line range an action touched, if it named one — that is what the document
+// scrolls to and marks when you pick a card. An action with no address (a whole
+// rewrite) marks nothing rather than guessing at one.
+function regionOf(a) {
+  if (!a) return null;
+  let spec = String(a.payload || "").trim();
+  if (spec.startsWith("{")) {
+    try {
+      spec = String(JSON.parse(spec).region || "");
+    } catch (e) {
+      spec = "";
+    }
+  }
+  const m = /^(\d+)(?:-(\d+))?$/.exec(spec);
+  if (!m) return null;
+  const start = parseInt(m[1], 10);
+  return [start, m[2] ? parseInt(m[2], 10) : start];
+}
+
+// The one gate: a version of this document is waiting to be written to a file.
+// Shown on the document itself, mirrored on its card in the history.
+function renderGate() {
+  gateEl.replaceChildren();
+  // Every export waiting on a verdict, whoever's thread it is: a gate nobody can
+  // see is not a gate.
+  const pending = [...actions.values()].filter(
+    (a) => a.state === "awaiting" && a.kind === "export",
+  );
+  if (!pending.length) {
+    gateEl.hidden = true;
+    return;
+  }
+  const a = pending[pending.length - 1];
+  gateEl.hidden = false;
+  const t = threads.get(a.thread);
+  const what = make(
+    "span",
+    "g-what",
+    "write " + a.thread + " v" + (t ? t.version : "?") + " to disk?",
+  );
+  const path = make("span", "g-path", String(a.payload || a.fact || ""));
+  const btns = make("div", "g-btns");
+  const yes = make("button", "accept", "write it");
+  yes.addEventListener("click", () => send({ type: "accept", thread: a.thread, n: a.n }));
+  const no = make("button", "deny", "not now");
+  no.addEventListener("click", () => send({ type: "deny", thread: a.thread, n: a.n }));
+  btns.append(yes, no);
+  const more = pending.length > 1 ? make("span", "g-path", "+" + (pending.length - 1) + " more") : null;
+  gateEl.append(what, path);
+  if (more) gateEl.append(more);
+  gateEl.append(btns);
+}
+
+function renderDoc() {
+  docEl.replaceChildren();
+  if (!focusThread) {
+    docEl.append(
+      make("div", "hint", "pick a thread on the left — its text shows here"),
+    );
+    vnoteEl.textContent = "";
+    return;
+  }
+  const t = threads.get(focusThread);
+  const d = docText.get(focusThread);
+  if (!d) {
+    docEl.append(make("div", "hint", "loading the working copy…"));
+    requestText(focusThread);
+    return;
+  }
+  vnoteEl.textContent =
+    "v" + d.version + " · " + d.lines + " lines" + (t && t.unsaved ? " · unsaved" : "");
+  const hit = selected && selected.thread === focusThread ? regionOf(actions.get(key(focusThread, selected.n))) : null;
+  const lines = d.text.split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const frag = document.createDocumentFragment();
+  lines.forEach((line, i) => {
+    const n = i + 1;
+    const row = make("div", "doc-line" + (hit && n >= hit[0] && n <= hit[1] ? " hit" : ""));
+    row.append(make("span", "ln", String(n)));
+    row.append(make("span", "lt", line));
+    frag.append(row);
+  });
+  docEl.append(frag);
+  if (hit) {
+    const el = docEl.querySelector(".doc-line.hit");
+    if (el) el.scrollIntoView({ block: "center" });
+  }
+}
+
+// A thread nobody has opened since its last action says so — same idiom as a
+// conversation list, because that is what this rail is.
+function unreadOf(id) {
+  const last = seen.get(id) || 0;
+  let count = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.n > last) count += 1;
+  }
+  return count;
+}
+
+function markSeen(id) {
+  const t = threads.get(id);
+  const top = t ? t.version : 0;
+  if ((seen.get(id) || 0) >= top) return;
+  seen.set(id, top);
+  try {
+    localStorage.setItem("fe.seen", JSON.stringify(Object.fromEntries(seen)));
+  } catch (e) {
+    /* a browser that will not keep it just forgets the dots */
+  }
+}
+
+function renderRail() {
+  railEl.replaceChildren();
+  const all = make("button", "rail-row all" + (focusThread === null ? " sel" : ""), "all threads");
+  all.addEventListener("click", () => {
+    focusThread = null;
+    renderRail();
+    renderStream();
+  });
+  railEl.append(all);
   for (const t of threads.values()) {
-    const cls = "chip" +
-      (focusThread === t.id ? " on" : "") +
-      (t.state === "live" ? " live" : "") +
-      (t.unsaved ? " unsaved" : "");
-    const chip = make("button", cls, t.label + " v" + t.version + (t.unsaved ? " •" : ""));
-    chip.title = [
+    const row = make("button", "rail-row" + (focusThread === t.id ? " sel" : ""));
+    row.append(make("span", "t-name", t.label + " v" + t.version));
+    const path = t.path ? t.path.split("/").slice(-2).join("/") : "(blank)";
+    row.append(make("span", "t-path", path));
+    const bits = [];
+    if (t.state !== "live") bits.push(t.state);
+    if (t.unsaved) bits.push("unsaved");
+    const unread = unreadOf(t.id);
+    if (unread) bits.push(unread + " new");
+    if (bits.length) row.append(make("span", "t-meta" + (unread ? " unread" : ""), bits.join(" · ")));
+    if (threadBusy(t.id)) row.append(make("span", "t-dot"));
+    row.title = [
       t.id,
       t.path || "(blank)",
       t.state,
       t.lines + " lines",
       t.exported_to ? ("file has v" + t.exported_at + " → " + t.exported_to) : "nothing written yet",
     ].join(" · ");
-    chip.addEventListener("click", () => selectThread(t.id));
-    chipsEl.append(chip);
+    row.addEventListener("click", () => {
+      focusThread = t.id;
+      markSeen(t.id);
+      requestText(t.id);
+      renderRail();
+      renderStream();
+      renderDoc();
+      renderGate();
+    });
+    railEl.append(row);
   }
 }
 
@@ -499,16 +832,18 @@ function renderDrafts() {
 }
 
 function selectThread(id) {
-  if (focusThread === id) { focusThread = null; renderChips(); return; }
   focusThread = id;
-  renderChips();
-  const t = threads.get(id);
-  if (t && t.version > 0) selectCard(id, t.version);
+  markSeen(id);
+  requestText(id);
+  renderRail();
+  renderStream();
+  renderDoc();
 }
 
 function renderStream() {
   streamEl.replaceChildren();
-  const all = [...actions.values()];
+  const every = [...actions.values()];
+  const all = focusThread ? every.filter((a) => a.thread === focusThread) : every;
   // Only the newest AGED_KEEP cards are drawn; older settled ones fold. A card
   // still awaiting a verdict or still streaming is never folded, however old —
   // it is the one thing in the list that needs someone.
@@ -518,10 +853,24 @@ function renderStream() {
     const foldable = i < cutoff && a.state !== "awaiting" && a.state !== "streaming";
     if (foldable) folded += 1;
     if (foldable && !showEarlier) return;
-    streamEl.append(buildCard(a));
+    const card = buildCard(a);
+    streamEl.append(card);
+    // The open card carries its own content — no separate pane to hunt for.
+    if (selected && selected.thread === a.thread && selected.n === a.n) {
+      card.append(detailEl);
+      renderDetail();
+    }
   });
   if (!all.length) {
-    streamEl.append(make("div", "hint", "no cards yet — the model's actions will stream here"));
+    streamEl.append(
+      make(
+        "div",
+        "hint",
+        focusThread
+          ? "nothing on this thread yet — its actions will stack up here"
+          : "no cards yet — the model's actions will stream here",
+      ),
+    );
   }
   if (!agedEl) {
     agedEl = make("button", "aged-more", "");
@@ -567,16 +916,10 @@ function buildCard(a) {
   return box;
 }
 
-function renderActions(a) {
-  const host = make("div", "actions");
-  const input = make("input");
-  input.placeholder = "ask…";
-  input.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || !input.value.trim()) return;
-    send({ type: "ask", thread: a.thread, n: a.n, text: input.value.trim() });
-    input.value = "";
-  });
-  host.append(input);
+// Talking about a card is talking to me — there is no text box in a card.
+// The card carries the decision it is waiting for, and nothing else.
+function renderActions(a, compact) {
+  const host = make("div", "actions" + (compact ? " compact" : ""));
   for (const act of ["accept", "deny"]) {
     const btn = make("button", act, act);
     btn.addEventListener("click", (e) => {
@@ -598,10 +941,11 @@ function selectCard(thread, n) {
   requestDetail(thread, n);
 }
 
-function openDetail() { detailEl.classList.add("open"); }
+function openDetail() { detailEl.classList.add("has-card"); }
 function closeDetail() {
   selected = null;
-  detailEl.classList.remove("open");
+  detailEl.classList.remove("has-card");
+  renderDetail();
   renderStream();
 }
 
@@ -613,7 +957,12 @@ function requestDetail(thread, n) {
 }
 
 function renderDetail() {
-  if (!selected) return;
+  if (!selected) {
+    detailEl.replaceChildren();
+    detailEl.classList.remove("has-card");
+    return;
+  }
+  detailEl.classList.add("has-card");
   const { thread, n } = selected;
   const a = actions.get(key(thread, n));
   const t = threads.get(thread);
@@ -624,62 +973,28 @@ function renderDetail() {
   const head = make("div", "d-head");
   head.append(make("span", "d-title", (a ? a.label : "") + "  #" + n));
   if (a && a.fact) head.append(make("span", "d-sub", a.fact));
+  const rng = regionOf(a);
+  if (rng) {
+    const jump = make("button", "d-jump", "see in document");
+    jump.title = "show lines " + rng[0] + "–" + rng[1] + " in the document view";
+    jump.addEventListener("click", () => setView("document"));
+    head.append(jump);
+  }
   head.append(make("span", "spacer"));
   const close = make("button", "d-close", "×");
   close.addEventListener("click", closeDetail);
   head.append(close);
   detailEl.append(head);
 
-  // thread — the object this card belongs to. Named inline, with where the file
-  // on disk stands relative to the working copy: an export is a position, and a
-  // thread that has moved past it says so instead of looking finished.
-  if (t) {
-    const dir = make("div", "t-dir");
-    dir.append(make("span", "label", "thread"));
-    dir.append(make("span", "name", t.label));
-    if (t.path) {
-      const path = make("span", "path", t.path);
-      path.title = t.path;
-      dir.append(path);
-    } else {
-      dir.append(make("span", "path", "(not bound to a file yet)"));
-    }
-    detailEl.append(dir);
-
-    const acts = make("div", "t-actions");
-    const state = make("div", "t-state");
-    state.append(make("div", "t-note", "working copy v" + t.version));
-    if (t.exported_to) {
-      state.append(make("div", "t-note", "file has v" + t.exported_at + " → " + t.exported_to));
-    } else {
-      state.append(make("div", "t-note", "nothing written to disk yet"));
-    }
-    if (t.unsaved && t.exported_to) {
-      state.append(make("div", "t-note unsaved", "unsaved changes — the file is behind the working copy"));
-    }
-    acts.append(state);
-    if (t.path && t.state === "live") {
-      const autoAct = make("div", "t-act");
-      const auto = make("button", t.auto ? "on" : "", t.auto ? "auto-export: on" : "auto-export: off");
-      auto.title = "trust this thread — export to its own file without asking";
-      auto.addEventListener("click", () => send({ type: "auto", thread: t.id, auto: !t.auto }));
-      autoAct.append(auto, make("span", "t-note", "write to its file without asking"));
-      acts.append(autoAct);
-    } else if (t.state !== "live") {
-      acts.append(make("div", "t-act", make("span", "t-note", "closed — it takes no more actions")));
-    }
-    detailEl.append(acts);
-  }
-
   const tabs = make("div", "tabs");
-  for (const name of ["effect", "full", "history"]) {
+  for (const name of ["effect", "full"]) {
     const b = make("button", "tab" + (tab === name ? " on" : ""), name);
     b.addEventListener("click", () => { tab = name; renderDetail(); });
     tabs.append(b);
   }
   detailEl.append(tabs);
 
-  if (tab === "history") { renderHistory(thread); return; }
+
 
   const effectLine = make("div", "effect-line");
   effectLine.append(make("b", null, "side effect: "));
@@ -744,9 +1059,18 @@ function onFrame(frame) {
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
       for (const a of frame.actions) upsertAction(a);
       if (frame.drafts) drafts = frame.drafts;
-      renderChips();
+      renderRail();
       renderDrafts();
       renderStream();
+      if (!selected) renderDetail();
+      renderGate();
+      // One thread and nothing picked: it is the only thing to look at.
+      if (focusThread === null && threads.size === 1) {
+        focusThread = [...threads.keys()][0];
+      }
+      if (focusThread) requestText(focusThread);
+      setView(view);
+      renderRail();
       break;
     }
     case "layout": {
@@ -767,7 +1091,7 @@ function onFrame(frame) {
       threadStates.clear();
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
       if (frame.drafts) drafts = frame.drafts;
-      renderChips();
+      renderRail();
       renderDrafts();
       if (changed) renderStream();
       if (selected) renderDetail();
@@ -775,11 +1099,38 @@ function onFrame(frame) {
     }
     case "action": {
       upsertAction(frame);
+      renderGate();
       const a = frame;
+      // Something is happening: give the human the thread it is happening on.
+      // Something is happening: give the human the thread it is happening on.
+      // With nothing picked at all, any action does — an empty page is worse
+      // than a guess they can undo with one click.
+      if (focusThread === null || a.state === "streaming" || a.state === "awaiting") {
+        focusThread = a.thread;
+        markSeen(a.thread);
+        renderRail();
+      }
+      // The working copy moved: the document is stale until told otherwise.
+      if (a.thread === focusThread) {
+        docText.delete(a.thread);
+        if (view === "document") requestText(a.thread);
+        if (view === "meta") renderMeta();
+      } else {
+        renderRail();
+      }
       renderStream();
       if (selected && selected.thread === a.thread && selected.n === a.n) {
         renderDetail();
       }
+      break;
+    }
+    case "text": {
+      docText.set(frame.thread, {
+        version: frame.version,
+        lines: frame.lines,
+        text: frame.text,
+      });
+      if (focusThread === frame.thread && view === "document") renderDoc();
       break;
     }
     case "detail": {

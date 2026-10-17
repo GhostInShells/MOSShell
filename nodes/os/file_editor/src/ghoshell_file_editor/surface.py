@@ -28,6 +28,8 @@ from websockets.asyncio.server import ServerConnection, serve
 from ghoshell_moss.message import Message
 from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
 
+from .structure import line_count
+
 from .projection import action_view, detail_view, snapshot, thread_view
 from .store import DocStore
 
@@ -65,7 +67,9 @@ class FileEditorSurface:
         self._server: Any = None
         self._decided: set[tuple[str, int]] = set()
         self._last: dict[tuple[str, int, str], float] = {}
-        self._layout = "page"
+        # Inline by default: the card opens under itself, inside the list. "page"
+        # is the deliberate exception for reading one card at a time.
+        self._layout = "split"
         self._layout_by = "default"
         self.port = port
 
@@ -159,6 +163,31 @@ class FileEditorSurface:
             )
             return
         await self.broadcast({"type": "detail", **detail_view(target, action)})
+
+    async def _text(self, thread: str) -> None:
+        """Hand the page the working copy itself — what the document view reads.
+
+        Pull, not push: a page asks when it is showing a thread, so a session with
+        ten threads never ships ten documents nobody is looking at. The version
+        rides along so the page can tell "I already have this one" from "this
+        moved" without diffing text.
+        """
+        target = self._store.get(thread)
+        if target is None:
+            await self.broadcast({"type": "error", "text": f"no thread {thread!r}"})
+            return
+        text = target.content
+        if len(text) > 200_000:
+            text = text[:200_000] + "\n… (capped on the page at 200k chars)"
+        await self.broadcast(
+            {
+                "type": "text",
+                "thread": thread,
+                "version": target.version,
+                "lines": line_count(target.content),
+                "text": text,
+            }
+        )
 
     async def _set_thread_auto(self, thread: str, auto: bool) -> None:
         try:
@@ -254,6 +283,8 @@ class FileEditorSurface:
                     await self._ask(thread, n, str(frame.get("text", "")))
                 elif kind == "detail":
                     await self._detail(thread, n)
+                elif kind == "text":
+                    await self._text(thread)
                 elif kind == "auto":
                     await self._set_thread_auto(thread, bool(frame.get("auto")))
                 elif kind == "toggle":
