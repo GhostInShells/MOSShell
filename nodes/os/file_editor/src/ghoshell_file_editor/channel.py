@@ -33,7 +33,15 @@ from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
 
 from .projection import action_view, thread_view
 from .store import DocStore
-from .structure import Action, Thread, change_stat, line_count, slice_region
+from .structure import (
+    REGION_LINES,
+    Action,
+    Thread,
+    change_stat,
+    line_count,
+    region_span,
+    slice_region,
+)
 
 __all__ = ["build_file_editor_channel"]
 
@@ -42,6 +50,34 @@ _READ_EXCERPT = 4000
 only needs to be enough for a human to recognize what was read."""
 
 _READ_LIMIT = 200_000
+
+
+def _size_txt(n: int) -> str:
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} B"
+
+
+def _meta_of(thread: Thread) -> str:
+    """What we will say about a file too big to hand over — facts, then the way in.
+
+    A memory is not a context: holding a 10MB working copy costs bytes, reading it
+    costs the model's whole frame and does not come back. So the first answer for
+    a big file is its shape — size, lines, line endings — and the two moves that
+    actually work on it: search for a line, read a region, edit a region.
+    """
+    text = thread.content
+    endings = "CRLF" if "\r\n" in text else "LF"
+    return (
+        f"[file_editor] {thread.id!r} — {thread.lines} lines · "
+        f"{_size_txt(thread.bytes)} · utf-8, {endings} · not sent whole\n"
+        f"too big to hand over in one frame. Working moves:\n"
+        f"  find(pattern) → line numbers\n"
+        f"  read(region=\"a-b\") → at most {REGION_LINES} lines per call\n"
+        f"  edit(region=\"a-b\") → replace those lines without quoting them back"
+    )
 """Ceiling on the text ``read`` returns, so one command cannot flood a context."""
 
 _LEVELS: dict[str, Priority] = {
@@ -286,10 +322,30 @@ def build_file_editor_channel(
                 f"thread {thread!r} is {target.state} — read the file itself, or "
                 f"open a new thread"
             )
+        if target.big and not region:
+            meta = _meta_of(target)
+            action = store.record(
+                target.id,
+                "read",
+                label or "read meta",
+                text=meta,
+                payload="",
+                fact=f"meta only · {target.lines} lines · {_size_txt(target.bytes)}",
+            )
+            await _card(target, action)
+            return meta
         try:
             text = slice_region(target.content, region)
+            start, end = region_span(target.content, region)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
+        if target.big and end - start + 1 > REGION_LINES:
+            shown = REGION_LINES
+            text = "".join(text.splitlines(keepends=True)[:shown])
+            text += (
+                f"\n… (region capped at {REGION_LINES} lines; lines "
+                f"{start + shown}-{end} not sent — narrow the region)"
+            )
         excerpt = text[:_READ_EXCERPT]
         if len(text) > _READ_EXCERPT:
             excerpt += "\n… (truncated on the card)"
@@ -308,6 +364,75 @@ def build_file_editor_channel(
                 f"region for the rest)"
             )
         return text
+
+    @chan.build.command(name="find", always_observe=True, available=enabled)
+    async def find(
+        thread: str,
+        pattern: str,
+        region: str = "",
+        limit: int = 40,
+        ignore_case: bool = False,
+        label: str = "",
+    ) -> str:
+        """Search the working copy and get line numbers — not the text.
+
+        The register to read a long file by: search for what you know, then read or
+        edit the region the match names. Line numbers are the coordinate every
+        other move accepts, which is why this returns them instead of excerpts.
+
+        ``pattern`` is a regular expression; ``region`` narrows the search the same
+        way ``read`` does; ``limit`` caps how many matches are listed (``total``
+        still counts them all). ``label`` is the card's title.
+        """
+        target = _get_thread(thread)
+        try:
+            found = store.find(
+                target.id, pattern, region=region, limit=limit, ignore_case=ignore_case
+            )
+        except (KeyError, ValueError) as e:
+            CommandUtil.raise_observe(str(e))
+        rows = [
+            f"{m['line']}:{m['col']}  {m['text']}" for m in found["matches"]
+        ]
+        body = "\n".join(rows) if rows else "(no matches)"
+        action = store.record(
+            target.id,
+            "find",
+            label or f"find {pattern[:40]}",
+            text=body,
+            payload=pattern,
+            fact=f"{found['total']} match(es), {found['shown']} shown · {found['lines']} lines",
+        )
+        await _card(target, action)
+        return (
+            f"[{name}] {thread!r} — {found['total']} match(es) in "
+            f"{found['lines']} lines\n{body}"
+        )
+
+    @chan.build.command(name="edit", always_observe=False, available=enabled)
+    async def edit(thread: str, region: str, text__: str = "", label: str = "") -> str:
+        """Replace the lines a region names — the edit that follows a ``find``.
+
+        ``str_replace`` asks you to quote what you are replacing, which is fine for
+        a paragraph and hostile for a long file: one wrong character and the edit
+        does not land. A region replaces by address instead. ``text__`` is the new
+        body for those lines; an empty body deletes them. ``label`` is the card's
+        title — say why the lines are going.
+        """
+        target = _get_thread(thread)
+        try:
+            action = store.edit_region(
+                target.id, region, text__, label or f"edit {region}"
+            )
+        except (KeyError, ValueError) as e:
+            CommandUtil.raise_observe(str(e))
+        action.fact = change_stat(action.effect)
+        await _card(target, action)
+        await _threads()
+        return (
+            f"[{name}] {thread!r} v{target.version} — {action.fact}, "
+            f"{line_count(target.content)} lines"
+        )
 
     # -- mutations ----------------------------------------------------------
 

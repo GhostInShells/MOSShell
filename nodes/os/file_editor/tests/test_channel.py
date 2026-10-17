@@ -273,3 +273,66 @@ async def test_a_card_carries_the_motive_and_the_mechanics(store):
         # an edit's fact is the size of the change, known only once it lands
         edit = [f for f in rec.of("action") if f["kind"] == "write"][-1]
         assert edit["fact"] == "+2 lines"
+
+
+@pytest.mark.asyncio
+async def test_a_big_file_reads_as_metadata_not_text(store):
+    """Past the threshold, the first answer is the file's shape, not its body.
+
+    A working copy that is only held costs bytes; one that is read costs the
+    model's whole frame, and a frame blown by a huge log does not come back. So
+    read() reports size / lines / endings and the three moves that work.
+    """
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command(
+            "append", args=("t", chunks(["line %d\n" % i for i in range(2500)]))
+        )
+        out = await runtime.execute_command("read", args=("t",))
+        assert out.startswith("[file_editor]"), out[:80]
+        assert "2500 lines" in out
+        assert "find(" in out and 'read(region="a-b")' in out
+        assert "line 2499" not in out, "the body must not be pasted into the frame"
+
+
+@pytest.mark.asyncio
+async def test_a_region_read_on_a_big_file_is_capped(store):
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command(
+            "append", args=("t", chunks(["line %d\n" % i for i in range(2500)]))
+        )
+        out = await runtime.execute_command("read", args=("t",), kwargs={"region": "1-900"})
+        assert "region capped" in out
+        assert "line 0" in out and "line 899" not in out
+
+
+@pytest.mark.asyncio
+async def test_find_returns_line_numbers_not_excerpts(store):
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command(
+            "append", args=("t", chunks(["alpha\n", "beta needle\n", "gamma\n"]))
+        )
+        out = await runtime.execute_command("find", args=("t", "needle"))
+        assert "2:" in out and "beta needle" in out
+        assert "1 match" in out
+        assert rec.of("action")[-1]["kind"] == "find"
+
+
+@pytest.mark.asyncio
+async def test_edit_replaces_the_named_lines_without_quoting_them(store):
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command(
+            "append", args=("t", chunks(["one\n", "two\n", "three\n"]))
+        )
+        await runtime.execute_command(
+            "edit", args=("t", "2-2"), kwargs={"text__": "TWO\n", "label": "rename two"}
+        )
+        assert store.get("t").content == "one\nTWO\nthree\n"
+        assert rec.of("action")[-1]["kind"] == "edit"

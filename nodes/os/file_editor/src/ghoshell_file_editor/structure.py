@@ -29,10 +29,10 @@ Author = Literal["g", "u"]
 """``g`` = ghost (the model), ``u`` = the human."""
 
 Kind = Literal[
-    "read", "write", "str_replace", "append", "rewind", "export"
+    "read", "find", "write", "edit", "str_replace", "append", "rewind", "export"
 ]
-"""What an action does. ``read`` changes nothing; ``export`` is the only kind
-that reaches the disk."""
+"""What an action does. ``read`` and ``find`` change nothing; ``export`` is the
+only kind that reaches the disk."""
 
 ActionState = Literal[
     "streaming", "applied", "awaiting", "written", "rejected", "failed",
@@ -54,6 +54,8 @@ STREAMING_KINDS: frozenset[str] = frozenset({"write", "append"})
 
 SIDE_EFFECTS: dict[str, str] = {
     "read": "none — read only",
+    "find": "none — searched only",
+    "edit": "in-memory only — working copy edited",
     "write": "in-memory only — working copy replaced",
     "str_replace": "in-memory only — working copy edited",
     "append": "in-memory only — working copy appended",
@@ -163,6 +165,14 @@ class Thread:
 
     actions: list[Action] = field(default_factory=list)
     created: float = field(default_factory=time.time)
+    bytes: int = 0
+    """Size of the baseline as it was read — a fact about the file, not the copy."""
+    lines: int = 0
+
+    @property
+    def big(self) -> bool:
+        """Past the threshold where handing the text over whole would be a mistake."""
+        return self.lines > BIG_LINES or self.bytes > BIG_BYTES
 
     @property
     def unsaved(self) -> bool:
@@ -313,8 +323,65 @@ def change_stat(effect: Effect | None) -> str:
     return (" ".join(parts) + " lines") if parts else "no change"
 
 
+BIG_LINES = 2000
+BIG_BYTES = 256 * 1024
+REGION_LINES = 300
+"""How big is too big to hand over whole.
+
+A working copy that is only *held* costs memory; one that is *read* costs the
+model's context, and a context blown by a 10MB log is not recoverable. So a file
+past either line here is opened as usual but read as metadata, by region, with a
+ceiling of ``REGION_LINES`` per call.
+"""
+
+
 def line_count(text: str) -> int:
     return len(text.splitlines())
+
+
+def is_big(text: str) -> bool:
+    return line_count(text) > BIG_LINES or len(text.encode("utf-8")) > BIG_BYTES
+
+
+def region_span(text: str, region: str) -> tuple[int, int]:
+    """Resolve ``"start-end"`` (1-based, inclusive) to a pair of line numbers.
+
+    Empty region = the whole text. Same parsing as :func:`slice_region`, exposed
+    because an edit needs to know *which* lines it replaces, not only the text.
+    """
+    lines = text.splitlines(keepends=True)
+    if not region.strip():
+        return 1, max(1, len(lines))
+    spec = region.strip()
+    if "-" in spec:
+        head, _, tail = spec.partition("-")
+        start_s, end_s = head, tail
+    else:
+        start_s = end_s = spec
+    try:
+        start = int(start_s)
+        end = int(end_s) if end_s.strip() else start
+    except ValueError:
+        raise ValueError(f"region must look like 'start-end', got {region!r}")
+    if start < 1 or end < start or end > len(lines):
+        raise ValueError(f"region {region!r} is outside the text ({len(lines)} lines)")
+    return start, end
+
+
+def replace_region(text: str, region: str, new: str) -> str:
+    """Swap the lines a region names for ``new``.
+
+    Line-addressed editing is the counterpart to ``str_replace``: once a search
+    has told you *where* something is, replacing those lines should not require
+    quoting them back. ``new`` replaces the span whole; give it the empty string
+    to delete the lines.
+    """
+    start, end = region_span(text, region)
+    lines = text.splitlines(keepends=True)
+    body = new if new.endswith("\n") or not new else new + "\n"
+    if end == len(lines) and not text.endswith(("\n", "")):
+        body = body[:-1] if body.endswith("\n") else body
+    return "".join(lines[: start - 1]) + body + "".join(lines[end:])
 
 
 def slice_region(text: str, region: str) -> str:

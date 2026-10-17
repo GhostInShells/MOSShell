@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import tempfile
 import time
@@ -43,7 +44,10 @@ from .structure import (
     Thread,
     content_at,
     effect_of,
+    line_count,
+    region_span,
     replace_once,
+    replace_region,
 )
 
 __all__ = ["DocStore"]
@@ -185,6 +189,8 @@ class DocStore:
             path=path,
             base=base,
             draft=draft_name or self._new_draft_name(thread_id),
+            bytes=len(base.encode("utf-8")),
+            lines=line_count(base),
         )
         self._threads[thread_id] = thread
         self._mirror(thread)
@@ -193,14 +199,17 @@ class DocStore:
         return thread
 
     def close(self, thread_id: str) -> Thread:
-        """Abandon a thread: drop the working copy, touch no file.
+        """Abandon a thread: it stops being editable and touches no file.
 
-        The line stays in memory for the human's traceability — it is reclaimed
-        only when ended threads outgrow the reclamation window (see
-        :meth:`_trim_ended`), never in a way the human has to notice.
+        When the working copy has moved past what is on disk, its draft is kept
+        instead of deleted — closing is "I am done with this thread", not "throw
+        the text away". The draft turns up as an unclaimed copy in the notice
+        and can be reopened with ``open(draft=...)``; the TTL sweep still clears
+        it eventually, so nothing leaks forever. A clean copy is dropped.
         """
         thread = self._require(thread_id)
-        self._unlink_draft(thread)
+        if not thread.unsaved:
+            self._unlink_draft(thread)
         thread.state = "closed"
         self._forget_verdicts(thread_id)
         self._trim_ended()
@@ -409,6 +418,81 @@ class DocStore:
         self._mirror(thread)
         return out
 
+    def find(
+        self,
+        thread_id: str,
+        pattern: str,
+        *,
+        region: str = "",
+        limit: int = 50,
+        ignore_case: bool = False,
+    ) -> dict:
+        """Search the working copy and report *where* the matches are.
+
+        Line numbers, not text: every next move accepts them — ``read(region=)``,
+        ``edit(region=)``, ``rewind`` — so a search is what lets a long file be
+        worked on without ever being read whole. ``total`` counts every match in
+        the range; ``shown`` honours ``limit``.
+        """
+        thread = self._require(thread_id)
+        text = thread.content
+        lines = text.splitlines()
+        if region:
+            start, end = region_span(text, region)
+        else:
+            start, end = 1, max(1, len(lines))
+        flags = re.IGNORECASE if ignore_case else 0
+        try:
+            rx = re.compile(pattern, flags)
+        except re.error as e:
+            raise ValueError(f"pattern is not a valid regular expression: {e}")
+        hits: list[dict] = []
+        total = 0
+        for i in range(start - 1, min(end, len(lines))):
+            line = lines[i]
+            m = rx.search(line)
+            if not m:
+                continue
+            total += 1
+            if len(hits) < limit:
+                hits.append(
+                    {"line": i + 1, "col": m.start() + 1, "text": line[:400]}
+                )
+        return {"matches": hits, "total": total, "shown": len(hits), "lines": len(lines)}
+
+    def edit_region(
+        self,
+        thread_id: str,
+        region: str,
+        new: str,
+        label: str = "",
+        author: Author = "g",
+        fact: str = "",
+    ) -> Action:
+        """Replace the lines a region names — the edit that follows a search.
+
+        ``str_replace`` asks the model to quote what it is replacing, which is
+        fine for a paragraph and hostile for a 4000-line file: one wrong
+        character in the quote and the edit does not land. A region replaces by
+        address instead, so the same file can be edited after a ``find`` without
+        being quoted back.
+        """
+        thread = self._require_live(thread_id)
+        before = thread.content
+        after = replace_region(before, region, new)
+        action = self._add(
+            thread,
+            "edit",
+            label,
+            author,
+            text=new,
+            payload=json.dumps({"region": region}, ensure_ascii=False),
+            fact=fact,
+        )
+        action.effect = effect_of(before, after)
+        self._mirror(thread)
+        return action
+
     def rewind(
         self,
         thread_id: str,
@@ -511,7 +595,15 @@ class DocStore:
         return self._drafts_dir / thread.draft
 
     def _mirror(self, thread: Thread) -> None:
-        """Rewrite the working copy. Small files, sync write, crash net."""
+        """Rewrite the working copy. Small files, sync write, crash net.
+
+        Also refreshes the thread's size facts: ``big`` has to follow the content
+        as it grows, not the baseline it was opened from — a blank thread that
+        receives 2500 lines is a big file by the time anyone reads it.
+        """
+        text = thread.content
+        thread.bytes = len(text.encode("utf-8"))
+        thread.lines = line_count(text)
         if not thread.draft:
             return
         path = self.draft_path(thread)
@@ -530,7 +622,9 @@ class DocStore:
         """Draft files no live thread owns — work a crash left behind."""
         if not self._drafts_dir.is_dir():
             return []
-        owned = {t.draft for t in self._threads.values() if t.draft}
+        # Only a *live* thread owns its copy: a closed one has let go of it, which
+        # is what makes closing-with-unsaved-work recoverable instead of fatal.
+        owned = {t.draft for t in self._threads.values() if t.draft and t.live}
         return sorted(
             p.name
             for p in self._drafts_dir.iterdir()

@@ -135,7 +135,12 @@ def test_read_record_has_no_effect(store):
     assert store.get("t").version == 1  # a read does not move the version
 
 
-def test_close_abandons_the_working_copy(store):
+def test_close_keeps_an_unsaved_working_copy_recoverable(store):
+    """Closing says "I am done with this thread", not "throw the text away".
+
+    An unsaved copy stays in the drafts directory, where the notice lists it and
+    ``open(draft=...)`` can pick it up; a copy that matches the disk is dropped.
+    """
     store.open("t", "doc")
     _append(store, "t", "x\n")
     t = store.get("t")
@@ -144,7 +149,18 @@ def test_close_abandons_the_working_copy(store):
     store.close("t")
     assert t.state == "closed"
     assert t.content == "x\n"  # the line stays traceable; reclamation is separate
-    assert not draft.exists()
+    assert draft.exists(), "unsaved work survives a close"
+    assert draft.name in store.orphans()
+
+
+def test_close_drops_a_copy_that_matches_the_disk(store):
+    store.open("t", "doc")
+    _append(store, "t", "x\n")
+    t = store.get("t")
+    store.note_export("t", "/tmp/out.txt", t.version)
+    draft = store.drafts_dir / t.draft
+    store.close("t")
+    assert not draft.exists(), "a clean copy leaves nothing behind"
 
 
 def test_an_export_records_a_position_and_leaves_the_thread_live(store):
