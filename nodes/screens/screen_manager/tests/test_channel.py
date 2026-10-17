@@ -477,3 +477,88 @@ async def test_a_numeric_handle_reaches_the_store_as_a_string():
         assert rec.of("focus")[-1]["id"] == a
         await runtime.execute_command("dismiss", args=(int(a),))
         assert rec.of("state"), "dismiss on a numeric handle must reach the store"
+
+
+class _FakeClauses:
+    """Stands in for the ClauseTopic feed: records the handler it was given."""
+
+    def __init__(self) -> None:
+        self.running = False
+        self.handler = None
+
+    async def start(self, on_clause):
+        self.running = True
+        self.handler = on_clause
+
+    async def stop(self):
+        self.running = False
+
+
+class _Clause:
+    def __init__(self, text, role):
+        self.text = text
+        self.role = role
+
+
+@pytest.mark.asyncio
+async def test_stage_talk_mirrors_the_conversation_legibly():
+    """One flag, three values, two shapes.
+
+    His sentences stack at the bottom — reading order matters, and a line that
+    flies shows its tail first. Mine fly in from the right. `stage` is one command
+    with flags rather than a verb per thing the stage can show.
+    """
+    rec = Recorder()
+    feed = _FakeClauses()
+    chan = build_screen_channel(
+        ScreenModel(), surface=rec, audio=MockAudioSource(), clauses=feed
+    )
+
+    async with chan.bootstrap() as runtime:
+        assert "talk=off" in await runtime.execute_command("stage")
+        assert not feed.running
+
+        assert "talk=both" in await runtime.execute_command(
+            "stage", kwargs={"talk": "both"}
+        )
+        assert feed.running
+
+        await feed.handler(_Clause("你好，老莫", "user"))
+        talk = rec.of("talk")
+        assert talk and talk[-1]["text"] == "你好，老莫"
+        assert talk[-1]["role"] == "user"
+
+        task = asyncio.ensure_future(feed.handler(_Clause("我在", "ghost")))
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if rec.of("veil"):
+                break
+        task.cancel()
+
+        await runtime.execute_command("stage", kwargs={"talk": "off"})
+    assert not feed.running
+
+    bullets = [f for f in rec.of("veil") if f.get("gesture") == "danmaku"]
+    assert [b["content"] for b in bullets] == ["我在"]
+    assert bullets[0]["motion"] == "rtl", "mine fly in from the right"
+
+
+@pytest.mark.asyncio
+async def test_stage_talk_ghost_mode_leaves_his_words_out():
+    """The value to use when the screen is going out to an audience: his words are
+    not mine to broadcast."""
+    rec = Recorder()
+    feed = _FakeClauses()
+    chan = build_screen_channel(
+        ScreenModel(), surface=rec, audio=MockAudioSource(), clauses=feed
+    )
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("stage", kwargs={"talk": "ghost"})
+        await feed.handler(_Clause("他说的这句", "user"))
+        rejected = None
+        try:
+            await runtime.execute_command("stage", kwargs={"talk": "only-mine"})
+        except Exception as e:  # noqa: BLE001 — the receipt is the assertion
+            rejected = str(e)
+    assert rec.of("talk") == []
+    assert rejected and "off / both / ghost" in rejected

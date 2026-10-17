@@ -46,6 +46,7 @@ from ghoshell_screen_manager.audio import (  # noqa: E402
     TopicAudioSource,
 )
 from ghoshell_screen_manager.bridge import WebViewBridge  # noqa: E402
+from ghoshell_screen_manager.clauses import TopicClauseFeed  # noqa: E402
 from ghoshell_screen_manager.channel import build_screen_channel  # noqa: E402
 from ghoshell_screen_manager.model import ScreenModel  # noqa: E402
 from ghoshell_screen_manager.surface import ScreenSurface  # noqa: E402
@@ -95,6 +96,10 @@ async def main(matrix: Matrix) -> None:
     # The live bus is the default: the background is driven by real speech, and
     # speech arriving *is* the switch. ``--mock-audio`` is the demo/headless escape.
     audio: AudioSource
+    # The stage's ear on the conversation: the same bus that carries the audio
+    # samples carries every finished clause. Subscribed only when stage(talk=...)
+    # asks for it — see the channel's `stage` command.
+    clauses = TopicClauseFeed(matrix.session.topics)
     if wants_mock_audio():
         audio = MockAudioSource()
         print("[webview_screen] audio: mock (--mock-audio)", flush=True)
@@ -144,6 +149,7 @@ async def main(matrix: Matrix) -> None:
         model,
         surface=surface,
         audio=audio,
+        clauses=clauses,
         surface_url=lambda: surface.url,
     )
     await matrix.provide_channel(channel)

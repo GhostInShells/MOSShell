@@ -30,6 +30,33 @@
   #stage    { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 4; }
   #scrim    { position: fixed; inset: 0; z-index: 3; display: none; background: rgba(0,0,0,.55); }
   #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }  /* 按钮必须在页面之上 */
+  /* The conversation, legibly: one line per clause, newest at the bottom, pushed
+     up by the next. Reading order is the whole point — a line that flies across
+     shows its tail first, which is fine for a comment feed and wrong for a
+     dialogue. Above the veil (z 7) so nothing drawn can bury it. */
+  #talk {
+    /* Clear of the rail (--rail-w follows its collapsed state) and centred: this
+       is subtitles, not a left-aligned log. */
+    position: fixed; left: calc(var(--rail-w) + 24px); bottom: 26px; right: 24px;
+    z-index: 8; pointer-events: none; display: flex; flex-direction: column;
+    gap: 3px; align-items: center; font-size: 24px; line-height: 1.32;
+    /* The page never declares a font, so subtitles inherited the browser default
+       and read like a scarecrow. A clean sans, sized for reading off a stream. */
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+      "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    font-weight: 600; letter-spacing: .02em;
+  }
+  /* Yellow on black outliner: the broadcast convention, and the one style that
+     survives whatever is underneath. Fixed on purpose — a knob here would only be
+     something else to get wrong; a second case earns a second style. */
+  #talk .line {
+    max-width: 80%; padding: 1px 10px; border-radius: 3px; text-align: center;
+    background: rgba(6, 8, 7, .55); color: #ffd24a; white-space: pre-wrap;
+    -webkit-text-stroke: 1px rgba(0, 0, 0, .9);
+    text-shadow: 0 2px 3px rgba(0, 0, 0, .85);
+    animation: talk-in .16s ease-out;
+  }
+  @keyframes talk-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
   #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
   /* 遮罩：不是当前屏的页面留在这一层 —— 它仍连着线，但只有一句话和一个按钮。
      为什么需要它：同一个 url 可以开在很多标签里，而每个标签的窗口尺寸不同；
@@ -301,6 +328,7 @@
 <div id="stage"></div>
 <div id="scrim"><button id="scrim-exit">✕ exit fullscreen</button></div>
 <canvas id="veil"></canvas>
+<div id="talk" aria-live="polite"></div>
 <div id="mask"><div id="mask-box">
   <p id="mask-line">another window is the screen</p>
   <button id="mask-claim">use this window</button>
@@ -969,7 +997,7 @@ function danmakuLane(key, lanes, want, now, busyMs) {
   return { li: li, startAt: startAt };
 }
 
-function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns, atX, atY, angle, region) {
+function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns, atX, atY, angle, region, overlap) {
   const font = 'bold ' + size + 'px ui-monospace, monospace';
   vctx.font = font;
   const tw = vctx.measureText(content).width;
@@ -990,7 +1018,12 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns,
   const pinned = (typeof atX === 'number' && typeof atY === 'number'
                   && atX >= 0 && atY >= 0);
   let slot = { li: 0, startAt: now };
-  if (!pinned) {
+  if (overlap) {
+    // A conversation overlaps itself: pick a lane at random and go now, rather
+    // than waiting for one to free up. Readability is not the point here; being
+    // in step with the voice is.
+    slot = { li: Math.floor(Math.random() * lanes), startAt: now };
+  } else if (!pinned) {
     const key = (item || 'stage') + '|' + (region || '-') + '|' +
                 Math.round(h0) + '|' + Math.round(size);
     slot = danmakuLane(key, lanes, lane, now, hold ? 1e9 : travel);
@@ -1998,6 +2031,18 @@ function renderRail() {
 
 function route(f) {
   switch (f.type) {
+    // The conversation itself: one line per clause, newest at the bottom.
+    case 'talk': {
+      const box = document.getElementById('talk');
+      if (!box) break;
+      const line = document.createElement('div');
+      line.className = 'line';
+      line.textContent = f.text || '';
+      box.append(line);
+      while (box.children.length > 8) box.firstElementChild.remove();
+      setTimeout(() => line.remove(), 18000);
+      break;
+    }
     case 'current': setMasked(false, ''); break;
     case 'mask': setMasked(true, f.reason); break;
     case 'snapshot': {
@@ -2065,7 +2110,7 @@ function route(f) {
       } else if (f.gesture === 'danmaku') {
         veilDanmaku(id, f.content || '', f.motion || '', d, f.color,
                     f.size || 30, f.lane || 0, f.item || '', f.turns || 1,
-                    f.at_x, f.at_y, f.angle || 0, f.region || '');
+                    f.at_x, f.at_y, f.angle || 0, f.region || '', !!f.overlap);
       } else if (f.gesture === 'paint') veilPaint(id, f.script || '', f.item || '', d, f.color);
       else if (f.gesture === 'remove') removeBlock(id);
       else if (f.gesture === 'clear') veilBlocks.clear();

@@ -23,7 +23,7 @@ import itertools
 import json
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
@@ -35,6 +35,15 @@ from .mock import demo_items
 from .model import ScreenModel, compute_layout
 
 __all__ = ["build_screen_channel"]
+
+
+class _ClauseFeed(Protocol):
+    """Whatever the node wires to the bus — the stage's ear on the conversation."""
+
+    @property
+    def running(self) -> bool: ...
+    async def start(self, on_clause: Callable[[Any], Awaitable[None]]) -> None: ...
+    async def stop(self) -> None: ...
 
 
 class _Surface(Protocol):
@@ -95,6 +104,7 @@ def build_screen_channel(
     *,
     surface: _Surface | None = None,
     audio: AudioSource | None = None,
+    clauses: "_ClauseFeed | None" = None,
     surface_url: str | Callable[[], str] | None = None,
     name: str = "webview_screen",
     description: str | None = None,
@@ -104,6 +114,8 @@ def build_screen_channel(
     :param model: window state — the single source of truth, shared with the surface.
     :param surface: the web broadcaster. None = headless (tests).
     :param audio: the audio source the mock commands drive. None = no audio knob.
+    :param clauses: the conversation feed (``ClauseTopic`` in). None = the stage
+        cannot mirror the conversation, so ``stage`` stays off and says so.
     :param surface_url: where the human surface lives, surfaced as a warm notice
         fragment so the model can discover it without a fixed port. May be a
         callable (resolved lazily, after the surface binds its ephemeral port).
@@ -389,7 +401,8 @@ def build_screen_channel(
                             color: str = "", size: float = 30, lane: int = 0,
                             item: str = "", turns: float = 1.0,
                             at_x: float = -1.0, at_y: float = -1.0,
-                            angle: float = 0.0, region: str = "") -> str:
+                            angle: float = 0.0, region: str = "",
+                            overlap: bool = False) -> str:
         """Validate one bullet and put it on the veil.
 
         Shared by the ``danmaku`` command and by ``__content__``: the checks and the
@@ -423,7 +436,8 @@ def build_screen_channel(
             item = _require(item)
         await _gesture("danmaku", duration, content=content, motion=motion,
                        color=color, size=size, lane=lane, item=item, turns=turns,
-                       at_x=at_x, at_y=at_y, angle=angle, region=region)
+                       at_x=at_x, at_y=at_y, angle=angle, region=region,
+                       overlap=overlap)
         tail = f"#{item}" if item else "stage"
         pinned = at_x >= 0
         where = f"at {at_x:.2f},{at_y:.2f}" if pinned else f"{motion} lane={lane or 'auto'}"
@@ -433,6 +447,75 @@ def build_screen_channel(
             where = f"{where} in {region}"
         return (f"[screen] danmaku @{tail} {where} "
                 f"({_dur_txt(duration)}) — {content[:24]}")
+
+    # -- what the stage mirrors ----------------------------------------------
+
+    # One command, flags growing over time: every new thing the stage can show
+    # arrives as a flag here, not as another verb.
+    # ``talk`` is one flag with three values, not two booleans: two booleans would
+    # encode "his but not mine", which nobody wants, and one meaningless pair.
+    stage_flags: dict[str, str] = {"talk": "off"}
+    _live_bullets: set[asyncio.Task] = set()
+
+    async def _on_clause(clause: Any) -> None:
+        """A finished sentence, mirrored onto the stage — legibly.
+
+        Two shapes, because the two sides want different things. His sentences
+        stack at the bottom, newest under the last, because reading order matters
+        and a sentence that flies across shows its tail first. Mine fly in from the
+        right: shorter, and watching them arrive is part of seeing me talk.
+        """
+        text = str(getattr(clause, "text", "") or "").strip()
+        mode = stage_flags["talk"]
+        if not text or mode == "off":
+            return
+        role = str(getattr(clause, "role", "") or "")
+        # "ghost" mirrors only my own speech — the mode for a stage that goes out
+        # to an audience, where the other side's words are not mine to broadcast.
+        if mode == "ghost" and role != "ghost":
+            return
+        if role == "ghost":
+            # Fired, not awaited: a bullet lives seconds, and a mirror that awaits
+            # each one makes every later sentence arrive seconds late.
+            bullet = asyncio.create_task(_send_danmaku(
+                text, duration=8.0, motion="rtl", size=26, overlap=True,
+            ))
+            _live_bullets.add(bullet)
+            bullet.add_done_callback(_live_bullets.discard)
+            return
+        await _emit({"type": "talk", "text": text, "role": role or "user"})
+
+    @chan.build.command(name="stage")
+    async def stage(talk: str | None = None) -> str:
+        """What the stage mirrors of the conversation itself.
+
+        ``talk`` mirrors the conversation itself as danmaku, in three values:
+        ``off`` (default — a stage that narrates everything is worse than one that
+        says nothing), ``both`` (his sentences enter from the left, mine leave to
+        the right), or ``ghost`` (mine only — the value to use when the screen is
+        going out to an audience, because then his words are not mine to broadcast).
+
+        Empty = read the flags back. More flags land here as the stage learns to
+        show more; they arrive as arguments, never as new commands.
+        """
+        if talk is not None:
+            mode = str(talk).strip().lower()
+            if mode not in ("off", "both", "ghost"):
+                CommandUtil.raise_observe(
+                    f"talk must be off / both / ghost, got {talk!r}"
+                )
+            if clauses is None:
+                CommandUtil.raise_observe(
+                    "no conversation feed is wired on this node — stage(talk) needs "
+                    "the ClauseTopic subscription"
+                )
+            if mode != "off" and not clauses.running:
+                await clauses.start(_on_clause)
+            elif mode == "off" and clauses.running:
+                await clauses.stop()
+            stage_flags["talk"] = mode
+        shown = ", ".join(f"{k}={v}" for k, v in stage_flags.items())
+        return f"[{name}] stage: {shown}"
 
     @chan.build.command(name="mark", blocking=False)
     async def mark(item: str, region: str = "full", duration: float = 2.0,
@@ -526,7 +609,8 @@ def build_screen_channel(
                       color: str = "", size: float = 30, lane: int = 0,
                       item: str = "", turns: float = 1.0,
                       at_x: float = -1.0, at_y: float = -1.0,
-                      angle: float = 0.0, region: str = "") -> str:
+                      angle: float = 0.0, region: str = "",
+                      overlap: bool = False) -> str:
         """Send one line of text flying across the screen — a danmaku bullet.
 
         Not a caption: a line with a direction, a lane and its own time slice.
@@ -561,7 +645,7 @@ def build_screen_channel(
         return await _send_danmaku(
             content, duration=duration, motion=motion, color=color, size=size,
             lane=lane, item=item, turns=turns, at_x=at_x, at_y=at_y,
-            angle=angle, region=region,
+            angle=angle, region=region, overlap=overlap,
         )
 
     # 走普通 command 而不是 content_command: 后者把 interface 固定成
