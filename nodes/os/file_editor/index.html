@@ -152,6 +152,10 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
   .rail-row .t-meta { grid-column: 1 / -1; font-size: var(--fs-small); color: var(--wait); }
   .rail-row .t-meta.unread { color: var(--accent); font-weight: 600; }
+  /* The one colour that means "you": orange is a card waiting for a verdict.
+     Blue is only "something changed since you looked" — read it or don't. */
+  .rail-row .t-meta.waits { color: var(--wait); font-weight: 600; }
+  .rail-row .t-meta.quiet { color: var(--dim); }
   .rail-row.sel .t-meta.unread { color: var(--accent); }
   .rail-row .t-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--run);
     align-self: center; animation: pulse 1.4s ease-in-out infinite; }
@@ -190,6 +194,20 @@
   }
   .gate button.accept { color: var(--run); border-color: var(--run); }
   .gate button.deny { color: var(--dim); }
+  /* "What changed while you were looking elsewhere": the rail answers it when it
+     is open, and this answers it when it is not. */
+  .digest { display: flex; align-items: baseline; gap: 8px; padding: 5px 16px;
+    background: #2a2a18; border-bottom: 1px solid var(--line); color: var(--wait);
+    font-size: var(--fs-small); cursor: pointer; flex: none; }
+  .digest:hover { color: var(--accent); }
+  .digest[hidden] { display: none; }
+  /* The drawer's closed state still has to answer "did anything happen" — the
+     count rides the handle that opens it. */
+  .rail-handle[data-count]::after {
+    content: attr(data-count); position: absolute; top: 46%; right: -3px;
+    background: var(--accent); color: #10131a; border-radius: 8px;
+    font-size: 10px; line-height: 12px; padding: 0 3px; font-weight: 600;
+  }
   .doc { flex: 1; min-height: 0; overflow: auto; padding: 10px 0 40px; }
   .doc-line { display: grid; grid-template-columns: 56px 1fr; white-space: pre-wrap;
     word-break: break-word; padding: 0 14px; }
@@ -400,6 +418,7 @@
       <span class="spacer"></span>
       <span class="vnote" id="vnote"></span>
     </div>
+    <div class="digest" id="digest" hidden></div>
     <div class="gate" id="gate" hidden></div>
     <section class="doc" id="doc"></section>
     <section class="stream" id="stream" hidden></section>
@@ -568,6 +587,12 @@ trustGlobalEl.addEventListener("click", () =>
   send({ type: "global_trust", on: !globalTrust }),
 );
 renderTrust();
+
+document.getElementById("digest").addEventListener("click", () => {
+  viewBase = { id: viewBase.id, n: topActionOf(viewBase.id) };
+  renderDigest();
+  setView("history");
+});
 
 document.getElementById("vtab-doc").addEventListener("click", () => {
   setView("document");
@@ -758,6 +783,14 @@ function removeThreadCards(thread) {
 // where it points, which version it is at, whether the file is behind it, and
 // whether it is doing something right now. The selected row is the one the card
 // list below is showing; "all threads" is the unfiltered view.
+function awaitingOf(id) {
+  let count = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.state === "awaiting") count += 1;
+  }
+  return count;
+}
+
 function threadBusy(id) {
   for (const a of actions.values()) {
     if (a.thread === id && (a.state === "streaming" || a.state === "awaiting")) return true;
@@ -897,6 +930,38 @@ function unreadOf(id) {
   return count;
 }
 
+function topActionOf(id) {
+  let top = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.n > top) top = a.n;
+  }
+  return top;
+}
+
+// What the open document has gained since this reader started looking at it. The
+// rail's `seen` mark answers "anything new in here?"; this answers "what changed
+// while I was reading", which is a different question and needs its own baseline.
+let viewBase = { id: null, n: 0 };
+
+function digestCount() {
+  if (!viewBase.id) return 0;
+  let count = 0;
+  for (const a of actions.values()) {
+    if (a.thread === viewBase.id && a.n > viewBase.n) count += 1;
+  }
+  return count;
+}
+
+function renderDigest() {
+  const el = document.getElementById("digest");
+  if (!el) return;
+  const count = digestCount();
+  el.hidden = count === 0;
+  if (!count) return;
+  el.textContent = count + " change" + (count > 1 ? "s" : "") +
+    " since you started reading this — click for the cards";
+}
+
 function markSeen(id) {
   let top = 0;
   for (const a of actions.values()) {
@@ -904,6 +969,7 @@ function markSeen(id) {
   }
   if ((seen.get(id) || 0) >= top) return;
   seen.set(id, top);
+  renderUnreadBadge();
   try {
     localStorage.setItem("fe.seen", JSON.stringify(Object.fromEntries(seen)));
   } catch (e) {
@@ -931,7 +997,17 @@ handleEl.addEventListener("click", () => setDrawer(!railEl.classList.contains("o
 scrimEl.addEventListener("click", () => setDrawer(false));
 window.addEventListener("resize", () => setDrawer(false));
 
+// The drawer's closed state still has to answer "did anything happen" — this rides
+// the handle, so it has to be refreshed wherever `seen` or the action list moves.
+function renderUnreadBadge() {
+  let unread = 0;
+  for (const id of threads.keys()) if (unreadOf(id)) unread += 1;
+  if (unread) handleEl.dataset.count = String(unread);
+  else delete handleEl.dataset.count;
+}
+
 function renderRail() {
+  renderUnreadBadge();
   railEl.replaceChildren();
   const all = make("button", "rail-row all" + (focusThread === null ? " sel" : ""), "all threads");
   all.addEventListener("click", () => {
@@ -942,19 +1018,20 @@ function renderRail() {
   railEl.append(all);
   for (const t of threads.values()) {
     const row = make("button", "rail-row" + (focusThread === t.id ? " sel" : ""));
-    row.append(make("span", "t-name", t.label + " v" + t.version));
+    row.append(make("span", "t-name", t.label));
     const path = t.path ? t.path.split("/").slice(-2).join("/") : "(blank)";
     row.append(make("span", "t-path", path));
-    const bits = ["v" + t.version];
-    let count = 0;
-    for (const a of actions.values()) if (a.thread === t.id) count += 1;
-    if (count > 1) bits.push(count + " actions");
-    if (t.state !== "live") bits.push(t.state);
-    if (t.unsaved) bits.push("unsaved");
+    // One line, one question: does this need the reader? Anything else (version,
+    // how many actions happened, whether the file is behind) is a fact about the
+    // object, and lives in meta — a row that says everything says nothing.
+    const waits = awaitingOf(t.id);
     const unread = unreadOf(t.id);
-    if (unread) bits.push(unread + " new");
-    if (bits.length) row.append(make("span", "t-meta" + (unread ? " unread" : ""), bits.join(" · ")));
-    if (threadBusy(t.id)) row.append(make("span", "t-dot"));
+    let status = null;
+    if (waits) status = make("span", "t-meta waits", "needs you — " + waits + " to decide");
+    else if (unread) status = make("span", "t-meta unread", unread + " new");
+    else status = make("span", "t-meta quiet", t.state === "live" ? "" : t.state);
+    if (status.textContent) row.append(status);
+    if (threadBusy(t.id) && !waits) row.append(make("span", "t-dot"));
     row.title = [
       t.id,
       t.path || "(blank)",
@@ -963,6 +1040,9 @@ function renderRail() {
       t.exported_to ? ("file has v" + t.exported_at + " → " + t.exported_to) : "nothing written yet",
     ].join(" · ");
     row.addEventListener("click", () => {
+      // Same baseline as selectThread: the digest counts what arrives *after* this
+      // moment, so the rail's dot and the document's bar answer different questions.
+      viewBase = { id: t.id, n: seen.get(t.id) || 0 };
       focusThread = t.id;
       markSeen(t.id);
       requestText(t.id);
@@ -970,6 +1050,7 @@ function renderRail() {
       renderStream();
       renderDoc();
       renderGate();
+      renderDigest();
       setDrawer(false);
     });
     railEl.append(row);
@@ -983,6 +1064,8 @@ function renderDrafts() {}
 
 function selectThread(id) {
   focusThread = id;
+  viewBase = { id: id, n: seen.get(id) || 0 };
+  renderDigest();
   markSeen(id);
   requestText(id);
   renderRail();
@@ -1309,13 +1392,23 @@ function onFrame(frame) {
       upsertAction(frame);
       renderGate();
       const a = frame;
-      // Something is happening: give the human the thread it is happening on.
-      // Something is happening: give the human the thread it is happening on.
-      // With nothing picked at all, any action does — an empty page is worse
-      // than a guess they can undo with one click.
-      if (focusThread === null || a.state === "streaming" || a.state === "awaiting") {
+      // Something that needs a human jumps the page to itself — a card waiting for a
+      // verdict with nobody looking at it is the one thing worth interrupting for.
+      // An ordinary edit does not: yanking the reader off the document they chose
+      // is how "what changed elsewhere" stops being answerable. It lights the rail
+      // instead, and the drawer handle carries the count when the rail is closed.
+      if ((focusThread === null && (a.state === "streaming" || a.state === "awaiting"))
+          || a.state === "awaiting") {
         focusThread = a.thread;
         markSeen(a.thread);
+        if (a.thread === viewBase.id) renderDigest();
+        renderRail();
+      } else {
+        // The reader is already here, so the rail's dot is theirs to skip; the
+        // digest keeps its own baseline and still reports what moved under them.
+        if (a.thread === focusThread) markSeen(a.thread);
+        if (a.thread === viewBase.id) renderDigest();
+        renderUnreadBadge();
         renderRail();
       }
       // The working copy moved: the document is stale until told otherwise.
