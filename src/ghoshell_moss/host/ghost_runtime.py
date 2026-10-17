@@ -13,7 +13,23 @@ from ghoshell_moss.core.blueprint.host import IGhostRuntime, MOSShellRuntime, Lo
 from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostEvent
-from ghoshell_moss.types.topics.ghost import GhostEventTopic
+from ghoshell_moss.types.topics.ghost import (
+    GHOST_IDLE,
+    GHOST_OUTPUT,
+    GHOST_THINKING,
+    GhostEventTopic,
+)
+
+# What actually goes on the bus. The session output keeps the whole record; the bus
+# carries only what a surface needs to follow along — a state light and the actions.
+# Everything else (turn/*, assistant/message, tool/result) would be traffic nobody
+# reads, and traffic is what drowns the signal.
+_PUBLISHED_EVENT_NAMES = frozenset({
+    GHOST_THINKING,
+    GHOST_IDLE,
+    GHOST_OUTPUT,
+    "dsh/tool/call",
+})
 from ghoshell_moss.core.blueprint.mindflow import (
     Mindflow, Thinking, Signal
 )
@@ -428,6 +444,8 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         self._publish_ghost_event(event)
 
     def _publish_ghost_event(self, event: GhostEvent) -> None:
+        if event.event not in _PUBLISHED_EVENT_NAMES:
+            return
         try:
             self._moss_runtime.session.topics.pub(
                 GhostEventTopic(**event.model_dump()),
@@ -468,8 +486,16 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
             session.output('error', log=f"articulate error: {e}")
             raise e
         finally:
+            # Articulate is over, thinking is over: the stage stops glowing here.
+            # In `finally` because a cancelled or failed turn is also "no longer
+            # thinking" — the state is what matters, not how it ended.
+            await self._on_ghost_event(GhostEvent(event=GHOST_IDLE, content="idle"))
             logos = "".join(logos_parts)
             if logos:
+                # 整段说完的话, 一条事件 —— 表面要的是成品, 不是逐字流.
+                await self._on_ghost_event(
+                    GhostEvent(event=GHOST_OUTPUT, content=logos)
+                )
                 # logos 同时发一条原子 OutputItem — headless 观测面 (on_output)
                 # 看不到 stream (get_logos), 这里补上 articulate 返回值的可观测出口.
                 session.output('logos', logos)

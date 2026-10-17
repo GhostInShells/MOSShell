@@ -22,6 +22,7 @@ __all__ = [
     "GHOST_IDLE",
     "GHOST_TOOL_CALL",
     "GHOST_TOOL_RESULT",
+    "GHOST_OUTPUT",
 ]
 
 # Namespaced, so consumers dispatch by name and ghosts never collide. These four
@@ -31,6 +32,11 @@ GHOST_THINKING = "ghost/lifecycle/thinking"
 GHOST_IDLE = "ghost/lifecycle/idle"
 GHOST_TOOL_CALL = "ghost/tool/call"
 GHOST_TOOL_RESULT = "ghost/tool/result"
+GHOST_OUTPUT = "ghost/output"
+"""The whole of what this turn said, as one string — the transcript a surface
+shows. Unlike the other events it is large by nature: one per turn, and it is
+the text itself, not a summary. One event rather than a stream, because a
+surface wants the finished answer, not the deltas."""
 
 
 class GhostEventTopic(GhostEvent, TopicModel):

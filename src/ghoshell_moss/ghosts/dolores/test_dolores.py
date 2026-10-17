@@ -2119,10 +2119,8 @@ class TestDoloresRun:
             collected = []
             async for delta in run.logos():
                 collected.append(delta)
-        # plain text (assistant/chunk text-delta) 不产出 logos; turn/end 被转发成一个 GhostEvent.
-        assert len(collected) == 1
-        assert collected[0].event == "dsh/turn/end"
-        assert collected[0].payload["data"] == {"turn": 1}
+        # plain text 不产出 logos; 流以 thinking 开场, turn/end 只收线、不再转发.
+        assert [d.event for d in collected] == ["ghost/lifecycle/thinking"]
         assert thinking.articulators == []  # 无 articulator 被创建
         assert thinking.abort_reasons == []  # completed → 不打断
 
@@ -2143,16 +2141,17 @@ class TestDoloresRun:
             collected = []
             async for delta in run.logos():
                 collected.append(delta)
+        # lifecycle/thinking 开场; 之后只剩行动脊椎 —— tool/call. turn/*、assistant/message
+        # 和 tool/result 还在 session log 里, 但不再往观测面复制一遍.
         assert [e.event for e in collected] == [
-            "dsh/turn/start",
-            "dsh/assistant/message",
+            "ghost/lifecycle/thinking",
             "dsh/tool/call",
-            "dsh/tool/result",
-            "dsh/turn/end",
         ]
-        # 转发的 payload 是原始信封 (to_dict), data 原样在内, seq 保序.
-        assert collected[0].payload["data"] == {"turn": 1}
-        assert collected[1].payload["seq"] == 2
+        # 转发的 payload 是原始信封 (to_dict), data 原样在内.
+        assert collected[1].payload["seq"] == 3
+        # content 是给表面的那一行: 摘要由我们自己拼, 不指望 dsh 给.
+        assert collected[0].content == "thinking"
+        assert collected[1].content.startswith("mystery_tool(")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

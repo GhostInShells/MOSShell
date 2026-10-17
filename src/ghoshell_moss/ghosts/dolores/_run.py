@@ -27,6 +27,7 @@ import contextlib
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Union, AsyncGenerator
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.ghost import GhostEvent
+from ghoshell_moss.types.topics.ghost import GHOST_THINKING
 from ghoshell_moss.core.blueprint.mindflow import ActionExitedException, Thinking
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
@@ -59,19 +60,39 @@ _STREAMING_TOOLS = frozenset({InterpretToolCall.tool_name(), ReactToolCall.tool_
 _DOLORES_TOOL_NAMESPACE_PREFIX = "moss"
 
 # 转发到观测面的 dsh 事件 (moss-ghost run 的 output 直接可读, 迭代时不用反查 dsh log).
-# 只取**完整**事件, 不取逐 token 的流: assistant/chunk 的 reasoning/text delta 体量无界
-# (一次长思考几千条), 会把 output 面灌满. 留下的这几个每 turn/step 常数条, 各自也不与别处重复:
-# turn/* 给层级, tool/* 是行动脊椎, assistant/message 是组装好的输出 + usage (对阈值 debug 有用).
+# 只留**行动脊椎**: 一次 turn 里真正发生在世界上的事是 tool 调用. turn/* 和 assistant/message
+# 曾经也发, 那是为了给一个可以自己读的观测面; 现在这个面有了 lifecycle 事件和真实订阅方,
+# 多发的那几类就只剩流量了 —— 流量会把信号埋掉.
+# 注意 turn/end 仍然要**处理** (它让 logos() 收线), 只是不再转发.
 _FORWARDED_DSH_EVENTS = frozenset({
-    "turn/start",
-    "turn/end",
     "tool/call",
-    "tool/result",
-    "assistant/message",
 })
 
 # event 名前缀: 观测面是共享流, 不带命名空间会和别的 ghost 事件撞名.
 _DSH_EVENT_NAME_PREFIX = "dsh/"
+
+# 事件上总线时只带一句话摘要: 原文留在 session 的 output 面. tool 的完整参数/结果一旦上总线,
+# 一次长命令就够把订阅方淹掉 —— 摘要由我们自己拼, 不指望 dsh 提供.
+_TOOL_KINDS = frozenset({"tool/call", "tool/result"})
+
+
+def _event_content(event: Any) -> str:
+    """One line a surface can render without opening the envelope."""
+    kind = event.meta.type
+    if kind not in _TOOL_KINDS:
+        return kind
+    envelope = event.to_dict()
+    payload = envelope.get("data") if isinstance(envelope.get("data"), dict) else envelope
+    name = (
+        payload.get("toolName") or payload.get("tool") or payload.get("name") or "tool"
+    )
+    args = payload.get("arguments") or payload.get("input") or payload.get("args") or {}
+    if isinstance(args, dict):
+        args = " ".join(f"{k}={v}" for k, v in list(args.items())[:2])
+    text = " ".join(str(args).split())
+    if len(text) > 60:
+        text = text[:57] + "..."
+    return f"{name}({text})" if text else f"{name}()"
 
 if TYPE_CHECKING:
     from ._ego import DoloresEgo
@@ -705,6 +726,8 @@ class DoloresRun:
         if self._logos_started:
             raise RuntimeError("DoloresRun.logos() can only be consumed once")
         self._logos_started = True
+        # 思考从这里开始, 到 articulate 收线为止 —— 总线上的第一件事和最后一件事.
+        yield GhostEvent(event=GHOST_THINKING, content="thinking")
         events = self._events()
         streams: dict[str, _StreamedCtml] = {}
         try:
@@ -714,6 +737,7 @@ class DoloresRun:
                 if event.meta.type in _FORWARDED_DSH_EVENTS:
                     yield GhostEvent(
                         event=f"{_DSH_EVENT_NAME_PREFIX}{event.meta.type}",
+                        content=_event_content(event),
                         payload=event.to_dict(),
                     )
                 if self._note_turn_end(event):
