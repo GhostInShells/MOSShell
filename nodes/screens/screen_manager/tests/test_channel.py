@@ -408,3 +408,23 @@ async def test_notice_carries_the_surface_url_when_provided():
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         assert runtime.self_meta().named_notices["url"] == "http://127.0.0.1:54321"
+
+
+@pytest.mark.asyncio
+async def test_a_numeric_handle_reaches_the_store_as_a_string():
+    """CTML parses attribute values as literals, so focus(id="2") arrives as 2.
+
+    Handles are strings in the store, so the command normalizes at its edge
+    instead of making every caller remember :str — the same family as
+    ids="0,1" and item="2". Before this, a numeric handle passed validation and
+    then missed the lookup, which read as "no item 2" while item 2 was there.
+    """
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("http://a",))
+        a = rec.of("open")[-1]["item"]["id"]
+        await runtime.execute_command("focus", args=(int(a),))
+        assert rec.of("focus")[-1]["id"] == a
+        await runtime.execute_command("dismiss", args=(int(a),))
+        assert rec.of("state"), "dismiss on a numeric handle must reach the store"

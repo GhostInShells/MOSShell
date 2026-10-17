@@ -184,6 +184,7 @@ def build_screen_channel(
         Only items you opened yourself can be re-pointed. A webview window's url
         belongs to its node, so navigating one is rejected.
         """
+        id = _as_id(id)
         try:
             item = model.navigate(id, url)
         except (ValueError, KeyError) as e:
@@ -229,7 +230,7 @@ def build_screen_channel(
     @chan.build.command(name="dismiss")
     async def dismiss(id: str) -> str:
         """Send an item back to the desktop — off its group, still in the pool."""
-        _require(id)
+        id = _require(id)
         item = model.dismiss(id)
         await _emit(P.state_frame(model))
         return f"[screen] #{id} → desktop" if item else f"[screen] #{id} is already floating"
@@ -237,7 +238,7 @@ def build_screen_channel(
     @chan.build.command(name="destroy")
     async def destroy(id: str) -> str:
         """Remove an item from the pool. An adopted item is tombstoned, not revived."""
-        _require(id)
+        id = _require(id)
         model.destroy(id)
         await _emit(P.close_frame(id))
         await _emit(P.state_frame(model))
@@ -250,7 +251,7 @@ def build_screen_channel(
         A *view*, not a layout: any pooled item will do, grouped or not. It never
         moves an item between groups.
         """
-        target = id or None
+        target = _as_id(id) if id not in ("", None) else None
         try:
             model.set_focus(target)
         except (KeyError, ValueError) as e:
