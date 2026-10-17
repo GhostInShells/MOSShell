@@ -679,6 +679,25 @@ def build_file_editor_channel(
 
     # -- presentation -------------------------------------------------------
 
+    @chan.build.command(name="view", always_observe=True, available=enabled)
+    async def view(mode: str = "") -> str:
+        """Switch the page between the three readings of a thread — or read it back.
+
+        ``document`` is the working copy itself, ``history`` is what has happened to
+        it, ``meta`` is the thread's own facts. Which one is on the table is a view,
+        not a layout: the human clicks it, and so may you — showing the other side
+        the thing you are talking about is half of being understood. Empty = read
+        back the current mode and who chose it.
+        """
+        if not mode:
+            current, by = surface.view_state()
+            return f"[{name}] view: {current} (chosen by {by})"
+        try:
+            chosen = await surface.set_view(mode)
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        return f"[{name}] view: {chosen} (chosen by model)"
+
     @chan.build.command(name="layout", always_observe=True, available=enabled)
     async def layout(mode: str = "") -> str:
         """How an open card is shown — my half of the presentation contract.

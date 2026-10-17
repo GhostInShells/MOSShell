@@ -40,6 +40,7 @@ _DEBOUNCE_SECONDS = 0.4
 decision arriving twice, not a second one."""
 
 _LAYOUTS = ("split", "page")
+_VIEWS = ("document", "history", "meta")
 """How an open card is shown: a side panel beside the card list, or the whole
 window. This is the model's half of the presentation contract — the human owns
 the click that opens a card, the model owns how big it opens."""
@@ -71,6 +72,11 @@ class FileEditorSurface:
         # is the deliberate exception for reading one card at a time.
         self._layout = "split"
         self._layout_by = "default"
+        # Which of the three readings a page is on. The human's click moves it,
+        # and so may the model: showing the other side *the thing you are talking
+        # about* is half of being understood.
+        self._view = "document"
+        self._view_by = "default"
         self.port = port
 
     @property
@@ -94,6 +100,8 @@ class FileEditorSurface:
         frame = snapshot(self._store)
         frame["layout"] = self._layout
         frame["layout_by"] = self._layout_by
+        frame["view"] = self._view
+        frame["view_by"] = self._view_by
         return frame
 
     # -- layout (the model's side of the presentation contract) -------------
@@ -114,6 +122,21 @@ class FileEditorSurface:
         self._layout = chosen
         self._layout_by = "model"
         await self.broadcast({"type": "layout", "layout": chosen, "by": self._layout_by})
+        return chosen
+
+    # -- view (which reading is on the table) --------------------------------
+
+    def view_state(self) -> tuple[str, str]:
+        return self._view, self._view_by
+
+    async def set_view(self, mode: str, by: str = "model") -> str:
+        """Switch the page between document / history / meta, and say who did it."""
+        chosen = (mode or "").strip().lower()
+        if chosen not in _VIEWS:
+            raise ValueError(f"view must be one of {_VIEWS}, got {mode!r}")
+        self._view = chosen
+        self._view_by = by
+        await self.broadcast({"type": "view", "view": chosen, "by": by})
         return chosen
 
     # -- uplink -------------------------------------------------------------
@@ -285,6 +308,11 @@ class FileEditorSurface:
                     await self._detail(thread, n)
                 elif kind == "text":
                     await self._text(thread)
+                elif kind == "view":
+                    try:
+                        await self.set_view(str(frame.get("view", "")), by="human")
+                    except ValueError:
+                        pass
                 elif kind == "auto":
                     await self._set_thread_auto(thread, bool(frame.get("auto")))
                 elif kind == "toggle":

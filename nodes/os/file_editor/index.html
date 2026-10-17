@@ -92,6 +92,27 @@
     flex: none; width: 230px; overflow-y: auto; background: var(--panel);
     border-right: 1px solid var(--line); display: flex; flex-direction: column;
   }
+  /* A drawer, not a shrinking column: on a narrow window the threads slide out
+     *over* the document instead of eating its width. The document's width is the
+     thing worth protecting — the list can come and go. */
+  .rail-handle {
+    display: none; position: absolute; left: 0; top: 0; bottom: 0; width: 16px;
+    background: var(--panel); border: 0; border-right: 1px solid var(--line);
+    color: var(--dim); font: inherit; cursor: pointer; z-index: 7; padding: 0;
+  }
+  .rail-handle:hover { color: var(--accent); }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 5; }
+  .scrim[hidden] { display: none; }
+  @media (max-width: 1180px) {
+    .rail {
+      position: absolute; left: 0; top: 0; bottom: 0; z-index: 6;
+      transform: translateX(-100%); transition: transform .16s ease-out;
+      box-shadow: 2px 0 12px rgba(0,0,0,.4);
+    }
+    .rail.open { transform: none; }
+    .rail-handle { display: block; }
+    .centre { padding-left: 16px; }
+  }
   .rail-row {
     display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
     text-align: left; background: transparent; color: var(--fg);
@@ -175,13 +196,7 @@
     background: transparent; color: var(--accent); border: 1px solid var(--line);
     border-radius: 4px; padding: 2px 8px; font: inherit; font-size: var(--fs-small); cursor: pointer;
   }
-  @media (max-width: 1180px) {
-    .rail { width: 44px; }
-    .rail-row .t-name, .rail-row .t-path, .rail-row .t-meta { display: none; }
-    .rail-row { grid-template-columns: 1fr; justify-items: center; padding: 10px 4px; }
-    .rail-row .t-dot { grid-column: 1; }
-    .detail { width: clamp(240px, 42%, 520px); }
-  }
+
   /* The other view: the model may give the open card the whole window instead of a
      side panel. Which card is open stays the human's click; only its size is ours. */
   body[data-layout="page"] .detail.has-card {
@@ -301,6 +316,21 @@
   .doc .markdown hr.rule { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
   .doc .markdown a { color: var(--accent); }
   .doc pre.diff { color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit; }
+  /* A diff is read left to right: two gutters for the two versions, then the line.
+     Green says what is there now, dim-and-struck says what it replaced. */
+  .diffview { font: inherit; }
+  .diffhunk { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 6px; }
+  .diffhunk:first-child { border-top: 0; margin-top: 0; }
+  .diffhunk .h-head { color: var(--accent); font-size: var(--fs-small); margin-bottom: 4px; }
+  .diffline { display: grid; grid-template-columns: 46px 46px 1fr; white-space: pre-wrap;
+    word-break: break-word; }
+  .diffline .g { color: var(--dim); text-align: right; padding-right: 10px; user-select: none;
+    font-size: var(--fs-small); }
+  .diffline.add { background: rgba(92,214,150,.10); box-shadow: inset 2px 0 0 var(--run); }
+  .diffline.add .body { color: var(--run); }
+  .diffline.del { background: rgba(255,255,255,.02); box-shadow: inset 2px 0 0 var(--line); }
+  .diffline.del .body { color: var(--dim); text-decoration: line-through; }
+  .diffline.ctx .body { color: var(--dim); }
   .doc .plain { color: var(--dim); white-space: pre-wrap; word-break: break-word; }
   /* The file's header, shown as a header: a ruled block of key: value lines, not
      prose, and not a heading. */
@@ -336,6 +366,7 @@
 </header>
 <main>
   <nav class="rail" id="rail"></nav>
+  <button class="rail-handle" id="rail-handle" title="threads">›</button>
   <div class="centre">
     <div class="views">
       <button class="vtab on" data-view="document" id="vtab-doc">document</button>
@@ -371,7 +402,8 @@ const AGED_KEEP = 12;               // newest cards kept in the list; older ones
 
 let selected = null;                // {thread, n}
 let focusThread = null;
-let view = "document";              // document | history — two readings of one thread
+let view = "document";              // document | history | meta — three readings of one thread
+let viewBy = "default";             // who moved the page last: human or model
 const docText = new Map();          // thread -> {version, lines, text}
 // Which action each thread has been read up to. Unread is a fact about the
 // human's attention, not about the thread: it lives here, in their browser.
@@ -392,6 +424,11 @@ const railEl = document.getElementById("rail");
 const docEl = document.getElementById("doc");
 const metaEl = document.getElementById("meta");
 const gateEl = document.getElementById("gate");
+const handleEl = document.getElementById("rail-handle");
+const scrimEl = document.createElement("div");
+scrimEl.className = "scrim";
+scrimEl.hidden = true;
+document.body.append(scrimEl);
 const vnoteEl = document.getElementById("vnote");
 draftsEl = document.getElementById("drafts");
 const connEl = document.getElementById("conn");
@@ -455,10 +492,18 @@ function renderMeta() {
   }
 }
 
-document.getElementById("vtab-doc").addEventListener("click", () => setView("document"));
-document.getElementById("vtab-meta").addEventListener("click", () => setView("meta"));
-document.getElementById("vtab-hist").addEventListener("click", () => setView("history"));
-
+document.getElementById("vtab-doc").addEventListener("click", () => {
+  setView("document");
+  send({ type: "view", view: "document" });
+});
+document.getElementById("vtab-meta").addEventListener("click", () => {
+  setView("meta");
+  send({ type: "view", view: "meta" });
+});
+document.getElementById("vtab-hist").addEventListener("click", () => {
+  setView("history");
+  send({ type: "view", view: "history" });
+});
 function make(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -657,6 +702,13 @@ function setView(next) {
   metaEl.hidden = view !== "meta";
   if (view === "document") renderDoc();
   if (view === "meta") renderMeta();
+  renderViewNote();
+}
+
+function renderViewNote() {
+  const base = vnoteEl.dataset.base || "";
+  const who = viewBy === "model" ? "moss set this view" : "";
+  vnoteEl.textContent = [base, who].filter(Boolean).join(" · ");
 }
 
 function requestText(thread) {
@@ -736,8 +788,9 @@ function renderDoc() {
     requestText(focusThread);
     return;
   }
-  vnoteEl.textContent =
+  vnoteEl.dataset.base =
     "v" + d.version + " · " + d.lines + " lines" + (t && t.unsaved ? " · unsaved" : "");
+  renderViewNote();
   const hit = selected && selected.thread === focusThread ? regionOf(actions.get(key(focusThread, selected.n))) : null;
   const lines = d.text.split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
@@ -768,8 +821,10 @@ function unreadOf(id) {
 }
 
 function markSeen(id) {
-  const t = threads.get(id);
-  const top = t ? t.version : 0;
+  let top = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.n > top) top = a.n;
+  }
   if ((seen.get(id) || 0) >= top) return;
   seen.set(id, top);
   try {
@@ -778,6 +833,23 @@ function markSeen(id) {
     /* a browser that will not keep it just forgets the dots */
   }
 }
+
+// Narrow window: the rail is a drawer laid over the document, opened from the
+// left edge and closed by the scrim or by picking a thread. Wide: it is simply
+// there. The document's width is never the thing that gives way.
+function narrow() {
+  return window.matchMedia("(max-width: 1180px)").matches;
+}
+
+function setDrawer(open) {
+  const show = open && narrow();
+  railEl.classList.toggle("open", show);
+  scrimEl.hidden = !show;
+}
+
+handleEl.addEventListener("click", () => setDrawer(!railEl.classList.contains("open")));
+scrimEl.addEventListener("click", () => setDrawer(false));
+window.addEventListener("resize", () => setDrawer(false));
 
 function renderRail() {
   railEl.replaceChildren();
@@ -793,7 +865,10 @@ function renderRail() {
     row.append(make("span", "t-name", t.label + " v" + t.version));
     const path = t.path ? t.path.split("/").slice(-2).join("/") : "(blank)";
     row.append(make("span", "t-path", path));
-    const bits = [];
+    const bits = ["v" + t.version];
+    let count = 0;
+    for (const a of actions.values()) if (a.thread === t.id) count += 1;
+    if (count > 1) bits.push(count + " actions");
     if (t.state !== "live") bits.push(t.state);
     if (t.unsaved) bits.push("unsaved");
     const unread = unreadOf(t.id);
@@ -815,6 +890,7 @@ function renderRail() {
       renderStream();
       renderDoc();
       renderGate();
+      setDrawer(false);
     });
     railEl.append(row);
   }
@@ -986,13 +1062,9 @@ function renderDetail() {
   head.append(close);
   detailEl.append(head);
 
-  const tabs = make("div", "tabs");
-  for (const name of ["effect", "full"]) {
-    const b = make("button", "tab" + (tab === name ? " on" : ""), name);
-    b.addEventListener("click", () => { tab = name; renderDetail(); });
-    tabs.append(b);
-  }
-  detailEl.append(tabs);
+  // No tab row: a card has one thing to say — what it changed. The whole document
+  // is a click away in the document view, so "the file as it left it" is not a
+  // second reading of the same card.
 
 
 
@@ -1012,22 +1084,59 @@ function renderDetail() {
 
   const doc = make("div", "doc");
   if (d) {
-    const content = tab === "effect" ? d.source : d.full;
-    doc.append(make("div", "doc-label",
-      tab === "effect" ? "this action — what it changed" : "the file as this action left it"));
-    const mdEl = make("div", "markdown");
-    mdEl.innerHTML = md(content);
-    doc.append(mdEl);
-    if (tab === "effect" && d.diff) {
-      const diffLabel = make("div", "effect-line");
-      diffLabel.append(make("b", null, "diff"));
-      doc.append(diffLabel);
-      doc.append(make("pre", "diff", d.diff));
+    // The effect tab answers one question — what changed — so for an edit it
+    // *is* the diff, drawn; for a read or a find there is nothing to compare and
+    // the action's own text is the answer.
+    if (d.diff) {
+      doc.append(renderDiffView(d.diff));
+    } else {
+      doc.append(make("div", "doc-label", "this action — what it says"));
+      const mdEl = make("div", "markdown");
+      mdEl.innerHTML = md(d.source);
+      doc.append(mdEl);
     }
   } else {
     doc.append(make("div", "loading", "loading…"));
   }
   detailEl.append(doc);
+}
+
+// A unified diff, drawn rather than printed: two gutters (the old file, the new
+// one) and the line itself. Additions read as what is there now; deletions stay
+// visible but struck, because "what it used to say" is half of the meaning.
+function renderDiffView(text) {
+  const host = make("div", "diffview");
+  let oldNo = 0;
+  let newNo = 0;
+  let hunk = null;
+  const push = (cls, oldG, newG, body) => {
+    if (!hunk) {
+      hunk = make("div", "diffhunk");
+      host.append(hunk);
+    }
+    const row = make("div", "diffline " + cls);
+    row.append(make("span", "g", oldG));
+    row.append(make("span", "g", newG));
+    row.append(make("span", "body", body));
+    hunk.append(row);
+  };
+  for (const raw of String(text).split("\n")) {
+    if (raw.startsWith("@@")) {
+      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+      oldNo = m ? parseInt(m[1], 10) : 0;
+      newNo = m ? parseInt(m[2], 10) : 0;
+      hunk = make("div", "diffhunk");
+      hunk.append(make("div", "h-head", raw));
+      host.append(hunk);
+      continue;
+    }
+    if (raw.startsWith("---") || raw.startsWith("+++")) continue;
+    if (raw.startsWith("+")) push("add", "", newNo++, raw.slice(1));
+    else if (raw.startsWith("-")) push("del", oldNo++, "", raw.slice(1));
+    else if (raw.startsWith(" ")) push("ctx", oldNo++, newNo++, raw.slice(1));
+  }
+  if (!host.childElementCount) host.append(make("div", "hint", "no textual change"));
+  return host;
 }
 
 function renderHistory(thread) {
@@ -1059,6 +1168,10 @@ function onFrame(frame) {
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
       for (const a of frame.actions) upsertAction(a);
       if (frame.drafts) drafts = frame.drafts;
+      if (frame.view) {
+        view = frame.view;
+        viewBy = frame.view_by || "default";
+      }
       renderRail();
       renderDrafts();
       renderStream();
@@ -1075,6 +1188,11 @@ function onFrame(frame) {
     }
     case "layout": {
       setLayout(frame.layout, frame.by);
+      break;
+    }
+    case "view": {
+      viewBy = frame.by || "model";
+      setView(frame.view || "document");
       break;
     }
     case "threads": {
