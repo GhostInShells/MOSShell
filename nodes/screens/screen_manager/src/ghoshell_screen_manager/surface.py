@@ -28,11 +28,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
 from ghoshell_moss.message import Message
 from ghoshell_moss.signals import AsideSignalMeta
@@ -44,6 +47,19 @@ from .model import ScreenModel
 __all__ = ["ScreenSurface"]
 
 _AUDIO_HZ = 5.0
+
+# The stage's own asset folder — the few images the veil may paint. Served over
+# the same port as the page, because a page from http:// cannot read file://.
+_ASSET_DIR = "assets"
+_ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_ASSET_TYPES = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "gif": "image/gif",
+    "svg": "image/svg+xml",
+}
 
 
 class ScreenSurface:
@@ -243,7 +259,35 @@ class ScreenSurface:
             return response
         if path == "/ws":
             return None
+        if path.startswith("/asset/"):
+            return self._serve_asset(connection, path[len("/asset/"):])
         return connection.respond(404, "not found")
+
+    def _serve_asset(self, connection: ServerConnection, name: str):
+        """One image the stage draws, by file name.
+
+        The veil can paint anything it can load, but a page served over http
+        cannot read a local file, and a base64 blob does not belong in a CTML
+        attribute. So the node serves the few assets it owns. A name only — no
+        directories, no traversal, an extension whitelist — because "serve a
+        file" is exactly the request that must not become "serve any file".
+        """
+        if not _ASSET_NAME.match(name or ""):
+            return connection.respond(404, "not found")
+        suffix = name.rsplit(".", 1)[-1].lower()
+        if suffix not in _ASSET_TYPES:
+            return connection.respond(404, "not found")
+        try:
+            body = (self._html_path.parent / _ASSET_DIR / name).read_bytes()
+        except OSError:
+            return connection.respond(404, "not found")
+        # ``respond`` only builds text bodies; an image needs the response object
+        # itself, because going through ``respond`` would re-encode the bytes.
+        headers = Headers()
+        headers["Content-Type"] = _ASSET_TYPES[suffix]
+        headers["Content-Length"] = str(len(body))
+        headers["Cache-Control"] = "no-store, max-age=0"
+        return Response(200, "OK", headers, body)
 
     def _page_ver(self) -> str:
         """The page's fingerprint — so an open window can tell it runs old code.

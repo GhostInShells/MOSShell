@@ -8,3 +8,7 @@ __pycache__/
 # runtime artifacts (ledger, logs) — keep dir, ignore contents.
 runtime/*
 !runtime/.gitignore
+
+# Node-local assets: the stage serves them by name (/asset/<name>), but they
+# are material, not source — e.g. a reference frame a macro points at.
+assets/
