@@ -516,8 +516,10 @@ async def test_stage_talk_mirrors_the_conversation_legibly():
 
     async with chan.bootstrap() as runtime:
         # 默认就是开着的, 而且 bootstrap 时走的是与命令同一条路 —— 一块屏不该因为
-        # 没人记得去拨开关而沉默, 那从观众那边看就是一块坏掉的屏.
-        assert "talk=ghost" in await runtime.execute_command("stage")
+        # 没人记得去拨开关而沉默, 那从观众那边看就是一块坏掉的屏. 默认档是 both:
+        # 这块屏是我和人共用的一扇窗, 两边的话都在上面, 一段对话才读得懂;
+        # "只投我自己" 是出门时的动作, 见下面那条用例.
+        assert "talk=both" in await runtime.execute_command("stage")
         assert feed.running
 
         assert "talk=both" in await runtime.execute_command(

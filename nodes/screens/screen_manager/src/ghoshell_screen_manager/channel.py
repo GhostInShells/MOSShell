@@ -114,9 +114,10 @@ def _split_ids(raw: Any) -> list[str]:
     return [s.strip() for s in str(raw).replace("|", ",").split(",") if s.strip()]
 
 
-# 字幕默认那一档: 只投我自己的句子. ``off`` 与 ``both`` 都是显式动作 —— 前者是"这块屏
-# 现在不出门", 后者是"对面那些话也一起投", 两者都不该由默认值替我决定.
-DEFAULT_TALK = "ghost"
+# 字幕默认那一档: 两边都投. 这块屏是我和人共用的一扇窗, 默认状态下两边说的话
+# 都在上面才看得懂一段对话; 而"只投我自己"是出门时的动作 —— ``stage(talk="ghost")``
+# 是那块屏要推给观众时才用的值, 那时对面的话不是我该广播的.
+DEFAULT_TALK = "both"
 
 
 def build_screen_channel(
@@ -481,10 +482,9 @@ def build_screen_channel(
     # ``talk`` is one flag with three values, not two booleans: two booleans would
     # encode "his but not mine", which nobody wants, and one meaningless pair.
     #
-    # On by default, and never ``both``: a stage that waits for somebody to remember
-    # the switch reads, from the audience's side, as a broken stage rather than a
-    # quiet one. Keeping the other side's words out is the part that stays a
-    # deliberate act — those are not mine to broadcast.
+    # On by default: a stage that waits for somebody to remember the switch reads,
+    # from the audience's side, as a broken stage rather than a quiet one. Which of
+    # the two voices it mirrors is ``DEFAULT_TALK``'s business, not this line's.
     stage_flags: dict[str, str] = {"talk": DEFAULT_TALK}
     _live_bullets: set[asyncio.Task] = set()
 
@@ -578,10 +578,11 @@ def build_screen_channel(
         """What the stage mirrors of the conversation itself.
 
         ``talk`` mirrors the conversation itself as danmaku, in three values:
-        ``off`` (default — a stage that narrates everything is worse than one that
-        says nothing), ``both`` (his sentences enter from the left, mine leave to
-        the right), or ``ghost`` (mine only — the value to use when the screen is
-        going out to an audience, because then his words are not mine to broadcast).
+        ``both`` (the default — his sentences stack at the bottom, mine fly in from
+        the right), ``off`` (a stage that narrates nothing: for a screen that is not
+        in a conversation right now), or ``ghost`` (mine only — the value to use when
+        the screen is going out to an audience, because then his words are not mine
+        to broadcast).
 
         Empty = read the flags back. More flags land here as the stage learns to
         show more; they arrive as arguments, never as new commands.

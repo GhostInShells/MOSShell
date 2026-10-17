@@ -343,6 +343,7 @@
 <body>
 
 <canvas id="bg"></canvas>
+<div id="think"></div>
 <div id="moss"><span>MOSS</span></div>
 <canvas id="desktop"></canvas>
 <div id="pool"></div>
@@ -830,6 +831,13 @@ requestAnimationFrame(desktopLoop);
 // 所以窗口一动，我指的仍是那块砖，而不是我当初按下的那个像素 —— 这是"说名字"和
 // "画坐标"的区别：坐标会过期，名字不会。
 const veilBlocks = new Map();   // id -> {draw, start, dur}
+// 状态灯只认"最后一次来自我这侧的事件是什么时候"：任何事件都算一次心跳，
+// 心跳之后 GHOST_KEEP_MS 内亮着，超过就自己灭。于是刷新/新窗口接上后，
+// 下一件事发生灯就亮；而我如果卡住、停了、死了，它不需要谁来撤，自己会暗。
+let ghostBeatAt = 0;
+const GHOST_KEEP_MS = 3000;
+const thinkEl = document.getElementById('think');
+function ghostBeat() { ghostBeatAt = performance.now(); }
 const VEIL_DEFAULT = {
   mark: 'rgba(80,255,150,1)', box: 'rgba(80,255,150,1)',
   circle: 'rgba(80,255,150,1)', arrow: 'rgba(255,130,80,1)',
@@ -1684,6 +1692,10 @@ function bgLoop() {
   }
 
   bctx.clearRect(0, 0, viewW, viewH);
+  // 灯：只由"最近一次心跳有多新"决定，与有没有收到 state 帧无关。
+  if (thinkEl) {
+    thinkEl.classList.toggle('on', ghostBeatAt > 0 && now - ghostBeatAt < GHOST_KEEP_MS);
+  }
   const speaking = feed.rms_db > GATE && feedFresh();
   // MOSS 文字吃断线判定：链路死了它就不该继续发光（传导，不是恢复）
   mossEl.classList.toggle('alive', speaking && feed.role === 'ghost');
@@ -2062,9 +2074,17 @@ function route(f) {
   switch (f.type) {
     // The conversation itself: one line per clause, newest at the bottom.
     // The state light: one bit, drawn as an edge. Deliberately not a word.
+    //
+    // It is driven by *freshness*, not by a boolean: the page may connect at any
+    // moment (a reload, a second window claiming the stage), and a boolean that
+    // only ever arrives inside a frame leaves a reloaded page dark while the ghost
+    // is in fact working. So every ghost-side event is a beat, and the light stays
+    // on for GHOST_KEEP_MS after the last one — which also gets the other half for
+    // free: a ghost that stopped talking and stopped acting goes dark by itself,
+    // instead of glowing on a stale state nobody can retract.
     case 'state': {
-      const bar = document.getElementById('think');
-      if (bar) bar.classList.toggle('on', !!f.thinking);
+      if (f.thinking) ghostBeat();
+      else ghostBeatAt = 0;            // an explicit idle: off now, not in K seconds
       break;
     }
     case 'talk': {
@@ -2076,9 +2096,12 @@ function route(f) {
       line.textContent = f.text || '';
       box.append(line);
       // New lines push the old ones up; the oldest fade out rather than vanish.
-      // One line: the history lives in the DSH surface. This line is for whoever
-      // is watching the stream, and for me to see how ASR parsed what was said.
-      while (box.children.length > 1) box.firstElementChild.remove();
+      // Two lines, not one: with a single slot the next clause yanks the sentence
+      // you were still reading off the screen — "kept up to date" beat "readable",
+      // and that was the wrong trade. The history beyond these two lives in the
+      // DSH surface; these two are for whoever is watching the stream, and for me
+      // to see how ASR parsed what was said.
+      while (box.children.length > 2) box.firstElementChild.remove();
       setTimeout(() => line.classList.add('gone'), 16000);
       setTimeout(() => line.remove(), 17500);
       break;
@@ -2148,6 +2171,7 @@ function route(f) {
         veilArrow(id, f.src, f.src_region || 'full', f.dst, f.dst_region || 'full',
                   d, f.color, w);
       } else if (f.gesture === 'danmaku') {
+        ghostBeat();      // 我说的话、我做的动作 —— 都是"我还在"的证据
         veilDanmaku(id, f.content || '', f.motion || '', d, f.color,
                     f.size || 30, f.lane || 0, f.item || '', f.turns || 1,
                     f.at_x, f.at_y, f.angle || 0, f.region || '', !!f.overlap);
