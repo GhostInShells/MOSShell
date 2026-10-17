@@ -51,17 +51,10 @@ def prepare_kwargs_by_signature(sig: inspect.Signature, args: tuple, kwargs: dic
                 # annotation the value
                 annotation = param.annotation
                 if not is_protocol(annotation) and callable(annotation):
-                    # A sequence handed to a ``str`` parameter keeps its shape: the
-                    # command decides how to read it (e.g. ids="0,1" arrives as a
-                    # tuple and the screen channel splits it). ``str((0, 1))`` would
-                    # turn it into "(0, 1)" and lose that.
-                    if annotation is str and isinstance(value, (list, tuple, set, dict)):
+                    try:
+                        value = param.annotation(value)
+                    except TypeError:
                         pass
-                    else:
-                        try:
-                            value = annotation(value)
-                        except TypeError:
-                            pass
 
                 bound_args.arguments[name] = value
             except (TypeError, ValueError) as e:
@@ -127,19 +120,7 @@ def to_function_docstring_lines(doc: str) -> list[str]:
 
 def parse_function_interface(fn: Callable) -> FunctionReflection:
     name = fn.__name__
-    # ``eval_str=True`` resolves string annotations back into real types.
-    #
-    # Without it, any module carrying ``from __future__ import annotations``
-    # hands us Parameter.annotation as the *string* ``'str'``, and the
-    # type-coercion loop in prepare_kwargs_by_signature (which asks
-    # ``callable(annotation)``) silently does nothing. That is how a command
-    # declared ``id: str`` received the int 2 from CTML's literal_eval and
-    # missed its own store lookup. Names unresolvable at runtime fall back to
-    # the raw signature rather than failing the whole channel.
-    try:
-        sig = inspect.Signature.from_callable(fn, eval_str=True)
-    except Exception:
-        sig = inspect.Signature.from_callable(fn)
+    sig = inspect.Signature.from_callable(fn)
     is_cofunc = inspect.iscoroutinefunction(fn)
     docstring = inspect.getdoc(fn)
     return FunctionReflection(
