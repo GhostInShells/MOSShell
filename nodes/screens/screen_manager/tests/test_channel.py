@@ -190,6 +190,55 @@ async def test_every_gesture_carries_an_id_and_a_place():
 
 
 @pytest.mark.asyncio
+async def test_content_says_it_on_the_screen_instead_of_in_the_voice():
+    """Character data on this channel is a bullet, not a caption.
+
+    The same door `say` uses on `__main__`: a sentence goes straight in and the
+    defaults decide the rest. Everything a caller might want to steer — direction,
+    size, lifetime — stays `danmaku`'s job, so this one keeps a single argument.
+    """
+    chan, rec = _channel()
+
+    async with chan.bootstrap() as runtime:
+        async def chunks():
+            yield "一"
+            yield "句话"
+
+        task = asyncio.ensure_future(
+            runtime.execute_command("__content__", args=(chunks(),))
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if rec.of("veil"):
+                break
+        frames = rec.of("veil")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(frames) == 1, "one scope of text is one bullet, not one per chunk"
+    assert frames[0]["gesture"] == "danmaku"
+    assert frames[0]["content"] == "一句话"
+    assert frames[0]["duration"] == 6.0
+
+
+@pytest.mark.asyncio
+async def test_content_of_nothing_draws_nothing():
+    """Whitespace is not a bullet: an empty scope stays silent instead of sending
+    a blank line flying across the stage."""
+    chan, rec = _channel()
+
+    async with chan.bootstrap() as runtime:
+        async def blank():
+            yield "  "
+            yield "\n"
+
+        assert await runtime.execute_command("__content__", args=(blank(),)) is None
+
+    assert rec.of("veil") == []
+
+
+@pytest.mark.asyncio
 async def test_veil_reads_back_what_is_still_drawn():
     model = ScreenModel()
     chan, rec = _channel(model)

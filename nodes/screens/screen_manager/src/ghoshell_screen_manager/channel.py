@@ -385,6 +385,55 @@ def build_screen_channel(
         finally:
             _veil.pop(gid, None)
 
+    async def _send_danmaku(content: str, duration: float = 6.0, motion: str = "",
+                            color: str = "", size: float = 30, lane: int = 0,
+                            item: str = "", turns: float = 1.0,
+                            at_x: float = -1.0, at_y: float = -1.0,
+                            angle: float = 0.0, region: str = "") -> str:
+        """Validate one bullet and put it on the veil.
+
+        Shared by the ``danmaku`` command and by ``__content__``: the checks and the
+        receipt are the same thing, and two copies of them would drift.
+        """
+        # CTML parses attribute values as literals, so content="1" arrives as the
+        # int 1. A one-digit danmaku is a normal thing to send ("54321"), so coerce
+        # here instead of asking every caller to remember :str.
+        content = str(content)
+        if motion not in ("", "rtl", "ltr", "orbit", "diag"):
+            CommandUtil.raise_observe(
+                f"motion must be empty / rtl / ltr / orbit / diag, got {motion!r}"
+            )
+        if size <= 0:
+            CommandUtil.raise_observe(f"size must be > 0, got {size!r}")
+        if (at_x >= 0) != (at_y >= 0):
+            CommandUtil.raise_observe("at_x and at_y go together: give both or neither")
+        if at_x >= 0 and not (0 <= at_x <= 1 and 0 <= at_y <= 1):
+            CommandUtil.raise_observe(
+                f"at_x / at_y are fractions of the box, 0..1; got {at_x!r}, {at_y!r}"
+            )
+        if region not in ("", "left", "right", "top", "bottom"):
+            CommandUtil.raise_observe(
+                f"region must be empty / left / right / top / bottom, got {region!r}"
+            )
+        if motion and motion != "diag" and angle:
+            CommandUtil.raise_observe("angle only applies to motion='diag'")
+        if not motion:
+            motion = "rtl" if random.random() < 0.7 else "ltr"
+        if item:
+            item = _require(item)
+        await _gesture("danmaku", duration, content=content, motion=motion,
+                       color=color, size=size, lane=lane, item=item, turns=turns,
+                       at_x=at_x, at_y=at_y, angle=angle, region=region)
+        tail = f"#{item}" if item else "stage"
+        pinned = at_x >= 0
+        where = f"at {at_x:.2f},{at_y:.2f}" if pinned else f"{motion} lane={lane or 'auto'}"
+        if motion == "diag" and not pinned:
+            where = f"diag {angle or '±random'}° lane={lane or 'auto'}"
+        if region and not pinned:
+            where = f"{where} in {region}"
+        return (f"[screen] danmaku @{tail} {where} "
+                f"({_dur_txt(duration)}) — {content[:24]}")
+
     @chan.build.command(name="mark", blocking=False)
     async def mark(item: str, region: str = "full", duration: float = 2.0,
                    color: str = "", width: float = 3) -> str:
@@ -509,44 +558,31 @@ def build_screen_channel(
         instead of stacking on top — "stacked" and "flashing by" are different
         things, and only one of them is readable.
         """
-        # CTML parses attribute values as literals, so content="1" arrives as the
-        # int 1. A one-digit danmaku is a normal thing to send ("54321"), so coerce
-        # here instead of asking every caller to remember :str.
-        content = str(content)
-        if motion not in ("", "rtl", "ltr", "orbit", "diag"):
-            CommandUtil.raise_observe(
-                f"motion must be empty / rtl / ltr / orbit / diag, got {motion!r}"
-            )
-        if size <= 0:
-            CommandUtil.raise_observe(f"size must be > 0, got {size!r}")
-        if (at_x >= 0) != (at_y >= 0):
-            CommandUtil.raise_observe("at_x and at_y go together: give both or neither")
-        if at_x >= 0 and not (0 <= at_x <= 1 and 0 <= at_y <= 1):
-            CommandUtil.raise_observe(
-                f"at_x / at_y are fractions of the box, 0..1; got {at_x!r}, {at_y!r}"
-            )
-        if region not in ("", "left", "right", "top", "bottom"):
-            CommandUtil.raise_observe(
-                f"region must be empty / left / right / top / bottom, got {region!r}"
-            )
-        if motion and motion != "diag" and angle:
-            CommandUtil.raise_observe("angle only applies to motion='diag'")
-        if not motion:
-            motion = "rtl" if random.random() < 0.7 else "ltr"
-        if item:
-            item = _require(item)
-        await _gesture("danmaku", duration, content=content, motion=motion,
-                       color=color, size=size, lane=lane, item=item, turns=turns,
-                       at_x=at_x, at_y=at_y, angle=angle, region=region)
-        tail = f"#{item}" if item else "stage"
-        pinned = at_x >= 0
-        where = f"at {at_x:.2f},{at_y:.2f}" if pinned else f"{motion} lane={lane or 'auto'}"
-        if motion == "diag" and not pinned:
-            where = f"diag {angle or '±random'}° lane={lane or 'auto'}"
-        if region and not pinned:
-            where = f"{where} in {region}"
-        return (f"[screen] danmaku @{tail} {where} "
-                f"({_dur_txt(duration)}) — {content[:24]}")
+        return await _send_danmaku(
+            content, duration=duration, motion=motion, color=color, size=size,
+            lane=lane, item=item, turns=turns, at_x=at_x, at_y=at_y,
+            angle=angle, region=region,
+        )
+
+    # 走普通 command 而不是 content_command: 后者把 interface 固定成
+    # ChannelRuntime.__content__ 那张模板, 反射给模型的签名因此只剩一行, 我写的说明
+    # 会丢. 内容是靠名字认的 (Command.is_magic_command), 所以叫 __content__ 的普通命令
+    # 一样会被当成 content 口.
+    @chan.build.command(name="__content__")
+    async def content(chunks__) -> str | None:
+        """Say it on the screen: the text becomes a danmaku bullet.
+
+        The short way to put a line where people look — no command name, no
+        parameters, one scope's worth of text is one bullet. It flies the way the
+        default feed does (mostly right → left, its own lane, six seconds of life).
+
+        Reach for ``danmaku`` when direction, position, size or lifetime matters;
+        reach for this when the sentence is the whole point.
+        """
+        text = "".join([chunk async for chunk in chunks__]).strip()
+        if not text:
+            return None
+        return await _send_danmaku(text)
 
     @chan.build.command(name="veil", blocking=False)
     async def veil() -> str:
