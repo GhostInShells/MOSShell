@@ -6,11 +6,12 @@ description: 'Matrix 层 cell 级服务化通讯接线层. ServiceOperator 封�
   各自定义自己的 service kind 与元数据, operator 永不装线. 关键词: "统一无聊层, 特别化有趣层".'
 milestone: v0.1.0
 priority: P0
-status: in-progress
-status_note: '2026-09-13 重开: operator 内核 + 客户端重写已完成并全绿; 验证项收敛为 webview service 的形状
-  (declaration + notify IM 式回执), screen node 消费待形状验证后再接。'
+status: completed
+status_note: '2026-10-17 accepted: webview kind ran through a month of live streams
+  on the screen node; V1''s reproducible path now lives in skills/matrix/service-operator
+  and passed zero-context validation.'
 title: Matrix Service — cell 级服务化通讯接线层
-updated: '2026-09-13'
+updated: '2026-10-17'
 ---
 
 # Matrix Service
@@ -500,3 +501,25 @@ ABC (`blueprint/service.py`)：
 
 形状是否自洽、够用：只读本文档 + `service.py` 接口面，能否独立写出 webview 的
 declaration / provider / client，而不需要碰 operator 内部实现。
+
+---
+
+## Acceptance — 2026-10-17
+
+验收依据不是单测，而是真实运行。`webview` kind 自 2026-09-19 落地后，随 screen node
+进入每日直播开发，连续运行到 2026-10-17。
+
+| 维度 | 证据 |
+|---|---|
+| 自动发现 + 消费 | D09：screen + push 启动后，screen 的 notice 自己出现 `<views>#0=push</views>`，桌面出现浮动物，**没有人打开 URL**；重启后全链复验通过 |
+| 多提供方 | terminal / file_editor / camera / push / artifacts / co_browser 六个 node 均以 `WebViewServer.serve` 上网格；dsh 在 boot 第六步自己声明成 webview (D11) |
+| 消费者策略在外 | screen_manager 用 `WebViewClient` 接这条线；adoption 与 arrangement 分离，排序 / 分组 / 焦点由消费者决定 |
+| 稳定性 | 期间没有 operator 级故障阻断使用；D13–D14 多 node 同时上屏 (terminal / file_editor / artifacts) |
+| 形状可复制 | V1 的目标收敛为 `skills/matrix/service-operator`；2026-10-17 零上下文旁路验证中，旁路 agent 仅凭该 skill + 框架认知面，给出"新 kind + query 快照 + pub 流 + identity/state 分离 + subscribe-before-pull"的正确方案 |
+
+**Cut scope (记录即边界)**: K7 channel 不回填；K8 liveness 不入 V1；badge 二分被
+recency/unread condition 形状取代 (V2 段已标 SUPERSEDED)。这些不是遗漏，是本轮明确
+不做的范围。
+
+**判定**: motivation satisfied —— cell 级能力通讯已有统一接线机制，webview 作为参考实现
+被七个提供方和 screen node 实际使用；对这个 workstream 的注意力可以释放。
