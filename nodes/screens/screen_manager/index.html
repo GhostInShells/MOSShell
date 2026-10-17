@@ -441,7 +441,9 @@ if (typeof ResizeObserver !== 'undefined') {
 // 继续拿最后一帧当"现在"，看起来一切正常。所以两件事一起做 ——
 //   恢复：close / error → 指数退避重连（服务端每次连接都会补发 snapshot，状态自己长回来）
 //   传导：给音频帧打时间戳，超时即当静音（雨停、心率持平）并在角上标出"已断开"
-const FEED_STALE_MS = 1000;
+// ghost 侧两帧（5Hz）没来就算停了：太久的话，打断之后雨还会按最后一帧的强度
+// 继续掉一秒，看上去就是"没停"。
+const FEED_STALE_MS = 400;
 let ws = null, wsOpen = false, retryMs = 500, feedAt = 0;
 let linkText = 'online', linkDown = false, fps = 0;
 
@@ -564,7 +566,7 @@ function startDebugReport() {
 }
 
 // 音频帧还新鲜吗？不新鲜 = 链路断了，画面按静音处理。
-function feedFresh() { return performance.now() - feedAt < FEED_STALE_MS; }
+function feedFresh() { return performance.now() - ghostAt < FEED_STALE_MS; }
 
 // ---- store 镜像（与服务端 ScreenModel 同构） ----
 const items = new Map();   // id -> { el, iframe, url, label, group, icon, slot }
@@ -1108,6 +1110,9 @@ let riseRef = 0;                   // 归一化参考峰：让"浪的平均高�
 let riseGlyphs = [];               // 每格每层的字（换字只换这里）
 let userFeed = { role: 'user', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
 let userAt = 0;   // 人那一侧最后一帧的时刻，独立于 ghost 侧
+let ghostAt = 0;  // ghost 侧最后一帧的时刻。断线判定必须按角色，不能共用 feedAt ——
+                  // 人说话时 user 帧一直在到，feedAt 就被不停刷新，雨会以为
+                  // ghost 还活着，继续按最后一帧的强度往下掉（18:14 实测）。
 const GATE = -45;
 // 字符集：数字（最低）→ 小写 → 大写 → 希腊（最高）。映射按分贝从低到高走一遍，
 // 所以常见语音电平应该落在字母段。换字符集只动这一处。
@@ -1344,7 +1349,7 @@ function produceRow(now) {
   }
   rmsPeak = Math.max(feed.rms_db, rmsPeak - PEAK_DECAY_DB);
 
-  const fresh = feed.role === 'ghost' && now - feedAt <= FRAME_MS * 1.5;
+  const fresh = feed.role === 'ghost' && now - ghostAt <= FRAME_MS * 1.5;
   const gateFloor = Math.max(RMS_FLOOR, rmsPeak - GATE_DROP_DB);
   const gateOpen = fresh && feed.rms_db > gateFloor;
   // 这一行的"呼吸量"：0 = 刚到门限，1 = 达到最近峰值。整片的亮度与字的大小都跟着它。
@@ -1440,7 +1445,7 @@ function stepRain(dt, now) {
   if (RAIN_MODE === 'columns') {
     const gateFloor = Math.max(RMS_FLOOR, rmsPeak - GATE_DROP_DB);
     rmsPeak = Math.max(feed.rms_db, rmsPeak - PEAK_DECAY_DB * (dt * 5));
-    const fresh = feed.role === 'ghost' && now - feedAt <= FEED_STALE_MS;
+    const fresh = feed.role === 'ghost' && now - ghostAt <= FEED_STALE_MS;
     const gateOpen = fresh && feed.rms_db > gateFloor;
     const loud = gateOpen ? Math.min(1, Math.max(0, (feed.rms_db - gateFloor) / GATE_DROP_DB)) : 0;
     // 平滑：topic 是 5Hz 来的，直接用会让整片亮度每秒跳五次 —— 那就是看到的"闪"
@@ -2069,11 +2074,12 @@ function route(f) {
     case 'audio': {
       // 两侧共用一条总线，谁说话谁发帧。雨只认 ghost，升字只认 user —— 所以按角色
       // 分家存，另一侧说话时不会把这一侧抹掉。
-      feedAt = performance.now();          // 断线判定用：这一帧是什么时候到的
+      feedAt = performance.now();          // 这一帧是什么时候到的
       if (f.sample.role === 'user') {
         userFeed = f.sample;
         userAt = feedAt;
       } else {
+        ghostAt = feedAt;                  // 断线判定要按角色：见 ghostAt 的注释
         feed = f.sample;
         mossEl.classList.toggle('alive', feed.rms_db > GATE);
       }
