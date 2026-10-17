@@ -133,6 +133,9 @@ const DOLORES_EGO_PRESET = 'dolores-ego'
 
 // dolores-ego 的 composition — 0.2.0 起程序化 register(PresetDefinition)，替代 .agent-presets/ 目录。
 // 内容 = 原 0.1.5 的 agent.cordis.yml composition (YAML → JS)，`!!js` 表达式退化为普通 JS 表达式。
+// 取舍: 只留"执行原语", 不留自带延续性的机制 —— workflow / subagent / ralph 全删.
+// 依据: dsh harness 假设 agent 该替人持续推进, 与 ghost "一边交流一边开发" 相反;
+// 交互协议归 moss (CTML / mindflow / terminal), 判例见 dsh-version-tracking.
 const DOLORES_EGO_PRESET_PLUGINS = [
   { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
   { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash', disabled: process.platform === 'win32' },
@@ -163,23 +166,6 @@ Make the plan decision-complete: state the goal and success criteria; group impl
 When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.`,
         },
       },
-    ],
-  },
-  {
-    id: 'delegation',
-    name: 'cordis:group',
-    group: true,
-    isolate: { workflowEngine: true },
-    config: [
-      { id: 'tool-subagent-control', name: '@deepseek-ai/dsh-tool-subagent-control' },
-      { id: 'tool-subagent-list-agents', name: '@deepseek-ai/dsh-tool-subagent-control/list-agents' },
-      { id: 'tool-subagent', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'spawn', toolName: 'subagent', modelSelectionSettings: true, backgroundMode: 'continuable' } },
-      { id: 'tool-subagent-fork', name: '@deepseek-ai/dsh-tool-subagent', config: { provider: 'fork', toolName: 'subagent_fork', backgroundMode: 'continuable' } },
-      { id: 'tool-subagent-codex', name: '@deepseek-ai/dsh-tool-subagent', disabled: true, config: { provider: 'codex', toolName: 'subagent_codex', backgroundMode: 'one-shot', maxDepth: 'provider-managed' } },
-      { id: 'tool-subagent-claude-code', name: '@deepseek-ai/dsh-tool-subagent', disabled: true, config: { provider: 'claude-code', toolName: 'subagent_claude_code', backgroundMode: 'one-shot', maxDepth: 'provider-managed' } },
-      { id: 'workflow-ptc', name: '@deepseek-ai/dsh-workflow-ptc', config: { provider: 'spawn' } },
-      { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
-      { id: 'tool-ralph', name: '@deepseek-ai/dsh-tool-ralph', disabled: true, config: { subagentProvider: 'spawn', maxRounds: 64 } },
     ],
   },
   { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },

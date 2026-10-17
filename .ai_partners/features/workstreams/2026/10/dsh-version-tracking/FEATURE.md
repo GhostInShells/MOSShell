@@ -154,6 +154,37 @@ stage2 完成即视为 KD1 达成，其余为执行细则。**本期不做 launc
 
 读数：**协议面稳定，产品面增长**——正好落在"可以继续追 A，但需要按 M6 / M3 观察"的区间。
 
+## 判例：dsh harness 与 moss 交互协议的分歧（2026-10-18）
+
+ghost 在连续会话里几轮之后会忘掉"一边交流、一边开发"，转为埋头干活。追到两个叠加原因，
+并据此裁掉 ego 的工具面：
+
+- **延续性契约**：dsh 的 workflow / subagent / jobs 不自带"做完就回来"的约束，harness
+  instruction 反而明说"继续推进、别轮询、收口前收齐"。每个都是**合法地不回到人类**的出口，
+  与本项目的交互假设相反。moss 侧由 CTML（宏）+ mindflow + terminal 异步仲裁承担交互，
+  不需要 dsh 这套机器。
+- **protected head 不对称**：dsh 的 instruction 在 surface 的不可压缩头，ghost 的协作意图在
+  可压缩的 ground / moment / recap 里；compaction 之后活下来的是前者。这是 dsh 的结构优势位，
+  不靠删工具能解，需要单独实验（见 Open Questions）。
+
+**Key Decisions（追加）**
+
+- **KD9 — workflow 不用，概念本身不成立。** 计划图先于信息可用；dsh 的 workflow 实为 subagent
+  编排器，与交互式认知相反。小回合用 CTML 宏、复杂交互用 bash，没有第三档需求。ego preset
+  删除 `workflow-ptc` / `tool-workflow`。
+- **KD10 — subagent 暂不用，由 stage3 的 memento branches / clone 替代。** 根因是 dsh 的通知
+  模型只有回合边界 + 转发事件、没有注意力仲裁："模型何时看到新输入"没有定义。clone 必须带
+  **注意力状态**（epoch / 仲裁中的信号 / 注意力债），否则只是换了存储位置。ego preset 删除
+  `tool-subagent`（spawn/fork）、`tool-subagent-control`，以及 `tool-ralph`。
+- **KD11 — jobs 保留能力，交互归 moss terminal。** 异步执行是原语；dsh 的后台 bash 留给
+  ghost clone / 独立场景，不在正常交互中宣传。其"继续推进"式提示仍在 harness instruction 里
+  （未追查产出者），记为已知残留。
+- **原则**：CTML 管交互（注意力/时序/仲裁），dsh tool 管执行（原语/副作用）；ego 只保留
+  **不产生"继续跑"契约**的执行原语。
+
+**落地**：`DOLORES_EGO_PRESET_PLUGINS` 删除整个 delegation 组；保留 bash / fs / fs-search /
+jobs / plan-mode / todo / web。
+
 ## 生命周期与复开
 
 ```
@@ -179,6 +210,9 @@ in-progress ──(本期合并完成)──▶ parked ──(上游发版 / 每
   的边界与上游同步策略（留 stage3 讨论，本文件不预设）。
 - 极简 / 只读的 dolores 组合：工具集收缩会改变"行为版本"，需要把组合版本写进 session
   元数据以保持可追溯（与 KD6 的"文件即真相"一致）。
+- **protected head 不对称实验**（砍掉延续性工具之后）：跑 3–5 轮"一边交流一边开发"的会话，
+  看 drift 是否显著下降。下降 → 毒主要在延续性契约；不降 → 转向"协作契约近场注入 / memento
+  锚点"方案，而不是继续删工具。
 
 ## Not In Scope
 
