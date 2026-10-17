@@ -98,7 +98,7 @@ read(文档 → 内存)
 
 | node | 面 | 说明 |
 |---|---|---|
-| `terminal` | 进程编排 | 待建;全异步 bash + python 调度器,见 `terminal.md`。持久 shell 会话是 `pexpect node`(另立) |
+| `terminal` | 进程编排 | 已实现 v1;全异步 bash + python 调度器,见 `terminal.md`。持久 shell 会话是 `nodes/os/shell`,由 workstream `interactive-shell-channel` 承载 |
 | `window_control` | 窗口 | 枚举/几何/聚焦;下面按 OS 分派实现 |
 | ~~`screen`~~ | ~~截屏~~ | **已移出本域 (2026-09-15, 见 KD4)** → feature `vision-stream` |
 | `osascript` | mac 原生 | 按控制语言原名,不发明 "app" 中间名词 |
