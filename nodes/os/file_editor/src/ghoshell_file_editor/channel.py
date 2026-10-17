@@ -290,9 +290,12 @@ def build_file_editor_channel(
 
     @chan.build.command(name="close", always_observe=False, available=enabled)
     async def close_thread(thread: str) -> str:
-        """Abandon a thread: the working copy is dropped and nothing is written.
+        """End a thread: nothing is written to disk, and its slot is freed.
 
-        Use it when the work is going nowhere — it frees the thread's slot.
+        An unsaved working copy is kept as a recoverable draft — it turns up in
+        the notice and reopens with ``open(draft=...)``; a copy that already
+        matches the disk is dropped. Closing is "I am done with this thread", not
+        "throw the text away".
         """
         target = store.get(thread)
         if target is None:
