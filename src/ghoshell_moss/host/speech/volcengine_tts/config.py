@@ -394,6 +394,14 @@ class VolcengineTTSConf(BaseModel):
         default="知性灿灿",
         description="the default speaker",
     )
+    #: 全局默认语速 — speaker 自己的 `voice.speech_rate` 为空时落到这里.
+    #: 火山引擎的默认 (0) 偏慢, 现场交互里一顿一顿的; 略微提一点更接近口语.
+    speech_rate: Optional[int] = Field(
+        default=20,
+        description="全局默认语速, 角色未单独指定时使用. [-50,100], 100 代表 2.0 倍速, 0 是正常",
+        ge=-50,
+        le=100,
+    )
 
     @classmethod
     def unwrap_env(cls, value: str, default: str = "") -> str:
@@ -439,7 +447,11 @@ class VolcengineTTSConf(BaseModel):
                     format=self.audio_format,
                     sample_rate=self.sample_rate,
                     loudness_rate=speaker.voice.loudness_rate,
-                    speech_rate=speaker.voice.speech_rate,
+                    speech_rate=(
+                        self.speech_rate
+                        if speaker.voice.speech_rate is None
+                        else speaker.voice.speech_rate
+                    ),
                     emotion=speaker.voice.emotion,
                 ),
                 speaker=speaker.tone,
