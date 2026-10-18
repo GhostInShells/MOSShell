@@ -371,6 +371,34 @@ async def test_on_signal_emit_observes_suppressed_emit():
         await task
 
 
+@pytest.mark.asyncio
+async def test_reactivating_the_same_etiquette_instance_keeps_it_active():
+    """重复激活同一个礼仪实例, 激活后当前礼仪仍是它.
+
+    协议承诺: "当前礼仪"是运行时单一真值 —— activate 之后它必须答得出来.
+    内置礼仪是模块级单例, 两次激活拿到的是同一个对象; 若旧会话收尾按身份比对清空,
+    新激活会当场变成"没有礼仪", 之后 emit 路退回默认 spec (首包打断 + 无 barge 判断),
+    表现为"模型一思考就被一句话打断".
+    """
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None,
+    )
+    first = controller.run_etiquette(always)
+    await asyncio.sleep(0)
+    second = controller.run_etiquette(always)
+    await asyncio.sleep(0.01)  # 让旧会话的收尾跑完
+
+    active = controller.active_etiquette()
+    assert active is not None, "re-activating a built-in etiquette cleared the active one"
+    assert active.name == always.name
+
+    controller.stop()
+    for task in (first, second):
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 # ============================================================
 # expect 语音输入超时提醒 — 纯异步, 不打断模型
 # ============================================================
@@ -1097,3 +1125,60 @@ async def test_listener_activity_resets_fault_budget():
     controller.stop()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+# ============================================================
+# 出声即让路 (deliver.barge_in_while_speaking) — 说话可被抢, 思考不被抢
+# ============================================================
+
+
+def _deliver_with_barge_in(emitted: list, speaking: bool | None, *, wired: bool = True):
+    """跑一条 TAIL, 返回它的 deliver signal; speaking=None 表示不接探针."""
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener,
+        asr=_MockASR(),
+        signal_broadcast=emitted.append,
+        speaking_probe=(None if speaking is None else (lambda: speaking)),
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver.barge_in_while_speaking = True
+    controller._set_active_etiquette(spec)
+    for cb in listener.result_observers:
+        cb(_tail("你好", segment_id="t1"))
+    assert emitted, "a TAIL must produce a deliver signal"
+    return emitted[-1]  # TAIL 只发一包, 就是交付包
+
+
+def test_barge_in_escalates_the_deliver_signal_while_speaking():
+    """ghost 正在出声 → 交付信号带 interrupt (这一包会掐掉正在说的话)."""
+    emitted = []
+    sig = _deliver_with_barge_in(emitted, speaking=True)
+    assert ListenerSignal.from_signal(sig).interrupt is True
+
+
+def test_barge_in_leaves_the_signal_alone_while_not_speaking():
+    """没在出声 (思考/挂工具) → 交付信号保持 interrupt=False, 按 mode 排队."""
+    emitted = []
+    sig = _deliver_with_barge_in(emitted, speaking=False)
+    assert ListenerSignal.from_signal(sig).interrupt is False
+
+
+def test_barge_in_is_inert_without_a_speaking_probe():
+    """独立 listener node 没有说侧 → 开关静默失效, 不猜测, 也不抛."""
+    emitted = []
+    sig = _deliver_with_barge_in(emitted, speaking=None)
+    assert ListenerSignal.from_signal(sig).interrupt is False
+
+
+def test_cue_is_the_only_builtin_that_yields_to_speech():
+    """开在 cue 一档上: 别的内建礼仪默认不动 — 出声被打断是「这一档」的选择, 不是全局默认."""
+    from ghoshell_moss.host.listener import etiquette
+
+    assert etiquette.cue.deliver.barge_in_while_speaking is True
+    others = [
+        name for name in etiquette.__all__
+        if name not in ("cue", "DeliverMode") and isinstance(getattr(etiquette, name), etiquette.EtiquetteSpec)
+    ]
+    assert others, "builtin etiquettes should not be empty"
+    assert not [n for n in others if getattr(etiquette, n).deliver.barge_in_while_speaking]

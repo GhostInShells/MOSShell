@@ -111,6 +111,12 @@ class DeliverSpec(BaseModel):
         description="词级置信度阈值: 置信度 < 该值的字会在 deliver signal 的 low_conf "
                     "属性里列出来 (供模型自查转写质量); None = 不列 (默认)。emit=True only",
     )
+    barge_in_while_speaking: bool = Field(
+        default=False,
+        description="出声即让路: ghost 正在出声 (speech player 在播) 时, 交付信号强制带 "
+                    "interrupt (emit=True only). 思考中不受它影响 —— 那时仍按 interrupt=False "
+                    "走 mode 的排队/留存. 一个开关谈清「什么可以被抢」: 出声可以被抢, 思考不该被抢.",
+    )
 
 
 class ClassifierSpec(BaseModel):
@@ -310,13 +316,15 @@ murmur = EtiquetteSpec(
 )
 
 
-# 逐句接话: 每句自成一段, 每句强制下一轮轮到你 (next), 但绝不打断身体.
+# 逐句接话: 每句自成一段, 每句强制下一轮轮到你 (next), 绝不打断"思考";
+# 但 ghost 正在出声时让路 (barge_in_while_speaking) —— 说话可以被抢, 思考不被抢.
 cue = EtiquetteSpec(
     name="cue",
-    description="continuous input — each clause takes a turn, without stopping your body",
+    description="continuous input — each clause takes a turn; your speech yields to a barge-in, "
+                "your thinking does not",
     onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=0.0),
-    deliver=DeliverSpec(interrupt=False, mode="next"),
+    deliver=DeliverSpec(interrupt=False, mode="next", barge_in_while_speaking=True),
 )
 
 

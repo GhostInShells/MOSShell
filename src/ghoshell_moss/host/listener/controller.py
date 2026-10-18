@@ -143,9 +143,14 @@ class ListenerController(ListenLifecycle):
             cell_name: str = "",
             config_store: Optional[ConfigStore] = None,
             topic_service: Optional[TopicService] = None,
+            speaking_probe: Optional[Callable[[], bool]] = None,
     ):
         self._listener = listener
         self._asr = asr
+        # 出声探针 — "ghost 此刻在不在说话". 交付时读它, 决定 barge_in_while_speaking
+        # 这一档要不要把 interrupt 翻上来 (见 DeliverSpec). None = 这个组装者不知道
+        # 说侧的存在 (独立 listener node), 开关静默失效.
+        self._speaking_probe = speaking_probe
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
@@ -337,6 +342,12 @@ class ListenerController(ListenLifecycle):
             fut: asyncio.Future = asyncio.get_event_loop().create_future()
             fut.set_result(None)
             return fut
+        # 每次会话持有自己的对象副本 —— 内置礼仪 (always / cue / murmur ...) 是模块级单例,
+        # 重复激活同一个实例时, 旧会话被取消后的 finally 里那句
+        # ``self._active_etiquette is etiquette`` 会因为"还是同一个对象"而成立, 把刚设好的
+        # 新激活清成 None. 之后整条 emit 路退回 OnsetSpec / DeliverSpec 的默认值
+        # (首包 emit + interrupt, 无 barge_in 判断) —— 表现就是"模型一思考就被一句话打断".
+        etiquette = etiquette.model_copy(deep=True)
         self._set_active_etiquette(etiquette)
         self._cancel_active()
         task = asyncio.create_task(
@@ -848,7 +859,7 @@ class ListenerController(ListenLifecycle):
         self._broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
-            interrupt=deliver.interrupt,
+            interrupt=deliver.interrupt or self._barge_in_now(deliver),
             mode=deliver.mode,
             low_conf=self._low_confidence_chars(deliver.low_confidence),
             complete=True,
@@ -858,6 +869,24 @@ class ListenerController(ListenLifecycle):
         self._notify_signal(
             f"deliver mode={deliver.mode or 'notify'} priority={deliver.priority.name}"
         )
+
+    def _barge_in_now(self, deliver: DeliverSpec) -> bool:
+        """这一包是否因为「我正在出声」而额外获得打断?
+
+        开关在礼仪里 (``deliver.barge_in_while_speaking``), 判断在现场: 说侧播放器
+        此刻有没有声音. 出声 = 可以被抢, 思考 = 不受影响 —— 后者仍按 ``interrupt``
+        与 ``mode`` 的原有语义走 (排队 / 留存 / 下一轮).
+        """
+        if not deliver.barge_in_while_speaking or self._speaking_probe is None:
+            return False
+        try:
+            speaking = bool(self._speaking_probe())
+        except Exception:  # 探针挂掉不该影响交付 — 退回"没在说话"
+            self._logger.debug("%s speaking probe failed", self._log_prefix, exc_info=True)
+            return False
+        if speaking:
+            self._notify_signal("deliver escalated to interrupt (ghost is speaking)")
+        return speaking
 
     # ── expect 语音输入超时提醒 (纯异步, 不打断模型) ──
 

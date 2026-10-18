@@ -79,6 +79,7 @@ class InterleavedVoice(Voice):
                 cell_name=matrix.this.name,
                 config_store=config_store,
                 topic_service=matrix.session.topics,
+                speaking_probe=self._speaking_probe(),
             )
             # 单例注册: TUI voice state / 其它消费面从 container 拿同一个 controller.
             # 保留旧兼容 — 迁移期若有消费方直接 container.get(ListenerController).
@@ -86,6 +87,24 @@ class InterleavedVoice(Voice):
 
     def speech(self) -> Optional[Speech]:
         return self._speech
+
+    def _speaking_probe(self):
+        """交出「此刻在不在出声」的探针 — 给听侧交付时读, 决定要不要让路.
+
+        说侧的播放器本来就答得出这个 (``TTSSpeech.player().is_playing()``, 设备缓冲里还有
+        声音就算在播). 这里不缓存、不推状态: 只在交付那一刻问一句, 问不到就退回 False.
+        """
+        speech = self._speech
+        if speech is None:
+            return None
+
+        def _probe() -> bool:
+            player = getattr(speech, "player", None)
+            if player is None:
+                return False
+            return bool(player().is_playing())
+
+        return _probe
 
     def listener_channel(self) -> Optional[Channel]:
         return self._controller.as_channel() if self._controller else None
