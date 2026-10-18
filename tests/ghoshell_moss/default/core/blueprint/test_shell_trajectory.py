@@ -16,6 +16,7 @@ from ghoshell_moss.core.blueprint.shell_trajectory import (
     MShellTrajectory,
     ShellTaskDoneEvent,
     ShellKeyFrame,
+    _command_preview,
 )
 from ghoshell_moss.core.concepts.channel import ChannelMeta
 
@@ -640,3 +641,33 @@ async def test_trajectory_when_need_observe_survives_new_epoch():
                 await i.wait_tasks(timeout=2)
 
             assert len(fired) > 0, "epoch 重建后 need_observe 订阅应仍然生效"
+
+
+def test_moss_status_shows_the_latest_executing_command_as_ctml():
+    """executing 给的是最新那条的原文 —— 认出它是哪一段 CTML, 就知道计划跑到哪了."""
+    status = MShellStatus(
+        state='running',
+        executing=['say'],
+        executing_preview='‹say›好，我掉 interpret…',
+    )
+    desc = status.description()
+    assert 'executing: 1 — ‹say›好，我掉 interpret…' in desc
+
+
+def test_moss_status_shows_the_next_pending_command_as_ctml():
+    """pending 只给队头那一行 —— 它决定我刚发的命令要等谁."""
+    status = MShellStatus(state='running', pending=3, pending_head='‹sleep duration="6"/›')
+    desc = status.description()
+    assert 'pending: 3 — ‹sleep duration="6"/›' in desc
+
+
+def test_command_preview_clips_and_folds_angle_brackets():
+    """预览只截 20 字, 且把尖括号折掉 —— 状态是嵌在 XML 形状的帧里的."""
+    from types import SimpleNamespace
+
+    task = SimpleNamespace(tokens='<say>这是一段很长的正文，长到必须被截断掉才行</say>')
+    preview = _command_preview(task)
+    assert '<' not in preview and '>' not in preview
+    assert preview.startswith('‹say›这是一段')
+    assert preview.endswith('…')
+    assert len(preview) == 21  # 20 字 + 省略号
