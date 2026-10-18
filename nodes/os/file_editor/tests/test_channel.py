@@ -53,7 +53,7 @@ async def test_channel_exposes_the_command_set(store):
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "close", "read", "write", "append", "str_replace",
-            "rewind", "export", "threads", "history", "layout", "point",
+            "rewind", "export", "threads", "history", "layout", "point", "format",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -339,6 +339,17 @@ async def test_reading_a_region_moves_the_cursor_onto_it(store):
 
 
 @pytest.mark.asyncio
+async def test_format_reads_back_and_refuses_an_unknown_renderer(store):
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        assert "auto" in await runtime.execute_command("format", args=("",))
+        assert "markdown" in await runtime.execute_command("format", args=("markdown",))
+        assert rec.fmt == ("markdown", "model")
+        with pytest.raises(Exception):
+            await runtime.execute_command("format", args=("html",))
+
+
+@pytest.mark.asyncio
 async def test_point_moves_the_cursor_without_reading(store):
     chan, rec = _channel(store)
     async with chan.bootstrap() as runtime:
@@ -364,8 +375,10 @@ async def test_point_with_no_thread_reads_the_cursor_back(store):
         assert "unset" in empty
         await rec.set_cursor("t", 2, 3, by="model")
         await rec.set_view_at("t", 40)
+        await rec.set_selection("t", 2, 3, "b\nc")
         out = await runtime.execute_command("point", args=("",))
         assert "2-3" in out and "line 40" in out
+        assert "selected" in out and "b" in out
 
 
 @pytest.mark.asyncio

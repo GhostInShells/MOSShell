@@ -44,6 +44,26 @@ class Recorder:
     def view_at_state(self) -> tuple[str, int]:
         return getattr(self, "view_at", ("", 0))
 
+    def selection_state(self) -> dict | None:
+        return getattr(self, "selection", None)
+
+    def format_state(self) -> tuple[str, str]:
+        return getattr(self, "fmt", ("auto", "default"))
+
+    async def set_format(self, mode: str, by: str = "model") -> str:
+        chosen = (mode or "").strip().lower()
+        if chosen not in ("auto", "raw", "markdown"):
+            raise ValueError(f"format must be one of ('auto', 'raw', 'markdown'), got {mode!r}")
+        self.fmt = (chosen, by)
+        return chosen
+
+    async def set_selection(self, thread: str, start: int, end: int, text: str = "") -> None:
+        self.selection = (
+            {"thread": thread, "start": int(start), "end": int(end), "text": text[:400]}
+            if thread and start > 0 and end >= start
+            else None
+        )
+
     async def set_view_at(self, thread: str, line: int) -> None:
         self.view_at = (thread, int(line))
 

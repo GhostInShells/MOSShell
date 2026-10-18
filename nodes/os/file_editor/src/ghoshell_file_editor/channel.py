@@ -109,6 +109,12 @@ class _Surface(Protocol):
 
     def view_at_state(self) -> tuple[str, int]: ...
 
+    def selection_state(self) -> dict[str, Any] | None: ...
+
+    def format_state(self) -> tuple[str, str]: ...
+
+    async def set_format(self, mode: str, by: str = "model") -> str: ...
+
 
 class _NoSurface:
     """Headless stand-in: no page to tell, but the knob still has a value, so a
@@ -141,6 +147,15 @@ class _NoSurface:
 
     def view_at_state(self) -> tuple[str, int]:
         return ("", 0)
+
+    def selection_state(self) -> dict[str, Any] | None:
+        return None
+
+    def format_state(self) -> tuple[str, str]:
+        return ("auto", "default")
+
+    async def set_format(self, mode: str, by: str = "model") -> str:
+        return (mode or "").strip().lower()
 
     async def set_layout(self, mode: str) -> str:
         chosen = (mode or "").strip().lower()
@@ -401,6 +416,26 @@ def build_file_editor_channel(
             )
         return text
 
+    @chan.build.command(name="format", available=enabled)
+    async def format(mode: str = "") -> str:
+        """How the document is drawn: raw text with line numbers, or rendered.
+
+        ``raw`` is the addressable face — every pointer, selection and line range
+        means something there. ``markdown`` renders the file so it can be *read*
+        (headings, code, tables); a rendered line is not a line number, so the
+        reading point and selections belong to the raw face. ``auto`` — the
+        default — picks by file suffix: ``.md`` reads as prose, everything else as
+        source. Empty = read the mode back.
+        """
+        if not mode:
+            current, by = surface.format_state()
+            return f"[{name}] format: {current} (chosen by {by})"
+        try:
+            chosen = await surface.set_format(mode, by="model")
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        return f"[{name}] format: {chosen} (chosen by model)"
+
     @chan.build.command(name="point", available=enabled)
     async def point(thread: str, region: str = "", label: str = "") -> str:
         """Put the reading point on these lines — without reading them out.
@@ -421,7 +456,14 @@ def build_file_editor_channel(
             seen, line = surface.view_at_state()
             point = f"point: {where!r} lines {lo}-{hi} ({by})" if where else "point: unset"
             pos = f"you: line {line} of {seen!r}" if seen else "you: not moved"
-            return f"[{name}] {point} · {pos}"
+            sel = surface.selection_state()
+            picked = ""
+            if sel:
+                picked = (
+                    f" · selected: {sel['thread']!r} lines {sel['start']}-{sel['end']}"
+                    f" «{sel.get('text', '')[:80]}»".rstrip()
+                )
+            return f"[{name}] {point} · {pos}{picked}"
         target = _get_thread(thread)
         try:
             start, end = region_span(target.content, region)

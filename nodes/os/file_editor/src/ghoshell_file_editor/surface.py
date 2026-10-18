@@ -40,6 +40,7 @@ _DEBOUNCE_SECONDS = 0.4
 decision arriving twice, not a second one."""
 
 _LAYOUTS = ("split", "page")
+_FORMATS = ("auto", "raw", "markdown")
 _VIEWS = ("document", "history", "meta")
 """How an open card is shown: a side panel beside the card list, or the whole
 window. This is the model's half of the presentation contract — the human owns
@@ -86,6 +87,15 @@ class FileEditorSurface:
         # ...and where the human is, which is a different question: it moves when
         # they scroll and it never drags the page anywhere.
         self._view_at: tuple[str, int] = ("", 0)
+        # What the human has selected, when they select something. A selection is
+        # a sentence they cannot say in the chat ("this part") — reading it as
+        # state is the only way it reaches me.
+        self._selection: dict[str, Any] | None = None
+        # How the document is drawn: raw (line numbers, addressable) or rendered
+        # (what the file means). `auto` reads it off the suffix, because the file
+        # already says which of the two is worth showing.
+        self._format = "auto"
+        self._format_by = "default"
         self.port = port
 
     @property
@@ -114,6 +124,9 @@ class FileEditorSurface:
         frame["cursor"] = self._cursor
         frame["cursor_by"] = self._cursor_by
         frame["view_at"] = {"thread": self._view_at[0], "line": self._view_at[1]}
+        frame["selection"] = self._selection
+        frame["format"] = self._format
+        frame["format_by"] = self._format_by
         return frame
 
     # -- layout (the model's side of the presentation contract) -------------
@@ -168,6 +181,22 @@ class FileEditorSurface:
         """(thread, line) the human is parked on. Empty thread before they scroll."""
         return self._view_at
 
+    def selection_state(self) -> dict[str, Any] | None:
+        """What the human has picked: {thread, start, end, text}, or None."""
+        return self._selection
+
+    def format_state(self) -> tuple[str, str]:
+        return self._format, self._format_by
+
+    async def set_format(self, mode: str, by: str = "model") -> str:
+        chosen = (mode or "").strip().lower()
+        if chosen not in _FORMATS:
+            raise ValueError(f"format must be one of {_FORMATS}, got {mode!r}")
+        self._format = chosen
+        self._format_by = by
+        await self.broadcast({"type": "format", "format": chosen, "by": by})
+        return chosen
+
     async def set_cursor(
             self,
             thread: str,
@@ -191,6 +220,21 @@ class FileEditorSurface:
             {"type": "point", "thread": thread, "start": lo, "end": hi, "by": by}
         )
         return self._cursor
+
+    async def set_selection(
+            self, thread: str, start: int, end: int, text: str = ""
+    ) -> None:
+        """Record a selection. Empty range clears it — a collapsed cursor is not a choice."""
+        if not thread or start <= 0 or end < start:
+            self._selection = None
+        else:
+            self._selection = {
+                "thread": thread,
+                "start": int(start),
+                "end": int(end),
+                "text": text[:400],
+            }
+        await self.broadcast({"type": "selection", "selection": self._selection})
 
     async def set_view_at(self, thread: str, line: int) -> None:
         """Record where the human has scrolled to — no jump, no redraw of my marker."""
@@ -399,6 +443,13 @@ class FileEditorSurface:
                         await self.set_view(str(frame.get("view", "")), by="human")
                     except ValueError:
                         pass
+                elif kind == "selection":
+                    await self.set_selection(
+                        thread,
+                        int(frame.get("start", 0) or 0),
+                        int(frame.get("end", 0) or 0),
+                        str(frame.get("text", "")),
+                    )
                 elif kind == "cursor":
                     # The human scrolled: record where they are. It is read back as
                     # state, so "where is he" needs no signal to win my attention.

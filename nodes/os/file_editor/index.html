@@ -212,6 +212,11 @@
   .doc-line { display: grid; grid-template-columns: 56px 1fr; white-space: pre-wrap;
     word-break: break-word; padding: 0 14px; }
   .doc-line .ln { color: var(--dim); text-align: right; padding-right: 14px; user-select: none; }
+  /* The rendered face: the same text, read rather than addressed. No line
+     numbers — a rendered line is not a line, and pretending otherwise would make
+     every coordinate in this page a lie. */
+  .doc-rendered { padding: 18px 26px 60px; max-width: 980px; }
+  .doc-rendered .markdown { font-size: 15px; line-height: 1.65; }
   .doc-line.hit { background: rgba(110,168,254,.10); box-shadow: inset 2px 0 0 var(--accent); }
   .doc-line.hit .ln { color: var(--accent); }
   /* Where the reader is. The model's point and the human's scroll share this
@@ -459,6 +464,9 @@ let viewBy = "default";             // who moved the page last: human or model
 let cursor = null;                  // the marker I put down: {thread, start, end} | null
 let cursorBy = "default";
 let viewAt = null;                  // where the human is parked: {thread, line} | null
+let selection = null;               // what the human picked: {thread, start, end, text} | null
+let format = "auto";                // auto | raw | markdown — how the document is drawn
+let formatBy = "default";
 let cursorKey = "";                 // last band I scrolled for, so a state echo does not yank the page
 let cursorQuietUntil = 0;           // after my own point lands, the human's scroll settles before it reports
 const docText = new Map();          // thread -> {version, lines, text}
@@ -508,8 +516,47 @@ function lineUnder(clientY) {
   return 0;
 }
 
+let selectionTimer = 0;
+let reportedSelection = "";
+document.addEventListener("selectionchange", () => {
+  clearTimeout(selectionTimer);
+  selectionTimer = setTimeout(reportSelection, 250);
+});
+
+function lineOfNode(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const row = el && el.closest ? el.closest(".doc-line") : null;
+  return row && row.dataset.n ? parseInt(row.dataset.n, 10) : 0;
+}
+
+// A selection is the sentence the human cannot type: "this part". It goes up as
+// state so I can read it when I look, and its text rides along in a short
+// preview — enough to know what we are talking about, not enough to be a second
+// copy of the document.
+function reportSelection() {
+  if (!focusThread || view !== "document" || effectiveFormat() === "markdown") return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.anchorNode || !docEl.contains(sel.anchorNode)) {
+    if (reportedSelection) {
+      reportedSelection = "";
+      send({ type: "selection", thread: "", start: 0, end: 0 });
+    }
+    return;
+  }
+  const a = lineOfNode(sel.anchorNode);
+  const b = lineOfNode(sel.focusNode);
+  if (!a || !b) return;
+  const start = Math.min(a, b);
+  const end = Math.max(a, b);
+  const text = String(sel.toString() || "");
+  const sig = focusThread + ":" + start + "-" + end + ":" + text.length;
+  if (sig === reportedSelection) return;
+  reportedSelection = sig;
+  send({ type: "selection", thread: focusThread, start, end, text: text.slice(0, 400) });
+}
+
 function reportCursor() {
-  if (view !== "document" || !focusThread) return;
+  if (view !== "document" || !focusThread || effectiveFormat() === "markdown") return;
   if (Date.now() < cursorQuietUntil) return;   // my own point is still settling
   const box = docEl.getBoundingClientRect();
   const start = lineUnder(box.top + 6);
@@ -878,7 +925,13 @@ function renderViewNote() {
   const you = viewAt && viewAt.thread === focusThread && viewAt.line
     ? "you: line " + viewAt.line
     : "";
-  vnoteEl.textContent = [base, look, you, who].filter(Boolean).join(" · ");
+  const picked = selection && selection.thread === focusThread
+    ? "selected " + selection.start + "–" + selection.end
+    : "";
+  const face = effectiveFormat() === "markdown"
+    ? "rendered · read-only" + (formatBy === "model" ? " (moss)" : "")
+    : "";
+  vnoteEl.textContent = [base, face, look, you, picked, who].filter(Boolean).join(" · ");
 }
 
 function requestText(thread) {
@@ -942,6 +995,13 @@ function renderGate() {
   gateEl.append(btns);
 }
 
+function effectiveFormat() {
+  if (format !== "auto") return format;
+  const t = focusThread ? threads.get(focusThread) : null;
+  const path = String((t && t.path) || "").toLowerCase();
+  return /\.(md|markdown|mdx)$/.test(path) ? "markdown" : "raw";
+}
+
 function renderDoc() {
   docEl.replaceChildren();
   if (!focusThread) {
@@ -961,6 +1021,16 @@ function renderDoc() {
   vnoteEl.dataset.base =
     "v" + d.version + " · " + d.lines + " lines" + (t && t.unsaved ? " · unsaved" : "");
   renderViewNote();
+  if (effectiveFormat() === "markdown") {
+    // Read it instead of addressing it. The reading point and selections stay
+    // on the raw face — a rendered paragraph has no line number to point at.
+    const host = make("div", "doc-rendered");
+    const body = make("div", "markdown");
+    body.innerHTML = md(d.text);
+    host.append(body);
+    docEl.replaceChildren(host);
+    return;
+  }
   const hit = selected && selected.thread === focusThread ? regionOf(actions.get(key(focusThread, selected.n))) : null;
   const band = cursor && cursor.thread === focusThread && cursor.start ? cursor : null;
   const lines = d.text.split("\n");
@@ -1410,6 +1480,8 @@ function onFrame(frame) {
       cursorBy = frame.cursor_by || "default";
       cursorKey = "";
       viewAt = frame.view_at && frame.view_at.thread ? frame.view_at : null;
+      selection = frame.selection || null;
+      if (frame.format) { format = frame.format; formatBy = frame.format_by || "default"; }
       renderRail();
       renderDrafts();
       renderStream();
@@ -1456,6 +1528,19 @@ function onFrame(frame) {
         renderDoc();
         renderViewNote();
       }
+      break;
+    }
+    case "format": {
+      format = frame.format || "auto";
+      formatBy = frame.by || "default";
+      renderDoc();
+      renderViewNote();
+      break;
+    }
+    case "selection": {
+      selection = frame.selection || null;
+      if (frame.format) { format = frame.format; formatBy = frame.format_by || "default"; }
+      renderViewNote();
       break;
     }
     case "view_at": {
