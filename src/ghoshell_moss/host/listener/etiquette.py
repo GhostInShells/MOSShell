@@ -113,9 +113,16 @@ class DeliverSpec(BaseModel):
     )
     barge_in_while_speaking: bool = Field(
         default=False,
-        description="出声即让路: ghost 正在出声 (speech player 在播) 时, 交付信号强制带 "
-                    "interrupt (emit=True only). 思考中不受它影响 —— 那时仍按 interrupt=False "
-                    "走 mode 的排队/留存. 一个开关谈清「什么可以被抢」: 出声可以被抢, 思考不该被抢.",
+        description="出声即让路: ghost 正在出声 (speech player 在播) 时, 交付信号带一个一次性提权 "
+                    "(见 barge_in_boost), 在仲裁里赢下当前注意力 (emit=True only). 思考中不受它影响 —— "
+                    "那时仍按 interrupt=False 走 mode 的排队/留存. 一个开关谈清「什么可以被抢」: "
+                    "出声可以被抢, 思考不该被抢.",
+    )
+    barge_in_boost: Priority = Field(
+        default=Priority.WARNING,
+        description="barge_in_while_speaking 打开时, 出声期间交付信号提权到的那一档. 默认 WARNING: "
+                    "高于 INFO/NOTICE 档的动作注意力, 又低于 ERROR 及以上的故障档. "
+                    "提权只赢一局 —— 抢到注意力后 nucleus 会把它降回运行档.",
     )
 
 

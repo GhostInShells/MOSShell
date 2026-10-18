@@ -152,6 +152,33 @@ async def test_deliver_packet_notify():
 
 
 @pytest.mark.asyncio
+async def test_deliver_boost_raises_the_challenge_then_falls_back():
+    """提权包: 挑战按 max(priority, boost), 抢到 attention 后降回运行档 — 只赢一局."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        sig = new_listener_signal('你好', segment_id='t1', complete=True, boost=Priority.WARNING)
+        assert ListenerSignal.from_signal(sig).boost == Priority.WARNING
+        nuc.add_signal(sig)
+        imp = notified[0]
+        assert imp.priority == Priority.WARNING
+        nuc.attended(imp)
+    assert imp.priority == Priority.INFO
+
+
+@pytest.mark.asyncio
+async def test_deliver_without_boost_challenges_at_its_own_priority():
+    """不填提权 (默认空) → 挑战档位就是 signal 自己的 priority, 不受影响."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        sig = new_listener_signal('你好', segment_id='t1', complete=True, priority=Priority.NOTICE)
+        assert ListenerSignal.from_signal(sig).boost is None
+        nuc.add_signal(sig)
+    assert notified[0].priority == Priority.NOTICE
+
+
+@pytest.mark.asyncio
 async def test_impulse_message_wrapped_in_listen_tag():
     notified: list = []
     async with ListenerNucleus() as nuc:

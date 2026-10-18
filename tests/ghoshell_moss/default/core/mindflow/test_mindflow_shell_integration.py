@@ -909,6 +909,61 @@ async def test_interrupt_preempts_protected_attention():
 
 
 @pytest.mark.asyncio
+async def test_higher_priority_preempts_protected_attention():
+    """高于当前 attention 的优先级永远先赢; 保护期只拦同/低优先级.
+
+    协议契约: ``is_protected()`` 是"同级不抖动"的约定, 不是优先级之上的另一道门.
+    同一场景下同优先级会被 buffer, 高一级则必须抢占.
+    """
+    suite = MindflowInShellTestSuite()
+
+    release_attention1 = asyncio.Event()
+
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            art.send_nowait("frame1")
+            await asyncio.wait_for(release_attention1.wait(), timeout=3.0)
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        async for _ in chunks__:
+            pass
+
+    suite.shell.main_channel.build.content_command(content_func)
+
+    async with suite:
+        suite.add_impulse(Impulse(
+            priority=Priority.NOTICE,
+            protection_time=10.0,
+            messages=[Message.new().with_content("user_first")],
+        ))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        attention1 = suite.last_attention
+        assert attention1 is not None
+
+        # NOTICE + 保护期, 但挑战者是 WARNING 一档 — 按优先级直接赢.
+        suite.add_signal(new_notify_signal(
+            Message.new().with_content("louder"),
+            priority=Priority.WARNING,
+        ))
+        await asyncio.wait_for(attention1.wait_abort(), timeout=2)
+
+        for _ in range(100):
+            if suite.attention_count >= 2:
+                break
+            await asyncio.sleep(0.02)
+
+    release_attention1.set()
+
+    assert suite.attention_count == 2
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
 async def test_three_loop_cycles_20_rounds():
     """三循环拓扑 20 轮: thinking / attention / action 交互.
 

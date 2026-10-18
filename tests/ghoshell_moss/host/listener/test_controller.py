@@ -1150,25 +1150,31 @@ def _deliver_with_barge_in(emitted: list, speaking: bool | None, *, wired: bool 
     return emitted[-1]  # TAIL 只发一包, 就是交付包
 
 
-def test_barge_in_escalates_the_deliver_signal_while_speaking():
-    """ghost 正在出声 → 交付信号带 interrupt (这一包会掐掉正在说的话)."""
+def test_barge_in_boosts_the_deliver_signal_while_speaking():
+    """ghost 正在出声 → 交付信号带一次性提权, 而不是硬掐整轮 (interrupt 保持 False)."""
+    from ghoshell_moss.core.blueprint.mindflow import Priority
+
     emitted = []
     sig = _deliver_with_barge_in(emitted, speaking=True)
-    assert ListenerSignal.from_signal(sig).interrupt is True
+    meta = ListenerSignal.from_signal(sig)
+    assert meta.boost is Priority.WARNING
+    assert meta.interrupt is False
 
 
 def test_barge_in_leaves_the_signal_alone_while_not_speaking():
-    """没在出声 (思考/挂工具) → 交付信号保持 interrupt=False, 按 mode 排队."""
+    """没在出声 (思考/挂工具) → 交付信号不提权, 按 mode 排队."""
     emitted = []
     sig = _deliver_with_barge_in(emitted, speaking=False)
-    assert ListenerSignal.from_signal(sig).interrupt is False
+    meta = ListenerSignal.from_signal(sig)
+    assert meta.boost is None
+    assert meta.interrupt is False
 
 
 def test_barge_in_is_inert_without_a_speaking_probe():
     """独立 listener node 没有说侧 → 开关静默失效, 不猜测, 也不抛."""
     emitted = []
     sig = _deliver_with_barge_in(emitted, speaking=None)
-    assert ListenerSignal.from_signal(sig).interrupt is False
+    assert ListenerSignal.from_signal(sig).boost is None
 
 
 def test_cue_is_the_only_builtin_that_yields_to_speech():

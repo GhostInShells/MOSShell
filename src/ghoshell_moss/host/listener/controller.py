@@ -859,7 +859,8 @@ class ListenerController(ListenLifecycle):
         self._broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
-            interrupt=deliver.interrupt or self._barge_in_now(deliver),
+            interrupt=deliver.interrupt,
+            boost=self._barge_in_boost(deliver),
             mode=deliver.mode,
             low_conf=self._low_confidence_chars(deliver.low_confidence),
             complete=True,
@@ -870,23 +871,29 @@ class ListenerController(ListenLifecycle):
             f"deliver mode={deliver.mode or 'notify'} priority={deliver.priority.name}"
         )
 
-    def _barge_in_now(self, deliver: DeliverSpec) -> bool:
-        """这一包是否因为「我正在出声」而额外获得打断?
+    def _barge_in_boost(self, deliver: DeliverSpec) -> Priority | None:
+        """这一包要不要因为「我正在出声」而提权一档?
 
         开关在礼仪里 (``deliver.barge_in_while_speaking``), 判断在现场: 说侧播放器
         此刻有没有声音. 出声 = 可以被抢, 思考 = 不受影响 —— 后者仍按 ``interrupt``
         与 ``mode`` 的原有语义走 (排队 / 留存 / 下一轮).
+
+        返回的是**提权**而不是 ``interrupt``: 提权让这一包在仲裁里按档位赢下当前注意力
+        (只赢一局, nucleus 抢到后降回运行档), 不硬掐整轮.
         """
         if not deliver.barge_in_while_speaking or self._speaking_probe is None:
-            return False
+            return None
         try:
             speaking = bool(self._speaking_probe())
         except Exception:  # 探针挂掉不该影响交付 — 退回"没在说话"
             self._logger.debug("%s speaking probe failed", self._log_prefix, exc_info=True)
-            return False
-        if speaking:
-            self._notify_signal("deliver escalated to interrupt (ghost is speaking)")
-        return speaking
+            return None
+        if not speaking:
+            return None
+        self._notify_signal(
+            f"deliver boosted to {deliver.barge_in_boost.name} (ghost is speaking)"
+        )
+        return deliver.barge_in_boost
 
     # ── expect 语音输入超时提醒 (纯异步, 不打断模型) ──
 

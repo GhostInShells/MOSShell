@@ -639,8 +639,11 @@ class AbsMindflow(Mindflow, ABC):
                     verdict = 'buffered' if impulse.mode == ChallengeMode.notify.value else 'suppressed'
                     await self._fire_challenge(impulse, defender, verdict)
                     return None
-                if self._current_attention.is_protected():
-                    # 保护期, 同/低优先级失败. notify → buffered; next → queued; 其它 suppress.
+                if (self._current_attention.is_protected()
+                        and Priority(impulse.priority) <= self._current_attention.priority()):
+                    # 保护期只拦同/低优先级. 高于当前 attention 的 challenger 永远先赢 ——
+                    # 保护期是"同级不抖动"的约定, 不是优先级之上的另一道门.
+                    # notify → buffered; next → queued; 其它 suppress.
                     if impulse.mode == ChallengeMode.next.value:
                         verdict = 'queued'
                     elif impulse.mode == ChallengeMode.notify.value:

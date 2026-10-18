@@ -99,6 +99,12 @@ class ListenerSignal(SignalMeta):
       word-level confidence fell below the etiquette's ``deliver.low_confidence``
       threshold. Rendered as the ``low_conf`` attribute of the delivered ``<listen>``
       tag (deliver only). Empty = none.
+    - ``boost``: a one-shot priority raise (提权) — empty by default. When set, the packet
+      challenges at ``max(priority, boost)`` instead of ``priority``; winning an attention
+      still lowers it back to the run tier (``Priority.INFO``). It moves the priority
+      *tier*, which is what decides a challenge; ``strength`` only arbitrates at equal
+      tier. Note the attention protection window is tier-relative: a same-tier challenge
+      inside it loses, a higher tier wins on priority.
 
     Text, speaker, voiceprint and similar extras are fields an impulse does not have —
     the listener side organizes them into the message body.
@@ -109,6 +115,10 @@ class ListenerSignal(SignalMeta):
     interrupt: bool = Field(default=False, description="whether the attention won by this packet calls shell.clear() first (Impulse.interrupt)")
     mode: str = Field(default="", description="loss-side mode: notify / aside / next / ''(default). An onset defaults to '' (suppress on loss); a deliver falls back to notify when empty")
     logos: str = Field(default="", description="conditioned-reflex command logos, sent with the impulse")
+    boost: Priority | None = Field(
+        default=None,
+        description="one-shot raise: 非空时这一包按 max(priority, boost) 挑战注意力; 赢下之后照旧降回运行档. 空 = 不提权.",
+    )
     low_conf: str = Field(default="", description="缩写 = low-confidence (低置信度): 词级置信度低于阈值 (deliver.low_confidence) 的字, 渲染为 <listen> 的 low_conf 属性; 空 = 无")
 
     @classmethod
@@ -308,17 +318,22 @@ class ListenerNucleus(Nucleus):
     def _on_deliver(self, meta: ListenerSignal, signal: Signal) -> None:
         # 发送包 (deliver): mode 为空兜底 notify + 端侧配 priority. 不受冷却约束 —
         # 内容绝不丢.
+        # 提权 (boost): 端侧要这一包赢的时候把它填上, 挑战按 max(priority, boost);
+        # 赢下之后 attended() 照旧降回运行档, 只赢这一局.
+        challenge_priority = signal.priority if meta.boost is None else max(
+            Priority(signal.priority), Priority(meta.boost),
+        )
         # 探针 (D13 丢尾包排查): 尾包到达 nucleus 的那一刻留一行.
         self._logger.info(
-            "%s deliver ← segment=%s len=%d priority=%s mode=%s",
+            "%s deliver ← segment=%s len=%d priority=%s boost=%s mode=%s",
             self._name, meta.segment_id, len(self._signal_text(signal)),
-            signal.priority, meta.mode or ChallengeMode.notify.value,
+            signal.priority, meta.boost, meta.mode or ChallengeMode.notify.value,
         )
         impulse = Impulse(
             source=self.name(),
             trace_id=meta.segment_id or unique_id(),
             id=meta.segment_id or unique_id(),
-            priority=signal.priority,
+            priority=challenge_priority,
             strength=self._normal_strength,
             strength_decay_seconds=self._strength_decay_seconds,
             complete=True,
@@ -434,6 +449,7 @@ def new_listener_signal(
         low_conf: str = "",
         complete: bool = True,
         priority: Priority | None = None,
+        boost: Priority | None = None,
         description: str = "",
         hint: str = "",
 ) -> Signal:
@@ -451,6 +467,7 @@ def new_listener_signal(
         interrupt=interrupt,
         mode=mode,
         logos=logos,
+        boost=boost,
         low_conf=low_conf,
     ).to_signal(
         text,
