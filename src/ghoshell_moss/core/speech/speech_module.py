@@ -332,6 +332,19 @@ class SpeechChannelModule(ChannelModule):
         self._muted = on
         return "muted" if on else "unmuted"
 
+    async def _clear_speech(self) -> str:
+        """Stop talking right now — drop every open speech stream, the one being played and the
+        ones still queued behind it.
+
+        The command that was speaking ends by itself, because its stream closes under it; nothing
+        else on the shell is touched. Use it when you started saying something and then decided
+        you should not have.
+        """
+        if self._speech is None:
+            return "no speech"
+        dropped = await self._speech.clear()
+        return f"dropped {len(dropped)} speech stream(s)"
+
     async def on_startup(self) -> None:
         if self._speech is None and CommandUtil.enabled():
             self._speech = CommandUtil.get_contract(Speech)
@@ -349,6 +362,7 @@ class SpeechChannelModule(ChannelModule):
             cmd = factory.build_content_command()
             commands[cmd.name()] = cmd
         commands["mute"] = PyCommand(self._mute, name="mute")
+        commands["clear_speech"] = PyCommand(self._clear_speech, name="clear_speech")
         self._own_commands = commands
 
     async def on_close(self) -> None:

@@ -1193,6 +1193,32 @@ def test_no_builtin_yields_to_speech_by_default():
     assert not [n for n in specs if getattr(etiquette, n).deliver.barge_in_while_speaking]
 
 
+def test_duplex_is_full_duplex_and_never_cuts_in():
+    """duplex 一条礼纪要兑现三件事: 每句一包、有真的判停收口、绝不打断.
+
+    缺了判停就退化成 cue (他停不停只能靠我自己猜); 缺了分句就退化成一次一整段
+    (我拿不到"他还在说"的中间态). 打断与否是另一条: 这一档里什么时候开口归我判断.
+    """
+    from ghoshell_moss.host.listener import etiquette
+
+    spec = etiquette.duplex
+    assert spec.deliver.per_clause
+    assert spec.stop.silence > 0
+    assert not spec.deliver.interrupt
+    assert not spec.onset.emit
+
+
+def test_default_etiquette_is_full_duplex():
+    """新开的 ghost 默认就在全双工上 — 不是「起话即打断」的 always, 也不是没判停的 cue."""
+    from ghoshell_moss.host.listener import etiquette
+
+    config = etiquette.EtiquetteConfig()
+    active = config.get(config.default)
+    assert active is not None, "the default must name a defined etiquette"
+    assert active.deliver.per_clause
+    assert active.stop.silence > 0
+
+
 # ── 分句交付 (deliver.per_clause) ─────────────────────────────────────────────
 #
 # 不变量: 每一包只带上次没发过的文本; 尾包绝不重发已发的分句; 身份由听侧规划,

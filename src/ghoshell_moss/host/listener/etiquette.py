@@ -39,6 +39,7 @@ __all__ = [
     "scored",
     "murmur",
     "cue",
+    "duplex",
     "knock",
 ]
 
@@ -341,6 +342,20 @@ cue = EtiquetteSpec(
 )
 
 
+# 全双工: 每句一包 + 段尾一包 paused=true 收口. 尾包**不是**冗余包: 4s 静音期间那句还在长,
+# 最后定稿的那一截、以及二遍识别才出来的文本, 都只能落在尾包里 —— 它既回答"他可能停了",
+# 也可能带着前面没发过的新内容. 静音取 4s: 一句说完的正常停顿 (换气、想一下) 不该把同一段
+# 切成两段, 而 4s 也够我在他真停下时及时接上.
+# 其余照 cue: 不打断、走 next、出声不让路 —— 什么时候开口是模型的判断, 不是礼仪的.
+duplex = EtiquetteSpec(
+    name="duplex",
+    description="full duplex — every clause reaches you; a 4s quiet tail says he may have stopped",
+    onset=OnsetSpec(emit=False, interrupt=False),
+    stop=StopSpec(silence=4.0),
+    deliver=DeliverSpec(interrupt=False, mode="next", per_clause=True),
+)
+
+
 # 长论述判停: 挂一个可编程分类器判"这段说完没有", 打分到阈值提前交付, 静默兜底.
 scored = EtiquetteSpec(
     name="scored",
@@ -391,12 +406,13 @@ class EtiquetteConfig(ConfigType):
             scored.model_copy(deep=True),
             murmur.model_copy(deep=True),
             cue.model_copy(deep=True),
+            duplex.model_copy(deep=True),
             knock.model_copy(deep=True),
         ],
         description="the defined etiquettes (name + description + the three layers)",
     )
     default: str = Field(
-        default="always",
+        default="duplex",
         description="the active etiquette name",
     )
 

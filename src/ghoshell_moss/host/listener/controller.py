@@ -48,6 +48,7 @@ from ghoshell_moss.host.listener.etiquette import (
     EtiquetteSpec,
     OnsetSpec,
     always as ALWAYS,
+    duplex as DUPLEX,
     knock as KNOCK,
     once as ONCE,
     scored as SCORED,
@@ -360,11 +361,11 @@ class ListenerController(ListenLifecycle):
         return task
 
     def start_default_etiquette(self) -> asyncio.Future:
-        """启动默认礼仪 (config.default); 未定义则 always 配置化并激活."""
+        """启动默认礼仪 (config.default); 未定义则回退开箱的全双工档并激活."""
         config = self._etiquette_config()
         spec = config.active()
         if spec is None:
-            spec = ALWAYS.model_copy(deep=True)
+            spec = DUPLEX.model_copy(deep=True)
             config.upsert(spec)
             config.activate(spec.name)
         return self.run_etiquette(spec)
@@ -1278,6 +1279,16 @@ class ListenerController(ListenLifecycle):
                 f"Information, not permission — you may speak on any packet; whether he has finished is\n"
                 f"your call, not the tag's. low_conf=\"…\" lists the characters whose transcription\n"
                 f"confidence was low (likely misheard) — confirm when it matters.\n"
+                f"Taking a turn — the packet is information, speaking is your choice:\n"
+                f"  You are not waiting for permission, and not waiting for the end of the stretch. When\n"
+                f"  what you hear already calls for an answer, or when he is heading the wrong way, it is\n"
+                f"  fine to step in while he is still talking.\n"
+                f"  A packet that says he may have stopped can also carry whatever the stretch added since\n"
+                f"  the previous one — read it as content first, as a pause cue second.\n"
+                f"  If you notice you cut in wrongly, stop yourself promptly: your own voice first, then\n"
+                f"  whatever you set in motion. Stopping late is worse than never having started.\n"
+                f"  How this person actually wants to be talked with is not settled here — it grows out of\n"
+                f"  practice. Watch how he reacts, and adjust what you do, not only what you say.\n"
                 f"ASR tunable params schema:\n"
                 f"{json.dumps(info.params_schema, ensure_ascii=False)}\n"
                 f"EtiquetteSpec json schema (for set_etiquette_spec):\n"

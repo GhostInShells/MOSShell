@@ -252,3 +252,32 @@ async def test_module_availability_is_continuous_not_a_startup_fork():
         assert meta.modules == ["speech"]
         assert meta.named_notices["mute"] == "off"
         assert "say" in {cmd.name for cmd in meta.commands}
+
+
+class _ClearRecordingSpeech(_ToggleSpeech):
+    """记下 clear() 被调了几次、丢了几条 stream — 只验"嘴被清空", 不验怎么清."""
+
+    def __init__(self, tts: TTS):
+        super().__init__(tts)
+        self.clears = 0
+        self.dropped: list[str] = []
+
+    async def clear(self) -> list[str]:
+        self.clears += 1
+        return list(self.dropped)
+
+
+@pytest.mark.asyncio
+async def test_clear_speech_drops_every_open_stream_and_leaves_the_rest_alone():
+    """插错话时只掐嘴: 一次 clear 把手里所有 stream 收掉, 主轨上别的动作一概不碰."""
+    speech = _ClearRecordingSpeech(_FakeTTS())
+    speech.dropped = ["first clause", "second clause"]
+    runtime_channel = _new_bound_runtime(SpeechChannelModule(), speech)
+    async with runtime_channel.bootstrap() as runtime:
+        clear_speech = runtime.get_command("clear_speech")
+        assert clear_speech is not None
+
+        receipt = await clear_speech()
+
+        assert speech.clears == 1
+        assert "2" in receipt
