@@ -81,6 +81,9 @@ __all__ = [
     "new_listener_signal",
 ]
 
+# 空正文的尾包 (分句交付时, 段结束但没带新文字) 的正文 —— 括号让它一眼不是 ASR 转写.
+_EMPTY_TAIL_HINT = "（他停了）"
+
 
 class ListenerSignal(SignalMeta):
     """Listener perception signal — a single degenerate form, meta fully self-explaining.
@@ -397,8 +400,11 @@ class ListenerNucleus(Nucleus):
         data = self._signal_text(signal)
         if not data and paused is not True:
             return []
-        # 空正文 + paused: 分句交付里尾包没带新内容时的形态 —— 它只回答「他可能停了」,
-        # 所以模型看到的是 <listen paused="true"/> 这样一个没有正文的标签, 而不是什么都没有.
+        # 空正文 + paused: 分句交付里尾包没带新内容时的形态 —— 它只回答「他可能停了」.
+        # 正文空着会让模型读到一段空块 (看着像一条空的 ASR 正文), 所以填一句括号提示:
+        # 括号让它一眼与转写正文分开.
+        if not data:
+            data = _EMPTY_TAIL_HINT
         return [self._listen_message(data, source, low_conf, signal.created_at, paused)]
 
     def _signal_text(self, signal: Signal) -> str:
