@@ -315,3 +315,29 @@ async def test_a_clause_packet_reads_as_not_paused_and_the_tail_as_paused():
     assert 'paused="false"' in _message_xml(clause_imp)
     assert 'paused="true"' in _message_xml(tail_imp)
     assert _message_text(tail_imp) == '', '没有新内容时尾包正文为空 —— 标记全在属性上, 不填任何替代文字'
+
+
+@pytest.mark.asyncio
+async def test_a_packet_shows_the_loudness_it_carries():
+    """响度是测量值: 有就写成 db 属性, 没有就不出现这个属性."""
+    messages: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: messages.append(imp))
+        nuc.add_signal(new_listener_signal('你好', impulse_id='a', complete=True, paused=True, db=-20.4))
+        nuc.add_signal(new_listener_signal('嗯', impulse_id='b', complete=True, paused=True))
+    loud, quiet = messages
+    assert 'db="-20.4"' in _message_xml(loud)
+    assert 'db=' not in _message_xml(quiet), '没量到响度就不写这个属性'
+
+
+@pytest.mark.asyncio
+async def test_the_strength_the_listener_computed_is_used():
+    """听侧算好的挑战强度被照用; 没给则回落 nucleus 的常态强度."""
+    messages: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: messages.append(imp))
+        nuc.add_signal(new_listener_signal('大声', impulse_id='a', complete=True, paused=True, strength=180))
+        nuc.add_signal(new_listener_signal('小声', impulse_id='b', complete=True, paused=True))
+    loud, quiet = messages
+    assert loud.strength == 180
+    assert quiet.strength == 100, '没给强度 → nucleus 的常态强度'

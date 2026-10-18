@@ -114,6 +114,12 @@ class ListenerSignal(SignalMeta):
       *tier*, which is what decides a challenge; ``strength`` only arbitrates at equal
       tier. Note the attention protection window is tier-relative: a same-tier challenge
       inside it loses, a higher tier wins on priority.
+    - ``db``: this packet's mean loudness (dB) — the capture side already computes
+      ``rms_db`` per frame, so the listener only averages. Rendered as the ``db``
+      attribute of the ``<listen>`` tag. A measurement, not a judgment about anyone.
+    - ``strength``: a challenge strength the listener computed from loudness before
+      firing; empty = keep the nucleus's normal one. Loudness is a fact only the sending
+      side holds, so that side computes the number and the nucleus just uses it.
 
     Text, speaker, voiceprint and similar extras are fields an impulse does not have —
     the listener side organizes them into the message body.
@@ -143,6 +149,16 @@ class ListenerSignal(SignalMeta):
         description="one-shot raise: 非空时这一包按 max(priority, boost) 挑战注意力; 赢下之后照旧降回运行档. 空 = 不提权.",
     )
     low_conf: str = Field(default="", description="缩写 = low-confidence (低置信度): 词级置信度低于阈值 (deliver.low_confidence) 的字, 渲染为 <listen> 的 low_conf 属性; 空 = 无")
+    db: float | None = Field(
+        default=None,
+        description="这一包的平均响度 (dB, capture 侧预算的 rms_db 的均值), 渲染为 <listen> 的 db 属性. "
+                    "空 = 这一包没有可量的声音. 它是测量值, 不是判断.",
+    )
+    strength: int | None = Field(
+        default=None,
+        description="听侧按响度水位算好的挑战强度; 空 = 用 nucleus 的常态强度. "
+                    "响度只有现场知道, 所以强度由发射方算好再交过来, nucleus 只照着用.",
+    )
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -357,14 +373,14 @@ class ListenerNucleus(Nucleus):
             trace_id=self._identity(meta),
             id=self._identity(meta),
             priority=challenge_priority,
-            strength=self._normal_strength,
+            strength=self._normal_strength if meta.strength is None else meta.strength,
             strength_decay_seconds=self._strength_decay_seconds,
             complete=True,
             interrupt=meta.interrupt,
             mode=meta.mode or ChallengeMode.notify.value,
             logos=meta.logos,
             hint=signal.hint,
-            messages=self._wrap_messages(signal, meta.source, meta.low_conf, meta.paused),
+            messages=self._wrap_messages(signal, meta.source, meta.low_conf, meta.paused, meta.db),
             description=signal.description,
         )
         self._fire(impulse)
@@ -391,8 +407,9 @@ class ListenerNucleus(Nucleus):
 
     def _wrap_messages(
             self, signal: Signal, source: str, low_conf: str = "", paused: bool | None = None,
+            db: float | None = None,
     ) -> list[Message]:
-        """Wrap the signal's text messages into one ``<listen source=... low_conf=... paused=...>`` tag."""
+        """Wrap the signal's text messages into one ``<listen source=... low_conf=... paused=... db=...>`` tag."""
         data = self._signal_text(signal)
         if not data and paused is not True:
             return []
@@ -400,7 +417,7 @@ class ListenerNucleus(Nucleus):
         # 它回答的是机制问题 —— 听侧判了这一段的停, 没有新的字. 正文就空着.
         # 不往正文里填任何替代文字: 那句替代会把机制语义翻译成一句"事实", 而正文
         # 只该放他真正说过的话. 怎么读一个空正文的包, 写在 listener 的 instruction 里.
-        return [self._listen_message(data, source, low_conf, signal.created_at, paused)]
+        return [self._listen_message(data, source, low_conf, signal.created_at, paused, db)]
 
     def _signal_text(self, signal: Signal) -> str:
         """Collect the text content of every message body in the signal."""
@@ -412,9 +429,10 @@ class ListenerNucleus(Nucleus):
         return '\n'.join(texts)
 
     def _listen_message(
-            self, data: str, source: str, low_conf: str, created_at, paused: bool | None = None,
+            self, data: str, source: str, low_conf: str, created_at,
+            paused: bool | None = None, db: float | None = None,
     ) -> Message:
-        """One ``<listen source=... low_conf=... paused=...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
+        """One ``<listen ...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
         attributes: dict[str, str] = {}
         if source:
             attributes["source"] = source
@@ -422,6 +440,8 @@ class ListenerNucleus(Nucleus):
             attributes["low_conf"] = low_conf
         if paused is not None:
             attributes["paused"] = "true" if paused else "false"
+        if db is not None:
+            attributes["db"] = f"{db:.1f}"
         message = Message.new(tag=ListenerSignal.xml_tag(), attributes=attributes or None, timestamp=True)
         message.meta.created = created_at
         return message.with_content(data)
@@ -494,6 +514,8 @@ def new_listener_signal(
         complete: bool = True,
         priority: Priority | None = None,
         boost: Priority | None = None,
+        db: float | None = None,
+        strength: int | None = None,
         description: str = "",
         hint: str = "",
 ) -> Signal:
@@ -513,6 +535,8 @@ def new_listener_signal(
         logos=logos,
         boost=boost,
         low_conf=low_conf,
+        db=db,
+        strength=strength,
         impulse_id=impulse_id,
         paused=paused,
     ).to_signal(

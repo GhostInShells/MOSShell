@@ -347,12 +347,14 @@ cue = EtiquetteSpec(
 # 也可能带着前面没发过的新内容. 静音取 4s: 一句说完的正常停顿 (换气、想一下) 不该把同一段
 # 切成两段, 而 4s 也够我在他真停下时及时接上.
 # 其余照 cue: 不打断、走 next、出声不让路 —— 什么时候开口是模型的判断, 不是礼仪的.
+# low_confidence=0.8: 火山词级置信度里, 0.8 以下基本就是听岔了 —— 默认开着, 让模型
+# 自己看到哪几个字可疑 (属性只在有可疑字时出现, 正常句子的帧里不会多一个字节).
 duplex = EtiquetteSpec(
     name="duplex",
     description="full duplex — every clause reaches you; a 4s quiet tail says he may have stopped",
     onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=4.0),
-    deliver=DeliverSpec(interrupt=False, mode="next", per_clause=True),
+    deliver=DeliverSpec(interrupt=False, mode="next", per_clause=True, low_confidence=0.8),
 )
 
 

@@ -10,10 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment, RecognitionWord
+from ghoshell_moss.contracts.audio import AudioChunk, AudioFrameMeta
 from ghoshell_moss.core.blueprint.mindflow import Priority
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
-from ghoshell_moss.host.listener.etiquette import always, knock
+from ghoshell_moss.host.listener.etiquette import always, duplex, knock
 
 
 class _MockState:
@@ -52,6 +53,7 @@ class _MockListener:
         self.result_observers = []
         self.segment_observers = []
         self.error_observers = []
+        self.audio_observers = []
         self.running = False
         self.entered = False
         self.exited = False
@@ -68,6 +70,10 @@ class _MockListener:
     def on_error(self, cb):
         self.error_observers.append(cb)
         return lambda: None
+
+    def on_audio_chunk(self, cb):
+        self.audio_observers.append(cb)
+        return lambda: self.audio_observers.remove(cb)
 
     def trigger_error(self, error):
         """测试钩子: 模拟耳朵级故障 (pump 崩溃 / ASR 上报) 扇出."""
@@ -1283,8 +1289,8 @@ def test_per_clause_tail_carries_only_the_remainder():
     assert meta.segment_id == "g"
 
 
-def test_per_clause_tail_with_nothing_new_is_a_pause_marker_only():
-    """没有新内容时尾包只回答"他停了" —— 正文为空, 不许重发整段."""
+def test_per_clause_tail_with_nothing_new_is_not_emitted():
+    """没有新内容时不发尾包: 分句已经把字送完了, 再为一包空正文单开一轮没有意义."""
     emitted = []
     controller = _per_clause_controller(emitted)
     cb = controller._cb
@@ -1292,11 +1298,8 @@ def test_per_clause_tail_with_nothing_new_is_a_pause_marker_only():
     cb(_clause("你好"))
     cb(_tail("你好", segment_id="g"))
 
-    assert len(emitted) == 2
-    assert _body(emitted[1]) == ""
-    meta = ListenerSignal.from_signal(emitted[1])
-    assert meta.paused is True
-    assert meta.segment_id == "g"
+    assert len(emitted) == 1, "空尾包不签发 —— 只剩那条分句"
+    assert _body(emitted[0]) == "你好"
 
 
 def test_impulse_ids_are_planned_by_the_listener():
@@ -1309,9 +1312,153 @@ def test_impulse_ids_are_planned_by_the_listener():
     cb(_clause("你好"))
     cb(RecognitionEvent(stream_id="s", segment_id="g", phase=RecognitionPhase.CLAUSE,
                         text="你好，再见", clause=RecognitionClause(text="再见")))
-    cb(_tail("你好，再见", segment_id="g"))
+    cb(_tail("你好，再见，最后一句", segment_id="g"))
 
     metas = [ListenerSignal.from_signal(s) for s in emitted]
     ids = [m.impulse_id for m in metas]
     assert ids[0] == ids[-1], "onset 与尾包是同一次话语 —— 同 id 才走得通吸收"
     assert len(set(ids[1:-1])) == 2, "每个分句各自一枚身份, 谁也不吸收谁"
+
+
+def _audio(rms_db: float, silent: bool = False) -> AudioChunk:
+    return AudioChunk(meta=AudioFrameMeta(rms_db=rms_db, is_silent=silent))
+
+
+def test_a_packet_carries_the_loudness_it_heard():
+    """deliver 带上这一段音频的平均响度 (dB): 静音帧不拉低它."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+    for cb in list(listener.audio_observers):
+        cb(_audio(-20.0))
+        cb(_audio(-20.0))
+        cb(_audio(-60.0, silent=True))
+    tail = RecognitionEvent(stream_id="s", segment_id="t1", phase=RecognitionPhase.TAIL, text="你好")
+    for cb in list(listener.result_observers):
+        cb(tail)
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db == pytest.approx(-20.0), '响度是两帧 -20dB 的均值, 静音帧不计入'
+    assert meta.strength is None, '没设水位 → 强度不动'
+
+
+def test_loudness_above_the_watermark_raises_the_strength():
+    """超过水位: 按高出的 dB 抬挑战强度, 由听侧发射前算好."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+    controller.with_loudness_watermark(-26.0)
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-20.0))       # 比水位高 6dB
+    tail = RecognitionEvent(stream_id="s", segment_id="t1", phase=RecognitionPhase.TAIL, text="你好")
+    for cb in list(listener.result_observers):
+        cb(tail)
+
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db == pytest.approx(-20.0)
+    assert meta.strength == 150, '高 6dB (半步) → 常态 100 的一倍半'
+
+
+def test_a_watermark_that_is_not_exceeded_leaves_the_strength_alone():
+    """没超过水位就是常态强度: 不填 strength, 由 nucleus 用自己的常态值."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+    controller.with_loudness_watermark(-10.0)
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-30.0))
+    tail = RecognitionEvent(stream_id="s", segment_id="t1", phase=RecognitionPhase.TAIL, text="你好")
+    for cb in list(listener.result_observers):
+        cb(tail)
+
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db == pytest.approx(-30.0)
+    assert meta.strength is None
+
+
+def test_a_clause_packet_can_challenge_harder_without_carrying_db():
+    """分句包带强度 (耳朵当场要压过对手) 但不带 db —— 整段多响是尾包的事."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(duplex.model_copy(deep=True))
+    controller.with_loudness_watermark(-26.0)
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-20.0))
+    clause = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.CLAUSE, text="你好",
+        clause=RecognitionClause(text="你好"),
+    )
+    for cb in list(listener.result_observers):
+        cb(clause)
+
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db is None, '分句包不带响度'
+    assert meta.strength == 150, '比水位高 6dB → 一杯半的强度'
+
+
+def test_the_watermark_learns_how_loud_this_person_normally_is():
+    """自动水位: 攒够几段之后, 只有比常态明显更响的那一句才抬强度."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+
+    def _segment(db_value: float) -> ListenerSignal:
+        for cb in list(listener.audio_observers):
+            cb(_audio(db_value))
+        tail = RecognitionEvent(stream_id="s", segment_id="t", phase=RecognitionPhase.TAIL, text="嗯")
+        for cb in list(listener.result_observers):
+            cb(tail)
+        return ListenerSignal.from_signal(emitted[-1])
+
+    for _ in range(5):
+        assert _segment(-30.0).strength is None, '还在认常态, 不提强度'
+    loud = _segment(-5.0)
+    assert loud.strength is not None and loud.strength > 200, '比常态高 25dB → 明显抬强度'
+    assert loud.db == pytest.approx(-5.0)
+
+
+def test_loudness_state_says_where_the_watermark_comes_from():
+    """读侧把两个来源分开报: 显式设过就是显式, 没设就报自动基线; 都没攒够就是 null."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+
+    state = controller.loudness_state()
+    assert state["explicit"] is None and state["auto"] is None and state["effective"] is None, \
+        '没设过水位、也没听过几段 → 没有水位'
+
+    controller.with_loudness_watermark(-26.0)
+    state = controller.loudness_state()
+    assert state["explicit"] == pytest.approx(-26.0)
+    assert state["effective"] == pytest.approx(-26.0)
+
+
+def test_loudness_state_reports_the_learned_baseline_and_the_running_stretch():
+    """攒够段之后报自动基线; 正在说的这一段的均值与它算出来的强度也一并报出."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+
+    for _ in range(5):
+        for cb in list(listener.audio_observers):
+            cb(_audio(-30.0))
+        for cb in list(listener.result_observers):
+            cb(_tail("嗯", segment_id="t"))
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-5.0))
+    state = controller.loudness_state()
+    assert state["auto"] == pytest.approx(-24.0), '基线 = 最近几段中位数 -30 加 6dB 余量'
+    assert state["effective"] == pytest.approx(-24.0)
+    assert state["segment"] == pytest.approx(-5.0), '正在说的这一段, 还没收尾'
+    assert state["strength"] is not None and state["strength"] > 200, \
+        '比基线高 19dB → 下一包明显抬强度'

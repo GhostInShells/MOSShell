@@ -16,7 +16,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import statistics
 import time
+from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
@@ -75,6 +77,23 @@ StopDetectorFactory = Callable[[EtiquetteSpec, Callable[[], None]], StopJudge]
 #: Why 有界: ASR 自身 ``max_connect_retries`` 默认 10 (退避 0.5→8s, 约 50s) 才 fatal —
 #: 无界重启会退化成每 ~50s 一次的 signal 风暴. 有界只为真正的瞬断留自愈窗口.
 _MAX_FAULT_RESTARTS = 3
+
+#: 响度 → 挑战强度: 比水位高多少 dB, 强度按常态的多少倍算.
+#: 人抬高嗓门是在加压, 不是在换优先级档 —— 所以走 strength, 不动 priority.
+#: 12dB ≈ 能量翻倍: 高一个 12dB 就给两倍强度; 到 +24dB 封顶 (三倍, 也是 Signal 的上限 300).
+_LOUD_STEP_DB = 12.0
+_LOUD_OVER_MAX_DB = 24.0
+
+#: 自动水位: 最近多少段的中位数当基线, 至少攒够几段才启用, 基线之上还要高多少 dB 才算"抬高".
+#: 用中位数而不是均值 —— 一次喊叫会把均值拽走, 中位数不动; 余量按 dB 加而不是按百分比乘,
+#: 因为 dB 是量级刻度, -25dB 乘 1.2 得到 -30dB, 那是把门槛降低 (反方向).
+_AUTO_WATERMARK_SEGMENTS = 12
+_AUTO_WATERMARK_MIN_SEGMENTS = 5
+_AUTO_WATERMARK_MARGIN_DB = 6.0
+
+#: 常态挑战强度 (``Signal.strength`` 的设计常态位) 与它的上限 (合约里的 le=300).
+_NORMAL_STRENGTH = 100
+_MAX_SIGNAL_STRENGTH = 300
 
 
 def build_stop_caller_factory(container) -> Optional[Callable[[str], MossLLMCaller]]:
@@ -208,8 +227,18 @@ class ListenerController(ListenLifecycle):
         # 分句交付的游标: 记住这一段已经发出去多少文本, 交给 SegmentDelta 保证不重发.
         self._delta = SegmentDelta()
         self._current_clauses: list[RecognitionClause] = []
+        # 响度 (dB): capture 侧已按帧算好 rms_db, 这里只攒均值 —— 一帧一次浮点加法, 不做 DSP.
+        # 口径是「这一整段」: 分句包读的是跑动均值, 尾包读完整均值, 段尾才清零.
+        self._level_sum: float = 0.0
+        self._level_count: int = 0
+        # 最近若干段的中位响度 (自动水位的基线), 只有段尾写入.
+        self._recent_db: deque[float] = deque(maxlen=_AUTO_WATERMARK_SEGMENTS)
+        # 显式水位 (运行时, 不进礼仪): 不超过它 → 常态强度; 超过 → 按高出的量抬高.
+        # None = 走自动水位 (基线中位数 + 余量), 攒不够样本时等同于不提.
+        self._db_watermark: float | None = None
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
+        self._listener.on_audio_chunk(self._on_audio_level)
         # 听到即恢复 → 复位故障重启计数 (自愈窗口内重新听到声音即清零).
         listener.on_recognition_result(self._on_fault_activity_reset)
         # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
@@ -253,6 +282,14 @@ class ListenerController(ListenLifecycle):
     def with_config_store(self, store: ConfigStore) -> Self:
         """注册 ConfigStore: 礼仪修改 save=True 时写回环境配置; 否则只内存."""
         self._config_store = store
+        return self
+
+    def with_loudness_watermark(self, db: float | None) -> Self:
+        """运行时响度水位 (dB): 不超过它 → 常态强度; 超过 → 按高出量抬强度.
+
+        channel 命令 ``set_loudness_watermark`` 与测试共用这一个入口. None = 关.
+        """
+        self._db_watermark = db
         return self
 
     def with_stop_detector(self, factory: StopDetectorFactory) -> Self:
@@ -876,6 +913,8 @@ class ListenerController(ListenLifecycle):
         deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
         if not deliver.emit or not deliver.per_clause:
             return
+        # 分句包只带强度 (要不要抬高耳朵的音量), 不带 db —— 整段多响是尾包的事.
+        strength = self._strength_for(self._segment_db())
         for packet in self._delta.feed(result):
             body = packet.text if packet.revised else packet.delta
             if not body:
@@ -892,6 +931,7 @@ class ListenerController(ListenLifecycle):
                 boost=self._barge_in_boost(deliver),
                 mode=deliver.mode,
                 low_conf=self._low_confidence_chars(deliver.low_confidence),
+                strength=strength,
                 complete=True,
                 priority=deliver.priority,
                 description="listener:clause",
@@ -901,9 +941,13 @@ class ListenerController(ListenLifecycle):
         """尾包发送: 按当前礼仪的 deliver 协议发射 (emit 关则不发射).
 
         分句交付开着时, 尾包只带**没发过的那一截** (由 ``SegmentDelta`` 切), 并且是唯一
-        带 ``segment_id`` (地址) 的一包; 没有新内容时它只带判停标记, 正文为空.
+        带 ``segment_id`` (地址) 的一包; 没有新内容时它不再发信号 —— 分句已经把这段字发完了,
+        只剩"他停了"一个事实, 而分句包本身就让模型在每一句上都有机会接话, 不需要再为这一个
+        事实单独开一轮 (空尾包曾经每段都白占一个 turn).
         """
         deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
+        # 段尾结响度: 尾包是唯一带 db 的包; 不发包的档位也照结, 否则基线会漏掉整段.
+        db, strength = self._close_segment_loudness()
         if not deliver.emit:
             self._notify_signal("deliver suppressed (emit=False)")
             return
@@ -915,6 +959,14 @@ class ListenerController(ListenLifecycle):
                 body = packet.text if packet.revised else packet.delta
             else:
                 body = ""
+            if not body:
+                # 空尾包: 这段的每个字都已随分句送过, 收尾没有新内容 —— 不单独签发.
+                self._logger.info(
+                    "%s deliver tail %s carries nothing new — not emitted",
+                    self._log_prefix, result.segment_id,
+                )
+                self._notify_signal("deliver tail skipped (nothing new after clauses)")
+                return
         self._broadcast(new_listener_signal(
             body,
             segment_id=result.segment_id,
@@ -924,6 +976,8 @@ class ListenerController(ListenLifecycle):
             boost=self._barge_in_boost(deliver),
             mode=deliver.mode,
             low_conf=self._low_confidence_chars(deliver.low_confidence),
+            db=db,
+            strength=strength,
             complete=True,
             priority=deliver.priority,
             description="listener:deliver",
@@ -1231,6 +1285,93 @@ class ListenerController(ListenLifecycle):
                     chars.append(w.text)
         return "".join(chars)
 
+    def _on_audio_level(self, chunk: AudioChunk) -> None:
+        """攒响度: 每帧一次加法 (rms_db 是 capture 预算好的, 不重算能量).
+
+        静音帧不计入 —— 判停之后的那段空白不该拉低这一包的平均响度.
+        """
+        meta = chunk.meta
+        if meta.is_silent:
+            return
+        self._level_sum += meta.rms_db
+        self._level_count += 1
+
+    def _segment_db(self) -> float | None:
+        """本段到此刻的平均响度 (dB); 还没量到声音 → None.
+
+        不分句清零: 分句包读的是跑动均值, 尾包读到的就是这一整段的均值.
+        """
+        return self._level_sum / self._level_count if self._level_count else None
+
+    def _watermark(self) -> float | None:
+        """当前的响度水位: 显式设过就用它, 否则用最近若干段的中位数 + 余量.
+
+        自动水位攒不够 ``_AUTO_WATERMARK_MIN_SEGMENTS`` 段就不给 (None = 不提强度) ——
+        前几段用来认这个人的常态, 不该拿它当判据.
+        """
+        if self._db_watermark is not None:
+            return self._db_watermark
+        if len(self._recent_db) < _AUTO_WATERMARK_MIN_SEGMENTS:
+            return None
+        return statistics.median(self._recent_db) + _AUTO_WATERMARK_MARGIN_DB
+
+    def _strength_for(self, db: float | None) -> int | None:
+        """按当前水位把响度折成挑战强度 (分句包用; 尾包走 ``_close_segment_loudness``)."""
+        return self._strength_over(db, self._watermark())
+
+    @staticmethod
+    def _strength_over(db: float | None, watermark: float | None) -> int | None:
+        """响度 -> 挑战强度; 不超过水位 → None (用 nucleus 的常态强度).
+
+        超过水位后按高出的量线性抬: ``+_LOUD_STEP_DB`` 翻一倍, 到 ``_LOUD_OVER_MAX_DB`` 封顶.
+        计算发生在发射前 —— 响度是听侧现场才有的东西, 交给 nucleus 时已经是一个数.
+        """
+        if db is None or watermark is None:
+            return None
+        over = db - watermark
+        if over <= 0:
+            return None
+        strength = int(round(_NORMAL_STRENGTH * (1.0 + min(over, _LOUD_OVER_MAX_DB) / _LOUD_STEP_DB)))
+        return min(strength, _MAX_SIGNAL_STRENGTH)
+
+    def loudness_state(self) -> dict:
+        """响度的现场读数 (public-internal: 给 ``get_loudness_state`` 命令与测试用).
+
+        显式水位与自动水位分开报 —— 只报一个"生效水位"会看不出它到底是谁给的.
+        """
+        segment = self._segment_db()
+        auto: float | None = None
+        if len(self._recent_db) >= _AUTO_WATERMARK_MIN_SEGMENTS:
+            auto = statistics.median(self._recent_db) + _AUTO_WATERMARK_MARGIN_DB
+        return {
+            "explicit": self._db_watermark,
+            "auto": auto,
+            "effective": self._watermark(),
+            "recent": list(self._recent_db),
+            "segment": segment,
+            "strength": self._strength_for(segment),
+        }
+
+    def _close_segment_loudness(self) -> tuple[float | None, int | None]:
+        """段尾: 结这一段的响度 (给尾包呈现), 顺带把它记进自动水位的基线, 然后清零.
+
+        尾包是一次话语里唯一带 ``db`` 的包 —— 分句只报"现在多响", 整段多响属于段尾.
+        """
+        db = self._segment_db()
+        # 水位先取: 这一段的强度按"它自己之前"的基线算, 不把自己算进基线.
+        watermark = self._watermark()
+        strength = self._strength_over(db, watermark)
+        self._level_sum = 0.0
+        self._level_count = 0
+        if db is not None:
+            self._logger.info(
+                "%s loudness db=%.1f watermark=%s strength=%s",
+                self._log_prefix, db,
+                "n/a" if watermark is None else f"{watermark:.1f}", strength,
+            )
+            self._recent_db.append(db)
+        return db, strength
+
     # ── internals ──
 
     def _cancel_active(self) -> None:
@@ -1273,16 +1414,15 @@ class ListenerController(ListenLifecycle):
                 f"Voice input is ASR transcription — it may contain homophones and near-sounds "
                 f"(谐音). Judge by meaning and context, infer what the user likely said, and "
                 f"ask for clarification when unsure.\n"
-                f"How to read a <listen> packet — the listening side hands you what it heard, plus a mark\n"
-                f"for where it thinks the stretch stands. What the conversation is actually doing is\n"
-                f"yours to judge.\n"
-                f"  paused=\"true\"  — it thinks the stretch just closed. There may be more, or there may not.\n"
+                f"How to read a <listen> packet — the listening side hands you what it heard, plus a mark for\n"
+                f"where it thinks the stretch stands; what the conversation is doing is yours to judge.\n"
+                f"  paused=\"true\"  — it thinks the stretch just closed.\n"
                 f"  paused=\"false\" — it thinks there is more coming.\n"
-                f"  A packet can also carry no text at all: it only says the stretch closed and nothing new\n"
-                f"  was heard — everything said so far is already in the packets before it.\n"
-                f"Speaking is always your call, on any packet — the tag is where the listening side stands,\n"
-                f"not a permission slip. low_conf=\"…\" lists the characters whose transcription confidence\n"
-                f"was low (likely misheard) — confirm when it matters.\n"
+                f"  A packet may also carry no text at all: only the stretch closing, nothing new heard.\n"
+                f"  The closing packet may also carry db=\"…\": how loud that stretch was, in dB — a\n"
+                f"  measurement, nothing to obey.\n"
+                f"Speaking is your call on any packet — the tag is not a permission slip. low_conf=\"…\" lists\n"
+                f"the characters whose transcription confidence was low; check them when it matters.\n"
                 f"Taking a turn — the packet is information, speaking is your choice:\n"
                 f"  You are not waiting for permission, and not waiting for the end of the stretch. When\n"
                 f"  what you hear already calls for an answer, or when he is heading the wrong way, it is\n"
@@ -1421,5 +1561,29 @@ class ListenerController(ListenLifecycle):
             current = dict(self._asr.get_info().params)
             self._asr.configure({**current, **params})
             return "asr configured"
+
+        @chan.build.command()
+        async def set_loudness_watermark(db: float | None = None) -> str:
+            """Set the runtime loudness watermark (dB): a packet at or below it challenges at
+            normal strength, one above it challenges harder the louder it is.
+
+            A runtime knob, not an etiquette field — it depends on the mic and the room, so it
+            belongs to the live session. None turns the escalation off; packets still carry
+            their own `db`.
+            """
+            self.with_loudness_watermark(db)
+            return f"loudness watermark: {'off' if db is None else f'{db:.1f}dB'}"
+
+        @chan.build.command(always_observe=True)
+        async def get_loudness_state() -> str:
+            """Read the loudness state (cold data, pulled on demand — not in notice).
+
+            Returns JSON: `explicit` (the runtime watermark, null = auto), `auto` (median of
+            recent segments + margin; null until enough segments are in), `effective` (the
+            one in force), `recent` (recent segment loudness, dB), `segment` (this stretch's
+            running mean, null before any sound) and `strength` (what the next packet would
+            challenge with; null = normal).
+            """
+            return json.dumps(self.loudness_state(), ensure_ascii=False)
 
 
