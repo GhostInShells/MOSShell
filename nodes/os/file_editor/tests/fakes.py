@@ -13,6 +13,7 @@ class Recorder:
         # the surface's presentation knob — how an open card is shown
         self.layout = "page"
         self.layout_by = "default"
+        self._cursors: dict = {}
 
     async def broadcast(self, frame: dict) -> None:
         self.frames.append(frame)
@@ -25,21 +26,20 @@ class Recorder:
         return mode
 
     async def set_cursor(
-        self, thread: str, start: int, end: int | None = None, *, by: str = "model"
+        self, thread: str, start: int, end: int | None = None, *, version: int = 0,
+        by: str = "model",
     ) -> dict:
         lo = max(1, int(start))
-        self.cursor = {"thread": thread, "start": lo, "end": max(lo, int(end or lo))}
-        self.cursor_by = by
-        return self.cursor
+        self._cursors[thread] = {
+            "start": lo, "end": max(lo, int(end or lo)), "version": version, "by": by
+        }
+        return self._cursors[thread]
 
-    def cursor_state(self) -> tuple[str, int, int, str]:
-        cur = getattr(self, "cursor", None) or {"thread": "", "start": 0, "end": 0}
-        return (
-            cur.get("thread", ""),
-            int(cur.get("start", 0)),
-            int(cur.get("end", 0)),
-            getattr(self, "cursor_by", "default"),
-        )
+    def cursors(self) -> dict:
+        return self._cursors
+
+    def cursor_of(self, thread: str) -> dict | None:
+        return self._cursors.get(thread)
 
     def view_at_state(self) -> tuple[str, int]:
         return getattr(self, "view_at", ("", 0))

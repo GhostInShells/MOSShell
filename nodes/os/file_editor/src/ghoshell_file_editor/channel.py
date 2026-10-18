@@ -102,10 +102,13 @@ class _Surface(Protocol):
     async def set_layout(self, mode: str) -> str: ...
 
     async def set_cursor(
-        self, thread: str, start: int, end: int | None = None, *, by: str = "model"
+        self, thread: str, start: int, end: int | None = None, *, version: int = 0,
+        by: str = "model",
     ) -> dict[str, Any]: ...
 
-    def cursor_state(self) -> tuple[str, int, int, str]: ...
+    def cursors(self) -> dict[str, dict[str, Any]]: ...
+
+    def cursor_of(self, thread: str) -> dict[str, Any] | None: ...
 
     def view_at_state(self) -> tuple[str, int]: ...
 
@@ -131,19 +134,17 @@ class _NoSurface:
         return self._layout, self._layout_by
 
     async def set_cursor(
-        self, thread: str, start: int, end: int | None = None, *, by: str = "model"
+        self, thread: str, start: int, end: int | None = None, *, version: int = 0,
+        by: str = "model",
     ) -> dict[str, Any]:
         lo = max(1, int(start))
-        self._cursor = {"thread": thread, "start": lo, "end": max(lo, int(end or lo))}
-        return self._cursor
+        return {"start": lo, "end": max(lo, int(end or lo)), "version": version, "by": by}
 
-    def cursor_state(self) -> tuple[str, int, int, str]:
-        return (
-            str(self._cursor.get("thread", "")),
-            int(self._cursor.get("start", 0)),
-            int(self._cursor.get("end", 0)),
-            "model",
-        )
+    def cursors(self) -> dict[str, dict[str, Any]]:
+        return {}
+
+    def cursor_of(self, thread: str) -> dict[str, Any] | None:
+        return None
 
     def view_at_state(self) -> tuple[str, int]:
         return ("", 0)
@@ -408,7 +409,9 @@ def build_file_editor_channel(
             fact=f"{region or 'all'} · {line_count(text)} lines",
         )
         await _card(target, action)
-        await surface.set_cursor(target.id, start, end, by="model")
+        await surface.set_cursor(
+            target.id, start, end, version=target.version, by="model"
+        )
         if len(text) > _READ_LIMIT:
             return (
                 f"{text[:_READ_LIMIT]}\n… (truncated at {_READ_LIMIT} chars — read a "
@@ -452,9 +455,23 @@ def build_file_editor_channel(
         two different sentences about the same number.
         """
         if not thread.strip():
-            where, lo, hi, by = surface.cursor_state()
+            marks = []
+            for one in store.threads():
+                mark = surface.cursor_of(one.id)
+                if not mark:
+                    continue
+                # A marker set on an older version is history, not an address: say
+                # so instead of quoting line numbers that have since moved.
+                if int(mark.get("version", 0)) == one.version:
+                    marks.append(
+                        f"point: {one.id!r} lines {mark['start']}-{mark['end']}"
+                    )
+                else:
+                    marks.append(
+                        f"point: {one.id!r} lines {mark['start']}-{mark['end']} "
+                        f"(stale — text moved to v{one.version})"
+                    )
             seen, line = surface.view_at_state()
-            point = f"point: {where!r} lines {lo}-{hi} ({by})" if where else "point: unset"
             pos = f"you: line {line} of {seen!r}" if seen else "you: not moved"
             sel = surface.selection_state()
             picked = ""
@@ -463,13 +480,16 @@ def build_file_editor_channel(
                     f" · selected: {sel['thread']!r} lines {sel['start']}-{sel['end']}"
                     f" «{sel.get('text', '')[:80]}»".rstrip()
                 )
-            return f"[{name}] {point} · {pos}{picked}"
+            body = " · ".join(marks) if marks else "point: unset"
+            return f"[{name}] {body} · {pos}{picked}"
         target = _get_thread(thread)
         try:
             start, end = region_span(target.content, region)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
-        await surface.set_cursor(target.id, start, end, by="model")
+        await surface.set_cursor(
+            target.id, start, end, version=target.version, by="model"
+        )
         tail = f" — {label}" if label else ""
         return f"[{name}] cursor on {thread!r} lines {start}-{end}{tail}"
 
@@ -517,7 +537,11 @@ def build_file_editor_channel(
             # A search is a way of looking somewhere: put the cursor on the first
             # hit so the page is already where the answer is.
             await surface.set_cursor(
-                target.id, int(matches[0]["line"]), int(matches[0]["line"]), by="model"
+                target.id,
+                int(matches[0]["line"]),
+                int(matches[0]["line"]),
+                version=target.version,
+                by="model",
             )
         return (
             f"[{name}] {thread!r} — {found['total']} match(es) in "

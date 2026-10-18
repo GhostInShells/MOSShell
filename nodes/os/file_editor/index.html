@@ -461,8 +461,7 @@ let viewBy = "default";             // who moved the page last: human or model
 // Where the reading is. One band, two authors: I point at what I am talking
 // about, they scroll to what they are reading — and both read back as the same
 // state, because "which lines are we on" is one fact, not two.
-let cursor = null;                  // the marker I put down: {thread, start, end} | null
-let cursorBy = "default";
+let cursors = {};                   // thread -> {start, end, version} : one marker per document
 let viewAt = null;                  // where the human is parked: {thread, line} | null
 let selection = null;               // what the human picked: {thread, start, end, text} | null
 let format = "auto";                // auto | raw | markdown — how the document is drawn
@@ -919,9 +918,12 @@ function setView(next) {
 function renderViewNote() {
   const base = vnoteEl.dataset.base || "";
   const who = viewBy === "model" ? "moss set this view" : "";
-  const look = cursor && cursor.thread === focusThread && cursor.start
-    ? "pointed at " + cursor.start + "–" + cursor.end
-    : "";
+  const mark = focusThread ? cursors[focusThread] : null;
+  const cur = focusThread ? threads.get(focusThread) : null;
+  const live = mark && cur && mark.version === cur.version;
+  const look = mark && live
+    ? "pointed at " + mark.start + "–" + mark.end
+    : mark ? "point stale (text moved)" : "";
   const you = viewAt && viewAt.thread === focusThread && viewAt.line
     ? "you: line " + viewAt.line
     : "";
@@ -1032,7 +1034,9 @@ function renderDoc() {
     return;
   }
   const hit = selected && selected.thread === focusThread ? regionOf(actions.get(key(focusThread, selected.n))) : null;
-  const band = cursor && cursor.thread === focusThread && cursor.start ? cursor : null;
+  const mark = focusThread ? cursors[focusThread] : null;
+  // A marker outlives its text only as history: same version, same lines.
+  const band = mark && (!t || mark.version === t.version) ? mark : null;
   const lines = d.text.split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const frag = document.createDocumentFragment();
@@ -1476,8 +1480,7 @@ function onFrame(frame) {
         view = frame.view;
         viewBy = frame.view_by || "default";
       }
-      cursor = frame.cursor && frame.cursor.thread ? frame.cursor : null;
-      cursorBy = frame.cursor_by || "default";
+      cursors = frame.cursors ? { ...frame.cursors } : {};
       cursorKey = "";
       viewAt = frame.view_at && frame.view_at.thread ? frame.view_at : null;
       selection = frame.selection || null;
@@ -1512,12 +1515,15 @@ function onFrame(frame) {
       setView(frame.view || "document");
       break;
     }
-    case "point": {
-      // My marker. It scrolls the page to itself once, and after that the page is
-      // the reader's: their scrolling never moves it and it never moves them.
-      cursor = frame.thread ? { thread: frame.thread, start: frame.start, end: frame.end } : null;
-      cursorBy = frame.by || "default";
-      if (frame.thread) {
+    case "cursor": {
+      // My marker for one thread. It scrolls the page to itself once; after that
+      // the page is the reader's — their scrolling never moves it, it never moves
+      // them, and switching threads keeps each document's own place.
+      if (!frame.thread) break;
+      cursors[frame.thread] = {
+        start: frame.start, end: frame.end, version: frame.version,
+      };
+      if (frame.by === "model") {
         cursorKey = "";
         if (focusThread !== frame.thread) {
           focusThread = frame.thread;
@@ -1526,8 +1532,10 @@ function onFrame(frame) {
         }
         if (view !== "document") setView("document");
         renderDoc();
-        renderViewNote();
+      } else {
+        renderDoc();
       }
+      renderViewNote();
       break;
     }
     case "format": {

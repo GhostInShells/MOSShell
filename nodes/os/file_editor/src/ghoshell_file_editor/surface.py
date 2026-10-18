@@ -82,8 +82,11 @@ class FileEditorSurface:
         # moves it to show what it is talking about, the human moves it by
         # scrolling. It is state, not a signal — a signal has to win attention to
         # arrive, a state only has to be read.
-        self._cursor: dict[str, Any] | None = None
-        self._cursor_by = "default"
+        # One marker per thread: a pointer is an address *inside* a document, so
+        # keeping one global marker meant switching threads lost the place and
+        # coming back did not restore it. Each entry remembers the text version it
+        # was set on — a line number that outlives its text is a lie.
+        self._cursors: dict[str, dict[str, Any]] = {}
         # ...and where the human is, which is a different question: it moves when
         # they scroll and it never drags the page anywhere.
         self._view_at: tuple[str, int] = ("", 0)
@@ -121,8 +124,7 @@ class FileEditorSurface:
         frame["layout_by"] = self._layout_by
         frame["view"] = self._view
         frame["view_by"] = self._view_by
-        frame["cursor"] = self._cursor
-        frame["cursor_by"] = self._cursor_by
+        frame["cursors"] = self._cursors
         frame["view_at"] = {"thread": self._view_at[0], "line": self._view_at[1]}
         frame["selection"] = self._selection
         frame["format"] = self._format
@@ -166,16 +168,12 @@ class FileEditorSurface:
 
     # -- the reading point (mine) and the reading position (theirs) ----------
 
-    def cursor_state(self) -> tuple[str, int, int, str]:
-        """(thread, start, end, by) — empty thread when nothing has been pointed at."""
-        if self._cursor is None:
-            return "", 0, 0, self._cursor_by
-        return (
-            str(self._cursor.get("thread", "")),
-            int(self._cursor.get("start", 0)),
-            int(self._cursor.get("end", 0)),
-            self._cursor_by,
-        )
+    def cursors(self) -> dict[str, dict[str, Any]]:
+        """Every thread's marker: {thread: {start, end, version, by}}."""
+        return self._cursors
+
+    def cursor_of(self, thread: str) -> dict[str, Any] | None:
+        return self._cursors.get(thread)
 
     def view_at_state(self) -> tuple[str, int]:
         """(thread, line) the human is parked on. Empty thread before they scroll."""
@@ -203,6 +201,7 @@ class FileEditorSurface:
             start: int,
             end: int | None = None,
             *,
+            version: int = 0,
             by: str = "model",
     ) -> dict[str, Any]:
         """Point at lines. This is a *marker*, so it stays where I put it.
@@ -214,12 +213,12 @@ class FileEditorSurface:
         """
         lo = max(1, int(start))
         hi = max(lo, int(end if end is not None else start))
-        self._cursor = {"thread": thread, "start": lo, "end": hi}
-        self._cursor_by = by
+        marker = {"start": lo, "end": hi, "version": int(version), "by": by}
+        self._cursors[thread] = marker
         await self.broadcast(
-            {"type": "point", "thread": thread, "start": lo, "end": hi, "by": by}
+            {"type": "cursor", "thread": thread, "by": by, **marker}
         )
-        return self._cursor
+        return marker
 
     async def set_selection(
             self, thread: str, start: int, end: int, text: str = ""
