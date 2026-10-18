@@ -118,6 +118,12 @@ class DeliverSpec(BaseModel):
                     "那时仍按 interrupt=False 走 mode 的排队/留存. 一个开关谈清「什么可以被抢」: "
                     "出声可以被抢, 思考不该被抢.",
     )
+    per_clause: bool = Field(
+        default=False,
+        description="分句交付: 云端每判出一句就各发一包 (只带增量, 永不重发前文), 段的收尾另发一包 "
+                    "(vad=segment, 只带没发过的那一截). 关 = 老行为: 只在段结束发一包, 带整段全文. "
+                    "开启时 stop.silence 必须 > 0 —— 否则每句都提交一次, 段被切成碎片.",
+    )
     barge_in_boost: Priority = Field(
         default=Priority.WARNING,
         description="barge_in_while_speaking 打开时, 出声期间交付信号提权到的那一档. 默认 WARNING: "

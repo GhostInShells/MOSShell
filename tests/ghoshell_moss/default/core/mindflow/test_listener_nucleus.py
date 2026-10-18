@@ -281,3 +281,37 @@ def _message_text(impulse) -> str:
             if isinstance(c, dict) and c.get('type') == 'text':
                 texts.append(c.get('text', ''))
     return '\n'.join(texts)
+
+
+@pytest.mark.asyncio
+async def test_impulse_identity_is_planned_by_the_listener():
+    """身份由听侧规划 (impulse_id): 同一话语的两个包共 id, 分句各自一枚.
+
+    segment_id 是地址, 不是身份 —— 只在没给 impulse_id 时才兼任.
+    """
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.add_signal(new_listener_signal(
+            segment_id='seg', impulse_id='seg#utterance', complete=False, priority=Priority.WARNING,
+        ))
+        nuc.add_signal(new_listener_signal('第一句', impulse_id='seg#c1', complete=True))
+        nuc.add_signal(new_listener_signal('第二句', impulse_id='seg#c2', complete=True))
+        nuc.add_signal(new_listener_signal('', segment_id='seg', impulse_id='seg#utterance', complete=True, paused=True))
+    ids = [imp.id for imp in notified]
+    assert ids[0] == ids[-1] == 'seg#utterance', 'onset 与尾包是同一次话语'
+    assert len({ids[1], ids[2]}) == 2, '分句各自一枚身份, 谁也不吸收谁'
+
+
+@pytest.mark.asyncio
+async def test_a_clause_packet_reads_as_not_paused_and_the_tail_as_paused():
+    """模型看到的是 paused: 中间分句 false, 段尾 true; 空正文的尾包只留标记."""
+    messages: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: messages.append(imp))
+        nuc.add_signal(new_listener_signal('还没说完', impulse_id='a', complete=True, paused=False))
+        nuc.add_signal(new_listener_signal('', segment_id='seg', impulse_id='b', complete=True, paused=True))
+    clause_imp, tail_imp = messages
+    assert 'paused="false"' in _message_xml(clause_imp)
+    assert 'paused="true"' in _message_xml(tail_imp)
+    assert _message_text(tail_imp) == '', '没有新内容时尾包不重发正文, 只回答"他停了"'

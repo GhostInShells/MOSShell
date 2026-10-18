@@ -53,6 +53,7 @@ from ghoshell_moss.host.listener.etiquette import (
     scored as SCORED,
 )
 from ghoshell_moss.host.listener.segment_buffer import SegmentBuffer
+from ghoshell_moss.host.listener.segment_delta import SegmentDelta
 from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
 from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
 
@@ -203,6 +204,8 @@ class ListenerController(ListenLifecycle):
         # segment buffer (感知协议): 跨 session 订阅 text/segment, 拉模式读.
         # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 deliver.emit=False 门控.
         self._buffer = SegmentBuffer()
+        # 分句交付的游标: 记住这一段已经发出去多少文本, 交给 SegmentDelta 保证不重发.
+        self._delta = SegmentDelta()
         self._current_clauses: list[RecognitionClause] = []
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
@@ -802,6 +805,8 @@ class ListenerController(ListenLifecycle):
                 self._log_prefix, result.segment_id, len(result.text or ''),
             )
             self._emit_interrupt(result)
+        elif result.phase == RecognitionPhase.CLAUSE:
+            self._emit_clause(result)
         elif result.phase == RecognitionPhase.TAIL:
             self._logger.info(
                 "%s recognition TAIL segment=%s len=%d → deliver",
@@ -834,6 +839,15 @@ class ListenerController(ListenLifecycle):
                 return
             raise
 
+    @staticmethod
+    def _utterance_id(segment_id: str) -> str:
+        """听侧规划的话语身份: 同一段的 onset 与尾包共用, 分句包各自另发一枚.
+
+        身份不等于地址 (``segment_id`` 是这段音频的地址). 老算法把两者合成一个,
+        于是每一包都成了「同一次话语」—— 分句交付时会被同 id 吸收掉.
+        """
+        return f"{segment_id}#utterance"
+
     def _emit_interrupt(self, result: RecognitionEvent) -> None:
         """首包打断: 按当前礼仪的 onset 协议发射 (emit 关则不发射)."""
         onset = self._active_etiquette.onset if self._active_etiquette else OnsetSpec()
@@ -843,6 +857,7 @@ class ListenerController(ListenLifecycle):
         self._broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
+            impulse_id=self._utterance_id(result.segment_id),
             interrupt=onset.interrupt,
             complete=False,
             priority=onset.priority,
@@ -850,15 +865,60 @@ class ListenerController(ListenLifecycle):
         ))
         self._notify_signal(f"onset interrupt={onset.interrupt} priority={onset.priority.name}")
 
+    def _emit_clause(self, result: RecognitionEvent) -> None:
+        """分句包: 云端每判出一句, 就单独发一包 (只带增量, 永不重发前文).
+
+        只在礼仪开了 ``deliver.per_clause`` 时上行 —— 关着的时候 CLAUSE 不上行, 段收尾
+        才发整段 (老行为). 分句包不带 ``segment_id``: 身份是它自己的一枚 impulse id,
+        地址只在尾包上出现一次.
+        """
+        deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
+        if not deliver.emit or not deliver.per_clause:
+            return
+        for packet in self._delta.feed(result):
+            body = packet.text if packet.revised else packet.delta
+            if not body:
+                continue
+            self._logger.info(
+                "%s clause packet %s #%s len=%d revised=%s",
+                self._log_prefix, packet.segment_id, packet.index, len(body), packet.revised,
+            )
+            self._broadcast(new_listener_signal(
+                body,
+                impulse_id=f"{packet.segment_id}#c{packet.index}",
+                paused=False,
+                interrupt=deliver.interrupt,
+                boost=self._barge_in_boost(deliver),
+                mode=deliver.mode,
+                low_conf=self._low_confidence_chars(deliver.low_confidence),
+                complete=True,
+                priority=deliver.priority,
+                description="listener:clause",
+            ))
+
     def _emit_deliver(self, result: RecognitionEvent) -> None:
-        """尾包发送: 按当前礼仪的 deliver 协议发射 (emit 关则不发射)."""
+        """尾包发送: 按当前礼仪的 deliver 协议发射 (emit 关则不发射).
+
+        分句交付开着时, 尾包只带**没发过的那一截** (由 ``SegmentDelta`` 切), 并且是唯一
+        带 ``segment_id`` (地址) 的一包; 没有新内容时它只带判停标记, 正文为空.
+        """
         deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
         if not deliver.emit:
             self._notify_signal("deliver suppressed (emit=False)")
             return
+        body = result.text
+        if deliver.per_clause:
+            packets = self._delta.feed(result)
+            if packets:
+                packet = packets[0]
+                body = packet.text if packet.revised else packet.delta
+            else:
+                body = ""
         self._broadcast(new_listener_signal(
-            result.text,
+            body,
             segment_id=result.segment_id,
+            impulse_id=self._utterance_id(result.segment_id),
+            paused=True,
             interrupt=deliver.interrupt,
             boost=self._barge_in_boost(deliver),
             mode=deliver.mode,
@@ -1212,6 +1272,12 @@ class ListenerController(ListenLifecycle):
                 f"Voice input is ASR transcription — it may contain homophones and near-sounds "
                 f"(谐音). Judge by meaning and context, infer what the user likely said, and "
                 f"ask for clarification when unsure.\n"
+                f"How to read a <listen> packet — pause answers one question: may he have stopped talking?\n"
+                f"  paused=\"true\"  — this packet closes a stretch of speech: he may have stopped.\n"
+                f"  paused=\"false\" — there is more coming: he is still in the middle of talking.\n"
+                f"Information, not permission — you may speak on any packet; whether he has finished is\n"
+                f"your call, not the tag's. low_conf=\"…\" lists the characters whose transcription\n"
+                f"confidence was low (likely misheard) — confirm when it matters.\n"
                 f"ASR tunable params schema:\n"
                 f"{json.dumps(info.params_schema, ensure_ascii=False)}\n"
                 f"EtiquetteSpec json schema (for set_etiquette_spec):\n"

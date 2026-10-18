@@ -1191,3 +1191,101 @@ def test_no_builtin_yields_to_speech_by_default():
     ]
     assert specs, "builtin etiquettes should not be empty"
     assert not [n for n in specs if getattr(etiquette, n).deliver.barge_in_while_speaking]
+
+
+# ── 分句交付 (deliver.per_clause) ─────────────────────────────────────────────
+#
+# 不变量: 每一包只带上次没发过的文本; 尾包绝不重发已发的分句; 身份由听侧规划,
+# 段号 (segment_id) 只在尾包上出现一次.
+
+
+def _per_clause_controller(emitted: list) -> ListenerController:
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver = spec.deliver.model_copy(update={"per_clause": True})
+    controller.set_etiquette_spec(spec)
+    # 直接用这一档当激活礼仪 —— 不走 run_etiquette (那会起状态机, 与本节要量的东西无关).
+    controller._set_active_etiquette(spec)
+    controller._cb = listener.result_observers[0]
+    return controller
+
+
+def _body(signal) -> str:
+    texts = []
+    for msg in signal.messages:
+        for c in msg.contents:
+            if isinstance(c, dict) and c.get("type") == "text":
+                texts.append(c.get("text", ""))
+    return "".join(texts)
+
+
+def test_per_clause_emits_one_packet_per_clause_with_only_the_delta():
+    """每句各发一包, 第二包只带新内容 —— 前文绝不重发."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    cb(RecognitionEvent(stream_id="s", segment_id="g", phase=RecognitionPhase.CLAUSE,
+                        text="你好，我是老莫", clause=RecognitionClause(text="我是老莫")))
+
+    assert len(emitted) == 2
+    assert _body(emitted[0]) == "你好"
+    assert _body(emitted[1]) == "，我是老莫"
+    for signal in emitted:
+        meta = ListenerSignal.from_signal(signal)
+        assert meta.paused is False, "中间的分句不是停顿"
+        assert meta.segment_id == "", "分句包不带地址 —— 地址只在尾包上出现一次"
+
+
+def test_per_clause_tail_carries_only_the_remainder():
+    """尾包只带没发过的那一截, 并带上段地址与 paused=true."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    cb(_tail("你好，还有这一句", segment_id="g"))
+
+    assert len(emitted) == 2
+    assert _body(emitted[1]) == "，还有这一句"
+    meta = ListenerSignal.from_signal(emitted[1])
+    assert meta.paused is True
+    assert meta.segment_id == "g"
+
+
+def test_per_clause_tail_with_nothing_new_is_a_pause_marker_only():
+    """没有新内容时尾包只回答"他停了" —— 正文为空, 不许重发整段."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    cb(_tail("你好", segment_id="g"))
+
+    assert len(emitted) == 2
+    assert _body(emitted[1]) == ""
+    meta = ListenerSignal.from_signal(emitted[1])
+    assert meta.paused is True
+    assert meta.segment_id == "g"
+
+
+def test_impulse_ids_are_planned_by_the_listener():
+    """身份由听侧规划: onset 与尾包共用一枚, 每个分句各自一枚."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_first("你", segment_id="g"))
+    cb(_clause("你好"))
+    cb(RecognitionEvent(stream_id="s", segment_id="g", phase=RecognitionPhase.CLAUSE,
+                        text="你好，再见", clause=RecognitionClause(text="再见")))
+    cb(_tail("你好，再见", segment_id="g"))
+
+    metas = [ListenerSignal.from_signal(s) for s in emitted]
+    ids = [m.impulse_id for m in metas]
+    assert ids[0] == ids[-1], "onset 与尾包是同一次话语 —— 同 id 才走得通吸收"
+    assert len(set(ids[1:-1])) == 2, "每个分句各自一枚身份, 谁也不吸收谁"

@@ -34,10 +34,20 @@ adds is an unconditional clear at the new attention's first frame, before any ne
 logos runs: stopping the body stops depending on what the previous attention
 happened to be doing.
 
-Same-id chain: onset and deliver share ``segment_id`` (the ASR segment id) as the
-impulse id, so mindflow takes the same-id absorb path (onset holds the slot →
-deliver fills it) — "speak up → deliver" reads as one continuous turn. Distinct
-listener instances stay apart through segment_id as well.
+Same-id chain: the **impulse id** is planned by the listener and travels in the
+signal meta (``impulse_id``). One utterance's onset and its final packet share one
+id, so mindflow takes the same-id absorb path (onset holds the slot → deliver fills
+it) — "speak up → deliver" reads as one continuous turn. Clause packets get a **new
+id each**: every clause is its own utterance event, and nothing absorbs it.
+
+``segment_id`` is an **address, not an identity** (the ASR segment, and later the
+audio file that holds it). It falls back to being the impulse id only when the
+signal carries none, so older producers keep working unchanged.
+
+``paused`` answers one question the model actually asks: **may he have stopped talking?**
+``paused=True`` on the packet that closes a segment, ``paused=False`` on the ones that are
+still in the middle of it. It is information, not permission — a pause is not an ending,
+and speaking is the model's call on every packet.
 
 Two-tier cooldown: ``suppress`` (lost the challenge) is the long one, ``attended``
 (won the challenge) the short one — the latter keeps one source from being
@@ -111,7 +121,21 @@ class ListenerSignal(SignalMeta):
     """
 
     source: str = Field(default="asr", description="where the listening came from — the upstream source producing the packet (asr / wake_word ...)")
-    segment_id: str = Field(default="", description="same-id key — the ASR segment id, shared by the onset and the deliver packet")
+    impulse_id: str = Field(
+        default="",
+        description="听侧规划的 impulse 身份: 同一次话语的 onset 与尾包共用, 每个分句各自一枚新 id. "
+                    "空 = 回落到 segment_id (老行为).",
+    )
+    segment_id: str = Field(
+        default="",
+        description="地址, 不是身份 — ASR segment id (将来对应这段音频的文件). "
+                    "只在本包没带 impulse_id 时兼任身份.",
+    )
+    paused: bool | None = Field(
+        default=None,
+        description="他这一轮说话已经停了 —— 尾包为 true, 中间的分句为 false. "
+                    "它是信息, 不是许可: 任何一个包都可以开口, 说完没说完全由模型自己判.",
+    )
     interrupt: bool = Field(default=False, description="whether the attention won by this packet calls shell.clear() first (Impulse.interrupt)")
     mode: str = Field(default="", description="loss-side mode: notify / aside / next / ''(default). An onset defaults to '' (suppress on loss); a deliver falls back to notify when empty")
     logos: str = Field(default="", description="conditioned-reflex command logos, sent with the impulse")
@@ -301,8 +325,8 @@ class ListenerNucleus(Nucleus):
         )
         impulse = Impulse(
             source=self.name(),
-            trace_id=meta.segment_id or unique_id(),
-            id=meta.segment_id or unique_id(),
+            trace_id=self._identity(meta),
+            id=self._identity(meta),
             priority=signal.priority,
             strength=self._first_strength,
             strength_decay_seconds=self._strength_decay_seconds,
@@ -331,8 +355,8 @@ class ListenerNucleus(Nucleus):
         )
         impulse = Impulse(
             source=self.name(),
-            trace_id=meta.segment_id or unique_id(),
-            id=meta.segment_id or unique_id(),
+            trace_id=self._identity(meta),
+            id=self._identity(meta),
             priority=challenge_priority,
             strength=self._normal_strength,
             strength_decay_seconds=self._strength_decay_seconds,
@@ -341,12 +365,21 @@ class ListenerNucleus(Nucleus):
             mode=meta.mode or ChallengeMode.notify.value,
             logos=meta.logos,
             hint=signal.hint,
-            messages=self._wrap_messages(signal, meta.source, meta.low_conf),
+            messages=self._wrap_messages(signal, meta.source, meta.low_conf, meta.paused),
             description=signal.description,
         )
         self._fire(impulse)
 
     # ── internals ──
+
+    @staticmethod
+    def _identity(meta: ListenerSignal) -> str:
+        """这一包的 impulse 身份: 听侧规划的 ``impulse_id``, 缺省才回落到 ``segment_id``.
+
+        身份与地址是两件事: 同一次话语的 onset 与尾包共用一个身份 (同 id 吸收),
+        每个分句各有自己的身份 (彼此不吸收); ``segment_id`` 只是这段音频的地址.
+        """
+        return meta.impulse_id or meta.segment_id or unique_id()
 
     def _in_cooldown(self) -> bool:
         now = time.monotonic()
@@ -357,12 +390,16 @@ class ListenerNucleus(Nucleus):
         if self._fire_impulse:
             self._fire_impulse(impulse)
 
-    def _wrap_messages(self, signal: Signal, source: str, low_conf: str = "") -> list[Message]:
-        """Wrap the signal's text messages into one ``<listen source=... low_conf=...>`` tag."""
+    def _wrap_messages(
+            self, signal: Signal, source: str, low_conf: str = "", paused: bool | None = None,
+    ) -> list[Message]:
+        """Wrap the signal's text messages into one ``<listen source=... low_conf=... paused=...>`` tag."""
         data = self._signal_text(signal)
-        if not data:
+        if not data and paused is not True:
             return []
-        return [self._listen_message(data, source, low_conf, signal.created_at)]
+        # 空正文 + paused: 分句交付里尾包没带新内容时的形态 —— 它只回答「他可能停了」,
+        # 所以模型看到的是 <listen paused="true"/> 这样一个没有正文的标签, 而不是什么都没有.
+        return [self._listen_message(data, source, low_conf, signal.created_at, paused)]
 
     def _signal_text(self, signal: Signal) -> str:
         """Collect the text content of every message body in the signal."""
@@ -373,13 +410,17 @@ class ListenerNucleus(Nucleus):
                     texts.append(c.get('text', ''))
         return '\n'.join(texts)
 
-    def _listen_message(self, data: str, source: str, low_conf: str, created_at) -> Message:
-        """One ``<listen source=... low_conf=... created=...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
+    def _listen_message(
+            self, data: str, source: str, low_conf: str, created_at, paused: bool | None = None,
+    ) -> Message:
+        """One ``<listen source=... low_conf=... paused=...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
         attributes: dict[str, str] = {}
         if source:
             attributes["source"] = source
         if low_conf:
             attributes["low_conf"] = low_conf
+        if paused is not None:
+            attributes["paused"] = "true" if paused else "false"
         message = Message.new(tag=ListenerSignal.xml_tag(), attributes=attributes or None, timestamp=True)
         message.meta.created = created_at
         return message.with_content(data)
@@ -447,6 +488,8 @@ def new_listener_signal(
         mode: str = "",
         logos: str = "",
         low_conf: str = "",
+        impulse_id: str = "",
+        paused: bool | None = None,
         complete: bool = True,
         priority: Priority | None = None,
         boost: Priority | None = None,
@@ -469,6 +512,8 @@ def new_listener_signal(
         logos=logos,
         boost=boost,
         low_conf=low_conf,
+        impulse_id=impulse_id,
+        paused=paused,
     ).to_signal(
         text,
         description=description or (text[:40] or ("barge-in" if not complete else "deliver")),
