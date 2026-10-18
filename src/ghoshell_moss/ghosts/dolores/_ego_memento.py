@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BranchInfo", "BrokenCommitError", "BypassCommit", "BypassState",
     "CommitDecision", "CommitDigest", "EgoMementoConfig", "EgoMementoManager",
+    "SourceUnreadableError",
 ]
 
 # metadata 约定 (memento 只存不解析).
@@ -117,6 +118,20 @@ _CHAT_PREAMBLE = (
 
 class BrokenCommitError(RuntimeError):
     """chat 的目标 commit 的 message 是坏占位 (非真摘要), 不可对话."""
+
+
+class SourceUnreadableError(RuntimeError):
+    """源 session 读不出来: 当前 dsh 拒绝这份存档, 且上游没有兼容接口.
+
+    不是 commit 内容坏, 是**存储格式与当前 harness 不兼容** —— 典型是 0.1.5 时代写的 ego
+    session 在 0.2.0 的 v4 不变式 (surface 首节点必须是受保护的 system/message) 下不合法,
+    冷读时被 dsh 的格式校验拒掉 (``stored log is corrupt: … requires a protected first
+    surface head`` / ``migration refuses the transformed artifact``).
+
+    处置: **显式抛出, 不回落不猜**. 每读一次就报一次 —— 让调用方看见"这里确实没了", 而不是
+    拿到一段像正文的半成品. 上游没有兼容读接口 (0.2.1-rc.2 里这条规则一字未改), 所以这是
+    终态, 不是待修项.
+    """
 
 
 class EgoMementoConfig(BaseModel):
@@ -207,14 +222,36 @@ def _input_size(usage: TokenUsage) -> int:
     return usage.inputTokens + (usage.cacheReadTokens or 0)
 
 
-def _is_unsupported_session_format(exc: Exception) -> bool:
-    """旁路读源 session 时, 源是比当前 harness 更新的日志格式 (v4 vs v3) 抛出的错.
+# 源存档读不出来时, dsh 的两类错误文本 (错误码不可控, 只认稳定关键字):
+# 1. 格式代际不支持 —— 迁移/解码层直接 refuse;
+# 2. 存档不满足当前格式不变式 —— 校验层判它 corrupt, 但字节没坏.
+_UNREADABLE_MARKERS = (
+    "SessionFormatUnsupported",
+    "reads only v3",
+    "log format v4",
+    "stored log is corrupt",
+    "requires a protected first surface head",
+    "refuses the transformed artifact",
+)
 
-    这是**版本漂移**, 不是旁路失败 —— 读不了而已, commit 内容没坏. 判定只认错误文本里的
-    稳定关键字, 不对照词汇表 (dsh 那边错误码不可控).
+
+def _is_unreadable_source(exc: Exception) -> bool:
+    """这个错误是不是"源存档读不出来" (格式不兼容), 而不是"旁路本身失败".
+
+    读不了 ≠ commit 内容坏: 前者是版本漂移, 后者是摘要没产出. 读侧要显式抛
+    (:class:`SourceUnreadableError`), 旁路则走 ``_skip`` —— 不写 error note, 不标 broken.
     """
     text = str(exc)
-    return "SessionFormatUnsupported" in text or "log format v4" in text or "reads only v3" in text
+    return any(marker in text for marker in _UNREADABLE_MARKERS)
+
+
+def _unreadable_reason(exc: Exception) -> str:
+    """压一行可读原因: 去掉 dsh 的 (raw log: /abs/path) 尾巴 —— 路径不进模型上下文."""
+    text = str(exc)
+    cut = text.find("(raw log:")
+    if cut >= 0:
+        text = text[:cut].rstrip(" ;:")
+    return text
 
 
 class EgoMementoManager:
@@ -394,7 +431,7 @@ class EgoMementoManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if _is_unsupported_session_format(exc):
+            if _is_unreadable_source(exc):
                 self._skip(run, str(exc))
             else:
                 self._fail(run, f"run failed: {exc}")
@@ -423,17 +460,19 @@ class EgoMementoManager:
         self._logger.warning("memento bypass failed, commit %s marked broken: %s", run.commit_id, reason)
 
     def _skip(self, run: BypassCommit, reason: str) -> None:
-        """源 session 格式比当前 harness 新 (v4 vs v3), 读不了 —— 不是旁路失败, 是版本漂移.
+        """源 session 读不出来 (格式代际不兼容) —— 不是旁路失败, 是版本漂移.
 
-        写一条空 note (无 error) 防止 ``backfill`` 反复重试, 但**不标 broken**: 坏的是"读不了",
-        不是"commit 内容坏了". 读侧不折它, 只当它没摘要 (``view.message`` 空).
+        两个方向都算: 源比 harness 新 (v4 vs v3), 或源比当前不变式旧 (0.1.5 的 ego session 在
+        0.2.0 的 protected head 规则下不合法). 写一条空 note (无 error) 防止 ``backfill`` 反复
+        重试, 但**不标 broken**: 坏的是"读不了", 不是"commit 内容坏了". 读侧不折它, 只当它没摘要
+        (``view.message`` 空), 真去 read 时抛 :class:`SourceUnreadableError`.
         """
         run.state = BypassState.FAILED
         try:
             self._branch().note(run.commit_id, message="", error="")
         except Exception:
             self._logger.exception("memento bypass: cannot write skip note for commit %s", run.commit_id)
-        self._logger.info("memento bypass skipped (source session format newer than harness): %s", reason)
+        self._logger.info("memento bypass skipped (source session unreadable under the current format): %s", reason)
 
     async def drain_bypass(self) -> None:
         """等所有在飞的旁路任务收尾 (观测/测试用)."""
@@ -472,10 +511,16 @@ class EgoMementoManager:
         取的是源 session 的**原始 log 区间**, 不是 surface 投影 —— transcript 要 ``tool/call``
         这类只在 log 里的记录. 源 session 可以是冷的 (上次运行留下的), plugin 侧冷读兜底.
         坏 commit 照读: 坏的是摘要, 原文还在.
+
+        源存档读不出来 (格式代际不兼容) 时抛 :class:`SourceUnreadableError` —— 不回落成空串、
+        不返回一段看起来像正文的东西: 读不到就报读不到.
         """
         view = self._require_commit(coord)
         ref = self._ref_of_view(view)
-        raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
+        try:
+            raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
+        except Exception as exc:
+            raise self._read_failure(view, ref, exc) from exc
         events = [SessionEvent.from_dict(event) for event in (raw or {}).get("events", [])]
         return render_transcript(events)
 
@@ -489,14 +534,32 @@ class EgoMementoManager:
         if view.is_broken:
             raise BrokenCommitError(f"commit {view.coord} has no context to talk to; read it instead")
         ref = self._ref_of_view(view)
-        result = await self._connection.call(
-            _BYPASS_RUN_ROUTE,
-            {"ref": ref.model_dump(mode="json"), "prompt": f"{_CHAT_PREAMBLE}\n\n{prompt}"},
-        )
+        try:
+            result = await self._connection.call(
+                _BYPASS_RUN_ROUTE,
+                {"ref": ref.model_dump(mode="json"), "prompt": f"{_CHAT_PREAMBLE}\n\n{prompt}"},
+            )
+        except Exception as exc:
+            raise self._read_failure(view, ref, exc) from exc
         text = str((result or {}).get("message", ""))
         if text == "":
             raise RuntimeError(f"chat with commit {view.coord} returned no text")
         return text
+
+    def _read_failure(self, view: CommitView, ref: DshSessionRef, exc: Exception) -> Exception:
+        """读源 session 失败 → 该抛什么.
+
+        格式不兼容映射成 :class:`SourceUnreadableError` (说明"这里确实没了, 别再试"), 其它异常
+        原样返回 (传输/服务端问题是真的可重试, 不该被伪装成终态).
+        """
+        if not _is_unreadable_source(exc):
+            return exc
+        return SourceUnreadableError(
+            f"memento {view.coord}: the source session {ref.session_id} cannot be read by the "
+            f"current dsh — the stored log does not satisfy the current format invariants, and "
+            f"there is no compatible read path. The original transcript is unavailable; the "
+            f"commit's note (if any) is still in view/history. dsh said: {_unreadable_reason(exc)}"
+        )
 
     def _require_commit(self, coord: str) -> CommitView:
         view = self.resolve(coord)

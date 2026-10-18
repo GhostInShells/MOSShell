@@ -185,6 +185,32 @@ ghost 在连续会话里几轮之后会忘掉"一边交流、一边开发"，转
 **落地**：`DOLORES_EGO_PRESET_PLUGINS` 删除整个 delegation 组；保留 bash / fs / fs-search /
 jobs / plan-mode / todo / web。
 
+## 判例：0.2.0 升级的存储代价 —— session log 可丢弃（2026-10-18）
+
+升级之后 ghost 的历史基本读不出来。根因不在迁移：**ego session 的 surface 头从来就不合 v4 的
+不变式** —— `ego/create` 先把 `<memory>` 当 `user/message` append，而 `system/message` 要到第一个
+step 才由 agent-loop 现算现追加，于是 surface 首节点不是 system message；v4 要求"首节点必须是受
+保护的 system/message"，冷读（memento read / 旁路 note / UI 打开历史）全部被拒。0.2.0 只是把这条
+校验从"没有"变成"有"。活 session 不受影响（live 读不过校验），所以是"回忆"断了而不是"思考"断了。
+
+**裁决（人类，2026-10-18）**
+
+- **不做向前兼容。** 只用 dsh 官方的约束；官方没有兼容读接口就放弃，不写影子解析器 —— 否则每换
+  一代格式都要维护一条旁路，工作量只涨不降。已核：`session/list` 只读 header；`session/page` /
+  日志导出走同一个 persistence read handle，同一套校验；上游 `dsh-v0.2.1-rc.2` 里这条规则一字未改，
+  也没有 repair 通道。
+- **session log 可丢弃。** 记忆是三层权威：**日记（ground/journal）→ memento（note）→ session log
+  （原文）**，越往上越经提炼。最底层本来就会腐烂，丢掉它不掉记忆本身 —— 类似人记不住三岁前的
+  事。由此也推出一条记录纪律：**读不到就报读不到，不要回填标记、不要打补丁式兼容。**
+- **forward 修形状，不修历史。** 新 session 必须合法：memory 后置到 surface 头之后（走 moment 帧
+  通道），`compact` 的 replace 范围排除 protected head。头定死为会话不变量（指令 + identity /
+  persona），可变量（memory / epoch / recap）留在可压缩层走 epoch recap。
+
+**落地**：`dsh_plugin/moss-dolores-ghost-plugin.ts`（memory 后置 + compact 排除 head）；
+`_ego_memento.py`（读侧抛 `SourceUnreadableError`、旁路对"读不出来"走 skip 而不标 broken）。
+
+**代价（已知并接受）**：0.1.5 时代 ego session 的原文不可读；可留的是已提炼的 note 与 ground。
+
 ## 生命周期与复开
 
 ```
@@ -224,6 +250,7 @@ in-progress ──(本期合并完成)──▶ parked ──(上游发版 / 每
 ## Design Index
 
 - 论证基础：[discuss/2026-10-18-app-first-vs-host-first.md](discuss/2026-10-18-app-first-vs-host-first.md)
+- 存储代价与 surface 头：[research/2026-10-18-ego-surface-protected-head.md](research/2026-10-18-ego-surface-protected-head.md)
 - 事实基线（可复跑）：[research/2026-10-18-dsh-020-to-021-baseline.md](research/2026-10-18-dsh-020-to-021-baseline.md)
 - 上游：`dsh-fusion` FEATURE（融合裁决、核心检查面、版本声明）
 - 执行叶子：`track/dsh-020` 分支上的 `dsh-020-track` FEATURE（仅该分支，未进 dev）

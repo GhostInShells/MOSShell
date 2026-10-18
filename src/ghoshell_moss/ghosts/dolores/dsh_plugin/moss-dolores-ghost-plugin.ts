@@ -180,7 +180,8 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
-// compact: 原地把 surface 前缀 [head, cut_turn) 替换成一条说明, 保留其后原文 tail; memory 由新 epoch 的 recap 交付.
+// compact: 原地把 (surface 头, cut_turn) 之间的节点替换成一条说明, 保留 surface 头与原文 tail;
+// memory 由新 epoch 的 recap 交付 (头是 protected head, 不可折叠).
 const DOLORES_COMPACT = `${DOLORES_API_ROOT}/compact`
 // 旁路原语: 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路 session (id ≠
 // doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠), 不走 subagent,
@@ -212,6 +213,21 @@ let doloresInstruction = ''
 // 最近一次注入的 memory 文本块 (ego/create 或 compact 写入). request-error 的溢出兜底用它重建
 // memory 头, 让模型在丢历史时仍保有 ground + memento 视图 (可能略陈旧, 是兜底不是常态).
 let cachedMemory: string[] = []
+
+// 尚未投递的 memory 文本块 (ego/create 写入, 第一次落到 pre-step 的那一帧投递).
+//
+// 为什么不在 create 时就 append: dsh 0.2.0 的 v4 不变式要求 **surface 的第一个节点必须是
+// system/message 且受保护** (protected first surface head)。system/message 由 agent-loop 在
+// 第一个 step 用 renderPrompt(assemble()) 现算现 append, 所以 create 时刻 surface 里若已经有
+// 我们塞的 user/message, system 就只能落在第二位 —— 那个存档从出生起就不合 v4 校验, 冷读
+// (memento read / 旁路 note / UI 打开历史) 全部被拒: "system/message requires a protected
+// first surface head"。代价是整个历史不可读, 所以 memory 必须等在 system 之后。
+//
+// 投递点选在第一次落地的 moment 帧 (pre-step 以 `enter` 投递的消息) — 那时 turn/start 与
+// step/start 已就位, system/message 已落在 surface 首位, memory 紧随其后, 与旧形状同序
+// (memory 在前, epoch 容器在后)。语义不变: memory 仍在可压缩层, compact 后由新 epoch 的
+// recap 槽重发。
+let pendingMemory: string[] = []
 
 // cancel_turn 标记: 某个 tool 的结果协议带了 cancel → 该 turn 的下一 step 直接 cut.
 // activeTurn 由 pre-step 更新 (当前正在跑的 turn); awaitToolResult 在 execute 时把 turn 存进
@@ -975,18 +991,12 @@ export function apply(ctx: Context) {
         handle.agent.session.append('session/title', { title: sessionTitle, messageSeqs: [], source: { kind: 'user' } })
         handle.agent.session.append('sandbox/mode', { mode: permission })
         await workspace.attachSession(handle.agent.id)
-        // 4. 注入 ghost.memory 上下文 — messages → user/message (surfaceOp append). 建立模型首轮可见表面.
-        //    source.kind 必须是生产方自有 kind: dsh 0.2.0 的 v4 迁移显式拒绝 kind === 'plugin'.
-        for (const msg of messages) {
-          if (typeof msg?.text === 'string' && msg.text.length > 0) {
-            handle.agent.session.append('user/message',
-              createUserMessage({
-                content: [{ type: 'text', text: msg.text }],
-                source: { kind: name },
-              }),
-              { surfaceOp: 'append' })
-          }
-        }
+        // 4. ghost.memory 暂存, **不写 surface** —— 见 pendingMemory 的注释: create 时刻写
+        //    user/message 会让 system/message 掉到 surface 第二位, 那份存档从此不合 v4 校验
+        //    (protected first surface head), 冷读全线被拒. 由第一轮 steer 投递.
+        pendingMemory = messages
+          .map(message => (message as { text?: unknown }).text)
+          .filter((text): text is string => typeof text === 'string' && text !== '')
         // todo: ping/pong 预热 (可选) — 创建后验证 session 可服务, 失败返回错误.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ sessionId: handle.agent.id, thinkingToken: doloresThinkingToken }))
@@ -1092,7 +1102,7 @@ export function apply(ctx: Context) {
         // steer, 等下一次真实 pre-step 消费. inputs 属 turn 驱动, none 帧不送.
         if (body.effort === 'none') {
           const epoch = await resolveEpoch(ctx, body)
-          const frame = buildMomentFrame(epoch, context, notices)
+          const frame = [...takePendingMemoryFrame(), ...buildMomentFrame(epoch, context, notices)]
           if (frame.length > 0) {
             pendingMoments.push({ messages: frame })
           }
@@ -1105,7 +1115,7 @@ export function apply(ctx: Context) {
         // 必须先 push 再 openThinking — gate 的 resolve 会同步调度 pre-step 续体为 microtask,
         // 若在 openThinking 后又 await, 续体可能在 push 落地前就 fold pendingMoments (丢帧).
         const epoch = await resolveEpoch(ctx, body)
-        const frame = buildMomentFrame(epoch, context, notices)
+        const frame = [...takePendingMemoryFrame(), ...buildMomentFrame(epoch, context, notices)]
         if (frame.length > 0) {
           pendingMoments.push({ messages: frame })
         }
@@ -1375,7 +1385,7 @@ export function apply(ctx: Context) {
     },
   })
 
-  // ── compact: 原地把 surface 前缀 [head, cut_turn) 替换成一条 compact 说明, 保留其后原文 tail ─
+  // ── compact: 原地把 (surface 头, cut_turn) 折叠成一条说明, 保留 protected head 与其后原文 tail ─
   // 入参 {memory: [{text}], notice, cut_turn}. memory 不写进 surface —— MOSS 同时开新 epoch, 由
   // epoch 的 recap 槽重新注入; 这里只拿它更新溢出兜底的缓存. 由 MOSS 在下一个 run 之前调用
   // (surface idle), 语义化 cut 由 MOSS 给 (SCS = 倒数第二个 commit 的 end_turn), turn→seq 解析 +
@@ -1409,7 +1419,15 @@ export function apply(ctx: Context) {
         cachedMemory = memory
         const events = agent.session.snapshotEvents()
         const cut = resolveCut(events, { session_id: sessionId, start_turn: 0, end_turn: cutTurn })
-        const shadowed = agent.session.surface.nodes.filter(seq => seq < cut)
+        // surface 头 (system/message) 是 protected head, **不参与折叠**: dsh v4 规定 replace 只有在
+        // 「移除范围恰好是这一个节点、且替换体也是 system/message」时才允许动它 (否则
+        // "surface replacement cannot shadow the protected system head"), 而 compact 的替换体是
+        // 一条说明 user/message. 所以折叠范围从头的下一个节点起, 头原地保留.
+        // 头的语义也因此定死: 它是会话不变量 (指令 + identity/persona), 可变量 (memory / epoch /
+        // recap) 全部走可压缩层, 由新 epoch 的 recap 槽重发.
+        const nodes = agent.session.surface.nodes
+        const head = nodes[0]
+        const shadowed = nodes.filter(seq => seq < cut && seq !== head)
         if (shadowed.length === 0) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ replaced: 0 }))
@@ -1648,6 +1666,22 @@ async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown):
 }
 
 /**
+ * 取走待投递的 memory 帧 (空则返回空数组) —— 只在第一次真正落到 pre-step 的那一帧产出.
+ *
+ * 走 moment 帧这条通道而不是 create 时 append, 是因为帧消息由 pre-step 以 `enter` 投递,
+ * 落盘顺序恒在 system/message 之后 (见 pendingMemory 注释). 取走即清空, 保证只投一次.
+ */
+function takePendingMemoryFrame(): UserMessage[] {
+  if (pendingMemory.length === 0) return []
+  const message = createUserMessage({
+    content: pendingMemory.map(text => ({ type: 'text' as const, text })),
+    source: { kind: `${name}:memory` },
+  })
+  pendingMemory = []
+  return [message]
+}
+
+/**
  * Enter 缓冲 — 组装 moment 帧消息 (按注入顺序): epoch <容器> 是底座消息, context <容器> 是
  * 坐落在其上的帧消息. 只做组装, 不 inbox inject; 由 pre-step 挂载点插到本步历史最前.
  *
@@ -1769,9 +1803,12 @@ function appendReplace(session: Session, shadowed: readonly number[], message: U
 /**
  * compactLossily — request-error 溢出兜底的模型无关有损压缩.
  *
- * 把「当前 turn 之前」的 surface 节点 (memory 头 + 旧轮次) 整体替换成一条 user/message, 内容 =
- * 缓存的 memory 文本块 + 一条「上下文被压缩」的说明. 保留当前 turn 的输入 (它的 seq >= 当前
+ * 把「当前 turn 之前、surface 头之后」的节点整体替换成一条 user/message, 内容 = 缓存的
+ * memory 文本块 + 一条「上下文被压缩」的说明. 保留当前 turn 的输入 (它的 seq >= 当前
  * ``turn/start``)。模型无关, 零 LLM 调用 —— 溢出路径上不该再发一次请求。
+ *
+ * surface 头 (system/message) 不折叠 —— 它是 dsh v4 的 protected head, 被 replace 覆盖会直接
+ * 违反不变式 (surface replacement cannot shadow the protected system head).
  *
  * self-bounding: 返回 false 表示没有可遮蔽的节点 (表面已经只剩当前 turn), 调用方据此放弃重试、
  * 退回原错误 —— 避免无限重试。首次溢出时 log 顺序 == surface 顺序 (尚未发生过 replace), 故按 seq
@@ -1787,7 +1824,7 @@ function compactLossily(agent: Agent, memory: readonly string[], turn: number): 
     }
   }
   if (turnStartSeq === undefined) return false
-  const shadowed = session.surface.nodes.filter(seq => seq < turnStartSeq)
+  const shadowed = session.surface.nodes.filter(seq => seq < turnStartSeq && seq !== session.surface.nodes[0])
   if (shadowed.length === 0) return false
   const marker = 'Context exceeded the model window and was compacted: the memory view above is the compressed history; the recent turn below is live.'
   const message = createUserMessage({

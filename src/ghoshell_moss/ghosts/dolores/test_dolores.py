@@ -1581,6 +1581,48 @@ class TestMementoReadSurface:
         assert conn.calls[0][1]["ref"]["session_id"] == "s1"
 
     @pytest.mark.asyncio
+    async def test_read_raises_on_unreadable_source(self, tmp_path: Path):
+        """源存档读不出来时显式抛 SourceUnreadableError —— 不回落成空串, 也不带出磁盘路径."""
+        from ._ego_memento import SourceUnreadableError
+
+        conn = self._Connection(RuntimeError(
+            'dsh RPC /moss-api/ghost/dolores/read failed (400): '
+            'SessionPersistenceCorruptionError: session "s1": stored log is corrupt: '
+            'SessionFormatError: system/message requires a protected first surface head '
+            "(raw log: /Users/someone/.dsh/sessions/x/session.v4.jsonl.zstd)"
+        ))
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        coord = self._coord(memento, anchor.seq)
+
+        with pytest.raises(SourceUnreadableError) as caught:
+            await manager.read(coord)
+
+        message = str(caught.value)
+        assert coord in message and "s1" in message
+        assert "no compatible read path" in message
+        assert "/Users/" not in message  # (raw log: …) 尾巴被剥掉, 路径不进上下文
+
+    @pytest.mark.asyncio
+    async def test_bypass_skips_unreadable_source_without_marking_broken(self, tmp_path: Path):
+        """格式不兼容 = 读不了, 不是旁路失败 —— 写空 note 防重试, 但不标 broken."""
+        conn = self._Connection(RuntimeError(
+            'dsh RPC /moss-api/ghost/dolores/bypass/run failed (400): '
+            'SessionFormatUnsupportedMigrationError: Session migration from v3 to v4 refuses '
+            'the transformed artifact: system/message requires a protected first surface head'
+        ))
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(anchor.id)
+        await manager.drain_bypass()
+
+        note = memento.get_branch("main").notes()[anchor.id]
+        assert note.message == "" and note.error == ""
+        assert manager.resolve(self._coord(memento, anchor.seq)).is_broken is False
+        assert manager.backfill() == 0  # 空 note 也算"有", 不再重试
+
+    @pytest.mark.asyncio
     async def test_chat_frames_the_context_not_the_commit(self, tmp_path: Path):
         conn = self._Connection({"message": "reply"})
         manager, memento = self._manager(tmp_path, conn)
