@@ -101,6 +101,14 @@ class _Surface(Protocol):
 
     async def set_layout(self, mode: str) -> str: ...
 
+    async def set_cursor(
+        self, thread: str, start: int, end: int | None = None, *, by: str = "model"
+    ) -> dict[str, Any]: ...
+
+    def cursor_state(self) -> tuple[str, int, int, str]: ...
+
+    def view_at_state(self) -> tuple[str, int]: ...
+
 
 class _NoSurface:
     """Headless stand-in: no page to tell, but the knob still has a value, so a
@@ -108,12 +116,31 @@ class _NoSurface:
 
     def __init__(self) -> None:
         self._layout, self._layout_by = "page", "default"
+        self._cursor: dict[str, Any] = {"thread": "", "start": 0, "end": 0}
 
     async def broadcast(self, frame: dict[str, Any]) -> None:
         return None
 
     def layout_state(self) -> tuple[str, str]:
         return self._layout, self._layout_by
+
+    async def set_cursor(
+        self, thread: str, start: int, end: int | None = None, *, by: str = "model"
+    ) -> dict[str, Any]:
+        lo = max(1, int(start))
+        self._cursor = {"thread": thread, "start": lo, "end": max(lo, int(end or lo))}
+        return self._cursor
+
+    def cursor_state(self) -> tuple[str, int, int, str]:
+        return (
+            str(self._cursor.get("thread", "")),
+            int(self._cursor.get("start", 0)),
+            int(self._cursor.get("end", 0)),
+            "model",
+        )
+
+    def view_at_state(self) -> tuple[str, int]:
+        return ("", 0)
 
     async def set_layout(self, mode: str) -> str:
         chosen = (mode or "").strip().lower()
@@ -319,6 +346,10 @@ def build_file_editor_channel(
         carries the mechanics beside it (which region, how many lines), so the
         motive is the part only you can supply — a card that says "read all" tells
         the human nothing about whether it is worth opening.
+
+        Reading also *moves the cursor onto those lines* — the page scrolls there
+        and lights them, so the human follows your eyes instead of guessing which
+        part of the file you are talking about.
         """
         target = _get_thread(thread)
         if target.state != "live":
@@ -362,12 +393,43 @@ def build_file_editor_channel(
             fact=f"{region or 'all'} · {line_count(text)} lines",
         )
         await _card(target, action)
+        await surface.set_cursor(target.id, start, end, by="model")
         if len(text) > _READ_LIMIT:
             return (
                 f"{text[:_READ_LIMIT]}\n… (truncated at {_READ_LIMIT} chars — read a "
                 f"region for the rest)"
             )
         return text
+
+    @chan.build.command(name="point", available=enabled)
+    async def point(thread: str, region: str = "", label: str = "") -> str:
+        """Put the reading point on these lines — without reading them out.
+
+        The gesture for talking about a document: the page scrolls to the region
+        and lights it, so whoever is watching sees the fragment under discussion
+        instead of a line number in a sentence. ``region`` is a range like
+        ``"330-346"``; empty points at the whole thread. It returns a one-line
+        receipt naming the lines, so a mis-aimed point shows up as numbers rather
+        than as someone staring at the wrong paragraph.
+
+        With no thread it only *reads back* where the reading point is — who moved
+        it included, because "he scrolled somewhere" and "I pointed somewhere" are
+        two different sentences about the same number.
+        """
+        if not thread.strip():
+            where, lo, hi, by = surface.cursor_state()
+            seen, line = surface.view_at_state()
+            point = f"point: {where!r} lines {lo}-{hi} ({by})" if where else "point: unset"
+            pos = f"you: line {line} of {seen!r}" if seen else "you: not moved"
+            return f"[{name}] {point} · {pos}"
+        target = _get_thread(thread)
+        try:
+            start, end = region_span(target.content, region)
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        await surface.set_cursor(target.id, start, end, by="model")
+        tail = f" — {label}" if label else ""
+        return f"[{name}] cursor on {thread!r} lines {start}-{end}{tail}"
 
     @chan.build.command(name="find", always_observe=True, available=enabled)
     async def find(
@@ -408,6 +470,13 @@ def build_file_editor_channel(
             fact=f"{found['total']} match(es), {found['shown']} shown · {found['lines']} lines",
         )
         await _card(target, action)
+        matches = found["matches"]
+        if matches:
+            # A search is a way of looking somewhere: put the cursor on the first
+            # hit so the page is already where the answer is.
+            await surface.set_cursor(
+                target.id, int(matches[0]["line"]), int(matches[0]["line"]), by="model"
+            )
         return (
             f"[{name}] {thread!r} — {found['total']} match(es) in "
             f"{found['lines']} lines\n{body}"

@@ -77,6 +77,15 @@ class FileEditorSurface:
         # about* is half of being understood.
         self._view = "document"
         self._view_by = "default"
+        # Where the reader is in the text. One point, two authors: the model
+        # moves it to show what it is talking about, the human moves it by
+        # scrolling. It is state, not a signal — a signal has to win attention to
+        # arrive, a state only has to be read.
+        self._cursor: dict[str, Any] | None = None
+        self._cursor_by = "default"
+        # ...and where the human is, which is a different question: it moves when
+        # they scroll and it never drags the page anywhere.
+        self._view_at: tuple[str, int] = ("", 0)
         self.port = port
 
     @property
@@ -102,6 +111,9 @@ class FileEditorSurface:
         frame["layout_by"] = self._layout_by
         frame["view"] = self._view
         frame["view_by"] = self._view_by
+        frame["cursor"] = self._cursor
+        frame["cursor_by"] = self._cursor_by
+        frame["view_at"] = {"thread": self._view_at[0], "line": self._view_at[1]}
         return frame
 
     # -- layout (the model's side of the presentation contract) -------------
@@ -138,6 +150,57 @@ class FileEditorSurface:
         self._view_by = by
         await self.broadcast({"type": "view", "view": chosen, "by": by})
         return chosen
+
+    # -- the reading point (mine) and the reading position (theirs) ----------
+
+    def cursor_state(self) -> tuple[str, int, int, str]:
+        """(thread, start, end, by) — empty thread when nothing has been pointed at."""
+        if self._cursor is None:
+            return "", 0, 0, self._cursor_by
+        return (
+            str(self._cursor.get("thread", "")),
+            int(self._cursor.get("start", 0)),
+            int(self._cursor.get("end", 0)),
+            self._cursor_by,
+        )
+
+    def view_at_state(self) -> tuple[str, int]:
+        """(thread, line) the human is parked on. Empty thread before they scroll."""
+        return self._view_at
+
+    async def set_cursor(
+            self,
+            thread: str,
+            start: int,
+            end: int | None = None,
+            *,
+            by: str = "model",
+    ) -> dict[str, Any]:
+        """Point at lines. This is a *marker*, so it stays where I put it.
+
+        It used to be one value with two authors, which made the human's scroll
+        erase my pointer and made my pointer fight their scroll. Two questions,
+        two answers: a point says "look at these lines" and only I set it; the
+        position says "where the reader is" and only the page sets it.
+        """
+        lo = max(1, int(start))
+        hi = max(lo, int(end if end is not None else start))
+        self._cursor = {"thread": thread, "start": lo, "end": hi}
+        self._cursor_by = by
+        await self.broadcast(
+            {"type": "point", "thread": thread, "start": lo, "end": hi, "by": by}
+        )
+        return self._cursor
+
+    async def set_view_at(self, thread: str, line: int) -> None:
+        """Record where the human has scrolled to — no jump, no redraw of my marker."""
+        if not thread:
+            return
+        line = max(0, int(line))
+        if self._view_at == (thread, line):
+            return
+        self._view_at = (thread, line)
+        await self.broadcast({"type": "view_at", "thread": thread, "line": line})
 
     # -- uplink -------------------------------------------------------------
 
@@ -336,6 +399,10 @@ class FileEditorSurface:
                         await self.set_view(str(frame.get("view", "")), by="human")
                     except ValueError:
                         pass
+                elif kind == "cursor":
+                    # The human scrolled: record where they are. It is read back as
+                    # state, so "where is he" needs no signal to win my attention.
+                    await self.set_view_at(thread, int(frame.get("start", 0) or 0))
                 elif kind == "auto":
                     await self._set_thread_auto(thread, bool(frame.get("auto")))
                 elif kind == "global_trust":

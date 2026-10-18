@@ -53,7 +53,7 @@ async def test_channel_exposes_the_command_set(store):
     async with chan.bootstrap() as runtime:
         for name in (
             "open", "close", "read", "write", "append", "str_replace",
-            "rewind", "export", "threads", "history", "layout",
+            "rewind", "export", "threads", "history", "layout", "point",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -321,6 +321,63 @@ async def test_find_returns_line_numbers_not_excerpts(store):
         assert "2:" in out and "beta needle" in out
         assert "1 match" in out
         assert rec.of("action")[-1]["kind"] == "find"
+
+
+@pytest.mark.asyncio
+async def test_reading_a_region_moves_the_cursor_onto_it(store):
+    """Reading is also pointing: the human should not have to guess which part
+    of the file the sentence is about."""
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command(
+            "append", args=("t", chunks([f"line {i}\n" for i in range(1, 40)]))
+        )
+        await runtime.execute_command("read", args=("t", "10-14"))
+        assert rec.cursor == {"thread": "t", "start": 10, "end": 14}
+        assert rec.cursor_by == "model"
+
+
+@pytest.mark.asyncio
+async def test_point_moves_the_cursor_without_reading(store):
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command("append", args=("t", chunks(["a\n", "b\n", "c\n"])))
+        before = len(rec.of("action"))
+        out = await runtime.execute_command("point", args=("t", "2-3"))
+        assert "2-3" in out
+        assert rec.cursor == {"thread": "t", "start": 2, "end": 3}
+        # a point is a gesture, not a record — it leaves no card behind
+        assert len(rec.of("action")) == before
+
+
+@pytest.mark.asyncio
+async def test_point_with_no_thread_reads_the_cursor_back(store):
+    """The other half of the contract: where the *human* scrolled is a value I
+    can pull, not a signal that has to win my attention to arrive."""
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command("append", args=("t", chunks(["a\n", "b\n", "c\n"])))
+        empty = await runtime.execute_command("point", args=("",))
+        assert "unset" in empty
+        await rec.set_cursor("t", 2, 3, by="model")
+        await rec.set_view_at("t", 40)
+        out = await runtime.execute_command("point", args=("",))
+        assert "2-3" in out and "line 40" in out
+
+
+@pytest.mark.asyncio
+async def test_find_puts_the_cursor_on_the_first_hit(store):
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command(
+            "append", args=("t", chunks(["alpha\n", "beta needle\n", "gamma\n"]))
+        )
+        await runtime.execute_command("find", args=("t", "needle"))
+        assert rec.cursor == {"thread": "t", "start": 2, "end": 2}
 
 
 @pytest.mark.asyncio

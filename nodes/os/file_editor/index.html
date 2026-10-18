@@ -214,6 +214,11 @@
   .doc-line .ln { color: var(--dim); text-align: right; padding-right: 14px; user-select: none; }
   .doc-line.hit { background: rgba(110,168,254,.10); box-shadow: inset 2px 0 0 var(--accent); }
   .doc-line.hit .ln { color: var(--accent); }
+  /* Where the reader is. The model's point and the human's scroll share this
+     one band: it answers "what are we looking at", not "who moved it" — the
+     who is a word in the note, not a second colour to learn. */
+  .doc-line.cursor { background: rgba(92,214,150,.12); box-shadow: inset 2px 0 0 var(--run); }
+  .doc-line.cursor .ln { color: var(--run); }
   .stream { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
   .stream[hidden] { display: none; }
   /* The thread's own facts, once. Every card used to repeat them; a question
@@ -448,6 +453,14 @@ let selected = null;                // {thread, n}
 let focusThread = null;
 let view = "document";              // document | history | meta — three readings of one thread
 let viewBy = "default";             // who moved the page last: human or model
+// Where the reading is. One band, two authors: I point at what I am talking
+// about, they scroll to what they are reading — and both read back as the same
+// state, because "which lines are we on" is one fact, not two.
+let cursor = null;                  // the marker I put down: {thread, start, end} | null
+let cursorBy = "default";
+let viewAt = null;                  // where the human is parked: {thread, line} | null
+let cursorKey = "";                 // last band I scrolled for, so a state echo does not yank the page
+let cursorQuietUntil = 0;           // after my own point lands, the human's scroll settles before it reports
 const docText = new Map();          // thread -> {version, lines, text}
 // Which action each thread has been read up to. Unread is a fact about the
 // human's attention, not about the thread: it lives here, in their browser.
@@ -467,6 +480,47 @@ const detailEl = document.createElement("div");
 detailEl.className = "detail";
 const railEl = document.getElementById("rail");
 const docEl = document.getElementById("doc");
+// The human's scroll is a reading position, so it goes back up as the same
+// state mine does — debounced, because a scroll is a hundred events per gesture
+// and one of them is the answer.
+let scrollTimer = 0;
+let reportedCursor = "";
+docEl.addEventListener("scroll", () => {
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(reportCursor, 350);
+}, { passive: true });
+
+function lineUnder(clientY) {
+  // elementFromPoint alone answers "the doc's own padding" near the edges, which
+  // reads as "line 0" and made the position never report. Ask the whole stack,
+  // then fall back to the first row that reaches below this height.
+  const box = docEl.getBoundingClientRect();
+  const x = box.left + Math.min(24, box.width * 0.5);
+  for (const el of document.elementsFromPoint(x, clientY) || []) {
+    const row = el.closest && el.closest(".doc-line");
+    if (row && row.dataset.n) return parseInt(row.dataset.n, 10);
+  }
+  for (const row of docEl.querySelectorAll(".doc-line")) {
+    if (row.getBoundingClientRect().bottom > clientY) {
+      return parseInt(row.dataset.n, 10) || 0;
+    }
+  }
+  return 0;
+}
+
+function reportCursor() {
+  if (view !== "document" || !focusThread) return;
+  if (Date.now() < cursorQuietUntil) return;   // my own point is still settling
+  const box = docEl.getBoundingClientRect();
+  const start = lineUnder(box.top + 6);
+  if (!start) return;
+  const sig = focusThread + ":" + start;
+  if (sig === reportedCursor) return;
+  reportedCursor = sig;
+  // A position, not a range: the visible span is just the window's height, and
+  // sending it as a range painted a band over the whole screen.
+  send({ type: "cursor", thread: focusThread, start, end: start });
+}
 const metaEl = document.getElementById("meta");
 const gateEl = document.getElementById("gate");
 const handleEl = document.getElementById("rail-handle");
@@ -818,7 +872,13 @@ function setView(next) {
 function renderViewNote() {
   const base = vnoteEl.dataset.base || "";
   const who = viewBy === "model" ? "moss set this view" : "";
-  vnoteEl.textContent = [base, who].filter(Boolean).join(" · ");
+  const look = cursor && cursor.thread === focusThread && cursor.start
+    ? "pointed at " + cursor.start + "–" + cursor.end
+    : "";
+  const you = viewAt && viewAt.thread === focusThread && viewAt.line
+    ? "you: line " + viewAt.line
+    : "";
+  vnoteEl.textContent = [base, look, you, who].filter(Boolean).join(" · ");
 }
 
 function requestText(thread) {
@@ -902,18 +962,32 @@ function renderDoc() {
     "v" + d.version + " · " + d.lines + " lines" + (t && t.unsaved ? " · unsaved" : "");
   renderViewNote();
   const hit = selected && selected.thread === focusThread ? regionOf(actions.get(key(focusThread, selected.n))) : null;
+  const band = cursor && cursor.thread === focusThread && cursor.start ? cursor : null;
   const lines = d.text.split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const frag = document.createDocumentFragment();
   lines.forEach((line, i) => {
     const n = i + 1;
-    const row = make("div", "doc-line" + (hit && n >= hit[0] && n <= hit[1] ? " hit" : ""));
+    const cls = "doc-line"
+      + (hit && n >= hit[0] && n <= hit[1] ? " hit" : "")
+      + (band && n >= band.start && n <= band.end ? " cursor" : "");
+    const row = make("div", cls);
+    row.dataset.n = String(n);
     row.append(make("span", "ln", String(n)));
     row.append(make("span", "lt", line));
     frag.append(row);
   });
   docEl.append(frag);
-  if (hit) {
+  // One scroll rule: the reading band wins, the picked card's range is the
+  // fallback. Scrolled only when the band actually moved — a re-render for an
+  // unrelated reason must not drag the page back to where I once pointed.
+  const key = band ? band.thread + ":" + band.start + "-" + band.end : "";
+  if (band && key !== cursorKey) {
+    cursorKey = key;
+    const el = docEl.querySelector(".doc-line.cursor");
+    if (el) el.scrollIntoView({ block: "center" });
+    if (cursorBy === "model") cursorQuietUntil = Date.now() + 800;
+  } else if (!band && hit) {
     const el = docEl.querySelector(".doc-line.hit");
     if (el) el.scrollIntoView({ block: "center" });
   }
@@ -1332,6 +1406,10 @@ function onFrame(frame) {
         view = frame.view;
         viewBy = frame.view_by || "default";
       }
+      cursor = frame.cursor && frame.cursor.thread ? frame.cursor : null;
+      cursorBy = frame.cursor_by || "default";
+      cursorKey = "";
+      viewAt = frame.view_at && frame.view_at.thread ? frame.view_at : null;
       renderRail();
       renderDrafts();
       renderStream();
@@ -1360,6 +1438,31 @@ function onFrame(frame) {
     case "view": {
       viewBy = frame.by || "model";
       setView(frame.view || "document");
+      break;
+    }
+    case "point": {
+      // My marker. It scrolls the page to itself once, and after that the page is
+      // the reader's: their scrolling never moves it and it never moves them.
+      cursor = frame.thread ? { thread: frame.thread, start: frame.start, end: frame.end } : null;
+      cursorBy = frame.by || "default";
+      if (frame.thread) {
+        cursorKey = "";
+        if (focusThread !== frame.thread) {
+          focusThread = frame.thread;
+          requestText(focusThread);
+          renderRail();
+        }
+        if (view !== "document") setView("document");
+        renderDoc();
+        renderViewNote();
+      }
+      break;
+    }
+    case "view_at": {
+      // Their position: a note, never a move. Repainting rows here is what made
+      // the page feel like it was arguing with the scroll wheel.
+      viewAt = frame.thread ? { thread: frame.thread, line: frame.line } : null;
+      renderViewNote();
       break;
     }
     case "threads": {

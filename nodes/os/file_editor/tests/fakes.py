@@ -24,6 +24,29 @@ class Recorder:
         self.layout, self.layout_by = mode, "model"
         return mode
 
+    async def set_cursor(
+        self, thread: str, start: int, end: int | None = None, *, by: str = "model"
+    ) -> dict:
+        lo = max(1, int(start))
+        self.cursor = {"thread": thread, "start": lo, "end": max(lo, int(end or lo))}
+        self.cursor_by = by
+        return self.cursor
+
+    def cursor_state(self) -> tuple[str, int, int, str]:
+        cur = getattr(self, "cursor", None) or {"thread": "", "start": 0, "end": 0}
+        return (
+            cur.get("thread", ""),
+            int(cur.get("start", 0)),
+            int(cur.get("end", 0)),
+            getattr(self, "cursor_by", "default"),
+        )
+
+    def view_at_state(self) -> tuple[str, int]:
+        return getattr(self, "view_at", ("", 0))
+
+    async def set_view_at(self, thread: str, line: int) -> None:
+        self.view_at = (thread, int(line))
+
     def __call__(self, signal: object) -> None:
         self.signals.append(signal)
 
