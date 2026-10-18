@@ -179,6 +179,9 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 // thinking 事务面 (取代旧的 articulate/enter|exit): 帧注入 + 锁反转 + 退出 cancel.
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
+// moment/push: 一轮**正在跑**时把一整帧 (context + inputs) 送进去 —— enter 只在起点投递,
+// 之后没有第二条路. context 走 pendingMoments (下一步历史最前), inputs 走 steer (续当前 turn).
+const DOLORES_MOMENT_PUSH = `${DOLORES_API_ROOT}/moment/push`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
 // compact: 原地把 (surface 头, cut_turn) 之间的节点替换成一条说明, 保留 surface 头与原文 tail;
 // memory 由新 epoch 的 recap 交付 (头是 protected head, 不可折叠).
@@ -1162,6 +1165,45 @@ export function apply(ctx: Context) {
     },
   })
 
+  // ── 2b. moment/push ──────────────────────────────────────────────────
+  // 一轮正在跑时把整帧送进去: 两半都缓冲到 pendingMoments, 由 pre-step 挂载点插到本步历史最前.
+  // 走的就是 enter / "协议返回的 moment" 那条投递路, 不用 agent.inject.
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_MOMENT_PUSH,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req) as unknown as { moment?: MomentPayload; thinkingToken?: string }
+        if (doloresEgoSessionId === null) {
+          throw new Error('no ego session — call ego/create first')
+        }
+        if (body.thinkingToken !== doloresThinkingToken) {
+          throw new Error('invalid thinkingToken — rejected (non-ego caller)')
+        }
+        resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        // 一份 moment 两半 (context 背景 + inputs 输入) 一起缓冲, 绝不只投一半.
+        if (hasMomentPayload(body.moment)) {
+          await queueMomentPayload(ctx, body.moment)
+        }
+        const pushed = body.moment as MomentPayload
+        probe(
+          `moment/push id=${String(pushed.moment_id ?? '?')} `
+          + `context=${pushed.context?.length ?? 0} inputs=${pushed.inputs?.length ?? 0}`,
+        )
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ pushed: true }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+
   // ── 3. thinking/exit (点 4) ───────────────────────────────────────────
   // 反转 thinking 状态; agent 非 idle 时显式 cancel, 不让 dsh 空跑失速.
   ctx.webServer.register({
@@ -1662,6 +1704,39 @@ async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown):
       content: inputBlocks,
       source: { kind: `${name}:inputs` },
     }))
+  }
+}
+
+/**
+ * 缓冲一次推送的 moment —— 与 enter 同一条投递路: 两半各自成帧塞进 pendingMoments,
+ * 由 pre-step 挂载点插到本步历史最前.
+ *
+ * 为什么不用 injectMomentPayload: ``Agent.inject`` 的契约写着 "Cancellation or disposal may
+ * discard pending context" —— 它是**门口暂存**, 一轮被抢断, 挂在门口的字随 inbox 一起消失.
+ * 2026-10-18 D18 实测: 四句话 17:14:21–28 全部 inject 成功, 17:14:41 那一轮被 abort,
+ * inbox 记 ``removedCount=9, outcome=canceled`` —— 投了, 一句没读, 字没了.
+ * pendingMoments 是插件自己的队列, pre-step 消费前一直在; 就算这一轮死掉, 下一轮的
+ * pre-step 照样把它插进历史, 绝不丢.
+ */
+async function queueMomentPayload(ctx: Context, moment: unknown): Promise<void> {
+  const { context, inputs } = moment as MomentPayload
+  const messages: UserMessage[] = []
+  const contextBlocks = Array.isArray(context) ? await durableMomentContent(ctx, context) : []
+  if (contextBlocks.length > 0) {
+    messages.push(createUserMessage({
+      content: contextBlocks,
+      source: { kind: `${name}:moment` },
+    }))
+  }
+  const inputBlocks = Array.isArray(inputs) ? await durableMomentContent(ctx, inputs) : []
+  if (inputBlocks.length > 0) {
+    messages.push(createUserMessage({
+      content: inputBlocks,
+      source: { kind: `${name}:inputs` },
+    }))
+  }
+  if (messages.length > 0) {
+    pendingMoments.push({ messages })
   }
 }
 

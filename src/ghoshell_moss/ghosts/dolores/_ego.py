@@ -60,6 +60,7 @@ _DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
 _DOLORES_THINKING_ENTER = "/moss-api/ghost/dolores/thinking/enter"
 _DOLORES_THINKING_EXIT = "/moss-api/ghost/dolores/thinking/exit"
 _DOLORES_TOOL_RESULT = "/moss-api/ghost/dolores/tool-result"
+_DOLORES_MOMENT_PUSH = "/moss-api/ghost/dolores/moment/push"
 # compact: 原地把 surface 前缀替换成一条说明, cut 到 cut_turn 边界; memory 由新 epoch 的 recap 交付.
 _DOLORES_COMPACT = "/moss-api/ghost/dolores/compact"
 
@@ -655,6 +656,19 @@ class DoloresEgo:
             "moment": moment,
             "cancel": cancel,
             "turn": turn,
+        })
+
+    async def push_moment(self, moment: Moment, moment_id: str) -> None:
+        """Deliver one whole frame into a turn that is *already running*.
+
+        ``thinking/enter`` is the only delivery point today — after it, the next frame
+        has to wait for the turn to end. This route carries the same payload protocol
+        (context + inputs, see ``moment_payload``), so a buffered impulse reaches the
+        model at the next step instead of at the next turn.
+        """
+        await self._launcher.call(_DOLORES_MOMENT_PUSH, {
+            "moment": self._moment_payload(moment, moment_id),
+            "thinkingToken": self._thinking_token,
         })
 
     def moment_payload(self, moment: Moment, moment_id: str) -> dict:

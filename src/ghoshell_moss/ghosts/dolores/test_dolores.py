@@ -1843,6 +1843,8 @@ class _FakeObserver:
 
     def __init__(self, log: list | None = None):
         self._log = log
+        self._pending: list = []
+        self._injected_callbacks: set = set()
 
     def add_echoes(self, result: list, need_observe: bool = False):
         if self._log is not None:
@@ -1851,6 +1853,22 @@ class _FakeObserver:
     def need_observe(self) -> bool:
         return False
 
+    # Observer 契约的另外三件. 替身要长成真 observer 的形状 —— 否则单测全绿、
+    # 生产 AttributeError (这个类的 docstring 记的就是那次事故).
+    def has_pending(self) -> bool:
+        return bool(self._pending)
+
+    def drain_percepts(self) -> list:
+        drained, self._pending = self._pending, []
+        return drained
+
+    def on_percepts_injected(self, callback):
+        self._injected_callbacks.add(callback)
+
+        def _disposer():
+            self._injected_callbacks.discard(callback)
+
+        return _disposer
 
 class FakeRunThinking:
     def __init__(self, log: list | None = None):
@@ -1860,8 +1878,13 @@ class FakeRunThinking:
         self.articulators: list[FakeArticulator] = []
         self._log = log
         # run 的进入日志读 attention/moment —— 与生产 Thinking 同名.
-        self.attention = SimpleNamespace(id="fake-attention")
+        # escalate: 每个 ghost event 的提权落点 (见 _escalate_on_ghost_event), 跑到这里记账.
+        self.attention = SimpleNamespace(id="fake-attention", escalate=self._escalate)
         self.moment = Moment(id="fake-moment", index=7)
+
+    def _escalate(self):
+        if self._log is not None:
+            self._log.append("escalate")
 
     def abort(self, reason):
         self.abort_reasons.append(reason)
@@ -2011,6 +2034,82 @@ class TestDoloresRun:
         assert "full surface" in results["call_one"]
 
     @pytest.mark.asyncio
+    async def test_react_tool_call_holds_the_percept_push(self):
+        """moss_react 在飞时, 落在 buffer 的话不再推 moment —— 这一轮马上就要被 cut."""
+        run = self._run()
+        run._thinking_event.set()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            seen["in_flight"] = run._ctml_in_flight
+            run._on_percepts_injected(["he said something mid-action"])
+            seen["push"] = run._buffered_push
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(
+            self._tool_call("moss_react", '{"ctml": "<noop/>"}', call_id="call_react"), {},
+        )
+
+        assert seen["in_flight"] is True, "react 必须在立旗状态下执行"
+        assert seen["push"] is None, "旗子立着时不许开推 moment 的任务"
+        assert run._ctml_in_flight is False, "工具返回后旗子必须放下"
+
+    @pytest.mark.asyncio
+    async def test_wait_next_tool_call_holds_the_percept_push(self):
+        """moss_wait_next 在飞时同样押: 它本身就是在交出这一轮, 中途推的帧没人读."""
+        run = self._run()
+        run._thinking_event.set()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            seen["in_flight"] = run._ctml_in_flight
+            run._on_percepts_injected(["he said something while I yield"])
+            seen["push"] = run._buffered_push
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(self._tool_call("moss_wait_next", "{}"), {})
+
+        assert seen["in_flight"] is True, "wait_next 必须在立旗状态下执行"
+        assert seen["push"] is None, "旗子立着时不许开推 moment 的任务"
+        assert run._ctml_in_flight is False, "工具返回后旗子必须放下"
+
+    @pytest.mark.asyncio
+    async def test_interpret_tool_call_does_not_hold_the_percept_push(self):
+        """moss_interpret 不立旗: 它跑完这一轮还要继续, 人此刻说的话下一步就该读到."""
+        run = self._run()
+        run._thinking_event.set()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            seen["in_flight"] = run._ctml_in_flight
+            run._on_percepts_injected(["he said something mid-action"])
+            seen["push"] = run._buffered_push
+            assert run._buffered_push is not None, "interpret 期间必须照常开推"
+            run._buffered_push.cancel()
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(
+            self._tool_call("moss_interpret", '{"ctml": "<noop/>"}'), {},
+        )
+
+        assert seen["in_flight"] is False, "interpret 不押推送"
+        assert run._ctml_in_flight is False
+
+    @pytest.mark.asyncio
+    async def test_non_ctml_tool_does_not_hold_the_percept_push(self):
+        """非 CTML 工具 (bash / 工具面读) 不立旗 — 跑 bash 时人说的话照旧推进来."""
+        run = self._run()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            seen["in_flight"] = run._ctml_in_flight
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(self._tool_call("moss_channel_facade", '{}'), {})
+
+        assert seen["in_flight"] is False
+
+    @pytest.mark.asyncio
     async def test_channel_facade_reports_unknown_path(self):
         """未知 path (非 recursive) 报错不抛 (工具结果回给模型, 不烧整轮)."""
         from ._run import DoloresRun
@@ -2031,6 +2130,27 @@ class TestDoloresRun:
             self._tool_call("moss_channel_facade", '{"channel_path": "nope", "recursive": false}'), {},
         )
         assert "no such channel" in ego.rpc_calls[0][1]
+
+    @pytest.mark.asyncio
+    async def test_ghost_event_escalates_the_attention_only_while_the_turn_runs(self):
+        """DSH 每签发一个事件就提权一次 —— thinking 期间人开口才抢不动、只能排队折进来.
+
+        反例 (D18 实测): 没有提权时, 只跑 tool call 的那几秒里强度按衰减曲线掉下去, 人一句
+        INFO 就赢下仲裁 → preempt → 整轮 abort, 正在跑的 tool call 一起陪葬.
+        """
+        log: list = []
+        run = self._run(thinking=FakeRunThinking(log))
+        event = self._event("tool/start", {"turn": 1})
+
+        run._thinking_event.set()
+        await run._on_event(event)
+        assert "escalate" in log
+
+        # 收线之后不再提权 —— 否则一个已经结束的 attention 永远不衰减.
+        log.clear()
+        run._thinking_event.clear()
+        await run._on_event(event)
+        assert "escalate" not in log
 
     @pytest.mark.asyncio
     async def test_shell_status_reads_facade(self):

@@ -54,6 +54,13 @@ from ._tools import (
 # 流式 tool 集合: 这两个 tool 的参数经 tool-call-delta 逐字进 articulator, 边生成边执行.
 _STREAMING_TOOLS = frozenset({InterpretToolCall.tool_name(), ReactToolCall.tool_name()})
 
+# 押住 moment 推送的 tool 集合 —— 收轮类的两个: `moss_react` 与 `moss_wait_next`.
+# 判据只有一条: **调完之后这一轮就不打算继续读了**. react 的结果一到 turn 就被 cut; wait_next
+# 本身就是在交出这一轮. 两者在飞的那段时间里, 人说的话推进来只能落进一个正在收尾的 turn ——
+# 所以留在 observer buffer 里, 等本 attention 收尾后自然签发成下一帧.
+# 而 interpret 不押: 它跑完这一轮还要继续, 人此刻说的话推进来正好下一步就读到.
+_HOLD_PUSH_TOOLS = frozenset({ReactToolCall.tool_name(), WaitNextToolCall.tool_name()})
+
 # 只有 moss* 命名空间的 tool 归本 run 管. 会话流 (on_session_event("*")) 里还有 host 自己的内环工具
 # (bash / read / write / edit / subagent ...), 它们由 dsh 侧自行结算 —— 我们既不该回答, 也不该报警告.
 # 早先把它们也当"等我们回答的 tool"逐条 warning, 一次排查刷出几百行噪音, 把真正的 D39 信号
@@ -306,6 +313,10 @@ class DoloresRun:
         self._logger = logger or get_moss_logger()
         self._queue: "asyncio.Queue[Any]" = asyncio.Queue()
         self._dispose_listener: "Callable[[], None] | None" = None
+        self._dispose_percepts: "Callable[[], None] | None" = None
+        self._buffered_push: "asyncio.Task[None] | None" = None
+        # moss_react 在飞: 这段时间里 percepts 只留 buffer, 不推 moment (其余工具照推, 见 _HOLD_PUSH_TOOLS).
+        self._ctml_in_flight: bool = False
         self._enter_task: "asyncio.Task[None] | None" = None
         # 本帧的 thinking 配对序 — __aenter__ 就铸好, enter/exit 带同一个 (见 _ego.next_thinking_seq).
         self._thinking_seq: int = 0
@@ -333,6 +344,9 @@ class DoloresRun:
         # 上一有效 run 决定的 compact 由 runtime 在进入本 run 之前执行 (见 Dolores.think): 它同时要开
         # 新 epoch 让 memory 走 recap 槽, 两个动作必须按序发生在请求之前.
         self._dispose_listener = self._ego.session.on_session_event("*", self._on_event)
+        self._dispose_percepts = self._thinking.observer.on_percepts_injected(
+            self._on_percepts_injected
+        )
         self._enter_task = asyncio.create_task(self._drive_enter())
         self._ego.logger.info(
             "Dolores ego run entered: seq=%s thinking=%s moment_index=%s previous_moment_id=%s "
@@ -359,6 +373,12 @@ class DoloresRun:
                 await task
         if self._dispose_listener is not None:
             self._dispose_listener()
+        if self._buffered_push is not None and not self._buffered_push.done():
+            self._buffered_push.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._buffered_push
+        if self._dispose_percepts is not None:
+            self._dispose_percepts()
         # re-send exit — even if enter failed (to clean up plugin-side state), blocking with a fail-safe timeout.
         await self._ego.exit_thinking(self._thinking_seq)
         # 观测探针 (D15 档位切换排查): 这三样决定"下一帧由谁签发".
@@ -411,6 +431,26 @@ class DoloresRun:
             yield item
 
     async def _handle_tool_use_event(self, event: ToolCallEvent, streams: dict[str, _StreamedCtml]) -> None:
+        """tool/call entry — flag the hold, then dispatch.
+
+        Only the turn-closing tools hold the push (see ``_HOLD_PUSH_TOOLS``): ``moss_react`` cuts
+        the turn the moment its result lands, and ``moss_wait_next`` is the yield itself — a frame
+        pushed while either is in flight arrives at a turn already closing. Every other tool —
+        ``moss_interpret`` included — lets a push through: the turn continues after it returns, so
+        the model reads the new input on the next step, which is exactly the point.
+        While the flag is held, ``_on_percepts_injected`` leaves percepts in the observer buffer,
+        where the normal attention flow signs them as the next moment once this cycle is over.
+        """
+        if event.name not in _HOLD_PUSH_TOOLS:
+            await self._dispatch_tool_use_event(event, streams)
+            return
+        self._ctml_in_flight = True
+        try:
+            await self._dispatch_tool_use_event(event, streams)
+        finally:
+            self._ctml_in_flight = False
+
+    async def _dispatch_tool_use_event(self, event: ToolCallEvent, streams: dict[str, _StreamedCtml]) -> None:
         """tool/call dispatch — discriminate by name and route to the typed tool.
 
         The two streaming tools (interpret / react) have their CTML already arriving via the delta
@@ -891,7 +931,22 @@ class DoloresRun:
     async def _on_event(self, event: "SessionEvent") -> None:
         """catch-all callback: 入队前处理, 再入队 (async-wrapped — the on_session_event consumer awaits)."""
         self._predispatch_abort(event)
+        self._escalate_on_ghost_event(event)
         self._queue.put_nowait(event)
+
+    def _escalate_on_ghost_event(self, event: "SessionEvent") -> None:
+        """DSH 每签发一个事件, 就是这一轮还在工作的证据 —— 提权一次 (同步, 无 IO).
+
+        提权原来只有一条路: logos 在跑的时候 action 循环每拍 escalate. 于是"身体在动"时强度
+        被刷满, 人开口同级抢不动, 只能排队 (queued), 才走 moment/push 折进这一轮; 而"只在思考
+        / 调工具"时**没有人提权**, 强度按衰减曲线掉下去, 人一句 INFO 就赢下仲裁 → preempt →
+        整轮 abort, 正在跑的 tool call 一起陪葬.
+
+        尊重 DSH 的时序: ghost 侧的 activity 本身就说明这个 attention 还活着; 不必等身体动手.
+        """
+        if not self._thinking_event.is_set():
+            return
+        self._thinking.attention.escalate()
 
     def _predispatch_abort(self, event: "SessionEvent") -> None:
         """turn/end 的中断类在**入队前**落地 (同步, 幂等).
@@ -925,6 +980,47 @@ class DoloresRun:
             end.turn, reason,
         )
         self._thinking.abort(reason)
+
+    def _on_percepts_injected(self, percepts: list[Any]) -> None:
+        """Buffered percepts landed while this turn is running.
+
+        Synchronous on purpose: it is called from inside the mindflow loop, so it may
+        only schedule. The work — observe one frame and push it whole (context +
+        echoes + inputs, not just the new inputs) — needs a task; a task that fails
+        must say so instead of vanishing.
+        """
+        if not self._thinking_event.is_set():
+            return
+        if self._ctml_in_flight:
+            # 中间不插话: 这一轮正抱着一个收轮工具 (moss_react / moss_wait_next) —— 推也只推给一个
+            # 正在收尾的 turn. 话留在 observer buffer 里, 本 attention 收尾时按 need_observe /
+            # has_pending 自然签发成下一帧, 不丢也不抢先.
+            self._logger.info(
+                "buffer push held: the turn is closing — %s message(s) stay in the buffer",
+                len(percepts),
+            )
+            return
+        if self._buffered_push is not None and not self._buffered_push.done():
+            # One push in flight is enough: its observe() drains whatever else landed.
+            return
+        self._logger.info(
+            "buffer push while this turn runs: %s message(s) — scheduling", len(percepts)
+        )
+        self._buffered_push = asyncio.create_task(self._push_buffered_moment())
+
+    async def _push_buffered_moment(self) -> None:
+        """Observe one frame and hand it to the running turn — the whole frame, not a slice."""
+        try:
+            moment = self._thinking.observer.observe()
+            moment_id = f"{self._thinking.observer.epoch.index}-{moment.index}"
+            await self._ego.push_moment(moment, moment_id)
+            self._logger.info("buffer push delivered: moment %s", moment_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A push that dies silently is worse than one that never ran: the frame is
+            # already observed, so nothing else will resend it.
+            self._logger.exception("buffer push failed — the frame stays undelivered")
 
     async def _drive_enter(self) -> None:
         """enter task: thinking/enter RPC. Enqueues the poison pill only on error.
