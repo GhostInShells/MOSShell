@@ -711,6 +711,13 @@ class DuplexChannelProvider(ChannelProvider):
                 self._loop.create_task(self._send_event_model_to_proxy(response, throw=False))
 
     def _on_command_progress(self, task: CommandTask) -> None:
+        # set_progress 没有线程约束: 命令可以在 worker 线程里 (如音频回调) 上报进度,
+        # 而 create_task 只能在事件循环线程里叫. 所以这里先把自己送回循环, 再读状态.
+        if self._loop.is_closed():
+            return
+        self._loop.call_soon_threadsafe(self._schedule_progress_send, task)
+
+    def _schedule_progress_send(self, task: CommandTask) -> None:
         if task.done() or not task.progress:
             return
         self._loop.create_task(self._send_command_progress(task.cid, task.progress))

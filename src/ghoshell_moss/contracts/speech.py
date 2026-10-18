@@ -146,6 +146,14 @@ class SpeechStream(ABC):
         """
         return lambda: None
 
+    def on_clause(self, callback: Callable[['SpeechClause'], None]) -> Callable[[], None]:
+        """注册本 stream 的 clause 回调: 每句真的播完了才回调一次. 返回 disposer.
+
+        与 ``Speech.on_clause`` 同名同理, 差别只在范围: 那个跨所有 segment, 这个只属于
+        本 stream——并发出声时进度不会串台. 默认 no-op (拿不到字幕对齐的实现无需覆盖).
+        """
+        return lambda: None
+
     @abstractmethod
     async def wait_played(self) -> None:
         """
@@ -195,18 +203,23 @@ class SpeechStream(ABC):
         """
         pass
 
-    async def play(self, samples: list['PlaybackSample'] | None = None) -> None:
+    async def play(
+            self,
+            sample_callback: list['PlaybackSample'] | Callable[['PlaybackSample'], None] | None = None,
+    ) -> None:
         """
         播放文本的完整生命周期.
 
-        :param samples: 非空时, 真实播放样本会追加到此列表, 供调用方 (如 command)
-            读取"实际播出了什么、播了多久". play 结束 (正常/异常/取消) 都会摘除注册.
+        :param sample_callback: 非空时, 真实播放样本会追加到此列表 (或回调), 供调用方
+            (如 command) 读取"实际播出了什么、播了多久". play 结束 (正常/异常/取消) 都会摘除注册.
         """
         if self.is_closed():
             return
         disposer = None
-        if samples is not None:
-            disposer = self.on_sample(samples.append)
+        if isinstance(sample_callback, list):
+            sample_callback = sample_callback.append
+        if sample_callback is not None:
+            disposer = self.on_sample(sample_callback)
         try:
             async with self:
                 # 不会主动 commit.

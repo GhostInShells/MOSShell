@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 from typing import Callable
 
@@ -9,6 +10,7 @@ from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.contracts.speech import (
     PlaybackSample,
     Speech,
+    SpeechClause,
     SpeechStream,
     TTSSpeech,
     speech_tail,
@@ -23,6 +25,73 @@ from ghoshell_moss.contracts.speech import (
 # 这里回落 samples[-1].text. 中英混排按 token 切分.
 def _played_seconds(samples: list[PlaybackSample]) -> float:
     return sum((s.duration for s in samples), 0.0)
+
+
+# 进度 = 我正在说的那几个字。原料是 clause 的对齐结果 (真的播完一句才来), 取它的尾巴:
+# 最后一个字就是播放头现在的位置, 前面加省略号说明它后面还有. 不累积, 不数句子.
+_PROGRESS_TAIL = 12
+
+
+def speech_progress(text: str) -> str:
+    """一句已播完的 clause 文本 → 一行进度: ``…最后几个字``. 空串 = 这句没字, 不更新."""
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    if len(text) <= _PROGRESS_TAIL:
+        return text
+    return "…" + text[-_PROGRESS_TAIL:]
+
+
+# 进度心跳间隔 (秒). 每秒一次: 再快没有信息增量, 再慢读不到"我这一句拖了多久".
+_PROGRESS_BEAT = 1.0
+
+
+class _SpeechProgress:
+    """播报中的进度: clause 只记"说到哪一截", 心跳每秒把"已播秒数 + 那一截"写成一行.
+
+    两个写入者分工固定 — clause 回调跑在音频 worker 线程, 只写字段; 进度只由心跳写。
+    否则两边交替写, 秒数刚出来就被字盖掉。
+    """
+
+    def __init__(self, task, samples: list[PlaybackSample]):
+        self._task = task
+        self._samples = samples
+        self._tail = ""
+        self._beat: asyncio.Task | None = None
+        self._dispose_clause: Callable[[], None] = lambda: None
+
+    def attach(self, chunks: SpeechStream) -> None:
+        self._dispose_clause = chunks.on_clause(self._on_clause)
+        self._beat = asyncio.create_task(self._run())
+
+    def _on_clause(self, clause: SpeechClause) -> None:
+        # 这句真的播完了才来, 所以它的尾字就是播放头现在的位置; 空句不覆盖上一截.
+        tail = speech_progress(clause.text)
+        if tail:
+            self._tail = tail
+
+    def _render(self) -> str:
+        if not self._tail:
+            return ""
+        # 已播 = 音频真正写进设备的样本时长之和; 总时长只有播完才知道, 这里不报.
+        return f"{_played_seconds(self._samples):.0f}s {self._tail}"
+
+    async def _run(self) -> None:
+        try:
+            while not self._task.done():
+                await asyncio.sleep(_PROGRESS_BEAT)
+                if self._task.done():
+                    return
+                progress = self._render()
+                if progress:
+                    self._task.set_progress(progress)
+        except asyncio.CancelledError:
+            pass
+
+    async def close(self) -> None:
+        self._dispose_clause()
+        if self._beat is not None and not self._beat.done():
+            self._beat.cancel()
 
 
 def played_message(samples: list[PlaybackSample]) -> str | None:
@@ -109,12 +178,15 @@ class _SpeechCommandFactory:
             if not isinstance(chunks__, SpeechStream):
                 return None
             samples: list[PlaybackSample] = []
+            progress = _SpeechProgress(CommandUtil.current_task(), samples)
+            progress.attach(chunks__)
             try:
-                await chunks__.play(samples)
+                await chunks__.play(samples.append)
             except asyncio.CancelledError:
                 # stream 已随 play 的上下文退出关闭, 但 batch 的 clause 还留着 — 对齐结果仍可读.
                 CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
             finally:
+                await progress.close()
                 # 命令退出/中断都要终结 stream — 否则 feed task 继续喂文本、TTS 继续合成,
                 # 无界 _chunks 堆音频导致内存泄漏. close() 幂等.
                 await chunks__.close()
@@ -181,11 +253,14 @@ class _SpeechCommandFactory:
             if not isinstance(chunks__, SpeechStream):
                 raise ValueError(f"System error: Chunks is not prepared")
             samples: list[PlaybackSample] = []
+            progress = _SpeechProgress(CommandUtil.current_task(), samples)
+            progress.attach(chunks__)
             try:
-                await chunks__.play(samples)
+                await chunks__.play(samples.append)
             except asyncio.CancelledError:
                 CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
             finally:
+                await progress.close()
                 # 命令退出/中断都要终结 stream (见 __content__ 同理). close() 幂等.
                 await chunks__.close()
             return played_message(samples)

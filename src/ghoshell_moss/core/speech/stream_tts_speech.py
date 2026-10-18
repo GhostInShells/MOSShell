@@ -129,6 +129,20 @@ class TTSSpeechStream(SpeechStream):
 
         return self._player.observe(_match)
 
+    def on_clause(self, callback: Callable[[SpeechClause], None]) -> Callable[[], None]:
+        """订阅本 stream 的 clause 对齐结果: 每句真的播完了才回调一次.
+
+        与 Speech.on_clause 同一个触发点 (见 ``_accumulate_sample``), 只是挂在本 stream
+        自己的列表上 — 构造时那份是从 Speech 拷来的, 之后注册的只影响本 stream.
+        """
+        self._clause_callbacks.append(callback)
+
+        def _dispose() -> None:
+            if callback in self._clause_callbacks:
+                self._clause_callbacks.remove(callback)
+
+        return _dispose
+
     @staticmethod
     def _clause_end(clause: SpeechClause) -> float:
         """clause 的绝对结束时间 (session 内), 无词时视为 0 (立即对齐)."""

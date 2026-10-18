@@ -31,7 +31,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.core import ChannelRuntime
 from ghoshell_moss.message import Message, Base64Image
-from ghoshell_moss.core.concepts.command import Command, Observe, ObserveError
+from ghoshell_moss.core.concepts.command import Command, Observe, ObserveError, CommandTask
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, Publisher, Subscriber
@@ -176,6 +176,14 @@ class CommandUtil:
         if runtime is None:
             cls.raise_observe('CommandUtil is not in the runtime context')
         return runtime
+
+    @classmethod
+    def current_task(cls) -> CommandTask:
+        from ghoshell_moss.core.concepts.channel import ChannelCtx
+        task = ChannelCtx.task()
+        if task is None:
+            cls.raise_observe('CommandUtil is not in the runtime context')
+        return task
 
     @classmethod
     def enabled(cls) -> bool:
