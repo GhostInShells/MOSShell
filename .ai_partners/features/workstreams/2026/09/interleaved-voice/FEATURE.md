@@ -735,3 +735,81 @@ controller 发 `listener:error` signal), `is_running()` 说真话, controller **
 (封顶后交回模型 re-activate); 三个静默失败各自补观测/自愈。
 
 **状态**: 修复落地 + 契约测试锚定, 待人类架构师确认后提交。
+## 2026-10-18 后续补: 分句交付 (clause delivery)
+
+> 人类架构师反复说过的一句话: **"分句发送这个概念始终没有奠定到, 每一轮开发它就理解不了。"**
+> 这一节就是为了断掉那个循环 —— 把那套语义写成判据, 而不是每次重新解释一遍。
+
+### 一句话
+
+`clause` 不是 `segment` 的别名。**分句是「云端 VAD 判出来的一句」, 段是「我们这边决定切的一段」。**
+一档礼仪可以选择「每句都送到大脑」, 而**段照旧按老逻辑走** —— 两者互不替代。
+
+### 两个 VAD, 两个层级
+
+| VAD | 在哪 | 判什么 | 产出 |
+|---|---|---|---|
+| 云端 VAD (`end_window_size`, 800ms) | ASR 服务端 | 一句是否说完 (`utterance.definite`) | `CLAUSE` 事件 |
+| 本地 VAD (礼仪的 `stop.silence` → `StopJudge`) | listener 侧 | 这一段该不该结束 | `commit()` → 发 NEG → 云端回 `is_last_package` → `TAIL` |
+
+`always` 这一档就是纯靠本地 VAD: 全程占着注意力, 最后判停提交一个包, 首包负责打断 —— 稳定的老礼仪。
+`cue` 一类则要**在段还活着的时候**就把每个分句送出去。
+
+### 为什么不能靠「每句 commit」实现分句发送 (走过的死路)
+
+按句 commit 等于每句都切段、重开 WS turn。后果是人类架构师点出来的那条:
+**WS 重启之后 ASR 解析不连贯 —— 后面发的内容纠正不了前面的分句, 还会切出更碎、丢了音频包的残句。**
+所以: **段不切, 分句照样发。** 分割交给增量规则, 不交给 commit。
+
+### 身份: 只有 impulse id 这一件事 (2026-10-18 人类架构师两次纠正后的定稿)
+
+**协议化的身份是 impulse id, 不是 signal id。** signal id 是传输层的包装, 可以每次都不一样,
+模型侧不必拿它推理。
+
+**impulse id 由 listener 在发送时自己规划**, 这是它作为协议生产方的职责:
+
+- `always` 一类: 一条话语发两个包 —— onset (`complete=false`) 与尾包 (`complete=true`) ——
+  **两个包用同一个 impulse id**。「这两个包是同一次话语」就是这么表达的, 同 id 吸收
+  (onset 占坑、尾包填坑) 靠的也是它。
+- 分句交付: **每句一个新 impulse id**。每一句都是一个独立的话语事件, 谁也不吸收谁。
+
+**segment_id 是地址, 不是身份。** 将来 listen 开存储时, 每个 segment 的整段音频落一个文件,
+`segment_id` 就是那个文件的标识。
+
+> 记在这里, 免得下一轮又"发明"一次 (人类架构师 2026-10-18 的原话):
+> **"现在不是要另外发明一个新字段, 而是正确地使用这个 signal ID / impulse ID。"**
+> 机制超过三个就没人跟得住了 —— 身份只用 impulse id 表达完。
+
+### 增量规则 (不变量)
+
+1. 每一包只带**上次没发过**的文本; 已发内容永不重发。
+2. 段收尾时若最终全文与已发的不一致, **才**额外带一次修正后的整句 —— 整句是异常包, 不是常态。
+3. 修正按**最长公共前缀**切差异, **禁止按长度相减**: ASR 的标点/空白在各次识别间会变, 长度相减会切出半句。
+4. **`paused` 是给模型看的那个字段**: `paused="true"` 表示这一包之后他可能停了 (段尾),
+   `paused="false"` 表示还在说 (中间分句)。**`complete` 不进模型面** —— 它是 mindflow 的
+   impulse 状态。命名绕开 `vad` / `segment` 这类行话: 模型要回答的不是"哪种 VAD", 而是
+   "他说完了没有", 而且 `paused` 读起来是信息 ("停了"), 不是许可 ("你可以说了")。
+
+### 已落地 / 未落地
+
+- **已落地** (2026-10-18):
+  - `10eb26e7` `host/listener/segment_delta.py` —— 规则 1/2/3 的纯逻辑, 十条单测.
+  - 协议: `ListenerSignal.impulse_id` (听侧规划的身份) + `paused` (给模型看的信息) +
+    `segment_id` (地址, 只在尾包出现).
+  - nucleus: 身份取 `impulse_id`, 渲染 `<listen ... paused="true|false">`.
+  - controller: `deliver.per_clause` 开关 —— 关 = 老行为 (只发尾包, 整段全文);
+    开 = 每句一包 (只带增量), 尾包只带剩余, 空则只留 `paused="true"` 标记.
+  - listener instruction 增加「怎么读一个 <listen> 包」.
+- **未落地**: `conversation` 这一档本身 (per_clause=true + silence>0)、低置信度阈值默认值。
+
+### 现状与要改的地方
+
+`ListenerNucleus` 现在拿 `segment_id` 同时当 `Impulse.id` 和 `trace_id` —— 这是误用:
+段地址被当成了话语身份。要改成 **listener 规划好的 impulse id**, `segment_id` 只作为地址随包携带。
+`always` 的行为不变 (它本来就同 id); 分句交付才有「每句一个新 id」这回事。
+
+### 与低置信度的关系 (同一天核过)
+
+链路本来就通: `new_listener_signal(low_conf=...)` → `ListenerSignal.low_conf` → nucleus 渲染
+`<listen low_conf="…">`。唯一的断点是礼仪侧 `deliver.low_confidence` 默认 `None` (= 不列)。
+所以这不是"要新做", 是"定下阈值 + 端到端验一次"。
