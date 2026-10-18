@@ -538,10 +538,42 @@ class Observer(Moments, ABC):
 
     @abstractmethod
     def need_observe(self) -> bool:
-        """Whether observation is needed."""
+        """Whether observation is needed — someone asked for another frame."""
         ...
 
     @abstractmethod
+    def has_pending(self) -> bool:
+        """Whether something is waiting in the buffer to be folded into a frame.
+
+        Two different questions, two names: ``need_observe`` is a *request* for
+        another observation, ``has_pending`` is a *fact* about undelivered
+        percepts. A buffered impulse sets the second and not the first, so
+        reading only the first is how data ends up sleeping until nobody knows
+        when.
+        """
+        ...
+
+    @abstractmethod
+    def drain_percepts(self) -> list[Message]:
+        """Take everything in the buffer out and hand it over.
+
+        The other half of ``has_pending``: after a drain the buffer is empty, so
+        the next frame is no longer owed to it. Used when the right answer is
+        "someone outside will carry this", not "fold it into another frame".
+        """
+        ...
+
+    @abstractmethod
+    def on_percepts_injected(
+            self, callback: Callable[[list[Message]], None]
+    ) -> Disposer:
+        """Hear about buffered percepts the moment they land.
+
+        Without it a buffered impulse is silent — ``inject_percepts`` only
+        appends. This is how "something entered the buffer" becomes an event the
+        scheduler can act on instead of a fact someone has to poll for.
+        """
+        ...
     def observe(self) -> Moment:
         """Produce a Moment at the instant of observation; only observe generates Moments."""
         ...
@@ -577,6 +609,7 @@ class BaseMomentsObserver(Observer):
 
         self._buffered_drained_percepts = {}
         self._injected_percepts = []
+        self._percepts_injected_callbacks: set[Callable[[list[Message]], None]] = set()
         self._logger: logging.Logger = logger or logging.getLogger(__name__)
         self._current_epoch: Epoch | None = None
 
@@ -683,6 +716,14 @@ class BaseMomentsObserver(Observer):
     def need_observe(self) -> bool:
         return self._echoes.need_observe
 
+    def has_pending(self) -> bool:
+        return bool(self._injected_percepts)
+
+    def drain_percepts(self) -> list[Message]:
+        drained = list(self._injected_percepts)
+        self._injected_percepts = []
+        return drained
+
     def peek(self) -> Moment:
         return self._peek_moment()
 
@@ -750,7 +791,6 @@ class BaseMomentsObserver(Observer):
                 self._moment_created_callbacks.discard(callback)
 
         return _disposer
-
     def on_echoes_add(self, callback: Callable[[list[Message], bool], None]) -> Disposer:
         self._echoes_added_callbacks.add(callback)
 
@@ -758,6 +798,17 @@ class BaseMomentsObserver(Observer):
             if callback in self._echoes_added_callbacks:
                 self._echoes_added_callbacks.discard(callback)
 
+        return _disposer
+
+    def on_percepts_injected(
+            self, callback: Callable[[list[Message]], None]
+    ) -> Disposer:
+        self._percepts_injected_callbacks.add(callback)
+
+        def _disposer():
+            self._percepts_injected_callbacks.discard(callback)
+
+        return _disposer
         return _disposer
 
     def with_dynamic_context_func(self, key: str, func: Callable[[], Iterable[Message]]) -> Disposer:
@@ -813,3 +864,9 @@ class BaseMomentsObserver(Observer):
             elif isinstance(message, Message):
                 percepts.append(message)
         self._injected_percepts.extend(percepts)
+        if percepts and len(self._percepts_injected_callbacks) > 0:
+            for callback in self._percepts_injected_callbacks:
+                try:
+                    callback(list(percepts))
+                except Exception as e:
+                    self._logger.error(e)

@@ -835,15 +835,12 @@ async def test_notify_buffer_drains_to_next_attention_percepts():
 
         # 放 attention1 跑完.
         release_attention1.set()
-        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
-
-        # attention2: 再发一个 input signal.
-        suite.add_signal(input_signal("user_second"))
+        # 新契约: buffer 不空, 就在同一个 attention 里再签一帧 —— 不等下一个 attention.
         await asyncio.wait_for(attention2_articulate_done.wait(), timeout=2)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
 
-    assert suite.attention_count == 2
-    assert captured_percepts, "frame2 articulate 没拿到 percepts"
+    assert suite.attention_count == 1
+    assert captured_percepts, "第二帧 articulate 没拿到 percepts"
     frame2_percepts_text = ''.join(
         c['text'] for m in captured_percepts[0] for c in m.contents if 'text' in c
     )

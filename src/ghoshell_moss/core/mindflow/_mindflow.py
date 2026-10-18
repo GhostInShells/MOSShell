@@ -1147,11 +1147,20 @@ class AbsMindflow(Mindflow, ABC):
                         # 回声帧: 只折帧中到达的 absorb 续包 (创建 impulse 已在首帧折过).
                         # 观测探针 (D15 档位切换排查): 环的入口判据, 决定这一帧之后还有没有下一帧.
                         self._logger.info(
-                            "%s echo-loop check: attention_aborted=%s need_observe=%s",
+                            "%s echo-loop check: attention_aborted=%s need_observe=%s "
+                            "has_pending=%s",
                             self._log_prefix, attention.is_aborted(),
                             self._moments_observer.need_observe(),
+                            self._moments_observer.has_pending(),
                         )
-                        while not attention.is_aborted() and self._moments_observer.need_observe():
+                        # Two reasons to run another frame, not one: someone asked
+                        # for it, or something is sitting in the buffer. Reading
+                        # only the request is how a buffered impulse sleeps until an
+                        # unrelated turn happens to wake it.
+                        while not attention.is_aborted() and (
+                                self._moments_observer.need_observe()
+                                or self._moments_observer.has_pending()
+                        ):
                             moment = self._moments_observer.observe()
                             self._fold_frame_impulses(moment, impulse)
                             think = self._make_thinking(attention, moment)
