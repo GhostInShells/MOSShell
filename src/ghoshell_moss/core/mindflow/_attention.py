@@ -299,8 +299,8 @@ class BaseAttention(AbsAttention):
             logger: LoggerItf | None = None,
             system_floor_strength: float = 0.0,
             source_escalation: float = 1.1,
-            max_protection_time: float = 3.0,
-            protection_duration_ratio: float = 0.2,
+            max_protection_time: float = 10.0,
+            protection_duration_ratio: float = 0.5,
     ):
         super().__init__(
             impulse=impulse,
@@ -319,7 +319,12 @@ class BaseAttention(AbsAttention):
         return current_strength < challenger_strength
 
     def current_strength(self) -> int:
-        """基于剩余生存权重的线性衰减模型. 强度在不提权情况下, 默认要衰减到 0"""
+        """基于剩余生存权重的线性衰减模型. 强度在不提权情况下, 默认要衰减到 0
+
+        曲线分两段: 平台段 (保护期, 强度 = 初始 * 同源加成) 与衰减段.
+        **衰减段从平台值往下走, 不掉回初始强度** —— 掉回去正好落到一个同强度挑战者的
+        水平上, 于是保护期一过同强度的信号立刻赢, 整段曲线对最常见的那一类信号毫无保护.
+        """
         now = time.monotonic()
         elapsed = now - self._strength_refreshed_at
 
@@ -327,12 +332,15 @@ class BaseAttention(AbsAttention):
             self._strength_decay_time * self._protection_duration_ratio,
             self._max_protection_time,
         )
+        plateau = self._strength_start_value * self._source_escalation
         if elapsed < protection_time:
-            return int(self._strength_start_value * self._source_escalation)
+            return int(plateau)
 
         decay_elapsed = elapsed - protection_time
         decay_duration = self._strength_decay_time - protection_time
+        if decay_duration <= 0:
+            return 0
         progress = min(decay_elapsed / decay_duration, 1.0)
         decay_factor = 1.0 if self._current_impulse.complete else 1.5
-        current = self._strength_start_value * (1.0 - (progress * decay_factor))
+        current = plateau * (1.0 - min(progress * decay_factor, 1.0))
         return int(max(current, 0))

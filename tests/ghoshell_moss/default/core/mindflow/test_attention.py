@@ -147,8 +147,29 @@ def test_current_strength_boosted_inside_protection_window():
         strength_decay_seconds=100,  # 长 TTL, 确保 elapsed 落在保护窗内
     )
     attention = BaseAttention(impulse=impulse, protection_duration_ratio=0.2)
-    # protection_time = min(100*0.2, 3.0) = 3.0s; elapsed ~0 在窗内 -> 100*1.1 = 110.
+    # protection_time = min(100*0.2, 10.0) = 10.0s; elapsed ~0 在窗内 -> 100*1.1 = 110.
     assert attention.current_strength() == 110
+
+
+def test_equal_strength_challenger_waits_through_plateau_and_early_decay(monkeypatch):
+    """同强度的异源挑战者, 平台段进不来, 衰减段也要走一段才进得来.
+
+    曲线从平台值 (初始 * 1.1) 连续往下, 不掉回初始强度 —— 掉回去的话保护期一过
+    同强度立刻赢, 整段衰减对最常见的那一类信号等于没有. T=20 时平台 = min(20*0.5, 10) = 10s,
+    衰减段再走 10s, 强度从 110 落到 0; 100 出现在衰减段的 1/11 处, 约 10.9s.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr("ghoshell_moss.core.mindflow._attention.time.monotonic", lambda: clock[0])
+    attention = BaseAttention(impulse=Impulse(
+        source='ghost', priority=Priority.INFO, strength=100, strength_decay_seconds=20,
+    ))
+    challenger = Impulse(source='listener', priority=Priority.INFO, strength=100)
+    clock[0] += 9.5  # 平台末尾
+    assert attention.arbit_challenge_by_strength(challenger) is False
+    clock[0] += 1.0  # 衰减段 0.5s: 110 * (1 - 0.05) = 104
+    assert attention.arbit_challenge_by_strength(challenger) is False
+    clock[0] += 1.0  # 衰减段 1.5s: 110 * (1 - 0.15) = 93
+    assert attention.arbit_challenge_by_strength(challenger) is True
 
 
 def test_current_strength_decay_uses_live_completeness(monkeypatch):
@@ -171,16 +192,26 @@ def test_current_strength_decay_uses_live_completeness(monkeypatch):
     assert attention.draw_from().complete is False  # 冻结创建者仍是 partial
     assert attention.impulse().complete is True     # 活量已 complete
     clock[0] += 5.0  # 进度 = 5 / 10 = 0.5
-    # factor=1.0 -> 100 * (1 - 0.5) = 50; 若误用 draw_from.complete -> factor=1.5 -> 25.
-    assert attention.current_strength() == 50
+    # 曲线从平台值 (100*1.1) 往下走: factor=1.0 -> 110 * (1 - 0.5) = 55;
+    # 若误用 draw_from.complete -> factor=1.5 -> 27.
+    assert attention.current_strength() == 55
 
 
-def test_arbit_same_source_escalates_and_can_flip_outcome():
-    """同源 challenger 被放大 1.1 才能同级抢赢 (92*1.1=101>100); 异源不放大 (92<100)."""
+def test_arbit_same_source_escalates_and_can_flip_outcome(monkeypatch):
+    """同源 challenger 被放大 1.1 才能同级抢赢 (92*1.1=101>100); 异源不放大 (92<100).
+
+    平台值是 110, 所以要把时钟拨到平台之后、强度已经掉到 100 左右再比 —— 同源加成
+    正是在衰减段里才决定胜负.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr("ghoshell_moss.core.mindflow._attention.time.monotonic", lambda: clock[0])
     attention = BaseAttention(
         impulse=Impulse(source='a', priority=Priority.NOTICE, strength=100, strength_decay_seconds=100),
         protection_duration_ratio=0.0,
+        max_protection_time=0.0,
     )
+    clock[0] += 9.0  # 进度 0.09 -> 110 * (1 - 0.09) = 100
+    assert attention.current_strength() == 100
     same = Impulse(source='a', priority=Priority.NOTICE, strength=92)
     assert attention.arbit_challenge_by_strength(same) is True
     other = Impulse(source='b', priority=Priority.NOTICE, strength=92)

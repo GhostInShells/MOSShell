@@ -1380,7 +1380,7 @@ class BaseMindflow(AbsMindflow):
             raise_nucleus_start_error: bool = True,
             system_floor_strength: float = 0.0,
             source_escalation: float = 1.1,
-            max_protection_time: float = 3.0,
+            max_protection_time: float = 10.0,
             gate: bool = True,
     ):
         super().__init__(*nuclei, logger=logger, raise_nucleus_start_error=raise_nucleus_start_error, gate=gate)

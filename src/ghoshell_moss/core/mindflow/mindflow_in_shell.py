@@ -404,7 +404,7 @@ class MindflowInShell(ABC):
             # 未兜底异常需要清空状态.
             await self.shell.clear()
 
-    # 执行期提权心跳的节拍 (秒). 强度顶平台长 min(strength_decay_seconds * 0.2, 3.0) 秒,
+    # 执行期提权心跳的节拍 (秒). 强度顶平台长 min(strength_decay_seconds * 0.5, 10.0) 秒,
     # 一拍就足够让强度一直停在平台值上; 再密只是徒增调度噪声.
     _escalation_interval: float = 1.0
 
