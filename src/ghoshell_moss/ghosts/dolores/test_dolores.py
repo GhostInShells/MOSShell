@@ -1543,6 +1543,27 @@ class TestMementoReadSurface:
         assert "main-note" in manager.view_message().to_content_string()
         assert "side-note" in manager.view_message("side").to_content_string()
 
+    def test_view_message_folds_the_past_instead_of_rendering_it(self, tmp_path: Path):
+        """The budget is the contract: n commits in detail, everything older folded.
+
+        This used to concatenate ``history + latest`` and draw every commit in
+        full, so a long branch shipped its whole life into memory while the
+        budget only existed in the signature.
+        """
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        for i in range(30):
+            anchor = manager.commit(session_id="s1", start_turn=i, end_turn=i + 1)
+            branch.note(anchor.id, f"note {i}\n" + ("body " * 200))
+
+        text = manager.view_message().to_content_string()
+
+        assert text.count("<commit ") == 10
+        assert text.count("<earlier ") == 1
+        assert 'count="20"' in text
+        # one folded entry, not twenty: the far side is a range plus a few titles
+        assert len(text) < 12000
+
     def test_view_message_carries_node_path_when_present(self, tmp_path: Path):
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")

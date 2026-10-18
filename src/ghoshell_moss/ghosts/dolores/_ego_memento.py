@@ -64,6 +64,9 @@ _READ_ROUTE = "/moss-api/ghost/dolores/read"
 _NOTE_EFFORT = "off"
 # 旁路摘要前置上下文: 只展开最近 1 条已就绪的 commit message 作前文.
 _NOTE_PRIOR_COUNT = 1
+_DIGEST_TITLES = 5
+"""How many titles the folded past keeps. The rest of `history` is a count and a
+coordinate range — a budget, not a promise to render every commit."""
 
 
 def _note_prompt(
@@ -689,11 +692,49 @@ class EgoMementoManager:
     # ── 渲染 ─────────────────────────────────────────────────────
 
     def _render_view(self, view: BranchView) -> Message:
-        container = Message.new(tag="branch", attributes={"name": view.name, "index": str(view.index)})
-        commits = view.history + view.latest
-        if not commits:
+        """Two densities, and the count says which window this is.
+
+        ``latest`` is the detail window (the contract's ``n``); ``history`` is
+        everything older and is *folded* — one entry naming the range and the few
+        titles closest to the window, never one entry per commit. The fold is what
+        the contract always claimed and the renderer never did: it concatenated
+        the two lists and drew every commit in full, so a 292-commit branch put
+        282 of them into memory while the budget only existed in a signature.
+        """
+        container = Message.new(
+            tag="branch",
+            attributes={
+                "name": view.name,
+                "index": str(view.index),
+                "total": str(view.commits_total),
+            },
+        )
+        children: list[Message] = []
+        if view.history:
+            children.append(self._render_digest(view))
+        children.extend(self._render_commit(cv) for cv in view.latest)
+        if not children:
             return container.with_content("no commit")
-        return container.with_messages(*[self._render_commit(cv) for cv in commits])
+        return container.with_messages(*children)
+
+    def _render_digest(self, view: BranchView) -> Message:
+        """The folded past: how much, which slice, and the titles nearest the light.
+
+        Bounded on purpose — ``_DIGEST_TITLES`` is the whole budget of the far
+        side. Anything older than the window is reachable by coordinate
+        (``read`` / ``history``), which is why it is safe not to ship it.
+        """
+        recent = view.history[-_DIGEST_TITLES:]
+        body = "\n".join(f"{cv.coord}  {cv.title}" for cv in recent)
+        return Message.new(
+            tag="earlier",
+            attributes={
+                "count": str(len(view.history)),
+                "first": view.history[0].coord,
+                "last": view.history[-1].coord,
+                "titles": str(len(recent)),
+            },
+        ).with_content(body)
 
     def _render_commit(self, cv: CommitView) -> Message:
         attributes = {"seq": cv.coord, "created": cv.created.isoformat()}
