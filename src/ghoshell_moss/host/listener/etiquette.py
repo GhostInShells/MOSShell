@@ -323,15 +323,15 @@ murmur = EtiquetteSpec(
 )
 
 
-# 逐句接话: 每句自成一段, 每句强制下一轮轮到你 (next), 绝不打断"思考";
-# 但 ghost 正在出声时让路 (barge_in_while_speaking) —— 说话可以被抢, 思考不被抢.
+# 逐句接话: 每句自成一段, 每句强制下一轮轮到你 (next), 绝不打断"思考", 也不抢"出声".
+# 出声即让路 (barge_in_while_speaking) 验过了, 开关留在 DeliverSpec 上, 但默认谁都不开 ——
+# 要抢嘴的那一档自己打开它.
 cue = EtiquetteSpec(
     name="cue",
-    description="continuous input — each clause takes a turn; your speech yields to a barge-in, "
-                "your thinking does not",
+    description="continuous input — each clause takes a turn; nothing is interrupted",
     onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=0.0),
-    deliver=DeliverSpec(interrupt=False, mode="next", barge_in_while_speaking=True),
+    deliver=DeliverSpec(interrupt=False, mode="next"),
 )
 
 

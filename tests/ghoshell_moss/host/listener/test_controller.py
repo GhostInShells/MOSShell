@@ -1177,14 +1177,17 @@ def test_barge_in_is_inert_without_a_speaking_probe():
     assert ListenerSignal.from_signal(sig).boost is None
 
 
-def test_cue_is_the_only_builtin_that_yields_to_speech():
-    """开在 cue 一档上: 别的内建礼仪默认不动 — 出声被打断是「这一档」的选择, 不是全局默认."""
+def test_no_builtin_yields_to_speech_by_default():
+    """出声即让路是「这一档」的选择, 不是全局默认 —— 内建礼仪一个都不开.
+
+    能力验过、留在 DeliverSpec 上, 但默认那一套礼仪里没有谁该抢嘴; 要抢的那一档自己打开它.
+    判据: 验过一个开关, 不许因此改掉几十档礼仪的默认行为.
+    """
     from ghoshell_moss.host.listener import etiquette
 
-    assert etiquette.cue.deliver.barge_in_while_speaking is True
-    others = [
+    specs = [
         name for name in etiquette.__all__
         if name not in ("cue", "DeliverMode") and isinstance(getattr(etiquette, name), etiquette.EtiquetteSpec)
     ]
-    assert others, "builtin etiquettes should not be empty"
-    assert not [n for n in others if getattr(etiquette, n).deliver.barge_in_while_speaking]
+    assert specs, "builtin etiquettes should not be empty"
+    assert not [n for n in specs if getattr(etiquette, n).deliver.barge_in_while_speaking]
