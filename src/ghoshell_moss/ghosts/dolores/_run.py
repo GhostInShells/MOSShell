@@ -54,12 +54,12 @@ from ._tools import (
 # 流式 tool 集合: 这两个 tool 的参数经 tool-call-delta 逐字进 articulator, 边生成边执行.
 _STREAMING_TOOLS = frozenset({InterpretToolCall.tool_name(), ReactToolCall.tool_name()})
 
-# 押住 moment 推送的 tool 集合 —— 收轮类的两个: `moss_react` 与 `moss_wait_next`.
-# 判据只有一条: **调完之后这一轮就不打算继续读了**. react 的结果一到 turn 就被 cut; wait_next
-# 本身就是在交出这一轮. 两者在飞的那段时间里, 人说的话推进来只能落进一个正在收尾的 turn ——
-# 所以留在 observer buffer 里, 等本 attention 收尾后自然签发成下一帧.
-# 而 interpret 不押: 它跑完这一轮还要继续, 人此刻说的话推进来正好下一步就读到.
-_HOLD_PUSH_TOOLS = frozenset({ReactToolCall.tool_name(), WaitNextToolCall.tool_name()})
+# 收轮类 tool 集合: `moss_react` 与 `moss_wait_next` —— 正常路径下它们的结果一到, turn 就被 cut.
+# 它们在飞的那段时间是**唯一**需要为"人此刻说的话"做判断的地方 (其余 tool 这一轮还要继续, 推就是了).
+# 判断不是"押住", 是**竞速**: 身体把动作跑完 = 该收轮; 人插了一句 = 收轮的前提没了, 这一轮接着走.
+# 后者赢下时 push 照常开, 工具的 cancel 改成 false —— 这就是"准全双工" (见 _wait_actions_racing_barge_in).
+# interpret 不参与: 它跑完这一轮还要继续, 人此刻说的话正好下一步就读到.
+_CLOSING_TOOLS = frozenset({ReactToolCall.tool_name(), WaitNextToolCall.tool_name()})
 
 # 只有 moss* 命名空间的 tool 归本 run 管. 会话流 (on_session_event("*")) 里还有 host 自己的内环工具
 # (bash / read / write / edit / subagent ...), 它们由 dsh 侧自行结算 —— 我们既不该回答, 也不该报警告.
@@ -198,6 +198,16 @@ def _turn_end_abort_reason(end: TurnEnd) -> str | None:
 _LogosDelta = str
 
 
+def _swallow_task_result(task: "asyncio.Task[Any]") -> None:
+    """把一条不再有人 await 的任务收干净 —— 取走它的异常, 否则 asyncio 会报 never retrieved.
+
+    用处只有一个: 竞速输了之后, 等身体跑完的那个 waiter 没人再等了 (这一轮不收轮, 身体照旧在
+    跑), 它总要有个人接手结局.
+    """
+    if not task.cancelled():
+        task.exception()
+
+
 class _VoidCtmlError(Exception):
     """这条 CTML 流作废 —— 传给 articulator 的 ``__aexit__``: 只让 action 出栈, 不 commit.
 
@@ -315,8 +325,11 @@ class DoloresRun:
         self._dispose_listener: "Callable[[], None] | None" = None
         self._dispose_percepts: "Callable[[], None] | None" = None
         self._buffered_push: "asyncio.Task[None] | None" = None
-        # moss_react 在飞: 这段时间里 percepts 只留 buffer, 不推 moment (其余工具照推, 见 _HOLD_PUSH_TOOLS).
+        # 收轮工具在飞: 这段时间里 percepts 要判断 —— 竞速赢下就照推, 输给身体就留 buffer
+        # (见 _wait_actions_racing_barge_in).
         self._ctml_in_flight: bool = False
+        # 本收轮工具的"人插话了"信号; None = 这一轮已经定了要收 (或压根没收轮工具在飞).
+        self._barge_in_event: "asyncio.Event | None" = None
         self._enter_task: "asyncio.Task[None] | None" = None
         # 本帧的 thinking 配对序 — __aenter__ 就铸好, enter/exit 带同一个 (见 _ego.next_thinking_seq).
         self._thinking_seq: int = 0
@@ -431,23 +444,25 @@ class DoloresRun:
             yield item
 
     async def _handle_tool_use_event(self, event: ToolCallEvent, streams: dict[str, _StreamedCtml]) -> None:
-        """tool/call entry — flag the hold, then dispatch.
+        """tool/call entry — flag a closing tool, then dispatch.
 
-        Only the turn-closing tools hold the push (see ``_HOLD_PUSH_TOOLS``): ``moss_react`` cuts
-        the turn the moment its result lands, and ``moss_wait_next`` is the yield itself — a frame
-        pushed while either is in flight arrives at a turn already closing. Every other tool —
-        ``moss_interpret`` included — lets a push through: the turn continues after it returns, so
-        the model reads the new input on the next step, which is exactly the point.
-        While the flag is held, ``_on_percepts_injected`` leaves percepts in the observer buffer,
-        where the normal attention flow signs them as the next moment once this cycle is over.
+        Only the two turn-closing tools arm anything (see ``_CLOSING_TOOLS``): ``moss_react`` cuts
+        the turn the moment its result lands, and ``moss_wait_next`` is the yield itself. While one
+        of them is in flight, a percept arriving must not be pushed blindly *nor* kept dumbly — the
+        two facts race (``_wait_actions_racing_barge_in``): the body finishing means the turn should
+        close; a human jumping in means there is something new to read, so the turn should go on.
+        Every other tool — ``moss_interpret`` included — just lets the push through: the turn
+        continues after it returns, so the model reads the new input on the next step.
         """
-        if event.name not in _HOLD_PUSH_TOOLS:
+        if event.name not in _CLOSING_TOOLS:
             await self._dispatch_tool_use_event(event, streams)
             return
         self._ctml_in_flight = True
+        self._barge_in_event = asyncio.Event()
         try:
             await self._dispatch_tool_use_event(event, streams)
         finally:
+            self._barge_in_event = None
             self._ctml_in_flight = False
 
     async def _dispatch_tool_use_event(self, event: ToolCallEvent, streams: dict[str, _StreamedCtml]) -> None:
@@ -620,13 +635,21 @@ class DoloresRun:
                 result="ctml syntax error",
                 cancel=True,
             )
-        await self._thinking.wait_actions_done()
+        if await self._wait_actions_racing_barge_in():
+            await self._flush_barge_in_push()
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result=(
+                    "a percept arrived mid-reaction — the moment is pushed and this turn "
+                    "continues; your actions keep running"
+                ),
+                cancel=False,
+            )
         return ToolCallResult(
             call=call.tool_call_event,
             result="reacted",
             cancel=True,
         )
-
     async def _handle_observe(self, call: ObserveToolCall) -> ToolCallResult:
         """moss_observe handler — (optionally) interrupt, wait for all actions to finish, refresh
         metas, then observe the freshest moment.
@@ -674,8 +697,20 @@ class DoloresRun:
         cancel=True: this result is what replaces the final answer. The plugin cuts the turn the moment
         it lands, so no further step runs; the turn/end that follows is what ends this thinking
         transaction (MOSS never cancels the turn itself).
+
+        Unless someone speaks first: a percept landing while the yield waits means there is already
+        something new to read, so yielding is pointless — the turn goes on instead (cancel=False).
         """
-        await self._thinking.wait_actions_done()
+        if await self._wait_actions_racing_barge_in():
+            await self._flush_barge_in_push()
+            return ToolCallResult(
+                call=call.tool_call_event,
+                result=(
+                    "a percept arrived before the yield — the moment is pushed and this turn "
+                    "continues instead of ending"
+                ),
+                cancel=False,
+            )
         return ToolCallResult(
             call=call.tool_call_event,
             result="yielded",
@@ -991,9 +1026,10 @@ class DoloresRun:
         """
         if not self._thinking_event.is_set():
             return
-        if self._ctml_in_flight:
-            # 中间不插话: 这一轮正抱着一个收轮工具 (moss_react / moss_wait_next) —— 推也只推给一个
-            # 正在收尾的 turn. 话留在 observer buffer 里, 本 attention 收尾时按 need_observe /
+        barge = self._barge_in_event
+        if self._ctml_in_flight and barge is None:
+            # 这一轮已经定了要收 (收轮工具的等待已经输给身体, cancel 待发) —— 推也只推给一个正在
+            # 收尾的 turn. 话留在 observer buffer 里, 本 attention 收尾时按 need_observe /
             # has_pending 自然签发成下一帧, 不丢也不抢先.
             self._logger.info(
                 "buffer push held: the turn is closing — %s message(s) stay in the buffer",
@@ -1003,9 +1039,17 @@ class DoloresRun:
         if self._buffered_push is not None and not self._buffered_push.done():
             # One push in flight is enough: its observe() drains whatever else landed.
             return
-        self._logger.info(
-            "buffer push while this turn runs: %s message(s) — scheduling", len(percepts)
-        )
+        if barge is not None:
+            # 收轮工具还在飞, 但人插了一句: 这一轮收轮的前提没了 —— 立旗, 让那个等待当场让路.
+            self._logger.info(
+                "barge-in while %s message(s) land — the closing tool yields, the turn continues",
+                len(percepts),
+            )
+            barge.set()
+        else:
+            self._logger.info(
+                "buffer push while this turn runs: %s message(s) — scheduling", len(percepts)
+            )
         self._buffered_push = asyncio.create_task(self._push_buffered_moment())
 
     async def _push_buffered_moment(self) -> None:
@@ -1021,6 +1065,58 @@ class DoloresRun:
             # A push that dies silently is worse than one that never ran: the frame is
             # already observed, so nothing else will resend it.
             self._logger.exception("buffer push failed — the frame stays undelivered")
+
+    async def _wait_actions_racing_barge_in(self) -> bool:
+        """等身体跑完, 但跟"人此刻插了一句"竞速 —— 人赢的话这一轮就不收 (准全双工).
+
+        收轮工具的等待期里有两件事可能先发生:
+
+        - **身体把动作跑完** —— 正常路径: 该收轮, 照旧 cancel=True.
+        - **人说了一句, percept 已经推进 buffer** —— 收轮的前提没了: 有新东西要读, 这一轮就该
+          接着往下走. 此时不动身体 (它的动作照旧跑着, 跨帧), 工具立刻返回且 cancel=False, 下一
+          step 就读到帧.
+
+        返回 True 表示人先到. 决定一旦落定就把竞速关掉 (``_barge_in_event = None``), 否则定完
+        要收轮之后落地的话会误开 push, 推给一个已经在收尾的 turn.
+        """
+        barge = self._barge_in_event
+        waiter = asyncio.ensure_future(self._thinking.wait_actions_done())
+        if barge is None:
+            await waiter
+            return False
+        racer = asyncio.ensure_future(barge.wait())
+        try:
+            done, _ = await asyncio.wait({waiter, racer}, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            waiter.cancel()
+            racer.cancel()
+            raise
+        if waiter in done:
+            racer.cancel()
+            self._barge_in_event = None
+            await waiter
+            return False
+        # 人先到: 身体照旧在跑, **不等它** —— 这正是"准全双工"的意思. 挂个哑回调把它收干净,
+        # 免得它在别的分支里抛出来变成 "never retrieved".
+        waiter.add_done_callback(_swallow_task_result)
+        self._logger.info(
+            "barge-in won the race against a closing tool — the turn continues, its actions keep running"
+        )
+        return True
+
+    async def _flush_barge_in_push(self) -> None:
+        """竞速赢了之后, 那一帧 push 必须落到下一个 step 之前 —— 否则模型读不到它.
+
+        有界等待: push 卡住时宁可留一条警告, 也不要让一个 tool call 无限期挂着.
+        """
+        push = self._buffered_push
+        if push is None or push.done():
+            return
+        done, _ = await asyncio.wait({push}, timeout=5.0)
+        if not done:
+            self._logger.warning(
+                "barge-in push did not land within 5s — the turn resumes without it"
+            )
 
     async def _drive_enter(self) -> None:
         """enter task: thinking/enter RPC. Enqueues the poison pill only on error.

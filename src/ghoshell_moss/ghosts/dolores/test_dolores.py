@@ -1770,6 +1770,11 @@ class FakeRunEgo:
         self.exit_calls = 0
         self.enter_error: Exception | None = None
         self.run_exits: list[bool] = []
+        # 竞速赢了之后那一帧必须真的落地 —— 记 id 就够断言.
+        self.pushed_moments: list[str] = []
+
+    async def push_moment(self, moment, moment_id):
+        self.pushed_moments.append(moment_id)
 
     def next_thinking_seq(self):
         self.enter_seq = getattr(self, 'enter_seq', 0) + 1
@@ -1862,6 +1867,13 @@ class _FakeObserver:
         drained, self._pending = self._pending, []
         return drained
 
+    def observe(self):
+        """签发一帧 —— 生产里 observe 是唯一生成 Moment 的地方 (收轮工具的竞速/push 都走它)."""
+        from ghoshell_moss.core.blueprint.moment import Moment
+
+        self.observed_count = getattr(self, "observed_count", 0) + 1
+        return Moment(id=f"fake-observed-{self.observed_count}", index=7 + self.observed_count)
+
     def on_percepts_injected(self, callback):
         self._injected_callbacks.add(callback)
 
@@ -1910,6 +1922,23 @@ class FakeRunThinking:
     @property
     def observer(self):
         return _FakeObserver(self._log)
+
+
+class _GatedThinking(FakeRunThinking):
+    """``wait_actions_done`` 一直挂着, 直到测试放行 —— 用来量"等身体"和"人插话"的竞速.
+
+    ``reached`` 在进入等待时就置位, 测试据此确定"接收轮工具已经停在竞速点上了"再插话;
+    放行 ``gate`` 就是"身体跑完了".
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.reached = asyncio.Event()
+        self.gate = asyncio.Event()
+
+    async def wait_actions_done(self):
+        self.reached.set()
+        await self.gate.wait()
 
 
 class _NoopShellFacade:
@@ -2034,8 +2063,8 @@ class TestDoloresRun:
         assert "full surface" in results["call_one"]
 
     @pytest.mark.asyncio
-    async def test_react_tool_call_holds_the_percept_push(self):
-        """moss_react 在飞时, 落在 buffer 的话不再推 moment —— 这一轮马上就要被 cut."""
+    async def test_closing_tool_races_the_percept_push(self):
+        """收轮工具在飞时人插一句: 立旗 + 照推 —— 不再死押, 这一轮要接着走."""
         run = self._run()
         run._thinking_event.set()
         seen: dict = {}
@@ -2043,7 +2072,9 @@ class TestDoloresRun:
         async def _fake_dispatch(event, streams):
             seen["in_flight"] = run._ctml_in_flight
             run._on_percepts_injected(["he said something mid-action"])
+            seen["barge"] = run._barge_in_event is not None and run._barge_in_event.is_set()
             seen["push"] = run._buffered_push
+            run._buffered_push.cancel()
 
         run._dispatch_tool_use_event = _fake_dispatch
         await run._handle_tool_use_event(
@@ -2051,27 +2082,43 @@ class TestDoloresRun:
         )
 
         assert seen["in_flight"] is True, "react 必须在立旗状态下执行"
-        assert seen["push"] is None, "旗子立着时不许开推 moment 的任务"
+        assert seen["barge"] is True, "人插话必须叫醒那个等待, 否则竞速永远没人赢"
+        assert seen["push"] is not None, "竞速赢了就该照推 moment"
         assert run._ctml_in_flight is False, "工具返回后旗子必须放下"
+        assert run._barge_in_event is None, "竞速信号只归这一次调用"
 
     @pytest.mark.asyncio
-    async def test_wait_next_tool_call_holds_the_percept_push(self):
-        """moss_wait_next 在飞时同样押: 它本身就是在交出这一轮, 中途推的帧没人读."""
+    async def test_wait_next_tool_call_arms_the_barge_in_race(self):
+        """moss_wait_next 同样进竞速 (它也是在等身体), 只是赢下之后是"这轮接着走"而不是"收轮"."""
         run = self._run()
         run._thinking_event.set()
         seen: dict = {}
 
         async def _fake_dispatch(event, streams):
-            seen["in_flight"] = run._ctml_in_flight
             run._on_percepts_injected(["he said something while I yield"])
+            seen["barge"] = run._barge_in_event is not None and run._barge_in_event.is_set()
             seen["push"] = run._buffered_push
+            run._buffered_push.cancel()
 
         run._dispatch_tool_use_event = _fake_dispatch
         await run._handle_tool_use_event(self._tool_call("moss_wait_next", "{}"), {})
 
-        assert seen["in_flight"] is True, "wait_next 必须在立旗状态下执行"
-        assert seen["push"] is None, "旗子立着时不许开推 moment 的任务"
-        assert run._ctml_in_flight is False, "工具返回后旗子必须放下"
+        assert seen["barge"] is True
+        assert seen["push"] is not None
+
+    @pytest.mark.asyncio
+    async def test_percepts_stay_in_the_buffer_once_the_turn_is_closing(self):
+        """竞速已经判给身体 (旗子撤下) 之后落地的 percepts 只留 buffer —— 这一轮正在收尾."""
+        run = self._run()
+        run._thinking_event.set()
+        run._ctml_in_flight = True
+        run._barge_in_event = None
+        seen: dict = {}
+
+        run._on_percepts_injected(["late words"])
+        seen["push"] = run._buffered_push
+
+        assert seen["push"] is None, "定了收轮之后不许再推给一个正在收尾的 turn"
 
     @pytest.mark.asyncio
     async def test_interpret_tool_call_does_not_hold_the_percept_push(self):
@@ -2795,6 +2842,64 @@ class TestDoloresRun:
         assert "".join(art.sent) == "<say>hi</say>"
         assert log.count("wait_actions_done") == 1, "react 必须先等 action 停再 cancel"
         assert ego.rpc_calls == [("c2", "reacted", None, True)]
+
+    @staticmethod
+    async def _drain(run) -> None:
+        async for _ in run.logos():
+            pass
+
+    @pytest.mark.asyncio
+    async def test_react_yields_to_a_barge_in_and_keeps_the_turn(self):
+        """准全双工: react 正等身体跑完时人插一句 —— 工具立刻返回, 不 cancel, 帧照推.
+
+        判据 (他给的): 竞速赢了不是"结束这一轮", 是"这一轮接着往下走". 所以结果是 cancel=False,
+        而且那一帧必须已经落地 (下一 step 才读得到). 身体的动作不取消, 跨帧照旧跑.
+        """
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        thinking = _GatedThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        try:
+            async with run:
+                await session.emit(self._ctml_delta("c3", name="moss_react", arguments_delta='{"ctml":"<noop/>"}', seq=1))
+                await session.emit(self._tool_call_event("moss_react", '{"ctml":"<noop/>"}', "c3", seq=2))
+                drain = asyncio.create_task(self._drain(run))
+                await asyncio.wait_for(thinking.reached.wait(), timeout=2)
+                run._on_percepts_injected(["他说了一句"])
+                await session.emit(self._turn_end(seq=3))
+                await asyncio.wait_for(drain, timeout=2)
+        finally:
+            thinking.gate.set()
+
+        call_id, result, moment, cancel = ego.rpc_calls[0]
+        assert call_id == "c3"
+        assert cancel is False, "竞速赢了就不许收轮 —— 这一轮要接着读那句新的话"
+        assert "continues" in result
+        assert ego.pushed_moments, "赢了竞速的那一帧必须落地, 否则下一 step 读不到它"
+
+    @pytest.mark.asyncio
+    async def test_wait_next_continues_the_turn_when_someone_speaks(self):
+        """moss_wait_next: 交出这一轮之前人说话了 —— 交出的前提没了, 这一轮接着走."""
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        thinking = _GatedThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        try:
+            async with run:
+                await session.emit(self._tool_call_event("moss_wait_next", "{}", "c4", seq=1))
+                drain = asyncio.create_task(self._drain(run))
+                await asyncio.wait_for(thinking.reached.wait(), timeout=2)
+                run._on_percepts_injected(["他抢先说了一句"])
+                await session.emit(self._turn_end(seq=2))
+                await asyncio.wait_for(drain, timeout=2)
+        finally:
+            thinking.gate.set()
+
+        call_id, result, moment, cancel = ego.rpc_calls[0]
+        assert call_id == "c4"
+        assert cancel is False
+        assert "continues" in result
+        assert ego.pushed_moments
 
     @pytest.mark.asyncio
     async def test_reasoning_records_depth_and_cancels(self):
