@@ -314,4 +314,4 @@ async def test_a_clause_packet_reads_as_not_paused_and_the_tail_as_paused():
     clause_imp, tail_imp = messages
     assert 'paused="false"' in _message_xml(clause_imp)
     assert 'paused="true"' in _message_xml(tail_imp)
-    assert _message_text(tail_imp) == '（他停了）', '没有新内容时尾包不重发正文, 只留一句括号提示'
+    assert _message_text(tail_imp) == '', '没有新内容时尾包正文为空 —— 标记全在属性上, 不填任何替代文字'
