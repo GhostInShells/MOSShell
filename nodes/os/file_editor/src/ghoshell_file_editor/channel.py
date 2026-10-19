@@ -565,6 +565,29 @@ def build_file_editor_channel(
             f"[{name}] {thread!r} reloaded to v{target.version} ({drift}) — {action.fact}"
         )
 
+    @chan.build.command(name="diff")
+    async def diff(thread: str, label: str = "") -> str:
+        """Compare the working copy with the file on disk — as an action.
+
+        The third step of the persistence story: detect the drift, read it back,
+        and when merging actually matters, look at the two side by side. The diff
+        is recorded, not just shown, because "someone compared these" is itself a
+        fact about the edit that both of us should be able to find later.
+
+        Direction is file → working copy: the question is what *we* are about to
+        write, not what the file did to us.
+        """
+        target = _get_thread(thread)
+        try:
+            action, text = store.diff_against_disk(target.id, label or "diff against the file")
+        except (KeyError, ValueError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _card(target, action)
+        await _threads()
+        if not text:
+            return f"[{name}] {thread!r} is identical to the file on disk — nothing to merge"
+        return f"[{name}] {thread!r} — {action.fact}\n{text}"
+
     @chan.build.command(name="point", available=enabled)
     async def point(thread: str, region: str = "", label: str = "") -> str:
         """Put the reading point on these lines — without reading them out.

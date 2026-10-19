@@ -29,10 +29,15 @@ Author = Literal["g", "u"]
 """``g`` = ghost (the model), ``u`` = the human."""
 
 Kind = Literal[
-    "read", "find", "write", "edit", "str_replace", "append", "rewind", "export"
+    "read", "find", "write", "edit", "str_replace", "append", "rewind", "export",
+    "diff",
 ]
-"""What an action does. ``read`` and ``find`` change nothing; ``export`` is the
-only kind that reaches the disk."""
+"""What an action does. ``read`` / ``find`` / ``diff`` change nothing; ``export``
+is the only kind that reaches the disk.
+
+``diff`` is an action where most editors have a mode: comparing our copy with
+something else is a judgement someone made, and both sides should be able to
+see that it was made — and what it found."""
 
 ActionState = Literal[
     "streaming", "applied", "awaiting", "written", "rejected", "failed",
@@ -61,6 +66,7 @@ SIDE_EFFECTS: dict[str, str] = {
     "append": "in-memory only — working copy appended",
     "rewind": "in-memory only — working copy rolled back",
     "export": "disk — writes the file",
+    "diff": "none — compared only",
 }
 """The mechanical verdict shown on every card: what this kind does to the world.
 One string per kind, derived from nothing — the point is that the human can

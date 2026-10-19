@@ -43,6 +43,7 @@ from .structure import (
     Kind,
     Thread,
     content_at,
+    diff_of,
     effect_of,
     line_count,
     region_span,
@@ -334,6 +335,36 @@ class DocStore:
         # Naming a version here would be precise but often wrong: the signature
         # was taken when we read or wrote, not at a number the thread recorded.
         return "the file changed on disk since we last read it"
+
+    def diff_against_disk(self, thread_id: str, label: str = "") -> tuple[Action, str]:
+        """Compare the working copy with the file it came from — as an action.
+
+        Most editors keep this in a mode. Here it is a *record*: someone decided
+        the two should be compared, and both sides of this collaboration get to
+        see that decision and what it found. Direction is file → working copy,
+        because the question being asked is "what am I about to write".
+        """
+        thread = self._require_live(thread_id)
+        if not thread.path:
+            raise ValueError(f"thread {thread_id!r} is not bound to a file")
+        on_disk = self._read_text(Path(thread.path), thread.label)
+        working = thread.content
+        diff = diff_of(on_disk, working, "on disk", "working copy")
+        changed = sum(
+            1 for line in diff.splitlines()
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))
+        )
+        action = self.record(
+            thread_id,
+            "diff",
+            label or "diff against the file",
+            payload=diff,
+            fact=(
+                "identical to the file on disk" if not diff
+                else f"{changed} changed lines between the file and the working copy"
+            ),
+        )
+        return action, diff
 
     def reload_from_disk(self, thread_id: str, label: str = "") -> Action:
         """Read the file again into the working copy, as one action.

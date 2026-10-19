@@ -579,3 +579,21 @@ async def test_a_file_changed_underneath_us_is_visible_and_reloadable(store, tmp
         assert "reloaded" in out
         assert store.get("t").content == "one\ntwo\n"
         assert store.disk_drift(store.get("t")) == "", "reload settles the drift"
+
+
+@pytest.mark.asyncio
+async def test_diff_against_the_file_is_an_action(store, tmp_path):
+    """Comparing is a decision someone made — so it lands on the line."""
+    doc = tmp_path / "note.md"
+    doc.write_text("one\ntwo\n", encoding="utf-8")
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t", str(doc), "note"))
+        out = await runtime.execute_command("diff", args=("t",))
+        assert "identical" in out, "nothing has changed yet"
+
+        await runtime.execute_command("edit", args=("t", "2-2", "TWO\n"))
+        out = await runtime.execute_command("diff", args=("t",))
+        assert "-two" in out and "+TWO" in out
+        kinds = [a.kind for a in store.get("t").actions]
+        assert kinds.count("diff") == 2, "a diff is recorded, not just printed"
