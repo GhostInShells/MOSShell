@@ -1016,6 +1016,41 @@ def test_deliver_carries_low_confidence_chars():
     assert meta.low_conf == "好"
 
 
+def test_clause_packet_carries_its_own_low_confidence_chars():
+    """分句包携带它自己这一句的低置信字, 且不重发前面几句的.
+
+    累积表是在分句包发射**之后**才写入的 (见 _on_accumulate_clause), 分句包若去读它,
+    拿到的永远是上一句的字 —— 这一段的第一句甚至会丢掉自己所有的可疑字.
+    """
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    spec = duplex.model_copy(deep=True)
+    spec.deliver.low_confidence = 0.5
+    controller._set_active_etiquette(spec)
+
+    first = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.CLAUSE, text="你好",
+        clause=RecognitionClause(
+            text="你好",
+            words=[RecognitionWord(text="你", conf=0.3), RecognitionWord(text="好", conf=0.9)],
+        ),
+    )
+    second = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.CLAUSE, text="你好呀",
+        clause=RecognitionClause(
+            text="呀",
+            words=[RecognitionWord(text="呀", conf=0.92)],
+        ),
+    )
+    for cb in listener.result_observers:
+        cb(first)
+        cb(second)
+
+    metas = [ListenerSignal.from_signal(s) for s in emitted]
+    assert [m.low_conf for m in metas] == ["你", ""]
+
+
 # ============================================================
 # 耳朵故障 (pump 崩溃 / ASR 上报) — 感知 + 有界自愈
 # ============================================================

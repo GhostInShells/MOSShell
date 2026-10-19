@@ -945,7 +945,10 @@ class ListenerController(ListenLifecycle):
                 interrupt=deliver.interrupt,
                 boost=self._barge_in_boost(deliver),
                 mode=deliver.mode,
-                low_conf=self._low_confidence_chars(deliver.low_confidence),
+                low_conf=self._low_confidence_chars(
+                    deliver.low_confidence,
+                    [result.clause] if result.clause is not None else [],
+                ),
                 strength=strength,
                 complete=True,
                 priority=deliver.priority,
@@ -1338,12 +1341,19 @@ class ListenerController(ListenLifecycle):
         elif event.phase == RecognitionPhase.TAIL:
             self._current_clauses = []
 
-    def _low_confidence_chars(self, threshold: float | None) -> str:
-        """当前 segment 里词级置信度 < threshold 的字 (拼接, 供 low_conf 属性); None → 空."""
+    def _low_confidence_chars(
+            self, threshold: float | None,
+            clauses: list[RecognitionClause] | None = None,
+    ) -> str:
+        """词级置信度 < threshold 的字 (拼接, 供 low_conf 属性); None → 空.
+
+        ``clauses`` 给定时读它 (分句包传它自己这一句); 不给则读本 segment 累积的分句
+        (尾包用). 累积表是在分句包发射之后才写入的, 分句包若去读它会永远落后一句.
+        """
         if threshold is None:
             return ""
         chars: list[str] = []
-        for clause in self._current_clauses:
+        for clause in (self._current_clauses if clauses is None else clauses):
             for w in clause.words:
                 if w.conf is not None and w.conf < threshold:
                     chars.append(w.text)
