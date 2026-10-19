@@ -6,16 +6,14 @@ depends:
 - dsh-fusion
 description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 以 DSH (DeepSeek Harness) 为推理中枢,
   MOSS 保留记忆/执行/感知. 已接线: ego 会话交易、moment 三槽位序列化、interleaved tools、自醒 nucleus、ghost_home
-  认知场、可替换 instruction 模板. 实例为 deepseek. 待接: Memento 持久化轨迹、ghost 反身 channel、独立思维模块、模型自感知切换.'
+  认知场、可替换 instruction 模板. 实例为 deepseek. Memento 持久化 / ghost 反身 channel / 模型自感知切换均已接; 独立思维模块 (并行化身 / clone / branches) 推下一阶段.'
 milestone: 0.1.0
 priority: P0
-status: in-progress
-status_note: '2026-10-17 修 compact 头部重建: memory 改由 epoch recap 槽交付 + compact 后开新 epoch.
-  _epoch_payload 送达后打戳 (index 单调), memory 先取值缓存, 取消跨 RPC 用 take_compact_memory 补开 epoch,
-  plugin 侧 epochIndex 去重 + 新 session 重置 lastEpochIndex/pendingMoments. moss the ghost 实机三轮
-  review 硬化 (P0/P1 全收), test 226 passed.'
+status: completed
+status_note: '2026-10-19 收尾: dolores-todo 三张表逐条裁定完毕, 零 open —— 缺陷清零, 未接能力与设计问题各归其位,
+  推给下一阶段的条目记 deferred。原型完成, 下一阶段另立 workstream。'
 title: Dolores Ghost
-updated: '2026-10-17'
+updated: '2026-10-19'
 ---
 
 # Dolores Ghost
@@ -74,9 +72,22 @@ DSH 推理中枢已接线，Dolores 的 articulate 由 DSH agent-loop 驱动，M
 - **tool 结果不进 memento。** interleaved 下 tool 是 thinking 期的纯交互通道，结果不写轨迹。
 - **effort 是 cache 安全旋钮，换模型会破坏 cache。** 只调 reasoningEffort（off/low/medium/high），不换 provider/model——云端 cache 与模型类型相关，换模型 = 全量请求（无 cache 命中）。
 
+## 原型完成判据 (2026-10-19 定)
+
+一条原型能不能标 complete, 判据不是「零条目」, 而是: **每一条 open 都有一个归属** —— 已修、判无效、或者明确交给下一阶段 (`deferred`)。原型的边界本来就是靠「哪些不属于它」划出来的; 留一条说不清归属的 open, 未来就会反复回来问同一个问题。
+
+按这条判据, 三张表全部收口, 本 workstream 判 completed。**下一阶段的开发另立 workstream**: 并行化身 / clone / branches (W3)、旁路大改造 (O19)、memento 迭代 (O17)、features 场 (W6)、千级 session 治理 (O3)。
+
 ## 待接 (Not Yet Wired)
 
-> 见 [dolores-todo.md](dolores-todo.md) 未接能力 W1–W4。
+**2026-10-19 收口 —— 这一节空了。**
+
+| 原条目 | 结论 |
+|---|---|
+| W1 Memento 持久化轨迹 | 已接; 这一块的落地效果是整条链上最好的 |
+| W2 Ghost 反身 channel | 已接; 器官全挂在 `ghost` 之下 |
+| W4 模型自感知切换 | 已接, 但走 **tool 面**而非 channel (内观走 tool, 外部交互走 CTML) |
+| W3 独立思维模块 | `deferred` —— 并行化身 / clone / branches, 下一阶段 |
 
 ## 打断结算契约 (tool 桥, D30)
 
@@ -118,7 +129,7 @@ MOSS 侧的结果回话与 dsh 侧 tool execute 是**两个方向**，永远可�
 
 ## Open Problems
 
-> 见 [dolores-todo.md](dolores-todo.md) 设计问题 O1–O3。
+**2026-10-19 收口 —— 没有 open 了。** O1–O19 逐条裁定: 13 条 `fixed`; 3 条 `invalid` (moment 切分已放弃 / Matrix 是 MOSS 第一公民不属本层 / 内核崩溃是假问题); 3 条 `deferred` (O3 千级 session 治理、O17 memento 迭代、O19 旁路大改造)。被驳回的假设与判据见 [dolores-todo.md](dolores-todo.md) 文首「2026-10-19 收尾裁定」。
 
 ## Implementation Notes
 

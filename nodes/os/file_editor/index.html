@@ -2045,7 +2045,11 @@ function onFrame(frame) {
           requestText(focusThread);
           renderRail();
         }
-        if (view !== "document") setView("document");
+        // A pointer from the model means "look at these lines" — so a face that
+        // cannot show the document at all has to come back to one that can.
+        // edit *can* show it: the lines and their numbers are right there, so
+        // being pointed at is no reason to pull the human out of editing.
+        if (view === "history") setView("document");
         renderDoc();
       } else {
         renderDoc();
