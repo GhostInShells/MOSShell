@@ -558,3 +558,24 @@ async def test_a_write_waits_while_the_human_holds_the_pen(store):
         assert "editing lines 1–2" in str(err.value)
         rec.locks.clear()
         assert "v" in await runtime.execute_command("edit", args=("t", "1-2", "x\n"))
+
+
+@pytest.mark.asyncio
+async def test_a_file_changed_underneath_us_is_visible_and_reloadable(store, tmp_path):
+    """No lock: we let the file move, we just refuse to be unaware of it."""
+    doc = tmp_path / "note.md"
+    doc.write_text("one\n", encoding="utf-8")
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t", str(doc), "note"))
+        thread = store.get("t")
+        assert store.disk_drift(thread) == ""
+
+        doc.write_text("one\ntwo\n", encoding="utf-8")   # somebody else edited it
+        drift = store.disk_drift(store.get("t"))
+        assert "changed on disk" in drift, "the working copy is not the file any more"
+
+        out = await runtime.execute_command("reload", args=("t",))
+        assert "reloaded" in out
+        assert store.get("t").content == "one\ntwo\n"
+        assert store.disk_drift(store.get("t")) == "", "reload settles the drift"

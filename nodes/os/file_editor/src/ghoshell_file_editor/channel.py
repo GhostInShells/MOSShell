@@ -540,6 +540,31 @@ def build_file_editor_channel(
             )
         return "\n".join(lines)
 
+    @chan.build.command(name="reload")
+    async def reload_file(thread: str, label: str = "") -> str:
+        """Read the file again into the working copy — one action, no merge.
+
+        For the case this node does not lock against: the file changed on disk
+        while we were editing it. The previous text is not thrown away, it stays
+        in the history where a diff can be asked for; what this does is say "the
+        file is the truth now".
+
+        Calling it when nothing changed is not an error, it is just visible: the
+        receipt names the drift it was called to fix.
+        """
+        target = _get_thread(thread)
+        drift = store.disk_drift(target) or "no drift"
+        try:
+            action = store.reload_from_disk(target.id, label or "reloaded from disk")
+        except (KeyError, ValueError) as e:
+            CommandUtil.raise_observe(str(e))
+        action.fact = change_stat(action.effect)
+        await _card(target, action)
+        await _threads()
+        return (
+            f"[{name}] {thread!r} reloaded to v{target.version} ({drift}) — {action.fact}"
+        )
+
     @chan.build.command(name="point", available=enabled)
     async def point(thread: str, region: str = "", label: str = "") -> str:
         """Put the reading point on these lines — without reading them out.
@@ -1050,12 +1075,17 @@ def build_file_editor_channel(
             written = f" | wrote v{t.exported_at}" if t.exported_to else ""
             lock = surface.lock_of(t.id)
             held = (
-                f" | he is editing {lock['start']}–{lock['end']} since {lock['since']}"
+                f" | being edited {lock['start']}–{lock['end']} since {lock['since']}"
                 if lock else ""
             )
+            # A file that changed underneath us is a fact about this thread, not a
+            # verdict on it — it belongs in the state, where it costs one clause
+            # and prevents a whole paragraph of wrong reasoning.
+            drift = store.disk_drift(t)
+            moved = f" | {drift} — reload(thread) to take it" if drift else ""
             out[_notice_name(t.id)] = (
                 f"v{t.version}{written} | {t.label} | {line_count(t.content)} lines | "
-                f"{loc}{waiting}{flag}{held}"
+                f"{loc}{waiting}{flag}{held}{moved}"
             )
         if store.global_trust():
             out["trust"] = "on — every export here writes at once"

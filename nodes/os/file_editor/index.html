@@ -202,8 +202,14 @@
      and it never paints over the first lines the way a sticky overlay does. */
   .vbar {
     flex: 0 0 auto; padding: 4px 18px 6px;
-    display: flex; justify-content: flex-end;
+    display: flex; align-items: baseline; gap: 10px; justify-content: flex-end;
   }
+  .meta-fold { color: var(--dim); }
+  .meta-fold.on { color: var(--fg); }
+  /* The facts about the thread are a fold at the top of the document, not a
+     third way of reading it: "what this is" sits above "what it says". */
+  .meta { flex: 0 0 auto; max-height: 38vh; overflow: auto; }
+  .meta[hidden] { display: none; }
   .vbar[hidden] { display: none; }
   /* The document is the reading surface: the working copy itself, line by line,
      with a gutter to address it by. Cards are its history, one view over. */
@@ -498,7 +504,6 @@
       <button class="vtab on" data-view="document" id="vtab-doc">document</button>
       <button class="vtab" data-view="edit" id="vtab-edit">edit</button>
       <button class="vtab" data-view="history" id="vtab-hist">history</button>
-      <button class="vtab" data-view="meta" id="vtab-meta">meta</button>
       <!-- The renderer picker sits after the three views on purpose: choosing how
            to look at the document is a view-level choice, and it must not steal
            space from the reading itself (DESIGN.md §6, point 6). -->
@@ -512,7 +517,10 @@
     <!-- The thread's running state belongs to the face it describes, so it sits
          right above the text — not in the tab row, where it would still be there
          while you are reading history. -->
-    <div class="vbar" id="vbar"><span class="vnote" id="vnote"></span></div>
+    <div class="vbar" id="vbar">
+      <button class="vtab meta-fold" id="meta-toggle" title="this thread's own facts">meta ▾</button>
+      <span class="vnote" id="vnote"></span>
+    </div>
     <div class="render-menu" id="render-menu" hidden></div>
     <div class="digest" id="digest" hidden></div>
     <div class="gate" id="gate" hidden></div>
@@ -830,10 +838,6 @@ document.getElementById("vtab-doc").addEventListener("click", () => {
   setView("document");
   send({ type: "view", view: "document" });
 });
-document.getElementById("vtab-meta").addEventListener("click", () => {
-  setView("meta");
-  send({ type: "view", view: "meta" });
-});
 document.getElementById("vtab-edit").addEventListener("click", () => {
   setView("edit");
   send({ type: "view", view: "edit" });
@@ -921,22 +925,22 @@ function threadBusy(id) {
 function setView(next) {
   // edit is the addressable face: it shares the document pane, and only there
   // does a drag on the text mean "these lines".
-  view = next === "history" ? "history" : next === "meta" ? "meta"
-       : next === "edit" ? "edit" : "document";
+  // Opening meta is a fold, not a view: it belongs to the document face.
+  if (next === "meta") { toggleMeta(true); next = "document"; }
+  view = next === "history" ? "history" : next === "edit" ? "edit" : "document";
   document.getElementById("vtab-doc").classList.toggle("on", view === "document");
   document.getElementById("vtab-edit").classList.toggle("on", view === "edit");
   document.getElementById("vtab-hist").classList.toggle("on", view === "history");
-  document.getElementById("vtab-meta").classList.toggle("on", view === "meta");
   docEl.hidden = view !== "document" && view !== "edit";
   // The bar describes the document face; history and meta speak for themselves.
   document.getElementById("vbar").hidden = view !== "document" && view !== "edit";
   streamEl.hidden = view !== "history";
-  metaEl.hidden = view !== "meta";
+  metaEl.hidden = view !== "document" && view !== "edit" ? true : metaEl.hidden;
   if (view === "document" || view === "edit") renderDoc();
   // Opening history asks for that thread's cards: a window that was not there
   // when they were made has no other way to learn about them.
   if (view === "history" && focusThread) requestActions(focusThread);
-  if (view === "meta") renderMeta();
+  if (!metaEl.hidden) renderMeta();
   renderViewNote();
 }
 
@@ -962,6 +966,21 @@ function renderViewNote() {
       : "";
   vnoteEl.textContent = [base, face, look, you, picked, who].filter(Boolean).join(" · ");
 }
+
+// The thread's own facts, folded above the document rather than being a third
+// way of reading it.
+function toggleMeta(on) {
+  const target = typeof on === "boolean" ? on : metaEl.hidden;
+  metaEl.hidden = !target;
+  document.getElementById("meta-toggle").classList.toggle("on", target);
+  if (target) renderMeta();
+}
+
+document.getElementById("meta-toggle").addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleMeta();
+  send({ type: "view", view: "document" });
+});
 
 function requestActions(thread) {
   if (!thread) return;
@@ -1945,7 +1964,7 @@ function onFrame(frame) {
       trusted = frame.trusted || [];
       if (typeof frame.global_trust === "boolean") globalTrust = frame.global_trust;
       renderTrust();
-      if (view === "meta") renderMeta();
+      if (!metaEl.hidden) renderMeta();
       break;
     }
     case "layout": {
@@ -2078,7 +2097,7 @@ function onFrame(frame) {
       if (selected) renderDetail();
       // The meta page is made of these thread facts — flipping auto there rewrites
       // them, and without this the switch keeps showing the state it had before.
-      if (view === "meta") renderMeta();
+      if (!metaEl.hidden) renderMeta();
       break;
     }
     case "action": {
@@ -2108,7 +2127,7 @@ function onFrame(frame) {
       if (a.thread === focusThread) {
         docText.delete(a.thread);
         if (view === "document") requestText(a.thread);
-        if (view === "meta") renderMeta();
+        if (!metaEl.hidden) renderMeta();
       } else {
         renderRail();
       }

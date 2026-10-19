@@ -165,6 +165,14 @@ class Thread:
 
     actions: list[Action] = field(default_factory=list)
     created: float = field(default_factory=time.time)
+    disk_sig: str = ""
+    """The file's signature at the moment we last read or wrote it.
+
+    Not a lock. We do not stop anyone from editing underneath us — we only refuse
+    to be *unaware* of it: the working copy knows which file version it was built
+    from, so a change on disk is a fact the thread can report instead of a verdict
+    it silently overwrites."""
+
     bytes: int = 0
     """Size of the baseline as it was read — a fact about the file, not the copy."""
     lines: int = 0

@@ -64,6 +64,19 @@ they are still open for business."""
 DRAFT_TTL_SECONDS = 7 * 24 * 3600
 """How long an unclaimed draft survives a crash before the sweep removes it."""
 
+def _disk_sig(path: str) -> str:
+    """A file's identity at one instant: mtime plus size.
+
+    Cheap enough to ask every turn, and precise enough for the only question it
+    answers — "is this still the file we read?".
+    """
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return ""
+    return f"{st.st_mtime_ns}:{st.st_size}"
+
+
 def _safe_name(text: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_") else "_" for c in text)
 
@@ -237,6 +250,7 @@ class DocStore:
             draft=draft_name or self._new_draft_name(thread_id),
             bytes=len(base.encode("utf-8")),
             lines=line_count(base),
+            disk_sig=_disk_sig(path) if path else "",
         )
         self._threads[thread_id] = thread
         self._mirror(thread)
@@ -303,6 +317,42 @@ class DocStore:
         for key in [k for k in self._verdicts if k.startswith(f"{thread_id}:")]:
             self._verdicts.pop(key, None)
             self._waiters.pop(key, None)
+
+    # -- is the file still the one we read? ---------------------------------
+
+    def disk_drift(self, thread: Thread) -> str:
+        """The file changed underneath us — say it, do not act on it.
+
+        No lock: somebody else editing the same file is normal here. What is not
+        allowed is a working copy that believes it is current when it is not.
+        """
+        if not thread.path or thread.state != "live":
+            return ""
+        now = _disk_sig(thread.path)
+        if not now or not thread.disk_sig or now == thread.disk_sig:
+            return ""
+        return f"the file changed on disk since v{thread.exported_at or 0}"
+
+    def reload_from_disk(self, thread_id: str, label: str = "") -> Action:
+        """Read the file again into the working copy, as one action.
+
+        Deliberately not a merge: it takes the file's text as the new working
+        copy and leaves the previous text in the history, where a diff can be
+        asked for. Merge is a later question, and answering it first would make
+        the simple case expensive.
+        """
+        thread = self._require_live(thread_id)
+        if not thread.path:
+            raise ValueError(f"thread {thread_id!r} is not bound to a file")
+        text = self._read_text(Path(thread.path), thread.label)
+        before = thread.content
+        action = self._add(
+            thread, "write", label or "reloaded from disk", "g", text=text,
+        )
+        action.effect = effect_of(before, text)
+        thread.disk_sig = _disk_sig(thread.path)
+        self._mirror(thread)
+        return action
 
     def _require(self, thread_id: str) -> Thread:
         thread = self._threads.get(thread_id)
