@@ -331,7 +331,9 @@ class DocStore:
         now = _disk_sig(thread.path)
         if not now or not thread.disk_sig or now == thread.disk_sig:
             return ""
-        return f"the file changed on disk since v{thread.exported_at or 0}"
+        # Naming a version here would be precise but often wrong: the signature
+        # was taken when we read or wrote, not at a number the thread recorded.
+        return "the file changed on disk since we last read it"
 
     def reload_from_disk(self, thread_id: str, label: str = "") -> Action:
         """Read the file again into the working copy, as one action.
