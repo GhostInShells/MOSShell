@@ -48,7 +48,7 @@ _DRAFT_RING = 8
 # be a constant here, because the library is a directory anyone can add a file to.
 # `raw` and `tmp` are always legal: raw is the last resort, tmp is the draft layer.
 _FORMATS = ("auto", "raw", "tmp")
-_VIEWS = ("document", "history", "meta")
+_VIEWS = ("document", "edit", "history", "meta")
 """How an open card is shown: a side panel beside the card list, or the whole
 window. This is the model's half of the presentation contract — the human owns
 the click that opens a card, the model owns how big it opens."""
@@ -78,6 +78,7 @@ class FileEditorSurface:
         self._last: dict[tuple[str, int, str], float] = {}
         self._drafts: dict[str, list[dict]] = {}
         self._faces: dict[str, dict] = {}
+        self._locks: dict[str, dict] = {}
         # Inline by default: the card opens under itself, inside the list. "page"
         # is the deliberate exception for reading one card at a time.
         self._layout = "split"
@@ -260,6 +261,68 @@ class FileEditorSurface:
 
     def set_face(self, thread: str, renderer: str, seq: int | None, by: str) -> None:
         self._faces[thread] = {"renderer": renderer, "seq": seq, "by": by}
+
+    # -- the editing lock ---------------------------------------------------
+    #
+    # The human edits; I wait. Not because I cannot merge — because merging is
+    # where the cost is, and the first version of shared editing does not need it.
+    # The lock is a *state*, visible in the thread's notice: a lock I cannot see
+    # is indistinguishable from a broken tool.
+
+    def lock_of(self, thread: str) -> dict:
+        return dict(self._locks.get(thread) or {})
+
+    def locked(self, thread: str) -> bool:
+        return thread in self._locks
+
+    def lock_refusal(self, thread: str) -> str:
+        """What a write gets told when the human holds the pen.
+
+        The message is the state, in one sentence: which lines, since when. A
+        generic "thread busy" would leave me to guess whether to retry, wait, or
+        give up.
+        """
+        lock = self._locks.get(thread)
+        if not lock:
+            return ""
+        span = f"lines {lock['start']}–{lock['end']}" if lock.get("end") else "a region"
+        return (
+            f"he is editing {span} in {thread!r} since {lock['since']} — wait for the "
+            f"commit, then read the thread again"
+        )
+
+    async def begin_edit(self, thread: str, start: int, end: int) -> dict:
+        lock = {"start": int(start), "end": int(end), "since": time.strftime("%H:%M:%S")}
+        self._locks[thread] = lock
+        await self.broadcast({"type": "lock", "thread": thread, "lock": lock})
+        return lock
+
+    async def cancel_edit(self, thread: str) -> None:
+        if self._locks.pop(thread, None) is not None:
+            await self.broadcast({"type": "lock", "thread": thread, "lock": None})
+
+    async def commit_edit(
+        self, thread: str, region: str, text: str, label: str = "", client_id: str = ""
+    ) -> Any:
+        """Land the human's edit as an action — the same shape as mine.
+
+        One action, author ``u``, in the same history, drawn with the same diff.
+        That is the whole point: "who wrote this line" must have one answer.
+        """
+        action = self._store.edit_region(
+            thread, region, text, label or f"he edited {region}", author="u"
+        )
+        await self.cancel_edit(thread)
+        await self.broadcast(
+            {
+                "type": "landed",
+                "thread": thread,
+                "n": action.n,
+                "client_id": client_id,
+                "by": "human",
+            }
+        )
+        return action
 
     async def set_cursor(
             self,
@@ -611,6 +674,39 @@ class FileEditorSurface:
                     )
                 elif kind == "toggle":
                     await self._set_enabled(bool(frame.get("enabled", True)))
+                elif kind == "actions":
+                    # The page pulls a thread's history instead of waiting to be
+                    # pushed: a window that connected late, or a page that was
+                    # reloaded, has no other way to learn what already happened.
+                    snap = snapshot(self._store)
+                    mine = [a for a in snap.get("actions", []) if a.get("thread") == thread]
+                    await connection.send(json.dumps(
+                        {"type": "actions", "thread": thread, "actions": mine}
+                    ))
+                elif kind == "edit_begin":
+                    await self.begin_edit(
+                        thread,
+                        int(frame.get("start", 0) or 0),
+                        int(frame.get("end", 0) or 0),
+                    )
+                elif kind == "edit_cancel":
+                    await self.cancel_edit(thread)
+                elif kind == "edit_commit":
+                    try:
+                        await self.commit_edit(
+                            thread,
+                            str(frame.get("region", "")),
+                            str(frame.get("text", "")),
+                            str(frame.get("label", "")),
+                            str(frame.get("client_id", "")),
+                        )
+                    except (KeyError, ValueError):
+                        # A rejected edit is not silence: the page keeps its
+                        # pending action and is told it did not land.
+                        await self.broadcast(
+                            {"type": "rejected", "thread": thread,
+                             "client_id": str(frame.get("client_id", ""))}
+                        )
                 elif kind == "face":
                     # What the page is actually drawing. Without this the state
                     # face only knows what *I* asked for, and the human's own

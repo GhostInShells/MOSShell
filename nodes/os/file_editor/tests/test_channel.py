@@ -543,3 +543,18 @@ async def test_preview_pushes_a_draft_and_renderers_lists_the_library(store):
 
         listing = await runtime.execute_command("renderers")
         assert "raw" in listing and "markdown" in listing
+
+
+@pytest.mark.asyncio
+async def test_a_write_waits_while_the_human_holds_the_pen(store):
+    """The refusal is the state, in one sentence — not a bare 'busy'."""
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("open", args=("t",))
+        await runtime.execute_command("append", args=("t", chunks(["a\n", "b\n"])))
+        rec.locks["t"] = {"start": 1, "end": 2, "since": "12:20:00"}
+        with pytest.raises(Exception) as err:
+            await runtime.execute_command("edit", args=("t", "1-2", "x\n"))
+        assert "editing lines 1–2" in str(err.value)
+        rec.locks.clear()
+        assert "v" in await runtime.execute_command("edit", args=("t", "1-2", "x\n"))

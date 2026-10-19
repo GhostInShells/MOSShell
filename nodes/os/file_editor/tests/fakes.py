@@ -15,6 +15,7 @@ class Recorder:
         self.layout_by = "default"
         self._cursors: dict = {}
         self.previews: list[dict] = []
+        self.locks: dict[str, dict] = {}
 
     async def broadcast(self, frame: dict) -> None:
         self.frames.append(frame)
@@ -76,6 +77,16 @@ class Recorder:
 
     async def show_draft(self, thread: str, seq: int) -> dict:
         raise ValueError("no drafts in the fake")
+
+    # -- the editing lock (the real surface's, minus the websocket) ---------
+    def lock_of(self, thread: str) -> dict:
+        return dict(self.locks.get(thread) or {})
+
+    def lock_refusal(self, thread: str) -> str:
+        lock = self.locks.get(thread)
+        if not lock:
+            return ""
+        return f"he is editing lines {lock['start']}–{lock['end']} in {thread!r}"
 
     def list_renderers(self) -> list[dict]:
         return [

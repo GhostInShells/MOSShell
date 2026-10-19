@@ -296,3 +296,30 @@ async def test_drafts_are_a_string_of_materials_per_thread(store, signals):
             await surface.show_draft("t", 99)
     finally:
         await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_humans_edit_lands_as_an_action_and_releases_the_lock(store, signals):
+    """One action, author `u`, same history — so "who wrote this line" has one
+    answer. The lock goes away with the commit, not with a timeout."""
+    surface = await _surface(store, signals)
+    store.open("t", "doc")
+    act = store.begin("t", "write", "seed")     # the ordinary path: stream, then land
+    store.feed("t", act.n, "one\ntwo\nthree\n")
+    store.tail("t", act.n)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            lock = await surface.begin_edit("t", 2, 2)
+            assert lock["start"] == 2 and surface.locked("t")
+            await _recv(ws, "lock")
+
+            action = await surface.commit_edit("t", "2-2", "TWO\n", "he fixed a word", "c-1")
+            assert action.author == "u"
+            assert store.get("t").content.split("\n")[1] == "TWO"
+            assert not surface.locked("t")
+            await _recv(ws, "lock")          # released first, then the action
+            landed = await _recv(ws, "landed")
+            assert landed["client_id"] == "c-1" and landed["by"] == "human"
+    finally:
+        await surface.stop()

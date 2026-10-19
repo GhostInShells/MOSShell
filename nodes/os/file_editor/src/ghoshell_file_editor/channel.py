@@ -272,6 +272,17 @@ def build_file_editor_channel(
         )
         signaler(signal)
 
+    def _guard_lock(thread_id: str) -> None:
+        """Writes wait while the human holds the pen.
+
+        The refusal names the lines and the time: a write that fails with "busy"
+        leaves me choosing between retrying blindly and giving up, and neither is
+        a decision I can make from "busy".
+        """
+        refusal = surface.lock_refusal(thread_id)
+        if refusal:
+            CommandUtil.raise_observe(refusal)
+
     def _get_thread(thread_id: str) -> Thread:
         thread = store.get(thread_id)
         if thread is None:
@@ -648,6 +659,7 @@ def build_file_editor_channel(
         body for those lines; an empty body deletes them. ``label`` is the card's
         title — say why the lines are going.
         """
+        _guard_lock(thread)
         target = _get_thread(thread)
         try:
             action = store.edit_region(
@@ -672,6 +684,7 @@ def build_file_editor_channel(
         The body streams in and lands the moment the tag closes. ``label`` is the
         card's title — say what the new text is.
         """
+        _guard_lock(thread)
         return await _stream(thread, "write", chunks__, label or "rewrite")
 
     @chan.build.command(name="append", always_observe=False, available=enabled)
@@ -681,6 +694,7 @@ def build_file_editor_channel(
         The way to build a long document a section at a time: the card shows the
         segment you added, not the whole file.
         """
+        _guard_lock(thread)
         return await _stream(thread, "append", chunks__, label or "append")
 
     async def _stream(thread: str, kind: str, chunks: Any, label: str) -> str:
@@ -728,6 +742,7 @@ def build_file_editor_channel(
 
         <![CDATA[ [{"old_str": "## Usage\\n", "new_str": "## Usage\\n\\nRun `moss start`.\\n"}] ]]>
         """
+        _guard_lock(thread)
         target = store.get(thread)
         if target is None:
             CommandUtil.raise_observe(f"no thread {thread!r} — threads() lists them")
@@ -971,11 +986,13 @@ def build_file_editor_channel(
     async def view(mode: str = "") -> str:
         """Switch the page between the three readings of a thread — or read it back.
 
-        ``document`` is the working copy itself, ``history`` is what has happened to
-        it, ``meta`` is the thread's own facts. Which one is on the table is a view,
-        not a layout: the human clicks it, and so may you — showing the other side
-        the thing you are talking about is half of being understood. Empty = read
-        back the current mode and who chose it.
+        ``document`` is the working copy, read through the current renderer;
+        ``edit`` is the addressable face — line numbers, selection and the inline
+        edit box — and entering it is what makes the human's selection mean
+        something; ``history`` is what has happened to the thread; ``meta`` is its
+        own facts. Which one is on the table is a view, not a layout: the human
+        clicks it, and so may you. Empty = read back the current mode and who
+        chose it.
         """
         if not mode:
             current, by = surface.view_state()
@@ -1031,9 +1048,14 @@ def build_file_editor_channel(
             # has moved past what was written says so, because "I already
             # exported" is exactly the belief that goes stale.
             written = f" | wrote v{t.exported_at}" if t.exported_to else ""
+            lock = surface.lock_of(t.id)
+            held = (
+                f" | he is editing {lock['start']}–{lock['end']} since {lock['since']}"
+                if lock else ""
+            )
             out[_notice_name(t.id)] = (
                 f"v{t.version}{written} | {t.label} | {line_count(t.content)} lines | "
-                f"{loc}{waiting}{flag}"
+                f"{loc}{waiting}{flag}{held}"
             )
         if store.global_trust():
             out["trust"] = "on — every export here writes at once"

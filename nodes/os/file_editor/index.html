@@ -198,6 +198,13 @@
   .render-row .render-name { color: var(--fg); font-family: var(--mono); min-width: 84px; }
   .render-row .render-desc { color: var(--dim); font-size: var(--fs-small); }
   .vnote { color: var(--dim); font-size: var(--fs-small); padding-right: 4px; }
+  /* A fixed strip: scrolling the document must not take the state with it. */
+  .vbar {
+    position: sticky; top: 0; z-index: 6; padding: 4px 18px 6px;
+    background: linear-gradient(#0f1214 70%, rgba(15,18,20,0));
+    display: flex; justify-content: flex-end;
+  }
+  .vbar[hidden] { display: none; }
   /* The document is the reading surface: the working copy itself, line by line,
      with a gutter to address it by. Cards are its history, one view over. */
   /* A gate belongs to the document, not to a line in a log: the working copy is
@@ -248,12 +255,41 @@
   }
   /* "Nothing rendered" and "the renderer is broken" must not look alike: this
      strip is the second one, named, above the fallback face it fell back to. */
+  /* The edit affordance and the box it opens. Deliberately small and anchored to
+     the document: editing is an act on a range, not a mode you switch into. */
+  .edit-here {
+    position: fixed; z-index: 12; padding: 4px 10px; border-radius: 4px;
+    background: #1d2630; color: var(--fg); border: 1px solid var(--accent);
+    font: inherit; font-size: var(--fs-small); cursor: pointer;
+  }
+  .edit-here[hidden] { display: none; }
+  .edit-box {
+    position: fixed; z-index: 13; left: 50%; top: 12%; transform: translateX(-50%);
+    width: min(760px, 80vw); background: #15181b; border: 1px solid var(--line);
+    border-radius: 7px; box-shadow: 0 14px 40px rgba(0,0,0,.55); padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .edit-box[hidden] { display: none; }
+  .edit-head { display: flex; justify-content: space-between; color: var(--dim);
+    font-size: var(--fs-small); font-family: var(--mono); }
+  .edit-box textarea {
+    width: 100%; min-height: 180px; resize: vertical; background: #0f1214;
+    color: var(--fg); border: 1px solid var(--line); border-radius: 5px;
+    padding: 10px; font-family: var(--mono); font-size: 13px; line-height: 1.55;
+  }
+  .edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .edit-actions button {
+    padding: 4px 12px; border-radius: 4px; border: 1px solid var(--line);
+    background: #1d2227; color: var(--fg); font: inherit; cursor: pointer;
+  }
+  .edit-actions button#edit-save { border-color: var(--accent); color: var(--accent); }
   .render-broken {
     margin: 10px 26px 0; padding: 8px 12px; border-radius: 5px;
     background: rgba(255,122,122,.10); border: 1px solid rgba(255,122,122,.45);
     color: #ff9b9b; font-size: var(--fs-small); font-family: var(--mono);
     white-space: pre-wrap;
   }
+  .doc-line.flash { background: rgba(92,214,150,.22); transition: background .8s ease-out; }
   .doc-line.hit { background: rgba(110,168,254,.10); box-shadow: inset 2px 0 0 var(--accent); }
   .doc-line.hit .ln { color: var(--accent); }
   /* Where the reader is. The model's point and the human's scroll share this
@@ -460,6 +496,7 @@
   <div class="centre">
     <div class="views">
       <button class="vtab on" data-view="document" id="vtab-doc">document</button>
+      <button class="vtab" data-view="edit" id="vtab-edit">edit</button>
       <button class="vtab" data-view="history" id="vtab-hist">history</button>
       <button class="vtab" data-view="meta" id="vtab-meta">meta</button>
       <!-- The renderer picker sits after the three views on purpose: choosing how
@@ -471,12 +508,29 @@
            minute ago. Two different lifetimes do not belong in one list. -->
       <button class="vtab draft-tab" id="vtab-tmp" hidden title="the draft face pushed right now">临时</button>
       <span class="spacer"></span>
-      <span class="vnote" id="vnote"></span>
     </div>
+    <!-- The thread's running state belongs to the face it describes, so it sits
+         right above the text — not in the tab row, where it would still be there
+         while you are reading history. -->
+    <div class="vbar" id="vbar"><span class="vnote" id="vnote"></span></div>
     <div class="render-menu" id="render-menu" hidden></div>
     <div class="digest" id="digest" hidden></div>
     <div class="gate" id="gate" hidden></div>
     <section class="doc" id="doc"></section>
+    <!-- The edit affordance: a selection over whole lines becomes an addressable
+         range, and this is the one button that turns it into an edit. -->
+    <button class="edit-here" id="edit-here" hidden>改这几行</button>
+    <div class="edit-box" id="edit-box" hidden>
+      <div class="edit-head">
+        <span id="edit-range"></span>
+        <span class="edit-hint">⌘/Ctrl+Enter 保存 · Esc 取消</span>
+      </div>
+      <textarea id="edit-text" spellcheck="false"></textarea>
+      <div class="edit-actions">
+        <button id="edit-save">保存</button>
+        <button id="edit-cancel">取消</button>
+      </div>
+    </div>
     <section class="stream" id="stream" hidden></section>
     <section class="meta" id="meta" hidden></section>
   </div>
@@ -599,7 +653,10 @@ function hasLineBridge() {
 // preview — enough to know what we are talking about, not enough to be a second
 // copy of the document.
 function reportSelection() {
-  if (!focusThread || view !== "document" || !hasLineBridge()) return;
+  // Only inside the edit face. Elsewhere a drag on the page is just a drag —
+  // believing it means "he is pointing at these lines" would be reading a
+  // signal that was never sent.
+  if (!focusThread || view !== "edit" || !hasLineBridge()) return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.anchorNode || !docEl.contains(sel.anchorNode)) {
     if (reportedSelection) {
@@ -621,7 +678,7 @@ function reportSelection() {
 }
 
 function reportCursor() {
-  if (view !== "document" || !focusThread || !hasLineBridge()) return;
+  if (view !== "edit" || !focusThread || !hasLineBridge()) return;
   if (Date.now() < cursorQuietUntil) return;   // my own point is still settling
   const box = docEl.getBoundingClientRect();
   const start = lineUnder(box.top + 6);
@@ -768,6 +825,10 @@ document.getElementById("vtab-meta").addEventListener("click", () => {
   setView("meta");
   send({ type: "view", view: "meta" });
 });
+document.getElementById("vtab-edit").addEventListener("click", () => {
+  setView("edit");
+  send({ type: "view", view: "edit" });
+});
 document.getElementById("vtab-hist").addEventListener("click", () => {
   setView("history");
   send({ type: "view", view: "history" });
@@ -849,14 +910,20 @@ function threadBusy(id) {
 // is the human's click (both are their surface); which thread is shown is
 // shared — clicking a thread in the rail or a card in the history moves both.
 function setView(next) {
-  view = next === "history" ? "history" : next === "meta" ? "meta" : "document";
+  // edit is the addressable face: it shares the document pane, and only there
+  // does a drag on the text mean "these lines".
+  view = next === "history" ? "history" : next === "meta" ? "meta"
+       : next === "edit" ? "edit" : "document";
   document.getElementById("vtab-doc").classList.toggle("on", view === "document");
+  document.getElementById("vtab-edit").classList.toggle("on", view === "edit");
   document.getElementById("vtab-hist").classList.toggle("on", view === "history");
   document.getElementById("vtab-meta").classList.toggle("on", view === "meta");
-  docEl.hidden = view !== "document";
+  docEl.hidden = view !== "document" && view !== "edit";
+  // The bar describes the document face; history and meta speak for themselves.
+  document.getElementById("vbar").hidden = view !== "document" && view !== "edit";
   streamEl.hidden = view !== "history";
   metaEl.hidden = view !== "meta";
-  if (view === "document") renderDoc();
+  if (view === "document" || view === "edit") renderDoc();
   if (view === "meta") renderMeta();
   renderViewNote();
 }
@@ -884,8 +951,13 @@ function renderViewNote() {
   vnoteEl.textContent = [base, face, look, you, picked, who].filter(Boolean).join(" · ");
 }
 
+function requestActions(thread) {
+  if (thread) send({ type: "actions", thread });
+}
+
 function requestText(thread) {
   if (!thread) return;
+  requestActions(thread);
   const known = docText.get(thread);
   const t = threads.get(thread);
   if (known && t && known.version === t.version) return;   // already current
@@ -1098,6 +1170,121 @@ function selectDraft(thread, seq) {
   if (thread === focusThread) renderDoc();
 }
 
+// -- editing: a selection over whole lines becomes a range -------------------
+//
+// The human changes words; I wait. The lock is announced before the first
+// keystroke (edit_begin), so my writes fail with "he is editing 40–52" rather
+// than with a mystery. The commit lands as one action with author `u` — the same
+// shape as mine — and the page keeps a *pending* action under a client id until
+// the server hands back the authoritative one. Matching by id, not by "newest
+// wins", is what keeps a rejected edit from silently evaporating.
+
+const editHereEl = document.getElementById("edit-here");
+const editBoxEl = document.getElementById("edit-box");
+const editRangeEl = document.getElementById("edit-range");
+const editTextEl = document.getElementById("edit-text");
+let editRange = null;               // [start, end] while a box is open
+let editLocked = null;              // the range I told the server I am editing
+let pendingEdit = null;             // {client_id, thread, range, text}
+let flashRange = null;              // lines that just changed, until the server agrees
+
+function lineRangeOfSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return null;
+  const a = linesOfNode(sel.anchorNode);
+  const b = linesOfNode(sel.focusNode);
+  if (!a || !b) return null;
+  return [Math.min(a[0], b[0]), Math.max(a[1], b[1])];
+}
+
+function placeEditButton() {
+  const range = view === "edit" && focusThread ? lineRangeOfSelection() : null;
+  if (!range) { editHereEl.hidden = true; return; }
+  const sel = window.getSelection();
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  editHereEl.hidden = false;
+  editHereEl.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 120)) + "px";
+  editHereEl.style.top = Math.max(8, rect.bottom + 6) + "px";
+  editHereEl.dataset.start = range[0];
+  editHereEl.dataset.end = range[1];
+}
+
+function currentLines(start, end) {
+  const d = docText.get(focusThread);
+  if (!d) return "";
+  return d.text.split("\n").slice(start - 1, end).join("\n");
+}
+
+async function openEditor(start, end) {
+  if (!focusThread) return;
+  // Only the addressable face can be edited: on a rendered face "these lines"
+  // is a block, and a block is not a text range you can type into.
+  if (effectiveRenderer(focusThread) !== "raw") chooseRenderer("raw");
+  await new Promise((r) => setTimeout(r, 0));
+  editRange = [start, end];
+  editTextEl.value = currentLines(start, end);
+  editRangeEl.textContent = focusThread + " · " + start + "–" + end;
+  editBoxEl.hidden = false;
+  editHereEl.hidden = true;
+  editTextEl.focus();
+  send({ type: "edit_begin", thread: focusThread, start, end });
+  editLocked = [start, end];
+}
+
+function closeEditor() {
+  editBoxEl.hidden = true;
+  editRange = null;
+  if (editLocked && focusThread) {
+    send({ type: "edit_cancel", thread: focusThread });
+    editLocked = null;
+  }
+}
+
+// Show the change before the server answers. A commit that waits for a round
+// trip before anything moves reads as "the button did nothing".
+function applyLocally(thread, start, end, text) {
+  const d = docText.get(thread);
+  if (!d) return null;
+  const lines = String(d.text).split("\n");
+  const body = text === "" ? [] : String(text).replace(/\n$/, "").split("\n");
+  lines.splice(start - 1, end - start + 1, ...body);
+  d.text = lines.join("\n");
+  d.lines = lines.length;
+  return [start, start + Math.max(body.length, 1) - 1];
+}
+
+function saveEditor() {
+  if (!editRange || !focusThread) return;
+  const clientId = "c-" + Date.now() + "-" + Math.floor(Math.random() * 1e4);
+  const region = editRange[0] + "-" + editRange[1];
+  flashRange = applyLocally(focusThread, editRange[0], editRange[1], editTextEl.value);
+  renderDoc();
+  pendingEdit = { client_id: clientId, thread: focusThread, range: region, text: editTextEl.value };
+  send({
+    type: "edit_commit",
+    thread: focusThread,
+    region,
+    text: editTextEl.value,
+    label: "he edited " + region,
+    client_id: clientId,
+  });
+  editBoxEl.hidden = true;
+  editRange = null;
+  editLocked = null;               // the server releases it with the commit
+}
+
+editHereEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  openEditor(parseInt(editHereEl.dataset.start, 10), parseInt(editHereEl.dataset.end, 10));
+});
+document.getElementById("edit-save").addEventListener("click", saveEditor);
+document.getElementById("edit-cancel").addEventListener("click", closeEditor);
+editTextEl.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") saveEditor();
+  if (e.key === "Escape") closeEditor();
+});
+document.addEventListener("selectionchange", () => setTimeout(placeEditButton, 260));
+
 // -- the picker -----------------------------------------------------------
 // Choosing a face is a view-level act, so it lives in the tab row: the menu
 // lists what the library actually contains (read from the files themselves) and
@@ -1211,7 +1398,9 @@ async function renderDoc() {
   //   2. the raw face is a renderer like any other (the one whose defining feature
   //      is line numbers), so the pane has exactly one path, not two.
   const seq = ++renderSeq;
-  const wanted = effectiveRenderer(focusThread);
+  // The edit face is the addressable one by definition: a rendered block is not
+  // a text range you can type into.
+  const wanted = view === "edit" ? "raw" : effectiveRenderer(focusThread);
   const hit = selected && selected.thread === focusThread
     ? regionOf(actions.get(key(focusThread, selected.n))) : null;
   const mark = focusThread ? cursors[focusThread] : null;
@@ -1280,6 +1469,12 @@ async function renderDoc() {
       });
     } catch (e) {
       docEl.prepend(make("div", "render-broken", shownName + " — 装饰时抛错：" + (e && e.message ? e.message : e)));
+    }
+  }
+  if (flashRange && shownName === "raw") {
+    for (const row of host.querySelectorAll(".doc-line")) {
+      const n = parseInt(row.dataset.n, 10);
+      if (n >= flashRange[0] && n <= flashRange[1]) row.classList.add("flash");
     }
   }
   if (band && scrollForBand) {
@@ -1781,6 +1976,44 @@ function onFrame(frame) {
       // thread, and drawn at once — the point of a draft is to see whether the
       // idea was worth having.
       installDraft(frame.thread, frame.seq, frame.script, frame.label, true);
+      break;
+    }
+    case "actions": {
+      // The pulled history for one thread: the same cards the push would have
+      // delivered, for whoever was not there when they were made.
+      for (const a of frame.actions || []) upsertAction(a);
+      renderRail();
+      renderDigest();
+      if (frame.thread === focusThread) { renderDoc(); }
+      break;
+    }
+    case "landed": {
+      // The server's copy of the edit I just made. Matched by client id — the
+      // pending action is dropped only when its own id comes back.
+      if (pendingEdit && frame.client_id === pendingEdit.client_id) pendingEdit = null;
+      requestText(frame.thread);
+      setTimeout(() => { flashRange = null; renderDoc(); }, 1500);
+      break;
+    }
+    case "rejected": {
+      if (pendingEdit && frame.client_id === pendingEdit.client_id) {
+        const lost = pendingEdit;
+        pendingEdit = null;
+        // Loud, not silent: an edit that did not land must look like one.
+        const strip = make("div", "render-broken",
+          "这次编辑没有落地（" + lost.thread + " " + lost.range + "），文本已回到上一次落地的状态");
+        docEl.prepend(strip);
+        setTimeout(() => strip.remove(), 8000);
+        requestText(frame.thread);
+      }
+      break;
+    }
+    case "lock": {
+      // The lock is state, and the state is the point: it says who is holding
+      // the pen, on what, since when.
+      if (focusThread && frame.thread === focusThread && frame.lock) {
+        renderViewNote();
+      }
       break;
     }
     case "preview_show": {
