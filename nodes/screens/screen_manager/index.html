@@ -2082,9 +2082,19 @@ function route(f) {
     // on for GHOST_KEEP_MS after the last one — which also gets the other half for
     // free: a ghost that stopped talking and stopped acting goes dark by itself,
     // instead of glowing on a stale state nobody can retract.
+    // Two producers share this frame name, and they are not the same message:
+    // the ghost light (`{type:'state', thinking}`) and the layout
+    // (`P.state_frame` — arena/ids/layout/desktop/groups/order). Keeping them as
+    // two `case 'state'` arms was a silent bug: the first arm matched, broke, and
+    // the second became dead code — so every model-side arrange updated the
+    // server's pool and never reached the page, while a human click worked
+    // because it comes back as `activate`. One arm, both jobs, asked by shape.
     case 'state': {
-      if (f.thinking) ghostBeat();
-      else ghostBeatAt = 0;            // an explicit idle: off now, not in K seconds
+      if ('thinking' in f) {
+        if (f.thinking) ghostBeat();
+        else ghostBeatAt = 0;          // an explicit idle: off now, not in K seconds
+      }
+      if ('layout' in f || 'arena' in f) applyState(f);
       break;
     }
     case 'talk': {
@@ -2134,7 +2144,6 @@ function route(f) {
       applyState(f);
       break;
     }
-    case 'state': applyState(f); break;
     case 'open': {
       const it = f.item;
       if (!items.has(it.id)) {
