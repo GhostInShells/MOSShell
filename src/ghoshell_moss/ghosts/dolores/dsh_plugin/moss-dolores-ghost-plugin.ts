@@ -182,6 +182,7 @@ const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
 // moment/push: 一轮**正在跑**时把一整帧 (context + inputs) 送进去 —— enter 只在起点投递,
 // 之后没有第二条路. context 走 pendingMoments (下一步历史最前), inputs 走 steer (续当前 turn).
 const DOLORES_MOMENT_PUSH = `${DOLORES_API_ROOT}/moment/push`
+const DOLORES_TURN_END_PROBE = `${DOLORES_API_ROOT}/turn-end-probe`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
 // compact: 原地把 (surface 头, cut_turn) 之间的节点替换成一条说明, 保留 surface 头与原文 tail;
 // memory 由新 epoch 的 recap 交付 (头是 protected head, 不可折叠).
@@ -1185,10 +1186,15 @@ export function apply(ctx: Context) {
         if (body.thinkingToken !== doloresThinkingToken) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
-        resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         // 一份 moment 两半 (context 背景 + inputs 输入) 一起缓冲, 绝不只投一半.
         if (hasMomentPayload(body.moment)) {
           await queueMomentPayload(ctx, body.moment)
+        }
+        // pending moment = 解锁信号 (D1=c): agent idle + gate open → 空 steer 开新 turn.
+        // moment 本身由 per-step 排空 pendingMoments 消费, steer 不消费 moment.
+        if (thinkingGate.isOpen && agent.status === 'idle') {
+          agent.steer(createUserMessage({ content: [], source: { kind: name } }))
         }
         const pushed = body.moment as MomentPayload
         probe(
@@ -1197,6 +1203,43 @@ export function apply(ctx: Context) {
         )
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ pushed: true }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+
+  // ── 2c. turn-end-probe (settle 2a 探针) ───────────────────────────────
+  // push 过的 moment 在 turn 结束前可能没被 pre-step 消费 (final answer 那一轮). MOSS 侧拿到
+  // turn/end 后调一次: 若 pendingMoments 非空且 agent idle 且 gate open → 空 steer 开下一 turn.
+  // 返回 {steered} 让 MOSS 决定继续还是落进 settle 竞速的 action_done 分支.
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_TURN_END_PROBE,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req) as unknown as { thinkingToken?: string }
+        if (doloresEgoSessionId === null) {
+          throw new Error('no ego session — call ego/create first')
+        }
+        if (body.thinkingToken !== doloresThinkingToken) {
+          throw new Error('invalid thinkingToken — rejected (non-ego caller)')
+        }
+        const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        let steered = false
+        if (pendingMoments.length > 0 && thinkingGate.isOpen && agent.status === 'idle') {
+          agent.steer(createUserMessage({ content: [], source: { kind: name } }))
+          steered = true
+          probe(`turn-end-probe steered=${pendingMoments.length} pending frame(s)`)
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ steered }))
       } catch (error) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: String(error) }))
@@ -1241,10 +1284,8 @@ export function apply(ctx: Context) {
         if (agent.status !== 'idle') {
           agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
         }
-        // 兜底投递: 本交易残余的缓冲帧 (none/空 inputs 补帧没触发 turn, 没有 pre-step 消费) 直接
-        // 投进 inbox (next-step), 由下一次 pre-step 认领 — 绝不丢. 必须在 cancel 之后: cancel 默认
-        // 清空 inbox, 先 flush 会被抹掉.
-        flushPendingMoments(agent)
+        // 不 flush pendingMoments: 债 2 — pending moment 100% 被消费 (除非硬重启), 绝不用 inbox
+        // inject 兜底 (inject 不唤醒、可被丢弃). 残余 pending moment 由下一次 turn 的 pre-step 排空.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: false }))
       } catch (error) {

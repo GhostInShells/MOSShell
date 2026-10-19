@@ -330,6 +330,12 @@ class DoloresRun:
         self._ctml_in_flight: bool = False
         # 本收轮工具的"人插话了"信号; None = 这一轮已经定了要收 (或压根没收轮工具在飞).
         self._barge_in_event: "asyncio.Event | None" = None
+        # 本思考周期 push 过 moment (settle 2a 的探针前提).
+        self._pushed_this_run: bool = False
+        # turn/end(normal) 后的 settle 竞速信号: 期间到达的 signal 只 set 它, 不 drain.
+        self._signal_event: "asyncio.Event | None" = None
+        # 正在 settle (turn/end 后 → settle 结论之间): 不安全, 不 drain, 只通知.
+        self._settling: bool = False
         self._enter_task: "asyncio.Task[None] | None" = None
         # 本帧的 thinking 配对序 — __aenter__ 就铸好, enter/exit 带同一个 (见 _ego.next_thinking_seq).
         self._thinking_seq: int = 0
@@ -833,13 +839,17 @@ class DoloresRun:
             )
 
     async def logos(self) -> "AsyncIterator[Union[GhostEvent, str]]":
-        """Consume the event stream, dispatch tool calls, forward debug events, end on turn/end.
+        """Consume the event stream, dispatch tool calls, forward debug events, span turns.
 
         The final answer is plain text that is never parsed into CTML — the ghost acts through tool
         calls. ``moss_interpret`` and ``moss_react`` are the two streaming tools: their
         ``tool-call-delta`` chunks are fed into a per-call articulator as they arrive, so the CTML
         reaches the shell while the model is still generating. Single consumption: a run has at most
-        one logos stream. Ending (turn/end) is internal — the consumer needs no break.
+        one logos stream.
+
+        主权在 body action, 不在 dsh turn: ``turn/end`` 的 ``completed``/``max-tokens`` 及我们自己的
+        ``hook`` cancel 只是记号, 不结束本 run —— 本 run 跨多个 dsh turn, 直到 ``settle`` 竞速判
+        ``action_done`` 才收线; ``aborted/interrupted/blocked/error`` 等反向传导才立刻收线。
 
         Yields one ``GhostEvent`` per dsh event in ``_FORWARDED_DSH_EVENTS``, or logos delta in arrival order. The
         raw envelope rides in ``payload`` untouched (``to_dict()``), so a dsh upgrade that adds
@@ -854,23 +864,34 @@ class DoloresRun:
         streams: dict[str, _StreamedCtml] = {}
         try:
             while True:
-                event = await anext(events)
-                # 转发先于 turn/end 判定: 那个判定会让本函数 return, turn/end 必须在它之前 yield 出去.
-                if event.meta.type in _FORWARDED_DSH_EVENTS and not _is_own_tool_call(event):
-                    yield GhostEvent(
-                        event=f"{_DSH_EVENT_NAME_PREFIX}{event.meta.type}",
-                        content=_event_content(event),
-                        payload=event.to_dict(),
-                    )
-                if self._note_turn_end(event):
+                # 消费一个 dsh turn 的事件, 直到 turn/end.
+                self._turn_end_noted = False
+                turn_aborted = False
+                while True:
+                    event = await anext(events)
+                    # 转发先于 turn/end 判定: 那个判定会 break 内层循环, turn/end 必须在它之前 yield 出去.
+                    if event.meta.type in _FORWARDED_DSH_EVENTS and not _is_own_tool_call(event):
+                        yield GhostEvent(
+                            event=f"{_DSH_EVENT_NAME_PREFIX}{event.meta.type}",
+                            content=_event_content(event),
+                            payload=event.to_dict(),
+                        )
+                    if self._note_turn_end(event):
+                        turn_aborted = self._interrupt_aborted
+                        break
+                    if chunk := AssistantChunk.from_session_event(event):
+                        logos_delta = await self._handle_ctml_delta(chunk.chunk, streams)
+                        if logos_delta is not None:
+                            yield logos_delta
+                        continue
+                    if tool := ToolCallEvent.from_session_event(event):
+                        await self._handle_tool_use_event(tool, streams)
+                if turn_aborted:
                     return
-                if chunk := AssistantChunk.from_session_event(event):
-                    logos_delta = await self._handle_ctml_delta(chunk.chunk, streams)
-                    if logos_delta is not None:
-                        yield logos_delta
-                    continue
-                if tool := ToolCallEvent.from_session_event(event):
-                    await self._handle_tool_use_event(tool, streams)
+                # normal turn/end → settle 竞速: 决定继续(新 turn 已 steer)还是退出.
+                if not await self._settle_after_turn_end():
+                    return
+                # continue: 回到外层循环消费下一 turn 的事件.
         finally:
             await events.aclose()
             await self._close_leftover_streams(streams)
@@ -932,17 +953,11 @@ class DoloresRun:
         return await stream.feed(chunk.argumentsDelta)
 
     def _note_turn_end(self, event: SessionEvent) -> bool:
-        """turn/end → 收线本帧 (返回该 event 是否为 turn/end); 中断类在入队前 abort.
+        """turn/end → 记账并分类 (返回该 event 是否为 turn/end); 中断类在入队前 abort.
 
-        本帧的退出始终走自然路径 —— logos() 在此 return → run 收线 → articulate 返回 → 帧自己结束;
-        但"这次收线是自然还是被打断"必须分类, 见 ``_turn_end_abort_reason``:
-
-        - 自然 (completed / max-tokens): 什么都不做, attention 留着 (need_observe 的回声帧循环
-          ``while not attention.is_aborted() and need_observe()`` 要求它活着, 自续帧靠它).
-        - 中断 (其它 cause): abort 并带 reason, 级联到 attention, 回声帧循环随之停止 (人喊停 / 故障
-          都该是"整个体系停"), 而 reason 落到 mindflow 的 thinking 退出点, 由那里急停身体
-          (``mindflow_in_shell._run_thinking`` 的 finally). **这一步不在这里做** —— 见 _predispatch_abort.
-        - 我们自己的 hook cancel 例外 (见 ``_turn_end_abort_reason``): 那一类已经 drain 过.
+        ``completed / max-tokens`` 及我们自己的 ``hook`` cancel 只是**记号**, 不结束本 run ——
+        logos() 会转入 ``_settle_after_turn_end`` 决定继续还是退出; ``aborted/interrupted/blocked/
+        error`` 等反向传导则已在 ``_predispatch_abort`` 落地 abort, 使 logos() 立刻收线。
 
         reason 是调用方自己的话 (对齐 ``Future.cancel(msg)``), 不当词汇表用; 日志里只带 kind (+ cause).
         """
@@ -960,6 +975,50 @@ class DoloresRun:
         # 中断类本该早在入队时落地 (_predispatch_abort); 这里兜一次, 防有人在队列上直投事件.
         self._predispatch_abort(event)
         return True
+
+    async def _settle_after_turn_end(self) -> bool:
+        """normal turn/end 后的竞速: 决定继续(新 turn 已 steer)还是退出本 run.
+
+        返回 True = 继续; False = 退出。退出只有 2b 的 action_done 一条路；probe 空 / 没 push 过
+        都不退，都要落进 2b。
+
+        两个"继续"源，2a 必须在 2b 之前（否则 body 已 done 时竞速秒判 action_done，漏掉已 push
+        未消费的 pending moment）:
+
+        - 2a: 本轮 push 过 moment → probe dsh 侧是否还有未消费 pending moment，有则 steer。
+        - 2b: 竞速 action_done vs 新 signal；signal 先到 → drain+push（plugin auto-steer）→ 继续。
+        """
+        self._settling = True
+        self._signal_event = asyncio.Event()
+        try:
+            if self._pushed_this_run:
+                if await self._ego.probe_pending_moment_and_steer():
+                    self._pushed_this_run = False
+                    return True
+            waiter = asyncio.ensure_future(self._thinking.wait_actions_done())
+            racer = asyncio.ensure_future(self._signal_event.wait())
+            try:
+                await asyncio.wait({waiter, racer}, return_when=asyncio.FIRST_COMPLETED)
+            except BaseException:
+                waiter.cancel()
+                racer.cancel()
+                raise
+            if self._signal_event.is_set():
+                # signal 先到: 身体照旧在跑, 不等它 —— 竞速赢下就接着读这一帧.
+                waiter.add_done_callback(_swallow_task_result)
+                self._logger.info(
+                    "settle: a signal arrived after turn/end — the run continues"
+                )
+                await self._push_buffered_moment()
+                self._pushed_this_run = True
+                return True
+            # action_done 先到: 没有要读的东西了, 退出.
+            racer.cancel()
+            await waiter
+            return False
+        finally:
+            self._settling = False
+            self._signal_event = None
 
     # ── internals ────────────────────────────────────────────────────
 
@@ -1026,6 +1085,12 @@ class DoloresRun:
         """
         if not self._thinking_event.is_set():
             return
+        if self._settling:
+            # 正在 settle(turn/end 后, 不安全): 只通知, 不 drain —— 让 settle 竞速决定要不要读.
+            # 竞速判 action_done 赢时 signal 仍留在 observer, 由 mindflow 签下一帧兜底.
+            if self._signal_event is not None:
+                self._signal_event.set()
+            return
         barge = self._barge_in_event
         if self._ctml_in_flight and barge is None:
             # 这一轮已经定了要收 (收轮工具的等待已经输给身体, cancel 待发) —— 推也只推给一个正在
@@ -1050,6 +1115,7 @@ class DoloresRun:
             self._logger.info(
                 "buffer push while this turn runs: %s message(s) — scheduling", len(percepts)
             )
+        self._pushed_this_run = True
         self._buffered_push = asyncio.create_task(self._push_buffered_moment())
 
     async def _push_buffered_moment(self) -> None:
@@ -1086,23 +1152,25 @@ class DoloresRun:
             return False
         racer = asyncio.ensure_future(barge.wait())
         try:
-            done, _ = await asyncio.wait({waiter, racer}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({waiter, racer}, return_when=asyncio.FIRST_COMPLETED)
         except BaseException:
             waiter.cancel()
             racer.cancel()
             raise
-        if waiter in done:
-            racer.cancel()
-            self._barge_in_event = None
-            await waiter
-            return False
-        # 人先到: 身体照旧在跑, **不等它** —— 这正是"准全双工"的意思. 挂个哑回调把它收干净,
-        # 免得它在别的分支里抛出来变成 "never retrieved".
-        waiter.add_done_callback(_swallow_task_result)
-        self._logger.info(
-            "barge-in won the race against a closing tool — the turn continues, its actions keep running"
-        )
-        return True
+        # 判据挂 barge 是否已置位, 不挂 done 集合的查询顺序: 身体完成与人插话落在同一 tick 时,
+        # 人的话仍在 push 路上 —— "收轮的前提没了" 应优先 (平局判给人).
+        if barge.is_set():
+            # 人先到: 身体照旧在跑, **不等它** —— 这正是"准全双工"的意思. 挂个哑回调把它收干净,
+            # 免得它在别的分支里抛出来变成 "never retrieved".
+            waiter.add_done_callback(_swallow_task_result)
+            self._logger.info(
+                "barge-in won the race against a closing tool — the turn continues, its actions keep running"
+            )
+            return True
+        racer.cancel()
+        self._barge_in_event = None
+        await waiter
+        return False
 
     async def _flush_barge_in_push(self) -> None:
         """竞速赢了之后, 那一帧 push 必须落到下一个 step 之前 —— 否则模型读不到它.

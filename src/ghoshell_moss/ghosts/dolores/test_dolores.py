@@ -1776,6 +1776,11 @@ class FakeRunEgo:
     async def push_moment(self, moment, moment_id):
         self.pushed_moments.append(moment_id)
 
+    async def probe_pending_moment_and_steer(self):
+        # settle 2a 探针 fake: 默认无未消费 pending moment (settle 落进 2b). 用例按需覆盖.
+        self.probe_calls = getattr(self, "probe_calls", 0) + 1
+        return False
+
     def next_thinking_seq(self):
         self.enter_seq = getattr(self, 'enter_seq', 0) + 1
         return self.enter_seq
@@ -2119,6 +2124,32 @@ class TestDoloresRun:
         seen["push"] = run._buffered_push
 
         assert seen["push"] is None, "定了收轮之后不许再推给一个正在收尾的 turn"
+
+    @pytest.mark.asyncio
+    async def test_percepts_during_settle_only_arm_the_signal(self):
+        """settle 期间 (不安全) signal 只置位 signal_event, 不 drain —— 留给 settle 竞速决定.
+
+        这是 safe flag 的核心: turn/end 后到 settle 结论之间, 若急着 drain, 竞速判 action_done
+        退出时 signal 已经被抽干 (has_pending 假), mindflow 不签下一帧 → 两头落空. 所以不安全窗口
+        只通知不 drain, 竞速判退出时 signal 仍留在 observer 兜底.
+        """
+        run = self._run()
+        run._thinking_event.set()
+        run._settling = True
+        run._signal_event = asyncio.Event()
+
+        run._on_percepts_injected(["他说了一句"])
+
+        assert run._signal_event.is_set(), "settle 期间 signal 必须叫醒竞速"
+        assert run._buffered_push is None, "settle 期间不 drain、不 push"
+        assert run._pushed_this_run is False, "settle 期间不标记 push"
+
+    @pytest.mark.asyncio
+    async def test_settle_exits_when_actions_done_and_no_signal(self):
+        """turn/end(normal) 后 settle: 无 push、无新 signal → action_done 赢 → 退出本 run."""
+        run = self._run()
+        run._thinking_event.set()
+        assert await run._settle_after_turn_end() is False, "无 signal 时 settle 判退出"
 
     @pytest.mark.asyncio
     async def test_interpret_tool_call_does_not_hold_the_percept_push(self):
@@ -2722,7 +2753,7 @@ class TestDoloresRun:
             async for _ in run.logos():
                 pass
 
-        assert log[-2:] == ["refresh_metas", "observe"]
+        assert "refresh_metas" in log and log[log.index("refresh_metas") + 1] == "observe"
         assert ego.rpc_calls == [
             ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
@@ -2815,7 +2846,9 @@ class TestDoloresRun:
 
         assert log.count("wait_observed") == 1, "interpret 等 observed 命令落地"
         assert log.count("wait_action_done") == 0, "interpret 不再等动作全部跑完"
-        assert log.count("wait_actions_done") == 0, "interpret 不再等 action 停 (跨帧继续)"
+        # interpret 的 handler 不等 action 停; 这 1 次 wait_actions_done 来自 run 收尾的 settle 竞速
+        # (主权在 body action: turn/end 后 run 仍要等 body 静默才退出).
+        assert log.count("wait_actions_done") == 1, "interpret 的 handler 不等 action 停 (跨帧继续)"
         assert ego.rpc_calls == [
             ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
@@ -2840,7 +2873,8 @@ class TestDoloresRun:
         assert art.entered == 1, "articulator 必须被展开一次"
         assert art.exited == 1, "articulator 必须被收尾一次"
         assert "".join(art.sent) == "<say>hi</say>"
-        assert log.count("wait_actions_done") == 1, "react 必须先等 action 停再 cancel"
+        # react 的竞速等 action 停 1 次; turn/end 后的 settle 竞速再等 1 次 (run 收口).
+        assert log.count("wait_actions_done") == 2, "react 先等 action 停再 cancel, settle 再等一次收口"
         assert ego.rpc_calls == [("c2", "reacted", None, True)]
 
     @staticmethod
@@ -2867,6 +2901,7 @@ class TestDoloresRun:
                 await asyncio.wait_for(thinking.reached.wait(), timeout=2)
                 run._on_percepts_injected(["他说了一句"])
                 await session.emit(self._turn_end(seq=3))
+                thinking.gate.set()  # 放行 settle 竞速的 wait_actions_done, 让 run 收口
                 await asyncio.wait_for(drain, timeout=2)
         finally:
             thinking.gate.set()
@@ -2891,6 +2926,7 @@ class TestDoloresRun:
                 await asyncio.wait_for(thinking.reached.wait(), timeout=2)
                 run._on_percepts_injected(["他抢先说了一句"])
                 await session.emit(self._turn_end(seq=2))
+                thinking.gate.set()  # 放行 settle 竞速的 wait_actions_done, 让 run 收口
                 await asyncio.wait_for(drain, timeout=2)
         finally:
             thinking.gate.set()

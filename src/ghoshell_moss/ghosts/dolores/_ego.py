@@ -61,6 +61,8 @@ _DOLORES_THINKING_ENTER = "/moss-api/ghost/dolores/thinking/enter"
 _DOLORES_THINKING_EXIT = "/moss-api/ghost/dolores/thinking/exit"
 _DOLORES_TOOL_RESULT = "/moss-api/ghost/dolores/tool-result"
 _DOLORES_MOMENT_PUSH = "/moss-api/ghost/dolores/moment/push"
+# settle 2a: 探针 —— 检查 dsh 侧是否还有未消费的 pending moment, 有则空 steer 开下一 turn.
+_DOLORES_TURN_END_PROBE = "/moss-api/ghost/dolores/turn-end-probe"
 # compact: 原地把 surface 前缀替换成一条说明, cut 到 cut_turn 边界; memory 由新 epoch 的 recap 交付.
 _DOLORES_COMPACT = "/moss-api/ghost/dolores/compact"
 
@@ -670,6 +672,21 @@ class DoloresEgo:
             "moment": self._moment_payload(moment, moment_id),
             "thinkingToken": self._thinking_token,
         })
+
+    async def probe_pending_moment_and_steer(self) -> bool:
+        """settle 2a: 探针 —— 检查 dsh 侧是否还有未消费的 pending moment, 有则空 steer 开下一 turn.
+
+        返回 True 表示插件侧确实 steered（有新 turn 要消费）。fire-and-forget 的 ``push_moment``
+        没有返回值, 这个探针就是"我 push 过、dsh 消费没有"的唯一事实来源。
+        """
+        try:
+            result = await self._launcher.call(_DOLORES_TURN_END_PROBE, {
+                "thinkingToken": self._thinking_token,
+            })
+        except Exception:
+            self._logger.exception("turn-end-probe failed — treating as no pending moment")
+            return False
+        return bool(result.get("steered")) if isinstance(result, dict) else False
 
     def moment_payload(self, moment: Moment, moment_id: str) -> dict:
         """moment → the one wire payload **every** delivery path carries: context + inputs.
