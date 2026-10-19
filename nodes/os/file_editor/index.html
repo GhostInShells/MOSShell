@@ -264,6 +264,23 @@
   .doc-line { display: grid; grid-template-columns: 56px 1fr; white-space: pre-wrap;
     word-break: break-word; padding: 0 14px; }
   .doc-line .ln { color: var(--dim); text-align: right; padding-right: 14px; user-select: none; }
+  /* Token colours the code renderer paints. The renderer decides *what* a token is
+     (it emits `tk-*` spans and nothing else); the page decides what that looks like
+     — and the page must, or the spans are silently unstyled and "highlighting"
+     reads as a lie. Dialled for reading, not for a theme. */
+  .tk-str { color: var(--run); }
+  .tk-cmt { color: var(--dim); font-style: italic; }
+  .tk-num { color: var(--wait); }
+  .tk-kw  { color: var(--accent); }
+  /* The vendored highlighter paints its own class names; the theme is here for
+     the same reason as the token colours above — the library says what a token
+     is, the page says what it looks like. Deliberately small: four voices is
+     all a reader needs to tell code from prose. */
+  /* The colours are the library's own theme (github-dark, linked above) — a reader
+     who knows highlight.js should recognise what they see. The page overrides only
+     the box: this document already has its own background, and a second one would
+     paint a dark rectangle inside a dark page. */
+  .hljs { background: transparent !important; }
   /* The rendered face: the same text, read rather than addressed. Whatever the
      renderer drew is the child here, so this rule is the frame, not the content. */
   .doc-rendered { padding: 18px 26px 60px; max-width: 980px; }
@@ -559,6 +576,8 @@
     <section class="meta" id="meta" hidden></section>
   </div>
 </main>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 "use strict";
 
@@ -1484,8 +1503,11 @@ async function renderDoc() {
   if (seq !== renderSeq) return;
 
   let html = "";
+  // The document's path is the renderer's only way to know what language it is
+  // looking at; passing it costs nothing and guessing from content is worse.
+  const docPath = focusThread ? String((threads.get(focusThread) || {}).path || "") : "";
   try {
-    html = mod ? String(mod.render(d.text) ?? "") : "";
+    html = mod ? String(mod.render(d.text, { path: docPath }) ?? "") : "";
   } catch (e) {
     broken = broken || (shownName + " — 渲染时抛错：" + (e && e.message ? e.message : e));
   }
