@@ -73,6 +73,10 @@ class FileEditorSurface:
         self._host = host
         self._html_path = html_path
         self._clients: set[ServerConnection] = set()
+        # 操作面只有一个。编辑会落到共享的工作副本上 —— 两块屏同时按，等于两只手
+        # 改同一段文字。规矩与屏、终端一致：最新连上的那扇拿走操作面，其余挂遮罩、
+        # 只读，遮罩上留一个「用这个窗口」把它抢回来。
+        self._current: ServerConnection | None = None
         self._server: Any = None
         self._decided: set[tuple[str, int]] = set()
         self._last: dict[tuple[str, int, str], float] = {}
@@ -634,12 +638,38 @@ class FileEditorSurface:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    async def _send_to(self, connection: ServerConnection, frame: dict) -> None:
+        try:
+            await connection.send(json.dumps(frame, ensure_ascii=False))
+        except Exception:
+            self._clients.discard(connection)
+
+    async def _claim(self, connection: ServerConnection) -> None:
+        """Make this window the one the human's hands are on.
+
+        Only one window may change the shared working copy: an edit is a side
+        effect on text we both see. The rest keep reading, behind a mask that
+        says so and offers a way back in.
+        """
+        self._current = connection
+        await self._send_to(connection, {"type": "current"})
+        for other in list(self._clients):
+            if other is not connection:
+                await self._send_to(
+                    other, {"type": "mask", "reason": "another window is the editor"}
+                )
+
+    def is_current(self, connection: ServerConnection) -> bool:
+        return connection is self._current
+
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)
         try:
             await connection.send(
                 json.dumps(self.snapshot(), ensure_ascii=False)
             )
+            # The newest window takes the surface: refreshing a page is a claim.
+            await self._claim(connection)
             async for raw in connection:
                 try:
                     frame = json.loads(raw)
@@ -648,6 +678,13 @@ class FileEditorSurface:
                 kind = frame.get("type")
                 thread = str(frame.get("thread", ""))
                 n = int(frame.get("n", 0))
+                if kind == "claim":
+                    await self._claim(connection)
+                    continue
+                # Everything below changes what we are both looking at or edits the
+                # shared copy. Only the holding window may do that; the others read.
+                if not self.is_current(connection):
+                    continue
                 if kind == "accept":
                     await self._verdict(thread, n, "accept")
                 elif kind == "deny":
@@ -729,6 +766,10 @@ class FileEditorSurface:
                     )
         finally:
             self._clients.discard(connection)
+            if self._current is connection:
+                # Nobody holds it until someone takes it — a window that is gone
+                # must not leave the others stranded behind a mask.
+                self._current = None
 
     async def start(self) -> None:
         self._server = await serve(

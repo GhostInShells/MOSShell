@@ -323,3 +323,48 @@ async def test_the_humans_edit_lands_as_an_action_and_releases_the_lock(store, s
             assert landed["client_id"] == "c-1" and landed["by"] == "human"
     finally:
         await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_only_the_claiming_window_can_edit(store, signals):
+    """An edit lands on the copy we both see — two live windows would be two hands."""
+    surface = await _surface(store, signals)
+    try:
+        exp = _pending_export(store)
+        url = f"ws://127.0.0.1:{surface.port}/ws"
+        async with connect(url) as first:
+            await _recv(first, "snapshot")
+            await _recv(first, "current")
+            async with connect(url) as second:
+                await _recv(second, "snapshot")
+                mask = await _recv(first, "mask")
+                assert "another window" in mask["reason"]
+
+                await first.send(json.dumps({"type": "accept", "thread": "t", "n": exp.n}))
+                await asyncio.sleep(0.1)
+                assert signals == [], "a reading window settled an export"
+
+                await second.send(json.dumps({"type": "accept", "thread": "t", "n": exp.n}))
+                await asyncio.sleep(0.1)
+                assert signals and "accepted" in signals[0].messages[0].to_content_string()
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_editor_surface_can_be_taken_back(store, signals):
+    surface = await _surface(store, signals)
+    try:
+        url = f"ws://127.0.0.1:{surface.port}/ws"
+        async with connect(url) as first:
+            await _recv(first, "snapshot")
+            await _recv(first, "current")
+            async with connect(url) as second:
+                await _recv(second, "snapshot")
+                await _recv(first, "mask")
+
+                await first.send(json.dumps({"type": "claim"}))
+                assert (await _recv(first, "current"))["type"] == "current"
+                assert (await _recv(second, "mask"))["type"] == "mask"
+    finally:
+        await surface.stop()

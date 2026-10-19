@@ -106,6 +106,18 @@
   .conn { font-size: var(--fs-small); color: var(--dim); }
   .conn.live { color: var(--run); }
 
+  /* 操作面的唯一性：只有一扇窗能改。别的窗照样看得到内容，但盖一层遮罩，
+     说明为什么按不了、以及怎么把它抢回来 —— 只读是看得见的状态，不是一次
+     按下去什么也不会发生的点击。 */
+  #mask { position: fixed; inset: 0; z-index: 30; display: none;
+          background: rgba(8, 10, 12, .82); place-items: center; }
+  body.masked #mask { display: grid; }
+  #mask-box { max-width: 30em; padding: 24px; text-align: center; }
+  #mask-box p { margin: 0 0 16px; color: var(--fg); opacity: .8; }
+  #mask-claim { font: inherit; padding: 8px 18px; color: var(--run); cursor: pointer;
+                background: transparent; border: 1px solid var(--run); border-radius: 4px; }
+  #mask-claim:hover { background: rgba(51, 221, 136, .12); }
+
   main { flex: 1; display: flex; min-height: 0; position: relative; }
   /* The three faces of one object: which threads exist, what they did, and what
      one action carried. Threads used to live in the header as chips, which could
@@ -489,6 +501,10 @@
 </style>
 </head>
 <body data-layout="page">
+<div id="mask"><div id="mask-box">
+  <p id="mask-line">another window is the editor</p>
+  <button id="mask-claim">use this window</button>
+</div></div>
 <header>
   <span class="brand">moss file_editor</span>
   <button class="toggle on" id="toggle" title="turn the model's editing on or off">editing: on</button>
@@ -855,6 +871,17 @@ function make(tag, cls, text) {
 function send(frame) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
 }
+
+// Only one window holds the surface: an edit lands on the shared copy, so two
+// windows that both look editable would be two hands on one document.
+let isCurrent = true;
+function setMasked(on, reason) {
+  isCurrent = !on;
+  document.body.classList.toggle("masked", !!on);
+  const line = document.getElementById("mask-line");
+  if (line) line.textContent = reason || "another window is the editor";
+}
+document.getElementById("mask-claim").addEventListener("click", () => send({ type: "claim" }));
 
 // -- state ----------------------------------------------------------------
 
@@ -1921,6 +1948,8 @@ function renderHistory(thread) {
 
 function onFrame(frame) {
   switch (frame.type) {
+    case "current": setMasked(false, ""); break;
+    case "mask": setMasked(true, frame.reason); break;
     case "snapshot": {
       threads.clear();
       // The draft faces I pushed earlier, restored with the page: a reload must
