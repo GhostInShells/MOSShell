@@ -170,6 +170,33 @@
     padding: 5px 10px; font: inherit; cursor: pointer;
   }
   .vtab.on { color: var(--fg); border-bottom-color: var(--accent); }
+  /* The renderer picker. A dropdown, not another row of buttons: choosing a face
+     is a rare act, and the tab row belongs to reading. */
+  .render-tab { color: var(--dim); }
+  /* The draft tab: visibly not one of the library's faces — dashed, and it goes
+     away when the draft does. */
+  .draft-tab {
+    color: #e0b060; border: 1px dashed rgba(224,176,96,.55); border-radius: 4px;
+    padding: 3px 8px;
+  }
+  .draft-tab[hidden] { display: none; }
+  .draft-tab.on { background: rgba(224,176,96,.12); color: #ffd08a; }
+  .render-tab.covered { opacity: .45; }
+  .render-tab:hover { color: var(--fg); }
+  .render-menu {
+    position: absolute; right: 18px; top: 34px; z-index: 30; min-width: 320px;
+    background: #15181b; border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5); padding: 4px; max-height: 60vh; overflow: auto;
+  }
+  .render-menu[hidden] { display: none; }
+  .render-row {
+    display: flex; gap: 10px; align-items: baseline; padding: 6px 10px;
+    border-radius: 4px; cursor: pointer;
+  }
+  .render-row:hover { background: #1d2227; }
+  .render-row.on { background: #1d2630; }
+  .render-row .render-name { color: var(--fg); font-family: var(--mono); min-width: 84px; }
+  .render-row .render-desc { color: var(--dim); font-size: var(--fs-small); }
   .vnote { color: var(--dim); font-size: var(--fs-small); padding-right: 4px; }
   /* The document is the reading surface: the working copy itself, line by line,
      with a gutter to address it by. Cards are its history, one view over. */
@@ -212,11 +239,21 @@
   .doc-line { display: grid; grid-template-columns: 56px 1fr; white-space: pre-wrap;
     word-break: break-word; padding: 0 14px; }
   .doc-line .ln { color: var(--dim); text-align: right; padding-right: 14px; user-select: none; }
-  /* The rendered face: the same text, read rather than addressed. No line
-     numbers — a rendered line is not a line, and pretending otherwise would make
-     every coordinate in this page a lie. */
+  /* The rendered face: the same text, read rather than addressed. Whatever the
+     renderer drew is the child here, so this rule is the frame, not the content. */
   .doc-rendered { padding: 18px 26px 60px; max-width: 980px; }
-  .doc-rendered .markdown { font-size: 15px; line-height: 1.65; }
+  /* A face that is not raw reads as prose; raw's own rows keep their grid. */
+  .doc-rendered[data-renderer]:not([data-renderer="raw"]):not([data-renderer="plain"]) {
+    font-size: 15px; line-height: 1.65;
+  }
+  /* "Nothing rendered" and "the renderer is broken" must not look alike: this
+     strip is the second one, named, above the fallback face it fell back to. */
+  .render-broken {
+    margin: 10px 26px 0; padding: 8px 12px; border-radius: 5px;
+    background: rgba(255,122,122,.10); border: 1px solid rgba(255,122,122,.45);
+    color: #ff9b9b; font-size: var(--fs-small); font-family: var(--mono);
+    white-space: pre-wrap;
+  }
   .doc-line.hit { background: rgba(110,168,254,.10); box-shadow: inset 2px 0 0 var(--accent); }
   .doc-line.hit .ln { color: var(--accent); }
   /* Where the reader is. The model's point and the human's scroll share this
@@ -425,9 +462,18 @@
       <button class="vtab on" data-view="document" id="vtab-doc">document</button>
       <button class="vtab" data-view="history" id="vtab-hist">history</button>
       <button class="vtab" data-view="meta" id="vtab-meta">meta</button>
+      <!-- The renderer picker sits after the three views on purpose: choosing how
+           to look at the document is a view-level choice, and it must not steal
+           space from the reading itself (DESIGN.md §6, point 6). -->
+      <button class="vtab render-tab" id="vtab-render" title="which renderer draws this document">render <span id="render-face">auto</span> ▾</button>
+      <!-- The draft gets its own tab, not a row in the picker. The library is a
+           catalogue of what this node ships; a draft is one thing I improvised a
+           minute ago. Two different lifetimes do not belong in one list. -->
+      <button class="vtab draft-tab" id="vtab-tmp" hidden title="the draft face pushed right now">临时</button>
       <span class="spacer"></span>
       <span class="vnote" id="vnote"></span>
     </div>
+    <div class="render-menu" id="render-menu" hidden></div>
     <div class="digest" id="digest" hidden></div>
     <div class="gate" id="gate" hidden></div>
     <section class="doc" id="doc"></section>
@@ -467,6 +513,7 @@ let selection = null;               // what the human picked: {thread, start, en
 let format = "auto";                // auto | raw | markdown — how the document is drawn
 let formatBy = "default";
 let cursorKey = "";                 // last band I scrolled for, so a state echo does not yank the page
+let cursorBy = "default";           // who placed the marker just drawn: model or human
 let cursorQuietUntil = 0;           // after my own point lands, the human's scroll settles before it reports
 const docText = new Map();          // thread -> {version, lines, text}
 // Which action each thread has been read up to. Unread is a fact about the
@@ -522,10 +569,29 @@ document.addEventListener("selectionchange", () => {
   selectionTimer = setTimeout(reportSelection, 250);
 });
 
-function lineOfNode(node) {
+// The bridge every face shares: whatever the renderer drew, its blocks carry
+// `data-lines`, and that is how a click or a drag becomes a line range again.
+// Walking to the nearest ancestor is deliberate — a renderer may nest spans as
+// deep as it likes and never has to think about this.
+function linesOfNode(node) {
   const el = node && (node.nodeType === 1 ? node : node.parentElement);
-  const row = el && el.closest ? el.closest(".doc-line") : null;
-  return row && row.dataset.n ? parseInt(row.dataset.n, 10) : 0;
+  const host = el && el.closest ? el.closest("[data-lines]") : null;
+  if (!host) return null;
+  const parts = String(host.dataset.lines || "").split("-");
+  const a = parseInt(parts[0], 10);
+  const b = parseInt(parts[1] || parts[0], 10);
+  return Number.isFinite(a) && Number.isFinite(b) ? [a, b] : null;
+}
+
+function lineOfNode(node) {
+  const range = linesOfNode(node);
+  return range ? range[0] : 0;
+}
+
+// A face without the bridge is a pure picture: nothing to report back, and
+// saying so is better than reporting a wrong line.
+function hasLineBridge() {
+  return !!docEl.querySelector("[data-lines]");
 }
 
 // A selection is the sentence the human cannot type: "this part". It goes up as
@@ -533,7 +599,7 @@ function lineOfNode(node) {
 // preview — enough to know what we are talking about, not enough to be a second
 // copy of the document.
 function reportSelection() {
-  if (!focusThread || view !== "document" || effectiveFormat() === "markdown") return;
+  if (!focusThread || view !== "document" || !hasLineBridge()) return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.anchorNode || !docEl.contains(sel.anchorNode)) {
     if (reportedSelection) {
@@ -555,7 +621,7 @@ function reportSelection() {
 }
 
 function reportCursor() {
-  if (view !== "document" || !focusThread || effectiveFormat() === "markdown") return;
+  if (view !== "document" || !focusThread || !hasLineBridge()) return;
   if (Date.now() < cursorQuietUntil) return;   // my own point is still settling
   const box = docEl.getBoundingClientRect();
   const start = lineUnder(box.top + 6);
@@ -712,126 +778,6 @@ function make(tag, cls, text) {
   if (text !== undefined) node.textContent = text;
   return node;
 }
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-function md(src) {
-  const text = src || "";
-  const front = leadingFrontmatter(text);
-  let html = "";
-  if (front) html += "<pre class='frontmatter'>" + esc(front) + "</pre>";
-  return html + renderDoc(front ? text.slice(front.length) : text);
-}
-
-// A leading YAML block is not markdown, and handing it to a renderer is how
-// three key: value lines came out as one bold line: three dashes under a
-// paragraph is a setext heading. Keep it out of the renderer and show it as
-// what it is — the file's header, not its prose.
-function leadingFrontmatter(text) {
-  const m = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/.exec(text);
-  return m ? m[0] : "";
-}
-
-// Our own renderer, deliberately small. Two reasons, both practical: the page
-// must not depend on a CDN (offline it degraded to plain text), and where we
-// know more than markdown does — the file header, a diff, a table that is really
-// a table — we want to say so ourselves.
-//
-// Safety is by construction: the whole document is escaped first, then structure
-// is wrapped around the escaped text. A file can therefore never inject markup
-// we did not intend, without needing a sanitiser.
-function renderDoc(src) {
-  const lines = String(src || "").replace(/\r\n?/g, "\n").split("\n");
-  const out = [];
-  const para = [];
-  const flush = () => {
-    if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para.length = 0; }
-  };
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const fence = /^\s*```/.exec(line);
-    if (fence) {
-      flush();
-      const buf = [];
-      i += 1;
-      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { buf.push(lines[i]); i += 1; }
-      i += 1;
-      out.push("<pre class='code'><code>" + esc(buf.join("\n")) + "</code></pre>");
-      continue;
-    }
-    if (/^\s*$/.test(line)) { flush(); i += 1; continue; }
-    const head = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (head) {
-      flush();
-      const n = head[1].length;
-      out.push("<h" + n + ">" + inline(head[2]) + "</h" + n + ">");
-      i += 1;
-      continue;
-    }
-    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flush(); out.push("<hr class='rule'>"); i += 1; continue; }
-    if (isTableStart(lines, i)) {
-      flush();
-      const cols = splitRow(line);
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].includes("|")) { rows.push(splitRow(lines[i])); i += 1; }
-      out.push(
-        "<table><thead><tr>" + cols.map((c) => "<th>" + inline(c) + "</th>").join("") + "</tr></thead><tbody>" +
-        rows.map((r) => "<tr>" + r.map((c) => "<td>" + inline(c) + "</td>").join("") + "</tr>").join("") +
-        "</tbody></table>");
-      continue;
-    }
-    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
-      flush();
-      const ordered = /^\s*\d+\./.test(line);
-      const items = [];
-      const re = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/;
-      while (i < lines.length && re.test(lines[i])) { items.push(inline(lines[i].replace(re, ""))); i += 1; }
-      const tag = ordered ? "ol" : "ul";
-      out.push("<" + tag + ">" + items.map((t) => "<li>" + t + "</li>").join("") + "</" + tag + ">");
-      continue;
-    }
-    if (/^\s*>\s?/.test(line)) {
-      flush();
-      const buf = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i += 1; }
-      out.push("<blockquote>" + inline(buf.join(" ")) + "</blockquote>");
-      continue;
-    }
-    para.push(line.trim());
-    i += 1;
-  }
-  flush();
-  return out.join("");
-}
-
-function isTableStart(lines, i) {
-  if (!lines[i].includes("|")) return false;
-  const sep = lines[i + 1];
-  return !!sep && sep.includes("-") && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(sep);
-}
-
-function splitRow(line) {
-  return line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
-}
-
-function inline(text) {
-  let t = esc(text);
-  t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
-  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  t = t.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
-  t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
-    // Relative targets are allowed on purpose: a file's links point at its
-    // neighbours, and this page is read by the people writing those files.
-    const ok = /^(https?:|\.{0,2}\/|#|\/)/.test(href) && !/["'<>]/.test(href);
-    return ok
-      ? "<a href='" + href + "' target='_blank' rel='noreferrer'>" + label + "</a>"
-      : label;
-  });
-  return t;
-}
 function send(frame) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
 }
@@ -930,9 +876,11 @@ function renderViewNote() {
   const picked = selection && selection.thread === focusThread
     ? "selected " + selection.start + "–" + selection.end
     : "";
-  const face = effectiveFormat() === "markdown"
-    ? "rendered · read-only" + (formatBy === "model" ? " (moss)" : "")
-    : "";
+  const face = currentFace && currentFace.name === "tmp"
+    ? "临时草稿 · " + ((activeDraftOf(focusThread) || {}).label || "draft") + " · read-only"
+    : currentFace && currentFace.name !== "raw"
+      ? "rendered by " + currentFace.name + " · read-only" + (formatBy === "model" ? " (moss)" : "")
+      : "";
   vnoteEl.textContent = [base, face, look, you, picked, who].filter(Boolean).join(" · ");
 }
 
@@ -997,14 +945,246 @@ function renderGate() {
   gateEl.append(btns);
 }
 
-function effectiveFormat() {
-  if (format !== "auto") return format;
-  const t = focusThread ? threads.get(focusThread) : null;
-  const path = String((t && t.path) || "").toLowerCase();
-  return /\.(md|markdown|mdx)$/.test(path) ? "markdown" : "raw";
+// -- renderers ------------------------------------------------------------
+// A renderer is a file under the node's renderers/ directory, served as a plain
+// module. The page learns the library from the header comments (`/renderers`)
+// and imports a module only when it is actually used — so adding a renderer is
+// writing a file, not touching this page (DESIGN.md §6).
+//
+// The bookkeeping below is deliberately dumb: a list, a module cache, and a
+// per-thread override. Everything interesting lives in the renderer files.
+
+let rendererLib = [];               // [{name, ext, description, file}]
+const rendererMods = new Map();     // name -> module | null (import failed)
+const renderOverride = new Map();   // thread -> renderer name, this reader's pick
+let currentFace = null;             // {thread, name, broken} — what is on the glass
+let renderSeq = 0;                  // an async render older than this is dropped
+
+async function loadRendererLib() {
+  try {
+    const r = await fetch("/renderers", { cache: "no-store" });
+    const j = await r.json();
+    rendererLib = Array.isArray(j.renderers) ? j.renderers : [];
+  } catch (e) {
+    rendererLib = [];
+  }
+  renderRenderTab();
 }
 
-function renderDoc() {
+async function loadRenderer(name) {
+  if (rendererMods.has(name)) return rendererMods.get(name);
+  let mod = null;
+  try {
+    mod = (await import("/renderers/" + name + ".js")).default || null;
+  } catch (e) {
+    mod = null;
+  }
+  rendererMods.set(name, mod);
+  return mod;
+}
+
+// Which face this document opens on: this reader's pick for the thread, then the
+// stage-wide choice, then whoever declares the file's extension, then raw.
+// The order matters — a per-document choice must beat a global one, or a single
+// override would silently re-face every other open thread.
+function effectiveRenderer(threadId) {
+  if (renderOverride.has(threadId)) return renderOverride.get(threadId);
+  if (format && format !== "auto") return format;
+  const t = threads.get(threadId);
+  const path = String((t && t.path) || "").toLowerCase();
+  const match = rendererLib.find((r) => (r.ext || []).some((e) => path.endsWith(e)));
+  return match ? match.name : "raw";
+}
+
+function effectiveFormat() {
+  return focusThread ? effectiveRenderer(focusThread) : "raw";
+}
+
+// One card's own text, drawn by the markdown renderer when it is there and as
+// plain text when it is not. This panel is a smaller surface than the document
+// pane and has no fallback strip of its own, so the fallback here is silent by
+// design: the text still appears, which is the whole promise of that panel.
+function paintMarkdown(el, text) {
+  loadRenderer("markdown").then((m) => {
+    try {
+      if (!m || typeof m.render !== "function") throw new Error("no renderer");
+      el.innerHTML = String(m.render(text) ?? "");
+    } catch (e) {
+      el.textContent = text;
+    }
+  });
+}
+
+// -- the draft layer: the materials I push at runtime ---------------------
+// A draft is not a firework. While working on one document I push several faces
+// and switch between them, so they belong to the thread's context: each thread
+// keeps its own string of drafts, and the page remembers which one is showing.
+// Nothing is written to disk — a draft worth keeping becomes a file in
+// renderers/ and joins the library, which is the same road the library took.
+//
+// A draft is the body of render(text): it gets the document's text and returns
+// HTML. Nothing else is promised, and no capability is granted.
+
+const draftsByThread = new Map();   // thread -> Map(seq -> {seq, label, fn, error})
+const activeDraft = new Map();      // thread -> seq currently drawn
+
+function draftsOf(thread) {
+  let m = draftsByThread.get(thread);
+  if (!m) { m = new Map(); draftsByThread.set(thread, m); }
+  return m;
+}
+
+function activeDraftOf(thread) {
+  const m = draftsByThread.get(thread);
+  if (!m || !m.size) return null;
+  const want = activeDraft.get(thread);
+  if (want && m.has(want)) return m.get(want);
+  const last = [...m.keys()].pop();      // the newest is the one I meant last
+  return m.get(last) || null;
+}
+
+async function resolveRenderer(name) {
+  if (name === "tmp") {
+    const d = activeDraftOf(focusThread);
+    if (!d) return null;
+    return { name: "tmp", render: (text) => d.fn(text) };
+  }
+  return loadRenderer(name);
+}
+
+// Compile once, here — a broken draft must fail at the push, not under a click.
+function compileDraft(seq, script, label) {
+  try {
+    // eslint-disable-next-line no-new-func — the mechanism, not a leak: the code
+    // comes from the model, into its own browser, on purpose.
+    const fn = new Function("text", String(script ?? ""));
+    fn("");
+    return { seq, label: label || ("草稿 " + seq), fn, error: "", by: "model" };
+  } catch (e) {
+    const err = e && e.message ? e.message : String(e);
+    return { seq, label: (label || ("草稿 " + seq)) + "（坏了）", fn: () => { throw e; }, error: err, by: "model" };
+  }
+}
+
+function installDraft(thread, seq, script, label, select) {
+  const d = compileDraft(seq, script, label);
+  draftsOf(thread).set(seq, d);
+  if (select) {
+    activeDraft.set(thread, seq);
+    // Selecting a draft is also selecting the face: install it and the picker
+    // still says "markdown" would be a page contradicting itself.
+    renderOverride.set(thread, "tmp");
+    // A draft pushed while nobody is looking at the thread still needs a place
+    // to land: without this the material arrives on a page that is not showing
+    // it, and both sides think the push failed.
+    if (!focusThread) {
+      focusThread = thread;
+      requestText(thread);
+      renderRail();
+    }
+  }
+  renderRenderTab();
+  if (thread === focusThread) renderDoc();
+}
+
+function selectDraft(thread, seq) {
+  activeDraft.set(thread, seq);
+  const d = draftsOf(thread).get(seq);
+  if (d) d.by = "human";
+  if (thread === focusThread && renderOverride.get(thread) !== "tmp") {
+    renderOverride.set(thread, "tmp");
+  }
+  renderRenderTab();
+  if (thread === focusThread) renderDoc();
+}
+
+// -- the picker -----------------------------------------------------------
+// Choosing a face is a view-level act, so it lives in the tab row: the menu
+// lists what the library actually contains (read from the files themselves) and
+// nothing else. "auto" is not a renderer — it is "let the extension decide".
+
+const renderMenuEl = document.getElementById("render-menu");
+const renderFaceEl = document.getElementById("render-face");
+
+const draftTabEl = document.getElementById("vtab-tmp");
+
+function renderRenderTab() {
+  // The draft is not a renderer: it gets its own tab, and the picker keeps
+  // naming only what the node ships. Mixing the two would make "the library has
+  // four faces" and "I improvised one just now" the same sentence.
+  const active = focusThread ? activeDraftOf(focusThread) : null;
+  const onDraft = !!focusThread && renderOverride.get(focusThread) === "tmp" && !!active;
+  const count = focusThread ? draftsOf(focusThread).size : 0;
+  draftTabEl.hidden = !count;
+  draftTabEl.classList.toggle("on", onDraft);
+  draftTabEl.textContent = active ? "临时 · " + active.label : "临时";
+  const name = focusThread ? effectiveRenderer(focusThread) : "raw";
+  const auto = !renderOverride.has(focusThread) && (!format || format === "auto");
+  // While the draft covers the document the picker still names the library's
+  // choice, dimmed — "what I would be looking at" is worth keeping in sight.
+  renderFaceEl.textContent = (auto ? "auto · " : "") + name;
+  renderFaceEl.parentElement.classList.toggle("covered", onDraft);
+}
+
+function closeRenderMenu() {
+  renderMenuEl.hidden = true;
+}
+
+function chooseRenderer(name) {
+  if (focusThread) {
+    if (name) renderOverride.set(focusThread, name);
+    else renderOverride.delete(focusThread);
+  }
+  closeRenderMenu();
+  renderRenderTab();
+  renderDoc();
+  // The choice is the reader's, so it stays in the reader's browser: sending it
+  // up would let one window rewrite how another one looks at the same file.
+}
+
+function openRenderMenu() {
+  renderMenuEl.replaceChildren();
+  const row = (name, label, desc, active) => {
+    const el = make("div", "render-row" + (active ? " on" : ""));
+    el.append(make("span", "render-name", label));
+    if (desc) el.append(make("span", "render-desc", desc));
+    el.addEventListener("click", () => chooseRenderer(name));
+    renderMenuEl.append(el);
+  };
+  const auto = !renderOverride.has(focusThread) && (!format || format === "auto");
+  row("", "auto", "按扩展名选（现在是 " + (focusThread ? effectiveRenderer(focusThread) : "raw") + "）", auto);
+  for (const r of rendererLib) {
+    const exts = (r.ext || []).join(" ");
+    row(r.name, r.name, (r.description || "") + (exts ? "  ·  " + exts : ""),
+        !auto && renderOverride.get(focusThread) === r.name);
+  }
+  renderMenuEl.hidden = false;
+}
+
+document.getElementById("vtab-render").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (renderMenuEl.hidden) openRenderMenu(); else closeRenderMenu();
+});
+renderMenuEl.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", closeRenderMenu);
+
+// One tab, two states: look at the draft, or go back to the library's choice.
+// It disappears with the draft it belongs to — a tab that outlives its content
+// is a tab that lies about what is on the screen.
+draftTabEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!focusThread || !activeDraftOf(focusThread)) return;
+  if (renderOverride.get(focusThread) === "tmp") renderOverride.delete(focusThread);
+  else renderOverride.set(focusThread, "tmp");
+  renderRenderTab();
+  renderDoc();
+});
+
+// Async by necessity: a renderer is a module that may not be loaded yet, and
+// "render the document" has to wait for the one it needs. Every caller is
+// fire-and-forget, and `renderSeq` makes a stale render drop itself instead of
+// painting over a newer one.
+async function renderDoc() {
   docEl.replaceChildren();
   if (!focusThread) {
     docEl.append(
@@ -1023,46 +1203,90 @@ function renderDoc() {
   vnoteEl.dataset.base =
     "v" + d.version + " · " + d.lines + " lines" + (t && t.unsaved ? " · unsaved" : "");
   renderViewNote();
-  if (effectiveFormat() === "markdown") {
-    // Read it instead of addressing it. The reading point and selections stay
-    // on the raw face — a rendered paragraph has no line number to point at.
-    const host = make("div", "doc-rendered");
-    const body = make("div", "markdown");
-    body.innerHTML = md(d.text);
-    host.append(body);
-    docEl.replaceChildren(host);
-    return;
-  }
-  const hit = selected && selected.thread === focusThread ? regionOf(actions.get(key(focusThread, selected.n))) : null;
+  // The face. Two rules, and the second one is the whole reason this is not a
+  // branch on a format string any more:
+  //   1. a renderer that throws must never take the pane with it — the failure
+  //      falls back to raw and says so in a strip, because "nothing rendered"
+  //      and "the renderer is broken" cannot look the same;
+  //   2. the raw face is a renderer like any other (the one whose defining feature
+  //      is line numbers), so the pane has exactly one path, not two.
+  const seq = ++renderSeq;
+  const wanted = effectiveRenderer(focusThread);
+  const hit = selected && selected.thread === focusThread
+    ? regionOf(actions.get(key(focusThread, selected.n))) : null;
   const mark = focusThread ? cursors[focusThread] : null;
   // A marker outlives its text only as history: same version, same lines.
   const band = mark && (!t || mark.version === t.version) ? mark : null;
-  const lines = d.text.split("\n");
-  if (lines.length && lines[lines.length - 1] === "") lines.pop();
-  const frag = document.createDocumentFragment();
-  lines.forEach((line, i) => {
-    const n = i + 1;
-    const cls = "doc-line"
-      + (hit && n >= hit[0] && n <= hit[1] ? " hit" : "")
-      + (band && n >= band.start && n <= band.end ? " cursor" : "");
-    const row = make("div", cls);
-    row.dataset.n = String(n);
-    row.append(make("span", "ln", String(n)));
-    row.append(make("span", "lt", line));
-    frag.append(row);
-  });
-  docEl.append(frag);
   // One scroll rule: the reading band wins, the picked card's range is the
   // fallback. Scrolled only when the band actually moved — a re-render for an
   // unrelated reason must not drag the page back to where I once pointed.
-  const key = band ? band.thread + ":" + band.start + "-" + band.end : "";
-  if (band && key !== cursorKey) {
-    cursorKey = key;
-    const el = docEl.querySelector(".doc-line.cursor");
-    if (el) el.scrollIntoView({ block: "center" });
+  const bandKey = band ? band.thread + ":" + band.start + "-" + band.end : "";
+  const scrollForBand = !!(band && bandKey !== cursorKey);
+
+  let mod = await resolveRenderer(wanted);
+  if (seq !== renderSeq) return;
+  let broken = "";
+  if (!mod) broken = wanted + " — 渲染器模块加载失败";
+  let shownName = mod ? wanted : "raw";
+  if (!mod) mod = await resolveRenderer("raw");
+  if (seq !== renderSeq) return;
+
+  let html = "";
+  try {
+    html = mod ? String(mod.render(d.text) ?? "") : "";
+  } catch (e) {
+    broken = broken || (shownName + " — 渲染时抛错：" + (e && e.message ? e.message : e));
+  }
+  if (seq !== renderSeq) return;
+  if (broken && shownName !== "raw") {
+    // Fall back to the face that cannot fail: escaping text needs nothing else.
+    shownName = "raw";
+    mod = await resolveRenderer("raw");
+    if (seq !== renderSeq) return;
+    try { html = mod ? String(mod.render(d.text) ?? "") : ""; } catch (e) { html = ""; }
+  }
+
+  const host = make("div", "doc-rendered");
+  host.dataset.renderer = shownName;
+  host.innerHTML = html;
+  docEl.replaceChildren(host);
+  if (broken) docEl.prepend(make("div", "render-broken", broken + " —— 已退回 raw"));
+  currentFace = focusThread ? { thread: focusThread, name: shownName, broken } : null;
+  renderViewNote();
+  // Tell the server what is actually on the glass. Without this the model's
+  // state face only knows what it asked for, and a switch made here would leave
+  // it describing a face nobody is looking at.
+  if (focusThread) {
+    send({
+      type: "face",
+      thread: focusThread,
+      renderer: shownName,
+      seq: shownName === "tmp" ? (activeDraft.get(focusThread) || 0) : 0,
+      // Who chose this face: a draft is mine at the push, and becomes the
+      // reader's the moment they pick one of them.
+      by: shownName === "tmp"
+        ? ((activeDraftOf(focusThread) || {}).by || "human")
+        : (formatBy === "model" && !renderOverride.has(focusThread) ? "model" : "human"),
+    });
+  }
+
+  // The renderer paints what it knows how to paint; one that cannot map its
+  // glass back to lines simply has no decorate, and gets no band.
+  if (mod && typeof mod.decorate === "function") {
+    try {
+      mod.decorate(host, {
+        cursor: band ? { ...band, scroll: scrollForBand } : null,
+        hit,
+      });
+    } catch (e) {
+      docEl.prepend(make("div", "render-broken", shownName + " — 装饰时抛错：" + (e && e.message ? e.message : e)));
+    }
+  }
+  if (band && scrollForBand) {
+    cursorKey = bandKey;
     if (cursorBy === "model") cursorQuietUntil = Date.now() + 800;
   } else if (!band && hit) {
-    const el = docEl.querySelector(".doc-line.hit");
+    const el = host.querySelector(".hit");
     if (el) el.scrollIntoView({ block: "center" });
   }
 }
@@ -1397,7 +1621,7 @@ function renderDetail() {
     } else {
       doc.append(make("div", "doc-label", "this action — what it says"));
       const mdEl = make("div", "markdown");
-      mdEl.innerHTML = md(d.source);
+      paintMarkdown(mdEl, d.source);
       doc.append(mdEl);
     }
   } else {
@@ -1468,6 +1692,12 @@ function onFrame(frame) {
   switch (frame.type) {
     case "snapshot": {
       threads.clear();
+      // The draft faces I pushed earlier, restored with the page: a reload must
+      // not make my materials vanish from my own perception.
+      draftsByThread.clear();
+      for (const [tid, items] of Object.entries(frame.render_drafts || {})) {
+        for (const d of items) installDraft(tid, d.seq, d.script, d.label, false);
+      }
       threadStates.clear();
       setLayout(frame.layout, frame.layout_by);
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
@@ -1523,6 +1753,7 @@ function onFrame(frame) {
       cursors[frame.thread] = {
         start: frame.start, end: frame.end, version: frame.version,
       };
+      cursorBy = frame.by || "default";
       if (frame.by === "model") {
         cursorKey = "";
         if (focusThread !== frame.thread) {
@@ -1543,6 +1774,19 @@ function onFrame(frame) {
       formatBy = frame.by || "default";
       renderDoc();
       renderViewNote();
+      break;
+    }
+    case "preview": {
+      // A draft pushed from the model side: kept with its siblings for this
+      // thread, and drawn at once — the point of a draft is to see whether the
+      // idea was worth having.
+      installDraft(frame.thread, frame.seq, frame.script, frame.label, true);
+      break;
+    }
+    case "preview_show": {
+      // Going back to an earlier draft. The drafts are the thread's material,
+      // and comparing one with another is how a view gets judged.
+      selectDraft(frame.thread, frame.seq);
       break;
     }
     case "selection": {
@@ -1692,6 +1936,10 @@ function connect() {
   };
 }
 connect();
+// The library is a directory on disk, so it is read once at open and only then
+// does "which face does this file get" have an answer. Loading it late is fine:
+// until it arrives, `auto` resolves to raw, which is the honest default anyway.
+loadRendererLib();
 
 // A window left open across an edit keeps running the old page — the change looks
 // like it never happened, and the human cannot easily refresh a frame that lives

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -40,7 +41,13 @@ _DEBOUNCE_SECONDS = 0.4
 decision arriving twice, not a second one."""
 
 _LAYOUTS = ("split", "page")
-_FORMATS = ("auto", "raw", "markdown")
+# How many drafts one thread keeps. A draft is a working view; when the ring
+# wraps, the survivor should have been written to renderers/ as a file.
+_DRAFT_RING = 8
+# `auto` plus whatever the renderer library happens to contain — the list cannot
+# be a constant here, because the library is a directory anyone can add a file to.
+# `raw` and `tmp` are always legal: raw is the last resort, tmp is the draft layer.
+_FORMATS = ("auto", "raw", "tmp")
 _VIEWS = ("document", "history", "meta")
 """How an open card is shown: a side panel beside the card list, or the whole
 window. This is the model's half of the presentation contract — the human owns
@@ -69,6 +76,8 @@ class FileEditorSurface:
         self._server: Any = None
         self._decided: set[tuple[str, int]] = set()
         self._last: dict[tuple[str, int, str], float] = {}
+        self._drafts: dict[str, list[dict]] = {}
+        self._faces: dict[str, dict] = {}
         # Inline by default: the card opens under itself, inside the list. "page"
         # is the deliberate exception for reading one card at a time.
         self._layout = "split"
@@ -129,6 +138,12 @@ class FileEditorSurface:
         frame["selection"] = self._selection
         frame["format"] = self._format
         frame["format_by"] = self._format_by
+        # The draft faces ride along under their own key — `drafts` already means
+        # "unclaimed working copies" in this protocol, and two meanings for one
+        # word is how a snapshot starts lying. A page that reloaded (or a second
+        # window) must see the same materials I pushed, or my perception would
+        # depend on which window happens to be open.
+        frame["render_drafts"] = {t: self.drafts(t) for t in self.draft_threads()}
         return frame
 
     # -- layout (the model's side of the presentation contract) -------------
@@ -188,12 +203,63 @@ class FileEditorSurface:
 
     async def set_format(self, mode: str, by: str = "model") -> str:
         chosen = (mode or "").strip().lower()
-        if chosen not in _FORMATS:
-            raise ValueError(f"format must be one of {_FORMATS}, got {mode!r}")
+        # The library is a directory, so the legal set is "the constants plus
+        # every file in it" — a name is valid because it exists, not because a
+        # constant somewhere remembered to list it.
+        known = set(_FORMATS) | {r["name"] for r in self.list_renderers()}
+        if chosen not in known:
+            raise ValueError(
+                f"format must be one of {tuple(sorted(known))}, got {mode!r}"
+            )
         self._format = chosen
         self._format_by = by
         await self.broadcast({"type": "format", "format": chosen, "by": by})
         return chosen
+
+    # -- the draft layer ----------------------------------------------------
+    #
+    # A draft is not a firework: it is one of a string of *materials* that belong
+    # to a thread's context. I push several while working on one document and
+    # switch between them, so the server keeps them (a short ring per thread) and
+    # the page can be told to show any of them again. Only the reference rides on
+    # history — the script itself lives here.
+
+    def draft_threads(self) -> list[str]:
+        """Threads that have drafts — so listing them needs no private access."""
+        return sorted(self._drafts)
+
+    def drafts(self, thread: str) -> list[dict]:
+        """The drafts pushed for one thread, oldest first."""
+        return [dict(d) for d in self._drafts.get(thread, [])]
+
+    def current_face(self, thread: str) -> dict:
+        """What the page says it is drawing right now: {renderer, seq, by}."""
+        return dict(self._faces.get(thread) or {})
+
+    async def push_preview(self, thread: str, script: str, label: str = "") -> dict:
+        """Keep a draft and hand it to the page.
+
+        The ring is small on purpose: a draft is a working view, and dozens of
+        them is a sign that the useful one should have been written to disk.
+        """
+        ring = self._drafts.setdefault(thread, [])
+        seq = (ring[-1]["seq"] + 1) if ring else 1
+        item = {"seq": seq, "label": label or f"草稿 {seq}", "script": script}
+        ring.append(item)
+        del ring[:-_DRAFT_RING]
+        await self.broadcast({"type": "preview", "thread": thread, **item})
+        return item
+
+    async def show_draft(self, thread: str, seq: int) -> dict:
+        """Ask the page to draw one of the drafts already pushed."""
+        for d in self._drafts.get(thread, []):
+            if d["seq"] == seq:
+                await self.broadcast({"type": "preview_show", "thread": thread, "seq": seq})
+                return dict(d)
+        raise ValueError(f"no draft #{seq} on thread {thread!r}")
+
+    def set_face(self, thread: str, renderer: str, seq: int | None, by: str) -> None:
+        self._faces[thread] = {"renderer": renderer, "seq": seq, "by": by}
 
     async def set_cursor(
             self,
@@ -396,6 +462,8 @@ class FileEditorSurface:
             return response
         if path == "/ws":
             return None
+        if path == "/renderers" or path.startswith("/renderers/"):
+            return self._renderer_response(connection, path)
         if path == "/__ver":
             # The page's fingerprint, so an open window can tell it runs old code.
             # Pull-based and cheap: the client asks, the server hashes the file,
@@ -412,6 +480,86 @@ class FileEditorSurface:
             return hashlib.sha1(self._html_path.read_bytes()).hexdigest()[:10]
         except OSError:
             return ""
+
+    # -- renderers ----------------------------------------------------------
+
+    @property
+    def _renderers_dir(self) -> Path:
+        """Where the renderer library lives: beside the page, not inside it.
+
+        A renderer is a file. Adding one is writing a file — no command, no page
+        edit — which is the whole point of the contract in DESIGN.md: the library
+        has to be extendable by whoever is looking at the document, including the
+        model, without a build step.
+        """
+        return self._html_path.parent / "renderers"
+
+    @staticmethod
+    def _renderer_meta(source: str, fallback: str) -> dict:
+        """Read a renderer's self-description out of its header comment.
+
+        The file explains itself (`// @name`, `// @ext`, `// @description`) so
+        listing the library never means executing model-written code. Parsing a
+        comment is a poor substitute for running the module — and that is exactly
+        why it is the right side of the line: discovery must be free of side
+        effects.
+        """
+        meta = {"name": fallback, "ext": [], "description": ""}
+        for line in source.splitlines()[:12]:
+            m = re.match(r"^\s*//\s*@(\w+)\s?(.*)$", line)
+            if not m:
+                continue
+            key, value = m.group(1), m.group(2).strip()
+            if key == "name" and value:
+                meta["name"] = value
+            elif key == "ext":
+                meta["ext"] = [e for e in value.split() if e]
+            elif key == "description":
+                meta["description"] = value
+        return meta
+
+    def list_renderers(self) -> list[dict]:
+        out: list[dict] = []
+        try:
+            paths = sorted(self._renderers_dir.glob("*.js"))
+        except OSError:
+            return out
+        for p in paths:
+            try:
+                meta = self._renderer_meta(p.read_text(encoding="utf-8"), p.stem)
+            except OSError:
+                continue
+            meta["file"] = p.name
+            out.append(meta)
+        return out
+
+    def _renderer_response(self, connection: Any, path: str) -> Any:
+        if path == "/renderers":
+            response = connection.respond(
+                200, json.dumps({"renderers": self.list_renderers()})
+            )
+            del response.headers["Content-Type"]
+            response.headers["Content-Type"] = "application/json"
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
+        # `/renderers/<name>.js` — one file, as a module. `Path.name` throws away
+        # any `..` before it reaches the disk, so a traversal attempt can only
+        # ever name a file inside the library.
+        name = Path(path[len("/renderers/"):]).name
+        if not name.endswith(".js"):
+            return connection.respond(404, "not found")
+        target = self._renderers_dir / name
+        try:
+            body = target.read_text(encoding="utf-8")
+        except OSError:
+            return connection.respond(404, "not found")
+        response = connection.respond(200, body)
+        del response.headers["Content-Type"]
+        response.headers["Content-Type"] = "text/javascript; charset=utf-8"
+        # A renderer that changed on disk must not be served from cache: the whole
+        # contract is "edit the file, see the face change".
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)
@@ -463,6 +611,16 @@ class FileEditorSurface:
                     )
                 elif kind == "toggle":
                     await self._set_enabled(bool(frame.get("enabled", True)))
+                elif kind == "face":
+                    # What the page is actually drawing. Without this the state
+                    # face only knows what *I* asked for, and the human's own
+                    # switch would leave me describing a face nobody is looking at.
+                    self.set_face(
+                        thread,
+                        str(frame.get("renderer", "")),
+                        int(frame["seq"]) if frame.get("seq") else None,
+                        str(frame.get("by", "human")),
+                    )
         finally:
             self._clients.discard(connection)
 

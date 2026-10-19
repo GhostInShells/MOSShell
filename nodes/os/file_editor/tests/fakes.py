@@ -14,6 +14,7 @@ class Recorder:
         self.layout = "page"
         self.layout_by = "default"
         self._cursors: dict = {}
+        self.previews: list[dict] = []
 
     async def broadcast(self, frame: dict) -> None:
         self.frames.append(frame)
@@ -52,10 +53,35 @@ class Recorder:
 
     async def set_format(self, mode: str, by: str = "model") -> str:
         chosen = (mode or "").strip().lower()
-        if chosen not in ("auto", "raw", "markdown"):
-            raise ValueError(f"format must be one of ('auto', 'raw', 'markdown'), got {mode!r}")
+        # The real surface accepts every name in renderers/; the fake carries the
+        # shipped library, which is what a test can see without a disk.
+        known = {"auto", "raw", "tmp", "markdown", "code", "plain"}
+        if chosen not in known:
+            raise ValueError(f"format must be one of {tuple(sorted(known))}, got {mode!r}")
         self.fmt = (chosen, by)
         return chosen
+
+    async def push_preview(self, thread: str, script: str, label: str = "") -> dict:
+        self.previews.append({"thread": thread, "script": script, "label": label})
+        return {"seq": len(self.previews), "label": label or "草稿 1", "script": script}
+
+    def drafts(self, thread: str) -> list[dict]:
+        return [p for p in self.previews if p["thread"] == thread]
+
+    def draft_threads(self) -> list[str]:
+        return sorted({p["thread"] for p in self.previews})
+
+    def current_face(self, thread: str) -> dict:
+        return {}
+
+    async def show_draft(self, thread: str, seq: int) -> dict:
+        raise ValueError("no drafts in the fake")
+
+    def list_renderers(self) -> list[dict]:
+        return [
+            {"name": "raw", "ext": [], "description": "带行号的原样文本", "file": "raw.js"},
+            {"name": "markdown", "ext": [".md"], "description": "markdown", "file": "markdown.js"},
+        ]
 
     async def set_selection(self, thread: str, start: int, end: int, text: str = "") -> None:
         self.selection = (

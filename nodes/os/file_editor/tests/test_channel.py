@@ -526,3 +526,20 @@ async def test_the_notice_reports_which_directories_are_trusted(store, tmp_path)
         await runtime.refresh_metas()
         notice = runtime.self_meta().named_notices.get("trust", "")
     assert str(work) in notice
+
+
+@pytest.mark.asyncio
+async def test_preview_pushes_a_draft_and_renderers_lists_the_library(store):
+    """Two halves of the same idea: the library is discovered, and a draft is
+    pushed. Neither writes a file — that is what `export`/the file path is for."""
+    chan, rec = _channel(store)
+    async with chan.bootstrap() as runtime:
+        out = await runtime.execute_command(
+            "preview", args=("t", "return '<b>x</b>'", "只看标题")
+        )
+        assert "只看标题" in out and "#1" in out
+        assert rec.previews[0]["thread"] == "t"
+        assert rec.previews[0]["label"] == "只看标题"
+
+        listing = await runtime.execute_command("renderers")
+        assert "raw" in listing and "markdown" in listing

@@ -191,3 +191,108 @@ async def test_flipping_trust_is_state_not_a_signal(store, signals, tmp_path):
     assert store.trusted() == [str(work)]
     assert store.global_trust() is True
     assert signals == [], "state is read, not announced"
+
+
+async def _http_get_path(port: int, path: str) -> bytes:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n".encode()
+    )
+    await writer.drain()
+    data = await reader.read()
+    writer.close()
+    return data
+
+
+@pytest.mark.asyncio
+async def test_the_renderer_library_is_a_directory_served_as_modules(store, signals):
+    """A renderer is a file: adding one is writing a file, and the page finds it.
+
+    The listing is read from the files' own header comments, so discovering the
+    library never executes model-written code — discovery has no side effects.
+    """
+    surface = await _surface(store, signals)
+    try:
+        listing = surface.list_renderers()
+        names = {r["name"] for r in listing}
+        assert {"raw", "markdown", "code", "plain"} <= names
+        md = next(r for r in listing if r["name"] == "markdown")
+        assert ".md" in md["ext"] and md["description"]
+
+        raw = await _http_get_path(surface.port, "/renderers")
+        assert b'"renderers"' in raw
+        body = await _http_get_path(surface.port, "/renderers/markdown.js")
+        head = body.split(b"\r\n\r\n", 1)[-1]
+        assert b"export default" in head, "served as the module it is"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_renderer_route_cannot_reach_outside_its_directory(store, signals):
+    """Only files in the library: the route takes a name, not a path."""
+    surface = await _surface(store, signals)
+    try:
+        body = await _http_get_path(surface.port, "/renderers/..%2f..%2findex.html")
+        assert b"404" in body.split(b"\r\n", 1)[0]
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_format_accepts_a_name_from_the_library_and_a_draft(store, signals):
+    surface = await _surface(store, signals)
+    try:
+        assert await surface.set_format("code") == "code"
+        assert await surface.set_format("tmp") == "tmp"
+        with pytest.raises(ValueError):
+            await surface.set_format("html")
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_pushed_preview_reaches_the_page_as_a_draft(store, signals):
+    """The draft layer: a script pushed at runtime becomes one more face."""
+    surface = await _surface(store, signals)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            shown = await surface.push_preview("t", "return '<b>x</b>'", "只看标题")
+            frame = await _recv(ws, "preview")
+            assert frame["script"] == "return '<b>x</b>'"
+            assert frame["label"] == "只看标题"
+            assert frame["thread"] == "t" and frame["seq"] == 1
+            assert shown["seq"] == 1
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_drafts_are_a_string_of_materials_per_thread(store, signals):
+    """A draft is not replaced and forgotten: it stays, and can be drawn again.
+
+    The ring is per thread because a draft reads that thread's working copy —
+    two documents do not share a face.
+    """
+    surface = await _surface(store, signals)
+    try:
+        first = await surface.push_preview("t", "return 'a'", "第一版")
+        second = await surface.push_preview("t", "return 'b'", "第二版")
+        other = await surface.push_preview("u", "return 'c'", "别的文档")
+        assert (first["seq"], second["seq"], other["seq"]) == (1, 2, 1)
+
+        ring = surface.drafts("t")
+        assert [d["label"] for d in ring] == ["第一版", "第二版"]
+        assert surface.draft_threads() == ["t", "u"]
+
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await surface.show_draft("t", 1)          # go back to the first face
+            frame = await _recv(ws, "preview_show")
+            assert frame == {"type": "preview_show", "thread": "t", "seq": 1}
+
+        with pytest.raises(ValueError):
+            await surface.show_draft("t", 99)
+    finally:
+        await surface.stop()

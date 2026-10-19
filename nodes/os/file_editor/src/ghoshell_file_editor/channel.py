@@ -421,14 +421,19 @@ def build_file_editor_channel(
 
     @chan.build.command(name="format", available=enabled)
     async def format(mode: str = "") -> str:
-        """How the document is drawn: raw text with line numbers, or rendered.
+        """Which renderer draws the document.
+
+        ``auto`` — the default — lets the file's extension decide. Any renderer in
+        the node's ``renderers/`` directory can be named (``raw``, ``markdown``,
+        ``code``, ``plain``, or whatever was added since); ``tmp`` is the draft
+        pushed with ``preview``.
 
         ``raw`` is the addressable face — every pointer, selection and line range
-        means something there. ``markdown`` renders the file so it can be *read*
-        (headings, code, tables); a rendered line is not a line number, so the
-        reading point and selections belong to the raw face. ``auto`` — the
-        default — picks by file suffix: ``.md`` reads as prose, everything else as
-        source. Empty = read the mode back.
+        means something there, and it is what everything falls back to. A rendered
+        face is for reading: its blocks still carry their line ranges, so pointing
+        and selecting work, but per block rather than per character.
+
+        Empty = read the mode back.
         """
         if not mode:
             current, by = surface.format_state()
@@ -438,6 +443,91 @@ def build_file_editor_channel(
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
         return f"[{name}] format: {chosen} (chosen by model)"
+
+    @chan.build.command(name="preview")
+    async def preview(thread: str, text__: str, label: str = "") -> str:
+        """Push a draft renderer for one thread and look at the document through it.
+
+        The tag body is the body of ``render(text)``: it receives the working copy's
+        text and returns HTML. It lands in the thread's own string of drafts — the
+        page labels it 临时, and the next one does not throw it away: ``show`` comes
+        back to it. Nothing is written to disk; a draft that turns out worth keeping
+        becomes a file in ``renderers/`` and joins the library for everyone.
+
+        A draft is a *material* for this thread, not a separate document: it reads
+        the same working copy, so it always reflects the latest edit.
+
+        Keep it short. A draft that needs more than a few dozen lines is telling you
+        it wants to be a file.
+        """
+        item = await surface.push_preview(thread, text__, label)
+        return (
+            f"[{name}] draft #{item['seq']} '{item['label']}' pushed on {thread!r} "
+            f"— the page shows it under 临时"
+        )
+
+    @chan.build.command(name="renderings")
+    async def renderings(thread: str = "") -> str:
+        """List the drafts pushed on a thread, and which face the page is showing.
+
+        The cold read for my own perception: ``preview`` is not fire-and-forget,
+        and without this I would be guessing which of the faces I drew is on the
+        screen now. With no thread it lists every thread that has drafts.
+        """
+        threads = [thread] if thread else surface.draft_threads()
+        if not threads:
+            return f"[{name}] renderings: none pushed yet"
+        lines = [f"[{name}] renderings:"]
+        for t in threads:
+            items = surface.drafts(t)
+            face = surface.current_face(t)
+            now = ""
+            if face:
+                now = f"  · showing {face.get('renderer')}"
+                if face.get("seq"):
+                    now += f" #{face['seq']}"
+                now += f" ({face.get('by')})"
+            lines.append(f"  {t}:{now}")
+            if not items:
+                lines.append("    (no drafts)")
+            for d in items:
+                lines.append(f"    #{d['seq']:<3} {d['label']}")
+        return "\n".join(lines)
+
+    @chan.build.command(name="show")
+    async def show(thread: str, seq: int) -> str:
+        """Draw one of the drafts already pushed — go back to an earlier view.
+
+        Switching is mine to do: the drafts belong to the thread's context, and
+        comparing the face I had two minutes ago with the one I have now is how
+        a view gets judged. ``seq`` comes from ``renderings``.
+        """
+        try:
+            item = await surface.show_draft(thread, int(seq))
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+        return f"[{name}] showing draft #{item['seq']} '{item['label']}' on {thread!r}"
+
+    @chan.build.command(name="renderers")
+    async def renderers() -> str:
+        """List the renderer library — the cold read.
+
+        The page already knows the library and shows the picker; this is for me.
+        The state face carries what is *relevant* (the current face, the broken
+        one), not the catalogue — so "what faces does this node have" has to be
+        asked rather than remembered, or I would confuse "I have not seen it" with
+        "it does not exist".
+        """
+        items = surface.list_renderers()
+        if not items:
+            return f"[{name}] renderers: (none found — falling back to raw only)"
+        lines = [f"[{name}] renderers ({len(items)}):"]
+        for r in items:
+            exts = " ".join(r.get("ext") or []) or "(fallback)"
+            lines.append(
+                f"  {r['name']:<10} {exts:<40} {r.get('description') or ''}".rstrip()
+            )
+        return "\n".join(lines)
 
     @chan.build.command(name="point", available=enabled)
     async def point(thread: str, region: str = "", label: str = "") -> str:
