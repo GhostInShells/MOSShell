@@ -432,3 +432,65 @@ async def test_disconnect_is_survivable(store, signals, stops):
             assert (await _recv(ws, "snapshot"))["mode"] == "approval"
     finally:
         await surface.stop()
+
+
+class _HangingLLM:
+    """A model call that never comes back — the shape of the live failure."""
+
+    async def call_messages(self, **kw):
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_frame_does_not_swallow_the_verdict_behind_it(
+    store, signals, stops
+):
+    """The read loop is the page's only uplink — it must never park on real work.
+
+    Found live (D19): an `analyze` frame awaited a model call inside the frame
+    loop, so every click behind it queued forever while broadcasts, being a
+    different task, kept flowing. The page looked alive and was deaf.
+    """
+    surface = await _surface(store, signals, stops, llm_funcs=lambda: _HangingLLM())
+    try:
+        card = _pending(store)
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "analyze", "id": card.id, "text": "why?"}))
+            await ws.send(json.dumps({"type": "accept", "id": card.id}))
+            await asyncio.sleep(0.2)
+            waiter = store.waiter(card.id)
+            assert waiter.done(), "the accept never reached the store"
+            assert waiter.result() == "accept"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_ping_is_answered_without_queueing_behind_work(store, signals, stops):
+    """The page's liveness probe: one cheap round trip, never behind a slow frame."""
+    surface = await _surface(store, signals, stops, llm_funcs=lambda: _HangingLLM())
+    try:
+        card = _pending(store)
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "analyze", "id": card.id, "text": "why?"}))
+            await ws.send(json.dumps({"type": "ping"}))
+            assert (await _recv(ws, "pong", timeout=1.0))["type"] == "pong"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_frame_we_cannot_read_does_not_kill_the_link(store, signals, stops):
+    """Silent failure is the bug: report it, keep reading."""
+    surface = await _surface(store, signals, stops)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send("not json at all")
+            await ws.send(json.dumps({"type": "accept", "id": "not-a-number"}))
+            await ws.send(json.dumps({"type": "ping"}))
+            assert (await _recv(ws, "pong", timeout=1.0))["type"] == "pong"
+    finally:
+        await surface.stop()

@@ -16,8 +16,10 @@ to the ghost is the ``ask`` question — a question, not a decision.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -411,6 +413,56 @@ class TerminalSurface:
         except OSError:
             return ""
 
+    # Frames whose work can take as long as a model call or a ground render.
+    # They must not run inside the read loop: that loop is this page's only
+    # uplink, so one slow frame parked in an ``await`` swallows every click
+    # behind it — while broadcasts, being a different task, keep flowing. The
+    # page then looks alive and is deaf, which is the worst of both.
+    # (Found live, D19: an ``analyze`` blocked the loop and the human's accepts
+    # never arrived; the downlink kept working, so "the link is fine" was true
+    # of half of it.)
+    _SLOW_FRAMES = frozenset({"ask", "analyze", "ground"})
+
+    async def _run_frame(self, kind: str, card_id: int, work: Awaitable[None]) -> None:
+        """Run one frame's work. A failure is reported, never swallowed."""
+        try:
+            await work
+        except Exception as e:  # noqa: BLE001 — one bad frame must not kill the link
+            print(f"[terminal] frame {kind}#{card_id} failed: {e!r}", file=sys.stderr)
+            try:
+                await self.broadcast({"type": "error", "text": f"{kind} failed: {e}"})
+            except Exception:  # noqa: BLE001 — the report must not become the failure
+                pass
+
+    def _frame_work(self, kind: str, card_id: int, frame: dict[str, Any]) -> Awaitable[None] | None:
+        """Map a frame to the work it asks for; ``None`` = not a frame we know."""
+        text = str(frame.get("text", "") or "")
+        if kind == "accept":
+            return self._accept(card_id, text)
+        if kind == "deny":
+            return self._deny(card_id, text)
+        if kind == "ask":
+            return self._ask(card_id, str(frame.get("text", "")))
+        if kind == "analyze":
+            return self._analyze(card_id, text, frame.get("history") or [])
+        if kind == "accept_all":
+            return self._accept_all()
+        if kind == "deny_all":
+            return self._deny_all()
+        if kind == "stop":
+            return self._stop(card_id)
+        if kind == "stop_all":
+            return self._stop_all()
+        if kind == "global_trust":
+            return self._set_global_trust(bool(frame.get("on")))
+        if kind == "mode":
+            return self._set_mode(str(frame.get("mode", "")))
+        if kind == "thread_auto":
+            return self._set_thread_auto(str(frame.get("name", "")), bool(frame.get("auto")))
+        if kind == "ground":
+            return self._render_ground(str(frame.get("thread", "")))
+        return None
+
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)
         try:
@@ -418,40 +470,29 @@ class TerminalSurface:
             async for raw in connection:
                 try:
                     frame = json.loads(raw)
-                except (TypeError, ValueError):
+                    if not isinstance(frame, dict):
+                        continue
+                    kind = str(frame.get("type", ""))
+                    card_id = int(frame.get("id", 0) or 0)
+                except (TypeError, ValueError) as e:
+                    # A frame we cannot read is a fact about the page, not a
+                    # reason to drop the link — say it and keep reading.
+                    print(f"[terminal] bad frame {raw[:80]!r}: {e!r}", file=sys.stderr)
                     continue
-                kind = frame.get("type")
-                card_id = int(frame.get("id", 0))
-                if kind == "accept":
-                    await self._accept(card_id, str(frame.get("text", "") or ""))
-                elif kind == "deny":
-                    await self._deny(card_id, str(frame.get("text", "") or ""))
-                elif kind == "ask":
-                    await self._ask(card_id, str(frame.get("text", "")))
-                elif kind == "analyze":
-                    await self._analyze(
-                        card_id,
-                        str(frame.get("text", "")),
-                        frame.get("history") or [],
-                    )
-                elif kind == "accept_all":
-                    await self._accept_all()
-                elif kind == "deny_all":
-                    await self._deny_all()
-                elif kind == "stop":
-                    await self._stop(card_id)
-                elif kind == "stop_all":
-                    await self._stop_all()
-                elif kind == "global_trust":
-                    await self._set_global_trust(bool(frame.get("on")))
-                elif kind == "mode":
-                    await self._set_mode(str(frame.get("mode", "")))
-                elif kind == "thread_auto":
-                    await self._set_thread_auto(
-                        str(frame.get("name", "")), bool(frame.get("auto"))
-                    )
-                elif kind == "ground":
-                    await self._render_ground(str(frame.get("thread", "")))
+                if kind == "ping":
+                    # One cheap round trip, answered here so it can never queue
+                    # behind real work: it is how the page tells a live link
+                    # from a deaf one.
+                    await connection.send(json.dumps({"type": "pong"}))
+                    continue
+                work = self._frame_work(kind, card_id, frame)
+                if work is None:
+                    print(f"[terminal] unknown frame {kind!r}", file=sys.stderr)
+                    continue
+                if kind in self._SLOW_FRAMES:
+                    asyncio.create_task(self._run_frame(kind, card_id, work))
+                else:
+                    await self._run_frame(kind, card_id, work)
         finally:
             self._clients.discard(connection)
 
