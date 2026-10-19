@@ -1873,10 +1873,12 @@ function renderDetail() {
   if (d) {
     // The effect tab answers one question — what changed — so for an edit it
     // *is* the diff, drawn; for a read or a find there is nothing to compare and
-    // the action's own text is the answer.
+    // the action's own text is the answer. An action that carries neither (an
+    // export: it moved the text, not the words) says nothing here on purpose —
+    // the card's own line already answers where it went.
     if (d.diff) {
       doc.append(renderDiffView(d.diff));
-    } else {
+    } else if (d.source) {
       doc.append(make("div", "doc-label", "this action — what it says"));
       const mdEl = make("div", "markdown");
       paintMarkdown(mdEl, d.source);

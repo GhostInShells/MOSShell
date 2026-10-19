@@ -862,11 +862,17 @@ def build_file_editor_channel(
         auto = directory_trust or (
             target.auto and bool(target.path) and dest == target.path
         )
+        # An export does not move the text, it moves the text *to a place*. So the
+        # card carries no content: dumping the whole document here made one card
+        # read as the file itself, and the mechanical half already says the only
+        # thing an export has to say (where it went, how many lines). The text is
+        # one click away in the document view — the same judgement ``projection``
+        # states for every action frame: a card says what happened, not what it says.
         action = store.record(
             thread,
             "export",
             label or f"export to {dest}",
-            text=target.content,
+            text="",
             payload=dest,
             state=("applied" if auto else "awaiting"),
             fact=f"→ {dest} · {line_count(target.content)} lines",

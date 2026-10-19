@@ -43,6 +43,9 @@
   .frame {
     border: 1px solid var(--line); border-radius: 4px; background: var(--panel);
     overflow: hidden;
+    /* 列表是竖向 flex：卡片默认会收缩，帧一多就被压成一条一条，滚动条永远不出现。
+       定死不收缩，高度不够时交给 main 的滚动条。 */
+    flex: 0 0 auto;
   }
   .frame.state-running { border-left: 3px solid var(--accent); }
   .frame.state-done { border-left: 3px solid var(--run); }
@@ -125,6 +128,10 @@
   let enabled = true;
   const frames = new Map();
   const openIds = new Set();
+  // 指针在面上 = 人正在读，自动滚动让位给他。
+  let hovering = false;
+  stream.addEventListener('mouseenter', () => { hovering = true; });
+  stream.addEventListener('mouseleave', () => { hovering = false; });
 
   function setEnabled(val) {
     enabled = !!val;
@@ -150,28 +157,29 @@
   }
 
   function render() {
+    // 指针停在面上时，人正在读 —— 不抢他的位置；否则跟着最新一条走到底部。
+    const keepTop = hovering ? stream.scrollTop : null;
     if (frames.size === 0) {
       stream.innerHTML = '<div class="empty">no frames yet</div>';
       return;
     }
-    const sorted = Array.from(frames.values()).sort((a, b) => b.id - a.id);
-    const latestId = sorted[0].id;
+    // 日志顺序：老的在上，新的在下。跟着底部就是跟着最新，和终端一个手感。
+    const sorted = Array.from(frames.values()).sort((a, b) => a.id - b.id);
+    const latestId = sorted[sorted.length - 1].id;
     stream.innerHTML = '';
 
-    const divider = document.createElement('div');
-    divider.className = 'divider';
-    divider.innerHTML = '<span class="new-dot"></span><span>latest</span>';
-    stream.appendChild(divider);
-
     for (const f of sorted) {
-      stream.appendChild(renderFrame(f, f.id === latestId));
       if (f.id === latestId && sorted.length > 1) {
-        const older = document.createElement('div');
-        older.className = 'divider';
-        older.innerHTML = '<span>older</span>';
-        stream.appendChild(older);
+        const divider = document.createElement('div');
+        divider.className = 'divider';
+        divider.innerHTML = '<span class="new-dot"></span><span>latest</span>';
+        stream.appendChild(divider);
       }
+      stream.appendChild(renderFrame(f, f.id === latestId));
     }
+
+    if (keepTop !== null) stream.scrollTop = keepTop;
+    else stream.scrollTop = stream.scrollHeight;
   }
 
   function renderFrame(f, isLatest) {
