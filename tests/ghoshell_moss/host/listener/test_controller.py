@@ -286,7 +286,8 @@ def test_signal_broadcast_clause_not_emitted():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
 
-    assert len(listener.result_observers) == 5  # 发射 + 累积 + buffer + 故障复位 + expect 观察者
+    # 发射 + 累积 + buffer + 故障复位 + 说话态 + expect 观察者
+    assert len(listener.result_observers) == 6
     listener.result_observers[0](_clause("你好"))
 
     assert emitted == []  # CLAUSE 不上行 — 判停已在 listener 侧消化
@@ -319,8 +320,8 @@ def test_signal_broadcast_interrupt_then_deliver():
 def test_no_signal_broadcast_registers_no_emitter():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR())
-    # 无 sink → 不注册发射观察者 (只剩 buffer + 故障复位 + expect 观察者).
-    assert len(listener.result_observers) == 3
+    # 无 sink → 不注册发射观察者 (只剩 buffer + 故障复位 + 说话态 + expect 观察者).
+    assert len(listener.result_observers) == 4
 
 
 def test_signal_wired_reflects_broadcast_injection():
@@ -1462,3 +1463,63 @@ def test_loudness_state_reports_the_learned_baseline_and_the_running_stretch():
     assert state["segment"] == pytest.approx(-5.0), '正在说的这一段, 还没收尾'
     assert state["strength"] is not None and state["strength"] > 200, \
         '比基线高 19dB → 下一包明显抬强度'
+
+
+# ============================================================
+# 说话态 (talking) — 状态 vs 边沿: notice 只给桶值, 尾巴走拉取
+# ============================================================
+
+
+def _talking_observer(listener):
+    """说话态回调 — 首包开 / 尾包关那份 (跨 session 稳定, 不依赖 signal_broadcast)."""
+    for cb in listener.result_observers:
+        if getattr(cb, "__name__", "") == "_on_talking_state":
+            return cb
+    raise AssertionError("talking observer not registered")
+
+
+@pytest.mark.asyncio
+async def test_talking_notice_turns_on_and_off():
+    """首包开 / 尾包关: 一段话只让 notice 变两次, 不按秒刷."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+
+    async def notices() -> dict:
+        return await controller.as_channel().build.get_named_notices()
+
+    # 没说话 → 片段缺席 (模型读作"他没在说").
+    assert (await notices())["talking"] is None
+
+    talk = _talking_observer(listener)
+    talk(_first("滕子京谪守巴陵郡"))
+    assert (await notices())["talking"] == "yes"  # 桶值, 不带秒数
+    assert controller.talking_state()["for"] is not None
+
+    # 文本累积: `text` 是全量替换, 尾巴跟着换.
+    talk(_partial("滕子京谪守巴陵郡"))
+    assert controller.talking_state()["tail"] == "滕子京谪守巴陵郡"
+
+    talk(_tail("滕子京谪守巴陵郡"))
+    assert (await notices())["talking"] is None
+    assert controller.talking_state()["talking"] is False
+    assert controller.talking_state()["idle_for"] is not None
+
+
+@pytest.mark.asyncio
+async def test_talking_readable_in_emit_true_pull():
+    """emit=True 时 buffer 是空的, 但 talking 在拉取面里仍然活着 —— 这是它存在的理由."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task = controller.run_etiquette(always.model_copy(deep=True), timeout=5.0)
+
+    controller._on_talking_state(_first("我们来玩一个游戏"))
+    payload = controller.transcript_state()
+
+    assert payload["enabled"] is False
+    assert payload["current"] is None  # 老的拉取面在 emit=True 下是空的
+    assert payload["talking"]["talking"] is True
+    assert payload["talking"]["tail"] == "我们来玩一个游戏"
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task

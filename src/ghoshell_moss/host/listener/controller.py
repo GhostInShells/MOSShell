@@ -95,6 +95,9 @@ _AUTO_WATERMARK_MARGIN_DB = 6.0
 _NORMAL_STRENGTH = 100
 _MAX_SIGNAL_STRENGTH = 300
 
+#: 说话态尾巴的截断长度 (字符). 只在识别事件回调里切一次, notice / 拉取都读这个快照.
+_TALKING_TAIL_CHARS = 24
+
 
 def build_stop_caller_factory(container) -> Optional[Callable[[str], MossLLMCaller]]:
     """出口位点 classifier 的依赖装配: 容器有模型环境 (MossLLMFuncs) 时返回
@@ -233,6 +236,14 @@ class ListenerController(ListenLifecycle):
         self._level_count: int = 0
         # 最近若干段的中位响度 (自动水位的基线), 只有段尾写入.
         self._recent_db: deque[float] = deque(maxlen=_AUTO_WATERMARK_SEGMENTS)
+        # 说话态 (温数据): "他此刻正在说, 话还没交过来". 首包/尾包是边沿信号, 模型那一轮
+        # 不在场就丢了; 状态不丢 —— notice 每轮重渲染时读这里. 只报一个桶值, 一段话里
+        # 变两次 (开 / 关), 不做按秒的刷新 (那会把 notice 变成每秒一次的 delta).
+        self._talking: bool = False
+        self._talking_since: float | None = None
+        self._talking_ended: float | None = None
+        # 这一段到此刻的累积文本尾巴: ``text`` 是全量替换, 每个事件一次切片赋值即可.
+        self._talking_tail: str = ""
         # 显式水位 (运行时, 不进礼仪): 不超过它 → 常态强度; 超过 → 按高出的量抬高.
         # None = 走自动水位 (基线中位数 + 余量), 攒不够样本时等同于不提.
         self._db_watermark: float | None = None
@@ -241,6 +252,10 @@ class ListenerController(ListenLifecycle):
         self._listener.on_audio_chunk(self._on_audio_level)
         # 听到即恢复 → 复位故障重启计数 (自愈窗口内重新听到声音即清零).
         listener.on_recognition_result(self._on_fault_activity_reset)
+        # 说话态追踪 (跨 session 稳定, 不依赖 signal_broadcast): 首包开 / 尾包关,
+        # 顺手留一个累积文本尾巴. 每个识别事件只多一次赋值 + 一次切片.
+        # 注册在 expect 之前 — expect 那条要保持在末位 (测试按 [-1] 取它).
+        listener.on_recognition_result(self._on_talking_state)
         # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
         # expect events, 让"期待输入"立刻满足 (取消超时). 不依赖 signal_broadcast.
         # (保持在 result_observers 末位 — 测试按 [-1] 取它.)
@@ -1042,6 +1057,55 @@ class ListenerController(ListenLifecycle):
             # 移除自己的 event; 若语音回调已 discard 过 (见 _on_expect_voice), 这里幂等.
             self._expect_events.pop(index, None)
 
+    # ── 说话态 (他在说, 话还没交过来) ──
+
+    def _on_talking_state(self, result: RecognitionEvent) -> None:
+        """维护"他正在说"这一格状态: 首包开, 尾包关, 文本尾巴留最后一次快照.
+
+        为什么是状态不是信号: onset / deliver 是边沿, 模型那一轮不在场就丢了; 而"他现在
+        在不在说"是每轮开工都想知道的事实。所以只记, 不发。
+        """
+        if result.phase == RecognitionPhase.FIRST:
+            self._talking = True
+            self._talking_since = result.created
+        elif result.phase == RecognitionPhase.TAIL:
+            self._talking = False
+            self._talking_ended = result.created
+        if result.text:
+            self._talking_tail = result.text[-_TALKING_TAIL_CHARS:]
+
+    def talking_state(self) -> dict:
+        """说话态的现场读数 (notice 与 ``get_transcript`` 共用同一个真值)."""
+        now = time.time()
+        return {
+            "talking": self._talking,
+            "for": round(now - self._talking_since, 1)
+            if self._talking and self._talking_since is not None else None,
+            "idle_for": round(now - self._talking_ended, 1)
+            if not self._talking and self._talking_ended is not None else None,
+            "tail": self._talking_tail,
+        }
+
+    def transcript_state(self, n: int = 0) -> dict:
+        """拉取面的唯一真值: 当前增长文本 + 最近 n 段 + 说话态.
+
+        ``talking`` 在两种模式下都活着 —— emit=True 时 buffer 是空的, 而"他正在说、
+        说了什么"恰恰是模型最需要、buffer 又不肯给的那一格.
+        """
+        active = self._active_etiquette
+        enabled = active is not None and not active.deliver.emit
+        if n <= 0:
+            n = active.deliver.history if active else 8
+        current = self._buffer.peek_current() if enabled else None
+        recent = self._buffer.peek_recent(n) if enabled else []
+        return {
+            "enabled": enabled,
+            "current": current.to_dict() if current else None,
+            "recent": [s.to_dict() for s in recent],
+            "forgotten": self._buffer.forgotten() if enabled else 0,
+            "talking": self.talking_state(),
+        }
+
     def _on_expect_voice(self, result: RecognitionEvent) -> None:
         """语音识别结果到达 → set 所有 pending expect events (期待满足).
 
@@ -1433,6 +1497,9 @@ class ListenerController(ListenLifecycle):
                 f"  whatever you set in motion. Stopping late is worse than never having started.\n"
                 f"  How this person actually wants to be talked with is not settled here — it grows out of\n"
                 f"  practice. Watch how he reacts, and adjust what you do, not only what you say.\n"
+                f"A <talking>yes</talking> fragment in the notice means he is mid-sentence right now: text\n"
+                f"is accumulating on his side and has not been delivered to you yet (the pull command\n"
+                f"get_transcript carries the tail of it). Its absence means nothing is being said.\n"
                 f"ASR tunable params schema:\n"
                 f"{json.dumps(info.params_schema, ensure_ascii=False)}\n"
                 f"EtiquetteSpec json schema (for set_etiquette_spec):\n"
@@ -1445,7 +1512,12 @@ class ListenerController(ListenLifecycle):
             # 没有激活礼仪时片段缺席 (None): 模型收到 <etiquette removed/> 墓碑, 而不是
             # 一个占位空值 — 空串在这里表示"不变", 会让模型一直以为旧礼仪还激活着.
             active = self._active_etiquette
-            notice: dict[str, str | None] = {"etiquette": active.name if active else None}
+            notice: dict[str, str | None] = {
+                "etiquette": active.name if active else None,
+                # 说话态: 一个桶值 (他在说 / 没说). 缺席即"没说" — 墓碑就是那条收尾边沿,
+                # 所以一段话只产生两次 delta, 不按秒刷.
+                "talking": "yes" if self._talking else None,
+            }
             # 留存槽位: 开时暴露最近一条定稿 segment 的全文 (变了才重发); 关/空时 None 墓碑.
             if active is not None and not active.deliver.emit:
                 recent = self._buffer.peek_recent(1)
@@ -1537,23 +1609,11 @@ class ListenerController(ListenLifecycle):
 
             `n=0` uses the active etiquette's deliver.history; returns JSON with
             `enabled` (deliver.emit=False), `current`, `recent` (tail-n) and `forgotten`.
-            Empty current/recent when emit=True or nothing heard yet.
+            Empty current/recent when emit=True or nothing heard yet — `talking` is the
+            exception: it is live in either mode (`talking` / `for` / `idle_for` / `tail`),
+            so you can tell he is still mid-sentence and read what he has said so far.
             """
-            active = self._active_etiquette
-            enabled = active is not None and not active.deliver.emit
-            if n <= 0:
-                n = active.deliver.history if active else 8
-            current = self._buffer.peek_current() if enabled else None
-            recent = self._buffer.peek_recent(n) if enabled else []
-            return json.dumps(
-                {
-                    "enabled": enabled,
-                    "current": current.to_dict() if current else None,
-                    "recent": [s.to_dict() for s in recent],
-                    "forgotten": self._buffer.forgotten() if enabled else 0,
-                },
-                ensure_ascii=False,
-            )
+            return json.dumps(self.transcript_state(n), ensure_ascii=False)
 
         @chan.build.command()
         async def configure_asr(params: dict) -> str:
