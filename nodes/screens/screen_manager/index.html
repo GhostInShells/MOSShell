@@ -841,7 +841,9 @@ function ghostBeat() { ghostBeatAt = performance.now(); }
 const VEIL_DEFAULT = {
   mark: 'rgba(80,255,150,1)', box: 'rgba(80,255,150,1)',
   circle: 'rgba(80,255,150,1)', arrow: 'rgba(255,130,80,1)',
-  danmaku: 'rgba(255,255,255,1)',
+  // 弹幕跟背后的字符雨同一种材质、同一种绿：#0f0 不是我随便挑的，是这层背景
+  // 自己的颜色。白色的字浮在绿雨上像贴纸，绿色的字像从雨里长出来。
+  danmaku: '#0f0',
 };
 function addBlock(id, draw, durMs) {
   veilBlocks.set(id, { draw, start: performance.now(), dur: durMs });
@@ -1034,10 +1036,23 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns,
   const hold = (durMs === Infinity);
   // 常驻（hold）也得有个穿越速度，否则它会僵在边上；8 秒一趟是默认节奏。
   const travel = hold ? 8000 : durMs;
+  // 可读性：弹幕会从白色面板上飘过去，字得自己站得住。用描边而不是底色块 ——
+  // 一块矩形比一行字重得多，会像贴纸；一圈深色轮廓只让字变清楚，不改变它的重量。
+  const ink = (c, text, x, y) => {
+    c.save();
+    c.lineJoin = 'round';
+    c.lineWidth = Math.max(2, size * 0.16);
+    c.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    c.strokeText(text, x, y);
+    c.restore();
+    c.fillText(text, x, y);
+  };
   // region：只在一半里飞 —— 左右各占半屏、各自朝中间走，靠的就是这一格。
   const REG = { left: [0, 0, 0.5, 1], right: [0.5, 0, 0.5, 1],
                 top: [0, 0, 1, 0.5], bottom: [0, 0.5, 1, 0.5] };
-  const reg = REG[region] || [0, 0, 1, 1];
+  // 没指定 region 的弹幕只在上方三成里飞 —— 弹幕是"飘过画面的旁白"，不是满屏的
+  // 字；它若从顶端一直落到最下面，就压住了正在被看的东西（thirdgerb 定的，D19）。
+  const reg = REG[region] || [0, 0, 1, 0.3];
   const box0 = item ? geometry()[item] : null;
   const h0 = (box0 ? box0.h : viewH) * reg[3];
   const lanes = Math.max(1, Math.floor(h0 / laneH));
@@ -1085,15 +1100,15 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns,
     c.textBaseline = 'middle';
     if (pinned) {
       c.textAlign = 'center';
-      c.fillText(content, box.x + atX * box.w, box.y + atY * box.h);
+      ink(c, content, box.x + atX * box.w, box.y + atY * box.h);
       return;
     }
     if (motion === 'orbit') {
       const R = Math.max(0, Math.min(box.w, box.h) / 2 - size);
       const th = p * turns * Math.PI * 2 - Math.PI / 2;
       c.textAlign = 'center';
-      c.fillText(content, box.x + box.w / 2 + R * Math.cos(th),
-                          box.y + box.h / 2 + R * Math.sin(th));
+      ink(c, content, box.x + box.w / 2 + R * Math.cos(th),
+                        box.y + box.h / 2 + R * Math.sin(th));
       return;
     }
     if (motion === 'diag') {
@@ -1105,15 +1120,15 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns,
       c.translate(mx - ca * L / 2 + ca * L * p, my - sa * L / 2 + sa * L * p);
       c.rotate(aRad);
       c.textAlign = 'center';
-      c.fillText(content, 0, 0);
+      ink(c, content, 0, 0);
       c.restore();
       return;
     }
     const span = box.w + tw;
     c.textAlign = 'left';
     const yy = box.y + laneH * (li + 0.5);
-    if (motion === 'ltr') c.fillText(content, box.x - tw + span * p, yy);
-    else c.fillText(content, box.x + box.w - span * p, yy);
+    if (motion === 'ltr') ink(c, content, box.x - tw + span * p, yy);
+    else ink(c, content, box.x + box.w - span * p, yy);
   }, durMs + delay);
 }
 function veilLoop() {
