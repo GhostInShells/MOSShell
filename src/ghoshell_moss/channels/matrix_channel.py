@@ -105,6 +105,25 @@ def _now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
+def _transition_for(content: str, event_level: CellEventLevel | None) -> CellTransition:
+    """Which arc of a cell's life this event is — read off what it says, not assumed.
+
+    Previously every event was reported as ``ready``, so "it came up" and "it is
+    gone" travelled as the same word and the transition carried no information.
+    The four arcs are distinguishable by their content prefix (see
+    ``Matrix._close_event``) and, as a fallback, by the level.
+    """
+    text = (content or '').strip().lower()
+    level = CellEventLevel.resolve(event_level)
+    if text.startswith('crash') or level >= CellEventLevel.ERROR:
+        return CellTransition.CRASHED
+    if text.startswith('closing'):
+        return CellTransition.EXITED
+    if text.startswith('spawn'):
+        return CellTransition.SPAWNED
+    return CellTransition.READY
+
+
 
 def _fmt_uptime(seconds: float) -> str:
     s = int(seconds)
@@ -474,9 +493,27 @@ def new_nodes_channel(
                 f'{target!r} does not uniquely match any running cell. '
                 f'status() shows current cells.'
             )
+        label = _live_label(handle, aliases.get(handle.address))
         await handle.stop(timeout=timeout)
         code = handle.process.meta.exit_code
-        return f'[{_live_label(handle, aliases.get(handle.address))}] stopped, exit={code}'
+        # 停下自己拉起的节点是**我的动作**，它的结束必须回到我这里 —— 不能只靠
+        # 「分支表少了一行」这种要我自己去看的推断。别人的正常退出是状态，我亲手
+        # 停的这一刀是回执。所以这里不发明新信号：发一条 cell_event，transition
+        # 取 exited，优先级抬到 NOTICE，让它越过"正常退出不入感知"那道阈值。
+        try:
+            meta = CellEventSignalMeta(
+                address=handle.address, transition=CellTransition.EXITED,
+            )
+            CommandUtil.send_signal(meta.to_signal(
+                f'{label} stopped, exit={code} — the cell is gone, its windows with it',
+                description=f'cell {aliases.get(handle.address, label)}',
+                priority=Priority.NOTICE,
+            ))
+        except Exception:
+            logger = CommandUtil.logger()
+            if logger is not None:
+                logger.exception('matrix channel: failed to signal node stop')
+        return f'[{label}] stopped, exit={code}'
 
     # -- status -------------------------------------------------------
 
@@ -740,7 +777,10 @@ def new_mesh_channel(
         if not CellEventLevel.is_perceivable(event.event_level):
             return
         try:
-            meta = CellEventSignalMeta(address=event.address, transition=CellTransition.READY)
+            meta = CellEventSignalMeta(
+                address=event.address,
+                transition=_transition_for(event.content, event.event_level),
+            )
             name = _branch_name(event.address, matrix.project.nodes.spawned_nodes())
             signal = meta.to_signal(
                 event.content,

@@ -696,3 +696,51 @@ async def test_accept_takes_only_the_forms_the_mesh_face_prints():
             "accept", kwargs={"target": f"node/vision/{_UID_A}"}
         )
         assert stub._accepted == [f"node/vision/{_UID_A}"]
+
+# ---- stop: the receipt for a kill I ordered ---- #
+
+
+class _StopMatrix(_StubMatrix):
+    """A matrix whose handle can be stopped, and remembers that it was."""
+
+    def __init__(self, handle):
+        super().__init__()
+        self.handled[handle.address] = handle
+        self._handle = handle
+
+    def handled_cells(self):
+        return self.handled
+
+
+@pytest.mark.asyncio
+async def test_stop_anchors_a_cell_event_rather_than_inventing_a_signal(monkeypatch):
+    """Stopping a node I spawned is my own action — its end must come back to me.
+
+    A normal exit is deliberately *state*, not perception (the four arcs: only a
+    crash is an error). That is right for everyone else, and wrong for the kill I
+    ordered: I need to know the cell is really gone, not infer it from a row
+    missing in the branch table. So the stop emits the same `cell_event` the mesh
+    already speaks — transition `exited`, raised to NOTICE so it clears the
+    "normal exit is not perceivable" threshold.
+    """
+    handle = _handle(_UID_A, pid=4242, exit_code=0)
+
+    async def _stop(timeout: float = 5.0) -> None:
+        return None
+
+    handle.stop = _stop
+    matrix = _StopMatrix(handle)
+    chan = new_nodes_channel(matrix)
+    sent = []
+    monkeypatch.setattr(CommandUtil, "send_signal", lambda s: sent.append(s))
+
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("stop", kwargs={"target": str(4242)})
+
+    assert len(sent) == 1, "a stop must report itself exactly once"
+    signal = sent[0]
+    assert signal.name == "cell_event"
+    assert signal.metadata["transition"] == "exited"
+    assert signal.metadata["address"] == handle.address
+    assert signal.priority >= 1, "the receipt has to clear the perceivable threshold"
+    assert "stopped" in signal.messages[0].to_content_string()
