@@ -337,8 +337,12 @@ class SpeechChannelModule(ChannelModule):
         ones still queued behind it.
 
         The command that was speaking ends by itself, because its stream closes under it; nothing
-        else on the shell is touched. Use it when you started saying something and then decided
-        you should not have.
+        else on the shell is touched.
+
+        Use it when you started saying something and then decided you should not have — the
+        sentence is already playing, so correct it this way: clear, then say the new line.
+        It takes the channel ahead of whatever is speaking (``call_soon``), so it lands
+        mid-sentence instead of queueing behind the very stream it has to drop.
         """
         if self._speech is None:
             return "no speech"
@@ -362,7 +366,11 @@ class SpeechChannelModule(ChannelModule):
             cmd = factory.build_content_command()
             commands[cmd.name()] = cmd
         commands["mute"] = PyCommand(self._mute, name="mute")
-        commands["clear_speech"] = PyCommand(self._clear_speech, name="clear_speech")
+        # call_soon: 它是唯一一条必须在**正在说话时**插队的命令. 不加这个标记, 它就和被它清掉的那段
+        # 语音排在同一条轨上, 要等那段话念完才轮到自己 —— 而那时已经没话可清了. 语义对齐 interrupt.
+        commands["clear_speech"] = PyCommand(
+            self._clear_speech, name="clear_speech", call_soon=True
+        )
         self._own_commands = commands
 
     async def on_close(self) -> None:
