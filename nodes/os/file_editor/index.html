@@ -198,10 +198,10 @@
   .render-row .render-name { color: var(--fg); font-family: var(--mono); min-width: 84px; }
   .render-row .render-desc { color: var(--dim); font-size: var(--fs-small); }
   .vnote { color: var(--dim); font-size: var(--fs-small); padding-right: 4px; }
-  /* A fixed strip: scrolling the document must not take the state with it. */
+  /* It sits above the scroller, not inside it: the document scrolls under it,
+     and it never paints over the first lines the way a sticky overlay does. */
   .vbar {
-    position: sticky; top: 0; z-index: 6; padding: 4px 18px 6px;
-    background: linear-gradient(#0f1214 70%, rgba(15,18,20,0));
+    flex: 0 0 auto; padding: 4px 18px 6px;
     display: flex; justify-content: flex-end;
   }
   .vbar[hidden] { display: none; }
@@ -519,7 +519,7 @@
     <section class="doc" id="doc"></section>
     <!-- The edit affordance: a selection over whole lines becomes an addressable
          range, and this is the one button that turns it into an edit. -->
-    <button class="edit-here" id="edit-here" hidden>改这几行</button>
+    <button class="edit-here" id="edit-here" hidden>edit these lines</button>
     <div class="edit-box" id="edit-box" hidden>
       <div class="edit-head">
         <span id="edit-range"></span>
@@ -677,7 +677,16 @@ function reportSelection() {
   send({ type: "selection", thread: focusThread, start, end, text: text.slice(0, 400) });
 }
 
+// A position nobody chose is not a perception. Until the human has actually
+// touched the page, the page says nothing — otherwise "you: line 70" is the
+// model reading a ghost.
+let humanTouched = false;
+for (const ev of ["mousedown", "keydown", "wheel"]) {
+  document.addEventListener(ev, () => { humanTouched = true; }, { capture: true, passive: true });
+}
+
 function reportCursor() {
+  if (!humanTouched) return;
   if (view !== "edit" || !focusThread || !hasLineBridge()) return;
   if (Date.now() < cursorQuietUntil) return;   // my own point is still settling
   const box = docEl.getBoundingClientRect();
@@ -924,6 +933,9 @@ function setView(next) {
   streamEl.hidden = view !== "history";
   metaEl.hidden = view !== "meta";
   if (view === "document" || view === "edit") renderDoc();
+  // Opening history asks for that thread's cards: a window that was not there
+  // when they were made has no other way to learn about them.
+  if (view === "history" && focusThread) requestActions(focusThread);
   if (view === "meta") renderMeta();
   renderViewNote();
 }
@@ -952,7 +964,12 @@ function renderViewNote() {
 }
 
 function requestActions(thread) {
-  if (thread) send({ type: "actions", thread });
+  if (!thread) return;
+  send({ type: "actions", thread });
+  // Starting on a thread with an old "you are on line N" is a lie about a click
+  // that never happened here.
+  humanTouched = false;
+  send({ type: "cursor", thread, start: 0 });
 }
 
 function requestText(thread) {
@@ -1265,7 +1282,7 @@ function saveEditor() {
     thread: focusThread,
     region,
     text: editTextEl.value,
-    label: "he edited " + region,
+    label: "edited " + region,
     client_id: clientId,
   });
   editBoxEl.hidden = true;
@@ -1991,6 +2008,9 @@ function onFrame(frame) {
       // The server's copy of the edit I just made. Matched by client id — the
       // pending action is dropped only when its own id comes back.
       if (pendingEdit && frame.client_id === pendingEdit.client_id) pendingEdit = null;
+      // The card comes with the receipt, so there is nothing to pull: one round
+      // trip instead of three is most of why the echo felt slow.
+      if (frame.action) { upsertAction(frame.action); renderRail(); renderDigest(); }
       requestText(frame.thread);
       setTimeout(() => { flashRange = null; renderDoc(); }, 1500);
       break;

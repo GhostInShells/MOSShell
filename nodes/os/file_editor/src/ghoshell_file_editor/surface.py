@@ -310,9 +310,12 @@ class FileEditorSurface:
         That is the whole point: "who wrote this line" must have one answer.
         """
         action = self._store.edit_region(
-            thread, region, text, label or f"he edited {region}", author="u"
+            thread, region, text, label or f"edited {region}", author="u"
         )
         await self.cancel_edit(thread)
+        # The action itself rides back with the receipt: the page already has the
+        # text it just wrote, and making it pull the whole thread again to learn
+        # one card is why the echo felt slow.
         await self.broadcast(
             {
                 "type": "landed",
@@ -320,6 +323,7 @@ class FileEditorSurface:
                 "n": action.n,
                 "client_id": client_id,
                 "by": "human",
+                "action": action_view(action),
             }
         )
         return action
@@ -365,7 +369,13 @@ class FileEditorSurface:
         await self.broadcast({"type": "selection", "selection": self._selection})
 
     async def set_view_at(self, thread: str, line: int) -> None:
-        """Record where the human has scrolled to — no jump, no redraw of my marker."""
+        """Record where the human has scrolled to — no jump, no redraw of my marker.
+
+        Line 0 means "nothing to report": a page that has not been touched yet says
+        so instead of leaving an old number behind. A position nobody chose is not
+        a perception, it is a ghost of one, and the model would read it as the
+        human pointing somewhere.
+        """
         if not thread:
             return
         line = max(0, int(line))
