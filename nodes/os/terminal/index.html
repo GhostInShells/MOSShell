@@ -55,6 +55,18 @@
   .conn { font-size: 14px; color: var(--dim); }
   .conn.live { color: var(--run); }
 
+  /* 操作面的唯一性：只有一扇窗能按。其余的窗照常看得到卡片，但盖一层遮罩，
+     上面写着为什么按不了、以及怎么把它抢回来 —— 只读是**看得见的状态**，
+     不是一次按下去什么也不会发生的点击。 */
+  #mask { position: fixed; inset: 0; z-index: 20; display: none;
+          background: rgba(8, 10, 12, .82); place-items: center; }
+  body.masked #mask { display: grid; }
+  #mask-box { max-width: 30em; padding: 24px; text-align: center; }
+  #mask-box p { margin: 0 0 16px; color: var(--fg); opacity: .8; }
+  #mask-claim { font: inherit; padding: 8px 18px; color: var(--run); cursor: pointer;
+                background: transparent; border: 1px solid var(--run); border-radius: 4px; }
+  #mask-claim:hover { background: rgba(51, 221, 136, .12); }
+
   /* A thread is not one more fact about the card: it is the space the command
      belongs to, so it is named in the same breath as the directory it points at
      rather than announced by a section header of its own. The rule on the left
@@ -273,6 +285,10 @@
 </style>
 </head>
 <body>
+<div id="mask"><div id="mask-box">
+  <p id="mask-line">another window is the terminal</p>
+  <button id="mask-claim">use this window</button>
+</div></div>
 <header>
   <!-- No brand: the screen tile that holds this window already names it, and the
        label was costing room the controls needed. -->
@@ -387,6 +403,16 @@ function makeCollapsible(label) {
 
 function send(frame) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+}
+
+// Only one window holds the surface: a verdict clicks through to a real command,
+// so two windows that both look pressable would be two hands on one button.
+let isCurrent = true;
+function setMasked(on, reason) {
+  isCurrent = !on;
+  document.body.classList.toggle("masked", !!on);
+  const line = document.getElementById("mask-line");
+  if (line) line.textContent = reason || "another window is the terminal";
 }
 
 // -- rendering -------------------------------------------------------------
@@ -725,6 +751,8 @@ function applyCard(card) {
 
 function onFrame(frame) {
   switch (frame.type) {
+    case "current": setMasked(false, ""); break;
+    case "mask": setMasked(true, frame.reason); break;
     case "snapshot": {
       if (typeof frame.global_trust === "boolean") setGlobalTrust(frame.global_trust);
       streamEl.replaceChildren();
@@ -834,6 +862,7 @@ modesEl.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-mode]");
   if (btn) send({ type: "mode", mode: btn.dataset.mode });
 });
+document.getElementById("mask-claim").addEventListener("click", () => send({ type: "claim" }));
 document.getElementById("accept-all").addEventListener("click", () => send({ type: "accept_all" }));
 document.getElementById("deny-all").addEventListener("click", () => send({ type: "deny_all" }));
 document.getElementById("stop-all").addEventListener("click", () => send({ type: "stop_all" }));

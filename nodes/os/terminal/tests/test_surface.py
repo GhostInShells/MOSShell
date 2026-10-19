@@ -494,3 +494,49 @@ async def test_a_frame_we_cannot_read_does_not_kill_the_link(store, signals, sto
             assert (await _recv(ws, "pong", timeout=1.0))["type"] == "pong"
     finally:
         await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_only_the_claiming_window_can_settle(store, signals, stops):
+    """A verdict is a side effect — two pressable windows would be two hands."""
+    surface = await _surface(store, signals, stops)
+    try:
+        card = _pending(store)
+        url = f"ws://127.0.0.1:{surface.port}/ws"
+        async with connect(url) as first:
+            await _recv(first, "snapshot")
+            await _recv(first, "current")
+            async with connect(url) as second:
+                await _recv(second, "snapshot")
+                mask = await _recv(first, "mask")
+                assert "another window" in mask["reason"]
+
+                await first.send(json.dumps({"type": "accept", "id": card.id}))
+                await asyncio.sleep(0.1)
+                assert not store.waiter(card.id).done(), "a reading window settled a card"
+
+                await second.send(json.dumps({"type": "accept", "id": card.id}))
+                await asyncio.sleep(0.1)
+                waiter = store.waiter(card.id)
+                assert waiter.done() and waiter.result() == "accept"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_masked_window_can_take_the_surface_back(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        url = f"ws://127.0.0.1:{surface.port}/ws"
+        async with connect(url) as first:
+            await _recv(first, "snapshot")
+            await _recv(first, "current")
+            async with connect(url) as second:
+                await _recv(second, "snapshot")
+                await _recv(first, "mask")
+
+                await first.send(json.dumps({"type": "claim"}))
+                assert (await _recv(first, "current"))["type"] == "current"
+                assert (await _recv(second, "mask"))["type"] == "mask"
+    finally:
+        await surface.stop()

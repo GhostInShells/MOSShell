@@ -143,6 +143,11 @@ class TerminalSurface:
         self._llm_funcs = llm_funcs
         self._groundset = groundset
         self._clients: set[ServerConnection] = set()
+        # 操作面只有一个。终端是**有副作用**的界面：点一次接受就会跑一条命令，
+        # 所以"哪块屏是人正在按的"必须是单一事实 —— 否则同一个窗口内容在两块屏上
+        # 各按各的，等于两个人同时按一个按钮。同一套规矩屏上已经有了：最新连上的
+        # 那一扇拿走操作面，其余挂遮罩、只读，遮罩上留一个「用这个窗口」把它抢回来。
+        self._current: ServerConnection | None = None
         self._server: Any = None
         self._settled: set[int] = set()
         self._last_action: dict[tuple[int, str], float] = {}
@@ -165,6 +170,32 @@ class TerminalSurface:
                 await client.send(payload)
             except Exception:
                 self._clients.discard(client)
+
+    # -- 操作面的唯一性 ------------------------------------------------------
+
+    async def _send_to(self, connection: ServerConnection, frame: dict[str, Any]) -> None:
+        try:
+            await connection.send(json.dumps(frame, ensure_ascii=False))
+        except Exception:
+            self._clients.discard(connection)
+
+    async def _claim(self, connection: ServerConnection) -> None:
+        """Make this window the one the human's hands are on.
+
+        Everyone renders the same cards; only the claimant's clicks are verdicts.
+        The others get a mask with a way back in, so "read-only" is visible state
+        and not a click that silently does nothing.
+        """
+        self._current = connection
+        await self._send_to(connection, {"type": "current"})
+        for other in list(self._clients):
+            if other is not connection:
+                await self._send_to(
+                    other, {"type": "mask", "reason": "another window is the terminal"}
+                )
+
+    def is_current(self, connection: ServerConnection) -> bool:
+        return connection is self._current
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -467,6 +498,8 @@ class TerminalSurface:
         self._clients.add(connection)
         try:
             await connection.send(json.dumps(self.snapshot(), ensure_ascii=False))
+            # 最新连上的这一扇拿走操作面：刷新页面 = 我要在这里按。
+            await self._claim(connection)
             async for raw in connection:
                 try:
                     frame = json.loads(raw)
@@ -485,6 +518,14 @@ class TerminalSurface:
                     # from a deaf one.
                     await connection.send(json.dumps({"type": "pong"}))
                     continue
+                if kind == "claim":
+                    await self._claim(connection)
+                    continue
+                # Everything below has a side effect. Only the window that holds
+                # the surface may cause one — the others are reading.
+                if not self.is_current(connection):
+                    print(f"[terminal] ignored {kind!r} from a non-current window", file=sys.stderr)
+                    continue
                 work = self._frame_work(kind, card_id, frame)
                 if work is None:
                     print(f"[terminal] unknown frame {kind!r}", file=sys.stderr)
@@ -495,6 +536,10 @@ class TerminalSurface:
                     await self._run_frame(kind, card_id, work)
         finally:
             self._clients.discard(connection)
+            if self._current is connection:
+                # The surface is nobody's until someone takes it: a page that is
+                # gone must not leave the remaining windows masked forever.
+                self._current = None
 
     async def start(self) -> None:
         self._server = await serve(
