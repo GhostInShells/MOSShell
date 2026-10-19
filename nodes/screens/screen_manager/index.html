@@ -56,7 +56,7 @@
        is subtitles, not a left-aligned log. */
     position: fixed; left: calc(var(--rail-w) + 24px); bottom: 26px; right: 24px;
     z-index: 8; pointer-events: none; display: flex; flex-direction: column;
-    gap: 3px; align-items: center; font-size: 24px; line-height: 1.32;
+    gap: 3px; align-items: center; font-size: var(--talk-size, 32px); line-height: 1.32;
     /* The page never declares a font, so subtitles inherited the browser default
        and read like a scarecrow. A clean sans, sized for reading off a stream. */
     font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
@@ -2090,7 +2090,12 @@ function route(f) {
     case 'talk': {
       const box = document.getElementById('talk');
       if (!box) break;
+      // 字号是这块屏的状态, 不是某一行的属性: 收到的第一件事是把它挂到 box 上,
+      // 于是已经在屏上的旧行也一起变 —— 否则改一次字号要等两句才看得全.
+      if (f.size) box.style.setProperty('--talk-size', f.size + 'px');
       if (f.clear) { box.replaceChildren(); break; }
+      // 只带 size 的帧到此为止: 它是"现在的字号", 不是一句话.
+      if (!f.text) break;
       const line = document.createElement('div');
       line.className = 'line';
       line.textContent = f.text || '';

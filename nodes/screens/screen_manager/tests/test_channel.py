@@ -566,3 +566,42 @@ async def test_stage_talk_ghost_mode_leaves_his_words_out():
             rejected = str(e)
     assert rec.of("talk") == []
     assert rejected and "off / both / ghost" in rejected
+
+
+@pytest.mark.asyncio
+async def test_stage_size_is_one_knob_for_both_voices():
+    """字号是这块屏的状态, 不分两边说话.
+
+    直播时人隔着一个屏看, 字幕太小等于没有字幕; 而如果只放大一边, 同一段对话就会
+    一半大一半小 —— 所以一个 size 同时管底部字幕与我飞进来的弹幕. 改字号还要落到
+    *已经在屏上*的旧行, 否则要等两句才看得全, 那就不像"现在多大"而像"下一句多大".
+    """
+    rec = Recorder()
+    feed = _FakeClauses()
+    chan = build_screen_channel(
+        ScreenModel(), surface=rec, audio=MockAudioSource(), clauses=feed
+    )
+
+    async with chan.bootstrap() as runtime:
+        # 默认那一档是给直播用的: 页面在数 px, 这里只断言这个旋钮存在且够大.
+        assert "size=" in await runtime.execute_command("stage")
+
+        assert "size=40.0" in await runtime.execute_command(
+            "stage", kwargs={"size": 40}
+        )
+        # 不带文字的帧: 它是"现在的字号", 页面据此改 box 的变量, 不画新的一行.
+        assert rec.of("talk")[-1] == {"type": "talk", "size": 40.0}
+
+        await feed.handler(_Clause("字幕要够大", "user"))
+        assert rec.of("talk")[-1]["text"] == "字幕要够大"
+        assert rec.of("talk")[-1]["size"] == 40.0
+
+        task = asyncio.ensure_future(feed.handler(_Clause("我这边也一起", "ghost")))
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if rec.of("veil"):
+                break
+        task.cancel()
+
+    bullets = [f for f in rec.of("veil") if f.get("gesture") == "danmaku"]
+    assert bullets and bullets[-1]["size"] == 40.0

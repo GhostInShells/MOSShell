@@ -119,6 +119,14 @@ def _split_ids(raw: Any) -> list[str]:
 # 是那块屏要推给观众时才用的值, 那时对面的话不是我该广播的.
 DEFAULT_TALK = "both"
 
+# 字号是这块屏唯一的"看起来多大"的旋钮, 而它取决于观看距离 —— 直播时人隔着一个屏,
+# 24px 的字幕等于没有字幕. 默认给直播那一档; 页面用 --talk-size 接住它, 所以改一次
+# 字号底部字幕和我这边的弹幕一起变, 不会一半大一半小.
+DEFAULT_TALK_SIZE = 32
+
+# 工具调用和我说话走同一根带子, 但它是旁注不是台词: 比正文小一档, 不另开旋钮.
+_TOOL_LINE_RATIO = 0.75
+
 
 def build_screen_channel(
     model: ScreenModel,
@@ -485,7 +493,9 @@ def build_screen_channel(
     # On by default: a stage that waits for somebody to remember the switch reads,
     # from the audience's side, as a broken stage rather than a quiet one. Which of
     # the two voices it mirrors is ``DEFAULT_TALK``'s business, not this line's.
-    stage_flags: dict[str, str] = {"talk": DEFAULT_TALK}
+    # ``size`` rides here beside ``talk`` for the same reason: it is a property of
+    # the mirror as a whole (one screen, one viewing distance), not of a command.
+    stage_flags: dict[str, Any] = {"talk": DEFAULT_TALK, "size": DEFAULT_TALK_SIZE}
     _live_bullets: set[asyncio.Task] = set()
 
     async def _on_clause(clause: Any) -> None:
@@ -511,12 +521,14 @@ def build_screen_channel(
             # One band, not the whole stage: my lines arriving from the right are
             # a second voice, and a voice that shows up everywhere is noise.
             bullet = asyncio.create_task(_send_danmaku(
-                text, duration=8.0, motion="rtl", size=26, overlap=True,
+                text, duration=8.0, motion="rtl", size=stage_flags["size"],
+                overlap=True,
             ))
             _live_bullets.add(bullet)
             bullet.add_done_callback(_live_bullets.discard)
             return
-        await _emit({"type": "talk", "text": text, "role": role or "user"})
+        await _emit({"type": "talk", "text": text, "role": role or "user",
+                     "size": stage_flags["size"]})
 
     async def _on_event(event: Any) -> None:
         """What I am doing, mirrored: a state light and the actions.
@@ -543,7 +555,8 @@ def build_screen_channel(
         if not text:
             return
         bullet = asyncio.create_task(_send_danmaku(
-            f"▸ {text}", duration=8.0, motion="rtl", size=22, overlap=True,
+            f"▸ {text}", duration=8.0, motion="rtl",
+            size=stage_flags["size"] * _TOOL_LINE_RATIO, overlap=True,
             color="#8fe3a1",
         ))
         _live_bullets.add(bullet)
@@ -574,7 +587,7 @@ def build_screen_channel(
         stage_flags["talk"] = mode
 
     @chan.build.command(name="stage")
-    async def stage(talk: str | None = None) -> str:
+    async def stage(talk: str | None = None, size: float | None = None) -> str:
         """What the stage mirrors of the conversation itself.
 
         ``talk`` mirrors the conversation itself as danmaku, in three values:
@@ -583,6 +596,14 @@ def build_screen_channel(
         in a conversation right now), or ``ghost`` (mine only — the value to use when
         the screen is going out to an audience, because then his words are not mine
         to broadcast).
+
+        ``size`` is the mirror's font size in px — one number for both voices, the
+        subtitles at the bottom and my bullets alike, because both are read from the
+        same distance. It is also the reason this is a stage flag and not a command
+        of its own: two knobs would let the two halves of one conversation drift to
+        different sizes. A stream is watched from farther away than a desk, so the
+        default leans large; ``size`` is how that judgement is corrected without
+        touching the page.
 
         Empty = read the flags back. More flags land here as the stage learns to
         show more; they arrive as arguments, never as new commands.
@@ -599,6 +620,13 @@ def build_screen_channel(
                     "the ClauseTopic subscription"
                 )
             await _apply_stage(mode)
+        if size is not None:
+            if not size > 0:
+                CommandUtil.raise_observe(f"size must be > 0, got {size!r}")
+            stage_flags["size"] = float(size)
+            # 不带文字的 talk 帧: 页面把它当字号本身, 不画新的一行. 已经挂在屏上的
+            # 旧行也跟着变 —— 改字号是"这块屏现在多大", 不是"下一句多大".
+            await _emit({"type": "talk", "size": stage_flags["size"]})
         shown = ", ".join(f"{k}={v}" for k, v in stage_flags.items())
         return f"[{name}] stage: {shown}"
 
