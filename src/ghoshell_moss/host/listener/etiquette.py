@@ -331,8 +331,8 @@ murmur = EtiquetteSpec(
 
 
 # 逐句接话: 每句自成一段, 每句强制下一轮轮到你 (next), 绝不打断"思考", 也不抢"出声".
-# 出声即让路 (barge_in_while_speaking) 验过了, 开关留在 DeliverSpec 上, 但默认谁都不开 ——
-# 要抢嘴的那一档自己打开它.
+# 出声即让路 (barge_in_while_speaking) 开关在 DeliverSpec 上, 内建那一套里只有 duplex
+# 打开它 —— 其余各档不因为"能力验过了"就跟着改行为.
 cue = EtiquetteSpec(
     name="cue",
     description="continuous input — each clause takes a turn; nothing is interrupted",
@@ -346,7 +346,11 @@ cue = EtiquetteSpec(
 # 最后定稿的那一截、以及二遍识别才出来的文本, 都只能落在尾包里 —— 它既回答"他可能停了",
 # 也可能带着前面没发过的新内容. 静音取 4s: 一句说完的正常停顿 (换气、想一下) 不该把同一段
 # 切成两段, 而 4s 也够我在他真停下时及时接上.
-# 其余照 cue: 不打断、走 next、出声不让路 —— 什么时候开口是模型的判断, 不是礼仪的.
+# 其余照 cue: 不打断、走 next —— 什么时候开口是模型的判断, 不是礼仪的. 只有一件例外:
+# 出声即让路 (barge_in_while_speaking) 在**这一档**打开 —— 我正说着、他又说了, 那时不必
+# 等我的判断, 语音让路 (提权一档 + 掐掉正在播的那一句); 思考与动作不受影响. 这是全双工
+# 该有的物理性质: 声音是半双工介质, 两把声音叠着两边都亏.
+# 判据: 能力在 DeliverSpec 上, 但只由这一档兑现 —— 别的礼仪不许因为"验过"就跟着改行为.
 # low_confidence=0.8: 火山词级置信度里, 0.8 以下基本就是听岔了 —— 默认开着, 让模型
 # 自己看到哪几个字可疑 (属性只在有可疑字时出现, 正常句子的帧里不会多一个字节).
 duplex = EtiquetteSpec(
@@ -354,7 +358,10 @@ duplex = EtiquetteSpec(
     description="full duplex — every clause reaches you; a 4s quiet tail says he may have stopped",
     onset=OnsetSpec(emit=False, interrupt=False),
     stop=StopSpec(silence=4.0),
-    deliver=DeliverSpec(interrupt=False, mode="next", per_clause=True, low_confidence=0.8),
+    deliver=DeliverSpec(
+        interrupt=False, mode="next", per_clause=True, low_confidence=0.8,
+        barge_in_while_speaking=True,
+    ),
 )
 
 

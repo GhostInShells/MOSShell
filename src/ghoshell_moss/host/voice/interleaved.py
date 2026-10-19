@@ -80,6 +80,7 @@ class InterleavedVoice(Voice):
                 config_store=config_store,
                 topic_service=matrix.session.topics,
                 speaking_probe=self._speaking_probe(),
+                speech_cutter=self._speech_cutter(),
             )
             # 单例注册: TUI voice state / 其它消费面从 container 拿同一个 controller.
             # 保留旧兼容 — 迁移期若有消费方直接 container.get(ListenerController).
@@ -105,6 +106,29 @@ class InterleavedVoice(Voice):
             return bool(player().is_playing())
 
         return _probe
+
+    def _speech_cutter(self):
+        """交出「别说了」— 给听侧让路时喊, 掐掉正在播的那条语音流.
+
+        和 ``_speaking_probe`` 成对: 探针只回答"我在不在说", 这里才动手. 只清说侧
+        (``speech.clear()``): 被打断的是这一句话, 不是这一身动作 —— 轮可以被话抢走,
+        身体不该被话停掉.
+
+        ``speech.clear()`` 是异步的, 而交付回调是同步的 (在事件循环里跑), 所以这里返回
+        的回调只负责把清空排进循环, 不阻塞交付本身.
+        """
+        speech = self._speech
+        if speech is None:
+            return None
+
+        def _cut() -> None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:  # 不在循环里 (收尾期) — 没有声音要掐
+                return
+            loop.create_task(speech.clear())
+
+        return _cut
 
     def listener_channel(self) -> Optional[Channel]:
         return self._controller.as_channel() if self._controller else None

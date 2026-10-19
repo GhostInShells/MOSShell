@@ -1219,11 +1219,77 @@ def test_barge_in_is_inert_without_a_speaking_probe():
     assert ListenerSignal.from_signal(sig).boost is None
 
 
-def test_no_builtin_yields_to_speech_by_default():
-    """出声即让路是「这一档」的选择, 不是全局默认 —— 内建礼仪一个都不开.
+# ── 出声即让路时掐语音 (speech_cutter) ────────────────────────────────────────
+#
+# 不变量: 让路分两半 —— 提权赢注意力, 掐语音收嘴. 只有"他真说了什么"才掐:
+# 空尾包说的是"他停了", 拿它当剪子等于每次该我接话时先剪掉自己.
 
-    能力验过、留在 DeliverSpec 上, 但默认那一套礼仪里没有谁该抢嘴; 要抢的那一档自己打开它.
-    判据: 验过一个开关, 不许因此改掉几十档礼仪的默认行为.
+
+def _barge_in_cut_controller(emitted: list, cuts: list, *, speaking: bool = True):
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener,
+        asr=_MockASR(),
+        signal_broadcast=emitted.append,
+        speaking_probe=lambda: speaking,
+        speech_cutter=lambda: cuts.append("cut"),
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver = spec.deliver.model_copy(
+        update={"per_clause": True, "barge_in_while_speaking": True},
+    )
+    controller.set_etiquette_spec(spec)
+    controller._set_active_etiquette(spec)
+    controller._cb = listener.result_observers[0]
+    return controller
+
+
+def test_barge_in_cuts_the_speech_when_a_packet_carries_text():
+    """我在说、他又说了有内容的一句 → 话音让路: 每一条带字的包都掐一次."""
+    emitted, cuts = [], []
+    controller = _barge_in_cut_controller(emitted, cuts)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    assert len(emitted) == 1, "分句照常交付"
+    assert cuts == ["cut"]
+
+    cb(RecognitionEvent(stream_id="s", segment_id="g", phase=RecognitionPhase.CLAUSE,
+                        text="你好，我是老莫", clause=RecognitionClause(text="我是老莫")))
+    assert len(cuts) == 2
+
+
+def test_barge_in_does_not_cut_on_a_tail_with_nothing_new():
+    """空尾包说的是"他停了", 不是"他在说" → 不掐, 也不签发 (老规矩照旧)."""
+    emitted, cuts = [], []
+    controller = _barge_in_cut_controller(emitted, cuts)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    before = len(cuts)
+    cb(_tail("你好", segment_id="g"))
+
+    assert len(emitted) == 1, "空尾包仍然不签发"
+    assert len(cuts) == before, "空尾包不许当剪子"
+
+
+def test_barge_in_does_not_touch_speech_while_not_speaking():
+    """没在出声 → 一个字都不掐; 开关管的是嘴, 不是耳朵."""
+    emitted, cuts = [], []
+    controller = _barge_in_cut_controller(emitted, cuts, speaking=False)
+
+    controller._cb(_clause("你好"))
+    controller._cb(_tail("你好，还有一句", segment_id="g"))
+
+    assert emitted, "包照发"
+    assert cuts == []
+
+
+def test_no_builtin_but_duplex_yields_to_speech_by_default():
+    """出声即让路是「这一档」的选择: 内建礼仪里只有 duplex 打开它.
+
+    duplex 是全双工那一档 —— "我正说着、他又说了"时话音让路是它的性质; 别的礼仪
+    不因为"能力验过"就跟着改行为. 判据: 验过一个开关, 不许因此改掉几十档礼仪的默认.
     """
     from ghoshell_moss.host.listener import etiquette
 
@@ -1232,14 +1298,16 @@ def test_no_builtin_yields_to_speech_by_default():
         if name not in ("cue", "DeliverMode") and isinstance(getattr(etiquette, name), etiquette.EtiquetteSpec)
     ]
     assert specs, "builtin etiquettes should not be empty"
-    assert not [n for n in specs if getattr(etiquette, n).deliver.barge_in_while_speaking]
+    yielding = [n for n in specs if getattr(etiquette, n).deliver.barge_in_while_speaking]
+    assert yielding == ["duplex"]
 
 
-def test_duplex_is_full_duplex_and_never_cuts_in():
-    """duplex 一条礼纪要兑现三件事: 每句一包、有真的判停收口、绝不打断.
+def test_duplex_is_full_duplex_and_never_interrupts_the_ghost():
+    """duplex 一条礼纪要兑现: 每句一包、有真的判停收口、不抢注意力.
 
     缺了判停就退化成 cue (他停不停只能靠我自己猜); 缺了分句就退化成一次一整段
-    (我拿不到"他还在说"的中间态). 打断与否是另一条: 这一档里什么时候开口归我判断.
+    (我拿不到"他还在说"的中间态). 打断分两层: 注意力不抢 (interrupt=False),
+    但我正出声时话音让路 —— 那是说侧的事, 不是把这一轮掀掉.
     """
     from ghoshell_moss.host.listener import etiquette
 
@@ -1248,6 +1316,7 @@ def test_duplex_is_full_duplex_and_never_cuts_in():
     assert spec.stop.silence > 0
     assert not spec.deliver.interrupt
     assert not spec.onset.emit
+    assert spec.deliver.barge_in_while_speaking
 
 
 def test_default_etiquette_is_full_duplex():

@@ -9,7 +9,7 @@ status: completed
 status_note: Voice contract extracted from moss_runtime; listener_node dedup left
   for next wave
 title: Interleaved Voice
-updated: '2026-09-26'
+updated: '2026-10-19'
 ---
 
 # Interleaved Voice
@@ -104,12 +104,13 @@ AEC 在产品里有很多做法, openbox 只做一种。它不是礼仪的一个
 
 | 边 | 语义 | 本轮 |
 |----|------|------|
-| **听 → 说** | 听起音 → attenuate 说 | **做** |
+| **听 → 说** | 听起音 → attenuate 说 | **已做 2026-10-19**, 落点见文末「出声即让路」一节 |
 | **说 → 听** | 说时听关 (完整半双工闸门) | **暂不做**; 只做**几秒说话保护** —— 说止后短暂抑制听的 commit, 防尾音自触发 |
 
 现有 `host/listener/etiquette.py` 的三层里, 已有这张表的半边:
 
-- `first_packet` (`barge_in` / `interrupt` / `priority`) = 边「听起音 → 说」
+- `onset` (旧名 `first_packet`; `emit` / `interrupt` / `priority`) = 边「听起音 → 说」,
+  但**只到通告与提权**; 真正掐语音的那一刀在 `deliver.barge_in_while_speaking` 上 (2026-10-19)
 - `deliver` = 边「听尾包 → 交付」
 - `stop` = 判停 (何时产生尾包)
 
@@ -254,9 +255,15 @@ shell 核心的隐藏杀器: **解释器多通道化**。
 **对 interleaved 的直接含义**（当前理解, 非决议）:
 
 - 语音脱离身体交互靠 shell 树的**路由/并行**: speech 不在主轨 → 声音与躯体各自独立时序。
-- **打断的主机制是 command 级** (取消 `say` task), 不是 clear。command 打断本身就是强
-  周期约束 —— 取消那个 task, 粒度天然只伤它, 别的 channel 任务不动; `STOPPED(301)` +
-  `played_text` 已由 speech-governance 就绪。**clear 是兜底**, 不是打断日常路径。
+- **打断有两个入口, 落到同一个动作上**: 模型自己改口 = `clear_speech` 命令; 他开口 =
+  `deliver.barge_in_while_speaking` 触发的 `speech.clear()`. 两者都**只清说侧、不取消任务**
+  —— 被清掉的那条流自己关, 正在说的那个 `say` 随之自然结束, 全身动作一律不动.
+  **2026-10-19 推翻了这里早先「clear 只是兜底, 真正的打断是取消 `say` task」的判据**, 两条理由:
+  ① C1 修完之前 `clear()` 根本不停播放 (只清账本), 那个"兜底"定位是拿一个坏函数换来的 ——
+  函数修好了, 定位也就该重判; ② 听侧只拿得到说侧**表面**, 拿不到 `say` 的 task 句柄; 要它
+  取消任务, 就得把 shell 的任务树交给 listener —— 那层耦合比一次 `clear()` 重得多
+  (人类架构师反复说的"不要太重的耦合"). `interrupt` 那种 command 级取消仍在, 但它是**全身**
+  动作, 不该为一句抢话用上.
 - 前提 = speech 不能托管到主轨 (即点 1)。动机 = 剥并行主轨, 语音脱离身体交互。
 
 ### 3. 地板机参数化进 TUI, 四种 UI 形态
@@ -394,6 +401,9 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 9. **对齐 AEC**: ASR 不听输出 (回声不进 ASR)。
 10. **首包发 signal 但不打断 speech**: 两边一起说 (双讲) 也许是好 feature。→ 推翻早先
     "听起音 → attenuate 说"的 barge-in 假设 (KD 中"听→说 做"那条)。
+    **2026-10-19 又翻回来了, 但换了个动作**: 不是 attenuate (把音量压下去, 人还得在一段
+    变小的声音里猜你在说什么), 而是**清掉已经过时的那一句**。而且它是 `duplex` 一档的
+    选择, 不是全局行为 —— 双讲仍然允许, 只是 `duplex` 不要它。判据见文末那节。
 11. **半双工 (说时不听) 可能不必要**: 它依赖外部界面启动 (永不自起), 有 AEC 后优先级下降。
 12. **封装物料**: listener controller 只实现单侧机制; 整体封装要在 `host/` 模块下有物料,
     方便迁移成 node, 甚至预写在 `host/nodes/`。
@@ -813,3 +823,60 @@ controller 发 `listener:error` signal), `is_running()` 说真话, controller **
 链路本来就通: `new_listener_signal(low_conf=...)` → `ListenerSignal.low_conf` → nucleus 渲染
 `<listen low_conf="…">`。唯一的断点是礼仪侧 `deliver.low_confidence` 默认 `None` (= 不列)。
 所以这不是"要新做", 是"定下阈值 + 端到端验一次"。
+
+## 2026-10-19 后续补: 出声即让路 —— 说侧的那一把剪子
+
+### 一句话
+
+`duplex` 这一档里, **他一张口, 我正在播的那一句就断在那儿**: 提权一档让这一包赢下注意力,
+同时清掉说侧正在播的流。**只剪嘴, 不剪身体** —— 已经发出去的动作照常跑完。
+
+### 落点 (四处)
+
+| 在哪 | 是什么 |
+|---|---|
+| `host/listener/controller.py` `_barge_in(deliver, body)` | `_barge_in_boost` 扩成两半: 提权照旧, 再补一刀 `_cut_speech()` |
+| 同上 `_cut_speech()` | 调注入的 `speech_cutter`; 回调失败只记 `debug`, 不影响这一包交付 |
+| `host/voice/interleaved.py` `_speech_cutter()` | 从 `speech` 派生同步回调, 内部 `loop.create_task(speech.clear())` |
+| `host/listener/etiquette.py` `duplex.deliver.barge_in_while_speaking=True` | 能力在 `DeliverSpec` 上, **只由这一档兑现** |
+
+探针与剪子成对: `speaking_probe` 只回答"我在不在说", `speech_cutter` 才动手。组装者注入,
+listener 不打听说侧是谁。
+
+### 三条判据
+
+1. **判据是 `body` 非空, 不是"这是不是尾包"**。空包说的是"他停了", 不是"他在说" ——
+   拿空包当剪子, 等于每次该我接话之前先把自己的话剪掉。这跟分句交付的 `paused` 是同一条:
+   `paused="true"` 是信息, 不是许可。
+2. **只剪说侧**。声音是半双工介质, 两把声音叠着两边都亏; 动作不是, 动作可以并行。
+   所以是 `speech.clear()`, 不是 `shell.clear()`, 更不是取消任务。
+3. **能力挂在礼仪字段上, 但默认谁都不开, 只有 `duplex` 兑现它**。别的礼仪不该因为
+   "这个能力验过了"就跟着改行为 —— `cue` / `murmur` 守的是"什么时候开口是模型的判断"。
+
+### 同日: `clear_speech` 从 `call_soon` 改成 prepare 阶段清理 (血的教训)
+
+早先给 `clear_speech` 加 `call_soon=True` (语义对齐 `interrupt`), 想让它插队到正在播的那段
+话前面。**真机实测失败**: `call_soon` 是"入队即执行", 而清空是按**同轨低优先级**扫的 ——
+它把同一轮里排在它后面的 `say` 一起掀掉, 结果是前一句被杀、后一句被吞。
+
+改法: 把清理挪到 **`partial` (prepare / `on_compiled`) 阶段**。那时命令**还没进通道队列**,
+`speech.clear()` 看得见的只有**已经存在的流** —— "清掉旧的、放过新的"不是靠抢优先级抢来的,
+是**时序上天然成立**的。执行体留在后面, 只回报清了几条。
+
+> 值得单独记: 同一个需求 ("让它排到前面去") 有两个落点 —— 一个靠**抢优先级** (会被同轨规则
+> 反噬), 一个靠**选阶段** (不跟任何规则打架)。先问"这个动作该发生在队列的前面还是后面",
+> 再问"怎么插队"。
+
+### 实测 (D19 22:2x, `duplex` 档, 真机)
+
+- 我先说过一句短的, 去调工具, 再说长句: 他在工具窗口里出声, 长句刚开口就被掀掉。
+- 长句播放中他出声: 当句播 1.2s 被清 → `dropped 1 speech stream(s)` → 紧接着发的下一句
+  完整播完 4.4s。**剪旧的、留新的, 一次命中。**
+- 他停下时不剪: 空尾包没被当成剪子, 我没有自剪。
+
+### 未落地
+
+- 只在单进程 (interleaved voice 同组装者) 下验过; listener node 与 speech node 分离时
+  `speech_cutter` 的注入路径没验。分离部署下听侧拿不到说侧表面, 这一刀要么走 mesh 调用,
+  要么退化成"只提权不剪"。
+- 掐与提权绑在同一个字段上。将来若要"只提权不掐" (双讲礼仪), 得把它拆成两个字段。

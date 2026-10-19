@@ -168,6 +168,7 @@ class ListenerController(ListenLifecycle):
             config_store: Optional[ConfigStore] = None,
             topic_service: Optional[TopicService] = None,
             speaking_probe: Optional[Callable[[], bool]] = None,
+            speech_cutter: Optional[Callable[[], None]] = None,
     ):
         self._listener = listener
         self._asr = asr
@@ -175,6 +176,9 @@ class ListenerController(ListenLifecycle):
         # 这一档要不要把 interrupt 翻上来 (见 DeliverSpec). None = 这个组装者不知道
         # 说侧的存在 (独立 listener node), 开关静默失效.
         self._speaking_probe = speaking_probe
+        # 掐语音 — "让正在播的那条流停". 和探针成对: 探针回答"我在不在说", 它回答
+        # "别说了". 组装者注入, 只作用于说侧 (speech.clear), 不动全身动作.
+        self._speech_cutter = speech_cutter
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
@@ -943,7 +947,7 @@ class ListenerController(ListenLifecycle):
                 impulse_id=f"{packet.segment_id}#c{packet.index}",
                 paused=False,
                 interrupt=deliver.interrupt,
-                boost=self._barge_in_boost(deliver),
+                boost=self._barge_in(deliver, body),
                 mode=deliver.mode,
                 low_conf=self._low_confidence_chars(
                     deliver.low_confidence,
@@ -991,7 +995,7 @@ class ListenerController(ListenLifecycle):
             impulse_id=self._utterance_id(result.segment_id),
             paused=True,
             interrupt=deliver.interrupt,
-            boost=self._barge_in_boost(deliver),
+            boost=self._barge_in(deliver, body),
             mode=deliver.mode,
             low_conf=self._low_confidence_chars(deliver.low_confidence),
             db=db,
@@ -1027,6 +1031,35 @@ class ListenerController(ListenLifecycle):
             f"deliver boosted to {deliver.barge_in_boost.name} (ghost is speaking)"
         )
         return deliver.barge_in_boost
+
+    def _barge_in(self, deliver: DeliverSpec, body: str) -> Priority | None:
+        """出声即让路: 提权一档, 并且掐掉正在播的那条语音流.
+
+        两件事一起做, 因为它们是同一个判断的两半 —— "我在说, 他又说了". 提权赢的是
+        注意力 (这一包该被看见); 掐语音收的是嘴 (我这一句已经过时了). 只掐说侧,
+        全身动作一律不动: 声音是半双工介质, 两把声音叠着两边都亏; 动作不是.
+
+        掐的判据里多一条 ``body``: 空内容的包不掐. 空尾包说的是"他停了", 不是"他在
+        说" —— 拿它当剪子, 等于每次该我接话时先把自己的话剪掉. 有字的包才是他真说了什么.
+        """
+        boost = self._barge_in_boost(deliver)
+        if boost is not None and body:
+            self._cut_speech()
+        return boost
+
+    def _cut_speech(self) -> None:
+        """掐掉正在播的语音流 — 只清说侧, 不动全身动作.
+
+        注入的是同步回调, 组装者内部负责把它接到异步的 ``speech.clear()`` 上;
+        这里只保证"该掐的时候一定喊到它", 喊不到不影响交付.
+        """
+        if self._speech_cutter is None:
+            return
+        try:
+            self._speech_cutter()
+            self._notify_signal("speech cut (barge-in while speaking)")
+        except Exception:  # 掐语音挂掉不该影响这一包交付
+            self._logger.debug("%s speech cutter failed", self._log_prefix, exc_info=True)
 
     # ── expect 语音输入超时提醒 (纯异步, 不打断模型) ──
 

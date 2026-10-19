@@ -285,6 +285,8 @@ class SpeechChannelModule(ChannelModule):
         self._own_commands = {}
         self._register_content_command = register_content_command
         self._muted = False
+        self._dropped = 0
+        """clear_speech 在 prepare 阶段清掉的流数, 由执行体报告一次后归零."""
 
     def name(self) -> str:
         return "speech"
@@ -332,6 +334,20 @@ class SpeechChannelModule(ChannelModule):
         self._muted = on
         return "muted" if on else "unmuted"
 
+    async def _clear_speech_partial(self) -> tuple[tuple, dict]:
+        """prepare 阶段 (on_compiled) 就把语音清掉.
+
+        命令在这一步还没进通道队列, 所以「清掉此刻存在的流」不会误伤同一轮里排在它后面的
+        ``say`` —— 那句那时根本还没被编译出来. 曾经用 ``call_soon`` 想解决同一个问题, 结果是
+        清空动作按「同轨低优先级」把后一句一起掀了 (D19 夜实测: clear_speech 之后的 say 被吞).
+
+        清理结果记在实例上, 执行体只负责把话说清楚, 不再碰语音.
+        """
+        self._dropped = 0
+        if self._speech is not None:
+            self._dropped = len(await self._speech.clear())
+        return (), {}
+
     async def _clear_speech(self) -> str:
         """Stop talking right now — drop every open speech stream, the one being played and the
         ones still queued behind it.
@@ -339,15 +355,17 @@ class SpeechChannelModule(ChannelModule):
         The command that was speaking ends by itself, because its stream closes under it; nothing
         else on the shell is touched.
 
-        Use it when you started saying something and then decided you should not have — the
-        sentence is already playing, so correct it this way: clear, then say the new line.
-        It takes the channel ahead of whatever is speaking (``call_soon``), so it lands
-        mid-sentence instead of queueing behind the very stream it has to drop.
+        The dropping happens while the command is being prepared, before it joins the channel
+        queue — it sees only the stream that already exists, so a line emitted right after this
+        command is not swept away with the old speech.
+
+        Use it when you started saying something and then decided you should not have: clear,
+        then say the new line.
         """
         if self._speech is None:
             return "no speech"
-        dropped = await self._speech.clear()
-        return f"dropped {len(dropped)} speech stream(s)"
+        dropped, self._dropped = self._dropped, 0
+        return f"dropped {dropped} speech stream(s)"
 
     async def on_startup(self) -> None:
         if self._speech is None and CommandUtil.enabled():
@@ -366,10 +384,11 @@ class SpeechChannelModule(ChannelModule):
             cmd = factory.build_content_command()
             commands[cmd.name()] = cmd
         commands["mute"] = PyCommand(self._mute, name="mute")
-        # call_soon: 它是唯一一条必须在**正在说话时**插队的命令. 不加这个标记, 它就和被它清掉的那段
-        # 语音排在同一条轨上, 要等那段话念完才轮到自己 —— 而那时已经没话可清了. 语义对齐 interrupt.
+        # 清理放在 partial (prepare / on_compiled) 里做: 那时命令还没进队列, 清得到的只有已经
+        # 存在的流; 执行体留空, 只回报清了几条. 不能用 call_soon —— 那是「入队即执行」, 清空
+        # 是按同轨低优先级扫的, 会把同一轮里排在它后面的 say 一并掀掉.
         commands["clear_speech"] = PyCommand(
-            self._clear_speech, name="clear_speech", call_soon=True
+            self._clear_speech, name="clear_speech", partial=self._clear_speech_partial
         )
         self._own_commands = commands
 
