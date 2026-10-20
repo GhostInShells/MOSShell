@@ -74,6 +74,25 @@
   #foot .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
     background: #55636f; margin-right: 5px; vertical-align: middle; }
   body.live #foot .dot { background: var(--accent); }
+
+  /* ===== 收起动作列 =====
+     全屏时收起的只是"卡"，不是"记录"：留下一条能点开的窄条，读点还在上面。 */
+  body.panelless { grid-template-columns: 1fr 26px; }
+  body.panelless #side > *:not(#strip) { display: none; }
+  #strip {
+    display: none; height: 100%; cursor: pointer; position: relative;
+    border-left: 1px solid var(--line); background: #0d1218;
+  }
+  body.panelless #strip { display: block; }
+  #strip .tick {
+    position: absolute; left: 9px; width: 7px; height: 7px; border-radius: 50%;
+    background: #2b313b; transform: translateY(-50%);
+  }
+  #strip .tick.reader { background: var(--accent); }
+  #strip .count {
+    position: absolute; bottom: 8px; left: 0; right: 0; text-align: center;
+    color: var(--dim); font-size: 10px; writing-mode: vertical-rl;
+  }
 </style>
 </head>
 <body>
@@ -91,6 +110,7 @@
   </header>
   <div id="cards"></div>
   <div id="foot"><span><i class="dot"></i><span id="conn">connecting…</span></span><span id="cursor"></span></div>
+  <div id="strip" title="展开动作列"><span class="count"></span></div>
 </aside>
 
 <script>
@@ -102,6 +122,7 @@ const workName = document.getElementById("work-name");
 const workMeta = document.getElementById("work-meta");
 const connEl = document.getElementById("conn");
 const cursorEl = document.getElementById("cursor");
+const strip = document.getElementById("strip");
 
 let ops = [];       // 这一份作品的 action log（服务端才是真相，这里是它的投影）
 let cursor = 0;     // reader 站在第几个 op 之后
@@ -228,7 +249,31 @@ function renderCards() {
   });
   cursorEl.textContent = ops.length ? `reader ${cursor}/${ops.length}` : "";
   empty.hidden = ops.length > 0;
+  renderStrip();
 }
+
+// 收起后剩下的那条窄条：读点还在上面，点一下展开。
+// 收的是"卡"，不是"记录" —— 所以它能被点回来，读点也不会跟着消失。
+function renderStrip() {
+  strip.replaceChildren();
+  const n = ops.length;
+  ops.forEach((op, idx) => {
+    const tick = document.createElement("i");
+    tick.className = "tick" + (idx + 1 === cursor ? " reader" : "");
+    tick.style.top = n > 1 ? `${(idx / (n - 1)) * 78 + 8}%` : "45%";
+    tick.title = op.note || op.kind;
+    strip.appendChild(tick);
+  });
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = n ? `${cursor}/${n}` : "";
+  strip.appendChild(count);
+}
+
+strip.addEventListener("click", () => {
+  document.body.classList.remove("panelless");
+  renderStrip();
+});
 
 function esc(s) { return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])); }
 
@@ -269,6 +314,11 @@ function onFrame(f) {
   }
   if (f.type === "cursor") {
     if (f.n !== cursor) replay(f.n);
+    return;
+  }
+  if (f.type === "panel") {
+    document.body.classList.toggle("panelless", !f.show);
+    renderStrip();
   }
 }
 

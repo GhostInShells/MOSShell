@@ -396,6 +396,19 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
                                 "ops": [op.as_frame() for op in work.ops[:work.cursor]]})
         return f"'{work.name}' reader at {work.cursor}/{len(work.ops)}"
 
+    @chan.build.command(always_observe=False)
+    async def panel(show: bool = True) -> str:
+        """Show or collapse the action column: full screen for the drawing.
+
+        What collapses is the **cards**, not the record — the strip that remains still
+        carries the reader's position and still opens on a click. A view action, so it
+        is the human's to undo as well.
+
+        :param show: True shows the column, False gives the drawing the whole width
+        """
+        await server.broadcast({"type": "panel", "show": bool(show)})
+        return "action column shown" if show else "action column collapsed — the record is still there"
+
     @chan.build.startup
     async def _startup() -> None:
         await server.start()
