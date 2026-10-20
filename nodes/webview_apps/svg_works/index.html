@@ -120,13 +120,13 @@
 
 <aside id="side">
   <header>
-    <select id="work-picker" title="切作品（换的是看哪个，不改任何作品的内容）"></select>
+    <select id="work-picker" title="switch work — a view action, no work is changed"></select>
     <span id="work-meta"></span>
-    <button id="canvas-first" title="画布优先：收起动作列，记录仍然在">⤢ 画布优先</button>
+    <button id="canvas-first" title="canvas first — hides the cards, keeps the record">canvas</button>
   </header>
   <div id="cards"></div>
   <div id="foot"><span><i class="dot"></i><span id="conn">connecting…</span></span><span id="cursor"></span></div>
-  <div id="strip" title="展开动作列"><span class="count"></span></div>
+  <div id="strip" title="show the action column"><span class="count"></span></div>
 </aside>
 
 <script>
@@ -191,13 +191,13 @@ function apply(op) {
     // 地址找不到时不要偷偷落到 stage 上：那是"改错了地方"，必须说出来。
     let parent = find(op.addr);
     if (!parent && op.addr !== "#stage") {
-      op.warn = `找不到地址 ${op.addr} — 这一笔没落地`;
+      op.warn = `no node at ${op.addr} — this op did not land`;
       return false;
     }
     parent = parent || stage;
     // 注意 SVG 元素的 tagName 保留小写（"path"），HTML 元素才是全大写 —— 两边都归一。
     if (VOID_SHAPES.has(String(parent.tagName).toUpperCase())) {
-      op.warn = `<${parent.tagName.toLowerCase()}> 装不了孩子 — 换个 <g> 当容器`;
+      op.warn = `<${parent.tagName.toLowerCase()}> cannot hold children — use a <g>`;
     }
     // 预览被 op 接管：先撤掉预览，避免同一段内容出现两次
     const live = previews.get(op.addr)?.node;
@@ -208,13 +208,13 @@ function apply(op) {
   }
   if (op.kind === "set") {
     const el = find(op.addr);
-    if (!el) { op.warn = `找不到地址 ${op.addr} — 属性没有改到`; return false; }
+    if (!el) { op.warn = `no node at ${op.addr} — attribute not set`; return false; }
     el.setAttribute(op.payload.attr, op.payload.value);
     return true;
   }
   if (op.kind === "remove") {
     const el = find(op.addr);
-    if (!el) { op.warn = `找不到地址 ${op.addr} — 没有可删的节点`; return false; }
+    if (!el) { op.warn = `no node at ${op.addr} — nothing to remove`; return false; }
     el.remove();
     return true;
   }
@@ -267,7 +267,7 @@ function renderCards() {
       warn.textContent = op.warn;
       card.appendChild(warn);
     }
-    card.title = "回到这一格";
+    card.title = "move the reader here";
     card.addEventListener("click", () => {
       // 人点卡 = 一个视图动作，所以发上去让服务端把读点也挪过去（两边同一个数）。
       send({ type: "user.checkout", n: idx + 1 });
