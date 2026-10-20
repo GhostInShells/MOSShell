@@ -13,7 +13,7 @@ description: 和 thirdgerb 一起直播开发时，我如何在场——把 webv
 按这个顺序，因为后面每一步都依赖前一步的地址：
 
 1. `<matrix.nodes:run target="nodes/screens/screen_manager"/>`
-   —— 屏幕躯体走 **webview** 这一支（`webview_screen`）。`qt_screen` 暂时不用。
+   —— 屏幕躯体只走 **webview** 这一支（`webview_screen`）。`qt_screen` 已于 D20 整体删除（旧设计，要重做也是一支新 node）。
 2. `<matrix.nodes:run target="nodes/browsers/co_browser"/>`
    —— 有头浏览器，人在看它的 exec 流；它是我能截图、能看页面的一只眼睛。
 3. 把 co_browser 指到屏幕地址，让「镜头里就是我的脸」：
