@@ -34,7 +34,8 @@
     padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
     flex-wrap: wrap;
   }
-  .brand { color: var(--accent); font-weight: 600; }
+  /* 这里不再写自己的名字：窗口的身份由 screen 的标题栏给（node 只交 label，
+     chrome 归平台）。同一条规矩，terminal 也一样 —— 否则三个 node 会长出三种标题。 */
   .spacer { flex: 1; }
   .toggle {
     background: transparent; color: var(--dim); border: 1px solid var(--line);
@@ -523,7 +524,6 @@
   <button id="mask-claim">use this window</button>
 </div></div>
 <header>
-  <span class="brand">moss file_editor</span>
   <button class="toggle on" id="toggle" title="turn the model's editing on or off">editing: on</button>
   <button class="switch" id="trust-global" title="hand every approval on this surface to the model">trust: off</button>
   <span class="spacer"></span>
