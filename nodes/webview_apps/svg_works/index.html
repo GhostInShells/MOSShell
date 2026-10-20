@@ -171,7 +171,13 @@ const VOID_SHAPES = new Set([
 // ---- 应用一条 op ---------------------------------------------------------
 function apply(op) {
   if (op.kind === "insert") {
-    const parent = find(op.addr) || stage;
+    // 地址找不到时不要偷偷落到 stage 上：那是"改错了地方"，必须说出来。
+    let parent = find(op.addr);
+    if (!parent && op.addr !== "#stage") {
+      op.warn = `找不到地址 ${op.addr} — 这一笔没落地`;
+      return false;
+    }
+    parent = parent || stage;
     // 注意 SVG 元素的 tagName 保留小写（"path"），HTML 元素才是全大写 —— 两边都归一。
     if (VOID_SHAPES.has(String(parent.tagName).toUpperCase())) {
       op.warn = `<${parent.tagName.toLowerCase()}> 装不了孩子 — 换个 <g> 当容器`;
@@ -185,13 +191,13 @@ function apply(op) {
   }
   if (op.kind === "set") {
     const el = find(op.addr);
-    if (!el) return false;
+    if (!el) { op.warn = `找不到地址 ${op.addr} — 属性没有改到`; return false; }
     el.setAttribute(op.payload.attr, op.payload.value);
     return true;
   }
   if (op.kind === "remove") {
     const el = find(op.addr);
-    if (!el) return false;
+    if (!el) { op.warn = `找不到地址 ${op.addr} — 没有可删的节点`; return false; }
     el.remove();
     return true;
   }
@@ -296,7 +302,9 @@ function onFrame(f) {
     return;
   }
   if (f.type === "stream") {
-    const parent = find(f.addr) || stage;
+    // 预览也走地址：找不到就不画，别把内容随手丢到 stage 上冒充"在流"。
+    const parent = find(f.addr);
+    if (!parent) return;
     let live = previews.get(f.addr);
     if (!live || !live.parentNode) {
       live = document.createElementNS(SVG_NS, "g");
