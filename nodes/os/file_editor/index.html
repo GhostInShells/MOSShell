@@ -221,7 +221,8 @@
   .meta-fold.on { color: var(--fg); }
   /* The facts about the thread are a fold at the top of the document, not a
      third way of reading it: "what this is" sits above "what it says". */
-  .meta { flex: 0 0 auto; max-height: 38vh; overflow: auto; }
+  .meta { flex: 0 0 auto; max-height: 38vh; overflow: auto;
+          background: #14181e; border-top: 1px solid #46515f; }
   .meta[hidden] { display: none; }
   .vbar[hidden] { display: none; }
   /* The document is the reading surface: the working copy itself, line by line,
@@ -341,8 +342,9 @@
   .stream[hidden] { display: none; }
   /* The thread's own facts, once. Every card used to repeat them; a question
      you ask about the object belongs to the object, not to each action on it. */
-  .meta { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px; }
-  .meta[hidden] { display: none; }
+  .meta { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px;
+  .meta { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px;
+          background: #14181e; border-top: 1px solid #46515f; }
   .meta-row { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; padding: 5px 0;
     border-bottom: 1px solid var(--line); align-items: baseline; }
   .meta-row .k { color: var(--dim); font-size: var(--fs-small); }
