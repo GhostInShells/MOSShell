@@ -90,12 +90,14 @@ function renderBlocks(src) {
       i += 2;
       const rows = [];
       while (i < lines.length && lines[i].includes("|")) { rows.push(splitRow(lines[i])); i += 1; }
+      // 表格天生可能比正文栏宽：列多、格子长。标准解法是给它一层可横向滚的容器，
+      // 而不是把单元格压扁 —— 压扁的代价是 "P0" 折成两行、每列都读不顺。
       out.push(
-        "<table" + attr(start, i) + "><thead><tr>" +
+        "<div class=\"table-wrap\"><table" + attr(start, i) + "><thead><tr>" +
         cols.map((c) => "<th>" + inline(c) + "</th>").join("") +
         "</tr></thead><tbody>" +
         rows.map((r) => "<tr>" + r.map((c) => "<td>" + inline(c) + "</td>").join("") + "</tr>").join("") +
-        "</tbody></table>",
+        "</tbody></table></div>",
       );
       continue;
     }

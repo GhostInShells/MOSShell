@@ -284,8 +284,12 @@
   .hljs { background: transparent !important; }
   /* The rendered face: the same text, read rather than addressed. Whatever the
      renderer drew is the child here, so this rule is the frame, not the content. */
-  .doc-rendered { padding: 18px 26px 60px; max-width: 980px; }
-  /* A face that is not raw reads as prose; raw's own rows keep their grid. */
+  /* 正文有阅读宽度（一行太长，眼睛会迷路），**表格没有**：一格一格读的东西，
+     宽度越大越好用。所以 max-width 从容器挪到"散文类子元素"上，表格单独放开。 */
+  .doc-rendered > :not(table):not(.table-wrap) { max-width: 980px; }
+  /* 表格自己带一层横向滚动容器：内容窄时它就是整栏宽，列多时按内容撑开、容器出滚动条。 */
+  .doc .table-wrap { max-width: none; overflow-x: auto; margin: 10px 0; }
+  .doc .doc-rendered table { max-width: none; }
   .doc-rendered[data-renderer]:not([data-renderer="raw"]):not([data-renderer="plain"]) {
     font-size: 15px; line-height: 1.65;
   }
@@ -455,29 +459,28 @@
     color: var(--dim); font-size: var(--fs-small); text-transform: uppercase; letter-spacing: .06em;
     margin: 0 0 6px;
   }
-  .doc .markdown {
-    color: var(--fg); font-size: var(--fs-body); line-height: 1.7;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
-    padding: 12px 14px;
-  }
-  .doc .markdown h1, .doc .markdown h2, .doc .markdown h3 { margin: 18px 0 8px; }
-  .doc .markdown p { margin: 8px 0; }
-  .doc .markdown code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-small); }
-  .doc .markdown pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
-  .doc .markdown ul, .doc .markdown ol { padding-left: 24px; }
+  /* 渲染容器曾经叫 .markdown，后来改名 .doc-rendered（1523 行），这块样式没跟着走 ——
+     于是表格、引用、代码块、分隔线全部退化成裸元素。表格没有边框，是这条漂移的症状，
+     不是默认样式。判据：容器的类名只有一处真相，改一处就要连带这条链。 */
+  .doc .doc-rendered { color: var(--fg); }
+  .doc .doc-rendered h1, .doc .doc-rendered h2, .doc .doc-rendered h3 { margin: 18px 0 8px; }
+  .doc .doc-rendered p { margin: 8px 0; }
+  .doc .doc-rendered code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-small); }
+  .doc .doc-rendered pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
+  .doc .doc-rendered ul, .doc .doc-rendered ol { padding-left: 24px; }
   /* The pieces our own renderer emits beyond prose. A table is a table, not a row
      of pipes; a rule is a division, not three dashes. */
-  .doc .markdown table { border-collapse: collapse; margin: 10px 0; width: 100%; }
-  .doc .markdown th, .doc .markdown td {
+  .doc .doc-rendered table { border-collapse: collapse; margin: 0; min-width: 100%; }
+  .doc .doc-rendered th, .doc .doc-rendered td {
     border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top;
     overflow-wrap: anywhere;
   }
-  .doc .markdown th { color: var(--dim); font-weight: 600; background: #1f2328; }
-  .doc .markdown blockquote {
+  .doc .doc-rendered th { color: var(--dim); font-weight: 600; background: #1f2328; }
+  .doc .doc-rendered blockquote {
     margin: 10px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--dim);
   }
-  .doc .markdown hr.rule { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
-  .doc .markdown a { color: var(--accent); }
+  .doc .doc-rendered hr.rule { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+  .doc .doc-rendered a { color: var(--accent); }
   .doc pre.diff { color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit; }
   /* A diff is read left to right: two gutters for the two versions, then the line.
      Green says what is there now, dim-and-struck says what it replaced. */
