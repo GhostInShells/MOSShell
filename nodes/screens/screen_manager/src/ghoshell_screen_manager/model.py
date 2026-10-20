@@ -489,7 +489,6 @@ class ScreenModel:
         if len(set(ids)) != len(ids):
             raise ValueError(f"duplicate ids in arrange: {', '.join(ids)}")
         layout = compute_layout(len(ids), family, dir)
-        wanted = set(ids)
 
         # Every listed item may currently be elsewhere (another group or the
         # desktop); detach it there before it lands here.
@@ -502,10 +501,10 @@ class ScreenModel:
         if target is None:
             target = Group(name=group)
             self._groups[group] = target
-        # Items pulled out of this group by an earlier move must not linger.
-        target.ids = [i for i in target.ids if i in wanted] + [
-            i for i in ids if i not in target.ids
-        ]
+        # The caller named the order — an earlier arrangement must not outvote it.
+        # (Keeping the old prefix and appending the new ones made re-arranging an
+        # existing group unable to reorder it at all: ``ids`` was silently a set.)
+        target.ids = list(ids)
         target.family = family
         target.dir = dir
         for item_id in ids:
