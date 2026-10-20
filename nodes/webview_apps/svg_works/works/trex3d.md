@@ -1,7 +1,7 @@
 ---
 name: trex3d
 description: T-Rex riding a bicycle, three-quarter view
-ops: 9
+ops: 10
 node: webview_apps/svg_works
 created: 2026-10-20
 updated: 2026-10-20
