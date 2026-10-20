@@ -6,6 +6,7 @@
 <style>
   :root {
     --rail-w: 200px;
+    --slotbar-h: 26px;
     --gap: 6px;
     --border: #2a3340;
     --accent: #3ddc8f;
@@ -218,8 +219,38 @@
     position: relative; overflow: hidden; border: 1px solid var(--border);
     background: #0a0a0a; min-width: 0; min-height: 0; pointer-events: auto;
     transition: grid-row .3s, grid-column .3s;
+    display: flex; flex-direction: column;
   }
-  .slot iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .slot iframe { flex: 1 1 auto; width: 100%; height: 100%; border: 0; display: block; min-height: 0; }
+
+  /* ===== 窗口标题栏：每个窗口一条，但由屏幕画 =====
+     node 只交 label（它声明里的名字），不交 chrome —— 否则三个 node 会长出三种高度、
+     三种按钮位置，而标题栏正是最容易被各写一遍的地方。
+     它同时是 notify 的可见形态：一块砖先得有名字、有它自己的那个动作，
+     人和我才说得上"那块东西"。 */
+  .slot-bar {
+    flex: 0 0 var(--slotbar-h); display: flex; align-items: center; gap: 8px;
+    padding: 0 8px;
+    /* 窗口感来自"标题栏比内容亮一档"这条 OS 惯例 —— 不是靠加边框。
+       顶边那条 1px 高光把栏和内容分开，又不制造第二道框。 */
+    background: #161d26; border-bottom: 1px solid #0b0f14;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+    color: #8a97a4; font-size: 11.5px; user-select: none; white-space: nowrap;
+  }
+  .slot-bar .name { color: #dfe9f2; overflow: hidden; text-overflow: ellipsis; }
+  .slot-bar .sp { flex: 1; }
+  /* 按钮平时不吵、指到就有：默认无边框、低对比；hover 才亮边框。
+     accent 只留给"这个窗口正在被放大"这一个状态 —— 颜色要有分工，
+     到处都亮等于到处都不亮。 */
+  .slot-bar button {
+    background: transparent; border: 0; border-radius: 3px; padding: 3px 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #6b7885; cursor: pointer; line-height: 0;
+    transition: color .15s, background .15s;
+  }
+  .slot-bar button:hover { color: #dfe9f2; background: rgba(255,255,255,.07); }
+  /* accent 只留给"这个窗口正在被放大"这一个状态：颜色表达状态，不做装饰。 */
+  .slot.focused .slot-bar button { color: var(--accent); }
   .slot.hidden { display: none; }
 
   /* 醒（awake）：把**已经物化**的那些 slot 原地点亮 —— 不新建 iframe、不搬父节点（WD1）。
@@ -631,15 +662,44 @@ let desktopIds = [];       // 未入组的 item id，顺序即 recency
 function item(id) { return items.get(id); }
 function slotEl(id) { return items.get(id)?.slot; }
 
+// 图标用 SVG 而不是字形：字体里有没有那个字符，不该决定一个按钮长什么样。
+// 方框 = 最大化，错位双框 = 还原 —— 这是窗口系统的通用语。
+const ICON_MAX =
+  '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">'
+  + '<rect x="1.5" y="1.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>';
+const ICON_RESTORE =
+  '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">'
+  + '<rect x="1" y="3" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/>'
+  + '<path d="M3.5 3V2.2a1.2 1.2 0 0 1 1.2-1.2h3.1a1.2 1.2 0 0 1 1.2 1.2v3.1a1.2 1.2 0 0 1-1.2 1.2H7" '
+  + 'fill="none" stroke="currentColor" stroke-width="1.1"/></svg>';
+
 // ---- stage：slot 池（iframe 永不 reparent） ----
 function makeSlot(it) {
   const slot = document.createElement('div');
   slot.className = 'slot hidden'; slot.dataset.id = it.id;
+  // 标题栏由屏幕画，不由 node 的页面画：node 只交 label，chrome 归平台。
+  // 那个按钮就是这个 app 自己的动作 —— 放大 / 还原，走服务端已有的 focus，
+  // 不新造"窗口最大化"的第二套语义。
+  const bar = document.createElement('div');
+  bar.className = 'slot-bar';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = it.label || it.id;
+  const sp = document.createElement('span');
+  sp.className = 'sp';
+  const btn = document.createElement('button');
+  btn.innerHTML = ICON_MAX;
+  btn.title = 'maximize / restore';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    send({ type: 'focus', id: focusId === it.id ? '' : it.id });
+  });
+  bar.append(name, sp, btn);
   const fr = document.createElement('iframe');
   fr.src = it.url;
-  slot.appendChild(fr);
+  slot.append(bar, fr);
   stage.appendChild(slot);
-  it.slot = slot; it.iframe = fr;
+  it.slot = slot; it.iframe = fr; it.barName = name; it.barBtn = btn;
 }
 
 function destroySlot(id) {
@@ -669,6 +729,9 @@ function renderStage(ids, layout) {
     const awaking = awakeIds.includes(it.id);
     it.slot.classList.toggle('hidden', !awaking && !ids.includes(it.id) && !focused);
     it.slot.classList.toggle('focused', focused);
+    // 标题栏跟着 item 的 label 走 —— 名字只有一处真相（node 的声明），这里只是读它。
+    if (it.barName) it.barName.textContent = it.label || it.id;
+    if (it.barBtn) it.barBtn.innerHTML = focused ? ICON_RESTORE : ICON_MAX;
   });
   syncScrim();
   const t = gridTemplate(layout);
