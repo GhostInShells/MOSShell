@@ -22,9 +22,10 @@
   /* ===== 左：画布 =====
      画布永远不重建：它只是在原地被 ops 改动。滚动、动画、选中都留在原地。 */
   #canvas {
-    position: relative; overflow: auto; background: var(--panel);
-    border-right: 1px solid var(--line-strong);
+    position: relative; overflow: hidden; background: var(--panel);
+    border-right: 1px solid var(--line-strong); cursor: grab;
   }
+  #canvas.panning { cursor: grabbing; }
   #stage { display: block; width: 100%; height: 100%; }
   #stage .live { opacity: .55; }
   /* 人被指到的那一块：闪一下。它不改变内容，只是"我看的是这里"。 */
@@ -130,7 +131,7 @@
   <svg id="stage" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"
        xmlns="http://www.w3.org/2000/svg"></svg>
   <div id="empty">open_work(name), then write into an address</div>
-  <div id="hint">ops land in place — nothing here reloads</div>
+  <div id="hint">ops land in place — nothing here reloads · drag to pan · wheel to zoom · double-click to fit</div>
 
 </div>
 
@@ -257,6 +258,77 @@ function replay(to) {
   renderCards();
 }
 
+// ---- 看的人的面：平移与缩放 ---------------------------------------------
+// 画布只负责画；"我看哪一块"是读的人的事，所以这一层不落成 op —— 它不改作品，
+// 只是同一份记录换了个看的位置。判据还是那条：读的归人，写的归我。
+const BASE = { x: 0, y: 0, w: 1000, h: 700 };
+const canvasEl = document.getElementById("canvas");
+let view = { ...BASE };
+let shownWork = null;
+
+function applyView() {
+  stage.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+}
+
+// 指针到画面坐标的映射只能问渲染器要：preserveAspectRatio 自己会做居中缩放，
+// 手算一遍迟早算歪。
+function toSvg(ev) {
+  const m = stage.getScreenCTM();
+  if (!m) return { x: 0, y: 0 };
+  return new DOMPoint(ev.clientX, ev.clientY).matrixTransform(m.inverse());
+}
+
+function fitToContent() {
+  let b = null;
+  try { b = stage.getBBox(); } catch (e) { b = null; }
+  if (!b || !(b.width > 0) || !(b.height > 0)) {
+    view = { ...BASE };
+    applyView();
+    return;
+  }
+  const pad = Math.max(b.width, b.height) * 0.06;
+  view = { x: b.x - pad, y: b.y - pad, w: b.width + pad * 2, h: b.height + pad * 2 };
+  applyView();
+}
+
+canvasEl.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const p = toSvg(ev);
+  const w = Math.min(BASE.w * 8, Math.max(BASE.w * 0.08, view.w * (ev.deltaY < 0 ? 0.88 : 1 / 0.88)));
+  const h = w * (view.h / view.w);
+  // 缩放锚在指针底下：放大时手指按住的那一点不动，这是"我能看细节"的前提。
+  view.x = p.x - (p.x - view.x) * (w / view.w);
+  view.y = p.y - (p.y - view.y) * (h / view.h);
+  view.w = w;
+  view.h = h;
+  applyView();
+}, { passive: false });
+
+let pan = null;
+canvasEl.addEventListener("pointerdown", (ev) => {
+  if (ev.button !== 0) return;
+  pan = { sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y, moved: false };
+});
+window.addEventListener("pointermove", (ev) => {
+  if (!pan) return;
+  const dx = ev.clientX - pan.sx;
+  const dy = ev.clientY - pan.sy;
+  if (!pan.moved && Math.hypot(dx, dy) < 4) return;   // 抖一下不算拖
+  pan.moved = true;
+  const r = stage.getBoundingClientRect();
+  const scale = Math.min(r.width / view.w, r.height / view.h) || 1;
+  view.x = pan.vx - dx / scale;
+  view.y = pan.vy - dy / scale;
+  canvasEl.classList.add("panning");
+  applyView();
+});
+window.addEventListener("pointerup", () => {
+  if (pan) canvasEl.classList.remove("panning");
+  pan = null;
+});
+canvasEl.addEventListener("dblclick", fitToContent);
+applyView();
+
 // ---- 动作列 -------------------------------------------------------------
 function opLine(op) {
   if (op.kind === "insert") {
@@ -374,8 +446,12 @@ function onState(f) {
     pagePicker.appendChild(opt);
   });
   pagePicker.hidden = pages.length === 0;
-  workMeta.textContent = current && current.description ? current.description : "";
+  const switched = !!current && current.name !== shownWork;
+  shownWork = current ? current.name : null;
   ops = f.ops || [];
+  replay(f.cursor == null ? ops.length : f.cursor);
+  // 换了一份作品就把它整张放进视野：读的人接手时先看到全貌，之后怎么挪由他。
+  if (switched) fitToContent();
   replay(f.cursor == null ? ops.length : f.cursor);
 }
 
