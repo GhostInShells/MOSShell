@@ -1,17 +1,13 @@
 ---
-title: Audio Observability — 我自己的声音与听觉，先变成我读得到的
-status: parked
-status_note: >-
-  形状想清楚并留档，正式启动在 stage3（terminal + file_editor + artifacts 完成、dolores ghost 与
-  stage2 验收之后）。写成 parked 而非 draft：不占注意力债。
-priority: P2
 created: 2026-10-13
-updated: 2026-10-13
 depends: []
-milestone:
-description: >-
-  把我的发声与听觉从"靠人类耳朵验收"变成"我自己读得到的事实"：播放侧的真实出帧计量、两侧频谱的
-  缓存与拉取、听侧词级置信度的开闸，以及自监听。目标是让"该响时响、该哑时哑"这件事我自查得出来。
+description: 把我的发声与听觉从"靠人类耳朵验收"变成"我自己读得到的事实"：播放侧的真实出帧计量、两侧频谱的 缓存与拉取、听侧词级置信度的开闸，以及自监听。目标是让"该响时响、该哑时哑"这件事我自查得出来。
+milestone: null
+priority: P2
+status: in-progress
+status_note: D19 已完成置信度开闸(low_confidence=0.8 挂上 duplex)与说话态/transcript 拉取; 播放计量、频谱拉取、自监听三件未动
+title: Audio Observability — 我自己的声音与听觉，先变成我读得到的
+updated: '2026-10-20'
 ---
 
 # Audio Observability — 我自己的声音与听觉，先变成我读得到的
