@@ -1327,6 +1327,7 @@ let editRange = null;               // [start, end] while a box is open
 let editLocked = null;              // the range I told the server I am editing
 let pendingEdit = null;             // {client_id, thread, range, text}
 let flashRange = null;              // lines that just changed, until the server agrees
+let flashTimer = null;              // the clear runs from the render that painted it
 
 function lineRangeOfSelection() {
   const sel = window.getSelection();
@@ -1620,6 +1621,12 @@ async function renderDoc() {
     for (const el of host.querySelectorAll("[data-lines]")) {
       const r = linesOfNode(el);
       if (r && r[1] >= flashRange[0] && r[0] <= flashRange[1]) el.classList.add("flash");
+    }
+    // The clear is scheduled from the render that actually painted the flash.
+    // Scheduling it when the action arrived raced the text frame — the timer
+    // usually won, and a change made from outside landed with nothing lit.
+    if (!flashTimer) {
+      flashTimer = setTimeout(() => { flashTimer = null; flashRange = null; renderDoc(); }, 2000);
     }
   }
   if (band && scrollForBand) {
@@ -2253,10 +2260,7 @@ function onFrame(frame) {
         // the change instead of the change. No scroll here on purpose: the reader
         // keeps their place and the flash tells them where it went.
         const moved = regionOf(a);
-        if (moved) {
-          flashRange = moved;
-          setTimeout(() => { flashRange = null; renderDoc(); }, 1500);
-        }
+        if (moved) flashRange = moved;
         if (view === "document") requestText(a.thread);
         if (!metaEl.hidden) renderMeta();
       } else {
