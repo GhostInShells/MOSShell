@@ -1,14 +1,13 @@
 ---
-title: SVG Works — 可修改、可回放的矢量作品
-status: draft
-priority: P1
 created: 2026-10-20
-updated: 2026-10-20
 depends: []
-milestone:
-description: >-
-  把矢量图形从"一次生成的结果"变成"可以一直改、可以回放到任意一步的作品"。
-  作品 = 一个可寻址对象；动作是真相，DOM 是它的投影。
+description: 把矢量图形从"一次生成的结果"变成"可以一直改、可以回放到任意一步的作品"。 作品 = 一个可寻址对象；动作是真相，DOM 是它的投影。
+milestone: null
+priority: P1
+status: in-progress
+status_note: v0 已在 nodes/webview_apps/svg_works 落地：作品=thread、op 追加、checkout 重放；4 条真机验证过
+title: SVG Works — 可修改、可回放的矢量作品
+updated: '2026-10-20'
 ---
 
 # SVG Works — 可修改、可回放的矢量作品
@@ -126,3 +125,29 @@ artifacts 的一次性 write 是它该有的轻。本条要在它旁边另做一
 - **卡点从来不在 SVG**，在我们这侧：没有桥（sandbox iframe ↔ 外界的 postMessage）、
   没有地址（节点没有稳定 id / 路径）、没有 patch 命令（只有 write / display / remove）。
 - **svg 必须写死宽高**：`max-height: 96%` 这类在 grid 容器里会塌成 0 高（D20 实测，第一版画出来是空白）。
+
+## Implementation (v0, 2026-10-20)
+
+`nodes/webview_apps/svg_works/` — a separate node, not `artifacts` (D7).
+
+| 命令 | 做的事 |
+|---|---|
+| `open_work(name, description)` | 开/选一个作品（作品 = thread） |
+| `write(name, addr, chunks__)` | 往某个地址流的片段，落成一条 op（流是现场，记录是一次） |
+| `set_attr(name, addr, attr, value)` | 改一个属性 —— "画到一半能改"的最小单位 |
+| `remove_node(name, addr)` | 删一棵子树 |
+| `history(name, n)` | 读 action 列表 |
+| `checkout(name, n)` | 把读点挪回第 n 条，页面重放 |
+
+真机验过的一条最小链路：骨架 → 往子地址挂节点 → 改属性（只有头变色，其余不动）
+→ checkout 到 1（颜色回来、只剩骨架、卡片变灰）→ checkout 回来（状态完整复原）。
+
+**实测发现的两件事**（都已修进代码）：
+
+- SVG 元素的 `tagName` 保留**小写**（`path`），HTML 才是全大写 —— 大小写归一之前，
+  "装不了孩子的节点"这条守卫永远不触发。
+- `[data-addr=arm]` 指到一个 `<path>` 时，append 在 DOM 上成功、画面上什么都没有。
+  现在卡片会明说"`<path>` 装不了孩子 — 换个 `<g>` 当容器"：**"装不下"和"画坏了"必须能分开**。
+
+还没做的：流式预览的完整性（write 期间用 `.live` 节点预览，op 落地时接管）、
+卡片的折叠/全屏、以及 D5 的受控小语言（现在 op 种类少，天然满足；加 op 时要守住）。
