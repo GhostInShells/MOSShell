@@ -2,7 +2,7 @@
 name: 'svg_works'
 description: 'vector works that stay mutable — a work is a thread with an append-only action list; write/set/remove change nodes in place, checkout replays a prefix. nothing reloads.'
 category: webview_apps
-singleton: false
+singleton: true
 exec:
   command: python
   args: main.py
@@ -36,7 +36,9 @@ reader. Collapsing the cards (fullscreen) hides the list, never the record.
 The surface binds an **ephemeral port by default** — read the live URL from this
 channel's `url` notice. Pin one with `--port N` or `MOSS_SVG_WORKS_PORT`.
 
-Not a singleton: run several instances, each gets its own port.
+Singleton: one works surface per runtime. Several works live in that one page and are
+switched from the header — a work per window would copy the whole mechanism once per
+window, and a non-singleton alias also grows a suffix on every restart.
 
 The design record lives in `.ai_partners/features/workstreams/2026/10/svg-works/`.
 
