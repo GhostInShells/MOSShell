@@ -345,7 +345,6 @@
   /* The thread's own facts, once. Every card used to repeat them; a question
      you ask about the object belongs to the object, not to each action on it. */
   .meta { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px;
-  .meta { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px;
           background: #14181e; border-top: 1px solid #46515f; }
   .meta-row { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; padding: 5px 0;
     border-bottom: 1px solid var(--line); align-items: baseline; }
@@ -477,7 +476,12 @@
   .doc .doc-rendered p { margin: 8px 0; }
   .doc .doc-rendered code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-small); }
   .doc .doc-rendered pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
-  .doc .doc-rendered ul, .doc .doc-rendered ol { padding-left: 24px; }
+  /* 列表的悬挂缩进要显式要：marker 放在外面、li 的内容对齐在 26px 处，
+     第二条以后的行才不会退回左边。markdown 渲染器会给 li 套一层 <p>，它的
+     默认外边距会把行距撑开，一并收掉。 */
+  .doc .doc-rendered ul, .doc .doc-rendered ol { padding-left: 26px; list-style-position: outside; }
+  .doc .doc-rendered li { margin: 3px 0; }
+  .doc .doc-rendered li > p { margin: 0; }
   /* The pieces our own renderer emits beyond prose. A table is a table, not a row
      of pipes; a rule is a division, not three dashes. */
   .doc .doc-rendered table { border-collapse: collapse; margin: 0; min-width: 100%; }
