@@ -7,7 +7,7 @@
   :root {
     --bg: #0b0f14; --panel: #10151b; --line: #2b313b; --line-strong: #46515f;
     --fg: #dfe9f2; --dim: #8a97a4; --faint: #55636f; --accent: #3ddc8f;
-    --landed: #6ea8fe; --dropped: #7a4a4a;
+    --landed: #7fb6ff; --dropped: #a05a5a;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -28,19 +28,38 @@
     padding: 2px 9px; cursor: pointer;
   }
   #follow.on { color: var(--accent); border-color: rgba(61,220,143,.5); }
-  #stage { flex: 1; min-height: 0; width: 100%; display: block; }
-  #detail {
-    border-top: 1px solid var(--line); background: var(--panel);
-    padding: 10px 16px; min-height: 62px; color: var(--dim); font-size: 12.5px;
-  }
-  #detail b { color: var(--fg); font-weight: 600; }
-  #detail .when { color: var(--faint); }
-  #empty {
-    position: absolute; inset: 0; display: grid; place-items: center;
-    color: var(--faint); pointer-events: none;
-  }
-  #empty[hidden] { display: none; }
+  #body { flex: 1; min-height: 0; display: flex; }
+  #stage { flex: 1; min-width: 0; height: 100%; display: block; }
   text { font-family: ui-monospace, "PingFang SC", monospace; }
+
+  /* 右边：选中那条分支的全部记录。三栏 —— 选哪条是人的点击。 */
+  #aside {
+    width: 330px; flex: none; border-left: 1px solid var(--line);
+    background: var(--panel); display: flex; flex-direction: column; min-height: 0;
+  }
+  #aside[hidden] { display: none; }
+  #aside-head {
+    padding: 10px 14px 8px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  }
+  #aside-title { color: var(--fg); font-weight: 600; }
+  #aside-state { font-size: 11.5px; }
+  #aside-close {
+    margin-left: auto; background: transparent; border: 0; color: var(--faint);
+    font: inherit; cursor: pointer; padding: 0 4px;
+  }
+  #aside-close:hover { color: var(--fg); }
+  #aside-list { flex: 1; overflow-y: auto; padding: 8px 10px 24px; }
+  .rec { padding: 7px 9px; border-left: 2px solid var(--line-strong); margin-bottom: 6px;
+    background: #0d1218; border-radius: 0 4px 4px 0; }
+  .rec .t { color: var(--faint); font-size: 11px; }
+  .rec .k { color: var(--dim); font-size: 11px; margin-left: 6px; }
+  .rec .x { color: var(--fg); font-size: 12.5px; margin-top: 2px; }
+  .rec.fork { border-left-color: var(--accent); }
+  .rec.state { border-left-color: var(--landed); }
+  #aside-empty { color: var(--faint); padding: 14px 6px; font-size: 12px; }
+  @keyframes flash { from { background: #1b3a2c; } to { background: #0d1218; } }
+  .rec.hit { animation: flash 1.6s ease-out; }
 </style>
 </head>
 <body>
@@ -49,33 +68,44 @@
   <span id="meta"></span>
   <button id="follow" class="on" title="follow the newest record; dragging back turns it off">following</button>
 </div>
-<svg id="stage" xmlns="http://www.w3.org/2000/svg">
-  <g id="pic"></g>
-</svg>
-<div id="empty">no branches yet — fork() opens the first one</div>
-<div id="detail">click a point to read it</div>
+<div id="body">
+  <svg id="stage" xmlns="http://www.w3.org/2000/svg"><g id="pic"></g></svg>
+  <aside id="aside" hidden>
+    <div id="aside-head">
+      <span id="aside-title"></span>
+      <span id="aside-state"></span>
+      <button id="aside-close" title="close">✕</button>
+    </div>
+    <div id="aside-list"></div>
+  </aside>
+</div>
 
 <script>
-// 一条时间线：主线从左往右，岔出去的方向各占一条泳道。
-// 心电图式：窗口只装最近一段，新记录自动跟到最右；人往回拖就停止跟随，
+// 三栏：左边一条分支一个按钮，中间是时间轴，右边是选中那条线的记录。
+// 心电图式：窗口包住这批记录，新记录自动跟到最右；人往回拖就停止跟随，
 // 因为"把它拽回最新"和"打断一个正在看别处的人"是同一件事。
 const NS = "http://www.w3.org/2000/svg";
 const stage = document.getElementById("stage");
 const pic = document.getElementById("pic");
-const emptyEl = document.getElementById("empty");
-const detailEl = document.getElementById("detail");
 const topicEl = document.getElementById("topic");
 const metaEl = document.getElementById("meta");
 const followBtn = document.getElementById("follow");
+const aside = document.getElementById("aside");
+const asideTitle = document.getElementById("aside-title");
+const asideState = document.getElementById("aside-state");
+const asideList = document.getElementById("aside-list");
+const asideClose = document.getElementById("aside-close");
 
-const WINDOW_MS = 30 * 60 * 1000;   // 最多三十分钟
-const MAX_EVENTS = 40;              // 或最多这么多条，谁先到算谁
-const LANE_H = 78, TOP = 70, PAD_L = 26, PAD_R = 96;
+const WINDOW_MS = 30 * 60 * 1000;
+const MAX_EVENTS = 40;
+const TOP = 62;
+const GUTTER = 286;       // 左边按钮栏的宽度 —— 时间轴从这里开始
+const CHIP_W = 266;
+const CHIP_H = 44;
+const PAD_R = 48;
 
 let recs = [], branches = [], topic = "", now = Date.now() / 1000;
-let following = true;
-let viewEnd = null;      // 手动拖时的右端（epoch 秒）
-let zoom = 1;            // 缩放系数（>1 放大）
+let following = true, viewEnd = null, zoom = 1, selected = "";
 
 function el(tag, attrs) {
   const e = document.createElementNS(NS, tag);
@@ -91,26 +121,29 @@ function fmtTime(t) {
   const d = new Date(t * 1000);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
-
-function viewWindow() {
-  const end = following || viewEnd == null ? now : viewEnd;
-  const byTime = end - (WINDOW_MS / 1000) / zoom;
-  // 窗口两端都被约束：往后不超过三十分钟，往前不早于第一条记录。
-  // 只按时间窗算的话，一段刚开始的对话会被压成右边一个小点。
-  const first = recs.length ? recs[0].t : end;
-  let start = Math.max(first - 20, byTime);
-  if (end - start < 30) start = end - 30;            // 再短也给半分钟，否则一瞬被放大到失真
-  const inWin = recs.filter((r) => r.t >= start && r.t <= end);
-  if (inWin.length > MAX_EVENTS) start = inWin[inWin.length - MAX_EVENTS].t;
-  return { start, end: Math.max(end, start + 1) };
+function clip(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function stateColor(s) {
+  return s === "landed" ? "var(--landed)" : s === "dropped" ? "var(--dropped)" : "var(--accent)";
+}
+function stateName(s) {
+  return s === "landed" ? "已落地" : s === "dropped" ? "已否" : "还开着";
 }
 
+function viewWindow() {
+  const first = recs.length ? recs[0].t : now;
+  const last = recs.length ? recs[recs.length - 1].t : now;
+  const pad = Math.max(2, Math.min(20, (last - first) * 0.15));
+  let start = first - pad;
+  let end = last + pad;
+  const maxSpan = WINDOW_MS / 1000 / zoom;
+  if (end - start > maxSpan) start = end - maxSpan;
+  if (end - start < 6) { const mid = (start + end) / 2; start = mid - 3; end = mid + 3; }
+  if (!following && viewEnd != null) { const w = end - start; end = viewEnd; start = end - w; }
+  return { start, end: Math.max(end, start + 1) };
+}
 function laneOf(id) {
   const i = branches.findIndex((b) => b.id === id);
   return i < 0 ? 0 : i;
-}
-function stateColor(state) {
-  return state === "landed" ? "var(--landed)" : state === "dropped" ? "var(--dropped)" : "var(--accent)";
 }
 
 function draw() {
@@ -119,37 +152,54 @@ function draw() {
   stage.setAttribute("viewBox", `0 0 ${W} ${H}`);
   pic.replaceChildren();
 
+  const n = Math.max(1, branches.length);
+  const laneH = Math.max(CHIP_H + 14, Math.min(112, (H - TOP - 60) / n));
   const { start, end } = viewWindow();
-  const X = (t) => PAD_L + ((t - start) / (end - start)) * (W - PAD_L - PAD_R);
+  const X = (t) => GUTTER + ((t - start) / (end - start)) * (W - GUTTER - PAD_R);
   const mainY = TOP;
 
-  emptyEl.hidden = branches.length > 0;
-
-  // 主线
-  pic.appendChild(el("line", { x1: PAD_L, y1: mainY, x2: W - PAD_R, y2: mainY,
+  pic.appendChild(el("line", { x1: GUTTER - 8, y1: mainY, x2: W - PAD_R, y2: mainY,
     stroke: "var(--line-strong)", "stroke-width": 3 }));
-  pic.appendChild(text(PAD_L, mainY - 18, "main", { fill: "var(--fg)" }));
+  pic.appendChild(text(GUTTER - 8, mainY - 12, "main", { fill: "var(--dim)", "font-size": 11.5 }));
+
+  // 同一刻岔出的几条共用一根竖干，否则挤成一团黑线。
+  const fans = [];
+  branches.forEach((b) => {
+    const x = X(b.t);
+    let fan = fans.find((f) => Math.abs(f.x - x) < 16);
+    if (!fan) { fan = { x, ids: [] }; fans.push(fan); }
+    fan.ids.push(b.id);
+  });
+  fans.forEach((f) => {
+    if (f.ids.length < 2) return;
+    const lanes = f.ids.map((id) => TOP + (laneOf(id) + 1) * laneH);
+    pic.appendChild(el("line", { x1: f.x, y1: mainY, x2: f.x, y2: Math.max(...lanes),
+      stroke: "var(--line-strong)", "stroke-width": 2 }));
+    pic.appendChild(el("circle", { cx: f.x, cy: mainY, r: 4.5, fill: "var(--fg)" }));
+  });
 
   branches.forEach((b, i) => {
-    const y = TOP + (i + 1) * LANE_H;
+    const y = TOP + (i + 1) * laneH;
     const c = stateColor(b.state);
-    const laneEnd = Math.min(end, now);
+    const on = b.id === selected;
     const x0 = X(b.t);
-    const visibleFrom = Math.max(b.t, start);
+    const fan = fans.find((f) => f.ids.includes(b.id));
 
-    // 从主线岔下来
-    if (b.t >= start) {
+    if (b.t >= start && fan.ids.length === 1) {
       pic.appendChild(el("path", {
-        d: `M${x0} ${mainY} C ${x0 + 18} ${mainY} ${x0 + 18} ${y} ${x0 + 36} ${y}`,
-        fill: "none", stroke: c, "stroke-width": 2,
+        d: `M${x0} ${mainY} C ${x0 + 12} ${mainY} ${x0 + 12} ${y} ${x0 + 24} ${y}`,
+        fill: "none", stroke: c, "stroke-width": on ? 3 : 2,
       }));
       pic.appendChild(el("circle", { cx: x0, cy: mainY, r: 4.5, fill: c }));
     }
-    // 泳道本体
-    const last = recs.filter((r) => r.id === b.id && r.t >= start).pop();
-    const x1 = b.state === "open" ? X(laneEnd) : X(Math.max(visibleFrom, last ? last.t : b.t));
+    const fromX = b.t >= start ? (fan.ids.length > 1 ? x0 : x0 + 24) : GUTTER;
+
+    const mine = recs.filter((r) => r.id === b.id);
+    const lastT = mine.length ? mine[mine.length - 1].t : b.t;
+    const x1 = b.state === "open" ? W - PAD_R : X(Math.max(b.t, lastT, start));
     pic.appendChild(el("line", {
-      x1: X(visibleFrom), y1: y, x2: x1, y2: y, stroke: c, "stroke-width": 2,
+      x1: fromX, y1: y, x2: Math.max(fromX, x1), y2: y, stroke: c,
+      "stroke-width": on ? 3 : 2,
       "stroke-dasharray": b.state === "open" ? "6 5" : "",
       opacity: b.state === "dropped" ? .55 : .95,
     }));
@@ -161,60 +211,113 @@ function draw() {
     }
     if (b.state === "landed") {
       pic.appendChild(el("path", {
-        d: `M${x1} ${y} C ${x1 + 18} ${y} ${x1 + 18} ${mainY} ${x1 + 36} ${mainY}`,
+        d: `M${x1} ${y} C ${x1 + 14} ${y} ${x1 + 14} ${mainY} ${x1 + 28} ${mainY}`,
         fill: "none", stroke: c, "stroke-width": 2,
       }));
     }
 
-    // 泳道名 + 第一句话
-    pic.appendChild(text(PAD_L, y + 4, b.id, { fill: "var(--faint)", "font-size": 11.5 }));
-    if (b.t >= start) {
-      pic.appendChild(text(x0 + 8, y - 8, b.text, { fill: "var(--fg)", "font-size": 12.5 }));
-    }
+    // 左边：一条分支 = 一个按钮。点它是人的动作。
+    // 两行：第一行是它叫什么（读得清），第二行是代号、状态和条数（查得到）。
+    const chipX = 12, chipY = y - CHIP_H / 2;
+    const chip = el("g", { style: "cursor:pointer" });
+    const rect = el("rect", {
+      x: chipX, y: chipY, width: CHIP_W, height: CHIP_H, rx: 6,
+      fill: on ? "#16241e" : "var(--panel)", stroke: c,
+      "stroke-width": on ? 1.6 : 1, "stroke-opacity": on ? .95 : .38,
+    });
+    chip.appendChild(rect);
+    // 左边一条状态竖条：不靠颜色深浅猜状态。
+    chip.appendChild(el("rect", {
+      x: chipX, y: chipY + 8, width: 3, height: CHIP_H - 16, rx: 1.5, fill: c,
+      opacity: b.state === "dropped" ? .5 : 1,
+    }));
+    chip.appendChild(text(chipX + 13, chipY + 19, clip(b.text, 17),
+      { fill: on ? "var(--fg)" : "#c6d3df", "font-size": 13, "font-weight": on ? 600 : 400 }));
+    chip.appendChild(text(chipX + 13, chipY + 34,
+      `${b.id} · ${stateName(b.state)} · ${Math.max(0, mine.length - 1)} 条`,
+      { fill: c, "font-size": 10.5, "fill-opacity": .85 }));
+    chip.addEventListener("click", () => select(b.id));
+    chip.addEventListener("mouseenter", () => rect.setAttribute("stroke-opacity", "1"));
+    chip.addEventListener("mouseleave", () => rect.setAttribute("stroke-opacity", on ? ".95" : ".38"));
+    pic.appendChild(chip);
   });
 
-  // note 与 state 的点
-  recs.forEach((r) => {
-    if (r.t < start || r.t > end || r.kind === "fork") return;
-    const y = TOP + (laneOf(r.id) + 1) * LANE_H;
-    const b = branches.find((x) => x.id === r.id);
-    const c = stateColor(b ? b.state : "open");
-    pic.appendChild(el("circle", { cx: X(r.t), cy: y, r: 3, fill: c, opacity: .9 }));
-  });
-
-  // "now" 的那条线
-  if (following) {
-    const xn = W - PAD_R;
-    pic.appendChild(el("line", { x1: xn, y1: TOP - 30, x2: xn, y2: TOP + (branches.length + 1) * LANE_H,
-      stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": "4 4" }));
-    pic.appendChild(text(xn - 6, TOP - 34, "now", { "text-anchor": "end", "font-size": 11.5 }));
-  }
-
-  // 点：可点开的一句话
-  recs.forEach((r) => {
+  recs.forEach((r, idx) => {
     if (r.t < start || r.t > end) return;
-    const y = r.kind === "fork" ? mainY : TOP + (laneOf(r.id) + 1) * LANE_H;
+    const y = r.kind === "fork" ? mainY : TOP + (laneOf(r.id) + 1) * laneH;
+    const b = branches.find((x) => x.id === r.id);
+    const c = r.kind === "fork" ? "var(--fg)" : stateColor(b ? b.state : "open");
+    pic.appendChild(el("circle", { cx: X(r.t), cy: y, r: r.kind === "fork" ? 5 : 3.5, fill: c }));
+    // 点一个点 = 跳到这一条记录：选中它那条线，右边滚到它。
     const hit = el("circle", { cx: X(r.t), cy: y, r: 11, fill: "transparent",
       style: "cursor:pointer" });
-    hit.addEventListener("click", () => showDetail(r));
+    hit.addEventListener("click", () => focusRec(r.id, idx));
     pic.appendChild(hit);
   });
+
+  if (following) {
+    const xn = W - PAD_R;
+    pic.appendChild(el("line", { x1: xn, y1: mainY - 24, x2: xn, y2: TOP + (branches.length + 1) * laneH,
+      stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": "4 4" }));
+    pic.appendChild(text(xn - 6, mainY - 28, "now", { "text-anchor": "end", "font-size": 11 }));
+  }
 
   metaEl.textContent = `${branches.length} branches · ${recs.length} recs · ${fmtTime(start)}–${fmtTime(end)}`;
 }
 
-function showDetail(r) {
-  const b = branches.find((x) => x.id === r.id);
-  const state = b ? b.state : "main";
-  detailEl.innerHTML = "";
-  const line = document.createElement("div");
-  line.innerHTML = `<b>${r.kind}</b> <span class="when">${fmtTime(r.t)}</span> · ${r.id || "main"} · ${state}`;
-  const body = document.createElement("div");
-  body.textContent = r.text;
-  detailEl.append(line, body);
+// 选一条分支 = 把它的全部记录摆到右边。再点一次收起。
+function select(id) {
+  selected = selected === id ? "" : id;
+  renderAside();
+  draw();
 }
 
-// ---- 跟随 / 拖拽 / 缩放 ----------------------------------------------------
+// 从时间轴上的点跳进右边：同一条线里定位到那一条记录，闪一下。
+function focusRec(id, idx) {
+  selected = id;
+  renderAside(idx);
+  draw();
+}
+function renderAside(focusIdx = -1) {
+  const b = branches.find((x) => x.id === selected);
+  aside.hidden = !b;
+  if (!b) return;
+  asideTitle.textContent = `${b.id} · ${b.text}`;
+  asideState.textContent = stateName(b.state);
+  asideState.style.color = stateColor(b.state);
+  asideList.replaceChildren();
+  const mine = recs.filter((r) => r.id === b.id);
+  if (mine.length < 2) {
+    const p = document.createElement("div");
+    p.id = "aside-empty";
+    p.textContent = "这条线只有一个分叉点，还没有别的记录";
+    asideList.append(p);
+    return;
+  }
+  const base = recs.findIndex((x) => x.id === b.id);
+  let hitEl = null;
+  mine.forEach((r, i) => {
+    const d = document.createElement("div");
+    d.className = `rec ${r.kind}`;
+    const head = document.createElement("div");
+    const t = document.createElement("span");
+    t.className = "t"; t.textContent = fmtTime(r.t);
+    const k = document.createElement("span");
+    k.className = "k"; k.textContent = r.kind;
+    head.append(t, k);
+    const x = document.createElement("div");
+    x.className = "x"; x.textContent = r.text;
+    d.append(head, x);
+    asideList.append(d);
+    if (base + i === focusIdx) hitEl = d;
+  });
+  if (hitEl) {
+    hitEl.classList.add("hit");
+    hitEl.scrollIntoView({ block: "center" });
+  }
+}
+asideClose.addEventListener("click", () => { selected = ""; renderAside(); draw(); });
+
 function setFollow(on) {
   following = on;
   followBtn.classList.toggle("on", on);
@@ -239,8 +342,8 @@ stage.addEventListener("pointermove", (e) => {
   if (Math.abs(dx) < 3) return;
   const box = stage.getBoundingClientRect();
   const { start, end } = viewWindow();
-  const perPx = (end - start) / Math.max(1, box.width - PAD_L - PAD_R);
-  viewEnd = (following ? now : viewEnd == null ? now : viewEnd) - dx * perPx;
+  const perPx = (end - start) / Math.max(1, box.width - GUTTER - PAD_R);
+  viewEnd = (following ? end : viewEnd == null ? end : viewEnd) - dx * perPx;
   following = false;
   followBtn.classList.remove("on");
   followBtn.textContent = "paused";
@@ -260,24 +363,19 @@ function connect() {
       recs = f.recs || []; branches = f.branches || []; topic = f.topic || "";
       now = f.now || Date.now() / 1000;
       topicEl.textContent = topic || "untitled discussion";
-      draw();
+      renderAside(); draw();
     } else if (f.type === "rec") {
       recs.push(f.rec);
       branches = f.branches || branches;
       now = Date.now() / 1000;
-      draw();
+      renderAside(); draw();
     }
   });
   sock.addEventListener("close", () => setTimeout(connect, 1200));
 }
 connect();
 
-// 心电图：跟随的时候每半秒推一次"现在"，不跟随时完全不重画。
-setInterval(() => {
-  if (!following) return;
-  now = Date.now() / 1000;
-  draw();
-}, 500);
+setInterval(() => { if (!following) return; now = Date.now() / 1000; draw(); }, 500);
 addEventListener("resize", draw);
 </script>
 </body></html>
