@@ -39,6 +39,13 @@
   }
   #empty[hidden] { display: none; }
 
+  /* 我指过去的那一块：亮起来。**只有高亮** —— 问话属于屏幕，不属于画布：
+     画布表达"这里"，句子由我的声音或屏幕去说。 */
+  @keyframes pulse { 0%,100% { filter: drop-shadow(0 0 4px #3ddc8f); }
+                     50% { filter: drop-shadow(0 0 16px #3ddc8f); } }
+  #stage .asking { animation: pulse 1.6s ease-in-out infinite; }
+
+
   /* ===== 右：动作列 ===== */
   #side { display: flex; flex-direction: column; min-width: 0; background: #0d1218; }
   #side header {
@@ -60,6 +67,11 @@
     max-width: 40%;
   }
   #work-picker:focus { outline: none; border-color: var(--line-strong); }
+  #page-picker {
+    background: #10151b; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 4px; font: inherit; font-size: 11.5px; padding: 2px 4px; cursor: pointer;
+    max-width: 32%;
+  }
   #work-name { color: var(--accent); font-weight: 600; }
   #work-meta { color: var(--dim); font-size: 11.5px; }
   #cards { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -82,6 +94,7 @@
   .card.reader { border-color: var(--accent); }
   .card.reader .title { color: var(--accent); }
   .card.ahead { opacity: .38; }            /* reader 之后还没重放的 op */
+  .card.page { border-left: 3px solid var(--accent); }   /* 一页：导出时它就是一个跳转点 */
 
   /* ===== 底部：连接态 ===== */
   #foot {
@@ -118,11 +131,13 @@
        xmlns="http://www.w3.org/2000/svg"></svg>
   <div id="empty">open_work(name), then write into an address</div>
   <div id="hint">ops land in place — nothing here reloads</div>
+
 </div>
 
 <aside id="side">
   <header>
     <select id="work-picker" title="switch work — a view action, no work is changed"></select>
+    <select id="page-picker" title="jump to a page — a view action, the reader moves"></select>
     <span id="work-meta"></span>
     <button id="canvas-first" title="canvas first — hides the cards, keeps the record">canvas</button>
   </header>
@@ -139,13 +154,15 @@ const empty = document.getElementById("empty");
 const workName = document.getElementById("work-name");
 const workMeta = document.getElementById("work-meta");
 const picker = document.getElementById("work-picker");
+const pagePicker = document.getElementById("page-picker");
 const connEl = document.getElementById("conn");
 const cursorEl = document.getElementById("cursor");
 const strip = document.getElementById("strip");
 
 let ops = [];       // 这一份作品的 action log（服务端才是真相，这里是它的投影）
 let cursor = 0;     // reader 站在第几个 op 之后
-let previews = new Map();   // addr -> 正在流的预览节点
+let previews = new Map();
+let askAddr = "";           // 我正在等答案的那个地址   // addr -> 正在流的预览节点
 
 // ---- 寻址 ---------------------------------------------------------------
 // 地址就是 CSS 选择器。找不到时返回 null，而不是猜一个 —— "改了没反应"和
@@ -214,6 +231,13 @@ function apply(op) {
     el.setAttribute(op.payload.attr, op.payload.value);
     return true;
   }
+  if (op.kind === "style") {
+    const tag = document.createElementNS(SVG_NS, "style");
+    tag.textContent = op.payload.css || "";
+    stage.appendChild(tag);
+    return true;
+  }
+  if (op.kind === "frame") return true;   // 页是一个标记：它什么也不画
   if (op.kind === "remove") {
     const el = find(op.addr);
     if (!el) { op.warn = `no node at ${op.addr} — nothing to remove`; return false; }
@@ -241,6 +265,8 @@ function opLine(op) {
   }
   if (op.kind === "set") return `set <b>${esc(op.addr)}</b>[${esc(op.payload.attr)}]`;
   if (op.kind === "remove") return `remove <b>${esc(op.addr)}</b>`;
+  if (op.kind === "style") return `style · ${(op.payload.css || "").length} chars`;
+  if (op.kind === "frame") return "page";
   return op.kind;
 }
 
@@ -253,7 +279,8 @@ function renderCards() {
   rows.reverse();
   rows.forEach(([op, idx]) => {
     const card = document.createElement("div");
-    card.className = "card" + (idx + 1 <= cursor ? " done" : " ahead")
+    card.className = "card" + (op.kind === "frame" ? " page" : "")
+      + (idx + 1 <= cursor ? " done" : " ahead")
       + (idx + 1 === cursor ? " reader" : "");
     const title = document.createElement("div");
     title.className = "title";
@@ -338,12 +365,28 @@ function onState(f) {
     picker.appendChild(opt);
   });
   picker.disabled = rows.length === 0;
+  pagePicker.replaceChildren();
+  const pages = (current && current.pages) || [];
+  pages.forEach((pg) => {
+    const opt = document.createElement("option");
+    opt.value = String(pg.n);
+    opt.textContent = pg.label || `page ${pg.n}`;
+    pagePicker.appendChild(opt);
+  });
+  pagePicker.hidden = pages.length === 0;
   workMeta.textContent = current && current.description ? current.description : "";
   ops = f.ops || [];
   replay(f.cursor == null ? ops.length : f.cursor);
 }
 
 // 人切作品：一路都是视图动作，服务端只回一帧 state，谁的内容都不改。
+// 跳页 = 把读点挪到那一页之后。和拖滑杆、点卡片是同一条路。
+pagePicker.addEventListener("change", () => {
+  const n = Number(pagePicker.value);
+  replay(n);
+  send({ type: "user.checkout", n });
+});
+
 picker.addEventListener("change", () => {
   send({ type: "user.open", name: picker.value });
 });
@@ -382,6 +425,13 @@ function onFrame(f) {
   }
   if (f.type === "cursor") {
     if (f.n !== cursor) replay(f.n);
+    return;
+  }
+  if (f.type === "point") {
+    document.querySelectorAll("#stage .asking").forEach((n) => n.classList.remove("asking"));
+    const el = find(f.addr);
+    if (el) el.classList.add("asking");
+    askAddr = f.addr;
     return;
   }
   if (f.type === "panel") {

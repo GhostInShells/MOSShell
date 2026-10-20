@@ -47,7 +47,7 @@ op per line — append-friendly, diff-friendly, and short enough to read with `h
 
 WORK_SUFFIX = ".jsonl"
 NOTE_SUFFIX = ".md"
-_OP_KINDS = {"insert", "set", "remove"}
+_OP_KINDS = {"insert", "set", "remove", "style", "frame"}
 
 
 def work_path(path: str) -> Path:
@@ -158,7 +158,8 @@ class Work:
 
     def head(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description,
-                "ops": len(self.ops), "cursor": self.cursor}
+                "ops": len(self.ops), "cursor": self.cursor,
+                "pages": [{"n": op.n, "label": op.note} for op in self.ops if op.kind == "frame"]}
 
 
 class WorkStore:
@@ -169,6 +170,7 @@ class WorkStore:
         self._order: list[str] = []
         self.current: str = ""
         self.picked: deque = deque(maxlen=6)
+        self.pending: dict[str, str] = {}   # addr -> the question waiting for an answer
 
     # ---- works -------------------------------------------------------------
     def open(self, name: str, description: str = "") -> Work:
@@ -307,6 +309,13 @@ class SurfaceServer:
                     if work is not None:
                         await self.broadcast({"type": "cursor", "n": work.cursor})
                 # 切换作品是人的"看哪个"，和切分组同一类动作：它改视图，不改任何作品的内容。
+                elif frame.get("type") == "user.answer":
+                    addr = str(frame.get("addr") or "")
+                    ok = bool(frame.get("ok"))
+                    self._store.pending.pop(addr, None)
+                    self._store.picked.append(
+                        f"{time.strftime('%H:%M:%S')} answer → {addr}: {'yes' if ok else 'no'}"
+                    )
                 elif frame.get("type") == "user.pick":
                     self._store.note_pick(str(frame.get("addr") or ""), str(frame.get("work") or ""))
                 elif frame.get("type") == "user.open":
@@ -390,8 +399,11 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
             f"current: {work.name} · {len(work.ops)} ops"
             + (f" · reader at {work.cursor}" if work.cursor != len(work.ops) else "")
         )
+        if store.pending:
+            line += "\nwaiting on the human: " + "; ".join(
+                f"{a} ({q})" if q else a for a, q in store.pending.items())
         if store.picked:
-            line += "\nhuman pointed at: " + "; ".join(list(store.picked)[-2:])
+            line += "\nhuman said: " + "; ".join(list(store.picked)[-2:])
         return line
 
     # ---- works -------------------------------------------------------------
@@ -623,6 +635,65 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         return f"imported '{work.name}' — {len(work.ops)} ops from {target}"
 
     @chan.build.command(always_observe=False)
+    async def point(addr: str, ask: str = "", name: str = "") -> str:
+        """Point at a node — the other half of the human being able to point at me.
+
+        The drawing only says **where**: the node lights up and nothing else. The
+        sentence that goes with it is spoken, and placed on the screen — a canvas that
+        grows question bars is a canvas turning into a chat window. `ask` is kept on the
+        record so the next turn knows what was being asked; it is not drawn.
+
+        :param addr: CSS selector of the node to point at
+        :param ask: what I am asking about it — remembered, not shown
+        :param name: the work; empty = the current one
+        """
+        work = store.get(name)
+        if work is None:
+            return "no work open"
+        if ask:
+            store.pending[addr] = ask
+        await server.broadcast({"type": "point", "addr": addr, "ask": ask})
+        return f"pointed at {addr}" + (f" — asking: {ask}" if ask else " — highlight only")
+
+    @chan.build.command(always_observe=False)
+    async def page(name: str = "", label: str = "", note: str = "") -> str:
+        """Mark this point in the record as a page — the slide of a deck.
+
+        A page is an op, so it replays like everything else: it means "at this many ops,
+        the work is at this page". Export the work and the pages become the steps a
+        reader can jump between.
+
+        :param name: the work; empty = the current one
+        :param label: the page's title, shown to the human
+        :param note: kept for symmetry; `label` is what gets shown
+        """
+        work = store.get(name)
+        if work is None:
+            return "no work open"
+        op = store.record(work.name, "frame", "", {}, label or note or f"page {len(work.ops) + 1}")
+        await server.broadcast({"type": "op", "op": op.as_frame()})
+        return f"op {op.n} · page '{op.note}' at {len(work.ops)} ops"
+
+    @chan.build.command(always_observe=False)
+    async def style(css: str, name: str = "", note: str = "") -> str:
+        """Add a style sheet to the work — one palette for the whole drawing.
+
+        Styles set one attribute at a time (that is what `set_attr` is for); a sheet is
+        for the things that belong to the work rather than to a node: the palette, the
+        stroke language, how motion feels. It is recorded as an op, so it replays too.
+
+        :param css: CSS to inject into the drawing's root
+        :param name: the work; empty = the current one
+        :param note: the card's title
+        """
+        work = store.get(name)
+        if work is None:
+            return "no work open"
+        op = store.record(work.name, "style", "#stage", {"css": css}, note)
+        await server.broadcast({"type": "op", "op": op.as_frame()})
+        return f"op {op.n} · style ({len(css)} chars)"
+
+    @chan.build.command(always_observe=False)
     async def panel(show: bool = True) -> str:
         """Show or collapse the action column: full screen for the drawing.
 
@@ -672,6 +743,9 @@ _HTML_PLAYER = """<!doctype html>
     font:inherit;padding:2px 9px;cursor:pointer}
   #bar .step:hover{color:#dfe9f2;border-color:#46515f}
   #slider{flex:1;accent-color:#3ddc8f}
+  #pages{background:#10151b;color:#8a97a4;border:1px solid #2b313b;border-radius:4px;
+    font:inherit;font-size:11.5px;padding:2px 4px;cursor:pointer}
+  #pages[hidden]{display:none}
   #note{position:fixed;left:14px;bottom:44px;color:#55636f;font-size:11.5px;pointer-events:none}
   #empty{position:absolute;inset:0;display:grid;place-items:center;color:#55636f}
 </style></head>
@@ -683,6 +757,7 @@ _HTML_PLAYER = """<!doctype html>
   <input id="slider" type="range" min="0" max="1" value="1" step="1">
   <button class="step" id="next">&#8250;</button>
   <span><b id="at">1</b>/<span id="n">1</span></span>
+  <select id="pages"></select>
   <span id="title"></span>
 </div>
 <div id="note">__DESC__</div>
@@ -722,6 +797,12 @@ function apply(op) {
     const el = find(op.addr); if (!el) return false;
     el.setAttribute(op.payload.attr, op.payload.value); return true;
   }
+  if (op.kind === "style") {
+    const tag = document.createElementNS(NS, "style");
+    tag.textContent = op.payload.css || "";
+    stage.appendChild(tag); return true;
+  }
+  if (op.kind === "frame") return true;
   if (op.kind === "remove") {
     const el = find(op.addr); if (!el) return false;
     el.remove(); return true;
@@ -758,6 +839,18 @@ addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") { stop(); goto(cursor + 1); }
   if (e.key === "ArrowLeft") { stop(); goto(cursor - 1); }
 });
+// 页：导出时每一页就是读点上的一个跳转。页本身也是一条 op，所以它同样被重放。
+const pageSel = document.getElementById("pages");
+const pages = ops.map((op, i) => ({ op, at: i + 1 })).filter((x) => x.op.kind === "frame");
+pages.forEach((x) => {
+  const opt = document.createElement("option");
+  opt.value = String(x.at);
+  opt.textContent = x.op.note || ("page " + x.at);
+  pageSel.appendChild(opt);
+});
+pageSel.hidden = pages.length === 0;
+pageSel.addEventListener("change", () => { stop(); goto(Number(pageSel.value)); });
+
 goto(ops.length);
 </script>
 </body></html>
