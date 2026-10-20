@@ -48,6 +48,8 @@ HOST = os.getenv("MOSS_DISCUSS_HOST", "127.0.0.1")
 DISCUSS_DIR = Path(os.getenv("MOSS_DISCUSS_DIR", str(_NODE_DIR / "sessions")))
 SUFFIX = ".jsonl"
 STATES = ("open", "landed", "dropped")
+STALE_AFTER = 10 * 60.0
+"""Seconds without a record before the notice says the picture has fallen behind."""
 
 
 def _port_from_argv(argv: list[str]) -> int | None:
@@ -253,7 +255,14 @@ def new_discuss_channel(board: Board, server: SurfaceServer, matrix: Matrix):
         for b in br:
             groups.setdefault(b["state"], []).append(b["id"])
         parts = [f"{k}: {len(v)} ({', '.join(v)})" for k, v in groups.items()]
-        return f"{board.topic or 'untitled'} · " + " · ".join(parts)
+        line = f"{board.topic or 'untitled'} · " + " · ".join(parts)
+        # 该提醒的不是"有几条开着"，是"这张图已经跟不上对话了"。
+        # 判据不是我记不记得（不可测），是最后一次记录距今多久（可测）。
+        if board.recs:
+            gap = time.time() - board.recs[-1].t
+            if gap >= STALE_AFTER:
+                line += f" · stale {int(gap // 60)}m — last record {int(gap // 60)}m ago"
+        return line
 
     @chan.build.command(always_observe=False)
     async def topic(name: str) -> str:
