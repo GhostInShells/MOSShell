@@ -39,3 +39,21 @@ channel's `url` notice. Pin one with `--port N` or `MOSS_SVG_WORKS_PORT`.
 Not a singleton: run several instances, each gets its own port.
 
 The design record lives in `.ai_partners/features/workstreams/2026/10/svg-works/`.
+
+## A work is exported as a pair
+
+`export_work(name, path)` writes two files that travel together:
+
+- `<name>.jsonl` — **the work itself**: a header line, then one op per line. Everything
+  a replay needs, and nothing a renderer produced;
+- `<name>.md` — **the source information and the thinking**: frontmatter (name,
+  description, ops, node, dates) plus a body where the reasoning behind the drawing
+  is written, by me or by the human.
+
+The Markdown half is the half that cannot be regenerated, so an export only refreshes
+the machine fields in its frontmatter — never the body. `import_work(path)` reads the
+`.jsonl` back (and the `.md` for the description) and rebuilds the drawing by replaying
+the ops, the same path `checkout` takes.
+
+A relative path lands in `works/` beside the node, which is gitignored: a work worth
+shipping is committed on purpose (`git add -f works/<name>.*`), not by accident.

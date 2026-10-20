@@ -50,6 +50,14 @@
     padding: 2px 8px; cursor: pointer;
   }
   #canvas-first:hover { color: var(--fg); border-color: var(--line-strong); }
+
+  /* 作品切换：和切分组同一类动作 —— 换的是"看哪个"，不动任何作品的内容。 */
+  #work-picker {
+    background: #10151b; color: var(--accent); border: 1px solid var(--line);
+    border-radius: 4px; font: inherit; font-weight: 600; padding: 2px 4px; cursor: pointer;
+    max-width: 40%;
+  }
+  #work-picker:focus { outline: none; border-color: var(--line-strong); }
   #work-name { color: var(--accent); font-weight: 600; }
   #work-meta { color: var(--dim); font-size: 11.5px; }
   #cards { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -112,7 +120,7 @@
 
 <aside id="side">
   <header>
-    <span id="work-name">—</span>
+    <select id="work-picker" title="切作品（换的是看哪个，不改任何作品的内容）"></select>
     <span id="work-meta"></span>
     <button id="canvas-first" title="画布优先：收起动作列，记录仍然在">⤢ 画布优先</button>
   </header>
@@ -128,6 +136,7 @@ const cards = document.getElementById("cards");
 const empty = document.getElementById("empty");
 const workName = document.getElementById("work-name");
 const workMeta = document.getElementById("work-meta");
+const picker = document.getElementById("work-picker");
 const connEl = document.getElementById("conn");
 const cursorEl = document.getElementById("cursor");
 const strip = document.getElementById("strip");
@@ -305,12 +314,26 @@ function esc(s) { return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">":
 
 // ---- 帧路由 -------------------------------------------------------------
 function onState(f) {
-  const current = (f.works || []).find((w) => w.name === f.current) || null;
-  workName.textContent = current ? current.name : "—";
+  const rows = f.works || [];
+  const current = rows.find((w) => w.name === f.current) || null;
+  picker.replaceChildren();
+  rows.forEach((w) => {
+    const opt = document.createElement("option");
+    opt.value = w.name;
+    opt.textContent = `${w.name} · ${w.ops}`;
+    if (current && w.name === current.name) opt.selected = true;
+    picker.appendChild(opt);
+  });
+  picker.disabled = rows.length === 0;
   workMeta.textContent = current && current.description ? current.description : "";
   ops = f.ops || [];
   replay(f.cursor == null ? ops.length : f.cursor);
 }
+
+// 人切作品：一路都是视图动作，服务端只回一帧 state，谁的内容都不改。
+picker.addEventListener("change", () => {
+  send({ type: "user.open", name: picker.value });
+});
 
 function onFrame(f) {
   if (f.type === "state") return onState(f);

@@ -10,3 +10,6 @@ __pycache__/
 
 # runtime artifacts (ledger, logs)
 runtime/
+
+# works are local by default; a work worth shipping is committed with -f
+works/

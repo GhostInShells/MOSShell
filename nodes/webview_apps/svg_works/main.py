@@ -22,6 +22,7 @@ Debug:  python main.py
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import os
 import sys
@@ -37,6 +38,76 @@ from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
 
 _NODE_DIR = Path(__file__).resolve().parent
 _INDEX_HTML = _NODE_DIR / "index.html"
+
+WORKS_DIR = Path(os.getenv("MOSS_SVG_WORKS_DIR", str(_NODE_DIR / "works")))
+"""Where a relative export path lands. A work file is `*.jsonl`: a header line, then one
+op per line — append-friendly, diff-friendly, and short enough to read with `head`."""
+
+WORK_SUFFIX = ".jsonl"
+NOTE_SUFFIX = ".md"
+_OP_KINDS = {"insert", "set", "remove"}
+
+
+def work_path(path: str) -> Path:
+    """Resolve an export/import target.
+
+    A relative path lands in ``WORKS_DIR`` (which is gitignored — a shared example is
+    committed on purpose, not by accident). The suffix is normalised to ``.jsonl`` so
+    the same handle can be used for both halves of a work.
+    """
+    raw = Path(path).expanduser()
+    base = raw if raw.is_absolute() else WORKS_DIR / raw
+    if not base.name.endswith(WORK_SUFFIX):
+        base = base.with_name(base.name + WORK_SUFFIX)
+    if not raw.is_absolute():
+        root = WORKS_DIR.resolve()
+        try:
+            base.resolve().relative_to(root)
+        except ValueError as exc:  # a relative path may not climb out of the works dir
+            raise ValueError(f"path escapes {root}: {path}") from exc
+    return base
+
+
+def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            meta: dict[str, str] = {}
+            for line in parts[1].strip().splitlines():
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    meta[key.strip()] = value.strip()
+            return meta, parts[2].lstrip("\n")
+    return {}, text
+
+
+def write_note(note_path: Path, work: Work) -> None:
+    """Keep a work's Markdown half in step with its ops — without touching the prose.
+
+    The prose half is the thinking behind the drawing: mine to write, the human's to
+    edit. The machine half is counters and dates. Rewriting the whole file would erase
+    the only part that cannot be regenerated from the ops, so an existing body is kept
+    as it is.
+    """
+    today = datetime.date.today().isoformat()
+    if note_path.exists():
+        meta, body = split_frontmatter(note_path.read_text(encoding="utf-8"))
+        meta.setdefault("created", today)
+    else:
+        meta = {"node": "webview_apps/svg_works", "created": today}
+        body = (
+            f"# {work.description or work.name}\n\n"
+            "<!-- 创作思路写在这里：为什么这样画、哪一笔是后来改的、下次想怎么改。\n"
+            "     导出只更新上面 frontmatter 里机器那几行，这一节不会被覆盖。 -->\n"
+        )
+    meta["name"] = work.name
+    meta["ops"] = str(len(work.ops))
+    meta["updated"] = today
+    if not meta.get("description"):
+        meta["description"] = work.description
+    order = ["name", "description", "ops", "node", "created", "updated"]
+    head = "\n".join(f"{k}: {meta[k]}" for k in order if k in meta)
+    note_path.write_text(f"---\n{head}\n---\n\n{body}", encoding="utf-8")
 
 HOST = os.getenv("MOSS_SVG_WORKS_HOST", "127.0.0.1")
 
@@ -114,6 +185,9 @@ class WorkStore:
     def works(self) -> list[dict[str, Any]]:
         return [self._works[n].head() for n in self._order]
 
+    def works_names(self) -> list[str]:
+        return list(self._order)
+
     # ---- ops ---------------------------------------------------------------
     def record(self, name: str, kind: str, addr: str, payload: dict[str, Any], note: str) -> Op | None:
         work = self.get(name)
@@ -126,6 +200,43 @@ class WorkStore:
         if work is None:
             return None
         work.cursor = max(0, min(n, len(work.ops)))
+        return work
+
+    # ---- export / import ---------------------------------------------------
+    def dump(self, name: str = "") -> list[dict[str, Any]]:
+        """The work as lines: one header, then one op per line."""
+        work = self.get(name)
+        if work is None:
+            return []
+        lines: list[dict[str, Any]] = [{
+            "type": "work", "version": 1,
+            "name": work.name, "description": work.description,
+        }]
+        lines += [{"type": "op", **op.as_frame()} for op in work.ops]
+        return lines
+
+    def load(self, name: str, rows: list[dict[str, Any]], description: str = "") -> Work:
+        """Rebuild a work from its lines — the ops, not a rendered document.
+
+        Numbering is rebuilt from position rather than trusted from the file: a hand
+        edit that leaves a hole in `n` must not create a work replay cannot address.
+        """
+        work = Work(name=name, description=description)
+        for row in rows:
+            if row.get("type") != "op":
+                continue
+            kind = row.get("kind", "")
+            if kind not in _OP_KINDS:
+                raise ValueError(f"unknown op kind {kind!r} — file refused, nothing imported")
+            work.ops.append(Op(
+                n=len(work.ops) + 1, kind=kind, addr=row.get("addr", ""),
+                payload=row.get("payload") or {}, note=row.get("note", ""),
+            ))
+        work.cursor = len(work.ops)
+        self._works[name] = work
+        if name not in self._order:
+            self._order.append(name)
+        self.current = name
         return work
 
     def snapshot(self) -> dict[str, Any]:
@@ -188,6 +299,12 @@ class SurfaceServer:
                     work = self._store.checkout("", int(frame.get("n", 0)))
                     if work is not None:
                         await self.broadcast({"type": "cursor", "n": work.cursor})
+                # 切换作品是人的"看哪个"，和切分组同一类动作：它改视图，不改任何作品的内容。
+                elif frame.get("type") == "user.open":
+                    name = str(frame.get("name") or "")
+                    if name and (name in self._store.works_names()):
+                        self._store.open(name)
+                        await self.broadcast({"type": "state", **self._store.snapshot()})
         finally:
             self._clients.discard(connection)
 
@@ -395,6 +512,72 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         await server.broadcast({"type": "replay", "n": work.cursor,
                                 "ops": [op.as_frame() for op in work.ops[:work.cursor]]})
         return f"'{work.name}' reader at {work.cursor}/{len(work.ops)}"
+
+    @chan.build.command(always_observe=False)
+    async def export_work(name: str = "", path: str = "") -> str:
+        """Save a work as a pair: `<name>.jsonl` (its ops) and `<name>.md` (its notes).
+
+        The `.jsonl` **is** the work — the action list, which is all a replay needs. The
+        `.md` beside it carries the source information and the thinking behind the
+        drawing; an export refreshes only the machine fields there, so anything written
+        in its body survives.
+
+        A relative path lands in this node's `works/` directory (gitignored: a work worth
+        shipping is committed on purpose, not by accident).
+
+        :param name: the work; empty = the current one
+        :param path: target path; a bare name is enough, the suffix is normalised
+        """
+        work = store.get(name)
+        if work is None:
+            return "no work open"
+        target = work_path(path or work.name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        lines = store.dump(work.name)
+        target.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in lines),
+            encoding="utf-8",
+        )
+        note = target.with_name(target.name[: -len(WORK_SUFFIX)] + NOTE_SUFFIX)
+        write_note(note, work)
+        return f"'{work.name}' → {target} ({len(lines) - 1} ops) + {note.name}"
+
+    @chan.build.command(always_observe=False)
+    async def import_work(path: str, name: str = "") -> str:
+        """Load a work from a `.jsonl` file and show it.
+
+        Only the ops are read — the drawing is rebuilt by replaying them, the same path
+        `checkout` takes. The `.md` beside it (if present) supplies the description, so
+        the notes travel with the file.
+
+        :param path: the `.jsonl` to read; relative paths resolve under `works/`
+        :param name: override the work's name; empty = the file's own name
+        """
+        target = work_path(path)
+        if not target.exists():
+            return f"no such work file: {target}"
+        rows: list[dict[str, Any]] = []
+        for i, raw in enumerate(target.read_text(encoding="utf-8").splitlines(), 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                rows.append(json.loads(raw))
+            except ValueError:
+                return f"{target.name} line {i}: not JSON — nothing imported"
+        header = next((r for r in rows if r.get("type") == "work"), {})
+        work_name = name or header.get("name") or target.stem
+        note = target.with_name(target.name[: -len(WORK_SUFFIX)] + NOTE_SUFFIX)
+        description = header.get("description", "")
+        if note.exists():
+            meta, _ = split_frontmatter(note.read_text(encoding="utf-8"))
+            description = description or meta.get("description", "")
+        try:
+            work = store.load(work_name, rows, description)
+        except ValueError as exc:
+            return str(exc)
+        await server.broadcast({"type": "state", **store.snapshot()})
+        return f"imported '{work.name}' — {len(work.ops)} ops from {target}"
 
     @chan.build.command(always_observe=False)
     async def panel(show: bool = True) -> str:
