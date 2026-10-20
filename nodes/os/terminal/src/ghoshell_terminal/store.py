@@ -244,6 +244,22 @@ class CardStore:
     def cards(self) -> list[Card]:
         return [self._cards[i] for i in self._order if i in self._cards]
 
+    def clear(self, keep_running: bool = True) -> int:
+        """Drop settled cards from the list — the history, not the work.
+
+        A card that is still awaiting a verdict or still has a process behind it stays:
+        clearing the screen must never hide a command that has not finished. What goes
+        is the tail of things that already ended, which is the part that turns a
+        terminal into a log nobody reads.
+        """
+        doomed = [c.id for c in self.cards() if c.settled or not keep_running]
+        for cid in doomed:
+            self._cards.pop(cid, None)
+            self._waiters.pop(cid, None)
+            self._verdicts.pop(cid, None)
+        self._order = [cid for cid in self._order if cid not in set(doomed)]
+        return len(doomed)
+
     def append_content(self, card_id: int, text: str) -> Card:
         card = self._require(card_id)
         card.content += text

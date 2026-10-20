@@ -1001,6 +1001,35 @@ def build_file_editor_channel(
             if gone else f"[{name}] draft {draft} was already gone"
         )
 
+    @chan.build.command(name="clear", available=enabled)
+    async def clear(drafts: bool = True, threads: bool = False) -> str:
+        """Throw away what has piled up — the debris, not the work.
+
+        ``drafts`` discards every unclaimed working copy: what a crash, a forgotten
+        thread, or a day of editing leaves behind. ``threads`` also closes the live
+        threads — off by default, because a live thread is somebody's unsaved text and
+        "clear" should never quietly mean "destroy".
+
+        Restarting the node is the other way to get a clean surface, but it costs more
+        than the mess: it takes the windows with it and puts every thread back to zero.
+        This is the same result as one sentence.
+        """
+        gone = 0
+        if drafts:
+            for name_ in list(store.recoverable()):
+                try:
+                    store.discard(name_)
+                    gone += 1
+                except ValueError:
+                    continue
+        closed = 0
+        if threads:
+            for t in list(store.live()):
+                store.close(t.id)
+                closed += 1
+        await _threads()
+        return f"[{name}] cleared {gone} draft(s), closed {closed} thread(s)"
+
     @chan.build.command(name="history", always_observe=True, available=enabled)
     async def history(thread: str) -> str:
         """The index of a thread: every action with its verdict, and the head.

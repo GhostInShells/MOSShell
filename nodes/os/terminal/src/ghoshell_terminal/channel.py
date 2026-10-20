@@ -572,6 +572,24 @@ def build_terminal_channel(
             out.append(f"#{c.id} {c.type.value} {c.state.value} [{c.thread}] {preview}")
         return "\n".join(out) if out else "(no cards yet)"
 
+    @chan.build.command(name="clear", always_observe=False, available=enabled)
+    async def clear(keep_running: bool = True) -> str:
+        """Take the finished cards off the terminal — the history, not the work.
+
+        A card still awaiting a verdict, or one with a process behind it, stays: clearing
+        the screen must never hide a command that has not finished. What goes is the tail
+        of things that already ended.
+
+        Restarting the node would also do it, but a restart takes the windows with it and
+        puts the pool back to zero; this is the same result as one sentence.
+        """
+        gone = store.clear(keep_running=keep_running)
+        # 让页面按快照重建列表，而不是逐张发"删除"：清空是一次整体状态变化。
+        snap = getattr(surface, "snapshot", None)
+        if snap is not None:
+            await _emit(snap())
+        return f"[{name}] cleared {gone} card(s)"
+
     async def _stop_card(card_id: int) -> str:
         card = store.get(card_id)
         if card is None:
