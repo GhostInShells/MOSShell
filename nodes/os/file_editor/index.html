@@ -880,10 +880,51 @@ trustGlobalEl.addEventListener("click", () =>
 );
 renderTrust();
 
+// The bar says *something changed*; clicking it must hand over the change
+// itself, not a list of cards that mentions it. The cards stay one click away
+// on the history tab, which is where a reader who wants the index goes.
+function newestActionOf(id) {
+  let top = null;
+  for (const a of actions.values()) {
+    if (a.thread === id && (!top || a.n > top.n)) top = a;
+  }
+  return top;
+}
+
+// Both faces carry data-lines, so "the lines that moved" is one address whether
+// the reader is on a rendered face or on raw.
+function scrollToLines(range) {
+  if (!range) return;
+  for (const el of docEl.querySelectorAll("[data-lines]")) {
+    const r = linesOfNode(el);
+    if (r && r[0] <= range[0] && range[0] <= r[1]) {
+      el.scrollIntoView({ block: "center" });
+      return;
+    }
+  }
+}
+
 document.getElementById("digest").addEventListener("click", () => {
+  const target = newestActionOf(viewBase.id);
   viewBase = { id: viewBase.id, n: topActionOf(viewBase.id) };
   renderDigest();
-  setView("history");
+  if (!target) {
+    setView("history");
+    return;
+  }
+  if (focusThread !== target.thread) {
+    focusThread = target.thread;
+    requestText(target.thread);
+  }
+  const moved = regionOf(target);
+  if (moved) {
+    flashRange = moved;
+    setTimeout(() => { flashRange = null; renderDoc(); }, 1800);
+  }
+  setView("document");
+  // The render is async (a renderer module may still be loading), so the scroll
+  // is scheduled rather than taken now.
+  setTimeout(() => scrollToLines(moved), 150);
 });
 
 document.getElementById("vtab-doc").addEventListener("click", () => {
@@ -1573,10 +1614,12 @@ async function renderDoc() {
       docEl.prepend(make("div", "render-broken", shownName + " — 装饰时抛错：" + (e && e.message ? e.message : e)));
     }
   }
-  if (flashRange && shownName === "raw") {
-    for (const row of host.querySelectorAll(".doc-line")) {
-      const n = parseInt(row.dataset.n, 10);
-      if (n >= flashRange[0] && n <= flashRange[1]) row.classList.add("flash");
+  if (flashRange) {
+    // Every face carries data-lines, so one rule lights a rendered block or a
+    // raw line: whatever overlaps the changed range flashes.
+    for (const el of host.querySelectorAll("[data-lines]")) {
+      const r = linesOfNode(el);
+      if (r && r[1] >= flashRange[0] && r[0] <= flashRange[1]) el.classList.add("flash");
     }
   }
   if (band && scrollForBand) {
@@ -2204,6 +2247,16 @@ function onFrame(frame) {
       // The working copy moved: the document is stale until told otherwise.
       if (a.thread === focusThread) {
         docText.delete(a.thread);
+        // The original contract: a change lands in place and shows *which* lines
+        // moved. Only a local edit used to flash, so a change made from outside
+        // arrived as "something changed since you started reading" — a pointer to
+        // the change instead of the change. No scroll here on purpose: the reader
+        // keeps their place and the flash tells them where it went.
+        const moved = regionOf(a);
+        if (moved) {
+          flashRange = moved;
+          setTimeout(() => { flashRange = null; renderDoc(); }, 1500);
+        }
         if (view === "document") requestText(a.thread);
         if (!metaEl.hidden) renderMeta();
       } else {
