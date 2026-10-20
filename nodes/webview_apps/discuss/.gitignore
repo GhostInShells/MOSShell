@@ -1,0 +1,15 @@
+# local install-completion marker
+.installed
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# isolated venv
+.venv/
+
+# runtime artifacts (ledger, logs)
+runtime/
+
+# sessions are local by default; one worth shipping is committed with -f
+sessions/

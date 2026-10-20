@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>discuss — timeline</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #10151b; --line: #2b313b; --line-strong: #46515f;
+    --fg: #dfe9f2; --dim: #8a97a4; --faint: #55636f; --accent: #3ddc8f;
+    --landed: #6ea8fe; --dropped: #7a4a4a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 13px/1.5 ui-monospace, "PingFang SC", "Noto Sans CJK SC", monospace;
+    display: flex; flex-direction: column;
+  }
+  #head {
+    display: flex; align-items: baseline; gap: 12px; padding: 10px 16px 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  #topic { color: var(--fg); font-weight: 600; }
+  #meta { color: var(--dim); font-size: 12px; }
+  #follow {
+    margin-left: auto; background: transparent; border: 1px solid var(--line);
+    border-radius: 4px; color: var(--dim); font: inherit; font-size: 11.5px;
+    padding: 2px 9px; cursor: pointer;
+  }
+  #follow.on { color: var(--accent); border-color: rgba(61,220,143,.5); }
+  #stage { flex: 1; min-height: 0; width: 100%; display: block; }
+  #detail {
+    border-top: 1px solid var(--line); background: var(--panel);
+    padding: 10px 16px; min-height: 62px; color: var(--dim); font-size: 12.5px;
+  }
+  #detail b { color: var(--fg); font-weight: 600; }
+  #detail .when { color: var(--faint); }
+  #empty {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--faint); pointer-events: none;
+  }
+  #empty[hidden] { display: none; }
+  text { font-family: ui-monospace, "PingFang SC", monospace; }
+</style>
+</head>
+<body>
+<div id="head">
+  <span id="topic">discuss</span>
+  <span id="meta"></span>
+  <button id="follow" class="on" title="follow the newest record; dragging back turns it off">following</button>
+</div>
+<svg id="stage" xmlns="http://www.w3.org/2000/svg">
+  <g id="pic"></g>
+</svg>
+<div id="empty">no branches yet — fork() opens the first one</div>
+<div id="detail">click a point to read it</div>
+
+<script>
+// 一条时间线：主线从左往右，岔出去的方向各占一条泳道。
+// 心电图式：窗口只装最近一段，新记录自动跟到最右；人往回拖就停止跟随，
+// 因为"把它拽回最新"和"打断一个正在看别处的人"是同一件事。
+const NS = "http://www.w3.org/2000/svg";
+const stage = document.getElementById("stage");
+const pic = document.getElementById("pic");
+const emptyEl = document.getElementById("empty");
+const detailEl = document.getElementById("detail");
+const topicEl = document.getElementById("topic");
+const metaEl = document.getElementById("meta");
+const followBtn = document.getElementById("follow");
+
+const WINDOW_MS = 30 * 60 * 1000;   // 最多三十分钟
+const MAX_EVENTS = 40;              // 或最多这么多条，谁先到算谁
+const LANE_H = 78, TOP = 70, PAD_L = 26, PAD_R = 96;
+
+let recs = [], branches = [], topic = "", now = Date.now() / 1000;
+let following = true;
+let viewEnd = null;      // 手动拖时的右端（epoch 秒）
+let zoom = 1;            // 缩放系数（>1 放大）
+
+function el(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+function text(x, y, s, attrs = {}) {
+  const t = el("text", { x, y, fill: "var(--dim)", "font-size": 12.5, ...attrs });
+  t.textContent = s;
+  return t;
+}
+function fmtTime(t) {
+  const d = new Date(t * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function viewWindow() {
+  const end = following || viewEnd == null ? now : viewEnd;
+  const byTime = end - (WINDOW_MS / 1000) / zoom;
+  // 窗口两端都被约束：往后不超过三十分钟，往前不早于第一条记录。
+  // 只按时间窗算的话，一段刚开始的对话会被压成右边一个小点。
+  const first = recs.length ? recs[0].t : end;
+  let start = Math.max(first - 20, byTime);
+  if (end - start < 30) start = end - 30;            // 再短也给半分钟，否则一瞬被放大到失真
+  const inWin = recs.filter((r) => r.t >= start && r.t <= end);
+  if (inWin.length > MAX_EVENTS) start = inWin[inWin.length - MAX_EVENTS].t;
+  return { start, end: Math.max(end, start + 1) };
+}
+
+function laneOf(id) {
+  const i = branches.findIndex((b) => b.id === id);
+  return i < 0 ? 0 : i;
+}
+function stateColor(state) {
+  return state === "landed" ? "var(--landed)" : state === "dropped" ? "var(--dropped)" : "var(--accent)";
+}
+
+function draw() {
+  const box = stage.getBoundingClientRect();
+  const W = Math.max(320, box.width), H = Math.max(200, box.height);
+  stage.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  pic.replaceChildren();
+
+  const { start, end } = viewWindow();
+  const X = (t) => PAD_L + ((t - start) / (end - start)) * (W - PAD_L - PAD_R);
+  const mainY = TOP;
+
+  emptyEl.hidden = branches.length > 0;
+
+  // 主线
+  pic.appendChild(el("line", { x1: PAD_L, y1: mainY, x2: W - PAD_R, y2: mainY,
+    stroke: "var(--line-strong)", "stroke-width": 3 }));
+  pic.appendChild(text(PAD_L, mainY - 18, "main", { fill: "var(--fg)" }));
+
+  branches.forEach((b, i) => {
+    const y = TOP + (i + 1) * LANE_H;
+    const c = stateColor(b.state);
+    const laneEnd = Math.min(end, now);
+    const x0 = X(b.t);
+    const visibleFrom = Math.max(b.t, start);
+
+    // 从主线岔下来
+    if (b.t >= start) {
+      pic.appendChild(el("path", {
+        d: `M${x0} ${mainY} C ${x0 + 18} ${mainY} ${x0 + 18} ${y} ${x0 + 36} ${y}`,
+        fill: "none", stroke: c, "stroke-width": 2,
+      }));
+      pic.appendChild(el("circle", { cx: x0, cy: mainY, r: 4.5, fill: c }));
+    }
+    // 泳道本体
+    const last = recs.filter((r) => r.id === b.id && r.t >= start).pop();
+    const x1 = b.state === "open" ? X(laneEnd) : X(Math.max(visibleFrom, last ? last.t : b.t));
+    pic.appendChild(el("line", {
+      x1: X(visibleFrom), y1: y, x2: x1, y2: y, stroke: c, "stroke-width": 2,
+      "stroke-dasharray": b.state === "open" ? "6 5" : "",
+      opacity: b.state === "dropped" ? .55 : .95,
+    }));
+    if (b.state === "dropped") {
+      pic.appendChild(el("path", {
+        d: `M${x1 - 5} ${y - 5} l10 10 M${x1 + 5} ${y - 5} l-10 10`,
+        stroke: c, "stroke-width": 2,
+      }));
+    }
+    if (b.state === "landed") {
+      pic.appendChild(el("path", {
+        d: `M${x1} ${y} C ${x1 + 18} ${y} ${x1 + 18} ${mainY} ${x1 + 36} ${mainY}`,
+        fill: "none", stroke: c, "stroke-width": 2,
+      }));
+    }
+
+    // 泳道名 + 第一句话
+    pic.appendChild(text(PAD_L, y + 4, b.id, { fill: "var(--faint)", "font-size": 11.5 }));
+    if (b.t >= start) {
+      pic.appendChild(text(x0 + 8, y - 8, b.text, { fill: "var(--fg)", "font-size": 12.5 }));
+    }
+  });
+
+  // note 与 state 的点
+  recs.forEach((r) => {
+    if (r.t < start || r.t > end || r.kind === "fork") return;
+    const y = TOP + (laneOf(r.id) + 1) * LANE_H;
+    const b = branches.find((x) => x.id === r.id);
+    const c = stateColor(b ? b.state : "open");
+    pic.appendChild(el("circle", { cx: X(r.t), cy: y, r: 3, fill: c, opacity: .9 }));
+  });
+
+  // "now" 的那条线
+  if (following) {
+    const xn = W - PAD_R;
+    pic.appendChild(el("line", { x1: xn, y1: TOP - 30, x2: xn, y2: TOP + (branches.length + 1) * LANE_H,
+      stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": "4 4" }));
+    pic.appendChild(text(xn - 6, TOP - 34, "now", { "text-anchor": "end", "font-size": 11.5 }));
+  }
+
+  // 点：可点开的一句话
+  recs.forEach((r) => {
+    if (r.t < start || r.t > end) return;
+    const y = r.kind === "fork" ? mainY : TOP + (laneOf(r.id) + 1) * LANE_H;
+    const hit = el("circle", { cx: X(r.t), cy: y, r: 11, fill: "transparent",
+      style: "cursor:pointer" });
+    hit.addEventListener("click", () => showDetail(r));
+    pic.appendChild(hit);
+  });
+
+  metaEl.textContent = `${branches.length} branches · ${recs.length} recs · ${fmtTime(start)}–${fmtTime(end)}`;
+}
+
+function showDetail(r) {
+  const b = branches.find((x) => x.id === r.id);
+  const state = b ? b.state : "main";
+  detailEl.innerHTML = "";
+  const line = document.createElement("div");
+  line.innerHTML = `<b>${r.kind}</b> <span class="when">${fmtTime(r.t)}</span> · ${r.id || "main"} · ${state}`;
+  const body = document.createElement("div");
+  body.textContent = r.text;
+  detailEl.append(line, body);
+}
+
+// ---- 跟随 / 拖拽 / 缩放 ----------------------------------------------------
+function setFollow(on) {
+  following = on;
+  followBtn.classList.toggle("on", on);
+  followBtn.textContent = on ? "following" : "paused";
+  if (on) viewEnd = null;
+  draw();
+}
+followBtn.addEventListener("click", () => setFollow(!following));
+
+stage.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  zoom = Math.min(8, Math.max(0.5, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  draw();
+}, { passive: false });
+
+let dragX = null;
+stage.addEventListener("pointerdown", (e) => { dragX = e.clientX; });
+stage.addEventListener("pointerup", () => { dragX = null; });
+stage.addEventListener("pointermove", (e) => {
+  if (dragX == null) return;
+  const dx = e.clientX - dragX;
+  if (Math.abs(dx) < 3) return;
+  const box = stage.getBoundingClientRect();
+  const { start, end } = viewWindow();
+  const perPx = (end - start) / Math.max(1, box.width - PAD_L - PAD_R);
+  viewEnd = (following ? now : viewEnd == null ? now : viewEnd) - dx * perPx;
+  following = false;
+  followBtn.classList.remove("on");
+  followBtn.textContent = "paused";
+  dragX = e.clientX;
+  draw();
+});
+
+// ---- 连接 -----------------------------------------------------------------
+let sock = null;
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  sock = new WebSocket(`${proto}://${location.host}/ws`);
+  sock.addEventListener("message", (ev) => {
+    let f;
+    try { f = JSON.parse(ev.data); } catch (e) { return; }
+    if (f.type === "state") {
+      recs = f.recs || []; branches = f.branches || []; topic = f.topic || "";
+      now = f.now || Date.now() / 1000;
+      topicEl.textContent = topic || "untitled discussion";
+      draw();
+    } else if (f.type === "rec") {
+      recs.push(f.rec);
+      branches = f.branches || branches;
+      now = Date.now() / 1000;
+      draw();
+    }
+  });
+  sock.addEventListener("close", () => setTimeout(connect, 1200));
+}
+connect();
+
+// 心电图：跟随的时候每半秒推一次"现在"，不跟随时完全不重画。
+setInterval(() => {
+  if (!following) return;
+  now = Date.now() / 1000;
+  draw();
+}, 500);
+addEventListener("resize", draw);
+</script>
+</body></html>
