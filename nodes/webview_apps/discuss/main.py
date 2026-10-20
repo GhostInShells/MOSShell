@@ -334,6 +334,22 @@ def new_discuss_channel(board: Board, server: SurfaceServer, matrix: Matrix):
         return f"{id} → {state}"
 
     @chan.build.command(always_observe=False)
+    async def reset(name: str = "") -> str:
+        """Start a new session — the board goes empty, the file on disk is untouched.
+
+        Every discussion needs a beginning, and a node that resumes its last session on
+        startup needs a way to say "that one is over". What is already exported stays
+        where it is: reset clears what is in front of us, not what was recorded.
+
+        :param name: the new topic; empty = an unnamed new session
+        """
+        board.recs.clear()
+        board._next = 0
+        board.topic = name
+        await server.broadcast({"type": "state", **board.snapshot()})
+        return f"new session: {name or 'untitled'}"
+
+    @chan.build.command(always_observe=False)
     async def list() -> str:
         """List the branches and where each one stands."""
         br = board.branches()
