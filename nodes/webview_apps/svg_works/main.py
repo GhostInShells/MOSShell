@@ -543,6 +543,37 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         return f"'{work.name}' → {target} ({len(lines) - 1} ops) + {note.name}"
 
     @chan.build.command(always_observe=False)
+    async def export_html(name: str = "", path: str = "", viewbox: str = "0 0 1000 700") -> str:
+        """Write a work out as one standalone HTML file — the ops plus a small player.
+
+        The result opens from the filesystem with no node, no server and no network: the
+        file carries the action list and a player that can step through it, scrub it or
+        play it back. It is the same record the node keeps, so what a reader can do here
+        (go to step n, watch it grow) is what the record means.
+
+        :param name: the work; empty = the current one
+        :param path: target path; a bare name lands in `works/` with an `.html` suffix
+        :param viewbox: the drawing's coordinate space
+        """
+        work = store.get(name)
+        if work is None:
+            return "no work open"
+        target = work_path(path or work.name).with_suffix(".html")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rows = store.dump(work.name)
+        title = work.description or work.name
+        html = (
+            _HTML_PLAYER
+            .replace("__TITLE__", title)
+            .replace("__TITLE_JS__", json.dumps(title, ensure_ascii=False))
+            .replace("__VIEWBOX__", viewbox)
+            .replace("__DESC__", (work.description or "").replace("<", "&lt;"))
+            .replace("__OPS__", json.dumps(rows, ensure_ascii=False).replace("</", "<\\/"))
+        )
+        target.write_text(html, encoding="utf-8")
+        return f"'{work.name}' → {target} ({len(work.ops)} ops, standalone)"
+
+    @chan.build.command(always_observe=False)
     async def import_work(path: str, name: str = "") -> str:
         """Load a work from a `.jsonl` file and show it.
 
@@ -612,6 +643,113 @@ async def main(matrix: Matrix) -> None:
     server = SurfaceServer(store, host=HOST, port=PORT, html_path=_INDEX_HTML)
     channel = new_svg_works_channel(store, server, matrix)
     await matrix.provide_channel(channel)
+
+
+_HTML_PLAYER = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0f14;color:#dfe9f2;
+    font:13px/1.5 ui-monospace,"PingFang SC",monospace;display:flex;flex-direction:column}
+  #stage{flex:1;min-height:0;width:100%;display:block}
+  #bar{display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid #2b313b;
+    background:#0d1218;color:#8a97a4;font-size:12px}
+  #bar b{color:#dfe9f2;font-weight:600}
+  #bar .step{background:transparent;border:1px solid #2b313b;border-radius:4px;color:#8a97a4;
+    font:inherit;padding:2px 9px;cursor:pointer}
+  #bar .step:hover{color:#dfe9f2;border-color:#46515f}
+  #slider{flex:1;accent-color:#3ddc8f}
+  #note{position:fixed;left:14px;bottom:44px;color:#55636f;font-size:11.5px;pointer-events:none}
+  #empty{position:absolute;inset:0;display:grid;place-items:center;color:#55636f}
+</style></head>
+<body>
+<svg id="stage" viewBox="__VIEWBOX__" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"></svg>
+<div id="bar">
+  <button class="step" id="play">play</button>
+  <button class="step" id="prev">&#8249;</button>
+  <input id="slider" type="range" min="0" max="1" value="1" step="1">
+  <button class="step" id="next">&#8250;</button>
+  <span><b id="at">1</b>/<span id="n">1</span></span>
+  <span id="title"></span>
+</div>
+<div id="note">__DESC__</div>
+<script id="ops" type="application/json">__OPS__</script>
+<script>
+// A standalone player for one work: the ops are the file. Nothing here talks to a
+// server and nothing re-renders the whole document while stepping forward.
+const NS = "http://www.w3.org/2000/svg";
+const rows = JSON.parse(document.getElementById("ops").textContent);
+const ops = rows.filter((r) => r.type === "op");
+const stage = document.getElementById("stage");
+const slider = document.getElementById("slider");
+const atEl = document.getElementById("at");
+const nEl = document.getElementById("n");
+const titleEl = document.getElementById("title");
+let cursor = 0, timer = null;
+
+document.getElementById("title").textContent = __TITLE_JS__;
+
+function find(addr) {
+  try { return stage.querySelector(addr) || document.querySelector(addr); } catch (e) { return null; }
+}
+function parseInto(parent, html) {
+  const holder = parent.namespaceURI === NS ? document.createElementNS(NS, "svg")
+                                             : document.createElement("div");
+  holder.innerHTML = html;
+  Array.from(holder.childNodes).forEach((n) => parent.appendChild(n));
+}
+function apply(op) {
+  if (op.kind === "insert") {
+    const parent = find(op.addr) || (op.addr === "#stage" ? stage : null);
+    if (!parent) return false;
+    parseInto(parent, op.payload.html || "");
+    return true;
+  }
+  if (op.kind === "set") {
+    const el = find(op.addr); if (!el) return false;
+    el.setAttribute(op.payload.attr, op.payload.value); return true;
+  }
+  if (op.kind === "remove") {
+    const el = find(op.addr); if (!el) return false;
+    el.remove(); return true;
+  }
+  return false;
+}
+function goto(n) {
+  stage.replaceChildren();
+  const target = Math.max(0, Math.min(n, ops.length));
+  for (let i = 0; i < target; i += 1) apply(ops[i]);
+  cursor = target;
+  slider.value = String(target);
+  atEl.textContent = String(target);
+  titleEl.textContent = target > 0 && ops[target - 1].note ? ops[target - 1].note : "";
+}
+slider.max = String(ops.length);
+nEl.textContent = String(ops.length);
+slider.addEventListener("input", () => { stop(); goto(Number(slider.value)); });
+document.getElementById("prev").addEventListener("click", () => { stop(); goto(cursor - 1); });
+document.getElementById("next").addEventListener("click", () => { stop(); goto(cursor + 1); });
+function stop() { if (timer) { clearInterval(timer); timer = null; document.getElementById("play").textContent = "play"; } }
+document.getElementById("play").addEventListener("click", () => {
+  if (timer) { stop(); return; }
+  if (cursor >= ops.length) goto(0);
+  document.getElementById("play").textContent = "pause";
+  timer = setInterval(() => {
+    if (cursor >= ops.length) { stop(); return; }
+    apply(ops[cursor]); cursor += 1;
+    slider.value = String(cursor); atEl.textContent = String(cursor);
+    titleEl.textContent = ops[cursor - 1].note || "";
+  }, 900);
+});
+addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") { stop(); goto(cursor + 1); }
+  if (e.key === "ArrowLeft") { stop(); goto(cursor - 1); }
+});
+goto(ops.length);
+</script>
+</body></html>
+"""
 
 
 if __name__ == "__main__":

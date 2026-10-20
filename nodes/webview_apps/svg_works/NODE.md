@@ -57,3 +57,10 @@ the ops, the same path `checkout` takes.
 
 A relative path lands in `works/` beside the node, which is gitignored: a work worth
 shipping is committed on purpose (`git add -f works/<name>.*`), not by accident.
+
+## A standalone player
+
+`export_html(name, path)` writes one `.html` with the ops embedded and a small player:
+play, step, scrub. It opens from the filesystem — no node, no server, no network — and
+what it lets a reader do (go to step n, watch it grow) is exactly what the record means.
+It is a build product of the `.jsonl`; the record stays the source.
