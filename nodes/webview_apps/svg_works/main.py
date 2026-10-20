@@ -26,6 +26,8 @@ import datetime
 import json
 import os
 import sys
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -166,6 +168,7 @@ class WorkStore:
         self._works: dict[str, Work] = {}
         self._order: list[str] = []
         self.current: str = ""
+        self.picked: deque = deque(maxlen=6)
 
     # ---- works -------------------------------------------------------------
     def open(self, name: str, description: str = "") -> Work:
@@ -187,6 +190,10 @@ class WorkStore:
 
     def works_names(self) -> list[str]:
         return list(self._order)
+
+    def note_pick(self, addr: str, work: str = "") -> None:
+        """Remember that the human pointed at an address — it is a read, not an edit."""
+        self.picked.append(f"{time.strftime('%H:%M:%S')} {work or self.current or '-'} → {addr}")
 
     # ---- ops ---------------------------------------------------------------
     def record(self, name: str, kind: str, addr: str, payload: dict[str, Any], note: str) -> Op | None:
@@ -300,6 +307,8 @@ class SurfaceServer:
                     if work is not None:
                         await self.broadcast({"type": "cursor", "n": work.cursor})
                 # 切换作品是人的"看哪个"，和切分组同一类动作：它改视图，不改任何作品的内容。
+                elif frame.get("type") == "user.pick":
+                    self._store.note_pick(str(frame.get("addr") or ""), str(frame.get("work") or ""))
                 elif frame.get("type") == "user.open":
                     name = str(frame.get("name") or "")
                     if name and (name in self._store.works_names()):
@@ -377,10 +386,13 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         work = store.get()
         if work is None:
             return "no work open — open_work(name) starts one"
-        return (
+        line = (
             f"current: {work.name} · {len(work.ops)} ops"
             + (f" · reader at {work.cursor}" if work.cursor != len(work.ops) else "")
         )
+        if store.picked:
+            line += "\nhuman pointed at: " + "; ".join(list(store.picked)[-2:])
+        return line
 
     # ---- works -------------------------------------------------------------
     @chan.build.command(always_observe=False)
