@@ -4,9 +4,15 @@ Index of development stages. Each stage is a directory anchored by a
 `STAGE.md` that carries its full lifecycle — from plan to retrospective.
 See [README.md](README.md) for the mechanism.
 
+## Planned
+
+- [2026-10-production](2026-10-production/STAGE.md) — the production stage: one
+  ghost steering a cluster, the mechanisms each block needs, and the handover that
+  follows. Four maps and a discuss snapshot sit beside the stage file.
+
 ## Active
 
-(none — stage 2 closed 2026-10-20; stage 3 in preparation)
+(none — stage 2 closed 2026-10-20; production planned)
 
 ## Completed
 

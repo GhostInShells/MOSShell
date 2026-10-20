@@ -1,0 +1,55 @@
+<svg id="stage" viewBox="9.999996185302734 -6.552366256713867 1160 820.5523681640625" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" width="1160" height="821"><rect x="-20000" y="-20000" width="40000" height="40000" fill="#0d1117"/><g id="map" font-family="PingFang SC, Hiragino Sans GB, sans-serif">
+  <text x="40" y="44" fill="#6e7681" font-size="19" letter-spacing="1">stage 3 · motivation</text>
+
+  <g id="edges" fill="none" stroke="#39404a" stroke-width="1.8" stroke-linecap="round">
+    <path d="M460 120 C 410 158, 372 190, 342 224"></path>
+    <path d="M462 132 C 384 240, 352 330, 342 386"></path>
+    <path d="M720 120 C 770 158, 808 190, 838 224"></path>
+    <path d="M718 132 C 796 240, 828 330, 838 386"></path>
+    <path d="M590 144 L 590 466"></path>
+    <path d="M590 530 L 590 576"></path>
+    <path d="M720 500 C 772 540, 812 578, 836 612"></path>
+    <path d="M190 260 L 190 276"></path>
+    <path d="M990 260 L 990 276"></path>
+  </g>
+
+  <rect x="460" y="80" width="260" height="64" rx="12" fill="#12201a" stroke="#7bd88f" stroke-width="2"></rect>
+  <text x="590" y="121" fill="#e6edf3" font-size="22" text-anchor="middle">人机共享物理现实</text>
+
+  <g font-size="18" fill="#c9d1d9">
+    <rect x="40" y="200" width="300" height="60" rx="9" fill="#0f141a" stroke="#58a6ff" stroke-width="1.5"></rect>
+    <text x="190" y="237" text-anchor="middle">生产力形态：现在的协作方式</text>
+
+    <rect x="40" y="280" width="300" height="60" rx="9" fill="#0b0f14" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="6 4"></rect>
+    <text x="190" y="317" text-anchor="middle" fill="#9aa4b0">产品形态：editor + terminal</text>
+
+    <rect x="40" y="360" width="300" height="76" rx="9" fill="#0f141a" stroke="#3fb950" stroke-width="1.5"></rect>
+    <text x="190" y="392" text-anchor="middle">降低交互成本</text>
+    <text x="190" y="418" text-anchor="middle" font-size="15" fill="#8b949e">小孩、老人也能真正交互</text>
+
+    <rect x="840" y="200" width="300" height="60" rx="9" fill="#0f141a" stroke="#d2a8ff" stroke-width="1.5"></rect>
+    <text x="990" y="237" text-anchor="middle">MOSS 自己的心智模型</text>
+
+    <rect x="840" y="280" width="300" height="60" rx="9" fill="#0f141a" stroke="#d2a8ff" stroke-width="1.5"></rect>
+    <text x="990" y="317" text-anchor="middle">同一个上下文，不同粒度</text>
+
+    <rect x="840" y="360" width="300" height="76" rx="9" fill="#0f141a" stroke="#f0883e" stroke-width="1.5"></rect>
+    <text x="990" y="392" text-anchor="middle">注意力编程的策略优化</text>
+    <text x="990" y="418" text-anchor="middle" font-size="15" fill="#8b949e">谁的注意力，怎么编排</text>
+
+    <rect x="460" y="470" width="260" height="60" rx="9" fill="#0f141a" stroke="#f0883e" stroke-width="1.5"></rect>
+    <text x="590" y="507" text-anchor="middle">反向编程 → 可观测面</text>
+
+    <rect x="380" y="580" width="420" height="76" rx="9" fill="#0f141a" stroke="#58a6ff" stroke-width="1.5"></rect>
+    <text x="590" y="612" text-anchor="middle">学习怎么做人机协作</text>
+    <text x="590" y="638" text-anchor="middle" font-size="15" fill="#8b949e">产品本身就是 few-shot</text>
+
+    <rect x="840" y="580" width="300" height="76" rx="9" fill="#0f141a" stroke="#d2a8ff" stroke-width="1.5"></rect>
+    <text x="990" y="612" text-anchor="middle">ghost 学会启动这套机制</text>
+    <text x="990" y="638" text-anchor="middle" font-size="15" fill="#8b949e">慢慢成为 L2 架构师</text>
+  </g>
+
+  <rect x="40" y="700" width="1100" height="84" rx="10" fill="#0d1117" stroke="#7bd88f" stroke-width="1.5" stroke-dasharray="8 5"></rect>
+  <text x="64" y="734" fill="#7bd88f" font-size="20">贯穿：集群化智能</text>
+  <text x="64" y="762" fill="#8b949e" font-size="16">人机交互层仍然是一个 ghost——它驱动集群并行开发，验收回到这一层</text>
+</g></svg>

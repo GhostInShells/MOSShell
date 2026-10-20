@@ -1,0 +1,27 @@
+{"type": "discuss", "version": 1, "topic": "stage 3 准备"}
+{"type": "rec", "t": 1792495242.675, "kind": "fork", "id": "b1", "text": "discuss 这个节点该不该改名成 timeline 一类的名字"}
+{"type": "rec", "t": 1792495297.829, "kind": "fork", "id": "b2", "text": "把现有的 feature 逐个过一遍，决定哪些关掉、哪些继续"}
+{"type": "rec", "t": 1792495383.377, "kind": "fork", "id": "b3", "text": "在 stage 3 里先写出下一个阶段的几个大方向；新建的 feature 这一轮不建目录，等到正式开发再建"}
+{"type": "rec", "t": 1792495383.38, "kind": "fork", "id": "b4", "text": "治理当前的 surface，然后发版把版本改到 beta3，再提一个 PR 合回 main"}
+{"type": "rec", "t": 1792495383.381, "kind": "fork", "id": "b5", "text": "建 stage 3 的目录与 STAGE.md 骨架"}
+{"type": "rec", "t": 1792495385.127, "kind": "state", "id": "b5", "text": "landed"}
+{"type": "rec", "t": 1792495385.316, "kind": "note", "id": "b5", "text": "2026-10-stage3 目录 + STAGE.md 骨架 + ROADMAP 的 Planned 段落，目录名还是占位"}
+{"type": "rec", "t": 1792496200.762, "kind": "fork", "id": "b6", "text": "Goals 要分层：五条动机不在同一层级，Goals 只留能判定的，其余进 Motivation 正文"}
+{"type": "rec", "t": 1792496200.836, "kind": "fork", "id": "b7", "text": "集群化智能这一波只做单 ghost，而它的机制最少；以及「产品形态宣发生产力形态」容易做成给宣传看的功能"}
+{"type": "rec", "t": 1792496200.885, "kind": "note", "id": "b7", "text": "thirdgerb：这一波肯定先做单 ghost"}
+{"type": "rec", "t": 1792496386.734, "kind": "state", "id": "b6", "text": "dropped"}
+{"type": "rec", "t": 1792496386.908, "kind": "note", "id": "b6", "text": "不是分叉——Goals 怎么分层属于主线上的判断，我把它推成了一条线，错在这里"}
+{"type": "rec", "t": 1792496387.097, "kind": "fork", "id": "b8", "text": "一边开发一边 debug：file editor 的改动提示与跳转、svg works 的平移缩放"}
+{"type": "rec", "t": 1792496387.194, "kind": "note", "id": "b8", "text": "两笔提交 e2fd388d、39e6575c"}
+{"type": "rec", "t": 1792496794.485, "kind": "fork", "id": "b9", "text": "discuss 要能记住每条线的下一步，而不只是开了哪些线（今天不讨论，先记着）"}
+{"type": "rec", "t": 1792497765.08, "kind": "fork", "id": "b10", "text": "直播间弹幕接入：把 B 站直播弹幕变成我读得到的感知，也是给别人看的窗"}
+{"type": "rec", "t": 1792499822.744, "kind": "state", "id": "b3", "text": "landed"}
+{"type": "rec", "t": 1792499822.806, "kind": "note", "id": "b3", "text": "STAGE.md 的 Goals 写了四块加侧边，没有为任何方向建 feature 目录"}
+{"type": "rec", "t": 1792499822.819, "kind": "state", "id": "b7", "text": "landed"}
+{"type": "rec", "t": 1792499822.89, "kind": "note", "id": "b7", "text": "确认先做单 ghost；宣传风险写进了 Acceptance 与 Risks 两条"}
+{"type": "rec", "t": 1792499822.934, "kind": "state", "id": "b8", "text": "landed"}
+{"type": "rec", "t": 1792499823.051, "kind": "note", "id": "b8", "text": "三笔提交：e2fd388d、39e6575c、023f52ab"}
+{"type": "rec", "t": 1792499883.71, "kind": "state", "id": "b1", "text": "landed"}
+{"type": "rec", "t": 1792499883.826, "kind": "note", "id": "b1", "text": "不改名，就围绕「discuss」这个概念继续打磨"}
+{"type": "rec", "t": 1792499883.829, "kind": "state", "id": "b10", "text": "landed"}
+{"type": "rec", "t": 1792499884.012, "kind": "note", "id": "b10", "text": "已在 stage 3 的工具与能力（跨上下文共享）里，按正常节奏开发"}

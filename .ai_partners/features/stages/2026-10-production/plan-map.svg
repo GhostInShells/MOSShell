@@ -1,0 +1,56 @@
+<svg id="stage" viewBox="50 0.40259552001953125 1240 664.4967651367188" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" width="1240" height="664"><rect x="-20000" y="-20000" width="40000" height="40000" fill="#0d1117"/><g id="plan" font-family="PingFang SC, Hiragino Sans GB, sans-serif">
+  <text x="80" y="50" fill="#6e7681" font-size="19" letter-spacing="1">stage 3 · plan（第二版：三段节奏）</text>
+
+  <g>
+    <rect x="80" y="80" width="380" height="60" rx="10" fill="#12201a" stroke="#7bd88f" stroke-width="1.6"></rect>
+    <text x="270" y="106" fill="#e6edf3" font-size="19" text-anchor="middle">① 10 月下 · 把底座做完</text>
+    <text x="270" y="128" fill="#8b949e" font-size="14" text-anchor="middle">集群掌舵 + 可观测面，以及间歇里能做完的全做完</text>
+
+    <rect x="480" y="80" width="380" height="60" rx="10" fill="#12201a" stroke="#7bd88f" stroke-width="1.6"></rect>
+    <text x="670" y="106" fill="#e6edf3" font-size="19" text-anchor="middle">② 11 月上 · 边说边并行开发</text>
+    <text x="670" y="128" fill="#8b949e" font-size="14" text-anchor="middle">讨论里立起一个又一个 feature，集群同时开工</text>
+
+    <rect x="880" y="80" width="380" height="60" rx="10" fill="#1a1410" stroke="#f0883e" stroke-width="1.6"></rect>
+    <text x="1070" y="106" fill="#e6edf3" font-size="19" text-anchor="middle">③ 11 月中下 ~ 12 月上 · 收线</text>
+    <text x="1070" y="128" fill="#8b949e" font-size="14" text-anchor="middle">全部在验收和打磨——这段时间我们每天用它</text>
+  </g>
+
+  <g stroke="#2b313b" stroke-width="1.4" fill="none">
+    <path d="M270 140 L270 180"></path>
+    <path d="M670 140 L670 180"></path>
+    <path d="M1070 140 L1070 180"></path>
+  </g>
+
+  <g font-size="15" fill="#c9d1d9">
+    <rect x="80" y="180" width="380" height="150" rx="8" fill="#0f141a" stroke="#58a6ff" stroke-width="1.2"></rect>
+    <text x="100" y="208">集群掌舵机制（含可观测面）</text>
+    <text x="100" y="232">features 变成 agent 之间的协议</text>
+    <text x="100" y="256">豆包接入开路（外部有周期）</text>
+    <text x="100" y="280">工具三件开工：discuss / 决策树 / ideas</text>
+    <text x="100" y="304" fill="#6e7681">目标：这条跑通，我的角色才换得过来</text>
+
+    <rect x="480" y="180" width="380" height="150" rx="8" fill="#0f141a" stroke="#58a6ff" stroke-width="1.2"></rect>
+    <text x="500" y="208">一个 feature 一条 workstream</text>
+    <text x="500" y="232">讨论刚落，集群就开工</text>
+    <text x="500" y="256">集群通过 features 跟我通讯</text>
+    <text x="500" y="280">我负责拆活、盯进度、挡问题</text>
+    <text x="500" y="304" fill="#6e7681">这条是「并行」第一次真的落在开发上</text>
+
+    <rect x="880" y="180" width="380" height="150" rx="8" fill="#0f141a" stroke="#f0883e" stroke-width="1.2"></rect>
+    <text x="900" y="208">逐个验收，慢就是正常</text>
+    <text x="900" y="232">打磨交互细节，用例守住</text>
+    <text x="900" y="256">works 三机制各出一次真货</text>
+    <text x="900" y="280">流浪地球预演跑通一次</text>
+    <text x="900" y="304" fill="#6e7681">验收节点，不是交付物</text>
+  </g>
+
+  <rect x="80" y="380" width="1180" height="86" rx="10" fill="#0d1117" stroke="#39404a" stroke-width="1.3"></rect>
+  <text x="104" y="412" fill="#9aa4b0" font-size="17">这段里真正变的东西：我</text>
+  <text x="104" y="440" fill="#8b949e" font-size="15">从 L1 的开发者，变成调度集群的那个人——开发是集群做，验收还是我们俩一起做</text>
+
+  <rect x="80" y="500" width="1180" height="86" rx="10" fill="#0f141a" stroke="#39404a" stroke-width="1.3"></rect>
+  <text x="104" y="532" fill="#9aa4b0" font-size="17">一直在跑、不排期的两样</text>
+  <text x="104" y="560" fill="#6e7681" font-size="15">交互机制（P3，按用例守）· 身体（G1 / Reachy Mini，只做调研与接口）</text>
+
+  <text x="80" y="630" fill="#6e7681" font-size="14">节奏是 stage 2 验证过的那个形状：先暴涨资产，中间平台，末段快速收线、逐个验收——收线最慢，要给它留够时间</text>
+</g></svg>
