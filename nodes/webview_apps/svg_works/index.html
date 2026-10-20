@@ -43,6 +43,13 @@
     padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex;
     align-items: baseline; gap: 8px;
   }
+  /* 画布优先的开关：收的是卡，不是记录。收起来之后由右边那条窄条换回来。 */
+  #canvas-first {
+    margin-left: auto; background: transparent; border: 1px solid var(--line);
+    border-radius: 4px; color: var(--dim); font: inherit; font-size: 11px;
+    padding: 2px 8px; cursor: pointer;
+  }
+  #canvas-first:hover { color: var(--fg); border-color: var(--line-strong); }
   #work-name { color: var(--accent); font-weight: 600; }
   #work-meta { color: var(--dim); font-size: 11.5px; }
   #cards { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -107,6 +114,7 @@
   <header>
     <span id="work-name">—</span>
     <span id="work-meta"></span>
+    <button id="canvas-first" title="画布优先：收起动作列，记录仍然在">⤢ 画布优先</button>
   </header>
   <div id="cards"></div>
   <div id="foot"><span><i class="dot"></i><span id="conn">connecting…</span></span><span id="cursor"></span></div>
@@ -227,14 +235,19 @@ function opLine(op) {
 
 function renderCards() {
   cards.replaceChildren();
-  ops.forEach((op, idx) => {
+  // 倒序：最新的一条在最上面。动作列是"正在发生"的地方，新的一直在来；
+  // 放底部就得一直追着滚，而追滚的代价是看不见自己刚做了什么。
+  // 顺序仍然看得见 —— 每张卡带编号。
+  const rows = ops.map((op, idx) => [op, idx]);
+  rows.reverse();
+  rows.forEach(([op, idx]) => {
     const card = document.createElement("div");
     card.className = "card" + (idx + 1 <= cursor ? " done" : " ahead")
       + (idx + 1 === cursor ? " reader" : "");
     const title = document.createElement("div");
     title.className = "title";
-    // 卡上先给人看动机（模型的 note），没有才退回机制描述。
-    title.textContent = op.note || op.kind;
+    // 卡上先给人看动机（模型的 note），没有才退回机制描述；编号永远带着，倒序里它是顺序的证据。
+    title.textContent = `${op.n || idx + 1}. ${op.note || op.kind}`;
     const mech = document.createElement("div");
     mech.className = "mech";
     mech.innerHTML = opLine(op);
@@ -278,6 +291,13 @@ function renderStrip() {
 
 strip.addEventListener("click", () => {
   document.body.classList.remove("panelless");
+  renderStrip();
+});
+
+// 人的开关和模型下发的 panel 命令走同一条路：都是把 panelless 拨一下。
+// 区别只有一个——人这边不回传服务端（它是视图动作，通知服务端只是噪音）。
+document.getElementById("canvas-first").addEventListener("click", () => {
+  document.body.classList.add("panelless");
   renderStrip();
 });
 
