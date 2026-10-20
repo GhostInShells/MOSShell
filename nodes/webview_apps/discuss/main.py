@@ -127,6 +127,19 @@ class Board:
         self._next = sum(1 for r in self.recs if r.kind == "fork")
 
 
+def latest_session() -> Path | None:
+    """The newest session on disk — what a restart should come back to.
+
+    A discussion outlives the process: the node is restarted whenever its code
+    changes, and losing the board each time would teach me not to trust it with
+    a conversation.
+    """
+    if not DISCUSS_DIR.exists():
+        return None
+    files = [f for f in DISCUSS_DIR.glob(f"*{SUFFIX}") if f.is_file()]
+    return max(files, key=lambda f: f.stat().st_mtime) if files else None
+
+
 def session_path(name: str) -> Path:
     raw = Path(name).expanduser()
     base = raw if raw.is_absolute() else DISCUSS_DIR / raw
@@ -372,6 +385,15 @@ def new_discuss_channel(board: Board, server: SurfaceServer, matrix: Matrix):
 
     @chan.build.startup
     async def _startup() -> None:
+        # 先接上一次，再开门：重启不该把一场讨论弄丢。
+        resume = latest_session()
+        if resume is not None:
+            try:
+                rows = [json.loads(line) for line in
+                        resume.read_text(encoding="utf-8").splitlines() if line.strip()]
+                board.load(rows)
+            except (OSError, ValueError):
+                pass
         await server.start()
         await WebViewServer.serve(
             matrix,
