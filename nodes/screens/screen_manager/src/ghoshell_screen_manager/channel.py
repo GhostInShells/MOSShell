@@ -224,6 +224,41 @@ def build_screen_channel(
         where = f"#{item.group}" if item.group else "desktop"
         return f"[screen] opened #{item.id} → {where}"
 
+    @chan.build.command(name="open_file")
+    async def open_file(path: str, label: str = "", group: str = "", icon: str = "") -> str:
+        """Materialize a window from a local html file.
+
+        The page is served from this screen's own origin — the only way an iframe can
+        show a file that lives on the machine. No extra server, no extra port: opening
+        a window belongs to the screen, not to a new node. A relative path resolves
+        against the workspace root; nothing outside it is readable, and only html is
+        accepted.
+
+        :param path: workspace-relative or absolute path to an .html file
+        :param label: the window's name; defaults to the file's name
+        :param group: land it directly in a group; empty = the desktop
+        """
+        from pathlib import Path as _Path
+
+        add = getattr(surface, "add_local", None)
+        if add is None:
+            CommandUtil.raise_observe("this surface cannot serve local files")
+            return ""
+        try:
+            url = add(_Path(path))
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+            return ""
+        try:
+            item = model.open(url, label=label or _Path(path).stem, group=group, icon=icon or None)
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+            return ""
+        await _emit(P.open_frame(item))
+        await _emit(P.state_frame(model))
+        where = f"#{item.group}" if item.group else "desktop"
+        return f"[screen] opened #{item.id} → {where} ({url})"
+
     @chan.build.command(name="navigate")
     async def navigate(id: str, url: str) -> str:
         """Point a hand-opened item at a new url — a ``page.goto``-style move.

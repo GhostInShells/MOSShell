@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>discuss — timeline mock</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0f14;color:#dfe9f2;
+    font:13px/1.5 ui-monospace,"PingFang SC",monospace;overflow:hidden}
+  svg{display:block;width:100%;height:100%}
+  text{font-family:ui-monospace,"PingFang SC",monospace}
+</style></head>
+<body>
+<svg id="stage" viewBox="0 0 1400 760" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="fade" x1="0" x2="1">
+      <stop offset="0" stop-color="#3ddc8f" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#3ddc8f" stop-opacity=".15"/>
+    </linearGradient>
+  </defs>
+</svg>
+<script>
+// mock data：就是今天这场对话的一条时间线。node 里这些会来自 jsonl。
+const E = [
+  {t: 0,  kind: "main",  text: "D20 开机"},
+  {t: 40, kind: "fork",  id: "voice",   text: "音频礼仪：协议值 / 房间值分层"},
+  {t: 120, kind: "landed", id: "voice",  text: "→ voice-interaction-control"},
+  {t: 140, kind: "fork",  id: "chrome", text: "每个窗口一条标题栏"},
+  {t: 210, kind: "note",  id: "chrome", text: "全局顶栏被否：它答的是另一个问题"},
+  {t: 300, kind: "landed", id: "chrome", text: "→ screen-manager W16 / O4"},
+  {t: 320, kind: "fork",  id: "svg",    text: "SVG 作品：动作是真相，DOM 是投影"},
+  {t: 460, kind: "note",  id: "svg",    text: "导出两件套 + 独立 HTML 播放器"},
+  {t: 520, kind: "open",  id: "svg",    text: "长流未验、页与样式未验"},
+  {t: 540, kind: "fork",  id: "ideas",  text: "想法落档机制"},
+  {t: 560, kind: "dropped", id: "ideas", text: "他：这一步我有成熟方案，先按纪律记"},
+  {t: 580, kind: "fork",  id: "discuss", text: "用分支图治理讨论上下文"},
+  {t: 700, kind: "open",  id: "discuss", text: "正在说：timeline 的形态"},
+  {t: 720, kind: "main",  text: "现在"},
+];
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("stage");
+const W = 1400, H = 760, L = 90, R = 120, TOP = 90, LANE = 86;
+const stateColor = { open: "#3ddc8f", landed: "#6ea8fe", dropped: "#7a4a4a" };
+const stateName  = { open: "open", landed: "landed", dropped: "dropped" };
+
+function el(n, a = {}) {
+  const e = document.createElementNS(NS, n);
+  for (const k in a) e.setAttribute(k, a[k]);
+  return e;
+}
+function txt(x, y, s, a = {}) {
+  const t = el("text", { x, y, fill: "#8a97a4", "font-size": 13, ...a });
+  t.textContent = s; return t;
+}
+// x 轴：时间 → x
+const span = 760;
+const X = (t) => L + (t / span) * (W - L - R);
+
+// 主线
+svg.appendChild(el("line", { x1: L, y1: TOP, x2: X(720), y2: TOP,
+  stroke: "#46515f", "stroke-width": 3 }));
+svg.appendChild(txt(L, TOP - 22, "main", { fill: "#dfe9f2" }));
+
+// 每条分支一条泳道
+const lanes = new Map();
+let laneIdx = 0;
+const laneY = (id) => {
+  if (!lanes.has(id)) { laneIdx += 1; lanes.set(id, TOP + laneIdx * LANE); }
+  return lanes.get(id);
+};
+
+// 分支线
+const branches = [...new Set(E.filter(e => e.id).map(e => e.id))];
+branches.forEach((id) => {
+  const pts = E.filter(e => e.id === id);
+  const start = pts[0].t, y = laneY(id);
+  const endEv = pts[pts.length - 1];
+  const end = endEv.t;
+  const state = endEv.kind === "landed" ? "landed" : endEv.kind === "dropped" ? "dropped" : "open";
+  const c = stateColor[state];
+
+  // 从主线岔出 → 走到泳道
+  svg.appendChild(el("path", {
+    d: `M${X(start)} ${TOP} C ${X(start) + 24} ${TOP} ${X(start) + 24} ${y} ${X(start) + 40} ${y}`,
+    fill: "none", stroke: c, "stroke-width": 2, opacity: .9,
+  }));
+  // 泳道本体：landed 在末端弯回主线；dropped 断在半空；open 虚线接到"现在"
+  const bodyEnd = state === "landed" || state === "dropped" ? end : 720;
+  svg.appendChild(el("line", {
+    x1: X(start) + 40, y1: y, x2: X(bodyEnd), y2: y,
+    stroke: c, "stroke-width": 2,
+    "stroke-dasharray": state === "open" ? "6 5" : "",
+    opacity: state === "dropped" ? .55 : .9,
+  }));
+  if (state === "landed") {
+    svg.appendChild(el("path", {
+      d: `M${X(end)} ${y} C ${X(end) + 24} ${y} ${X(end) + 24} ${TOP} ${X(end) + 40} ${TOP}`,
+      fill: "none", stroke: c, "stroke-width": 2,
+    }));
+  }
+  if (state === "dropped") {
+    svg.appendChild(el("path", {
+      d: `M${X(end) - 6} ${y - 6} l12 12 M${X(end) + 6} ${y - 6} l-12 12`,
+      stroke: c, "stroke-width": 2,
+    }));
+  }
+
+  // 泳道名
+  svg.appendChild(txt(L - 6, y + 4, id, { fill: "#55636f", "text-anchor": "end", "font-size": 12 }));
+});
+
+// 点与一句提示
+E.filter(e => e.kind !== "main").forEach((e) => {
+  const y = laneY(e.id);
+  const c = stateColor[e.kind === "landed" ? "landed" : e.kind === "dropped" ? "dropped" : "open"];
+  svg.appendChild(el("circle", { cx: X(e.t), cy: y, r: e.kind === "fork" ? 5 : 3.5, fill: c }));
+  const above = e.kind === "fork";
+  svg.appendChild(txt(X(e.t) + 8, y + (above ? -12 : 20), e.text, {
+    fill: above ? "#dfe9f2" : "#8a97a4", "font-size": above ? 13 : 12,
+  }));
+});
+
+// 主线的 checkpoint
+E.filter(e => e.kind === "main").forEach((e) => {
+  svg.appendChild(el("circle", { cx: X(e.t), cy: TOP, r: 4, fill: "#dfe9f2" }));
+  svg.appendChild(txt(X(e.t) - 6, TOP - 12, e.text, { fill: "#dfe9f2", "text-anchor": "end" }));
+});
+
+// "现在"这条竖线
+svg.appendChild(el("line", { x1: X(720), y1: TOP - 40, x2: X(720), y2: TOP + LANE * (laneIdx + 0.6),
+  stroke: "#2b313b", "stroke-width": 1, "stroke-dasharray": "4 4" }));
+svg.appendChild(txt(X(720) - 8, TOP - 46, "now", { "text-anchor": "end", "font-size": 12 }));
+
+// 图例
+let lx = L;
+Object.entries(stateName).forEach(([k, label]) => {
+  svg.appendChild(el("circle", { cx: lx, cy: 700, r: 4, fill: stateColor[k] }));
+  const t = txt(lx + 10, 704, label, { "font-size": 12 });
+  svg.appendChild(t);
+  lx += 26 + label.length * 8;
+});
+svg.appendChild(txt(L, 60, "discuss · timeline", { fill: "#dfe9f2", "font-size": 15 }));
+svg.appendChild(txt(L + 150, 60, "分支从哪里岔出、走到哪、收没收 —— 一句话一句提示",
+  { "font-size": 12, fill: "#55636f" }));
+</script>
+</body></html>

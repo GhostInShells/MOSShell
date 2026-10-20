@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,19 @@ _AUDIO_HZ = 5.0
 # The stage's own asset folder — the few images the veil may paint. Served over
 # the same port as the page, because a page from http:// cannot read file://.
 _ASSET_DIR = "assets"
+_LOCAL_TOKEN = re.compile(r"^[A-Za-z0-9]{6,32}$")
+
+
+def _workspace_root(start: Path) -> Path:
+    """The project's own tree — the boundary a local file may not be read outside of.
+
+    "Serve a local page" is a request that must not turn into "serve any file", so the
+    boundary is discovered from the code rather than taken from the caller.
+    """
+    for d in [start, *start.parents]:
+        if (d / ".git").exists() or (d / "pyproject.toml").exists():
+            return d
+    return start
 _ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ASSET_TYPES = {
     "png": "image/png",
@@ -87,6 +101,9 @@ class ScreenSurface:
         """Per-tab identity, as the page reported it. Lets us name the current tab
         without pretending a connection object is a place."""
         self._server: Any = None
+        self._locals: dict[str, Path] = {}
+        """token -> local html file. A page served from here shares this origin, which
+        is the only way an iframe can show a file on the machine."""
         self._audio_task: asyncio.Task | None = None
         self._rail = ""
         """The human's sidebar state, reported by the page. Empty until it says."""
@@ -259,9 +276,47 @@ class ScreenSurface:
             return response
         if path == "/ws":
             return None
+        if path.startswith("/local/"):
+            return self._serve_local(connection, path[len("/local/"):])
         if path.startswith("/asset/"):
             return self._serve_asset(connection, path[len("/asset/"):])
         return connection.respond(404, "not found")
+
+    def add_local(self, path: Path) -> str:
+        """Register a local html file and return a url that serves it from this origin.
+
+        A relative path resolves against the workspace root; anything that lands outside
+        it is refused, and only html is accepted — this is "show me a page I wrote", not
+        a file browser.
+        """
+        root = _workspace_root(Path(__file__).resolve())
+        target = path if path.is_absolute() else (root / path)
+        try:
+            target = target.resolve()
+            target.relative_to(root)
+        except (OSError, ValueError):
+            raise ValueError(f"not inside the workspace: {path}") from None
+        if not target.is_file():
+            raise ValueError(f"no such file: {target}")
+        if target.suffix.lower() not in (".html", ".htm"):
+            raise ValueError(f"only .html pages can be opened, got {target.suffix!r}")
+        token = uuid.uuid4().hex[:12]
+        self._locals[token] = target
+        return f"{self.url}/local/{token}"
+
+    def _serve_local(self, connection: ServerConnection, token: str):
+        token = (token or "").split("?", 1)[0]
+        if not _LOCAL_TOKEN.match(token) or token not in self._locals:
+            return connection.respond(404, "not found")
+        try:
+            body = self._locals[token].read_bytes()
+        except OSError:
+            return connection.respond(404, "not found")
+        response = connection.respond(200, body.decode("utf-8", "replace"))
+        del response.headers["Content-Type"]
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
     def _serve_asset(self, connection: ServerConnection, name: str):
         """One image the stage draws, by file name.
