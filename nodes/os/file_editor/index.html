@@ -139,7 +139,9 @@
   .rail-handle:hover { color: var(--accent); }
   .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 5; }
   .scrim[hidden] { display: none; }
-  @media (max-width: 1180px) {
+    /* 900 而不是 1180：一块正常大小的窗口本来就装得下列表，把它做成抽屉只会遮住正文。
+       抽屉留给真的窄的窗（手机宽度、半屏）。 */
+    @media (max-width: 900px) {
     .rail {
       position: absolute; left: 0; top: 0; bottom: 0; z-index: 6;
       transform: translateX(-100%); transition: transform .16s ease-out;
@@ -464,7 +466,13 @@
   /* 渲染容器曾经叫 .markdown，后来改名 .doc-rendered（1523 行），这块样式没跟着走 ——
      于是表格、引用、代码块、分隔线全部退化成裸元素。表格没有边框，是这条漂移的症状，
      不是默认样式。判据：容器的类名只有一处真相，改一处就要连带这条链。 */
-  .doc .doc-rendered { color: var(--fg); }
+  /* 文档是一块面板，不是一段漂着的文字：底色、细边、内边距，读起来才像"一份文件"。
+     这条原本属于 .markdown 容器，容器改名 .doc-rendered 时一起丢了 —— 现在找回来。 */
+  .doc .doc-rendered {
+    color: var(--fg);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 16px 20px 44px; margin: 12px 16px;
+  }
   .doc .doc-rendered h1, .doc .doc-rendered h2, .doc .doc-rendered h3 { margin: 18px 0 8px; }
   .doc .doc-rendered p { margin: 8px 0; }
   .doc .doc-rendered code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-small); }
@@ -1638,7 +1646,7 @@ function markSeen(id) {
 // left edge and closed by the scrim or by picking a thread. Wide: it is simply
 // there. The document's width is never the thing that gives way.
 function narrow() {
-  return window.matchMedia("(max-width: 1180px)").matches;
+  return window.matchMedia("(max-width: 900px)").matches;
 }
 
 function setDrawer(open) {
@@ -1650,9 +1658,13 @@ function setDrawer(open) {
   handleEl.title = show ? "hide threads" : "threads";
 }
 
+
 handleEl.addEventListener("click", () => setDrawer(!railEl.classList.contains("open")));
 scrimEl.addEventListener("click", () => setDrawer(false));
-window.addEventListener("resize", () => setDrawer(false));
+// 窗口变大变小不该替人把抽屉关掉：那是一步"人的动作"，只有人能做。
+window.addEventListener("resize", () => setDrawer(railEl.classList.contains("open")));
+// 进来的时候先让人看见列表 —— 不知道有哪些 thread，就没有可点的东西。
+setDrawer(true);
 
 // The drawer's closed state still has to answer "did anything happen" — this rides
 // the handle, so it has to be refreshed wherever `seen` or the action list moves.
