@@ -7,6 +7,9 @@ matters most is the second run: a default must not undo an edit.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -46,6 +49,31 @@ def test_a_second_run_touches_nothing(dirs: tuple[Path, Path]) -> None:
     assert ensure_memento_layout(root, branch) == []
 
     assert (branch / "GROUND.md").read_text() == "edited by the ghost\n"
+
+
+def test_the_hook_archives_a_file_whose_frontmatter_starts_on_line_two(
+    dirs: tuple[Path, Path],
+) -> None:
+    """一个空行不该让 `done` 看不见 —— 归档的判据是状态, 不是第一行的字节."""
+    root, branch = dirs
+    ensure_memento_layout(root, branch)
+    (branch / "plan.md").write_text("\n---\nstatus: done\n---\n\n# plan\n", encoding="utf-8")
+    commit = root / "commits" / "2026" / "10" / "cmt_1-2"
+
+    subprocess.run(
+        [sys.executable, str(root / "hooks" / "on_commit.py")],
+        check=True,
+        env={
+            **os.environ,
+            "MEMENTO_BRANCH_DIR": str(branch),
+            "MEMENTO_COMMIT_DIR": str(commit),
+            "MEMENTO_COORD": "1-2",
+        },
+        capture_output=True,
+    )
+
+    assert (commit / "plan.md").is_file()
+    assert not (branch / "plan.md").exists()
 
 
 def test_the_hook_is_executable_python(dirs: tuple[Path, Path]) -> None:

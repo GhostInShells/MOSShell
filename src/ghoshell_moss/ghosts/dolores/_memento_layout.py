@@ -102,28 +102,17 @@ import os
 import pathlib
 import shutil
 
+import frontmatter
+
 FINISHED = {"done", "dropped", "closed", "completed"}
 
 
 def status_of(path: pathlib.Path) -> str:
-    """Read `status` from the frontmatter; no frontmatter means no status."""
+    """Read `status` through the frontmatter library — the file may open with a blank line."""
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        return str(frontmatter.load(path).metadata.get("status", "")).strip()
+    except Exception:
         return ""
-    if not text.startswith("---"):
-        return ""
-    end = text.find("\\n---", 3)
-    if end < 0:
-        return ""
-    for line in text[3:end].splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, _, value = line.partition(":")
-        if key.strip() == "status":
-            return value.strip().strip("'\\"")
-    return ""
 
 
 def archive(branch: pathlib.Path, commit: pathlib.Path) -> list[str]:
