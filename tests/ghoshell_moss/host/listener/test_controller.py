@@ -1719,3 +1719,61 @@ async def test_save_without_a_current_interaction_refuses():
     controller = ListenerController(listener=_MockListener(), asr=_MockASR())
     with pytest.raises(ValueError):
         controller.save_interaction("nothing")
+
+
+@pytest.mark.asyncio
+async def test_saving_reloads_current_as_the_saved_name():
+    """存: 同名配置被覆盖, 而 current 与出身都挪到新名字上 —— 刚存的就是它的定义."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+    controller.tune_interaction({"deliver.mode": "aside"})
+
+    controller.save_interaction("quiet-room", "答在闲下来之后")
+
+    state = controller.interaction_state()
+    assert state["current"] == "quiet-room"
+    assert state["origin"] == "quiet-room"
+    assert state["deviated"] == [], '刚存下来的就是它的定义, 不该再跟旧出身算偏离'
+    assert "quiet-room" in state["presets"]
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_tuning_history_shrinks_what_the_buffer_actually_keeps():
+    """改 history 要落到 buffer 的物理容量: 数字变了而环形没缩, 读出来就是假的."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task, state = await _start_controller(controller, controller.always, timeout=5.0)
+    controller.tune_interaction({"deliver.emit": False, "deliver.history": 8})
+
+    for i in range(4):
+        for cb in listener.segment_observers:
+            cb(_segment(f"第{i}段", segment_id=f"g{i}"))
+    assert len(controller.transcript_state()["recent"]) == 4
+
+    controller.tune_interaction({"deliver.history": 2})
+
+    again = controller.transcript_state()
+    assert len(again["recent"]) == 2
+    assert again["forgotten"] == 2, '缩容挤掉的要计入 forgotten, 否则模型不知道有 gap'
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_restarting_for_a_stop_knob_keeps_a_one_shot_session_one_shot():
+    """重开要带上原来那次的寿命参数: 「听一次」不许被重开成常驻."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.once)
+
+    controller.tune_interaction({"stop.silence": 2.5})
+
+    for _ in range(100):
+        if listener.listen_count >= 2:
+            break
+        await asyncio.sleep(0.01)
+    assert listener.listen_count >= 2, "重开没有真的重新听"
+
+    for cb in listener.state.result:
+        cb(_tail("你好"))
+    await asyncio.wait_for(controller._active_task, timeout=1.0)

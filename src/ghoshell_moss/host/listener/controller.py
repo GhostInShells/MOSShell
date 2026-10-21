@@ -221,6 +221,10 @@ class ListenerController(ListenLifecycle):
         # 不参与任何行为判断. 存的是名字而不是 spec: 预设本身可能被 set_etiquette_spec 改掉,
         # 那样"偏离"就该重新算, 而不是跟一份过期快照比.
         self._interaction_origin: str = ""
+        # 这一次会话的寿命参数 (最近一次 run_etiquette 的入参). tune 动到判停那层要
+        # 原样重开, 否则「听一次」会被重开成常驻 — 寿命也是这次会话的一部分.
+        self._session_timeout: Optional[float] = None
+        self._session_until_tail: bool = False
         # 人类锁 — pause(True) 设置, pause(False) 释放. 只 TUI/人类主权面写.
         # 锁着时: run_etiquette 门控 (log + no-op) + as_channel() 的 chan.available
         # 返回 False → 整个 channel 从模型面消失 (无残留 affordance).
@@ -424,9 +428,18 @@ class ListenerController(ListenLifecycle):
         if active is None:
             raise ValueError("no current interaction — activate an etiquette first")
         touched = apply_interaction_patch(active, patch)
+        # 交付层的容量是 buffer 的物理形状, 不是 spec 里的一个数: 改了要跟着缩容,
+        # 否则读出来是新的、留下来的还是旧的.
+        if "deliver.history" in touched:
+            self._buffer.resize(active.deliver.history)
         restarted = False
         if needs_session_restart(touched) and self._active_task is not None and not self._active_task.done():
-            self.run_etiquette(active)
+            # 重开必须带上这一次会话的寿命参数 —— 默认参数会把「听一次」变回常驻.
+            self.run_etiquette(
+                active,
+                timeout=self._session_timeout,
+                until_tail=self._session_until_tail,
+            )
             restarted = True
         return self.interaction_state(), touched, restarted
 
@@ -446,6 +459,11 @@ class ListenerController(ListenLifecycle):
         config.upsert(spec)
         if self._config_store is not None:
             self._config_store.save(config)
+        # 存完就 reload 成这一份: current 认这个名字, 出身也挪到它身上. 同名旧配置被覆盖,
+        # 别的预设不动. 刚存下来的形状就是这个名字的定义 —— 再拿旧预设算「偏离」没有意义.
+        stored = config.get(name) or spec
+        self._interaction_origin = stored.name
+        self._set_active_etiquette(stored.model_copy(deep=True))
         return f"saved current as etiquette '{name}'"
 
     # ── 礼仪驱动状态机 (纯配置, 持续监听 = 另一种 always) ──
@@ -480,6 +498,9 @@ class ListenerController(ListenLifecycle):
         etiquette = etiquette.model_copy(deep=True)
         # 出身: 这一份 current 是谁加载来的. 只回答"偏离了哪几格", 不参与行为判断.
         self._interaction_origin = etiquette.name
+        # 寿命参数跟着会话走, 供 tune 动判停层时原样重开.
+        self._session_timeout = timeout
+        self._session_until_tail = until_tail
         self._set_active_etiquette(etiquette)
         self._cancel_active()
         task = asyncio.create_task(
@@ -1676,9 +1697,11 @@ class ListenerController(ListenLifecycle):
             - **C · 打断** `onset.*` / `deliver.interrupt` / `deliver.barge_in_while_speaking`
               — who may take away what you are doing.
 
-            Returns JSON: `current` (the preset it was loaded from), `deviated` (which
-            keys have moved away from that preset), `values` (the flattened keys),
-            `presets` (what else can be loaded). Read it before tuning, and again after.
+            Returns JSON: `current` (the name of the etiquette in force), `origin` (the
+            preset it was loaded from — `current` and `origin` are the same until you
+            tune or save), `deviated` (which keys have moved away from `origin`),
+            `values` (the flattened keys), `presets` (what else can be loaded).
+            Read it before tuning, and again after.
             """
             return json.dumps(self.interaction_state(), ensure_ascii=False)
 
