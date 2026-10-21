@@ -5,7 +5,7 @@ Attention 基础结构实现.
 """
 
 from abc import abstractmethod, ABC
-from typing import Literal
+from typing import Callable, Literal
 from ghoshell_moss.core.blueprint.mindflow import (
     Attention, Impulse, Priority
 )
@@ -42,6 +42,8 @@ class AbsAttention(Attention, ABC):
 
         # 关键的 flags.
         self._aborted_event = ThreadSafeEvent()
+        # abort 回调通道: 同步传导, 不依赖任何 task 被调度 (见 on_abort 的契约).
+        self._abort_callbacks: list[Callable[[], None]] = []
         # 运行时.
         self._event_loop: asyncio.AbstractEventLoop | None = None
 
@@ -57,7 +59,7 @@ class AbsAttention(Attention, ABC):
         self._started: bool = False
         self._closing: bool = False
         self._closed_event = ThreadSafeEvent()
-        self._abort_reason = ''
+        self._abort_reason: str | None = None
         # update the impulse
         self._log_prefix = f"<Attention id={self._draw_from_impulse.id}>"
         self._current_impulse: Impulse = impulse
@@ -192,6 +194,42 @@ class AbsAttention(Attention, ABC):
     def is_closed(self) -> bool:
         return self._aborted_event.is_set()
 
+    def on_abort(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register an abort callback. Synchronous, at most once, and never lost.
+
+        A waiter task can be cancelled before it is ever scheduled, and then the
+        wake-up it was holding is simply lost — silently, with nothing in the log.
+        Registering here instead keeps the propagation on the aborting call stack.
+        """
+        # 先 append 再判读: abort() 可能来自别的线程, 在"判读→append"之间置位并 swap 掉列表,
+        # 于是 callback 落进一个再不会被遍历的新列表 —— 就是契约要杜绝的那类静默丢失.
+        # 用"能不能把自己摘回来"区分: 摘到 = 还没被 sweep, 当场补发; 摘不到 = abort 已触发过.
+        self._abort_callbacks.append(callback)
+        if self._aborted_event.is_set():
+            try:
+                self._abort_callbacks.remove(callback)
+            except ValueError:
+                # 已被 abort 摘走并在它的调用栈里触发过, 不重复.
+                return lambda: None
+            self._invoke_abort_callback(callback)
+            return lambda: None
+
+        def _dispose() -> None:
+            try:
+                self._abort_callbacks.remove(callback)
+            except ValueError:
+                # 已经触发过了.
+                pass
+
+        return _dispose
+
+    def _invoke_abort_callback(self, callback: Callable[[], None]) -> None:
+        # 回调不得影响 abort 本身: 一个坏回调不能吃掉其它回调, 也不能吃掉 abort 的返回.
+        try:
+            callback()
+        except Exception:
+            self._logger.exception("%s abort callback %r failed", self._log_prefix, callback)
+
     def abort(self, error: str | Exception | None) -> None:
         if self._aborted_event.is_set():
             return
@@ -203,8 +241,12 @@ class AbsAttention(Attention, ABC):
                 self._abort_reason = f"Error: {error}"
             elif isinstance(error, str):
                 self._abort_reason = error
+        # 先摘牌再回调: 回调里可能又注册 (abort 幂等, 那些会走"立即回调"分支).
+        callbacks, self._abort_callbacks = self._abort_callbacks, []
+        for callback in callbacks:
+            self._invoke_abort_callback(callback)
 
-    def abort_reason(self) -> str:
+    def abort_reason(self) -> str | None:
         return self._abort_reason
 
     async def wait_abort(self) -> None:
@@ -257,8 +299,8 @@ class BaseAttention(AbsAttention):
             logger: LoggerItf | None = None,
             system_floor_strength: float = 0.0,
             source_escalation: float = 1.1,
-            max_protection_time: float = 3.0,
-            protection_duration_ratio: float = 0.2,
+            max_protection_time: float = 10.0,
+            protection_duration_ratio: float = 0.5,
     ):
         super().__init__(
             impulse=impulse,
@@ -277,7 +319,12 @@ class BaseAttention(AbsAttention):
         return current_strength < challenger_strength
 
     def current_strength(self) -> int:
-        """基于剩余生存权重的线性衰减模型. 强度在不提权情况下, 默认要衰减到 0"""
+        """基于剩余生存权重的线性衰减模型. 强度在不提权情况下, 默认要衰减到 0
+
+        曲线分两段: 平台段 (保护期, 强度 = 初始 * 同源加成) 与衰减段.
+        **衰减段从平台值往下走, 不掉回初始强度** —— 掉回去正好落到一个同强度挑战者的
+        水平上, 于是保护期一过同强度的信号立刻赢, 整段曲线对最常见的那一类信号毫无保护.
+        """
         now = time.monotonic()
         elapsed = now - self._strength_refreshed_at
 
@@ -285,12 +332,15 @@ class BaseAttention(AbsAttention):
             self._strength_decay_time * self._protection_duration_ratio,
             self._max_protection_time,
         )
+        plateau = self._strength_start_value * self._source_escalation
         if elapsed < protection_time:
-            return int(self._strength_start_value * self._source_escalation)
+            return int(plateau)
 
         decay_elapsed = elapsed - protection_time
         decay_duration = self._strength_decay_time - protection_time
+        if decay_duration <= 0:
+            return 0
         progress = min(decay_elapsed / decay_duration, 1.0)
         decay_factor = 1.0 if self._current_impulse.complete else 1.5
-        current = self._strength_start_value * (1.0 - (progress * decay_factor))
+        current = plateau * (1.0 - min(progress * decay_factor, 1.0))
         return int(max(current, 0))

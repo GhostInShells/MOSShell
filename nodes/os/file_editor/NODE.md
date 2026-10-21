@@ -8,52 +8,52 @@ exec:
   args: main.py
 ---
 
-File editor is a shared working copy of a text file. You and the human look at
-the same text: every move you make becomes a **card** on the human's surface, and
-nothing asks permission except `export()`, because writing to disk is the only
-real side effect.
-
-The web surface binds an **ephemeral port by default** — read its live URL from
-this channel's `url` notice, never assume a fixed port. To pin one, start with
-`--port N` (or set `MOSS_FILE_EDITOR_PORT`).
+You and the human share one working copy per thread. Every move you make becomes
+a **card** on their surface; `export()` is the only step that touches the disk,
+so it is the only step that asks.
 
 ```
 <file_editor:open thread="readme" path="./README.md" label="README"/>
-<file_editor:read thread="readme"/>
-<file_editor:append thread="readme" label="usage"><![CDATA[## Usage
+<file_editor:find thread="readme" pattern="^## "/>
+<file_editor:read thread="readme" region="12-40" label="the usage section"/>
+<file_editor:edit thread="readme" region="12-20" label="rewrite usage"><![CDATA[## Usage
 
-Run `moss --ai start`.]]></file_editor:append>
-<file_editor:str_replace thread="readme"><![CDATA[{"old_str": "moss start", "new_str": "moss --ai start"}]]></file_editor:str_replace>
+Run `moss --ai start`.]]></file_editor:edit>
 <file_editor:export thread="readme"/>
 ```
 
-**A thread is an editable object.** `open()` starts one from a file, from an
-unclaimed working copy left by an earlier session (`open(draft=...)`, listed in
-the notice), or blank — an editable object does not have to come from a
-document. One path carries at most one open thread; `label` is the name the
-human sees.
+A thread is an editable object: it can come from a file, from a working copy a
+previous session left behind (`open(draft=...)`; `orphans()` lists them, `discard`
+throws one away), or from nothing at all. Threads outlive their exports — writing
+records a *position* on the line (`exported_at`), which is why you can keep
+editing and export again.
 
-**Reading is shared perception.** `read()` returns the text to you at once and
-leaves a card showing the same text — the human sees exactly what you saw.
-`region="10-40"` reads only those lines. Edits (`write`, `append`,
-`str_replace`, `rewind`) land the moment the tag closes; nothing waits on a
-person.
+**Finding your way in.** `find()` answers with line numbers, never with text.
+Line numbers are the coordinate everything else takes: `read(region=)` returns
+those lines and leaves a card showing the same thing, `edit(region=)` replaces
+them without asking you to quote them back, and `str_replace` stays for the case
+where the snippet is what you actually know.
 
-**The only gate is `export()`.** It returns a receipt immediately; the human
-decides on the surface, and you learn the outcome as a signal. Accepting writes
-the file and ends the thread — open a new one to keep editing that file. One
-exception: a thread the human has *auto-trusted* exports to its own file without
-asking — but only back to the file it was opened from; writing anywhere new is a
-new target and still asks.
+**A big file is a fact, not a paragraph.** Past a couple of thousand lines or a
+quarter megabyte, `read()` with no region returns the file's shape — size, lines,
+endings — and the three moves above; a region read is capped. Holding a large
+copy is cheap, reading it is not.
 
-**Versions are positions, not snapshots.** `history(thread)` is the index — one
-row per action with its verdict; use it to pick `n` for `rewind(n)`, which puts
-the text back where action `n` left it (`0` = the baseline) by appending an
-ordinary action, never erasing. The current version of each thread is always in
-the notice.
+**Every card has two readers.** The mechanics are the node's: which region, how
+many lines, `+2 −1` for an edit, where an export lands. The motive is yours: the
+`label` on `read` / `find` / `edit` / `rewind` / `export`. A card that says only
+"read all" cannot tell the human whether it is worth opening; one that shows only
+a motive hides what happened.
 
-Boundaries worth knowing: the working copy is text-only, and only a live thread
-takes actions — after `export` it is frozen, and a thread opened with no file
-has no path to export to unless you pass one. Paths are confined to the project
-home and the system temp dir; a file outside those roots is refused, not
-questioned.
+**The only gate is `export()`.** It returns a receipt at once; the human decides
+on the surface and you learn the outcome as a signal. A thread the human has
+auto-trusted writes to its own file without asking — a new target still asks.
+`close()` ends editing: an unsaved copy is kept as a recoverable draft, a clean
+one is dropped.
+
+**Presentation is split down the middle**, same contract as the terminal node:
+which card is open is their click, how big it opens is yours (`layout()`), and
+the page names who chose.
+
+Boundaries: text only; paths are confined to the project home and the system temp
+dir, and a path outside them is refused rather than questioned.

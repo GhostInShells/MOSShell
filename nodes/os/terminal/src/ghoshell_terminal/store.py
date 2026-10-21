@@ -25,8 +25,10 @@ __all__ = ["CardStore", "CardLog", "Mode"]
 class Mode:
     """The two global postures. Plain constants — the wire format is the string.
 
-    Trust is scoped per-thread (``Thread.auto``) and per-pattern (accepted
-    rules), not by a global auto switch — that was blanket trust, so it is gone.
+    Approval is the default; trust is scoped (``Thread.auto`` per thread, accepted
+    rules per pattern) and, above both, a whole-terminal hand-over the human can
+    flip. That last one is not a third mode: it is the same posture with the
+    question already answered, and only the human's surface can set it.
     """
 
     APPROVAL = "approval"
@@ -93,6 +95,7 @@ class CardStore:
         self._cards: dict[int, Card] = {}
         self._order: list[int] = []
         self._rules: list[Card] = []
+        self._global_trust = False
         self._mode = Mode.APPROVAL
         self._waiters: dict[int, asyncio.Future] = {}
         self._verdicts: dict[int, str] = {}
@@ -123,6 +126,15 @@ class CardStore:
     def mode(self) -> str:
         return self._mode
 
+    def global_trust(self) -> bool:
+        """Whether the human has handed every approval on this terminal over."""
+        return self._global_trust
+
+    def set_global_trust(self, on: bool) -> bool:
+        """Flip that hand-over. Only the human's surface calls this."""
+        self._global_trust = bool(on)
+        return self._global_trust
+
     def set_mode(self, mode: str) -> str:
         if mode not in Mode.ALL:
             raise ValueError(f"unknown mode {mode!r} (one of {list(Mode.ALL)})")
@@ -136,6 +148,23 @@ class CardStore:
     @property
     def outputs_dir(self) -> Path:
         return self._outputs_dir
+
+    def clear_outputs(self) -> int:
+        """Drop every output file left by a previous run; returns how many went.
+
+        Card ids restart at 1 in each process, so nothing on disk from an earlier
+        run can be referenced by anything — a kept file is only a leak, and a
+        grown directory is a memory leak with a slower clock. The audit trail
+        lives in ``log_dir`` and is deliberately **not** touched here.
+        """
+        if not self._outputs_dir.is_dir():
+            return 0
+        gone = 0
+        for path in self._outputs_dir.iterdir():
+            if path.is_file():
+                path.unlink(missing_ok=True)
+                gone += 1
+        return gone
 
     def output_path(self, card_id: int) -> Path:
         """The path the subprocess layer should write this card's full stdout to.
@@ -214,6 +243,22 @@ class CardStore:
 
     def cards(self) -> list[Card]:
         return [self._cards[i] for i in self._order if i in self._cards]
+
+    def clear(self, keep_running: bool = True) -> int:
+        """Drop settled cards from the list — the history, not the work.
+
+        A card that is still awaiting a verdict or still has a process behind it stays:
+        clearing the screen must never hide a command that has not finished. What goes
+        is the tail of things that already ended, which is the part that turns a
+        terminal into a log nobody reads.
+        """
+        doomed = [c.id for c in self.cards() if c.settled or not keep_running]
+        for cid in doomed:
+            self._cards.pop(cid, None)
+            self._waiters.pop(cid, None)
+            self._verdicts.pop(cid, None)
+        self._order = [cid for cid in self._order if cid not in set(doomed)]
+        return len(doomed)
 
     def append_content(self, card_id: int, text: str) -> Card:
         card = self._require(card_id)

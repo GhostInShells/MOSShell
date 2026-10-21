@@ -59,6 +59,10 @@ class NullSpeech(Speech):
     def new_segment(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         return _NullSpeechStream(id=batch_id or unique_id())
 
+    def streams(self) -> list[SpeechStream]:
+        """什么都不说, 自然一条流都没有 —— 不是「不知道」, 是没有."""
+        return []
+
     def is_running(self) -> bool:
         return True
 

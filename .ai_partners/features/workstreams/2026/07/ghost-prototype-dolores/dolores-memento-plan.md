@@ -33,6 +33,8 @@ turn/end 自清理」是唯一的执行基元** —— 下面的 note 生成 / c
    - 立刻根据 **last commit 取未 commit + note 的上下文区块**，
    - **创建新的 ego session**，下一轮直接切过去（**会丢失 subagents 等讯息**）；
    - 又或者**在同一个 session 平面上继续往下走**，但性能上要考虑代价。
+   - **→ 2026-10-12 收敛：选定「同 session 平面继续」（原地 surface replace，替换内容 = memory 视图），
+     详见 [dolores-commit-compact-ego-session.md](dolores-commit-compact-ego-session.md) 文末「压缩机制 — 收敛设计」。**
 
 ### note / branch / read
 

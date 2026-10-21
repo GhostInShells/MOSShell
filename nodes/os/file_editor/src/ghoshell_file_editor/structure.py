@@ -29,10 +29,15 @@ Author = Literal["g", "u"]
 """``g`` = ghost (the model), ``u`` = the human."""
 
 Kind = Literal[
-    "read", "write", "str_replace", "append", "rewind", "export"
+    "read", "find", "write", "edit", "str_replace", "append", "rewind", "export",
+    "diff",
 ]
-"""What an action does. ``read`` changes nothing; ``export`` is the only kind
-that reaches the disk."""
+"""What an action does. ``read`` / ``find`` / ``diff`` change nothing; ``export``
+is the only kind that reaches the disk.
+
+``diff`` is an action where most editors have a mode: comparing our copy with
+something else is a judgement someone made, and both sides should be able to
+see that it was made — and what it found."""
 
 ActionState = Literal[
     "streaming", "applied", "awaiting", "written", "rejected", "failed",
@@ -44,20 +49,24 @@ it has landed in memory; ``awaiting`` only for an export proposal; then
 mid-stream."""
 
 ThreadState = Literal["live", "exported", "closed"]
-"""``live`` while it can still be edited; ``exported`` once its text landed on
-disk (the final chapter — but the line stays traceable); ``closed`` when
-abandoned."""
+"""``live`` while it can still be edited — which is every thread that has not been
+closed, including ones already written to disk (a write records a position, not
+an ending); ``exported`` is kept only for records written before that changed;
+``closed`` when abandoned."""
 
 STREAMING_KINDS: frozenset[str] = frozenset({"write", "append"})
 """The kinds whose payload the model writes token by token."""
 
 SIDE_EFFECTS: dict[str, str] = {
     "read": "none — read only",
+    "find": "none — searched only",
+    "edit": "in-memory only — working copy edited",
     "write": "in-memory only — working copy replaced",
     "str_replace": "in-memory only — working copy edited",
     "append": "in-memory only — working copy appended",
     "rewind": "in-memory only — working copy rolled back",
     "export": "disk — writes the file",
+    "diff": "none — compared only",
 }
 """The mechanical verdict shown on every card: what this kind does to the world.
 One string per kind, derived from nothing — the point is that the human can
@@ -100,7 +109,17 @@ class Action:
     kind: Kind
     author: Author
     label: str = ""
-    """The human-facing name of what this action did — the card's title."""
+    """The human-facing name of what this action did — the card's title.
+
+    Two readers, one card: ``label`` is *why* — the model's motive, written by the
+    model and empty when it gave none. ``fact`` is *what* — the mechanics, always
+    filled in by the channel, never by hand. A card that shows only the mechanics
+    ("read all") tells the human nothing about whether it is worth opening; a card
+    that shows only a motive hides what actually happened.
+    """
+
+    fact: str = ""
+    """The mechanical summary: lines read, ``+a −r`` for an edit, ``→ path``."""
 
     state: ActionState = "applied"
     text: str = ""
@@ -118,6 +137,11 @@ class Thread:
     thread that was never bound to a file (an editable object does not have to
     come from a document). ``draft`` is the working copy's name under the
     drafts directory — the crash net.
+
+    A thread outlives its exports. Writing the working copy to disk records a
+    *position* on the line (``exported_at``) rather than ending anything: the
+    file is one version among many, and the working copy keeps moving. A thread
+    ends only when it is closed.
     """
 
     id: str
@@ -134,8 +158,40 @@ class Thread:
     """The text at open time — what v0 of the line holds."""
 
     exported_to: str = ""
+    """Where the working copy was last written. Empty = never written."""
+
+    exported_at: int = 0
+    """The version that last landed on disk — a position, not a copy.
+
+    ``0`` means the baseline is what is on disk (or that nothing was written).
+    Keeping it as a version is what lets a thread stay useful after an export:
+    the file is one position on this line, and the working copy may have moved
+    past it since.
+    """
+
     actions: list[Action] = field(default_factory=list)
     created: float = field(default_factory=time.time)
+    disk_sig: str = ""
+    """The file's signature at the moment we last read or wrote it.
+
+    Not a lock. We do not stop anyone from editing underneath us — we only refuse
+    to be *unaware* of it: the working copy knows which file version it was built
+    from, so a change on disk is a fact the thread can report instead of a verdict
+    it silently overwrites."""
+
+    bytes: int = 0
+    """Size of the baseline as it was read — a fact about the file, not the copy."""
+    lines: int = 0
+
+    @property
+    def big(self) -> bool:
+        """Past the threshold where handing the text over whole would be a mistake."""
+        return self.lines > BIG_LINES or self.bytes > BIG_BYTES
+
+    @property
+    def unsaved(self) -> bool:
+        """True when the working copy has moved past what is on disk."""
+        return self.exported_at != self.version
 
     @property
     def head(self) -> Action | None:
@@ -208,13 +264,13 @@ def replace_once(text: str, old: str, new: str) -> str:
     own rule, kept here so the store never has to validate prose.
     """
     if not old:
-        raise ValueError("str_replace needs a non-empty old_str")
+        raise ValueError("str_replace needs a non-empty old side")
     found = text.count(old)
     if found == 0:
-        raise ValueError("old_str does not appear in the text")
+        raise ValueError("the old text does not appear in the working copy")
     if found > 1:
         raise ValueError(
-            f"old_str appears {found} times — extend it with surrounding context "
+            f"the old text appears {found} times — extend it with surrounding context "
             f"so it is unique"
         )
     return text.replace(old, new, 1)
@@ -253,8 +309,93 @@ def side_effect(action: Action) -> str:
     return base
 
 
+def change_stat(effect: Effect | None) -> str:
+    """How much text moved: ``+3 −1 lines``, or ``no change``.
+
+    Counted from the unified diff, so a rewrite that touches everything reads
+    differently from one that touches one line — which is the whole reason the
+    number is on the card.
+    """
+    if effect is None:
+        return ""
+    lines = effect.diff.splitlines()
+    # Drop the two file headers positionally: a *content* line that happens to
+    # start with "---" arrives as "----" and must still count.
+    if len(lines) >= 2 and lines[0].startswith("---") and lines[1].startswith("+++"):
+        lines = lines[2:]
+    added = removed = 0
+    for line in lines:
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    parts = []
+    if added:
+        parts.append(f"+{added}")
+    if removed:
+        parts.append(f"−{removed}")
+    return (" ".join(parts) + " lines") if parts else "no change"
+
+
+BIG_LINES = 2000
+BIG_BYTES = 256 * 1024
+REGION_LINES = 300
+"""How big is too big to hand over whole.
+
+A working copy that is only *held* costs memory; one that is *read* costs the
+model's context, and a context blown by a 10MB log is not recoverable. So a file
+past either line here is opened as usual but read as metadata, by region, with a
+ceiling of ``REGION_LINES`` per call.
+"""
+
+
 def line_count(text: str) -> int:
     return len(text.splitlines())
+
+
+def is_big(text: str) -> bool:
+    return line_count(text) > BIG_LINES or len(text.encode("utf-8")) > BIG_BYTES
+
+
+def region_span(text: str, region: str) -> tuple[int, int]:
+    """Resolve ``"start-end"`` (1-based, inclusive) to a pair of line numbers.
+
+    Empty region = the whole text. Same parsing as :func:`slice_region`, exposed
+    because an edit needs to know *which* lines it replaces, not only the text.
+    """
+    lines = text.splitlines(keepends=True)
+    if not region.strip():
+        return 1, max(1, len(lines))
+    spec = region.strip()
+    if "-" in spec:
+        head, _, tail = spec.partition("-")
+        start_s, end_s = head, tail
+    else:
+        start_s = end_s = spec
+    try:
+        start = int(start_s)
+        end = int(end_s) if end_s.strip() else start
+    except ValueError:
+        raise ValueError(f"region must look like 'start-end', got {region!r}")
+    if start < 1 or end < start or end > len(lines):
+        raise ValueError(f"region {region!r} is outside the text ({len(lines)} lines)")
+    return start, end
+
+
+def replace_region(text: str, region: str, new: str) -> str:
+    """Swap the lines a region names for ``new``.
+
+    Line-addressed editing is the counterpart to ``str_replace``: once a search
+    has told you *where* something is, replacing those lines should not require
+    quoting them back. ``new`` replaces the span whole; give it the empty string
+    to delete the lines.
+    """
+    start, end = region_span(text, region)
+    lines = text.splitlines(keepends=True)
+    body = new if new.endswith("\n") or not new else new + "\n"
+    if end == len(lines) and not text.endswith(("\n", "")):
+        body = body[:-1] if body.endswith("\n") else body
+    return "".join(lines[: start - 1]) + body + "".join(lines[end:])
 
 
 def slice_region(text: str, region: str) -> str:

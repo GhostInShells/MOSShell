@@ -542,3 +542,37 @@ async def test_thinking_waits_last_action_before_exit():
     await action_task
     await thinking_task
     assert thinking_exited.is_set()
+
+
+# -- 退出传导与收线 -----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_attention_abort_reaches_wait_abort():
+    """attention 退出必须能让这一帧的 wait_abort 返回 (生产循环就停在这个 await 上)."""
+    thinking, _ = _make_thinking()
+    async with thinking:
+        thinking.attention.abort('interrupted')
+        await asyncio.wait_for(thinking.wait_abort(), 0.5)
+        assert thinking.is_aborted()
+
+
+@pytest.mark.asyncio
+async def test_stop_after_abort_still_releases_waiting_futures():
+    """停止位 != 收线: abort 已置位后, stop() 仍要释放等待中的 future.
+
+    停止位可能由 abort 回调**同步**置位 (不再经过任何 task), 所以 stop() 不能因为
+    "事件已置位" 就早退 —— 否则等待中的 future 永远没人取消.
+    """
+    thinking, _ = _make_thinking()
+    async with thinking:
+        never = asyncio.get_running_loop().create_future()
+        waiter = asyncio.ensure_future(thinking.wait_until_done(never))
+        # 让 wait_until_done 先登记, 再 abort (此刻还没有任何 future 被取消).
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        thinking.abort('interrupted')
+        await thinking.stop()
+
+        await asyncio.wait_for(waiter, 0.5)
+        assert never.cancelled()

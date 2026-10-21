@@ -12,7 +12,7 @@ from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    ground_cli, llms_cli, audio, mcp_cli, skills_cli,
+    ground_cli, llms_cli, audio, mcp_cli, skills_cli, memento_cli,
 )
 from ghoshell_moss.core.blueprint.project import register_control_flow_exit
 from ghoshell_moss.depends import depend_matrix, depend_mcp
@@ -39,12 +39,13 @@ app.add_typer(start_cli.start_app, name="start", short_help="Orient yourself —
 app.add_typer(codex_cli.codex_app, name="codex", short_help="Runtime introspection and code evaluation tools")
 app.add_typer(project_cli.project_app, name="project", short_help="MOSS Project tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
-app.add_typer(skills_cli.skills_app, name="skills", short_help="MOSS skills — 复合任务技能 (发现/召回)")
+app.add_typer(skills_cli.skills_app, name="skills", short_help="MOSS skills — 复合任务技能 (发现/读取)")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
 app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")
 app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
 app.add_typer(ground_cli.ground_app, name="ground", short_help="Cognitive ground — pin addresses to a directory")
+app.add_typer(memento_cli.memento_app, name="memento", short_help="The trajectory — log, show, commit, branch, hook")
 app.add_typer(llms_cli.llms_app, name="llms", short_help="Inspect and call LLM configs — list models, verify availability.")
 
 # Matrix-dependent groups: only register when zenoh is available.

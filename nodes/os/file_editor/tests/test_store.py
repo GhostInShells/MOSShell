@@ -135,7 +135,12 @@ def test_read_record_has_no_effect(store):
     assert store.get("t").version == 1  # a read does not move the version
 
 
-def test_close_abandons_the_working_copy(store):
+def test_close_keeps_an_unsaved_working_copy_recoverable(store):
+    """Closing says "I am done with this thread", not "throw the text away".
+
+    An unsaved copy stays in the drafts directory, where the notice lists it and
+    ``open(draft=...)`` can pick it up; a copy that matches the disk is dropped.
+    """
     store.open("t", "doc")
     _append(store, "t", "x\n")
     t = store.get("t")
@@ -144,31 +149,53 @@ def test_close_abandons_the_working_copy(store):
     store.close("t")
     assert t.state == "closed"
     assert t.content == "x\n"  # the line stays traceable; reclamation is separate
-    assert not draft.exists()
+    assert draft.exists(), "unsaved work survives a close"
+    assert draft.name in store.orphans()
 
 
-def test_export_keeps_the_line_for_traceability(store):
+def test_close_drops_a_copy_that_matches_the_disk(store):
+    store.open("t", "doc")
+    _append(store, "t", "x\n")
+    t = store.get("t")
+    store.note_export("t", "/tmp/out.txt", t.version)
+    draft = store.drafts_dir / t.draft
+    store.close("t")
+    assert not draft.exists(), "a clean copy leaves nothing behind"
+
+
+def test_an_export_records_a_position_and_leaves_the_thread_live(store):
     store.open("t", "doc")
     _append(store, "t", "final\n")
     t = store.get("t")
     draft = store.drafts_dir / t.draft
-    store.mark_exported("t", "/tmp/final.txt")
-    assert t.state == "exported"
+    store.note_export("t", "/tmp/final.txt", t.version)
+    # An export is a position on the line, not the end of the thread: the same
+    # working copy keeps going and can be written again.
+    assert t.state == "live"
     assert t.exported_to == "/tmp/final.txt"
+    assert t.exported_at == 1
+    assert not t.unsaved, "what is on disk is what the working copy holds"
     assert t.content == "final\n"
     assert t.version == 1
-    assert not draft.exists()
+    assert draft.exists(), "the working copy survives the export"
     # the line is intact — the human can still trace what led to the export
     assert t.actions[0].effect is not None
     assert t.actions[0].effect.after == "final\n"
 
+    # ... and it keeps going: another edit, another position on disk
+    _append(store, "t", "more\n")
+    assert t.unsaved, "the working copy has moved past the file"
+    store.note_export("t", "/tmp/final.txt", t.version)
+    assert t.exported_at == t.version
+    assert not t.unsaved
 
-def test_trim_drops_the_oldest_ended_thread(store):
+
+def test_trim_drops_the_oldest_closed_thread(store):
     for i in range(9):
         store.open(f"t{i}", f"d{i}")
-        store.mark_exported(f"t{i}", f"/tmp/x{i}.md")
+        store.close(f"t{i}")
     ids = [t.id for t in store.threads()]
-    assert "t0" not in ids, "the oldest ended thread is reclaimed"
+    assert "t0" not in ids, "the oldest closed thread is reclaimed"
     assert "t1" in ids
     assert len(store.threads()) == 8
 

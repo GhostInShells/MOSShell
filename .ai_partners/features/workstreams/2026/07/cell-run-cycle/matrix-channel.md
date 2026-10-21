@@ -118,6 +118,11 @@ wait 违反 nonblocking，callback 是 matrix 内务。
 
 ### 1.6 CellEvent → context / signal 生命周期绑定
 
+- **transition 跟着内容走，不写死**（2026-10-19 修）：`CellEventSignalMeta` 的
+  `transition` 字段曾经在发信号时一律填 `READY`，于是"起来了"和"没了"走的是同一个
+  词，字段本身不承载信息。现在按 §WW-5 的四弧从 content 前缀判定
+  （`crash…` → CRASHED，`closing…` → EXITED，`spawn…` → SPAWNED，其余 READY），
+  级别只作兜底。
 - matrix.on_startup 一次 `mesh.on_event` 订阅，两个扇出:
   (a) 写 channel 自持 ring buffer (喂 context_messages)；
   (b) `CommandUtil.send_signal(CellEventSignal)` → CellEventNucleus 转
@@ -254,6 +259,14 @@ output 三处内部结构。
 
 - `target` 用 relative_path (§1.2 已定，与 list 输出对齐；name 有歧义时报错)
 - `stop` 的 address 接受完整 CellAddress 或 `name_uidprefix` 短形式 (handled_cells 唯一匹配即可)
+- `stop` 的返回仍是薄 ack，但**它不是这条动作的全部**：停一个自己拉起的节点，
+  它的结束必须回到模型那里，不能只靠"分支表少了一行"这种要模型自己去看的推断。
+  所以 stop 在 `handle.stop()` 之后额外发一条 `cell_event` —— transition 取
+  `exited`，优先级抬到 NOTICE，越过"正常退出不入感知"那道阈值（§1.6 的四弧判决
+  对**别人**的正常退出依然成立，对**我下的这一刀**不成立：它是回执，不是状态）。
+  (2026-10-19, thirdgerb: "stop 其实应该要把它的优先级变成 notify，然后模式是
+  next 的……要让你一定感知到这个节点已经关闭了"；同日对齐：不新造信号，走已有的
+  cell_event。)
 - `run` singleton 冲突 → observe_error, 附现有 address + stop 提示 (走 §7 dedup 逻辑)
 - context_messages: 见 §5.4
 

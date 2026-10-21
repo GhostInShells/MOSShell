@@ -4,7 +4,13 @@
 .memento/
 # local env config (copied from .env.example, not committed)
 .env
-# people I know — privacy-bearing, keep only the directory index
-people/
-!people/GROUND.md
+# people/ is NOT ignored (2026-10-12): gitignore was never the privacy mechanism.
+# The rule is upstream — private things (health, emotions, family specifics) are not
+# written down anywhere at all, discussed and let go. Hiding the directory only hid
+# the migratable part, and left the private part free to be written elsewhere.
+#
+# The one exception is narrow and named on purpose: an interview outline whose own
+# frontmatter says privacy is his to present (health, family, fears). It stays local
+# until he rules on what may be published.
+people/*/INTERVIEW.md
 .dolores.yml

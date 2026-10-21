@@ -21,15 +21,30 @@ class FakeStdout:
         return b""
 
 
+class FakeStderr:
+    """A binary stderr pipe: hands over ``payload`` once, then EOF."""
+
+    def __init__(self, payload: bytes = b"") -> None:
+        self._payload = payload
+
+    async def read(self, n: int) -> bytes:
+        chunk, self._payload = self._payload[:n], self._payload[n:]
+        return chunk
+
+
 class FakeProcess:
-    def __init__(self, hold: bool = False) -> None:
+    def __init__(self, hold: bool = False, stderr: bytes = b"") -> None:
         self.returncode: Optional[int] = None
         self.stdout = FakeStdout(hold=hold)
+        self.stderr = FakeStderr(stderr)
 
 
 class FakeManaged:
-    def __init__(self, *, index: int, command: str, name: str, hold: bool = False) -> None:
-        self.process = FakeProcess(hold=hold)
+    def __init__(
+        self, *, index: int, command: str, name: str, hold: bool = False,
+        stderr: bytes = b"",
+    ) -> None:
+        self.process = FakeProcess(hold=hold, stderr=stderr)
         self.meta = ProcessMeta(
             index=index, pid=1000 + index, command=command, name=name, cwd="",
         )
@@ -43,8 +58,9 @@ class FakeManaged:
 class FakeSubprocesses:
     """Records spawns; returns a held-open (live) or EOF (crashed) child."""
 
-    def __init__(self, *, hold: bool = True) -> None:
+    def __init__(self, *, hold: bool = True, stderr: bytes = b"") -> None:
         self.hold = hold
+        self.stderr = stderr
         self.spawned: list[FakeManaged] = []
         self._counter = 0
 
@@ -55,7 +71,7 @@ class FakeSubprocesses:
         self._counter += 1
         managed = FakeManaged(
             index=self._counter, command=" ".join(args), name=name or "cmd",
-            hold=self.hold,
+            hold=self.hold, stderr=self.stderr,
         )
         self.spawned.append(managed)
         return managed

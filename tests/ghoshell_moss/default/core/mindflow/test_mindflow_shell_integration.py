@@ -557,6 +557,98 @@ async def test_observe_loop_runs_two_frames_in_one_attention():
 
 
 @pytest.mark.asyncio
+async def test_need_observe_written_by_the_thinking_before_exit_drives_next_frame():
+    """协议契约: 一个 thinking 在**退出之前自己写下的** need_observe, 必须签发下一帧.
+
+    与上一条的分工: 上一条的下一帧来自命令结果 (shell trajectory 的 observe);
+    这一条来自 thinking 自身 — 这正是 ``moss_reasoning`` 的形态: 结束这一轮
+    (turn 结束) 与"还要一帧"是两件事, 而后者只有写进 observer 才算数.
+
+    生产路径 (顺序承重): run 收尾 → ``wait_actions_done()`` (身体跑完) →
+    ``observer.add_echoes([], need_observe=True)`` → thinking 退出 →
+    mindflow 的回声环 ``while not attention.is_aborted() and need_observe()``
+    才会读到它. 三处顺序都不可换:
+
+    - 写早了: ``Observer.observe()`` 每次都换 echoes 容器, 标记被带走 (D13 实测);
+    - 写晚了 (thinking 已退出): 没人再读, 帧就断在这里 (D15 现场: 档位变了, 下一帧没来);
+    - 若这轮 abort 掉 attention: 环的第一项为假, 标记写了也不进下一帧.
+    """
+    suite = MindflowInShellTestSuite()
+    frames: list[int] = []
+    marks: list[bool] = []
+    next_frame_marks: list[bool] = []
+
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            frames.append(len(frames) + 1)
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+            if len(frames) == 1:
+                # 收线那一刻: 身体已跑完, attention 仍活着, 自己声明还要一帧.
+                thinking.observer.add_echoes([], need_observe=True)
+                marks.append(thinking.observer.need_observe())
+            else:
+                # 判据 (D15 现场): **新签发的这一帧**必须能从自己的 previous 读到
+                # 上一帧写下的标记 —— 这才是插件侧 needsObserve 的来源
+                # (``_ego.needs_observe`` → ``thinking.moment.previous.need_observe``).
+                # 只断言 writer 侧 (marks) 是不够的: 写进去了、reader 读不到,
+                # 插件就永远落 buffered —— 那正是线上观测到的形状.
+                previous = thinking.moment.previous
+                next_frame_marks.append(previous is not None and previous.need_observe)
+
+    suite.articulate = articulate
+
+    async with suite:
+        suite.add_signal(input_signal("user_msg"))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        # 第一帧写下标记 → 第二帧; 第二帧不写 → attention 自然结束.
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
+
+    assert marks == [True]
+    assert next_frame_marks == [True]
+    assert frames == [1, 2]
+    assert suite.attention_count == 1
+    assert suite.thinking_count == 2
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
+async def test_need_observe_written_after_the_thinking_exits_is_too_late():
+    """上界对照: 同一个标记写在 thinking 退出**之后**, 不签发下一帧.
+
+    把"退出前写"这条时序判据钉死: 环只在 thinking 交还控制权之后判一次
+    ``need_observe()`` —— 那时如果还是 False, attention 就自然结束, 之后谁再写
+    都没人读了. 这条不是冗余: 它就是 D15 现场那个"档位变了、下一帧没来"的形状.
+    """
+    suite = MindflowInShellTestSuite()
+    frames: list[int] = []
+    late_marks: list[bool] = []
+
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            frames.append(len(frames) + 1)
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async with suite:
+        suite.add_signal(input_signal("user_msg"))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)
+        # attention 已结束, 这时再补写 — 没有人会读它.
+        suite.mindflow.moments.add_echoes([], need_observe=True)
+        late_marks.append(suite.mindflow.moments.need_observe())
+
+    assert late_marks == [True]  # 标记本身写进去了...
+    assert frames == [1]  # ...但帧没有多出来.
+    assert suite.thinking_count == 1
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
 async def test_interpret_error_surfaces_to_model_in_next_moment():
     """协议契约: InterpretError 是可管理中断 — 模型应能在下一轮 Moment 看到错误并自我纠正.
 
@@ -743,15 +835,12 @@ async def test_notify_buffer_drains_to_next_attention_percepts():
 
         # 放 attention1 跑完.
         release_attention1.set()
-        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
-
-        # attention2: 再发一个 input signal.
-        suite.add_signal(input_signal("user_second"))
+        # 新契约: buffer 不空, 就在同一个 attention 里再签一帧 —— 不等下一个 attention.
         await asyncio.wait_for(attention2_articulate_done.wait(), timeout=2)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
 
-    assert suite.attention_count == 2
-    assert captured_percepts, "frame2 articulate 没拿到 percepts"
+    assert suite.attention_count == 1
+    assert captured_percepts, "第二帧 articulate 没拿到 percepts"
     frame2_percepts_text = ''.join(
         c['text'] for m in captured_percepts[0] for c in m.contents if 'text' in c
     )
@@ -816,6 +905,61 @@ async def test_interrupt_preempts_protected_attention():
     # FATAL 抢占了保护期内的 attention: 两个 attention, 第二个是 interrupt.
     assert suite.attention_count == 2
     assert suite.impulses[1].interrupt is True
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
+async def test_higher_priority_preempts_protected_attention():
+    """高于当前 attention 的优先级永远先赢; 保护期只拦同/低优先级.
+
+    协议契约: ``is_protected()`` 是"同级不抖动"的约定, 不是优先级之上的另一道门.
+    同一场景下同优先级会被 buffer, 高一级则必须抢占.
+    """
+    suite = MindflowInShellTestSuite()
+
+    release_attention1 = asyncio.Event()
+
+    async def articulate(thinking: Thinking) -> None:
+        art = thinking.articulator()
+        async with art:
+            art.send_nowait("frame1")
+            await asyncio.wait_for(release_attention1.wait(), timeout=3.0)
+            if not thinking.is_aborted():
+                await art.wait_action_done()
+
+    suite.articulate = articulate
+
+    async def content_func(chunks__: AsyncIterable[str]) -> None:
+        async for _ in chunks__:
+            pass
+
+    suite.shell.main_channel.build.content_command(content_func)
+
+    async with suite:
+        suite.add_impulse(Impulse(
+            priority=Priority.NOTICE,
+            protection_time=10.0,
+            messages=[Message.new().with_content("user_first")],
+        ))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        attention1 = suite.last_attention
+        assert attention1 is not None
+
+        # NOTICE + 保护期, 但挑战者是 WARNING 一档 — 按优先级直接赢.
+        suite.add_signal(new_notify_signal(
+            Message.new().with_content("louder"),
+            priority=Priority.WARNING,
+        ))
+        await asyncio.wait_for(attention1.wait_abort(), timeout=2)
+
+        for _ in range(100):
+            if suite.attention_count >= 2:
+                break
+            await asyncio.sleep(0.02)
+
+    release_attention1.set()
+
+    assert suite.attention_count == 2
     assert not suite.exceptions
 
 

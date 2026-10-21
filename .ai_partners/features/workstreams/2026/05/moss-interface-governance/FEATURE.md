@@ -3,7 +3,7 @@ title: MOSS Interface Governance — 抽象面自解释 + 英文释义 + 注释�
 status: in-progress
 priority: P1
 created: 2026-05-29
-updated: 2026-09-13
+updated: '2026-10-17'
 depends: []
 milestone: beta-release
 description: >-
@@ -254,6 +254,35 @@ Longer intro / Chinese 正文 follows after a blank line (L3 may stay Chinese).
 "类型"字段须用受控英文词表（避免 `meta` 与 `系统管理` 混排），翻译时只翻描述与类型，
 保留格式。
 
+### KD-E: skills 是治理面的延伸，机制类 skill 可指路开箱源码（2026-10-17）
+
+新增。治理对象从抽象面（contracts / concepts / blueprint）延伸到 **skills 交付层**。
+交付层有同一腐烂风险：skill 若复制实现、或把 FEATURE 文档当入口，接口漂移后会静默变成假话。
+
+四条判据：
+
+1. **两类 skill**。task skill = 可执行的复合任务流程；mechanism skill = 对一个核心机制的
+   方向性理解。mechanism skill 的结构固定为：**问题 → 动机 → 方案形状 → 框架已有认知面
+   在哪 → 指路用例方向（含一条可执行验收）→ 版本/身份**。
+2. **最小知识面归还框架**。mechanism skill 不自建阅读清单，不重复 blueprint / matrix /
+   channel_builder 已经打磨过的认知表面；它只补最容易漏掉的那把概念钥匙。指向活代码
+   （blueprint、services、openbox nodes）可以；指向 FEATURE / workstream / 决策编号不可以
+   （延续 KD-C）。
+3. **开箱实现可以作参考方向**。此前"skills 不出现 openbox 经验"的边界改为"**可以指路，
+   不可复制**"：node / service 源码是 worked example，skill 只写路径、角色、看什么；接口真值
+   一律走 `moss codex get-interface`。这条变化的前提是 matrix service 与 screen projection
+   已在直播中稳定运行 —— 开箱经验从"过程"变成了可引用的"样例"。
+4. **过期治理**。frontmatter 必带 `moss_version` / `verified` / `author` / `evidence`；
+   版本或接口反射不匹配即 review 候选，优先删除而不是保留一句假话。
+5. **零上下文旁路验证**。skill 的验收不是作者读一遍，而是：设计一个**命题**（要什么结果，
+   不点名角色和答案）→ 给一个看不到本轮对话的旁路 agent 同一命题 + skill 路径 → 它调研后
+   给出方案 → **由作者判断**方案是否落在预期机制上。违反机制的"看似合理"方案 = skill 的
+   失败，不是 agent 的失败。结果写入 `evidence`；细则见 `cli/skills/AGENTS.md` §Validation。
+
+落点：`src/ghoshell_moss/cli/skills/AGENTS.md` 的 Two kinds of skill / 写作纪律 / Meta
+format / Categories；首批 mechanism skill 为 `skills/matrix/service-operator` 与
+`skills/screen/projection`。
+
 ### 不做的事
 
 - **不重构代码**。不修改接口签名、不调整逻辑、不重新组织模块结构。
@@ -338,6 +367,18 @@ Longer intro / Chinese 正文 follows after a blank line (L3 may stay Chinese).
   - 验证：AST 结构（docstring 归一化后）与 HEAD 逐文件完全一致（纯字符串/注释改动，
     无签名/逻辑/顺序变化）；`py_compile` 通过；`get-interface` 反射全英文。
     单测按人类指示未跑（纯文本改动，结构等价已证）。
+
+- 2026-10-17 (skills 交付层纳入治理):
+  - 新增 KD-E：mechanism skill 类型、最小知识面归还框架、开箱源码"指路不复制"、过期元数据。
+  - `cli/skills/AGENTS.md`：新增 Two kinds of skill；写作纪律加"distill, do not index"与
+    开箱参考规则；Meta format 增加 `author` / `evidence`；category 白名单加入 `matrix` / `screen`。
+  - 首批 mechanism skill：`matrix/service-operator`（operator → matrix service 的机制形状）、
+    `screen/projection`（跨进程能力投屏的语义模型与主权边界）。
+  - **零上下文旁路验证**：两条命题（host metrics 服务化 / build monitor 投屏）交给看不到本轮
+    对话的旁路 agent，只给 skill 路径，禁读 features/journal。两份方案均落在预期机制（新 kind +
+    query/pub、subscribe-before-pull；adoption ≠ arrangement、人管视图、地址化 veil），未另起
+    并行机制或复制实现。验证暴露的两处"必须靠源码补"的缺口已回填：Matrix 的 accessor /
+    serve-connect 取向、adopted id 与视图 provenance。
 
 ### 剩余工作面
 

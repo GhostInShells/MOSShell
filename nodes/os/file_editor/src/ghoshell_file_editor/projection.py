@@ -29,12 +29,18 @@ def _dialogue_view(action: Action) -> list[dict[str, Any]]:
 
 
 def action_view(action: Action) -> dict[str, Any]:
-    """A card: identity plus the mechanical effect line. No content."""
+    """A card: identity, the mechanical fact, and the model's motive. No content.
+
+    ``label`` is why (the model's, may be empty), ``fact`` is what (the machine's,
+    always filled) — the card needs both, or the human is asked to open something
+    without knowing whether it is worth opening.
+    """
     return {
         "n": action.n,
         "kind": action.kind,
         "author": action.author,
         "label": action.label,
+        "fact": action.fact,
         "state": action.state,
         "effect": side_effect(action),
         "at": action.at,
@@ -54,6 +60,8 @@ def thread_view(thread: Thread) -> dict[str, Any]:
         "lines": line_count(thread.content),
         "chars": len(thread.content),
         "exported_to": thread.exported_to,
+        "exported_at": thread.exported_at,
+        "unsaved": thread.unsaved,
     }
 
 
@@ -84,4 +92,10 @@ def snapshot(store: DocStore) -> dict[str, Any]:
         "type": "snapshot",
         "threads": [thread_view(t) for t in store.threads()],
         "actions": actions[-SNAPSHOT_ACTIONS:],
+        # Unclaimed working copies the human can see for themselves.
+        "drafts": store.recoverable(),
+        # What the human has granted. Read-only for the model: the switch that
+        # writes this lives on the surface, not in the command set.
+        "trusted": store.trusted(),
+        "global_trust": store.global_trust(),
     }

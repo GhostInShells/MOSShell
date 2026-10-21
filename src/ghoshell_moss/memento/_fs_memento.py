@@ -46,6 +46,7 @@ from ghoshell_moss.memento.abcd import (
     Memento,
     Note,
 )
+from ghoshell_moss.memento.hooks import hook_env, hook_paths, render_view_text, run_slot
 
 __all__ = ["FsBranch", 'FsMemento', 'new_local_memento']
 
@@ -371,6 +372,54 @@ class FsBranch(Branch):
             return None
         notes = await self.anotes()
         return self._probe_memento(self._commit_view(commits[seq - 1], notes, self.index))
+
+    # ── 带 hook 的生成 ──
+    async def _render_slot(self, slot: str, *, coord: str = "", commit_dir: Path | None = None) -> str:
+        """Run this branch's mounted view slot and return what it contributes to the page.
+
+        The slot belongs to memento, not to whoever renders the view: the branch already knows
+        its own directory, so it also knows where the hooks are mounted (branch first, then the
+        root) and what the protocol promises them. Letting a caller append the output instead
+        is how a plan written into the branch directory failed to reach the boot memory.
+        """
+        roots = [self._dir(), self._memento.root]
+        if not hook_paths(roots, slot):
+            return ""
+        env = hook_env(
+            slot,
+            root=self._memento.root,
+            branch=self._name,
+            branch_dir=self._dir(),
+            coord=coord,
+            commit_dir=commit_dir,
+        )
+        try:
+            results = await run_slot(slot, roots, env_base=env, log_root=self._memento.root)
+        except Exception:  # noqa: BLE001 — 读面不许因为 hook 而挂
+            return ""
+        return render_view_text(results)
+
+    async def aview_with_hooks(self, *, n: int = 10) -> BranchView:
+        """The view an actual reader gets: the projection **plus** what the directory renders.
+
+        Cheap views (``view`` / ``aview``) stay hook-free on purpose — they are called from sync
+        paths and inside other projections. This one is the explicit opt-in, and it re-runs the
+        slot on every call: a plan that moved a minute ago must not come back stale.
+        """
+        view = await self.aview(n=n)
+        view.ground = await self._render_slot("branch_view")
+        return view
+
+    async def aget_commit_with_hooks(self, seq: int) -> CommitView | None:
+        """A commit read with its directory's own rendering — same contract as the branch view."""
+        view = await self.aget_commit(seq)
+        if view is None:
+            return None
+        commit_dir = view.memento_path(self._memento.root).parent
+        # 协议承诺: hook 拿得到一个已经存在的目标目录, 它只管往里搬东西.
+        commit_dir.mkdir(parents=True, exist_ok=True)
+        view.ground = await self._render_slot("commit_view", coord=view.coord, commit_dir=commit_dir)
+        return view
 
     # ── 查询 ──
     def query_commits(

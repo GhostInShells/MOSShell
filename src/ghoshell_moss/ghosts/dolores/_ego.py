@@ -60,6 +60,11 @@ _DOLORES_EGO_CREATE = "/moss-api/ghost/dolores/ego/create"
 _DOLORES_THINKING_ENTER = "/moss-api/ghost/dolores/thinking/enter"
 _DOLORES_THINKING_EXIT = "/moss-api/ghost/dolores/thinking/exit"
 _DOLORES_TOOL_RESULT = "/moss-api/ghost/dolores/tool-result"
+_DOLORES_MOMENT_PUSH = "/moss-api/ghost/dolores/moment/push"
+# settle 2a: 探针 —— 检查 dsh 侧是否还有未消费的 pending moment, 有则空 steer 开下一 turn.
+_DOLORES_TURN_END_PROBE = "/moss-api/ghost/dolores/turn-end-probe"
+# compact: 原地把 surface 前缀替换成一条说明, cut 到 cut_turn 边界; memory 由新 epoch 的 recap 交付.
+_DOLORES_COMPACT = "/moss-api/ghost/dolores/compact"
 
 # thinking/exit confirmation timeout (fail-safe): degrade instead of hanging the exit if the plugin stalls.
 _EXIT_RPC_TIMEOUT = 5.0
@@ -104,7 +109,7 @@ class DoloresConfig(BaseModel):
     )
     dsh: DshLauncherConfig = Field(
         default_factory=DshLauncherConfig,
-        description="dsh launcher config (binary/profile/port/...).",
+        description="dsh launcher config (profile/port/...).",
     )
     ego: DoloresEgoConfig = Field(
         default_factory=DoloresEgoConfig,
@@ -180,6 +185,8 @@ class DoloresEgo:
         self._ego_session_id: str | None = None
         # anti-bypass token: returned by ego/create, carried by thinking enter/exit, verified by the plugin to reject non-ego calls.
         self._thinking_token: str | None = None
+        # thinking 配对序 (单调, 每 session): enter/exit 带同一个, 插件只关自己那一次的 gate.
+        self._thinking_seq: int = 0
         self._exit_stack = contextlib.AsyncExitStack()
         # logger: prefer the injected one (MOSS runtime logger), else fall back.
         self._logger = logger or get_moss_logger()
@@ -187,8 +194,10 @@ class DoloresEgo:
         self._thinking_event = asyncio.Event()
         # self-wake signal outlet — injected by host/mindflow after bus wiring; this side never touches the nucleus directly.
         self._signal_broadcast: "Callable[[Signal], None] | None" = None
-        # epoch tracking: remembers the last injected epoch id, compared on enter to decide whether to carry an <epoch> container.
+        # epoch tracking: remembers the last **delivered** epoch id/index, compared on enter to decide
+        # whether to carry an <cognition_epoch> container. Stamped only after the enter RPC succeeds.
         self._moment_epoch: str | None = None
+        self._moment_epoch_index: int = -1
         # 待采用的思考档声明: startup 的 boot 声明 (或 moss_reasoning 的现场声明) 放这里,
         # 由下一个**真正带上它**的思考帧下发, 采用即置回 None —— 没被采用的声明不会凭空蒸发.
         # 声明只被消费一次, 但档位本身不会一轮即丢: plugin 把它写进 request/header 的持久配置,
@@ -202,11 +211,21 @@ class DoloresEgo:
         self._window_size: int = 0
         self._window_base: int = 0
         self._warned: bool = False
+        # 待执行的 compact (上一有效 run 决定, 下一 run 启动执行) — 只在 run 边界写入/清空.
+        self._pending_compact: bool = False
+        # compact 已发往 plugin、epoch 尚未开启时的 memory 暂存. 取消可能落在 RPC 中间:
+        # 插件可能已经换了 surface, 而调用方还没拿到返回值 —— 由下一帧取走并补开 epoch.
+        self._compact_memory: list[Message] | None = None
         # 待注入的 notice (warn / committed); thinking-enter 时排空, 与 moment 同级注入.
         self._notices: list[Message] = []
-        # 一次性告警位: 这两条都描述"整条功能静默失效", 报一次就够, 逐帧重报只会淹没日志.
-        self._usage_missing_warned: bool = False
+        # 连续缺 usage 计数: 首帧 (warm-up) 的 usage 是收尾才补, live 流里常缺一条, 属预期瞬态;
+        # 连续两条都缺才说明窗口增量真喂不进来. 出现 usage 即清零.
+        self._usage_missing_count: int = 0
         self._self_wake_unwired_warned: bool = False
+
+    @property
+    def logger(self) -> LoggerItf:
+        return self._logger or get_moss_logger()
 
     # ── long-lived: lifecycle ────────────────────────────────────────
 
@@ -223,10 +242,9 @@ class DoloresEgo:
         creation, establishing an initial surface below the instruction and above the conversation.
         Returns the ego session id.
 
-        With a memento 切点 (``resume_ref()``) the plugin rebuilds the surface instead: memory first,
-        then the source session's surface tail after the cut, so the ego resumes mid-conversation
-        instead of starting blank. 源头 session 通常已不在本进程 (上次运行留下的 commit), 冷读兜底.
-        切点失效 (源 log 已轮转/清掉) 不能拖死启动 —— 退一步建全新 session, 内容退回 memory 层.
+        启动**不再回放源 session 的原文 tail**：seed 只有 memory (ground + memento view)。这样 dsh
+        历史消息协议再变，启动都不碰（防「升级后 ghost 永远起不来」）。跨重启的连续性由 memento
+        视图 + read/chat 承担。
         """
         payload = {
             "project_home": str(self._ctx.project_home),
@@ -242,23 +260,7 @@ class DoloresEgo:
         if self._ctx.ghost_home is not None:
             payload["ghost_home"] = str(self._ctx.ghost_home)
             payload["home_title"] = f"{self._ctx.name} @ home"
-        ref = self._memento_manager.resume_ref() if self._memento_manager is not None else None
-        if ref is not None:
-            payload["ref"] = ref.model_dump(mode="json")
-        try:
-            result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
-        except Exception:
-            if "ref" not in payload:
-                raise
-            # 退一步建全新 session = 连续性的实际丢失 (内容退回 memory 层). 这不是普通告警:
-            # 只记一行 warning 而不带 traceback, 就等于把"为什么会退"永久丢掉.
-            self._logger.warning(
-                "ego rebuild from memento 切点 failed (ref=%s/%s-%s) — falling back to a fresh session",
-                ref.session_id, ref.start_turn, ref.end_turn,
-                exc_info=True,
-            )
-            payload.pop("ref")
-            result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
+        result = await self._launcher.call(_DOLORES_EGO_CREATE, payload)
         self._ego_session_id = result["sessionId"]
         self._thinking_token = result.get("thinkingToken")
         if self._thinking_token is None:
@@ -302,6 +304,23 @@ class DoloresEgo:
         if self._session is None:
             raise RuntimeError("ego session not started. Call __aenter__ first.")
         return self._session
+
+    @property
+    def model_route(self) -> "tuple[str, str] | None":
+        """(provider, model) this session actually requested with — the last ``request/header``.
+
+        Deliberately **not** ``session.model_selection()``: that reads the model *catalog
+        default*, and the catalog default is not session state — ``session/selectModel``
+        rewrites it globally in the background. Measured 2026-10-15: one ``selectModel`` on a
+        throwaway session moved the default every session reads, while the live session's own
+        projection stayed put. So the catalog default must never be used to fill in "the
+        session's current model": it would silently rewrite a route the human changed in the UI.
+
+        None = no request observed yet (a session that has never run).
+        """
+        if self._model_identity is None:
+            return None
+        return (self._model_identity[0], self._model_identity[1])
 
     # ── short-lived: run_thinking (transaction) ──────────────────────
 
@@ -394,16 +413,17 @@ class DoloresEgo:
             self._logger.warning("assistant/message did not parse — window size unchanged")
             return
         if message.usage is None:
-            # usage 一直缺失 = 窗口大小永远是 0 = 增量永远是 0 = K/T 阈值永不触发, 自动落锚静默失效.
-            # 每轮都报会淹掉日志, 所以只报第一次; 这是一条"功能整体哑了"的告警, 不是逐帧噪声.
-            if not self._usage_missing_warned:
-                self._usage_missing_warned = True
+            # 首帧 (warm-up) 的 usage 是收尾才补的, live 流里常缺一条, 属预期瞬态, 不当故障.
+            # 连续两条都缺 usage 才说明窗口增量真的喂不进来 (K/T 阈值会静默失效), 此时才告警.
+            self._usage_missing_count += 1
+            if self._usage_missing_count == 2:
                 self._logger.warning(
-                    "assistant/message carries no usage — the window size stays 0 and the K/T "
-                    "commit thresholds can never fire; automatic anchoring is silently dead"
+                    "assistant/message carried no usage twice in a row — the window size stays 0 "
+                    "and the K/T commit thresholds can never fire; automatic anchoring is silently dead"
                 )
             return
         self._window_size = self._memento_manager.window_size(message.usage)
+        self._usage_missing_count = 0
 
     async def _on_request_header(self, event: SessionEvent) -> None:
         """request/header 回调 — 感知模型身份与思考档, 变化时排一条 notice (下一帧 enter 带出).
@@ -493,6 +513,110 @@ class DoloresEgo:
             return None
         return self._memento_manager.coord(anchor)
 
+    # ── compact (原地 surface replace; 上一有效 run 决定, 下一 run 启动执行) ──
+
+    def on_run_exit(self, valid: bool) -> None:
+        """run 边界回调 —— 只在**有效** run (无异常 / 无中断 abort) 之后确认是否要 compact.
+
+        valid=False 时清空待执行位（异常 run 的上下文状态不可信，不能据此压）。valid=True 时按
+        **绝对**窗口阈值 ``compact_tokens`` 判定：`window_size`（最近一次 assistant/message 的 usage）
+        达标且存在 SCS（至少两个 commit）→ 置位，交给下一个 run 启动时执行。
+        """
+        if not valid:
+            self._pending_compact = False
+            return
+        manager = self._memento_manager
+        if manager is None:
+            return
+        if self._window_size >= manager.config.compact_tokens and manager.compact_cut_turn() is not None:
+            self._pending_compact = True
+
+    async def compact_if_pending(self) -> list[Message] | None:
+        """run 启动前调用：有 pending 就原地 compact，无则 no-op.
+
+        返回**本次压缩实际使用的 memory 消息**（供调用方开新 epoch 时作 recap），没压则 None。
+        memory 不再写进 surface 历史，而是随新 epoch 的 recap 槽交付；调用方不在成功返回后紧接着
+        开 epoch，ego 侧 epoch id 不变，recap 根本不会注入。
+
+        memory 在这里**先行取值并缓存**：一来决定是否值得压（取不到就不压，memory 仍留在 surface，
+        安全退回旧语义），二来若 compact 的 RPC 窗口被取消，下一帧可以取走缓存补开 epoch。
+        失败降级为告警 —— 主动 compact 是防溢出，不该反过来把一个 run 的启动拖死。
+        """
+        if not self._pending_compact:
+            return None
+        self._pending_compact = False
+        manager = self._memento_manager
+        if manager is None:
+            return None
+        cut_turn = manager.compact_cut_turn()
+        if cut_turn is None:
+            return None
+        try:
+            memory, notice = self._compact_memory_payload()
+        except Exception:
+            # 取 memory 就失败 = 还没动 surface, 直接放弃本次压缩 (旧语义下 memory 还在头部).
+            self._logger.exception("dolores compact skipped — memory unavailable")
+            return None
+        if not memory:
+            return None
+        # 请求发出前先暂存: 取消落在 RPC 中间时, 插件可能已经换了 surface, 而调用方还没拿到返回值.
+        self._compact_memory = memory
+        try:
+            result = await self._launcher.call(
+                _DOLORES_COMPACT,
+                {
+                    "memory": [{"text": msg.to_content_string()} for msg in memory],
+                    "notice": notice,
+                    "cut_turn": cut_turn,
+                },
+            )
+            if not (result or {}).get("replaced"):
+                # 没有可遮蔽的节点 = 实际没压 —— 不开新 epoch, 不白复位一次 cognition.
+                self._compact_memory = None
+                return None
+            self._compact_memory = None
+            self._logger.info("dolores compact at turn %s (window=%s)", cut_turn, self._window_size)
+            return memory
+        except asyncio.CancelledError:
+            # 取消落在 RPC 中间: 插件可能已经 appendReplace 了、结果未知. memory 保留在 _compact_memory,
+            # 下一帧 take_compact_memory() 取走补开 epoch. 这里只记一条, 不清理, 原样上抛.
+            self._logger.warning(
+                "dolores compact cancelled mid-flight at turn %s — surface state unknown; "
+                "keeping memory for the next frame",
+                cut_turn,
+            )
+            raise
+        except Exception:
+            # 普通异常(连接失败/参数错)维持清理: 若保留 memory 会让 on_run_exit 每轮重武装 pending,
+            # 形成「压一次失败 → 开 epoch → 再压失败」的每两帧一次全量复位回环, 比丢 memory 更糟.
+            self._compact_memory = None
+            self._logger.exception("dolores compact failed — degraded")
+            return None
+
+    def take_compact_memory(self) -> list[Message] | None:
+        """取走 compact 跨取消遗留的 memory —— 调用方据此补开 epoch; 无遗留则 None."""
+        memory, self._compact_memory = self._compact_memory, None
+        return memory
+
+    def _compact_memory_payload(self) -> tuple[list[Message], str]:
+        """compact 的两块内容：memory 消息 + 一条 compact 说明.
+
+        memory 不随 surface 替换交付（替换内容只有说明）—— 它由新 epoch 的 recap 槽重新注入，
+        避免同一份 memory 在 surface 与 epoch 里出现两次。memory 仍然上行给 plugin，只作溢出
+        兜底的缓存（plugin 在 request-error 时用它重建头部）。
+        """
+        if self._memories is None:
+            return [], ""
+        memory = [msg for msg in self._memories() if not msg.is_empty()]
+        if not memory:
+            return [], ""
+        notice = (
+            "Your context was compacted to stay within the model window. The memory view arrives "
+            "later in this window as the recap of this cognition epoch; the turns after this notice "
+            "are the live tail."
+        )
+        return memory, notice
+
     def _session_start_turn(self) -> int:
         """本 session 的区间下界 (**开**): 上个 commit 的 end_turn (同 session); 跨 session 从 0 重编号.
 
@@ -511,15 +635,18 @@ class DoloresEgo:
             self,
             call_id: str,
             result: dict | list | str | None,
-            moment: list[dict] | None = None,
+            moment: dict | None = None,
             cancel: bool = False,
             turn: int | None = None,
     ) -> None:
         """Unlock a pending tool: {callId, result, moment, cancel, turn}.
 
         result = the tool's return value for the model (a "{epoch}-{moment}" short id for
-        fetch_next_moment). moment = the moment content parts to inject into context (text + image);
-        the plugin injects the moment then resolves the result. callId is passed through for routing.
+        fetch_next_moment). moment = the moment payload to inject — the *same* ``{context, inputs,
+        moment_id}`` protocol as ``thinking/enter`` uses (see ``moment_payload``), never a
+        context-only slice: the moment already drained its percepts, so dropping ``inputs`` here
+        would destroy them. The plugin injects the moment then resolves the result. callId is
+        passed through for routing.
         cancel = cut the turn as soon as the result lands (the turn ends without a final answer; the
         plugin binds it to the turn the tool was called in).
         turn = the turn the tool was called in. It lets the plugin bind a result that arrives before
@@ -533,17 +660,49 @@ class DoloresEgo:
             "turn": turn,
         })
 
-    def moment_context_parts(self, moment: Moment, moment_id: str) -> list[dict]:
-        """moment → content blocks for context injection (context slot, excluding percept/hint).
+    async def push_moment(self, moment: Moment, moment_id: str) -> None:
+        """Deliver one whole frame into a turn that is *already running*.
 
-        The fetch_next_moment tool injects the moment into the next step's context (background, does
-        not drive a turn) via the tool-result RPC. Content blocks (text + image) are preserved, not
-        folded to a string. Empty when there is no context content.
+        ``thinking/enter`` is the only delivery point today — after it, the next frame
+        has to wait for the turn to end. This route carries the same payload protocol
+        (context + inputs, see ``moment_payload``), so a buffered impulse reaches the
+        model at the next step instead of at the next turn.
         """
-        context_msg = self._context_message(moment, moment_id)
-        if context_msg is None:
-            return []
-        return [self._content_payload(content) for content in context_msg.as_contents(with_meta=True)]
+        await self._launcher.call(_DOLORES_MOMENT_PUSH, {
+            "moment": self._moment_payload(moment, moment_id),
+            "thinkingToken": self._thinking_token,
+        })
+
+    async def probe_pending_moment_and_steer(self) -> bool:
+        """settle 2a: 探针 —— 检查 dsh 侧是否还有未消费的 pending moment, 有则空 steer 开下一 turn.
+
+        返回 True 表示插件侧确实 steered（有新 turn 要消费）。fire-and-forget 的 ``push_moment``
+        没有返回值, 这个探针就是"我 push 过、dsh 消费没有"的唯一事实来源。
+        """
+        try:
+            result = await self._launcher.call(_DOLORES_TURN_END_PROBE, {
+                "thinkingToken": self._thinking_token,
+            })
+        except Exception:
+            self._logger.exception("turn-end-probe failed — treating as no pending moment")
+            return False
+        return bool(result.get("steered")) if isinstance(result, dict) else False
+
+    def moment_payload(self, moment: Moment, moment_id: str) -> dict:
+        """moment → the one wire payload **every** delivery path carries: context + inputs.
+
+        Both delivery paths — ``thinking/enter`` and ``tool-result`` — hand over the same moment
+        data protocol. The earlier split (enter = context + inputs, tool-result = context only) was
+        a silent loss channel, not a simplification: ``observe()`` *drains* whatever percepts were
+        injected since the last observation into the moment it produces, and a path that then
+        structurally drops ``inputs`` destroys that text outright. A frame carrying a buffered
+        impulse (verdict ``buffered`` rides the next observation as percepts) could therefore be
+        consumed by a mid-thought ``moss_interpret`` observation and never reach the model at all.
+
+        The consume/deliver decoupling is the defect; the invariant is "no delivery path drops
+        inputs". Slot mapping (context vs inputs) lives in ``_moment_payload``.
+        """
+        return self._moment_payload(moment, moment_id)
 
     def needs_observe(self, thinking: "Thinking") -> bool:
         """Whether this frame is a self-driven observe continuation (the previous round's echo required another look).
@@ -556,8 +715,20 @@ class DoloresEgo:
         previous = thinking.moment.previous
         return bool(previous is not None and previous.need_observe)
 
-    async def enter_thinking(self, thinking: "Thinking") -> None:
-        """Inject moment (context/inputs) + epoch + effort + thinkingToken to start a thinking turn.
+    def next_thinking_seq(self) -> int:
+        """铸下一个 thinking 配对序 — 单调, 每 session 一次递增.
+
+        enter 是可取消的 task, 它的 HTTP 请求一旦在飞, 取消就收不回来 —— 插件侧的到达顺序因此
+        不保证与发起顺序一致. enter 与 exit 带同一个序, 插件只关自己那一次的 gate, 迟到的
+        (序号更小的) enter 一律无视. 于是 exit(N) 不可能关掉 enter(N+1) 开的那道门.
+        """
+        self._thinking_seq += 1
+        return self._thinking_seq
+
+    async def enter_thinking(self, thinking: "Thinking", thinking_seq: int) -> None:
+        """Inject moment (context/inputs) + epoch + effort + thinkingToken + thinkingSeq to start a thinking turn.
+
+        ``thinkingSeq`` pairs this enter with its exit (see ``next_thinking_seq``).
 
         ``effort`` is the frame's single thinking effort, taken from the impulse's ``thinking_effort``
         (``'none'`` = don't drive a turn, ``''`` = no opinion, a depth = apply it). Resolution:
@@ -583,34 +754,47 @@ class DoloresEgo:
             self.default_thinking_effort = None
         else:
             effort = ""
+        epoch = thinking.observer.epoch
+        epoch_payload = self._epoch_payload(thinking)
         payload = {
             "moment": self._moment_payload(moment, moment_ref),
-            "epoch": self._epoch_payload(thinking),
+            "epoch": epoch_payload,
+            # epoch 幂等键: plugin 据此丢弃迟到/重复的 epoch 帧 (epochIndex <= 已见到的最大 index).
+            # 送达后打戳必然允许重发, 重发与乱序到达都由这一键去重.
+            "epochIndex": epoch.index if epoch_payload is not None else None,
             # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
             "notices": self._drain_notices(),
             "effort": effort,
             "thinkingToken": self._thinking_token,
+            "thinkingSeq": thinking_seq,
             # observe continuation: empty inputs still drive a turn — see needs_observe().
             "needsObserve": self.needs_observe(thinking),
         }
         await self._launcher.call(_DOLORES_THINKING_ENTER, payload)
+        # 送达后才打戳: enter 丢失/被取消时, 下一帧必须能重发 epoch (含唯一的 memory recap).
+        # index 单调, 迟到的旧 enter 不会把戳退回去.
+        if epoch_payload is not None and epoch.index >= self._moment_epoch_index:
+            self._moment_epoch = epoch.id
+            self._moment_epoch_index = epoch.index
 
     def _drain_notices(self) -> list[str]:
         """排空 notice 队列 → 纯文本 (与 moment 同级, 由 plugin 挂载到本步历史; notice 无图)."""
         notices, self._notices = self._notices, []
         return [notice.to_content_string() for notice in notices if not notice.is_empty()]
 
-    async def exit_thinking(self) -> None:
+    async def exit_thinking(self, thinking_seq: int) -> None:
         """Reverse the thinking state; the plugin does the relevant teardown.
 
         A non-idle agent is cancelled by the plugin. Blocks for confirmation with a fail-safe timeout
-        so a stalled plugin degrades instead of hanging the exit.
+        so a stalled plugin degrades instead of hanging the exit. ``thinking_seq`` is the one this
+        frame's enter carried — the plugin closes only that enter's gate.
         """
         try:
             await self._launcher.call(
                 _DOLORES_THINKING_EXIT,
                 {
                     "thinkingToken": self._thinking_token,
+                    "thinkingSeq": thinking_seq,
                 },
                 timeout=_EXIT_RPC_TIMEOUT,
             )
@@ -684,11 +868,14 @@ class DoloresEgo:
         guess what an "epoch" is. The plugin is a dumb transport — it only receives content blocks,
         it does not parse structure. Returns on the first frame and on every epoch change; None when
         unchanged.
+
+        Pure peek: it does not stamp ``_moment_epoch``. The stamp happens only after the enter RPC
+        succeeds (see ``enter_thinking``) — a lost enter must not burn the epoch, or the recap (now
+        the only delivery path for ghost memory after a compact) would never be re-sent.
         """
         epoch = thinking.observer.epoch
         if epoch.id == self._moment_epoch:
             return None
-        self._moment_epoch = epoch.id
         children: list[Message] = []
         if epoch.recap:
             children.append(Message.new(tag="recap").with_messages(*epoch.recap))

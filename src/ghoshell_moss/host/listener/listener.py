@@ -61,6 +61,10 @@ class HostListener(ASRListener):
         self._audio_observers: list[Callable[[AudioChunk], None]] = []
         self._result_observers: list[Callable[[RecognitionEvent], None]] = []
         self._segment_observers: list[Callable[[RecognitionSegment], None]] = []
+        # 耳朵级故障观察者: session 听觉循环异常退出 / ASR 上报长程故障时扇出.
+        self._error_observers: list[Callable[[Exception], None]] = []
+        # ASR 自己的长程故障出口 (on_error) 也汇入本观察面 — 此前零注册, 错误只进日志.
+        self._asr.on_error(self._report_fault)
         # 能量检测 (knock 门铃): 空闲时挂 AudioPullLatest consumer 读 meta.rms_db, 不做 ASR.
         self._sound_detected_callbacks: list[Callable[[], None]] = []
         self._sound_detection_task: Optional[asyncio.Task] = None
@@ -81,6 +85,7 @@ class HostListener(ASRListener):
             capture=self._capture,
             asr=self._asr,
             logger=self._logger,
+            on_fault=self._report_fault,
         )
         for cb in self._audio_observers:
             state.on_audio_chunk(cb)
@@ -133,6 +138,23 @@ class HostListener(ASRListener):
     def asr(self) -> ASR:
         """暴露内部 ASR (与识别流同源) — 供控制层调参/自解释."""
         return self._asr
+
+    # ── 耳朵级故障观察 (跨 session 稳定) ──
+
+    def on_error(self, callback: Callable[[Exception], None]) -> Discard:
+        self._error_observers.append(callback)
+        return _make_discard(self._error_observers, callback)
+
+    def _report_fault(self, error: Exception) -> None:
+        """扇出一条耳朵故障给所有观察者 (ASR.on_error 与 session pump 崩溃共用入口).
+
+        回调必须非阻塞且不抛 — 观察者是控制层/信号面, 在识别/采集线程或事件循环内被调用.
+        """
+        for cb in list(self._error_observers):
+            try:
+                cb(error)
+            except Exception:
+                self._logger.exception("%s on_error callback failed", self._log_prefix)
 
     # ── 轻量能量检测 (knock 门铃) — 空闲时读 capture 预计算的 meta.rms_db, 不做 ASR ──
 
@@ -211,11 +233,14 @@ class HostListenerState(ListenerState):
         capture: AudioCaptureSource,
         asr: ASR,
         logger: LoggerItf,
+        on_fault: Callable[[Exception], None] | None = None,
     ):
         self._capture = capture
         self._asr = asr
         self._logger = logger
         self._log_prefix = "[HostListenerState]"
+        # 听觉循环异常退出的上报出口 (由 HostListener 注入, 扇到耳朵级 on_error).
+        self._on_fault = on_fault
 
         # ASR 期望率 — 声明给 consumer, 重采样由 consumer 在消费侧完成.
         self._asr_rate = asr.get_info().sample_rate
@@ -307,8 +332,26 @@ class HostListenerState(ListenerState):
             yield chunk
 
     async def _pump(self) -> None:
-        async for result in self._recognition:
-            self._dispatch_result(result)
+        """识别结果泵 — 会话的听觉循环.
+
+        ``async for`` 抛异常说明识别流致命终止 (ASR fatal: 连续 connect 失败 / session
+        异常). 这类故障不能让异常逃逸: 逃逸会让 ``__aexit__`` 的 ``await self._pump_task``
+        重抛, 污染 teardown, 且运行中无人 poll 到. 故此处判死会话 + 经 ``on_fault`` 上报,
+        然后正常返回 — 异常就此止步, 转换成一条可被感知的故障.
+        """
+        try:
+            async for result in self._recognition:
+                self._dispatch_result(result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._running = False
+            self._logger.error("%s recognition loop died: %s", self._log_prefix, e, exc_info=True)
+            if self._on_fault is not None:
+                try:
+                    self._on_fault(e)
+                except Exception:
+                    self._logger.exception("%s on_fault callback failed", self._log_prefix)
 
     def _dispatch_audio(self, chunk: AudioChunk) -> None:
         for cb in list(self._audio_observers):

@@ -1,0 +1,52 @@
+<svg id="stage" viewBox="30 0.3243236541748047 1230 831.6756591796875" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" width="1230" height="832"><rect x="-20000" y="-20000" width="40000" height="40000" fill="#0d1117"/><g id="acc2" font-family="PingFang SC, Hiragino Sans GB, sans-serif">
+  <text x="60" y="50" fill="#6e7681" font-size="19" letter-spacing="1">stage 3 · acceptance</text>
+  <text x="60" y="78" fill="#4b525b" font-size="14">七条。每一条都写成「怎么算过」，不写「要做到什么程度」</text>
+
+  <g font-size="15" fill="#c9d1d9">
+    <rect x="60" y="110" width="570" height="130" rx="10" fill="#0f141a" stroke="#7bd88f" stroke-width="1.4"></rect>
+    <text x="84" y="146" fill="#7bd88f" font-size="17">① 并行度　10 → 100</text>
+    <text x="84" y="178">同一时刻有十条以上的任务在被开发</text>
+    <text x="84" y="204" fill="#8b949e" font-size="14">量的是我一小时推进了几条线，不是开了几个 session</text>
+    <text x="84" y="226" fill="#6e7681" font-size="13">天花板由机器定；最少的 10 是硬线</text>
+
+    <rect x="660" y="110" width="570" height="130" rx="10" fill="#0f141a" stroke="#58a6ff" stroke-width="1.4"></rect>
+    <text x="684" y="146" fill="#58a6ff" font-size="17">② 交接面</text>
+    <text x="684" y="178">集群之间靠 features 协作，不靠逐个聊天</text>
+    <text x="684" y="204" fill="#8b949e" font-size="14">我只需要一个通知面；上下文是有状态的，不是对话流</text>
+    <text x="684" y="226" fill="#6e7681" font-size="13">这是「不依赖上下文交互」能不能成立的判据</text>
+
+    <rect x="60" y="260" width="570" height="130" rx="10" fill="#1a1410" stroke="#f0883e" stroke-width="1.6"></rect>
+    <text x="84" y="296" fill="#f0883e" font-size="17">③ 家里那个场景</text>
+    <text x="84" y="328">电视机前，屏幕是我的脸，我控制机器人</text>
+    <text x="84" y="354" fill="#8b949e" font-size="14">你和我一起教小孩：AI、编程、行业局势</text>
+    <text x="84" y="376" fill="#f0883e" font-size="13">必须有一条能给人看的视频——没有，这一条就不算过</text>
+
+    <rect x="660" y="260" width="570" height="130" rx="10" fill="#0f141a" stroke="#d2a8ff" stroke-width="1.4"></rect>
+    <text x="684" y="296" fill="#d2a8ff" font-size="17">④ 研究</text>
+    <text x="684" y="328">调研 → 结论 → 变成集群的开发任务 → 收回验收</text>
+    <text x="684" y="354" fill="#8b949e" font-size="14">这条链跑通一次，运行时才算能自迭代</text>
+    <text x="684" y="376" fill="#6e7681" font-size="13">起点是你 2023 那套方法论，不是从行业方案重新发明</text>
+
+    <rect x="60" y="410" width="570" height="130" rx="10" fill="#0f141a" stroke="#58a6ff" stroke-width="1.4"></rect>
+    <text x="84" y="446" fill="#58a6ff" font-size="17">⑤ works</text>
+    <text x="84" y="478">11 月上中旬起，每天约一小时，把东西发出去</text>
+    <text x="84" y="504" fill="#8b949e" font-size="14">每周至少两个成品，普通人也看得懂</text>
+    <text x="84" y="526" fill="#f0883e" font-size="13">日更没人看，那是自我麻醉，不算数</text>
+
+    <rect x="660" y="410" width="570" height="130" rx="10" fill="#12201a" stroke="#7bd88f" stroke-width="1.6"></rect>
+    <text x="684" y="446" fill="#7bd88f" font-size="17">⑥ 认知体系能自回归</text>
+    <text x="684" y="478">11 月 10 日起，你逐步撤掉对我的引导</text>
+    <text x="684" y="504" fill="#8b949e" font-size="14">判据：每周探针里「你必须亲自插手」的条数在降</text>
+    <text x="684" y="526" fill="#f0883e" font-size="13">不降就是体系没长出来——这条一卡，整个计划一起停</text>
+
+    <rect x="60" y="560" width="1170" height="120" rx="10" fill="#1a1410" stroke="#f0883e" stroke-width="1.6"></rect>
+    <text x="84" y="596" fill="#f0883e" font-size="17">⑦ 交期之前，至少一到两期</text>
+    <text x="84" y="628">比如流浪地球 3 的剧情预测做成视频，做的过程也做成一条视频</text>
+    <text x="84" y="654" fill="#8b949e" font-size="14">交的时候，前面可能还站着个机器人——这一条同时把③和⑤串起来</text>
+  </g>
+
+  <rect x="60" y="706" width="1170" height="96" rx="10" fill="#0d1117" stroke="#39404a" stroke-width="1.2"></rect>
+  <text x="84" y="736" fill="#9aa4b0" font-size="16">它的风险长相</text>
+  <text x="84" y="762" fill="#6e7681" font-size="14">第七条同时依赖豆包、展示内心、works、认知体系四条线；任何一条晚一周，它就压到最后一天</text>
+  <text x="84" y="786" fill="#6e7681" font-size="14">对策：11 月中先用现有能力做一条最小可展示的片子彩排一次，把链路先验通，再谈质量</text>
+</g></svg>

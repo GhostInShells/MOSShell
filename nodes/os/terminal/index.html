@@ -18,16 +18,22 @@
     --done: #5c6675;
   }
   * { box-sizing: border-box; }
+  /* Nothing below 14px: this surface is read at a glance, often by tired eyes.
+     Hierarchy comes from colour and weight, not from shrinking the text. */
   body {
     margin: 0; height: 100vh; display: flex; flex-direction: column;
+    /* The window is what this page must fit, and its width is never ours to choose;
+       body carries the container so both the header and main can answer to it. */
+    container-type: inline-size;
     background: var(--bg); color: var(--fg);
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   header {
     display: flex; align-items: center; gap: 10px;
     padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  .brand { color: var(--accent); font-weight: 600; }
+  /* A label is one label: a control must never break in the middle of itself. */
+  header button { white-space: nowrap; }
   .spacer { flex: 1; }
   .modes { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
   .modes button {
@@ -36,52 +42,109 @@
   }
   .modes button + button { border-left: 1px solid var(--line); }
   .modes button.on { background: var(--accent); color: #10131a; }
-  .mode-hint { color: var(--dim); font-size: 12px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button.bulk {
     background: transparent; color: var(--fg); border: 1px solid var(--line);
     border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
   }
   button.bulk:hover { border-color: var(--accent); color: var(--accent); }
+  button.bulk.on { color: var(--run); border-color: var(--run); }
   button.danger {
     background: transparent; color: var(--bad); border: 1px solid var(--bad);
     border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
   }
-  .conn { font-size: 12px; color: var(--dim); }
+  .conn { font-size: 14px; color: var(--dim); }
   .conn.live { color: var(--run); }
 
-  .t-row { display: flex; align-items: center; gap: 6px; }
-  .t-row .name { color: var(--fg); font-weight: 600; }
-  .t-row .cwd { color: var(--done); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .t-row button {
-    background: transparent; border: 1px solid var(--line); color: var(--dim);
-    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: 12px;
+  /* 操作面的唯一性：只有一扇窗能按。其余的窗照常看得到卡片，但盖一层遮罩，
+     上面写着为什么按不了、以及怎么把它抢回来 —— 只读是**看得见的状态**，
+     不是一次按下去什么也不会发生的点击。 */
+  #mask { position: fixed; inset: 0; z-index: 20; display: none;
+          background: rgba(8, 10, 12, .82); place-items: center; }
+  body.masked #mask { display: grid; }
+  #mask-box { max-width: 30em; padding: 24px; text-align: center; }
+  #mask-box p { margin: 0 0 16px; color: var(--fg); opacity: .8; }
+  #mask-claim { font: inherit; padding: 8px 18px; color: var(--run); cursor: pointer;
+                background: transparent; border: 1px solid var(--run); border-radius: 4px; }
+  #mask-claim:hover { background: rgba(51, 221, 136, .12); }
+
+  /* A thread is not one more fact about the card: it is the space the command
+     belongs to, so it is named in the same breath as the directory it points at
+     rather than announced by a section header of its own. The rule on the left
+     marks it as one thing; the word "thread" says what that thing is. */
+  .t-dir {
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px;
+    border-left: 3px solid var(--line); padding: 2px 0 2px 10px;
   }
-  .t-row button.on { color: var(--run); border-color: var(--run); }
+  .t-dir .label { color: var(--dim); font-size: 14px; text-transform: uppercase; letter-spacing: .06em; }
+  .t-dir .name { color: var(--fg); font-weight: 600; font-size: 16px; }
+  .t-dir .cwd { color: var(--done); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .t-dir .gone { color: var(--dim); font-size: 14px; }
+  /* One action per line: a control and the words that explain it stay a unit. */
+  .t-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; }
+  .t-act { display: inline-flex; align-items: baseline; gap: 8px; }
+  .t-act button {
+    background: transparent; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: 14px;
+  }
+  .t-act button.on { color: var(--run); border-color: var(--run); }
+  .t-act .t-note { color: var(--dim); font-size: 14px; }
   .t-ground { margin-top: 4px; }
   .t-ground-text {
     color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit;
     max-height: 60vh; overflow-y: auto; border-top: 1px solid var(--line); padding-top: 6px;
   }
   .d-collapse summary {
-    color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
     cursor: pointer; user-select: none; padding: 6px 0; border-top: 1px solid var(--line);
   }
   .d-collapse summary:hover { color: var(--accent); }
   .d-collapse > *:not(summary) { margin-top: 6px; }
   .d-tags { display: flex; flex-wrap: wrap; gap: 4px; }
   .tag {
-    font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line);
+    font-size: 14px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line);
     color: var(--dim); white-space: nowrap;
   }
 
-  main { flex: 1; display: flex; min-height: 0; }
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
   .stream { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
   .detail {
     display: none; flex-direction: column; gap: 14px;
-    width: clamp(320px, 42%, 720px); border-left: 1px solid var(--line);
+    border-left: 1px solid var(--line);
     background: var(--panel); overflow-y: auto; padding: 14px;
   }
-  .detail.open { display: flex; }
+  .detail.open { display: flex; flex: 1 1 auto; }
+  /* Every block keeps its own size and the panel is what scrolls. Letting flex
+     squeeze instead was worse: with ground and analyze both open, the command
+     and the output were flattened to a few lines each — the two blocks that
+     carry the evidence became unreadable exactly when there was most to read. */
+  .detail > * { flex: none; }
+  /* A selected card is the subject of the window: it takes the room, and the list
+     shrinks to just enough to switch cards. Selection decides this, not width. */
+  main:has(> .detail.open) > .stream { flex: 0 0 clamp(220px, 26%, 340px); }
+  /* The other view: the model may give the open card the whole window instead.
+     Which card is open stays the human's click; only its size is ours. */
+  body[data-layout="page"] .detail.open { position: absolute; inset: 0; width: auto; border-left: 0; z-index: 3; }
+  body[data-layout="page"] main:has(> .detail.open) > .stream { flex: 1 1 auto; }
+  .layout-mark { color: var(--dim); font-size: 14px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* A control never shrinks: a squeezed button reads as a broken button. The
+     explanatory text is what gives way instead. */
+  .modes, button.bulk, button.danger { flex: none; }
+  .layout-mark.model { color: var(--accent); }
+
+  /* Narrow window: the detail takes the whole window instead of squeezing the stream;
+     the header keeps its controls, drops the explanation, and stops wrapping in the
+     middle of a label. Both are measured by body's width — the window, not the viewport. */
+  @container (max-width: 800px) {
+    .detail { position: absolute; inset: 0; width: auto; border-left: 0; }
+    header { gap: 6px; padding: 6px 10px; }
+    .modes button, button.bulk, button.danger { padding: 4px 7px; white-space: nowrap; }
+    .conn { white-space: nowrap; }
+  }
+  /* Narrower than one full row of controls: the header wraps rather than pushing
+     the last control off the edge — a second line beats half a button. */
+  @container (max-width: 620px) {
+    header { flex-wrap: wrap; }
+  }
   .detail .hint { color: var(--dim); }
 
   .card {
@@ -96,13 +159,27 @@
   .card.s-done { border-left-color: var(--done); }
   .card.s-error, .card.s-rejected { border-left-color: var(--bad); }
   .card.s-cancelled { border-left-color: var(--done); opacity: .6; }
+  /* The list is a window on the newest work, not an archive: cards older than the
+     newest few collapse behind one line. The record is the store's audit log, so
+     nothing is lost by not drawing it — and a three-hour session must not grow a
+     list that can only be scrolled. */
+  .card.aged { display: none; }
+  .aged-more {
+    flex: none; width: min(100%, 900px); background: var(--bg);
+    border: 1px dashed var(--line); border-radius: 4px; color: var(--dim);
+    padding: 3px 10px; cursor: pointer; font: inherit; font-size: 14px;
+    /* Sticky: the list follows the newest card, so a fold marker that scrolled
+       away with the oldest ones would be an affordance nobody can reach. */
+    position: sticky; top: 0; z-index: 2;
+  }
+  .aged-more:hover { color: var(--fg); }
   @keyframes pulse { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px rgba(224,163,62,.14); } }
 
   .row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .id { color: var(--dim); }
   .title { color: var(--fg); font-weight: 600; }
   .desc { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .badge { margin-left: auto; font-size: 11px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
+  .badge { margin-left: auto; font-size: 14px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
   .badge.s-awaiting { color: var(--wait); border-color: var(--wait); }
   .badge.s-running { color: var(--run); border-color: var(--run); }
   .badge.s-error, .badge.s-rejected { color: var(--bad); border-color: var(--bad); }
@@ -129,20 +206,68 @@
   }
 
   .d-head { display: flex; align-items: baseline; gap: 8px; }
-  .d-title { font-weight: 600; font-size: 15px; }
+  .d-facts { display: flex; align-items: center; gap: 12px; margin: 8px 0 2px; }
+  .d-facts .badge { margin-left: 0; }
+  .detail .actions { margin: 12px 0 2px; }
+  .detail .actions input { max-width: 320px; }
+  .d-title { font-weight: 600; font-size: 16px; }
   .d-close { margin-left: auto; background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
   .d-close:hover { color: var(--fg); }
+  /* An open card can cover the list, so the detail has to carry the one thing the
+     list would have told you: more commands arrived while you were reading. State,
+     not a signal — the page already has every card; this only counts the ones that
+     came after this one, and turns loud when one of them is waiting on a verdict. */
+  .d-new {
+    margin-left: auto; background: transparent; border: 1px solid var(--line);
+    color: var(--dim); border-radius: 8px; padding: 0 8px; cursor: pointer;
+    font: inherit; font-size: 14px; white-space: nowrap;
+  }
+  .d-new:hover { color: var(--fg); }
+  .d-new.ask { color: var(--wait); border-color: var(--wait); }
+  /* Close and the new-cards chip share the right end as one group, so the × keeps
+     its place whether or not the chip is showing — anchored by the group, not by
+     whichever of the two happens to be visible. */
+  .d-right { margin-left: auto; display: flex; align-items: baseline; gap: 6px; }
+  .d-right .d-close { margin-left: 0; }
   .d-desc { color: var(--dim); margin: 2px 0 10px; }
-  .d-meta { color: var(--dim); font-size: 12px; }
+  .d-meta { color: var(--dim); font-size: 14px; }
   .d-meta b { color: var(--fg); font-weight: 600; }
   .d-meta div { margin: 1px 0; }
-  .d-section {
-    margin: 14px 0 4px; color: var(--dim); font-size: 11px; text-transform: uppercase;
-    letter-spacing: .06em; border-top: 1px solid var(--line); padding-top: 10px;
-  }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
-  .d-cmd { color: var(--fg); }
-  .d-out { color: var(--dim); max-height: 46vh; overflow-y: auto; }
+  /* The two blocks that carry a shell's own voice use the shell's palette: a
+     near-black screen, a phosphor prompt, and a foreground dim enough that a page
+     of output does not glare. Panel grey was the wrong room for either of them. */
+  .d-cmd, .d-out {
+    background: #0b0e10; border: 1px solid #1d232a; border-radius: 4px;
+    padding: 8px 10px;
+  }
+  /* Both blocks are bounded: a block that carries the shell's own voice can be
+     any length, so without a ceiling a long command would push the verdict, the
+     thread row and the output clean off the panel — the block that needs reading
+     most is the one that got scrolled away. Cap each and let it scroll inside. */
+  /* flex:none so the cap is what bounds it, not the panel squeezing it flat:
+     the command is the thing under review and must keep showing several lines,
+     while the panel as a whole scrolls if the rest does not fit. */
+  .d-cmd { color: #cbd7cd; max-height: 30vh; overflow-y: auto; flex: none; }
+  .d-cmd::before { content: "❯ "; color: #6fbf73; }
+  .d-out { color: #b3bfb5; max-height: 46vh; overflow-y: auto; }
+  /* Three lenses on one card — output / analyze / ground — as peers that take
+     turns instead of stacking. Room here is scarce and the three are never wanted
+     at once: reading the folder's notes, or asking a second model, is exactly when
+     the output stops mattering. The command and the thread above stay put, because
+     they are what all three read. */
+  .tabs { display: flex; gap: 4px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .tabs button {
+    background: transparent; border: 1px solid var(--line); border-radius: 3px;
+    color: var(--dim); padding: 1px 10px; cursor: pointer; font: inherit; font-size: 14px;
+  }
+  .tabs button:hover { color: var(--fg); }
+  .tabs button.on { color: var(--accent); border-color: var(--accent); }
+  /* The body of the open tab is the one part that grows: it takes what is left
+     below the pinned blocks and scrolls inside, so a long output and a long
+     conversation never resize the things above them. */
+  .detail > .tab-body { flex: 1 1 auto; min-height: 160px; overflow-y: auto; margin-top: 8px; }
+  .tab-hint { color: var(--dim); }
   .d-analyze { display: flex; flex-direction: column; gap: 6px; }
   .a-hist { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }
   .a-q { color: var(--accent); }
@@ -160,18 +285,23 @@
 </style>
 </head>
 <body>
+<div id="mask"><div id="mask-box">
+  <p id="mask-line">another window is the terminal</p>
+  <button id="mask-claim">use this window</button>
+</div></div>
 <header>
-  <span class="brand">moss terminal</span>
-  <div class="modes" id="modes">
-    <button data-mode="approval">approval</button>
-    <button data-mode="disabled">disabled</button>
+  <!-- No brand: the screen tile that holds this window already names it, and the
+       label was costing room the controls needed. -->
+  <div class="modes" id="modes" title="who approves a command — you, or the thread you trust">
+    <button data-mode="approval" title="every command waits for your click">approval</button>
+    <button data-mode="disabled" title="commands leave the model's interface; this terminal goes quiet">disabled</button>
   </div>
-  <span class="mode-hint" id="mode-hint"></span>
+  <button class="bulk" id="trust-global" title="hand every approval on this terminal to the model">trust: off</button>
   <span class="spacer"></span>
-  <button class="bulk" id="accept-all">accept all</button>
-  <button class="bulk" id="deny-all">deny all</button>
-  <button class="danger" id="stop-all">stop all</button>
-  <span class="conn" id="conn">connecting…</span>
+  <button class="bulk" id="accept-all" title="accept every command still waiting">accept all</button>
+  <button class="bulk" id="deny-all" title="deny every command still waiting">deny all</button>
+  <button class="danger" id="stop-all" title="kill every command still running">stop all</button>
+  <span class="conn" id="conn" title="live link to this terminal">connecting…</span>
 </header>
 <main>
   <section class="stream" id="stream"></section>
@@ -180,16 +310,66 @@
 <script>
 "use strict";
 
-const MODE_HINTS = {
-  approval: "manual unless thread auto",
-  disabled: "commands off",
-};
 const SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 
 const cards = new Map();
 const nodes = new Map();
 const threads = new Map();
 const groundCache = new Map();
+// Threads we have already asked for notes but not yet heard back from — without
+// this the tab would re-send on every re-render while the answer is in flight.
+const groundPending = new Set();
+// Which of the card's three lenses is showing. Output is the default because the
+// output is why the card exists; the other two are things you go and look at.
+let detailTab = "output";
+// The cards that already existed when this detail opened. Everything else came in
+// while the human was reading — the chip in the header is that difference.
+let detailOpenedIds = new Set();
+let newChip = null;
+
+// Kept in one place so a card arriving and a card re-rendering agree on the count.
+function updateNewChip() {
+  if (!newChip) return;
+  const fresh = [...cards.keys()].filter((id) => !detailOpenedIds.has(id));
+  const asking = fresh.filter((id) => (cards.get(id) || {}).state === "awaiting").length;
+  newChip.hidden = fresh.length === 0;
+  newChip.textContent = "+" + fresh.length + " new";
+  newChip.classList.toggle("ask", asking > 0);
+  newChip.title = asking > 0
+    ? fresh.length + " command(s) arrived since you opened this card, " + asking + " waiting for your verdict — click to go back to the list"
+    : fresh.length + " command(s) arrived since you opened this card — click to go back to the list";
+}
+
+// How many of the newest cards stay in the list. Older settled ones fold behind a
+// single line; a card still waiting for a verdict is never folded away, however
+// old — it is the one thing in the list that needs the human.
+const AGED_KEEP = 12;
+const LIVE_STATES = new Set(["awaiting", "running"]);
+let showEarlier = false;
+let agedEl = null;
+
+function refreshAged() {
+  const ids = [...nodes.keys()];
+  const cutoff = Math.max(0, ids.length - AGED_KEEP);
+  let folded = 0;
+  ids.forEach((id, i) => {
+    const card = cards.get(id) || {};
+    const foldable = i < cutoff && !LIVE_STATES.has(card.state);
+    if (foldable) folded += 1;
+    const box = nodes.get(id);
+    if (box) box.classList.toggle("aged", foldable && !showEarlier);
+  });
+  if (!agedEl) {
+    agedEl = make("button", "aged-more", "");
+    agedEl.addEventListener("click", () => {
+      showEarlier = !showEarlier;
+      refreshAged();
+    });
+    streamEl.prepend(agedEl);
+  }
+  agedEl.hidden = folded === 0;
+  agedEl.textContent = showEarlier ? "hide the earlier " + folded + " — back to the top" : "earlier: " + folded + " — show";
+}
 const analyzeHistory = new Map();
 const analyzePending = new Set();
 let analyzeAvailable = true;
@@ -201,7 +381,6 @@ const streamEl = document.getElementById("stream");
 const detailEl = document.getElementById("detail");
 const connEl = document.getElementById("conn");
 const modesEl = document.getElementById("modes");
-const hintEl = document.getElementById("mode-hint");
 
 function make(tag, cls, text) {
   const node = document.createElement(tag);
@@ -224,6 +403,16 @@ function makeCollapsible(label) {
 
 function send(frame) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+}
+
+// Only one window holds the surface: a verdict clicks through to a real command,
+// so two windows that both look pressable would be two hands on one button.
+let isCurrent = true;
+function setMasked(on, reason) {
+  isCurrent = !on;
+  document.body.classList.toggle("masked", !!on);
+  const line = document.getElementById("mask-line");
+  if (line) line.textContent = reason || "another window is the terminal";
 }
 
 // -- rendering -------------------------------------------------------------
@@ -259,6 +448,10 @@ function buildCard(card) {
 
 function renderCard(card) {
   let box = nodes.get(card.id);
+  // Follow the newest card only if the human was already at the bottom: yanking a
+  // reader who scrolled up is worse than letting them find it (the header chip and
+  // this list's own bottom are how they get told).
+  const stick = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 48;
   if (!box) {
     box = buildCard(card);
     nodes.set(card.id, box);
@@ -269,7 +462,12 @@ function renderCard(card) {
   box.querySelector(".badge").textContent = card.state;
   box.querySelector(".cmd .txt").textContent = card.content ? card.content : "(empty)";
   renderActions(box.querySelector(".actions"), card);
+  refreshAged();
+  if (stick) streamEl.scrollTop = streamEl.scrollHeight;
   if (selectedId === card.id) renderDetail(card);
+  // Another card moved while this one is open: the header chip is the only place
+  // that can say so, and it costs a text update instead of a re-render.
+  else if (selectedId != null) updateNewChip();
 }
 
 function renderActions(host, card) {
@@ -304,6 +502,14 @@ function renderActions(host, card) {
   }
 }
 
+// How long this card has been running, in seconds, as the page counts it.
+function elapsedText(card) {
+  if (card.state === "running" && card._startedAt) {
+    return Math.max(0, Math.floor((Date.now() - card._startedAt) / 1000)) + "s";
+  }
+  return (card.elapsed ?? 0) + "s";
+}
+
 function renderDetail(card) {
   for (const d of detailEl.querySelectorAll("details[open]")) {
     const s = d.querySelector("summary");
@@ -313,54 +519,108 @@ function renderDetail(card) {
 
   const head = make("div", "d-head");
   head.append(make("span", "d-title", "#" + card.id + "  " + (card.title || "")));
+  newChip = make("button", "d-new", "");
+  newChip.title = "commands that arrived while you were reading this card — click to go back to the list";
+  newChip.addEventListener("click", () => closeDetail());
+  newChip.hidden = true;
   const close = make("button", "d-close", "×");
+  close.title = "close this card and go back to the list";
   close.addEventListener("click", () => closeDetail());
-  head.append(close);
+  const right = make("div", "d-right");
+  right.append(newChip, close);
+  head.append(right);
   detailEl.append(head);
+
+  // An open card covers the list, so it has to carry what the list showed: state,
+  // exit, how long it ran, and how much output it has.
+  const facts = make("div", "d-facts");
+  facts.append(make("span", "badge s-" + card.state, card.state));
+  if (card.exit_code !== null && card.exit_code !== undefined) {
+    facts.append(make("span", "d-meta", "exit " + card.exit_code));
+  }
+  const ended = card.ended || Date.now() / 1000;
+  facts.append(make("span", "d-meta", Math.max(0, ended - card.created).toFixed(1) + "s"));
+  if (card.output_chars) facts.append(make("span", "d-meta", card.output_chars + " chars"));
+  detailEl.append(facts);
+
+  // The verdict belongs with the card: an open card covers the list, so leaving the
+  // decision only in the list means the human cannot answer what they are reading.
+  // Same renderer as the list — one place decides what actions a card offers.
+  const verdicts = make("div", "actions");
+  renderActions(verdicts, card);
+  if (verdicts.childElementCount) detailEl.append(verdicts);
 
   if (card.description) detailEl.append(make("div", "d-desc", card.description));
 
-  // command first — the thing under review
-  detailEl.append(make("div", "d-section", "command"));
+  // The command leads the card and needs no banner over it: the ❯ prompt and the
+  // shell colour already say "this is the command". A section header here was one
+  // more line of furniture above the thing the human came to read.
   detailEl.append(make("pre", "d-cmd", card.content || "(empty)"));
 
-  // thread controls — visible actions, not buried in the collapsed meta
+  // thread — the space this command belongs to. Named inline (the word next to the
+  // directory is what carries the concept), then the one thing you can do to it.
   if (card.thread) {
     const t = threads.get(card.thread);
+    const dir = make("div", "t-dir");
+    dir.append(make("span", "label", "thread"));
+    dir.append(make("span", "name", card.thread));
+    if (t && t.cwd) {
+      const cwd = make("span", "cwd", t.cwd);
+      cwd.title = t.cwd;
+      dir.append(cwd);
+    }
+    if (!t) {
+      // A card can name a thread this page has not heard of — the list is pushed,
+      // not inferred. Say the name and say what is missing; a block that simply
+      // does not appear reads as "this card has no thread at all".
+      dir.append(make("span", "gone", "— not in this page's list yet"));
+    }
+    detailEl.append(dir);
     if (t) {
-      const tRow = make("div", "t-row");
-      tRow.append(make("span", "name", t.name));
-      if (t.cwd) tRow.append(make("span", "cwd", t.cwd));
-      const auto = make("button", t.auto ? "on" : "", "auto");
-      auto.title = "auto-approve this thread's commands";
+      const acts = make("div", "t-actions");
+      const autoAct = make("div", "t-act");
+      const auto = make("button", t.auto ? "on" : "", t.auto ? "auto-approve: on" : "auto-approve: off");
+      auto.title = "when on, commands in this thread run without asking you";
       auto.addEventListener("click", () => send({ type: "thread_auto", name: t.name, auto: !t.auto }));
-      tRow.append(auto);
-      const ground = make("button", "", "ground");
-      ground.title = "view this thread's cognitive field";
-      ground.addEventListener("click", () => {
-        if (groundCache.has(t.name)) {
-          groundCache.delete(t.name);
-        } else {
-          send({ type: "ground", thread: t.name });
-        }
-        renderDetail(card);
-      });
-      tRow.append(ground);
-      detailEl.append(tRow);
-      if (groundCache.has(t.name)) {
-        detailEl.append(make("pre", "t-ground-text", groundCache.get(t.name)));
-      }
+      autoAct.append(auto, make("span", "t-note", "run here without asking"));
+      acts.append(autoAct);
+      detailEl.append(acts);
     }
   }
 
-  // analyze — collapsible, sits between command and output
-  if (analyzeAvailable) {
-    const aDetails = makeCollapsible("analyze (By LLM Func)");
+  // Take turns, not a stack: output / analyze / ground. Nothing below the pins
+  // changes size because of what is open — the open tab owns the leftover room.
+  const tabDefs = [["output", "what the command printed"]];
+  if (analyzeAvailable) tabDefs.push(["analyze", "ask a second, zero-context model about this command"]);
+  if (card.thread) tabDefs.push(["ground", "the notes attached to this thread's folder"]);
+  // Ground belongs to the folder and survives closing the card, so it is the one
+  // tab whose content can already be stale-but-known: reuse it, do not re-ask.
+  if (detailTab === "ground" && !card.thread) detailTab = "output";
+  if (!tabDefs.some(([k]) => k === detailTab)) detailTab = "output";
+  if (tabDefs.length > 1) {
+    const strip = make("div", "tabs");
+    for (const [key, hint] of tabDefs) {
+      const b = make("button", key === detailTab ? "on" : "", key);
+      b.title = hint;
+      b.addEventListener("click", () => {
+        detailTab = key;
+        renderDetail(card);
+      });
+      strip.append(b);
+    }
+    detailEl.append(strip);
+  }
+
+  const body = make("div", "tab-body");
+  if (detailTab === "analyze" && analyzeAvailable) {
     const aBox = make("div", "d-analyze");
     const aHist = make("div", "a-hist");
     for (const turn of analyzeHistory.get(card.id) || []) {
       if (turn.q) aHist.append(make("div", "a-q", "you: " + turn.q));
       if (turn.a) aHist.append(make("div", "a-a", turn.a));
+    }
+    if (!aHist.childElementCount) {
+      aHist.append(make("div", "tab-hint", "no question yet — ask below; the answer comes from a model with no other context"));
     }
     aBox.append(aHist);
     const pending = analyzePending.has(card.id);
@@ -381,34 +641,57 @@ function renderDetail(card) {
     };
     aInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
     const aBtn = make("button", null, pending ? "…" : "analyze");
+    aBtn.title = "ask a second, zero-context model about this command";
     aBtn.disabled = pending;
     aBtn.addEventListener("click", ask);
     aRow.append(aInput);
     aRow.append(aBtn);
     aBox.append(aRow);
-    aDetails.append(aBox);
-    detailEl.append(aDetails);
+    body.append(aBox);
+  } else if (detailTab === "ground" && card.thread) {
+    if (groundCache.has(card.thread)) {
+      body.append(make("pre", "t-ground-text", groundCache.get(card.thread)));
+    } else {
+      body.append(make("div", "tab-hint", "asking this thread's folder for its notes…"));
+      // Ask once per thread: the page may re-render (a new card, a verdict) while
+      // the answer is in flight, and re-asking every time would be a loop.
+      if (!groundPending.has(card.thread)) {
+        groundPending.add(card.thread);
+        send({ type: "ground", thread: card.thread });
+      }
+    }
+  } else {
+    body.append(make("pre", "d-out", (card.output_tail || []).join("") || "(none yet)"));
   }
-
-  // output
-  detailEl.append(make("div", "d-section", "output (tail)"));
-  detailEl.append(make("pre", "d-out", (card.output_tail || []).join("") || "(none yet)"));
+  detailEl.append(body);
 
   // meta — collapsed, tagged
   const mDetails = makeCollapsible("meta");
   const tags = make("div", "d-tags");
+  // A running card's elapsed time is not a snapshot. The server only reports it
+  // when something happens, so a card that has been running for eight minutes
+  // still says "42s" — the page remembers when the clock started and counts it
+  // itself. A finished card keeps the number the server last measured.
+  if (!card._startedAt) card._startedAt = Date.now() - (card.elapsed ?? 0) * 1000;
+  const elapsedTag = make("span", "tag tag-elapsed", "elapsed=" + elapsedText(card));
   const tagRows = [
     ["state", card.state], ["thread", card.thread || "—"], ["exit", card.exit_code ?? "—"],
     ["cwd", card.cwd || "—"], ["proc", card.process_index ?? "—"],
-    ["elapsed", (card.elapsed ?? 0) + "s"], ["out", (card.output_chars ?? 0) + "c"],
   ];
   for (const [k, v] of tagRows) tags.append(make("span", "tag", k + "=" + v));
+  tags.append(elapsedTag);
+  tags.append(make("span", "tag", "out=" + (card.output_chars ?? 0) + "c"));
   mDetails.append(tags);
   detailEl.append(mDetails);
 
-  // latest analyze content sits at the bottom — keep it in view after re-render
-  const hist = detailEl.querySelector(".a-hist");
-  if (hist) hist.scrollTop = hist.scrollHeight;
+  // The open tab keeps its own scroll at the newest line.
+  if (detailTab === "analyze") {
+    const hist = detailEl.querySelector(".a-hist");
+    if (hist) hist.scrollTop = hist.scrollHeight;
+  } else if (detailTab === "output") {
+    body.scrollTop = body.scrollHeight;
+  }
+  updateNewChip();
 }
 
 function toggle(id) {
@@ -420,6 +703,11 @@ function toggle(id) {
 }
 function openDetail(id) {
   selectedId = id;
+  // A new card starts on its output: the lenses belong to a card, not to the page.
+  detailTab = "output";
+  // What the list showed at this moment is "already seen" — the chip counts only
+  // what arrives after, so opening a card never starts with a backlog.
+  detailOpenedIds = new Set(cards.keys());
   for (const [cid, box] of nodes) box.classList.toggle("selected", cid === id);
   const card = cards.get(id);
   if (card) renderDetail(card);
@@ -427,16 +715,39 @@ function openDetail(id) {
 }
 function closeDetail() {
   selectedId = null;
+  newChip = null;
   for (const [, box] of nodes) box.classList.remove("selected");
   detailEl.classList.remove("open");
 }
+
+// Trust here is one question: does every command run without asking? The switch
+// is the human's; the model reads it and says what it means, nothing more.
+let globalTrust = false;
+const trustEl = document.getElementById("trust-global");
+function setGlobalTrust(on) {
+  globalTrust = on;
+  trustEl.textContent = "trust: " + (on ? "on" : "off");
+  trustEl.classList.toggle("on", on);
+  trustEl.title = on
+    ? "trust is on — every command runs without asking; click to take it back"
+    : "trust is off — commands wait for your click unless their thread or a rule is trusted";
+}
+trustEl.addEventListener("click", () => send({ type: "global_trust", on: !globalTrust }));
+setGlobalTrust(false);
 
 function setMode(mode) {
   currentMode = mode;
   for (const btn of modesEl.querySelectorAll("button")) {
     btn.classList.toggle("on", btn.dataset.mode === mode);
   }
-  hintEl.textContent = MODE_HINTS[mode] || "";
+}
+
+// How an open card is shown is the model's call. The header used to say which one
+// was in force and who chose it; the layout says that itself, so the label is gone.
+function setLayout(mode, by) {
+  const layout = mode === "page" ? "page" : "split";
+  document.body.dataset.layout = layout;
+  document.body.dataset.layoutBy = by === "model" ? "model" : "human";
 }
 
 function updateThreads(list) {
@@ -455,15 +766,22 @@ function applyCard(card) {
 
 function onFrame(frame) {
   switch (frame.type) {
+    case "current": setMasked(false, ""); break;
+    case "mask": setMasked(true, frame.reason); break;
     case "snapshot": {
+      if (typeof frame.global_trust === "boolean") setGlobalTrust(frame.global_trust);
       streamEl.replaceChildren();
       nodes.clear();
       cards.clear();
       setMode(frame.mode);
+      setLayout(frame.layout, frame.layout_by);
       updateThreads(frame.threads);
       for (const card of frame.cards) applyCard(card);
       break;
     }
+    case "layout":
+      setLayout(frame.layout, frame.by);
+      break;
     case "card.head":
       applyCard(frame.card);
       maybeScroll();
@@ -483,6 +801,9 @@ function onFrame(frame) {
     case "mode":
       setMode(frame.mode);
       break;
+    case "trust":
+      setGlobalTrust(!!frame.global_trust);
+      break;
     case "threads":
       updateThreads(frame.threads);
       if (selectedId != null) {
@@ -492,6 +813,7 @@ function onFrame(frame) {
       break;
     case "ground": {
       groundCache.set(frame.thread, frame.text);
+      groundPending.delete(frame.thread);
       if (selectedId != null) {
         const card = cards.get(selectedId);
         if (card && card.thread === frame.thread) renderDetail(card);
@@ -547,6 +869,15 @@ setInterval(() => {
       if (anim) anim.hidden = true;
     }
   }
+  // The open card's clock runs with the spinner: an elapsed time that only
+  // moves when the server has something to say is a clock that lies.
+  if (selectedId != null) {
+    const card = cards.get(selectedId);
+    const tag = detailEl.querySelector(".tag-elapsed");
+    if (card && tag && card.state === "running") {
+      tag.textContent = "elapsed=" + elapsedText(card);
+    }
+  }
 }, 120);
 
 // -- wiring ----------------------------------------------------------------
@@ -555,6 +886,7 @@ modesEl.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-mode]");
   if (btn) send({ type: "mode", mode: btn.dataset.mode });
 });
+document.getElementById("mask-claim").addEventListener("click", () => send({ type: "claim" }));
 document.getElementById("accept-all").addEventListener("click", () => send({ type: "accept_all" }));
 document.getElementById("deny-all").addEventListener("click", () => send({ type: "deny_all" }));
 document.getElementById("stop-all").addEventListener("click", () => send({ type: "stop_all" }));
@@ -573,6 +905,20 @@ function connect() {
   };
 }
 connect();
+
+// A window left open across an edit keeps running the old page — the change looks
+// like it never happened, and the human cannot easily refresh a frame that lives
+// inside the screen as an adopted window. So ask the server for the page's
+// fingerprint instead: pull-based, cheap, and the window updates itself.
+let pageVer = null;
+setInterval(async () => {
+  try {
+    const d = await (await fetch("/__ver", { cache: "no-store" })).json();
+    if (!d.ver) return;
+    if (pageVer === null) { pageVer = d.ver; return; }
+    if (d.ver !== pageVer) location.reload();
+  } catch (e) { /* the server is not up yet — ask again next tick */ }
+}, 3000);
 </script>
 </body>
 </html>

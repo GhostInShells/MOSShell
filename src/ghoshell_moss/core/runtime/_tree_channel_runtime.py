@@ -288,7 +288,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         except Exception as e:
             if not task.done():
                 task.fail(e)
-            self.logger.error("%s task %s failed: %s", self.log_prefix, task.cid, e)
+            self.logger.exception("%s task %s failed: %s", self.log_prefix, task.cid, e)
             if throw:
                 raise e
         finally:

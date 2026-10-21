@@ -2,7 +2,7 @@
 title: File Editor — 人机共享感知的文本工作副本
 node: nodes/os/file_editor
 created: 2026-09-15
-updated: 2026-09-19
+updated: 2026-10-14
 status: in-progress
 ---
 
@@ -101,15 +101,47 @@ status: in-progress
   供追溯，只在服务端淘汰（thread 从 threads 帧消失）时才同步清 DOM——不随 export
   立即清空。
 
+## 本轮（2026-10-14）— thread 不再被导出终结；页面重做；自持渲染
+
+（提交 `5cab3066` / `15609d8e`）
+
+- **导出是位置，不是终态**。`store.note_export(thread, path, n)` 只记下"哪一版上了盘"：thread 保持
+  live、工作副本不删、不进入回收窗口。`Thread.exported_at` / `unsaved` 把"盘上停在哪一版"变成可读
+  的事实，通知面写 `v3 | wrote v1`。instruction / export docstring / NODE.md 三处原先写着"接受导出
+  就结束这条 thread"——**那是错的，不是过时**，一并改掉。（人类判定："thread 应该是一直能用的概念"。）
+- **页面与 terminal 同形**：chip 带版本与落后点（工作副本走到盘前面时变黄）；详情里一条竖线写
+  `thread / 名字 / 路径`，下面一件事一行地写"工作副本 v3 / file has v1 → 路径 / unsaved"；关闭按钮
+  `flex:none` 钉住——它原本会被一个长标题推出面板，**一个布局 bug 变成了功能死路，而且无人报错**。
+  同批：列表吸顶收折（只画最新 12 张）、草稿人也能看到、页面 `/__ver` 自刷新 + `no-store`。
+- **自持渲染**：拆掉 CDN 的 `marked`，自己写渲染器——先整段转义、再套结构，所以不需要 sanitizer；
+  文件头、表格、分隔线这些"我们比 markdown 知道得更多"的地方由我们渲染。顺带修掉 diff 标签被渲染成
+  `[object HTMLElement]` 的缺陷（把一个元素当文字传给了构造器）。
+- **字形对齐**：引入 `--fs-body: 15px` / `--fs-small: 14px` / `--fs-title: 16px`，与 terminal 同一套；
+  页面里不再有裸像素字号（`×` 这个字形除外）。
+
+### 决定不做：不给模型开 JS eval 的口子
+
+提议是：让模型能像 devtools 一样 eval 任意 JS、直接改 DOM，用来"临时改样式"。**不做。**
+
+- **真正的否决理由**（人类给的，比我提的硬）：页面上的按钮和输入是**人的**操作面。模型若能自己点，
+  人机协作本身就不成立——我可以随时绕过人把操作做完。这不是 debug 能力，是把协作契约开了一个洞。
+- 次要理由：服务端每帧重画，DOM 改动会**静默消失**（本项目最讨厌的那类失败）；同一件事有两个权威
+  必然漂移；而"改源码"这条路本来就够快（页面 3 秒自刷新）。
+- 真实缺口是**读数**而不是改法：缺的是"这页现在长什么样"的反馈（几何 / 计算样式），不是"多一只手"。
+- **替代方向（未落地）**：临时样式落成**本地物料**——一份主题文件，节点启动时加载、可切换默认；
+  而不是在运行中改一个正在被别人看着的页面。
+
+> 留档的理由：人类明确说"这个蠢想法要写进文档，免得以后又想到这条路、再蠢一轮"。
+
 ## 三轴与状态
 
 | 轴 | 内容 | 状态 |
 |---|---|---|
 | 1 数据结构 | `structure.py`(纯) + `store.py`(DocStore: thread/draft/verdict/auto/root) | 落地 |
 | 2 通讯协议 | `channel.py`(命令集 + named notice) + `surface.py`(WS + 信号 + auto) + `projection.py` | 落地 |
-| 3 UI | `index.html` 卡片流 + 三 tab + auto 开关 + 卡片动作(accept/deny/ask) | 落地 |
+| 3 UI | `index.html` 卡片流 + 三 tab + auto 开关 + 卡片动作(accept/deny/ask) + 收折/自刷新 | 落地 |
 
-单测 56 个（structure 17 / store 21 / channel 14 / surface 4）。
+单测 59 个（structure / store / channel / surface）。
 
 ## 未决 / 待办
 
@@ -119,5 +151,6 @@ status: in-progress
   `Dialogue`；需要时作为带 anchor 的 Dialogue 变体补回。
 - `focus` 命令未做：人的视图靠点击 thread chip + 最近卡片自动跟随，够用；显式 focus
   留作极便宜的后续 kind。
-- 全屏聚焦某张卡的阅读体验（当前右侧 detail）——与 terminal 的"全屏 command 主题"
-  并列待办。
+- 全屏聚焦某张卡的阅读体验：**已落地**（`layout(page|split)` 归模型定 + 三标签），此条作废。
+- **命令重写**（人改写一条待批准的动作再发）仍未做；卡片模型里留着位置（`label` 可改写）。
+- **主题物料**：见上"替代方向"，未落地。

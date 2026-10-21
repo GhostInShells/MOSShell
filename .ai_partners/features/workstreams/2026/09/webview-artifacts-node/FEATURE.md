@@ -5,11 +5,11 @@ description: 流式 artifact 表面：一个 write 命令 + 8 种 kind + duratio
   三阶段流式，全屏单一看 + label 回溯面 + 人类动作上行 notice 反身性。
 milestone: null
 priority: P1
-status: completed
+status: in-progress
 status_note: 8 kinds + duration + notice uplink + non-singleton port, dogfooded via
-  MCP
+  MCP。2026-10-14 讨论出下一版方向（artifact 当成一份很小的文档：原地改动 + 版本位置 + 可导出关键帧），未实现。
 title: Webview Artifacts Node
-updated: '2026-09-15'
+updated: '2026-10-14'
 ---
 
 # Webview Artifacts Node
@@ -69,6 +69,29 @@ MOSS 有 `channels/mermaid_draw.py`（一次性 data-url 浏览器渲染）和 `
   `[HH:MM:SS]` 时间戳）。模型由此能"看见"人类在页面上做了什么。
 - **非 singleton + 端口入参。** `singleton: false` 允许多实例；`--port` argv 或
   `MOSS_ARTIFACTS_PORT` 环境变量定端口，同端口冲突自然 bind 失败。
+
+## 下一版方向（2026-10-14 讨论，未实现）
+
+人类提的点：**给每个 artifact 的源码加 append / str_replace**，像编辑一个文件那样原地累加，
+于是"单张幻灯片里也能一帧一帧地播"。我的判断与要绑定的约束：
+
+- **身份说准**：artifact 就是**一份很小的文档**，指向一个会渲染的目标——照抄 file_editor 那套
+  （线 / 一步 / 效果），别发明第二套语义：`write` = 整篇替换，`append` / `str_replace` = 改动，
+  版本是**位置**不是快照，`read(label, n)` 能取回任意版本。这样"改一段、它重画一次"和改文件是
+  同一种动作。
+- **买到的是"位置不变"**：今天是写一张、切一张，人看到的是切页；原地改则黑板一直在，只是上面在
+  长东西——讲机制时差别很大。
+- **kind 分家（不定下来就会抖）**：`canvas` / `term` 天生容忍半截源码，可以流式重画；
+  `mermaid` / `html` 不行——源码没写完就是错的，它们应当**停在上一张好图**，而不是闪一下报错。
+- **不许抢人的视线**：谁在看什么是人的手。原地刷新的 artifact 要在页面上标明自己是**活的**；
+  人一旦切走，不能用下一次 append 把它抢回来。（同日定下的"不给自己开绕开人的口子"是同一族。）
+- **两种时间尺度别互相顶替**：写 JS 每帧重画 = **一张画里的运动**；改源码 = **一个故事里的步骤**。
+  两个都要，别用其中一种去替另一种。
+- **向上延展（人类给的框架）**：thread + action + effect 这套分形地用在每个方面——artifact 也可以
+  **导出**，导出时把关键帧串起来（effect 连着 effect）本身就是一段**可重放的动画**。
+  「你说的 20 年那套架构思想，分形地用在项目每一面。」
+
+> 今天不改代码（下午有展示）。此节是讨论产物，等排期。
 
 ## Implementation Notes
 

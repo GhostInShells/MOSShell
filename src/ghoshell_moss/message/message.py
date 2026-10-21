@@ -455,6 +455,12 @@ class Message(BaseModel, WithAdditional):
         attr_str = ''
         if attrs:
             attr_str = ' ' + attrs
+        # 空正文: 自闭合 (<tag attrs/>), 不渲染成 <tag attrs>\n\n</tag>.
+        # 那个空行读起来像"正文被截断了", 而自闭合是 CTML 本来就有的约定 ——
+        # 无正文就是无正文, 一点歧义都不留.
+        if not self.contents:
+            yield Text.new_content(f'<{tag}{attr_str}/>')
+            return
         contents = [Text.new_content(f'<{tag}{attr_str}>\n')]
         contents.extend(self.contents)
         contents.append(Text.new_content(f'\n</{tag}>'))

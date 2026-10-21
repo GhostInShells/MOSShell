@@ -10,9 +10,19 @@ class Recorder:
     def __init__(self) -> None:
         self.frames: list[dict] = []
         self.signals: list[object] = []
+        self.rail: str = ""
+        self.viewport: str = ""
 
     async def broadcast(self, frame: dict) -> None:
         self.frames.append(frame)
+
+    def rail_state(self) -> str:
+        """Stand in for the human-side sidebar state the surface reports."""
+        return self.rail
+
+    def viewport_state(self) -> str:
+        """Stand in for the current screen window's size."""
+        return self.viewport
 
     def __call__(self, signal: object) -> None:
         self.signals.append(signal)

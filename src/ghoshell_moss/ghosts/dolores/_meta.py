@@ -21,7 +21,7 @@ class DoloresMeta(GhostMeta):
     iterating as the carrier for this repo's own ghost instance.
     """
 
-    VERSION = "0.1.0-dev2"
+    VERSION = "0.1.0-dev3"
 
     def __init__(
             self,
@@ -89,11 +89,6 @@ class DoloresMeta(GhostMeta):
     def dsh_plugin_stub(cls) -> Path:
         """Source file of the dsh ghost plugin (a standalone stub)."""
         return Path(__file__).parent / "dsh_plugin" / "moss-dolores-ghost-plugin.ts"
-
-    @classmethod
-    def dsh_preset_dir(cls) -> Path:
-        """Source dir of the repo-owned dolores-ego agent preset (copied into .agent-presets)."""
-        return Path(__file__).parent / "dsh_preset"
 
     # ── factory ─────────────────────────────────────
 

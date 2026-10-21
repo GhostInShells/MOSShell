@@ -49,6 +49,21 @@ class _MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
     pass
 
 
+def resolve_shell_speech(voice: Voice | None, *, speech: bool) -> Speech | None:
+    """shell 拿到 Speech 的唯一入口 — 判据: 「本轮启用说侧」且「Voice 持有实现」.
+
+    两个条件缺一即 None. speech=False (``--voice none`` / ``listen``) 时 shell 不挂
+    say/mute (``ctml_shell.set_speech`` 契约: 传入 None 表示禁语音); Voice 缺席时本来
+    就没有实现.
+
+    ``voice.run()`` 的 flag 管装线, 这里的 flag 管器官 —— 两者都看, 否则关得掉桥、
+    关不掉嘴.
+    """
+    if voice is None or not speech:
+        return None
+    return voice.speech()
+
+
 class ShellRuntimeImpl(MOSShellRuntime):
 
     def __init__(
@@ -61,6 +76,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             run_shell_on_start: bool = True,
             speech: bool = True,
             listen: bool = False,
+            speech_as_content_command: bool | None = None,
             name: str | None = None,
             description: str | None = None,
     ):
@@ -78,10 +94,17 @@ class ShellRuntimeImpl(MOSShellRuntime):
                 or env.moss_meta.description
         )
         self._run_shell_on_start = run_shell_on_start
-        # speech / listen 开关 (bool): 契约屏蔽层 — 未来不耦合 Voice 实现, 只在
-        # __aenter__ 转发给 voice.run(). True/False 决定启用哪一侧.
+        # speech / listen 开关 (bool): 契约屏蔽层 — 不耦合 Voice 实现. speech 在
+        # 两处生效: 决定 shell 拿不拿 Speech (resolve_shell_speech → 挂不挂 say/mute),
+        # 并与 listen 一起转发给 voice.run() 决定装哪一侧的桥 / controller.
         self._speech_enabled = speech
         self._listen_enabled = listen
+        # 裸文本是否走语音. None = 跟随 speech: 有嘴就让裸文本走嘴 —— CTML 的惯用形态是
+        # 主轨文本经 __main__.__content__ 出声, 不必包 <say>. 传 False 可显式关掉 (只留 <say>).
+        # 交给 shell 的仍是「构造方式」而非「有没有语音」: shell 只在真有 Speech 时用它。
+        self._speech_as_content_command = (
+            speech if speech_as_content_command is None else speech_as_content_command
+        )
         # Voice 总装 (IoC 里存在即启用, 缺席即无语音). __aenter__ 里 resolve.
         self._voice: Voice | None = None
         self._voice_lifecycle: VoiceLifecycle | None = None
@@ -129,6 +152,7 @@ class ShellRuntimeImpl(MOSShellRuntime):
             main_channel=manifests_main,
             experimental=False,
             meta_instruction=self._system_prompter.instruction(),
+            speech_as_content_command=self._speech_as_content_command,
         )
 
     def _build_system_prompter(self) -> _MossSystemPrompterImpl:
@@ -477,12 +501,16 @@ class ShellRuntimeImpl(MOSShellRuntime):
     def _resolve_voice(self) -> None:
         """resolve Voice 总装 (内核 contract) — IoC 里存在即启用.
 
-        从 container 取 Voice (缺席 → None, 无语音). 有则把 speech 装到 shell,
-        听侧 channel 挂进 main. 全部装线 (说侧桥 / 听侧 controller / 联动) 由
-        voice.run() 返回的 lifecycle 在 matrix 里托管, runtime 不再自己组装.
+        从 container 取 Voice (缺席 → None, 无语音). 取到后还要看 ``_speech_enabled``
+        才决定给不给 shell Speech (见 resolve_shell_speech); 听侧 channel 挂进 main.
+        全部装线 (说侧桥 / 听侧 controller / 联动) 由 voice.run() 返回的 lifecycle 在
+        matrix 里托管, runtime 不再自己组装.
 
         speech() / listener_channel() 必须在 lifecycle enter 之前可读 —— shell
         set_speech / import_channels 是装配动作, 在 __aenter__ 的 setup 阶段完成.
+
+        shell 拿不拿到 Speech 由 ``_speech_enabled`` 决定 (resolve_shell_speech):
+        run() 的 flag 管装线, 这里的 flag 管器官.
         """
         try:
             self._voice = self._matrix.container.get(Voice)
@@ -492,8 +520,9 @@ class ShellRuntimeImpl(MOSShellRuntime):
             )
             self._voice = None
 
-        speech = self._voice.speech() if self._voice is not None else None
-        self._ctml_shell.set_speech(speech)
+        self._ctml_shell.set_speech(
+            resolve_shell_speech(self._voice, speech=self._speech_enabled)
+        )
 
         if self._voice is not None:
             channel = self._voice.listener_channel()

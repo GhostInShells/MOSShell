@@ -18,16 +18,19 @@ There is deliberately no append-only log: the durable artifact is the draft, not
 the history, so the filesystem stays bounded (one small file per live thread,
 unlinked when the thread ends).
 
-A thread ends one of two ways — ``mark_exported`` after the text lands on disk
-(the final chapter) and ``close`` when it is abandoned. Ended threads keep their
-line for the human's traceability; reclamation is a separate, silent step that
-drops the oldest ended thread once they outgrow a bounded window.
+A thread ends one way — ``close``, when it is abandoned. An export does not end
+it: ``note_export`` records which version reached the disk and leaves the thread
+live, so the same working copy can keep moving and be written again. Closed
+threads keep their line for the human's traceability; reclamation is a separate,
+silent step that drops the oldest closed thread once they outgrow a bounded
+window.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import tempfile
 import time
@@ -40,8 +43,12 @@ from .structure import (
     Kind,
     Thread,
     content_at,
+    diff_of,
     effect_of,
+    line_count,
+    region_span,
     replace_once,
+    replace_region,
 )
 
 __all__ = ["DocStore"]
@@ -51,11 +58,25 @@ MAX_LIVE_THREADS = 16
 state, not an error: the model is told to export or close."""
 
 MAX_ENDED_THREADS = 8
-"""How many ended (exported/closed) threads stay in memory for reference. Their
-durable record is the file on disk, not the line."""
+"""How many closed threads stay in memory for reference. Their durable record is
+the file on disk, not the line. Exported-but-live threads are not counted here:
+they are still open for business."""
 
 DRAFT_TTL_SECONDS = 7 * 24 * 3600
 """How long an unclaimed draft survives a crash before the sweep removes it."""
+
+def _disk_sig(path: str) -> str:
+    """A file's identity at one instant: mtime plus size.
+
+    Cheap enough to ask every turn, and precise enough for the only question it
+    answers — "is this still the file we read?".
+    """
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return ""
+    return f"{st.st_mtime_ns}:{st.st_size}"
+
 
 def _safe_name(text: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_") else "_" for c in text)
@@ -86,6 +107,12 @@ class DocStore:
         self._waiters: dict[str, asyncio.Future] = {}
         self._verdicts: dict[str, str] = {}
         self._recoverable: list[str] = []
+        # Trust is granted, never taken: the model reads these, only the human's
+        # surface writes them. A directory grant and the whole-feature switch are
+        # two different questions — "this area is mine to approve" and "I hand the
+        # approvals over" — so they are two different pieces of state.
+        self._trusted: list[str] = []
+        self._global_trust = False
 
     @property
     def drafts_dir(self) -> Path:
@@ -117,6 +144,46 @@ class DocStore:
     @staticmethod
     def _inside(p: Path, root: Path) -> bool:
         return p == root or root in p.parents
+
+    # -- trust --------------------------------------------------------------
+
+    def global_trust(self) -> bool:
+        """Whether the human has handed the approvals for this whole surface over."""
+        return self._global_trust
+
+    def set_global_trust(self, on: bool) -> bool:
+        """Flip that hand-over. The human's surface only."""
+        self._global_trust = bool(on)
+        return self._global_trust
+
+    def trusted(self) -> list[str]:
+        """Directories whose exports go through without asking."""
+        return list(self._trusted)
+
+    def set_dir_trust(self, path: str, trusted: bool) -> list[str]:
+        """Grant or withdraw trust for a directory — the human's move only.
+
+        Stored by directory, not by file: the question is "may writes under here
+        stop asking", and a file named here is only one write.
+        """
+        resolved = Path(self.resolve_target(path))
+        directory = str(resolved if resolved.is_dir() else resolved.parent)
+        if trusted:
+            if directory not in self._trusted:
+                self._trusted.append(directory)
+        else:
+            self._trusted = [d for d in self._trusted if d != directory]
+        return list(self._trusted)
+
+    def is_trusted(self, dest: str) -> bool:
+        """Whether a write to ``dest`` needs no approval."""
+        if self._global_trust:
+            return True
+        try:
+            target = Path(dest).expanduser().resolve()
+        except OSError:
+            return False
+        return any(self._inside(target, Path(d)) for d in self._trusted)
 
     # -- threads ------------------------------------------------------------
 
@@ -182,6 +249,9 @@ class DocStore:
             path=path,
             base=base,
             draft=draft_name or self._new_draft_name(thread_id),
+            bytes=len(base.encode("utf-8")),
+            lines=line_count(base),
+            disk_sig=_disk_sig(path) if path else "",
         )
         self._threads[thread_id] = thread
         self._mirror(thread)
@@ -190,33 +260,33 @@ class DocStore:
         return thread
 
     def close(self, thread_id: str) -> Thread:
-        """Abandon a thread: drop the working copy, touch no file.
+        """Abandon a thread: it stops being editable and touches no file.
 
-        The line stays in memory for the human's traceability — it is reclaimed
-        only when ended threads outgrow the reclamation window (see
-        :meth:`_trim_ended`), never in a way the human has to notice.
+        When the working copy has moved past what is on disk, its draft is kept
+        instead of deleted — closing is "I am done with this thread", not "throw
+        the text away". The draft turns up as an unclaimed copy in the notice
+        and can be reopened with ``open(draft=...)``; the TTL sweep still clears
+        it eventually, so nothing leaks forever. A clean copy is dropped.
         """
         thread = self._require(thread_id)
-        self._unlink_draft(thread)
+        if not thread.unsaved:
+            self._unlink_draft(thread)
         thread.state = "closed"
         self._forget_verdicts(thread_id)
         self._trim_ended()
         return thread
 
-    def mark_exported(self, thread_id: str, path: str) -> Thread:
-        """The final chapter: the text is on disk now.
+    def note_export(self, thread_id: str, path: str, n: int) -> Thread:
+        """Record that version ``n`` is now on disk. The thread stays live.
 
-        The line stays intact — the human can still trace every action that led
-        to the export. Reclamation is a separate, silent step: once ended
-        threads exceed the window, the oldest is dropped whole, not emptied in
-        place.
+        An export is a position on the line, not the end of one: the human can
+        keep working, the working copy keeps its draft, and the next export
+        writes a later version. Nothing here ends a thread — only :meth:`close`
+        does.
         """
         thread = self._require(thread_id)
         thread.exported_to = path
-        thread.state = "exported"
-        self._unlink_draft(thread)
-        self._forget_verdicts(thread_id)
-        self._trim_ended()
+        thread.exported_at = n
         return thread
 
     def _trim_ended(self) -> None:
@@ -248,6 +318,74 @@ class DocStore:
         for key in [k for k in self._verdicts if k.startswith(f"{thread_id}:")]:
             self._verdicts.pop(key, None)
             self._waiters.pop(key, None)
+
+    # -- is the file still the one we read? ---------------------------------
+
+    def disk_drift(self, thread: Thread) -> str:
+        """The file changed underneath us — say it, do not act on it.
+
+        No lock: somebody else editing the same file is normal here. What is not
+        allowed is a working copy that believes it is current when it is not.
+        """
+        if not thread.path or thread.state != "live":
+            return ""
+        now = _disk_sig(thread.path)
+        if not now or not thread.disk_sig or now == thread.disk_sig:
+            return ""
+        # Naming a version here would be precise but often wrong: the signature
+        # was taken when we read or wrote, not at a number the thread recorded.
+        return "the file changed on disk since we last read it"
+
+    def diff_against_disk(self, thread_id: str, label: str = "") -> tuple[Action, str]:
+        """Compare the working copy with the file it came from — as an action.
+
+        Most editors keep this in a mode. Here it is a *record*: someone decided
+        the two should be compared, and both sides of this collaboration get to
+        see that decision and what it found. Direction is file → working copy,
+        because the question being asked is "what am I about to write".
+        """
+        thread = self._require_live(thread_id)
+        if not thread.path:
+            raise ValueError(f"thread {thread_id!r} is not bound to a file")
+        on_disk = self._read_text(Path(thread.path), thread.label)
+        working = thread.content
+        diff = diff_of(on_disk, working, "on disk", "working copy")
+        changed = sum(
+            1 for line in diff.splitlines()
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))
+        )
+        action = self.record(
+            thread_id,
+            "diff",
+            label or "diff against the file",
+            payload=diff,
+            fact=(
+                "identical to the file on disk" if not diff
+                else f"{changed} changed lines between the file and the working copy"
+            ),
+        )
+        return action, diff
+
+    def reload_from_disk(self, thread_id: str, label: str = "") -> Action:
+        """Read the file again into the working copy, as one action.
+
+        Deliberately not a merge: it takes the file's text as the new working
+        copy and leaves the previous text in the history, where a diff can be
+        asked for. Merge is a later question, and answering it first would make
+        the simple case expensive.
+        """
+        thread = self._require_live(thread_id)
+        if not thread.path:
+            raise ValueError(f"thread {thread_id!r} is not bound to a file")
+        text = self._read_text(Path(thread.path), thread.label)
+        before = thread.content
+        action = self._add(
+            thread, "write", label or "reloaded from disk", "g", text=text,
+        )
+        action.effect = effect_of(before, text)
+        thread.disk_sig = _disk_sig(thread.path)
+        self._mirror(thread)
+        return action
 
     def _require(self, thread_id: str) -> Thread:
         thread = self._threads.get(thread_id)
@@ -282,6 +420,7 @@ class DocStore:
         text: str = "",
         payload: str = "",
         state: str = "applied",
+        fact: str = "",
     ) -> Action:
         n = thread.actions[-1].n + 1 if thread.actions else 1
         action = Action(
@@ -289,6 +428,7 @@ class DocStore:
             kind=kind,
             author=author,
             label=label,
+            fact=fact,
             state=state,
             text=text,
             payload=payload,
@@ -313,6 +453,7 @@ class DocStore:
         payload: str = "",
         author: Author = "g",
         state: str = "applied",
+        fact: str = "",
     ) -> Action:
         """Append an action that carries no content change (open / read / export).
 
@@ -322,7 +463,14 @@ class DocStore:
         """
         thread = self._require_live(thread_id)
         return self._add(
-            thread, kind, label, author, text=text, payload=payload, state=state
+            thread,
+            kind,
+            label,
+            author,
+            text=text,
+            payload=payload,
+            state=state,
+            fact=fact,
         )
 
     # -- streaming mutations (write / append) -------------------------------
@@ -371,6 +519,7 @@ class DocStore:
         ops: list[tuple[str, str]],
         label: str = "",
         author: Author = "g",
+        fact: str = "",
     ) -> list[Action]:
         """Apply str_replace ops in order — one card per op.
 
@@ -391,13 +540,96 @@ class DocStore:
                 author,
                 text=new,
                 payload=json.dumps({"old_str": old, "new_str": new}, ensure_ascii=False),
+                fact=fact,
             )
             action.effect = effect_of(before, after)
             out.append(action)
         self._mirror(thread)
         return out
 
-    def rewind(self, thread_id: str, target: int, author: Author = "g") -> Action:
+    def find(
+        self,
+        thread_id: str,
+        pattern: str,
+        *,
+        region: str = "",
+        limit: int = 50,
+        ignore_case: bool = False,
+    ) -> dict:
+        """Search the working copy and report *where* the matches are.
+
+        Line numbers, not text: every next move accepts them — ``read(region=)``,
+        ``edit(region=)``, ``rewind`` — so a search is what lets a long file be
+        worked on without ever being read whole. ``total`` counts every match in
+        the range; ``shown`` honours ``limit``.
+        """
+        thread = self._require(thread_id)
+        text = thread.content
+        lines = text.splitlines()
+        if region:
+            start, end = region_span(text, region)
+        else:
+            start, end = 1, max(1, len(lines))
+        flags = re.IGNORECASE if ignore_case else 0
+        try:
+            rx = re.compile(pattern, flags)
+        except re.error as e:
+            raise ValueError(f"pattern is not a valid regular expression: {e}")
+        hits: list[dict] = []
+        total = 0
+        for i in range(start - 1, min(end, len(lines))):
+            line = lines[i]
+            m = rx.search(line)
+            if not m:
+                continue
+            total += 1
+            if len(hits) < limit:
+                hits.append(
+                    {"line": i + 1, "col": m.start() + 1, "text": line[:400]}
+                )
+        return {"matches": hits, "total": total, "shown": len(hits), "lines": len(lines)}
+
+    def edit_region(
+        self,
+        thread_id: str,
+        region: str,
+        new: str,
+        label: str = "",
+        author: Author = "g",
+        fact: str = "",
+    ) -> Action:
+        """Replace the lines a region names — the edit that follows a search.
+
+        ``str_replace`` asks the model to quote what it is replacing, which is
+        fine for a paragraph and hostile for a 4000-line file: one wrong
+        character in the quote and the edit does not land. A region replaces by
+        address instead, so the same file can be edited after a ``find`` without
+        being quoted back.
+        """
+        thread = self._require_live(thread_id)
+        before = thread.content
+        after = replace_region(before, region, new)
+        action = self._add(
+            thread,
+            "edit",
+            label,
+            author,
+            text=new,
+            payload=json.dumps({"region": region}, ensure_ascii=False),
+            fact=fact,
+        )
+        action.effect = effect_of(before, after)
+        self._mirror(thread)
+        return action
+
+    def rewind(
+        self,
+        thread_id: str,
+        target: int,
+        author: Author = "g",
+        label: str = "",
+        fact: str = "",
+    ) -> Action:
         """Append an ordinary action that puts the text back where ``target`` left it.
 
         ``0`` means the baseline. The target must be an action that actually moved
@@ -409,9 +641,10 @@ class DocStore:
         action = self._add(
             thread,
             "rewind",
-            f"rewind to v{target}",
+            label or f"rewind to v{target}",
             author,
             payload=str(target),
+            fact=fact or f"→ v{target}",
         )
         action.effect = effect_of(before, after)
         self._mirror(thread)
@@ -491,7 +724,15 @@ class DocStore:
         return self._drafts_dir / thread.draft
 
     def _mirror(self, thread: Thread) -> None:
-        """Rewrite the working copy. Small files, sync write, crash net."""
+        """Rewrite the working copy. Small files, sync write, crash net.
+
+        Also refreshes the thread's size facts: ``big`` has to follow the content
+        as it grows, not the baseline it was opened from — a blank thread that
+        receives 2500 lines is a big file by the time anyone reads it.
+        """
+        text = thread.content
+        thread.bytes = len(text.encode("utf-8"))
+        thread.lines = line_count(text)
         if not thread.draft:
             return
         path = self.draft_path(thread)
@@ -510,7 +751,9 @@ class DocStore:
         """Draft files no live thread owns — work a crash left behind."""
         if not self._drafts_dir.is_dir():
             return []
-        owned = {t.draft for t in self._threads.values() if t.draft}
+        # Only a *live* thread owns its copy: a closed one has let go of it, which
+        # is what makes closing-with-unsaved-work recoverable instead of fatal.
+        owned = {t.draft for t in self._threads.values() if t.draft and t.live}
         return sorted(
             p.name
             for p in self._drafts_dir.iterdir()
@@ -520,10 +763,29 @@ class DocStore:
     def recoverable(self) -> list[str]:
         """The drafts the last :meth:`sweep` kept — work a crash left behind.
 
-        Cached rather than rescanned: the notice renders on every meta refresh,
-        and a directory listing has no business on that path.
+        Cached rather than rescanned: the page asks for this on every connect, and
+        a directory listing has no business on that path.
         """
         return list(self._recoverable)
+
+    def discard(self, name: str) -> bool:
+        """Throw an unclaimed working copy away. Returns whether it was there.
+
+        Only an orphan can go. A draft a live thread still owns *is* that thread's
+        text, so deleting it would cut the crash net under an edit in progress —
+        close the thread first if that is what you mean.
+        """
+        if name != Path(name).name or name in ("", ".gitignore"):
+            raise ValueError(f"{name!r} is not a draft name")
+        owned = {t.draft for t in self._threads.values() if t.draft and t.live}
+        if name in owned:
+            raise ValueError(f"{name!r} belongs to a live thread — close it first")
+        self._recoverable = [d for d in self._recoverable if d != name]
+        try:
+            (self._drafts_dir / name).unlink()
+        except FileNotFoundError:
+            return False
+        return True
 
     def sweep(self) -> list[str]:
         """Remove expired orphans; keep the ones still young enough to adopt.

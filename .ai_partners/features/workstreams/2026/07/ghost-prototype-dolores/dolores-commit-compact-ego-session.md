@@ -108,8 +108,10 @@ ctx.agents.create({          ← 三者统一走这里
     **note 生产不绑定 ego 生命周期。**
 11. **note 生产 = session ref fork 跑一轮**（旁路单轮基元）。下一步做。
 12. **aexit 时 last turn 若无 commit 则补 commit**（去重/补漏）。这一步不做。
-13. **ego `compact()`**：能换掉 runtime 持有的 ego 实例；create ego session 传入**可为空的 session ref**
-    ——取自最后一个 **note 非空**的 commit，从源 session 拆出 ref 之后的 message，建新 session 运行。
+13. **ego `compact()`**：~~能换掉 runtime 持有的 ego 实例；create ego session 传入**可为空的 session ref**
+    ——取自最后一个 **note 非空**的 commit，从源 session 拆出 ref 之后的 message，建新 session 运行。~~
+    **→ 已被 2026-10-12「压缩机制 — 收敛设计」取代（见文末）：改走同 session 平面上的 surface replace，
+    不新建 session。**
 
 ### 依赖：memento 坐标改造（→ memento-mori 实现）
 
@@ -124,3 +126,115 @@ ctx.agents.create({          ← 三者统一走这里
   - `id`（ULID）留在数据模型做全局身份（`ForkRef`/文件系统/跨 owner），**不进 view**。
 - **memento 须提供配套 index 查找**：坐标 → commit（不是渲染侧临时拼）。这是契约面的新增，待 memento-mori
   定形（`Memento.resolve_commit(coord)` / `branch.get_commit(seq)` + `branch.index` 一类）。
+
+## 压缩机制 — 收敛设计（2026-10-12 与人类架构师对齐）
+
+> 取代第 13 步的「create 新 session」版本。[dolores-memento-plan.md](dolores-memento-plan.md) §6 当初列了
+> 两条路（**新建 session** / **同 session 平面继续**），此处选定**后者：同 session 平面上的 surface replace**。
+> 理由：session id / agent / tools / 既有 commit ref 全部稳定，无重接线 race，不丢 subagent 等工作态；
+> `collapseTurn` 已证明活 session 上 replace 可行。
+
+### 一个原语
+
+**compact = 原地把 surface 前缀 `[head, cut)` 替换成一条 `user/message`，内容 = ghost 的 memory
+（ground + 重新渲染的 memento branch view）；`cut` 之后的原文 tail 原样保留。**
+
+- 替换内容必须是 **memory（视图）**，不是单条 note —— note 是增量语义（`_note_prompt`：「只记自上个
+  commit 以来」），单独拿一条替换整段会丢掉它之前的全部；只有 branch view 是整条轨迹的汇总，且它本就是
+  session 创建时的 seed 材料（plugin `memorySeed` / `_runtime.memories()`）。于是**启动压缩与运行中压缩
+  是同一件事**：模型的「头部」永远是 `memory(视图) + 自 cut 以来的原文 tail`。
+- 旧 memory（head 处那次注入）与旧轮次一起被 replace 遮蔽，新 memory 落位。
+
+### 切点 = 安全 compact 位点（SCS）
+
+- **SCS = 倒数第二个 commit 的 `end_turn`**（即 `cut(n-1)`，`n` = tip）。永远把**最新一个 commit 的 span
+  留在压缩区外**，作原文 tail。→「不丢最近几轮」是**结构保证**，不靠算。
+- 保留 tail 的大小由 **commit 节奏**决定：`force_tokens`(T) 越密，tail 越小。T 与 `compact_tokens` 的关系
+  就是「保留多少原文」的旋钮。
+- `cut` 落在**已完成 turn 的边界**上 → tool-call/result 配对平衡，replace 合法。
+- SCS 随 commit 前推；compact 时直接切，无重算。
+
+### 触发与时机
+
+- **阈值是绝对值** `compact_tokens`（模型窗口的某比例；架构师给 400k–800k 量级），不是 K/T 那种增量。
+  取值来源 = `assistant/message` 的 usage（最近一次调用的真实 prompt 大小）。
+- **判定**放在**上一个有效 run**（无异常 / abort）结束时；**执行**放在**下一个 run 启动时**（pre-step、
+  请求之前）。→ 请求之前就压好，**溢出不会发生**（不是「先失败再补救」）。代价：下一个 run 启动有轻微延时。
+
+### ego 启动：不再回放最近上下文
+
+- `create_session` 的 seed 退化为 **memory 一段（ground + branch view）**，**不再**带源 session 的原文 tail。
+- 退役启动路径上的 `resume_ref` / `buildEgoSeed` / `resolveCut` / `surfaceTailSeed` / `loadSourceEvents`。
+  **dsh 历史消息协议再变，启动都不碰**（这是防「升级后 ghost 永远起不来」的关键）。
+- 跨重启的连续性完全由 memento 承担：视图 + `read`/`chat`。丢的是最近原文轮次（重启 = 新 epoch）。
+
+### python → plugin 协议
+
+```
+POST /moss-api/ghost/dolores/compact
+  { memory: <content blocks>, cut_turn: <int> }   # 压到该 turn 边界, 保留其后原文
+```
+
+- 协议**语义化、不带版本形状**：`cut_turn` 由 python 从 SCS 给；turn→seq 解析、边界校正、replace 形状
+  全在 plugin 那一侧。python 侧跨 dsh 版本一行不改。
+- 版本耦合收进 plugin 内部封装（探测 + 归一，**不散落**）：
+  - `appendReplace(session, range, msg, sourceSeqs)` —— 归一 `{op,start,end}` vs `{op,startSeq,endSeq}`
+  - `onRequestError(ctx, handler)` —— 归一 retry 返回形状
+  - `classifyOverflow(err)` —— 先认 code，认不到文本兜底
+- 其余路由不变（ego/create、thinking/enter|exit、tool-result、bypass/run、read）。
+
+### 溢出兜底（已实现）
+
+- 主动压缩覆盖常态；`agent/request-error` recovery 作后手：认 `CONTEXT_WINDOW_EXCEEDED` → 有损压掉
+  「当前 turn 之前」的全部历史 → `{kind:'retry'}`。防单步（一个超大 moment）直接冲过上限。
+- 有损压缩**模型无关**（零 LLM 调用，溢出路径上不再发请求）：替换内容 = 缓存的 memory 文本块（plugin
+  在 ego/create 与 compact 时记下）+ 一条「上下文被压缩」说明。self-bounding：无节点可压时退回原错误，
+  不无限重试。
+- 替换内容含一条说明 notice，把「发生了什么」直接告诉模型 —— 主动 compact 的 memory 视图前同样前置一条。
+
+### 未决 / 注意
+
+- branch view 受 `view_limit`（默认 10 条 commit）截断 → **压到视图时，超过 limit 的旧 commit 淡出模型
+  可见记忆**（仍在磁盘，`read`/`chat` 可达）。这是「渐进披露」，但 retain 值待确认。
+- `surfaceOp` 字段名跨版本分歧（0.1.5-rc.1 要 `{op,startSeq,endSeq}`）已在 plugin 封装层解决，python 侧无感。
+- 旁路「多档（角色）」是后续方向（subagent / commit / clone 并行化身），本设计不涉及；见
+  [dolores-reentrant-ego-session.md](dolores-reentrant-ego-session.md)。
+
+## 修订：memory 改为 epoch recap 槽（2026-10-17）
+
+原设计让 compact 的**替换内容 = memory 视图 + 说明**。实机问题：memory 从头到尾只是 `ego/create`
+时追加的普通 `user/message`，没有任何"可更新槽位"的身份。它虽然被 compact 重新写回 surface，但：
+
+1. 压缩换了模型可见的头部，却没有开新 epoch —— `Dolores.think()` 的 `_epoch_opened` 是首次 thinking
+   一次性标志，ego 侧 `_moment_epoch` 不变，`<cognition_epoch>` 不再注入，recap/baseline 永不复位；
+2. memory 住进 surface 历史，每次压缩都被整段卷掉再补写，始终不是"槽"。
+
+修订（两件事是同一个动作的两个面）：
+
+- **compact 后必须开新 epoch**。执行点从 `DoloresRun.__aenter__` 移到 `Dolores.think()`：compact →
+  `moments.new_epoch()` → 本帧 enter 携带新的 `<cognition_epoch>`。新 epoch 顺带刷新 shell baseline
+  （`on_epoch_creating → ShellTrajectory.new_epoch`）。
+- **memory 由 epoch recap 槽交付**。首次 compact 起注册
+  `moments.with_epoch_recap("memory", runtime.memories)`；此后每个新 epoch 都重新交付 memory。
+  surface 替换内容**只剩一条说明**，避免同一份 memory 在 surface 与 epoch 里出现两次。
+  首次 epoch 不注册 recap —— `create_session` 已经把 memory 作为 surface 头注入，不重复。
+
+协议相应变为：
+
+```
+POST /moss-api/ghost/dolores/compact
+  { memory: <content blocks>, notice: <str>, cut_turn: <int> }
+```
+
+`memory` 不再写进 surface，只用于更新 plugin 的溢出兜底缓存；替换内容 = `notice`。
+
+### 实机 review 补的三条（deepseek ghost 审出，同上日期）
+
+1. **epoch 打戳移到送达之后**。`_epoch_payload` 改为纯 peek；`enter_thinking` 在 enter RPC 成功
+   返回后才写 `_moment_epoch`（并按 index 单调，迟到的旧 enter 不回退）。否则一次 enter 丢失就
+   burn 掉本 epoch，而 memory 已只剩 recap 一条腿 → 静默失忆。
+2. **memory 在 compact 前先行取值并缓存**，recap 闭包直接返回这份快照。`new_epoch` 里 recap func
+   的异常会被吞掉，二次读取失败 = memory 静默消失；先取值还能在取不到时安全放弃压缩（surface
+   不动，退回旧语义）。
+3. **取消跨过 compact RPC**。插件可能已换 surface 而调用方没拿到返回值；memory 暂存在 ego 上
+   （`_compact_memory`），下一帧 `take_compact_memory()` 取走并补开 epoch。

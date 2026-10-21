@@ -468,3 +468,36 @@ async def test_is_running_false_after_abort():
         assert action.is_running() is True
         action.abort('preempted')
         assert action.is_running() is False
+
+
+# -- 退出传导与收线 (与 BaseThinking 对称) -------------------------------------------
+
+@pytest.mark.asyncio
+async def test_attention_abort_reaches_wait_abort():
+    """attention 退出必须能让这一帧的 wait_abort 返回 (logos 循环就停在这个 await 上)."""
+    action, _ = _make_action()
+    async with action:
+        action.attention.abort('interrupted')
+        await asyncio.wait_for(action.wait_abort(), 0.5)
+        assert action.is_aborted()
+
+
+@pytest.mark.asyncio
+async def test_stop_after_abort_still_releases_waiting_futures():
+    """停止位 != 收线: abort 已置位后, stop() 仍要释放等待中的 future.
+
+    停止位可能由 abort 回调**同步**置位 (不再经过任何 task), 所以 stop() 不能因为
+    "事件已置位" 就早退 —— 否则等待中的 future 永远没人取消.
+    """
+    action, _ = _make_action()
+    async with action:
+        never = asyncio.get_running_loop().create_future()
+        waiter = asyncio.ensure_future(action.wait_until_done(never))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        action.abort('interrupted')
+        await action.stop()
+
+        await asyncio.wait_for(waiter, 0.5)
+        assert never.cancelled()

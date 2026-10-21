@@ -11,9 +11,11 @@ exec:
 Terminal runs shell commands for the ghost, and shows each one to a human as a
 **card**. The pose is that the human is a busy collaborator, not an approval gate:
 `exec()` returns a receipt immediately — the model never waits on a person's
-response time. What happens to the card next (accepted, denied, talked about,
-withdrawn) and what the process did (exited, failed, was stopped) both arrive as
-signals, so `read(id)` is how the model learns its fate.
+response time. Three moments follow a card, and two of them arrive as signals: a
+**deny** (that command will not run) and the **process end** (exit code + output
+tail). An **accept** is state only — the card turns `running` and the notice counts
+it — so issuing work and getting on with something else costs no turn per
+approval. `level` sets how loudly the completion arrives.
 
 Commands run inside a **thread** — a named working context with a cwd. The
 default thread `root` is always open at the node's own root, so `exec()` with no
@@ -39,10 +41,14 @@ accepts it. The two global postures are `approval` (the default) and `disabled`
 (commands drop out of the interface).
 
 **Cards and actions.** `accept` and `deny` are decisions; `ask` is talk — it
-leaves the card pending and comes to the model as a question. `accept`/`deny`
-arrive as **aside** signals (buffered, no interrupt); when the last pending card
-settles, one **notify** tells the model the review round is over. `ask` and
-process completion are notifies.
+leaves the card pending and comes to the model as a **notify** question. Verdicts
+are reported by the channel, not by the surface: `accept` moves the card to
+`running` and says nothing; `deny` sends a notify naming the card (the human's
+words ride along); the process end sends a notify with exit code and output tail.
+A **rule** card is the exception — it has no process, so an accepted rule reports
+itself live. `level` (background / info / warning) picks how loudly a completion
+arrives — `background` buffers without claiming a turn, and a non-zero exit
+escalates one step.
 
 **Ground.** Every thread has a cognitive field (the nearest `GROUND.md`). The
 model reads it with `ground(thread)`; the human views the same field on demand

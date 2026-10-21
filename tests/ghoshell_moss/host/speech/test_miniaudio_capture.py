@@ -260,3 +260,55 @@ class TestAudioSequentialConsumer:
         assert chunk.samples.size == 160
 
         await consumer.__aexit__(None, None, None)
+
+
+# ── 静默失败补观测 (2026-10-13): 丢帧可计数 / AEC 失败自愈 ──────────────
+
+
+@pytest.mark.asyncio
+async def test_queue_full_drops_are_counted():
+    """队列满丢帧是设计允许的, 但必须可观测 — dropped_frames() 计数, 不再无声."""
+    source = _make_source()
+    consumer = source.new_sequential_consumer(max_queue_frames=1)
+    await consumer.__aenter__()
+
+    for i in range(3):
+        source._fan_out(_make_chunk(seq=i))
+
+    assert consumer.dropped_frames() == 2  # 首帧入队, 后两帧因满被丢弃
+    await consumer.__aexit__(None, None, None)
+
+
+class _FailingAEC(AcousticEchoCanceller):
+    """测试用 AEC: process 每次抛 (模拟原生库坏掉)."""
+
+    sample_rate = 16000
+    stream_delay_ms = 0
+
+    def __init__(self):
+        self.calls = 0
+
+    def push_far(self, frame: np.ndarray) -> None:
+        pass
+
+    def process(self, near: np.ndarray) -> np.ndarray:
+        self.calls += 1
+        raise RuntimeError("aec native error")
+
+
+def test_aec_self_disables_after_repeated_failures():
+    """AEC 连续失败: 帧原样放行 (不丢), 达阈值后卸载 — 降级但不再逐帧失败."""
+    from ghoshell_moss.host.audios.miniaudio_impl.miniaudio_capture import _AEC_MAX_FAILURES
+
+    source = _make_source()
+    aec = _FailingAEC()
+    source.set_aec(aec)
+    samples = np.ones(16, dtype=np.int16)
+
+    for _ in range(_AEC_MAX_FAILURES):
+        assert np.array_equal(source._apply_aec(samples), samples)  # 原样放行, 不丢帧
+    assert aec.calls == _AEC_MAX_FAILURES
+
+    # 阈值已达 → AEC 卸载, 后续帧不再调 process (降级但不再逐帧失败)
+    assert np.array_equal(source._apply_aec(samples), samples)
+    assert aec.calls == _AEC_MAX_FAILURES

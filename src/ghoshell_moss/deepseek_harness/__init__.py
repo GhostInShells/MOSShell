@@ -14,8 +14,9 @@ from ghoshell_moss.deepseek_harness.launcher import (
 
 # 本自研协议客户端对齐的 dsh 版本. dsh 是开发者预览, serverInfo.version 恒 0.0.1
 # (不承诺接口稳定); 追版本时改此常量 + 核对核心检查面 (清单见 dsh-fusion workstream
-# FEATURE.md 的「dsh 版本声明」节).
-DSH_VERSION = "0.1.5-rc.2"
+# FEATURE.md 的「dsh 版本声明」节). 只作文档声明, 不作运行时门控 —— 兼容性靠能力探测,
+# 因此 0.2.1 若能直接启动也不在代码里区分两版 (判定框架见 dsh-version-tracking).
+DSH_VERSION = "0.2.0-rc.2"
 
 __all__ = [
     "DshConnection",

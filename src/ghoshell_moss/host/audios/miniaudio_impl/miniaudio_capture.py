@@ -44,6 +44,13 @@ _SILENCE_THRESHOLD_DB = -50.0
 #: 设备锁 key 前缀 —— 锁的是具体设备, 不是全局 "audio_capture".
 _LOCK_KEY_PREFIX = "audio_capture"
 
+#: 丢帧 warning 的节流间隔 (秒) —— 队列满时每帧都记会刷屏, 按此间隔聚合出一条.
+_DROP_LOG_INTERVAL = 5.0
+
+#: AEC 连续失败多少次后卸载 (自愈: 降级放行 raw 帧, 不再逐帧丢). AEC 失败通常持续
+#: (原生库状态坏), 单个阈值足够 —— 不重试以免继续丢帧.
+_AEC_MAX_FAILURES = 5
+
 
 def _compute_frame_meta(samples: np.ndarray) -> AudioFrameMeta:
     """Compute RMS + 3-band energy + silence flag from raw PCM."""
@@ -95,6 +102,9 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._started = False
         self._closing = False
         self._aec: AcousticEchoCanceller | None = None
+        self._aec_failures = 0
+        # 设备被别的进程占用 → 生命周期已 enter 但无设备空转 (degraded). 见 start().
+        self._degraded = False
 
     @property
     def sample_rate(self) -> int:
@@ -119,6 +129,7 @@ class MiniAudioCaptureSource(AudioCaptureSource):
     def set_aec(self, aec: AcousticEchoCanceller | None) -> None:
         """挂载/卸载回声消除器. 挂载后采集帧在 meta 前经 process 消回声."""
         self._aec = aec
+        self._aec_failures = 0
 
     def _apply_aec(self, samples: np.ndarray) -> np.ndarray:
         """public-internal: 采集帧过 AEC (int16 → float32 → process → int16).
@@ -126,13 +137,27 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         在 meta 计算前调用, 保证 meta (rms/is_silent) 描述消回声后的信号 — 静音
         门控读这个 meta, 不重算能量. 无 AEC 时原样返回. AEC 是单声道表面 (契约),
         接线层据此只对 mono 采集挂载.
+
+        AEC 抛异常时**原样放行 raw 帧**(不丢帧), 连续失败达 ``_AEC_MAX_FAILURES`` 后
+        卸载 AEC —— 降级为"无回声消除但有声音", 而不是"逐帧丢帧导致全聋".
         """
         aec = self._aec
         if aec is None:
             return samples
-        mono = samples.ravel().astype(np.float32) / 32768.0
-        out = aec.process(mono)
-        return (out * 32768.0).clip(-32768, 32767).astype(np.int16).reshape(samples.shape)
+        try:
+            mono = samples.ravel().astype(np.float32) / 32768.0
+            out = aec.process(mono)
+            self._aec_failures = 0
+            return (out * 32768.0).clip(-32768, 32767).astype(np.int16).reshape(samples.shape)
+        except Exception:
+            self._aec_failures += 1
+            if self._aec_failures >= _AEC_MAX_FAILURES:
+                self._logger.error(
+                    "AEC failed %d times — disabling AEC, raw audio continues",
+                    self._aec_failures,
+                )
+                self._aec = None
+            return samples
 
     async def start(self) -> None:
         if self._started:
@@ -142,11 +167,17 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         lock_key = _device_lock_key(device_id)
         self._locker = self._workspace.lock(lock_key)
         if not self._locker.acquire(timeout=0):
-            self._logger.warning(
-                "Audio capture device locked by another process (%s), skipping start", lock_key)
+            # 设备被另一进程占用: 生命周期已 enter, 但无设备空转 (degraded). is_running()
+            # 不再能区分"在采集"与"无设备", 故显式标记 + 记 error, 供上层/自解释面识别.
+            self._logger.error(
+                "Audio capture device locked by another process (%s) — starting degraded: "
+                "lifecycle entered but NO device captured", lock_key)
             self._locker = None
             self._started = True
+            self._degraded = True
             return
+
+        self._degraded = False
 
         if device_id is not None:
             self._logger.info("Audio capture using device id=%s", device_id)
@@ -169,10 +200,20 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._logger.info("Audio capture started (device=%s)", self.device_explain())
 
     def device_explain(self) -> str:
+        if self._degraded:
+            return "degraded: device locked by another process, no capture"
         if self._capture is None:
             return "not started"
         return f"miniaudio capture, {self._config.sample_rate}Hz, " \
                f"{self._config.channels}ch, {self._config.format}"
+
+    def is_degraded(self) -> bool:
+        """生命周期已 enter 但无设备空转 (设备被别的进程占用) — 与 is_running() 区分.
+
+        ``is_running()`` 只表示"已 start 且未 close"(生命周期归属判定用), 无法区分
+        有无真实采集; 本方法暴露 degraded 真相, 供上层/自解释面识别"耳朵是空的".
+        """
+        return self._degraded
 
     async def close(self) -> None:
         if self._closing:
@@ -314,6 +355,10 @@ class MiniAudioSequentialConsumer(AudioSequentialConsumer):
         self._dispose: Callable[[], None] | None = None
         self._started = False
         self._shutdown = False
+        # 队列满丢弃的最新帧计数 + 上次记日志时间 (节流). 丢帧是实时流设计允许的,
+        # 但必须可观测 — 此前 contextlib.suppress 全吞, 无声无息.
+        self._dropped = 0
+        self._last_drop_log = 0.0
 
     def shutdown(self, immediately: bool = False) -> None:
         self._shutdown = True
@@ -335,9 +380,27 @@ class MiniAudioSequentialConsumer(AudioSequentialConsumer):
         self._started = False
 
     def _on_chunk(self, chunk: AudioChunk) -> None:
-        if self._queue is not None and not self._shutdown:
-            with contextlib.suppress(Exception):
-                self._queue.sync_q.put_nowait(chunk)
+        """采集线程入队. 队列满时丢弃最新帧 (实时流不阻塞采集), 计数 + 节流记 warning.
+
+        丢弃是设计允许的 (消费者跟不上), 但**不再无声** — 计数可经 ``dropped_frames()``
+        读, 并按 ``_DROP_LOG_INTERVAL`` 节流记一条 warning.
+        """
+        if self._queue is None or self._shutdown:
+            return
+        try:
+            self._queue.sync_q.put_nowait(chunk)
+        except janus.SyncQueueFull:
+            self._dropped += 1
+            now = time.monotonic()
+            if now - self._last_drop_log >= _DROP_LOG_INTERVAL:
+                self._last_drop_log = now
+                self._logger.warning(
+                    "audio consumer queue full — dropped %d frames so far "
+                    "(consumer cannot keep up)", self._dropped)
+
+    def dropped_frames(self) -> int:
+        """public-internal: 累计因队列满丢弃的帧数 (实时流背压的可观测面)."""
+        return self._dropped
 
     def __aiter__(self) -> "MiniAudioSequentialConsumer":
         if not self._started:

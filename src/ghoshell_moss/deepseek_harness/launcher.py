@@ -20,6 +20,10 @@ MOSS 特定行为靠子类长出来 (如 DoloresDshLauncher).
 
 Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 自己的配置
 (provider/model/prompt/tools 是 dsh 的 config 域, 由 dsh 从文件/env 自发现).
+
+dsh 可执行路径: ``DSH_BINARY`` 环境变量 → PATH 上的 ``dsh`` (见 ``resolve_dsh_binary``;
+spawn 时惰性解析). 可用它把单个 ghost 钉到特定 dsh 安装 (如本地某个版本) 做验证,
+而不动全局安装. 只留一条机制: 可执行路径属"启动期配置", 归 ghost home 的 ``.env``.
 """
 
 # ── 协作模式 (人类结对) ──────────────────────────────────────
@@ -52,6 +56,16 @@ Config 刻意薄: 只装「连接/启动器自己要的参数」, 不复刻 dsh 
 # 10. workspace 列表改走 workspace/follow 流 baseline (0.1.5 已无 workspace.list 动词);
 #     follow 快照喂 cursor + header (cwd/agentPreset) 给 session (page 的 throughSeq 来源).
 
+# ── 阶段性 (2026-09-30, dsh 可执行路径可指定) ───────────────
+# 11. DSH_BINARY 环境变量 → PATH 上的 `dsh` (resolve_dsh_binary), spawn 时惰性解析 + info 日志.
+#     用于把单个 ghost 钉到特定 dsh 安装 (如本地 0.2.0) 做版本验证, 不动全局安装
+#     (0.2.0 会把 session 从 v3 迁到 v4, 上游不承诺可降级).
+#     注: 曾有 config.dsh.binary 字段 + env 两条机制, 已砍掉配置字段 —— 路径只从 .env 来.
+
+# ── 修复 (2026-10-15, mux 入站上限) ────────────────────────
+# 12. mux 入站不限: 库默认 1 MiB 打不过长会话重连的整份下发物 (越线即 1009 断链).
+#     宿主侧工具 (CTML) 只走这条 mux —— 链路静默死 = CTML 静默死, 而 bash 照常.
+
 # ── 已知问题 (随改随记, 最后一起删) ─────────────────────────
 # 1. `_owns_sp` 手动 __aexit__ 与 exit stack 重复回收 subprocess manager (第二次 no-op, 待合).
 # 2. __aenter__ except 块的清理被注释, 中途失败会漏孤儿进程 (启动超时使该路径可达, 需补).
@@ -63,6 +77,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -101,6 +116,10 @@ DSH_WEB_TOKEN_ENV = "DSH_WEB_TOKEN"
 # dsh web 是否自动打开浏览器 (真值 → --no-open). 由 ghost home 的 .env 决定, 默认开.
 DSH_WEB_NO_OPEN_ENV = "DSH_WEB_NO_OPEN"
 
+# dsh 可执行的环境变量来源: 未设置时落到 PATH 上的 `dsh` (见 resolve_dsh_binary).
+# 可用它把单个 ghost 钉到特定 dsh 安装 (如本地 0.2.0), 而不动全局安装.
+DSH_BINARY_ENV = "DSH_BINARY"
+
 # $events 下行帧处理器: emit 单向通知 (event_name, args 位置参数).
 RemoteEmitHandler = Callable[[str, list[Any]], Awaitable[None] | None]
 # waterfall 处理器: 收 (event_name, request), 返回 outcome dict
@@ -117,6 +136,26 @@ Disposer = Callable[[], None]
 def _env_flag(name: str) -> bool:
     """读取布尔型环境变量 (1/true/yes/on, 大小写不敏感), 未设置或空串为 False."""
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_dsh_binary() -> str:
+    """把 dsh 可执行解析成绝对路径: ``DSH_BINARY`` 环境变量 → PATH 上的 ``dsh``.
+
+    只有一条来源链 (没有 config 字段): 可执行路径属启动期配置, 归 ghost home 的 ``.env``.
+    纯函数, 不 spawn — 找不到时抛错并指明请求值及其来源, 让拼写错误当场暴露, 而不是等到
+    spawn 得到一句无上下文的 ``FileNotFoundError``.
+    """
+    requested = os.environ.get(DSH_BINARY_ENV, "").strip()
+    source = f"{DSH_BINARY_ENV} env"
+    if not requested:
+        requested, source = "dsh", "PATH default"
+    resolved = shutil.which(requested)
+    if resolved is None:
+        raise RuntimeError(
+            f"dsh executable not found: {requested!r} (from {source}); "
+            f"set {DSH_BINARY_ENV} to an absolute executable path"
+        )
+    return resolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +195,6 @@ class DshLauncherConfig(DshConnectionConfig):
     自发现, 这里不复刻. 可扩展靠"嵌套子配置 + 子类化", forbid 让拼写错当场失败.
     """
 
-    binary: str = Field(default="dsh", description="dsh 可执行; 默认从 PATH 找.")
     home: Path | None = Field(default=None, description="DSH_HOME; None → 在 cwd 启动, 让 dsh 自发现 profile/config.")
     profile: str = Field(default="web", description="进程层 profile 选择, 不是 dsh 配置.")
     args: list[str] = Field(default_factory=list, description="启动器 flag 之后的 verbatim 参数.")
@@ -256,7 +294,12 @@ class DshConnection:
             try:
                 await self._authorize()
                 headers = {"Cookie": self._cookie_header} if self._cookie_header else None
-                async with websockets.connect(self.config.mux_url, additional_headers=headers) as ws:
+                async with websockets.connect(
+                        self.config.mux_url,
+                        additional_headers=headers,
+                        # 入站不限: 库默认 1 MiB 会被长会话的整份重下发打穿 (1009). 见 #11.
+                        max_size=None,
+                ) as ws:
                     self._ws = ws
                     self._dsh_started.set()
                     self._logger.info("%smux connected", self._log_prefix)
@@ -662,6 +705,8 @@ class DshLauncher(DshConnection):
         self._web_url: str | None = None
         self._token_ready = ThreadSafeEvent()
         self._log_prefix: str = f"[DSHLauncher] "
+        # dsh 可执行的解析结果 — 惰性 (spawn 时才解), 构造不该依赖 PATH 上有 dsh.
+        self._resolved_binary: str | None = None
 
     @property
     def config(self) -> DshLauncherConfig:
@@ -754,10 +799,17 @@ class DshLauncher(DshConnection):
 
     # ---- 内部 ---- #
 
+    def _resolve_binary(self) -> str:
+        """惰性解析并缓存 dsh 可执行路径 — 不在 ``__init__`` 解析, 让不 spawn 的构造 (如测试) 不依赖 PATH."""
+        if self._resolved_binary is None:
+            self._resolved_binary = resolve_dsh_binary()
+            self._logger.info("%sdsh binary: %s", self._log_prefix, self._resolved_binary)
+        return self._resolved_binary
+
     async def _spawn_dsh(self) -> ManagedProcess:
         """spawn dsh subprocess"""
         args = [
-            self.config.binary,
+            self._resolve_binary(),
             "--profile", self.config.profile,
             "--port", str(self.config.port),
         ]

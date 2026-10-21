@@ -57,6 +57,10 @@ async def main(matrix: Matrix) -> None:
         outputs_dir=matrix.home / "runtime" / "outputs",
         log_dir=matrix.home / "runtime" / "cards",
     )
+    # A card's output file dies with the process that made it; start from a clean
+    # directory so a restart cannot inherit one (and the directory cannot grow
+    # without bound). The audit trail in runtime/cards is left alone.
+    store.clear_outputs()
     groundset = DefaultGroundSet(workspace_root=matrix.project_home, materialize=False)
 
     def get_llm_funcs():

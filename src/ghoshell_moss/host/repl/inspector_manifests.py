@@ -161,11 +161,11 @@ class ManifestsInspector:
                 v = m.value()
                 row["scheme"] = v.scheme()
                 row["host"] = v.host
-                row["description"] = v.description or ""
+                row["description"] = v.description() or ""
                 rows.append(row)
             return rows
 
-        result = {"matrix": _resource_rows(self._matrix.resources), "mode": None}
+        result = {"matrix": _resource_rows(self._matrix.resources()), "mode": None}
         if self._mode is not None:
             result["mode"] = _resource_rows(self._mode.resources())
         return result

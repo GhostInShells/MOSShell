@@ -9,6 +9,65 @@
 > 关联：`ghost-prototype-dolores` FEATURE.md；全貌 → [dolores-memento-plan.md](dolores-memento-plan.md)；
 > 缺陷 → [dolores-todo.md](dolores-todo.md)。
 
+## 准全双工：moment push 与 turn 边界（perStep 第三阶段，2026-10-19）
+
+> 前两阶段针对**旁路**（非主 session 的单轮重入）。本阶段针对**主 session 自身的重入**：
+> 一个 thinking 帧内，dsh 的 turn 结束后 body 动作可能仍在跑，期间到达的 signal（人的输入、
+> 工具的异步 signal 回调、cell_event …）要能立即折进下一轮，而不是等 turn 边界把 moment
+> 从 MOSS 抽干后无人消费。收敛出的核心命题：**主权在 body action，不在 dsh turn**。
+
+### 根因（不可逆交接 + 被动投递）
+
+- `BaseMomentsObserver.observe()`（`core/blueprint/moment.py:763-777`）是一次**不可逆交接**：
+  同时抽干 `_injected_percepts`（`has_pending()` 变假）和轮换 `_echoes`（`need_observe` 折进
+  `moment.previous` 后从 observer 消失）。mindflow 下一帧判据 `need_observe() or has_pending()`
+  （`core/mindflow/_mindflow.py:1163`）据此决定是否再签 thinking。
+- `moment/push` 只把 moment 塞进 `pendingMoments`（插件私有队列），**仅在活着的 pre-step 末尾
+  排空**（`dsh_plugin/moss-dolores-ghost-plugin.ts` 的 `agent/pre-step` 分支）；turn 已结束时它
+  要么滞留，要么被 `thinking/exit` 的 `flushPendingMoments` 投进 inbox（`agent.inject` 不唤醒、
+  契约上可被丢弃）。于是：MOSS 的判据被抽干了，dsh 又没有活 turn 来消费 → 两头落空。
+- 两个投递通道必须分清：`inject`（tool-result 的 moment → next-step inbox，turn 活着时续下一步）
+  vs `pendingMoments`（`/moment/push` → 仅 pre-step 排空）。
+
+### 收敛后的机制
+
+| 点 | 结论 |
+|---|---|
+| turn/end 分类 | `aborted/interrupted/blocked/error` = 反向传导（abort）；`completed/max-tokens` 及自己的 `hook` cancel = 记号 |
+| run 退出判据 | `turn_ended ∧ action_done ∧ 无待处理 signal`，或 `thinking abort`；经 settle 竞速串行化 |
+| steer 与消费分离（D1=c） | steer = **空 steer**（唤醒开 turn，控制面）；moment 由 pre-step 排空 `pendingMoments`（数据面）。**steer 绝不消费 moment** |
+| push moment | drain(observe) → push → `pendingMoments`，fire-and-forget，**无返回值探针** |
+| thinking/exit | 无条件 close gate，但**不 flush** `pendingMoments`（100% 消费，除非硬重启） |
+| safe flag | 安全 → observe+push；不安全 → 只通知不 drain（不安全 = turn/end 到达 → settle 结论之间） |
+
+### settle 竞速（turn/end normal 后）
+
+```
+consume_turn_events → turn/end
+  abort 类 → return（反向传导，body 交 mindflow 急停）
+  normal → settle():
+    2a. pushed_this_run 且 dsh 有未消费 pending moment → 空 steer → 新 turn → continue
+    2b. race(wait_actions_done, signal_event)
+        signal 赢 → drain + push + steer → continue
+        action_done 赢 → exit
+```
+
+退出**只有** 2b 的 action_done 一条路；probe 空 / 本轮没 push 过，都不退出，都要落进 2b。
+2a 必须在 2b 之前：否则 body 已 done 时竞速秒判 action_done，把已 push 但未消费的 pending
+moment 漏掉。`drain+push` 里 push 必须先 await 完再 steer，否则新 turn 的 pre-step 时
+`pendingMoments` 还没落进去。
+
+### 工具语义
+
+- `moss_observe`：保留阻塞到 observed（正交，不卷进 push/cancel；不阻塞会让模型反复 observe）。
+- `moss_react` / `moss_wait_next`：期间 push 过 moment 就不 cancel，turn 自然走到 turn/end 探针。
+- `final answer`：非 tool，即 turn/end normal → settle 探针。
+
+### 待实测 / 未做（下一期）
+
+numb 防抖、主动观测注入（tool use / agent message 这类必然有 next step 的事件）本期不做。
+回归目标与实机判据见 [dolores-todo.md](dolores-todo.md)。
+
 ## 实现落地 (2026-09-12)
 
 > 已在 `dsh_plugin/moss-dolores-ghost-plugin.ts` 实现, 待 GUI 实机验证。

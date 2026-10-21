@@ -2,8 +2,8 @@
 title: Terminal — 全异步进程编排（bash + python 调度器）
 node: nodes/os/terminal
 created: 2026-09-16
-updated: 2026-09-18
-status: in-progress
+updated: 2026-10-14
+status: completed
 ---
 
 # Terminal
@@ -127,6 +127,27 @@ script 卡片批准一次后，持续下发被执行的 bash 卡片（子命令�
 - **赋名机制验证**：matrix.nodes `run(target, name)` 新增必填 name，terminal 以 name="terminal"
   稳定 mount 到 `matrix.mesh.terminal`（内部 uid 仍随机，仅作进程标识）。
 
+### 本轮（2026-10-14）— 卡片详情按"人的读法"重做；列表不再无界；页面自刷新
+
+全部按 thirdgerb 现场给的判据做，每条都在真机上量过（提交 `4b65b4ad` / `01a6c059` / `a6f632c1`）：
+
+- **command 区块有上限**：命令可以任意长，没有天花板时它把裁决、thread、output 一起顶出面板
+  （实测 2000 字符：`.d-cmd` 由 85px 涨到 648px，output 落到 1021px，而视口只有 900）。
+  现在 30vh + 内部滚动 + `flex:none`，与 output 的 46vh 对称。
+- **output / analyze / ground 是同级的三块，轮换而不是堆叠**：command 与 thread 钉在上面，
+  下面一条标签栏；开着的那个标签占剩余高度、自己滚，面板整体不再滚——上面任何东西都不因
+  谁被打开而改变大小。判据来自他："这三块互不抢视觉，我看分析的时候 output 是冗余。"
+- **thread 概念写明白**：竖线里一行 `thread / 名字 / 目录`，`auto-approve` 独自一行。
+  去掉了 command 与 thread 的小标题——有了 `❯` 提示符和配色，标题只是多一行家具。
+- **列表不再无界**：只画最新 12 张，更老的已结算卡收在**吸顶**的 `earlier: N` 后面；
+  等待裁决的卡永不收折（它是列表里唯一需要人的东西）。列表只在人本来就在底部时才跟随新卡。
+  历史本来就在 audit jsonl 与 store 的 100 张上限里，界面不必背着它。
+- **详情页开着时看得见新命令**：头部 `+N new` 筹码，其中一张等裁决就变色；筹码与关闭按钮
+  合成一组钉在右边，有没有筹码 × 都在原位（在此之前 × 会被顶到标题后面）。
+- **页面自刷新**：服务端 `/__ver` 给出 index.html 的 sha1，页面每 3 秒问一次，指纹变了自己刷。
+  这条不是锦上添花：这个页面作为 adopted window 活在屏幕里，人没有方便的办法刷它。
+  实测：页面里放一个记号，改完文件 7 秒后记号消失。
+
 ## 待定
 
 - `pexpect node`（持久 shell 会话）另立文档，本域命名表需补一行。
@@ -135,4 +156,9 @@ script 卡片批准一次后，持续下发被执行的 bash 卡片（子命令�
 - `script` 编排工具（K2 的另一半）与 `Sandbox.aexec` 沙箱，回看本设计文档的 script 机制。
 - **settled 卡片上的对话**（人类对已结束命令提问）：低优先级。缺口 = settled 卡片的 UI
   挂一个 ask 输入框 + 放宽 surface `_ask` 守卫；模型侧 `read()` 已能读结果回应。
-- 全屏 command 主题（点击卡片全屏聚焦，当前是右侧 toggle detail）。
+- 全屏 command 主题 —— **已落地**（`layout(page|split)` 归模型定 + 详情页三标签），此条作废。
+- **命令重写（K3 的另一半）未落地**：现在只有 accept / deny / ask，没有"人改写命令再发"。
+  卡片模型上留有位置（`title` 可重写、`rewritten` 是独立终态），但没有实现路径。
+- **跨节点的两条账**（不在本 node 内，记在 `screen-manager/screen-todo.md` 的 T1 / T3）：
+  CTML 参数经 `literal_eval` 后与签名注解不一致（`ids="0,1"` 到节点手里是 tuple），本 node 只在
+  调用侧绕开（改用 `|` 分隔），根因在内核；co_browser 的 `exec` 会静默丢弃。

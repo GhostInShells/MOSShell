@@ -17,6 +17,7 @@ and the consumer decides what to render.
 """
 
 import time
+from typing import Any
 from typing import Awaitable, Callable
 
 from typing_extensions import Self
@@ -31,6 +32,22 @@ from ghoshell_moss.core.blueprint.service import (
 )
 
 from .declaration import ACTIVATE_KEY, STATE_KEY, WebViewDeclaration, WebViewState
+
+class _Unset:
+    """Sentinel type for "leave this field alone".
+
+    Distinct from ``None``, which is a value a caller may legitimately set (a
+    cleared face). A bare ``object()`` would do at runtime, but the signature has
+    to say what it accepts.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "UNSET"
+
+
+_UNSET = _Unset()
 
 __all__ = ['WebViewServer']
 
@@ -134,6 +151,27 @@ class WebViewServer(ServiceServer):
         """
         self._require_running()
         self._state.last_activity_at = time.time()
+        self._publish()
+
+    def set_face(
+            self,
+            *,
+            line: str | None | _Unset = _UNSET,
+            art: str | None | _Unset = _UNSET,
+    ) -> None:
+        """Set what this view shows on a tile — a line, a still image, or both.
+
+        Not an activity claim: ``touch`` / ``notify`` move a view in a
+        recency-ordered region, while a face is what the tile *says*. Setting it
+        therefore leaves ``last_activity_at`` alone.
+
+        Omitted arguments keep their current value; pass ``None`` to clear one.
+        """
+        self._require_running()
+        if line is not _UNSET:
+            self._state.face_line = line
+        if art is not _UNSET:
+            self._state.face_art = art
         self._publish()
 
     def notify(self, message: str | None = None) -> None:

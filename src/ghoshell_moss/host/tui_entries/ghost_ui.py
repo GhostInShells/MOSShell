@@ -220,9 +220,12 @@ class GhostLogosState(_GhostStateBase):
                 pass
         await super().__aexit__(exc_type, exc_val, exc_tb)
 
+    # 内联进 logos 流的 output item role —— 策略只在这里声明一处, 不在判断里散落字面量.
+    INLINE_ROLES: frozenset[str] = frozenset({'error', 'system'})
+
     def _on_output_item(self, item: OutputItem) -> None:
-        """on_output 回调 (zenoh 线程): 只把 error item 转入 janus 队列, event loop 消费."""
-        if item.role == 'error':
+        """on_output 回调 (zenoh 线程): 把 INLINE_ROLES 里的 item 转入 janus 队列, event loop 消费."""
+        if item.role in self.INLINE_ROLES:
             self._output_queue.sync_q.put_nowait(item)
 
     async def _consume_errors(self) -> None:

@@ -95,9 +95,6 @@ class TestDoloresMeta:
         assert (dsh_stubs / "profiles/web/package.json").exists()
         # plugin 源在独立 stub, 创建时复制进 dsh profile.
         assert _dolores_meta().dsh_plugin_stub().is_file()
-        # ego preset 源在独立 dir, 创建时复制进 .agent-presets.
-        assert _dolores_meta().dsh_preset_dir().is_dir()
-        assert (_dolores_meta().dsh_preset_dir() / "dolores-ego/agent.cordis.yml").is_file()
 
 
 class TestStubsSync:
@@ -123,8 +120,6 @@ class TestStubsSync:
         assert (tmp_path / ".dsh").is_dir()
         assert (tmp_path / "skills").is_dir()
         assert (tmp_path / ".dsh/profiles/web/moss-dolores-ghost-plugin.ts").exists()
-        # ego preset 复制进 .agent-presets.
-        assert (tmp_path / ".dsh/.agent-presets/dolores-ego/agent.cordis.yml").exists()
         # startup 目录 (开机启动文档) 随 stubs 同步.
         assert (tmp_path / "startup" / "default.startup.yml").exists()
         assert (tmp_path / "startup" / "GROUND.md").exists()
@@ -521,7 +516,7 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
 
-        await ego.enter_thinking(self._thinking("low"))
+        await ego.enter_thinking(self._thinking("low"), 1)
 
         payload = launcher.calls[0][1]
         assert payload["effort"] == "low"
@@ -535,7 +530,7 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
 
-        await ego.enter_thinking(self._thinking("none"))
+        await ego.enter_thinking(self._thinking("none"), 1)
 
         assert launcher.calls[0][1]["effort"] == "none"
         assert ego.default_thinking_effort == "high"
@@ -547,7 +542,7 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
         ego.default_thinking_effort = "high"
 
-        await ego.enter_thinking(self._thinking(""))
+        await ego.enter_thinking(self._thinking(""), 1)
 
         payload = launcher.calls[0][1]
         assert payload["effort"] == "high"
@@ -559,7 +554,7 @@ class TestDoloresEgoReasoningEffort:
         launcher = self._Launcher()
         ego = self._ego(launcher)
 
-        await ego.enter_thinking(self._thinking(""))
+        await ego.enter_thinking(self._thinking(""), 1)
 
         assert launcher.calls[0][1]["effort"] == ""
         assert ego.default_thinking_effort is None
@@ -572,7 +567,7 @@ class TestDoloresEgoReasoningEffort:
 
         assert ego.default_thinking_effort == "low"
 
-        await ego.enter_thinking(self._thinking(""))
+        await ego.enter_thinking(self._thinking(""), 1)
 
         assert launcher.calls[0][1]["effort"] == "low"
         assert ego.default_thinking_effort is None
@@ -584,6 +579,42 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
 
         assert ego.default_thinking_effort is None
+
+    @pytest.mark.asyncio
+    async def test_lost_enter_does_not_burn_the_epoch(self):
+        """enter RPC 丢了不能打戳 —— 否则 recap (压缩后 memory 的唯一通路) 永不重发."""
+        from ghoshell_moss.message import Message
+
+        class _FlakyLauncher(self._Launcher):
+            fail = False
+
+            async def call(self, path, payload=None, *, timeout=None):
+                if self.fail:
+                    raise RuntimeError("enter lost")
+                return await super().call(path, payload, timeout=timeout)
+
+        launcher = _FlakyLauncher()
+        ego = self._ego(launcher)
+        thinking = self._thinking("")
+        thinking.observer.epoch = SimpleNamespace(
+            id="e1", index=1,
+            recap=[Message.new(tag="memory").with_content("ground")],
+            baseline={"facade": "<facade/>"},
+        )
+
+        launcher.fail = True
+        with pytest.raises(RuntimeError):
+            await ego.enter_thinking(thinking, 1)
+        assert ego._moment_epoch is None
+
+        launcher.fail = False
+        await ego.enter_thinking(thinking, 2)
+        assert launcher.calls[0][1]["epoch"] is not None
+        assert ego._moment_epoch == "e1"
+
+        # 送达后同 epoch 不再重复.
+        await ego.enter_thinking(thinking, 3)
+        assert launcher.calls[1][1]["epoch"] is None
 
 
 class TestDoloresMemories:
@@ -605,6 +636,238 @@ class TestDoloresMemories:
             assert len(memories) == 1
             text = memories[0].to_content_string()
             assert "<ground>" in text and "</ground>" in text
+
+
+class _FakeCompactManager:
+    """Duck-typed EgoMementoManager — compact 只读阈值配置与 SCS."""
+
+    def __init__(self, cut_turn=7, compact_tokens=0):
+        self.config = SimpleNamespace(compact_tokens=compact_tokens)
+        self._cut_turn = cut_turn
+
+    def compact_cut_turn(self):
+        return self._cut_turn
+
+
+class _FakeCompactLauncher:
+    def __init__(self, replaced: int = 1):
+        self._replaced = replaced
+        self.calls: list[tuple[str, dict]] = []
+
+    async def call(self, path, payload):
+        self.calls.append((path, payload))
+        return {"replaced": self._replaced}
+
+
+class _CancellingLauncher:
+    """取消落在 compact RPC 中间 — 插件可能已经换了 surface."""
+
+    async def call(self, path, payload):
+        raise asyncio.CancelledError()
+
+
+def _compact_ego(*, memories, memento_manager=None, launcher=None):
+    from ._ego import DoloresEgo, DoloresEgoContext
+
+    ego = DoloresEgo(
+        launcher=launcher,
+        ctx=DoloresEgoContext(
+            project_home=Path("."),
+            project_name="pytest",
+            name="dolores",
+            mode="pytest",
+            instruction="i",
+            facade=None,
+        ),
+        memories=memories,
+        memento_manager=memento_manager,
+    )
+    ego._ego_session_id = "s1"
+    return ego
+
+
+class TestDoloresEgoCompact:
+    """compact 的 payload 拆分 — memory 走 epoch recap, surface 只留说明."""
+
+    @staticmethod
+    def _memory_message():
+        from ghoshell_moss.message import Message
+
+        return Message.new(tag="memory").with_content("ground")
+
+    @pytest.mark.asyncio
+    async def test_payload_splits_memory_from_notice(self):
+        ego = _compact_ego(memories=lambda: [self._memory_message()])
+
+        memory, notice = ego._compact_memory_payload()
+
+        assert "<memory>" in memory[0].to_content_string()
+        assert "compacted" in notice
+        assert "<memory>" not in notice
+
+    @pytest.mark.asyncio
+    async def test_compact_if_pending_returns_memory_and_sends_notice(self):
+        launcher = _FakeCompactLauncher()
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memento_manager=_FakeCompactManager(cut_turn=7),
+            launcher=launcher,
+        )
+        ego._pending_compact = True
+
+        memory = await ego.compact_if_pending()
+
+        assert memory is not None and "<memory>" in memory[0].to_content_string()
+        path, payload = launcher.calls[0]
+        assert path.endswith("/compact")
+        assert payload["cut_turn"] == 7
+        assert "<memory>" in payload["memory"][0]["text"]
+        assert "compacted" in payload["notice"]
+        assert ego._pending_compact is False
+        # 成功返回即交付, 不留下跨帧暂存.
+        assert ego.take_compact_memory() is None
+
+    @pytest.mark.asyncio
+    async def test_nothing_shadowed_is_not_a_compact(self):
+        """plugin 返回 replaced=0 → 实际没压, 不开新 epoch."""
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memento_manager=_FakeCompactManager(cut_turn=7),
+            launcher=_FakeCompactLauncher(replaced=0),
+        )
+        ego._pending_compact = True
+
+        assert await ego.compact_if_pending() is None
+        assert ego.take_compact_memory() is None
+
+    @pytest.mark.asyncio
+    async def test_compact_if_pending_noop_without_pending(self):
+        ego = _compact_ego(
+            memories=lambda: [],
+            memento_manager=_FakeCompactManager(),
+            launcher=_FakeCompactLauncher(),
+        )
+
+        assert await ego.compact_if_pending() is None
+
+    @pytest.mark.asyncio
+    async def test_cancelled_compact_leaves_memory_for_the_next_frame(self):
+        """取消落在 RPC 窗口: 插件可能已换 surface —— memory 必须留给下一帧补开 epoch."""
+        ego = _compact_ego(
+            memories=lambda: [self._memory_message()],
+            memento_manager=_FakeCompactManager(cut_turn=7),
+            launcher=_CancellingLauncher(),
+        )
+        ego._pending_compact = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await ego.compact_if_pending()
+
+        memory = ego.take_compact_memory()
+        assert memory is not None and "<memory>" in memory[0].to_content_string()
+        assert ego.take_compact_memory() is None  # 取走即清
+
+
+class _FakeMoments:
+    """moments 的录制替身 — epoch 次数 / recap 注册 / recap 产物."""
+
+    def __init__(self):
+        self.epochs = 0
+        self.recap_funcs: dict = {}
+        self.epoch_recaps: list[list] = []
+
+    def with_epoch_recap(self, key, recap_func):
+        self.recap_funcs[key] = recap_func
+
+    def new_epoch(self, recap):
+        self.epochs += 1
+        self.epoch_recaps.append([msg for func in self.recap_funcs.values() for msg in func()])
+
+
+class _FakeRunContext:
+    def __init__(self, logos: list[str]):
+        self._logos = logos
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def logos(self):
+        for delta in self._logos:
+            yield delta
+
+
+class _FakeThinkEgo:
+    def __init__(self, *, memory=None, leftover=None):
+        self._memory = memory
+        self._leftover = leftover
+        self.compact_calls = 0
+        self.take_calls = 0
+
+    async def compact_if_pending(self):
+        self.compact_calls += 1
+        return self._memory
+
+    def take_compact_memory(self):
+        self.take_calls += 1
+        memory, self._leftover = self._leftover, None
+        return memory
+
+    def run_thinking(self, thinking):
+        return _FakeRunContext(["x"])
+
+
+class TestDoloresEpoch:
+    """epoch 周期 — 首次 thinking 开 epoch; compact 后开新 epoch 并交付 memory recap."""
+
+    @staticmethod
+    def _ghost():
+        ghost = _dolores()
+        moments = _FakeMoments()
+        ghost._mindflow = SimpleNamespace(moments=moments)
+        return ghost, moments
+
+    @staticmethod
+    def _memory_message():
+        from ghoshell_moss.message import Message
+
+        return Message.new(tag="memory").with_content("ground")
+
+    @pytest.mark.asyncio
+    async def test_first_epoch_has_no_memory_recap(self):
+        ghost, moments = self._ghost()
+        ghost._ego = _FakeThinkEgo()
+
+        assert [delta async for delta in ghost.think(None)] == ["x"]
+
+        assert moments.epochs == 1
+        assert moments.recap_funcs == {}
+
+    @pytest.mark.asyncio
+    async def test_compact_opens_epoch_with_memory_recap(self):
+        ghost, moments = self._ghost()
+        ghost._ego = _FakeThinkEgo(memory=[self._memory_message()])
+
+        assert [delta async for delta in ghost.think(None)] == ["x"]
+
+        assert ghost._ego.compact_calls == 1
+        assert moments.epochs == 1
+        assert "memory" in moments.recap_funcs
+        assert "<memory>" in moments.epoch_recaps[0][0].to_content_string()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_compact_is_completed_on_the_next_frame(self):
+        """上次 think 在 compact RPC 窗口被取消 → 本帧取走遗留 memory 补开 epoch."""
+        ghost, moments = self._ghost()
+        ghost._ego = _FakeThinkEgo(leftover=[self._memory_message()])
+
+        assert [delta async for delta in ghost.think(None)] == ["x"]
+
+        assert ghost._ego.take_calls == 1
+        assert "memory" in moments.recap_funcs
+        assert "<memory>" in moments.epoch_recaps[0][0].to_content_string()
 
 
 class TestDoloresEgoNucleus:
@@ -1280,6 +1543,27 @@ class TestMementoReadSurface:
         assert "main-note" in manager.view_message().to_content_string()
         assert "side-note" in manager.view_message("side").to_content_string()
 
+    def test_view_message_folds_the_past_instead_of_rendering_it(self, tmp_path: Path):
+        """The budget is the contract: n commits in detail, everything older folded.
+
+        This used to concatenate ``history + latest`` and draw every commit in
+        full, so a long branch shipped its whole life into memory while the
+        budget only existed in the signature.
+        """
+        manager, memento = self._manager(tmp_path)
+        branch = memento.get_branch("main")
+        for i in range(30):
+            anchor = manager.commit(session_id="s1", start_turn=i, end_turn=i + 1)
+            branch.note(anchor.id, f"note {i}\n" + ("body " * 200))
+
+        text = manager.view_message().to_content_string()
+
+        assert text.count("<commit ") == 10
+        assert text.count("<earlier ") == 1
+        assert 'count="20"' in text
+        # one folded entry, not twenty: the far side is a range plus a few titles
+        assert len(text) < 12000
+
     def test_view_message_carries_node_path_when_present(self, tmp_path: Path):
         manager, memento = self._manager(tmp_path)
         branch = memento.get_branch("main")
@@ -1316,6 +1600,48 @@ class TestMementoReadSurface:
 
         assert text == "  > 为什么\n  ~ 因为"  # render_transcript 默认两级缩进
         assert conn.calls[0][1]["ref"]["session_id"] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_read_raises_on_unreadable_source(self, tmp_path: Path):
+        """源存档读不出来时显式抛 SourceUnreadableError —— 不回落成空串, 也不带出磁盘路径."""
+        from ._ego_memento import SourceUnreadableError
+
+        conn = self._Connection(RuntimeError(
+            'dsh RPC /moss-api/ghost/dolores/read failed (400): '
+            'SessionPersistenceCorruptionError: session "s1": stored log is corrupt: '
+            'SessionFormatError: system/message requires a protected first surface head '
+            "(raw log: /Users/someone/.dsh/sessions/x/session.v4.jsonl.zstd)"
+        ))
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        coord = self._coord(memento, anchor.seq)
+
+        with pytest.raises(SourceUnreadableError) as caught:
+            await manager.read(coord)
+
+        message = str(caught.value)
+        assert coord in message and "s1" in message
+        assert "no compatible read path" in message
+        assert "/Users/" not in message  # (raw log: …) 尾巴被剥掉, 路径不进上下文
+
+    @pytest.mark.asyncio
+    async def test_bypass_skips_unreadable_source_without_marking_broken(self, tmp_path: Path):
+        """格式不兼容 = 读不了, 不是旁路失败 —— 写空 note 防重试, 但不标 broken."""
+        conn = self._Connection(RuntimeError(
+            'dsh RPC /moss-api/ghost/dolores/bypass/run failed (400): '
+            'SessionFormatUnsupportedMigrationError: Session migration from v3 to v4 refuses '
+            'the transformed artifact: system/message requires a protected first surface head'
+        ))
+        manager, memento = self._manager(tmp_path, conn)
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+
+        manager.schedule_note(anchor.id)
+        await manager.drain_bypass()
+
+        note = memento.get_branch("main").notes()[anchor.id]
+        assert note.message == "" and note.error == ""
+        assert manager.resolve(self._coord(memento, anchor.seq)).is_broken is False
+        assert manager.backfill() == 0  # 空 note 也算"有", 不再重试
 
     @pytest.mark.asyncio
     async def test_chat_frames_the_context_not_the_commit(self, tmp_path: Path):
@@ -1380,8 +1706,8 @@ class TestMementoCommitSpan:
         assert memento.get_branch("main").commits() == []
 
 
-class TestEgoMementoResumeRef:
-    """ego 重建切点的选择 — 纯逻辑 (真 memento), 只认摘要已就绪的 commit."""
+class TestEgoMementoCompactCut:
+    """SCS (安全 compact 位点) = tip commit 的 start_turn = 倒数第二个 commit 的 end_turn."""
 
     @staticmethod
     def _manager(tmp_path: Path):
@@ -1394,34 +1720,21 @@ class TestEgoMementoResumeRef:
 
     def test_none_without_commits(self, tmp_path: Path):
         manager, _ = self._manager(tmp_path)
-        assert manager.resume_ref() is None
+        assert manager.compact_cut_turn() is None
 
-    def test_none_when_no_note_ready(self, tmp_path: Path):
+    def test_none_with_a_single_commit(self, tmp_path: Path):
+        # 只有一个 commit = 没有 n-1, 无可压 (tip.start_turn == 0).
         manager, _ = self._manager(tmp_path)
         manager.commit(session_id="s1", start_turn=0, end_turn=3)
-        assert manager.resume_ref() is None
+        assert manager.compact_cut_turn() is None
 
-    def test_none_when_only_note_is_empty(self, tmp_path: Path):
-        manager, memento = self._manager(tmp_path)
-        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=3)
-        memento.get_branch("main").note(anchor.id, "")
-
-        assert manager.resume_ref() is None
-
-    def test_falls_back_to_last_commit_with_ready_note(self, tmp_path: Path):
-        manager, memento = self._manager(tmp_path)
-        branch = memento.get_branch("main")
-        first = manager.commit(session_id="s1", start_turn=0, end_turn=3)
-        second = manager.commit(session_id="s1", start_turn=3, end_turn=7)
-        branch.note(first.id, "first")
-        branch.note(second.id, "second")
-        # 尾巴上还有一个摘要没产出来的 commit: 切点回退到已就绪的那个, 它之后的原文当 raw 尾巴带过去.
+    def test_returns_second_newest_end_turn(self, tmp_path: Path):
+        # (0,3] (3,7] (7,9] → tip 是 (7,9], 其 start_turn=7 = 倒数第二个 commit 的 end_turn.
+        manager, _ = self._manager(tmp_path)
+        manager.commit(session_id="s1", start_turn=0, end_turn=3)
+        manager.commit(session_id="s1", start_turn=3, end_turn=7)
         manager.commit(session_id="s1", start_turn=7, end_turn=9)
-
-        ref = manager.resume_ref()
-
-        assert ref is not None
-        assert (ref.session_id, ref.start_turn, ref.end_turn) == ("s1", 3, 7)
+        assert manager.compact_cut_turn() == 7
 
 
 # ── DoloresRun — thinking 交易 run 对象 (public + 可测) ─────────────
@@ -1451,17 +1764,37 @@ class FakeRunEgo:
 
     def __init__(self, session):
         self.session = session
+        # production ego exposes .logger (run 的 __aenter__ 用它记进入日志).
+        self.logger = logging.getLogger("pytest.dolores")
         self.enter_calls = 0
         self.exit_calls = 0
         self.enter_error: Exception | None = None
+        self.run_exits: list[bool] = []
+        # 竞速赢了之后那一帧必须真的落地 —— 记 id 就够断言.
+        self.pushed_moments: list[str] = []
 
-    async def enter_thinking(self, thinking):
+    async def push_moment(self, moment, moment_id):
+        self.pushed_moments.append(moment_id)
+
+    async def probe_pending_moment_and_steer(self):
+        # settle 2a 探针 fake: 默认无未消费 pending moment (settle 落进 2b). 用例按需覆盖.
+        self.probe_calls = getattr(self, "probe_calls", 0) + 1
+        return False
+
+    def next_thinking_seq(self):
+        self.enter_seq = getattr(self, 'enter_seq', 0) + 1
+        return self.enter_seq
+
+    async def enter_thinking(self, thinking, thinking_seq):
         self.enter_calls += 1
         if self.enter_error is not None:
             raise self.enter_error
 
-    async def exit_thinking(self):
+    async def exit_thinking(self, thinking_seq):
         self.exit_calls += 1
+
+    def on_run_exit(self, valid: bool):
+        self.run_exits.append(valid)
 
 
 class FakeArticulator:
@@ -1474,6 +1807,9 @@ class FakeArticulator:
         # 生命周期痕迹: 展开是否发生, 是回归测试的核心判据 (见 test_ctml_append_opens_lifecycle).
         self.entered = 0
         self.exited = 0
+        # 退出时收到的 (exc_type, exc_val, exc_tb) —— 判"是 commit 收尾还是异常退出",
+        # 这两条在 kernel 里换来完全不同的结果 (见 TestMalformedInterpretStreamSettlement).
+        self.exit_args: tuple | None = None
 
     async def __aenter__(self):
         self.entered += 1
@@ -1481,6 +1817,7 @@ class FakeArticulator:
 
     async def __aexit__(self, *args):
         self.exited += 1
+        self.exit_args = args
         return None
 
     async def send(self, delta: str):
@@ -1516,17 +1853,55 @@ class _FakeObserver:
 
     def __init__(self, log: list | None = None):
         self._log = log
+        self._pending: list = []
+        self._injected_callbacks: set = set()
 
     def add_echoes(self, result: list, need_observe: bool = False):
         if self._log is not None:
             self._log.append(f"observer.add_echoes:{need_observe}")
 
+    def need_observe(self) -> bool:
+        return False
+
+    # Observer 契约的另外三件. 替身要长成真 observer 的形状 —— 否则单测全绿、
+    # 生产 AttributeError (这个类的 docstring 记的就是那次事故).
+    def has_pending(self) -> bool:
+        return bool(self._pending)
+
+    def drain_percepts(self) -> list:
+        drained, self._pending = self._pending, []
+        return drained
+
+    def observe(self):
+        """签发一帧 —— 生产里 observe 是唯一生成 Moment 的地方 (收轮工具的竞速/push 都走它)."""
+        from ghoshell_moss.core.blueprint.moment import Moment
+
+        self.observed_count = getattr(self, "observed_count", 0) + 1
+        return Moment(id=f"fake-observed-{self.observed_count}", index=7 + self.observed_count)
+
+    def on_percepts_injected(self, callback):
+        self._injected_callbacks.add(callback)
+
+        def _disposer():
+            self._injected_callbacks.discard(callback)
+
+        return _disposer
 
 class FakeRunThinking:
     def __init__(self, log: list | None = None):
+        from ghoshell_moss.core.blueprint.moment import Moment
+
         self.abort_reasons: list = []
         self.articulators: list[FakeArticulator] = []
         self._log = log
+        # run 的进入日志读 attention/moment —— 与生产 Thinking 同名.
+        # escalate: 每个 ghost event 的提权落点 (见 _escalate_on_ghost_event), 跑到这里记账.
+        self.attention = SimpleNamespace(id="fake-attention", escalate=self._escalate)
+        self.moment = Moment(id="fake-moment", index=7)
+
+    def _escalate(self):
+        if self._log is not None:
+            self._log.append("escalate")
 
     def abort(self, reason):
         self.abort_reasons.append(reason)
@@ -1552,6 +1927,23 @@ class FakeRunThinking:
     @property
     def observer(self):
         return _FakeObserver(self._log)
+
+
+class _GatedThinking(FakeRunThinking):
+    """``wait_actions_done`` 一直挂着, 直到测试放行 —— 用来量"等身体"和"人插话"的竞速.
+
+    ``reached`` 在进入等待时就置位, 测试据此确定"接收轮工具已经停在竞速点上了"再插话;
+    放行 ``gate`` 就是"身体跑完了".
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.reached = asyncio.Event()
+        self.gate = asyncio.Event()
+
+    async def wait_actions_done(self):
+        self.reached.set()
+        await self.gate.wait()
 
 
 class _NoopShellFacade:
@@ -1590,8 +1982,22 @@ class FakeDispatchEgo(FakeRunEgo):
         self.rpc_calls.append((call_id, result, moment, cancel))
         self.rpc_turns.append(turn)
 
-    def moment_context_parts(self, moment, moment_id):
-        return [{"type": "text", "text": f"moment:{moment_id}"}]
+    @property
+    def model_route(self):
+        """(provider, model) 的真实路由 — 生产里读最后一次 request/header, 这里给固定值.
+
+        有了它, ``_push_effort_officially`` 才不会退到 ``session.model_selection()`` 的兜底
+        (那条兜底会读 catalog 默认值, 生产里是被刻意避开的路径).
+        """
+        return ("deepseek-official", "deepseek-flash")
+
+    def moment_payload(self, moment, moment_id):
+        # 两条投递路共用同一种协议 — fake 也按同一形状给 (context + inputs + moment_id).
+        return {
+            "context": [{"type": "text", "text": f"moment:{moment_id}"}],
+            "inputs": [],
+            "moment_id": moment_id,
+        }
 
 
 class TestDoloresRun:
@@ -1662,6 +2068,126 @@ class TestDoloresRun:
         assert "full surface" in results["call_one"]
 
     @pytest.mark.asyncio
+    async def test_closing_tool_races_the_percept_push(self):
+        """收轮工具在飞时人插一句: 立旗 + 照推 —— 不再死押, 这一轮要接着走."""
+        run = self._run()
+        run._thinking_event.set()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            seen["in_flight"] = run._ctml_in_flight
+            run._on_percepts_injected(["he said something mid-action"])
+            seen["barge"] = run._barge_in_event is not None and run._barge_in_event.is_set()
+            seen["push"] = run._buffered_push
+            run._buffered_push.cancel()
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(
+            self._tool_call("moss_react", '{"ctml": "<noop/>"}', call_id="call_react"), {},
+        )
+
+        assert seen["in_flight"] is True, "react 必须在立旗状态下执行"
+        assert seen["barge"] is True, "人插话必须叫醒那个等待, 否则竞速永远没人赢"
+        assert seen["push"] is not None, "竞速赢了就该照推 moment"
+        assert run._ctml_in_flight is False, "工具返回后旗子必须放下"
+        assert run._barge_in_event is None, "竞速信号只归这一次调用"
+
+    @pytest.mark.asyncio
+    async def test_wait_next_tool_call_arms_the_barge_in_race(self):
+        """moss_wait_next 同样进竞速 (它也是在等身体), 只是赢下之后是"这轮接着走"而不是"收轮"."""
+        run = self._run()
+        run._thinking_event.set()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            run._on_percepts_injected(["he said something while I yield"])
+            seen["barge"] = run._barge_in_event is not None and run._barge_in_event.is_set()
+            seen["push"] = run._buffered_push
+            run._buffered_push.cancel()
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(self._tool_call("moss_wait_next", "{}"), {})
+
+        assert seen["barge"] is True
+        assert seen["push"] is not None
+
+    @pytest.mark.asyncio
+    async def test_percepts_stay_in_the_buffer_once_the_turn_is_closing(self):
+        """竞速已经判给身体 (旗子撤下) 之后落地的 percepts 只留 buffer —— 这一轮正在收尾."""
+        run = self._run()
+        run._thinking_event.set()
+        run._ctml_in_flight = True
+        run._barge_in_event = None
+        seen: dict = {}
+
+        run._on_percepts_injected(["late words"])
+        seen["push"] = run._buffered_push
+
+        assert seen["push"] is None, "定了收轮之后不许再推给一个正在收尾的 turn"
+
+    @pytest.mark.asyncio
+    async def test_percepts_during_settle_only_arm_the_signal(self):
+        """settle 期间 (不安全) signal 只置位 signal_event, 不 drain —— 留给 settle 竞速决定.
+
+        这是 safe flag 的核心: turn/end 后到 settle 结论之间, 若急着 drain, 竞速判 action_done
+        退出时 signal 已经被抽干 (has_pending 假), mindflow 不签下一帧 → 两头落空. 所以不安全窗口
+        只通知不 drain, 竞速判退出时 signal 仍留在 observer 兜底.
+        """
+        run = self._run()
+        run._thinking_event.set()
+        run._settling = True
+        run._signal_event = asyncio.Event()
+
+        run._on_percepts_injected(["他说了一句"])
+
+        assert run._signal_event.is_set(), "settle 期间 signal 必须叫醒竞速"
+        assert run._buffered_push is None, "settle 期间不 drain、不 push"
+        assert run._pushed_this_run is False, "settle 期间不标记 push"
+
+    @pytest.mark.asyncio
+    async def test_settle_exits_when_actions_done_and_no_signal(self):
+        """turn/end(normal) 后 settle: 无 push、无新 signal → action_done 赢 → 退出本 run."""
+        run = self._run()
+        run._thinking_event.set()
+        assert await run._settle_after_turn_end() is False, "无 signal 时 settle 判退出"
+
+    @pytest.mark.asyncio
+    async def test_interpret_tool_call_does_not_hold_the_percept_push(self):
+        """moss_interpret 不立旗: 它跑完这一轮还要继续, 人此刻说的话下一步就该读到."""
+        run = self._run()
+        run._thinking_event.set()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            seen["in_flight"] = run._ctml_in_flight
+            run._on_percepts_injected(["he said something mid-action"])
+            seen["push"] = run._buffered_push
+            assert run._buffered_push is not None, "interpret 期间必须照常开推"
+            run._buffered_push.cancel()
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(
+            self._tool_call("moss_interpret", '{"ctml": "<noop/>"}'), {},
+        )
+
+        assert seen["in_flight"] is False, "interpret 不押推送"
+        assert run._ctml_in_flight is False
+
+    @pytest.mark.asyncio
+    async def test_non_ctml_tool_does_not_hold_the_percept_push(self):
+        """非 CTML 工具 (bash / 工具面读) 不立旗 — 跑 bash 时人说的话照旧推进来."""
+        run = self._run()
+        seen: dict = {}
+
+        async def _fake_dispatch(event, streams):
+            seen["in_flight"] = run._ctml_in_flight
+
+        run._dispatch_tool_use_event = _fake_dispatch
+        await run._handle_tool_use_event(self._tool_call("moss_channel_facade", '{}'), {})
+
+        assert seen["in_flight"] is False
+
+    @pytest.mark.asyncio
     async def test_channel_facade_reports_unknown_path(self):
         """未知 path (非 recursive) 报错不抛 (工具结果回给模型, 不烧整轮)."""
         from ._run import DoloresRun
@@ -1684,6 +2210,27 @@ class TestDoloresRun:
         assert "no such channel" in ego.rpc_calls[0][1]
 
     @pytest.mark.asyncio
+    async def test_ghost_event_escalates_the_attention_only_while_the_turn_runs(self):
+        """DSH 每签发一个事件就提权一次 —— thinking 期间人开口才抢不动、只能排队折进来.
+
+        反例 (D18 实测): 没有提权时, 只跑 tool call 的那几秒里强度按衰减曲线掉下去, 人一句
+        INFO 就赢下仲裁 → preempt → 整轮 abort, 正在跑的 tool call 一起陪葬.
+        """
+        log: list = []
+        run = self._run(thinking=FakeRunThinking(log))
+        event = self._event("tool/start", {"turn": 1})
+
+        run._thinking_event.set()
+        await run._on_event(event)
+        assert "escalate" in log
+
+        # 收线之后不再提权 —— 否则一个已经结束的 attention 永远不衰减.
+        log.clear()
+        run._thinking_event.clear()
+        await run._on_event(event)
+        assert "escalate" not in log
+
+    @pytest.mark.asyncio
     async def test_shell_status_reads_facade(self):
         """moss_shell_status 读 shell 状态描述, 不产生 moment."""
         from ._run import DoloresRun
@@ -1703,6 +2250,39 @@ class TestDoloresRun:
         )
         await run._handle_tool_use_event(self._tool_call("moss_shell_status", call_id="call_s"), {})
         assert ego.rpc_calls == [("call_s", "idle, 2 actions running", None, False)]
+
+    @pytest.mark.asyncio
+    async def test_shell_clear_reaches_shell_directly(self):
+        """moss_shell_clear 直接调 shell.clear(), 不经过 CTML 的 __main__ 队列.
+
+        这是排队堵死时的逃生口: CTML 的 <clear/> 自己也是一条命令, 会和被堵的命令排在一起.
+        它不该签发 moment, 也不该掐回合 —— 下一步要能看见清完之后的现场.
+        """
+        from ._run import DoloresRun
+
+        calls = []
+
+        class _Shell:
+            async def clear(self):
+                calls.append("clear")
+
+        class _Facade:
+            def __init__(self):
+                self.shell = _Shell()
+
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        run = DoloresRun(
+            ego=ego, thinking=FakeRunThinking(), thinking_event=asyncio.Event(), facade=_Facade(),
+        )
+        await run._handle_tool_use_event(self._tool_call("moss_shell_clear", call_id="call_c"), {})
+
+        assert calls == ["clear"], "shell.clear() 没被调用 —— 逃生口等于不存在"
+        call_id, result, error, cancel = ego.rpc_calls[0]
+        assert call_id == "call_c"
+        assert error is None
+        assert cancel is False, "清壳不该掐掉回合, 否则下一步看不到结果"
+        assert "cleared" in result
 
     @pytest.mark.asyncio
     async def test_observe_observes_moment(self):
@@ -1744,7 +2324,7 @@ class TestDoloresRun:
         )
         await run._handle_tool_use_event(self._tool_call("moss_observe", call_id="call_w"), {})
         assert ego.rpc_calls == [
-            ("call_w", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("call_w", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -1828,10 +2408,8 @@ class TestDoloresRun:
             collected = []
             async for delta in run.logos():
                 collected.append(delta)
-        # plain text (assistant/chunk text-delta) 不产出 logos; turn/end 被转发成一个 GhostEvent.
-        assert len(collected) == 1
-        assert collected[0].event == "dsh/turn/end"
-        assert collected[0].payload["data"] == {"turn": 1}
+        # plain text 不产出 logos; 流以 thinking 开场, turn/end 只收线、不再转发.
+        assert [d.event for d in collected] == ["ghost/lifecycle/thinking"]
         assert thinking.articulators == []  # 无 articulator 被创建
         assert thinking.abort_reasons == []  # completed → 不打断
 
@@ -1852,35 +2430,118 @@ class TestDoloresRun:
             collected = []
             async for delta in run.logos():
                 collected.append(delta)
+        # lifecycle/thinking 开场; 之后只剩行动脊椎 —— tool/call. turn/*、assistant/message
+        # 和 tool/result 还在 session log 里, 但不再往观测面复制一遍.
         assert [e.event for e in collected] == [
-            "dsh/turn/start",
-            "dsh/assistant/message",
+            "ghost/lifecycle/thinking",
             "dsh/tool/call",
-            "dsh/tool/result",
-            "dsh/turn/end",
         ]
-        # 转发的 payload 是原始信封 (to_dict), data 原样在内, seq 保序.
-        assert collected[0].payload["data"] == {"turn": 1}
-        assert collected[1].payload["seq"] == 2
+        # 转发的 payload 是原始信封 (to_dict), data 原样在内.
+        assert collected[1].payload["seq"] == 3
+        # content 是给表面的那一行: 摘要由我们自己拼, 不指望 dsh 给.
+        assert collected[0].content == "thinking"
+        assert collected[1].content == "mystery_tool"
+
+    @pytest.mark.asyncio
+    async def test_tool_event_summary_prefers_the_callers_own_description(self):
+        """观测面上那一行取调用方自己写的 description, 不是参数原文."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._event(
+                "tool/call",
+                {"callId": "c1", "name": "bash",
+                 "arguments": '{"command": "git status", "description": "Show working tree status"}'},
+                seq=1,
+            ))
+            await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
+            collected = []
+            async for delta in run.logos():
+                collected.append(delta)
+        assert collected[1].content == "bash: Show working tree status"
+
+    @pytest.mark.asyncio
+    async def test_tool_event_summary_never_leaks_argument_text(self):
+        """没有 description 就只报工具名 —— 参数里可能有文件正文/路径/口令, 不许上总线."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._event(
+                "tool/call",
+                {"callId": "c1", "name": "write",
+                 "arguments": '{"file_path": "/tmp/secret.md", "content": "private text"}'},
+                seq=1,
+            ))
+            await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
+            collected = []
+            async for delta in run.logos():
+                collected.append(delta)
+        assert collected[1].content == "write"
+        assert "private" not in collected[1].payload.get("content", "")
+        assert "secret" not in str(collected[1].content)
+
+    @pytest.mark.asyncio
+    async def test_own_tool_calls_never_reach_the_surface(self):
+        """moss_interpret / moss_react 是管道不是行动: 不上观测面."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._event(
+                "tool/call",
+                {"callId": "c1", "name": "moss_surface_probe",
+                 "arguments": '{"ctml": "<say>hi</say>"}'},
+                seq=1,
+            ))
+            await session.emit(self._event("turn/end", {"turn": 1}, seq=2))
+            collected = []
+            async for delta in run.logos():
+                collected.append(delta)
+        assert [getattr(d, "event", None) for d in collected] == ["ghost/lifecycle/thinking"]
+
+    def test_is_own_tool_call_discriminates_by_namespace(self):
+        """判据挂在 moss 命名空间上 —— 与 tool 分发用的是同一条前缀."""
+        from ghoshell_moss.ghosts.dolores._run import _is_own_tool_call
+
+        def call(name: str):
+            return self._event(
+                "tool/call",
+                {"callId": "c1", "name": name, "arguments": "{}"},
+            )
+
+        assert _is_own_tool_call(call("moss_interpret")) is True
+        assert _is_own_tool_call(call("moss_react")) is True
+        assert _is_own_tool_call(call("bash")) is False
+        assert _is_own_tool_call(call("read")) is False
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "reason",
+        "reason, expected",
         [
-            {"kind": "aborted", "reason": {"kind": "user"}},
-            {"kind": "error"},
-            {"kind": "max-tokens"},
-            {"kind": "interrupted"},
-            {"kind": "completed"},
+            ({"kind": "completed"}, None),
+            ({"kind": "max-tokens"}, None),
+            ({"kind": "brand-new-kind"}, None),
+            ({"kind": "aborted", "reason": {"kind": "hook", "reason": "moss cancel_turn"}}, None),
+            ({"kind": "aborted", "reason": {"kind": "user"}}, "turn/end aborted (user)"),
+            ({"kind": "interrupted"}, "turn/end interrupted"),
+            ({"kind": "blocked", "reason": {"kind": "user"}}, "turn/end blocked (user)"),
+            ({"kind": "error"}, "turn/end error"),
         ],
     )
-    async def test_turn_end_never_aborts_thinking(self, reason):
-        """turn/end 只收线本帧, 绝不冒泡 abort — 无论 reason.kind 是什么.
+    async def test_turn_end_classifies_before_ending_the_frame(self, reason, expected):
+        """turn/end 分两类: 自然收线不动 attention, 中断类 abort 并带 reason.
 
-        冒泡 (Thinking.abort → attention.abort) 会连 attention 一起杀掉, 使 need_observe 驱动的
-        回声帧循环 `while not attention.is_aborted() and need_observe()` 永远起不来 —— interpret
-        error 自愈帧 / moss_reasoning 续帧全丢. 本帧的退出走自然路径: logos() 在此返回 → run
-        收线 → articulate 返回 → 帧自己结束; run 退出时另 cancel dsh, 双向对齐.
+        旧版这条叫 `test_turn_end_never_aborts_thinking`, 断言"无论 kind 都绝不 abort" —— 那是把一个
+        方向的判据当成了通性: 它只对"我们自己让 plugin 切的 turn"成立 (cause=hook, 身体在返回前已
+        drain). UI 点停与运行时故障若也走自然退出, 身体会继续跑 (语音照旧播完), 故障还会自续成环.
+        现在判据挂在 cause 上 (不挂 turn 号), 见 ``_run._turn_end_abort_reason``.
+
+        端到端判据 (语音是否真停) 不在单测里: 见 regressions/dolores-ghost-prototype TC-003.
         """
         session = FakeRunSession()
         ego = FakeRunEgo(session)
@@ -1891,6 +2552,52 @@ class TestDoloresRun:
             await session.emit(self._event("turn/end", {"turn": 1, "reason": reason}, seq=2))
             async for _ in run.logos():
                 pass
+        if expected is None:
+            assert thinking.abort_reasons == []
+        else:
+            assert thinking.abort_reasons == [expected]
+
+    @pytest.mark.asyncio
+    async def test_turn_end_interrupt_lands_before_the_consumer_can_run(self):
+        """中断在**入队前**落地: 消费被 tool handler 占住时, 人点停也要立刻生效.
+
+        2026-10-04 D04 实测的根: ``_handle_react`` 在 logos() 里 await wait_actions_done() 等身体跑完,
+        期间的 turn/end 只能排队 —— 人点的停 (aborted/user) 在队列里等了 41 秒, 语音自己播完才被消费.
+        判据是入队时就 abort (Attention.abort 同步立即生效), 不等消费.
+        """
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(
+                self._event(
+                    "turn/end",
+                    {"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "user"}}},
+                    seq=2,
+                )
+            )
+            # 关键: 这里**不消费** logos() —— 消费正被占住, 模拟 D04 的真实时序.
+        assert thinking.abort_reasons == ["turn/end aborted (user)"]
+
+    @pytest.mark.asyncio
+    async def test_our_own_hook_cancel_does_not_abort_on_enqueue(self):
+        """正常收轮 (cause=hook) 不得因为入了队就 abort —— 否则每次 react 一开口就被自己清掉."""
+        session = FakeRunSession()
+        ego = FakeRunEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._text_chunk("<say>hi</say>", seq=1))
+            await session.emit(
+                self._event(
+                    "turn/end",
+                    {"turn": 1, "reason": {"kind": "aborted",
+                                           "reason": {"kind": "hook", "reason": "moss cancel_turn"}}},
+                    seq=2,
+                )
+            )
         assert thinking.abort_reasons == []
 
     @pytest.mark.asyncio
@@ -1932,7 +2639,7 @@ class TestDoloresRun:
             moment=Moment(id="1-7"),
         )
         await run._dispatch_tool_result(result)
-        assert ego.rpc_calls == [("call_ok", {"moment_ref": "1-7"}, [{"type": "text", "text": "moment:1-7"}], False)]
+        assert ego.rpc_calls == [("call_ok", {"moment_ref": "1-7"}, {"context": [{"type": "text", "text": "moment:1-7"}], "inputs": [], "moment_id": "1-7"}, False)]
 
     @pytest.mark.asyncio
     async def test_dispatch_tool_result_absorbs_rpc_failure(self):
@@ -2040,8 +2747,28 @@ class TestDoloresRun:
         assert len(thinking.articulators) == 1
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
+
+    @pytest.mark.asyncio
+    async def test_reply_first_runs_the_interpret_path_and_does_not_close_the_turn(self):
+        """reply_first 是同一机制换个名字: 流式进 articulator, 签 moment, cancel 为假."""
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._ctml_delta("c1", name="moss_reply_first", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", arguments_delta='先看一眼</say>"}', seq=2))
+            await session.emit(self._tool_call_event("moss_reply_first", '{"ctml":"<say>先看一眼</say>"}', "c1", seq=3))
+            await session.emit(self._turn_end(seq=4))
+            async for _ in run.logos():
+                pass
+
+        assert "".join(thinking.articulators[0].sent) == "<say>先看一眼</say>"
+        assert ego.rpc_calls == [
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
+        ], "与 interpret 同一条路: 带 moment 回来, cancel 为假 —— 这一轮还要继续"
 
     @pytest.mark.asyncio
     async def test_interpret_refreshes_metas_before_signing_the_moment(self):
@@ -2079,9 +2806,9 @@ class TestDoloresRun:
             async for _ in run.logos():
                 pass
 
-        assert log[-2:] == ["refresh_metas", "observe"]
+        assert "refresh_metas" in log and log[log.index("refresh_metas") + 1] == "observe"
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -2123,7 +2850,7 @@ class TestDoloresRun:
 
         assert "".join(thinking.articulators[0].sent) == "<say>hi</say>"
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -2172,9 +2899,11 @@ class TestDoloresRun:
 
         assert log.count("wait_observed") == 1, "interpret 等 observed 命令落地"
         assert log.count("wait_action_done") == 0, "interpret 不再等动作全部跑完"
-        assert log.count("wait_actions_done") == 0, "interpret 不再等 action 停 (跨帧继续)"
+        # interpret 的 handler 不等 action 停; 这 1 次 wait_actions_done 来自 run 收尾的 settle 竞速
+        # (主权在 body action: turn/end 后 run 仍要等 body 静默才退出).
+        assert log.count("wait_actions_done") == 1, "interpret 的 handler 不等 action 停 (跨帧继续)"
         assert ego.rpc_calls == [
-            ("c1", {"moment_ref": "3-7"}, [{"type": "text", "text": "moment:3-7"}], False),
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
         ]
 
     @pytest.mark.asyncio
@@ -2197,12 +2926,73 @@ class TestDoloresRun:
         assert art.entered == 1, "articulator 必须被展开一次"
         assert art.exited == 1, "articulator 必须被收尾一次"
         assert "".join(art.sent) == "<say>hi</say>"
-        assert log.count("wait_actions_done") == 1, "react 必须先等 action 停再 cancel"
+        # react 的竞速等 action 停 1 次; turn/end 后的 settle 竞速再等 1 次 (run 收口).
+        assert log.count("wait_actions_done") == 2, "react 先等 action 停再 cancel, settle 再等一次收口"
         assert ego.rpc_calls == [("c2", "reacted", None, True)]
+
+    @staticmethod
+    async def _drain(run) -> None:
+        async for _ in run.logos():
+            pass
+
+    @pytest.mark.asyncio
+    async def test_react_yields_to_a_barge_in_and_keeps_the_turn(self):
+        """准全双工: react 正等身体跑完时人插一句 —— 工具立刻返回, 不 cancel, 帧照推.
+
+        判据 (他给的): 竞速赢了不是"结束这一轮", 是"这一轮接着往下走". 所以结果是 cancel=False,
+        而且那一帧必须已经落地 (下一 step 才读得到). 身体的动作不取消, 跨帧照旧跑.
+        """
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        thinking = _GatedThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        try:
+            async with run:
+                await session.emit(self._ctml_delta("c3", name="moss_react", arguments_delta='{"ctml":"<noop/>"}', seq=1))
+                await session.emit(self._tool_call_event("moss_react", '{"ctml":"<noop/>"}', "c3", seq=2))
+                drain = asyncio.create_task(self._drain(run))
+                await asyncio.wait_for(thinking.reached.wait(), timeout=2)
+                run._on_percepts_injected(["他说了一句"])
+                await session.emit(self._turn_end(seq=3))
+                thinking.gate.set()  # 放行 settle 竞速的 wait_actions_done, 让 run 收口
+                await asyncio.wait_for(drain, timeout=2)
+        finally:
+            thinking.gate.set()
+
+        call_id, result, moment, cancel = ego.rpc_calls[0]
+        assert call_id == "c3"
+        assert cancel is False, "竞速赢了就不许收轮 —— 这一轮要接着读那句新的话"
+        assert "continues" in result
+        assert ego.pushed_moments, "赢了竞速的那一帧必须落地, 否则下一 step 读不到它"
+
+    @pytest.mark.asyncio
+    async def test_wait_next_continues_the_turn_when_someone_speaks(self):
+        """moss_wait_next: 交出这一轮之前人说话了 —— 交出的前提没了, 这一轮接着走."""
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        thinking = _GatedThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        try:
+            async with run:
+                await session.emit(self._tool_call_event("moss_wait_next", "{}", "c4", seq=1))
+                drain = asyncio.create_task(self._drain(run))
+                await asyncio.wait_for(thinking.reached.wait(), timeout=2)
+                run._on_percepts_injected(["他抢先说了一句"])
+                await session.emit(self._turn_end(seq=2))
+                thinking.gate.set()  # 放行 settle 竞速的 wait_actions_done, 让 run 收口
+                await asyncio.wait_for(drain, timeout=2)
+        finally:
+            thinking.gate.set()
+
+        call_id, result, moment, cancel = ego.rpc_calls[0]
+        assert call_id == "c4"
+        assert cancel is False
+        assert "continues" in result
+        assert ego.pushed_moments
 
     @pytest.mark.asyncio
     async def test_reasoning_records_depth_and_cancels(self):
-        """moss_reasoning: 记档 + need_observe 驱动下一帧 + 等 action 停 + cancel 中断本轮."""
+        """moss_reasoning: 入口只标记 + cancel 收轮; 等身体/推档位/补回声都在 run 收尾."""
         from ._run import DoloresRun
 
         session = FakeRunSession()
@@ -2213,11 +3003,17 @@ class TestDoloresRun:
         await run._handle_tool_use_event(self._tool_call("moss_reasoning", '{"effort": "high"}', call_id="c_r"), {})
 
         assert ego.default_thinking_effort == "high"
-        assert log == ["observer.add_echoes:True", "wait_actions_done"], (
-            "reasoning 必须先标 need_observe (在 observer 上) 驱动下一帧, 再等 action 停 —— "
-            "顺序反了就是让记账工具砍掉正在进行的动作"
-        )
+        assert run._need_switch_thinking_effort == "high", "入口只把要换的档位记成状态"
+        assert log == [], "工具入口不执行副作用: 不等动作、不推档位、不提交回声"
         assert ego.rpc_calls == [("c_r", {"effort": "high"}, None, True)]
+
+        # 副作用全部在 run 收尾落地, 顺序: 等身体 → 推档位 → 补回声 (都在 exit_thinking 之前).
+        # 替身上没有 select_model, 于是走 _push_effort_officially 的"永不致命"退路.
+        await run.__aexit__(None, None, None)
+        assert log == ["wait_actions_done", "observer.add_echoes:True"], (
+            "收尾必须先把身体等完, 再补 need_observe —— 少哪一步, 档位换了下一帧也没人签发"
+        )
+        assert run._need_switch_thinking_effort is None, "pending 收尾后必须清掉, 不留悬声明"
 
     def test_tool_surface_matches_production_thinking(self):
         """handlers 在 thinking 上用的每个 API, 生产类必须真的有.
@@ -2298,7 +3094,12 @@ class TestDoloresMomentPayload:
         assert payload["context"] == []
         assert payload["inputs"] == []
 
-    def test_moment_context_parts_contains_context_only(self):
+    def test_moment_payload_carries_both_slots(self):
+        """一条 moment 投递必须同时带 context 与 inputs —— 少一半就是一次静默丢字.
+
+        病根: ``observe()`` 把挂起的 percepts 抽干塞进它产出的 moment, 而投递走哪条路由别人决定.
+        所以任何一条路只要结构上不带 inputs, 就会把已消费的文字蒸发 (D13 的 buffered 语音)。
+        """
         from ghoshell_moss.core.blueprint.moment import Echoes, Moment
         from ghoshell_moss.message import Message
 
@@ -2306,15 +3107,19 @@ class TestDoloresMomentPayload:
             previous=Echoes(messages=[Message.new().with_content("echo")]),
             percepts={"test": [Message.new().with_content("percept")]},
         )
-        parts = self._ego().moment_context_parts(moment, "0-1")
-        text = "".join(c["text"] for c in parts if c.get("type") == "text")
-        assert "echo" in text
-        assert "percept" not in text
+        payload = self._ego().moment_payload(moment, "0-1")
+        assert payload["moment_id"] == "0-1"
+        context_text = "".join(c["text"] for c in payload["context"] if c.get("type") == "text")
+        assert "echo" in context_text
+        inputs_text = "".join(c["text"] for c in payload["inputs"] if c.get("type") == "text")
+        assert "percept" in inputs_text
 
-    def test_moment_context_parts_empty_when_no_content(self):
+    def test_moment_payload_empty_when_no_content(self):
         from ghoshell_moss.core.blueprint.moment import Moment
 
-        assert self._ego().moment_context_parts(Moment(), "0-0") == []
+        payload = self._ego().moment_payload(Moment(), "0-0")
+        assert payload["context"] == []
+        assert payload["inputs"] == []
 
 
 class TestDoloresEpochPayload:
@@ -2590,7 +3395,8 @@ class TestMementoChannel:
 
 
 class TestDoloresMemories:
-    def test_returns_single_memory_container(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_returns_single_memory_container(self, tmp_path: Path):
         from ghoshell_moss.memento import new_local_memento
 
         from ._ego_memento import EgoMementoConfig, EgoMementoManager
@@ -2604,6 +3410,8 @@ class TestDoloresMemories:
         ghost = _dolores()
         ghost._ground_text = "GROUND"
         ghost._memento_manager = manager
+        # 渲染是异步的 (要跑 branch_view 槽位), 在 __aenter__ 里做一次, memories() 读缓存.
+        ghost._memento_view = await manager.aview_message()
 
         memories = ghost.memories()
 
@@ -2612,6 +3420,42 @@ class TestDoloresMemories:
         assert "<memory" in text
         assert "<ground" in text and "GROUND" in text
         assert "<branch" in text and "note" in text
+
+    @pytest.mark.asyncio
+    async def test_branch_ground_rides_into_boot_memory(self, tmp_path: Path):
+        """D21 的现场: 计划写在 branch 目录里, 开机却只收到锚点摘要.
+
+        判据 —— ``branch_view`` 是 branch view 生成的一部分, 所以它必须跟着 view 一起
+        进 boot memory; 不是等谁想起来再去拼.
+        """
+        from ghoshell_moss.memento import new_local_memento
+
+        from ._ego_memento import EgoMementoConfig, EgoMementoManager
+
+        memento = new_local_memento(tmp_path / "owner")
+        memento.create_branch("main")
+        manager = EgoMementoManager(connection=None, memento=memento, config=EgoMementoConfig())
+        anchor = manager.commit(session_id="s1", start_turn=0, end_turn=1)
+        memento.get_branch("main").note(anchor.id, "note")
+
+        branch = memento.get_branch("main")
+        (branch.path / "plan.md").write_text("# the plan\n", encoding="utf-8")
+        hooks = branch.path / "hooks"
+        hooks.mkdir()
+        (hooks / "branch_view.py").write_text(
+            "import os, pathlib\n"
+            "d = pathlib.Path(os.environ['MEMENTO_BRANCH_DIR'])\n"
+            "print((d / 'plan.md').read_text())\n",
+            encoding="utf-8",
+        )
+
+        ghost = _dolores()
+        ghost._ground_text = "GROUND"
+        ghost._memento_manager = manager
+        ghost._memento_view = await manager.aview_message()
+
+        text = ghost.memories()[0].to_content_string()
+        assert "# the plan" in text, "branch 目录渲染的东西没进 boot memory"
 
     def test_returns_empty_when_nothing_to_remember(self):
         ghost = _dolores()
@@ -2730,15 +3574,30 @@ class TestSilentFailureSurfaces:
         )
 
     @pytest.mark.asyncio
-    async def test_unknown_tool_call_is_logged_not_silent(self):
-        """没有 handler 认领的 tool 名 = 这次调用永远等不到回话. 日志必须说话."""
+    async def test_unknown_moss_tool_call_is_logged_not_silent(self):
+        """名字是我们的 (moss*), 却没有 handler 认领 = 这次调用永远等不到回话. 日志必须说话."""
         run = self._run()
         with captured_logs(run._logger) as logs:
             await run._handle_tool_use_event(
-                TestDoloresRun._tool_call("read_file", "{}", "call_unknown"), {},
+                TestDoloresRun._tool_call("moss_mystery", "{}", "call_unknown"), {},
             )
         assert any("matched no dolores tool" in m and "call_unknown" in m
                    for m in logs.messages(logging.WARNING)), logs.messages()
+
+    @pytest.mark.asyncio
+    async def test_foreign_tool_calls_are_ignored_silently(self):
+        """host 内环工具 (bash / read / edit / subagent ...) 由 dsh 自己结算 —— 我们连痕都不该留.
+
+        2026-10-04 D04: 早先它们被当成"等我们回答的 tool"逐条 warning, 一次排查刷出几百行噪音,
+        把真正的 D39 信号 (我们自己的 tool 没 handler) 埋掉了.
+        """
+        run = self._run()
+        with captured_logs(run._logger) as logs:
+            for name in ("bash", "read", "edit", "subagent"):
+                await run._handle_tool_use_event(
+                    TestDoloresRun._tool_call(name, "{}", f"call_{name}"), {},
+                )
+        assert logs.messages(logging.WARNING) == [], logs.messages()
 
     @pytest.mark.asyncio
     async def test_tool_arguments_parse_failure_is_logged(self):
@@ -2763,7 +3622,7 @@ class TestSilentFailureSurfaces:
         run = self._run(logger=handed)
         with captured_logs(handed) as logs:
             await run._handle_tool_use_event(
-                TestDoloresRun._tool_call("nope", "{}", "call_x"), {},
+                TestDoloresRun._tool_call("moss_nope", "{}", "call_x"), {},
             )
         assert logs.messages(logging.WARNING), "记录没有落在传下来的 logger 上"
 
@@ -2782,7 +3641,7 @@ class TestSilentFailureSurfaces:
         assert articulator.exited == 1, "残留流的 articulator 边界没有被关"
         assert streams == {}
         assert any("never settled" in m and "call_orphan" in m
-                   for m in logs.messages(logging.WARNING)), logs.messages()
+                   for m in logs.messages(logging.INFO)), logs.messages()
 
     @pytest.mark.asyncio
     async def test_enter_failure_is_logged_with_traceback(self):
@@ -2819,6 +3678,117 @@ class TestSilentFailureSurfaces:
         assert isinstance(result, ToolCallResult) and result.result == "ctml parse error"
         assert any("corrupt" in m and "call_broken" in m
                    for m in logs.messages(logging.WARNING)), logs.messages()
+
+
+class TestMalformedInterpretStreamSettlement:
+    """参数解析失败的 ``moss_interpret`` 必须当场了结它由 delta 开出来的 stream.
+
+    这场戏只有几个角色, 一句一句看就懂了.
+
+    ============ 角色 ============
+
+    模型     一个词一个词地说出它要执行的 CTML; 说完了还要正式交一份"菜单"
+             (tool/call 的 arguments)。
+    delta    模型吐出的每个词 (tool-call-delta)。**MOSS 收到第一个词就把灶点着了。**
+    菜单     模型最后交上来的完整 arguments。只有它能解析, 这一单才算真正受理。
+    灶       这一单的执行位 (articulator + 它在 mindflow 里排的那个 action)。
+
+    ============ 顺序 (就是线上 17:20:34 的顺序) ============
+
+    1. 模型吐第一个词            → ``_handle_ctml_delta``      → 灶点着了
+    2. 模型把 CTML 吐完          → ``_handle_ctml_delta``      → 菜已经在锅里
+    3. 模型交上来的菜单是坏的     → ``_handle_tool_use_event``  → 只回一句"参数不对", 然后就结束了
+
+    **第 3 步曾是一个 bug**: 菜单坏了可以不接这一单, 但**灶必须关** —— 不关, 这个执行位就一直占着。
+    当时的代码不关: ``_handle_interpret`` 里的 ``streams.pop`` / ``__aexit__`` 只在 handler 被调用时
+    才发生, 而参数解析失败这一支根本没走到 handler (2026-10-13 线上整帧冻结的触发点)。
+    现在由 ``DoloresRun._void_stream`` 在 ``_handle_tool_use_event`` 里当场作废。
+
+    这里立的是**两条不变量**: (1) 必须关, 且只能关一次; (2) 必须走"异常退出"那一支 ——
+    见本文件末尾对 ``exit_args`` 的断言。
+
+    ============ 不关灶会怎样, 不在这里断言 ============
+
+    "灶一直被占着 → 下一位客人永远轮不到 → 整帧冻结" 是 **kernel 的鲁棒性**问题, 不由本文件断言。
+    那条在 ``tests/ghoshell_moss/default/core/mindflow/test_abandoned_action.py``: 用生产装线
+    (真三循环) 复现, 不含任何替身 —— 两层各自一条, 互不替代。
+
+    ============ 为什么"坏菜单"还能把灶点着 ============
+
+    因为切词的人不需要菜谱的句号。``_ctml_stream.py`` 的注释写得很直白:
+    "The closing quote needs no prediction"。所以 ``{"ctml": "<noop/>`` 这种
+    "开了头、没收尾"的坏串, 前半段照样能把 ``<noop/>`` 解出来下锅 —— 这就是线上那条的形状
+    (moss.log 里 pydantic 报的正是 ``EOF while parsing a string``)。
+    """
+
+    #: 线上那条坏菜单的最小等价物: 开了头, 永远不收尾。
+    _BROKEN_ARGS = '{"ctml": "<noop/>'
+    #: 同一个字符串的逐词分片 —— 模型是先吐词、最后才交菜单的。
+    _BROKEN_DELTAS = ('{"ctml": "', '<noop/>')
+
+    @staticmethod
+    def _run(thinking):
+        from ._run import DoloresRun
+
+        session = FakeRunSession()
+        return DoloresRun(
+            ego=FakeDispatchEgo(session),
+            thinking=thinking,
+            thinking_event=asyncio.Event(),
+            facade=_NoopShellFacade(),
+        )
+
+    @staticmethod
+    def _delta(call_id: str, arguments_delta: str):
+        return SimpleNamespace(type="tool-call-delta", id=call_id, name="moss_interpret",
+                               argumentsDelta=arguments_delta)
+
+    @classmethod
+    async def _stream_arguments(cls, run, call_id: str, pieces: tuple, streams: dict) -> None:
+        """按碎片顺序喂一条 arguments 的 argumentsDelta 流 (dsh 就是逐 token 推的)."""
+        for piece in pieces:
+            await run._handle_ctml_delta(cls._delta(call_id, piece), streams)
+
+    @pytest.mark.asyncio
+    async def test_malformed_interpret_settles_its_delta_stream(self):
+        """只问第 3 步: 菜单坏了、这一单不接了, 灶关了没有?"""
+        run = self._run(FakeRunThinking())
+        streams: dict = {}          # 场上"还开着的灶"
+
+        # 模型吐词 (第 1、2 步): 第一个词就该点着灶, 后面的词是菜。
+        await self._stream_arguments(run, "call_bad", self._BROKEN_DELTAS, streams)
+        stream = streams["call_bad"]
+        assert stream.articulator.entered == 1, "第一个词到了, 灶就该点着"
+        assert stream.stream.matched, (
+            "词本身没问题: 它按 {\"ctml\": \"… 前缀匹配、正常解码 —— 坏的只是最后交上来的那份菜单"
+        )
+        assert not stream.stream.failed, "参数流没有损坏 (损坏是另一条分支: stream.failed)"
+        assert stream.stream.value == "<noop/>", "菜已经在锅里了"
+
+        # 模型交菜单 (第 3 步): 同一份内容拼出来的串是坏 JSON, 所以 MOSS 只回一句"参数不对"。
+        await run._handle_tool_use_event(
+            TestDoloresRun._tool_call("moss_interpret", self._BROKEN_ARGS, "call_bad"), streams,
+        )
+
+        # 这一单可以不接, 但灶必须关。
+        assert "call_bad" not in streams, "灶还留在场上: 没有任何人会再来关它"
+        assert stream.articulator.exited == 1, "灶没关 (articulator 的边界没有收尾)"
+
+        # 收尾的**方式**也是契约的一部分: 必须走"异常退出"那一支, 不能 commit。
+        #   - commit (exc_val is None) 会让解释器执行这份半截 CTML —— 而它的参数刚被拒;
+        #   - 但如果传 ActionExitedException / StatementExitedException, kernel 走的是
+        #     "attention 已经 abort" 那一支, 什么都不做 —— 灶照样占着, 等于没修。
+        # 只有普通异常能落 action 的 stop event、放行 action loop, 又不惊动整帧。
+        # 机制的生产验证在 tests/ghoshell_moss/default/core/mindflow/test_abandoned_action.py。
+        from ghoshell_moss.core.blueprint.mindflow import StatementExitedException
+
+        exit_args = stream.articulator.exit_args
+        assert exit_args is not None, "边界没被收尾"
+        assert exit_args[1] is not None, "commit 收尾会执行这份参数刚被拒的半截 CTML"
+        assert not isinstance(exit_args[1], StatementExitedException), (
+            "StatementExitedException 那一支假定 attention 已 abort, 在这里什么都不做 —— "
+            "action 不会被放行, 卡死照旧"
+        )
 
 
 class TestEgoSilentFailureSurfaces:
@@ -2885,3 +3855,64 @@ class TestEgoSilentFailureSurfaces:
             ego._emit_self_wake()
         warned = [m for m in logs.messages(logging.WARNING) if "self-wake dropped" in m]
         assert len(warned) == 1, f"应只报一次, 实得 {len(warned)}"
+
+
+class TestTurnEndClassification:
+    """turn/end → 要不要显式退出 thinking 的判定表 (纯函数, 不依赖替身).
+
+    这是 cancel 治理的判据面: 自然收线绝不动 attention, 中断类才 abort —— 唯一例外是 cause 属于我们自己
+    的 hook cancel (moss_react / moss_wait_next / moss_reasoning 自己收的轮), 身体在返回结果前已 drain.
+    2026-10-04 D04 的教训: 判据曾经挂在 turn 号上, 于是每一个 react 轮都被算成"自己人", 人点的
+    aborted/user 被一起豁免, 41.3 秒语音全量播完. 端到端行为 (语音是否真停) 归
+    features/regressions/dolores-ghost-prototype TC-003, 不在单测里.
+    """
+
+    @staticmethod
+    def _end(kind: str, turn: int = 7, cause=None):
+        from ghoshell_moss.deepseek_harness.types.session_events import TurnEnd, TurnEndReason
+        return TurnEnd(turn=turn, reason=TurnEndReason(kind=kind, reason=cause))
+
+    @staticmethod
+    def _cause(kind: str, reason: str = ""):
+        from ghoshell_moss.deepseek_harness.types.session_events import AgentCancelCause
+        return AgentCancelCause(kind=kind, reason=reason or None)
+
+    def test_natural_ends_do_not_touch_the_body(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(self._end("completed")) is None
+        assert _turn_end_abort_reason(self._end("max-tokens")) is None
+
+    def test_unknown_kind_is_treated_as_natural(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(self._end("something-new-from-dsh")) is None
+
+    def test_interruption_kinds_abort_with_a_reason(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(self._end("aborted")) == "turn/end aborted"
+        assert _turn_end_abort_reason(self._end("interrupted")) == "turn/end interrupted"
+        assert _turn_end_abort_reason(self._end("blocked")) == "turn/end blocked"
+        assert _turn_end_abort_reason(self._end("error")) == "turn/end error"
+
+    def test_cause_rides_along_when_dsh_provides_one(self):
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(
+            self._end("aborted", cause=self._cause("user"))
+        ) == "turn/end aborted (user)"
+        assert _turn_end_abort_reason(
+            self._end("blocked", cause=self._cause("user"))
+        ) == "turn/end blocked (user)"
+
+    def test_our_own_hook_cancel_is_not_an_interruption(self):
+        """cause=hook: moss_react / moss_wait_next / moss_reasoning 自己收的轮 — 不得 abort."""
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(
+            self._end("aborted", cause=self._cause("hook", "moss cancel_turn"))
+        ) is None
+        assert _turn_end_abort_reason(self._end("blocked", cause=self._cause("hook"))) is None
+
+    def test_error_wins_over_a_hook_cause(self):
+        """故障优先: 即便这轮也被我们标过收轮, 运行时错误仍然要 abort (否则自续成环)."""
+        from ghoshell_moss.ghosts.dolores._run import _turn_end_abort_reason
+        assert _turn_end_abort_reason(
+            self._end("error", cause=self._cause("hook"))
+        ) == "turn/end error (hook)"

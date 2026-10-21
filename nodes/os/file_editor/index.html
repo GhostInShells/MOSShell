@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moss file_editor</title>
-<script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
 <style>
   :root {
     --bg: #14161a;
@@ -17,19 +16,26 @@
     --wait: #e0a33e;
     --bad: #d9645f;
     --done: #5c6675;
+    /* Type tokens: one scale, named, shared with the terminal node. Nothing here
+       should be a bare pixel value again — a page we may tune at runtime has to
+       state its sizes somewhere readable. */
+    --fs-body: 15px;
+    --fs-small: 14px;
+    --fs-title: 16px;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; height: 100vh; display: flex; flex-direction: column;
     background: var(--bg); color: var(--fg);
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: var(--fs-body)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   header {
     display: flex; align-items: center; gap: 10px;
     padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
     flex-wrap: wrap;
   }
-  .brand { color: var(--accent); font-weight: 600; }
+  /* 这里不再写自己的名字：窗口的身份由 screen 的标题栏给（node 只交 label，
+     chrome 归平台）。同一条规矩，terminal 也一样 —— 否则三个 node 会长出三种标题。 */
   .spacer { flex: 1; }
   .toggle {
     background: transparent; color: var(--dim); border: 1px solid var(--line);
@@ -39,21 +45,339 @@
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip {
     background: transparent; color: var(--done); border: 1px solid var(--line);
-    border-radius: 10px; padding: 2px 10px; cursor: pointer; font: inherit; font-size: 12px;
+    border-radius: 10px; padding: 2px 10px; cursor: pointer; font: inherit; font-size: var(--fs-small);
   }
   .chip.live { color: var(--run); border-color: var(--run); }
   .chip.on { color: var(--accent); border-color: var(--accent); background: rgba(110,168,254,.08); }
-  .conn { font-size: 12px; color: var(--dim); }
+  /* The working copy can move past what is on disk, and "I already wrote it" is
+     exactly the belief that goes quietly stale. So a chip says the version it is
+     at, and turns loud when the file is behind it. */
+  .chip.unsaved { color: var(--wait); border-color: var(--wait); }
+  /* Unclaimed working copies are the model's to adopt, but the human should not
+     have to hear about them second-hand — this is the same list, on their side. */
+  .chip.drafts { color: var(--wait); border-color: var(--line); }
+  /* The thread block — same shape as the terminal's. The ruled line names the
+     object and where it lives; the actions under it are what you can do to it. */
+  .t-dir {
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px;
+    border-left: 3px solid var(--line); padding: 2px 0 2px 10px; margin: 10px 0 0;
+  }
+  .t-dir .label { color: var(--dim); font-size: var(--fs-small); text-transform: uppercase; letter-spacing: .06em; }
+  .t-dir .name { color: var(--fg); font-weight: 600; }
+  .t-dir .path {
+    color: var(--done); font-size: var(--fs-small); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .t-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; }
+  .t-act { display: inline-flex; align-items: baseline; gap: 8px; }
+  /* A toggle gets its own line: label, one sentence of what it means, the button
+     at the far end. */
+  /* A toggle has to look like something you can push: a knob, a border, a hover.
+     A bare "off" at the end of a row reads as a caption. */
+  .switch { display: inline-flex; align-items: center; gap: 7px; background: transparent;
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px 3px 4px;
+    color: var(--dim); font: inherit; font-size: var(--fs-small); cursor: pointer; }
+  .switch::before { content: ""; width: 12px; height: 12px; border-radius: 50%;
+    background: #5a5f63; margin-right: 1px; }
+  .switch.on { color: var(--run); border-color: var(--run); }
+  .switch.on::before { background: var(--run); }
+  .switch:hover { border-color: var(--accent); color: var(--accent); }
+  /* A toggle: what it is on one line with its switch at the end, then one
+     sentence saying what turning it on would mean. */
+  .meta-toggle { display: flex; flex-direction: column; gap: 3px; padding: 9px 0;
+    border-bottom: 1px solid var(--line); }
+  .mt-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .mt-head .k { color: var(--fg); font-size: var(--fs-small); letter-spacing: .04em;
+    overflow-wrap: anywhere; }
+  .mt-note { color: var(--dim); font-size: var(--fs-small); }
+  .meta-toggle.on .mt-note { color: var(--run); }
+  .meta-toggle { cursor: pointer; }
+  .meta-toggle.on { background: rgba(80, 200, 120, .04); }
+  .t-act button {
+    background: transparent; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: var(--fs-small);
+  }
+  .t-act button.on { color: var(--run); border-color: var(--run); }
+  .t-act .t-note { color: var(--dim); font-size: var(--fs-small); }
+  .t-act .t-note.unsaved { color: var(--wait); }
+  /* Where the file stands, one fact per line: a horizontal run of them put a long
+     path in charge of the width, and the words at the other end fell off. */
+  .t-state { display: flex; flex-direction: column; gap: 2px; }
+  .t-state .t-note { overflow-wrap: anywhere; }
+  .conn { font-size: var(--fs-small); color: var(--dim); }
   .conn.live { color: var(--run); }
 
-  main { flex: 1; display: flex; min-height: 0; }
-  .stream { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
-  .detail {
-    display: none; flex-direction: column;
-    width: clamp(360px, 46%, 760px); border-left: 1px solid var(--line);
-    background: var(--panel); overflow-y: auto;
+  /* 操作面的唯一性：只有一扇窗能改。别的窗照样看得到内容，但盖一层遮罩，
+     说明为什么按不了、以及怎么把它抢回来 —— 只读是看得见的状态，不是一次
+     按下去什么也不会发生的点击。 */
+  #mask { position: fixed; inset: 0; z-index: 30; display: none;
+          background: rgba(8, 10, 12, .82); place-items: center; }
+  body.masked #mask { display: grid; }
+  #mask-box { max-width: 30em; padding: 24px; text-align: center; }
+  #mask-box p { margin: 0 0 16px; color: var(--fg); opacity: .8; }
+  #mask-claim { font: inherit; padding: 8px 18px; color: var(--run); cursor: pointer;
+                background: transparent; border: 1px solid var(--run); border-radius: 4px; }
+  #mask-claim:hover { background: rgba(51, 221, 136, .12); }
+
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
+  /* The three faces of one object: which threads exist, what they did, and what
+     one action carried. Threads used to live in the header as chips, which could
+     carry a name and nothing else — no path, no version, no activity. A thread is
+     the object an edit belongs to, so it gets a column of its own. */
+  .rail {
+    flex: none; width: 230px; overflow-y: auto; background: var(--panel);
+    border-right: 1px solid var(--line); display: flex; flex-direction: column;
   }
-  .detail.open { display: flex; }
+  /* A drawer, not a shrinking column: on a narrow window the threads slide out
+     *over* the document instead of eating its width. The document's width is the
+     thing worth protecting — the list can come and go. */
+  .rail-handle {
+    display: none; position: absolute; left: 0; top: 0; bottom: 0; width: 16px;
+    background: var(--panel); border: 0; border-right: 1px solid var(--line);
+    color: var(--dim); font: inherit; cursor: pointer; z-index: 7; padding: 0;
+  }
+  .rail-handle:hover { color: var(--accent); }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 5; }
+  .scrim[hidden] { display: none; }
+    /* 900 而不是 1180：一块正常大小的窗口本来就装得下列表，把它做成抽屉只会遮住正文。
+       抽屉留给真的窄的窗（手机宽度、半屏）。 */
+    @media (max-width: 900px) {
+    .rail {
+      position: absolute; left: 0; top: 0; bottom: 0; z-index: 6;
+      transform: translateX(-100%); transition: transform .16s ease-out;
+      box-shadow: 2px 0 12px rgba(0,0,0,.4);
+    }
+    .rail.open { transform: none; }
+    /* Open, the handle sits on the drawer's outer edge: at left:0 it lay on top of
+       the list and swallowed the first characters of every row. */
+    .rail.open + .rail-handle { left: 230px; border-right: 0; border-left: 1px solid var(--line); }
+    .rail-handle { display: block; }
+    .centre { padding-left: 16px; }
+  }
+  .rail-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+    text-align: left; background: transparent; color: var(--fg);
+    border: 0; border-bottom: 1px solid var(--line); border-left: 2px solid transparent;
+    padding: 8px 10px; font: inherit; cursor: pointer;
+  }
+  .rail-row:hover { background: var(--bg); }
+  .rail-row.sel { border-left-color: var(--accent); background: var(--bg); }
+  .rail-row .t-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail-row .t-path { grid-column: 1 / -1; color: var(--dim); font-size: var(--fs-small);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .rail-row .t-meta { grid-column: 1 / -1; font-size: var(--fs-small); color: var(--wait); }
+  .rail-row .t-meta.unread { color: var(--accent); font-weight: 600; }
+  /* The one colour that means "you": orange is a card waiting for a verdict.
+     Blue is only "something changed since you looked" — read it or don't. */
+  .rail-row .t-meta.waits { color: var(--wait); font-weight: 600; }
+  .rail-row .t-meta.quiet { color: var(--dim); }
+  .rail-row.sel .t-meta.unread { color: var(--accent); }
+  .rail-row .t-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--run);
+    align-self: center; animation: pulse 1.4s ease-in-out infinite; }
+  .rail-row.all { color: var(--dim); font-size: var(--fs-small); padding: 6px 10px; }
+  .centre { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .views {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px 0; border-bottom: 1px solid var(--line);
+  }
+  .vtab {
+    background: transparent; color: var(--dim); border: 0; border-bottom: 2px solid transparent;
+    padding: 5px 10px; font: inherit; cursor: pointer;
+  }
+  .vtab.on { color: var(--fg); border-bottom-color: var(--accent); }
+  /* The renderer picker. A dropdown, not another row of buttons: choosing a face
+     is a rare act, and the tab row belongs to reading. */
+  .render-tab { color: var(--dim); }
+  /* The draft tab: visibly not one of the library's faces — dashed, and it goes
+     away when the draft does. */
+  .draft-tab {
+    color: #e0b060; border: 1px dashed rgba(224,176,96,.55); border-radius: 4px;
+    padding: 3px 8px;
+  }
+  .draft-tab[hidden] { display: none; }
+  .draft-tab.on { background: rgba(224,176,96,.12); color: #ffd08a; }
+  .render-tab.covered { opacity: .45; }
+  .render-tab:hover { color: var(--fg); }
+  .render-menu {
+    position: absolute; right: 18px; top: 34px; z-index: 30; min-width: 320px;
+    background: #15181b; border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5); padding: 4px; max-height: 60vh; overflow: auto;
+  }
+  .render-menu[hidden] { display: none; }
+  .render-row {
+    display: flex; gap: 10px; align-items: baseline; padding: 6px 10px;
+    border-radius: 4px; cursor: pointer;
+  }
+  .render-row:hover { background: #1d2227; }
+  .render-row.on { background: #1d2630; }
+  .render-row .render-name { color: var(--fg); font-family: var(--mono); min-width: 84px; }
+  .render-row .render-desc { color: var(--dim); font-size: var(--fs-small); }
+  .vnote { color: var(--dim); font-size: var(--fs-small); padding-right: 4px; }
+  /* It sits above the scroller, not inside it: the document scrolls under it,
+     and it never paints over the first lines the way a sticky overlay does. */
+  .vbar {
+    flex: 0 0 auto; padding: 4px 18px 6px;
+    display: flex; align-items: baseline; gap: 10px; justify-content: flex-end;
+  }
+  .meta-fold { color: var(--dim); }
+  .meta-fold.on { color: var(--fg); }
+  /* The facts about the thread are a fold at the top of the document, not a
+     third way of reading it: "what this is" sits above "what it says". */
+  .meta { flex: 0 0 auto; max-height: 38vh; overflow: auto;
+          background: #14181e; border-top: 1px solid #46515f; }
+  .meta[hidden] { display: none; }
+  .vbar[hidden] { display: none; }
+  /* The document is the reading surface: the working copy itself, line by line,
+     with a gutter to address it by. Cards are its history, one view over. */
+  /* A gate belongs to the document, not to a line in a log: the working copy is
+     what is about to cross into the file, and this is the page it lives on. The
+     history card shows the same gate, so neither view can approve behind the other. */
+  .gate {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; flex: none;
+    padding: 8px 14px; border-bottom: 1px solid var(--line);
+    background: rgba(240,193,90,.07); color: var(--wait); align-items: center;
+  }
+  .gate .g-what { grid-column: 1; grid-row: 1; }
+  .gate .g-btns { grid-column: 2; grid-row: 1 / span 2; }
+  .gate[hidden] { display: none; }
+  .gate .g-what { color: var(--fg); }
+  .gate .g-path { color: var(--dim); font-size: var(--fs-small); word-break: break-all;
+    grid-column: 1; grid-row: 2; }
+  .gate .g-btns { display: flex; gap: 6px; flex: none; }
+  .gate button {
+    background: transparent; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 3px 10px; font: inherit; cursor: pointer;
+  }
+  .gate button.accept { color: var(--run); border-color: var(--run); }
+  .gate button.deny { color: var(--dim); }
+  /* "What changed while you were looking elsewhere": the rail answers it when it
+     is open, and this answers it when it is not. */
+  .digest { display: flex; align-items: baseline; gap: 8px; padding: 5px 16px;
+    background: #2a2a18; border-bottom: 1px solid var(--line); color: var(--wait);
+    font-size: var(--fs-small); cursor: pointer; flex: none; }
+  .digest:hover { color: var(--accent); }
+  .digest[hidden] { display: none; }
+  /* The drawer's closed state still has to answer "did anything happen" — the
+     count rides the handle that opens it. */
+  .rail-handle[data-count]::after {
+    content: attr(data-count); position: absolute; top: 46%; right: -3px;
+    background: var(--accent); color: #10131a; border-radius: 8px;
+    font-size: 10px; line-height: 12px; padding: 0 3px; font-weight: 600;
+  }
+  .doc { flex: 1; min-height: 0; overflow: auto; padding: 10px 0 40px; }
+  .doc-line { display: grid; grid-template-columns: 56px 1fr; white-space: pre-wrap;
+    word-break: break-word; padding: 0 14px; }
+  .doc-line .ln { color: var(--dim); text-align: right; padding-right: 14px; user-select: none; }
+  /* Token colours the code renderer paints. The renderer decides *what* a token is
+     (it emits `tk-*` spans and nothing else); the page decides what that looks like
+     — and the page must, or the spans are silently unstyled and "highlighting"
+     reads as a lie. Dialled for reading, not for a theme. */
+  .tk-str { color: var(--run); }
+  .tk-cmt { color: var(--dim); font-style: italic; }
+  .tk-num { color: var(--wait); }
+  .tk-kw  { color: var(--accent); }
+  /* The vendored highlighter paints its own class names; the theme is here for
+     the same reason as the token colours above — the library says what a token
+     is, the page says what it looks like. Deliberately small: four voices is
+     all a reader needs to tell code from prose. */
+  /* The colours are the library's own theme (github-dark, linked above) — a reader
+     who knows highlight.js should recognise what they see. The page overrides only
+     the box: this document already has its own background, and a second one would
+     paint a dark rectangle inside a dark page. */
+  .hljs { background: transparent !important; }
+  /* The rendered face: the same text, read rather than addressed. Whatever the
+     renderer drew is the child here, so this rule is the frame, not the content. */
+  /* 正文有阅读宽度（一行太长，眼睛会迷路），**表格没有**：一格一格读的东西，
+     宽度越大越好用。所以 max-width 从容器挪到"散文类子元素"上，表格单独放开。 */
+  .doc-rendered > :not(table):not(.table-wrap) { max-width: 980px; }
+  /* 表格自己带一层横向滚动容器：内容窄时它就是整栏宽，列多时按内容撑开、容器出滚动条。 */
+  .doc .table-wrap { max-width: none; overflow-x: auto; margin: 10px 0; }
+  .doc .doc-rendered table { max-width: none; }
+  .doc-rendered[data-renderer]:not([data-renderer="raw"]):not([data-renderer="plain"]) {
+    font-size: 15px; line-height: 1.65;
+  }
+  /* "Nothing rendered" and "the renderer is broken" must not look alike: this
+     strip is the second one, named, above the fallback face it fell back to. */
+  /* The edit affordance and the box it opens. Deliberately small and anchored to
+     the document: editing is an act on a range, not a mode you switch into. */
+  .edit-here {
+    position: fixed; z-index: 12; padding: 4px 10px; border-radius: 4px;
+    background: #1d2630; color: var(--fg); border: 1px solid var(--accent);
+    font: inherit; font-size: var(--fs-small); cursor: pointer;
+  }
+  .edit-here[hidden] { display: none; }
+  .edit-box {
+    position: fixed; z-index: 13; left: 50%; top: 12%; transform: translateX(-50%);
+    width: min(760px, 80vw); background: #15181b; border: 1px solid var(--line);
+    border-radius: 7px; box-shadow: 0 14px 40px rgba(0,0,0,.55); padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .edit-box[hidden] { display: none; }
+  .edit-head { display: flex; justify-content: space-between; color: var(--dim);
+    font-size: var(--fs-small); font-family: var(--mono); }
+  .edit-box textarea {
+    width: 100%; min-height: 180px; resize: vertical; background: #0f1214;
+    color: var(--fg); border: 1px solid var(--line); border-radius: 5px;
+    padding: 10px; font-family: var(--mono); font-size: 13px; line-height: 1.55;
+  }
+  .edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .edit-actions button {
+    padding: 4px 12px; border-radius: 4px; border: 1px solid var(--line);
+    background: #1d2227; color: var(--fg); font: inherit; cursor: pointer;
+  }
+  .edit-actions button#edit-save { border-color: var(--accent); color: var(--accent); }
+  .render-broken {
+    margin: 10px 26px 0; padding: 8px 12px; border-radius: 5px;
+    background: rgba(255,122,122,.10); border: 1px solid rgba(255,122,122,.45);
+    color: #ff9b9b; font-size: var(--fs-small); font-family: var(--mono);
+    white-space: pre-wrap;
+  }
+  .doc-line.flash { background: rgba(92,214,150,.22); transition: background .8s ease-out; }
+  .doc-line.hit { background: rgba(110,168,254,.10); box-shadow: inset 2px 0 0 var(--accent); }
+  .doc-line.hit .ln { color: var(--accent); }
+  /* Where the reader is. The model's point and the human's scroll share this
+     one band: it answers "what are we looking at", not "who moved it" — the
+     who is a word in the note, not a second colour to learn. */
+  .doc-line.cursor { background: rgba(92,214,150,.12); box-shadow: inset 2px 0 0 var(--run); }
+  .doc-line.cursor .ln { color: var(--run); }
+  .stream { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .stream[hidden] { display: none; }
+  /* The thread's own facts, once. Every card used to repeat them; a question
+     you ask about the object belongs to the object, not to each action on it. */
+  .meta { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px;
+          background: #14181e; border-top: 1px solid #46515f; }
+  .meta-row { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; padding: 5px 0;
+    border-bottom: 1px solid var(--line); align-items: baseline; }
+  .meta-row .k { color: var(--dim); font-size: var(--fs-small); }
+  .meta-row .v { color: var(--fg); word-break: break-all; }
+  .meta-row .v.warn { color: var(--wait); }
+  .meta-row .v.dim { color: var(--dim); }
+  /* The detail is not a column of its own — it opens *under the card it belongs
+     to*. A third column competed with the document for width and said nothing
+     when empty; inside the card, the content keeps the company of its siblings. */
+  .detail {
+    display: flex; flex-direction: column;
+    border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px;
+    background: var(--panel);
+  }
+  .detail:empty { display: none; }
+  .detail .d-empty { color: var(--dim); font-size: var(--fs-small); }
+  .detail .d-jump {
+    background: transparent; color: var(--accent); border: 1px solid var(--line);
+    border-radius: 4px; padding: 2px 8px; font: inherit; font-size: var(--fs-small); cursor: pointer;
+  }
+
+  /* The other view: the model may give the open card the whole window instead of a
+     side panel. Which card is open stays the human's click; only its size is ours. */
+  body[data-layout="page"] .detail.has-card {
+    position: fixed; inset: 0; width: auto; z-index: 3; margin: 0; padding: 12px 16px;
+    overflow-y: auto; background: var(--bg);
+  }
+  .layout-mark {
+    color: var(--dim); font-size: var(--fs-small); min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .layout-mark.model { color: var(--accent); }
 
   .card {
     border: 1px solid var(--line); border-left: 3px solid var(--done);
@@ -61,6 +385,17 @@
     width: min(100%, 900px);
   }
   .card.selected { border-color: var(--accent); }
+  /* The list is a window on the newest work, not an archive: older settled cards
+     fold behind one sticky line. The 300-card eviction is a backstop, not a
+     reading experience — a long session must not grow a list that only sinks. */
+  .card.aged { display: none; }
+  .aged-more {
+    flex: none; width: min(100%, 900px); background: var(--bg);
+    border: 1px dashed var(--line); border-radius: 4px; color: var(--dim);
+    padding: 3px 10px; cursor: pointer; font: inherit; font-size: var(--fs-small);
+    position: sticky; top: 0; z-index: 2;
+  }
+  .aged-more:hover { color: var(--fg); }
   .card.k-open, .card.k-read { border-left-color: var(--done); }
   .card.k-write, .card.k-append, .card.k-str_replace { border-left-color: var(--accent); }
   .card.k-rewind { border-left-color: var(--wait); }
@@ -72,10 +407,16 @@
   @keyframes pulse { 0%,100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px rgba(224,163,62,.14); } }
 
   .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .kind { font-size: 11px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--accent); flex: none; }
-  .thread-tag { color: var(--done); font-size: 12px; flex: none; }
+  .kind { font-size: var(--fs-small); padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--accent); flex: none; }
+  .thread-tag { color: var(--done); font-size: var(--fs-small); flex: none; }
   .title { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .badge { margin-left: auto; font-size: 11px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
+  /* Two readers on one card: the title is the model's motive, the fact line is
+     what actually happened. Neither replaces the other. */
+  .fact {
+    color: var(--dim); font-size: var(--fs-small); margin-top: 3px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .badge { margin-left: auto; font-size: var(--fs-small); padding: 0 7px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
   .badge.s-awaiting { color: var(--wait); border-color: var(--wait); }
   .badge.s-written { color: var(--run); border-color: var(--run); }
   .badge.s-rejected, .badge.s-failed { color: var(--bad); border-color: var(--bad); }
@@ -92,40 +433,142 @@
     border-radius: 4px; padding: 2px 8px; font: inherit;
   }
 
-  .d-head { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-  .d-title { font-weight: 600; font-size: 14px; }
-  .d-sub { color: var(--dim); font-size: 12px; }
+  /* The title gives way, never the close button: a long label used to push the ×
+     off the panel, and the × is the one control that gets you back to the list. */
+  .d-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .d-title { font-weight: 600; font-size: var(--fs-title); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .d-sub { color: var(--dim); font-size: var(--fs-small); overflow-wrap: anywhere; }
+  .d-head .d-close { flex: none; margin-left: auto; }
   .d-close { margin-left: auto; background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
   .d-close:hover { color: var(--fg); }
-  .t-auto {
-    background: transparent; border: 1px solid var(--line); color: var(--dim);
-    border-radius: 3px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: 12px;
-  }
-  .t-auto.on { color: var(--run); border-color: var(--run); }
 
   .tabs { display: flex; gap: 6px; padding: 10px 14px 0; }
   .tab {
     background: transparent; color: var(--dim); border: 1px solid var(--line);
-    border-radius: 10px; padding: 2px 12px; cursor: pointer; font: inherit; font-size: 12px;
+    border-radius: 10px; padding: 2px 12px; cursor: pointer; font: inherit; font-size: var(--fs-small);
   }
   .tab.on { color: var(--accent); border-color: var(--accent); background: rgba(110,168,254,.08); }
 
   .effect-line {
     margin: 8px 14px 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px;
-    color: var(--dim); font-size: 12px; background: var(--bg);
+    color: var(--dim); font-size: var(--fs-small); background: var(--bg);
   }
   .effect-line b { color: var(--fg); font-weight: 600; }
 
-  .doc { padding: 10px 16px 24px; overflow-y: auto; flex: 1; }
-  .doc .markdown { color: var(--fg); font-size: 14px; line-height: 1.7; }
-  .doc .markdown h1, .doc .markdown h2, .doc .markdown h3 { margin: 18px 0 8px; }
-  .doc .markdown p { margin: 8px 0; }
-  .doc .markdown code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
-  .doc .markdown pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
-  .doc .markdown ul, .doc .markdown ol { padding-left: 24px; }
+  .doc { padding: 10px 16px 24px; overflow-y: auto; flex: 1; min-width: 0; }
+  /* The document is the only thing here that is *content*: it gets a frame and a
+     name, so nothing has to be guessed at from its weight on the page. */
+  .doc .doc-label {
+    color: var(--dim); font-size: var(--fs-small); text-transform: uppercase; letter-spacing: .06em;
+    margin: 0 0 6px;
+  }
+  /* 渲染容器曾经叫 .markdown，后来改名 .doc-rendered（1523 行），这块样式没跟着走 ——
+     于是表格、引用、代码块、分隔线全部退化成裸元素。表格没有边框，是这条漂移的症状，
+     不是默认样式。判据：容器的类名只有一处真相，改一处就要连带这条链。 */
+  /* 文档是一块面板，不是一段漂着的文字：底色、细边、内边距，读起来才像"一份文件"。
+     这条原本属于 .markdown 容器，容器改名 .doc-rendered 时一起丢了 —— 现在找回来。 */
+  .doc .doc-rendered {
+    color: var(--fg);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 16px 20px 44px; margin: 12px 16px;
+  }
+  .doc .doc-rendered h1, .doc .doc-rendered h2, .doc .doc-rendered h3 { margin: 18px 0 8px; }
+  .doc .doc-rendered p { margin: 8px 0; }
+  .doc .doc-rendered code { background: #1f2328; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-small); }
+  .doc .doc-rendered pre { background: #1f2328; padding: 12px; border-radius: 6px; overflow: auto; }
+  /* 列表的悬挂缩进要显式要：marker 放在外面、li 的内容对齐在 26px 处，
+     第二条以后的行才不会退回左边。markdown 渲染器会给 li 套一层 <p>，它的
+     默认外边距会把行距撑开，一并收掉。 */
+  .doc .doc-rendered ul, .doc .doc-rendered ol { padding-left: 26px; list-style-position: outside; }
+  .doc .doc-rendered li { margin: 3px 0; }
+  .doc .doc-rendered li > p { margin: 0; }
+  /* The pieces our own renderer emits beyond prose. A table is a table, not a row
+     of pipes; a rule is a division, not three dashes. */
+  .doc .doc-rendered table { border-collapse: collapse; margin: 0; min-width: 100%; }
+  .doc .doc-rendered th, .doc .doc-rendered td {
+    border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+  .doc .doc-rendered th { color: var(--dim); font-weight: 600; background: #1f2328; }
+  .doc .doc-rendered blockquote {
+    margin: 10px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--dim);
+  }
+  .doc .doc-rendered hr.rule { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+  .doc .doc-rendered a { color: var(--accent); }
   .doc pre.diff { color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit; }
+  /* A diff is read left to right: two gutters for the two versions, then the line.
+     Green says what is there now, dim-and-struck says what it replaced. */
+  .diffview { font: inherit; }
+  .diffhunk { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 6px; }
+  .diffhunk:first-child { border-top: 0; margin-top: 0; }
+  .diffhunk .h-head { color: var(--accent); font-size: var(--fs-small); margin-bottom: 4px; }
+  .diffline { display: grid; grid-template-columns: 46px 46px 1fr; white-space: pre-wrap;
+    word-break: break-word; }
+  .diffline .g { color: var(--dim); text-align: right; padding-right: 10px; user-select: none;
+    font-size: var(--fs-small); }
+  .diffline.add { background: rgba(92,214,150,.10); box-shadow: inset 2px 0 0 var(--run); }
+  .diffline.add .body { color: var(--run); }
+  .diffline.del { background: rgba(255,255,255,.02); box-shadow: inset 2px 0 0 var(--line); }
+  .diffline.del .body { color: var(--dim); text-decoration: line-through; }
+  .diffline.ctx .body { color: var(--dim); }
   .doc .plain { color: var(--dim); white-space: pre-wrap; word-break: break-word; }
-  .dialogue { margin: 4px 14px 0; color: var(--dim); font-size: 12px; }
+  /* The side-effect face: one row per action, newest first, its diff under it.
+     Only the newest is open by default — a reader scanning the work should see
+     the recent shape first, not a wall of context lines. */
+  .fx { overflow: auto; padding: 6px 0 24px 26px; position: relative; }
+  /* A spine, not a list: the actions are a sequence, and a reader should see how
+     many steps there were before reading any of them. Collapsed rows keep only
+     their head, so a long run looks like a stack of cards rather than a wall. */
+  .fx::before { content: ""; position: absolute; left: 11px; top: 10px; bottom: 18px;
+    width: 1px; background: var(--line); }
+  .fx-item { position: relative; border: 1px solid var(--line); border-radius: 10px;
+    background: rgba(255,255,255,.015); padding: 0 12px; margin: 0 0 5px; }
+  .fx-item::before { content: ""; position: absolute; left: -20px; top: 13px; width: 7px;
+    height: 7px; border-radius: 50%; background: var(--line); }
+  .fx-item.open { background: rgba(92,214,150,.045); border-color: var(--run); margin-bottom: 10px; }
+  .fx-item.open::before { background: var(--run); }
+    .fx-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; }
+    .fx-head .caret { flex: 0 0 auto; background: none; border: 0; color: var(--dim);
+      font: inherit; font-size: var(--fs-small); cursor: pointer; padding: 0 2px; }
+    .fx-head .caret:hover { color: var(--fg); }
+    .fx-head .n { color: var(--dim); font-size: var(--fs-small); min-width: 2.4em; flex: 0 0 auto; }
+    .fx-head .k { color: var(--accent); font-size: var(--fs-small); flex: 0 0 auto; }
+    /* The label is the flexible one: the right-hand side is a machine fact that
+       can be arbitrarily long (a path, a line count), and letting it push the
+       title into a one-character column was exactly backwards. */
+    .fx-head .t { color: var(--fg); flex: 1 1 auto; min-width: 0; cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fx-head .t:hover { text-decoration: underline; }
+    /* The machine fact goes on its own line: it can be a whole path, and it was
+       the reason the title got squeezed to one character per line. */
+    .fx-fact { color: var(--dim); font-size: var(--fs-small); padding: 0 0 6px 22px;
+      overflow-wrap: anywhere; }
+    .fx-state { flex: 0 0 auto; font-size: var(--fs-small); padding: 1px 8px;
+      border: 1px solid currentColor; border-radius: 999px; opacity: .9; }
+    .fx-state.s-awaiting { color: #ffd24a; }
+    .fx-state.s-streaming { color: var(--run); }
+    .fx-state.s-error, .fx-state.s-cancelled { color: #ff7a6b; }
+  .fx-item.open .fx-head .t { color: var(--run); }
+  .fx-body { margin: 2px 0 10px; max-height: 300px; overflow: auto; }
+  .fx-item:not(.open) .fx-body { display: none; }
+  .fx-quiet { color: var(--dim); font-size: var(--fs-small); }
+  .fx-empty { color: var(--dim); padding: 22px 0; }
+  /* Whole-window reading: everything that belongs to the document goes away. */
+  body.fx-mode .rail,
+  body.fx-mode .rail-handle,
+  body.fx-mode .views,
+  body.fx-mode .vbar,
+  body.fx-mode .digest,
+  body.fx-mode .gate { display: none !important; }
+  body.fx-mode .centre { padding-left: 24px; }
+  .fx-head .thread-tag { color: var(--accent); font-size: var(--fs-small); opacity: .75; }
+  /* The file's header, shown as a header: a ruled block of key: value lines, not
+     prose, and not a heading. */
+  .doc .frontmatter {
+    color: var(--dim); white-space: pre-wrap; word-break: break-word; font: inherit;
+    font-size: var(--fs-small); border-left: 3px solid var(--line); padding: 6px 0 6px 10px; margin: 0 0 12px;
+  }
+  .dialogue { margin: 4px 14px 0; color: var(--dim); font-size: var(--fs-small); }
   .dialogue b { color: var(--accent); }
   .hint { color: var(--dim); padding: 16px; }
   .loading { color: var(--done); padding: 16px; }
@@ -138,22 +581,79 @@
   .hist-row:hover { background: var(--bg); }
   .hist-row .n { color: var(--dim); flex: none; }
   .hist-row .k { color: var(--accent); flex: none; width: 90px; }
-  .hist-row .st { margin-left: auto; color: var(--dim); font-size: 11px; }
+  .hist-row .st { margin-left: auto; color: var(--dim); font-size: var(--fs-small); }
   .hist-row.sel { background: var(--bg); box-shadow: inset 2px 0 0 var(--accent); }
 </style>
 </head>
-<body>
+<body data-layout="page">
+<div id="mask"><div id="mask-box">
+  <p id="mask-line">another window is the editor</p>
+  <button id="mask-claim">use this window</button>
+</div></div>
 <header>
-  <span class="brand">moss file_editor</span>
   <button class="toggle on" id="toggle" title="turn the model's editing on or off">editing: on</button>
-  <div class="chips" id="chips"></div>
+  <button class="switch" id="trust-global" title="hand every approval on this surface to the model">trust: off</button>
+  <!-- Reading the work rather than the file: every action this thread has had, its
+       side effect drawn, newest first. It sits next to trust because both answer
+       "how much of this surface am I delegating / looking at", neither is a way of
+       reading the document. -->
+  <button class="switch" id="effects-toggle" title="only what changed — every action of this thread, newest first">side effects</button>
   <span class="spacer"></span>
   <span class="conn" id="conn">connecting…</span>
 </header>
 <main>
-  <section class="stream" id="stream"></section>
-  <aside class="detail" id="detail"></aside>
+  <nav class="rail" id="rail"></nav>
+  <button class="rail-handle" id="rail-handle" title="threads">›</button>
+  <div class="centre">
+    <div class="views">
+      <button class="vtab on" data-view="document" id="vtab-doc">document</button>
+      <button class="vtab" data-view="edit" id="vtab-edit">edit</button>
+      <button class="vtab" data-view="history" id="vtab-hist">history</button>
+      <!-- The renderer picker sits after the three views on purpose: choosing how
+           to look at the document is a view-level choice, and it must not steal
+           space from the reading itself (DESIGN.md §6, point 6). -->
+      <button class="vtab render-tab" id="vtab-render" title="which renderer draws this document">render <span id="render-face">auto</span> ▾</button>
+      <!-- The draft gets its own tab, not a row in the picker. The library is a
+           catalogue of what this node ships; a draft is one thing I improvised a
+           minute ago. Two different lifetimes do not belong in one list. -->
+      <button class="vtab draft-tab" id="vtab-tmp" hidden title="the draft face pushed right now">临时</button>
+      <span class="spacer"></span>
+    </div>
+    <!-- The thread's running state belongs to the face it describes, so it sits
+         right above the text — not in the tab row, where it would still be there
+         while you are reading history. -->
+    <div class="vbar" id="vbar">
+      <button class="vtab meta-fold" id="meta-toggle" title="this thread's own facts">meta ▾</button>
+      <span class="vnote" id="vnote"></span>
+    </div>
+    <div class="render-menu" id="render-menu" hidden></div>
+    <div class="digest" id="digest" hidden></div>
+    <div class="gate" id="gate" hidden></div>
+    <section class="doc" id="doc"></section>
+    <!-- The side-effect face: the document is hidden here on purpose. This pane
+         answers one question — what did the model change — and a document would
+         make the reader re-derive that answer line by line. -->
+    <section class="fx" id="fx" hidden></section>
+    <!-- The edit affordance: a selection over whole lines becomes an addressable
+         range, and this is the one button that turns it into an edit. -->
+    <button class="edit-here" id="edit-here" hidden>edit these lines</button>
+    <div class="edit-box" id="edit-box" hidden>
+      <div class="edit-head">
+        <span id="edit-range"></span>
+        <span class="edit-hint">⌘/Ctrl+Enter 保存 · Esc 取消</span>
+      </div>
+      <textarea id="edit-text" spellcheck="false"></textarea>
+      <div class="edit-actions">
+        <button id="edit-save">保存</button>
+        <button id="edit-cancel">取消</button>
+      </div>
+    </div>
+    <section class="stream" id="stream" hidden></section>
+    <section class="meta" id="meta" hidden></section>
+  </div>
 </main>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 "use strict";
 
@@ -171,35 +671,366 @@ const pendingDetail = new Set();
 const threadStates = new Map();     // thread -> state (to spot a thread ending)
 
 const MAX_CARDS = 300;              // backstop bound on the client card store
+const AGED_KEEP = 12;               // newest cards kept in the list; older ones fold
 
 let selected = null;                // {thread, n}
 let focusThread = null;
+let view = "document";              // document | history | meta — three readings of one thread
+let viewBy = "default";             // who moved the page last: human or model
+// Where the reading is. One band, two authors: I point at what I am talking
+// about, they scroll to what they are reading — and both read back as the same
+// state, because "which lines are we on" is one fact, not two.
+let cursors = {};                   // thread -> {start, end, version} : one marker per document
+let viewAt = null;                  // where the human is parked: {thread, line} | null
+let selection = null;               // what the human picked: {thread, start, end, text} | null
+let format = "auto";                // auto | raw | markdown — how the document is drawn
+let formatBy = "default";
+let cursorKey = "";                 // last band I scrolled for, so a state echo does not yank the page
+let cursorBy = "default";           // who placed the marker just drawn: model or human
+let cursorQuietUntil = 0;           // after my own point lands, the human's scroll settles before it reports
+const docText = new Map();          // thread -> {version, lines, text}
+// Which action each thread has been read up to. Unread is a fact about the
+// human's attention, not about the thread: it lives here, in their browser.
+const seen = new Map(
+  Object.entries(JSON.parse(localStorage.getItem("fe.seen") || "{}")),
+);
 let tab = "effect";
 let enabled = true;
+let showEarlier = false;            // the fold line's own state, page-local
+let agedEl = null;
+let drafts = [];
+let trusted = [];   // directories the human trusted: exports there write at once
+let globalTrust = false;  // the whole surface handed over: every export writes at once                    // unclaimed working copies, from the server
 
 const streamEl = document.getElementById("stream");
-const detailEl = document.getElementById("detail");
-const chipsEl = document.getElementById("chips");
+const detailEl = document.createElement("div");
+detailEl.className = "detail";
+const railEl = document.getElementById("rail");
+const docEl = document.getElementById("doc");
+const fxEl = document.getElementById("fx");
+const effectsToggleEl = document.getElementById("effects-toggle");
+// What the side-effect face has been told: every thread's actions with their
+// diffs resolved, oldest first. It is a pull, not a stream — this face is opened
+// on purpose, and the actions a reader asked for are not worth pushing.
+let fxRows = [];
+// The human's scroll is a reading position, so it goes back up as the same
+// state mine does — debounced, because a scroll is a hundred events per gesture
+// and one of them is the answer.
+let scrollTimer = 0;
+let reportedCursor = "";
+docEl.addEventListener("scroll", () => {
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(reportCursor, 350);
+}, { passive: true });
+
+function lineUnder(clientY) {
+  // elementFromPoint alone answers "the doc's own padding" near the edges, which
+  // reads as "line 0" and made the position never report. Ask the whole stack,
+  // then fall back to the first row that reaches below this height.
+  const box = docEl.getBoundingClientRect();
+  const x = box.left + Math.min(24, box.width * 0.5);
+  for (const el of document.elementsFromPoint(x, clientY) || []) {
+    const row = el.closest && el.closest(".doc-line");
+    if (row && row.dataset.n) return parseInt(row.dataset.n, 10);
+  }
+  for (const row of docEl.querySelectorAll(".doc-line")) {
+    if (row.getBoundingClientRect().bottom > clientY) {
+      return parseInt(row.dataset.n, 10) || 0;
+    }
+  }
+  return 0;
+}
+
+let selectionTimer = 0;
+let reportedSelection = "";
+document.addEventListener("selectionchange", () => {
+  clearTimeout(selectionTimer);
+  selectionTimer = setTimeout(reportSelection, 250);
+});
+
+// The bridge every face shares: whatever the renderer drew, its blocks carry
+// `data-lines`, and that is how a click or a drag becomes a line range again.
+// Walking to the nearest ancestor is deliberate — a renderer may nest spans as
+// deep as it likes and never has to think about this.
+function linesOfNode(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const host = el && el.closest ? el.closest("[data-lines]") : null;
+  if (!host) return null;
+  const parts = String(host.dataset.lines || "").split("-");
+  const a = parseInt(parts[0], 10);
+  const b = parseInt(parts[1] || parts[0], 10);
+  return Number.isFinite(a) && Number.isFinite(b) ? [a, b] : null;
+}
+
+function lineOfNode(node) {
+  const range = linesOfNode(node);
+  return range ? range[0] : 0;
+}
+
+// A face without the bridge is a pure picture: nothing to report back, and
+// saying so is better than reporting a wrong line.
+function hasLineBridge() {
+  return !!docEl.querySelector("[data-lines]");
+}
+
+// A selection is the sentence the human cannot type: "this part". It goes up as
+// state so I can read it when I look, and its text rides along in a short
+// preview — enough to know what we are talking about, not enough to be a second
+// copy of the document.
+function reportSelection() {
+  // Only inside the edit face. Elsewhere a drag on the page is just a drag —
+  // believing it means "he is pointing at these lines" would be reading a
+  // signal that was never sent.
+  if (!focusThread || view !== "edit" || !hasLineBridge()) return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.anchorNode || !docEl.contains(sel.anchorNode)) {
+    if (reportedSelection) {
+      reportedSelection = "";
+      send({ type: "selection", thread: "", start: 0, end: 0 });
+    }
+    return;
+  }
+  const a = lineOfNode(sel.anchorNode);
+  const b = lineOfNode(sel.focusNode);
+  if (!a || !b) return;
+  const start = Math.min(a, b);
+  const end = Math.max(a, b);
+  const text = String(sel.toString() || "");
+  const sig = focusThread + ":" + start + "-" + end + ":" + text.length;
+  if (sig === reportedSelection) return;
+  reportedSelection = sig;
+  send({ type: "selection", thread: focusThread, start, end, text: text.slice(0, 400) });
+}
+
+// A position nobody chose is not a perception. Until the human has actually
+// touched the page, the page says nothing — otherwise "you: line 70" is the
+// model reading a ghost.
+let humanTouched = false;
+for (const ev of ["mousedown", "keydown", "wheel"]) {
+  document.addEventListener(ev, () => { humanTouched = true; }, { capture: true, passive: true });
+}
+
+function reportCursor() {
+  if (!humanTouched) return;
+  if (view !== "edit" || !focusThread || !hasLineBridge()) return;
+  if (Date.now() < cursorQuietUntil) return;   // my own point is still settling
+  const box = docEl.getBoundingClientRect();
+  const start = lineUnder(box.top + 6);
+  if (!start) return;
+  const sig = focusThread + ":" + start;
+  if (sig === reportedCursor) return;
+  reportedCursor = sig;
+  // A position, not a range: the visible span is just the window's height, and
+  // sending it as a range painted a band over the whole screen.
+  send({ type: "cursor", thread: focusThread, start, end: start });
+}
+const metaEl = document.getElementById("meta");
+const gateEl = document.getElementById("gate");
+const handleEl = document.getElementById("rail-handle");
+const scrimEl = document.createElement("div");
+scrimEl.className = "scrim";
+scrimEl.hidden = true;
+document.body.append(scrimEl);
+const vnoteEl = document.getElementById("vnote");
 const connEl = document.getElementById("conn");
 const toggleEl = document.getElementById("toggle");
 
+// How an open card is shown is the model's call. It used to announce itself with a
+// label in the header; the layout is visible on its own face, so the label is gone.
+function setLayout(mode, by) {
+  const layout = mode === "page" ? "page" : "split";
+  document.body.dataset.layout = layout;
+  document.body.dataset.layoutBy = by === "model" ? "model" : "human";
+}
+
+// The thread's facts, in one place: what it is, where it points, how far the
+// working copy has moved past the file. Every card used to carry a copy of this.
+function renderMeta() {
+  metaEl.replaceChildren();
+  if (!focusThread) {
+    metaEl.append(make("div", "hint", "pick a thread on the left"));
+    return;
+  }
+  const t = threads.get(focusThread);
+  const d = docText.get(focusThread);
+  if (!t) return;
+  const rows = [];
+  const add = (k, v, cls) => rows.push([k, v, cls || ""]);
+  add("thread", t.id);
+  add("label", t.label);
+  add("path", t.path || "(not bound to a file)", t.path ? "" : "dim");
+  add("state", t.state);
+  add("version", "v" + t.version);
+  add("lines", String(d ? d.lines : t.lines));
+  if (t.exported_to) {
+    add("on disk", "v" + t.exported_at + " → " + t.exported_to);
+    add(
+      "unsaved",
+      t.unsaved ? "the file is behind the working copy" : "nothing since the last export",
+      t.unsaved ? "warn" : "dim",
+    );
+  } else {
+    add("on disk", "nothing written yet", "dim");
+  }
+  for (const [k, v, cls] of rows) {
+    const row = make("div", "meta-row");
+    row.append(make("span", "k", k));
+    row.append(make("span", "v" + (cls ? " " + cls : ""), v));
+    metaEl.append(row);
+  }
+  if (t.path && t.state === "live") {
+    // Two scopes of trust, both the human's: this thread, or the whole directory
+    // it lives in. Nothing here is reachable from the model's command set — it
+    // can read `trusted` and say "click that one", which is the point.
+    const dir = t.path.slice(0, t.path.lastIndexOf("/")) || "/";
+    const dirTrusted = trusted.some(
+      (d) => t.path === d || t.path.startsWith(d.endsWith("/") ? d : d + "/"),
+    );
+    // One switch per row: a squeezed row turned two controls into a block of
+    // wrapped text, and a control nobody can read is a control nobody uses.
+    // The sentence says what the *current* state means, and the whole row is the
+    // hit area: a switch whose only feedback is a knob moving reads as inert.
+    const addToggle = (key, on, label, button) => {
+      const row = make("div", "meta-toggle" + (on ? " on" : ""));
+      const head = make("div", "mt-head");
+      head.append(make("span", "k", key));
+      head.append(button);
+      row.append(head);
+      row.append(make("div", "mt-note", label));
+      row.addEventListener("click", (ev) => {
+        if (ev.target !== button) button.click();
+      });
+      metaEl.append(row);
+    };
+    const auto = make("button", t.auto ? "switch on" : "switch", t.auto ? "on" : "off");
+    auto.setAttribute("aria-pressed", t.auto ? "true" : "false");
+    auto.addEventListener("click", () => send({ type: "auto", thread: t.id, auto: !t.auto }));
+    addToggle(
+      "auto-export",
+      t.auto,
+      t.auto
+        ? "on — writing this thread's own file needs no approval"
+        : "off — exports to this thread's file ask first",
+      auto,
+    );
+    const dirBtn = make("button", dirTrusted ? "switch on" : "switch", dirTrusted ? "on" : "off");
+    dirBtn.setAttribute("aria-pressed", dirTrusted ? "true" : "false");
+    dirBtn.id = "trust-dir";
+    dirBtn.title = "trust every write under " + dir;
+    dirBtn.addEventListener("click", () =>
+      send({ type: "trust_dir", path: dir, trusted: !dirTrusted }),
+    );
+    addToggle(
+      "trust " + dir,
+      dirTrusted,
+      dirTrusted
+        ? "on — every write under this directory lands without asking"
+        : "off — writes under this directory ask first",
+      dirBtn,
+    );
+  }
+}
+
+const trustGlobalEl = document.getElementById("trust-global");
+function renderTrust() {
+  trustGlobalEl.textContent = "trust: " + (globalTrust ? "on" : "off");
+  trustGlobalEl.classList.toggle("on", globalTrust);
+  trustGlobalEl.setAttribute("aria-pressed", globalTrust ? "true" : "false");
+  trustGlobalEl.title = globalTrust
+    ? "trust is on — every export writes without asking; click to take it back"
+    : "trust is off — exports ask, unless their directory is trusted";
+}
+trustGlobalEl.addEventListener("click", () =>
+  send({ type: "global_trust", on: !globalTrust }),
+);
+
+// One switch, two states: this face or the document. It is a reading of the same
+// thread, not a fourth tab — the tabs say how to look at the document, this says
+// whether to look at the document at all.
+effectsToggleEl.addEventListener("click", () =>
+  setView(view === "effects" ? "document" : "effects"),
+);
+renderTrust();
+
+// The bar says *something changed*; clicking it must hand over the change
+// itself, not a list of cards that mentions it. The cards stay one click away
+// on the history tab, which is where a reader who wants the index goes.
+function newestActionOf(id) {
+  let top = null;
+  for (const a of actions.values()) {
+    if (a.thread === id && (!top || a.n > top.n)) top = a;
+  }
+  return top;
+}
+
+// Both faces carry data-lines, so "the lines that moved" is one address whether
+// the reader is on a rendered face or on raw.
+function scrollToLines(range) {
+  if (!range) return;
+  for (const el of docEl.querySelectorAll("[data-lines]")) {
+    const r = linesOfNode(el);
+    if (r && r[0] <= range[0] && range[0] <= r[1]) {
+      el.scrollIntoView({ block: "center" });
+      return;
+    }
+  }
+}
+
+document.getElementById("digest").addEventListener("click", () => {
+  const target = newestActionOf(viewBase.id);
+  viewBase = { id: viewBase.id, n: topActionOf(viewBase.id) };
+  renderDigest();
+  if (!target) {
+    setView("history");
+    return;
+  }
+  if (focusThread !== target.thread) {
+    focusThread = target.thread;
+    requestText(target.thread);
+  }
+  const moved = regionOf(target);
+  if (moved) {
+    flashRange = moved;
+    setTimeout(() => { flashRange = null; renderDoc(); }, 1800);
+  }
+  setView("document");
+  // The render is async (a renderer module may still be loading), so the scroll
+  // is scheduled rather than taken now.
+  setTimeout(() => scrollToLines(moved), 150);
+});
+
+document.getElementById("vtab-doc").addEventListener("click", () => {
+  setView("document");
+  send({ type: "view", view: "document" });
+});
+document.getElementById("vtab-edit").addEventListener("click", () => {
+  setView("edit");
+  send({ type: "view", view: "edit" });
+});
+document.getElementById("vtab-hist").addEventListener("click", () => {
+  setView("history");
+  send({ type: "view", view: "history" });
+});
 function make(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
   if (text !== undefined) node.textContent = text;
   return node;
 }
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-function md(src) {
-  if (window.marked && marked.parse) return marked.parse(src || "");
-  return "<pre class='plain'>" + esc(src || "") + "</pre>";
-}
 function send(frame) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
 }
+
+// Only one window holds the surface: an edit lands on the shared copy, so two
+// windows that both look editable would be two hands on one document.
+let isCurrent = true;
+function setMasked(on, reason) {
+  isCurrent = !on;
+  document.body.classList.toggle("masked", !!on);
+  const line = document.getElementById("mask-line");
+  if (line) line.textContent = reason || "another window is the editor";
+}
+document.getElementById("mask-claim").addEventListener("click", () => send({ type: "claim" }));
 
 // -- state ----------------------------------------------------------------
 
@@ -244,35 +1075,854 @@ function removeThreadCards(thread) {
 
 // -- rendering ------------------------------------------------------------
 
-function renderChips() {
-  chipsEl.replaceChildren();
-  for (const t of threads.values()) {
-    const cls = "chip" +
-      (focusThread === t.id ? " on" : "") +
-      (t.state === "live" ? " live" : "");
-    const chip = make("button", cls, t.label + " v" + t.version);
-    chip.title = [t.id, t.path || "(blank)", t.state, t.lines + " lines"].join(" · ");
-    chip.addEventListener("click", () => selectThread(t.id));
-    chipsEl.append(chip);
+// The thread rail: every live object with the facts a chip could not carry —
+// where it points, which version it is at, whether the file is behind it, and
+// whether it is doing something right now. The selected row is the one the card
+// list below is showing; "all threads" is the unfiltered view.
+function awaitingOf(id) {
+  let count = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.state === "awaiting") count += 1;
+  }
+  return count;
+}
+
+function threadBusy(id) {
+  for (const a of actions.values()) {
+    if (a.thread === id && (a.state === "streaming" || a.state === "awaiting")) return true;
+  }
+  return false;
+}
+
+// Two readings of one thread, and only one of them is the object: the document
+// is what we are both editing, the card list is how it got here. Switching views
+// is the human's click (both are their surface); which thread is shown is
+// shared — clicking a thread in the rail or a card in the history moves both.
+function setView(next) {
+  // edit is the addressable face: it shares the document pane, and only there
+  // does a drag on the text mean "these lines".
+  // Opening meta is a fold, not a view: it belongs to the document face.
+  if (next === "meta") { toggleMeta(true); next = "document"; }
+  view = next === "history" ? "history"
+    : next === "edit" ? "edit"
+    : next === "effects" ? "effects"
+    : "document";
+  document.getElementById("vtab-doc").classList.toggle("on", view === "document");
+  document.getElementById("vtab-edit").classList.toggle("on", view === "edit");
+  document.getElementById("vtab-hist").classList.toggle("on", view === "history");
+  effectsToggleEl.classList.toggle("on", view === "effects");
+  // The side-effect face is a whole-window reading, not a pane: the thread rail,
+  // the document tabs and the document's own bar all belong to the file, and this
+  // face is not about the file. Leaving them up mixes two visual languages.
+  document.body.classList.toggle("fx-mode", view === "effects");
+  docEl.hidden = view !== "document" && view !== "edit";
+  fxEl.hidden = view !== "effects";
+  // The bar describes the document face; history and meta speak for themselves.
+  document.getElementById("vbar").hidden = view !== "document" && view !== "edit";
+  streamEl.hidden = view !== "history";
+  metaEl.hidden = view !== "document" && view !== "edit" ? true : metaEl.hidden;
+  if (view === "document" || view === "edit") renderDoc();
+  // Both faces are readings of the thread's actions, so both ask for them.
+  if (view === "history" && focusThread) requestActions(focusThread);
+  if (view === "effects") { requestEffects(); renderEffects(); }
+  if (!metaEl.hidden) renderMeta();
+  renderViewNote();
+}
+
+function renderViewNote() {
+  const base = vnoteEl.dataset.base || "";
+  const who = viewBy === "model" ? "moss set this view" : "";
+  const mark = focusThread ? cursors[focusThread] : null;
+  const cur = focusThread ? threads.get(focusThread) : null;
+  const live = mark && cur && mark.version === cur.version;
+  const look = mark && live
+    ? "pointed at " + mark.start + "–" + mark.end
+    : mark ? "point stale (text moved)" : "";
+  const you = viewAt && viewAt.thread === focusThread && viewAt.line
+    ? "you: line " + viewAt.line
+    : "";
+  const picked = selection && selection.thread === focusThread
+    ? "selected " + selection.start + "–" + selection.end
+    : "";
+  const face = currentFace && currentFace.name === "tmp"
+    ? "临时草稿 · " + ((activeDraftOf(focusThread) || {}).label || "draft") + " · read-only"
+    : currentFace && currentFace.name !== "raw"
+      ? "rendered by " + currentFace.name + " · read-only" + (formatBy === "model" ? " (moss)" : "")
+      : "";
+  vnoteEl.textContent = [base, face, look, you, picked, who].filter(Boolean).join(" · ");
+}
+
+// The thread's own facts, folded above the document rather than being a third
+// way of reading it.
+function toggleMeta(on) {
+  const target = typeof on === "boolean" ? on : metaEl.hidden;
+  metaEl.hidden = !target;
+  document.getElementById("meta-toggle").classList.toggle("on", target);
+  if (target) renderMeta();
+}
+
+document.getElementById("meta-toggle").addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleMeta();
+  send({ type: "view", view: "document" });
+});
+
+function requestActions(thread) {
+  if (!thread) return;
+  send({ type: "actions", thread });
+  // Starting on a thread with an old "you are on line N" is a lie about a click
+  // that never happened here.
+  humanTouched = false;
+  send({ type: "cursor", thread, start: 0 });
+}
+
+function requestText(thread) {
+  if (!thread) return;
+  requestActions(thread);
+  const known = docText.get(thread);
+  const t = threads.get(thread);
+  if (known && t && known.version === t.version) return;   // already current
+  send({ type: "text", thread });
+}
+
+// The line range an action touched, if it named one — that is what the document
+// scrolls to and marks when you pick a card. An action with no address (a whole
+// rewrite) marks nothing rather than guessing at one.
+function regionOf(a) {
+  if (!a) return null;
+  let spec = String(a.payload || "").trim();
+  if (spec.startsWith("{")) {
+    try {
+      spec = String(JSON.parse(spec).region || "");
+    } catch (e) {
+      spec = "";
+    }
+  }
+  const m = /^(\d+)(?:-(\d+))?$/.exec(spec);
+  if (!m) return null;
+  const start = parseInt(m[1], 10);
+  return [start, m[2] ? parseInt(m[2], 10) : start];
+}
+
+// The one gate: a version of this document is waiting to be written to a file.
+// Shown on the document itself, mirrored on its card in the history.
+function renderGate() {
+  gateEl.replaceChildren();
+  // Every export waiting on a verdict, whoever's thread it is: a gate nobody can
+  // see is not a gate.
+  const pending = [...actions.values()].filter(
+    (a) => a.state === "awaiting" && a.kind === "export",
+  );
+  if (!pending.length) {
+    gateEl.hidden = true;
+    return;
+  }
+  const a = pending[pending.length - 1];
+  gateEl.hidden = false;
+  const t = threads.get(a.thread);
+  const what = make(
+    "span",
+    "g-what",
+    "write " + a.thread + " v" + (t ? t.version : "?") + " to disk?",
+  );
+  const path = make("span", "g-path", String(a.payload || a.fact || ""));
+  const btns = make("div", "g-btns");
+  const yes = make("button", "accept", "write it");
+  yes.addEventListener("click", () => send({ type: "accept", thread: a.thread, n: a.n }));
+  const no = make("button", "deny", "not now");
+  no.addEventListener("click", () => send({ type: "deny", thread: a.thread, n: a.n }));
+  btns.append(yes, no);
+  const more = pending.length > 1 ? make("span", "g-path", "+" + (pending.length - 1) + " more") : null;
+  gateEl.append(what, path);
+  if (more) gateEl.append(more);
+  gateEl.append(btns);
+}
+
+// -- renderers ------------------------------------------------------------
+// A renderer is a file under the node's renderers/ directory, served as a plain
+// module. The page learns the library from the header comments (`/renderers`)
+// and imports a module only when it is actually used — so adding a renderer is
+// writing a file, not touching this page (DESIGN.md §6).
+//
+// The bookkeeping below is deliberately dumb: a list, a module cache, and a
+// per-thread override. Everything interesting lives in the renderer files.
+
+let rendererLib = [];               // [{name, ext, description, file}]
+const rendererMods = new Map();     // name -> module | null (import failed)
+const renderOverride = new Map();   // thread -> renderer name, this reader's pick
+let currentFace = null;             // {thread, name, broken} — what is on the glass
+let renderSeq = 0;                  // an async render older than this is dropped
+
+async function loadRendererLib() {
+  try {
+    const r = await fetch("/renderers", { cache: "no-store" });
+    const j = await r.json();
+    rendererLib = Array.isArray(j.renderers) ? j.renderers : [];
+  } catch (e) {
+    rendererLib = [];
+  }
+  renderRenderTab();
+}
+
+async function loadRenderer(name) {
+  if (rendererMods.has(name)) return rendererMods.get(name);
+  let mod = null;
+  try {
+    mod = (await import("/renderers/" + name + ".js")).default || null;
+  } catch (e) {
+    mod = null;
+  }
+  rendererMods.set(name, mod);
+  return mod;
+}
+
+// Which face this document opens on: this reader's pick for the thread, then the
+// stage-wide choice, then whoever declares the file's extension, then raw.
+// The order matters — a per-document choice must beat a global one, or a single
+// override would silently re-face every other open thread.
+function effectiveRenderer(threadId) {
+  if (renderOverride.has(threadId)) return renderOverride.get(threadId);
+  if (format && format !== "auto") return format;
+  const t = threads.get(threadId);
+  const path = String((t && t.path) || "").toLowerCase();
+  const match = rendererLib.find((r) => (r.ext || []).some((e) => path.endsWith(e)));
+  return match ? match.name : "raw";
+}
+
+function effectiveFormat() {
+  return focusThread ? effectiveRenderer(focusThread) : "raw";
+}
+
+// One card's own text, drawn by the markdown renderer when it is there and as
+// plain text when it is not. This panel is a smaller surface than the document
+// pane and has no fallback strip of its own, so the fallback here is silent by
+// design: the text still appears, which is the whole promise of that panel.
+function paintMarkdown(el, text) {
+  loadRenderer("markdown").then((m) => {
+    try {
+      if (!m || typeof m.render !== "function") throw new Error("no renderer");
+      el.innerHTML = String(m.render(text) ?? "");
+    } catch (e) {
+      el.textContent = text;
+    }
+  });
+}
+
+// -- the draft layer: the materials I push at runtime ---------------------
+// A draft is not a firework. While working on one document I push several faces
+// and switch between them, so they belong to the thread's context: each thread
+// keeps its own string of drafts, and the page remembers which one is showing.
+// Nothing is written to disk — a draft worth keeping becomes a file in
+// renderers/ and joins the library, which is the same road the library took.
+//
+// A draft is the body of render(text): it gets the document's text and returns
+// HTML. Nothing else is promised, and no capability is granted.
+
+const draftsByThread = new Map();   // thread -> Map(seq -> {seq, label, fn, error})
+const activeDraft = new Map();      // thread -> seq currently drawn
+
+function draftsOf(thread) {
+  let m = draftsByThread.get(thread);
+  if (!m) { m = new Map(); draftsByThread.set(thread, m); }
+  return m;
+}
+
+function activeDraftOf(thread) {
+  const m = draftsByThread.get(thread);
+  if (!m || !m.size) return null;
+  const want = activeDraft.get(thread);
+  if (want && m.has(want)) return m.get(want);
+  const last = [...m.keys()].pop();      // the newest is the one I meant last
+  return m.get(last) || null;
+}
+
+async function resolveRenderer(name) {
+  if (name === "tmp") {
+    const d = activeDraftOf(focusThread);
+    if (!d) return null;
+    return { name: "tmp", render: (text) => d.fn(text) };
+  }
+  return loadRenderer(name);
+}
+
+// Compile once, here — a broken draft must fail at the push, not under a click.
+function compileDraft(seq, script, label) {
+  try {
+    // eslint-disable-next-line no-new-func — the mechanism, not a leak: the code
+    // comes from the model, into its own browser, on purpose.
+    const fn = new Function("text", String(script ?? ""));
+    fn("");
+    return { seq, label: label || ("草稿 " + seq), fn, error: "", by: "model" };
+  } catch (e) {
+    const err = e && e.message ? e.message : String(e);
+    return { seq, label: (label || ("草稿 " + seq)) + "（坏了）", fn: () => { throw e; }, error: err, by: "model" };
   }
 }
 
+function installDraft(thread, seq, script, label, select) {
+  const d = compileDraft(seq, script, label);
+  draftsOf(thread).set(seq, d);
+  if (select) {
+    activeDraft.set(thread, seq);
+    // Selecting a draft is also selecting the face: install it and the picker
+    // still says "markdown" would be a page contradicting itself.
+    renderOverride.set(thread, "tmp");
+    // A draft pushed while nobody is looking at the thread still needs a place
+    // to land: without this the material arrives on a page that is not showing
+    // it, and both sides think the push failed.
+    if (!focusThread) {
+      focusThread = thread;
+      requestText(thread);
+      renderRail();
+    }
+  }
+  renderRenderTab();
+  if (thread === focusThread) renderDoc();
+}
+
+function selectDraft(thread, seq) {
+  activeDraft.set(thread, seq);
+  const d = draftsOf(thread).get(seq);
+  if (d) d.by = "human";
+  if (thread === focusThread && renderOverride.get(thread) !== "tmp") {
+    renderOverride.set(thread, "tmp");
+  }
+  renderRenderTab();
+  if (thread === focusThread) renderDoc();
+}
+
+// -- editing: a selection over whole lines becomes a range -------------------
+//
+// The human changes words; I wait. The lock is announced before the first
+// keystroke (edit_begin), so my writes fail with "he is editing 40–52" rather
+// than with a mystery. The commit lands as one action with author `u` — the same
+// shape as mine — and the page keeps a *pending* action under a client id until
+// the server hands back the authoritative one. Matching by id, not by "newest
+// wins", is what keeps a rejected edit from silently evaporating.
+
+const editHereEl = document.getElementById("edit-here");
+const editBoxEl = document.getElementById("edit-box");
+const editRangeEl = document.getElementById("edit-range");
+const editTextEl = document.getElementById("edit-text");
+let editRange = null;               // [start, end] while a box is open
+let editLocked = null;              // the range I told the server I am editing
+let pendingEdit = null;             // {client_id, thread, range, text}
+let flashRange = null;              // lines that just changed, until the server agrees
+let flashTimer = null;              // the clear runs from the render that painted it
+
+function lineRangeOfSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return null;
+  const a = linesOfNode(sel.anchorNode);
+  const b = linesOfNode(sel.focusNode);
+  if (!a || !b) return null;
+  return [Math.min(a[0], b[0]), Math.max(a[1], b[1])];
+}
+
+function placeEditButton() {
+  const range = view === "edit" && focusThread ? lineRangeOfSelection() : null;
+  if (!range) { editHereEl.hidden = true; return; }
+  const sel = window.getSelection();
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  editHereEl.hidden = false;
+  editHereEl.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 120)) + "px";
+  editHereEl.style.top = Math.max(8, rect.bottom + 6) + "px";
+  editHereEl.dataset.start = range[0];
+  editHereEl.dataset.end = range[1];
+}
+
+function currentLines(start, end) {
+  const d = docText.get(focusThread);
+  if (!d) return "";
+  return d.text.split("\n").slice(start - 1, end).join("\n");
+}
+
+async function openEditor(start, end) {
+  if (!focusThread) return;
+  // Only the addressable face can be edited: on a rendered face "these lines"
+  // is a block, and a block is not a text range you can type into.
+  if (effectiveRenderer(focusThread) !== "raw") chooseRenderer("raw");
+  await new Promise((r) => setTimeout(r, 0));
+  editRange = [start, end];
+  editTextEl.value = currentLines(start, end);
+  editRangeEl.textContent = focusThread + " · " + start + "–" + end;
+  editBoxEl.hidden = false;
+  editHereEl.hidden = true;
+  editTextEl.focus();
+  send({ type: "edit_begin", thread: focusThread, start, end });
+  editLocked = [start, end];
+}
+
+function closeEditor() {
+  editBoxEl.hidden = true;
+  editRange = null;
+  if (editLocked && focusThread) {
+    send({ type: "edit_cancel", thread: focusThread });
+    editLocked = null;
+  }
+}
+
+// Show the change before the server answers. A commit that waits for a round
+// trip before anything moves reads as "the button did nothing".
+function applyLocally(thread, start, end, text) {
+  const d = docText.get(thread);
+  if (!d) return null;
+  const lines = String(d.text).split("\n");
+  const body = text === "" ? [] : String(text).replace(/\n$/, "").split("\n");
+  lines.splice(start - 1, end - start + 1, ...body);
+  d.text = lines.join("\n");
+  d.lines = lines.length;
+  return [start, start + Math.max(body.length, 1) - 1];
+}
+
+function saveEditor() {
+  if (!editRange || !focusThread) return;
+  const clientId = "c-" + Date.now() + "-" + Math.floor(Math.random() * 1e4);
+  const region = editRange[0] + "-" + editRange[1];
+  flashRange = applyLocally(focusThread, editRange[0], editRange[1], editTextEl.value);
+  renderDoc();
+  pendingEdit = { client_id: clientId, thread: focusThread, range: region, text: editTextEl.value };
+  send({
+    type: "edit_commit",
+    thread: focusThread,
+    region,
+    text: editTextEl.value,
+    label: "edited " + region,
+    client_id: clientId,
+  });
+  editBoxEl.hidden = true;
+  editRange = null;
+  editLocked = null;               // the server releases it with the commit
+}
+
+editHereEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  openEditor(parseInt(editHereEl.dataset.start, 10), parseInt(editHereEl.dataset.end, 10));
+});
+document.getElementById("edit-save").addEventListener("click", saveEditor);
+document.getElementById("edit-cancel").addEventListener("click", closeEditor);
+editTextEl.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") saveEditor();
+  if (e.key === "Escape") closeEditor();
+});
+document.addEventListener("selectionchange", () => setTimeout(placeEditButton, 260));
+
+// -- the picker -----------------------------------------------------------
+// Choosing a face is a view-level act, so it lives in the tab row: the menu
+// lists what the library actually contains (read from the files themselves) and
+// nothing else. "auto" is not a renderer — it is "let the extension decide".
+
+const renderMenuEl = document.getElementById("render-menu");
+const renderFaceEl = document.getElementById("render-face");
+
+const draftTabEl = document.getElementById("vtab-tmp");
+
+function renderRenderTab() {
+  // The draft is not a renderer: it gets its own tab, and the picker keeps
+  // naming only what the node ships. Mixing the two would make "the library has
+  // four faces" and "I improvised one just now" the same sentence.
+  const active = focusThread ? activeDraftOf(focusThread) : null;
+  const onDraft = !!focusThread && renderOverride.get(focusThread) === "tmp" && !!active;
+  const count = focusThread ? draftsOf(focusThread).size : 0;
+  draftTabEl.hidden = !count;
+  draftTabEl.classList.toggle("on", onDraft);
+  draftTabEl.textContent = active ? "临时 · " + active.label : "临时";
+  const name = focusThread ? effectiveRenderer(focusThread) : "raw";
+  const auto = !renderOverride.has(focusThread) && (!format || format === "auto");
+  // While the draft covers the document the picker still names the library's
+  // choice, dimmed — "what I would be looking at" is worth keeping in sight.
+  renderFaceEl.textContent = (auto ? "auto · " : "") + name;
+  renderFaceEl.parentElement.classList.toggle("covered", onDraft);
+}
+
+function closeRenderMenu() {
+  renderMenuEl.hidden = true;
+}
+
+function chooseRenderer(name) {
+  if (focusThread) {
+    if (name) renderOverride.set(focusThread, name);
+    else renderOverride.delete(focusThread);
+  }
+  closeRenderMenu();
+  renderRenderTab();
+  renderDoc();
+  // The choice is the reader's, so it stays in the reader's browser: sending it
+  // up would let one window rewrite how another one looks at the same file.
+}
+
+function openRenderMenu() {
+  renderMenuEl.replaceChildren();
+  const row = (name, label, desc, active) => {
+    const el = make("div", "render-row" + (active ? " on" : ""));
+    el.append(make("span", "render-name", label));
+    if (desc) el.append(make("span", "render-desc", desc));
+    el.addEventListener("click", () => chooseRenderer(name));
+    renderMenuEl.append(el);
+  };
+  const auto = !renderOverride.has(focusThread) && (!format || format === "auto");
+  row("", "auto", "按扩展名选（现在是 " + (focusThread ? effectiveRenderer(focusThread) : "raw") + "）", auto);
+  for (const r of rendererLib) {
+    const exts = (r.ext || []).join(" ");
+    row(r.name, r.name, (r.description || "") + (exts ? "  ·  " + exts : ""),
+        !auto && renderOverride.get(focusThread) === r.name);
+  }
+  renderMenuEl.hidden = false;
+}
+
+document.getElementById("vtab-render").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (renderMenuEl.hidden) openRenderMenu(); else closeRenderMenu();
+});
+renderMenuEl.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", closeRenderMenu);
+
+// One tab, two states: look at the draft, or go back to the library's choice.
+// It disappears with the draft it belongs to — a tab that outlives its content
+// is a tab that lies about what is on the screen.
+draftTabEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!focusThread || !activeDraftOf(focusThread)) return;
+  if (renderOverride.get(focusThread) === "tmp") renderOverride.delete(focusThread);
+  else renderOverride.set(focusThread, "tmp");
+  renderRenderTab();
+  renderDoc();
+});
+
+// Async by necessity: a renderer is a module that may not be loaded yet, and
+// "render the document" has to wait for the one it needs. Every caller is
+// fire-and-forget, and `renderSeq` makes a stale render drop itself instead of
+// painting over a newer one.
+async function renderDoc() {
+  docEl.replaceChildren();
+  if (!focusThread) {
+    docEl.append(
+      make("div", "hint", "pick a thread on the left — its text shows here"),
+    );
+    vnoteEl.textContent = "";
+    return;
+  }
+  const t = threads.get(focusThread);
+  const d = docText.get(focusThread);
+  if (!d) {
+    docEl.append(make("div", "hint", "loading the working copy…"));
+    requestText(focusThread);
+    return;
+  }
+  vnoteEl.dataset.base =
+    "v" + d.version + " · " + d.lines + " lines" + (t && t.unsaved ? " · unsaved" : "");
+  renderViewNote();
+  // The face. Two rules, and the second one is the whole reason this is not a
+  // branch on a format string any more:
+  //   1. a renderer that throws must never take the pane with it — the failure
+  //      falls back to raw and says so in a strip, because "nothing rendered"
+  //      and "the renderer is broken" cannot look the same;
+  //   2. the raw face is a renderer like any other (the one whose defining feature
+  //      is line numbers), so the pane has exactly one path, not two.
+  const seq = ++renderSeq;
+  // The edit face is the addressable one by definition: a rendered block is not
+  // a text range you can type into.
+  const wanted = view === "edit" ? "raw" : effectiveRenderer(focusThread);
+  const hit = selected && selected.thread === focusThread
+    ? regionOf(actions.get(key(focusThread, selected.n))) : null;
+  const mark = focusThread ? cursors[focusThread] : null;
+  // A marker outlives its text only as history: same version, same lines.
+  const band = mark && (!t || mark.version === t.version) ? mark : null;
+  // One scroll rule: the reading band wins, the picked card's range is the
+  // fallback. Scrolled only when the band actually moved — a re-render for an
+  // unrelated reason must not drag the page back to where I once pointed.
+  const bandKey = band ? band.thread + ":" + band.start + "-" + band.end : "";
+  const scrollForBand = !!(band && bandKey !== cursorKey);
+
+  let mod = await resolveRenderer(wanted);
+  if (seq !== renderSeq) return;
+  let broken = "";
+  if (!mod) broken = wanted + " — 渲染器模块加载失败";
+  let shownName = mod ? wanted : "raw";
+  if (!mod) mod = await resolveRenderer("raw");
+  if (seq !== renderSeq) return;
+
+  let html = "";
+  // The document's path is the renderer's only way to know what language it is
+  // looking at; passing it costs nothing and guessing from content is worse.
+  const docPath = focusThread ? String((threads.get(focusThread) || {}).path || "") : "";
+  try {
+    html = mod ? String(mod.render(d.text, { path: docPath }) ?? "") : "";
+  } catch (e) {
+    broken = broken || (shownName + " — 渲染时抛错：" + (e && e.message ? e.message : e));
+  }
+  if (seq !== renderSeq) return;
+  if (broken && shownName !== "raw") {
+    // Fall back to the face that cannot fail: escaping text needs nothing else.
+    shownName = "raw";
+    mod = await resolveRenderer("raw");
+    if (seq !== renderSeq) return;
+    try { html = mod ? String(mod.render(d.text) ?? "") : ""; } catch (e) { html = ""; }
+  }
+
+  const host = make("div", "doc-rendered");
+  host.dataset.renderer = shownName;
+  host.innerHTML = html;
+  docEl.replaceChildren(host);
+  if (broken) docEl.prepend(make("div", "render-broken", broken + " —— 已退回 raw"));
+  currentFace = focusThread ? { thread: focusThread, name: shownName, broken } : null;
+  renderViewNote();
+  // Tell the server what is actually on the glass. Without this the model's
+  // state face only knows what it asked for, and a switch made here would leave
+  // it describing a face nobody is looking at.
+  if (focusThread) {
+    send({
+      type: "face",
+      thread: focusThread,
+      renderer: shownName,
+      seq: shownName === "tmp" ? (activeDraft.get(focusThread) || 0) : 0,
+      // Who chose this face: a draft is mine at the push, and becomes the
+      // reader's the moment they pick one of them.
+      by: shownName === "tmp"
+        ? ((activeDraftOf(focusThread) || {}).by || "human")
+        : (formatBy === "model" && !renderOverride.has(focusThread) ? "model" : "human"),
+    });
+  }
+
+  // The renderer paints what it knows how to paint; one that cannot map its
+  // glass back to lines simply has no decorate, and gets no band.
+  if (mod && typeof mod.decorate === "function") {
+    try {
+      mod.decorate(host, {
+        cursor: band ? { ...band, scroll: scrollForBand } : null,
+        hit,
+      });
+    } catch (e) {
+      docEl.prepend(make("div", "render-broken", shownName + " — 装饰时抛错：" + (e && e.message ? e.message : e)));
+    }
+  }
+  if (flashRange) {
+    // Every face carries data-lines, so one rule lights a rendered block or a
+    // raw line: whatever overlaps the changed range flashes.
+    for (const el of host.querySelectorAll("[data-lines]")) {
+      const r = linesOfNode(el);
+      if (r && r[1] >= flashRange[0] && r[0] <= flashRange[1]) el.classList.add("flash");
+    }
+    // The clear is scheduled from the render that actually painted the flash.
+    // Scheduling it when the action arrived raced the text frame — the timer
+    // usually won, and a change made from outside landed with nothing lit.
+    if (!flashTimer) {
+      flashTimer = setTimeout(() => { flashTimer = null; flashRange = null; renderDoc(); }, 2000);
+    }
+  }
+  if (band && scrollForBand) {
+    cursorKey = bandKey;
+    if (cursorBy === "model") cursorQuietUntil = Date.now() + 800;
+  } else if (!band && hit) {
+    const el = host.querySelector(".hit");
+    if (el) el.scrollIntoView({ block: "center" });
+  }
+}
+
+// A thread nobody has opened since its last action says so — same idiom as a
+// conversation list, because that is what this rail is.
+function unreadOf(id) {
+  const last = seen.get(id) || 0;
+  let count = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.n > last) count += 1;
+  }
+  return count;
+}
+
+function topActionOf(id) {
+  let top = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.n > top) top = a.n;
+  }
+  return top;
+}
+
+// What the open document has gained since this reader started looking at it. The
+// rail's `seen` mark answers "anything new in here?"; this answers "what changed
+// while I was reading", which is a different question and needs its own baseline.
+let viewBase = { id: null, n: 0 };
+
+function digestCount() {
+  if (!viewBase.id) return 0;
+  let count = 0;
+  for (const a of actions.values()) {
+    if (a.thread === viewBase.id && a.n > viewBase.n) count += 1;
+  }
+  return count;
+}
+
+function renderDigest() {
+  const el = document.getElementById("digest");
+  if (!el) return;
+  const count = digestCount();
+  el.hidden = count === 0;
+  if (!count) return;
+  el.textContent = count + " change" + (count > 1 ? "s" : "") +
+    " since you started reading this — click for the cards";
+}
+
+function markSeen(id) {
+  let top = 0;
+  for (const a of actions.values()) {
+    if (a.thread === id && a.n > top) top = a.n;
+  }
+  if ((seen.get(id) || 0) >= top) return;
+  seen.set(id, top);
+  renderUnreadBadge();
+  try {
+    localStorage.setItem("fe.seen", JSON.stringify(Object.fromEntries(seen)));
+  } catch (e) {
+    /* a browser that will not keep it just forgets the dots */
+  }
+}
+
+// Narrow window: the rail is a drawer laid over the document, opened from the
+// left edge and closed by the scrim or by picking a thread. Wide: it is simply
+// there. The document's width is never the thing that gives way.
+function narrow() {
+  return window.matchMedia("(max-width: 900px)").matches;
+}
+
+function setDrawer(open) {
+  const show = open && narrow();
+  railEl.classList.toggle("open", show);
+  scrimEl.hidden = !show;
+  // The button travels with the drawer's edge, so its arrow has to point back.
+  handleEl.textContent = show ? "‹" : "›";
+  handleEl.title = show ? "hide threads" : "threads";
+}
+
+
+handleEl.addEventListener("click", () => setDrawer(!railEl.classList.contains("open")));
+scrimEl.addEventListener("click", () => setDrawer(false));
+// 窗口变大变小不该替人把抽屉关掉：那是一步"人的动作"，只有人能做。
+window.addEventListener("resize", () => setDrawer(railEl.classList.contains("open")));
+// 进来的时候先让人看见列表 —— 不知道有哪些 thread，就没有可点的东西。
+setDrawer(true);
+
+// The drawer's closed state still has to answer "did anything happen" — this rides
+// the handle, so it has to be refreshed wherever `seen` or the action list moves.
+function renderUnreadBadge() {
+  let unread = 0;
+  for (const id of threads.keys()) if (unreadOf(id)) unread += 1;
+  if (unread) handleEl.dataset.count = String(unread);
+  else delete handleEl.dataset.count;
+}
+
+function renderRail() {
+  renderUnreadBadge();
+  railEl.replaceChildren();
+  const all = make("button", "rail-row all" + (focusThread === null ? " sel" : ""), "all threads");
+  all.addEventListener("click", () => {
+    focusThread = null;
+    renderRail();
+    renderStream();
+  });
+  railEl.append(all);
+  for (const t of threads.values()) {
+    const row = make("button", "rail-row" + (focusThread === t.id ? " sel" : ""));
+    row.append(make("span", "t-name", t.label));
+    const path = t.path ? t.path.split("/").slice(-2).join("/") : "(blank)";
+    row.append(make("span", "t-path", path));
+    // One line, one question: does this need the reader? Anything else (version,
+    // how many actions happened, whether the file is behind) is a fact about the
+    // object, and lives in meta — a row that says everything says nothing.
+    const waits = awaitingOf(t.id);
+    const unread = unreadOf(t.id);
+    let status = null;
+    if (waits) status = make("span", "t-meta waits", "needs you — " + waits + " to decide");
+    else if (unread) status = make("span", "t-meta unread", unread + " new");
+    else status = make("span", "t-meta quiet", t.state === "live" ? "" : t.state);
+    if (status.textContent) row.append(status);
+    if (threadBusy(t.id) && !waits) row.append(make("span", "t-dot"));
+    row.title = [
+      t.id,
+      t.path || "(blank)",
+      t.state,
+      t.lines + " lines",
+      t.exported_to ? ("file has v" + t.exported_at + " → " + t.exported_to) : "nothing written yet",
+    ].join(" · ");
+    row.addEventListener("click", () => {
+      // Same baseline as selectThread: the digest counts what arrives *after* this
+      // moment, so the rail's dot and the document's bar answer different questions.
+      viewBase = { id: t.id, n: seen.get(t.id) || 0 };
+      focusThread = t.id;
+      markSeen(t.id);
+      requestText(t.id);
+      renderRail();
+      renderStream();
+      renderDoc();
+      renderGate();
+      renderDigest();
+      setDrawer(false);
+    });
+    railEl.append(row);
+  }
+}
+
+// Unclaimed working copies are the model's bookkeeping: its notice carries the
+// count and orphans() lists them. On the page a number nobody can act on is one
+// more thing to read past, so the chip is gone.
+function renderDrafts() {}
+
 function selectThread(id) {
-  if (focusThread === id) { focusThread = null; renderChips(); return; }
   focusThread = id;
-  renderChips();
-  const t = threads.get(id);
-  if (t && t.version > 0) selectCard(id, t.version);
+  viewBase = { id: id, n: seen.get(id) || 0 };
+  renderDigest();
+  markSeen(id);
+  requestText(id);
+  renderRail();
+  renderStream();
+  renderDoc();
 }
 
 function renderStream() {
   streamEl.replaceChildren();
-  let count = 0;
-  for (const [k, a] of actions) {
-    streamEl.append(buildCard(a));
-    count++;
+  const every = [...actions.values()];
+  const all = focusThread ? every.filter((a) => a.thread === focusThread) : every;
+  // Only the newest AGED_KEEP cards are drawn; older settled ones fold. A card
+  // still awaiting a verdict or still streaming is never folded, however old —
+  // it is the one thing in the list that needs someone.
+  const cutoff = Math.max(0, all.length - AGED_KEEP);
+  let folded = 0;
+  all.forEach((a, i) => {
+    const foldable = i < cutoff && a.state !== "awaiting" && a.state !== "streaming";
+    if (foldable) folded += 1;
+    if (foldable && !showEarlier) return;
+    const card = buildCard(a);
+    streamEl.append(card);
+    // The open card carries its own content — no separate pane to hunt for.
+    if (selected && selected.thread === a.thread && selected.n === a.n) {
+      card.append(detailEl);
+      renderDetail();
+    }
+  });
+  if (!all.length) {
+    streamEl.append(
+      make(
+        "div",
+        "hint",
+        focusThread
+          ? "nothing on this thread yet — its actions will stack up here"
+          : "no cards yet — the model's actions will stream here",
+      ),
+    );
   }
-  if (!count) streamEl.append(make("div", "hint", "no cards yet — the model's actions will stream here"));
+  if (!agedEl) {
+    agedEl = make("button", "aged-more", "");
+    agedEl.addEventListener("click", () => {
+      showEarlier = !showEarlier;
+      renderStream();
+    });
+    streamEl.prepend(agedEl);
+  } else {
+    streamEl.prepend(agedEl);
+  }
+  agedEl.hidden = folded === 0;
+  agedEl.textContent = showEarlier
+    ? "hide the earlier " + folded + " — back to the newest"
+    : "earlier: " + folded + " — show";
   maybeScroll();
 }
 
@@ -297,20 +1947,16 @@ function buildCard(a) {
   row.append(make("span", "badge s-" + a.state, a.state));
   box.append(row);
 
+  if (a.fact) box.append(make("div", "fact", a.fact));
+
   if (a.state === "awaiting") box.append(renderActions(a));
   return box;
 }
 
-function renderActions(a) {
-  const host = make("div", "actions");
-  const input = make("input");
-  input.placeholder = "ask…";
-  input.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || !input.value.trim()) return;
-    send({ type: "ask", thread: a.thread, n: a.n, text: input.value.trim() });
-    input.value = "";
-  });
-  host.append(input);
+// Talking about a card is talking to me — there is no text box in a card.
+// The card carries the decision it is waiting for, and nothing else.
+function renderActions(a, compact) {
+  const host = make("div", "actions" + (compact ? " compact" : ""));
   for (const act of ["accept", "deny"]) {
     const btn = make("button", act, act);
     btn.addEventListener("click", (e) => {
@@ -332,10 +1978,11 @@ function selectCard(thread, n) {
   requestDetail(thread, n);
 }
 
-function openDetail() { detailEl.classList.add("open"); }
+function openDetail() { detailEl.classList.add("has-card"); }
 function closeDetail() {
   selected = null;
-  detailEl.classList.remove("open");
+  detailEl.classList.remove("has-card");
+  renderDetail();
   renderStream();
 }
 
@@ -346,8 +1993,99 @@ function requestDetail(thread, n) {
   send({ type: "detail", thread, n });
 }
 
+// The whole thread's actions with their diffs, in one pull. Asking per card
+// would cost one round trip per row, and the reader opened this face to see all
+// of them at once.
+// The side-effect face is global on purpose: the question is "what has the model
+// been doing", which is not a property of any one thread. The thread shows up as
+// a tag on each row instead — read the work first, the file second.
+function requestEffects() {
+  send({ type: "effects" });
+}
+
+function renderEffects() {
+  fxEl.replaceChildren();
+  const rows = fxRows;
+  if (!rows.length) {
+    fxEl.append(make("div", "fx-empty", "nothing has happened yet — no action to show"));
+    return;
+  }
+  // Newest first: the question is "what did the model just do", and the answer
+  // is at the top. The newest few stay open — one open row means every update
+  // clears the field of view and nothing can be watched across updates. Older
+  // ones stay one click away, closed.
+  const OPEN_TAIL = 3;
+  rows.slice().reverse().forEach((a, i) => {
+    const shown = i < OPEN_TAIL;
+    const item = make("div", "fx-item" + (shown ? " open" : ""));
+    const head = make("div", "fx-head");
+    // 三角管展开, 其余整条管「跳过去」: 在这张卡上面真正要做的事是回到那个 thread
+    // 去操作, 而不是在这里再读一遍 diff.
+    const caret = make("button", "caret", shown ? "▾" : "▸");
+    caret.title = "show what this step changed";
+    caret.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = item.classList.toggle("open");
+      caret.textContent = open ? "▾" : "▸";
+    });
+    head.append(caret);
+    head.append(make("span", "n", "#" + a.n));
+    head.append(make("span", "k", a.kind));
+    head.append(make("span", "thread-tag", a.thread || ""));
+    head.append(make("span", "t", a.label || "(no label)"));
+    // 状态只在不是 done 的时候出现: 一条在等放行的签发, 长得和已经写完的那条一样,
+    // 是这张面最容易漏掉的一件事.
+    if (a.state && a.state !== "done") {
+      head.append(make("span", "fx-state s-" + a.state, a.state));
+    }
+    head.addEventListener("click", () => jumpToAction(a.thread, a.n));
+    item.append(head);
+    // 机器那一行独立成行: 它可能是一整条路径, 挤在第一行里会把标题压成一列一个字.
+    if (a.effect || a.fact) item.append(make("div", "fx-fact", a.effect || a.fact));
+    // 等放行的那条直接在原地决定: 这条动作已经知道自己属于哪一版, 逼人先跳到另一个面
+    // 上再点一下, 是把两个面之间的边界当成了规则 —— 它只是当初没想到.
+    if (a.state === "awaiting") {
+      const acts = make("div", "actions compact");
+      for (const verdict of ["accept", "deny"]) {
+        const btn = make("button", verdict, verdict);
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          send({ type: verdict, thread: a.thread, n: a.n });
+        });
+        acts.append(btn);
+      }
+      item.append(acts);
+    }
+    const body = make("div", "fx-body");
+    if (a.diff) {
+      body.append(renderDiffView(a.diff));
+    } else if (a.fact) {
+      body.append(make("div", "fx-quiet", a.fact));
+    } else {
+      body.append(make("div", "fx-quiet", "this action moved nothing textual"));
+    }
+    item.append(body);
+    fxEl.append(item);
+  });
+}
+
+// 从副作用面跳回那张卡: 换到那个 thread, 选中那一版, 回到文档面 —— accept / deny
+// 这类真正能在这一步做的动作都在那个面上. 副作用面负责看见, 不负责在这里再操作一遍.
+function jumpToAction(thread, n) {
+  if (!thread) return;
+  focusThread = thread;
+  renderRail();
+  renderStream();
+  selectCard(thread, n);
+  setView("document");
+}
 function renderDetail() {
-  if (!selected) return;
+  if (!selected) {
+    detailEl.replaceChildren();
+    detailEl.classList.remove("has-card");
+    return;
+  }
+  detailEl.classList.add("has-card");
   const { thread, n } = selected;
   const a = actions.get(key(thread, n));
   const t = threads.get(thread);
@@ -357,30 +2095,25 @@ function renderDetail() {
 
   const head = make("div", "d-head");
   head.append(make("span", "d-title", (a ? a.label : "") + "  #" + n));
-  if (t) head.append(make("span", "d-sub",
-    t.label + " · v" + t.version + " · " + (t.path || "(blank)") +
-    (t.state === "exported" ? " · exported → " + (t.exported_to || "") : "")));
-  if (t && t.path) {
-    head.append(make("span", "spacer"));
-    const auto = make("button", "t-auto" + (t.auto ? " on" : ""), "auto");
-    auto.title = "trust this thread — export to its file without asking";
-    auto.addEventListener("click", () => send({ type: "auto", thread: t.id, auto: !t.auto }));
-    head.append(auto);
+  if (a && a.fact) head.append(make("span", "d-sub", a.fact));
+  const rng = regionOf(a);
+  if (rng) {
+    const jump = make("button", "d-jump", "see in document");
+    jump.title = "show lines " + rng[0] + "–" + rng[1] + " in the document view";
+    jump.addEventListener("click", () => setView("document"));
+    head.append(jump);
   }
+  head.append(make("span", "spacer"));
   const close = make("button", "d-close", "×");
   close.addEventListener("click", closeDetail);
   head.append(close);
   detailEl.append(head);
 
-  const tabs = make("div", "tabs");
-  for (const name of ["effect", "full", "history"]) {
-    const b = make("button", "tab" + (tab === name ? " on" : ""), name);
-    b.addEventListener("click", () => { tab = name; renderDetail(); });
-    tabs.append(b);
-  }
-  detailEl.append(tabs);
+  // No tab row: a card has one thing to say — what it changed. The whole document
+  // is a click away in the document view, so "the file as it left it" is not a
+  // second reading of the same card.
 
-  if (tab === "history") { renderHistory(thread); return; }
+
 
   const effectLine = make("div", "effect-line");
   effectLine.append(make("b", null, "side effect: "));
@@ -398,18 +2131,61 @@ function renderDetail() {
 
   const doc = make("div", "doc");
   if (d) {
-    const content = tab === "effect" ? d.source : d.full;
-    const mdEl = make("div", "markdown");
-    mdEl.innerHTML = md(content);
-    doc.append(mdEl);
-    if (tab === "effect" && d.diff) {
-      doc.append(make("div", "effect-line", make("b", null, "diff")));
-      doc.append(make("pre", "diff", d.diff));
+    // The effect tab answers one question — what changed — so for an edit it
+    // *is* the diff, drawn; for a read or a find there is nothing to compare and
+    // the action's own text is the answer. An action that carries neither (an
+    // export: it moved the text, not the words) says nothing here on purpose —
+    // the card's own line already answers where it went.
+    if (d.diff) {
+      doc.append(renderDiffView(d.diff));
+    } else if (d.source) {
+      doc.append(make("div", "doc-label", "this action — what it says"));
+      const mdEl = make("div", "markdown");
+      paintMarkdown(mdEl, d.source);
+      doc.append(mdEl);
     }
   } else {
     doc.append(make("div", "loading", "loading…"));
   }
   detailEl.append(doc);
+}
+
+// A unified diff, drawn rather than printed: two gutters (the old file, the new
+// one) and the line itself. Additions read as what is there now; deletions stay
+// visible but struck, because "what it used to say" is half of the meaning.
+function renderDiffView(text) {
+  const host = make("div", "diffview");
+  let oldNo = 0;
+  let newNo = 0;
+  let hunk = null;
+  const push = (cls, oldG, newG, body) => {
+    if (!hunk) {
+      hunk = make("div", "diffhunk");
+      host.append(hunk);
+    }
+    const row = make("div", "diffline " + cls);
+    row.append(make("span", "g", oldG));
+    row.append(make("span", "g", newG));
+    row.append(make("span", "body", body));
+    hunk.append(row);
+  };
+  for (const raw of String(text).split("\n")) {
+    if (raw.startsWith("@@")) {
+      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+      oldNo = m ? parseInt(m[1], 10) : 0;
+      newNo = m ? parseInt(m[2], 10) : 0;
+      hunk = make("div", "diffhunk");
+      hunk.append(make("div", "h-head", raw));
+      host.append(hunk);
+      continue;
+    }
+    if (raw.startsWith("---") || raw.startsWith("+++")) continue;
+    if (raw.startsWith("+")) push("add", "", newNo++, raw.slice(1));
+    else if (raw.startsWith("-")) push("del", oldNo++, "", raw.slice(1));
+    else if (raw.startsWith(" ")) push("ctx", oldNo++, newNo++, raw.slice(1));
+  }
+  if (!host.childElementCount) host.append(make("div", "hint", "no textual change"));
+  return host;
 }
 
 function renderHistory(thread) {
@@ -434,13 +2210,163 @@ function renderHistory(thread) {
 
 function onFrame(frame) {
   switch (frame.type) {
+    case "current": setMasked(false, ""); break;
+    case "mask": setMasked(true, frame.reason); break;
     case "snapshot": {
       threads.clear();
+      // The draft faces I pushed earlier, restored with the page: a reload must
+      // not make my materials vanish from my own perception.
+      draftsByThread.clear();
+      for (const [tid, items] of Object.entries(frame.render_drafts || {})) {
+        for (const d of items) installDraft(tid, d.seq, d.script, d.label, false);
+      }
       threadStates.clear();
+      setLayout(frame.layout, frame.layout_by);
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
       for (const a of frame.actions) upsertAction(a);
-      renderChips();
+      if (frame.drafts) drafts = frame.drafts;
+      if (frame.trusted) trusted = frame.trusted;
+      if (typeof frame.global_trust === "boolean") globalTrust = frame.global_trust;
+      renderTrust();
+      if (frame.view) {
+        view = frame.view;
+        viewBy = frame.view_by || "default";
+      }
+      cursors = frame.cursors ? { ...frame.cursors } : {};
+      cursorKey = "";
+      viewAt = frame.view_at && frame.view_at.thread ? frame.view_at : null;
+      selection = frame.selection || null;
+      if (frame.format) { format = frame.format; formatBy = frame.format_by || "default"; }
+      renderRail();
+      renderDrafts();
       renderStream();
+      if (!selected) renderDetail();
+      renderGate();
+      // One thread and nothing picked: it is the only thing to look at.
+      if (focusThread === null && threads.size === 1) {
+        focusThread = [...threads.keys()][0];
+      }
+      if (focusThread) requestText(focusThread);
+      setView(view);
+      renderRail();
+      break;
+    }
+    case "trusted": {
+      trusted = frame.trusted || [];
+      if (typeof frame.global_trust === "boolean") globalTrust = frame.global_trust;
+      renderTrust();
+      if (!metaEl.hidden) renderMeta();
+      break;
+    }
+    case "layout": {
+      setLayout(frame.layout, frame.by);
+      break;
+    }
+    case "view": {
+      viewBy = frame.by || "model";
+      setView(frame.view || "document");
+      break;
+    }
+    case "cursor": {
+      // My marker for one thread. It scrolls the page to itself once; after that
+      // the page is the reader's — their scrolling never moves it, it never moves
+      // them, and switching threads keeps each document's own place.
+      if (!frame.thread) break;
+      cursors[frame.thread] = {
+        start: frame.start, end: frame.end, version: frame.version,
+      };
+      cursorBy = frame.by || "default";
+      if (frame.by === "model") {
+        cursorKey = "";
+        if (focusThread !== frame.thread) {
+          focusThread = frame.thread;
+          requestText(focusThread);
+          renderRail();
+        }
+        // A pointer from the model means "look at these lines" — so a face that
+        // cannot show the document at all has to come back to one that can.
+        // edit *can* show it: the lines and their numbers are right there, so
+        // being pointed at is no reason to pull the human out of editing.
+        if (view === "history") setView("document");
+        renderDoc();
+      } else {
+        renderDoc();
+      }
+      renderViewNote();
+      break;
+    }
+    case "format": {
+      format = frame.format || "auto";
+      formatBy = frame.by || "default";
+      renderDoc();
+      renderViewNote();
+      break;
+    }
+    case "preview": {
+      // A draft pushed from the model side: kept with its siblings for this
+      // thread, and drawn at once — the point of a draft is to see whether the
+      // idea was worth having.
+      installDraft(frame.thread, frame.seq, frame.script, frame.label, true);
+      break;
+    }
+    case "actions": {
+      // The pulled history for one thread: the same cards the push would have
+      // delivered, for whoever was not there when they were made.
+      for (const a of frame.actions || []) upsertAction(a);
+      renderRail();
+      renderDigest();
+      if (frame.thread === focusThread) { renderDoc(); }
+      break;
+    }
+    case "landed": {
+      // The server's copy of the edit I just made. Matched by client id — the
+      // pending action is dropped only when its own id comes back.
+      if (pendingEdit && frame.client_id === pendingEdit.client_id) pendingEdit = null;
+      // The card comes with the receipt, so there is nothing to pull: one round
+      // trip instead of three is most of why the echo felt slow.
+      if (frame.action) { upsertAction(frame.action); renderRail(); renderDigest(); }
+      requestText(frame.thread);
+      setTimeout(() => { flashRange = null; renderDoc(); }, 1500);
+      break;
+    }
+    case "rejected": {
+      if (pendingEdit && frame.client_id === pendingEdit.client_id) {
+        const lost = pendingEdit;
+        pendingEdit = null;
+        // Loud, not silent: an edit that did not land must look like one.
+        const strip = make("div", "render-broken",
+          "这次编辑没有落地（" + lost.thread + " " + lost.range + "），文本已回到上一次落地的状态");
+        docEl.prepend(strip);
+        setTimeout(() => strip.remove(), 8000);
+        requestText(frame.thread);
+      }
+      break;
+    }
+    case "lock": {
+      // The lock is state, and the state is the point: it says who is holding
+      // the pen, on what, since when.
+      if (focusThread && frame.thread === focusThread && frame.lock) {
+        renderViewNote();
+      }
+      break;
+    }
+    case "preview_show": {
+      // Going back to an earlier draft. The drafts are the thread's material,
+      // and comparing one with another is how a view gets judged.
+      selectDraft(frame.thread, frame.seq);
+      break;
+    }
+    case "selection": {
+      selection = frame.selection || null;
+      if (frame.format) { format = frame.format; formatBy = frame.format_by || "default"; }
+      renderViewNote();
+      break;
+    }
+    case "view_at": {
+      // Their position: a note, never a move. Repainting rows here is what made
+      // the page feel like it was arguing with the scroll wheel.
+      viewAt = frame.thread ? { thread: frame.thread, line: frame.line } : null;
+      renderViewNote();
       break;
     }
     case "threads": {
@@ -456,18 +2382,79 @@ function onFrame(frame) {
       }
       threadStates.clear();
       for (const t of frame.threads) { threads.set(t.id, t); threadStates.set(t.id, t.state); }
-      renderChips();
+      if (frame.drafts) drafts = frame.drafts;
+      if (frame.trusted) trusted = frame.trusted;
+      if (typeof frame.global_trust === "boolean") globalTrust = frame.global_trust;
+      renderTrust();
+      renderRail();
+      renderDrafts();
       if (changed) renderStream();
       if (selected) renderDetail();
+      // The meta page is made of these thread facts — flipping auto there rewrites
+      // them, and without this the switch keeps showing the state it had before.
+      if (!metaEl.hidden) renderMeta();
       break;
     }
     case "action": {
       upsertAction(frame);
+      renderGate();
+      // A new action on the thread the side-effect face is showing is exactly
+      // what that face is for: pull it again, or the reader watches a frozen
+      // list while the model keeps working.
+      if (view === "effects") requestEffects();
       const a = frame;
+      // Something that needs a human jumps the page to itself — a card waiting for a
+      // verdict with nobody looking at it is the one thing worth interrupting for.
+      // An ordinary edit does not: yanking the reader off the document they chose
+      // is how "what changed elsewhere" stops being answerable. It lights the rail
+      // instead, and the drawer handle carries the count when the rail is closed.
+      if ((focusThread === null && (a.state === "streaming" || a.state === "awaiting"))
+          || a.state === "awaiting") {
+        focusThread = a.thread;
+        markSeen(a.thread);
+        if (a.thread === viewBase.id) renderDigest();
+        renderRail();
+      } else {
+        // The reader is already here, so the rail's dot is theirs to skip; the
+        // digest keeps its own baseline and still reports what moved under them.
+        if (a.thread === focusThread) markSeen(a.thread);
+        if (a.thread === viewBase.id) renderDigest();
+        renderUnreadBadge();
+        renderRail();
+      }
+      // The working copy moved: the document is stale until told otherwise.
+      if (a.thread === focusThread) {
+        docText.delete(a.thread);
+        // The original contract: a change lands in place and shows *which* lines
+        // moved. Only a local edit used to flash, so a change made from outside
+        // arrived as "something changed since you started reading" — a pointer to
+        // the change instead of the change. No scroll here on purpose: the reader
+        // keeps their place and the flash tells them where it went.
+        const moved = regionOf(a);
+        if (moved) flashRange = moved;
+        if (view === "document") requestText(a.thread);
+        if (!metaEl.hidden) renderMeta();
+      } else {
+        renderRail();
+      }
       renderStream();
       if (selected && selected.thread === a.thread && selected.n === a.n) {
         renderDetail();
       }
+      break;
+    }
+    case "text": {
+      docText.set(frame.thread, {
+        version: frame.version,
+        lines: frame.lines,
+        text: frame.text,
+      });
+      if (focusThread === frame.thread && view === "document") renderDoc();
+      break;
+    }
+    case "effects": {
+      fxRows = frame.rows || [];
+      if (view === "effects") renderEffects();
       break;
     }
     case "detail": {
@@ -532,6 +2519,24 @@ function connect() {
   };
 }
 connect();
+// The library is a directory on disk, so it is read once at open and only then
+// does "which face does this file get" have an answer. Loading it late is fine:
+// until it arrives, `auto` resolves to raw, which is the honest default anyway.
+loadRendererLib();
+
+// A window left open across an edit keeps running the old page — the change looks
+// like it never happened, and the human cannot easily refresh a frame that lives
+// inside the screen as an adopted window. So ask the server for the page's
+// fingerprint instead: pull-based, cheap, and the window updates itself.
+let pageVer = null;
+setInterval(async () => {
+  try {
+    const d = await (await fetch("/__ver", { cache: "no-store" })).json();
+    if (!d.ver) return;
+    if (pageVer === null) { pageVer = d.ver; return; }
+    if (d.ver !== pageVer) location.reload();
+  } catch (e) { /* the server is not up yet — ask again next tick */ }
+}, 3000);
 </script>
 </body>
 </html>

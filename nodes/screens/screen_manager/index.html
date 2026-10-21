@@ -6,12 +6,15 @@
 <style>
   :root {
     --rail-w: 200px;
+    --slotbar-h: 26px;
     --gap: 6px;
     --border: #2a3340;
     --accent: #3ddc8f;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
+  /* 池子在场时水印压暗：它是背景，不该和瓷砖抢中间那块地方 */
+  body.pool-on { --moss-dim: .14; }
   body {
     font: 13px/1.4 ui-monospace, "PingFang SC", "Noto Sans CJK SC", monospace;
     background: #0a0c10;
@@ -25,10 +28,77 @@
   #bg       { position: fixed; inset: 0; z-index: 0; }
   #moss     { position: fixed; inset: 0; z-index: 1; display: grid; place-items: center; pointer-events: none; }
   #desktop  { position: fixed; inset: 0; z-index: 2; }
-  #stage    { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 3; }
-  #scrim    { position: fixed; inset: 0; z-index: 4; display: none; background: rgba(0,0,0,.55); }
-  #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }
+  #stage    { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 4; }
+  #scrim    { position: fixed; inset: 0; z-index: 3; display: none; background: rgba(0,0,0,.55); }
+  #scrim-exit { position: fixed; top: 12px; right: 12px; z-index: 6; }  /* 按钮必须在页面之上 */
+  /* The state light: 2px on the top edge, moving only while I am thinking.
+     It answers "is it working on something" without a single glyph, and it is
+     the one thing that changes when the ghost goes quiet — so the screen never
+     looks frozen when it is only silent. */
+  /* A 2px hairline at the very top edge is the first thing a window frame eats,
+     and on a bright stage it is invisible anyway. So: thicker, detached from the
+     edge by a hair, and carrying its own dark bed — the light has to be readable
+     against whatever happens to be underneath, and it has to survive being
+     cropped by the top of the window. */
+  #think {
+    position: fixed; left: 0; right: 0; top: 0; height: 5px; z-index: 9;
+    pointer-events: none; opacity: 0; transition: opacity .35s ease;
+    background-color: rgba(0,0,0,.55);
+    box-shadow: 0 1px 6px rgba(0,0,0,.55);
+    background-image: linear-gradient(90deg, transparent, #6ea8fe 30%, #fff3b0 50%, #6ea8fe 70%, transparent);
+    background-size: 40% 100%; background-repeat: no-repeat;
+    background-position: -40% 0;
+  }
+  #think.on { opacity: 1; animation: think-sweep 1.4s linear infinite; }
+  @keyframes think-sweep {
+    from { background-position: -40% 0; }
+    to   { background-position: 140% 0; }
+  }
+  body.think-dim #think { opacity: .5; }
+  /* The conversation, legibly: one line per clause, newest at the bottom, pushed
+     up by the next. Reading order is the whole point — a line that flies across
+     shows its tail first, which is fine for a comment feed and wrong for a
+     dialogue. Above the veil (z 7) so nothing drawn can bury it. */
+  #talk {
+    /* Clear of the rail (--rail-w follows its collapsed state) and centred: this
+       is subtitles, not a left-aligned log. */
+    position: fixed; left: calc(var(--rail-w) + 24px); bottom: 26px; right: 24px;
+    z-index: 8; pointer-events: none; display: flex; flex-direction: column;
+    gap: 3px; align-items: center; font-size: var(--talk-size, 32px); line-height: 1.32;
+    /* The page never declares a font, so subtitles inherited the browser default
+       and read like a scarecrow. A clean sans, sized for reading off a stream. */
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+      "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    font-weight: 700;
+  }
+  /* Yellow on black outliner: the broadcast convention, and the one style that
+     survives whatever is underneath. Fixed on purpose — a knob here would only be
+     something else to get wrong; a second case earns a second style. */
+  #talk .line.gone { opacity: 0; transition: opacity 1.4s ease-out; }
+  #talk .line {
+    max-width: 80%; padding: 1px 10px; border-radius: 3px; text-align: center;
+    background: rgba(6, 8, 7, .55); color: #ffd24a; white-space: pre-wrap;
+    text-shadow:
+      -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000,
+      -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000,
+      0 3px 8px rgba(0, 0, 0, .95);
+    animation: talk-in .16s ease-out;
+    transition: opacity .9s ease-out;
+  }
+  @keyframes talk-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
   #veil     { position: fixed; inset: 0; z-index: 7; pointer-events: none; }
+  /* 遮罩：不是当前屏的页面留在这一层 —— 它仍连着线，但只有一句话和一个按钮。
+     为什么需要它：同一个 url 可以开在很多标签里，而每个标签的窗口尺寸不同；
+     "谁在画、画在哪一块"必须只有一个答案，否则模型画的手势会落在人没看的那块。 */
+  #mask     { position: fixed; inset: 0; z-index: 20; display: none;
+              background: rgba(4,10,6,.94); color: #cfe8d8; place-items: center; }
+  body.masked #mask { display: grid; }
+  #mask-box { max-width: 34em; padding: 24px; text-align: center;
+              font: 15px/1.7 ui-monospace, Menlo, monospace; }
+  #mask-box p { margin: 0 0 16px; opacity: .8; }
+  #mask-claim { font: inherit; padding: 8px 18px; color: #6fd6a0; cursor: pointer;
+                background: transparent; border: 1px solid #3d8; border-radius: 4px; }
+  #mask-claim:hover { background: rgba(51, 221, 136, .12); }
   #log      { position: fixed; top: 8px; right: 8px; z-index: 8; }
   #log-badge { background: #161d26; color: #8af; border: 1px solid var(--border); border-radius: 10px;
                padding: 3px 9px; cursor: pointer; font-size: 11px; }
@@ -38,6 +108,112 @@
   #log-list.open { display: block; }
   #log-list div { padding: 3px 0; border-bottom: 1px solid #1a2230; }
   #st       { position: fixed; top: 10px; left: 12px; z-index: 8; color: #8af; font-size: 11px; }
+  /* 连接状态：断线必须可见 —— 页面不许假装自己还活着 */
+  /* ===== 人在看的那一面：默认只有产品本身 =====
+     仪表（状态行 / 帧率 / 几何 / 活动日志）默认全藏，只有 --debug 时才挂在侧栏
+     底部 —— 它们不该浮在舞台上，更不该跟栏重叠。 */
+  #st, #link, #log, #rail-state-text { display: none; }
+  body.debug #st, body.debug #link { display: block; }
+  body.debug #log { display: block; }
+  body.debug #rail-state-text { display: inline; }
+  #rail-diagnostics { display: none; }
+  body.debug #rail-diagnostics {
+    display: block; padding: 6px 9px; border-top: 1px solid var(--border);
+    color: #8af; font-size: 11px; max-height: 40%; overflow-y: auto;
+  }
+  #rail-diagnostics #log-list { display: block; position: static; width: auto; border: 0;
+    background: transparent; padding: 0; max-height: none; }
+  #rail-diagnostics #log-badge { display: none; }
+  #rail-diagnostics #log-list div { border-bottom: 1px solid #1a2230; }
+  #log { position: static; }
+  /* 仪表一律进栏、不进浮层：#st 原本是 fixed 在左上角，那正好压在栏上 ——
+     默认藏起来只是让它不出现，--debug 时还得把它挪进栏里。 */
+  #st { position: static; top: auto; left: auto; }
+  #link { position: static; margin-top: 2px; color: #3d8; }
+
+  /* 心跳：在线时水位标极慢呼吸，说话时亮起（.alive），断线时灰掉且静止。
+     水位标是 background 层 —— 舞台上有 item 时它被盖住，所以它表达的只是
+     "空屏时我在不在"；断线在任何情况下都看得见的那一份，挂在侧栏顶上那颗点。 */
+  /* 呼吸帧自己带乘数：animation 的 opacity 盖掉普通声明，只改 #moss span 不会生效。 */
+  @keyframes breathe {
+    0%, 100% { opacity: calc(.30 * var(--moss-dim, 1)) }
+    50%      { opacity: calc(.54 * var(--moss-dim, 1)) }
+  }
+  #moss span { animation: breathe 4.5s ease-in-out infinite; }
+  body.link-down #moss span {
+    animation: none; background: none; opacity: calc(.45 * var(--moss-dim, 1));
+    -webkit-text-fill-color: #4a5560; color: #4a5560;
+  }
+  /* 心跳点长在 home 上：home 是"回到我们说话的地方"，我在不在就是那里的状态。
+     它替掉了原先单独一行 —— 一行只放一颗点，本来就多余。 */
+  .rail-home .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: #3ddc8f;
+    display: inline-block; margin-right: 7px; vertical-align: middle;
+    animation: beat 2.6s ease-in-out infinite;
+  }
+  @keyframes beat { 0%, 100% { opacity: .45 } 50% { opacity: 1 } }
+  .rail-home .dot.down { background: #f66; animation: none; }
+  body.link-down #rail { border-right-color: #f66; }
+  body.link-down.rail-collapsed #rail { background: #2a1010; }
+  /* 脚本错误时状态行必须现身，不管是不是 --debug */
+  body.page-error #rail-state-text { display: inline; color: #f66; }
+
+  /* ===== rail：人切组的侧栏（第一层只放"地方"） =====
+     主权：人管"看哪" —— 这个面就是那句话的实体。常驻、可手动收起；
+     不做自动隐藏：自动隐藏会让控件先消失、再等人想起它存在，而我们正在治的
+     恰恰是"人看不见我在干什么"这个病。闲置只淡不隐（留一条边条）。
+     指针预算：**接收指针的层都要让开这一列**（stage / desktop），不接收指针的层
+     可以铺满（bg / veil）。否则栏底下的可交互区域会点不到，而且这种错在结构上
+     不可见。 */
+  :root { --rail-open-w: 188px; --rail-strip: 14px; --rail-w: var(--rail-open-w); }
+  body.rail-collapsed { --rail-w: var(--rail-strip); }
+  #rail {
+    position: fixed; top: 0; bottom: 0; left: 0; width: var(--rail-w);
+    z-index: 9; display: flex; flex-direction: column;
+    background: rgba(11, 15, 21, .92); border-right: 1px solid var(--border);
+    transition: width .18s ease, opacity .35s ease;
+  }
+  /* 收起后**不靠悬停展开**。悬停展开在这套布局里是错的：点下"收起"的那一刻鼠标
+     还在栏上，浏览器把 :hover 留在栏上，栏当场自己弹回来 —— 表现就是"这个按钮
+     没用"。所以收起态的边条本身就是一个按钮：点它展开，行为确定、不猜指针。 */
+  body.rail-collapsed #rail { cursor: pointer; }
+  body.rail-collapsed #rail-groups,
+  body.rail-collapsed #rail-foot { display: none; }
+  /* 收起后必须**看得出哪儿能点** —— 只留一条光边，人不知道点哪里。
+     整条边条都是热区，这个符号只是把"热区在这儿"说出来。 */
+  /* 收起成边条时，那颗"我在不在"的点改挂在边条上：进焦点会强制收起，
+     而"我在不在"不能因为进了焦点就消失。 */
+  #rail-dot { display: none; }
+  body.rail-collapsed #rail-dot {
+    display: block; width: 7px; height: 7px; border-radius: 50%;
+    background: #3ddc8f; margin: 8px auto 0; animation: beat 2.6s ease-in-out infinite;
+  }
+  #rail-hint { display: none; }
+  body.rail-collapsed #rail-hint {
+    display: flex; flex: 1; align-items: center; justify-content: center;
+    color: #5c6a76; font-size: 12px; user-select: none;
+  }
+  body.rail-collapsed #rail:hover #rail-hint { color: #3ddc8f; }
+  #rail.idle { opacity: .42; }
+  #rail.idle:hover { opacity: 1; }
+  #rail-idle { display: none; }
+  #rail-groups { flex: 1; overflow-y: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+  #rail-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+  .rail-item {
+    display: block; width: 100%; text-align: left; font: inherit;
+    background: transparent; color: #9fb0c0; border: 0; border-radius: 6px;
+    padding: 6px 9px; cursor: pointer; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .rail-item:hover { background: rgba(61,220,143,.10); color: #dfe9f2; }
+  .rail-item.active { background: rgba(61,220,143,.16); color: #3ddc8f; }
+  .rail-empty { color: #55636f; font-size: 11px; padding: 6px 9px; }
+  #rail-foot { padding: 6px; border-top: 1px solid var(--border); }
+  #rail-toggle {
+    width: 100%; background: transparent; color: #6b7c8c; border: 0; cursor: pointer;
+    font: inherit; padding: 4px; border-radius: 6px;
+  }
+  #rail-toggle:hover { background: rgba(255,255,255,.06); color: #dfe9f2; }
 
   /* ===== desktop：代理圆盘（canvas 物理） ===== */
   #desktop { cursor: pointer; }
@@ -50,15 +226,143 @@
     position: relative; overflow: hidden; border: 1px solid var(--border);
     background: #0a0a0a; min-width: 0; min-height: 0; pointer-events: auto;
     transition: grid-row .3s, grid-column .3s;
+    display: flex; flex-direction: column;
   }
-  .slot iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .slot iframe { flex: 1 1 auto; width: 100%; height: 100%; border: 0; display: block; min-height: 0; }
+
+  /* ===== 窗口标题栏：每个窗口一条，但由屏幕画 =====
+     node 只交 label（它声明里的名字），不交 chrome —— 否则三个 node 会长出三种高度、
+     三种按钮位置，而标题栏正是最容易被各写一遍的地方。
+     它同时是 notify 的可见形态：一块砖先得有名字、有它自己的那个动作，
+     人和我才说得上"那块东西"。 */
+  .slot-bar {
+    flex: 0 0 var(--slotbar-h); display: flex; align-items: center; gap: 8px;
+    padding: 0 8px;
+    /* 窗口感来自"标题栏比内容亮一档"这条 OS 惯例 —— 不是靠加边框。
+       顶边那条 1px 高光把栏和内容分开，又不制造第二道框。 */
+    background: #161d26; border-bottom: 1px solid #0b0f14;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+    color: #8a97a4; font-size: 11.5px; user-select: none; white-space: nowrap;
+  }
+  .slot-bar .name { color: #dfe9f2; overflow: hidden; text-overflow: ellipsis; }
+  .slot-bar .sp { flex: 1; }
+  /* 按钮平时不吵、指到就有：默认无边框、低对比；hover 才亮边框。
+     accent 只留给"这个窗口正在被放大"这一个状态 —— 颜色要有分工，
+     到处都亮等于到处都不亮。 */
+  .slot-bar button {
+    background: transparent; border: 0; border-radius: 3px; padding: 3px 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #6b7885; cursor: pointer; line-height: 0;
+    transition: color .15s, background .15s;
+  }
+  .slot-bar button:hover { color: #dfe9f2; background: rgba(255,255,255,.07); }
+  /* accent 只留给"这个窗口正在被放大"这一个状态：颜色表达状态，不做装饰。 */
+  .slot.focused .slot-bar button { color: var(--accent); }
   .slot.hidden { display: none; }
 
+  /* 醒（awake）：把**已经物化**的那些 slot 原地点亮 —— 不新建 iframe、不搬父节点（WD1）。
+     指针一进场，**整片一起**从画像变屏幕；它是"场活了"，不是"多开了十个窗口"。
+     它是一次"看"，不是一次"用"，所以不接收指针：否则光标进砖 → 活页盖上来 →
+     吃掉指针 → pointerleave → 撤掉 → pointerenter …… 抽搐。
+     外形照着瓷砖画，让人读到的是"同一块东西活了"。 */
+  .slot.peek {
+    position: fixed; z-index: 3; pointer-events: none; box-sizing: border-box;
+    /* 粗边框：黑底上，活页自己的内容会把边界吃掉 —— 没有框就读成"一片糊在背景里的东西"，
+       而不是"一块东西"。框是这块屏的"这是活的"最便宜的说法。
+       尺寸全部乘 --pb：光学缩小时整块 slot 被 scale 下去，框和字若不预先放大，
+       屏幕上就只剩半像素的线和四像素的字（第一版就是这样，自己截图才发现）。 */
+    border-style: solid; border-color: rgba(138,150,144,.62);
+    border-width: calc(2px * var(--pb, 1));
+    border-radius: 6px;
+    background: #060a08 padding-box;
+    box-shadow: 0 18px 48px rgba(0,0,0,.6);
+  }
+  /* 指针停着的那一块：框加粗提亮 —— 十块都活着的时候，它是"你正停在这"的唯一标记。 */
+  .slot.peek.pointed { border-width: calc(3px * var(--pb, 1)); border-color: rgba(120,255,190,.95); }
+  /* 名字跟着活页走：活页一盖上来，砖上那行字就被压住了，而它是唯一能回答
+     "这是什么"的线索（光学缩小的画面像一张海报）。名字由 raiseSlot 写进 data-label。
+     尺寸同样乘 --pb —— 它长在被 scale 的元素里面。 */
+  .slot.peek::after {
+    content: attr(data-label);
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: calc(18px * var(--pb, 1)) calc(10px * var(--pb, 1)) calc(6px * var(--pb, 1));
+    font-size: calc(16px * var(--pb, 1)); line-height: 1.1;
+    color: #d8ffe9; text-align: center; letter-spacing: .02em;
+    text-shadow: 0 1px 4px rgba(0,0,0,.9);
+    background: linear-gradient(to top, rgba(3,10,7,.78), rgba(3,10,7,0));
+    pointer-events: none; border-radius: 0 0 6px 6px;
+  }
+  /* 出现是"活过来"，不是"弹出来"：硬切会在划过时读成一次闪，
+     淡入即使误触也只是一次柔和的呼吸。 */
+  .slot.peek.fade { transition: opacity .18s ease-out; }
+
   /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
-  .slot.fullscreen { position: fixed; inset: 0; z-index: 5; border: 0; }
+  /* 焦点：同一个 slot 换一套样式，不是搬容器、不是复制 iframe。
+     左边让开栏宽 —— 它是接收指针的层，按判据必须让，"被侧栏挡住"是违反判据的 bug。 */
+  .slot.focused { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; border: 0; }
   #scrim-exit {
     background: #222; color: #ddd; border: 1px solid #555;
     border-radius: 4px; padding: 6px 12px; cursor: pointer;
+    /* 弱：你读内容时它不该抢注意力；但也不能弱到看不见 —— 它是"怎么出去"的唯一提示。
+       0.3 在黑底上几乎不可见，0.45 加一点底色刚好"在但不吵"。 */
+    opacity: .45; transition: opacity .18s; background: rgba(34, 34, 34, .8);
+  }
+  #scrim-exit:hover { opacity: 1; }
+
+  /* ===== pool：home 的池子 —— 所有 item 的陈列（前景 / 中景 / 远景） ===== */
+  /* home 不再是一片虚空：所有开着的 item 都在这层里，按 recency 排成三档深度。
+     深度里只放"画像"（标签 + 状态点），**不放 iframe** —— 活体在深处会把帧率吃掉，
+     而且它接收指针，会和"谁在焦点"这件事打架。 */
+  #pool {
+    position: fixed; top: 0; right: 0; bottom: 0; left: var(--rail-w);
+    z-index: 2; display: none; pointer-events: none;
+  }
+  #pool.on { display: block; }
+  .tile {
+    position: absolute; left: 0; top: 0; width: 264px; height: 164px;
+    /* 没有画像的时候，标签就是瓷砖的"脸" —— 所以它居中，不是页脚。 */
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 7px; padding: 10px; box-sizing: border-box; text-align: center;
+    border: 1px solid transparent; border-radius: 6px;
+    /* 双背景：内层是瓷砖本体，外层只画边框（padding-box / border-box 各取一层） */
+    background:
+      linear-gradient(165deg, #24332b, #101713) padding-box,
+      linear-gradient(135deg, rgba(61, 220, 143, .55), rgba(61, 220, 143, .07) 45%, rgba(61, 220, 143, .38)) border-box;
+    color: #cff7e2; font-size: 12.5px; letter-spacing: .02em;
+    pointer-events: auto; cursor: pointer; transform-origin: 50% 50%;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, .55),
+                inset 0 1px 0 rgba(120, 255, 190, .07);
+  }
+  .tile .tile-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: #3ddc8f;
+    flex: 0 0 auto; opacity: .85;
+  }
+  .tile .tile-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%; font-size: 16px; font-weight: 500;
+    color: #a8d8bf; transition: color .18s;
+  }
+  .tile.lit .tile-name { color: #eafff3; }
+  /* 脸：一行字是主面，名字退成底下的小字。有图的时候图铺满，字压在图上。 */
+  .tile .tile-line {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%; font-size: 14px; font-weight: 500;
+    color: #dff7ea; letter-spacing: .01em;
+  }
+  .tile.faced .tile-name { font-size: 11px; opacity: .62; }
+  .tile .tile-art {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; border-radius: 5px; opacity: .92;
+  }
+  .tile.arted { justify-content: flex-end; }
+  .tile.arted .tile-caption {
+    position: relative; width: 100%; padding: 5px 6px;
+    background: linear-gradient(transparent, rgba(6, 12, 9, .88) 42%);
+    border-radius: 0 0 5px 5px;
+  }
+  .tile.sel {
+    border-color: #3ddc8f;
+    box-shadow: 0 0 0 1px #3ddc8f, 0 18px 44px rgba(0, 0, 0, .6);
   }
 
   /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
@@ -67,25 +371,52 @@
     background: linear-gradient(90deg, #127a4b, #3ddc8f, #127a4b);
     -webkit-background-clip: text; background-clip: text;
     color: transparent; background-size: 200% 100%;
-    opacity: .35; transition: opacity .4s;
+    transition: opacity .4s;
     /* font-size 由 JS 反解：measureText 后按屏宽等比设定，保证四字等宽。 */
   }
-  #moss span.alive { opacity: 1; animation: flow 1.6s linear infinite; }
+  #moss span.alive { opacity: calc(1 * var(--moss-dim, 1)); animation: flow 1.6s linear infinite; }
   @keyframes flow { to { background-position: 200% 0; } }
 </style>
 </head>
 <body>
 
 <canvas id="bg"></canvas>
+<div id="think"></div>
 <div id="moss"><span>MOSS</span></div>
 <canvas id="desktop"></canvas>
+<div id="pool"></div>
 <div id="stage"></div>
-<div id="scrim"><button id="scrim-exit">✕ 退出全屏</button></div>
+<div id="scrim"><button id="scrim-exit">✕ exit fullscreen</button></div>
 <canvas id="veil"></canvas>
-<div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
-<div id="st"></div>
+<div id="talk" aria-live="polite"></div>
+<div id="mask"><div id="mask-box">
+  <p id="mask-line">another window is the screen</p>
+  <button id="mask-claim">use this window</button>
+</div></div>
+<aside id="rail">
+  <div id="rail-hint" title="expand">›</div>
+  <div id="rail-dot" class="dot"></div>
+  <div id="rail-groups"></div>
+  <div id="rail-diagnostics">
+    <div id="st"></div>
+    <div id="link"></div>
+    <div id="log"><span id="log-badge">0</span><div id="log-list"></div></div>
+  </div>
+  <div id="rail-foot"><button id="rail-toggle" title="collapse / expand">‹</button></div>
+</aside>
 
 <script>
+// 加载期/运行期脚本错误必须可见：否则整个画面静悄悄死掉，人只会以为"没生效"。
+// （教训：一次 const/let 的暂时性死区错误就让整页脚本停摆，而我只能靠用户反馈才发现。）
+window.addEventListener('error', (e) => {
+  const el = document.getElementById('link');
+  if (el) { el.textContent = 'script error: ' + (e.message || 'unknown'); el.classList.add('down'); }
+  // 这条**不受 --debug 影响**：脚本整个死掉时，屏幕上必须留下痕迹，
+  // 否则人只会以为"没生效"。
+  const label = document.getElementById('rail-state-text');
+  if (label) { label.textContent = 'script error'; }
+  document.body.classList.add('page-error');
+});
 // =====================================================================
 // 四层合成器：bg（声音感知 + MOSS 文字）→ desktop（未入组 item 的代理圆盘
 // 物理）→ stage（已入组 item 的 iframe 分格）→ veil（模型的手）。
@@ -102,47 +433,287 @@ const veil = $('#veil'), vctx = veil.getContext('2d');
 const stage = $('#stage');
 const mossEl = $('#moss span');
 const st = $('#st');
+const link = $('#link');
+const rail = $('#rail'), railGroups = $('#rail-groups');
 
+// 调试面：默认关。开启的唯一入口是 node 的 --debug（自开窗时它会把 ?debug=1 带上）——
+// 屏幕上给人看的是产品，仪表在关掉时不该占一个像素。页面自己往 stdout 报的自查
+// 不受它影响：那条线从不进人眼，是模型的眼睛。
+const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+if (DEBUG) document.body.classList.add('debug');
+
+// ---- 我是哪块屏 ----
+// 同一个 url 可以开在多个标签里，而每个标签的窗口尺寸不同：几块屏同时画，
+// 模型画的手势就会落在人没在看的那一块。所以页面先自报身份（uid 存
+// sessionStorage —— 刷新不变、换标签变），由节点指派*一块*为当前屏，其余挂遮罩。
+// `?claim=1` 是节点启动时自己开的那扇窗：它带着认领意图进来，不必等人点按钮。
+const SCREEN_UID_KEY = 'moss-screen-uid';
+const screenUid = (() => {
+  let u = sessionStorage.getItem(SCREEN_UID_KEY);
+  if (!u) {
+    u = 'p' + Math.random().toString(36).slice(2, 10);
+    sessionStorage.setItem(SCREEN_UID_KEY, u);
+  }
+  return u;
+})();
+const WANTS_CLAIM = new URLSearchParams(location.search).get('claim') === '1';
+let isCurrent = false;
+
+function setMasked(on, reason) {
+  isCurrent = !on;
+  document.body.classList.toggle('masked', !!on);
+  const line = $('#mask-line');
+  if (line) line.textContent = reason || 'another window is the screen';
+  // 拿到屏幕的那一刻就报一次画幅：节点那边是"人换了屏"，我这边是"我该按哪个尺寸画"。
+  if (isCurrent) reportViewport();
+}
+
+// 栏宽的唯一源在这里，CSS 变量由它推出来（两边各写一个 188 迟早会漂）。
+const RAIL_OPEN = 188, RAIL_STRIP = 14;
+document.documentElement.style.setProperty('--rail-open-w', RAIL_OPEN + 'px');
+document.documentElement.style.setProperty('--rail-strip', RAIL_STRIP + 'px');
+function railCollapsed() { return document.body.classList.contains('rail-collapsed'); }
+function railWidth() { return railCollapsed() ? RAIL_STRIP : RAIL_OPEN; }
+
+// 视图尺寸 —— 这个数决定"贴底"的画在哪一行，所以必须取"真正看得见的那块"。
+//
+// 踩过的坑：window.innerHeight（516）与 documentElement.clientHeight（812）会不一致 ——
+// 分屏 / 缩放 / 内嵌 webview 下，clientHeight 报的是布局视口，可以比实际可见区高一截。
+// 之前把它当基准，贴底那层就画到了可视区下方（y≈810 > 516），肉眼即"什么都没画"。
+// 三个候选里取最小的那个：小的那个总是更接近"真正看得见"的一侧，
+// 而画在可见区里稍微靠上，永远好过画在可见区外什么都看不见。
+function viewSize() {
+  const cands = [window.innerHeight, document.documentElement.clientHeight];
+  if (window.visualViewport) cands.push(window.visualViewport.height);
+  const h = Math.min(...cands.filter((v) => v > 0)) || window.innerHeight;
+  const w = window.innerWidth || document.documentElement.clientWidth;
+  return { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
+}
 function sizeCanvas(c, ctx) {
-  c.width = innerWidth * devicePixelRatio;
-  c.height = innerHeight * devicePixelRatio;
+  const v = viewSize();
+  c.width = v.w * devicePixelRatio;
+  c.height = v.h * devicePixelRatio;
+  // 必须显式写 CSS 尺寸。canvas 是替换元素：`position: fixed; inset: 0` 里的
+  // `width: auto` 会解析成*固有尺寸*（也就是 width/height 属性），而不是被
+  // 上下左右四个偏移撑开。于是在 dpr=2 的 Retina 屏上，画布元素变成视口的
+  // 两倍大（1686×1624 对 843×812），画面被放大两倍、右下四分之三落到屏幕外，
+  // 贴底画的那层（升字浪）就永远看不见。
+  // dpr=1 时属性值恰好等于视口，所以它在非 Retina 下一直是"能用"的 —— 这也
+  // 正是 Playwright（dpr=1）正常、他的 Chrome（dpr=2）一直不正常的原因。
+  c.style.width = v.w + 'px';
+  c.style.height = v.h + 'px';
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
-addEventListener('resize', () => {
+// 视图尺寸：所有"贴底"的画法都读它，而不是读 innerHeight。
+let viewW = innerWidth, viewH = innerHeight;
+function syncViewport() {
+  const v = viewSize();
+  viewW = v.w; viewH = v.h;
   sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
   fitMossText(); initRainCols(); layoutDesktop();
-});
-sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
+  reportViewport();
+}
+addEventListener('resize', syncViewport);
+if (window.visualViewport) {
+  // visualViewport 的 resize 比 window 的更贴近"看得见的那块变了"——
+  // 分屏、缩放常常只动它，不动 window 的 resize。
+  window.visualViewport.addEventListener('resize', syncViewport);
+  window.visualViewport.addEventListener('scroll', syncViewport);
+}
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(syncViewport).observe(document.documentElement);
+}
 
-// ---- ws ----
-const ws = new WebSocket(`ws://${location.host}/ws`);
-ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
-function send(f) { ws.send(JSON.stringify(f)); }
+// ---- ws：断线要自愈，也要说出来 ----
+// 只在加载时开一条连接是不够的：弱网 / 休眠 / node 重启都会让它静默死掉，而页面会
+// 继续拿最后一帧当"现在"，看起来一切正常。所以两件事一起做 ——
+//   恢复：close / error → 指数退避重连（服务端每次连接都会补发 snapshot，状态自己长回来）
+//   传导：给音频帧打时间戳，超时即当静音（雨停、心率持平）并在角上标出"已断开"
+// ghost 侧两帧（5Hz）没来就算停了：太久的话，打断之后雨还会按最后一帧的强度
+// 继续掉一秒，看上去就是"没停"。
+const FEED_STALE_MS = 400;
+let ws = null, wsOpen = false, retryMs = 500, feedAt = 0;
+let linkText = 'online', linkDown = false, fps = 0;
+
+function setLink(text, down) {
+  linkText = text;
+  link.classList.toggle('down', !!down);
+  // 断线是**唯一必须常驻可见**的状态：页面不许假装自己还活着（D02 的账）。
+  // 它挂在侧栏顶上那颗点上（收起成边条时边条自己变红），水位标同步表现。
+  linkDown = !!down;
+  document.body.classList.toggle('link-down', !!down);
+  document.querySelectorAll('#rail .dot').forEach((d) => d.classList.toggle('down', !!down));
+  const label = $('#rail-state-text');
+  if (label) label.textContent = text;
+  renderLink();
+}
+
+// 仪表行（只在 --debug 下可见）：帧率与几何。诊断自己要读的数，不该让人念。
+function renderLink() {
+  link.textContent = (fps ? `${fps}fps · ` : '') + `${viewW}×${viewH}@${devicePixelRatio}`;
+}
+
+function scheduleRetry() {
+  const wait = retryMs;
+  retryMs = Math.min(retryMs * 2, 8000);
+  setTimeout(connect, wait);
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => {
+    wsOpen = true; retryMs = 500; setLink('online', false); startDebugReport();
+    // 先自报身份：节点据此指派当前屏，其余的挂遮罩。认领意图随第一次 hello 带上 ——
+    // 节点重启后，它自己开的那扇窗要自己拿回屏幕，不该等人再点一次。
+    send({ type: 'hello', uid: screenUid, claim: WANTS_CLAIM });
+    // 重连（或首次连接）后补报一次人侧状态：服务端不持久化它，断线期间的面板
+    // 变动不能丢。
+    send({ type: 'rail', collapsed: railCollapsed() });
+  };
+  ws.onmessage = (e) => { const f = JSON.parse(e.data); route(f); };
+  ws.onerror = () => { try { ws.close(); } catch (_) {} };
+  ws.onclose = () => {
+    if (!wsOpen) return setLink('connect failed — retrying…', true);
+    wsOpen = false;
+    setLink('link down — reconnecting…', true);
+    scheduleRetry();
+  };
+}
+connect();
+
+function send(f) {
+  if (!wsOpen) return;            // 未连接就丢弃，别让一次点击把整个脚本抛死
+  ws.send(JSON.stringify(f));
+}
+
+// 遮罩上的那颗按钮：人在这一页按一下，就是在说"屏幕是这块"。
+$('#mask-claim').addEventListener('click', () => send({ type: 'claim' }));
+
+// 画幅自报（只报"当前屏"）：它同时是两件事 —— 我画手势要用的尺寸，以及
+// "屏幕换了人"的可读形式。只有当前屏在上报，所以这个数一变，就是人在另一个
+// 窗口上按了按钮。变了才报，不是每帧都报。
+let lastViewport = '';
+function reportViewport() {
+  if (!isCurrent || !wsOpen) return;
+  const v = `${viewW}x${viewH}@${devicePixelRatio}`;
+  if (v === lastViewport) return;
+  lastViewport = v;
+  send({ type: 'viewport', w: viewW, h: viewH, dpr: devicePixelRatio });
+}
+
+// 自查上报：每 2 秒把"我量到的几何 + 画法状态"报给服务端，落在它的 stdout 上。
+// 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
+// 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
+let debugTimer = null;
+function debugPayload() {
+  const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
+    ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
+  return {
+    viewW, viewH,
+    innerH: Math.round(window.innerHeight),
+    clientH: document.documentElement.clientHeight,
+    visualH: window.visualViewport ? Math.round(window.visualViewport.height) : null,
+    dpr: devicePixelRatio,
+    bgH: bg.height,
+    baseY: viewH - 2,
+    rms: typeof userFeed !== 'undefined' ? userFeed.rms_db : null,
+    loudest: (typeof userFeed !== 'undefined' && userFeed.spectrum_bins?.length)
+      ? Math.max(...userFeed.spectrum_bins) : null,
+    riseMax,
+    userAge: typeof userAt !== 'undefined' ? Math.round(performance.now() - userAt) : null,
+    railW: railWidth(),
+    collapsed: railCollapsed(),
+    groups: groupNames.length,
+    arena,
+    // 池子的两个相位：rot 只在"没人"时累加，spin 是缓动后的角速度。
+    // 这一条是为了让"停没停"可读 —— 判断从屏幕上看不出来（漂移一直在动）。
+    poolRot: Math.round(poolRot * 1000) / 1000,
+    poolSpin: Math.round(poolSpin * 1000) / 1000,
+    poolTiles: tiles.size,
+  };
+}
+// 版本指纹：开发期页面一直在改，而开着的旧窗口会在"旧世界"里继续跑（我们为此白查过一轮
+// stdout 里的旧字段）。客户端每 3 秒问一次服务端；版本一变就自己刷新 —— 不需要任何人记得按刷新。
+let pageVer = null;
+setInterval(async () => {
+  try {
+    const d = await (await fetch('/__ver', { cache: 'no-store' })).json();
+    if (!d.ver) return;
+    if (pageVer === null) { pageVer = d.ver; return; }
+    if (d.ver !== pageVer) location.reload();
+  } catch (e) { /* 服务还没起来：下一拍再问 */ }
+}, 3000);
+
+function startDebugReport() {
+  if (debugTimer) return;
+  // 只报"当前屏"：被遮罩的页面没在画，它的几何不是屏幕的几何 —— 报上去只会
+  // 让我在 stdout 里读到两块屏的数、分不清哪块算。
+  const tick = () => { if (isCurrent) send({ type: 'debug', payload: debugPayload() }); };
+  tick();
+  debugTimer = setInterval(tick, 2000);
+}
+
+// 音频帧还新鲜吗？不新鲜 = 链路断了，画面按静音处理。
+function feedFresh() { return performance.now() - ghostAt < FEED_STALE_MS; }
 
 // ---- store 镜像（与服务端 ScreenModel 同构） ----
 const items = new Map();   // id -> { el, iframe, url, label, group, icon, slot }
 let arena = '';            // 当前 group 名，'' = desktop
-let fullscreenId = null;   // active group 的全屏 item（per-group）
+let groupNames = [];       // 全部 group（创建序）—— 侧栏读它。delta 帧也带，
+                           // 否则新起的组要等下一次刷新才看得见。
+let focusId = null;        // 焦点视图：被"单独看"的那一个 item（与分组无关）
+let stageIds = [];         // 最近一次 state 的舞台 ids —— focus 变化时要重算可见性
+let stageLayout = null;
 let desktopIds = [];       // 未入组的 item id，顺序即 recency
 
 function item(id) { return items.get(id); }
 function slotEl(id) { return items.get(id)?.slot; }
 
+// 图标用 SVG 而不是字形：字体里有没有那个字符，不该决定一个按钮长什么样。
+// 方框 = 最大化，错位双框 = 还原 —— 这是窗口系统的通用语。
+const ICON_MAX =
+  '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">'
+  + '<rect x="1.5" y="1.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>';
+const ICON_RESTORE =
+  '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">'
+  + '<rect x="1" y="3" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/>'
+  + '<path d="M3.5 3V2.2a1.2 1.2 0 0 1 1.2-1.2h3.1a1.2 1.2 0 0 1 1.2 1.2v3.1a1.2 1.2 0 0 1-1.2 1.2H7" '
+  + 'fill="none" stroke="currentColor" stroke-width="1.1"/></svg>';
+
 // ---- stage：slot 池（iframe 永不 reparent） ----
 function makeSlot(it) {
   const slot = document.createElement('div');
   slot.className = 'slot hidden'; slot.dataset.id = it.id;
+  // 标题栏由屏幕画，不由 node 的页面画：node 只交 label，chrome 归平台。
+  // 那个按钮就是这个 app 自己的动作 —— 放大 / 还原，走服务端已有的 focus，
+  // 不新造"窗口最大化"的第二套语义。
+  const bar = document.createElement('div');
+  bar.className = 'slot-bar';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = it.label || it.id;
+  const sp = document.createElement('span');
+  sp.className = 'sp';
+  const btn = document.createElement('button');
+  btn.innerHTML = ICON_MAX;
+  btn.title = 'maximize / restore';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    send({ type: 'focus', id: focusId === it.id ? '' : it.id });
+  });
+  bar.append(name, sp, btn);
   const fr = document.createElement('iframe');
   fr.src = it.url;
-  slot.appendChild(fr);
+  slot.append(bar, fr);
   stage.appendChild(slot);
-  it.slot = slot; it.iframe = fr;
+  it.slot = slot; it.iframe = fr; it.barName = name; it.barBtn = btn;
 }
 
 function destroySlot(id) {
   const it = items.get(id); if (!it) return;
+  if (awakeIds.includes(id)) awakeIds = awakeIds.filter((x) => x !== id);   // 砖没了，亮着的那块不留在屏幕上
   it.slot.remove();
-  if (fullscreenId === id) fullscreenId = null;
+  if (focusId === id) focusId = null;
 }
 
 function gridTemplate(layout) {
@@ -155,11 +726,21 @@ function gridTemplate(layout) {
 }
 
 function renderStage(ids, layout) {
-  // 每个 item 的 slot 都挂在 stage；只有 active group 的 ids 显示并分格。
+  stageIds = ids; stageLayout = layout;
+  // 每个 item 的 slot 都挂在 stage；active group 的 ids 显示并分格。
+  // 焦点视图是**第三件**事：正在被看的那一个，即使不在任何组里也上舞台 ——
+  // 整屏是"呈现"，与"它属于哪个组"无关（旧的 per-group fullscreen 把两者绑死了）。
   items.forEach((it) => {
-    const onStage = ids.includes(it.id);
-    it.slot.classList.toggle('hidden', !onStage);
+    const focused = !!focusId && it.id === focusId;
+    // 正亮着活页的那块不走这条：它此刻摆在砖的位置上，不是"没上舞台所以要藏"。
+    const awaking = awakeIds.includes(it.id);
+    it.slot.classList.toggle('hidden', !awaking && !ids.includes(it.id) && !focused);
+    it.slot.classList.toggle('focused', focused);
+    // 标题栏跟着 item 的 label 走 —— 名字只有一处真相（node 的声明），这里只是读它。
+    if (it.barName) it.barName.textContent = it.label || it.id;
+    if (it.barBtn) it.barBtn.innerHTML = focused ? ICON_RESTORE : ICON_MAX;
   });
+  syncScrim();
   const t = gridTemplate(layout);
   if (!t) { stage.style.gridTemplateColumns = ''; stage.style.gridTemplateRows = ''; return; }
   stage.style.gridTemplateColumns = t[0];
@@ -173,12 +754,25 @@ function renderStage(ids, layout) {
 }
 
 // ---- fullscreen（per-group，插 scrim 不改 DOM 结构） ----
-function setFullscreen(id) {
-  if (fullscreenId && slotEl(fullscreenId)) slotEl(fullscreenId).classList.remove('fullscreen');
-  fullscreenId = id;
-  if (id && slotEl(id)) slotEl(id).classList.add('fullscreen');
-  $('#scrim').style.display = id ? 'block' : 'none';
+// 焦点视图：一个 item 单独占满舞台。它**不动任何分组**，也不复制 iframe ——
+// 只是给同一个 slot 换一套样式（.fullscreen = position:fixed; inset:0）。
+function syncScrim() { $('#scrim').style.display = focusId ? 'block' : 'none'; }
+
+let railBeforeFocus = false;   // 进焦点前的栏状态，离开时原样还回去
+
+function setFocus(id) {
+  const wasOn = !!focusId, on = !!id;
+  focusId = id || null;
+  // 进焦点：栏自动收成边条 —— 页面几乎整屏，而"栏在哪"仍然可预测（焦点 = 窄条）。
+  // 这是动人家的家具，所以只做可逆的一步：离开时原样还原。
+  if (on && !wasOn) { railBeforeFocus = railCollapsed(); setRailCollapsed(true); }
+  if (!on && wasOn) { setRailCollapsed(railBeforeFocus); }
+  renderStage(stageIds, stageLayout);
+  syncPool();
 }
+
+// Esc = 离开焦点：浏览器里唯一的"退出"直觉
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && focusId) send({ type: 'focus', id: '' }); });
 
 // ===== desktop：代理圆盘物理（花束 / 布朗 / 环绕） =====
 // 圆盘是 item 的灵魂，不是 iframe。每个圆盘有一个 home 槽位，稳定位置是 recency 的
@@ -189,8 +783,12 @@ const discs = [];            // { id, x, y, vx, vy, hx, hy, label }
 
 function layoutDesktop() {
   const n = discs.length;
-  const cx = innerWidth / 2, cy = innerHeight / 2;
-  const R = Math.min(innerWidth, innerHeight) * 0.28;
+  // 舞台的可用区 = 整屏 − 栏宽。桌面圆盘是**接收点击**的物料，所以它必须待在
+  // 让开栏的那一侧；否则圆盘会漂到栏底下，看着在、点不到。
+  const x0 = railWidth();
+  const w = Math.max(1, viewW - x0);
+  const cx = x0 + w / 2, cy = viewH / 2;
+  const R = Math.min(w, viewH) * 0.28;
   discs.forEach((d, k) => {
     const th = (k / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
     const r = n === 1 ? 0 : R * (0.5 + 0.5 * (k / Math.max(1, n - 1)));
@@ -239,17 +837,17 @@ function stepDiscs(dt) {
     d.vx = (d.vx + fx * dt) * 0.9;
     d.vy = (d.vy + fy * dt) * 0.9;
     d.x += d.vx * dt; d.y += d.vy * dt;
-    // 边界软反弹
-    const M = 40;
-    if (d.x < M) { d.x = M; d.vx = Math.abs(d.vx); }
-    if (d.x > innerWidth - M) { d.x = innerWidth - M; d.vx = -Math.abs(d.vx); }
+    // 边界软反弹（左边界让开侧栏：那一列接收指针的是栏，不是桌面）
+    const M = 40, XL = railWidth() + M;
+    if (d.x < XL) { d.x = XL; d.vx = Math.abs(d.vx); }
+    if (d.x > viewW - M) { d.x = viewW - M; d.vx = -Math.abs(d.vx); }
     if (d.y < M) { d.y = M; d.vy = Math.abs(d.vy); }
-    if (d.y > innerHeight - M) { d.y = innerHeight - M; d.vy = -Math.abs(d.vy); }
+    if (d.y > viewH - M) { d.y = viewH - M; d.vy = -Math.abs(d.vy); }
   }
 }
 
 function drawDiscs() {
-  dctx.clearRect(0, 0, innerWidth, innerHeight);
+  dctx.clearRect(0, 0, viewW, viewH);
   for (const d of discs) {
     const r = 26;
     dctx.beginPath();
@@ -289,20 +887,38 @@ function desktopLoop() {
   requestAnimationFrame(desktopLoop);
   const now = performance.now();
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
-  if (discs.length) {
+  if (discs.length && !poolEl.classList.contains('on')) {
     stepDiscs(dt);
     drawDiscs();
   } else {
-    dctx.clearRect(0, 0, innerWidth, innerHeight);
+    dctx.clearRect(0, 0, viewW, viewH);
   }
 }
 requestAnimationFrame(desktopLoop);
 
-// ===== veil：姿态层（block 手势，多块可叠加） =====
-const veilBlocks = [];
-function addBlock(draw, durMs) {
-  veilBlocks.push({ draw, start: performance.now(), dur: durMs });
+// ===== veil：姿态层（手势块，多块可叠加） =====
+// 一个块 = 一次手势。块带 id，所以能被单独撤掉，也能被一次清空；几何**每帧现查**，
+// 所以窗口一动，我指的仍是那块砖，而不是我当初按下的那个像素 —— 这是"说名字"和
+// "画坐标"的区别：坐标会过期，名字不会。
+const veilBlocks = new Map();   // id -> {draw, start, dur}
+// 状态灯只认"最后一次来自我这侧的事件是什么时候"：任何事件都算一次心跳，
+// 心跳之后 GHOST_KEEP_MS 内亮着，超过就自己灭。于是刷新/新窗口接上后，
+// 下一件事发生灯就亮；而我如果卡住、停了、死了，它不需要谁来撤，自己会暗。
+let ghostBeatAt = 0;
+const GHOST_KEEP_MS = 3000;
+const thinkEl = document.getElementById('think');
+function ghostBeat() { ghostBeatAt = performance.now(); }
+const VEIL_DEFAULT = {
+  mark: 'rgba(80,255,150,1)', box: 'rgba(80,255,150,1)',
+  circle: 'rgba(80,255,150,1)', arrow: 'rgba(255,130,80,1)',
+  // 弹幕跟背后的字符雨同一种材质、同一种绿：#0f0 不是我随便挑的，是这层背景
+  // 自己的颜色。白色的字浮在绿雨上像贴纸，绿色的字像从雨里长出来。
+  danmaku: '#0f0',
+};
+function addBlock(id, draw, durMs) {
+  veilBlocks.set(id, { draw, start: performance.now(), dur: durMs });
 }
+function removeBlock(id) { veilBlocks.delete(id); }
 function geometry() {
   const out = {};
   items.forEach((it) => {
@@ -318,49 +934,285 @@ const REGION = {
   top:    (r) => [r.x, r.y, r.w, r.h / 2],
   bottom: (r) => [r.x, r.y + r.h / 2, r.w, r.h / 2],
 };
+function regionRect(g, region) {
+  if (REGION[region]) return REGION[region](g);
+  // "x,y,w,h" —— 相对这块砖的比例。比例而不是像素：砖会重排、窗口会缩放，
+  // 像素矩形的正确性只在画下的那一瞬成立，比例跟着砖走。
+  const p = String(region || '').split(',').map(Number);
+  if (p.length === 4 && p.every((v) => !Number.isNaN(v))) {
+    return [g.x + p[0] * g.w, g.y + p[1] * g.h, p[2] * g.w, p[3] * g.h];
+  }
+  return REGION.full(g);
+}
+// 端点在**区域中心**上：arrow 的"起点/终点"因此也是地址，不是裸坐标。
+function anchor(g, region) {
+  const [x, y, w, h] = regionRect(g, region);
+  return [x + w / 2, y + h / 2];
+}
 function fade(p) { const a = 0.15; if (p < a) return p / a; if (p > 1 - a) return (1 - p) / a; return 1; }
+// durMs = Infinity 表示常驻（由撤除命令收），淡入淡出仍走同一条曲线。
+function veilAlpha(b, now) {
+  if (b.dur === Infinity) return 1;
+  return fade((now - b.start) / b.dur);
+}
+function veilColor(kind, color) {
+  return color || VEIL_DEFAULT[kind] || 'rgba(255,255,255,1)';
+}
 
-function veilMark(item, region, durMs) {
-  addBlock((c, p) => {
+function veilMark(id, item, region, durMs, color, width) {
+  addBlock(id, (c, a) => {
     const g = geometry()[item]; if (!g) return;
-    const [x, y, w, h] = REGION[region] ? REGION[region](g) : REGION.full(g);
-    const a = fade(p);
-    c.fillStyle = `rgba(80,255,150,${0.15 * a})`; c.fillRect(x, y, w, h);
-    c.strokeStyle = `rgba(80,255,150,${a})`; c.lineWidth = 3; c.strokeRect(x, y, w, h);
+    const [x, y, w, h] = regionRect(g, region);
+    c.globalAlpha = a;
+    c.fillStyle = veilColor('mark', color); c.globalAlpha = a * 0.15;
+    c.fillRect(x, y, w, h);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('mark', color); c.lineWidth = width;
+    c.strokeRect(x, y, w, h);
   }, durMs);
 }
-function veilArrow(src, dst, durMs) {
-  addBlock((c, p) => {
+function veilBox(id, item, region, durMs, color, width) {
+  addBlock(id, (c, a) => {
+    const g = geometry()[item]; if (!g) return;
+    const [x, y, w, h] = regionRect(g, region);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('box', color); c.lineWidth = width;
+    c.strokeRect(x, y, w, h);
+  }, durMs);
+}
+function veilCircle(id, item, region, durMs, color, width) {
+  addBlock(id, (c, a) => {
+    const g = geometry()[item]; if (!g) return;
+    const [x, y, w, h] = regionRect(g, region);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('circle', color); c.lineWidth = width;
+    c.beginPath();
+    c.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    c.stroke();
+  }, durMs);
+}
+function veilArrow(id, src, srcRegion, dst, dstRegion, durMs, color, width) {
+  addBlock(id, (c, a) => {
     const A = geometry()[src], B = geometry()[dst]; if (!A || !B) return;
-    const ax = A.x + A.w / 2, ay = A.y + A.h / 2;
-    const bx = B.x + B.w / 2, by = B.y + B.h / 2;
-    const a = fade(p);
-    c.strokeStyle = `rgba(255,130,80,${a})`; c.lineWidth = 3;
+    // 两端各缩一点，箭头不压在目标框上 —— 指过去，不是糊上去。
+    const [ax, ay] = anchor(A, srcRegion), [bx, by] = anchor(B, dstRegion);
+    c.globalAlpha = a;
+    c.strokeStyle = veilColor('arrow', color); c.lineWidth = width;
     c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
     const ang = Math.atan2(by - ay, bx - ax);
+    const head = 6 + width * 2;
     c.beginPath(); c.moveTo(bx, by);
-    c.lineTo(bx - 12 * Math.cos(ang - 0.4), by - 12 * Math.sin(ang - 0.4));
-    c.lineTo(bx - 12 * Math.cos(ang + 0.4), by - 12 * Math.sin(ang + 0.4));
-    c.closePath(); c.fillStyle = `rgba(255,130,80,${a})`; c.fill();
+    c.lineTo(bx - head * Math.cos(ang - 0.4), by - head * Math.sin(ang - 0.4));
+    c.lineTo(bx - head * Math.cos(ang + 0.4), by - head * Math.sin(ang + 0.4));
+    c.closePath(); c.fillStyle = veilColor('arrow', color); c.fill();
   }, durMs);
 }
-function veilText(content, durMs) {
-  addBlock((c, p) => {
-    c.fillStyle = `rgba(255,255,255,${fade(p)})`;
-    c.font = 'bold 52px ui-monospace, monospace';
-    c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.fillText(content, innerWidth / 2, innerHeight / 2);
+
+// 手绘层：脚本每一帧被调一次，拿到画布、目标砖的框、以及"它活了多久"。
+// 不给积木式的动画 —— 动画由脚本自己算。这和 co_browser / artifacts 里直接下代码
+// 是同一件事：这一层要动，就得是我写的。
+//
+// 生命周期与其它手势完全一致（duration / clear_veil / 绑 item）：动的东西也必须
+// 收得回来，否则它会在我看不见的地方一直跑。
+const paintCache = new Map();
+function compilePaint(src) {
+  let fn = paintCache.get(src);
+  if (!fn) {
+    fn = new Function('ctx', 'box', 't', 'dpr', src);
+    paintCache.set(src, fn);
+  }
+  return fn;
+}
+function veilPaint(id, script, item, durMs, color) {
+  addBlock(id, (c, a, t) => {
+    const g = item ? geometry()[item] : null;
+    const full = g ? { x: g.x, y: g.y, w: g.w, h: g.h }
+                   : { x: 0, y: 0, w: viewW, h: viewH };
+    const box = { x: full.x + reg[0] * full.w, y: full.y + reg[1] * full.h,
+                  w: full.w * reg[2], h: full.h * reg[3] };
+    c.globalAlpha = a;
+    c.fillStyle = veilColor('paint', color);
+    c.strokeStyle = veilColor('paint', color);
+    try {
+      compilePaint(script)(c, box, t, devicePixelRatio);
+    } catch (e) {
+      // 脚本错了要说出来 —— 静默失败比崩溃坏：屏上"什么都没画"看起来像没生效。
+      c.globalAlpha = a;
+      c.fillStyle = '#ff5f56';
+      c.font = '13px ui-monospace, monospace';
+      c.fillText('paint error: ' + e.message, box.x + 10, box.y + 20);
+    }
+    c.globalAlpha = 1;
   }, durMs);
+}
+
+// ===== 弹幕：会飞的字 =====
+// 和居中大字不同，一条弹幕是"一行的飞行"：它有轨道、有方向、有它自己的时间片。
+//
+// 三条规矩，和这一层其它手势一致：
+//   1. 位置是"活了多久"的函数，不是累积位移 —— 掉帧也不会走样，重画多少次都一样；
+//   2. 有 id、有 duration、能被 clear_veil 收 —— 会动的东西更要收得回来；
+//   3. 轨道是排出来的，不是碰运气：一条弹幕占住一条带，占着期间不再放第二条，
+//      所以字不会叠在一起（"叠"和"闪过"在观感上完全是两回事）。
+//
+// 唯一带状态的地方是轨道占用表 danmakuLanes —— 它记的不是"屏上现在有什么"，
+// 而是"哪条带什么时候空出来"，所以它只是排班，不是第二份画面真相。
+const danmakuLanes = new Map();   // key -> Array<freeAt>，下标就是轨道号
+
+// 排一条带：want>0 是指定轨道（1 起数），want<=0 是自动 —— 在空出来的带里按
+// 「中间密、两头疏」的权重随机挑一条，像人真的在打弹幕；都占着就挑最早空出来的
+// 那条（宁可延后出发，也不叠上去）。
+function danmakuLane(key, lanes, want, now, busyMs) {
+  let arr = danmakuLanes.get(key);
+  if (!arr || arr.length !== lanes) { arr = new Array(lanes).fill(0); danmakuLanes.set(key, arr); }
+  let li = 0;
+  if (want > 0) {
+    li = Math.min(want, lanes) - 1;
+  } else {
+    // 权重 = 1 + 2·(1 − 距竖直中线的归一化距离)：中线 3，上下边缘 1。
+    // 随机的是轨道，不是"有没有空"——空了才有资格被抽到。
+    const mid = (lanes - 1) / 2;
+    const span = Math.max(mid, 0.5);
+    const free = [];
+    let total = 0;
+    for (let i = 0; i < lanes; i++) {
+      if (arr[i] > now) continue;
+      const w = 1 + 2 * (1 - Math.abs(i - mid) / span);
+      free.push(i);
+      total += w;
+    }
+    if (free.length === 0) {
+      for (let i = 0; i < lanes; i++) if (arr[i] < arr[li]) li = i;
+    } else {
+      let r = Math.random() * total;
+      li = free[free.length - 1];
+      for (let k = 0; k < free.length; k++) {
+        r -= 1 + 2 * (1 - Math.abs(free[k] - mid) / span);
+        if (r <= 0) { li = free[k]; break; }
+      }
+    }
+  }
+  // 这条带最早什么时候空出来 —— 排到后面就晚一点出发，但绝不叠上去。
+  const startAt = Math.max(now, arr[li]);
+  arr[li] = startAt + busyMs;
+  return { li: li, startAt: startAt };
+}
+
+function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns, atX, atY, angle, region, overlap) {
+  const font = 'bold ' + size + 'px ui-monospace, monospace';
+  vctx.font = font;
+  const tw = vctx.measureText(content).width;
+  const laneH = Math.max(size * 1.6, size + 8);
+  const hold = (durMs === Infinity);
+  // 常驻（hold）也得有个穿越速度，否则它会僵在边上；8 秒一趟是默认节奏。
+  const travel = hold ? 8000 : durMs;
+  // 可读性：弹幕会从白色面板上飘过去，字得自己站得住。用描边而不是底色块 ——
+  // 一块矩形比一行字重得多，会像贴纸；一圈深色轮廓只让字变清楚，不改变它的重量。
+  const ink = (c, text, x, y) => {
+    c.save();
+    c.lineJoin = 'round';
+    c.lineWidth = Math.max(2, size * 0.16);
+    c.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    c.strokeText(text, x, y);
+    c.restore();
+    c.fillText(text, x, y);
+  };
+  // region：只在一半里飞 —— 左右各占半屏、各自朝中间走，靠的就是这一格。
+  const REG = { left: [0, 0, 0.5, 1], right: [0.5, 0, 0.5, 1],
+                top: [0, 0, 1, 0.5], bottom: [0, 0.5, 1, 0.5] };
+  // 没指定 region 的弹幕只在上方三成里飞 —— 弹幕是"飘过画面的旁白"，不是满屏的
+  // 字；它若从顶端一直落到最下面，就压住了正在被看的东西（thirdgerb 定的，D19）。
+  const reg = REG[region] || [0, 0, 1, 0.3];
+  const box0 = item ? geometry()[item] : null;
+  const h0 = (box0 ? box0.h : viewH) * reg[3];
+  const lanes = Math.max(1, Math.floor(h0 / laneH));
+  const now = performance.now();
+  // at_x / at_y（0..1 的比例，两个数）把这行钉在那个点上：不排队、不横穿，
+  // 寿命就是它留在那儿的时长。比例而不是像素 —— 窗口一动它还在那个相对位置上。
+  const pinned = (typeof atX === 'number' && typeof atY === 'number'
+                  && atX >= 0 && atY >= 0);
+  let slot = { li: 0, startAt: now };
+  if (overlap) {
+    // Avoid overlap, but never at the price of being late. The lane scheduler
+    // already knows which bands are still occupied — ask it *where* to go, then
+    // ignore its answer to "when". A mirror that queues its own sentences arrives
+    // after the moment they describe; a mirror that stacks them stays in time and
+    // only occasionally rides over its predecessor.
+    const key = (item || 'stage') + '|' + (region || '-') + '|' +
+                Math.round(h0) + '|' + Math.round(size);
+    // A band is occupied only until the previous line's *tail* is in, not until
+    // it leaves — that is what makes a dense feed look even instead of slotted.
+    const enterMs = Math.max(300, travel * Math.min(0.5, (tw + 80) / (viewW + tw)));
+    const picked = danmakuLane(key, lanes, lane, now, hold ? 1e9 : enterMs);
+    slot = { li: picked.li, startAt: now };
+  } else if (!pinned) {
+    const key = (item || 'stage') + '|' + (region || '-') + '|' +
+                Math.round(h0) + '|' + Math.round(size);
+    slot = danmakuLane(key, lanes, lane, now, hold ? 1e9 : travel);
+  }
+  const li = slot.li;
+  // 轨道排到后面了就先等 —— 这条延迟和它的寿命一样是真的，不是"看起来没叠"。
+  const delay = (hold || pinned) ? 0 : Math.max(0, slot.startAt - now);
+  // 斜角：角度归我（正负都行），默认随机 ±(17°..30°)；0 就是"随你"。
+  const deg = angle || (17 + Math.random() * 13) * (Math.random() < 0.5 ? -1 : 1);
+  const aRad = deg * Math.PI / 180;
+  addBlock(id, (c, a, age) => {
+    const t = age - delay;
+    if (t < 0) return;
+    // 每帧现查几何：窗口一动，这条弹幕跟着它那块砖走（和 mark/box 同一条规矩）。
+    const g = item ? geometry()[item] : null;
+    const box = g ? { x: g.x, y: g.y, w: g.w, h: g.h }
+                  : { x: 0, y: 0, w: viewW, h: viewH };
+    const p = hold ? 1 : Math.min(1, t / travel);
+    c.globalAlpha = hold ? 1 : fade(t / (delay + travel));
+    c.fillStyle = veilColor('danmaku', color);
+    c.font = font;
+    c.textBaseline = 'middle';
+    if (pinned) {
+      c.textAlign = 'center';
+      ink(c, content, box.x + atX * box.w, box.y + atY * box.h);
+      return;
+    }
+    if (motion === 'orbit') {
+      const R = Math.max(0, Math.min(box.w, box.h) / 2 - size);
+      const th = p * turns * Math.PI * 2 - Math.PI / 2;
+      c.textAlign = 'center';
+      ink(c, content, box.x + box.w / 2 + R * Math.cos(th),
+                        box.y + box.h / 2 + R * Math.sin(th));
+      return;
+    }
+    if (motion === 'diag') {
+      // 字自己转过来躺在斜线上，再沿那条斜线走过去 —— 转的是字，不是屏幕。
+      const ca = Math.cos(aRad), sa = Math.sin(aRad);
+      const L = (box.w + tw) / Math.max(Math.abs(ca), 0.2) + Math.abs(box.h * Math.tan(aRad)) + size * 2;
+      const mx = box.x + box.w / 2, my = box.y + box.h / 2;
+      c.save();
+      c.translate(mx - ca * L / 2 + ca * L * p, my - sa * L / 2 + sa * L * p);
+      c.rotate(aRad);
+      c.textAlign = 'center';
+      ink(c, content, 0, 0);
+      c.restore();
+      return;
+    }
+    const span = box.w + tw;
+    c.textAlign = 'left';
+    const yy = box.y + laneH * (li + 0.5);
+    if (motion === 'ltr') ink(c, content, box.x - tw + span * p, yy);
+    else ink(c, content, box.x + box.w - span * p, yy);
+  }, durMs + delay);
 }
 function veilLoop() {
   requestAnimationFrame(veilLoop);
   const now = performance.now();
-  vctx.clearRect(0, 0, innerWidth, innerHeight);
-  for (let i = veilBlocks.length - 1; i >= 0; i--) {
-    const b = veilBlocks[i];
-    if (now - b.start >= b.dur) { veilBlocks.splice(i, 1); continue; }
-    b.draw(vctx, (now - b.start) / b.dur);
-  }
+  vctx.clearRect(0, 0, viewW, viewH);
+  veilBlocks.forEach((b, id) => {
+    const age = now - b.start;
+    if (age >= b.dur) { veilBlocks.delete(id); return; }
+    // 第三个参数是"这个块活了多久"：静态块不看它，动态块靠它算位置 —— 所以
+    // 动画是时间的函数，不是累积状态，掉帧也不会走样。
+    b.draw(vctx, veilAlpha(b, now), age);
+  });
+  vctx.globalAlpha = 1;
 }
 requestAnimationFrame(veilLoop);
 
@@ -369,7 +1221,7 @@ requestAnimationFrame(veilLoop);
 const MOSS_SCALE = 0.24;  // 相对 min(屏宽, 屏高)
 function fitMossText() {
   const span = mossEl;
-  const target = Math.min(innerWidth, innerHeight) * MOSS_SCALE;
+  const target = Math.min(viewW, viewH) * MOSS_SCALE;
   let size = 10;
   span.style.fontSize = size + 'px';
   while (span.offsetWidth < target && size < 400) {
@@ -379,108 +1231,983 @@ function fitMossText() {
 }
 fitMossText();
 
+// 字形单元尺寸：升字区高度、雨的排布都以它为单位，必须先于一切使用点。
+const GW = 16, GH = 20;                 // 字形图集单元尺寸（固定，与屏宽无关）
+
 let feed = { role: 'ghost', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
+
+// ===== 听侧：从底部长上来的字 =====
+// 同一套字形、同一套配色，方向相反 —— 我的声音从上往下掉，人的声音从下往上长。
+// 这样两层共用一种材质（都是字），却一眼分得出谁在说；也不像频谱柱那样横向横扫。
+// 常量与状态提到这里：雨的容量和升字区都要用，必须先于一切函数。
+const BAR_CELLS = 48;              // 格数固定：与屏宽无关，格宽才是柔软量
+const BAR_DB_FLOOR = -52;          // 低于此分贝 = 全空。静音底噪落在 -55 上下，地板得抬到
+                                   // 这儿，"没声音"才真的读成零；低了会留一排矮字。
+const BAR_DB_CEIL = -20;           // 高于此分贝 = 全满
+const RISE_TARGET_FRAC = 0.25;     // 听侧升字浪的高度 = 屏高的这个比例（thirdgerb 定的）
+let RISE_ROWS = 22;                // 一格最多长几层字（层 = 字高）；随屏高重算
+const RISE_PEAK_TARGET = 0.95;     // 归一化后最强的列长到 RISE_ROWS 的几成
+const RISE_ATTACK_S = 0.06;        // 涨上去的时间常数（秒）
+const RISE_RELEASE_S = 0.55;       // 回落的时间常数（秒）。原来是按帧 ×0.80 —— 一帧就掉两成，
+                                   // 浪头一直在跳，看起来就是"最上面那颗字在疯狂闪烁"
+const RISE_ENV_ATTACK_S = 0.15;    // 列能量的时间平滑：涨
+const RISE_ENV_RELEASE_S = 0.40;   // 列能量的时间平滑：落
+const RISE_REF_FALL_S = 2.5;       // 归一化参考峰的回落时间常数（秒）
+const RISE_REF_FLOOR = 0.22;       // 参考峰低于它就不再放大：静音不该被拉成满格
+// 雨落到屏高的 55% 为止 —— 和听侧的 30% 是两个独立的数，不再由升字区反推。
+const RAIN_BOTTOM = 0.55;
+const BAR_FLOOR_Y = () => Math.max(0, viewH * RAIN_BOTTOM);
+let barSrc = [];                   // 16 bin → 48 格，0..1
+let riseHeights = [];              // 每格当前高度（0..RISE_ROWS），按时间常数平滑
+let riseFilled = [];               // 每格上一帧已经长到第几层 —— 换字只换"刚长出来"的那几层
+let riseEnv = [];                  // 每列能量的时间平滑值（5Hz 的帧不能直接当高度用）
+let riseRef = 0;                   // 归一化参考峰：让"浪的平均高度"钉在屏高的一定比例上
+let riseGlyphs = [];               // 每格每层的字（换字只换这里）
+let userFeed = { role: 'user', rms_db: -80, peak: 0, spectrum_bins: new Array(16).fill(-96), waveform: new Array(128).fill(0) };
+let userAt = 0;   // 人那一侧最后一帧的时刻，独立于 ghost 侧
+let ghostAt = 0;  // ghost 侧最后一帧的时刻。断线判定必须按角色，不能共用 feedAt ——
+                  // 人说话时 user 帧一直在到，feedAt 就被不停刷新，雨会以为
+                  // ghost 还活着，继续按最后一帧的强度往下掉（18:14 实测）。
 const GATE = -45;
-// 字符集：CJK 汉字为主（均匀采样），假名点缀，数字符号点缀 —— 不全是日文。
+// 字符集：数字（最低）→ 小写 → 大写 → 希腊（最高）。映射按分贝从低到高走一遍，
+// 所以常见语音电平应该落在字母段。换字符集只动这一处。
 const CHARSET = (() => {
   const parts = [];
-  for (let i = 0; i < 48; i++) parts.push(String.fromCodePoint(0x4E00 + ((i * 2654435761) % 0x51A5)));
-  parts.push('アイウエオカキクケコサシスセソ');   // 片假名点缀
-  parts.push('あいうえおかきくけこ');               // 平假名点缀
-  parts.push('0123456789ABCDEFZ$@#%&*+=<>');      // 数字符号点缀
+  parts.push('0123456789');
+  for (let c = 0x61; c <= 0x7A; c++) parts.push(String.fromCharCode(c));     // a-z
+  for (let c = 0x41; c <= 0x5A; c++) parts.push(String.fromCharCode(c));     // A-Z
+  for (let c = 0x3B1; c <= 0x3C9; c++) parts.push(String.fromCharCode(c));   // α-ω
+  for (let c = 0x391; c <= 0x3A9; c++) parts.push(String.fromCharCode(c));   // Α-Ω
   return parts.join('');
 })();
-const CW = 16, CH = 20;
+const GLYPH_PX = 12;                    // 字形大小 —— 越小字越细
 const atlas = document.createElement('canvas');
-atlas.width = CHARSET.length * CW; atlas.height = CH;
+atlas.width = CHARSET.length * GW; atlas.height = GH;
 const actx = atlas.getContext('2d');
-actx.font = 'bold 15px ui-monospace, "PingFang SC", monospace';
+actx.font = `bold ${GLYPH_PX}px ui-monospace, "PingFang SC", monospace`;
 actx.textAlign = 'center'; actx.textBaseline = 'middle';
 actx.fillStyle = '#0f0';
-for (let i = 0; i < CHARSET.length; i++) actx.fillText(CHARSET[i], i * CW + CW / 2, CH / 2);
+for (let i = 0; i < CHARSET.length; i++) actx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
 
+// 头字用的亮字图集：Matrix 的"雨头"是白亮的，尾是绿的。同一套字形，两遍上色。
+const headAtlas = document.createElement('canvas');
+headAtlas.width = atlas.width; headAtlas.height = atlas.height;
+const hactx = headAtlas.getContext('2d');
+hactx.font = actx.font;
+hactx.textAlign = 'center'; hactx.textBaseline = 'middle';
+hactx.fillStyle = '#d8ffe4';
+for (let i = 0; i < CHARSET.length; i++) hactx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
+
+// 横向格数：60 是**上限**，不是定值。字形宽 GW 固定 16px，而格距 = 屏宽 / 格数 ——
+// 屏一窄，60 列的格距就小于字形宽，相邻列的字互相压住，看起来就是"挤在一起"。
+// 所以格数跟着屏宽走：先保证格距放得下一个字（×1.2 留缝），再封顶到 60。
+// 宽屏仍是 60 列；窄屏少几列，但字不重叠，照样均匀铺满整宽。
+const RAIN_COLS_MAX = 60;
+let RAIN_COLS = RAIN_COLS_MAX;
+let pitch = 0;
 let cols = [];
 function initRainCols() {
-  const n = Math.ceil(innerWidth / CW);
-  cols = Array.from({ length: n }, (_, i) => ({
-    x: i * CW, head: Math.random() * innerHeight,
-    speed: 50 + Math.random() * 90, buf: [], next: 0,
+  RAIN_COLS = Math.max(12, Math.min(RAIN_COLS_MAX, Math.floor(viewW / (GW * 1.2))));
+  pitch = viewW / RAIN_COLS;
+  cols = Array.from({ length: RAIN_COLS }, (_, i) => ({
+    x: i * pitch + (pitch - GW) / 2,
+    parts: [],                                   // 这一列自己的字符：{ g, y }，最老的在前
+    e: 0,                                        // 这一列此刻的能量（平滑后）
+    nextAt: 0,                                   // 下一次落字的时刻
+    jitter: 0.75 + Math.random() * 0.5,          // 每列自己的快慢，避免相邻列同步
   }));
 }
 initRainCols();
-const TAIL = 18, EMIT_MS = 333;
-function pickChar(i) {
-  const bin = feed.spectrum_bins[i % feed.spectrum_bins.length];
-  const norm = Math.min(1, Math.max(0, (bin + 96) / 96));
-  return Math.min(CHARSET.length - 1, Math.floor(norm * CHARSET.length));
+
+// ===== 字符雨 = 频谱瀑布 =====
+// 语义：这不是"按内容写字"，是**声音的另一种呈现**。ECG 把同一份信号画成一条横线，
+// 这里把它画成从上往下走的字符：
+//   - **生产由前端时钟驱动**（5Hz，每 200ms 产出一行）；到点就去看"手上最新拿到的那帧
+//     topic 是什么"，用它的频谱算这一行；手上没有（没声音 / 链路断了）就产一行 null。
+//     所以纵向是**时间轴**，节奏恒定连贯，跟 topic 的到达率无关 —— topic 丢帧只是
+//     丢一行内容，不会让画面卡顿或错位。
+//   - 横向每一格 = 一个频点，16 个 bin 线性插值铺满整屏宽度（低频在左）。
+//   - 该格这一帧的分贝决定它**发不发字、发哪种字**；不发的格子是这一行里的 null 占位，
+//     随行一起往下走（空隙是属于行的，不是漂在屏幕上的）。
+//   - 队列容量 = 一屏，所以屏幕展示的是**最近约十秒**的录音带；静音时录带继续往下走，
+//     内容被空白行顶出去，而不是当场消失。
+const FRAME_MS = 200;              // 前端生产时钟：5Hz，跟 AudioSampleTopic 同拍
+const ROW_PX = GH;                 // 一行字占的高度
+const ROW_STEP = 2;                // 每产一行整片下落几行 —— 行与行之间空出呼吸的缝
+const ROW_PITCH = ROW_PX * ROW_STEP;
+const CATCHUP_MAX = 25;            // 一帧 rAF 里最多补产多少行（防后台标签页回来时爆量）
+const FADE_BOTTOM = 0.3;           // 屏幕底部保留的透明度（1 = 不渐隐）
+const BREATH_MIN = 0.4;            // 最安静时的亮度（呼吸的底）
+const BREATH_SCALE = 0.3;          // 呼吸时字形最多放大多少比例
+
+// ── 画法 ────────────────────────────────────────────────────────────────
+// 'columns'（默认）：**致敬 Matrix 的列雨**。每一列是独立的 —— 它有自己的头、自己的
+//         速度、自己的落字节奏、自己的尾长。列的横坐标 = 一个频点，所以这一列有多活跃
+//         完全由它对应的那个频带此刻的能量决定：
+//             能量高 → 落得勤、落得快、尾巴长（像雨）
+//             能量低 → 偶尔滴一颗，甚至停住
+//         元音一变，活跃的列就换一批。整片因此是"声音的雨"，而不是一排排的波形。
+//         代价（要说清）：列的纵向不再等于时间轴 —— 每列有自己的速度，位置表达的是
+//         "这一列的能量×时间"。这是为了列感付的价。
+// 'hybrid'：行式画法（帧内归一 + 白化），纵向 = 时间轴，做对照用。
+// 想对比画法不用改代码：地址后面加 ?mode=hybrid / ?mode=bars / ?mode=edge 即可。
+const RAIN_MODE = new URLSearchParams(location.search).get('mode') || 'columns';
+const SPEED_MIN = 70;              // px/s：最弱时的下落速度。原为 14 —— 声音一停，空中的字要爬半分钟才走完，
+                                   // 看着像"声音停了还在掉个不停"。抬到 70，一屏约六秒走完，"慢"靠字距不靠爬。
+const SPEED_MAX = 260;             // px/s：最强时
+const SPACE_MIN = GH * 1.5;        // 最强的列：字与字之间隔 1.5 格
+const SPACE_MAX = GH * 4.5;        // 最弱的列：隔 4.5 格（稀疏的滴）
+const TAIL_LIT = 10;               // 尾迹点亮多少个字，再往上就淡尽了
+const TAIL_DIM = 0.12;             // 尾巴最末端的透明度
+const EMIT_EPS = 0.10;             // 能量低于此值：这一列不落字（越大，参与下雨的列越少）
+// 雨的底线跟着升字区走（BAR_FLOOR_Y）：两层各占各的地，屏幕一高带宽一点就自己让开，
+// 不再用两个写死的比例互相打架。
+const RAIN_FLOOR_FADE = GH * 3;    // 底线前这几像素渐隐，免得雨在中间被硬切出一条边
+// 逐频带自动增益（AGC）：每个频带按**它自己的**历史最高/最低来归一。
+// 不这么做的话，语音能量天然堆在低频，屏幕左边永远在下暴雨、右边永远是干的。
+const AGC_DECAY_DB = 2.0;          // 每秒衰减多少 dB（最高往下掉、最低往上抬）
+const AGC_ABS_FLOOR = -50;         // 这一带的峰值低于它 → 从来没出过声，不参与
+const AGC_MIN_RANGE = 8;           // 自己的最高最低差不到这个数 → 全是噪声，不参与
+const LOUD_SMOOTH = 8;             // 呼吸的平滑速率（每秒收敛多少）—— 不平滑就会 5Hz 闪
+const BAND_TILT = 0.7;             // 带宽分配：权重 ∝ 1/(k+1)^BAND_TILT（越大越偏向低频）
+const GATE_DROP_DB = 12;           // 比"衰减峰值"低这么多 → 这一行不画（自动门限，不标定绝对值）
+const RMS_FLOOR = -45;             // 兜底门限：低于它一定是底噪
+const PEAK_DECAY_DB = 0.25;        // 每行峰值衰减（≈1.25 dB/s）
+const EMA_ALPHA = 0.08;            // 每频带慢速均值的更新率（≈2.5s 时间常数）
+const DEV_FLOOR = 2.5;             // 白化门限：高出自己均值这么多分贝才出声（越高越疏）
+const DEV_FULL = 12.0;             // 高出这么多分贝 = 满亮度
+const CELL_STRIDE = 1;             // 段内每 N 列画一个字（密度旋钮）
+const GLYPH_TRIES = 6;             // 同一条内不重复，最多重抽几次
+
+let rows = [];                     // rows[0] = 最新一行：{ g: 字形或 null, a: 透明度 }
+let rowTickAt = 0;                 // 上一次产出时刻 = 前端时钟的相位
+let ema = [];                      // 每个频带自己的慢速均值（白化基线）
+let rmsPeak = -120;                // 衰减峰值：门限拿它当参照
+let bmax = [], bmin = [];          // 每频带的衰减最高/抬升最低（逐带 AGC 的两端）
+let loudSmooth = 0;                // 平滑后的"呼吸量"：直接用它会让整片 5Hz 闪
+
+// 逐频带 AGC：每个频带按**它自己的**历史区间归一，所以"能量天然堆在低频"这件事
+// 不再把整屏压到左边。返回每个频带 0..1 的能量。
+function agcEnergies(bins, dt) {
+  const nb = bins.length;
+  if (bmax.length !== nb) { bmax = bins.slice(); bmin = bins.slice(); }
+  const out = new Array(nb);
+  for (let k = 0; k < nb; k++) {
+    const db = bins[k];
+    bmax[k] = Math.max(db, bmax[k] - AGC_DECAY_DB * dt);
+    bmin[k] = Math.min(db, bmin[k] + AGC_DECAY_DB * dt);
+    const range = bmax[k] - bmin[k];
+    out[k] = (bmax[k] > AGC_ABS_FLOOR && range >= AGC_MIN_RANGE)
+      ? Math.min(1, Math.max(0, (db - bmin[k]) / range))
+      : 0;                          // 这一带从来没出过声 / 只有噪声：不参与
+  }
+  return out;
 }
-function stepRain(dt, now) {
-  for (const c of cols) {
-    c.head += c.speed * dt;
-    if (now >= c.next) {
-      c.buf.unshift(pickChar(c.x / CW));
-      if (c.buf.length > TAIL) c.buf.pop();
-      c.next = now + EMIT_MS + Math.random() * 200;
+
+// 雨只铺到升字区上沿：两层各占各的地，谁也不盖谁。升字区高度固定，所以这个界限
+// 只跟窗口高度有关，与列数无关。
+function rainCapacity() {
+  const floorY = Math.max(0, BAR_FLOOR_Y());
+  return Math.max(1, Math.floor(floorY / ROW_PITCH) + 2);
+}
+
+// 频带 → 列区间的分配表：累计权重取整，保证每段至少一列、末段收在总宽上。
+function bandSpans(nb, total) {
+  const raw = [];
+  let sum = 0;
+  for (let k = 0; k < nb; k++) { const v = 1 / Math.pow(k + 1, BAND_TILT); raw.push(v); sum += v; }
+  const spans = [];
+  let acc = 0, prev = 0;
+  for (let k = 0; k < nb; k++) {
+    acc += raw[k];
+    let end = Math.round((total * acc) / sum);
+    if (end < prev + 1) end = prev + 1;
+    if (end > total) end = total;
+    spans.push({ lo: prev, hi: end });
+    prev = end;
+  }
+  if (spans.length) spans[spans.length - 1].hi = total;   // 收尾对齐右边界
+  return spans;
+}
+let bands = bandSpans((feed.spectrum_bins || []).length || 16, RAIN_COLS);
+
+const randGlyph = () => Math.floor(Math.random() * CHARSET.length);
+
+// 同一条（段）内不重复：重抽几次，抽不到就用最后一次，避免退化成死循环。
+function glyphUniqueIn(used) {
+  let g = randGlyph();
+  for (let t = 0; t < GLYPH_TRIES && used.has(g); t++) g = randGlyph();
+  used.add(g);
+  return g;
+}
+
+// 帧内相对高低：每帧摊满 0..1，跟绝对分贝无关。
+function frameShape(bins) {
+  const lo = Math.min(...bins), hi = Math.max(...bins);
+  const span = Math.max(1e-6, hi - lo);
+  return (db) => (db - lo) / span;
+}
+
+// 'hybrid'：白化决定出声与亮度，帧内归一决定段长。
+function fillHybrid(g, a, bins) {
+  const shape = frameShape(bins);
+  for (let k = 0; k < bins.length && k < bands.length; k++) {
+    const dev = bins[k] - ema[k];
+    if (dev < DEV_FLOOR) continue;                 // 不比自己的基线响：这一行这段不出声
+    const sp = bands[k], width = sp.hi - sp.lo;
+    const len = Math.max(1, Math.round(shape(bins[k]) * width));
+    const alpha = 0.5 + 0.5 * Math.min(1, dev / DEV_FULL);
+    const used = new Set();
+    for (let c = sp.lo; c < sp.lo + len && c < g.length; c += CELL_STRIDE) {
+      g[c] = glyphUniqueIn(used);
+      a[c] = alpha;
     }
-    for (let k = 0; k < c.buf.length; k++) {
-      const y = c.head - k * CH;
-      if (y < 0 || y > innerHeight) continue;
-      bctx.globalAlpha = 1 - k / c.buf.length;
-      bctx.drawImage(atlas, c.buf[k] * CW, 0, CW, CH, c.x, y, CW, CH);
+  }
+}
+
+// 'bars'：帧内归一的条形图，不做白化。
+function fillBars(g, a, bins) {
+  const shape = frameShape(bins);
+  for (let k = 0; k < bins.length && k < bands.length; k++) {
+    const sp = bands[k], width = sp.hi - sp.lo;
+    const len = Math.round(shape(bins[k]) * width);
+    const used = new Set();
+    for (let c = sp.lo; c < sp.lo + len && c < g.length; c += CELL_STRIDE) {
+      g[c] = glyphUniqueIn(used);
+      a[c] = 1;
+    }
+  }
+}
+
+// 'edge'：每段只落一个点，位置由帧内归一决定。
+function fillEdge(g, a, bins) {
+  const shape = frameShape(bins);
+  for (let k = 0; k < bins.length && k < bands.length; k++) {
+    const sp = bands[k], width = sp.hi - sp.lo;
+    const col = sp.lo + Math.min(width - 1, Math.floor(shape(bins[k]) * width));
+    g[col] = randGlyph();
+    a[col] = 1;
+  }
+}
+
+// 产出一行：门限开着就按当前这帧 topic 算字，否则整行空。
+function produceRow(now) {
+  const n = RAIN_COLS;
+  const g = new Array(n).fill(null);
+  const a = new Array(n).fill(0);
+  const bins = feed.spectrum_bins;
+  if (bins.length && ema.length !== bins.length) ema = new Array(bins.length).fill(null);
+
+  // 白化基线始终跟着更新（静音也更新），否则声音回来时基线是旧的，会误判成"变化"
+  for (let k = 0; k < bins.length; k++) {
+    ema[k] = ema[k] === null ? bins[k] : ema[k] + EMA_ALPHA * (bins[k] - ema[k]);
+  }
+  rmsPeak = Math.max(feed.rms_db, rmsPeak - PEAK_DECAY_DB);
+
+  const fresh = feed.role === 'ghost' && now - ghostAt <= FRAME_MS * 1.5;
+  const gateFloor = Math.max(RMS_FLOOR, rmsPeak - GATE_DROP_DB);
+  const gateOpen = fresh && feed.rms_db > gateFloor;
+  // 这一行的"呼吸量"：0 = 刚到门限，1 = 达到最近峰值。整片的亮度与字的大小都跟着它。
+  const loud = Math.min(1, Math.max(0, (feed.rms_db - gateFloor) / GATE_DROP_DB));
+  if (gateOpen && bins.length) {
+    if (bands.length !== bins.length) bands = bandSpans(bins.length, RAIN_COLS);
+    if (RAIN_MODE === 'hybrid') fillHybrid(g, a, bins);
+    else if (RAIN_MODE === 'bars') fillBars(g, a, bins);
+    else fillEdge(g, a, bins);
+  }
+
+  rows.unshift({ g, a, loud });
+  while (rows.length > rainCapacity()) rows.pop();
+  rowTickAt = now;
+}
+
+// ── 'columns'：逐列独立的 Matrix 列雨 ──────────────────────────────────
+// 每一列一个粒子队列。列的横坐标 t ∈ [0,1] 映射到一个频点（16 个桶线性插值），
+// 该频点此刻的能量 e 决定这一列的一切：
+//     下落速度  v = SPEED_MIN + (SPEED_MAX-SPEED_MIN) * e
+//     落字间隔  T = 字距 / v，字距 = 从一格到三格随 e 变（强列密，弱列疏）
+//     尾迹长度  点亮 TAIL_LIT 个字，再往上的尾部淡到 TAIL_DIM
+// 于是"哪几列在下雨"就是"哪几个频带在出声"，元音一变活跃的列就换一批。
+function stepRainColumns(dt, now, loud, gateOpen) {
+  const bins = feed.spectrum_bins;
+  const nb = bins.length;
+  const colE = nb ? agcEnergies(bins, dt) : [];
+  const n = cols.length;
+  for (let i = 0; i < n; i++) {
+    const c = cols[i];
+    const t = n > 1 ? i / (n - 1) : 0;
+    let target = 0;
+    if (gateOpen && nb) {
+      // 这一列的横坐标落在哪两个频带之间 → 把两带的能量插值给它
+      const pos = t * (nb - 1), bi = Math.floor(pos), fr = pos - bi;
+      const e0 = colE[Math.min(bi, nb - 1)], e1 = colE[Math.min(bi + 1, nb - 1)];
+      target = (e0 + (e1 - e0) * fr) * (0.15 + 0.85 * loud);
+    }
+    c.e += (target - c.e) * Math.min(1, dt * 6);      // 平滑：能量抖动不该让列抽筋
+
+    const v = (SPEED_MIN + (SPEED_MAX - SPEED_MIN) * c.e) * c.jitter;
+
+    // **一列一个速度**：整列的字一起落，速度听这一列此刻的能量。
+    // 试过"每颗字在出生时定死速度"（想让声音停了以后旧字赶紧走完），代价是快的会追上慢的：
+    // 要么穿过去（同一处被不同字形反复覆盖 = 闪），要么加一道最小间距闸——但那样快的字
+    // 会**堆在慢的后面**，整列退化成跟着最慢那颗走。两个都不是雨该有的样子。
+    // 现在回到整列同速：不可能追尾（间距就是落字时的间距），速度也照样跟着声音走。
+    // 声音停了旧字会一起慢下来这件事，靠把 SPEED_MIN 抬高解决（见常量）。
+    const fall = v * dt;
+
+    if (c.e > EMIT_EPS) {
+      const spacing = SPACE_MIN + (SPACE_MAX - SPACE_MIN) * (1 - c.e);
+      if (now >= c.nextAt) {
+        c.parts.push({ g: randGlyph(), y: -GH });
+        c.nextAt = now + (spacing / Math.max(1, v)) * 1000;
+      }
+    } else {
+      c.nextAt = now;                                  // 停了就随时可以从头开始下
+    }
+
+    for (const p of c.parts) p.y += fall;
+    const rainFloor = Math.max(0, BAR_FLOOR_Y());
+    let alive = 0;
+    for (let k = 0; k < c.parts.length; k++) {          // 淘汰过底线的（最老的在前）
+      if (c.parts[k].y <= rainFloor) break;
+      alive++;
+    }
+    if (alive) c.parts.splice(0, alive);
+    if (c.parts.length > TAIL_LIT * 2) c.parts.splice(0, c.parts.length - TAIL_LIT * 2);
+
+    const base = BREATH_MIN + (1 - BREATH_MIN) * loud;  // 呼吸：整片随音量亮暗
+    const zoom = 1 + BREATH_SCALE * loud;
+    const w = GW * zoom, h = GH * zoom;
+    const cnt = c.parts.length;
+    for (let k = 0; k < cnt; k++) {
+      const p = c.parts[k];
+      const age = cnt - 1 - k;                          // 0 = 最新的那颗（雨头）
+      // 雨头就是最新那颗，直接给满亮度、用白字。曾试过按年龄淡入（想压掉顶端那点闪），
+      // 但闪的是**听侧**那一波浪，不是雨这边 —— 那一下只是把白雨头压暗了，观感反而变差。
+      // 恢复原样：雨头干脆、白亮。
+      const fade = age === 0 ? 1 : Math.max(TAIL_DIM, 1 - age / TAIL_LIT);
+      const edge = Math.max(0, Math.min(1, (rainFloor - p.y) / RAIN_FLOOR_FADE));
+      bctx.globalAlpha = Math.min(1, base * fade * edge);
+      const img = age === 0 ? headAtlas : atlas;        // 雨头白亮，尾绿
+      bctx.drawImage(img, p.g * GW, 0, GW, GH,
+        c.x + (GW - w) / 2, p.y + (GH - h) / 2, w, h);
     }
   }
   bctx.globalAlpha = 1;
 }
-function drawEcg() {
-  const baseY = innerHeight * 0.82, amp = innerHeight * 0.12;
-  const w = feed.waveform.length, th = 0.5;
-  bctx.lineWidth = 2;
-  bctx.beginPath();
-  for (let i = 0; i < w; i++) {
-    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
-    i === 0 ? bctx.moveTo(x, y) : bctx.lineTo(x, y);
+
+function stepRain(dt, now) {
+  if (RAIN_MODE === 'columns') {
+    const gateFloor = Math.max(RMS_FLOOR, rmsPeak - GATE_DROP_DB);
+    rmsPeak = Math.max(feed.rms_db, rmsPeak - PEAK_DECAY_DB * (dt * 5));
+    const fresh = feed.role === 'ghost' && now - ghostAt <= FEED_STALE_MS;
+    const gateOpen = fresh && feed.rms_db > gateFloor;
+    const loud = gateOpen ? Math.min(1, Math.max(0, (feed.rms_db - gateFloor) / GATE_DROP_DB)) : 0;
+    // 平滑：topic 是 5Hz 来的，直接用会让整片亮度每秒跳五次 —— 那就是看到的"闪"
+    loudSmooth += (loud - loudSmooth) * Math.min(1, dt * LOUD_SMOOTH);
+    stepRainColumns(dt, now, loudSmooth, gateOpen);
+    return;
   }
-  bctx.strokeStyle = '#3d8'; bctx.stroke();
-  bctx.beginPath(); let drawing = false;
-  for (let i = 0; i < w; i++) {
-    const hot = Math.abs(feed.waveform[i]) > th;
-    const x = (i / (w - 1)) * innerWidth, y = baseY - feed.waveform[i] * amp;
-    if (hot && !drawing) { bctx.moveTo(x, y); drawing = true; }
-    else if (hot && drawing) bctx.lineTo(x, y);
-    else if (!hot && drawing) drawing = false;
+
+  if (!rowTickAt) rowTickAt = now - FRAME_MS;
+  let produced = 0;
+  while (now - rowTickAt >= FRAME_MS && produced < CATCHUP_MAX) {
+    produceRow(rowTickAt + FRAME_MS);     // 按时间轴补产：补出来的行多为空白（手上没有新帧）
+    produced++;
   }
-  bctx.strokeStyle = '#f44'; bctx.stroke();
-  const bw = innerWidth / 16;
-  for (let i = 0; i < 16; i++) {
-    const h = Math.max(0, (feed.spectrum_bins[i] + 96) / 96) * 26;
-    bctx.fillStyle = feed.spectrum_bins[i] > GATE ? '#f44' : '#3d8';
-    bctx.fillRect(i * bw, innerHeight - h, bw - 2, h);
+
+  // 分数位移：一行的间距在一整个 200ms 里平滑铺开，所以 5Hz 的生产看起来是连续下落
+  const shift = Math.min(1, (now - rowTickAt) / FRAME_MS) * ROW_PITCH;
+  const cap = rows.length;
+  const zoom = 1 + BREATH_SCALE * (rows.length ? rows[0].loud : 0);   // 呼吸：整片随音量微微胀缩
+  const w = GW * zoom, h = GH * zoom;
+  const floorY = BAR_FLOOR_Y();   // 升字区上沿：雨到这儿为止，不盖住人说话那层
+  for (let r = 0; r < cap; r++) {
+    const y = (r - 1) * ROW_PITCH + shift;   // 最新一行从屏幕上方一格滑入
+    if (y > floorY) break;
+    const row = rows[r];
+    // 渐隐（位置越靠下越淡，但不归零：位置仍是时间） × 呼吸（整片随当前音量亮暗）
+    const base = (FADE_BOTTOM + (1 - FADE_BOTTOM) * Math.max(0, 1 - y / viewH))
+      * (BREATH_MIN + (1 - BREATH_MIN) * row.loud);
+    if (base <= 0.01) continue;
+    for (let i = 0; i < row.g.length; i++) {
+      const gg = row.g[i];
+      if (gg === null) continue;
+      bctx.globalAlpha = Math.min(1, base * (row.a[i] || 1));
+      bctx.drawImage(atlas, gg * GW, 0, GW, GH,
+        cols[i].x + (GW - w) / 2, y + (GH - h) / 2, w, h);
+    }
   }
+  bctx.globalAlpha = 1;
 }
+// 16 个频带 → 48 格：线性插值铺满。0dB 的绝对电平没有意义，所以用固定窗口
+// (floor..ceil) 而不是自适应 —— 自适应会让安静时的底噪被放大成满格。
+function resampleBins(bins) {
+  const n = bins.length;
+  if (barSrc.length !== BAR_CELLS) barSrc = new Array(BAR_CELLS).fill(0);
+  if (!n) { for (let i = 0; i < BAR_CELLS; i++) barSrc[i] = 0; return barSrc; }
+  for (let i = 0; i < BAR_CELLS; i++) {
+    const pos = (i / (BAR_CELLS - 1)) * (n - 1);
+    const lo = Math.floor(pos), hi = Math.min(lo + 1, n - 1), fr = pos - lo;
+    const db = bins[lo] + (bins[hi] - bins[lo]) * fr;
+    const t = (db - BAR_DB_FLOOR) / (BAR_DB_CEIL - BAR_DB_FLOOR);
+    barSrc[i] = Math.max(0, Math.min(1, t));
+  }
+  return barSrc;
+}
+
+// 每一格 = 一个频点：这一格此刻有多响，就决定它长出多高的一串字。
+// 一层 = 一格字高。想让浪更连续，密的是列、不是层：层数固定，宽度用来铺满。
+const RISE_COLS = 28;              // 升字列数 —— 比雨的 60 列疏，浪才看得出形状
+const RISE_SMOOTH = 0.35;          // 相邻列的能量平滑：锯齿来自频带跳变，不是声音本身
+const RISE_BELL = 0.62;            // 钟形包络强度：0 = 平坦，1 = 完全按正态分布压
+
+function drawListenerRise(dt, now) {
+  const bins = userFeed.spectrum_bins || [];
+  // 门限与画法必须同尺度：GATE 是 rms_db 的门（-45），而 bins 是各帧自归一化后的
+  // 相对值（安静时最强桶也只到 -20 上下）。拿 GATE 去比 bins，等于用一把尺量另一把
+  // 尺的量出的数——人说话时两侧都过门，一静下来 bin 落回 -25 就误判成"没声音"，
+  // 一层字都不画。所以这里按 rms_db 判活，画幅交给 BAR_DB_FLOOR..BAR_DB_CEIL。
+  // 门就取 BAR_DB_FLOOR：显示窗口的下沿才定义"这帧能不能长出字"，两个门没必要分开。
+  const live = userFeed.rms_db > BAR_DB_FLOOR && now - userAt <= FEED_STALE_MS;
+  resampleBins(live ? bins : []);
+
+  // 层数 = 屏高 × 目标比例 ÷ 字高。原来写死 7 层 —— 812 高的屏上只有 140px ≈ 17%，
+  // 浪只像底部一层毛边，而且"一格最多长 7 层"这件事跟屏多大无关，本来就不该写死。
+  const needRows = Math.max(6, Math.round((viewH * RISE_TARGET_FRAC) / GH));
+  if (RISE_ROWS !== needRows) {
+    RISE_ROWS = needRows;
+    riseHeights = []; riseFilled = []; riseGlyphs = [];
+  }
+  if (riseHeights.length !== RISE_COLS) {
+    riseHeights = new Array(RISE_COLS).fill(0);
+    riseFilled = new Array(RISE_COLS).fill(0);
+    riseGlyphs = Array.from({ length: RISE_COLS }, () =>
+      Array.from({ length: RISE_ROWS }, () => randGlyph()));
+  }
+
+  // 把 48 格的 barSrc 再抽到 RISE_COLS 列，并做一次横向平滑 —— 浪要连成起伏，
+  // 不是一排各自独立的钉子。
+  const colV = [];
+  for (let i = 0; i < RISE_COLS; i++) {
+    const pos = (i / (RISE_COLS - 1)) * (BAR_CELLS - 1);
+    const lo = Math.floor(pos), hi = Math.min(lo + 1, BAR_CELLS - 1), fr = pos - lo;
+    colV.push(barSrc[lo] + (barSrc[hi] - barSrc[lo]) * fr);
+  }
+  const colS = colV.slice();
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 1; i < RISE_COLS - 1; i++) {
+      colS[i] += (colV[i - 1] + colV[i + 1] - 2 * colV[i]) * RISE_SMOOTH;
+    }
+  }
+
+  // 钟形包络：字不该挤在某一侧，而该像正态分布 —— 中段最盛、两侧渐稀。
+  // 这是**画法**不是数据：频谱本身长什么样仍由 colS 决定，钟形只给它一个重心。
+  const mid = (RISE_COLS - 1) / 2;
+  for (let i = 0; i < RISE_COLS; i++) {
+    const z = (i - mid) / (RISE_COLS * 0.32);   // 标准差 ≈ 屏宽的 32%
+    const bell = Math.exp(-0.5 * z * z);
+    colS[i] = colS[i] * ((1 - RISE_BELL) + bell * RISE_BELL);
+  }
+
+  // 列能量的**时间**平滑。频谱帧是 5Hz 来的：每一帧直接拿来当高度，等于让整个浪头
+  // 每秒上下抖五次 —— 横向平滑解决不了这个，那是空间上的锯齿，这是时间上的。
+  // 涨得快、落得慢，浪才是"起伏"，而不是一排各自跳动的钉子。
+  if (riseEnv.length !== RISE_COLS) riseEnv = new Array(RISE_COLS).fill(0);
+  for (let i = 0; i < RISE_COLS; i++) {
+    const tau = colS[i] > riseEnv[i] ? RISE_ENV_ATTACK_S : RISE_ENV_RELEASE_S;
+    riseEnv[i] += (colS[i] - riseEnv[i]) * Math.min(1, dt / tau);
+  }
+
+  // 归一化：让**最强的列**长到 RISE_ROWS 的 RISE_PEAK_TARGET 那么高。这样"浪的平均高度"
+  // 钉在屏高的一定比例上，不会随话筒电平、说话远近整体上下漂 —— 形状仍由 colS 决定，
+  // 归一化只决定它画多大。参考峰慢慢回落（不是每帧重算），所以它不会自己抖。
+  let peak = 0;
+  for (let i = 0; i < RISE_COLS; i++) peak = Math.max(peak, riseEnv[i]);
+  riseRef = Math.max(peak, riseRef - (dt / RISE_REF_FALL_S) * riseRef);
+  const norm = RISE_PEAK_TARGET / Math.max(riseRef, RISE_REF_FLOOR);
+
+  // 列宽 = 屏宽 / 列数，但字形按格距居中：字比格窄，所以列与列之间自然有缝，
+  // 而那点缝正好让浪看起来是"一串字"而不是一堵墙。
+  const colW = viewW / RISE_COLS;
+  const baseY = viewH - 2;
+  const RISE_OFFSET = GH / 2;        // 与雨错开半格：两条浪不落在同一行上
+  // 每列的字横坐标：整列共用，避免逐层算出来错位
+  for (let i = 0; i < RISE_COLS; i++) {
+    const want = Math.max(0, Math.min(1, riseEnv[i] * norm)) * RISE_ROWS;
+    // 按**时间常数**逼近期望高度，而不是每帧按固定比例衰减：帧率一变，观感就变。
+    const tau = want > riseHeights[i] ? RISE_ATTACK_S : RISE_RELEASE_S;
+    riseHeights[i] += (want - riseHeights[i]) * Math.min(1, dt / tau);
+    const h = riseHeights[i];
+    const full = Math.floor(h);
+    const x = i * colW + colW / 2;
+    const energy = Math.max(0, Math.min(1, colS[i]));
+    // 换字只换**这一帧刚长出来的**那几层。原来每帧对每一层都掷 10%×energy 的骰子，
+    // 浪头那颗字一秒钟要换好几次 —— 那才是"疯狂闪烁"的直接来源。
+    for (let k = riseFilled[i]; k < full && k < RISE_ROWS; k++) riseGlyphs[i][k] = randGlyph();
+    riseFilled[i] = Math.min(full, RISE_ROWS);
+    // 真静音时一格都不画。此前 k <= full 在 full=0 时会留下一层底痕 —— 那让"没声音"
+    // 也看着有字，正是要避免的。层的存在必须完全由高度决定。
+    for (let k = 0; k < full && k < RISE_ROWS; k++) {
+      const y = baseY - (k + 1) * GH - RISE_OFFSET;
+      const dim = k / RISE_ROWS;                      // 越高越淡：尾部渐隐
+      const top = k === Math.min(full, RISE_ROWS) - 1;  // 最上面那格才是"浪头"
+      bctx.globalAlpha = (0.35 + 0.65 * (1 - dim)) * (0.30 + 0.70 * energy);
+      bctx.drawImage(
+        top ? headAtlas : atlas,
+        riseGlyphs[i][k] * GW, 0, GW, GH,
+        x - GW / 2, y, GW, GH);
+    }
+  }
+  bctx.globalAlpha = 1;
+}
+
 let lastB = performance.now();
+let fpsFrames = 0, fpsAt = performance.now();
 function bgLoop() {
   requestAnimationFrame(bgLoop);
   const now = performance.now();
   const dt = (now - lastB) / 1000; lastB = now;
-  bctx.clearRect(0, 0, innerWidth, innerHeight);
-  const speaking = feed.rms_db > GATE;
-  if (feed.role === 'ghost' && speaking) stepRain(dt, now);
-  else if (feed.role === 'user' && speaking) drawEcg();
+
+  fpsFrames++;
+  if (now - fpsAt >= 500) {
+    fps = Math.round((fpsFrames * 1000) / (now - fpsAt));
+    fpsFrames = 0; fpsAt = now;
+    renderLink();
+  }
+
+  bctx.clearRect(0, 0, viewW, viewH);
+  // 灯：只由"最近一次心跳有多新"决定，与有没有收到 state 帧无关。
+  if (thinkEl) {
+    thinkEl.classList.toggle('on', ghostBeatAt > 0 && now - ghostBeatAt < GHOST_KEEP_MS);
+  }
+  const speaking = feed.rms_db > GATE && feedFresh();
+  // MOSS 文字吃断线判定：链路死了它就不该继续发光（传导，不是恢复）
+  mossEl.classList.toggle('alive', speaking && feed.role === 'ghost');
+  // 雨永远在画：它是"最近约十秒的录音带"，静音只是让空白行把旧内容顶出去，
+  // 而不是让画面停住或当场清空。
+  stepRain(dt, now);
+  // 听侧常画：静音时只剩一格底痕，但那一层始终在 —— 人不需要先出声才发现自己被听着。
+  drawListenerRise(dt, now);
+  // 池子：home 空闲时，所有 item 的那片场（缓慢漂移，视差分档）
+  stepPool(dt);
 }
 requestAnimationFrame(bgLoop);
+
+// ===== pool：home 的池子 =====
+// home = 舞台空闲。空闲时不该是一片虚空：**所有开着的 item**（含已入组的）都在这里，
+// 按 recency 排成前景 / 中景 / 远景 —— 越老越远、越小、越糊，糊就是"现在不是说它"
+// （这个语法取自《极限审判》里 AI 法官开场那一片物料）。
+//
+// 这一层只画画像（脸 + 名字），不画 iframe —— 活页由 awake 那一层在指针进场时摆上来。
+const poolEl = $('#pool');
+const tiles = new Map();     // id -> { el, band, bl }
+let poolHover = null;        // 指针正停在哪一张上（焦点拉伸系数的来源）
+let poolPhase = 0;           // 漂移相位（一直在走：那是"活着"）
+let poolRot = 0;             // 螺旋的整体转角
+const POOL_SPIN = 0.055;     // 约 2 分钟一圈：慢到不打扰，快到看得见
+let poolSpin = POOL_SPIN;    // 当前角速度（rad/s）—— 缓动，不是开关
+let poolSpinWant = POOL_SPIN;
+let tileSeed = 0;            // 每块砖出生时领一个稳定序号（漂移相位的身份，不是池序）
+// 醒（awake）：指针**停稳**在一块砖上 = 整片从"画像"变"屏幕"。
+//
+// 判据分两半，缺一不可：
+//   · 时间 —— 在一块砖上累计待够 AWAKE_DWELL 毫秒（划过不算：停在那里和路过，在时间上
+//     长得一样，光看时间分不开）；
+//   · 位移 —— 这段时间里指针没走够 AWAKE_TRAVEL 像素（手还在走，就不算"停"）。
+// 这两条是"悬停"这个词的可执行定义。落点不重要（一停十块都变），但没有这两条，
+// 一滑过去整片就闪一次 —— 那读成"抽搐"，不是"场活了"。
+const AWAKE_DWELL = 260;    // 悬停多久才算"停"（等于场停稳所需的时间）
+const AWAKE_TRAVEL = 8;     // 这段时间里允许的累计位移（px）——超过就重新起算
+const AWAKE_LEAVE_MS = 180; // 离场滞回：砖一直在漂，指针不动也会 enter/leave 抖
+let awakeIds = [];          // 此刻亮着的活页（同一时刻一起亮、一起收）
+let awakeLeaveAt = 0;       // 离场后的收回时刻（0 = 指针在场）
+let hoverSince = 0;         // 指针停在这块砖上、且没走动的起点
+let hoverTravel = 0;        // 从那个起点起累计走过的距离
+let ptrX = -1, ptrY = -1;
+
+const POOL_MAX = 14;         // 再老的不画 —— 不活跃的东西不该占视野
+const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向日葵螺旋的种子序
+const POOL_EASE = 6;         // 槽位缓动速率（1/s）：排序一变，卡片是滑过去的，不是瞬移
+
+// 池序从服务端来 —— 它是模型的决定（`raise` 写的），不是页面能从插入序猜出来的。
+// 页面自己再算一遍 = 对同一件事有两个权威，那种账今天已经付过一次了。
+let poolIds = [];
+function poolOrder() { return poolIds.filter((id) => items.has(id)); }
+
+function tileFace(id) {
+  const t = tiles.get(id); if (!t) return;
+  const it = items.get(id); if (!it) return;
+  const art = it.face_art, line = it.face_line;
+  el_setText(t.name, it.label || it.id);
+  el_setText(t.line, line || '');
+  t.line.style.display = line ? '' : 'none';
+  t.el.classList.toggle('faced', !!line);
+  // 图是可选项：节点不给，就不画 —— 一行字加一个名字已经是一张能认的脸。
+  if (art) {
+    if (t.art.getAttribute('src') !== art) t.art.setAttribute('src', art);
+    t.art.style.display = ''; t.el.classList.add('arted');
+  } else {
+    t.art.removeAttribute('src'); t.art.style.display = 'none';
+    t.el.classList.remove('arted');
+  }
+}
+
+function el_setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+function makeTile(it) {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  const art = document.createElement('img'); art.className = 'tile-art';
+  art.alt = ''; art.style.display = 'none';
+  const line = document.createElement('span'); line.className = 'tile-line';
+  const name = document.createElement('span'); name.className = 'tile-name';
+  const caption = document.createElement('div'); caption.className = 'tile-caption';
+  caption.append(line, name);
+  el.append(art, caption);
+  // hover = 焦点拉伸的入口，也是"醒"的计时器起点。只做"变大变清"，**绝不移动**
+  // （理由见 layoutPool）。亮不亮由"停够没有"决定，不由"碰到了没有"决定。
+  el.addEventListener('pointerenter', () => {
+    poolHover = it.id;
+    hoverSince = performance.now();      // 每进一块砖，重新起算"停"了多久
+    hoverTravel = 0;
+  });
+  el.addEventListener('pointerleave', () => { if (poolHover === it.id) poolHover = null; });
+  // 一下点击 = 看它整屏。这是一次**视图动作**：服务端回广播，并把 view_by 写进
+  // notice 的状态面 —— 不再走 aside（旁路会丢，见 FEATURE「呈现模型」）。
+  el.addEventListener('click', () => { send({ type: 'focus', id: it.id }); });
+  poolEl.appendChild(el);
+  // seed 是这块砖的**稳定**身份，不随池序变 —— 漂移的相位若挂在序号 k 上，
+  // 每次重排所有卡片的抖动会同时跳一下，看着像全屏抽筋。
+  tiles.set(it.id, { el, bl: -1, hk: 0, line, name, art, seed: tileSeed++,
+                     bx: null, by: null, bu: null });
+  tileFace(it.id);
+}
+
+function dropTile(id) {
+  const t = tiles.get(id); if (!t) return;
+  t.el.remove(); tiles.delete(id);
+}
+
+// 池子只在 home 且没有焦点时在场：焦点视图要独占舞台。
+function poolOn() { return arena === '' && tiles.size > 0 && !focusId; }
+
+// ---- awake：指针在场 = 整片瓷砖变屏幕 ----
+// 两层各归各的：瓷砖层一直游动、永不装 iframe；slot 层一直物化、永不 reparent。
+// 它们只在"指针在场"这一个状态上交接 —— 而且不是搬，是把那块 slot 摆到砖的位置上。
+//
+// 一次切换驱动全部，不是十块各自计时：同一件事有十个时钟，边缘擦过时读成一串碎闪，
+// 而不是"场活了"。
+function awakeNow() {
+  return poolOrder().slice(0, POOL_MAX).filter((id) => {
+    const it = items.get(id), t = tiles.get(id);
+    return !!(it && it.slot && t);
+  });
+}
+
+function awakeOn() {
+  const ids = awakeNow();
+  const same = ids.length === awakeIds.length && ids.every((id, k) => id === awakeIds[k]);
+  if (same) { syncAwakeRects(); return; }
+  awakeIds.forEach((id) => { if (!ids.includes(id)) retreatSlot(id); });
+  const fresh = ids.filter((id) => !awakeIds.includes(id));
+  awakeIds = ids;
+  fresh.forEach(raiseSlot);        // 只对"这一批新亮的"做淡入，已亮的不重放动画
+  syncAwakeRects();
+}
+
+function raiseSlot(id) {
+  const it = items.get(id); if (!it || !it.slot) return;
+  const s = it.slot;
+  s.dataset.label = it.label || it.id;     // 名字跟着活页走（CSS ::after 取它）
+  // 被 scale 的元素里，框与字都要预先乘回去；重排模式（PEEK_SCALE=false）没有缩放，乘 1。
+  s.style.setProperty('--pb', String(PEEK_SCALE ? PEEK_BASE : 1));
+  s.classList.remove('hidden');
+  s.classList.add('peek', 'fade');
+  // 淡入：先把 0 写进去、逼一次重排让它成为起点，再放开 —— 否则它和 display 的切换
+  // 落在同一帧，transition 根本不会跑。
+  s.style.opacity = '0';
+  void s.offsetWidth;
+  s.style.opacity = '1';
+}
+
+function retreatSlot(id) {
+  const it = items.get(id); if (!it || !it.slot) return;
+  const s = it.slot;
+  s.classList.remove('peek', 'fade', 'pointed');
+  s.style.opacity = '';
+  s.style.left = s.style.top = s.style.width = s.style.height = '';
+  s.style.transform = '';
+  // 回到它本来该在的位置：还在舞台上或正被看着的留可见，其余收回 hidden。
+  if (!stageIds.includes(id) && focusId !== id) s.classList.add('hidden');
+}
+
+function hideAwake() {
+  awakeIds.forEach(retreatSlot);
+  awakeIds = [];
+}
+
+// 框跟着砖走，而不是在亮出那一刻拍一张尺寸照：砖本身在漂、hover 放大也是缓动的，
+// 一次性量下来的矩形会比砖最终的位置小一圈，看起来像"贴歪了"。
+//
+// 两种"变小"是两件事，取决于页面照什么尺寸排版：
+//   PEEK_SCALE=true  光学缩小 —— 页面按 PEEK_BASE 倍渲染，再整体 scale 下去。
+//                    看到的是**完整的原构图被拍扁**，像一张缩略图/海报。
+//   PEEK_SCALE=false 重排 —— 盒子直接设成砖的矩形，页面按这个视口重新布局。
+//                    看到的是**它真的变小之后长什么样**（响应式布局的真实结果）。
+const PEEK_SCALE = true;
+const PEEK_BASE = 4;         // 光学缩小时，页面按瓷砖的几倍尺寸渲染
+const TILE_W = 264, TILE_H = 164;
+
+function syncAwakeRects() {
+  awakeIds.forEach((id) => {
+    const it = items.get(id), t = tiles.get(id);
+    if (!it || !it.slot || !t) return;
+    const r = t.el.getBoundingClientRect();
+    const s = it.slot;
+    s.classList.toggle('pointed', id === poolHover);   // 框加粗=指针正停在这块
+    s.style.left = `${r.left}px`; s.style.top = `${r.top}px`;
+    if (PEEK_SCALE) {
+      const bw = TILE_W * PEEK_BASE, bh = TILE_H * PEEK_BASE;
+      s.style.width = `${bw}px`; s.style.height = `${bh}px`;
+      s.style.transformOrigin = '0 0';
+      s.style.transform = `scale(${(r.width / bw).toFixed(4)})`;
+    } else {
+      s.style.width = `${r.width}px`; s.style.height = `${r.height}px`;
+      s.style.transform = '';
+    }
+  });
+}
+
+function layoutPool(dt = 0.016) {
+  const x0 = railWidth(), w = Math.max(1, viewW - x0);
+  // 旋心略低于中线、偏左三分：正中是墓碑位，偏一点才像有人在构图。
+  const cx = x0 + w * 0.46, cy = viewH * 0.60;
+  const RY = 0.56;                       // 竖直压扁 = 伪透视（把圆摊成一片"地"）
+  const rmax = Math.min(w * 0.50, viewH * 0.50);
+  const ids = poolOrder().slice(0, POOL_MAX);
+  const n = Math.max(1, ids.length);
+  // hover 系数逐帧缓动（不用 CSS transition：位置本来每帧都在写，两套动画会打架）。
+  // 缓动让"升起来"是呼吸，不是抽搐。
+  ids.forEach((id) => {
+    const t = tiles.get(id); if (!t) return;
+    const want = poolHover === id ? 1 : 0;
+    t.hk = t.hk + (want - t.hk) * Math.min(1, dt * 9);
+  });
+  const anyHover = ids.reduce((m, id) => Math.max(m, tiles.get(id)?.hk || 0), 0);
+  ids.forEach((id, k) => {
+    const t = tiles.get(id); if (!t) return;
+    const el = t.el;
+    // 黄金回旋：半径 ∝ √序号，角度 ∝ 序号 —— 不重叠、有机、增删不必重排全场。
+    const u = n === 1
+      // 只有一件东西时，螺旋没有"场"可铺：它落在眼睛所在的地方（旋心、最近、最大）。
+      // 通用公式会把它推到半径的六成处，一个孤零零的小瓷砖浮在大空白里。
+      ? 0
+      : Math.sqrt((k + 0.6) / (n + 0.6));      // 0（旋心/最近）→ 1（边缘/最老）
+    const rad = rmax * u, ang = k * GOLDEN + poolRot;
+    // 槽位（目标）与**显示位置**分开：池序一变，k 就变，槽位是瞬移的；
+    // 让显示位置追着槽位走，卡片才是"滑"过去的，而不是跳过去。
+    // 缓动的只有槽位 —— 呼吸（drift）照旧即时叠加，它是活着的证据，不该被平滑掉。
+    const bxT = cx + rad * Math.cos(ang);
+    const byT = cy + rad * Math.sin(ang) * RY - u * 46;
+    if (t.bx === null) { t.bx = bxT; t.by = byT; t.bu = u; }   // 新砖不飞入：直接站在槽上
+    const e = Math.min(1, dt * POOL_EASE);
+    t.bx += (bxT - t.bx) * e;
+    t.by += (byT - t.by) * e;
+    t.bu += (u - t.bu) * e;
+    // 远近由半径算出：越靠边越小、越糊、越淡、越往上抬（灭点在三分线上）
+    const sc = 1.06 - t.bu * 0.44;
+    // 双八度漂移：低频大摆 + 高频小抖；近的动得多，远的几乎不动（视差）。
+    //
+    // 幅度按**视口**算，不按固定像素：13px 在 1280 宽的屏上是呼吸，在 2560 宽上
+    // 是一根头发 —— 同一份代码在两种屏上不该表现成两种性格。
+    //
+    // 而且只要有人把指针放在场上，整个**运动场**就缓动停住（不只是自转）：
+    // 判据还是那条——**指针不许改变靶子的位置**。一个在你瞄准线下继续漂的场，
+    // 就是把靶子从光标底下挪走。
+    //
+    // 相位挂在每块砖自己的 seed 上，不挂在序号 k 上：重排时 k 集体换位，
+    // 挂在 k 上等于让全场的抖动同时跳一下。
+    const amp = ((1 - t.bu) * 0.022 * Math.min(w, viewH)) + 5;
+    const motion = 1 - anyHover;
+    const s = t.seed;
+    const drx = (Math.sin(poolPhase * .7 + s * .9) * .7 + Math.sin(poolPhase * 1.9 + s * 2.3) * .3) * amp * motion;
+    const dry = (Math.cos(poolPhase * .6 + s * .7) * .7 + Math.cos(poolPhase * 1.7 + s * 1.9) * .3) * amp * .6 * motion;
+    const x = t.bx + drx;
+    const y = t.by + dry;
+    const sel = false;
+    const hk = t.hk || 0;
+    // 焦点拉伸**原地**放大：transform-origin 是中心，所以光标永远还在它里面。
+    // 一旦平移，光标会掉出边界 → enter/leave 互相打架 → 画面抽搐。
+    // 邻居不让位，只降一点亮度："退到后面"用明暗说，不用位移说。
+    const sc2 = sc * (1 + 0.26 * hk);
+    el.style.transform = `translate(-50%,-50%) translate3d(${x}px, ${y}px, 0) scale(${sel ? sc2 * 1.16 : sc2})`;
+    el.style.opacity = (sel ? 1 : (1 - t.bu * 0.28)) * (1 - 0.20 * anyHover * (1 - hk));
+    el.style.zIndex = String(200 - k + (sel ? 50 : 0) + Math.round(hk * 400));
+    // 模糊只做"一点点霜"：瓷砖是**可点的目标**，糊到认不出字就等于没做交互。
+    // 远近的感觉主要交给缩放、压暗和漂移幅度，不是交给失焦。
+    const bl = +((sel ? 0 : t.bu * 1.1) * (1 - hk)).toFixed(2);
+    if (t.bl !== bl) { el.style.filter = bl ? `blur(${bl}px)` : ''; t.bl = bl; }
+    el.classList.toggle('sel', sel);
+    el.classList.toggle('lit', hk > 0.4);
+  });
+}
+
+function syncPool() {
+  const keep = new Set(poolOrder().slice(0, POOL_MAX));
+  [...tiles.keys()].forEach((id) => { if (!keep.has(id)) { retreatSlot(id); dropTile(id); } });
+  keep.forEach((id) => { if (!tiles.has(id) && items.has(id)) makeTile(items.get(id)); });
+  const on = poolOn();
+  if (!on) hideAwake();         // 池子不在场（切组 / 进焦点）时，活页必须收回
+  poolEl.classList.toggle('on', on);
+  document.body.classList.toggle('pool-on', on);
+  desktop.style.display = on ? 'none' : '';   // 圆盘那一套退役：它的职责搬到池子
+  if (on) layoutPool();
+}
+
+function stepPool(dt) {
+  if (!poolEl.classList.contains('on')) return;
+  poolPhase += dt;                                   // 漂移一直在走：它不打扰任何人
+  // 自转只在"没人"的时候走，而且**缓动到停**，不是开关 —— 指针进来时它是"回头看你"，
+  // 不是"啪地刹住"。这也是唯一允许整体移动的时刻：没人正瞄着某一张。
+  poolSpin += (poolSpinWant - poolSpin) * Math.min(1, dt * 2.5);
+  poolRot += poolSpin * dt;
+  layoutPool(dt);
+  // 醒：**停稳**才亮（悬停判据 = AWAKE_DWELL 时间 + AWAKE_TRAVEL 位移），离场延迟收回。
+  // 一次切换驱动全部活页，不是十块各自计时。
+  if (poolHover) {
+    awakeLeaveAt = 0;
+    if (awakeIds.length || performance.now() - hoverSince > AWAKE_DWELL) awakeOn();
+  } else if (awakeIds.length) {
+    if (!awakeLeaveAt) awakeLeaveAt = performance.now() + AWAKE_LEAVE_MS;
+    else if (performance.now() > awakeLeaveAt) { hideAwake(); awakeLeaveAt = 0; }
+  }
+  if (awakeIds.length) syncAwakeRects();   // 活页跟着砖走（砖在漂、hover 放大也在缓动）
+}
+
+// 指针进屏 = 注意状态：停转。出屏 = 回到呼吸。
+// 同时累计"在砖上走了多远" —— "停稳"要的是"没在走"，不只是"待够时间"。
+addEventListener('pointermove', (e) => {
+  poolSpinWant = (e.clientX > railWidth()) ? 0 : POOL_SPIN;
+  if (ptrX >= 0) hoverTravel += Math.abs(e.clientX - ptrX) + Math.abs(e.clientY - ptrY);
+  ptrX = e.clientX; ptrY = e.clientY;
+  if (hoverTravel > AWAKE_TRAVEL) { hoverSince = performance.now(); hoverTravel = 0; }
+});
 
 // ===== 帧路由 =====
 function applyState(f) {
   arena = f.arena || '';
+  if (f.groups) groupNames = f.groups;
+  if (f.order) poolIds = f.order;
   const ids = f.ids || [];
   desktopIds = f.desktop || [];
+  focusId = f.focus || null;
   renderStage(ids, f.layout);
-  setFullscreen(f.fullscreen ?? null);
+  renderRail();
   syncDiscs();
+  syncPool();
+}
+
+// ---- rail：人切组的唯一入口 ----
+// 人点一下 = 一次 switch_view 上行；服务端 activate 后回 broadcast，并把这件事
+// 作为 aside 回流给模型（"human switched to #x"）—— 所以这里不需要模型参与，
+// 也不需要页面自己维护"当前在哪"：arena 永远从帧里来。
+function railButton(label, group, extraClass) {
+  const b = document.createElement('button');
+  b.className = 'rail-item' + (extraClass ? ' ' + extraClass : '')
+    + (group === arena ? ' active' : '');
+  b.textContent = label;
+  b.title = group || 'home';
+  b.addEventListener('click', () => send({ type: 'switch_view', group }));
+  return b;
+}
+
+// home 那一行和别的组不同：它前面挂一颗心跳点（在线呼吸 / 断线红且静止），
+// 后面在错误或调试时带一行字。它表达的是"我在不在"，而不是"有哪些地方"。
+function homeButton() {
+  const b = document.createElement('button');
+  b.className = 'rail-item rail-home' + (arena === '' ? ' active' : '');
+  b.title = 'home';
+  const dot = document.createElement('span');
+  dot.className = 'dot' + (linkDown ? ' down' : '');
+  const label = document.createElement('span');
+  label.textContent = 'home';
+  const note = document.createElement('span');
+  note.id = 'rail-state-text';
+  note.textContent = linkText;
+  b.append(dot, label, note);
+  b.addEventListener('click', () => send({ type: 'switch_view', group: '' }));
+  return b;
+}
+
+function renderRail() {
+  railGroups.textContent = '';
+  // "home" = 把舞台交还给我（arena = desktop）。它不是组，所以单独一行、隔开。
+  railGroups.appendChild(homeButton());
+  railGroups.appendChild(Object.assign(document.createElement('div'), { id: 'rail-sep' }));
+  if (!groupNames.length) {
+    const empty = document.createElement('div');
+    empty.className = 'rail-empty';
+    empty.textContent = 'no groups yet';
+    railGroups.appendChild(empty);
+    return;
+  }
+  groupNames.forEach((g) => railGroups.appendChild(railButton('#' + g, g)));
 }
 
 function route(f) {
   switch (f.type) {
+    // The conversation itself: one line per clause, newest at the bottom.
+    // The state light: one bit, drawn as an edge. Deliberately not a word.
+    //
+    // It is driven by *freshness*, not by a boolean: the page may connect at any
+    // moment (a reload, a second window claiming the stage), and a boolean that
+    // only ever arrives inside a frame leaves a reloaded page dark while the ghost
+    // is in fact working. So every ghost-side event is a beat, and the light stays
+    // on for GHOST_KEEP_MS after the last one — which also gets the other half for
+    // free: a ghost that stopped talking and stopped acting goes dark by itself,
+    // instead of glowing on a stale state nobody can retract.
+    // Two producers share this frame name, and they are not the same message:
+    // the ghost light (`{type:'state', thinking}`) and the layout
+    // (`P.state_frame` — arena/ids/layout/desktop/groups/order). Keeping them as
+    // two `case 'state'` arms was a silent bug: the first arm matched, broke, and
+    // the second became dead code — so every model-side arrange updated the
+    // server's pool and never reached the page, while a human click worked
+    // because it comes back as `activate`. One arm, both jobs, asked by shape.
+    case 'state': {
+      if ('thinking' in f) {
+        if (f.thinking) ghostBeat();
+        else ghostBeatAt = 0;          // an explicit idle: off now, not in K seconds
+      }
+      if ('layout' in f || 'arena' in f) applyState(f);
+      break;
+    }
+    case 'talk': {
+      const box = document.getElementById('talk');
+      if (!box) break;
+      // 字号是这块屏的状态, 不是某一行的属性: 收到的第一件事是把它挂到 box 上,
+      // 于是已经在屏上的旧行也一起变 —— 否则改一次字号要等两句才看得全.
+      if (f.size) box.style.setProperty('--talk-size', f.size + 'px');
+      if (f.clear) { box.replaceChildren(); break; }
+      // 只带 size 的帧到此为止: 它是"现在的字号", 不是一句话.
+      if (!f.text) break;
+      const line = document.createElement('div');
+      line.className = 'line';
+      line.textContent = f.text || '';
+      box.append(line);
+      // New lines push the old ones up; the oldest fade out rather than vanish.
+      // Two lines, not one: with a single slot the next clause yanks the sentence
+      // you were still reading off the screen — "kept up to date" beat "readable",
+      // and that was the wrong trade. The history beyond these two lives in the
+      // DSH surface; these two are for whoever is watching the stream, and for me
+      // to see how ASR parsed what was said.
+      while (box.children.length > 2) box.firstElementChild.remove();
+      setTimeout(() => line.classList.add('gone'), 16000);
+      setTimeout(() => line.remove(), 17500);
+      break;
+    }
+    case 'current': setMasked(false, ''); break;
+    case 'mask': setMasked(true, f.reason); break;
     case 'snapshot': {
       // 全量帧：reconcile（缺建、多删）。f.items 是所有 item 的详情（含桌面），
       // 页面据此物化 iframe；桌面 item 的 iframe 隐藏，只画代理圆盘。
@@ -490,8 +2217,11 @@ function route(f) {
         if (items.has(it.id)) {
           const cur = items.get(it.id);
           cur.label = it.label; cur.group = it.group; cur.url = it.url;
+          cur.face_line = it.face_line; cur.face_art = it.face_art;
+          tileFace(it.id);
         } else {
-          const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon };
+          const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon,
+                          face_line: it.face_line, face_art: it.face_art };
           items.set(it.id, entry); makeSlot(entry);
         }
       });
@@ -499,11 +2229,11 @@ function route(f) {
       applyState(f);
       break;
     }
-    case 'state': applyState(f); break;
     case 'open': {
       const it = f.item;
       if (!items.has(it.id)) {
-        const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon };
+        const entry = { id: it.id, url: it.url, label: it.label, group: it.group, icon: it.icon,
+                        face_line: it.face_line, face_art: it.face_art };
         items.set(it.id, entry); makeSlot(entry);
       } else {
         // navigate：已存在的 item 换 url，iframe 原地重载（不 reparent）。
@@ -511,27 +2241,57 @@ function route(f) {
         cur.url = it.url;
         if (cur.iframe) cur.iframe.src = it.url;
       }
+      syncPool();
       break;
     }
     case 'close': {
-      destroySlot(f.id); items.delete(f.id); break;
+      destroySlot(f.id); items.delete(f.id); syncPool(); break;
     }
     case 'activate': {
       if (f.by_model) { /* 模型切组：可在此处做 activate 动画（WD6） */ }
       applyState(f); break;
     }
-    case 'fullscreen': setFullscreen(f.id); break;
+    case 'focus': setFocus(f.id); break;
+    case 'face': {
+      const it = items.get(f.id); if (!it) break;
+      it.face_line = f.face_line; it.face_art = f.face_art;
+      tileFace(f.id);
+      break;
+    }
     case 'veil': {
-      const d = (f.duration || 2) * 1000;
-      if (f.gesture === 'mark') veilMark(f.item, f.region || 'full', d);
-      else if (f.gesture === 'arrow') veilArrow(f.src, f.dst, d);
-      else if (f.gesture === 'text') veilText(f.content, d);
+      // duration<=0 = 常驻（Infinity），交给撤除命令收；有 id 才能被单独撤掉。
+      const d = f.duration > 0 ? f.duration * 1000 : Infinity;
+      const id = f.id;
+      const w = f.width || 3;
+      if (f.gesture === 'mark') veilMark(id, f.item, f.region || 'full', d, f.color, w);
+      else if (f.gesture === 'box') veilBox(id, f.item, f.region || 'full', d, f.color, w);
+      else if (f.gesture === 'circle') veilCircle(id, f.item, f.region || 'full', d, f.color, w);
+      else if (f.gesture === 'arrow') {
+        veilArrow(id, f.src, f.src_region || 'full', f.dst, f.dst_region || 'full',
+                  d, f.color, w);
+      } else if (f.gesture === 'danmaku') {
+        ghostBeat();      // 我说的话、我做的动作 —— 都是"我还在"的证据
+        veilDanmaku(id, f.content || '', f.motion || '', d, f.color,
+                    f.size || 30, f.lane || 0, f.item || '', f.turns || 1,
+                    f.at_x, f.at_y, f.angle || 0, f.region || '', !!f.overlap);
+      } else if (f.gesture === 'paint') veilPaint(id, f.script || '', f.item || '', d, f.color);
+      else if (f.gesture === 'remove') removeBlock(id);
+      else if (f.gesture === 'clear') veilBlocks.clear();
       break;
     }
     case 'audio': {
-      feed = f.sample;
-      mossEl.classList.toggle('alive', feed.role === 'ghost' && feed.rms_db > GATE);
-      st.textContent = `#${arena || 'desktop'} · ${feed.role} ${feed.rms_db.toFixed(0)}dB`;
+      // 两侧共用一条总线，谁说话谁发帧。雨只认 ghost，升字只认 user —— 所以按角色
+      // 分家存，另一侧说话时不会把这一侧抹掉。
+      feedAt = performance.now();          // 这一帧是什么时候到的
+      if (f.sample.role === 'user') {
+        userFeed = f.sample;
+        userAt = feedAt;
+      } else {
+        ghostAt = feedAt;                  // 断线判定要按角色：见 ghostAt 的注释
+        feed = f.sample;
+        mossEl.classList.toggle('alive', feed.rms_db > GATE);
+      }
+      st.textContent = `#${arena || 'desktop'} · ${f.sample.role} ${f.sample.rms_db.toFixed(0)}dB`;
       break;
     }
     case 'notice': {
@@ -541,8 +2301,7 @@ function route(f) {
 }
 
 // ===== 上行 + log =====
-$('#scrim').addEventListener('click', () => { if (fullscreenId) send({ type: 'fullscreen', id: '' }); });
-$('#scrim-exit').addEventListener('click', (e) => { e.stopPropagation(); send({ type: 'fullscreen', id: '' }); });
+$('#scrim-exit').addEventListener('click', (e) => { e.stopPropagation(); send({ type: 'focus', id: '' }); });
 
 let logCount = 0;
 function logLine(text) {
@@ -555,6 +2314,43 @@ function logLine(text) {
   while (list.children.length > 50) list.lastChild.remove();
 }
 $('#log-badge').addEventListener('click', () => $('#log-list').classList.toggle('open'));
+
+// ---- rail 的两个人侧行为：收起、闲置淡出 ----
+// 收起是**手动**的（人不点，它不消失）；闲置只是淡，不停用，也不隐藏。
+
+let railIdle = null;
+function railPoke() {
+  rail.classList.remove('idle');
+  clearTimeout(railIdle);
+  railIdle = setTimeout(() => {
+    if (!rail.matches(':hover') && !railCollapsed()) rail.classList.add('idle');
+  }, 4000);
+}
+rail.addEventListener('pointerenter', railPoke);
+rail.addEventListener('pointermove', railPoke);
+rail.addEventListener('pointerleave', railPoke);
+railPoke();
+
+function setRailCollapsed(v) {
+  document.body.classList.toggle('rail-collapsed', v);
+  $('#rail-toggle').textContent = v ? '›' : '‹';
+  rail.classList.remove('idle');
+  // 上报给人侧状态面：栏宽改变的是舞台的**可用区**，模型排布时得知道。
+  // （它不进 debug 面 —— debug 面是要退役的，这是语义状态。）
+  send({ type: 'rail', collapsed: v });
+  // 栏宽变了 → 舞台可用区变了 → 画布与桌面圆盘重新对齐（贴底那层最容易在这里出血）
+  syncViewport();
+}
+$('#rail-toggle').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setRailCollapsed(!railCollapsed());
+});
+// 收起后整条边条就是"展开"的按钮 —— 收起是手动的，展开也是。
+rail.addEventListener('click', () => { if (railCollapsed()) setRailCollapsed(false); });
+
+// 首次同步放在这里，不放在定义处：syncViewport 会读 MOSS_SCALE 等 const，
+// 在它们初始化之前调用会撞上暂时性死区（TDZ）。此刻所有 const 已就位。
+syncViewport();
 </script>
 </body>
 </html>

@@ -4,7 +4,8 @@
 
 - **锚点**: ``commit()`` 组 ``DshSessionRef`` + 写 memento. metadata = ``{ref, prev_turn}``,
   memento 只存不解析. 区间取「已完成的 turn」(追认): 签发时 turn/end 已知, usage 齐整.
-- **view / 切点**: ``view_message()`` 给 ghost 的 memories; ``resume_ref()`` 给 ego 重建的切点.
+- **view / 切点**: ``view_message()`` 给 ghost 的 memories; ``compact_cut_turn()`` 给 compact 的
+  安全切点 (SCS = tip commit 的 start_turn).
 - **阈值**: ``evaluate()`` 是纯算法. **窗口状态 (window_base / warned) 在 ego**, 不在这里 ——
   manager 不托管 ego 的运行时状态. 每个 commit 重置滑动窗口.
 - **旁路 note 生产**: ``schedule_note()`` 为每个锚点排一个旁路任务 (身份旁路 session, seed = 源
@@ -17,8 +18,6 @@
   关停时被取消的旁路**留空** → 下次开机补上; 真失败 (传输异常 / 空文本) 写一条 **terminal error
   note** (``_fail``) → 补漏据此不再重试, 读侧把它标成 broken. 幂等依据是 memento 里那条 Note
   本身 (不是内存态) —— 所以失败必须落盘, 否则恒失败的 commit 每次开机都要白跑一遍.
-- 未落: ego 的 inflight 替换 —— 当前只在 ego 开启/关闭时用 ``resume_ref()`` 重建.
-  (``read`` / ``chat`` 已落, 见 ``memento_channel``.)
 
 dep 只有不可变项 (connection / memento / config / logger) —— 这些是它干活的工具, 不是 ego 状态.
 """
@@ -29,6 +28,7 @@ import asyncio
 import dataclasses
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -39,6 +39,7 @@ from ghoshell_moss.deepseek_harness.trajectory import render_transcript
 from ghoshell_moss.deepseek_harness.types.refs import DshSessionRef
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, TokenUsage
 from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento, Note
+from ghoshell_moss.memento.hooks import hook_env, run_slot
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BranchInfo", "BrokenCommitError", "BypassCommit", "BypassState",
     "CommitDecision", "CommitDigest", "EgoMementoConfig", "EgoMementoManager",
+    "SourceUnreadableError",
 ]
 
 # metadata 约定 (memento 只存不解析).
@@ -64,6 +66,9 @@ _READ_ROUTE = "/moss-api/ghost/dolores/read"
 _NOTE_EFFORT = "off"
 # 旁路摘要前置上下文: 只展开最近 1 条已就绪的 commit message 作前文.
 _NOTE_PRIOR_COUNT = 1
+_DIGEST_TITLES = 5
+"""How many titles the folded past keeps. The rest of `history` is a count and a
+coordinate range — a budget, not a promise to render every commit."""
 
 
 def _note_prompt(
@@ -120,6 +125,20 @@ class BrokenCommitError(RuntimeError):
     """chat 的目标 commit 的 message 是坏占位 (非真摘要), 不可对话."""
 
 
+class SourceUnreadableError(RuntimeError):
+    """源 session 读不出来: 当前 dsh 拒绝这份存档, 且上游没有兼容接口.
+
+    不是 commit 内容坏, 是**存储格式与当前 harness 不兼容** —— 典型是 0.1.5 时代写的 ego
+    session 在 0.2.0 的 v4 不变式 (surface 首节点必须是受保护的 system/message) 下不合法,
+    冷读时被 dsh 的格式校验拒掉 (``stored log is corrupt: … requires a protected first
+    surface head`` / ``migration refuses the transformed artifact``).
+
+    处置: **显式抛出, 不回落不猜**. 每读一次就报一次 —— 让调用方看见"这里确实没了", 而不是
+    拿到一段像正文的半成品. 上游没有兼容读接口 (0.2.1-rc.2 里这条规则一字未改), 所以这是
+    终态, 不是待修项.
+    """
+
+
 class EgoMementoConfig(BaseModel):
     """``.dolores.yml`` 的 ``memento:`` 段. Field 默认即兜底."""
 
@@ -132,6 +151,14 @@ class EgoMementoConfig(BaseModel):
     force_tokens: int = Field(
         default=100_000,
         description="T: 达此值强制建锚点. 置 0 = 每 turn commit (验证期用).",
+    )
+    compact_tokens: int = Field(
+        default=600_000,
+        description=(
+            "C: 上下文**绝对**窗口上限 (最近一次调用的 prompt 大小). 达此值且上一 run 有效时, "
+            "下一个 run 启动前做 compact (原地 surface replace, 替换内容 = memory 视图). "
+            "应设成实际模型 context window 的某比例 (架构师量级 400k-800k, 取中位). 0 = 关闭自动 compact."
+        ),
     )
     note_max_tokens: int = Field(
         default=800,
@@ -198,6 +225,38 @@ class CommitDecision(str, Enum):
 def _input_size(usage: TokenUsage) -> int:
     """一次调用的窗口输入大小 = 未缓存 input + cache read (两者都进了 prompt)."""
     return usage.inputTokens + (usage.cacheReadTokens or 0)
+
+
+# 源存档读不出来时, dsh 的两类错误文本 (错误码不可控, 只认稳定关键字):
+# 1. 格式代际不支持 —— 迁移/解码层直接 refuse;
+# 2. 存档不满足当前格式不变式 —— 校验层判它 corrupt, 但字节没坏.
+_UNREADABLE_MARKERS = (
+    "SessionFormatUnsupported",
+    "reads only v3",
+    "log format v4",
+    "stored log is corrupt",
+    "requires a protected first surface head",
+    "refuses the transformed artifact",
+)
+
+
+def _is_unreadable_source(exc: Exception) -> bool:
+    """这个错误是不是"源存档读不出来" (格式不兼容), 而不是"旁路本身失败".
+
+    读不了 ≠ commit 内容坏: 前者是版本漂移, 后者是摘要没产出. 读侧要显式抛
+    (:class:`SourceUnreadableError`), 旁路则走 ``_skip`` —— 不写 error note, 不标 broken.
+    """
+    text = str(exc)
+    return any(marker in text for marker in _UNREADABLE_MARKERS)
+
+
+def _unreadable_reason(exc: Exception) -> str:
+    """压一行可读原因: 去掉 dsh 的 (raw log: /abs/path) 尾巴 —— 路径不进模型上下文."""
+    text = str(exc)
+    cut = text.find("(raw log:")
+    if cut >= 0:
+        text = text[:cut].rstrip(" ;:")
+    return text
 
 
 class EgoMementoManager:
@@ -268,11 +327,14 @@ class EgoMementoManager:
         if start_turn == end_turn:
             return None
         ref = DshSessionRef(session_id=session_id, start_turn=start_turn, end_turn=end_turn)
-        return self._branch().commit(
+        commit = self._branch().commit(
             message=message,
             metatype="session",
             metadata={_REF_KEY: ref.model_dump(mode="json"), _PREV_TURN_KEY: start_turn},
         )
+        # 旁路: 锚点已落地, hook 在旁边跑. 不 await, 失败不回滚, 也不挡主路.
+        self.fire_hook("on_commit", commit)
+        return commit
 
     # ── 节点空间 (写者自己的地盘) ─────────────────────────────────
 
@@ -377,7 +439,10 @@ class EgoMementoManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._fail(run, f"run failed: {exc}")
+            if _is_unreadable_source(exc):
+                self._skip(run, str(exc))
+            else:
+                self._fail(run, f"run failed: {exc}")
             return
         message = str((result or {}).get("message", ""))
         if message == "":
@@ -401,6 +466,21 @@ class EgoMementoManager:
         except Exception:
             self._logger.exception("memento bypass: cannot mark commit %s broken", run.commit_id)
         self._logger.warning("memento bypass failed, commit %s marked broken: %s", run.commit_id, reason)
+
+    def _skip(self, run: BypassCommit, reason: str) -> None:
+        """源 session 读不出来 (格式代际不兼容) —— 不是旁路失败, 是版本漂移.
+
+        两个方向都算: 源比 harness 新 (v4 vs v3), 或源比当前不变式旧 (0.1.5 的 ego session 在
+        0.2.0 的 protected head 规则下不合法). 写一条空 note (无 error) 防止 ``backfill`` 反复
+        重试, 但**不标 broken**: 坏的是"读不了", 不是"commit 内容坏了". 读侧不折它, 只当它没摘要
+        (``view.message`` 空), 真去 read 时抛 :class:`SourceUnreadableError`.
+        """
+        run.state = BypassState.FAILED
+        try:
+            self._branch().note(run.commit_id, message="", error="")
+        except Exception:
+            self._logger.exception("memento bypass: cannot write skip note for commit %s", run.commit_id)
+        self._logger.info("memento bypass skipped (source session unreadable under the current format): %s", reason)
 
     async def drain_bypass(self) -> None:
         """等所有在飞的旁路任务收尾 (观测/测试用)."""
@@ -439,12 +519,33 @@ class EgoMementoManager:
         取的是源 session 的**原始 log 区间**, 不是 surface 投影 —— transcript 要 ``tool/call``
         这类只在 log 里的记录. 源 session 可以是冷的 (上次运行留下的), plugin 侧冷读兜底.
         坏 commit 照读: 坏的是摘要, 原文还在.
+
+        源存档读不出来 (格式代际不兼容) 时抛 :class:`SourceUnreadableError` —— 不回落成空串、
+        不返回一段看起来像正文的东西: 读不到就报读不到.
         """
         view = self._require_commit(coord)
         ref = self._ref_of_view(view)
-        raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
+        try:
+            raw = await self._connection.call(_READ_ROUTE, {"ref": ref.model_dump(mode="json")})
+        except Exception as exc:
+            raise self._read_failure(view, ref, exc) from exc
         events = [SessionEvent.from_dict(event) for event in (raw or {}).get("events", [])]
-        return render_transcript(events)
+        text = render_transcript(events)
+        # 这个 commit 目录自己的说明由 commit_view 槽位生成, 是 read 的一部分 ——
+        # 不是 channel 在正文后面拼上去的尾巴.
+        ground = await self._commit_ground(view)
+        return f"{text}\n\n{ground}" if ground else text
+
+    async def _commit_ground(self, view: CommitView) -> str:
+        """这一个 commit 的目录说自己什么 —— 取的时候才跑槽位, 所以永远是新的一遍."""
+        branch = self._memento.get_branch(self._config.branch_name)
+        if branch is None:
+            return ""
+        try:
+            hooked = await branch.aget_commit_with_hooks(view.seq)
+        except Exception:  # noqa: BLE001 — 读面不许因为 hook 而挂
+            return ""
+        return hooked.ground if hooked is not None else ""
 
     async def chat(self, coord: str, prompt: str) -> str:
         """和某条 commit **所属的上下文**对话一轮 (走旁路原语).
@@ -456,14 +557,32 @@ class EgoMementoManager:
         if view.is_broken:
             raise BrokenCommitError(f"commit {view.coord} has no context to talk to; read it instead")
         ref = self._ref_of_view(view)
-        result = await self._connection.call(
-            _BYPASS_RUN_ROUTE,
-            {"ref": ref.model_dump(mode="json"), "prompt": f"{_CHAT_PREAMBLE}\n\n{prompt}"},
-        )
+        try:
+            result = await self._connection.call(
+                _BYPASS_RUN_ROUTE,
+                {"ref": ref.model_dump(mode="json"), "prompt": f"{_CHAT_PREAMBLE}\n\n{prompt}"},
+            )
+        except Exception as exc:
+            raise self._read_failure(view, ref, exc) from exc
         text = str((result or {}).get("message", ""))
         if text == "":
             raise RuntimeError(f"chat with commit {view.coord} returned no text")
         return text
+
+    def _read_failure(self, view: CommitView, ref: DshSessionRef, exc: Exception) -> Exception:
+        """读源 session 失败 → 该抛什么.
+
+        格式不兼容映射成 :class:`SourceUnreadableError` (说明"这里确实没了, 别再试"), 其它异常
+        原样返回 (传输/服务端问题是真的可重试, 不该被伪装成终态).
+        """
+        if not _is_unreadable_source(exc):
+            return exc
+        return SourceUnreadableError(
+            f"memento {view.coord}: the source session {ref.session_id} cannot be read by the "
+            f"current dsh — the stored log does not satisfy the current format invariants, and "
+            f"there is no compatible read path. The original transcript is unavailable; the "
+            f"commit's note (if any) is still in view/history. dsh said: {_unreadable_reason(exc)}"
+        )
 
     def _require_commit(self, coord: str) -> CommitView:
         view = self.resolve(coord)
@@ -532,6 +651,19 @@ class EgoMementoManager:
             return None
         return self._render_view(branch.view(n=n if n is not None else self._config.view_limit))
 
+    async def aview_message(self, name: str | None = None, *, n: int | None = None) -> Message | None:
+        """``view_message`` 的带 hook 版本 —— 真正读这一页的人都该走这条.
+
+        差别只有一个: ``branch_view`` 槽位在这里跑, 结果进 ``BranchView.ground`` 再被渲染.
+        同步那条留着, 是因为它在别的投影里被当纯读数用; 但它读不出线自己渲染的东西,
+        所以开机 memory 与 ``memento:view`` 都必须走这条异步入口.
+        """
+        branch = self._memento.get_branch(name or self._config.branch_name)
+        if branch is None:
+            return None
+        view = await branch.aview_with_hooks(n=n if n is not None else self._config.view_limit)
+        return self._render_view(view)
+
     def list_branches(self) -> list[BranchInfo]:
         """所有现存 branch 的概览 —— 先看有哪些, 再用 ``view_message(name)`` 看内容."""
         infos: list[BranchInfo] = []
@@ -578,31 +710,67 @@ class EgoMementoManager:
         """坐标 (如 ``1-27``) → CommitView; 格式错 / 不存在返回 None. read / chat 的入口."""
         return self._memento.resolve_commit(coord)
 
-    def resume_ref(self) -> DshSessionRef | None:
-        """ego 重建的切点: 最后一个**摘要已就绪**的 commit 的 ref; 没有则 None (= 全新 session).
+    def compact_cut_turn(self) -> int | None:
+        """安全 compact 位点 (SCS): 倒数第二个 commit 的 end_turn, 即 tip commit 的 start_turn.
 
-        只认 `note.message` 非空的 commit —— 摘要区靠它, 没有它就退化成"整段原文再带一遍" (无效还原).
-        更晚的 commit 若 note 还没生产出来, 它到切点之间的原文就作为 raw 尾巴带过去, 不丢内容.
+        tip commit ``n`` 的 ``start_turn`` = ``end_turn(n-1)`` (半开区间 (start, end]), 所以切到它
+        意味着「压到 n-1、保留最新一个 commit 的 span 作原文 tail」——「不丢最近几轮」是结构保证,
+        不靠算。返回 ``None`` 表示无可压 (没有 tip / tip 就是第一个 commit, 无 n-1)。
         """
-        branch = self._memento.get_branch(self._config.branch_name)
-        if branch is None:
+        ref = self.latest_ref()
+        if ref is None or ref.start_turn <= 0:
             return None
-        notes = branch.notes()
-        cut: DshSessionRef | None = None
-        for commit in branch.commits():
-            note = notes.get(commit.id)
-            if note is not None and note.message:
-                cut = self._ref_of(commit)
-        return cut
+        return ref.start_turn
 
     # ── 渲染 ─────────────────────────────────────────────────────
 
     def _render_view(self, view: BranchView) -> Message:
-        container = Message.new(tag="branch", attributes={"name": view.name, "index": str(view.index)})
-        commits = view.history + view.latest
-        if not commits:
+        """Two densities, and the count says which window this is.
+
+        ``latest`` is the detail window (the contract's ``n``); ``history`` is
+        everything older and is *folded* — one entry naming the range and the few
+        titles closest to the window, never one entry per commit. The fold is what
+        the contract always claimed and the renderer never did: it concatenated
+        the two lists and drew every commit in full, so a 292-commit branch put
+        282 of them into memory while the budget only existed in a signature.
+        """
+        container = Message.new(
+            tag="branch",
+            attributes={
+                "name": view.name,
+                "index": str(view.index),
+                "total": str(view.commits_total),
+            },
+        )
+        children: list[Message] = []
+        if view.history:
+            children.append(self._render_digest(view))
+        children.extend(self._render_commit(cv) for cv in view.latest)
+        if view.ground:
+            # 线自己渲染的那一页（计划、开着的 task）属于这个 view, 不是摘要的脚注.
+            children.append(Message.new(tag="ground").with_content(view.ground))
+        if not children:
             return container.with_content("no commit")
-        return container.with_messages(*[self._render_commit(cv) for cv in commits])
+        return container.with_messages(*children)
+
+    def _render_digest(self, view: BranchView) -> Message:
+        """The folded past: how much, which slice, and the titles nearest the light.
+
+        Bounded on purpose — ``_DIGEST_TITLES`` is the whole budget of the far
+        side. Anything older than the window is reachable by coordinate
+        (``read`` / ``history``), which is why it is safe not to ship it.
+        """
+        recent = view.history[-_DIGEST_TITLES:]
+        body = "\n".join(f"{cv.coord}  {cv.title}" for cv in recent)
+        return Message.new(
+            tag="earlier",
+            attributes={
+                "count": str(len(view.history)),
+                "first": view.history[0].coord,
+                "last": view.history[-1].coord,
+                "titles": str(len(recent)),
+            },
+        ).with_content(body)
 
     def _render_commit(self, cv: CommitView) -> Message:
         attributes = {"seq": cv.coord, "created": cv.created.isoformat()}
@@ -619,6 +787,67 @@ class EgoMementoManager:
         if branch is None:
             raise RuntimeError(f"memento branch '{self._config.branch_name}' not found")
         return branch
+
+    # ── 生命周期 hook (槽位是文件, 见 memento/hooks.py) ─────────────
+
+    @property
+    def branch_path(self) -> Path:
+        """这条线的目录 —— 交给 hook 的工作面."""
+        return self._branch().path
+
+    @property
+    def memento_root(self) -> Path:
+        return self._memento.root
+
+    def hook_roots(self) -> list[Path]:
+        """线的 hooks/ 在前, ego 根的在后 —— 覆盖而不是替换."""
+        return [self.branch_path, self.memento_root]
+
+    def hook_env_for(self, slot: str, coord: str = "") -> dict[str, str]:
+        """协议约定的那组环境变量; commit 目录按约定算, 不看它存不存在."""
+        root = self.memento_root
+        commit_dir = self._commit_dir_of(coord) if coord else None
+        return hook_env(
+            slot,
+            root=root,
+            branch=self._config.branch_name,
+            branch_dir=self.branch_path,
+            coord=coord,
+            commit_dir=commit_dir,
+        )
+
+    def _commit_dir_of(self, coord: str) -> Path | None:
+        view = self._memento.resolve_commit(coord)
+        if view is None:
+            return None
+        return view.memento_path(self.memento_root).parent
+
+    def fire_hook(self, slot: str, commit: CommitRef) -> None:
+        """把槽位挂到事件旁边 —— 一个 task, 不 await, 不参与 commit 的成败."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._run_hook_quietly(slot, commit))
+
+    async def _run_hook_quietly(self, slot: str, commit: CommitRef) -> None:
+        try:
+            view = self._branch().get_commit(commit.seq)
+            if view is None:
+                return
+            root = self.memento_root
+            commit_dir = self._commit_dir_of(view.coord)
+            if commit_dir is not None:
+                # 协议承诺: hook 拿得到一个已经存在的目标目录, 它只管往里搬东西.
+                commit_dir.mkdir(parents=True, exist_ok=True)
+            await run_slot(
+                slot,
+                self.hook_roots(),
+                env_base=self.hook_env_for(slot, view.coord),
+                log_root=root,
+            )
+        except Exception:  # 旁路的一切失败都不许外溢
+            self._logger.warning("memento hook %s failed", slot, exc_info=True)
 
     def _ref_of(self, commit: CommitRef) -> DshSessionRef | None:
         raw = commit.metadata.get(_REF_KEY)

@@ -99,6 +99,23 @@ def test_output_keeps_a_bounded_tail_and_never_writes_a_file(store):
     assert not store.output_path(card.id).exists()
 
 
+def test_clear_outputs_drops_a_previous_runs_files_and_returns_the_count(store):
+    """Card ids restart at 1 every process, so an old file is only a leak — and a
+    directory that keeps growing is a memory leak with a slower clock."""
+    out = store.output_path(3)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("x" * 100)
+    store.output_path(4).write_text("y" * 100)
+
+    assert store.clear_outputs() == 2
+    assert list(store.outputs_dir.iterdir()) == []
+
+
+def test_clear_outputs_is_a_no_op_before_anything_was_written(store):
+    assert not store.outputs_dir.exists()
+    assert store.clear_outputs() == 0
+
+
 def test_rules_only_go_live_once_accepted(store):
     card = store.new_card(CardType.RULE, title="safe reads")
     store.append_content(card.id, r"ls -la")

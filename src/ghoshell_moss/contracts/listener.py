@@ -48,6 +48,16 @@ class Listener(ABC):
         与 ``is_listening()`` 不同: 后者指"当前是否有一条活跃 session".
         """
 
+    # ── 耳朵级故障观察 (跨 session 稳定) — 对称 ASR.on_error ──
+
+    def on_error(self, callback: Callable[[Exception], None]) -> Discard:
+        """注册"耳朵故障"观察者 — session 听觉循环异常退出 / ASR 上报长程故障时回调.
+
+        对称 ``ASR.on_error``: 把"耳朵挂了"从一条只进日志的死契约, 变成可被控制层/模型
+        感知并据以自愈的信号源. 默认 no-op (无故障面的 listener 只是永不上报). 回调不应抛异常.
+        """
+        return lambda: None
+
     # 三个 on_*: 自动装线到当前 session (跨 session 稳定订阅)
     @abstractmethod
     def on_audio_chunk(self, callback: Callable[[AudioChunk], None]) -> Discard:

@@ -33,18 +33,29 @@ class TTSManagerConfig(ConfigType):
     def conf_name(cls) -> str:
         return 'tts_factory'
 
-    def validate(self) -> None:
-        """resolved 后自校验: 关键鉴权 key 非空 (env 缺失时 resolve 保留 $VAR 占位)."""
-        if self.use == 'volcengine_stream_tts_model':
-            conf = self.volcengine_stream_tts_model_config
-            missing = [
-                name for name, value in (
-                    ("app_key", conf.app_key),
-                    ("access_token", conf.access_token),
-                ) if not value or value.startswith("$")
-            ]
-            if missing:
-                raise ValueError(f"Volcengine TTS env not set: {', '.join(missing)}")
+    def validate_configuration(self) -> None:
+        """resolved 后自校验: 至少一条可用凭据 (env 缺失时 resolve 保留 $VAR 占位)."""
+        if self.use != 'volcengine_stream_tts_model':
+            return
+        conf = self.volcengine_stream_tts_model_config
+
+        def usable(value: str) -> bool:
+            return bool(value) and not value.startswith("$")
+
+        # 与 gen_header 选路一致: 优先新控制台 api_key; 缺则要求旧版 app_key+access_token 成对.
+        if usable(conf.api_key):
+            return
+        legacy_missing = [
+            name for name, value in (
+                ("app_key", conf.app_key),
+                ("access_token", conf.access_token),
+            ) if not usable(value)
+        ]
+        if legacy_missing:
+            raise ValueError(
+                f"Volcengine TTS env not set: SEED_API_KEY "
+                f"(legacy missing: {', '.join(legacy_missing)})"
+            )
 
 
 class TTSServiceProvider(Provider[TTS]):
@@ -56,7 +67,7 @@ class TTSServiceProvider(Provider[TTS]):
     def factory(self, con: IoCContainer) -> INSTANCE:
         store = con.force_fetch(ConfigStore)
         manager_conf = store.get_or_create(TTSManagerConfig())
-        manager_conf.validate()
+        manager_conf.validate_configuration()
 
         if manager_conf.use == 'volcengine_stream_tts_model':
             return self._factory_volcengine_stream_tts_model(

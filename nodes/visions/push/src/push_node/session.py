@@ -39,10 +39,14 @@ class PushSession:
     ``owner`` distinguishes the two kinds of sessions the store holds: a session
     the ghost requested (``owner="model"``) versus one the human opened directly
     (``owner="human"``). The model may stop the former, never the latter.
+
+    ``index`` is the requested capture device; None means "whatever this node is
+    configured for", resolved by the ffmpeg layer at spawn time.
     """
 
     id: int
     source: str
+    index: Optional[int] = None
     label: str = ""
     owner: str = "model"
     description: str = ""
@@ -73,6 +77,7 @@ class PushSession:
         return {
             "id": self.id,
             "source": self.source,
+            "index": self.index,
             "label": self.label,
             "owner": self.owner,
             "description": self.description,

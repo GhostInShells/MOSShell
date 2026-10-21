@@ -16,7 +16,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import statistics
 import time
+from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
@@ -39,6 +41,7 @@ from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_cha
 from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
+from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.core.mindflow.listener_nucleus import new_listener_signal
 from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.host.listener.etiquette import (
@@ -48,11 +51,17 @@ from ghoshell_moss.host.listener.etiquette import (
     EtiquetteSpec,
     OnsetSpec,
     always as ALWAYS,
+    apply_interaction_patch,
+    deviated_keys,
+    duplex as DUPLEX,
+    flatten_interaction,
     knock as KNOCK,
+    needs_session_restart,
     once as ONCE,
     scored as SCORED,
 )
 from ghoshell_moss.host.listener.segment_buffer import SegmentBuffer
+from ghoshell_moss.host.listener.segment_delta import SegmentDelta
 from ghoshell_moss.host.listener.stop_judge import StopJudge, StopScoreObservation
 from ghoshell_moss.types.topics import AudioSampleTopic, ClauseTopic
 
@@ -68,6 +77,31 @@ __all__ = [
 #: 默认实现由 ``ListenerController`` 按 ``StopSpec`` + 注入的 caller 组装;
 #: 注入自定义 factory 即可整段替换 (container 在 runtime get 一次后塞进来).
 StopDetectorFactory = Callable[[EtiquetteSpec, Callable[[], None]], StopJudge]
+
+#: 听觉故障自愈: 连续故障重启当前礼仪的次数上限. 达上限停手, 交回模型 re-activate.
+#: Why 有界: ASR 自身 ``max_connect_retries`` 默认 10 (退避 0.5→8s, 约 50s) 才 fatal —
+#: 无界重启会退化成每 ~50s 一次的 signal 风暴. 有界只为真正的瞬断留自愈窗口.
+_MAX_FAULT_RESTARTS = 3
+
+#: 响度 → 挑战强度: 比水位高多少 dB, 强度按常态的多少倍算.
+#: 人抬高嗓门是在加压, 不是在换优先级档 —— 所以走 strength, 不动 priority.
+#: 12dB ≈ 能量翻倍: 高一个 12dB 就给两倍强度; 到 +24dB 封顶 (三倍, 也是 Signal 的上限 300).
+_LOUD_STEP_DB = 12.0
+_LOUD_OVER_MAX_DB = 24.0
+
+#: 自动水位: 最近多少段的中位数当基线, 至少攒够几段才启用, 基线之上还要高多少 dB 才算"抬高".
+#: 用中位数而不是均值 —— 一次喊叫会把均值拽走, 中位数不动; 余量按 dB 加而不是按百分比乘,
+#: 因为 dB 是量级刻度, -25dB 乘 1.2 得到 -30dB, 那是把门槛降低 (反方向).
+_AUTO_WATERMARK_SEGMENTS = 12
+_AUTO_WATERMARK_MIN_SEGMENTS = 5
+_AUTO_WATERMARK_MARGIN_DB = 6.0
+
+#: 常态挑战强度 (``Signal.strength`` 的设计常态位) 与它的上限 (合约里的 le=300).
+_NORMAL_STRENGTH = 100
+_MAX_SIGNAL_STRENGTH = 300
+
+#: 说话态尾巴的截断长度 (字符). 只在识别事件回调里切一次, notice / 拉取都读这个快照.
+_TALKING_TAIL_CHARS = 24
 
 
 def build_stop_caller_factory(container) -> Optional[Callable[[str], MossLLMCaller]]:
@@ -138,9 +172,18 @@ class ListenerController(ListenLifecycle):
             cell_name: str = "",
             config_store: Optional[ConfigStore] = None,
             topic_service: Optional[TopicService] = None,
+            speaking_probe: Optional[Callable[[], bool]] = None,
+            speech_cutter: Optional[Callable[[], None]] = None,
     ):
         self._listener = listener
         self._asr = asr
+        # 出声探针 — "ghost 此刻在不在说话". 交付时读它, 决定 barge_in_while_speaking
+        # 这一档要不要把 interrupt 翻上来 (见 DeliverSpec). None = 这个组装者不知道
+        # 说侧的存在 (独立 listener node), 开关静默失效.
+        self._speaking_probe = speaking_probe
+        # 掐语音 — "让正在播的那条流停". 和探针成对: 探针回答"我在不在说", 它回答
+        # "别说了". 组装者注入, 只作用于说侧 (speech.clear), 不动全身动作.
+        self._speech_cutter = speech_cutter
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[ListenerController]"
         self._active_task: Optional[asyncio.Task] = None
@@ -175,6 +218,14 @@ class ListenerController(ListenLifecycle):
         # ``_active_etiquette`` 是"当前礼仪"的唯一真值 — snapshot / notice / signal
         # 发射都从这里读, 不设第二真值.
         self._active_etiquette: Optional[EtiquetteSpec] = None
+        # 这一份 current 是从哪套预设加载来的 — 只用来回答"跟出身比哪一格动了",
+        # 不参与任何行为判断. 存的是名字而不是 spec: 预设本身可能被 set_etiquette_spec 改掉,
+        # 那样"偏离"就该重新算, 而不是跟一份过期快照比.
+        self._interaction_origin: str = ""
+        # 这一次会话的寿命参数 (最近一次 run_etiquette 的入参). tune 动到判停那层要
+        # 原样重开, 否则「听一次」会被重开成常驻 — 寿命也是这次会话的一部分.
+        self._session_timeout: Optional[float] = None
+        self._session_until_tail: bool = False
         # 人类锁 — pause(True) 设置, pause(False) 释放. 只 TUI/人类主权面写.
         # 锁着时: run_etiquette 门控 (log + no-op) + as_channel() 的 chan.available
         # 返回 False → 整个 channel 从模型面消失 (无残留 affordance).
@@ -186,19 +237,51 @@ class ListenerController(ListenLifecycle):
         self._topic_task: Optional[asyncio.Task] = None
         self._topic_disposer: Optional[Callable[[], None]] = None
         self._topic_publisher: Optional[Publisher] = None
-        # audio sample → topic 装线 (懒, 由 with_audio_sample_service 启动).
+        # audio sample → topic 装线 (跟随 clause 桥一起 enter, 见 __aenter__).
         self._audio_sample_task: Optional[asyncio.Task] = None
         self._audio_sample_disposer: Optional[Callable[[], None]] = None
         self._audio_sample_publisher: Optional[Publisher] = None
         # segment buffer (感知协议): 跨 session 订阅 text/segment, 拉模式读.
         # 关时不入历史, 开时保留 + 经 notice/pull 暴露; 由 deliver.emit=False 门控.
         self._buffer = SegmentBuffer()
+        # 分句交付的游标: 记住这一段已经发出去多少文本, 交给 SegmentDelta 保证不重发.
+        self._delta = SegmentDelta()
         self._current_clauses: list[RecognitionClause] = []
+        # 响度 (dB): capture 侧已按帧算好 rms_db, 这里只攒均值 —— 一帧一次浮点加法, 不做 DSP.
+        # 口径是「这一整段」: 分句包读的是跑动均值, 尾包读完整均值, 段尾才清零.
+        self._level_sum: float = 0.0
+        self._level_count: int = 0
+        # 最近若干段的中位响度 (自动水位的基线), 只有段尾写入.
+        self._recent_db: deque[float] = deque(maxlen=_AUTO_WATERMARK_SEGMENTS)
+        # 说话态 (温数据): "他此刻正在说, 话还没交过来". 首包/尾包是边沿信号, 模型那一轮
+        # 不在场就丢了; 状态不丢 —— notice 每轮重渲染时读这里. 只报一个桶值, 一段话里
+        # 变两次 (开 / 关), 不做按秒的刷新 (那会把 notice 变成每秒一次的 delta).
+        self._talking: bool = False
+        self._talking_since: float | None = None
+        self._talking_ended: float | None = None
+        # 这一段到此刻的累积文本尾巴: ``text`` 是全量替换, 每个事件一次切片赋值即可.
+        self._talking_tail: str = ""
+        # 显式水位 (运行时, 不进礼仪): 不超过它 → 常态强度; 超过 → 按高出的量抬高.
+        # None = 走自动水位 (基线中位数 + 余量), 攒不够样本时等同于不提.
+        self._db_watermark: float | None = None
         self._listener.on_recognition_result(self._on_buffer_event)
         self._listener.on_recognition_segment(self._on_buffer_segment)
+        self._listener.on_audio_chunk(self._on_audio_level)
+        # 听到即恢复 → 复位故障重启计数 (自愈窗口内重新听到声音即清零).
+        listener.on_recognition_result(self._on_fault_activity_reset)
+        # 说话态追踪 (跨 session 稳定, 不依赖 signal_broadcast): 首包开 / 尾包关,
+        # 顺手留一个累积文本尾巴. 每个识别事件只多一次赋值 + 一次切片.
+        # 注册在 expect 之前 — expect 那条要保持在末位 (测试按 [-1] 取它).
+        listener.on_recognition_result(self._on_talking_state)
         # expect 语音回调 (跨 session 稳定): 任何语音识别结果到达 → set 所有 pending
         # expect events, 让"期待输入"立刻满足 (取消超时). 不依赖 signal_broadcast.
+        # (保持在 result_observers 末位 — 测试按 [-1] 取它.)
         listener.on_recognition_result(self._on_expect_voice)
+        # 耳朵故障观察 (跨 session 稳定, 对称 ASR.on_error): pump 崩溃 / ASR 上报 →
+        # 发感知 signal + 有界自愈. 此前无消费者 → 耳朵静默变聋、无人知.
+        listener.on_error(self._on_listener_fault)
+        self._fault_restarts = 0
+        self._restart_task: Optional[asyncio.Task] = None
 
     # ── 生命周期: listener 未启动则托管, 已启动则只借用 ──
 
@@ -210,6 +293,12 @@ class ListenerController(ListenLifecycle):
         # topic 装线 (clause → ClauseTopic): 构造时注入的 service 在 async with 里才 await 启动.
         if self._topic_service is not None:
             await self.with_topic_service(self._topic_service)
+            # 说侧发帧、听侧也要发帧 —— 两边共用一条 AudioSampleTopic 总线, 靠 role 区分.
+            # 这条约定归 voice 模块自己履行: 装线跟着 clause 桥一起走, 谁组装 controller
+            # 都不必记得再补一句 (漏一次就是听侧的雨永远不下).
+            await self.with_audio_sample_service(
+                self._topic_service, sample_rate=self._asr.get_info().sample_rate
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -225,6 +314,14 @@ class ListenerController(ListenLifecycle):
     def with_config_store(self, store: ConfigStore) -> Self:
         """注册 ConfigStore: 礼仪修改 save=True 时写回环境配置; 否则只内存."""
         self._config_store = store
+        return self
+
+    def with_loudness_watermark(self, db: float | None) -> Self:
+        """运行时响度水位 (dB): 不超过它 → 常态强度; 超过 → 按高出量抬强度.
+
+        channel 命令 ``set_loudness_watermark`` 与测试共用这一个入口. None = 关.
+        """
+        self._db_watermark = db
         return self
 
     def with_stop_detector(self, factory: StopDetectorFactory) -> Self:
@@ -294,6 +391,82 @@ class ListenerController(ListenLifecycle):
         self.run_etiquette(spec)
         return f"activated '{spec.name}'"
 
+    # ── voiceflow: 读 / 改 / 存 ──
+    #
+    # 一套礼仪是三个维度上的一个点; 运行时真正生效的永远是那一份 ``_active_etiquette``
+    # (current). 这三个方法只碰 current, 不新增"第二真值": 读它, 就地改它, 或者把整份
+    # current 另存成一个新名字.
+
+    def interaction_state(self) -> dict:
+        """current 的现状: 三个维度的现值 + 跟出身比哪几格被改过 + 现有预设名."""
+        active = self._active_etiquette
+        config = self._etiquette_config()
+        presets = [spec.name for spec in config.etiquettes]
+        if active is None:
+            return {
+                "current": None,
+                "origin": None,
+                "deviated": [],
+                "values": {},
+                "presets": presets,
+            }
+        origin = config.get(self._interaction_origin) if self._interaction_origin else None
+        return {
+            "current": active.name,
+            "origin": self._interaction_origin or None,
+            "deviated": deviated_keys(origin, active),
+            "values": flatten_interaction(active),
+            "presets": presets,
+        }
+
+    def tune_interaction(self, patch: dict) -> tuple[dict, list[str], bool]:
+        """就地改 current, 返回 (改完的现状, 动到的键, 是否重开了会话).
+
+        A 判停那一层的键在会话启动时就被拷进 StopJudge, 改对象到不了正在跑的那一版,
+        所以动到它们要重开会话 —— 返回值必须说出来, 不能装作已经生效.
+        """
+        active = self._active_etiquette
+        if active is None:
+            raise ValueError("no current interaction — activate an etiquette first")
+        touched = apply_interaction_patch(active, patch)
+        # 交付层的容量是 buffer 的物理形状, 不是 spec 里的一个数: 改了要跟着缩容,
+        # 否则读出来是新的、留下来的还是旧的.
+        if "deliver.history" in touched:
+            self._buffer.resize(active.deliver.history)
+        restarted = False
+        if needs_session_restart(touched) and self._active_task is not None and not self._active_task.done():
+            # 重开必须带上这一次会话的寿命参数 —— 默认参数会把「听一次」变回常驻.
+            self.run_etiquette(
+                active,
+                timeout=self._session_timeout,
+                until_tail=self._session_until_tail,
+            )
+            restarted = True
+        return self.interaction_state(), touched, restarted
+
+    def save_interaction(self, name: str, description: str = "") -> str:
+        """把完整的 current 另存成一个新名字 (写回 config store, 重启后还在)."""
+        active = self._active_etiquette
+        if active is None:
+            raise ValueError("no current interaction — activate an etiquette first")
+        name = name.strip()
+        if not name:
+            raise ValueError("save_etiquette needs a name")
+        spec = active.model_copy(deep=True)
+        spec.name = name
+        if description:
+            spec.description = description
+        config = self._etiquette_config()
+        config.upsert(spec)
+        if self._config_store is not None:
+            self._config_store.save(config)
+        # 存完就 reload 成这一份: current 认这个名字, 出身也挪到它身上. 同名旧配置被覆盖,
+        # 别的预设不动. 刚存下来的形状就是这个名字的定义 —— 再拿旧预设算「偏离」没有意义.
+        stored = config.get(name) or spec
+        self._interaction_origin = stored.name
+        self._set_active_etiquette(stored.model_copy(deep=True))
+        return f"saved current as etiquette '{name}'"
+
     # ── 礼仪驱动状态机 (纯配置, 持续监听 = 另一种 always) ──
 
     def run_etiquette(
@@ -318,6 +491,17 @@ class ListenerController(ListenLifecycle):
             fut: asyncio.Future = asyncio.get_event_loop().create_future()
             fut.set_result(None)
             return fut
+        # 每次会话持有自己的对象副本 —— 内置礼仪 (always / cue / murmur ...) 是模块级单例,
+        # 重复激活同一个实例时, 旧会话被取消后的 finally 里那句
+        # ``self._active_etiquette is etiquette`` 会因为"还是同一个对象"而成立, 把刚设好的
+        # 新激活清成 None. 之后整条 emit 路退回 OnsetSpec / DeliverSpec 的默认值
+        # (首包 emit + interrupt, 无 barge_in 判断) —— 表现就是"模型一思考就被一句话打断".
+        etiquette = etiquette.model_copy(deep=True)
+        # 出身: 这一份 current 是谁加载来的. 只回答"偏离了哪几格", 不参与行为判断.
+        self._interaction_origin = etiquette.name
+        # 寿命参数跟着会话走, 供 tune 动判停层时原样重开.
+        self._session_timeout = timeout
+        self._session_until_tail = until_tail
         self._set_active_etiquette(etiquette)
         self._cancel_active()
         task = asyncio.create_task(
@@ -327,11 +511,11 @@ class ListenerController(ListenLifecycle):
         return task
 
     def start_default_etiquette(self) -> asyncio.Future:
-        """启动默认礼仪 (config.default); 未定义则 always 配置化并激活."""
+        """启动默认礼仪 (config.default); 未定义则回退开箱的全双工档并激活."""
         config = self._etiquette_config()
         spec = config.active()
         if spec is None:
-            spec = ALWAYS.model_copy(deep=True)
+            spec = DUPLEX.model_copy(deep=True)
             config.upsert(spec)
             config.activate(spec.name)
         return self.run_etiquette(spec)
@@ -574,6 +758,11 @@ class ListenerController(ListenLifecycle):
         self._set_active_etiquette(None)
         self._cancel_active()
         self._clear_expects()
+        # 停听也停掉排期中的故障重启, 并复位计数 — 勿在停止后复活会话 (停机竞态).
+        if self._restart_task is not None and not self._restart_task.done():
+            self._restart_task.cancel()
+        self._restart_task = None
+        self._fault_restarts = 0
 
     def pause(self, toggle: bool = True) -> None:
         """人类锁 (ListenLifecycle 表面): True 上锁 + 停听, False 释放 + 恢复默认礼仪.
@@ -675,7 +864,12 @@ class ListenerController(ListenLifecycle):
 
         与 clause 装线不同: 这是 latest-value-wins, 用 LatestAudioWindow 累积 + stale,
         一个周期 task 取走当前窗口算频谱发布, 无队列.
+
+        __aenter__ 已经装过(装线归 voice 模块自己); 重复调用是 no-op —— 显式调它
+        仍是合法入口 (listener_node 就这么用), 但两条路走同一次装线, 不会双发.
         """
+        if self._audio_sample_publisher is not None:
+            return
         publisher = service.model_publisher(creator="listener", model=AudioSampleTopic)
         window = LatestAudioWindow()
 
@@ -755,10 +949,55 @@ class ListenerController(ListenLifecycle):
         TAIL → 发送包 (complete=True + notify + INFO);
         CLAUSE/PARTIAL 不上行 (判停已在 listener 侧消化).
         """
+        # 探针 (D13 丢尾包排查): FIRST/TAIL 各自留一行 — 回答"尾包到底有没有被生产".
         if result.phase == RecognitionPhase.FIRST:
+            self._logger.info(
+                "%s recognition FIRST segment=%s len=%d → onset",
+                self._log_prefix, result.segment_id, len(result.text or ''),
+            )
             self._emit_interrupt(result)
+        elif result.phase == RecognitionPhase.CLAUSE:
+            self._emit_clause(result)
         elif result.phase == RecognitionPhase.TAIL:
+            self._logger.info(
+                "%s recognition TAIL segment=%s len=%d → deliver",
+                self._log_prefix, result.segment_id, len(result.text or ''),
+            )
             self._emit_deliver(result)
+        else:
+            self._logger.info(
+                "%s recognition %s segment=%s — not upstreamed",
+                self._log_prefix, result.phase, result.segment_id,
+            )
+
+    def _broadcast(self, signal) -> None:
+        """广播一条 listener signal; host session 已关闭时静默丢弃 (teardown 竞态)."""
+        # 探针 (D13 丢尾包排查): 每条真的出门的 listener signal 留一行 — 分清"没生成"与"生成了没送到".
+        if self._signal_broadcast is None:
+            self._logger.warning(
+                "%s signal dropped — no broadcast sink wired", self._log_prefix,
+            )
+            return
+        self._logger.info(
+            "%s broadcast signal complete=%s priority=%s desc=%s",
+            self._log_prefix, signal.complete, signal.priority, signal.description,
+        )
+        try:
+            self._signal_broadcast(signal)
+        except RuntimeError as exc:
+            if "closed" in str(exc).lower():
+                self._logger.debug("%s signal dropped (host session closed)", self._log_prefix)
+                return
+            raise
+
+    @staticmethod
+    def _utterance_id(segment_id: str) -> str:
+        """听侧规划的话语身份: 同一段的 onset 与尾包共用, 分句包各自另发一枚.
+
+        身份不等于地址 (``segment_id`` 是这段音频的地址). 老算法把两者合成一个,
+        于是每一包都成了「同一次话语」—— 分句交付时会被同 id 吸收掉.
+        """
+        return f"{segment_id}#utterance"
 
     def _emit_interrupt(self, result: RecognitionEvent) -> None:
         """首包打断: 按当前礼仪的 onset 协议发射 (emit 关则不发射)."""
@@ -766,9 +1005,10 @@ class ListenerController(ListenLifecycle):
         if not onset.emit:
             self._notify_signal("onset suppressed (emit=False)")
             return
-        self._signal_broadcast(new_listener_signal(
+        self._broadcast(new_listener_signal(
             result.text,
             segment_id=result.segment_id,
+            impulse_id=self._utterance_id(result.segment_id),
             interrupt=onset.interrupt,
             complete=False,
             priority=onset.priority,
@@ -776,18 +1016,84 @@ class ListenerController(ListenLifecycle):
         ))
         self._notify_signal(f"onset interrupt={onset.interrupt} priority={onset.priority.name}")
 
-    def _emit_deliver(self, result: RecognitionEvent) -> None:
-        """尾包发送: 按当前礼仪的 deliver 协议发射 (emit 关则不发射)."""
+    def _emit_clause(self, result: RecognitionEvent) -> None:
+        """分句包: 云端每判出一句, 就单独发一包 (只带增量, 永不重发前文).
+
+        只在礼仪开了 ``deliver.per_clause`` 时上行 —— 关着的时候 CLAUSE 不上行, 段收尾
+        才发整段 (老行为). 分句包不带 ``segment_id``: 身份是它自己的一枚 impulse id,
+        地址只在尾包上出现一次.
+        """
         deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
+        if not deliver.emit or not deliver.per_clause:
+            return
+        # 分句包只带强度 (要不要抬高耳朵的音量), 不带 db —— 整段多响是尾包的事.
+        strength = self._strength_for(self._segment_db())
+        for packet in self._delta.feed(result):
+            body = packet.text if packet.revised else packet.delta
+            if not body:
+                continue
+            self._logger.info(
+                "%s clause packet %s #%s len=%d revised=%s",
+                self._log_prefix, packet.segment_id, packet.index, len(body), packet.revised,
+            )
+            self._broadcast(new_listener_signal(
+                body,
+                impulse_id=f"{packet.segment_id}#c{packet.index}",
+                paused=False,
+                interrupt=deliver.interrupt,
+                boost=self._barge_in(deliver, body),
+                mode=deliver.mode,
+                low_conf=self._low_confidence_chars(
+                    deliver.low_confidence,
+                    [result.clause] if result.clause is not None else [],
+                ),
+                strength=strength,
+                complete=True,
+                priority=deliver.priority,
+                description="listener:clause",
+            ))
+
+    def _emit_deliver(self, result: RecognitionEvent) -> None:
+        """尾包发送: 按当前礼仪的 deliver 协议发射 (emit 关则不发射).
+
+        分句交付开着时, 尾包只带**没发过的那一截** (由 ``SegmentDelta`` 切), 并且是唯一
+        带 ``segment_id`` (地址) 的一包; 没有新内容时它不再发信号 —— 分句已经把这段字发完了,
+        只剩"他停了"一个事实, 而分句包本身就让模型在每一句上都有机会接话, 不需要再为这一个
+        事实单独开一轮 (空尾包曾经每段都白占一个 turn).
+        """
+        deliver = self._active_etiquette.deliver if self._active_etiquette else DeliverSpec()
+        # 段尾结响度: 尾包是唯一带 db 的包; 不发包的档位也照结, 否则基线会漏掉整段.
+        db, strength = self._close_segment_loudness()
         if not deliver.emit:
             self._notify_signal("deliver suppressed (emit=False)")
             return
-        self._signal_broadcast(new_listener_signal(
-            result.text,
+        body = result.text
+        if deliver.per_clause:
+            packets = self._delta.feed(result)
+            if packets:
+                packet = packets[0]
+                body = packet.text if packet.revised else packet.delta
+            else:
+                body = ""
+            if not body:
+                # 空尾包: 这段的每个字都已随分句送过, 收尾没有新内容 —— 不单独签发.
+                self._logger.info(
+                    "%s deliver tail %s carries nothing new — not emitted",
+                    self._log_prefix, result.segment_id,
+                )
+                self._notify_signal("deliver tail skipped (nothing new after clauses)")
+                return
+        self._broadcast(new_listener_signal(
+            body,
             segment_id=result.segment_id,
+            impulse_id=self._utterance_id(result.segment_id),
+            paused=True,
             interrupt=deliver.interrupt,
+            boost=self._barge_in(deliver, body),
             mode=deliver.mode,
             low_conf=self._low_confidence_chars(deliver.low_confidence),
+            db=db,
+            strength=strength,
             complete=True,
             priority=deliver.priority,
             description="listener:deliver",
@@ -796,37 +1102,142 @@ class ListenerController(ListenLifecycle):
             f"deliver mode={deliver.mode or 'notify'} priority={deliver.priority.name}"
         )
 
-    # ── expect 语音输入超时提醒 (纯异步, 不打断模型) ──
+    def _barge_in_boost(self, deliver: DeliverSpec) -> Priority | None:
+        """这一包要不要因为「我正在出声」而提权一档?
 
-    def expect(self, timeout: float = 10.0) -> str:
-        """期待一段语音输入在 ``timeout`` 秒内发生; 立刻返回回执 index.
+        开关在礼仪里 (``deliver.barge_in_while_speaking``), 判断在现场: 说侧播放器
+        此刻有没有声音. 出声 = 可以被抢, 思考 = 不受影响 —— 后者仍按 ``interrupt``
+        与 ``mode`` 的原有语义走 (排队 / 留存 / 下一轮).
 
-        纯异步: 不阻塞调用方 (非 observe), 不打断模型当前行为. 若超时前有任何语音
-        识别结果到达, 期待即满足 (自动取消, 不发任何 signal); 若超时仍未收到语音,
-        listener 主动发一条 notify signal 告知"预期语音输入没发生", source 标记为
-        本 cell 名 (``cell_name``), 与 asr 识别结果 (source="asr") 区分.
+        返回的是**提权**而不是 ``interrupt``: 提权让这一包在仲裁里按档位赢下当前注意力
+        (只赢一局, nucleus 抢到后降回运行档), 不硬掐整轮.
+        """
+        if not deliver.barge_in_while_speaking or self._speaking_probe is None:
+            return None
+        try:
+            speaking = bool(self._speaking_probe())
+        except Exception:  # 探针挂掉不该影响交付 — 退回"没在说话"
+            self._logger.debug("%s speaking probe failed", self._log_prefix, exc_info=True)
+            return None
+        if not speaking:
+            return None
+        self._notify_signal(
+            f"deliver boosted to {deliver.barge_in_boost.name} (ghost is speaking)"
+        )
+        return deliver.barge_in_boost
 
-        回执 index 单调递增, 供模型关联"哪次 expect 超时". 返回字符串形如 ``"#3"``.
+    def _barge_in(self, deliver: DeliverSpec, body: str) -> Priority | None:
+        """出声即让路: 提权一档, 并且掐掉正在播的那条语音流.
+
+        两件事一起做, 因为它们是同一个判断的两半 —— "我在说, 他又说了". 提权赢的是
+        注意力 (这一包该被看见); 掐语音收的是嘴 (我这一句已经过时了). 只掐说侧,
+        全身动作一律不动: 声音是半双工介质, 两把声音叠着两边都亏; 动作不是.
+
+        掐的判据里多一条 ``body``: 空内容的包不掐. 空尾包说的是"他停了", 不是"他在
+        说" —— 拿它当剪子, 等于每次该我接话时先把自己的话剪掉. 有字的包才是他真说了什么.
+        """
+        boost = self._barge_in_boost(deliver)
+        if boost is not None and body:
+            self._cut_speech()
+        return boost
+
+    def _cut_speech(self) -> None:
+        """掐掉正在播的语音流 — 只清说侧, 不动全身动作.
+
+        注入的是同步回调, 组装者内部负责把它接到异步的 ``speech.clear()`` 上;
+        这里只保证"该掐的时候一定喊到它", 喊不到不影响交付.
+        """
+        if self._speech_cutter is None:
+            return
+        try:
+            self._speech_cutter()
+            self._notify_signal("speech cut (barge-in while speaking)")
+        except Exception:  # 掐语音挂掉不该影响这一包交付
+            self._logger.debug("%s speech cutter failed", self._log_prefix, exc_info=True)
+
+    # ── expect_reply: 等一句回复, 等不到就敲一下自己 (纯异步, 不打断模型) ──
+
+    def expect_reply(self, seconds: float = 10.0) -> str:
+        """期待一段语音输入在 ``seconds`` 秒内发生; 立刻返回回执 index.
+
+        纯异步: 不阻塞调用方 (非 observe), 不打断模型当前行为. 若这段时间内有任何语音
+        识别结果到达, 期待即满足 (自动取消, 不发任何 signal); 若到期仍没有语音,
+        listener 主动发一条 **knock** —— 最低一档、丢了就丢, 说的是"他还没开口,
+        你可以开口了", 而不是"出事了".
+
+        与 mindflow 的 ``idle-knock`` 同形: 一个等的是 mindflow 静默, 一个等的是
+        麦克风静默. 区别只在这边有明确的语音指向 —— 它只在意他说没说话.
+
+        回执 index 单调递增, 供模型关联"哪次 expect_reply 到期". 返回形如 ``"#3"``.
         """
         self._expect_seq += 1
         index = str(self._expect_seq)
         event = asyncio.Event()
         self._expect_events[index] = event
-        task = asyncio.create_task(self._expect_wait(index, event, timeout))
+        task = asyncio.create_task(self._expect_wait(index, event, seconds))
         self._expect_tasks.add(task)
         task.add_done_callback(self._expect_tasks.discard)
         return index
 
-    async def _expect_wait(self, index: str, event: asyncio.Event, timeout: float) -> None:
-        """等语音 (event set) 或超时; 超时发 notify signal, 未超时静默退出."""
+    async def _expect_wait(self, index: str, event: asyncio.Event, seconds: float) -> None:
+        """等语音 (event set) 或到期; 到期发 knock, 未到期静默退出."""
         try:
-            await asyncio.wait_for(event.wait(), timeout)
+            await asyncio.wait_for(event.wait(), seconds)
             # 语音已到 → 期待满足, 不发任何 signal.
         except asyncio.TimeoutError:
-            self._emit_expect_timeout(index, timeout)
+            self._emit_expect_timeout(index, seconds)
         finally:
             # 移除自己的 event; 若语音回调已 discard 过 (见 _on_expect_voice), 这里幂等.
             self._expect_events.pop(index, None)
+
+    # ── 说话态 (他在说, 话还没交过来) ──
+
+    def _on_talking_state(self, result: RecognitionEvent) -> None:
+        """维护"他正在说"这一格状态: 首包开, 尾包关, 文本尾巴留最后一次快照.
+
+        为什么是状态不是信号: onset / deliver 是边沿, 模型那一轮不在场就丢了; 而"他现在
+        在不在说"是每轮开工都想知道的事实。所以只记, 不发。
+        """
+        if result.phase == RecognitionPhase.FIRST:
+            self._talking = True
+            self._talking_since = result.created
+        elif result.phase == RecognitionPhase.TAIL:
+            self._talking = False
+            self._talking_ended = result.created
+        if result.text:
+            self._talking_tail = result.text[-_TALKING_TAIL_CHARS:]
+
+    def talking_state(self) -> dict:
+        """说话态的现场读数 (notice 与 ``get_transcript`` 共用同一个真值)."""
+        now = time.time()
+        return {
+            "talking": self._talking,
+            "for": round(now - self._talking_since, 1)
+            if self._talking and self._talking_since is not None else None,
+            "idle_for": round(now - self._talking_ended, 1)
+            if not self._talking and self._talking_ended is not None else None,
+            "tail": self._talking_tail,
+        }
+
+    def transcript_state(self, n: int = 0) -> dict:
+        """拉取面的唯一真值: 当前增长文本 + 最近 n 段 + 说话态.
+
+        ``talking`` 在两种模式下都活着 —— emit=True 时 buffer 是空的, 而"他正在说、
+        说了什么"恰恰是模型最需要、buffer 又不肯给的那一格.
+        """
+        active = self._active_etiquette
+        enabled = active is not None and not active.deliver.emit
+        if n <= 0:
+            n = active.deliver.history if active else 8
+        current = self._buffer.peek_current() if enabled else None
+        recent = self._buffer.peek_recent(n) if enabled else []
+        return {
+            "enabled": enabled,
+            "current": current.to_dict() if current else None,
+            "recent": [s.to_dict() for s in recent],
+            "forgotten": self._buffer.forgotten() if enabled else 0,
+            "talking": self.talking_state(),
+        }
 
     def _on_expect_voice(self, result: RecognitionEvent) -> None:
         """语音识别结果到达 → set 所有 pending expect events (期待满足).
@@ -848,23 +1259,20 @@ class ListenerController(ListenLifecycle):
         self._expect_tasks.clear()
         self._expect_events.clear()
 
-    def _emit_expect_timeout(self, index: str, timeout: float) -> None:
-        """超时: 发一条 notify signal, 告知模型"预期语音输入没发生".
+    def _emit_expect_timeout(self, index: str, seconds: float) -> None:
+        """到期: 发一条 knock —— 他还没开口, 你可以开口了.
 
-        source = cell_name (不是 "asr"), complete=True + interrupt=False + mode=notify —
-        只旁路知会, 不打断模型. signal_broadcast 未注入时静默跳过.
+        为什么是 knock 不是 notify: 这句话的性质是"你可以说话了", 不是"出事了".
+        knock 是最低一档且抢占失败即丢 —— 我正在忙的时候它就该消失, 不该跟真实
+        事件抢注意力. signal_broadcast 未注入时静默跳过.
         """
         if self._signal_broadcast is None:
             return
-        self._signal_broadcast(new_listener_signal(
-            f"expected voice input (expect #{index}) timed out after {timeout:g}s",
-            source=self._cell_name or "listener",
-            complete=True,
-            interrupt=False,
-            mode="notify",
-            description="listener:expect-timeout",
+        self._broadcast(new_knock_signal(
+            f"expect_reply #{index}: no voice in {seconds:g}s — he has not spoken, you may take the floor",
+            description="listener:expect-reply-timeout",
         ))
-        self._notify_signal(f"expect #{index} timed out after {timeout:g}s")
+        self._notify_signal(f"expect_reply #{index} timed out after {seconds:g}s")
 
     def _emit_idle_timeout(self, idle_timeout: float) -> None:
         """空闲超时: 发一条 notify signal, 告知模型"长时间无语音, 降级到 knock 门铃".
@@ -874,7 +1282,7 @@ class ListenerController(ListenLifecycle):
         """
         if self._signal_broadcast is None:
             return
-        self._signal_broadcast(new_listener_signal(
+        self._broadcast(new_listener_signal(
             f"no speech for {idle_timeout:g}s — degrading to knock (sound detection)",
             source=self._cell_name or "listener",
             complete=True,
@@ -892,12 +1300,78 @@ class ListenerController(ListenLifecycle):
         """
         if self._signal_broadcast is None:
             return
-        self._signal_broadcast(new_knock_signal(
+        self._broadcast(new_knock_signal(
             "sound detected — ASR is off; re-activate listening to engage",
             priority=detect.priority,
             description="listener:knock",
         ))
         self._notify_signal(f"knock (sound detected, priority={detect.priority.name})")
+
+    # ── 耳朵故障 (pump 崩溃 / ASR 上报) — 感知 + 有界自愈 ──
+
+    def _on_listener_fault(self, error: Exception) -> None:
+        """耳朵级故障: 发感知 signal + 有界重启当前礼仪.
+
+        在识别/ASR 线程或事件循环内被调用 — 只做标记与排期; 重启经 ``create_task`` 延迟
+        一拍 (不在 pump 协程内自取消). 无激活礼仪 (如 knock 中间态) 时只发 signal 不自愈.
+        """
+        self._logger.error("%s listener fault: %s", self._log_prefix, error)
+        self._emit_listener_error(error)
+        spec = self._active_etiquette
+        if spec is None:
+            return
+        if self._fault_restarts >= _MAX_FAULT_RESTARTS:
+            self._emit_listener_degraded()
+            return
+        self._fault_restarts += 1
+        if self._restart_task is None or self._restart_task.done():
+            self._restart_task = asyncio.create_task(self._restart_after_fault(spec))
+
+    async def _restart_after_fault(self, spec: EtiquetteSpec) -> None:
+        await asyncio.sleep(0)
+        # 重启前复核: 仍未被人类锁 / 未被切走 / 仍是同一礼仪 (故障与重启之间可能已 stop).
+        if self._human_paused or self._active_etiquette is not spec:
+            return
+        # deep copy: 新礼仪对象与旧 task 持有的 spec 非同实例 — 旧 task 被 cancel 时其
+        # finally 的身份判断 (``_active_etiquette is etiquette``) 不会误清新激活.
+        self.run_etiquette(spec.model_copy(deep=True))
+
+    def _on_fault_activity_reset(self, result: RecognitionEvent) -> None:
+        """任一识别事件到达 → 听觉已恢复, 复位故障重启计数 (清空自愈窗口)."""
+        if self._fault_restarts:
+            self._fault_restarts = 0
+
+    def _emit_listener_error(self, error: Exception) -> None:
+        """耳朵故障: 发一条 notify signal, 告知模型"听觉循环挂了"及原因.
+
+        source = cell_name (不是 "asr"), 与 expect-timeout / idle-timeout 同形.
+        """
+        if self._signal_broadcast is None:
+            return
+        self._broadcast(new_listener_signal(
+            f"listener fault: {error}",
+            source=self._cell_name or "listener",
+            complete=True,
+            interrupt=False,
+            mode="notify",
+            description="listener:error",
+        ))
+        self._notify_signal(f"listener fault: {error}")
+
+    def _emit_listener_degraded(self) -> None:
+        """连续故障达上限: 停止自动重启, 告知模型需手动 re-activate."""
+        if self._signal_broadcast is None:
+            return
+        self._broadcast(new_listener_signal(
+            f"listener failed to recover after {_MAX_FAULT_RESTARTS} restarts — "
+            f"re-activate listening manually",
+            source=self._cell_name or "listener",
+            complete=True,
+            interrupt=False,
+            mode="notify",
+            description="listener:degraded",
+        ))
+        self._notify_signal("listener degraded (restart budget exhausted)")
 
     # ── 人类强发送 (输入法语义) ──
 
@@ -927,7 +1401,7 @@ class ListenerController(ListenLifecycle):
         if not text:
             return "buffer empty — nothing to send"
         if self._signal_broadcast is not None:
-            self._signal_broadcast(new_listener_signal(
+            self._broadcast(new_listener_signal(
                 text,
                 source="asr",
                 complete=True,
@@ -994,16 +1468,110 @@ class ListenerController(ListenLifecycle):
         elif event.phase == RecognitionPhase.TAIL:
             self._current_clauses = []
 
-    def _low_confidence_chars(self, threshold: float | None) -> str:
-        """当前 segment 里词级置信度 < threshold 的字 (拼接, 供 low_conf 属性); None → 空."""
+    def _low_confidence_chars(
+            self, threshold: float | None,
+            clauses: list[RecognitionClause] | None = None,
+    ) -> str:
+        """词级置信度 < threshold 的字 (拼接, 供 low_conf 属性); None → 空.
+
+        ``clauses`` 给定时读它 (分句包传它自己这一句); 不给则读本 segment 累积的分句
+        (尾包用). 累积表是在分句包发射之后才写入的, 分句包若去读它会永远落后一句.
+        """
         if threshold is None:
             return ""
         chars: list[str] = []
-        for clause in self._current_clauses:
+        for clause in (self._current_clauses if clauses is None else clauses):
             for w in clause.words:
                 if w.conf is not None and w.conf < threshold:
                     chars.append(w.text)
         return "".join(chars)
+
+    def _on_audio_level(self, chunk: AudioChunk) -> None:
+        """攒响度: 每帧一次加法 (rms_db 是 capture 预算好的, 不重算能量).
+
+        静音帧不计入 —— 判停之后的那段空白不该拉低这一包的平均响度.
+        """
+        meta = chunk.meta
+        if meta.is_silent:
+            return
+        self._level_sum += meta.rms_db
+        self._level_count += 1
+
+    def _segment_db(self) -> float | None:
+        """本段到此刻的平均响度 (dB); 还没量到声音 → None.
+
+        不分句清零: 分句包读的是跑动均值, 尾包读到的就是这一整段的均值.
+        """
+        return self._level_sum / self._level_count if self._level_count else None
+
+    def _watermark(self) -> float | None:
+        """当前的响度水位: 显式设过就用它, 否则用最近若干段的中位数 + 余量.
+
+        自动水位攒不够 ``_AUTO_WATERMARK_MIN_SEGMENTS`` 段就不给 (None = 不提强度) ——
+        前几段用来认这个人的常态, 不该拿它当判据.
+        """
+        if self._db_watermark is not None:
+            return self._db_watermark
+        if len(self._recent_db) < _AUTO_WATERMARK_MIN_SEGMENTS:
+            return None
+        return statistics.median(self._recent_db) + _AUTO_WATERMARK_MARGIN_DB
+
+    def _strength_for(self, db: float | None) -> int | None:
+        """按当前水位把响度折成挑战强度 (分句包用; 尾包走 ``_close_segment_loudness``)."""
+        return self._strength_over(db, self._watermark())
+
+    @staticmethod
+    def _strength_over(db: float | None, watermark: float | None) -> int | None:
+        """响度 -> 挑战强度; 不超过水位 → None (用 nucleus 的常态强度).
+
+        超过水位后按高出的量线性抬: ``+_LOUD_STEP_DB`` 翻一倍, 到 ``_LOUD_OVER_MAX_DB`` 封顶.
+        计算发生在发射前 —— 响度是听侧现场才有的东西, 交给 nucleus 时已经是一个数.
+        """
+        if db is None or watermark is None:
+            return None
+        over = db - watermark
+        if over <= 0:
+            return None
+        strength = int(round(_NORMAL_STRENGTH * (1.0 + min(over, _LOUD_OVER_MAX_DB) / _LOUD_STEP_DB)))
+        return min(strength, _MAX_SIGNAL_STRENGTH)
+
+    def loudness_state(self) -> dict:
+        """响度的现场读数 (public-internal: 给 ``get_loudness_state`` 命令与测试用).
+
+        显式水位与自动水位分开报 —— 只报一个"生效水位"会看不出它到底是谁给的.
+        """
+        segment = self._segment_db()
+        auto: float | None = None
+        if len(self._recent_db) >= _AUTO_WATERMARK_MIN_SEGMENTS:
+            auto = statistics.median(self._recent_db) + _AUTO_WATERMARK_MARGIN_DB
+        return {
+            "explicit": self._db_watermark,
+            "auto": auto,
+            "effective": self._watermark(),
+            "recent": list(self._recent_db),
+            "segment": segment,
+            "strength": self._strength_for(segment),
+        }
+
+    def _close_segment_loudness(self) -> tuple[float | None, int | None]:
+        """段尾: 结这一段的响度 (给尾包呈现), 顺带把它记进自动水位的基线, 然后清零.
+
+        尾包是一次话语里唯一带 ``db`` 的包 —— 分句只报"现在多响", 整段多响属于段尾.
+        """
+        db = self._segment_db()
+        # 水位先取: 这一段的强度按"它自己之前"的基线算, 不把自己算进基线.
+        watermark = self._watermark()
+        strength = self._strength_over(db, watermark)
+        self._level_sum = 0.0
+        self._level_count = 0
+        if db is not None:
+            self._logger.info(
+                "%s loudness db=%.1f watermark=%s strength=%s",
+                self._log_prefix, db,
+                "n/a" if watermark is None else f"{watermark:.1f}", strength,
+            )
+            self._recent_db.append(db)
+        return db, strength
 
     # ── internals ──
 
@@ -1047,6 +1615,33 @@ class ListenerController(ListenLifecycle):
                 f"Voice input is ASR transcription — it may contain homophones and near-sounds "
                 f"(谐音). Judge by meaning and context, infer what the user likely said, and "
                 f"ask for clarification when unsure.\n"
+                f"voiceflow — how this conversation is paced is a live state, not a mode you are\n"
+                f"stuck in. `interaction` reads it (three dimensions: 判停 / 交付 / 打断), `tune`\n"
+                f"moves one knob and returns the state re-read (that return IS the proof it took),\n"
+                f"`save_etiquette` keeps the current shape under a name. If the pacing is wrong for\n"
+                f"what you are doing, change it instead of fighting it.\n"
+                f"How to read a <listen> packet — the listening side hands you what it heard, plus a mark for\n"
+                f"where it thinks the stretch stands; what the conversation is doing is yours to judge.\n"
+                f"  paused=\"true\"  — it thinks the stretch just closed.\n"
+                f"  paused=\"false\" — it thinks there is more coming.\n"
+                f"  A packet may also carry no text at all: only the stretch closing, nothing new heard.\n"
+                f"  The closing packet may also carry db=\"…\": how loud that stretch was, in dB — a\n"
+                f"  measurement, nothing to obey.\n"
+                f"Speaking is your call on any packet — the tag is not a permission slip. low_conf=\"…\" lists\n"
+                f"the characters whose transcription confidence was low; check them when it matters.\n"
+                f"Taking a turn — the packet is information, speaking is your choice:\n"
+                f"  You are not waiting for permission, and not waiting for the end of the stretch. When\n"
+                f"  what you hear already calls for an answer, or when he is heading the wrong way, it is\n"
+                f"  fine to step in while he is still talking.\n"
+                f"  A packet that says the stretch may have closed can also carry whatever it added since\n"
+                f"  the previous one — read it as content first, as a pause cue second.\n"
+                f"  If you notice you cut in wrongly, stop yourself promptly: your own voice first, then\n"
+                f"  whatever you set in motion. Stopping late is worse than never having started.\n"
+                f"  How this person actually wants to be talked with is not settled here — it grows out of\n"
+                f"  practice. Watch how he reacts, and adjust what you do, not only what you say.\n"
+                f"A <talking>yes</talking> fragment in the notice means he is mid-sentence right now: text\n"
+                f"is accumulating on his side and has not been delivered to you yet (the pull command\n"
+                f"get_transcript carries the tail of it). Its absence means nothing is being said.\n"
                 f"ASR tunable params schema:\n"
                 f"{json.dumps(info.params_schema, ensure_ascii=False)}\n"
                 f"EtiquetteSpec json schema (for set_etiquette_spec):\n"
@@ -1059,7 +1654,15 @@ class ListenerController(ListenLifecycle):
             # 没有激活礼仪时片段缺席 (None): 模型收到 <etiquette removed/> 墓碑, 而不是
             # 一个占位空值 — 空串在这里表示"不变", 会让模型一直以为旧礼仪还激活着.
             active = self._active_etiquette
-            notice: dict[str, str | None] = {"etiquette": active.name if active else None}
+            notice: dict[str, str | None] = {
+                # 名字 + 这套礼仪自己的说明. 说明是**指令**, 不是注释 —— cue 的"被点名才开口"
+                # 就写在这里, 所以它必须随激活礼仪一起进到模型的视野里, 而不是等模型
+                # 主动 get_etiquette 才看得到.
+                "etiquette": f"{active.name} — {active.description}" if active else None,
+                # 说话态: 一个桶值 (他在说 / 没说). 缺席即"没说" — 墓碑就是那条收尾边沿,
+                # 所以一段话只产生两次 delta, 不按秒刷.
+                "talking": "yes" if self._talking else None,
+            }
             # 留存槽位: 开时暴露最近一条定稿 segment 的全文 (变了才重发); 关/空时 None 墓碑.
             if active is not None and not active.deliver.emit:
                 recent = self._buffer.peek_recent(1)
@@ -1082,6 +1685,63 @@ class ListenerController(ListenLifecycle):
             """Run an etiquette — empty name runs the active/default one."""
             return self.activate_etiquette(name)
 
+        @chan.build.command(always_observe=True)
+        async def interaction() -> str:
+            """Read voiceflow — how this conversation is being paced right now.
+
+            Three orthogonal dimensions, not three behaviours:
+
+            - **A · 判停** `stop.*` — when one of his sentences counts as finished
+              (silence seconds, end keywords, a classifier's score, sound detection).
+            - **B · 交付** `deliver.*` — how a finished sentence reaches you
+              (push or keep-only, per clause or per stretch, queue mode, priority).
+            - **C · 打断** `onset.*` / `deliver.interrupt` / `deliver.barge_in_while_speaking`
+              — who may take away what you are doing.
+
+            Returns JSON: `current` (the name of the etiquette in force), `origin` (the
+            preset it was loaded from — `current` and `origin` are the same until you
+            tune or save), `deviated` (which keys have moved away from `origin`),
+            `values` (the flattened keys), `presets` (what else can be loaded).
+            Read it before tuning, and again after.
+            """
+            return json.dumps(self.interaction_state(), ensure_ascii=False)
+
+        @chan.build.command(always_observe=True)
+        async def tune(text__: str) -> str:
+            """Change the current interaction in place — and confirm it took effect.
+
+            `text__` is a JSON object of the keys to move, named exactly as
+            `interaction` prints them, e.g. `{"deliver.barge_in_while_speaking": false}`.
+            Only the keys you pass change; everything else stays.
+
+            The return value **is** the confirmation: it is the same JSON `interaction`
+            returns, re-read after the change, plus `touched` and `restarted`. Do not
+            assume a knob moved because the call returned — read it back.
+
+            A key from the 判停 layer (`stop.*`) cannot reach a session already running:
+            it is copied into the stop judge when the session starts, so those keys
+            restart listening and the answer says `"restarted": true`. Delivery and
+            interruption keys apply on the next signal, no restart.
+            """
+            patch = json.loads(text__)
+            if not isinstance(patch, dict):
+                raise ValueError(f"tune expects a JSON object, got {type(patch).__name__}")
+            state, touched, restarted = self.tune_interaction(patch)
+            state["touched"] = touched
+            state["restarted"] = restarted
+            return json.dumps(state, ensure_ascii=False)
+
+        @chan.build.command()
+        async def save_etiquette(name: str, description: str = "") -> str:
+            """Keep the current interaction as a named etiquette.
+
+            The whole `current` is written out — not a diff against its origin — and
+            persisted through the config store, so it survives a restart. `description`
+            is the etiquette's own instruction to you: it rides into your notice whenever
+            this etiquette is active, so write the rule you want to obey, not a label.
+            """
+            return self.save_interaction(name, description)
+
         @chan.build.command(blocking=False)
         async def stop() -> str:
             """Stop listening (run -> stop -> run lifecycle)."""
@@ -1089,16 +1749,26 @@ class ListenerController(ListenLifecycle):
             return "stopped"
 
         @chan.build.command(blocking=False)
-        async def expect(timeout: float = 10.0) -> str:
-            """Expect voice input within `timeout` seconds; returns a receipt index immediately.
+        async def expect_reply(seconds: float = 10.0) -> str:
+            """Wait for him to reply — and get knocked if he does not.
 
-            Pure async — does not block or interrupt your current behavior. If any voice
-            arrives before timeout, the expectation is satisfied silently. If it times out,
-            the listener sends you a notify signal (`source` = this cell name, not "asr")
-            saying the expected voice input did not happen. The receipt index lets you
-            correlate which `expect` timed out (e.g. a later signal referencing "#3").
+            The command to reach for after you have spoken and handed the turn back:
+            "he may answer; if he does not say anything within `seconds`, tell me".
+
+            Pure async — it returns a receipt index immediately and blocks nothing. If
+            any voice arrives before the deadline, the expectation is met silently and
+            nothing is sent. If it expires, the listener sends you a **knock**: the
+            lowest tier, dropped when you are busy, saying that he has not spoken and
+            you may take the floor. Unlike a notify, losing it is fine — the moment it
+            would have been useful is the moment you were free to hear it.
+
+            This is the voice-side twin of mindflow's `idle-knock`: one watches the
+            mindflow go quiet, the other watches the microphone go quiet.
+
+            The receipt index lets you correlate which expectation expired (e.g. a
+            later signal referencing "#3").
             """
-            return self.expect(timeout)
+            return self.expect_reply(seconds)
 
         @chan.build.command(blocking=False)
         async def send_now() -> str:
@@ -1151,23 +1821,11 @@ class ListenerController(ListenLifecycle):
 
             `n=0` uses the active etiquette's deliver.history; returns JSON with
             `enabled` (deliver.emit=False), `current`, `recent` (tail-n) and `forgotten`.
-            Empty current/recent when emit=True or nothing heard yet.
+            Empty current/recent when emit=True or nothing heard yet — `talking` is the
+            exception: it is live in either mode (`talking` / `for` / `idle_for` / `tail`),
+            so you can tell he is still mid-sentence and read what he has said so far.
             """
-            active = self._active_etiquette
-            enabled = active is not None and not active.deliver.emit
-            if n <= 0:
-                n = active.deliver.history if active else 8
-            current = self._buffer.peek_current() if enabled else None
-            recent = self._buffer.peek_recent(n) if enabled else []
-            return json.dumps(
-                {
-                    "enabled": enabled,
-                    "current": current.to_dict() if current else None,
-                    "recent": [s.to_dict() for s in recent],
-                    "forgotten": self._buffer.forgotten() if enabled else 0,
-                },
-                ensure_ascii=False,
-            )
+            return json.dumps(self.transcript_state(n), ensure_ascii=False)
 
         @chan.build.command()
         async def configure_asr(params: dict) -> str:
@@ -1175,5 +1833,29 @@ class ListenerController(ListenLifecycle):
             current = dict(self._asr.get_info().params)
             self._asr.configure({**current, **params})
             return "asr configured"
+
+        @chan.build.command()
+        async def set_loudness_watermark(db: float | None = None) -> str:
+            """Set the runtime loudness watermark (dB): a packet at or below it challenges at
+            normal strength, one above it challenges harder the louder it is.
+
+            A runtime knob, not an etiquette field — it depends on the mic and the room, so it
+            belongs to the live session. None turns the escalation off; packets still carry
+            their own `db`.
+            """
+            self.with_loudness_watermark(db)
+            return f"loudness watermark: {'off' if db is None else f'{db:.1f}dB'}"
+
+        @chan.build.command(always_observe=True)
+        async def get_loudness_state() -> str:
+            """Read the loudness state (cold data, pulled on demand — not in notice).
+
+            Returns JSON: `explicit` (the runtime watermark, null = auto), `auto` (median of
+            recent segments + margin; null until enough segments are in), `effective` (the
+            one in force), `recent` (recent segment loudness, dB), `segment` (this stretch's
+            running mean, null before any sound) and `strength` (what the next packet would
+            challenge with; null = normal).
+            """
+            return json.dumps(self.loudness_state(), ensure_ascii=False)
 
 

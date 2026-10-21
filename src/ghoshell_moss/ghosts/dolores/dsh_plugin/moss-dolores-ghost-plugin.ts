@@ -7,13 +7,27 @@ import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-mod
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { foldSurface, isSurfaceEligibleType, SessionSeq } from '@deepseek-ai/dsh-session'
-import type { JsonValue, Session, SessionEvent, SessionId, SurfaceEventType } from '@deepseek-ai/dsh-session'
+import type { JsonValue, Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { PERSONA_PREFIX_SECTION, PERSONA_SUFFIX_SECTION, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
+
+/*
+ * 探针出口 (2026-10-15): cordis 的 ctx.logger 只挂一个内存环形缓冲 (1000 条,
+ * 给 web 的 cordis 面看) —— 全仓没有任何包给它注册 console exporter, 所以
+ * logger 的每一行**都不落 stdout/stderr**, 无论什么级别. 诊断要走 stderr:
+ * launcher 的 _consume_dsh_process_stderr 把它按 ERROR 记进
+ * .moss/runtime/logs/moss.log (按天滚动). 前缀 __DOLORES_PROBE__ 便于 grep.
+ */
+function probe(message: string): void {
+  try {
+    process.stderr.write(`__DOLORES_PROBE__ ${message}\n`)
+  } catch {
+    /* 探针不该改变行为: 写不出去就算了 */
+  }
+}
 
 /*
  * ═══════════════════════════════════════════════════════════════════════
@@ -100,10 +114,8 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
  * 契约细节见 settlePendingCallsOnExit / settledCallIds. MOSS 侧同样兜底吸收 RPC 失败.
  *
  * ── 遗留问题 ────────────────────────────────────────────────────────
- * 1. **epoch 周期接线**: epoch 槽位已实现 (<epoch> 容器), 但触发周期 (compact 压上下文)
- *    尚未装线 — recap/baseline 的生产接在 compact 上.
- * 2. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
- * 3. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
+ * 1. **on_event 内部逻辑**: token 记账 / tool 桥 / seq 跟踪 (deferred).
+ * 2. **command_logos 提示**: command_logos (<executing>) 是「感知」不是「输入」, 需在
  *    instruction 里 prompt 模型不要重复它 (待接).
  */
 
@@ -114,9 +126,51 @@ export const inject: string[] = ['webServer', 'workspaceRegistry', 'agents', 'sy
 // 强相关路径命名空间: /moss-api/ghost/<ghost 名> — 体现 moss + ghost 类型 + dolores 实例, 不用通用 /plugin-api 弱命名.
 const DOLORES_API_ROOT = '/moss-api/ghost/dolores'
 
-// ego 专属 preset id (目录名即 id) — plugin 侧的单一权威. 内容由 launcher 从 repo 自持
-// 的 dolores-ego preset 复制进 <DSH_HOME>/.agent-presets (不再从 shipped standard 逐字再生).
+// ego 专属 preset id — plugin 侧的单一权威. 0.2.0 起 composition 由下方
+// DOLORES_EGO_PRESET_PLUGINS + apply() 里的 agentPresets.register 程序化注册;
+// 不再从 repo 复制目录进 <DSH_HOME>/.agent-presets (0.2.0 已无目录发现).
 const DOLORES_EGO_PRESET = 'dolores-ego'
+
+// dolores-ego 的 composition — 0.2.0 起程序化 register(PresetDefinition)，替代 .agent-presets/ 目录。
+// 内容 = 原 0.1.5 的 agent.cordis.yml composition (YAML → JS)，`!!js` 表达式退化为普通 JS 表达式。
+// 取舍: 只留"执行原语", 不留自带延续性的机制 —— workflow / subagent / ralph 全删.
+// 依据: dsh harness 假设 agent 该替人持续推进, 与 ghost "一边交流一边开发" 相反;
+// 交互协议归 moss (CTML / mindflow / terminal), 判例见 dsh-version-tracking.
+const DOLORES_EGO_PRESET_PLUGINS = [
+  { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
+  { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash', disabled: process.platform === 'win32' },
+  { id: 'tool-pwsh', name: '@deepseek-ai/dsh-tool-pwsh', disabled: process.platform !== 'win32' },
+  { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
+  { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
+  { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
+  {
+    id: 'planning',
+    name: 'cordis:group',
+    group: true,
+    isolate: { planMode: true },
+    config: [
+      {
+        id: 'plan-mode',
+        name: '@deepseek-ai/dsh-plan-mode',
+        config: {
+          section: `You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.`,
+        },
+      },
+    ],
+  },
+  { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },
+  { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: true, searchTimeoutMs: 60000 } },
+]
 
 const DOLORES_EGO_CREATE = `${DOLORES_API_ROOT}/ego/create`
 // 通用 session 观测面: 任意 live session 的 instruction / surface 读取 (sessionId 收在 body).
@@ -125,7 +179,14 @@ const DOLORES_SESSION_SURFACE = `${DOLORES_API_ROOT}/session/surface`
 // thinking 事务面 (取代旧的 articulate/enter|exit): 帧注入 + 锁反转 + 退出 cancel.
 const DOLORES_THINKING_ENTER = `${DOLORES_API_ROOT}/thinking/enter`
 const DOLORES_THINKING_EXIT = `${DOLORES_API_ROOT}/thinking/exit`
+// moment/push: 一轮**正在跑**时把一整帧 (context + inputs) 送进去 —— enter 只在起点投递,
+// 之后没有第二条路. context 走 pendingMoments (下一步历史最前), inputs 走 steer (续当前 turn).
+const DOLORES_MOMENT_PUSH = `${DOLORES_API_ROOT}/moment/push`
+const DOLORES_TURN_END_PROBE = `${DOLORES_API_ROOT}/turn-end-probe`
 const DOLORES_TOOL_RESULT = `${DOLORES_API_ROOT}/tool-result`
+// compact: 原地把 (surface 头, cut_turn) 之间的节点替换成一条说明, 保留 surface 头与原文 tail;
+// memory 由新 epoch 的 recap 交付 (头是 protected head, 不可折叠).
+const DOLORES_COMPACT = `${DOLORES_API_ROOT}/compact`
 // 旁路原语: 走**身份旁路**单轮 — seed 成 dolores-ego preset 的旁路 session (id ≠
 // doloresEgoSessionId → pre-step 自动降级 + tools 全拒 + turn/end 折叠), 不走 subagent,
 // 不 attach ego workspace (attach 到 ghost_home 上的 home workspace 归组). 必须复用 ego
@@ -153,6 +214,25 @@ let doloresThinkingToken: string | null = null
 // ego 的 persona 文本 (instruction) — ego/create 写入, session/start 时由 apply_ego_agent 注入 persona 段.
 let doloresInstruction = ''
 
+// 最近一次注入的 memory 文本块 (ego/create 或 compact 写入). request-error 的溢出兜底用它重建
+// memory 头, 让模型在丢历史时仍保有 ground + memento 视图 (可能略陈旧, 是兜底不是常态).
+let cachedMemory: string[] = []
+
+// 尚未投递的 memory 文本块 (ego/create 写入, 第一次落到 pre-step 的那一帧投递).
+//
+// 为什么不在 create 时就 append: dsh 0.2.0 的 v4 不变式要求 **surface 的第一个节点必须是
+// system/message 且受保护** (protected first surface head)。system/message 由 agent-loop 在
+// 第一个 step 用 renderPrompt(assemble()) 现算现 append, 所以 create 时刻 surface 里若已经有
+// 我们塞的 user/message, system 就只能落在第二位 —— 那个存档从出生起就不合 v4 校验, 冷读
+// (memento read / 旁路 note / UI 打开历史) 全部被拒: "system/message requires a protected
+// first surface head"。代价是整个历史不可读, 所以 memory 必须等在 system 之后。
+//
+// 投递点选在第一次落地的 moment 帧 (pre-step 以 `enter` 投递的消息) — 那时 turn/start 与
+// step/start 已就位, system/message 已落在 surface 首位, memory 紧随其后, 与旧形状同序
+// (memory 在前, epoch 容器在后)。语义不变: memory 仍在可压缩层, compact 后由新 epoch 的
+// recap 槽重发。
+let pendingMemory: string[] = []
+
 // cancel_turn 标记: 某个 tool 的结果协议带了 cancel → 该 turn 的下一 step 直接 cut.
 // activeTurn 由 pre-step 更新 (当前正在跑的 turn); awaitToolResult 在 execute 时把 turn 存进
 // pending, /tool-result 见到 cancel 时把它记成 cancelTurn. 带 turn 才不会误 cancel 下一轮.
@@ -178,20 +258,36 @@ type GateOutcome = 'open' | 'aborted' | 'timeout'
 class ThinkingGate {
   private _open = false
   private _waiters: Array<() => void> = []
+  // 配对序: enter 开、exit 关, 两边带同一个 thinkingSeq. enter 是**可取消的在飞请求** —— 取消收不回
+  // 已经发出的 HTTP, 所以插件侧的到达顺序不保证与发起顺序一致. 只认序号更大的 open (迟到的无视),
+  // exit 只在序号等于当前时才关. 于是 exit(N) 不可能关掉 enter(N+1) 开的那道门 —— 那正是把
+  // "一次错配"变成"永久阻塞"的路径.
+  private _seq = 0
 
   get isOpen(): boolean {
     return this._open
   }
 
-  open(): void {
+  get seq(): number {
+    return this._seq
+  }
+
+  /** 只认更大的序: 迟到的 enter (更小的 seq) 一律无视 — 否则它会把已关上的门重新推开. */
+  open(seq: number): boolean {
+    if (seq <= this._seq) return false
+    this._seq = seq
     this._open = true
     const waiters = this._waiters
     this._waiters = []
     for (const resolve of waiters) resolve()
+    return true
   }
 
-  close(): void {
+  /** 只关自己那一次的 gate; 别的序号一律无视. */
+  close(seq: number): boolean {
+    if (seq !== this._seq) return false
     this._open = false
+    return true
   }
 
   async wait(timeoutMs?: number, signal?: AbortSignal): Promise<GateOutcome> {
@@ -219,12 +315,25 @@ class ThinkingGate {
 
 const thinkingGate = new ThinkingGate()
 
-function openThinking(): void {
-  thinkingGate.open()
+/**
+ * thinkingSeq — enter/exit 的配对序 (见 ThinkingGate).
+ *
+ * 缺失或非法一律拒绝: 配不上对就保证不了"exit 只关自己那一次", 而那正是这道门能把系统关死的路径.
+ */
+function readThinkingSeq(body: { thinkingSeq?: unknown }): number {
+  const seq = body.thinkingSeq
+  if (typeof seq !== 'number' || !Number.isInteger(seq) || seq <= 0) {
+    throw new Error('invalid thinkingSeq — enter and exit must pair by index')
+  }
+  return seq
 }
 
-function closeThinking(): void {
-  thinkingGate.close()
+function openThinking(seq: number): boolean {
+  return thinkingGate.open(seq)
+}
+
+function closeThinking(seq: number): boolean {
+  return thinkingGate.close(seq)
 }
 
 // tool 回调桥 (approach a): 需要 MOSS 侧 round-trip 的 tool (observe 等) execute 挂 pending
@@ -366,6 +475,31 @@ interface MomentFrame {
  */
 const pendingMoments: MomentFrame[] = []
 
+/**
+ * epoch 去重 (幂等键): 送达后打戳意味着 python 侧可能重发同一 epoch, 也可能在 cancel/重试下乱序
+ * 到达. 记录已接受的最大 epochIndex, 遇到 ``index <= last`` 的帧就丢弃其 epoch 内容 (context/notices
+ * 仍照常投递) — 避免同一份 memory + 全量 facade 在 budget 最紧的压缩后一帧里出现两次.
+ */
+let lastEpochIndex = -1
+
+/** 是否接受这个 epoch 帧; 接受即推进 lastEpochIndex. 只对真正携带 epoch 内容的帧调用. */
+function acceptEpochIndex(index: number): boolean {
+  if (index <= lastEpochIndex) return false
+  lastEpochIndex = index
+  return true
+}
+
+/** 解析本帧的 epoch 内容: 迟到/重复的 epochIndex 直接丢弃, 只对真正携带内容的帧调用. */
+async function resolveEpoch(ctx: Context, body: ThinkingEnterPayload): Promise<ContentBlock[] | undefined> {
+  if (!Array.isArray(body.epoch) || body.epoch.length === 0) return undefined
+  // 先干活再认领: durable 若失败 (以后 epoch 混入非文本附件), 不能先把 index 推进再丢内容 ——
+  // 那样 python 侧会以为是送达了, 同 index 重发却被丢弃, 静默丢失.
+  const content = await durableMomentContent(ctx, body.epoch)
+  const index = typeof body.epochIndex === 'number' ? body.epochIndex : undefined
+  if (index !== undefined && !acceptEpochIndex(index)) return undefined
+  return content
+}
+
 /** thinking/enter 入参 (点 3). 阻塞执行完: handler 完成注入 + 开锁才返回. */
 interface ThinkingEnterPayload {
   /** moment 拆两条 (python 侧映射): context (inject) + inputs (steer). */
@@ -378,6 +512,8 @@ interface ThinkingEnterPayload {
   }
   /** epoch 变更时才携带 (python 侧比较 epoch.id): <epoch> 容器 content blocks (inject, 稳定背景). */
   epoch?: MomentContentPart[]
+  /** epoch 幂等键 — 与 epoch 内容一起下发, 用于丢弃迟到/重复的 epoch 帧 (送达后打戳必然允许重发). */
+  epochIndex?: number | null
   /** memento notice (commit 提醒等) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn. */
   notices?: string[]
   /**
@@ -394,6 +530,8 @@ interface ThinkingEnterPayload {
   needsObserve?: boolean
   /** 防旁路 (点 4): ego/create 返回的 token, 校验失败直接拒绝. */
   thinkingToken?: string
+  /** 配对序 (点 4): 与本次 enter 的 exit 同值 — 插件只关自己那一次的 gate (见 ThinkingGate). */
+  thinkingSeq?: number
 }
 
 // ── ego tools (module-level, 构建一次) ──────────────────────────────────
@@ -415,6 +553,20 @@ const egoTools = [
       render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
     },
     execute: async (_args, exec) => awaitToolResult('moss_interpret', String(exec.callId), exec.signal),
+  }),
+  defineTool({
+    name: 'moss_reply_first',
+    // 一轮的第一步: 先出声, 再干活. 名字就是全部改动 —— prompt 里的「先说一句」
+    // 需要被想起来, 工具则是每一步都摆在手边的选择.
+    description: 'Open a turn with one short line, then keep working. Reach for it when the work will take more than a few seconds: the human hears that you started before any result exists. One line, not a plan; the turn goes on.',
+    parameters: {
+      ctml: { type: 'string', required: true, description: 'One short CTML unit to execute — a line, not a plan.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_reply_first', String(exec.callId), exec.signal),
   }),
   defineTool({
     name: 'moss_react',
@@ -464,6 +616,19 @@ const egoTools = [
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
     execute: async (_args, exec) => awaitToolResult('moss_shell_status', String(exec.callId), exec.signal),
+  }),
+  defineTool({
+    name: 'moss_shell_clear',
+    // 最后一把锤子: 走 ego 直接调 shell.clear(), 绕过 __main__ 的命令队列. 卡住的正是那条队列时,
+    // CTML 的 <clear/> 自己也排在后面 —— 只有这条还通. 不清 turn: 下一步要能看见清完的样子.
+    // 它会停掉一切, 包括你想留着的东西, 所以不是 interrupt、不是重置、不是收尾工具.
+    description: 'The last hammer — clear the Shell right now (drop the speech, reset every channel runtime, own and children, and stop the running plan) without going through CTML. Reach for it ONLY when the shell is genuinely wedged: you already emitted a <clear/> and it did not land, because a command that never finishes is holding the channel queue and the clear queued behind it. It stops everything, including work you meant to keep — it is not an interrupt, not a reset for a stale moment, not a tidy-up. For anything smaller use clear_speech (stop talking), <clear chan="..."/> (reset one channel), <interrupt/> (stop actions) or noop (stand down). The turn stays open, so you can look at what the clear left behind.',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_shell_clear', String(exec.callId), exec.signal),
   }),
   defineTool({
     name: 'moss_channel_facade',
@@ -704,6 +869,16 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     }
     return decision
   })
+  // request-error 溢出兜底 (主动 compact 之外的最后一手): 模型窗口被冲爆时, 有损压掉当前 turn 之前
+  // 的历史并重试一次. 只认 CONTEXT_WINDOW_EXCEEDED; 其它错误 delegate. 不可修 (无节点可压) 时退回原错误.
+  agentCtx.on('agent/request-error', async ({ agent: errAgent, failure, signal, turn }, next) => {
+    if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE || signal.aborted) return next()
+    if (compactLossily(errAgent, cachedMemory, turn)) {
+      ctx.logger.warn('dolores: context overflow recovered by lossy compact in turn %s', turn)
+      return { kind: 'retry' }
+    }
+    return next()
+  })
 }
 
 /**
@@ -732,7 +907,18 @@ function installEgoAgentStart(ctx: Context, assemble: (agent: Agent) => void): v
 }
 
 export function apply(ctx: Context) {
-  // ── 0. agent start: 每个 ego agent 实例装配一次 ────────────────────────
+  // ── 0. agent preset: 程序化注册 dolores-ego (0.2.0 起替代 .agent-presets/ 目录发现) ──
+  // register 同步把定义写入 registry (mount 前可见), 激活异步完成; 失败仅告警不打断 boot.
+  ctx.get('agentPresets').register({
+    id: DOLORES_EGO_PRESET,
+    name: 'Dolores Ego',
+    description: '内部使用 — Dolores 主脑会话（非 ego 请勿手动创建）。',
+    plugins: DOLORES_EGO_PRESET_PLUGINS,
+  }).catch((error: unknown) => {
+    ctx.logger.warn('dolores: ego preset register failed: %s', String(error))
+  })
+
+  // ── 1. agent start: 每个 ego agent 实例装配一次 ────────────────────────
   // startup 和 resume 都装配, 各自 fresh ctx — 这里调 apply_ego_agent 做 tools +
   // identity/persona + perStep 的全套注册, 替代「全局 perStep + setup 里注册」.
   // 非主 ego session (界面误建 / fork 出的旁路) 也走这里装配, 由 perStep 的旁路分支降级.
@@ -810,16 +996,16 @@ export function apply(ctx: Context) {
         }
         // persona 文本落到模块级, 供 apply_ego_agent 在 session/start 时注入 persona 段.
         doloresInstruction = instruction
-        // 2. ref 存在时才走构造器 seed: seed = memory + 切点之后的 surface 尾巴 —— memory 必须排在
-        //    尾巴之前 (前情提要在前, "刚刚发生"在后), 所以只有带尾巴这一路要把 memory 也放进 seed.
-        //    无 ref 时保持原路 (create 空 session, 之后逐条 append memory), 不动既有主路行为.
-        const ref = readRef(body.ref)
-        const seed = ref === undefined ? [] : await buildEgoSeed(ctx, messages, ref)
-        // 3. create ego session: 专属 preset (standard 的工具面) + overridden identity/persona.
+        // 缓存 memory 文本块, 供 request-error 溢出兜底重建 memory 头.
+        cachedMemory = messages
+          .map(message => (message as { text?: unknown }).text)
+          .filter((text): text is string => typeof text === 'string' && text !== '')
+        // 2. create ego session: 专属 preset (standard 的工具面) + overridden identity/persona.
+        //    启动**不回放源 session 原文 tail** —— seed 恒为空, memory 逐条 append。dsh 历史协议
+        //    再变也不碰 (防"升级后 ghost 起不来")。
         const sessionId = randomUUID()
         const handle = await ctx.agents.create({
           sessionId,
-          ...(seed.length > 0 ? { seed } : {}),
           meta: { cwd: projectHome, agentPreset: DOLORES_EGO_PRESET },
           setup: async (agentCtx: Context) => {
             await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_EGO_PRESET)
@@ -827,24 +1013,21 @@ export function apply(ctx: Context) {
         })
         doloresEgoSessionId = handle.agent.id
         doloresThinkingToken = randomUUID()
-        // 4. title + sandbox mode + workspace membership (log-only events + account).
+        // 新 session 重开一个 epoch 序列: python 侧 epoch.index 从 1 重数, 而 lastEpochIndex 是模块级
+        // 跨 session 遗留 —— 不重置会让新 session 的 epoch 全被当成「迟到」丢掉, 首次压缩后 memory
+        // recap 静默消失. pendingMoments 同理 (旧 session 的残帧不能进新 session 的 surface).
+        lastEpochIndex = -1
+        pendingMoments.length = 0
+        // 3. title + sandbox mode + workspace membership (log-only events + account).
         handle.agent.session.append('session/title', { title: sessionTitle, messageSeqs: [], source: { kind: 'user' } })
         handle.agent.session.append('sandbox/mode', { mode: permission })
         await workspace.attachSession(handle.agent.id)
-        // 5. 无 ref: 注入 ghost.memory 上下文 (点 1) — messages → user/message (surfaceOp append).
-        //    这是初见上下文 = 建立模型首轮可见的表面.
-        if (ref === undefined) {
-          for (const msg of messages) {
-            if (typeof msg?.text === 'string' && msg.text.length > 0) {
-              handle.agent.session.append('user/message',
-                createUserMessage({
-                  content: [{ type: 'text', text: msg.text }],
-                  source: { kind: 'plugin', plugin: name },
-                }),
-                { surfaceOp: 'append' })
-            }
-          }
-        }
+        // 4. ghost.memory 暂存, **不写 surface** —— 见 pendingMemory 的注释: create 时刻写
+        //    user/message 会让 system/message 掉到 surface 第二位, 那份存档从此不合 v4 校验
+        //    (protected first surface head), 冷读全线被拒. 由第一轮 steer 投递.
+        pendingMemory = messages
+          .map(message => (message as { text?: unknown }).text)
+          .filter((text): text is string => typeof text === 'string' && text !== '')
         // todo: ping/pong 预热 (可选) — 创建后验证 session 可服务, 失败返回错误.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ sessionId: handle.agent.id, thinkingToken: doloresThinkingToken }))
@@ -925,6 +1108,7 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        const thinkingSeq = readThinkingSeq(body)
         // ── 思考档 (点 1): 单一字段 `effort`, 与 turn 驱动分开判定 ──────────────
         // 1. 先结算上一轮: pending 已被 request/header 采纳 → 释放, 权威交回 canonical 链
         //    (settings/UI 从此可改; 不释放 = 永久覆盖 —— 这就是"界面改档位不生效"的根).
@@ -948,10 +1132,8 @@ export function apply(ctx: Context) {
         // none: 只吸收背景不驱动 turn — epoch/context 缓冲到 perStep 挂载点, 不 openThinking 不
         // steer, 等下一次真实 pre-step 消费. inputs 属 turn 驱动, none 帧不送.
         if (body.effort === 'none') {
-          const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
-            ? await durableMomentContent(ctx, body.epoch)
-            : undefined
-          const frame = buildMomentFrame(epoch, context, notices)
+          const epoch = await resolveEpoch(ctx, body)
+          const frame = [...takePendingMemoryFrame(), ...buildMomentFrame(epoch, context, notices)]
           if (frame.length > 0) {
             pendingMoments.push({ messages: frame })
           }
@@ -963,14 +1145,20 @@ export function apply(ctx: Context) {
         // 到 pendingMoments, 由 pre-step 在 next() 后插到本步历史最前 — 本 turn 生效.
         // 必须先 push 再 openThinking — gate 的 resolve 会同步调度 pre-step 续体为 microtask,
         // 若在 openThinking 后又 await, 续体可能在 push 落地前就 fold pendingMoments (丢帧).
-        const epoch = Array.isArray(body.epoch) && body.epoch.length > 0
-          ? await durableMomentContent(ctx, body.epoch)
-          : undefined
-        const frame = buildMomentFrame(epoch, context, notices)
+        const epoch = await resolveEpoch(ctx, body)
+        const frame = [...takePendingMemoryFrame(), ...buildMomentFrame(epoch, context, notices)]
         if (frame.length > 0) {
           pendingMoments.push({ messages: frame })
         }
-        openThinking()
+        const gateOpened = openThinking(thinkingSeq)
+        // 探针 (2026-10-15): 换档后下一帧开不出来, 岔口收窄到「enter 拿到的这一帧」——
+        // needsObserve 是否为 true 决定走 steer 自续还是滞留 pendingMoments.
+        // 这一行必须打在分支判定**之前**, 才能区分「flag 没到」与「到了但没走那条支」.
+        probe(
+          `thinking/enter seq=${thinkingSeq} gate=${gateOpened ? 'opened' : 'ignored-stale'} `
+          + `open=${thinkingGate.isOpen} effort=${String(body.effort)} needsObserve=${String(body.needsObserve)} `
+          + `inputs=${inputs.length} context=${context.length}`,
+        )
         if (inputs.length > 0) {
           // 正常 enter: steer inputs 驱动 turn. inputs 为空则不起 turn — turn 由真实输入驱动,
           // 不再为「无 percepts」造 'thinking' 占位.
@@ -989,11 +1177,96 @@ export function apply(ctx: Context) {
           // continuation: N" 这类字, 会被模型当成用户输入.
           agent.steer(createUserMessage({
             content: [],
-            source: { kind: 'plugin', plugin: name },
+            source: { kind: name },
           }))
         }
+        probe(
+          `thinking/enter seq=${thinkingSeq} `
+          + `turn-drive=${inputs.length > 0 ? 'steer-inputs' : (body.needsObserve === true ? 'steer-observe' : 'buffered')}`,
+        )
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: true }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+
+  // ── 2b. moment/push ──────────────────────────────────────────────────
+  // 一轮正在跑时把整帧送进去: 两半都缓冲到 pendingMoments, 由 pre-step 挂载点插到本步历史最前.
+  // 走的就是 enter / "协议返回的 moment" 那条投递路, 不用 agent.inject.
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_MOMENT_PUSH,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req) as unknown as { moment?: MomentPayload; thinkingToken?: string }
+        if (doloresEgoSessionId === null) {
+          throw new Error('no ego session — call ego/create first')
+        }
+        if (body.thinkingToken !== doloresThinkingToken) {
+          throw new Error('invalid thinkingToken — rejected (non-ego caller)')
+        }
+        const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        // 一份 moment 两半 (context 背景 + inputs 输入) 一起缓冲, 绝不只投一半.
+        if (hasMomentPayload(body.moment)) {
+          await queueMomentPayload(ctx, body.moment)
+        }
+        // pending moment = 解锁信号 (D1=c): agent idle + gate open → 空 steer 开新 turn.
+        // moment 本身由 per-step 排空 pendingMoments 消费, steer 不消费 moment.
+        if (thinkingGate.isOpen && agent.status === 'idle') {
+          agent.steer(createUserMessage({ content: [], source: { kind: name } }))
+        }
+        const pushed = body.moment as MomentPayload
+        probe(
+          `moment/push id=${String(pushed.moment_id ?? '?')} `
+          + `context=${pushed.context?.length ?? 0} inputs=${pushed.inputs?.length ?? 0}`,
+        )
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ pushed: true }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+
+  // ── 2c. turn-end-probe (settle 2a 探针) ───────────────────────────────
+  // push 过的 moment 在 turn 结束前可能没被 pre-step 消费 (final answer 那一轮). MOSS 侧拿到
+  // turn/end 后调一次: 若 pendingMoments 非空且 agent idle 且 gate open → 空 steer 开下一 turn.
+  // 返回 {steered} 让 MOSS 决定继续还是落进 settle 竞速的 action_done 分支.
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_TURN_END_PROBE,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req) as unknown as { thinkingToken?: string }
+        if (doloresEgoSessionId === null) {
+          throw new Error('no ego session — call ego/create first')
+        }
+        if (body.thinkingToken !== doloresThinkingToken) {
+          throw new Error('invalid thinkingToken — rejected (non-ego caller)')
+        }
+        const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
+        let steered = false
+        if (pendingMoments.length > 0 && thinkingGate.isOpen && agent.status === 'idle') {
+          agent.steer(createUserMessage({ content: [], source: { kind: name } }))
+          steered = true
+          probe(`turn-end-probe steered=${pendingMoments.length} pending frame(s)`)
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ steered }))
       } catch (error) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: String(error) }))
@@ -1021,7 +1294,12 @@ export function apply(ctx: Context) {
           throw new Error('invalid thinkingToken — rejected (non-ego caller)')
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-        closeThinking()
+        const thinkingSeq = readThinkingSeq(body)
+        const gateClosed = closeThinking(thinkingSeq)
+        ctx.logger.info(
+          'dolores: thinking/exit seq=%d gate=%s open=%s',
+          thinkingSeq, gateClosed ? 'closed' : 'ignored-not-owner', thinkingGate.isOpen,
+        )
         // 先结算 (再 cancel). 这一轮思考已经结束, 仍在等 MOSS 侧回话的 tool 不会再拿到这一轮的
         // moment. 与其等 cancel 的 abort 把它变成 rejected, 不如现在给一个**普通结果** (interrupted),
         // 让模型自己决定下一步. 结算同时登记墓碑, 使 MOSS 侧随后到的 /tool-result 被安静吞掉.
@@ -1033,10 +1311,8 @@ export function apply(ctx: Context) {
         if (agent.status !== 'idle') {
           agent.cancel({ kind: 'hook', reason: 'moss thinking/exit' })
         }
-        // 兜底投递: 本交易残余的缓冲帧 (none/空 inputs 补帧没触发 turn, 没有 pre-step 消费) 直接
-        // 投进 inbox (next-step), 由下一次 pre-step 认领 — 绝不丢. 必须在 cancel 之后: cancel 默认
-        // 清空 inbox, 先 flush 会被抹掉.
-        flushPendingMoments(agent)
+        // 不 flush pendingMoments: 债 2 — pending moment 100% 被消费 (除非硬重启), 绝不用 inbox
+        // inject 兜底 (inject 不唤醒、可被丢弃). 残余 pending moment 由下一次 turn 的 pre-step 排空.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ thinking: false }))
       } catch (error) {
@@ -1070,14 +1346,11 @@ export function apply(ctx: Context) {
           }
           // 早到路径: 号还没注册 (dsh 尚未派发该 tool 的 execute). 不阻塞、不等 — 就地暂存结果
           // (带 MOSS 侧随话带回的 turn), 由 execute 自取. 见 earlyResults 的注释.
-          if (Array.isArray(body.moment) && body.moment.length > 0 && doloresEgoSessionId !== null) {
+          if (hasMomentPayload(body.moment) && doloresEgoSessionId !== null) {
             // moment 仍立即注入 (agent 已存在), 与正常路径"先 inject 后 resolve"同序.
             const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
-            const blocks = await durableMomentContent(ctx, body.moment as MomentContentPart[])
-            agent.inject(createUserMessage({
-              content: blocks,
-              source: { kind: 'plugin', plugin: `${name}:moment` },
-            }))
+            // context/inputs 两半由 helper 一起投 — 见 injectMomentPayload 契约注释.
+            await injectMomentPayload(ctx, agent, body.moment)
           }
           earlyResults.set(callId, {
             result: body.result,
@@ -1095,13 +1368,10 @@ export function apply(ctx: Context) {
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         pendingCalls.delete(callId)
         // moment 注入 (先 inject 后 resolve): 观察到的 moment 进下一个 step 的上下文.
-        // 无 moment (缺省/空数组) 则不注入 — result 单独回给模型.
-        if (Array.isArray(body.moment) && body.moment.length > 0) {
-          const blocks = await durableMomentContent(ctx, body.moment as MomentContentPart[])
-          agent.inject(createUserMessage({
-            content: blocks,
-            source: { kind: 'plugin', plugin: `${name}:moment` },
-          }))
+        // context 与 inputs 两半都注 — 见 injectMomentPayload 的契约注释: 两条投递路 (enter /
+        // tool-result) 走同一种 moment 数据协议, 少一半就是一次静默丢字.
+        if (hasMomentPayload(body.moment)) {
+          await injectMomentPayload(ctx, agent, body.moment)
         }
         // result = tool 给模型的返回值 (observe 为 "{epoch}-{moment}" 短 id).
         pending.resolve(body.result)
@@ -1182,7 +1452,7 @@ export function apply(ctx: Context) {
         try {
           handle.agent.followup(createUserMessage({
             content: [{ type: 'text', text: prompt }],
-            source: { kind: 'plugin', plugin: name },
+            source: { kind: name },
           }))
           await handle.agent.whenIdle()
           const message = lastAssistantText(handle.agent)
@@ -1218,6 +1488,68 @@ export function apply(ctx: Context) {
         const slice = sliceRange(events, ref)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ events: slice }))
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    },
+  })
+
+  // ── compact: 原地把 (surface 头, cut_turn) 折叠成一条说明, 保留 protected head 与其后原文 tail ─
+  // 入参 {memory: [{text}], notice, cut_turn}. memory 不写进 surface —— MOSS 同时开新 epoch, 由
+  // epoch 的 recap 槽重新注入; 这里只拿它更新溢出兜底的缓存. 由 MOSS 在下一个 run 之前调用
+  // (surface idle), 语义化 cut 由 MOSS 给 (SCS = 倒数第二个 commit 的 end_turn), turn→seq 解析 +
+  // replace 形状都留在这里.
+  ctx.webServer.register({
+    kind: 'exact',
+    path: DOLORES_COMPACT,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      try {
+        const body = await readJson(req)
+        const sessionId = doloresEgoSessionId
+        if (sessionId === null) throw new Error('no ego session id (ego/create not run)')
+        const agent = ctx.agents.get(sessionId)
+        if (agent === undefined) throw new Error('no live ego session to compact')
+        const cutTurn = typeof body.cut_turn === 'number' && Number.isInteger(body.cut_turn) && body.cut_turn >= 0
+          ? body.cut_turn
+          : undefined
+        if (cutTurn === undefined) throw new Error('cut_turn must be a non-negative integer')
+        const memory = (Array.isArray(body.memory) ? body.memory : [])
+          .map(message => (message as { text?: unknown }).text)
+          .filter((text): text is string => typeof text === 'string' && text !== '')
+        if (memory.length === 0) throw new Error('memory must contain at least one text block')
+        const notice = typeof body.notice === 'string' ? body.notice : ''
+        if (notice === '') throw new Error('notice must be a non-empty string')
+        // memory 只更新兜底缓存; surface 替换内容只有说明 —— memory 由新 epoch 的 recap 交付.
+        cachedMemory = memory
+        const events = agent.session.snapshotEvents()
+        const cut = resolveCut(events, { session_id: sessionId, start_turn: 0, end_turn: cutTurn })
+        // surface 头 (system/message) 是 protected head, **不参与折叠**: dsh v4 规定 replace 只有在
+        // 「移除范围恰好是这一个节点、且替换体也是 system/message」时才允许动它 (否则
+        // "surface replacement cannot shadow the protected system head"), 而 compact 的替换体是
+        // 一条说明 user/message. 所以折叠范围从头的下一个节点起, 头原地保留.
+        // 头的语义也因此定死: 它是会话不变量 (指令 + identity/persona), 可变量 (memory / epoch /
+        // recap) 全部走可压缩层, 由新 epoch 的 recap 槽重发.
+        const nodes = agent.session.surface.nodes
+        const head = nodes[0]
+        const shadowed = nodes.filter(seq => seq < cut && seq !== head)
+        if (shadowed.length === 0) {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ replaced: 0 }))
+          return
+        }
+        const message = createUserMessage({
+          content: [{ type: 'text', text: notice }],
+          source: { kind: `${name}:compact` },
+        })
+        appendReplace(agent.session, shadowed, message)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ replaced: shadowed.length }))
       } catch (error) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: String(error) }))
@@ -1297,57 +1629,6 @@ type SessionRangeRef = {
   end_seq?: number
 }
 
-/**
- * 组装一条 seed 事件 (契约: seq 0 连续, surface 类型必须带 surfaceOp).
- *
- * 需要一次断言: `SessionEvent` 是按 type 判别的联合, 而这里的 type 是动态取的, 编译器收窄不了.
- * 断言是安全的 —— 这些事件进构造器时会被逐条校验信封 (assertSessionEventEnvelope /
- * assertCurrentLlmShape) 与 surface 计划 (SurfaceManager.validateNext), 不合格直接抛.
- */
-function seedEvent(type: SurfaceEventType, time: number, data: unknown): SessionEvent {
-  return { type, seq: SessionSeq(0), time, data, surfaceOp: 'append' } as SessionEvent
-}
-
-/**
- * ego 带 ref 时的初始表面 = memory 事件 + 切点之后的 surface 尾巴.
- *
- * memory 必须排在最前: 它是前情提要 (ground + memento view), 尾巴是"刚刚发生". 两者合成一个
- * constructor seed, 所以整段是一次性表面. ref 的源 session 常常已经不在本进程 (上次运行留下的
- * commit) —— 走 loadSourceEvents 的冷读兜底, 冷态下 surface 节点由 foldSurface 从 log 折出,
- * 与 live 的 session.surface.nodes 同源同义.
- *
- * 代价要注意: 冷读 + 全量 fold 是 O(源 session log), 所以 ego 重建的开销由上一次 session 的
- * 体积决定 —— 这也正是它的上界 (最终由 session 切换的阈值兜住).
- */
-async function buildEgoSeed(
-  ctx: Context,
-  messages: readonly { text?: unknown }[],
-  ref: SessionRangeRef,
-): Promise<SessionEvent[]> {
-  const texts = messages
-    .map(message => message?.text)
-    .filter((text): text is string => typeof text === 'string' && text !== '')
-  const seed = memorySeed(texts)
-  const events = await loadSourceEvents(ctx, ref.session_id)
-  const cut = resolveCut(events, ref)
-  seed.push(...surfaceTailSeed(events, cut))
-  return withSeq(seed)
-}
-
-/** memory 文本 → user/message 事件, 建立模型首轮可见的表面. */
-function memorySeed(texts: readonly string[]): SessionEvent[] {
-  return texts.map(text => seedEvent('user/message', Date.now(), createUserMessage({
-    content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: name },
-  })))
-}
-
-/** body.ref 可空: 缺省 → undefined (调用方走无 ref 的路); 给了但形状不对 → 抛. */
-function readRef(raw: unknown): SessionRangeRef | undefined {
-  if (raw === undefined || raw === null) return undefined
-  return parseSessionRangeRef(raw)
-}
-
 /** 解析 body.ref; 形状不对直接抛 (路由是外部入口, 不静默吞). */
 function parseSessionRangeRef(raw: unknown): SessionRangeRef {
   const record = (raw ?? {}) as Record<string, unknown>
@@ -1421,46 +1702,6 @@ function resolveCut(events: readonly SessionEvent[], ref: SessionRangeRef): numb
   return cut
 }
 
-/**
- * 切点之后的 surface 节点 → seed 事件 (逐条以 append 重发), 即"模型真正看见过的那些消息".
- *
- * 三条依据: ① 只取 surface 节点, 被 replace 遮蔽过的内容不会复活; ② 一律改写成 append, seed 里
- * 没有 replace op, 不触发 surface 的 range/provenance 校验; ③ `tool/call` 本就不进 surface ——
- * 工具调用装在 assistant/message 的 content 块里 (实机验证过), 所以不丢。
- *
- * `events` 是完整 log 且 seq 连续从 0 (live 的 snapshotEvents / 冷读 read 同契约), 故可直接按
- * 下标取事件; surface 节点由 `foldSurface` 折出 (冷态唯一可用, 与 live 同源).
- */
-function surfaceTailSeed(events: readonly SessionEvent[], cutSeq: number): SessionEvent[] {
-  const seed: SessionEvent[] = []
-  for (const seq of foldSurface(events).nodes) {
-    if (seq < cutSeq) continue
-    const event = events[seq]
-    if (event === undefined || !isSurfaceEligibleType(event.type)) continue
-    seed.push(seedEventFromTail(event))
-  }
-  return seed
-}
-
-/**
- * 尾部 surface 事件 → seed 事件: 只留 {type,time,data} 并以 append 重发.
- *
- * 刻意丢的: replace 专属的 `sourceEventSeqs` (我们只发 append); assistant/message 的 `stream`
- * (逐字重放数据 —— seed 校验只要求它是数组, 见 dsh-session 的 assertAssistantSettlementShape)。
- * `usage` 保留: 它是真实记账, 不是重放数据; `data` 其余字段原样透传.
- */
-function seedEventFromTail(event: SessionEvent): SessionEvent {
-  const data = event.type === 'assistant/message'
-    ? { ...(event.data as Record<string, unknown>), stream: [] }
-    : event.data
-  return seedEvent(event.type, event.time, data)
-}
-
-/** 重排 seq 为 0 连续 (构造器 seed 契约: `snapshot.seq === index`). */
-function withSeq(seed: SessionEvent[]): SessionEvent[] {
-  return seed.map((event, index) => ({ ...event, seq: SessionSeq(index) }) as SessionEvent)
-}
-
 /** 最后一条非空 assistant text (镜像 python _final_response: assistant/message 的 text 块). */
 function lastAssistantText(agent: Agent): string {
   const events = agent.session.snapshotEvents()
@@ -1492,8 +1733,110 @@ async function durableMomentContent(ctx: Context, contents: readonly MomentConte
 }
 
 /**
+ * 一次投递的 moment 载荷 — **两条投递路共用同一种数据协议**: `thinking/enter` 与 `tool-result`.
+ *
+ * 为什么必须同一种: MOSS 侧 `observe()` 产出的 moment 已经把挂起的 percepts **抽干**放进自己
+ * 的 inputs 里 —— 消费与投递是分开的两个动作. 所以任何一条投递路只要结构上不带 inputs, 就会
+ * 把那一帧已经消费掉的文字直接蒸发 (曾发生: verdict=buffered 的语音被思考中途一次
+ * moss_interpret 的观察接走, 而那条路只送 context, 人的话再没出现过).
+ *
+ * 不变式: **没有任何一条投递路可以丢掉 inputs.** 这里是插件侧的守卫 —— MOSS 送什么注什么,
+ * 但"少了一半"要先被认出来, 而不是安静地注一条只有背景的消息.
+ */
+interface MomentPayload {
+  context: MomentContentPart[]
+  inputs: MomentContentPart[]
+  moment_id?: string
+}
+
+/** 载荷形状判定 — 缺省 / 空载荷 (没有 context 也没有 inputs) 视为"无 moment". */
+function hasMomentPayload(moment: unknown): boolean {
+  if (moment === null || typeof moment !== 'object' || Array.isArray(moment)) return false
+  const { context, inputs } = moment as { context?: unknown; inputs?: unknown }
+  return (Array.isArray(context) && context.length > 0) || (Array.isArray(inputs) && inputs.length > 0)
+}
+
+/** 注入一次投递的 moment: context 与 inputs 各成一条消息, 两半都注, 绝不只注一半. */
+async function injectMomentPayload(ctx: Context, agent: Agent, moment: unknown): Promise<void> {
+  const { context, inputs } = moment as MomentPayload
+  const contextBlocks = Array.isArray(context) ? await durableMomentContent(ctx, context) : []
+  if (contextBlocks.length > 0) {
+    agent.inject(createUserMessage({
+      content: contextBlocks,
+      source: { kind: `${name}:moment` },
+    }))
+  }
+  const inputBlocks = Array.isArray(inputs) ? await durableMomentContent(ctx, inputs) : []
+  if (inputBlocks.length > 0) {
+    agent.inject(createUserMessage({
+      content: inputBlocks,
+      source: { kind: `${name}:inputs` },
+    }))
+  }
+}
+
+/**
+ * 缓冲一次推送的 moment —— 与 enter 同一条投递路: 两半各自成帧塞进 pendingMoments,
+ * 由 pre-step 挂载点插到本步历史最前.
+ *
+ * 为什么不用 injectMomentPayload: ``Agent.inject`` 的契约写着 "Cancellation or disposal may
+ * discard pending context" —— 它是**门口暂存**, 一轮被抢断, 挂在门口的字随 inbox 一起消失.
+ * 2026-10-18 D18 实测: 四句话 17:14:21–28 全部 inject 成功, 17:14:41 那一轮被 abort,
+ * inbox 记 ``removedCount=9, outcome=canceled`` —— 投了, 一句没读, 字没了.
+ * pendingMoments 是插件自己的队列, pre-step 消费前一直在; 就算这一轮死掉, 下一轮的
+ * pre-step 照样把它插进历史, 绝不丢.
+ */
+async function queueMomentPayload(ctx: Context, moment: unknown): Promise<void> {
+  const { context, inputs } = moment as MomentPayload
+  const messages: UserMessage[] = []
+  const contextBlocks = Array.isArray(context) ? await durableMomentContent(ctx, context) : []
+  if (contextBlocks.length > 0) {
+    messages.push(createUserMessage({
+      content: contextBlocks,
+      source: { kind: `${name}:moment` },
+    }))
+  }
+  const inputBlocks = Array.isArray(inputs) ? await durableMomentContent(ctx, inputs) : []
+  if (inputBlocks.length > 0) {
+    messages.push(createUserMessage({
+      content: inputBlocks,
+      source: { kind: `${name}:inputs` },
+    }))
+  }
+  if (messages.length > 0) {
+    pendingMoments.push({ messages })
+  }
+}
+
+/**
+ * 取走待投递的 memory 帧 (空则返回空数组) —— 只在第一次真正落到 pre-step 的那一帧产出.
+ *
+ * 走 moment 帧这条通道而不是 create 时 append, 是因为帧消息由 pre-step 以 `enter` 投递,
+ * 落盘顺序恒在 system/message 之后 (见 pendingMemory 注释). 取走即清空, 保证只投一次.
+ */
+function takePendingMemoryFrame(): UserMessage[] {
+  if (pendingMemory.length === 0) return []
+  const message = createUserMessage({
+    content: pendingMemory.map(text => ({ type: 'text' as const, text })),
+    source: { kind: `${name}:memory` },
+  })
+  pendingMemory = []
+  return [message]
+}
+
+/**
  * Enter 缓冲 — 组装 moment 帧消息 (按注入顺序): epoch <容器> 是底座消息, context <容器> 是
  * 坐落在其上的帧消息. 只做组装, 不 inbox inject; 由 pre-step 挂载点插到本步历史最前.
+ *
+ * 决策 (dsh 0.2.0 跟踪): moment 保持 user/message, 不用 developer/message. 依据:
+ * 1. 图两个都支持 — ContentBlockMap 含 image, user 与 developer 的 content 都是 ContentBlock[],
+ *    moment 的图已由 durableMomentContent → admitEncodedImages 落成 image 块, 不需要 developer 承载.
+ * 2. 头规则不碰 moment — 0.2.0 只要求 system/message 是 surface 头 (protectedHead); moment 是头之后
+ *    per-step 注入的 user/message, 不触发该规则.
+ * 3. 注入通道是 user 专属 — Agent.inject / Agent.steer (runtime-types.ts:231/241) 只收 UserMessage,
+ *    底层写 user/message 事件; 改用 developer/message 需绕过它们直写 session.append('developer/message'),
+ *    丢掉 inject/steer 的驱动/背压语义, 还得重摸 perStep 时序 — 纯语义洁癖、无功能收益.
+ * 若将来想要"注入上下文 ≠ 用户回合"的语义区隔, 作为独立改动动注入通道, 不在这里混入.
  */
 function buildMomentFrame(
   epoch: ContentBlock[] | undefined,
@@ -1504,20 +1847,20 @@ function buildMomentFrame(
   if (epoch !== undefined && epoch.length > 0) {
     messages.push(createUserMessage({
       content: epoch,
-      source: { kind: 'plugin', plugin: `${name}:epoch` },
+      source: { kind: `${name}:epoch` },
     }))
   }
   // notices (memento commit 提醒) — 纯文本, 与 moment 同级注入, 只告知不驱动 turn.
   if (notices.length > 0) {
     messages.push(createUserMessage({
       content: notices.map(text => ({ type: 'text' as const, text })),
-      source: { kind: 'plugin', plugin: `${name}:notice` },
+      source: { kind: `${name}:notice` },
     }))
   }
   if (context.length > 0) {
     messages.push(createUserMessage({
       content: context,
-      source: { kind: 'plugin', plugin: `${name}:moment` },
+      source: { kind: `${name}:moment` },
     }))
   }
   return messages
@@ -1541,7 +1884,7 @@ function flushPendingMoments(agent: Agent): void {
 function bypassInstruction(): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text: BYPASS_INSTRUCTION }],
-    source: { kind: 'plugin', plugin: name },
+    source: { kind: name },
   })
 }
 
@@ -1573,13 +1916,70 @@ function collapseTurn(session: Session, turn: number): void {
   if (start === undefined || end === undefined) return
   const shadowed = session.surface.nodes.filter(seq => seq >= start && seq <= end)
   if (shadowed.length === 0) return
-  session.append('user/message', createUserMessage({
+  appendReplace(session, shadowed, createUserMessage({
     content: [],
-    source: { kind: 'plugin', plugin: name },
-  }), {
-    surfaceOp: { op: 'replace', start: shadowed[0], end: shadowed[shadowed.length - 1] },
-    sourceEventSeqs: [...shadowed],
+    source: { kind: name },
+  }))
+}
+
+/**
+ * appendReplace — 原地用一条 user/message replace 掉 shadowed 序列上的 surface 节点.
+ *
+ * replace 字段名跨版本漂移 (0.1.5-rc.1 要 ``{op,startSeq,endSeq}``, 0.1.5-rc.2 用 ``{op,start,end}``)；
+ * ``session.append`` 在 shape 不符时**同步抛** (push 前校验, 不留半写), 于是退回另一种形状即可 ——
+ * 不查版本号, 机制自适应 (唯一合法的 replace 节点是 user/message, 见 collapseTurn 注释)。
+ */
+function appendReplace(session: Session, shadowed: readonly number[], message: UserMessage): void {
+  const first = shadowed[0]
+  const last = shadowed[shadowed.length - 1]
+  const sourceSeqs = [...shadowed]
+  const tryAppend = (surfaceOp: unknown): void => {
+    session.append('user/message', message, { surfaceOp, sourceEventSeqs: sourceSeqs } as never)
+  }
+  try {
+    tryAppend({ op: 'replace', start: first, end: last })
+  } catch (error) {
+    tryAppend({ op: 'replace', startSeq: first, endSeq: last })
+  }
+}
+
+/**
+ * compactLossily — request-error 溢出兜底的模型无关有损压缩.
+ *
+ * 把「当前 turn 之前、surface 头之后」的节点整体替换成一条 user/message, 内容 = 缓存的
+ * memory 文本块 + 一条「上下文被压缩」的说明. 保留当前 turn 的输入 (它的 seq >= 当前
+ * ``turn/start``)。模型无关, 零 LLM 调用 —— 溢出路径上不该再发一次请求。
+ *
+ * surface 头 (system/message) 不折叠 —— 它是 dsh v4 的 protected head, 被 replace 覆盖会直接
+ * 违反不变式 (surface replacement cannot shadow the protected system head).
+ *
+ * self-bounding: 返回 false 表示没有可遮蔽的节点 (表面已经只剩当前 turn), 调用方据此放弃重试、
+ * 退回原错误 —— 避免无限重试。首次溢出时 log 顺序 == surface 顺序 (尚未发生过 replace), 故按 seq
+ * 过滤是精确的; 后续再溢出只会是「memory + 单 turn 仍超限」这种不可修场景, shadowed 为空, 自然收束。
+ */
+function compactLossily(agent: Agent, memory: readonly string[], turn: number): boolean {
+  const session = agent.session
+  let turnStartSeq: number | undefined
+  for (const event of session.snapshotEvents()) {
+    if (event.type === 'turn/start' && (event.data as { turn?: number }).turn === turn) {
+      turnStartSeq = event.seq
+      break
+    }
+  }
+  if (turnStartSeq === undefined) return false
+  const shadowed = session.surface.nodes.filter(seq => seq < turnStartSeq && seq !== session.surface.nodes[0])
+  if (shadowed.length === 0) return false
+  const marker = 'Context exceeded the model window and was compacted: the memory view above is the compressed history; the recent turn below is live.'
+  const message = createUserMessage({
+    content: [...memory.map(text => ({ type: 'text', text } as const)), { type: 'text', text: marker } as const],
+    source: { kind: `${name}:compact-overflow` },
   })
+  try {
+    appendReplace(session, shadowed, message)
+  } catch (error) {
+    return false
+  }
+  return true
 }
 
 function resolveLiveAgent(ctx: Context, body: Record<string, unknown>) {

@@ -18,7 +18,7 @@ import pytest
 from ghoshell_container import Container
 
 from ghoshell_moss.contracts.logger import LoggerItf
-from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
+from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Impulse, Priority, Signal
 from ghoshell_moss.core.mindflow.listener_nucleus import (
     ListenerNucleus, ListenerNucleusMeta, ListenerSignal,
     new_listener_signal,
@@ -152,6 +152,33 @@ async def test_deliver_packet_notify():
 
 
 @pytest.mark.asyncio
+async def test_deliver_boost_raises_the_challenge_then_falls_back():
+    """提权包: 挑战按 max(priority, boost), 抢到 attention 后降回运行档 — 只赢一局."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        sig = new_listener_signal('你好', segment_id='t1', complete=True, boost=Priority.WARNING)
+        assert ListenerSignal.from_signal(sig).boost == Priority.WARNING
+        nuc.add_signal(sig)
+        imp = notified[0]
+        assert imp.priority == Priority.WARNING
+        nuc.attended(imp)
+    assert imp.priority == Priority.INFO
+
+
+@pytest.mark.asyncio
+async def test_deliver_without_boost_challenges_at_its_own_priority():
+    """不填提权 (默认空) → 挑战档位就是 signal 自己的 priority, 不受影响."""
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        sig = new_listener_signal('你好', segment_id='t1', complete=True, priority=Priority.NOTICE)
+        assert ListenerSignal.from_signal(sig).boost is None
+        nuc.add_signal(sig)
+    assert notified[0].priority == Priority.NOTICE
+
+
+@pytest.mark.asyncio
 async def test_impulse_message_wrapped_in_listen_tag():
     notified: list = []
     async with ListenerNucleus() as nuc:
@@ -202,6 +229,26 @@ async def test_interrupt_gated_by_suppress_cooldown():
         assert len(notified) == 1  # 冷却期内打断包不 fire
 
 
+@pytest.mark.asyncio
+async def test_suppress_retains_impulse_peekable():
+    """契约: suppressed 后 impulse 仍保留、可 peek — rank 输掉不等于完结 (不丢).
+
+    落选的若是**携带内容**的发送包, 清缓存会把内容整包抹掉; 更硬的是它占着的那个 attention
+    从此永远等不到 complete (尾包补不齐), thinking 通路会停摆.
+    """
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(new_listener_signal('你好', segment_id='t1', complete=True))
+        nuc.suppress(Impulse(), None)
+        peeked = nuc.peek()
+        assert peeked is not None, "suppress 后 impulse 仍应可 peek"
+        assert peeked.complete is True
+        joined = ' '.join(
+            c['text'] for m in peeked.messages for c in m.contents if isinstance(c, dict) and 'text' in c
+        )
+        assert '你好' in joined, f"发送包内容不得因 rank 落选而丢失 — {joined!r}"
+
+
 # ============================================================
 # ListenerNucleusMeta — 自解释发现
 # ============================================================
@@ -234,3 +281,63 @@ def _message_text(impulse) -> str:
             if isinstance(c, dict) and c.get('type') == 'text':
                 texts.append(c.get('text', ''))
     return '\n'.join(texts)
+
+
+@pytest.mark.asyncio
+async def test_impulse_identity_is_planned_by_the_listener():
+    """身份由听侧规划 (impulse_id): 同一话语的两个包共 id, 分句各自一枚.
+
+    segment_id 是地址, 不是身份 —— 只在没给 impulse_id 时才兼任.
+    """
+    notified: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: notified.append(imp))
+        nuc.add_signal(new_listener_signal(
+            segment_id='seg', impulse_id='seg#utterance', complete=False, priority=Priority.WARNING,
+        ))
+        nuc.add_signal(new_listener_signal('第一句', impulse_id='seg#c1', complete=True))
+        nuc.add_signal(new_listener_signal('第二句', impulse_id='seg#c2', complete=True))
+        nuc.add_signal(new_listener_signal('', segment_id='seg', impulse_id='seg#utterance', complete=True, paused=True))
+    ids = [imp.id for imp in notified]
+    assert ids[0] == ids[-1] == 'seg#utterance', 'onset 与尾包是同一次话语'
+    assert len({ids[1], ids[2]}) == 2, '分句各自一枚身份, 谁也不吸收谁'
+
+
+@pytest.mark.asyncio
+async def test_a_clause_packet_reads_as_not_paused_and_the_tail_as_paused():
+    """模型看到的是 paused: 中间分句 false, 段尾 true; 空正文的尾包只留标记."""
+    messages: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: messages.append(imp))
+        nuc.add_signal(new_listener_signal('还没说完', impulse_id='a', complete=True, paused=False))
+        nuc.add_signal(new_listener_signal('', segment_id='seg', impulse_id='b', complete=True, paused=True))
+    clause_imp, tail_imp = messages
+    assert 'paused="false"' in _message_xml(clause_imp)
+    assert 'paused="true"' in _message_xml(tail_imp)
+    assert _message_text(tail_imp) == '', '没有新内容时尾包正文为空 —— 标记全在属性上, 不填任何替代文字'
+
+
+@pytest.mark.asyncio
+async def test_a_packet_shows_the_loudness_it_carries():
+    """响度是测量值: 有就写成 db 属性, 没有就不出现这个属性."""
+    messages: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: messages.append(imp))
+        nuc.add_signal(new_listener_signal('你好', impulse_id='a', complete=True, paused=True, db=-20.4))
+        nuc.add_signal(new_listener_signal('嗯', impulse_id='b', complete=True, paused=True))
+    loud, quiet = messages
+    assert 'db="-20.4"' in _message_xml(loud)
+    assert 'db=' not in _message_xml(quiet), '没量到响度就不写这个属性'
+
+
+@pytest.mark.asyncio
+async def test_the_strength_the_listener_computed_is_used():
+    """听侧算好的挑战强度被照用; 没给则回落 nucleus 的常态强度."""
+    messages: list = []
+    async with ListenerNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: messages.append(imp))
+        nuc.add_signal(new_listener_signal('大声', impulse_id='a', complete=True, paused=True, strength=180))
+        nuc.add_signal(new_listener_signal('小声', impulse_id='b', complete=True, paused=True))
+    loud, quiet = messages
+    assert loud.strength == 180
+    assert quiet.strength == 100, '没给强度 → nucleus 的常态强度'

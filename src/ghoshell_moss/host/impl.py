@@ -109,6 +109,7 @@ class Host(IHost):
             run_shell: bool = True,
             speech: bool = True,
             listen: bool = False,
+            speech_as_content_command: bool | None = None,
             name: str | None = None,
             description: str | None = None,
     ) -> MOSShellRuntime:
@@ -131,6 +132,7 @@ class Host(IHost):
             run_shell_on_start=run_shell,
             speech=speech,
             listen=listen,
+            speech_as_content_command=speech_as_content_command,
             name=name,
             description=description,
         )
@@ -142,6 +144,7 @@ class Host(IHost):
             run_shell: bool = True,
             speech: bool = True,
             listen: bool = False,
+            speech_as_content_command: bool | None = None,
     ) -> IGhostRuntime:
         if isinstance(ghost, str):
             ghost_meta = self._project.get_ghost(ghost)
@@ -159,7 +162,12 @@ class Host(IHost):
         # (Environment.set_ghost_name 已删, seal 是一次性跃迁). host 侧无法在
         # 已 seal env 上改 ghost_name — Ghost 归属由 env 构造时决定.
         # ghost_name 必须在 seal 前设置; Host 不负责补全.
-        moss_runtime = self.run(run_shell=run_shell, speech=speech, listen=listen)
+        moss_runtime = self.run(
+            run_shell=run_shell,
+            speech=speech,
+            listen=listen,
+            speech_as_content_command=speech_as_content_command,
+        )
         return GhostRuntimeImpl(
             moss_runtime=moss_runtime,
             ghost_meta=ghost_meta,

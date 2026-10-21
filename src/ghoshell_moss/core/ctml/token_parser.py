@@ -507,9 +507,14 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
 
         try:
             _value = literal_eval(value)
-            value = _value
         except (SyntaxError, TypeError, ValueError):
             pass
+        else:
+            # 元组和集合不在 CTML 的约定里: ``ids="0,1"`` 是文本 "0,1", literal_eval
+            # 把它读成元组是解析器在自说自话, 不是调用方要一个元组; 而元组序列化出去
+            # 本来也会变成数组. 所以一律退回字符串, 让手滑的逗号只是一段文本.
+            if not isinstance(_value, (tuple, set)):
+                value = _value
 
         return name, value
 

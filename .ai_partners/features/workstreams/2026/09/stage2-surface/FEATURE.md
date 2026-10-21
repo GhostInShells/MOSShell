@@ -138,6 +138,16 @@ blogs 已是 proto-work(域方法论 `writing-conventions.md`、per-model 音色
 9. 整体 review + 摩擦复测
 ```
 
+**KD11 执行记录(2026-10-02):**
+- `moss skills recall` 已移除(脱 LLMFuncs 依赖,选项 i:list/read 保留 markdown_kb)。
+- 二级分类骨架落地:`skills/<category>/<name>/SKILL.md`(pattern `**/SKILL.md`),
+  治理文档 `README.md` → `AGENTS.md`(英文),含 meta 格式(`moss_version` / `platform` /
+  `verified`)与分类白名单。
+- 新增 `audio/macos-device-routing`(英文,标 beta2)。
+- **删除 beta1 技能(4,待按新规范重建)**:`build-a-gui-app` / `debug-with-script-node` /
+  `integrate-ros2` / `develop-moss-via-mcp`。重建方向:`integrate-ros2` 收敛为
+  proxy/provider 一件事,并考虑 ROS2 内放 matrix node。
+
 **迁移纪律(承 KD8):**
 - `git mv` **纯移动、不改正文**,保 similarity ≥ 50% 不断 `--follow`。
 - **只修活引用**(CLAUDE.md / GROUND.md / start.md / FQA.md / `.ai_partners/CLAUDE.md` 日记范式),

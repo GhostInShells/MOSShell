@@ -195,3 +195,50 @@ class TestRegistryHasNoRuntimeMethods:
             f"ProjectNodeManager leaked runtime method {banned!r} — "
             "spawn/kill/runtime should live at run_node throat / CLI ledger reader."
         )
+
+
+class _FakeManagedProcess:
+    """最小 ManagedProcess 替身: 只实现 ``record_spawned`` 依赖的那一面 (done callback)."""
+
+    def __init__(self) -> None:
+        self._callbacks = []
+
+    def add_done_callback(self, callback) -> None:
+        self._callbacks.append(callback)
+
+    def exit(self) -> None:
+        for callback in self._callbacks:
+            callback(Mock())
+
+
+class TestAliasNaming:
+    """名字是**能力的位置**: 模型记的是名字, 不是 pid。契约必须跨重启稳定。"""
+
+    def test_a_plain_node_never_reuses_a_name(self, project):
+        # 非单例可以并存, 所以名字要单调 — 下游按名字缓存的东西不必处理"换了主人".
+        env, dirs = project
+        reg = ProjectNodeManager(env, dirs)
+        assert [reg.mint_alias('worker') for _ in range(3)] == [
+            'worker', 'worker_2', 'worker_3',
+        ]
+
+    def test_a_singleton_takes_its_name_back_on_a_restart(self, project):
+        # 单例同时只有一个活实例 (锁保证): 它在的时候裸名被占, 它一走名字就还回去.
+        # 真起进程成本高, 这里用 spawn 记名 / 进程退出释放那两步驱动命名,
+        # 覆盖"base 被占"这条分支 (只调 mint 而不记活账测不到它).
+        env, dirs = project
+        reg = ProjectNodeManager(env, dirs)
+        proc = _FakeManagedProcess()
+        # spawn 序: mint 出裸名, 再记入活账. 单例拿走裸名后单调计数被推过 0 —
+        # 否则同名非单例随后会再发一次裸名, 两本账各说各话.
+        reg.record_spawned('addr-1', proc, reg.mint_alias('screen', singleton=True))
+        assert reg.spawned_nodes() == {'addr-1': 'screen'}
+        assert reg.mint_alias('worker') == 'worker'  # 无关 base 不受影响
+        # base 已被一个活着的持有者占住: 只能发后缀, 绝不与活实例撞名.
+        # (这个持有者通常是同名的非单例 —— 单例撞锁在到达 mint_alias 之前就抛了.)
+        assert reg.mint_alias('screen', singleton=True) == 'screen_2'
+        # 退出 → 活账释放 → 裸名归还, 跨重启稳定.
+        proc.exit()
+        assert reg.spawned_nodes() == {}
+        assert reg.mint_alias('screen', singleton=True) == 'screen'
+

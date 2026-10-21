@@ -208,8 +208,16 @@ def _run_ghost_headless(ghost_runtime, main: Callable[[], Awaitable[None]]) -> N
     close() 只同步置 moss_runtime 的 closing event (thread-safe); 真正的收尾由
     main() 的 ``async with ghost_runtime: await moss.wait_close()`` 完成 — close 后
     wait_close 返回 → async with 退出 → ghost.__aexit__ 反卷 (含 dsh launcher)。
+
+    信号必须留痕: 它是"引擎为什么停"的两条静默路径之一 (另一条是内部直接调 close),
+    不留痕则一次意外停摆与一次人为重启在日志里完全同形 (2026-10-13 11:37 的判据)。
     """
-    handler = lambda s, f: ghost_runtime.close()
+    def handler(signum, _frame):
+        ghost_runtime.moss.logger.info(
+            "received signal %s (%s) — closing the ghost runtime",
+            signal.Signals(signum).name, signum,
+        )
+        ghost_runtime.close()
     prev_int = signal.signal(signal.SIGINT, handler)
     prev_term = signal.signal(signal.SIGTERM, handler)
     try:

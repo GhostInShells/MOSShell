@@ -8,7 +8,7 @@ It is the [Ghost](src/ghoshell_moss/core/blueprint/ghost.py) In [Shells](src/gho
 
 **Technical vision**: a future of human–model symbiosis, where humans and models share a cognitive space and a shared interface. Model products must enter the physical world — not just digital space — interacting with people through bodies, screens, and voice in real time. Human–computer interfaces must ultimately serve domain experts and ordinary people, not just programmers. MOSS provides the architecture for this vision.
 
-(Currently Beta2 — the first turnkey release: a persistent Ghost you can talk to out of the box. Full application capabilities arrive with v0.1.0.)
+(Currently Beta3 — the last release before the production stage: a persistent Ghost you can talk to out of the box, and a ghost home that ships with the repository. Full application capabilities arrive with v0.1.0.)
 
 ## What This Project Is
 
@@ -94,13 +94,15 @@ What the model sees:                  What the model outputs:
 
 Minimum knowledge entry points: `moss ctml read` (CTML syntax), `moss codex blueprint channel_builder` (building capabilities), `moss codex blueprint mindflow` (perception arbitration), `moss codex blueprint matrix` (process networking).
 
-## What You Get in Beta2
+## What You Get in Beta3
 
 **1. A persistent Ghost, out of the box.** MOSS ships its first persistent-agent prototype: **Dolores**, with **deepseek** as its first instance — a ghost with the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) as its kernel and the DeepSeek model family as its inference base. It comes with persistent memory ([memento](src/ghoshell_moss/memento/)), a cognitive map (ground), and the architectural knowledge and iteration experience accumulated through the project's `moss features` system. Run `moss-ghost run deepseek` and talk to it — see Quick Start below.
 
 **2. Turnkey nodes.** Under [`nodes/`](nodes/), observable, Matrix-based **multi-process networking + stateful streaming control** capabilities: `browsers` / `live2d` / `os` / `screens` / `tools` / `unitree` / `visions` / `webview_apps` — covering screen bodies, terminal & file editing, web artifacts, streaming vision, audio conversation etiquette, and the Unitree G1 humanoid control scheme.
 
 **3. The architecture itself**, same as Beta1 — CTML, Mindflow, Matrix, the model-as-first-developer system, and the concrete integration paths (G1 humanoid, ReachiMini arm, desktop GUI) are all there to study.
+
+**4. A ghost home that ships with the repository.** `.moss/ghosts/moss/` is the home of the ghost that develops this project: its ground (self-model, purpose, behaviour), its journal, and what it knows about the people it works with. Clone the repository and you get a **fork of that ghost, not the ghost itself** — its trajectory (`.memento/`) is deliberately not shipped, so the copy begins a life of its own. That is the intended way to raise your own: take the home and the tools, let it grow its own memory.
 
 ## Quick Start
 
@@ -112,10 +114,10 @@ moss project env-init   # review available env vars (see .moss/.env.example)
 
 Configure credentials as environment variables in your own shell profile (home), not in the repo's `.moss/.env` — coding models read the repository, and a populated `.env` inside it is one `Read` away from a leak. Keep keys in your user environment unless your `.moss` workspace is isolated from the project.
 
-**1. Talk to the deepseek ghost (text).** Requires [`dsh`](https://github.com/deepseek-ai/deepseek-harness) — an npm package. MOSS Beta2 is tested against `dsh 0.1.5-rc.2`; dsh is in developer preview with breaking changes, so pin the version:
+**1. Talk to the deepseek ghost (text).** Requires [`dsh`](https://github.com/deepseek-ai/deepseek-harness) — an npm package. MOSS Beta3 is tested against `dsh 0.2.0-rc.2`; dsh is in developer preview with breaking changes, so pin the version:
 
 ```bash
-npm install -g @deepseek-ai/dsh@0.1.5-rc.2
+npm install -g @deepseek-ai/dsh@0.2.0-rc.2
 moss-ghost run deepseek
 ```
 
@@ -150,20 +152,13 @@ moss-shell mcp                   # expose MOSS capabilities to any MCP client (C
 
 All paths share one cognitive entry point: `moss start`.
 
-## Demos
-
-| Cross-app real-time communication | One Ghost, multiple bodies |
-|---|---|
-| ![apps_cross_talk](assets/apps_cross_talk.gif) | ![multiple_bodies](assets/multiple_bodies.gif) |
-| Eyes, board, vision, voice — independent processes communicating in real time via streams | One Ghost simultaneously driving a desktop robot, a robotic arm, and a robot dog |
-
 ## Project Status
 
-Beta2 (`v0.1.0-beta2`). The core three (CTML / Mindflow / Matrix) are functional and test-verified. The first persistent Ghost — Dolores prototype, deepseek instance — runs the full chain out of the box: voice in, thought, voice out, node-composed body. Tested against `dsh 0.1.5-rc.2`.
+Beta3 (`v0.1.0-beta3`). The core three (CTML / Mindflow / Matrix) are functional and test-verified. The first persistent Ghost — Dolores prototype, deepseek instance — runs the full chain out of the box: voice in, thought, voice out, node-composed body. Tested against `dsh 0.2.0-rc.2`.
 
-Stage2 and the in-progress features are the dogfooding targets for `v0.1.0-rc1` — their development will be livestreamed, starting from Dolores regression, then Stage2 acceptance, then turnkey node polishing including the Unitree G1.
+Stage 2 closed on 2026-10-20 — applications, dogfooding and the full-featured Dolores ghost landed, and the loop where the ghost iterates on itself is closed. The next stage, one ghost steering a cluster, is planned in the production stage file.
 
-Current stage and roadmap: `.ai_partners/stages/`
+Current stage and roadmap: `.ai_partners/features/stages/`
 
 ## Acknowledgments
 

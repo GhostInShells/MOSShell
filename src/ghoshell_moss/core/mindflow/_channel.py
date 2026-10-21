@@ -19,9 +19,11 @@ app channel. 反身控制原则: 刻意自省, 不做每帧轮询.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Priority
+from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.core.blueprint.states_channel import new_prime_channel, PrimeChannel
 from ghoshell_moss.core.concepts.channel import Channel
 
@@ -127,6 +129,40 @@ def build_mindflow_channel(
         value = _parse_priority(priority)
         mindflow.set_impulse_priority_bar(value)
         return f"impulse bar set to {value.name}"
+
+    # --- idle 上的一次性动作 --- #
+
+    @channel.build.command(name="idle-knock")
+    async def idle_knock(seconds: float, text__: str) -> str:
+        """Arm one knock on the coming idle — a line to yourself after N seconds of quiet.
+
+        The command to reach for instead of `sleep` when you want to wait for
+        something without holding the turn: nothing blocks, no action stays open.
+        It arms a callback on the next idle window and returns at once.
+
+        When mindflow goes idle the callback runs; it waits `seconds` and then
+        sends a `knock` signal whose message is `text__` — the line you wrote to
+        yourself. A knock is the lowest tier and is dropped when you are busy, so a
+        reminder born of silence never competes with a real event.
+
+        It serves exactly one window and fires once. If real signals or actions
+        arrive first, that window closes and the callback is cancelled — nothing is
+        sent, nothing stays armed.
+        """
+        state: dict = {"disposer": None}
+
+        async def _fire(_moments) -> None:
+            try:
+                await asyncio.sleep(seconds)
+                mindflow.add_signal(new_knock_signal(text__))
+            finally:
+                # 一次性: 不论是发出去了还是被这一轮 idle 取消, 都把自己从回调集里摘掉.
+                if state["disposer"] is not None:
+                    state["disposer"]()
+                    state["disposer"] = None
+
+        state["disposer"] = mindflow.when_idle(_fire)
+        return f"armed: one knock in {seconds:g}s after idle starts (cancelled if real signals arrive first)"
 
     # --- 感知读面 --- #
 

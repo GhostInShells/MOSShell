@@ -3,12 +3,19 @@
 The pose this channel takes is that the human is a busy collaborator, not an
 approval gate. Issuing a command returns a receipt immediately — the model never
 blocks on a human's response time. The command becomes a card on the terminal
-surface, and whatever happens to it next (approved, denied, talked about,
-expired) reaches the model as a signal, not as a return value.
+surface, and three moments follow it.
+
+**Three moments, two signals.** The verdict: ``accept`` is *state* — the card
+turns ``running`` and the notice counts it, so it is deliberately not signalled;
+``deny`` is a *signal*, because it means a command the model planned will not
+run. The process end is a *signal* carrying the exit code and the output tail.
+That is the whole reporting contract. How loudly the completion arrives is the
+model's own ``level``, raised one step when the run failed.
 
 Every card settles exactly once; the waiter tasks spawned here are the single
-place where ``awaiting`` turns into ``running`` or ``rejected``. The web surface
-only hands down verdicts — it never writes card state itself.
+place where ``awaiting`` turns into ``running`` or ``rejected`` — and the single
+place a verdict is reported. The web surface only hands verdicts down: it never
+writes card state, and it never speaks for the card.
 
 Signals go out through an injected ``signaler`` rather than through
 ``CommandUtil``, for the same reason the surface is injected: the node wires both
@@ -48,6 +55,14 @@ _LEVELS: dict[str, Priority] = {
     "warning": Priority.WARNING,
 }
 
+_LOUDER: dict[str, str] = {
+    "background": "info",
+    "info": "warning",
+    "warning": "warning",
+}
+"""A failed run is never quiet — it escalates one step. "Tell me quietly when it
+works" must not also mean "…and when it breaks"."""
+
 _OUTPUT_THRESHOLD = 8000
 """Above this many characters the full output is a file, and the model reads the
 path instead of the text."""
@@ -62,9 +77,24 @@ _TAG_SAFE = re.compile(r"[^A-Za-z0-9_]")
 class _Surface(Protocol):
     async def broadcast(self, frame: dict[str, Any]) -> None: ...
 
+    async def set_layout(self, mode: str) -> str: ...
+
+    def layout_state(self) -> tuple[str, str]: ...
+
+    async def sync_threads(self) -> None: ...
+
 
 class _NoSurface:
     async def broadcast(self, frame: dict[str, Any]) -> None:
+        return None
+
+    async def set_layout(self, mode: str) -> str:
+        return mode
+
+    def layout_state(self) -> tuple[str, str]:
+        return ("page", "default")
+
+    async def sync_threads(self) -> None:
         return None
 
 
@@ -129,10 +159,42 @@ def build_terminal_channel(
             return ""
         return surface_url() if callable(surface_url) else surface_url
 
-    async def _signal(card: Card) -> None:
-        """Tell the ghost a card settled. Never lost, always guaranteed a turn."""
+    def _notify(
+        card: Card,
+        text: str,
+        *,
+        description: str,
+        priority: Priority = Priority.INFO,
+        claim_turn: bool = True,
+    ) -> None:
+        """One voice for every report about a card.
+
+        A ``notify`` is buffered rather than dropped when the model is busy;
+        ``claim_turn`` additionally guarantees it the next turn.
+        """
         if signaler is None:
             return
+        signal = NotifySignalMeta(next=claim_turn).to_signal(
+            Message.new(tag=name, name=card.thread or name).with_content(text),
+            description=description,
+            priority=priority,
+        )
+        signaler(signal)
+
+    def _loudness(card: Card) -> str:
+        """How loudly a completion reaches the model.
+
+        ``level`` is the promise made when the command was issued: ``background``
+        buffers the result without claiming a turn, ``info`` claims one, ``warning``
+        claims one loudly.
+        """
+        level = card.level if card.level in _LEVELS else "info"
+        if card.exit_code not in (0, None):
+            level = _LOUDER[level]
+        return level
+
+    async def _signal(card: Card) -> None:
+        """Tell the model a card's process ended — exit code and output tail."""
         if card.output_file:
             result = f"output: {card.output_chars} chars, full text at {card.output_file}"
         elif card.output_tail:
@@ -146,13 +208,41 @@ def build_terminal_channel(
             f"({card.elapsed()}s)\n{result}\n"
             f"read({card.id}) for detail"
         )
-        level = card.level if card.level in _LEVELS else "info"
-        signal = NotifySignalMeta(next=True).to_signal(
-            Message.new(tag=name, name=card.thread or name).with_content(text),
+        level = _loudness(card)
+        _notify(
+            card,
+            text,
             description=f"terminal card #{card.id} {card.state.value}",
             priority=_LEVELS[level],
+            claim_turn=level != "background",
         )
-        signaler(signal)
+
+    async def _signal_denied(card: Card) -> None:
+        """Tell the model the human said no — a plan change, so a signal.
+
+        Not optional like an accept: silence here reads as "still waiting", and the
+        card's own state would then only be found by a ``read`` nobody asked for.
+        The human's words, when they left any, ride along.
+        """
+        text = (
+            f"[{name} #{card.id}] denied by the human — '{card.title}' did not run"
+        )
+        said = [f"{d.author}: {d.text}" for d in card.dialogue]
+        if said:
+            text = f"{text}\n" + "\n".join(said)
+        _notify(card, text, description=f"terminal card #{card.id} denied")
+
+    async def _signal_rule_live(card: Card) -> None:
+        """A rule card's verdict *is* its last moment — it has no process to run.
+
+        So unlike a command's accept, this accept must report: otherwise the model
+        never learns whether the trust it proposed actually went live.
+        """
+        text = (
+            f"[{name} #{card.id}] rule '{card.title}' is live — matching commands "
+            f"now run without asking"
+        )
+        _notify(card, text, description=f"terminal rule #{card.id} live")
 
     async def _emit(frame: dict[str, Any]) -> None:
         await surface.broadcast(frame)
@@ -172,6 +262,11 @@ def build_terminal_channel(
 
     async def _run(card: Card) -> None:
         out_path = store.output_path(card.id)
+        # The capture writer appends. Card ids restart at 1 in each process while
+        # the output directory outlives the process, so without this a new card
+        # silently inherits an old run's file — and reports its path as this run's
+        # output. A card's file is its own run's, from an empty start.
+        out_path.unlink(missing_ok=True)
         try:
             managed = await processes.shell(
                 card.content,
@@ -225,38 +320,21 @@ def build_terminal_channel(
         await _full(card)
         await _signal(card)
 
-    async def _maybe_batch_done() -> None:
-        """One knock when the last awaiting card settles — not one per verdict.
-
-        The surface already buffered each individual verdict as an aside; this
-        single notify only says the review round is over, go look.
-        """
-        if store.awaiting() or signaler is None:
-            return
-        text = (
-            f"[{name}] every pending command is now decided — cards() to "
-            f"review the batch"
-        )
-        signal = NotifySignalMeta(next=True).to_signal(
-            Message.new(tag=name, name=name).with_content(text),
-            description=text[:120],
-        )
-        signaler(signal)
-
     async def _await_verdict(card: Card) -> None:
         """Park until the human (or the model's own cancel) settles the card."""
         verdict = await store.waiter(card.id)
         if store.get(card.id) is None or store.get(card.id).state is not CardState.AWAITING:
             return
         if verdict == "accept":
+            # Accepted = state, not a signal: the card turns running and the notice
+            # counts it. A knock here would only buy the model a turn it does not need.
             store.set_state(card.id, CardState.RUNNING)
             await _full(card)
-            await _maybe_batch_done()
             await _run(card)
         else:
             store.set_state(card.id, CardState.REJECTED)
             await _full(card)
-            await _maybe_batch_done()
+            await _signal_denied(card)
 
     async def _await_rule(card: Card) -> None:
         verdict = await store.waiter(card.id)
@@ -265,10 +343,12 @@ def build_terminal_channel(
         if verdict == "accept":
             store.activate_rule(card.id)
             store.set_state(card.id, CardState.DONE)
+            await _full(card)
+            await _signal_rule_live(card)
         else:
             store.set_state(card.id, CardState.REJECTED)
-        await _full(card)
-        await _maybe_batch_done()
+            await _full(card)
+            await _signal_denied(card)
 
     # -- channel ------------------------------------------------------------
 
@@ -283,12 +363,19 @@ def build_terminal_channel(
         root = store.root
         return (
             "Shell commands become cards on a human-facing terminal. exec() returns "
-            "a receipt at once — it never waits on a person, so keep issuing and "
-            "read(id) later to learn each card's fate. A card is settled by the "
-            "human's accept or deny, then again when its process ends (done/error); "
-            "ask only talks about it and leaves it pending. You can cancel(id) a card "
-            "still awaiting a verdict, and stop(id) a running one. Commands run in a "
-            "thread: open(thread, cwd, description) names a location, then exec into "
+            "a receipt at once — it never waits on a person, so keep issuing. Three "
+            "moments follow a card, and two of them reach you: the verdict and the "
+            "process end. An accept is state only — the card turns running and the "
+            "notice counts it, nothing to read; a deny is a signal, because that "
+            "command will not run; the process end is a signal carrying the exit code "
+            "and the output tail. A rule card is the exception: it has no process, so "
+            "an accepted rule reports itself as live. level sets how loudly a "
+            "completion reaches you: "
+            "background (buffered, no turn claimed) / info (a turn is claimed) / "
+            "warning — and a non-zero exit escalates one step, so a failure is never "
+            "quiet. ask only talks about it and leaves it pending. You can cancel(id) a "
+            "card still awaiting a verdict, and stop(id) a running one. Commands run in "
+            "a thread: open(thread, cwd, description) names a location, then exec into "
             "it; exec() with no thread runs in the default 'root' thread. "
             f"Every cwd must live inside {root}. "
             "A command runs without asking when its thread is auto (the human trusts "
@@ -311,6 +398,9 @@ def build_terminal_channel(
             t = store.open_thread(thread, cwd, description)
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
+        # A page only knows the threads it saw at connect: say it out loud, or
+        # every card in this thread loses its thread row on an open page.
+        await surface.sync_threads()
         return f"thread {t.name!r} opened @ {t.cwd}"
 
     @chan.build.command(name="threads", always_observe=True, available=enabled)
@@ -355,7 +445,9 @@ def build_terminal_channel(
         ``thread`` defaults to ``root`` — the terminal's own root directory. The
         line streams onto a card the human watches appear. ``desc`` is the card's
         title — say what this command is for. ``level`` picks how loudly the
-        completion signal reaches you: background / info / warning.
+        completion reaches you: background (buffered, no turn claimed) / info (a
+        turn is claimed) / warning; a non-zero exit escalates one step, so a
+        failure is never quiet.
 
         A command runs without asking when its thread is ``auto`` (the human
         flipped that thread to trust it) or it matches an accepted rule.
@@ -392,12 +484,18 @@ def build_terminal_channel(
                 f"[{name} #{card.id}] empty command — put the shell line in the tag body"
             )
 
-        auto = t.auto or store.match_rule(card.content) is not None
+        everything = store.global_trust()
+        auto = everything or t.auto or store.match_rule(card.content) is not None
         if auto:
             store.set_state(card.id, CardState.RUNNING)
             await _tail(card)
             CommandUtil.create_task(_run(card))
-            return f"[{name} #{card.id}] {thread} running (auto-approved)"
+            why = (
+                "trust is on for this whole terminal" if everything
+                else "the thread is trusted" if t.auto
+                else "a rule covers it"
+            )
+            return f"[{name} #{card.id}] {thread} running (auto-approved — {why})"
         store.set_state(card.id, CardState.AWAITING)
         await _tail(card)
         CommandUtil.create_task(_await_verdict(card))
@@ -474,6 +572,24 @@ def build_terminal_channel(
             out.append(f"#{c.id} {c.type.value} {c.state.value} [{c.thread}] {preview}")
         return "\n".join(out) if out else "(no cards yet)"
 
+    @chan.build.command(name="clear", always_observe=False, available=enabled)
+    async def clear(keep_running: bool = True) -> str:
+        """Take the finished cards off the terminal — the history, not the work.
+
+        A card still awaiting a verdict, or one with a process behind it, stays: clearing
+        the screen must never hide a command that has not finished. What goes is the tail
+        of things that already ended.
+
+        Restarting the node would also do it, but a restart takes the windows with it and
+        puts the pool back to zero; this is the same result as one sentence.
+        """
+        gone = store.clear(keep_running=keep_running)
+        # 让页面按快照重建列表，而不是逐张发"删除"：清空是一次整体状态变化。
+        snap = getattr(surface, "snapshot", None)
+        if snap is not None:
+            await _emit(snap())
+        return f"[{name}] cleared {gone} card(s)"
+
     async def _stop_card(card_id: int) -> str:
         card = store.get(card_id)
         if card is None:
@@ -493,6 +609,20 @@ def build_terminal_channel(
     if stops is not None:
         stops.stop = _stop_card
         stops.stop_all = _stop_all
+
+    @chan.build.command(name="layout", always_observe=True, available=enabled)
+    async def layout(mode: str = "") -> str:
+        """How an open card is shown — my half of the presentation contract.
+
+        ``split`` keeps the list beside it; ``page`` gives it the whole window.
+        Which card is open is the human's click; this decides only how big it
+        opens, and the page says who chose it. Empty = read the mode back.
+        """
+        if not mode:
+            current, by = surface.layout_state()
+            return f"[{name}] layout: {current} (chosen by {by})"
+        chosen = await surface.set_layout(mode)
+        return f"[{name}] layout: {chosen} (chosen by model)"
 
     @chan.build.command(name="stop", always_observe=False, available=enabled)
     async def stop(card_id: int) -> str:

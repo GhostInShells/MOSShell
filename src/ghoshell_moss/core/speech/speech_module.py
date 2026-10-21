@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 from typing import Callable
 
@@ -6,9 +7,11 @@ from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
+from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.speech import (
     PlaybackSample,
     Speech,
+    SpeechClause,
     SpeechStream,
     TTSSpeech,
     speech_tail,
@@ -23,6 +26,73 @@ from ghoshell_moss.contracts.speech import (
 # 这里回落 samples[-1].text. 中英混排按 token 切分.
 def _played_seconds(samples: list[PlaybackSample]) -> float:
     return sum((s.duration for s in samples), 0.0)
+
+
+# 进度 = 我正在说的那几个字。原料是 clause 的对齐结果 (真的播完一句才来), 取它的尾巴:
+# 最后一个字就是播放头现在的位置, 前面加省略号说明它后面还有. 不累积, 不数句子.
+_PROGRESS_TAIL = 12
+
+
+def speech_progress(text: str) -> str:
+    """一句已播完的 clause 文本 → 一行进度: ``…最后几个字``. 空串 = 这句没字, 不更新."""
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    if len(text) <= _PROGRESS_TAIL:
+        return text
+    return "…" + text[-_PROGRESS_TAIL:]
+
+
+# 进度心跳间隔 (秒). 每秒一次: 再快没有信息增量, 再慢读不到"我这一句拖了多久".
+_PROGRESS_BEAT = 1.0
+
+
+class _SpeechProgress:
+    """播报中的进度: clause 只记"说到哪一截", 心跳每秒把"已播秒数 + 那一截"写成一行.
+
+    两个写入者分工固定 — clause 回调跑在音频 worker 线程, 只写字段; 进度只由心跳写。
+    否则两边交替写, 秒数刚出来就被字盖掉。
+    """
+
+    def __init__(self, task, samples: list[PlaybackSample]):
+        self._task = task
+        self._samples = samples
+        self._tail = ""
+        self._beat: asyncio.Task | None = None
+        self._dispose_clause: Callable[[], None] = lambda: None
+
+    def attach(self, chunks: SpeechStream) -> None:
+        self._dispose_clause = chunks.on_clause(self._on_clause)
+        self._beat = asyncio.create_task(self._run())
+
+    def _on_clause(self, clause: SpeechClause) -> None:
+        # 这句真的播完了才来, 所以它的尾字就是播放头现在的位置; 空句不覆盖上一截.
+        tail = speech_progress(clause.text)
+        if tail:
+            self._tail = tail
+
+    def _render(self) -> str:
+        if not self._tail:
+            return ""
+        # 已播 = 音频真正写进设备的样本时长之和; 总时长只有播完才知道, 这里不报.
+        return f"{_played_seconds(self._samples):.0f}s {self._tail}"
+
+    async def _run(self) -> None:
+        try:
+            while not self._task.done():
+                await asyncio.sleep(_PROGRESS_BEAT)
+                if self._task.done():
+                    return
+                progress = self._render()
+                if progress:
+                    self._task.set_progress(progress)
+        except asyncio.CancelledError:
+            pass
+
+    async def close(self) -> None:
+        self._dispose_clause()
+        if self._beat is not None and not self._beat.done():
+            self._beat.cancel()
 
 
 def played_message(samples: list[PlaybackSample]) -> str | None:
@@ -109,12 +179,15 @@ class _SpeechCommandFactory:
             if not isinstance(chunks__, SpeechStream):
                 return None
             samples: list[PlaybackSample] = []
+            progress = _SpeechProgress(CommandUtil.current_task(), samples)
+            progress.attach(chunks__)
             try:
-                await chunks__.play(samples)
+                await chunks__.play(samples.append)
             except asyncio.CancelledError:
                 # stream 已随 play 的上下文退出关闭, 但 batch 的 clause 还留着 — 对齐结果仍可读.
                 CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
             finally:
+                await progress.close()
                 # 命令退出/中断都要终结 stream — 否则 feed task 继续喂文本、TTS 继续合成,
                 # 无界 _chunks 堆音频导致内存泄漏. close() 幂等.
                 await chunks__.close()
@@ -135,9 +208,16 @@ class _SpeechCommandFactory:
         # 否则文档一变整块命令接口就要重发, 命令 meta 也跟着反复重生成.
         say_doc = (
             f"Speak with the specified voice state. The content becomes spoken audio — avoid visually-oriented text (tables, special symbols) as speech content.\n"
+            f"Say it once: do not say again what you have already said. A retried or re-emitted line\n"
+            f"  that re-states the previous one is heard as saying the same thing twice — continue, or say something new.\n"
             f":param voice: Speed, pitch, etc. of the voice. JSON structure, schema is {voice_schema_str}\n"
             f"  When calling via CTML, voice must be a JSON string, e.g. voice:dict=\"{{'speed': 1.0, 'pitch': 'high'}}\"\n"
             f":param as_default: Make the voice state set in this turn the default.\n"
+            f":param replace: drop whatever is still being said and say this instead — one call,\n"
+            f"  not clear_speech followed by say. Default false: the line queues behind the rest.\n"
+            f"  Finishing the line you are speaking is not an obligation: when his new words\n"
+            f"  change what he means, reply now with replace=True rather than queue behind\n"
+            f"  your own unfinished sentence.\n"
             f":param chunks__: The text content you speak.\n"
             f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"
             f"  Available tones: {tone_descriptions_str}\n"
@@ -150,8 +230,13 @@ class _SpeechCommandFactory:
                 voice: dict | None = None,
                 as_default: bool = False,
                 tone: str = "",
+                replace: bool = False,
         ) -> tuple[list, dict]:
             self._check_muted()
+            # 「换一句」是一个动作, 不是两个. 清退放在 prepare 阶段 (命令还没进队列),
+            # 所以它只掀掉此刻已经存在的流, 不会误伤排在这一句后面的东西.
+            if replace:
+                await self._speech.clear()
             if as_default:
                 if voice:
                     tts.set_voice(voice)
@@ -176,16 +261,25 @@ class _SpeechCommandFactory:
             _ = asyncio.create_task(run_tts_batch())
             return [], dict(voice=voice, chunks__=stream, as_default=as_default)
 
-        async def say(chunks__, voice: dict | None = None, as_default: bool = False, tone: str = "") -> str | None:
+        async def say(
+                chunks__,
+                voice: dict | None = None,
+                as_default: bool = False,
+                tone: str = "",
+                replace: bool = False,
+        ) -> str | None:
             self._check_muted()
             if not isinstance(chunks__, SpeechStream):
                 raise ValueError(f"System error: Chunks is not prepared")
             samples: list[PlaybackSample] = []
+            progress = _SpeechProgress(CommandUtil.current_task(), samples)
+            progress.attach(chunks__)
             try:
-                await chunks__.play(samples)
+                await chunks__.play(samples.append)
             except asyncio.CancelledError:
                 CommandUtil.reraise_stopped(stopped_message(samples, chunks__.played_text()))
             finally:
+                await progress.close()
                 # 命令退出/中断都要终结 stream (见 __content__ 同理). close() 幂等.
                 await chunks__.close()
             return played_message(samples)
@@ -210,6 +304,8 @@ class SpeechChannelModule(ChannelModule):
         self._own_commands = {}
         self._register_content_command = register_content_command
         self._muted = False
+        self._dropped = 0
+        """clear_speech 在 prepare 阶段清掉的流数, 由执行体报告一次后归零."""
 
     def name(self) -> str:
         return "speech"
@@ -225,6 +321,44 @@ class SpeechChannelModule(ChannelModule):
         恢复则自动回来.
         """
         return self._speech is not None and self._speech.is_running()
+
+    async def get_context_messages(self) -> list[Message]:
+        """说话的运行时状态 — 每轮读一次当下, 不说话时不出现.
+
+        notice 是增量下发的: 秒数每轮都在变, 走 delta 就等于每轮推一条状态刷屏.
+        context message 每轮本来就要重发一份, 进度一直变不吃额外代价 —— 这个场景下
+        它比 delta 好用.
+
+        报的是「还有多少没说」, 不是「说到第几个字」: 我需要的判断是「这段话还剩多长,
+        值不值得现在停下」。数字全部来自 speech 契约, 这里只负责排版。
+        """
+        line = self._speech_state_line()
+        if not line:
+            return []
+        return [Message.new(tag="speech").with_content(line)]
+
+    def _speech_state_line(self) -> str:
+        """一行说清「现在还有多少话没出口」; 不在说话就是空串, 整条不出现.
+
+        数据只从契约上取: 活着几条流由 ``Speech.streams()`` 回答, 每条还剩多少由
+        ``SpeechStream.unplayed()`` 回答. 某个后端说不清时就不报那个数——报个数是
+        为了方便我判断, 不是义务, 更不能拿零去冒充。
+        """
+        speech = self._speech
+        if speech is None:
+            return ""
+        alive = [stream for stream in speech.streams() if not stream.is_closed()]
+        if not alive:
+            return ""
+        lefts = [stream.unplayed() for stream in alive]
+        said = f"{len(alive)} stream(s) speaking"
+        if all(left is not None for left in lefts):
+            ahead = sum(len(left) for left in lefts if left is not None)
+            said += f" · {ahead} chars still to say" if ahead else " · nothing left to say"
+        return (
+            f"speech: {said} — cut it? clear_speech drops it, say(replace=True) swaps it. "
+            f"Say the new line only after deciding this, not on top of it"
+        )
 
     async def get_named_notices(self) -> dict[str, str | None]:
         """此刻的状态 — 命令表面写契约, 状态由这里随 meta 刷新下发.
@@ -257,6 +391,39 @@ class SpeechChannelModule(ChannelModule):
         self._muted = on
         return "muted" if on else "unmuted"
 
+    async def _clear_speech_partial(self, *args, **kwargs) -> tuple[tuple, dict]:
+        """prepare 阶段 (on_compiled) 就把语音清掉.
+
+        命令在这一步还没进通道队列, 所以「清掉此刻存在的流」不会误伤同一轮里排在它后面的
+        ``say`` —— 那句那时根本还没被编译出来. 曾经用 ``call_soon`` 想解决同一个问题, 结果是
+        清空动作按「同轨低优先级」把后一句一起掀了 (D19 夜实测: clear_speech 之后的 say 被吞).
+
+        清理结果记在实例上, 执行体只负责把话说清楚, 不再碰语音.
+        """
+        self._dropped = 0
+        if self._speech is not None:
+            self._dropped = len(await self._speech.clear())
+        return (), {}
+
+    async def _clear_speech(self) -> str:
+        """Stop talking right now — drop every open speech stream, the one being played and the
+        ones still queued behind it.
+
+        The command that was speaking ends by itself, because its stream closes under it; nothing
+        else on the shell is touched.
+
+        The dropping happens while the command is being prepared, before it joins the channel
+        queue — it sees only the stream that already exists, so a line emitted right after this
+        command is not swept away with the old speech.
+
+        Use it when you started saying something and then decided you should not have: clear,
+        then say the new line.
+        """
+        if self._speech is None:
+            return "no speech"
+        dropped, self._dropped = self._dropped, 0
+        return f"dropped {dropped} speech stream(s)"
+
     async def on_startup(self) -> None:
         if self._speech is None and CommandUtil.enabled():
             self._speech = CommandUtil.get_contract(Speech)
@@ -274,6 +441,12 @@ class SpeechChannelModule(ChannelModule):
             cmd = factory.build_content_command()
             commands[cmd.name()] = cmd
         commands["mute"] = PyCommand(self._mute, name="mute")
+        # 清理放在 partial (prepare / on_compiled) 里做: 那时命令还没进队列, 清得到的只有已经
+        # 存在的流; 执行体留空, 只回报清了几条. 不能用 call_soon —— 那是「入队即执行」, 清空
+        # 是按同轨低优先级扫的, 会把同一轮里排在它后面的 say 一并掀掉.
+        commands["clear_speech"] = PyCommand(
+            self._clear_speech, name="clear_speech", partial=self._clear_speech_partial
+        )
         self._own_commands = commands
 
     async def on_close(self) -> None:

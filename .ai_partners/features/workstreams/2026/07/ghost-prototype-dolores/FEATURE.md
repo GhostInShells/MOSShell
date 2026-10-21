@@ -6,25 +6,14 @@ depends:
 - dsh-fusion
 description: 'Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 以 DSH (DeepSeek Harness) 为推理中枢,
   MOSS 保留记忆/执行/感知. 已接线: ego 会话交易、moment 三槽位序列化、interleaved tools、自醒 nucleus、ghost_home
-  认知场、可替换 instruction 模板. 实例为 deepseek. 待接: Memento 持久化轨迹、ghost 反身 channel、独立思维模块、模型自感知切换.'
+  认知场、可替换 instruction 模板. 实例为 deepseek. Memento 持久化 / ghost 反身 channel / 模型自感知切换均已接; 独立思维模块 (并行化身 / clone / branches) 推下一阶段.'
 milestone: 0.1.0
 priority: P0
-status: in-progress
-status_note: 'DSH 推理中枢接线完成 (ego 交易 + 三槽位 + interleaved tools + 自醒 + ghost_home + inception
-  模板), 实例 deepseek. 2026-09-10 落地 ego 专属 preset (非 ego session 可用) + agent 级 moss_think
-  nibble (per-agent model selection). 2026-09-12 落地旁路单轮机制 (reentrant 文档): pre-step
-  旁路分支 (降级思考模式 low + sandbox read-only + 注入旁路提示) + tools 全拒 guard + pre-step
-  前置折叠 (collapseTurn, map 记录 turn id, 弃 session/event) + preset 元数据 (不复用 standard
-  描述), 删除 session/frozen (D29 invalid). GUI 实机验证跑通 (旁路历史不进入下一轮). 问题清单统一到
-  dolores-todo.md. 2026-09-12 实机打断现场连修两条 P0: D30 (打断时 tool 结果迟到打穿整轮: exit
-  先结算 pending tool + settled-call 墓碑 + MOSS 侧吸收 RPC 失败) 与 D25 (need_observe 亮着不思考:
-  续帧被「inputs 为空不起 turn」挡成缓冲帧, 改 needsObserve 标记 + steer 开轮; 同根因解开帧顺序错乱
-  与 fetch moment 迟到一轮). 两条均需重启 dsh 才生效, 待回归 (本轮只跑 test_dolores.py, 未做全量回归).
-  另: 平台提交署名正式叫 dsh in moss. 2026-09-25 恢复启动补漏 (backfill) + 失败落盘 terminal
-  error note (D35): 根因是 fa97362d 在引入「关停取消在飞旁路」时把 resume()/resume_tail 一起
-  误删, 空 note 成永久空洞; 零有效工作区间是否 commit 立为 O18 (待第五轮回归拿数据).'
+status: completed
+status_note: '2026-10-19 收尾: dolores-todo 三张表逐条裁定完毕, 零 open —— 缺陷清零, 未接能力与设计问题各归其位,
+  推给下一阶段的条目记 deferred。原型完成, 下一阶段另立 workstream。'
 title: Dolores Ghost
-updated: '2026-09-25'
+updated: '2026-10-19'
 ---
 
 # Dolores Ghost
@@ -83,9 +72,22 @@ DSH 推理中枢已接线，Dolores 的 articulate 由 DSH agent-loop 驱动，M
 - **tool 结果不进 memento。** interleaved 下 tool 是 thinking 期的纯交互通道，结果不写轨迹。
 - **effort 是 cache 安全旋钮，换模型会破坏 cache。** 只调 reasoningEffort（off/low/medium/high），不换 provider/model——云端 cache 与模型类型相关，换模型 = 全量请求（无 cache 命中）。
 
+## 原型完成判据 (2026-10-19 定)
+
+一条原型能不能标 complete, 判据不是「零条目」, 而是: **每一条 open 都有一个归属** —— 已修、判无效、或者明确交给下一阶段 (`deferred`)。原型的边界本来就是靠「哪些不属于它」划出来的; 留一条说不清归属的 open, 未来就会反复回来问同一个问题。
+
+按这条判据, 三张表全部收口, 本 workstream 判 completed。**下一阶段的开发另立 workstream**: 并行化身 / clone / branches (W3)、旁路大改造 (O19)、memento 迭代 (O17)、features 场 (W6)、千级 session 治理 (O3)。
+
 ## 待接 (Not Yet Wired)
 
-> 见 [dolores-todo.md](dolores-todo.md) 未接能力 W1–W4。
+**2026-10-19 收口 —— 这一节空了。**
+
+| 原条目 | 结论 |
+|---|---|
+| W1 Memento 持久化轨迹 | 已接; 这一块的落地效果是整条链上最好的 |
+| W2 Ghost 反身 channel | 已接; 器官全挂在 `ghost` 之下 |
+| W4 模型自感知切换 | 已接, 但走 **tool 面**而非 channel (内观走 tool, 外部交互走 CTML) |
+| W3 独立思维模块 | `deferred` —— 并行化身 / clone / branches, 下一阶段 |
 
 ## 打断结算契约 (tool 桥, D30)
 
@@ -95,6 +97,27 @@ MOSS 侧的结果回话与 dsh 侧 tool execute 是**两个方向**，永远可�
 - **迟到回话被吞**：结算时登记 settled-call 墓碑（TTL 60s），随后到达的 `/tool-result` 回 `200 {dropped}` 而不是 `400 no pending tool call`；abort 监听器 reject 但不删条目。
 - **MOSS 侧兜底**：`_dispatch_tool_result` 吸收 RPC 失败（warn + drop）。一次迟到的 moment 结果**永不**能烧掉整轮 logos 流。
 - **yield 路径不动**：`wait_next_moment` 仍由下一轮 enter 解锁，exit 不结算、不 cancel。
+
+## 人喊停的可达性契约 (D04)
+
+**命题**：人在 dsh 界面点停时，物理身体必须在**点击那一刻**停，而不是等这一轮自己走完。
+
+- **修前实测（2026-10-04 00:29）**：`moss_react` 已被 dsh 正确中断，语音却 **41.3 秒播满**。三处根因：
+  ① 豁免按 **turn 号**记 —— `moss_react` / `moss_wait_next` 的结果**常态**带 `cancel=True`，等于把每一轮都
+  记成"自己人"，人点的 `user` abort 被一起吞掉；② `logos()` **单线程顺序**消费，`_handle_react` 的
+  `wait_actions_done()` 正占着循环等身体跑完，turn/end 排队 41 秒才被消费 —— 信号到了没人开门；
+  ③ `on_session_event("*")` 把 host 内环工具（bash / read / write / edit / subagent）也当"等我们回答的
+  tool"，warning 刷屏，把真正的 D39 信号埋掉。
+- **修法（P1–P4）**：中断类 abort 挪到**入队前**（`_predispatch_abort`，同步幂等，不等消费）；
+  判据挂 **cause**（`hook` = 我们自己的 hook cancel 才豁免，`user` / 无 cause / 其它 = 中断，`error` 永远中断）；
+  事件按 `moss*` 命名空间过滤；action 退出改 `interpreter.close(cancel_managing=True)`（只清本动作范围持有的
+  命令），`shell.clear()` 收在 thinking 退出那一处 —— 那是"整具身体"的粒度，多路 interpreter 时不会误伤别的轨道。
+- **配套内核修正**：`abort_reason: str | None`（对齐 `Future.cancel(msg)`，reason 不当词汇表用）；
+  `cancel_executing` → `cancel_managing`（这个参数管的是 parsed tasks，不是"执行"本身）。
+- **修后实测（2026-10-04 01:06）**：语音在 3.1 秒处被掐断；探针早于消费者 20ms，整树 clear 在 22ms 内完成。
+- **未闭环**：`moss_react` tool 入口**本身**仍未实测（复现走的是 `moss_interpret` + `moss_wait_next`，
+  死锁形状相同）；`_abort_clear` 的 interpreter 级 close 还没有 mindflow 集成用例。
+  回归入口：`.ai_partners/features/regressions/dolores-ghost-prototype/REGRESSION.md`（TC-000..005）。
 
 ## observe 续帧契约 (D25)
 
@@ -106,7 +129,7 @@ MOSS 侧的结果回话与 dsh 侧 tool execute 是**两个方向**，永远可�
 
 ## Open Problems
 
-> 见 [dolores-todo.md](dolores-todo.md) 设计问题 O1–O3。
+**2026-10-19 收口 —— 没有 open 了。** O1–O19 逐条裁定: 13 条 `fixed`; 3 条 `invalid` (moment 切分已放弃 / Matrix 是 MOSS 第一公民不属本层 / 内核崩溃是假问题); 3 条 `deferred` (O3 千级 session 治理、O17 memento 迭代、O19 旁路大改造)。被驳回的假设与判据见 [dolores-todo.md](dolores-todo.md) 文首「2026-10-19 收尾裁定」。
 
 ## Implementation Notes
 

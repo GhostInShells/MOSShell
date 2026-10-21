@@ -1,0 +1,98 @@
+<svg id="stage" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="700"><g id="stage"><rect width="1000" height="700" fill="#0b0f0c"/>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<g id="chain">
+  <circle cx="120" cy="300" r="105" fill="#0d1711" stroke="#3fbf7f" stroke-width="3"/>
+  <text x="120" y="232" text-anchor="middle" fill="#9fecc6" font-size="20" font-family="sans-serif">memento</text>
+  <text x="120" y="262" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="monospace">CLI</text>
+  <text x="120" y="285" text-anchor="middle" fill="#e8fff2" font-size="12" font-family="monospace">commit</text>
+  <text x="120" y="305" text-anchor="middle" fill="#e8fff2" font-size="12" font-family="monospace">read</text>
+  <text x="120" y="325" text-anchor="middle" fill="#e8fff2" font-size="12" font-family="monospace">view</text>
+  <text x="120" y="345" text-anchor="middle" fill="#e8fff2" font-size="12" font-family="monospace">chat / node</text>
+  <text x="120" y="368" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="monospace">history</text>
+
+  <line x1="228" y1="300" x2="252" y2="305" stroke="#3fbf7f" stroke-width="2"/>
+  <rect x="252" y="258" width="132" height="94" rx="12" fill="#0f1c15" stroke="#2f7f5a" stroke-width="2"/>
+  <text x="318" y="288" text-anchor="middle" fill="#d9ffe9" font-size="14" font-family="sans-serif">回调</text>
+  <text x="318" y="312" text-anchor="middle" fill="#9fecc6" font-size="11" font-family="sans-serif">commit</text>
+  <text x="318" y="332" text-anchor="middle" fill="#9fecc6" font-size="11" font-family="sans-serif">branch</text>
+
+  <line x1="386" y1="305" x2="410" y2="305" stroke="#3fbf7f" stroke-width="2"/>
+  <rect x="410" y="262" width="112" height="86" rx="12" fill="#12241a" stroke="#3fbf7f" stroke-width="2"/>
+  <text x="466" y="296" text-anchor="middle" fill="#e8fff2" font-size="14" font-family="sans-serif">manager</text>
+  <text x="466" y="318" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="sans-serif">subscribe</text>
+</g>
+
+<g id="bus">
+  <line x1="524" y1="305" x2="548" y2="305" stroke="#3fbf7f" stroke-width="2"/>
+  <rect x="548" y="240" width="196" height="130" rx="12" fill="#12241a" stroke="#3fbf7f" stroke-width="2"/>
+  <text x="646" y="270" text-anchor="middle" fill="#e8fff2" font-size="15" font-family="sans-serif">topic 广播</text>
+  <text x="646" y="296" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="sans-serif">带身份寻址</text>
+  <text x="646" y="318" text-anchor="middle" fill="#9fecc6" font-size="11" font-family="monospace">address</text>
+  <text x="646" y="338" text-anchor="middle" fill="#9fecc6" font-size="11" font-family="monospace">根目录 · 角色</text>
+  <text x="646" y="360" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">订阅方不必预知对方</text>
+</g>
+
+<g id="discuss-node">
+  <line x1="746" y1="305" x2="770" y2="305" stroke="#5fe3a6" stroke-width="2"/>
+  <rect x="770" y="188" width="212" height="234" rx="14" fill="#14261c" stroke="#5fe3a6" stroke-width="2"/>
+  <text x="876" y="218" text-anchor="middle" fill="#e8fff2" font-size="17" font-family="sans-serif">discuss · node</text>
+  <text x="876" y="242" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="sans-serif">旁路 agent，不在对话里占注意力</text>
+  <rect x="790" y="258" width="172" height="72" rx="10" fill="#0f1c15" stroke="#2f7f5a" stroke-width="1.5"/>
+  <text x="876" y="284" text-anchor="middle" fill="#d9ffe9" font-size="12" font-family="sans-serif">本地 agent / llm func</text>
+  <text x="876" y="306" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">只听 commit</text>
+  <text x="876" y="322" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">判：挂已有线 还是 新开一条</text>
+  <text x="876" y="360" text-anchor="middle" fill="#9fecc6" font-size="11" font-family="sans-serif">→ 归档成线上的 checkpoint</text>
+  <text x="876" y="382" text-anchor="middle" fill="#9fecc6" font-size="11" font-family="sans-serif">→ 有的 checkpoint 带状态</text>
+  <text x="876" y="404" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">open / landed / dropped</text>
+</g>
+
+<g id="threads">
+  <path d="M876,424 L876,505 L820,548" fill="none" stroke="#5fe3a6" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="560" y="520" fill="#7fd9a8" font-size="12" font-family="sans-serif">每条 commit 落到某条线上</text>
+
+  <text x="200" y="560" fill="#9fecc6" font-size="12" font-family="sans-serif">主线</text>
+  <line x1="240" y1="585" x2="950" y2="585" stroke="#5fe3a6" stroke-width="2"/>
+  <circle cx="330" cy="585" r="7" fill="#5fe3a6"/>
+  <circle cx="480" cy="585" r="7" fill="#5fe3a6"/>
+  <circle cx="630" cy="585" r="7" fill="#5fe3a6"/>
+  <circle cx="800" cy="585" r="7" fill="#5fe3a6"/>
+
+  <path d="M630,585 L700,650 L950,650" fill="none" stroke="#2f7f5a" stroke-width="2"/>
+  <circle cx="960" cy="650" r="0" fill="#2f7f5a"/>
+  <text x="700" y="676" fill="#7fd9a8" font-size="11" font-family="sans-serif">岔出去的线，一句话就能开</text>
+
+  <rect x="240" y="600" width="132" height="40" rx="8" fill="#12241a" stroke="#3fbf7f" stroke-width="1.5"/>
+  <text x="306" y="617" text-anchor="middle" fill="#9fecc6" font-size="10" font-family="sans-serif">带状态的 checkpoint</text>
+  <text x="306" y="632" text-anchor="middle" fill="#7fd9a8" font-size="9" font-family="sans-serif">决定这条线 landed 还是 open</text>
+  <line x1="330" y1="600" x2="330" y2="592" stroke="#3fbf7f" stroke-width="1.5"/>
+</g>
+</g></svg>

@@ -91,6 +91,7 @@ async def test_serves_the_page_and_snapshots_on_connect(store, signals, stops):
     try:
         page = await _http_get(surface.port)
         assert b"moss terminal" in page
+        assert b"cache-control: no-store" in page.lower(), "a reload must not serve a stale page"
 
         card = _pending(store)
         async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
@@ -103,7 +104,11 @@ async def test_serves_the_page_and_snapshots_on_connect(store, signals, stops):
 
 
 @pytest.mark.asyncio
-async def test_accept_settles_and_tells_the_ghost(store, signals, stops):
+async def test_accept_settles_and_leaves_the_reporting_to_the_channel(
+    store, signals, stops
+):
+    """A verdict is handed down, not announced: the channel's waiter is the one
+    that reports it, so the surface says nothing for an accept."""
     surface = await _surface(store, signals, stops)
     try:
         card = _pending(store)
@@ -113,9 +118,7 @@ async def test_accept_settles_and_tells_the_ghost(store, signals, stops):
             await asyncio.sleep(0.1)
 
         assert store.waiter(card.id).result() == "accept"
-        assert len(signals) == 1
-        assert signals[0].name == "aside"
-        assert "accepted" in signals[0].messages[0].to_content_string()
+        assert signals == [], "the surface never speaks for a card"
     finally:
         await surface.stop()
 
@@ -132,8 +135,8 @@ async def test_a_second_verdict_on_the_same_card_is_swallowed(store, signals, st
             await ws.send(json.dumps({"type": "accept", "id": card.id}))
             await asyncio.sleep(0.1)
 
-        assert len(signals) == 1, "one card, one decision"
-        assert store.waiter(card.id).result() == "accept"
+        assert store.waiter(card.id).result() == "accept", "one card, one decision"
+        assert signals == []
     finally:
         await surface.stop()
 
@@ -183,6 +186,28 @@ async def test_thread_auto_toggle_reaches_the_store(store, signals, stops):
             frame = await _recv(ws, "threads")
             assert any(t["name"] == "root" and t["auto"] is True for t in frame["threads"])
         assert store.get_thread("root").auto is True
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_sync_threads_reaches_an_already_connected_page(store, signals, stops):
+    """A page connected before the thread existed must still learn about it.
+
+    The detail panel looks a card's thread up by name to draw its row (cwd, auto,
+    ground). If nothing pushes the list, that lookup misses and the row silently
+    vanishes — which is exactly what a thread opened mid-session used to do.
+    """
+    surface = await _surface(store, signals, stops)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            snap = await _recv(ws, "snapshot")
+            assert all(t["name"] != "late" for t in snap["threads"])
+
+            store.open_thread("late", ".")
+            await surface.sync_threads()
+            frame = await _recv(ws, "threads")
+            assert any(t["name"] == "late" for t in frame["threads"])
     finally:
         await surface.stop()
 
@@ -329,8 +354,7 @@ async def test_accept_all_settles_every_pending_card(store, signals, stops):
             await ws.send(json.dumps({"type": "accept_all"}))
             await asyncio.sleep(0.1)
         assert [store.waiter(c.id).result() for c in cards] == ["accept"] * 3
-        assert len(signals) == 3
-        assert [s.name for s in signals] == ["aside", "aside", "aside"]
+        assert signals == [], "a batch of accepts is state, not a batch of signals"
     finally:
         await surface.stop()
 
@@ -345,8 +369,7 @@ async def test_deny_all_settles_every_pending_card(store, signals, stops):
             await ws.send(json.dumps({"type": "deny_all"}))
             await asyncio.sleep(0.1)
         assert [store.waiter(c.id).result() for c in cards] == ["deny"] * 3
-        assert len(signals) == 3
-        assert [s.name for s in signals] == ["aside", "aside", "aside"]
+        assert signals == [], "the channel reports each denial — the surface only hands it down"
     finally:
         await surface.stop()
 
@@ -376,6 +399,28 @@ async def test_stop_buttons_reach_the_channel_handles(store, signals, stops):
 
 
 @pytest.mark.asyncio
+async def test_layout_is_the_model_side_of_the_presentation_contract(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        assert surface.layout_state() == ("page", "default")
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            snap = await _recv(ws, "snapshot")
+            assert snap["layout"] == "page"
+            assert snap["layout_by"] == "default"
+
+            assert await surface.set_layout("split") == "split"
+            frame = await _recv(ws, "layout")
+            assert frame["layout"] == "split"
+            assert frame["by"] == "model"
+
+        assert surface.layout_state() == ("split", "model")
+        with pytest.raises(ValueError):
+            await surface.set_layout("cinema")
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
 async def test_disconnect_is_survivable(store, signals, stops):
     surface = await _surface(store, signals, stops)
     try:
@@ -385,5 +430,113 @@ async def test_disconnect_is_survivable(store, signals, stops):
 
         async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
             assert (await _recv(ws, "snapshot"))["mode"] == "approval"
+    finally:
+        await surface.stop()
+
+
+class _HangingLLM:
+    """A model call that never comes back — the shape of the live failure."""
+
+    async def call_messages(self, **kw):
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_frame_does_not_swallow_the_verdict_behind_it(
+    store, signals, stops
+):
+    """The read loop is the page's only uplink — it must never park on real work.
+
+    Found live (D19): an `analyze` frame awaited a model call inside the frame
+    loop, so every click behind it queued forever while broadcasts, being a
+    different task, kept flowing. The page looked alive and was deaf.
+    """
+    surface = await _surface(store, signals, stops, llm_funcs=lambda: _HangingLLM())
+    try:
+        card = _pending(store)
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "analyze", "id": card.id, "text": "why?"}))
+            await ws.send(json.dumps({"type": "accept", "id": card.id}))
+            await asyncio.sleep(0.2)
+            waiter = store.waiter(card.id)
+            assert waiter.done(), "the accept never reached the store"
+            assert waiter.result() == "accept"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_ping_is_answered_without_queueing_behind_work(store, signals, stops):
+    """The page's liveness probe: one cheap round trip, never behind a slow frame."""
+    surface = await _surface(store, signals, stops, llm_funcs=lambda: _HangingLLM())
+    try:
+        card = _pending(store)
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send(json.dumps({"type": "analyze", "id": card.id, "text": "why?"}))
+            await ws.send(json.dumps({"type": "ping"}))
+            assert (await _recv(ws, "pong", timeout=1.0))["type"] == "pong"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_frame_we_cannot_read_does_not_kill_the_link(store, signals, stops):
+    """Silent failure is the bug: report it, keep reading."""
+    surface = await _surface(store, signals, stops)
+    try:
+        async with connect(f"ws://127.0.0.1:{surface.port}/ws") as ws:
+            await _recv(ws, "snapshot")
+            await ws.send("not json at all")
+            await ws.send(json.dumps({"type": "accept", "id": "not-a-number"}))
+            await ws.send(json.dumps({"type": "ping"}))
+            assert (await _recv(ws, "pong", timeout=1.0))["type"] == "pong"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_only_the_claiming_window_can_settle(store, signals, stops):
+    """A verdict is a side effect — two pressable windows would be two hands."""
+    surface = await _surface(store, signals, stops)
+    try:
+        card = _pending(store)
+        url = f"ws://127.0.0.1:{surface.port}/ws"
+        async with connect(url) as first:
+            await _recv(first, "snapshot")
+            await _recv(first, "current")
+            async with connect(url) as second:
+                await _recv(second, "snapshot")
+                mask = await _recv(first, "mask")
+                assert "another window" in mask["reason"]
+
+                await first.send(json.dumps({"type": "accept", "id": card.id}))
+                await asyncio.sleep(0.1)
+                assert not store.waiter(card.id).done(), "a reading window settled a card"
+
+                await second.send(json.dumps({"type": "accept", "id": card.id}))
+                await asyncio.sleep(0.1)
+                waiter = store.waiter(card.id)
+                assert waiter.done() and waiter.result() == "accept"
+    finally:
+        await surface.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_masked_window_can_take_the_surface_back(store, signals, stops):
+    surface = await _surface(store, signals, stops)
+    try:
+        url = f"ws://127.0.0.1:{surface.port}/ws"
+        async with connect(url) as first:
+            await _recv(first, "snapshot")
+            await _recv(first, "current")
+            async with connect(url) as second:
+                await _recv(second, "snapshot")
+                await _recv(first, "mask")
+
+                await first.send(json.dumps({"type": "claim"}))
+                assert (await _recv(first, "current"))["type"] == "current"
+                assert (await _recv(second, "mask"))["type"] == "mask"
     finally:
         await surface.stop()

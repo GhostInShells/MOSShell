@@ -285,24 +285,23 @@ def new_shell_main_channel(description: str = "") -> PrimeChannel:
 
 def new_moss_main_channel(
         description: str = "",
-        register_speech_as_content: bool = False,
         extended: bool = False,
 ) -> PrimeChannel:
     """
     创建一个标准的, 支持默认能力的 moss main channel
     提示如何组建 Shell Main Channel.
+
+    只声明与语音无关的默认能力 (系统原语 + matrix). 语音的命令面 (say / mute /
+    named notice / 可选 __content__) 不在这里 —— 它随 Speech 的生命周期, 由
+    CTMLShell 在拿到 Speech 时挂到 main channel.
     """
     from ghoshell_moss.core.ctml.shell.ctml_main import inject_system_primitives
     from ghoshell_moss.channels.matrix_channel import build_matrix_channel
-    from ghoshell_moss.core.speech import SpeechChannelModule
 
     main = new_shell_main_channel(description=description)
 
     # -- 系统原语 --------------------------------------------------
     inject_system_primitives(main, extended=extended)
-
-    # -- Speech --------------------------------------------------
-    main.with_module(SpeechChannelModule(register_content_command=register_speech_as_content))
 
     # -- matrix
     main.import_channels(build_matrix_channel())

@@ -536,11 +536,11 @@ class Interpreter(ABC):
     @abstractmethod
     async def close(
             self,
-            cancel_executing: bool = True,
+            cancel_managing: bool = True,
     ) -> Interpretation | None:
         """
         Stop the interpretation.
-        :param cancel_executing: whether to also clear the parsed tasks. If not cleared, the tasks themselves are not interrupted.
+        :param cancel_managing: whether to also clear the parsed tasks. If not cleared, the tasks themselves are not interrupted.
         :return: if an unfinished Interpreter was interrupted, return its executed interpretation state; if it already finished, return None.
         """
         pass

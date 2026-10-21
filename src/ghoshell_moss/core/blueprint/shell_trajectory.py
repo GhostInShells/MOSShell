@@ -45,13 +45,35 @@ MShellState: TypeAlias = Literal[
     'idle',
 ]
 
+# 状态每帧都进上下文, 所以只给"我此刻卡在哪一条"这一条证据, 外加两行进度.
+# 条数本身不是判据: 一条命令的 tokens 里已经含着它是哪一段 CTML —— 认出来, 就知道
+# 我的计划执行到了第几步.
+_PREVIEW_CHARS = 20
+_PROGRESS_LINES_LIMIT = 2
+
+
+def _command_preview(task: CommandTask | None) -> str:
+    """The shortest honest answer to "which command is this" — its own CTML, truncated.
+
+    A name says ``say``; the tokens say ``<say>好，我掉 interpret…``. The second one lets
+    the reader locate itself inside the plan it wrote, which is the whole point of
+    carrying it in every frame. Angle brackets are folded to ``‹ ›`` because the status
+    rides inside an XML-shaped frame.
+    """
+    if task is None:
+        return ''
+    text = ' '.join(task.tokens.split())
+    if len(text) > _PREVIEW_CHARS:
+        text = text[:_PREVIEW_CHARS] + '…'
+    return text.replace('<', '‹').replace('>', '›')
+
 
 class MShellStatus(BaseModel):
     """shell 的运行状态"""
     state: MShellState = Field(description="state")
     executing: list[str] = Field(
         default_factory=list,
-        description="executing command task callers",
+        description="executing commands, as `chan:command` (no call id)",
     )
     need_observe: int = Field(
         default=0,
@@ -64,6 +86,16 @@ class MShellStatus(BaseModel):
     pending: int = Field(
         default=0,
         description="pending task count",
+    )
+    executing_preview: str = Field(
+        default='',
+        description="the most recently started command, as a clipped `tokens` preview — "
+                    "where the plan currently is",
+    )
+    pending_head: str = Field(
+        default='',
+        description="the next task to run — the one a newly emitted command would queue "
+                    "behind — as a clipped `tokens` preview",
     )
     cancelled: int = Field(
         default=0,
@@ -101,7 +133,9 @@ class MShellStatus(BaseModel):
         observe = 0
         progresses = {}
         pending = 0
+        pending_head: CommandTask | None = None
         executing = []
+        last_executing: CommandTask | None = None
         for task in interpreter.managing_tasks().values():
             if task.observe():
                 observe += 1
@@ -113,10 +147,14 @@ class MShellStatus(BaseModel):
                 completed += 1
             elif task.state == "executing":
                 executing.append(task.caller_name())
+                last_executing = task
                 if task.progress:
                     progresses[task.caller_name()] = task.progress
             else:
                 pending += 1
+                # 只留队头: 它决定"我刚发的命令要等谁". 往后几条会随着人的插话重排, 记了也不准.
+                if pending_head is None:
+                    pending_head = task
 
         return MShellStatus(
             state=state,
@@ -125,7 +163,9 @@ class MShellStatus(BaseModel):
             cancelled=cancelled,
             failed=failed,
             pending=pending,
+            pending_head=_command_preview(pending_head),
             executing=executing,
+            executing_preview=_command_preview(last_executing),
             progresses=progresses,
         )
 
@@ -142,14 +182,16 @@ class MShellStatus(BaseModel):
         if self.need_observe:
             body_lines.append('need_observe: %d' % self.need_observe)
         if self.executing:
-            body_lines.append('executing: %d' % len(self.executing))
-            if len(self.progresses) > 0:
-                for caller, progress in self.progresses.items():
-                    progress = progress.replace("\n", ' ')
-                    body_lines.append(f" {caller}: {progress}")
-            body_lines.append(f'last executing: {self.executing[-1]}')
+            # 只给最新那一条的原文: 认出它是哪一段 CTML, 就知道自己的计划跑到哪儿了.
+            # 比命令名有用 —— 名字说 "say", 原文说 "say 的哪一句".
+            last = f' — {self.executing_preview}' if self.executing_preview else ''
+            body_lines.append('executing: %d%s' % (len(self.executing), last))
+            for caller, progress in list(self.progresses.items())[:_PROGRESS_LINES_LIMIT]:
+                progress = progress.replace("\n", ' ')
+                body_lines.append(f" {caller}: {progress}")
         if self.pending:
-            body_lines.append('pending: %d' % self.pending)
+            next_note = f' — {self.pending_head}' if self.pending_head else ''
+            body_lines.append('pending: %d%s' % (self.pending, next_note))
         if not body_lines:
             return f"<{tag} {self.state}/>"
         body = "\n".join(body_lines)

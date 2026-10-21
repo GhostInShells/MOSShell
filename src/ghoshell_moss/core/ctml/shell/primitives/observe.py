@@ -5,6 +5,6 @@ __all__ = ["observe"]
 
 async def observe() -> Observe:
     """
-    force to observe
+    Insert an observation point to ensure the current logos stream is observed.
     """
     return Observe()

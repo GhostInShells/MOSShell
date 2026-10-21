@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" id="stage" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><style>text{fill:#8a97a4;font-family:ui-monospace,monospace}line,path{shape-rendering:geometricPrecision}</style>
+<rect data-addr="bg" x="0" y="0" width="1000" height="700" fill="#0b0f14"></rect>
+<text data-addr="title" x="48" y="56" fill="#dfe9f2" font-size="22" font-family="monospace">注意力放大器</text>
+<text data-addr="sub" x="48" y="80" fill="#55636f" font-size="13" font-family="monospace">一个人的一天 → 上千小时的并行开发；关键不在并行度，在谁持有全局</text>
+<g data-addr="human">
+  <circle cx="120" cy="300" r="46" fill="#16241e" stroke="#3ddc8f" stroke-width="2"></circle>
+  <text x="120" y="294" fill="#dfe9f2" font-size="14" text-anchor="middle" font-family="monospace">人</text>
+  <text x="120" y="314" fill="#3ddc8f" font-size="11" text-anchor="middle" font-family="monospace">18h / 天</text>
+</g>
+<text data-addr="human-note" x="120" y="372" fill="#8a97a4" font-size="11.5" text-anchor="middle" font-family="monospace">注意力 + 长期对账</text>
+<g data-addr="cluster">
+<g font-family="monospace">
+  <line x1="168" y1="300" x2="316" y2="180" stroke="#2b313b" stroke-width="1.5"></line>
+  <line x1="168" y1="300" x2="316" y2="240" stroke="#2b313b" stroke-width="1.5"></line>
+  <line x1="168" y1="300" x2="316" y2="300" stroke="#2b313b" stroke-width="1.5"></line>
+  <line x1="168" y1="300" x2="316" y2="360" stroke="#2b313b" stroke-width="1.5"></line>
+  <line x1="168" y1="300" x2="316" y2="420" stroke="#2b313b" stroke-width="1.5"></line>
+  <circle cx="330" cy="180" r="17" fill="#10151b" stroke="#3ddc8f" stroke-width="1.6"></circle>
+  <circle cx="330" cy="240" r="17" fill="#10151b" stroke="#3ddc8f" stroke-width="1.6"></circle>
+  <circle cx="330" cy="300" r="17" fill="#10151b" stroke="#3ddc8f" stroke-width="1.6"></circle>
+  <circle cx="330" cy="360" r="17" fill="#10151b" stroke="#3ddc8f" stroke-width="1.6"></circle>
+  <circle cx="330" cy="420" r="17" fill="#10151b" stroke="#3ddc8f" stroke-width="1.6"></circle>
+  <circle data-addr="always1" cx="330" cy="180" r="25" fill="none" stroke="#7fb6ff" stroke-width="1.4" stroke-dasharray="4 4"></circle>
+  <circle data-addr="always3" cx="330" cy="300" r="25" fill="none" stroke="#7fb6ff" stroke-width="1.4" stroke-dasharray="4 4"></circle>
+  <text x="330" y="466" fill="#7fb6ff" font-size="11" text-anchor="middle">虚线 = 常驻运行，不停</text>
+  <text x="330" y="486" fill="#55636f" font-size="11" text-anchor="middle">它们在算"这个决定对以后意味着什么"</text>
+  <text x="330" y="152" fill="#8a97a4" font-size="11" text-anchor="middle">并行 ghost 集群</text>
+</g>
+</g>
+<g data-addr="tasks">
+<g font-family="monospace">
+  <text x="640" y="152" fill="#8a97a4" font-size="11" text-anchor="middle">并行任务（架构级）</text>
+  <rect x="540" y="172" width="360" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <rect x="540" y="204" width="300" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <rect x="540" y="236" width="330" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <rect x="540" y="268" width="250" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <rect x="540" y="300" width="340" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <rect x="540" y="332" width="210" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <rect x="540" y="364" width="290" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <rect x="540" y="396" width="180" height="18" rx="4" fill="#16241e" stroke="#3ddc8f" stroke-width="1"></rect>
+  <line x1="352" y1="180" x2="536" y2="181" stroke="#2b313b" stroke-width="1.2"></line>
+  <line x1="352" y1="240" x2="536" y2="213" stroke="#2b313b" stroke-width="1.2"></line>
+  <line x1="352" y1="300" x2="536" y2="245" stroke="#2b313b" stroke-width="1.2"></line>
+  <line x1="352" y1="360" x2="536" y2="277" stroke="#2b313b" stroke-width="1.2"></line>
+  <line x1="352" y1="420" x2="536" y2="309" stroke="#2b313b" stroke-width="1.2"></line>
+  <text x="900" y="452" fill="#dfe9f2" font-size="15" text-anchor="end">≈ 100–200 倍</text>
+  <text x="900" y="472" fill="#55636f" font-size="11" text-anchor="end">一天的注意力 → 上千小时的工作量</text>
+</g>
+</g>
+<g data-addr="loop">
+<g font-family="monospace">
+  <path d="M 880 520 C 880 600 620 620 420 600 C 240 582 120 560 120 470" fill="none" stroke="#7fb6ff" stroke-width="2" stroke-dasharray="7 6"></path>
+  <path d="M 120 470 l -7 12 l 14 0 z" fill="#7fb6ff"></path>
+  <text x="500" y="596" fill="#7fb6ff" font-size="12" text-anchor="middle">对账循环：每个形状落地之后，对未来意味着什么</text>
+  <text x="500" y="616" fill="#55636f" font-size="11" text-anchor="middle">—— 这一段判断不在任何一次开发的上下文里，只能由一个一直在跑的地方持有</text>
+  <text x="48" y="668" fill="#a05a5a" font-size="12">放任自驱而无人持有全局：两侧的图景只会碰撞，不会融合</text>
+</g>
+</g>
+</svg>

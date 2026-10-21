@@ -2,19 +2,24 @@
 
 One port serves the page and the WebSocket. Downlink carries the card stream
 (``card.head`` / ``card.delta`` / ``card.tail`` / ``card.output`` / ``card.full``)
-plus a full snapshot on connect and the global ``mode``. Uplink carries the
+plus a full snapshot on connect, the global ``mode`` and the layout mode. Uplink carries the
 human's three actions (``accept`` / ``deny`` / ``ask``), the two stops, and the
 mode switch.
 
 Verdicts are handed down, never written here: ``store.settle`` wakes the channel's
-waiter, and the channel is the only place card state moves. What this module does
-own is the signal to the ghost — the human's action is a fact the model must
-learn, and it travels as a must-not-lose notify that guarantees a turn.
+waiter, and the channel is the only place card state moves — and the only place a
+verdict is reported to the model. This module keeps the human's side whole: it
+broadcasts the card stream and it records what the human said (the ``ask`` box's
+dialogue), which is where the channel reads a denial's reason from. Its own signal
+to the ghost is the ``ask`` question — a question, not a decision.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -25,7 +30,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME
 from ghoshell_moss.message import Message
-from ghoshell_moss.signals import AsideSignalMeta, NotifySignalMeta
+from ghoshell_moss.signals import NotifySignalMeta
 
 from .card import CardState
 from .store import CardStore
@@ -35,6 +40,16 @@ __all__ = ["TerminalSurface", "StopHandles"]
 _DEBOUNCE_SECONDS = 0.4
 """A verdict is one decision. Repeated clicks inside this window are the same
 decision arriving twice, not a second one."""
+
+_LAYOUTS = ("split", "page")
+"""How an open card is shown — the model's half of the presentation contract.
+
+``split`` keeps the list beside the open card; ``page`` gives the card the whole
+window. Which card is open is the human's click; this decides only how big it
+opens, and ``_layout_by`` records who chose it so the page can say so. The default
+is ``page``: an open card is the subject, and the list is not worth sharing room
+with it. ``split`` is what the model reaches for when the window is roomy.
+"""
 
 _ANALYZE_INSTRUCTION = (
     "You are a second-opinion shell reviewer. The prompt is an XML document: a "
@@ -128,9 +143,16 @@ class TerminalSurface:
         self._llm_funcs = llm_funcs
         self._groundset = groundset
         self._clients: set[ServerConnection] = set()
+        # 操作面只有一个。终端是**有副作用**的界面：点一次接受就会跑一条命令，
+        # 所以"哪块屏是人正在按的"必须是单一事实 —— 否则同一个窗口内容在两块屏上
+        # 各按各的，等于两个人同时按一个按钮。同一套规矩屏上已经有了：最新连上的
+        # 那一扇拿走操作面，其余挂遮罩、只读，遮罩上留一个「用这个窗口」把它抢回来。
+        self._current: ServerConnection | None = None
         self._server: Any = None
         self._settled: set[int] = set()
         self._last_action: dict[tuple[int, str], float] = {}
+        self._layout = "page"
+        self._layout_by = "default"
         self.port = port
 
     @property
@@ -149,14 +171,62 @@ class TerminalSurface:
             except Exception:
                 self._clients.discard(client)
 
+    # -- 操作面的唯一性 ------------------------------------------------------
+
+    async def _send_to(self, connection: ServerConnection, frame: dict[str, Any]) -> None:
+        try:
+            await connection.send(json.dumps(frame, ensure_ascii=False))
+        except Exception:
+            self._clients.discard(connection)
+
+    async def _claim(self, connection: ServerConnection) -> None:
+        """Make this window the one the human's hands are on.
+
+        Everyone renders the same cards; only the claimant's clicks are verdicts.
+        The others get a mask with a way back in, so "read-only" is visible state
+        and not a click that silently does nothing.
+        """
+        self._current = connection
+        await self._send_to(connection, {"type": "current"})
+        for other in list(self._clients):
+            if other is not connection:
+                await self._send_to(
+                    other, {"type": "mask", "reason": "another window is the terminal"}
+                )
+
+    def is_current(self, connection: ServerConnection) -> bool:
+        return connection is self._current
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "type": "snapshot",
             "mode": self._store.mode,
+            "global_trust": self._store.global_trust(),
+            "layout": self._layout,
+            "layout_by": self._layout_by,
             "root": str(self._store.root),
             "threads": [t.model_dump(mode="json") for t in self._store.threads()],
             "cards": [c.view() for c in self._store.cards()],
         }
+
+    # -- layout (the model's side of the presentation contract) -------------
+
+    def layout_state(self) -> tuple[str, str]:
+        return self._layout, self._layout_by
+
+    async def set_layout(self, mode: str) -> str:
+        """Set how an open card is shown, and remember who chose it.
+
+        The human owns the click that opens a card; the model owns this. Every page
+        is told, so the marker can name its author instead of hiding the decision.
+        """
+        chosen = (mode or "").strip().lower()
+        if chosen not in _LAYOUTS:
+            raise ValueError(f"layout must be one of {_LAYOUTS}, got {mode!r}")
+        self._layout = chosen
+        self._layout_by = "model"
+        await self.broadcast({"type": "layout", "layout": chosen, "by": self._layout_by})
+        return chosen
 
     # -- uplink -------------------------------------------------------------
 
@@ -179,9 +249,6 @@ class TerminalSurface:
         if text:
             self._store.add_dialogue(card_id, "human", text)
             await self.broadcast({"type": "card.full", "card": card.view()})
-        self._aside(
-            f"[terminal #{card_id}] accepted '{card.title}' — it is running now"
-        )
 
     async def _deny(self, card_id: int, text: str = "") -> None:
         if card_id in self._settled or self._debounced(card_id, "deny"):
@@ -193,9 +260,6 @@ class TerminalSurface:
         if text:
             self._store.add_dialogue(card_id, "human", text)
             await self.broadcast({"type": "card.full", "card": card.view()})
-        self._aside(
-            f"[terminal #{card_id}] denied '{card.title}' — do not re-issue this one"
-        )
 
     async def _ask(self, card_id: int, text: str) -> None:
         if self._debounced(card_id, "ask"):
@@ -261,6 +325,14 @@ class TerminalSurface:
         if self._stops.stop_all is not None:
             await self._stops.stop_all()
 
+    async def _set_global_trust(self, on: bool) -> None:
+        """Hand every approval over, or take it back — the human's switch.
+
+        State only: the notice carries it, and a signal here would only interrupt.
+        """
+        store_on = self._store.set_global_trust(on)
+        await self.broadcast({"type": "trust", "global_trust": store_on})
+
     async def _set_mode(self, mode: str) -> None:
         try:
             resolved = self._store.set_mode(mode)
@@ -275,7 +347,7 @@ class TerminalSurface:
         except KeyError:
             await self.broadcast({"type": "error", "text": f"no thread {name!r}"})
             return
-        await self._broadcast_threads()
+        await self.sync_threads()
         # Trusting a thread also settles what is already waiting in it — the
         # human's "auto" means "run everything here", including cards that were
         # issued before the switch was flipped.
@@ -313,7 +385,15 @@ class TerminalSurface:
             return
         await self.broadcast({"type": "ground", "thread": thread, "text": str(view)})
 
-    async def _broadcast_threads(self) -> None:
+    async def sync_threads(self) -> None:
+        """Push the thread list to every open page.
+
+        A page only learns the threads from the snapshot it connected with, so
+        anything that *adds* a thread — the channel's ``open()``, the human's
+        auto switch — has to say so. Without this the detail panel silently
+        drops a card's thread row (name, cwd, auto, ground), because the page
+        looks the thread up in a map that was never updated.
+        """
         await self.broadcast({
             "type": "threads",
             "threads": [t.model_dump(mode="json") for t in self._store.threads()],
@@ -324,17 +404,6 @@ class TerminalSurface:
         if self._send_signal is None:
             return
         signal = NotifySignalMeta(next=next_).to_signal(
-            Message.new(tag="terminal", name=self._identity).with_content(text),
-            description=text[:120],
-        )
-        self._send_signal(signal)
-
-    def _aside(self, text: str) -> None:
-        """A decision the ghost notices without being interrupted. Verdicts are
-        facts, not questions — they buffer until the ghost is free."""
-        if self._send_signal is None:
-            return
-        signal = AsideSignalMeta().to_signal(
             Message.new(tag="terminal", name=self._identity).with_content(text),
             description=text[:120],
         )
@@ -352,52 +421,125 @@ class TerminalSurface:
             response = connection.respond(200, html)
             del response.headers["Content-Type"]
             response.headers["Content-Type"] = "text/html; charset=utf-8"
+            # A reload must show the page as it is on disk. Without this the browser
+            # may keep the old one, and a change looks like it never happened.
+            response.headers["Cache-Control"] = "no-store"
             return response
         if path == "/ws":
             return None
+        if path == "/__ver":
+            # The page's fingerprint, so an open window can tell it runs old code.
+            # Pull-based and cheap: the client asks, the server hashes the file,
+            # nobody has to remember to hit refresh. Same mechanism as the screen.
+            response = connection.respond(200, json.dumps({"ver": self._page_ver()}))
+            del response.headers["Content-Type"]
+            response.headers["Content-Type"] = "application/json"
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
         return connection.respond(404, "not found")
+
+    def _page_ver(self) -> str:
+        try:
+            return hashlib.sha1(self._html_path.read_bytes()).hexdigest()[:10]
+        except OSError:
+            return ""
+
+    # Frames whose work can take as long as a model call or a ground render.
+    # They must not run inside the read loop: that loop is this page's only
+    # uplink, so one slow frame parked in an ``await`` swallows every click
+    # behind it — while broadcasts, being a different task, keep flowing. The
+    # page then looks alive and is deaf, which is the worst of both.
+    # (Found live, D19: an ``analyze`` blocked the loop and the human's accepts
+    # never arrived; the downlink kept working, so "the link is fine" was true
+    # of half of it.)
+    _SLOW_FRAMES = frozenset({"ask", "analyze", "ground"})
+
+    async def _run_frame(self, kind: str, card_id: int, work: Awaitable[None]) -> None:
+        """Run one frame's work. A failure is reported, never swallowed."""
+        try:
+            await work
+        except Exception as e:  # noqa: BLE001 — one bad frame must not kill the link
+            print(f"[terminal] frame {kind}#{card_id} failed: {e!r}", file=sys.stderr)
+            try:
+                await self.broadcast({"type": "error", "text": f"{kind} failed: {e}"})
+            except Exception:  # noqa: BLE001 — the report must not become the failure
+                pass
+
+    def _frame_work(self, kind: str, card_id: int, frame: dict[str, Any]) -> Awaitable[None] | None:
+        """Map a frame to the work it asks for; ``None`` = not a frame we know."""
+        text = str(frame.get("text", "") or "")
+        if kind == "accept":
+            return self._accept(card_id, text)
+        if kind == "deny":
+            return self._deny(card_id, text)
+        if kind == "ask":
+            return self._ask(card_id, str(frame.get("text", "")))
+        if kind == "analyze":
+            return self._analyze(card_id, text, frame.get("history") or [])
+        if kind == "accept_all":
+            return self._accept_all()
+        if kind == "deny_all":
+            return self._deny_all()
+        if kind == "stop":
+            return self._stop(card_id)
+        if kind == "stop_all":
+            return self._stop_all()
+        if kind == "global_trust":
+            return self._set_global_trust(bool(frame.get("on")))
+        if kind == "mode":
+            return self._set_mode(str(frame.get("mode", "")))
+        if kind == "thread_auto":
+            return self._set_thread_auto(str(frame.get("name", "")), bool(frame.get("auto")))
+        if kind == "ground":
+            return self._render_ground(str(frame.get("thread", "")))
+        return None
 
     async def _handler(self, connection: ServerConnection) -> None:
         self._clients.add(connection)
         try:
             await connection.send(json.dumps(self.snapshot(), ensure_ascii=False))
+            # 最新连上的这一扇拿走操作面：刷新页面 = 我要在这里按。
+            await self._claim(connection)
             async for raw in connection:
                 try:
                     frame = json.loads(raw)
-                except (TypeError, ValueError):
+                    if not isinstance(frame, dict):
+                        continue
+                    kind = str(frame.get("type", ""))
+                    card_id = int(frame.get("id", 0) or 0)
+                except (TypeError, ValueError) as e:
+                    # A frame we cannot read is a fact about the page, not a
+                    # reason to drop the link — say it and keep reading.
+                    print(f"[terminal] bad frame {raw[:80]!r}: {e!r}", file=sys.stderr)
                     continue
-                kind = frame.get("type")
-                card_id = int(frame.get("id", 0))
-                if kind == "accept":
-                    await self._accept(card_id, str(frame.get("text", "") or ""))
-                elif kind == "deny":
-                    await self._deny(card_id, str(frame.get("text", "") or ""))
-                elif kind == "ask":
-                    await self._ask(card_id, str(frame.get("text", "")))
-                elif kind == "analyze":
-                    await self._analyze(
-                        card_id,
-                        str(frame.get("text", "")),
-                        frame.get("history") or [],
-                    )
-                elif kind == "accept_all":
-                    await self._accept_all()
-                elif kind == "deny_all":
-                    await self._deny_all()
-                elif kind == "stop":
-                    await self._stop(card_id)
-                elif kind == "stop_all":
-                    await self._stop_all()
-                elif kind == "mode":
-                    await self._set_mode(str(frame.get("mode", "")))
-                elif kind == "thread_auto":
-                    await self._set_thread_auto(
-                        str(frame.get("name", "")), bool(frame.get("auto"))
-                    )
-                elif kind == "ground":
-                    await self._render_ground(str(frame.get("thread", "")))
+                if kind == "ping":
+                    # One cheap round trip, answered here so it can never queue
+                    # behind real work: it is how the page tells a live link
+                    # from a deaf one.
+                    await connection.send(json.dumps({"type": "pong"}))
+                    continue
+                if kind == "claim":
+                    await self._claim(connection)
+                    continue
+                # Everything below has a side effect. Only the window that holds
+                # the surface may cause one — the others are reading.
+                if not self.is_current(connection):
+                    print(f"[terminal] ignored {kind!r} from a non-current window", file=sys.stderr)
+                    continue
+                work = self._frame_work(kind, card_id, frame)
+                if work is None:
+                    print(f"[terminal] unknown frame {kind!r}", file=sys.stderr)
+                    continue
+                if kind in self._SLOW_FRAMES:
+                    asyncio.create_task(self._run_frame(kind, card_id, work))
+                else:
+                    await self._run_frame(kind, card_id, work)
         finally:
             self._clients.discard(connection)
+            if self._current is connection:
+                # The surface is nobody's until someone takes it: a page that is
+                # gone must not leave the remaining windows masked forever.
+                self._current = None
 
     async def start(self) -> None:
         self._server = await serve(

@@ -11,9 +11,10 @@ Two mappings, split by ``Signal.complete``:
   attention and holds the slot, which the deliver packet then fills via same-id
   absorb. The preempt tier itself comes from ``signal.priority``; strength only
   arbitrates at equal priority. Losing the challenge (mode defaults to ``''``)
-  suppresses it — an onset carries no content, so dropping it loses nothing. Onset
-  is not emitted during cooldown (suppress or attended), keeping multi-source or
-  repeated barge-ins from storming the attention.
+  suppresses it: the impulse stays peekable and is picked up by a later re-rank —
+  only ``attended`` clears the slot. Onset is not emitted during cooldown (suppress
+  or attended), keeping multi-source or repeated barge-ins from storming the
+  attention.
 - ``complete=True`` → deliver: falls back to ``notify`` when mode is empty,
   carries the caller-configured priority (INFO by default), and answers in full.
   Losing the challenge buffers the messages into the mindflow (notify) — the
@@ -33,10 +34,20 @@ adds is an unconditional clear at the new attention's first frame, before any ne
 logos runs: stopping the body stops depending on what the previous attention
 happened to be doing.
 
-Same-id chain: onset and deliver share ``segment_id`` (the ASR segment id) as the
-impulse id, so mindflow takes the same-id absorb path (onset holds the slot →
-deliver fills it) — "speak up → deliver" reads as one continuous turn. Distinct
-listener instances stay apart through segment_id as well.
+Same-id chain: the **impulse id** is planned by the listener and travels in the
+signal meta (``impulse_id``). One utterance's onset and its final packet share one
+id, so mindflow takes the same-id absorb path (onset holds the slot → deliver fills
+it) — "speak up → deliver" reads as one continuous turn. Clause packets get a **new
+id each**: every clause is its own utterance event, and nothing absorbs it.
+
+``segment_id`` is an **address, not an identity** (the ASR segment, and later the
+audio file that holds it). It falls back to being the impulse id only when the
+signal carries none, so older producers keep working unchanged.
+
+``paused`` answers one question the model actually asks: **may he have stopped talking?**
+``paused=True`` on the packet that closes a segment, ``paused=False`` on the ones that are
+still in the middle of it. It is information, not permission — a pause is not an ending,
+and speaking is the model's call on every packet.
 
 Two-tier cooldown: ``suppress`` (lost the challenge) is the long one, ``attended``
 (won the challenge) the short one — the latter keeps one source from being
@@ -70,7 +81,6 @@ __all__ = [
     "new_listener_signal",
 ]
 
-
 class ListenerSignal(SignalMeta):
     """Listener perception signal — a single degenerate form, meta fully self-explaining.
 
@@ -98,17 +108,57 @@ class ListenerSignal(SignalMeta):
       word-level confidence fell below the etiquette's ``deliver.low_confidence``
       threshold. Rendered as the ``low_conf`` attribute of the delivered ``<listen>``
       tag (deliver only). Empty = none.
+    - ``boost``: a one-shot priority raise (提权) — empty by default. When set, the packet
+      challenges at ``max(priority, boost)`` instead of ``priority``; winning an attention
+      still lowers it back to the run tier (``Priority.INFO``). It moves the priority
+      *tier*, which is what decides a challenge; ``strength`` only arbitrates at equal
+      tier. Note the attention protection window is tier-relative: a same-tier challenge
+      inside it loses, a higher tier wins on priority.
+    - ``db``: this packet's mean loudness (dB) — the capture side already computes
+      ``rms_db`` per frame, so the listener only averages. Rendered as the ``db``
+      attribute of the ``<listen>`` tag. A measurement, not a judgment about anyone.
+    - ``strength``: a challenge strength the listener computed from loudness before
+      firing; empty = keep the nucleus's normal one. Loudness is a fact only the sending
+      side holds, so that side computes the number and the nucleus just uses it.
 
     Text, speaker, voiceprint and similar extras are fields an impulse does not have —
     the listener side organizes them into the message body.
     """
 
     source: str = Field(default="asr", description="where the listening came from — the upstream source producing the packet (asr / wake_word ...)")
-    segment_id: str = Field(default="", description="same-id key — the ASR segment id, shared by the onset and the deliver packet")
+    impulse_id: str = Field(
+        default="",
+        description="听侧规划的 impulse 身份: 同一次话语的 onset 与尾包共用, 每个分句各自一枚新 id. "
+                    "空 = 回落到 segment_id (老行为).",
+    )
+    segment_id: str = Field(
+        default="",
+        description="地址, 不是身份 — ASR segment id (将来对应这段音频的文件). "
+                    "只在本包没带 impulse_id 时兼任身份.",
+    )
+    paused: bool | None = Field(
+        default=None,
+        description="他这一轮说话已经停了 —— 尾包为 true, 中间的分句为 false. "
+                    "它是信息, 不是许可: 任何一个包都可以开口, 说完没说完全由模型自己判.",
+    )
     interrupt: bool = Field(default=False, description="whether the attention won by this packet calls shell.clear() first (Impulse.interrupt)")
     mode: str = Field(default="", description="loss-side mode: notify / aside / next / ''(default). An onset defaults to '' (suppress on loss); a deliver falls back to notify when empty")
     logos: str = Field(default="", description="conditioned-reflex command logos, sent with the impulse")
+    boost: Priority | None = Field(
+        default=None,
+        description="one-shot raise: 非空时这一包按 max(priority, boost) 挑战注意力; 赢下之后照旧降回运行档. 空 = 不提权.",
+    )
     low_conf: str = Field(default="", description="缩写 = low-confidence (低置信度): 词级置信度低于阈值 (deliver.low_confidence) 的字, 渲染为 <listen> 的 low_conf 属性; 空 = 无")
+    db: float | None = Field(
+        default=None,
+        description="这一包的平均响度 (dB, capture 侧预算的 rms_db 的均值), 渲染为 <listen> 的 db 属性. "
+                    "空 = 这一包没有可量的声音. 它是测量值, 不是判断.",
+    )
+    strength: int | None = Field(
+        default=None,
+        description="听侧按响度水位算好的挑战强度; 空 = 用 nucleus 的常态强度. "
+                    "响度只有现场知道, 所以强度由发射方算好再交过来, nucleus 只照着用.",
+    )
 
     @classmethod
     def signal_name(cls) -> SignalName:
@@ -152,6 +202,7 @@ class ListenerNucleus(Nucleus):
             normal_strength: int = 100,
             suppress_seconds: float = 0.5,
             attended_seconds: float = 0.1,
+            strength_decay_seconds: float = 120.0,
             logger: LoggerItf | None = None,
     ):
         self._name = name
@@ -161,6 +212,7 @@ class ListenerNucleus(Nucleus):
         self._normal_strength = normal_strength      # attended 后降回 (运行强度)
         self._suppress_seconds = suppress_seconds    # 仲裁失败大冷却
         self._attended_seconds = attended_seconds    # 抢占成功小冷却
+        self._strength_decay_seconds = strength_decay_seconds  # 赢得 attention 后的强度 TTL
 
         self._fire_impulse: Callable[[Impulse], None] | None = None
         self._is_running = False
@@ -199,9 +251,17 @@ class ListenerNucleus(Nucleus):
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
+            # 探针 (D13 丢尾包排查): nucleus 没在跑时信号是静默丢的, 这里让它出声.
+            self._logger.info(
+                "%s signal dropped — nucleus not running (complete=%s)",
+                self._name, signal.complete,
+            )
             return
         meta = ListenerSignal.from_signal(signal)
         if meta is None:
+            self._logger.info(
+                "%s signal dropped — meta parse failed (complete=%s)", self._name, signal.complete,
+            )
             return
         if signal.complete:
             self._on_deliver(meta, signal)
@@ -216,8 +276,11 @@ class ListenerNucleus(Nucleus):
         self._fire_impulse = fire_impulse
 
     def suppress(self, suppress_by: Impulse, suppressed: Impulse | None = None) -> None:
-        # 仲裁失败: 丢弃缓存, 进入大冷却 — 只压首包发射, 发送包不受约束.
-        self._impulse_cache = None
+        # 契约 (``Nucleus.peek``): suppressed 后 impulse **仍保留、可被 peek**, 只是冷却期内不再
+        # 主动 fire —— rank 输掉不等于完结, 由下一轮 re-rank 捞回.
+        # 这里不能清缓存: ``_rank_best_impulse_from_nuclei`` 对同一轮里**任何**落选者都调 suppress,
+        # 落选的若是携带内容的发送包, 清缓存就把它整包抹掉, 而它占着的那个 attention 永远等不到
+        # complete (尾包补不齐 → thinking 通路停摆).
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def attended(self, impulse: Impulse) -> Impulse | None:
@@ -266,13 +329,22 @@ class ListenerNucleus(Nucleus):
         # 首包 (onset): 占坑 impulse — complete=False 供 same-id absorb; interrupt
         # 由端侧配. 冷却期 (suppress 或 attended) 内不发射 — 防抢占风暴.
         if self._in_cooldown():
+            # 探针 (D13 丢尾包排查): 冷却期丢掉的 onset 必须看得见 — 它决定后面还有没有槽可吸收.
+            self._logger.info(
+                "%s onset dropped in cooldown segment=%s", self._name, meta.segment_id,
+            )
             return
+        self._logger.info(
+            "%s onset ← segment=%s priority=%s interrupt=%s",
+            self._name, meta.segment_id, signal.priority, meta.interrupt,
+        )
         impulse = Impulse(
             source=self.name(),
-            trace_id=meta.segment_id or unique_id(),
-            id=meta.segment_id or unique_id(),
+            trace_id=self._identity(meta),
+            id=self._identity(meta),
             priority=signal.priority,
             strength=self._first_strength,
+            strength_decay_seconds=self._strength_decay_seconds,
             complete=False,
             interrupt=meta.interrupt,
             mode=meta.mode,
@@ -285,23 +357,44 @@ class ListenerNucleus(Nucleus):
     def _on_deliver(self, meta: ListenerSignal, signal: Signal) -> None:
         # 发送包 (deliver): mode 为空兜底 notify + 端侧配 priority. 不受冷却约束 —
         # 内容绝不丢.
+        # 提权 (boost): 端侧要这一包赢的时候把它填上, 挑战按 max(priority, boost);
+        # 赢下之后 attended() 照旧降回运行档, 只赢这一局.
+        challenge_priority = signal.priority if meta.boost is None else max(
+            Priority(signal.priority), Priority(meta.boost),
+        )
+        # 探针 (D13 丢尾包排查): 尾包到达 nucleus 的那一刻留一行.
+        self._logger.info(
+            "%s deliver ← segment=%s len=%d priority=%s boost=%s mode=%s",
+            self._name, meta.segment_id, len(self._signal_text(signal)),
+            signal.priority, meta.boost, meta.mode or ChallengeMode.notify.value,
+        )
         impulse = Impulse(
             source=self.name(),
-            trace_id=meta.segment_id or unique_id(),
-            id=meta.segment_id or unique_id(),
-            priority=signal.priority,
-            strength=self._normal_strength,
+            trace_id=self._identity(meta),
+            id=self._identity(meta),
+            priority=challenge_priority,
+            strength=self._normal_strength if meta.strength is None else meta.strength,
+            strength_decay_seconds=self._strength_decay_seconds,
             complete=True,
             interrupt=meta.interrupt,
             mode=meta.mode or ChallengeMode.notify.value,
             logos=meta.logos,
             hint=signal.hint,
-            messages=self._wrap_messages(signal, meta.source, meta.low_conf),
+            messages=self._wrap_messages(signal, meta.source, meta.low_conf, meta.paused, meta.db),
             description=signal.description,
         )
         self._fire(impulse)
 
     # ── internals ──
+
+    @staticmethod
+    def _identity(meta: ListenerSignal) -> str:
+        """这一包的 impulse 身份: 听侧规划的 ``impulse_id``, 缺省才回落到 ``segment_id``.
+
+        身份与地址是两件事: 同一次话语的 onset 与尾包共用一个身份 (同 id 吸收),
+        每个分句各有自己的身份 (彼此不吸收); ``segment_id`` 只是这段音频的地址.
+        """
+        return meta.impulse_id or meta.segment_id or unique_id()
 
     def _in_cooldown(self) -> bool:
         now = time.monotonic()
@@ -312,12 +405,19 @@ class ListenerNucleus(Nucleus):
         if self._fire_impulse:
             self._fire_impulse(impulse)
 
-    def _wrap_messages(self, signal: Signal, source: str, low_conf: str = "") -> list[Message]:
-        """Wrap the signal's text messages into one ``<listen source=... low_conf=...>`` tag."""
+    def _wrap_messages(
+            self, signal: Signal, source: str, low_conf: str = "", paused: bool | None = None,
+            db: float | None = None,
+    ) -> list[Message]:
+        """Wrap the signal's text messages into one ``<listen source=... low_conf=... paused=... db=...>`` tag."""
         data = self._signal_text(signal)
-        if not data:
+        if not data and paused is not True:
             return []
-        return [self._listen_message(data, source, low_conf, signal.created_at)]
+        # 空正文 + paused=true (分句交付里, 段结束但这一包没带新文字) 是合法的:
+        # 它回答的是机制问题 —— 听侧判了这一段的停, 没有新的字. 正文就空着.
+        # 不往正文里填任何替代文字: 那句替代会把机制语义翻译成一句"事实", 而正文
+        # 只该放他真正说过的话. 怎么读一个空正文的包, 写在 listener 的 instruction 里.
+        return [self._listen_message(data, source, low_conf, signal.created_at, paused, db)]
 
     def _signal_text(self, signal: Signal) -> str:
         """Collect the text content of every message body in the signal."""
@@ -328,13 +428,20 @@ class ListenerNucleus(Nucleus):
                     texts.append(c.get('text', ''))
         return '\n'.join(texts)
 
-    def _listen_message(self, data: str, source: str, low_conf: str, created_at) -> Message:
-        """One ``<listen source=... low_conf=... created=...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
+    def _listen_message(
+            self, data: str, source: str, low_conf: str, created_at,
+            paused: bool | None = None, db: float | None = None,
+    ) -> Message:
+        """One ``<listen ...>`` wrapped message; ``created`` is the signal's arrival wall clock."""
         attributes: dict[str, str] = {}
         if source:
             attributes["source"] = source
         if low_conf:
             attributes["low_conf"] = low_conf
+        if paused is not None:
+            attributes["paused"] = "true" if paused else "false"
+        if db is not None:
+            attributes["db"] = f"{db:.1f}"
         message = Message.new(tag=ListenerSignal.xml_tag(), attributes=attributes or None, timestamp=True)
         message.meta.created = created_at
         return message.with_content(data)
@@ -355,17 +462,21 @@ class ListenerNucleus(Nucleus):
                 first_strength: int | None = None,
                 suppress_seconds: float | None = None,
                 attended_seconds: float | None = None,
+                strength_decay_seconds: float | None = None,
         ) -> str:
-            """Dynamically tune the barge-in parameters (onset strength / cooldowns)."""
+            """Dynamically tune the barge-in parameters (onset strength / cooldowns / attention TTL)."""
             if first_strength is not None:
                 self._first_strength = first_strength
             if suppress_seconds is not None:
                 self._suppress_seconds = suppress_seconds
             if attended_seconds is not None:
                 self._attended_seconds = attended_seconds
+            if strength_decay_seconds is not None:
+                self._strength_decay_seconds = strength_decay_seconds
             return (
                 f"configured: first_strength={self._first_strength} "
-                f"suppress={self._suppress_seconds}s attended={self._attended_seconds}s"
+                f"suppress={self._suppress_seconds}s attended={self._attended_seconds}s "
+                f"decay={self._strength_decay_seconds}s"
             )
 
         return channel
@@ -398,8 +509,13 @@ def new_listener_signal(
         mode: str = "",
         logos: str = "",
         low_conf: str = "",
+        impulse_id: str = "",
+        paused: bool | None = None,
         complete: bool = True,
         priority: Priority | None = None,
+        boost: Priority | None = None,
+        db: float | None = None,
+        strength: int | None = None,
         description: str = "",
         hint: str = "",
 ) -> Signal:
@@ -417,7 +533,12 @@ def new_listener_signal(
         interrupt=interrupt,
         mode=mode,
         logos=logos,
+        boost=boost,
         low_conf=low_conf,
+        db=db,
+        strength=strength,
+        impulse_id=impulse_id,
+        paused=paused,
     ).to_signal(
         text,
         description=description or (text[:40] or ("barge-in" if not complete else "deliver")),

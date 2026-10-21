@@ -13,6 +13,10 @@ so the process is as governed as any terminal child, just read as bytes.
 A natural exit is a *failure* (the device vanished or the stream broke); a stop
 is not. The ``stopping`` flag on ``_Live`` keeps the two apart so cancelling a
 reader never reports a spurious failure.
+
+A dead producer's *reason* lives on its stderr (missing device, denied capture
+permission, a bad pixel format), so the manager keeps a bounded tail of it and
+folds it into the failure text — a bare exit code tells nobody anything.
 """
 from __future__ import annotations
 
@@ -34,6 +38,9 @@ _SOI = b"\xff\xd8"
 _EOI = b"\xff\xd9"
 _READ_CHUNK = 65536
 _MAX_BUFFER = 8 * 1024 * 1024
+_STDERR_TAIL = 2000
+_STDERR_GRACE = 0.5
+_REASON_CHARS = 400
 
 
 def _split_latest_jpeg(buffer: bytes) -> tuple[Optional[bytes], bytes]:
@@ -47,6 +54,14 @@ def _split_latest_jpeg(buffer: bytes) -> tuple[Optional[bytes], bytes]:
     return buffer[soi:eoi + 2], buffer[eoi + 2:]
 
 
+def _stderr_reason(raw: bytes) -> str:
+    """The kept stderr tail as one bounded line — a reason, not a log dump."""
+    text = " ".join(raw.decode("utf-8", "replace").split())
+    if len(text) > _REASON_CHARS:
+        text = "…" + text[-_REASON_CHARS:]
+    return text
+
+
 class _Live:
     """One running producer: its process, its latest frame, and its stop flag."""
 
@@ -55,6 +70,7 @@ class _Live:
         self.managed = managed
         self.latest: Optional[bytes] = None
         self.latest_at: Optional[float] = None
+        self.stderr_tail: bytes = b""
         self.task: Optional[asyncio.Task] = None
         self.stopping = False
 
@@ -78,6 +94,7 @@ class ProducerManager:
         """Spawn the producer for an approved session and begin reading frames."""
         argv = build_argv(
             session.source,
+            index=session.index,
             fps=session.fps,
             max_width=session.max_width,
             quality=session.quality,
@@ -88,7 +105,7 @@ class ProducerManager:
                 name=f"push:{session.id}",
                 description=f"{session.source} push",
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
         except Exception as exc:
             self._store.fail(session.id, f"failed to spawn: {exc}")
@@ -100,9 +117,31 @@ class ProducerManager:
         self._live[session.id] = live
         live.task = asyncio.create_task(self._read_loop(live))
 
+    async def _drain_stderr(self, live: _Live) -> None:
+        """Keep the tail of ffmpeg's stderr.
+
+        The pipe must be read or the child blocks on a full buffer, so this runs
+        for the whole life of the producer and keeps only the last bytes — that
+        is what a failure needs, not the log.
+        """
+        stderr = getattr(live.managed.process, "stderr", None)
+        if stderr is None:
+            return
+        try:
+            while True:
+                chunk = await stderr.read(_READ_CHUNK)
+                if not chunk:
+                    break
+                live.stderr_tail = (live.stderr_tail + chunk)[-_STDERR_TAIL:]
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
     async def _read_loop(self, live: _Live) -> None:
         proc = live.managed.process
         buffer = b""
+        drain = asyncio.create_task(self._drain_stderr(live))
         try:
             while True:
                 chunk = await proc.stdout.read(_READ_CHUNK)
@@ -123,11 +162,25 @@ class ProducerManager:
         except Exception:
             pass
         finally:
+            if live.stopping:
+                drain.cancel()
+            else:
+                # The child is gone, so its stderr ends on its own; give the tail
+                # a moment to land before it becomes the failure reason.
+                try:
+                    await asyncio.wait_for(drain, timeout=_STDERR_GRACE)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    drain.cancel()
+                except Exception:
+                    pass
             if not live.stopping and self._store.get(live.session.id).state == SessionState.LIVE:
-                code = proc.returncode
-                self._store.fail(live.session.id, f"producer exited (code {code})")
+                reason = f"producer exited (code {proc.returncode})"
+                tail = _stderr_reason(live.stderr_tail)
+                if tail:
+                    reason = f"{reason}: {tail}"
+                self._store.fail(live.session.id, reason)
                 if self._on_failed is not None:
-                    await self._on_failed(live.session.id, f"producer exited (code {code})")
+                    await self._on_failed(live.session.id, reason)
             self._live.pop(live.session.id, None)
 
     async def stop(self, session_id: int) -> None:

@@ -765,8 +765,19 @@ class AttentionStatement(ABC):
         """不仅退出自身, 也退出父级的 Statement"""
         ...
 
+    def on_abort(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register an abort callback. Synchronous, at most once, and never lost.
+
+        Fires inside the ``abort()`` call stack; if the statement is already aborted
+        at registration time, the callback fires immediately instead.
+
+        The callback must be cheap and thread-safe — ``abort`` may arrive from outside
+        the event loop — and must not raise. Returns a disposer that unregisters it.
+        """
+        return lambda: None
+
     @abstractmethod
-    def abort_reason(self) -> str:
+    def abort_reason(self) -> str | None:
         ...
 
     @abstractmethod

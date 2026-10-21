@@ -58,6 +58,18 @@ class BaseThinking(Thinking):
         self._stop_event = ThreadSafeEvent()
         self._started = False
         self._stopped = False
+        # stop() 的"清理只做一次"标记 (停止位与清理分开, 见 stop()).
+        self._cleaned = False
+        # attention 的 abort 回调撤销函数.
+        self._dispose_attention_abort: Callable[[], None] | None = None
+        # 本帧签发的 action / articulator 的终止回调 —— 契约层次是 attention → thinking →
+        # action/articulator, 所以这一层要能自己向下传导.
+        # **必须先于 on_abort 初始化**: 若 attention 构造时已 abort, on_abort 会当场补发
+        # _notify_stop, 它读 _stop_callbacks — 顺序颠倒会 AttributeError.
+        self._stop_callbacks: list[Callable[[], None]] = []
+        # 从属关系在**构造时**就成立, 不等 __aenter__: 构造与 enter 之间有真实窗口, 窗口里
+        # 没人挂牌的从属者会安静地掉在退出级联之外 (与 Attention.on_abort 同一形状).
+        self._dispose_attention_abort = self._attention.on_abort(self._notify_stop)
         self._lifecycle_task: asyncio.Task | None = None
         self._waiting_futures: list[asyncio.Future] = []
         # 每签发一个 action 就保留它的 stop event, 供清空(全部) / 对齐(最后一个)治理.
@@ -115,10 +127,14 @@ class BaseThinking(Thinking):
             action_stop_event=action_stop_event,
             mindflow_stop_event=self._mindflow_stop_event,
             thinking_stop_event=self._stop_event,
+            notify_thinking_stop=self._notify_stop,
             logger=self._logger,
         )
         # 保留 action 的 stop event, 供 thinking 清空/对齐治理.
         self._action_stop_events.append(action_stop_event)
+        # 生命周期从属本帧 (契约层次: attention → thinking → action/articulator): 构造时就挂牌,
+        # 不等 enter —— 这一帧一停, 它签发的 action/articulator 立刻收线, 不必等谁被调度.
+        action.bind_to_thinking_stop(self.on_stop)
 
         gated = self._warrant is not None
         if not gated:
@@ -171,15 +187,18 @@ class BaseThinking(Thinking):
 
     def abort(self, reason: str | Exception | None) -> None:
         self._attention.abort(reason)
-        self._stop_event.set()
+        self._notify_stop()
 
-    def abort_reason(self) -> str:
+    def abort_reason(self) -> str | None:
         return self._attention.abort_reason()
 
     async def stop(self) -> None:
-        if self._stop_event.is_set():
+        # 停止位与清理分开: 停止位可能已被 abort 回调**同步**置位 (见 _notify_stop),
+        # 但等待中的 future 仍然要有人取消一次, 所以这里不能因为 event 已置位就早退.
+        self._notify_stop()
+        if self._cleaned:
             return
-        self._stop_event.set()
+        self._cleaned = True
         if self._waiting_futures:
             for t in self._waiting_futures:
                 t.cancel()
@@ -201,20 +220,70 @@ class BaseThinking(Thinking):
         await self._stop_event.wait()
 
     async def _lifecycle_aborted_monitor(self) -> None:
-        await asyncio.wait(
-            [
-                asyncio.create_task(self._attention.wait_abort()),
-                asyncio.create_task(self._stop_event.wait()),
-                asyncio.create_task(self._mindflow_stop_event.wait()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        """等"该收线"的两路来源, 到了就把这一帧收干净.
+
+        不再等 attention: attention 的 abort 由 ``on_abort`` 回调**同步**置位 ``_stop_event``
+        (见 ``_notify_stop``), 这里只是在同一事件上补做异步清理.
+        """
+        stop_waiter = asyncio.create_task(self._stop_event.wait(), name="thinking-stop-event")
+        mindflow_waiter = asyncio.create_task(self._mindflow_stop_event.wait(), name="mindflow-stop-event")
+        try:
+            await asyncio.wait(
+                {stop_waiter, mindflow_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            # asyncio.wait 不管被取消时的遗留: 取消 monitor 不能把这两个 waiter 漏在循环里.
+            for waiter in (stop_waiter, mindflow_waiter):
+                if not waiter.done():
+                    waiter.cancel()
         await self.stop()
+
+    def on_stop(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register a stop callback for a child this frame issues. Synchronous, never lost.
+
+        与 ``Attention.on_abort`` 同一形状: 先 append 再判读, 晚注册当场补发. 于是"已构造、
+        还没被 enter"的 action / articulator 也稳稳挂在本帧的退出级联上 —— 这正是它们唯一的
+        终点 (它们可能一次都没被调度过, 没有自己的收尾任务).
+        """
+        self._stop_callbacks.append(callback)
+        if self._stop_event.is_set():
+            try:
+                self._stop_callbacks.remove(callback)
+            except ValueError:
+                return lambda: None
+            callback()
+            return lambda: None
+
+        def _dispose() -> None:
+            try:
+                self._stop_callbacks.remove(callback)
+            except ValueError:
+                # 已经触发过了.
+                pass
+
+        return _dispose
+
+    def _notify_stop(self) -> None:
+        """本帧停止位落地, 并向下传导到本帧签发的 action / articulator.
+
+        必须是同步的: 可能跑在 attention 的 abort 调用栈上, 而一个还没被调度就被取消的 waiter
+        会让这次退出永远传不到. 对子对象同样同步收起 —— 只置停止位不够: 它们还各自等着自己的
+        compiled/observed 落地, 而一个从没被调度过的对象只有这里能放行 (2026-10-13 的卡死).
+        """
+        self._stop_event.set()
+        callbacks, self._stop_callbacks = self._stop_callbacks, []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                self._logger.exception("%s stop callback %r failed", self._log_prefix, callback)
 
     async def __aenter__(self) -> Self:
         if self._started:
             return self
         self._started = True
+        # 牌已在 __init__ 挂好 (构造即从属); 这里只起异步收尾的监视任务.
         self._lifecycle_task = asyncio.create_task(self._lifecycle_aborted_monitor())
         return self
 
@@ -245,4 +314,8 @@ class BaseThinking(Thinking):
                 self._attention.abort(exc_val)
             return None
         finally:
-            self._stop_event.set()
+            self._notify_stop()
+            # 撤牌: 这一帧已收线, 之后的 abort 不该再回调到它.
+            if self._dispose_attention_abort is not None:
+                self._dispose_attention_abort()
+                self._dispose_attention_abort = None

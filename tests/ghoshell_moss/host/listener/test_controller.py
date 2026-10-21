@@ -10,10 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment, RecognitionWord
+from ghoshell_moss.contracts.audio import AudioChunk, AudioFrameMeta
 from ghoshell_moss.core.blueprint.mindflow import Priority
+from ghoshell_moss.core.mindflow.knock_nucleus import KnockSignalMeta
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
-from ghoshell_moss.host.listener.etiquette import always, knock
+from ghoshell_moss.host.listener.etiquette import always, duplex, knock
 
 
 class _MockState:
@@ -51,9 +53,12 @@ class _MockListener:
         self.listened = asyncio.Event()
         self.result_observers = []
         self.segment_observers = []
+        self.error_observers = []
+        self.audio_observers = []
         self.running = False
         self.entered = False
         self.exited = False
+        self.listen_count = 0
 
     def on_recognition_result(self, cb):
         self.result_observers.append(cb)
@@ -63,10 +68,24 @@ class _MockListener:
         self.segment_observers.append(cb)
         return lambda: None
 
+    def on_error(self, cb):
+        self.error_observers.append(cb)
+        return lambda: None
+
+    def on_audio_chunk(self, cb):
+        self.audio_observers.append(cb)
+        return lambda: self.audio_observers.remove(cb)
+
+    def trigger_error(self, error):
+        """测试钩子: 模拟耳朵级故障 (pump 崩溃 / ASR 上报) 扇出."""
+        for cb in list(self.error_observers):
+            cb(error)
+
     def is_running(self):
         return self.running
 
     async def listen(self):
+        self.listen_count += 1
         self.state = _MockState()
         self.listened.set()
         return self.state
@@ -268,7 +287,8 @@ def test_signal_broadcast_clause_not_emitted():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
 
-    assert len(listener.result_observers) == 4  # 发射 + 累积 + buffer + expect 观察者
+    # 发射 + 累积 + buffer + 故障复位 + 说话态 + expect 观察者
+    assert len(listener.result_observers) == 6
     listener.result_observers[0](_clause("你好"))
 
     assert emitted == []  # CLAUSE 不上行 — 判停已在 listener 侧消化
@@ -301,8 +321,8 @@ def test_signal_broadcast_interrupt_then_deliver():
 def test_no_signal_broadcast_registers_no_emitter():
     listener = _MockListener()
     ListenerController(listener=listener, asr=_MockASR())
-    # 无 sink → 不注册发射观察者 (只剩 buffer + expect 观察者).
-    assert len(listener.result_observers) == 2
+    # 无 sink → 不注册发射观察者 (只剩 buffer + 故障复位 + 说话态 + expect 观察者).
+    assert len(listener.result_observers) == 4
 
 
 def test_signal_wired_reflects_broadcast_injection():
@@ -359,6 +379,34 @@ async def test_on_signal_emit_observes_suppressed_emit():
         await task
 
 
+@pytest.mark.asyncio
+async def test_reactivating_the_same_etiquette_instance_keeps_it_active():
+    """重复激活同一个礼仪实例, 激活后当前礼仪仍是它.
+
+    协议承诺: "当前礼仪"是运行时单一真值 —— activate 之后它必须答得出来.
+    内置礼仪是模块级单例, 两次激活拿到的是同一个对象; 若旧会话收尾按身份比对清空,
+    新激活会当场变成"没有礼仪", 之后 emit 路退回默认 spec (首包打断 + 无 barge 判断),
+    表现为"模型一思考就被一句话打断".
+    """
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None,
+    )
+    first = controller.run_etiquette(always)
+    await asyncio.sleep(0)
+    second = controller.run_etiquette(always)
+    await asyncio.sleep(0.01)  # 让旧会话的收尾跑完
+
+    active = controller.active_etiquette()
+    assert active is not None, "re-activating a built-in etiquette cleared the active one"
+    assert active.name == always.name
+
+    controller.stop()
+    for task in (first, second):
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 # ============================================================
 # expect 语音输入超时提醒 — 纯异步, 不打断模型
 # ============================================================
@@ -369,36 +417,36 @@ def _expect_voice_observer(listener):
 
 
 @pytest.mark.asyncio
-async def test_expect_returns_incrementing_index():
+async def test_expect_reply_returns_incrementing_index():
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None,
     )
-    i1 = controller.expect(timeout=10.0)
-    i2 = controller.expect(timeout=10.0)
+    i1 = controller.expect_reply(seconds=10.0)
+    i2 = controller.expect_reply(seconds=10.0)
     assert i1 == "1"
     assert i2 == "2"
-    controller.stop()  # 清空 pending expect
+    controller.stop()  # 清空 pending expect_reply
 
 
 @pytest.mark.asyncio
-async def test_expect_timeout_emits_notify_signal():
+async def test_expect_reply_timeout_emits_knock():
+    """到期 → 发 knock (最低一档, 丢了就丢), 文本带回执编号."""
     emitted = []
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
         cell_name="ghost_cell",
     )
-    index = controller.expect(timeout=0.05)
+    index = controller.expect_reply(seconds=0.05)
     await asyncio.sleep(0.1)
 
     assert len(emitted) == 1
     sig = emitted[0]
-    assert sig.complete is True
-    meta = ListenerSignal.from_signal(sig)
-    assert meta.source == "ghost_cell"  # 不是 "asr" — 系统提示, 与识别结果区分
-    assert meta.interrupt is False
-    assert f"#{index}" in sig.description or f"#{index}" in _signal_text(sig)
+    # 是 knock, 不是 listener/notify: 这句话的性质是"他还没开口, 你可以开口了",
+    # 不该跟真实事件抢注意力 —— 抢不到就该消失.
+    assert KnockSignalMeta.match(sig)
+    assert f"#{index}" in _signal_text(sig)
 
 
 def _signal_text(sig) -> str:
@@ -412,13 +460,13 @@ def _signal_text(sig) -> str:
 
 @pytest.mark.asyncio
 async def test_expect_satisfied_by_voice_silently():
-    """语音到达 → expect 满足, 不发任何 signal."""
+    """语音到达 → expect_reply 满足, 不发任何 signal."""
     emitted = []
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
     )
-    controller.expect(timeout=0.2)
+    controller.expect_reply(seconds=0.2)
     voice_cb = _expect_voice_observer(listener)
 
     await asyncio.sleep(0.05)
@@ -430,14 +478,14 @@ async def test_expect_satisfied_by_voice_silently():
 
 @pytest.mark.asyncio
 async def test_expect_voice_sets_all_pending():
-    """一次语音到达满足所有 pending expect (各自超时都取消)."""
+    """一次语音到达满足所有 pending expect_reply (各自到期都取消)."""
     emitted = []
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
     )
-    controller.expect(timeout=0.2)
-    controller.expect(timeout=0.2)
+    controller.expect_reply(seconds=0.2)
+    controller.expect_reply(seconds=0.2)
     voice_cb = _expect_voice_observer(listener)
 
     await asyncio.sleep(0.05)
@@ -967,3 +1015,766 @@ def test_deliver_carries_low_confidence_chars():
     assert len(emitted) == 1
     meta = ListenerSignal.from_signal(emitted[0])
     assert meta.low_conf == "好"
+
+
+def test_clause_packet_carries_its_own_low_confidence_chars():
+    """分句包携带它自己这一句的低置信字, 且不重发前面几句的.
+
+    累积表是在分句包发射**之后**才写入的 (见 _on_accumulate_clause), 分句包若去读它,
+    拿到的永远是上一句的字 —— 这一段的第一句甚至会丢掉自己所有的可疑字.
+    """
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    spec = duplex.model_copy(deep=True)
+    spec.deliver.low_confidence = 0.5
+    controller._set_active_etiquette(spec)
+
+    first = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.CLAUSE, text="你好",
+        clause=RecognitionClause(
+            text="你好",
+            words=[RecognitionWord(text="你", conf=0.3), RecognitionWord(text="好", conf=0.9)],
+        ),
+    )
+    second = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.CLAUSE, text="你好呀",
+        clause=RecognitionClause(
+            text="呀",
+            words=[RecognitionWord(text="呀", conf=0.92)],
+        ),
+    )
+    for cb in listener.result_observers:
+        cb(first)
+        cb(second)
+
+    metas = [ListenerSignal.from_signal(s) for s in emitted]
+    assert [m.low_conf for m in metas] == ["你", ""]
+
+
+# ============================================================
+# 耳朵故障 (pump 崩溃 / ASR 上报) — 感知 + 有界自愈
+# ============================================================
+
+
+async def _spin(n: int = 5) -> None:
+    for _ in range(n):
+        await asyncio.sleep(0)
+
+
+def _descriptions(emitted) -> list[str]:
+    return [getattr(s, "description", "") for s in emitted]
+
+
+@pytest.mark.asyncio
+async def test_listener_fault_emits_error_signal():
+    """耳朵故障 (无激活礼仪时) → 发一条 listener:error signal, 不重启."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append, cell_name="ear",
+    )
+
+    listener.trigger_error(RuntimeError("asr connect failed"))
+    await _spin()
+
+    assert _descriptions(emitted) == ["listener:error"]
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.source == "ear"
+    assert listener.listen_count == 0
+
+
+@pytest.mark.asyncio
+async def test_listener_fault_restarts_active_etiquette():
+    """有激活礼仪时, 耳朵故障 → 重启同一礼仪 (新起一条 session)."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    task = controller.run_etiquette(always.model_copy(deep=True))
+    await listener.listened.wait()
+    await listener.state.entered.wait()
+    await _spin()
+    assert listener.listen_count == 1
+
+    listener.trigger_error(RuntimeError("asr dropped"))
+    await _spin()
+
+    assert listener.listen_count == 2  # 重启: 又听了一次
+    assert "listener:error" in _descriptions(emitted)
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_listener_fault_restart_is_bounded_then_degrades():
+    """连续故障: 最多重启 _MAX_FAULT_RESTARTS 次, 之后发 listener:degraded 且不再重启."""
+    from ghoshell_moss.host.listener.controller import _MAX_FAULT_RESTARTS
+
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    task = controller.run_etiquette(always.model_copy(deep=True))
+    await listener.listened.wait()
+    await listener.state.entered.wait()
+    await _spin()
+
+    for _ in range(_MAX_FAULT_RESTARTS + 1):
+        listener.trigger_error(RuntimeError("asr down"))
+        await _spin()
+
+    # 初次 + 封顶次数的重启; 超出后不再重启.
+    assert listener.listen_count == 1 + _MAX_FAULT_RESTARTS
+    assert _descriptions(emitted).count("listener:degraded") == 1
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_listener_activity_resets_fault_budget():
+    """听到声音即复位故障自愈窗口: 曾消耗预算后, 新一轮故障仍能重启 (不降级)."""
+    from ghoshell_moss.host.listener.controller import _MAX_FAULT_RESTARTS
+
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    task = controller.run_etiquette(always.model_copy(deep=True))
+    await listener.listened.wait()
+    await listener.state.entered.wait()
+    await _spin()
+
+    for _ in range(_MAX_FAULT_RESTARTS):
+        listener.trigger_error(RuntimeError("flaky"))
+        await _spin()
+    # 听觉恢复: 一条识别结果复位自愈窗口.
+    for cb in listener.result_observers:
+        cb(_partial("你好"))
+    await _spin()
+
+    listener.trigger_error(RuntimeError("flaky again"))
+    await _spin()
+
+    assert "listener:degraded" not in _descriptions(emitted)
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+# ============================================================
+# 出声即让路 (deliver.barge_in_while_speaking) — 说话可被抢, 思考不被抢
+# ============================================================
+
+
+def _deliver_with_barge_in(emitted: list, speaking: bool | None, *, wired: bool = True):
+    """跑一条 TAIL, 返回它的 deliver signal; speaking=None 表示不接探针."""
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener,
+        asr=_MockASR(),
+        signal_broadcast=emitted.append,
+        speaking_probe=(None if speaking is None else (lambda: speaking)),
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver.barge_in_while_speaking = True
+    controller._set_active_etiquette(spec)
+    for cb in listener.result_observers:
+        cb(_tail("你好", segment_id="t1"))
+    assert emitted, "a TAIL must produce a deliver signal"
+    return emitted[-1]  # TAIL 只发一包, 就是交付包
+
+
+def test_barge_in_boosts_the_deliver_signal_while_speaking():
+    """ghost 正在出声 → 交付信号带一次性提权, 而不是硬掐整轮 (interrupt 保持 False)."""
+    from ghoshell_moss.core.blueprint.mindflow import Priority
+
+    emitted = []
+    sig = _deliver_with_barge_in(emitted, speaking=True)
+    meta = ListenerSignal.from_signal(sig)
+    assert meta.boost is Priority.WARNING
+    assert meta.interrupt is False
+
+
+def test_barge_in_leaves_the_signal_alone_while_not_speaking():
+    """没在出声 (思考/挂工具) → 交付信号不提权, 按 mode 排队."""
+    emitted = []
+    sig = _deliver_with_barge_in(emitted, speaking=False)
+    meta = ListenerSignal.from_signal(sig)
+    assert meta.boost is None
+    assert meta.interrupt is False
+
+
+def test_barge_in_is_inert_without_a_speaking_probe():
+    """独立 listener node 没有说侧 → 开关静默失效, 不猜测, 也不抛."""
+    emitted = []
+    sig = _deliver_with_barge_in(emitted, speaking=None)
+    assert ListenerSignal.from_signal(sig).boost is None
+
+
+# ── 出声即让路时掐语音 (speech_cutter) ────────────────────────────────────────
+#
+# 不变量: 让路分两半 —— 提权赢注意力, 掐语音收嘴. 只有"他真说了什么"才掐:
+# 空尾包说的是"他停了", 拿它当剪子等于每次该我接话时先剪掉自己.
+
+
+def _barge_in_cut_controller(emitted: list, cuts: list, *, speaking: bool = True):
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener,
+        asr=_MockASR(),
+        signal_broadcast=emitted.append,
+        speaking_probe=lambda: speaking,
+        speech_cutter=lambda: cuts.append("cut"),
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver = spec.deliver.model_copy(
+        update={"per_clause": True, "barge_in_while_speaking": True},
+    )
+    controller.set_etiquette_spec(spec)
+    controller._set_active_etiquette(spec)
+    controller._cb = listener.result_observers[0]
+    return controller
+
+
+def test_barge_in_cuts_the_speech_when_a_packet_carries_text():
+    """我在说、他又说了有内容的一句 → 话音让路: 每一条带字的包都掐一次."""
+    emitted, cuts = [], []
+    controller = _barge_in_cut_controller(emitted, cuts)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    assert len(emitted) == 1, "分句照常交付"
+    assert cuts == ["cut"]
+
+    cb(RecognitionEvent(stream_id="s", segment_id="g", phase=RecognitionPhase.CLAUSE,
+                        text="你好，我是老莫", clause=RecognitionClause(text="我是老莫")))
+    assert len(cuts) == 2
+
+
+def test_barge_in_does_not_cut_on_a_tail_with_nothing_new():
+    """空尾包说的是"他停了", 不是"他在说" → 不掐, 也不签发 (老规矩照旧)."""
+    emitted, cuts = [], []
+    controller = _barge_in_cut_controller(emitted, cuts)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    before = len(cuts)
+    cb(_tail("你好", segment_id="g"))
+
+    assert len(emitted) == 1, "空尾包仍然不签发"
+    assert len(cuts) == before, "空尾包不许当剪子"
+
+
+def test_barge_in_does_not_touch_speech_while_not_speaking():
+    """没在出声 → 一个字都不掐; 开关管的是嘴, 不是耳朵."""
+    emitted, cuts = [], []
+    controller = _barge_in_cut_controller(emitted, cuts, speaking=False)
+
+    controller._cb(_clause("你好"))
+    controller._cb(_tail("你好，还有一句", segment_id="g"))
+
+    assert emitted, "包照发"
+    assert cuts == []
+
+
+def test_no_builtin_but_cue_yields_to_speech_by_default():
+    """出声即让路是「这一档」的选择: 内建礼仪里只有 cue 打开它.
+
+    cue 的意思是"被点名才开口": 我说的是应答, 他一开口应答就该让路. 基线 duplex
+    不跟着改 —— 我说完这一句再把话筒交出去. 判据: 验过一个开关, 不许因此改掉几十档
+    礼仪的默认.
+    """
+    from ghoshell_moss.host.listener import etiquette
+
+    specs = [
+        name for name in dir(etiquette)
+        if isinstance(getattr(etiquette, name), etiquette.EtiquetteSpec)
+    ]
+    assert specs, "builtin etiquettes should not be empty"
+    yielding = [n for n in specs if getattr(etiquette, n).deliver.barge_in_while_speaking]
+    assert yielding == ["cue"]
+
+
+def test_duplex_is_full_duplex_and_never_interrupts_the_ghost():
+    """duplex 一条礼纪要兑现: 每句一包、有真的判停收口、不抢注意力、不掐语音.
+
+    缺了判停就退化成 cue (他停不停只能靠我自己猜); 缺了分句就退化成一次一整段
+    (我拿不到"他还在说"的中间态). 打断分两层: 注意力不抢 (interrupt=False),
+    语音也不抢 —— 基线是"我把这句说完再让", 要立刻拿话筒的是 cue/always.
+    """
+    from ghoshell_moss.host.listener import etiquette
+
+    spec = etiquette.duplex
+    assert spec.deliver.per_clause
+    assert spec.stop.silence > 0
+    assert not spec.deliver.interrupt
+    assert not spec.onset.emit
+    assert not spec.deliver.barge_in_while_speaking
+
+
+def test_default_etiquette_is_full_duplex():
+    """新开的 ghost 默认就在全双工上 — 不是「起话即打断」的 always, 也不是没判停的 cue."""
+    from ghoshell_moss.host.listener import etiquette
+
+    config = etiquette.EtiquetteConfig()
+    active = config.get(config.default)
+    assert active is not None, "the default must name a defined etiquette"
+    assert active.deliver.per_clause
+    assert active.stop.silence > 0
+
+
+# ── 分句交付 (deliver.per_clause) ─────────────────────────────────────────────
+#
+# 不变量: 每一包只带上次没发过的文本; 尾包绝不重发已发的分句; 身份由听侧规划,
+# 段号 (segment_id) 只在尾包上出现一次.
+
+
+def _per_clause_controller(emitted: list) -> ListenerController:
+    listener = _MockListener()
+    controller = ListenerController(
+        listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
+    )
+    spec = always.model_copy(deep=True)
+    spec.deliver = spec.deliver.model_copy(update={"per_clause": True})
+    controller.set_etiquette_spec(spec)
+    # 直接用这一档当激活礼仪 —— 不走 run_etiquette (那会起状态机, 与本节要量的东西无关).
+    controller._set_active_etiquette(spec)
+    controller._cb = listener.result_observers[0]
+    return controller
+
+
+def _body(signal) -> str:
+    texts = []
+    for msg in signal.messages:
+        for c in msg.contents:
+            if isinstance(c, dict) and c.get("type") == "text":
+                texts.append(c.get("text", ""))
+    return "".join(texts)
+
+
+def test_per_clause_emits_one_packet_per_clause_with_only_the_delta():
+    """每句各发一包, 第二包只带新内容 —— 前文绝不重发."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    cb(RecognitionEvent(stream_id="s", segment_id="g", phase=RecognitionPhase.CLAUSE,
+                        text="你好，我是老莫", clause=RecognitionClause(text="我是老莫")))
+
+    assert len(emitted) == 2
+    assert _body(emitted[0]) == "你好"
+    assert _body(emitted[1]) == "，我是老莫"
+    for signal in emitted:
+        meta = ListenerSignal.from_signal(signal)
+        assert meta.paused is False, "中间的分句不是停顿"
+        assert meta.segment_id == "", "分句包不带地址 —— 地址只在尾包上出现一次"
+
+
+def test_per_clause_tail_carries_only_the_remainder():
+    """尾包只带没发过的那一截, 并带上段地址与 paused=true."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    cb(_tail("你好，还有这一句", segment_id="g"))
+
+    assert len(emitted) == 2
+    assert _body(emitted[1]) == "，还有这一句"
+    meta = ListenerSignal.from_signal(emitted[1])
+    assert meta.paused is True
+    assert meta.segment_id == "g"
+
+
+def test_per_clause_tail_with_nothing_new_is_not_emitted():
+    """没有新内容时不发尾包: 分句已经把字送完了, 再为一包空正文单开一轮没有意义."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_clause("你好"))
+    cb(_tail("你好", segment_id="g"))
+
+    assert len(emitted) == 1, "空尾包不签发 —— 只剩那条分句"
+    assert _body(emitted[0]) == "你好"
+
+
+def test_impulse_ids_are_planned_by_the_listener():
+    """身份由听侧规划: onset 与尾包共用一枚, 每个分句各自一枚."""
+    emitted = []
+    controller = _per_clause_controller(emitted)
+    cb = controller._cb
+
+    cb(_first("你", segment_id="g"))
+    cb(_clause("你好"))
+    cb(RecognitionEvent(stream_id="s", segment_id="g", phase=RecognitionPhase.CLAUSE,
+                        text="你好，再见", clause=RecognitionClause(text="再见")))
+    cb(_tail("你好，再见，最后一句", segment_id="g"))
+
+    metas = [ListenerSignal.from_signal(s) for s in emitted]
+    ids = [m.impulse_id for m in metas]
+    assert ids[0] == ids[-1], "onset 与尾包是同一次话语 —— 同 id 才走得通吸收"
+    assert len(set(ids[1:-1])) == 2, "每个分句各自一枚身份, 谁也不吸收谁"
+
+
+def _audio(rms_db: float, silent: bool = False) -> AudioChunk:
+    return AudioChunk(meta=AudioFrameMeta(rms_db=rms_db, is_silent=silent))
+
+
+def test_a_packet_carries_the_loudness_it_heard():
+    """deliver 带上这一段音频的平均响度 (dB): 静音帧不拉低它."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+    for cb in list(listener.audio_observers):
+        cb(_audio(-20.0))
+        cb(_audio(-20.0))
+        cb(_audio(-60.0, silent=True))
+    tail = RecognitionEvent(stream_id="s", segment_id="t1", phase=RecognitionPhase.TAIL, text="你好")
+    for cb in list(listener.result_observers):
+        cb(tail)
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db == pytest.approx(-20.0), '响度是两帧 -20dB 的均值, 静音帧不计入'
+    assert meta.strength is None, '没设水位 → 强度不动'
+
+
+def test_loudness_above_the_watermark_raises_the_strength():
+    """超过水位: 按高出的 dB 抬挑战强度, 由听侧发射前算好."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+    controller.with_loudness_watermark(-26.0)
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-20.0))       # 比水位高 6dB
+    tail = RecognitionEvent(stream_id="s", segment_id="t1", phase=RecognitionPhase.TAIL, text="你好")
+    for cb in list(listener.result_observers):
+        cb(tail)
+
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db == pytest.approx(-20.0)
+    assert meta.strength == 150, '高 6dB (半步) → 常态 100 的一倍半'
+
+
+def test_a_watermark_that_is_not_exceeded_leaves_the_strength_alone():
+    """没超过水位就是常态强度: 不填 strength, 由 nucleus 用自己的常态值."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+    controller.with_loudness_watermark(-10.0)
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-30.0))
+    tail = RecognitionEvent(stream_id="s", segment_id="t1", phase=RecognitionPhase.TAIL, text="你好")
+    for cb in list(listener.result_observers):
+        cb(tail)
+
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db == pytest.approx(-30.0)
+    assert meta.strength is None
+
+
+def test_a_clause_packet_can_challenge_harder_without_carrying_db():
+    """分句包带强度 (耳朵当场要压过对手) 但不带 db —— 整段多响是尾包的事."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(duplex.model_copy(deep=True))
+    controller.with_loudness_watermark(-26.0)
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-20.0))
+    clause = RecognitionEvent(
+        stream_id="s", segment_id="t1", phase=RecognitionPhase.CLAUSE, text="你好",
+        clause=RecognitionClause(text="你好"),
+    )
+    for cb in list(listener.result_observers):
+        cb(clause)
+
+    meta = ListenerSignal.from_signal(emitted[0])
+    assert meta.db is None, '分句包不带响度'
+    assert meta.strength == 150, '比水位高 6dB → 一杯半的强度'
+
+
+def test_the_watermark_learns_how_loud_this_person_normally_is():
+    """自动水位: 攒够几段之后, 只有比常态明显更响的那一句才抬强度."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+
+    def _segment(db_value: float) -> ListenerSignal:
+        for cb in list(listener.audio_observers):
+            cb(_audio(db_value))
+        tail = RecognitionEvent(stream_id="s", segment_id="t", phase=RecognitionPhase.TAIL, text="嗯")
+        for cb in list(listener.result_observers):
+            cb(tail)
+        return ListenerSignal.from_signal(emitted[-1])
+
+    for _ in range(5):
+        assert _segment(-30.0).strength is None, '还在认常态, 不提强度'
+    loud = _segment(-5.0)
+    assert loud.strength is not None and loud.strength > 200, '比常态高 25dB → 明显抬强度'
+    assert loud.db == pytest.approx(-5.0)
+
+
+def test_loudness_state_says_where_the_watermark_comes_from():
+    """读侧把两个来源分开报: 显式设过就是显式, 没设就报自动基线; 都没攒够就是 null."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+
+    state = controller.loudness_state()
+    assert state["explicit"] is None and state["auto"] is None and state["effective"] is None, \
+        '没设过水位、也没听过几段 → 没有水位'
+
+    controller.with_loudness_watermark(-26.0)
+    state = controller.loudness_state()
+    assert state["explicit"] == pytest.approx(-26.0)
+    assert state["effective"] == pytest.approx(-26.0)
+
+
+def test_loudness_state_reports_the_learned_baseline_and_the_running_stretch():
+    """攒够段之后报自动基线; 正在说的这一段的均值与它算出来的强度也一并报出."""
+    emitted = []
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR(), signal_broadcast=emitted.append)
+    controller._set_active_etiquette(always.model_copy(deep=True))
+
+    for _ in range(5):
+        for cb in list(listener.audio_observers):
+            cb(_audio(-30.0))
+        for cb in list(listener.result_observers):
+            cb(_tail("嗯", segment_id="t"))
+
+    for cb in list(listener.audio_observers):
+        cb(_audio(-5.0))
+    state = controller.loudness_state()
+    assert state["auto"] == pytest.approx(-24.0), '基线 = 最近几段中位数 -30 加 6dB 余量'
+    assert state["effective"] == pytest.approx(-24.0)
+    assert state["segment"] == pytest.approx(-5.0), '正在说的这一段, 还没收尾'
+    assert state["strength"] is not None and state["strength"] > 200, \
+        '比基线高 19dB → 下一包明显抬强度'
+
+
+# ============================================================
+# 说话态 (talking) — 状态 vs 边沿: notice 只给桶值, 尾巴走拉取
+# ============================================================
+
+
+def _talking_observer(listener):
+    """说话态回调 — 首包开 / 尾包关那份 (跨 session 稳定, 不依赖 signal_broadcast)."""
+    for cb in listener.result_observers:
+        if getattr(cb, "__name__", "") == "_on_talking_state":
+            return cb
+    raise AssertionError("talking observer not registered")
+
+
+@pytest.mark.asyncio
+async def test_talking_notice_turns_on_and_off():
+    """首包开 / 尾包关: 一段话只让 notice 变两次, 不按秒刷."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+
+    async def notices() -> dict:
+        return await controller.as_channel().build.get_named_notices()
+
+    # 没说话 → 片段缺席 (模型读作"他没在说").
+    assert (await notices())["talking"] is None
+
+    talk = _talking_observer(listener)
+    talk(_first("滕子京谪守巴陵郡"))
+    assert (await notices())["talking"] == "yes"  # 桶值, 不带秒数
+    assert controller.talking_state()["for"] is not None
+
+    # 文本累积: `text` 是全量替换, 尾巴跟着换.
+    talk(_partial("滕子京谪守巴陵郡"))
+    assert controller.talking_state()["tail"] == "滕子京谪守巴陵郡"
+
+    talk(_tail("滕子京谪守巴陵郡"))
+    assert (await notices())["talking"] is None
+    assert controller.talking_state()["talking"] is False
+    assert controller.talking_state()["idle_for"] is not None
+
+
+@pytest.mark.asyncio
+async def test_talking_readable_in_emit_true_pull():
+    """emit=True 时 buffer 是空的, 但 talking 在拉取面里仍然活着 —— 这是它存在的理由."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task = controller.run_etiquette(always.model_copy(deep=True), timeout=5.0)
+
+    controller._on_talking_state(_first("我们来玩一个游戏"))
+    payload = controller.transcript_state()
+
+    assert payload["enabled"] is False
+    assert payload["current"] is None  # 老的拉取面在 emit=True 下是空的
+    assert payload["talking"]["talking"] is True
+    assert payload["talking"]["tail"] == "我们来玩一个游戏"
+
+    controller.stop()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+# ── voiceflow: 读 / 改 / 存 ──────────────────────────────────────────────────
+#
+# 契约: 「对话现在是按什么节奏走的」是一个活状态, 不是一套模式. 读它要看得见三个维度,
+# 改它要回改完之后的现值 (那就是"生效"的证据), 存它要把整份状态变成一个名字.
+
+
+@pytest.mark.asyncio
+async def test_interaction_reads_all_three_dimensions():
+    """读: current 的名字 + 出身 + 三维现值, 缺一层就不叫"看得见节奏"."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    state = controller.interaction_state()
+    values = state["values"]
+
+    assert state["current"] == "always"
+    assert state["origin"] == "always"
+    assert state["deviated"] == []
+    assert {"stop.silence", "deliver.mode", "onset.interrupt"} <= set(values)
+    assert "always" in state["presets"]
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_tune_returns_the_state_reread_after_the_change():
+    """改: 返回的就是改完再读一遍的现值 —— 不是 ok, 也不是改之前的快照."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    state, touched, restarted = controller.tune_interaction({"deliver.mode": "aside"})
+
+    assert touched == ["deliver.mode"]
+    assert restarted is False
+    assert state["values"]["deliver.mode"] == "aside"
+    assert "deliver.mode" in state["deviated"]  # 跟出身比, 这一格动了
+    assert controller.interaction_state()["values"]["deliver.mode"] == "aside"
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_tuning_a_stop_knob_restarts_and_says_so():
+    """判停那一层在会话启动时就被拷走, 改它必须重开会话 —— 返回值不许装作已经生效."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    state, touched, restarted = controller.tune_interaction({"stop.silence": 2.5})
+
+    assert touched == ["stop.silence"]
+    assert restarted is True
+    assert state["values"]["stop.silence"] == 2.5
+    await _stop(controller._active_task)
+
+
+@pytest.mark.asyncio
+async def test_tune_rejects_a_key_it_does_not_own():
+    """不认的键当场报错: "写进去了但没生效"比报错难查得多."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    with pytest.raises(ValueError):
+        controller.tune_interaction({"deliver.volume": 3})
+
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_save_keeps_the_whole_current_under_a_new_name():
+    """存: 写出去的是整份 current, 不是跟出身的差异; 存完它就在配置里活着."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+    controller.tune_interaction({"deliver.mode": "aside", "deliver.interrupt": False})
+
+    message = controller.save_interaction("quiet-room", "答在闲下来之后")
+
+    assert "quiet-room" in message
+    saved = controller.etiquette_config().get("quiet-room")
+    assert saved is not None
+    assert saved.deliver.mode == "aside"
+    assert saved.description == "答在闲下来之后"
+    assert saved.stop.silence == controller.interaction_state()["values"]["stop.silence"]
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_save_without_a_current_interaction_refuses():
+    """没有 current 就没有可存的东西 —— 报错, 不拿一套空默认糊过去."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    with pytest.raises(ValueError):
+        controller.save_interaction("nothing")
+
+
+@pytest.mark.asyncio
+async def test_saving_reloads_current_as_the_saved_name():
+    """存: 同名配置被覆盖, 而 current 与出身都挪到新名字上 —— 刚存的就是它的定义."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+    controller.tune_interaction({"deliver.mode": "aside"})
+
+    controller.save_interaction("quiet-room", "答在闲下来之后")
+
+    state = controller.interaction_state()
+    assert state["current"] == "quiet-room"
+    assert state["origin"] == "quiet-room"
+    assert state["deviated"] == [], '刚存下来的就是它的定义, 不该再跟旧出身算偏离'
+    assert "quiet-room" in state["presets"]
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_tuning_history_shrinks_what_the_buffer_actually_keeps():
+    """改 history 要落到 buffer 的物理容量: 数字变了而环形没缩, 读出来就是假的."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task, state = await _start_controller(controller, controller.always, timeout=5.0)
+    controller.tune_interaction({"deliver.emit": False, "deliver.history": 8})
+
+    for i in range(4):
+        for cb in listener.segment_observers:
+            cb(_segment(f"第{i}段", segment_id=f"g{i}"))
+    assert len(controller.transcript_state()["recent"]) == 4
+
+    controller.tune_interaction({"deliver.history": 2})
+
+    again = controller.transcript_state()
+    assert len(again["recent"]) == 2
+    assert again["forgotten"] == 2, '缩容挤掉的要计入 forgotten, 否则模型不知道有 gap'
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_restarting_for_a_stop_knob_keeps_a_one_shot_session_one_shot():
+    """重开要带上原来那次的寿命参数: 「听一次」不许被重开成常驻."""
+    listener = _MockListener()
+    controller = ListenerController(listener=listener, asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.once)
+
+    controller.tune_interaction({"stop.silence": 2.5})
+
+    for _ in range(100):
+        if listener.listen_count >= 2:
+            break
+        await asyncio.sleep(0.01)
+    assert listener.listen_count >= 2, "重开没有真的重新听"
+
+    for cb in listener.state.result:
+        cb(_tail("你好"))
+    await asyncio.wait_for(controller._active_task, timeout=1.0)

@@ -134,6 +134,10 @@ class Dolores(Ghost):
         # memento: ego 轨迹索引 + 旁路服务. manager 由 ghost 持有, 同时注入 ego.
         self._memento: FsMemento | None = None
         self._memento_manager: EgoMementoManager | None = None
+        # branch view render cache — rendered async in __aenter__ (it runs the branch_view slot),
+        # read synchronously by memories(). One render per boot: the plan is a snapshot of the
+        # directory at the moment the session opens, which is exactly what boot memory is.
+        self._memento_view: Message | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: DoloresEgo | None = None
         self._facade: MShellContextFacade | None = None
@@ -144,7 +148,7 @@ class Dolores(Ghost):
         self._channel: MutableChannel | None = None
         # startup doc (StartupDoc) — loaded once in __aenter__, read by channel() and startup().
         self._startup_doc: "StartupDoc | None" = None
-        # the cognition epoch is opened once, on the first thinking (see think()).
+        # the cognition epoch is opened on the first thinking and again after every compact (see think()).
         self._epoch_opened: bool = False
 
     # ── Ghost ABC ──────────────────────────────────
@@ -274,10 +278,8 @@ class Dolores(Ghost):
         children: list[Message] = []
         if self._ground_text:
             children.append(Message.new(tag="ground").with_content(self._ground_text))
-        if self._memento_manager is not None:
-            view = self._memento_manager.view_message()
-            if view is not None:
-                children.append(view)
+        if self._memento_view is not None:
+            children.append(self._memento_view)
         if not children:
             return []
         return [Message.new(tag="memory").with_messages(*children)]
@@ -307,10 +309,33 @@ class Dolores(Ghost):
         from the shell facade, wired by the runtime *after* ghost.__aenter__ (ghost_runtime step 5),
         so opening it earlier would snapshot an empty baseline. The epoch is then delivered by the
         ego's own epoch slot on the first frame.
+
+        A compact decided by the previous valid run is executed first, and a new epoch is opened
+        right after it: compaction rewrites the model-visible head, so the cognition must restart on
+        a new epoch too. The ghost memory rides that epoch's recap slot — it is no longer written
+        into the surface history, which the compact would shadow.
         """
-        if not self._epoch_opened:
+        memory: list[Message] | None = None
+        if self._ego is not None:
+            # 遗留优先: 它意味着「上次 compact 可能已经换了 surface、epoch 还没开」, 比本帧再压
+            # 一次更急. 先取走它, 取不到才发起本帧的 compact —— 否则本帧失败的 compact 会把遗留
+            # 清成 None, memory 在模型视野里彻底消失.
+            memory = self._ego.take_compact_memory()
+            if memory is not None:
+                # 上次 compact 在 RPC 中间被取消, 本帧补上: 这是一条可观测的恢复路径, 不能静默.
+                self.logger.warning(
+                    "dolores: completing a compact cancelled mid-flight — opening epoch with "
+                    "%d memory messages",
+                    len(memory),
+                )
+            else:
+                memory = await self._ego.compact_if_pending()
+        if memory is not None:
             self._epoch_opened = True
-            self.mindflow().moments.new_epoch([])
+            self._open_cognition_epoch(memory=memory)
+        elif not self._epoch_opened:
+            self._epoch_opened = True
+            self._open_cognition_epoch(memory=None)
         if self._ego is not None:
             async with self._ego.run_thinking(thinking) as run:
                 async for delta in run.logos():
@@ -318,14 +343,28 @@ class Dolores(Ghost):
         else:
             yield ""
 
+    def _open_cognition_epoch(self, memory: "list[Message] | None") -> None:
+        """Open a new cognition epoch, optionally carrying the ghost memory in its recap slot.
+
+        The first epoch passes ``memory=None`` — create_session already seeded the memory as the
+        surface head there. From the first compact on, memory lives only in the epoch recap: every
+        later epoch re-delivers it, so the compact shadow can never drop it.
+
+        The memory is captured **before** ``new_epoch`` and replayed through a closure: recap funcs
+        run inside ``BaseMomentsObserver.new_epoch``, which swallows their exceptions — re-reading
+        the memory there could silently lose it after the compact already dropped it from surface.
+        """
+        moments = self.mindflow().moments
+        if memory is not None:
+            moments.with_epoch_recap("memory", lambda: memory)
+        moments.new_epoch([])
+
     async def __aenter__(self) -> Self:
         await self._exit_stack.__aenter__()
         # file IO is offloaded to a thread; session.output stays on the main loop (avoid cross-thread).
         action = await asyncio.to_thread(self._sync_stubs)
         # always override the plugin stub (active dev artifact, not version-gated) so the latest lands in ghost home.
         await asyncio.to_thread(self._sync_dsh_plugin)
-        # always override the ego preset (independent composition, follows dsh 升级 rebase).
-        await asyncio.to_thread(self._sync_dsh_preset)
         if action is not None and self._session is not None:
             self._session.output(
                 "system",
@@ -363,6 +402,8 @@ class Dolores(Ghost):
                 self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR)
                 if self._memento.get_branch(branch_name) is None:
                     self._memento.create_branch(branch_name)
+                # 布局不在这里写: 两类 ground 与 on_commit 都是 stubs 里的种子文件,
+                # 由 _seed_ground 在开机时补进 ghost home; 分支目录本身保持空, 渲染靠 walk.
             # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
             # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
             from ._ego import DoloresEgo, DoloresEgoContext
@@ -394,6 +435,9 @@ class Dolores(Ghost):
                 # 启动补漏: 上次运行留下的空 note (关停时被取消的旁路) 在这里补派任务. 只派发不等待,
                 # 与运行期旁路同一条非阻塞路径 —— 不拖慢 boot.
                 self._memento_manager.backfill()
+                # 线自己渲染的那一页（计划 / 开着的 task）由 branch_view 槽位生成 —— 渲染在
+                # 这里, 因为 memories() 是同步读; 它现在真的会进 boot memory, 不再只在 memento:view 里.
+                self._memento_view = await self._memento_manager.aview_message()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
                     launcher=self.dsh_launcher,
@@ -420,7 +464,7 @@ class Dolores(Ghost):
     # ── startup (born) ───────────────────────────────
 
     async def startup(self) -> None:
-        """Lifecycle hook (born) — emit the boot self-wake signal from the cached startup doc.
+        """Lifecycle hook (born) — announce the ghost's own web face, then boot-wake.
 
         The doc is loaded once in ``__aenter__`` so both ``channel()`` (for ``init_frame``)
         and ``startup()`` (for command + instruction) read the same snapshot. Boot is
@@ -428,13 +472,71 @@ class Dolores(Ghost):
         """
         if self._matrix is None:
             return
+        # The surface is an organ, not a reading of the startup doc: it is announced
+        # whether or not a boot doc exists.
+        await self._serve_dsh_webview()
         doc = self._startup_doc
         if doc is None or (not doc.command and not doc.instruction):
             return
         from .nucleus import new_dolores_ego_signal
 
-        signal = new_dolores_ego_signal(kind="startup", command=doc.command, instruction=doc.instruction)
+        signal = new_dolores_ego_signal(
+            kind="startup",
+            command=doc.command,
+            instruction=self._with_dsh_surface(doc.instruction),
+        )
         self._matrix.session.add_signal(signal)
+
+    def _dsh_surface_url(self) -> str | None:
+        """The dsh web surface URL (its per-launch token included), or None before it is up.
+
+        One resolver for two consumers — the boot instruction and the webview
+        declaration.  Two copies of "where the surface lives" would be two
+        authorities over the same fact, and they would drift.
+        """
+        try:
+            launcher = self.dsh_launcher
+        except RuntimeError:
+            return None
+        return launcher.web_url() or f"{launcher.config.base_url}/?token={launcher.token()}"
+
+    async def _serve_dsh_webview(self) -> None:
+        """Announce the dsh web surface on the mesh, so a screen adopts it by itself.
+
+        The ghost's reasoning surface is an organ like any node's — not something a
+        human has to open, nor something the model has to materialize by hand with
+        ``open(url=...)``.  Left unannounced, "the reasoning is on stage" depends on
+        someone *remembering* to do it, which is exactly the kind of thing that
+        silently stops happening.
+        """
+        from ghoshell_moss.services.webview import WebViewDeclaration, WebViewServer
+
+        url = self._dsh_surface_url()
+        if not url:
+            return
+        await WebViewServer.serve(
+            self._matrix,
+            WebViewDeclaration(
+                url=url,
+                title="dsh",
+                description="what the ghost is thinking, as it thinks it",
+                icon="brain",
+            ),
+        )
+
+    def _with_dsh_surface(self, instruction: str) -> str:
+        """Append the dsh web surface URL to the boot instruction.
+
+        The URL carries a per-launch token, so it is only known after the launcher has
+        spawned dsh — it can never live in the startup doc. Without it the ghost cannot
+        reach its own web surface (where the human reads its messages), which is exactly
+        what happened before this line existed.
+        """
+        url = self._dsh_surface_url()
+        if not url:
+            return instruction
+        line = f"dsh web surface: {url}"
+        return f"{instruction}\n\n{line}" if instruction else line
 
     def _resolve_startup_doc(self) -> Path | None:
         """Resolve the current mode's startup doc, falling back to the default."""
@@ -532,8 +634,7 @@ class Dolores(Ghost):
           field is the ghost/user's and survives a version bump.
         - ground (the rest of ``stubs/``) → seed-once: a file is copied only when absent, so the
           ghost's own edits (identity / purpose / behaviors / GROUND.md) are never clobbered.
-        - plugin (``dsh_plugin`` / ``dsh_preset``) → always override, handled separately and not
-          version-gated.
+        - plugin (``dsh_plugin``) → always override, handled separately and not version-gated.
 
         The home directory itself is materialized first: a deleted/never-created ghost home is the
         normal way to reset an instance (delete the dir, restart → re-seed), so every write below
@@ -580,6 +681,17 @@ class Dolores(Ghost):
         if not marker.exists():
             return DoloresConfig()
         data = yaml.safe_load(marker.read_text(encoding="utf-8")) or {}
+        # 旧 stub 曾把 dsh 可执行路径写进 dsh.binary; 该机制已删除 (统一走 DSH_BINARY env).
+        # 老 ghost home 若还留着这个键, 拔掉并 warn, 而不是让 forbid-extra 把它变成启动失败.
+        dsh_section = data.get("dsh")
+        if isinstance(dsh_section, dict) and "binary" in dsh_section:
+            legacy = dsh_section.pop("binary")
+            self.logger.warning(
+                "ignoring legacy dsh.binary=%r in %s; pin the dsh binary with DSH_BINARY "
+                "in the ghost's .env instead",
+                legacy,
+                marker,
+            )
         return DoloresConfig(**data)
 
     def _write_version(self, version: str) -> None:
@@ -627,20 +739,6 @@ class Dolores(Ghost):
         target = self._home / ".dsh" / "profiles" / "web" / "moss-dolores-ghost-plugin.ts"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self._meta.dsh_plugin_stub(), target)
-
-    def _sync_dsh_preset(self) -> None:
-        """Copy the repo-owned dolores-ego preset into ghost home — always override.
-
-        The preset is the independent (non-standard) agent composition, authored in-repo under
-        dsh_preset/. Copied fresh every startup so dsh 升级 rebase 落在仓库文件上, 不在运行态.
-        """
-        if self._home is None:
-            return
-        shutil.copytree(
-            self._meta.dsh_preset_dir(),
-            self._home / ".dsh" / ".agent-presets",
-            dirs_exist_ok=True,
-        )
 
     def _sync_default_model(self) -> tuple[str, str] | None:
         """Assert the configured default model into the dsh settings document (DSH_HOME/settings.yaml).

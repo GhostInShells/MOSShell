@@ -9,7 +9,7 @@ status: completed
 status_note: Voice contract extracted from moss_runtime; listener_node dedup left
   for next wave
 title: Interleaved Voice
-updated: '2026-09-26'
+updated: '2026-10-19'
 ---
 
 # Interleaved Voice
@@ -104,12 +104,13 @@ AEC 在产品里有很多做法, openbox 只做一种。它不是礼仪的一个
 
 | 边 | 语义 | 本轮 |
 |----|------|------|
-| **听 → 说** | 听起音 → attenuate 说 | **做** |
+| **听 → 说** | 听起音 → attenuate 说 | **已做 2026-10-19**, 落点见文末「出声即让路」一节 |
 | **说 → 听** | 说时听关 (完整半双工闸门) | **暂不做**; 只做**几秒说话保护** —— 说止后短暂抑制听的 commit, 防尾音自触发 |
 
 现有 `host/listener/etiquette.py` 的三层里, 已有这张表的半边:
 
-- `first_packet` (`barge_in` / `interrupt` / `priority`) = 边「听起音 → 说」
+- `onset` (旧名 `first_packet`; `emit` / `interrupt` / `priority`) = 边「听起音 → 说」,
+  但**只到通告与提权**; 真正掐语音的那一刀在 `deliver.barge_in_while_speaking` 上 (2026-10-19)
 - `deliver` = 边「听尾包 → 交付」
 - `stop` = 判停 (何时产生尾包)
 
@@ -254,9 +255,15 @@ shell 核心的隐藏杀器: **解释器多通道化**。
 **对 interleaved 的直接含义**（当前理解, 非决议）:
 
 - 语音脱离身体交互靠 shell 树的**路由/并行**: speech 不在主轨 → 声音与躯体各自独立时序。
-- **打断的主机制是 command 级** (取消 `say` task), 不是 clear。command 打断本身就是强
-  周期约束 —— 取消那个 task, 粒度天然只伤它, 别的 channel 任务不动; `STOPPED(301)` +
-  `played_text` 已由 speech-governance 就绪。**clear 是兜底**, 不是打断日常路径。
+- **打断有两个入口, 落到同一个动作上**: 模型自己改口 = `clear_speech` 命令; 他开口 =
+  `deliver.barge_in_while_speaking` 触发的 `speech.clear()`. 两者都**只清说侧、不取消任务**
+  —— 被清掉的那条流自己关, 正在说的那个 `say` 随之自然结束, 全身动作一律不动.
+  **2026-10-19 推翻了这里早先「clear 只是兜底, 真正的打断是取消 `say` task」的判据**, 两条理由:
+  ① C1 修完之前 `clear()` 根本不停播放 (只清账本), 那个"兜底"定位是拿一个坏函数换来的 ——
+  函数修好了, 定位也就该重判; ② 听侧只拿得到说侧**表面**, 拿不到 `say` 的 task 句柄; 要它
+  取消任务, 就得把 shell 的任务树交给 listener —— 那层耦合比一次 `clear()` 重得多
+  (人类架构师反复说的"不要太重的耦合"). `interrupt` 那种 command 级取消仍在, 但它是**全身**
+  动作, 不该为一句抢话用上.
 - 前提 = speech 不能托管到主轨 (即点 1)。动机 = 剥并行主轨, 语音脱离身体交互。
 
 ### 3. 地板机参数化进 TUI, 四种 UI 形态
@@ -371,6 +378,10 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
    - `TTSManagerConfig.validate()` — volcengine 分支检查 `app_key`/`access_token` 非空非 `$`;
      `TTSServiceProvider.factory` `get_or_create` 后调用.
    - `VolcengineSaucConfig.validate()` — 检查 `api_key` (listener 侧后接).
+   **已修 2026-10-11**: `validate` 撞 pydantic v2 `BaseModel.validate` (deprecated classmethod),
+   两个 config 一并改名 `validate_configuration()`. 且 TTS 侧原只认旧版 `app_key`+`access_token`,
+   与 `gen_header` (优先 `api_key`) 及单凭据 `SEED_API_KEY` 文档相悖 — 只配 `SEED_API_KEY` 时被误判
+   降级. 改为与 `gen_header` 同选路: 有 `api_key` 即通过, 否则要 `app_key`+`access_token` 成对.
    **待做**: ConfigType 基类 `validate()` + ConfigStore 读时调用一次的机制 (可选, 用户判可跳过).
 7. **provider 降级**: speech / listener provider 据 config validate 降级 (null speech / null listener)。
    **已做 2026-09-20 (speech 侧)**: `TTSSpeechServiceProvider.factory` catch `force_fetch(TTS)`
@@ -390,6 +401,9 @@ ASR 的语义输出, 在门控之后; 门控做语义判断必然过严/过松�
 9. **对齐 AEC**: ASR 不听输出 (回声不进 ASR)。
 10. **首包发 signal 但不打断 speech**: 两边一起说 (双讲) 也许是好 feature。→ 推翻早先
     "听起音 → attenuate 说"的 barge-in 假设 (KD 中"听→说 做"那条)。
+    **2026-10-19 又翻回来了, 但换了个动作**: 不是 attenuate (把音量压下去, 人还得在一段
+    变小的声音里猜你在说什么), 而是**清掉已经过时的那一句**。而且它是 `duplex` 一档的
+    选择, 不是全局行为 —— 双讲仍然允许, 只是 `duplex` 不要它。判据见文末那节。
 11. **半双工 (说时不听) 可能不必要**: 它依赖外部界面启动 (永不自起), 有 AEC 后优先级下降。
 12. **封装物料**: listener controller 只实现单侧机制; 整体封装要在 `host/` 模块下有物料,
     方便迁移成 node, 甚至预写在 `host/nodes/`。
@@ -711,3 +725,158 @@ speech / None listener 各自静默降级 (Voice 自己判 `isinstance(speech, T
 **判据**: `moss-shell --voice all log` headless 起得来 —
 capture started → Voice lifecycle add → shell started → speech started; LIFO 关闭
 (shell exited → player closed → BaseTTSSpeech closed → HostListener closed).
+
+## 2026-10-13 后续补: 听觉链路的静默失败与无感知/无自愈故障
+
+> 人类架构师要求从 interleaved voice 起排查音频模块的静默失败, 以及"听觉循环异常导致
+> 崩溃、却无感知渠道、无自愈渠道"的问题。详细发现 + 修复方案 + 决策见
+> [2026-10-13_hearing-loop-silent-faults.md](2026-10-13_hearing-loop-silent-faults.md)。
+
+**发现两类, 且互锁**:
+
+- **静默失败**: S1 采集队列满 → 无声丢帧(连日志都没有, `miniaudio_capture.py:337-340`);
+  S2 设备锁争用 → 假装起动无设备(`:144-149`); S3 AEC 逐帧失败 → 全丢帧不自愈。
+- **无感知/无自愈 (核心)**: `HostListenerState._pump` 崩溃后 `is_running()` 撒谎、无人监督;
+  既有感知契约 `ASR.on_error` **全仓零注册**(死契约); 无重启/看门狗。默认 `always` 礼仪的
+  `idle_timeout=300` 会在 300s 后发**误导性** "no speech" 信号归因错误, 再降级 knock(不做 ASR)。
+
+**修复方向** (本 commit 内): 接活故障感知面(`Listener.on_error` + session pump 崩溃上行 →
+controller 发 `listener:error` signal), `is_running()` 说真话, controller **有界自动重启**
+(封顶后交回模型 re-activate); 三个静默失败各自补观测/自愈。
+
+**状态**: 修复落地 + 契约测试锚定, 待人类架构师确认后提交。
+## 2026-10-18 后续补: 分句交付 (clause delivery)
+
+> 人类架构师反复说过的一句话: **"分句发送这个概念始终没有奠定到, 每一轮开发它就理解不了。"**
+> 这一节就是为了断掉那个循环 —— 把那套语义写成判据, 而不是每次重新解释一遍。
+
+### 一句话
+
+`clause` 不是 `segment` 的别名。**分句是「云端 VAD 判出来的一句」, 段是「我们这边决定切的一段」。**
+一档礼仪可以选择「每句都送到大脑」, 而**段照旧按老逻辑走** —— 两者互不替代。
+
+### 两个 VAD, 两个层级
+
+| VAD | 在哪 | 判什么 | 产出 |
+|---|---|---|---|
+| 云端 VAD (`end_window_size`, 800ms) | ASR 服务端 | 一句是否说完 (`utterance.definite`) | `CLAUSE` 事件 |
+| 本地 VAD (礼仪的 `stop.silence` → `StopJudge`) | listener 侧 | 这一段该不该结束 | `commit()` → 发 NEG → 云端回 `is_last_package` → `TAIL` |
+
+`always` 这一档就是纯靠本地 VAD: 全程占着注意力, 最后判停提交一个包, 首包负责打断 —— 稳定的老礼仪。
+`cue` 一类则要**在段还活着的时候**就把每个分句送出去。
+
+### 为什么不能靠「每句 commit」实现分句发送 (走过的死路)
+
+按句 commit 等于每句都切段、重开 WS turn。后果是人类架构师点出来的那条:
+**WS 重启之后 ASR 解析不连贯 —— 后面发的内容纠正不了前面的分句, 还会切出更碎、丢了音频包的残句。**
+所以: **段不切, 分句照样发。** 分割交给增量规则, 不交给 commit。
+
+### 身份: 只有 impulse id 这一件事 (2026-10-18 人类架构师两次纠正后的定稿)
+
+**协议化的身份是 impulse id, 不是 signal id。** signal id 是传输层的包装, 可以每次都不一样,
+模型侧不必拿它推理。
+
+**impulse id 由 listener 在发送时自己规划**, 这是它作为协议生产方的职责:
+
+- `always` 一类: 一条话语发两个包 —— onset (`complete=false`) 与尾包 (`complete=true`) ——
+  **两个包用同一个 impulse id**。「这两个包是同一次话语」就是这么表达的, 同 id 吸收
+  (onset 占坑、尾包填坑) 靠的也是它。
+- 分句交付: **每句一个新 impulse id**。每一句都是一个独立的话语事件, 谁也不吸收谁。
+
+**segment_id 是地址, 不是身份。** 将来 listen 开存储时, 每个 segment 的整段音频落一个文件,
+`segment_id` 就是那个文件的标识。
+
+> 记在这里, 免得下一轮又"发明"一次 (人类架构师 2026-10-18 的原话):
+> **"现在不是要另外发明一个新字段, 而是正确地使用这个 signal ID / impulse ID。"**
+> 机制超过三个就没人跟得住了 —— 身份只用 impulse id 表达完。
+
+### 增量规则 (不变量)
+
+1. 每一包只带**上次没发过**的文本; 已发内容永不重发。
+2. 段收尾时若最终全文与已发的不一致, **才**额外带一次修正后的整句 —— 整句是异常包, 不是常态。
+3. 修正按**最长公共前缀**切差异, **禁止按长度相减**: ASR 的标点/空白在各次识别间会变, 长度相减会切出半句。
+4. **`paused` 是给模型看的那个字段**: `paused="true"` 表示这一包之后他可能停了 (段尾),
+   `paused="false"` 表示还在说 (中间分句)。**`complete` 不进模型面** —— 它是 mindflow 的
+   impulse 状态。命名绕开 `vad` / `segment` 这类行话: 模型要回答的不是"哪种 VAD", 而是
+   "他说完了没有", 而且 `paused` 读起来是信息 ("停了"), 不是许可 ("你可以说了")。
+
+### 已落地 / 未落地
+
+- **已落地** (2026-10-18):
+  - `10eb26e7` `host/listener/segment_delta.py` —— 规则 1/2/3 的纯逻辑, 十条单测.
+  - 协议: `ListenerSignal.impulse_id` (听侧规划的身份) + `paused` (给模型看的信息) +
+    `segment_id` (地址, 只在尾包出现).
+  - nucleus: 身份取 `impulse_id`, 渲染 `<listen ... paused="true|false">`.
+  - controller: `deliver.per_clause` 开关 —— 关 = 老行为 (只发尾包, 整段全文);
+    开 = 每句一包 (只带增量), 尾包只带剩余, 空则只留 `paused="true"` 标记.
+  - listener instruction 增加「怎么读一个 <listen> 包」.
+- **未落地**: `conversation` 这一档本身 (per_clause=true + silence>0)、低置信度阈值默认值。
+
+### 现状与要改的地方
+
+`ListenerNucleus` 现在拿 `segment_id` 同时当 `Impulse.id` 和 `trace_id` —— 这是误用:
+段地址被当成了话语身份。要改成 **listener 规划好的 impulse id**, `segment_id` 只作为地址随包携带。
+`always` 的行为不变 (它本来就同 id); 分句交付才有「每句一个新 id」这回事。
+
+### 与低置信度的关系 (同一天核过)
+
+链路本来就通: `new_listener_signal(low_conf=...)` → `ListenerSignal.low_conf` → nucleus 渲染
+`<listen low_conf="…">`。唯一的断点是礼仪侧 `deliver.low_confidence` 默认 `None` (= 不列)。
+所以这不是"要新做", 是"定下阈值 + 端到端验一次"。
+
+## 2026-10-19 后续补: 出声即让路 —— 说侧的那一把剪子
+
+### 一句话
+
+`duplex` 这一档里, **他一张口, 我正在播的那一句就断在那儿**: 提权一档让这一包赢下注意力,
+同时清掉说侧正在播的流。**只剪嘴, 不剪身体** —— 已经发出去的动作照常跑完。
+
+### 落点 (四处)
+
+| 在哪 | 是什么 |
+|---|---|
+| `host/listener/controller.py` `_barge_in(deliver, body)` | `_barge_in_boost` 扩成两半: 提权照旧, 再补一刀 `_cut_speech()` |
+| 同上 `_cut_speech()` | 调注入的 `speech_cutter`; 回调失败只记 `debug`, 不影响这一包交付 |
+| `host/voice/interleaved.py` `_speech_cutter()` | 从 `speech` 派生同步回调, 内部 `loop.create_task(speech.clear())` |
+| `host/listener/etiquette.py` `duplex.deliver.barge_in_while_speaking=True` | 能力在 `DeliverSpec` 上, **只由这一档兑现** |
+
+探针与剪子成对: `speaking_probe` 只回答"我在不在说", `speech_cutter` 才动手。组装者注入,
+listener 不打听说侧是谁。
+
+### 三条判据
+
+1. **判据是 `body` 非空, 不是"这是不是尾包"**。空包说的是"他停了", 不是"他在说" ——
+   拿空包当剪子, 等于每次该我接话之前先把自己的话剪掉。这跟分句交付的 `paused` 是同一条:
+   `paused="true"` 是信息, 不是许可。
+2. **只剪说侧**。声音是半双工介质, 两把声音叠着两边都亏; 动作不是, 动作可以并行。
+   所以是 `speech.clear()`, 不是 `shell.clear()`, 更不是取消任务。
+3. **能力挂在礼仪字段上, 但默认谁都不开, 只有 `duplex` 兑现它**。别的礼仪不该因为
+   "这个能力验过了"就跟着改行为 —— `cue` / `murmur` 守的是"什么时候开口是模型的判断"。
+
+### 同日: `clear_speech` 从 `call_soon` 改成 prepare 阶段清理 (血的教训)
+
+早先给 `clear_speech` 加 `call_soon=True` (语义对齐 `interrupt`), 想让它插队到正在播的那段
+话前面。**真机实测失败**: `call_soon` 是"入队即执行", 而清空是按**同轨低优先级**扫的 ——
+它把同一轮里排在它后面的 `say` 一起掀掉, 结果是前一句被杀、后一句被吞。
+
+改法: 把清理挪到 **`partial` (prepare / `on_compiled`) 阶段**。那时命令**还没进通道队列**,
+`speech.clear()` 看得见的只有**已经存在的流** —— "清掉旧的、放过新的"不是靠抢优先级抢来的,
+是**时序上天然成立**的。执行体留在后面, 只回报清了几条。
+
+> 值得单独记: 同一个需求 ("让它排到前面去") 有两个落点 —— 一个靠**抢优先级** (会被同轨规则
+> 反噬), 一个靠**选阶段** (不跟任何规则打架)。先问"这个动作该发生在队列的前面还是后面",
+> 再问"怎么插队"。
+
+### 实测 (D19 22:2x, `duplex` 档, 真机)
+
+- 我先说过一句短的, 去调工具, 再说长句: 他在工具窗口里出声, 长句刚开口就被掀掉。
+- 长句播放中他出声: 当句播 1.2s 被清 → `dropped 1 speech stream(s)` → 紧接着发的下一句
+  完整播完 4.4s。**剪旧的、留新的, 一次命中。**
+- 他停下时不剪: 空尾包没被当成剪子, 我没有自剪。
+
+### 未落地
+
+- 只在单进程 (interleaved voice 同组装者) 下验过; listener node 与 speech node 分离时
+  `speech_cutter` 的注入路径没验。分离部署下听侧拿不到说侧表面, 这一刀要么走 mesh 调用,
+  要么退化成"只提权不剪"。
+- 掐与提权绑在同一个字段上。将来若要"只提权不掐" (双讲礼仪), 得把它拆成两个字段。

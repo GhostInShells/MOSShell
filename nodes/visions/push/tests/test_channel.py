@@ -133,3 +133,34 @@ async def test_accept_all_skips_the_verdict(store):
         session = store.sessions()[-1]
         await _until(lambda: session.state == SessionState.LIVE)
         assert len(processes.spawned) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_requested_capture_index_reaches_the_producer(store):
+    processes = FakeSubprocesses()
+    accept_all = AcceptAll()
+    accept_all.enabled = True
+    chan, _ = _channel(store, processes, accept_all=accept_all)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("request", args=("screen",), kwargs={"index": 2})
+        session = store.sessions()[-1]
+        await _until(lambda: session.state == SessionState.LIVE)
+
+        assert "-i 2:none" in processes.spawned[0].meta.command
+
+
+@pytest.mark.asyncio
+async def test_a_dead_producer_reports_what_ffmpeg_said(store):
+    crash = b"[avfoundation @ 0x7f] Selected framerate is not supported\nError opening input"
+    processes = FakeSubprocesses(hold=False, stderr=crash)
+    accept_all = AcceptAll()
+    accept_all.enabled = True
+    chan, rec = _channel(store, processes, accept_all=accept_all)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("request", args=("screen",))
+        session = store.sessions()[-1]
+        await _until(lambda: session.state == SessionState.FAILED)
+
+        assert "not supported" in session.failure, "a bare exit code says nothing"
+        signalled = " ".join(str(s.messages[0].to_content_string()) for s in rec.signals)
+        assert "not supported" in signalled, "the reason must reach the model too"

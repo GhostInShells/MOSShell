@@ -292,3 +292,58 @@ async def test_mindflow_defaults_to_gate_on():
             await runtime.refresh_metas()
             assert "listener_nucleus" not in runtime.virtual_sub_channels()
             assert "gated_children" in runtime.self_meta().named_notices
+
+
+# ── idle 上的一次性动作 ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_idle_knock_arms_one_shot_on_the_coming_idle():
+    """channel 命令在跑 ⇒ mindflow 不在 idle; arm 之后回到 idle 才响一次."""
+    mf = BaseMindflow()
+    chan = build_mindflow_channel(mf)
+    async with mf:
+        sent: list = []
+        mf.add_signal = lambda signal: sent.append(signal)  # type: ignore[method-assign]
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            # 启动即 idle; 命令是在 action 里执行的, 所以先离开这一轮 idle,
+            # 复现的就是真实顺序: 非 idle 时 arm → 窗口打开 → 响一次.
+            await mf._stop_idling()
+            assert mf.is_idle() is False
+
+            result = await runtime.execute_command(
+                "idle-knock", kwargs={"seconds": 0.02, "text__": "过来看一眼"},
+            )
+            assert "armed" in result
+            assert len(mf._on_idle_callbacks) == 1
+
+            mf._set_idle()
+            await _wait_until(lambda: bool(sent))
+            assert len(sent) == 1
+            assert sent[0].priority == Priority.NOTICE
+            assert "过来看一眼" in sent[0].messages[0].to_content_string()
+            # 一次性: 发完就把自己从 idle 回调里摘掉, 下一轮不会再响.
+            assert len(mf._on_idle_callbacks) == 0
+
+
+@pytest.mark.asyncio
+async def test_idle_knock_is_cancelled_when_the_window_closes_first():
+    """真实信号先到 -> 这一轮 idle 关闭, 回调被取消, 什么都不发."""
+    mf = BaseMindflow()
+    chan = build_mindflow_channel(mf)
+    async with mf:
+        sent: list = []
+        mf.add_signal = lambda signal: sent.append(signal)  # type: ignore[method-assign]
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            await mf._stop_idling()
+
+            await runtime.execute_command(
+                "idle-knock", kwargs={"seconds": 10, "text__": "不该响"},
+            )
+            mf._set_idle()
+            await asyncio.sleep(0.01)
+            await mf._stop_idling()
+            await asyncio.sleep(0.02)
+            assert sent == []

@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import traceback
 from typing import Callable, Iterable
 
 from ghoshell_container import IoCContainer
@@ -12,6 +13,23 @@ from ghoshell_moss.core.blueprint.host import IGhostRuntime, MOSShellRuntime, Lo
 from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.host.safe_mode import SafeModeImpl
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostEvent
+from ghoshell_moss.types.topics.ghost import (
+    GHOST_IDLE,
+    GHOST_OUTPUT,
+    GHOST_THINKING,
+    GhostEventTopic,
+)
+
+# What actually goes on the bus. The session output keeps the whole record; the bus
+# carries only what a surface needs to follow along — a state light and the actions.
+# Everything else (turn/*, assistant/message, tool/result) would be traffic nobody
+# reads, and traffic is what drowns the signal.
+_PUBLISHED_EVENT_NAMES = frozenset({
+    GHOST_THINKING,
+    GHOST_IDLE,
+    GHOST_OUTPUT,
+    "dsh/tool/call",
+})
 from ghoshell_moss.core.blueprint.mindflow import (
     Mindflow, Thinking, Signal
 )
@@ -240,14 +258,23 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
         self._moss_runtime.matrix.create_task(future, stop_matrix_on_error=True, name=name)
 
     def close(self) -> None:
+        """关闭 runtime.
+
+        **入口日志必须是 INFO 且带调用栈**: 关闭路径上没有其它可复核的痕迹 ——
+        信号 handler 与内部 close 走的都是这里, 而"谁关的"此前只写 debug (默认不输出).
+        一次静默停摆 (2026-10-13 11:37) 因此无法与"人为重启"区分, 这条日志就是判据.
+        """
         logger = self.moss.logger
-        logger.debug("%r closing moss runtime", self)
+        logger.info(
+            "%r close() called — caller stack:\n%s",
+            self, "".join(traceback.format_stack(limit=12)[:-1]),
+        )
         self._moss_runtime.close()
         if self._mindflow is not None:
-            logger.debug("%r closing mindflow", self)
+            logger.info("%r closing mindflow", self)
             self._mindflow.close()
             self._loop_status["mindflow"] = 'stopped'
-        logger.debug("%r closed", self)
+        logger.info("%r closed", self)
 
     def inspect_loop_health(self) -> LoopHealth:
         return self._loop_status.copy()
@@ -410,6 +437,24 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
                 'ghost-event',
                 event.model_dump_json(indent=2, ensure_ascii=False, exclude_none=True, exclude_defaults=True),
             )
+        # Same event, second surface: the session output is for whoever is reading
+        # *this* session; the bus is for everyone else — the screen, a status bar, a
+        # panel that is not a session at all. Fire and forget: an event must never
+        # take the ghost down with it.
+        self._publish_ghost_event(event)
+
+    def _publish_ghost_event(self, event: GhostEvent) -> None:
+        if event.event not in _PUBLISHED_EVENT_NAMES:
+            return
+        try:
+            self._moss_runtime.session.topics.pub(
+                GhostEventTopic(**event.model_dump()),
+                creator='ghost',
+            )
+        except Exception:  # noqa: BLE001 — a bus that is down is not a ghost failure
+            self.moss.logger.exception(
+                "%s could not publish ghost event %r", self._log_prefix, event.event
+            )
 
     def _on_logos_end(self) -> None:
         """一段 logos (utterance) 结束 — 发 EOF 哨兵, 消费端据此冲刷尾段."""
@@ -441,8 +486,16 @@ class GhostInShellDrivenByMindflow(IGhostRuntime, MindflowInShell):
             session.output('error', log=f"articulate error: {e}")
             raise e
         finally:
+            # Articulate is over, thinking is over: the stage stops glowing here.
+            # In `finally` because a cancelled or failed turn is also "no longer
+            # thinking" — the state is what matters, not how it ended.
+            await self._on_ghost_event(GhostEvent(event=GHOST_IDLE, content="idle"))
             logos = "".join(logos_parts)
             if logos:
+                # 整段说完的话, 一条事件 —— 表面要的是成品, 不是逐字流.
+                await self._on_ghost_event(
+                    GhostEvent(event=GHOST_OUTPUT, content=logos)
+                )
                 # logos 同时发一条原子 OutputItem — headless 观测面 (on_output)
                 # 看不到 stream (get_logos), 这里补上 articulate 返回值的可观测出口.
                 session.output('logos', logos)
