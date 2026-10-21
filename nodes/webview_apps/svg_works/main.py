@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -270,6 +271,7 @@ class SurfaceServer:
         self._host = host
         self._html_path = html_path
         self._clients: set[ServerConnection] = set()
+        self._svg_waiters: dict[str, asyncio.Future] = {}
         self._server: Any = None
         self.port = port
 
@@ -323,8 +325,34 @@ class SurfaceServer:
                     if name and (name in self._store.works_names()):
                         self._store.open(name)
                         await self.broadcast({"type": "state", **self._store.snapshot()})
+                # 导出 SVG 用的是「页面自己序列化」这条路：画出来的 DOM 只有页面有，
+                # 服务端重放一遍 ops 得到的是一份近似，而近似会在细节上撒一次谎。
+                elif frame.get("type") == "svg.result":
+                    seq = str(frame.get("seq") or "")
+                    waiter = self._svg_waiters.pop(seq, None)
+                    if waiter is not None and not waiter.done():
+                        waiter.set_result(str(frame.get("data") or ""))
         finally:
             self._clients.discard(connection)
+            # 页面走了，还在等的序列化不该把调用方挂死。
+            for waiter in self._svg_waiters.values():
+                if not waiter.done():
+                    waiter.set_result("")
+            self._svg_waiters.clear()
+
+    async def request_svg(self, timeout: float = 5.0) -> str:
+        """Ask a connected page to serialize the drawing; return its markup."""
+        if not self._clients:
+            return ""
+        seq = uuid.uuid4().hex
+        waiter: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._svg_waiters[seq] = waiter
+        await self.broadcast({"type": "export.svg", "seq": seq})
+        try:
+            return await asyncio.wait_for(waiter, timeout)
+        except asyncio.TimeoutError:
+            self._svg_waiters.pop(seq, None)
+            return ""
 
     @staticmethod
     def _encode(frame: dict[str, Any]) -> str:
@@ -596,6 +624,33 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         )
         target.write_text(html, encoding="utf-8")
         return f"'{work.name}' → {target} ({len(work.ops)} ops, standalone)"
+
+    @chan.build.command(always_observe=False)
+    async def export_svg(name: str = "", path: str = "") -> str:
+        """Write the drawing out as one standalone SVG file — the picture, not the record.
+
+        `export_html` ships the ops and a player: the reader can step through how it was
+        drawn. This one ships the result: a single `.svg` that opens in any browser, drops
+        into a markdown file or an issue, and needs neither the node nor JavaScript. Use
+        it when what matters is the picture; use `export_work` when it is the making.
+
+        The markup comes from the connected page, not from replaying the ops here — the
+        page is the one that actually drew it, and a second renderer would only be an
+        approximation of it.
+
+        :param name: the work; empty = the current one
+        :param path: target path; a bare name lands in `works/` with an `.svg` suffix
+        """
+        work = store.get(name)
+        if work is None:
+            return "no work open"
+        markup = await server.request_svg()
+        if not markup:
+            return "no page connected — nothing to serialize (open the node's url first)"
+        target = work_path(path or work.name).with_suffix(".svg")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markup, encoding="utf-8")
+        return f"'{work.name}' → {target} ({len(markup)} chars)"
 
     @chan.build.command(always_observe=False)
     async def import_work(path: str, name: str = "") -> str:

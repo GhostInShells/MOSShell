@@ -513,7 +513,29 @@ function onFrame(f) {
   if (f.type === "panel") {
     document.body.classList.toggle("panelless", !f.show);
     renderStrip();
+    return;
   }
+  if (f.type === "export.svg") {
+    send({ type: "svg.result", seq: f.seq, data: serializeStage() });
+  }
+}
+
+// 导出的是"画出来的这一张"，不是"读的人此刻看的那一格"：所以 viewBox 取内容
+// 的外接框，而不是当前视口 —— 否则导出的图会缺掉画面外的部分。
+function serializeStage() {
+  const clone = stage.cloneNode(true);
+  clone.setAttribute("xmlns", SVG_NS);
+  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  let box = { x: 0, y: 0, width: 1000, height: 700 };
+  try {
+    const b = stage.getBBox();
+    if (b.width > 0 && b.height > 0) box = b;
+  } catch (e) { /* 空画布：退回默认坐标 */ }
+  clone.setAttribute("viewBox", `${box.x} ${box.y} ${box.width} ${box.height}`);
+  clone.setAttribute("width", String(Math.round(box.width)));
+  clone.setAttribute("height", String(Math.round(box.height)));
+  clone.removeAttribute("style");
+  return new XMLSerializer().serializeToString(clone);
 }
 
 // ---- 连接 ---------------------------------------------------------------
