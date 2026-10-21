@@ -16,8 +16,10 @@ store, not in this index, so reading it belongs to the ghost channel that holds 
 session, not to a shell that can only see the trajectory files. ``chat`` — a real round of
 inference is a capability of the model side, never a command a person runs.
 
-Every command resolves its root the same way: ``--root`` if given, else the ego trajectory
-under the current project's ghost home, else ``.memento/ego`` in the working directory.
+Every command resolves its root the same way: ``--root`` if given — before or after the
+subcommand, both work — else ``.memento/ego`` in the working directory. Nothing is
+searched for: a trajectory is not something to guess at, so a directory without one is an
+error that names what it looked at, not a reason to go hunting for someone else's memory.
 """
 
 from __future__ import annotations
@@ -61,35 +63,44 @@ memento_app.add_typer(hook_app, name="hook")
 
 DEFAULT_EGO_DIR = ".memento/ego"
 
+# The ``--root`` given before the subcommand. A callback option is the only place typer lets
+# it sit there; the commands keep their own ``--root`` so both orders read naturally. It is
+# reset on every invocation, so one process running several commands never inherits a root.
+_group_root: Optional[Path] = None
+
+
+@memento_app.callback()
+def _main(root: Optional[Path] = typer.Option(None, "--root", help="memento root directory.")):
+    """Memento: the trajectory index behind your own memory."""
+    global _group_root
+    _group_root = root
+
 
 # ── root resolution ─────────────────────────────────────────────────────────
 
 
-def _candidate_roots() -> list[Path]:
-    """Where a trajectory can live, nearest first: this project's ghosts, then cwd."""
-    cwd = Path.cwd()
-    candidates: list[Path] = []
-    ghosts = cwd / ".moss" / "ghosts"
-    if ghosts.is_dir():
-        for home in sorted(ghosts.iterdir()):
-            candidates.append(home / DEFAULT_EGO_DIR)
-    candidates.append(cwd / DEFAULT_EGO_DIR)
-    return candidates
-
-
 def _resolve_root(root: Optional[Path]) -> Path:
-    """One root, or a refusal that names what was looked at."""
-    if root is not None:
-        resolved = root.expanduser().resolve()
+    """One root, or a refusal that names what was looked at.
+
+    ``--root`` wins wherever it was written. Without it the answer is ``.memento/ego`` under
+    the working directory — the one place a person standing here means. There is no search:
+    picking a ghost home for you would mean silently reading a trajectory nobody asked for.
+    """
+    given = root if root is not None else _group_root
+    if given is not None:
+        resolved = given.expanduser().resolve()
         if not resolved.is_dir():
             print_error(f"not a directory: {resolved}")
             raise typer.Exit(code=2)
         return resolved
-    found = [c for c in _candidate_roots() if c.is_dir()]
-    if not found:
-        print_error("no memento root found; pass --root <dir> (e.g. .moss/ghosts/<name>/.memento/ego)")
+    cwd_root = (Path.cwd() / DEFAULT_EGO_DIR).resolve()
+    if not cwd_root.is_dir():
+        print_error(
+            f"no trajectory at {cwd_root}; pass --root <dir> "
+            "(e.g. --root .moss/ghosts/<name>/.memento/ego)"
+        )
         raise typer.Exit(code=2)
-    return found[0].resolve()
+    return cwd_root
 
 
 def _branch(m, name: Optional[str]):
@@ -112,7 +123,7 @@ def _branch(m, name: Optional[str]):
 
 
 def _hook_roots(branch, root: Path) -> list[Path]:
-    """Branch first, then the ego root — a branch overrides, it does not replace."""
+    """Branch first, then the ego root — both run: a branch adds to the root, never replaces it."""
     return [branch.path, root]
 
 

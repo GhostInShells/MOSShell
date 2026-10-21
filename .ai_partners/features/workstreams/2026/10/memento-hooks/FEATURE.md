@@ -1,15 +1,14 @@
 ---
-title: Memento Hooks
-status: in-progress
-priority: P2
 created: 2026-10-21
-updated: 2026-10-21
 depends: []
-milestone:
-description: >-
-  Memento's lifecycle events (commit, branch) can trigger behaviour and produce side
-  effects. The trigger is not a framework but a file: drop an executable in the right
-  directory and it runs; take it away and it does not.
+description: 'Memento''s lifecycle events (commit, branch) can trigger behaviour and
+  produce side effects. The trigger is not a framework but a file: drop an executable
+  in the right directory and it runs; take it away and it does not.'
+milestone: null
+priority: P2
+status: completed
+title: Memento Hooks
+updated: '2026-10-21'
 ---
 
 # Memento Hooks
@@ -185,3 +184,85 @@ it is a capability of the model side, not a command a person runs. The old CLI's
 1. Hook discovery and execution (three slots, env-var protocol, concurrency, failure log).
 2. The CLI above, running against the real trajectory.
 3. The two ground points and the `plan` / `task` convention.
+
+## Decisions from the first live accept (D21 evening)
+
+### D12 — The view hooks live in the ghost home, not in the layout code
+
+`_memento_layout.py` writes only what is *convention*: the two ground points and
+`on_commit`. `commit_view.py` / `branch_view.py` are content the ghost authors in its own
+home — the layout must not grow them.
+
+> 「对，所以 layout 里面不要有。」
+
+Writing those two files by hand was also the whole of the fix for "the branch view shows no
+plan": the mechanism was already right, the slots were simply empty.
+
+### D13 — A hook speaks for itself; the kernel carries no result
+
+`on_commit` stays fire-and-forget. After it moves something it does two things, both on the
+bypass:
+
+1. writes `on_commit.md` into the anchor directory — the commit view's `ls` pin lists it, so
+   the record travels with the anchor and needs no plumbing to be seen;
+2. pushes a `notify` signal with `next=True` **from its own process** — the hook is a child
+   of the memento process, it inherits the environment, so `Matrix.new(...).run(main)` plus
+   `matrix.session.add_signal(...)` is all it takes.
+
+No return value, no awaiting, no kernel line. The side effect that must be visible is
+announced by the thing that performed it — which is also why a slow or broken hook can never
+hold up the commit that already landed.
+
+`background` is not a signal field; that knob belongs to the delivery layer (terminal
+`level`, listener `deliver.mode`). "Do not fight for attention" is expressed by the signal
+type and its priority, not by a flag.
+
+> 「它完全可以在这个动作做完了之后……给你主动的发一个 signal，然后在这个 signal 里面做描述，那这样就不需要等待这个进程的返回值了。」
+
+Verified end to end: a bare script sends a notify into the ghost's context; a task marked
+`done` moves into the new anchor directory and the notify names the file that moved.
+
+### D14 — Corrections are appended, never rewritten
+
+The ground frame already in context is history. Rewriting it would break the KV prefix from
+that point on and, worse, silently edit what the ghost has read — the ghost would have no
+memory of having been corrected. A change is announced as an increment (the notify above);
+the stale frame stays visible as the thing the increment corrects.
+
+> 「上面那个 plan.md 可能还出现在 branch 里面……这个做法是不是 OK 的？」 — it is, as long as the
+> increment names what is now false.
+
+### D15 — Layering is additive, not overriding
+
+Two places mount a slot: the ego root (`<root>/hooks/`) and a branch
+(`branches/<id>/hooks/`). When both have the file, **both run** — a branch adds to the root's
+discipline, it never switches it off. The root is the layer that carries the ghost's own
+standing rules; a branch is the escape hatch for one line of work that needs something extra,
+and it should not be able to silently disable a rule the ghost wrote for itself.
+
+> 「还是不是只要 owner 有就够了？」 — the root alone is enough to start; the branch layer stays a
+> spare knob, on the condition that it can only add.
+
+The docstring on the CLI's `_hook_roots` said "overrides" and was corrected to match the code.
+
+### D16 — The root is required; what it must not do is make you hunt for it
+
+A trajectory has no ambient identity: given no directory, the CLI cannot know whose memory
+it is being asked to read. Searching for one is therefore not a convenience but a guess —
+it picked the first ghost home in alphabetical order, so a shell in this repository could
+quietly read someone else's line.
+
+The rule settled on: `--root` if given, else `.memento/ego` under the **current working
+directory**, else an error that names the path it looked at. Nothing is searched.
+
+> 「如果没有给 root 的时候就默认是 CWD，然后 CWD 没有就报错，那也不用去找，对吧？你这主动找这件事情是有点诡异的。」
+
+Two ergonomic frictions came with it, and both were fixed rather than documented:
+
+- `--root` now works on either side of the subcommand (`memento --root X log` and
+  `memento log --root X` are the same command). It used to be a command-level option only,
+  so the natural spelling failed with `No such option`.
+- the refusal prints the exact flag to pass, with the ghost-home form as the example.
+
+The lesson worth keeping: when a tool's answer is ambiguous, the fix is to make the
+ambiguity an error, not to make the guess smarter.

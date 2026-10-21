@@ -400,6 +400,16 @@ class Dolores(Ghost):
                 self._memento = new_local_memento(self._home / _EGO_MEMENTO_DIR)
                 if self._memento.get_branch(branch_name) is None:
                     self._memento.create_branch(branch_name)
+                # 布局是约定不是配置: 两个 ground 点与默认 on_commit, 缺哪补哪, 已有的绝不覆盖.
+                from ._memento_layout import ensure_memento_layout
+
+                branch = self._memento.get_branch(branch_name)
+                if branch is not None:
+                    written = ensure_memento_layout(
+                        self._home / _EGO_MEMENTO_DIR, branch.path
+                    )
+                    if written:
+                        self.logger.info("memento layout: wrote %s", ", ".join(written))
             # ego wiring: create and hold the ego session (via plugin RPC), after dsh is ready.
             # dependency inversion: the ego does not back-ref the ghost; runtime context is injected via ctx/launcher/memories closure.
             from ._ego import DoloresEgo, DoloresEgoContext
