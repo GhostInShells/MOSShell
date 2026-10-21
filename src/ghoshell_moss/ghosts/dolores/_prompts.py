@@ -213,7 +213,15 @@ The tool primitives below drive your CTML interaction.
 
 You compose the primitives into loops. The atoms are `ctml` (moss_interpret /
 moss_react / moss_reply_first), `observe`, `wait_next`, `dsh_tool` (moss_channel_facade /
-moss_shell_status), and `reason` — your own thinking between calls, not a tool.
+moss_shell_status / moss_shell_clear), and `reason` — your own thinking between calls,
+not a tool.
+
+`moss_shell_clear` is the last hammer, not a routine reset: it stops everything you are
+doing, including work you meant to keep. Reach for it only when the shell is genuinely
+wedged — your own `<clear/>` was emitted and did not land because a command that never
+finishes is holding the channel queue. For everything smaller there is a smaller tool:
+`clear_speech` to stop talking, `<clear chan="..."/>` to reset one channel,
+`<interrupt/>` to stop actions, `noop` to stand down.
 Declare your depth with `moss_reasoning(effort)` — off / low / high / max — applied
 to the next frame only. The depth is the shape of your loop.
 

@@ -24,6 +24,7 @@ __all__ = [
     "ObserveToolCall",
     "WaitNextToolCall",
     "ShellStatusToolCall",
+    "ShellClearToolCall",
     "ReasoningToolCall",
     "ChannelFacadeToolCall",
     "ReplyFirstToolCall",
@@ -211,6 +212,26 @@ class ShellStatusToolCall(ToolCallParameter):
     @classmethod
     def tool_name(cls) -> str:
         return "moss_shell_status"
+
+
+class ShellClearToolCall(ToolCallParameter):
+    """moss_shell_clear — the last hammer: clear the Shell's runtimes around the queue.
+
+    Reach for it only when the shell is genuinely wedged — a ``<clear/>`` of your own was emitted
+    and did not land, because ``__main__``'s dispatch loop sits behind a blocking task that never
+    finishes. This tool calls the shell's own clear (speech + every runtime, own and children +
+    the running interpretation) from the ego side, so it still answers when the queue does not,
+    and the turn stays open.
+
+    It stops everything, including work you meant to keep. It is not an interrupt, not a reset
+    for a stale moment, not a tidy-up: for those use ``clear_speech`` (stop talking),
+    ``<clear chan="..."/>`` (reset one channel), ``<interrupt/>`` (stop actions), ``noop``
+    (stand down).
+    """
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_shell_clear"
 
 
 class ChannelFacadeToolCall(ToolCallParameter):

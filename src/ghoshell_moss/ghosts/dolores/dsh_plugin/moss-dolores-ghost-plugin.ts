@@ -618,6 +618,19 @@ const egoTools = [
     execute: async (_args, exec) => awaitToolResult('moss_shell_status', String(exec.callId), exec.signal),
   }),
   defineTool({
+    name: 'moss_shell_clear',
+    // 最后一把锤子: 走 ego 直接调 shell.clear(), 绕过 __main__ 的命令队列. 卡住的正是那条队列时,
+    // CTML 的 <clear/> 自己也排在后面 —— 只有这条还通. 不清 turn: 下一步要能看见清完的样子.
+    // 它会停掉一切, 包括你想留着的东西, 所以不是 interrupt、不是重置、不是收尾工具.
+    description: 'The last hammer — clear the Shell right now (drop the speech, reset every channel runtime, own and children, and stop the running plan) without going through CTML. Reach for it ONLY when the shell is genuinely wedged: you already emitted a <clear/> and it did not land, because a command that never finishes is holding the channel queue and the clear queued behind it. It stops everything, including work you meant to keep — it is not an interrupt, not a reset for a stale moment, not a tidy-up. For anything smaller use clear_speech (stop talking), <clear chan="..."/> (reset one channel), <interrupt/> (stop actions) or noop (stand down). The turn stays open, so you can look at what the clear left behind.',
+    parameters: {},
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_shell_clear', String(exec.callId), exec.signal),
+  }),
+  defineTool({
     name: 'moss_channel_facade',
     // 自省工具: recursive=true 列 path 前缀下的 channel (取代 moss_channels), false 读单个完整操作面.
     description: 'Read your channel operating surface. With recursive=true (default) list every channel under channel_path (empty = all); with recursive=false read one channel\'s full surface (instruction, commands, notices, state). For self-inspection — normally you already have this in context.',

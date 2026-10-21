@@ -2252,6 +2252,39 @@ class TestDoloresRun:
         assert ego.rpc_calls == [("call_s", "idle, 2 actions running", None, False)]
 
     @pytest.mark.asyncio
+    async def test_shell_clear_reaches_shell_directly(self):
+        """moss_shell_clear 直接调 shell.clear(), 不经过 CTML 的 __main__ 队列.
+
+        这是排队堵死时的逃生口: CTML 的 <clear/> 自己也是一条命令, 会和被堵的命令排在一起.
+        它不该签发 moment, 也不该掐回合 —— 下一步要能看见清完之后的现场.
+        """
+        from ._run import DoloresRun
+
+        calls = []
+
+        class _Shell:
+            async def clear(self):
+                calls.append("clear")
+
+        class _Facade:
+            def __init__(self):
+                self.shell = _Shell()
+
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        run = DoloresRun(
+            ego=ego, thinking=FakeRunThinking(), thinking_event=asyncio.Event(), facade=_Facade(),
+        )
+        await run._handle_tool_use_event(self._tool_call("moss_shell_clear", call_id="call_c"), {})
+
+        assert calls == ["clear"], "shell.clear() 没被调用 —— 逃生口等于不存在"
+        call_id, result, error, cancel = ego.rpc_calls[0]
+        assert call_id == "call_c"
+        assert error is None
+        assert cancel is False, "清壳不该掐掉回合, 否则下一步看不到结果"
+        assert "cleared" in result
+
+    @pytest.mark.asyncio
     async def test_observe_observes_moment(self):
         """moss_observe 等动作完 + observe 最新 moment (返回 moment_ref 并注入)."""
         from ghoshell_moss.core.blueprint.moment import Moment

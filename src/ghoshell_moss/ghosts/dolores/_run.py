@@ -46,6 +46,7 @@ from ._tools import (
     ObserveToolCall,
     WaitNextToolCall,
     ShellStatusToolCall,
+    ShellClearToolCall,
     ReasoningToolCall,
     ChannelFacadeToolCall,
     ReplyFirstToolCall,
@@ -517,6 +518,10 @@ class DoloresRun:
         if result is not None:
             await self._dispatch_tool_result(result)
             return
+        result = await ShellClearToolCall.run_tool(event, self._handle_shell_clear, logger=self._logger)
+        if result is not None:
+            await self._dispatch_tool_result(result)
+            return
         result = await ChannelFacadeToolCall.run_tool(event, self._handle_channel_facade, logger=self._logger)
         if result is not None:
             await self._dispatch_tool_result(result)
@@ -691,6 +696,19 @@ class DoloresRun:
     async def _handle_shell_status(self, call: ShellStatusToolCall) -> str:
         """shell_status handler — observe the Shell running status now; returns the status description, produces no moment."""
         return self._facade.status().description()
+
+    async def _handle_shell_clear(self, call: ShellClearToolCall) -> str:
+        """shell_clear handler — clear the shell's runtimes from here, around the command queue.
+
+        ``shell.clear()`` is the shell's own escape path: it drops speech, clears every runtime
+        (own and children) and stops the running interpretation. Reaching it from the ego means it
+        still works when ``__main__``'s dispatch loop is wedged — the exact case a CTML ``<clear/>``
+        cannot handle, because that one is itself queued on the same loop. No moment, no cancel:
+        the turn stays open so the next step can look at what the clear left behind.
+        """
+        shell = self._facade.shell
+        await shell.clear()
+        return "cleared the shell: speech dropped, every channel runtime reset, interpretation stopped"
 
     async def _handle_channel_facade(self, call: ChannelFacadeToolCall) -> str:
         """moss_channel_facade handler — recursive lists channels under the path prefix; otherwise one channel's full surface."""
