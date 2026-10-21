@@ -7,6 +7,7 @@ from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
+from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.speech import (
     PlaybackSample,
     Speech,
@@ -210,6 +211,8 @@ class _SpeechCommandFactory:
             f":param voice: Speed, pitch, etc. of the voice. JSON structure, schema is {voice_schema_str}\n"
             f"  When calling via CTML, voice must be a JSON string, e.g. voice:dict=\"{{'speed': 1.0, 'pitch': 'high'}}\"\n"
             f":param as_default: Make the voice state set in this turn the default.\n"
+            f":param replace: drop whatever is still being said and say this instead — one call,\n"
+            f"  not clear_speech followed by say. Default false: the line queues behind the rest.\n"
             f":param chunks__: The text content you speak.\n"
             f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"
             f"  Available tones: {tone_descriptions_str}\n"
@@ -222,8 +225,13 @@ class _SpeechCommandFactory:
                 voice: dict | None = None,
                 as_default: bool = False,
                 tone: str = "",
+                replace: bool = False,
         ) -> tuple[list, dict]:
             self._check_muted()
+            # 「换一句」是一个动作, 不是两个. 清退放在 prepare 阶段 (命令还没进队列),
+            # 所以它只掀掉此刻已经存在的流, 不会误伤排在这一句后面的东西.
+            if replace:
+                await self._clear_speech_partial()
             if as_default:
                 if voice:
                     tts.set_voice(voice)
@@ -248,7 +256,13 @@ class _SpeechCommandFactory:
             _ = asyncio.create_task(run_tts_batch())
             return [], dict(voice=voice, chunks__=stream, as_default=as_default)
 
-        async def say(chunks__, voice: dict | None = None, as_default: bool = False, tone: str = "") -> str | None:
+        async def say(
+                chunks__,
+                voice: dict | None = None,
+                as_default: bool = False,
+                tone: str = "",
+                replace: bool = False,
+        ) -> str | None:
             self._check_muted()
             if not isinstance(chunks__, SpeechStream):
                 raise ValueError(f"System error: Chunks is not prepared")
@@ -302,6 +316,41 @@ class SpeechChannelModule(ChannelModule):
         恢复则自动回来.
         """
         return self._speech is not None and self._speech.is_running()
+
+    async def get_context_messages(self) -> list[Message]:
+        """说话的运行时状态 — 每轮读一次当下, 不说话时不出现.
+
+        notice 是增量下发的: 秒数每轮都在变, 走 delta 就等于每轮推一条状态刷屏.
+        context message 每轮本来就要重发一份, 进度一直变不吃额外代价 —— 这个场景下
+        它比 delta 好用.
+
+        报的是「还有多少没说」, 不是「说到第几个字」: 我需要的判断是「这段话还剩多长,
+        值不值得现在停下」。数字全部来自 speech 契约, 这里只负责排版。
+        """
+        line = self._speech_state_line()
+        if not line:
+            return []
+        return [Message.new(tag="speech").with_content(line)]
+
+    def _speech_state_line(self) -> str:
+        """一行说清「现在还有多少话没出口」; 不在说话就是空串, 整条不出现.
+
+        数据只从契约上取: 活着几条流由 ``Speech.streams()`` 回答, 每条还剩多少由
+        ``SpeechStream.unplayed()`` 回答. 某个后端说不清时就不报那个数——报个数是
+        为了方便我判断, 不是义务, 更不能拿零去冒充。
+        """
+        speech = self._speech
+        if speech is None:
+            return ""
+        alive = [stream for stream in speech.streams() if not stream.is_closed()]
+        if not alive:
+            return ""
+        lefts = [stream.unplayed() for stream in alive]
+        said = f"{len(alive)} stream(s) speaking"
+        if all(left is not None for left in lefts):
+            ahead = sum(len(left) for left in lefts if left is not None)
+            said += f" · {ahead} chars still to say" if ahead else " · nothing left to say"
+        return f"speech: {said} — clear_speech drops it, say(replace=True) swaps it"
 
     async def get_named_notices(self) -> dict[str, str | None]:
         """此刻的状态 — 命令表面写契约, 状态由这里随 meta 刷新下发.

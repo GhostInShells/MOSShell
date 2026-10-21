@@ -103,6 +103,18 @@ class TTSSpeechStream(SpeechStream):
     def is_closed(self) -> bool:
         return self._closed_event.is_set()
 
+    def unplayed(self) -> str | None:
+        """缓冲里还没播出去的那一段.
+
+        对齐可用时它是准的 (played_text 是逐 clause 推的); 没有 clause 能力的后端
+        played_text 返回空串, 这时把整段缓冲当成没播过 —— 那是保守的偏高, 不是零。
+        """
+        played = self.played_text()
+        buffered = self._text_buffer
+        if played and buffered.startswith(played):
+            return buffered[len(played):]
+        return buffered
+
     def played_text(self) -> str:
         """已被真实播放出去的文本 — 由 clause 对齐推出, 不是已喂文本.
 
@@ -336,6 +348,10 @@ class BaseTTSSpeech(TTSSpeech):
         self._streams[stream.id] = stream
         self._last_stream = stream
         return stream
+
+    def streams(self) -> list[SpeechStream]:
+        """还活着的流 — 一条承诺就是一段要说的话, 关掉的已经从字典里摘掉."""
+        return list(self._streams.values())
 
     def is_running(self) -> bool:
         return self._started and not self._closing

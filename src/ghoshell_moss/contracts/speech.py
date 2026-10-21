@@ -128,6 +128,14 @@ class SpeechStream(ABC):
         """
         pass
 
+    def unplayed(self) -> str | None:
+        """还没说出口的文本 —— 判断「这段话还剩多长」用的那个数.
+
+        与 ``played_text()`` 同一套诚实约定: ``None`` 表示这个实现给不出, 而不是
+        「没有剩余」。给不出就是给不出, 调用方不许拿空串冒充零。
+        """
+        return None
+
     def played_text(self) -> str:
         """已经被真实播放出去的文本; 拿不到 text↔音频对齐时返回空串.
 
@@ -299,6 +307,15 @@ class Speech(ABC):
         对齐听侧 ``RecognitionSegment`` (文本 + 音频存储单位). 默认 no-op.
         """
         return lambda: None
+
+    @abstractmethod
+    def streams(self) -> list[SpeechStream]:
+        """还活着的输出流 —— 已经交出、还没播完的那些.
+
+        这是「我现在还有多少话没出口」的唯一来源. 抽象在这里而不是让调用方去问具体
+        后端: 谁来持有流, 谁就负责回答; 拿不到的实现在这里没有第二种说法.
+        """
+        pass
 
     @abstractmethod
     def is_running(self) -> bool:

@@ -116,6 +116,9 @@ class MockSpeech(Speech):
         self._streams[stream_id] = stream
         return stream
 
+    def streams(self) -> list[SpeechStream]:
+        return [s for s in self._streams.values() if not s.output_done_event.is_set()]
+
     def is_running(self) -> bool:
         return True
 

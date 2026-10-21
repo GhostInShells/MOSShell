@@ -87,6 +87,10 @@ class _FakeTTSSpeech(TTSSpeech):
     def new_segment(self, *, batch_id: str | None = None) -> SpeechStream:
         raise NotImplementedError
 
+    def streams(self) -> list[SpeechStream]:
+        """不做真实播放的假体: 手上没有流, 如实说没有."""
+        return []
+
     def is_running(self) -> bool:
         return True
 
@@ -274,10 +278,12 @@ async def test_clear_speech_drops_every_open_stream_and_leaves_the_rest_alone():
     speech.dropped = ["first clause", "second clause"]
     runtime_channel = _new_bound_runtime(SpeechChannelModule(), speech)
     async with runtime_channel.bootstrap() as runtime:
-        clear_speech = runtime.get_command("clear_speech")
-        assert clear_speech is not None
+        assert runtime.get_command("clear_speech") is not None
 
-        receipt = await clear_speech()
+        # 走真实的派发路径: clear_speech 的清退写在 prepare (on_compiled) 里 —— 那是
+        # 命令还没进队列、只有此刻已有的流会被掀掉的时刻. 直接调命令对象只跑到执行体,
+        # 于是"什么都没清"看起来像"清不掉", 这不是产品行为, 是测试绕过了准备阶段.
+        receipt = await runtime.execute_command("clear_speech")
 
         assert speech.clears == 1
         assert "2" in receipt
