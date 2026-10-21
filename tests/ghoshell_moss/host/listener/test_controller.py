@@ -1285,29 +1285,30 @@ def test_barge_in_does_not_touch_speech_while_not_speaking():
     assert cuts == []
 
 
-def test_no_builtin_but_duplex_yields_to_speech_by_default():
-    """出声即让路是「这一档」的选择: 内建礼仪里只有 duplex 打开它.
+def test_no_builtin_but_cue_yields_to_speech_by_default():
+    """出声即让路是「这一档」的选择: 内建礼仪里只有 cue 打开它.
 
-    duplex 是全双工那一档 —— "我正说着、他又说了"时话音让路是它的性质; 别的礼仪
-    不因为"能力验过"就跟着改行为. 判据: 验过一个开关, 不许因此改掉几十档礼仪的默认.
+    cue 的意思是"被点名才开口": 我说的是应答, 他一开口应答就该让路. 基线 duplex
+    不跟着改 —— 我说完这一句再把话筒交出去. 判据: 验过一个开关, 不许因此改掉几十档
+    礼仪的默认.
     """
     from ghoshell_moss.host.listener import etiquette
 
     specs = [
-        name for name in etiquette.__all__
-        if name not in ("cue", "DeliverMode") and isinstance(getattr(etiquette, name), etiquette.EtiquetteSpec)
+        name for name in dir(etiquette)
+        if isinstance(getattr(etiquette, name), etiquette.EtiquetteSpec)
     ]
     assert specs, "builtin etiquettes should not be empty"
     yielding = [n for n in specs if getattr(etiquette, n).deliver.barge_in_while_speaking]
-    assert yielding == ["duplex"]
+    assert yielding == ["cue"]
 
 
 def test_duplex_is_full_duplex_and_never_interrupts_the_ghost():
-    """duplex 一条礼纪要兑现: 每句一包、有真的判停收口、不抢注意力.
+    """duplex 一条礼纪要兑现: 每句一包、有真的判停收口、不抢注意力、不掐语音.
 
     缺了判停就退化成 cue (他停不停只能靠我自己猜); 缺了分句就退化成一次一整段
     (我拿不到"他还在说"的中间态). 打断分两层: 注意力不抢 (interrupt=False),
-    但我正出声时话音让路 —— 那是说侧的事, 不是把这一轮掀掉.
+    语音也不抢 —— 基线是"我把这句说完再让", 要立刻拿话筒的是 cue/always.
     """
     from ghoshell_moss.host.listener import etiquette
 
@@ -1316,7 +1317,7 @@ def test_duplex_is_full_duplex_and_never_interrupts_the_ghost():
     assert spec.stop.silence > 0
     assert not spec.deliver.interrupt
     assert not spec.onset.emit
-    assert spec.deliver.barge_in_while_speaking
+    assert not spec.deliver.barge_in_while_speaking
 
 
 def test_default_etiquette_is_full_duplex():
@@ -1627,3 +1628,94 @@ async def test_talking_readable_in_emit_true_pull():
     controller.stop()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+# ── voiceflow: 读 / 改 / 存 ──────────────────────────────────────────────────
+#
+# 契约: 「对话现在是按什么节奏走的」是一个活状态, 不是一套模式. 读它要看得见三个维度,
+# 改它要回改完之后的现值 (那就是"生效"的证据), 存它要把整份状态变成一个名字.
+
+
+@pytest.mark.asyncio
+async def test_interaction_reads_all_three_dimensions():
+    """读: current 的名字 + 出身 + 三维现值, 缺一层就不叫"看得见节奏"."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    state = controller.interaction_state()
+    values = state["values"]
+
+    assert state["current"] == "always"
+    assert state["origin"] == "always"
+    assert state["deviated"] == []
+    assert {"stop.silence", "deliver.mode", "onset.interrupt"} <= set(values)
+    assert "always" in state["presets"]
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_tune_returns_the_state_reread_after_the_change():
+    """改: 返回的就是改完再读一遍的现值 —— 不是 ok, 也不是改之前的快照."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    state, touched, restarted = controller.tune_interaction({"deliver.mode": "aside"})
+
+    assert touched == ["deliver.mode"]
+    assert restarted is False
+    assert state["values"]["deliver.mode"] == "aside"
+    assert "deliver.mode" in state["deviated"]  # 跟出身比, 这一格动了
+    assert controller.interaction_state()["values"]["deliver.mode"] == "aside"
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_tuning_a_stop_knob_restarts_and_says_so():
+    """判停那一层在会话启动时就被拷走, 改它必须重开会话 —— 返回值不许装作已经生效."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    state, touched, restarted = controller.tune_interaction({"stop.silence": 2.5})
+
+    assert touched == ["stop.silence"]
+    assert restarted is True
+    assert state["values"]["stop.silence"] == 2.5
+    await _stop(controller._active_task)
+
+
+@pytest.mark.asyncio
+async def test_tune_rejects_a_key_it_does_not_own():
+    """不认的键当场报错: "写进去了但没生效"比报错难查得多."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+
+    with pytest.raises(ValueError):
+        controller.tune_interaction({"deliver.volume": 3})
+
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_save_keeps_the_whole_current_under_a_new_name():
+    """存: 写出去的是整份 current, 不是跟出身的差异; 存完它就在配置里活着."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    task, _ = await _start_controller(controller, controller.always, timeout=5.0)
+    controller.tune_interaction({"deliver.mode": "aside", "deliver.interrupt": False})
+
+    message = controller.save_interaction("quiet-room", "答在闲下来之后")
+
+    assert "quiet-room" in message
+    saved = controller.etiquette_config().get("quiet-room")
+    assert saved is not None
+    assert saved.deliver.mode == "aside"
+    assert saved.description == "答在闲下来之后"
+    assert saved.stop.silence == controller.interaction_state()["values"]["stop.silence"]
+    await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_save_without_a_current_interaction_refuses():
+    """没有 current 就没有可存的东西 —— 报错, 不拿一套空默认糊过去."""
+    controller = ListenerController(listener=_MockListener(), asr=_MockASR())
+    with pytest.raises(ValueError):
+        controller.save_interaction("nothing")

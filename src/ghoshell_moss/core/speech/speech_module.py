@@ -213,6 +213,9 @@ class _SpeechCommandFactory:
             f":param as_default: Make the voice state set in this turn the default.\n"
             f":param replace: drop whatever is still being said and say this instead — one call,\n"
             f"  not clear_speech followed by say. Default false: the line queues behind the rest.\n"
+            f"  Finishing the line you are speaking is not an obligation: when his new words\n"
+            f"  change what he means, reply now with replace=True rather than queue behind\n"
+            f"  your own unfinished sentence.\n"
             f":param chunks__: The text content you speak.\n"
             f":param tone: Switch the voice tone to use. Defaults to the current tone.\n"
             f"  Available tones: {tone_descriptions_str}\n"
@@ -231,7 +234,7 @@ class _SpeechCommandFactory:
             # 「换一句」是一个动作, 不是两个. 清退放在 prepare 阶段 (命令还没进队列),
             # 所以它只掀掉此刻已经存在的流, 不会误伤排在这一句后面的东西.
             if replace:
-                await self._clear_speech_partial()
+                await self._speech.clear()
             if as_default:
                 if voice:
                     tts.set_voice(voice)
@@ -383,7 +386,7 @@ class SpeechChannelModule(ChannelModule):
         self._muted = on
         return "muted" if on else "unmuted"
 
-    async def _clear_speech_partial(self) -> tuple[tuple, dict]:
+    async def _clear_speech_partial(self, *args, **kwargs) -> tuple[tuple, dict]:
         """prepare 阶段 (on_compiled) 就把语音清掉.
 
         命令在这一步还没进通道队列, 所以「清掉此刻存在的流」不会误伤同一轮里排在它后面的

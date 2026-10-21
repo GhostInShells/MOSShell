@@ -50,8 +50,12 @@ from ghoshell_moss.host.listener.etiquette import (
     EtiquetteSpec,
     OnsetSpec,
     always as ALWAYS,
+    apply_interaction_patch,
+    deviated_keys,
     duplex as DUPLEX,
+    flatten_interaction,
     knock as KNOCK,
+    needs_session_restart,
     once as ONCE,
     scored as SCORED,
 )
@@ -213,6 +217,10 @@ class ListenerController(ListenLifecycle):
         # ``_active_etiquette`` 是"当前礼仪"的唯一真值 — snapshot / notice / signal
         # 发射都从这里读, 不设第二真值.
         self._active_etiquette: Optional[EtiquetteSpec] = None
+        # 这一份 current 是从哪套预设加载来的 — 只用来回答"跟出身比哪一格动了",
+        # 不参与任何行为判断. 存的是名字而不是 spec: 预设本身可能被 set_etiquette_spec 改掉,
+        # 那样"偏离"就该重新算, 而不是跟一份过期快照比.
+        self._interaction_origin: str = ""
         # 人类锁 — pause(True) 设置, pause(False) 释放. 只 TUI/人类主权面写.
         # 锁着时: run_etiquette 门控 (log + no-op) + as_channel() 的 chan.available
         # 返回 False → 整个 channel 从模型面消失 (无残留 affordance).
@@ -378,6 +386,68 @@ class ListenerController(ListenLifecycle):
         self.run_etiquette(spec)
         return f"activated '{spec.name}'"
 
+    # ── voiceflow: 读 / 改 / 存 ──
+    #
+    # 一套礼仪是三个维度上的一个点; 运行时真正生效的永远是那一份 ``_active_etiquette``
+    # (current). 这三个方法只碰 current, 不新增"第二真值": 读它, 就地改它, 或者把整份
+    # current 另存成一个新名字.
+
+    def interaction_state(self) -> dict:
+        """current 的现状: 三个维度的现值 + 跟出身比哪几格被改过 + 现有预设名."""
+        active = self._active_etiquette
+        config = self._etiquette_config()
+        presets = [spec.name for spec in config.etiquettes]
+        if active is None:
+            return {
+                "current": None,
+                "origin": None,
+                "deviated": [],
+                "values": {},
+                "presets": presets,
+            }
+        origin = config.get(self._interaction_origin) if self._interaction_origin else None
+        return {
+            "current": active.name,
+            "origin": self._interaction_origin or None,
+            "deviated": deviated_keys(origin, active),
+            "values": flatten_interaction(active),
+            "presets": presets,
+        }
+
+    def tune_interaction(self, patch: dict) -> tuple[dict, list[str], bool]:
+        """就地改 current, 返回 (改完的现状, 动到的键, 是否重开了会话).
+
+        A 判停那一层的键在会话启动时就被拷进 StopJudge, 改对象到不了正在跑的那一版,
+        所以动到它们要重开会话 —— 返回值必须说出来, 不能装作已经生效.
+        """
+        active = self._active_etiquette
+        if active is None:
+            raise ValueError("no current interaction — activate an etiquette first")
+        touched = apply_interaction_patch(active, patch)
+        restarted = False
+        if needs_session_restart(touched) and self._active_task is not None and not self._active_task.done():
+            self.run_etiquette(active)
+            restarted = True
+        return self.interaction_state(), touched, restarted
+
+    def save_interaction(self, name: str, description: str = "") -> str:
+        """把完整的 current 另存成一个新名字 (写回 config store, 重启后还在)."""
+        active = self._active_etiquette
+        if active is None:
+            raise ValueError("no current interaction — activate an etiquette first")
+        name = name.strip()
+        if not name:
+            raise ValueError("save_etiquette needs a name")
+        spec = active.model_copy(deep=True)
+        spec.name = name
+        if description:
+            spec.description = description
+        config = self._etiquette_config()
+        config.upsert(spec)
+        if self._config_store is not None:
+            self._config_store.save(config)
+        return f"saved current as etiquette '{name}'"
+
     # ── 礼仪驱动状态机 (纯配置, 持续监听 = 另一种 always) ──
 
     def run_etiquette(
@@ -408,6 +478,8 @@ class ListenerController(ListenLifecycle):
         # 新激活清成 None. 之后整条 emit 路退回 OnsetSpec / DeliverSpec 的默认值
         # (首包 emit + interrupt, 无 barge_in 判断) —— 表现就是"模型一思考就被一句话打断".
         etiquette = etiquette.model_copy(deep=True)
+        # 出身: 这一份 current 是谁加载来的. 只回答"偏离了哪几格", 不参与行为判断.
+        self._interaction_origin = etiquette.name
         self._set_active_etiquette(etiquette)
         self._cancel_active()
         task = asyncio.create_task(
@@ -1521,6 +1593,11 @@ class ListenerController(ListenLifecycle):
                 f"Voice input is ASR transcription — it may contain homophones and near-sounds "
                 f"(谐音). Judge by meaning and context, infer what the user likely said, and "
                 f"ask for clarification when unsure.\n"
+                f"voiceflow — how this conversation is paced is a live state, not a mode you are\n"
+                f"stuck in. `interaction` reads it (three dimensions: 判停 / 交付 / 打断), `tune`\n"
+                f"moves one knob and returns the state re-read (that return IS the proof it took),\n"
+                f"`save_etiquette` keeps the current shape under a name. If the pacing is wrong for\n"
+                f"what you are doing, change it instead of fighting it.\n"
                 f"How to read a <listen> packet — the listening side hands you what it heard, plus a mark for\n"
                 f"where it thinks the stretch stands; what the conversation is doing is yours to judge.\n"
                 f"  paused=\"true\"  — it thinks the stretch just closed.\n"
@@ -1556,7 +1633,10 @@ class ListenerController(ListenLifecycle):
             # 一个占位空值 — 空串在这里表示"不变", 会让模型一直以为旧礼仪还激活着.
             active = self._active_etiquette
             notice: dict[str, str | None] = {
-                "etiquette": active.name if active else None,
+                # 名字 + 这套礼仪自己的说明. 说明是**指令**, 不是注释 —— cue 的"被点名才开口"
+                # 就写在这里, 所以它必须随激活礼仪一起进到模型的视野里, 而不是等模型
+                # 主动 get_etiquette 才看得到.
+                "etiquette": f"{active.name} — {active.description}" if active else None,
                 # 说话态: 一个桶值 (他在说 / 没说). 缺席即"没说" — 墓碑就是那条收尾边沿,
                 # 所以一段话只产生两次 delta, 不按秒刷.
                 "talking": "yes" if self._talking else None,
@@ -1582,6 +1662,61 @@ class ListenerController(ListenLifecycle):
         async def activate(name: str = "") -> str:
             """Run an etiquette — empty name runs the active/default one."""
             return self.activate_etiquette(name)
+
+        @chan.build.command(always_observe=True)
+        async def interaction() -> str:
+            """Read voiceflow — how this conversation is being paced right now.
+
+            Three orthogonal dimensions, not three behaviours:
+
+            - **A · 判停** `stop.*` — when one of his sentences counts as finished
+              (silence seconds, end keywords, a classifier's score, sound detection).
+            - **B · 交付** `deliver.*` — how a finished sentence reaches you
+              (push or keep-only, per clause or per stretch, queue mode, priority).
+            - **C · 打断** `onset.*` / `deliver.interrupt` / `deliver.barge_in_while_speaking`
+              — who may take away what you are doing.
+
+            Returns JSON: `current` (the preset it was loaded from), `deviated` (which
+            keys have moved away from that preset), `values` (the flattened keys),
+            `presets` (what else can be loaded). Read it before tuning, and again after.
+            """
+            return json.dumps(self.interaction_state(), ensure_ascii=False)
+
+        @chan.build.command(always_observe=True)
+        async def tune(text__: str) -> str:
+            """Change the current interaction in place — and confirm it took effect.
+
+            `text__` is a JSON object of the keys to move, named exactly as
+            `interaction` prints them, e.g. `{"deliver.barge_in_while_speaking": false}`.
+            Only the keys you pass change; everything else stays.
+
+            The return value **is** the confirmation: it is the same JSON `interaction`
+            returns, re-read after the change, plus `touched` and `restarted`. Do not
+            assume a knob moved because the call returned — read it back.
+
+            A key from the 判停 layer (`stop.*`) cannot reach a session already running:
+            it is copied into the stop judge when the session starts, so those keys
+            restart listening and the answer says `"restarted": true`. Delivery and
+            interruption keys apply on the next signal, no restart.
+            """
+            patch = json.loads(text__)
+            if not isinstance(patch, dict):
+                raise ValueError(f"tune expects a JSON object, got {type(patch).__name__}")
+            state, touched, restarted = self.tune_interaction(patch)
+            state["touched"] = touched
+            state["restarted"] = restarted
+            return json.dumps(state, ensure_ascii=False)
+
+        @chan.build.command()
+        async def save_etiquette(name: str, description: str = "") -> str:
+            """Keep the current interaction as a named etiquette.
+
+            The whole `current` is written out — not a diff against its origin — and
+            persisted through the config store, so it survives a restart. `description`
+            is the etiquette's own instruction to you: it rides into your notice whenever
+            this etiquette is active, so write the rule you want to obey, not a label.
+            """
+            return self.save_interaction(name, description)
 
         @chan.build.command(blocking=False)
         async def stop() -> str:
