@@ -360,7 +360,7 @@ def build_file_editor_channel(
 
     # -- lifecycle ----------------------------------------------------------
 
-    @chan.build.command(name="open", always_observe=False, available=enabled)
+    @chan.build.command(name="open", always_observe=True, available=enabled)
     async def open_thread(
         thread: str, path: str = "", label: str = "", draft: str = ""
     ) -> str:
@@ -383,7 +383,7 @@ def build_file_editor_channel(
             f"{line_count(opened.content)} lines. read({opened.id!r}) to see it."
         )
 
-    @chan.build.command(name="close", always_observe=False, available=enabled)
+    @chan.build.command(name="close", always_observe=True, available=enabled)
     async def close_thread(thread: str) -> str:
         """End a thread: nothing is written to disk, and its slot is freed.
 
@@ -737,7 +737,7 @@ def build_file_editor_channel(
             f"{found['lines']} lines\n{body}"
         )
 
-    @chan.build.command(name="edit", always_observe=False, available=enabled)
+    @chan.build.command(name="edit", always_observe=True, available=enabled)
     async def edit(thread: str, region: str, text__: str = "", label: str = "") -> str:
         """Replace the lines a region names — the edit that follows a ``find``.
 
@@ -765,7 +765,7 @@ def build_file_editor_channel(
 
     # -- mutations ----------------------------------------------------------
 
-    @chan.build.command(name="write", always_observe=False, available=enabled)
+    @chan.build.command(name="write", always_observe=True, available=enabled)
     async def write(thread: str, chunks__: str, label: str = "") -> str:
         """Replace the whole working copy with what you write.
 
@@ -775,7 +775,7 @@ def build_file_editor_channel(
         _guard_lock(thread)
         return await _stream(thread, "write", chunks__, label or "rewrite")
 
-    @chan.build.command(name="append", always_observe=False, available=enabled)
+    @chan.build.command(name="append", always_observe=True, available=enabled)
     async def append(thread: str, chunks__: str, label: str = "") -> str:
         """Add what you write to the end of the working copy.
 
@@ -818,7 +818,7 @@ def build_file_editor_channel(
             f"({line_count(target.content)} lines)"
         )
 
-    @chan.build.command(name="str_replace", always_observe=False, available=enabled)
+    @chan.build.command(name="str_replace", always_observe=True, available=enabled)
     async def str_replace(
             thread: str,
             text__: str,
@@ -861,7 +861,7 @@ def build_file_editor_channel(
             f"{line_count(target.content)} lines"
         )
 
-    @chan.build.command(name="rewind", always_observe=False, available=enabled)
+    @chan.build.command(name="rewind", always_observe=True, available=enabled)
     async def rewind(thread: str, n: int, label: str = "") -> str:
         """Put the working copy back where action ``n`` left it (``0`` = baseline).
 
