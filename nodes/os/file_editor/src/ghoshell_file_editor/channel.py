@@ -166,16 +166,56 @@ class _NoSurface:
         return chosen
 
 
-def parse_ops(raw: str) -> list[tuple[str, str]]:
-    """Parse the ``str_replace`` body: a str_replace-protocol payload.
+DEFAULT_OP_SEP = "||"
+"""old from new — one separator inside a pair."""
 
-    Accepts one op or a list, each ``{"old_str": ..., "new_str": ...}``. The body
-    arrives as text so the model can wrap it in CDATA and keep multi-line strings
-    readable.
+DEFAULT_PAIR_SEP = "\n|||\n"
+"""pair from pair — so several edits fit in one body without any nesting."""
+
+
+def parse_ops(
+        raw: str,
+        sep: str = DEFAULT_OP_SEP,
+        pair_sep: str = DEFAULT_PAIR_SEP,
+) -> list[tuple[str, str]]:
+    """Parse the ``str_replace`` body: plain text, one separator, no nesting.
+
+    A pair is ``old`` + ``sep`` + ``new``; several pairs are joined with
+    ``pair_sep``. That is the whole grammar, on purpose: the body is written
+    inside a CTML tag inside an argument, and a JSON object in there is a third
+    language to get right before the edit can even be attempted.
+
+    A body that begins like JSON still parses as the older op-list shape — that
+    is a documented second form, not a guess.
+
+    Ambiguity is refused rather than resolved: a pair that does not contain
+    exactly one ``sep`` names its own number in the error, so a separator that
+    also appears in the text is fixed by passing a different one.
     """
-    text = raw.strip()
-    if not text:
-        raise ValueError("the body is empty — put the JSON ops in the tag body")
+    text = raw.strip("\n")
+    if not text.strip():
+        raise ValueError(
+            "the body is empty — write `old` + sep + `new` (sep defaults to '||')"
+        )
+    head = text.lstrip()[:1]
+    if head in ("{", "["):
+        return _parse_json_ops(text)
+    chunks = text.split(pair_sep) if pair_sep in text else [text]
+    ops: list[tuple[str, str]] = []
+    for i, chunk in enumerate(chunks):
+        found = chunk.count(sep)
+        if found != 1:
+            raise ValueError(
+                f"pair {i + 1}: expected exactly one {sep!r} between old and new, "
+                f"found {found} — pass a different sep if the text contains it"
+            )
+        old, new = chunk.split(sep)
+        ops.append((old, new))
+    return ops
+
+
+def _parse_json_ops(text: str) -> list[tuple[str, str]]:
+    """The older payload shape: one op or a list, each ``{old_str, new_str}``."""
     try:
         payload = json.loads(text)
     except ValueError as e:
@@ -779,23 +819,36 @@ def build_file_editor_channel(
         )
 
     @chan.build.command(name="str_replace", always_observe=False, available=enabled)
-    async def str_replace(thread: str, text__: str, label: str = "") -> str:
-        """Edit by swapping exact snippets — one card per op.
+    async def str_replace(
+            thread: str,
+            text__: str,
+            label: str = "",
+            sep: str = DEFAULT_OP_SEP,
+            pair_sep: str = DEFAULT_PAIR_SEP,
+    ) -> str:
+        """Edit by swapping exact snippets — the body is text, not JSON.
 
-        The body is JSON in the tag body (CDATA it, so quotes and newlines are
-        safe): one op, or a list of them, each ``{"old_str": ..., "new_str": ...}``.
-        Every ``old_str`` must appear exactly once in the text at the moment its op
-        runs, so include enough surrounding context to be unique. Ops apply in
-        order, so a later op sees the earlier ones' result.
+        One pair is the old text, ``sep`` (default ``||``), then the new text.
+        Several pairs are joined with ``pair_sep`` (default a line holding
+        ``|||``). Everything else is literal: newlines, quotes and braces in the
+        body are just text, because there is no second language to escape for.
 
-        <![CDATA[ [{"old_str": "## Usage\\n", "new_str": "## Usage\\n\\nRun `moss start`.\\n"}] ]]>
+            old text||new text
+            |||
+            another old||another new
+
+        Each old text must appear exactly once in the working copy at the moment
+        its pair runs; pairs apply in order, so a later pair sees the earlier
+        one's result. A pair that does not contain exactly one ``sep`` is refused
+        by its number — pass a different ``sep`` when the text itself contains
+        the default one. One card per pair; ``label`` is the card's title.
         """
         _guard_lock(thread)
         target = store.get(thread)
         if target is None:
             CommandUtil.raise_observe(f"no thread {thread!r} — threads() lists them")
         try:
-            ops = parse_ops(text__)
+            ops = parse_ops(text__, sep=sep, pair_sep=pair_sep)
             actions = store.replace(thread, ops, label or f"str_replace ×{len(ops)}")
         except (KeyError, ValueError) as e:
             CommandUtil.raise_observe(str(e))

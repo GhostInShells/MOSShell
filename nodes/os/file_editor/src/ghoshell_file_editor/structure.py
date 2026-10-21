@@ -264,13 +264,13 @@ def replace_once(text: str, old: str, new: str) -> str:
     own rule, kept here so the store never has to validate prose.
     """
     if not old:
-        raise ValueError("str_replace needs a non-empty old_str")
+        raise ValueError("str_replace needs a non-empty old side")
     found = text.count(old)
     if found == 0:
-        raise ValueError("old_str does not appear in the text")
+        raise ValueError("the old text does not appear in the working copy")
     if found > 1:
         raise ValueError(
-            f"old_str appears {found} times — extend it with surrounding context "
+            f"the old text appears {found} times — extend it with surrounding context "
             f"so it is unique"
         )
     return text.replace(old, new, 1)

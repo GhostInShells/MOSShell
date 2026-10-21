@@ -41,6 +41,26 @@ def test_parse_ops_accepts_one_or_a_list():
     assert parse_ops('{"edits": [{"old_str": "a", "new_str": "b"}]}') == [("a", "b")]
 
 
+def test_parse_ops_reads_the_plain_text_form():
+    """一对是 old||new, 多对用一行 ||| 隔开 —— 正文里没有第二种语言要转义."""
+    assert parse_ops("a||b") == [("a", "b")]
+    assert parse_ops("a||b\n|||\nc||d") == [("a", "b"), ("c", "d")]
+    assert parse_ops("x||") == [("x", "")], "删掉一段就是新的那半空着"
+    assert parse_ops("a\\b||c") == [("a\\b", "c")], "反斜杠是字面量, 不是转义"
+
+
+def test_parse_ops_names_the_pair_it_cannot_split():
+    with pytest.raises(ValueError, match="pair 2"):
+        parse_ops("a||b\n|||\nc||d||e")
+    with pytest.raises(ValueError, match="pair 1"):
+        parse_ops("no separator here")
+
+
+def test_parse_ops_takes_a_custom_separator():
+    assert parse_ops("a=>b", sep="=>") == [("a", "b")]
+    assert parse_ops("a||b=>c", sep="=>") == [("a||b", "c")]
+
+
 def test_parse_ops_refuses_garbage():
     for raw in ("", "not json", "[]", '[{"old_str": "a"}]'):
         with pytest.raises(ValueError):
