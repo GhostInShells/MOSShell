@@ -355,7 +355,10 @@ class SpeechChannelModule(ChannelModule):
         if all(left is not None for left in lefts):
             ahead = sum(len(left) for left in lefts if left is not None)
             said += f" · {ahead} chars still to say" if ahead else " · nothing left to say"
-        return f"speech: {said} — clear_speech drops it, say(replace=True) swaps it"
+        return (
+            f"speech: {said} — cut it? clear_speech drops it, say(replace=True) swaps it. "
+            f"Say the new line only after deciding this, not on top of it"
+        )
 
     async def get_named_notices(self) -> dict[str, str | None]:
         """此刻的状态 — 命令表面写契约, 状态由这里随 meta 刷新下发.
