@@ -134,6 +134,10 @@ class Dolores(Ghost):
         # memento: ego 轨迹索引 + 旁路服务. manager 由 ghost 持有, 同时注入 ego.
         self._memento: FsMemento | None = None
         self._memento_manager: EgoMementoManager | None = None
+        # branch view render cache — rendered async in __aenter__ (it runs the branch_view slot),
+        # read synchronously by memories(). One render per boot: the plan is a snapshot of the
+        # directory at the moment the session opens, which is exactly what boot memory is.
+        self._memento_view: Message | None = None
         self._exit_stack = contextlib.AsyncExitStack()
         self._ego: DoloresEgo | None = None
         self._facade: MShellContextFacade | None = None
@@ -274,10 +278,8 @@ class Dolores(Ghost):
         children: list[Message] = []
         if self._ground_text:
             children.append(Message.new(tag="ground").with_content(self._ground_text))
-        if self._memento_manager is not None:
-            view = self._memento_manager.view_message()
-            if view is not None:
-                children.append(view)
+        if self._memento_view is not None:
+            children.append(self._memento_view)
         if not children:
             return []
         return [Message.new(tag="memory").with_messages(*children)]
@@ -441,6 +443,9 @@ class Dolores(Ghost):
                 # 启动补漏: 上次运行留下的空 note (关停时被取消的旁路) 在这里补派任务. 只派发不等待,
                 # 与运行期旁路同一条非阻塞路径 —— 不拖慢 boot.
                 self._memento_manager.backfill()
+                # 线自己渲染的那一页（计划 / 开着的 task）由 branch_view 槽位生成 —— 渲染在
+                # 这里, 因为 memories() 是同步读; 它现在真的会进 boot memory, 不再只在 memento:view 里.
+                self._memento_view = await self._memento_manager.aview_message()
             self._ego = await self._exit_stack.enter_async_context(
                 DoloresEgo(
                     launcher=self.dsh_launcher,

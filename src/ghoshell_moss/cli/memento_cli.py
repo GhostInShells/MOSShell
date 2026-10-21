@@ -214,27 +214,13 @@ def show_cmd(
     echo(f"message   {view.message or '(no note — the summarizer has not run)'}")
     commit_dir = view.memento_path(resolved).parent
     echo(f"dir       {commit_dir}{'' if commit_dir.is_dir() else '  (not created)'}")
-    if not hook:
+    if not hook or branch is None:
         return
-    results = _run(
-        run_slot(
-            "commit_view",
-            _hook_roots(branch, resolved) if branch is not None else [resolved],
-            env_base=hook_env(
-                "commit_view",
-                root=resolved,
-                branch=branch.ref.name if branch is not None else "",
-                branch_dir=branch.path if branch is not None else None,
-                coord=view.coord,
-                commit_dir=commit_dir,
-            ),
-            log_root=resolved,
-        )
-    )
-    text = render_view_text(results)
-    if text:
+    # 这一段的产物现在归 memento 生成 (CommitView.ground) —— CLI 只把它印出来, 不再自己跑一遍.
+    hooked = _run(branch.aget_commit_with_hooks(view.seq))
+    if hooked is not None and hooked.ground:
         echo("")
-        echo(text)
+        echo(hooked.ground)
 
 
 # ── commit ──────────────────────────────────────────────────────────────────
@@ -321,23 +307,11 @@ def branch_show(
             echo(f"  {view.coord:<12} {view.title or '(no note)'}")
     if not hook:
         return
-    results = _run(
-        run_slot(
-            "branch_view",
-            _hook_roots(target, resolved),
-            env_base=hook_env(
-                "branch_view",
-                root=resolved,
-                branch=target.ref.name,
-                branch_dir=target.path,
-            ),
-            log_root=resolved,
-        )
-    )
-    text = render_view_text(results)
-    if text:
+    # 同上: 线自己渲染的那一页由 memento 生成 (BranchView.ground), 这里只印.
+    view = _run(target.aview_with_hooks(n=limit))
+    if view.ground:
         echo("")
-        echo(text)
+        echo(view.ground)
 
 
 @branch_app.command("create")

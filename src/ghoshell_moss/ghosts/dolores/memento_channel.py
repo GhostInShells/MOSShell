@@ -34,7 +34,6 @@ from pathlib import Path
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.ghosts.dolores._ego_memento import BrokenCommitError, EgoMementoManager
-from ghoshell_moss.memento.hooks import render_view_text, run_slot
 
 __all__ = ["build_memento_channel"]
 
@@ -107,25 +106,6 @@ def _parse_date(value: str | None, field: str) -> datetime | None:
         ) from None
 
 
-async def _view_slot(slot: str, manager: EgoMementoManager, coord: str = "") -> str:
-    """Run a view slot and return what it contributes to the page.
-
-    A view hook is read-side: its stdout belongs under the thing being read. A failed
-    slot contributes one announcement line instead of a stack trace, and never keeps the
-    page from being produced — the log is where a failure is investigated.
-    """
-    try:
-        results = await run_slot(
-            slot,
-            manager.hook_roots(),
-            env_base=manager.hook_env_for(slot, coord),
-            log_root=manager.memento_root,
-        )
-    except Exception:  # 读面不许因为 hook 而挂
-        return ""
-    return render_view_text(results)
-
-
 def build_memento_channel(
     manager: EgoMementoManager,
     *,
@@ -168,16 +148,15 @@ def build_memento_channel(
         :param branch: branch name. None = the one you are living on.
         :param limit: at most how many, counted back from the most recent. None = the default window.
         """
-        message = manager.view_message(branch, n=limit)
+        message = await manager.aview_message(branch, n=limit)
         if message is None:
             return f"[memento] no branch `{branch}`"
-        text = message.to_content_string()
-        extra = await _view_slot("branch_view", manager)
-        return f"{text}\n\n{extra}" if extra else text
+        # 线自己渲染的那一页已经长在 view 里了 (BranchView.ground) —— 这里不再拼.
+        return message.to_content_string()
 
     @chan.build.command(name="read", always_observe=True)
     async def read(coord: str) -> str:
-        """Read a span's raw conversation.
+        """Read a span's raw conversation, with what that commit's directory says about itself.
 
         :param coord: commit coordinate, e.g. `1-27`.
         """
@@ -185,10 +164,8 @@ def build_memento_channel(
             text = await manager.read(coord)
         except KeyError:
             return f"[memento] no commit at `{coord}`"
-        body = text or f"[memento] nothing was said in that span ({coord})"
-        # commit view 就长在 read 上: 原文之后接 hook 生成的那一段, 不是另开一条命令.
-        extra = await _view_slot("commit_view", manager, coord)
-        return f"{body}\n\n{extra}" if extra else body
+        # 文本与 commit_view 的产物都是 manager.read 这次生成的, 这里只渲染.
+        return text or f"[memento] nothing was said in that span ({coord})"
 
     @chan.build.command(name="history", always_observe=True)
     async def history(

@@ -195,6 +195,14 @@ class CommitView(BaseModel):
         default=None,
         description="Absolute path of the node index file (MEMENTO.md) when it exists; None = this commit has no node yet.",
     )
+    ground: str = Field(
+        default="",
+        description=(
+            "What this commit's directory says about itself: the ``commit_view`` slot's stdout, "
+            "filled by the generation that runs the hooks. Empty means the view was generated "
+            "without them — not that the directory is empty."
+        ),
+    )
 
     @property
     def coord(self) -> str:
@@ -277,6 +285,14 @@ class BranchView(BaseModel):
     history: list[CommitView] = Field(default_factory=list, description="Earlier commits, folded summaries.")
     latest: list[CommitView] = Field(default_factory=list, description="Most recent commits, detail.")
     commits_total: int = Field(default=0)
+    ground: str = Field(
+        default="",
+        description=(
+            "What this branch's directory says about itself: the ``branch_view`` slot's stdout, "
+            "filled by the generation that runs the hooks (the plan, the open tasks, whatever the "
+            "directory chooses to render). Empty means the view was generated without hooks."
+        ),
+    )
 
 
 class Branch(ABC):
@@ -399,6 +415,20 @@ class Branch(ABC):
     @abstractmethod
     async def aview(self, *, n: int = 10) -> BranchView:
         """IO-costly: aggregate multiple files into a view; the most expensive read."""
+
+    @abstractmethod
+    async def aview_with_hooks(self, *, n: int = 10) -> BranchView:
+        """``aview`` plus the directory's own rendering, in ``BranchView.ground``.
+
+        The explicit opt-in to the ``branch_view`` slot: ``view`` / ``aview`` stay hook-free
+        (cheap, sync-callable, used inside other projections), and this one runs the mounted
+        hooks on every call — a view is a snapshot of a moving directory, so a cached hook
+        output would be the wrong thing to hand out.
+        """
+
+    @abstractmethod
+    async def aget_commit_with_hooks(self, seq: int) -> CommitView | None:
+        """``aget_commit`` plus the ``commit_view`` slot's stdout in ``CommitView.ground``."""
 
     @abstractmethod
     def query_commits(

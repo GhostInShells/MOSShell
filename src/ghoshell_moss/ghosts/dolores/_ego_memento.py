@@ -530,7 +530,22 @@ class EgoMementoManager:
         except Exception as exc:
             raise self._read_failure(view, ref, exc) from exc
         events = [SessionEvent.from_dict(event) for event in (raw or {}).get("events", [])]
-        return render_transcript(events)
+        text = render_transcript(events)
+        # 这个 commit 目录自己的说明由 commit_view 槽位生成, 是 read 的一部分 ——
+        # 不是 channel 在正文后面拼上去的尾巴.
+        ground = await self._commit_ground(view)
+        return f"{text}\n\n{ground}" if ground else text
+
+    async def _commit_ground(self, view: CommitView) -> str:
+        """这一个 commit 的目录说自己什么 —— 取的时候才跑槽位, 所以永远是新的一遍."""
+        branch = self._memento.get_branch(self._config.branch_name)
+        if branch is None:
+            return ""
+        try:
+            hooked = await branch.aget_commit_with_hooks(view.seq)
+        except Exception:  # noqa: BLE001 — 读面不许因为 hook 而挂
+            return ""
+        return hooked.ground if hooked is not None else ""
 
     async def chat(self, coord: str, prompt: str) -> str:
         """和某条 commit **所属的上下文**对话一轮 (走旁路原语).
@@ -636,6 +651,19 @@ class EgoMementoManager:
             return None
         return self._render_view(branch.view(n=n if n is not None else self._config.view_limit))
 
+    async def aview_message(self, name: str | None = None, *, n: int | None = None) -> Message | None:
+        """``view_message`` 的带 hook 版本 —— 真正读这一页的人都该走这条.
+
+        差别只有一个: ``branch_view`` 槽位在这里跑, 结果进 ``BranchView.ground`` 再被渲染.
+        同步那条留着, 是因为它在别的投影里被当纯读数用; 但它读不出线自己渲染的东西,
+        所以开机 memory 与 ``memento:view`` 都必须走这条异步入口.
+        """
+        branch = self._memento.get_branch(name or self._config.branch_name)
+        if branch is None:
+            return None
+        view = await branch.aview_with_hooks(n=n if n is not None else self._config.view_limit)
+        return self._render_view(view)
+
     def list_branches(self) -> list[BranchInfo]:
         """所有现存 branch 的概览 —— 先看有哪些, 再用 ``view_message(name)`` 看内容."""
         infos: list[BranchInfo] = []
@@ -718,6 +746,9 @@ class EgoMementoManager:
         if view.history:
             children.append(self._render_digest(view))
         children.extend(self._render_commit(cv) for cv in view.latest)
+        if view.ground:
+            # 线自己渲染的那一页（计划、开着的 task）属于这个 view, 不是摘要的脚注.
+            children.append(Message.new(tag="ground").with_content(view.ground))
         if not children:
             return container.with_content("no commit")
         return container.with_messages(*children)
