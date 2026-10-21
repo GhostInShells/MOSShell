@@ -121,19 +121,6 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 3. 在 `main.py` 中 import 并用 `app.add_typer(xxx_app, name="xxx")` 注册
 4. 所有输出函数从 `utils.py` import
 
-## Skills 知识库
-
-`skills_cli.py` + `cli/skills/` 目录组成反身性知识库 (取代 howtos, moss-skills):
-
-- **存储**: `cli/skills/<category>/<name>/SKILL.md`, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.resources.markdown_kb`, glob+frontmatter 参数化) 做资源管理
-- **结构**: `<category>/<name>/SKILL.md` (name + description frontmatter), `cli/skills/AGENTS.md` (skill 治理)
-- **命令**:
-  - `moss skills list [-q keyword] [--json] [--root <path>]`: 发现技能
-  - `moss skills read <path>`: 读取技能
-  - 无 LLM 依赖 — 旧 `recall` 需 LLMFuncs 配置, 已移除
-- **元规则**: `cli/skills/AGENTS.md` 承担——入口判定三问 + 反模式清单 + 写作纪律。写 skill 前必读
-- **当前定位**: 两类技能 —— **task skill** (复合任务的行动流程) 与 **mechanism skill** (核心机制的方向性理解, 可指路开箱实现作参考方向, 但不复制实现)。最小知识面归框架 `blueprint` / `matrix` / `channel_builder` / `moss codex`, skill 只补易漏的概念钥匙。历史上 howtos 曾积累 16 篇混合内容, 2026-07-18 doc-governance 治理后收敛为 3 篇, 2026-08 moss-skills 迁移为 skills (见 `.ai_partners/features/workstreams/2026/08/moss-skills/`)
-
 ## 架构小贴士
 
 - `Environment.discover()` 在多个命令中独立调用 — 这是设计意图, 因为各命令可能在不同 mode 或 scope 下独立运行
