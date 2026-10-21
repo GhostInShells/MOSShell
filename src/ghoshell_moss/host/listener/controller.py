@@ -41,6 +41,7 @@ from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_cha
 from ghoshell_moss.core.blueprint.mindflow import ChallengeMode, Priority, Signal
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import Publisher, TopicService
+from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.core.mindflow.listener_nucleus import new_listener_signal
 from ghoshell_moss.core.mindflow.knock_nucleus import new_knock_signal
 from ghoshell_moss.host.listener.etiquette import (
@@ -1154,34 +1155,37 @@ class ListenerController(ListenLifecycle):
         except Exception:  # 掐语音挂掉不该影响这一包交付
             self._logger.debug("%s speech cutter failed", self._log_prefix, exc_info=True)
 
-    # ── expect 语音输入超时提醒 (纯异步, 不打断模型) ──
+    # ── expect_reply: 等一句回复, 等不到就敲一下自己 (纯异步, 不打断模型) ──
 
-    def expect(self, timeout: float = 10.0) -> str:
-        """期待一段语音输入在 ``timeout`` 秒内发生; 立刻返回回执 index.
+    def expect_reply(self, seconds: float = 10.0) -> str:
+        """期待一段语音输入在 ``seconds`` 秒内发生; 立刻返回回执 index.
 
-        纯异步: 不阻塞调用方 (非 observe), 不打断模型当前行为. 若超时前有任何语音
-        识别结果到达, 期待即满足 (自动取消, 不发任何 signal); 若超时仍未收到语音,
-        listener 主动发一条 notify signal 告知"预期语音输入没发生", source 标记为
-        本 cell 名 (``cell_name``), 与 asr 识别结果 (source="asr") 区分.
+        纯异步: 不阻塞调用方 (非 observe), 不打断模型当前行为. 若这段时间内有任何语音
+        识别结果到达, 期待即满足 (自动取消, 不发任何 signal); 若到期仍没有语音,
+        listener 主动发一条 **knock** —— 最低一档、丢了就丢, 说的是"他还没开口,
+        你可以开口了", 而不是"出事了".
 
-        回执 index 单调递增, 供模型关联"哪次 expect 超时". 返回字符串形如 ``"#3"``.
+        与 mindflow 的 ``idle-knock`` 同形: 一个等的是 mindflow 静默, 一个等的是
+        麦克风静默. 区别只在这边有明确的语音指向 —— 它只在意他说没说话.
+
+        回执 index 单调递增, 供模型关联"哪次 expect_reply 到期". 返回形如 ``"#3"``.
         """
         self._expect_seq += 1
         index = str(self._expect_seq)
         event = asyncio.Event()
         self._expect_events[index] = event
-        task = asyncio.create_task(self._expect_wait(index, event, timeout))
+        task = asyncio.create_task(self._expect_wait(index, event, seconds))
         self._expect_tasks.add(task)
         task.add_done_callback(self._expect_tasks.discard)
         return index
 
-    async def _expect_wait(self, index: str, event: asyncio.Event, timeout: float) -> None:
-        """等语音 (event set) 或超时; 超时发 notify signal, 未超时静默退出."""
+    async def _expect_wait(self, index: str, event: asyncio.Event, seconds: float) -> None:
+        """等语音 (event set) 或到期; 到期发 knock, 未到期静默退出."""
         try:
-            await asyncio.wait_for(event.wait(), timeout)
+            await asyncio.wait_for(event.wait(), seconds)
             # 语音已到 → 期待满足, 不发任何 signal.
         except asyncio.TimeoutError:
-            self._emit_expect_timeout(index, timeout)
+            self._emit_expect_timeout(index, seconds)
         finally:
             # 移除自己的 event; 若语音回调已 discard 过 (见 _on_expect_voice), 这里幂等.
             self._expect_events.pop(index, None)
@@ -1255,23 +1259,20 @@ class ListenerController(ListenLifecycle):
         self._expect_tasks.clear()
         self._expect_events.clear()
 
-    def _emit_expect_timeout(self, index: str, timeout: float) -> None:
-        """超时: 发一条 notify signal, 告知模型"预期语音输入没发生".
+    def _emit_expect_timeout(self, index: str, seconds: float) -> None:
+        """到期: 发一条 knock —— 他还没开口, 你可以开口了.
 
-        source = cell_name (不是 "asr"), complete=True + interrupt=False + mode=notify —
-        只旁路知会, 不打断模型. signal_broadcast 未注入时静默跳过.
+        为什么是 knock 不是 notify: 这句话的性质是"你可以说话了", 不是"出事了".
+        knock 是最低一档且抢占失败即丢 —— 我正在忙的时候它就该消失, 不该跟真实
+        事件抢注意力. signal_broadcast 未注入时静默跳过.
         """
         if self._signal_broadcast is None:
             return
-        self._broadcast(new_listener_signal(
-            f"expected voice input (expect #{index}) timed out after {timeout:g}s",
-            source=self._cell_name or "listener",
-            complete=True,
-            interrupt=False,
-            mode="notify",
-            description="listener:expect-timeout",
+        self._broadcast(new_knock_signal(
+            f"expect_reply #{index}: no voice in {seconds:g}s — he has not spoken, you may take the floor",
+            description="listener:expect-reply-timeout",
         ))
-        self._notify_signal(f"expect #{index} timed out after {timeout:g}s")
+        self._notify_signal(f"expect_reply #{index} timed out after {seconds:g}s")
 
     def _emit_idle_timeout(self, idle_timeout: float) -> None:
         """空闲超时: 发一条 notify signal, 告知模型"长时间无语音, 降级到 knock 门铃".
@@ -1748,16 +1749,26 @@ class ListenerController(ListenLifecycle):
             return "stopped"
 
         @chan.build.command(blocking=False)
-        async def expect(timeout: float = 10.0) -> str:
-            """Expect voice input within `timeout` seconds; returns a receipt index immediately.
+        async def expect_reply(seconds: float = 10.0) -> str:
+            """Wait for him to reply — and get knocked if he does not.
 
-            Pure async — does not block or interrupt your current behavior. If any voice
-            arrives before timeout, the expectation is satisfied silently. If it times out,
-            the listener sends you a notify signal (`source` = this cell name, not "asr")
-            saying the expected voice input did not happen. The receipt index lets you
-            correlate which `expect` timed out (e.g. a later signal referencing "#3").
+            The command to reach for after you have spoken and handed the turn back:
+            "he may answer; if he does not say anything within `seconds`, tell me".
+
+            Pure async — it returns a receipt index immediately and blocks nothing. If
+            any voice arrives before the deadline, the expectation is met silently and
+            nothing is sent. If it expires, the listener sends you a **knock**: the
+            lowest tier, dropped when you are busy, saying that he has not spoken and
+            you may take the floor. Unlike a notify, losing it is fine — the moment it
+            would have been useful is the moment you were free to hear it.
+
+            This is the voice-side twin of mindflow's `idle-knock`: one watches the
+            mindflow go quiet, the other watches the microphone go quiet.
+
+            The receipt index lets you correlate which expectation expired (e.g. a
+            later signal referencing "#3").
             """
-            return self.expect(timeout)
+            return self.expect_reply(seconds)
 
         @chan.build.command(blocking=False)
         async def send_now() -> str:

@@ -12,6 +12,7 @@ import pytest
 from ghoshell_moss.contracts.asr import ASRInfo, RecognitionClause, RecognitionEvent, RecognitionPhase, RecognitionSegment, RecognitionWord
 from ghoshell_moss.contracts.audio import AudioChunk, AudioFrameMeta
 from ghoshell_moss.core.blueprint.mindflow import Priority
+from ghoshell_moss.core.mindflow.knock_nucleus import KnockSignalMeta
 from ghoshell_moss.core.mindflow.listener_nucleus import ListenerSignal
 from ghoshell_moss.host.listener.controller import ListenerController
 from ghoshell_moss.host.listener.etiquette import always, duplex, knock
@@ -416,36 +417,36 @@ def _expect_voice_observer(listener):
 
 
 @pytest.mark.asyncio
-async def test_expect_returns_incrementing_index():
+async def test_expect_reply_returns_incrementing_index():
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=lambda s: None,
     )
-    i1 = controller.expect(timeout=10.0)
-    i2 = controller.expect(timeout=10.0)
+    i1 = controller.expect_reply(seconds=10.0)
+    i2 = controller.expect_reply(seconds=10.0)
     assert i1 == "1"
     assert i2 == "2"
-    controller.stop()  # 清空 pending expect
+    controller.stop()  # 清空 pending expect_reply
 
 
 @pytest.mark.asyncio
-async def test_expect_timeout_emits_notify_signal():
+async def test_expect_reply_timeout_emits_knock():
+    """到期 → 发 knock (最低一档, 丢了就丢), 文本带回执编号."""
     emitted = []
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
         cell_name="ghost_cell",
     )
-    index = controller.expect(timeout=0.05)
+    index = controller.expect_reply(seconds=0.05)
     await asyncio.sleep(0.1)
 
     assert len(emitted) == 1
     sig = emitted[0]
-    assert sig.complete is True
-    meta = ListenerSignal.from_signal(sig)
-    assert meta.source == "ghost_cell"  # 不是 "asr" — 系统提示, 与识别结果区分
-    assert meta.interrupt is False
-    assert f"#{index}" in sig.description or f"#{index}" in _signal_text(sig)
+    # 是 knock, 不是 listener/notify: 这句话的性质是"他还没开口, 你可以开口了",
+    # 不该跟真实事件抢注意力 —— 抢不到就该消失.
+    assert KnockSignalMeta.match(sig)
+    assert f"#{index}" in _signal_text(sig)
 
 
 def _signal_text(sig) -> str:
@@ -459,13 +460,13 @@ def _signal_text(sig) -> str:
 
 @pytest.mark.asyncio
 async def test_expect_satisfied_by_voice_silently():
-    """语音到达 → expect 满足, 不发任何 signal."""
+    """语音到达 → expect_reply 满足, 不发任何 signal."""
     emitted = []
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
     )
-    controller.expect(timeout=0.2)
+    controller.expect_reply(seconds=0.2)
     voice_cb = _expect_voice_observer(listener)
 
     await asyncio.sleep(0.05)
@@ -477,14 +478,14 @@ async def test_expect_satisfied_by_voice_silently():
 
 @pytest.mark.asyncio
 async def test_expect_voice_sets_all_pending():
-    """一次语音到达满足所有 pending expect (各自超时都取消)."""
+    """一次语音到达满足所有 pending expect_reply (各自到期都取消)."""
     emitted = []
     listener = _MockListener()
     controller = ListenerController(
         listener=listener, asr=_MockASR(), signal_broadcast=emitted.append,
     )
-    controller.expect(timeout=0.2)
-    controller.expect(timeout=0.2)
+    controller.expect_reply(seconds=0.2)
+    controller.expect_reply(seconds=0.2)
     voice_cb = _expect_voice_observer(listener)
 
     await asyncio.sleep(0.05)
