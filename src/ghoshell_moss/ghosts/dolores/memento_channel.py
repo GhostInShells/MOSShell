@@ -34,6 +34,7 @@ from pathlib import Path
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 from ghoshell_moss.ghosts.dolores._ego_memento import BrokenCommitError, EgoMementoManager
+from ghoshell_moss.memento.hooks import render_view_text, run_slot
 
 __all__ = ["build_memento_channel"]
 
@@ -106,6 +107,25 @@ def _parse_date(value: str | None, field: str) -> datetime | None:
         ) from None
 
 
+async def _view_slot(slot: str, manager: EgoMementoManager, coord: str = "") -> str:
+    """Run a view slot and return what it contributes to the page.
+
+    A view hook is read-side: its stdout belongs under the thing being read. A failed
+    slot contributes one announcement line instead of a stack trace, and never keeps the
+    page from being produced — the log is where a failure is investigated.
+    """
+    try:
+        results = await run_slot(
+            slot,
+            manager.hook_roots(),
+            env_base=manager.hook_env_for(slot, coord),
+            log_root=manager.memento_root,
+        )
+    except Exception:  # 读面不许因为 hook 而挂
+        return ""
+    return render_view_text(results)
+
+
 def build_memento_channel(
     manager: EgoMementoManager,
     *,
@@ -151,7 +171,9 @@ def build_memento_channel(
         message = manager.view_message(branch, n=limit)
         if message is None:
             return f"[memento] no branch `{branch}`"
-        return message.to_content_string()
+        text = message.to_content_string()
+        extra = await _view_slot("branch_view", manager)
+        return f"{text}\n\n{extra}" if extra else text
 
     @chan.build.command(name="read", always_observe=True)
     async def read(coord: str) -> str:
@@ -163,7 +185,10 @@ def build_memento_channel(
             text = await manager.read(coord)
         except KeyError:
             return f"[memento] no commit at `{coord}`"
-        return text or f"[memento] nothing was said in that span ({coord})"
+        body = text or f"[memento] nothing was said in that span ({coord})"
+        # commit view 就长在 read 上: 原文之后接 hook 生成的那一段, 不是另开一条命令.
+        extra = await _view_slot("commit_view", manager, coord)
+        return f"{body}\n\n{extra}" if extra else body
 
     @chan.build.command(name="history", always_observe=True)
     async def history(

@@ -28,6 +28,7 @@ import asyncio
 import dataclasses
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -38,6 +39,7 @@ from ghoshell_moss.deepseek_harness.trajectory import render_transcript
 from ghoshell_moss.deepseek_harness.types.refs import DshSessionRef
 from ghoshell_moss.deepseek_harness.types.session_events import SessionEvent, TokenUsage
 from ghoshell_moss.memento.abcd import Branch, BranchView, CommitRef, CommitView, Memento, Note
+from ghoshell_moss.memento.hooks import hook_env, run_slot
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -325,11 +327,14 @@ class EgoMementoManager:
         if start_turn == end_turn:
             return None
         ref = DshSessionRef(session_id=session_id, start_turn=start_turn, end_turn=end_turn)
-        return self._branch().commit(
+        commit = self._branch().commit(
             message=message,
             metatype="session",
             metadata={_REF_KEY: ref.model_dump(mode="json"), _PREV_TURN_KEY: start_turn},
         )
+        # 旁路: 锚点已落地, hook 在旁边跑. 不 await, 失败不回滚, 也不挡主路.
+        self.fire_hook("on_commit", commit)
+        return commit
 
     # ── 节点空间 (写者自己的地盘) ─────────────────────────────────
 
@@ -751,6 +756,67 @@ class EgoMementoManager:
         if branch is None:
             raise RuntimeError(f"memento branch '{self._config.branch_name}' not found")
         return branch
+
+    # ── 生命周期 hook (槽位是文件, 见 memento/hooks.py) ─────────────
+
+    @property
+    def branch_path(self) -> Path:
+        """这条线的目录 —— 交给 hook 的工作面."""
+        return self._branch().path
+
+    @property
+    def memento_root(self) -> Path:
+        return self._memento.root
+
+    def hook_roots(self) -> list[Path]:
+        """线的 hooks/ 在前, ego 根的在后 —— 覆盖而不是替换."""
+        return [self.branch_path, self.memento_root]
+
+    def hook_env_for(self, slot: str, coord: str = "") -> dict[str, str]:
+        """协议约定的那组环境变量; commit 目录按约定算, 不看它存不存在."""
+        root = self.memento_root
+        commit_dir = self._commit_dir_of(coord) if coord else None
+        return hook_env(
+            slot,
+            root=root,
+            branch=self._config.branch_name,
+            branch_dir=self.branch_path,
+            coord=coord,
+            commit_dir=commit_dir,
+        )
+
+    def _commit_dir_of(self, coord: str) -> Path | None:
+        view = self._memento.resolve_commit(coord)
+        if view is None:
+            return None
+        return view.memento_path(self.memento_root).parent
+
+    def fire_hook(self, slot: str, commit: CommitRef) -> None:
+        """把槽位挂到事件旁边 —— 一个 task, 不 await, 不参与 commit 的成败."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._run_hook_quietly(slot, commit))
+
+    async def _run_hook_quietly(self, slot: str, commit: CommitRef) -> None:
+        try:
+            view = self._branch().get_commit(commit.seq)
+            if view is None:
+                return
+            root = self.memento_root
+            commit_dir = self._commit_dir_of(view.coord)
+            if commit_dir is not None:
+                # 协议承诺: hook 拿得到一个已经存在的目标目录, 它只管往里搬东西.
+                commit_dir.mkdir(parents=True, exist_ok=True)
+            await run_slot(
+                slot,
+                self.hook_roots(),
+                env_base=self.hook_env_for(slot, view.coord),
+                log_root=root,
+            )
+        except Exception:  # 旁路的一切失败都不许外溢
+            self._logger.warning("memento hook %s failed", slot, exc_info=True)
 
     def _ref_of(self, commit: CommitRef) -> DshSessionRef | None:
         raw = commit.metadata.get(_REF_KEY)

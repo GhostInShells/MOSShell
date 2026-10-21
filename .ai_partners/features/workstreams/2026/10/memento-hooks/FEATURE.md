@@ -1,6 +1,6 @@
 ---
 title: Memento Hooks
-status: draft
+status: in-progress
 priority: P2
 created: 2026-10-21
 updated: 2026-10-21
@@ -104,3 +104,84 @@ has — a running state, failures left on record, no automatic retry, content st
 `sidecar-map` (an svg works piece; ops in `works/sidecar-map.jsonl`): left is the branch
 directory as a working area, right is the commit directory as a snapshot, the arrow between
 them is a hook moving things across, and the bottom row names the three mounting points.
+
+
+## Design settled (D21, live session with thirdgerb)
+
+The open questions above were answered in conversation. What follows is the shape to build.
+
+### D6 — Three hook slots, and only three
+
+| Slot | Runs when | Returns |
+|---|---|---|
+| `on_commit.py` | right after an anchor lands | nothing that matters — side effects only |
+| `commit_view.py` | one commit is read in detail (`show`) | text appended under the note |
+| `branch_view.py` | a branch view is generated (`branch show`) | text appended under the branch description |
+
+A slot with no file does not run; deleting the file turns it off. Summaries and lists never
+trigger any of them — `log`, `read`, `status` stay hook-free.
+
+> 「commit hook 不能在读列表或者读 notes 的时候自动刷，它应该是详细读某一个 commit 的时候才调用。」
+
+### D7 — A `.py` slot runs under memento's own interpreter
+
+No shebang, no `chmod`: a `.py` file is executed by the interpreter the memento process is
+already running on, so writing the file is the whole of turning it on.
+
+> 「它跑的那个解释器应该是 memento 自己所在的解释器。你不要强调是 MOSS，因为 MOSS 这个库它不一定是运行在 MOSS 里面。」
+
+### D8 — The protocol is environment variables
+
+A hook is handed what it needs through env vars, defined by the protocol rather than by each
+hook's imagination. The one that must always be there is the directory of the commit that
+just landed; the branch directory, the coordinate and the event name ride along.
+
+> 「这个环境变量里面应该包含已经创建的目标目录的位置……属于我们在 hook 的协议里面就约定一定会拿得到的环境变量。」
+
+### D9 — Concurrent, bounded, and without a verdict
+
+Several hooks on one slot run concurrently, each with its own timeout. A failure is recorded
+and left alone: no retry, no rollback, and never a blocked main path (this is D5, made
+concrete).
+
+### D10 — Two ground points, not one per commit
+
+`branches/GROUND.md` and `commits/GROUND.md`. Rendering walks up from the directory being
+read and renders that directory only — so a new commit inherits the commits-level ground and
+no per-commit copy is ever materialised.
+
+> 「只需要在 branch 的根目录和 commit 的根目录里面放两个 ground 文件就够了，render 的时候它会自动向上查找 GROUND.md，然后只渲染当前的目录。」
+
+### D11 — `plan` and `task` are the branch's working surface
+
+- `plan.md` — one file per branch, frontmatter carries its status.
+- `*.task.md` — many, each carrying its own status.
+- The branch GROUND describes them; the model edits the file, or the status, directly.
+- `on_commit` moves the finished ones into the new commit directory. The archive is the
+  hook's job, not mine to remember.
+- Visibility: existence and status ride in the branch view; bodies are read on demand —
+  a branch with ten tasks must not fill the screen.
+
+> 「文档不应该全部都展开，这样你满屏都会被 task 和 plan 灌满。」
+
+### CLI surface, aligned with git
+
+| `memento …` | git | What it answers |
+|---|---|---|
+| `status` | `git status` | which branch, anything unanchored, where the hooks live, how the last run went |
+| `log` | `git log` | the anchors in a range, one line each |
+| `show <coord>` | `git show` | one anchor in detail: note, directory, `commit_view` output |
+| `read <coord>` | `git show --raw` | that span's raw conversation, unchanged |
+| `commit -m` | `git commit -m` | freeze the span since the last anchor; `-m` is the note |
+| `branch list|show|create` | `git branch` | which lines exist; one line now (`branch_view`); open a new one |
+| `hook list|run|log` | `.git/hooks` | what is in the slots, run one by hand, read the failures |
+
+`record` folds into `commit -m`; `space` folds into `show`; `chat` stays out of the CLI —
+it is a capability of the model side, not a command a person runs. The old CLI's
+`owner` / `agent` / `witness` are not revived: there is one line and one ghost.
+
+### What gets built first
+
+1. Hook discovery and execution (three slots, env-var protocol, concurrency, failure log).
+2. The CLI above, running against the real trajectory.
+3. The two ground points and the `plan` / `task` convention.
