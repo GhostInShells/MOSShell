@@ -527,11 +527,22 @@
     height: 7px; border-radius: 50%; background: var(--line); }
   .fx-item.open { background: rgba(92,214,150,.045); border-color: var(--run); margin-bottom: 10px; }
   .fx-item.open::before { background: var(--run); }
-  .fx-head { display: flex; align-items: baseline; gap: 10px; cursor: pointer; padding: 7px 0; }
-  .fx-head .n { color: var(--dim); font-size: var(--fs-small); min-width: 2.4em; }
-  .fx-head .k { color: var(--accent); font-size: var(--fs-small); }
-  .fx-head .t { color: var(--fg); overflow-wrap: anywhere; }
-  .fx-head .e { color: var(--dim); font-size: var(--fs-small); margin-left: auto; white-space: nowrap; }
+    .fx-head { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; }
+    .fx-head .caret { flex: 0 0 auto; background: none; border: 0; color: var(--dim);
+      font: inherit; font-size: var(--fs-small); cursor: pointer; padding: 0 2px; }
+    .fx-head .caret:hover { color: var(--fg); }
+    .fx-head .n { color: var(--dim); font-size: var(--fs-small); min-width: 2.4em; flex: 0 0 auto; }
+    .fx-head .k { color: var(--accent); font-size: var(--fs-small); flex: 0 0 auto; }
+    /* The label is the flexible one: the right-hand side is a machine fact that
+       can be arbitrarily long (a path, a line count), and letting it push the
+       title into a one-character column was exactly backwards. */
+    .fx-head .t { color: var(--fg); flex: 1 1 auto; min-width: 0; cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fx-head .t:hover { text-decoration: underline; }
+    /* The machine fact goes on its own line: it can be a whole path, and it was
+       the reason the title got squeezed to one character per line. */
+    .fx-fact { color: var(--dim); font-size: var(--fs-small); padding: 0 0 6px 22px;
+      overflow-wrap: anywhere; }
   .fx-item.open .fx-head .t { color: var(--run); }
   .fx-body { margin: 2px 0 10px; max-height: 300px; overflow: auto; }
   .fx-item:not(.open) .fx-body { display: none; }
@@ -1999,13 +2010,24 @@ function renderEffects() {
   rows.slice().reverse().forEach((a, i) => {
     const item = make("div", "fx-item" + (i === 0 ? " open" : ""));
     const head = make("div", "fx-head");
+    // 三角管展开, 其余整条管「跳过去」: 在这张卡上面真正要做的事是回到那个 thread
+    // 去操作, 而不是在这里再读一遍 diff.
+    const caret = make("button", "caret", i === 0 ? "▾" : "▸");
+    caret.title = "show what this step changed";
+    caret.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = item.classList.toggle("open");
+      caret.textContent = open ? "▾" : "▸";
+    });
+    head.append(caret);
     head.append(make("span", "n", "#" + a.n));
     head.append(make("span", "k", a.kind));
     head.append(make("span", "thread-tag", a.thread || ""));
     head.append(make("span", "t", a.label || "(no label)"));
-    head.append(make("span", "e", a.effect || ""));
-    head.addEventListener("click", () => item.classList.toggle("open"));
+    head.addEventListener("click", () => jumpToAction(a.thread, a.n));
     item.append(head);
+    // 机器那一行独立成行: 它可能是一整条路径, 挤在第一行里会把标题压成一列一个字.
+    if (a.effect || a.fact) item.append(make("div", "fx-fact", a.effect || a.fact));
     const body = make("div", "fx-body");
     if (a.diff) {
       body.append(renderDiffView(a.diff));
@@ -2019,6 +2041,16 @@ function renderEffects() {
   });
 }
 
+// 从副作用面跳回那张卡: 换到那个 thread, 选中那一版, 回到文档面 —— accept / deny
+// 这类真正能在这一步做的动作都在那个面上. 副作用面负责看见, 不负责在这里再操作一遍.
+function jumpToAction(thread, n) {
+  if (!thread) return;
+  focusThread = thread;
+  renderRail();
+  renderStream();
+  selectCard(thread, n);
+  setView("document");
+}
 function renderDetail() {
   if (!selected) {
     detailEl.replaceChildren();
