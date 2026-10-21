@@ -2011,13 +2011,17 @@ function renderEffects() {
     return;
   }
   // Newest first: the question is "what did the model just do", and the answer
-  // is at the top. Everything older stays one click away, closed.
+  // is at the top. The newest few stay open — one open row means every update
+  // clears the field of view and nothing can be watched across updates. Older
+  // ones stay one click away, closed.
+  const OPEN_TAIL = 3;
   rows.slice().reverse().forEach((a, i) => {
-    const item = make("div", "fx-item" + (i === 0 ? " open" : ""));
+    const shown = i < OPEN_TAIL;
+    const item = make("div", "fx-item" + (shown ? " open" : ""));
     const head = make("div", "fx-head");
     // 三角管展开, 其余整条管「跳过去」: 在这张卡上面真正要做的事是回到那个 thread
     // 去操作, 而不是在这里再读一遍 diff.
-    const caret = make("button", "caret", i === 0 ? "▾" : "▸");
+    const caret = make("button", "caret", shown ? "▾" : "▸");
     caret.title = "show what this step changed";
     caret.addEventListener("click", (e) => {
       e.stopPropagation();
