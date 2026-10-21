@@ -26,6 +26,7 @@ __all__ = [
     "ShellStatusToolCall",
     "ReasoningToolCall",
     "ChannelFacadeToolCall",
+    "ReplyFirstToolCall",
 ]
 
 _ResultType = dict | list | str | None
@@ -243,3 +244,19 @@ class ReasoningToolCall(ToolCallParameter):
     @classmethod
     def tool_name(cls) -> str:
         return "moss_reasoning"
+
+
+class ReplyFirstToolCall(ToolCallParameter):
+    """moss_reply_first — open a turn by saying one line, then keep working.
+
+    The call lands one short CTML unit and returns once its observed commands settle; the turn
+    stays open, so the work that follows is ordinary tools. It carries its own name because the
+    intent has to be chooseable at the moment a turn begins — a prompt sentence has to be
+    recalled, a tool is picked.
+    """
+
+    ctml: str = Field(default="", description="the short CTML to execute — one line, not a plan.")
+
+    @classmethod
+    def tool_name(cls) -> str:
+        return "moss_reply_first"

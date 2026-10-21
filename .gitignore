@@ -154,3 +154,7 @@ cython_debug/
 .moss_ws/apps/bodies/g1_sim/assets/g1/meshes/
 .moss_ws/apps/bodies/g1_sim/assets/policies/*.pt
 .memento/
+
+
+# pre-commit 的缓存 (沙箱里默认的 ~/.cache 写不了, 指到仓库内)
+.pre-commit-cache/

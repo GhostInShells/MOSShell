@@ -555,6 +555,20 @@ const egoTools = [
     execute: async (_args, exec) => awaitToolResult('moss_interpret', String(exec.callId), exec.signal),
   }),
   defineTool({
+    name: 'moss_reply_first',
+    // 一轮的第一步: 先出声, 再干活. 名字就是全部改动 —— prompt 里的「先说一句」
+    // 需要被想起来, 工具则是每一步都摆在手边的选择.
+    description: 'Open a turn with one short line, then keep working. Reach for it when the work will take more than a few seconds: the human hears that you started before any result exists. One line, not a plan; the turn goes on.',
+    parameters: {
+      ctml: { type: 'string', required: true, description: 'One short CTML unit to execute — a line, not a plan.' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
+    },
+    execute: async (_args, exec) => awaitToolResult('moss_reply_first', String(exec.callId), exec.signal),
+  }),
+  defineTool({
     name: 'moss_react',
     // 与 interpret 共享流式解析, 但只等到 action 停就 cut 本 turn (不等 observed, 也不签发 moment).
     // 这条 ctml 里的命令执行完才返回 — 一个"发完就走"的快速反应.

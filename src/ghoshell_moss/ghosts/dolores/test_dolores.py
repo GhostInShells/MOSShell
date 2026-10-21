@@ -2718,6 +2718,26 @@ class TestDoloresRun:
         ]
 
     @pytest.mark.asyncio
+    async def test_reply_first_runs_the_interpret_path_and_does_not_close_the_turn(self):
+        """reply_first 是同一机制换个名字: 流式进 articulator, 签 moment, cancel 为假."""
+        session = FakeRunSession()
+        ego = FakeDispatchEgo(session)
+        thinking = FakeRunThinking()
+        run = self._run(session=session, ego=ego, thinking=thinking)
+        async with run:
+            await session.emit(self._ctml_delta("c1", name="moss_reply_first", arguments_delta='{"ctml":"<say>', seq=1))
+            await session.emit(self._ctml_delta("c1", arguments_delta='先看一眼</say>"}', seq=2))
+            await session.emit(self._tool_call_event("moss_reply_first", '{"ctml":"<say>先看一眼</say>"}', "c1", seq=3))
+            await session.emit(self._turn_end(seq=4))
+            async for _ in run.logos():
+                pass
+
+        assert "".join(thinking.articulators[0].sent) == "<say>先看一眼</say>"
+        assert ego.rpc_calls == [
+            ("c1", {"moment_ref": "3-7"}, {"context": [{"type": "text", "text": "moment:3-7"}], "inputs": [], "moment_id": "3-7"}, False),
+        ], "与 interpret 同一条路: 带 moment 回来, cancel 为假 —— 这一轮还要继续"
+
+    @pytest.mark.asyncio
     async def test_interpret_refreshes_metas_before_signing_the_moment(self):
         """签 moment 之前必须把暖层刷到"动作之后" —— 否则模型看到的还是动作前的世界 (晚一拍)."""
         from ._run import DoloresRun

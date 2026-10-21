@@ -48,11 +48,14 @@ from ._tools import (
     ShellStatusToolCall,
     ReasoningToolCall,
     ChannelFacadeToolCall,
+    ReplyFirstToolCall,
     ToolCallResult,
 )
 
 # 流式 tool 集合: 这两个 tool 的参数经 tool-call-delta 逐字进 articulator, 边生成边执行.
-_STREAMING_TOOLS = frozenset({InterpretToolCall.tool_name(), ReactToolCall.tool_name()})
+_STREAMING_TOOLS = frozenset({
+    InterpretToolCall.tool_name(), ReactToolCall.tool_name(), ReplyFirstToolCall.tool_name(),
+})
 
 # 收轮类 tool 集合: `moss_react` 与 `moss_wait_next` —— 正常路径下它们的结果一到, turn 就被 cut.
 # 它们在飞的那段时间是**唯一**需要为"人此刻说的话"做判断的地方 (其余 tool 这一轮还要继续, 推就是了).
@@ -482,6 +485,13 @@ class DoloresRun:
             # 不是我们的 tool: 静默略过 —— host 内环工具由 dsh 自己结算, 我们连痕都不必留.
             return
         result = await InterpretToolCall.run_tool(
+            event, lambda call: self._handle_interpret(call, streams), logger=self._logger,
+        )
+        if result is not None:
+            await self._void_stream(event, streams)
+            await self._dispatch_tool_result(result)
+            return
+        result = await ReplyFirstToolCall.run_tool(
             event, lambda call: self._handle_interpret(call, streams), logger=self._logger,
         )
         if result is not None:
