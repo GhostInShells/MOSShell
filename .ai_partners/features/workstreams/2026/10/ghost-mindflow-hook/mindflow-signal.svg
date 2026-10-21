@@ -1,0 +1,89 @@
+<svg id="stage" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="700">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<g id="main-row">
+  <rect x="30" y="60" width="160" height="64" rx="12" fill="#12241a" stroke="#3fbf7f" stroke-width="2"/>
+  <text x="110" y="99" text-anchor="middle" fill="#e8fff2" font-size="14" font-family="sans-serif">mindflow</text>
+
+  <line x1="190" y1="92" x2="226" y2="92" stroke="#3fbf7f" stroke-width="2"/>
+  <rect x="226" y="60" width="160" height="64" rx="12" fill="#12241a" stroke="#ffd24a" stroke-width="2"/>
+  <text x="306" y="88" text-anchor="middle" fill="#ffd24a" font-size="14" font-family="sans-serif">idle</text>
+  <text x="306" y="110" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">没有信号也没有动作</text>
+
+  <line x1="386" y1="92" x2="422" y2="92" stroke="#3fbf7f" stroke-width="2"/>
+  <rect x="422" y="60" width="170" height="64" rx="12" fill="#0f1c15" stroke="#5fe3a6" stroke-width="2"/>
+  <text x="507" y="88" text-anchor="middle" fill="#e8fff2" font-size="14" font-family="sans-serif">idle hook</text>
+  <text x="507" y="110" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">带生命周期的 async 回调</text>
+
+  <line x1="592" y1="92" x2="628" y2="92" stroke="#5fe3a6" stroke-width="2"/>
+  <rect x="628" y="44" width="340" height="96" rx="12" fill="#14261c" stroke="#5fe3a6" stroke-width="2"/>
+  <text x="798" y="72" text-anchor="middle" fill="#e8fff2" font-size="14" font-family="sans-serif">挂 n 个不同类型的钩子</text>
+  <text x="798" y="96" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="sans-serif">并行跑，互不等待</text>
+  <text x="798" y="120" text-anchor="middle" fill="#9fecc6" font-size="11" font-family="sans-serif">每个都能对应一个能独立执行的东西</text>
+</g>
+
+<g id="paths">
+  <path d="M798,140 L798,168 L700,168 L700,196" fill="none" stroke="#3fbf7f" stroke-width="2"/>
+  <path d="M798,140 L798,168 L900,168 L900,196" fill="none" stroke="#ffd24a" stroke-width="2"/>
+
+  <rect x="620" y="196" width="170" height="80" rx="12" fill="#0f1c15" stroke="#3fbf7f" stroke-width="2"/>
+  <text x="705" y="226" text-anchor="middle" fill="#e8fff2" font-size="13" font-family="sans-serif">内核态定死</text>
+  <text x="705" y="250" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">人写的，改不了 → 边际功能</text>
+
+  <rect x="810" y="196" width="180" height="80" rx="12" fill="#14261c" stroke="#ffd24a" stroke-width="2"/>
+  <text x="900" y="226" text-anchor="middle" fill="#ffd24a" font-size="13" font-family="sans-serif">模型自己给</text>
+  <text x="900" y="250" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">运行中改 → 日常能力</text>
+
+  <path d="M900,276 L900,300 L820,300 L820,320" fill="none" stroke="#ffd24a" stroke-width="2" stroke-dasharray="6 5"/>
+  <rect x="620" y="320" width="360" height="120" rx="12" fill="#0f1c15" stroke="#ffd24a" stroke-width="2"/>
+  <text x="800" y="348" text-anchor="middle" fill="#ffd24a" font-size="13" font-family="monospace">ghost_home/hooks/</text>
+  <text x="640" y="376" fill="#e8fff2" font-size="11" font-family="monospace">idle_remind.py · idle_digest.sh</text>
+  <text x="640" y="398" fill="#e8fff2" font-size="11" font-family="monospace">idle_check_ctx.py</text>
+  <text x="640" y="424" fill="#7fd9a8" font-size="10" font-family="sans-serif">它们是 node 脚本：能用整个 matrix，也能被 cancel</text>
+</g>
+
+<g id="control-line">
+  <path d="M110,124 L110,170 L70,170 L70,196" fill="none" stroke="#3fbf7f" stroke-width="2" stroke-dasharray="6 5"/>
+  <rect x="30" y="196" width="190" height="80" rx="12" fill="#12241a" stroke="#3fbf7f" stroke-width="2"/>
+  <text x="125" y="226" text-anchor="middle" fill="#e8fff2" font-size="13" font-family="sans-serif">mindflow channel</text>
+  <text x="125" y="250" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">我这一轮怎么用它</text>
+
+  <line x1="220" y1="236" x2="256" y2="236" stroke="#3fbf7f" stroke-width="2"/>
+  <rect x="256" y="196" width="150" height="80" rx="12" fill="#0f1c15" stroke="#5fe3a6" stroke-width="2"/>
+  <text x="331" y="226" text-anchor="middle" fill="#e8fff2" font-size="13" font-family="sans-serif">notice</text>
+  <text x="331" y="250" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">开关</text>
+
+  <line x1="406" y1="236" x2="442" y2="236" stroke="#5fe3a6" stroke-width="2"/>
+  <rect x="442" y="196" width="150" height="80" rx="12" fill="#0f1c15" stroke="#ffd24a" stroke-width="2"/>
+  <text x="517" y="226" text-anchor="middle" fill="#ffd24a" font-size="13" font-family="sans-serif">knock 信号</text>
+  <text x="517" y="250" text-anchor="middle" fill="#7fd9a8" font-size="10" font-family="sans-serif">只敲一下，抢到才给 hint</text>
+</g>
+
+<g id="why">
+  <rect x="30" y="320" width="560" height="130" rx="12" fill="#12241a" stroke="#5fe3a6" stroke-width="2"/>
+  <text x="310" y="350" text-anchor="middle" fill="#e8fff2" font-size="13" font-family="sans-serif">跨进程 node ≠ 同进程插件</text>
+  <text x="56" y="380" fill="#9fecc6" font-size="11" font-family="sans-serif">① 改完不用重启自己　② 崩了不带走自己　③ 可以并存多份做对比</text>
+  <text x="56" y="406" fill="#9fecc6" font-size="11" font-family="sans-serif">④ 写完立刻能看见它产生什么，还能当场测它</text>
+  <text x="56" y="432" fill="#4b7a63" font-size="11" font-family="sans-serif">→ 自迭代不是发版，是一次对话里跑得完的闭环</text>
+</g>
+</svg>
