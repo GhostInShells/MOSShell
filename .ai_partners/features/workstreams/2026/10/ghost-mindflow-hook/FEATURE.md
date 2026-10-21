@@ -1,6 +1,6 @@
 ---
 title: Ghost Mindflow Hook
-status: draft
+status: in-progress
 priority: P1
 created: 2026-10-21
 updated: 2026-10-21
@@ -64,6 +64,44 @@ Not an absolute path: for now, somewhere under the ghost home. The further step 
 hang it under a **branch**, merging with memento's commit hooks into one scheme —
 `branches/<id>/hooks/on_commit/`, `hooks/on_idle/`, the event name as the directory, drop
 a file in and it takes effect. A thread's habits then live as files, not as configuration.
+
+## Landed — the minimum slice: `idle-knock`
+
+The first piece of this design is in the kernel, and it is deliberately smaller than a
+hook system: one command on the mindflow channel, no registry, no persistence.
+
+`idle-knock(seconds, text__)` arms a callback on the coming idle window and returns at
+once — nothing blocks, no action stays open. When mindflow goes idle the callback runs:
+it waits `seconds`, then sends a `knock` signal whose message is `text__`, the line the
+ghost wrote to itself. It fires once and disposes itself; if real signals arrive first,
+the window closes, `_stop_idling` cancels the callback, and nothing is sent.
+
+**No kernel change was needed.** `when_idle` already had exactly this lifecycle:
+callbacks are turned into tasks when the window opens and cancelled when it closes
+(`_mindflow.py`). The slice is one command plus its tests.
+
+What it buys: the ghost can wait for something without betting on a number and without
+holding the turn. `sleep` is what it replaces — the failure mode it removes is "waited
+for a thing that never came, so never moved again".
+
+### The test that was wrong
+
+The first version of the test armed the command and then called `_set_idle()` by hand to
+simulate the window. It failed, and the failure was interesting enough to record: it
+proved that a callback registered while the window is already open never runs, which led
+to a patch in `when_idle` to cover it.
+
+That patch was redundant and was reverted. A channel command executes inside an action,
+so mindflow is never idle while the command that arms the callback is running — the state
+the test manufactured does not exist. Worse, the wrong case leaked into the rest of the
+directory and made a shell-integration test fail.
+
+> 「你加的那个改动是冗余的，因为 mindflow 它就是全程……channel 在运行的时候 mindflow
+> 就一定不是 idle，只是你的测试方式，它的逻辑不对。」
+
+The lesson generalizes past this test: **a case that cannot happen in the real path is not
+a case, it is a bug in the test.** Write the order the runtime actually takes — leave the
+window first, then arm — or the test will demand a kernel change the kernel does not need.
 
 ## Open questions
 
