@@ -27,13 +27,9 @@ pins:
 
 ## What this space is
 
-<Write it for yourself, or for this space's owner. Not an introduction for strangers: say
-what lives here and who reads it. Two examples — rewrite one of them:>
-
-- **a ghost home's works** — these are my own pieces, and the only reader is me. No need to
-  manage anyone's impression; the job is to make it possible for me to find them again.
-- **the works/ at a moshell project root** — moshell's dogfooding output, plus the public
-  products made by moss the ghost and kept because they are meant to be distributed.
+<Write this section yourself. It is the only part of this file that has to be *authored*
+rather than copied: what lives here, and — thinking about **who will read it** — what they
+need in order to use this space without asking you.>
 
 **The mechanism can be invented.** A `GROUND.md` exists here because *somebody has to say
 out loud that this space is governed*. The three lines below are a reference, not a
@@ -42,7 +38,7 @@ happens somewhere a reader will look. The scheme is not the goal; the governance
 
 ## A reference shape (rewrite it into what this space actually does)
 
-- **Topology** — <what the second level means here, and what the third is. Two lines.>
+- **Topology** — <what the levels mean here, and which of them carry a `WORK.md`. Two lines.>
 - **Distribution** — `all | process | template-only`: <what enters the repository, what
   does not, and why>
 - **Template** — <which WORK template; or "this space defines its own, see AGENTS.md">

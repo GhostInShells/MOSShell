@@ -40,7 +40,8 @@ behaviour is to skip this skill entirely and say so.
 
 - **proposition** — a concrete, recurring line of products (`blogs/`, `curriculum/`, `film-reviews/`),
   never an activity type (`making/`, `ops/`): activity is what skills are for.
-- **work** — one delivered thing.
+- **work** — any directory holding a `WORK.md`. It may contain further works: a blog is a work, and
+  a post inside it may be one too. What makes something a work is the `WORK.md`, not the depth.
 - A space holding no work yet is legitimate: a production system that nobody has used is still a system.
 
 ## Strategy 1 — declare the space (optional)
