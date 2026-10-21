@@ -35,19 +35,26 @@
      It answers "is it working on something" without a single glyph, and it is
      the one thing that changes when the ghost goes quiet — so the screen never
      looks frozen when it is only silent. */
+  /* A 2px hairline at the very top edge is the first thing a window frame eats,
+     and on a bright stage it is invisible anyway. So: thicker, detached from the
+     edge by a hair, and carrying its own dark bed — the light has to be readable
+     against whatever happens to be underneath, and it has to survive being
+     cropped by the top of the window. */
   #think {
-    position: fixed; left: 0; right: 0; top: 0; height: 2px; z-index: 9;
+    position: fixed; left: 0; right: 0; top: 0; height: 5px; z-index: 9;
     pointer-events: none; opacity: 0; transition: opacity .35s ease;
-    background-image: linear-gradient(90deg, transparent, #6ea8fe 35%, #ffd24a 50%, #6ea8fe 65%, transparent);
-    background-size: 45% 100%; background-repeat: no-repeat;
-    background-position: -45% 0;
+    background-color: rgba(0,0,0,.55);
+    box-shadow: 0 1px 6px rgba(0,0,0,.55);
+    background-image: linear-gradient(90deg, transparent, #6ea8fe 30%, #fff3b0 50%, #6ea8fe 70%, transparent);
+    background-size: 40% 100%; background-repeat: no-repeat;
+    background-position: -40% 0;
   }
-  #think.on { opacity: 1; animation: think-sweep 1.8s linear infinite; }
+  #think.on { opacity: 1; animation: think-sweep 1.4s linear infinite; }
   @keyframes think-sweep {
-    from { background-position: -45% 0; }
-    to   { background-position: 145% 0; }
+    from { background-position: -40% 0; }
+    to   { background-position: 140% 0; }
   }
-  body.think-dim #think { opacity: .35; }
+  body.think-dim #think { opacity: .5; }
   /* The conversation, legibly: one line per clause, newest at the bottom, pushed
      up by the next. Reading order is the whole point — a line that flies across
      shows its tail first, which is fine for a comment feed and wrong for a
