@@ -208,6 +208,8 @@ class _SpeechCommandFactory:
         # 否则文档一变整块命令接口就要重发, 命令 meta 也跟着反复重生成.
         say_doc = (
             f"Speak with the specified voice state. The content becomes spoken audio — avoid visually-oriented text (tables, special symbols) as speech content.\n"
+            f"Say it once: do not say again what you have already said. A retried or re-emitted line\n"
+            f"  that re-states the previous one is heard as saying the same thing twice — continue, or say something new.\n"
             f":param voice: Speed, pitch, etc. of the voice. JSON structure, schema is {voice_schema_str}\n"
             f"  When calling via CTML, voice must be a JSON string, e.g. voice:dict=\"{{'speed': 1.0, 'pitch': 'high'}}\"\n"
             f":param as_default: Make the voice state set in this turn the default.\n"
