@@ -74,36 +74,53 @@ moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 where = ["src"]
 exclude = ["test_*"]
 
+# Data only: python modules ship because they are modules. Everything a package reads at
+# runtime — templates, seeds, prompts, docs the CLI prints — has to be named here, because
+# setuptools ships exactly what the config says and nothing more.
 [tool.setuptools.package-data]
-# 简化匹配逻辑，专注于非代码资源. by gemini 3
-"ghoshell_moss.core.codex" = ["_features_stubs/**/*.md"]
-"ghoshell_moss.cli.docs" = ["**/*.md"]
-"ghoshell_moss.cli.skills" = ["**/*.md"]
+"ghoshell_moss" = ["README.md"]
+"ghoshell_moss.anchor" = ["SPECIFICATION.md"]
+"ghoshell_moss.ground" = ["SPECIFICATION.md"]
+"ghoshell_moss.core" = ["README.md"]
+"ghoshell_moss.core.blueprint" = ["CLAUDE.md"]
+"ghoshell_moss.core.codex" = ["_features_stubs/**/*.md", "README.md"]
+"ghoshell_moss.core.ctml" = ["prompts/**/*.md", "README.md"]
+"ghoshell_moss.core.speech" = ["README.md"]
+"ghoshell_moss.core.file_editor" = ["_openhands/UPSTREAM.md", "_openhands/LICENSE", "README.md"]
+"ghoshell_moss.cli" = ["start.md", "CLAUDE.md", "docs/**/*.md", "skills/**/*.md"]
 "ghoshell_moss.stubs" = [
     "**/*.md",
-    "**/.env.example",
-    "**/.gitignore",
-    "**/*.ini",
+    "**/*.yml",
     "**/*.yaml",
-    "**/*.toml", # 建议加上，万一以后有子配置
     "**/*.json",
     "**/*.jsonl",
+    "**/*.toml",
+    "**/*.ini",
+    "**/*.txt",
+    "**/.env.example",
+    "**/.gitignore",
+    "**/.gitkeep",
 ]
 "ghoshell_moss.ghosts.dolores" = [
     "stubs/**/*.md",
     "stubs/**/*.yml",
-    "stubs/**/.gitignore",
+    "stubs/**/*.py",
+    "stubs/.dolores.yml",
+    "stubs/.env.example",
+    "stubs/.gitignore",
+    "stubs/.memento/ego/branches/GROUND.md",
+    "stubs/.memento/ego/commits/GROUND.md",
+    "stubs/.memento/ego/hooks/on_commit.py",
+    "dsh_plugin/**/*",
     "dsh_stubs/**/*.ts",
     "dsh_stubs/**/*.yml",
     "dsh_stubs/**/*.yaml",
     "dsh_stubs/**/*.json",
 ]
 
-[tool.pdm.build]
-includes = []
 [build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
 
 
 [dependency-groups]
