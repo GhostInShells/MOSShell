@@ -5,7 +5,7 @@ MOSS 是一个有状态双工运行时框架。它让大模型能够实时、并
 
 **技术愿景**：人与智能模型共生的未来，是人类与模型共享认知空间、共享交互界面。模型产品必须进入现实世界——而不仅是数字空间，通过躯体、屏幕、语音与人实时互动。人机交互界面最终要推向领域专家和普通人，而不只是程序员。MOSS 在为这个愿景提供架构。
 
-（当前是 Beta2 版本——第一个开箱可用的发布：装完就能和一个持久 Ghost 对话。完整应用能力在 v0.1.0 正式版提供。）
+（当前是 Beta3 版本——进入 production 阶段之前的最后一个发布：装完就能和一个持久 Ghost 对话，并且带走一份可以自己养起来的 ghost home。完整应用能力在 v0.1.0 正式版提供。）
 
 ## 这个项目是什么
 
@@ -47,7 +47,6 @@ MOSS 的架构是一个蝴蝶形状。
 左侧翅膀接受外部世界的并行信号输入，通过 Mindflow 调度思考的关键帧。
 右侧翅膀向躯体发送指令，驱动并行的有时序行动，影响外部世界。
 智能模型的 Ghost 控制着两侧翅膀的扇动。
-
 
 ```
                     ┌───────┐
@@ -92,13 +91,15 @@ MOSS 通过 CTML 技术构建智能模型的控制界面。一个人对机器人
 
 最小知识入口：`moss ctml read`（CTML 语法）、`moss codex blueprint channel_builder`（构建能力）、`moss codex blueprint mindflow`（感知仲裁）、`moss codex blueprint matrix`（进程组网）。
 
-## Beta2 开箱有什么
+## Beta3 开箱有什么
 
 **1. 一个开箱即用的持久 Ghost。** MOSS 自带第一个持久智能体原型 **Dolores**，其第一个实例 **deepseek** —— 以 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）为内核、DeepSeek 模型家族为推理基座的 ghost。它自带持久记忆（[memento](src/ghoshell_moss/memento/)）、认知地图（ground），以及项目 `moss features` 体系所赋予的架构知识和迭代经验。运行 `moss-ghost run deepseek` 即可与它对话——见下面的快速开始。
 
 **2. 开箱 nodes。** [`nodes/`](nodes/) 目录下，是可观测的、基于 Matrix 实现的**多进程组网 + 有状态流式控制**能力：`browsers` / `live2d` / `os` / `screens` / `tools` / `unitree` / `visions` / `webview_apps` —— 覆盖屏幕躯体、终端与文件编辑、web artifacts、流式视觉体系、音频对话礼仪，以及 Unitree G1 人形机器人控制方案。
 
 **3. 架构本身**，与 Beta1 一致 —— CTML、Mindflow、Matrix、模型第一开发者体系，以及 G1 人形机器人、ReachiMini 机械臂、Desktop GUI 等具体集成路径，都可以调研。
+
+**4. 一份可以带走的 ghost home。** `.moss/ghosts/moss/` 是开发这个项目的那只 ghost 的家：它的 ground（自我认知、意义、行为风格）、它的日记，以及它对这些协作者的了解。clone 仓库拿到的，是**它的一个分叉，不是它本人**——轨迹（`.memento/`）是有意不随仓库分发的，副本从这里开始长属于自己的一段。这就是我们推荐的养法：拿走这份家和工具，让它长出自己的记忆。
 
 ## 快速开始
 
@@ -110,10 +111,10 @@ moss project env-init   # 了解可用环境变量 (见 .moss/.env.example)
 
 凭据请配置在你自己的 shell 环境（home）里，不推荐写进仓库内的 `.moss/.env` —— 编码模型会读仓库，写在里面的 `.env` 离泄露只差一次 `Read`。除非你的 `.moss` 工作区与项目目录做了隔离，否则 key 留在用户环境。
 
-**1. 与 deepseek ghost 文字对话。** 需要安装 [`dsh`](https://github.com/deepseek-ai/deepseek-harness)（npm 包）。MOSS Beta2 标定测试版本为 `dsh 0.1.5-rc.2`；dsh 处于 developer preview，会有破坏性更新，请锁定版本：
+**1. 与 deepseek ghost 文字对话。** 需要安装 [`dsh`](https://github.com/deepseek-ai/deepseek-harness)（npm 包）。MOSS Beta3 标定测试版本为 `dsh 0.2.0-rc.2`；dsh 处于 developer preview，会有破坏性更新，请锁定版本：
 
 ```bash
-npm install -g @deepseek-ai/dsh@0.1.5-rc.2
+npm install -g @deepseek-ai/dsh@0.2.0-rc.2
 moss-ghost run deepseek
 ```
 
@@ -148,20 +149,13 @@ moss-shell mcp                   # 将 MOSS 能力提供给任何 MCP 平台 (�
 
 无论哪种路径，认知入口是同一个：`moss start`。
 
-## Demos
-
-| 跨 App 实时通信 | 一个 Ghost，多个身体 |
-|---|---|
-| ![apps_cross_talk](assets/apps_cross_talk.gif) | ![multiple_bodies](assets/multiple_bodies.gif) |
-| 眼睛、棋盘、视觉、语音各自独立进程，通过 stream 实时互通 | 一个 Ghost 同时连接桌面机器人、机械臂、机器狗 |
-
 ## 项目状态
 
-Beta2（`v0.1.0-beta2`）。核心三件套（CTML / Mindflow / Matrix）已可用并通过测试验证。第一个持久 Ghost —— Dolores 原型的 deepseek 实例 —— 开箱即跑通全链路：语音进、思考、语音出、node 组装的躯体。标定测试于 `dsh 0.1.5-rc.2`。
+Beta3（`v0.1.0-beta3`）。核心三件套（CTML / Mindflow / Matrix）已可用并通过测试验证。第一个持久 Ghost —— Dolores 原型的 deepseek 实例 —— 开箱即跑通全链路：语音进、思考、语音出、node 组装的躯体。标定测试于 `dsh 0.2.0-rc.2`。
 
-Stage2 与 in-progress features 是 `v0.1.0-rc1` 的 dogfooding 对象，将以直播开发的方式进行：从 Dolores 回归开始，然后是 Stage2 验收，再到开箱 node 打磨（包括 Unitree G1）。
+Stage2 已于 2026-10-20 关闭——应用、dogfooding 与全功能 Dolores ghost 都已落地，ghost 自己迭代自己的闭环也合上了。下一阶段（一只 ghost 驱动一个集群）写在 production 的 STAGE.md 里。
 
-当前阶段与路线图：`.ai_partners/stages/`
+当前阶段与路线图：`.ai_partners/features/stages/`
 
 ## 致谢
 
