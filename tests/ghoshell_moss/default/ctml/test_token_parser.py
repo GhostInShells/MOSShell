@@ -651,3 +651,17 @@ def test_token_parser_with_sub_channel_content():
     q = q[1:-1]
     for token in q:
         assert token.chan == "foo.bar"
+
+
+def test_a_comma_separated_attribute_stays_text():
+    """``ids="0,1"`` 是文本, 不是元组.
+
+    ``literal_eval`` 会把 "0,1" 读成 ``(0, 1)``; 元组不在 CTML 的约定里, 序列化出去
+    也会变成数组. 手滑一个逗号就让命令收到一个元组, 是最难看出来的一类错 —— 所以
+    解析出来是元组/集合时退回原文.
+    """
+    content = "<foo ids='0,1'/>"
+    q: list[CommandToken] = []
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak")
+    foo = [t for t in q if t is not None and t.name == "foo" and t.seq == "start"]
+    assert foo and foo[0].kwargs == {"ids": "0,1"}
