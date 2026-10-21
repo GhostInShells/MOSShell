@@ -1067,12 +1067,14 @@ def build_file_editor_channel(
 
     @chan.build.command(name="view", always_observe=True, available=enabled)
     async def view(mode: str = "") -> str:
-        """Switch the page between the three readings of a thread — or read it back.
+        """Switch the page between the readings of a thread — or read it back.
 
         ``document`` is the working copy, read through the current renderer;
         ``edit`` is the addressable face — line numbers, selection and the inline
         edit box — and entering it is what makes the human's selection mean
-        something; ``history`` is what has happened to the thread; ``meta`` is its
+        something; ``history`` is what has happened to the thread; ``effects`` is
+        the same history read for meaning rather than sequence — every action with
+        the diff it made, newest first, with the document hidden; ``meta`` is its
         own facts. Which one is on the table is a view, not a layout: the human
         clicks it, and so may you. Empty = read back the current mode and who
         chose it.

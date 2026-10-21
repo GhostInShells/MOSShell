@@ -512,6 +512,40 @@
   .diffline.del .body { color: var(--dim); text-decoration: line-through; }
   .diffline.ctx .body { color: var(--dim); }
   .doc .plain { color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+  /* The side-effect face: one row per action, newest first, its diff under it.
+     Only the newest is open by default — a reader scanning the work should see
+     the recent shape first, not a wall of context lines. */
+  .fx { overflow: auto; padding: 6px 0 24px 26px; position: relative; }
+  /* A spine, not a list: the actions are a sequence, and a reader should see how
+     many steps there were before reading any of them. Collapsed rows keep only
+     their head, so a long run looks like a stack of cards rather than a wall. */
+  .fx::before { content: ""; position: absolute; left: 11px; top: 10px; bottom: 18px;
+    width: 1px; background: var(--line); }
+  .fx-item { position: relative; border: 1px solid var(--line); border-radius: 10px;
+    background: rgba(255,255,255,.015); padding: 0 12px; margin: 0 0 5px; }
+  .fx-item::before { content: ""; position: absolute; left: -20px; top: 13px; width: 7px;
+    height: 7px; border-radius: 50%; background: var(--line); }
+  .fx-item.open { background: rgba(92,214,150,.045); border-color: var(--run); margin-bottom: 10px; }
+  .fx-item.open::before { background: var(--run); }
+  .fx-head { display: flex; align-items: baseline; gap: 10px; cursor: pointer; padding: 7px 0; }
+  .fx-head .n { color: var(--dim); font-size: var(--fs-small); min-width: 2.4em; }
+  .fx-head .k { color: var(--accent); font-size: var(--fs-small); }
+  .fx-head .t { color: var(--fg); overflow-wrap: anywhere; }
+  .fx-head .e { color: var(--dim); font-size: var(--fs-small); margin-left: auto; white-space: nowrap; }
+  .fx-item.open .fx-head .t { color: var(--run); }
+  .fx-body { margin: 2px 0 10px; max-height: 300px; overflow: auto; }
+  .fx-item:not(.open) .fx-body { display: none; }
+  .fx-quiet { color: var(--dim); font-size: var(--fs-small); }
+  .fx-empty { color: var(--dim); padding: 22px 0; }
+  /* Whole-window reading: everything that belongs to the document goes away. */
+  body.fx-mode .rail,
+  body.fx-mode .rail-handle,
+  body.fx-mode .views,
+  body.fx-mode .vbar,
+  body.fx-mode .digest,
+  body.fx-mode .gate { display: none !important; }
+  body.fx-mode .centre { padding-left: 24px; }
+  .fx-head .thread-tag { color: var(--accent); font-size: var(--fs-small); opacity: .75; }
   /* The file's header, shown as a header: a ruled block of key: value lines, not
      prose, and not a heading. */
   .doc .frontmatter {
@@ -543,6 +577,11 @@
 <header>
   <button class="toggle on" id="toggle" title="turn the model's editing on or off">editing: on</button>
   <button class="switch" id="trust-global" title="hand every approval on this surface to the model">trust: off</button>
+  <!-- Reading the work rather than the file: every action this thread has had, its
+       side effect drawn, newest first. It sits next to trust because both answer
+       "how much of this surface am I delegating / looking at", neither is a way of
+       reading the document. -->
+  <button class="switch" id="effects-toggle" title="only what changed — every action of this thread, newest first">side effects</button>
   <span class="spacer"></span>
   <span class="conn" id="conn">connecting…</span>
 </header>
@@ -575,6 +614,10 @@
     <div class="digest" id="digest" hidden></div>
     <div class="gate" id="gate" hidden></div>
     <section class="doc" id="doc"></section>
+    <!-- The side-effect face: the document is hidden here on purpose. This pane
+         answers one question — what did the model change — and a document would
+         make the reader re-derive that answer line by line. -->
+    <section class="fx" id="fx" hidden></section>
     <!-- The edit affordance: a selection over whole lines becomes an addressable
          range, and this is the one button that turns it into an edit. -->
     <button class="edit-here" id="edit-here" hidden>edit these lines</button>
@@ -648,6 +691,12 @@ const detailEl = document.createElement("div");
 detailEl.className = "detail";
 const railEl = document.getElementById("rail");
 const docEl = document.getElementById("doc");
+const fxEl = document.getElementById("fx");
+const effectsToggleEl = document.getElementById("effects-toggle");
+// What the side-effect face has been told: every thread's actions with their
+// diffs resolved, oldest first. It is a pull, not a stream — this face is opened
+// on purpose, and the actions a reader asked for are not worth pushing.
+let fxRows = [];
 // The human's scroll is a reading position, so it goes back up as the same
 // state mine does — debounced, because a scroll is a hundred events per gesture
 // and one of them is the answer.
@@ -878,6 +927,13 @@ function renderTrust() {
 trustGlobalEl.addEventListener("click", () =>
   send({ type: "global_trust", on: !globalTrust }),
 );
+
+// One switch, two states: this face or the document. It is a reading of the same
+// thread, not a fourth tab — the tabs say how to look at the document, this says
+// whether to look at the document at all.
+effectsToggleEl.addEventListener("click", () =>
+  setView(view === "effects" ? "document" : "effects"),
+);
 renderTrust();
 
 // The bar says *something changed*; clicking it must hand over the change
@@ -1031,19 +1087,28 @@ function setView(next) {
   // does a drag on the text mean "these lines".
   // Opening meta is a fold, not a view: it belongs to the document face.
   if (next === "meta") { toggleMeta(true); next = "document"; }
-  view = next === "history" ? "history" : next === "edit" ? "edit" : "document";
+  view = next === "history" ? "history"
+    : next === "edit" ? "edit"
+    : next === "effects" ? "effects"
+    : "document";
   document.getElementById("vtab-doc").classList.toggle("on", view === "document");
   document.getElementById("vtab-edit").classList.toggle("on", view === "edit");
   document.getElementById("vtab-hist").classList.toggle("on", view === "history");
+  effectsToggleEl.classList.toggle("on", view === "effects");
+  // The side-effect face is a whole-window reading, not a pane: the thread rail,
+  // the document tabs and the document's own bar all belong to the file, and this
+  // face is not about the file. Leaving them up mixes two visual languages.
+  document.body.classList.toggle("fx-mode", view === "effects");
   docEl.hidden = view !== "document" && view !== "edit";
+  fxEl.hidden = view !== "effects";
   // The bar describes the document face; history and meta speak for themselves.
   document.getElementById("vbar").hidden = view !== "document" && view !== "edit";
   streamEl.hidden = view !== "history";
   metaEl.hidden = view !== "document" && view !== "edit" ? true : metaEl.hidden;
   if (view === "document" || view === "edit") renderDoc();
-  // Opening history asks for that thread's cards: a window that was not there
-  // when they were made has no other way to learn about them.
+  // Both faces are readings of the thread's actions, so both ask for them.
   if (view === "history" && focusThread) requestActions(focusThread);
+  if (view === "effects") { requestEffects(); renderEffects(); }
   if (!metaEl.hidden) renderMeta();
   renderViewNote();
 }
@@ -1912,6 +1977,48 @@ function requestDetail(thread, n) {
   send({ type: "detail", thread, n });
 }
 
+// The whole thread's actions with their diffs, in one pull. Asking per card
+// would cost one round trip per row, and the reader opened this face to see all
+// of them at once.
+// The side-effect face is global on purpose: the question is "what has the model
+// been doing", which is not a property of any one thread. The thread shows up as
+// a tag on each row instead — read the work first, the file second.
+function requestEffects() {
+  send({ type: "effects" });
+}
+
+function renderEffects() {
+  fxEl.replaceChildren();
+  const rows = fxRows;
+  if (!rows.length) {
+    fxEl.append(make("div", "fx-empty", "nothing has happened yet — no action to show"));
+    return;
+  }
+  // Newest first: the question is "what did the model just do", and the answer
+  // is at the top. Everything older stays one click away, closed.
+  rows.slice().reverse().forEach((a, i) => {
+    const item = make("div", "fx-item" + (i === 0 ? " open" : ""));
+    const head = make("div", "fx-head");
+    head.append(make("span", "n", "#" + a.n));
+    head.append(make("span", "k", a.kind));
+    head.append(make("span", "thread-tag", a.thread || ""));
+    head.append(make("span", "t", a.label || "(no label)"));
+    head.append(make("span", "e", a.effect || ""));
+    head.addEventListener("click", () => item.classList.toggle("open"));
+    item.append(head);
+    const body = make("div", "fx-body");
+    if (a.diff) {
+      body.append(renderDiffView(a.diff));
+    } else if (a.fact) {
+      body.append(make("div", "fx-quiet", a.fact));
+    } else {
+      body.append(make("div", "fx-quiet", "this action moved nothing textual"));
+    }
+    item.append(body);
+    fxEl.append(item);
+  });
+}
+
 function renderDetail() {
   if (!selected) {
     detailEl.replaceChildren();
@@ -2231,6 +2338,10 @@ function onFrame(frame) {
     case "action": {
       upsertAction(frame);
       renderGate();
+      // A new action on the thread the side-effect face is showing is exactly
+      // what that face is for: pull it again, or the reader watches a frozen
+      // list while the model keeps working.
+      if (view === "effects") requestEffects();
       const a = frame;
       // Something that needs a human jumps the page to itself — a card waiting for a
       // verdict with nobody looking at it is the one thing worth interrupting for.
@@ -2279,6 +2390,11 @@ function onFrame(frame) {
         text: frame.text,
       });
       if (focusThread === frame.thread && view === "document") renderDoc();
+      break;
+    }
+    case "effects": {
+      fxRows = frame.rows || [];
+      if (view === "effects") renderEffects();
       break;
     }
     case "detail": {

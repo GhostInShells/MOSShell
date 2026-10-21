@@ -41,6 +41,10 @@ _DEBOUNCE_SECONDS = 0.4
 decision arriving twice, not a second one."""
 
 _LAYOUTS = ("split", "page")
+# How many actions the side-effect face pulls in one go. A window, not the whole
+# history: this face is read newest-first, so the tail is what it is for, and a
+# thread that has run for hours should not ship every diff it ever made.
+_EFFECTS_ROWS = 60
 # How many drafts one thread keeps. A draft is a working view; when the ring
 # wraps, the survivor should have been written to renderers/ as a file.
 _DRAFT_RING = 8
@@ -48,7 +52,7 @@ _DRAFT_RING = 8
 # be a constant here, because the library is a directory anyone can add a file to.
 # `raw` and `tmp` are always legal: raw is the last resort, tmp is the draft layer.
 _FORMATS = ("auto", "raw", "tmp")
-_VIEWS = ("document", "edit", "history", "meta")
+_VIEWS = ("document", "edit", "history", "meta", "effects")
 """How an open card is shown: a side panel beside the card list, or the whole
 window. This is the model's half of the presentation contract — the human owns
 the click that opens a card, the model owns how big it opens."""
@@ -177,7 +181,7 @@ class FileEditorSurface:
         return self._view, self._view_by
 
     async def set_view(self, mode: str, by: str = "model") -> str:
-        """Switch the page between document / history / meta, and say who did it."""
+        """Switch the page between document / edit / history / effects / meta, and say who did it."""
         chosen = (mode or "").strip().lower()
         if chosen not in _VIEWS:
             raise ValueError(f"view must be one of {_VIEWS}, got {mode!r}")
@@ -436,6 +440,31 @@ class FileEditorSurface:
             return
         await self.broadcast({"type": "detail", **detail_view(target, action)})
 
+    async def _effects(self) -> None:
+        """Every action across every thread, with the diff it made.
+
+        This is one face, not one per thread: the question it answers is "what has
+        the model been doing", and a reader asking that does not care which thread
+        an edit belonged to until they are already looking at it. Each row carries
+        its thread for exactly that reason.
+
+        One pull rather than one per card — a round trip per row would get slower
+        precisely as there is more worth reading. An action that moved no text (a
+        read, a find, an export) carries an empty diff on purpose: the card's own
+        line already says what it did.
+        """
+        rows: list[dict[str, Any]] = []
+        for thread in self._store.threads():
+            for action in thread.actions:
+                row = action_view(action)
+                row["thread"] = thread.id
+                row["diff"] = action.effect.diff if action.effect is not None else ""
+                rows.append(row)
+        # Ordered oldest first, the same direction as `at` — the page draws the
+        # tail reversed. Ties keep a stable order instead of shuffling per pull.
+        rows.sort(key=lambda r: (str(r.get("at") or ""), str(r["thread"]), int(r["n"])))
+        await self.broadcast({"type": "effects", "rows": rows[-_EFFECTS_ROWS:]})
+
     async def _text(self, thread: str) -> None:
         """Hand the page the working copy itself — what the document view reads.
 
@@ -693,6 +722,8 @@ class FileEditorSurface:
                     await self._ask(thread, n, str(frame.get("text", "")))
                 elif kind == "detail":
                     await self._detail(thread, n)
+                elif kind == "effects":
+                    await self._effects()
                 elif kind == "text":
                     await self._text(thread)
                 elif kind == "view":
