@@ -87,8 +87,25 @@ class TTSSpeechStream(SpeechStream):
         if self._closed_event.is_set():
             return
 
-        # 先等 tts 解析完成.
-        await self._tts_batch.wait_done()
+        # 先等 tts 解析完成 —— 但要能被 close() 打断. 只等 batch 的话, 一个再也回不来的
+        # TTS 会话就能把 say 命令连同整条 channel 队列钉死: clear() 置的是
+        # _closed_event / _play_done_event, 而这里等的是 batch 的 done, 两个事件不相干.
+        batch_done = asyncio.ensure_future(self._tts_batch.wait_done())
+        closed = asyncio.ensure_future(self._closed_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {batch_done, closed}, return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in (batch_done, closed):
+                if not task.done():
+                    task.cancel()
+        if closed in done and batch_done not in done:
+            # 被 clear/close 打断: 不再等播放, 让 say 命令当场收场.
+            return
+        if batch_done in done and not batch_done.cancelled():
+            # 合成失败时保持原来的语义: 异常抛给 play(), 由它走 fail 路径.
+            batch_done.result()
         # 等待 play done 完成.
         await self._play_done_event.wait()
         self.logger.info("%s wait play done", self._log_prefix)
@@ -243,10 +260,13 @@ class TTSSpeechStream(SpeechStream):
         self._playing_loop_task = asyncio.create_task(self._play_loop())
 
     async def close(self):
+        """无条件关闭: 任何状态下的流都必须真的关上.
+
+        曾经未 start_synthesis 的流走一条早退分支, 只把自己从 Speech 的字典里摘掉 ——
+        batch 没关, _closed_event 也没置, 于是 is_closed() 永远是 False. 那种"幽灵流"
+        会留在 _last_stream / 队列持有者的手里, 永远等不到收场. clear 必须没有这种死角.
+        """
         if self._closed_event.is_set():
-            return
-        if not self._started:
-            self._notify_closed()
             return
         self._closed_event.set()
         self.logger.info("%s close TTS stream", self._log_prefix)
@@ -261,7 +281,14 @@ class TTSSpeechStream(SpeechStream):
         if self._sample_disposer is not None:
             self._sample_disposer()
             self._sample_disposer = None
-        await asyncio.gather(self._tts_batch.close(), self._player.clear())
+        results = await asyncio.gather(
+            self._tts_batch.close(), self._player.clear(), return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error(
+                    "%s close failed: %r", self._log_prefix, result,
+                )
         self._notify_closed()
 
     def _notify_closed(self) -> None:
@@ -361,15 +388,37 @@ class BaseTTSSpeech(TTSSpeech):
             raise RuntimeError("TTS Speech is not running")
 
     async def clear(self) -> list[str]:
+        """强保证: 清完之后不允许还有活着的流.
+
+        闭环的三件事: (1) 把 _last_stream 也算进来 —— 它是唯一可能不在 _streams 里的引用;
+        (2) 关流的失败不许被吞掉, 一条一条记名字; (3) 清完回头查一遍, 还有没关上的
+        大声报出来. 逃生口只在自己能验证"确实清干净了"的时候才算逃生口.
+        """
         if not self.is_running():
             return []
         self.logger.info("%s clear", self._log_prefix)
         streams = list(self._streams.values())
+        if self._last_stream is not None and self._last_stream not in streams:
+            streams.append(self._last_stream)
         outputted = [s.buffered() for s in streams]
         if streams:
-            await asyncio.gather(*(s.close() for s in streams), return_exceptions=True)
+            results = await asyncio.gather(
+                *(s.close() for s in streams), return_exceptions=True,
+            )
+            for stream, result in zip(streams, results):
+                if isinstance(result, Exception):
+                    self.logger.error(
+                        "%s stream %s close failed during clear: %r",
+                        self._log_prefix, stream.id, result,
+                    )
         self._streams.clear()
         self._last_stream = None
+        leftovers = [s.id for s in streams if not s.is_closed()]
+        if leftovers:
+            self.logger.error(
+                "%s clear left %d stream(s) open: %s",
+                self._log_prefix, len(leftovers), leftovers,
+            )
         return outputted
 
     async def start(self) -> None:

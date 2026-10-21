@@ -128,3 +128,60 @@ async def test_clear_stops_playback():
     await asyncio.wait_for(play_task, timeout=2.0)
 
     await speech.close()
+
+
+class _HangingTTSBatch(_LongTTSBatch):
+    """wait_done 永不返回 —— 模拟一个再也不回来的 TTS 会话.
+
+    D21 现场: say 命令卡在 wait_played 的 ``_tts_batch.wait_done()`` 上, 而 clear() 置的是
+    stream 自己的 closed / play_done 事件, 两个不相干 —— 于是 clear 救不回来, 整条 channel
+    队列跟着停摆, 只能重启.
+    """
+
+    async def wait_done(self) -> None:
+        await asyncio.Event().wait()
+
+
+class _HangingTTS(_LongTTS):
+    def new_batch(self, batch_id: str = "", *, callback=None, tone=None, voice=None) -> TTSBatch:
+        return _HangingTTSBatch(batch_id or "hanging-batch")
+
+
+@pytest.mark.asyncio
+async def test_clear_frees_a_say_stuck_on_the_tts_batch():
+    """clear() 必须能解掉一个卡在等 batch 收尾的 say, 否则它会把命令队列一起带走."""
+    player = VirtualStreamPlayer(sample_rate=8000, channels=1)
+    speech = BaseTTSSpeech(player=player, tts=_HangingTTS())
+    await speech.start()
+
+    stream = speech.new_segment()
+    stream.feed("这句话永远合不完")
+    stream.commit()
+
+    play_task = asyncio.create_task(stream.play([]))
+    await asyncio.sleep(0.05)
+    assert not play_task.done(), "测试前提: batch 不收尾, play 应该还在等"
+
+    await speech.clear()
+    await asyncio.wait_for(play_task, timeout=2.0)
+    assert stream.is_closed() is True
+
+    await speech.close()
+
+
+@pytest.mark.asyncio
+async def test_clear_closes_a_stream_that_never_started_synthesis():
+    """没开始合成的流也必须在 clear 里真关掉, 不能只从账本里摘掉."""
+    player = VirtualStreamPlayer(sample_rate=8000, channels=1)
+    speech = BaseTTSSpeech(player=player, tts=_LongTTS())
+    await speech.start()
+
+    stream = speech.new_segment()
+    stream.feed("只准备, 还没开始")
+    assert stream.is_closed() is False
+
+    await speech.clear()
+    assert stream.is_closed() is True, "未合成的流漏关了: batch 没关, is_closed() 永远是 False"
+    assert speech.streams() == []
+
+    await speech.close()
