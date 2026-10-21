@@ -502,6 +502,14 @@ function renderActions(host, card) {
   }
 }
 
+// How long this card has been running, in seconds, as the page counts it.
+function elapsedText(card) {
+  if (card.state === "running" && card._startedAt) {
+    return Math.max(0, Math.floor((Date.now() - card._startedAt) / 1000)) + "s";
+  }
+  return (card.elapsed ?? 0) + "s";
+}
+
 function renderDetail(card) {
   for (const d of detailEl.querySelectorAll("details[open]")) {
     const s = d.querySelector("summary");
@@ -660,12 +668,19 @@ function renderDetail(card) {
   // meta — collapsed, tagged
   const mDetails = makeCollapsible("meta");
   const tags = make("div", "d-tags");
+  // A running card's elapsed time is not a snapshot. The server only reports it
+  // when something happens, so a card that has been running for eight minutes
+  // still says "42s" — the page remembers when the clock started and counts it
+  // itself. A finished card keeps the number the server last measured.
+  if (!card._startedAt) card._startedAt = Date.now() - (card.elapsed ?? 0) * 1000;
+  const elapsedTag = make("span", "tag tag-elapsed", "elapsed=" + elapsedText(card));
   const tagRows = [
     ["state", card.state], ["thread", card.thread || "—"], ["exit", card.exit_code ?? "—"],
     ["cwd", card.cwd || "—"], ["proc", card.process_index ?? "—"],
-    ["elapsed", (card.elapsed ?? 0) + "s"], ["out", (card.output_chars ?? 0) + "c"],
   ];
   for (const [k, v] of tagRows) tags.append(make("span", "tag", k + "=" + v));
+  tags.append(elapsedTag);
+  tags.append(make("span", "tag", "out=" + (card.output_chars ?? 0) + "c"));
   mDetails.append(tags);
   detailEl.append(mDetails);
 
@@ -852,6 +867,15 @@ setInterval(() => {
     for (const [, box] of nodes) {
       const anim = box.querySelector(".anim");
       if (anim) anim.hidden = true;
+    }
+  }
+  // The open card's clock runs with the spinner: an elapsed time that only
+  // moves when the server has something to say is a clock that lies.
+  if (selectedId != null) {
+    const card = cards.get(selectedId);
+    const tag = detailEl.querySelector(".tag-elapsed");
+    if (card && tag && card.state === "running") {
+      tag.textContent = "elapsed=" + elapsedText(card);
     }
   }
 }, 120);
