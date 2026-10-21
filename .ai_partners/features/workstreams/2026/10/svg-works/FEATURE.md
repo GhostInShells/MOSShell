@@ -7,7 +7,7 @@ priority: P1
 status: in-progress
 status_note: v0 已在 nodes/webview_apps/svg_works 落地：作品=thread、op 追加、checkout 重放；4 条真机验证过
 title: SVG Works — 可修改、可回放的矢量作品
-updated: '2026-10-20'
+updated: '2026-10-21'
 ---
 
 # SVG Works — 可修改、可回放的矢量作品
@@ -138,6 +138,15 @@ artifacts 的一次性 write 是它该有的轻。本条要在它旁边另做一
 | `remove_node(name, addr)` | 删一棵子树 |
 | `history(name, n)` | 读 action 列表 |
 | `checkout(name, n)` | 把读点挪回第 n 条，页面重放 |
+| `export_work(name, path)` | jsonl（记录本身，可加载回来）+ md（纪要，从记录生成） |
+| `export_html(name, path)` | 一份自带播放器的独立 html：记录 + 能拖能回放 |
+| `export_svg(name, path)` | **画完的这一张**：一份独立 `.svg`，不依赖节点与 JS |
+
+`export_svg`（D21 加）：markup 由**连着的那一页**序列化，不在服务端重放 op 再拼一遍。
+页面才是真正把它画出来的那一个；第二个渲染器只能近似，而近似会在细节上撒谎
+（字体度量、注入的样式、属性归一）。请求/回包走已有的 websocket：
+服务端广播 `export.svg` 带一个 seq，等 `svg.result`；没有页面 / 超时 / 断线都回空，
+不让调用方挂死。
 
 真机验过的一条最小链路：骨架 → 往子地址挂节点 → 改属性（只有头变色，其余不动）
 → checkout 到 1（颜色回来、只剩骨架、卡片变灰）→ checkout 回来（状态完整复原）。
