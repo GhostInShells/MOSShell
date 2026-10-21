@@ -1,0 +1,60 @@
+<svg id="stage" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="700">
+<g id="stage"><rect width="1000" height="700" fill="#0b0f0c"/>
+
+
+
+
+
+
+
+
+
+
+<g id="two-dirs">
+  <text x="500" y="70" text-anchor="middle" fill="#9fecc6" font-size="22" font-family="sans-serif">branch 目录是工作区，commit 目录是那一刻的快照</text>
+
+  <rect x="70" y="120" width="370" height="330" rx="14" fill="#0f1c15" stroke="#5fe3a6" stroke-width="2"/>
+  <text x="255" y="152" text-anchor="middle" fill="#e8fff2" font-size="16" font-family="monospace">branches/&lt;id&gt;/</text>
+  <text x="255" y="174" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="sans-serif">这条线的工作区，一直在改</text>
+
+  <text x="95" y="206" fill="#9fecc6" font-size="12" font-family="monospace">meta.json · commits.jsonl</text>
+  <text x="95" y="228" fill="#9fecc6" font-size="12" font-family="monospace">commit_notes.jsonl</text>
+  <text x="95" y="262" fill="#e8fff2" font-size="12" font-family="monospace">GROUND.md</text>
+  <text x="215" y="262" fill="#4b7a63" font-size="10" font-family="sans-serif">这条线的场</text>
+  <text x="95" y="294" fill="#e8fff2" font-size="12" font-family="monospace">on_commit</text>
+  <text x="215" y="294" fill="#4b7a63" font-size="10" font-family="sans-serif">钩子，写了才生效</text>
+  <text x="95" y="330" fill="#e8fff2" font-size="12" font-family="monospace">todo.md · plan.md</text>
+  <text x="95" y="352" fill="#e8fff2" font-size="12" font-family="monospace">随手记</text>
+  <text x="185" y="352" fill="#4b7a63" font-size="10" font-family="sans-serif">活文件，谁都能改</text>
+
+  <line x1="450" y1="285" x2="530" y2="285" stroke="#5fe3a6" stroke-width="2"/>
+  <polygon points="530,285 518,279 518,291" fill="#5fe3a6"/>
+  <text x="490" y="266" text-anchor="middle" fill="#9fecc6" font-size="12" font-family="sans-serif">commit</text>
+
+  <rect x="540" y="120" width="380" height="330" rx="14" fill="#14261c" stroke="#5fe3a6" stroke-width="2"/>
+  <text x="730" y="152" text-anchor="middle" fill="#e8fff2" font-size="15" font-family="monospace">commits/…/&lt;commit&gt;/</text>
+  <text x="730" y="174" text-anchor="middle" fill="#7fd9a8" font-size="11" font-family="sans-serif">那一刻它长什么样</text>
+
+  <text x="565" y="206" fill="#e8fff2" font-size="12" font-family="monospace">GROUND.md</text>
+  <text x="665" y="206" fill="#4b7a63" font-size="10" font-family="sans-serif">这个锚点的场</text>
+  <text x="565" y="238" fill="#9fecc6" font-size="12" font-family="monospace">todo.md · plan.md</text>
+  <text x="565" y="260" fill="#4b7a63" font-size="10" font-family="sans-serif">钩子搬进来的快照</text>
+  <text x="565" y="300" fill="#7fd9a8" font-size="11" font-family="sans-serif">→ 关掉的条目自己沉到这里</text>
+  <text x="565" y="324" fill="#7fd9a8" font-size="11" font-family="sans-serif">→ 两条锚点一 diff，就是这一段做了什么</text>
+</g>
+
+<g id="layers">
+  <rect x="70" y="480" width="850" height="150" rx="14" fill="#0d1711" stroke="#2f7f5a" stroke-width="2"/>
+  <text x="490" y="510" text-anchor="middle" fill="#e8fff2" font-size="15" font-family="sans-serif">三个挂载点，按「谁能改它」分</text>
+
+  <text x="100" y="545" fill="#9fecc6" font-size="12" font-family="sans-serif">① 内核</text>
+  <text x="185" y="545" fill="#7fd9a8" font-size="11" font-family="sans-serif">commit 之后会扫这些目录并搬文件 —— 只有这一句</text>
+
+  <text x="100" y="575" fill="#9fecc6" font-size="12" font-family="sans-serif">② 一条线</text>
+  <text x="185" y="575" fill="#7fd9a8" font-size="11" font-family="sans-serif">branch 目录里的钩子与 GROUND.md —— 这条线怎么长</text>
+
+  <text x="100" y="605" fill="#9fecc6" font-size="12" font-family="sans-serif">③ 整个 ghost</text>
+  <text x="185" y="605" fill="#7fd9a8" font-size="11" font-family="sans-serif">ego 根下的默认钩子与模板 —— 所有线默认长什么样</text>
+</g>
+</g>
+</svg>
