@@ -89,7 +89,9 @@ class IdeaLink(BaseModel):
 class Idea(BaseModel):
     id: str
     root: str = ""              # which `ideas/` directory it came from
-    text: str = ""              # the first sentence
+    text: str = ""              # the first sentence — the whole thought
+    label: str = ""             # what the bubble shows; empty = fall back to text
+    icon: str = ""              # a glyph, or a URL to a small image, drawn inside the bubble
     born: str = ""
     priority: float = 1.0       # size
     state: str = "spark"        # spark | active | waiting | done | retired
@@ -120,6 +122,13 @@ def _apply(ideas: dict[str, Idea], ev: IdeaEvent, root: str) -> None:
         item = ideas[ev.id] = Idea(id=ev.id, root=root, born=ev.t)
     if ev.op == "state":
         item.state = str(ev.payload.get("state", item.state))
+    elif ev.op == "label":
+        # 气泡上那几个字是**可治理的元数据**，不是正文的截断。
+        # 正文说自己是什么，label 说它在图上叫什么——后者随时可以改。
+        item.label = str(ev.payload.get("label", ""))
+    elif ev.op == "icon":
+        # 一个字符，或者一张小图的地址。'是什么'由 label 说，'长什么样'由它说。
+        item.icon = str(ev.payload.get("icon", ""))
     elif ev.op == "priority":
         item.priority = float(ev.payload.get("priority", item.priority))
     elif ev.op == "tag":
@@ -237,9 +246,12 @@ class IdeaStore:
         return Path(item.root)
 
     def snapshot(self) -> dict[str, Any]:
+        # 每条事件都带上它出自哪个目录：多目录挂在一起时，页面得能分出哪颗球
+        # 属于哪个簇。events 与 _owner 一直平行增长，这里只是把那条影子说出口。
         return {
             "roots": [str(r) for r in self.roots],
-            "events": [ev.model_dump() for ev in self.events],
+            "events": [{**ev.model_dump(), "root": root}
+                       for ev, root in zip(self.events, self._owner)],
         }
 
 
@@ -447,6 +459,43 @@ def new_ideas_channel(store: IdeaStore, server: IdeasServer, matrix: Matrix):
         ev = store.append(root, "state", id, {"state": state})
         await server.broadcast({"type": "event", "event": ev.model_dump(), "root": str(root)})
         return f"{id} → {state}"
+
+    @chan.build.command(always_observe=True)
+    async def relabel(id: str, label: str) -> str:
+        """Give an idea the few words its bubble shows.
+
+        The full text says what the thought *is*; the label says what it is called on the
+        graph. They are different questions — a sentence rarely fits in a circle, and
+        truncating it is not naming it. A label is metadata: change it as often as the
+        picture needs, and the change is an event like every other.
+
+        :param id: the idea
+        :param label: a few characters; empty = fall back to the text
+        """
+        root = store.root_of(id)
+        if root is None:
+            return f"no idea {id!r}"
+        ev = store.append(root, "label", id, {"label": label})
+        await server.broadcast({"type": "event", "event": ev.model_dump(), "root": str(root)})
+        return f"{id} label = {label!r}"
+
+    @chan.build.command(always_observe=True)
+    async def set_icon(id: str, icon: str) -> str:
+        """Give an idea a face: one glyph, or the address of a small image.
+
+        Same contract as `relabel`: the picture is a reading of the record, so what it
+        shows is metadata that can be changed at any time — never a thing baked into
+        the text.
+
+        :param id: the idea
+        :param icon: a character (e.g. 一个 emoji) or an http(s)/data URL to an image
+        """
+        root = store.root_of(id)
+        if root is None:
+            return f"no idea {id!r}"
+        ev = store.append(root, "icon", id, {"icon": icon})
+        await server.broadcast({"type": "event", "event": ev.model_dump(), "root": str(root)})
+        return f"{id} icon = {icon!r}"
 
     @chan.build.command(always_observe=True)
     async def set_priority(id: str, priority: float) -> str:
