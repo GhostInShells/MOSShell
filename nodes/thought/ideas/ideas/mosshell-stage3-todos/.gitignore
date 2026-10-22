@@ -1,0 +1,10 @@
+# This group is published: `IDEAS.md`, `graph.json` (the last version) and
+# `.versions/` belong to the project's history.
+#
+# What stays out is the delta — the live state that changes on every gesture and the
+# account that records each of them.
+#
+.graph.json
+ops.jsonl
+.lock
+.trash/

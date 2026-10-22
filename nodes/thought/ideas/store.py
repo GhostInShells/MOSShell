@@ -38,7 +38,8 @@ try:  # POSIX only; a missing lock degrades to "write and hope", never to a cras
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-GRAPH = "graph.json"
+GRAPH = "graph.json"          # the published copy — what the repo carries
+LIVE_GRAPH = ".graph.json"     # the working state — what every write touches
 IDEAS = "IDEAS.md"
 OPS = "ops.jsonl"
 LOCK = ".lock"
@@ -54,6 +55,9 @@ DEFAULT_KINDS = ("detail", "depend", "related")
 KIND = "detail"
 
 GROUP_STATUS = ("active", "waiting", "archived")
+
+UNDO_DEPTH = 40
+_UNDO_DEPTH = UNDO_DEPTH
 
 IDEAS_TEMPLATE = """---
 status: {status}
@@ -148,6 +152,11 @@ class Group:
     # -- read ---------------------------------------------------------------
     @property
     def graph_path(self) -> Path:
+        return self.path / LIVE_GRAPH
+
+    @property
+    def published_path(self) -> Path:
+        """The copy that enters git: rewritten only on save, never on a gesture."""
         return self.path / GRAPH
 
     @property
@@ -177,6 +186,16 @@ class Group:
                 continue
             out[int(head)] = (tail.replace("_", " ") or "checkpoint", path)
         return out
+
+    def default_concept(self) -> str:
+        """The word a new node wears when nobody says otherwise.
+
+        It is the word used the last time a node was created — expressed by using it,
+        not by a separate setting nobody remembers to change.
+        """
+        scale = self.concepts()
+        name = str(self.meta.get("default_concept", "") or "")
+        return name if name in scale else next(iter(scale), DEFAULT_CONCEPT)
 
     def concepts(self) -> dict[str, str]:
         """The colour scale: six slots. Their *words* are ours to rename.
@@ -211,6 +230,7 @@ class Group:
             "status": self.status,
             "saved_rev": self.saved_rev,
             "saved_name": self.saved_name,
+            "default_concept": self.default_concept(),
             "meta": {"concepts": self.concepts()},
             "nodes": [{"id": n.id, **n.to_dict()} for n in self._sorted_nodes()],
             "edges": [e.to_dict() for e in self.edges],
@@ -225,7 +245,8 @@ class Group:
         payload = {
             "rev": self.rev,
             "name": self.name,
-            "meta": {"concepts": dict(self.meta.get("concepts") or {})},
+            "meta": {"concepts": dict(self.meta.get("concepts") or {}),
+                     "default_concept": str(self.meta.get("default_concept", "") or "")},
             "nodes": {n.id: n.to_dict() for n in self._sorted_nodes()},
             "edges": [e.to_dict() for e in self.edges],
         }
@@ -355,6 +376,9 @@ class GraphStore:
         self.root = Path(root).expanduser().resolve()
         self.groups: dict[str, Group] = {}
         self.broken: list[str] = []
+        # A short in-memory history per group, for undo. Durability is the versions'
+        # job; this only has to survive the last few gestures.
+        self._undo: dict[str, list[dict]] = {}
 
     # -- discovery ----------------------------------------------------------
     def reload(self) -> None:
@@ -380,7 +404,8 @@ class GraphStore:
             head, _, saved_name = saved.partition(" ")
             if head.startswith("r") and head[1:].isdigit():
                 group.saved_rev, group.saved_name = int(head[1:]), saved_name.strip()
-        if not group.graph_path.exists():
+        live = group.graph_path if group.graph_path.exists() else group.published_path
+        if not live.exists():
             legacy = sorted(group.path.glob(f"*{LEGACY_SUFFIX}"))
             if legacy:
                 self._import_legacy(group, legacy)
@@ -390,13 +415,20 @@ class GraphStore:
                 write_ideas_sign(group)
             self.save(group, "init")   # a group starts from a version: history needs a base
             return
-        data = json.loads(group.graph_path.read_text(encoding="utf-8"))
+        data = json.loads(live.read_text(encoding="utf-8"))
+        if live == group.published_path:
+            # First run on a published group: the working state is born from the
+            # published copy, so the next gesture has somewhere to land.
+            write_atomic(group.graph_path, live.read_text(encoding="utf-8"))
         self._load_data(group, data)
 
     def _load_data(self, group: Group, data: dict) -> None:
         """Fill a group from a graph.json body — shared by the loader and by restore."""
         group.rev = int(data.get("rev", 0))
-        group.meta = {"concepts": dict((data.get("meta") or {}).get("concepts") or {})}
+        raw_meta = data.get("meta") or {}
+        group.meta = {"concepts": dict(raw_meta.get("concepts") or {})}
+        if raw_meta.get("default_concept"):
+            group.meta["default_concept"] = str(raw_meta["default_concept"])
         group.nodes = {}
         for nid, raw in (data.get("nodes") or {}).items():
             group.nodes[nid] = Node(
@@ -518,6 +550,35 @@ class GraphStore:
             write_atomic(group.graph_path, group.to_json())
             with group.ops_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"rev": group.rev, "t": _now(), **op}, ensure_ascii=False) + "\n")
+        self._remember(group)
+
+    def _remember(self, group: Group) -> None:
+        """Keep the last few states in memory — enough for Ctrl+Z, nothing more."""
+        stack = self._undo.setdefault(group.name, [])
+        stack.append(json.loads(group.to_json()))
+        del stack[:-_UNDO_DEPTH]
+
+    def undo(self, group: Group) -> dict:
+        """Step back one write.
+
+        In-memory on purpose: what must survive a restart is a version, not an undo
+        step. It appends an `undo` op like any other write, so the account stays honest.
+        """
+        stack = self._undo.get(group.name) or []
+        if len(stack) < 2:
+            raise KeyError("nothing to undo")
+        stack.pop()
+        data = stack[-1]
+        with self._lock(group):
+            self._load_data(group, data)
+            group.rev += 1
+            write_atomic(group.graph_path, group.to_json())
+            with group.ops_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "undo"},
+                                    ensure_ascii=False) + "\n")
+        # The last element of the stack *is* the current state, so the restored one is
+        # already there — popping is the whole bookkeeping, and the stack runs out.
+        return {"rev": group.rev, "nodes": len(group.nodes)}
 
     @contextmanager
     def _lock(self, group: Group):
@@ -551,8 +612,11 @@ class GraphStore:
         if weight is None:
             weight = max(FLOOR, (parent_node.weight * DECAY) if parent_node else 1.0)
         weight = round(float(weight), 3)
+        chosen = concept.strip()
+        if chosen:
+            group.meta["default_concept"] = chosen      # the last word used becomes the default
         node = Node(id=node_id, label=label.strip(), body=body.strip(),
-                    concept=concept.strip() or next(iter(group.concepts()), DEFAULT_CONCEPT),
+                    concept=chosen or group.default_concept(),
                     weight=weight, created=_now())
         group.nodes[node_id] = node
         edge = None
@@ -569,6 +633,7 @@ class GraphStore:
                     fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "edge",
                                          "edge": edge.id, "from": edge.src, "to": edge.dst,
                                          "kind": edge.kind}, ensure_ascii=False) + "\n")
+        self._remember(group)
         return node
 
     def set_node(self, group: Group, key: str, **fields) -> Node:
@@ -636,6 +701,9 @@ class GraphStore:
             group.versions_path.mkdir(parents=True, exist_ok=True)
             path = group.versions_path / f"r{group.rev}-{_slug(name)}.json"
             write_atomic(path, group.to_json())
+            # The published copy: same content, stable name, enters git. It only moves
+            # when a version is made, so the repo's delta is one version at a time.
+            write_atomic(group.published_path, group.to_json())
             with group.ops_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": VERSION_OP,
                                      "name": name}, ensure_ascii=False) + "\n")
@@ -687,6 +755,7 @@ class GraphStore:
             with group.ops_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "restore",
                                      "from": rev, "name": name}, ensure_ascii=False) + "\n")
+        self._remember(group)
         return {"rev": group.rev, "from": rev, "name": name}
 
     def segment_report(self, group: Group) -> list[str]:
@@ -790,8 +859,10 @@ class GraphStore:
         if new in concepts and new != old:
             raise ValueError(f"concept {new!r} already exists in {group.name}")
         if old != new:
-            concepts[new] = concepts.pop(old)
-            group.meta["concepts"] = concepts
+            # A rename must not reshuffle the legend: the slot keeps its place in the
+            # scale, only its word changes.
+            group.meta["concepts"] = {
+                (new if key == old else key): value for key, value in concepts.items()}
         moved = 0
         for node in group.nodes.values():
             if node.concept == old:

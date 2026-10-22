@@ -42,11 +42,17 @@
   #side .rel{display:block;font-size:13px;color:#8fb8a2;text-decoration:none;cursor:pointer;
     padding:5px 8px;margin:4px 0;border:1px solid #16211c;border-radius:7px;line-height:1.4}
   #side .rel:hover{border-color:var(--hot);color:#eaf7ee}
+  #side .relrow{display:flex;align-items:center;gap:6px}
+  #side .relrow .rel{flex:1}
+  #side .relrow .cut{background:transparent;color:var(--dim);border:1px solid var(--line);
+    border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer}
+  #side .relrow .cut:hover{border-color:var(--red);color:#d0715c}
   #side .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
   #side .acts button{background:#0f1613;color:var(--dim);border:1px solid var(--line);
     border-radius:7px;padding:5px 10px;font-size:12px;cursor:pointer}
   #side .acts button:hover{border-color:var(--hot);color:var(--fg)}
   #side .acts button.danger:hover{border-color:var(--red);color:#d0715c}
+  #side .acts button.danger.arm{border-color:var(--red);color:#d0715c;background:#1d1412}
   #side .acts button.on{border-color:var(--red);color:var(--red)}
 
   #hud{position:absolute;left:16px;top:14px;font-size:12px;color:var(--dim);max-width:calc(100% - 430px)}
@@ -57,6 +63,10 @@
   #clusters button.on{color:var(--bg);background:#58a6ff;border-color:#58a6ff}
   #clusters button.archived{opacity:.45;border-style:dashed}
   #clusters button.ghost{opacity:.6;border-style:dotted}
+  #linkkinds{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  #linkkinds button{background:transparent;color:var(--dim);border:1px solid var(--line);
+    border-radius:999px;padding:3px 9px;font-size:11px;cursor:pointer}
+  #linkkinds button.on{color:#e8f5ea;border-color:var(--hot);background:#16211c}
   #concepts span{display:inline-flex;align-items:center;gap:5px}
   #concepts i{width:8px;height:8px;border-radius:50%;display:inline-block}
   #hud #add{margin-top:10px;background:transparent;color:var(--hot);border:1px dashed var(--line);
@@ -100,6 +110,7 @@
     <button id="newgroup">＋ New group</button>
   </div>
   <div id="concepts"></div>
+  <div id="linkkinds"></div>
   <div class="toolbar">
     <button id="add">＋ New node (Tab grows one from the selection)</button>
     <button id="save">Save</button>
@@ -152,6 +163,7 @@ let linkFrom = '';
 let ws = null;
 let settled = false;
 let drift = 1;
+let zoomK = 1;      // the camera's scale — labels divide by it so they stay readable
 let lastSig = '';
 // 展示层：讲述是读法，不写进 graph.json。spot 压暗其余，pulse 用运动抓眼。
 let view = {spot: null, dim: 0.15};
@@ -177,7 +189,11 @@ const sim = d3.forceSimulation(nodes)
   .on('tick', onTick);
 
 const zoom = d3.zoom().scaleExtent([0.25, 3]).clickDistance(4)
-  .on('zoom', e => root.attr('transform', e.transform));
+  .on('zoom', e => {
+    root.attr('transform', e.transform);
+    zoomK = e.transform.k || 1;
+    paint();          // labels counter-scale, so a zoom is a repaint
+  });
 svg.call(zoom).on('dblclick.zoom', null);
 svg.on('click', () => { sel = null; send({type:'view-select', id: ''}); drawSide(); paint(); fit(); });
 
@@ -204,7 +220,8 @@ function fit(){
 function onTick(){
   paint();
   if (!settled && sim.alpha() < 0.05){
-    settled = true; document.body.classList.add('ready'); fit();
+    settled = true; document.body.classList.add('ready');
+    if (!sel) fit();     // a settle must not yank the camera off a node someone picked
   }
 }
 
@@ -244,7 +261,10 @@ function fontSize(d, lines){
   const cjk = /[\u3400-\u9fff]/.test(lines[0] || '');
   const room = d.r * (lines.length > 1 ? 1.25 : 1.6);
   const size = room / longest * (cjk ? 1 : 1.25);
-  return Math.max(9, Math.min(d.r * 0.8, size));
+  const base = Math.max(9, Math.min(d.r * 0.8, size));
+  // Zooming out must not make labels unreadable: divide by the camera scale, but never
+  // let a label grow past its own bubble.
+  return Math.max(8, Math.min(d.r * 1.15, base / zoomK));
 }
 
 function paint(){
@@ -271,12 +291,14 @@ function paint(){
   merged.on('click', (ev, d) => {
     ev.stopPropagation();
     if (ev.shiftKey && sel && sel.id !== d.id){
-      send({type:'link', group: groupName, src: sel.id, dst: d.id, kind: ev.altKey ? 'depend' : 'related'});
+      // Shift is the only connect gesture; *what* it draws comes from the legend row.
+      send({type:'link', group: groupName, src: sel.id, dst: d.id, kind: linkKind});
       return;
     }
     sel = {id: d.id, group: groupName};
     send({type:'view-select', id: d.id});
     drawSide(); paint();
+    focusOn(d);          // the camera follows the selection — that is the whole gesture
   });
   merged.on('mouseenter', (ev, d) => { hoverId = d.id; });
   merged.on('mouseleave', (ev, d) => { if (hoverId === d.id) hoverId = null; });
@@ -284,9 +306,10 @@ function paint(){
   const spotF = d => (!view.spot ? 1 : (view.spot.has(d.id) ? 1 : view.dim));
   merged.select('.ring')
     .attr('r', d => d.r * pulseScale(d))
-    .style('fill', d => hexA(d.color, 0.14))
-    .style('stroke', d => d.color)
-    .style('stroke-width', d => sel && sel.id === d.id ? 3 : 1.6);
+    .style('fill', d => hexA(d.color, sel && sel.id === d.id ? 0.32 : 0.14))
+    .style('stroke', d => sel && sel.id === d.id ? '#e8f5ea' : d.color)
+    // Widths are divided by the camera scale so a selection looks the same at any zoom.
+    .style('stroke-width', d => (sel && sel.id === d.id ? 3.4 : 1.6) / zoomK);
   merged.select('.flagring')
     .attr('r', d => d.r * pulseScale(d) + 7)
     .style('stroke', d => d.flag ? '#d0715c' : 'none')
@@ -308,6 +331,15 @@ function paint(){
 }
 
 function pos(n){ return { x: (n.x || 0) + (n.ox || 0), y: (n.y || 0) + (n.oy || 0), r: n.r || 0 }; }
+function focusOn(n, k = 1.8){
+  // One gesture: the bubble is selected and the camera sits on it. Clicking the empty
+  // canvas goes back to the whole graph.
+  const zoomTo = Math.min(2.6, Math.max(1.2, k));
+  const t = d3.zoomIdentity
+    .translate(availW() / 2 - zoomTo * n.x, H() / 2 - zoomTo * n.y)
+    .scale(zoomTo);
+  svg.transition().duration(650).ease(d3.easeCubicOut).call(zoom.transform, t);
+}
 function rim(a, b){
   const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
   return [a.x + (dx / d) * a.r, a.y + (dy / d) * a.r];
@@ -520,7 +552,12 @@ function renderConcepts(){
     el.appendChild(s);
   }
   const sel2 = document.getElementById('n-concept');
+  // Rebuilding the options must not throw away what is being chosen right now.
+  const prev = sel2.value;
+  const editing = !document.getElementById('newform').hidden;
   sel2.innerHTML = Object.keys(cs).map(k => `<option value="${k}">${k}</option>`).join('');
+  const want = (editing && prev) ? prev : ((cur() || {}).default_concept || prev);
+  if (want && cs[want]) sel2.value = want;
 }
 
 /* ------------------------------------------------------------- drawer */
@@ -536,7 +573,7 @@ function drawSide(){
     document.getElementById('s-links').innerHTML = '';
     document.getElementById('s-notes').innerHTML = `<div style="color:var(--dim);font-size:12px;line-height:1.8">
       The graph of this group is on the left. Click a bubble to read it, Tab grows one from it,
-      Shift-click another to link.</div>`;
+      shift-click another to link — with the edge kind picked in the legend above.</div>`;
     acts.style.display = 'none';
     return;
   }
@@ -582,12 +619,17 @@ function drawSide(){
     const other = g.nodes.find(n => n.id === (dir === 'out' ? e.to : e.from));
     const nm = other ? (other.label || other.id) : '?';
     const arrow = dir === 'out' ? '↓' : '↑';
-    return `<a class="rel" data-id="${other ? other.id : ''}">${arrow} ${esc(nm)} · ${e.kind}</a>`;
+    return `<div class="relrow"><a class="rel" data-id="${other ? other.id : ''}">${arrow} ${esc(nm)} · ${e.kind}</a>` +
+           `<button class="cut" data-src="${esc(e.from)}" data-dst="${esc(e.to)}" title="remove this edge">✂</button></div>`;
   };
   relBox.innerHTML = [...ins.map(e => line(e, 'in')), ...outs.map(e => line(e, 'out'))].join('');
   relBox.querySelectorAll('a.rel').forEach(a => a.addEventListener('click', () => {
     if (!a.dataset.id) return;
     sel = {id: a.dataset.id, group: groupName}; drawSide(); paint();
+  }));
+  // An edge is a thing you made; it has to be a thing you can cut.
+  relBox.querySelectorAll('button.cut').forEach(b => b.addEventListener('click', () => {
+    send({type:'unlink', group: groupName, src: b.dataset.src, dst: b.dataset.dst});
   }));
 
   document.getElementById('s-notes').innerHTML = '';
@@ -610,7 +652,16 @@ document.getElementById('a-child').addEventListener('click', () => openForm(sel 
 document.getElementById('a-delete').addEventListener('click', () => {
   const g = cur(); if (!sel || !g) return;
   const it = g.nodes.find(n => n.id === sel.id);
-  if (!confirm(`delete "${it.label || it.id}" and every edge touching it?`)) return;
+  const btn = document.getElementById('a-delete');
+  // Two steps, inline: a modal can be swallowed by the host page, and a destructive
+  // click has to be visible. Second click within three seconds deletes; Ctrl+Z undoes.
+  if (!btn.classList.contains('arm')){
+    btn.classList.add('arm');
+    btn.textContent = 'really?';
+    setTimeout(() => { btn.classList.remove('arm'); btn.textContent = 'Delete'; }, 3000);
+    return;
+  }
+  btn.classList.remove('arm'); btn.textContent = 'Delete';
   send({type:'rm', group: groupName, id: sel.id});
   sel = null;
 });
@@ -619,6 +670,9 @@ const newForm = document.getElementById('newform');
 function openForm(from){
   linkFrom = from || '';
   newForm.hidden = false;
+  const pick = document.getElementById('n-concept');
+  const dflt = (cur() || {}).default_concept;
+  if (dflt) pick.value = dflt;   // the form opens on the group's default word
   const input = document.getElementById('n-label');
   input.placeholder = from
     ? `grown from "${(cur().nodes.find(n => n.id === from) || {}).label || from}": 1–8 characters`
@@ -639,6 +693,9 @@ newForm.addEventListener('submit', e => {
 
 window.addEventListener('keydown', e => {
   if (e.target.closest('input,textarea,select')) return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z'){
+    e.preventDefault(); send({type:'undo', group: groupName}); return;
+  }
   if (e.key === 'Escape'){ sel = null; drawSide(); paint(); fit(); return; }
   if (e.key === 'Tab'){ e.preventDefault(); openForm(sel ? sel.id : ''); }
 });
@@ -691,7 +748,10 @@ function apply(state){
     if (g){ groupName = g.name; sel = {id: pendingSelect, group: g.name}; }
     pendingSelect = null;
   }
-  const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#side');
+  // Only a text field counts as "typing". A clicked chip is not, or the panel would
+  // never refresh after a concept change.
+  const typing = !!(document.activeElement && document.activeElement.matches &&
+    document.activeElement.matches('#side input, #side textarea'));
   const sig = stateSig();
   const changed = sig !== lastSig;
   lastSig = sig;
@@ -774,6 +834,29 @@ async function poll(){
 /* ------------------------------------------------------------- versions */
 let versionRows = [];
 let playing = false;
+
+// One gesture (shift), three kinds: the legend row decides which — no modifier chords,
+// because on a Mac every chord is a different keyboard.
+const LINK_KINDS = [['detail', '→ grows out of'], ['depend', '⇒ depends'], ['related', '~ related']];
+let linkKind = localStorage.getItem('ideas.linkkind') || 'detail';
+
+function renderLinkKinds(){
+  const el = document.getElementById('linkkinds');
+  el.innerHTML = '';
+  for (const [kind, label] of LINK_KINDS){
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = `shift-click another bubble draws this edge`;
+    if (kind === linkKind) b.classList.add('on');
+    b.onclick = () => {
+      linkKind = kind;
+      localStorage.setItem('ideas.linkkind', kind);
+      renderLinkKinds();
+    };
+    el.appendChild(b);
+  }
+}
+renderLinkKinds();
 
 function autoVersionName(){
   const g = cur();

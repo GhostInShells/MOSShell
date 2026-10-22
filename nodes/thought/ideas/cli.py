@@ -242,7 +242,7 @@ def add(ctx, label: str, group: str, body: str, concept: str, parent: str, weigh
 @click.option("--body", default=None)
 @click.option("--concept", default=None)
 @click.option("--weight", default=None, type=float)
-click.option("--flag/--no-flag", "flag", default=None, help="flag it / clear the flag")
+@click.option("--flag/--no-flag", "flag", default=None, help="flag it / clear the flag")
 @click.pass_context
 def set_(ctx, key: str, group: str, label, body, concept, weight, flag) -> None:
     """Change one node's fields. `--flag` is the human's red mark."""

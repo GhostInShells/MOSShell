@@ -1,4 +1,9 @@
-# The data root is entirely ignored: what ships is `examples/`, and it is copied
-# into `ideas/` on first run. Keep your own ideas out of git unless you decide
-# otherwise — that is a legitimate choice, just delete this line then.
-/ideas/
+# A group is disposable by default: its working graph, its account and its versions
+# are none of the project's business unless that group is published.
+#
+# Publishing is naming it here once. Inside a published group its own .gitignore
+# decides what belongs to the history (the sign, the published graph.json, the
+# version snapshots) and what stays out (the live state, the account).
+#
+/ideas/*
+!/ideas/mosshell-stage3-todos/

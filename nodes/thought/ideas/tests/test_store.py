@@ -17,7 +17,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from store import GRAPH, GraphStore, junctions, leaves, shortest_path, spine  # noqa: E402
+from store import (  # noqa: E402
+    GRAPH,
+    LIVE_GRAPH,
+    GraphStore,
+    junctions,
+    leaves,
+    shortest_path,
+    spine,
+)
 
 LEGACY = """---
 state: spark
@@ -50,11 +58,20 @@ def write_legacy(group: Path, name: str, label: str, links: str = "", body: str 
 # -------------------------------------------------------------------- discovery
 
 
-def test_a_group_is_a_directory_with_one_graph(tmp_path: Path):
+def test_a_group_keeps_a_live_graph_and_a_published_one(tmp_path: Path):
+    """`graph.json` is the version product; `.graph.json` is the working state.
+
+    Two names for two different promises: one changes on every gesture, the other
+    only when a version is made — which is why only the second can enter git.
+    """
     group_dir(tmp_path)
     store, group = loaded(tmp_path)
-    assert group.graph_path == tmp_path / "design" / GRAPH
-    assert group.graph_path.exists(), "an empty group still gets a graph on disk"
+
+    assert group.graph_path == tmp_path / "design" / LIVE_GRAPH
+    assert group.graph_path.exists(), "an empty group still gets a working graph on disk"
+    assert group.published_path == tmp_path / "design" / GRAPH
+    assert group.published_path.exists(), "the init version publishes graph.json"
+    assert json.loads(group.published_path.read_text(encoding="utf-8"))["rev"] == group.rev
     assert group.rev == 1
 
 
@@ -336,3 +353,86 @@ def test_a_broken_line_voids_only_its_segment(tmp_path: Path):
     report = store.segment_report(group)
     assert any("one" in row and "readable" in row for row in report)
     assert any("ignored" in row for row in report)
+
+
+def test_renaming_a_concept_keeps_its_place_and_moves_its_nodes(tmp_path: Path):
+    """A rename changes the word, not the slot: order stays, and every node follows."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    order = list(group.concepts())
+    colour = group.concepts()[order[0]]
+    node = store.add_node(group, "motive", concept=order[0])
+
+    store.rename_concept(group, order[0], "purpose")
+
+    assert list(group.concepts())[0] == "purpose", "the slot keeps its position"
+    assert group.concepts()["purpose"] == colour, "the colour is the slot's, not the word's"
+    assert group.find(node.id).concept == "purpose"
+
+
+def test_a_nodes_concept_can_be_changed(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    order = list(group.concepts())
+    node = store.add_node(group, "motive")
+
+    store.set_node(group, node.id, concept=order[2])
+
+    assert group.find(node.id).concept == order[2]
+    again = GraphStore(tmp_path)
+    again.reload()
+    assert again.require_group("design").find(node.id).concept == order[2]
+
+
+def test_the_last_word_used_becomes_the_default(tmp_path: Path):
+    """The default concept is expressed by using it, not by a setting nobody changes."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    order = list(group.concepts())
+
+    store.add_node(group, "motive", concept=order[2])
+    assert group.default_concept() == order[2]
+
+    plain = store.add_node(group, "execution")
+    assert plain.concept == order[2]
+
+    again = GraphStore(tmp_path)
+    again.reload()
+    assert again.require_group("design").find(plain.id).concept == order[2]
+
+
+def test_the_default_concept_survives_a_reload(tmp_path: Path):
+    """It is group state, so it has to be in graph.json — not only in memory."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    order = list(group.concepts())
+    store.add_node(group, "motive", concept=order[3])
+
+    again = GraphStore(tmp_path)
+    again.reload()
+    g = again.require_group("design")
+
+    assert g.default_concept() == order[3]
+    assert again.add_node(g, "later").concept == order[3]
+
+
+def test_undo_steps_back_one_write(tmp_path: Path):
+    """Undo is an appended act, not a rewrite — and it only has to cover a few gestures."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    store.add_node(group, "motive")
+    store.add_node(group, "execution")
+    assert len(group.nodes) == 2
+
+    info = store.undo(group)
+
+    assert len(group.nodes) == 1
+    assert info["nodes"] == 1
+    assert '"op": "undo"' in group.ops_path.read_text(encoding="utf-8")
+    # exactly one step back was available: once the first write is reached, it runs out
+    try:
+        store.undo(group)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("undo must run out after stepping back to the first write")

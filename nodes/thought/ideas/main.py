@@ -179,6 +179,20 @@ class IdeasServer:
                     except Exception as exc:  # noqa: BLE001
                         await connection.send(json.dumps({"type": "error", "message": f"{exc!r}"}))
                     continue
+                if kind == "undo":
+                    # Ctrl+Z: one step back, in memory. Versions are the durable kind.
+                    try:
+                        self._store.reload()
+                        group = self._store.require_group(
+                            str(frame.get("group", "") or self.view.get("group", "")))
+                        info = self._store.undo(group)
+                        await self.publish()
+                        await connection.send(json.dumps({
+                            "type": "ok",
+                            "result": f'undo → r{info["rev"]} ({info["nodes"]} nodes)'}))
+                    except Exception as exc:  # noqa: BLE001
+                        await connection.send(json.dumps({"type": "error", "message": f"{exc!r}"}))
+                    continue
                 if kind in ("save", "restore", "versions"):
                     # Versions are the collaboration unit: Save / restore / the version
                     # list on the page all land here, on the same store calls.
