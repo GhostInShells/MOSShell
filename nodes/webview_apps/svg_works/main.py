@@ -151,12 +151,17 @@ class Work:
     ops: list[Op] = field(default_factory=list)
     cursor: int = 0             # how many ops are currently applied (0..len(ops))
 
+
     def add(self, kind: str, addr: str, payload: dict[str, Any], note: str) -> Op:
+        # The reader follows only if it was already at the head. Someone standing back
+        # at step 12 is *reading*: appending must not yank them forward — that is the
+        # difference between "live" and "being edited under you".
+        at_head = self.cursor == len(self.ops)
         op = Op(n=len(self.ops) + 1, kind=kind, addr=addr, payload=payload, note=note)
         self.ops.append(op)
-        self.cursor = len(self.ops)
+        if at_head:
+            self.cursor = len(self.ops)
         return op
-
     def head(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description,
                 "ops": len(self.ops), "cursor": self.cursor,
