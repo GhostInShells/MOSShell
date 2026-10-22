@@ -87,6 +87,7 @@ class ScreenSurface:
         host: str = "127.0.0.1",
         port: int = 0,
         html_path: Path,
+        session: str = "",
     ) -> None:
         self._model = model
         self._audio = audio
@@ -94,6 +95,16 @@ class ScreenSurface:
         self._identity = self_identity
         self._host = host
         self._html_path = html_path
+        self._session = session
+        """This run's window token.
+
+        Only the window *this node just opened* carries it, so only that window may
+        take the screen without a click. A tab left over from an earlier run is
+        still retrying the same port and would otherwise claim the screen the moment
+        it reconnects — an invisible window becoming "the screen" is a failure that
+        looks like the screen is broken. Humans are never gated by the token: the
+        button sends ``claim``, which is always honoured.
+        """
         self._clients: set[ServerConnection] = set()
         self._current: ServerConnection | None = None
         """The one window that *is* the screen. Every other page is told to mask."""
@@ -371,6 +382,7 @@ class ScreenSurface:
                         connection,
                         str(frame.get("uid", "")),
                         bool(frame.get("claim")),
+                        str(frame.get("session", "")),
                     )
                     continue
                 if kind == "claim":
@@ -417,7 +429,9 @@ class ScreenSurface:
                 self._current = None
                 await self._mask_everyone_but(None, "the screen window closed")
 
-    async def _hello(self, connection: ServerConnection, uid: str, claim: bool) -> None:
+    async def _hello(
+        self, connection: ServerConnection, uid: str, claim: bool, session: str = "",
+    ) -> None:
         """A page says who it is. Exactly one of them gets to be the screen.
 
         ``claim`` comes from the url the node opened itself with: the window we just
@@ -426,8 +440,17 @@ class ScreenSurface:
         steal the screen.
         """
         self._uids[connection] = uid
-        if claim or self._current is None:
+        owns_run = bool(self._session) and session == self._session
+        if claim and owns_run:
+            # 这一轮节点开的那扇窗：它是屏，不必等人点按钮。
             await self._set_current(connection)
+        elif self._current is None and not self._session:
+            # 没有 token 的运行（测试、或者手工起屏）：谁先来谁是屏。
+            await self._set_current(connection)
+        elif self._current is None:
+            # 屏空着，但来的是个不带 token 的页面（旧标签，或者人自己开的窗口）：
+            # 不自动上台，给它按钮。节点开的那扇窗会自己带 token 进来。
+            await self._mask(connection, "this window can be the screen")
         else:
             await self._mask(connection, "another window is the screen")
 

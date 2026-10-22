@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import secrets
 import sys
 import webbrowser
 from pathlib import Path
@@ -107,6 +108,15 @@ def presence_path() -> str:
     return ""
 
 
+_SESSION = secrets.token_hex(4)
+"""这一轮起屏的窗口口令。
+
+只有这个节点刚开的那扇窗带着它 —— 于是只有它能不加点击就成为屏。上一轮留下的
+标签还在往同一个端口重连，它们带的 token 已经作废：它们只会是遮罩，不会突然
+变成屏幕。人按按钮不受这条约束。
+"""
+
+
 async def main(matrix: Matrix) -> None:
     model = ScreenModel()
 
@@ -136,6 +146,7 @@ async def main(matrix: Matrix) -> None:
         host=HOST,
         port=resolve_port(),
         html_path=_INDEX_HTML,
+        session=_SESSION,
     )
     await surface.start()
     print(f"[webview_screen] surface at {surface.url}", flush=True)
@@ -158,7 +169,11 @@ async def main(matrix: Matrix) -> None:
         # `claim=1` marks the window *we* opened as the screen: this node just told
         # the human to look here, so it takes the screen on hello instead of showing
         # the mask. Tabs left over from earlier runs carry no claim and stay masked.
-        url = surface.url + "?claim=1" + ("&debug=1" if wants_debug() else "")
+        url = (
+            surface.url
+            + f"?claim=1&session={_SESSION}"
+            + ("&debug=1" if wants_debug() else "")
+        )
         try:
             opened = await asyncio.to_thread(webbrowser.open, url)
             if not opened:
