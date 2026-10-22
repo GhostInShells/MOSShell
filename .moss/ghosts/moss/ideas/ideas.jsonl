@@ -1,0 +1,47 @@
+{"t":"2026-10-22T12:11:27","id":"idea-2287634","op":"born","payload":{"text":"运输条：播放 / 单步 / 可点的格子","priority":2.2}}
+{"t":"2026-10-22T12:11:27","id":"idea-2287738","op":"born","payload":{"text":"op 自带 duration，回放的节奏属于作品","priority":2.0}}
+{"t":"2026-10-22T12:11:27","id":"idea-2287810","op":"born","payload":{"text":"on_commit 改成单文件分发器","priority":1.3}}
+{"t":"2026-10-22T12:11:28","id":"idea-2288020","op":"born","payload":{"text":"任务面长什么样：一屏？一个节点？","priority":1.7}}
+{"t":"2026-10-22T12:11:28","id":"idea-2288128","op":"born","payload":{"text":"八十三条缺回执的命令，按什么顺序过","priority":1.2}}
+{"t":"2026-10-22T12:11:28","id":"idea-2288131","op":"born","payload":{"text":"声纹：谁在说话，得随包一起到","priority":1.0}}
+{"t":"2026-10-22T12:11:31","id":"idea-2287634","op":"link","payload":{"dst":"idea-2287738","kind":"related","weight":1.6}}
+{"t":"2026-10-22T12:11:31","id":"idea-2287738","op":"link","payload":{"dst":"idea-2288020","kind":"related","weight":1.0}}
+{"t":"2026-10-22T12:11:31","id":"idea-2287810","op":"link","payload":{"dst":"idea-2288020","kind":"related","weight":1.0}}
+{"t":"2026-10-22T12:11:31","id":"idea-2288128","op":"link","payload":{"dst":"idea-2288020","kind":"related","weight":1.0}}
+{"t":"2026-10-22T12:11:31","id":"idea-2287634","op":"state","payload":{"state":"active"}}
+{"t":"2026-10-22T12:11:31","id":"idea-2287738","op":"state","payload":{"state":"active"}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279295","op":"born","payload":{"text":"svg work 读点：回得去才走得回来","priority":1.4}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279332","op":"born","payload":{"text":"钩子通知降到 BACKGROUND，锚点不再打断","priority":1.2}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279404","op":"born","payload":{"text":"memento 挡数据不挡机制","priority":1.3}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279477","op":"born","payload":{"text":"terminal 多了视图开关","priority":1.0}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279559","op":"born","payload":{"text":"ideas 多目录登记表","priority":1.6}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279607","op":"born","payload":{"text":"侧栏四个页签 Meta/当前/History/Ground","priority":1.5}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279816","op":"born","payload":{"text":"svg work 运输条 + op 带 duration","priority":1.8}}
+{"t":"2026-10-22T12:44:39","id":"idea-4279825","op":"born","payload":{"text":"八十三条缺回执的命令，按什么顺序过","priority":1.1}}
+{"t":"2026-10-22T12:44:42","id":"idea-4279295","op":"state","payload":{"state":"done"}}
+{"t":"2026-10-22T12:44:42","id":"idea-4279332","op":"state","payload":{"state":"done"}}
+{"t":"2026-10-22T12:44:42","id":"idea-4279404","op":"state","payload":{"state":"done"}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279477","op":"state","payload":{"state":"done"}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279559","op":"state","payload":{"state":"active"}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279607","op":"state","payload":{"state":"active"}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279816","op":"state","payload":{"state":"active"}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279295","op":"link","payload":{"dst":"idea-4279816","kind":"related","weight":1.6}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279559","op":"link","payload":{"dst":"idea-4279607","kind":"related","weight":1.0}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279816","op":"link","payload":{"dst":"idea-4279607","kind":"related","weight":1.0}}
+{"t":"2026-10-22T12:44:43","id":"idea-4279825","op":"link","payload":{"dst":"idea-4279607","kind":"related","weight":1.0}}
+{"t":"2026-10-22T12:47:27","id":"idea-2287634","op":"label","payload":{"label":"运输条"}}
+{"t":"2026-10-22T12:47:27","id":"idea-2287738","op":"label","payload":{"label":"duration"}}
+{"t":"2026-10-22T12:47:27","id":"idea-2287810","op":"label","payload":{"label":"钩子分发"}}
+{"t":"2026-10-22T12:47:27","id":"idea-2288020","op":"label","payload":{"label":"任务面"}}
+{"t":"2026-10-22T12:47:27","id":"idea-2288128","op":"label","payload":{"label":"回执"}}
+{"t":"2026-10-22T12:47:27","id":"idea-2288131","op":"label","payload":{"label":"声纹"}}
+{"t":"2026-10-22T12:47:27","id":"idea-4279295","op":"label","payload":{"label":"读点"}}
+{"t":"2026-10-22T12:47:27","id":"idea-4279332","op":"label","payload":{"label":"注意力"}}
+{"t":"2026-10-22T12:47:27","id":"idea-4279404","op":"label","payload":{"label":"忽略"}}
+{"t":"2026-10-22T12:47:28","id":"idea-4279477","op":"label","payload":{"label":"视图开关"}}
+{"t":"2026-10-22T12:47:28","id":"idea-4279559","op":"label","payload":{"label":"登记表"}}
+{"t":"2026-10-22T12:47:28","id":"idea-4279607","op":"label","payload":{"label":"侧栏"}}
+{"t":"2026-10-22T12:47:28","id":"idea-4279816","op":"label","payload":{"label":"时间轴"}}
+{"t":"2026-10-22T12:47:28","id":"idea-4279825","op":"label","payload":{"label":"八十三"}}
+{"t":"2026-10-22T13:15:20","id":"idea-6120808","op":"born","payload":{"text":"moss_observe 要带等待上限——无限等会把一轮卡死，等不到就该回来","priority":1.6}}
+{"t":"2026-10-22T13:18:48","id":"idea-6120808","op":"note","payload":{"text":"### 同一条轨上的另一个坑\n\n`danmaku(duration=0)` 的语义是「留屏到 clear_veil」——所以它**永远不返回**。\n\n- 连发五条，外层 `<_>` 就一直关不上，整轮卡死\n- 留屏要用有生命周期的办法，别用 0\n\n实测：13:14 那一次就是这么卡的。"}}
