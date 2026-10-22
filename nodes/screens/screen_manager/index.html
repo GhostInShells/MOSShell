@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- rev: 2026-10-22 pip-rail stacking fix (body.rail-pip) -->
 <html lang="zh">
 <head>
 <meta charset="utf-8">
@@ -308,6 +309,13 @@
   .slot.pip iframe { background: transparent; }
   /* rail：待左侧栏的底部，不进舞台 —— 展示区一点都不让出去。
      栏收起时它跟着收，位置永远可预测: 栏在哪，"我"就在那底下。 */
+  /* #stage 自己就是一个层叠上下文(z-index 4)，栏里那块再怎么设 z-index 也翻不出去 ——
+     "发灰"就是这么来的：它被栏(9)那层 92% 的底盖着。有栏内 pip 时把舞台这一层抬到
+     栏之上，veil / talk 再各抬一档，保住原来的先后。没栏内 pip 时一律不动。 */
+  body.rail-pip #stage { z-index: 10; }
+  body.rail-pip #veil  { z-index: 11; }
+  body.rail-pip #talk  { z-index: 12; }
+
   .slot.pip-rail {
     position: fixed; left: 0; bottom: 0;
     width: var(--rail-w); height: var(--rail-w);
@@ -756,6 +764,8 @@ function renderStage(ids, layout) {
     if (it.barBtn) it.barBtn.innerHTML = focused ? ICON_RESTORE : ICON_MAX;
   });
   syncScrim();
+  document.body.classList.toggle(
+    'rail-pip', !!layout && layout.family === 'pip' && layout.dir === 'rail');
   const t = gridTemplate(layout);
   if (!t) { stage.style.gridTemplateColumns = ''; stage.style.gridTemplateRows = ''; return; }
   stage.style.gridTemplateColumns = t[0];
