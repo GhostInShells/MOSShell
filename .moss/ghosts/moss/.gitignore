@@ -1,7 +1,13 @@
 # runtime data — dsh reasoning-core territory
 .dsh/
-# ego trajectory index (memento) — runtime data, contains real conversations, not committed
-.memento/
+# ego trajectory (memento): the DATA stays local, the MECHANISM ships.
+# branches/ and commits/ are real conversations — never committed. hooks/ and the two
+# GROUND.md are the law this ghost runs on, and they must be readable by whoever takes over.
+.memento/*/branches/*
+!.memento/*/branches/GROUND.md
+.memento/*/commits/*
+!.memento/*/commits/GROUND.md
+.memento/*/hooks/__pycache__/
 # local env config (copied from .env.example, not committed)
 .env
 # people/ is NOT ignored (2026-10-12): gitignore was never the privacy mechanism.
