@@ -23,6 +23,10 @@
   #bar button:hover{border-color:var(--hot)}
   #track{flex:1;height:20px;display:flex;align-items:center;cursor:pointer}
   #track input{width:100%}
+  #chips{display:flex;gap:6px}
+  #chips button{background:transparent;color:var(--dim);border:1px solid var(--line);
+    border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer}
+  #chips button.on{color:var(--bg);background:var(--hot);border-color:var(--hot)}
   #when{font-size:12px;color:var(--dim);min-width:92px;text-align:right}
   #side{position:absolute;top:0;right:0;bottom:58px;width:340px;background:#0c1116;
     border-left:1px solid #16211c;padding:18px;overflow:auto;transform:translateX(100%);
@@ -43,6 +47,7 @@
   <div id="s-notes"></div>
 </div>
 <div id="bar">
+  <div id="chips"></div>
   <button id="play">播放</button>
   <button id="now">到最新</button>
   <div id="track"><input id="slider" type="range" min="0" max="0" value="0"/></div>
@@ -61,10 +66,10 @@ const STATE_RING = {
   retired: '#4d6a5c',
 };
 
-let events = [];        // the raw record, exactly as the node wrote it
-let cut = 0;            // how many events are applied — the timeline position
+let events = [];        // the raw record, exactly as the node wrote itlet cut = 0;            // how many events are applied — the timeline position
 let sel = null;
 let fitted = false;
+let filterState = '';   // '' = 全看；其余只压暗不匹配的，不改数据
 
 const svg = d3.select('#s');
 const root = d3.select('#root');
@@ -160,7 +165,8 @@ function paint(){
     return d.text.length > max ? d.text.slice(0, max) + '…' : d.text;
   });
   merged.attr('transform', d => `translate(${d.x},${d.y})`)
-    .classed('sel', d => sel && d.id === sel.id);
+    .classed('sel', d => sel && d.id === sel.id)
+    .style('opacity', d => (!filterState || d.state === filterState) ? 1 : 0.12);
 }
 
 function refresh(alpha){
@@ -215,6 +221,21 @@ function drawSide(){
     `<div class="note"><span style="color:#4d6a5c">${(n.t || '').replace('T', ' ')}</span><br>${n.text}</div>`
   ).join('') || '<div class="note" style="opacity:.5">还没有记录</div>';
 }
+
+// ---- 过滤：只是「现在不画」，不改任何数据 -------------------------------
+const chipsEl = document.getElementById('chips');
+[['', '全部']].concat(Object.keys(STATE_RING).map(k => [k, k])).forEach(([value, label]) => {
+  const btn = document.createElement('button');
+  btn.textContent = label;
+  btn.dataset.value = value;
+  if (value === '') btn.classList.add('on');
+  btn.addEventListener('click', () => {
+    filterState = value;
+    [...chipsEl.children].forEach(c => c.classList.toggle('on', c.dataset.value === value));
+    paint();
+  });
+  chipsEl.appendChild(btn);
+});
 
 // ---- 时间轴：只改数据，不重建布局 ---------------------------------------
 const slider = document.getElementById('slider');
