@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"/>
+<title>ideas</title>
+<style>
+  :root{--bg:#0b0f13;--fg:#e8f5ea;--dim:#6f8a7b;--line:#22312b;--hot:#7ee787;--warm:#f0b429}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font-family:"PingFang SC","Noto Sans SC",system-ui,sans-serif}
+  #stage{position:absolute;inset:0 0 58px 0}
+  svg{display:block;width:100%;height:100%;cursor:grab}
+  svg:active{cursor:grabbing}
+  .ring{fill:rgba(126,231,135,.10);stroke:#7ee787;stroke-width:1.4;transition:fill .25s,stroke .25s}
+  .bub text{fill:#c9dbd1;font-size:12px;text-anchor:middle;pointer-events:none;user-select:none}
+  .bub{cursor:pointer}
+  .bub.sel .ring{stroke:var(--warm);fill:rgba(240,180,41,.14)}
+  line.edge{stroke:#3f6153;stroke-width:1.2}
+  #bar{position:absolute;left:0;right:0;bottom:0;height:58px;display:flex;align-items:center;gap:14px;
+    padding:0 18px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.6));border-top:1px solid #16211c}
+  #bar button{background:#0f1613;color:var(--fg);border:1px solid var(--line);border-radius:8px;
+    padding:6px 12px;font-size:13px;cursor:pointer}
+  #bar button:hover{border-color:var(--hot)}
+  #track{flex:1;height:20px;display:flex;align-items:center;cursor:pointer}
+  #track input{width:100%}
+  #when{font-size:12px;color:var(--dim);min-width:92px;text-align:right}
+  #side{position:absolute;top:0;right:0;bottom:58px;width:340px;background:#0c1116;
+    border-left:1px solid #16211c;padding:18px;overflow:auto;transform:translateX(100%);
+    transition:transform .25s ease}
+  #side.open{transform:none}
+  #side h2{font-size:17px;margin:0 0 8px;font-weight:500;line-height:1.4}
+  #side .meta{font-size:12px;color:var(--dim);margin-bottom:14px;line-height:1.7}
+  #side .note{border-left:2px solid var(--line);padding:4px 0 4px 10px;margin:8px 0;font-size:13px;color:#c9dbd1}
+  #hud{position:absolute;left:16px;top:14px;font-size:12px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div id="stage"><svg id="s"><g id="root"></g></svg></div>
+<div id="hud"></div>
+<div id="side">
+  <h2 id="s-title"></h2>
+  <div class="meta" id="s-meta"></div>
+  <div id="s-notes"></div>
+</div>
+<div id="bar">
+  <button id="play">播放</button>
+  <button id="now">到最新</button>
+  <div id="track"><input id="slider" type="range" min="0" max="0" value="0"/></div>
+  <div id="when"></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script>
+const W = () => document.getElementById('stage').clientWidth;
+const H = () => document.getElementById('stage').clientHeight;
+
+const STATE_RING = {
+  spark:   '#7ee787',
+  active:  '#58a6ff',
+  waiting: '#f0b429',
+  done:    '#8aa89a',
+  retired: '#4d6a5c',
+};
+
+let events = [];        // the raw record, exactly as the node wrote it
+let cut = 0;            // how many events are applied — the timeline position
+let sel = null;
+let fitted = false;
+
+const svg = d3.select('#s');
+const root = d3.select('#root');
+const edgeLayer = root.append('g');
+const nodeLayer = root.append('g');
+
+let nodes = [], links = [];
+const sim = d3.forceSimulation(nodes)
+  .force('charge', d3.forceManyBody().strength(d => -110 - (d.r || 40) * 3))
+  .force('center', d3.forceCenter(W() / 2, H() / 2).strength(.16))
+  .force('collide', d3.forceCollide().radius(d => d.r + 18))
+  .force('link', d3.forceLink(links).id(d => d.id).distance(200).strength(.12))
+  .on('tick', paint);
+
+const zoom = d3.zoom().scaleExtent([0.25, 3]).on('zoom', e => root.attr('transform', e.transform));
+svg.call(zoom).on('dblclick.zoom', null);
+
+function radius(priority){
+  // 字要看得见、球也要看得见：半径跟着屏幕大小走，不跟像素走。
+  const s = Math.min(W(), H()) / 900;
+  return (26 + Math.sqrt(Math.max(priority, 0.2)) * 30) * Math.max(0.75, s);
+}
+
+function fit(){
+  if (!nodes.length) return;
+  const pad = 140;
+  const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+  const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad;
+  const y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
+  const k = Math.min(W() / (x1 - x0), H() / (y1 - y0), 1.8);
+  const t = d3.zoomIdentity
+    .translate(W() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2)
+    .scale(k);
+  svg.transition().duration(700).ease(d3.easeCubicOut).call(zoom.transform, t);
+}
+
+// ---- 折叠：当前状态永远是「前 cut 条事件」的产物 -------------------------
+function fold(limit){
+  const map = new Map();
+  const out = [];
+  for (let i = 0; i < limit && i < events.length; i += 1){
+    const ev = events[i];
+    let it = map.get(ev.id);
+    if (ev.op === 'born'){
+      it = { id: ev.id, text: ev.payload.text || '', priority: ev.payload.priority ?? 1,
+             state: ev.payload.state || 'spark', tags: [], links: [], notes: [], t: ev.t };
+      map.set(ev.id, it);
+      continue;
+    }
+    if (!it) continue;
+    if (ev.op === 'state') it.state = ev.payload.state || it.state;
+    else if (ev.op === 'priority') it.priority = ev.payload.priority ?? it.priority;
+    else if (ev.op === 'tag') { if (!it.tags.includes(ev.payload.tag)) it.tags.push(ev.payload.tag); }
+    else if (ev.op === 'untag') it.tags = it.tags.filter(x => x !== ev.payload.tag);
+    else if (ev.op === 'note') it.notes.push({ t: ev.t, text: ev.payload.text });
+    else if (ev.op === 'link') it.links.push({ dst: ev.payload.dst, kind: ev.payload.kind || 'related',
+                                               weight: ev.payload.weight ?? 1 });
+    else if (ev.op === 'unlink') it.links = it.links.filter(l => l.dst !== ev.payload.dst);
+  }
+  map.forEach(it => out.push(it));
+  const edges = [];
+  for (const it of out){
+    for (const l of it.links){
+      if (map.has(l.dst)) edges.push({ source: it.id, target: l.dst, kind: l.kind, weight: l.weight });
+    }
+  }
+  return { nodes: out, links: edges };
+}
+
+// ---- 画：join，不重建 ----------------------------------------------------
+function paint(){
+  const g = edgeLayer.selectAll('line.edge').data(links, d => d.source.id + '→' + d.target.id);
+  g.join('line').attr('class', 'edge')
+    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+    .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
+    .attr('stroke-dasharray', d => d.kind === 'depend' ? '5 4' : null)
+    .attr('stroke-width', d => 0.8 + (d.weight || 1) * 0.6);
+
+  const b = nodeLayer.selectAll('g.bub').data(nodes, d => d.id);
+  const enter = b.enter().append('g').attr('class', 'bub');
+  enter.append('circle').attr('class', 'ring');
+  enter.append('text');
+  b.exit().transition().duration(400).style('opacity', 0).remove();
+
+  const merged = enter.merge(b);
+  merged.on('click', (ev, d) => { ev.stopPropagation(); focusOn(d); });
+  merged.select('.ring')
+    .attr('r', d => d.r)
+    .attr('stroke', d => STATE_RING[d.state] || '#7ee787')
+    .attr('stroke-dasharray', d => d.state === 'waiting' ? '4 4' : null);
+  merged.select('text').attr('dy', 4).text(d => {
+    const max = Math.max(6, Math.floor(d.r / 9));
+    return d.text.length > max ? d.text.slice(0, max) + '…' : d.text;
+  });
+  merged.attr('transform', d => `translate(${d.x},${d.y})`)
+    .classed('sel', d => sel && d.id === sel.id);
+}
+
+function refresh(alpha){
+  const folded = fold(cut);
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  nodes = folded.nodes.map(n => {
+    const old = byId.get(n.id);
+    return Object.assign({}, n, old ? { x: old.x, y: old.y, vx: old.vx, vy: old.vy, r: old.r } : {},
+                         { r: radius(n.priority) });
+  });
+  links = folded.links;
+  sim.nodes(nodes);
+  sim.force('link').links(links);
+  sim.force('center').x(W() / 2).y(H() / 2);
+  sim.alpha(alpha).restart();
+  if (sel) sel = nodes.find(n => n.id === sel.id) || null;
+  updateHud();
+  paint();
+  drawSide();
+}
+
+function updateHud(){
+  document.getElementById('hud').textContent =
+    `${nodes.length} 颗 · ${links.length} 条线 · 第 ${cut}/${events.length} 条事件`;
+  document.getElementById('when').textContent = cut === events.length ? '最新' : `${cut}/${events.length}`;
+  const slider = document.getElementById('slider');
+  slider.max = String(events.length);
+  slider.value = String(cut);
+}
+
+// ---- 相机：点一颗，把它推到中间 -----------------------------------------
+function focusOn(d){
+  sel = d;
+  const k = Math.min(2, Math.max(1.2, 900 / (d.r * 12)));
+  const t = d3.zoomIdentity.translate(W() / 2 - k * d.x, H() / 2 - k * d.y).scale(k);
+  svg.transition().duration(650).ease(d3.easeCubicOut).call(zoom.transform, t);
+  paint();
+  drawSide();
+}
+
+function drawSide(){
+  const side = document.getElementById('side');
+  if (!sel){ side.classList.remove('open'); return; }
+  side.classList.add('open');
+  document.getElementById('s-title').textContent = sel.text || '(没有字)';
+  document.getElementById('s-meta').textContent =
+    `${sel.id} · ${sel.state} · 权重 ${sel.priority}` +
+    (sel.tags.length ? ` · [${sel.tags.join(', ')}]` : '') +
+    ` · 连着 ${sel.links.length} 条`;
+  const box = document.getElementById('s-notes');
+  box.innerHTML = (sel.notes || []).map(n =>
+    `<div class="note"><span style="color:#4d6a5c">${(n.t || '').replace('T', ' ')}</span><br>${n.text}</div>`
+  ).join('') || '<div class="note" style="opacity:.5">还没有记录</div>';
+}
+
+// ---- 时间轴：只改数据，不重建布局 ---------------------------------------
+const slider = document.getElementById('slider');
+slider.addEventListener('input', () => {
+  stop();
+  cut = Number(slider.value);
+  refresh(0.12);          // 很小的 alpha：挤一挤，不是洗牌
+});
+
+let timer = null;
+function stop(){ if (timer){ clearInterval(timer); timer = null; document.getElementById('play').textContent = '播放'; } }
+document.getElementById('play').addEventListener('click', () => {
+  if (timer){ stop(); return; }
+  if (cut >= events.length) { cut = 0; refresh(0.12); }
+  document.getElementById('play').textContent = '暂停';
+  timer = setInterval(() => {
+    if (cut >= events.length){ stop(); return; }
+    cut += 1; refresh(0.15);
+  }, 600);
+});
+document.getElementById('now').addEventListener('click', () => {
+  stop(); cut = events.length; refresh(0.12);
+});
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ svg.transition().duration(600).call(zoom.transform, d3.zoomIdentity); }
+});
+window.addEventListener('resize', () => { sim.force('center').x(W() / 2).y(H() / 2); sim.alpha(0.1).restart(); });
+
+// ---- 接节点 --------------------------------------------------------------
+function connect(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = (msg) => {
+    let f; try { f = JSON.parse(msg.data); } catch (e) { return; }
+    if (f.type === 'state'){
+      events = f.events || [];
+      cut = events.length;
+      refresh(0.9);
+      // 第一次连上时把整张图放进视野；之后怎么挪就是读的人的事了。
+      if (!fitted){ fitted = true; setTimeout(fit, 1000); }
+    } else if (f.type === 'event'){
+      events.push(f.event);
+      if (cut === events.length - 1) cut = events.length;   // 读点在头，才跟着走
+      refresh(0.35);
+    }
+  };
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+connect();
+</script>
+</body>
+</html>
