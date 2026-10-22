@@ -8,7 +8,7 @@
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
     font-family:"PingFang SC","Noto Sans SC",system-ui,sans-serif}
-  #stage{position:absolute;inset:0 0 58px 0}
+  #stage{position:absolute;inset:0}
   #s{opacity:0;transition:opacity .55s ease}
   body.ready #s{opacity:1}
   svg{display:block;width:100%;height:100%;cursor:grab}
@@ -17,35 +17,19 @@
   .bub text{fill:#c9dbd1;font-size:12px;text-anchor:middle;pointer-events:none;user-select:none}
   .bub{cursor:pointer}
   .bub.sel .ring{stroke:var(--warm);fill:rgba(240,180,41,.14)}
-  line.edge{stroke:#3f6153;stroke-width:1.2}
-  #bar{position:absolute;left:0;right:0;bottom:0;height:58px;display:flex;align-items:center;gap:14px;
-    padding:0 18px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.6));border-top:1px solid #16211c}
-  #bar button{background:#0f1613;color:var(--fg);border:1px solid var(--line);border-radius:8px;
-    padding:6px 12px;font-size:13px;cursor:pointer}
-  #bar button:hover{border-color:var(--hot)}
-  #track{flex:1;height:20px;display:flex;align-items:center;cursor:pointer}
-  #track input{width:100%}
-  #chips{display:flex;gap:6px}
-  #chips button{background:transparent;color:var(--dim);border:1px solid var(--line);
-    border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer}
-  #chips button.on{color:var(--bg);background:var(--hot);border-color:var(--hot)}
-  #when{font-size:12px;color:var(--dim);min-width:158px;text-align:right;font-variant-numeric:tabular-nums}
-  #when b{color:#c9dbd1;font-weight:500;font-size:13px}
 
   /* 抽屉是三层：头（标题+事实）钉住、中间自己滚、底（打开文档）钉住。
      否则正文一长，「打开文档」就被顶到看不见的地方去了。 */
-  #side{position:absolute;top:0;right:0;bottom:58px;width:380px;background:#0c1116;
-    border-left:1px solid #16211c;padding:18px 18px 18px 22px;transform:translateX(100%);
-    transition:transform .25s ease;display:flex;flex-direction:column;min-height:0}
+  #side{position:absolute;top:0;right:0;bottom:0;width:380px;background:#0c1116;
+    border-left:1px solid #16211c;padding:18px 18px 18px 22px;display:flex;flex-direction:column;min-height:0;
+    transition:width .2s ease}
   #s-head{flex:0 0 auto}
   #s-body{flex:1 1 auto;overflow:auto;min-height:0;margin:0 -6px;padding:0 6px}
-  #side.open{transform:none}
   #grip{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize}
   #grip:hover{background:rgba(126,231,135,.18)}
   #side h2{font-size:17px;margin:0 0 8px;font-weight:500;line-height:1.4}
   #side .meta{font-size:12px;color:var(--dim);margin-bottom:14px;line-height:1.7}
   #side .note{border-left:2px solid var(--line);padding:4px 0 4px 10px;margin:5px 0;font-size:13px;color:#c9dbd1}
-  #side .note .stamp{color:#4d6a5c;font-size:11px;display:block;margin-bottom:2px}
   #side .md p{margin:.35em 0;line-height:1.65}
   #side .md ul,#side .md ol{margin:.35em 0;padding-left:1.3em;line-height:1.65}
   #side .md h1,#side .md h2,#side .md h3,#side .md h4{margin:.7em 0 .3em;font-weight:600;line-height:1.35}
@@ -59,20 +43,25 @@
   #side .rel{display:block;font-size:13px;color:#8fb8a2;text-decoration:none;cursor:pointer;
     padding:5px 8px;margin:4px 0;border:1px solid #16211c;border-radius:7px;line-height:1.4}
   #side .rel:hover{border-color:var(--hot);color:#eaf7ee}
+  #side .rel.dead{color:#a3553f;border-color:#2a1a14;cursor:default;text-decoration:line-through}
+  #side .rel.dead:hover{border-color:#2a1a14;color:#a3553f}
   #side #s-doc{flex:0 0 auto;margin-top:12px;padding-top:12px;border-top:1px solid #16211c;font-size:12px}
   #side #s-doc a{color:var(--hot);text-decoration:none}
   #side #s-doc .hint{color:#4d6a5c;margin-left:8px}
 
   #hud{position:absolute;left:16px;top:14px;font-size:12px;color:var(--dim)}
-  #clusters{display:flex;gap:6px;margin-top:8px}
-  #clusters button{background:transparent;color:var(--dim);border:1px solid var(--line);
+  #clusters,#chips{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;max-width:60vw}
+  #clusters button,#chips button{background:transparent;color:var(--dim);border:1px solid var(--line);
     border-radius:999px;padding:3px 9px;font-size:11px;cursor:pointer}
   #clusters button.on{color:var(--bg);background:#58a6ff;border-color:#58a6ff}
+  #chips button.on{color:var(--bg);background:var(--hot);border-color:var(--hot)}
+  #broken{position:absolute;left:16px;bottom:12px;font-size:11px;color:#a3553f;max-width:60vw}
 </style>
 </head>
 <body>
 <div id="stage"><svg id="s"><g id="root"></g></svg></div>
-<div id="hud"><div id="counts"></div><div id="clusters"></div></div>
+<div id="hud"><div id="counts"></div><div id="clusters"></div><div id="chips"></div></div>
+<div id="broken"></div>
 <div id="side">
   <div id="grip"></div>
   <div id="s-head">
@@ -84,13 +73,6 @@
     <div id="s-notes"></div>
   </div>
   <div id="s-doc"></div>
-</div>
-<div id="bar">
-  <div id="chips"></div>
-  <button id="play" title="按记录本来的节奏往前推">▶</button>
-  <button id="now">到最新</button>
-  <div id="track"><input id="slider" type="range" min="0" max="0" value="0" step="1"/></div>
-  <div id="when"></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script>
@@ -114,22 +96,18 @@ const TIERS = [
   { at: 2.5, r: 92 },
 ];
 
-let events = [];        // the raw record, exactly as the node wrote it
-let cut = 0;            // how many events are in force — the timeline position
+let DATA = {root:'', groups:[], broken:[]};
+let groupName = '';     // 正在看的那一组（一组 = 一个目录）
 let sel = null;
-let dragging = false;
 let hoverId = null;
-let fitted = false;
-let filterState = '';   // '' = 全看；其余只压暗不匹配的，不改数据
-let filterRoot = '';    // 目录簇的同一套规矩
+let filterState = '';
 
 const svg = d3.select('#s');
 const root = d3.select('#root');
+const deadLayer = root.append('g');
 const edgeLayer = root.append('g');
 const nodeLayer = root.append('g');
 
-// nodes 是「这棵树上曾经出生过的全部」——拖时间轴只改谁亮着，不改成员，
-// 所以位置永远不需要重算，来回拖也不会抖。
 let nodes = [];
 let links = [];
 const sim = d3.forceSimulation(nodes)
@@ -151,25 +129,23 @@ const sim = d3.forceSimulation(nodes)
 const zoom = d3.zoom().scaleExtent([0.25, 3]).clickDistance(4)
   .on('zoom', e => root.attr('transform', e.transform));
 svg.call(zoom).on('dblclick.zoom', null);
-// 点空白就是「不看了」：收起抽屉，把镜头还给整张图。
-// 球自己的 click 会 stopPropagation，所以这里只会收到真正的空白。
+// 点空白就是「不看了」：取消选中，回到这一组自己的 README。
 svg.on('click', () => {
-  // 不管刚才有没有聚焦，点空白都把镜头还给整张图——「回到全景」本身就是一个动作。
-  stopPlay();
   sel = null;
   drawSide();
   paint();
   fit();
 });
 
-const POS_KEY = 'ideas.pos.v4';   // 换力模型就换版本号，别继承上一版的位置
+const POS_KEY = 'ideas.pos.v5';   // 换力模型就换版本号，别继承上一版的位置
+const posKey = () => `${POS_KEY}:${groupName}`;
 function restorePos(){
-  try { return JSON.parse(localStorage.getItem(POS_KEY) || '{}'); } catch (e) { return {}; }
+  try { return JSON.parse(localStorage.getItem(posKey()) || '{}'); } catch (e) { return {}; }
 }
 function savePos(){
   const out = {};
   for (const n of nodes) if (Number.isFinite(n.x)) out[n.id] = [Math.round(n.x), Math.round(n.y)];
-  try { localStorage.setItem(POS_KEY, JSON.stringify(out)); } catch (e) { /* 配额满了就算了 */ }
+  try { localStorage.setItem(posKey(), JSON.stringify(out)); } catch (e) { /* 配额满了就算了 */ }
 }
 // 起点不随机：同样的数据，永远得到同一张图。
 // 黄金角螺旋把 i 均匀铺在圆盘上，既不像网格那样假，也不会全堆在中间。
@@ -192,47 +168,23 @@ function radius(priority){
   return (tier.r + span * 8) * Math.max(0.62, s);
 }
 
+const sideWidth = () => document.getElementById('side').getBoundingClientRect().width;
+// 抽屉一直开着，图的中心就该是「没被抽屉压住的那半块」的中心。
+const availW = () => Math.max(320, W() - sideWidth());
+
 function fit(){
-  const live = nodes.filter(n => n.on && Number.isFinite(n.x));
+  const live = nodes.filter(n => Number.isFinite(n.x));
   if (!live.length) return;
-  const pad = 120;   // 底下那层字幕会吃掉一条，取景留够
+  const pad = 120;
   const xs = live.map(n => n.x), ys = live.map(n => n.y);
   const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad;
   const y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
-  const k = Math.max(0.25, Math.min(W() / (x1 - x0), H() / (y1 - y0), 3.0));
+  const k = Math.max(0.25, Math.min(availW() / (x1 - x0), H() / (y1 - y0), 3.0));
   if (!Number.isFinite(k)) return;   // 坐标还没算出来就别动相机，否则会把画面缩成 0
   const t = d3.zoomIdentity
-    .translate(W() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2)
+    .translate(availW() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2)
     .scale(k);
   svg.transition().duration(700).ease(d3.easeCubicOut).call(zoom.transform, t);
-}
-
-// ---- 折叠：状态永远是「前 limit 条事件」的产物 ---------------------------
-function foldAt(limit){
-  const map = new Map();
-  for (let i = 0; i < limit && i < events.length; i += 1){
-    const ev = events[i];
-    let it = map.get(ev.id);
-    if (ev.op === 'born'){
-      it = { id: ev.id, root: ev.root || '', text: ev.payload.text || '', label: '', icon: '',
-             priority: ev.payload.priority ?? 1, state: ev.payload.state || 'spark',
-             tags: [], links: [], notes: [], t: ev.t };
-      map.set(ev.id, it);
-      continue;
-    }
-    if (!it) continue;
-    if (ev.op === 'state') it.state = ev.payload.state || it.state;
-    else if (ev.op === 'label') it.label = ev.payload.label || '';
-    else if (ev.op === 'icon') it.icon = ev.payload.icon || '';
-    else if (ev.op === 'priority') it.priority = ev.payload.priority ?? it.priority;
-    else if (ev.op === 'tag') { if (!it.tags.includes(ev.payload.tag)) it.tags.push(ev.payload.tag); }
-    else if (ev.op === 'untag') it.tags = it.tags.filter(x => x !== ev.payload.tag);
-    else if (ev.op === 'note') it.notes.push({ t: ev.t, text: ev.payload.text });
-    else if (ev.op === 'link') it.links.push({ dst: ev.payload.dst, kind: ev.payload.kind || 'related',
-                                               weight: ev.payload.weight ?? 1 });
-    else if (ev.op === 'unlink') it.links = it.links.filter(l => l.dst !== ev.payload.dst);
-  }
-  return map;
 }
 
 // ---- tick：画一帧，顺便等它落定 ------------------------------------------
@@ -249,40 +201,54 @@ function onTick(){
 
 // ---- 画：join，不重建 ----------------------------------------------------
 function paint(){
-  const g = edgeLayer.selectAll('line.edge').data(links, d => d.srcId + '→' + d.dstId);
+  // 断头线：目标文件已经不在了。它是信息，不是错误——所以画一小截红线加一个叉，
+  // 而不是把这条边静默丢掉。
+  const dead = links.filter(l => l.dead);
+  deadLayer.selectAll('line.deadedge').data(dead, d => d.srcId + '→' + d.dstId)
+    .join('line').attr('class', 'deadedge')
+    .attr('stroke', '#a3553f').attr('stroke-width', 1.2).attr('stroke-dasharray', '3 4')
+    .attr('x1', d => pos(d.source).x + Math.cos(d.ang) * pos(d.source).r)
+    .attr('y1', d => pos(d.source).y + Math.sin(d.ang) * pos(d.source).r)
+    .attr('x2', d => pos(d.source).x + Math.cos(d.ang) * (pos(d.source).r + 30))
+    .attr('y2', d => pos(d.source).y + Math.sin(d.ang) * (pos(d.source).r + 30))
+    .style('opacity', d => nodeAlpha(d.source));
+  deadLayer.selectAll('text.deadmark').data(dead, d => d.srcId + '→' + d.dstId)
+    .join('text').attr('class', 'deadmark')
+    .attr('fill', '#a3553f').attr('font-size', 13).attr('text-anchor', 'middle')
+    .attr('x', d => pos(d.source).x + Math.cos(d.ang) * (pos(d.source).r + 36))
+    .attr('y', d => pos(d.source).y + Math.sin(d.ang) * (pos(d.source).r + 40))
+    .text('×')
+    .style('opacity', d => nodeAlpha(d.source));
+
+  const g = edgeLayer.selectAll('line.edge').data(links.filter(l => !l.dead), d => d.srcId + '→' + d.dstId);
   g.join('line').attr('class', 'edge')
     .attr('x1', d => rim(pos(d.source), d.target)[0]).attr('y1', d => rim(pos(d.source), d.target)[1])
     .attr('x2', d => rim(pos(d.target), d.source)[0]).attr('y2', d => rim(pos(d.target), d.source)[1])
+    .attr('stroke', d => d.kind === 'depend' ? '#3f6153' : '#3f6153')
     .attr('stroke-dasharray', d => d.kind === 'depend' ? '5 4' : null)
-    .attr('stroke-width', d => 0.8 + (d.weight || 1) * 0.6)
-    .style('opacity', d => d.vis === undefined
-      ? (linkOn(d) ? 1 : 0)
-      : Math.min(d.source.vis ?? 1, d.target.vis ?? 1));
+    .attr('stroke-width', d => 1.0)
+    .style('opacity', d => Math.min(nodeAlpha(d.source), nodeAlpha(d.target)));
 
   const b = nodeLayer.selectAll('g.bub').data(nodes, d => d.id);
   const enter = b.enter().append('g').attr('class', 'bub');
   enter.append('circle').attr('class', 'ring');
-  enter.append('image').attr('class', 'icon').attr('preserveAspectRatio', 'xMidYMid meet');
   enter.append('text').attr('class', 'cap');
   enter.append('text').attr('class', 'name');
   b.exit().remove();
 
   const merged = enter.merge(b);
-  merged.on('click', (ev, d) => { ev.stopPropagation(); if (d.on) focusOn(d); });
-  // 悬浮时的「呼吸」只是球自己在胀缩，不是改力——力一松，整张图会重新找平衡，
-  // 那是「场在动」，不是「球在呼吸」。
+  merged.on('click', (ev, d) => { ev.stopPropagation(); focusOn(d); });
   // 停在谁身上，谁就静下来——看一颗东西的时候，画面不该还在动。
-  merged.on('mouseenter', (ev, d) => { if (d.on) hoverId = d.id; });
+  merged.on('mouseenter', (ev, d) => { hoverId = d.id; });
   merged.on('mouseleave', (ev, d) => { if (hoverId === d.id) hoverId = null; });
-  const isUrl = (s) => !!s && (/^(https?:|data:)/.test(s) || /\.(png|jpe?g|svg|webp|gif)$/i.test(s));
   merged.select('.ring')
     .attr('r', d => d.r)
     // 用 style 而不是 attr：`.ring` 这条 CSS 规则会盖掉 presentation attribute，
     // 全被压成同一个绿 —— 状态就白编了。这一条踩过。
     .style('stroke', d => STATE_RING[d.state] || '#7ee787')
     .style('stroke-dasharray', d => d.state === 'waiting' ? '4 4' : null);
-  // 飞书那种形状：圈里是「脸」（小图，或者前两个大字），名字在圈下面。
-  const capOf = d => Array.from(String(d.label || d.text || '')).slice(0, 2).join('');
+  // 飞书那种形状：圈里是「脸」（前两个字），名字在圈下面。
+  const capOf = d => Array.from(String(d.title || d.name || '')).slice(0, 2).join('');
   // 圈里的字要跟着圈长大：中文两个字是「宽」顶住圆，拉丁两个字是「高」顶住圆，
   // 同一个字号打两种字，看上去一种偏小——所以按字数与字形分别算。
   const capFont = d => {
@@ -291,25 +257,18 @@ function paint(){
     const cjk = /[\u3400-\u9fff]/.test(t);
     return d.r * (cjk ? (n === 1 ? 1.12 : 0.72) : (n === 1 ? 1.38 : 0.98));
   };
-  // 用 style 而不是 attr：`.bub text{font-size:12px}` 这条 CSS 会把 presentation
-  // attribute 盖掉，于是所有圈里的字都被钉在 12px —— 跟 `.ring` 的 stroke 同一个坑。
   merged.select('.cap')
     .style('font-size', d => capFont(d) + 'px')
     .attr('dy', d => capFont(d) * 0.36)
-    .text(d => isUrl(d.icon) ? '' : capOf(d));
+    .text(d => capOf(d));
   merged.select('.name')
     .attr('y', d => d.r + 15)
     .style('font-size', '13px')
     .text(d => {
-      const s = String(d.label || d.text || '');
+      const s = String(d.title || d.name || '');
       if (Array.from(s).length <= 2) return '';
       return s.length > 12 ? s.slice(0, 12) + '…' : s;
     });
-  merged.select('.icon')
-    .attr('href', d => isUrl(d.icon) ? d.icon : null)
-    .attr('width', d => d.r * 1.15).attr('height', d => d.r * 1.15)
-    .attr('x', d => -d.r * 0.575).attr('y', d => -d.r * 0.575)
-    .style('display', d => isUrl(d.icon) ? null : 'none');
   merged.attr('transform', d => `translate(${pos(d).x},${pos(d).y})`)
     .classed('sel', d => sel && d.id === sel.id)
     .style('opacity', d => d.vis === undefined ? nodeAlpha(d) : d.vis);
@@ -325,108 +284,83 @@ function rim(a, b){
   return [p.x + (dx / d) * p.r, p.y + (dy / d) * p.r];
 }
 
-// 三种「不亮」不是同一种不亮：还没出生的最淡，被筛掉的次之，亮着的满。
+// 两种「不亮」不是同一种不亮：被筛掉的暗，亮着的满。
 function nodeAlpha(d){
-  if (!d.on) return 0.05;
   if (filterState && d.state !== filterState) return 0.10;
-  if (filterRoot && d.root !== filterRoot) return 0.10;
   return 1;
 }
-
 function nodeOn(d){
-  if (!d.on) return false;
-  if (filterState && d.state !== filterState) return false;
-  if (filterRoot && d.root !== filterRoot) return false;
-  return true;
-}
-function linkOn(d){
-  const a = d.source, b = d.target;
-  return !!(a && b && a.on && b.on);
+  return !(filterState && d.state !== filterState);
 }
 
-// ---- 成员：新事件来了才动（这里允许重算力，因为世界真的变了）-------------
+// ---- 成员：换了组、或者文件变了，才动 ------------------------------------
+function currentGroup(){
+  return DATA.groups.find(g => g.name === groupName) || null;
+}
+
 function rebuild(alpha){
-  const folded = foldAt(events.length);
+  const g = currentGroup();
+  const ideas = g ? g.ideas : [];
   const byId = new Map(nodes.map(n => [n.id, n]));
-  // 老节点整个搬过去，位置就跟着搬过去了：只有真的新出生的才需要给个起点。
   const saved = restorePos();
-  const ids = [...folded.keys()].sort();
+  const ids = ideas.map(i => i.name);
   nodes = ids.map((id, i) => {
     const old = byId.get(id);
-    if (old) return old;
-    const it = folded.get(id);
+    const it = ideas[i];
+    const r = radius(it.priority);
+    if (old){ old.it = it; old.r = r; return old; }
     const back = saved[id];
     const [sx, sy] = Array.isArray(back) ? back : seedPos(i, ids.length);
-    return { id, x: sx, y: sy, r: radius(it.priority) };
+    return { id, it, x: sx, y: sy, r };
   });
-  sim.nodes(nodes);
-  updateSlice();
-  if (alpha) sim.alpha(alpha).restart();
-  updateHud();
-}
-
-// ---- 切片：只改谁亮着，不碰力、不碰位置 ----------------------------------
-function updateSlice(){
-  const map = foldAt(cut);
-  let grew = false;
-  for (const n of nodes){
-    const it = map.get(n.id);
-    n.on = !!it;
-    if (it){
-      n.state = it.state; n.priority = it.priority; n.label = it.label; n.icon = it.icon;
-      n.text = it.text; n.notes = it.notes; n.tags = it.tags; n.links = it.links;
-      n.t = it.t;                      // 出生时刻：抽屉里那句「什么时候生出来的」靠它
-      n.root = it.root || n.root || '';
-      const r = radius(it.priority);
-      // 档位在拖动中被跨过时半径会变——那一刻得让邻居让一次，否则大球会压小球。
-      if (n.r > 0 && Math.abs(r - n.r) > 0.5) grew = true;   // 第一次赋值不算「变大」
-      n.r = r;
-    }
-  }
+  nodes.forEach(n => { n.state = n.it.state; n.priority = n.it.priority; n.title = n.it.title; });
   links = [];
-  const byId = new Map(nodes.map(n => [n.id, n]));
-  for (const it of map.values()){
-    for (const l of it.links){
-      const dst = byId.get(l.dst);
-      if (!dst) continue;
-      // 先自己把 id 换成节点：拖动时我们不让力重算，paint 就得拿到实体。
-      links.push({ srcId: it.id, dstId: l.dst, source: byId.get(it.id), target: dst,
-                   kind: l.kind, weight: l.weight });
+  const here = new Map(nodes.map(n => [n.id, n]));
+  for (const it of ideas){
+    for (const l of (it.links || [])){
+      const dst = here.get(l.name);
+      // 指向组外的边：这一屏里没有那颗球，不画；文件里的那行还在。
+      if (!dst && !l.dead) continue;
+      links.push({
+        srcId: it.name, dstId: l.name,
+        source: here.get(it.name), target: dst || null,
+        kind: l.kind, dead: !!l.dead || !dst,
+        // 断头线朝哪儿伸：用名字定一个固定的角度，同一份数据每次画在同一个方向。
+        ang: (hash(l.name) % 360) * Math.PI / 180,
+      });
     }
   }
-  sim.force('link').links(links);
+  sim.nodes(nodes);
+  sim.force('link').links(links.filter(l => !l.dead));
+  if (!nodes.length){
+    // 空组：没有球就没有「落定」那一刻，别让画面一直黑着。
+    settled = true;
+    document.body.classList.add('ready');
+  }
+  if (alpha) sim.alpha(alpha).restart();
   if (sel) sel = nodes.find(n => n.id === sel.id) || null;
-  paint();
   updateHud();
+  paint();
   drawSide();
-  // 只有「球真的变大了」才轻轻挤一下；拖时间轴本身绝不重启力。
-  if (grew && !dragging) sim.alpha(0.08).restart();
 }
 
-function fmtT(t){ return (t || '').replace('T', ' ').slice(5, 19); }
+function hash(s){ let h = 0; for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
 function updateHud(){
-  const live = nodes.filter(n => n.on).length;
+  const live = nodes.length;
+  const dead = links.filter(l => l.dead).length;
   document.getElementById('counts').textContent =
-    `${live} 颗 · ${links.length} 条线 · 第 ${cut}/${events.length} 条事件`;
-  const when = document.getElementById('when');
-  if (!events.length) when.innerHTML = '';
-  else if (cut === 0) when.innerHTML = '<b>起点</b> 还没发生';
-  else when.innerHTML = `<b>${fmtT(events[cut - 1].t)}</b> · ${cut}/${events.length}`;
-  const slider = document.getElementById('slider');
-  slider.max = String(events.length);
-  slider.value = String(cut);
+    `${groupName || '未选组'} · ${live} 颗 · ${links.length - dead} 条线` + (dead ? ` · ${dead} 条断头` : '');
   renderClusters();
+  document.getElementById('broken').textContent =
+    (DATA.broken && DATA.broken.length) ? `读不出来的文件：${DATA.broken.join('；')}` : '';
 }
 
 // ---- 相机：点一颗，把它推到中间 -----------------------------------------
 function focusOn(d){
   sel = d;
   const k = Math.min(2, Math.max(1.2, 900 / (d.r * 12)));
-  // 推到的那个「中间」是没被抽屉压住的那一半，不是整块画布的中间。
-  const side = document.getElementById('side');
-  const avail = W() - side.getBoundingClientRect().width;   // 选中就会开抽屉，先把它让出来
-  const t = d3.zoomIdentity.translate(Math.max(200, avail) / 2 - k * d.x, H() / 2 - k * d.y).scale(k);
+  const t = d3.zoomIdentity.translate(availW() / 2 - k * d.x, H() / 2 - k * d.y).scale(k);
   svg.transition().duration(650).ease(d3.easeCubicOut).call(zoom.transform, t);
   paint();
   drawSide();
@@ -464,47 +398,60 @@ function md(src){
   return out.join('\n');
 }
 
+function fmtT(ms){
+  if (!ms) return '';
+  const d = new Date(ms * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 抽屉一直开着：选了就是那颗 idea 的文件，没选就是这一组自己的 README。
 function drawSide(){
-  const side = document.getElementById('side');
-  if (!sel || !sel.on){ side.classList.remove('open'); return; }
-  side.classList.add('open');
+  const g = currentGroup();
+  document.getElementById('side').classList.add('open');
 
-  document.getElementById('s-title').textContent = sel.text || '(没有字)';
+  if (!sel){
+    document.getElementById('s-title').textContent = g ? g.name : '（没有组）';
+    document.getElementById('s-meta').textContent = g
+      ? `${g.ideas.length} 颗 · 这一组的 README`
+      : '';
+    document.getElementById('s-links').innerHTML = '';
+    document.getElementById('s-notes').innerHTML = `<div class="md">${
+      md(g && g.readme ? g.readme : '_这一组还没有 README.md —— 写上它是什么、先读哪一颗。_')}</div>`;
+    document.getElementById('s-doc').innerHTML = g ? `<span class="hint">${esc(g.path || '')}</span>` : '';
+    return;
+  }
 
-  // 状态、权重写成话，不写原始数字。
-  const moves = events.slice(0, cut).filter(e => e.id === sel.id && e.op === 'state').length;
-  const facts = [
-    sel.state,
-    `权重 ${sel.priority}`,
-    `${fmtT(sel.t)} 出生`,
-    moves ? `挪过 ${moves} 次` : '没挪过',
-  ];
-  if (sel.tags.length) facts.push(sel.tags.map(t => `#${t}`).join(' '));
+  const it = sel.it || {};
+  document.getElementById('s-title').textContent = it.title || sel.id;
+  const facts = [it.state, `权重 ${it.priority}`];
+  if (it.mtime) facts.push(`${fmtT(it.mtime)} 改过`);
+  if (it.tags && it.tags.length) facts.push(it.tags.map(t => `#${t}`).join(' '));
   document.getElementById('s-meta').textContent = facts.join(' · ');
 
-  // 连着谁——点一下就走到那颗球上，不是只给一个数字。
   const linksEl = document.getElementById('s-links');
-  linksEl.innerHTML = (sel.links || []).map(l => {
-    const n = nodes.find(x => x.id === l.dst);
-    const label = n ? (n.label || n.text || l.dst) : l.dst;
+  linksEl.innerHTML = (it.links || []).map(l => {
+    const n = nodes.find(x => x.id === l.name);
+    const label = n ? (n.title || n.id) : l.name;
     const short = label.length > 20 ? label.slice(0, 20) + '…' : label;
     const kind = l.kind === 'depend' ? '依赖' : '相关';
-    return `<a class="rel" data-id="${esc(l.dst)}">${kind} · ${esc(short)}</a>`;
+    const deadCls = (!n || l.dead) ? ' dead' : '';
+    const hint = (!n && !l.dead) ? '（在别的组）' : (l.dead ? '（文件不在了）' : '');
+    return `<a class="rel${deadCls}" data-id="${esc(l.name)}">${kind} · ${esc(short)}${hint}</a>`;
   }).join('');
   linksEl.querySelectorAll('a.rel').forEach(a => a.addEventListener('click', () => {
     const n = nodes.find(x => x.id === a.dataset.id);
-    if (n && n.on) focusOn(n);
+    if (n) focusOn(n);
   }));
 
-  const box = document.getElementById('s-notes');
-  box.innerHTML = (sel.notes || []).map(n =>
-    `<div class="note"><span class="stamp">${fmtT(n.t)}</span><div class="md">${md(n.text)}</div></div>`
-  ).join('') || '<div class="note" style="opacity:.45">还没有正文。这颗 idea 目前只有那一句话。</div>';
+  document.getElementById('s-notes').innerHTML =
+    `<div class="md">${md(it.body || '')}</div>` ||
+    '<div class="note" style="opacity:.45">这一颗还没有正文。</div>';
 
-  // 磁盘上那份 `.md` 是它的人面：投影，只读，但点得开。
+  // 磁盘上那份 `.md` 就是它本身，不是投影——点开看的就是那个文件。
   document.getElementById('s-doc').innerHTML =
-    `<a href="/idea/${encodeURIComponent(sel.id)}.md" target="_blank" rel="noreferrer">打开文档 ↗</a>
-     <span class="hint">投影，每次追加都会重写</span>`;
+    `<a href="/doc/${encodeURIComponent(sel.id)}" target="_blank" rel="noreferrer">打开文档 ↗</a>
+     <span class="hint">${esc(sel.id)}.idea.md</span>`;
 }
 
 // ---- 过滤：只是「现在不亮」，不改任何数据 -------------------------------
@@ -522,99 +469,35 @@ const chipsEl = document.getElementById('chips');
   chipsEl.appendChild(btn);
 });
 
-// ---- 目录簇：一个目录一颗按钮，切的是「看哪一片」 -----------------------
+// ---- 组：一个目录一颗按钮，切的是「看哪一组」 ---------------------------
 const clustersEl = document.getElementById('clusters');
-function rootLabel(r){
-  if (!r) return '未标';
-  const parts = String(r).split('/').filter(Boolean);
-  return parts[parts.length - 1] || r;
-}
 function renderClusters(){
-  // 挂着哪几个目录、各有多少颗——这是这面图的边界，一颗目录的时候也要摆着。
-  // 挂目录归我（open），切到哪个目录看归他：所以这里是按钮，不是只读标签。
-  const counts = new Map();
-  for (const n of nodes) if (n.on) counts.set(n.root || '(未标)', (counts.get(n.root || '(未标)') || 0) + 1);
-  const roots = [...counts.keys()].sort();
-  const total = [...counts.values()].reduce((a, b) => a + b, 0);
-  const sig = roots.map(r => `${r}:${counts.get(r)}`).join('|') + '#' + filterRoot + '#' + total;
+  const sig = DATA.groups.map(g => `${g.name}:${g.ideas.length}`).join('|') + '#' + groupName;
   if (clustersEl.dataset.sig === sig) return;
   clustersEl.dataset.sig = sig;
   clustersEl.innerHTML = '';
-  const add = (value, label, title) => {
+  for (const g of DATA.groups){
     const btn = document.createElement('button');
-    btn.textContent = label;
-    btn.title = title || '';
-    btn.dataset.value = value;
-    if (value === filterRoot) btn.classList.add('on');
+    btn.textContent = `${g.name} ${g.ideas.length}`;
+    btn.title = g.path || '';
+    btn.dataset.value = g.name;
+    if (g.name === groupName) btn.classList.add('on');
     btn.addEventListener('click', () => {
-      filterRoot = value;
-      clustersEl.dataset.sig = '';     // 让下一帧重画选中态
-      paint();
-      renderClusters();
+      if (groupName === g.name) return;
+      groupName = g.name; sel = null; settled = false;
+      document.body.classList.remove('ready');
+      svg.call(zoom.transform, d3.zoomIdentity);   // 相机先归零，别继承上一组的视角
+      rebuild(0.9);
     });
     clustersEl.appendChild(btn);
-  };
-  if (roots.length <= 1){
-    // 只挂了一个目录时，「全部」和「那个目录」是同一件事——摆两颗一样的按钮是废话。
-    const only = roots[0] || '(未标)';
-    add('', `${rootLabel(only)} ${total}`, only);
-  } else {
-    add('', `全部 ${total}`, '看所有挂着的目录');
-    for (const r of roots) add(r, `${rootLabel(r)} ${counts.get(r)}`, r);
   }
 }
 
-// ---- 播放：把「记录时间」压成「演出时间」 ------------------------------
-// 这一步走多久，取决于上一条事件到这一条之间隔了多久：
-// 挤在一起的那一段会连着冒，中间空着的会停一下——节奏本身就是信息。
-const PLAY_SPEED = 0.02;      // 记录里过 1 秒 → 画面上过 20 毫秒
-const PLAY_MIN = 80, PLAY_MAX = 1200;
-let playTimer = null;
-function stopPlay(){
-  if (playTimer){ clearTimeout(playTimer); playTimer = null; }
-  const btn = document.getElementById('play');
-  if (btn) btn.textContent = '▶';
-}
-function isPlaying(){ return playTimer !== null; }
-function playFrom(start, end){
-  stopPlay();
-  const to = Math.min(end, events.length);
-  let at = start >= to ? 0 : start;
-  cut = at; updateSlice();
-  document.getElementById('play').textContent = '⏸';
-  const step = () => {
-    if (cut >= to){ stopPlay(); return; }
-    const prev = events[cut - 1] ? Date.parse(events[cut - 1].t) : Date.parse(events[cut].t);
-    const next = events[cut] ? Date.parse(events[cut].t) : prev;
-    const dt = Math.max(0, (next - prev) || 0);
-    const delay = Math.min(PLAY_MAX, Math.max(PLAY_MIN, dt * PLAY_SPEED));
-    cut += 1;
-    updateSlice();
-    playTimer = setTimeout(step, delay);
-  };
-  step();
-}
-
-// ---- 时间轴：只是过筛。拖到哪儿就是「看到哪儿」，不是「播到哪儿」--------
-const slider = document.getElementById('slider');
-slider.addEventListener('input', () => {
-  stopPlay();               // 手动拖的时候不再自动推
-  cut = Number(slider.value);
-  dragging = true;
-  updateSlice();            // 不 restart：位置冻着，只换谁亮
-});
-slider.addEventListener('change', () => {
-  dragging = false;
-  if (nodes.some(n => n.on)) sim.alpha(0.05).restart();   // 松手后让挤在一起的分开
-});
-
 // ---- 呼吸：没人看的时候，整张图轻轻浮着 -------------------------------
-// d3 自带的两件事凑出来的：alphaTarget 让它一直微微烧着，
-// forceX / forceY 把每颗球拴在它自己的锚点上——于是不是「重新排版」，是「在原地浮」。
-let settled = false;
-let drift = 1;              // 0 = 完全静止，1 = 正常浮
 // 呼吸只发生在像素上：每颗球围着自己的位置飘几像素，位置本身一次都不动。
 // 走力的那版会让整张图慢慢重新找平衡——最后就塌成一串，那不叫呼吸。
+let settled = false;
+let drift = 1;              // 0 = 完全静止，1 = 正常浮
 function breathe(ts){
   requestAnimationFrame(breathe);
   if (!settled) return;
@@ -642,19 +525,13 @@ function breathe(ts){
 }
 requestAnimationFrame(breathe);
 
-document.getElementById('play').addEventListener('click', () => {
-  if (isPlaying()) { stopPlay(); return; }
-  playFrom(cut, events.length);
-});
-document.getElementById('now').addEventListener('click', () => {
-  stopPlay(); cut = events.length; updateSlice();
-});
 window.addEventListener('keydown', e => {
-  if (e.key === 'Escape'){ stopPlay(); sel = null; drawSide(); paint(); fit(); }
-  if (e.key === 'ArrowLeft'){ cut = Math.max(0, cut - 1); updateSlice(); }
-  if (e.key === 'ArrowRight'){ cut = Math.min(events.length, cut + 1); updateSlice(); }
+  if (e.key === 'Escape'){ sel = null; drawSide(); paint(); fit(); }
 });
-window.addEventListener('resize', () => { sim.force('center').x(W() / 2).y(H() / 2); sim.alpha(0.1).restart(); });
+window.addEventListener('resize', () => {
+  sim.force('center').x(W() / 2).y(H() / 2); sim.alpha(0.1).restart();
+  fit();
+});
 
 // ---- 抽屉可以拉宽：宽度是读的人的决定 -----------------------------------
 const sideEl = document.getElementById('side');
@@ -668,30 +545,31 @@ document.getElementById('grip').addEventListener('mousedown', e => {
     localStorage.setItem('ideas.sidew', Math.round(sideEl.getBoundingClientRect().width));
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
+    fit();
   };
   window.addEventListener('mousemove', move);
   window.addEventListener('mouseup', up);
 });
 
 // ---- 接节点 --------------------------------------------------------------
+function apply(state){
+  DATA = state;
+  if (!currentGroup()){
+    groupName = DATA.groups.length ? DATA.groups[0].name : '';
+    sel = null; settled = false;
+    document.body.classList.remove('ready');
+  }
+  // 选中的那颗还在不在（文件可能被删了或被改名了）
+  if (sel && !nodes.some(n => n.id === sel.id)) sel = null;
+  rebuild(0.35);
+}
+
 function connect(){
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = (msg) => {
     let f; try { f = JSON.parse(msg.data); } catch (e) { return; }
-    if (f.type === 'state'){
-      events = f.events || [];
-      cut = events.length;
-      svg.call(zoom.transform, d3.zoomIdentity);   // 相机先归零，别继承上一次的坏视角
-      rebuild(0.9);
-      // 第一次连上时把整张图放进视野；之后怎么挪就是读的人的事了。
-      fitted = true;   // 取景和淡入都交给 onTick 的落定时刻，不猜时间
-    } else if (f.type === 'event'){
-      events.push(f.event);
-      const atHead = cut === events.length - 1;
-      if (atHead) cut = events.length;             // 读点在头，才跟着走
-      rebuild(0.35);
-    }
+    if (f.type === 'state') apply(f);
   };
   ws.onclose = () => setTimeout(connect, 1500);
 }

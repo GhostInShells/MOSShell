@@ -1,0 +1,4 @@
+# The data root is entirely ignored: what ships is `examples/`, and it is copied
+# into `ideas/` on first run. Keep your own ideas out of git unless you decide
+# otherwise — that is a legitimate choice, just delete this line then.
+/ideas/

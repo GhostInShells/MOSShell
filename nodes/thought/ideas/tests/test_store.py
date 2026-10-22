@@ -1,87 +1,159 @@
-"""The log is the truth here; the current state is only its fold.
+"""The file is the truth here: one `*.idea.md` per idea, one directory per group.
 
-These tests pin the three properties the mechanism rests on: every change is a new
-event, folding is order-preserving, and each idea keeps a readable `.md` beside the log.
+These tests pin the four properties the simplified mechanism rests on:
+
+* discovery is a first-level directory scan, and the filename is the identity;
+* frontmatter round-trips — editing a file by hand is a supported operation;
+* a link whose target is gone is *reported*, not dropped;
+* a broken file is reported too, because a file that silently disappears is
+  indistinguishable from one that was never written.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
-_MODULE = Path(__file__).resolve().parents[1] / "main.py"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from store import SUFFIX, Store, split_frontmatter  # noqa: E402
+
+IDEA = """---
+state: {state}
+priority: {priority}
+tags: [t1, t2]
+links: [other, third:depend]
+---
+
+the body of {name}
+"""
 
 
-def _load():
-    name = "ideas_main"
-    spec = importlib.util.spec_from_file_location(name, _MODULE)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[name] = module          # pydantic resolves models through sys.modules
-    spec.loader.exec_module(module)
-    return module
+def write_group(root: Path, group: str, readme: str = "group context") -> Path:
+    path = root / group
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "README.md").write_text(readme, encoding="utf-8")
+    return path
 
 
-ideas_mod = _load()
+def write_idea(group: Path, name: str, state: str = "spark", priority: float = 1.0) -> Path:
+    path = group / f"{name}{SUFFIX}"
+    path.write_text(IDEA.format(state=state, priority=priority, name=name), encoding="utf-8")
+    return path
 
 
-def _store(tmp_path: Path):
-    store = ideas_mod.IdeaStore()
-    store.add_root(str(tmp_path))
-    store.load()
+def loaded(tmp_path: Path) -> Store:
+    store = Store(tmp_path)
+    store.reload()
     return store
 
 
-def test_born_lands_as_an_event_and_a_readable_file(tmp_path):
-    store = _store(tmp_path)
-    root = store.roots[0]
-    store.append(root, "born", "idea-1", {"text": "第一条", "priority": 2.0})
-    assert [ev.op for ev in store.events] == ["born"]
-    assert store.ideas["idea-1"].text == "第一条"
-    assert store.ideas["idea-1"].priority == 2.0
-    md = root / "ideas" / "idea-1.md"
-    assert md.exists() and "第一条" in md.read_text(encoding="utf-8")
+# --------------------------------------------------------------------- discovery
 
 
-def test_state_and_priority_are_appended_not_overwritten(tmp_path):
-    store = _store(tmp_path)
-    root = store.roots[0]
-    store.append(root, "born", "idea-1", {"text": "x"})
-    store.append(root, "state", "idea-1", {"state": "active"})
-    store.append(root, "priority", "idea-1", {"priority": 3.5})
-    # the current state is the last word, but the record keeps every word
-    assert store.ideas["idea-1"].state == "active"
-    assert store.ideas["idea-1"].priority == 3.5
-    assert [ev.op for ev in store.events] == ["born", "state", "priority"]
+def test_first_level_directories_are_groups(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    write_group(tmp_path, "work")
+    write_idea(tmp_path / "voice", "duplex-gap", state="active", priority=3)
+    write_idea(tmp_path / "work", "bench-the-windows")
+
+    store = loaded(tmp_path)
+
+    assert sorted(store.groups) == ["voice", "work"]
+    idea = store.find("duplex-gap")
+    assert idea is not None and idea.group == "voice"
+    assert idea.state == "active" and idea.priority == 3.0
+    assert idea.tags == ["t1", "t2"]
+    assert (tmp_path / "voice" / "README.md").read_text(encoding="utf-8") == "group context"
 
 
-def test_fold_after_reload_matches_the_live_state(tmp_path):
-    store = _store(tmp_path)
-    root = store.roots[0]
-    store.append(root, "born", "a", {"text": "a"})
-    store.append(root, "born", "b", {"text": "b"})
-    store.append(root, "link", "a", {"dst": "b", "kind": "depend", "weight": 2.0})
-    store.append(root, "tag", "a", {"tag": "screen"})
-    before = {k: (v.state, v.priority, len(v.links), tuple(v.tags)) for k, v in store.ideas.items()}
-
-    fresh = ideas_mod.IdeaStore()
-    fresh.add_root(str(tmp_path))
-    fresh.load()
-    after = {k: (v.state, v.priority, len(v.links), tuple(v.tags)) for k, v in fresh.ideas.items()}
-
-    assert after == before, "replaying the log must rebuild exactly the state we were holding"
+def test_name_is_the_identity(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    write_idea(tmp_path / "voice", "duplex-gap")
+    idea = loaded(tmp_path).find("duplex-gap")
+    assert idea is not None and idea.name == "duplex-gap"
+    assert idea.title == "the body of duplex-gap"      # first body line is the reading title
 
 
-def test_a_broken_line_does_not_eat_the_record(tmp_path):
-    store = _store(tmp_path)
-    root = store.roots[0]
-    store.append(root, "born", "a", {"text": "a"})
-    log = root / "ideas" / "ideas.jsonl"
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write("{not json}\n")
-    store.append(root, "state", "a", {"state": "done"})
-    fresh = ideas_mod.IdeaStore()
-    fresh.add_root(str(tmp_path))
-    fresh.load()
-    assert fresh.ideas["a"].state == "done"
+def test_frontmatter_round_trips(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    path = write_idea(tmp_path / "voice", "duplex-gap")
+
+    idea = loaded(tmp_path).find("duplex-gap")
+    assert idea is not None
+    idea.state = "waiting"
+    idea.tags.append("later")
+    idea.save()
+
+    meta, body = split_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["state"] == "waiting"
+    assert meta["tags"] == ["t1", "t2", "later"]
+    assert body.strip() == "the body of duplex-gap"
+
+
+# ------------------------------------------------------------------------- links
+
+
+def test_dead_link_is_reported_not_dropped(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    write_idea(tmp_path / "voice", "other")
+    write_idea(tmp_path / "voice", "duplex-gap")   # links: other, third:depend
+
+    store = loaded(tmp_path)
+    idea = store.find("duplex-gap")
+    assert idea is not None
+    known = store.known()
+    assert [l.name for l in idea.live_links(known)] == ["other"]
+    assert [l.name for l in idea.dead_links(known)] == ["third"]
+
+
+def test_rename_rewrites_every_reference(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    write_idea(tmp_path / "voice", "other")
+    write_idea(tmp_path / "voice", "duplex-gap")
+
+    store = loaded(tmp_path)
+    store.rename("other", "other-name")
+
+    assert store.find("other") is None
+    assert store.find("other-name") is not None
+    idea = store.find("duplex-gap")
+    assert idea is not None
+    assert [l.name for l in idea.links] == ["other-name", "third"]
+
+
+# ------------------------------------------------------------------------ writes
+
+
+def test_spark_slugifies_and_never_overwrites(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    store = loaded(tmp_path)
+
+    first = store.spark("双工开得太满: 两个人不在同一个时间点上说话", group="voice")
+    second = store.spark("双工开得太满: 两个人不在同一个时间点上说话", group="voice")
+
+    assert first.name == "双工开得太满-两个人不在同一个时间点上说话"
+    assert second.name == first.name + "-2"
+    assert first.path.exists() and second.path.exists()
+
+
+def test_broken_file_is_reported_not_skipped(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    write_idea(tmp_path / "voice", "fine")
+    (tmp_path / "voice" / f"broken{SUFFIX}").write_text("---\nstate: [unclosed\n---\n", encoding="utf-8")
+
+    store = loaded(tmp_path)
+
+    assert store.find("fine") is not None
+    assert len(store.broken) == 1 and "broken" in store.broken[0]
+
+
+def test_snapshot_carries_dead_flag_for_the_page(tmp_path: Path):
+    write_group(tmp_path, "voice")
+    write_idea(tmp_path / "voice", "other")
+    write_idea(tmp_path / "voice", "duplex-gap")
+
+    snap = loaded(tmp_path).snapshot()
+    idea = next(i for g in snap["groups"] for i in g["ideas"] if i["name"] == "duplex-gap")
+    flags = {l["name"]: l["dead"] for l in idea["links"]}
+    assert flags == {"other": False, "third": True}

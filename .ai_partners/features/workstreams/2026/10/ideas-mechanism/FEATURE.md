@@ -253,6 +253,72 @@ class Idea(BaseModel):
 - **不存在"数据量太大"**：目录就是分片。一个 `ideas/` 管一段，多了另开一个——和 `GROUND.md`
   一样是约定，不需要数据库迁就它。
 
+## Revision (D22 20:00) — over-designed; the first version is the file
+
+After building the log+fold version and living with it for a day, thirdgerb called the
+whole thing back:
+
+> 「我反复思考了现在的设计, 发现我有过度完美化的趋势, 投入的注意力资源和它想解决的问题,
+> 阻塞的问题不匹配. 所以需要先收敛第一版的 ideas, 让它简化并立刻用起来.」
+
+The mechanism below supersedes the log. D7 (node + one implementation + several clients)
+stands; everything that turned a file into a record of itself is gone.
+
+### What replaced what
+
+| Superseded | Now |
+|---|---|
+| D8 — a registry in the ghost home decides which directories have ideas | A group **is** a first-level directory of the root; the root is `--root` / `MOSS_IDEAS_ROOT`, defaulting to `ideas/` beside the node. Nothing scans, nothing is registered. |
+| D9 / D16 / D17 / D18 — append-only log, state = fold, pydantic event models | **The file is the truth.** One `.idea.md`: frontmatter (`state` / `priority` / `tags` / `links`) + body. Editing it by hand is a normal move. |
+| D10 — timeline drags over the record | **Dropped.** Replay was a mechanism the problem never asked for; "how did this idea get here" is git's job, if anyone wants it. |
+| D11 — Meta / 当前 / History / Ground tabs | **Deferred.** The right sidebar is always open: the group's `README.md` when nothing is selected, the idea's file when something is. |
+| D12 — several `ideas/` mounted at once, clusters linked | **Deferred.** One root per run. |
+
+### New decisions
+
+- **The filename is the identity, and it is semantic.** `duplex-gap.idea.md` says what it
+  is before anything is opened; an opaque `idea-10384843` would force a reader to open a
+  hundred files to find one. `rename` therefore rewrites every reference — it is the one
+  verb that sweeps the root.
+- **A dead link is information, not an error.** Rendering checks liveness once and draws
+  the missing end as a cut line: "I wrote that relation" and "I misremembered" must not
+  look alike.
+- **A broken file is reported, never skipped.** A file that vanishes from the list is
+  indistinguishable from one that was never written.
+- **No stored timestamps.** File mtime is the truth about "when did this last move";
+  a second field would drift from it.
+- **Writes are atomic** (tmp + rename): the page and `list` read these files while they
+  are being written.
+- **The data root is disposable.** It ships with examples and a `.gitignore`; deleting
+  either the file or the whole directory is a supported choice. What is shipped is only
+  what we deliberately put there.
+- **One implementation, several doors.** `cli.py` (click) edits the files; the node's
+  channel and the page both go through it. The channel exposes the daily verbs explicitly
+  and one `run(text__)` escape hatch for the long tail; when the verb set passes ~10, the
+  explicit commands collapse into `run` alone.
+
+### The file
+
+```markdown
+---
+state: active            # spark | active | waiting | done | retired
+priority: 3              # the bubble's size
+tags: [voice, duplex]
+links: [attention-cue, voiceprint:depend]   # name = related, name:kind = kind
+---
+
+The body is the thinking itself.
+```
+
+### Still open
+
+- Whether the ghost's 48 existing ideas (old jsonl format, `.moss/ghosts/moss/ideas/`)
+  get migrated or dropped — deferred by thirdgerb: *「我也有点舍不得直接清, 我们先留一会,
+  等一下我们先拿它做用例把我们一些东西讲完, 然后我们才继续.」*
+- Skill packaging (the CLI as a `moss skill` executable with agreed env vars) — explicitly
+  not in the first version: *「ideas 仍然 node 化, 暂时不做 skill, 未来可以做.」*
+
+
 ## Takeover Notes — 零上下文的人从这里开始
 ### 已经做出来的东西在哪
 
