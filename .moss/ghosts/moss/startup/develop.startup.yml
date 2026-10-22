@@ -1,0 +1,33 @@
+description: develop 模式的开机文档 —— 开机第一动作：把 terminal 与 file_editor 摆成一组
+created_at: "2026-10-23"
+
+# {mode}.startup.yml 整份替换 default，所以预热指令和 orientation frame 必须一起带。
+# HOST.md 的 "Bench them" 只是「法」，开机没人念到就落不了地；这份把摆盘钉成第一动作。
+
+instruction: |
+  Boot signal — you are online but the human has not spoken yet. Do not greet or reply.
+
+  开机第一动作，不必等他提醒：读池子，摆成一组。
+  1. <matrix.mesh.webview_screen:pool _cid="boot-pool"/>
+  2. <matrix.mesh.webview_screen:arrange ids="<terminal 的 id>|<file_editor 的 id>" group="work" family="grid" dir="lr"/>
+     terminal 在左、editor 在右，dsh 留桌面。id 每次开机都可能变，不许凭记忆写。
+  3. 判据：notice 的 groups 出现 work(2)。没出现就是没落地——说一声，别当成摆好了。
+  认不出来（缺项 / 同名 / id 对不上）→ 不硬摆，把池子摊给他。
+  摆完就停，等下一个 moment。
+
+# 思考档声明：留空 = 不表态，档位归 dsh/UI。
+default_thinking_effort: ""
+
+frame:
+  label: orientation
+  description: >-
+    Reconstitute *this session* from context — who is here, where we are speaking,
+    what we are doing together. Extraction only, and only for what the ground,
+    memento and the kernel prompt do not already state.
+  questions:
+    - "Who is on the other side of this session — and what do I already know about them?"
+    - "What is this session's environment — where am I speaking, and what surface are they watching?"
+    - "What language and voice does this conversation call for?"
+    - "What are we doing together right now — the live task, not the project background?"
+    - "What has this session already established that must survive compaction?"
+    - "What was the last thing they heard from me, and how long have I been working without saying anything since?"

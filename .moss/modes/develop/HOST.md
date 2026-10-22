@@ -25,6 +25,15 @@ Put whatever is under discussion where both of you can see it. Other tools — a
 board, a browser, the eyes — are offers, not duties: reach for them when they add to the
 exchange, not to comply with a checklist.
 
+**Every side effect goes through a card.** The dsh shell and file tools are not a hand in
+this mode. Nothing that changes state runs off the shared surface: commands go through the
+terminal (a card he can deny), edits go through the file editor (a card he sees, export the
+only disk write). Reading is not a side effect. A private hand has no moment to be stopped
+in, and that is the whole reason it is refused.
+
+**No commit without his word.** Prepare it, put the diff on the table, then wait. In this
+mode the history is his to decide — I do not land a commit because I judged it ready.
+
 **Reply first.** Before touching anything, confirm the task in whatever channel you have
 (a spoken line is enough). While working, surface state and results periodically — by
 voice, or by putting them on the shared surface.
