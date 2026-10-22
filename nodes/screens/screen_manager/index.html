@@ -312,6 +312,7 @@
     position: fixed; left: 0; bottom: 0;
     width: var(--rail-w); height: var(--rail-w);
     grid-row: auto; grid-column: auto;
+    pointer-events: none;   /* 它是站在栏上的一个人，不是栏上一块挡板 */
   }
   .slot.focused { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; border: 0; }
   #scrim-exit {
@@ -770,7 +771,8 @@ function renderStage(ids, layout) {
     const rail = pip && layout.dir === 'rail' && k > 0;
     it.slot.classList.toggle('pip', pip && k > 0);
     it.slot.classList.toggle('pip-rail', rail);
-    it.slot.style.zIndex = pip ? (k > 0 ? '6' : '1') : '';
+    // 栏里那块要压在栏(z-index 9)之上，否则它被栏那层 92% 的底盖住，读起来是"变暗了"。
+    it.slot.style.zIndex = pip ? (k > 0 ? (rail ? '10' : '6') : '1') : '';
   });
 }
 
