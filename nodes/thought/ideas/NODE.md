@@ -20,8 +20,8 @@ cut, what contradicts what".
   "rev": 18,
   "meta": {"concepts": {"core": "#e8f5ea", "storage": "#58a6ff", "risk": "#d0715c"}},
   "nodes": {
-    "n1": {"label": "动机", "body": "", "concept": "core", "weight": 1.0},
-    "n10": {"label": "存储策略", "concept": "storage", "weight": 0.8, "flag": true}
+    "n1": {"label": "motive", "body": "", "concept": "core", "weight": 1.0},
+    "n10": {"label": "storage", "concept": "storage", "weight": 0.8, "flag": true}
   },
   "edges": [{"id": "e3", "from": "n1", "to": "n10", "kind": "detail"}]
 }
@@ -49,9 +49,9 @@ one call. `critical` gives the spine (longest chain + branch points), `path a b`
 ```
 moss nodes run nodes/thought/ideas
 python cli.py tree
-python cli.py add "存储策略" --from 架构方案 --concept design
-python cli.py set 存储策略 --flag
-python cli.py link "存储策略 -> md, 存储策略 => 版本控制"
+python cli.py add "storage" --from architecture --concept design
+python cli.py set storage --flag
+python cli.py link "storage -> md, storage => version control"
 ```
 
 The root defaults to `ideas/` beside this node, overridden by `--root` or

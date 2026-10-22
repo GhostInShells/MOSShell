@@ -62,6 +62,15 @@
   #hud #add{margin-top:10px;background:transparent;color:var(--hot);border:1px dashed var(--line);
     border-radius:999px;padding:4px 12px;font-size:12px;cursor:pointer}
   #hud #add:hover{border-color:var(--hot)}
+  #hud .toolbar{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  #hud .toolbar button{background:#0f1613;color:var(--dim);border:1px solid var(--line);
+    border-radius:999px;padding:4px 12px;font-size:12px;cursor:pointer}
+  #hud .toolbar button:hover{border-color:var(--hot);color:var(--fg)}
+  #grouprow{display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap}
+  #grouprow #clusters{margin-top:0}
+  #grouprow #newgroup{background:#0f1613;color:var(--hot);border:1px solid var(--line);
+    border-radius:999px;padding:3px 11px;font-size:11px;cursor:pointer}
+  #grouprow #newgroup:hover{border-color:var(--hot)}
   #hud #newform{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
   #hud #newform input,#hud #newform select{background:#0f1613;color:var(--fg);border:1px solid var(--line);
     border-radius:6px;padding:4px 8px;font-size:12px}
@@ -85,14 +94,21 @@
 </defs><g id="root"></g></svg></div>
 <div id="hud">
   <div id="counts"></div>
-  <div id="clusters"></div>
+  <div id="grouprow">
+    <div id="clusters"></div>
+    <button id="newgroup">＋ New group</button>
+  </div>
   <div id="concepts"></div>
-  <button id="add">＋ 新的一颗（Tab 从选中的那颗长出来）</button>
+  <div class="toolbar">
+    <button id="add">＋ New node (Tab grows one from the selection)</button>
+    <button id="relayout">Re-layout</button>
+    <button id="refresh">Refresh</button>
+  </div>
   <form id="newform" hidden>
-    <input id="n-label" placeholder="label：1–8 个字" autocomplete="off"/>
+    <input id="n-label" placeholder="label: 1–8 characters" autocomplete="off"/>
     <select id="n-concept"></select>
-    <button type="submit">落</button>
-    <button type="button" id="n-cancel">取消</button>
+    <button type="submit">Add</button>
+    <button type="button" id="n-cancel">Cancel</button>
   </form>
 </div>
 <div id="broken"></div>
@@ -102,9 +118,9 @@
   <div id="s-head"><h2 id="s-title"></h2><div class="meta" id="s-meta"></div></div>
   <div id="s-body"><div id="s-edit"></div><div id="s-links"></div><div id="s-notes"></div></div>
   <div class="acts">
-    <button id="a-flag">标红</button>
-    <button id="a-child">长一颗</button>
-    <button id="a-delete" class="danger">删除</button>
+    <button id="a-flag">Flag</button>
+    <button id="a-child">Child</button>
+    <button id="a-delete" class="danger">Delete</button>
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
@@ -122,12 +138,12 @@ let ws = null;
 let settled = false;
 let drift = 1;
 let lastSig = '';
-let showArchived = localStorage.getItem('ideas.archived') === '1';
 // 展示层：讲述是读法，不写进 graph.json。spot 压暗其余，pulse 用运动抓眼。
 let view = {spot: null, dim: 0.15};
 const pulses = new Map();     // id → 结束时间戳
 let captionTimer = null;
 let relayoutWanted = false;   // 一批 op 结束后的尾 op：整张图重新排一次
+let showArchived = localStorage.getItem('ideas.archived') === '1';   // 归档抽屉：他的选择，默认收起
 
 const svg = d3.select('#s');
 const root = d3.select('#root');
@@ -324,14 +340,19 @@ function rebuild(alpha, keepSide){
     .filter(e => here.has(e.from) && here.has(e.to))
     .map(e => ({ id: e.id, kind: e.kind, source: here.get(e.from), target: here.get(e.to) }));
   // 只在需要时重新规划：第一次进来、或者有人明确要 relayout。
-  if (!settled || relayoutWanted){ planLayout(); relayoutWanted = false; }
+  // 规划出来的位置就是答案：第一次进来直接落到目标位，别让力模拟把球从中心炸开。
+  const planned = !settled || relayoutWanted;
+  if (planned){ planLayout(!settled); relayoutWanted = false; }
   sim.force('charge', null)
     .force('link', null)
     .force('collide', null);
   sim.nodes(nodes);
-  sim.force('collide', d3.forceCollide().radius(d => d.r + 26).strength(1));
+  sim.force('collide', d3.forceCollide().radius(d => d.r + 34).strength(.45));
   if (!nodes.length){ settled = true; document.body.classList.add('ready'); }
-  if (alpha) sim.alpha(alpha).restart();
+  if (planned){
+    sim.stop(); settled = true; document.body.classList.add('ready');
+    requestAnimationFrame(fit);
+  } else if (alpha) sim.alpha(alpha).restart();
   if (sel && !here.has(sel.id)) sel = null;
   updateHud(); paint();
   if (!keepSide) drawSide();
@@ -339,7 +360,7 @@ function rebuild(alpha, keepSide){
 
 // 布局是**规划**，不是涌现：先按「深度分环 + 子树分角」把人排好，
 // 再让力只负责把挤在一起的分开。自由力导会让边互相穿，那正是刚才那张图的乱。
-function planLayout(){
+function planLayout(snap){
   const byId = new Map(nodes.map(n => [n.id, n]));
   const kids = new Map(nodes.map(n => [n.id, []]));
   const hasParent = new Set();
@@ -365,13 +386,15 @@ function planLayout(){
   const maxDepth = Math.max(1, ...nodes.map(n => n.depth || 0), depthOf(roots, kids));
   const gap = R / Math.max(2, maxDepth + 0.6);
   let cursor = -Math.PI / 2;
+  const touched = new Set();
   const place = (id, a0, a1, depth) => {
+    touched.add(id);
     const ang = (a0 + a1) / 2;
     const r = (depth + 0.9) * gap;
     const n = byId.get(id);
     n.tx = cx + Math.cos(ang) * r;
     n.ty = cy + Math.sin(ang) * r;
-    if (!Number.isFinite(n.x)){ n.x = n.tx; n.y = n.ty; }   // 新节点直接出现在目标位
+    if (snap || !Number.isFinite(n.x)){ n.x = n.tx; n.y = n.ty; }   // 规划出的位置就是答案
     n.depth = depth;
     n.fx = null; n.fy = null;
     let cur = a0;
@@ -387,13 +410,12 @@ function planLayout(){
     cursor += span;
   }
   // 没连上的（孤立节点）放在最外圈，按顺序排开。
-  const placed = new Set(nodes.map(n => n.id));
-  const loose = nodes.filter(n => !placed.has(n.id));
+  const loose = nodes.filter(n => !touched.has(n.id));
   loose.forEach((n, i) => {
     const a = (i / Math.max(1, loose.length)) * Math.PI * 2;
     const tx = cx + Math.cos(a) * (R * 1.05);
     const ty = cy + Math.sin(a) * (R * 1.05);
-    if (!Number.isFinite(n.x)){ n.x = tx; n.y = ty; }
+    if (snap || !Number.isFinite(n.x)){ n.x = tx; n.y = ty; }
     n.tx = tx; n.ty = ty;
   });
 }
@@ -419,12 +441,12 @@ function updateHud(){
   const total = g ? g.nodes.length : 0;
   const flagged = g ? g.nodes.filter(n => n.flag).length : 0;
   document.getElementById('counts').textContent =
-    `${groupName || '未选组'} · ${total} 节点 · ${g ? g.edges.length : 0} 边 · r${g ? g.rev : 0}`
-    + (flagged ? ` · ${flagged} 标红` : '');
+    `${groupName || 'no group'} · ${total} nodes · ${g ? g.edges.length : 0} edges · r${g ? g.rev : 0}`
+    + (flagged ? ` · ${flagged} flagged` : '');
   renderClusters();
   renderConcepts();
   document.getElementById('broken').textContent =
-    (DATA.broken && DATA.broken.length) ? `读不出来的图：${DATA.broken.join('；')}` : '';
+    (DATA.broken && DATA.broken.length) ? `unreadable graphs: ${DATA.broken.join('; ')}` : '';
 }
 
 function renderClusters(){
@@ -433,9 +455,9 @@ function renderClusters(){
     + '#' + groupName + '#' + showArchived;
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig; el.innerHTML = '';
-  const archived = DATA.groups.filter(g => g.status !== 'active' && g.name !== groupName);
-  const shown = showArchived ? DATA.groups : DATA.groups.filter(g => g.status === 'active' || g.name === groupName);
-  for (const g of shown){
+  const alive = DATA.groups.filter(g => g.status === 'active' || g.name === groupName);
+  const drawer = DATA.groups.filter(g => g.status !== 'active' && g.name !== groupName);
+  for (const g of (showArchived ? DATA.groups : alive)){
     const btn = document.createElement('button');
     btn.textContent = `${g.name} ${g.nodes.length}`;
     if (g.name === groupName) btn.classList.add('on');
@@ -450,10 +472,11 @@ function renderClusters(){
     };
     el.appendChild(btn);
   }
-  if (archived.length){
+  if (drawer.length){
+    // 抽屉：归档是收起来的东西。他翻得开看历史组，我不把它列进 notice。
     const toggle = document.createElement('button');
     toggle.className = 'ghost';
-    toggle.textContent = showArchived ? '收起来档' : `＋ 归档 ${archived.length}`;
+    toggle.textContent = showArchived ? 'Hide archived' : `Archived ${drawer.length}`;
     toggle.onclick = () => {
       showArchived = !showArchived;
       localStorage.setItem('ideas.archived', showArchived ? '1' : '0');
@@ -470,21 +493,21 @@ function renderConcepts(){
   for (const [name, color] of Object.entries(cs)){
     const s = document.createElement('span');
     s.innerHTML = `<i style="background:${color}"></i>${name}`;
-    s.title = '点一下改颜色';
+    s.title = 'click to change its colour';
     s.style.cursor = 'pointer';
     s.onclick = () => {
-      const next = prompt(`「${name}」的颜色（#rrggbb）`, color);
+      const next = prompt(`colour of "${name}" (#rrggbb)`, color);
       if (next) send({type:'concept', group: groupName, name, color: next.trim()});
     };
     el.appendChild(s);
   }
   const addChip = document.createElement('span');
-  addChip.textContent = '＋ 概念';
+  addChip.textContent = '＋ concept';
   addChip.style.cursor = 'pointer';
   addChip.onclick = () => {
-    const name = prompt('新概念的名字（比如 storage / voice）');
+    const name = prompt('name of the new concept (e.g. storage / voice)');
     if (!name) return;
-    const color = prompt('它的颜色（#rrggbb）', '#58a6ff');
+    const color = prompt('its colour (#rrggbb)', '#58a6ff');
     if (color) send({type:'concept', group: groupName, name: name.trim(), color: color.trim()});
   };
   el.appendChild(addChip);
@@ -498,13 +521,14 @@ function drawSide(){
   const acts = document.querySelector('#side .acts');
   if (!sel || !g || !g.nodes.some(n => n.id === sel.id)){
     sel = null;
-    document.getElementById('s-title').textContent = g ? g.name : '（没有组）';
+    document.getElementById('s-title').textContent = g ? g.name : 'no group';
     document.getElementById('s-meta').textContent = g
-      ? `${g.nodes.length} 节点 · ${g.edges.length} 边 · r${g.rev} · 这一组的图（${g.path}/graph.json）` : '';
+      ? `${g.nodes.length} nodes · ${g.edges.length} edges · r${g.rev} · this group's graph (${g.path}/graph.json)` : '';
     document.getElementById('s-edit').innerHTML = '';
     document.getElementById('s-links').innerHTML = '';
     document.getElementById('s-notes').innerHTML = `<div style="color:var(--dim);font-size:12px;line-height:1.8">
-      左边是这一组的图。点一颗球看它，Tab 从它长一颗，Shift 点另一颗连线。</div>`;
+      The graph of this group is on the left. Click a bubble to read it, Tab grows one from it,
+      Shift-click another to link.</div>`;
     acts.style.display = 'none';
     return;
   }
@@ -513,7 +537,7 @@ function drawSide(){
   const cs = concepts();
   document.getElementById('s-title').textContent = it.label || it.id;
   document.getElementById('s-meta').textContent =
-    `${it.id} · ${it.concept} · w${it.weight}` + (it.flag ? ' · 标红' : '');
+    `${it.id} · ${it.concept} · w${it.weight}` + (it.flag ? ' · flagged' : '');
 
   document.getElementById('s-edit').innerHTML = `
     <div class="row"><label>label</label><input id="e-label" value="${esc(it.label || '')}"></div>
@@ -522,10 +546,10 @@ function drawSide(){
         ${Object.entries(cs).map(([k, color]) => `<button class="chip${k === it.concept ? ' on' : ''}"
             data-k="${esc(k)}" style="--c:${color}"><i style="background:${color}"></i>${esc(k)}</button>`).join('')}
       </div></div>
-    <div class="row"><label>权重</label>
+    <div class="row"><label>weight</label>
       <input id="e-weight" type="range" min="0.1" max="1" step="0.05" value="${it.weight}">
       <span id="e-weight-v" style="width:36px;text-align:right;color:var(--dim)">${it.weight}</span></div>
-    <div class="row body"><label>正文</label><textarea id="e-body">${esc(it.body || '')}</textarea></div>`;
+    <div class="row body"><label>body</label><textarea id="e-body">${esc(it.body || '')}</textarea></div>`;
 
   const lab = document.getElementById('e-label');
   lab.addEventListener('change', () => send({type:'set', group: groupName, id: it.id, label: lab.value}));
@@ -560,7 +584,7 @@ function drawSide(){
 
   document.getElementById('s-notes').innerHTML = '';
   document.getElementById('a-flag').classList.toggle('on', !!it.flag);
-  document.getElementById('a-flag').textContent = it.flag ? '取消标红' : '标红';
+  document.getElementById('a-flag').textContent = it.flag ? 'clear flag' : 'flag';
 }
 
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -578,7 +602,7 @@ document.getElementById('a-child').addEventListener('click', () => openForm(sel 
 document.getElementById('a-delete').addEventListener('click', () => {
   const g = cur(); if (!sel || !g) return;
   const it = g.nodes.find(n => n.id === sel.id);
-  if (!confirm(`删掉「${it.label || it.id}」和它连着的边？`)) return;
+  if (!confirm(`delete "${it.label || it.id}" and every edge touching it?`)) return;
   send({type:'rm', group: groupName, id: sel.id});
   sel = null;
 });
@@ -589,8 +613,8 @@ function openForm(from){
   newForm.hidden = false;
   const input = document.getElementById('n-label');
   input.placeholder = from
-    ? `从「${(cur().nodes.find(n => n.id === from) || {}).label || from}」长出来：1–8 个字`
-    : 'label：1–8 个字';
+    ? `grown from "${(cur().nodes.find(n => n.id === from) || {}).label || from}": 1–8 characters`
+    : 'label: 1–8 characters';
   input.value = '';
   input.focus();
 }
@@ -673,7 +697,18 @@ function apply(state){
   rebuild(0.3, !!typing);
 }
 
-// 页面连上后先说一次"我在看什么"，之后每次切换/选中再说一次。
+function applyEye(f){
+  // My hand can move the page too: show_group lands here, so the screen follows what
+  // I point at as well as what he clicks.
+  if (!f.group || f.group === groupName) return;
+  const g = DATA.groups.find(x => x.name === f.group);
+  if (!g) return;
+  groupName = g.name; sel = null; settled = false; lastSig = ''; relayoutWanted = true;
+  document.body.classList.remove('ready');
+  rebuild(0.9);
+}
+
+// The page says what it is looking at once on connect, then on every switch/select.
 function announceEye(){
   if (!ws || ws.readyState !== 1) return;
   send({type:'view-group', group: groupName});
@@ -690,6 +725,7 @@ function connect(){
     else if (f.type === 'removed'){ sel = null; }
     else if (f.type === 'error') console.warn('[ideas]', f.message);
     else if (f.type === 'view') applyView(f);
+    else if (f.type === 'eye') applyEye(f);
   };
   ws.onopen = () => announceEye();
   ws.onclose = () => setTimeout(connect, 1500);
@@ -732,6 +768,24 @@ async function poll(){
   try { const r = await fetch('/state', {cache:'no-store'}); if (r.ok) apply(await r.json()); }
   catch (e) { /* 断线等下一次 */ }
 }
+// 两个手动把手：排不回原样的时候，他不必等我，自己能把画面重置。
+function relayoutNow(){
+  settled = true; relayoutWanted = false;
+  planLayout(true);
+  fit(); paint();
+}
+function refreshNow(){
+  lastSig = ''; settled = false; relayoutWanted = true;
+  poll();
+}
+document.getElementById('newgroup').onclick = () => {
+  const name = (prompt('name of the new group? (a directory under root)') || '').trim();
+  if (!name) return;
+  send({type:'group-new', name});
+};
+document.getElementById('relayout').onclick = relayoutNow;
+document.getElementById('refresh').onclick = refreshNow;
+
 connect();
 setInterval(poll, 2500);
 setTimeout(announceEye, 800);

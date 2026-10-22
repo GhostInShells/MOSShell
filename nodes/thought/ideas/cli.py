@@ -5,11 +5,11 @@ One `graph.json` per group holds the whole picture; every verb here edits it. Th
 script is the implementation anybody can drive — a shell, another agent, the node's
 `run` command — so the node never owns the only way in.
 
-    ideas tree                        # 整张图，一次读进来
-    ideas add "存储策略" --from 架构方案 --concept design
-    ideas link "存储策略 -> md, 存储策略 -> JSON"
-    ideas set 存储策略 --flag          # 标红：这一点有问题
-    ideas diff --since 12             # 自 r12 以来动了什么
+    ideas tree                        # the whole graph, in one read
+    ideas add "storage" --from architecture --concept design
+    ideas link "storage -> md, storage -> JSON"
+    ideas set storage --flag          # flag it: this point has a problem
+    ideas diff --since 12             # what moved since r12
 
 Root resolution: `--root` > `MOSS_IDEAS_ROOT` > the node's own `ideas/`.
 """
@@ -79,14 +79,15 @@ def cli(ctx, root: str) -> None:
 def groups(ctx) -> None:
     """List the groups (first-level directories), with node and edge counts."""
     store = _store(ctx)
-    if not store.groups:
+    visible = [g for g in store.groups.values() if g.status != "archived"]
+    if not visible:
         click.echo(f"no group under {store.root}")
         return
-    for g in store.groups.values():
+    for g in visible:
         rev, name = store.last_save(g)
-        tail = f"{g.name} [{g.status}] · {len(g.nodes)} 节点 · {len(g.edges)} 边 · r{g.rev}"
+        tail = f"{g.name} [{g.status}] · {len(g.nodes)} nodes · {len(g.edges)} edges · r{g.rev}"
         if name:
-            tail += f" · 自「{name}」后 {store.ops_since_save(g)} 条"
+            tail += f' · {store.ops_since_save(g)} ops since "{name}"'
         click.echo(tail)
 
 
@@ -123,7 +124,7 @@ def list_(ctx, group: str, concept: str, flagged: bool) -> None:
             if flagged and not n.flag:
                 continue
             mark = " !" if n.flag else ""
-            rows.append(f"{g.name}/{n.id} · {n.label or '(无 label)'} · {n.concept} · w{n.weight:g}{mark}")
+            rows.append(f"{g.name}/{n.id} · {n.label or '(no label)'} · {n.concept} · w{n.weight:g}{mark}")
     click.echo("\n".join(rows) if rows else "nothing matches")
 
 
@@ -140,7 +141,7 @@ def show(ctx, key: str, group: str) -> None:
     assert g is not None
     click.echo(f"## {node.label or node.id}   [{g.name}/{node.id}]")
     click.echo(f"concept {node.concept} · weight {node.weight:g} · rev r{g.rev}"
-               + (" · 标红" if node.flag else ""))
+               + (" · flagged" if node.flag else ""))
     if node.body:
         click.echo("")
         click.echo(node.body)
@@ -170,8 +171,8 @@ def diff(ctx, group: str, since: int | None, from_save: bool) -> None:
         if since is None:
             since = store.last_save(g)[0] if from_save else 0
         rev, name = store.last_save(g)
-        anchor = f"自「{name}」(r{rev})" if name else "从头"
-        click.echo(f"## {g.name} (r{g.rev}, {anchor} → 现在)")
+        anchor = f'since "{name}" (r{rev})' if name else "from the beginning"
+        click.echo(f"## {g.name} (r{g.rev}, {anchor} → now)")
         click.echo("\n".join(store.diff_lines(g, since)))
 
 
@@ -187,11 +188,11 @@ def critical(ctx, group: str, top: int) -> None:
         click.echo(f"## {g.name}")
         chain = spine(g)
         if chain:
-            click.echo("主路: " + " → ".join(g.nodes[n].name + (" !" if g.nodes[n].flag else "")
-                                            for n in chain if n in g.nodes) + f"  ({len(chain) - 1} 跳)")
+            click.echo("spine: " + " → ".join(g.nodes[n].name + (" !" if g.nodes[n].flag else "")
+                                            for n in chain if n in g.nodes) + f"  ({len(chain) - 1} hops)")
         for nid, fan in junctions(g)[:top]:
             node = g.nodes[nid]
-            click.echo(f"分叉 {node.name} · {fan} 条下游" + (" !" if node.flag else ""))
+            click.echo(f"branch {node.name} · {fan} downstream" + (" !" if node.flag else ""))
 
 
 @cli.command()
@@ -206,7 +207,7 @@ def path(ctx, src: str, dst: str, group: str) -> None:
     hop = shortest_path(g, src, dst)
     if hop is None:
         raise click.ClickException(f"no path between {src!r} and {dst!r}")
-    click.echo(" → ".join(g.nodes[n].name for n in hop) + f"  ({len(hop) - 1} 跳)")
+    click.echo(" → ".join(g.nodes[n].name for n in hop) + f"  ({len(hop) - 1} hops)")
 
 
 @cli.command("leaves")
@@ -248,7 +249,7 @@ def add(ctx, label: str, group: str, body: str, concept: str, parent: str, weigh
 @click.option("--body", default=None)
 @click.option("--concept", default=None)
 @click.option("--weight", default=None, type=float)
-@click.option("--flag/--no-flag", "flag", default=None, help="标红 / 取消标红")
+click.option("--flag/--no-flag", "flag", default=None, help="flag it / clear the flag")
 @click.pass_context
 def set_(ctx, key: str, group: str, label, body, concept, weight, flag) -> None:
     """Change one node's fields. `--flag` is the human's red mark."""
@@ -320,7 +321,7 @@ def rm(ctx, key: str, group: str) -> None:
     if node is None or g is None:
         raise click.ClickException(f"not found: {key}")
     gone = _guard(store.remove_node, g, node.id)
-    click.echo(f"− {gone['label']} ({gone['node']}), 连带 {gone['edges']} 条边")
+    click.echo(f"− {gone['label']} ({gone['node']}), {gone['edges']} edges with it")
 
 
 @cli.command()
@@ -346,15 +347,16 @@ def op_(ctx, payload: str | None) -> None:
     sugar over it. The schema is in `op_help`.
 
         ideas op '{"op":"set","id":"n10","concept":"risk"}'
-        ideas op '[{"op":"add","group":"ideas-design","label":"存储"}, {...}]'
+        ideas op '[{"op":"add","group":"design","label":"storage"}, {...}]'
     """
     raw = payload if payload is not None else click.get_text_stream("stdin").read()
     ops: list[dict] = []
     try:
         data = json.loads(raw)
     except ValueError:
-        # JSONL: 一行一个 op，`#` 开头是注释。正文以 `{` 开头时 CTML 会把它当字面量，
-        # 所以流式写法要从一行注释起头——这不是怪癖，是让 parser 放行的最便宜办法。
+        # JSONL: one op per line, `#` opens a comment. A body that starts with `{` is read
+        # as a literal by CTML, so a streamed body opens with a comment line — not a
+        # quirk, just the cheapest way to let the parser through.
         for line in raw.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -414,11 +416,11 @@ def op_help() -> None:
 def batch(ctx, lines, group: str) -> None:
     """Run many verbs at once — one per line, from arguments or stdin.
 
-    The batch door exists because治理 is a pass over the whole graph, not a single
+    The batch door exists because governance is a pass over the whole graph, not a single
     edit: seventeen `set --concept` lines should be one call, not seventeen. Every
     line still goes through the same verbs, so nothing here is a second mechanism.
 
-        ideas batch "set 动机 --concept core" "set 执行 --concept core"
+        ideas batch "set motivation --concept core" "set execution --concept core"
         ideas batch < plan.txt        # one verb per line, `#` comments
     """
     from click.testing import CliRunner

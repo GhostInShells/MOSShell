@@ -104,6 +104,7 @@ class IdeasServer:
             "root": str(self._store.root),
             "focus": focus.name if focus else "",
             "view": dict(self.view),
+            # 归档的组也发给页面：抽屉是他的手，看不看归他选；我的 notice 不列它们。
             "groups": [g.snapshot() for g in self._store.groups.values()],
             "broken": list(self._store.broken),
         }
@@ -130,6 +131,17 @@ class IdeasServer:
                     else:
                         self.view["selected"] = str(frame.get("id", ""))
                     await self.broadcast({"type": "eye", **self.view})
+                    continue
+                if kind == "group-new":
+                    # 他自己开一组：页面上那个按钮落到这里，落盘的还是同一层目录。
+                    try:
+                        group = self._store.create_group(str(frame.get("name", "")))
+                    except Exception as exc:  # noqa: BLE001 — tell the page, never swallow
+                        await connection.send(json.dumps({"type": "error", "message": f"{exc!r}"}))
+                        continue
+                    self.view["group"] = group.name
+                    self.view["selected"] = ""
+                    await self.publish()
                     continue
                 if kind in ("add", "set", "link", "unlink", "rm", "concept", "op"):
                     # 页面的每一帧都是同一个 op 协议的一行——不是第二条写路径。
@@ -168,7 +180,7 @@ class IdeasServer:
     async def _ws_add(self, connection: ServerConnection, frame: dict) -> None:
         self._store.reload()
         group = self._store.require_group(str(frame.get("group", "")))
-        label = str(frame.get("label", "") or "").strip() or "新的一颗"
+        label = str(frame.get("label", "") or "").strip() or "new"
         node = self._store.add_node(
             group, label,
             body=str(frame.get("body", "") or ""),
@@ -265,34 +277,37 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
 
     @chan.build.notice
     def notice() -> str:
-        if not store.groups:
+        # Archived groups are put away: they never take a line here and never become the
+        # focus. Only the live groups under root are spoken about.
+        visible = [g for g in store.groups.values() if g.status != "archived"]
+        if not visible:
             return f"no group under {store.root} — mkdir one"
-        seen = server.view.get("group")
+        here = server.view.get("group")
+        seen = here if any(g.name == here for g in visible) else ""
         focus = store.focus_group()
+        selected = server.view.get("selected")
         lines: list[str] = []
-        # 先说屏上那一组：我的感知面和人看到的是同一个东西，否则我说什么都在错图上。
-        if seen and seen in store.groups:
-            lines.append(f"屏上: {seen}" + (f" · 选中 {server.view.get('selected')}"
-                                           if server.view.get("selected") else ""))
-        if focus is not None and focus.name != seen:
-            lines.append(f"焦点组: {focus.name}（箱里最大的活图）")
-        counts = " · ".join(
-            f"{g.name}{'*' if g.name == seen else ''} {len(g.nodes)}/{len(g.edges)}"
-            for g in store.groups.values() if g.status == "active")
-        if counts:
-            lines.append("活图: " + counts)
-        # 主路只在最大的那一组上算：第一组是例子，不是他正在看的那张图。
-        main = store.groups.get(seen) if seen in store.groups else store.focus_group()
+        # The group on screen comes first: what I perceive and what he sees must be
+        # the same thing, or everything I say is about the wrong graph.
+        if seen and (len(visible) > 1 or selected):
+            lines.append(f"screen: {seen}" + (f" · selected {selected}" if selected else ""))
+        if len(visible) > 1:
+            if focus is not None and focus.name != seen:
+                lines.append(f"focus: {focus.name} (largest live graph)")
+            lines.append("live: " + " · ".join(
+                f"{g.name}{'*' if g.name == seen else ''} {len(g.nodes)}/{len(g.edges)}"
+                for g in visible))
+        main = next((g for g in visible if g.name == seen), None) or focus
         if main is not None and main.nodes:
             chain = spine(main)
             if chain:
-                lines.append(f"主路[{main.name}]: " + " → ".join(
+                lines.append(f"spine[{main.name}]: " + " → ".join(
                     main.nodes[n].name for n in chain[:5] if n in main.nodes))
-        dead = [n.name for g in store.groups.values() for n in g.nodes.values() if n.flag]
+        dead = [n.name for g in visible for n in g.nodes.values() if n.flag]
         if dead:
-            lines.append("标红: " + ", ".join(dead[:5]))
+            lines.append("flagged: " + ", ".join(dead[:5]))
         if store.broken:
-            lines.append("坏图: " + "; ".join(store.broken[:2]))
+            lines.append("broken: " + "; ".join(store.broken[:2]))
         return "\n".join(lines)
 
     # ---- read --------------------------------------------------------------
@@ -300,6 +315,20 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
     async def groups() -> str:
         """List the groups with node / edge counts and their revision."""
         return await run_cli(["groups"])
+
+    @chan.build.command(always_observe=True)
+    async def show_group(group: str) -> str:
+        """Put a group on the page — the screen follows my hand, not only his click.
+
+        :param group: which group to show
+        """
+        store.reload()
+        g = store.require_group(group)
+        server.view["group"] = g.name
+        server.view["selected"] = ""
+        await server.publish()
+        await server.broadcast({"type": "eye", **server.view})
+        return f"screen: {g.name} · {len(g.nodes)} nodes · {len(g.edges)} edges"
 
     @chan.build.command(always_observe=True)
     async def tree(group: str = "") -> str:
@@ -424,7 +453,7 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
     async def link(spec: str, group: str = "") -> str:
         """Connect nodes: `a -> b` (detail), `a => b` (depend), `a ~ b` (related).
 
-        :param spec: the edge line, e.g. `存储策略 -> md, 存储策略 => 版本控制`
+        :param spec: the edge line, e.g. `storage -> md, storage => version control`
         :param group: which group
         """
         return await run_cli(["link", spec] + (["--group", group] if group else []))
@@ -476,8 +505,8 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
         Each completed line is applied and published immediately, so an audience watches
         the structure being written rather than the result of writing it.
 
-            {"op": "add", "label": "判据", "parent": "ideas"}
-            {"op": "link", "src": "ideas", "dst": "判据"}
+        {"op": "add", "label": "criteria", "parent": "ideas"}
+        {"op": "link", "src": "ideas", "dst": "criteria"}
         """
         buf = ""
         applied = 0

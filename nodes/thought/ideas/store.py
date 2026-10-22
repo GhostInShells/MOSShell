@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -62,22 +61,23 @@ updated: {updated}
 
 # {name}
 
-一句话说这一组是什么——给下一个打开它的人看。
+One line on what this group is — for whoever opens it next.
 
-- 图在 `{graph}`：节点、边、概念表、rev 都在里面。
-- 读法：`ideas tree --group {name}` 通读；`ideas show <label>` 看一颗。
+- the graph lives in `{graph}`: nodes, edges, the concept scale, rev.
+- how to read it: `ideas tree --group {name}` for the whole thing;
+  `ideas show <label>` for one node.
 
-> 这个文件是**招牌**：只说明这是什么、活的还是死的。**不列节点**——节点在图里，
-> 这里再抄一份，两份就会漂。
+> This file is a **sign**: what this is, and whether it is alive. It **does not list
+> nodes** — they live in the graph, and a second copy would drift.
 """
 
 DEFAULT_CONCEPTS: dict[str, str] = {
-    "misc": "#8aa89a",     # 未归类
-    "core": "#e8f5ea",     # 主干：动机、目的
-    "design": "#58a6ff",   # 架构、数据结构
-    "exec": "#7ee787",     # 执行、实现
-    "sense": "#f0b429",    # 感知、交互
-    "risk": "#d0715c",     # 主要矛盾、风险
+    "misc": "#8aa89a",     # unclassified
+    "core": "#e8f5ea",     # the trunk: motive, purpose
+    "design": "#58a6ff",   # architecture, data structures
+    "exec": "#7ee787",     # execution, implementation
+    "sense": "#f0b429",    # perception, interaction
+    "risk": "#d0715c",     # the main contradiction, risk
 }
 
 
@@ -253,7 +253,7 @@ def shortest_path(group: Group, src: str, dst: str) -> list[str] | None:
 
 
 def spine(group: Group) -> list[str]:
-    """The longest detail chain — "主要矛盾" read as what everything else hangs off.
+    """The longest detail chain — the main contradiction, read as what everything else hangs off.
 
     Ranked by *length of the longest chain*, not by subtree size: a root always owns
     everything, so counting descendants would answer "where am I" and never "what is
@@ -321,8 +321,6 @@ class GraphStore:
     def reload(self) -> None:
         self.groups = {}
         self.broken = []
-        if not self.root.exists():
-            seed_if_missing(self.root)
         if not self.root.exists():
             return
         for child in sorted(self.root.iterdir()):
@@ -413,6 +411,19 @@ class GraphStore:
         for file, _meta, _body in parsed:
             os.replace(file, trash / file.name)
 
+    def create_group(self, name: str) -> Group:
+        """A group is a directory — creating one is this mkdir and nothing else.
+
+        The page's "new group" lands here: the human names it, the directory *is* the
+        group, and the graph appears empty on the next reload.
+        """
+        clean = str(name or "").strip()
+        if not clean or clean.startswith(".") or "/" in clean or "\\" in clean:
+            raise ValueError(f"bad group name {clean!r}")
+        (self.root / clean).mkdir(parents=True, exist_ok=True)
+        self.reload()
+        return self.require_group(clean)
+
     # -- lookup -------------------------------------------------------------
     def group_of(self, name: str = "") -> Group | None:
         """No name = the group this run is *about*: the biggest active one.
@@ -425,11 +436,11 @@ class GraphStore:
         return self.groups.get(name)
 
     def focus_group(self) -> Group | None:
-        if not self.groups:
-            return None
+        """The biggest **active** group — an archived one is never the subject by accident."""
         alive = [g for g in self.groups.values() if g.status == "active"]
-        pool = alive or list(self.groups.values())
-        return max(pool, key=lambda g: len(g.nodes))
+        if not alive:
+            return None
+        return max(alive, key=lambda g: len(g.nodes))
 
     def require_group(self, name: str = "") -> Group:
         group = self.group_of(name)
@@ -626,8 +637,8 @@ class GraphStore:
         so "one implementation" is not a slogan — it is this function. Each op names its
         own group; an op that omits it lands in the first group.
 
-            {"op": "add",  "group": "…", "label": "存储", "parent": "架构方案"}
-            {"op": "set",  "id": "n7", "concept": "design", "flag": true}
+            {"op": "add",  "group": "…", "label": "storage", "parent": "architecture"}
+            {"op": "link", "src": "storage", "dst": "md", "kind": "detail"}
             {"op": "link", "src": "存储策略", "dst": "md", "kind": "detail"}
             {"op": "rm",   "id": "n7"}
         """
@@ -639,7 +650,7 @@ class GraphStore:
             group = self.require_group(str(raw.get("group", "") or ""))
             if name == "add":
                 node = self.add_node(
-                    group, str(raw.get("label", "") or "新的一颗"),
+                    group, str(raw.get("label", "") or "new"),
                     body=str(raw.get("body", "") or ""),
                     concept=str(raw.get("concept", "") or ""),
                     weight=raw.get("weight"),
@@ -697,7 +708,7 @@ class GraphStore:
             walk(nid, "")
         rest = [n.id for n in group._sorted_nodes() if n.id not in seen]
         if rest:
-            lines.append("— 没有上游的孤岛 —")
+            lines.append("— islands with no upstream —")
             for nid in rest:
                 walk(nid, "")
         return lines
@@ -762,11 +773,12 @@ def split_frontmatter(raw: str) -> tuple[dict, str]:
 
 def _ideas_body(name: str) -> str:
     return (
-        f"# {name}\n\n一句话说这一组是什么——给下一个打开它的人看。\n\n"
-        f"- 图在 `{GRAPH}`：节点、边、概念表、rev 都在里面。\n"
-        f"- 读法：`ideas tree --group {name}` 通读；`ideas show <label>` 看一颗。\n\n"
-        "> 这个文件是**招牌**：只说明这是什么、活的还是死的。**不列节点**——节点在图里，\n"
-        "> 这里再抄一份，两份就会漂。\n"
+        f"# {name}\n\nOne line on what this group is — for whoever opens it next.\n\n"
+        f"- the graph lives in `{GRAPH}`: nodes, edges, the concept scale, rev.\n"
+        f"- how to read it: `ideas tree --group {name}` for the whole thing;"
+        f" `ideas show <label>` for one node.\n\n"
+        "> This file is a **sign**: what this is, and whether it is alive. It **does not\n"
+        "> list nodes** — they live in the graph, and a second copy would drift.\n"
     )
 
 
@@ -797,16 +809,3 @@ def resolve_root(raw: str = "", *, node_dir: Path) -> Path:
     if not path.is_absolute():
         path = Path.cwd() / path
     return path.resolve()
-
-
-EXAMPLES_DIR = Path(__file__).resolve().parent / "examples"
-
-
-def seed_if_missing(root: Path) -> bool:
-    if root.exists():
-        return False
-    if not EXAMPLES_DIR.is_dir():
-        root.mkdir(parents=True, exist_ok=True)
-        return False
-    shutil.copytree(EXAMPLES_DIR, root)
-    return True

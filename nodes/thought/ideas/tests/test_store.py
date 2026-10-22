@@ -202,3 +202,59 @@ def test_every_group_carries_a_sign(tmp_path: Path):
     again = GraphStore(tmp_path)
     again.reload()
     assert again.require_group("design").status == "archived"
+
+
+# ------------------------------------------------------------------- discovery rules
+
+
+def test_a_missing_root_starts_empty(tmp_path: Path):
+    """A root that does not exist starts as nothing — not as a box of examples.
+
+    Examples used to be copied in on first run; a booting ghost then read a demo
+    graph as if it were the work, which is worse than reading nothing.
+    """
+    root = tmp_path / "ideas"
+    store = GraphStore(root)
+    store.reload()
+
+    assert store.groups == {}
+    assert store.focus_group() is None
+    assert not root.exists(), "nothing is copied in behind the root's back"
+
+
+def test_archived_is_never_the_focus(tmp_path: Path):
+    """A bigger archived graph must not become the subject, and with nothing alive
+    there is no subject at all — never a fallback into the drawer."""
+    write_legacy(group_dir(tmp_path, "old"), "a", "旧")
+    group_dir(tmp_path, "alive")
+
+    store = GraphStore(tmp_path)
+    store.reload()
+    store.set_status(store.require_group("old"), "archived")
+    store.reload()
+    assert store.focus_group().name == "alive"
+
+    store.set_status(store.require_group("alive"), "archived")
+    store.reload()
+    assert store.focus_group() is None
+
+
+def test_a_group_can_be_made_from_the_page(tmp_path: Path):
+    """Creating a group is a mkdir — the page's button and the shell do exactly this."""
+    root = tmp_path / "ideas"
+    store = GraphStore(root)
+    store.reload()
+    assert store.groups == {}
+
+    group = store.create_group("stage3")
+
+    assert (root / "stage3").is_dir()
+    assert store.require_group("stage3").nodes == {}
+    assert store.focus_group().name == "stage3"
+
+    for bad in ("", ".hidden", "a/b", "  "):
+        try:
+            store.create_group(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad!r} must be refused")
