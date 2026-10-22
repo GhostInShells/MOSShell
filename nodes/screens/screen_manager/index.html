@@ -10,7 +10,12 @@
     --slotbar-h: 26px;
     --gap: 6px;
     --border: #2a3340;
+    /* 一块屏的主色是住户身上那身紫，但紫不该是屏幕上唯一的颜色 —— 全紫会读成
+       "滤了一层颜色"，而不是"这些光本来就是这些颜色"。所以配两个邻居：一段冰蓝
+       （它出声、它活着的时候用）和一点玫红（边缘、远端的暖）。紫仍是主角。 */
     --accent: #9b8cff;
+    --accent-ice: #7ad7ff;
+    --accent-rose: #ff9ad5;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -149,8 +154,10 @@
   /* 心跳点长在 home 上：home 是"回到我们说话的地方"，我在不在就是那里的状态。
      它替掉了原先单独一行 —— 一行只放一颗点，本来就多余。 */
   .rail-home .dot {
-    width: 7px; height: 7px; border-radius: 50%; background: #9b8cff;
-    box-shadow: 0 0 10px rgba(160, 145, 255, .85);
+    /* 这颗点说的是"我在不在"，和"你选了什么"是两件事 —— 所以它不跟着选中的紫走，
+       它是冰蓝的：活着的时候屏幕上唯一一处冷色。 */
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent-ice);
+    box-shadow: 0 0 10px rgba(122, 215, 255, .9);
     display: inline-block; margin-right: 8px; vertical-align: middle;
     animation: beat 2.6s ease-in-out infinite;
   }
@@ -195,7 +202,9 @@
   #rail-dot { display: none; }
   body.rail-collapsed #rail-dot {
     display: block; width: 7px; height: 7px; border-radius: 50%;
-    background: #9b8cff; margin: 8px auto 0; animation: beat 2.6s ease-in-out infinite;
+    background: var(--accent-ice);
+    box-shadow: 0 0 10px rgba(122, 215, 255, .8);
+    margin: 8px auto 0; animation: beat 2.6s ease-in-out infinite;
   }
   #rail-hint { display: none; }
   body.rail-collapsed #rail-hint {
@@ -395,12 +404,12 @@
     /* 双背景：内层是瓷砖本体，外层只画边框（padding-box / border-box 各取一层） */
     background:
       linear-gradient(165deg, #2a2745, #12101e) padding-box,
-      linear-gradient(135deg, rgba(155, 140, 255, .55), rgba(155, 140, 255, .07) 45%, rgba(155, 140, 255, .38)) border-box;
+      linear-gradient(135deg, rgba(155, 140, 255, .55), rgba(122, 215, 255, .18) 45%, rgba(255, 154, 213, .36)) border-box;
     color: #ddd6ff; font-size: 12.5px; letter-spacing: .02em;
     pointer-events: auto; cursor: pointer; transform-origin: 50% 50%;
     box-shadow: 0 14px 36px rgba(0, 0, 0, .55),
                 0 0 26px rgba(139, 134, 255, .16),
-                0 0 72px rgba(139, 134, 255, .09),
+                0 0 72px rgba(122, 215, 255, .07),
                 inset 0 1px 0 rgba(190, 175, 255, .09);
   }
   /* 光圈：瓷砖在黑底上要自己发一点光才站得住。近处那圈晕由 box-shadow 给，
@@ -453,7 +462,7 @@
   /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
   #moss span {
     font-weight: 900; letter-spacing: .02em;
-    background: linear-gradient(90deg, #3f3680, #9b8cff, #3f3680);
+    background: linear-gradient(90deg, #322a63, #8b7fe0, #3f6f8f);
     -webkit-background-clip: text; background-clip: text;
     color: transparent; background-size: 200% 100%;
     transition: opacity .4s;
@@ -506,7 +515,7 @@
     opacity: 1;
     animation: flow 2.8s linear infinite;
     /* 亮，但还是它身上那套蓝紫 —— 白成一片就不是同一个人了。 */
-    background-image: linear-gradient(90deg, #8b86ff, #c3bfff, #eae8ff, #c3bfff, #8b86ff);
+    background-image: linear-gradient(90deg, #8b86ff, #b6aaff, #e9e6ff, #9fd8ff, #8b86ff);
     filter: drop-shadow(0 0 26px rgba(180, 160, 255, .85))
             drop-shadow(0 0 8px rgba(255, 255, 255, .42));
     transform: translate(var(--moss-dx, 0px), var(--moss-dy, 0px));
@@ -745,7 +754,7 @@ function reportViewport() {
 // 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
 // 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
 let debugTimer = null;
-const PAGE_REV = '2026-10-22-violet-5';
+const PAGE_REV = '2026-10-22-violet-7';
 function debugPayload() {
   const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
     ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
@@ -2584,6 +2593,9 @@ function route(f) {
       break;
     }
     case 'current': setMasked(false, ''); break;
+    // 服务端盯着 index.html：它一变就让我重载。页面自己那份轮询是上一版的做法，
+    // 实测会静默失效（人以为没生效，其实只是旧代码还在跑）。
+    case 'reload': location.reload(); break;
     case 'mask': setMasked(true, f.reason); break;
     case 'snapshot': {
       // 全量帧：reconcile（缺建、多删）。f.items 是所有 item 的详情（含桌面），

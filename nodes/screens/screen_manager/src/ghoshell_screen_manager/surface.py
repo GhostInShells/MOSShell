@@ -465,10 +465,32 @@ class ScreenSurface:
         if sockets:
             self.port = sockets[0].getsockname()[1]
         self._audio_task = asyncio.create_task(self._audio_loop())
+        self._rev_task = asyncio.create_task(self._watch_rev())
+
+    async def _watch_rev(self) -> None:
+        """Tell the open window to reload when this file changes on disk.
+
+        The page used to ask for its own fingerprint every few seconds; in practice
+        that poll went quiet and a window kept running yesterday's code while every
+        edit looked "not applied" from the outside. The server already knows the
+        file — watching it here costs one hash per tick and needs nothing from the
+        page but a handler."""
+        seen = self._page_ver()
+        while True:
+            await asyncio.sleep(1.5)
+            try:
+                ver = self._page_ver()
+            except Exception:                      # noqa: BLE001 — never die on a read
+                continue
+            if ver and ver != seen:
+                seen = ver
+                await self.broadcast({"type": "reload"})
 
     async def stop(self) -> None:
         if self._audio_task is not None:
             self._audio_task.cancel()
+        if getattr(self, "_rev_task", None) is not None:
+            self._rev_task.cancel()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
