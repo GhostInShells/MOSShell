@@ -665,10 +665,12 @@ def build_screen_channel(
         text = str(getattr(event, "content", "") or "").strip()
         if not text:
             return
+        # 颜色分工：我说的话是紫的，我做的事是冰蓝的 —— 一行字是"说"还是"做"，
+        # 一眼该分得出来。原来这条写死成绿色，是这块屏还没有配色的年代留下的。
         bullet = asyncio.create_task(_send_danmaku(
             f"▸ {text}", duration=8.0, motion="rtl",
             size=stage_flags["size"] * _TOOL_LINE_RATIO, overlap=True,
-            color="#8fe3a1",
+            color="#7ad7ff",
         ))
         _live_bullets.add(bullet)
         bullet.add_done_callback(_live_bullets.discard)
