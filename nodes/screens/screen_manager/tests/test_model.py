@@ -394,3 +394,11 @@ def test_pip_rejects_wrong_count_and_dir():
         compute_layout(3, "pip", "br")
     with pytest.raises(ValueError):
         compute_layout(2, "pip", "lr")
+
+
+def test_pip_rail_keeps_the_stage_whole():
+    layout = compute_layout(2, "pip", "rail")
+    master = layout.cells[0]
+    assert (master.r, master.c, master.rs, master.cs) == (1, 1, layout.rows, layout.cols)
+    # 栏里的那块不占舞台的格子 —— 位置由页面 fixed 摆，格子只是占位
+    assert layout.cells[1].rs < layout.rows and layout.cells[1].cs < layout.cols

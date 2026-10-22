@@ -286,7 +286,9 @@ def build_screen_channel(
         (equal split), stack (one master + a strip) or pip (one item on the whole
         stage, a second floating over a corner — the shape to reach for when
         something should *stay* on screen without taking space from what is being
-        shown). ``dir`` is lr / tb for grid and stack, br / bl / tr / tl for pip.
+        shown). ``dir`` is lr / tb for grid and stack; for pip it is br / bl / tr /
+        tl (a corner of the stage) or rail (the bottom of the left sidebar — it
+        takes nothing from the stage, and it comes and goes with the sidebar).
         The shape is derived from the count — you never give sizes.
         """
         try:

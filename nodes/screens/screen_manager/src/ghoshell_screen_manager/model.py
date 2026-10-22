@@ -43,8 +43,9 @@ __all__ = [
 
 FAMILIES = ("grid", "stack", "pip")
 DIRS = ("lr", "tb")
-PIP_CORNERS = ("br", "bl", "tr", "tl")
-"""pip 的 dir 说的是"小窗贴哪个角"，不是轴方向。"""
+PIP_CORNERS = ("br", "bl", "tr", "tl", "rail")
+"""pip 的 dir 说的是"小窗待在哪"，不是轴方向: 四个角，或 ``rail`` ——
+左侧栏的底部。``rail`` 不占舞台的格子: 它落在栏里, 所以不挡正在被展示的东西。"""
 
 DEFAULT_LAYOUT = ("grid", "lr")
 """A group that was never arranged: equal split, left-to-right."""
@@ -131,6 +132,9 @@ def compute_layout(n: int, family: str, dir: str) -> Layout:
         if n != 2:
             raise LayoutError("pip takes exactly 2 items (one stage + one corner card)")
         # 20×20 的粗网格：主人占满整块，角落卡约 20% 宽、35% 高，贴在指定角。
+        # rail 的格子只是个占位（页面用 fixed 把它摆进侧栏），主人照样占满舞台。
+        if dir == "rail":
+            return Layout("pip", dir, 20, 20, [Cell(1, 1, 20, 20), Cell(1, 1, 7, 4)])
         span_r, span_c = 7, 4
         rs = 1 if dir.startswith("t") else 20 - span_r + 1
         cs = 1 if dir.endswith("l") else 20 - span_c + 1

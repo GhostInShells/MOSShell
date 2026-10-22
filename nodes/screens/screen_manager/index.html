@@ -306,6 +306,13 @@
   }
   .slot.pip .slot-bar { display: none; }
   .slot.pip iframe { background: transparent; }
+  /* rail：待左侧栏的底部，不进舞台 —— 展示区一点都不让出去。
+     栏收起时它跟着收，位置永远可预测: 栏在哪，"我"就在那底下。 */
+  .slot.pip-rail {
+    position: fixed; left: 0; bottom: 0;
+    width: var(--rail-w); height: var(--rail-w);
+    grid-row: auto; grid-column: auto;
+  }
   .slot.focused { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; border: 0; }
   #scrim-exit {
     background: #222; color: #ddd; border: 1px solid #555;
@@ -760,7 +767,9 @@ function renderStage(ids, layout) {
     // pip：格子是重叠的，主人铺满，角落卡浮在上面。层高靠 DOM 顺序不可靠，
     // 所以这里显式给一层 —— 也让角落卡能有自己的投影，读成"一张小卡片"。
     const pip = layout.family === 'pip';
+    const rail = pip && layout.dir === 'rail' && k > 0;
     it.slot.classList.toggle('pip', pip && k > 0);
+    it.slot.classList.toggle('pip-rail', rail);
     it.slot.style.zIndex = pip ? (k > 0 ? '6' : '1') : '';
   });
 }
