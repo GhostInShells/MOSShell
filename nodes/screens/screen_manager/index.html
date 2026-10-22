@@ -416,6 +416,56 @@
   }
   #moss span.alive { opacity: calc(1 * var(--moss-dim, 1)); animation: flow 1.6s linear infinite; }
   @keyframes flow { to { background-position: 200% 0; } }
+
+  /* ===== presence：住在这块屏上的那一个 =====
+     不是 item，也不是窗口：没有把手、不入组、任何 arrange 都动不到它。它和
+     MOSS 四个字同属"桌面本身"，所以第一帧里它就已经在了 —— 屏打开时有人站着，
+     而不是一块空场等人发命令。z 2 = 在 MOSS 文字（1）之上、舞台（4）之下：
+     推内容时它退到窗口后面，home 露出来时又看得见。 */
+  /* z 3 = 在 pool 的瓷砖之上、舞台（4）之下：home 上没人能挡住它，铺了内容它就让到侧栏。 */
+  #presence { position: fixed; inset: 0; z-index: 3; pointer-events: none; display: none; }
+  #presence.on { display: block; }
+  /* 缩进侧栏那一档必须抬到栏的上面：栏是 z 9、底色 92% 不透明，压在 3 上就等于
+     给我蒙了一层灰——"比较暗"不是配色问题，是被盖住了。它是 pointer-events:none，
+     踩着栏也不会挡栏里的点击。 */
+  body.compact #presence { z-index: 10; }
+  #presence iframe {
+    width: 100%; height: 100%; border: 0; display: block;
+    background: transparent;            /* 透明底才读成"站在那儿"，不是"又一扇窗" */
+    pointer-events: none;               /* 它是存在，不是控件：不吃鼠标 */
+    /* 人 + 字这一对居中时，人要挪多少由页面算（它知道字有多宽），页面只负责站好。 */
+    transform: translateX(var(--presence-shift, 0px));
+  }
+
+  /* 有人站在桌面上时，四个字让到右边、变亮、变斜体 —— 它从"招牌"变成"这个人的招牌"。
+     色取住户身上那套紫（体表 #9f93e0→#33315f、边缘 #8f7cf0），但比人亮一档：
+     字是背景，暗下去就成了污渍，亮起来才是招牌。粗体和字号一概不动。
+     位移两个分量都由 layoutPresence 算：x 让开人，y 把字底对齐到人的地线。 */
+  /* 有人的桌面上，名字不该按"空屏心跳"那样呼吸 —— 那套是 30%~54% 的不透明度，
+     原本表达的是"空着的时候我在不在"。既然有人站在这儿，字就是他一直挂着的名字：
+     满亮，加一道缓慢的流光；断线时仍然交给 body.link-down 去灰掉。 */
+  /* 舞台上有内容时，住户缩进左侧栏底部（"它知道该缩到哪里"），名字收起来：
+     这时候屏幕是给内容用的，名字只是留在桌面上的东西，不该压在画面上。 */
+  body.compact #moss span { opacity: 0 !important; animation: none !important; }
+  body.presence-on #moss span { transition: opacity .35s ease; }
+
+  body.presence-on:not(.link-down) #moss span {
+    font-style: italic;
+    /* 斜体的字身会向右溢出元素盒，而填充是靠 background-clip:text —— 背景只画在
+       盒子里，溢出去的那一截就没有漆，读起来就是"S 被截了一半"。给它一点右侧内边距
+       当余量，再用负外边距把这截宽度还回去，位置一点不动。 */
+    padding-right: .18em;
+    margin-right: -.18em;
+    padding-left: .06em;
+    margin-left: -.06em;
+    opacity: 1;
+    animation: flow 2.8s linear infinite;
+    /* 亮，但还是它身上那套蓝紫 —— 白成一片就不是同一个人了。 */
+    background-image: linear-gradient(90deg, #8b86ff, #c3bfff, #eae8ff, #c3bfff, #8b86ff);
+    filter: drop-shadow(0 0 26px rgba(180, 160, 255, .85))
+            drop-shadow(0 0 8px rgba(255, 255, 255, .42));
+    transform: translate(var(--moss-dx, 0px), var(--moss-dy, 0px));
+  }
 </style>
 </head>
 <body>
@@ -423,6 +473,7 @@
 <canvas id="bg"></canvas>
 <div id="think"></div>
 <div id="moss"><span>MOSS</span></div>
+<div id="presence"></div>
 <canvas id="desktop"></canvas>
 <div id="pool"></div>
 <div id="stage"></div>
@@ -551,6 +602,7 @@ function syncViewport() {
   viewW = v.w; viewH = v.h;
   sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
   fitMossText(); initRainCols(); layoutDesktop();
+  layoutPresence();          // 字宽刚量出来，人的位置才能定
   reportViewport();
 }
 addEventListener('resize', syncViewport);
@@ -670,6 +722,29 @@ function debugPayload() {
     poolRot: Math.round(poolRot * 1000) / 1000,
     poolSpin: Math.round(poolSpin * 1000) / 1000,
     poolTiles: tiles.size,
+    // 桌面上有没有住户、它的 iframe 到底加载出来没有 —— 这两件事决定"我站在屏上"
+    // 是不是真的；从模型这边看，屏幕是一个我没有窗口的进程。fact，不是画法。
+    // 桌面这一对的几何：我看不到自己的屏，只能让它把量到的数报回来。
+    mossX: (() => {
+      const m = mossEl.getBoundingClientRect();
+      return [Math.round(m.left), Math.round(m.top), Math.round(m.width), Math.round(m.height)];
+    })(),
+    personX: (() => {
+      const f = document.querySelector('#presence iframe');
+      if (!f) return null;
+      const r = f.getBoundingClientRect();
+      return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+    })(),
+    // 想没在想、小人有没有开始挠头 —— 一条链上的两个事实，分开报，
+    // 坏在哪一段一眼就看出来（没帧 / 帧到了但没递过去 / 递过去了没生效）。
+    think: ghostBeatAt > 0 && performance.now() - ghostBeatAt < GHOST_KEEP_MS,
+    scratch: !!(document.querySelector('#presence iframe')?.contentDocument
+                ?.getElementById('art')?.classList.contains('scratch')),
+    presence: presenceUrl ? 1 : 0,
+    presenceReady: (() => {
+      const f = document.querySelector('#presence iframe');
+      return f ? (f.contentDocument ? 1 : 2) : 0;  // 0 无, 1 跨源已挂, 2 同源可读
+    })(),
   };
 }
 // 版本指纹：开发期页面一直在改，而开着的旧窗口会在"旧世界"里继续跑（我们为此白查过一轮
@@ -772,8 +847,31 @@ function renderStage(ids, layout) {
   // 整屏是"呈现"，与"它属于哪个组"无关（旧的 per-group fullscreen 把两者绑死了）。
   items.forEach((it) => {
     const focused = !!focusId && it.id === focusId;
-    const stood = !!overlayId && it.id === overlayId;
+    const stood = overlayId !== null && String(it.id) === String(overlayId);
     it.slot.classList.toggle('overlay', stood);
+    // 站着的那一件：位置直接写在行内。类名容易被别的规则盖住，试过一次它就缩在左上角；
+    // 行内样式没有这个悬念。离开站立时把这些键全部还回去。
+    if (stood) {
+      // 站在**旋心**上，不是站在屏幕正中 —— 池子的洞就是给自己挖的 (cx=0.46, cy=0.60)，
+      // 这样砖不会被人挡住，人也不会压在砖上。
+      Object.assign(it.slot.style, {
+        position: 'fixed',
+        left: 'calc(var(--rail-w) + (100vw - var(--rail-w)) * 0.46)',
+        top: 'calc(100vh * 0.60)',
+        width: 'min(72vh, 72vw)', height: 'min(72vh, 72vw)',
+        transform: 'translate(-50%, -50%)',
+        right: '', bottom: '',
+        zIndex: '6', background: 'transparent', border: '0', boxShadow: 'none',
+        pointerEvents: 'none', overflow: 'visible',
+        gridRow: '', gridColumn: '',
+      });
+    } else if (it.slot.style.position === 'fixed') {
+      Object.assign(it.slot.style, {
+        position: '', left: '', right: '', top: '', bottom: '', zIndex: '',
+        width: '', height: '', transform: '',
+        background: '', border: '', pointerEvents: '',
+      });
+    }
     // 正亮着活页的那块不走这条：它此刻摆在砖的位置上，不是"没上舞台所以要藏"。
     const awaking = awakeIds.includes(it.id);
     it.slot.classList.toggle('hidden', !awaking && !stood && !ids.includes(it.id) && !focused);
@@ -813,6 +911,95 @@ function renderStage(ids, layout) {
 function syncScrim() { $('#scrim').style.display = focusId ? 'block' : 'none'; }
 
 let overlayId = null;
+/** 桌面的住户：不是 item，没有把手 —— 只换 src，不参与 pool / group 的任何逻辑。
+ *  同一个 url 不重建 iframe（重建就会重载页面，小人的呼吸会被打断一次）。 */
+let presenceUrl = '';
+
+/** 递一条事实给桌面上的住户（它自己的页面）。
+ *  现在是"我说话时的音量"：屏只有频谱，开口度得由真实幅度决定，正弦是猜的。 */
+function presencePost(msg) {
+  const frame = document.querySelector('#presence iframe');
+  if (!frame || !frame.contentWindow) return;
+  try { frame.contentWindow.postMessage(msg, '*'); } catch (e) { /* 跨源就静默 */ }
+}
+
+function syncPresence(url) {
+  url = url || '';
+  if (url === presenceUrl) return;
+  const had = presenceUrl;
+  presenceUrl = url;
+  const box = document.getElementById('presence');
+  if (!box) return;
+  box.replaceChildren();
+  box.classList.toggle('on', !!url);
+  layoutPresence();
+  if (!url) return;
+  const frame = document.createElement('iframe');
+  frame.setAttribute('title', 'presence');
+  frame.setAttribute('scrolling', 'no');
+  frame.setAttribute('allowtransparency', 'true');
+  frame.src = url;
+  box.appendChild(frame);
+  // 住户真的加载出来时，报一次事实（不是 debug 模式的周期上报）：
+  // "桌面上有人"这件事，模型这边没有窗口可看，只能由页面说。
+  frame.addEventListener('load', () => {
+    send({ type: 'debug', payload: debugPayload() });
+  });
+  // 第一帧就带着 url 来的（--presence 起屏）：这时不要 log，屏刚起来，没有"变了"。
+  if (had) console.log('[presence] -> ' + url);
+}
+
+/** 人 + 字是一对：人站在左，字让到右边，中间的空当是留白给的。
+ *
+ *  两边的几何必须同源：人的方块由 presence 页的 `height:53%` 决定，字的位置从这里
+ *  反推 —— 各写一套百分比，窗口一变比例就散架。字宽只有量了才知道（字号是 JS 反解
+ *  出来的），所以这一条在 fitMossText 之后跑。
+ */
+function layoutPresence() {
+  const on = typeof presenceUrl === 'string' && !!presenceUrl;
+  // 舞台上有内容（或有人在看某一件）时，住户缩进侧栏底部 —— 它自己知道该让开。
+  const compact = on && !!arena;
+  document.body.classList.toggle('presence-on', on);
+  document.body.classList.toggle('compact', compact);
+  const frame = document.querySelector('#presence iframe');
+  if (!on) {
+    mossEl.style.removeProperty('--moss-dx');
+    mossEl.style.removeProperty('--moss-dy');
+    if (frame) frame.style.removeProperty('transform');
+    return;
+  }
+  const side = viewH * 0.477;                 // = presence 页 svg 的 height
+  const top = (viewH - side) / 2;             // = 它的 top
+  if (compact) {
+    // 侧栏档：整块 iframe 缩小平移过去（人形页面本身不动，位置只在这一处算）。
+    const railW = railWidth();
+    const target = Math.round(Math.min(150, railW * 0.82));
+    const s = target / side;
+    const dx = (railW - target) / 2 - s * viewW * 0.22;
+    const dy = viewH - 26 - target - s * viewH * 0.2615;
+    if (frame) {
+      frame.style.transformOrigin = '0 0';
+      frame.style.transform = `translate(${Math.round(dx)}px, ${Math.round(dy)}px) scale(${s.toFixed(4)})`;
+    }
+    mossEl.style.setProperty('--moss-dx', '0px');
+    mossEl.style.setProperty('--moss-dy', '0px');
+    return;
+  }
+  // 桌面档：人站屏心，名字挂在它右边、底对齐脚下。
+  const gap = Math.max(8, viewW * 0.008);
+  const lw = mossEl.offsetWidth || 0;
+  const lh = mossEl.offsetHeight || 0;
+  const personLeft = (viewW - side) / 2;
+  if (frame) {
+    frame.style.transformOrigin = '0 0';
+    frame.style.transform = `translateX(${Math.round(personLeft - viewW * 0.22)}px)`;
+  }
+  mossEl.style.setProperty(
+    '--moss-dx', Math.round(personLeft + side + gap + lw / 2 - viewW / 2) + 'px');
+  const groundY = top + side * 0.765;         // 脚下那条线，不是更下面的影子
+  mossEl.style.setProperty(
+    '--moss-dy', Math.round(groundY - (viewH / 2 + lh / 2)) + 'px');
+}
 let railBeforeFocus = false;   // 进焦点前的栏状态，离开时原样还回去
 
 function setFocus(id) {
@@ -1882,6 +2069,13 @@ let hoverTravel = 0;        // 从那个起点起累计走过的距离
 let ptrX = -1, ptrY = -1;
 
 const POOL_HOLE = 0.46;   // 旋心留空的半径占比：小人在那儿站着
+// 台上真站了人的时候，这个洞要跟着人一起变大 —— 瓷砖绕开他，不是从他身上碾过去。
+// 洞是"家的位置"，人的大小是它唯一该听的量。
+function poolHole() {
+  const standing = document.body.classList.contains('presence-on')
+    && !document.body.classList.contains('compact');
+  return standing ? 0.64 : POOL_HOLE;
+}
 const POOL_MAX = 14;         // 再老的不画 —— 不活跃的东西不该占视野
 const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向日葵螺旋的种子序
 const POOL_EASE = 6;         // 槽位缓动速率（1/s）：排序一变，卡片是滑过去的，不是瞬移
@@ -2057,23 +2251,36 @@ function layoutPool(dt = 0.016) {
     // 黄金回旋：半径 ∝ √序号，角度 ∝ 序号 —— 不重叠、有机、增删不必重排全场。
     // 旋心**留空**：那里站着"我"（overlay 的小人）。第一块砖不再压在正中，
     // 所有砖都从内圈往外排 —— 家在中间，东西围着它。只有一件时也落在内圈上。
-    const u = Math.max(
-      POOL_HOLE,
-      n === 1 ? 1 : Math.sqrt((k + 0.6) / (n + 0.6)),   // 内圈 → 边缘/最老
-    );
-    const rad = rmax * u, ang = k * GOLDEN + poolRot;
+    // 台上真站着人的时候，回旋让位给"泊位"：瓷砖沿底边排成一条，中间的画布
+    // 整个留给那个人和他的名字。围着他转好看，但两张砖就能把他糊住 ——
+    // 所以有人在场时，规则从"围着家"改成"排在家的下面"，两条都要能读。
+    const standing = document.body.classList.contains('presence-on')
+      && !document.body.classList.contains('compact');
+    let u, bxT, byT;
+    if (standing) {
+      u = 0.55;
+      const step = Math.min(w * 0.15, 200);
+      bxT = cx + (k - (n - 1) / 2) * step;
+      byT = viewH - 150;
+    } else {
+      u = Math.max(
+        poolHole(),
+        n === 1 ? 1 : Math.sqrt((k + 0.6) / (n + 0.6)),   // 内圈 → 边缘/最老
+      );
+      const rad = rmax * u, ang = k * GOLDEN + poolRot;
+      bxT = cx + rad * Math.cos(ang);
+      byT = cy + rad * Math.sin(ang) * RY - u * 46;
+    }
     // 槽位（目标）与**显示位置**分开：池序一变，k 就变，槽位是瞬移的；
     // 让显示位置追着槽位走，卡片才是"滑"过去的，而不是跳过去。
     // 缓动的只有槽位 —— 呼吸（drift）照旧即时叠加，它是活着的证据，不该被平滑掉。
-    const bxT = cx + rad * Math.cos(ang);
-    const byT = cy + rad * Math.sin(ang) * RY - u * 46;
     if (t.bx === null) { t.bx = bxT; t.by = byT; t.bu = u; }   // 新砖不飞入：直接站在槽上
     const e = Math.min(1, dt * POOL_EASE);
     t.bx += (bxT - t.bx) * e;
     t.by += (byT - t.by) * e;
     t.bu += (u - t.bu) * e;
     // 远近由半径算出：越靠边越小、越糊、越淡、越往上抬（灭点在三分线上）
-    const sc = 1.06 - t.bu * 0.44;
+    const sc = (1.06 - t.bu * 0.44) * (standing ? 0.74 : 1);
     // 双八度漂移：低频大摆 + 高频小抖；近的动得多，远的几乎不动（视差）。
     //
     // 幅度按**视口**算，不按固定像素：13px 在 1280 宽的屏上是呼吸，在 2560 宽上
@@ -2113,11 +2320,13 @@ function layoutPool(dt = 0.016) {
 function syncPool() {
   const keep = new Set(poolOrder().slice(0, POOL_MAX));
   [...tiles.keys()].forEach((id) => { if (!keep.has(id)) { retreatSlot(id); dropTile(id); } });
-  keep.forEach((id) => { if (!tiles.has(id) && items.has(id)) makeTile(items.get(id)); });
-  // 站着的那一件不画砖，但**留着它的 slot** —— 砖和 slot 是同一个元素，
-  // 把它从池子里摘掉会连人一起摘掉（试过，小人就没了）。
-  [...tiles.entries()].forEach(([id, t]) => {
-    if (t && t.el) t.el.style.display = (id === overlayId) ? 'none' : '';
+  keep.forEach((id) => {
+    // 站着的那一件不画砖 —— 它不是桌上的一件东西。只丢掉砖，不碰它的 slot。
+    if (overlayId !== null && String(id) === String(overlayId)) {
+      if (tiles.has(id)) dropTile(id);
+      return;
+    }
+    if (!tiles.has(id) && items.has(id)) makeTile(items.get(id));
   });
   const on = poolOn();
   if (!on) hideAwake();         // 池子不在场（切组 / 进焦点）时，活页必须收回
@@ -2165,8 +2374,10 @@ function applyState(f) {
   desktopIds = f.desktop || [];
   focusId = f.focus || null;
   overlayId = f.overlay || null;
+  if ('presence' in f) syncPresence(f.presence);
   renderStage(ids, f.layout);
   renderRail();
+  layoutPresence();          // 有没有内容上场，决定住户站在桌面还是缩进侧栏
   syncDiscs();
   syncPool();
 }
@@ -2241,6 +2452,9 @@ function route(f) {
       if ('thinking' in f) {
         if (f.thinking) ghostBeat();
         else ghostBeatAt = 0;          // an explicit idle: off now, not in K seconds
+        // 屏幕顶上那条灯是给人的第一眼；站在桌面上的那一个也要有这个状态：
+        // 想事情的时候挠挠头、冒个问号。同一份事实，两处表达。
+        presencePost({ type: 'moss:think', on: !!f.thinking });
       }
       if ('layout' in f || 'arena' in f) applyState(f);
       break;
@@ -2257,6 +2471,14 @@ function route(f) {
             { type: 'moss:mouth', chars: f.chars || 0, role: f.role || 'ghost' }, '*');
         } catch (e) { /* 跨源就静默: 那不是我们的人形 */ }
       });
+      // 桌面上的住户也是"人形": 说话时它同样要开口 —— 它不在 pool 里, 所以要单独递.
+      const pf = document.querySelector('#presence iframe');
+      if (pf && pf.contentWindow) {
+        try {
+          pf.contentWindow.postMessage(
+            { type: 'moss:mouth', chars: f.chars || 0, role: f.role || 'ghost' }, '*');
+        } catch (e) { /* 同上 */ }
+      }
       break;
     }
     case 'talk': {
@@ -2367,6 +2589,13 @@ function route(f) {
         ghostAt = feedAt;                  // 断线判定要按角色：见 ghostAt 的注释
         feed = f.sample;
         mossEl.classList.toggle('alive', feed.rms_db > GATE);
+        // 我说的话，开口度按真实幅度走：-45dB 起，-15dB 张满。5Hz 的帧，
+        // 页面自己补间；这里只报一个 0~1 的数，不替它决定怎么动。
+        presencePost({
+          type: 'moss:mouth',
+          role: 'ghost',
+          level: Math.max(0, Math.min(1, (feed.rms_db + 45) / 30)),
+        });
       }
       st.textContent = `#${arena || 'desktop'} · ${f.sample.role} ${f.sample.rms_db.toFixed(0)}dB`;
       break;

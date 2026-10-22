@@ -354,6 +354,44 @@ def build_screen_channel(
         await _emit(P.state_frame(model))
         return f"[screen] overlay {'#' + id if id else 'clear'}"
 
+    @chan.build.command(name="presence")
+    async def presence(path: str = "") -> str:
+        """Put a page on the desk as whoever *lives* here — the ghost itself.
+
+        Not a window and not an overlay: a presence has no handle, belongs to no
+        group and survives every rearrange, because it is furniture of the desk the
+        way the MOSS lettering is. So it can be there in the first frame — start the
+        node with ``--presence PATH`` and the screen opens with someone standing on
+        it, no command needed, nothing to wait for.
+
+        ``overlay`` is the other tool: an overlay is a window that dropped its
+        chrome, so it must be opened first. Reach for ``overlay`` for *content* that
+        should stand (a poster, a page), and ``presence`` for *who the screen
+        belongs to* — one of it, set once, never arranged.
+
+        ``path``: a workspace-relative or absolute ``.html`` (served from this
+        screen's own origin, same rule as ``open_file``; a transparent background
+        makes it read as standing on the desk). Empty clears it.
+        """
+        if not path:
+            model.set_presence(None)
+            await _emit(P.state_frame(model))
+            return "[screen] presence clear"
+        add = getattr(surface, "add_local", None)
+        if add is None:
+            CommandUtil.raise_observe("this surface cannot serve local files")
+            return ""
+        from pathlib import Path as _Path
+
+        try:
+            url = add(_Path(path))
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+            return ""
+        model.set_presence(url)
+        await _emit(P.state_frame(model))
+        return f"[screen] presence {url}"
+
     @chan.build.command(name="focus")
     async def focus(id: str = "") -> str:
         """Show one item alone, full stage; ``id`` empty leaves the focus.
@@ -620,6 +658,10 @@ def build_screen_channel(
         # are mine to show — they are what I am doing on the stage's behalf.
         if kind != "dsh/tool/call":
             return
+        # 这条链上"我在思考"没有独立的事件：ghost/lifecycle/thinking 是旧脑那一路发的，
+        # DSH 的大脑只在收尾时发 idle。所以一次工具调用就是"我正在做事"的心跳 ——
+        # 灯和桌面上的那个人都靠它亮起来；它们各自带 keep 窗口，没人续就自己灭。
+        await _emit({"type": "state", "thinking": True})
         text = str(getattr(event, "content", "") or "").strip()
         if not text:
             return

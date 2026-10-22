@@ -203,6 +203,18 @@ class ScreenModel:
         cannot be dropped.
         """
         self._focus: str | None = None
+        self._presence: str = ""
+        """The page that *inhabits* the desk — the ghost itself, standing on home.
+
+        Not an item: no handle, no group, no window. It is part of the desk the way
+        the MOSS lettering is, which is the whole difference from ``overlay``: an
+        overlay item is a pooled window that lost its chrome, so it has to be opened
+        and therefore cannot be there at startup. A presence is set (or given to the
+        node before it serves its first frame), so the screen *opens with someone on
+        it* instead of showing an empty stage and waiting for a command.
+
+        Empty = an unoccupied desk.
+        """
         self._overlay: str = ""
         """The item the human looks at *alone* — a view, not a layout.
 
@@ -273,6 +285,19 @@ class ScreenModel:
     def overlay(self) -> str:
         """The item standing over the screen with no window chrome, or ``""``."""
         return self._overlay
+
+    def presence(self) -> str:
+        """The page inhabiting the desk — the ghost standing on home, or ``""``."""
+        return self._presence
+
+    def set_presence(self, url: str | None) -> None:
+        """Put a page on the desk as its inhabitant (``None``/``""`` empties it).
+
+        Separate from ``set_overlay`` on purpose: an occupant has no handle to
+        reference, survives every rearrange (it is furniture, not a window), and is
+        what the human sees before the model has said anything at all.
+        """
+        self._presence = url or ""
 
     def set_overlay(self, item_id: str | None, *, by: str = "model") -> None:
         """Let one item stand *on* the screen instead of being shown by it.

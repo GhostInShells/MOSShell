@@ -24,7 +24,7 @@ async def test_channel_exposes_the_command_set():
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
             "focus", "float", "raise", "pool", "mark", "box", "circle", "arrow",
-            "danmaku", "paint", "veil", "clear_veil",
+            "danmaku", "paint", "veil", "clear_veil", "overlay", "presence",
             "mock_scene", "mock_audio",
         ):
             assert runtime.get_command(name) is not None, name
@@ -605,3 +605,60 @@ async def test_stage_size_is_one_knob_for_both_voices():
 
     bullets = [f for f in rec.of("veil") if f.get("gesture") == "danmaku"]
     assert bullets and bullets[-1]["size"] == 40.0
+
+
+@pytest.mark.asyncio
+async def test_presence_clear_emits_state_carrying_an_empty_presence():
+    """presence 随每一帧 state 走：页面据它决定桌面上有没有人站着。"""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("presence", args=("",))
+        state = rec.of("state")[-1]
+        assert state["presence"] == ""
+        assert state["items"] if "items" in state else True
+
+
+@pytest.mark.asyncio
+async def test_presence_needs_a_surface_that_serves_local_pages():
+    """没有 add_local 的面（headless / 测试用的 recorder）要明说，而不是静默成功。"""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        with pytest.raises(Exception):
+            await runtime.execute_command("presence", args=("works/x.html",))
+    assert model.presence() == ""
+
+
+class _Feed:
+    """一条假的 event feed：只做一件事 —— 把回调留给我，让我手动投递事件。"""
+
+    def __init__(self):
+        self.running = False
+        self.cb = None
+
+    async def start(self, on_event):
+        self.running = True
+        self.cb = on_event
+
+    async def stop(self):
+        self.running = False
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_is_the_heartbeat_of_a_turn_under_dsh():
+    """DSH 的大脑不发 ghost/lifecycle/thinking，只有收尾的 idle；所以在屏上，
+    一次工具调用就是"我正在做事"的证据 —— 顶灯和桌面上的那个人都靠它亮。"""
+    from types import SimpleNamespace
+
+    model = ScreenModel()
+    rec = Recorder()
+    feed = _Feed()
+    chan = build_screen_channel(
+        model, surface=rec, audio=MockAudioSource(), clauses=_Feed(), events=feed,
+    )
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("stage", args=("both",))
+        await feed.cb(SimpleNamespace(event="dsh/tool/call", content="bash: ls"))
+        states = [f for f in rec.of("state") if "thinking" in f]
+        assert states and states[-1]["thinking"] is True

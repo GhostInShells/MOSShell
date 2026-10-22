@@ -81,6 +81,7 @@ def _state(model: ScreenModel) -> dict:
         "layout": _layout_view(model),
         "focus": model.focus(),
         "overlay": model.overlay(),
+        "presence": model.presence(),
         "view_by": model.view_by(),
         "desktop": model.desktop_items(),
         "groups": model.groups(),

@@ -426,3 +426,45 @@ def test_overlay_clears_without_touching_focus():
     m.set_overlay(None)
     assert m.overlay() == ""
     assert m.focus() == a.id
+
+
+# ---- presence：桌面的住户，不是 pool 里的一件 -------------------------------
+
+def test_presence_is_empty_until_someone_lives_here():
+    m = ScreenModel()
+    assert m.presence() == ""
+
+
+def test_presence_is_set_and_cleared_by_url():
+    m = ScreenModel()
+    m.set_presence("http://127.0.0.1:20381/local/abc")
+    assert m.presence() == "http://127.0.0.1:20381/local/abc"
+    m.set_presence("")
+    assert m.presence() == ""
+    m.set_presence("http://x")
+    m.set_presence(None)
+    assert m.presence() == ""
+
+
+def test_presence_is_furniture_not_a_window():
+    """arrange / dismiss / activate 动不到它 —— 它是桌面，不是桌面上的一件。"""
+    m = ScreenModel()
+    a = m.open("http://a")
+    m.set_presence("http://ghost")
+    m.arrange("g", [a.id], family="grid", dir="lr")
+    m.dismiss(a.id)
+    m.activate("")
+    assert m.presence() == "http://ghost"
+    # 它也没有 id —— 不在 pool 里，不参与 order
+    assert m.presence() not in m.pool_order()
+    assert m.presence() not in [i.id for i in m.items()]
+
+
+def test_presence_survives_a_snapshot_without_becoming_an_item():
+    from ghoshell_screen_manager.projection import snapshot
+
+    m = ScreenModel()
+    m.set_presence("http://ghost")
+    f = snapshot(m)
+    assert f["presence"] == "http://ghost"
+    assert f["items"] == []

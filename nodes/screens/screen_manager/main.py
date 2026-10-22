@@ -90,6 +90,23 @@ def wants_debug() -> bool:
     return "--debug" in sys.argv[1:]
 
 
+def presence_path() -> str:
+    """``--presence PATH`` — the page that inhabits the desk, set before the first frame.
+
+    The point of it being a start argument rather than a command: a screen that
+    belongs to someone should *open* occupied. Sending the ghost in afterwards means
+    the human watches an empty desk for as long as it takes the model to notice, and
+    that gap is exactly what "it's slow" means.
+    """
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--presence" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--presence="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
 async def main(matrix: Matrix) -> None:
     model = ScreenModel()
 
@@ -122,6 +139,17 @@ async def main(matrix: Matrix) -> None:
     )
     await surface.start()
     print(f"[webview_screen] surface at {surface.url}", flush=True)
+
+    # The desk is occupied before the first page ever loads: whoever lives on this
+    # screen is part of it, not a window opened onto it. A bad path is a fact to
+    # report and never a reason to die — the screen still works with an empty desk.
+    occupant = presence_path()
+    if occupant:
+        try:
+            model.set_presence(surface.add_local(Path(occupant)))
+            print(f"[webview_screen] presence: {occupant}", flush=True)
+        except ValueError as e:
+            print(f"[webview_screen] presence rejected: {e}", flush=True)
 
     if wants_open():
         # Open just after the surface is listening, so the first request finds a
