@@ -214,17 +214,19 @@ class TerminalSurface:
     def layout_state(self) -> tuple[str, str]:
         return self._layout, self._layout_by
 
-    async def set_layout(self, mode: str) -> str:
+    async def set_layout(self, mode: str, by: str = "model") -> str:
         """Set how an open card is shown, and remember who chose it.
 
-        The human owns the click that opens a card; the model owns this. Every page
-        is told, so the marker can name its author instead of hiding the decision.
+        The human owns the click that opens a card and the switch that decides whether the
+        list stays beside it; the model owns the same switch from its side. Either can move
+        it, and the marker records which one did — a control only one side can reach is not
+        a shared surface, it is a monologue with a view.
         """
         chosen = (mode or "").strip().lower()
         if chosen not in _LAYOUTS:
             raise ValueError(f"layout must be one of {_LAYOUTS}, got {mode!r}")
         self._layout = chosen
-        self._layout_by = "model"
+        self._layout_by = "human" if by == "human" else "model"
         await self.broadcast({"type": "layout", "layout": chosen, "by": self._layout_by})
         return chosen
 
@@ -488,6 +490,9 @@ class TerminalSurface:
             return self._set_global_trust(bool(frame.get("on")))
         if kind == "mode":
             return self._set_mode(str(frame.get("mode", "")))
+        if kind == "layout":
+            # 人自己切并排 / 全屏。同一个开关，两个作者，标记里写明是谁动的。
+            return self.set_layout(str(frame.get("layout", "")), by="human")
         if kind == "thread_auto":
             return self._set_thread_auto(str(frame.get("name", "")), bool(frame.get("auto")))
         if kind == "ground":
