@@ -302,6 +302,14 @@
      左边让开栏宽 —— 它是接收指针的层，按判据必须让，"被侧栏挡住"是违反判据的 bug。 */
   /* pip 的角落卡不是"一扇窗"，是"一个人站在那里"：没有框、没有底色、没有标题栏,
      页面自己的透明背景透出下面的主画面。留边框就成了又一个窗口，那是另一种意思。 */
+  /* bare：一件东西整块舞台，但**没有窗** —— 框、标题栏、底色都不画，
+     页面自己的透明背景直接落在屏上。 */
+  .slot.bare {
+    background: transparent; border: 0; box-shadow: none; border-radius: 0; overflow: visible;
+  }
+  .slot.bare .slot-bar { display: none; }
+  .slot.bare iframe { background: transparent; }
+
   .slot.pip {
     background: transparent; border: 0; box-shadow: none; border-radius: 0; overflow: visible;
   }
@@ -322,6 +330,15 @@
     grid-row: auto; grid-column: auto;
     pointer-events: none;   /* 它是站在栏上的一个人，不是栏上一块挡板 */
   }
+  /* overlay：一件东西"站在"屏上 —— 没有框、没有标题栏、没有底色，也不改写舞台：
+     底下的分组照常渲染。页面自己是透明的，它就只是落在屏上的一个人。 */
+  .slot.overlay {
+    position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 6;
+    background: transparent; border: 0; box-shadow: none; border-radius: 0;
+    pointer-events: none; overflow: visible;
+  }
+  .slot.overlay .slot-bar { display: none; }
+  .slot.overlay iframe { background: transparent; }
   .slot.focused { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; border: 0; }
   #scrim-exit {
     background: #222; color: #ddd; border: 1px solid #555;
@@ -755,9 +772,11 @@ function renderStage(ids, layout) {
   // 整屏是"呈现"，与"它属于哪个组"无关（旧的 per-group fullscreen 把两者绑死了）。
   items.forEach((it) => {
     const focused = !!focusId && it.id === focusId;
+    const stood = !!overlayId && it.id === overlayId;
+    it.slot.classList.toggle('overlay', stood);
     // 正亮着活页的那块不走这条：它此刻摆在砖的位置上，不是"没上舞台所以要藏"。
     const awaking = awakeIds.includes(it.id);
-    it.slot.classList.toggle('hidden', !awaking && !ids.includes(it.id) && !focused);
+    it.slot.classList.toggle('hidden', !awaking && !stood && !ids.includes(it.id) && !focused);
     it.slot.classList.toggle('focused', focused);
     // 标题栏跟着 item 的 label 走 —— 名字只有一处真相（node 的声明），这里只是读它。
     if (it.barName) it.barName.textContent = it.label || it.id;
@@ -766,6 +785,8 @@ function renderStage(ids, layout) {
   syncScrim();
   document.body.classList.toggle(
     'rail-pip', !!layout && layout.family === 'pip' && layout.dir === 'rail');
+  items.forEach((it) => it.slot.classList.toggle(
+    'bare', !!layout && layout.family === 'bare' && ids.includes(it.id)));
   const t = gridTemplate(layout);
   if (!t) { stage.style.gridTemplateColumns = ''; stage.style.gridTemplateRows = ''; return; }
   stage.style.gridTemplateColumns = t[0];
@@ -791,6 +812,7 @@ function renderStage(ids, layout) {
 // 只是给同一个 slot 换一套样式（.fullscreen = position:fixed; inset:0）。
 function syncScrim() { $('#scrim').style.display = focusId ? 'block' : 'none'; }
 
+let overlayId = null;
 let railBeforeFocus = false;   // 进焦点前的栏状态，离开时原样还回去
 
 function setFocus(id) {
@@ -2135,6 +2157,7 @@ function applyState(f) {
   const ids = f.ids || [];
   desktopIds = f.desktop || [];
   focusId = f.focus || null;
+  overlayId = f.overlay || null;
   renderStage(ids, f.layout);
   renderRail();
   syncDiscs();

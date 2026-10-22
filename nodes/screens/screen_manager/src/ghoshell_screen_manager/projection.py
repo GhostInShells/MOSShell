@@ -80,6 +80,7 @@ def _state(model: ScreenModel) -> dict:
         "ids": model.arena_items(),
         "layout": _layout_view(model),
         "focus": model.focus(),
+        "overlay": model.overlay(),
         "view_by": model.view_by(),
         "desktop": model.desktop_items(),
         "groups": model.groups(),

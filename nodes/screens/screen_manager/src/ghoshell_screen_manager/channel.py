@@ -283,7 +283,9 @@ def build_screen_channel(
         Write ``ids="0|1|2"``; do NOT write a comma list (``"0,1"`` is a Python
         literal, so CTML hands it over as a tuple instead of the string you meant).
         ``group`` names the arrangement (created on first use). ``family`` is grid
-        (equal split), stack (one master + a strip) or pip (one item on the whole
+        (equal split), stack (one master + a strip), bare (one item, whole stage, no
+        window chrome at all — for a page that should stand on the screen instead
+        of looking like another window) or pip (one item on the whole
         stage, a second floating over a corner — the shape to reach for when
         something should *stay* on screen without taking space from what is being
         shown). ``dir`` is lr / tb for grid and stack; for pip it is br / bl / tr /
@@ -330,6 +332,23 @@ def build_screen_channel(
         await _emit(P.close_frame(id))
         await _emit(P.state_frame(model))
         return f"[screen] removed #{id}"
+
+    @chan.build.command(name="overlay")
+    async def overlay(id: str = "") -> str:
+        """Let one item stand on the screen — no frame, no title bar, no background.
+
+        The arena keeps rendering underneath: this is not a window replacing the
+        desk, it is a presence over it (something whose own page is transparent then
+        reads as standing there). Empty ``id`` takes it away. Focus is the other
+        thing — focus means "look only at this one".
+        """
+        id = _as_id(id) if id else ""
+        try:
+            model.set_overlay(id or None)
+        except (ValueError, KeyError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _emit(P.state_frame(model))
+        return f"[screen] overlay {'#' + id if id else 'clear'}"
 
     @chan.build.command(name="focus")
     async def focus(id: str = "") -> str:

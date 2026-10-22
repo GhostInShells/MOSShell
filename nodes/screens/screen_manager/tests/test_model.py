@@ -402,3 +402,27 @@ def test_pip_rail_keeps_the_stage_whole():
     assert (master.r, master.c, master.rs, master.cs) == (1, 1, layout.rows, layout.cols)
     # 栏里的那块不占舞台的格子 —— 位置由页面 fixed 摆，格子只是占位
     assert layout.cells[1].rs < layout.rows and layout.cells[1].cs < layout.cols
+
+
+# ---- overlay：站在屏上，而不是被屏展示 -------------------------------------
+
+def test_overlay_does_not_change_what_the_screen_shows():
+    m = ScreenModel()
+    a = m.open("http://a", group="desk")
+    b = m.open("http://b")
+    m.activate("desk")
+    m.set_overlay(b.id)
+    assert m.overlay() == b.id
+    # 舞台还是那个分组 —— 站在屏上的东西不该把台下换掉
+    assert m.arena() == "desk"
+    assert m.arena_items() == [a.id]
+
+
+def test_overlay_clears_without_touching_focus():
+    m = ScreenModel()
+    a = m.open("http://a")
+    m.set_focus(a.id)
+    m.set_overlay(a.id)
+    m.set_overlay(None)
+    assert m.overlay() == ""
+    assert m.focus() == a.id

@@ -203,6 +203,7 @@ class ScreenModel:
         cannot be dropped.
         """
         self._focus: str | None = None
+        self._overlay: str = ""
         """The item the human looks at *alone* — a view, not a layout.
 
         Deliberately independent of groups: a tile in the pool lives on the
@@ -268,6 +269,22 @@ class ScreenModel:
     def view_by(self) -> str:
         """Who moved the view last: ``human`` / ``model`` / ``""`` (nobody yet)."""
         return self._view_by
+
+    def overlay(self) -> str:
+        """The item standing over the screen with no window chrome, or ``""``."""
+        return self._overlay
+
+    def set_overlay(self, item_id: str | None, *, by: str = "model") -> None:
+        """Let one item stand *on* the screen instead of being shown by it.
+
+        Unlike focus, this changes nothing about what the screen shows — the arena
+        keeps rendering underneath. That is the whole point: the thing in the middle
+        is not a window replacing the desk, it is a presence over it.
+        """
+        if item_id:
+            self._require(item_id)
+        self._overlay = item_id or ""
+        self._view_by = by
 
     def set_focus(self, item_id: str | None, *, by: str = "model") -> None:
         """Point the view at one item (None = leave focus). Any pooled item will do."""
