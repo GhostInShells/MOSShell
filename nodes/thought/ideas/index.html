@@ -32,9 +32,13 @@
   #when{font-size:12px;color:var(--dim);min-width:158px;text-align:right;font-variant-numeric:tabular-nums}
   #when b{color:#c9dbd1;font-weight:500;font-size:13px}
 
+  /* 抽屉是三层：头（标题+事实）钉住、中间自己滚、底（打开文档）钉住。
+     否则正文一长，「打开文档」就被顶到看不见的地方去了。 */
   #side{position:absolute;top:0;right:0;bottom:58px;width:380px;background:#0c1116;
-    border-left:1px solid #16211c;padding:18px 18px 18px 22px;overflow:auto;transform:translateX(100%);
-    transition:transform .25s ease}
+    border-left:1px solid #16211c;padding:18px 18px 18px 22px;transform:translateX(100%);
+    transition:transform .25s ease;display:flex;flex-direction:column;min-height:0}
+  #s-head{flex:0 0 auto}
+  #s-body{flex:1 1 auto;overflow:auto;min-height:0;margin:0 -6px;padding:0 6px}
   #side.open{transform:none}
   #grip{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize}
   #grip:hover{background:rgba(126,231,135,.18)}
@@ -52,6 +56,12 @@
   #side .md pre code{background:none;padding:0;font-size:12px;line-height:1.55}
   #side .md a{color:var(--hot)}
   #side .md strong{color:#eaf7ee}
+  #side .rel{display:block;font-size:13px;color:#8fb8a2;text-decoration:none;cursor:pointer;
+    padding:5px 8px;margin:4px 0;border:1px solid #16211c;border-radius:7px;line-height:1.4}
+  #side .rel:hover{border-color:var(--hot);color:#eaf7ee}
+  #side #s-doc{flex:0 0 auto;margin-top:12px;padding-top:12px;border-top:1px solid #16211c;font-size:12px}
+  #side #s-doc a{color:var(--hot);text-decoration:none}
+  #side #s-doc .hint{color:#4d6a5c;margin-left:8px}
 
   #hud{position:absolute;left:16px;top:14px;font-size:12px;color:var(--dim)}
   #clusters{display:flex;gap:6px;margin-top:8px}
@@ -65,9 +75,15 @@
 <div id="hud"><div id="counts"></div><div id="clusters"></div></div>
 <div id="side">
   <div id="grip"></div>
-  <h2 id="s-title"></h2>
-  <div class="meta" id="s-meta"></div>
-  <div id="s-notes"></div>
+  <div id="s-head">
+    <h2 id="s-title"></h2>
+    <div class="meta" id="s-meta"></div>
+  </div>
+  <div id="s-body">
+    <div id="s-links"></div>
+    <div id="s-notes"></div>
+  </div>
+  <div id="s-doc"></div>
 </div>
 <div id="bar">
   <div id="chips"></div>
@@ -359,6 +375,7 @@ function updateSlice(){
     if (it){
       n.state = it.state; n.priority = it.priority; n.label = it.label; n.icon = it.icon;
       n.text = it.text; n.notes = it.notes; n.tags = it.tags; n.links = it.links;
+      n.t = it.t;                      // 出生时刻：抽屉里那句「什么时候生出来的」靠它
       n.root = it.root || n.root || '';
       const r = radius(it.priority);
       // 档位在拖动中被跨过时半径会变——那一刻得让邻居让一次，否则大球会压小球。
@@ -451,15 +468,43 @@ function drawSide(){
   const side = document.getElementById('side');
   if (!sel || !sel.on){ side.classList.remove('open'); return; }
   side.classList.add('open');
+
   document.getElementById('s-title').textContent = sel.text || '(没有字)';
-  document.getElementById('s-meta').textContent =
-    `${sel.id} · ${sel.state} · 权重 ${sel.priority}` +
-    (sel.tags.length ? ` · [${sel.tags.join(', ')}]` : '') +
-    ` · 连着 ${sel.links.length} 条`;
+
+  // 状态、权重写成话，不写原始数字。
+  const moves = events.slice(0, cut).filter(e => e.id === sel.id && e.op === 'state').length;
+  const facts = [
+    sel.state,
+    `权重 ${sel.priority}`,
+    `${fmtT(sel.t)} 出生`,
+    moves ? `挪过 ${moves} 次` : '没挪过',
+  ];
+  if (sel.tags.length) facts.push(sel.tags.map(t => `#${t}`).join(' '));
+  document.getElementById('s-meta').textContent = facts.join(' · ');
+
+  // 连着谁——点一下就走到那颗球上，不是只给一个数字。
+  const linksEl = document.getElementById('s-links');
+  linksEl.innerHTML = (sel.links || []).map(l => {
+    const n = nodes.find(x => x.id === l.dst);
+    const label = n ? (n.label || n.text || l.dst) : l.dst;
+    const short = label.length > 20 ? label.slice(0, 20) + '…' : label;
+    const kind = l.kind === 'depend' ? '依赖' : '相关';
+    return `<a class="rel" data-id="${esc(l.dst)}">${kind} · ${esc(short)}</a>`;
+  }).join('');
+  linksEl.querySelectorAll('a.rel').forEach(a => a.addEventListener('click', () => {
+    const n = nodes.find(x => x.id === a.dataset.id);
+    if (n && n.on) focusOn(n);
+  }));
+
   const box = document.getElementById('s-notes');
   box.innerHTML = (sel.notes || []).map(n =>
     `<div class="note"><span class="stamp">${fmtT(n.t)}</span><div class="md">${md(n.text)}</div></div>`
-  ).join('') || '<div class="note" style="opacity:.5">还没有记录</div>';
+  ).join('') || '<div class="note" style="opacity:.45">还没有正文。这颗 idea 目前只有那一句话。</div>';
+
+  // 磁盘上那份 `.md` 是它的人面：投影，只读，但点得开。
+  document.getElementById('s-doc').innerHTML =
+    `<a href="/idea/${encodeURIComponent(sel.id)}.md" target="_blank" rel="noreferrer">打开文档 ↗</a>
+     <span class="hint">投影，每次追加都会重写</span>`;
 }
 
 // ---- 过滤：只是「现在不亮」，不改任何数据 -------------------------------

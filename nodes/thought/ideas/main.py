@@ -286,6 +286,24 @@ class IdeasServer:
             return response
         if path == "/ws":
             return None
+        if path.startswith("/idea/") and path.endswith(".md"):
+            # 一颗 idea 的人面文档：`<root>/ideas/<id>.md`。它是投影，不是源——
+            # 每次追加事件都会重写，所以这里只读；写要走事件。
+            idea_id = path[len("/idea/"):-len(".md")]
+            if not idea_id or not all(c.isalnum() or c in "-_" for c in idea_id):
+                return connection.respond(400, "bad idea id")
+            root = self._store.root_of(idea_id)
+            doc = (root / "ideas" / f"{idea_id}.md") if root else None
+            if doc is None or not doc.exists():
+                return connection.respond(404, "no such idea")
+            try:
+                body = doc.read_text(encoding="utf-8")
+            except OSError:
+                return connection.respond(500, "unreadable")
+            response = connection.respond(200, body)
+            del response.headers["Content-Type"]
+            response.headers["Content-Type"] = "text/markdown; charset=utf-8"
+            return response
         return connection.respond(404, "not found")
 
     async def _handler(self, connection: ServerConnection) -> None:
