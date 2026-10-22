@@ -41,8 +41,10 @@ __all__ = [
     "grid_template",
 ]
 
-FAMILIES = ("grid", "stack")
+FAMILIES = ("grid", "stack", "pip")
 DIRS = ("lr", "tb")
+PIP_CORNERS = ("br", "bl", "tr", "tl")
+"""pip 的 dir 说的是"小窗贴哪个角"，不是轴方向。"""
 
 DEFAULT_LAYOUT = ("grid", "lr")
 """A group that was never arranged: equal split, left-to-right."""
@@ -109,13 +111,33 @@ def compute_layout(n: int, family: str, dir: str) -> Layout:
 
     ``grid`` splits equally; ``stack`` gives one master (index 0) plus a strip of
     the rest. ``dir`` is the axis: ``lr`` fills a row first, ``tb`` a column first.
+
+    ``pip`` is the picture-in-picture shape: one item takes the whole stage and the
+    second rides in a small card over a corner of it (``dir`` = ``br`` / ``bl`` /
+    ``tr`` / ``tl``). It is the only family whose cells overlap — that overlap is
+    the point, so the corner reads as "still here", not as "the stage got smaller".
     """
     if family not in FAMILIES:
-        raise LayoutError(f"unknown family {family!r} (grid | stack)")
-    if dir not in DIRS:
+        raise LayoutError(f"unknown family {family!r} (grid | stack | pip)")
+    if family == "pip":
+        if dir not in PIP_CORNERS:
+            raise LayoutError(f"pip dir must be one of {PIP_CORNERS}, got {dir!r}")
+    elif dir not in DIRS:
         raise LayoutError(f"unknown dir {dir!r} (lr | tb)")
     if n <= 0:
         raise LayoutError("need at least one item to arrange")
+
+    if family == "pip":
+        if n != 2:
+            raise LayoutError("pip takes exactly 2 items (one stage + one corner card)")
+        # 20×20 的粗网格：主人占满整块，角落卡约 20% 宽、35% 高，贴在指定角。
+        span_r, span_c = 7, 4
+        rs = 1 if dir.startswith("t") else 20 - span_r + 1
+        cs = 1 if dir.endswith("l") else 20 - span_c + 1
+        return Layout(
+            "pip", dir, 20, 20,
+            [Cell(1, 1, 20, 20), Cell(rs, cs, span_r, span_c)],
+        )
 
     if family == "stack":
         if n < 2:
@@ -146,7 +168,8 @@ def compute_layout(n: int, family: str, dir: str) -> Layout:
 def grid_template(layout: Layout) -> tuple[str, str]:
     """The CSS ``grid-template-columns`` / ``grid-template-rows`` for a layout.
 
-    Stack gives the master axis a 2:1 share; everything else is even.
+    Stack gives the master axis a 2:1 share; everything else is even — pip
+    included, because its overlap comes from the cells, not from the tracks.
     """
     if layout.family == "stack":
         if layout.dir == "lr":

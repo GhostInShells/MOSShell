@@ -299,6 +299,13 @@
   /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
   /* 焦点：同一个 slot 换一套样式，不是搬容器、不是复制 iframe。
      左边让开栏宽 —— 它是接收指针的层，按判据必须让，"被侧栏挡住"是违反判据的 bug。 */
+  /* pip 的角落卡不是"一扇窗"，是"一个人站在那里"：没有框、没有底色、没有标题栏,
+     页面自己的透明背景透出下面的主画面。留边框就成了又一个窗口，那是另一种意思。 */
+  .slot.pip {
+    background: transparent; border: 0; box-shadow: none; border-radius: 0; overflow: visible;
+  }
+  .slot.pip .slot-bar { display: none; }
+  .slot.pip iframe { background: transparent; }
   .slot.focused { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; border: 0; }
   #scrim-exit {
     background: #222; color: #ddd; border: 1px solid #555;
@@ -750,6 +757,11 @@ function renderStage(ids, layout) {
     const c = layout.cells[k]; if (!c) return;
     it.slot.style.gridRow = `${c.r} / span ${c.rs}`;
     it.slot.style.gridColumn = `${c.c} / span ${c.cs}`;
+    // pip：格子是重叠的，主人铺满，角落卡浮在上面。层高靠 DOM 顺序不可靠，
+    // 所以这里显式给一层 —— 也让角落卡能有自己的投影，读成"一张小卡片"。
+    const pip = layout.family === 'pip';
+    it.slot.classList.toggle('pip', pip && k > 0);
+    it.slot.style.zIndex = pip ? (k > 0 ? '6' : '1') : '';
   });
 }
 

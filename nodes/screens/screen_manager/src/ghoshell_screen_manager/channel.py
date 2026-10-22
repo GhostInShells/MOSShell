@@ -283,8 +283,11 @@ def build_screen_channel(
         Write ``ids="0|1|2"``; do NOT write a comma list (``"0,1"`` is a Python
         literal, so CTML hands it over as a tuple instead of the string you meant).
         ``group`` names the arrangement (created on first use). ``family`` is grid
-        (equal split) or stack (one master + a strip); ``dir`` is lr or tb. The
-        shape is derived from the count — you never give sizes.
+        (equal split), stack (one master + a strip) or pip (one item on the whole
+        stage, a second floating over a corner — the shape to reach for when
+        something should *stay* on screen without taking space from what is being
+        shown). ``dir`` is lr / tb for grid and stack, br / bl / tr / tl for pip.
+        The shape is derived from the count — you never give sizes.
         """
         try:
             layout = model.arrange(
