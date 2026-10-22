@@ -119,7 +119,7 @@ let links = [];
 const sim = d3.forceSimulation(nodes)
   // 斥力要够大：一串线连着的时候，斥力一弱，整张图就会塌成一条直线——
   // 那正是「线叠在一起」的样子。球越大推开得越远，才不会互相压。
-  .force('charge', d3.forceManyBody().strength(d => -300 - (d.r || 40) * 5))
+  .force('charge', d3.forceManyBody().strength(d => -820 - (d.r || 40) * 8))
   .force('center', d3.forceCenter(W() / 2, H() / 2).strength(.06))
   // 孤立的球会被斥力一路推出去，把取景框撑得又大又空——这条把它们收回一个盘子里。
   .force('disc', d3.forceRadial(Math.min(W(), H()) * 0.34, W() / 2, H() / 2).strength(.10))
@@ -127,7 +127,7 @@ const sim = d3.forceSimulation(nodes)
   // 边的长度跟着两头的球走：大球不该挤在小球旁边。
   .force('link', d3.forceLink(links).id(d => d.id)
     .distance(l => 60 + (l.source.r || 40) + (l.target.r || 40))
-    .strength(.45))
+    .strength(.20))
   .on('tick', onTick);
 
 // clickDistance：d3 默认「按下到松开之间动过 1 像素就算拖动」，于是手抖一下就
@@ -146,7 +146,7 @@ svg.on('click', () => {
   fit();
 });
 
-const POS_KEY = 'ideas.pos.v3';   // 换力模型就换版本号，别继承上一版的位置
+const POS_KEY = 'ideas.pos.v4';   // 换力模型就换版本号，别继承上一版的位置
 function restorePos(){
   try { return JSON.parse(localStorage.getItem(POS_KEY) || '{}'); } catch (e) { return {}; }
 }
@@ -239,7 +239,9 @@ function paint(){
     .attr('x2', d => rim(pos(d.target), d.source)[0]).attr('y2', d => rim(pos(d.target), d.source)[1])
     .attr('stroke-dasharray', d => d.kind === 'depend' ? '5 4' : null)
     .attr('stroke-width', d => 0.8 + (d.weight || 1) * 0.6)
-    .style('opacity', d => linkOn(d) ? 1 : 0);
+    .style('opacity', d => d.vis === undefined
+      ? (linkOn(d) ? 1 : 0)
+      : Math.min(d.source.vis ?? 1, d.target.vis ?? 1));
 
   const b = nodeLayer.selectAll('g.bub').data(nodes, d => d.id);
   const enter = b.enter().append('g').attr('class', 'bub');
@@ -265,13 +267,23 @@ function paint(){
     .style('stroke-dasharray', d => d.state === 'waiting' ? '4 4' : null);
   // 飞书那种形状：圈里是「脸」（小图，或者前两个大字），名字在圈下面。
   const capOf = d => Array.from(String(d.label || d.text || '')).slice(0, 2).join('');
+  // 圈里的字要跟着圈长大：中文两个字是「宽」顶住圆，拉丁两个字是「高」顶住圆，
+  // 同一个字号打两种字，看上去一种偏小——所以按字数与字形分别算。
+  const capFont = d => {
+    const t = capOf(d);
+    const n = Array.from(t).length || 1;
+    const cjk = /[\u3400-\u9fff]/.test(t);
+    return d.r * (cjk ? (n === 1 ? 1.12 : 0.72) : (n === 1 ? 1.38 : 0.98));
+  };
+  // 用 style 而不是 attr：`.bub text{font-size:12px}` 这条 CSS 会把 presentation
+  // attribute 盖掉，于是所有圈里的字都被钉在 12px —— 跟 `.ring` 的 stroke 同一个坑。
   merged.select('.cap')
-    .attr('font-size', d => d.r * 0.62)
-    .attr('dy', d => d.r * 0.22)
+    .style('font-size', d => capFont(d) + 'px')
+    .attr('dy', d => capFont(d) * 0.36)
     .text(d => isUrl(d.icon) ? '' : capOf(d));
   merged.select('.name')
     .attr('y', d => d.r + 15)
-    .attr('font-size', 13)
+    .style('font-size', '13px')
     .text(d => {
       const s = String(d.label || d.text || '');
       if (Array.from(s).length <= 2) return '';
@@ -284,7 +296,7 @@ function paint(){
     .style('display', d => isUrl(d.icon) ? null : 'none');
   merged.attr('transform', d => `translate(${pos(d).x},${pos(d).y})`)
     .classed('sel', d => sel && d.id === sel.id)
-    .style('opacity', d => nodeOn(d) ? 1 : 0.12);
+    .style('opacity', d => d.vis === undefined ? nodeAlpha(d) : d.vis);
   merged.style('pointer-events', d => nodeOn(d) ? null : 'none');
 }
 
@@ -295,6 +307,14 @@ function rim(a, b){
   const dx = q.x - p.x, dy = q.y - p.y;
   const d = Math.hypot(dx, dy) || 1;
   return [p.x + (dx / d) * p.r, p.y + (dy / d) * p.r];
+}
+
+// 三种「不亮」不是同一种不亮：还没出生的最淡，被筛掉的次之，亮着的满。
+function nodeAlpha(d){
+  if (!d.on) return 0.05;
+  if (filterState && d.state !== filterState) return 0.10;
+  if (filterRoot && d.root !== filterRoot) return 0.10;
+  return 1;
 }
 
 function nodeOn(d){
@@ -465,27 +485,38 @@ function rootLabel(r){
   return parts[parts.length - 1] || r;
 }
 function renderClusters(){
-  const roots = [...new Set(events.map(e => e.root || ''))].filter(Boolean);
-  // 只挂了一个目录的时候，这颗按钮什么也切不动——不摆一个按不动的按钮。
-  clustersEl.style.display = roots.length > 1 ? '' : 'none';
-  if (roots.length < 2) return;
-  const wanted = ['', ...roots].join('\u0000');
-  if (clustersEl.dataset.sig === wanted) return;
-  clustersEl.dataset.sig = wanted;
+  // 挂着哪几个目录、各有多少颗——这是这面图的边界，一颗目录的时候也要摆着。
+  // 挂目录归我（open），切到哪个目录看归他：所以这里是按钮，不是只读标签。
+  const counts = new Map();
+  for (const n of nodes) if (n.on) counts.set(n.root || '(未标)', (counts.get(n.root || '(未标)') || 0) + 1);
+  const roots = [...counts.keys()].sort();
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  const sig = roots.map(r => `${r}:${counts.get(r)}`).join('|') + '#' + filterRoot + '#' + total;
+  if (clustersEl.dataset.sig === sig) return;
+  clustersEl.dataset.sig = sig;
   clustersEl.innerHTML = '';
-  [['', '全部目录']].concat(roots.map(r => [r, rootLabel(r)])).forEach(([value, label]) => {
+  const add = (value, label, title) => {
     const btn = document.createElement('button');
     btn.textContent = label;
-    btn.title = value || '';
+    btn.title = title || '';
     btn.dataset.value = value;
     if (value === filterRoot) btn.classList.add('on');
     btn.addEventListener('click', () => {
       filterRoot = value;
-      [...clustersEl.children].forEach(c => c.classList.toggle('on', c.dataset.value === value));
+      clustersEl.dataset.sig = '';     // 让下一帧重画选中态
       paint();
+      renderClusters();
     });
     clustersEl.appendChild(btn);
-  });
+  };
+  if (roots.length <= 1){
+    // 只挂了一个目录时，「全部」和「那个目录」是同一件事——摆两颗一样的按钮是废话。
+    const only = roots[0] || '(未标)';
+    add('', `${rootLabel(only)} ${total}`, only);
+  } else {
+    add('', `全部 ${total}`, '看所有挂着的目录');
+    for (const r of roots) add(r, `${rootLabel(r)} ${counts.get(r)}`, r);
+  }
 }
 
 // ---- 播放：把「记录时间」压成「演出时间」 ------------------------------
@@ -541,21 +572,28 @@ let drift = 1;              // 0 = 完全静止，1 = 正常浮
 // 走力的那版会让整张图慢慢重新找平衡——最后就塌成一串，那不叫呼吸。
 function breathe(ts){
   requestAnimationFrame(breathe);
+  if (!settled) return;
   const goal = hoverId ? 0 : 1;
   drift += (goal - drift) * 0.07;
-  if (!settled) return;
-  if (drift < 0.005 && goal === 0) return;
   const t = ts / 1000;
-  let moved = false;
+  let busy = false;
   for (const n of nodes){
+    // 渐显渐隐：出现和退场都走一段，不是啪一下换掉。
+    const want = nodeAlpha(n);
+    if (n.vis === undefined) n.vis = want;
+    if (Math.abs(want - n.vis) > 0.004){
+      n.vis += (want - n.vis) * 0.16;
+      busy = true;
+    } else if (n.vis !== want){
+      n.vis = want;
+      busy = true;
+    }
     if (n.ph === undefined) n.ph = Math.random() * Math.PI * 2;
     const a = 3.6 * drift;
-    const ox = (Math.sin(t * 0.63 + n.ph) + Math.sin(t * 1.27 + n.ph * 2.1) * 0.45) * a;
-    const oy = (Math.cos(t * 0.81 + n.ph * 1.7) + Math.cos(t * 1.53 + n.ph) * 0.45) * a;
-    if (Math.abs((n.ox || 0) - ox) > 0.01 || Math.abs((n.oy || 0) - oy) > 0.01) moved = true;
-    n.ox = ox; n.oy = oy;
+    n.ox = (Math.sin(t * 0.63 + n.ph) + Math.sin(t * 1.27 + n.ph * 2.1) * 0.45) * a;
+    n.oy = (Math.cos(t * 0.81 + n.ph * 1.7) + Math.cos(t * 1.53 + n.ph) * 0.45) * a;
   }
-  if (moved || drift > 0.005) paint();
+  if (busy || drift > 0.005) paint();
 }
 requestAnimationFrame(breathe);
 
