@@ -561,3 +561,98 @@ class TestBridgeSuite:
                 assert len(task.progress) > 0
                 await task
                 assert task.progress == 'progress 9'
+
+
+
+# --- 复现: 同一个远程命令, 正文 'x' 通, 正文 '1' 炸 --- #
+
+@pytest.mark.asyncio
+async def test_remote_chunks_literal_like_body(suite: BridgeTestSuite) -> None:
+    """正文是普通文本 (x) 时通; 正文像 Python 字面量 (1 / 单行 JSON) 时炸.
+
+    对应 ideas 节点上 ops 的失败: UNKNOWN_ERROR: isinstance() arg 2 must be a type.
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    chan = PyChannel(name="provider")
+    got: list[str] = []
+
+    @chan.build.command(always_observe=True)
+    async def ops(chunks__) -> str:
+        async for c in chunks__:
+            got.append(c)
+        return "".join(got)
+
+    provider, proxy = suite.create("proxy")
+    shell = new_ctml_shell()
+    shell.main_channel.import_channels(proxy)
+
+    async with provider.arun(chan):
+        async with shell:
+            await shell.wait_connected("proxy")
+            await shell.refresh_metas()
+
+            # 1. 普通文本: 应当到达.
+            async with shell.interpreter_in_ctx() as i:
+                i.feed("<proxy:ops>x</proxy:ops>")
+                i.commit()
+                await i.wait_tasks(timeout=10)
+                i.raise_exception()
+            assert "".join(got) == "x", f"plain text did not arrive: {got}"
+
+            # 2. 像字面量的文本: 复现点.
+            got.clear()
+            async with shell.interpreter_in_ctx() as i:
+                i.feed("<proxy:ops>1</proxy:ops>")
+                i.commit()
+                await i.wait_tasks(timeout=10)
+                i.raise_exception()
+            assert "".join(got) == "1", f"literal-like text did not arrive: {got}"
+
+
+
+# --- 第二个实验: 子 channel 上的 chunks__ --- #
+
+@pytest.mark.asyncio
+async def test_remote_child_channel_chunks_literal_body(suite: BridgeTestSuite) -> None:
+    """子 channel + chunks__ + CTML + 像字面量的正文.
+
+    活的那条路是 matrix.mesh.ideas —— 三层路径; 上面那个用例只覆盖了扁平的一层.
+    """
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    chan = PyChannel(name="provider")
+    sub = PyChannel(name="ideas")
+    chan.import_channels(sub)
+
+    got: list[str] = []
+
+    @sub.build.command(always_observe=True)
+    async def ops(chunks__) -> str:
+        async for c in chunks__:
+            got.append(c)
+        return "".join(got)
+
+    provider, proxy = suite.create("proxy")
+    shell = new_ctml_shell()
+    shell.main_channel.import_channels(proxy)
+
+    async with provider.arun(chan):
+        async with shell:
+            await shell.wait_connected("proxy")
+            await shell.refresh_metas()
+
+            async with shell.interpreter_in_ctx() as i:
+                i.feed("<proxy.ideas:ops>x</proxy.ideas:ops>")
+                i.commit()
+                await i.wait_tasks(timeout=10)
+                i.raise_exception()
+            assert "".join(got) == "x", f"plain text did not arrive: {got}"
+
+            got.clear()
+            async with shell.interpreter_in_ctx() as i:
+                i.feed("<proxy.ideas:ops>1</proxy.ideas:ops>")
+                i.commit()
+                await i.wait_tasks(timeout=10)
+                i.raise_exception()
+            assert "".join(got) == "1", f"literal-like text did not arrive: {got}"

@@ -492,27 +492,41 @@ possible: two minds point at the same node instead of arguing over prose.
 `decision_tree` is a strict subset of this: a graph with one parent per node and no
 cycles. Once this holds, it can be retired rather than maintained.
 
-## Known kernel bug (D22 23:30) — a `text__` / `chunks__` body that looks like a literal
+## Resolved — the "literal body" bug was a shadowed builtin (D23 00:08)
 
-Found while wiring `ops(chunks__)`. The command never receives the body:
+The note that used to sit here blamed the kernel (`literal_eval` on a `text__` body plus
+string annotations). That was wrong. The real cause was in this node.
+
+Symptom, found while wiring `ops(chunks__)` — the command never receives the body when the
+body looks like a Python literal:
 
 | body | reaches the command? |
 |---|---|
 | `x` | yes |
-| `{"op": "add", …}` | **no** |
+| `{"op": "add", …}` | **no** — `UNKNOWN_ERROR: isinstance() arg 2 must be a type, a tuple of types, or a union` |
 | `# json` on the first line, then the same JSON | yes |
 
-The failure is `UNKNOWN_ERROR: isinstance() arg 2 must be a type, a tuple of types, or
-a union`. Reading the code, the plausible chain is: the body is `literal_eval`'d before
-dispatch (a `{`-leading body becomes a dict), and then the value is checked against the
-parameter's annotation — which is a **string** `'str'` because the node module uses
-`from __future__ import annotations`, so `isinstance(value, 'str')` raises.
+Root cause: `async def list(...)` is a command defined in `new_ideas_channel()`, in the same
+scope that defines `ops`. Python resolves the name `list` inside `ops` to that function
+object, so
 
-Two candidate fixes, both in the kernel (thirdgerb will take it):
+    batch = data if isinstance(data, list) else [data]
 
-1. `text__` / `chunks__` content is declared text — never `literal_eval` it.
-2. Resolve annotations with `typing.get_type_hints()` before validating (or do not
-   validate at all and let the function raise).
+was checking against a *function*, not the builtin type. `json.loads("x")` raises first and
+is caught, so only a body that parses ever reaches the broken line — which is why it looked
+like a "text versus literal" problem.
 
-Until then, JSON over CTML is blocked; the working doors are the CLI (`ideas ops` with
-JSONL on stdin) and the explicit channel verbs (`add` / `set` / `link` / `rm`).
+Fix: `_LIST = list` at module level, and `ops` uses `_LIST`.
+
+What this rules out for good:
+
+- **not the kernel.** `chunks__` arrives verbatim through CTML, through the bridge on real
+  zenoh, and across the mesh. `<say>1</say>` and `file_editor:write` with a `{"a": 1}` body
+  both behave correctly.
+- **not the annotations.** But `from __future__ import annotations` is load-bearing in this
+  module: the `list[str]` annotations are harmless only because they stay strings. Drop it
+  and the shadowed name breaks at import time.
+
+Lesson worth keeping: a command name and a builtin sharing one scope is an invisible trap in
+this style of channel code. Either keep a private alias for the type, or do not name a
+command after a builtin.

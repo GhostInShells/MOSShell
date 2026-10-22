@@ -1756,3 +1756,57 @@ async def test_ctml_macro_executed_logos_flattened():
     assert calls == ["hi"]
     assert "<greet" not in logos
     assert "<say" in logos
+
+
+# --- 复现: nodes/thought/ideas/main.py 的 ops —— 无注解 chunks__ + 多行 JSON 正文 --- #
+
+@pytest.mark.asyncio
+async def test_ctml_chunks_json_lines_like_ideas_ops():
+    """复现 ideas 的 ops: chunks__ 不带注解, 正文是逐行 JSON."""
+    chan = new_channel(name="ideas")
+    seen: list[str] = []
+
+    @chan.build.command(always_observe=True)
+    async def ops(chunks__) -> str:
+        buf = ""
+        async for chunk in chunks__:
+            buf += chunk
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                if line.strip():
+                    seen.append(line.strip())
+        if buf.strip():
+            seen.append(buf.strip())
+        return f"{len(seen)} op(s)"
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml=(
+            "<ideas:ops>"
+            '{"op": "add", "label": "\u5224\u636e"}\n'
+            '{"op": "link", "src": "a", "dst": "b"}'
+            "</ideas:ops>"
+        ),
+    )
+    assert len(tasks) == 1
+    assert await tasks[0] == "2 op(s)"
+
+
+@pytest.mark.asyncio
+async def test_ctml_chunks_json_object_like_ideas_ops():
+    """对照: 正文是单个 JSON 对象 (literal_eval 能解析的形状)."""
+    chan = new_channel(name="ideas2")
+    seen: list[str] = []
+
+    @chan.build.command(always_observe=True)
+    async def ops(chunks__) -> str:
+        async for chunk in chunks__:
+            seen.append(chunk)
+        return f"{len(seen)} chunk(s)"
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="<ideas2:ops>{\"op\": \"add\", \"label\": \"x\"}</ideas2:ops>",
+    )
+    assert len(tasks) == 1
+    assert await tasks[0] == "1 chunk(s)"

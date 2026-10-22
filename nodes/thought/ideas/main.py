@@ -30,6 +30,11 @@ _NODE_DIR = Path(__file__).resolve().parent
 _INDEX_HTML = _NODE_DIR / "index.html"
 _CLI = _NODE_DIR / "cli.py"
 
+# `list` is also a command name inside new_ideas_channel — it shadows the builtin
+# in that scope, so a bare `isinstance(x, list)` there checks against a function.
+# Keep the type under a private alias for runtime use.
+_LIST = list
+
 
 def _argv_value(flag: str) -> str | None:
     argv = sys.argv[1:]
@@ -461,6 +466,7 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
         """
         return await run_cli(["concept", name, color] + (["--group", group] if group else []))
 
+
     @chan.build.command(always_observe=True)
     async def ops(chunks__) -> str:
         """Apply ops as a stream: one JSON object per line, landing as each line arrives.
@@ -486,7 +492,7 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
             except ValueError as exc:
                 failed.append(f"{exc}")
                 return 0
-            batch = data if isinstance(data, list) else [data]
+            batch = data if isinstance(data, _LIST) else [data]
             store.reload()
             try:
                 store.apply_ops(batch)
