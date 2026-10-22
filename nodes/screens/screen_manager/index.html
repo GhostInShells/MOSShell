@@ -809,7 +809,7 @@ function reportViewport() {
 // 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
 // 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
 let debugTimer = null;
-const PAGE_REV = '2026-10-22-theme-2';
+const PAGE_REV = '2026-10-22-theme-3';
 function debugPayload() {
   const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
     ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
@@ -859,6 +859,9 @@ function debugPayload() {
     // 背景的漆：1 = 空桌的绿，0.62 = 住户在场时那身蓝紫压暗过的。这一条只回答
     // "现在画的是哪一套"，免得"颜色没换"和"换了没生效"在屏幕上看成同一件事。
     rainTint: rainDim,
+    // 现在穿的是哪一套。换主题之后"改了没生效"和"根本没换"在画面上长得一样，
+    // 所以让页面自己说一句。
+    theme: themeName,
     presenceReady: (() => {
       const f = document.querySelector('#presence iframe');
       return f ? (f.contentDocument ? 1 : 2) : 0;  // 0 无, 1 跨源已挂, 2 同源可读
