@@ -95,15 +95,20 @@ def notify(message: str, coord: str) -> None:
     slow or broken hook can never hold up the commit that already landed.
     """
     from ghoshell_moss.core.blueprint.matrix import Matrix
+    from ghoshell_moss.core.blueprint.mindflow import Priority
     from ghoshell_moss.message import Message
     from ghoshell_moss.signals import NotifySignalMeta
 
     async def _send(matrix) -> None:
-        signal = NotifySignalMeta(next=True).to_signal(
+        signal = NotifySignalMeta(next=False).to_signal(
             Message.new(
                 tag="memento_notice", attributes={"kind": "commit", "coord": coord}
             ).with_content(message),
             description="memento on_commit: what the anchor took, what is still open",
+            # 这是回执，不是呼救。它说的是「搬走了哪些文件、还开着哪些任务」——
+            # 没有任何理由让它赢下一次正在进行的注意力，也没有理由让它预约下一轮。
+            # BACKGROUND 永远挑战不成功；notify 抢不到时会缓冲而不是丢弃，正好。
+            priority=Priority.BACKGROUND,
         )
         matrix.session.add_signal(signal)
         await asyncio.sleep(0.5)
