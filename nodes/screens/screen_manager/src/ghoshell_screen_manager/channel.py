@@ -17,6 +17,10 @@ both to ``Matrix`` and tests wire both to a recorder.
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger("moss")
+
 import asyncio
 import contextlib
 import itertools
@@ -566,6 +570,9 @@ def build_screen_channel(
         right: shorter, and watching them arrive is part of seeing me talk.
         """
         text = str(getattr(clause, "text", "") or "").strip()
+        # 谁的话到了屏上 —— DEBUG 级: 排查"听侧/说侧有没有接上"时把它打开就够了,
+        # 平时一句话一行会把日志淹掉.
+        logger.debug("[clause] role=%r text=%r", getattr(clause, "role", ""), text[:12])
         mode = stage_flags["talk"]
         if not text or mode == "off":
             return
@@ -575,6 +582,9 @@ def build_screen_channel(
         if mode == "ghost" and role != "ghost":
             return
         if role == "ghost":
+            # 说侧的 clause 到了 —— 屏上每一个"站在那儿的东西"都该跟着动嘴。
+            # 一条独立的帧: 弹幕管文字, 这一条管身体, 两者各自可以缺席.
+            await _emit({"type": "mouth", "role": "ghost", "chars": len(text)})
             # Fired, not awaited: a bullet lives seconds, and a mirror that awaits
             # each one makes every later sentence arrive seconds late.
             # One band, not the whole stage: my lines arriving from the right are

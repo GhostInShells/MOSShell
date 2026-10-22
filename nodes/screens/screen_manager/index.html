@@ -1881,6 +1881,7 @@ let hoverSince = 0;         // 指针停在这块砖上、且没走动的起点
 let hoverTravel = 0;        // 从那个起点起累计走过的距离
 let ptrX = -1, ptrY = -1;
 
+const POOL_HOLE = 0.46;   // 旋心留空的半径占比：小人在那儿站着
 const POOL_MAX = 14;         // 再老的不画 —— 不活跃的东西不该占视野
 const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向日葵螺旋的种子序
 const POOL_EASE = 6;         // 槽位缓动速率（1/s）：排序一变，卡片是滑过去的，不是瞬移
@@ -2054,11 +2055,12 @@ function layoutPool(dt = 0.016) {
     const t = tiles.get(id); if (!t) return;
     const el = t.el;
     // 黄金回旋：半径 ∝ √序号，角度 ∝ 序号 —— 不重叠、有机、增删不必重排全场。
-    const u = n === 1
-      // 只有一件东西时，螺旋没有"场"可铺：它落在眼睛所在的地方（旋心、最近、最大）。
-      // 通用公式会把它推到半径的六成处，一个孤零零的小瓷砖浮在大空白里。
-      ? 0
-      : Math.sqrt((k + 0.6) / (n + 0.6));      // 0（旋心/最近）→ 1（边缘/最老）
+    // 旋心**留空**：那里站着"我"（overlay 的小人）。第一块砖不再压在正中，
+    // 所有砖都从内圈往外排 —— 家在中间，东西围着它。只有一件时也落在内圈上。
+    const u = Math.max(
+      POOL_HOLE,
+      n === 1 ? 1 : Math.sqrt((k + 0.6) / (n + 0.6)),   // 内圈 → 边缘/最老
+    );
     const rad = rmax * u, ang = k * GOLDEN + poolRot;
     // 槽位（目标）与**显示位置**分开：池序一变，k 就变，槽位是瞬移的；
     // 让显示位置追着槽位走，卡片才是"滑"过去的，而不是跳过去。
@@ -2236,6 +2238,20 @@ function route(f) {
         else ghostBeatAt = 0;          // an explicit idle: off now, not in K seconds
       }
       if ('layout' in f || 'arena' in f) applyState(f);
+      break;
+    }
+    case 'mouth': {
+      // 说侧开口了: 转给每一个"人形"的 iframe (overlay / pip 里那一件).
+      // 屏不替它们决定怎么动 —— 只递一个事实: 现在我这边有声音出来, 长度多少.
+      items.forEach((it) => {
+        const standing = it.slot.classList.contains('overlay')
+          || it.slot.classList.contains('pip') || it.slot.classList.contains('pip-rail');
+        if (!standing || !it.iframe || !it.iframe.contentWindow) return;
+        try {
+          it.iframe.contentWindow.postMessage(
+            { type: 'moss:mouth', chars: f.chars || 0, role: f.role || 'ghost' }, '*');
+        } catch (e) { /* 跨源就静默: 那不是我们的人形 */ }
+      });
       break;
     }
     case 'talk': {
