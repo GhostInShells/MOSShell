@@ -9,9 +9,9 @@ description: 'A lightweight capture layer for surplus creativity — an off-cont
 milestone: null
 priority: P2
 status: in-progress
-status_note: D22 定形：一个 node + d3-force 面；执行面四阶段，先做 Phase 0-1
+status_note: D23 dogfood 之后定形：版本是协作单位，ops 退回账本；Phase 2 的页面对话继续
 title: Ideas Mechanism
-updated: '2026-10-22'
+updated: '2026-10-23'
 ---
 
 # Ideas Mechanism
@@ -530,3 +530,92 @@ What this rules out for good:
 Lesson worth keeping: a command name and a builtin sharing one scope is an invisible trap in
 this style of channel code. Either keep a private alias for the type, or do not name a
 command after a builtin.
+
+
+## D23 — Versions are the collaboration unit; ops go back to being an account (2026-10-23)
+
+The node was dogfooded for the first time against a real graph (`mosshell-stage3-todos`).
+Everything below came out of that hour, and every item answers a friction the human hit
+while drawing.
+
+### Versions, not saves
+
+`save` used to write a marker line and nothing else — a bookmark with nothing behind it.
+It now copies the whole state to `versions/r{rev}-{name}.json`. The filename carries the
+rev, so listing versions is a directory scan and there is no index to drift.
+
+- `versions()` lists them, `version(ref)` cold-reads one, `restore(ref)` copies one back.
+- **restore is appended, never a rewrite**: it writes one more op
+  (`{"op":"restore","from": rN}`) and bumps rev, so the account keeps telling the truth
+  about what happened.
+- every group starts from an `init` version, so history always has a base to fall back to.
+
+### The log is an account, not a read surface
+
+Hot paths no longer open `ops.jsonl`: the current version lives in the sign's frontmatter
+(`saved: r18 name`), and "how many since" is `rev - saved_rev`. `diff` was rewritten to
+compare **two versions** (an empty side means the current version / now). There is no
+command to cold-read ops — read the file if you ever need it.
+
+The log stays segmented by version lines, and recovery is per segment: a broken line
+invalidates the whole segment containing it (half a stretch of changes is worse than none
+of it), and `segment_report()` says which segment died and how many lines were lost.
+Tolerated, never silent.
+
+### Discovery is the root scan
+
+Two things were removed rather than tuned:
+
+- **seeding** — a missing root used to be filled with `examples/`, and a booting ghost then
+  read a demo graph as if it were the work. A missing root now stays empty.
+- **archived in the notice** — archived groups never take a line in the notice, never
+  become the focus, and are not listed by `groups()`. The page keeps them behind a
+  collapsed drawer the human opens: his surface, his choice; my attention stays clean.
+
+The human can start a group himself now — a group *is* a directory, and the page's
+"New group" calls `create_group`. `show_group(ref)` is the other direction: it puts a
+group on the screen, so arranging a group is not only his click.
+
+### Six colour slots, renamable
+
+Concepts had drifted into "a vocabulary you can only grow" — and the first complaint was
+exactly that: "概念能加不能删". The model that held:
+
+**six fixed colour slots; the word is what we call the slot, and it can be renamed.**
+
+- the default word *is* the colour name (`gray`, `green`, `blue`, `amber`, `red`, `white`)
+- `rename_concept(old, new)` moves the slot's key and every node wearing it, in one write
+- no palette, no adding, no deleting. Picking a word on a node is the whole gesture.
+
+### The touch of a force field, without the pile
+
+The first real graph collapsed into a heap within seconds. Two causes, both mine:
+
+1. every rebuild nulled `charge` and `link` while leaving `center` and `radial` running —
+   pull without repulsion;
+2. `breathe()` also lerped nodes back to their last planned position, so two motions fought
+   each other.
+
+Now `planLayout` is the **seed** and charge / link / collide relax from it; the radial force
+is gone and centring is a whisper (.015). `breathe` only adds the idle offset and never
+moves a node. Re-layout restarts the simulation instead of freezing it.
+
+### Page moves
+
+- **Save / Versions / Play** in the toolbar; the HUD carries the durability line
+  (`★r18 name`, or `unsaved`).
+- **Play walks versions, not ops.** Ops are per keystroke; versions are moments. Play
+  fetches `/version?ref=rN` and steps the canvas through them, the version name as caption.
+- **Refresh is a real reload**, and a script that throws says so on the surface instead of
+  leaving a row of dead buttons — "nothing appeared" and "the script is broken" must not
+  look alike.
+
+### Still open
+
+- **Reset by op number.** A version-level restore is a file copy; `reset(rN)` needs the
+  account to be replayable, and today's account is written for reading, not replaying.
+  Next change: make every write emit a replayable op, then `reset(rev)` is "the nearest
+  version at or before rev, then that segment replayed forward".
+- **The lock does not span read-modify-write.** `apply()` locks only the write, so the page
+  and the CLI can overwrite each other silently. Versions let you go back; they do not stop
+  the overwrite. This is the one remaining data-loss path with no signal.

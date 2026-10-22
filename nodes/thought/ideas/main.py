@@ -85,6 +85,27 @@ class IdeasServer:
             # 谁在磁盘上改了图，页面下一次问就到了——新鲜度是读的人的事。
             self._store.reload()
             return connection.respond(200, json.dumps({"type": "state", **self.snapshot()}))
+        if path == "/version":
+            # Cold read of one version — what `play` and "what did that point look like"
+            # both need; it never touches the current graph.
+            from urllib.parse import unquote
+
+            self._store.reload()
+            raw = request.path.split("?", 1)[1] if "?" in request.path else ""
+            query = {}
+            for part in unquote(raw).split("&"):
+                key, _, value = part.partition("=")
+                if key:
+                    query[key] = value
+            try:
+                group = self._store.require_group(query.get("group", ""))
+                rev, title, data = self._store.read_version(group, query.get("ref", ""))
+            except Exception as exc:  # noqa: BLE001
+                return connection.respond(404, str(exc))
+            return connection.respond(200, json.dumps(
+                {"rev": rev, "name": title,
+                 "nodes": data.get("nodes") or {},
+                 "edges": data.get("edges") or []}))
         if path == "/ws":
             return None
         if path.startswith("/raw/"):
@@ -142,6 +163,44 @@ class IdeasServer:
                     self.view["group"] = group.name
                     self.view["selected"] = ""
                     await self.publish()
+                    continue
+                if kind == "concept-rename":
+                    # A page click renames a colour word: the slot stays, the word moves.
+                    try:
+                        self._store.reload()
+                        group = self._store.require_group(
+                            str(frame.get("group", "") or self.view.get("group", "")))
+                        info = self._store.rename_concept(
+                            group, str(frame.get("from", "")), str(frame.get("to", "")))
+                        await self.publish()
+                        await connection.send(json.dumps({
+                            "type": "ok",
+                            "result": f'renamed {info["from"]} → {info["to"]} ({info["nodes"]} nodes)'}))
+                    except Exception as exc:  # noqa: BLE001
+                        await connection.send(json.dumps({"type": "error", "message": f"{exc!r}"}))
+                    continue
+                if kind in ("save", "restore", "versions"):
+                    # Versions are the collaboration unit: Save / restore / the version
+                    # list on the page all land here, on the same store calls.
+                    try:
+                        self._store.reload()
+                        group = self._store.require_group(
+                            str(frame.get("group", "") or self.view.get("group", "")))
+                        if kind == "versions":
+                            await connection.send(json.dumps({
+                                "type": "versions", "group": group.name,
+                                "rows": self._store.versions(group)}))
+                            continue
+                        if kind == "save":
+                            info = self._store.save(group, str(frame.get("name", "") or ""))
+                            result = f'saved r{info["rev"]} {info["name"]}'
+                        else:
+                            info = self._store.restore(group, str(frame.get("ref", "")))
+                            result = f'restored r{info["from"]} "{info["name"]}" → r{info["rev"]}'
+                        await self.publish()
+                        await connection.send(json.dumps({"type": "ok", "result": result}))
+                    except Exception as exc:  # noqa: BLE001 — tell the page, never swallow
+                        await connection.send(json.dumps({"type": "error", "message": f"{exc!r}"}))
                     continue
                 if kind in ("add", "set", "link", "unlink", "rm", "concept", "op"):
                     # 页面的每一帧都是同一个 op 协议的一行——不是第二条写路径。
@@ -255,7 +314,7 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
     def instruction() -> str:
         return (
             "the graph is the truth: one `graph.json` per group. `tree()` is the cold read — "
-            "the whole structure in one call; `diff(since)` says what moved since a rev.\n"
+            "the whole structure in one call; `diff` compares two versions.\n"
             "a node is `{label, body, concept, weight, flag}`. weight decays with generation "
             "(child = parent × 0.8, floor 0.2), so depth is size: further out *is* more detail.\n"
             "an edge is an entity `{id, from, to, kind}`; kind is detail | depend | related. "
@@ -264,6 +323,10 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
             "in code. `flag` is the human's red mark: the node he says has a problem.\n"
             "`critical()` answers where the spine is (longest chain + branch points); "
             "`path(a,b)` and `leaves()` are the pruning questions. `run(text)` is the escape hatch.\n"
+            "versions are the collaboration unit: `save(name)` copies the graph into a real file, "
+            "`versions()` lists them, `version(ref)` cold-reads one, `restore(ref)` goes back. "
+            "ops.jsonl is the account — nothing reads it on the hot path; read the file if you "
+            "ever need it.\n"
             "two planes, kept apart: **data** (`op`, `add`, `set`, `link`, `rm`, `save`) changes "
             "graph.json; **presentation** (`spot`, `walk`, `focus`, `pulse`, `caption`, "
             "`overview`, `view_clear`) never touches it — a narration is a reading, not a fact. "
@@ -365,13 +428,52 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
         return await run_cli(["show", key] + (["--group", group] if group else []))
 
     @chan.build.command(always_observe=True)
-    async def diff(since: int = 0, group: str = "") -> str:
-        """What changed since a revision — the account, not the truth.
+    async def diff(from_version: str = "", to_version: str = "", group: str = "") -> str:
+        """What changed between two versions — the ops log is not a read surface.
 
-        :param since: only ops after this rev
+        :param from_version: a version ref (name or `r18`); empty = the current version
+        :param to_version: a version ref; empty = now
         :param group: which group
         """
-        return await run_cli(["diff", "--since", str(since)] + (["--group", group] if group else []))
+        argv = ["diff", "--from", from_version, "--to", to_version]
+        if group:
+            argv += ["--group", group]
+        return await run_cli(argv)
+
+    @chan.build.command(always_observe=True)
+    async def save(name: str, group: str = "") -> str:
+        """Anchor this rev as a version — a real copy you can go back to.
+
+        :param name: what this moment is called
+        :param group: which group
+        """
+        return await run_cli(["save", name] + (["--group", group] if group else []))
+
+    @chan.build.command(always_observe=True)
+    async def versions(group: str = "") -> str:
+        """The checkpoints on disk, oldest first.
+
+        :param group: which group
+        """
+        return await run_cli(["versions"] + (["--group", group] if group else []))
+
+    @chan.build.command(always_observe=True)
+    async def version(ref: str, group: str = "") -> str:
+        """Cold read one version — what it held, without touching the graph.
+
+        :param ref: a version name, or `r18`
+        :param group: which group
+        """
+        return await run_cli(["version", ref] + (["--group", group] if group else []))
+
+    @chan.build.command(always_observe=True)
+    async def restore(ref: str, group: str = "") -> str:
+        """Go back to a version. Appended to the account — history is not rewritten.
+
+        :param ref: a version name, or `r18`
+        :param group: which group
+        """
+        return await run_cli(["restore", ref] + (["--group", group] if group else []))
 
     @chan.build.command(always_observe=True)
     async def critical(group: str = "") -> str:
@@ -494,6 +596,16 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
         :param group: which group
         """
         return await run_cli(["concept", name, color] + (["--group", group] if group else []))
+
+    @chan.build.command(always_observe=True)
+    async def rename_concept(old: str, new: str, group: str = "") -> str:
+        """Rename a concept word — the colour slot stays, every node follows.
+
+        :param old: the current word
+        :param new: the new word
+        :param group: which group
+        """
+        return await run_cli(["rename-concept", old, new] + (["--group", group] if group else []))
 
 
     @chan.build.command(always_observe=True)

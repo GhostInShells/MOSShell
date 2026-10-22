@@ -43,11 +43,13 @@ IDEAS = "IDEAS.md"
 OPS = "ops.jsonl"
 LOCK = ".lock"
 TRASH = ".trash"
+VERSIONS = ".versions"
+VERSION_OP = "version"
 LEGACY_SUFFIX = ".idea.md"
 
 DECAY = 0.8
 FLOOR = 0.2
-DEFAULT_CONCEPT = "misc"
+DEFAULT_CONCEPT = "gray"
 DEFAULT_KINDS = ("detail", "depend", "related")
 KIND = "detail"
 
@@ -71,13 +73,16 @@ One line on what this group is — for whoever opens it next.
 > nodes** — they live in the graph, and a second copy would drift.
 """
 
+# The scale is a fixed vocabulary of colour names, and a node's `concept` is one of
+# these words. There is no palette to edit and no word to add: picking a colour *is*
+# the whole gesture, and the word a node wears is the colour it draws in.
 DEFAULT_CONCEPTS: dict[str, str] = {
-    "misc": "#8aa89a",     # unclassified
-    "core": "#e8f5ea",     # the trunk: motive, purpose
-    "design": "#58a6ff",   # architecture, data structures
-    "exec": "#7ee787",     # execution, implementation
-    "sense": "#f0b429",    # perception, interaction
-    "risk": "#d0715c",     # the main contradiction, risk
+    "gray": "#8aa89a",     # unclassified
+    "green": "#7ee787",    # execution, implementation
+    "blue": "#58a6ff",     # architecture, data structures
+    "amber": "#f0b429",    # perception, interaction
+    "red": "#d0715c",      # the main contradiction, risk
+    "white": "#e8f5ea",    # the trunk: motive, purpose
 }
 
 
@@ -134,6 +139,8 @@ class Group:
     path: Path
     rev: int = 0
     status: str = "active"
+    saved_rev: int = 0          # the newest version's rev, read from the sign — never the log
+    saved_name: str = ""
     meta: dict = field(default_factory=lambda: {"concepts": {}})
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: list[Edge] = field(default_factory=list)
@@ -151,10 +158,34 @@ class Group:
     def ideas_path(self) -> Path:
         return self.path / IDEAS
 
+    @property
+    def versions_path(self) -> Path:
+        return self.path / VERSIONS
+
+    def version_files(self) -> dict[int, tuple[str, Path]]:
+        """Every checkpoint on disk, keyed by rev — the filename *is* the index.
+
+        No index file: an index is a fourth thing that can drift from the three it
+        describes. A directory scan is cheap and cannot lie.
+        """
+        out: dict[int, tuple[str, Path]] = {}
+        if not self.versions_path.is_dir():
+            return out
+        for path in self.versions_path.glob("r*.json"):
+            head, _, tail = path.stem[1:].partition("-")
+            if not head.isdigit():
+                continue
+            out[int(head)] = (tail.replace("_", " ") or "checkpoint", path)
+        return out
+
     def concepts(self) -> dict[str, str]:
-        merged = dict(DEFAULT_CONCEPTS)
-        merged.update({str(k): str(v) for k, v in (self.meta.get("concepts") or {}).items()})
-        return merged
+        """The colour scale: six slots. Their *words* are ours to rename.
+
+        Once a group has touched its scale the map is authoritative — otherwise the
+        defaults would keep re-appearing under a name someone already renamed.
+        """
+        own = {str(k): str(v) for k, v in (self.meta.get("concepts") or {}).items()}
+        return own or dict(DEFAULT_CONCEPTS)
 
     def find(self, key: str) -> Node | None:
         """Accept an id or a label — the human thinks in labels, the file speaks ids."""
@@ -178,6 +209,8 @@ class Group:
             "path": str(self.path),
             "rev": self.rev,
             "status": self.status,
+            "saved_rev": self.saved_rev,
+            "saved_name": self.saved_name,
             "meta": {"concepts": self.concepts()},
             "nodes": [{"id": n.id, **n.to_dict()} for n in self._sorted_nodes()],
             "edges": [e.to_dict() for e in self.edges],
@@ -302,6 +335,12 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _slug(name: str) -> str:
+    """A filename-safe version name: `release 1` → `release_1`."""
+    keep = [c if (c.isalnum() or c in "-_") else "_" for c in str(name or "").strip()]
+    return "".join(keep).strip("_") or "checkpoint"
+
+
 def write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -337,6 +376,10 @@ class GraphStore:
         if group.ideas_path.exists():
             meta, _body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8", errors="replace"))
             group.status = str(meta.get("status", "active")) or "active"
+            saved = str(meta.get("saved", "") or "")
+            head, _, saved_name = saved.partition(" ")
+            if head.startswith("r") and head[1:].isdigit():
+                group.saved_rev, group.saved_name = int(head[1:]), saved_name.strip()
         if not group.graph_path.exists():
             legacy = sorted(group.path.glob(f"*{LEGACY_SUFFIX}"))
             if legacy:
@@ -345,8 +388,13 @@ class GraphStore:
             group.write()          # a brand-new, empty graph on disk
             if not group.ideas_path.exists():
                 write_ideas_sign(group)
+            self.save(group, "init")   # a group starts from a version: history needs a base
             return
         data = json.loads(group.graph_path.read_text(encoding="utf-8"))
+        self._load_data(group, data)
+
+    def _load_data(self, group: Group, data: dict) -> None:
+        """Fill a group from a graph.json body — shared by the loader and by restore."""
         group.rev = int(data.get("rev", 0))
         group.meta = {"concepts": dict((data.get("meta") or {}).get("concepts") or {})}
         group.nodes = {}
@@ -406,6 +454,7 @@ class GraphStore:
         group.write(note=f"imported {len(files)} markdown ideas")
         if not group.ideas_path.exists():
             write_ideas_sign(group)
+        self.save(group, "imported")
         trash = group.path / TRASH
         trash.mkdir(exist_ok=True)
         for file, _meta, _body in parsed:
@@ -503,7 +552,8 @@ class GraphStore:
             weight = max(FLOOR, (parent_node.weight * DECAY) if parent_node else 1.0)
         weight = round(float(weight), 3)
         node = Node(id=node_id, label=label.strip(), body=body.strip(),
-                    concept=concept.strip() or DEFAULT_CONCEPT, weight=weight, created=_now())
+                    concept=concept.strip() or next(iter(group.concepts()), DEFAULT_CONCEPT),
+                    weight=weight, created=_now())
         group.nodes[node_id] = node
         edge = None
         if parent_node is not None:
@@ -573,42 +623,144 @@ class GraphStore:
         self.apply(group, {"op": "rm", "node": node.id, "label": node.label, "edges": len(touched)})
         return {"node": node.id, "label": node.label, "edges": len(touched)}
 
+    # -- versions -----------------------------------------------------------
     def save(self, group: Group, name: str) -> dict:
-        """Name the current rev — a checkpoint, not another change.
+        """Anchor this rev as a **version** — a real copy, not a marker.
 
-        `rev` moves on every write, so a batch of twenty colour changes buries the one
-        thing worth referencing. A save does not touch the graph at all: it writes a
-        marker into the account and its name into the group's sign.
+        `versions/r{rev}-{name}.json` is the whole state at that moment, so going back
+        is a file copy, not a replay. The account keeps one line for the record;
+        nothing reads the log to find out which version is current.
         """
         name = (name or "").strip() or "checkpoint"
         with self._lock(group):
+            group.versions_path.mkdir(parents=True, exist_ok=True)
+            path = group.versions_path / f"r{group.rev}-{_slug(name)}.json"
+            write_atomic(path, group.to_json())
             with group.ops_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "save", "name": name},
-                                    ensure_ascii=False) + "\n")
-        if group.ideas_path.exists():
-            meta, body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8"))
-            meta["saved"] = f"r{group.rev} {name}"
-            meta["updated"] = _now()
-            write_atomic(group.ideas_path, join_frontmatter(meta, body))
-        return {"rev": group.rev, "name": name}
+                fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": VERSION_OP,
+                                     "name": name}, ensure_ascii=False) + "\n")
+        self._mark_saved(group, name)
+        return {"rev": group.rev, "name": name, "file": str(path)}
 
-    def last_save(self, group: Group) -> tuple[int, str]:
-        """(rev, name) of the newest checkpoint; (0, "") when none was ever made."""
+    def _mark_saved(self, group: Group, name: str) -> None:
+        """The sign carries the current version, so listing groups never reads the log."""
+        group.saved_rev, group.saved_name = group.rev, name
+        if not group.ideas_path.exists():
+            return
+        meta, body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8"))
+        meta["saved"] = f"r{group.rev} {name}"
+        meta["updated"] = _now()
+        write_atomic(group.ideas_path, join_frontmatter(meta, body))
+
+    def versions(self, group: Group) -> list[dict]:
+        """The checkpoints on disk, oldest first — a directory scan, no index."""
+        return [{"rev": rev, "name": name, "file": str(path)}
+                for rev, (name, path) in sorted(group.version_files().items())]
+
+    def read_version(self, group: Group, ref: str) -> tuple[int, str, dict]:
+        """Cold read a version: by name, by `r18`, or by `18`."""
+        found = group.version_files()
+        if not found:
+            raise KeyError(f"no versions in {group.name}")
+        ref = str(ref or "").strip()
+        if ref[:1] == "r" and ref[1:].isdigit():
+            rev = int(ref[1:])
+        elif ref.isdigit():
+            rev = int(ref)
+        else:
+            hits = [r for r, (n, _p) in found.items() if n == ref]
+            if not hits:
+                raise KeyError(f"no version {ref!r} in {group.name} — versions() lists them")
+            rev = max(hits)
+        if rev not in found:
+            raise KeyError(f"no version at r{rev} in {group.name}")
+        name, path = found[rev]
+        return rev, name, json.loads(path.read_text(encoding="utf-8"))
+
+    def restore(self, group: Group, ref: str) -> dict:
+        """Go back to a version — appended to the account, never a rewrite of history."""
+        rev, name, data = self.read_version(group, ref)
+        with self._lock(group):
+            self._load_data(group, data)
+            group.rev += 1
+            write_atomic(group.graph_path, group.to_json())
+            with group.ops_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "restore",
+                                     "from": rev, "name": name}, ensure_ascii=False) + "\n")
+        return {"rev": group.rev, "from": rev, "name": name}
+
+    def segment_report(self, group: Group) -> list[str]:
+        """Which stretches of the log are readable — the never-silent half of recovery.
+
+        A `version` line opens a segment; a broken line inside it invalidates the whole
+        segment, because half a stretch of changes is worse than none of it. Nothing is
+        rewritten here: this reports, and `graph.json` stays the truth either way.
+        """
         if not group.ops_path.exists():
-            return 0, ""
-        rev, name = 0, ""
+            return ["no ops recorded"]
+        rows: list[str] = []
+        start, broken = 0, 0
         for line in group.ops_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
                 op = json.loads(line)
-            except ValueError:
+                rev = int(op.get("rev", 0))
+            except (ValueError, TypeError):
+                broken += 1
                 continue
-            if op.get("op") == "save":
-                rev, name = int(op.get("rev", 0)), str(op.get("name", ""))
-        return rev, name
+            if op.get("op") == VERSION_OP:
+                if broken:
+                    rows.append(f"after r{start}: {broken} broken line(s) — that whole "
+                                f"segment is ignored")
+                start, broken = rev, 0
+                rows.append(f"r{rev} ★ {op.get('name')} — readable")
+        if broken:
+            rows.append(f"after r{start}: {broken} broken line(s) — that whole segment is ignored")
+        return rows
+
+    def last_save(self, group: Group) -> tuple[int, str]:
+        """The current version, read from the sign — the log is never opened for this."""
+        return group.saved_rev, group.saved_name
 
     def ops_since_save(self, group: Group) -> int:
-        rev, _name = self.last_save(group)
-        return max(0, group.rev - rev)
+        return max(0, group.rev - group.saved_rev)
+
+    def _graph_at(self, group: Group, ref: str) -> tuple[str, dict]:
+        if not ref:
+            return f"r{group.rev} (now)", json.loads(group.to_json())
+        rev, name, data = self.read_version(group, ref)
+        return f"r{rev} {name}", data
+
+    def diff_versions(self, group: Group, from_ref: str = "", to_ref: str = "") -> list[str]:
+        """What changed between two versions — the question the log used to answer.
+
+        Empty `from_ref` means the current version, empty `to_ref` means now; neither
+        reads the ops log.
+        """
+        if not from_ref and group.saved_rev:
+            from_ref = f"r{group.saved_rev}"
+        a_name, a = self._graph_at(group, from_ref)
+        b_name, b = self._graph_at(group, to_ref)
+        na, nb = a.get("nodes") or {}, b.get("nodes") or {}
+        rows = [f"{a_name} → {b_name}"]
+        for nid in sorted(set(nb) - set(na)):
+            rows.append(f"+ {nb[nid].get('label') or nid}")
+        for nid in sorted(set(na) - set(nb)):
+            rows.append(f"− {na[nid].get('label') or nid}")
+        for nid in sorted(set(na) & set(nb)):
+            if na[nid] != nb[nid]:
+                rows.append(f"~ {nb[nid].get('label') or nid}")
+        ea = {str(e.get("id")): e for e in a.get("edges") or []}
+        eb = {str(e.get("id")): e for e in b.get("edges") or []}
+        for eid in sorted(set(eb) - set(ea)):
+            rows.append(f"→ {eb[eid].get('from')}→{eb[eid].get('to')}")
+        for eid in sorted(set(ea) - set(eb)):
+            rows.append(f"✂ {ea[eid].get('from')}→{ea[eid].get('to')}")
+        if len(rows) == 1:
+            rows.append("no change")
+        return rows
 
     def set_status(self, group: Group, status: str) -> None:
         """The sign's own field: alive, waiting, or put away. The graph never moves."""
@@ -622,6 +774,31 @@ class GraphStore:
         write_atomic(group.ideas_path, join_frontmatter(meta, body) if body.strip() else
                      _ideas_body(group.name))
         self.apply(group, {"op": "status", "group": group.name, "status": status})
+
+    def rename_concept(self, group: Group, old: str, new: str) -> dict:
+        """Rename a concept word — the colour slot stays, the label changes.
+
+        Renaming moves the key in the scale and every node wearing it, in one write,
+        so nothing is left pointing at a word that no longer exists.
+        """
+        old, new = str(old or "").strip(), str(new or "").strip()
+        if not old or not new:
+            raise ValueError("rename needs two words")
+        concepts = dict(group.concepts())
+        if old not in concepts:
+            raise KeyError(f"no concept {old!r} in {group.name}")
+        if new in concepts and new != old:
+            raise ValueError(f"concept {new!r} already exists in {group.name}")
+        if old != new:
+            concepts[new] = concepts.pop(old)
+            group.meta["concepts"] = concepts
+        moved = 0
+        for node in group.nodes.values():
+            if node.concept == old:
+                node.concept = new
+                moved += 1
+        self.apply(group, {"op": "concept-rename", "from": old, "to": new, "nodes": moved})
+        return {"from": old, "to": new, "nodes": moved}
 
     def set_concept(self, group: Group, name: str, color: str) -> None:
         concepts = dict(group.meta.get("concepts") or {})

@@ -72,6 +72,7 @@
     border-radius:999px;padding:3px 11px;font-size:11px;cursor:pointer}
   #grouprow #newgroup:hover{border-color:var(--hot)}
   #hud #newform{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  #hud #newform[hidden]{display:none}
   #hud #newform input,#hud #newform select{background:#0f1613;color:var(--fg);border:1px solid var(--line);
     border-radius:6px;padding:4px 8px;font-size:12px}
   #hud #newform input{min-width:240px}
@@ -101,6 +102,9 @@
   <div id="concepts"></div>
   <div class="toolbar">
     <button id="add">＋ New node (Tab grows one from the selection)</button>
+    <button id="save">Save</button>
+    <button id="versions">Versions</button>
+    <button id="play">Play</button>
     <button id="relayout">Re-layout</button>
     <button id="refresh">Refresh</button>
   </div>
@@ -125,6 +129,17 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script>
+// A broken script and a page with nothing to show must not look alike: if anything
+// throws, say it on the surface instead of leaving four dead buttons.
+window.addEventListener('error', e => {
+  const el = document.getElementById('broken');
+  if (el) el.textContent = `script error: ${e.message} (line ${e.lineno}:${e.colno})`;
+});
+window.addEventListener('unhandledrejection', e => {
+  const el = document.getElementById('broken');
+  if (el) el.textContent = `script error: ${e.reason}`;
+});
+
 const W = () => document.getElementById('stage').clientWidth;
 const H = () => document.getElementById('stage').clientHeight;
 
@@ -339,20 +354,20 @@ function rebuild(alpha, keepSide){
   links = (g ? g.edges : [])
     .filter(e => here.has(e.from) && here.has(e.to))
     .map(e => ({ id: e.id, kind: e.kind, source: here.get(e.from), target: here.get(e.to) }));
-  // 只在需要时重新规划：第一次进来、或者有人明确要 relayout。
-  // 规划出来的位置就是答案：第一次进来直接落到目标位，别让力模拟把球从中心炸开。
-  const planned = !settled || relayoutWanted;
-  if (planned){ planLayout(!settled); relayoutWanted = false; }
-  sim.force('charge', null)
-    .force('link', null)
-    .force('collide', null);
+  // Plan first, then let the forces relax it: the plan gives the shape, charge + link
+  // give the touch. No radial pull — that is what used to squeeze everything inward.
+  const first = !settled;
+  if (first || relayoutWanted){ planLayout(first); relayoutWanted = false; }
   sim.nodes(nodes);
-  sim.force('collide', d3.forceCollide().radius(d => d.r + 34).strength(.45));
+  sim.force('charge', d3.forceManyBody().strength(d => -700 - d.r * 10));
+  sim.force('link', d3.forceLink(links).id(d => d.id)
+    .distance(l => 90 + (l.source.r || 40) + (l.target.r || 40)).strength(.22));
+  sim.force('collide', d3.forceCollide().radius(d => d.r + 26).strength(1));
+  // A whisper of centring keeps the graph on screen; anything stronger clumps it.
+  sim.force('center', d3.forceCenter(availW() / 2, H() / 2).strength(.015));
+  sim.force('disc', null);
+  sim.alpha(first ? 0.6 : 0.3).restart();
   if (!nodes.length){ settled = true; document.body.classList.add('ready'); }
-  if (planned){
-    sim.stop(); settled = true; document.body.classList.add('ready');
-    requestAnimationFrame(fit);
-  } else if (alpha) sim.alpha(alpha).restart();
   if (sel && !here.has(sel.id)) sel = null;
   updateHud(); paint();
   if (!keepSide) drawSide();
@@ -442,6 +457,7 @@ function updateHud(){
   const flagged = g ? g.nodes.filter(n => n.flag).length : 0;
   document.getElementById('counts').textContent =
     `${groupName || 'no group'} · ${total} nodes · ${g ? g.edges.length : 0} edges · r${g ? g.rev : 0}`
+    + (g && g.saved_rev ? ` · ★r${g.saved_rev} ${g.saved_name}` : ' · unsaved')
     + (flagged ? ` · ${flagged} flagged` : '');
   renderClusters();
   renderConcepts();
@@ -487,30 +503,22 @@ function renderClusters(){
 }
 
 function renderConcepts(){
+  // The scale is a legend, not an editor: six colour words, and a node picks one in
+  // the side panel. No palette, no new words — picking a colour is the gesture.
   const el = document.getElementById('concepts');
   el.innerHTML = '';
   const cs = concepts();
   for (const [name, color] of Object.entries(cs)){
     const s = document.createElement('span');
     s.innerHTML = `<i style="background:${color}"></i>${name}`;
-    s.title = 'click to change its colour';
+    s.title = 'click to rename this concept word — the colour stays';
     s.style.cursor = 'pointer';
     s.onclick = () => {
-      const next = prompt(`colour of "${name}" (#rrggbb)`, color);
-      if (next) send({type:'concept', group: groupName, name, color: next.trim()});
+      const next = (prompt(`rename the concept "${name}"`, name) || '').trim();
+      if (next && next !== name) send({type:'concept-rename', group: groupName, from: name, to: next});
     };
     el.appendChild(s);
   }
-  const addChip = document.createElement('span');
-  addChip.textContent = '＋ concept';
-  addChip.style.cursor = 'pointer';
-  addChip.onclick = () => {
-    const name = prompt('name of the new concept (e.g. storage / voice)');
-    if (!name) return;
-    const color = prompt('its colour (#rrggbb)', '#58a6ff');
-    if (color) send({type:'concept', group: groupName, name: name.trim(), color: color.trim()});
-  };
-  el.appendChild(addChip);
   const sel2 = document.getElementById('n-concept');
   sel2.innerHTML = Object.keys(cs).map(k => `<option value="${k}">${k}</option>`).join('');
 }
@@ -642,20 +650,14 @@ function breathe(ts){
   const goal = hoverId ? 0 : 1;
   drift += (goal - drift) * 0.07;
   const t = ts / 1000;
-  let moving = false;
-  for (const n of nodes){
-    if (Number.isFinite(n.tx)){
-      const dx = n.tx - n.x, dy = n.ty - n.y;
-      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5){ n.x += dx * 0.16; n.y += dy * 0.16; moving = true; }
-    }
-  }
   for (const n of nodes){
     if (n.ph === undefined) n.ph = Math.random() * Math.PI * 2;
     const a = 3.2 * drift;
     n.ox = (Math.sin(t * 0.63 + n.ph) + Math.sin(t * 1.27 + n.ph * 2.1) * 0.45) * a;
     n.oy = (Math.cos(t * 0.81 + n.ph * 1.7) + Math.cos(t * 1.53 + n.ph) * 0.45) * a;
   }
-  if (drift > 0.005 || pulses.size || moving) paint();
+  // Positions belong to the simulation now — breathe only adds the idle motion on top.
+  if (drift > 0.005 || pulses.size || sim.alpha() > 0.01) paint();
 }
 requestAnimationFrame(breathe);
 
@@ -726,6 +728,7 @@ function connect(){
     else if (f.type === 'error') console.warn('[ideas]', f.message);
     else if (f.type === 'view') applyView(f);
     else if (f.type === 'eye') applyEye(f);
+    else if (f.type === 'versions'){ versionRows = f.rows || []; drawVersions(versionRows); }
   };
   ws.onopen = () => announceEye();
   ws.onclose = () => setTimeout(connect, 1500);
@@ -768,16 +771,90 @@ async function poll(){
   try { const r = await fetch('/state', {cache:'no-store'}); if (r.ok) apply(await r.json()); }
   catch (e) { /* 断线等下一次 */ }
 }
-// 两个手动把手：排不回原样的时候，他不必等我，自己能把画面重置。
-function relayoutNow(){
-  settled = true; relayoutWanted = false;
-  planLayout(true);
-  fit(); paint();
+/* ------------------------------------------------------------- versions */
+let versionRows = [];
+let playing = false;
+
+function autoVersionName(){
+  const g = cur();
+  return g ? `v${g.rev}` : 'v1';
 }
-function refreshNow(){
-  lastSig = ''; settled = false; relayoutWanted = true;
+
+function drawVersions(rows){
+  // A reading of the directory, not a second model: r{rev} · name, oldest first.
+  document.getElementById('s-title').textContent = 'versions';
+  document.getElementById('s-meta').textContent =
+    `${rows.length} checkpoint(s) in ${groupName} · current ★r${(cur() || {}).saved_rev || 0}`;
+  document.getElementById('s-links').innerHTML = '';
+  document.getElementById('s-notes').innerHTML = '';
+  const box = document.getElementById('s-edit');
+  box.innerHTML = rows.length ? rows.map(r => `
+    <div class="row" style="align-items:center;gap:8px">
+      <span style="flex:1">r${r.rev} · ${esc(r.name)}</span>
+      <button class="chip" data-ref="r${r.rev}">restore</button>
+    </div>`).join('')
+    : '<div style="color:var(--dim);font-size:12px">no versions yet — Save makes one</div>';
+  box.querySelectorAll('button[data-ref]').forEach(btn => btn.addEventListener('click', () => {
+    if (confirm(`go back to ${btn.dataset.ref}? the graph is replaced; history keeps both`))
+      send({type:'restore', group: groupName, ref: btn.dataset.ref});
+  }));
+}
+
+function showSnapshot(data){
+  const g = cur();
+  if (!g) return;
+  g.nodes = Object.entries(data.nodes || {}).map(([id, raw]) => ({
+    id, label: raw.label || '', body: raw.body || '',
+    concept: raw.concept || 'gray', weight: raw.weight === undefined ? 1 : raw.weight,
+    flag: !!raw.flag}));
+  g.edges = (data.edges || []).map(e => ({id: e.id, from: e.from, to: e.to, kind: e.kind || 'detail'}));
+  sel = null; settled = false; lastSig = ''; relayoutWanted = true;
+  rebuild(0);
+}
+
+async function playVersions(){
+  // Play goes through versions, not ops: ops are per keystroke, versions are moments.
+  if (playing){ playing = false; return; }
+  if (!versionRows.length){ send({type:'versions', group: groupName}); return; }
+  playing = true;
+  const cap = document.getElementById('caption');
+  for (const row of versionRows.slice()){
+    if (!playing) break;
+    try {
+      const res = await fetch(`/version?group=${encodeURIComponent(groupName)}&ref=r${row.rev}`);
+      if (!res.ok) continue;
+      showSnapshot(await res.json());
+      cap.textContent = `r${row.rev} · ${row.name}`;
+      cap.classList.add('on');
+      await new Promise(done => setTimeout(done, 1100));
+    } catch (e) { break; }
+  }
+  playing = false;
+  cap.classList.remove('on');
   poll();
 }
+
+// 两个手动把手：排不回原样的时候，他不必等我，自己能把画面重置。
+function relayoutNow(){
+  // A fresh plan, then one more settle: the same touch as the first paint.
+  planLayout(true);
+  relayoutWanted = false;
+  sim.nodes(nodes).alpha(0.8).restart();
+}
+function refreshNow(){
+  // The honest meaning of a Refresh button: reload the page, not re-ask politely.
+  location.reload();
+}
+try {
+  document.getElementById('save').onclick = () => {
+    const name = (prompt('name this version', autoVersionName()) || '').trim();
+    if (name) send({type:'save', group: groupName, name});
+  };
+} catch (err) {
+  document.getElementById('broken').textContent = `wiring failed: ${err}`;
+}
+document.getElementById('versions').onclick = () => send({type:'versions', group: groupName});
+document.getElementById('play').onclick = playVersions;
 document.getElementById('newgroup').onclick = () => {
   const name = (prompt('name of the new group? (a directory under root)') || '').trim();
   if (!name) return;

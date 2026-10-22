@@ -154,26 +154,19 @@ def show(ctx, key: str, group: str) -> None:
         click.echo("↓ " + ", ".join(f"{g.nodes[e.dst].name}({e.kind})" for e in out))
 
 
+
 @cli.command()
 @click.option("--group", "-g", default="")
-@click.option("--since", "-s", default=None, type=int, help="only ops after this rev")
-@click.option("--since-save/--all", "from_save", default=True,
-              help="start from the last save checkpoint (default) or from the beginning")
+@click.option("--from", "from_ref", default="", help="a version (name or r18); empty = the current one")
+@click.option("--to", "to_ref", default="", help="a version; empty = now")
 @click.pass_context
-def diff(ctx, group: str, since: int | None, from_save: bool) -> None:
-    """What changed since a revision — the account, not the truth.
-
-    Default anchor is the last checkpoint: "what moved since I last looked seriously".
-    """
+def diff(ctx, group: str, from_ref: str, to_ref: str) -> None:
+    """What changed between two versions — the ops log is not a read surface."""
     store = _store(ctx)
     targets = [_group(store, group)] if group else list(store.groups.values())
     for g in targets:
-        if since is None:
-            since = store.last_save(g)[0] if from_save else 0
-        rev, name = store.last_save(g)
-        anchor = f'since "{name}" (r{rev})' if name else "from the beginning"
-        click.echo(f"## {g.name} (r{g.rev}, {anchor} → now)")
-        click.echo("\n".join(store.diff_lines(g, since)))
+        click.echo(f"## {g.name} (r{g.rev})")
+        click.echo("\n".join(store.diff_versions(g, from_ref, to_ref)))
 
 
 @cli.command()
@@ -337,6 +330,19 @@ def concept(ctx, name: str, color: str, group: str) -> None:
     click.echo(f"{name} = {color}")
 
 
+@cli.command("rename-concept")
+@click.argument("old")
+@click.argument("new")
+@click.option("--group", "-g", default="")
+@click.pass_context
+def rename_concept(ctx, old: str, new: str, group: str) -> None:
+    """Rename a concept word — the colour slot stays, every node follows it."""
+    store = _store(ctx)
+    g = _group(store, group)
+    info = _guard(store.rename_concept, g, old, new)
+    click.echo(f'{info["from"]} → {info["to"]} ({info["nodes"]} nodes)')
+
+
 @cli.command("op")
 @click.argument("payload", required=False)
 @click.pass_context
@@ -381,14 +387,57 @@ def op_(ctx, payload: str | None) -> None:
 @click.option("--group", "-g", default="")
 @click.pass_context
 def save(ctx, name: str, group: str) -> None:
-    """Name the current rev — a checkpoint you can diff against later.
+    """Anchor this rev as a version — a real copy you can go back to.
 
-    A save writes no graph data; it only marks the account and the sign.
+    `versions/r{rev}-{name}.json` is the whole state; going back is a file copy.
     """
     store = _store(ctx)
     g = _group(store, group)
-    info = store.save(g, name)
-    click.echo(f"★ r{info['rev']} 「{info['name']}」")
+    info = _guard(store.save, g, name)
+    click.echo(f"★ r{info['rev']} {info['name']}")
+
+
+@cli.command("versions")
+@click.option("--group", "-g", default="")
+@click.pass_context
+def versions_(ctx, group: str) -> None:
+    """Every checkpoint on disk — a directory scan, not a log read."""
+    store = _store(ctx)
+    g = _group(store, group)
+    rows = store.versions(g)
+    if not rows:
+        click.echo(f"no versions in {g.name} — `ideas save NAME` makes one")
+        return
+    for row in rows:
+        mark = " *" if row["rev"] == g.saved_rev else ""
+        click.echo(f"r{row['rev']}  {row['name']}{mark}")
+
+
+@cli.command("version")
+@click.argument("ref")
+@click.option("--group", "-g", default="")
+@click.pass_context
+def version_(ctx, ref: str, group: str) -> None:
+    """Cold read one version: what it held, without touching the current graph."""
+    store = _store(ctx)
+    g = _group(store, group)
+    rev, name, data = _guard(store.read_version, g, ref)
+    nodes = data.get("nodes") or {}
+    click.echo(f"r{rev}  {name} · {len(nodes)} nodes · {len(data.get('edges') or [])} edges")
+    for nid, raw in nodes.items():
+        click.echo(f"  {nid}  {raw.get('label', '')}  [{raw.get('concept', '')}]")
+
+
+@cli.command("restore")
+@click.argument("ref")
+@click.option("--group", "-g", default="")
+@click.pass_context
+def restore_(ctx, ref: str, group: str) -> None:
+    """Go back to a version. Appended to the account — history is not rewritten."""
+    store = _store(ctx)
+    g = _group(store, group)
+    info = _guard(store.restore, g, ref)
+    click.echo(f'restored {g.name} to r{info["from"]} "{info["name"]}" — now r{info["rev"]}')
 
 
 @cli.command("op-help")

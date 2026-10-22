@@ -258,3 +258,81 @@ def test_a_group_can_be_made_from_the_page(tmp_path: Path):
         except ValueError:
             continue
         raise AssertionError(f"{bad!r} must be refused")
+
+
+# -------------------------------------------------------------------- versions
+
+
+def test_a_group_starts_from_an_init_version(tmp_path: Path):
+    """Every group has a base version, so history is never a stretch with no anchor."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+
+    assert [v["name"] for v in store.versions(group)] == ["init"]
+    assert group.saved_rev == group.rev
+
+
+def test_save_writes_a_real_snapshot(tmp_path: Path):
+    """A save is a copy of the graph, not a marker: going back is a file copy."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    root = store.add_node(group, "motive")
+    store.add_node(group, "execution", parent=root.id)
+
+    info = store.save(group, "two nodes")
+
+    path = Path(info["file"])
+    assert path.exists() and path.parent.name == ".versions"
+    rev, name, data = store.read_version(group, "two nodes")
+    assert (rev, name) == (info["rev"], "two nodes")
+    assert len(data["nodes"]) == 2
+    assert [v["rev"] for v in store.versions(group)] == sorted(
+        [v["rev"] for v in store.versions(group)])
+
+
+def test_restore_goes_back_and_appends_an_op(tmp_path: Path):
+    """Going back does not rewrite the account — it says 'at r4 I went back to r2'."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    store.add_node(group, "motive")
+    store.save(group, "one")
+    version_rev = group.saved_rev
+    store.add_node(group, "later")
+    assert len(group.nodes) == 2
+
+    info = store.restore(group, "one")
+
+    assert len(group.nodes) == 1
+    assert info["from"] == version_rev
+    assert info["rev"] == group.rev == version_rev + 1
+    assert any("readable" in row for row in store.segment_report(group))
+
+
+def test_the_sign_carries_the_version_so_the_log_is_never_hot_read(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    store.add_node(group, "motive")
+    store.save(group, "one")
+
+    group.ops_path.unlink()          # the account is gone; the sign still knows
+    again = GraphStore(tmp_path)
+    again.reload()
+    g = again.require_group("design")
+
+    assert again.last_save(g) == (g.saved_rev, "one")
+    assert again.ops_since_save(g) == 0
+
+
+def test_a_broken_line_voids_only_its_segment(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    store.add_node(group, "motive")
+    store.save(group, "one")
+    store.add_node(group, "later")
+
+    with group.ops_path.open("a", encoding="utf-8") as fh:
+        fh.write("{not json\n")
+
+    report = store.segment_report(group)
+    assert any("one" in row and "readable" in row for row in report)
+    assert any("ignored" in row for row in report)
