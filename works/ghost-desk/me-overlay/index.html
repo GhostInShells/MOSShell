@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>我 · 浮层</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:transparent;overflow:hidden;max-width:100%;max-height:100%}
+  body{position:relative}
+  /* 默认几何 = "站在桌面中间"：右侧留给 MOSS 四个大字，两者合成一对。
+     尺寸用 aspect-ratio 而不是 width/height 两个百分比：窗口比例一变，两个
+     百分比会各走各的，正方形就被压扁了。top 与 height 之和正好把盒子居中
+     （26.15 + 47.7/2 = 50），水平位置由屏那边算（它才知道字有多宽）。
+     (1920x929 上量过: 人约 443px 见方, 中心正落在屏心) */
+  svg{position:absolute;left:22%;top:26.15%;height:47.7%;aspect-ratio:1/1;
+      transform:scale(var(--k,1));transform-origin:50% 60%}
+
+  .float{transform-origin:50% 72%;animation:float 6.4s ease-in-out infinite}
+  @keyframes float{
+    0%,100%{transform:translateY(-1.2%) scale(1,1)}
+    50%{transform:translateY(1.2%) scale(1.012,.986)}
+  }
+  .hud{transform-origin:200px 196px;animation:spin 90s linear infinite}
+  .hud2{transform-origin:200px 196px;animation:spin 60s linear infinite reverse}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .motes{transform-origin:200px 196px;animation:spin 52s linear infinite}
+  .motes2{transform-origin:200px 196px;animation:spin 74s linear infinite reverse}
+  .twinkle{animation:twinkle 3.6s ease-in-out infinite}
+  .twinkle:nth-child(2n){animation-delay:1.1s}
+  .twinkle:nth-child(3n){animation-delay:2.2s}
+  @keyframes twinkle{0%,100%{opacity:.25}50%{opacity:1}}
+  .rise{animation:rise 7s linear infinite}
+  .rise:nth-child(2){animation-duration:9s;animation-delay:1.6s}
+  .rise:nth-child(3){animation-duration:8s;animation-delay:3.1s}
+  .rise:nth-child(4){animation-duration:11s;animation-delay:4.6s}
+  @keyframes rise{0%{transform:translateY(0);opacity:0}18%{opacity:.9}100%{transform:translateY(-110px);opacity:0}}
+  /* 思考：一个人想事情的样子 —— 一只手抬到太阳穴上来回抓，头上冒一个问号。
+     不做转圈的加载图标：那读起来是"机器在忙"，不在"这个人在想"。 */
+  .scratch .hand-r{animation:scratch .4s ease-in-out infinite alternate}
+  @keyframes scratch{
+    from{transform:translate(-36px,-90px) rotate(-12deg)}
+    to{transform:translate(-28px,-80px) rotate(9deg)}
+  }
+  /* 冒出来的是三个点，不是问号：三个点谁都读成"在想着，还没说完"，
+     问号会读成"有疑问 / 出错"。 */
+  .dots circle{opacity:0}
+  .scratch .dots circle{animation:dotpulse 1.4s ease-in-out infinite}
+  .scratch .dots circle:nth-child(2){animation-delay:.18s}
+  .scratch .dots circle:nth-child(3){animation-delay:.36s}
+  @keyframes dotpulse{0%,22%{opacity:.12}50%{opacity:1}78%,100%{opacity:.12}}
+  .eye{transform-box:fill-box;transform-origin:center;transition:transform .07s ease}
+  .blink .eye{transform:scaleY(.07)}
+  .hand-l{animation:handL 5.2s ease-in-out infinite;transform-origin:96px 250px}
+  .hand-r{animation:handR 5.2s ease-in-out infinite;transform-origin:304px 250px}
+  @keyframes handL{0%,100%{transform:translate(0,0) rotate(-4deg)}50%{transform:translate(-5px,-7px) rotate(4deg)}}
+  @keyframes handR{0%,100%{transform:translate(0,0) rotate(4deg)}50%{transform:translate(5px,-7px) rotate(-4deg)}}
+  .mouth{transform-box:fill-box;transform-origin:center;transition:transform .16s ease}
+  .talking .mouth{animation:talk .11s ease-in-out infinite alternate}
+  @keyframes talk{from{transform:scaleY(.9)}to{transform:scaleY(2.3)}}
+  .talking .halo{animation:pulse .9s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.5;transform:scale(1)}50%{opacity:.95;transform:scale(1.055)}}
+  .halo{transform-origin:200px 196px}
+  /* 小窗（侧栏那块、或任何窄容器）里，同样的百分比会缩成一颗豆子 —— 小尺寸下要占得更满。 */
+  @media (max-width: 460px), (max-height: 460px) {
+    svg { left: 5%; top: 6%; width: 90%; height: 88%; aspect-ratio: auto; }
+  }
+</style>
+</head>
+<body>
+<svg id="art" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <radialGradient id="bodyG" cx="38%" cy="28%" r="78%">
+      <stop offset="0" stop-color="#dcd8f5"/><stop offset="26%" stop-color="#9f93e0"/>
+      <stop offset="58%" stop-color="#6a63c4"/><stop offset="86%" stop-color="#33315f"/>
+      <stop offset="100%" stop-color="#191346"/>
+    </radialGradient>
+    <radialGradient id="rimG" cx="50%" cy="50%" r="50%">
+      <stop offset="62%" stop-color="rgba(180,155,255,0)"/>
+      <stop offset="88%" stop-color="rgba(190,170,255,.55)"/>
+      <stop offset="100%" stop-color="rgba(220,210,255,.9)"/>
+    </radialGradient>
+    <radialGradient id="haloG" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="rgba(110,150,235,.26)"/>
+      <stop offset="56%" stop-color="rgba(90,130,220,.09)"/>
+      <stop offset="100%" stop-color="rgba(120,100,240,0)"/>
+    </radialGradient>
+    <radialGradient id="shadowG" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#04030a" stop-opacity=".55"/>
+      <stop offset="55%" stop-color="#04030a" stop-opacity=".24"/>
+      <stop offset="100%" stop-color="#04030a" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="nebula" x="-25%" y="-25%" width="150%" height="150%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.009 0.013" numOctaves="2" seed="7" result="n">
+        <animate attributeName="baseFrequency" dur="17s" values="0.009 0.013;0.013 0.009;0.009 0.013" repeatCount="indefinite"/>
+      </feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="13" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="9"/></filter>
+    <filter id="tiny" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.4"/></filter>
+    <clipPath id="bodyClip">
+      <path d="M200 58 C 112 58 78 126 78 196 C 78 234 80 258 80 278 C 80 300 94 304 105 291
+               C 116 278 122 265 135 274 C 148 283 147 299 160 303 C 173 307 181 290 193 288
+               C 205 286 213 305 227 303 C 241 301 247 284 259 278 C 271 272 277 287 289 295
+               C 301 303 322 297 322 274 C 322 252 322 230 322 196 C 322 126 288 58 200 58 Z"/>
+    </clipPath>
+  </defs>
+
+  <circle class="halo" cx="200" cy="192" r="182" fill="url(#haloG)"/>
+  <ellipse cx="200" cy="344" rx="132" ry="24" fill="url(#shadowG)"/>
+  <ellipse cx="200" cy="336" rx="96" ry="26" fill="rgba(140,170,255,.10)" filter="url(#soft)"/>
+
+  <g class="hud" opacity=".45">
+    <circle cx="200" cy="196" r="196" fill="none" stroke="rgba(150,170,255,.26)" stroke-width="1" stroke-dasharray="1 9"/>
+  </g>
+  <g class="hud2" opacity=".38">
+    <path d="M200 40 A156 156 0 0 1 356 196" fill="none" stroke="rgba(120,220,255,.5)" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M200 352 A156 156 0 0 1 44 196" fill="none" stroke="rgba(200,150,255,.42)" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+
+  <g fill="#bfe9ff">
+    <circle class="rise" cx="120" cy="330" r="1.6" opacity=".8"/>
+    <circle class="rise" cx="286" cy="336" r="1.3" opacity=".7"/>
+    <circle class="rise" cx="212" cy="346" r="1.5" opacity=".75"/>
+    <circle class="rise" cx="164" cy="338" r="1.1" opacity=".6"/>
+  </g>
+
+  <g class="motes" fill="#cfd8ff">
+    <circle class="twinkle" cx="52" cy="120" r="2.4" opacity=".8"/>
+    <circle class="twinkle" cx="330" cy="96" r="1.8" opacity=".7"/>
+    <circle class="twinkle" cx="352" cy="250" r="2.2" opacity=".65"/>
+    <circle class="twinkle" cx="40" cy="262" r="1.6" opacity=".7"/>
+    <circle class="twinkle" cx="120" cy="40" r="1.4" opacity=".6"/>
+  </g>
+  <g class="motes2" fill="#a8f0ff">
+    <circle class="twinkle" cx="300" cy="150" r="1.5" opacity=".55"/>
+    <circle class="twinkle" cx="96" cy="330" r="2" opacity=".5"/>
+    <circle class="twinkle" cx="264" cy="352" r="1.4" opacity=".5"/>
+  </g>
+
+  <g class="float">
+    <g filter="url(#nebula)">
+      <path d="M200 58 C 112 58 78 126 78 196 C 78 234 80 258 80 278 C 80 300 94 304 105 291
+               C 116 278 122 265 135 274 C 148 283 147 299 160 303 C 173 307 181 290 193 288
+               C 205 286 213 305 227 303 C 241 301 247 284 259 278 C 271 272 277 287 289 295
+               C 301 303 322 297 322 274 C 322 252 322 230 322 196 C 322 126 288 58 200 58 Z"
+            fill="url(#bodyG)"/>
+    </g>
+    <g clip-path="url(#bodyClip)">
+      <ellipse cx="150" cy="150" rx="96" ry="76" fill="rgba(190,150,255,.55)" filter="url(#soft)"/>
+      <ellipse cx="252" cy="232" rx="88" ry="64" fill="rgba(90,190,255,.42)" filter="url(#soft)"/>
+      <ellipse cx="196" cy="120" rx="60" ry="46" fill="rgba(255,190,240,.30)" filter="url(#soft)"/>
+      <circle cx="140" cy="112" r="1.8" fill="#fff" opacity=".9" filter="url(#tiny)"/>
+      <circle cx="262" cy="128" r="1.4" fill="#fff" opacity=".8" filter="url(#tiny)"/>
+      <circle cx="232" cy="268" r="1.6" fill="#fff" opacity=".7" filter="url(#tiny)"/>
+      <path d="M200 58 C 112 58 78 126 78 196 C 78 234 80 258 80 278 C 80 300 94 304 105 291
+               C 116 278 122 265 135 274 C 148 283 147 299 160 303 C 173 307 181 290 193 288
+               C 205 286 213 305 227 303 C 241 301 247 284 259 278 C 271 272 277 287 289 295
+               C 301 303 322 297 322 274 C 322 252 322 230 322 196 C 322 126 288 58 200 58 Z"
+            fill="none" stroke="url(#rimG)" stroke-width="3"/>
+    </g>
+
+    <g class="hand-l">
+      <path d="M60 258 q-6 -18 8 -20 q6 -12 14 -2 q8 -10 12 2 q10 -4 8 12 q-2 14 -14 16 q-20 4 -28 -8 z" fill="#8f7cf0" opacity=".95"/>
+      <circle cx="68" cy="240" r="3.2" fill="#e3dbff" opacity=".45"/>
+    </g>
+    <g class="hand-r">
+      <path d="M340 258 q6 -18 -8 -20 q-6 -12 -14 -2 q-8 -10 -12 2 q-10 -4 -8 12 q2 14 14 16 q20 4 28 -8 z" fill="#8f7cf0" opacity=".95"/>
+      <circle cx="332" cy="240" r="3.2" fill="#e3dbff" opacity=".45"/>
+    </g>
+
+    <g class="eye" id="eyeL">
+      <ellipse cx="159" cy="187" rx="17" ry="20" fill="#1b1630"/>
+      <ellipse cx="154" cy="179" rx="5.5" ry="6" fill="#fff" opacity=".88"/>
+    </g>
+    <g class="eye" id="eyeR">
+      <ellipse cx="241" cy="187" rx="17" ry="20" fill="#1b1630"/>
+      <ellipse cx="236" cy="179" rx="5.5" ry="6" fill="#fff" opacity=".88"/>
+    </g>
+    <ellipse class="mouth" cx="200" cy="242" rx="15" ry="9" fill="#120d2c"/>
+    <g class="dots" fill="#c3bfff">
+      <circle cx="270" cy="104" r="7"/><circle cx="296" cy="104" r="7"/><circle cx="322" cy="104" r="7"/>
+    </g>
+    <ellipse cx="126" cy="224" rx="17" ry="9" fill="#ff9fd0" opacity=".18" filter="url(#tiny)"/>
+    <ellipse cx="274" cy="224" rx="17" ry="9" fill="#ff9fd0" opacity=".18" filter="url(#tiny)"/>
+  </g>
+</svg>
+<script>
+const art = document.getElementById('art');
+let talkUntil = 0;
+let thinkUntil = 0;   // 我这边在做事的时间窗：超时自己停
+function lidOn(on){ art.classList.toggle('blink', on); }
+function blink(){
+  lidOn(true); setTimeout(()=>lidOn(false), 95);
+  setTimeout(blink, (Date.now()<talkUntil?1200:2600)+Math.random()*3000);
+}
+setTimeout(blink, 1500);
+function say(text, secs){
+  art.classList.add('talking'); talkUntil = Date.now()+secs*1000;
+  clearTimeout(say._t);
+  say._t = setTimeout(()=>art.classList.remove('talking'), secs*1000);
+}
+function readHash(){
+  const h=(location.hash||'').replace(/^#/,''); if(!h) return;
+  const p=new URLSearchParams(h);
+  // #talk=秒 只让嘴动、不要字幕 —— 句子短的时候这一条最省事
+  const k = p.get('k');
+  if (k) document.documentElement.style.setProperty('--k', k);
+  const bare = p.get('talk');
+  if(bare){ say('', parseFloat(bare)||3); return; }
+  if(p.get('say')) say(p.get('say'), parseFloat(p.get('for')||'0') || 3);
+}
+// 屏递来的"现在有声音"的事实: 说侧每判出一句就推一条, 嘴跟着动.
+// 只在"我站在屏上"(overlay / pip) 时才会收到 —— 屏只往人形里转.
+// 嘴的两种驱动：有真声音就跟着幅度开合（帧率 5Hz，靠 rAF 补间抹平），
+// 没有就退回正弦（hash 的 #talk= 那一套，给"总线还没通"的时候用）。
+const mouthEl = document.querySelector('.mouth');
+let mTarget = 0, mNow = 0, mAt = 0, mRAF = 0;
+function mouthTick() {
+  if (performance.now() - mAt > 260) mTarget = 0;      // 没声了就闭回去
+  mNow += (mTarget - mNow) * 0.45;
+  // 静止时就是它原本的样子（0.9 ≈ 不做形变）—— 张开的量才是信息，
+  // 闭着的时候不该是一条缝。
+  mouthEl.style.transform = `scaleY(${(0.9 + mNow * 1.55).toFixed(3)})`;
+  mRAF = (mNow > 0.012 || mTarget > 0.012) ? requestAnimationFrame(mouthTick) : 0;
+}
+function mouthLevel(level) {
+  mTarget = Math.max(0, Math.min(1, level));
+  mAt = performance.now();
+  art.classList.remove('talking');                      // 正弦让位给幅度
+  if (!mRAF) mRAF = requestAnimationFrame(mouthTick);
+}
+
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (!d) return;
+  // 两条消息：嘴（说侧的音量）和想（我这边在做事）。以前这里只放行 moss:mouth，
+  // 于是挠头那条被自己的守卫挡在门外 —— 屏一直在发，人一次没抓到。
+  if (d.type === 'moss:think') { thinkUntil = d.on ? Date.now() + 4000 : 0; return; }
+  if (d.type !== 'moss:mouth') return;
+  if (d.role && d.role !== 'ghost') return;
+  if (typeof d.level === 'number') { mouthLevel(d.level); return; }
+  // 每句都续上一段: 句与句之间的空档不该让嘴闭上 —— 它说的是连续的说话, 不是逐句的点射
+  const secs = Math.max(2.6, Math.min(4.5, (d.chars || 0) * 0.2));
+  say('', secs);
+});
+
+setInterval(() => {
+  const on = Date.now() < thinkUntil;
+  if (on !== art.classList.contains('scratch')) art.classList.toggle('scratch', on);
+}, 250);
+
+window.addEventListener('hashchange', readHash); readHash();
+</script>
+</body>
+</html>
