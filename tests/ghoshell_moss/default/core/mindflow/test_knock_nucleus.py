@@ -35,10 +35,10 @@ def test_signal_meta_signal_name_is_knock():
     assert KnockSignalMeta.signal_name() == 'knock'
 
 
-def test_signal_meta_default_priority_is_notice():
-    """普通 knock 是 NOTICE — knock 必须可输, 默认值不能高到必赢."""
+def test_signal_meta_default_priority_is_background():
+    """knock 是 BACKGROUND — 永不抢占; "忙时丢掉" 只在这一档成立."""
     signal = new_knock_signal(Message.new().with_content('come and get it'))
-    assert signal.priority == Priority.NOTICE
+    assert signal.priority == Priority.BACKGROUND
 
 
 def test_signal_meta_caller_override_priority():
@@ -164,7 +164,7 @@ async def test_add_signal_fires_impulse_via_bus():
         nuc.with_bus(signal_broadcast=lambda s: None, fire_impulse=notified.append)
         nuc.add_signal(_signal('come look'))
     assert len(notified) == 1
-    assert notified[0].priority == Priority.NOTICE
+    assert notified[0].priority == Priority.BACKGROUND
 
 
 @pytest.mark.asyncio
