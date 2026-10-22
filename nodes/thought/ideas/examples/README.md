@@ -1,37 +1,17 @@
-# ideas — the data root
+# examples
 
-Each first-level subdirectory here is a **group**; each `*.idea.md` inside it is one
-idea. A group's `README.md` is that group's own context: what it is for, what to read
-first.
+Each first-level directory here is a **group**, and a group is one `graph.json`:
 
-```
-ideas/                   ← the data root, gitignored, seeded from these examples
-  README.md              ← this file
-  example-voice/         ← a group
-    README.md            ← the group's shared context
-    duplex-gap.idea.md   ← one idea: frontmatter + body
-  example-lifecycle/
+```json
+{
+  "rev": 3,
+  "meta": {"concepts": {"core": "#e8f5ea", "risk": "#d0715c"}},
+  "nodes": {"n1": {"label": "动机", "body": "...", "concept": "core", "weight": 1.0}},
+  "edges": [{"id": "e1", "from": "n1", "to": "n2", "kind": "detail"}]
+}
 ```
 
-## One idea, one file
-
-```markdown
----
-state: spark          # spark | active | waiting | done | retired
-priority: 2           # the bubble's size
-tags: [voice, duplex]
-links: [attention-cue, voiceprint:depend]
----
-
-The body is the thinking itself. Edit it by hand; nothing else holds a copy.
-```
-
-`links` entries are filenames without `.idea.md`; `name` means `related`, `name:depend`
-means this idea depends on that one. **The filename is the identity and it is
-semantic** — `duplex-gap.idea.md` says what it is before anything is opened.
-
-## The examples are disposable
-
-Everything in this directory is an example. It is copied into the data root on first
-run and then belongs to whoever owns that root — delete it, edit it, ignore the whole
-mechanism. The node never assumes its data is precious.
+`ops.jsonl` beside it is the account of how it got there — disposable, used only by
+`diff`. Everything here is an example: it is copied into the data root on first run and
+then belongs to whoever owns that root. Delete it; the node never assumes its data is
+precious.

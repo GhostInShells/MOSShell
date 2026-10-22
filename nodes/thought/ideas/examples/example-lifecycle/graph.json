@@ -1,0 +1,41 @@
+{
+  "rev": 1,
+  "name": "example-lifecycle",
+  "meta": {
+    "concepts": {}
+  },
+  "nodes": {
+    "n1": {
+      "label": "from-spark-to-done",
+      "body": "一条 idea 的生命周期：spark（刚被记下）→ active（正在动）→ waiting（等别人）→ done / retired。\n\n状态是文件里的一行，不是一段历史：改它就是改它，没有折回的必要。",
+      "concept": "misc",
+      "weight": 2.0
+    },
+    "n2": {
+      "label": "old-draft-retired",
+      "body": "这条只是为了给 retired 一个看得见的样本：它已经没有下文了，留着不删，\n是因为\"退场\"和\"不存在\"不是一回事。",
+      "concept": "misc",
+      "weight": 1.0
+    },
+    "n3": {
+      "label": "waiting-is-not-done",
+      "body": "waiting 和 done 别混：一个是\"卡在别处\"，一个是\"这件事结束了\"。混起来，\n清单就会假装很干净。\n\n（上面那条 depend 指向一个已经不存在的文件——渲染时会画成断头线。）",
+      "concept": "misc",
+      "weight": 1.5
+    }
+  },
+  "edges": [
+    {
+      "id": "e1",
+      "from": "n1",
+      "to": "n3",
+      "kind": "detail"
+    },
+    {
+      "id": "e2",
+      "from": "n3",
+      "to": "n1",
+      "kind": "related"
+    }
+  ]
+}

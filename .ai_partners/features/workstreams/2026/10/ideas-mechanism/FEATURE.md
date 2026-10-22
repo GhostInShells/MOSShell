@@ -437,3 +437,82 @@ The body is the thinking itself.
 - 一条 idea 什么时候算「该升级」：看连线的密度，还是人来判？
 - 谁往里落：只有 ghost 落，还是人说话就自动落一条——后者的噪声怎么挡？
 - 一条 idea 的「物料」（附件、截图、链接）放哪：同一个 jsonl，还是它自己的目录。
+## Revision 2 (D22 22:00) — it is a graph, not a file per idea
+
+Eleven hours after the first revision, the mechanism was rebuilt again, this time from
+thirdgerb's own drawings. His words:
+
+> 「这个之所以不是思维导图, 因为它是图. 节点关联建立完了后, 拓扑容易推算.
+> 尤其是大型工程的依赖关系.」
+
+> 「我将 ideas 图视作一种视觉信息压缩策略, 而且是我们共享拓扑交流的策略.」
+
+**What the second revision got wrong:** one markdown per idea optimised for the wrong
+reader. A graph is read as a whole — topology is a question about the whole — and a
+directory of files forces any reader (model or human) to reassemble it from fragments.
+
+### The shape now
+
+- **One `graph.json` per group.** `{rev, meta.concepts, nodes{id: {...}}, edges[...]}`.
+  `rev` is monotone; every write bumps it.
+- **Edges are entities** with their own ids. Storing a link on its source node makes
+  every edge single-parent, which is exactly the tree-shaped blindness the mechanism is
+  trying to escape.
+- **Ids are opaque (`n7`), labels are display.** Renaming cannot break an edge — which
+  retires the whole "rename must sweep the root" problem from the first revision.
+- **Weight decays by generation** (child = parent × 0.8, floor 0.2). Depth is size, so
+  pruning is a decision about weight rather than taste.
+- **Concepts are the colour scale**, not an enum in code: `meta.concepts` maps a word to
+  a hex, extended by whoever is drawing. `flag` is the human's red mark — "this point
+  has a problem" — drawn as a dashed red ring outside the bubble.
+- **`ops.jsonl` is the account, not the truth**: one line per change with its rev; used
+  by `diff`; deletable at any time. No replay, no fold.
+- **`IDEAS.md` returns, as a sign.** Each group carries one: frontmatter
+  `status: active|waiting|archived` + one sentence of context + a pointer to
+  `graph.json`. It **never lists nodes** — that was the failure mode of the central
+  registry in the first revision. Discovery = glob `*/IDEAS.md`, read the status, then
+  read the graph.
+
+### The read side is the mechanism
+
+`tree` (the whole graph in one call), `diff <rev>` (what moved), `critical` (longest
+chain + branch points), `path a b`, `leaves`. These are what make topological alignment
+possible: two minds point at the same node instead of arguing over prose.
+
+### Doors
+
+- `cli.py` — the implementation; executable, root from `MOSS_IDEAS_ROOT`.
+- channel — the same verbs as CTML commands, plus `run(text)`.
+- **`batch`** — many verbs in one call. It exists because governance is a pass over the
+  whole graph (seventeen `set --concept` lines), and without it the model reaches for a
+  shell loop, which makes bash a mechanism nobody designed.
+
+### Consequence to keep in mind
+
+`decision_tree` is a strict subset of this: a graph with one parent per node and no
+cycles. Once this holds, it can be retired rather than maintained.
+
+## Known kernel bug (D22 23:30) — a `text__` / `chunks__` body that looks like a literal
+
+Found while wiring `ops(chunks__)`. The command never receives the body:
+
+| body | reaches the command? |
+|---|---|
+| `x` | yes |
+| `{"op": "add", …}` | **no** |
+| `# json` on the first line, then the same JSON | yes |
+
+The failure is `UNKNOWN_ERROR: isinstance() arg 2 must be a type, a tuple of types, or
+a union`. Reading the code, the plausible chain is: the body is `literal_eval`'d before
+dispatch (a `{`-leading body becomes a dict), and then the value is checked against the
+parameter's annotation — which is a **string** `'str'` because the node module uses
+`from __future__ import annotations`, so `isinstance(value, 'str')` raises.
+
+Two candidate fixes, both in the kernel (thirdgerb will take it):
+
+1. `text__` / `chunks__` content is declared text — never `literal_eval` it.
+2. Resolve annotations with `typing.get_type_hints()` before validating (or do not
+   validate at all and let the function raise).
+
+Until then, JSON over CTML is blocked; the working doors are the CLI (`ideas ops` with
+JSONL on stdin) and the explicit channel verbs (`add` / `set` / `link` / `rm`).

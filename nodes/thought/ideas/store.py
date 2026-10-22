@@ -1,174 +1,321 @@
-"""The ideas store — plain files, one idea per `*.idea.md`.
+"""The ideas graph — one `graph.json` per group, edges as entities.
 
-**The file is the truth.** Nothing else holds an idea's state: frontmatter carries
-`state` / `priority` / `tags` / `links`, the body carries the thinking itself. Editing
-one of these files by hand is a first-class operation, not a workaround.
+**The graph is the truth.** A group is a directory; inside it one JSON holds the whole
+picture: `meta` (the concept→colour scale), `nodes` (id → label / body / concept /
+weight / flag), `edges` (each with its own id, direction and kind), and a monotone
+`rev` that every change increments.
 
-**A group is a directory.** The root has first-level subdirectories; each one is a
-group, and its `*.idea.md` files are the ideas. `README.md` inside a group is that
-group's shared context — what it is for, what to read first.
+Why JSON and not one markdown per idea: a graph is read as a whole. A reader — model or
+human — should be able to take the entire structure in one look, and topology
+(what depends on what, where the bottleneck is, which branch can be cut) is a question
+about the whole, not about a file.
 
-**The name is the identity and it is semantic.** `duplex-gap-between-clicks.idea.md`
-says what it is before anything is opened; `idea-10384843.idea.md` says only that it
-exists. Renaming therefore rewrites references — `rename()` sweeps the whole root.
+**`ops.jsonl` is the account, not the truth.** Every write appends one line: what
+changed, and at which rev. It exists for `diff` (a cold reader asking "what moved since
+I last looked") and it may be deleted at any time — the graph would lose its history and
+nothing else. There is no replay: `graph.json` never has to be rebuilt from ops.
 
-No log, no fold, no replay: the timeline was a mechanism the problem never asked for.
-If a trace is ever wanted it is a disposable file beside the data, never a second
-truth.
+**Nodes are identified by opaque ids.** `n7` never changes; `label` is what it is called
+today. Renaming therefore cannot break an edge — what an edge points at is the id.
+
+**Weight decays with generation.** A child weighs `parent × 0.8` (floor 0.2), so
+"further out is more detail" is a fact of the data rather than a matter of taste, and
+cutting a branch becomes a decision about size instead of an argument.
 """
 
 from __future__ import annotations
 
+import json
 import os
-import re
 import shutil
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-import yaml
+try:  # POSIX only; a missing lock degrades to "write and hope", never to a crash
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
-SUFFIX = ".idea.md"
-README = "README.md"
+GRAPH = "graph.json"
+IDEAS = "IDEAS.md"
+OPS = "ops.jsonl"
+LOCK = ".lock"
+TRASH = ".trash"
+LEGACY_SUFFIX = ".idea.md"
 
-STATES = ("spark", "active", "waiting", "done", "retired")
-KINDS = ("related", "depend")
+DECAY = 0.8
+FLOOR = 0.2
+DEFAULT_CONCEPT = "misc"
+DEFAULT_KINDS = ("detail", "depend", "related")
+KIND = "detail"
 
-_UNSAFE = re.compile(r"[\s/\\:*?\"<>|]+")
+GROUP_STATUS = ("active", "waiting", "archived")
 
+IDEAS_TEMPLATE = """---
+status: {status}
+graph: {graph}
+updated: {updated}
+---
 
-def slugify(text: str, limit: int = 24) -> str:
-    """A filename that still reads like the idea it holds."""
-    head = (text or "").strip().splitlines()[0] if text and text.strip() else "idea"
-    head = _UNSAFE.sub("-", head).strip("-.")
-    head = re.sub(r"-{2,}", "-", head)
-    return (head[:limit] or "idea").rstrip("-.")
+# {name}
 
+一句话说这一组是什么——给下一个打开它的人看。
 
-# --------------------------------------------------------------------- frontmatter
+- 图在 `{graph}`：节点、边、概念表、rev 都在里面。
+- 读法：`ideas tree --group {name}` 通读；`ideas show <label>` 看一颗。
 
+> 这个文件是**招牌**：只说明这是什么、活的还是死的。**不列节点**——节点在图里，
+> 这里再抄一份，两份就会漂。
+"""
 
-def split_frontmatter(raw: str) -> tuple[dict, str]:
-    """`--- {...} ---` + body; a file without frontmatter is all body."""
-    if not raw.startswith("---"):
-        return {}, raw
-    lines = raw.splitlines(keepends=True)
-    if lines[0].strip() != "---":
-        return {}, raw
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            header = "".join(lines[1:i])
-            body = "".join(lines[i + 1:])
-            data = yaml.safe_load(header) or {}
-            if not isinstance(data, dict):
-                raise ValueError("frontmatter is not a mapping")
-            return data, body.lstrip("\n")
-    raise ValueError("unterminated frontmatter")
-
-
-def join_frontmatter(meta: dict, body: str) -> str:
-    header = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
-    return f"---\n{header}\n---\n\n{body.rstrip()}\n"
+DEFAULT_CONCEPTS: dict[str, str] = {
+    "misc": "#8aa89a",     # 未归类
+    "core": "#e8f5ea",     # 主干：动机、目的
+    "design": "#58a6ff",   # 架构、数据结构
+    "exec": "#7ee787",     # 执行、实现
+    "sense": "#f0b429",    # 感知、交互
+    "risk": "#d0715c",     # 主要矛盾、风险
+}
 
 
-@dataclass
-class Link:
-    name: str
-    kind: str = "related"
-
-    def to_line(self) -> str:
-        return self.name if self.kind == "related" else f"{self.name}:{self.kind}"
+# --------------------------------------------------------------------------- models
 
 
 @dataclass
-class Idea:
-    name: str                      # filename stem = identity = what a link points at
-    group: str
-    path: Path
-    state: str = "spark"
-    priority: float = 1.0
-    tags: list[str] = field(default_factory=list)
-    links: list[Link] = field(default_factory=list)
+class Node:
+    id: str
+    label: str = ""
     body: str = ""
-    mtime: float = 0.0
+    concept: str = DEFAULT_CONCEPT
+    weight: float = 1.0
+    flag: bool = False          # the human's red mark: "I have a problem with this one"
+    created: str = ""
 
-    # -- read ---------------------------------------------------------------
-    @property
-    def title(self) -> str:
-        for line in self.body.splitlines():
-            line = line.strip().lstrip("#").strip()
-            if line:
-                return line
-        return self.name
-
-    def live_links(self, known: set[str]) -> list[Link]:
-        return [l for l in self.links if l.name in known]
-
-    def dead_links(self, known: set[str]) -> list[Link]:
-        return [l for l in self.links if l.name not in known]
-
-    # -- write --------------------------------------------------------------
-    def meta(self) -> dict:
-        out: dict = {"state": self.state, "priority": self.priority}
-        if self.tags:
-            out["tags"] = list(self.tags)
-        if self.links:
-            out["links"] = [l.to_line() for l in self.links]
+    def to_dict(self) -> dict:
+        out = {
+            "label": self.label,
+            "body": self.body,
+            "concept": self.concept,
+            "weight": round(float(self.weight), 3),
+        }
+        if self.flag:
+            out["flag"] = True
+        if self.created:
+            out["created"] = self.created
         return out
 
-    def to_text(self) -> str:
-        return join_frontmatter(self.meta(), self.body)
+    @property
+    def name(self) -> str:
+        """What reads well in a line of text: the label, else the id."""
+        return self.label or self.id
 
-    def save(self) -> None:
-        write_atomic(self.path, self.to_text())
-        self.mtime = self.path.stat().st_mtime
 
-    def to_dict(self, known: set[str]) -> dict:
-        return {
-            "name": self.name,
-            "group": self.group,
-            "state": self.state,
-            "priority": self.priority,
-            "tags": self.tags,
-            "mtime": self.mtime,
-            "title": self.title,
-            "body": self.body,
-            "links": [
-                {"name": l.name, "kind": l.kind, "dead": l.name not in known}
-                for l in self.links
-            ],
-        }
+@dataclass
+class Edge:
+    id: str
+    src: str
+    dst: str
+    kind: str = KIND
+    label: str = ""
+
+    def to_dict(self) -> dict:
+        out = {"id": self.id, "from": self.src, "to": self.dst, "kind": self.kind}
+        if self.label:
+            out["label"] = self.label
+        return out
 
 
 @dataclass
 class Group:
     name: str
     path: Path
-    ideas: dict[str, Idea] = field(default_factory=dict)
-    readme: str = ""
+    rev: int = 0
+    status: str = "active"
+    meta: dict = field(default_factory=lambda: {"concepts": {}})
+    nodes: dict[str, Node] = field(default_factory=dict)
+    edges: list[Edge] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
-        return {"name": self.name, "path": str(self.path), "readme": self.readme}
+    # -- read ---------------------------------------------------------------
+    @property
+    def graph_path(self) -> Path:
+        return self.path / GRAPH
+
+    @property
+    def ops_path(self) -> Path:
+        return self.path / OPS
+
+    @property
+    def ideas_path(self) -> Path:
+        return self.path / IDEAS
+
+    def concepts(self) -> dict[str, str]:
+        merged = dict(DEFAULT_CONCEPTS)
+        merged.update({str(k): str(v) for k, v in (self.meta.get("concepts") or {}).items()})
+        return merged
+
+    def find(self, key: str) -> Node | None:
+        """Accept an id or a label — the human thinks in labels, the file speaks ids."""
+        if key in self.nodes:
+            return self.nodes[key]
+        for node in self.nodes.values():
+            if node.label == key:
+                return node
+        return None
+
+    def children(self, nid: str) -> list[Edge]:
+        return [e for e in self.edges if e.src == nid]
+
+    def parents(self, nid: str) -> list[Edge]:
+        return [e for e in self.edges if e.dst == nid]
+
+    # -- write --------------------------------------------------------------
+    def snapshot(self) -> dict:
+        return {
+            "name": self.name,
+            "path": str(self.path),
+            "rev": self.rev,
+            "status": self.status,
+            "meta": {"concepts": self.concepts()},
+            "nodes": [{"id": n.id, **n.to_dict()} for n in self._sorted_nodes()],
+            "edges": [e.to_dict() for e in self.edges],
+        }
+
+    def _sorted_nodes(self) -> list[Node]:
+        def key(n: Node) -> int:
+            return int(n.id[1:]) if n.id[1:].isdigit() else 0
+        return sorted(self.nodes.values(), key=key)
+
+    def to_json(self) -> str:
+        payload = {
+            "rev": self.rev,
+            "name": self.name,
+            "meta": {"concepts": dict(self.meta.get("concepts") or {})},
+            "nodes": {n.id: n.to_dict() for n in self._sorted_nodes()},
+            "edges": [e.to_dict() for e in self.edges],
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+    def write(self, note: str = "") -> None:
+        """Whole-graph save. `rev` moves here so a save is never an anonymous write."""
+        self.rev += 1
+        write_atomic(self.graph_path, self.to_json())
+        if note:
+            with self.ops_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"rev": self.rev, "t": _now(), "op": "init", "note": note},
+                                    ensure_ascii=False) + "\n")
 
 
-def write_atomic(path: Path, text: str) -> None:
-    """Half-written files are read by the page and by `list`; never let one exist."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+# ------------------------------------------------------------------------ topology
+
+
+def roots_of(group: Group) -> list[str]:
+    """Nodes nobody points at with a `detail` edge — where the reading starts."""
+    pointed = {e.dst for e in group.edges if e.kind == KIND}
+    return [n.id for n in group._sorted_nodes() if n.id not in pointed]
+
+
+def subtree_size(group: Group, nid: str) -> int:
+    seen: set[str] = set()
+    stack = [nid]
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        stack.extend(e.dst for e in group.children(cur) if e.kind == KIND)
+    return len(seen) - 1
+
+
+def shortest_path(group: Group, src: str, dst: str) -> list[str] | None:
+    a, b = group.find(src), group.find(dst)
+    if a is None or b is None:
+        return None
+    prev: dict[str, str] = {}
+    seen = {a.id}
+    queue = [a.id]
+    while queue:
+        cur = queue.pop(0)
+        if cur == b.id:
+            path = [b.id]
+            while path[-1] != a.id:
+                path.append(prev[path[-1]])
+            return list(reversed(path))
+        neighbours = [e.dst for e in group.children(cur)] + [e.src for e in group.parents(cur)]
+        for nxt in neighbours:
+            if nxt not in seen:
+                seen.add(nxt)
+                prev[nxt] = cur
+                queue.append(nxt)
+    return None
+
+
+def spine(group: Group) -> list[str]:
+    """The longest detail chain — "主要矛盾" read as what everything else hangs off.
+
+    Ranked by *length of the longest chain*, not by subtree size: a root always owns
+    everything, so counting descendants would answer "where am I" and never "what is
+    the spine".
+    """
+    best: list[str] = []
+
+    def walk(nid: str, trail: list[str], seen: set[str]) -> None:
+        nonlocal best
+        if len(trail) > len(best):
+            best = list(trail)
+        for edge in group.children(nid):
+            if edge.kind != KIND or edge.dst in seen:
+                continue
+            walk(edge.dst, trail + [edge.dst], seen | {edge.dst})
+
+    for nid in roots_of(group):
+        walk(nid, [nid], {nid})
+    return best
+
+
+def junctions(group: Group) -> list[tuple[str, int]]:
+    """Branch points, by degree — where cutting one edge changes the most."""
+    deg = {nid: len(group.children(nid)) + len(group.parents(nid)) for nid in group.nodes}
+    fan = {nid: len(group.children(nid)) for nid in group.nodes}
+    ranked = sorted(group.nodes, key=lambda nid: (-(fan[nid] * 2 + deg[nid]), nid))
+    return [(nid, fan[nid]) for nid in ranked]
+
+
+def centrality(group: Group) -> list[tuple[str, int, int]]:
+    """Kept for callers that want a single number: (node, degree, descendants)."""
+    deg = {nid: len(group.children(nid)) + len(group.parents(nid)) for nid in group.nodes}
+    desc = {nid: subtree_size(group, nid) for nid in group.nodes}
+    ranked = sorted(group.nodes, key=lambda nid: (-(desc[nid] * 2 + deg[nid]), nid))
+    return [(nid, deg[nid], desc[nid]) for nid in ranked]
+
+
+def leaves(group: Group) -> list[str]:
+    return [n.id for n in group._sorted_nodes() if not group.children(n.id)]
 
 
 # --------------------------------------------------------------------------- store
 
 
-class Store:
-    """One root: its first-level directories are groups, their files are ideas."""
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def write_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+class GraphStore:
+    """Every first-level directory under the root is a group with its own graph."""
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).expanduser().resolve()
         self.groups: dict[str, Group] = {}
-        self.broken: list[str] = []      # files that could not be parsed — shown, not skipped
+        self.broken: list[str] = []
 
     # -- discovery ----------------------------------------------------------
     def reload(self) -> None:
@@ -182,219 +329,477 @@ class Store:
             if not child.is_dir() or child.name.startswith("."):
                 continue
             group = Group(name=child.name, path=child)
-            readme = child / README
-            if readme.exists():
-                group.readme = readme.read_text(encoding="utf-8", errors="replace")
-            for file in sorted(child.glob(f"*{SUFFIX}")):
-                name = file.name[: -len(SUFFIX)]
-                try:
-                    idea = self._read_idea(file, name, group.name)
-                except Exception as exc:  # noqa: BLE001 — a bad file must not vanish
-                    self.broken.append(f"{group.name}/{file.name}: {exc}")
-                    continue
-                group.ideas[name] = idea
-            self.groups[group.name] = group
+            try:
+                self._load_group(group)
+            except Exception as exc:  # noqa: BLE001 — a broken graph is reported, never hidden
+                self.broken.append(f"{child.name}: {exc}")
+            self.groups[child.name] = group
 
-    @staticmethod
-    def _read_idea(path: Path, name: str, group: str) -> Idea:
-        meta, body = split_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
-        state = str(meta.get("state", "spark")).strip() or "spark"
-        if state not in STATES:
-            state = "spark"
-        raw_links = meta.get("links") or []
-        links: list[Link] = []
-        for item in raw_links:
-            if isinstance(item, dict):
-                dst = str(item.get("to") or item.get("name") or "").strip()
-                kind = str(item.get("kind", "related")).strip() or "related"
-            else:
-                dst, _, kind = str(item).partition(":")
-                dst, kind = dst.strip(), (kind.strip() or "related")
-            if not dst:
-                continue
-            links.append(Link(name=dst, kind=kind if kind in KINDS else "related"))
-        return Idea(
-            name=name,
-            group=group,
-            path=path,
-            state=state,
-            priority=float(meta.get("priority", 1.0) or 1.0),
-            tags=[str(t) for t in (meta.get("tags") or [])],
-            links=links,
-            body=body,
-            mtime=path.stat().st_mtime,
-        )
+    def _load_group(self, group: Group) -> None:
+        if group.ideas_path.exists():
+            meta, _body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8", errors="replace"))
+            group.status = str(meta.get("status", "active")) or "active"
+        if not group.graph_path.exists():
+            legacy = sorted(group.path.glob(f"*{LEGACY_SUFFIX}"))
+            if legacy:
+                self._import_legacy(group, legacy)
+                return
+            group.write()          # a brand-new, empty graph on disk
+            if not group.ideas_path.exists():
+                write_ideas_sign(group)
+            return
+        data = json.loads(group.graph_path.read_text(encoding="utf-8"))
+        group.rev = int(data.get("rev", 0))
+        group.meta = {"concepts": dict((data.get("meta") or {}).get("concepts") or {})}
+        group.nodes = {}
+        for nid, raw in (data.get("nodes") or {}).items():
+            group.nodes[nid] = Node(
+                id=nid,
+                label=str(raw.get("label", "")),
+                body=str(raw.get("body", "")),
+                concept=str(raw.get("concept", DEFAULT_CONCEPT)),
+                weight=float(raw.get("weight", 1.0)),
+                flag=bool(raw.get("flag", False)),
+                created=str(raw.get("created", "")),
+            )
+        group.edges = [
+            Edge(id=str(raw.get("id", f"e{i}")), src=str(raw.get("from", "")),
+                 dst=str(raw.get("to", "")), kind=str(raw.get("kind", KIND)),
+                 label=str(raw.get("label", "")))
+            for i, raw in enumerate(data.get("edges") or [])
+        ]
+        if not group.ideas_path.exists():
+            write_ideas_sign(group)
+
+    def _import_legacy(self, group: Group, files: list[Path]) -> None:
+        """The markdown generation: one file per idea, links in frontmatter.
+
+        Imported once into `graph.json`; the old files move to `.trash/` so the import
+        cannot run twice and nothing is destroyed.
+        """
+        ids: dict[str, str] = {}
+        parsed: list[tuple[Path, dict, str]] = []
+        for i, file in enumerate(files, start=1):
+            raw = file.read_text(encoding="utf-8", errors="replace")
+            meta, body = split_frontmatter(raw)
+            parsed.append((file, meta, body))
+            ids[file.name[: -len(LEGACY_SUFFIX)]] = f"n{i}"
+            group.nodes[f"n{i}"] = Node(
+                id=f"n{i}",
+                label=str(meta.get("label", "") or file.name[: -len(LEGACY_SUFFIX)]),
+                body=body.strip(),
+                concept=str(meta.get("concept", DEFAULT_CONCEPT)),
+                weight=float(meta.get("priority", 1.0) or 1.0),
+            )
+        edge_n = 1
+        for file, meta, _body in parsed:
+            src = ids[file.name[: -len(LEGACY_SUFFIX)]]
+            for item in meta.get("links") or []:
+                if isinstance(item, dict):
+                    dst, kind = str(item.get("to", "")), str(item.get("kind", KIND))
+                else:
+                    dst, _, kind = str(item).partition(":")
+                    kind = kind or KIND
+                target = ids.get(dst.strip())
+                if target and target != src:
+                    group.edges.append(Edge(id=f"e{edge_n}", src=src, dst=target,
+                                            kind=kind if kind in DEFAULT_KINDS else KIND))
+                    edge_n += 1
+        group.write(note=f"imported {len(files)} markdown ideas")
+        if not group.ideas_path.exists():
+            write_ideas_sign(group)
+        trash = group.path / TRASH
+        trash.mkdir(exist_ok=True)
+        for file, _meta, _body in parsed:
+            os.replace(file, trash / file.name)
 
     # -- lookup -------------------------------------------------------------
-    def known(self) -> set[str]:
-        return {i.name for g in self.groups.values() for i in g.ideas.values()}
-
-    def find(self, name: str) -> Idea | None:
-        for group in self.groups.values():
-            if name in group.ideas:
-                return group.ideas[name]
-        return None
-
-    def all_ideas(self) -> Iterable[Idea]:
-        for group in self.groups.values():
-            yield from group.ideas.values()
-
     def group_of(self, name: str = "") -> Group | None:
+        """No name = the group this run is *about*: the biggest active one.
+
+        Alphabetical order is how a filesystem sorts, not how a person reads — an
+        archived example must never become the default subject of a sentence.
+        """
         if not name:
-            return next(iter(self.groups.values()), None)
+            return self.focus_group()
         return self.groups.get(name)
 
-    # -- read ---------------------------------------------------------------
-    def snapshot(self) -> dict:
-        known = self.known()
-        return {
-            "root": str(self.root),
-            "groups": [
-                {
-                    **g.to_dict(),
-                    "ideas": [
-                        idea.to_dict(known)
-                        for idea in sorted(g.ideas.values(), key=lambda x: -x.mtime)
-                    ],
-                }
-                for g in self.groups.values()
-            ],
-            "broken": list(self.broken),
-        }
+    def focus_group(self) -> Group | None:
+        if not self.groups:
+            return None
+        alive = [g for g in self.groups.values() if g.status == "active"]
+        pool = alive or list(self.groups.values())
+        return max(pool, key=lambda g: len(g.nodes))
 
-    def list_lines(self, group: str = "", state: str = "", tag: str = "", limit: int = 40) -> list[str]:
-        rows: list[str] = []
+    def require_group(self, name: str = "") -> Group:
+        group = self.group_of(name)
+        if group is None:
+            raise KeyError(f"no group {name!r}")
+        return group
+
+    def find(self, key: str, group: str = "") -> tuple[Group | None, Node | None]:
+        order = [self.require_group(group)] if group else list(self.groups.values())
+        for g in order:
+            node = g.find(key)
+            if node is not None:
+                return g, node
+        return None, None
+
+    def all_nodes(self) -> Iterable[tuple[Group, Node]]:
         for g in self.groups.values():
-            if group and g.name != group:
-                continue
-            for idea in sorted(g.ideas.values(), key=lambda x: -x.mtime):
-                if state and idea.state != state:
-                    continue
-                if tag and tag not in idea.tags:
-                    continue
-                extra = f" · [{', '.join(idea.tags)}]" if idea.tags else ""
-                dead = idea.dead_links(self.known())
-                dangling = f" · {len(dead)} dead link(s)" if dead else ""
-                rows.append(f"{g.name}/{idea.name} · {idea.state} · p{idea.priority:g}{extra}{dangling} · {idea.title}")
-                if len(rows) >= limit:
-                    return rows
-        return rows
+            for n in g._sorted_nodes():
+                yield g, n
 
-    def read_doc(self, name: str) -> str:
-        idea = self.find(name)
-        if idea is None:
-            raise KeyError(name)
-        return idea.path.read_text(encoding="utf-8", errors="replace")
+    # -- writes -------------------------------------------------------------
+    def apply(self, group: Group, op: dict) -> None:
+        """One mutation: bump rev, append the op, then write the graph down."""
+        with self._lock(group):
+            group.rev += 1
+            write_atomic(group.graph_path, group.to_json())
+            with group.ops_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"rev": group.rev, "t": _now(), **op}, ensure_ascii=False) + "\n")
 
-    # -- write --------------------------------------------------------------
-    def _next_name(self, group: Group, base: str) -> str:
-        name, n = base, 2
-        while name in group.ideas or (group.path / f"{name}{SUFFIX}").exists():
-            name = f"{base}-{n}"
+    @contextmanager
+    def _lock(self, group: Group):
+        """Single writer: the node and the CLI both take this before touching the file."""
+        path = group.path / LOCK
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+")
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+    def _next_id(self, group: Group, prefix: str) -> str:
+        used = {int(k[1:]) for k in group.nodes if k[1:].isdigit()}
+        used |= {int(e.id[1:]) for e in group.edges if e.id[1:].isdigit()}
+        n = 1
+        while n in used:
             n += 1
-        return name
+        return f"{prefix}{n}"
 
-    def spark(self, text: str, *, group: str = "", name: str = "", priority: float = 1.0) -> Idea:
-        target = self.group_of(group)
-        if target is None:
-            raise KeyError(f"no group {group!r}")
-        final = self._next_name(target, slugify(name or text))
-        body = text.strip()
-        idea = Idea(name=final, group=target.name, path=target.path / f"{final}{SUFFIX}",
-                    priority=priority, body=body)
-        idea.save()
-        target.ideas[final] = idea
-        return idea
+    def add_node(self, group: Group, label: str, *, body: str = "", concept: str = "",
+                 weight: float | None = None, parent: str = "") -> Node:
+        node_id = self._next_id(group, "n")
+        parent_node = group.find(parent) if parent else None
+        if weight is None:
+            weight = max(FLOOR, (parent_node.weight * DECAY) if parent_node else 1.0)
+        weight = round(float(weight), 3)
+        node = Node(id=node_id, label=label.strip(), body=body.strip(),
+                    concept=concept.strip() or DEFAULT_CONCEPT, weight=weight, created=_now())
+        group.nodes[node_id] = node
+        edge = None
+        if parent_node is not None:
+            edge = Edge(id=self._next_id(group, "e"), src=parent_node.id, dst=node_id, kind=KIND)
+            group.edges.append(edge)
+        with self._lock(group):
+            group.rev += 1
+            write_atomic(group.graph_path, group.to_json())
+            with group.ops_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "add",
+                                     "node": node_id, "label": node.label}, ensure_ascii=False) + "\n")
+                if edge is not None:
+                    fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "edge",
+                                         "edge": edge.id, "from": edge.src, "to": edge.dst,
+                                         "kind": edge.kind}, ensure_ascii=False) + "\n")
+        return node
 
-    def note(self, name: str, text: str) -> Idea:
-        idea = self._require(name)
-        idea.body = (idea.body.rstrip() + "\n\n" + text.strip() + "\n") if idea.body.strip() else text.strip() + "\n"
-        idea.save()
-        return idea
+    def set_node(self, group: Group, key: str, **fields) -> Node:
+        node = group.find(key)
+        if node is None:
+            raise KeyError(key)
+        changed: dict = {}
+        for name in ("label", "body", "concept"):
+            if fields.get(name) is not None and getattr(node, name) != str(fields[name]):
+                setattr(node, name, str(fields[name]))
+                changed[name] = str(fields[name])
+        if fields.get("weight") is not None and float(node.weight) != float(fields["weight"]):
+            node.weight = float(fields["weight"])
+            changed["weight"] = node.weight
+        if fields.get("flag") is not None and node.flag != bool(fields["flag"]):
+            node.flag = bool(fields["flag"])
+            changed["flag"] = node.flag
+        if changed:
+            self.apply(group, {"op": "set", "node": node.id, **changed})
+        return node
 
-    def set_state(self, name: str, state: str) -> Idea:
-        if state not in STATES:
-            raise ValueError(f"state must be one of {STATES}")
-        idea = self._require(name)
-        idea.state = state
-        idea.save()
-        return idea
-
-    def set_priority(self, name: str, priority: float) -> Idea:
-        idea = self._require(name)
-        idea.priority = float(priority)
-        idea.save()
-        return idea
-
-    def tag(self, name: str, word: str) -> Idea:
-        idea = self._require(name)
-        if word and word not in idea.tags:
-            idea.tags.append(word)
-            idea.save()
-        return idea
-
-    def untag(self, name: str, word: str) -> Idea:
-        idea = self._require(name)
-        if word in idea.tags:
-            idea.tags.remove(word)
-            idea.save()
-        return idea
-
-    def link(self, src: str, dst: str, kind: str = "related") -> Idea:
-        idea = self._require(src)
-        if self.find(dst) is None:
+    def link(self, group: Group, src: str, dst: str, kind: str = KIND, label: str = "") -> Edge:
+        a, b = group.find(src), group.find(dst)
+        if a is None:
+            raise KeyError(src)
+        if b is None:
             raise KeyError(dst)
-        if all(not (l.name == dst) for l in idea.links):
-            idea.links.append(Link(name=dst, kind=kind if kind in KINDS else "related"))
-            idea.save()
-        return idea
+        edge = Edge(id=self._next_id(group, "e"), src=a.id, dst=b.id,
+                    kind=kind if kind in DEFAULT_KINDS else KIND, label=label)
+        group.edges.append(edge)
+        self.apply(group, {"op": "edge", "edge": edge.id, "from": a.id, "to": b.id, "kind": edge.kind})
+        return edge
 
-    def unlink(self, src: str, dst: str) -> Idea:
-        idea = self._require(src)
-        kept = [l for l in idea.links if l.name != dst]
-        if len(kept) != len(idea.links):
-            idea.links = kept
-            idea.save()
-        return idea
+    def unlink(self, group: Group, src: str, dst: str) -> int:
+        a, b = group.find(src), group.find(dst)
+        if a is None or b is None:
+            raise KeyError(src if a is None else dst)
+        kept = [e for e in group.edges if not (e.src == a.id and e.dst == b.id)]
+        dropped = len(group.edges) - len(kept)
+        if dropped:
+            group.edges = kept
+            self.apply(group, {"op": "unedge", "from": a.id, "to": b.id})
+        return dropped
 
-    def rename(self, old: str, new: str) -> str:
-        """Move the file *and* rewrite every reference — the name is the identity."""
-        idea = self._require(old)
-        target = slugify(new)
-        group = self.groups[idea.group]
-        if target in group.ideas:
-            raise ValueError(f"{target!r} already exists in {group.name}")
-        new_path = group.path / f"{target}{SUFFIX}"
-        os.replace(idea.path, new_path)
-        group.ideas.pop(old)
-        idea.name, idea.path = target, new_path
-        group.ideas[target] = idea
-        touched = []
-        for other in self.all_ideas():
-            changed = False
-            for l in other.links:
-                if l.name == old:
-                    l.name = target
-                    changed = True
-            if changed:
-                other.save()
-                touched.append(other.name)
-        return f"{old} → {target}" + (f"; rewrote links in {', '.join(touched)}" if touched else "")
+    def remove_node(self, group: Group, key: str) -> dict:
+        node = group.find(key)
+        if node is None:
+            raise KeyError(key)
+        touched = [e for e in group.edges if e.src == node.id or e.dst == node.id]
+        group.nodes.pop(node.id, None)
+        group.edges = [e for e in group.edges if e.src != node.id and e.dst != node.id]
+        self.apply(group, {"op": "rm", "node": node.id, "label": node.label, "edges": len(touched)})
+        return {"node": node.id, "label": node.label, "edges": len(touched)}
 
-    # -- internals ----------------------------------------------------------
-    def _require(self, name: str) -> Idea:
-        idea = self.find(name)
-        if idea is None:
-            raise KeyError(name)
-        return idea
+    def save(self, group: Group, name: str) -> dict:
+        """Name the current rev — a checkpoint, not another change.
+
+        `rev` moves on every write, so a batch of twenty colour changes buries the one
+        thing worth referencing. A save does not touch the graph at all: it writes a
+        marker into the account and its name into the group's sign.
+        """
+        name = (name or "").strip() or "checkpoint"
+        with self._lock(group):
+            with group.ops_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"rev": group.rev, "t": _now(), "op": "save", "name": name},
+                                    ensure_ascii=False) + "\n")
+        if group.ideas_path.exists():
+            meta, body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8"))
+            meta["saved"] = f"r{group.rev} {name}"
+            meta["updated"] = _now()
+            write_atomic(group.ideas_path, join_frontmatter(meta, body))
+        return {"rev": group.rev, "name": name}
+
+    def last_save(self, group: Group) -> tuple[int, str]:
+        """(rev, name) of the newest checkpoint; (0, "") when none was ever made."""
+        if not group.ops_path.exists():
+            return 0, ""
+        rev, name = 0, ""
+        for line in group.ops_path.read_text(encoding="utf-8").splitlines():
+            try:
+                op = json.loads(line)
+            except ValueError:
+                continue
+            if op.get("op") == "save":
+                rev, name = int(op.get("rev", 0)), str(op.get("name", ""))
+        return rev, name
+
+    def ops_since_save(self, group: Group) -> int:
+        rev, _name = self.last_save(group)
+        return max(0, group.rev - rev)
+
+    def set_status(self, group: Group, status: str) -> None:
+        """The sign's own field: alive, waiting, or put away. The graph never moves."""
+        if status not in GROUP_STATUS:
+            raise ValueError(f"status must be one of {GROUP_STATUS}")
+        meta, body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8"))
+        meta["status"] = status
+        meta["updated"] = _now()
+        meta.setdefault("graph", GRAPH)
+        group.status = status
+        write_atomic(group.ideas_path, join_frontmatter(meta, body) if body.strip() else
+                     _ideas_body(group.name))
+        self.apply(group, {"op": "status", "group": group.name, "status": status})
+
+    def set_concept(self, group: Group, name: str, color: str) -> None:
+        concepts = dict(group.meta.get("concepts") or {})
+        concepts[name] = color
+        group.meta["concepts"] = concepts
+        self.apply(group, {"op": "concept", "name": name, "color": color})
+
+    # -- the op protocol ----------------------------------------------------
+    def apply_ops(self, ops: list[dict]) -> list[str]:
+        """The single write door: a list of op objects, applied in order.
+
+        Every other surface (CLI verb, CTML command, page WebSocket) speaks this JSON,
+        so "one implementation" is not a slogan — it is this function. Each op names its
+        own group; an op that omits it lands in the first group.
+
+            {"op": "add",  "group": "…", "label": "存储", "parent": "架构方案"}
+            {"op": "set",  "id": "n7", "concept": "design", "flag": true}
+            {"op": "link", "src": "存储策略", "dst": "md", "kind": "detail"}
+            {"op": "rm",   "id": "n7"}
+        """
+        out: list[str] = []
+        for raw in ops:
+            if not isinstance(raw, dict):
+                raise ValueError(f"an op must be an object, got {type(raw).__name__}")
+            name = str(raw.get("op", "")).strip()
+            group = self.require_group(str(raw.get("group", "") or ""))
+            if name == "add":
+                node = self.add_node(
+                    group, str(raw.get("label", "") or "新的一颗"),
+                    body=str(raw.get("body", "") or ""),
+                    concept=str(raw.get("concept", "") or ""),
+                    weight=raw.get("weight"),
+                    parent=str(raw.get("parent", "") or ""),
+                )
+                out.append(f"+ {group.name}/{node.id} {node.label}")
+            elif name == "set":
+                node = self.set_node(
+                    group, str(raw.get("id", "")),
+                    label=raw.get("label"), body=raw.get("body"),
+                    concept=raw.get("concept"), weight=raw.get("weight"), flag=raw.get("flag"),
+                )
+                out.append(f"~ {node.id} {node.label}")
+            elif name == "link":
+                edge = self.link(group, str(raw.get("src", "")), str(raw.get("dst", "")),
+                                 str(raw.get("kind", KIND)))
+                out.append(f"→ {edge.src}→{edge.dst}")
+            elif name == "unlink":
+                dropped = self.unlink(group, str(raw.get("src", "")), str(raw.get("dst", "")))
+                out.append(f"✂ {dropped}")
+            elif name == "rm":
+                gone = self.remove_node(group, str(raw.get("id", "")))
+                out.append(f"− {gone['label']}")
+            elif name == "concept":
+                self.set_concept(group, str(raw.get("name", "")), str(raw.get("color", "")))
+                out.append(f"◧ {raw.get('name')}")
+            elif name == "status":
+                self.set_status(group, str(raw.get("value", "")))
+                out.append(f"⚑ {group.name} {raw.get('value')}")
+            else:
+                raise ValueError(f"unknown op {name!r} — one of add/set/link/unlink/rm/concept/status")
+        return out
+
+    # -- reading helpers ----------------------------------------------------
+    def tree_lines(self, group: Group) -> list[str]:
+        """The whole graph, compact enough to take in one look."""
+        lines: list[str] = []
+        seen: set[str] = set()
+
+        def walk(nid: str, prefix: str) -> None:
+            if nid in seen or nid not in group.nodes:
+                return
+            seen.add(nid)
+            node = group.nodes[nid]
+            mark = " !" if node.flag else ""
+            lines.append(f"{prefix}{node.label or nid}{mark} [{node.concept} {node.weight:g}]")
+            kids = group.children(nid)
+            for i, edge in enumerate(kids):
+                last = i == len(kids) - 1
+                branch = "└─ " if last else "├─ "
+                arrow = {"depend": "⇒ ", "related": "~ "}.get(edge.kind, "")
+                walk(edge.dst, prefix.replace("├─ ", "│  ").replace("└─ ", "   ") + branch + arrow)
+
+        for nid in roots_of(group):
+            walk(nid, "")
+        rest = [n.id for n in group._sorted_nodes() if n.id not in seen]
+        if rest:
+            lines.append("— 没有上游的孤岛 —")
+            for nid in rest:
+                walk(nid, "")
+        return lines
+
+    def diff_lines(self, group: Group, since: int = 0) -> list[str]:
+        if not group.ops_path.exists():
+            return [f"no ops recorded (rev {group.rev})"]
+        rows: list[str] = []
+        for line in group.ops_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                op = json.loads(line)
+            except ValueError:
+                continue
+            if int(op.get("rev", 0)) <= since:
+                continue
+            what = op.get("op")
+            node = group.nodes.get(str(op.get("node", "")))
+            who = node.name if node is not None else (op.get("label") or op.get("node"))
+            if what == "add":
+                rows.append(f"r{op['rev']}  + {who}")
+            elif what == "set":
+                fields = ", ".join(f"{k}={v}" for k, v in op.items()
+                                   if k not in ("rev", "t", "op", "node"))
+                rows.append(f"r{op['rev']}  ~ {who} ({fields})")
+            elif what == "edge":
+                rows.append(f"r{op['rev']}  → {op.get('from')} → {op.get('to')}")
+            elif what == "unedge":
+                rows.append(f"r{op['rev']}  ✂ {op.get('from')} → {op.get('to')}")
+            elif what == "rm":
+                rows.append(f"r{op['rev']}  − {who}")
+            elif what == "concept":
+                rows.append(f"r{op['rev']}  ◧ {op.get('name')} = {op.get('color')}")
+            elif what == "save":
+                rows.append(f"r{op['rev']}  ★ save 「{op.get('name')}」")
+            elif what == "init":
+                rows.append(f"r{op['rev']}  ⚑ {op.get('note')}")
+            else:
+                rows.append(f"r{op['rev']}  ? {what}")
+        return rows or [f"nothing since r{since} (now r{group.rev})"]
 
 
-# ---------------------------------------------------------------------- root discovery
+# ---------------------------------------------------------------------- root helpers
+
+
+def split_frontmatter(raw: str) -> tuple[dict, str]:
+    """Legacy markdown only: `--- yaml ---` + body."""
+    if not raw.startswith("---"):
+        return {}, raw
+    lines = raw.splitlines(keepends=True)
+    if lines[0].strip() != "---":
+        return {}, raw
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            import yaml
+            data = yaml.safe_load("".join(lines[1:i])) or {}
+            return (data if isinstance(data, dict) else {}), "".join(lines[i + 1:])
+    return {}, raw
+
+
+def _ideas_body(name: str) -> str:
+    return (
+        f"# {name}\n\n一句话说这一组是什么——给下一个打开它的人看。\n\n"
+        f"- 图在 `{GRAPH}`：节点、边、概念表、rev 都在里面。\n"
+        f"- 读法：`ideas tree --group {name}` 通读；`ideas show <label>` 看一颗。\n\n"
+        "> 这个文件是**招牌**：只说明这是什么、活的还是死的。**不列节点**——节点在图里，\n"
+        "> 这里再抄一份，两份就会漂。\n"
+    )
+
+
+def write_ideas_sign(group: Group) -> None:
+    """Every group carries a sign: what it is, and whether it is alive."""
+    if group.ideas_path.exists():
+        return
+    write_atomic(group.ideas_path, IDEAS_TEMPLATE.format(
+        status=group.status, graph=GRAPH, updated=_now(), name=group.name))
+
+
+def join_frontmatter(meta: dict, body: str) -> str:
+    import yaml
+    header = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+    return f"---\n{header}\n---\n\n{body.lstrip()}\n"
+
+
+def default_root(node_dir: Path) -> Path:
+    return node_dir / "ideas"
+
+
+def resolve_root(raw: str = "", *, node_dir: Path) -> Path:
+    """`--root` > `MOSS_IDEAS_ROOT` > the node's own `ideas/`; relative = caller's cwd."""
+    candidate = raw or os.getenv("MOSS_IDEAS_ROOT", "")
+    if not candidate:
+        return default_root(node_dir).resolve()
+    path = Path(candidate).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
 
 
 EXAMPLES_DIR = Path(__file__).resolve().parent / "examples"
-"""What ships: copied into a root that does not exist yet, and never into one that does
-— deleting the examples is a supported move, and re-seeding would undo it."""
 
 
 def seed_if_missing(root: Path) -> bool:
@@ -405,24 +810,3 @@ def seed_if_missing(root: Path) -> bool:
         return False
     shutil.copytree(EXAMPLES_DIR, root)
     return True
-
-
-def default_root(node_dir: Path) -> Path:
-    """Out of the box the data sits beside the node, gitignored, and is disposable."""
-    return node_dir / "ideas"
-
-
-def resolve_root(raw: str = "", *, node_dir: Path) -> Path:
-    """`--root` > `MOSS_IDEAS_ROOT` > the node's own `ideas/`.
-
-    The env var is the agreed handoff: whoever starts the process decides which
-    directory this run governs, and every child inherits the answer.
-    """
-    candidate = raw or os.getenv("MOSS_IDEAS_ROOT", "")
-    if not candidate:
-        return default_root(node_dir).resolve()
-    path = Path(candidate).expanduser()
-    if not path.is_absolute():
-        # relative resolves against the caller's cwd — the same rule the shell uses
-        path = Path.cwd() / path
-    return path.resolve()

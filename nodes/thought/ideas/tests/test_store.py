@@ -1,159 +1,204 @@
-"""The file is the truth here: one `*.idea.md` per idea, one directory per group.
+"""The graph is the truth here: one `graph.json` per group, edges as entities.
 
-These tests pin the four properties the simplified mechanism rests on:
+These tests pin what the mechanism now rests on:
 
-* discovery is a first-level directory scan, and the filename is the identity;
-* frontmatter round-trips — editing a file by hand is a supported operation;
-* a link whose target is gone is *reported*, not dropped;
-* a broken file is reported too, because a file that silently disappears is
-  indistinguishable from one that was never written.
+* a group is a directory holding one graph; discovery is a first-level scan;
+* edges are entities with their own ids, so a label change cannot break one;
+* weight decays with generation — depth is size, not taste;
+* the op log is an account, not the truth: `diff` reads it, nothing folds it back;
+* the markdown generation is imported once, and moved aside rather than rewritten.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from store import SUFFIX, Store, split_frontmatter  # noqa: E402
+from store import GRAPH, GraphStore, junctions, leaves, shortest_path, spine  # noqa: E402
 
-IDEA = """---
-state: {state}
+LEGACY = """---
+state: spark
 priority: {priority}
-tags: [t1, t2]
-links: [other, third:depend]
+label: {label}
+links: [{links}]
 ---
 
-the body of {name}
+{body}
 """
 
 
-def write_group(root: Path, group: str, readme: str = "group context") -> Path:
-    path = root / group
+def group_dir(root: Path, name: str = "design") -> Path:
+    path = root / name
     path.mkdir(parents=True, exist_ok=True)
-    (path / "README.md").write_text(readme, encoding="utf-8")
     return path
 
 
-def write_idea(group: Path, name: str, state: str = "spark", priority: float = 1.0) -> Path:
-    path = group / f"{name}{SUFFIX}"
-    path.write_text(IDEA.format(state=state, priority=priority, name=name), encoding="utf-8")
-    return path
-
-
-def loaded(tmp_path: Path) -> Store:
-    store = Store(tmp_path)
+def loaded(tmp_path: Path, name: str = "design"):
+    store = GraphStore(tmp_path)
     store.reload()
-    return store
+    return store, store.require_group(name)
 
 
-# --------------------------------------------------------------------- discovery
+def write_legacy(group: Path, name: str, label: str, links: str = "", body: str = "", priority: float = 1.0):
+    (group / f"{name}.idea.md").write_text(
+        LEGACY.format(priority=priority, label=label, links=links, body=body or label), encoding="utf-8")
 
 
-def test_first_level_directories_are_groups(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    write_group(tmp_path, "work")
-    write_idea(tmp_path / "voice", "duplex-gap", state="active", priority=3)
-    write_idea(tmp_path / "work", "bench-the-windows")
-
-    store = loaded(tmp_path)
-
-    assert sorted(store.groups) == ["voice", "work"]
-    idea = store.find("duplex-gap")
-    assert idea is not None and idea.group == "voice"
-    assert idea.state == "active" and idea.priority == 3.0
-    assert idea.tags == ["t1", "t2"]
-    assert (tmp_path / "voice" / "README.md").read_text(encoding="utf-8") == "group context"
+# -------------------------------------------------------------------- discovery
 
 
-def test_name_is_the_identity(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    write_idea(tmp_path / "voice", "duplex-gap")
-    idea = loaded(tmp_path).find("duplex-gap")
-    assert idea is not None and idea.name == "duplex-gap"
-    assert idea.title == "the body of duplex-gap"      # first body line is the reading title
+def test_a_group_is_a_directory_with_one_graph(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    assert group.graph_path == tmp_path / "design" / GRAPH
+    assert group.graph_path.exists(), "an empty group still gets a graph on disk"
+    assert group.rev == 1
 
 
-def test_frontmatter_round_trips(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    path = write_idea(tmp_path / "voice", "duplex-gap")
+def test_weight_decays_with_generation(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    root = store.add_node(group, "动机")
+    child = store.add_node(group, "执行", parent=root.id)
+    grandchild = store.add_node(group, "前端样式", parent=child.id)
 
-    idea = loaded(tmp_path).find("duplex-gap")
-    assert idea is not None
-    idea.state = "waiting"
-    idea.tags.append("later")
-    idea.save()
-
-    meta, body = split_frontmatter(path.read_text(encoding="utf-8"))
-    assert meta["state"] == "waiting"
-    assert meta["tags"] == ["t1", "t2", "later"]
-    assert body.strip() == "the body of duplex-gap"
+    assert root.weight == 1.0
+    assert child.weight == 0.8
+    assert grandchild.weight == 0.64
+    # the edge came with the child, pointing the right way
+    assert [(e.src, e.dst) for e in group.edges] == [(root.id, child.id), (child.id, grandchild.id)]
 
 
-# ------------------------------------------------------------------------- links
+# ------------------------------------------------------------------------ edges
 
 
-def test_dead_link_is_reported_not_dropped(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    write_idea(tmp_path / "voice", "other")
-    write_idea(tmp_path / "voice", "duplex-gap")   # links: other, third:depend
+def test_edges_are_entities_and_survive_a_rename(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    a = store.add_node(group, "存储策略")
+    b = store.add_node(group, "md", parent=a.id)
+    edge_id = group.edges[0].id
 
-    store = loaded(tmp_path)
-    idea = store.find("duplex-gap")
-    assert idea is not None
-    known = store.known()
-    assert [l.name for l in idea.live_links(known)] == ["other"]
-    assert [l.name for l in idea.dead_links(known)] == ["third"]
+    store.set_node(group, a.id, label="存储")     # label is a display name, not an identity
 
-
-def test_rename_rewrites_every_reference(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    write_idea(tmp_path / "voice", "other")
-    write_idea(tmp_path / "voice", "duplex-gap")
-
-    store = loaded(tmp_path)
-    store.rename("other", "other-name")
-
-    assert store.find("other") is None
-    assert store.find("other-name") is not None
-    idea = store.find("duplex-gap")
-    assert idea is not None
-    assert [l.name for l in idea.links] == ["other-name", "third"]
+    assert group.edges[0].id == edge_id
+    assert group.edges[0].src == a.id
+    assert group.find("存储") is a and group.find(a.id) is a
+    assert group.children(a.id)[0].dst == b.id
 
 
-# ------------------------------------------------------------------------ writes
+def test_removing_a_node_takes_its_edges_with_it(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    a = store.add_node(group, "方案")
+    b = store.add_node(group, "执行", parent=a.id)
+    store.add_node(group, "验收", parent=a.id)
+
+    gone = store.remove_node(group, b.id)
+
+    assert gone["edges"] == 1
+    assert b.id not in group.nodes
+    assert all(e.dst != b.id and e.src != b.id for e in group.edges)
 
 
-def test_spark_slugifies_and_never_overwrites(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    store = loaded(tmp_path)
-
-    first = store.spark("双工开得太满: 两个人不在同一个时间点上说话", group="voice")
-    second = store.spark("双工开得太满: 两个人不在同一个时间点上说话", group="voice")
-
-    assert first.name == "双工开得太满-两个人不在同一个时间点上说话"
-    assert second.name == first.name + "-2"
-    assert first.path.exists() and second.path.exists()
+# --------------------------------------------------------------------- topology
 
 
-def test_broken_file_is_reported_not_skipped(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    write_idea(tmp_path / "voice", "fine")
-    (tmp_path / "voice" / f"broken{SUFFIX}").write_text("---\nstate: [unclosed\n---\n", encoding="utf-8")
+def test_topology_answers_where_the_spine_is(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    root = store.add_node(group, "动机")
+    mid = store.add_node(group, "执行", parent=root.id)
+    store.add_node(group, "前端", parent=mid.id)
+    store.add_node(group, "画布", parent=mid.id)
+    store.add_node(group, "验收", parent=root.id)
 
-    store = loaded(tmp_path)
+    # 主路是最长的那条链，不是子树最大的那个——根永远子树最大，那样答的不是"主路"
+    chain = spine(group)
+    assert chain[:2] == [root.id, mid.id] and len(chain) == 3
+    assert chain[-1] in {group.find("前端").id, group.find("画布").id}
+    assert junctions(group)[0][0] == mid.id, "the branch point is where two children hang"
+    assert set(leaves(group)) == {group.find("前端").id, group.find("画布").id, group.find("验收").id}
+    assert shortest_path(group, root.id, group.find("画布").id) == [root.id, mid.id, group.find("画布").id]
 
-    assert store.find("fine") is not None
-    assert len(store.broken) == 1 and "broken" in store.broken[0]
+
+# ------------------------------------------------------------------------ ops
 
 
-def test_snapshot_carries_dead_flag_for_the_page(tmp_path: Path):
-    write_group(tmp_path, "voice")
-    write_idea(tmp_path / "voice", "other")
-    write_idea(tmp_path / "voice", "duplex-gap")
+def test_ops_are_an_account_and_diff_reads_them(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    start = group.rev
+    store.add_node(group, "架构方案")
+    store.add_node(group, "执行", parent="架构方案")
+    store.set_node(group, "执行", flag=True)
 
-    snap = loaded(tmp_path).snapshot()
-    idea = next(i for g in snap["groups"] for i in g["ideas"] if i["name"] == "duplex-gap")
-    flags = {l["name"]: l["dead"] for l in idea["links"]}
-    assert flags == {"other": False, "third": True}
+    lines = store.diff_lines(group, since=start)
+    joined = "\n".join(lines)
+    assert "+ 架构方案" in joined
+    assert "+ 执行" in joined and "flag=True" in joined
+
+    # the log is disposable: dropping it leaves the graph intact
+    group.ops_path.unlink()
+    again = GraphStore(tmp_path)
+    again.reload()
+    g2 = again.require_group("design")
+    assert len(g2.nodes) == 2
+    assert "no ops recorded" in again.diff_lines(g2)[0]
+
+
+def test_rev_moves_on_every_write(tmp_path: Path):
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+    before = group.rev
+    store.add_node(group, "a")
+    store.set_node(group, "a", body="x")
+    assert group.rev == before + 2
+    on_disk = json.loads(group.graph_path.read_text(encoding="utf-8"))
+    assert on_disk["rev"] == group.rev
+
+
+# ---------------------------------------------------------------------- legacy
+
+
+def test_markdown_ideas_are_imported_once(tmp_path: Path):
+    group = group_dir(tmp_path)
+    write_legacy(group, "motivation", "动机", links="execution")
+    write_legacy(group, "execution", "执行", links="frontend, storage:depend")
+    write_legacy(group, "frontend", "前端")
+    write_legacy(group, "storage", "存储")
+
+    store, g = loaded(tmp_path)
+
+    assert len(g.nodes) == 4
+    labels = {n.label for n in g.nodes.values()}
+    assert labels == {"动机", "执行", "前端", "存储"}
+    kinds = sorted(e.kind for e in g.edges)
+    assert kinds == ["depend", "detail", "detail"]
+    # the old files are moved aside, not deleted, and the import does not run twice
+    assert not list(group.glob("*.idea.md"))
+    assert len(list((group / ".trash").glob("*.idea.md"))) == 4
+
+    store2 = GraphStore(tmp_path)
+    store2.reload()
+    assert len(store2.require_group("design").nodes) == 4
+
+
+def test_every_group_carries_a_sign(tmp_path: Path):
+    """IDEAS.md says what the group is and whether it is alive — it never lists nodes."""
+    group_dir(tmp_path)
+    store, group = loaded(tmp_path)
+
+    assert group.ideas_path.exists()
+    head = group.ideas_path.read_text(encoding="utf-8")
+    assert "status: active" in head and "graph.json" in head
+    assert "n1" not in head, "the sign must not copy the graph"
+
+    store.set_status(group, "archived")
+    assert "status: archived" in group.ideas_path.read_text(encoding="utf-8")
+    again = GraphStore(tmp_path)
+    again.reload()
+    assert again.require_group("design").status == "archived"
