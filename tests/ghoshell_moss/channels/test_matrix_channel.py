@@ -7,8 +7,9 @@ is warm; nothing rides the hot context band.
 - nodes: state rides named_notices fragments, each diffed independently, so one
   fragment moving does not re-send the others. The text must be byte-stable
   between refreshes — a drifting field (uptime, age) would defeat the diff.
-  running / exited keep a bounded tail; installed is a bare count (the catalog
-  is a pull via list()).
+  running / exited keep a bounded tail; installed carries the catalog itself —
+  target path + description, bounded by show_installed — because a booting ghost
+  cannot pull what it does not know exists.
 - mesh: a bounded tail of recent cell events. The tail must be capped, and it
   must not re-emit while no new event has arrived.
 """
@@ -164,7 +165,7 @@ async def test_nodes_state_rides_notice_not_context():
         assert meta.context == []
         assert meta.notice == ""  # no unnamed notice — state is all fragments now
         assert meta.named_notices["running"].startswith("1 running:")
-        assert meta.named_notices["installed"] == "1"
+        assert meta.named_notices["installed"].startswith("installed nodes (1):")
 
 
 @pytest.mark.asyncio
@@ -201,22 +202,48 @@ async def test_nodes_notice_reports_exit_without_age_text():
 
 
 @pytest.mark.asyncio
-async def test_nodes_installed_is_count_only():
+async def test_nodes_installed_carries_the_catalog_not_just_a_count():
+    """A booting ghost cannot ask for what it does not know exists.
+
+    The installed fragment must name every organ with the target run() takes and the
+    sentence saying what it is for. A bare count leaves a ghost that has just lost its
+    context blind to its own body — what this pins is not cosmetic.
+    """
     matrix = _StubMatrix()
     matrix.project.nodes = _NodesCatalog({
-        f"nodes/n{i}": _manifest(f"node{i}", "tools", description=f"desc {i}")
-        for i in range(20)
+        "nodes/n0": _manifest("n0", "tools", description="desc 0"),
+        "nodes/n1": _manifest("n1", "tools", description="desc 1"),
+        "nodes/voice": _manifest("listener", "sensors", description="microphone"),
     })
     chan = new_nodes_channel(matrix)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        meta = runtime.self_meta()
+        installed = runtime.self_meta().named_notices["installed"]
 
-        assert meta.named_notices["installed"] == "20"
-        # the catalog's descriptions and paths never ride the warm band
-        warm = "\n".join(meta.named_notices.values())
-        assert "desc " not in warm
-        assert "nodes/n0" not in warm
+        assert installed.startswith("installed nodes (3):"), "the count still leads"
+        assert "nodes/n0 — desc 0" in installed, "the run target rides with its description"
+        assert "nodes/voice (listener) — microphone" in installed, (
+            "a manifest whose name differs from its directory keeps both identities"
+        )
+
+
+@pytest.mark.asyncio
+async def test_nodes_installed_tail_is_bounded():
+    """The catalog rides the warm band, so its tail has a bound — not a blind spot."""
+    matrix = _StubMatrix()
+    matrix.project.nodes = _NodesCatalog({
+        f"nodes/n{i}": _manifest(f"n{i}", "tools", description=f"desc {i}")
+        for i in range(6)
+    })
+    chan = new_nodes_channel(matrix, show_installed=4)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        installed = runtime.self_meta().named_notices["installed"]
+
+        assert "installed nodes (6):" in installed, "the count is the whole truth"
+        assert "nodes/n2 — desc 2" in installed
+        assert "nodes/n4" not in installed, "rows past the bound are not replayed"
+        assert "...+2 more, list() for the rest" in installed, "overspill points at the pull"
 
 
 class _PathRecordingCatalog(_NodesCatalog):
