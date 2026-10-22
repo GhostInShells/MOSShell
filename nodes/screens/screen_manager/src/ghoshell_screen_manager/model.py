@@ -215,6 +215,14 @@ class ScreenModel:
 
         Empty = an unoccupied desk.
         """
+        self._theme: str = "violet"
+        """Which palette the desk wears — a name, not a set of colours.
+
+        The colours live in ``themes/<name>.json`` as CSS variables, so a theme is
+        something anyone can add by dropping a file in; the model only holds the
+        choice. Keeping the choice in the state (rather than as a boot-time flag)
+        means switching is a normal command that everyone can see.
+        """
         self._overlay: str = ""
         """The item the human looks at *alone* — a view, not a layout.
 
@@ -285,6 +293,12 @@ class ScreenModel:
     def overlay(self) -> str:
         """The item standing over the screen with no window chrome, or ``""``."""
         return self._overlay
+
+    def theme(self) -> str:
+        return self._theme
+
+    def set_theme(self, name: str | None) -> None:
+        self._theme = (name or "").strip() or "violet"
 
     def presence(self) -> str:
         """The page inhabiting the desk — the ghost standing on home, or ``""``."""

@@ -88,6 +88,7 @@ class ScreenSurface:
         port: int = 0,
         html_path: Path,
         session: str = "",
+        themes_dir: Path | None = None,
     ) -> None:
         self._model = model
         self._audio = audio
@@ -96,6 +97,10 @@ class ScreenSurface:
         self._host = host
         self._html_path = html_path
         self._session = session
+        self._themes_dir = themes_dir or (html_path.parent / "themes")
+        """Where the palettes live. A theme is a json of CSS variables — adding one
+        is dropping a file here, which is the whole point of not baking colours into
+        the page."""
         """This run's window token.
 
         Only the window *this node just opened* carries it, so only that window may
@@ -287,11 +292,36 @@ class ScreenSurface:
             return response
         if path == "/ws":
             return None
+        if path.startswith("/themes/"):
+            return self._serve_theme(connection, path[len("/themes/"):])
         if path.startswith("/local/"):
             return self._serve_local(connection, path[len("/local/"):])
         if path.startswith("/asset/"):
             return self._serve_asset(connection, path[len("/asset/"):])
         return connection.respond(404, "not found")
+
+    def themes(self) -> list[str]:
+        """Theme names available on disk, in a stable order."""
+        try:
+            return sorted(p.stem for p in self._themes_dir.glob("*.json"))
+        except OSError:
+            return []
+
+    def _serve_theme(self, connection: ServerConnection, name: str):
+        safe = Path(name).name
+        if not safe.endswith(".json") or "/" in name:
+            return connection.respond(404, "not found")
+        try:
+            # respond() takes text, not bytes — a theme is small json, so decoding
+            # it here costs nothing and keeps one call shape for every route.
+            body = (self._themes_dir / safe).read_text(encoding="utf-8")
+        except OSError:
+            return connection.respond(404, "not found")
+        response = connection.respond(200, body)
+        del response.headers["Content-Type"]
+        response.headers["Content-Type"] = "application/json"
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
     def add_local(self, path: Path) -> str:
         """Register a local html file and return a url that serves it from this origin.

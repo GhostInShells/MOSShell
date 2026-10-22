@@ -25,7 +25,7 @@ async def test_channel_exposes_the_command_set():
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
             "focus", "float", "raise", "pool", "mark", "box", "circle", "arrow",
             "danmaku", "paint", "veil", "clear_veil", "overlay", "presence",
-            "mock_scene", "mock_audio",
+            "mock_scene", "mock_audio", "theme",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -662,3 +662,29 @@ async def test_a_tool_call_is_the_heartbeat_of_a_turn_under_dsh():
         await feed.cb(SimpleNamespace(event="dsh/tool/call", content="bash: ls"))
         states = [f for f in rec.of("state") if "thinking" in f]
         assert states and states[-1]["thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_theme_switches_and_reports():
+    """A palette is a name the state holds — switching must be visible to everyone."""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("theme", args=("moss",))
+        assert model.theme() == "moss"
+        assert rec.of("theme")[-1]["name"] == "moss"
+        # The state frame carries it too: a window that connects later must open
+        # in the palette the desk is actually wearing.
+        await runtime.execute_command("open", args=("http://x",))
+        assert rec.of("state")[-1]["theme"] == "moss"
+
+
+@pytest.mark.asyncio
+async def test_theme_reads_back_when_name_is_empty():
+    model = ScreenModel()
+    model.set_theme("moss")
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        out = await runtime.execute_command("theme", args=("",))
+        assert "moss" in str(out)
+        assert model.theme() == "moss"

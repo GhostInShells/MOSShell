@@ -392,6 +392,31 @@ def build_screen_channel(
         await _emit(P.state_frame(model))
         return f"[screen] presence {url}"
 
+    @chan.build.command(name="theme")
+    async def theme(name: str = "") -> str:
+        """Wear a palette — the desk's colours come from ``themes/<name>.json``.
+
+        A theme is a json of CSS variables, not code: adding one means dropping a
+        file next to the others and passing its name. The colours are deliberately
+        *not* in this repository's Python — a colour written here would outlive the
+        palette it belonged to (the tool-call line was green long after the desk was
+        not), so the model names a role and the page looks the colour up.
+
+        Empty ``name`` reads back: the one in force, and what else is on the shelf.
+        """
+        list_themes = getattr(surface, "themes", None)
+        available = list_themes() if callable(list_themes) else []
+        if not name:
+            return f"[screen] theme {model.theme()}" + (
+                f" (available: {', '.join(available)})" if available else "")
+        if available and name not in available:
+            CommandUtil.raise_observe(
+                f"no such theme: {name} (available: {', '.join(available)})")
+            return ""
+        model.set_theme(name)
+        await _emit({"type": "theme", "name": model.theme()})
+        return f"[screen] theme {model.theme()}"
+
     @chan.build.command(name="focus")
     async def focus(id: str = "") -> str:
         """Show one item alone, full stage; ``id`` empty leaves the focus.

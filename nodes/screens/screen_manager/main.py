@@ -53,6 +53,7 @@ from ghoshell_screen_manager.model import ScreenModel  # noqa: E402
 from ghoshell_screen_manager.surface import ScreenSurface  # noqa: E402
 
 _INDEX_HTML = _NODE_DIR / "index.html"
+_THEMES = _NODE_DIR / "themes"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 20381
@@ -91,6 +92,17 @@ def wants_debug() -> bool:
     return "--debug" in sys.argv[1:]
 
 
+def theme_name() -> str:
+    """``--theme NAME`` — which palette the desk wears (``themes/NAME.json``)."""
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--theme" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--theme="):
+            return arg.split("=", 1)[1]
+    return "violet"
+
+
 def presence_path() -> str:
     """``--presence PATH`` — the page that inhabits the desk, set before the first frame.
 
@@ -119,6 +131,7 @@ _SESSION = secrets.token_hex(4)
 
 async def main(matrix: Matrix) -> None:
     model = ScreenModel()
+    model.set_theme(theme_name())
 
     # The live bus is the default: the background is driven by real speech, and
     # speech arriving *is* the switch. ``--mock-audio`` is the demo/headless escape.
@@ -147,6 +160,7 @@ async def main(matrix: Matrix) -> None:
         port=resolve_port(),
         html_path=_INDEX_HTML,
         session=_SESSION,
+        themes_dir=_THEMES,
     )
     await surface.start()
     print(f"[webview_screen] surface at {surface.url}", flush=True)

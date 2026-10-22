@@ -5,17 +5,72 @@
 <meta charset="utf-8">
 <title>MOSS screen</title>
 <style>
+  /* ===== 主题 =====
+     这块屏的颜色不写死在这儿：它是**一组变量**，由 themes/*.json 提供，页面只认
+     var()。别人想做一个主题，就是往 themes/ 里放一个 json —— 不用改这一行 CSS。
+     下面这份默认值等于 violet 主题，所以即使主题文件没取到，屏也不会变成透明。 */
   :root {
     --rail-w: 200px;
     --slotbar-h: 26px;
     --gap: 6px;
-    --border: #2a3340;
-    /* 一块屏的主色是住户身上那身紫，但紫不该是屏幕上唯一的颜色 —— 全紫会读成
-       "滤了一层颜色"，而不是"这些光本来就是这些颜色"。所以配两个邻居：一段冰蓝
-       （它出声、它活着的时候用）和一点玫红（边缘、远端的暖）。紫仍是主角。 */
+
     --accent: #9b8cff;
     --accent-ice: #7ad7ff;
     --accent-rose: #ff9ad5;
+    --ink: #dfe9f2;
+    --dim: #9fb0c0;
+    --border: #2a3340;
+
+    --tile-bg-a: #2a2745;
+    --tile-bg-b: #12101e;
+    --tile-text: #ddd6ff;
+    --tile-name: #b0a6e0;
+    --tile-line: #e6e1ff;
+    --tile-lit: #f1eeff;
+    --tile-border-1: rgba(155, 140, 255, .55);
+    --tile-border-2: rgba(122, 215, 255, .18);
+    --tile-border-3: rgba(255, 154, 213, .36);
+    --tile-glow: rgba(139, 134, 255, .16);
+    --tile-glow-2: rgba(122, 215, 255, .07);
+    --tile-halo: rgba(160, 145, 255, .24);
+
+    --rail-bg-a: rgba(20, 16, 38, .94);
+    --rail-bg-b: rgba(9, 7, 18, .97);
+    --rail-border: rgba(150, 140, 255, .18);
+    --rail-hover: rgba(155, 140, 255, .10);
+    --rail-hover-rim: rgba(160, 145, 255, .16);
+    --rail-active-a: rgba(155, 140, 255, .22);
+    --rail-active-b: rgba(155, 140, 255, .05);
+    --rail-active-rim: rgba(160, 145, 255, .28);
+
+    --rain-tail: #7c6fc8;
+    --rain-head: #e7e2ff;
+    --rain-dim-resident: 0.62;
+    --rain-dim-empty: 0.9;
+
+    --danmaku: #b7a9ff;
+    --talk-text: #efecff;
+    --talk-bg: rgba(10, 7, 22, .62);
+    --talk-glow: rgba(160, 145, 255, .55);
+    --talk-rim: rgba(160, 145, 255, .16);
+
+    --moss-idle-1: #322a63;
+    --moss-idle-2: #8b7fe0;
+    --moss-idle-3: #3f6f8f;
+    --moss-live-1: #8b86ff;
+    --moss-live-2: #b6aaff;
+    --moss-live-3: #e9e6ff;
+    --moss-live-4: #9fd8ff;
+
+    --think-a: #8b86ff;
+    --think-b: #dff1ff;
+
+    --disc-fill: rgba(22, 29, 38, .92);
+    --disc-stroke: rgba(155, 140, 255, .5);
+    --disc-text: #9b8cff;
+
+    --mask-bg: rgba(10, 8, 22, .94);
+    --mask-text: #ded9f2;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -51,7 +106,7 @@
     pointer-events: none; opacity: 0; transition: opacity .35s ease;
     background-color: rgba(0,0,0,.55);
     box-shadow: 0 1px 6px rgba(0,0,0,.55);
-    background-image: linear-gradient(90deg, transparent, #6ea8fe 30%, #fff3b0 50%, #6ea8fe 70%, transparent);
+    background-image: linear-gradient(90deg, transparent, var(--think-a) 30%, var(--think-b) 50%, var(--think-a) 70%, transparent);
     background-size: 40% 100%; background-repeat: no-repeat;
     background-position: -40% 0;
   }
@@ -86,9 +141,9 @@
      贴过来的一行字。可读性靠"深底 + 光晕"，不靠描边。 */
   #talk .line {
     max-width: 80%; padding: 3px 14px; border-radius: 12px; text-align: center;
-    background: rgba(10, 7, 22, .62); color: #efecff; white-space: pre-wrap;
-    box-shadow: 0 0 0 1px rgba(160, 145, 255, .16), 0 8px 26px rgba(0, 0, 0, .55);
-    text-shadow: 0 0 14px rgba(160, 145, 255, .55), 0 2px 6px rgba(0, 0, 0, .9);
+    background: var(--talk-bg); color: var(--talk-text); white-space: pre-wrap;
+    box-shadow: 0 0 0 1px var(--talk-rim), 0 8px 26px rgba(0, 0, 0, .55);
+    text-shadow: 0 0 14px var(--talk-glow), 0 2px 6px rgba(0, 0, 0, .9);
     animation: talk-in .16s ease-out;
     transition: opacity .9s ease-out;
   }
@@ -98,14 +153,14 @@
      为什么需要它：同一个 url 可以开在很多标签里，而每个标签的窗口尺寸不同；
      "谁在画、画在哪一块"必须只有一个答案，否则模型画的手势会落在人没看的那块。 */
   #mask     { position: fixed; inset: 0; z-index: 20; display: none;
-              background: rgba(10,8,22,.94); color: #ded9f2; place-items: center; }
+              background: var(--mask-bg); color: var(--mask-text); place-items: center; }
   body.masked #mask { display: grid; }
   #mask-box { max-width: 34em; padding: 24px; text-align: center;
               font: 15px/1.7 ui-monospace, Menlo, monospace; }
   #mask-box p { margin: 0 0 16px; opacity: .8; }
-  #mask-claim { font: inherit; padding: 8px 18px; color: #a99cff; cursor: pointer;
-                background: transparent; border: 1px solid #8f7cf0; border-radius: 4px; }
-  #mask-claim:hover { background: rgba(155, 140, 255, .12); }
+  #mask-claim { font: inherit; padding: 8px 18px; color: var(--accent); cursor: pointer;
+                background: transparent; border: 1px solid var(--accent); border-radius: 4px; }
+  #mask-claim:hover { background: var(--rail-hover); }
   #log      { position: fixed; top: 8px; right: 8px; z-index: 8; }
   #log-badge { background: #161d26; color: #8af; border: 1px solid var(--border); border-radius: 10px;
                padding: 3px 9px; cursor: pointer; font-size: 11px; }
@@ -182,8 +237,8 @@
     z-index: 9; display: flex; flex-direction: column;
     /* 栏是这块屏的"边",不是一块板:深色渐层 + 一道很细的紫边,让它从黑底里
        浮出来一点点。模糊只糊它背后的东西,不吃自己的颜色。 */
-    background: linear-gradient(180deg, rgba(20, 16, 38, .94), rgba(9, 7, 18, .97));
-    border-right: 1px solid rgba(150, 140, 255, .18);
+    background: linear-gradient(180deg, var(--rail-bg-a), var(--rail-bg-b));
+    border-right: 1px solid var(--rail-border);
     box-shadow: inset -1px 0 0 rgba(200, 190, 255, .06), 14px 0 44px rgba(0, 0, 0, .45);
     backdrop-filter: blur(9px);
     -webkit-backdrop-filter: blur(9px);
@@ -218,7 +273,7 @@
   #rail-groups { flex: 1; overflow-y: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
   #rail-sep {
     height: 1px; margin: 7px 8px;
-    background: linear-gradient(90deg, transparent, rgba(160, 145, 255, .28), transparent);
+    background: linear-gradient(90deg, transparent, var(--rail-border), transparent);
   }
   .rail-item {
     position: relative;
@@ -231,18 +286,18 @@
   /* 悬停是"手停在这儿",选中是"你正在这儿":前者只提亮,后者才配一道光边和
      左边的紫线 —— 一列里同时亮两行,人就分不清自己在哪儿了。 */
   .rail-item:hover {
-    background: rgba(155, 140, 255, .10); color: #e8e4ff;
-    box-shadow: inset 0 0 0 1px rgba(160, 145, 255, .16);
+    background: var(--rail-hover); color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--rail-hover-rim);
   }
   .rail-item.active {
-    background: linear-gradient(90deg, rgba(155, 140, 255, .22), rgba(155, 140, 255, .05));
-    color: #cfc7ff;
-    box-shadow: inset 0 0 0 1px rgba(160, 145, 255, .28), 0 0 18px rgba(139, 134, 255, .16);
+    background: linear-gradient(90deg, var(--rail-active-a), var(--rail-active-b));
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--rail-active-rim), 0 0 18px var(--tile-glow);
   }
   .rail-item.active::before {
     content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 2px;
-    border-radius: 2px; background: #9b8cff;
-    box-shadow: 0 0 10px rgba(160, 145, 255, .9);
+    border-radius: 2px; background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
   }
   .rail-empty { color: #55636f; font-size: 11px; padding: 6px 9px; }
   #rail-foot { padding: 6px; border-top: 1px solid var(--border); }
@@ -403,13 +458,13 @@
     border: 1px solid transparent; border-radius: 30px;
     /* 双背景：内层是瓷砖本体，外层只画边框（padding-box / border-box 各取一层） */
     background:
-      linear-gradient(165deg, #2a2745, #12101e) padding-box,
-      linear-gradient(135deg, rgba(155, 140, 255, .55), rgba(122, 215, 255, .18) 45%, rgba(255, 154, 213, .36)) border-box;
-    color: #ddd6ff; font-size: 12.5px; letter-spacing: .02em;
+      linear-gradient(165deg, var(--tile-bg-a), var(--tile-bg-b)) padding-box,
+      linear-gradient(135deg, var(--tile-border-1), var(--tile-border-2) 45%, var(--tile-border-3)) border-box;
+    color: var(--tile-text); font-size: 12.5px; letter-spacing: .02em;
     pointer-events: auto; cursor: pointer; transform-origin: 50% 50%;
     box-shadow: 0 14px 36px rgba(0, 0, 0, .55),
-                0 0 26px rgba(139, 134, 255, .16),
-                0 0 72px rgba(122, 215, 255, .07),
+                0 0 26px var(--tile-glow),
+                0 0 72px var(--tile-glow-2),
                 inset 0 1px 0 rgba(190, 175, 255, .09);
   }
   /* 光圈：瓷砖在黑底上要自己发一点光才站得住。近处那圈晕由 box-shadow 给，
@@ -417,7 +472,7 @@
      慢慢地胀缩，幅度小到不注意就看不见：屏是背景，不该一直动。 */
   .tile::before {
     content: ''; position: absolute; inset: -9px; border-radius: 38px;
-    border: 1px dashed rgba(160, 145, 255, .24);
+    border: 1px dashed var(--tile-halo);
     pointer-events: none;
     animation: halo-breathe 5.6s ease-in-out infinite;
   }
@@ -426,20 +481,20 @@
     50%      { opacity: 1; transform: scale(1.03); }
   }
   .tile .tile-dot {
-    width: 6px; height: 6px; border-radius: 50%; background: #9b8cff;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
     flex: 0 0 auto; opacity: .85;
   }
   .tile .tile-name {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     max-width: 100%; font-size: 16px; font-weight: 500;
-    color: #b0a6e0; transition: color .18s;
+    color: var(--tile-name); transition: color .18s;
   }
-  .tile.lit .tile-name { color: #f1eeff; }
+  .tile.lit .tile-name { color: var(--tile-lit); }
   /* 脸：一行字是主面，名字退成底下的小字。有图的时候图铺满，字压在图上。 */
   .tile .tile-line {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     max-width: 100%; font-size: 14px; font-weight: 500;
-    color: #e6e1ff; letter-spacing: .01em;
+    color: var(--tile-line); letter-spacing: .01em;
   }
   .tile.faced .tile-name { font-size: 11px; opacity: .62; }
   .tile .tile-art {
@@ -453,16 +508,16 @@
     border-radius: 0 0 28px 28px;
   }
   .tile.sel {
-    border-color: #9b8cff;
-    box-shadow: 0 0 0 1px #9b8cff, 0 18px 44px rgba(0, 0, 0, .6),
-                0 0 34px rgba(139, 134, 255, .38);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent), 0 18px 44px rgba(0, 0, 0, .6),
+                0 0 34px var(--tile-glow);
   }
   .tile.sel::before { border-color: rgba(200, 190, 255, .55); animation: none; opacity: 1; }
 
   /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
   #moss span {
     font-weight: 900; letter-spacing: .02em;
-    background: linear-gradient(90deg, #322a63, #8b7fe0, #3f6f8f);
+    background: linear-gradient(90deg, var(--moss-idle-1), var(--moss-idle-2), var(--moss-idle-3));
     -webkit-background-clip: text; background-clip: text;
     color: transparent; background-size: 200% 100%;
     transition: opacity .4s;
@@ -515,7 +570,7 @@
     opacity: 1;
     animation: flow 2.8s linear infinite;
     /* 亮，但还是它身上那套蓝紫 —— 白成一片就不是同一个人了。 */
-    background-image: linear-gradient(90deg, #8b86ff, #b6aaff, #e9e6ff, #9fd8ff, #8b86ff);
+    background-image: linear-gradient(90deg, var(--moss-live-1), var(--moss-live-2), var(--moss-live-3), var(--moss-live-4), var(--moss-live-1));
     filter: drop-shadow(0 0 26px rgba(180, 160, 255, .85))
             drop-shadow(0 0 8px rgba(255, 255, 255, .42));
     transform: translate(var(--moss-dx, 0px), var(--moss-dy, 0px));
@@ -754,7 +809,7 @@ function reportViewport() {
 // 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
 // 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
 let debugTimer = null;
-const PAGE_REV = '2026-10-22-violet-7';
+const PAGE_REV = '2026-10-22-theme-2';
 function debugPayload() {
   const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
     ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
@@ -1158,16 +1213,16 @@ function drawDiscs() {
     const r = 26;
     dctx.beginPath();
     dctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-    dctx.fillStyle = 'rgba(22,29,38,.92)';
+    dctx.fillStyle = cssVar('--disc-fill', 'rgba(22,29,38,.92)');
     dctx.fill();
     // 圆盘是"还没入组的东西"：给它一圈自己的光，它才不像贴上去的贴纸。
-    dctx.shadowColor = 'rgba(160,145,255,.75)';
+    dctx.shadowColor = cssVar('--disc-stroke', 'rgba(155,140,255,.5)');
     dctx.shadowBlur = 14;
-    dctx.strokeStyle = 'rgba(155,140,255,.5)';
+    dctx.strokeStyle = cssVar('--disc-stroke', 'rgba(155,140,255,.5)');
     dctx.lineWidth = 1.5;
     dctx.stroke();
     dctx.shadowBlur = 0;
-    dctx.fillStyle = '#9b8cff';
+    dctx.fillStyle = cssVar('--disc-text', '#9b8cff');
     dctx.font = 'bold 13px ui-monospace, monospace';
     dctx.textAlign = 'center'; dctx.textBaseline = 'middle';
     const label = d.label.length > 6 ? d.label.slice(0, 6) : d.label;
@@ -1266,7 +1321,10 @@ function veilAlpha(b, now) {
   return fade((now - b.start) / b.dur);
 }
 function veilColor(kind, color) {
-  return color || VEIL_DEFAULT[kind] || 'rgba(255,255,255,1)';
+  if (color) return resolveColor(color);
+  // 弹幕跟着主题走：雨是什么颜色，飞过去的字就是什么颜色。
+  if (kind === 'danmaku') return cssVar('--danmaku', VEIL_DEFAULT.danmaku);
+  return VEIL_DEFAULT[kind] || 'rgba(255,255,255,1)';
 }
 
 function veilMark(id, item, region, durMs, color, width) {
@@ -1354,6 +1412,36 @@ function veilPaint(id, script, item, durMs, color) {
     }
     c.globalAlpha = 1;
   }, durMs);
+}
+
+// ===== 主题 =====
+// 屏的颜色是一份 json（themes/<name>.json）里的一组 CSS 变量。这里只负责把变量
+// 贴到 :root 上，然后让 canvas 那几处（字符雨、圆盘）重新取一次色 —— canvas 不认
+// CSS 变量，它只能被读出来再喂进去。
+let themeName = '';
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback || '';
+}
+// Python 那边递过来的是"这是谁的颜色"，不是某一串十六进制：写死颜色的话，
+// 主题一换，那一行字就永远停在旧主题上（今晚就为这个白找了两轮）。
+const COLOR_TOKENS = { tool: '--accent-2', ghost: '--danmaku', accent: '--accent' };
+function resolveColor(c) {
+  const token = COLOR_TOKENS[c];
+  return token ? cssVar(token, c) : c;
+}
+async function applyTheme(name) {
+  if (!name || name === themeName) return;
+  try {
+    const r = await fetch('/themes/' + encodeURIComponent(name) + '.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const theme = await r.json();
+    const root = document.documentElement;
+    for (const [k, v] of Object.entries(theme.vars || {})) root.style.setProperty(k, String(v));
+    themeName = name;
+    rebuildRainAtlas();     // canvas 的两张字色图集要按新主题重上一次漆
+    applyRainTint();
+  } catch (e) { /* 主题取不到就用页面里那份默认值，屏不该因此变黑 */ }
 }
 
 // ===== 弹幕：会飞的字 =====
@@ -1611,11 +1699,15 @@ function glyphAtlas(fill) {
 // 两套漆：空桌上它是 Matrix 的绿（雨头白亮、尾绿）；桌上有住户时换成他那一身蓝紫，
 // 并整体压暗一档 —— 有人站在那儿，背景就不该跟他抢注意力，但也不能消失：
 // 它是这块屏的呼吸，安静的时候还得看得见。两套图集同形不同色，切换只是换引用。
-const RAIN_TAIL = glyphAtlas('#7c6fc8');
-const RAIN_HEAD = glyphAtlas('#e7e2ff');
-const atlas = RAIN_TAIL;
-const headAtlas = RAIN_HEAD;
+// 主题一换就得重新上漆：图集是画好的位图，改不了颜色，只能重画。
+let atlas = null;
+let headAtlas = null;
 let rainDim = 1;
+function rebuildRainAtlas() {
+  atlas = glyphAtlas(cssVar('--rain-tail', '#7c6fc8'));
+  headAtlas = glyphAtlas(cssVar('--rain-head', '#e7e2ff'));
+}
+rebuildRainAtlas();
 /** 背景的亮度闸：住户在场时整片压暗，其余不变。 */
 function rainAlpha(a) { return Math.min(1, a * rainDim); }
 /** 换漆：只在"桌上站着人、而且看的就是桌面"时走蓝紫，缩进侧栏那段交给舞台。 */
@@ -1624,7 +1716,8 @@ function applyRainTint() {
   const occupied = body.contains('presence-on') && !body.contains('compact');
   // 只有一套漆（住户身上那身蓝紫），两种音量：他站在桌面上时压暗一档，
   // 桌空着时亮一点。整块屏不再有第二种颜色 —— 绿只留在项目里，不留在画面上。
-  rainDim = occupied ? 0.62 : 0.9;
+  rainDim = parseFloat(
+    cssVar(occupied ? '--rain-dim-resident' : '--rain-dim-empty', '0.62')) || 0.62;
 }
 
 // 横向格数：60 是**上限**，不是定值。字形宽 GW 固定 16px，而格距 = 屏宽 / 格数 ——
@@ -2593,6 +2686,8 @@ function route(f) {
       break;
     }
     case 'current': setMasked(false, ''); break;
+    // 主题：一份 json 的变量名，页面把它贴到 :root 上，canvas 自己再取一次色。
+    case 'theme': applyTheme(f.name || ''); break;
     // 服务端盯着 index.html：它一变就让我重载。页面自己那份轮询是上一版的做法，
     // 实测会静默失效（人以为没生效，其实只是旧代码还在跑）。
     case 'reload': location.reload(); break;
@@ -2600,6 +2695,8 @@ function route(f) {
     case 'snapshot': {
       // 全量帧：reconcile（缺建、多删）。f.items 是所有 item 的详情（含桌面），
       // 页面据此物化 iframe；桌面 item 的 iframe 隐藏，只画代理圆盘。
+      // 主题也随状态来：换一个窗口连上来，它第一帧就该是这块屏的颜色。
+      applyTheme(f.theme || '');
       const seen = new Set();
       f.items.forEach((it) => {
         seen.add(it.id);
