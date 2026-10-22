@@ -495,7 +495,11 @@ function onFrame(f) {
     return;
   }
   if (f.type === "replay") {
-    ops = ops.slice(0, Math.max(0, (f.ops || []).length)) ;
+    // A replay frame may carry a *prefix* of the record (a player stepping back).
+    // Never shrink what we already hold: the ops past the prefix are the reader's
+    // way forward again, and dropping them turns "step back" into "lose the tail".
+    const incoming = f.ops || [];
+    if (incoming.length > ops.length) ops = incoming;
     replay(f.n);
     return;
   }

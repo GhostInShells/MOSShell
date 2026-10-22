@@ -435,7 +435,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         return line
 
     # ---- works -------------------------------------------------------------
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def open_work(name: str, description: str = "") -> str:
         """Start a work, or select an existing one.
 
@@ -462,7 +462,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         )
 
     # ---- ops ---------------------------------------------------------------
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def write(name: str, addr: str, chunks__: str, note: str = "") -> str:
         """Stream a fragment into the node at `addr` (appended at the end of it).
 
@@ -489,7 +489,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         await server.broadcast({"type": "op", "op": op.as_frame()})
         return f"op {op.n} · insert into {addr} ({len(text)} chars)"
 
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def set_attr(name: str, addr: str, attr: str, value: str, note: str = "") -> str:
         """Set one attribute on the node at `addr` — the smallest possible change.
 
@@ -508,7 +508,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         await server.broadcast({"type": "op", "op": op.as_frame()})
         return f"op {op.n} · {addr}[{attr}] = {value}"
 
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def remove_node(name: str, addr: str, note: str = "") -> str:
         """Remove the node at `addr` and its subtree.
 
@@ -561,11 +561,53 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
             return "no work open"
         target = len(work.ops) if n < 0 else n
         store.checkout(work.name, target)
-        await server.broadcast({"type": "replay", "n": work.cursor,
-                                "ops": [op.as_frame() for op in work.ops[:work.cursor]]})
+        # Same frame the human's own checkout sends: a cursor move, not a new op list.
+        # Shipping the prefix again would make the page throw away the ops it already
+        # has (and a page that is *reading* step 12 must still be able to walk forward).
+        await server.broadcast({"type": "cursor", "n": work.cursor})
         return f"'{work.name}' reader at {work.cursor}/{len(work.ops)}"
 
     @chan.build.command(always_observe=False)
+    async def play(name: str = "", frm: int = -1, to: int = -1, interval: float = 0.35) -> str:
+        """Walk the reader forward one op at a time — the replay you can watch.
+
+        ``checkout`` jumps: the page is rebuilt in a single frame, which is right when
+        you are *placing* the reader. ``play`` is for showing a work being made — the
+        cursor steps from where the reader stands to the end, one op per ``interval``,
+        so the drawing grows on the page instead of appearing whole.
+
+        Going back first is not a special case: set ``frm`` lower and it rewinds to
+        there in one step, then walks forward from it. A backward playback (a "rewind
+        film") is deliberately not offered — the ops are a log, and the honest way to
+        see the past is to stand at a step and read it, not to watch it run backwards.
+
+        It holds its channel for as long as it plays: a replay takes real time, and
+        pretending otherwise would let the next command race the picture.
+
+        :param name: the work; empty = the current one
+        :param frm: op to start from; -1 = wherever the reader stands
+        :param to: op to stop at; -1 = the head
+        :param interval: seconds per step
+        """
+        work = store.get(name)
+        if work is None:
+            return "no work open"
+        total = len(work.ops)
+        start = work.cursor if frm < 0 else max(0, min(frm, total))
+        end = total if to < 0 else max(0, min(to, total))
+        step = max(0.05, float(interval))
+        store.checkout(work.name, start)
+        await server.broadcast({"type": "cursor", "n": work.cursor})
+        if end <= start:
+            return f"'{work.name}' reader at {work.cursor}/{total} — nothing to play"
+        for n in range(start + 1, end + 1):
+            await asyncio.sleep(step)
+            store.checkout(work.name, n)
+            await server.broadcast({"type": "cursor", "n": work.cursor})
+        return (f"'{work.name}' played ops {start + 1}..{end} "
+                f"in {round(step * (end - start), 1)}s — reader at {work.cursor}/{total}")
+
+    @chan.build.command(always_observe=True)
     async def export_work(name: str = "", path: str = "") -> str:
         """Save a work as a pair: `<name>.jsonl` (its ops) and `<name>.md` (its notes).
 
@@ -594,7 +636,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         write_note(note, work)
         return f"'{work.name}' → {target} ({len(lines) - 1} ops) + {note.name}"
 
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def export_html(name: str = "", path: str = "", viewbox: str = "0 0 1000 700") -> str:
         """Write a work out as one standalone HTML file — the ops plus a small player.
 
@@ -625,7 +667,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         target.write_text(html, encoding="utf-8")
         return f"'{work.name}' → {target} ({len(work.ops)} ops, standalone)"
 
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def export_svg(name: str = "", path: str = "") -> str:
         """Write the drawing out as one standalone SVG file — the picture, not the record.
 
@@ -652,7 +694,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         target.write_text(markup, encoding="utf-8")
         return f"'{work.name}' → {target} ({len(markup)} chars)"
 
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def import_work(path: str, name: str = "") -> str:
         """Load a work from a `.jsonl` file and show it.
 
@@ -710,7 +752,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         await server.broadcast({"type": "point", "addr": addr, "ask": ask})
         return f"pointed at {addr}" + (f" — asking: {ask}" if ask else " — highlight only")
 
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def page(name: str = "", label: str = "", note: str = "") -> str:
         """Mark this point in the record as a page — the slide of a deck.
 
@@ -729,7 +771,7 @@ def new_svg_works_channel(store: WorkStore, server: SurfaceServer, matrix: Matri
         await server.broadcast({"type": "op", "op": op.as_frame()})
         return f"op {op.n} · page '{op.note}' at {len(work.ops)} ops"
 
-    @chan.build.command(always_observe=False)
+    @chan.build.command(always_observe=True)
     async def style(css: str, name: str = "", note: str = "") -> str:
         """Add a style sheet to the work — one palette for the whole drawing.
 
