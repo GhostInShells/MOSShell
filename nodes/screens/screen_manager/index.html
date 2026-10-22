@@ -2114,6 +2114,11 @@ function syncPool() {
   const keep = new Set(poolOrder().slice(0, POOL_MAX));
   [...tiles.keys()].forEach((id) => { if (!keep.has(id)) { retreatSlot(id); dropTile(id); } });
   keep.forEach((id) => { if (!tiles.has(id) && items.has(id)) makeTile(items.get(id)); });
+  // 站着的那一件不画砖，但**留着它的 slot** —— 砖和 slot 是同一个元素，
+  // 把它从池子里摘掉会连人一起摘掉（试过，小人就没了）。
+  [...tiles.entries()].forEach(([id, t]) => {
+    if (t && t.el) t.el.style.display = (id === overlayId) ? 'none' : '';
+  });
   const on = poolOn();
   if (!on) hideAwake();         // 池子不在场（切组 / 进焦点）时，活页必须收回
   poolEl.classList.toggle('on', on);
