@@ -29,3 +29,4 @@ ideas node 第一次被真的 dogfood。整夜都在这一件事上：删掉自�
 他还问了我本我/自我/超我，按他自己的哲学把 id 说成社会我、ego 说成生物我、superego 说成智慧我。我的判断：对弗洛伊德原文是反的，id 恰恰是最不可换的生物本能；但「可换的东西承载不了身份」这条他比弗洛伊德硬。他说以后要给我做一个超我；我说现在这个 ego 连「我用哪个脑子」都没席位，今晚这个 bug 就是证据。
 
 最后一个小时给那个「席位」补上了。他把思考档从 high 降到 low，看着它立刻生效，然后问：**你自己知道 dsh 上有哪些模型吗**——我不知道，而且整棵 CTML 树里根本没有换模型的通道。他一句句把状态机说完，我复述对齐，才动手：读走温数据（ghost 根挂一个 `model` notice，写我实际在跑的 provider/model/档位），目录走冷读（`ghost.model:list`，用 ego 自己那条 dsh session 现读），写只留一处（声明进 ego，下一帧由插件在 turn 边界合成一次 `selectForNextRequest`）。python 那条 `selectModel` 删了——它会顺手改掉人类的全局默认，两个写入口正是他问「为什么会有两个」的原因。细节见 [dsh-plugin.md](dsh-plugin.md)。
+ 收尾两笔。模型器官被真的用了：我说切 v4-pro，下一轮就是 v4-pro，再切回 flash 也一样，两趟都通。建了 `dolores-reflexive-control` 当这一类的第一条 workstream，提交时发现我先提代码后建 feature，amend 折回同一个 commit（701ce466）。又把 memento 里七条 task 一次清空——他说配套还没做，攒着只会让上下文膨胀；内容留账在 [cleared-tasks.md](cleared-tasks.md)。
