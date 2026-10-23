@@ -315,7 +315,7 @@ class ScreenSurface:
         before the page hears about the switch — the page cannot read the workspace.
 
         ``name`` is the theme's *name* (what ``themes()`` lists and ``theme(name)``
-        takes), not a filename: ``violet``, and the ``.json`` is added here. Getting
+        takes), not a filename: ``kawaii-shell``, and the ``.json`` is added here. Getting
         that wrong is silent — the theme would still switch, only its scene half
         would be ignored — so the guard below is about shape, not about the suffix.
         """

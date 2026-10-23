@@ -220,7 +220,7 @@ class ScreenModel:
 
         Empty = an unoccupied desk.
         """
-        self._theme: str = "violet"
+        self._theme: str = "kawaii-shell"
         """Which palette the desk wears — a name, not a set of colours.
 
         The colours live in ``themes/<name>.json`` as CSS variables, so a theme is
@@ -303,7 +303,7 @@ class ScreenModel:
         return self._theme
 
     def set_theme(self, name: str | None) -> None:
-        self._theme = (name or "").strip() or "violet"
+        self._theme = (name or "").strip() or "kawaii-shell"
 
     def presence(self) -> str:
         """The page inhabiting the desk — the ghost standing on home, or ``""``."""

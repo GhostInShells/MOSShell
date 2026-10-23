@@ -5,7 +5,7 @@
 
 ```json
 {
-  "name": "violet",
+  "name": "kawaii-shell",
   "label": "蓝紫 · 住户",
   "description": "一句话说清这套颜色是什么感觉。",
   "vars": { "--accent": "#9b8cff", "--rain-tail": "#7c6fc8", "...": "..." }
@@ -40,7 +40,7 @@
 ## 怎么用
 
 ```
-matrix.mesh.screen:theme name="violet"     # 换；不认识的会报错并列出可选
+matrix.mesh.screen:theme name="kawaii-shell"     # 换；不认识的会报错并列出可选
 matrix.mesh.screen:theme                    # 读：现在穿哪套，还有哪些
 ```
 
@@ -50,7 +50,7 @@ matrix.mesh.screen:theme                    # 读：现在穿哪套，还有哪�
 
 | 名字 | 什么感觉 |
 |---|---|
-| `violet` | 住户身上那身紫；话是紫的、事是冰蓝的，背景压暗一档 |
+| `kawaii-shell` | 住户身上那身紫（原 `violet`）；话是紫的、事是冰蓝的，背景压暗一档 |
 | `moss` | 屏最早的那一套 Matrix 绿 |
 
 ## 键位一览

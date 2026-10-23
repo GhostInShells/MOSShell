@@ -100,7 +100,7 @@ def theme_name() -> str:
             return argv[i + 1]
         if arg.startswith("--theme="):
             return arg.split("=", 1)[1]
-    return "violet"
+    return "kawaii-shell"
 
 
 def presence_path() -> str:
