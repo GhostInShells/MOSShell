@@ -55,6 +55,14 @@
   @keyframes handL{0%,100%{transform:translate(0,0) rotate(-4deg)}50%{transform:translate(-5px,-7px) rotate(4deg)}}
   @keyframes handR{0%,100%{transform:translate(0,0) rotate(4deg)}50%{transform:translate(5px,-7px) rotate(-4deg)}}
   .mouth{transform-box:fill-box;transform-origin:center;transition:transform .16s ease}
+  /* 安静时是微笑嘴；一出声换成会张合的开口 */
+  .mouth-open{opacity:0}
+  /* 只让开口淡入；弧立刻退场 —— 两个形状同时在场上半透明时，
+     弧的两头会在椭圆边上露出两个小角，像长耳朵。 */
+  .mouth-rest{transition:none}
+  .mouth-open{transition:opacity .28s ease-out}
+  .talking .mouth-rest,.mouthing .mouth-rest{opacity:0}
+  .talking .mouth-open,.mouthing .mouth-open{opacity:1}
   .talking .mouth{animation:talk .11s ease-in-out infinite alternate}
   @keyframes talk{from{transform:scaleY(.9)}to{transform:scaleY(2.3)}}
   .talking .halo{animation:pulse .9s ease-in-out infinite}
@@ -176,7 +184,11 @@
       <ellipse cx="241" cy="187" rx="17" ry="20" fill="#1b1630"/>
       <ellipse cx="236" cy="179" rx="5.5" ry="6" fill="#fff" opacity=".88"/>
     </g>
-    <ellipse class="mouth" cx="200" cy="242" rx="15" ry="9" fill="#120d2c"/>
+    <g class="mouth">
+      <path class="mouth-rest" d="M186 237 q14 9 28 0" fill="none"
+            stroke="#120d2c" stroke-width="4" stroke-linecap="round"/>
+      <ellipse class="mouth-open" cx="200" cy="242" rx="15" ry="9" fill="#120d2c"/>
+    </g>
     <g class="dots" fill="#c3bfff">
       <circle cx="270" cy="104" r="7"/><circle cx="296" cy="104" r="7"/><circle cx="322" cy="104" r="7"/>
     </g>
@@ -214,18 +226,24 @@ function readHash(){
 // 嘴的两种驱动：有真声音就跟着幅度开合（帧率 5Hz，靠 rAF 补间抹平），
 // 没有就退回正弦（hash 的 #talk= 那一套，给"总线还没通"的时候用）。
 const mouthEl = document.querySelector('.mouth');
-let mTarget = 0, mNow = 0, mAt = 0, mRAF = 0;
+let mTarget = 0, mNow = 0, mAt = 0, mLoud = 0, mRAF = 0;
 function mouthTick() {
   if (performance.now() - mAt > 260) mTarget = 0;      // 没声了就闭回去
   mNow += (mTarget - mNow) * 0.45;
   // 静止时就是它原本的样子（0.9 ≈ 不做形变）—— 张开的量才是信息，
   // 闭着的时候不该是一条缝。
   mouthEl.style.transform = `scaleY(${(0.9 + mNow * 1.55).toFixed(3)})`;
-  mRAF = (mNow > 0.012 || mTarget > 0.012) ? requestAnimationFrame(mouthTick) : 0;
+  // 只有"真的有声"才续命：句子里的小停顿（<0.45s）不换回微笑，
+  // 一句话说完了才让微笑回来。
+  art.classList.toggle('mouthing', performance.now() - mLoud < 450);
+  const holding = performance.now() - mLoud < 450;
+  mRAF = (mNow > 0.012 || mTarget > 0.012 || holding) ? requestAnimationFrame(mouthTick) : 0;
+  if (!mRAF) art.classList.remove('mouthing');
 }
 function mouthLevel(level) {
   mTarget = Math.max(0, Math.min(1, level));
   mAt = performance.now();
+  if (mTarget > 0.05) mLoud = mAt;      // 有声：把"正在说"的窗口往前推
   art.classList.remove('talking');                      // 正弦让位给幅度
   if (!mRAF) mRAF = requestAnimationFrame(mouthTick);
 }
