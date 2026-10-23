@@ -25,6 +25,7 @@ from ghoshell_moss.ground import GroundSet
 
 from ._ego_memento import EgoMementoManager
 from .memento_channel import build_memento_channel
+from .model_channel import ModelOrgan, identity_text, new_model_channel
 
 __all__ = ["build_dolores_channel"]
 
@@ -38,6 +39,7 @@ def build_dolores_channel(
     commit_anchor: Callable[[str], str | None] | None = None,
     frame_root: str | Path | None = None,
     init_frame: Frame | None = None,
+    model: ModelOrgan | None = None,
     name: str = "ghost",
     description: str | None = None,
 ) -> MutableChannel:
@@ -102,4 +104,12 @@ def build_dolores_channel(
                 ),
             )
         )
+    if model is not None:
+        chan.import_channels(new_model_channel(model))
+
+        # 温数据面: 我实际在跑哪个模型、哪一档. named notice 的规矩 —— 变才重发, 没变零成本;
+        # 来源是 request/header 的观测 (真在跑什么), 不是目录默认值 (新会话从哪开始).
+        @chan.build.named_notices
+        async def _model_identity() -> dict[str, str | None]:
+            return {"model": identity_text(model.read_identity())}
     return chan

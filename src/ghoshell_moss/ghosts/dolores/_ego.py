@@ -203,6 +203,9 @@ class DoloresEgo:
         # 声明只被消费一次, 但档位本身不会一轮即丢: plugin 把它写进 request/header 的持久配置,
         # 后续帧仍从那里读到, 直到 ghost 或界面再改一次.
         self.default_thinking_effort: str | None = default_thinking_effort or None
+        # 待采用的模型声明 (provider, model): 与档位走同一条路 —— 声明一次, 由下一个**真正带上它**
+        # 的思考帧下发, 采用即置回 None. None = 不表态, 模型保持 dsh 侧现状.
+        self.default_model: tuple[str, str] | None = None
         # 预期模型身份 (provider, model, reasoning_effort) — request/header 观测值与之不符时排一条
         # notice. None = 尚未观测过 (首次观测也算变化: 开局就得知道自己在哪一档).
         self._model_identity: tuple[str, str, str] | None = None
@@ -322,6 +325,91 @@ class DoloresEgo:
             return None
         return (self._model_identity[0], self._model_identity[1])
 
+    @property
+    def model_identity(self) -> "tuple[str, str, str] | None":
+        """(provider, model, reasoning_effort) as last observed on ``request/header`` — the warm read.
+
+        Same source as :attr:`model_route`, one field wider: the depth is part of the identity a
+        ghost needs to know about itself (it decides how it talks, not only how long it thinks).
+        None = no request observed yet, so the ghost has no route of its own to report.
+        """
+        return self._model_identity
+
+    def declare_model(self, provider: str, model: str, effort: str = "") -> str:
+        """Declare the model (and optionally the depth) for the next thinking frame.
+
+        Records state and nothing else — the same shape as the ``moss_reasoning`` depth
+        declaration, and for the same reason: the only writer into dsh is the plugin, once per
+        frame at the turn boundary. A declaration is consumed by the next frame that carries it,
+        so a ``'none'`` frame (background only) cannot silently eat it.
+
+        :param provider: dsh provider id, e.g. ``deepseek-official``.
+        :param model: dsh model id from the catalog, e.g. ``deepseek-flash``.
+        :param effort: optional depth to travel with the switch (off/low/high/max). Empty = keep
+            whatever the new model's current selection holds.
+        :return: a short receipt naming what was declared.
+        """
+        provider = (provider or "").strip()
+        model = (model or "").strip()
+        if not provider or not model:
+            raise ValueError("declare_model: provider and model are both required")
+        self.default_model = (provider, model)
+        effort = (effort or "").strip()
+        if effort:
+            self.default_thinking_effort = effort
+        self._declare_identity(provider, model, effort)
+        return f"declared {provider}/{model}" + (f" @ {effort}" if effort else "")
+
+    def declare_effort(self, effort: str) -> str:
+        """Declare the thinking depth for the next frame — the ``moss_reasoning`` backend.
+
+        The depth half of :meth:`declare_model`: the model stays put, only the depth moves. Like
+        the model declaration it updates the identity immediately, so the warm notice shows the
+        new depth right away and ``request/header`` confirms it a frame later.
+
+        :param effort: depth to travel with (off/low/high/max).
+        :return: a short receipt naming the declared depth.
+        """
+        effort = (effort or "").strip()
+        self.default_thinking_effort = effort
+        self._declare_identity("", "", effort)
+        return f"declared depth {effort}"
+
+    def _declare_identity(self, provider: str, model: str, effort: str) -> None:
+        """Merge a declaration over the observed identity and apply it immediately.
+
+        An empty component means "keep the current value" — ``declare_effort`` leaves provider
+        and model untouched while ``declare_model`` replaces them. The merged identity is the
+        optimistic value the notice shows; ``request/header`` later reconciles it.
+        """
+        current = self._model_identity or ("", "", "")
+        self._set_identity(
+            provider or current[0],
+            model or current[1],
+            effort or current[2],
+        )
+
+    def _set_identity(self, provider: str, model: str, effort: str) -> None:
+        """Record the identity and queue a notice when it changed — declaration and observation alike.
+
+        The single mutation point for ``_model_identity``: both the optimistic declaration and
+        the ``request/header`` truth flow through here, so a change is announced exactly once
+        whichever source moved it.
+        """
+        observed = (provider, model, effort)
+        if observed == self._model_identity:
+            return
+        previous = self._model_identity
+        self._model_identity = observed
+        self._notices.append(Message.new(tag="model_notice").with_content(
+            dolores_model_notice(
+                provider=provider,
+                model=model,
+                effort=effort,
+                previous_effort=None if previous is None else previous[2],
+            )
+        ))
+
     # ── short-lived: run_thinking (transaction) ──────────────────────
 
     def run_thinking(self, thinking: "Thinking") -> "DoloresRun":
@@ -435,19 +523,7 @@ class DoloresEgo:
         if header is None:
             return
         config = header.header.config
-        observed = (config.provider, config.model, config.reasoningEffort or "")
-        previous = self._model_identity
-        if observed == previous:
-            return
-        self._model_identity = observed
-        self._notices.append(Message.new(tag="model_notice").with_content(
-            dolores_model_notice(
-                provider=observed[0],
-                model=observed[1],
-                effort=observed[2],
-                previous_effort=None if previous is None else previous[2],
-            )
-        ))
+        self._set_identity(config.provider, config.model, config.reasoningEffort or "")
 
     async def _on_turn_end(self, event: SessionEvent) -> None:
         """turn/end 回调 — 推进 last_turn, 再按阈值决定是否强制提交."""
@@ -754,6 +830,13 @@ class DoloresEgo:
             self.default_thinking_effort = None
         else:
             effort = ""
+        # 模型声明与档位同一条路: 一次性, 由下一帧带走. 帧上没有与之竞争的第二来源, 所以任何
+        # 一帧 (含 'none' 背景帧) 带上它都是有效的 —— 插件在判定 turn 驱动之前就把它写掉了.
+        provider = ""
+        model = ""
+        if self.default_model is not None:
+            provider, model = self.default_model
+            self.default_model = None
         epoch = thinking.observer.epoch
         epoch_payload = self._epoch_payload(thinking)
         payload = {
@@ -765,6 +848,10 @@ class DoloresEgo:
             # notices (commit 提醒 / 已提交告知) — 与 moment 同级注入, 每帧排空.
             "notices": self._drain_notices(),
             "effort": effort,
+            # 模型声明 (provider/model) — 与档位同一个写入口: 插件在 turn 边界写一次
+            # selectForNextRequest. 空串 = 不表态, 模型保持在 dsh 侧现状.
+            "provider": provider,
+            "model": model,
             "thinkingToken": self._thinking_token,
             "thinkingSeq": thinking_seq,
             # observe continuation: empty inputs still drive a turn — see needs_observe().

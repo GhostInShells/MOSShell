@@ -238,6 +238,35 @@ class Dolores(Ghost):
             raise RuntimeError("commit_anchor called before the ego session was created")
         return self._ego.commit_anchor(note)
 
+    def _model_organ(self) -> "ModelOrgan":
+        """ghost.model 的后端 —— 读目录 / 读现状 / 声明, 三件都落在 ego 身上.
+
+        读目录走 ego 已经持有的那个 dsh session (``session/modelCatalog``), 不新开连接:
+        它就是"我现在这颗脑子"的那条连接, 另开一条会答出另一份状态.
+        """
+        from .model_channel import ModelOrgan
+
+        async def read_catalog():
+            if self._ego is None:
+                raise RuntimeError("model catalog asked before the ego session was created")
+            return await self._ego.session.models()
+
+        def read_identity():
+            if self._ego is None:
+                return None
+            return self._ego.model_identity
+
+        def declare(provider: str, model: str, effort: str) -> str:
+            if self._ego is None:
+                raise RuntimeError("model declared before the ego session was created")
+            return self._ego.declare_model(provider, model, effort)
+
+        return ModelOrgan(
+            read_catalog=read_catalog,
+            read_identity=read_identity,
+            declare=declare,
+        )
+
     def channel(self) -> "MutableChannel | None":
         """The ghost's reflexive control channel — its own organs as sub-channels.
 
@@ -259,6 +288,7 @@ class Dolores(Ghost):
                 commit_anchor=self._commit_anchor,
                 frame_root=self._frame_root(),
                 init_frame=self._startup_doc.frame if self._startup_doc is not None else None,
+                model=self._model_organ(),
             )
         return self._channel
 

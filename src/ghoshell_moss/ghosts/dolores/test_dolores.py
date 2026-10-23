@@ -581,6 +581,84 @@ class TestDoloresEgoReasoningEffort:
         assert ego.default_thinking_effort is None
 
     @pytest.mark.asyncio
+    async def test_model_declaration_rides_the_next_frame_and_is_consumed_once(self):
+        """模型声明与档位同一条路: 下一帧带出 provider/model, 采用即消费."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        ego.declare_model("deepseek-official", "deepseek-v4-pro")
+        await ego.enter_thinking(self._thinking(""), 1)
+
+        payload = launcher.calls[0][1]
+        assert payload["provider"] == "deepseek-official"
+        assert payload["model"] == "deepseek-v4-pro"
+        assert ego.default_model is None
+
+    @pytest.mark.asyncio
+    async def test_no_model_declaration_sends_empty_strings(self):
+        """无声明 = 不表态: 空串让插件保持当前模型 (不是把 provider 清零)."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        await ego.enter_thinking(self._thinking(""), 1)
+
+        payload = launcher.calls[0][1]
+        assert payload["provider"] == ""
+        assert payload["model"] == ""
+
+    @pytest.mark.asyncio
+    async def test_declare_model_carries_the_effort_and_refuses_half_a_route(self):
+        """换模型可以顺手带档位; provider/model 缺一不可 —— 半个 route 会写坏下一次请求."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        receipt = ego.declare_model("deepseek-official", "deepseek-v4-pro", "max")
+        assert "deepseek-v4-pro" in receipt and "max" in receipt
+        assert ego.default_model == ("deepseek-official", "deepseek-v4-pro")
+        assert ego.default_thinking_effort == "max"
+
+        with pytest.raises(ValueError):
+            ego.declare_model("", "deepseek-v4-pro")
+
+    def test_model_identity_is_none_until_a_request_is_observed(self):
+        """温数据的读口: 还没跑过请求 = None, 不拿目录默认值冒充"我在跑的模型"."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        assert ego.model_identity is None
+        assert ego.model_route is None
+
+    def test_declare_model_updates_identity_immediately(self):
+        """声明模型那一刻身份就变 —— notice 不等下一帧 header 才反映改动."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        ego.declare_model("deepseek-official", "deepseek-v4-pro", "high")
+
+        assert ego.model_identity == ("deepseek-official", "deepseek-v4-pro", "high")
+
+    def test_declare_effort_updates_identity_immediately(self):
+        """只改档位那一刻身份也变 —— 模型保持, 档位立即切到新值."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+        ego.declare_model("deepseek-official", "deepseek-flash", "low")
+
+        ego.declare_effort("high")
+
+        assert ego.model_identity == ("deepseek-official", "deepseek-flash", "high")
+
+    def test_declare_model_queues_identity_notice_immediately(self):
+        """声明即排 notice —— 下一帧 enter 就带上新身份, 不等 header 回传."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        ego.declare_model("deepseek-official", "deepseek-v4-pro", "high")
+
+        notices = [n for n in ego._notices if n.meta.tag == "model_notice"]
+        assert len(notices) == 1
+        assert "deepseek-v4-pro" in notices[0].to_content_string()
+
+    @pytest.mark.asyncio
     async def test_lost_enter_does_not_burn_the_epoch(self):
         """enter RPC 丢了不能打戳 —— 否则 recap (压缩后 memory 的唯一通路) 永不重发."""
         from ghoshell_moss.message import Message
@@ -1795,6 +1873,10 @@ class FakeRunEgo:
 
     def on_run_exit(self, valid: bool):
         self.run_exits.append(valid)
+
+    def declare_effort(self, effort):
+        self.default_thinking_effort = effort
+        return f"declared depth {effort}"
 
 
 class FakeArticulator:
@@ -3496,6 +3578,88 @@ class TestBuildChannel:
             names = {m.name for m in runtime.metas().values()}
             assert "frame" not in names
             assert "ground" in names
+
+    @pytest.mark.asyncio
+    async def test_model_organ_mounts_and_its_identity_rides_the_ghost_notice(self, tmp_path: Path):
+        """ghost.model 挂上来, 当前模型走 ghost 根的 named notice (变才重发)."""
+        from ghoshell_moss.ground import DefaultGroundSet
+
+        from .channel import build_dolores_channel
+        from .model_channel import ModelOrgan
+
+        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        organ = ModelOrgan(
+            read_catalog=self._empty_catalog,
+            read_identity=lambda: ("deepseek-official", "deepseek-flash", "low"),
+            declare=lambda provider, model, effort: f"declared {provider}/{model}",
+        )
+        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path, model=organ)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            metas = {m.name: m for m in runtime.metas().values()}
+        assert "model" in metas
+        ghost_meta = metas["ghost"]
+        assert ghost_meta.named_notices["model"] == "deepseek-official/deepseek-flash · thinking low"
+
+    @pytest.mark.asyncio
+    async def test_no_model_organ_means_no_model_channel(self, tmp_path: Path):
+        """没有后端就不挂这个器官 —— 挂一个只会答"做不了"的命令是在骗模型."""
+        from ghoshell_moss.ground import DefaultGroundSet
+
+        from .channel import build_dolores_channel
+
+        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            metas = {m.name: m for m in runtime.metas().values()}
+        assert "model" not in metas
+        assert "model" not in metas["ghost"].named_notices
+
+    @staticmethod
+    async def _empty_catalog():
+        from ghoshell_moss.deepseek_harness.types.sessions import ModelCatalog
+
+        return ModelCatalog()
+
+    def test_catalog_renders_models_with_their_own_depth_ladder(self):
+        """目录文本按 provider 分组, 每个模型带自己的档位表 —— 换模型前先看见它能想多深."""
+        from ghoshell_moss.deepseek_harness.types.sessions import (
+            ModelCatalog,
+            ModelCatalogModel,
+            ModelProviderGroup,
+            ModelReasoning,
+            ModelReasoningEffort,
+        )
+
+        from .model_channel import _catalog_text
+
+        catalog = ModelCatalog(
+            groups=[
+                ModelProviderGroup(
+                    id="deepseek-official",
+                    name="DeepSeek",
+                    models=[
+                        ModelCatalogModel(
+                            id="deepseek-flash",
+                            name="DeepSeek-V41-Flash",
+                            reasoning=ModelReasoning(
+                                efforts=[ModelReasoningEffort(id="off"), ModelReasoningEffort(id="max")],
+                                defaultEffort="off",
+                            ),
+                        )
+                    ],
+                )
+            ],
+            routableProviders=["deepseek-official"],
+        )
+        text = _catalog_text(catalog)
+        assert "deepseek-official" in text
+        assert "deepseek-flash" in text
+        assert "off/max" in text
+        assert "default off" in text
 
     @pytest.mark.asyncio
     async def test_init_frame_lands_in_notice(self, tmp_path: Path):
