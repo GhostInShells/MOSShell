@@ -558,6 +558,9 @@
      给我蒙了一层灰——"比较暗"不是配色问题，是被盖住了。它是 pointer-events:none，
      踩着栏也不会挡栏里的点击。 */
   body.compact #presence { z-index: 10; }
+  /* 侧栏收起之后，住户就跟着收起来：它站的位置本来就是栏的底部，
+     栏不在了还留在角落，就成了一个没有去处的人。 */
+  body.compact.rail-collapsed #presence { display: none; }
   #presence iframe {
     width: 100%; height: 100%; border: 0; display: block;
     background: transparent;            /* 透明底才读成"站在那儿"，不是"又一扇窗" */
@@ -1119,11 +1122,11 @@ function layoutPresence() {
   const top = (viewH - side) / 2;             // = 它的 top
   if (compact) {
     // 侧栏档：整块 iframe 缩小平移过去（人形页面本身不动，位置只在这一处算）。
-    const railW = railWidth();
-    const target = Math.round(Math.min(150, railW * 0.82));
+    const target = Math.round(Math.min(150, viewH * 0.2));
     const s = target / side;
-    const dx = (railW - target) / 2 - s * viewW * 0.22;
-    const dy = viewH - 26 - target - s * viewH * 0.2615;
+    // 左下角：左边留一点空，人脚踩在底边上方一点
+    const dx = 18 - s * viewW * 0.22;
+    const dy = viewH - 24 - target - s * viewH * 0.2615;
     if (frame) {
       frame.style.transformOrigin = '0 0';
       frame.style.transform = `translate(${Math.round(dx)}px, ${Math.round(dy)}px) scale(${s.toFixed(4)})`;
