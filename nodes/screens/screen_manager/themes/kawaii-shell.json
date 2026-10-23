@@ -2,7 +2,7 @@
   "name": "kawaii-shell",
   "label": "卡哇伊 · 住户",
   "description": "住户身上那身紫。话是紫的、事是冰蓝的，背景的雨压暗一档；化身也归这套：就是站在桌上那个小人。",
-  "presence": "works/ghost-desk/me-overlay/index.html",
+  "presence": "nodes/screens/screen_manager/pages/me-overlay/index.html",
   "vars": {
     "--accent": "#9b8cff",
     "--accent-2": "#7ad7ff",
