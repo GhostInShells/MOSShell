@@ -204,6 +204,11 @@ class ScreenModel:
         """
         self._focus: str | None = None
         self._presence: str = ""
+        self._presence_default: str = ""
+        """The occupant the node was configured with — ``--presence`` or a ``presence``
+        command. Kept apart from ``_presence`` because a theme may lend the desk its
+        own occupant: leaving that theme has to put this one back, and a scene that
+        says nothing about occupants must not silently empty the desk."""
         """The page that *inhabits* the desk — the ghost itself, standing on home.
 
         Not an item: no handle, no group, no window. It is part of the desk the way
@@ -310,8 +315,32 @@ class ScreenModel:
         Separate from ``set_overlay`` on purpose: an occupant has no handle to
         reference, survives every rearrange (it is furniture, not a window), and is
         what the human sees before the model has said anything at all.
+
+        This is the *current* occupant. A theme may lend the desk its own one for a
+        while (see ``set_presence_default`` / ``restore_presence``): "who stands
+        here" is part of a scene, so switching scenes can change it — and switching
+        back has to put the original one back, which is why the default is kept.
         """
         self._presence = url or ""
+
+    def set_presence_default(self, url: str | None) -> None:
+        """Set the occupant this node was configured with — and show it now.
+
+        What ``--presence`` at startup and an explicit ``presence`` command mean:
+        "this desk is inhabited by this page". A theme that brings its own occupant
+        overrides it without destroying it, so the next theme that does not still
+        finds it there.
+        """
+        self._presence_default = url or ""
+        self._presence = self._presence_default
+
+    def presence_default(self) -> str:
+        """The configured occupant, ignoring whatever theme is currently worn."""
+        return self._presence_default
+
+    def restore_presence(self) -> None:
+        """Drop a theme's borrowed occupant and put the configured one back."""
+        self._presence = self._presence_default
 
     def set_overlay(self, item_id: str | None, *, by: str = "model") -> None:
         """Let one item stand *on* the screen instead of being shown by it.

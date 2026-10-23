@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>主题切换 · 三处住着的东西</title>
+<style>
+  :root{
+    --bg:#08060f; --ink:#eeebff; --dim:#8d86ad; --line:rgba(160,145,255,.22);
+    --violet:#9b8cff; --ice:#7ad7ff; --rose:#ff9ad5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(1100px 700px at 8% -10%, rgba(120,90,255,.16), transparent 60%),
+      radial-gradient(900px 700px at 96% 118%, rgba(90,190,255,.09), transparent 60%),
+      var(--bg);
+    color:var(--ink); font-family:"PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    padding:34px 46px 26px; overflow:hidden; display:flex; flex-direction:column;
+  }
+  h1{font-size:29px; font-weight:650}
+  .lead{margin-top:10px; font-size:15px; color:#b7b0d2; line-height:1.6}
+  .lead b{color:#fff; font-weight:600}
+
+  .row{display:grid; grid-template-columns:1fr 56px 1.15fr 56px 1.25fr; align-items:stretch;
+       gap:0; margin-top:26px; flex:1; min-height:0}
+
+  .panel{border:1px solid var(--line); border-radius:18px; padding:18px 20px;
+    background:linear-gradient(170deg, rgba(44,40,72,.80), rgba(14,12,24,.90));
+    box-shadow:0 16px 40px rgba(0,0,0,.45); display:flex; flex-direction:column}
+  .panel h2{font-size:12px; letter-spacing:.10em; color:var(--dim); font-weight:500}
+  .panel .big{font-size:19px; font-weight:650; margin-top:6px}
+  .panel .sub{font-size:12.5px; color:#9a93b6; margin-top:6px; line-height:1.55}
+
+  .items{margin-top:14px; display:flex; flex-direction:column; gap:8px}
+  .it{border:1px solid rgba(160,145,255,.16); border-radius:10px; padding:8px 11px;
+      background:rgba(155,140,255,.06); font-size:13px; color:#cfc8ea; line-height:1.5}
+  .it b{color:#fff; font-weight:600}
+  .it.mono{font:12.5px ui-monospace,Menlo,monospace; color:#cfc7ff}
+  .it.plum{border-color:rgba(155,140,255,.40); background:rgba(155,140,255,.13)}
+  .it.ice{border-color:rgba(122,215,255,.28); background:rgba(122,215,255,.07)}
+  .it.rose{border-color:rgba(255,154,213,.26); background:rgba(255,154,213,.06)}
+
+  .arrow{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px;
+         color:var(--dim); font:12px ui-monospace,Menlo,monospace; text-align:center}
+  .arrow .ln{width:100%; height:1px; position:relative;
+    background:linear-gradient(90deg, transparent, rgba(155,140,255,.6), transparent)}
+  .arrow .ln::after{content:''; position:absolute; right:-1px; top:-4px;
+    border-left:8px solid rgba(155,140,255,.85); border-top:4.5px solid transparent; border-bottom:4.5px solid transparent}
+  .arrow span{font-size:11.5px; line-height:1.35; color:#8d86ad}
+
+  footer{margin-top:16px; display:flex; gap:24px; align-items:center; font-size:13px; color:#8d86ad}
+  footer b{color:#fff; font-weight:600}
+  footer .cmd{font:12.5px ui-monospace,Menlo,monospace; color:#cfc7ff}
+</style>
+</head>
+<body>
+<h1>切一个主题：三处各管一件事</h1>
+<div class="lead">
+  颜色只在<b>磁盘上的文件</b>里。屏的进程里只有一个<b>名字</b>，浏览器里只有一套<b>变量</b>——
+  三处各管一件事，谁也不替谁记颜色。
+</div>
+
+<div class="row">
+
+  <!-- 1 磁盘 -->
+  <div class="panel">
+    <h2>① 磁盘</h2>
+    <div class="big">你写的那份文件</div>
+    <div class="sub">一个人可以往这里放任意多份，屏不会数。</div>
+    <div class="items">
+      <div class="it mono">themes/violet.json</div>
+      <div class="it mono">themes/moss.json</div>
+      <div class="it mono" style="opacity:.75">…你放几个就是几个</div>
+      <div class="it"><b>vars</b> — 颜色变量表<br><b>presence</b> — 桌上站着谁：<b>true</b> / <b>false</b> / <b>一个页面路径</b></div>
+      <div class="it mono" style="font-size:11.5px">"presence": "works/ghost-desk/me-overlay/index.html"</div>
+    </div>
+  </div>
+
+  <div class="arrow">
+    <span>按名字取</span>
+    <div class="ln"></div>
+  </div>
+
+  <!-- 2 进程 -->
+  <div class="panel">
+    <h2>② 屏的进程</h2>
+    <div class="big">只记住一个名字</div>
+    <div class="sub">模型里没有一处颜色，只有"现在穿哪套"。</div>
+    <div class="items">
+      <div class="it plum"><b>theme(name)</b> — 命令进来，改这一个字段</div>
+      <div class="it"><b>ScreenModel.theme = "moss"</b></div>
+      <div class="it ice"><b>广播</b> — 每个连着的窗口都收到；新连上的拿全量</div>
+      <div class="it"><b>/themes/&lt;name&gt;.json</b> — 文件由这里递给页面</div>
+    </div>
+  </div>
+
+  <div class="arrow">
+    <span>广播一帧<br>页面自己取</span>
+    <div class="ln"></div>
+  </div>
+
+  <!-- 3 浏览器 -->
+  <div class="panel">
+    <h2>③ 浏览器</h2>
+    <div class="big">把名字变成画面</div>
+    <div class="sub">页面不缓存颜色，也不猜；它照着变量画。</div>
+    <div class="items">
+      <div class="it plum"><b>:root</b> — 变量逐个贴上去，CSS 里全是 var()</div>
+      <div class="it ice"><b>canvas</b> — 字符雨与圆盘是位图，换主题要重画两张图集</div>
+      <div class="it rose"><b>化身</b> — 是谁、在不在：这两件由这份 JSON 决定；站哪里则看舞台上有没有内容，换主题时一起重算</div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <span class="cmd">matrix.mesh.screen:theme name="moss"</span>
+  <span><b>加主题 = 放一个文件</b></span>
+  <span><b>切换 = 一条命令</b>，不重启、不改代码</span>
+</footer>
+</body>
+</html>

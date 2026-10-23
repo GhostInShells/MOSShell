@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>themes/ · 两份主题</title>
+<style>
+  :root{--bg:#08060f;--ink:#eeebff;--dim:#8d86ad;--line:rgba(160,145,255,.20)}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:radial-gradient(900px 600px at 20% -10%, rgba(120,90,255,.16), transparent 60%), var(--bg);
+    color:var(--ink); font-family:"PingFang SC",system-ui,sans-serif;
+    padding:22px 26px; overflow:hidden; display:flex; flex-direction:column}
+  h1{font-size:18px; font-weight:650}
+  .note{margin-top:7px; font-size:12px; color:#a9a2c6; line-height:1.6}
+  .two{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; flex:1; min-height:0}
+  .pane{border:1px solid var(--line); border-radius:14px; padding:11px 13px; display:flex; flex-direction:column;
+        background:linear-gradient(170deg, rgba(40,37,66,.72), rgba(13,11,22,.9))}
+  .pane .fn{font:600 12.5px ui-monospace,Menlo,monospace}
+  .pane .fn.v{color:#9b8cff} .pane .fn.m{color:#3ddc8f}
+  pre{margin-top:8px; flex:1; overflow:auto; font:11px/1.62 ui-monospace,Menlo,monospace; white-space:pre; color:#cfc7ff}
+  .c{color:#6b6488}
+  .diff{margin-top:12px; border:1px dashed rgba(160,145,255,.30); border-radius:12px; padding:9px 13px}
+  .diff h3{font-size:11.5px; color:var(--dim); font-weight:500; letter-spacing:.07em}
+  .dl{display:grid; grid-template-columns:1.5fr .9fr .9fr; gap:9px; font:11px ui-monospace,Menlo,monospace;
+      padding:2px 0; color:#a9a2c6}
+  .dk{color:#cfc7ff} .dv{color:#9b8cff} .dm{color:#3ddc8f}
+</style>
+</head>
+<body>
+<h1>两份主题：同一套键，不同的值</h1>
+<div class="note">结构一模一样——<code>presence</code> 一句话，<code>vars</code> 一张表。差的只有值：谁紫、谁绿、桌上站着谁。</div>
+<div class="two">
+  <div class="pane"><div class="fn v">violet.json</div><pre>{
+  "name": "violet",
+  "label": &quot;蓝紫 · 住户&quot;,
+  "presence": &quot;works/ghost-desk/me-overlay/index.html&quot;,   <span class="c">// ← 谁站在桌上</span>
+  "vars": {        <span class="c">// 62 个变量</span>
+    "--accent": "#9b8cff",
+    "--accent-2": "#7ad7ff",
+    "--accent-3": "#ff9ad5",
+    "--ink": "#ded9f2",
+    "--dim": "#9fb0c0",
+    "--border": "#2a3340",
+    "--tile-bg-a": "#2a2745",
+    "--tile-bg-b": "#12101e",
+    "--tile-text": "#ddd6ff",
+    "--tile-name": "#b0a6e0",
+    <span class="c">… 还有 52 个</span>
+  }
+}</pre></div>
+  <div class="pane"><div class="fn m">moss.json</div><pre>{
+  "name": "moss",
+  "label": &quot;MOSS 绿 · 原味&quot;,
+  "presence": false,   <span class="c">// ← 谁站在桌上</span>
+  "vars": {        <span class="c">// 62 个变量</span>
+    "--accent": "#3ddc8f",
+    "--accent-2": "#3ddc8f",
+    "--accent-3": "#127a4b",
+    "--ink": "#dfe9f2",
+    "--dim": "#9fb0c0",
+    "--border": "#1e3a2c",
+    "--tile-bg-a": "#24332b",
+    "--tile-bg-b": "#101713",
+    "--tile-text": "#cff7e2",
+    "--tile-name": "#a8d8bf",
+    <span class="c">… 还有 52 个</span>
+  }
+}</pre></div>
+</div>
+<div class="diff">
+  <h3>两边都写的键里，值不同的有 61 个（举几个）</h3>
+  <div class="dl"><span class="dk">--accent</span><span class="dv">#9b8cff</span><span class="dm">#3ddc8f</span></div>
+<div class="dl"><span class="dk">--accent-2</span><span class="dv">#7ad7ff</span><span class="dm">#3ddc8f</span></div>
+<div class="dl"><span class="dk">--accent-3</span><span class="dv">#ff9ad5</span><span class="dm">#127a4b</span></div>
+<div class="dl"><span class="dk">--ink</span><span class="dv">#ded9f2</span><span class="dm">#dfe9f2</span></div>
+<div class="dl"><span class="dk">--border</span><span class="dv">#2a3340</span><span class="dm">#1e3a2c</span></div>
+<div class="dl"><span class="dk">--tile-bg-a</span><span class="dv">#2a2745</span><span class="dm">#24332b</span></div>
+<div class="dl"><span class="dk">--tile-bg-b</span><span class="dv">#12101e</span><span class="dm">#101713</span></div>
+<div class="dl"><span class="dk">--tile-text</span><span class="dv">#ddd6ff</span><span class="dm">#cff7e2</span></div>
+</div>
+</body>
+</html>

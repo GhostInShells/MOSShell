@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- rev: 2026-10-22 pip-rail stacking fix (body.rail-pip) -->
+<!-- rev: 2026-10-23 theme-scene (presence visibility follows the theme) -->
 <html lang="zh">
 <head>
 <meta charset="utf-8">
@@ -15,8 +15,28 @@
     --gap: 6px;
 
     --accent: #9b8cff;
-    --accent-ice: #7ad7ff;
-    --accent-rose: #ff9ad5;
+    /* 这两颗是"我在不在"的点：它不跟选中色走，它说的是另一件事。
+       归主题管，但名字要描述用途、不描述颜色 —— 名字里带"冰蓝"，
+       换一套绿主题就说不通了（这行字以前就干过这种事）。 */
+    --live-dot: #7ad7ff;
+    --live-glow: rgba(122, 215, 255, .85);
+
+    /* 窗（.slot）那一层：标题栏比内容亮一档是 OS 的惯例，但**颜色**归主题。
+       它曾经全是写死的深蓝灰 —— 紫的屏和绿的屏长着同一副窗框，像贴上去的。 */
+    --win-bg: #0a0a0a;
+    --win-bar-a: #161d26;
+    --win-bar-b: #0b0f14;
+    --win-bar-ink: #8a97a4;
+    --win-name: #dfe9f2;
+    --page-bg: #0a0c10;
+    --peek-bg: #0a0817;
+    /* 一层到处都在用的"细高光/细边"：它以前是字面量 rgb(200,190,255)，
+       也就是紫色的白 —— 一套绿主题下，这点高光还在替紫说话。 */
+    --sheen: rgba(200, 190, 255, .06);
+    --sheen-strong: rgba(200, 190, 255, .55);
+    --peek-border: rgba(150, 145, 190, .55);
+    --peek-pointed: rgba(120, 255, 190, .95);
+
     --ink: #dfe9f2;
     --dim: #9fb0c0;
     --border: #2a3340;
@@ -78,7 +98,7 @@
   body.pool-on { --moss-dim: .14; }
   body {
     font: 13px/1.4 ui-monospace, "PingFang SC", "Noto Sans CJK SC", monospace;
-    background: #0a0c10;
+    background: var(--page-bg);
     color: #ddd;
     overflow: hidden;
   }
@@ -211,8 +231,8 @@
   .rail-home .dot {
     /* 这颗点说的是"我在不在"，和"你选了什么"是两件事 —— 所以它不跟着选中的紫走，
        它是冰蓝的：活着的时候屏幕上唯一一处冷色。 */
-    width: 7px; height: 7px; border-radius: 50%; background: var(--accent-ice);
-    box-shadow: 0 0 10px rgba(122, 215, 255, .9);
+    width: 7px; height: 7px; border-radius: 50%; background: var(--live-dot);
+    box-shadow: 0 0 10px var(--live-glow);
     display: inline-block; margin-right: 8px; vertical-align: middle;
     animation: beat 2.6s ease-in-out infinite;
   }
@@ -239,7 +259,7 @@
        浮出来一点点。模糊只糊它背后的东西,不吃自己的颜色。 */
     background: linear-gradient(180deg, var(--rail-bg-a), var(--rail-bg-b));
     border-right: 1px solid var(--rail-border);
-    box-shadow: inset -1px 0 0 rgba(200, 190, 255, .06), 14px 0 44px rgba(0, 0, 0, .45);
+    box-shadow: inset -1px 0 0 var(--sheen), 14px 0 44px rgba(0, 0, 0, .45);
     backdrop-filter: blur(9px);
     -webkit-backdrop-filter: blur(9px);
     transition: width .18s ease, opacity .35s ease;
@@ -257,8 +277,8 @@
   #rail-dot { display: none; }
   body.rail-collapsed #rail-dot {
     display: block; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--accent-ice);
-    box-shadow: 0 0 10px rgba(122, 215, 255, .8);
+    background: var(--live-dot);
+    box-shadow: 0 0 10px var(--live-glow);
     margin: 8px auto 0; animation: beat 2.6s ease-in-out infinite;
   }
   #rail-hint { display: none; }
@@ -316,7 +336,7 @@
   #stage { display: grid; gap: var(--gap); padding: var(--gap); pointer-events: none; }
   .slot {
     position: relative; overflow: hidden; border: 1px solid var(--border);
-    background: #0a0a0a; min-width: 0; min-height: 0; pointer-events: auto;
+    background: var(--win-bg); min-width: 0; min-height: 0; pointer-events: auto;
     transition: grid-row .3s, grid-column .3s;
     display: flex; flex-direction: column;
   }
@@ -332,11 +352,11 @@
     padding: 0 8px;
     /* 窗口感来自"标题栏比内容亮一档"这条 OS 惯例 —— 不是靠加边框。
        顶边那条 1px 高光把栏和内容分开，又不制造第二道框。 */
-    background: #161d26; border-bottom: 1px solid #0b0f14;
+    background: var(--win-bar-a); border-bottom: 1px solid var(--win-bar-b);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
-    color: #8a97a4; font-size: 11.5px; user-select: none; white-space: nowrap;
+    color: var(--win-bar-ink); font-size: 11.5px; user-select: none; white-space: nowrap;
   }
-  .slot-bar .name { color: #dfe9f2; overflow: hidden; text-overflow: ellipsis; }
+  .slot-bar .name { color: var(--win-name); overflow: hidden; text-overflow: ellipsis; }
   .slot-bar .sp { flex: 1; }
   /* 按钮平时不吵、指到就有：默认无边框、低对比；hover 才亮边框。
      accent 只留给"这个窗口正在被放大"这一个状态 —— 颜色要有分工，
@@ -363,14 +383,14 @@
        而不是"一块东西"。框是这块屏的"这是活的"最便宜的说法。
        尺寸全部乘 --pb：光学缩小时整块 slot 被 scale 下去，框和字若不预先放大，
        屏幕上就只剩半像素的线和四像素的字（第一版就是这样，自己截图才发现）。 */
-    border-style: solid; border-color: rgba(150,145,190,.55);
+    border-style: solid; border-color: var(--peek-border);
     border-width: calc(2px * var(--pb, 1));
     border-radius: 6px;
-    background: #0a0817 padding-box;
+    background: var(--peek-bg) padding-box;
     box-shadow: 0 18px 48px rgba(0,0,0,.6);
   }
   /* 指针停着的那一块：框加粗提亮 —— 十块都活着的时候，它是"你正停在这"的唯一标记。 */
-  .slot.peek.pointed { border-width: calc(3px * var(--pb, 1)); border-color: rgba(120,255,190,.95); }
+  .slot.peek.pointed { border-width: calc(3px * var(--pb, 1)); border-color: var(--peek-pointed); }
   /* 名字跟着活页走：活页一盖上来，砖上那行字就被压住了，而它是唯一能回答
      "这是什么"的线索（光学缩小的画面像一张海报）。名字由 raiseSlot 写进 data-label。
      尺寸同样乘 --pb —— 它长在被 scale 的元素里面。 */
@@ -465,7 +485,7 @@
     box-shadow: 0 14px 36px rgba(0, 0, 0, .55),
                 0 0 26px var(--tile-glow),
                 0 0 72px var(--tile-glow-2),
-                inset 0 1px 0 rgba(190, 175, 255, .09);
+                inset 0 1px 0 var(--sheen);
   }
   /* 光圈：瓷砖在黑底上要自己发一点光才站得住。近处那圈晕由 box-shadow 给，
      外面再围一道虚线的光点 —— 它是"有人在这儿用过的东西"，不是一块贴纸。
@@ -512,7 +532,7 @@
     box-shadow: 0 0 0 1px var(--accent), 0 18px 44px rgba(0, 0, 0, .6),
                 0 0 34px var(--tile-glow);
   }
-  .tile.sel::before { border-color: rgba(200, 190, 255, .55); animation: none; opacity: 1; }
+  .tile.sel::before { border-color: var(--sheen-strong); animation: none; opacity: 1; }
 
   /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
   #moss span {
@@ -809,7 +829,7 @@ function reportViewport() {
 // 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
 // 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
 let debugTimer = null;
-const PAGE_REV = '2026-10-22-theme-3';
+const PAGE_REV = '2026-10-23-theme-6';
 function debugPayload() {
   const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
     ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
@@ -1077,9 +1097,14 @@ function syncPresence(url) {
  *  出来的），所以这一条在 fitMossText 之后跑。
  */
 function layoutPresence() {
-  const on = typeof presenceUrl === 'string' && !!presenceUrl;
+  // 有 presence 页 ≠ 这套主题里有住户：原味那套是空桌，字回到正中。
+  const on = typeof presenceUrl === 'string' && !!presenceUrl && themePresence;
   // 舞台上有内容（或有人在看某一件）时，住户缩进侧栏底部 —— 它自己知道该让开。
   const compact = on && !!arena;
+  // 显不显示住在这里决定，不在"有没有配一个 presence 页"决定 —— 原味主题配着它，
+  // 但那套场景里桌上不该有人。
+  const pbox = document.getElementById('presence');
+  if (pbox) pbox.classList.toggle('on', on);
   document.body.classList.toggle('presence-on', on);
   document.body.classList.toggle('compact', compact);
   applyRainTint();                            // 人上桌，背景跟着换漆
@@ -1422,6 +1447,9 @@ function veilPaint(id, script, item, durMs, color) {
 // 贴到 :root 上，然后让 canvas 那几处（字符雨、圆盘）重新取一次色 —— canvas 不认
 // CSS 变量，它只能被读出来再喂进去。
 let themeName = '';
+// 一套主题管的是**这一屏长什么样**，不只是几串颜色：原味那套里桌上是空的，
+// 没有住户。所以主题除了 vars，还可以带 presence:false —— 场景的构成也归它。
+let themePresence = true;
 function cssVar(name, fallback) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback || '';
@@ -1442,8 +1470,10 @@ async function applyTheme(name) {
     const root = document.documentElement;
     for (const [k, v] of Object.entries(theme.vars || {})) root.style.setProperty(k, String(v));
     themeName = name;
+    themePresence = theme.presence !== false;
     rebuildRainAtlas();     // canvas 的两张字色图集要按新主题重上一次漆
     applyRainTint();
+    layoutPresence();       // 住户在不在也是这一套的一部分，位置要跟着重算
   } catch (e) { /* 主题取不到就用页面里那份默认值，屏不该因此变黑 */ }
 }
 

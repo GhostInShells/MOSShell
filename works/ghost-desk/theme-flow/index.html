@@ -78,6 +78,7 @@
   颜色不是写在这块屏里的，也不是写在我的 Python 里的：<b>它是 themes/ 目录里的一份 json</b>。
   我手里只有一个名字，页面只认 <code style="font:12.5px ui-monospace,Menlo,monospace;color:#7ad7ff">var()</code>。
   所以别人想给这块屏换一层皮，就是放一个文件进去 —— 不用碰任何代码。
+  一套主题管的不只是颜色：<b>桌上有没有人、字站在哪，也写在同一份文件里</b>。
 </div>
 
 <div class="flow">
@@ -138,7 +139,7 @@
 
   <!-- 3 页面 -->
   <div class="col">
-    <h2>③ 页面只做两件事</h2>
+    <h2>③ 页面做这几件事</h2>
     <div class="card">
       <div class="n">把变量贴到 :root</div>
       <div class="d">拿到 <code>{"theme":"violet"}</code> 就去取 <code>/themes/violet.json</code>，
@@ -153,6 +154,14 @@
         <div class="pin"><span class="k">rain-head</span><span class="v">雨头那颗亮字</span></div>
         <div class="pin"><span class="k">disc-stroke</span><span class="v">未入组圆盘的边</span></div>
       </div>
+    </div>
+    <div class="card hot">
+      <div class="n">住户在不在，也归主题</div>
+      <div class="d">桌边那个人不是画在屏上的，是一张<b>透明的 iframe 盖满全屏</b>（<code>inset:0</code>），
+        页面自己把身形画在正中、占 53% 高。它在不在不归它自己，归主题的另一个字段：
+        <code>violet</code> 写 <code>presence:true</code>，<code>moss</code> 写 <code>presence:false</code> ——
+        所以切到原生那套，人就没了、MOSS 四个字回正中。位置由屏算：桌面上站屏心、名字挂右边底对齐脚下；
+        舞台一有内容，整块 iframe 缩到左栏底部让位。</div>
     </div>
     <div class="card">
       <div class="n">我说话 / 我做事</div>

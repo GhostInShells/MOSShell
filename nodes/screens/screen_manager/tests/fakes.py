@@ -32,3 +32,27 @@ class Recorder:
 
     def of(self, kind: str) -> list[dict]:
         return [f for f in self.frames if f["type"] == kind]
+
+
+class ThemedSurface(Recorder):
+    """A surface that can also read theme files and serve local pages.
+
+    A theme may name the occupant of the desk, and that shape needs exactly two
+    capabilities the recorder lacks: reading a theme's json, and turning a
+    workspace path into a url the page can load.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.specs: dict[str, dict] = {}
+        self.served: list[object] = []
+
+    def themes(self) -> list[str]:
+        return sorted(self.specs)
+
+    def theme(self, name: str) -> dict | None:
+        return self.specs.get(name)
+
+    def add_local(self, path) -> str:
+        self.served.append(path)
+        return f"/local/{path}"

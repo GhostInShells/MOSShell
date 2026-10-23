@@ -307,6 +307,28 @@ class ScreenSurface:
         except OSError:
             return []
 
+    def theme(self, name: str) -> dict | None:
+        """Read one theme's json, or ``None`` when there is no such file.
+
+        The screen's own process needs this too, not only the page: a theme may
+        name the occupant of the desk, and that has to be resolved and served
+        before the page hears about the switch — the page cannot read the workspace.
+
+        ``name`` is the theme's *name* (what ``themes()`` lists and ``theme(name)``
+        takes), not a filename: ``violet``, and the ``.json`` is added here. Getting
+        that wrong is silent — the theme would still switch, only its scene half
+        would be ignored — so the guard below is about shape, not about the suffix.
+        """
+        safe = Path(name).name
+        if not safe or safe != name:
+            return None
+        if not safe.endswith(".json"):
+            safe += ".json"
+        try:
+            return json.loads((self._themes_dir / safe).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def _serve_theme(self, connection: ServerConnection, name: str):
         safe = Path(name).name
         if not safe.endswith(".json") or "/" in name:

@@ -171,7 +171,7 @@ async def main(matrix: Matrix) -> None:
     occupant = presence_path()
     if occupant:
         try:
-            model.set_presence(surface.add_local(Path(occupant)))
+            model.set_presence_default(surface.add_local(Path(occupant)))
             print(f"[webview_screen] presence: {occupant}", flush=True)
         except ValueError as e:
             print(f"[webview_screen] presence rejected: {e}", flush=True)

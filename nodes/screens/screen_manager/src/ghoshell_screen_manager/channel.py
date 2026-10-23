@@ -28,6 +28,7 @@ import json
 import random
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
@@ -374,23 +375,58 @@ def build_screen_channel(
         makes it read as standing on the desk). Empty clears it.
         """
         if not path:
-            model.set_presence(None)
+            model.set_presence_default(None)
             await _emit(P.state_frame(model))
             return "[screen] presence clear"
         add = getattr(surface, "add_local", None)
         if add is None:
             CommandUtil.raise_observe("this surface cannot serve local files")
             return ""
-        from pathlib import Path as _Path
 
         try:
-            url = add(_Path(path))
+            url = add(Path(path))
         except ValueError as e:
             CommandUtil.raise_observe(str(e))
             return ""
-        model.set_presence(url)
+        # An explicit call names the occupant of *this desk* — the one a theme that
+        # says nothing about occupants falls back to. A theme that brings its own
+        # one may still override it for as long as it is worn.
+        model.set_presence_default(url)
         await _emit(P.state_frame(model))
         return f"[screen] presence {url}"
+
+    async def _apply_theme_presence(name: str) -> bool:
+        """Let the theme decide who stands on the desk; ``True`` = the desk changed.
+
+        A theme is a scene, not a palette, so "is anyone standing here, and who"
+        belongs to it. Three shapes of ``presence``:
+
+        - ``"works/…/someone.html"`` — this scene brings its own occupant; it is
+          served from the screen's own origin and put on the desk before the page
+          hears about the switch.
+        - ``false`` — an empty desk. The page hides the occupant; the url is left
+          alone so the next theme that wants it still finds it.
+        - ``true`` or absent — back to the occupant this node was configured with
+          (``--presence``, or an explicit ``presence`` command).
+
+        Nothing is broadcast when the answer is "same person as before": a theme
+        that only changes colours must not churn the desk.
+        """
+        read = getattr(surface, "theme", None)
+        spec = read(name) if callable(read) else None
+        want = spec.get("presence", True) if isinstance(spec, dict) else True
+        before = model.presence()
+        if isinstance(want, str) and want.strip():
+            try:
+                model.set_presence(surface.add_local(Path(want.strip())))
+            except ValueError as e:
+                # A theme pointing at a page that isn't there must not take the
+                # desk down with it: report it, and fall back to the configured one.
+                print(f"[screen] theme {name}: presence rejected: {e}", flush=True)
+                model.restore_presence()
+        else:
+            model.restore_presence()
+        return model.presence() != before
 
     @chan.build.command(name="theme")
     async def theme(name: str = "") -> str:
@@ -414,7 +450,15 @@ def build_screen_channel(
                 f"no such theme: {name} (available: {', '.join(available)})")
             return ""
         model.set_theme(name)
+        # A theme is a scene, not a palette: besides the colours it may name the
+        # occupant of the desk. ``true``/absent keeps whoever the node was started
+        # with, ``false`` is an empty desk, and a path lends this theme its own
+        # page — so "who stands here" travels with the look instead of living in a
+        # boot flag that every theme would have to agree with.
+        occupant = await _apply_theme_presence(name)
         await _emit({"type": "theme", "name": model.theme()})
+        if occupant:
+            await _emit(P.state_frame(model))
         return f"[screen] theme {model.theme()}"
 
     @chan.build.command(name="focus")
@@ -691,11 +735,13 @@ def build_screen_channel(
         if not text:
             return
         # 颜色分工：我说的话是紫的，我做的事是冰蓝的 —— 一行字是"说"还是"做"，
-        # 一眼该分得出来。原来这条写死成绿色，是这块屏还没有配色的年代留下的。
+        # 一眼该分得出来。这里递的是**角色**（tool），不是某一串十六进制：
+        # 颜色归主题，页面拿着角色去查 --accent-2。上一版这里写着 "#7ad7ff"，
+        # 于是换主题时只有这一行字留在旧颜色上 —— 又一个"颜色比主题活得久"。
         bullet = asyncio.create_task(_send_danmaku(
             f"▸ {text}", duration=8.0, motion="rtl",
             size=stage_flags["size"] * _TOOL_LINE_RATIO, overlap=True,
-            color="#7ad7ff",
+            color="tool",
         ))
         _live_bullets.add(bullet)
         bullet.add_done_callback(_live_bullets.discard)

@@ -688,3 +688,59 @@ async def test_theme_reads_back_when_name_is_empty():
         out = await runtime.execute_command("theme", args=("",))
         assert "moss" in str(out)
         assert model.theme() == "moss"
+
+
+@pytest.mark.asyncio
+async def test_a_theme_can_bring_its_own_occupant():
+    """一套主题就是一场场景：不止颜色，"谁站在桌上"也归它。
+
+    presence 写成路径 = 这套场景自带化身；节点起来时配的那个人只是没被这套
+    主题提到时的默认值，不是唯一的那个人。
+    """
+    from fakes import ThemedSurface
+
+    surface = ThemedSurface()
+    surface.specs["violet"] = {"presence": "works/who.html"}
+    model = ScreenModel()
+    chan = build_screen_channel(model, surface=surface, audio=MockAudioSource())
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("theme", args=("violet",))
+        assert model.presence() == "/local/works/who.html"
+        # 页面是"收到一帧才画"的：换人这件事必须随帧走，不能只留在模型的脑子里。
+        assert surface.of("state")[-1]["presence"] == "/local/works/who.html"
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_theme_that_lent_an_occupant_gives_the_desk_its_own_back():
+    """借来的化身要能还回去：起屏的那个人不属于某一套主题，只属于这块屏。"""
+    from fakes import ThemedSurface
+
+    surface = ThemedSurface()
+    surface.specs["violet"] = {"presence": "works/who.html"}
+    surface.specs["moss"] = {"presence": False}
+    model = ScreenModel()
+    model.set_presence_default("/local/me.html")
+    chan = build_screen_channel(model, surface=surface, audio=MockAudioSource())
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("theme", args=("violet",))
+        assert model.presence() == "/local/works/who.html"
+        await runtime.execute_command("theme", args=("moss",))
+        # false 只是"这套场景里桌上没人"，地址还留着 —— 下一套想要就还在。
+        assert model.presence() == "/local/me.html"
+
+
+@pytest.mark.asyncio
+async def test_a_colour_only_theme_does_not_churn_the_desk():
+    """只改颜色的主题不该动桌上的人，也不该为此多发一帧。"""
+    from fakes import ThemedSurface
+
+    surface = ThemedSurface()
+    surface.specs["plain"] = {"vars": {"--accent": "#fff"}}
+    model = ScreenModel()
+    model.set_presence_default("/local/me.html")
+    chan = build_screen_channel(model, surface=surface, audio=MockAudioSource())
+    async with chan.bootstrap() as runtime:
+        before = len(surface.of("state"))
+        await runtime.execute_command("theme", args=("plain",))
+        assert model.presence() == "/local/me.html"
+        assert len(surface.of("state")) == before
