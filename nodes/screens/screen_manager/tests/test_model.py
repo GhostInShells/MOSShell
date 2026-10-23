@@ -356,3 +356,115 @@ def test_raise_does_not_care_about_groups():
     m.arrange("code", [a], family="grid", dir="lr")
     assert m.raise_to_front([a]) == [a, b]
     assert m.group_items("code") == [a]
+
+
+# ---- pip：主人铺满整块，角落卡浮在一角 -------------------------------------
+
+def test_pip_master_is_full_stage():
+    layout = compute_layout(2, "pip", "br")
+    assert (layout.family, layout.dir) == ("pip", "br")
+    master = layout.cells[0]
+    assert (master.r, master.c, master.rs, master.cs) == (1, 1, layout.rows, layout.cols)
+
+
+def test_pip_corner_moves_with_dir():
+    br = compute_layout(2, "pip", "br").cells[1]
+    bl = compute_layout(2, "pip", "bl").cells[1]
+    tr = compute_layout(2, "pip", "tr").cells[1]
+    tl = compute_layout(2, "pip", "tl").cells[1]
+    # 角不对：br 贴右下，tl 贴左上，bl/tr 各占另外两角
+    assert br.c > bl.c and br.r == bl.r
+    assert tl.r < br.r and tl.c == bl.c
+    assert tr.r == tl.r and tr.c == br.c
+    # 角卡必须真的落在 20x20 的网格里，且是"小卡片"而不是半块屏
+    for cell in (br, bl, tr, tl):
+        assert cell.r + cell.rs - 1 <= 20 and cell.c + cell.cs - 1 <= 20
+        assert cell.cs <= 4 and cell.rs <= 7
+
+
+def test_pip_cells_overlap_on_purpose():
+    layout = compute_layout(2, "pip", "br")
+    assert [c.rs for c in layout.cells] == [20, 7] or layout.cells[0].rs > layout.cells[1].rs
+
+
+def test_pip_rejects_wrong_count_and_dir():
+    with pytest.raises(ValueError):
+        compute_layout(1, "pip", "br")
+    with pytest.raises(ValueError):
+        compute_layout(3, "pip", "br")
+    with pytest.raises(ValueError):
+        compute_layout(2, "pip", "lr")
+
+
+def test_pip_rail_keeps_the_stage_whole():
+    layout = compute_layout(2, "pip", "rail")
+    master = layout.cells[0]
+    assert (master.r, master.c, master.rs, master.cs) == (1, 1, layout.rows, layout.cols)
+    # 栏里的那块不占舞台的格子 —— 位置由页面 fixed 摆，格子只是占位
+    assert layout.cells[1].rs < layout.rows and layout.cells[1].cs < layout.cols
+
+
+# ---- overlay：站在屏上，而不是被屏展示 -------------------------------------
+
+def test_overlay_does_not_change_what_the_screen_shows():
+    m = ScreenModel()
+    a = m.open("http://a", group="desk")
+    b = m.open("http://b")
+    m.activate("desk")
+    m.set_overlay(b.id)
+    assert m.overlay() == b.id
+    # 舞台还是那个分组 —— 站在屏上的东西不该把台下换掉
+    assert m.arena() == "desk"
+    assert m.arena_items() == [a.id]
+
+
+def test_overlay_clears_without_touching_focus():
+    m = ScreenModel()
+    a = m.open("http://a")
+    m.set_focus(a.id)
+    m.set_overlay(a.id)
+    m.set_overlay(None)
+    assert m.overlay() == ""
+    assert m.focus() == a.id
+
+
+# ---- presence：桌面的住户，不是 pool 里的一件 -------------------------------
+
+def test_presence_is_empty_until_someone_lives_here():
+    m = ScreenModel()
+    assert m.presence() == ""
+
+
+def test_presence_is_set_and_cleared_by_url():
+    m = ScreenModel()
+    m.set_presence("http://127.0.0.1:20381/local/abc")
+    assert m.presence() == "http://127.0.0.1:20381/local/abc"
+    m.set_presence("")
+    assert m.presence() == ""
+    m.set_presence("http://x")
+    m.set_presence(None)
+    assert m.presence() == ""
+
+
+def test_presence_is_furniture_not_a_window():
+    """arrange / dismiss / activate 动不到它 —— 它是桌面，不是桌面上的一件。"""
+    m = ScreenModel()
+    a = m.open("http://a")
+    m.set_presence("http://ghost")
+    m.arrange("g", [a.id], family="grid", dir="lr")
+    m.dismiss(a.id)
+    m.activate("")
+    assert m.presence() == "http://ghost"
+    # 它也没有 id —— 不在 pool 里，不参与 order
+    assert m.presence() not in m.pool_order()
+    assert m.presence() not in [i.id for i in m.items()]
+
+
+def test_presence_survives_a_snapshot_without_becoming_an_item():
+    from ghoshell_screen_manager.projection import snapshot
+
+    m = ScreenModel()
+    m.set_presence("http://ghost")
+    f = snapshot(m)
+    assert f["presence"] == "http://ghost"
+    assert f["items"] == []

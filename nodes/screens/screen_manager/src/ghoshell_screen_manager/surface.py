@@ -87,6 +87,8 @@ class ScreenSurface:
         host: str = "127.0.0.1",
         port: int = 0,
         html_path: Path,
+        session: str = "",
+        themes_dir: Path | None = None,
     ) -> None:
         self._model = model
         self._audio = audio
@@ -94,6 +96,20 @@ class ScreenSurface:
         self._identity = self_identity
         self._host = host
         self._html_path = html_path
+        self._session = session
+        self._themes_dir = themes_dir or (html_path.parent / "themes")
+        """Where the palettes live. A theme is a json of CSS variables — adding one
+        is dropping a file here, which is the whole point of not baking colours into
+        the page."""
+        """This run's window token.
+
+        Only the window *this node just opened* carries it, so only that window may
+        take the screen without a click. A tab left over from an earlier run is
+        still retrying the same port and would otherwise claim the screen the moment
+        it reconnects — an invisible window becoming "the screen" is a failure that
+        looks like the screen is broken. Humans are never gated by the token: the
+        button sends ``claim``, which is always honoured.
+        """
         self._clients: set[ServerConnection] = set()
         self._current: ServerConnection | None = None
         """The one window that *is* the screen. Every other page is told to mask."""
@@ -276,11 +292,58 @@ class ScreenSurface:
             return response
         if path == "/ws":
             return None
+        if path.startswith("/themes/"):
+            return self._serve_theme(connection, path[len("/themes/"):])
         if path.startswith("/local/"):
             return self._serve_local(connection, path[len("/local/"):])
         if path.startswith("/asset/"):
             return self._serve_asset(connection, path[len("/asset/"):])
         return connection.respond(404, "not found")
+
+    def themes(self) -> list[str]:
+        """Theme names available on disk, in a stable order."""
+        try:
+            return sorted(p.stem for p in self._themes_dir.glob("*.json"))
+        except OSError:
+            return []
+
+    def theme(self, name: str) -> dict | None:
+        """Read one theme's json, or ``None`` when there is no such file.
+
+        The screen's own process needs this too, not only the page: a theme may
+        name the occupant of the desk, and that has to be resolved and served
+        before the page hears about the switch — the page cannot read the workspace.
+
+        ``name`` is the theme's *name* (what ``themes()`` lists and ``theme(name)``
+        takes), not a filename: ``kawaii-shell``, and the ``.json`` is added here. Getting
+        that wrong is silent — the theme would still switch, only its scene half
+        would be ignored — so the guard below is about shape, not about the suffix.
+        """
+        safe = Path(name).name
+        if not safe or safe != name:
+            return None
+        if not safe.endswith(".json"):
+            safe += ".json"
+        try:
+            return json.loads((self._themes_dir / safe).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _serve_theme(self, connection: ServerConnection, name: str):
+        safe = Path(name).name
+        if not safe.endswith(".json") or "/" in name:
+            return connection.respond(404, "not found")
+        try:
+            # respond() takes text, not bytes — a theme is small json, so decoding
+            # it here costs nothing and keeps one call shape for every route.
+            body = (self._themes_dir / safe).read_text(encoding="utf-8")
+        except OSError:
+            return connection.respond(404, "not found")
+        response = connection.respond(200, body)
+        del response.headers["Content-Type"]
+        response.headers["Content-Type"] = "application/json"
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
     def add_local(self, path: Path) -> str:
         """Register a local html file and return a url that serves it from this origin.
@@ -371,6 +434,7 @@ class ScreenSurface:
                         connection,
                         str(frame.get("uid", "")),
                         bool(frame.get("claim")),
+                        str(frame.get("session", "")),
                     )
                     continue
                 if kind == "claim":
@@ -417,7 +481,9 @@ class ScreenSurface:
                 self._current = None
                 await self._mask_everyone_but(None, "the screen window closed")
 
-    async def _hello(self, connection: ServerConnection, uid: str, claim: bool) -> None:
+    async def _hello(
+        self, connection: ServerConnection, uid: str, claim: bool, session: str = "",
+    ) -> None:
         """A page says who it is. Exactly one of them gets to be the screen.
 
         ``claim`` comes from the url the node opened itself with: the window we just
@@ -426,8 +492,17 @@ class ScreenSurface:
         steal the screen.
         """
         self._uids[connection] = uid
-        if claim or self._current is None:
+        owns_run = bool(self._session) and session == self._session
+        if claim and owns_run:
+            # 这一轮节点开的那扇窗：它是屏，不必等人点按钮。
             await self._set_current(connection)
+        elif self._current is None and not self._session:
+            # 没有 token 的运行（测试、或者手工起屏）：谁先来谁是屏。
+            await self._set_current(connection)
+        elif self._current is None:
+            # 屏空着，但来的是个不带 token 的页面（旧标签，或者人自己开的窗口）：
+            # 不自动上台，给它按钮。节点开的那扇窗会自己带 token 进来。
+            await self._mask(connection, "this window can be the screen")
         else:
             await self._mask(connection, "another window is the screen")
 
@@ -442,10 +517,32 @@ class ScreenSurface:
         if sockets:
             self.port = sockets[0].getsockname()[1]
         self._audio_task = asyncio.create_task(self._audio_loop())
+        self._rev_task = asyncio.create_task(self._watch_rev())
+
+    async def _watch_rev(self) -> None:
+        """Tell the open window to reload when this file changes on disk.
+
+        The page used to ask for its own fingerprint every few seconds; in practice
+        that poll went quiet and a window kept running yesterday's code while every
+        edit looked "not applied" from the outside. The server already knows the
+        file — watching it here costs one hash per tick and needs nothing from the
+        page but a handler."""
+        seen = self._page_ver()
+        while True:
+            await asyncio.sleep(1.5)
+            try:
+                ver = self._page_ver()
+            except Exception:                      # noqa: BLE001 — never die on a read
+                continue
+            if ver and ver != seen:
+                seen = ver
+                await self.broadcast({"type": "reload"})
 
     async def stop(self) -> None:
         if self._audio_task is not None:
             self._audio_task.cancel()
+        if getattr(self, "_rev_task", None) is not None:
+            self._rev_task.cancel()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()

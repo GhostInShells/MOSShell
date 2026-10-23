@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>主题切换 · 三处住着的东西</title>
+<style>
+  /* A diagram is not the thing it describes, and it does not wear the desk's
+     clothes either: it has to stand on its own the moment it is screenshotted or
+     pasted into a doc. So the base is neutral graphite and the three columns are
+     *semantic* — source, process, result — not this week's accent colour.
+     What keeps it from clashing with the desk is contrast, not hue. */
+  :root{
+    --bg:#0a0b0e; --ink:#e7e9ee; --dim:#959ba6;
+    --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.065);
+    /* the theme's three accents, one per layer */
+    --disk:#d8a15e; --proc:#6fa8dc; --browser:#7fbf9a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(1200px 820px at 50% -22%, rgba(255,255,255,.05), transparent 70%),
+      var(--bg);
+    color:var(--ink); font-family:"PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    padding:34px 46px 26px; overflow:hidden; display:flex; flex-direction:column;
+  }
+  h1{font-size:29px; font-weight:650; letter-spacing:.01em; color:#f2f4f8}
+  .lead{margin-top:10px; font-size:15px; color:#a8afba; line-height:1.65}
+  .lead b{color:#e8ebf1; font-weight:600}
+
+  .row{display:grid; grid-template-columns:1fr 54px 1.12fr 54px 1.22fr; align-items:stretch;
+       gap:0; margin-top:26px; flex:1; min-height:0}
+
+  .panel{position:relative; border:1px solid var(--line); border-radius:16px; padding:19px 20px;
+    background:linear-gradient(180deg, #14161a 0%, #0b0c0e 100%);
+    box-shadow:0 22px 50px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.045);
+    display:flex; flex-direction:column; overflow:hidden}
+  .panel::before{content:''; position:absolute; left:0; right:0; top:0; height:1px;
+    background:linear-gradient(90deg, transparent, var(--c), transparent);
+    opacity:.85; filter:blur(.2px)}
+  .panel .h2{display:flex; align-items:center; gap:8px; font-size:12px; letter-spacing:.10em;
+    color:var(--dim); font-weight:500}
+  .panel .h2::before{content:''; width:6px; height:6px; border-radius:50%;
+    background:var(--c); box-shadow:0 0 9px var(--c)}
+  .panel .big{font-size:19px; font-weight:650; margin-top:7px; color:#f0f2f6}
+  .panel .sub{font-size:12.5px; color:#969caa; margin-top:6px; line-height:1.55}
+
+  .panel.disk{--c:var(--disk)}
+  .panel.proc{--c:var(--proc)}
+  .panel.browser{--c:var(--browser)}
+
+  .items{margin-top:14px; display:flex; flex-direction:column; gap:8px}
+  .it{border:1px solid var(--line-soft); border-radius:9px; padding:8px 11px;
+      background:rgba(255,255,255,.025); font-size:13px; color:#c9cfd8; line-height:1.5}
+  .it b{color:#fff; font-weight:600}
+  .it.mono{font:12.5px ui-monospace,Menlo,monospace; color:#c6ccd6}
+  .it.key{border-color:color-mix(in srgb, var(--c) 42%, transparent);
+          background:color-mix(in srgb, var(--c) 8%, transparent); color:#f2f4f8}
+  .it.ghost{opacity:.55}
+
+  .arrow{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px;
+         color:var(--dim); font:12px ui-monospace,Menlo,monospace; text-align:center}
+  .arrow .ln{width:100%; height:1px; position:relative;
+    background:linear-gradient(90deg, transparent, rgba(255,255,255,.26), transparent)}
+  .arrow .ln::after{content:''; position:absolute; right:-1px; top:-4px;
+    border-left:6px solid rgba(255,255,255,.38);
+    border-top:4px solid transparent; border-bottom:4px solid transparent}
+  .arrow span{font-size:11.5px; line-height:1.35; color:#8d94a0}
+
+  footer{margin-top:16px; display:flex; gap:24px; align-items:center; font-size:13px; color:#8d94a0}
+  footer b{color:#eaedf2; font-weight:600}
+  footer .cmd{font:12.5px ui-monospace,Menlo,monospace; color:#cfd6e0;
+    border:1px solid var(--line); border-radius:8px; padding:5px 10px;
+    background:rgba(255,255,255,.04)}
+</style>
+</head>
+<body>
+<h1>切一个主题：三处各管一件事</h1>
+<div class="lead">
+  颜色只在<b>磁盘上的文件</b>里。屏的进程里只有一个<b>名字</b>，浏览器里只有一套<b>变量</b>——
+  三处各管一件事，谁也不替谁记颜色。
+</div>
+
+<div class="row">
+
+  <!-- 1 磁盘 -->
+  <div class="panel disk">
+    <div class="h2">① 磁盘</div>
+    <div class="big">你写的那份文件</div>
+    <div class="sub">一个人可以往这里放任意多份，屏不会数。</div>
+    <div class="items">
+      <div class="it mono key">themes/kawaii-shell.json</div>
+      <div class="it mono">themes/moss.json</div>
+      <div class="it ghost">…你放几个就是几个</div>
+      <div class="it"><b>vars</b> — 颜色变量表<br><b>presence</b> — 桌上站着谁：<b>true</b> / <b>false</b> / <b>一个页面路径</b></div>
+      <div class="it mono" style="font-size:11.5px">"presence": "nodes/screens/screen_manager/pages/me-overlay/index.html"</div>
+    </div>
+  </div>
+
+  <div class="arrow">
+    <span>按名字取</span>
+    <div class="ln"></div>
+  </div>
+
+  <!-- 2 进程 -->
+  <div class="panel proc">
+    <div class="h2">② 屏的进程</div>
+    <div class="big">只记住一个名字</div>
+    <div class="sub">模型里没有一处颜色，只有"现在穿哪套"。</div>
+    <div class="items">
+      <div class="it key"><b>theme(name)</b> — 命令进来，改这一个字段</div>
+      <div class="it"><b>ScreenModel.theme = "kawaii-shell"</b></div>
+      <div class="it"><b>广播</b> — 每个连着的窗口都收到；新连上的拿全量</div>
+      <div class="it"><b>/themes/&lt;name&gt;.json</b> — 文件由这里递给页面</div>
+    </div>
+  </div>
+
+  <div class="arrow">
+    <span>广播一帧<br>页面自己取</span>
+    <div class="ln"></div>
+  </div>
+
+  <!-- 3 浏览器 -->
+  <div class="panel browser">
+    <div class="h2">③ 浏览器</div>
+    <div class="big">把名字变成画面</div>
+    <div class="sub">页面不缓存颜色，也不猜；它照着变量画。</div>
+    <div class="items">
+      <div class="it key"><b>:root</b> — 变量逐个贴上去，CSS 里全是 var()</div>
+      <div class="it"><b>canvas</b> — 字符雨与圆盘是位图，换主题要重画两张图集</div>
+      <div class="it"><b>化身</b> — 是谁、在不在：这两件由这份 JSON 决定；站哪里则看舞台上有没有内容，换主题时一起重算</div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <span class="cmd">matrix.mesh.screen:theme name="kawaii-shell"</span>
+  <span><b>加主题 = 放一个文件</b></span>
+  <span><b>切换 = 一条命令</b>，不重启、不改代码</span>
+</footer>
+</body>
+</html>

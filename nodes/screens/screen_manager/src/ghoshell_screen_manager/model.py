@@ -41,8 +41,11 @@ __all__ = [
     "grid_template",
 ]
 
-FAMILIES = ("grid", "stack")
+FAMILIES = ("grid", "stack", "pip")
 DIRS = ("lr", "tb")
+PIP_CORNERS = ("br", "bl", "tr", "tl", "rail")
+"""pip 的 dir 说的是"小窗待在哪"，不是轴方向: 四个角，或 ``rail`` ——
+左侧栏的底部。``rail`` 不占舞台的格子: 它落在栏里, 所以不挡正在被展示的东西。"""
 
 DEFAULT_LAYOUT = ("grid", "lr")
 """A group that was never arranged: equal split, left-to-right."""
@@ -109,13 +112,36 @@ def compute_layout(n: int, family: str, dir: str) -> Layout:
 
     ``grid`` splits equally; ``stack`` gives one master (index 0) plus a strip of
     the rest. ``dir`` is the axis: ``lr`` fills a row first, ``tb`` a column first.
+
+    ``pip`` is the picture-in-picture shape: one item takes the whole stage and the
+    second rides in a small card over a corner of it (``dir`` = ``br`` / ``bl`` /
+    ``tr`` / ``tl``). It is the only family whose cells overlap — that overlap is
+    the point, so the corner reads as "still here", not as "the stage got smaller".
     """
     if family not in FAMILIES:
-        raise LayoutError(f"unknown family {family!r} (grid | stack)")
-    if dir not in DIRS:
+        raise LayoutError(f"unknown family {family!r} (grid | stack | pip)")
+    if family == "pip":
+        if dir not in PIP_CORNERS:
+            raise LayoutError(f"pip dir must be one of {PIP_CORNERS}, got {dir!r}")
+    elif dir not in DIRS:
         raise LayoutError(f"unknown dir {dir!r} (lr | tb)")
     if n <= 0:
         raise LayoutError("need at least one item to arrange")
+
+    if family == "pip":
+        if n != 2:
+            raise LayoutError("pip takes exactly 2 items (one stage + one corner card)")
+        # 20×20 的粗网格：主人占满整块，角落卡约 20% 宽、35% 高，贴在指定角。
+        # rail 的格子只是个占位（页面用 fixed 把它摆进侧栏），主人照样占满舞台。
+        if dir == "rail":
+            return Layout("pip", dir, 20, 20, [Cell(1, 1, 20, 20), Cell(1, 1, 7, 4)])
+        span_r, span_c = 7, 4
+        rs = 1 if dir.startswith("t") else 20 - span_r + 1
+        cs = 1 if dir.endswith("l") else 20 - span_c + 1
+        return Layout(
+            "pip", dir, 20, 20,
+            [Cell(1, 1, 20, 20), Cell(rs, cs, span_r, span_c)],
+        )
 
     if family == "stack":
         if n < 2:
@@ -146,7 +172,8 @@ def compute_layout(n: int, family: str, dir: str) -> Layout:
 def grid_template(layout: Layout) -> tuple[str, str]:
     """The CSS ``grid-template-columns`` / ``grid-template-rows`` for a layout.
 
-    Stack gives the master axis a 2:1 share; everything else is even.
+    Stack gives the master axis a 2:1 share; everything else is even — pip
+    included, because its overlap comes from the cells, not from the tracks.
     """
     if layout.family == "stack":
         if layout.dir == "lr":
@@ -176,6 +203,32 @@ class ScreenModel:
         cannot be dropped.
         """
         self._focus: str | None = None
+        self._presence: str = ""
+        self._presence_default: str = ""
+        """The occupant the node was configured with — ``--presence`` or a ``presence``
+        command. Kept apart from ``_presence`` because a theme may lend the desk its
+        own occupant: leaving that theme has to put this one back, and a scene that
+        says nothing about occupants must not silently empty the desk."""
+        """The page that *inhabits* the desk — the ghost itself, standing on home.
+
+        Not an item: no handle, no group, no window. It is part of the desk the way
+        the MOSS lettering is, which is the whole difference from ``overlay``: an
+        overlay item is a pooled window that lost its chrome, so it has to be opened
+        and therefore cannot be there at startup. A presence is set (or given to the
+        node before it serves its first frame), so the screen *opens with someone on
+        it* instead of showing an empty stage and waiting for a command.
+
+        Empty = an unoccupied desk.
+        """
+        self._theme: str = "kawaii-shell"
+        """Which palette the desk wears — a name, not a set of colours.
+
+        The colours live in ``themes/<name>.json`` as CSS variables, so a theme is
+        something anyone can add by dropping a file in; the model only holds the
+        choice. Keeping the choice in the state (rather than as a boot-time flag)
+        means switching is a normal command that everyone can see.
+        """
+        self._overlay: str = ""
         """The item the human looks at *alone* — a view, not a layout.
 
         Deliberately independent of groups: a tile in the pool lives on the
@@ -241,6 +294,65 @@ class ScreenModel:
     def view_by(self) -> str:
         """Who moved the view last: ``human`` / ``model`` / ``""`` (nobody yet)."""
         return self._view_by
+
+    def overlay(self) -> str:
+        """The item standing over the screen with no window chrome, or ``""``."""
+        return self._overlay
+
+    def theme(self) -> str:
+        return self._theme
+
+    def set_theme(self, name: str | None) -> None:
+        self._theme = (name or "").strip() or "kawaii-shell"
+
+    def presence(self) -> str:
+        """The page inhabiting the desk — the ghost standing on home, or ``""``."""
+        return self._presence
+
+    def set_presence(self, url: str | None) -> None:
+        """Put a page on the desk as its inhabitant (``None``/``""`` empties it).
+
+        Separate from ``set_overlay`` on purpose: an occupant has no handle to
+        reference, survives every rearrange (it is furniture, not a window), and is
+        what the human sees before the model has said anything at all.
+
+        This is the *current* occupant. A theme may lend the desk its own one for a
+        while (see ``set_presence_default`` / ``restore_presence``): "who stands
+        here" is part of a scene, so switching scenes can change it — and switching
+        back has to put the original one back, which is why the default is kept.
+        """
+        self._presence = url or ""
+
+    def set_presence_default(self, url: str | None) -> None:
+        """Set the occupant this node was configured with — and show it now.
+
+        What ``--presence`` at startup and an explicit ``presence`` command mean:
+        "this desk is inhabited by this page". A theme that brings its own occupant
+        overrides it without destroying it, so the next theme that does not still
+        finds it there.
+        """
+        self._presence_default = url or ""
+        self._presence = self._presence_default
+
+    def presence_default(self) -> str:
+        """The configured occupant, ignoring whatever theme is currently worn."""
+        return self._presence_default
+
+    def restore_presence(self) -> None:
+        """Drop a theme's borrowed occupant and put the configured one back."""
+        self._presence = self._presence_default
+
+    def set_overlay(self, item_id: str | None, *, by: str = "model") -> None:
+        """Let one item stand *on* the screen instead of being shown by it.
+
+        Unlike focus, this changes nothing about what the screen shows — the arena
+        keeps rendering underneath. That is the whole point: the thing in the middle
+        is not a window replacing the desk, it is a presence over it.
+        """
+        if item_id:
+            self._require(item_id)
+        self._overlay = item_id or ""
+        self._view_by = by
 
     def set_focus(self, item_id: str | None, *, by: str = "model") -> None:
         """Point the view at one item (None = leave focus). Any pooled item will do."""

@@ -24,8 +24,8 @@ async def test_channel_exposes_the_command_set():
         for name in (
             "open", "navigate", "arrange", "activate", "dismiss", "destroy",
             "focus", "float", "raise", "pool", "mark", "box", "circle", "arrow",
-            "danmaku", "paint", "veil", "clear_veil",
-            "mock_scene", "mock_audio",
+            "danmaku", "paint", "veil", "clear_veil", "overlay", "presence",
+            "mock_scene", "mock_audio", "theme",
         ):
             assert runtime.get_command(name) is not None, name
 
@@ -605,3 +605,142 @@ async def test_stage_size_is_one_knob_for_both_voices():
 
     bullets = [f for f in rec.of("veil") if f.get("gesture") == "danmaku"]
     assert bullets and bullets[-1]["size"] == 40.0
+
+
+@pytest.mark.asyncio
+async def test_presence_clear_emits_state_carrying_an_empty_presence():
+    """presence 随每一帧 state 走：页面据它决定桌面上有没有人站着。"""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("presence", args=("",))
+        state = rec.of("state")[-1]
+        assert state["presence"] == ""
+        assert state["items"] if "items" in state else True
+
+
+@pytest.mark.asyncio
+async def test_presence_needs_a_surface_that_serves_local_pages():
+    """没有 add_local 的面（headless / 测试用的 recorder）要明说，而不是静默成功。"""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        with pytest.raises(Exception):
+            await runtime.execute_command("presence", args=("works/x.html",))
+    assert model.presence() == ""
+
+
+class _Feed:
+    """一条假的 event feed：只做一件事 —— 把回调留给我，让我手动投递事件。"""
+
+    def __init__(self):
+        self.running = False
+        self.cb = None
+
+    async def start(self, on_event):
+        self.running = True
+        self.cb = on_event
+
+    async def stop(self):
+        self.running = False
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_is_the_heartbeat_of_a_turn_under_dsh():
+    """DSH 的大脑不发 ghost/lifecycle/thinking，只有收尾的 idle；所以在屏上，
+    一次工具调用就是"我正在做事"的证据 —— 顶灯和桌面上的那个人都靠它亮。"""
+    from types import SimpleNamespace
+
+    model = ScreenModel()
+    rec = Recorder()
+    feed = _Feed()
+    chan = build_screen_channel(
+        model, surface=rec, audio=MockAudioSource(), clauses=_Feed(), events=feed,
+    )
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("stage", args=("both",))
+        await feed.cb(SimpleNamespace(event="dsh/tool/call", content="bash: ls"))
+        states = [f for f in rec.of("state") if "thinking" in f]
+        assert states and states[-1]["thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_theme_switches_and_reports():
+    """A palette is a name the state holds — switching must be visible to everyone."""
+    model = ScreenModel()
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("theme", args=("moss",))
+        assert model.theme() == "moss"
+        assert rec.of("theme")[-1]["name"] == "moss"
+        # The state frame carries it too: a window that connects later must open
+        # in the palette the desk is actually wearing.
+        await runtime.execute_command("open", args=("http://x",))
+        assert rec.of("state")[-1]["theme"] == "moss"
+
+
+@pytest.mark.asyncio
+async def test_theme_reads_back_when_name_is_empty():
+    model = ScreenModel()
+    model.set_theme("moss")
+    chan, rec = _channel(model)
+    async with chan.bootstrap() as runtime:
+        out = await runtime.execute_command("theme", args=("",))
+        assert "moss" in str(out)
+        assert model.theme() == "moss"
+
+
+@pytest.mark.asyncio
+async def test_a_theme_can_bring_its_own_occupant():
+    """一套主题就是一场场景：不止颜色，"谁站在桌上"也归它。
+
+    presence 写成路径 = 这套场景自带化身；节点起来时配的那个人只是没被这套
+    主题提到时的默认值，不是唯一的那个人。
+    """
+    from fakes import ThemedSurface
+
+    surface = ThemedSurface()
+    surface.specs["violet"] = {"presence": "works/who.html"}
+    model = ScreenModel()
+    chan = build_screen_channel(model, surface=surface, audio=MockAudioSource())
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("theme", args=("violet",))
+        assert model.presence() == "/local/works/who.html"
+        # 页面是"收到一帧才画"的：换人这件事必须随帧走，不能只留在模型的脑子里。
+        assert surface.of("state")[-1]["presence"] == "/local/works/who.html"
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_theme_that_lent_an_occupant_gives_the_desk_its_own_back():
+    """借来的化身要能还回去：起屏的那个人不属于某一套主题，只属于这块屏。"""
+    from fakes import ThemedSurface
+
+    surface = ThemedSurface()
+    surface.specs["violet"] = {"presence": "works/who.html"}
+    surface.specs["moss"] = {"presence": False}
+    model = ScreenModel()
+    model.set_presence_default("/local/me.html")
+    chan = build_screen_channel(model, surface=surface, audio=MockAudioSource())
+    async with chan.bootstrap() as runtime:
+        await runtime.execute_command("theme", args=("violet",))
+        assert model.presence() == "/local/works/who.html"
+        await runtime.execute_command("theme", args=("moss",))
+        # false 只是"这套场景里桌上没人"，地址还留着 —— 下一套想要就还在。
+        assert model.presence() == "/local/me.html"
+
+
+@pytest.mark.asyncio
+async def test_a_colour_only_theme_does_not_churn_the_desk():
+    """只改颜色的主题不该动桌上的人，也不该为此多发一帧。"""
+    from fakes import ThemedSurface
+
+    surface = ThemedSurface()
+    surface.specs["plain"] = {"vars": {"--accent": "#fff"}}
+    model = ScreenModel()
+    model.set_presence_default("/local/me.html")
+    chan = build_screen_channel(model, surface=surface, audio=MockAudioSource())
+    async with chan.bootstrap() as runtime:
+        before = len(surface.of("state"))
+        await runtime.execute_command("theme", args=("plain",))
+        assert model.presence() == "/local/me.html"
+        assert len(surface.of("state")) == before

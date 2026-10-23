@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>主题 · 一份文件换一层皮</title>
+<style>
+  :root{
+    --bg:#08060f; --ink:#eeebff; --dim:#8d86ad; --line:rgba(160,145,255,.20);
+    --violet:#9b8cff; --ice:#7ad7ff; --rose:#ff9ad5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(1100px 700px at 10% -10%, rgba(120,90,255,.18), transparent 60%),
+      radial-gradient(900px 700px at 95% 115%, rgba(90,190,255,.10), transparent 60%),
+      var(--bg);
+    color:var(--ink); font-family:"PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    padding:34px 44px 26px; overflow:hidden; display:flex; flex-direction:column;
+  }
+  header{display:flex; align-items:baseline; gap:14px}
+  h1{font-size:27px; font-weight:650; letter-spacing:.01em}
+  h1 em{font:400 13.5px ui-monospace,Menlo,monospace; color:var(--dim); font-style:normal}
+  .lead{margin-top:9px; color:#b7b0d2; font-size:14.5px; line-height:1.65; max-width:1250px}
+  .lead b{color:#fff; font-weight:600}
+
+  .flow{display:grid; grid-template-columns:0.9fr 64px 1.05fr 64px 1.05fr; align-items:stretch;
+        gap:0; margin-top:22px; flex:1; min-height:0}
+  .col{display:flex; flex-direction:column; gap:12px; min-height:0}
+  .col h2{font-size:12px; font-weight:500; color:var(--dim); letter-spacing:.09em}
+
+  .card{
+    border:1px solid var(--line); border-radius:16px; padding:15px 17px;
+    background:linear-gradient(165deg, rgba(42,39,69,.75), rgba(18,16,30,.85));
+    box-shadow:0 14px 36px rgba(0,0,0,.5), 0 0 26px rgba(139,134,255,.10);
+  }
+  .card.hot{border-color:rgba(155,140,255,.5); box-shadow:0 14px 36px rgba(0,0,0,.5), 0 0 34px rgba(139,134,255,.22)}
+  .card .n{font:600 13px ui-monospace,Menlo,monospace; color:var(--violet)}
+  .card .d{font-size:13px; color:#a9a2c6; margin-top:7px; line-height:1.6}
+  .card code{font:12.5px ui-monospace,Menlo,monospace; color:var(--ice)}
+
+  .file{
+    border:1px dashed rgba(160,145,255,.32); border-radius:14px; padding:12px 15px;
+    background:rgba(155,140,255,.05);
+  }
+  .file .fn{font:600 13px ui-monospace,Menlo,monospace}
+  .file .fn.violet{color:var(--violet)} .file .fn.moss{color:#3ddc8f}
+  .file .vars{margin-top:8px; font:11.5px/1.75 ui-monospace,Menlo,monospace; color:#8f88ad; word-break:break-all}
+  .file .vars b{color:#cfc7ff; font-weight:500}
+
+  .arrow{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;
+         color:var(--dim); font:11.5px ui-monospace,Menlo,monospace}
+  .arrow .ln{width:100%; height:1px;
+    background:linear-gradient(90deg, transparent, rgba(155,140,255,.55), transparent); position:relative}
+  .arrow .ln::after{content:''; position:absolute; right:-1px; top:-3.5px;
+    border-left:7px solid rgba(155,140,255,.75); border-top:4px solid transparent; border-bottom:4px solid transparent}
+
+  .swatch{display:flex; gap:8px; margin-top:10px}
+  .sw{width:26px; height:26px; border-radius:8px; border:1px solid rgba(255,255,255,.08)}
+
+  .pins{margin-top:8px; display:flex; flex-direction:column; gap:7px}
+  .pin{display:grid; grid-template-columns:104px 1fr; gap:12px; align-items:center;
+       border-top:1px dashed rgba(140,160,220,.12); padding-top:7px}
+  .pin:first-child{border-top:0; padding-top:0}
+  .pin .k{font:12px ui-monospace,Menlo,monospace; color:var(--ice)}
+  .pin .v{font-size:12.5px; color:#b3accf}
+
+  footer{margin-top:14px; display:flex; gap:26px; align-items:center; color:var(--dim); font-size:12.5px}
+  footer .cmd{font:12.5px ui-monospace,Menlo,monospace; color:#cfc7ff}
+  footer .tag{padding:3px 9px; border-radius:999px; border:1px solid rgba(160,145,255,.28); color:#b8b0d8}
+</style>
+</head>
+<body>
+<header>
+  <h1>主题 <em>one file, one skin</em></h1>
+</header>
+<div class="lead">
+  颜色不是写在这块屏里的，也不是写在我的 Python 里的：<b>它是 themes/ 目录里的一份 json</b>。
+  我手里只有一个名字，页面只认 <code style="font:12.5px ui-monospace,Menlo,monospace;color:#7ad7ff">var()</code>。
+  所以别人想给这块屏换一层皮，就是放一个文件进去 —— 不用碰任何代码。
+  一套主题管的不只是颜色：<b>桌上有没有人、字站在哪，也写在同一份文件里</b>。
+</div>
+
+<div class="flow">
+  <!-- 1 主题文件 -->
+  <div class="col">
+    <h2>① themes/ 目录</h2>
+    <div class="file">
+      <div class="fn violet">violet.json</div>
+      <div class="vars">
+        <b>--accent</b>: #9b8cff · <b>--accent-2</b>: #7ad7ff<br>
+        <b>--rain-tail</b>: #7c6fc8 · <b>--talk-text</b>: #efecff …<br>
+        名字 = theme("violet") 的参数
+      </div>
+      <div class="swatch">
+        <span class="sw" style="background:#9b8cff"></span><span class="sw" style="background:#7ad7ff"></span>
+        <span class="sw" style="background:#ff9ad5"></span><span class="sw" style="background:#2a2745"></span>
+      </div>
+    </div>
+    <div class="file">
+      <div class="fn moss">moss.json</div>
+      <div class="vars"><b>--accent</b>: #3ddc8f · <b>--danmaku</b>: #0f0<br>最早那套 Matrix 绿</div>
+      <div class="swatch">
+        <span class="sw" style="background:#3ddc8f"></span><span class="sw" style="background:#0f0"></span>
+        <span class="sw" style="background:#d8ffe4"></span><span class="sw" style="background:#24332b"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="n">缺的键 → 用默认值</div>
+      <div class="d">一套主题不必写全：改哪一个就写哪一个，剩下的退回页面里那份默认。</div>
+    </div>
+  </div>
+
+  <div class="arrow"><span>贴上去</span><div class="ln"></div></div>
+
+  <!-- 2 状态与命令 -->
+  <div class="col">
+    <h2>② 屏的状态里只有一个名字</h2>
+    <div class="card hot">
+      <div class="n">ScreenModel.theme = "violet"</div>
+      <div class="d">颜色不进模型 —— 模型不持有颜色，只持有"穿哪一套"。这样切换是一句普通的命令，
+        而且所有人都看得见（状态帧里带着它，新开的窗口第一帧就穿对）。</div>
+    </div>
+    <div class="card">
+      <div class="n">theme(name="")</div>
+      <div class="d">
+        <code>theme name="moss"</code> → 换<br>
+        <code>theme</code> → 读回：现在穿哪套、架子还有哪些<br>
+        不认识的会被拒，并把可选的列出来
+      </div>
+    </div>
+    <div class="card">
+      <div class="n">--theme moss（起屏）</div>
+      <div class="d">也可以在节点启动时就指定，省得第一帧先闪一下别的颜色。</div>
+    </div>
+  </div>
+
+  <div class="arrow"><span>广播</span><div class="ln"></div></div>
+
+  <!-- 3 页面 -->
+  <div class="col">
+    <h2>③ 页面做这几件事</h2>
+    <div class="card">
+      <div class="n">把变量贴到 :root</div>
+      <div class="d">拿到 <code>{"theme":"violet"}</code> 就去取 <code>/themes/violet.json</code>，
+        逐个 set 成 CSS 变量。CSS 里没有一个写死的颜色，全都是 var()。</div>
+    </div>
+    <div class="card">
+      <div class="n">canvas 重新上一次漆</div>
+      <div class="d">背景的字符雨、桌面的圆盘是位图，不认 CSS 变量：
+        换主题时按取到的值重画两张字色图集。这一处是唯一需要"知道主题变了"的地方。</div>
+      <div class="pins">
+        <div class="pin"><span class="k">rain-tail</span><span class="v">雨字的尾色</span></div>
+        <div class="pin"><span class="k">rain-head</span><span class="v">雨头那颗亮字</span></div>
+        <div class="pin"><span class="k">disc-stroke</span><span class="v">未入组圆盘的边</span></div>
+      </div>
+    </div>
+    <div class="card hot">
+      <div class="n">住户在不在，也归主题</div>
+      <div class="d">桌边那个人不是画在屏上的，是一张<b>透明的 iframe 盖满全屏</b>（<code>inset:0</code>），
+        页面自己把身形画在正中、占 53% 高。它在不在不归它自己，归主题的另一个字段：
+        <code>violet</code> 写 <code>presence:true</code>，<code>moss</code> 写 <code>presence:false</code> ——
+        所以切到原生那套，人就没了、MOSS 四个字回正中。位置由屏算：桌面上站屏心、名字挂右边底对齐脚下；
+        舞台一有内容，整块 iframe 缩到左栏底部让位。</div>
+    </div>
+    <div class="card">
+      <div class="n">我说话 / 我做事</div>
+      <div class="d">
+        递的是<b>角色</b>不是颜色：<code>tool</code> → <code>--accent-2</code>，
+        <code>ghost</code> → <code>--danmaku</code>。写死一个十六进制，它就会比主题多活一轮
+        —— 今晚那条工具调用的绿就是这么活下来的。
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span class="cmd">matrix.mesh.screen:theme name="moss"</span>
+  <span>换一层皮，不换引擎</span>
+  <span class="tag">themes/README.md 是给下一个写主题的人的契约</span>
+</footer>
+</body>
+</html>

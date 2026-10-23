@@ -17,6 +17,10 @@ both to ``Matrix`` and tests wire both to a recorder.
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger("moss")
+
 import asyncio
 import contextlib
 import itertools
@@ -24,6 +28,7 @@ import json
 import random
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil, new_channel
@@ -283,8 +288,15 @@ def build_screen_channel(
         Write ``ids="0|1|2"``; do NOT write a comma list (``"0,1"`` is a Python
         literal, so CTML hands it over as a tuple instead of the string you meant).
         ``group`` names the arrangement (created on first use). ``family`` is grid
-        (equal split) or stack (one master + a strip); ``dir`` is lr or tb. The
-        shape is derived from the count — you never give sizes.
+        (equal split), stack (one master + a strip), bare (one item, whole stage, no
+        window chrome at all — for a page that should stand on the screen instead
+        of looking like another window) or pip (one item on the whole
+        stage, a second floating over a corner — the shape to reach for when
+        something should *stay* on screen without taking space from what is being
+        shown). ``dir`` is lr / tb for grid and stack; for pip it is br / bl / tr /
+        tl (a corner of the stage) or rail (the bottom of the left sidebar — it
+        takes nothing from the stage, and it comes and goes with the sidebar).
+        The shape is derived from the count — you never give sizes.
         """
         try:
             layout = model.arrange(
@@ -325,6 +337,129 @@ def build_screen_channel(
         await _emit(P.close_frame(id))
         await _emit(P.state_frame(model))
         return f"[screen] removed #{id}"
+
+    @chan.build.command(name="overlay")
+    async def overlay(id: str = "") -> str:
+        """Let one item stand on the screen — no frame, no title bar, no background.
+
+        The arena keeps rendering underneath: this is not a window replacing the
+        desk, it is a presence over it (something whose own page is transparent then
+        reads as standing there). Empty ``id`` takes it away. Focus is the other
+        thing — focus means "look only at this one".
+        """
+        id = _as_id(id) if id else ""
+        try:
+            model.set_overlay(id or None)
+        except (ValueError, KeyError) as e:
+            CommandUtil.raise_observe(str(e))
+        await _emit(P.state_frame(model))
+        return f"[screen] overlay {'#' + id if id else 'clear'}"
+
+    @chan.build.command(name="presence")
+    async def presence(path: str = "") -> str:
+        """Put a page on the desk as whoever *lives* here — the ghost itself.
+
+        Not a window and not an overlay: a presence has no handle, belongs to no
+        group and survives every rearrange, because it is furniture of the desk the
+        way the MOSS lettering is. So it can be there in the first frame — start the
+        node with ``--presence PATH`` and the screen opens with someone standing on
+        it, no command needed, nothing to wait for.
+
+        ``overlay`` is the other tool: an overlay is a window that dropped its
+        chrome, so it must be opened first. Reach for ``overlay`` for *content* that
+        should stand (a poster, a page), and ``presence`` for *who the screen
+        belongs to* — one of it, set once, never arranged.
+
+        ``path``: a workspace-relative or absolute ``.html`` (served from this
+        screen's own origin, same rule as ``open_file``; a transparent background
+        makes it read as standing on the desk). Empty clears it.
+        """
+        if not path:
+            model.set_presence_default(None)
+            await _emit(P.state_frame(model))
+            return "[screen] presence clear"
+        add = getattr(surface, "add_local", None)
+        if add is None:
+            CommandUtil.raise_observe("this surface cannot serve local files")
+            return ""
+
+        try:
+            url = add(Path(path))
+        except ValueError as e:
+            CommandUtil.raise_observe(str(e))
+            return ""
+        # An explicit call names the occupant of *this desk* — the one a theme that
+        # says nothing about occupants falls back to. A theme that brings its own
+        # one may still override it for as long as it is worn.
+        model.set_presence_default(url)
+        await _emit(P.state_frame(model))
+        return f"[screen] presence {url}"
+
+    async def _apply_theme_presence(name: str) -> bool:
+        """Let the theme decide who stands on the desk; ``True`` = the desk changed.
+
+        A theme is a scene, not a palette, so "is anyone standing here, and who"
+        belongs to it. Three shapes of ``presence``:
+
+        - ``"works/…/someone.html"`` — this scene brings its own occupant; it is
+          served from the screen's own origin and put on the desk before the page
+          hears about the switch.
+        - ``false`` — an empty desk. The page hides the occupant; the url is left
+          alone so the next theme that wants it still finds it.
+        - ``true`` or absent — back to the occupant this node was configured with
+          (``--presence``, or an explicit ``presence`` command).
+
+        Nothing is broadcast when the answer is "same person as before": a theme
+        that only changes colours must not churn the desk.
+        """
+        read = getattr(surface, "theme", None)
+        spec = read(name) if callable(read) else None
+        want = spec.get("presence", True) if isinstance(spec, dict) else True
+        before = model.presence()
+        if isinstance(want, str) and want.strip():
+            try:
+                model.set_presence(surface.add_local(Path(want.strip())))
+            except ValueError as e:
+                # A theme pointing at a page that isn't there must not take the
+                # desk down with it: report it, and fall back to the configured one.
+                print(f"[screen] theme {name}: presence rejected: {e}", flush=True)
+                model.restore_presence()
+        else:
+            model.restore_presence()
+        return model.presence() != before
+
+    @chan.build.command(name="theme")
+    async def theme(name: str = "") -> str:
+        """Wear a palette — the desk's colours come from ``themes/<name>.json``.
+
+        A theme is a json of CSS variables, not code: adding one means dropping a
+        file next to the others and passing its name. The colours are deliberately
+        *not* in this repository's Python — a colour written here would outlive the
+        palette it belonged to (the tool-call line was green long after the desk was
+        not), so the model names a role and the page looks the colour up.
+
+        Empty ``name`` reads back: the one in force, and what else is on the shelf.
+        """
+        list_themes = getattr(surface, "themes", None)
+        available = list_themes() if callable(list_themes) else []
+        if not name:
+            return f"[screen] theme {model.theme()}" + (
+                f" (available: {', '.join(available)})" if available else "")
+        if available and name not in available:
+            CommandUtil.raise_observe(
+                f"no such theme: {name} (available: {', '.join(available)})")
+            return ""
+        model.set_theme(name)
+        # A theme is a scene, not a palette: besides the colours it may name the
+        # occupant of the desk. ``true``/absent keeps whoever the node was started
+        # with, ``false`` is an empty desk, and a path lends this theme its own
+        # page — so "who stands here" travels with the look instead of living in a
+        # boot flag that every theme would have to agree with.
+        occupant = await _apply_theme_presence(name)
+        await _emit({"type": "theme", "name": model.theme()})
+        if occupant:
+            await _emit(P.state_frame(model))
+        return f"[screen] theme {model.theme()}"
 
     @chan.build.command(name="focus")
     async def focus(id: str = "") -> str:
@@ -542,6 +677,9 @@ def build_screen_channel(
         right: shorter, and watching them arrive is part of seeing me talk.
         """
         text = str(getattr(clause, "text", "") or "").strip()
+        # 谁的话到了屏上 —— DEBUG 级: 排查"听侧/说侧有没有接上"时把它打开就够了,
+        # 平时一句话一行会把日志淹掉.
+        logger.debug("[clause] role=%r text=%r", getattr(clause, "role", ""), text[:12])
         mode = stage_flags["talk"]
         if not text or mode == "off":
             return
@@ -551,6 +689,9 @@ def build_screen_channel(
         if mode == "ghost" and role != "ghost":
             return
         if role == "ghost":
+            # 说侧的 clause 到了 —— 屏上每一个"站在那儿的东西"都该跟着动嘴。
+            # 一条独立的帧: 弹幕管文字, 这一条管身体, 两者各自可以缺席.
+            await _emit({"type": "mouth", "role": "ghost", "chars": len(text)})
             # Fired, not awaited: a bullet lives seconds, and a mirror that awaits
             # each one makes every later sentence arrive seconds late.
             # One band, not the whole stage: my lines arriving from the right are
@@ -586,13 +727,21 @@ def build_screen_channel(
         # are mine to show — they are what I am doing on the stage's behalf.
         if kind != "dsh/tool/call":
             return
+        # 这条链上"我在思考"没有独立的事件：ghost/lifecycle/thinking 是旧脑那一路发的，
+        # DSH 的大脑只在收尾时发 idle。所以一次工具调用就是"我正在做事"的心跳 ——
+        # 灯和桌面上的那个人都靠它亮起来；它们各自带 keep 窗口，没人续就自己灭。
+        await _emit({"type": "state", "thinking": True})
         text = str(getattr(event, "content", "") or "").strip()
         if not text:
             return
+        # 颜色分工：我说的话是紫的，我做的事是冰蓝的 —— 一行字是"说"还是"做"，
+        # 一眼该分得出来。这里递的是**角色**（tool），不是某一串十六进制：
+        # 颜色归主题，页面拿着角色去查 --accent-2。上一版这里写着 "#7ad7ff"，
+        # 于是换主题时只有这一行字留在旧颜色上 —— 又一个"颜色比主题活得久"。
         bullet = asyncio.create_task(_send_danmaku(
             f"▸ {text}", duration=8.0, motion="rtl",
             size=stage_flags["size"] * _TOOL_LINE_RATIO, overlap=True,
-            color="#8fe3a1",
+            color="tool",
         ))
         _live_bullets.add(bullet)
         bullet.add_done_callback(_live_bullets.discard)
