@@ -16,8 +16,10 @@ status_note: >-
   2026-10-10 定位收紧（thirdgerb）：它不是"某块屏的后端"，而是 **screen 模式启动即打开的那个工作台**
   —— 浏览器里的一个 Web 分屏桌面，别的 node 的 surface 以 item 身份被摆进去。验证期已过，
   施工面从"验证页"转成"产品化的默认面"；人的入口（顶栏 / 切组）归属待定 → screen-todo O4。
+  2026-10-24 新增「局域网接入」命题（未开工）：网关作为 screen 的可拆模块、默认拒绝、
+  全模式登录；论证见 discuss/2026-10-24_lan_access_and_gateway.md，待办 W17–W19 / O5。
 title: Screen Manager — MOSS 开箱的标准可扩展屏幕躯体
-updated: '2026-10-10'
+updated: '2026-10-24'
 ---
 
 # Screen Manager
@@ -312,6 +314,48 @@ iframe 重载、页面状态全丢（WD1）。
 是 **webview 渲染器的实现细节漏进了契约**，换渲染器即失效。契约该说的是指针：
 **舞台上当前需要人操作的那一块必须拿到指针** —— 与它归谁无关。
 
+## 局域网接入（2026-10-24 命题，未开工）
+
+命题：让手机 / 平板 / 电视等局域网设备也能看这块屏，并把屏上所有 webview 一起带出去；
+路由由 ghost 动态管，准入默认拒绝，所有访问先登录。完整论证、行业参照与威胁模型见
+[discuss/2026-10-24_lan_access_and_gateway.md](discuss/2026-10-24_lan_access_and_gateway.md)。
+
+### 结论（已定）
+
+- **网关是 screen 的可拆模块，不是内联代码。** `--lan` 时由 screen 组合启动，只依赖
+  「路由表 + 认证器 + 占位页」三个接口，将来可原样拆成独立节点。screen 已经是所有
+  webview 的聚合者，路由表天然等于它已 adopt 的集合；但安全边界要能独立评审、独立存活。
+- **上游永远 127.0.0.1，网关是唯一对外 listener。** app 节点不知道 LAN 的存在；绑定地址
+  与宣告地址分离。本地访问也走同一道认证 —— loopback 不是安全边界（同机用户 / 本地进程 /
+  rebinding）。
+- **按 hostname（子域）或独立端口路由，路径前缀被否。** 页面传输是根路径
+  （`file_editor/index.html:2510` 的 `/ws`、`:1258` 的 `/renderers`），前缀必然撞墙；
+  更根本的是路径前缀会把不同节点塞进同一 origin，抹掉同源隔离。
+- **URL 治理只动服务端三处。** 页面本身已是 origin 相对；写死地址只在
+  `WebViewDeclaration(url=surface.url)`、channel 的 `out["url"]`、`add_local()` 的绝对地址。
+  不变量：**组件只知道自己在哪监听，永远不猜自己将从哪被访问**；发给浏览器的引用一律
+  origin 相对，必须绝对时由网关按 `X-Forwarded-Host` 翻译。
+- **路由主键是服务 address，slug 由 title 派生并持久化**（端口是运行态，名字不能随重启变）。
+- **策略三层且 deny 优先**：内置默认（default deny、`terminal` 常驻 deny）→ 持久化策略
+  （workspace 下 0600 文件）→ 会话覆盖（ghost channel）。放行是安全事件，必须在屏上可见、
+  留审计。
+- **ghost 只能自动降级，提权要本地人类确认。** ghost 上下文会被 webview 内容 / 网页 /
+  终端输出污染，允许它自由放行 `terminal` 等于给 prompt injection 一条直达远程 shell 的路。
+- **未准入的 route 由网关返回静态占位页，且不建立到上游的连接。** screen 保留该 item，
+  `face_line` 标"局域网未授权"，不静默消失。
+- **认证覆盖所有模式**：设备凭证（本地注册后发长期 token，可逐台吊销）+ 可选密码
+  （Argon2id 哈希，绝不加密）。本地信任锚是**文件系统权限**，不是 loopback；注册 / 重置是
+  本地 CLI/TUI，不依赖 screen 进程存活；远程设备用一次性配对码换设备 token。
+- **TLS 与 Host/Origin 白名单是硬要求**：WPA2 是共享密钥，LAN 不等于可信；Host 校验是
+  rebinding 防御，登录页与占位页加 `X-Frame-Options: DENY`。
+
+### 未决
+
+- 子域模式 vs 端口模式的默认选择；DNS 泛解析 / mDNS 的可用性。
+- TLS 供给：Caddy internal CA / mkcert / Tailscale；WebAuthn 只在域名 + TLS 下可用。
+- 多屏 slug 冲突；远程 Matrix cell 的 `url=127.0.0.1` 不可达（现有协议边界，本命题不解）。
+- LAN 观众是"只看"还是"可操作"：屏幕可点击并回流信号，鉴权之外可能需要只读档位。
+
 ## 三层实现（可插拔）
 
 | 层 | 实现 | 状态 | 归属 |
@@ -330,6 +374,7 @@ iframe 重载、页面状态全丢（WD1）。
 - 旧设计（被取代）：[FEATURE.legacy.md](FEATURE.legacy.md)
 - 碰撞轨迹：`discuss/2026-07-24_screen_body_design_collision.md` ·
   `discuss/2026-09-13_screen_formal_design_collision.md`
+- 局域网接入论证：[discuss/2026-10-24_lan_access_and_gateway.md](discuss/2026-10-24_lan_access_and_gateway.md)
 - 旧视觉 demo：`demo/`（保留）
 - 相邻轨迹（参考，非依赖）：
   - `types/topics/audio.py` — `AudioSampleTopic`（双边频谱，视效数据面）· `ClauseTopic`

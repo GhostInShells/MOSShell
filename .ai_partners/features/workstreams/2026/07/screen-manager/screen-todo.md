@@ -61,6 +61,9 @@
 | W13 | **fixed** | **页面版本指纹** — `/__ver` 返回 index.html 的 sha1 前 10 位；页面每 3 秒问一次，**版本一变自己刷新**。动机：开着的旧窗口会把"旧世界"的数据混进同一份 stdout（2026-10-10 白查过一轮） | 本 feature |
 | W8 | open | **多屏机制未验证** — 一台机器上多个 screen node、或多显示面之间的分工与主权（谁排布、谁全屏、人怎么看）今日未测 | 本 feature |
 | W16 | **fixed** | **窗口标题栏** — 每窗一条、由屏画（label 来自 node 声明，右端是这一块的 maximize / restore）；图标走 SVG 方框不赌字形；窗口感来自"栏比内容亮一档"而不是加框；accent 只标 focused。`0cde24bb` + `257de158`。判据：任意两个 node 并排时标题栏结构与位置完全一致，且 node 页面内不再出现自己的名字 | 本 feature |
+| W17 | open | **局域网网关（`--lan`）** — screen 内组合的可拆模块：唯一对外 listener、子域或端口路由、HTTP+WS 代理、静态拒绝页（不连上游）、Host/Origin 白名单、TLS。路由表来自 `WebViewClient`，slug 由 title 派生并持久化；策略文件 0600。上游保持 127.0.0.1 | 本 feature |
+| W18 | open | **URL 治理三处** — `WebViewDeclaration` 继续只报 loopback 事实；channel 的 `url` 面向人时给 public URL；`add_local()` 返回 `/local/<token>` 相对地址；screen 拆 `--host`（绑定）与 `--public-url`（宣告）。判据：局域网浏览器打开任意 item 与本地一致 | W17 |
+| W19 | open | **认证与设备凭证** — 全模式登录；Argon2id（不加密）；长期 device token + 逐台吊销；一次性配对码；本地 CLI/TUI 做注册与重置（不依赖 screen 存活）；限速；跨子域 cookie；WS 握手校验 | W17 |
 
 ## W7 听侧（用户音频）
 
@@ -101,6 +104,7 @@
 | O2 | open | **三档命名** — node 已定 `webview_screen`（档位进名字），但 qt/os 档命名、channel 命名是否跟档位绑定仍未定 |
 | O3 | open | **qt 档 node 落点** — `qt_compositor.md` 说另起目录，新目录名待定 |
 | O4 | **decided** | **人切组 / 顶部导航栏的归属（2026-10-20 裁决）** — 拆成两家：**切组留在侧栏**（人的"看哪"入口不动，标题栏只管"这一块"）；**每个窗口的标题栏由屏画**——左端 = node 声明里的 label，右端 = 这一块自己的 maximize / restore（走已有的 `focus`，不造第二套语义）。node 不再在自己页面里写名字。**全局顶栏被否**（它回答的是"窗口怎么占满屏"，不是"砖怎么放大"）。notify 抽屉归屏，尚未落地。详见 FEATURE「窗口 chrome 的归属」 |
+| O5 | open | **LAN 路由与 TLS 选型（2026-10-24）** — 子域（需泛解析，WebAuthn 可用）vs 独立端口（零 DNS）；TLS 用 Caddy internal CA / mkcert / Tailscale。默认值与 DNS 供给方式待定。论证见 `discuss/2026-10-24_lan_access_and_gateway.md` |
 
 ## 2026-10-10 新登记（现场）
 
