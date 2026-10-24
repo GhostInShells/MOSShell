@@ -54,6 +54,24 @@
     --tile-glow-2: rgba(122, 215, 255, .07);
     --tile-halo: rgba(160, 145, 255, .24);
 
+    /* 形状也是主题的一部分：圆角、光圈、投影都不是颜色，但同样回答"这个主题长什么样"。
+       moss 是最早那一版 —— 6px 圆角、没有光圈、一层压影；kawaii-shell 是后来的
+       30px + 呼吸虚线 + 三层光晕。页面里写的是后者（默认），主题 json 里写它自己要的那版
+       —— 否则"换主题"这件事只能换漆，不能换形。 */
+    --tile-radius: 30px;
+    --tile-art-radius: 28px;
+    --tile-halo-ring: 1px dashed var(--tile-halo);
+    --tile-halo-motion: halo-breathe 5.6s ease-in-out infinite;
+    --tile-shadow:
+      0 14px 36px rgba(0, 0, 0, .55),
+      0 0 26px var(--tile-glow),
+      0 0 72px var(--tile-glow-2),
+      inset 0 1px 0 var(--sheen);
+    --tile-sel-shadow:
+      0 0 0 1px var(--accent),
+      0 18px 44px rgba(0, 0, 0, .6),
+      0 0 34px var(--tile-glow);
+
     --rail-bg-a: rgba(20, 16, 38, .94);
     --rail-bg-b: rgba(9, 7, 18, .97);
     --rail-border: rgba(150, 140, 255, .18);
@@ -474,27 +492,27 @@
     /* 没有画像的时候，标签就是瓷砖的"脸" —— 所以它居中，不是页脚。 */
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 7px; padding: 10px; box-sizing: border-box; text-align: center;
-    /* 圆一点：瓷砖是手感，不是表格。方角读起来像控件，圆角才像"一块东西。 */
-    border: 1px solid transparent; border-radius: 30px;
+    /* 圆一点：瓷砖是手感，不是表格。方角读起来像控件，圆角才像"一块东西。
+       圆多少归主题管：moss 那一版就是 6px。 */
+    border: 1px solid transparent; border-radius: var(--tile-radius);
     /* 双背景：内层是瓷砖本体，外层只画边框（padding-box / border-box 各取一层） */
     background:
       linear-gradient(165deg, var(--tile-bg-a), var(--tile-bg-b)) padding-box,
       linear-gradient(135deg, var(--tile-border-1), var(--tile-border-2) 45%, var(--tile-border-3)) border-box;
     color: var(--tile-text); font-size: 12.5px; letter-spacing: .02em;
     pointer-events: auto; cursor: pointer; transform-origin: 50% 50%;
-    box-shadow: 0 14px 36px rgba(0, 0, 0, .55),
-                0 0 26px var(--tile-glow),
-                0 0 72px var(--tile-glow-2),
-                inset 0 1px 0 var(--sheen);
+    box-shadow: var(--tile-shadow);
   }
   /* 光圈：瓷砖在黑底上要自己发一点光才站得住。近处那圈晕由 box-shadow 给，
      外面再围一道虚线的光点 —— 它是"有人在这儿用过的东西"，不是一块贴纸。
-     慢慢地胀缩，幅度小到不注意就看不见：屏是背景，不该一直动。 */
+     慢慢地胀缩，幅度小到不注意就看不见：屏是背景，不该一直动。
+     整圈是主题可撤的：`--tile-halo-ring: 0` + `--tile-halo-motion: none` 就是没有它。 */
   .tile::before {
-    content: ''; position: absolute; inset: -9px; border-radius: 38px;
-    border: 1px dashed var(--tile-halo);
+    content: ''; position: absolute; inset: -9px;
+    border-radius: calc(var(--tile-radius) + 8px);
+    border: var(--tile-halo-ring);
     pointer-events: none;
-    animation: halo-breathe 5.6s ease-in-out infinite;
+    animation: var(--tile-halo-motion);
   }
   @keyframes halo-breathe {
     0%, 100% { opacity: .5; transform: scale(1); }
@@ -519,18 +537,17 @@
   .tile.faced .tile-name { font-size: 11px; opacity: .62; }
   .tile .tile-art {
     position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; border-radius: 28px; opacity: .92;
+    object-fit: cover; border-radius: var(--tile-art-radius); opacity: .92;
   }
   .tile.arted { justify-content: flex-end; }
   .tile.arted .tile-caption {
     position: relative; width: 100%; padding: 5px 6px;
     background: linear-gradient(transparent, rgba(12, 9, 24, .9) 42%);
-    border-radius: 0 0 28px 28px;
+    border-radius: 0 0 var(--tile-art-radius) var(--tile-art-radius);
   }
   .tile.sel {
     border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent), 0 18px 44px rgba(0, 0, 0, .6),
-                0 0 34px var(--tile-glow);
+    box-shadow: var(--tile-sel-shadow);
   }
   .tile.sel::before { border-color: var(--sheen-strong); animation: none; opacity: 1; }
 
@@ -832,7 +849,7 @@ function reportViewport() {
 // 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
 // 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
 let debugTimer = null;
-const PAGE_REV = '2026-10-23-theme-6';
+const PAGE_REV = '2026-10-24-tile-shape';
 function debugPayload() {
   const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
     ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
@@ -1669,6 +1686,20 @@ function fitMossText() {
   span.style.fontSize = Math.max(10, size - 1) + 'px';
 }
 fitMossText();
+
+// 桌面上那个词是**谁的名字**：屏不属于框架，属于住在这里的 ghost。名字由服务端给
+// （它从运行环境里读 MOSS_GHOST_NAME），页面自己不知道谁在跑它 —— 写死 MOSS 就等于
+// 谁来住都挂框架的牌子。字号是量出来的，所以换了字要重新量一次。
+(async () => {
+  try {
+    const d = await (await fetch('/__brand', { cache: 'no-store' })).json();
+    const word = (d.brand || '').trim();
+    if (!word || word === mossEl.textContent) return;
+    // 拉丁名按老版大写（这套字重本来就是为四五个大写字母调的）；中文名原样写。
+    mossEl.textContent = /^[\x20-\x7e]+$/.test(word) ? word.toUpperCase() : word;
+    fitMossText();
+  } catch (e) { /* 服务没起上来：留着框架自己的名字，不是错误 */ }
+})();
 
 // 字形单元尺寸：升字区高度、雨的排布都以它为单位，必须先于一切使用点。
 const GW = 16, GH = 20;                 // 字形图集单元尺寸（固定，与屏宽无关）

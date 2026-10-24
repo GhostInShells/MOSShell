@@ -504,8 +504,15 @@ def build_screen_channel(
 
     @chan.build.command(name="pool", always_observe=True)
     async def pool() -> str:
-        """List the whole pool — the desktop, and every group in order."""
+        """List the whole pool — the desktop, and every group in order.
+
+        Every item carries where it came from. The ids alone answer "how many", but
+        not "why two": two tiles with one label and one url look identical on the page
+        and are a different question entirely from two live providers. The address is
+        the only thing that tells them apart, so it is printed, not remembered.
+        """
         arena = model.arena() or "desktop"
+        by_id = {item.id: item for item in model.items()}
         lines = [
             f"showing: #{arena}",
             f"order: {' '.join(model.pool_order()) or '-'}",
@@ -514,6 +521,18 @@ def build_screen_channel(
         for g in model.groups():
             mark = "*" if g == model.arena() else " "
             lines.append(f"{mark} #{g}: {', '.join(model.group_items(g))}")
+        for iid in model.pool_order():
+            item = by_id.get(iid)
+            if item is None:
+                continue
+            face = (item.face_line or "").strip()
+            origin = f"service {item.service}" if item.service else "hand-opened"
+            group = f"group {item.group}" if item.group else "desktop"
+            lines.append(
+                f"  #{iid} {item.label or iid}"
+                + (f" ({face})" if face else "")
+                + f" — {origin}, {group}, {item.url}"
+            )
         return "\n".join(lines)
 
     # -- veil gestures (time-aware) ----------------------------------------

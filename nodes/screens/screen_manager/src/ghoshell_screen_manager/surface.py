@@ -89,6 +89,7 @@ class ScreenSurface:
         html_path: Path,
         session: str = "",
         themes_dir: Path | None = None,
+        brand: str = "",
     ) -> None:
         self._model = model
         self._audio = audio
@@ -101,6 +102,12 @@ class ScreenSurface:
         """Where the palettes live. A theme is a json of CSS variables — adding one
         is dropping a file here, which is the whole point of not baking colours into
         the page."""
+        self._brand = (brand or "").strip()
+        """Whose desk this is — the word the empty page says.
+
+        Not decoration: it names the occupant. It comes from the runtime (the ghost
+        name) rather than the page, because the page cannot know who is running it,
+        and a screen that always says the framework's name says the wrong name."""
         """This run's window token.
 
         Only the window *this node just opened* carries it, so only that window may
@@ -286,6 +293,14 @@ class ScreenSurface:
             return response
         if path == "/__ver":
             response = connection.respond(200, json.dumps({"ver": self._page_ver()}))
+            del response.headers["Content-Type"]
+            response.headers["Content-Type"] = "application/json"
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
+        if path == "/__brand":
+            # 页面第一帧就要写出这个名字，所以它是同源读的一个小接口，不走 ws：
+            # 走 ws 的话，屏要先建连、先拿快照，字才敢写 —— 空桌在第一帧就该有主人。
+            response = connection.respond(200, json.dumps({"brand": self._brand}))
             del response.headers["Content-Type"]
             response.headers["Content-Type"] = "application/json"
             response.headers["Cache-Control"] = "no-store, max-age=0"

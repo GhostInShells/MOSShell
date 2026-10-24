@@ -22,6 +22,13 @@
     "--tile-glow": "rgba(61, 220, 143, .16)",
     "--tile-glow-2": "rgba(61, 220, 143, .07)",
     "--tile-halo": "rgba(120, 255, 190, .22)",
+
+    "--tile-radius": "6px",
+    "--tile-art-radius": "5px",
+    "--tile-halo-ring": "0",
+    "--tile-halo-motion": "none",
+    "--tile-shadow": "0 14px 36px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(120, 255, 190, .07)",
+    "--tile-sel-shadow": "0 0 0 1px var(--accent), 0 18px 44px rgba(0, 0, 0, .6)",
     "--rail-bg-a": "rgba(11, 15, 21, .92)",
     "--rail-bg-b": "rgba(11, 15, 21, .92)",
     "--rail-border": "#2a3340",

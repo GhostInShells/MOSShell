@@ -50,6 +50,14 @@ PIP_CORNERS = ("br", "bl", "tr", "tl", "rail")
 DEFAULT_LAYOUT = ("grid", "lr")
 """A group that was never arranged: equal split, left-to-right."""
 
+DEFAULT_THEME = "moss"
+"""Which palette a screen wears when nobody said: the framework's own green.
+
+``kawaii-shell`` stays on the shelf — a theme is a choice, and the default is the
+one the desk was made in. Two authorities over "the default" (a boot flag and a
+store fallback) drifted apart once already; this constant is the only one.
+"""
+
 
 class LayoutError(ValueError):
     """A proposed arrangement cannot be laid out (bad family/dir, wrong item count)."""
@@ -220,7 +228,7 @@ class ScreenModel:
 
         Empty = an unoccupied desk.
         """
-        self._theme: str = "kawaii-shell"
+        self._theme: str = DEFAULT_THEME
         """Which palette the desk wears — a name, not a set of colours.
 
         The colours live in ``themes/<name>.json`` as CSS variables, so a theme is
@@ -303,7 +311,7 @@ class ScreenModel:
         return self._theme
 
     def set_theme(self, name: str | None) -> None:
-        self._theme = (name or "").strip() or "kawaii-shell"
+        self._theme = (name or "").strip() or DEFAULT_THEME
 
     def presence(self) -> str:
         """The page inhabiting the desk — the ghost standing on home, or ``""``."""

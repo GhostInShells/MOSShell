@@ -49,7 +49,7 @@ from ghoshell_screen_manager.audio import (  # noqa: E402
 from ghoshell_screen_manager.bridge import WebViewBridge  # noqa: E402
 from ghoshell_screen_manager.clauses import TopicClauseFeed, TopicEventFeed  # noqa: E402
 from ghoshell_screen_manager.channel import build_screen_channel  # noqa: E402
-from ghoshell_screen_manager.model import ScreenModel  # noqa: E402
+from ghoshell_screen_manager.model import DEFAULT_THEME, ScreenModel  # noqa: E402
 from ghoshell_screen_manager.surface import ScreenSurface  # noqa: E402
 
 _INDEX_HTML = _NODE_DIR / "index.html"
@@ -100,7 +100,18 @@ def theme_name() -> str:
             return argv[i + 1]
         if arg.startswith("--theme="):
             return arg.split("=", 1)[1]
-    return "kawaii-shell"
+    return DEFAULT_THEME
+
+
+def ghost_brand() -> str:
+    """Whose desk this is — the ghost name, for the lettering at the centre of the page.
+
+    The word in the middle of an empty desk is not decoration: it says *who lives
+    here*. A screen that always says ``MOSS`` says the framework's name, not the
+    occupant's, so the name comes from the runtime (``MOSS_GHOST_NAME``) and the
+    framework is only the fallback — an unghosted screen is still MOSS's.
+    """
+    return (os.getenv("MOSS_GHOST_NAME") or "").strip() or "MOSS"
 
 
 def presence_path() -> str:
@@ -161,6 +172,7 @@ async def main(matrix: Matrix) -> None:
         html_path=_INDEX_HTML,
         session=_SESSION,
         themes_dir=_THEMES,
+        brand=ghost_brand(),
     )
     await surface.start()
     print(f"[webview_screen] surface at {surface.url}", flush=True)
