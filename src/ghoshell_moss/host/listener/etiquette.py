@@ -192,10 +192,8 @@ class DetectSpec(BaseModel):
         default=None,
         description="optional sandbox audio-detection function; None = simple energy threshold",
     )
-    priority: Priority = Field(
-        default=Priority.NOTICE,
-        description="priority of the knock signal emitted on detection",
-    )
+    # No priority knob: a knock is emitted at BACKGROUND — losable by promise,
+    # and only the tier that can never preempt keeps that promise (D22).
     cooldown: float = Field(
         default=10.0,
         description="seconds to suppress repeat knocks after a detection",

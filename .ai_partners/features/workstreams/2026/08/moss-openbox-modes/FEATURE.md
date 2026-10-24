@@ -91,6 +91,22 @@ mode 提供躯体(channel 能力面), ghost 提供大脑, 两者正交。meta �
 全双工运行时脚本化(启动 matrix → 发 signal → 拿结果 → 关)= 零价值。验收由人类测试 TUI / 两个 ghost
 对话。QA(qa-exchange)是广播问答抽象, 不是跨 ghost 对话通道。
 
+### 6. develop 模式 — 权限之外的第二根轴：工作台闭环（2026-10-22）
+
+四模式原本只在"能力梯度"这一根轴上排列。`develop` 加进来后，矩阵变成两维：
+
+| 轴 | 最高处 | 判据 |
+|------|------|------|
+| 权限 | `meta` | 能不能破自己的权限（runtime_debug 及其后陆续加的 super-user 能力） |
+| 工作台 | `develop` | 能不能只用 MOSS 把活干完 |
+
+- **`develop` 不是降级的 `meta`**：meta 是 root，今后还会往里加 runtime 一类的能力；develop 不给任何破权限的口子。
+- **差异只写在两处**：
+  - `HOST.md` 的 `bringup_nodes`：`nodes/screens/screen_manager`、`nodes/os/file_editor`、`nodes/os/terminal` 开机即起——工作台是躯体的默认状态，不是每次临时搭。
+  - `src/HOST/channels.py`：通道面与 default 同构（系统原语 + matrix + moss_cli + macro store），再加 runtime_error 自诊断。
+- **playwright 与眼睛（camera / vision push）按需开**，不进 bringup：一台机器上的屏和终端是常驻的，眼睛不是。
+- **判据（写给未来的自己）**：如果某件事只能用 harness 的 bash / 读写做完，那说明 MOSS 这一层还缺件——缺的那件就是这一轮的活。
+
 ## Exploration Paths / 教训
 
 - **一度误判为严格递增 ladder**: 把四 mode 说成 `install ⊂ default ⊂ meta` 子集。被纠正 —
@@ -117,8 +133,17 @@ mode 提供躯体(channel 能力面), ghost 提供大脑, 两者正交。meta �
   抽象 + 三层一致显示（不再直接 `ScannedProjectManifest()`）。
 - **验证通过**: `moss manifests` 各命令三层正确（nuclei 显示 6 个 project 级）、`moss-shell mcp` 启动成功。
 
+### develop 模式落地 (2026-10-22)
+
+- `moss modes create develop` 生成 `.moss/modes/develop/`；`HOST.md` 改 `name` / `description` / `bringup_nodes`，
+  `channels.py` 换成 `new_moss_main_channel()`（含 matrix）+ moss_cli + macro store + runtime_error。
+- `moss modes show develop` 通过：模式可发现，node_paths 解析到 `nodes/` 与 `.moss/nodes`。
+- 未验证：真以 develop 起一个壳，看 bringup 的三件是否都上线。
+
 ### 待办
 
+- develop：实际起壳验证 bringup（屏 / 编辑器 / terminal 三件是否都挂上）。
+- develop：「不用 harness 工具」这条边界落在哪一层——壳的配置，还是只算纪律。
 - `install` mode stub（null providers 等）未建; stubs 四模式矩阵只做了 default。
 - mode 主通道 `channels.py` 仍 ad-hoc（default/meta/system_test 差异未按四模式矩阵规整）。
 - `ProjectManifest.explain()` 硬编码 "Matrix Manifest / MATRIX.manifests" 文本未修正（project 层自描述显示错误）。

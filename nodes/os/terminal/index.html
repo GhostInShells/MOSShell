@@ -48,6 +48,8 @@
   }
   button.bulk:hover { border-color: var(--accent); color: var(--accent); }
   button.bulk.on { color: var(--run); border-color: var(--run); }
+  /* 图标按钮：一个字符，不占字的位置。 */
+  button.bulk.glyph { padding: 4px 8px; font-size: 14px; line-height: 1; }
   button.danger {
     background: transparent; color: var(--bad); border: 1px solid var(--bad);
     border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit;
@@ -292,6 +294,9 @@
 <header>
   <!-- No brand: the screen tile that holds this window already names it, and the
        label was costing room the controls needed. -->
+  <!-- 并排 / 全屏，只放图标：它俩说的是"怎么摆"，不占一个字的位置。
+       以前只有模型能切，人只能关掉卡片退回列表——那不是切换，是撤退。 -->
+  <button class="bulk glyph" id="layout-toggle" title="并排看列表 / 全屏看一张">◧</button>
   <div class="modes" id="modes" title="who approves a command — you, or the thread you trust">
     <button data-mode="approval" title="every command waits for your click">approval</button>
     <button data-mode="disabled" title="commands leave the model's interface; this terminal goes quiet">disabled</button>
@@ -742,12 +747,22 @@ function setMode(mode) {
   }
 }
 
-// How an open card is shown is the model's call. The header used to say which one
-// was in force and who chose it; the layout says that itself, so the label is gone.
+// How an open card is shown: 并排（列表在旁边）还是全屏（只看这一张）。
+// 模型能切，人也能切——同一个开关，两个作者，标记里写明是谁动的。
 function setLayout(mode, by) {
   const layout = mode === "page" ? "page" : "split";
   document.body.dataset.layout = layout;
   document.body.dataset.layoutBy = by === "model" ? "model" : "human";
+  const btn = document.getElementById("layout-toggle");
+  if (btn) btn.textContent = layout === "page" ? "▣" : "◧";
+}
+
+const layoutToggle = document.getElementById("layout-toggle");
+if (layoutToggle) {
+  layoutToggle.addEventListener("click", () => {
+    const next = document.body.dataset.layout === "page" ? "split" : "page";
+    send({ type: "layout", layout: next });
+  });
 }
 
 function updateThreads(list) {

@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-import type { Agent, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { Context } from '@deepseek-ai/cordis'
@@ -61,8 +59,9 @@ function probe(message: string): void {
  *                       (修正: 早期 docstring 称 context → inject 是本轮, 那是误读; 见 agent-loop claim 时序.)
  * 7. tool 面          — observe (主动观测, approach a 内联返回 moment content blocks) +
  *                       moss_reasoning(effort) (纯声明默认思考档; ego 记下 → 下一轮 enter 携带
- *                       reasoning_effort → thinking/enter 应用到 per-agent selection, turn 边界生效);
- *                       interleaved_logos / switch_model deferred (落文档不实现).
+ *                       effort/provider/model → thinking/enter 合成一次 selectForNextRequest,
+ *                       turn 边界生效);
+ *                       interleaved_logos deferred (落文档不实现).
  * 8. 时序图           — 见下方 ASCII.
  *
  * ── 时序: MOSS 驱动路径 (thinking = turn) ──────────────────────────────
@@ -524,6 +523,13 @@ interface ThinkingEnterPayload {
    */
   effort: string
   /**
+   * 本帧声明的模型 (provider/model) — 空串 = 不表态. 与 ``effort`` 同一条路: 一次性的声明,
+   * 由插件在 turn 边界写成一次 ``selectForNextRequest``. 声明换模型时, 没带 ``effort`` 就沿用
+   * 当前档位 (换脑子不顺手改思考强度, 除非 ghost 明说).
+   */
+  provider?: string
+  model?: string
+  /**
    * observe 续帧标记 (python 侧判定): 这一帧是「上一轮的回声要求再看一眼」产生的自我延续,
    * 而不是外部输入. 这种帧常常 inputs 为空, 但它**必须开一轮** —— 见 thinking/enter 的 turn 驱动规则.
    */
@@ -661,106 +667,57 @@ const egoTools = [
   }),
 ]
 
-// ── per-agent model selection (thinking/enter 下落思考档的目标) ────────────────
-// 每个 ego agent 一份 selection, 装在它自己的 ctx 上 (installModelSelection), 不是模块单例.
+// ── 模型 + 思考档: 只读写官方那一份 selection (dsh-api-session-controller) ────────
+// 这里曾经有一份自己的 ModelSelection: 三级链 (pending → request/header → agentDefaultModel)
+// + 在 session-start 对同一个 agent 再 installModelSelection() 一次. 两个病, 一个结构:
 //
-// 权威链: pending(picked) → request/header(持久) → agentDefaultModel(settings/UI).
-// pending 是**一次性**的: 写进去只为让"下一个到达 prompt assembly 的请求"用上新档位,
-// 该请求落 request/header 之后 pending 即释放 (releaseIfAdopted, 对标官方
-// `dsh-api-session-controller` 的 selection.consume). 释放是这条链的关键 ——
-// 不释放 = 一个持久覆盖, 会把 settings/UI 的选择永久压住, 界面改档位再也进不来.
+// 1. cordis 的 waterfall 先注册的在最外层、最后覆盖 —— 我们那份每轮把 request/header 里的
+//    旧档位盖回请求配置, 界面/settings 写进去的选择被压掉. 2026-10-23 实测:
+//      干净会话: seq 20 选 high → seq 26 request/header 就是 high (下一个请求就采纳);
+//      ego 会话: seq 816 写低档 → 之后跑到 seq 841, header 一直是旧档, pending 永不采纳.
+// 2. 它还是 ego agent 唯一的 provider/model 来源. ego agent 是 ctx.agents.create({...})
+//    直接建的, 不走 session-controller 的 ensureSession; 后者才会带 agentOptions 并装官方
+//    selection. 于是删掉这份私有结构的第一版补丁, 启动第一次请求直接 "has no provider/model".
 //
-// 反过来, 释放之后档位并不丢: 它已经落在 request/header 里, 成为 canonical 链的当前值,
-// 下一次 assembly 依然读到它. 所以"一次性写入 + 采纳即释放" = "改一次, 一直生效", 而不是"只生效一轮".
-const egoSelections = new WeakMap<Agent, EgoSelection>()
-
-/**
- * 合法思考档位 — 与 dsh 适配器真正接受的值域一致 (deepseek adapter 只认 off/low/high/max).
- * `'none'` 不在其中: 它是 mindflow 的"不思考"语义 (不驱动 turn), 不是模型档位.
- */
+// 所以两端都归位到官方, 权威链只剩一条: 会话级选择 (model/selection 事件 + live picked) → 全局默认.
+//   - create: 给 agentOptions (provider/model 取 agentDefaultModel);
+//   - session-start: 装官方 selection (selectionFor, 幂等);
+//   - thinking/enter: selectForNextRequest 写一次 (durable 事件 + live picked) ——
+//     **模型与档位共用这一个写口**: 一帧里 (provider, model, effort) 合成一次调用.
+//     不用 selectModel RPC: 它会顺手 saveSelection, 即 ghost 声明一次会改掉人类的全局默认.
+//     python 侧那条 _push_effort_officially (走 selectModel) 因此已删除 —— 全局只有一个写口.
 const THINKING_DEPTHS: readonly string[] = ['off', 'low', 'high', 'max']
 
-interface EgoSelection {
-  /** 交给 installModelSelection 的引用 (它读 current / 写 assembled). */
-  ref: ModelSelectionRef
-  /** pending 已被 request/header 采纳则释放, 把权威交还 canonical 链. */
-  releaseIfAdopted(agent: Agent): void
-  /** 当前生效的档位 (pending 优先, 否则 canonical 链). */
-  effectiveEffort(agent: Agent): string | undefined
-  /** 为下一个请求写一个档位 (pending); 无 provider/model 可依时不动. */
-  declareEffort(agent: Agent, effort: string): void
+/** 官方 model selection 面 — 结构化依赖, 不新增包依赖 (拿不到就是 undefined, 要吵). */
+interface SessionControllerLike {
+  agents: {
+    selectionFor(agent: Agent): {
+      current: { provider: string; model: string; reasoningEffort?: string }
+    }
+    selectForNextRequest(
+      agent: Agent,
+      selection: { provider: string; model: string; reasoningEffort?: string },
+    ): void
+  }
 }
 
-/** request/header 里记为"适配器默认"而非显式选择的 effort — 不作为档位读数. */
-interface LoggedHeader {
-  config: { provider: string; model: string; reasoningEffort?: string }
-  adapterDefaults?: { reasoningEffort?: true }
-}
-
-function loggedEffort(header: LoggedHeader | undefined): string | undefined {
-  const effort = header?.config.reasoningEffort
-  if (effort === undefined) return undefined
-  if (header?.adapterDefaults?.reasoningEffort === true) return undefined
-  return effort
+function getSessionController(ctx: Context): SessionControllerLike | undefined {
+  return ctx.get('sessionController') as SessionControllerLike | undefined
 }
 
 /**
- * 装配一个 agent 的模型选择面 (幂等): 建 state + 把 ref 挂上 installModelSelection.
- *
- * 两件事绑在一起是刻意的 —— state 一旦存在就必须已经在 agent.ctx 上装好, 否则 thinking/enter
- * 会往一个没人读的 ref 里写档位, 表面一切正常而实际毫无效果. 这正是本轮要根除的失效模式.
+ * 让这个 agent 挂上官方那一条 selection 链 (幂等, session-start 调一次).
+ * 拿不到服务就大声报错 —— 静默降级正是上一版真正失效的原因.
  */
-function ensureEgoSelection(agent: Agent, ctx: Context): EgoSelection {
-  const existing = egoSelections.get(agent)
-  if (existing !== undefined) return existing
-  const defaults: AgentDefaultModelConfig = ctx.agentDefaultModel
-  let picked: ModelSelection | undefined
-  const state: EgoSelection = {
-    ref: {
-      get current() {
-        if (picked !== undefined) return picked
-        const header = agent.session.requestHeader() as LoggedHeader | undefined
-        if (header !== undefined) {
-          const effort = loggedEffort(header)
-          return {
-            provider: header.config.provider,
-            model: header.config.model,
-            ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
-          }
-        }
-        return defaults.currentSelection()
-      },
-      set current(next) {
-        picked = next
-      },
-      assembled: undefined,
-    },
-    releaseIfAdopted(target: Agent): void {
-      if (picked === undefined) return
-      const header = target.session.requestHeader() as LoggedHeader | undefined
-      if (header === undefined) return
-      // 适配器默认标记 = 我们写的 pending 没被采用; 若仍不放行就是永久覆盖, 直接释放.
-      if (header.adapterDefaults?.reasoningEffort === true) {
-        picked = undefined
-        return
-      }
-      if (header.config.provider !== picked.provider || header.config.model !== picked.model) return
-      if (header.config.reasoningEffort !== picked.reasoningEffort) return
-      picked = undefined
-    },
-    effectiveEffort(): string | undefined {
-      return state.ref.current?.reasoningEffort
-    },
-    declareEffort(_target: Agent, effort: string): void {
-      const current = state.ref.current
-      if (current === undefined) return
-      state.ref.current = { ...current, reasoningEffort: ReasoningEffortId(effort) }
-    },
+function installOfficialSelection(agent: Agent, ctx: Context): void {
+  const controller = getSessionController(ctx)
+  if (controller === undefined) {
+    ctx.logger.error(
+      'dolores: sessionController 不可达 — 思考档读不到也写不进, 界面改档位不会生效',
+    )
+    return
   }
-  egoSelections.set(agent, state)
-  // per-agent model selection — canonical 链读 provider/model, thinking/enter 写 pending 档位.
-  installModelSelection(agent.ctx, state.ref)
-  return state
+  controller.agents.selectionFor(agent)
 }
 
 /**
@@ -797,9 +754,8 @@ function apply_ego_agent(agent: Agent, ctx: Context): void {
     order: agentCtx.systemPrompt.getSectionOrder('WEB_SURFACE'),
     text: '',
   }), 'dolores-ego-web-surface.section()')
-  // per-agent model selection — canonical 链读 provider/model, thinking/enter 写 pending 档位.
-  // 装配与 state 创建绑在 ensureEgoSelection 里 (幂等), thinking/enter 走同一个入口.
-  ensureEgoSelection(agent, ctx)
+  // 思考档: 装官方那一条 selection 链 (幂等). 不自己持有 —— thinking/enter 只往官方写一次.
+  installOfficialSelection(agent, ctx)
   // ego tools 注册到 agent scope (scoped) — 只有 ego agent 可见.
   for (const tool of egoTools) {
     agentCtx.tools.register(tool)
@@ -1004,8 +960,13 @@ export function apply(ctx: Context) {
         //    启动**不回放源 session 原文 tail** —— seed 恒为空, memory 逐条 append。dsh 历史协议
         //    再变也不碰 (防"升级后 ghost 起不来")。
         const sessionId = randomUUID()
+        // agentOptions 必须有: ego agent 由 ctx.agents.create 直接建, 不走 session-controller 的
+        // ensureSession (只有那条路会带 agentOptions + 安装官方 selection). 少这两个字段,
+        // 启动后的第一次请求直接失败: "agent ... has no provider/model".
+        const defaultSelection = ctx.agentDefaultModel.currentSelection()
         const handle = await ctx.agents.create({
           sessionId,
+          agentOptions: { provider: defaultSelection.provider, model: defaultSelection.model },
           meta: { cwd: projectHome, agentPreset: DOLORES_EGO_PRESET },
           setup: async (agentCtx: Context) => {
             await agentCtx.get('agentPresets').mount(agentCtx, DOLORES_EGO_PRESET)
@@ -1109,17 +1070,41 @@ export function apply(ctx: Context) {
         }
         const agent = resolveLiveAgent(ctx, { sessionId: doloresEgoSessionId })
         const thinkingSeq = readThinkingSeq(body)
-        // ── 思考档 (点 1): 单一字段 `effort`, 与 turn 驱动分开判定 ──────────────
-        // 1. 先结算上一轮: pending 已被 request/header 采纳 → 释放, 权威交回 canonical 链
-        //    (settings/UI 从此可改; 不释放 = 永久覆盖 —— 这就是"界面改档位不生效"的根).
-        // 2. 本帧是合法档位 → 写 pending, 在下一个进入 prompt assembly 的请求生效.
-        // 3. `''` (不表态) / `'none'` (不思考) → 不动档位.
-        const model = ensureEgoSelection(agent, ctx)
-        model.releaseIfAdopted(agent)
-        if (THINKING_DEPTHS.includes(body.effort)) {
-          if (model.effectiveEffort(agent) !== body.effort) {
-            // turn 边界生效 (下个请求重编 prompt), 不在 perStep 中途改 — 避免思考模式中途切换报错.
-            model.declareEffort(agent, body.effort)
+        // ── 模型 + 思考档: 全局唯一的写入口 ─────────────────────────────────────
+        // 这一帧带了合法档位或一组 (provider, model) 声明 → 把它们盖到当前 selection 上,
+        // 与现状不同才写一次官方 selectForNextRequest (append durable 的 model/selection +
+        // 更新 live picked, 下一个进入 prompt assembly 的请求生效).
+        // `''` (不表态) / `'none'` (不思考) → 该字段不动.
+        // 不用 selectModel RPC: 它会顺手 saveSelection, 也就是 ghost 声明一次就把人类的全局
+        // 默认改掉 —— 那条路已在 python 侧删除, 这里也不再引入第二个写口.
+        // pending 的释放由官方在 request/header 事件上自己 consume —— 这里不持有任何状态.
+        {
+          const wantEffort = THINKING_DEPTHS.includes(body.effort) ? body.effort : ''
+          const wantProvider = typeof body.provider === 'string' ? body.provider.trim() : ''
+          const wantModel = typeof body.model === 'string' ? body.model.trim() : ''
+          const switching = wantProvider !== '' && wantModel !== ''
+          if (wantEffort !== '' || switching) {
+            const controller = getSessionController(ctx)
+            if (controller === undefined) {
+              ctx.logger.error('dolores: sessionController 不可达 — 模型/档位声明送不出去, 界面上的选择也不会反映到这里')
+            } else {
+              const current = controller.agents.selectionFor(agent).current
+              const provider = switching ? wantProvider : current.provider
+              const model = switching ? wantModel : current.model
+              const effort = wantEffort !== '' ? wantEffort : current.reasoningEffort
+              if (
+                provider !== current.provider ||
+                model !== current.model ||
+                effort !== current.reasoningEffort
+              ) {
+                // turn 边界生效 (下个请求重编 prompt), 不在 perStep 中途改 — 避免思考模式中途切换报错.
+                controller.agents.selectForNextRequest(agent, {
+                  provider,
+                  model,
+                  ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
+                })
+              }
+            }
           }
         }
         // moment 拆两条 (python 侧映射): context (inject, 背景) + inputs (steer, 输入).

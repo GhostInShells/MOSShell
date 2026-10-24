@@ -153,7 +153,20 @@ cython_debug/
 # g1_sim downloadable binary assets
 .moss_ws/apps/bodies/g1_sim/assets/g1/meshes/
 .moss_ws/apps/bodies/g1_sim/assets/policies/*.pt
-.memento/
+# ego 轨迹 (memento) 里同时住着**机制**和**数据**：
+#   hooks/ 与两个 GROUND.md 是随项目分发的机制；branches/ 与 commits/ 下的东西是运行时轨迹。
+# 所以忽略只挡数据，不挡机制 —— 否则明天新加一个钩子会悄悄不进版本，没人会收到提示。
+# 带 `/` 的规则是**锚定在仓库根**的，所以必须加 `**/` 才能管到散落各处的 ghost home
+# （`src/.../stubs/.memento`、`.moss/ghosts/*/.memento`）。这一条踩过一次。
+**/.memento/*/branches/*
+!**/.memento/*/branches/GROUND.md
+**/.memento/*/commits/*
+!**/.memento/*/commits/GROUND.md
+# 索引、引用、钩子的运行日志：全是运行时数据，一个字节都不该进版本。
+# 机制只有两类文件——`.py` 和 `.md`——所以按后缀挡，比按目录挡稳。
+**/.memento/**/*.json
+**/.memento/**/*.jsonl
+**/.memento/**/__pycache__/
 
 
 # pre-commit 的缓存 (沙箱里默认的 ~/.cache 写不了, 指到仓库内)

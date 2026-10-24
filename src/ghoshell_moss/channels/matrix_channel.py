@@ -11,8 +11,9 @@
 本文件没有 perception 级数据, 不占热面. 所有运行时状态都是**状态级**变更, 走 warm 面:
 - nodes: 有生命周期的表面拆成 named_notices 片段 (running / exited / installed),
   各自独立差分, 一个片段变动不拖其余. running/exited 尾部有上界
-  (show_running / show_dead); installed 只报计数, 目录交 list(). 实时量
-  (精确 uptime / 更长事件历史) 交 status() / read_output() 主动拉取.
+  (show_running / show_dead); installed 报目录 (run 目标 + description) 与计数,
+  尾部有上界 (show_installed). 实时量 (精确 uptime / 更长事件历史) 交
+  status() / read_output() 主动拉取.
 - mesh: auto_accept 策略走无名 notice (常驻), 事件尾部有上界 (show_events),
   历史交 events() 主动拉取.
 
@@ -76,6 +77,7 @@ __all__ = [
 # ---- constants ----
 _DEFAULT_SHOW_RUNNING = 8
 _DEFAULT_SHOW_DEAD = 3
+_DEFAULT_SHOW_INSTALLED = 30
 _DEFAULT_SHOW_EVENTS = 8
 _DEFAULT_SHOW_BRANCHES = 8
 _EVENT_BUFFER = 128
@@ -317,6 +319,7 @@ def new_nodes_channel(
         description: str | None = None,
         show_running: int = _DEFAULT_SHOW_RUNNING,
         show_dead: int = _DEFAULT_SHOW_DEAD,
+        show_installed: int = _DEFAULT_SHOW_INSTALLED,
 ) -> Channel:
     """本地 node 治理 channel. 五动词全 nonblocking, 数据源来自 matrix."""
 
@@ -608,8 +611,9 @@ def new_nodes_channel(
         """Warm state, split by lifecycle so one fragment moving does not re-send the rest.
 
         ``running`` / ``exited`` keep a bounded tail of rows (absent when nothing is in
-        that state, which reads as "removed"); ``installed`` is a bare count — the catalog
-        itself is a deliberate pull via list(). Rows carry pid / exit code only, never
+        that state, which reads as "removed"); ``installed`` carries the catalog itself —
+        run target + description, bounded by show_installed — because a booting ghost
+        cannot pull what it does not know exists. Rows carry pid / exit code only, never
         uptime / "N ago", so the text is byte-stable between refreshes and the facade diff
         stays quiet. Live detail comes from status() / read_output().
         """
@@ -635,11 +639,21 @@ def new_nodes_channel(
             )
 
         # refresh=False: reads the cache primed at startup; this path must never be the
-        # one that scans. A bare count keeps the catalog out of the warm band —
-        # descriptions and paths are what list() is for.
+        # one that scans. The catalog rides the warm band on purpose: a booting ghost
+        # cannot ask for what it does not know exists, and the run target is exactly what
+        # run() takes while the description says what the organ is for. Bounded by
+        # show_installed; everything past the bound is a pull via list().
         found = matrix.project.nodes.list_nodes(refresh=False, installed=True)
         if found:
-            out['installed'] = str(len(found))
+            catalog = sorted(found.items())
+            lines = [f'installed nodes ({len(catalog)}):']
+            for rel_path, manifest in catalog[:show_installed]:
+                label = _node_ident(rel_path, manifest)
+                desc = ' '.join((manifest.description or '').split())
+                lines.append(f'  {label} — {desc}' if desc else f'  {label}')
+            if len(catalog) > show_installed:
+                lines.append(f'  ...+{len(catalog) - show_installed} more, list() for the rest')
+            out['installed'] = '\n'.join(lines)
 
         return out
 
@@ -651,8 +665,9 @@ def new_nodes_channel(
             'Local node cell governance. All verbs are nonblocking. run() '
             'returns immediately — the spawned organ surfaces on the network '
             'once it announces. read(target) before running: the declaration '
-            'carries how the node wants to be used. The warm notice carries only '
-            'counts and a short tail — status() / list() pull the detail.'
+            'carries how the node wants to be used. The warm notice lists the '
+            'installed catalog (run target + description) and a bounded tail of '
+            'live cells; status() / list() pull the rest.'
         )
 
     return chan
@@ -664,6 +679,7 @@ def build_nodes_channel(
         description: str | None = None,
         show_running: int = _DEFAULT_SHOW_RUNNING,
         show_dead: int = _DEFAULT_SHOW_DEAD,
+        show_installed: int = _DEFAULT_SHOW_INSTALLED,
 ) -> ChannelFactory:
     """High-order factory: config → ChannelFactory. Resolves Matrix from container."""
 
@@ -673,6 +689,7 @@ def build_nodes_channel(
             matrix,
             name=name, description=description,
             show_running=show_running, show_dead=show_dead,
+            show_installed=show_installed,
         )
 
     return factory

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>细节 · 一次切换传了什么</title>
+<style>
+  :root{--bg:#08060f;--ink:#eeebff;--dim:#8d86ad;--line:rgba(160,145,255,.20);
+        --violet:#9b8cff;--ice:#7ad7ff;--rose:#ff9ad5}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:radial-gradient(900px 600px at 20% -10%, rgba(120,90,255,.16), transparent 60%), var(--bg);
+    color:var(--ink); font-family:"PingFang SC",system-ui,sans-serif;
+    padding:26px 30px; overflow:hidden; display:flex; flex-direction:column; gap:14px}
+  h1{font-size:20px; font-weight:650}
+  h1 em{font:400 12px ui-monospace,Menlo,monospace; color:var(--dim); font-style:normal; margin-left:8px}
+  .sec{display:flex; flex-direction:column; gap:7px}
+  .sec h2{font-size:11.5px; letter-spacing:.09em; color:var(--dim); font-weight:500}
+  .row{display:grid; grid-template-columns:104px 1fr; gap:12px; align-items:baseline;
+       border-top:1px dashed rgba(140,160,220,.14); padding-top:6px}
+  .row:first-of-type{border-top:0; padding-top:0}
+  .k{font:600 12px ui-monospace,Menlo,monospace; color:var(--ice)}
+  .v{font-size:12.5px; color:#b6afd2; line-height:1.55}
+  .v b{color:#fff; font-weight:600}
+  .v code{font:11.5px ui-monospace,Menlo,monospace; color:#cfc7ff}
+  .pm{font:11.5px/1.6 ui-monospace,Menlo,monospace; color:#a9a2c6;
+      background:rgba(155,140,255,.07); border:1px solid rgba(155,140,255,.16);
+      border-radius:8px; padding:5px 9px; word-break:break-all}
+  .rose{color:var(--rose)}
+</style>
+</head>
+<body>
+<h1>细节 <em>what actually travels</em></h1>
+
+<div class="sec">
+  <h2>一个主题文件里有五个键</h2>
+  <div class="row"><div class="k">name</div><div class="v">文件名去掉后缀；也是 <code>theme(name)</code> 的参数</div></div>
+  <div class="row"><div class="k">label</div><div class="v">给人看的名字，一句话</div></div>
+  <div class="row"><div class="k">description</div><div class="v">这套场景是什么感觉</div></div>
+  <div class="row"><div class="k">vars</div><div class="v">颜色变量表（现在 62 个）；<b>缺的键退回页面 :root 里那份默认</b></div></div>
+  <div class="row"><div class="k">presence</div><div class="v">桌上站着谁 —— 三件之一，见下</div></div>
+</div>
+
+<div class="sec">
+  <h2>presence 的三种写法</h2>
+  <div class="row"><div class="k">true / 不写</div><div class="v">用这块屏起屏时配的那个人（<code>--presence</code> 或 <code>presence</code> 命令）</div></div>
+  <div class="row"><div class="k">false</div><div class="v">空桌：人不出现，MOSS 四个字回正中</div></div>
+  <div class="row"><div class="k rose">"一个路径"</div><div class="v"><b>这套场景自带的化身</b>：换到它就换上，换走时原来那个人自动回来</div></div>
+</div>
+
+<div class="sec">
+  <h2>总线上多出来的两帧</h2>
+  <div class="pm">{"type":"theme", "name":"moss"}   → 页面据此去取 /themes/moss.json</div>
+  <div class="pm">{"type":"state", "theme":"moss", "presence":"/local/…"}   → 只有换人时才补这一帧</div>
+</div>
+
+<div class="sec">
+  <h2>页面收到的三处落点</h2>
+  <div class="row"><div class="k">:root</div><div class="v">62 个 CSS 变量逐个贴上去，<code>var()</code> 全自动跟着变</div></div>
+  <div class="row"><div class="k">canvas</div><div class="v">两张字色图集重画：雨尾 / 雨头 / 圆盘边 —— 位图不认变量</div></div>
+  <div class="row"><div class="k rose">化身</div><div class="v">是谁、在不在由主题定；站哪里看舞台上有没有内容</div></div>
+</div>
+</body>
+</html>

@@ -421,10 +421,10 @@ class DoloresRun:
             # 等身体跑完再收线: 记账工具不能比它所作用的世界先结束.
             self._logger.info("run exit: draining actions before declaring the effort switch")
             await self._thinking.wait_actions_done()
-            self._logger.info("run exit: actions drained — pushing effort %s", self._need_switch_thinking_effort)
-            # 帧结束前最后写下的两件事: 推档位 (官方 selectModel), 再补 need_observe 回声驱动
-            # 下一帧. 入口写下的标记会被这一轮任何一次 observe() 换容器带走, 只有这里写才算数.
-            await self._push_effort_officially(self._need_switch_thinking_effort)
+            self._logger.info("run exit: actions drained — declaring %s for the next frame", self._need_switch_thinking_effort)
+            # 帧结束前最后写下的两件事: 声明下一个请求的模型/档位 (声明本身在入口就写进 ego 了,
+            # 真正的 dsh 写入只有插件在 thinking/enter 的那一处), 再补 need_observe 回声驱动下一帧.
+            # 入口写下的标记会被这一轮任何一次 observe() 换容器带走, 只有这里写才算数.
             self._thinking.observer.add_echoes([], need_observe=True)
             moment = self._thinking.moment
             self._logger.info(
@@ -766,70 +766,14 @@ class DoloresRun:
         into ``run_tool``'s error path (result=None, cancel dropped), which is how this tool silently
         stopped ending turns. Guarded by ``test_tool_surface_matches_production_thinking``.
         """
-        # default_thinking_effort 是插件那条私有路 (下一帧 enter 携带这个值).
-        self._ego.default_thinking_effort = call.effort
+        # declare_effort 走与 declare_model 同一条私有路 (下一帧 enter 携带), 并立刻更新身份.
+        self._ego.declare_effort(call.effort)
         self._need_switch_thinking_effort = call.effort
         return ToolCallResult(
             call=call.tool_call_event,
             result={"effort": call.effort},
             cancel=True,
         )
-
-    async def _push_effort_officially(self, effort: str) -> None:
-        """Declare the depth a second time, through DSH's official ``session/selectModel``.
-
-        **Why two paths, for one stage.** The plugin's private pending (ego declaration →
-        ``thinking/enter``'s effort → ``declareEffort`` → request-header injection) writes the
-        *agent's* selection. The DSH session projection never sees that, so the web UI cannot
-        show it — the human changes a depth and the interface stays on the old one. That is
-        exactly the report this change answers.
-
-        ``session/selectModel`` is the mechanism the UI itself uses (``/model`` and the
-        composer both go through it), so the projection (``lastUsed`` / ``pending``) moves and
-        the UI syncs. Both paths carry the *same* value, so a frame in which only one has
-        landed is still correct — but they must not both stay: once this one is verified live,
-        the private path should be deleted, not kept as a fallback.
-
-        **Known upstream side effect** (measured 2026-10-15): ``selectModel`` also rewrites the
-        *default* model profile, in the background and in submission order. So a depth declared
-        here becomes the default for sessions created later. That is dsh's behaviour, not ours,
-        and the request carries no session-only switch — recorded here so the next reader does
-        not mistake it for something we did.
-
-        **Never fatal.** This rides a bookkeeping tool: a failed RPC must not break the turn, so
-        every failure degrades to the plugin path and says so in the log.
-        """
-        if not effort:
-            return
-        try:
-            session = self._ego.session
-        except RuntimeError:
-            return  # not started yet — nothing to steer
-
-        route = self._ego.model_route
-        if route is None:
-            # No request observed yet, so the session has no route of its own to preserve;
-            # the catalog default is the only thing on offer and it is what this session
-            # will start from anyway. Safe *only* here — see model_route's docstring.
-            try:
-                current = await session.model_selection()
-                route = (current.provider, current.model)
-            except Exception:
-                self._logger.warning(
-                    "moss_reasoning: no provider/model to name for session/selectModel — "
-                    "effort went out on the plugin path only, so the web UI will not show it"
-                )
-                return
-
-        provider, model = route
-        try:
-            await session.select_model(provider=provider, model=model, reasoning_effort=effort)
-        except Exception:
-            self._logger.exception(
-                "moss_reasoning: session/selectModel failed for effort=%s — the effort still went "
-                "out on the plugin path, but the web UI will not show this change",
-                effort,
-            )
 
     async def _dispatch_tool_result(self, result: ToolCallResult) -> None:
         """Return a ToolCallResult to the plugin via tool-result RPC: result unlocks the tool, moment injects.

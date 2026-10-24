@@ -1,0 +1,42 @@
+<svg id="stage" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="700">
+<rect data-addr="bg" x="0" y="0" width="1000" height="620" fill="#0b0f14"/>
+<text data-addr="title" x="40" y="46" fill="#dfe9f2" font-size="22">works 的三重身份，四条并行轨</text>
+<text data-addr="sub" x="40" y="70" fill="#7f8c99" font-size="12.5">features 是第一产业（造能力）；works 的产物是第三产业（交付的东西）</text>
+<line data-addr="axis" x1="360" y1="96" x2="950" y2="96" stroke="#2a3642" stroke-width="1"/>
+<text x="360" y="88" fill="#4b5563" font-size="11">今晚</text>
+<text x="880" y="88" fill="#4b5563" font-size="11">以后</text>
+<g data-addr="rows" font-size="13">
+  <text x="40" y="140" fill="#f0b429">① works 这条 feature</text>
+  <text x="40" y="160" fill="#6f7d8a" font-size="11.5">记录机制的诞生</text>
+  <rect x="360" y="124" width="150" height="26" rx="6" fill="#2a2317" stroke="#f0b429"/>
+  <text x="372" y="142" fill="#f0b429" font-size="11.5">今晚做完</text>
+  <text x="524" y="142" fill="#6f7d8a" font-size="11.5">验收 = 一段手工</text>
+
+  <text x="40" y="220" fill="#7fd4ff">② moss skills 里的 skill</text>
+  <text x="40" y="240" fill="#6f7d8a" font-size="11.5">树根：教别的 project 怎么长 works</text>
+  <rect x="520" y="204" width="330" height="26" rx="6" fill="#101a24" stroke="#7fd4ff"/>
+  <text x="532" y="222" fill="#7fd4ff" font-size="11.5">未来：开一个新目录，用零上下文的 project 验证</text>
+
+  <text x="40" y="300" fill="#3ddc8f">③ moshell/works 与 ghost home/works</text>
+  <text x="40" y="320" fill="#6f7d8a" font-size="11.5">两棵树，治理方法持续更新</text>
+  <rect x="360" y="284" width="590" height="26" rx="6" fill="#0f1a15" stroke="#3ddc8f" stroke-dasharray="7 5"/>
+  <text x="372" y="302" fill="#3ddc8f" font-size="11.5">一直用下去（长跑）</text>
+
+  <text x="40" y="380" fill="#c9a0ff">④ 一个个具体的 work</text>
+  <text x="40" y="400" fill="#6f7d8a" font-size="11.5">做完，生命周期就结束</text>
+  <rect x="520" y="364" width="70" height="26" rx="6" fill="#1a1526" stroke="#c9a0ff"/>
+  <rect x="610" y="364" width="70" height="26" rx="6" fill="#1a1526" stroke="#c9a0ff"/>
+  <rect x="700" y="364" width="70" height="26" rx="6" fill="#1a1526" stroke="#c9a0ff"/>
+  <rect x="790" y="364" width="70" height="26" rx="6" fill="#1a1526" stroke="#c9a0ff"/>
+  <text x="520" y="410" fill="#8a7ba3" font-size="11">每件各自开始、各自结束，不共享生命周期</text>
+</g>
+
+<g data-addr="note">
+  <rect x="40" y="450" width="910" height="132" rx="10" fill="#111820" stroke="#e0553f"/>
+  <text x="60" y="478" fill="#e0553f" font-size="13">「works」这个词同时指三样东西，所以每次讨论都要先说清是哪一层</text>
+  <text x="60" y="504" fill="#aab6c2" font-size="12">works **feature** — 记录机制怎么诞生（有开始有结束）</text>
+  <text x="60" y="526" fill="#aab6c2" font-size="12">works **mechanism / skill** — 未来别人怎么照做（会被反复验证和修订）</text>
+  <text x="60" y="548" fill="#aab6c2" font-size="12">works **directory / 一个具体 work** — 目录长跑；作品一瞬</text>
+  <text x="60" y="572" fill="#6f7d8a" font-size="11.5">小学教育并不是"一条 feature 长出多个 works"，它是 works/ 下的一个命题目录，里面的课各自成作品</text>
+</g>
+</svg>

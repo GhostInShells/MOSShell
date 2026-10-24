@@ -1,0 +1,954 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"/>
+<title>ideas</title>
+<style>
+  :root{--bg:#0b0f13;--fg:#e8f5ea;--dim:#6f8a7b;--line:#22312b;--hot:#7ee787;--warm:#f0b429;--red:#d0715c}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
+    font-family:"PingFang SC","Noto Sans SC",system-ui,sans-serif}
+  #stage{position:absolute;inset:0}
+  #s{opacity:0;transition:opacity .55s ease}
+  body.ready #s{opacity:1}
+  svg{display:block;width:100%;height:100%;cursor:grab}
+  svg:active{cursor:grabbing}
+  .bub text{fill:#c9dbd1;text-anchor:middle;pointer-events:none;user-select:none}
+  .bub{cursor:pointer}
+
+  #side{position:absolute;top:0;right:0;bottom:0;width:392px;background:#0c1116;
+    border-left:1px solid #16211c;padding:18px 18px 18px 22px;display:flex;flex-direction:column;min-height:0}
+  #s-head{flex:0 0 auto}
+  #s-body{flex:1 1 auto;overflow:auto;min-height:0;margin:0 -6px;padding:0 6px}
+  #grip{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize}
+  #grip:hover{background:rgba(126,231,135,.18)}
+  #side h2{font-size:17px;margin:0 0 8px;font-weight:500;line-height:1.45;word-break:break-word}
+  #side .meta{font-size:12px;color:var(--dim);margin-bottom:12px;line-height:1.7}
+  #side .row{display:flex;align-items:center;gap:10px;margin:0 0 8px}
+  #side .row label{width:56px;color:var(--dim);font-size:12px}
+  #side .row input,#side .row select,#side .row textarea{flex:1;background:#0f1613;color:var(--fg);
+    border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:13px;font-family:inherit}
+  #side .row input:focus,#side .row select:focus,#side .row textarea:focus{outline:none;border-color:var(--hot)}
+  #side .row textarea{min-height:120px;resize:vertical;line-height:1.6}
+  #side .chips{display:flex;flex-wrap:wrap;gap:6px;flex:1}
+  #side .chip{display:inline-flex;align-items:center;gap:5px;background:transparent;color:var(--dim);
+    border:1px solid var(--line);border-radius:999px;padding:2px 9px;font-size:11px;cursor:pointer}
+  #side .chip i{width:8px;height:8px;border-radius:50%}
+  #side .chip.on{color:var(--fg);border-color:var(--c,var(--hot))}
+  #side .row.body{align-items:flex-start}
+  #side input[type=range]{padding:0}
+  #side .md p{margin:.35em 0;line-height:1.65}
+  #side .md code{background:#16211c;border-radius:4px;padding:1px 5px;font-size:12px}
+  #side .rel{display:block;font-size:13px;color:#8fb8a2;text-decoration:none;cursor:pointer;
+    padding:5px 8px;margin:4px 0;border:1px solid #16211c;border-radius:7px;line-height:1.4}
+  #side .rel:hover{border-color:var(--hot);color:#eaf7ee}
+  #side .relrow{display:flex;align-items:center;gap:6px}
+  #side .relrow .rel{flex:1}
+  #side .relrow .cut{background:transparent;color:var(--dim);border:1px solid var(--line);
+    border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer}
+  #side .relrow .cut:hover{border-color:var(--red);color:#d0715c}
+  #side .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  #side .acts button{background:#0f1613;color:var(--dim);border:1px solid var(--line);
+    border-radius:7px;padding:5px 10px;font-size:12px;cursor:pointer}
+  #side .acts button:hover{border-color:var(--hot);color:var(--fg)}
+  #side .acts button.danger:hover{border-color:var(--red);color:#d0715c}
+  #side .acts button.danger.arm{border-color:var(--red);color:#d0715c;background:#1d1412}
+  #side .acts button.on{border-color:var(--red);color:var(--red)}
+
+  #hud{position:absolute;left:16px;top:14px;font-size:12px;color:var(--dim);max-width:calc(100% - 430px)}
+  #clusters,#concepts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  #clusters button,#concepts span{background:transparent;color:var(--dim);border:1px solid var(--line);
+    border-radius:999px;padding:3px 9px;font-size:11px;cursor:default}
+  #clusters button{cursor:pointer}
+  #clusters button.on{color:var(--bg);background:#58a6ff;border-color:#58a6ff}
+  #clusters button.archived{opacity:.45;border-style:dashed}
+  #clusters button.ghost{opacity:.6;border-style:dotted}
+  #linkkinds{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  #linkkinds button{background:transparent;color:var(--dim);border:1px solid var(--line);
+    border-radius:999px;padding:3px 9px;font-size:11px;cursor:pointer}
+  #linkkinds button.on{color:#e8f5ea;border-color:var(--hot);background:#16211c}
+  #concepts span{display:inline-flex;align-items:center;gap:5px}
+  #concepts i{width:8px;height:8px;border-radius:50%;display:inline-block}
+  #hud #add{margin-top:10px;background:transparent;color:var(--hot);border:1px dashed var(--line);
+    border-radius:999px;padding:4px 12px;font-size:12px;cursor:pointer}
+  #hud #add:hover{border-color:var(--hot)}
+  #hud .toolbar{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  #hud .toolbar button{background:#0f1613;color:var(--dim);border:1px solid var(--line);
+    border-radius:999px;padding:4px 12px;font-size:12px;cursor:pointer}
+  #hud .toolbar button:hover{border-color:var(--hot);color:var(--fg)}
+  #grouprow{display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap}
+  #grouprow #clusters{margin-top:0}
+  #grouprow #newgroup{background:#0f1613;color:var(--hot);border:1px solid var(--line);
+    border-radius:999px;padding:3px 11px;font-size:11px;cursor:pointer}
+  #grouprow #newgroup:hover{border-color:var(--hot)}
+  #hud #newform{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  #hud #newform[hidden]{display:none}
+  #hud #newform input,#hud #newform select{background:#0f1613;color:var(--fg);border:1px solid var(--line);
+    border-radius:6px;padding:4px 8px;font-size:12px}
+  #hud #newform input{min-width:240px}
+  #hud #newform button{background:#0f1613;color:var(--fg);border:1px solid var(--line);
+    border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+  #hud #newform button[type=submit]{border-color:var(--hot);color:var(--hot)}
+  #broken{position:absolute;left:16px;bottom:12px;font-size:11px;color:#a3553f;max-width:60vw}
+  /* 展示层：只有临时视图，没有数据。 */
+  #caption{position:absolute;left:0;right:392px;bottom:44px;text-align:center;pointer-events:none;
+    font-size:19px;color:#e8f5ea;text-shadow:0 2px 18px rgba(0,0,0,.9);opacity:0;
+    transition:opacity .35s ease;padding:0 40px}
+  #caption.on{opacity:1}
+</style>
+</head>
+<body>
+<div id="stage"><svg id="s"><defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#3f6153"/>
+  </marker>
+</defs><g id="root"></g></svg></div>
+<div id="hud">
+  <div id="counts"></div>
+  <div id="grouprow">
+    <div id="clusters"></div>
+    <button id="newgroup">＋ New group</button>
+  </div>
+  <div id="concepts"></div>
+  <div id="linkkinds"></div>
+  <div class="toolbar">
+    <button id="add">＋ New node (Tab grows one from the selection)</button>
+    <button id="save">Save</button>
+    <button id="versions">Versions</button>
+    <button id="play">Play</button>
+    <button id="relayout">Re-layout</button>
+    <button id="refresh">Refresh</button>
+  </div>
+  <form id="newform" hidden>
+    <input id="n-label" placeholder="label: 1–8 characters" autocomplete="off"/>
+    <select id="n-concept"></select>
+    <button type="submit">Add</button>
+    <button type="button" id="n-cancel">Cancel</button>
+  </form>
+</div>
+<div id="broken"></div>
+<div id="caption"></div>
+<div id="side">
+  <div id="grip"></div>
+  <div id="s-head"><h2 id="s-title"></h2><div class="meta" id="s-meta"></div></div>
+  <div id="s-body"><div id="s-edit"></div><div id="s-links"></div><div id="s-notes"></div></div>
+  <div class="acts">
+    <button id="a-flag">Flag</button>
+    <button id="a-child">Child</button>
+    <button id="a-delete" class="danger">Delete</button>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script>
+// A broken script and a page with nothing to show must not look alike: if anything
+// throws, say it on the surface instead of leaving four dead buttons.
+window.addEventListener('error', e => {
+  const el = document.getElementById('broken');
+  if (el) el.textContent = `script error: ${e.message} (line ${e.lineno}:${e.colno})`;
+});
+window.addEventListener('unhandledrejection', e => {
+  const el = document.getElementById('broken');
+  if (el) el.textContent = `script error: ${e.reason}`;
+});
+
+const W = () => document.getElementById('stage').clientWidth;
+const H = () => document.getElementById('stage').clientHeight;
+
+let DATA = {root:'', groups:[], broken:[]};
+let groupName = '';
+let sel = null;            // {id, group}
+let hoverId = null;
+let pendingSelect = null;
+let linkFrom = '';
+let ws = null;
+let settled = false;
+let drift = 1;
+let zoomK = 1;      // the camera's scale — labels divide by it so they stay readable
+let lastSig = '';
+// 展示层：讲述是读法，不写进 graph.json。spot 压暗其余，pulse 用运动抓眼。
+let view = {spot: null, dim: 0.15};
+const pulses = new Map();     // id → 结束时间戳
+let captionTimer = null;
+let relayoutWanted = false;   // 一批 op 结束后的尾 op：整张图重新排一次
+let showArchived = localStorage.getItem('ideas.archived') === '1';   // 归档抽屉：他的选择，默认收起
+
+const svg = d3.select('#s');
+const root = d3.select('#root');
+const edgeLayer = root.append('g');
+const nodeLayer = root.append('g');
+
+let nodes = [];
+let links = [];
+const sim = d3.forceSimulation(nodes)
+  .force('charge', d3.forceManyBody().strength(d => -900 - (d.r || 40) * 9))
+  .force('center', d3.forceCenter(W() / 2, H() / 2).strength(.06))
+  .force('disc', d3.forceRadial(Math.min(W(), H()) * 0.32, W() / 2, H() / 2).strength(.08))
+  .force('collide', d3.forceCollide().radius(d => d.r + 22).strength(1))
+  .force('link', d3.forceLink(links).id(d => d.id)
+    .distance(l => 70 + (l.source.r || 40) + (l.target.r || 40)).strength(.25))
+  .on('tick', onTick);
+
+const zoom = d3.zoom().scaleExtent([0.25, 3]).clickDistance(4)
+  .on('zoom', e => {
+    root.attr('transform', e.transform);
+    zoomK = e.transform.k || 1;
+    paint();          // labels counter-scale, so a zoom is a repaint
+  });
+svg.call(zoom).on('dblclick.zoom', null);
+svg.on('click', () => { sel = null; send({type:'view-select', id: ''}); drawSide(); paint(); fit(); });
+
+/* --------------------------------------------------------------- helpers */
+const cur = () => DATA.groups.find(g => g.name === groupName) || null;
+const concepts = () => (cur() ? cur().meta.concepts : {}) || {};
+const sideWidth = () => document.getElementById('side').getBoundingClientRect().width;
+const availW = () => Math.max(320, W() - sideWidth());
+const radiusOf = w => 20 + 50 * Math.max(0.15, Math.min(1, w || 1));
+
+function fit(){
+  const live = nodes.filter(n => Number.isFinite(n.x));
+  if (!live.length) return;
+  const pad = 120;
+  const xs = live.map(n => n.x), ys = live.map(n => n.y);
+  const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad;
+  const y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
+  const k = Math.max(0.25, Math.min(availW() / (x1 - x0), H() / (y1 - y0), 2.6));
+  if (!Number.isFinite(k)) return;
+  const t = d3.zoomIdentity.translate(availW() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2).scale(k);
+  svg.transition().duration(700).ease(d3.easeCubicOut).call(zoom.transform, t);
+}
+
+function onTick(){
+  paint();
+  if (!settled && sim.alpha() < 0.05){
+    settled = true; document.body.classList.add('ready');
+    if (!sel) fit();     // a settle must not yank the camera off a node someone picked
+  }
+}
+
+/* ---------------------------------------------------------------- drawing */
+// label 允许 1–n 个字。折行两件事都要有：显式的回车（label 里写 \n）和自动折。
+// 自动折守一条：单个拉丁词不硬切——"skill" 被切成 "ski/ll" 是排版事故，不是换行。
+function labelLines(d){
+  const raw = String(d.label || d.id || '');
+  const out = [];
+  for (const part of raw.split('\n')){
+    const text = part.trim();
+    if (!text) continue;
+    const chars = Array.from(text);
+    if (chars.length <= 4){ out.push(text); continue; }
+    if (!/[\s_]/.test(text) && !/[\u3400-\u9fff]/.test(text)){
+      out.push(text);                       // 一个整词：一行，靠字号缩
+      continue;
+    }
+    if (/\s|_/.test(text)){
+      const words = text.split(/([\s_]+)/).filter(w => w.trim());
+      let line = '';
+      for (const w of words){
+        const next = line ? line + ' ' + w : w;
+        if (Array.from(next).length > 6 && line){ out.push(line); line = w; }
+        else line = next;
+      }
+      if (line) out.push(line);
+      continue;
+    }
+    const half = Math.ceil(chars.length / 2);
+    out.push(chars.slice(0, half).join(''), chars.slice(half).join(''));
+  }
+  return out.length ? out : [String(d.id || '')];
+}
+function fontSize(d, lines){
+  const longest = Math.max(...lines.map(l => Array.from(l).length), 1);
+  const cjk = /[\u3400-\u9fff]/.test(lines[0] || '');
+  const room = d.r * (lines.length > 1 ? 1.25 : 1.6);
+  const size = room / longest * (cjk ? 1 : 1.25);
+  const base = Math.max(9, Math.min(d.r * 0.8, size));
+  // Zooming out must not make labels unreadable: divide by the camera scale, but never
+  // let a label grow past its own bubble.
+  return Math.max(8, Math.min(d.r * 1.15, base / zoomK));
+}
+
+function paint(){
+  const g = edgeLayer.selectAll('line.edge').data(links, d => d.id);
+  g.join('line').attr('class', 'edge')
+    .attr('x1', d => rim(pos(d.source), pos(d.target))[0]).attr('y1', d => rim(pos(d.source), pos(d.target))[1])
+    .attr('x2', d => rim(pos(d.target), pos(d.source))[0]).attr('y2', d => rim(pos(d.target), pos(d.source))[1])
+    .attr('stroke', d => d.kind === 'depend' ? '#4a7f63' : (d.kind === 'related' ? '#2f4a3d' : '#3f6153'))
+    .attr('stroke-width', d => d.kind === 'detail' ? 1.2 : 1.1)
+    .attr('stroke-dasharray', d => d.kind === 'related' ? '4 4' : null)
+    // 方向只给一点点意思：一个很小的箭头，够看出往哪儿，不喧哗。
+    .attr('marker-end', d => d.kind === 'detail' || d.kind === 'depend' ? 'url(#arrow)' : null)
+    .style('opacity', d => Math.min(nodeAlpha(d.source), nodeAlpha(d.target))
+      * (!view.spot ? 1 : (view.spot.has(d.source.id) && view.spot.has(d.target.id) ? 1 : view.dim)));
+
+  const b = nodeLayer.selectAll('g.bub').data(nodes, d => d.id);
+  const enter = b.enter().append('g').attr('class', 'bub');
+  enter.append('circle').attr('class', 'ring');
+  enter.append('circle').attr('class', 'flagring').attr('fill', 'none');
+  enter.append('text').attr('class', 'cap');
+  b.exit().remove();
+
+  const merged = enter.merge(b);
+  merged.on('click', (ev, d) => {
+    ev.stopPropagation();
+    if (ev.shiftKey && sel && sel.id !== d.id){
+      // Shift is the only connect gesture; *what* it draws comes from the legend row.
+      send({type:'link', group: groupName, src: sel.id, dst: d.id, kind: linkKind});
+      return;
+    }
+    sel = {id: d.id, group: groupName};
+    send({type:'view-select', id: d.id});
+    drawSide(); paint();
+    focusOn(d);          // the camera follows the selection — that is the whole gesture
+  });
+  merged.on('mouseenter', (ev, d) => { hoverId = d.id; });
+  merged.on('mouseleave', (ev, d) => { if (hoverId === d.id) hoverId = null; });
+
+  const spotF = d => (!view.spot ? 1 : (view.spot.has(d.id) ? 1 : view.dim));
+  merged.select('.ring')
+    .attr('r', d => d.r * pulseScale(d))
+    .style('fill', d => hexA(d.color, sel && sel.id === d.id ? 0.32 : 0.14))
+    .style('stroke', d => sel && sel.id === d.id ? '#e8f5ea' : d.color)
+    // Widths are divided by the camera scale so a selection looks the same at any zoom.
+    .style('stroke-width', d => (sel && sel.id === d.id ? 3.4 : 1.6) / zoomK);
+  merged.select('.flagring')
+    .attr('r', d => d.r * pulseScale(d) + 7)
+    .style('stroke', d => d.flag ? '#d0715c' : 'none')
+    .style('stroke-width', 1.6)
+    .style('stroke-dasharray', d => d.flag ? '3 4' : null)
+    .style('opacity', d => d.flag ? 0.95 : 0);
+  merged.select('.cap')
+    .each(function(d){
+      const el = d3.select(this);
+      const lines = labelLines(d);
+      el.selectAll('tspan').data(lines).join('tspan')
+        .attr('x', 0)
+        .attr('dy', (l, i) => i === 0 ? (lines.length > 1 ? '-0.2em' : '0.34em') : '1.1em')
+        .text(l => l);
+      el.style('font-size', fontSize(d, lines) + 'px');
+    });
+  merged.attr('transform', d => `translate(${pos(d).x},${pos(d).y})`)
+    .style('opacity', d => (d.vis === undefined ? nodeAlpha(d) : d.vis) * spotF(d));
+}
+
+function pos(n){ return { x: (n.x || 0) + (n.ox || 0), y: (n.y || 0) + (n.oy || 0), r: n.r || 0 }; }
+function focusOn(n, k = 1.8){
+  // One gesture: the bubble is selected and the camera sits on it. Clicking the empty
+  // canvas goes back to the whole graph.
+  const zoomTo = Math.min(2.6, Math.max(1.2, k));
+  const t = d3.zoomIdentity
+    .translate(availW() / 2 - zoomTo * n.x, H() / 2 - zoomTo * n.y)
+    .scale(zoomTo);
+  svg.transition().duration(650).ease(d3.easeCubicOut).call(zoom.transform, t);
+}
+function rim(a, b){
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+  return [a.x + (dx / d) * a.r, a.y + (dy / d) * a.r];
+}
+function nodeAlpha(){ return 1; }
+function pulseScale(d){
+  const until = pulses.get(d.id);
+  if (!until) return 1;
+  if (until <= Date.now()){ pulses.delete(d.id); return 1; }
+  return 1 + 0.08 * Math.sin((until - Date.now()) / 85);
+}
+function hexA(hex, a){
+  const h = String(hex || '#8aa89a').replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+/* ------------------------------------------------------------- rebuild */
+function rebuild(alpha, keepSide){
+  const g = cur();
+  const list = g ? g.nodes : [];
+  const cs = concepts();
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const ids = list.map(n => n.id);
+  nodes = list.map((n, i) => {
+    const old = byId.get(n.id);
+    const it = n;
+    const r = radiusOf(it.weight);
+    const color = cs[it.concept] || cs.misc || '#8aa89a';
+    if (old){ old.it = it; old.r = r; old.color = color; return old; }
+    // 新球先贴在父球旁边：一批 op 连续进来时，不该每来一颗就重排整张图。
+    const parentEdge = (g ? g.edges : []).find(e => e.to === n.id && byId.get(e.from));
+    const p = parentEdge ? byId.get(parentEdge.from) : null;
+    const x = p ? p.x + 40 + Math.random() * 30 : W() / 2;
+    const y = p ? p.y + 30 + Math.random() * 30 : H() / 2;
+    return { id: n.id, it, x, y, tx: x, ty: y, r, color };
+  });
+  nodes.forEach(n => { n.label = n.it.label; n.flag = n.it.flag; n.fx = n.fy = null; });
+  if (nodes.length === 1){
+    nodes[0].x = availW() / 2; nodes[0].y = H() / 2;
+    nodes[0].fx = nodes[0].x; nodes[0].fy = nodes[0].y;
+  }
+  const here = new Map(nodes.map(n => [n.id, n]));
+  links = (g ? g.edges : [])
+    .filter(e => here.has(e.from) && here.has(e.to))
+    .map(e => ({ id: e.id, kind: e.kind, source: here.get(e.from), target: here.get(e.to) }));
+  // Plan first, then let the forces relax it: the plan gives the shape, charge + link
+  // give the touch. No radial pull — that is what used to squeeze everything inward.
+  const first = !settled;
+  if (first || relayoutWanted){ planLayout(first); relayoutWanted = false; }
+  sim.nodes(nodes);
+  sim.force('charge', d3.forceManyBody().strength(d => -700 - d.r * 10));
+  sim.force('link', d3.forceLink(links).id(d => d.id)
+    .distance(l => 90 + (l.source.r || 40) + (l.target.r || 40)).strength(.22));
+  sim.force('collide', d3.forceCollide().radius(d => d.r + 26).strength(1));
+  // A whisper of centring keeps the graph on screen; anything stronger clumps it.
+  sim.force('center', d3.forceCenter(availW() / 2, H() / 2).strength(.015));
+  sim.force('disc', null);
+  sim.alpha(first ? 0.6 : 0.3).restart();
+  if (!nodes.length){ settled = true; document.body.classList.add('ready'); }
+  if (sel && !here.has(sel.id)) sel = null;
+  updateHud(); paint();
+  if (!keepSide) drawSide();
+}
+
+// 布局是**规划**，不是涌现：先按「深度分环 + 子树分角」把人排好，
+// 再让力只负责把挤在一起的分开。自由力导会让边互相穿，那正是刚才那张图的乱。
+function planLayout(snap){
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const kids = new Map(nodes.map(n => [n.id, []]));
+  const hasParent = new Set();
+  for (const l of links){
+    if (l.kind !== 'detail') continue;
+    const p = l.source.id || l.source, c = l.target.id || l.target;
+    if (!kids.has(p) || !byId.has(c)) continue;
+    kids.get(p).push(c);
+    hasParent.add(c);
+  }
+  const roots = nodes.map(n => n.id).filter(id => !hasParent.has(id));
+  const size = new Map();
+  const count = id => {
+    const ks = kids.get(id) || [];
+    const s = ks.length ? ks.reduce((a, k) => a + count(k), 0) : 1;
+    size.set(id, s);
+    return s;
+  };
+  roots.forEach(count);
+  const total = roots.reduce((a, r) => a + (size.get(r) || 1), 0) || 1;
+  const cx = availW() / 2, cy = H() / 2;
+  const R = Math.min(availW(), H()) * 0.42;
+  const maxDepth = Math.max(1, ...nodes.map(n => n.depth || 0), depthOf(roots, kids));
+  const gap = R / Math.max(2, maxDepth + 0.6);
+  let cursor = -Math.PI / 2;
+  const touched = new Set();
+  const place = (id, a0, a1, depth) => {
+    touched.add(id);
+    const ang = (a0 + a1) / 2;
+    const r = (depth + 0.9) * gap;
+    const n = byId.get(id);
+    n.tx = cx + Math.cos(ang) * r;
+    n.ty = cy + Math.sin(ang) * r;
+    if (snap || !Number.isFinite(n.x)){ n.x = n.tx; n.y = n.ty; }   // 规划出的位置就是答案
+    n.depth = depth;
+    n.fx = null; n.fy = null;
+    let cur = a0;
+    for (const k of kids.get(id) || []){
+      const span = (a1 - a0) * ((size.get(k) || 1) / (size.get(id) || 1));
+      place(k, cur, cur + span, depth + 1);
+      cur += span;
+    }
+  };
+  for (const root of roots){
+    const span = 2 * Math.PI * ((size.get(root) || 1) / total);
+    place(root, cursor, cursor + span, 0);
+    cursor += span;
+  }
+  // 没连上的（孤立节点）放在最外圈，按顺序排开。
+  const loose = nodes.filter(n => !touched.has(n.id));
+  loose.forEach((n, i) => {
+    const a = (i / Math.max(1, loose.length)) * Math.PI * 2;
+    const tx = cx + Math.cos(a) * (R * 1.05);
+    const ty = cy + Math.sin(a) * (R * 1.05);
+    if (snap || !Number.isFinite(n.x)){ n.x = tx; n.y = ty; }
+    n.tx = tx; n.ty = ty;
+  });
+}
+
+function depthOf(roots, kids){
+  let max = 0;
+  const walk = (id, d) => { max = Math.max(max, d); (kids.get(id) || []).forEach(k => walk(k, d + 1)); };
+  roots.forEach(r => walk(r, 0));
+  return max;
+}
+
+function seedPos(i, total){
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  const R = Math.min(W(), H()) * 0.42;
+  const r = R * Math.sqrt((i + 0.5) / Math.max(1, total));
+  const a = i * golden;
+  return [W() / 2 + r * Math.cos(a), H() / 2 + r * Math.sin(a)];
+}
+
+/* ----------------------------------------------------------------- hud */
+function updateHud(){
+  const g = cur();
+  const total = g ? g.nodes.length : 0;
+  const flagged = g ? g.nodes.filter(n => n.flag).length : 0;
+  document.getElementById('counts').textContent =
+    `${groupName || 'no group'} · ${total} nodes · ${g ? g.edges.length : 0} edges · r${g ? g.rev : 0}`
+    + (g && g.saved_rev ? ` · ★r${g.saved_rev} ${g.saved_name}` : ' · unsaved')
+    + (flagged ? ` · ${flagged} flagged` : '');
+  renderClusters();
+  renderConcepts();
+  document.getElementById('broken').textContent =
+    (DATA.broken && DATA.broken.length) ? `unreadable graphs: ${DATA.broken.join('; ')}` : '';
+}
+
+function renderClusters(){
+  const el = document.getElementById('clusters');
+  const sig = DATA.groups.map(g => `${g.name}:${g.nodes.length}:${g.rev}:${g.status}`).join('|')
+    + '#' + groupName + '#' + showArchived;
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig; el.innerHTML = '';
+  const alive = DATA.groups.filter(g => g.status === 'active' || g.name === groupName);
+  const drawer = DATA.groups.filter(g => g.status !== 'active' && g.name !== groupName);
+  for (const g of (showArchived ? DATA.groups : alive)){
+    const btn = document.createElement('button');
+    btn.textContent = `${g.name} ${g.nodes.length}`;
+    if (g.name === groupName) btn.classList.add('on');
+    if (g.status !== 'active') btn.classList.add('archived');
+    btn.onclick = () => {
+      if (groupName === g.name) return;
+      groupName = g.name; sel = null; settled = false; lastSig = ''; relayoutWanted = true;
+      send({type:'view-group', group: groupName});
+      document.body.classList.remove('ready');
+      svg.call(zoom.transform, d3.zoomIdentity);
+      rebuild(0.9);
+    };
+    el.appendChild(btn);
+  }
+  if (drawer.length){
+    // 抽屉：归档是收起来的东西。他翻得开看历史组，我不把它列进 notice。
+    const toggle = document.createElement('button');
+    toggle.className = 'ghost';
+    toggle.textContent = showArchived ? 'Hide archived' : `Archived ${drawer.length}`;
+    toggle.onclick = () => {
+      showArchived = !showArchived;
+      localStorage.setItem('ideas.archived', showArchived ? '1' : '0');
+      renderClusters();
+    };
+    el.appendChild(toggle);
+  }
+}
+
+function renderConcepts(){
+  // The scale is a legend, not an editor: six colour words, and a node picks one in
+  // the side panel. No palette, no new words — picking a colour is the gesture.
+  const el = document.getElementById('concepts');
+  el.innerHTML = '';
+  const cs = concepts();
+  for (const [name, color] of Object.entries(cs)){
+    const s = document.createElement('span');
+    s.innerHTML = `<i style="background:${color}"></i>${name}`;
+    s.title = 'click to rename this concept word — the colour stays';
+    s.style.cursor = 'pointer';
+    s.onclick = () => {
+      const next = (prompt(`rename the concept "${name}"`, name) || '').trim();
+      if (next && next !== name) send({type:'concept-rename', group: groupName, from: name, to: next});
+    };
+    el.appendChild(s);
+  }
+  const sel2 = document.getElementById('n-concept');
+  // Rebuilding the options must not throw away what is being chosen right now.
+  const prev = sel2.value;
+  const editing = !document.getElementById('newform').hidden;
+  sel2.innerHTML = Object.keys(cs).map(k => `<option value="${k}">${k}</option>`).join('');
+  const want = (editing && prev) ? prev : ((cur() || {}).default_concept || prev);
+  if (want && cs[want]) sel2.value = want;
+}
+
+/* ------------------------------------------------------------- drawer */
+function drawSide(){
+  const g = cur();
+  const acts = document.querySelector('#side .acts');
+  if (!sel || !g || !g.nodes.some(n => n.id === sel.id)){
+    sel = null;
+    document.getElementById('s-title').textContent = g ? g.name : 'no group';
+    document.getElementById('s-meta').textContent = g
+      ? `${g.nodes.length} nodes · ${g.edges.length} edges · r${g.rev} · this group's graph (${g.path}/graph.json)` : '';
+    document.getElementById('s-edit').innerHTML = '';
+    document.getElementById('s-links').innerHTML = '';
+    document.getElementById('s-notes').innerHTML = `<div style="color:var(--dim);font-size:12px;line-height:1.8">
+      The graph of this group is on the left. Click a bubble to read it, Tab grows one from it,
+      shift-click another to link — with the edge kind picked in the legend above.</div>`;
+    acts.style.display = 'none';
+    return;
+  }
+  acts.style.display = '';
+  const it = g.nodes.find(n => n.id === sel.id);
+  const cs = concepts();
+  document.getElementById('s-title').textContent = it.label || it.id;
+  document.getElementById('s-meta').textContent =
+    `${it.id} · ${it.concept} · w${it.weight}` + (it.flag ? ' · flagged' : '');
+
+  document.getElementById('s-edit').innerHTML = `
+    <div class="row"><label>label</label><input id="e-label" value="${esc(it.label || '')}"></div>
+    <div class="row"><label>concept</label>
+      <div id="e-concept" class="chips">
+        ${Object.entries(cs).map(([k, color]) => `<button class="chip${k === it.concept ? ' on' : ''}"
+            data-k="${esc(k)}" style="--c:${color}"><i style="background:${color}"></i>${esc(k)}</button>`).join('')}
+      </div></div>
+    <div class="row"><label>weight</label>
+      <input id="e-weight" type="range" min="0.1" max="1" step="0.05" value="${it.weight}">
+      <span id="e-weight-v" style="width:36px;text-align:right;color:var(--dim)">${it.weight}</span></div>
+    <div class="row body"><label>body</label><textarea id="e-body">${esc(it.body || '')}</textarea></div>`;
+
+  const lab = document.getElementById('e-label');
+  lab.addEventListener('change', () => send({type:'set', group: groupName, id: it.id, label: lab.value}));
+  lab.addEventListener('keydown', e => { if (e.key === 'Enter') lab.blur(); });
+  document.querySelectorAll('#e-concept .chip').forEach(btn => btn.addEventListener('click', () => {
+    send({type:'set', group: groupName, id: it.id, concept: btn.dataset.k});
+  }));
+  const wEl = document.getElementById('e-weight');
+  wEl.addEventListener('input', () => { document.getElementById('e-weight-v').textContent = wEl.value; });
+  wEl.addEventListener('change', () => send({type:'set', group: groupName, id: it.id, weight: Number(wEl.value)}));
+  const bodyEl = document.getElementById('e-body');
+  bodyEl.addEventListener('blur', () => {
+    if (bodyEl.value.trim() !== String(it.body || '').trim())
+      send({type:'set', group: groupName, id: it.id, body: bodyEl.value});
+  });
+  bodyEl.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) bodyEl.blur(); });
+
+  const relBox = document.getElementById('s-links');
+  const outs = g.edges.filter(e => e.from === it.id);
+  const ins = g.edges.filter(e => e.to === it.id);
+  const line = (e, dir) => {
+    const other = g.nodes.find(n => n.id === (dir === 'out' ? e.to : e.from));
+    const nm = other ? (other.label || other.id) : '?';
+    const arrow = dir === 'out' ? '↓' : '↑';
+    return `<div class="relrow"><a class="rel" data-id="${other ? other.id : ''}">${arrow} ${esc(nm)} · ${e.kind}</a>` +
+           `<button class="cut" data-src="${esc(e.from)}" data-dst="${esc(e.to)}" title="remove this edge">✂</button></div>`;
+  };
+  relBox.innerHTML = [...ins.map(e => line(e, 'in')), ...outs.map(e => line(e, 'out'))].join('');
+  relBox.querySelectorAll('a.rel').forEach(a => a.addEventListener('click', () => {
+    if (!a.dataset.id) return;
+    sel = {id: a.dataset.id, group: groupName}; drawSide(); paint();
+  }));
+  // An edge is a thing you made; it has to be a thing you can cut.
+  relBox.querySelectorAll('button.cut').forEach(b => b.addEventListener('click', () => {
+    send({type:'unlink', group: groupName, src: b.dataset.src, dst: b.dataset.dst});
+  }));
+
+  document.getElementById('s-notes').innerHTML = '';
+  document.getElementById('a-flag').classList.toggle('on', !!it.flag);
+  document.getElementById('a-flag').textContent = it.flag ? 'clear flag' : 'flag';
+}
+
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+
+/* ------------------------------------------------------------- actions */
+function send(obj){
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+document.getElementById('a-flag').addEventListener('click', () => {
+  const g = cur(); if (!sel || !g) return;
+  const it = g.nodes.find(n => n.id === sel.id);
+  send({type:'set', group: groupName, id: sel.id, flag: !it.flag});
+});
+document.getElementById('a-child').addEventListener('click', () => openForm(sel ? sel.id : ''));
+document.getElementById('a-delete').addEventListener('click', () => {
+  const g = cur(); if (!sel || !g) return;
+  const it = g.nodes.find(n => n.id === sel.id);
+  const btn = document.getElementById('a-delete');
+  // Two steps, inline: a modal can be swallowed by the host page, and a destructive
+  // click has to be visible. Second click within three seconds deletes; Ctrl+Z undoes.
+  if (!btn.classList.contains('arm')){
+    btn.classList.add('arm');
+    btn.textContent = 'really?';
+    setTimeout(() => { btn.classList.remove('arm'); btn.textContent = 'Delete'; }, 3000);
+    return;
+  }
+  btn.classList.remove('arm'); btn.textContent = 'Delete';
+  send({type:'rm', group: groupName, id: sel.id});
+  sel = null;
+});
+
+const newForm = document.getElementById('newform');
+function openForm(from){
+  linkFrom = from || '';
+  newForm.hidden = false;
+  const pick = document.getElementById('n-concept');
+  const dflt = (cur() || {}).default_concept;
+  if (dflt) pick.value = dflt;   // the form opens on the group's default word
+  const input = document.getElementById('n-label');
+  input.placeholder = from
+    ? `grown from "${(cur().nodes.find(n => n.id === from) || {}).label || from}": 1–8 characters`
+    : 'label: 1–8 characters';
+  input.value = '';
+  input.focus();
+}
+document.getElementById('add').addEventListener('click', () => openForm(sel ? sel.id : ''));
+document.getElementById('n-cancel').addEventListener('click', () => { newForm.hidden = true; });
+newForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const label = document.getElementById('n-label').value.trim();
+  if (!label) return;
+  send({type:'add', group: groupName, label, from: linkFrom,
+        concept: document.getElementById('n-concept').value});
+  newForm.hidden = true; linkFrom = '';
+});
+
+window.addEventListener('keydown', e => {
+  if (e.target.closest('input,textarea,select')) return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z'){
+    e.preventDefault(); send({type:'undo', group: groupName}); return;
+  }
+  if (e.key === 'Escape'){ sel = null; drawSide(); paint(); fit(); return; }
+  if (e.key === 'Tab'){ e.preventDefault(); openForm(sel ? sel.id : ''); }
+});
+
+/* ------------------------------------------------------------- breathing */
+function breathe(ts){
+  requestAnimationFrame(breathe);
+  if (!settled) return;
+  const goal = hoverId ? 0 : 1;
+  drift += (goal - drift) * 0.07;
+  const t = ts / 1000;
+  for (const n of nodes){
+    if (n.ph === undefined) n.ph = Math.random() * Math.PI * 2;
+    const a = 3.2 * drift;
+    n.ox = (Math.sin(t * 0.63 + n.ph) + Math.sin(t * 1.27 + n.ph * 2.1) * 0.45) * a;
+    n.oy = (Math.cos(t * 0.81 + n.ph * 1.7) + Math.cos(t * 1.53 + n.ph) * 0.45) * a;
+  }
+  // Positions belong to the simulation now — breathe only adds the idle motion on top.
+  if (drift > 0.005 || pulses.size || sim.alpha() > 0.01) paint();
+}
+requestAnimationFrame(breathe);
+
+window.addEventListener('resize', () => {
+  sim.force('center').x(W() / 2).y(H() / 2); sim.alpha(0.1).restart(); fit();
+});
+
+/* ------------------------------------------------------------- wiring */
+function stateSig(){
+  const g = cur();
+  return JSON.stringify({
+    group: groupName,
+    groups: DATA.groups.map(x => [x.name, x.nodes.length, x.rev]),
+    nodes: g ? g.nodes.map(n => [n.id, n.label, n.flag, n.concept, n.weight]) : [],
+    edges: g ? g.edges.length : 0,
+  });
+}
+
+function apply(state){
+  DATA = state;
+  if (!cur()){
+    // 默认看哪一组是「展示」的一部分：node 说哪一组是焦点就哪一组，
+    // 而不是按字母序拿到一个归档的例子。
+    groupName = DATA.focus && DATA.groups.some(g => g.name === DATA.focus)
+      ? DATA.focus
+      : (DATA.groups.length ? DATA.groups[0].name : '');
+    sel = null; settled = false; document.body.classList.remove('ready'); lastSig = '';
+  }
+  if (pendingSelect){
+    const g = DATA.groups.find(x => x.nodes.some(n => n.id === pendingSelect));
+    if (g){ groupName = g.name; sel = {id: pendingSelect, group: g.name}; }
+    pendingSelect = null;
+  }
+  // Only a text field counts as "typing". A clicked chip is not, or the panel would
+  // never refresh after a concept change.
+  const typing = !!(document.activeElement && document.activeElement.matches &&
+    document.activeElement.matches('#side input, #side textarea'));
+  const sig = stateSig();
+  const changed = sig !== lastSig;
+  lastSig = sig;
+  if (!changed) return;
+  rebuild(0.3, !!typing);
+}
+
+function applyEye(f){
+  // My hand can move the page too: show_group lands here, so the screen follows what
+  // I point at as well as what he clicks.
+  if (!f.group || f.group === groupName) return;
+  const g = DATA.groups.find(x => x.name === f.group);
+  if (!g) return;
+  groupName = g.name; sel = null; settled = false; lastSig = ''; relayoutWanted = true;
+  document.body.classList.remove('ready');
+  rebuild(0.9);
+}
+
+// The page says what it is looking at once on connect, then on every switch/select.
+function announceEye(){
+  if (!ws || ws.readyState !== 1) return;
+  send({type:'view-group', group: groupName});
+  if (sel) send({type:'view-select', id: sel.id});
+}
+
+function connect(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = (msg) => {
+    let f; try { f = JSON.parse(msg.data); } catch (e) { return; }
+    if (f.type === 'state') apply(f);
+    else if (f.type === 'added'){ pendingSelect = f.id; poll(); }
+    else if (f.type === 'removed'){ sel = null; }
+    else if (f.type === 'error') console.warn('[ideas]', f.message);
+    else if (f.type === 'view') applyView(f);
+    else if (f.type === 'eye') applyEye(f);
+    else if (f.type === 'versions'){ versionRows = f.rows || []; drawVersions(versionRows); }
+  };
+  ws.onopen = () => announceEye();
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+function applyView(f){
+  if (f.op === 'spot'){
+    view.spot = (f.ids && f.ids.length) ? new Set(f.ids) : null;
+    view.dim = (typeof f.dim === 'number') ? f.dim : 0.15;
+    paint();
+  } else if (f.op === 'focus'){
+    const n = nodes.find(x => x.id === f.id);
+    if (!n) return;
+    const k = Math.min(2.6, Math.max(1.2, f.zoom || 1.8));
+    const t = d3.zoomIdentity.translate(availW() / 2 - k * n.x, H() / 2 - k * n.y).scale(k);
+    svg.transition().duration(600).ease(d3.easeCubicOut).call(zoom.transform, t);
+  } else if (f.op === 'overview'){
+    fit();
+  } else if (f.op === 'pulse'){
+    const n = nodes.find(x => x.id === f.id);
+    if (!n) return;
+    pulses.set(n.id, Date.now() + 450 * (f.times || 2));
+  } else if (f.op === 'caption'){
+    const el = document.getElementById('caption');
+    el.textContent = f.text || '';
+    el.classList.add('on');
+    clearTimeout(captionTimer);
+    captionTimer = setTimeout(() => el.classList.remove('on'), (f.seconds || 3) * 1000);
+  } else if (f.op === 'relayout'){
+    relayoutWanted = true;
+    planLayout();
+    paint();
+  } else if (f.op === 'clear'){
+    view.spot = null; pulses.clear();
+    document.getElementById('caption').classList.remove('on');
+    paint();
+  }
+}
+
+async function poll(){
+  try { const r = await fetch('/state', {cache:'no-store'}); if (r.ok) apply(await r.json()); }
+  catch (e) { /* 断线等下一次 */ }
+}
+/* ------------------------------------------------------------- versions */
+let versionRows = [];
+let playing = false;
+
+// One gesture (shift), three kinds: the legend row decides which — no modifier chords,
+// because on a Mac every chord is a different keyboard.
+const LINK_KINDS = [['detail', '→ grows out of'], ['depend', '⇒ depends'], ['related', '~ related']];
+let linkKind = localStorage.getItem('ideas.linkkind') || 'detail';
+
+function renderLinkKinds(){
+  const el = document.getElementById('linkkinds');
+  el.innerHTML = '';
+  for (const [kind, label] of LINK_KINDS){
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = `shift-click another bubble draws this edge`;
+    if (kind === linkKind) b.classList.add('on');
+    b.onclick = () => {
+      linkKind = kind;
+      localStorage.setItem('ideas.linkkind', kind);
+      renderLinkKinds();
+    };
+    el.appendChild(b);
+  }
+}
+renderLinkKinds();
+
+function autoVersionName(){
+  const g = cur();
+  return g ? `v${g.rev}` : 'v1';
+}
+
+function drawVersions(rows){
+  // A reading of the directory, not a second model: r{rev} · name, oldest first.
+  document.getElementById('s-title').textContent = 'versions';
+  document.getElementById('s-meta').textContent =
+    `${rows.length} checkpoint(s) in ${groupName} · current ★r${(cur() || {}).saved_rev || 0}`;
+  document.getElementById('s-links').innerHTML = '';
+  document.getElementById('s-notes').innerHTML = '';
+  const box = document.getElementById('s-edit');
+  box.innerHTML = rows.length ? rows.map(r => `
+    <div class="row" style="align-items:center;gap:8px">
+      <span style="flex:1">r${r.rev} · ${esc(r.name)}</span>
+      <button class="chip" data-ref="r${r.rev}">restore</button>
+    </div>`).join('')
+    : '<div style="color:var(--dim);font-size:12px">no versions yet — Save makes one</div>';
+  box.querySelectorAll('button[data-ref]').forEach(btn => btn.addEventListener('click', () => {
+    if (confirm(`go back to ${btn.dataset.ref}? the graph is replaced; history keeps both`))
+      send({type:'restore', group: groupName, ref: btn.dataset.ref});
+  }));
+}
+
+function showSnapshot(data){
+  const g = cur();
+  if (!g) return;
+  g.nodes = Object.entries(data.nodes || {}).map(([id, raw]) => ({
+    id, label: raw.label || '', body: raw.body || '',
+    concept: raw.concept || 'gray', weight: raw.weight === undefined ? 1 : raw.weight,
+    flag: !!raw.flag}));
+  g.edges = (data.edges || []).map(e => ({id: e.id, from: e.from, to: e.to, kind: e.kind || 'detail'}));
+  sel = null; settled = false; lastSig = ''; relayoutWanted = true;
+  rebuild(0);
+}
+
+async function playVersions(){
+  // Play goes through versions, not ops: ops are per keystroke, versions are moments.
+  if (playing){ playing = false; return; }
+  if (!versionRows.length){ send({type:'versions', group: groupName}); return; }
+  playing = true;
+  const cap = document.getElementById('caption');
+  for (const row of versionRows.slice()){
+    if (!playing) break;
+    try {
+      const res = await fetch(`/version?group=${encodeURIComponent(groupName)}&ref=r${row.rev}`);
+      if (!res.ok) continue;
+      showSnapshot(await res.json());
+      cap.textContent = `r${row.rev} · ${row.name}`;
+      cap.classList.add('on');
+      await new Promise(done => setTimeout(done, 1100));
+    } catch (e) { break; }
+  }
+  playing = false;
+  cap.classList.remove('on');
+  poll();
+}
+
+// 两个手动把手：排不回原样的时候，他不必等我，自己能把画面重置。
+function relayoutNow(){
+  // A fresh plan, then one more settle: the same touch as the first paint.
+  planLayout(true);
+  relayoutWanted = false;
+  sim.nodes(nodes).alpha(0.8).restart();
+}
+function refreshNow(){
+  // The honest meaning of a Refresh button: reload the page, not re-ask politely.
+  location.reload();
+}
+try {
+  document.getElementById('save').onclick = () => {
+    const name = (prompt('name this version', autoVersionName()) || '').trim();
+    if (name) send({type:'save', group: groupName, name});
+  };
+} catch (err) {
+  document.getElementById('broken').textContent = `wiring failed: ${err}`;
+}
+document.getElementById('versions').onclick = () => send({type:'versions', group: groupName});
+document.getElementById('play').onclick = playVersions;
+document.getElementById('newgroup').onclick = () => {
+  const name = (prompt('name of the new group? (a directory under root)') || '').trim();
+  if (!name) return;
+  send({type:'group-new', name});
+};
+document.getElementById('relayout').onclick = relayoutNow;
+document.getElementById('refresh').onclick = refreshNow;
+
+connect();
+setInterval(poll, 2500);
+setTimeout(announceEye, 800);
+</script>
+</body>
+</html>

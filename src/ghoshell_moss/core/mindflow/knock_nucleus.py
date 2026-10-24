@@ -40,7 +40,10 @@ class KnockSignalMeta(SignalMeta):
 
     @classmethod
     def priority(cls) -> Priority:
-        return Priority.NOTICE
+        # BACKGROUND, not NOTICE: a knock promises to be losable — "dropped when you are
+        # busy" only holds at the tier that can never preempt. NOTICE let a sound-detection
+        # knock cut a sentence in half mid-speech (D22).
+        return Priority.BACKGROUND
 
 
 class KnockNucleus(Nucleus):
@@ -157,7 +160,7 @@ class KnockNucleusMeta(NucleusMeta):
 
 def new_knock_signal(
         *messages: ContextType,
-        priority: Priority = Priority.NOTICE,
+        priority: Priority = Priority.BACKGROUND,
         description: str = '',
         stale_timeout: float = 0,
         hint: str = '',

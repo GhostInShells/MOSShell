@@ -1,0 +1,68 @@
+<svg id="stage" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="700">
+<rect data-addr="bg" x="0" y="0" width="1000" height="700" fill="#0b0f14"/>
+<text data-addr="title" x="40" y="48" fill="#dfe9f2" font-size="24">works 的树</text>
+<text data-addr="sub" x="40" y="72" fill="#7f8c99" font-size="13">种子是 feature，根是 skill，干是两棵 works 空间，叶是一个个作品</text>
+<line data-addr="soil" x1="40" y1="540" x2="960" y2="540" stroke="#2a3642" stroke-width="1" stroke-dasharray="6 6"/>
+<text x="884" y="530" fill="#4b5563" font-size="11">土面</text>
+<g data-addr="roots" stroke="#8a6d3b" stroke-width="2.2" fill="none" opacity="0.9">
+  <path d="M330 540 C 320 575, 285 600, 250 622"/>
+  <path d="M330 540 C 330 580, 330 615, 330 642"/>
+  <path d="M330 540 C 340 575, 375 600, 412 620"/>
+  <path d="M300 575 C 285 590, 270 596, 252 600"/>
+  <path d="M362 578 C 378 592, 394 598, 410 600"/>
+</g>
+<g data-addr="trunk">
+  <rect x="314" y="300" width="32" height="240" fill="#6b4f2a"/>
+  <rect x="314" y="300" width="12" height="240" fill="#7d5c32"/>
+</g>
+<g data-addr="sprout">
+  <ellipse cx="330" cy="516" rx="14" ry="9" fill="#3ddc8f" opacity="0.85"/>
+</g>
+
+<g data-addr="branches" stroke="#6b4f2a" stroke-width="10" fill="none" stroke-linecap="round">
+  <path d="M330 330 C 310 300, 280 276, 246 250"/>
+  <path d="M330 330 C 352 300, 384 276, 420 252"/>
+  <path d="M330 320 C 330 290, 330 268, 330 244"/>
+</g>
+<g data-addr="canopy">
+  <ellipse cx="236" cy="226" rx="86" ry="62" fill="#123020" stroke="#1f5c3a"/>
+  <ellipse cx="330" cy="196" rx="76" ry="56" fill="#14361f" stroke="#1f5c3a"/>
+  <ellipse cx="428" cy="228" rx="88" ry="62" fill="#123020" stroke="#1f5c3a"/>
+  <text x="236" y="222" fill="#3ddc8f" font-size="13" text-anchor="middle">项目 works/</text>
+  <text x="236" y="242" fill="#6f8a7b" font-size="11" text-anchor="middle">随仓库分发</text>
+  <text x="330" y="192" fill="#3ddc8f" font-size="13" text-anchor="middle">ghost works/</text>
+  <text x="330" y="212" fill="#6f8a7b" font-size="11" text-anchor="middle">我的家，默认不发</text>
+  <text x="428" y="222" fill="#3ddc8f" font-size="13" text-anchor="middle">一个个 work</text>
+  <text x="428" y="242" fill="#6f8a7b" font-size="11" text-anchor="middle">树叶</text>
+</g>
+<g data-addr="leaves" fill="#3ddc8f" opacity="0.55">
+  <circle cx="180" cy="196" r="3"/><circle cx="204" cy="262" r="3"/>
+  <circle cx="288" cy="262" r="3"/><circle cx="470" cy="198" r="3"/>
+  <circle cx="492" cy="262" r="3"/><circle cx="386" cy="166" r="3"/>
+</g>
+
+<g data-addr="labels">
+  <line x1="60" y1="560" x2="300" y2="560" stroke="#2a3642" stroke-width="1"/>
+  <text x="60" y="552" fill="#3ddc8f" font-size="14">① 种子</text>
+  <text x="60" y="580" fill="#aab6c2" font-size="12">本 feature：works-mechanism</text>
+  <text x="60" y="600" fill="#6f7d8a" font-size="11.5">机制先由 feature 长出来，不是先写文档</text>
+
+  <line x1="60" y1="630" x2="238" y2="616" stroke="#2a3642" stroke-width="1"/>
+  <text x="60" y="644" fill="#f0b429" font-size="14">② 树根</text>
+  <text x="60" y="666" fill="#aab6c2" font-size="12">skill：如何治理 project / ghost home 的 works</text>
+
+  <text x="628" y="352" fill="#dfe9f2" font-size="14">③ 树干</text>
+  <text x="628" y="374" fill="#aab6c2" font-size="12">两棵 works 空间，照树根搭</text>
+  <text x="628" y="394" fill="#6f7d8a" font-size="11.5">GROUND.md 只声明机制，不列作品</text>
+
+  <text x="628" y="446" fill="#dfe9f2" font-size="14">④ 树叶</text>
+  <text x="628" y="468" fill="#aab6c2" font-size="12">一个作品 = 一份 WORK.md + 产物</text>
+  <text x="628" y="488" fill="#6f7d8a" font-size="11.5">没有产物也能重做，才算合格</text>
+
+  <rect x="628" y="512" width="300" height="112" rx="9" fill="#111820" stroke="#e0553f"/>
+  <text x="646" y="536" fill="#e0553f" font-size="12.5">我曾经搞错的一句</text>
+  <text x="646" y="558" fill="#aab6c2" font-size="11.5">「works 是机制 → 必须由 feature 长」</text>
+  <text x="646" y="578" fill="#aab6c2" font-size="11.5">「单个 work 不是 → 不归 feature 管」</text>
+  <text x="646" y="602" fill="#6f7d8a" font-size="11.5">把两层当一层，就会两头都错</text>
+</g>
+</svg>

@@ -476,9 +476,12 @@ function onFrame(f) {
     renderCards();
     return;
   }
+
   if (f.type === "stream") {
-    // 全流式：不看"这是一个 chunk"，看"地址上现在应该长什么样"。
-    // 每个 delta 把缓冲区重解析一遍，挂回同一个预览组 —— 元素完整一只就出现一只，
+    // 读的人在别处读的时候，现场预览不该画到他脸上：他停在第 12 步，我却把新的一笔
+    // 直接刷上去，等于替他翻了页。op 照样进列表，等他自己走过去。
+    if (cursor !== ops.length) return;
+    // 全流式：不看"这是一个 chunk"，看"地址上现在应该长什么样"。    // 每个 delta 把缓冲区重解析一遍，挂回同一个预览组 —— 元素完整一只就出现一只，
     // 而不是等整段写完再"啪"地跳出来。动画在流式期间会重起，落到 op 时归位。
     const parent = find(f.addr);
     if (!parent) return;
@@ -495,7 +498,11 @@ function onFrame(f) {
     return;
   }
   if (f.type === "replay") {
-    ops = ops.slice(0, Math.max(0, (f.ops || []).length)) ;
+    // A replay frame may carry a *prefix* of the record (a player stepping back).
+    // Never shrink what we already hold: the ops past the prefix are the reader's
+    // way forward again, and dropping them turns "step back" into "lose the tail".
+    const incoming = f.ops || [];
+    if (incoming.length > ops.length) ops = incoming;
     replay(f.n);
     return;
   }

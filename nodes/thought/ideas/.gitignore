@@ -1,0 +1,9 @@
+# A group is disposable by default: its working graph, its account and its versions
+# are none of the project's business unless that group is published.
+#
+# Publishing is naming it here once. Inside a published group its own .gitignore
+# decides what belongs to the history (the sign, the published graph.json, the
+# version snapshots) and what stays out (the live state, the account).
+#
+/ideas/*
+!/ideas/mosshell-stage3-todos/

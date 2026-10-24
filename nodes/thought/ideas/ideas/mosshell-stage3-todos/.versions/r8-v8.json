@@ -1,0 +1,70 @@
+{
+  "rev": 8,
+  "name": "mosshell-stage3-todos",
+  "meta": {
+    "concepts": {}
+  },
+  "nodes": {
+    "n1": {
+      "label": "bugs",
+      "body": "",
+      "concept": "misc",
+      "weight": 0.4,
+      "created": "2026-10-23T00:53:57"
+    },
+    "n2": {
+      "label": "stage3",
+      "body": "",
+      "concept": "gray",
+      "weight": 0.8,
+      "created": "2026-10-23T01:15:05"
+    },
+    "n4": {
+      "label": "nodes",
+      "body": "",
+      "concept": "gray",
+      "weight": 0.64,
+      "created": "2026-10-23T01:15:31"
+    },
+    "n6": {
+      "label": "dolores",
+      "body": "",
+      "concept": "gray",
+      "weight": 0.64,
+      "created": "2026-10-23T01:15:39"
+    },
+    "n8": {
+      "label": "skills",
+      "body": "",
+      "concept": "gray",
+      "weight": 0.64,
+      "created": "2026-10-23T01:15:48"
+    }
+  },
+  "edges": [
+    {
+      "id": "e3",
+      "from": "n1",
+      "to": "n2",
+      "kind": "detail"
+    },
+    {
+      "id": "e5",
+      "from": "n2",
+      "to": "n4",
+      "kind": "detail"
+    },
+    {
+      "id": "e7",
+      "from": "n2",
+      "to": "n6",
+      "kind": "detail"
+    },
+    {
+      "id": "e9",
+      "from": "n2",
+      "to": "n8",
+      "kind": "detail"
+    }
+  ]
+}

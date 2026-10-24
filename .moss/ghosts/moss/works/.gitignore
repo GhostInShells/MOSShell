@@ -1,0 +1,26 @@
+# Distribution tier: process.
+# The making ships; the products do not. Add a type here when a new renderer appears.
+*.html
+*.svg
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.mp4
+*.mp3
+*.wav
+*.m4a
+*.pdf
+
+# Vendor libraries and data — a minified js or a stroke-order json is an input, not a
+# product: it is re-fetchable and it is not ours to publish. The WORK.md says where from.
+*.js
+*.json
+
+# The whole products tree stays out of the repository. What ships is the making; §6 of
+# each WORK.md says how to regenerate or re-fetch everything under here.
+artifacts/
+
+# A work that must ship its product force-adds it (git add -f) and says why in
+# its WORK.md §6 — an exception written down, never a silent one.

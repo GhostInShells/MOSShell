@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import secrets
 import sys
 import webbrowser
 from pathlib import Path
@@ -48,10 +49,11 @@ from ghoshell_screen_manager.audio import (  # noqa: E402
 from ghoshell_screen_manager.bridge import WebViewBridge  # noqa: E402
 from ghoshell_screen_manager.clauses import TopicClauseFeed, TopicEventFeed  # noqa: E402
 from ghoshell_screen_manager.channel import build_screen_channel  # noqa: E402
-from ghoshell_screen_manager.model import ScreenModel  # noqa: E402
+from ghoshell_screen_manager.model import DEFAULT_THEME, ScreenModel  # noqa: E402
 from ghoshell_screen_manager.surface import ScreenSurface  # noqa: E402
 
 _INDEX_HTML = _NODE_DIR / "index.html"
+_THEMES = _NODE_DIR / "themes"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 20381
@@ -90,8 +92,57 @@ def wants_debug() -> bool:
     return "--debug" in sys.argv[1:]
 
 
+def theme_name() -> str:
+    """``--theme NAME`` — which palette the desk wears (``themes/NAME.json``)."""
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--theme" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--theme="):
+            return arg.split("=", 1)[1]
+    return DEFAULT_THEME
+
+
+def ghost_brand() -> str:
+    """Whose desk this is — the ghost name, for the lettering at the centre of the page.
+
+    The word in the middle of an empty desk is not decoration: it says *who lives
+    here*. A screen that always says ``MOSS`` says the framework's name, not the
+    occupant's, so the name comes from the runtime (``MOSS_GHOST_NAME``) and the
+    framework is only the fallback — an unghosted screen is still MOSS's.
+    """
+    return (os.getenv("MOSS_GHOST_NAME") or "").strip() or "MOSS"
+
+
+def presence_path() -> str:
+    """``--presence PATH`` — the page that inhabits the desk, set before the first frame.
+
+    The point of it being a start argument rather than a command: a screen that
+    belongs to someone should *open* occupied. Sending the ghost in afterwards means
+    the human watches an empty desk for as long as it takes the model to notice, and
+    that gap is exactly what "it's slow" means.
+    """
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--presence" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--presence="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
+_SESSION = secrets.token_hex(4)
+"""这一轮起屏的窗口口令。
+
+只有这个节点刚开的那扇窗带着它 —— 于是只有它能不加点击就成为屏。上一轮留下的
+标签还在往同一个端口重连，它们带的 token 已经作废：它们只会是遮罩，不会突然
+变成屏幕。人按按钮不受这条约束。
+"""
+
+
 async def main(matrix: Matrix) -> None:
     model = ScreenModel()
+    model.set_theme(theme_name())
 
     # The live bus is the default: the background is driven by real speech, and
     # speech arriving *is* the switch. ``--mock-audio`` is the demo/headless escape.
@@ -119,9 +170,23 @@ async def main(matrix: Matrix) -> None:
         host=HOST,
         port=resolve_port(),
         html_path=_INDEX_HTML,
+        session=_SESSION,
+        themes_dir=_THEMES,
+        brand=ghost_brand(),
     )
     await surface.start()
     print(f"[webview_screen] surface at {surface.url}", flush=True)
+
+    # The desk is occupied before the first page ever loads: whoever lives on this
+    # screen is part of it, not a window opened onto it. A bad path is a fact to
+    # report and never a reason to die — the screen still works with an empty desk.
+    occupant = presence_path()
+    if occupant:
+        try:
+            model.set_presence_default(surface.add_local(Path(occupant)))
+            print(f"[webview_screen] presence: {occupant}", flush=True)
+        except ValueError as e:
+            print(f"[webview_screen] presence rejected: {e}", flush=True)
 
     if wants_open():
         # Open just after the surface is listening, so the first request finds a
@@ -130,7 +195,11 @@ async def main(matrix: Matrix) -> None:
         # `claim=1` marks the window *we* opened as the screen: this node just told
         # the human to look here, so it takes the screen on hello instead of showing
         # the mask. Tabs left over from earlier runs carry no claim and stay masked.
-        url = surface.url + "?claim=1" + ("&debug=1" if wants_debug() else "")
+        url = (
+            surface.url
+            + f"?claim=1&session={_SESSION}"
+            + ("&debug=1" if wants_debug() else "")
+        )
         try:
             opened = await asyncio.to_thread(webbrowser.open, url)
             if not opened:

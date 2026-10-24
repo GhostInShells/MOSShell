@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<!--
+  ============================================================================
+  page kit — 一张展示页的骨架。新图先拷这份，再填内容。
+  ----------------------------------------------------------------------------
+  三条规矩（2026-10-23 与 thirdgerb 定的，见 ghost 的 behaviors.md）：
+
+  1. **图不穿屏的衣服。** 屏换什么主题，这张图不跟着变 —— 图是要离开这块屏的：
+     被截图、发给人、贴进文档，那时候它得自己站得住。
+  2. **同屋感靠对比，不靠色相。** 底色是中性石墨黑，配白字，任何主题下都不打架；
+     别把整块面刷成一个颜色，层级用明度、间距和细边来分。
+  3. **颜色在图里带意思。** 三颗 accent 是语义，不是心情：
+       --a1 暖金  → 来源 / 存储（磁盘、输入、原始数据）
+       --a2 钢蓝  → 过程 / 工具（进程、命令、执行）
+       --a3 鼠尾草绿 → 结果 / 状态（画面、输出、正在发生的事）
+     换一张图，换的是哪块用哪个颜色，不是把它们换成别的色。
+
+  页面是自包含的（样式内联）：屏把每份 html 单独挂在 /local/<hash> 下，
+  相对路径引不到别的文件，所以别拆 css。
+  ============================================================================
+-->
+<style>
+  :root{
+    /* neutral graphite — deliberately not a theme's palette */
+    --bg:#0a0b0e; --ink:#e7e9ee; --dim:#959ba6;
+    --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.065);
+    --surf-a:#14161a; --surf-b:#0b0c0e;
+    /* semantics: source / process / result */
+    --a1:#d8a15e; --a2:#6fa8dc; --a3:#7fbf9a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:radial-gradient(1200px 820px at 50% -22%, rgba(255,255,255,.05), transparent 70%), var(--bg);
+    color:var(--ink); font-family:"PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    padding:34px 46px 26px; overflow:hidden; display:flex; flex-direction:column;
+  }
+  h1{font-size:29px; font-weight:650; letter-spacing:.01em; color:#f2f4f8}
+  .lead{margin-top:10px; font-size:15px; color:#a8afba; line-height:1.65}
+  .lead b{color:#e8ebf1; font-weight:600}
+
+  .row{display:grid; align-items:stretch; gap:0; margin-top:26px; flex:1; min-height:0}
+
+  .panel{position:relative; border:1px solid var(--line); border-radius:16px; padding:19px 20px;
+    background:linear-gradient(180deg, var(--surf-a) 0%, var(--surf-b) 100%);
+    box-shadow:0 22px 50px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.045);
+    display:flex; flex-direction:column; overflow:hidden}
+  .panel::before{content:''; position:absolute; left:0; right:0; top:0; height:1px;
+    background:linear-gradient(90deg, transparent, var(--c,var(--a3)), transparent); opacity:.85}
+  .panel .h2{display:flex; align-items:center; gap:8px; font-size:12px; letter-spacing:.10em;
+    color:var(--dim); font-weight:500}
+  .panel .h2::before{content:''; width:6px; height:6px; border-radius:50%;
+    background:var(--c,var(--a3)); box-shadow:0 0 9px var(--c,var(--a3))}
+  .panel .big{font-size:19px; font-weight:650; margin-top:7px; color:#f0f2f6}
+  .panel .sub{font-size:12.5px; color:#969caa; margin-top:6px; line-height:1.55}
+
+  /* one semantic per panel: <div class="panel" style="--c:var(--a1)"> */
+  .panel.p1{--c:var(--a1)} .panel.p2{--c:var(--a2)} .panel.p3{--c:var(--a3)}
+
+  .items{margin-top:14px; display:flex; flex-direction:column; gap:8px}
+  .it{border:1px solid var(--line-soft); border-radius:9px; padding:8px 11px;
+      background:rgba(255,255,255,.025); font-size:13px; color:#c9cfd8; line-height:1.5}
+  .it b{color:#fff; font-weight:600}
+  .it.mono{font:12.5px ui-monospace,Menlo,monospace; color:#c6ccd6}
+  .it.key{border-color:color-mix(in srgb, var(--c,var(--a3)) 42%, transparent);
+          background:color-mix(in srgb, var(--c,var(--a3)) 8%, transparent); color:#f4f6fa}
+  .it.ghost{opacity:.55}
+
+  .arrow{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px;
+         color:var(--dim); font:12px ui-monospace,Menlo,monospace; text-align:center}
+  .arrow .ln{width:100%; height:1px; position:relative;
+    background:linear-gradient(90deg, transparent, rgba(255,255,255,.26), transparent)}
+  .arrow .ln::after{content:''; position:absolute; right:-1px; top:-4px;
+    border-left:6px solid rgba(255,255,255,.38);
+    border-top:4px solid transparent; border-bottom:4px solid transparent}
+  .arrow span{font-size:11.5px; line-height:1.35; color:#8d94a0}
+
+  footer{margin-top:16px; display:flex; gap:24px; align-items:center; font-size:13px; color:#8d94a0}
+  footer b{color:#eaedf2; font-weight:600}
+  footer .cmd{font:12.5px ui-monospace,Menlo,monospace; color:#cfd6e0;
+    border:1px solid var(--line); border-radius:8px; padding:5px 10px;
+    background:rgba(255,255,255,.04)}
+</style>
+</head>
+<body>
+<h1>__标题__</h1>
+<div class="lead">一句话说清这张图在解释什么。关键处用 <b>粗体</b>。</div>
+
+<div class="row" style="grid-template-columns:1fr 54px 1.12fr">
+  <div class="panel p1">
+    <div class="h2">① 第一块</div>
+    <div class="big">它是什么</div>
+    <div class="sub">一句补充，别写长段落。</div>
+    <div class="items">
+      <div class="it mono key">用 key 标出这张图的主角</div>
+      <div class="it">一条事实</div>
+      <div class="it ghost">一条退后的注脚</div>
+    </div>
+  </div>
+
+  <div class="arrow"><span>关系</span><div class="ln"></div></div>
+
+  <div class="panel p2">
+    <div class="h2">② 第二块</div>
+    <div class="big">它做什么</div>
+    <div class="sub">一句补充。</div>
+    <div class="items">
+      <div class="it key">主角在这块里的样子</div>
+      <div class="it">一条事实</div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span class="cmd">命令或入口</span>
+  <span><b>一句话结论</b></span>
+</footer>
+</body>
+</html>

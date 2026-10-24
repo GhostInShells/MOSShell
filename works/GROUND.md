@@ -1,21 +1,33 @@
 ---
 $id: moss-project/works
 name: works
-description: MOSS's outward artifacts — distributable works made with the project's own openbox capabilities
+description: Things made with moshell — by moshell's ghost and its developers
 pins:
 - verb: ls
   label: here
   arguments:
     path: $CWD
     depth: 1
-  description: Ground at the current position — expand the directory while moving inside the field
+  description: Expand this level to see the propositions
 ---
 
 # Works
 
-MOSS's outward face: distributable artifacts made with the project's own openbox
-capabilities — a collection of few-shots in human–model collaborative creation.
+Things made with moshell: a blog, a set of lessons, a video treatment, a research note. Each was
+produced by the ghost living in this repository, working with its developers.
 
-- Second-level directories are organized by concrete proposition (`blogs/`, `film-reviews/`, ...)
-- A domain carries its methodology in its own `README.md`; a single work uses `WORK.md`
-- Frame rules: [`README.md`](README.md)
+They can be shown or remade by the ghost of moshell: an agent or a ghost picks a piece and shows
+it, or makes another one on request.
+
+## What is here
+
+Pieces are grouped by what they are about — one directory per line of work, such as `blogs/` or
+`film-reviews/`. Each piece is a directory holding its own `WORK.md`, which records how it was
+made and what it takes to make another.
+
+## Looking around
+
+`moss ground render <path>` renders any level of the tree. Every level may carry its own
+`GROUND.md` describing what it holds. To locate a particular piece, searching for `WORK.md` is
+the shortest path.
+

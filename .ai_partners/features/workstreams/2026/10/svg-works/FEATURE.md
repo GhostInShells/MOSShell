@@ -5,10 +5,10 @@ description: 把矢量图形从"一次生成的结果"变成"可以一直改、�
 milestone: null
 priority: P1
 status: in-progress
-status_note: v0 已在 nodes/webview_apps/svg_works 落地：作品=thread、op 追加、checkout 重放；4 条真机验证过
-title: SVG Works — 可修改、可回放的矢量作品
-updated: '2026-10-21'
----
+
+status_note: v0 已在 nodes/webview_apps/svg_works 落地：作品=thread、op 追加、checkout 重放；4 条真机验证过。D22 修了读点截断（D9），加了 play（D10）title: SVG Works — 可修改、可回放的矢量作品
+
+updated: '2026-10-22'---
 
 # SVG Works — 可修改、可回放的矢量作品
 
@@ -92,11 +92,43 @@ artifacts 的一次性 write 是它该有的轻。本条要在它旁边另做一
 ### D8 — 边界：eval 只开在自有画布页
 
 在**人的页面**上 eval 是越权；在**我们自己的画布**上 eval 就是机制本身。
+
 这条界要写死在机制里，不能靠模型记着。
 
-## 与既有 workstream 的关系
+### D9 — 读点：回得去，才走得回来
 
-| workstream | 关系 |
+D4 说「要看某一格就重放前缀」，但 v0 广播这一帧时把**整段前缀**一起发了过去，
+页面收到后 `ops = ops.slice(0, 前缀长度)` —— 页面把自己的记录剪断了。
+于是回退一次，尾部就没了：再往前翻，DOM 和记录对不上。
+D22 实测到的就是这个：`checkout` 之后屏幕上还是第 2 页，而 `history` 里读点已经写在 9，
+两回事，谁也没报错。
+
+现在 `checkout` 只广播 `{"type":"cursor","n":...}` —— 和人自己拖滑杆走的是同一帧；
+页面那侧改成只增不减。**前缀是记录的一部分，不是一次订阅。**
+
+### D10 — 跳与演，是两个动作
+
+`checkout` 是**跳**：一帧重建，用来把读的人放到第 n 格。
+`play(frm, to, interval)` 是**演**：读点一步一步走过去，画面是长出来的，
+用来放一段制作过程。两者都在读点这条线上，但一个求准，一个求看着发生。
+
+**不做倒放**：op 是一条日志，看过去的诚实方式是站到某一步去读，
+
+
+而不是看它倒着跑一遍。
+
+### D11 — 写新 op 不拽走正在读的人
+
+读点被追加的动作拽走，是在和人的注意力打架：他停在第 12 步读，我一画，他的眼睛就被
+拖到最后一格。规则改成：**读点本来就在头，才跟着走；人在别处读，就留在别处。**
+
+（thirdgerb 定，D22：「你不要把人类的视角直接拽过去，这样就打架了。」）
+
+有意思的是客户端本来就是这个语义 —— `ops.length === cursor + 1` 才应用新 op；
+不一致的是服务端 `Work.add()` 里那句无条件的 `self.cursor = len(self.ops)`。
+测试从一条拆成两条：在头的人跟，退回去的人不跟。
+
+## 与既有 workstream 的关系| workstream | 关系 |
 |---|---|
 | `webview_apps/artifacts` | 结果面，保持轻；本条的产物可以借它的页面壳 |
 | `moss-os-control` 的 file_editor | 同一套骨架（thread / region / edit / rewind），本条是它在画布上的对偶 |
@@ -115,8 +147,8 @@ artifacts 的一次性 write 是它该有的轻。本条要在它旁边另做一
 - 受控小语言的**边界**：哪些 op 进白名单，样式改到什么粒度。
 - 时间轴在边条上的**形态**：格子多到一定程度怎么折。
 - 与 artifacts 的**关系**：复用页面壳还是新节点（D7）。
-- 作品与 screen 的 item 的关系：一个作品是不是也是一个可摆上屏的 item。
 
+- 作品与 screen 的 item 的关系：一个作品是不是也是一个可摆上屏的 item。
 ## Implementation Notes
 
 - **SVG 就是 DOM**：任意 HTML 节点里可以 append 一个 `<svg>`；SVG 内部可以嵌套 `<svg>`
@@ -137,8 +169,9 @@ artifacts 的一次性 write 是它该有的轻。本条要在它旁边另做一
 | `set_attr(name, addr, attr, value)` | 改一个属性 —— "画到一半能改"的最小单位 |
 | `remove_node(name, addr)` | 删一棵子树 |
 | `history(name, n)` | 读 action 列表 |
-| `checkout(name, n)` | 把读点挪回第 n 条，页面重放 |
-| `export_work(name, path)` | jsonl（记录本身，可加载回来）+ md（纪要，从记录生成） |
+
+| `checkout(name, n)` | 把读点挪回第 n 条，页面重放（D9：只广播游标，不发前缀） |
+| `play(frm, to, interval)` | 把读点一步一步往前走 —— 能看的重放（D10） || `export_work(name, path)` | jsonl（记录本身，可加载回来）+ md（纪要，从记录生成） |
 | `export_html(name, path)` | 一份自带播放器的独立 html：记录 + 能拖能回放 |
 | `export_svg(name, path)` | **画完的这一张**：一份独立 `.svg`，不依赖节点与 JS |
 

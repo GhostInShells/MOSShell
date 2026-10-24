@@ -606,7 +606,7 @@ class ListenerController(ListenLifecycle):
         """
         if not self._supports_sound_detection():
             return
-        disposer = self._listener.on_sound_detected(lambda: self._emit_knock_signal(detect))
+        disposer = self._listener.on_sound_detected(lambda: self._emit_knock_signal())
         self._listener.start_sound_detection(threshold_db=detect.threshold_db, cooldown=detect.cooldown)
         try:
             await asyncio.Event().wait()
@@ -1292,20 +1292,23 @@ class ListenerController(ListenLifecycle):
         ))
         self._notify_signal(f"idle timeout after {idle_timeout:g}s")
 
-    def _emit_knock_signal(self, detect: DetectSpec) -> None:
+    def _emit_knock_signal(self) -> None:
         """检测到声音: 发一条 knock signal, 告知模型"有声音, 但 ASR 关闭中".
 
         knock 语义 (losable): 模型忙时丢了也无所谓, 门铃的价值是"有空来应门".
+        优先级恒为 BACKGROUND —— 门铃永远不抢占, 也就不可能打断正在说的话。
+        detect 不再提供 priority 旋钮: 那一档曾是 NOTICE (一次把交付层的 notify
+        听成了优先级的 NOTICE), 于是"可丢"的门铃拿着能插队的票。
         signal_broadcast 未注入时静默跳过.
         """
         if self._signal_broadcast is None:
             return
         self._broadcast(new_knock_signal(
             "sound detected — ASR is off; re-activate listening to engage",
-            priority=detect.priority,
+            priority=Priority.BACKGROUND,
             description="listener:knock",
         ))
-        self._notify_signal(f"knock (sound detected, priority={detect.priority.name})")
+        self._notify_signal("knock (sound detected, ASR off)")
 
     # ── 耳朵故障 (pump 崩溃 / ASR 上报) — 感知 + 有界自愈 ──
 

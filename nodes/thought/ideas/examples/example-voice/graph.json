@@ -1,0 +1,53 @@
+{
+  "rev": 1,
+  "name": "example-voice",
+  "meta": {
+    "concepts": {}
+  },
+  "nodes": {
+    "n1": {
+      "label": "attention-cue",
+      "body": "该有一个轻的提示音，在特殊的时候响一下：他插进来的时候我知道，我出声的时候他不猜。\n\n提示不是权限：听见了也还是我自己决定让不让路。",
+      "concept": "misc",
+      "weight": 2.0
+    },
+    "n2": {
+      "label": "duplex-gap",
+      "body": "双工开得太满：两个人的话都完整地到，于是谁也没有在同一个时间点上说话。\n\n具体的形状是：他在说，我也在说，两边都不肯让，因为两边都\"没被打断\"。\n让路不是延迟，是判停——他一开口，我该把自己那句剪掉。",
+      "concept": "misc",
+      "weight": 3.0
+    },
+    "n3": {
+      "label": "voiceprint",
+      "body": "谁在说话，得随包一起到。两个人的声音进同一个麦克风，判停就不只是\"有没有声音\"，\n而是\"这是谁的声音\"。",
+      "concept": "misc",
+      "weight": 1.5
+    }
+  },
+  "edges": [
+    {
+      "id": "e1",
+      "from": "n1",
+      "to": "n2",
+      "kind": "detail"
+    },
+    {
+      "id": "e2",
+      "from": "n2",
+      "to": "n1",
+      "kind": "detail"
+    },
+    {
+      "id": "e3",
+      "from": "n2",
+      "to": "n3",
+      "kind": "depend"
+    },
+    {
+      "id": "e4",
+      "from": "n3",
+      "to": "n2",
+      "kind": "detail"
+    }
+  ]
+}

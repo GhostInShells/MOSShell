@@ -1,15 +1,114 @@
 <!DOCTYPE html>
+<!-- rev: 2026-10-23 theme-scene (presence visibility follows the theme) -->
 <html lang="zh">
 <head>
 <meta charset="utf-8">
 <title>MOSS screen</title>
 <style>
+  /* ===== 主题 =====
+     这块屏的颜色不写死在这儿：它是**一组变量**，由 themes/*.json 提供，页面只认
+     var()。别人想做一个主题，就是往 themes/ 里放一个 json —— 不用改这一行 CSS。
+     下面这份默认值等于 kawaii-shell 主题，所以即使主题文件没取到，屏也不会变成透明。 */
   :root {
     --rail-w: 200px;
     --slotbar-h: 26px;
     --gap: 6px;
+
+    --accent: #9b8cff;
+    /* 这两颗是"我在不在"的点：它不跟选中色走，它说的是另一件事。
+       归主题管，但名字要描述用途、不描述颜色 —— 名字里带"冰蓝"，
+       换一套绿主题就说不通了（这行字以前就干过这种事）。 */
+    --live-dot: #7ad7ff;
+    --live-glow: rgba(122, 215, 255, .85);
+
+    /* 窗（.slot）那一层：标题栏比内容亮一档是 OS 的惯例，但**颜色**归主题。
+       它曾经全是写死的深蓝灰 —— 紫的屏和绿的屏长着同一副窗框，像贴上去的。 */
+    --win-bg: #0a0a0a;
+    --win-bar-a: #161d26;
+    --win-bar-b: #0b0f14;
+    --win-bar-ink: #8a97a4;
+    --win-name: #dfe9f2;
+    --page-bg: #0a0c10;
+    --peek-bg: #0a0817;
+    /* 一层到处都在用的"细高光/细边"：它以前是字面量 rgb(200,190,255)，
+       也就是紫色的白 —— 一套绿主题下，这点高光还在替紫说话。 */
+    --sheen: rgba(200, 190, 255, .06);
+    --sheen-strong: rgba(200, 190, 255, .55);
+    --peek-border: rgba(150, 145, 190, .55);
+    --peek-pointed: rgba(120, 255, 190, .95);
+
+    --ink: #dfe9f2;
+    --dim: #9fb0c0;
     --border: #2a3340;
-    --accent: #3ddc8f;
+
+    --tile-bg-a: #2a2745;
+    --tile-bg-b: #12101e;
+    --tile-text: #ddd6ff;
+    --tile-name: #b0a6e0;
+    --tile-line: #e6e1ff;
+    --tile-lit: #f1eeff;
+    --tile-border-1: rgba(155, 140, 255, .55);
+    --tile-border-2: rgba(122, 215, 255, .18);
+    --tile-border-3: rgba(255, 154, 213, .36);
+    --tile-glow: rgba(139, 134, 255, .16);
+    --tile-glow-2: rgba(122, 215, 255, .07);
+    --tile-halo: rgba(160, 145, 255, .24);
+
+    /* 形状也是主题的一部分：圆角、光圈、投影都不是颜色，但同样回答"这个主题长什么样"。
+       moss 是最早那一版 —— 6px 圆角、没有光圈、一层压影；kawaii-shell 是后来的
+       30px + 呼吸虚线 + 三层光晕。页面里写的是后者（默认），主题 json 里写它自己要的那版
+       —— 否则"换主题"这件事只能换漆，不能换形。 */
+    --tile-radius: 30px;
+    --tile-art-radius: 28px;
+    --tile-halo-ring: 1px dashed var(--tile-halo);
+    --tile-halo-motion: halo-breathe 5.6s ease-in-out infinite;
+    --tile-shadow:
+      0 14px 36px rgba(0, 0, 0, .55),
+      0 0 26px var(--tile-glow),
+      0 0 72px var(--tile-glow-2),
+      inset 0 1px 0 var(--sheen);
+    --tile-sel-shadow:
+      0 0 0 1px var(--accent),
+      0 18px 44px rgba(0, 0, 0, .6),
+      0 0 34px var(--tile-glow);
+
+    --rail-bg-a: rgba(20, 16, 38, .94);
+    --rail-bg-b: rgba(9, 7, 18, .97);
+    --rail-border: rgba(150, 140, 255, .18);
+    --rail-hover: rgba(155, 140, 255, .10);
+    --rail-hover-rim: rgba(160, 145, 255, .16);
+    --rail-active-a: rgba(155, 140, 255, .22);
+    --rail-active-b: rgba(155, 140, 255, .05);
+    --rail-active-rim: rgba(160, 145, 255, .28);
+
+    --rain-tail: #7c6fc8;
+    --rain-head: #e7e2ff;
+    --rain-dim-resident: 0.62;
+    --rain-dim-empty: 0.9;
+
+    --danmaku: #b7a9ff;
+    --talk-text: #efecff;
+    --talk-bg: rgba(10, 7, 22, .62);
+    --talk-glow: rgba(160, 145, 255, .55);
+    --talk-rim: rgba(160, 145, 255, .16);
+
+    --moss-idle-1: #322a63;
+    --moss-idle-2: #8b7fe0;
+    --moss-idle-3: #3f6f8f;
+    --moss-live-1: #8b86ff;
+    --moss-live-2: #b6aaff;
+    --moss-live-3: #e9e6ff;
+    --moss-live-4: #9fd8ff;
+
+    --think-a: #8b86ff;
+    --think-b: #dff1ff;
+
+    --disc-fill: rgba(22, 29, 38, .92);
+    --disc-stroke: rgba(155, 140, 255, .5);
+    --disc-text: #9b8cff;
+
+    --mask-bg: rgba(10, 8, 22, .94);
+    --mask-text: #ded9f2;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -17,7 +116,7 @@
   body.pool-on { --moss-dim: .14; }
   body {
     font: 13px/1.4 ui-monospace, "PingFang SC", "Noto Sans CJK SC", monospace;
-    background: #0a0c10;
+    background: var(--page-bg);
     color: #ddd;
     overflow: hidden;
   }
@@ -45,7 +144,7 @@
     pointer-events: none; opacity: 0; transition: opacity .35s ease;
     background-color: rgba(0,0,0,.55);
     box-shadow: 0 1px 6px rgba(0,0,0,.55);
-    background-image: linear-gradient(90deg, transparent, #6ea8fe 30%, #fff3b0 50%, #6ea8fe 70%, transparent);
+    background-image: linear-gradient(90deg, transparent, var(--think-a) 30%, var(--think-b) 50%, var(--think-a) 70%, transparent);
     background-size: 40% 100%; background-repeat: no-repeat;
     background-position: -40% 0;
   }
@@ -75,13 +174,14 @@
      survives whatever is underneath. Fixed on purpose — a knob here would only be
      something else to get wrong; a second case earns a second style. */
   #talk .line.gone { opacity: 0; transition: opacity 1.4s ease-out; }
+  /* 说话这一层也换成同一套颜色：淡紫白的字、深紫的底、一圈很轻的同色光。
+     原来那版是黄字 + 纯黑描边（广播字幕的老规矩），在这块紫屏上像另一台机器
+     贴过来的一行字。可读性靠"深底 + 光晕"，不靠描边。 */
   #talk .line {
-    max-width: 80%; padding: 1px 10px; border-radius: 3px; text-align: center;
-    background: rgba(6, 8, 7, .55); color: #ffd24a; white-space: pre-wrap;
-    text-shadow:
-      -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000,
-      -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000,
-      0 3px 8px rgba(0, 0, 0, .95);
+    max-width: 80%; padding: 3px 14px; border-radius: 12px; text-align: center;
+    background: var(--talk-bg); color: var(--talk-text); white-space: pre-wrap;
+    box-shadow: 0 0 0 1px var(--talk-rim), 0 8px 26px rgba(0, 0, 0, .55);
+    text-shadow: 0 0 14px var(--talk-glow), 0 2px 6px rgba(0, 0, 0, .9);
     animation: talk-in .16s ease-out;
     transition: opacity .9s ease-out;
   }
@@ -91,14 +191,14 @@
      为什么需要它：同一个 url 可以开在很多标签里，而每个标签的窗口尺寸不同；
      "谁在画、画在哪一块"必须只有一个答案，否则模型画的手势会落在人没看的那块。 */
   #mask     { position: fixed; inset: 0; z-index: 20; display: none;
-              background: rgba(4,10,6,.94); color: #cfe8d8; place-items: center; }
+              background: var(--mask-bg); color: var(--mask-text); place-items: center; }
   body.masked #mask { display: grid; }
   #mask-box { max-width: 34em; padding: 24px; text-align: center;
               font: 15px/1.7 ui-monospace, Menlo, monospace; }
   #mask-box p { margin: 0 0 16px; opacity: .8; }
-  #mask-claim { font: inherit; padding: 8px 18px; color: #6fd6a0; cursor: pointer;
-                background: transparent; border: 1px solid #3d8; border-radius: 4px; }
-  #mask-claim:hover { background: rgba(51, 221, 136, .12); }
+  #mask-claim { font: inherit; padding: 8px 18px; color: var(--accent); cursor: pointer;
+                background: transparent; border: 1px solid var(--accent); border-radius: 4px; }
+  #mask-claim:hover { background: var(--rail-hover); }
   #log      { position: fixed; top: 8px; right: 8px; z-index: 8; }
   #log-badge { background: #161d26; color: #8af; border: 1px solid var(--border); border-radius: 10px;
                padding: 3px 9px; cursor: pointer; font-size: 11px; }
@@ -129,7 +229,7 @@
   /* 仪表一律进栏、不进浮层：#st 原本是 fixed 在左上角，那正好压在栏上 ——
      默认藏起来只是让它不出现，--debug 时还得把它挪进栏里。 */
   #st { position: static; top: auto; left: auto; }
-  #link { position: static; margin-top: 2px; color: #3d8; }
+  #link { position: static; margin-top: 2px; color: #8f7cf0; }
 
   /* 心跳：在线时水位标极慢呼吸，说话时亮起（.alive），断线时灰掉且静止。
      水位标是 background 层 —— 舞台上有 item 时它被盖住，所以它表达的只是
@@ -147,8 +247,11 @@
   /* 心跳点长在 home 上：home 是"回到我们说话的地方"，我在不在就是那里的状态。
      它替掉了原先单独一行 —— 一行只放一颗点，本来就多余。 */
   .rail-home .dot {
-    width: 7px; height: 7px; border-radius: 50%; background: #3ddc8f;
-    display: inline-block; margin-right: 7px; vertical-align: middle;
+    /* 这颗点说的是"我在不在"，和"你选了什么"是两件事 —— 所以它不跟着选中的紫走，
+       它是冰蓝的：活着的时候屏幕上唯一一处冷色。 */
+    width: 7px; height: 7px; border-radius: 50%; background: var(--live-dot);
+    box-shadow: 0 0 10px var(--live-glow);
+    display: inline-block; margin-right: 8px; vertical-align: middle;
     animation: beat 2.6s ease-in-out infinite;
   }
   @keyframes beat { 0%, 100% { opacity: .45 } 50% { opacity: 1 } }
@@ -170,7 +273,13 @@
   #rail {
     position: fixed; top: 0; bottom: 0; left: 0; width: var(--rail-w);
     z-index: 9; display: flex; flex-direction: column;
-    background: rgba(11, 15, 21, .92); border-right: 1px solid var(--border);
+    /* 栏是这块屏的"边",不是一块板:深色渐层 + 一道很细的紫边,让它从黑底里
+       浮出来一点点。模糊只糊它背后的东西,不吃自己的颜色。 */
+    background: linear-gradient(180deg, var(--rail-bg-a), var(--rail-bg-b));
+    border-right: 1px solid var(--rail-border);
+    box-shadow: inset -1px 0 0 var(--sheen), 14px 0 44px rgba(0, 0, 0, .45);
+    backdrop-filter: blur(9px);
+    -webkit-backdrop-filter: blur(9px);
     transition: width .18s ease, opacity .35s ease;
   }
   /* 收起后**不靠悬停展开**。悬停展开在这套布局里是错的：点下"收起"的那一刻鼠标
@@ -186,27 +295,48 @@
   #rail-dot { display: none; }
   body.rail-collapsed #rail-dot {
     display: block; width: 7px; height: 7px; border-radius: 50%;
-    background: #3ddc8f; margin: 8px auto 0; animation: beat 2.6s ease-in-out infinite;
+    background: var(--live-dot);
+    box-shadow: 0 0 10px var(--live-glow);
+    margin: 8px auto 0; animation: beat 2.6s ease-in-out infinite;
   }
   #rail-hint { display: none; }
   body.rail-collapsed #rail-hint {
     display: flex; flex: 1; align-items: center; justify-content: center;
     color: #5c6a76; font-size: 12px; user-select: none;
   }
-  body.rail-collapsed #rail:hover #rail-hint { color: #3ddc8f; }
+  body.rail-collapsed #rail:hover #rail-hint { color: #9b8cff; }
   #rail.idle { opacity: .42; }
   #rail.idle:hover { opacity: 1; }
   #rail-idle { display: none; }
   #rail-groups { flex: 1; overflow-y: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
-  #rail-sep { height: 1px; background: var(--border); margin: 5px 4px; }
-  .rail-item {
-    display: block; width: 100%; text-align: left; font: inherit;
-    background: transparent; color: #9fb0c0; border: 0; border-radius: 6px;
-    padding: 6px 9px; cursor: pointer; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis;
+  #rail-sep {
+    height: 1px; margin: 7px 8px;
+    background: linear-gradient(90deg, transparent, var(--rail-border), transparent);
   }
-  .rail-item:hover { background: rgba(61,220,143,.10); color: #dfe9f2; }
-  .rail-item.active { background: rgba(61,220,143,.16); color: #3ddc8f; }
+  .rail-item {
+    position: relative;
+    display: block; width: 100%; text-align: left; font: inherit;
+    background: transparent; color: #9fb0c0; border: 0; border-radius: 10px;
+    padding: 8px 11px; cursor: pointer; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+  }
+  /* 悬停是"手停在这儿",选中是"你正在这儿":前者只提亮,后者才配一道光边和
+     左边的紫线 —— 一列里同时亮两行,人就分不清自己在哪儿了。 */
+  .rail-item:hover {
+    background: var(--rail-hover); color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--rail-hover-rim);
+  }
+  .rail-item.active {
+    background: linear-gradient(90deg, var(--rail-active-a), var(--rail-active-b));
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--rail-active-rim), 0 0 18px var(--tile-glow);
+  }
+  .rail-item.active::before {
+    content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: 2px;
+    border-radius: 2px; background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+  }
   .rail-empty { color: #55636f; font-size: 11px; padding: 6px 9px; }
   #rail-foot { padding: 6px; border-top: 1px solid var(--border); }
   #rail-toggle {
@@ -224,7 +354,7 @@
   #stage { display: grid; gap: var(--gap); padding: var(--gap); pointer-events: none; }
   .slot {
     position: relative; overflow: hidden; border: 1px solid var(--border);
-    background: #0a0a0a; min-width: 0; min-height: 0; pointer-events: auto;
+    background: var(--win-bg); min-width: 0; min-height: 0; pointer-events: auto;
     transition: grid-row .3s, grid-column .3s;
     display: flex; flex-direction: column;
   }
@@ -240,11 +370,11 @@
     padding: 0 8px;
     /* 窗口感来自"标题栏比内容亮一档"这条 OS 惯例 —— 不是靠加边框。
        顶边那条 1px 高光把栏和内容分开，又不制造第二道框。 */
-    background: #161d26; border-bottom: 1px solid #0b0f14;
+    background: var(--win-bar-a); border-bottom: 1px solid var(--win-bar-b);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
-    color: #8a97a4; font-size: 11.5px; user-select: none; white-space: nowrap;
+    color: var(--win-bar-ink); font-size: 11.5px; user-select: none; white-space: nowrap;
   }
-  .slot-bar .name { color: #dfe9f2; overflow: hidden; text-overflow: ellipsis; }
+  .slot-bar .name { color: var(--win-name); overflow: hidden; text-overflow: ellipsis; }
   .slot-bar .sp { flex: 1; }
   /* 按钮平时不吵、指到就有：默认无边框、低对比；hover 才亮边框。
      accent 只留给"这个窗口正在被放大"这一个状态 —— 颜色要有分工，
@@ -271,14 +401,14 @@
        而不是"一块东西"。框是这块屏的"这是活的"最便宜的说法。
        尺寸全部乘 --pb：光学缩小时整块 slot 被 scale 下去，框和字若不预先放大，
        屏幕上就只剩半像素的线和四像素的字（第一版就是这样，自己截图才发现）。 */
-    border-style: solid; border-color: rgba(138,150,144,.62);
+    border-style: solid; border-color: var(--peek-border);
     border-width: calc(2px * var(--pb, 1));
     border-radius: 6px;
-    background: #060a08 padding-box;
+    background: var(--peek-bg) padding-box;
     box-shadow: 0 18px 48px rgba(0,0,0,.6);
   }
   /* 指针停着的那一块：框加粗提亮 —— 十块都活着的时候，它是"你正停在这"的唯一标记。 */
-  .slot.peek.pointed { border-width: calc(3px * var(--pb, 1)); border-color: rgba(120,255,190,.95); }
+  .slot.peek.pointed { border-width: calc(3px * var(--pb, 1)); border-color: var(--peek-pointed); }
   /* 名字跟着活页走：活页一盖上来，砖上那行字就被压住了，而它是唯一能回答
      "这是什么"的线索（光学缩小的画面像一张海报）。名字由 raiseSlot 写进 data-label。
      尺寸同样乘 --pb —— 它长在被 scale 的元素里面。 */
@@ -287,9 +417,9 @@
     position: absolute; left: 0; right: 0; bottom: 0;
     padding: calc(18px * var(--pb, 1)) calc(10px * var(--pb, 1)) calc(6px * var(--pb, 1));
     font-size: calc(16px * var(--pb, 1)); line-height: 1.1;
-    color: #d8ffe9; text-align: center; letter-spacing: .02em;
+    color: #e7e2ff; text-align: center; letter-spacing: .02em;
     text-shadow: 0 1px 4px rgba(0,0,0,.9);
-    background: linear-gradient(to top, rgba(3,10,7,.78), rgba(3,10,7,0));
+    background: linear-gradient(to top, rgba(10,8,22,.8), rgba(10,8,22,0));
     pointer-events: none; border-radius: 0 0 6px 6px;
   }
   /* 出现是"活过来"，不是"弹出来"：硬切会在划过时读成一次闪，
@@ -299,6 +429,45 @@
   /* 全屏 = 插 scrim + fixed 摆位（不 reparent iframe） */
   /* 焦点：同一个 slot 换一套样式，不是搬容器、不是复制 iframe。
      左边让开栏宽 —— 它是接收指针的层，按判据必须让，"被侧栏挡住"是违反判据的 bug。 */
+  /* pip 的角落卡不是"一扇窗"，是"一个人站在那里"：没有框、没有底色、没有标题栏,
+     页面自己的透明背景透出下面的主画面。留边框就成了又一个窗口，那是另一种意思。 */
+  /* bare：一件东西整块舞台，但**没有窗** —— 框、标题栏、底色都不画，
+     页面自己的透明背景直接落在屏上。 */
+  .slot.bare {
+    background: transparent; border: 0; box-shadow: none; border-radius: 0; overflow: visible;
+  }
+  .slot.bare .slot-bar { display: none; }
+  .slot.bare iframe { background: transparent; }
+
+  .slot.pip {
+    background: transparent; border: 0; box-shadow: none; border-radius: 0; overflow: visible;
+  }
+  .slot.pip .slot-bar { display: none; }
+  .slot.pip iframe { background: transparent; }
+  /* rail：待左侧栏的底部，不进舞台 —— 展示区一点都不让出去。
+     栏收起时它跟着收，位置永远可预测: 栏在哪，"我"就在那底下。 */
+  /* #stage 自己就是一个层叠上下文(z-index 4)，栏里那块再怎么设 z-index 也翻不出去 ——
+     "发灰"就是这么来的：它被栏(9)那层 92% 的底盖着。有栏内 pip 时把舞台这一层抬到
+     栏之上，veil / talk 再各抬一档，保住原来的先后。没栏内 pip 时一律不动。 */
+  body.rail-pip #stage { z-index: 10; }
+  body.rail-pip #veil  { z-index: 11; }
+  body.rail-pip #talk  { z-index: 12; }
+
+  .slot.pip-rail {
+    position: fixed; left: 0; bottom: 0;
+    width: var(--rail-w); height: var(--rail-w);
+    grid-row: auto; grid-column: auto;
+    pointer-events: none;   /* 它是站在栏上的一个人，不是栏上一块挡板 */
+  }
+  /* overlay：一件东西"站在"屏上 —— 没有框、没有标题栏、没有底色，也不改写舞台：
+     底下的分组照常渲染。页面自己是透明的，它就只是落在屏上的一个人。 */
+  .slot.overlay {
+    position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 6;
+    background: transparent; border: 0; box-shadow: none; border-radius: 0;
+    pointer-events: none; overflow: visible;
+  }
+  .slot.overlay .slot-bar { display: none; }
+  .slot.overlay iframe { background: transparent; }
   .slot.focused { position: fixed; left: var(--rail-w); right: 0; top: 0; bottom: 0; z-index: 5; border: 0; }
   #scrim-exit {
     background: #222; color: #ddd; border: 1px solid #555;
@@ -323,52 +492,69 @@
     /* 没有画像的时候，标签就是瓷砖的"脸" —— 所以它居中，不是页脚。 */
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 7px; padding: 10px; box-sizing: border-box; text-align: center;
-    border: 1px solid transparent; border-radius: 6px;
+    /* 圆一点：瓷砖是手感，不是表格。方角读起来像控件，圆角才像"一块东西。
+       圆多少归主题管：moss 那一版就是 6px。 */
+    border: 1px solid transparent; border-radius: var(--tile-radius);
     /* 双背景：内层是瓷砖本体，外层只画边框（padding-box / border-box 各取一层） */
     background:
-      linear-gradient(165deg, #24332b, #101713) padding-box,
-      linear-gradient(135deg, rgba(61, 220, 143, .55), rgba(61, 220, 143, .07) 45%, rgba(61, 220, 143, .38)) border-box;
-    color: #cff7e2; font-size: 12.5px; letter-spacing: .02em;
+      linear-gradient(165deg, var(--tile-bg-a), var(--tile-bg-b)) padding-box,
+      linear-gradient(135deg, var(--tile-border-1), var(--tile-border-2) 45%, var(--tile-border-3)) border-box;
+    color: var(--tile-text); font-size: 12.5px; letter-spacing: .02em;
     pointer-events: auto; cursor: pointer; transform-origin: 50% 50%;
-    box-shadow: 0 14px 36px rgba(0, 0, 0, .55),
-                inset 0 1px 0 rgba(120, 255, 190, .07);
+    box-shadow: var(--tile-shadow);
+  }
+  /* 光圈：瓷砖在黑底上要自己发一点光才站得住。近处那圈晕由 box-shadow 给，
+     外面再围一道虚线的光点 —— 它是"有人在这儿用过的东西"，不是一块贴纸。
+     慢慢地胀缩，幅度小到不注意就看不见：屏是背景，不该一直动。
+     整圈是主题可撤的：`--tile-halo-ring: 0` + `--tile-halo-motion: none` 就是没有它。 */
+  .tile::before {
+    content: ''; position: absolute; inset: -9px;
+    border-radius: calc(var(--tile-radius) + 8px);
+    border: var(--tile-halo-ring);
+    pointer-events: none;
+    animation: var(--tile-halo-motion);
+  }
+  @keyframes halo-breathe {
+    0%, 100% { opacity: .5; transform: scale(1); }
+    50%      { opacity: 1; transform: scale(1.03); }
   }
   .tile .tile-dot {
-    width: 6px; height: 6px; border-radius: 50%; background: #3ddc8f;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
     flex: 0 0 auto; opacity: .85;
   }
   .tile .tile-name {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     max-width: 100%; font-size: 16px; font-weight: 500;
-    color: #a8d8bf; transition: color .18s;
+    color: var(--tile-name); transition: color .18s;
   }
-  .tile.lit .tile-name { color: #eafff3; }
+  .tile.lit .tile-name { color: var(--tile-lit); }
   /* 脸：一行字是主面，名字退成底下的小字。有图的时候图铺满，字压在图上。 */
   .tile .tile-line {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     max-width: 100%; font-size: 14px; font-weight: 500;
-    color: #dff7ea; letter-spacing: .01em;
+    color: var(--tile-line); letter-spacing: .01em;
   }
   .tile.faced .tile-name { font-size: 11px; opacity: .62; }
   .tile .tile-art {
     position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; border-radius: 5px; opacity: .92;
+    object-fit: cover; border-radius: var(--tile-art-radius); opacity: .92;
   }
   .tile.arted { justify-content: flex-end; }
   .tile.arted .tile-caption {
     position: relative; width: 100%; padding: 5px 6px;
-    background: linear-gradient(transparent, rgba(6, 12, 9, .88) 42%);
-    border-radius: 0 0 5px 5px;
+    background: linear-gradient(transparent, rgba(12, 9, 24, .9) 42%);
+    border-radius: 0 0 var(--tile-art-radius) var(--tile-art-radius);
   }
   .tile.sel {
-    border-color: #3ddc8f;
-    box-shadow: 0 0 0 1px #3ddc8f, 0 18px 44px rgba(0, 0, 0, .6);
+    border-color: var(--accent);
+    box-shadow: var(--tile-sel-shadow);
   }
+  .tile.sel::before { border-color: var(--sheen-strong); animation: none; opacity: 1; }
 
   /* ===== background：MOSS 文字（遮罩，等宽反解） ===== */
   #moss span {
     font-weight: 900; letter-spacing: .02em;
-    background: linear-gradient(90deg, #127a4b, #3ddc8f, #127a4b);
+    background: linear-gradient(90deg, var(--moss-idle-1), var(--moss-idle-2), var(--moss-idle-3));
     -webkit-background-clip: text; background-clip: text;
     color: transparent; background-size: 200% 100%;
     transition: opacity .4s;
@@ -376,6 +562,59 @@
   }
   #moss span.alive { opacity: calc(1 * var(--moss-dim, 1)); animation: flow 1.6s linear infinite; }
   @keyframes flow { to { background-position: 200% 0; } }
+
+  /* ===== presence：住在这块屏上的那一个 =====
+     不是 item，也不是窗口：没有把手、不入组、任何 arrange 都动不到它。它和
+     MOSS 四个字同属"桌面本身"，所以第一帧里它就已经在了 —— 屏打开时有人站着，
+     而不是一块空场等人发命令。z 2 = 在 MOSS 文字（1）之上、舞台（4）之下：
+     推内容时它退到窗口后面，home 露出来时又看得见。 */
+  /* z 3 = 在 pool 的瓷砖之上、舞台（4）之下：home 上没人能挡住它，铺了内容它就让到侧栏。 */
+  #presence { position: fixed; inset: 0; z-index: 3; pointer-events: none; display: none; }
+  #presence.on { display: block; }
+  /* 缩进侧栏那一档必须抬到栏的上面：栏是 z 9、底色 92% 不透明，压在 3 上就等于
+     给我蒙了一层灰——"比较暗"不是配色问题，是被盖住了。它是 pointer-events:none，
+     踩着栏也不会挡栏里的点击。 */
+  body.compact #presence { z-index: 10; }
+  /* 侧栏收起之后，住户就跟着收起来：它站的位置本来就是栏的底部，
+     栏不在了还留在角落，就成了一个没有去处的人。 */
+  body.compact.rail-collapsed #presence { display: none; }
+  #presence iframe {
+    width: 100%; height: 100%; border: 0; display: block;
+    background: transparent;            /* 透明底才读成"站在那儿"，不是"又一扇窗" */
+    pointer-events: none;               /* 它是存在，不是控件：不吃鼠标 */
+    /* 人 + 字这一对居中时，人要挪多少由页面算（它知道字有多宽），页面只负责站好。 */
+    transform: translateX(var(--presence-shift, 0px));
+  }
+
+  /* 有人站在桌面上时，四个字让到右边、变亮、变斜体 —— 它从"招牌"变成"这个人的招牌"。
+     色取住户身上那套紫（体表 #9f93e0→#33315f、边缘 #8f7cf0），但比人亮一档：
+     字是背景，暗下去就成了污渍，亮起来才是招牌。粗体和字号一概不动。
+     位移两个分量都由 layoutPresence 算：x 让开人，y 把字底对齐到人的地线。 */
+  /* 有人的桌面上，名字不该按"空屏心跳"那样呼吸 —— 那套是 30%~54% 的不透明度，
+     原本表达的是"空着的时候我在不在"。既然有人站在这儿，字就是他一直挂着的名字：
+     满亮，加一道缓慢的流光；断线时仍然交给 body.link-down 去灰掉。 */
+  /* 舞台上有内容时，住户缩进左侧栏底部（"它知道该缩到哪里"），名字收起来：
+     这时候屏幕是给内容用的，名字只是留在桌面上的东西，不该压在画面上。 */
+  body.compact #moss span { opacity: 0 !important; animation: none !important; }
+  body.presence-on #moss span { transition: opacity .35s ease; }
+
+  body.presence-on:not(.link-down) #moss span {
+    font-style: italic;
+    /* 斜体的字身会向右溢出元素盒，而填充是靠 background-clip:text —— 背景只画在
+       盒子里，溢出去的那一截就没有漆，读起来就是"S 被截了一半"。给它一点右侧内边距
+       当余量，再用负外边距把这截宽度还回去，位置一点不动。 */
+    padding-right: .18em;
+    margin-right: -.18em;
+    padding-left: .06em;
+    margin-left: -.06em;
+    opacity: 1;
+    animation: flow 2.8s linear infinite;
+    /* 亮，但还是它身上那套蓝紫 —— 白成一片就不是同一个人了。 */
+    background-image: linear-gradient(90deg, var(--moss-live-1), var(--moss-live-2), var(--moss-live-3), var(--moss-live-4), var(--moss-live-1));
+    filter: drop-shadow(0 0 26px rgba(180, 160, 255, .85))
+            drop-shadow(0 0 8px rgba(255, 255, 255, .42));
+    transform: translate(var(--moss-dx, 0px), var(--moss-dy, 0px));
+  }
 </style>
 </head>
 <body>
@@ -383,6 +622,7 @@
 <canvas id="bg"></canvas>
 <div id="think"></div>
 <div id="moss"><span>MOSS</span></div>
+<div id="presence"></div>
 <canvas id="desktop"></canvas>
 <div id="pool"></div>
 <div id="stage"></div>
@@ -457,6 +697,9 @@ const screenUid = (() => {
   return u;
 })();
 const WANTS_CLAIM = new URLSearchParams(location.search).get('claim') === '1';
+// 这一轮起屏的窗口口令：只有节点刚开的那扇窗带着它。旧标签带的是作废的口令，
+// 重连也抢不走屏 —— 它们只会拿到遮罩。
+const SESSION = new URLSearchParams(location.search).get('session') || '';
 let isCurrent = false;
 
 function setMasked(on, reason) {
@@ -511,6 +754,7 @@ function syncViewport() {
   viewW = v.w; viewH = v.h;
   sizeCanvas(bg, bctx); sizeCanvas(desktop, dctx); sizeCanvas(veil, vctx);
   fitMossText(); initRainCols(); layoutDesktop();
+  layoutPresence();          // 字宽刚量出来，人的位置才能定
   reportViewport();
 }
 addEventListener('resize', syncViewport);
@@ -565,7 +809,7 @@ function connect() {
     wsOpen = true; retryMs = 500; setLink('online', false); startDebugReport();
     // 先自报身份：节点据此指派当前屏，其余的挂遮罩。认领意图随第一次 hello 带上 ——
     // 节点重启后，它自己开的那扇窗要自己拿回屏幕，不该等人再点一次。
-    send({ type: 'hello', uid: screenUid, claim: WANTS_CLAIM });
+    send({ type: 'hello', uid: screenUid, claim: WANTS_CLAIM, session: SESSION });
     // 重连（或首次连接）后补报一次人侧状态：服务端不持久化它，断线期间的面板
     // 变动不能丢。
     send({ type: 'rail', collapsed: railCollapsed() });
@@ -605,6 +849,7 @@ function reportViewport() {
 // 目的只有一个 —— 让模型能自己读到客户端的真相，不必让人去念控制台。
 // 分屏不可见那种问题，根因在客户端，服务端够不着；人也不该当那只眼睛。
 let debugTimer = null;
+const PAGE_REV = '2026-10-24-tile-shape';
 function debugPayload() {
   const riseMax = (typeof riseHeights !== 'undefined' && riseHeights.length)
     ? Math.round(Math.max(...riseHeights) * 100) / 100 : -1;
@@ -630,6 +875,37 @@ function debugPayload() {
     poolRot: Math.round(poolRot * 1000) / 1000,
     poolSpin: Math.round(poolSpin * 1000) / 1000,
     poolTiles: tiles.size,
+    // 桌面上有没有住户、它的 iframe 到底加载出来没有 —— 这两件事决定"我站在屏上"
+    // 是不是真的；从模型这边看，屏幕是一个我没有窗口的进程。fact，不是画法。
+    // 桌面这一对的几何：我看不到自己的屏，只能让它把量到的数报回来。
+    mossX: (() => {
+      const m = mossEl.getBoundingClientRect();
+      return [Math.round(m.left), Math.round(m.top), Math.round(m.width), Math.round(m.height)];
+    })(),
+    personX: (() => {
+      const f = document.querySelector('#presence iframe');
+      if (!f) return null;
+      const r = f.getBoundingClientRect();
+      return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+    })(),
+    // 想没在想、小人有没有开始挠头 —— 一条链上的两个事实，分开报，
+    // 坏在哪一段一眼就看出来（没帧 / 帧到了但没递过去 / 递过去了没生效）。
+    think: ghostBeatAt > 0 && performance.now() - ghostBeatAt < GHOST_KEEP_MS,
+    scratch: !!(document.querySelector('#presence iframe')?.contentDocument
+                ?.getElementById('art')?.classList.contains('scratch')),
+    presence: presenceUrl ? 1 : 0,
+    // 页面自己的版本号：改过什么就写在这里，读回来一眼知道屏上跑的是不是这一版。
+    rev: PAGE_REV,
+    // 背景的漆：1 = 空桌的绿，0.62 = 住户在场时那身蓝紫压暗过的。这一条只回答
+    // "现在画的是哪一套"，免得"颜色没换"和"换了没生效"在屏幕上看成同一件事。
+    rainTint: rainDim,
+    // 现在穿的是哪一套。换主题之后"改了没生效"和"根本没换"在画面上长得一样，
+    // 所以让页面自己说一句。
+    theme: themeName,
+    presenceReady: (() => {
+      const f = document.querySelector('#presence iframe');
+      return f ? (f.contentDocument ? 1 : 2) : 0;  // 0 无, 1 跨源已挂, 2 同源可读
+    })(),
   };
 }
 // 版本指纹：开发期页面一直在改，而开着的旧窗口会在"旧世界"里继续跑（我们为此白查过一轮
@@ -732,15 +1008,44 @@ function renderStage(ids, layout) {
   // 整屏是"呈现"，与"它属于哪个组"无关（旧的 per-group fullscreen 把两者绑死了）。
   items.forEach((it) => {
     const focused = !!focusId && it.id === focusId;
+    const stood = overlayId !== null && String(it.id) === String(overlayId);
+    it.slot.classList.toggle('overlay', stood);
+    // 站着的那一件：位置直接写在行内。类名容易被别的规则盖住，试过一次它就缩在左上角；
+    // 行内样式没有这个悬念。离开站立时把这些键全部还回去。
+    if (stood) {
+      // 站在**旋心**上，不是站在屏幕正中 —— 池子的洞就是给自己挖的 (cx=0.46, cy=0.60)，
+      // 这样砖不会被人挡住，人也不会压在砖上。
+      Object.assign(it.slot.style, {
+        position: 'fixed',
+        left: 'calc(var(--rail-w) + (100vw - var(--rail-w)) * 0.46)',
+        top: 'calc(100vh * 0.60)',
+        width: 'min(72vh, 72vw)', height: 'min(72vh, 72vw)',
+        transform: 'translate(-50%, -50%)',
+        right: '', bottom: '',
+        zIndex: '6', background: 'transparent', border: '0', boxShadow: 'none',
+        pointerEvents: 'none', overflow: 'visible',
+        gridRow: '', gridColumn: '',
+      });
+    } else if (it.slot.style.position === 'fixed') {
+      Object.assign(it.slot.style, {
+        position: '', left: '', right: '', top: '', bottom: '', zIndex: '',
+        width: '', height: '', transform: '',
+        background: '', border: '', pointerEvents: '',
+      });
+    }
     // 正亮着活页的那块不走这条：它此刻摆在砖的位置上，不是"没上舞台所以要藏"。
     const awaking = awakeIds.includes(it.id);
-    it.slot.classList.toggle('hidden', !awaking && !ids.includes(it.id) && !focused);
+    it.slot.classList.toggle('hidden', !awaking && !stood && !ids.includes(it.id) && !focused);
     it.slot.classList.toggle('focused', focused);
     // 标题栏跟着 item 的 label 走 —— 名字只有一处真相（node 的声明），这里只是读它。
     if (it.barName) it.barName.textContent = it.label || it.id;
     if (it.barBtn) it.barBtn.innerHTML = focused ? ICON_RESTORE : ICON_MAX;
   });
   syncScrim();
+  document.body.classList.toggle(
+    'rail-pip', !!layout && layout.family === 'pip' && layout.dir === 'rail');
+  items.forEach((it) => it.slot.classList.toggle(
+    'bare', !!layout && layout.family === 'bare' && ids.includes(it.id)));
   const t = gridTemplate(layout);
   if (!t) { stage.style.gridTemplateColumns = ''; stage.style.gridTemplateRows = ''; return; }
   stage.style.gridTemplateColumns = t[0];
@@ -750,6 +1055,14 @@ function renderStage(ids, layout) {
     const c = layout.cells[k]; if (!c) return;
     it.slot.style.gridRow = `${c.r} / span ${c.rs}`;
     it.slot.style.gridColumn = `${c.c} / span ${c.cs}`;
+    // pip：格子是重叠的，主人铺满，角落卡浮在上面。层高靠 DOM 顺序不可靠，
+    // 所以这里显式给一层 —— 也让角落卡能有自己的投影，读成"一张小卡片"。
+    const pip = layout.family === 'pip';
+    const rail = pip && layout.dir === 'rail' && k > 0;
+    it.slot.classList.toggle('pip', pip && k > 0);
+    it.slot.classList.toggle('pip-rail', rail);
+    // 栏里那块要压在栏(z-index 9)之上，否则它被栏那层 92% 的底盖住，读起来是"变暗了"。
+    it.slot.style.zIndex = pip ? (k > 0 ? (rail ? '10' : '6') : '1') : '';
   });
 }
 
@@ -758,6 +1071,102 @@ function renderStage(ids, layout) {
 // 只是给同一个 slot 换一套样式（.fullscreen = position:fixed; inset:0）。
 function syncScrim() { $('#scrim').style.display = focusId ? 'block' : 'none'; }
 
+let overlayId = null;
+/** 桌面的住户：不是 item，没有把手 —— 只换 src，不参与 pool / group 的任何逻辑。
+ *  同一个 url 不重建 iframe（重建就会重载页面，小人的呼吸会被打断一次）。 */
+let presenceUrl = '';
+
+/** 递一条事实给桌面上的住户（它自己的页面）。
+ *  现在是"我说话时的音量"：屏只有频谱，开口度得由真实幅度决定，正弦是猜的。 */
+function presencePost(msg) {
+  const frame = document.querySelector('#presence iframe');
+  if (!frame || !frame.contentWindow) return;
+  try { frame.contentWindow.postMessage(msg, '*'); } catch (e) { /* 跨源就静默 */ }
+}
+
+function syncPresence(url) {
+  url = url || '';
+  if (url === presenceUrl) return;
+  const had = presenceUrl;
+  presenceUrl = url;
+  const box = document.getElementById('presence');
+  if (!box) return;
+  box.replaceChildren();
+  box.classList.toggle('on', !!url);
+  layoutPresence();
+  if (!url) return;
+  const frame = document.createElement('iframe');
+  frame.setAttribute('title', 'presence');
+  frame.setAttribute('scrolling', 'no');
+  frame.setAttribute('allowtransparency', 'true');
+  frame.src = url;
+  box.appendChild(frame);
+  // 住户真的加载出来时，报一次事实（不是 debug 模式的周期上报）：
+  // "桌面上有人"这件事，模型这边没有窗口可看，只能由页面说。
+  frame.addEventListener('load', () => {
+    send({ type: 'debug', payload: debugPayload() });
+  });
+  // 第一帧就带着 url 来的（--presence 起屏）：这时不要 log，屏刚起来，没有"变了"。
+  if (had) console.log('[presence] -> ' + url);
+}
+
+/** 人 + 字是一对：人站在左，字让到右边，中间的空当是留白给的。
+ *
+ *  两边的几何必须同源：人的方块由 presence 页的 `height:53%` 决定，字的位置从这里
+ *  反推 —— 各写一套百分比，窗口一变比例就散架。字宽只有量了才知道（字号是 JS 反解
+ *  出来的），所以这一条在 fitMossText 之后跑。
+ */
+function layoutPresence() {
+  // 有 presence 页 ≠ 这套主题里有住户：原味那套是空桌，字回到正中。
+  const on = typeof presenceUrl === 'string' && !!presenceUrl && themePresence;
+  // 舞台上有内容（或有人在看某一件）时，住户缩进侧栏底部 —— 它自己知道该让开。
+  const compact = on && !!arena;
+  // 显不显示住在这里决定，不在"有没有配一个 presence 页"决定 —— 原味主题配着它，
+  // 但那套场景里桌上不该有人。
+  const pbox = document.getElementById('presence');
+  if (pbox) pbox.classList.toggle('on', on);
+  document.body.classList.toggle('presence-on', on);
+  document.body.classList.toggle('compact', compact);
+  applyRainTint();                            // 人上桌，背景跟着换漆
+  const frame = document.querySelector('#presence iframe');
+  if (!on) {
+    mossEl.style.removeProperty('--moss-dx');
+    mossEl.style.removeProperty('--moss-dy');
+    if (frame) frame.style.removeProperty('transform');
+    return;
+  }
+  const side = viewH * 0.477;                 // = presence 页 svg 的 height
+  const top = (viewH - side) / 2;             // = 它的 top
+  if (compact) {
+    // 侧栏档：整块 iframe 缩小平移过去（人形页面本身不动，位置只在这一处算）。
+    const target = Math.round(Math.min(150, viewH * 0.2));
+    const s = target / side;
+    // 左下角：左边留一点空，人脚踩在底边上方一点
+    const dx = 18 - s * viewW * 0.22;
+    const dy = viewH - 24 - target - s * viewH * 0.2615;
+    if (frame) {
+      frame.style.transformOrigin = '0 0';
+      frame.style.transform = `translate(${Math.round(dx)}px, ${Math.round(dy)}px) scale(${s.toFixed(4)})`;
+    }
+    mossEl.style.setProperty('--moss-dx', '0px');
+    mossEl.style.setProperty('--moss-dy', '0px');
+    return;
+  }
+  // 桌面档：人站屏心，名字挂在它右边、底对齐脚下。
+  const gap = Math.max(8, viewW * 0.008);
+  const lw = mossEl.offsetWidth || 0;
+  const lh = mossEl.offsetHeight || 0;
+  const personLeft = (viewW - side) / 2;
+  if (frame) {
+    frame.style.transformOrigin = '0 0';
+    frame.style.transform = `translateX(${Math.round(personLeft - viewW * 0.22)}px)`;
+  }
+  mossEl.style.setProperty(
+    '--moss-dx', Math.round(personLeft + side + gap + lw / 2 - viewW / 2) + 'px');
+  const groundY = top + side * 0.765;         // 脚下那条线，不是更下面的影子
+  mossEl.style.setProperty(
+    '--moss-dy', Math.round(groundY - (viewH / 2 + lh / 2)) + 'px');
+}
 let railBeforeFocus = false;   // 进焦点前的栏状态，离开时原样还回去
 
 function setFocus(id) {
@@ -852,12 +1261,16 @@ function drawDiscs() {
     const r = 26;
     dctx.beginPath();
     dctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-    dctx.fillStyle = 'rgba(22,29,38,.92)';
+    dctx.fillStyle = cssVar('--disc-fill', 'rgba(22,29,38,.92)');
     dctx.fill();
-    dctx.strokeStyle = 'rgba(61,220,143,.5)';
+    // 圆盘是"还没入组的东西"：给它一圈自己的光，它才不像贴上去的贴纸。
+    dctx.shadowColor = cssVar('--disc-stroke', 'rgba(155,140,255,.5)');
+    dctx.shadowBlur = 14;
+    dctx.strokeStyle = cssVar('--disc-stroke', 'rgba(155,140,255,.5)');
     dctx.lineWidth = 1.5;
     dctx.stroke();
-    dctx.fillStyle = '#3ddc8f';
+    dctx.shadowBlur = 0;
+    dctx.fillStyle = cssVar('--disc-text', '#9b8cff');
     dctx.font = 'bold 13px ui-monospace, monospace';
     dctx.textAlign = 'center'; dctx.textBaseline = 'middle';
     const label = d.label.length > 6 ? d.label.slice(0, 6) : d.label;
@@ -911,9 +1324,9 @@ function ghostBeat() { ghostBeatAt = performance.now(); }
 const VEIL_DEFAULT = {
   mark: 'rgba(80,255,150,1)', box: 'rgba(80,255,150,1)',
   circle: 'rgba(80,255,150,1)', arrow: 'rgba(255,130,80,1)',
-  // 弹幕跟背后的字符雨同一种材质、同一种绿：#0f0 不是我随便挑的，是这层背景
-  // 自己的颜色。白色的字浮在绿雨上像贴纸，绿色的字像从雨里长出来。
-  danmaku: '#0f0',
+  // 弹幕跟背后的字符雨同一种材质：雨是住户那身蓝紫，弹幕也是。白色的字浮在
+  // 雨上像贴纸，同色的字像从雨里长出来。
+  danmaku: '#b7a9ff',
 };
 function addBlock(id, draw, durMs) {
   veilBlocks.set(id, { draw, start: performance.now(), dur: durMs });
@@ -956,7 +1369,10 @@ function veilAlpha(b, now) {
   return fade((now - b.start) / b.dur);
 }
 function veilColor(kind, color) {
-  return color || VEIL_DEFAULT[kind] || 'rgba(255,255,255,1)';
+  if (color) return resolveColor(color);
+  // 弹幕跟着主题走：雨是什么颜色，飞过去的字就是什么颜色。
+  if (kind === 'danmaku') return cssVar('--danmaku', VEIL_DEFAULT.danmaku);
+  return VEIL_DEFAULT[kind] || 'rgba(255,255,255,1)';
 }
 
 function veilMark(id, item, region, durMs, color, width) {
@@ -1046,6 +1462,41 @@ function veilPaint(id, script, item, durMs, color) {
   }, durMs);
 }
 
+// ===== 主题 =====
+// 屏的颜色是一份 json（themes/<name>.json）里的一组 CSS 变量。这里只负责把变量
+// 贴到 :root 上，然后让 canvas 那几处（字符雨、圆盘）重新取一次色 —— canvas 不认
+// CSS 变量，它只能被读出来再喂进去。
+let themeName = '';
+// 一套主题管的是**这一屏长什么样**，不只是几串颜色：原味那套里桌上是空的，
+// 没有住户。所以主题除了 vars，还可以带 presence:false —— 场景的构成也归它。
+let themePresence = true;
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback || '';
+}
+// Python 那边递过来的是"这是谁的颜色"，不是某一串十六进制：写死颜色的话，
+// 主题一换，那一行字就永远停在旧主题上（今晚就为这个白找了两轮）。
+const COLOR_TOKENS = { tool: '--accent-2', ghost: '--danmaku', accent: '--accent' };
+function resolveColor(c) {
+  const token = COLOR_TOKENS[c];
+  return token ? cssVar(token, c) : c;
+}
+async function applyTheme(name) {
+  if (!name || name === themeName) return;
+  try {
+    const r = await fetch('/themes/' + encodeURIComponent(name) + '.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const theme = await r.json();
+    const root = document.documentElement;
+    for (const [k, v] of Object.entries(theme.vars || {})) root.style.setProperty(k, String(v));
+    themeName = name;
+    themePresence = theme.presence !== false;
+    rebuildRainAtlas();     // canvas 的两张字色图集要按新主题重上一次漆
+    applyRainTint();
+    layoutPresence();       // 住户在不在也是这一套的一部分，位置要跟着重算
+  } catch (e) { /* 主题取不到就用页面里那份默认值，屏不该因此变黑 */ }
+}
+
 // ===== 弹幕：会飞的字 =====
 // 和居中大字不同，一条弹幕是"一行的飞行"：它有轨道、有方向、有它自己的时间片。
 //
@@ -1112,10 +1563,15 @@ function veilDanmaku(id, content, motion, durMs, color, size, lane, item, turns,
     c.save();
     c.lineJoin = 'round';
     c.lineWidth = Math.max(2, size * 0.16);
-    c.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    // 轮廓仍然是深色（字要压得住背后的画面），但不是纯黑：同色系的深紫。
+    // 黑边落在紫雨上读起来是"贴上去的一块"，深紫边才像同一个材质。
+    c.strokeStyle = 'rgba(10, 6, 26, 0.85)';
     c.strokeText(text, x, y);
-    c.restore();
+    // 一层很轻的同色光晕：字自己也发一点光，才跟这一屏的调子一致。
+    c.shadowColor = 'rgba(160, 145, 255, .6)';
+    c.shadowBlur = size * 0.45;
     c.fillText(text, x, y);
+    c.restore();
   };
   // region：只在一半里飞 —— 左右各占半屏、各自朝中间走，靠的就是这一格。
   const REG = { left: [0, 0, 0.5, 1], right: [0.5, 0, 0.5, 1],
@@ -1231,6 +1687,20 @@ function fitMossText() {
 }
 fitMossText();
 
+// 桌面上那个词是**谁的名字**：屏不属于框架，属于住在这里的 ghost。名字由服务端给
+// （它从运行环境里读 MOSS_GHOST_NAME），页面自己不知道谁在跑它 —— 写死 MOSS 就等于
+// 谁来住都挂框架的牌子。字号是量出来的，所以换了字要重新量一次。
+(async () => {
+  try {
+    const d = await (await fetch('/__brand', { cache: 'no-store' })).json();
+    const word = (d.brand || '').trim();
+    if (!word || word === mossEl.textContent) return;
+    // 拉丁名按老版大写（这套字重本来就是为四五个大写字母调的）；中文名原样写。
+    mossEl.textContent = /^[\x20-\x7e]+$/.test(word) ? word.toUpperCase() : word;
+    fitMossText();
+  } catch (e) { /* 服务没起上来：留着框架自己的名字，不是错误 */ }
+})();
+
 // 字形单元尺寸：升字区高度、雨的排布都以它为单位，必须先于一切使用点。
 const GW = 16, GH = 20;                 // 字形图集单元尺寸（固定，与屏宽无关）
 
@@ -1281,22 +1751,41 @@ const CHARSET = (() => {
   return parts.join('');
 })();
 const GLYPH_PX = 12;                    // 字形大小 —— 越小字越细
-const atlas = document.createElement('canvas');
-atlas.width = CHARSET.length * GW; atlas.height = GH;
-const actx = atlas.getContext('2d');
-actx.font = `bold ${GLYPH_PX}px ui-monospace, "PingFang SC", monospace`;
-actx.textAlign = 'center'; actx.textBaseline = 'middle';
-actx.fillStyle = '#0f0';
-for (let i = 0; i < CHARSET.length; i++) actx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
+/** 一张字色图集：整张表只换漆，字与字形不动 —— 换色不重排，只重上一次色。 */
+function glyphAtlas(fill) {
+  const cv = document.createElement('canvas');
+  cv.width = CHARSET.length * GW; cv.height = GH;
+  const cx = cv.getContext('2d');
+  cx.font = `bold ${GLYPH_PX}px ui-monospace, "PingFang SC", monospace`;
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillStyle = fill;
+  for (let i = 0; i < CHARSET.length; i++) cx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
+  return cv;
+}
 
-// 头字用的亮字图集：Matrix 的"雨头"是白亮的，尾是绿的。同一套字形，两遍上色。
-const headAtlas = document.createElement('canvas');
-headAtlas.width = atlas.width; headAtlas.height = atlas.height;
-const hactx = headAtlas.getContext('2d');
-hactx.font = actx.font;
-hactx.textAlign = 'center'; hactx.textBaseline = 'middle';
-hactx.fillStyle = '#d8ffe4';
-for (let i = 0; i < CHARSET.length; i++) hactx.fillText(CHARSET[i], i * GW + GW / 2, GH / 2);
+// 两套漆：空桌上它是 Matrix 的绿（雨头白亮、尾绿）；桌上有住户时换成他那一身蓝紫，
+// 并整体压暗一档 —— 有人站在那儿，背景就不该跟他抢注意力，但也不能消失：
+// 它是这块屏的呼吸，安静的时候还得看得见。两套图集同形不同色，切换只是换引用。
+// 主题一换就得重新上漆：图集是画好的位图，改不了颜色，只能重画。
+let atlas = null;
+let headAtlas = null;
+let rainDim = 1;
+function rebuildRainAtlas() {
+  atlas = glyphAtlas(cssVar('--rain-tail', '#7c6fc8'));
+  headAtlas = glyphAtlas(cssVar('--rain-head', '#e7e2ff'));
+}
+rebuildRainAtlas();
+/** 背景的亮度闸：住户在场时整片压暗，其余不变。 */
+function rainAlpha(a) { return Math.min(1, a * rainDim); }
+/** 换漆：只在"桌上站着人、而且看的就是桌面"时走蓝紫，缩进侧栏那段交给舞台。 */
+function applyRainTint() {
+  const body = document.body.classList;
+  const occupied = body.contains('presence-on') && !body.contains('compact');
+  // 只有一套漆（住户身上那身蓝紫），两种音量：他站在桌面上时压暗一档，
+  // 桌空着时亮一点。整块屏不再有第二种颜色 —— 绿只留在项目里，不留在画面上。
+  rainDim = parseFloat(
+    cssVar(occupied ? '--rain-dim-resident' : '--rain-dim-empty', '0.62')) || 0.62;
+}
 
 // 横向格数：60 是**上限**，不是定值。字形宽 GW 固定 16px，而格距 = 屏宽 / 格数 ——
 // 屏一窄，60 列的格距就小于字形宽，相邻列的字互相压住，看起来就是"挤在一起"。
@@ -1587,7 +2076,7 @@ function stepRainColumns(dt, now, loud, gateOpen) {
       // 恢复原样：雨头干脆、白亮。
       const fade = age === 0 ? 1 : Math.max(TAIL_DIM, 1 - age / TAIL_LIT);
       const edge = Math.max(0, Math.min(1, (rainFloor - p.y) / RAIN_FLOOR_FADE));
-      bctx.globalAlpha = Math.min(1, base * fade * edge);
+      bctx.globalAlpha = rainAlpha(base * fade * edge);
       const img = age === 0 ? headAtlas : atlas;        // 雨头白亮，尾绿
       bctx.drawImage(img, p.g * GW, 0, GW, GH,
         c.x + (GW - w) / 2, p.y + (GH - h) / 2, w, h);
@@ -1633,7 +2122,7 @@ function stepRain(dt, now) {
     for (let i = 0; i < row.g.length; i++) {
       const gg = row.g[i];
       if (gg === null) continue;
-      bctx.globalAlpha = Math.min(1, base * (row.a[i] || 1));
+      bctx.globalAlpha = rainAlpha(base * (row.a[i] || 1));
       bctx.drawImage(atlas, gg * GW, 0, GW, GH,
         cols[i].x + (GW - w) / 2, y + (GH - h) / 2, w, h);
     }
@@ -1752,7 +2241,7 @@ function drawListenerRise(dt, now) {
       const y = baseY - (k + 1) * GH - RISE_OFFSET;
       const dim = k / RISE_ROWS;                      // 越高越淡：尾部渐隐
       const top = k === Math.min(full, RISE_ROWS) - 1;  // 最上面那格才是"浪头"
-      bctx.globalAlpha = (0.35 + 0.65 * (1 - dim)) * (0.30 + 0.70 * energy);
+      bctx.globalAlpha = rainAlpha((0.35 + 0.65 * (1 - dim)) * (0.30 + 0.70 * energy));
       bctx.drawImage(
         top ? headAtlas : atlas,
         riseGlyphs[i][k] * GW, 0, GW, GH,
@@ -1826,6 +2315,14 @@ let hoverSince = 0;         // 指针停在这块砖上、且没走动的起点
 let hoverTravel = 0;        // 从那个起点起累计走过的距离
 let ptrX = -1, ptrY = -1;
 
+const POOL_HOLE = 0.46;   // 旋心留空的半径占比：小人在那儿站着
+// 台上真站了人的时候，这个洞要跟着人一起变大 —— 瓷砖绕开他，不是从他身上碾过去。
+// 洞是"家的位置"，人的大小是它唯一该听的量。
+function poolHole() {
+  const standing = document.body.classList.contains('presence-on')
+    && !document.body.classList.contains('compact');
+  return standing ? 0.64 : POOL_HOLE;
+}
 const POOL_MAX = 14;         // 再老的不画 —— 不活跃的东西不该占视野
 const GOLDEN = 2.399963229728653;   // 黄金角 137.5°（弧度）—— 向日葵螺旋的种子序
 const POOL_EASE = 6;         // 槽位缓动速率（1/s）：排序一变，卡片是滑过去的，不是瞬移
@@ -1999,24 +2496,38 @@ function layoutPool(dt = 0.016) {
     const t = tiles.get(id); if (!t) return;
     const el = t.el;
     // 黄金回旋：半径 ∝ √序号，角度 ∝ 序号 —— 不重叠、有机、增删不必重排全场。
-    const u = n === 1
-      // 只有一件东西时，螺旋没有"场"可铺：它落在眼睛所在的地方（旋心、最近、最大）。
-      // 通用公式会把它推到半径的六成处，一个孤零零的小瓷砖浮在大空白里。
-      ? 0
-      : Math.sqrt((k + 0.6) / (n + 0.6));      // 0（旋心/最近）→ 1（边缘/最老）
-    const rad = rmax * u, ang = k * GOLDEN + poolRot;
+    // 旋心**留空**：那里站着"我"（overlay 的小人）。第一块砖不再压在正中，
+    // 所有砖都从内圈往外排 —— 家在中间，东西围着它。只有一件时也落在内圈上。
+    // 台上真站着人的时候，回旋让位给"泊位"：瓷砖沿底边排成一条，中间的画布
+    // 整个留给那个人和他的名字。围着他转好看，但两张砖就能把他糊住 ——
+    // 所以有人在场时，规则从"围着家"改成"排在家的下面"，两条都要能读。
+    const standing = document.body.classList.contains('presence-on')
+      && !document.body.classList.contains('compact');
+    let u, bxT, byT;
+    if (standing) {
+      u = 0.55;
+      const step = Math.min(w * 0.15, 200);
+      bxT = cx + (k - (n - 1) / 2) * step;
+      byT = viewH - 150;
+    } else {
+      u = Math.max(
+        poolHole(),
+        n === 1 ? 1 : Math.sqrt((k + 0.6) / (n + 0.6)),   // 内圈 → 边缘/最老
+      );
+      const rad = rmax * u, ang = k * GOLDEN + poolRot;
+      bxT = cx + rad * Math.cos(ang);
+      byT = cy + rad * Math.sin(ang) * RY - u * 46;
+    }
     // 槽位（目标）与**显示位置**分开：池序一变，k 就变，槽位是瞬移的；
     // 让显示位置追着槽位走，卡片才是"滑"过去的，而不是跳过去。
     // 缓动的只有槽位 —— 呼吸（drift）照旧即时叠加，它是活着的证据，不该被平滑掉。
-    const bxT = cx + rad * Math.cos(ang);
-    const byT = cy + rad * Math.sin(ang) * RY - u * 46;
     if (t.bx === null) { t.bx = bxT; t.by = byT; t.bu = u; }   // 新砖不飞入：直接站在槽上
     const e = Math.min(1, dt * POOL_EASE);
     t.bx += (bxT - t.bx) * e;
     t.by += (byT - t.by) * e;
     t.bu += (u - t.bu) * e;
     // 远近由半径算出：越靠边越小、越糊、越淡、越往上抬（灭点在三分线上）
-    const sc = 1.06 - t.bu * 0.44;
+    const sc = (1.06 - t.bu * 0.44) * (standing ? 0.74 : 1);
     // 双八度漂移：低频大摆 + 高频小抖；近的动得多，远的几乎不动（视差）。
     //
     // 幅度按**视口**算，不按固定像素：13px 在 1280 宽的屏上是呼吸，在 2560 宽上
@@ -2056,7 +2567,14 @@ function layoutPool(dt = 0.016) {
 function syncPool() {
   const keep = new Set(poolOrder().slice(0, POOL_MAX));
   [...tiles.keys()].forEach((id) => { if (!keep.has(id)) { retreatSlot(id); dropTile(id); } });
-  keep.forEach((id) => { if (!tiles.has(id) && items.has(id)) makeTile(items.get(id)); });
+  keep.forEach((id) => {
+    // 站着的那一件不画砖 —— 它不是桌上的一件东西。只丢掉砖，不碰它的 slot。
+    if (overlayId !== null && String(id) === String(overlayId)) {
+      if (tiles.has(id)) dropTile(id);
+      return;
+    }
+    if (!tiles.has(id) && items.has(id)) makeTile(items.get(id));
+  });
   const on = poolOn();
   if (!on) hideAwake();         // 池子不在场（切组 / 进焦点）时，活页必须收回
   poolEl.classList.toggle('on', on);
@@ -2102,8 +2620,11 @@ function applyState(f) {
   const ids = f.ids || [];
   desktopIds = f.desktop || [];
   focusId = f.focus || null;
+  overlayId = f.overlay || null;
+  if ('presence' in f) syncPresence(f.presence);
   renderStage(ids, f.layout);
   renderRail();
+  layoutPresence();          // 有没有内容上场，决定住户站在桌面还是缩进侧栏
   syncDiscs();
   syncPool();
 }
@@ -2178,8 +2699,33 @@ function route(f) {
       if ('thinking' in f) {
         if (f.thinking) ghostBeat();
         else ghostBeatAt = 0;          // an explicit idle: off now, not in K seconds
+        // 屏幕顶上那条灯是给人的第一眼；站在桌面上的那一个也要有这个状态：
+        // 想事情的时候挠挠头、冒个问号。同一份事实，两处表达。
+        presencePost({ type: 'moss:think', on: !!f.thinking });
       }
       if ('layout' in f || 'arena' in f) applyState(f);
+      break;
+    }
+    case 'mouth': {
+      // 说侧开口了: 转给每一个"人形"的 iframe (overlay / pip 里那一件).
+      // 屏不替它们决定怎么动 —— 只递一个事实: 现在我这边有声音出来, 长度多少.
+      items.forEach((it) => {
+        const standing = it.slot.classList.contains('overlay')
+          || it.slot.classList.contains('pip') || it.slot.classList.contains('pip-rail');
+        if (!standing || !it.iframe || !it.iframe.contentWindow) return;
+        try {
+          it.iframe.contentWindow.postMessage(
+            { type: 'moss:mouth', chars: f.chars || 0, role: f.role || 'ghost' }, '*');
+        } catch (e) { /* 跨源就静默: 那不是我们的人形 */ }
+      });
+      // 桌面上的住户也是"人形": 说话时它同样要开口 —— 它不在 pool 里, 所以要单独递.
+      const pf = document.querySelector('#presence iframe');
+      if (pf && pf.contentWindow) {
+        try {
+          pf.contentWindow.postMessage(
+            { type: 'moss:mouth', chars: f.chars || 0, role: f.role || 'ghost' }, '*');
+        } catch (e) { /* 同上 */ }
+      }
       break;
     }
     case 'talk': {
@@ -2207,10 +2753,17 @@ function route(f) {
       break;
     }
     case 'current': setMasked(false, ''); break;
+    // 主题：一份 json 的变量名，页面把它贴到 :root 上，canvas 自己再取一次色。
+    case 'theme': applyTheme(f.name || ''); break;
+    // 服务端盯着 index.html：它一变就让我重载。页面自己那份轮询是上一版的做法，
+    // 实测会静默失效（人以为没生效，其实只是旧代码还在跑）。
+    case 'reload': location.reload(); break;
     case 'mask': setMasked(true, f.reason); break;
     case 'snapshot': {
       // 全量帧：reconcile（缺建、多删）。f.items 是所有 item 的详情（含桌面），
       // 页面据此物化 iframe；桌面 item 的 iframe 隐藏，只画代理圆盘。
+      // 主题也随状态来：换一个窗口连上来，它第一帧就该是这块屏的颜色。
+      applyTheme(f.theme || '');
       const seen = new Set();
       f.items.forEach((it) => {
         seen.add(it.id);
@@ -2290,6 +2843,13 @@ function route(f) {
         ghostAt = feedAt;                  // 断线判定要按角色：见 ghostAt 的注释
         feed = f.sample;
         mossEl.classList.toggle('alive', feed.rms_db > GATE);
+        // 我说的话，开口度按真实幅度走：-45dB 起，-15dB 张满。5Hz 的帧，
+        // 页面自己补间；这里只报一个 0~1 的数，不替它决定怎么动。
+        presencePost({
+          type: 'moss:mouth',
+          role: 'ghost',
+          level: Math.max(0, Math.min(1, (feed.rms_db + 45) / 30)),
+        });
       }
       st.textContent = `#${arena || 'desktop'} · ${f.sample.role} ${f.sample.rms_db.toFixed(0)}dB`;
       break;

@@ -1,6 +1,6 @@
 # 运行时数据 — dsh 推理中枢的领地
 .dsh/
-# ego 轨迹索引 (memento) — 运行时数据, 测试期可直接删
-.memento/
+# `.memento/` 的忽略规则在仓库根的 .gitignore 里（挡 branches/commits 的数据，
+# 留 hooks/ 与两个 GROUND.md 的机制），这里不再重复——两处各写一份，只会让两处打架。
 # 本地环境配置 (从 .env.example 复制, 不入库)
 .env

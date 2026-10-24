@@ -301,15 +301,14 @@ class TestStubsSync:
 
 
 class TestDoloresDefaultModel:
-    """dsh 的默认模型归 ghost home 所有: 启动时压进 .dsh/settings.yaml 的 agent-default-model.
-
-    这一层不做 UI 的对手 —— 它是权威. 无它, 网页 Models 面挑一个纯文本模型就会让 dsh 在
-    出站前把每张图投影成文本占位, ghost 于是"看不见"图.
+    """``agent-default-model`` 是 **seed-once**: 首次启动若段不存在 → 从 DoloresMeta.default_model
+    写入; 之后段归 ghost home 所有 (dsh web Models 面可改), 启动不再覆盖. meta 若无 default_model →
+    完全不碰 settings.yaml, 让 dsh 用自己的默认.
     """
 
     @staticmethod
-    def _boot(home: Path) -> None:
-        ghost = _dolores(home=home, session=MockSession())
+    def _boot(home: Path, meta=None) -> None:
+        ghost = _dolores(meta=meta, home=home, session=MockSession())
 
         async def run():
             async with ghost:
@@ -321,20 +320,14 @@ class TestDoloresDefaultModel:
     def _settings(home: Path) -> dict:
         return yaml.safe_load((home / ".dsh" / "settings.yaml").read_text(encoding="utf-8"))
 
-    def test_creates_settings_with_vision_capable_default(self, tmp_path: Path, monkeypatch):
-        # 没有 settings.yaml 的首次启动: 落一份, 默认模型必须是有视觉的 id.
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
-
-        self._boot(tmp_path)
-
+    def test_seeds_section_from_meta_when_absent(self, tmp_path: Path):
+        meta = _dolores_meta(default_model=("anthropic", "claude-opus-4-7"))
+        self._boot(tmp_path, meta=meta)
         section = self._settings(tmp_path)["agent-default-model"]
-        assert section == {"provider": "deepseek-official", "model": "deepseek-flash"}
+        assert section == {"provider": "anthropic", "model": "claude-opus-4-7"}
 
-    def test_overwrites_a_text_only_model(self, tmp_path: Path, monkeypatch):
-        # 网页 Models 面挑了纯文本模型 (deepseek-v4-flash) → 启动时必须被换回有视觉的默认.
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
+    def test_does_not_overwrite_existing_section(self, tmp_path: Path):
+        # UI 已经写过段 (哪怕是纯文本模型) → ghost 不再抢它.
         (tmp_path / ".dsh").mkdir()
         (tmp_path / ".dsh" / "settings.yaml").write_text(
             "agent-default-model:\n"
@@ -343,37 +336,80 @@ class TestDoloresDefaultModel:
             "  reasoningEffort: off\n",
             encoding="utf-8",
         )
-
-        self._boot(tmp_path)
-
-        # 文本级 patch: 换掉 model, 其余叶子 (含 `reasoningEffort: off`) 逐字保留.
+        meta = _dolores_meta(default_model=("anthropic", "claude-opus-4-7"))
+        self._boot(tmp_path, meta=meta)
         text = (tmp_path / ".dsh" / "settings.yaml").read_text(encoding="utf-8")
-        assert "model: deepseek-flash\n" in text
-        assert "model: deepseek-v4-flash\n" not in text
-        assert "reasoningEffort: off\n" in text
+        assert "model: deepseek-v4-flash\n" in text
+        assert "claude-opus-4-7" not in text
 
-    def test_preserves_other_settings_sections(self, tmp_path: Path, monkeypatch):
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
-        (tmp_path / ".dsh").mkdir()
-        (tmp_path / ".dsh" / "settings.yaml").write_text(
-            "ui-onboarding:\n  welcomeNoticeVersion: 2026-08-13.1\n",
-            encoding="utf-8",
-        )
+    def test_no_default_model_meta_leaves_settings_untouched(self, tmp_path: Path):
+        self._boot(tmp_path)  # meta.default_model is None by default
+        text = (tmp_path / ".dsh" / "settings.yaml").read_text(encoding="utf-8") \
+            if (tmp_path / ".dsh" / "settings.yaml").exists() else ""
+        assert "agent-default-model" not in text
 
-        self._boot(tmp_path)
 
-        settings = self._settings(tmp_path)
-        assert settings["ui-onboarding"]["welcomeNoticeVersion"] == "2026-08-13.1"
-        assert settings["agent-default-model"]["model"] == "deepseek-flash"
+class TestDoloresProviders:
+    """``meta.providers`` → ``profiles/web/cordis.patch.yml`` 的 ``id: llm-pi-ai`` 条目, seed-once.
+    base_url_env 在 seed 时从 ``os.environ`` 解析为真值写入 (文件在 gitignored 的 ghost home 内),
+    api_key_env 以名字落下, 运行时由 dsh 解析.
+    """
 
-    def test_env_selects_the_model(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("DOLORES_DEFAULT_MODEL", "deepseek-v4-flash-vision-exp")
-        monkeypatch.setenv("DOLORES_DEFAULT_MODEL_PROVIDER", "deepseek-official")
+    @staticmethod
+    def _patch_path(home: Path) -> Path:
+        return home / ".dsh" / "profiles" / "web" / "cordis.patch.yml"
 
-        self._boot(tmp_path)
+    @staticmethod
+    def _boot(home: Path, meta) -> None:
+        ghost = _dolores(meta=meta, home=home, session=MockSession())
 
-        assert self._settings(tmp_path)["agent-default-model"]["model"] == "deepseek-v4-flash-vision-exp"
+        async def run():
+            async with ghost:
+                pass
+
+        asyncio.run(run())
+
+    def test_seeds_pi_ai_entry_with_resolved_base_url(self, tmp_path: Path, monkeypatch):
+        from ._meta import DoloresProviderSpec
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com/anthropic")
+        meta = _dolores_meta(providers=[
+            DoloresProviderSpec(
+                route="anthropic",
+                api_key_env="ANTHROPIC_API_KEY",
+                base_url_env="ANTHROPIC_BASE_URL",
+            ),
+        ])
+        self._boot(tmp_path, meta=meta)
+
+        docs = list(yaml.safe_load_all(self._patch_path(tmp_path).read_text(encoding="utf-8")))
+        entries = next(d for d in docs if isinstance(d, list))
+        pi_ai = next(e for e in entries if isinstance(e, dict) and e.get("id") == "llm-pi-ai")
+        provider = pi_ai["providers"]["anthropic"]
+        assert provider["apiKeyEnv"] == "ANTHROPIC_API_KEY"
+        assert provider["baseURL"] == "https://proxy.example.com/anthropic"
+
+    def test_seed_once_does_not_duplicate(self, tmp_path: Path, monkeypatch):
+        from ._meta import DoloresProviderSpec
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://a.example")
+        meta = _dolores_meta(providers=[
+            DoloresProviderSpec(route="anthropic", api_key_env="ANTHROPIC_API_KEY",
+                                base_url_env="ANTHROPIC_BASE_URL"),
+        ])
+        self._boot(tmp_path, meta=meta)
+        # Second boot with a different env URL — must not re-write.
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://b.example")
+        self._boot(tmp_path, meta=meta)
+        text = self._patch_path(tmp_path).read_text(encoding="utf-8")
+        assert text.count("id: llm-pi-ai") == 1
+        assert "https://a.example" in text
+        assert "https://b.example" not in text
+
+    def test_no_providers_meta_leaves_patch_as_stub(self, tmp_path: Path):
+        self._boot(tmp_path, meta=_dolores_meta())
+        text = self._patch_path(tmp_path).read_text(encoding="utf-8")
+        assert "llm-pi-ai" not in text
 
 
 class TestDolores:
@@ -579,6 +615,84 @@ class TestDoloresEgoReasoningEffort:
         ego = self._ego(launcher)
 
         assert ego.default_thinking_effort is None
+
+    @pytest.mark.asyncio
+    async def test_model_declaration_rides_the_next_frame_and_is_consumed_once(self):
+        """模型声明与档位同一条路: 下一帧带出 provider/model, 采用即消费."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        ego.declare_model("deepseek-official", "deepseek-v4-pro")
+        await ego.enter_thinking(self._thinking(""), 1)
+
+        payload = launcher.calls[0][1]
+        assert payload["provider"] == "deepseek-official"
+        assert payload["model"] == "deepseek-v4-pro"
+        assert ego.default_model is None
+
+    @pytest.mark.asyncio
+    async def test_no_model_declaration_sends_empty_strings(self):
+        """无声明 = 不表态: 空串让插件保持当前模型 (不是把 provider 清零)."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        await ego.enter_thinking(self._thinking(""), 1)
+
+        payload = launcher.calls[0][1]
+        assert payload["provider"] == ""
+        assert payload["model"] == ""
+
+    @pytest.mark.asyncio
+    async def test_declare_model_carries_the_effort_and_refuses_half_a_route(self):
+        """换模型可以顺手带档位; provider/model 缺一不可 —— 半个 route 会写坏下一次请求."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        receipt = ego.declare_model("deepseek-official", "deepseek-v4-pro", "max")
+        assert "deepseek-v4-pro" in receipt and "max" in receipt
+        assert ego.default_model == ("deepseek-official", "deepseek-v4-pro")
+        assert ego.default_thinking_effort == "max"
+
+        with pytest.raises(ValueError):
+            ego.declare_model("", "deepseek-v4-pro")
+
+    def test_model_identity_is_none_until_a_request_is_observed(self):
+        """温数据的读口: 还没跑过请求 = None, 不拿目录默认值冒充"我在跑的模型"."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        assert ego.model_identity is None
+        assert ego.model_route is None
+
+    def test_declare_model_updates_identity_immediately(self):
+        """声明模型那一刻身份就变 —— notice 不等下一帧 header 才反映改动."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        ego.declare_model("deepseek-official", "deepseek-v4-pro", "high")
+
+        assert ego.model_identity == ("deepseek-official", "deepseek-v4-pro", "high")
+
+    def test_declare_effort_updates_identity_immediately(self):
+        """只改档位那一刻身份也变 —— 模型保持, 档位立即切到新值."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+        ego.declare_model("deepseek-official", "deepseek-flash", "low")
+
+        ego.declare_effort("high")
+
+        assert ego.model_identity == ("deepseek-official", "deepseek-flash", "high")
+
+    def test_declare_model_queues_identity_notice_immediately(self):
+        """声明即排 notice —— 下一帧 enter 就带上新身份, 不等 header 回传."""
+        launcher = self._Launcher()
+        ego = self._ego(launcher)
+
+        ego.declare_model("deepseek-official", "deepseek-v4-pro", "high")
+
+        notices = [n for n in ego._notices if n.meta.tag == "model_notice"]
+        assert len(notices) == 1
+        assert "deepseek-v4-pro" in notices[0].to_content_string()
 
     @pytest.mark.asyncio
     async def test_lost_enter_does_not_burn_the_epoch(self):
@@ -1795,6 +1909,10 @@ class FakeRunEgo:
 
     def on_run_exit(self, valid: bool):
         self.run_exits.append(valid)
+
+    def declare_effort(self, effort):
+        self.default_thinking_effort = effort
+        return f"declared depth {effort}"
 
 
 class FakeArticulator:
@@ -3496,6 +3614,88 @@ class TestBuildChannel:
             names = {m.name for m in runtime.metas().values()}
             assert "frame" not in names
             assert "ground" in names
+
+    @pytest.mark.asyncio
+    async def test_model_organ_mounts_and_its_identity_rides_the_ghost_notice(self, tmp_path: Path):
+        """ghost.model 挂上来, 当前模型走 ghost 根的 named notice (变才重发)."""
+        from ghoshell_moss.ground import DefaultGroundSet
+
+        from .channel import build_dolores_channel
+        from .model_channel import ModelOrgan
+
+        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        organ = ModelOrgan(
+            read_catalog=self._empty_catalog,
+            read_identity=lambda: ("deepseek-official", "deepseek-flash", "low"),
+            declare=lambda provider, model, effort: f"declared {provider}/{model}",
+        )
+        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path, model=organ)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            metas = {m.name: m for m in runtime.metas().values()}
+        assert "model" in metas
+        ghost_meta = metas["ghost"]
+        assert ghost_meta.named_notices["model"] == "deepseek-official/deepseek-flash · thinking low"
+
+    @pytest.mark.asyncio
+    async def test_no_model_organ_means_no_model_channel(self, tmp_path: Path):
+        """没有后端就不挂这个器官 —— 挂一个只会答"做不了"的命令是在骗模型."""
+        from ghoshell_moss.ground import DefaultGroundSet
+
+        from .channel import build_dolores_channel
+
+        (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
+        gs = DefaultGroundSet(workspace_root=tmp_path)
+        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path)
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            metas = {m.name: m for m in runtime.metas().values()}
+        assert "model" not in metas
+        assert "model" not in metas["ghost"].named_notices
+
+    @staticmethod
+    async def _empty_catalog():
+        from ghoshell_moss.deepseek_harness.types.sessions import ModelCatalog
+
+        return ModelCatalog()
+
+    def test_catalog_renders_models_with_their_own_depth_ladder(self):
+        """目录文本按 provider 分组, 每个模型带自己的档位表 —— 换模型前先看见它能想多深."""
+        from ghoshell_moss.deepseek_harness.types.sessions import (
+            ModelCatalog,
+            ModelCatalogModel,
+            ModelProviderGroup,
+            ModelReasoning,
+            ModelReasoningEffort,
+        )
+
+        from .model_channel import _catalog_text
+
+        catalog = ModelCatalog(
+            groups=[
+                ModelProviderGroup(
+                    id="deepseek-official",
+                    name="DeepSeek",
+                    models=[
+                        ModelCatalogModel(
+                            id="deepseek-flash",
+                            name="DeepSeek-V41-Flash",
+                            reasoning=ModelReasoning(
+                                efforts=[ModelReasoningEffort(id="off"), ModelReasoningEffort(id="max")],
+                                defaultEffort="off",
+                            ),
+                        )
+                    ],
+                )
+            ],
+            routableProviders=["deepseek-official"],
+        )
+        text = _catalog_text(catalog)
+        assert "deepseek-official" in text
+        assert "deepseek-flash" in text
+        assert "off/max" in text
+        assert "default off" in text
 
     @pytest.mark.asyncio
     async def test_init_frame_lands_in_notice(self, tmp_path: Path):

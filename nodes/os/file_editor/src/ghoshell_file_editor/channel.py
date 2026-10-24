@@ -470,7 +470,7 @@ def build_file_editor_channel(
             )
         return text
 
-    @chan.build.command(name="format", available=enabled)
+    @chan.build.command(name="format", always_observe=True, available=enabled)
     async def format(mode: str = "") -> str:
         """Which renderer draws the document.
 
@@ -580,7 +580,7 @@ def build_file_editor_channel(
             )
         return "\n".join(lines)
 
-    @chan.build.command(name="reload")
+    @chan.build.command(name="reload", always_observe=True)
     async def reload_file(thread: str, label: str = "") -> str:
         """Read the file again into the working copy — one action, no merge.
 
@@ -628,7 +628,7 @@ def build_file_editor_channel(
             return f"[{name}] {thread!r} is identical to the file on disk — nothing to merge"
         return f"[{name}] {thread!r} — {action.fact}\n{text}"
 
-    @chan.build.command(name="point", available=enabled)
+    @chan.build.command(name="point", always_observe=True, available=enabled)
     async def point(thread: str, region: str = "", label: str = "") -> str:
         """Put the reading point on these lines — without reading them out.
 
@@ -883,7 +883,7 @@ def build_file_editor_channel(
 
     # -- the one side effect ------------------------------------------------
 
-    @chan.build.command(name="export", always_observe=False, available=enabled)
+    @chan.build.command(name="export", always_observe=True, available=enabled)
     async def export(thread: str, path: str = "", label: str = "") -> str:
         """Propose writing the working copy to ``path`` (default: the file it was
         opened from).
@@ -1036,7 +1036,7 @@ def build_file_editor_channel(
             lines.append(f"- {draft} | {st.st_size} bytes | {_age(now - st.st_mtime)} old")
         return "\n".join(lines)
 
-    @chan.build.command(name="discard", available=enabled)
+    @chan.build.command(name="discard", always_observe=True, available=enabled)
     async def discard(draft: str) -> str:
         """Throw an unclaimed working copy away.
 
@@ -1054,7 +1054,7 @@ def build_file_editor_channel(
             if gone else f"[{name}] draft {draft} was already gone"
         )
 
-    @chan.build.command(name="clear", available=enabled)
+    @chan.build.command(name="clear", always_observe=True, available=enabled)
     async def clear(drafts: bool = True, threads: bool = False) -> str:
         """Throw away what has piled up — the debris, not the work.
 

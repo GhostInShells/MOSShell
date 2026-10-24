@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ghoshell_container import IoCContainer
@@ -10,7 +11,31 @@ from ghoshell_moss.core.concepts.shell import MOSShell
 
 from .nucleus import DoloresEgoNucleusMeta
 
-__all__ = ["DoloresMeta"]
+__all__ = ["DoloresMeta", "DoloresProviderSpec"]
+
+
+@dataclass(frozen=True)
+class DoloresProviderSpec:
+    """A pi-ai provider declaration — the shape Dolores projects into dsh at **seed time**.
+
+    Every field is a *name* (env var, route key), never a secret. The provider block is written
+    once into ``<ghost_home>/.dsh/profiles/web/cordis.patch.yml`` on first boot; after that, the
+    ghost home owns the file and the Python declaration is no longer the source of truth.
+
+    - ``route`` — pi-ai provider route id (``anthropic`` / ``openai`` / ``deepseek`` …).
+    - ``api_key_env`` — process env var that holds the credential at runtime (``apiKeyEnv``).
+    - ``base_url_env`` — process env var holding a base-URL override. At seed time Dolores reads
+      this env var and writes the resolved URL literally into the (gitignored) patch file; the
+      meta carries only the *name*, so repo-visible code never leaks a vendor endpoint.
+    - ``models`` — optional explicit catalog override.
+    - ``display_name`` — optional label.
+    """
+
+    route: str
+    api_key_env: str
+    base_url_env: str | None = None
+    models: list[str] | None = None
+    display_name: str | None = None
 
 
 class DoloresMeta(GhostMeta):
@@ -32,6 +57,8 @@ class DoloresMeta(GhostMeta):
             ),
             identity: str | None = None,
             nuclei_metas: list[NucleusMeta] | None = None,
+            providers: list[DoloresProviderSpec] | None = None,
+            default_model: tuple[str, str] | None = None,
     ):
         self._name = name
         self._description = description
@@ -41,6 +68,25 @@ class DoloresMeta(GhostMeta):
         self._nuclei_metas = (
             nuclei_metas if nuclei_metas is not None else [DoloresEgoNucleusMeta()]
         )
+        # Per-ghost dsh provider seed — projected **once** into ghost_home's cordis.patch.yml on
+        # first boot. After the ghost home is materialized the patch file belongs to the ghost
+        # (and lives inside the gitignored ghost_home), so later edits here do *not* chase the
+        # old home. Empty list = don't touch the patch's provider section.
+        self._providers: list[DoloresProviderSpec] = list(providers or [])
+        # Default (provider_route, model_id) — seeded **once** into settings.yaml's
+        # ``agent-default-model`` section on first boot. None = leave settings.yaml alone and let
+        # dsh fall back to its own default. The ghost home can change this value after seeding.
+        self._default_model: tuple[str, str] | None = default_model
+
+    @property
+    def llm_providers(self) -> list[DoloresProviderSpec]:
+        # Named ``llm_providers`` (not ``providers``) because GhostMeta.providers() is the
+        # IoC-provider contract — a different concept. Dolores declares pi-ai routes here.
+        return list(self._providers)
+
+    @property
+    def default_model(self) -> tuple[str, str] | None:
+        return self._default_model
 
     # ── GhostMeta ABC ──────────────────────────────
 

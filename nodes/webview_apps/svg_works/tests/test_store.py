@@ -50,17 +50,28 @@ def test_checkout_moves_the_cursor_without_dropping_ops():
     assert store.get("w").cursor == 3, "a cursor past the end clamps to the end"
 
 
-def test_new_op_lands_at_the_end_and_advances_the_cursor():
+
+def test_new_op_lands_at_the_end_and_the_reader_at_the_head_follows():
     store = store_mod.WorkStore()
     store.open("w")
     store.record("w", "insert", "#stage", {"html": "<g/>"}, "")
-    store.checkout("w", 0)
     op = store.record("w", "set", "#stage", {"attr": "fill", "value": "#000"}, "")
-    # Appending after a checkout is how a fork is expressed: the log keeps growing and
-    # the reader follows the newest op.
     assert op.n == 2
-    assert store.get("w").cursor == 2
+    assert store.get("w").cursor == 2, "a reader already at the head follows what lands"
 
+
+def test_a_reader_who_stepped_back_is_not_dragged():
+    store = store_mod.WorkStore()
+    store.open("w")
+    for _ in range(3):
+        store.record("w", "insert", "#stage", {"html": "<g/>"}, "")
+    store.checkout("w", 1)
+    op = store.record("w", "set", "#stage", {"attr": "fill", "value": "#000"}, "")
+    # The record still grows at the tail — but somebody reading step 1 keeps their place.
+    # "Live" and "being edited under you" are different situations, and only one of them
+    # should move the person's eyes.
+    assert op.n == 4
+    assert store.get("w").cursor == 1
 
 def test_snapshot_is_the_fold_of_the_current_work():
     store = store_mod.WorkStore()

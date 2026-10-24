@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
 import yaml
+
+from ._meta import DoloresProviderSpec
 from typing_extensions import Self
 
 from ghoshell_moss.contracts.logger import get_moss_logger
@@ -43,16 +45,14 @@ from ._prompts import (
 # ego 轨迹索引的根目录 (相对 ghost_home); branch 名由 memento config 决定.
 _EGO_MEMENTO_DIR = ".memento/ego"
 
-# dsh 默认模型 — 读 ghost_home/.env (见 stubs/.env.example), 启动时压进 DSH_HOME/settings.yaml.
-# 必须是**有视觉**的模型 id: dsh 对纯文本 id 会在出站前把每张图投影成文本占位
-# ([image omitted because this model accepts text only; ...]), ghost 于是"看不见"图.
-_ENV_DEFAULT_MODEL = "DOLORES_DEFAULT_MODEL"
-_ENV_DEFAULT_MODEL_PROVIDER = "DOLORES_DEFAULT_MODEL_PROVIDER"
-_DEFAULT_MODEL = "deepseek-flash"
-_DEFAULT_MODEL_PROVIDER = "deepseek-official"
 # settings.yaml 里承载默认模型的 section 名 (dsh-agent-default-model 的 settings namespace).
+# 该段由 ghost 在首次 seed 时按 DoloresMeta.default_model 一次性写入, 之后归 ghost home 自治
+# (dsh web Models 面可编辑). 多模态是现代模型默认, 不再做视觉强改.
 _SETTINGS_MODEL_SECTION = "agent-default-model"
 _SETTINGS_FILE = "settings.yaml"
+# cordis patch — 承载 provider 覆盖的声明段. 同样 seed-once.
+_CORDIS_PATCH = "profiles/web/cordis.patch.yml"
+_PI_AI_ID = "llm-pi-ai"
 # 可安全写成 YAML plain scalar 的形状; 其余转成 JSON 双引号串 (合法 YAML 标量).
 _PLAIN_SCALAR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -61,41 +61,48 @@ def _yaml_scalar(value: str) -> str:
     return value if _PLAIN_SCALAR.fullmatch(value) else json.dumps(value)
 
 
-def _assert_model_section(text: str, provider: str, model: str) -> str:
-    """Set provider/model inside the ``agent-default-model`` section of a settings document.
+def _seed_model_section(text: str, provider: str, model: str) -> str | None:
+    """Append the ``agent-default-model`` section if it is absent — otherwise return ``None``.
 
-    Textual on purpose. The document is owned by dsh: its YAML 1.2 emitter writes it, and its
-    own writes are leaf-level diffs that keep comments and formatting. A PyYAML round-trip
-    (YAML 1.1) would read `reasoningEffort: off` as a bool and write `false` back — which fails
-    dsh's string schema and takes the whole section down with it. Only the two leaves we own are
-    rewritten here; every other byte is carried through.
+    **Seed-once, never overwrite.** The settings doc is owned by dsh (and by whoever is driving
+    the Models page); once the section exists, the ghost home owns the choice. Returning None
+    tells the caller to leave the file untouched. Textual on purpose: dsh's YAML 1.2 emitter and
+    PyYAML's YAML 1.1 round-trip disagree on tokens like ``off`` (bool vs string), so we never
+    rewrite bytes we did not place.
     """
     header = f"{_SETTINGS_MODEL_SECTION}:"
-    values = {"provider": provider, "model": model}
+    if any(line.rstrip() == header for line in text.splitlines()):
+        return None
     lines = text.splitlines()
-    start = next((i for i, line in enumerate(lines) if line.rstrip() == header), None)
-    if start is None:
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.append(header)
-        lines.extend(f"  {key}: {_yaml_scalar(value)}" for key, value in values.items())
-        return "\n".join(lines) + "\n"
-    # 段落范围 = header 之后所有空行或缩进行.
-    end = start + 1
-    while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
-        end += 1
-    body: list[str] = []
-    seen: set[str] = set()
-    for line in lines[start + 1:end]:
-        key = next((k for k in values if line.startswith(f"  {k}:")), None)
-        if key is None:
-            body.append(line)
-        else:
-            body.append(f"  {key}: {_yaml_scalar(values[key])}")
-            seen.add(key)
-    body.extend(f"  {key}: {_yaml_scalar(values[key])}" for key in values if key not in seen)
-    lines[start + 1:end] = body
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append(header)
+    lines.append(f"  provider: {_yaml_scalar(provider)}")
+    lines.append(f"  model: {_yaml_scalar(model)}")
     return "\n".join(lines) + "\n"
+
+
+def _render_provider_block(providers: list[DoloresProviderSpec]) -> dict:
+    """Project the meta's provider declarations into the dict shape pi-ai's cordis patch expects.
+
+    Reads ``base_url_env`` *at seed time* from ``os.environ`` and writes the resolved URL into
+    the patch; ``api_key_env`` is passed through as a name (dsh resolves it at runtime). The
+    patch file lives inside the gitignored ghost home, so a literal URL here never reaches the
+    repo — but the meta itself only carries variable *names*, keeping repo-visible Python clean.
+    """
+    out: dict[str, dict] = {}
+    for spec in providers:
+        entry: dict = {"apiKeyEnv": spec.api_key_env}
+        if spec.base_url_env:
+            resolved = os.environ.get(spec.base_url_env)
+            if resolved:
+                entry["baseURL"] = resolved
+        if spec.models:
+            entry["models"] = list(spec.models)
+        if spec.display_name:
+            entry["displayName"] = spec.display_name
+        out[spec.route] = entry
+    return {"providers": out}
 
 
 class Dolores(Ghost):
@@ -238,6 +245,35 @@ class Dolores(Ghost):
             raise RuntimeError("commit_anchor called before the ego session was created")
         return self._ego.commit_anchor(note)
 
+    def _model_organ(self) -> "ModelOrgan":
+        """ghost.model 的后端 —— 读目录 / 读现状 / 声明, 三件都落在 ego 身上.
+
+        读目录走 ego 已经持有的那个 dsh session (``session/modelCatalog``), 不新开连接:
+        它就是"我现在这颗脑子"的那条连接, 另开一条会答出另一份状态.
+        """
+        from .model_channel import ModelOrgan
+
+        async def read_catalog():
+            if self._ego is None:
+                raise RuntimeError("model catalog asked before the ego session was created")
+            return await self._ego.session.models()
+
+        def read_identity():
+            if self._ego is None:
+                return None
+            return self._ego.model_identity
+
+        def declare(provider: str, model: str, effort: str) -> str:
+            if self._ego is None:
+                raise RuntimeError("model declared before the ego session was created")
+            return self._ego.declare_model(provider, model, effort)
+
+        return ModelOrgan(
+            read_catalog=read_catalog,
+            read_identity=read_identity,
+            declare=declare,
+        )
+
     def channel(self) -> "MutableChannel | None":
         """The ghost's reflexive control channel — its own organs as sub-channels.
 
@@ -259,6 +295,7 @@ class Dolores(Ghost):
                 commit_anchor=self._commit_anchor,
                 frame_root=self._frame_root(),
                 init_frame=self._startup_doc.frame if self._startup_doc is not None else None,
+                model=self._model_organ(),
             )
         return self._channel
 
@@ -722,11 +759,24 @@ class Dolores(Ghost):
             (self._home / d).mkdir(parents=True, exist_ok=True)
 
     def _sync_dsh_home(self) -> None:
-        shutil.copytree(
-            self._meta.dsh_stubs_dir(),
-            self._home / ".dsh",
-            dirs_exist_ok=True,
-        )
+        """Seed-once the dsh home from stubs — copy each file only when absent.
+
+        Prior behavior (``copytree`` with ``dirs_exist_ok=True``) clobbered ghost-home edits on
+        every boot, defeating the point of letting the ghost own its own dsh profiles. Now any
+        file the ghost (or dsh itself) has written survives; only the gaps are filled.
+        """
+        src_root = self._meta.dsh_stubs_dir()
+        dst_root = self._home / ".dsh"
+        for src in src_root.rglob("*"):
+            if not src.is_file():
+                continue
+            dst = dst_root / src.relative_to(src_root)
+            if dst.exists():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        # provider block is derived at seed time (reads env), not a static stub — handle it next.
+        self._sync_providers()
 
     def _sync_dsh_plugin(self) -> None:
         """Copy the plugin stub into ghost home — always override, not version-gated.
@@ -741,35 +791,59 @@ class Dolores(Ghost):
         shutil.copy2(self._meta.dsh_plugin_stub(), target)
 
     def _sync_default_model(self) -> tuple[str, str] | None:
-        """Assert the configured default model into the dsh settings document (DSH_HOME/settings.yaml).
+        """Seed-once ``agent-default-model`` into dsh settings — only when the section is absent.
 
-        dsh resolves ``agent-default-model`` from its settings document live, and that document
-        overrides the default shipped by dsh-base — it is the same seam the dsh web Models page
-        writes. Asserting it here makes the ghost's model owned by the ghost home (see
-        ``stubs/.env.example``) rather than by whatever the UI last wrote, so a text-only model
-        picked there cannot silently turn the ghost blind to images.
-
-        Returns the applied (provider, model), or None when there is no ghost home / no usable
-        config.
+        Reads the pair from ``DoloresMeta.default_model``; env fallback was removed (that was
+        the wrong seam — the ghost home's settings.yaml is the right one). After the first
+        seed the section belongs to the ghost home (dsh web Models page can rewrite it live);
+        later Python-side changes to ``default_model`` do **not** chase an existing home.
         """
         if self._home is None:
             return None
-        provider = os.environ.get(_ENV_DEFAULT_MODEL_PROVIDER, _DEFAULT_MODEL_PROVIDER).strip()
-        model = os.environ.get(_ENV_DEFAULT_MODEL, _DEFAULT_MODEL).strip()
+        pair = self._meta.default_model
+        if pair is None:
+            return None
+        provider, model = pair[0].strip(), pair[1].strip()
         if not provider or not model:
-            self.logger.warning(
-                "dsh default model config is empty (%s/%s) — leaving %s untouched",
-                provider, model, _SETTINGS_FILE,
-            )
             return None
         path = self._resolve_dsh_home(self._load_config().dsh.home) / _SETTINGS_FILE
         text = path.read_text(encoding="utf-8") if path.exists() else ""
-        patched = _assert_model_section(text, provider, model)
-        if patched != text:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(patched, encoding="utf-8")
-            self.logger.info("dsh default model set to %s/%s", provider, model)
+        seeded = _seed_model_section(text, provider, model)
+        if seeded is None:
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(seeded, encoding="utf-8")
+        self.logger.info("dsh default model seeded as %s/%s", provider, model)
         return provider, model
+
+    def _sync_providers(self) -> None:
+        """Seed-once meta.providers into ``profiles/web/cordis.patch.yml``.
+
+        The stub ships with its own patch entries; we append (not replace) an ``id: llm-pi-ai``
+        override that carries the declared providers. Seed marker is literal ``id: llm-pi-ai``
+        in the file — once present, we never append again. base_url_env is resolved from the
+        process env *at this moment* and written literally; the patch sits inside the
+        gitignored ghost home, so a literal URL here never reaches the repo.
+        """
+        providers = self._meta.llm_providers
+        if self._home is None or not providers:
+            return
+        target = self._home / ".dsh" / _CORDIS_PATCH
+        text = target.read_text(encoding="utf-8") if target.exists() else ""
+        if re.search(r"^\s*-?\s*id:\s*" + re.escape(_PI_AI_ID) + r"\s*$", text, re.MULTILINE):
+            return
+        block = _render_provider_block(providers)
+        if not block["providers"]:
+            return
+        rendered = yaml.safe_dump(
+            [{"id": _PI_AI_ID, **block}], allow_unicode=True, sort_keys=False,
+        )
+        if text and not text.endswith("\n"):
+            text += "\n"
+        combined = text + "\n# llm-pi-ai providers — seeded once from DoloresMeta.providers.\n" + rendered
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(combined, encoding="utf-8")
+        self.logger.info("dsh providers seeded for routes: %s", list(block["providers"].keys()))
 
     def _resolve_dsh_home(self, home: str | Path | None) -> Path:
         if home is None:

@@ -1,184 +1,144 @@
 ---
 name: moss-skills
-description: Governance for MOSS skills — action-oriented, deliverable skills for composite tasks. Read before authoring a skill.
+description: Governance for MOSS skills — distilled experience for *using* MOSShell. Read before authoring, pruning or reviewing a skill.
 ---
 
 # MOSS Skills
 
-Skills are **action-oriented, deliverable knowledge for composite tasks** — not documents.
-An agent working with MOSS picks one up at the start of a task via `moss skills list` / `read`.
+A skill is **distilled experience**, written for somebody who is *using* MOSShell — a person or a
+model — not for someone developing the framework itself. That change of identity is the whole premise:
+the reader arrived with a task, not with the source tree.
 
-## Role — skills serve agents *using* MOSS
+The scope is not the manual. It starts there (install it, wire a channel, drive a screen) and keeps
+going: how to talk with a child, how to talk with an elder, how to build a robot out of what is here.
+A skill exists because somebody needed the same advice twice and the second time cost the same.
 
-A skill answers: *"how do I use MOSS to accomplish a composite task?"* — drive the CLI, wire
-channels, route audio, operate a shell/ghost, compose nodes.
+## Topology — three levels
 
-It does **not** cover how to *develop* MOSS (kernel internals, adding channels/contracts,
-architecture). Development guidance lives in `moss docs`, `moss codex`, and the `CLAUDE.md`
-family — not here.
+Skills are graded the way `features specification` grades declarations. Every skill states its level
+in the frontmatter; the level decides how much a skill is allowed to assume.
 
-Corollary: a skill must be **generic and durable** — not an artifact of one feature iteration.
-
-### Two kinds of skill
-
-**Task skill** — an executable procedure for a composite task: what to do first, what next,
-how components cooperate. The original kind.
-
-**Mechanism skill** — orientation into a core mechanism an agent must use or extend (for
-example, how capabilities are wired across cells, or how a screen projects them). A mechanism
-skill is not an API catalogue and not an implementation. It states the problem, the motive,
-the shape of the solution, and where the framework already explains it. Its value is judgment
-and navigation; executable detail stays in the interface reflection.
-
-A mechanism skill **may point at openbox implementations as reference direction** — the nodes
-and services shipped with MOSS are the worked examples. Pointing is not copying: name the
-files or packages, say what to look for in them, and defer interface truth to
-`moss codex get-interface`. Never paste implementation or line numbers into the skill.
-
-## Where skills sit
-
-MOSS self-explanation is layered; skills fill the **delivery** layer:
-
-| Layer | Carries | Example |
+| Level | Answers | Example |
 |---|---|---|
-| L0 code | first self-explanation principle | the source itself |
-| L1 CLI-flow | cognitive map | `moss codex` / `moss start` / `moss --ai all-commands` |
-| L2 dir doc | what a directory carries | `<subdir>/AGENTS.md` |
-| L3 docs | systematic exposition | `moss docs read` |
-| **skills** | **action entry for composite tasks** | **this directory** |
+| **L0** | the direct method for one concrete task | audio etiquette; installing moshell; how to distribute a build |
+| **L1** | a general method for a class of domain problems, from which N L0s can be grown | how to create a ghost for a user |
+| **L2** | how to create new L1s — building a mechanism of your own | how to build your works system |
 
-A skill is legitimate only if the layers above cannot cover it, **and** it is a real
-composite-task entry an agent needs at task start.
+An L0 may be looked up mid-task. An L1 is read before starting a domain. An L2 is read when someone
+is about to invent a governance of their own — it is the most expensive to write and the most
+dangerous to write badly.
 
-## Entry criteria (answer all three before writing)
+## Where skills sit among the other surfaces
 
-1. **Composite action?** Coordinates several components/systems with an executable procedure —
-   not a single command or a single interface. For a mechanism skill, the composite action is
-   reasoning about and extending a mechanism that spans several components; it must still end
-   in something the reader can run to confirm the mechanism works.
-2. **Needed at task start?** If it is only a lookup need, `moss docs` already covers it.
-3. **Stable within six months?** The abstractions it depends on must be battle-tested, not under
-   active evolution. An unstable domain written as a skill is a self-made stale source.
-   Acceptance in real use — not a green unit test — is what makes a mechanism stable enough.
+| Surface | Carries |
+|---|---|
+| **code** | facts — the first self-explanation, and the only authority |
+| **cli-flow** (`moss start`, `moss codex`, `moss --ai all-commands`) | the cognitive map: where things are |
+| **features** | the evolution trail: why the project is shaped this way |
+| **docs** | architecture philosophy (may later be retired, or migrate into works) |
+| **skills** | distilled experience: the path that is not visible from the map |
 
-If you cannot answer **yes** to all three, do not write it.
+> Building a product with moshell: the code is the components on the desk, the CLI is the bookshelf,
+> and skills are the tool books on it.
 
-## Anti-patterns (historically validated)
+A skill is legitimate only when the surfaces above it cannot carry the same thing — the map tells you
+where to look, a skill tells you what you would not have guessed after looking.
 
-- ✗ A skill tacked onto a component — the component's interface is already the prompt.
-  A mechanism skill is not exempt: it must add judgment and navigation the interface cannot.
-- ✗ Step-level operational skills — CLI help + `moss --ai all-commands` already self-explain.
-- ✗ Decision / architecture discussion — that belongs to `features/` / `docs`.
-- ✗ Interface usage notes — `moss codex get-interface` is the authoritative, non-rotting source.
-- ✗ Copying docs into a skill — skills point at executable procedures; pure reading stays in docs.
-- ✗ Copying openbox code into a skill — reference direction only; the source stays authoritative.
+## What goes in, what does not
 
-## Writing discipline
+Before writing one, answer six questions. Two of them are answered by somebody who was not in the room.
 
-- **Language: English.**
-- **YAML frontmatter is required** — see Meta format below.
-- **Reference interfaces, do not copy** — `moss codex get-interface <module>` is authoritative.
-- **Do not hardcode specifics** — enum members, CLI literals, CTML command literals all drift;
-  point readers to reflection (`moss codex`) for current values.
-- **Describe the shape of the composite behavior** — the unique value is orchestration knowledge
-  (what first, what next, how components cooperate), not an interface catalogue.
-- **Point at openbox source as direction, not as text** — name paths/roles and what to look for.
-  Do not paste code, line numbers, or output. Never point at `FEATURE.md`, workstreams, or
-  decision numbers: those are reverse indexes, not authority, and they do not ship.
-- **Mechanism skills distill, they do not index** — problem, motivation, solution shape, where
-  the framework already explains it, reference directions with one executable acceptance,
-  version and identity. The knowledge surface belongs to the framework (`moss codex blueprint`,
-  `channel_builder`, interface reflection); a skill does not curate a reading list in its place.
-  Its value is the conceptual key that is easy to miss, not a table of contents. Keep
-  implementation out; if a section needs code to make sense, the interface is under-documented.
-- **Mark provenance for expiry** — `moss_version`, `verified`, `author`, and `evidence` in the
-  frontmatter. A skill whose interface no longer matches reflection is a review candidate.
-- **Scripts live beside the skill** — `<name>/SKILL.md` is the entry; helper scripts may sit in
-  the same directory (see Scripts).
+1. **Which scenario?** For a zero-context agent, what problem situation calls for this skill? Hand the
+   scenario to a fresh agent and watch what it does without the skill.
+2. **Which category?** Does it belong to an existing one? If not, that is a governance act — agree on
+   it with the architect before creating it.
+3. **Does it pay?** Does it markedly cut exploration cost, decision cost, or trial-and-error cost — or
+   teach something the reader could not have known beforehand?
+4. **Does it attract?** Given the problem, would an agent notice this skill fast enough to want to open
+   it? A skill nobody opens is noise with a filename.
+5. **Does it keep?** Will it still be useful one iteration stage later?
+6. **What does it cost the pool?** Every skill adds to what must be read past. Does the pool stay
+   legible, or does this tip it into a governance pass?
 
-## Meta format
+If any answer is no, do not write it.
 
-Every `SKILL.md` carries frontmatter:
+## Philosophy — the fewest skills for the same body of knowledge
+
+What a skills pool should contain, and nothing else:
+
+1. the **L0** skills a zero-context agent cannot work without — the ones that visibly cut exploration
+   and usage cost;
+2. **L1** skills as few-shots — enough that a new domain can be reasoned by analogy, not so many that
+   they become a catalogue;
+3. **all** the **L2** skills — sharing the experience of building whole mechanisms on moshell.
+
+And the negative rules, which matter more:
+
+- ✗ **A skill never replaces facts.** Code is the truth; a skill that restates it will be wrong first.
+- ✗ **A skill never replaces exploration.** It points at the path. A skill so complete that nothing has
+  to be looked up adds entropy: it buries the path under its own description.
+- ✗ **No domain-path knowledge.** Where things live in a particular project is `GROUND.md` /
+  `AGENTS.md` business, not a skill's.
+- ✗ **If one always-visible piece of code self-explains it** (the channel builder, the matrix), write no
+  skill — in a composite situation, give the path to that code instead.
+- ✗ **Skills are not liabilities, but they do rot.** Stale: delete. Noisy: delete. Duplicated: merge.
+  Each iteration stage's surface review is the occasion to do it (`moss features surface`).
+
+## What a SKILL.md carries
+
+Four sections, in this order. Everything longer than this lives beside the skill, and `SKILL.md` links
+to it — drawings, code, tools, long walkthroughs. No large binaries ride with a skill.
+
+1. **Scenario** — one paragraph: the situation that brings a reader here. It is what an agent checks
+   against its own intent before trusting the rest.
+2. **Method** — the procedure as a state machine or a behaviour tree first, prose second. What comes
+   first, what must be true before each step, what the forks are. Not a narrative.
+3. **Exploration path** — where the resources are: which packages, which commands, what to look for
+   when you get there. Point; never paste.
+4. **How to trust this** — the verification strategy. What a reader can run or observe to confirm the
+   skill still describes reality. This section is why a skill can be reviewed rather than believed.
+
+## Frontmatter
+
+The official `SKILL.md` protocol's own fields apply — do not restate its format here, follow it. Beyond
+them a MOSS skill adds what a reader needs to decide whether it is still current:
 
 ```yaml
 ---
-name: <leaf-name>                               # skill identifier; matches the directory name
-description: <when an agent needs this skill>   # discovery/display signal; be specific
-moss_version: <version>                         # the MOSS version verified against, e.g. beta2
-platform: [<platform>]                          # optional; environment constraint, e.g. [macos]
-verified: <YYYY-MM-DD>                          # last date the content was confirmed correct
-author: <model identity>                        # who wrote it; real harness identity
-evidence: <what real use confirmed it>          # e.g. live runs, dates, participating nodes
+name: <leaf-name>
+description: <the situation that needs this skill>
+moss_version: <the version it was written against>
+stage: <the iteration stage, e.g. stage3>
+level: <L0 | L1 | L2>
 ---
 ```
 
-The version and identity fields exist so content can be **stale-checked and pruned** later.
-A skill whose `moss_version` no longer matches the current MOSS version, or whose referenced
-interfaces no longer reflect, is a candidate for review. Prefer pruning a rotted skill over
-letting it quietly become false.
+Every other field follows the general `skill.md` convention.
 
-## Validation — the zero-context handoff
+## Validation — the skill must be found, then it must work
 
-A skill is written for an agent that was not in the room. Validate it that way before treating
-it as verified:
+Two checks, both with an agent that was not in the room. A skill is unverified until both pass.
 
-1. **Design a proposition, not a quiz.** Write a concrete task that requires the mechanism —
-   the intended outcome, not the roles or the answer. "Make this node's live metrics consumable
-   by other cells" is a proposition; "write a ServiceDeclaration" is a quiz.
-2. **Use a side agent.** Start a fresh agent with no access to the authoring conversation. Give
-   it the task and the skill path; tell it to read the skill first, then research the framework
-   surface the skill points to. Do not hand it the author's notes, FEATURE documents, or the
-   reference implementation's design rationale.
-3. **Ask for an approach.** The agent returns how it would build it, which components it would
-   touch, and where the skill was unclear. Research only — no code.
-4. **The author judges.** Did the approach land on the intended shape? Did it invent a parallel
-   mechanism, copy an implementation, or miss a boundary? A plausible plan that violates the
-   mechanism is a failure of the skill, not of the agent.
-5. **Fix or prune.** Fill the missing key, or conclude the skill cannot carry the mechanism and
-   remove it. Record the validation in `evidence`.
+1. **Attraction.** Give a fresh agent a domain problem, without naming the skill. Watch whether
+   `moss skills` leads it to the right one. If it never arrives, the description or the category is
+   wrong — the content may still be fine.
+2. **Delivery.** Give it the problem again, let it read the skill, and see whether it can walk the
+   exploration path and produce a plan in the intended shape. Research only — no code, no hint from the
+   author.
 
-This tests the delivery surface, not the agent. The agent's self-assessment is not the verdict.
+Fix or prune. Record in the body what case confirmed it.
 
-## Categories (second level)
+## Governance
 
-Skills are organized one level deep by category:
+A skills pool is curated the way categories are: somebody has to be responsible for its size.
 
-```
-skills/<category>/<name>/SKILL.md
-```
+- **On creation** — run the six questions; the pool's entropy is part of the cost.
+- **When stale** — a skill is a claim about one MOSS version. Checked and still true, the developer
+  bumps `moss_version`; no longer true, it is fixed or pruned.
+- **When poor** — a validation fails twice, or two skills teach the same thing differently.
+- **At every stage end** — `moss features surface` opens the pass; prune, merge, re-level.
 
-The category is **curated, not free-form**. Current whitelist:
+Categories are not a fixed whitelist. A category is a first-class governance object: propose one when
+the pool has outgrown its current shape, and agree it with the architect.
 
-| Category | Scope |
-|---|---|
-| `audio` | audio device routing, playback, capture, voice |
-| `matrix` | cell-level capability wiring, service kinds, mesh communication |
-| `screen` | screen projection: window semantics, adoption, layout, foreground gestures |
-
-**Creating a new category requires agreeing with the architect first** — do not invent one.
-The category directory name is the category; it is not repeated in frontmatter.
-
-## Scripts
-
-A skill may ship helper scripts in its own directory:
-
-```
-skills/<category>/<name>/
-  SKILL.md
-  <script>            # optional
-```
-
-Scripts assume the **MOSS python environment** drives them — invoke via `uv run` or the
-project's `.venv` python, never a bare system python.
-
-## Delivery
-
-- `moss skills list` — discover skills (glob + frontmatter index).
-- `moss skills read <path>` — read a skill (short name or full path).
-- `moss skills list --root <path>` — explore skills in any directory.
-
-Skills live at a standard location and are discovered by the agent's own harness; MOSS does
-**not** inject them into the agent context.
-
-> `moss skills recall` was removed. It required `LLMFuncs` (an LLM config), which dead-ended
-> cold-start / unconfigured workspaces. Skills must not depend on a second config mechanism.
+ 
