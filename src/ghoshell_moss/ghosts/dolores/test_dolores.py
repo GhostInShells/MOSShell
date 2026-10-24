@@ -301,15 +301,14 @@ class TestStubsSync:
 
 
 class TestDoloresDefaultModel:
-    """dsh 的默认模型归 ghost home 所有: 启动时压进 .dsh/settings.yaml 的 agent-default-model.
-
-    这一层不做 UI 的对手 —— 它是权威. 无它, 网页 Models 面挑一个纯文本模型就会让 dsh 在
-    出站前把每张图投影成文本占位, ghost 于是"看不见"图.
+    """``agent-default-model`` 是 **seed-once**: 首次启动若段不存在 → 从 DoloresMeta.default_model
+    写入; 之后段归 ghost home 所有 (dsh web Models 面可改), 启动不再覆盖. meta 若无 default_model →
+    完全不碰 settings.yaml, 让 dsh 用自己的默认.
     """
 
     @staticmethod
-    def _boot(home: Path) -> None:
-        ghost = _dolores(home=home, session=MockSession())
+    def _boot(home: Path, meta=None) -> None:
+        ghost = _dolores(meta=meta, home=home, session=MockSession())
 
         async def run():
             async with ghost:
@@ -321,20 +320,14 @@ class TestDoloresDefaultModel:
     def _settings(home: Path) -> dict:
         return yaml.safe_load((home / ".dsh" / "settings.yaml").read_text(encoding="utf-8"))
 
-    def test_creates_settings_with_vision_capable_default(self, tmp_path: Path, monkeypatch):
-        # 没有 settings.yaml 的首次启动: 落一份, 默认模型必须是有视觉的 id.
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
-
-        self._boot(tmp_path)
-
+    def test_seeds_section_from_meta_when_absent(self, tmp_path: Path):
+        meta = _dolores_meta(default_model=("anthropic", "claude-opus-4-7"))
+        self._boot(tmp_path, meta=meta)
         section = self._settings(tmp_path)["agent-default-model"]
-        assert section == {"provider": "deepseek-official", "model": "deepseek-flash"}
+        assert section == {"provider": "anthropic", "model": "claude-opus-4-7"}
 
-    def test_overwrites_a_text_only_model(self, tmp_path: Path, monkeypatch):
-        # 网页 Models 面挑了纯文本模型 (deepseek-v4-flash) → 启动时必须被换回有视觉的默认.
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
+    def test_does_not_overwrite_existing_section(self, tmp_path: Path):
+        # UI 已经写过段 (哪怕是纯文本模型) → ghost 不再抢它.
         (tmp_path / ".dsh").mkdir()
         (tmp_path / ".dsh" / "settings.yaml").write_text(
             "agent-default-model:\n"
@@ -343,37 +336,80 @@ class TestDoloresDefaultModel:
             "  reasoningEffort: off\n",
             encoding="utf-8",
         )
-
-        self._boot(tmp_path)
-
-        # 文本级 patch: 换掉 model, 其余叶子 (含 `reasoningEffort: off`) 逐字保留.
+        meta = _dolores_meta(default_model=("anthropic", "claude-opus-4-7"))
+        self._boot(tmp_path, meta=meta)
         text = (tmp_path / ".dsh" / "settings.yaml").read_text(encoding="utf-8")
-        assert "model: deepseek-flash\n" in text
-        assert "model: deepseek-v4-flash\n" not in text
-        assert "reasoningEffort: off\n" in text
+        assert "model: deepseek-v4-flash\n" in text
+        assert "claude-opus-4-7" not in text
 
-    def test_preserves_other_settings_sections(self, tmp_path: Path, monkeypatch):
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL", raising=False)
-        monkeypatch.delenv("DOLORES_DEFAULT_MODEL_PROVIDER", raising=False)
-        (tmp_path / ".dsh").mkdir()
-        (tmp_path / ".dsh" / "settings.yaml").write_text(
-            "ui-onboarding:\n  welcomeNoticeVersion: 2026-08-13.1\n",
-            encoding="utf-8",
-        )
+    def test_no_default_model_meta_leaves_settings_untouched(self, tmp_path: Path):
+        self._boot(tmp_path)  # meta.default_model is None by default
+        text = (tmp_path / ".dsh" / "settings.yaml").read_text(encoding="utf-8") \
+            if (tmp_path / ".dsh" / "settings.yaml").exists() else ""
+        assert "agent-default-model" not in text
 
-        self._boot(tmp_path)
 
-        settings = self._settings(tmp_path)
-        assert settings["ui-onboarding"]["welcomeNoticeVersion"] == "2026-08-13.1"
-        assert settings["agent-default-model"]["model"] == "deepseek-flash"
+class TestDoloresProviders:
+    """``meta.providers`` → ``profiles/web/cordis.patch.yml`` 的 ``id: llm-pi-ai`` 条目, seed-once.
+    base_url_env 在 seed 时从 ``os.environ`` 解析为真值写入 (文件在 gitignored 的 ghost home 内),
+    api_key_env 以名字落下, 运行时由 dsh 解析.
+    """
 
-    def test_env_selects_the_model(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("DOLORES_DEFAULT_MODEL", "deepseek-v4-flash-vision-exp")
-        monkeypatch.setenv("DOLORES_DEFAULT_MODEL_PROVIDER", "deepseek-official")
+    @staticmethod
+    def _patch_path(home: Path) -> Path:
+        return home / ".dsh" / "profiles" / "web" / "cordis.patch.yml"
 
-        self._boot(tmp_path)
+    @staticmethod
+    def _boot(home: Path, meta) -> None:
+        ghost = _dolores(meta=meta, home=home, session=MockSession())
 
-        assert self._settings(tmp_path)["agent-default-model"]["model"] == "deepseek-v4-flash-vision-exp"
+        async def run():
+            async with ghost:
+                pass
+
+        asyncio.run(run())
+
+    def test_seeds_pi_ai_entry_with_resolved_base_url(self, tmp_path: Path, monkeypatch):
+        from ._meta import DoloresProviderSpec
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com/anthropic")
+        meta = _dolores_meta(providers=[
+            DoloresProviderSpec(
+                route="anthropic",
+                api_key_env="ANTHROPIC_API_KEY",
+                base_url_env="ANTHROPIC_BASE_URL",
+            ),
+        ])
+        self._boot(tmp_path, meta=meta)
+
+        docs = list(yaml.safe_load_all(self._patch_path(tmp_path).read_text(encoding="utf-8")))
+        entries = next(d for d in docs if isinstance(d, list))
+        pi_ai = next(e for e in entries if isinstance(e, dict) and e.get("id") == "llm-pi-ai")
+        provider = pi_ai["providers"]["anthropic"]
+        assert provider["apiKeyEnv"] == "ANTHROPIC_API_KEY"
+        assert provider["baseURL"] == "https://proxy.example.com/anthropic"
+
+    def test_seed_once_does_not_duplicate(self, tmp_path: Path, monkeypatch):
+        from ._meta import DoloresProviderSpec
+
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://a.example")
+        meta = _dolores_meta(providers=[
+            DoloresProviderSpec(route="anthropic", api_key_env="ANTHROPIC_API_KEY",
+                                base_url_env="ANTHROPIC_BASE_URL"),
+        ])
+        self._boot(tmp_path, meta=meta)
+        # Second boot with a different env URL — must not re-write.
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://b.example")
+        self._boot(tmp_path, meta=meta)
+        text = self._patch_path(tmp_path).read_text(encoding="utf-8")
+        assert text.count("id: llm-pi-ai") == 1
+        assert "https://a.example" in text
+        assert "https://b.example" not in text
+
+    def test_no_providers_meta_leaves_patch_as_stub(self, tmp_path: Path):
+        self._boot(tmp_path, meta=_dolores_meta())
+        text = self._patch_path(tmp_path).read_text(encoding="utf-8")
+        assert "llm-pi-ai" not in text
 
 
 class TestDolores:
