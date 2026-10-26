@@ -51,6 +51,8 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
             safety_delay=safety_delay,
         )
         self._device_pattern = device_pattern
+        # 解析到的输出设备名 (None = 系统默认输出), 供日志/自解释说清"到底哪台".
+        self._device_name: str | None = None
         self._playback: Optional[miniaudio.PlaybackDevice] = None
         self._on_emit_callbacks: list[Callable[[np.ndarray], None]] = []
         # 设备播放头追踪 (见 _make_generator / wait_play_done).
@@ -87,18 +89,28 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         self._playhead_time = time.monotonic()
         self._last_real_frame_pos = 0
 
-    def _find_device(self):
-        """按 ``device_pattern`` (名字子串) 匹配输出设备; 空则用 miniaudio 默认."""
-        pattern = self._device_pattern.strip().lower()
+    def _find_device(self) -> tuple[object | None, str | None]:
+        """按 ``device_pattern`` (名字小写子串) 解析输出设备; 返回 (device_id, name).
+
+        空 pattern = 没指定, 返回 (None, None) 交给 miniaudio 打开系统默认输出. 指定了
+        却一台不匹配时记 warning 再退回默认 —— 静默退回会让"发现失败"看不见.
+        """
+        pattern = (self._device_pattern or "").strip().lower()
         if not pattern:
-            return None
+            return None, None
         try:
             for d in miniaudio.Devices().get_playbacks():
-                if pattern in d['name'].lower():
-                    return d['id']
+                name = d["name"]
+                if pattern in name.lower():
+                    return d["id"], name
         except Exception as e:
             self.logger.warning("Playback device enumeration failed: %s, using default", e)
-        return None
+            return None, None
+        self.logger.warning(
+            "No output device matches %r — falling back to the system default output",
+            self._device_pattern,
+        )
+        return None, None
 
     def _make_generator(self):
         """创建 audio generator，每次 yield 精确 frame_count 的字节。"""
@@ -225,11 +237,18 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         """启动 miniaudio 播放设备。"""
         gen = self._make_generator()
         next(gen)  # prime
+        device_id, device_name = self._find_device()
+        self._device_name = device_name
+        # 打设备名而不是 id: id 是 cdata 指针, 对所有设备 repr 一样, 打出来读不出"哪台".
+        self.logger.info(
+            "Audio playback using %s",
+            repr(device_name) if device_name else "the system default output device",
+        )
         self._playback = miniaudio.PlaybackDevice(
             output_format=miniaudio.SampleFormat.SIGNED16,
             nchannels=self.channels,
             sample_rate=self.sample_rate,
-            device_id=self._find_device(),
+            device_id=device_id,
         )
         self._playback.start(gen)
 

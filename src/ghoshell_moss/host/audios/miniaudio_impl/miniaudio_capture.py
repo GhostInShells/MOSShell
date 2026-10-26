@@ -9,6 +9,7 @@ session.
 """
 import collections
 import contextlib
+import hashlib
 import logging
 import re
 import time
@@ -74,12 +75,21 @@ def _compute_frame_meta(samples: np.ndarray) -> AudioFrameMeta:
     )
 
 
-def _device_lock_key(device_id) -> str:
-    """锁 key 由设备标识派生, 符合 workspace.lock 的 `^[a-zA-Z0-9_-]+$` 约束."""
-    if device_id is None:
+def _device_lock_key(device_name: str | None) -> str:
+    """锁 key 由**设备名**派生, 符合 workspace.lock 的 `^[a-zA-Z0-9_-]+$` 约束.
+
+    不能用 miniaudio 的设备 id 派生: 那个 id 是 cdata 指针, ``str()`` 出来是
+    ``<cdata 'union ma_device_id *' owning 256 bytes>`` —— 对所有设备都一样, 于是
+    "锁具体设备"退化成"锁全局采集", 两台不同的麦克风互相打架. 设备名是唯一能区分
+    它们、又能被人读懂的东西.
+    """
+    if not device_name:
         return f"{_LOCK_KEY_PREFIX}_default"
-    s = re.sub(r"[^a-zA-Z0-9_-]", "_", str(device_id))
-    return f"{_LOCK_KEY_PREFIX}_{s}" or f"{_LOCK_KEY_PREFIX}_default"
+    s = re.sub(r"[^a-zA-Z0-9_-]", "_", str(device_name))
+    # 设备名常是纯中文 (「外置麦克风」「内置麦克风」), 净化后只剩一串下划线会互相撞上;
+    # 后缀一段名字哈希, 保证"不同设备必不同 key", 前缀保留可读性.
+    digest = hashlib.md5(device_name.encode("utf-8")).hexdigest()[:8]
+    return f"{_LOCK_KEY_PREFIX}_{s[:32]}_{digest}"
 
 
 class MiniAudioCaptureSource(AudioCaptureSource):
@@ -105,6 +115,8 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._aec_failures = 0
         # 设备被别的进程占用 → 生命周期已 enter 但无设备空转 (degraded). 见 start().
         self._degraded = False
+        # 解析到的设备名 (None = 系统默认输入), 供 device_explain / 日志说清"到底哪台".
+        self._device_name: str | None = None
 
     @property
     def sample_rate(self) -> int:
@@ -163,8 +175,9 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         if self._started:
             return
 
-        device_id = self._find_device()
-        lock_key = _device_lock_key(device_id)
+        device_id, device_name = self._find_device()
+        self._device_name = device_name
+        lock_key = _device_lock_key(device_name)
         self._locker = self._workspace.lock(lock_key)
         if not self._locker.acquire(timeout=0):
             # 设备被另一进程占用: 生命周期已 enter, 但无设备空转 (degraded). is_running()
@@ -179,10 +192,11 @@ class MiniAudioCaptureSource(AudioCaptureSource):
 
         self._degraded = False
 
-        if device_id is not None:
-            self._logger.info("Audio capture using device id=%s", device_id)
-        else:
-            self._logger.info("Audio capture using default input device")
+        # 打设备名而不是 id: id 是 cdata 指针, 对所有设备 repr 都一样, 打出来读不出"哪台".
+        self._logger.info(
+            "Audio capture using %s",
+            repr(device_name) if device_name else "the system default input device",
+        )
 
         self._capture = miniaudio.CaptureDevice(
             input_format=miniaudio.SampleFormat.SIGNED16,
@@ -204,7 +218,8 @@ class MiniAudioCaptureSource(AudioCaptureSource):
             return "degraded: device locked by another process, no capture"
         if self._capture is None:
             return "not started"
-        return f"miniaudio capture, {self._config.sample_rate}Hz, " \
+        where = f"device={self._device_name!r}" if self._device_name else "device=system default input"
+        return f"miniaudio capture [{where}], {self._config.sample_rate}Hz, " \
                f"{self._config.channels}ch, {self._config.format}"
 
     def is_degraded(self) -> bool:
@@ -258,15 +273,33 @@ class MiniAudioCaptureSource(AudioCaptureSource):
 
     # -- internals --
 
-    def _find_device(self):
-        pattern = self._config.device_pattern.lower()
+    def _find_device(self) -> tuple[object | None, str | None]:
+        """按 ``device_pattern`` (名字小写子串) 解析输入设备; 返回 (device_id, name).
+
+        **空 pattern 是"没有指定", 不是"匹配一切".** 空串作为子串命中任何名字, 会静默
+        拿到枚举里的第一台 —— macOS 上经常是 BlackHole 这类数字静音设备 (实测 -200dB,
+        逐帧完全静音), 于是日志写着"匹配成功", 而耳朵是空的. 这里与 player 的
+        ``_find_device`` 对齐: 返回 (None, None), 交给 miniaudio 打开系统默认输入.
+
+        匹配到多台时取第一台; 指定了 pattern 却一台都不匹配时记 warning 再退回默认 ——
+        静默退回会让"设备发现失败"永远看不见.
+        """
+        pattern = (self._config.device_pattern or "").strip().lower()
+        if not pattern:
+            return None, None
         try:
             for d in miniaudio.Devices().get_captures():
-                if pattern in d['name'].lower():
-                    return d['id']
+                name = d["name"]
+                if pattern in name.lower():
+                    return d["id"], name
         except Exception as e:
             self._logger.warning("Device enumeration failed: %s, using default", e)
-        return None
+            return None, None
+        self._logger.warning(
+            "No input device matches %r — falling back to the system default input",
+            self._config.device_pattern,
+        )
+        return None, None
 
     def _fan_out(self, chunk: AudioChunk) -> None:
         """public-internal: 把一帧分发给所有注册的观察者.
