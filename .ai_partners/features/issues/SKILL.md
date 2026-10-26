@@ -38,6 +38,18 @@ ticket, and it is worth amending this file afterwards so the next reader inherit
 it.
 
 
+## Language
+
+Issues are written in **whatever language the reporter writes in**. There is no
+mandate: a ticket's job is to be understood by whoever fixes it, and forcing a
+language onto the person who hit the bug trades their clarity for our uniformity.
+
+Our own pull requests are **English-first**. A PR outlives the conversation that
+produced it and is read by people — and models — outside it, so it is written in
+the language of the repository rather than the language of the room. (Provisional:
+the human's "we go English for local PRs for now" is a decision of practice, not a
+statute.)
+
 ## States — an early convention, open to change
 
 State lives in labels; GitHub's own open/closed remains the outer boundary.

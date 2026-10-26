@@ -112,6 +112,23 @@ carries a reason; a ticket is never closed without a receipt.
 
 > "状态名有早期约定, 但开放空间, 再慢慢治理好." — thirdgerb
 
+### D6 — Issues follow the reporter's language; our PRs are English-first (2026-10-26)
+
+The first real PR made the friction visible: its body was written in Chinese
+because the conversation was, and it has to be read by people and models who were
+not in that conversation.
+
+- **Issues: no mandate.** A ticket is written in whatever language the reporter
+  writes in. Forcing a language onto the person who hit the bug trades their
+  clarity for our uniformity.
+- **Our pull requests: English-first.** A PR outlives the conversation that
+  produced it, so it is written in the repository's language rather than the
+  room's. Provisional — "we go English for local PRs for now" is a decision of
+  practice, not a statute.
+
+The general shape: **artefacts that outlive the conversation are English;
+artefacts answered in the room follow the room.**
+
 ## First-stage acceptance — the point of this workstream
 
 The mechanism cannot be accepted by inspection; it can only be accepted by use.
