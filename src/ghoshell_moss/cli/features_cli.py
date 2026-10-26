@@ -147,6 +147,58 @@ def specification(
 
 
 # ---------------------------------------------------------------------------
+# issues
+# ---------------------------------------------------------------------------
+
+#: Where a project states how it governs issues. Read-only by design: the command
+#: exists so the convention is discoverable from the features surface, not so the
+#: framework can own issue tracking — issues live wherever the project keeps them.
+ISSUES_CONVENTION = Path("issues") / "SKILL.md"
+
+
+@features_app.command("issues", short_help="Read this project's issue convention (issues/SKILL.md).")
+def issues_cmd(
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+    ),
+):
+    """
+    Print the project's issue convention.
+
+    The features system governs how work evolves; issues are the outside world
+    knocking. This command is only an entry point — it reads and prints
+    `<features>/issues/SKILL.md` and does nothing else. Where issues actually
+    live (GitHub, GitLab, elsewhere), which tool reads them, and who may open or
+    close one are the project's business, stated in that file.
+
+    A project without the file is not an error: it simply has not stated a
+    convention yet, and the message says how to write one.
+    """
+    fd = _resolve_dir(features_dir)
+    path = fd / ISSUES_CONVENTION
+
+    if not path.is_file():
+        print_info(f"No issue convention in this project — {path} does not exist.")
+        echo("")
+        echo("  Issues are not part of the features data model: features track how work")
+        echo("  evolves, issues arrive from outside. This command only surfaces the")
+        echo("  convention. A project that wants one states it in:")
+        echo(f"    {path}")
+        echo("")
+        echo("  That file should answer, for a reader with no context:")
+        echo("    - where issues live and which tool reads them (gh, glab, anything)")
+        echo("    - the state machine, and what each state means")
+        echo("    - label rules, and which of them are firm vs provisional")
+        echo("    - who may open, comment on, and close one")
+        echo("    - what a closing receipt must contain")
+        return
+
+    echo(path.read_text(encoding="utf-8"))
+    echo(f"\nConvention path: {path.resolve()}")
+
+
+# ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
 

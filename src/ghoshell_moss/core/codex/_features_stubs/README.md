@@ -306,6 +306,20 @@ collaboration with the model recording results.
 
 See [regressions/README.md](regressions/README.md).
 
+### Issues
+
+Issues are the outside world knocking; features track how work evolves. They are deliberately **not** part
+of the features data model: an issue's lifecycle is driven by people outside the project, and its source of
+truth is whatever tracker the project uses (GitHub, in MOSShell's case) — never a file in this directory.
+
+What the features system provides is a **slot and an entry point**. If a project states its convention in
+`issues/SKILL.md`, `moss features issues` prints it; if not, the command says so and explains what such a
+file should answer. The command reads and nothing else — no parsing, no validation, no caching — so the
+convention can change without touching code, and no tracker is imposed on anyone.
+
+The slot is what makes issue governance discoverable to a zero-context model arriving in an unfamiliar
+project: it is visible from the features surface even while it is empty.
+
 ### Project Surface
 
 The project's L3 — its product promises — is presented through a bounded scope of documents, code, and CLI
