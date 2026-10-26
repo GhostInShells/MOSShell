@@ -1,4 +1,11 @@
+import os
+
 from ghoshell_moss.ghosts.dolores import DoloresMeta, DoloresProviderSpec
+
+# Seed-time default model. Env override lets a human pin a different Claude without
+# editing this file; it only matters on first boot (before ghost home is materialized),
+# after which .dsh/settings.yaml owns the value.
+_DEFAULT_MODEL = os.environ.get("MOSS_CLAUDE_DEFAULT_MODEL", "claude-opus-5-5")
 
 ghost = DoloresMeta(
     name="claude",
@@ -18,5 +25,5 @@ ghost = DoloresMeta(
             base_url_env="ANTHROPIC_BASE_URL",
         ),
     ],
-    default_model=("anthropic", "claude-opus-4-7"),
+    default_model=("anthropic", _DEFAULT_MODEL),
 )
