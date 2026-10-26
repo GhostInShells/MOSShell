@@ -5,6 +5,7 @@ Capture fans PCM out locally (no Zenoh), so the contract under test is:
 register an observer via ``on_audio_chunk``, dispose it, and consumers read
 chunks from an in-process queue.
 """
+import re
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -312,3 +313,44 @@ def test_aec_self_disables_after_repeated_failures():
     # 阈值已达 → AEC 卸载, 后续帧不再调 process (降级但不再逐帧失败)
     assert np.array_equal(source._apply_aec(samples), samples)
     assert aec.calls == _AEC_MAX_FAILURES
+
+
+# ── 设备解析 (D26: 空 pattern 曾命中一切, 静默打开枚举第一台) ────────────
+
+
+def test_empty_device_pattern_means_no_device_not_match_all():
+    """空 pattern = 没指定 → (None, None), 交给系统默认输入.
+
+    回归点: 空串作为子串命中任何设备名, 会返回枚举里的第一台 (macOS 上常是
+    BlackHole 这类数字静音设备) —— 日志写着匹配成功, 而耳朵是空的.
+    """
+    source = _make_source(device_pattern="")
+    assert source._find_device() == (None, None)
+
+
+def test_unmatched_pattern_falls_back_to_default():
+    """指定了却匹配不上 → 退回默认, 不是静默坏掉."""
+    source = _make_source(device_pattern="device-that-does-not-exist-xyz")
+    assert source._find_device() == (None, None)
+
+
+def test_device_lock_key_is_per_device():
+    """锁 key 用设备名派生: 不同设备必不同 key, 且符合 workspace.lock 字符约束."""
+    from ghoshell_moss.host.audios.miniaudio_impl.miniaudio_capture import _device_lock_key
+
+    keys = {
+        name: _device_lock_key(name)
+        for name in (None, "BlackHole 2ch", "外置麦克风", "内置麦克风", "MacBook Pro麦克风")
+    }
+    assert len(set(keys.values())) == len(keys)  # 纯中文设备名也不能互撞
+    for key in keys.values():
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", key), key
+
+
+def test_device_explain_names_the_resolved_device():
+    """explain 里要看得到解析到的设备名 —— 否则"发现到哪台"谁都不知道."""
+    source = _make_source()
+    source._device_name = "外置麦克风"
+    source._capture = object()  # 只需非 None: explain 只读它判断是否已启动
+    explain = source.device_explain()
+    assert "外置麦克风" in explain
