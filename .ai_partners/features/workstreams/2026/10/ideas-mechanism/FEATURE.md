@@ -619,3 +619,61 @@ moves a node. Re-layout restarts the simulation instead of freezing it.
 - **The lock does not span read-modify-write.** `apply()` locks only the write, so the page
   and the CLI can overwrite each other silently. Versions let you go back; they do not stop
   the overwrite. This is the one remaining data-loss path with no signal.
+
+
+## D27 — `IDEAS.md` is the discovery protocol; `--root` is only a default (2026-10-27)
+
+Found while trying to open a journal-scoped graph next to a project-scoped one. The node
+could not do it, and the reason was not a missing feature — it was a wrong identity rule.
+
+His words:
+
+> 「我认为 root 是目录发现空间, 它指向仅仅影响默认的发现和使用.」
+> 「拓扑是 (root) -> (ideas group) 两层目录空间. 重申, root 仅仅用来做发现.」
+> 「IDEAS.md 是一个目录级的发现协议, 它不需要任何地方照抄 GROUND, 而是 GROUND 直接 pin
+> 对 ideas 的发现就可以做到自动发现. IDEAS 本身符合一个 spec (node 的), 则模型自己可以
+> 理解如何在 bash 空间里查找它, 也不依赖 GROUND.md 预先 pin.」
+
+### What this supersedes
+
+- **D23 "Discovery is the root scan."** The scan may remain the *default* radius, but it is
+  not what makes something a group. The marker is.
+- Revision 2 already said "Discovery = glob `*/IDEAS.md`" (line ~473). D23 replaced that
+  with the root scan, and the drift starts there. The sign was kept, but only as something
+  the node *writes*; nothing reads it to decide "this is a group".
+
+Layering, stated once so it stops being re-derived:
+
+1. **Marker** (owned by this node): a directory containing `IDEAS.md` **is** a group. The
+   address of the group is the address of that directory.
+2. **Discovery** (owned by whoever looks): the node scans its root by default; the model can
+   glob for `IDEAS.md` anywhere; GROUND may pin it. None of these define the protocol.
+3. **Cache** (optional, ground's business): pinning the *results* of discovery into a frame
+   is a budget decision, not a claim about what exists.
+
+### The four defects dogfooding exposed
+
+1. `GraphStore.reload()` decides group-hood by `root.iterdir()` + `is_dir()`. `IDEAS.md` is
+   written on publish (`write_ideas_sign`) and **never read on the discovery path**.
+2. A group therefore has **no address** — its name is "a first-level directory under the
+   root". This makes `--root` a boundary instead of a default: two runs see two disjoint
+   worlds, and the journal group and the project group cannot be seen together.
+3. **Creating a group is not a data-plane verb.** `create_group` is reachable only from the
+   page's "new group"; neither `cli.py` nor the channel exposes it. A model that wants a
+   graph is pushed to `mkdir`, and the notice actively says `mkdir one`.
+4. **The surface is not self-explaining about the protocol.** Nothing on the channel says
+   "a directory with `IDEAS.md` is a group", and nothing says who may start one. A model
+   that does not know the rule cannot follow it, and will reach for a shell instead.
+
+### Direction (implemented below)
+
+- A group is a directory containing `IDEAS.md`; a directory without the sign is not one.
+- `--root` = default discovery radius + default creation location. Named by path, a group
+  may live anywhere.
+- Creating a group = writing the sign + an empty graph. It becomes a data-plane verb
+  (`new(path)`), available to the model, the CLI and the page alike.
+- Notices and errors become declarative. An error may say what is missing; it must not
+  tell the reader to run a shell command.
+
+Still open: how two groups with the same directory name are told apart when both are
+attached from different places (candidate: the path is the key, the name is the label).

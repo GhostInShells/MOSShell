@@ -386,9 +386,19 @@ class GraphStore:
         self.broken = []
         if not self.root.exists():
             return
+
         for child in sorted(self.root.iterdir()):
             if not child.is_dir() or child.name.startswith("."):
                 continue
+            if not (child / IDEAS).is_file():
+                # Discovery is the marker, not the position: a directory is a group
+                # because it carries the sign. A stray graph without one is still
+                # reported — a group that silently vanishes is worse than a broken one.
+                if (child / LIVE_GRAPH).exists() or (child / GRAPH).exists():
+                    self.broken.append(
+                        f"{child.name}: no {IDEAS} — a group is a directory carrying one")
+                continue
+
             group = Group(name=child.name, path=child)
             try:
                 self._load_group(group)
@@ -492,19 +502,46 @@ class GraphStore:
         for file, _meta, _body in parsed:
             os.replace(file, trash / file.name)
 
-    def create_group(self, name: str) -> Group:
-        """A group is a directory — creating one is this mkdir and nothing else.
 
-        The page's "new group" lands here: the human names it, the directory *is* the
-        group, and the graph appears empty on the next reload.
+    def create_group(self, path: str) -> Group:
+        """Create a group at `path` — writing the sign is the whole act.
+
+        A group is a directory carrying `IDEAS.md`, so creating one is writing that
+        sign; the empty graph follows on the next reload. `path` resolves against the
+        root, so a plain name stays the common case. An absolute path lets a group
+        live anywhere: the root is a default discovery radius, not a boundary.
         """
-        clean = str(name or "").strip()
-        if not clean or clean.startswith(".") or "/" in clean or "\\" in clean:
-            raise ValueError(f"bad group name {clean!r}")
-        (self.root / clean).mkdir(parents=True, exist_ok=True)
+        clean = str(path or "").strip()
+        if not clean:
+            raise ValueError("new needs a path")
+        target = Path(clean).expanduser()
+        if not target.is_absolute():
+            target = self.root / clean
+        target = target.resolve()
+        if target == self.root:
+            raise ValueError("the root itself is not a group")
+        if target.exists() and not target.is_dir():
+            raise ValueError(f"{target} is not a directory")
+        if self.root in target.parents and target.parent != self.root:
+            raise ValueError(
+                f"{target} is nested under the root — the topology is (root) -> (groups), "
+                "one level deep. Put the group directly under the root, or outside it and "
+                "name it by path.")
+        target.mkdir(parents=True, exist_ok=True)
+        write_ideas_sign(Group(name=target.name, path=target))
         self.reload()
-        return self.require_group(clean)
+        group = self.groups.get(target.name)
+        if group is not None and group.path.resolve() == target:
+            return group
+        return self._group_at(target)
 
+    def _group_at(self, path: Path) -> Group:
+        """Resolve a group by its address — the door for a group outside the root."""
+        if not (path / IDEAS).is_file():
+            raise KeyError(f"{path} is not a group (no {IDEAS})")
+        group = Group(name=path.name, path=path)
+        self._load_group(group)
+        return group
     # -- lookup -------------------------------------------------------------
     def group_of(self, name: str = "") -> Group | None:
         """No name = the group this run is *about*: the biggest active one.
@@ -523,12 +560,37 @@ class GraphStore:
             return None
         return max(alive, key=lambda g: len(g.nodes))
 
+
     def require_group(self, name: str = "") -> Group:
         group = self.group_of(name)
-        if group is None:
-            raise KeyError(f"no group {name!r}")
-        return group
+        if group is not None:
+            return group
+        group = self._group_by_path(name)
+        if group is not None:
+            return group
+        known = ", ".join(sorted(self.groups)) or "(none)"
+        raise KeyError(f"no group {name!r} — known under {self.root}: {known}")
 
+    def _group_by_path(self, raw: str) -> Group | None:
+        """A group named by address rather than by name under the root.
+
+        `--root` decides what is discovered, not what may be used: a path carrying
+        `IDEAS.md` is a group wherever it lives. (Group names hold no slash, so the
+        presence of one is what makes this a path.)
+
+        A relative path resolves against the root, not the process cwd — the root is
+        the frame of reference for every name; an absolute path names its own frame.
+        """
+        text = str(raw or "").strip()
+        if not text or "/" not in text:
+            return None
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.root / candidate
+        candidate = candidate.resolve()
+        if not (candidate / IDEAS).is_file():
+            return None
+        return self._group_at(candidate)
     def find(self, key: str, group: str = "") -> tuple[Group | None, Node | None]:
         order = [self.require_group(group)] if group else list(self.groups.values())
         for g in order:
