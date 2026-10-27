@@ -1,8 +1,8 @@
 ---
 status: active
 graph: graph.json
-updated: '2026-10-27T16:28:31'
-saved: r116 v116
+updated: '2026-10-27T19:54:33'
+saved: r125 v125
 ---
 
 # stage3
@@ -15,6 +15,7 @@ One line on what this group is — for whoever opens it next.
 
 > This file is a **sign**: what this is, and whether it is alive. It **does not list
 > nodes** — they live in the graph, and a second copy would drift.
+
 
 
 

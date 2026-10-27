@@ -1,0 +1,10 @@
+# Written by the ideas node when this group was made.
+#
+# What a group *is*: `IDEAS.md` (the sign) and `graph.json` (the last published version).
+# Everything else here is generated from them and stays out of history.
+#
+.graph.json
+ops.jsonl
+.lock
+.trash/
+.versions/
