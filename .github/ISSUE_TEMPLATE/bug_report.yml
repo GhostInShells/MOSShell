@@ -1,0 +1,56 @@
+name: Bug report
+description: A defect you can reproduce. One runnable command beats an adjective.
+title: "[area] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two screenshots beat a paragraph; one runnable command beats "something looks off".
+        Write in the language you think in — this project reads both.
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What happened, and what did you expect
+      description: Both halves. Without the expected half, a reader cannot tell a bug from a decision.
+      placeholder: |
+        saw:
+        expected:
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: From a clean state. Commands, CTML, or an exact code location — not a conclusion.
+      placeholder: |
+        1. ...
+        2. ...
+        3. observed: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Without these, the reader can only guess whether it is you.
+      value: |
+        - repo / branch / commit:
+        - OS:
+        - node or mode:
+        - viewport or device:
+
+  - type: textarea
+    id: expected_fix
+    attributes:
+      label: What "fixed" should look like
+      description: Optional. Something observable, so this ticket can be judged instead of argued.
+
+  - type: input
+    id: authorisation
+    attributes:
+      label: Authorisation (models only)
+      description: If a model filed this on someone's behalf, name the person who authorised this specific ticket. Humans leave it empty.
