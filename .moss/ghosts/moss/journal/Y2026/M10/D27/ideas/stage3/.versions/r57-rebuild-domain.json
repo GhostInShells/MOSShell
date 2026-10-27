@@ -1,0 +1,219 @@
+{
+  "rev": 57,
+  "name": "stage3",
+  "meta": {
+    "concepts": {
+      "done": "#7ee787",
+      "todo": "#58a6ff",
+      "domain": "#f0b429",
+      "later": "#8aa89a"
+    },
+    "default_concept": "done"
+  },
+  "nodes": {
+    "n1": {
+      "label": "主任务",
+      "body": "今天真正要推的那件事。还没有子节点 —— 等你放出来。",
+      "concept": "domain",
+      "weight": 1.0,
+      "created": "2026-10-27T14:28:42"
+    },
+    "n2": {
+      "label": "摩擦点",
+      "body": "协作里卡住的地方。它们不是问题本身，是压在最底下那颗盘上的一摞小盘。",
+      "concept": "domain",
+      "weight": 1.0,
+      "created": "2026-10-27T14:28:42"
+    },
+    "n3": {
+      "label": "issues",
+      "body": "要提交到 github 的问题。",
+      "concept": "domain",
+      "weight": 1.0,
+      "created": "2026-10-27T14:28:42"
+    },
+    "n4": {
+      "label": "调研",
+      "body": "动手之前要把机制读清楚的。",
+      "concept": "domain",
+      "weight": 1.0,
+      "created": "2026-10-27T14:28:42"
+    },
+    "n5": {
+      "label": "开发",
+      "body": "已经在改代码的。",
+      "concept": "domain",
+      "weight": 1.0,
+      "created": "2026-10-27T14:28:42"
+    },
+    "n10": {
+      "label": "screen族",
+      "body": "screen 的 family：docstring 与 index.html 都有 bare，model.FAMILIES 只有 grid/stack/pip。文档比代码多一档。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:43"
+    },
+    "n12": {
+      "label": "启动",
+      "body": "moss start 一次没跑过；CLAUDE.md 里的 @src/ghoshell_moss/cli/start.md 没被解析，拿到的是目录不是地图。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:43"
+    },
+    "n14": {
+      "label": "默认场",
+      "body": "mode 里的 ground 该拿掉或确保没有；project ground 还要 ignore .moss/ 与 ghost 模板。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:44"
+    },
+    "n16": {
+      "label": "AGENTS",
+      "body": "CLAUDE.md 改 AGENTS.md 当正本。dsh 的候选表把 AGENTS.md 排第一，同目录逐字节相同会去重。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:44"
+    },
+    "n18": {
+      "label": "图根",
+      "body": "ideas 的 root 到底是边界还是默认发现半径 —— 今天已经改成后者。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:44"
+    },
+    "n20": {
+      "label": "替换",
+      "body": "file_editor 的 str_replace 吃掉边界换行，五次多行替换四次粘连成语法错误；按行寻址的 edit(region) 才稳。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:44"
+    },
+    "n22": {
+      "label": "表面",
+      "body": "ideas 的表面协议不自解释：无组时不说谁开局，错误信息还指着 shell。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:45"
+    },
+    "n24": {
+      "label": "screen",
+      "body": "待提交 github：screen 的 bare family 文档/实现不一致。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:45"
+    },
+    "n26": {
+      "label": "dsh指令",
+      "body": "dsh 怎么读 CLAUDE.md / AGENTS.md：候选顺序、逐字节去重、.local 覆盖。代码已读，结论待成文。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:45"
+    },
+    "n28": {
+      "label": "场机制",
+      "body": "moss ground 的机制：标记发现、pin、groundset 子场、refresh 缓存、三处场挂法。",
+      "concept": "todo",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:45"
+    },
+    "n30": {
+      "label": "发现",
+      "body": "ideas 发现-读取改造：IDEAS.md 成为发现协议，root 降为默认半径，new(path) 从通道开局。23 tests passed。",
+      "concept": "done",
+      "weight": 0.8,
+      "created": "2026-10-27T14:28:46"
+    }
+  },
+  "edges": [
+    {
+      "id": "e6",
+      "from": "n1",
+      "to": "n2",
+      "kind": "detail"
+    },
+    {
+      "id": "e7",
+      "from": "n2",
+      "to": "n3",
+      "kind": "depend"
+    },
+    {
+      "id": "e8",
+      "from": "n2",
+      "to": "n4",
+      "kind": "depend"
+    },
+    {
+      "id": "e9",
+      "from": "n2",
+      "to": "n5",
+      "kind": "depend"
+    },
+    {
+      "id": "e11",
+      "from": "n2",
+      "to": "n10",
+      "kind": "detail"
+    },
+    {
+      "id": "e13",
+      "from": "n2",
+      "to": "n12",
+      "kind": "detail"
+    },
+    {
+      "id": "e15",
+      "from": "n2",
+      "to": "n14",
+      "kind": "detail"
+    },
+    {
+      "id": "e17",
+      "from": "n2",
+      "to": "n16",
+      "kind": "detail"
+    },
+    {
+      "id": "e19",
+      "from": "n2",
+      "to": "n18",
+      "kind": "detail"
+    },
+    {
+      "id": "e21",
+      "from": "n2",
+      "to": "n20",
+      "kind": "detail"
+    },
+    {
+      "id": "e23",
+      "from": "n2",
+      "to": "n22",
+      "kind": "detail"
+    },
+    {
+      "id": "e25",
+      "from": "n3",
+      "to": "n24",
+      "kind": "detail"
+    },
+    {
+      "id": "e27",
+      "from": "n4",
+      "to": "n26",
+      "kind": "detail"
+    },
+    {
+      "id": "e29",
+      "from": "n4",
+      "to": "n28",
+      "kind": "detail"
+    },
+    {
+      "id": "e31",
+      "from": "n5",
+      "to": "n30",
+      "kind": "detail"
+    }
+  ]
+}
