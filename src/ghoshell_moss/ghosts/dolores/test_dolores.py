@@ -3561,8 +3561,8 @@ class TestDoloresMemories:
         hooks = branch.path / "hooks"
         hooks.mkdir()
         (hooks / "branch_view.py").write_text(
-            "import os, pathlib\n"
-            "d = pathlib.Path(os.environ['MEMENTO_BRANCH_DIR'])\n"
+            "from ghoshell_moss.memento.hooks import MementoHookEnv\n"
+            "d = MementoHookEnv.BRANCH_DIR.path()\n"
             "print((d / 'plan.md').read_text())\n",
             encoding="utf-8",
         )
