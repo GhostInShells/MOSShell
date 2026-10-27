@@ -3591,8 +3591,7 @@ class TestBuildChannel:
         gs = DefaultGroundSet(workspace_root=tmp_path)
         frame_root = tmp_path / "frames"
         frame_root.mkdir()
-        chan = build_dolores_channel(
-            groundset=gs, workspace_root=tmp_path, frame_root=frame_root
+        chan = build_dolores_channel(groundset=gs, frame_root=frame_root
         )
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
@@ -3608,7 +3607,7 @@ class TestBuildChannel:
 
         (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
         gs = DefaultGroundSet(workspace_root=tmp_path)
-        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path)
+        chan = build_dolores_channel(groundset=gs)
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             names = {m.name for m in runtime.metas().values()}
@@ -3630,7 +3629,7 @@ class TestBuildChannel:
             read_identity=lambda: ("deepseek-official", "deepseek-flash", "low"),
             declare=lambda provider, model, effort: f"declared {provider}/{model}",
         )
-        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path, model=organ)
+        chan = build_dolores_channel(groundset=gs, model=organ)
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             metas = {m.name: m for m in runtime.metas().values()}
@@ -3647,7 +3646,7 @@ class TestBuildChannel:
 
         (tmp_path / "GROUND.md").write_text("---\nname: g\n---\n# G\n")
         gs = DefaultGroundSet(workspace_root=tmp_path)
-        chan = build_dolores_channel(groundset=gs, workspace_root=tmp_path)
+        chan = build_dolores_channel(groundset=gs)
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             metas = {m.name: m for m in runtime.metas().values()}
@@ -3709,8 +3708,7 @@ class TestBuildChannel:
         frame_root = tmp_path / "frames"
         frame_root.mkdir()
         seed = Frame(label="orient", questions=["Where am I?"])
-        chan = build_dolores_channel(
-            groundset=gs, workspace_root=tmp_path, frame_root=frame_root, init_frame=seed
+        chan = build_dolores_channel(groundset=gs, frame_root=frame_root, init_frame=seed
         )
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()

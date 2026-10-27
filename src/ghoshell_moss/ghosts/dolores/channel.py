@@ -10,7 +10,7 @@ manager, ghost home), 把子 channel 挂成静态子节点. 由 ``Ghost.channel(
 Example:
     from ghoshell_moss.ghosts.dolores.channel import build_dolores_channel
 
-    chan = build_dolores_channel(groundset=gs, memento_manager=mm, workspace_root=ghost_home)
+    chan = build_dolores_channel(groundset=gs, memento_manager=mm)
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ __all__ = ["build_dolores_channel"]
 def build_dolores_channel(
     *,
     groundset: GroundSet,
-    workspace_root: str | Path,
     memento_manager: EgoMementoManager | None = None,
     memento_root: str | Path | None = None,
     commit_anchor: Callable[[str], str | None] | None = None,
@@ -47,7 +46,6 @@ def build_dolores_channel(
 
     :param groundset: ghost 持有的 GroundSet — 注入给 ground 子 channel 共享, 不新建
         (两个 set 压同一目录 = 两个 snapshot owner).
-    :param workspace_root: 子 channel 相对路径解析基点 (ghost home).
     :param memento_manager: ghost 持有的 memento 服务 — memento 子 channel 读它. None
         = 不挂记忆器官 (memento 未启用时).
     :param memento_root: 轨迹的磁盘位置 (进自解释). None = 不复述路径.
@@ -77,7 +75,6 @@ def build_dolores_channel(
     chan.import_channels(
         new_ground_channel(
             groundset,
-            workspace_root=workspace_root,
             render_root=False,
             name="ground",
             description=(

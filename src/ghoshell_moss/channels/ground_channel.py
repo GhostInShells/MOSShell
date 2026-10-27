@@ -30,6 +30,8 @@ import asyncio
 import logging
 import os
 import re
+import shlex
+import sys
 from pathlib import Path
 
 import yaml
@@ -41,8 +43,10 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     MutableChannel,
     new_channel,
 )
-from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet
+from ghoshell_moss.ground._render import ground_meta
+from ghoshell_moss.ground._manager import GroundSlot, GroundsManager
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
 from ghoshell_moss.ground.contract import (
     PIN_LABEL_MAX_LEN,
@@ -76,210 +80,76 @@ _REQUIRED_ARGS = {
 # -- helpers ---------------------------------------------------------------
 
 
-def _resolve_address(value: str | Path, root: Path) -> Path:
-    p = Path(value)
-    if not p.is_absolute():
-        p = root / p
-    return p.resolve()
+def _instruction_prose(manager: "GroundsManager | None" = None) -> str:
+    """The one-paragraph mechanism note — it explains relations, never lists commands.
 
-
-def _find_ancestor_ground(start: Path) -> Path | None:
-    """从 start 的父目录向上找最近的 GROUND.md, 边界 $HOME."""
-    start = start.resolve()
-    home = Path(os.environ.get("HOME", "/")).resolve()
-    current = start.parent
-    while True:
-        if (current / DEFAULT_L0_FILENAME).is_file():
-            return current
-        if current == home or current == current.parent:
-            return None
-        current = current.parent
-
-
-async def _render_dir(dir_path: str | Path, workspace: Path) -> str:
-    """渲染一个目录的 ground 帧 — ground-root 或 walk 模式 (无状态 peek, mirror ``moss ground render``).
-
-    只读: 用一次性 DefaultGroundSet, open → render → close; 未 dirty 不触发 sediment.
+    Two shapes: a single rooted set (the old path, one home) and several homes (one ghost
+    governing thought / body / environment). The latter describes relations only; content
+    lives in each sub-channel's notice.
     """
-    path = _resolve_address(dir_path, workspace)
-    if not path.is_dir():
-        return f"[ground] not a directory: {path}"
-
-    if (path / DEFAULT_L0_FILENAME).is_file():
-        async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-            ground = await gs.open(path)
-            return str(await ground.render())
-
-    ground_root = _find_ancestor_ground(path)
-    if ground_root is None:
-        return f"[ground] no GROUND.md from {path} up to $HOME — run `moss ground init`"
-    doc_path = ground_root / DEFAULT_L0_FILENAME
-    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-        ground = await gs.open(path, doc=doc_path)
-        return str(await ground.render(cwd=path))
-
-
-async def _meta_dir(dir_path: str | Path, workspace: Path) -> str:
-    """无状态 peek 场 meta — mirror ``moss ground meta``."""
-    path = _resolve_address(dir_path, workspace)
-    if (path / DEFAULT_L0_FILENAME).is_file():
-        ground_root = path
-    else:
-        ground_root = _find_ancestor_ground(path)
-        if ground_root is None:
-            return f"[ground] no GROUND.md from {path} up to $HOME"
-    doc_path = ground_root / DEFAULT_L0_FILENAME
-    async with DefaultGroundSet(workspace_root=workspace, materialize=False) as gs:
-        ground = await gs.open(path, doc=doc_path)
-        return await _ground_meta(ground)
-
-
-async def _ground_meta(ground: Ground) -> str:
-    """场 meta — 身份 (cd / $id) + pin TOC + 法链计数."""
-    from ghoshell_moss.ground._render import render_meta
-
-    chain = await ground.chain_text()
-    return render_meta(
-        root=ground.root,
-        doc_path=ground.doc_path,
-        chain=chain,
-        pins=ground.pins(),
-        id_=ground.convention.id,
-        label=ground.label,
-    )
-
-
-def _instruction_prose() -> str:
-    """Ground 机制一句话 — 不列命令 (命令签名由 interface 自动反射)."""
+    if manager is not None:
+        lines = [
+            "## Ground (cognitive field)",
+            "A field is a directory marked by GROUND.md: frontmatter (identity + pins) + body (law).",
+            "This ghost governs several homes at once. Each answers a different question, and none "
+            "overrides another:",
+        ]
+        for slot in manager.slots():
+            state = "mounted" if slot.mounted else f"absent ({slot.reason})"
+            lines.append(f"- `{slot.key}` — {state}")
+        lines += [
+            "The homes are peers, not a hierarchy: nothing inherits law from a neighbour. A home "
+            "without GROUND.md simply has none, and never borrows one from above.",
+            "Content lives in each home's own sub-channel (named notice) and is re-rendered only on "
+            "startup / open / refresh; every other round reads the cache. `refresh` is what brings "
+            "new content; `stats` reports when each field was last rendered and whether its source "
+            "changed since.",
+            "Heavier read views (render / meta / validate / templates) are deliberately NOT "
+            "duplicated here: run them through `ground_run` with `moss ground <verb>` (its cwd is the "
+            "home you name), or straight from bash when you have one.",
+            "With more than one home mounted, `ground=<label>` is required on every command that "
+            "touches a field tree. It is never guessed: a wrong guess would render or rewrite another "
+            "home's files and still look like success.",
+        ]
+        return "\n".join(lines)
     return (
-        "## Ground (认知场)\n"
-        "场 = 一个被 GROUND.md 标记的目录: frontmatter (身份 + pins) + body (法).\n"
-        "本 channel 持有一个场集: 锚点场 (root) 的 body 上行到 ghost instruction 呈现, 这里只挂 "
-        "root 用 ``groundset:`` 字段声明展开的子场. 子场身份与帧都在各自 notice, 且**只在 "
-        "startup / open / refresh 时重渲染** (refresh 即显式付费重读法+帧); 其余每轮吃缓存, "
-        "不读盘. 改了场文件后调 `refresh` 才能看到新内容."
+        "## Ground (cognitive field)\n"
+        "A field is a directory marked by GROUND.md: frontmatter (identity + pins) + body (law).\n"
+        "This channel holds one rooted set: the root field's body is surfaced elsewhere, and only the "
+        "fields declared by its ``groundset:`` entry are mounted here as sub-channels. A field's "
+        "identity and frame both live in its notice and are re-rendered **only on startup / open / "
+        "refresh** (a refresh is what re-reads the law and pays for the frame); every other round "
+        "reads the cache and touches no disk. Call `refresh` after editing a field file. Heavier read "
+        "views go through `ground_run` with `moss ground <verb>`."
     )
 
 
-def _upsert_pin(ground_file: str | Path, pin: Pin, workspace: Path) -> str:
-    """把 pin 增改到指定 GROUND.md (同 label 覆盖). 文件不存在 → 报告, 不创建.
+async def _upsert_pin(ground_file: str | Path, pin: Pin) -> str:
+    """增改一枚 pin — 纯文件操作, 走契约上的 classmethod, 不借任何驻留场集.
 
-    同步 IO, 由调用方卸载到线程池. 只重写 frontmatter pins, 不动 body.
+    编辑面只认绝对路径: 多 home 下"相对谁"没有唯一答案, 与其猜一个基点, 不如让
+    调用方把地址写全 (场帧的 meta 首行就是 ``cd <abs>``).
     """
-    gpath = _resolve_address(ground_file, workspace)
-    if gpath.is_dir():
-        gpath = gpath / DEFAULT_L0_FILENAME
-    if not gpath.is_file():
-        return f"[ground] no such GROUND.md: {gpath}"
-
-    contents = load_l0(gpath.parent, gpath.name)
-    pins = [p for p in contents.pins if p.label != pin.label]
-    pins.insert(0, pin)
-    dump_l0_pins(gpath.parent, pins, gpath.name)
-    return f"[ground] pinned {pin.verb}:{pin.label}"
+    try:
+        # 契约上是 classmethod: 走默认实现, 但语义属于 GroundSet 那一层.
+        return await asyncio.to_thread(DefaultGroundSet.upsert_pin, ground_file, pin)
+    except ValueError as e:
+        return f"[ground] {e}"
 
 
-def _validate_text(text: str) -> str:
-    """校验一份 GROUND.md 文本 → 诊断 (errors + warnings). 不 raise, 不写盘."""
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
-    if fm_match:
-        try:
-            fm_data = yaml.safe_load(fm_match.group(1)) or {}
-        except yaml.YAMLError as e:
-            errors.append(f"frontmatter YAML: {e}")
-            return _fmt_diagnostics(errors, warnings)
-    else:
-        fm_data = {}
-        if text.lstrip().startswith("---"):
-            warnings.append(
-                "file starts with '---' but no closing '---' found — frontmatter "
-                "may be unclosed; all pins will be ignored"
-            )
-
-    pins_data = fm_data.get("pins")
-    if pins_data is None:
-        return _fmt_diagnostics(errors, warnings)
-
-    if not isinstance(pins_data, list):
-        errors.append("frontmatter 'pins': must be a list")
-        return _fmt_diagnostics(errors, warnings)
-
-    seen_labels: set[str] = set()
-    for i, entry in enumerate(pins_data):
-        if not isinstance(entry, dict):
-            errors.append(f"pin[{i}]: not a mapping")
-            continue
-        idx = f"pin[{i}]"
-
-        verb = entry.get("verb")
-        if not verb:
-            errors.append(f"{idx}: missing 'verb' field")
-            continue
-        if verb not in _KNOWN_VERBS:
-            warnings.append(f"{idx}: unknown verb '{verb}' — will be skipped on load")
-
-        label = entry.get("label")
-        if not label:
-            errors.append(f"{idx}: missing 'label' field")
-        elif not isinstance(label, str) or not _PIN_LABEL_RE.match(label):
-            errors.append(f"{idx}: label '{label}' does not match [a-zA-Z_][a-zA-Z0-9_-]*")
-        elif len(label) > PIN_LABEL_MAX_LEN:
-            errors.append(f"{idx}: label '{label}' exceeds {PIN_LABEL_MAX_LEN} char limit")
-        else:
-            if label in seen_labels:
-                warnings.append(f"{idx}: duplicate label '{label}'")
-            seen_labels.add(label)
-
-        args = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
-        for field in _REQUIRED_ARGS.get(verb, set()):
-            if field not in args:
-                errors.append(f"{idx} ({verb}): missing required argument '{field}'")
-
-        if verb == "file" and "range" in args:
-            rv = args["range"]
-            if isinstance(rv, int):
-                if rv < 1:
-                    errors.append(f"{idx}: range {rv} must be >= 1 (1-indexed)")
-            elif isinstance(rv, str):
-                m = re.match(r"^(\d+)(?:-(\d+))?$", rv)
-                if m is None:
-                    errors.append(f"{idx}: 'range' '{rv}' does not match pattern N or N-M")
-                elif m.group(2) and int(m.group(1)) > int(m.group(2)):
-                    errors.append(f"{idx}: range start {m.group(1)} > end {m.group(2)}")
-            else:
-                errors.append(f"{idx}: 'range' must be str or int, got {type(rv).__name__}")
-
-    return _fmt_diagnostics(errors, warnings)
-
-
-def _fmt_diagnostics(errors: list[str], warnings: list[str]) -> str:
-    if not errors and not warnings:
-        return "[ground] GROUND.md is valid"
-    lines = [f"[WARN] {w}" for w in warnings] + [f"[ERROR] {e}" for e in errors]
-    status = "missing" if errors else f"valid ({len(warnings)} warning(s))"
-    lines.append(f"[ground] {status}")
-    return "\n".join(lines)
-
-
-def _templates_as_text(dirpath: str | Path | None, workspace: Path) -> str:
-    target = _resolve_address(dirpath, workspace) if dirpath else workspace
-    gs = DefaultGroundSet(workspace_root=target, logger=logging.getLogger("moss"), materialize=False)
-    tmpls = gs.templates()
-    if not tmpls:
-        return "[ground] no templates found (.grounds/ empty or missing)"
-    return "\n".join(f"- {t.name}  ({t.source})  {t.path}" for t in tmpls)
+async def _unpin_at(ground_file: str | Path, label: str) -> str:
+    try:
+        return await asyncio.to_thread(DefaultGroundSet.unpin_at, ground_file, label)
+    except ValueError as e:
+        return f"[ground] {e}"
 
 
 # -- channel builder -------------------------------------------------------
 
 
 def new_ground_channel(
-    groundset: GroundSet,
+    groundset: GroundSet | GroundsManager,
     *,
-    workspace_root: str | Path | None = None,
     open_on_start: list[str | Path] | None = None,
     render_root: bool = False,
     instruction: str | None = None,
@@ -287,78 +157,163 @@ def new_ground_channel(
     name: str = "ground",
     description: str | None = None,
 ) -> MutableChannel:
-    """组装 ground channel — 持有 GroundSet, 把场挂成 virtual children.
+    """组装 ground channel — 持有认知场, 把场挂成 virtual children.
 
-    :param groundset: 注入的 GroundSet 实例 (channel 持有, 承载 open/close 生命周期).
-        其 root 与 ``groundset`` 字段物化的子场在构造期已建立.
-    :param workspace_root: 相对路径解析基点. None = cwd.
+    :param groundset: 一个 ``GroundSet`` (单根, 旧路径), 或一个 ``GroundsManager``
+        (若干各自单根的场集, 每个 home 一棵树). manager 模式下: 每个已挂载的 home
+        是一个内容子 channel, 该 home ``groundset`` 声明出来的子场挂成它的孙子.
+        **命令面仍然只有这一个 channel** —— 树是内容, 不是又一堆控制面.
     :param open_on_start: 启动时额外 open 的场目录列表 (子场声明之外).
-    :param render_root: 是否把 root 场的帧渲染进本 channel 的 notice. 默认 False —
-        root 的 body 走 ghost 级 instruction (组装 system prompt 时注入). channel 的
-        instruction/notice 都经 facade, 在 shell epoch 重供, 晚于 system prompt 组装;
-        root 是身份性内容, 必须在最初的上下文里出现.
+    :param render_root: 单根模式下, 是否把 root 场的帧渲染进本 channel 的 notice.
+        manager 模式下每层的帧本来就在各自子 channel 里, 此参数无效.
     :param instruction: 覆盖默认 instruction (None = 机制 prose).
-    :param edit: 编辑模式的初始开关. True = pin_*/spec/validate/templates 默认展开,
-        False = 折叠 (edit 命令运行时切换).
+    :param edit: 编辑模式的初始开关.
     :param name: CTML 标签名.
     :param description: 覆盖默认描述.
     """
-    workspace = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    # 单根兼容层. 复数只住在 manager 里, 不在 GroundSet 里 (D1).
+    manager: GroundsManager | None = groundset if isinstance(groundset, GroundsManager) else None
+    if manager is not None:
+        slots: list[GroundSlot] = manager.mounted()
+    else:
+        slots = [GroundSlot(key=groundset.root.label, home=groundset.root.root, groundset=groundset)]
+
+    def _set(key: str = "") -> GroundSet:
+        """一个 home label → 它的场集.
+
+        只有一个 home 时, 省掉 ``ground`` 是安全的 (没有第二种答案). 有多个 home 时
+        省掉它 → 报错并列出全部 label, **不替你挑主槽**: 猜错的事不静默, 否则渲染/
+        改写的会是另一个家的文件, 而错误看起来像成功.
+        """
+        if manager is None:
+            if key:
+                raise CommandErrorCode.NOT_FOUND.error(
+                    f"this ground channel holds a single home; no slot {key!r}"
+                )
+            return groundset  # type: ignore[return-value]
+        mounted = manager.mounted()
+        if not key:
+            if len(mounted) == 1:
+                return mounted[0].groundset  # type: ignore[return-value]
+            known = ", ".join(f"{s.key}={s.home}" for s in manager.slots()) or "(none)"
+            raise CommandErrorCode.INVALID_USAGE.error(
+                "ground= is required when this ghost governs several homes — "
+                f"known: {known}"
+            )
+        try:
+            slot = manager.require(key)
+        except KeyError as e:
+            raise CommandErrorCode.NOT_FOUND.error(str(e)) from None
+        if slot.groundset is None:
+            raise CommandErrorCode.NOT_AVAILABLE.error(
+                f"ground slot {key!r} is not mounted ({slot.reason})"
+            )
+        return slot.groundset
+
+    def _find_field(label: str, key: str = "") -> Ground | None:
+        """按 label 找场. 给了 ground 就只在那一个 home 里找; 否则在所有已挂载 home 里找."""
+        if key:
+            return _set(key).get(label)
+        for slot in slots:
+            if slot.groundset is None:
+                continue
+            found = slot.groundset.get(label)
+            if found is not None:
+                return found
+        return None
+
+    def _field_hint(label: str, key: str = "") -> str:
+        """同名场跨 home 时, 把候选指出来 —— 让"没找到"和"找到了好几个"分得开."""
+        homes = [
+            f"{slot.key}:{label}"
+            for slot in slots
+            if slot.groundset is not None and slot.groundset.get(label) is not None
+        ]
+        if len(homes) > 1 and not key:
+            return f" — it lives in several homes ({', '.join(homes)}); pass ground=<label>"
+        return ""
+
     children: dict[str, Channel] = {}
-    # 场帧缓存 — label -> {"meta": 身份+pin TOC, "frame": body+pins 内容}.
-    # notice 只读缓存: 帧只在 startup / open / refresh 时重渲染, 其余每轮 refresh_metas
-    # 都吃内存, 场里的 exec pin 不会随刷新反复起进程.
-    _cached: dict[str, dict[str, str]] = {}
-    # 编辑模式闸门: pin_*/spec/validate/templates 折叠在其后, edit 命令开关.
-    # command 级 available 在每次 meta refresh 重算, 折叠/展开随 _edit_mode 变化.
+    # 场帧缓存 — ground.id -> {"meta", "frame", "at"}. id 而不是 label: 三个 home
+    # 各自可能有叫 `skills` 的子场, label 撞名正常, id 不会.
+    _cached: dict[str, dict] = {}
     _edit_mode = edit
 
     if description is None:
         description = (
-            "Ground — 认知场: GROUND.md 标记的目录, 法链跨 compact 存活. "
-            "open/close 挂场为子 channel, render 无状态 peek, refresh 显式重渲染, "
-            "pin_*/spec/validate/templates."
+            "Ground — cognitive fields: directories marked by GROUND.md whose law chain survives "
+            "compaction. One content sub-channel per home, one command surface; `refresh` is the "
+            "explicit re-render."
         )
 
     chan = new_channel(name=name, description=description)
 
     async def _refresh_ground(ground: Ground) -> None:
-        """重读法 (GROUND.md) + 重渲染帧, 一起写进缓存. 脏场跳过 load, 保留未落盘改动."""
+        """重读法 (GROUND.md) + 重渲染帧. 脏场跳过 load, 保留未落盘改动."""
+        import time as _t
+
         if not ground.dirty:
             await ground.load()
-        _cached[ground.label] = {
-            "meta": await _ground_meta(ground),
+        _cached[ground.id] = {
+            "meta": await ground_meta(ground),
             "frame": str(await ground.render()),
+            "at": _t.time(),
         }
 
-    def _build_child(ground: Ground) -> Channel:
+    def _build_leaf(ground: Ground) -> Channel:
+        """一个场的 channel: 只有内容, 没有命令."""
         child = new_channel(name=ground.label, description=f"ground field {ground.label}", uid=ground.id)
 
         @child.build.named_notices
-        async def _child_parts() -> dict[str, str | None]:
-            return dict(_cached.get(ground.label, {}))
+        async def _leaf_parts() -> dict[str, str | None]:
+            cached = _cached.get(ground.id, {})
+            return {"meta": cached.get("meta", ""), "frame": cached.get("frame", "")}
 
         return child
 
-    async def _open_ground(directory: str | Path, label: str | None, doc: str | None, template: str | None) -> Ground:
-        ground = await groundset.open(directory, label=label, doc=doc, template=template)
-        if ground is not groundset.root:
-            children[ground.label] = _build_child(ground)
-            await _refresh_ground(ground)
-        elif render_root:
-            await _refresh_ground(ground)
+    def _build_slot_tree(slot: GroundSlot) -> Channel:
+        """把一个 home 建成一棵子树: 根是它自己的场, 孙子是它 ``groundset`` 声明的子场.
+
+        channel 名用 slot key (``ghost-home`` / ``mode-ground`` / ``project-ground``):
+        读的人需要知道的是"这条法属于哪一层", 不是它碰巧住在哪个目录.
+        """
+        gs = slot.groundset
+        grandchildren: dict[str, Channel] = {}
+        for ground in gs.active().values():
+            if ground is gs.root:
+                continue
+            grandchildren[ground.label] = _build_leaf(ground)
+
+        node = new_channel(name=slot.key, description=f"ground of {slot.key}", uid=gs.root.id)
+
+        @node.build.named_notices
+        async def _slot_parts() -> dict[str, str | None]:
+            cached = _cached.get(gs.root.id, {})
+            return {"meta": cached.get("meta", ""), "frame": cached.get("frame", "")}
+
+        @node.build.virtual_children
+        def _slot_children() -> dict[str, Channel]:
+            return dict(grandchildren)
+
+        return node
+
+    async def _open_ground(
+        directory: str | Path, label: str | None, doc: str | None, template: str | None, key: str = "",
+    ) -> Ground:
+        gs = _set(key)
+        ground = await gs.open(directory, label=label, doc=doc, template=template)
+        if ground is not gs.root:
+            children[ground.label] = _build_leaf(ground)
+        await _refresh_ground(ground)
         return ground
 
     @chan.build.startup
     async def _startup() -> None:
-        # root 与 `groundset` 子场在 GroundSet 构造期已物化; 这里挂子 channel 并 seed 帧缓存.
-        for ground in groundset.active().values():
-            if ground is groundset.root:
-                if render_root:
-                    await _refresh_ground(ground)
-                continue
-            children[ground.label] = _build_child(ground)
-            await _refresh_ground(ground)
+        # 每个已挂载的 home 一棵树; 根是 slot key, 孙子是它 set 协议声明的子场.
+        for slot in slots:
+            children[slot.key] = _build_slot_tree(slot)
+            for ground in slot.groundset.active().values():
+                await _refresh_ground(ground)
         for d in (open_on_start or []):
             await _open_ground(d, None, None, None)
 
@@ -366,13 +321,20 @@ def new_ground_channel(
     async def _instruction() -> str:
         if instruction is not None:
             return instruction
-        return _instruction_prose()
+        return _instruction_prose(manager)
 
     @chan.build.notice
     async def _notice() -> str:
+        if manager is not None:
+            # 缺席是内容: 一行一个 slot, 让"这里没有场"和"没找到"分得开 (D6).
+            lines = manager.status_lines()
+            for slot in manager.mounted():
+                for err in slot.groundset.materialize_errors():
+                    lines.append(f"{slot.key}: {err}")
+            return "\n".join(lines)
         parts = [f"[ground] {e}" for e in groundset.materialize_errors()]
         if render_root:
-            parts.append(_cached.get(groundset.root.label, {}).get("frame", ""))
+            parts.append(_cached.get(groundset.root.id, {}).get("frame", ""))
         return "\n\n".join(parts)
 
     @chan.build.virtual_children
@@ -380,73 +342,173 @@ def new_ground_channel(
         return dict(children)
 
     @chan.build.command(name="open", always_observe=True)
-    async def open(directory: str, label: str | None = None, doc: str | None = None, template: str | None = None) -> str:
-        """打开一个场, 挂成子 channel (身份 + 帧都在子 notice, seed 缓存).
+    async def open(
+        directory: str,
+        label: str | None = None,
+        doc: str | None = None,
+        template: str | None = None,
+        ground: str = "",
+    ) -> str:
+        """Open a field and mount it as a sub-channel (identity + frame live in its notice).
 
-        :param directory: 场目录 (相对 root 或绝对).
-        :param label: 本 channel 内唯一标识. None = 目录 basename.
-        :param doc: 显式 GROUND.md 路径 (法锚点). None = directory/GROUND.md.
-        :param template: .grounds/ 模板名, 用模板 body + pins 初始化.
+        :param directory: The field directory. A relative path resolves against the root of
+            the home named by ``ground``.
+        :param label: Unique label inside this channel. None = the directory basename.
+        :param doc: Explicit GROUND.md path (the law anchor). None = directory/GROUND.md.
+        :param template: Template name from .grounds/; its body + pins seed the field.
+        :param ground: Which home this belongs to (a slot label from the session notice).
+            Required when the ghost governs several homes. Omit it with a single home; if it
+            is needed and missing, the call fails and lists every home — it never picks one.
         """
-        ground = await _open_ground(directory, label, doc, template)
-        return f"[ground] opened {ground.label} @ {ground.root}\n\n{await _ground_meta(ground)}"
+        gs = _set(ground)
+        ground_obj = await _open_ground(directory, label, doc, template, ground)
+        return (
+            f"[ground] opened {ground_obj.label} @ {ground_obj.root}\n\n"
+            f"{await ground_meta(ground_obj)}"
+        )
 
     @chan.build.command(name="close", always_observe=False)
-    async def close(label: str) -> str:
-        """关闭一个已打开的场, 撤下其子 channel (dirty 时落盘).
+    async def close(label: str, ground: str = "") -> str:
+        """Close an open field and unmount its sub-channel (dirty fields are written first).
 
-        :param label: 场标识 (见 open 返回值).
+        :param label: The field label (as returned by ``open``).
+        :param ground: Which home; required when several are mounted.
         """
-        if label not in children:
+        gs = _set(ground)
+        found = gs.get(label)
+        if label not in children and found is None:
             return f"[ground] no such open ground: {label}"
-        await groundset.close(label)
+        await gs.close(label)
         children.pop(label, None)
-        _cached.pop(label, None)
+        if found is not None:
+            _cached.pop(found.id, None)
         return f"[ground] closed {label}"
 
     @chan.build.command(name="refresh", always_observe=False)
-    async def refresh(label: str | None = None) -> str:
-        """重读场的法 (GROUND.md) 并重渲染其帧 — 显式刷新认知场.
+    async def refresh(label: str | None = None, ground: str = "") -> str:
+        """Re-read a field's law and re-render its frame — an explicit refresh of the field.
 
-        场帧是缓存的: 只在 startup / open / 本命令时重渲染, 其余每轮都是内存读.
-        改了场里的文件 (或 GROUND.md 的 pins/body) 之后调它, 下一帧 facade delta
-        会带上新内容 (冷 meta + 热帧一起更).
+        Nothing updates by itself: a refresh is a command, not a clock. After editing a field
+        file, this is what makes the change visible.
 
-        :param label: 场标识. None = 刷新全部已挂场 (含 root, 若本 channel 渲染 root).
+        :param label: Which field. None = every field in the named home (or in every mounted
+            home when ``ground`` is omitted too).
+        :param ground: Which home. Naming it removes the ambiguity of a label that exists in
+            more than one home.
         """
         if label is None:
-            targets = [g for g in groundset.active().values() if g is not groundset.root or render_root]
+            if ground:
+                targets = [g for g in _set(ground).active().values()]
+            else:
+                targets = [g for slot in slots for g in slot.groundset.active().values()]
         else:
-            ground = groundset.get(label)
-            if ground is None:
-                return f"[ground] no such field: {label}"
-            targets = [ground]
-        for ground in targets:
-            await _refresh_ground(ground)
+            found = _find_field(label, ground)
+            if found is None:
+                return f"[ground] no such field: {label}{_field_hint(label, ground)}"
+            targets = [found]
+        for ground_obj in targets:
+            await _refresh_ground(ground_obj)
         return f"[ground] refreshed {', '.join(g.label for g in targets)}"
 
-    @chan.build.command(name="render", always_observe=True)
-    async def render(directory: str, meta: bool = False) -> str:
-        """无状态 peek — 渲染一个目录的 ground 帧 (body + pins 内容), 不挂子 channel.
+    @chan.build.command(name="stats", always_observe=True)
+    async def stats() -> str:
+        """When each field was last rendered, and whether its source moved since — cold read.
 
-        :param directory: 目录路径 (相对 root 或绝对). 场根或场内子目录皆可.
-        :param meta: 是否在帧前附身份 + pin TOC + 法链计数. 默认 False.
+        Every home is printed with its absolute path: the label says which layer, only the
+        path says where the files are. A home's root field has no name of its own — its
+        state rides the home's line, because one home carries one identity.
+
+        Times are absolute clock times, not ages: an age changes on every read, which
+        turns a cold read hot and implies a freshness that nothing here maintains.
         """
-        frame = await _render_dir(directory, workspace)
-        if not meta or frame.startswith("[ground]"):
-            return frame
-        return await _meta_dir(directory, workspace) + "\n\n---\n\n" + frame
+        import time as _t
+
+        def _state(ground) -> str:
+            cached = _cached.get(ground.id)
+            if not cached:
+                return "not rendered yet"
+            at = float(cached.get("at", 0) or 0)
+            doc = getattr(ground, "doc_path", None) or (ground.root / DEFAULT_L0_FILENAME)
+            try:
+                moved = bool(Path(doc).is_file() and Path(doc).stat().st_mtime > at)
+            except OSError:
+                moved = False
+            stamp = _t.strftime("%H:%M", _t.localtime(at)) if at else "--:--"
+            return f"rendered at {stamp}, source changed: {'yes' if moved else 'no'}"
+
+        if manager is not None:
+            homes: list[GroundSlot] = manager.slots()
+        else:
+            homes = [
+                GroundSlot(key=groundset.root.label, home=groundset.root.root, groundset=groundset)
+            ]
+
+        lines: list[str] = []
+        for slot in homes:
+            if slot.groundset is None:
+                lines.append(f"{slot.key}: {slot.home} — {slot.status_line()}")
+                continue
+            root = slot.groundset.root
+            lines.append(f"{slot.key}: {slot.home} — {_state(root)}")
+            for ground in slot.groundset.active().values():
+                if ground is root:
+                    continue
+                lines.append(f"  {ground.label}: {_state(ground)}")
+        return "\n".join(lines) or "[ground] nothing mounted"
+
+    @chan.build.command(name="ground_run", always_observe=True, blocking=False)
+    async def ground_run(text__: str, ground: str = "") -> str:
+        """Run one ``moss ground`` command line — heavier read views stay in the CLI.
+
+        The working directory is the root of the home named by ``ground``, so relative paths
+        point at the right place by construction: ``render .`` renders that home's root field,
+        ``templates`` scans that home's own .grounds/.
+
+        :param text__: subcommand + arguments, e.g. ``meta .`` / ``validate .`` /
+            ``templates`` / ``verbs`` / ``spec``. Never include ``moss`` or ``ground`` itself.
+        :param ground: Which home; required when several are mounted.
+        """
+        home = _set(ground).root.root
+        args = (text__ or "").strip()
+        if not args:
+            return "[ground] empty command — e.g. `meta .`"
+        cmd = [sys.executable, "-m", "ghoshell_moss.cli", "ground", *shlex.split(args)]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(home),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await proc.communicate()
+        except Exception as e:  # noqa: BLE001 — 起不来就把原因交回去, 不吞
+            return f"[ground] cannot run: {e}"
+        text = (out or b"").decode("utf-8", errors="replace").strip()
+        errtext = (err or b"").decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            return f"[ground] ground {args} → exit {proc.returncode}\n{errtext or text}"
+        return text or errtext or f"[ground] ground {args} → no output"
 
     @chan.build.command(name="edit", always_observe=False)
     async def edit(on: bool = True) -> str:
-        """开关编辑模式 — 展开/折叠 pin_* / spec / validate / templates 这一组命令.
+        """Toggle edit mode — unfolds / folds the pin_* and unpin group.
 
-        :param on: True 展开编辑命令组 (默认), False 折叠回导航视图.
+        :param on: True unfolds the editing group (default), False folds it back to the
+            navigation view.
         """
         nonlocal _edit_mode
         _edit_mode = on
         state = "on" if _edit_mode else "off"
         return f"[ground] edit mode {state}"
+
+    @chan.build.command(name="unpin", always_observe=False, available=lambda: _edit_mode)
+    async def unpin(ground_file: str, label: str) -> str:
+        """Remove one pin from a GROUND.md — pins could be added but never removed before this.
+
+        :param ground_file: Absolute path of the target GROUND.md (or its directory).
+        :param label: The pin label to remove.
+        """
+        return await _unpin_at(ground_file, label)
 
     @chan.build.command(name="pin_file", always_observe=False, available=lambda: _edit_mode)
     async def pin_file(
@@ -454,15 +516,15 @@ def new_ground_channel(
         line_range: str | None = None, budget: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
-        """在指定 GROUND.md 增改一枚 file pin (单文件注视, 可选行区间).
+        """Add or replace a file pin in a GROUND.md (one file watched, optional line range).
 
-        :param ground_file: 目标 GROUND.md 文件路径 (或所在目录). 相对 root 或绝对.
-        :param label: 唯一标识, 覆盖同 label 旧 pin.
-        :param path: 文件路径, 锚点语法允许 ($GROUND|$CWD|$HOME).
-        :param line_range: 行区间 'N' 或 'N-M'.
-        :param budget: 内容字符上限.
-        :param always_show: walk 模式也不折叠, 永远展开.
-        :param description: 一句话说明.
+        :param ground_file: Absolute path of the target GROUND.md (or its directory).
+        :param label: Unique label; replaces any pin with the same label.
+        :param path: The file path; anchor syntax allows ($GROUND|$CWD|$HOME).
+        :param line_range: Line range 'N' or 'N-M'.
+        :param budget: Cap on rendered characters.
+        :param always_show: Keep it expanded even in walk mode.
+        :param description: One line on why this is watched.
         """
         pin = FilePin(
             label=label,
@@ -470,7 +532,7 @@ def new_ground_channel(
             always_show=always_show,
             description=description,
         )
-        return await asyncio.to_thread(_upsert_pin, ground_file, pin, workspace)
+        return await _upsert_pin(ground_file, pin)
 
     @chan.build.command(name="pin_glob", always_observe=False, available=lambda: _edit_mode)
     async def pin_glob(
@@ -478,15 +540,15 @@ def new_ground_channel(
         limit: int | None = None, max_depth: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
-        """在指定 GROUND.md 增改一枚 glob pin (匹配路径清单, 不出内容).
+        """Add or replace a glob pin in a GROUND.md (a list of matching paths, no content).
 
-        :param ground_file: 目标 GROUND.md 文件路径 (或所在目录).
-        :param label: 唯一标识, 覆盖同 label 旧 pin.
-        :param path: glob 路径 (*, **, ? 标准语义), 锚点前缀允许.
-        :param limit: 命中路径数上限.
-        :param max_depth: ** 递归深度上限.
-        :param always_show: walk 模式也不折叠, 永远展开.
-        :param description: 一句话说明.
+        :param ground_file: Absolute path of the target GROUND.md (or its directory).
+        :param label: Unique label; replaces any pin with the same label.
+        :param path: The glob (*, **, ? with standard semantics); anchor prefixes allowed.
+        :param limit: Cap on matching paths.
+        :param max_depth: Cap on ** recursion depth.
+        :param always_show: Keep it expanded even in walk mode.
+        :param description: One line on why this is watched.
         """
         pin = GlobPin(
             label=label,
@@ -494,7 +556,7 @@ def new_ground_channel(
             always_show=always_show,
             description=description,
         )
-        return await asyncio.to_thread(_upsert_pin, ground_file, pin, workspace)
+        return await _upsert_pin(ground_file, pin)
 
     @chan.build.command(name="pin_frontmatter", always_observe=False, available=lambda: _edit_mode)
     async def pin_frontmatter(
@@ -503,17 +565,17 @@ def new_ground_channel(
         limit: int | None = None, max_depth: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
-        """在指定 GROUND.md 增改一枚 frontmatter pin (YAML frontmatter, pattern 可多文件).
+        """Add or replace a frontmatter pin in a GROUND.md (YAML frontmatter, glob-capable).
 
-        :param ground_file: 目标 GROUND.md 文件路径 (或所在目录).
-        :param label: 唯一标识, 覆盖同 label 旧 pin.
-        :param path: 文件路径或 glob pattern.
-        :param keys: 只提取指定 frontmatter key. None = 全块.
-        :param budget: 内容字符上限.
-        :param limit: pattern 模式命中文件数上限.
-        :param max_depth: 递归发现深度上限.
-        :param always_show: walk 模式也不折叠, 永远展开.
-        :param description: 一句话说明.
+        :param ground_file: Absolute path of the target GROUND.md (or its directory).
+        :param label: Unique label; replaces any pin with the same label.
+        :param path: A file path or a glob pattern.
+        :param keys: Only these frontmatter keys. None = the whole block.
+        :param budget: Cap on rendered characters.
+        :param limit: Cap on matched files in pattern mode.
+        :param max_depth: Cap on recursive discovery depth.
+        :param always_show: Keep it expanded even in walk mode.
+        :param description: One line on why this is watched.
         """
         pin = FrontmatterPin(
             label=label,
@@ -521,7 +583,7 @@ def new_ground_channel(
             always_show=always_show,
             description=description,
         )
-        return await asyncio.to_thread(_upsert_pin, ground_file, pin, workspace)
+        return await _upsert_pin(ground_file, pin)
 
     @chan.build.command(name="pin_ls", always_observe=False, available=lambda: _edit_mode)
     async def pin_ls(
@@ -529,16 +591,16 @@ def new_ground_channel(
         depth: int = 2, limit: int | None = None, max_depth: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
-        """在指定 GROUND.md 增改一枚 ls pin (目录树结构视图, 不出内容).
+        """Add or replace an ls pin in a GROUND.md (directory structure, no content).
 
-        :param ground_file: 目标 GROUND.md 文件路径 (或所在目录).
-        :param label: 唯一标识, 覆盖同 label 旧 pin.
-        :param path: 目录路径, 锚点语法允许.
-        :param depth: 遍历深度. 默认 2.
-        :param limit: 目录条目数上限.
-        :param max_depth: 递归深度上限 (与 depth 取较小者).
-        :param always_show: walk 模式也不折叠, 永远展开.
-        :param description: 一句话说明.
+        :param ground_file: Absolute path of the target GROUND.md (or its directory).
+        :param label: Unique label; replaces any pin with the same label.
+        :param path: The directory path; anchor syntax allowed.
+        :param depth: Traversal depth. Default 2.
+        :param limit: Cap on directory entries.
+        :param max_depth: Cap on recursion depth (the smaller of the two wins).
+        :param always_show: Keep it expanded even in walk mode.
+        :param description: One line on why this is watched.
         """
         pin = LsPin(
             label=label,
@@ -546,7 +608,7 @@ def new_ground_channel(
             always_show=always_show,
             description=description,
         )
-        return await asyncio.to_thread(_upsert_pin, ground_file, pin, workspace)
+        return await _upsert_pin(ground_file, pin)
 
     @chan.build.command(name="pin_exec", always_observe=False, available=lambda: _edit_mode)
     async def pin_exec(
@@ -555,16 +617,17 @@ def new_ground_channel(
         timeout: float = 10.0, budget: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
-        """在指定 GROUND.md 增改一枚 exec pin (场根子树内可执行文件).
+        """Add or replace an exec pin in a GROUND.md (an executable inside the field subtree).
 
-        :param ground_file: 目标 GROUND.md 文件路径 (或所在目录).
-        :param label: 唯一标识, 覆盖同 label 旧 pin.
-        :param ref: 场根子树内的可执行文件相对路径. 不允许 ../ 或绝对路径.
-        :param mode: 解释器模式 shebang/python/shell. 非 shebang 不要求 +x.
-        :param timeout: 秒. 默认 10, 上限 60.
-        :param budget: stdout 字符上限.
-        :param always_show: walk 模式也不折叠, 永远展开.
-        :param description: 一句话说明.
+        :param ground_file: Absolute path of the target GROUND.md (or its directory).
+        :param label: Unique label; replaces any pin with the same label.
+        :param ref: Path to the executable, relative to the field root. No ../ and no
+            absolute paths.
+        :param mode: How to run it.
+        :param budget: Cap on rendered characters.
+        :param timeout: Seconds before the run is abandoned.
+        :param always_show: Keep it expanded even in walk mode.
+        :param description: One line on why this is watched.
         """
         pin = ExecPin(
             label=label,
@@ -572,7 +635,7 @@ def new_ground_channel(
             always_show=always_show,
             description=description,
         )
-        return await asyncio.to_thread(_upsert_pin, ground_file, pin, workspace)
+        return await _upsert_pin(ground_file, pin)
 
     @chan.build.command(name="pin_law", always_observe=False, available=lambda: _edit_mode)
     async def pin_law(
@@ -580,15 +643,15 @@ def new_ground_channel(
         budget: int | None = None, lines: int | None = None,
         always_show: bool = False, description: str = "",
     ) -> str:
-        """在指定 GROUND.md 增改一枚 law pin (外来约定文件法链).
+        """Add or replace a law pin in a GROUND.md (a law file the field stands on).
 
-        :param ground_file: 目标 GROUND.md 文件路径 (或所在目录).
-        :param label: 唯一标识, 覆盖同 label 旧 pin.
-        :param filename: 约定文件名 (CLAUDE.md, AGENT.md...). 从 cwd 向上逐层收集.
-        :param budget: 总字符上限.
-        :param lines: 总行数上限.
-        :param always_show: walk 模式也不折叠, 永远展开.
-        :param description: 一句话说明.
+        :param ground_file: Absolute path of the target GROUND.md (or its directory).
+        :param label: Unique label; replaces any pin with the same label.
+        :param filename: The law file, relative to the field root.
+        :param budget: Cap on rendered characters.
+        :param lines: Cap on rendered lines.
+        :param always_show: Keep it expanded even in walk mode.
+        :param description: One line on why this is watched.
         """
         pin = LawPin(
             label=label,
@@ -596,38 +659,7 @@ def new_ground_channel(
             always_show=always_show,
             description=description,
         )
-        return await asyncio.to_thread(_upsert_pin, ground_file, pin, workspace)
-
-    @chan.build.command(name="spec", always_observe=True, available=lambda: _edit_mode)
-    async def spec() -> str:
-        """GROUND.md 格式规范 (SPECIFICATION.md 全文)."""
-        import ghoshell_moss.ground
-
-        spec_path = Path(ghoshell_moss.ground.__file__).parent / "SPECIFICATION.md"
-        if not spec_path.is_file():
-            return "[ground] SPECIFICATION.md not found"
-        return spec_path.read_text(encoding="utf-8")
-
-    @chan.build.command(name="validate", always_observe=True, available=lambda: _edit_mode)
-    async def validate(filepath: str) -> str:
-        """校验一份 GROUND.md 的格式与 pin 定义, 返回诊断结果.
-
-        :param filepath: 目标 GROUND.md 文件路径 (或所在目录).
-        """
-        gpath = _resolve_address(filepath, workspace)
-        if gpath.is_dir():
-            gpath = gpath / DEFAULT_L0_FILENAME
-        if not gpath.is_file():
-            return f"[ground] no such GROUND.md: {gpath}"
-        return _validate_text(gpath.read_text(encoding="utf-8"))
-
-    @chan.build.command(name="templates", always_observe=True, available=lambda: _edit_mode)
-    async def templates(dirpath: str | None = None) -> str:
-        """列出可用的 ground 模板 (.grounds/ 发现) 与发现源.
-
-        :param dirpath: 项目目录 (扫描其 .grounds/). None = 场根.
-        """
-        return _templates_as_text(dirpath, workspace)
+        return await _upsert_pin(ground_file, pin)
 
     return chan
 
@@ -648,7 +680,6 @@ def build_ground_channel_factory(
         groundset = DefaultGroundSet(workspace_root=root)
         return new_ground_channel(
             groundset,
-            workspace_root=root,
             open_on_start=open_on_start,
             render_root=render_root,
             instruction=instruction,
@@ -681,7 +712,6 @@ def build_project_ground_channel(
         groundset = DefaultGroundSet(workspace_root=project_root)
         return new_ground_channel(
             groundset,
-            workspace_root=project_root,
             open_on_start=open_on_start,
             render_root=render_root,
             instruction=instruction,

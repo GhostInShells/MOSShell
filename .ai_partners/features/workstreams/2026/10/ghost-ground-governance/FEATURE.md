@@ -122,7 +122,9 @@ mode 是能力组装，不是知识域；共享给多个 ghost，写成约束。
 4. ghost 的 instruction 里**没有**场内容。
 5. 项目根的索引里没有 `.moss`（已达成，回归项）。
 6. `refresh` 能指名刷新单个根；`stats()` 能说出每个根的上次渲染时刻。
-7. 冷启动路径可回退：`MOSS_GROUND_MULTI_HOME=0` 走旧路径并能起来。
+7. 启动期只有**一种**装配路径 —— 没有回退开关。回去的路是 git：分支 `ground-multi-home` 上
+   的改动没有提交，`git switch dev` 即退回。没有 matrix 时只剩 ghost home，那是地址缺失的事实，
+   不是开关。
 
 ## Execution plan
 
@@ -138,3 +140,123 @@ mode 是能力组装，不是知识域；共享给多个 ghost，写成约束。
 - mode home 现在没有 GROUND.md（它有 `HOST.md`）。是让它长期缺位，还是承认它该有自己的场？
 - 子场 TOC 的阈值定多少（先按 8 试）。
 - `stats()` 属于 channel 命令还是外壳 CLI（暂定 channel，因为它是我要读的东西）。
+
+### Rejected — a config switch to fall back to the single-root path
+
+An earlier cut carried `MOSS_GROUND_MULTI_HOME=0` in `_runtime.py`, reading `os.environ`
+directly. Removed on thirdgerb's objection, and the objection was right three times over:
+
+1. **An architecture-level mechanism does not get an off-switch.** A switch is a sentence
+   saying "we are not sure this is correct", and it leaves a second code path that no one
+   runs — which rots, then only pretends to be a way back.
+2. **It borrowed a namespace it was not declared in.** `MOSS_*` is the runtime-scope
+   namespace, enumerated in `dump_runtime_scope`. This variable was in neither the list
+   nor the ghost's `.env.example`, so it was neither a moss protocol variable nor a
+   declared ghost knob — it sat in the worst position: visible only to whoever reads the
+   implementation.
+3. **A hidden way back is not a way back.** The two real recoveries already existed: the
+   branch (`git switch dev`) and the mechanism's own absence semantics (a home without
+   `GROUND.md` is not mounted; a broken one keeps its reason while the others mount).
+
+What stays: `new_ground_channel` still accepts a single `GroundSet`. That is not a switch
+— other call sites genuinely own a one-root set, and removing it would only be purity at
+their expense.
+
+### D11 — 命令面按"作用在什么上"分层，不按"谁方便"分层
+
+15 个命令逐个查过，只有 4 个真的需要 home 身份：
+
+| 作用对象 | 命令 | 需要什么 |
+|---|---|---|
+| 驻留的树 | `open` / `close` / `refresh` / `stats` | 一个 home 身份 |
+| 一份文件 | `pin_file` / `pin_glob` / `pin_frontmatter` / `pin_ls` / `pin_exec` / `pin_law` / `unpin` / `edit` | 一个**绝对路径**（edit 连路径都不要） |
+| 一次 CLI 调用 | `ground_run(text__, ground)` | home（作为 cwd） |
+
+`render` / `meta` / `validate` / `templates` / `spec` **从命令面拿掉**：CLI 全有，
+重复实现就是同一种能力两种表达（与 `__content__` 被撤同一个判词 ——
+`sqlite_channel.py` 早写过"自由文本路由对多库定位太绕"）。读它们走
+`ground_run`，cwd 就是所指的那一层 home，相对路径因此天然指对地方。
+
+`ground_run` 用 `text__` 而不是属性：属性值走 `XML decode → ast.literal_eval`，
+命令行的引号要转义两层；`text__` 是标签体，原样到达。
+
+### D12 — 多 home 下 `ground=` 不给就报错，绝不默认主槽
+
+今天所有"回到主槽"的问题出处只有一处：`new_ground_channel(workspace_root=...)`
+一个共享变量当相对路径基点，10 个命令共用它，而这 10 个里没有一个真的在乎是哪个家。
+
+- 单 home：省略 `ground` 安全（没有第二种答案）。
+- 多 home：省略 → 报错并列出全部 `label=path`。猜错不静默 —— 猜错的后果是渲染/改写
+  另一个家的文件，而错误看起来像成功。
+- `workspace_root` 从 `new_ground_channel` 与 `build_dolores_channel` 面上去掉：
+  相对路径的基点现在由 `ground=` 说，不再有一个隐式的"主槽"。
+
+### D13 — 无驻留态操作进契约，以 `@classmethod` 声明
+
+`GroundSet` 新增六个抽象 classmethod：`peek_dir` / `peek_meta` / `templates_at` /
+`validate_text` / `upsert_pin` / `unpin_at`。理由不是"顺手"，是这类操作以前借
+`GroundSet` 当函数用：`_render_dir` 为了渲染别家的目录，会 `new` 一个
+`DefaultGroundSet(workspace_root=主槽)` —— 临时场的锚在错的家，模板发现
+（`.grounds/`）与子场声明都随之错。声明进契约后：
+
+- 消费方（channel / CLI / 测试）不必知道实现如何定位；
+- 换实现不能悄悄漂；
+- `pin_*` 这类纯文件操作彻底离开"哪个家"的坐标系（实现落在 `ground/_edit.py`）。
+
+### D14 — 创建只有一条路径：谁持有谁创建
+
+`GroundsManager.mount()` 以前自己 `new DefaultGroundSet`，而 channel factory 也会
+`new` —— 两条创建路径可以让同一个 home 有两个场集，而只有一个是被读的那一个。
+改成 `mount(groundset_factory)`：manager 只编排（查 GROUND.md、持 slot、报
+`absent`/`broken`），场集由持有者造。**没有场集就没有真相**这条因此只剩一个出处。
+
+### D15 — `unpin` 补齐：pin 是单向门
+
+契约里一直有 `pin` / `unpin` 转发，命令面只有 6 个 `pin_*`，没有 `unpin` ——
+能加不能撤，只能去改文件。pin 决定每轮看见什么，是场里最重的东西，单向门迟早出事。
+`unpin(ground_file, label)` 走编辑组，只认绝对路径，label 不存在则不写盘并列出已有 label。
+
+### D16 — 一个 home 只带一个身份：根场的 label 就是 slot key
+
+重启验收时暴露的是"同一个 home 三个名字"：channel 叫 `ghost_home`，`stats` 里根场那行
+叫 `moss`（目录名），帧里 frontmatter 叫 `Ghost Ground`。三个名字不是三种信息，是一处雾。
+
+判词：**目录名是地址，不是身份**。所以根场不再从 `dir_abs.name` 取 label —— 装配者把
+slot key 传进去（`DefaultGroundSet(workspace_root=..., root_label=slot.key)`），`mount`
+的工厂因此改为接收整个 `GroundSlot` 而不是 `Path`。`stats` 里根场不再单独占一行，
+它的状态并进 home 那一行：
+
+```
+ghost_home: /abs/path — rendered at 17:32, source changed: no
+  existence: rendered at 17:32, source changed: no
+```
+
+frontmatter 的 `name` 保持是**文档标题**（内容），不参与身份。单 home 场景没有 slot key，
+label 仍是目录名 —— 那里没有第二个名字可用。
+
+### D17 — 冷读面不出热数据
+
+`stats` 原来打的是 `rendered 38s ago`。相对时长每次读都变，把冷读面变成热数据，还
+暗示一种"新鲜度"——而系统里没有任何东西会自己刷新，`refresh` 是命令不是时钟。它唯一
+造成的效果是让人（和我）把"刚生成"误当成"可信"。
+
+改：时间用**绝对时刻**（`rendered at 17:32`，刷新前不变）；判据只留一位——
+`source changed: yes/no`，也就是"你读到的帧和盘上的法是否一致"。
+
+### D18 — 缺 `ground=` 抛错误码，不抛裸异常
+
+`_set()` 以前 `raise KeyError`。裸异常在 `CommandError.from_error` 里一律降级成
+`UNKNOWN_ERROR(505)`，而 505 属**致命档**：一次"你少传了个参数"会中断整批兄弟命令
+（实测：一个报错让同批另外两条被 cancelled）。错误消息本身是对的，错的是它的等级与
+类型被抹平了。
+
+现在按语义分档：缺 `ground=` → `INVALID_USAGE(401)`；slot 名不认识 → `NOT_FOUND(404)`；
+slot 没挂 → `NOT_AVAILABLE(403)`。糖用现成的 `CommandErrorCode.X.error(msg)`（`errors.py`）。
+
+同一处还修了一个"文档教错的命令"：`ground_run` 的示例写 `render . --meta`，而 `meta`
+是独立动词，`render` 没有这个选项——照它跑就 exit 2。示例改为 `meta .`。
+
+**没有做、记成 issue 的三件事**（都属于命令错误面/解析面，不在本 feature scope 内）：
+① CTML 里流式参数走属性（`text__="..."`）会被静默接受并降级成一次性参数，模型收不到
+任何"这不符合最佳实践"的信号；② `UNKNOWN_ERROR` 的友好兼容 + `CommandUtil` 补通用
+error 糖；③ channel builder 没有把"未捕获异常 = 致命未知错误"这条契约写在作者看得见的地方。

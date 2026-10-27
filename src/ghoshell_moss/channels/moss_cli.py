@@ -111,14 +111,13 @@ def new_moss_cli_channel(
     def instruction() -> str:
         return (
             "## moss CLI\n"
-            "Run moss CLI commands through `exec` — pass ONLY the subcommand + args; "
-            "the moss CLI and its --ai flag are supplied for you, and there is no shell "
-            "to escape.\n"
-            "When this environment gives you no other way to run shell commands, use "
-            "this channel in place of invoking the moss CLI yourself.\n"
-            "Before driving the moss CLI, load an entry point: `start` is the cognitive "
-            "map (what MOSS is, what it can do, where to go next); `all-commands` is the "
-            "full command tree. Append --help to a single command for its arguments.\n"
+            "Prefer a real shell when you have one — it pipes, redirects, and runs several "
+            "processes. This channel is the bridge for environments without bash.\n"
+            "Pass ONLY the subcommand + args: the `moss` prefix and `--ai` are supplied for "
+            "you, and there is no shell to escape.\n"
+            "Load an entry point first: `start` is the cognitive map (what MOSS is, what it "
+            "can do, where to go next); `all-commands` is the full command tree. Append "
+            "--help to a single command for its arguments.\n"
         )
 
     # 局部糖形式: decorator 做边界 (exec 模式 / 超时 / 过滤 / 加工), closure 绑定注入的

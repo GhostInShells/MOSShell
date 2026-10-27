@@ -49,6 +49,7 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobPin,
     LawPin,
+    Ground,
     LsPin,
     PathOutsideRootError,
     Pin,
@@ -57,7 +58,7 @@ from ghoshell_moss.ground.contract import (
     ViewHeader,
 )
 
-__all__ = ["render_context", "render_meta", "render_walk"]
+__all__ = ["render_context", "render_meta", "render_walk", "ground_meta"]
 
 
 async def render_context(
@@ -170,6 +171,23 @@ def render_meta(
         lines.append("pins: (none)")
 
     return "\n".join(lines)
+
+
+async def ground_meta(ground: Ground) -> str:
+    """场身份 (``cd`` / ``$id``) + pin TOC + 法链 — 给一个 Ground, 不关心它住在哪个场集.
+
+    无驻留态版本 (``GroundSet.peek_meta``) 与 channel 的 ``stats``/帧缓存共用这一条,
+    免得"同一种呈现"在两处各写一遍。
+    """
+    chain = await ground.chain_text()
+    return render_meta(
+        root=ground.root,
+        doc_path=ground.doc_path,
+        chain=chain,
+        pins=ground.pins(),
+        id_=ground.convention.id,
+        label=ground.label,
+    )
 
 
 # -- walk (场内移动) ----------------------------------------------------------
