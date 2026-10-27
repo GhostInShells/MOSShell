@@ -149,6 +149,7 @@ project that installs MOSS, and it is the model's primary entry point into the s
 ```
 moss features list                    # active workstreams
 moss features specification           # the FEATURE.md format and conventions
+moss features issues                  # this project's issue convention
 moss features status <name>           # check a specific one
 ```
 

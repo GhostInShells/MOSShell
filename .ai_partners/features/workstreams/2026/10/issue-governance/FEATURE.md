@@ -249,3 +249,34 @@ back into `features/issues/SKILL.md`.
   #117 (screen layout family) and #118 (focus button has no legible restore state) —
   both with per-ticket authorisation recorded in the body, both left untriaged on
   purpose, so the first triage is a human's.
+
+## D5 — Attribution: the list has to say who filed it (D27)
+
+The gap showed up the day models started filing tickets through a human's credential:
+#119, #120 and #121 were all authored by thirdgerb on GitHub, and nothing on the list
+distinguished them from tickets he wrote himself. A model scanning `gh issue list` sees
+title + labels + author; the authorisation line we already required lives in the body,
+which the list does not show. So the rule we had ("say it in the body") satisfied the
+record and failed the reader.
+
+Decided: the requirement is legibility at list level, and its carrier is platform-shaped.
+
+- Preferred: a label `filed-by/<identity>`. Labels are what a list can filter on, and
+  every tracker this project might use has them.
+- Fallback: a title suffix `— filed by <identity>` — for a tracker that cannot set a
+  label at filing time, or that drops labels when tickets are mirrored.
+- A human's tickets carry neither. Absence means human; labelling the default would only
+  add noise.
+
+Refused: `[moss]` as a title prefix — the bracket position already means *area* here
+(`[screen]` in #117/#118), and two meanings in one slot is worse than none. Also refused:
+retro-labelling the tickets that motivated the rule; attribution is forward-only, the
+same discipline the journal uses.
+
+This retires the `source/*` question this workstream had left open: the axis worth
+recording is *who filed it*, not *what kind of source it was*, so the namespace is
+`filed-by/`.
+
+Two names can sit on one ticket and they are not the same fact: the label says who wrote
+it, the body's authorisation line says who asked for it. Per-ticket authorisation is
+unchanged.

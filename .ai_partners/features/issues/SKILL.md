@@ -129,6 +129,37 @@ Two things stay with humans, always:
 - **Opening an issue** — it speaks to the outside world in the project's voice.
 - **Closing an issue** — the same, in reverse.
 
+## Attribution — a ticket says who filed it, at list level
+
+A human's filing is visible for free: the platform prints their name as the author. A
+model's is not — the local `gh`/`glab` credential belongs to the human, so a
+model-opened ticket is authored by that human and sits in the list indistinguishable
+from one of theirs. The requirement is therefore not credit but **legibility**: who
+filed this must be readable from the *list*, without opening the ticket.
+
+The requirement is platform-neutral. Only its carrier is not:
+
+1. **Preferred — a label**: `filed-by/<identity>`, e.g. `filed-by/moss`. A label is the
+   one thing a list can filter on, and every tracker this project might use has them.
+2. **Fallback — a title suffix**: `— filed by <identity>`, for a tracker that cannot set
+   a label at filing time, or that drops labels when tickets are mirrored elsewhere.
+
+A human's tickets carry neither: **absence means human.** Labelling the default only
+adds noise to the list. Create the label once per repository (`gh label create`) —
+GitLab creates it on first use, GitHub does not; that difference changes how the label
+is made, never what it is called.
+
+`<identity>` is the name the commit convention already uses (`moss the Ghost`, or a
+model id). Two different names may sit on one ticket, and they mean different things:
+the label says **who wrote it**; the authorisation line in the body says **who asked for
+it**. The rule above — a model does not open issues on its own — is unchanged;
+authorisation stays per ticket.
+
+Forward-only: tickets opened before this rule keep the shape they were given.
+
+This settles the question this file used to leave open. The useful axis is **who**, not
+**what kind**, so the namespace is `filed-by/`, not `source/`.
+
 ## Receipts
 
 Closing carries a receipt, one line is enough:
@@ -151,6 +182,5 @@ A ticket closed without a receipt is reopened without discussion.
 
 Recorded so the next reader does not mistake silence for a position:
 
-- whether a `source/*` label is worth having (today there is one source: a human);
 - whether priority becomes a label or a GitHub Project field;
 - whether the state names above survive contact with real use.
