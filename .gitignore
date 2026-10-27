@@ -173,3 +173,5 @@ cython_debug/
 .pre-commit-cache/
 # scratch area for live experiments (never committed)
 .playground/
+# 第三方 clone / 外部假仓库：内容忽略，坐标另记
+.vendors/ 
