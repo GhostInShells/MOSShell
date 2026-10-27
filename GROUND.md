@@ -1,6 +1,9 @@
 ---
 name: MOSS
 description: Ghost in Shells 架构的 Shell 层 — 认知场索引
+ignore:
+- ".*/"
+- "!.ai_partners/"
 pins:
 - verb: frontmatter
   label: grounds
