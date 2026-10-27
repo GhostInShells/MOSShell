@@ -61,7 +61,8 @@ moss nodes run nodes/thought/ideas
 
 python cli.py new stage3                       # a group under the default root
 python cli.py new ../../journal/D27/ideas/plan # ...or anywhere, by path
-python cli.py treepython cli.py add "storage" --from architecture --concept design
+python cli.py tree
+python cli.py add "storage" --from architecture --concept design
 python cli.py set storage --flag
 python cli.py link "storage -> md, storage => version control"
 ```
@@ -70,7 +71,18 @@ python cli.py link "storage -> md, storage => version control"
 The root defaults to `ideas/` beside this node, overridden by `--root` or
 `MOSS_IDEAS_ROOT` (the agreed handoff: whoever starts the process decides the directory).
 A missing root stays empty — nothing is seeded, so a booting ghost never reads a demo
-graph as if it were the work. `ideas/` is gitignored wholesale, so what ships is
-disposable by design.
+graph as if it were the work.
+
+**A group ships its content, never its generations.** Every group directory gets a
+`.gitignore` when it is made — and on its first read, if it predates that default. What
+stays out is everything the node can rebuild: `.graph.json` (live state), `ops.jsonl`
+(the account), `.lock`, `.trash/`, `.versions/`. What the history carries is the two
+files that *are* the group: `IDEAS.md` and `graph.json`. A `.gitignore` written by hand
+is a decision and is never overwritten — the default only fills a gap.
+
+The trade is deliberate: snapshots stay on disk, so `versions` and `restore` work where
+they were taken, and a fresh clone gets the last published graph rather than every
+gesture since. The node's own root is unpublished by default; publishing one group is
+naming it once in the node's `.gitignore`.
 Port is ephemeral — read the live URL from the channel's `url` notice, or pin it with
 `--port N` / `MOSS_IDEAS_PORT`.

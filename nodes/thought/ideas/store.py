@@ -45,6 +45,7 @@ OPS = "ops.jsonl"
 LOCK = ".lock"
 TRASH = ".trash"
 VERSIONS = ".versions"
+GITIGNORE = ".gitignore"
 VERSION_OP = "version"
 LEGACY_SUFFIX = ".idea.md"
 
@@ -75,6 +76,22 @@ One line on what this group is — for whoever opens it next.
 
 > This file is a **sign**: what this is, and whether it is alive. It **does not list
 > nodes** — they live in the graph, and a second copy would drift.
+"""
+
+# A group's content is two files: the sign and the last published graph. Everything else
+# in the directory is generated — the live state moves on every gesture, the account grows
+# one line per change, the versions accumulate a snapshot per save. None of that belongs to
+# a history: it is reproducible from the two, and committing it makes every gesture a diff.
+GITIGNORE_TEMPLATE = """# Written by the ideas node when this group was made.
+#
+# What a group *is*: `IDEAS.md` (the sign) and `graph.json` (the last published version).
+# Everything else here is generated from them and stays out of history.
+#
+.graph.json
+ops.jsonl
+.lock
+.trash/
+.versions/
 """
 
 # The scale is a fixed vocabulary of colour names, and a node's `concept` is one of
@@ -407,6 +424,10 @@ class GraphStore:
             self.groups[child.name] = group
 
     def _load_group(self, group: Group) -> None:
+        # A group directory owes two files before any of its content is read: its sign and
+        # its ignore rule. Both are written only when absent, so this also repairs a group
+        # made before a default existed — and never overwrites one someone wrote.
+        ensure_group_files(group)
         if group.ideas_path.exists():
             meta, _body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8", errors="replace"))
             group.status = str(meta.get("status", "active")) or "active"
@@ -421,8 +442,6 @@ class GraphStore:
                 self._import_legacy(group, legacy)
                 return
             group.write()          # a brand-new, empty graph on disk
-            if not group.ideas_path.exists():
-                write_ideas_sign(group)
             self.save(group, "init")   # a group starts from a version: history needs a base
             return
         data = json.loads(live.read_text(encoding="utf-8"))
@@ -457,7 +476,7 @@ class GraphStore:
             for i, raw in enumerate(data.get("edges") or [])
         ]
         if not group.ideas_path.exists():
-            write_ideas_sign(group)
+            ensure_group_files(group)
 
     def _import_legacy(self, group: Group, files: list[Path]) -> None:
         """The markdown generation: one file per idea, links in frontmatter.
@@ -495,7 +514,7 @@ class GraphStore:
                     edge_n += 1
         group.write(note=f"imported {len(files)} markdown ideas")
         if not group.ideas_path.exists():
-            write_ideas_sign(group)
+            ensure_group_files(group)
         self.save(group, "imported")
         trash = group.path / TRASH
         trash.mkdir(exist_ok=True)
@@ -528,7 +547,7 @@ class GraphStore:
                 "one level deep. Put the group directly under the root, or outside it and "
                 "name it by path.")
         target.mkdir(parents=True, exist_ok=True)
-        write_ideas_sign(Group(name=target.name, path=target))
+        ensure_group_files(Group(name=target.name, path=target))
         self.reload()
         group = self.groups.get(target.name)
         if group is not None and group.path.resolve() == target:
@@ -1098,6 +1117,24 @@ def write_ideas_sign(group: Group) -> None:
         return
     write_atomic(group.ideas_path, IDEAS_TEMPLATE.format(
         status=group.status, graph=GRAPH, updated=_now(), name=group.name))
+
+
+def write_group_gitignore(path: Path) -> None:
+    """Every group carries its ignore rule: the content stays, the generations go.
+
+    Written only when absent — a `.gitignore` someone wrote by hand is a decision about
+    that group, and a default must never overwrite a decision.
+    """
+    target = path / GITIGNORE
+    if target.exists():
+        return
+    write_atomic(target, GITIGNORE_TEMPLATE)
+
+
+def ensure_group_files(group: Group) -> None:
+    """The two files a group directory owes: its sign, and the rule keeping it small."""
+    write_ideas_sign(group)
+    write_group_gitignore(group.path)
 
 
 def join_frontmatter(meta: dict, body: str) -> str:

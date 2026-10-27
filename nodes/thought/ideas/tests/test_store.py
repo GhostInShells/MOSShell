@@ -237,6 +237,36 @@ def test_every_group_carries_a_sign(tmp_path: Path):
     assert again.require_group("design").status == "archived"
 
 
+def test_every_group_carries_its_ignore_rule(tmp_path: Path):
+    """A group ships its content (`IDEAS.md`, `graph.json`) and not its generations.
+
+    Writing the sign and the ignore rule are the same act: a group directory made
+    anywhere is safe to commit without a hand-written rule, so `git add -A` after a
+    session of gestures cannot drag the live state, the account or the snapshots in.
+    """
+    store = GraphStore(tmp_path)
+    store.reload()
+    group = store.create_group("stage3")
+
+    text = (group.path / ".gitignore").read_text(encoding="utf-8")
+    rules = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    assert rules == [".graph.json", "ops.jsonl", ".lock", ".trash/", ".versions/"]
+    assert "graph.json" not in rules and "IDEAS.md" not in rules, "the content is not ignored"
+
+    # a group made before the default existed gets one on the next read
+    old = group_dir(tmp_path)
+    assert not (old / ".gitignore").exists()
+    GraphStore(tmp_path).reload()
+    assert (old / ".gitignore").exists()
+
+    # and a hand-written rule is a decision — a default never overwrites one
+    hand = group_dir(tmp_path, "hand")
+    (hand / ".gitignore").write_text("mine\n", encoding="utf-8")
+    GraphStore(tmp_path).reload()
+    assert (hand / ".gitignore").read_text(encoding="utf-8") == "mine\n"
+
+
 # ------------------------------------------------------------------- discovery rules
 
 

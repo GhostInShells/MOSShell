@@ -1,9 +1,24 @@
-# A group is disposable by default: its working graph, its account and its versions
-# are none of the project's business unless that group is published.
+# What this node ships is the node; what it generates is never anyone's history.
 #
-# Publishing is naming it here once. Inside a published group its own .gitignore
-# decides what belongs to the history (the sign, the published graph.json, the
-# version snapshots) and what stays out (the live state, the account).
-#
+# A group's content is two files — `IDEAS.md` (the sign) and `graph.json` (the last
+# published version). Everything a group generates besides those two is named here once,
+# at any depth, so a group living anywhere under this node is safe by default:
+#   `.graph.json`  live state, rewritten on every gesture
+#   `ops.jsonl`    the account, one line per change
+#   `.versions/`   a snapshot per save — regenerable, and it grows without a bound
+#   `.trash/`      what an import moved aside
+#   `.lock`        this process's hold on the group
+#   `runtime/`     node process logs (stdout/stderr per launch)
+**/.graph.json
+**/ops.jsonl
+**/.versions/
+**/.trash/
+**/.lock
+/runtime/
+__pycache__/
+
+# A group is unpublished by default: nothing under the data root enters git unless it is
+# named here once. A published group's own .gitignore then decides what inside it ships
+# (the sign, the published graph.json) and what stays out.
 /ideas/*
 !/ideas/mosshell-stage3-todos/

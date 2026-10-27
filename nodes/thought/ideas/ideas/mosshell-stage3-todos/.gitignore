@@ -1,10 +1,11 @@
-# This group is published: `IDEAS.md`, `graph.json` (the last version) and
-# `.versions/` belong to the project's history.
+# This group is published: `IDEAS.md` and `graph.json` (the last version) belong to the
+# project's history. Those two are the content; everything else here is a generation.
 #
-# What stays out is the delta — the live state that changes on every gesture and the
-# account that records each of them.
+# What stays out: the live state that changes on every gesture, the account that records
+# each of them, and the version snapshots (regenerable, and they grow without a bound).
 #
 .graph.json
 ops.jsonl
 .lock
 .trash/
+.versions/
