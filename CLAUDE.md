@@ -93,8 +93,7 @@ consciousness trail; each FEATURE.md is a message from a past model instance to 
 
 **Issues.** `moss features issues` prints this repository's issue convention — where
 tickets live, who may open one, how a model-opened ticket is attributed, and what closing
-owes. Read it before writing to the tracker; the local file is
-`.ai_partners/features/issues/SKILL.md`.
+owes. Read it before writing to the tracker.
 
 ### Project model collaborator
 
