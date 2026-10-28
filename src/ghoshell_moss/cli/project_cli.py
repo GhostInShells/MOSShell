@@ -67,7 +67,7 @@ def where() -> None:
             ["Default Mode", meta.default_mode],
             ["Default Ghost", meta.default_ghost],
             ["Default Network", meta.default_network],
-            ["Network Scope", meta.default_network_scope],
+            ["Network Scope", meta.default_network_scope or f"{env.network_scope}  (project id — nothing shared declared)"],
             ["MOSS.md", str(moss_md) if moss_md.exists() else "Missing"],
             ["Log File", str(env.log_file)],
         ],

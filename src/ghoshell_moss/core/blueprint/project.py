@@ -190,7 +190,8 @@ class NetworkMetadata(BaseModel):
     )
     scope: str = Field(
         default=DEFAULT_NETWORK_SCOPE,
-        description="联通到目标网络后, 通信子网所用的名称. 必须存在. ",
+        description="联通到目标网络后, 通信子网所用的名称. 空 = 该网络不指定子网, "
+                    "由运行时声明的 scope 决定, 最终兜底到 project id. ",
     )
     config: dict[str, Any] = Field(
         default_factory=dict,

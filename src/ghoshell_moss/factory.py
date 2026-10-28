@@ -52,22 +52,26 @@ def _create_matrix(env: Environment, project: Project, cell: CellRuntimeInfo | N
 
 def resolve_network(env: Environment, project: Project) -> NetworkMetadata:
     """
-    从 env.network 名字 → project.network_metas() 拿 NetworkMetadata.
-    找不到时兜底: driver=zenoh, name/scope 取 env 值.
+    从 env.network 名字 → project.network_metas() 拿 NetworkMetadata, 并定下实际通信子网.
+
+    scope 的优先级: 运行时声明 > 网络自己的配置 > project id —— 最终不允许为空.
+    运行时声明为空是常态: 它表示"本 project 不进任何共享子网", 于是落到 project id,
+    不同 project 天然隔离; 要与另一个 project 联通, 必须显式声明与它相同的 scope.
 
     host 侧 (Host.new_matrix concrete) 与 worker 侧 (_create_matrix factory) 共用
     本函数, 保证网络接线一致.
     """
     all_networks = project.network_metas()
     metadata = all_networks.get(env.network)
-    if metadata is not None:
-        return metadata
-    # 兜底 default — 供裸 workspace (无 networks/*.json) 场景直接可跑
-    return NetworkMetadata(
-        name=env.network,
-        driver='zenoh',
-        scope=env.network_scope,
-    )
+    if metadata is None:
+        # 兜底 — 供裸 workspace (无 networks/*.json) 场景直接可跑
+        metadata = NetworkMetadata(
+            name=env.network,
+            driver='zenoh',
+            scope='',
+        )
+    scope = env.declared_network_scope or metadata.scope or env.project_id
+    return metadata.model_copy(update={'scope': scope})
 
 
 def resolve_matrix_adapter(
