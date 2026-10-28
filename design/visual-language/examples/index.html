@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 视图样例（按拓扑）</title>
+<style>
+  :root{--bg:#05080f;--ink:#e6eeff;--ink2:#8fa4cf;--ink3:#4a5b80;--line:#1a2540;--accent:#7aa2ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:13px/1.6 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif}
+  header{padding:38px 46px 6px}
+  h1{font-size:15px;font-weight:400;margin:0 0 6px}
+  .sub{color:var(--ink3);font-size:10px;letter-spacing:.22em;text-transform:uppercase}
+  section{padding:22px 46px 4px}
+  h2{font-size:10px;letter-spacing:.24em;color:var(--ink3);font-weight:400;margin:0 0 14px;
+    text-transform:uppercase;border-bottom:1px solid var(--line);padding-bottom:8px}
+  .row{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+  .card{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#070c17;text-decoration:none;color:inherit;display:block}
+  .card:hover{border-color:var(--accent)}
+  .card img{display:block;width:100%;height:auto}
+  .cap{padding:12px 14px 14px}
+  .cap b{font-weight:500;font-size:12.5px}
+  .cap .note{color:var(--ink2);font-size:11px;margin-top:5px}
+  .tag{font-size:9px;letter-spacing:.16em;color:var(--ink3);border:1px solid var(--line);
+    border-radius:4px;padding:1px 6px;margin-right:6px}
+  footer{padding:26px 46px 60px;color:var(--ink3);font-size:10px;letter-spacing:.08em}
+</style>
+</head>
+<body>
+<header>
+  <div class="sub">swarm · view samples · D28</div>
+  <h1>按视图拓扑摆好的样例 — 一个目录一个视图</h1>
+</header>
+
+<section>
+  <h2>L0 · 全部 swarm</h2>
+  <div class="row">
+    <a class="card" href="L0-swarm-map/index.html">
+      <img src="shots/L0-swarm-map.jpg" alt="">
+      <div class="cap"><b>星图 + 侧栏</b>
+        <div class="note">星系 = swarm；侧栏是同一份数据的另一个投影。点击进入 swarm。</div>
+        <div style="margin-top:8px"><span class="tag">L0</span>open →</div></div>
+    </a>
+  </div>
+</section>
+
+<section>
+  <h2>L1 · swarm 内部（同一颗星，三层显隐）</h2>
+  <div class="row">
+    <a class="card" href="L1-swarm/planning/index.html">
+      <img src="shots/04-dyson.jpg" alt="">
+      <div class="cap"><b>规划 · 戴森壳（按 feature）</b>
+        <div class="note">六边形面板 = 一条 workstream；绿色竣工、金色在建、暗孔 draft。</div>
+        <div style="margin-top:8px"><span class="tag">planning</span>open →</div></div>
+    </a>
+    <a class="card" href="L1-swarm/planning/index-time.html">
+      <img src="shots/04-dyson-time.jpg" alt="">
+      <div class="cap"><b>规划 · 戴森壳（按时间）</b>
+        <div class="note">纬度带 = 月份，壳从南极往上长。同一份数据，换一种铺法。</div>
+        <div style="margin-top:8px"><span class="tag">planning</span>open →</div></div>
+    </a>
+    <a class="card" href="L1-swarm/resources/index.html">
+      <img src="shots/L1-resources.jpg" alt="">
+      <div class="cap"><b>资源 · 组件库 + 装配</b>
+        <div class="note">零件是核心单位：loop / preset / skill / tool / boundary；右边是 task 的装配图。</div>
+        <div style="margin-top:8px"><span class="tag">resources</span>open →</div></div>
+    </a>
+  </div>
+  <div class="row" style="margin-top:22px">
+    <a class="card" href="L1-swarm/tasks/index.html">
+      <img src="shots/05-territory.jpg" alt="">
+      <div class="cap"><b>任务 · 领地内的节点</b>
+        <div class="note">边界由它真正拥有的节点算出；首府到 task 的走线是治理路径。</div>
+        <div style="margin-top:8px"><span class="tag">tasks</span>open →</div></div>
+    </a>
+  </div>
+</section>
+
+<section>
+  <h2>L2 · 进到一个 task</h2>
+  <div class="row">
+    <a class="card" href="L2-task/design/index.html">
+      <img src="shots/06-blueprint.jpg" alt="">
+      <div class="cap"><b>设计 · 代码拓扑（蓝图语法）</b>
+        <div class="note">零发光；标注是引出气泡，数量是尺寸线量出来的。为审计设计。</div>
+        <div style="margin-top:8px"><span class="tag">design</span>open →</div></div>
+    </a>
+    <a class="card" href="L2-task/runtime/index.html">
+      <img src="shots/07-pipeline.jpg" alt="">
+      <div class="cap"><b>运行 · op 的流（带子语法）</b>
+        <div class="note">工位 = op，货件数 = 真实在飞的 op。浅色底是刻意的一次反证。</div>
+        <div style="margin-top:8px"><span class="tag">runtime</span>open →</div></div>
+    </a>
+  </div>
+</section>
+
+<section>
+  <h2>free · 还没挂进拓扑的探索</h2>
+  <div class="row">
+    <a class="card" href="free/03-ambient.html">
+      <img src="shots/03-ambient.jpg" alt="">
+      <div class="cap"><b>静息 / 显影</b>
+        <div class="note">无交互时只有场与呼吸，点击才显影成语义场景。</div>
+        <div style="margin-top:8px"><span class="tag">ambient</span>open →</div></div>
+    </a>
+    <a class="card" href="free/02-experience.html">
+      <img src="shots/02-experience.jpg" alt="">
+      <div class="cap"><b>三档连续推拉（早期）</b>
+        <div class="note">世界 / 领地 / 任务，同一份 SVG 的相机移动。</div>
+        <div style="margin-top:8px"><span class="tag">early</span>open →</div></div>
+    </a>
+    <a class="card" href="free/01-topology.html">
+      <div class="cap"><b>最早的一版拓扑</b>
+        <div class="note">用来对齐"画什么"的静态图，没有截图。</div>
+        <div style="margin-top:8px"><span class="tag">early</span>open →</div></div>
+    </a>
+  </div>
+</section>
+
+<footer>每张图对应一个目录；改样式先改 ../brief.md 的规则。 · via moss</footer>
+</body>
+</html>

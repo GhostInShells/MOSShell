@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 体验原型 02 — 呼吸</title>
+<style>
+  :root{
+    --bg0:#0b1528; --bg1:#060a14; --bg2:#03050b;
+    --ink:#e8eeff; --ink2:#93a4cc; --ink3:#4d5b7d;
+    --line:#1b2540; --line2:#2b3a66;
+    --cool:#7aa2ff; --warm:#ffb86b; --ok:#5be0a0; --bad:#ff6b8a;
+    --ease:cubic-bezier(.22,1,.36,1);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:var(--bg2);color:var(--ink);
+    font:13px/1.6 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  #stage{position:fixed;inset:0;background:
+    radial-gradient(125% 95% at 52% 34%, var(--bg0) 0%, var(--bg1) 55%, var(--bg2) 100%)}
+  #stage::after{content:"";position:absolute;inset:-10%;pointer-events:none;opacity:.026;
+    background-image:radial-gradient(#fff 1px, transparent 1px);background-size:3px 3px}
+  #vignette{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(110% 80% at 50% 42%, transparent 52%, rgba(0,0,0,.62) 100%)}
+  svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+  #camera{transition:transform 950ms var(--ease)}
+  .layer{transition:opacity 950ms var(--ease)}
+  .breathe{transform-box:fill-box;transform-origin:center;animation:breath 5.2s ease-in-out infinite}
+  .breathe.fast{animation-duration:1.9s}
+  .breathe.slow{animation-duration:7.4s}
+  @keyframes breath{0%,100%{opacity:.46;transform:scale(1)}50%{opacity:.94;transform:scale(1.03)}}
+  @keyframes glow{0%,100%{opacity:.30;transform:scale(1)}50%{opacity:.62;transform:scale(1.05)}}
+  .aura{transform-box:fill-box;transform-origin:center;animation:glow 9s ease-in-out infinite}
+  .flow{stroke-dasharray:2 9;animation:flow 11s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-260}}
+  .evt-dot{animation:travel 780ms var(--ease) forwards}
+  @keyframes travel{from{offset-distance:0%}to{offset-distance:100%}}
+
+  .lbl{fill:var(--ink);font-size:12px;letter-spacing:.02em}
+  .lbl.sm{font-size:10.5px}
+  .lbl.xs{font-size:9.5px;letter-spacing:.1em}
+  .dim{fill:var(--ink2)} .dimmer{fill:var(--ink3)}
+  .hair{stroke:var(--line);fill:none;stroke-width:1}
+  .hair2{stroke:var(--line2);fill:none;stroke-width:1}
+  .trail{fill:none;stroke:var(--ink3);stroke-width:1;stroke-dasharray:2 7;opacity:.6}
+
+  #chrome{position:absolute;left:44px;top:38px;pointer-events:none}
+  #level{font-size:10px;letter-spacing:.26em;text-transform:uppercase;color:var(--ink3)}
+  #title{font-size:15px;margin-top:7px;letter-spacing:.03em}
+  #hint{position:absolute;left:44px;bottom:26px;font-size:10px;letter-spacing:.05em;color:var(--ink3)}
+  #hint b{color:var(--ink2);font-weight:400}
+  #heart{position:absolute;right:36px;bottom:28px;width:7px;height:7px;border-radius:50%;
+    background:var(--cool);box-shadow:0 0 16px var(--cool);animation:heart 5.2s ease-in-out infinite}
+  @keyframes heart{0%,100%{opacity:.2;transform:scale(.75)}50%{opacity:.85;transform:scale(1.2)}}
+  #ribbon{position:absolute;left:44px;right:150px;bottom:56px;height:16px;overflow:hidden;
+    font:9.5px/16px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink3);letter-spacing:.05em}
+  #ribbon div{animation:rise 7s ease-out forwards;white-space:nowrap}
+  @keyframes rise{0%{opacity:0;transform:translateY(5px)}10%{opacity:.85}78%{opacity:.5}100%{opacity:0}}
+  #detail{position:absolute;right:44px;top:40px;width:236px;opacity:0;transition:opacity .3s var(--ease);
+    font-size:11px;color:var(--ink2)}
+  #detail.on{opacity:1}
+  #detail h4{margin:0 0 9px;font-size:9.5px;letter-spacing:.16em;color:var(--ink3);font-weight:400;text-transform:uppercase}
+  #detail .row{display:flex;justify-content:space-between;gap:14px;padding:3px 0;border-bottom:1px solid rgba(43,58,102,.3)}
+  #detail .row span:last-child{color:var(--ink);text-align:right}
+  #keys{position:absolute;right:44px;bottom:56px;display:flex;gap:6px}
+  #keys button{font:9.5px/1 ui-monospace,monospace;color:var(--ink2);background:transparent;
+    border:1px solid var(--line2);border-radius:4px;padding:5px 9px;cursor:pointer;letter-spacing:.1em}
+  #keys button:hover{color:var(--ink);border-color:var(--cool)}
+  #keys button[aria-pressed="true"]{color:var(--cool);border-color:var(--cool)}
+</style>
+</head>
+<body>
+<div id="stage">
+  <svg id="svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice"></svg>
+  <div id="vignette"></div>
+  <div id="chrome"><div id="level">world</div><div id="title">swarm 运行时</div></div>
+  <div id="detail"></div>
+  <div id="ribbon"></div>
+  <div id="keys">
+    <button data-view="world">1 世界</button>
+    <button data-view="cluster">2 领地</button>
+    <button data-view="task">3 任务</button>
+  </div>
+  <div id="heart"></div>
+  <div id="hint">点集群进入领地 · 点任务进入任务 · <b>空格</b> 停呼吸 · click a cluster, then a task</div>
+</div>
+
+<script>
+/* ============================================================
+   快照 —— 渲染是它的纯函数
+   ============================================================ */
+const SNAP = {
+  clusters: [
+    { id:"A", label:"swarm A · MOSShell", root:"~/.moss/swarms/a", x:1180, y:880, r:430,
+      hive:{ agents:6, skills:24, running:2 },
+      workspaces:[ {label:"MOSShell", angle:-2.35, trail:.72}, {label:"works", angle:-0.62, trail:.38} ],
+      tasks:[
+        {id:"t1", label:"agent-swarm 原型", state:"running",  x:880, y:1210, kids:2},
+        {id:"t2", label:"ground 治理",     state:"done",     x:1140, y:1210},
+        {id:"t3", label:"旧迁移",          state:"canceled", x:1400, y:1210} ] },
+    { id:"B", label:"swarm B · 客户现场", root:"~/.moss/swarms/b", x:2470, y:600, r:250,
+      hive:{ agents:3, skills:9, running:1 },
+      workspaces:[ {label:"site-x", angle:-1.95, trail:.5} ], tasks:[] },
+    { id:"C", label:"swarm C · 实验", root:"~/.moss/swarms/c", x:2830, y:1330, r:190,
+      hive:{ agents:1, skills:2, running:0 }, workspaces:[], tasks:[], scanning:true }
+  ],
+  task: {
+    label:"task · run-agent-loop",
+    ancestors:["swarm A","cluster · MOSShell","task t1"],
+    ctx:[["workspace","MOSShell"],["agent","deepseek-flash ×2"],["instruction","skill/develop"]],
+    steps:[
+      { label:"prepare ctx",  ops:[ ["o1","done","moss"], ["o2","done","moss"] ] },
+      { label:"agent loop",   ops:[ ["o3","done","worker-1"], ["o4","busy","worker-1"], ["o5","pending","—"] ] },
+      { label:"commit facts", ops:[ ["o6","pending","—"] ] }
+    ],
+    events:[ ["o2","o3","ctx.ready"], ["o4","o5","lease.renew"], ["o5","o6","step.done"] ]
+  }
+};
+
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("svg");
+const el = (t,a={},txt)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(txt!=null)n.textContent=txt;return n;};
+const g = (a={},p=svg)=>{const n=el("g",a);p.appendChild(n);return n;};
+const rnd = (s=>()=>(s=s*1664525+1013904223>>>0)/4294967296)(20261028);
+
+/* 星尘 */
+const bg = g({class:"layer"});
+for(let i=0;i<210;i++){
+  bg.appendChild(el("circle",{cx:(rnd()*3800).toFixed(1),cy:(rnd()*2200).toFixed(1),
+    r:(rnd()*1.1+.2).toFixed(2),fill:"#93a4cc",opacity:(.05+rnd()*.16).toFixed(3)}));
+}
+
+const camera = g({id:"camera"});
+const layerWorld   = g({class:"layer"}, camera);
+const layerCluster = g({class:"layer"}, camera);
+const layerTask    = g({class:"layer"}, camera);
+const defs = el("defs"); svg.appendChild(defs);
+
+/* ============================================================
+   世界 · 集群
+   ============================================================ */
+SNAP.clusters.forEach(c=>{
+  const n = g({}, layerWorld);
+  const grad = el("radialGradient",{id:"halo-"+c.id});
+  grad.appendChild(el("stop",{offset:"0%","stop-color":"#7aa2ff","stop-opacity":".26"}));
+  grad.appendChild(el("stop",{offset:"62%","stop-color":"#7aa2ff","stop-opacity":".05"}));
+  grad.appendChild(el("stop",{offset:"100%","stop-color":"#7aa2ff","stop-opacity":"0"}));
+  defs.appendChild(grad);
+
+  n.appendChild(el("circle",{cx:c.x,cy:c.y,r:c.r*.94,fill:`url(#halo-${c.id})`,class:"aura"}));
+  n.appendChild(el("circle",{cx:c.x,cy:c.y,r:c.r,fill:"none",stroke:"#33447c","stroke-width":"1"}));
+  n.appendChild(el("circle",{cx:c.x,cy:c.y,r:c.r-16,fill:"none",stroke:"#1b2540","stroke-width":"1"}));
+
+  const core = g({class:"breathe"+(c.hive.running?" fast":"")},n);
+  core.appendChild(el("circle",{cx:c.x,cy:c.y,r:5.5,fill:"#7aa2ff"}));
+  core.appendChild(el("circle",{cx:c.x,cy:c.y,r:15,fill:"none",stroke:"#7aa2ff","stroke-width":"1.2",opacity:".8"}));
+  core.appendChild(el("circle",{cx:c.x,cy:c.y,r:31,fill:"none",stroke:"#2b3a66","stroke-width":"1"}));
+  for(let i=0;i<c.hive.agents;i++){
+    const a=i/c.hive.agents*Math.PI*2-Math.PI/2;
+    n.appendChild(el("circle",{cx:c.x+Math.cos(a)*23,cy:c.y+Math.sin(a)*23,r:2,
+      fill:"#7aa2ff",opacity:i<2?".85":".45"}));
+  }
+  c.workspaces.forEach(w=>{
+    const rr=c.r-78, px=c.x+Math.cos(w.angle)*rr, py=c.y+Math.sin(w.angle)*rr;
+    n.appendChild(el("circle",{cx:c.x,cy:c.y,r:rr,fill:"none",stroke:"#1b2540","stroke-width":"1",opacity:".8"}));
+    const a0=w.angle-.95*w.trail, a1=w.angle;
+    const p=a=>[c.x+Math.cos(a)*rr, c.y+Math.sin(a)*rr];
+    const [x0,y0]=p(a0),[x1,y1]=p(a1);
+    n.appendChild(el("path",{d:`M ${x0} ${y0} A ${rr} ${rr} 0 0 1 ${x1} ${y1}`,class:"trail"}));
+    n.appendChild(el("circle",{cx:px,cy:py,r:3.6,fill:"#060a14",stroke:"#93a4cc","stroke-width":"1"}));
+    n.appendChild(el("text",{x:px+12,y:py+4,class:"lbl xs dimmer"},w.label.toUpperCase()));
+  });
+  if(c.tasks.length){
+    n.appendChild(el("text",{x:c.x,y:c.y+c.r-58,class:"lbl xs dimmer","text-anchor":"middle"},
+      `${c.tasks.length} TASKS · ${c.hive.running} RUNNING`));
+  }
+  n.appendChild(el("text",{x:c.x,y:c.y+c.r+36,class:"lbl","text-anchor":"middle"},c.label));
+  n.appendChild(el("text",{x:c.x,y:c.y+c.r+56,class:"lbl xs dimmer","text-anchor":"middle"},c.root));
+
+  if(c.scanning){
+    const scan = el("circle",{cx:c.x,cy:c.y,r:c.r,fill:"none",stroke:"#7aa2ff","stroke-width":"1",opacity:".2"});
+    scan.setAttribute("class","breathe slow");
+    n.appendChild(scan);
+  }
+  const hit = el("circle",{cx:c.x,cy:c.y,r:c.r,fill:"transparent",style:"cursor:pointer"});
+  hit.addEventListener("click",e=>{e.stopPropagation();setView("cluster");});
+  hit.addEventListener("mouseenter",()=>showDetail(c.label,[
+    ["agents",c.hive.agents],["skills",c.hive.skills],["workspaces",c.workspaces.length],
+    ["tasks",c.tasks.length],["隔离","不与其他集群共享任何事实"]]));
+  hit.addEventListener("mouseleave",hideDetail);
+  n.appendChild(hit);
+});
+
+/* ============================================================
+   领地 · 集群内部
+   ============================================================ */
+const A = SNAP.clusters[0];
+const CX = A.x, CY = A.y;
+(function(){
+  const n = layerCluster;
+  n.appendChild(el("circle",{cx:CX,cy:CY,r:A.r,fill:"none",stroke:"#7aa2ff","stroke-width":"1",opacity:".28"}));
+
+  const hive = g({class:"breathe slow"}, n);
+  hive.appendChild(el("circle",{cx:CX,cy:CY,r:118,fill:"none",stroke:"#1b2540","stroke-width":"1"}));
+  hive.appendChild(el("circle",{cx:CX,cy:CY,r:96,fill:"none",stroke:"#2b3a66","stroke-width":"1"}));
+  hive.appendChild(el("circle",{cx:CX,cy:CY,r:74,fill:"#0a1224",stroke:"#7aa2ff","stroke-width":"1.4"}));
+  for(let i=0;i<A.hive.skills;i++){
+    const a=i/A.hive.skills*Math.PI*2, r1=118, r2=118+(i%3?7:14);
+    hive.appendChild(el("line",{x1:CX+Math.cos(a)*r1,y1:CY+Math.sin(a)*r1,
+      x2:CX+Math.cos(a)*r2,y2:CY+Math.sin(a)*r2,stroke:"#2b3a66","stroke-width":"1"}));
+  }
+  for(let i=0;i<A.hive.agents;i++){
+    const a=i/A.hive.agents*Math.PI*2-Math.PI/2;
+    const d=el("circle",{cx:CX+Math.cos(a)*92,cy:CY+Math.sin(a)*92,r:3.2,
+      fill:i<2?"#7aa2ff":"#4d5b7d"});
+    d.style.animation=`breath ${4.2+i*.43}s ease-in-out infinite`;
+    d.style.transformBox="fill-box"; d.style.transformOrigin="center";
+    hive.appendChild(d);
+  }
+  hive.appendChild(el("text",{x:CX,y:CY-6,class:"lbl","text-anchor":"middle"},"hive"));
+  hive.appendChild(el("text",{x:CX,y:CY+14,class:"lbl xs dimmer","text-anchor":"middle"},"OVERMIND"));
+  const hh = el("circle",{cx:CX,cy:CY,r:120,fill:"transparent",style:"cursor:pointer"});
+  hh.addEventListener("mouseenter",()=>showDetail("hive · overmind",[
+    ["管什么","agents / skills / 目录布局（含 features）"],["治理","ground（自己是一块认知场）"],
+    ["何时找它","ghost 要屏蔽细节上下文时"]]));
+  hh.addEventListener("mouseleave",hideDetail);
+  hive.appendChild(hh);
+
+  const t0 = A.tasks[0];
+  n.appendChild(el("path",{d:`M ${CX+96} ${CY+70} C ${CX+180} ${CY+210} ${t0.x-40} ${t0.y-150} ${t0.x} ${t0.y-30}`,
+    class:"flow",stroke:"#7aa2ff",fill:"none","stroke-width":"1.1",opacity:".75"}));
+
+  n.appendChild(el("text",{x:1140,y:t0.y-52,class:"lbl xs dimmer","text-anchor":"middle"},"TASKS · 一等公民"));
+  A.tasks.forEach(t=>{
+    const tn = g({},n);
+    const col = t.state==="done"?"#5be0a0":t.state==="canceled"?"#4d5b7d":
+                t.state==="exception"?"#ff6b8a":"#7aa2ff";
+    const dash = t.state==="canceled" ? "4 6" : "none";
+    tn.appendChild(el("rect",{x:t.x-96,y:t.y-30,width:192,height:60,rx:7,
+      fill:"#080d18",stroke:col,"stroke-width":"1","stroke-dasharray":dash}));
+    tn.appendChild(el("text",{x:t.x-78,y:t.y-2,class:"lbl sm"},t.label));
+    tn.appendChild(el("text",{x:t.x-78,y:t.y+15,class:"lbl xs dimmer"},t.state.toUpperCase()));
+    if(t.state==="running"){
+      const h=el("rect",{x:t.x-104,y:t.y-38,width:208,height:76,rx:11,fill:"none",
+        stroke:"#7aa2ff","stroke-width":"1",opacity:".35"});
+      h.style.animation="breath 2.6s ease-in-out infinite";
+      h.style.transformBox="fill-box"; h.style.transformOrigin="center";
+      tn.appendChild(h);
+    }
+    if(t.kids) tn.appendChild(el("text",{x:t.x+78,y:t.y+15,class:"lbl xs dimmer","text-anchor":"end"},
+      `+${t.kids} CHILD`));
+    const hit=el("rect",{x:t.x-104,y:t.y-38,width:300,height:76,fill:"transparent",style:"cursor:pointer"});
+    hit.addEventListener("click",e=>{e.stopPropagation();setView("task");});
+    hit.addEventListener("mouseenter",()=>showDetail(t.label,[
+      ["state",t.state],["构成","workspace + agent + instruction"],["出口","done / canceled / exception"]]));
+    hit.addEventListener("mouseleave",hideDetail);
+    tn.appendChild(hit);
+  });
+})();
+
+/* ============================================================
+   任务 · op 泳道
+   ============================================================ */
+const OP = {};
+const LANE = { x: 760, y: 1560, W: 66, GAP: 34 };
+(function(){
+  const n = layerTask;
+  const T = SNAP.task;
+  T.ancestors.forEach((a,i)=>{
+    const x = LANE.x + i*138;
+    n.appendChild(el("text",{x,y:LANE.y-176,class:"lbl xs dimmer"},a.toUpperCase()));
+    if(i<T.ancestors.length-1)
+      n.appendChild(el("path",{d:`M ${x+84} ${LANE.y-180} L ${x+120} ${LANE.y-180}`,
+        stroke:"#2b3a66","stroke-width":"1"}));
+  });
+  n.appendChild(el("text",{x:LANE.x,y:LANE.y-140,class:"lbl"},T.label));
+  T.ctx.forEach(([k,v],i)=>{
+    n.appendChild(el("text",{x:LANE.x,y:LANE.y-112+i*18,class:"lbl sm dimmer"},`${k} = ${v}`));
+  });
+
+  let x = LANE.x;
+  T.steps.forEach((st,si)=>{
+    const w = st.ops.length*(LANE.W+LANE.GAP)-LANE.GAP;
+    n.appendChild(el("rect",{x:x-14,y:LANE.y-14,width:w+28,height:LANE.W+28,rx:10,
+      fill:"#7aa2ff",opacity:".035"}));
+    n.appendChild(el("text",{x,y:LANE.y+LANE.W+28,class:"lbl xs dimmer"},
+      `STEP ${si+1} · ${st.label.toUpperCase()}`));
+    st.ops.forEach(([id,state,by])=>{
+      const op=g({},n);
+      const col = state==="done"?"#5be0a0":state==="busy"?"#7aa2ff":state==="exception"?"#ff6b8a":"#4d5b7d";
+      op.appendChild(el("rect",{x,y:LANE.y,width:LANE.W,height:LANE.W,rx:7,
+        fill:state==="busy"?"rgba(122,162,255,.14)":"#080d18",stroke:col,"stroke-width":"1"}));
+      op.appendChild(el("text",{x:x+LANE.W/2,y:LANE.y+28,class:"lbl sm","text-anchor":"middle"},id));
+      op.appendChild(el("text",{x:x+LANE.W/2,y:LANE.y+44,class:"lbl xs dimmer","text-anchor":"middle"},by));
+      if(state==="busy"){
+        const h=el("rect",{x:x-7,y:LANE.y-7,width:LANE.W+14,height:LANE.W+14,rx:10,
+          fill:"none",stroke:"#7aa2ff",opacity:".42"});
+        h.style.animation="breath 1.9s ease-in-out infinite";
+        h.style.transformBox="fill-box"; h.style.transformOrigin="center";
+        op.appendChild(h);
+      }
+      OP[id]=[x+LANE.W/2, LANE.y];
+      const hit=el("rect",{x,y:LANE.y,width:LANE.W,height:LANE.W,fill:"transparent",style:"cursor:pointer"});
+      hit.addEventListener("mouseenter",()=>showDetail(id,[["state",state],["持有",by],
+        ["语义","agent loop：可重入的小循环，栈不跨 op"]]));
+      hit.addEventListener("mouseleave",hideDetail);
+      hit.addEventListener("click",()=>fireEvent("o4","o5","lease.renew"));
+      op.appendChild(hit);
+      x += LANE.W+LANE.GAP;
+    });
+    x += 44;
+  });
+
+  T.events.forEach(([a,b,label])=>{
+    const p1=OP[a],p2=OP[b]; if(!p1||!p2) return;
+    const mx=(p1[0]+p2[0])/2, my=LANE.y-70;
+    n.appendChild(el("path",{d:`M ${p1[0]} ${LANE.y} Q ${mx} ${my} ${p2[0]} ${LANE.y}`,
+      fill:"none",stroke:"#ffb86b","stroke-width":"1.2",opacity:".65"}));
+    n.appendChild(el("text",{x:mx,y:LANE.y-42,class:"lbl xs dimmer","text-anchor":"middle"},label));
+  });
+
+  n.appendChild(el("text",{x:LANE.x,y:LANE.y+118,class:"lbl xs dimmer"},
+    "EXITS · DONE 闭合环  ·  CANCELED 断口  ·  EXCEPTION 缺口且停止呼吸"));
+})();
+
+/* ============================================================
+   相机
+   ============================================================ */
+const VIEWS = {
+  world:   { s:.68, cx:1860, cy: 950, lvl:"world",   title:"swarm 运行时 · 三个隔离的集群" },
+  cluster: { s:.95, cx:1140, cy:1010, lvl:"cluster", title:"swarm A · 领地内 · 核 / 轨道 / 任务场" },
+  task:    { s:1.66, cx:1154, cy:1524, lvl:"task",   title:"task · 实例 · op 泳道与事件" }
+};
+function setView(v){
+  const V = VIEWS[v], W=1600, H=1000;
+  const tx = W/2 - V.cx*V.s, ty = H/2 - V.cy*V.s;
+  camera.setAttribute("transform",`translate(${tx} ${ty}) scale(${V.s})`);
+  layerWorld.style.opacity   = v==="world" ? 1 : (v==="cluster" ? .12 : 0);
+  layerCluster.style.opacity = v==="cluster" ? 1 : (v==="task" ? 0 : 0);
+  layerTask.style.opacity    = v==="task" ? 1 : 0;
+  document.getElementById("level").textContent = V.lvl;
+  document.getElementById("title").textContent = V.title;
+  document.querySelectorAll("#keys button").forEach(b=>
+    b.setAttribute("aria-pressed", b.dataset.view===v ? "true":"false"));
+}
+
+function fireEvent(a,b,label){
+  const p1=OP[a],p2=OP[b]; if(!p1||!p2) return;
+  const mx=(p1[0]+p2[0])/2, my=LANE.y-70;
+  const d=`M ${p1[0]} ${LANE.y} Q ${mx} ${my} ${p2[0]} ${LANE.y}`;
+  const dot=el("circle",{r:3,fill:"#ffb86b",class:"evt-dot"});
+  dot.style.offsetPath=`path("${d}")`;
+  layerTask.appendChild(dot);
+  setTimeout(()=>dot.remove(),900);
+  fact(`event · ${label} · ${a} → ${b}`);
+}
+
+function fact(text){
+  const r=document.getElementById("ribbon");
+  const line=document.createElement("div");
+  line.textContent=`${new Date().toTimeString().slice(0,8)}  ${text}`;
+  r.appendChild(line);
+  while(r.children.length>3) r.firstChild.remove();
+}
+
+const detail=document.getElementById("detail");
+function showDetail(title,rows){
+  detail.innerHTML=`<h4>${title}</h4>`+
+    rows.map(([k,v])=>`<div class="row"><span>${k}</span><span>${v}</span></div>`).join("");
+  detail.classList.add("on");
+}
+function hideDetail(){detail.classList.remove("on");}
+
+document.querySelectorAll("#keys button").forEach(b=>b.addEventListener("click",()=>setView(b.dataset.view)));
+window.addEventListener("keydown",e=>{
+  if(e.key==="1")setView("world");
+  if(e.key==="2")setView("cluster");
+  if(e.key==="3")setView("task");
+  if(e.key===" "){e.preventDefault();
+    const paused=document.body.classList.toggle("paused");
+    document.querySelectorAll(".breathe,.aura,.evt-dot,#heart").forEach(n=>
+      n.style.animationPlayState = paused ? "paused":"running");
+  }
+});
+svg.addEventListener("click",hideDetail);
+
+window.addEventListener("mousemove",e=>{
+  const dx=(e.clientX/innerWidth-.5)*9, dy=(e.clientY/innerHeight-.5)*7;
+  layerCluster.style.transform=`translate(${dx*.6}px,${dy*.6}px)`;
+  layerTask.style.transform=`translate(${dx*1.4}px,${dy*1.4}px)`;
+});
+
+setView("world");
+fact("swarm A · task t1 进入 running");
+fact("swarm C · 发现新集群，等待 ghost 认领");
+</script>
+</body>
+</html>

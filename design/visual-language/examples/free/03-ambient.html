@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 03 · 静息 / 显影</title>
+<style>
+  :root{
+    --bg0:#0a1120; --bg1:#05070f; --bg2:#02040a;
+    --ink:#e8eeff; --ink2:#8fa4cf; --ink3:#42507a;
+    --cool:#7aa2ff; --warm:#ffb86b; --ok:#6fe3ac; --bad:#ff6b8a;
+    --ease:cubic-bezier(.22,1,.36,1);
+    --amp:1;                    /* 环境动效振幅：显影时减半 */
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:#02040a;color:var(--ink);
+    font:13px/1.6 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif;
+    -webkit-font-smoothing:antialiased;cursor:default}
+  canvas,svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #motes{pointer-events:none}
+  #grain{position:absolute;inset:-10%;pointer-events:none;opacity:.025;
+    background-image:radial-gradient(#fff 1px,transparent 1px);background-size:3px 3px}
+  #vignette{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(115% 85% at 50% 45%,transparent 48%,rgba(0,0,0,.7) 100%)}
+
+  /* ---------- 显影 ---------- */
+  .anno{opacity:0;transition:opacity 700ms var(--ease)}
+  body[data-mode="live"] .anno{opacity:1}
+  .anno.d1{transition-delay:120ms}
+  .anno.d2{transition-delay:260ms}
+  .anno.d3{transition-delay:400ms}
+  #chrome{opacity:0;transition:opacity 600ms var(--ease)}
+  body[data-mode="live"] #chrome{opacity:1}
+
+  /* ---------- 呼吸：环境动，不携带信息 ---------- */
+  .aura{transform-box:fill-box;transform-origin:center;animation:aura calc(11s / var(--amp)) ease-in-out infinite}
+  @keyframes aura{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.7;transform:scale(1.035)}}
+  .core{transform-box:fill-box;transform-origin:center;animation:core calc(5.4s / var(--amp)) ease-in-out infinite}
+  @keyframes core{0%,100%{opacity:.72;transform:scale(.96)}50%{opacity:1;transform:scale(1.05)}}
+  .orbit{animation:spin linear infinite;transform-origin:center}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  body[data-mode="live"]{--amp:2}      /* 显影后呼吸放慢：注意力让给信息 */
+
+  /* 流星：真事件的回声，少而轻 */
+  .meteor{opacity:0}
+  .meteor.go{animation:meteor 1500ms var(--ease) forwards}
+  @keyframes meteor{0%{opacity:0;transform:translate(0,0);}10%{opacity:.9}
+    100%{opacity:0;transform:translate(120px,70px)}}
+
+  #chrome{position:absolute;left:40px;top:34px;pointer-events:none}
+  #level{font-size:9.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--ink3)}
+  #title{font-size:14px;margin-top:6px;letter-spacing:.03em;color:var(--ink)}
+  #hint{position:absolute;left:40px;bottom:26px;font-size:9.5px;letter-spacing:.06em;color:var(--ink3);
+    opacity:0;transition:opacity 500ms var(--ease)}
+  body[data-mode="live"] #hint,#hint.show{opacity:1}
+  #pin{position:absolute;right:36px;bottom:28px;font-size:9px;letter-spacing:.18em;color:var(--ink3);
+    opacity:0;transition:opacity .3s}
+  body[data-pinned="true"] #pin,#pin.show{opacity:.9}
+  #wake{position:absolute;right:36px;bottom:28px;font-size:9px;letter-spacing:.2em;color:var(--ink3);
+    opacity:0;transition:opacity .6s var(--ease);text-transform:uppercase}
+  #wake.show{opacity:.55}
+</style>
+</head>
+<body data-mode="ambient" data-pinned="false">
+<canvas id="bg"></canvas>
+<canvas id="motes"></canvas>
+<svg id="scene" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice"></svg>
+<div id="grain"></div><div id="vignette"></div>
+
+<div id="chrome">
+  <div id="level">ambient</div>
+  <div id="title">swarm · 静息</div>
+</div>
+<div id="hint">点击集群 · 显影（click to wake）</div>
+<div id="wake">click to wake</div>
+<div id="pin">PINNED</div>
+
+<script>
+/* ============================================================
+   数据结构：只有拓扑与总量。静息态只用总量，物化态才用细节。
+   ============================================================ */
+const SNAP = {
+  clusters: [
+    { id:"A", label:"swarm A · MOSShell", x:520, y:520, r:300,
+      running:2, tasks:3, load:.62, hue:"#7aa2ff" },
+    { id:"B", label:"swarm B · 客户现场", x:1150, y:300, r:170,
+      running:1, tasks:1, load:.28, hue:"#9cc4ff" },
+    { id:"C", label:"swarm C · 实验", x:1210, y:760, r:150,
+      running:0, tasks:0, load:.06, hue:"#6f7fb0", scanning:true }
+  ]
+};
+
+const NS = "http://www.w3.org/2000/svg";
+const scene = document.getElementById("scene");
+const el = (t,a={},txt)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(txt!=null)n.textContent=txt;return n;};
+const g = (a={},p=scene)=>{const n=el("g",a);p.appendChild(n);return n;};
+const rnd = (s=>()=>(s=s*1664525+1013904223>>>0)/4294967296)(20261028);
+
+/* ---------------- 静态星云（一次烘焙） ---------------- */
+const bg = document.getElementById("bg");
+function bakeField(){
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  bg.width = innerWidth * dpr; bg.height = innerHeight * dpr;
+  const c = bg.getContext("2d"); c.scale(dpr, dpr);
+  c.fillStyle = "#02040a"; c.fillRect(0,0,innerWidth,innerHeight);
+  // 三团极淡的星云，对应三个集群的位置（构图锚定）
+  SNAP.clusters.forEach(cl=>{
+    const x = cl.x / 1600 * innerWidth, y = cl.y / 1000 * innerHeight;
+    const rr = cl.r / 1600 * innerWidth * 2.2;
+    const grd = c.createRadialGradient(x,y,0,x,y,rr);
+    grd.addColorStop(0, "rgba(122,162,255,0.10)");
+    grd.addColorStop(.45, "rgba(90,120,200,0.035)");
+    grd.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = grd; c.beginPath(); c.arc(x,y,rr,0,6.283); c.fill();
+  });
+  // 星点
+  for (let i=0;i<520;i++){
+    const x = rnd()*innerWidth, y = rnd()*innerHeight;
+    const r = rnd()*1.2+.2, a = .04 + rnd()*.20;
+    c.beginPath(); c.arc(x,y,r,0,6.283);
+    c.fillStyle = `rgba(200,215,255,${a.toFixed(3)})`; c.fill();
+  }
+}
+bakeField();
+addEventListener("resize", bakeField);
+
+/* ---------------- 漂移的微尘（唯一的持续开销） ---------------- */
+const motesCv = document.getElementById("motes");
+const mctx = motesCv.getContext("2d");
+let motes = [], speed = 1, running = true, last = 0;
+function initMotes(){
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  motesCv.width = innerWidth*dpr; motesCv.height = innerHeight*dpr;
+  mctx.setTransform(dpr,0,0,dpr,0,0);
+  motes = Array.from({length:64},()=>({
+    x: Math.random()*innerWidth, y: Math.random()*innerHeight,
+    vx: (Math.random()-.5)*.14, vy: (Math.random()-.5)*.14,
+    r: Math.random()*1.3+.35, a: .12+Math.random()*.5, d: .4+Math.random()*.9
+  }));
+}
+initMotes(); addEventListener("resize", initMotes);
+
+function frame(t){
+  if (!running) return;
+  const dt = Math.min(50, t - last || 16); last = t;
+  mctx.clearRect(0,0,innerWidth,innerHeight);
+  for (const m of motes){
+    m.x += m.vx*dt*.06*speed*m.d; m.y += m.vy*dt*.06*speed*m.d;
+    if (m.x<-10) m.x = innerWidth+10; if (m.x>innerWidth+10) m.x = -10;
+    if (m.y<-10) m.y = innerHeight+10; if (m.y>innerHeight+10) m.y = -10;
+    mctx.beginPath(); mctx.arc(m.x,m.y,m.r,0,6.283);
+    mctx.fillStyle = `rgba(175,195,255,${m.a})`; mctx.fill();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+document.addEventListener("visibilitychange", ()=>{
+  running = !document.hidden;
+  if (running) requestAnimationFrame(frame);
+});
+
+/* ---------------- 三个集群：同一份几何，两套注释 ---------------- */
+const camera = g({ id:"camera", style:"transition:transform 1100ms cubic-bezier(.22,1,.36,1)" });
+SNAP.clusters.forEach(cl=>{
+  const n = g({}, camera);
+  // 光晕
+  n.appendChild(el("circle",{cx:cl.x,cy:cl.y,r:cl.r*1.6,fill:`url(#halo-${cl.id})`,class:"aura"}));
+  // 结构环
+  n.appendChild(el("circle",{cx:cl.x,cy:cl.y,r:cl.r,fill:"none",stroke:"#2c3c6e","stroke-width":"1",opacity:".7"}));
+  n.appendChild(el("circle",{cx:cl.x,cy:cl.y,r:cl.r*.62,fill:"none",stroke:"#1d2848","stroke-width":"1"}));
+  // 极坐标格：数字星系的骨架，不能压过核
+  const lattice = g({opacity:".5"}, n);
+  for (let i=1;i<=3;i++)
+    lattice.appendChild(el("circle",{cx:cl.x,cy:cl.y,r:cl.r*(i*.24),fill:"none",
+      stroke:"#16203c","stroke-width":"1"}));
+  for (let i=0;i<12;i++){
+    const a = i/12*Math.PI*2;
+    lattice.appendChild(el("line",{x1:cl.x+Math.cos(a)*cl.r*.18,y1:cl.y+Math.sin(a)*cl.r*.18,
+      x2:cl.x+Math.cos(a)*cl.r*.98,y2:cl.y+Math.sin(a)*cl.r*.98,
+      stroke:"#101a33","stroke-width":"1"}));
+  }
+
+  // 核：真实活跃度决定呼吸周期（诚实的体温计）
+  const period = Math.max(2.4, 7.6 - cl.running*1.1);
+  const coreG = g({class:"core"}, n);
+  coreG.style.animationDuration = period + "s";
+  coreG.appendChild(el("circle",{cx:cl.x,cy:cl.y,r:16,fill:"url(#coreGrad-"+cl.id+")"}));
+  coreG.appendChild(el("circle",{cx:cl.x,cy:cl.y,r:3.4,fill:"#dce7ff"}));
+
+  // 公转：一圈极慢的光（DSP 的眼睛）
+  const orbit = g({class:"orbit"}, n);
+  orbit.style.transformOrigin = `${cl.x}px ${cl.y}px`;
+  orbit.style.animationDuration = (34 + cl.r/12) + "s";
+  orbit.appendChild(el("circle",{cx:cl.x,cy:cl.y,r:cl.r*.62,fill:"none",stroke:"none"}));
+  orbit.appendChild(el("circle",{cx:cl.x+cl.r*.62,cy:cl.y,r:2.2,fill:cl.hue,opacity:".9",
+    style:`filter:drop-shadow(0 0 6px ${cl.hue})`}));
+
+  // 注释层（物化才出现）
+  const anno = g({class:"anno d1"}, n);
+  anno.appendChild(el("text",{x:cl.x,y:cl.y+cl.r+30,class:"lbl","text-anchor":"middle",
+    fill:"#e8eeff","font-size":"12px"},cl.label));
+  const met = g({class:"anno d2"}, n);
+  met.appendChild(el("text",{x:cl.x,y:cl.y+cl.r+50,"text-anchor":"middle",fill:"#42507a","font-size":"9.5px",
+    "letter-spacing":".12em"},`${cl.tasks} TASKS · ${cl.running} RUNNING`));
+
+  // 任务格：物化后显影（只在 A 上，示意父子与状态）
+  if (cl.id === "A"){
+    const tasks = [
+      {label:"agent-swarm 原型", state:"running", x:cl.x-150, y:cl.y+cl.r*.72},
+      {label:"ground 治理",     state:"done",    x:cl.x+40,  y:cl.y+cl.r*.86},
+      {label:"旧迁移",          state:"canceled", x:cl.x+230, y:cl.y+cl.r*.80}
+    ];
+    const tg = g({class:"anno d3"}, n);
+    tasks.forEach(t=>{
+      const col = t.state==="done"?"#6fe3ac":t.state==="canceled"?"#42507a":"#7aa2ff";
+      tg.appendChild(el("rect",{x:t.x-78,y:t.y-20,width:156,height:40,rx:6,fill:"#070c17",
+        stroke:col,"stroke-width":"1","stroke-dasharray":t.state==="canceled"?"4 6":"none",opacity:".95"}));
+      tg.appendChild(el("text",{x:t.x-62,y:t.y+5,fill:"#c9d6f5","font-size":"10.5px"},t.label));
+    });
+  }
+
+  // 命中区
+  const hit = el("circle",{cx:cl.x,cy:cl.y,r:cl.r,fill:"transparent",style:"cursor:pointer"});
+  hit.addEventListener("click", e=>{ e.stopPropagation(); wakeTo(cl); });
+  hit.addEventListener("mouseenter", ()=>{ });
+  n.appendChild(hit);
+
+  // 流星锚点（事件回声）
+  const met2 = el("circle",{cx:cl.x+cl.r*.6,cy:cl.y-cl.r*.35,r:1.6,fill:"#ffb86b",class:"meteor"});
+  n.appendChild(met2);
+  cl._meteor = met2;
+});
+
+const defs = el("defs"); scene.appendChild(defs);
+SNAP.clusters.forEach(cl=>{
+  const grd = el("radialGradient",{id:"coreGrad-"+cl.id});
+  grd.appendChild(el("stop",{offset:"0%","stop-color":cl.hue,"stop-opacity":".95"}));
+  grd.appendChild(el("stop",{offset:"55%","stop-color":cl.hue,"stop-opacity":".22"}));
+  grd.appendChild(el("stop",{offset:"100%","stop-color":cl.hue,"stop-opacity":"0"}));
+  defs.appendChild(grd);
+  const halo = el("radialGradient",{id:"halo-"+cl.id});
+  halo.appendChild(el("stop",{offset:"0%","stop-color":cl.hue,"stop-opacity":".16"}));
+  halo.appendChild(el("stop",{offset:"38%","stop-color":cl.hue,"stop-opacity":".07"}));
+  halo.appendChild(el("stop",{offset:"72%","stop-color":cl.hue,"stop-opacity":".015"}));
+  halo.appendChild(el("stop",{offset:"100%","stop-color":cl.hue,"stop-opacity":"0"}));
+  defs.appendChild(halo);
+});
+
+/* ---------------- 模式机 ---------------- */
+let mode = "ambient", pinned = false, idleTimer = null, zoomed = null;
+const body = document.body;
+const titleEl = document.getElementById("title");
+const levelEl = document.getElementById("level");
+
+function setMode(m){
+  mode = m;
+  body.dataset.mode = m;
+  levelEl.textContent = m === "ambient" ? "ambient" : "materialized";
+  titleEl.textContent = m === "ambient" ? "swarm · 静息" : (zoomed ? zoomed.label : "swarm · 显影");
+  if (m === "live") armIdle(); else clearTimeout(idleTimer);
+}
+function wake(){
+  if (mode === "live") { armIdle(); return; }
+  setMode("live");
+}
+function wakeTo(cl){
+  zoomed = cl;
+  setMode("live");
+  zoomTo(cl);
+}
+function zoomTo(cl){
+  // viewBox 是 1600x1000：把集群中心移到 (800,500)，与窗口尺寸无关
+  const s = Math.min(1600/(cl.r*2.8), 1.7);
+  const tx = 800 - cl.x*s, ty = 500 - cl.y*s;
+  camera.setAttribute("transform", `translate(${tx} ${ty}) scale(${s})`);
+}
+function resetZoom(){
+  zoomed = null;
+  camera.setAttribute("transform", "");
+  if (mode === "live") titleEl.textContent = "swarm · 显影";
+}
+function armIdle(){
+  clearTimeout(idleTimer);
+  if (pinned) return;
+  idleTimer = setTimeout(()=>{
+    if (pinned || mode !== "live") return;
+    resetZoom();
+    setMode("ambient");
+  }, 25000);
+}
+
+/* 交互：意图后才提示；一碰即醒 */
+let wakeHintTimer = null;
+const wakeEl = document.getElementById("wake");
+addEventListener("mousemove", ()=>{
+  lastTouch = Date.now();
+  if (mode === "ambient"){
+    wakeEl.classList.add("show");
+    clearTimeout(wakeHintTimer);
+    wakeHintTimer = setTimeout(()=>wakeEl.classList.remove("show"), 1600);
+  }
+  armIdle();
+});
+addEventListener("click", ()=>{ lastTouch = Date.now(); wake(); });
+
+addEventListener("keydown", e=>{
+  if (e.code === "Space"){ e.preventDefault(); pinned = !pinned;
+    body.dataset.pinned = String(pinned);
+    document.getElementById("pin").classList.toggle("show", pinned);
+    if (!pinned) armIdle(); }
+  if (e.key === "1"){ resetZoom(); setMode("ambient"); }
+  if (e.key === "2"){ setMode("live"); }
+});
+
+/* 休眠阶梯：静久则慢 */
+let lastTouch = Date.now();
+function ladder(){
+  const away = Date.now() - lastTouch;
+  speed = away > 180000 ? .25 : away > 60000 ? .55 : 1;
+}
+setInterval(ladder, 5000);
+
+/* 真事件回声：一次任务结束 → 一颗流星；限频 */
+function meteor(cl){
+  const m = cl._meteor;
+  m.classList.remove("go"); void m.offsetWidth; m.classList.add("go");
+}
+setInterval(()=>{
+  const cl = SNAP.clusters[Math.floor(Math.random()*SNAP.clusters.length)];
+  if (cl.running > 0 && Math.random() < .5) meteor(cl);
+}, 47000);
+
+setMode("ambient");
+</script>
+</body>
+</html>

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 06 · 工程图</title>
+<style>
+  :root{
+    --paper:#061323; --grid:#0d2337; --grid2:#123049;
+    --ink:#d8f2ff; --ink2:#7fb2d0; --ink3:#3d6b8a; --line:#1b4763;
+    --hot:#ffd166; --ok:#5ee0a8; --bad:#ff7a8a;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:var(--paper);color:var(--ink);
+    font:12px/1.5 var(--mono);-webkit-font-smoothing:antialiased}
+  svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .hair{fill:none;stroke:var(--line);stroke-width:1}
+  .ink{fill:none;stroke:var(--ink2);stroke-width:1}
+  .thick{fill:none;stroke:var(--ink);stroke-width:1.4}
+  .txt{fill:var(--ink2);font:10px var(--mono);letter-spacing:.08em}
+  .txt.big{fill:var(--ink);font-size:11px;letter-spacing:.14em}
+  .txt.dim{fill:var(--ink3);font-size:9px}
+  .hot{fill:none;stroke:var(--hot);stroke-width:1.4}
+  #hud{position:absolute;left:34px;top:28px;pointer-events:none}
+  #hud .k{font-size:9px;letter-spacing:.3em;color:var(--ink3)}
+  #hud .t{font-size:13px;margin-top:6px;color:var(--ink);letter-spacing:.06em}
+  #legend{position:absolute;left:34px;bottom:24px;font-size:9px;color:var(--ink3);line-height:1.9;letter-spacing:.06em}
+  #legend b{color:var(--ink2);font-weight:400}
+  #scan{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  #scan div{position:absolute;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(120,200,255,.25),transparent);
+    animation:scan 14s linear infinite}
+  @keyframes scan{from{top:-5%}to{top:105%}}
+  .blink{animation:blink 1.6s steps(1) infinite}
+  @keyframes blink{0%,60%{opacity:1}61%,100%{opacity:.15}}
+</style>
+</head>
+<body>
+<svg id="scene" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="var(--grid)" stroke-width="1"/>
+    </pattern>
+    <pattern id="g2" width="200" height="200" patternUnits="userSpaceOnUse">
+      <rect width="200" height="200" fill="url(#g)"/>
+      <path d="M200 0H0V200" fill="none" stroke="var(--grid2)" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#g2)"/>
+  <g id="drawing"></g>
+</svg>
+<div id="scan"><div></div></div>
+<div id="hud">
+  <div class="k">BLUEPRINT · 工程图</div>
+  <div class="t">SWARM ASSEMBLY — SHEET 01 · 三处领地 · 比例 1:1</div>
+</div>
+<div id="legend">
+  <div><b>框</b> = 一个集群的隔离区（图幅）</div>
+  <div><b>直角走线</b> = 首府到 task 的治理路径（不是消息）</div>
+  <div><b>引出标注</b> = 每条 task 的编号与状态（审计档）</div>
+  <div><b>尺寸线</b> = 数量是量出来的，不是写上去的</div>
+</div>
+
+<script>
+const NS="http://www.w3.org/2000/svg";
+const svg=document.getElementById("scene");
+const el=(t,a={},x)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!=null)n.textContent=x;return n;};
+const g=id=>document.getElementById(id);
+const draw=g("drawing");
+
+/* 数据：节点绕首府径向排布，像芯片的引脚 */
+const SHEETS=[
+  { id:"A", title:"SWARM A — MOSHELL", x:60, y:100, w:760, h:560,
+    hive:"OVERMIND", band:"in-progress", cap:{x:440,y:380}, r:210,
+    tasks:[
+      {n:"T-01",label:"agent-swarm",s:"running",deg:-150},
+      {n:"T-02",label:"issue-governance",s:"done",deg:-95},
+      {n:"T-03",label:"voiceflow",s:"running",deg:-40},
+      {n:"T-04",label:"svg-works",s:"pending",deg:40},
+      {n:"T-05",label:"search-surface",s:"draft",deg:95},
+      {n:"T-06",label:"ideas-mechanism",s:"pending",deg:150}
+    ]},
+  { id:"B", title:"SWARM B — SITE X", x:880, y:100, w:660, h:380,
+    hive:"HIVE", band:"in-progress", cap:{x:1080,y:300}, r:170,
+    tasks:[
+      {n:"T-07",label:"site 巡检",s:"running",deg:-40},
+      {n:"T-08",label:"delivery",s:"pending",deg:60}
+    ]},
+  { id:"C", title:"SWARM C — EXPERIMENT", x:880, y:540, w:660, h:340,
+    hive:"UNKNOWN", band:"draft", cap:{x:1080,y:720}, r:150, tasks:[] }
+];
+
+/* 图幅：四角刻线 + 标题栏 + 裁切边界 */
+function sheetFrame(sh){
+  const {x,y,w,h}=sh;
+  draw.appendChild(el("rect",{x,y,width:w,height:h,class:"thick","stroke-opacity":".55"}));
+  const t=16;
+  [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]].forEach(([cx,cy,sx,sy])=>{
+    draw.appendChild(el("line",{x1:cx,y1:cy,x2:cx+sx*t,y2:cy,class:"ink"}));
+    draw.appendChild(el("line",{x1:cx,y1:cy,x2:cx,y2:cy+sy*t,class:"ink"}));
+  });
+  draw.appendChild(el("text",{x:x+14,y:y+22,class:"txt big"},sh.title));
+  draw.appendChild(el("text",{x:x+14,y:y+38,class:"txt dim"},
+    `SHEET ${sh.id} · ${sh.hive} · ${sh.tasks.length} TASKS`));
+  // 标题栏（右下）
+  const bw=150, bh=26;
+  draw.appendChild(el("rect",{x:x+w-bw,y:y+h-bh,width:bw,height:bh,class:"ink"}));
+  draw.appendChild(el("text",{x:x+w-bw+8,y:y+h-bh+17,class:"txt dim"},"MOSS · GHOST IN SHELLS"));
+}
+
+/* 尺寸线：数量是量出来的 */
+function dimension(x1,x2,y,label){
+  draw.appendChild(el("line",{x1,y1:y,x2,y2:y,class:"hair"}));
+  [[x1,x1],[x2,x2]].forEach(([a,b])=>{
+    draw.appendChild(el("line",{x1:a,y1:y-5,x2:b,y2:y+5,class:"hair"}));
+  });
+  draw.appendChild(el("text",{x:(x1+x2)/2,y:y-6,"text-anchor":"middle",class:"txt dim"},label));
+}
+
+/* 直角走线 */
+function orthoLane(a,b){
+  const d=`M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+  return el("path",{d,class:"hair","stroke-dasharray":"3 6","stroke-opacity":".8"});
+}
+
+/* task 标记：带引出标注 */
+const STATE_COL={running:"var(--hot)",done:"var(--ok)",pending:"var(--ink2)",draft:"var(--ink3)"};
+function taskMark(sh,tk){
+  const rad=(tk.deg||0)*Math.PI/180;
+  tk.x = sh.cap.x + Math.cos(rad)*sh.r;
+  tk.y = sh.cap.y + Math.sin(rad)*sh.r*0.72;
+  const g1=el("g",{style:"cursor:pointer"});
+  // 节点：小方框 + 编号
+  g1.appendChild(el("rect",{x:tk.x-11,y:tk.y-11,width:22,height:22,class:"ink",rx:2}));
+  if(tk.s==="running"){
+    const h=el("rect",{x:tk.x-15,y:tk.y-15,width:30,height:30,class:"hot",rx:3,"stroke-opacity":".9"});
+    g1.appendChild(h);
+  }
+  if(tk.s==="done"){
+    g1.appendChild(el("rect",{x:tk.x-7,y:tk.y-7,width:14,height:14,fill:"var(--ok)","fill-opacity":".55",rx:1}));
+  }
+  // 引出线 + 气泡编号
+  // 引出方向：沿极角朝外
+  const side = Math.cos(rad) >= 0 ? 1 : -1;
+  const bx = tk.x + side*64, by = tk.y + (Math.sin(rad) < 0 ? -30 : 30);
+  const anchor = side > 0 ? "start" : "end";
+  g1.appendChild(el("path",{d:`M ${tk.x+side*12} ${tk.y} L ${bx} ${by}`,class:"hair"}));
+  g1.appendChild(el("circle",{cx:bx+side*12,cy:by,r:12,class:"ink"}));
+  g1.appendChild(el("text",{x:bx+side*12,y:by+3.5,class:"txt dim","text-anchor":"middle"},tk.n));
+  g1.appendChild(el("text",{x:bx+side*26,y:by-4,class:"txt","text-anchor":anchor,
+    fill:STATE_COL[tk.s]||"var(--ink2)"}, tk.label.toUpperCase()));
+  g1.appendChild(el("text",{x:bx+side*26,y:by+10,class:"txt dim","text-anchor":anchor},
+    tk.s.toUpperCase()));
+  return g1;
+}
+
+SHEETS.forEach(sh=>{
+  sheetFrame(sh);
+  // 首府
+  const c=sh.cap;
+  draw.appendChild(el("rect",{x:c.x-20,y:c.y-20,width:40,height:40,class:"thick"}));
+  draw.appendChild(el("rect",{x:c.x-12,y:c.y-12,width:24,height:24,class:"ink"}));
+  draw.appendChild(el("text",{x:c.x,y:c.y+4,"text-anchor":"middle",class:"txt dim"},"CORE"));
+  draw.appendChild(el("text",{x:c.x,y:c.y+38,"text-anchor":"middle",class:"txt dim"},sh.hive));
+
+  // 先算坐标，再画车道，最后画节点（避免线压在标注上）
+  sh.tasks.forEach(tk=>{
+    const rad=(tk.deg||0)*Math.PI/180;
+    tk.x = sh.cap.x + Math.cos(rad)*sh.r;
+    tk.y = sh.cap.y + Math.sin(rad)*sh.r*0.72;
+  });
+  sh.tasks.forEach(tk=>draw.appendChild(orthoLane(c,tk)));
+  sh.tasks.forEach(tk=>{
+    const m=taskMark(sh,tk);
+    m.addEventListener("mouseenter",()=>m.style.filter="brightness(1.5)");
+    m.addEventListener("mouseleave",()=>m.style.filter="");
+    draw.appendChild(m);
+  });
+
+  // 尺寸线：任务数 / 运行数
+  const run=sh.tasks.filter(t=>t.s==="running").length;
+  dimension(sh.x+40, sh.x+sh.w-40, sh.y+sh.h-74,
+    `${sh.tasks.length} TASKS  ·  ${run} RUNNING  ·  0 EXCEPTION`);
+});
+
+/* 图纸上的“光标”：一个缓慢移动的十字，像正在读图的人 */
+const cursor=el("g");
+cursor.appendChild(el("line",{x1:0,y1:0,x2:26,y2:0,class:"hair"}));
+cursor.appendChild(el("line",{x1:0,y1:0,x2:0,y2:26,class:"hair"}));
+cursor.appendChild(el("circle",{cx:0,cy:0,r:2,class:"hot"}));
+draw.appendChild(cursor);
+let ct=0;
+function tick(){
+  ct+=0.0035;
+  const x=120+Math.cos(ct)*760+380, y=200+Math.sin(ct*1.3)*330;
+  cursor.setAttribute("transform",`translate(${x.toFixed(1)} ${y.toFixed(1)})`);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

@@ -27,7 +27,7 @@ updated: '2026-10-28'
 | # | 子任务 | 文档 | 关系 |
 |---|---|---|---|
 | 00 | 方法论：验收集群用真任务、facts 为地基、不先卸载再动手 | `00-methodology.md` | 全部的前提 |
-| 01 | 集群运行时可视化界面风格（面向人类） | `01-visualization-style.md` | 独立 |
+| 01 | 集群运行时可视化界面风格（面向人类） | `01-visualization-style.md` → 物料在 `design/visual-language/` | 独立 |
 | 02 | 集群运行时设计（规划/控制/数据/呈现/容错/故障发现） | `02-runtime-design.md` | **依赖 03** |
 | 03 | 默认协作体系 | `03-collaboration-system.md` | 先于 02 |
 
@@ -181,6 +181,23 @@ attention engineering
 - 上游：`workstreams/2026/08/dsh-fusion/FEATURE.md`（传输、session 坐标、控制面、注意力铁律）
 - 边界判断：`dsh-fusion/research/research_2026-09-09_agent_platform_vs_generic_facade.md`
 - 单轮原语：`dsh-fusion/research/research_2026-09-11_session_run_single_turn.md`
+
+## Materials（物料索引）
+
+调研与设计阶段的产物按命题收在 **[`design/`](../../../../../../design/README.md)**，不堆在本目录。
+本目录只放讨论提纲；产物在下面两处：
+
+| 命题 | 位置 | 现在有什么 |
+|---|---|---|
+| 集群运行时的视觉语言 | [`design/visual-language/`](../../../../../../design/visual-language/README.md) | 纲领、视图拓扑 v1、**按拓扑摆好的六个视图样例**（L0/L1×3/L2×2）、图墙、定妆照 |
+| task 文档与组件模型 | [`design/task-model/`](../../../../../../design/task-model/README.md) | task 文档骨架 + 三份真实任务样例（BOM 与装配图的数据形态） |
+
+视觉语言的三句话结论（D28）：
+1. 主题不是配色，是**语法包**：星辰（场与总量）/ 蓝图（结构与审计）/ 带子（流与吞吐）。
+2. L1 是**多星系统**：星 = workspace（树形治理），每颗星各自一层壳 = 它的 features。
+3. 只有 task 相关的东西"有意图地动"，其余是呼吸或静止。
+
+下一步（未开始）：把三个视图串成同坐标的连续推拉；unit 类型由 thirdgerb 定义。
 
 ## Exploration paths
 

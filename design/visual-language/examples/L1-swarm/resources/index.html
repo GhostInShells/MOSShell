@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>L1 · 资源（组件库 + 装配）</title>
+<style>
+  :root{--paper:#061323;--grid:#0d2337;--ink:#d8f2ff;--ink2:#7fb2d0;--ink3:#3d6b8a;
+    --line:#1b4763;--hot:#ffd166;--ok:#5ee0a8;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:var(--paper);color:var(--ink);
+    font:12px/1.5 var(--mono)}
+  svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .hair{fill:none;stroke:var(--line);stroke-width:1}
+  .ink{fill:none;stroke:var(--ink2);stroke-width:1}
+  .thick{fill:none;stroke:var(--ink);stroke-width:1.3}
+  .txt{fill:var(--ink2);font:10px var(--mono);letter-spacing:.06em}
+  .big{fill:var(--ink);font-size:11px;letter-spacing:.12em}
+  .dim{fill:var(--ink3);font-size:9px;letter-spacing:.1em}
+  .part{fill:none;stroke:var(--ink2);stroke-width:1}
+  .part.hot{stroke:var(--hot);stroke-width:1.6}
+  #hud{position:absolute;left:36px;top:26px}
+  #hud .k{font-size:9px;letter-spacing:.3em;color:var(--ink3)}
+  #hud .t{font-size:13px;margin-top:5px;letter-spacing:.06em}
+  #legend{position:absolute;left:36px;bottom:24px;font-size:9px;color:var(--ink3);line-height:1.9;letter-spacing:.05em}
+</style>
+</head>
+<body>
+<svg id="scene" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="var(--grid)" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#g)"/>
+  <g id="draw"></g>
+</svg>
+<div id="hud">
+  <div class="k">RESOURCES · 组件库</div>
+  <div class="t">零件是核心单位；agent 只是其中一行</div>
+</div>
+<div id="legend">
+  <div><b>左</b> = 零件架（loop / preset / skill / tool / boundary）</div>
+  <div><b>右</b> = 一份 task 文档的装配图（BOM → 图）</div>
+  <div><b>悬停零件</b> = 高亮它在装配图里出现的位置</div>
+</div>
+
+<script>
+const NS="http://www.w3.org/2000/svg";
+const dg=document.getElementById("draw");
+const el=(t,a={},x)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!=null)n.textContent=x;return n;};
+
+/* 组件：真实存在的那些，不是编的 */
+const PARTS=[
+  {id:"L-01",type:"loop",name:"task-loop",x:120,y:170},
+  {id:"A-01",type:"agent-preset",name:"deepseek-flash / max",x:120,y:290},
+  {id:"A-02",type:"agent-preset",name:"deepseek-pro / high",x:120,y:370},
+  {id:"S-01",type:"skill",name:"uv-workspace",x:120,y:470},
+  {id:"S-02",type:"skill",name:"visualization",x:120,y:550},
+  {id:"T-01",type:"tool",name:"terminal",x:420,y:470},
+  {id:"T-02",type:"tool",name:"co_browser",x:420,y:550},
+  {id:"B-01",type:"boundary",name:"workspace: prototypes/",x:120,y:670}
+];
+
+/* 装配图：一份 task 文档（003 视觉探索）的 BOM → op 图 */
+const OPS=[
+  {id:"op-1",x:760,y:200,label:"立 GOAL",parts:["L-01","A-01","B-01"]},
+  {id:"op-2",x:940,y:200,label:"05 领地图",parts:["S-02","T-02"]},
+  {id:"op-3",x:1120,y:200,label:"06 工程图",parts:["S-02"]},
+  {id:"op-4",x:1300,y:200,label:"07 流水线",parts:["S-02","T-02"]},
+  {id:"op-5",x:940,y:380,label:"04 戴森加深",parts:["S-02","T-01"]},
+  {id:"op-6",x:1120,y:380,label:"INDEX",parts:["T-01"]},
+  {id:"op-7",x:1300,y:380,label:"投屏",parts:["T-02"]}
+];
+const EVENTS=[["op-1","op-2"],["op-1","op-3"],["op-1","op-4"],["op-2","op-5"],["op-5","op-6"],["op-6","op-7"]];
+
+/* 左：零件架 */
+dg.appendChild(el("text",{x:120,y:110,class:"big"},"PARTS · 零件"));
+PARTS.forEach(p=>{
+  const g=el("g",{style:"cursor:pointer"});
+  g.appendChild(el("rect",{x:p.x-60,y:p.y-24,width:300,height:44,rx:3,class:"part"}));
+  g.appendChild(el("text",{x:p.x-50,y:p.y-6,class:"txt"},p.id+"  "+p.type));
+  g.appendChild(el("text",{x:p.x-50,y:p.y+11,class:"big","font-size":"10px"},p.name));
+  g.addEventListener("mouseenter",()=>highlight(p.id,true));
+  g.addEventListener("mouseleave",()=>highlight(p.id,false));
+  dg.appendChild(g);
+});
+
+/* 右：装配图 */
+dg.appendChild(el("text",{x:760,y:110,class:"big"},"ASSEMBLY · task 003 的装配"));
+const opEls={};
+OPS.forEach(o=>{
+  const g=el("g");
+  g.appendChild(el("rect",{x:o.x-52,y:o.y-20,width:104,height:40,rx:3,class:"ink"}));
+  g.appendChild(el("text",{x:o.x,y:o.y-2,class:"txt","text-anchor":"middle"},o.id));
+  g.appendChild(el("text",{x:o.x,y:o.y+13,class:"dim","text-anchor":"middle"},o.label));
+  dg.appendChild(g); opEls[o.id]=g;
+});
+EVENTS.forEach(([a,b])=>{
+  const A=OPS.find(o=>o.id===a), B=OPS.find(o=>o.id===b);
+  dg.appendChild(el("path",{d:`M ${A.x} ${A.y+20} V ${(A.y+B.y)/2} H ${B.x} V ${B.y-20}`,class:"hair"}));
+});
+
+/* 悬停：高亮零件在装配图里的位置 */
+function highlight(partId,on){
+  OPS.forEach(o=>{
+    if(!o.parts.includes(partId)) return;
+    const r=opEls[o.id].firstChild;
+    r.setAttribute("class", on ? "part hot" : "ink");
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>L0 · 星图（全部 swarm）</title>
+<style>
+  :root{--bg:#04060f;--panel:#070c17;--ink:#e6eeff;--ink2:#8fa4cf;--ink3:#46557d;--line:#18223c;
+    --cool:#7aa2ff;--warm:#ffb86b;--ok:#5be0a0}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);
+    font:13px/1.6 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif}
+  #side{position:absolute;left:0;top:0;bottom:0;width:262px;background:var(--panel);
+    border-right:1px solid var(--line);padding:26px 20px;overflow:auto}
+  #side h1{font-size:9.5px;letter-spacing:.3em;color:var(--ink3);text-transform:uppercase;margin:0 0 18px;font-weight:400}
+  .sw{border:1px solid transparent;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
+  .sw:hover{border-color:var(--line)}
+  .sw[aria-selected="true"]{border-color:var(--cool);background:rgba(122,162,255,.06)}
+  .sw .n{font-size:12px}
+  .sw .m{font-size:9.5px;letter-spacing:.08em;color:var(--ink3);margin-top:3px}
+  .hint{position:absolute;left:20px;bottom:22px;font-size:9px;color:var(--ink3);letter-spacing:.1em}
+  svg{position:absolute;left:262px;top:0;width:calc(100% - 262px);height:100%;display:block}
+  .gx{cursor:pointer}
+  .ring{fill:none;stroke:var(--line)}
+  .lbl{fill:var(--ink);font-size:11px}
+  .sub{fill:var(--ink3);font-size:9.5px;letter-spacing:.12em}
+  #enter{position:absolute;right:34px;bottom:28px;font:10px/1 ui-monospace,monospace;letter-spacing:.16em;
+    color:var(--ink2);background:transparent;border:1px solid var(--line);border-radius:5px;padding:8px 12px;cursor:pointer}
+  #enter:hover{color:var(--cool);border-color:var(--cool)}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<aside id="side">
+  <h1>swarms · 列表即物化</h1>
+  <div id="list"></div>
+  <div class="hint">列表与星图是同一份数据的两个投影</div>
+</aside>
+<svg id="scene" viewBox="0 0 1400 900" preserveAspectRatio="xMidYMid slice"></svg>
+<button id="enter">ENTER SWARM →</button>
+<script>
+const NS="http://www.w3.org/2000/svg";
+const svg=document.getElementById("scene");
+const el=(t,a={},x)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!=null)n.textContent=x;return n;};
+const rnd=(s=>()=>(s=s*1664525+1013904223>>>0)/4294967296)(20261028);
+
+/* 三个 swarm：位置固定，尺寸按"它管着多少东西" */
+const SWARMS=[
+  {id:"moss",name:"MOSShell",x:470,y:430,r:190,running:3,tasks:22,features:71,ws:14,
+   hue:"#7aa2ff",note:"主仓库 · 正在建设中"},
+  {id:"site",name:"客户现场",x:1010,y:300,r:120,running:1,tasks:4,features:9,ws:3,
+   hue:"#8fe0d0",note:"长期治理 · overlord 在看"},
+  {id:"lab",name:"实验",x:980,y:660,r:95,running:0,tasks:0,features:0,ws:1,
+   hue:"#8f9dc8",note:"刚发现 · 等待认领"}
+];
+let sel="moss";
+
+/* 背景 */
+for(let i=0;i<520;i++){
+  svg.appendChild(el("circle",{cx:(rnd()*1400).toFixed(1),cy:(rnd()*900).toFixed(1),
+    r:(rnd()*1.05+.2).toFixed(2),fill:"#cfe0ff",opacity:(.03+rnd()*.15).toFixed(3)}));
+}
+
+/* 星系：螺旋臂 + 核 */
+function galaxy(s){
+  const g=el("g",{class:"gx"});
+  const halo=el("radialGradient",{id:"h-"+s.id});
+  halo.appendChild(el("stop",{offset:"0%","stop-color":s.hue,"stop-opacity":".22"}));
+  halo.appendChild(el("stop",{offset:"60%","stop-color":s.hue,"stop-opacity":".06"}));
+  halo.appendChild(el("stop",{offset:"100%","stop-color":s.hue,"stop-opacity":"0"}));
+  svg.appendChild(el("defs",{},null)).appendChild(halo);
+  g.appendChild(el("circle",{cx:s.x,cy:s.y,r:s.r*1.5,fill:`url(#h-${s.id})`}));
+  g.appendChild(el("circle",{cx:s.x,cy:s.y,r:s.r,class:"ring","stroke-opacity":".5"}));
+
+  // 螺旋臂：两臂，点是"星"，也是它拥有的东西
+  const arms=el("g");
+  for(let arm=0;arm<2;arm++){
+    for(let i=0;i<160;i++){
+      const t=i/160;
+      const a=t*3.4 + arm*Math.PI + (rnd()-.5)*.16;
+      const rr=s.r*(0.12+t*0.86)*(0.94+rnd()*.12);
+      arms.appendChild(el("circle",{
+        cx:(s.x+Math.cos(a)*rr).toFixed(1), cy:(s.y+Math.sin(a)*rr*0.94).toFixed(1),
+        r:(rnd()*1.15+.25).toFixed(2), fill:s.hue,
+        opacity:(0.10+0.5*(1-t)).toFixed(2)}));
+    }
+  }
+  arms.style.transformOrigin=`${s.x}px ${s.y}px`;
+  arms.style.animation=`spin ${90+s.r/2}s linear infinite`;
+  g.appendChild(arms);
+
+  // 核
+  g.appendChild(el("circle",{cx:s.x,cy:s.y,r:4.5,fill:"#fff"}));
+  g.appendChild(el("circle",{cx:s.x,cy:s.y,r:11,fill:"none",stroke:s.hue,"stroke-width":"1",opacity:".7"}));
+
+  // 运行中的信号：只画真实 running 数的光点
+  for(let i=0;i<s.running;i++){
+    const a=i/s.running*Math.PI*2;
+    const dot=el("circle",{cx:s.x+Math.cos(a)*s.r*0.55,cy:s.y+Math.sin(a)*s.r*0.55,
+      r:2.4,fill:"#ffb86b"});
+    dot.style.animation=`spin ${18+i*4}s linear infinite`;
+    dot.style.transformOrigin=`${s.x}px ${s.y}px`;
+    g.appendChild(dot);
+  }
+
+  g.appendChild(el("text",{x:s.x,y:s.y+s.r+30,class:"lbl","text-anchor":"middle"},s.name));
+  g.appendChild(el("text",{x:s.x,y:s.y+s.r+48,class:"sub","text-anchor":"middle"},
+    `${s.tasks} TASKS · ${s.features} FEATURES · ${s.ws} WORKSPACES`));
+  g.addEventListener("click",()=>select(s.id));
+  return g;
+}
+SWARMS.forEach(s=>svg.appendChild(galaxy(s)));
+
+/* 侧栏：同一份数据的另一种投影 */
+const list=document.getElementById("list");
+function renderList(){
+  list.innerHTML="";
+  SWARMS.forEach(s=>{
+    const d=document.createElement("div");
+    d.className="sw"; d.setAttribute("aria-selected", String(s.id===sel));
+    d.innerHTML=`<div class="n">${s.name}</div>
+      <div class="m">${s.running} RUNNING · ${s.features} FEATURES</div>`;
+    d.onclick=()=>select(s.id);
+    list.appendChild(d);
+  });
+}
+function select(id){
+  sel=id; renderList();
+  document.getElementById("enter").textContent=`ENTER ${SWARMS.find(s=>s.id===id).name} →`;
+}
+renderList();
+
+document.getElementById("enter").onclick=()=>{
+  location.href="../L1-swarm/planning/index.html";
+};
+</script>
+</body>
+</html>

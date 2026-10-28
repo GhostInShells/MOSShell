@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 拓扑原型 01</title>
+<style>
+  :root{
+    --bg:#05070f; --panel:#0a0e1a; --ink:#cfd8ff; --dim:#5b6b9c;
+    --line:#1c2742; --accent:#7aa2ff; --warm:#ffb86b; --ok:#5be0a0; --bad:#ff6b8a;
+  }
+  body[data-theme="circuit"]{
+    --bg:#070d0a; --panel:#0a1410; --ink:#c9ffe2; --dim:#4c7a62;
+    --line:#16301f; --accent:#35e08a; --warm:#ffd166; --ok:#35e08a; --bad:#ff5c7a;
+  }
+  body[data-theme="mono"]{
+    --bg:#0e0e0e; --panel:#151515; --ink:#ededed; --dim:#777;
+    --line:#262626; --accent:#d8d8d8; --warm:#a8a8a8; --ok:#cfcfcf; --bad:#8f8f8f;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);
+    font:13px/1.55 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif}
+  #app{display:grid;grid-template-columns:210px 1fr 270px;height:100%}
+  aside{padding:14px 16px;background:var(--panel);border-right:1px solid var(--line);overflow:auto}
+  #detail{border-right:0;border-left:1px solid var(--line)}
+  h1{font-size:12px;letter-spacing:.16em;text-transform:uppercase;margin:0 0 16px;color:var(--dim)}
+  .grp{margin-bottom:16px}
+  .grp>label{display:block;font-size:11px;color:var(--dim);margin-bottom:6px;letter-spacing:.06em}
+  button{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);
+    border-radius:6px;padding:3px 9px;margin:0 4px 4px 0;cursor:pointer;transition:border-color .15s,color .15s}
+  button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+  button:hover{border-color:var(--dim)}
+  main{position:relative;overflow:hidden}
+  svg{width:100%;height:100%;display:block}
+  #detail h2{font-size:11px;letter-spacing:.1em;color:var(--dim);margin:0 0 10px;text-transform:uppercase}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12px;margin:0}
+  .kv b{color:var(--dim);font-weight:400;white-space:nowrap}
+  .lg{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);margin-bottom:6px}
+  .lg i{width:10px;height:10px;display:inline-block;border:1px solid currentColor;flex:0 0 auto}
+  .boundary{fill:none;stroke:var(--line);stroke-width:1.5}
+  .boundary.hot{stroke:var(--accent);opacity:.55}
+  .core{fill:none;stroke:var(--accent);stroke-width:1.5}
+  .agentdot{fill:var(--accent);opacity:.75}
+  .tick{stroke:var(--dim);stroke-width:1}
+  .trail{fill:none;stroke:var(--dim);stroke-width:1;stroke-dasharray:2 5;opacity:.8}
+  .ws{fill:var(--panel);stroke:var(--dim);stroke-width:1}
+  .ws-txt,.lbl{fill:var(--ink);font-size:11px}
+  .lbl.dim{fill:var(--dim)}
+  .lbl.tiny{font-size:10px}
+  .taskbox{fill:none;stroke:var(--line);stroke-width:1}
+  .taskbox.done{stroke:var(--ok)} .taskbox.canceled{stroke:var(--dim);stroke-dasharray:3 3}
+  .taskbox.exception{stroke:var(--bad)} .taskbox.running{stroke:var(--accent)}
+  .op{fill:var(--panel);stroke:var(--accent);stroke-width:1}
+  .op.busy{fill:var(--accent);opacity:.8}
+  .op.done{stroke:var(--ok)} .op.pending{stroke:var(--dim)}
+  .stepband{fill:var(--accent);opacity:.05}
+  .stepband-line{stroke:var(--line);stroke-width:1;stroke-dasharray:4 4}
+  .evt{fill:none;stroke:var(--warm);stroke-width:1.2;opacity:.85}
+  .anc{fill:none;stroke:var(--line);stroke-width:1}
+  .hit{fill:transparent;cursor:pointer}
+  .fade{opacity:.25}
+  text{user-select:none}
+</style>
+</head>
+<body data-theme="stellar">
+<div id="app">
+  <aside>
+    <h1>swarm · 运行视图</h1>
+    <div class="grp"><label>层级（世界 → 领地 → 任务）</label>
+      <button data-level="swarms">集群</button>
+      <button data-level="cluster">领地</button>
+      <button data-level="task">任务</button>
+    </div>
+    <div class="grp"><label>风格（未定，先看三种底色）</label>
+      <button data-theme-set="stellar">星辰</button>
+      <button data-theme-set="circuit">电路</button>
+      <button data-theme-set="mono">极简</button>
+    </div>
+    <div class="grp"><label>图例</label>
+      <div class="lg"><i style="border-radius:50%"></i>集群边界 · 彼此隔离</div>
+      <div class="lg"><i style="border-radius:50%;border-color:var(--accent)"></i>Hive · overmind（信息治理）</div>
+      <div class="lg"><i style="border-radius:50%;border-color:var(--dim)"></i>workspace · 轨迹即 overlord</div>
+      <div class="lg"><i></i>op · agent loop（二等）</div>
+      <div class="lg"><i style="border-color:var(--warm)"></i>event · 连接 op 的事实</div>
+    </div>
+    <div class="grp"><label>刻意不画</label>
+      <div class="lbl dim tiny">agent 不画成演员。它只以「谁在占这个 op」的形式出现 —— 画成演员，
+      整套图的语义就变成消息传递了。</div>
+    </div>
+  </aside>
+
+  <main><svg id="svg" viewBox="0 0 1200 780" preserveAspectRatio="xMidYMid meet"></svg></main>
+
+  <aside id="detail"><h2>详情</h2><p class="lbl dim">点边界、核心、方块、连线，看它叫什么。</p></aside>
+</div>
+
+<script>
+/* ---------------- 数据：虚构但按真实拓扑长 ---------------- */
+const DATA = {
+  swarms: [
+    {
+      id: "A", label: "swarm A · MOSShell", root: "~/.moss/swarms/a", r: 158, x: 340, y: 400,
+      hive: { label: "overmind", agents: 6, skills: 14, catalog: "ground/" },
+      workspaces: [
+        { label: "MOSShell", state: "active", trail: 0.72 },
+        { label: "works", state: "slow", trail: 0.35 }
+      ],
+      tasks: [
+        { id: "t1", label: "agent-swarm 原型", state: "running", kids: 2 },
+        { id: "t2", label: "ground 治理", state: "done" },
+        { id: "t3", label: "旧迁移", state: "canceled" }
+      ]
+    },
+    {
+      id: "B", label: "swarm B · 客户现场", root: "~/.moss/swarms/b", r: 118, x: 690, y: 330,
+      hive: { label: "overmind", agents: 3, skills: 6, catalog: "ground/" },
+      workspaces: [{ label: "site-x", state: "active", trail: 0.5 }],
+      tasks: [{ id: "t4", label: "site 巡检", state: "running", kids: 0 }]
+    },
+    {
+      id: "C", label: "swarm C · 实验（刚被发现）", root: "~/.moss/swarms/c", r: 96, x: 900, y: 560,
+      hive: { label: "overmind?", agents: 1, skills: 1, catalog: "?" },
+      workspaces: [],
+      tasks: []
+    }
+  ],
+  task: {
+    label: "task · run-agent-loop",
+    ctx: [
+      ["workspace", "MOSShell"],
+      ["agent", "deepseek-flash ×2"],
+      ["instruction", "skill/develop + features/dsh-agent-swarm"],
+      ["state", "running"]
+    ],
+    steps: [
+      { id: "s1", label: "prepare ctx", ops: [
+        { id: "o1", state: "done", by: "moss" }, { id: "o2", state: "done", by: "moss" }] },
+      { id: "s2", label: "agent loop", ops: [
+        { id: "o3", state: "done", by: "worker-1" }, { id: "o4", state: "busy", by: "worker-1" },
+        { id: "o5", state: "pending", by: "—" }] },
+      { id: "s3", label: "commit facts", ops: [
+        { id: "o6", state: "pending", by: "—" }] }
+    ],
+    events: [
+      { from: "o2", to: "o3", label: "ctx.ready" },
+      { from: "o4", to: "o5", label: "lease.renew" },
+      { from: "o5", to: "o6", label: "step.done" }
+    ]
+  }
+};
+
+/* ---------------- 画布 ---------------- */
+const svg = document.getElementById("svg");
+const detail = document.getElementById("detail");
+let level = "swarms";
+
+const S = (tag, attrs = {}, text) => {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  if (text != null) el.textContent = text;
+  return el;
+};
+const clear = () => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
+const g = (attrs = {}) => { const el = S("g", attrs); svg.appendChild(el); return el; };
+
+function info(pairs, title) {
+  detail.innerHTML = `<h2>${title || "详情"}</h2><dl class="kv">` +
+    pairs.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join("") + `</dl>`;
+}
+function onHit(el, pairs, title, fn) {
+  el.addEventListener("click", () => { info(pairs, title); fn && fn(); });
+}
+
+/* ---------------- 层级一：集群 = 岛屿 ---------------- */
+function renderSwarms() {
+  clear();
+  const root = g();
+  const t = S("text", { x: 60, y: 56, class: "lbl dim" }, "集群发现：彼此隔离，互不连线；ghost 是唯一的控制者");
+  root.appendChild(t);
+
+  DATA.swarms.forEach(sw => {
+    const gg = g();
+    const ring = S("circle", { cx: sw.x, cy: sw.y, r: sw.r, class: "boundary" + (sw.id === "A" ? " hot" : "") });
+    gg.appendChild(ring);
+    // hive 核心
+    gg.appendChild(S("circle", { cx: sw.x, cy: sw.y, r: 16, class: "core" }));
+    // agent 槽位（资源，不是演员）
+    for (let i = 0; i < sw.hive.agents; i++) {
+      const a = (i / sw.hive.agents) * Math.PI * 2 - Math.PI / 2;
+      gg.appendChild(S("circle", { cx: sw.x + Math.cos(a) * 26, cy: sw.y + Math.sin(a) * 26, r: 2.4, class: "agentdot" }));
+    }
+    // skills 刻度
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      gg.appendChild(S("line", {
+        x1: sw.x + Math.cos(a) * 34, y1: sw.y + Math.sin(a) * 34,
+        x2: sw.x + Math.cos(a) * 40, y2: sw.y + Math.sin(a) * 40, class: "tick"
+      }));
+    }
+    // workspace + 轨迹（overlord = 环 + 轨迹，不是节点）
+    sw.workspaces.forEach((w, i) => {
+      const a = -0.55 + i * 0.9;
+      const wx = sw.x + Math.cos(a) * (sw.r - 30), wy = sw.y + Math.sin(a) * (sw.r - 30);
+      gg.appendChild(S("circle", { cx: wx, cy: wy, r: 5, class: "ws" }));
+      gg.appendChild(S("path", {
+        d: `M ${sw.x + Math.cos(a - 0.55) * (sw.r - 12)} ${sw.y + Math.sin(a - 0.55) * (sw.r - 12)}
+            A ${sw.r - 12} ${sw.r - 12} 0 0 1 ${sw.x + Math.cos(a + 0.55) * (sw.r - 12)} ${sw.y + Math.sin(a + 0.55) * (sw.r - 12)}`,
+        class: "trail"
+      }));
+      gg.appendChild(S("text", { x: wx + 10, y: wy + 4, class: "lbl dim tiny" }, w.label));
+    });
+    // 标签
+    gg.appendChild(S("text", { x: sw.x, y: sw.y + sw.r + 22, class: "lbl", "text-anchor": "middle" }, sw.label));
+    gg.appendChild(S("text", { x: sw.x, y: sw.y + sw.r + 38, class: "lbl dim tiny", "text-anchor": "middle" }, sw.root));
+
+    const hit = S("circle", { cx: sw.x, cy: sw.y, r: sw.r, class: "hit" });
+    onHit(hit, [["集群", sw.label], ["根目录", sw.root], ["hive", sw.hive.label],
+      ["agents", sw.hive.agents], ["skills", sw.hive.skills], ["catalog", sw.hive.catalog],
+      ["workspaces", sw.workspaces.length], ["tasks", sw.tasks.length],
+      ["隔离", "不与其他集群共享任何 channel 或事实"]], "集群", () => { level = "cluster"; renderCluster(sw); });
+    gg.appendChild(hit);
+  });
+}
+
+/* ---------------- 层级二：领地内部 ---------------- */
+function renderCluster(sw) {
+  clear();
+  const cx = 560, cy = 360, R = 250;
+  svg.appendChild(S("circle", { cx, cy, r: R, class: "boundary hot" }));
+  svg.appendChild(S("text", { x: cx, y: 66, class: "lbl", "text-anchor": "middle" }, sw.label));
+  svg.appendChild(S("text", { x: cx, y: 84, class: "lbl dim tiny", "text-anchor": "middle" },
+    `${sw.root} · 目录隔离的领地`));
+
+  // Hive（overmind）：信息治理的单体对话对象
+  const hive = g();
+  hive.appendChild(S("circle", { cx, cy, r: 46, class: "core" }));
+  hive.appendChild(S("circle", { cx, cy, r: 58, class: "boundary" }));
+  for (let i = 0; i < sw.hive.agents; i++) {
+    const a = (i / sw.hive.agents) * Math.PI * 2 - Math.PI / 2;
+    hive.appendChild(S("circle", { cx: cx + Math.cos(a) * 52, cy: cy + Math.sin(a) * 52, r: 3.4, class: "agentdot" }));
+  }
+  for (let i = 0; i < sw.hive.skills; i++) {
+    const a = (i / sw.hive.skills) * Math.PI * 2;
+    hive.appendChild(S("line", { x1: cx + Math.cos(a) * 66, y1: cy + Math.sin(a) * 66,
+      x2: cx + Math.cos(a) * 74, y2: cy + Math.sin(a) * 74, class: "tick" }));
+  }
+  hive.appendChild(S("text", { x: cx, y: cy + 4, class: "lbl", "text-anchor": "middle" }, sw.hive.label));
+  hive.appendChild(S("text", { x: cx, y: cy + 20, class: "lbl dim tiny", "text-anchor": "middle" }, "overmind"));
+  const hiveHit = S("circle", { cx, cy, r: 62, class: "hit" });
+  onHit(hiveHit, [["角色", sw.hive.label + "（overmind）"],
+    ["管什么", "agents / skills / 目录布局（含 features）"],
+    ["治理方式", "ground —— 自己是一块认知场"],
+    ["ghost 何时找它", "需要屏蔽细节上下文时；否则 ghost 自己治理 task"],
+    ["agents", sw.hive.agents], ["skills", sw.hive.skills]], "Hive");
+  hive.appendChild(hiveHit);
+
+  // workspaces：环上的长期目标 + 轨迹
+  sw.workspaces.forEach((w, i) => {
+    const y = cy - 120 + i * 240;
+    const x = cx + 330;
+    svg.appendChild(S("rect", { x: x - 88, y: y - 22, width: 176, height: 44, rx: 6, class: "ws" }));
+    svg.appendChild(S("text", { x, y: y - 3, class: "lbl", "text-anchor": "middle" }, w.label));
+    svg.appendChild(S("text", { x, y: y + 13, class: "lbl dim tiny", "text-anchor": "middle" },
+      `长期治理 · 轨迹 ${(w.trail * 100).toFixed(0)}%`));
+    svg.appendChild(S("path", { d: `M ${x + 88} ${y} L ${cx + 74} ${cy}`, class: "trail" }));
+    const hit = S("rect", { x: x - 88, y: y - 22, width: 176, height: 44, class: "hit" });
+    onHit(hit, [["workspace", w.label], ["状态", w.state],
+      ["谁在看它的变化轨迹", "overlord（观测面 + 监控面）"]], "workspace");
+    svg.appendChild(hit);
+  });
+
+  // tasks：领地内的任务根 + 子代
+  const tx = cx - 300, ty = cy + 150;
+  svg.appendChild(S("text", { x: tx, y: ty - 26, class: "lbl dim tiny" }, "tasks · 一等公民"));
+  sw.tasks.forEach((t, i) => {
+    const y = ty + i * 46;
+    const gg = g();
+    gg.appendChild(S("rect", { x: tx - 60, y: y - 16, width: 190, height: 32, rx: 5,
+      class: "taskbox " + t.state }));
+    gg.appendChild(S("text", { x: tx - 50, y: y + 5, class: "lbl" }, t.label));
+    gg.appendChild(S("text", { x: tx + 118, y: y + 5, class: "lbl dim tiny", "text-anchor": "end" }, t.state));
+    if (t.kids) {
+      for (let k = 0; k < t.kids; k++) {
+        gg.appendChild(S("rect", { x: tx + 140 + k * 46, y: y - 10, width: 38, height: 20, rx: 4,
+          class: "taskbox " + (k === 0 ? "done" : "pending") }));
+      }
+    }
+    const hit = S("rect", { x: tx - 60, y: y - 16, width: 190, height: 32, class: "hit" });
+    onHit(hit, [["task", t.label], ["状态", t.state],
+      ["构成", "workspace + agent + instruction（skill / features）"],
+      ["出口", "done / canceled / exception"]], "task", () => { level = "task"; renderTask(); });
+    gg.appendChild(hit);
+  });
+}
+
+/* ---------------- 层级三：任务 = op 图 + event 连线 ---------------- */
+function renderTask() {
+  clear();
+  const T = DATA.task;
+  // 祖先链：这个任务从哪来
+  const ancestors = ["swarm A", "cluster · MOSShell", "task · root"];
+  ancestors.forEach((a, i) => {
+    svg.appendChild(S("text", { x: 80 + i * 150, y: 70, class: "lbl dim tiny" }, a + (i < 2 ? "  ›" : "")));
+  });
+  svg.appendChild(S("text", { x: 80, y: 104, class: "lbl" }, T.label));
+  T.ctx.forEach(([k, v], i) => {
+    svg.appendChild(S("text", { x: 80, y: 128 + i * 18, class: "lbl dim tiny" }, `${k} = ${v}`));
+  });
+
+  // step 带 + ops
+  const x0 = 80, y0 = 300, opW = 54, gap = 40;
+  let x = x0;
+  const pos = {};
+  T.steps.forEach((st, si) => {
+    const w = st.ops.length * (opW + gap) - gap;
+    svg.appendChild(S("rect", { x: x - 14, y: y0 + 82, width: w + 28, height: 54, rx: 6, class: "stepband" }));
+    svg.appendChild(S("line", { x1: x - 14, y1: y0 + 148, x2: x + w + 14, y2: y0 + 148, class: "stepband-line" }));
+    svg.appendChild(S("text", { x, y: y0 + 168, class: "lbl dim tiny" }, `step ${si + 1} · ${st.label}`));
+    st.ops.forEach(op => {
+      const gg = g();
+      gg.appendChild(S("rect", { x, y: y0, width: opW, height: 54, rx: 5, class: "op " + op.state }));
+      gg.appendChild(S("text", { x: x + opW / 2, y: y0 + 24, class: "lbl tiny", "text-anchor": "middle" }, op.id));
+      gg.appendChild(S("text", { x: x + opW / 2, y: y0 + 42, class: "lbl dim tiny", "text-anchor": "middle" }, op.by));
+      pos[op.id] = { x: x + opW / 2, y: y0 + 54 };
+      const hit = S("rect", { x, y: y0, width: opW, height: 54, class: "hit" });
+      onHit(hit, [["op", op.id], ["状态", op.state], ["持有它的 agent", op.by],
+        ["语义", "agent loop：一次可重入的小循环，栈不跨 op"],
+        ["一等公民？", "否 —— task 一等，op 二等，agent 是资源"]], "op");
+      gg.appendChild(hit);
+      x += opW + gap;
+    });
+    x += 46;
+  });
+
+  // events：op 与 op 之间的弧线
+  T.events.forEach(ev => {
+    const a = pos[ev.from], b = pos[ev.to];
+    if (!a || !b) return;
+    const mx = (a.x + b.x) / 2, my = Math.min(a.y, b.y) - 92;
+    const path = S("path", { d: `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`, class: "evt" });
+    svg.appendChild(path);
+    svg.appendChild(S("text", { x: mx, y: my + 24, class: "lbl dim tiny", "text-anchor": "middle" }, ev.label));
+  });
+
+  // 出口
+  svg.appendChild(S("text", { x: x0, y: y0 - 60, class: "lbl dim tiny" },
+    "终态出口只有三个：done · canceled · exception —— 图上的每个 op 都必须能走到其中一个"));
+}
+
+/* ---------------- 交互 ---------------- */
+document.querySelectorAll("[data-level]").forEach(b => {
+  b.addEventListener("click", () => {
+    const l = b.dataset.level;
+    level = l;
+    document.querySelectorAll("[data-level]").forEach(x =>
+      x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+    if (l === "swarms") renderSwarms();
+    else if (l === "cluster") renderCluster(DATA.swarms[0]);
+    else renderTask();
+  });
+});
+document.querySelectorAll("[data-theme-set]").forEach(b => {
+  b.addEventListener("click", () => {
+    document.body.dataset.theme = b.dataset.themeSet;
+    document.querySelectorAll("[data-theme-set]").forEach(x =>
+      x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+  });
+});
+
+document.querySelector('[data-level="swarms"]').setAttribute("aria-pressed", "true");
+document.querySelector('[data-theme-set="stellar"]').setAttribute("aria-pressed", "true");
+renderSwarms();
+</script>
+</body>
+</html>

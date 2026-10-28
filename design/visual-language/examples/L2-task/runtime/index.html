@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 07 · 流水线</title>
+<style>
+  :root{
+    --bg:#eef1f4; --ink:#2b333d; --ink2:#5d6a78; --ink3:#98a4b1;
+    --belt:#39414d; --belt2:#586371; --plate:#ffffff; --line:#d3dae1;
+    --cool:#2f6fd0; --warm:#e08a1e; --ok:#2fa36b; --bad:#d64550; --draft:#aab4bf;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);
+    font:13px/1.6 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif}
+  svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .belt{stroke:var(--belt);stroke-width:26;stroke-linecap:round;fill:none}
+  .belt-in{stroke:var(--belt2);stroke-width:14;stroke-linecap:round;fill:none}
+  .chev{fill:var(--bg);opacity:.85}
+  .plate{fill:var(--plate);stroke:var(--line);stroke-width:1}
+  .lbl{fill:var(--ink);font-size:12px}
+  .sm{fill:var(--ink2);font-size:10px;letter-spacing:.04em}
+  .xs{fill:var(--ink3);font-size:9.5px;letter-spacing:.16em}
+  #hud{position:absolute;left:36px;top:30px}
+  #hud .k{font-size:9.5px;letter-spacing:.3em;color:var(--ink3);text-transform:uppercase}
+  #hud .t{font-size:15px;margin-top:6px}
+  #hud .s{font-size:11px;margin-top:6px;color:var(--ink2)}
+  #legend{position:absolute;left:36px;bottom:26px;font-size:10px;color:var(--ink2);line-height:1.9}
+  #legend b{color:var(--ink);font-weight:500}
+  .item{animation:run 9s linear infinite}
+  @keyframes run{from{offset-distance:0%}to{offset-distance:100%}}
+</style>
+</head>
+<body>
+<svg id="scene" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <g id="lines"></g>
+</svg>
+<div id="hud">
+  <div class="k">pipeline · 流水线</div>
+  <div class="t">swarm 运行时 · 三条产线</div>
+  <div class="s">带子上有多少件货，取决于有多少个 op 真在飞</div>
+</div>
+<div id="legend">
+  <div><b>带子</b> = 一条 task 的 op 链；箭头 = 方向</div>
+  <div><b>工位</b> = op；框色 = 状态（橙=在跑，绿=完成，灰=待机）</div>
+  <div><b>货件</b> = 正在飞的 op（数量来自真实的 running 数）</div>
+  <div><b>产线头的机器</b> = hive；带子之间不互通 = 集群隔离</div>
+</div>
+
+<script>
+const NS="http://www.w3.org/2000/svg";
+const svg=document.getElementById("scene");
+const el=(t,a={},x)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!=null)n.textContent=x;return n;};
+const root=document.getElementById("lines");
+
+const LINES=[
+  {id:"A",label:"SWARM A · MOSHELL",y:250,len:1080,running:2,
+   stations:[
+     {n:"T-01 agent-swarm",s:"running",x:740},
+     {n:"T-02 issue-gov",s:"done",x:880},
+     {n:"T-03 voiceflow",s:"running",x:1020},
+     {n:"T-04 svg-works",s:"pending",x:1160}
+   ]},
+  {id:"B",label:"SWARM B · SITE X",y:500,len:720,running:1,
+   stations:[
+     {n:"T-07 site 巡检",s:"running",x:760},
+     {n:"T-08 delivery",s:"pending",x:940}
+   ]},
+  {id:"C",label:"SWARM C · 实验",y:740,len:520,running:0,stations:[]}
+];
+const X0=300;
+
+const COL={running:"var(--warm)",done:"var(--ok)",pending:"var(--line)",draft:"var(--draft)",exception:"var(--bad)"};
+
+LINES.forEach((L,li)=>{
+  const g=el("g");
+  const y=L.y, len=L.len;
+  // 产线：主带
+  const belt=el("path",{d:`M ${X0} ${y} H ${X0+len}`,class:"belt"});
+  g.appendChild(belt);
+  // 方向箭头（沿带）
+  for(let x=X0+60;x<X0+len-20;x+=120){
+    g.appendChild(el("path",{d:`M ${x} ${y-9} l 14 9 l -14 9 z`,class:"chev"}));
+  }
+  // 产线头：hive
+  g.appendChild(el("rect",{x:X0-128,y:y-40,width:112,height:80,rx:10,class:"plate"}));
+  g.appendChild(el("text",{x:X0-72,y:y-6,class:"lbl","text-anchor":"middle"},L.id));
+  g.appendChild(el("text",{x:X0-72,y:y+12,class:"sm","text-anchor":"middle"},L.running?`${L.running} RUNNING`:"IDLE"));
+  // 名称
+  g.appendChild(el("text",{x:X0-128,y:y-58,class:"xs"},L.label));
+
+  // 工位
+  L.stations.forEach(st=>{
+    const col=COL[st.s]||"var(--line)";
+    g.appendChild(el("rect",{x:st.x-34,y:y-52,width:68,height:104,rx:8,class:"plate",
+      stroke:col,"stroke-width":st.s==="running"?2:1.2}));
+    // 工位内部的“刀头”
+    g.appendChild(el("circle",{cx:st.x,cy:y-14,r:7,fill:col,"fill-opacity":st.s==="done"?".9":".15",stroke:col}));
+    g.appendChild(el("text",{x:st.x,y:y+22,class:"sm","text-anchor":"middle","font-size":"9px"},st.n.split(" ")[0]));
+    g.appendChild(el("text",{x:st.x,y:y+74,class:"sm","text-anchor":"middle","font-size":"9px"},st.n.split(" ").slice(1).join(" ")));
+  });
+
+  // 货件：数量 = 真实 running 数（每件一条 loop 动画，错相位）
+  for(let i=0;i<L.running*2;i++){
+    const it=el("circle",{r:5,fill:"var(--warm)"});
+    it.setAttribute("class","item");
+    it.style.offsetPath=`path("M ${X0} ${y} H ${X0+len}")`;
+    it.style.animationDelay=`${-(i*2.2).toFixed(1)}s`;
+    it.style.animationDuration=`${(9 - li).toFixed(0)}s`;
+    g.appendChild(it);
+  }
+  root.appendChild(g);
+});
+
+// 三条产线之间的“不通”：只画一句说明的留白，不画线
+root.appendChild(el("text",{x:X0+40,y:905,class:"xs"},
+  "NO INTERCHANGE BETWEEN LINES · 集群之间没有共享事实，所以没有传送带"));
+</script>
+</body>
+</html>

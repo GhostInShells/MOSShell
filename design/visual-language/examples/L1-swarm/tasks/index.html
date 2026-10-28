@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 05 · 领地图</title>
+<style>
+  :root{
+    --bg:#04060f; --ink:#e4ecff; --ink2:#93a6cf; --ink3:#43537a; --line:#18223c;
+    --cool:#7fb0ff; --warm:#ffb454; --ok:#5fe0a8; --bad:#ff6b8a; --draft:#41506f;
+    --ease:cubic-bezier(.22,1,.36,1);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:#02040a;color:var(--ink);
+    font:13px/1.6 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #grain{position:absolute;inset:-10%;pointer-events:none;opacity:.022;
+    background-image:radial-gradient(#fff 1px,transparent 1px);background-size:3px 3px}
+  #vig{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 45%,transparent 45%,rgba(0,0,0,.75) 100%)}
+  .blob{stroke-width:1.1}
+  .lane{fill:none;stroke-width:1;stroke-dasharray:2 7;opacity:.5}
+  .lbl{fill:var(--ink);font-size:12px;letter-spacing:.02em}
+  .sm{fill:var(--ink2);font-size:9.5px;letter-spacing:.08em}
+  .xs{fill:var(--ink3);font-size:9px;letter-spacing:.18em}
+  #hud{position:absolute;left:40px;top:34px;pointer-events:none}
+  #hud .k{font-size:9.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--ink3)}
+  #hud .t{font-size:14px;margin-top:6px}
+  #hud .s{font-size:10px;margin-top:8px;color:var(--ink2);letter-spacing:.04em}
+  #legend{position:absolute;left:40px;bottom:28px;font-size:9.5px;color:var(--ink3);line-height:1.9}
+  #legend b{color:var(--ink2);font-weight:400}
+  .hang{position:absolute;right:40px;bottom:28px;font-size:9px;color:var(--ink3);letter-spacing:.16em}
+</style>
+</head>
+<body>
+<svg id="scene" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <g id="field"></g>
+  <g id="cam" style="transition:transform 900ms var(--ease)">
+    <g id="territories"></g>
+    <g id="nodes"></g>
+  </g>
+</svg>
+<div id="grain"></div><div id="vig"></div>
+<div id="hud">
+  <div class="k">territory · 领地</div>
+  <div class="t">swarm 运行时 · 三块互不重叠的领地</div>
+  <div class="s">没有连线不是因为没画，是因为它们之间没有共享的事实</div>
+</div>
+<div id="legend">
+  <div><b>领地边界</b> = 一个集群的隔离区</div>
+  <div><b>首府</b> = hive（overmind）</div>
+  <div><b>节点</b> = task；实心环 = 正在跑</div>
+  <div><b>车道</b> = 首府到 task 的治理路径（不是消息）</div>
+</div>
+<div class="hang">CLICK A TERRITORY</div>
+
+<script>
+const NS="http://www.w3.org/2000/svg";
+const svg=document.getElementById("scene");
+const el=(t,a={},x)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);
+  if(x!=null)n.textContent=x;return n;};
+const rnd=(s=>()=>(s=s*1664525+1013904223>>>0)/4294967296)(20261028);
+
+/* ---------- 数据：三块领地 ---------- */
+const T=[
+  {id:"A",label:"swarm A · MOSShell",x:560,y:520,r:330,hue:"#7fb0ff",state:"active",
+   capital:"overmind",done:1,running:2,
+   tasks:[
+     {n:"agent-swarm",s:"running",a:-2.5,rr:.55},
+     {n:"issue-governance",s:"done",a:-1.9,rr:.78},
+     {n:"voiceflow",s:"running",a:-1.2,rr:.62},
+     {n:"svg-works",s:"pending",a:-0.6,rr:.82},
+     {n:"search-surface",s:"draft",a:-3.1,rr:.80},
+     {n:"ideas-mechanism",s:"pending",a:-2.9,rr:.42}
+   ]},
+  {id:"B",label:"swarm B · 客户现场",x:1180,y:300,r:210,hue:"#8fe0d0",state:"active",
+   capital:"hive",done:0,running:1,
+   tasks:[
+     {n:"site 巡检",s:"running",a:-2.2,rr:.62},
+     {n:"delivery",s:"pending",a:-1.1,rr:.74}
+   ]},
+  {id:"C",label:"swarm C · 实验",x:1210,y:790,r:130,hue:"#8f9dc8",state:"discovered",
+   capital:"?",done:0,running:0,tasks:[]}
+];
+
+/* ---------- 背景：星场 + 银河带 ---------- */
+const field=document.getElementById("field");
+const grad=el("radialGradient",{id:"band"}); 
+grad.appendChild(el("stop",{offset:"0%","stop-color":"#1a2a5e","stop-opacity":".55"}));
+grad.appendChild(el("stop",{offset:"55%","stop-color":"#101a3a","stop-opacity":".25"}));
+grad.appendChild(el("stop",{offset:"100%","stop-color":"#02040a","stop-opacity":"0"}));
+const defs=el("defs"); defs.appendChild(grad); svg.insertBefore(defs,svg.firstChild);
+field.appendChild(el("ellipse",{cx:820,cy:520,rx:820,ry:250,fill:"url(#band)",
+  transform:"rotate(-18 820 520)",opacity:".9"}));
+for(let i=0;i<420;i++){
+  const a=rnd()*Math.PI*2, rr=Math.sqrt(rnd());
+  const x=820+Math.cos(a)*rr*760, y=520+Math.sin(a)*rr*440;
+  field.appendChild(el("circle",{cx:x.toFixed(1),cy:y.toFixed(1),r:(rnd()*1.1+.2).toFixed(2),
+    fill:"#cfe0ff",opacity:(.04+rnd()*.16).toFixed(3)}));
+}
+
+/* ---------- 领地形状：不规则边界 ---------- */
+function blob(cx,cy,r,seed0){
+  const pts=[];
+  const K=14;
+  for(let i=0;i<K;i++){
+    const a=i/K*Math.PI*2;
+    let s=seed0+i*97; s=(s*1664525+1013904223)>>>0;
+    const k=.78+((s%1000)/1000)*.42;
+    pts.push([cx+Math.cos(a)*r*k, cy+Math.sin(a)*r*k]);
+  }
+  let d="";
+  for(let i=0;i<K;i++){
+    const p0=pts[(i-1+K)%K],p1=pts[i],p2=pts[(i+1)%K],p3=pts[(i+2)%K];
+    if(i===0) d+=`M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} `;
+    const c1=[p1[0]+(p2[0]-p0[0])/6, p1[1]+(p2[1]-p0[1])/6];
+    const c2=[p2[0]-(p3[0]-p1[0])/6, p2[1]-(p3[1]-p1[1])/6];
+    d+=`C ${c1[0].toFixed(1)} ${c1[1].toFixed(1)} ${c2[0].toFixed(1)} ${c2[1].toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)} `;
+  }
+  return d+"Z";
+}
+
+/* ---------- 领地形状：包住它真正拥有的节点 ---------- */
+function smoothClosed(pts){
+  const K = pts.length;
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)} `;
+  for (let i=0;i<K;i++){
+    const p0=pts[(i-1+K)%K], p1=pts[i], p2=pts[(i+1)%K], p3=pts[(i+2)%K];
+    const c1=[p1[0]+(p2[0]-p0[0])/6, p1[1]+(p2[1]-p0[1])/6];
+    const c2=[p2[0]-(p3[0]-p1[0])/6, p2[1]-(p3[1]-p1[1])/6];
+    d+=`C ${c1[0].toFixed(1)} ${c1[1].toFixed(1)} ${c2[0].toFixed(1)} ${c2[1].toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)} `;
+  }
+  return d+"Z";
+}
+function hull(pts){
+  // monotone chain
+  const P=pts.slice().sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const cross=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+  const lower=[];
+  for(const p of P){ while(lower.length>=2 && cross(lower[lower.length-2],lower[lower.length-1],p)<=0) lower.pop(); lower.push(p); }
+  const upper=[];
+  for(let i=P.length-1;i>=0;i--){ const p=P[i];
+    while(upper.length>=2 && cross(upper[upper.length-2],upper[upper.length-1],p)<=0) upper.pop(); upper.push(p); }
+  return lower.slice(0,-1).concat(upper.slice(0,-1));
+}
+function territoryPath(t){
+  if (!t.tasks.length) return blob(t.x,t.y,t.r,613);
+  const pts=[[t.x,t.y]].concat(t.tasks.map(tk=>
+    [t.x+Math.cos(tk.a)*tk.rr*t.r, t.y+Math.sin(tk.a)*tk.rr*t.r]));
+  const cx=pts.reduce((a,p)=>a+p[0],0)/pts.length;
+  const cy=pts.reduce((a,p)=>a+p[1],0)/pts.length;
+  const H=hull(pts).map(p=>{
+    const dx=p[0]-cx, dy=p[1]-cy, L=Math.hypot(dx,dy)||1;
+    const k=1.0+64/L;                     // 每个凸包顶点外扩固定像素
+    return [cx+dx*k, cy+dy*k];
+  });
+  return smoothClosed(H);
+}
+
+/* ---------- 画领地 ---------- */
+const terrG=document.getElementById("territories");
+const nodeG=document.getElementById("nodes");
+const cam=document.getElementById("cam");
+let zoomed=null;
+
+T.forEach((t,ti)=>{
+  const g=el("g");
+  const shape=el("path",{d:territoryPath(t),class:"blob"});
+  shape.setAttribute("fill",t.hue);
+  shape.setAttribute("fill-opacity",(0.035 + 0.02*t.running).toFixed(3));
+  shape.setAttribute("stroke",t.hue);
+  shape.setAttribute("stroke-opacity",(0.22 + 0.10*t.running).toFixed(2));
+  g.appendChild(shape);
+  // 内圈：表示"已治理的范围"，比边界小一圈
+  if (t.state === "discovered"){
+    const inner=el("path",{d:blob(t.x,t.y,t.r*.78,ti*613+31),class:"blob"});
+    inner.setAttribute("fill","none"); inner.setAttribute("stroke",t.hue);
+    inner.setAttribute("stroke-opacity",".16"); inner.setAttribute("stroke-dasharray","2 8");
+    g.appendChild(inner);
+  }
+
+  // 首府
+  const cap=el("g");
+  cap.appendChild(el("circle",{cx:t.x,cy:t.y,r:7,fill:t.hue}));
+  cap.appendChild(el("circle",{cx:t.x,cy:t.y,r:15,fill:"none",stroke:t.hue,"stroke-width":"1",opacity:".55"}));
+  cap.appendChild(el("circle",{cx:t.x,cy:t.y,r:26,fill:"none",stroke:t.hue,"stroke-width":"1",opacity:".2"}));
+  cap.appendChild(el("text",{x:t.x,y:t.y+44,class:"sm","text-anchor":"middle"},t.capital));
+  g.appendChild(cap);
+  terrG.appendChild(g);
+
+  // 标签
+  const topY = t.tasks.length
+    ? Math.min(...t.tasks.map(tk=>t.y+Math.sin(tk.a)*tk.rr*t.r)) - 78
+    : t.y - t.r - 26;
+  terrG.appendChild(el("text",{x:t.x,y:topY,class:"lbl","text-anchor":"middle"},t.label));
+  terrG.appendChild(el("text",{x:t.x,y:topY+18,class:"xs","text-anchor":"middle"},
+    t.tasks.length? `${t.tasks.length} TASKS · ${t.running} RUNNING` : "DISCOVERED · NO TASKS"));
+  if(t.state==="discovered"){
+    const scan=el("path",{d:blob(t.x,t.y,t.r*.55,ti*77),class:"blob"});
+    scan.setAttribute("fill","none"); scan.setAttribute("stroke",t.hue);
+    scan.setAttribute("stroke-opacity",".3"); scan.setAttribute("stroke-dasharray","3 9");
+    scan.style.animation="spin 24s linear infinite"; scan.style.transformOrigin=`${t.x}px ${t.y}px`;
+    terrG.appendChild(scan);
+  }
+
+  // 车道 + 节点
+  t.tasks.forEach((tk,i)=>{
+    const a=tk.a, rr=tk.rr*t.r;
+    const nx=t.x+Math.cos(a)*rr, ny=t.y+Math.sin(a)*rr;
+    const mx=(t.x+nx)/2, my=(t.y+ny)/2;
+    const lane=el("path",{d:`M ${t.x} ${t.y} Q ${mx} ${my-26} ${nx} ${ny}`,class:"lane"});
+    lane.setAttribute("stroke",t.hue);
+    nodeG.appendChild(lane);
+
+    const col = tk.s==="done"?"#5fe0a8":tk.s==="running"?"#ffb454":tk.s==="draft"?"#41506f":"#7f8db0";
+    const solid = tk.s==="done" || tk.s==="running";
+    const sz = 9;
+    const poly=el("polygon",{points:
+      `${nx},${ny-sz} ${nx+sz*.87},${ny-sz*.5} ${nx+sz*.87},${ny+sz*.5} ${nx},${ny+sz} ${nx-sz*.87},${ny+sz*.5} ${nx-sz*.87},${ny-sz*.5}`,
+      fill:solid?col:"#070c17", "fill-opacity":solid?".85":"1", stroke:col,
+      "stroke-width":tk.s==="running"?1.8:1.2});
+    const ng=el("g"); ng.appendChild(poly);
+    if(tk.s==="running"){
+      const ring=el("circle",{cx:nx,cy:ny,r:sz+6,fill:"none",stroke:col,"stroke-width":"1",opacity:".55",
+        "stroke-dasharray":"3 5"});
+      ring.style.animation="spin 9s linear infinite"; ring.style.transformOrigin=`${nx}px ${ny}px`;
+      ng.appendChild(ring);
+    }
+    ng.appendChild(el("text",{x:nx,y:ny+sz+15,class:"sm","text-anchor":"middle","font-size":"9px"},tk.n));
+    nodeG.appendChild(ng);
+  });
+});
+
+const styleEl=document.createElement("style");
+styleEl.textContent="@keyframes spin{to{transform:rotate(360deg)}}";
+document.head.appendChild(styleEl);
+
+/* ---------- 交互：悬停高亮、点击推镜 ---------- */
+let focusIdx=-1;
+document.querySelectorAll("#territories > g").forEach((g,i)=>{
+  g.style.cursor="pointer";
+  g.addEventListener("mouseenter",()=>{ focusIdx=i; g.style.filter="brightness(1.35)"; });
+  g.addEventListener("mouseleave",()=>{ focusIdx=-1; g.style.filter=""; });
+  g.addEventListener("click",ev=>{
+    ev.stopPropagation();
+    const t=T[i];
+    const s=1.8;
+    cam.setAttribute("transform",`translate(${800-t.x*s} ${500-t.y*s}) scale(${s})`);
+  });
+});
+svg.addEventListener("click",()=>cam.setAttribute("transform",""));
+</script>
+</body>
+</html>
