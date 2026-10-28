@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>swarm · 视图骨架</title>
+<style>
+  :root{
+    --bg:#05080f;--panel:#080d18;--ink:#e6eeff;--ink2:#8fa4cf;--ink3:#4a5b80;
+    --line:#1a2540;--line2:#28375c;--accent:#7aa2ff;--warm:#ffb86b;--ok:#5be0a0;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);
+    font:13px/1.6 ui-sans-serif,-apple-system,"PingFang SC","Noto Sans SC",sans-serif}
+  #app{display:grid;grid-template-columns:236px 1fr 320px;height:100%}
+
+  /* 左：拓扑导航 */
+  nav{background:var(--panel);border-right:1px solid var(--line);padding:26px 18px;overflow:auto}
+  nav .k{font-size:9px;letter-spacing:.3em;color:var(--ink3);text-transform:uppercase;margin-bottom:18px}
+  nav a{display:block;color:var(--ink2);text-decoration:none;padding:7px 10px;border-radius:6px;
+    font-size:12px;border:1px solid transparent}
+  nav a:hover{border-color:var(--line)}
+  nav a[aria-current="page"]{color:var(--accent);border-color:var(--accent);background:rgba(122,162,255,.05)}
+  nav .lv{font-size:9px;letter-spacing:.2em;color:var(--ink3);margin:16px 0 6px;padding-left:10px}
+  nav a.sub{padding-left:22px;font-size:11.5px}
+  nav .note{margin-top:22px;font-size:9.5px;color:var(--ink3);line-height:1.8}
+
+  /* 中：舞台 */
+  main{position:relative;overflow:hidden}
+  #stage{position:absolute;inset:0}
+  header.top{position:absolute;left:38px;top:30px;z-index:2;pointer-events:none}
+  header.top .lvl{font-size:9px;letter-spacing:.28em;color:var(--ink3);text-transform:uppercase}
+  header.top h1{font-size:15px;font-weight:400;margin:7px 0 0;letter-spacing:.02em}
+  header.top .p{margin-top:8px;color:var(--ink2);font-size:11.5px;max-width:620px}
+  #zones{position:absolute;inset:0}
+  #fade{position:absolute;inset:0;background:var(--bg);opacity:0;pointer-events:none;transition:opacity .25s}
+
+  .zone{position:absolute;border:1px dashed var(--line2);border-radius:8px;padding:12px 14px;
+    color:var(--ink3);font-size:10.5px;letter-spacing:.04em;transition:border-color .2s,background .2s}
+  .zone:hover{border-color:var(--accent);background:rgba(122,162,255,.04)}
+  .zone b{display:block;color:var(--ink2);font-weight:400;font-size:11px;letter-spacing:.06em;margin-bottom:6px}
+  .zone .n{color:var(--ink3);line-height:1.7}
+  .zone .sample{position:absolute;right:10px;bottom:8px;font-size:9px;color:var(--ink3);
+    text-decoration:none;border-bottom:1px solid var(--line2)}
+  .zone .sample:hover{color:var(--accent)}
+  .zone{overflow:hidden}
+  .zone .ghost{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    opacity:.10;filter:saturate(.8);pointer-events:none;border-radius:8px}
+  .zone b,.zone .n,.zone .sample{position:relative}
+
+  /* 右：这页的规格 */
+  aside{background:var(--panel);border-left:1px solid var(--line);padding:26px 20px;overflow:auto}
+  aside h2{font-size:9px;letter-spacing:.28em;color:var(--ink3);text-transform:uppercase;
+    margin:0 0 14px;font-weight:400}
+  aside .blk{margin-bottom:20px}
+  aside .blk h3{font-size:10px;letter-spacing:.1em;color:var(--ink2);margin:0 0 6px;font-weight:400}
+  aside ul{margin:0;padding-left:16px;color:var(--ink2);font-size:11px;line-height:1.85}
+  aside .no li{color:#8c6a76}
+  aside .tag{display:inline-block;font:9px var(--mono);letter-spacing:.1em;color:var(--ink3);
+    border:1px solid var(--line);border-radius:4px;padding:2px 6px;margin:0 5px 5px 0}
+
+  #foot{position:absolute;left:38px;right:38px;bottom:22px;display:flex;justify-content:space-between;
+    font-size:9.5px;letter-spacing:.1em;color:var(--ink3);border-top:1px solid var(--line);padding-top:10px}
+  #foot kbd{font:9px var(--mono);border:1px solid var(--line2);border-radius:3px;padding:1px 5px;color:var(--ink2)}
+</style>
+</head>
+<body>
+<div id="app">
+  <nav>
+    <div class="k">view skeleton</div>
+    <div id="rail"></div>
+    <div class="note">每一页只回答一个问题。<br>虚线框是区域，不是内容——<br>内容是以后对着这页聊出来的。</div>
+  </nav>
+
+  <main>
+    <header class="top">
+      <div class="lvl" id="lvl"></div>
+      <h1 id="title"></h1>
+      <div class="p" id="purpose"></div>
+    </header>
+    <div id="zones"></div>
+    <div id="fade"></div>
+    <div id="foot">
+      <span><kbd>1</kbd>–<kbd>6</kbd> 切页 · <kbd>←</kbd><kbd>→</kbd> 前后 · 骨架不含数据（via moss）</span>
+      <span id="stamp"></span>
+    </div>
+  </main>
+
+  <aside>
+    <h2>这一页的规格</h2>
+    <div class="blk"><h3>要回答的问题</h3><div id="q" style="color:var(--ink2);font-size:11.5px"></div></div>
+    <div class="blk"><h3>必须出现的对象</h3><div id="objects"></div></div>
+    <div class="blk"><h3>这一页不许出现</h3><ul class="no" id="mustnot"></ul></div>
+    <div class="blk"><h3>动效纪律</h3><div id="motion" style="color:var(--ink2);font-size:11px"></div></div>
+    <div class="blk"><h3>样稿</h3><div id="samples"></div></div>
+    <div class="blk"><h3>还缺</h3><ul id="missing"></ul></div>
+  </aside>
+</div>
+
+<script>
+/* ---------------------------------------------------------------
+   骨架 = 拓扑 + 每页的区域 + 每页的规格。
+   不含数据、不含控制；样稿用链接指过去。
+   --------------------------------------------------------------- */
+const VIEWS = [
+  {
+    id:"L0", path:"L0", level:"L0 · 全部 swarm", title:"星图",
+    purpose:"一眼看出有几个 swarm、谁在忙；侧栏是同一份数据的另一个投影。",
+    question:"现在有哪几个世界，哪一个值得进去？",
+    objects:["swarm（星系）","当前选中态","侧栏列表","隔离（不连线）"],
+    mustnot:["跨 swarm 的连线（没有共享事实）","任何具体 task 的细节"],
+    motion:"星系缓慢自转；只有 running 数对应的光点在动。",
+    samples:[["L0 · 星图","../examples/L0-swarm-map/index.html"]],
+    missing:["发现新 swarm 的过程（扫描/显影）","侧栏排序与筛选"],
+    zones:[
+      {x:38,y:140,w:790,h:520,preview:"../examples/shots/L0-swarm-map.jpg",label:"主视图 · 星系场",note:"每个 swarm 一片星系；大小 = 它管着多少个 workspace。",sample:"../examples/L0-swarm-map/index.html"},
+      {x:846,y:140,w:300,h:520,label:"侧栏 · 列表",note:"同一模型的另一种投影；点它等于点星系。",sample:null},
+      {x:38,y:678,w:1108,h:64,label:"选中摘要",note:"进去之前给三行：任务数 / 在建 feature 数 / 最后一次活动。",sample:null}
+    ]
+  },
+  {
+    id:"L1-planning", path:"L1/planning", level:"L1 · swarm 内部", title:"规划图（壳 = features）",
+    purpose:"这个 workspace 长成什么样了：哪些已经竣工、哪些在建、哪些还是暗孔。",
+    question:"我们在围着什么建，建到哪一步了？",
+    objects:["恒星 = workspace","壳上的面板 = workstream","竣工 / 在建 / draft 三种形","整体完成度弧"],
+    mustnot:["单个 op 的细节","agent 的化身（它不是主角）"],
+    motion:"壳缓慢自转；竣工面板有焊接光，不闪；施工光点从行星飞向面板。",
+    samples:[["按 feature","../examples/L1-swarm/planning/index.html"],
+             ["按时间（纬度=月份）","../examples/L1-swarm/planning/index-time.html"]],
+    missing:["点面板进 task","破洞（exception）的真实样本"],
+    zones:[
+      {x:38,y:140,w:790,h:480,preview:"../examples/shots/04-dyson.jpg",label:"主视图 · 戴森壳",note:"六边形面板 = 一条 workstream；纬度可以按 feature 铺，也可以按月份铺。",sample:"../examples/L1-swarm/planning/index.html"},
+      {x:846,y:140,w:300,h:480,label:"当前面板",note:"名字 / 状态 / 进度 / 谁在施工 / 最近一次事实。",sample:null},
+      {x:38,y:638,w:1108,h:104,label:"标尺 · 时间",note:"横向是项目的时间轴；它让整页读起来像仪器，而不是仪表盘。",sample:null}
+    ]
+  },
+  {
+    id:"L1-resources", path:"L1/resources", level:"L1 · swarm 内部", title:"资源图（组件库 + 装配）",
+    purpose:"任务不是 agent 干的，是一组零件装配起来干的；这一页就是零件与装配。",
+    question:"做这件事，用了哪些零件？",
+    objects:["零件：loop / agent-preset / skill / tool / boundary","装配图（BOM → 图）","零件详情"],
+    mustnot:["把 agent 画成主角","运行时的流动（那是运行图的事）"],
+    motion:"基本静止（蓝图语法）；只有悬停时高亮零件在装配图里的位置。",
+    samples:[["零件架 + 装配","../examples/L1-swarm/resources/index.html"]],
+    missing:["零件超过 8 个时的分组/检索","装配图到源码的那一步"],
+    zones:[
+      {x:38,y:140,w:380,h:600,preview:"../examples/shots/L1-resources.jpg",label:"左 · 零件架",note:"按类型分段；每件有编号，可被装配图引用。",sample:"../examples/L1-swarm/resources/index.html"},
+      {x:436,y:140,w:440,h:600,label:"中 · 装配图",note:"节点是 op，边是 event；每个 op 标注用到的零件。",sample:null},
+      {x:894,y:140,w:252,h:600,label:"右 · 零件详情",note:"这个零件从哪来、被哪些 task 用过、边界是什么。",sample:null}
+    ]
+  },
+  {
+    id:"L1-tasks", path:"L1/tasks", level:"L1 · swarm 内部", title:"任务图（正在跑的东西）",
+    purpose:"哪条 task 在飞、飞过哪些 workspace、卡在哪。",
+    question:"现在有什么在跑，卡在哪儿？",
+    objects:["task 节点与状态","workspace 边界","治理走线","事件流"],
+    mustnot:["没有授权的跨星连线","把消息画成线（线是事实，不是消息）"],
+    motion:"只有 task 在动：光点沿授权路径飞；其余静止。",
+    samples:[["领地 + 走线","../examples/L1-swarm/tasks/index.html"]],
+    missing:["真实事件流","卡住/超时的形状"],
+    zones:[
+      {x:38,y:140,w:790,h:520,preview:"../examples/shots/05-territory.jpg",label:"主视图 · 任务网络",note:"节点 = task；边界 = workspace；走线 = 父子授权。",sample:"../examples/L1-swarm/tasks/index.html"},
+      {x:846,y:140,w:300,h:250,label:"选中 task",note:"状态 / 所在 workspace / 持有者 / 已运行多久。",sample:null},
+      {x:846,y:410,w:300,h:250,label:"事件流",note:"最近的事实，一行一条；不是日志，是能指认的证据。",sample:null},
+      {x:38,y:678,w:1108,h:64,label:"失败带",note:"exception / canceled 的 task 集中在这里，方便一眼看见坏消息。",sample:null}
+    ]
+  },
+  {
+    id:"L2-design", path:"L2/design", level:"L2 · 一个 task", title:"设计图（代码拓扑）",
+    purpose:"这个 task 凭什么这样跑：unit 之间的连接，就是代码的形状。",
+    question:"它由什么组成，凭什么这么跑？",
+    objects:["unit 节点（类型由 thirdgerb 定义）","边 = 实际调用/串接","节点 → 源码位置"],
+    mustnot:["运行时的数值（那是运行图的事）","任何没被反射出来的东西"],
+    motion:"几乎不动；点节点才展开源码。",
+    samples:[["蓝图语法","../examples/L2-task/design/index.html"]],
+    missing:["unit 类型清单（等定义）","节点点进源码"],
+    zones:[
+      {x:38,y:140,w:760,h:520,preview:"../examples/shots/06-blueprint.jpg",label:"主 · 代码拓扑",note:"节点与边的种类由反射决定；这一页只负责摆和指。",sample:"../examples/L2-task/design/index.html"},
+      {x:816,y:140,w:330,h:520,label:"右 · 节点详情",note:"签名 / 约束 / 落在哪个文件哪一行。",sample:null},
+      {x:38,y:678,w:1108,h:64,label:"祖先链",note:"这个 task 从哪来：父 task、所属 workspace、所属 swarm。",sample:null}
+    ]
+  },
+  {
+    id:"L2-runtime", path:"L2/runtime", level:"L2 · 一个 task", title:"运行图（op 的流）",
+    purpose:"这一刻在流什么、堵在哪、下一个卡点会出现在哪。",
+    question:"现在流到哪儿了，堵了吗？",
+    objects:["op 泳道","event 弧","持有者（谁在占这个 op）","吞吐 / 积压"],
+    mustnot:["假的货件（数量必须来自真实 running）","把 agent 画成走来走去的人"],
+    motion:"带子匀速；货件数 = 真实在飞的 op；事件弧一次 780ms 播完即静。",
+    samples:[["带子语法（浅色）","../examples/L2-task/runtime/index.html"]],
+    missing:["背压/堵塞的形状","跨 step 的两种事件边"],
+    zones:[
+      {x:38,y:140,w:900,h:480,preview:"../examples/shots/07-pipeline.jpg",label:"主 · op 泳道",note:"每一步一段；op 是工位，事件是货件经过的路径。",sample:"../examples/L2-task/runtime/index.html"},
+      {x:956,y:140,w:190,h:480,label:"右 · op 详情",note:"状态 / 持有者 / 重试次数 / 用的零件。",sample:null},
+      {x:38,y:638,w:1108,h:104,label:"事实带",note:"一行一条：谁、做了什么、结果如何。审计要的就在这里。",sample:null}
+    ]
+  }
+];
+
+const rail=document.getElementById("rail");
+const zones=document.getElementById("zones");
+const fade=document.getElementById("fade");
+
+function renderRail(cur){
+  rail.innerHTML="";
+  let last="";
+  VIEWS.forEach(v=>{
+    const lv=v.level.split(" · ")[0];
+    if(lv!==last){ const d=document.createElement("div"); d.className="lv"; d.textContent=v.level; rail.appendChild(d); last=lv; }
+    const a=document.createElement("a");
+    a.href="#"+v.path; a.textContent=v.title;
+    if(v.id===cur) a.setAttribute("aria-current","page");
+    rail.appendChild(a);
+  });
+}
+
+function show(i){
+  const v=VIEWS[i];
+  fade.style.opacity=1;
+  setTimeout(()=>{
+    document.getElementById("lvl").textContent=v.level;
+    document.getElementById("title").textContent=v.title;
+    document.getElementById("purpose").textContent=v.purpose;
+    document.getElementById("q").textContent=v.question;
+
+    const objs=document.getElementById("objects");
+    objs.innerHTML=v.objects.map(o=>`<span class="tag">${o}</span>`).join("");
+    document.getElementById("mustnot").innerHTML=v.mustnot.map(x=>`<li>${x}</li>`).join("");
+    document.getElementById("motion").textContent=v.motion;
+    document.getElementById("samples").innerHTML=v.samples
+      .map(([n,h])=>`<a href="${h}" style="display:block;color:var(--ink2);font-size:11px;text-decoration:none;border-bottom:1px solid var(--line);padding:4px 0">${n} →</a>`).join("");
+    document.getElementById("missing").innerHTML=v.missing.map(x=>`<li>${x}</li>`).join("");
+    document.getElementById("stamp").textContent=`${v.path} · skeleton v0`;
+
+    zones.innerHTML="";
+    const r=zones.getBoundingClientRect();
+    const sx=r.width/1180, sy=r.height/1000;
+    v.zones.forEach(z=>{
+      const d=document.createElement("div");
+      d.className="zone";
+      d.style.cssText+=`left:${(z.x*sx).toFixed(1)}px;top:${(z.y*sy).toFixed(1)}px;`+
+        `width:${(z.w*sx).toFixed(1)}px;height:${(z.h*sy).toFixed(1)}px`;
+      d.innerHTML=(z.preview?`<img class="ghost" src="${z.preview}" alt="">`:"")+
+        `<b>${z.label}</b><div class="n">${z.note}</div>`+
+        (z.sample?`<a class="sample" href="${z.sample}">样稿 →</a>`:"");
+      zones.appendChild(d);
+    });
+    renderRail(v.id);
+    location.hash=v.path;
+    fade.style.opacity=0;
+  }, 180);
+}
+
+window.addEventListener("hashchange",()=>{
+  const i=VIEWS.findIndex(v=>v.path===location.hash.slice(1));
+  if(i>=0) show(i);
+});
+window.addEventListener("keydown",e=>{
+  const cur=VIEWS.findIndex(v=>v.path===location.hash.slice(1));
+  if(e.key>="1"&&e.key<="6"){ show(Math.min(VIEWS.length-1, +e.key-1)); }
+  if(e.key==="ArrowRight") show(Math.min(VIEWS.length-1, cur+1));
+  if(e.key==="ArrowLeft") show(Math.max(0, cur-1));
+});
+
+const start=VIEWS.findIndex(v=>v.path===location.hash.slice(1));
+show(start>=0?start:0);
+
+let rt=null;
+window.addEventListener("resize",()=>{
+  clearTimeout(rt);
+  rt=setTimeout(()=>{
+    const i=VIEWS.findIndex(v=>v.path===location.hash.slice(1));
+    if(i>=0) show(i);
+  },150);
+});
+</script>
+</body>
+</html>

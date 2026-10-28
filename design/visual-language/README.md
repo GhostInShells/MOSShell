@@ -30,7 +30,8 @@
 | [`view-topology.md`](view-topology.md) | 视图拓扑 v1：层、对象、转场、语法、workspace 树 |
 | [`decision-log.md`](decision-log.md) | 本轮的步数预算、评判标准、逐步决策记录 |
 | [`examples/`](examples/README.md) | 按拓扑摆好的视图样例（一个目录一个视图）+ 定妆照 |
-| [`examples/index.html`](examples/index.html) | 图墙，先看这个 |
+| [`skeleton/index.html`](skeleton/index.html) | **骨架**：六个视图的可讨论版（区域 + 规格 + 样稿薄影），对齐方案时对着它聊 |
+| [`examples/index.html`](examples/index.html) | 图墙：每个视图一份可跑的样稿 |
 
 ## 自评（见 `decision-log.md` 与图墙）
 

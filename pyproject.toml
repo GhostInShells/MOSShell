@@ -122,6 +122,13 @@ exclude = ["test_*"]
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
+# Monorepo. Sibling distributions live under packages/ with their own pyproject.toml and
+# their own src/ layout; they depend on ghoshell-moss rather than the other way round, and
+# never ship inside it. src/ stays what ships with this distribution, so nothing here needs
+# an exclusion.
+[tool.uv.workspace]
+members = ["packages/ghoshell-agent-swarm"]
+
 
 [dependency-groups]
 dev = [
