@@ -13,8 +13,18 @@ surface two minds point at when they align. It is a graph, not a mind map: a min
 answers "what comes next", a graph answers "where is the bottleneck, which branch can be
 cut, what contradicts what".
 
-**The graph is the truth.** A group is a directory holding one `graph.json`:
 
+**A group is a directory carrying `IDEAS.md`.** The marker is the identity, not the
+position: any directory with that sign is a group, and the group's address is that
+directory's address. `--root` (or `MOSS_IDEAS_ROOT`) is only the **default discovery
+radius** — what gets scanned without being told, and where a plain name lands when you
+create one. A group living elsewhere is still usable: name it by its path.
+
+A directory without the sign is not a group. A `graph.json` sitting in one is reported as
+broken rather than silently skipped — a group that vanishes without a word is worse than
+one that fails out loud.
+
+**The graph is the truth.** A group is a directory holding one `graph.json`:
 ```json
 {
   "rev": 18,
@@ -48,16 +58,31 @@ one call. `critical` gives the spine (longest chain + branch points), `path a b`
 
 ```
 moss nodes run nodes/thought/ideas
+
+python cli.py new stage3                       # a group under the default root
+python cli.py new ../../journal/D27/ideas/plan # ...or anywhere, by path
 python cli.py tree
 python cli.py add "storage" --from architecture --concept design
 python cli.py set storage --flag
 python cli.py link "storage -> md, storage => version control"
 ```
 
+
 The root defaults to `ideas/` beside this node, overridden by `--root` or
 `MOSS_IDEAS_ROOT` (the agreed handoff: whoever starts the process decides the directory).
-`examples/` is copied in only when that directory does not exist yet; `ideas/` is
-gitignored wholesale, so what ships is disposable by design.
+A missing root stays empty — nothing is seeded, so a booting ghost never reads a demo
+graph as if it were the work.
 
+**A group ships its content, never its generations.** Every group directory gets a
+`.gitignore` when it is made — and on its first read, if it predates that default. What
+stays out is everything the node can rebuild: `.graph.json` (live state), `ops.jsonl`
+(the account), `.lock`, `.trash/`, `.versions/`. What the history carries is the two
+files that *are* the group: `IDEAS.md` and `graph.json`. A `.gitignore` written by hand
+is a decision and is never overwritten — the default only fills a gap.
+
+The trade is deliberate: snapshots stay on disk, so `versions` and `restore` work where
+they were taken, and a fresh clone gets the last published graph rather than every
+gesture since. The node's own root is unpublished by default; publishing one group is
+naming it once in the node's `.gitignore`.
 Port is ephemeral — read the live URL from the channel's `url` notice, or pin it with
 `--port N` / `MOSS_IDEAS_PORT`.

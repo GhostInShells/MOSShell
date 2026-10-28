@@ -1,0 +1,7 @@
+# Blank issues are off on purpose.
+#
+# The convention itself lives in the features surface (`moss features issues`);
+# `.github/` is where that convention is *enforced*. A form that can be bypassed is
+# a suggestion, not an enforcement surface. One line to change if the judgement
+# turns out wrong.
+blank_issues_enabled: false

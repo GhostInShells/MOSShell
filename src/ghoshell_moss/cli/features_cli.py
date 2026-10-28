@@ -254,15 +254,15 @@ def list_cmd(
 
         table_data.append([name, status_display, pri, title_str, updated, feat_path])
 
+    console.print(
+        "[dim]Pri = delivery weight within the current development stage, not a time-based priority.[/dim]"
+    )
+
     print_simple_table(
         data=table_data,
         headers=["Name", "Status", "Pri", "Title", "Updated", "Path"],
         title=title,
         column_ratios=[1, 0.7, 0.3, 1.5, 0.6, 1.5],
-    )
-
-    console.print(
-        "[dim]Pri = importance within the current stage (iteration cycle), not development urgency.[/dim]"
     )
 
     if features or total_features:

@@ -2,7 +2,7 @@
 default_ghost: none
 default_mode: default
 default_network: local
-default_network_scope: default
+default_network_scope: ''
 description: ''
 matrix_manifest_package: MOSS.manifests
 name: moss

@@ -1,11 +1,21 @@
-description: develop 模式的开机文档 —— 开机第一动作：把 terminal 与 file_editor 摆成一组
+description: develop 模式的开机文档 —— 开机第一动作：先把 moss start 的认知地图拿到手里，再把 terminal 与 file_editor 摆成一组
 created_at: "2026-10-23"
 
 # {mode}.startup.yml 整份替换 default，所以预热指令和 orientation frame 必须一起带。
 # HOST.md 的 "Bench them" 只是「法」，开机没人念到就落不了地；这份把摆盘钉成第一动作。
 
+# 首动作（反射弧，不思考）：认知地图。
+# CLAUDE.md 里的 `@src/ghoshell_moss/cli/start.md` 依赖 harness 去解析 @ 引用——有的
+# harness 直接把那一行原样注入，模型只看到路径、看不到内容，于是开机就没有地图。
+# `moss start` 从源码树打印同一份内容，不依赖任何注入，所以把它钉成开机第一个动作。
+command: |-
+  <moss_cli:exec>start</moss_cli:exec>
+
 instruction: |
   Boot signal — you are online but the human has not spoken yet. Do not greet or reply.
+
+  认知地图已经由开机首动作 `moss start` 取回来了（不依赖 CLAUDE.md 的 @ 解析）。
+  先读它，再动手。
 
   开机第一动作，不必等他提醒：读池子，摆成一组。
   1. <matrix.mesh.webview_screen:pool _cid="boot-pool"/>

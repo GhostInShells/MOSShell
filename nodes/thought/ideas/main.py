@@ -326,9 +326,12 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
 
     @chan.build.instruction
     def instruction() -> str:
+
         return (
-            "the graph is the truth: one `graph.json` per group. `tree()` is the cold read — "
-            "the whole structure in one call; `diff` compares two versions.\n"
+            "a group is a directory carrying `IDEAS.md` — the marker is what makes it a group, "
+            "not its position. `new(path)` creates one anywhere; the root is only the default "
+            "discovery radius, and a group may also be addressed by its path.\n"
+            "the graph is the truth: one `graph.json` per group. `tree()` is the cold read — "            "the whole structure in one call; `diff` compares two versions.\n"
             "a node is `{label, body, concept, weight, flag}`. weight decays with generation "
             "(child = parent × 0.8, floor 0.2), so depth is size: further out *is* more detail.\n"
             "an edge is an entity `{id, from, to, kind}`; kind is detail | depend | related. "
@@ -358,7 +361,12 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
         # focus. Only the live groups under root are spoken about.
         visible = [g for g in store.groups.values() if g.status != "archived"]
         if not visible:
-            return f"no group under {store.root} — mkdir one"
+
+            return (
+                f"no group under {store.root}\n"
+                "a group is a directory carrying IDEAS.md, discovered one level under the root "
+
+            )
         here = server.view.get("group")
         seen = here if any(g.name == here for g in visible) else ""
         focus = store.focus_group()
@@ -387,7 +395,21 @@ def new_ideas_channel(store: GraphStore, server: IdeasServer, matrix: Matrix):
             lines.append("broken: " + "; ".join(store.broken[:2]))
         return "\n".join(lines)
 
+
     # ---- read --------------------------------------------------------------
+    @chan.build.command(always_observe=True)
+    async def new(path: str) -> str:
+        """Create a group at `path` — writing the sign is the whole act.
+
+        A group is a directory carrying `IDEAS.md`; this writes it, and the empty graph
+        follows on the next reload. A plain name lands under the root; any other path
+        lets the group live where it belongs, because the root is the default discovery
+        radius rather than a boundary.
+
+        :param path: a name under the root, or a directory path
+        """
+        return await run_cli(["new", path])
+
     @chan.build.command(always_observe=True)
     async def groups() -> str:
         """List the groups with node / edge counts and their revision."""

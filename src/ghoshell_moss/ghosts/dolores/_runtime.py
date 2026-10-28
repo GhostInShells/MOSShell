@@ -22,6 +22,7 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.ground import DefaultGroundSet, Ground
+from ghoshell_moss.ground._manager import GroundSlot, GroundsManager
 from ghoshell_moss.message import Message
 
 if TYPE_CHECKING:
@@ -135,6 +136,7 @@ class Dolores(Ghost):
         # launcher / ground are lazy — __init__ touches no httpx / matrix.processes / shell (side-effect free).
         self._dsh_launcher: DshLauncher | None = None
         self._ground_set: DefaultGroundSet | None = None
+        self._grounds: GroundsManager | None = None
         self._root_ground: Ground | None = None
         # ground render cache — rendered async in __aenter__, read synchronously by memories().
         self._ground_text: str | None = None
@@ -215,12 +217,14 @@ class Dolores(Ghost):
         )
 
     async def ground_instruction(self) -> str | None:
-        """ground slot — render the held root ground (ghost_home cognitive field) to text.
+        """ground slot — 多 home 模式下不再把场内容塞进 ghost 的 instruction.
 
-        The root ground is opened and held long-term in __aenter__ to keep snapshot change-tracking
-        (single owner). Called by the epoch cycle; this step only prepares the element, it does not
-        actively wire it.
+        D2: instruction 讲的是"这个 channel 怎么用"; 场的渲染结果是**内容**, 它在 ground
+        channel 的子 channel notice 里. 所以这里返回 None, 让那个槽回到 ghost 自己手里
+        (或者空着), 而不是被某个场的 body + pins 占住.
         """
+        if self._grounds is not None:
+            return None
         if self._root_ground is None:
             return None
         view = await self._root_ground.render()
@@ -282,14 +286,13 @@ class Dolores(Ghost):
         gets the same instance: the channel closes over live resources (shared GroundSet, memento
         manager), and rebuilding it would hand out a second view of the same organs.
         """
-        if self._home is None or self._ground_set is None:
+        if self._home is None or (self._ground_set is None and self._grounds is None):
             return None
         if self._channel is None:
             from .channel import build_dolores_channel
 
             self._channel = build_dolores_channel(
-                groundset=self._ground_set,
-                workspace_root=self._home,
+                groundset=self._grounds if self._grounds is not None else self._ground_set,
                 memento_manager=self._memento_manager,
                 memento_root=self._home / _EGO_MEMENTO_DIR,
                 commit_anchor=self._commit_anchor,
@@ -421,12 +424,30 @@ class Dolores(Ghost):
         await asyncio.to_thread(self._sync_default_model)
         # open and hold the root ground (ghost_home cognitive field). Stub sync runs first (GROUND.md
         # already written); the GroundSet lifecycle is managed by the exit stack; the memory ground
-        # section must render before ego creation.
+        # ground: 一个 ghost 同时治理 ghost / mode / project 三个 home (D1). 哪一层没有
+        # GROUND.md 就不挂, 但会以 absent 出现在 channel notice 里 (D6) —— 缺席是内容.
+        # 没有 matrix 就没有另外两个 home 的地址, 那时只剩 ghost home (事实, 不是开关).
         if self._home is not None:
-            self._ground_set = await self._exit_stack.enter_async_context(
-                DefaultGroundSet(workspace_root=self._home)
-            )
-            self._root_ground = await self._ground_set.open(self._home)
+            if self._matrix is None:
+                self._ground_set = await self._exit_stack.enter_async_context(
+                    DefaultGroundSet(workspace_root=self._home)
+                )
+                self._root_ground = await self._ground_set.open(self._home)
+            else:
+                env = self._matrix.env
+                slots = [
+                    GroundSlot("ghost_home", self._home),
+                    GroundSlot("mode_home", Path(env.mode_home)),
+                    GroundSlot("project_home", Path(env.project_path)),
+                ]
+                # 谁持有谁创建: manager 只编排 (查 GROUND.md / 报 absent), 场集由这里造.
+                # 根场的身份就是 slot key —— 目录名是地址, 不是身份.
+                self._grounds = await GroundsManager(slots).mount(
+                    lambda slot: DefaultGroundSet(
+                        workspace_root=slot.home, root_label=slot.key,
+                    )
+                )
+                self._exit_stack.push_async_callback(self._grounds.close)
         # render the ground text, cached for synchronous read by memories() (ego create_session consumes it via closure).
         self._ground_text = await self.ground_instruction()
         if self._matrix is not None:

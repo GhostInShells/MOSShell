@@ -31,7 +31,7 @@ from ghoshell_moss.cli.utils import voice_flags
 
 @click.group(invoke_without_command=True)
 @click.option("--mode", default="default", help="MOSS runtime mode.")
-@click.option("--scope", default="default", help="Network scope for session isolation.")
+@click.option("--scope", default="", help="Network scope for session isolation. Empty = this project's own scope (project id), isolated from other projects.")
 @click.option("--network", default="local", help="Network driver.")
 @click.option(
     "--voice",

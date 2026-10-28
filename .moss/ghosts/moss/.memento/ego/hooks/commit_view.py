@@ -6,18 +6,17 @@ most anchors, and empty is not broken.
 """
 
 import asyncio
-import os
-from pathlib import Path
 
-from ghoshell_moss.channels.ground_channel import _render_dir
+from ghoshell_moss.ground import DefaultGroundSet
+from ghoshell_moss.memento.hooks import MementoHookEnv
 
 
 def main() -> None:
-    directory = os.environ.get("MEMENTO_COMMIT_DIR", "")
-    if not directory:
+    directory = MementoHookEnv.COMMIT_DIR.path()
+    if directory is None:
         return
-    workspace = Path(os.environ.get("MEMENTO_ROOT") or directory)
-    print(asyncio.run(_render_dir(directory, workspace)))
+    template_base = MementoHookEnv.ROOT.path() or directory
+    print(asyncio.run(DefaultGroundSet.peek_dir(directory, template_base=template_base)))
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 """Tests for ground_channel — 认知场的运行时落点 (virtual children 模型).
 
 Covers:
-- 命令注册 (open / close / render / pin_* / spec / validate / templates)
+- 命令面: 驻留 (open/close/refresh/stats) + 落盘 (pin_*/unpin) + 一个 CLI runner
+- 读侧不重复实现: render/validate/templates/spec 由 ``moss ground`` 提供
 - open → virtual child (instruction=meta, help=帧); close → 撤下
-- render 无状态 peek (body + pin 内容), meta flag
+- 契约 classmethod: peek_dir / validate_text / templates_at / upsert_pin / unpin_at
 - pin_file 增改落盘 + always_show; 目标不存在报告不创建
-- spec / validate 诊断
 - open_on_start 启动时开场面
 """
 
@@ -42,7 +42,7 @@ def _chan(ground, **kw):
     gs = DefaultGroundSet(workspace_root=ground)
     # 测试默认展开编辑命令组, 直接覆盖全命令面; 折叠行为另测.
     kw.setdefault("edit", True)
-    return new_ground_channel(gs, workspace_root=ground, **kw)
+    return new_ground_channel(gs, **kw)
 
 
 def _meta_by_name(runtime, name):
@@ -58,9 +58,11 @@ async def test_commands_registered(ground):
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         names = {c.name for c in runtime.self_meta().commands}
-        assert {"open", "close", "render", "edit", "pin_file", "pin_glob",
-                "pin_frontmatter", "pin_ls", "pin_exec", "pin_law",
-                "spec", "validate", "templates"} <= names
+        assert {"open", "close", "refresh", "stats", "ground_run", "edit",
+                "pin_file", "pin_glob", "pin_frontmatter", "pin_ls", "pin_exec",
+                "pin_law", "unpin"} <= names
+        # 读侧归 CLI: 命令面不重复实现它
+        assert {"render", "validate", "templates", "spec"}.isdisjoint(names)
 
 
 @pytest.mark.asyncio
@@ -106,32 +108,23 @@ async def test_close_removes_virtual_child(ground):
 
 
 @pytest.mark.asyncio
-async def test_render_peek_shows_frame(ground):
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("render", kwargs={"directory": "."})
-        assert "# Test Ground" in result
-        assert "def hot():" in result
-        assert "hot spot" in result
+async def test_peek_dir_shows_frame(ground):
+    result = await DefaultGroundSet.peek_dir(ground)
+    assert "# Test Ground" in result
+    assert "def hot():" in result
+    assert "hot spot" in result
 
 
 @pytest.mark.asyncio
-async def test_render_meta_flag_adds_identity(ground):
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("render", kwargs={"directory": ".", "meta": True})
-        assert "cd " in result and "pins:" in result
+async def test_peek_meta_adds_identity(ground):
+    result = await DefaultGroundSet.peek_meta(ground)
+    assert "cd " in result and "pins:" in result
 
 
 @pytest.mark.asyncio
-async def test_render_nonexistent_dir_reported(ground):
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("render", kwargs={"directory": "nope"})
-        assert "not a directory" in result or "no GROUND.md" in result
+async def test_peek_nonexistent_dir_reported(ground):
+    result = await DefaultGroundSet.peek_dir(ground / "nope")
+    assert "not a directory" in result or "no GROUND.md" in result
 
 
 @pytest.mark.asyncio
@@ -140,7 +133,7 @@ async def test_pin_file_reports_missing_ground_file(ground):
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         result = await runtime.execute_command(
-            "pin_file", kwargs={"ground_file": "missing.md", "label": "x", "path": "y"}
+            "pin_file", kwargs={"ground_file": str(ground / "missing.md"), "label": "x", "path": "y"}
         )
         assert "no such GROUND.md" in result
         assert not (ground / "missing.md").exists()
@@ -153,7 +146,7 @@ async def test_pin_file_writes_with_always_show(ground):
         await runtime.refresh_metas()
         result = await runtime.execute_command(
             "pin_file",
-            kwargs={"ground_file": ".", "label": "greet", "path": "data/hot.py",
+            kwargs={"ground_file": str(ground), "label": "greet", "path": "data/hot.py",
                     "always_show": True, "description": "greet"},
         )
         assert "pinned file:greet" in result
@@ -164,36 +157,21 @@ async def test_pin_file_writes_with_always_show(ground):
 
 
 @pytest.mark.asyncio
-async def test_spec_returns_specification(ground):
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("spec")
-        assert "GROUND" in result
-
-
-@pytest.mark.asyncio
 async def test_validate_reports_invalid(ground):
     bad = ground / "bad.md"
     bad.write_text("---\npins:\n- verb: file\n  arguments:\n    path: x\n---\n")
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("validate", kwargs={"filepath": "bad.md"})
-        assert "[ERROR]" in result
-        assert "missing 'label'" in result
+    result = DefaultGroundSet.validate_text(bad.read_text())
+    assert "[ERROR]" in result
+    assert "missing 'label'" in result
 
 
 @pytest.mark.asyncio
 async def test_validate_warns_on_unknown_verb(ground):
     bad = ground / "bad.md"
     bad.write_text("---\npins:\n- label: x\n  verb: unknown_verb\n---\n")
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("validate", kwargs={"filepath": "bad.md"})
-        assert "[WARN]" in result
-        assert "unknown verb" in result
+    result = DefaultGroundSet.validate_text(bad.read_text())
+    assert "[WARN]" in result
+    assert "unknown verb" in result
 
 
 @pytest.mark.asyncio
@@ -201,21 +179,18 @@ async def test_validate_rejects_long_label(ground):
     # label 超 63 字符须报 ERROR, 与 contract 的 Pin.label max_length=63 对齐.
     bad = ground / "bad.md"
     bad.write_text("---\npins:\n- label: " + "a" * 64 + "\n  verb: file\n  arguments:\n    path: x\n---\n")
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("validate", kwargs={"filepath": "bad.md"})
-        assert "[ERROR]" in result
-        assert "63" in result
+    result = DefaultGroundSet.validate_text(bad.read_text())
+    assert "[ERROR]" in result
+    assert "63" in result
 
 
 @pytest.mark.asyncio
-async def test_templates_lists_or_reports_empty(ground):
-    chan = _chan(ground)
-    async with chan.bootstrap() as runtime:
-        await runtime.refresh_metas()
-        result = await runtime.execute_command("templates")
-        assert "templates" in result or "found" in result
+async def test_templates_at_discovers_project_templates(ground):
+    gem = ground / ".grounds" / "basic.md"
+    gem.parent.mkdir()
+    gem.write_text("---\ndescription: a template\n---\n# t\n")
+    names = [t.name for t in DefaultGroundSet.templates_at(ground)]
+    assert "basic" in names
 
 
 @pytest.mark.asyncio
@@ -233,21 +208,19 @@ async def test_open_on_start_injects_child(ground):
 async def test_edit_folds_commands_by_default(ground):
     # 默认 edit=False: 编辑命令组折叠, 只留 open/close/render/edit.
     gs = DefaultGroundSet(workspace_root=ground)
-    chan = new_ground_channel(gs, workspace_root=ground)
+    chan = new_ground_channel(gs)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         names = {c.name for c in runtime.self_meta().commands}
-        assert {"open", "close", "render", "edit"} <= names
+        assert {"open", "close", "refresh", "stats", "ground_run", "edit"} <= names
         assert "pin_file" not in names
-        assert "spec" not in names
-        assert "validate" not in names
-        assert "templates" not in names
+        assert "unpin" not in names
 
 
 @pytest.mark.asyncio
 async def test_edit_command_unfolds_gated_commands(ground):
     gs = DefaultGroundSet(workspace_root=ground)
-    chan = new_ground_channel(gs, workspace_root=ground)
+    chan = new_ground_channel(gs)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         assert "pin_file" not in {c.name for c in runtime.self_meta().commands}
@@ -255,7 +228,7 @@ async def test_edit_command_unfolds_gated_commands(ground):
         await runtime.refresh_metas()
         names = {c.name for c in runtime.self_meta().commands}
         assert "pin_file" in names
-        assert "spec" in names
+        assert "unpin" in names
         # 折叠回来
         await runtime.execute_command("edit", kwargs={"on": False})
         await runtime.refresh_metas()
@@ -331,7 +304,7 @@ async def test_root_not_rendered_by_default(ground):
 async def test_render_root_renders_root_in_notice(ground):
     _with_child(ground)
     gs = DefaultGroundSet(workspace_root=ground)
-    chan = new_ground_channel(gs, workspace_root=ground, edit=True, render_root=True)
+    chan = new_ground_channel(gs, edit=True, render_root=True)
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         notice = runtime.self_meta().notice
@@ -341,9 +314,7 @@ async def test_render_root_renders_root_in_notice(ground):
 @pytest.mark.asyncio
 async def test_instruction_override(ground):
     gs = DefaultGroundSet(workspace_root=ground)
-    chan = new_ground_channel(
-        gs, workspace_root=ground, edit=True, instruction="CUSTOM INSTRUCTION"
-    )
+    chan = new_ground_channel(gs, edit=True, instruction="CUSTOM INSTRUCTION")
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         assert runtime.self_meta().instruction == "CUSTOM INSTRUCTION"
@@ -356,3 +327,52 @@ async def test_materialize_error_surfaced_in_notice(ground):
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         assert "missing" in runtime.self_meta().notice
+
+
+# -- 落盘面的另一半 / CLI runner ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unpin_removes_a_pin(ground):
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.execute_command(
+            "unpin", kwargs={"ground_file": str(ground), "label": "hot"}
+        )
+        assert "unpinned hot" in result
+        assert "label: hot" not in (ground / "GROUND.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_unpin_reports_unknown_label(ground):
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.execute_command(
+            "unpin", kwargs={"ground_file": str(ground), "label": "nope"}
+        )
+        assert "no pin 'nope'" in result
+        assert "label: hot" in (ground / "GROUND.md").read_text()  # 不写盘
+
+
+@pytest.mark.asyncio
+async def test_edit_face_refuses_relative_paths(ground):
+    """多 home 下"相对谁"没有唯一答案 → 编辑面只认绝对路径, 且报错说清."""
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.execute_command(
+            "pin_file", kwargs={"ground_file": "GROUND.md", "label": "x", "path": "y"}
+        )
+        assert "absolute" in result
+
+
+@pytest.mark.asyncio
+async def test_ground_run_proxies_the_cli(ground):
+    """读侧归 CLI: runner 在指定的 home 下跑 ``moss ground <verb>`` 并带回 stdout."""
+    chan = _chan(ground)
+    async with chan.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        result = await runtime.execute_command("ground_run", kwargs={"text__": "verbs"})
+        assert "file" in result and "exec" in result

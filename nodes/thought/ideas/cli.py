@@ -91,6 +91,25 @@ def groups(ctx) -> None:
         click.echo(tail)
 
 
+
+@cli.command()
+@click.argument("path")
+@click.pass_context
+def new(ctx, path: str) -> None:
+    """Create a group at PATH — writing the sign is the whole act.
+
+    A group is a directory carrying IDEAS.md. A plain name lands under the root; a
+    path (relative or absolute) lets a group live anywhere, because the root is only
+    the default discovery radius, not a boundary.
+    """
+    store = _store(ctx)
+    try:
+        g = store.create_group(path)
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(f"{g.name} → {g.path}")
+
+
 @cli.command()
 @click.option("--group", "-g", default="")
 @click.pass_context

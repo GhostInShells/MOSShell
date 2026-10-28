@@ -434,7 +434,9 @@ class Builder(Facade):
         evolve with the channel's state and survive context rebuild.
 
         Cold data: held at the head of the context; re-emitted by the trajectory only
-        when its text changes (facade delta).
+        when its text changes (facade delta) — the whole text, once, not a diff of it.
+        A long instruction therefore costs its full length every time any part of it
+        moves: put the law here, and leave the documents to a pin or a command.
 
         Red line: never restate which commands this channel has — command signatures are
         already reflected to the model by interface (Code as Prompt), and a hand-written

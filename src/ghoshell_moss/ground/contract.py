@@ -538,6 +538,59 @@ class GroundSet(ABC):
     def templates(self) -> list[TemplateInfo]:
         """返回可用模板清单, 按 name 排序."""
 
+    # -- 无驻留态操作 (classmethod, 任何实现必须配套) ---------------------------
+    #
+    # 这六条都不需要一个"活着的"场集: 给目录就给视图, 给文件就改文件.
+    # 之所以声明在契约上, 是因为消费方 (channel / CLI / 测试) 不该关心实现
+    # 如何构造临时场 — 更不该像以前那样, 为了渲染别家的目录而去 new 一个锚在
+    # 主槽上的临时场集. 实现方按自己的方式解析, 契约只保证"能答".
+    #
+    # 定位规则由实现决定, 但编辑面只有一条共识: 地址要么是绝对路径, 要么由
+    # 调用方给出基点. 多 home 下不存在"隐式相对谁".
+
+    @classmethod
+    @abstractmethod
+    async def peek_dir(
+        cls,
+        directory: str | Path,
+        *,
+        template_base: str | Path | None = None,
+    ) -> str:
+        """无状态渲染一个目录的帧 — 场根给本场视图, 场内子目录给 walk 视图.
+
+        只读: 不注册场, 不改盘, 不落 sediment.
+
+        :param directory: 场根或场内任意目录.
+        :param template_base: 模板发现(``.grounds/``)与相对路径的基点. None = directory.
+        """
+
+    @classmethod
+    @abstractmethod
+    async def peek_meta(cls, directory: str | Path) -> str:
+        """无状态读一个目录的场身份 + pin TOC (mirror ``ground meta``)."""
+
+    @classmethod
+    @abstractmethod
+    def templates_at(
+        cls, directory: str | Path | None = None
+    ) -> list[TemplateInfo]:
+        """一份目录可见的模板清单 (``.grounds/`` 发现), 不需要驻留场集."""
+
+    @classmethod
+    @abstractmethod
+    def validate_text(cls, text: str) -> str:
+        """校验一份 GROUND.md 文本 → 诊断. 纯函数, 不读盘不写盘."""
+
+    @classmethod
+    @abstractmethod
+    def upsert_pin(cls, ground_file: str | Path, pin: Pin) -> str:
+        """增改一枚 pin (同 label 覆盖). 只碰 frontmatter, 不动 body."""
+
+    @classmethod
+    @abstractmethod
+    def unpin_at(cls, ground_file: str | Path, label: str) -> str:
+        """撤掉一枚 pin. label 不存在 → 报告, 不写盘."""
+
     # -- 转发 (CTML 接触面) ---------------------------------------------------
 
     def pin(self, ground: str, pin: Pin) -> Pin:

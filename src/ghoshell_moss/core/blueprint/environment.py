@@ -29,6 +29,7 @@ __all__ = [
     'WORKSPACE_ENV_EXAMPLE_FILENAME',
     'DEFAULT_NETWORK_SCOPE',
     'DEFAULT_NETWORK_NAME',
+    'NETWORK_SCOPE_PATTERN',
     # env keys
     'ENV_WORKSPACE_DIR_KEY',
     'ENV_PROJECT_DIR_KEY',
@@ -120,8 +121,14 @@ ENV_NETWORK_KEY = 'MOSS_NETWORK'
 DEFAULT_NETWORK_NAME = 'local'
 
 # 指定 network 下的通讯子空间.
+# 空 = 未声明; 解析时落到当前 project 的 project id, 于是不同 project 天然隔离在同一
+# network 的不同命名空间里. 只有显式声明同一个 scope, 两者才进入同一个子网.
 ENV_NETWORK_SCOPE_KEY = 'MOSS_NETWORK_SCOPE'
-DEFAULT_NETWORK_SCOPE = 'default'
+DEFAULT_NETWORK_SCOPE = ''
+
+# scope 会成为 zenoh key 的一段, 同时必须允许写成 project id (ULID 以数字开头),
+# 所以这里的约束比 MOSS_NAME_PATTERN 松: 允许空, 允许数字开头, 不允许分隔符.
+NETWORK_SCOPE_PATTERN = r'^[A-Za-z0-9_-]*$'
 
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
 NONE_MOSS_MODE = "none"
@@ -207,7 +214,7 @@ class MossMeta(BaseModel):
     )
     default_network_scope: str = Field(
         default=DEFAULT_NETWORK_SCOPE,
-        pattern=MOSS_NAME_PATTERN,
+        pattern=NETWORK_SCOPE_PATTERN,
     )
     default_mode: str = Field(
         default=DEFAULT_MODE_NAME,
@@ -337,7 +344,6 @@ class Environment:
         self._cell_address = cell_address or os.environ.get(ENV_CELL_ADDRESS_KEY, '')
         self._parent_cell_address = parent_cell_address or os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
         self._network = network or os.environ.get(ENV_NETWORK_KEY, self._meta.default_network)
-        self._network_scope = scope or os.environ.get(ENV_NETWORK_SCOPE_KEY, self._meta.default_network_scope)
         project_id = os.environ.get(ENV_PROJECT_ID_KEY, '')
         if not project_id:
             project_id_file = workspace / WORKSPACE_PROJECT_ID_FILE
@@ -348,6 +354,15 @@ class Environment:
                 workspace.mkdir(parents=True, exist_ok=True)
                 project_id_file.write_text(project_id)
         self._project_id = project_id
+        # 只记录"显式声明"的那一层; 空 = 未声明, 交由 network_scope 兜底到 project id.
+        # 分两层是因为 network 自己的配置也能声明 scope (见 resolve_network),
+        # 而它排在这一层之后、project id 之前.
+        self._declared_network_scope = (
+                scope
+                or os.environ.get(ENV_NETWORK_SCOPE_KEY, '')
+                or self._meta.default_network_scope
+                or ''
+        )
 
     @classmethod
     def find_moss_meta(cls, directory: Path) -> MossMeta | None:
@@ -437,7 +452,13 @@ class Environment:
 
     @property
     def network_scope(self) -> str:
-        return self._network_scope
+        """实际使用的 network scope — 永不为空: 未声明时落到 project id."""
+        return self._declared_network_scope or self._project_id
+
+    @property
+    def declared_network_scope(self) -> str:
+        """显式声明的 scope; 空表示未声明, 由 network 配置或 project id 兜底."""
+        return self._declared_network_scope
 
     @property
     def run_id(self) -> str:

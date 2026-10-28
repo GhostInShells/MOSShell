@@ -932,6 +932,7 @@ async def test_higher_priority_preempts_protected_attention():
     async def content_func(chunks__: AsyncIterable[str]) -> None:
         async for _ in chunks__:
             pass
+        await asyncio.sleep(0.02)
 
     suite.shell.main_channel.build.content_command(content_func)
 
@@ -954,6 +955,13 @@ async def test_higher_priority_preempts_protected_attention():
 
         for _ in range(100):
             if suite.attention_count >= 2:
+                break
+            await asyncio.sleep(0.02)
+
+        # 第二帧的 thinking 起来 ≠ 它的 action 落地; 退出 suite 前要等 action 收线,
+        # 否则关闭窗口里 action loop 还会去碰 shell, 被记成 "Shell not running".
+        for _ in range(100):
+            if suite.action_done_count >= 2:
                 break
             await asyncio.sleep(0.02)
 

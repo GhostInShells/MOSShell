@@ -8,9 +8,9 @@ description: A per-project issue convention carried by the features system — o
 milestone: null
 priority: P1
 status: in-progress
-status_note: convention live; stage-1 acceptance = ~2 weeks of real operation
+status_note: convention live and enforced by .github templates; stage-1 acceptance = ~2 weeks of real operation
 title: Issue Governance
-updated: '2026-10-26'
+updated: '2026-10-27'
 ---
 
 # Issue Governance
@@ -129,6 +129,58 @@ not in that conversation.
 The general shape: **artefacts that outlive the conversation are English;
 artefacts answered in the room follow the room.**
 
+### D7 — The convention is prose; `.github/` is where it is enforced (2026-10-27)
+
+The slot made the convention *discoverable*; nothing yet made it *applied*. GitHub's
+own default (`ISSUE_TEMPLATE/`, `PULL_REQUEST_TEMPLATE.md`, `SECURITY.md`) supplies the
+enforcement surface in a shape every reader already knows — so the work was to align to
+it, not to invent one.
+
+The direction is one way, and this is the whole decision:
+
+- **`features/issues/SKILL.md` states the convention.** It is the authority.
+- **`.github/` executes it.** When a template and the convention disagree, the template
+  is the bug — and no template cites the convention back. A template can only say what
+  it wants filled in; pointing at the prose from inside a form is how two sources of
+  truth start.
+
+What was built, and why each shape:
+
+- **`bug_report.yml` — two required fields only** (`what happened / expected`,
+  `how to reproduce`). Everything else is optional: environment (filled by default so it
+  is cheap to keep), the expected result, and an authorisation field for a model-authored
+  ticket (D3 encoded as a field instead of a habit).
+- **`config.yml` — `blank_issues_enabled: false`.** A form that can be bypassed is a
+  suggestion, not an enforcement surface. The judgement sits in the file so it can be
+  reversed in one line.
+- **`SECURITY.md` — states the absence of a private channel** rather than implying one.
+  Beta has no response commitment; the rule that earns its place is "never paste keys or
+  `.env` contents", because that is the accident this project actually expects.
+- **`PULL_REQUEST_TEMPLATE.md`** — for whoever writes the body, which today is the ghost
+  itself: an untemplated PR body is written from zero every time.
+
+What was deliberately **deferred** — and what would reverse each one:
+
+A deferral is a trade-off, not a verdict. Each line below names what we accept meanwhile
+*and* the condition that would make us revisit it. Without the trigger, a deferral ages
+into a rule that nobody remembers deciding.
+
+- **CI — deferred until the test surface is classified.** The blocker is not the workflow
+  file but sorting which tests can run without real devices and services; and MOSShell is
+  expected to split repositories at RC, so a pipeline built now is partly work thrown away
+  at the split. Accepted meanwhile: "does a fresh clone pass?" is a hope, not a fact.
+  **Revisit when** the suite is divided into device-free and device-bound sets — then a
+  device-free job is worth building *before* the split, not after it.
+- **`feature_request.yml` — deferred while there is only one intake.** Ideas already land
+  in the ideas graph, and `moss features list` says what the project is doing; a second
+  form would split intent across two places. **Revisit when** someone outside the project
+  wants to *propose* capability, rather than report a defect.
+- **`CODEOWNERS` / `FUNDING` / dependabot — deferred until there is more than one
+  maintainer.** They automate review assignment and dependency bumps: coordination a team
+  needs, a solo owner does not. **Revisit when** a second person starts landing commits.
+- **`blank_issues_enabled: false` is a judgement, not a fact** — the reversal lives in
+  `config.yml` itself, one line, because that is where it will be read.
+
 ## First-stage acceptance — the point of this workstream
 
 The mechanism cannot be accepted by inspection; it can only be accepted by use.
@@ -182,4 +234,49 @@ back into `features/issues/SKILL.md`.
 - First real use: GitHub issue #115 (audio device resolution) — filed with
   per-ticket authorisation, closed with a receipt pointing at `fb33f8bb`.
 - The convention became live before this workstream existed; this file records it
-  retroactively so the two-week clock has a place to be judged.
+  retroactively so the two-week clock has a place to be judged.- Enforced in `d0248132`: `.github/ISSUE_TEMPLATE/bug_report.yml`,
+  `.github/ISSUE_TEMPLATE/config.yml`, `.github/PULL_REQUEST_TEMPLATE.md`,
+  `.github/SECURITY.md`, plus a "Where the shape is enforced" section at the head of
+  `features/issues/SKILL.md`.
+- Relation between the three artefacts, stated once so it stops being re-derived:
+  **`SKILL.md` is the convention** (what the project believes), **`FEATURE.md` (this
+  file) is the reasoning** (why these shapes, what was refused, what would reverse
+  them), **`.github/` is the machinery** (what a person actually fills in). The
+  pointer runs convention → machinery. Nothing in `.github/` cites either document
+  back; if a template needs to explain the policy, the policy belongs in the
+  convention instead.
+- Two real tickets filed under the convention on the day the templates landed:
+  #117 (screen layout family) and #118 (focus button has no legible restore state) —
+  both with per-ticket authorisation recorded in the body, both left untriaged on
+  purpose, so the first triage is a human's.
+
+## D5 — Attribution: the list has to say who filed it (D27)
+
+The gap showed up the day models started filing tickets through a human's credential:
+#119, #120 and #121 were all authored by thirdgerb on GitHub, and nothing on the list
+distinguished them from tickets he wrote himself. A model scanning `gh issue list` sees
+title + labels + author; the authorisation line we already required lives in the body,
+which the list does not show. So the rule we had ("say it in the body") satisfied the
+record and failed the reader.
+
+Decided: the requirement is legibility at list level, and its carrier is platform-shaped.
+
+- Preferred: a label `filed-by/<identity>`. Labels are what a list can filter on, and
+  every tracker this project might use has them.
+- Fallback: a title suffix `— filed by <identity>` — for a tracker that cannot set a
+  label at filing time, or that drops labels when tickets are mirrored.
+- A human's tickets carry neither. Absence means human; labelling the default would only
+  add noise.
+
+Refused: `[moss]` as a title prefix — the bracket position already means *area* here
+(`[screen]` in #117/#118), and two meanings in one slot is worse than none. Also refused:
+retro-labelling the tickets that motivated the rule; attribution is forward-only, the
+same discipline the journal uses.
+
+This retires the `source/*` question this workstream had left open: the axis worth
+recording is *who filed it*, not *what kind of source it was*, so the namespace is
+`filed-by/`.
+
+Two names can sit on one ticket and they are not the same fact: the label says who wrote
+it, the body's authorisation line says who asked for it. Per-ticket authorisation is
+unchanged.

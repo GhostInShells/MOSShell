@@ -1,24 +1,39 @@
 ---
-title: DSH Agent Swarm
-status: draft
-# priority: importance within the current stage (iteration cycle) — not development urgency
-priority: P3
 created: 2026-10-17
-updated: 2026-10-17
-depends: [dsh-fusion]
-milestone:
-status_note: >-
-  Draft only. 这是 stage3 的核心候选 feature; 当前阶段只保留意图与已对齐的决策,
-  不写实现, 不排队优先级. 人类明确要求极度克制, 防止思维奔逸打乱 v0.1.0 迭代计划.
-description: >-
-  Ghost 主导的 dsh agent 蜂群 — 任务树治理 + D3 关系图观测 + 文件夹持久化.
-  是通用 agent swarm 的原型, 不是通用层本身.
+depends:
+- dsh-fusion
+description: Ghost 主导的 dsh agent 蜂群 — 任务树治理 + D3 关系图观测 + 文件夹持久化. 是通用 agent swarm 的原型,
+  不是通用层本身.
+milestone: null
+priority: P3
+status: in-progress
+status_note: Subtask index established (D28); 00-methodology records the alignment,
+  01-04 are skeletons awaiting further unloading. No implementation yet.
+title: DSH Agent Swarm
+updated: '2026-10-28'
 ---
 
 # DSH Agent Swarm
 
 > Use `moss features set-status dsh-agent-swarm <status> -m "note"` to update state.
-> Stage: 计划为 stage3 的核心 feature (2026-08-v0.1.0 是 stage2)。当前 status=draft, 不推进实现。
+> Stage: 计划为 stage3 的核心 feature (2026-08-v0.1.0 是 stage2)。D28 起进入 in-progress：
+> 先立子任务索引与方法论，实现尚未开始。
+
+## Subtask Index
+
+主文档只维护动机、决策（KD，只追加）与索引；每个子任务是同目录下的一份 `.md`。
+索引第一条是方法论——它不属于任何领域，是其余四个共用的前提。
+
+| # | 子任务 | 文档 | 关系 |
+|---|---|---|---|
+| 00 | 方法论：验收集群用真任务、facts 为地基、不先卸载再动手 | `00-methodology.md` | 全部的前提 |
+| 01 | 集群运行时可视化界面风格（面向人类） | `01-visualization-style.md` | 独立 |
+| 02 | 集群运行时设计（规划/控制/数据/呈现/容错/故障发现） | `02-runtime-design.md` | **依赖 03** |
+| 03 | 默认协作体系 | `03-collaboration-system.md` | 先于 02 |
+| 04 | dsh 具体版本的依赖解耦（`packages/` + 版本线） | `04-dsh-version-decoupling.md` | 独立，可穿插 |
+
+拆分标准是**按并行阻塞**（D28, thirdgerb）：现在没有集群，多个管线（claude code 等）并行推进，
+所以切的是"谁不挡谁"，不是"谁先落地"。
 
 ## Motivation
 
@@ -131,7 +146,12 @@ attention engineering
 - **放手让 L2 自驱的门槛是指标**：升级精确率/召回率、每任务人类决策分钟数、返工率、
   集成冲突率、离开后重建时间——不是“跑到了 100 个任务”。
 
-## Scope — 五个可解耦的领域
+## Scope — 五个可解耦的领域 (superseded 2026-10-28)
+
+> **Superseded.** 下面这套五分法（2026-10-17）已被 `## Subtask Index` 的四领域取代：
+> 它自己就说明"五个不是并列"（KD6 横切、KD8 本体论），本来就不是并行单元。
+> 保留原文，按本 workstream 的规矩只追加、不回改。
+
 
 1. **可视化界面** — 用前端 mock 子页面在零实现背景下逼出读模型；fixture 形状即未来 API 形状；
    讨论产出是接口契约而非截图；必须覆盖边缘态与上百节点的图性能。

@@ -45,6 +45,7 @@ OPS = "ops.jsonl"
 LOCK = ".lock"
 TRASH = ".trash"
 VERSIONS = ".versions"
+GITIGNORE = ".gitignore"
 VERSION_OP = "version"
 LEGACY_SUFFIX = ".idea.md"
 
@@ -75,6 +76,22 @@ One line on what this group is — for whoever opens it next.
 
 > This file is a **sign**: what this is, and whether it is alive. It **does not list
 > nodes** — they live in the graph, and a second copy would drift.
+"""
+
+# A group's content is two files: the sign and the last published graph. Everything else
+# in the directory is generated — the live state moves on every gesture, the account grows
+# one line per change, the versions accumulate a snapshot per save. None of that belongs to
+# a history: it is reproducible from the two, and committing it makes every gesture a diff.
+GITIGNORE_TEMPLATE = """# Written by the ideas node when this group was made.
+#
+# What a group *is*: `IDEAS.md` (the sign) and `graph.json` (the last published version).
+# Everything else here is generated from them and stays out of history.
+#
+.graph.json
+ops.jsonl
+.lock
+.trash/
+.versions/
 """
 
 # The scale is a fixed vocabulary of colour names, and a node's `concept` is one of
@@ -386,9 +403,19 @@ class GraphStore:
         self.broken = []
         if not self.root.exists():
             return
+
         for child in sorted(self.root.iterdir()):
             if not child.is_dir() or child.name.startswith("."):
                 continue
+            if not (child / IDEAS).is_file():
+                # Discovery is the marker, not the position: a directory is a group
+                # because it carries the sign. A stray graph without one is still
+                # reported — a group that silently vanishes is worse than a broken one.
+                if (child / LIVE_GRAPH).exists() or (child / GRAPH).exists():
+                    self.broken.append(
+                        f"{child.name}: no {IDEAS} — a group is a directory carrying one")
+                continue
+
             group = Group(name=child.name, path=child)
             try:
                 self._load_group(group)
@@ -397,6 +424,10 @@ class GraphStore:
             self.groups[child.name] = group
 
     def _load_group(self, group: Group) -> None:
+        # A group directory owes two files before any of its content is read: its sign and
+        # its ignore rule. Both are written only when absent, so this also repairs a group
+        # made before a default existed — and never overwrites one someone wrote.
+        ensure_group_files(group)
         if group.ideas_path.exists():
             meta, _body = split_frontmatter(group.ideas_path.read_text(encoding="utf-8", errors="replace"))
             group.status = str(meta.get("status", "active")) or "active"
@@ -411,8 +442,6 @@ class GraphStore:
                 self._import_legacy(group, legacy)
                 return
             group.write()          # a brand-new, empty graph on disk
-            if not group.ideas_path.exists():
-                write_ideas_sign(group)
             self.save(group, "init")   # a group starts from a version: history needs a base
             return
         data = json.loads(live.read_text(encoding="utf-8"))
@@ -447,7 +476,7 @@ class GraphStore:
             for i, raw in enumerate(data.get("edges") or [])
         ]
         if not group.ideas_path.exists():
-            write_ideas_sign(group)
+            ensure_group_files(group)
 
     def _import_legacy(self, group: Group, files: list[Path]) -> None:
         """The markdown generation: one file per idea, links in frontmatter.
@@ -485,26 +514,53 @@ class GraphStore:
                     edge_n += 1
         group.write(note=f"imported {len(files)} markdown ideas")
         if not group.ideas_path.exists():
-            write_ideas_sign(group)
+            ensure_group_files(group)
         self.save(group, "imported")
         trash = group.path / TRASH
         trash.mkdir(exist_ok=True)
         for file, _meta, _body in parsed:
             os.replace(file, trash / file.name)
 
-    def create_group(self, name: str) -> Group:
-        """A group is a directory — creating one is this mkdir and nothing else.
 
-        The page's "new group" lands here: the human names it, the directory *is* the
-        group, and the graph appears empty on the next reload.
+    def create_group(self, path: str) -> Group:
+        """Create a group at `path` — writing the sign is the whole act.
+
+        A group is a directory carrying `IDEAS.md`, so creating one is writing that
+        sign; the empty graph follows on the next reload. `path` resolves against the
+        root, so a plain name stays the common case. An absolute path lets a group
+        live anywhere: the root is a default discovery radius, not a boundary.
         """
-        clean = str(name or "").strip()
-        if not clean or clean.startswith(".") or "/" in clean or "\\" in clean:
-            raise ValueError(f"bad group name {clean!r}")
-        (self.root / clean).mkdir(parents=True, exist_ok=True)
+        clean = str(path or "").strip()
+        if not clean:
+            raise ValueError("new needs a path")
+        target = Path(clean).expanduser()
+        if not target.is_absolute():
+            target = self.root / clean
+        target = target.resolve()
+        if target == self.root:
+            raise ValueError("the root itself is not a group")
+        if target.exists() and not target.is_dir():
+            raise ValueError(f"{target} is not a directory")
+        if self.root in target.parents and target.parent != self.root:
+            raise ValueError(
+                f"{target} is nested under the root — the topology is (root) -> (groups), "
+                "one level deep. Put the group directly under the root, or outside it and "
+                "name it by path.")
+        target.mkdir(parents=True, exist_ok=True)
+        ensure_group_files(Group(name=target.name, path=target))
         self.reload()
-        return self.require_group(clean)
+        group = self.groups.get(target.name)
+        if group is not None and group.path.resolve() == target:
+            return group
+        return self._group_at(target)
 
+    def _group_at(self, path: Path) -> Group:
+        """Resolve a group by its address — the door for a group outside the root."""
+        if not (path / IDEAS).is_file():
+            raise KeyError(f"{path} is not a group (no {IDEAS})")
+        group = Group(name=path.name, path=path)
+        self._load_group(group)
+        return group
     # -- lookup -------------------------------------------------------------
     def group_of(self, name: str = "") -> Group | None:
         """No name = the group this run is *about*: the biggest active one.
@@ -523,12 +579,37 @@ class GraphStore:
             return None
         return max(alive, key=lambda g: len(g.nodes))
 
+
     def require_group(self, name: str = "") -> Group:
         group = self.group_of(name)
-        if group is None:
-            raise KeyError(f"no group {name!r}")
-        return group
+        if group is not None:
+            return group
+        group = self._group_by_path(name)
+        if group is not None:
+            return group
+        known = ", ".join(sorted(self.groups)) or "(none)"
+        raise KeyError(f"no group {name!r} — known under {self.root}: {known}")
 
+    def _group_by_path(self, raw: str) -> Group | None:
+        """A group named by address rather than by name under the root.
+
+        `--root` decides what is discovered, not what may be used: a path carrying
+        `IDEAS.md` is a group wherever it lives. (Group names hold no slash, so the
+        presence of one is what makes this a path.)
+
+        A relative path resolves against the root, not the process cwd — the root is
+        the frame of reference for every name; an absolute path names its own frame.
+        """
+        text = str(raw or "").strip()
+        if not text or "/" not in text:
+            return None
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.root / candidate
+        candidate = candidate.resolve()
+        if not (candidate / IDEAS).is_file():
+            return None
+        return self._group_at(candidate)
     def find(self, key: str, group: str = "") -> tuple[Group | None, Node | None]:
         order = [self.require_group(group)] if group else list(self.groups.values())
         for g in order:
@@ -1036,6 +1117,24 @@ def write_ideas_sign(group: Group) -> None:
         return
     write_atomic(group.ideas_path, IDEAS_TEMPLATE.format(
         status=group.status, graph=GRAPH, updated=_now(), name=group.name))
+
+
+def write_group_gitignore(path: Path) -> None:
+    """Every group carries its ignore rule: the content stays, the generations go.
+
+    Written only when absent — a `.gitignore` someone wrote by hand is a decision about
+    that group, and a default must never overwrite a decision.
+    """
+    target = path / GITIGNORE
+    if target.exists():
+        return
+    write_atomic(target, GITIGNORE_TEMPLATE)
+
+
+def ensure_group_files(group: Group) -> None:
+    """The two files a group directory owes: its sign, and the rule keeping it small."""
+    write_ideas_sign(group)
+    write_group_gitignore(group.path)
 
 
 def join_frontmatter(meta: dict, body: str) -> str:

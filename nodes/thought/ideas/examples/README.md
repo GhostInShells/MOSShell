@@ -12,6 +12,7 @@ Each first-level directory here is a **group**, and a group is one `graph.json`:
 ```
 
 `ops.jsonl` beside it is the account of how it got there — disposable, used only by
-`diff`. Everything here is an example: it is copied into the data root on first run and
-then belongs to whoever owns that root. Delete it; the node never assumes its data is
-precious.
+`diff`. It is written on first load rather than shipped: what a group carries is the
+sign and the graph, and the account is a generation like any other. Everything here is an
+example: it is copied into the data root on first run and then belongs to whoever owns
+that root. Delete it; the node never assumes its data is precious.

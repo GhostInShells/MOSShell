@@ -91,6 +91,10 @@ consciousness trail; each FEATURE.md is a message from a past model instance to 
   `set-status <name> completed` with the code when done.
 - See `moss features specification` for details.
 
+**Issues.** `moss features issues` prints this repository's issue convention — where
+tickets live, who may open one, how a model-opened ticket is attributed, and what closing
+owes. Read it before writing to the tracker.
+
 ### Project model collaborator
 
 This project is developed and maintained long-term by human engineers and intelligent

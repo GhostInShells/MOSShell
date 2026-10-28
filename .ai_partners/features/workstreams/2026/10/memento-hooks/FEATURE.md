@@ -266,3 +266,30 @@ Two ergonomic frictions came with it, and both were fixed rather than documented
 
 The lesson worth keeping: when a tool's answer is ambiguous, the fix is to make the
 ambiguity an error, not to make the guess smarter.
+
+## Constraints that leaked (post-completion)
+
+Recorded after the mechanism shipped — not changes to what was decided, but gaps the
+decisions did not nail shut. Open a sub-workstream when acted on.
+
+### C1 — The env-var protocol has no symbol surface (resolved 2026-10-28)
+
+D8 said "the protocol is environment variables … defined by the protocol rather than by
+each hook's imagination". The code half-honored it: `src/ghoshell_moss/memento/hooks.py`
+`_build_env` listed the six names (`MEMENTO_HOOK_SLOT` / `MEMENTO_ROOT` / `MEMENTO_BRANCH`
+/ `MEMENTO_BRANCH_DIR` / `MEMENTO_COORD` / `MEMENTO_COMMIT_DIR`) as string literals in a
+private function. Every consumer — the dolores stub, the inline hook in `test_dolores.py`,
+the two view hooks under `.moss/ghosts/moss/.memento/ego/hooks/` — retyped those literals
+and wrapped `os.environ[...]` / `Path(...)` on each side. A rename of any name would
+compile silently and break at run.
+
+Fix, modelled on `CommandErrorCode` (`core/concepts/errors.py:128`): `MementoHookEnv`, a
+`(str, Enum)` whose values are the env-var names, with reader sugar on the class
+(`.get(default)` returns the raw string; `.path()` returns a `Path | None`). `hook_env`
+keys off the enum; every consumer imports it and goes through `.path()` / `.get()`.
+Constant and reader live together — the thing D8 was asking for.
+
+Discovered 2026-10-28 while fixing `commit_view.py` / `branch_view.py` after
+`ghost-ground-governance` removed the private `_render_dir` the hooks were reaching into.
+That private-import was a separate smell (cross-package `_` import, fixed by routing
+through `DefaultGroundSet.peek_dir`); the env-var smell is the one C1 names.

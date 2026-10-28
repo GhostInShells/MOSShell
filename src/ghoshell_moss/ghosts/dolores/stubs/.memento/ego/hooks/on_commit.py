@@ -1,10 +1,10 @@
 """on_commit — move the finished plan and tasks into the anchor that just landed, then speak.
 
-The protocol hands over MEMENTO_BRANCH_DIR, MEMENTO_COMMIT_DIR and MEMENTO_COORD. Two things
-happen, both on the bypass: files whose status says the work is over move into the new anchor,
-and the ghost is told what moved and what is still open — a file disappearing without a word
-looks exactly like a file being lost, and a finished anchor with three stale tasks is exactly
-the thing nobody remembers by the next turn.
+The protocol hands over the branch directory, the commit directory and the coordinate via
+MementoHookEnv. Two things happen, both on the bypass: files whose status says the work is
+over move into the new anchor, and the ghost is told what moved and what is still open — a
+file disappearing without a word looks exactly like a file being lost, and a finished anchor
+with three stale tasks is exactly the thing nobody remembers by the next turn.
 
 Every line this prints is a hint the ghost wrote for itself. Nothing here waits on the kernel,
 and the kernel waits on nothing here.
@@ -12,11 +12,12 @@ and the kernel waits on nothing here.
 
 import asyncio
 import datetime
-import os
 import pathlib
 import shutil
 
 import frontmatter
+
+from ghoshell_moss.memento.hooks import MementoHookEnv
 
 FINISHED = {"done", "dropped", "closed", "completed"}
 
@@ -117,9 +118,11 @@ def notify(message: str, coord: str) -> None:
 
 
 def main() -> None:
-    branch = pathlib.Path(os.environ["MEMENTO_BRANCH_DIR"])
-    commit = pathlib.Path(os.environ["MEMENTO_COMMIT_DIR"])
-    coord = os.environ.get("MEMENTO_COORD") or commit.name
+    branch = MementoHookEnv.BRANCH_DIR.path()
+    commit = MementoHookEnv.COMMIT_DIR.path()
+    if branch is None or commit is None:
+        return
+    coord = MementoHookEnv.COORD.get() or commit.name
 
     moved = archive(branch, commit)
     plan_state, tasks = still_open(branch)

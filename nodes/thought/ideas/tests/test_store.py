@@ -2,8 +2,9 @@
 
 These tests pin what the mechanism now rests on:
 
-* a group is a directory holding one graph; discovery is a first-level scan;
-* edges are entities with their own ids, so a label change cannot break one;
+
+* a group is a directory carrying `IDEAS.md`; discovery reads the marker, one level
+  under the root — the position is the default radius, not the identity;* edges are entities with their own ids, so a label change cannot break one;
 * weight decays with generation — depth is size, not taste;
 * the op log is an account, not the truth: `diff` reads it, nothing folds it back;
 * the markdown generation is imported once, and moved aside rather than rewritten.
@@ -38,11 +39,26 @@ links: [{links}]
 """
 
 
-def group_dir(root: Path, name: str = "design") -> Path:
+
+SIGN = """---
+status: {status}
+graph: {graph}
+---
+
+# {name}
+
+One line on what this group is.
+"""
+
+
+def group_dir(root: Path, name: str = "design", *, sign: bool = True) -> Path:
+    """A group is a directory carrying the sign — so the helper writes the sign."""
     path = root / name
     path.mkdir(parents=True, exist_ok=True)
+    if sign:
+        (path / "IDEAS.md").write_text(
+            SIGN.format(status="active", graph=GRAPH, name=name), encoding="utf-8")
     return path
-
 
 def loaded(tmp_path: Path, name: str = "design"):
     store = GraphStore(tmp_path)
@@ -221,6 +237,36 @@ def test_every_group_carries_a_sign(tmp_path: Path):
     assert again.require_group("design").status == "archived"
 
 
+def test_every_group_carries_its_ignore_rule(tmp_path: Path):
+    """A group ships its content (`IDEAS.md`, `graph.json`) and not its generations.
+
+    Writing the sign and the ignore rule are the same act: a group directory made
+    anywhere is safe to commit without a hand-written rule, so `git add -A` after a
+    session of gestures cannot drag the live state, the account or the snapshots in.
+    """
+    store = GraphStore(tmp_path)
+    store.reload()
+    group = store.create_group("stage3")
+
+    text = (group.path / ".gitignore").read_text(encoding="utf-8")
+    rules = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    assert rules == [".graph.json", "ops.jsonl", ".lock", ".trash/", ".versions/"]
+    assert "graph.json" not in rules and "IDEAS.md" not in rules, "the content is not ignored"
+
+    # a group made before the default existed gets one on the next read
+    old = group_dir(tmp_path)
+    assert not (old / ".gitignore").exists()
+    GraphStore(tmp_path).reload()
+    assert (old / ".gitignore").exists()
+
+    # and a hand-written rule is a decision — a default never overwrites one
+    hand = group_dir(tmp_path, "hand")
+    (hand / ".gitignore").write_text("mine\n", encoding="utf-8")
+    GraphStore(tmp_path).reload()
+    assert (hand / ".gitignore").read_text(encoding="utf-8") == "mine\n"
+
+
 # ------------------------------------------------------------------- discovery rules
 
 
@@ -256,8 +302,9 @@ def test_archived_is_never_the_focus(tmp_path: Path):
     assert store.focus_group() is None
 
 
+
 def test_a_group_can_be_made_from_the_page(tmp_path: Path):
-    """Creating a group is a mkdir — the page's button and the shell do exactly this."""
+    """Creating a group writes the sign — the page, the CLI and the channel all do this."""
     root = tmp_path / "ideas"
     store = GraphStore(root)
     store.reload()
@@ -266,16 +313,47 @@ def test_a_group_can_be_made_from_the_page(tmp_path: Path):
     group = store.create_group("stage3")
 
     assert (root / "stage3").is_dir()
+    assert (root / "stage3" / "IDEAS.md").is_file(), "the sign is the group"
     assert store.require_group("stage3").nodes == {}
     assert store.focus_group().name == "stage3"
 
-    for bad in ("", ".hidden", "a/b", "  "):
+    for bad in ("", "  "):
         try:
             store.create_group(bad)
         except ValueError:
             continue
         raise AssertionError(f"{bad!r} must be refused")
+    # A path is a path: a plain name lands under the root, an absolute one may live
+    # anywhere, because the root is the default discovery radius rather than a wall.
+    for nested in ("a/b", "a/b/c"):
+        try:
+            store.create_group(nested)
+        except ValueError as exc:
+            assert "one level deep" in str(exc), nested
+            continue
+        raise AssertionError(f"a nested group {nested!r} would be undiscoverable")
 
+    outside = tmp_path / "elsewhere" / "journal"
+    made = store.create_group(str(outside))
+    assert (outside / "IDEAS.md").is_file()
+    assert store.require_group(str(outside)).nodes == {}
+    assert made.path == outside.resolve()
+
+
+def test_a_directory_without_the_sign_is_not_a_group(tmp_path: Path):
+    """The marker decides, not the position — and a stray graph is reported, not hidden."""
+    group_dir(tmp_path, "design")
+    (tmp_path / "just-a-folder").mkdir()
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    (stray / GRAPH).write_text("{}", encoding="utf-8")
+
+    store = GraphStore(tmp_path)
+    store.reload()
+
+    assert sorted(store.groups) == ["design"]
+    assert not (tmp_path / "just-a-folder" / "IDEAS.md").exists()
+    assert any("stray" in line and "IDEAS.md" in line for line in store.broken)
 
 # -------------------------------------------------------------------- versions
 

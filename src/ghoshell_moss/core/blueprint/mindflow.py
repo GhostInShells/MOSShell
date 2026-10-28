@@ -57,15 +57,27 @@ SignalName = str
 
 class Priority(int, enum.Enum):
     """
-    为了避免优先级无限膨胀, 因此做策略约定.
+    Signal / impulse priority ladder — fixed, so the tiers cannot inflate.
+
+    The engineering baseline is ``INFO``: ``Signal.priority`` and
+    ``SignalMeta.priority()`` default to it, and a signal stays there unless its source
+    has a concrete reason to challenge the current attention. ``NOTICE`` and above are
+    deliberate escalations — ``InputSignalMeta`` sits at ``NOTICE`` because a human
+    input expects an answer. ``BACKGROUND`` can never win a challenge; use it for
+    notices that are safe to lose.
+
+    ``Impulse.priority`` defaults to ``NOTICE`` because an impulse is already a
+    nucleus's arbitration verdict, not a raw edge signal. A nucleus that mirrors its
+    signal untouched (``Impulse.from_signal``) keeps the signal's tier, so a
+    ``BACKGROUND`` signal stays ``BACKGROUND``.
     """
-    BACKGROUND = -1  # 永远不能挑战成功任何当前注意力.
-    INFO = 0  # 基础值.
-    NOTICE = 1
+    BACKGROUND = -1  # never wins a challenge against the current attention.
+    INFO = 0  # engineering baseline: no escalation requested.
+    NOTICE = 1  # first escalation tier: input that expects an answer.
     WARNING = 2
     ERROR = 3
     CRITICAL = 4
-    FATAL = 5  # 约定的最高级别, 永远抢占成功.
+    FATAL = 5  # top tier: always preempts.
 
 
 class Signal(BaseModel):
@@ -109,7 +121,10 @@ class Signal(BaseModel):
     )
     priority: Priority = Field(
         default=Priority.INFO,
-        description="信号的优先级, 越大优先级越高. 用于做抢占式调度. 来自边缘系统的输入本身应包含第一轮优先级"
+        description="the signal priority — higher wins arbitration. Edge systems should "
+                    "set the first-round tier themselves. A signal stays on the default "
+                    "INFO (the engineering baseline) unless it is deliberately escalated; "
+                    "the tier semantics are on Priority."
     )
     strength: int = Field(
         default=100,

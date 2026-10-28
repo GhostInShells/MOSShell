@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -36,6 +37,7 @@ __all__ = [
     "HOOK_DIR_NAME",
     "DEFAULT_TIMEOUT",
     "HookResult",
+    "MementoHookEnv",
     "hook_paths",
     "hook_env",
     "run_slot",
@@ -47,6 +49,33 @@ HOOK_SLOTS: tuple[str, ...] = ("on_commit", "commit_view", "branch_view")
 """The slots themselves. The file name decides when it runs."""
 
 HOOK_DIR_NAME = "hooks"
+
+
+class MementoHookEnv(str, Enum):
+    """The env-var protocol handed to every hook — one symbol per name, with reader sugar.
+
+    D8 settled that a hook is given what it needs through env vars defined by the protocol
+    rather than by each hook's imagination. The enum is that protocol made addressable:
+    the producer (``hook_env``) keys off these members; a consumer imports the enum and
+    reads through ``.get`` / ``.path`` instead of retyping the string.
+
+    >>> commit = MementoHookEnv.COMMIT_DIR.path()
+    >>> coord = MementoHookEnv.COORD.get()
+    """
+
+    HOOK_SLOT = "MEMENTO_HOOK_SLOT"
+    ROOT = "MEMENTO_ROOT"
+    BRANCH = "MEMENTO_BRANCH"
+    BRANCH_DIR = "MEMENTO_BRANCH_DIR"
+    COORD = "MEMENTO_COORD"
+    COMMIT_DIR = "MEMENTO_COMMIT_DIR"
+
+    def get(self, default: str = "") -> str:
+        return os.environ.get(self.value, default)
+
+    def path(self) -> Path | None:
+        raw = self.get()
+        return Path(raw) if raw else None
 """Directory holding the slots, under a branch directory or the memento root."""
 
 LOG_FILE_NAME = ".log.jsonl"
@@ -107,12 +136,12 @@ def hook_env(
     commit landed is a hook that will be rewritten for every reader.
     """
     env = {
-        "MEMENTO_HOOK_SLOT": slot,
-        "MEMENTO_ROOT": str(Path(root).resolve()),
-        "MEMENTO_BRANCH": branch,
-        "MEMENTO_BRANCH_DIR": "" if branch_dir is None else str(Path(branch_dir).resolve()),
-        "MEMENTO_COORD": coord,
-        "MEMENTO_COMMIT_DIR": "" if commit_dir is None else str(Path(commit_dir).resolve()),
+        MementoHookEnv.HOOK_SLOT.value: slot,
+        MementoHookEnv.ROOT.value: str(Path(root).resolve()),
+        MementoHookEnv.BRANCH.value: branch,
+        MementoHookEnv.BRANCH_DIR.value: "" if branch_dir is None else str(Path(branch_dir).resolve()),
+        MementoHookEnv.COORD.value: coord,
+        MementoHookEnv.COMMIT_DIR.value: "" if commit_dir is None else str(Path(commit_dir).resolve()),
     }
     if extra:
         env.update({str(k): str(v) for k, v in extra.items()})
@@ -121,7 +150,7 @@ def hook_env(
 
 async def _run_one(path: Path, env: Mapping[str, str], timeout: float) -> HookResult:
     """Run one hook file to completion, or to its deadline. Never raises."""
-    result = HookResult(slot=env.get("MEMENTO_HOOK_SLOT", ""), path=str(path))
+    result = HookResult(slot=env.get(MementoHookEnv.HOOK_SLOT.value, ""), path=str(path))
     started = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -172,7 +201,7 @@ async def run_slot(
     paths = hook_paths(roots, slot)
     if not paths:
         return []
-    env = {**env_base, "MEMENTO_HOOK_SLOT": slot}
+    env = {**env_base, MementoHookEnv.HOOK_SLOT.value: slot}
     results = await asyncio.gather(*[_run_one(path, env, timeout) for path in paths])
     log_results(results, log_root if log_root is not None else roots[0])
     return list(results)
