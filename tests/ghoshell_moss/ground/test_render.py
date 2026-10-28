@@ -107,6 +107,35 @@ class TestContentGlob:
         assert result == "(no matches)"
 
 
+# -- ls content ------------------------------------------------------------
+
+
+class TestContentLs:
+    @pytest.fixture
+    def anchor(self, tmp_path):
+        (tmp_path / "a.md").write_text("a")
+        (tmp_path / ".ghost.log").write_text("noise")
+        (tmp_path / ".moss").mkdir()
+        (tmp_path / ".moss" / "b.log").write_text("noise")
+        return Anchor(ground=tmp_path, cwd=tmp_path)
+
+    def test_ignore_filters_files_and_dirs(self, anchor):
+        from pathspec import PathSpec
+
+        spec = PathSpec.from_lines("gitignore", [".moss/", "*.log"])
+        pin = LsPin(label="ls", arguments=LsArguments(path=".", depth=2))
+        result = _content_ls(pin, anchor, ignore=spec)
+        assert "a.md" in result
+        assert ".ghost.log" not in result
+        assert ".moss" not in result
+
+    def test_no_ignore_lists_everything(self, anchor):
+        pin = LsPin(label="ls", arguments=LsArguments(path=".", depth=2))
+        result = _content_ls(pin, anchor, ignore=None)
+        assert ".ghost.log" in result
+        assert ".moss" in result
+
+
 # -- frontmatter pattern mode ----------------------------------------------
 
 

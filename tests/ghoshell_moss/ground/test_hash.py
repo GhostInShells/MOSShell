@@ -475,6 +475,19 @@ class TestGroundIgnore:
         assert obs.exists is True
         assert obs.size == 1  # only a.py — .moss/ tree excluded
 
+    def test_ls_ignore_skips_ignored_files(self, tmp_path):
+        """ignore 对文件与目录含义一致 — ls 与 glob/frontmatter 同语义."""
+        (tmp_path / "a.md").write_text("a")
+        (tmp_path / ".ghost.log").write_text("noise")
+        (tmp_path / ".moss").mkdir()
+        (tmp_path / ".moss" / "b.log").write_text("noise")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = LsPin(label="ls", arguments=LsArguments(path=".", depth=2))
+        spec = self._spec([".moss/", "*.log"])
+        obs = observe_sync(pin, anchor, ignore=spec)
+        assert obs.exists is True
+        assert obs.size == 1  # only a.md
+
     def test_ignore_file_merged(self, tmp_path):
         (tmp_path / "keep.py").write_text("a")
         (tmp_path / "skip_me").mkdir()

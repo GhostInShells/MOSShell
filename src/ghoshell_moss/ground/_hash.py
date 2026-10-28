@@ -444,27 +444,32 @@ def _seg_match(name: str, seg: str) -> bool:
     return fnmatch.fnmatchcase(name, seg)
 
 
+def _entry_ignored(entry: Path, root: Path | None, ignore: PathSpec | None) -> bool:
+    """Ground-level ignore prunes this entry — directories and files alike.
+
+    Directories match with a trailing slash (gitignore directory semantics),
+    files match by their own path. Every discovery verb goes through this one
+    predicate so one ``ignore:`` declaration has one meaning.
+    """
+    if ignore is None or root is None:
+        return False
+    try:
+        rel = entry.relative_to(root).as_posix()
+    except ValueError:
+        rel = entry.as_posix()
+    return ignore.match_file(rel + "/" if entry.is_dir() else rel)
+
+
 def _dir_children(dir_: Path, root: Path, ignore: PathSpec | None) -> list[Path]:
     """Iterable dir entries, skipping GLOB_IGNORE noise and ignore-spec pruned paths."""
     try:
         entries = list(dir_.iterdir())
     except OSError:
         return []
-    out: list[Path] = []
-    for e in entries:
-        if e.name in GLOB_IGNORE:
-            continue
-        if ignore is not None:
-            try:
-                rel = e.relative_to(root).as_posix()
-            except ValueError:
-                rel = e.as_posix()
-            if e.is_dir():
-                if ignore.match_file(rel + "/"):
-                    continue
-            elif ignore.match_file(rel):
-                continue
-        out.append(e)
+    out = [
+        e for e in entries
+        if e.name not in GLOB_IGNORE and not _entry_ignored(e, root, ignore)
+    ]
     return sorted(out, key=lambda p: p.name)
 
 
@@ -504,17 +509,8 @@ def _walk_ls(
     except OSError:
         return
 
-    # 场级 ignore: 预过滤 — 被忽略的目录完全不出现在列表中
-    visible: list[Path] = []
-    for entry in items:
-        if entry.is_dir() and ignore is not None and ground_root is not None:
-            try:
-                rel = entry.relative_to(ground_root).as_posix()
-            except ValueError:
-                rel = entry.as_posix()
-            if ignore.match_file(rel + "/"):
-                continue
-        visible.append(entry)
+    # 场级 ignore: 预过滤 — 被忽略的目录与文件完全不出现在列表中
+    visible = [e for e in items if not _entry_ignored(e, ground_root, ignore)]
 
     for i, entry in enumerate(visible):
         is_last = i == len(visible) - 1

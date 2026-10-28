@@ -38,6 +38,7 @@ from ghoshell_moss.ground._chain import collect_law_files
 from ghoshell_moss.ground._hash import (
     GLOB_IGNORE,
     Observation,
+    _entry_ignored,
     _path_touches_ignore,
     glob_limited,
     observe,
@@ -782,17 +783,8 @@ def _walk_ls_entries(
     except OSError:
         return
 
-    # ground-level ignore: pre-filter — ignored dirs excluded from listing
-    visible: list[Path] = []
-    for entry in items:
-        if entry.is_dir() and ignore is not None and ground_root is not None:
-            try:
-                rel = entry.relative_to(ground_root).as_posix()
-            except ValueError:
-                rel = entry.as_posix()
-            if ignore.match_file(rel + "/"):
-                continue
-        visible.append(entry)
+    # ground-level ignore: pre-filter — ignored dirs and files excluded
+    visible = [e for e in items if not _entry_ignored(e, ground_root, ignore)]
 
     for i, entry in enumerate(visible):
         is_last = i == len(visible) - 1
