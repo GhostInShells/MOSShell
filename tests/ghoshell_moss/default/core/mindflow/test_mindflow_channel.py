@@ -321,7 +321,8 @@ async def test_idle_knock_arms_one_shot_on_the_coming_idle():
             mf._set_idle()
             await _wait_until(lambda: bool(sent))
             assert len(sent) == 1
-            assert sent[0].priority == Priority.NOTICE
+            # 敲门的语义是可丢失: 永不抢占, 忙碌时被丢弃.
+            assert sent[0].priority == Priority.BACKGROUND
             assert "过来看一眼" in sent[0].messages[0].to_content_string()
             # 一次性: 发完就把自己从 idle 回调里摘掉, 下一轮不会再响.
             assert len(mf._on_idle_callbacks) == 0
