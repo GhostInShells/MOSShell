@@ -30,7 +30,8 @@ updated: '2026-10-28'
 | 01 | 集群运行时可视化界面风格（面向人类） | `01-visualization-style.md` | 独立 |
 | 02 | 集群运行时设计（规划/控制/数据/呈现/容错/故障发现） | `02-runtime-design.md` | **依赖 03** |
 | 03 | 默认协作体系 | `03-collaboration-system.md` | 先于 02 |
-| 04 | dsh 具体版本的依赖解耦（`packages/` + 版本线） | `04-dsh-version-decoupling.md` | 独立，可穿插 |
+
+| 05 | 总设计思想：纯代码规划 / 事件总线 / 文件真相 / task 第一公民 | `05-design-principles.md` | 与 00 并列：00 讲怎么开发，05 讲建什么 ||
 
 拆分标准是**按并行阻塞**（D28, thirdgerb）：现在没有集群，多个管线（claude code 等）并行推进，
 所以切的是"谁不挡谁"，不是"谁先落地"。
