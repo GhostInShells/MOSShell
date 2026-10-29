@@ -46,6 +46,106 @@ warm ``url`` notice fragment. Web-surface nodes never claim a fixed port unless
 ``--port`` / ``MOSS_ARTIFACTS_PORT`` asks them to, so siblings never collide."""
 
 
+def _dir_from_argv(argv: list[str]) -> str | None:
+    if "--dir" in argv:
+        i = argv.index("--dir")
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+ARTIFACTS_DIR = Path(
+    _dir_from_argv(sys.argv[1:])
+    or os.getenv("MOSS_ARTIFACTS_DIR")
+    or (_NODE_DIR / "artifacts")
+).expanduser()
+"""Where exported ``.artifact.md`` files live: ``--dir`` argv, else
+``MOSS_ARTIFACTS_DIR``, else ``<node>/artifacts/``. A relative path resolves against
+the working directory.
+
+The node stays memory-first: the directory is not watched and nothing is written back
+implicitly, so ``export`` and ``import`` are the only doors. That is also why the unit
+is *one card* — a collection of cards is a different proposition (a deck: order,
+transitions, narration), and it belongs to whatever reads the directory, not to this
+store."""
+
+
+_MACHINE_KEYS = ("label", "kind", "description", "created_at")
+"""Frontmatter keys this node owns. Every other key belongs to the caller: it is read
+back on import, kept in the item, and written out again on export. That is the whole
+of the forward-compatibility story — a later version can add metadata (a deck's
+narration line, for one) without this code eating it or old files needing a rewrite."""
+
+
+def _iso(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
+
+
+def _epoch(value: object, fallback: float) -> float:
+    try:
+        return time.mktime(time.strptime(str(value), "%Y-%m-%dT%H:%M:%S"))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Split a ``---``-delimited frontmatter block from its body; keep every key.
+
+    Values are JSON scalars when this node writes them (``json.dumps`` output is a
+    valid YAML scalar, so quotes and newlines escape for free), and raw text when a
+    human wrote them: anything that does not parse as JSON stays the string as typed.
+    No YAML dependency, tolerant on read.
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    for i in range(1, len(lines)):
+        if lines[i].strip() != "---":
+            continue
+        meta: dict[str, Any] = {}
+        for line in "".join(lines[1:i]).splitlines():
+            if not line.strip() or line.lstrip().startswith("#") or ":" not in line:
+                continue
+            key, _, raw = line.partition(":")
+            key, raw = key.strip(), raw.strip()
+            if not key:
+                continue
+            if not raw:
+                meta[key] = ""
+                continue
+            try:
+                meta[key] = json.loads(raw)
+            except (TypeError, ValueError):
+                meta[key] = raw
+        return meta, "".join(lines[i + 1 :])
+    return {}, text
+
+
+def render_artifact_file(meta: dict[str, Any], source: str) -> str:
+    head = "\n".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in meta.items())
+    return f"---\n{head}\n---\n{source}"
+
+
+def _safe_name(label: str) -> str:
+    keep = "-_.() "
+    return "".join(c if (c.isalnum() or c in keep) else "_" for c in label).strip() or "artifact"
+
+
+def resolve_target(path: str, default_name: str = "") -> Path:
+    """Resolve an export/import target; a relative path lands under ARTIFACTS_DIR."""
+    raw = (path or "").strip()
+    if not raw:
+        return ARTIFACTS_DIR / default_name if default_name else ARTIFACTS_DIR
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = ARTIFACTS_DIR / target
+    if target.is_dir() or raw.endswith(("/", os.sep)):
+        return target / default_name if default_name else target
+    if target.suffix:
+        return target
+    return target.with_name(target.name + ".artifact.md")
+
+
 class ArtifactStore:
     """In-memory artifacts. `_order` is the append-only history; `_items` is the fold.
 
@@ -58,7 +158,15 @@ class ArtifactStore:
         self._items: dict[str, dict[str, Any]] = {}
         self._user_actions: deque = deque(maxlen=20)
 
-    def start(self, label: str, kind: str, description: str) -> None:
+    def start(
+        self,
+        label: str,
+        kind: str,
+        description: str,
+        *,
+        meta: dict[str, Any] | None = None,
+        created_at: float | None = None,
+    ) -> None:
         # style is a meta-artifact — it applies globally, so it never enters the
         # displayable order (history / tabs) but stays in _items for read() recall.
         if label in self._order:
@@ -70,7 +178,8 @@ class ArtifactStore:
             "kind": kind,
             "description": description,
             "source": "",
-            "created_at": time.time(),
+            "created_at": created_at if created_at is not None else time.time(),
+            "meta": dict(meta or {}),
         }
 
     def append(self, label: str, text: str) -> None:
@@ -241,7 +350,11 @@ def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer, matrix: M
             "html (a full document in a sandboxed iframe), "
             "style (CSS injected globally — a meta-artifact, never listed).\n"
             "label is the handle: read(label) recalls the source, display(label) switches to it, "
-            "remove(label) deletes it."
+            "remove(label) deletes it.\n"
+            "a card is also a file: export(label, path) writes `<label>.artifact.md` — frontmatter "
+            "for the machine fields, body for the source verbatim — under this node's artifact "
+            "directory (`--dir` or MOSS_ARTIFACTS_DIR); import_file(path) reads one back and puts "
+            "it on the surface. one export is one card, never a collection."
         )
 
     @chan.build.named_notices
@@ -315,6 +428,82 @@ def new_artifacts_channel(store: ArtifactStore, server: SurfaceServer, matrix: M
         if source is None:
             return f"no artifact named '{label}'"
         return source
+
+    @chan.build.command(always_observe=True)
+    async def export(label: str, path: str = "") -> str:
+        """Write one artifact out as a `<label>.artifact.md` file — one card, one file.
+
+        Frontmatter carries the machine fields (`label` / `kind` / `description` /
+        `created_at`) plus every key this node does not know; the body is the source
+        exactly as it was streamed — no code fence, `kind` says how to read it.
+        A key already present on disk survives the export, which is how a later
+        version adds metadata without rewriting files already out in the world.
+
+        :param label: the artifact to write
+        :param path: file or directory; empty = this node's artifact directory, named
+            `<label>.artifact.md`. A path with no suffix gets `.artifact.md` appended.
+        """
+        item = store.get(label)
+        if item is None:
+            return f"no artifact named '{label}'"
+        target = resolve_target(path, f"{_safe_name(label)}.artifact.md")
+        meta: dict[str, Any] = {
+            "label": item["label"],
+            "kind": item["kind"],
+            "description": item["description"],
+            "created_at": _iso(item["created_at"]),
+        }
+        meta.update(item.get("meta") or {})
+        if target.is_file():
+            try:
+                on_disk, _ = split_frontmatter(target.read_text(encoding="utf-8"))
+            except OSError:
+                on_disk = {}
+            for key, value in on_disk.items():
+                meta.setdefault(key, value)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(render_artifact_file(meta, item["source"]), encoding="utf-8")
+        except OSError as exc:
+            return f"cannot write {target}: {exc}"
+        return f"'{label}' → {target} ({item['kind']}, {len(item['source'])} chars)"
+
+    @chan.build.command(always_observe=True)
+    async def import_file(path: str) -> str:
+        """Read one `.artifact.md` back onto the surface — the inverse of `export`.
+
+        Nothing is focused: an import must not take the human's view. The card lands
+        at the tail of the order, so `history` lists it as the newest.
+
+        :param path: the file, or a name inside this node's artifact directory
+        """
+        target = resolve_target(path)
+        if target.is_dir():
+            return f"'{target}' is a directory — one import is one card; pass a file"
+        if not target.is_file():
+            return f"no such artifact file: {target}"
+        try:
+            text = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"cannot read {target}: {exc}"
+        meta, source = split_frontmatter(text)
+        stem = target.name[: -len(".artifact.md")] if target.name.endswith(".artifact.md") else target.stem
+        label = str(meta.get("label") or stem or "artifact")
+        kind = str(meta.get("kind") or "markdown")
+        description = str(meta.get("description") or "")
+        extras = {k: v for k, v in meta.items() if k not in _MACHINE_KEYS}
+        store.start(
+            label, kind, description,
+            meta=extras,
+            created_at=_epoch(meta.get("created_at"), time.time()),
+        )
+        store.end(label, source)
+        await server.broadcast({
+            "type": "artifact.start", "label": label,
+            "kind": kind, "description": description,
+        })
+        await server.broadcast({"type": "artifact.end", "label": label, "source": source})
+        return f"imported '{label}' ({kind}, {len(source)} chars) ← {target}"
 
     @chan.build.command(always_observe=True)
     async def history(n: int = 10) -> str:

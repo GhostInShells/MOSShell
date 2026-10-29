@@ -293,3 +293,55 @@ Discovered 2026-10-28 while fixing `commit_view.py` / `branch_view.py` after
 `ghost-ground-governance` removed the private `_render_dir` the hooks were reaching into.
 That private-import was a separate smell (cross-package `_` import, fixed by routing
 through `DefaultGroundSet.peek_dir`); the env-var smell is the one C1 names.
+
+
+## Application to be validated: `#tag` as an index (D29)
+
+Status: discussion only — no code, no schema. This section records the mechanisms a concrete
+application has to prove; each one is written so it can fail.
+
+**Starting point.** A fragment of experience has no standalone value — it is only worth
+something together with the context it came from. So the unit is not a note but a **ref**: a
+coordinate that reads back. memento already stores the text; what is scarce is the *mark* that
+says "come back to this".
+
+**Why a commit is the best pointer.** It already carries a coordinate, a timestamp, a span and
+a diff, and naming it costs no extra action — the tag is a word inside a note I was already
+writing.
+
+**Why hooks and not the harness.** The motivation above already says it: prompt-level rules
+fail, mechanisms hold. A tag that only becomes an index when the model remembers to index it is
+a prompt-level rule. Capture, index and digest must each hang on an event.
+
+> 「所有的索引和治理都要有能力通过 hook 而不是 harness 驱动。」（D29）
+
+> 「能放心大胆地遗忘（从注意力中清除），本身就是一种智力优势。」（D29）
+
+The bin can be enormous precisely because the labels are cheap and the contents are already
+stored. This is not a new store; it is the rim of the one memento already is.
+
+### Mechanisms to validate
+
+| # | Mechanism | Falsifier |
+|---|---|---|
+| M1 | **Capture is free.** A tag lives inside text memento already stores (a note, a line of conversation); no separate command, no vocabulary decision at write time. | Two weeks of ordinary work and the notes carry no tags unless someone asks for them. |
+| M2 | **The index is a projection.** A hook walks anchors and their notes and emits an index; deleting the index loses nothing. | Delete the index, run the hook once — the index comes back complete, or it does not. |
+| M3 | **Digestion fires on an event, not on memory.** "Turn the backlog into a surface" is attached to a condition (one tag's backlog at or above N, or every k anchors). | Leave it alone for three days: either the digestion ran, or the debt is visible and growing. If nothing runs and nothing shows, it is still harness-driven. |
+| M4 | **Debt is visible without eating attention.** A view hook prints one line per tag — count, age of the oldest — and never bodies. | A branch view that hides the debt, or floods the screen with it, fails. |
+| M5 | **One read rebuilds the moment.** tag → coordinate → `read`. | Three months later, one read reconstructs the thirty seconds. This is the one that cannot be checked on the day it is written. |
+| M6 | **A hook cannot write facts.** It may write index, views and drafts; anchors and spans stay read-only to it; a failure is recorded and the anchor still lands (D5). | Break a hook on purpose: the commit lands, the failure is on record, the span is unchanged. |
+| M7 | **Digestion has three exits and no fourth.** Whatever it produces goes to a behavior, a skill, or an issue — never "later". | Six weeks on: does the weekly probe's count fall, and do precedents start growing again? If both are flat, the bin only moved. |
+| M8 | **Small vocabulary, no enforcement.** About ten named tags; an unknown one is still indexed and left for digestion to rename. | A vocabulary that forces a decision at write time (breaking M1), or needs a schema migration to grow. |
+
+### Scenarios
+
+1. **Seams** — something was missed in a stretch; the mark says "reread this", the body stays in memento.
+2. **Dreaming** — an off-attention round reads the backlog, distills it into a surface, marks the tags digested. A dream's output must be a draft that is cheap to reject: a confident wrong thing in a dream is as confident as when awake.
+3. **Re-use by happenstance** — tags written for one purpose get read for another; the index does not need to know why they were written.
+
+### What to build first
+
+Not the tag. The hook that walks the anchors and prints what it found — C1's lesson is that a
+protocol living in string literals has no symbol surface, and a tag convention with no
+enumerating hook is the same thing: text with no reader, where "we have tags" would be a story
+rather than a fact.
