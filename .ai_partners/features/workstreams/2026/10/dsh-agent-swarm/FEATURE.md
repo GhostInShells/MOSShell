@@ -7,10 +7,14 @@ description: Ghost 主导的 dsh agent 蜂群 — 任务树治理 + D3 关系图
 milestone: null
 priority: P3
 status: in-progress
-status_note: Subtask index established (D28); 00-methodology records the alignment,
-  01-04 are skeletons awaiting further unloading. No implementation yet.
+status_note: >-
+  Subtask index established (D28). D29 ran round two of the discussion -- twenty cards and a
+  master index under discuss/, and 05-design-principles carries the round marker. The shape
+  converged but nothing is implemented: bus on top and runtime below, matter as identity,
+  facts as the only truth, ticket as fence. Next step -- thirdgerb writes a blueprint, moss
+  builds the prototype on top of deepseek harness against it.
 title: DSH Agent Swarm
-updated: '2026-10-28'
+updated: '2026-10-29'
 ---
 
 # DSH Agent Swarm
@@ -210,3 +214,21 @@ attention engineering
 ## Implementation Notes
 
 <!-- 待 stage3. 当前不写实现, 不排队优先级. -->
+
+## 第二轮讨论（D29，2026-10-29）
+
+一整天的讨论落在 `discuss/`：`README.md` 是总纲（约定 / 收敛 / 他说 / 我理解 / 已卸载 / 卡片索引），
+旁边 20 张 `r2-NN-*.artifact.md` 是每轮的图。两轮讨论的分界在 `05-design-principles.md` 的 round 标记。
+
+收敛出来的形状（细节见总纲，每条都有对应的 R2 节）：
+
+- 总线在上、运行时在下；**总线是唯一的地址翻译处**。
+- **案（matter）是身份，卷是地址，档是终态**；run 是承办人，一案可多个 run。
+- **有状态的是案，不是 session**；facts 是唯一真相，三档存储按"恢复单位"分。
+- **票是栅栏不是锁**；锁键是 `(matter, run)`，不是进程。
+- **栈在模型上下文，op 没有 body**；op 的入口走代码反射，不走 http/bash。
+- **一份 blueprint 三个投影**（人 / ghost / agent）；翻译层数 = 进程边界数。
+- 四层：名册 / Prototype / Instance。
+
+**下一步的验证**（thirdgerb 定）：他手写一个 blueprint；moss 用它加上 deepseek harness 做出 prototype；
+同时它要兼容一个通用观测面。判据——第一天就能跑；杀掉它，能从 facts 重建。
