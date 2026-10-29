@@ -2,14 +2,16 @@
 created: 2026-09-14
 depends: []
 description: 流式 artifact 表面：一个 write 命令 + 8 种 kind + duration 时间预算，head/delta/full
-  三阶段流式，全屏单一看 + label 回溯面 + 人类动作上行 notice 反身性。
+  三阶段流式，全屏单一看 + label 回溯面 + 人类动作上行 notice 反身性 + 单卡 `.artifact.md` 导出/导入。
 milestone: null
 priority: P1
 status: in-progress
-status_note: 8 kinds + duration + notice uplink + non-singleton port, dogfooded via
-  MCP。2026-10-14 讨论出下一版方向（artifact 当成一份很小的文档：原地改动 + 版本位置 + 可导出关键帧），未实现。
+status_note: 8 kinds + duration + notice uplink + non-singleton port。2026-10-14 讨论出下一版方向
+  （artifact 当成一份很小的文档：原地改动 + 版本位置 + 可导出关键帧），未实现。2026-10-29 落地其中的
+  最小一件：单卡导出/导入（`<label>.artifact.md`，frontmatter 未知键原样保留）、artifact 目录可指向
+  （--dir / MOSS_ARTIFACTS_DIR）。原地改动、play 条、deck 仍未实现。
 title: Webview Artifacts Node
-updated: '2026-10-14'
+updated: '2026-10-29'
 ---
 
 # Webview Artifacts Node
@@ -104,7 +106,43 @@ MOSS 有 `channels/mermaid_draw.py`（一次性 data-url 浏览器渲染）和 `
 ## Implementation
 
 - 节点：`nodes/webview_apps/artifacts/`（`NODE.md` + `main.py` + `index.html`），3 文件，零新依赖。
-- 命令面：`write`(8 kinds + duration) / `read` / `history` / `display` / `source` / `remove` / `clear`。
+- 命令面：`write`(8 kinds + duration) / `read` / `history` / `display` / `source` / `remove` / `clear`
+  / `export(label, path)` / `import_file(path)`（2026-10-29 新增后两个）。
 - wire 帧（裸 WS，非 ChannelEvent）：`state` / `artifact.start` / `artifact.chunk` /
   `artifact.end` / `artifact.focus` / `artifact.remove` / `source` / `clear`；上行 `user.action`。
 - 前端：单 view 全屏、label tabs、可折叠 source pane、绿点事件闪烁；mermaid/marked/hls.js 走 CDN。
+
+## 单卡导出 / 导入（2026-10-29 落地）
+
+D29 的讨论把上一节里"导出"那一条先落了最小形状：**导出粒度是一张卡，不是一个集合。**
+
+- **一张卡 = 一份事实。** 卡的事实就是它自己那段源文本；集合没有自己的事实，它只是对别的事实
+  的排序与编排。所以集合（deck ≈ ppt）不在这里做——将来它只装指针、顺序、转场、串讲词，
+  **绝不装内容副本**，否则导入立刻变成两份真相的合并问题。
+- **格式 `<label>.artifact.md`**：frontmatter = 机器字段（label / kind / description / created_at）
+  \+ **任何本节点不认识的键**；正文 = 该 kind 的源，逐字节原样，**不加代码围栏**（kind 已经说明
+  怎么读它）。description 就是压缩面：不读源码也知道这张卡是什么。
+- **向前兼容 = 未知键保留。** 导入时未知键进 item 的 `meta`，导出时原样写回；导出时磁盘上已有的
+  未知键也保留。于是将来加 metadata（比如 deck 的串讲词）不必回改已导出的文件，旧代码也不需要
+  认识它。
+- **目录可指向**：`--dir` argv / `MOSS_ARTIFACTS_DIR` / 默认 `<node>/artifacts/`（gitignore）。
+  内存仍是存储本体：**不双写**，目录不被监听，导出/导入是仅有的两道门。
+- **导入不许抢人的视线**：只入 store 并广播 start/end，不 focus。
+
+判据（可验，不靠感觉）：
+
+1. 一张卡导出 → 删掉 → 导入，`read(label)` 回来是同一段字节。
+2. 手工往 frontmatter 塞一个不认识的键（如 `narration:`），导出一次后它还在；拿一份旧文件导入，
+   它也不会被吃掉。
+3. 导入一张卡不影响其他卡，且 `history` 里它排在最前（最新）。
+
+还没做的，按顺序：
+
+- **play 条**：现在 `write` 只留最终 source（`store.end` 直接覆盖），chunk 序列与时间全丢。
+  "它是怎么长出来的"和"最后长成什么样"是两份事实，谁也推不出谁。要做 play，就得给过程留痕
+  （chunk + 时间戳），形状与 `svg_works` 的 ops 同族。今天不做，但"未知键保留"已经给它留了位。
+- **原地改动 / 版本位置**（上一节的主线）：仍未实现。
+- **deck / index**：另一个命题。PPT 的核心不是"多卡 + 转场"，是叙事顺序——每页要能回答
+  "为什么下一张是这张"。只做目录加特效会退化成文件浏览器。判据：一个 deck 说不说得出一句叙事。
+- **聚合导出 + ghost 无关播放器**：`svg_works` 的 `export_html` 已有先例（standalone 带播放器），
+  别发明第二种。播放器的判据是只读文件，不接 matrix、不接 channel。

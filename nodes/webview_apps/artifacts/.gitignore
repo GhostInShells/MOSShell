@@ -10,3 +10,6 @@ __pycache__/
 
 # runtime artifacts (ledger, logs)
 runtime/
+
+# exported cards are local by default; a card worth shipping is committed with -f
+artifacts/

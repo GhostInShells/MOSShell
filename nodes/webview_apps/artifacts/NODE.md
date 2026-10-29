@@ -27,6 +27,22 @@ The surface binds an **ephemeral port by default** — read its live URL from th
 channel's `url` notice, never assume a fixed port. To pin one, start with
 `--port N` (or set `MOSS_ARTIFACTS_PORT`).
 
+A card is also a file. `export(label, path)` writes `<label>.artifact.md` — frontmatter
+for the machine fields (`label` / `kind` / `description` / `created_at`) plus any key
+this node does not know, then the source verbatim as the body. That is the discoverable
+protocol: an ordinary markdown file with a title block, readable by anything, no node
+required. `import_file(path)` reads one back. Frontmatter keys the node does not
+recognise are kept and written back, so a later version can add metadata (a deck's
+narration line, say) without breaking files already on disk.
+
+Cards land in this node's `artifacts/` directory (gitignored) by default; `--dir` or
+`MOSS_ARTIFACTS_DIR` points it elsewhere, for a session that wants a working folder of
+its own. Memory stays the store — the directory is not watched and nothing is written
+back implicitly, so export and import are the only doors.
+
+One export is one card. A collection of cards is a deck: order, transitions and
+narration belong to whatever reads the directory, not to this node.
+
 Not a singleton: run several instances — each binds its own ephemeral port by
 default, or pass `--port N` to pin each to a distinct fixed port. Two instances
 on the same fixed port will not start (the bind fails).
