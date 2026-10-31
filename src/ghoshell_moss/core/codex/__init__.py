@@ -19,6 +19,11 @@ from ._features import (
     init_features,
     RESERVED_STATUSES,
     QUIET_STATUSES,
+    ReservedStatus,
+    WorkstreamMeta,
+    StageMeta,
+    RegressionMeta,
+    ParseError,
 )
 
 __all__ = [
@@ -40,6 +45,11 @@ __all__ = [
     'init_features',
     'RESERVED_STATUSES',
     'QUIET_STATUSES',
+    'ReservedStatus',
+    'WorkstreamMeta',
+    'StageMeta',
+    'RegressionMeta',
+    'ParseError',
 ]
 
 

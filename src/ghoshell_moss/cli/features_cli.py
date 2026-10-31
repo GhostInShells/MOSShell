@@ -18,6 +18,8 @@ from ghoshell_moss.core.codex._features import (
     list_stages,
     list_regressions,
     RESERVED_STATUSES,
+    WorkstreamMeta,
+    ParseError,
     _find_stubs_dir,
 )
 from ghoshell_moss.cli.utils import (
@@ -60,7 +62,7 @@ def _status_label(stat: str) -> str:
     return stat
 
 
-def _status_counts(features: list[dict]) -> dict[str, int]:
+def _status_counts(features: list[WorkstreamMeta]) -> dict[str, int]:
     """Status distribution — reserved statuses keyed individually, free-form aggregated under 'others'."""
     counts: dict[str, int] = {}
     others = 0
@@ -83,7 +85,7 @@ def _ordered_statuses(*count_sets: dict[str, int]) -> list[str]:
     return [s for s in _STATUS_ORDER if s in seen] + sorted(seen - set(_STATUS_ORDER))
 
 
-def _print_parse_errors(parse_errors: list[dict]) -> None:
+def _print_parse_errors(parse_errors: list[ParseError]) -> None:
     """Print FEATURE.md frontmatter parse errors — called at end of list/status output."""
     echo("")
     print_warning(f"Parse errors — {len(parse_errors)} FEATURE.md file(s) have broken YAML frontmatter "
@@ -563,7 +565,7 @@ def check_cmd(
         return
 
     # Group by status
-    grouped: dict[str, list[dict]] = {}
+    grouped: dict[str, list[WorkstreamMeta]] = {}
     for f in unfinished:
         stat = f.get("status", "?")
         grouped.setdefault(stat, []).append(f)
@@ -659,7 +661,9 @@ def _features_root_from_fm(fm_path: Path) -> Optional[Path]:
     return None
 
 
-def _resolve_review_feature(feature_part: str, features_dir: Optional[Path]) -> tuple[Path, dict, Path]:
+def _resolve_review_feature(
+    feature_part: str, features_dir: Optional[Path],
+) -> tuple[Path, WorkstreamMeta, Path]:
     """Resolve a feature name or path to (features_dir, meta, fm_path)."""
     fd = _resolve_dir(features_dir)
 
@@ -690,7 +694,7 @@ def _resolve_review_feature(feature_part: str, features_dir: Optional[Path]) -> 
     return fd, meta, fm_path
 
 
-def _feature_basic_info(meta: dict, fm_path: Path) -> list[str]:
+def _feature_basic_info(meta: WorkstreamMeta, fm_path: Path) -> list[str]:
     """Feature basic info — frontmatter only, not the FEATURE.md body (zero-context)."""
     return [
         f"- Name:       {meta.get('_feature_dir', '?')}",

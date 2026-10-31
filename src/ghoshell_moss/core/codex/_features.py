@@ -9,7 +9,63 @@ Path encodes creation date. No archive/move — status changes are frontmatter-o
 """
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Literal, Optional, TypedDict, cast, get_args
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+ReservedStatus = Literal["draft", "in-progress", "completed", "dropped", "parked"]
+
+# Frontmatter values are raw as parsed from YAML: an ISO date arrives as `date`,
+# an empty value as `None`, and any field may be absent entirely.
+DateLike = date | str
+
+
+class WorkstreamMeta(TypedDict, total=False):
+    """FEATURE.md frontmatter, plus the source keys injected by the query layer."""
+    title: str | None
+    status: str  # open vocabulary; reserved values in ReservedStatus
+    status_note: str | None
+    priority: str | None  # P0 | P1 | P2 | P3 by convention
+    created: DateLike | None
+    updated: DateLike | None
+    depends: list[str] | None
+    milestone: str | None
+    description: str | None
+    _feature_dir: str
+    _feature_path: str
+
+
+class StageMeta(TypedDict, total=False):
+    """STAGE.md frontmatter, plus the source key injected by the query layer."""
+    status: str  # planning | active | completed | cancelled
+    period: str | None
+    delivery: str | None
+    _stage_dir: str
+
+
+class RegressionMeta(TypedDict, total=False):
+    """REGRESSION.md frontmatter, plus the source key injected by the query layer."""
+    title: str | None
+    version: int | str
+    status: str
+    priority: str | None
+    created: DateLike | None
+    updated: DateLike | None
+    scope: str | None
+    depends: list[str] | None
+    description: str | None
+    _regression_dir: str
+
+
+class ParseError(TypedDict):
+    """A FEATURE.md whose frontmatter failed to parse, reported instead of listed."""
+    feature_dir: str
+    path: str
+    error: str
+    hint: str
 
 
 # ---------------------------------------------------------------------------
@@ -17,7 +73,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 # Open vocabulary: free-form statuses are allowed; these reserved values are the stability contract.
-RESERVED_STATUSES = {"draft", "in-progress", "completed", "dropped", "parked"}
+RESERVED_STATUSES: frozenset[ReservedStatus] = frozenset(get_args(ReservedStatus))
 
 # A parked workstream is a *formed proposal deliberately set aside* — a technical plan kept on
 # file for reference, carrying no attention debt. Quiet statuses are dropped from the listing
@@ -31,7 +87,7 @@ QUIET_STATUSES = {"parked"}
 DEFAULT_RECENT_DAYS = 60
 
 
-def parse_frontmatter(filepath: str | Path) -> Optional[dict]:
+def parse_frontmatter(filepath: str | Path) -> Optional[dict[str, Any]]:
     """Parse YAML frontmatter from a FEATURE.md file.  Returns None if missing or unparseable.
 
     For error reporting, use :func:`parse_frontmatter_with_error` which returns
@@ -45,9 +101,11 @@ def parse_frontmatter(filepath: str | Path) -> Optional[dict]:
         return None
 
 
-def parse_frontmatter_with_error(filepath: str | Path) -> tuple[Optional[dict], Optional[dict]]:
-    """Parse YAML frontmatter, returning (meta, error) — error is a dict with
-    ``path``, ``error``, and ``hint`` keys on parse failure.
+def parse_frontmatter_with_error(
+    filepath: str | Path,
+) -> tuple[Optional[dict[str, Any]], Optional[ParseError]]:
+    """Parse YAML frontmatter, returning (meta, error) — error is a
+    :class:`ParseError` describing the broken file on parse failure.
     """
     try:
         import frontmatter
@@ -58,13 +116,15 @@ def parse_frontmatter_with_error(filepath: str | Path) -> tuple[Optional[dict], 
         return meta, None
     except Exception as exc:
         fpath = Path(filepath)
-        return None, {
-            "feature_dir": fpath.parent.name,
-            "path": str(fpath),
-            "error": str(exc),
-            "hint": "YAML frontmatter parse error — check for unquoted colons, "
-                    "bad indentation, or invalid YAML syntax in the frontmatter block.",
-        }
+        return None, ParseError(
+            feature_dir=fpath.parent.name,
+            path=str(fpath),
+            error=str(exc),
+            hint=(
+                "YAML frontmatter parse error — check for unquoted colons, "
+                "bad indentation, or invalid YAML syntax in the frontmatter block."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +140,7 @@ def _find_feature_dir(features_dir: Path, feature_id: str) -> Optional[Path]:
     return None
 
 
-def _coerce_date(value) -> Optional[date]:
+def _coerce_date(value: Any) -> Optional[date]:
     """Normalize a frontmatter date value (date, datetime, or ISO string) to a date."""
     if isinstance(value, datetime):
         return value.date()
@@ -94,7 +154,7 @@ def _coerce_date(value) -> Optional[date]:
     return None
 
 
-def _recent_date(meta: dict) -> Optional[date]:
+def _recent_date(meta: WorkstreamMeta) -> Optional[date]:
     """Effective activity date for a feature: ``updated``, falling back to ``created``.
 
     Returns None when neither field parses as a date; callers then include the
@@ -107,6 +167,35 @@ def _recent_date(meta: dict) -> Optional[date]:
     return None
 
 
+def _as_workstream_meta(
+    raw: dict[str, Any], feature_dir: str, feature_path: str,
+) -> WorkstreamMeta:
+    """Narrow parsed YAML to :class:`WorkstreamMeta` and attach its source location.
+
+    This is trust, not validation: FEATURE.md is hand-authored, so its field
+    types are a convention the file is expected to follow, not an enforced
+    contract. Everything below this line can rely on the declared shape.
+    """
+    meta = cast(WorkstreamMeta, raw)
+    meta["_feature_dir"] = feature_dir
+    meta["_feature_path"] = feature_path
+    return meta
+
+
+def _as_stage_meta(raw: dict[str, Any], stage_dir: str) -> StageMeta:
+    """Narrow parsed YAML to :class:`StageMeta`; trust, not validation."""
+    meta = cast(StageMeta, raw)
+    meta["_stage_dir"] = stage_dir
+    return meta
+
+
+def _as_regression_meta(raw: dict[str, Any], regression_dir: str) -> RegressionMeta:
+    """Narrow parsed YAML to :class:`RegressionMeta`; trust, not validation."""
+    meta = cast(RegressionMeta, raw)
+    meta["_regression_dir"] = regression_dir
+    return meta
+
+
 # ---------------------------------------------------------------------------
 # Query
 # ---------------------------------------------------------------------------
@@ -115,7 +204,7 @@ def list_features(
     features_dir: str | Path,
     status_filter: Optional[str] = None,
     all_months: bool = False,
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[WorkstreamMeta], list[ParseError]]:
     """
     List features from workstreams/ directory.
 
@@ -142,22 +231,23 @@ def list_features(
     # filter by each feature's own activity date instead (O(n), fine at this scale).
     feat_dirs = [fm_path.parent for fm_path in sorted(workstreams_dir.glob("**/FEATURE.md"))]
 
-    results = []
-    parse_errors = []
+    results: list[WorkstreamMeta] = []
+    parse_errors: list[ParseError] = []
     for feat_dir in feat_dirs:
         fm_path = feat_dir / "FEATURE.md"
-        meta, err = parse_frontmatter_with_error(fm_path)
+        raw, err = parse_frontmatter_with_error(fm_path)
         if err is not None:
             parse_errors.append(err)
             continue
-        if meta is None:
+        if raw is None:
             continue
+        meta = _as_workstream_meta(
+            raw, feat_dir.name, str(feat_dir.relative_to(workstreams_dir)),
+        )
         if cutoff is not None:
             recent = _recent_date(meta)
             if recent is not None and recent < cutoff:
                 continue
-        meta["_feature_dir"] = feat_dir.name
-        meta["_feature_path"] = str(feat_dir.relative_to(workstreams_dir))
         status = meta.get("status")
         if status_filter:
             if status != status_filter:
@@ -166,7 +256,7 @@ def list_features(
             continue
         results.append(meta)
 
-    def _sort_key(m: dict) -> str:
+    def _sort_key(m: WorkstreamMeta) -> str:
         v = m.get("updated", "")
         if isinstance(v, date):
             v = v.isoformat()
@@ -176,7 +266,9 @@ def list_features(
     return results, parse_errors
 
 
-def get_feature(features_dir: str | Path, feature_id: str) -> tuple[Optional[dict], Optional[dict]]:
+def get_feature(
+    features_dir: str | Path, feature_id: str,
+) -> tuple[Optional[WorkstreamMeta], Optional[ParseError]]:
     """Get a single feature's frontmatter by id. Searches workstreams/ tree via glob.
 
     Returns (meta, parse_error). If the feature dir is not found, returns (None, None).
@@ -187,44 +279,44 @@ def get_feature(features_dir: str | Path, feature_id: str) -> tuple[Optional[dic
     if feat_dir is None:
         return None, None
     fm_path = feat_dir / "FEATURE.md"
-    meta, err = parse_frontmatter_with_error(fm_path)
+    raw, err = parse_frontmatter_with_error(fm_path)
     if err is not None:
         return None, err
-    if meta is not None:
-        meta["_feature_dir"] = feature_id
-        meta["_feature_path"] = str(feat_dir.relative_to(workstreams_dir))
+    if raw is None:
+        return None, None
+    meta = _as_workstream_meta(
+        raw, feature_id, str(feat_dir.relative_to(workstreams_dir)),
+    )
     return meta, None
 
 
-def list_stages(features_dir: str | Path) -> list[dict]:
+def list_stages(features_dir: str | Path) -> list[StageMeta]:
     """List stages from stages/*/STAGE.md, reading each STAGE.md frontmatter."""
     stages_dir = Path(features_dir) / "stages"
     if not stages_dir.is_dir():
         return []
-    results = []
+    results: list[StageMeta] = []
     for st_path in sorted(stages_dir.glob("*/STAGE.md")):
         if st_path.parent.name == "_template":
             continue
-        meta, _ = parse_frontmatter_with_error(st_path)
-        if meta is None:
+        raw, _ = parse_frontmatter_with_error(st_path)
+        if raw is None:
             continue
-        meta["_stage_dir"] = st_path.parent.name
-        results.append(meta)
+        results.append(_as_stage_meta(raw, st_path.parent.name))
     return results
 
 
-def list_regressions(features_dir: str | Path) -> list[dict]:
+def list_regressions(features_dir: str | Path) -> list[RegressionMeta]:
     """List regression sets from regressions/*/REGRESSION.md, reading frontmatter."""
     regressions_dir = Path(features_dir) / "regressions"
     if not regressions_dir.is_dir():
         return []
-    results = []
+    results: list[RegressionMeta] = []
     for r_path in sorted(regressions_dir.glob("*/REGRESSION.md")):
-        meta, _ = parse_frontmatter_with_error(r_path)
-        if meta is None:
+        raw, _ = parse_frontmatter_with_error(r_path)
+        if raw is None:
             continue
-        meta["_regression_dir"] = r_path.parent.name
-        results.append(meta)
+        results.append(_as_regression_meta(raw, r_path.parent.name))
     return results
 
 
