@@ -34,7 +34,7 @@ depends: []
 
 
 def test_recent_window_is_rolling_60_days_by_activity(tmp_path):
-    from ghoshell_moss.core.codex._features import list_features
+    from ghoshell_moss.core.codex.features import list_features
 
     today = date.today()
     fd = tmp_path / "features"
@@ -62,7 +62,7 @@ def test_parked_is_quiet_unless_named(tmp_path):
     and surfaces only when status_filter names it. This is what keeps parked
     proposals out of the default list and out of the pre-commit `check`.
     """
-    from ghoshell_moss.core.codex._features import list_features
+    from ghoshell_moss.core.codex.features import list_features
 
     today = date.today()
     fd = tmp_path / "features"

@@ -9,7 +9,7 @@ from typing import Optional
 
 import typer
 
-from ghoshell_moss.core.codex._features import (
+from ghoshell_moss.core.codex.features import (
     list_features,
     get_feature,
     create_feature,
@@ -20,7 +20,7 @@ from ghoshell_moss.core.codex._features import (
     RESERVED_STATUSES,
     WorkstreamMeta,
     ParseError,
-    _find_stubs_dir,
+    find_stubs_dir,
 )
 from ghoshell_moss.cli.utils import (
     print_success, print_error, print_info, print_warning,
@@ -134,7 +134,7 @@ def specification(
     readme = fd / "README.md"
 
     if not readme.is_file():
-        stubs = _find_stubs_dir()
+        stubs = find_stubs_dir()
         if stubs and (bundled := stubs / "README.md").is_file():
             echo(bundled.read_text(encoding="utf-8"))
             echo(f"\nSpecification path: {bundled.resolve()}")

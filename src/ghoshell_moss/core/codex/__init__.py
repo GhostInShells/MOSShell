@@ -10,7 +10,7 @@ from .discover import (
     scan_module, from_module, scan_package,
     is_subclass_of, is_class, is_routine, is_native_to,
 )
-from ._features import (
+from .features import (
     parse_frontmatter,
     list_features,
     get_feature,

@@ -449,19 +449,19 @@ def update_feature_status(
 # Template resolution
 # ---------------------------------------------------------------------------
 
-# _features.py lives at ghoshell_moss/core/codex/_features.py
+# This module lives at ghoshell_moss/core/codex/features.py.
 # Use package root as anchor — more robust than counting from a deep file.
 _PKG_ROOT = Path(__file__).resolve().parents[2]  # ghoshell_moss/
 
 
-def _find_stubs_dir() -> Optional[Path]:
+def find_stubs_dir() -> Optional[Path]:
     """Find the bundled feature stubs (scaffolding files).
 
     Priority:
     1. Packaged sibling dir — always available (source or installed).
     2. Source checkout .ai_partners/features/ — additional fallback for MOSShell dev.
     """
-    # 1. Packaged alongside _features.py — most reliable
+    # 1. Packaged alongside this module — most reliable
     p = Path(__file__).resolve().parent / "_features_stubs"
     if (p / "README.md").is_file():
         return p
@@ -489,7 +489,7 @@ def init_features(features_dir: str | Path | None = None) -> Path:
     features_dir = Path(features_dir) if features_dir is not None else Path.cwd() / "features"
     features_dir.mkdir(parents=True, exist_ok=True)
 
-    stubs_dir = _find_stubs_dir()
+    stubs_dir = find_stubs_dir()
     if stubs_dir is not None:
         # Full overwrite: copy every stub file/dir into the target.
         for item in stubs_dir.iterdir():
