@@ -11,9 +11,11 @@ rendered by as_contents.
 
 from pathlib import Path
 
+import pytest
+
 from ghoshell_moss.llms.pydantic_ai_adapter.conversion import message_to_parts, messages_to_parts
 from ghoshell_moss.message import Message
-from ghoshell_moss.message.prompt import message_from_file, message_from_prompt
+from ghoshell_moss.message.prompt import Prompt, message_from_file, message_from_prompt
 
 
 def _tree(tmp_path: Path) -> Path:
@@ -164,6 +166,63 @@ def test_message_from_file_meta_type_matches_sniffed_image(tmp_path: Path):
     msg = message_from_file("shot.txt", base_dir=tmp_path, expose_file_meta=True)
     assert msg is not None
     assert msg.meta.attributes["type"] == "image/jpeg"
+
+
+# ── Prompt handle ──────────────────────────────────────────────────────
+
+
+def test_prompt_handle_is_lazy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Building the handle must not read files — a ref may not exist yet."""
+    monkeypatch.chdir(tmp_path)
+    prompt = Prompt("read @late.md")
+    (tmp_path / "late.md").write_text("born after\n", encoding="utf-8")
+    assert _text(prompt.messages()) == "read born after\n"
+
+
+def test_prompt_handle_binds_cwd_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("here\n", encoding="utf-8")
+    assert _text(Prompt("@a.txt").messages()) == "here\n"
+
+
+def test_prompt_handle_relative_base_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.chdir(tmp_path)
+    sub = tmp_path / "docs"
+    sub.mkdir()
+    (sub / "a.txt").write_text("sub\n", encoding="utf-8")
+    assert _text(Prompt("@a.txt", "docs").messages()) == "sub\n"
+
+
+def test_prompt_handle_rereads_files_each_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "v.txt"
+    f.write_text("one\n", encoding="utf-8")
+    prompt = Prompt("@v.txt")
+    assert _text(prompt.messages()) == "one\n"
+    f.write_text("two\n", encoding="utf-8")
+    assert _text(prompt.messages()) == "two\n"
+
+
+def test_prompt_handle_expose_file_meta(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.md").write_text("body\n", encoding="utf-8")
+    blocks = Prompt("@notes.md", expose_file_meta=True).messages()
+    assert len(blocks) == 1
+    assert blocks[0].meta.tag == "file"
+    assert blocks[0].meta.attributes["path"] == "notes.md"
+
+
+def test_prompt_handle_rejects_base_dir_outside_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The handle's directory scope is confined to cwd, `..` included."""
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    with pytest.raises(PermissionError):
+        Prompt("x", "..")
+    with pytest.raises(PermissionError):
+        Prompt("x", tmp_path / "elsewhere")
+    # a nested dir under cwd is fine
+    assert Prompt("x", "nested").messages()[0].contents[0]["text"] == "x"
 
 
 # ── conversion (moss Message → pydantic-ai parts) ──────────────────────

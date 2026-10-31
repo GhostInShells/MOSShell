@@ -15,6 +15,9 @@ the fallback is "if @ doesn't hit a file, keep it as-is". A bare reference
 strips trailing sentence punctuation before resolution, so ``@app.py.``
 resolves ``app.py``; a quoted path is taken verbatim. Thinking does NOT go
 through @ — it is a separate call parameter, injected as history.
+
+``Prompt`` binds text + ``base_dir`` into a reusable handle; it resolves
+nothing at construction, so ``Prompt(...).messages()`` picks up file changes.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from pathlib import Path
 from ghoshell_moss.message import Base64Image, Content, Message, Text
 from ghoshell_moss.message.contents.images import sniff_media_type
 
-__all__ = ["message_from_prompt", "message_from_file"]
+__all__ = ["Prompt", "message_from_file", "message_from_prompt"]
 
 # @ followed by a quoted path or a bare non-whitespace run. The `@` must not be
 # preceded by a non-whitespace char, so ``hello@world`` stays plain text.
@@ -41,6 +44,39 @@ def _read_header(path: Path) -> bytes:
     """读文件头字节 — 判类型用字节, 不信任扩展名; 只读少量字节, 不把大文件吞进内存."""
     with open(path, "rb") as f:
         return f.read(_HEADER_BYTES)
+
+
+class Prompt:
+    """A reusable, directory-bound prompt — a handle, parsed on demand.
+
+    Construction binds ``base_dir`` to cwd once and confines it there; it does not
+    read any file. ``messages()`` resolves the inline @-references afresh on every
+    call, so the files it points at may appear or change after the prompt is built.
+    """
+
+    __slots__ = ("text", "base_dir", "expose_file_meta")
+
+    def __init__(
+            self,
+            text: str,
+            base_dir: Path | str | None = None,
+            *,
+            expose_file_meta: bool = False,
+    ):
+        root = Path.cwd().resolve()
+        base = (root / base_dir if base_dir is not None else root).resolve()
+        try:
+            base.relative_to(root)
+        except ValueError:
+            raise PermissionError(f"prompt base_dir {base} is outside cwd {root}") from None
+        self.text: str = text
+        self.base_dir: Path = base
+        self.expose_file_meta: bool = expose_file_meta
+
+    def messages(self) -> list[Message]:
+        return message_from_prompt(
+            self.text, base_dir=self.base_dir, expose_file_meta=self.expose_file_meta,
+        )
 
 
 def message_from_prompt(
