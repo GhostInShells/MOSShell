@@ -27,7 +27,6 @@ from ghoshell_moss.core.blueprint.service import (
     Handle,
     Sample,
     ServiceClient,
-    ServiceDeclaration,
     ServiceMeta,
     ServiceOperator,
 )
@@ -75,7 +74,7 @@ class _CallbackHandle(Handle):
         self._close_fn()
 
 
-class WebViewClient(ServiceClient):
+class WebViewClient(ServiceClient[WebViewDeclaration]):
     """Tracks the live web views and their conditions, in discovery order of events."""
 
     def __init__(self, operator_factory: Callable[[], Awaitable[ServiceOperator]]):
@@ -100,7 +99,7 @@ class WebViewClient(ServiceClient):
 
         return cls(_operator)
 
-    async def get_connected(self) -> list[ServiceDeclaration]:
+    async def get_connected(self) -> list[WebViewDeclaration]:
         """ABC accessor.  Consumers want ``items()`` — that is where addresses live."""
         return [item.declaration for item in self.items()]
 

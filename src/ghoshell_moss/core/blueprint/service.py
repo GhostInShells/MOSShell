@@ -13,7 +13,7 @@ The operator itself does NOT encapsulate the business server or client
 — it provides the wire layer.
 """
 
-from typing import Callable, Awaitable, Any, TypedDict, Optional, TYPE_CHECKING
+from typing import Callable, Awaitable, Any, TypedDict, Optional, TYPE_CHECKING, TypeVar, Generic
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
@@ -288,11 +288,17 @@ class ServiceServer(ABC):
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None: ...
 
 
-class ServiceClient(ABC):
-    """lifecycle interface of a service client with operator"""
+SERVICE = TypeVar('SERVICE', bound=ServiceDeclaration)
+
+
+class ServiceClient(Generic[SERVICE], ABC):
+    """lifecycle interface of a service client with operator
+
+    ``SERVICE`` is the declaration type this client tracks; ``get_connected`` returns them.
+    """
 
     @abstractmethod
-    async def get_connected(self) -> list[ServiceDeclaration]:
+    async def get_connected(self) -> list[SERVICE]:
         """ query the alive services"""
         ...
 

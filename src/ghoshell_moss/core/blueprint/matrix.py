@@ -12,7 +12,7 @@ philosophical substance. Matrix is not mesh, nor a mesh client — mesh is only 
 sources it projects from.
 """
 import dataclasses
-from typing import Literal, Callable, Awaitable, Any, Protocol, TypeAlias, Type, TYPE_CHECKING
+from typing import Literal, Callable, Awaitable, Any, Protocol, TypeAlias, Type, TypeVar, TYPE_CHECKING
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -38,6 +38,8 @@ Facade = ABC
 """Facade marks a "consumer surface": you hold it and call it, you do not inherit it."""
 
 __all__ = ['Matrix', 'MatrixLifecycleObject', 'RuntimeScopeKey', 'CellHandle']
+
+CLIENT = TypeVar('CLIENT', bound=ServiceClient[Any])
 
 
 class MatrixLifecycleObject(Protocol):
@@ -469,7 +471,7 @@ class Matrix(Facade):
         await self.add_lifecycle_object(server)
         return server
 
-    async def connect_service(self, client_cls: Type[ServiceClient]) -> ServiceClient:
+    async def connect_service(self, client_cls: Type[CLIENT]) -> CLIENT:
         """Start a Service Client through its Facade or Adapter and register it with the Matrix lifecycle. """
         client = client_cls.new(self)
         await self.add_lifecycle_object(client)
