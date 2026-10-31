@@ -12,14 +12,23 @@ import typer
 from ghoshell_moss.core.codex.features import (
     list_features,
     get_feature,
+    locate_feature,
+    count_statuses,
+    is_terminal,
+    discover_perspectives,
+    resolve_features_dir,
     create_feature,
     init_features,
     update_feature_status,
     list_stages,
     list_regressions,
     RESERVED_STATUSES,
+    RESERVED_STATUS_ORDER,
     WorkstreamMeta,
     ParseError,
+    ISSUES_CONVENTION,
+    README_FILENAME,
+    SURFACE_FILENAME,
     find_stubs_dir,
 )
 from ghoshell_moss.cli.utils import (
@@ -43,9 +52,6 @@ _DROPPED_HINT = "Record why in -m 'reason' for future reference. The workstream 
 _PARKED_HINT = ("Record why in -m 'reason' and what would reopen it. Parked workstreams are hidden "
                 "from 'list' and 'check'; retrieve with: moss features list --status parked")
 
-# Canonical display order for status stats; free-form statuses aggregate under 'others'.
-_STATUS_ORDER = ["draft", "in-progress", "completed", "dropped", "parked"]
-
 
 def _status_label(stat: str) -> str:
     """Rich-markup status label, matching the list table coloring."""
@@ -62,27 +68,12 @@ def _status_label(stat: str) -> str:
     return stat
 
 
-def _status_counts(features: list[WorkstreamMeta]) -> dict[str, int]:
-    """Status distribution — reserved statuses keyed individually, free-form aggregated under 'others'."""
-    counts: dict[str, int] = {}
-    others = 0
-    for fm in features:
-        st = fm.get("status", "?")
-        if st in RESERVED_STATUSES:
-            counts[st] = counts.get(st, 0) + 1
-        else:
-            others += 1
-    if others:
-        counts["others"] = others
-    return counts
-
-
 def _ordered_statuses(*count_sets: dict[str, int]) -> list[str]:
     """Union of statuses across count sets, reserved first then free-form alphabetically."""
     seen: set[str] = set()
     for counts in count_sets:
         seen.update(counts)
-    return [s for s in _STATUS_ORDER if s in seen] + sorted(seen - set(_STATUS_ORDER))
+    return [s for s in RESERVED_STATUS_ORDER if s in seen] + sorted(seen - set(RESERVED_STATUS_ORDER))
 
 
 def _print_parse_errors(parse_errors: list[ParseError]) -> None:
@@ -99,18 +90,6 @@ def _print_parse_errors(parse_errors: list[ParseError]) -> None:
         echo("")
     echo("  Fix: open the file and correct the YAML frontmatter between the --- markers.")
     echo("")
-
-
-def _resolve_dir(features_dir: Optional[Path]) -> Path:
-    """Resolve the features directory: explicit `--dir`, else `$CWD/features`,
-    else `$CWD/.ai_partners/features` (MOSShell legacy)."""
-    if features_dir is not None:
-        return features_dir
-    cwd = Path.cwd()
-    generic = cwd / "features"
-    if generic.is_dir():
-        return generic
-    return cwd / ".ai_partners" / "features"
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +109,12 @@ def specification(
     Reads from the local features/ copy first.
     Falls back to the bundled canonical copy shipped with the package.
     """
-    fd = _resolve_dir(features_dir)
-    readme = fd / "README.md"
+    fd = resolve_features_dir(features_dir)
+    readme = fd / README_FILENAME
 
     if not readme.is_file():
         stubs = find_stubs_dir()
-        if stubs and (bundled := stubs / "README.md").is_file():
+        if stubs and (bundled := stubs / README_FILENAME).is_file():
             echo(bundled.read_text(encoding="utf-8"))
             echo(f"\nSpecification path: {bundled.resolve()}")
             print_info("Shown from bundled copy. Run 'moss features init' to create a local one.")
@@ -151,12 +130,6 @@ def specification(
 # ---------------------------------------------------------------------------
 # issues
 # ---------------------------------------------------------------------------
-
-#: Where a project states how it governs issues. Read-only by design: the command
-#: exists so the convention is discoverable from the features surface, not so the
-#: framework can own issue tracking — issues live wherever the project keeps them.
-ISSUES_CONVENTION = Path("issues") / "SKILL.md"
-
 
 @features_app.command("issues", short_help="Read this project's issue convention (issues/SKILL.md).")
 def issues_cmd(
@@ -177,7 +150,7 @@ def issues_cmd(
     A project without the file is not an error: it simply has not stated a
     convention yet, and the message says how to write one.
     """
-    fd = _resolve_dir(features_dir)
+    fd = resolve_features_dir(features_dir)
     path = fd / ISSUES_CONVENTION
 
     if not path.is_file():
@@ -226,7 +199,7 @@ def list_cmd(
     time window. Parked workstreams stay hidden either way — ask for them
     explicitly with --status parked.
     """
-    fd = _resolve_dir(features_dir)
+    fd = resolve_features_dir(features_dir)
     features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
     # All-time (status-filtered) view — feeds the stats table and the empty-window hint.
     total_features, _ = list_features(str(fd), status_filter=status, all_months=True)
@@ -268,8 +241,8 @@ def list_cmd(
     )
 
     if features or total_features:
-        listed_counts = _status_counts(features)
-        total_counts = _status_counts(total_features)
+        listed_counts = count_statuses(features)
+        total_counts = count_statuses(total_features)
         statuses = _ordered_statuses(listed_counts, total_counts)
         stats_headers = [""] + statuses + ["Total"]
         if listed_counts == total_counts:
@@ -316,7 +289,7 @@ def status_cmd(
     With a name: shows full detail panel for that workstream.
     Without a name: shows a compact summary of all workstreams.
     """
-    fd = _resolve_dir(features_dir)
+    fd = resolve_features_dir(features_dir)
 
     if feature_name:
         meta, parse_err = get_feature(str(fd), feature_name)
@@ -426,11 +399,10 @@ def create_cmd(
     """
     Create a new development workstream from the TEMPLATE.md.
     """
-    fd = _resolve_dir(features_dir)
-    template = fd / "TEMPLATE.md"
+    fd = resolve_features_dir(features_dir)
 
     try:
-        fm_path = create_feature(str(fd), name, template_path=template if template.is_file() else None)
+        fm_path = create_feature(str(fd), name)
         print_success(f"Workstream '{name}' created: {fm_path}")
         print_info("Read the convention: moss features specification")
         print_info(f"Next: edit {fm_path} to record motivation and key decisions.")
@@ -464,7 +436,7 @@ def set_status_cmd(
 
     Faster than manually editing FEATURE.md — one shell call vs Read+Edit.
     """
-    fd = _resolve_dir(features_dir)
+    fd = resolve_features_dir(features_dir)
 
     if status not in RESERVED_STATUSES:
         print_warning(f"'{status}' is not a reserved status ({', '.join(sorted(RESERVED_STATUSES))}). "
@@ -531,9 +503,6 @@ def init_cmd(
 # check
 # ---------------------------------------------------------------------------
 
-_TERMINAL_STATUSES = {"completed", "dropped"}
-
-
 @features_app.command("check", short_help="List unfinished workstreams — pre-commit reminder.")
 def check_cmd(
     features_dir: Optional[Path] = typer.Option(
@@ -554,13 +523,13 @@ def check_cmd(
 
     before committing.
     """
-    fd = _resolve_dir(features_dir)
+    fd = resolve_features_dir(features_dir)
     features, parse_errors = list_features(str(fd))
 
     if parse_errors:
         _print_parse_errors(parse_errors)
 
-    unfinished = [f for f in features if f.get("status") not in _TERMINAL_STATUSES]
+    unfinished = [f for f in features if not is_terminal(f.get("status"))]
     if not unfinished:
         return
 
@@ -592,107 +561,6 @@ def check_cmd(
 # ---------------------------------------------------------------------------
 # review
 # ---------------------------------------------------------------------------
-
-def _load_review_doc(path: Path) -> Optional[tuple[dict, str]]:
-    """Load a review doc's (metadata, content). Returns None if unparseable."""
-    try:
-        import frontmatter
-        post = frontmatter.load(str(path))
-        return dict(post.metadata) if post.metadata else {}, post.content
-    except Exception:
-        return None
-
-
-def _discover_perspectives(
-    global_review_dir: Path, per_feature_review_dir: Path,
-) -> tuple[list[dict], list[Path]]:
-    """Discover review perspective docs under the two candidate dirs.
-
-    ``per_feature_review_dir`` overrides ``global_review_dir`` by same perspective
-    name. Returns ``(perspectives, broken)`` — perspectives is a list of
-    ``{name, when, description, content, path}``; broken is the list of review docs
-    whose frontmatter failed to parse or is missing ``when``/``description``
-    (surfaced, not silently skipped).
-    """
-    perspectives: dict[str, dict] = {}
-    broken: list[Path] = []
-
-    def _merge(review_dir: Path) -> None:
-        if not review_dir.is_dir():
-            return
-        for doc in sorted(review_dir.glob("*.md")):
-            loaded = _load_review_doc(doc)
-            if loaded is None:
-                broken.append(doc)
-                continue
-            meta, content = loaded
-            if not meta.get("when") or not meta.get("description"):
-                broken.append(doc)
-                continue
-            name = doc.stem
-            perspectives[name] = {
-                "name": name,
-                "when": meta.get("when", ""),
-                "description": meta.get("description", ""),
-                "content": content,
-                "path": doc,
-            }
-
-    _merge(global_review_dir)        # low precedence
-    _merge(per_feature_review_dir)   # high precedence (same-name override)
-    return sorted(perspectives.values(), key=lambda p: p["name"]), broken
-
-
-def _resolve_to_fm_path(raw: str) -> Optional[Path]:
-    """Resolve a feature dir or FEATURE.md file path to the FEATURE.md file."""
-    p = Path(raw).expanduser()
-    if p.is_file() and p.name == "FEATURE.md":
-        return p.resolve()
-    if p.is_dir() and (p / "FEATURE.md").is_file():
-        return (p / "FEATURE.md").resolve()
-    return None
-
-
-def _features_root_from_fm(fm_path: Path) -> Optional[Path]:
-    """Walk up from a FEATURE.md to the .ai_partners/features/ root."""
-    for parent in fm_path.parents:
-        if parent.name == "features" and (parent / "workstreams").is_dir():
-            return parent
-    return None
-
-
-def _resolve_review_feature(
-    feature_part: str, features_dir: Optional[Path],
-) -> tuple[Path, WorkstreamMeta, Path]:
-    """Resolve a feature name or path to (features_dir, meta, fm_path)."""
-    fd = _resolve_dir(features_dir)
-
-    # Name form — align with `moss features status/set-status`.
-    meta, err = get_feature(str(fd), feature_part)
-    if err is not None:
-        print_error(f"Workstream '{feature_part}' exists but FEATURE.md has a YAML parse error:")
-        _print_parse_errors([err])
-        raise typer.Exit(code=1)
-    if meta is None:
-        # Path form — a FEATURE.md or feature dir path.
-        fm_path = _resolve_to_fm_path(feature_part)
-        if fm_path is None:
-            print_error(f"Workstream '{feature_part}' not found.")
-            raise typer.Exit(code=1)
-        found_fd = _features_root_from_fm(fm_path)
-        if found_fd is None:
-            print_error(f"Could not locate .ai_partners/features/ for '{feature_part}'.")
-            raise typer.Exit(code=1)
-        fd = found_fd
-        meta, err = get_feature(str(fd), fm_path.parent.name)
-        if err is not None or meta is None:
-            print_error(f"Workstream '{feature_part}' not found.")
-            raise typer.Exit(code=1)
-    else:
-        fm_path = fd / "workstreams" / meta["_feature_path"] / "FEATURE.md"
-
-    return fd, meta, fm_path
-
 
 def _feature_basic_info(meta: WorkstreamMeta, fm_path: Path) -> list[str]:
     """Feature basic info — frontmatter only, not the FEATURE.md body (zero-context)."""
@@ -734,12 +602,18 @@ def review_cmd(
     else:
         feature_part, perspective = feature, None
 
-    fd, meta, fm_path = _resolve_review_feature(feature_part, features_dir)
-    feature_path = meta["_feature_path"]
-    perspectives, broken = _discover_perspectives(
-        fd / "review",
-        fd / "workstreams" / feature_path / "review",
-    )
+    source, err = locate_feature(feature_part, features_dir)
+    if err is not None:
+        print_error(f"Workstream '{feature_part}' exists but FEATURE.md has a YAML parse error:")
+        _print_parse_errors([err])
+        raise typer.Exit(code=1)
+    if source is None:
+        print_error(f"Workstream '{feature_part}' not found.")
+        print_info("Expected a workstream name, a feature directory, or a FEATURE.md path.")
+        raise typer.Exit(code=1)
+
+    meta, fm_path = source["meta"], source["fm_path"]
+    perspectives, broken = discover_perspectives(source["features_dir"], meta["_feature_path"])
 
     if perspective is None:
         lines = [
@@ -822,7 +696,7 @@ def stages_cmd(
     ),
 ):
     """List stages from stages/*/STAGE.md with status, period, and delivery."""
-    fd = _resolve_dir(features_dir)
+    fd = resolve_features_dir(features_dir)
     stages = list_stages(str(fd))
     if not stages:
         print_info("No stages found under stages/.")
@@ -852,7 +726,7 @@ def regressions_cmd(
     ),
 ):
     """List regression sets from regressions/*/REGRESSION.md."""
-    fd = _resolve_dir(features_dir)
+    fd = resolve_features_dir(features_dir)
     regs = list_regressions(str(fd))
     if not regs:
         print_info("No regression sets found under regressions/.")
@@ -883,8 +757,8 @@ def surface_cmd(
     ),
 ):
     """Render SURFACE.md — the project's L3 deliverables checklist."""
-    fd = _resolve_dir(features_dir)
-    surface = fd / "SURFACE.md"
+    fd = resolve_features_dir(features_dir)
+    surface = fd / SURFACE_FILENAME
     if not surface.is_file():
         print_error(f"SURFACE.md not found at {surface}")
         print_info("Run 'moss features init' to scaffold it, or create it manually.")

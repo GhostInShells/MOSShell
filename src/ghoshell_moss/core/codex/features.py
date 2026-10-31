@@ -8,6 +8,7 @@ Directory topology: workstreams/<year>/<month>/<name>/FEATURE.md
 Path encodes creation date. No archive/move — status changes are frontmatter-only.
 """
 from datetime import date, datetime, timedelta
+from operator import itemgetter
 from pathlib import Path
 from typing import Any, Literal, Optional, TypedDict, cast, get_args
 
@@ -68,6 +69,22 @@ class ParseError(TypedDict):
     hint: str
 
 
+class ReviewPerspective(TypedDict):
+    """A review perspective doc: ``<features>/review/*.md``, overridable per feature."""
+    name: str
+    when: str
+    description: str
+    content: str
+    path: Path
+
+
+class FeatureSource(TypedDict):
+    """A resolved workstream: features root, frontmatter, and FEATURE.md path."""
+    features_dir: Path
+    meta: WorkstreamMeta
+    fm_path: Path
+
+
 # ---------------------------------------------------------------------------
 # Frontmatter
 # ---------------------------------------------------------------------------
@@ -80,6 +97,14 @@ RESERVED_STATUSES: frozenset[ReservedStatus] = frozenset(get_args(ReservedStatus
 # unless explicitly requested by status filter, so they neither pollute the default view nor
 # reach the pre-commit `check`. Retrieve them with `--status parked`.
 QUIET_STATUSES = {"parked"}
+
+# Canonical display/aggregation order — derived from the Literal so the two cannot drift.
+RESERVED_STATUS_ORDER: list[str] = list(get_args(ReservedStatus))
+
+# A terminal state releases attention on a workstream: it stays listed, but the
+# pre-commit `check` stops reminding about it. Not the same as quiet — a dropped
+# workstream is terminal *and* still visible.
+TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "dropped"})
 
 # Default listing window ("last 2 months") is a rolling 60-day lookback. A naive
 # month-bucket count reaches back too shallowly: on the 1st of a month it spans
@@ -128,8 +153,66 @@ def parse_frontmatter_with_error(
 
 
 # ---------------------------------------------------------------------------
+# Layout
+# ---------------------------------------------------------------------------
+
+README_FILENAME = "README.md"
+TEMPLATE_FILENAME = "TEMPLATE.md"
+SURFACE_FILENAME = "SURFACE.md"
+
+#: Where a project states how it governs issues — a slot the features surface
+#: exposes, not a document the framework owns.
+ISSUES_CONVENTION = Path("issues") / "SKILL.md"
+
+
+def resolve_features_dir(features_dir: str | Path | None = None) -> Path:
+    """Resolve the features root for reading: explicit path, else ``$CWD/features``,
+    else the legacy ``$CWD/.ai_partners/features``."""
+    if features_dir is not None:
+        return Path(features_dir)
+    cwd = Path.cwd()
+    generic = cwd / "features"
+    if generic.is_dir():
+        return generic
+    return cwd / ".ai_partners" / "features"
+
+
+def _default_features_dir() -> Path:
+    """Where ``features init`` creates a tree when none is named.
+
+    Deliberately not :func:`resolve_features_dir`: creation has no legacy
+    fallback — a new project always gets ``$CWD/features``; only reads fall
+    back to an existing ``.ai_partners/features``.
+    """
+    return Path.cwd() / "features"
+
+
+def resolve_feature_path(raw: str | Path) -> Optional[Path]:
+    """Resolve a FEATURE.md file or feature-directory path to the FEATURE.md file."""
+    p = Path(raw).expanduser()
+    if p.is_file() and p.name == "FEATURE.md":
+        return p.resolve()
+    if p.is_dir() and (p / "FEATURE.md").is_file():
+        return (p / "FEATURE.md").resolve()
+    return None
+
+
+def find_features_root(fm_path: str | Path) -> Optional[Path]:
+    """Walk up from a FEATURE.md to the features root (the dir holding ``workstreams/``)."""
+    for parent in Path(fm_path).parents:
+        if parent.name == "features" and (parent / "workstreams").is_dir():
+            return parent
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def is_terminal(status: Optional[str]) -> bool:
+    """Whether a workstream status releases attention (see TERMINAL_STATUSES)."""
+    return status in TERMINAL_STATUSES
+
 
 def _find_feature_dir(features_dir: Path, feature_id: str) -> Optional[Path]:
     """Find a feature directory by name via glob search across year/month trees."""
@@ -290,6 +373,55 @@ def get_feature(
     return meta, None
 
 
+def locate_feature(
+    feature_part: str, features_dir: str | Path | None = None,
+) -> tuple[Optional[FeatureSource], Optional[ParseError]]:
+    """Resolve a feature name or a FEATURE.md / feature-directory path.
+
+    Returns (source, parse_error). A name that does not resolve is retried as a
+    filesystem path, and the features root is recovered from the path itself.
+    """
+    fd = resolve_features_dir(features_dir)
+    meta, err = get_feature(str(fd), feature_part)
+    if err is not None:
+        return None, err
+    if meta is not None:
+        return FeatureSource(
+            features_dir=fd,
+            meta=meta,
+            fm_path=fd / "workstreams" / meta["_feature_path"] / "FEATURE.md",
+        ), None
+
+    fm_path = resolve_feature_path(feature_part)
+    if fm_path is None:
+        return None, None
+    root = find_features_root(fm_path)
+    if root is None:
+        return None, None
+    meta, err = get_feature(str(root), fm_path.parent.name)
+    if err is not None:
+        return None, err
+    if meta is None:
+        return None, None
+    return FeatureSource(features_dir=root, meta=meta, fm_path=fm_path), None
+
+
+def count_statuses(features: list[WorkstreamMeta]) -> dict[str, int]:
+    """Status distribution — reserved statuses keyed individually, free-form
+    aggregated under ``others``."""
+    counts: dict[str, int] = {}
+    others = 0
+    for meta in features:
+        status = meta.get("status", "?")
+        if status in RESERVED_STATUSES:
+            counts[status] = counts.get(status, 0) + 1
+        else:
+            others += 1
+    if others:
+        counts["others"] = others
+    return counts
+
+
 def list_stages(features_dir: str | Path) -> list[StageMeta]:
     """List stages from stages/*/STAGE.md, reading each STAGE.md frontmatter."""
     stages_dir = Path(features_dir) / "stages"
@@ -318,6 +450,57 @@ def list_regressions(features_dir: str | Path) -> list[RegressionMeta]:
             continue
         results.append(_as_regression_meta(raw, r_path.parent.name))
     return results
+
+
+def _load_review_doc(path: Path) -> Optional[tuple[dict[str, Any], str]]:
+    """Load a review doc's (metadata, content). Returns None if unparseable."""
+    try:
+        import frontmatter
+        post = frontmatter.load(str(path))
+        return dict(post.metadata) if post.metadata else {}, post.content
+    except Exception:
+        return None
+
+
+def discover_perspectives(
+    features_dir: str | Path,
+    feature_path: str | None = None,
+) -> tuple[list[ReviewPerspective], list[Path]]:
+    """Discover review perspective docs, per-feature overriding global by name.
+
+    Reads ``<features>/review/*.md`` and, when ``feature_path`` is given,
+    ``<features>/workstreams/<feature_path>/review/*.md``. A doc must carry
+    ``when`` and ``description`` frontmatter. Returns ``(perspectives, broken)``
+    — broken is the list of docs that failed to parse or lack those fields
+    (surfaced, not silently skipped).
+    """
+    root = Path(features_dir)
+    review_dirs = [root / "review"]
+    if feature_path is not None:
+        review_dirs.append(root / "workstreams" / feature_path / "review")
+
+    perspectives: dict[str, ReviewPerspective] = {}
+    broken: list[Path] = []
+    for review_dir in review_dirs:  # global first; per-feature overrides it
+        if not review_dir.is_dir():
+            continue
+        for doc in sorted(review_dir.glob("*.md")):
+            loaded = _load_review_doc(doc)
+            if loaded is None:
+                broken.append(doc)
+                continue
+            meta, content = loaded
+            if not meta.get("when") or not meta.get("description"):
+                broken.append(doc)
+                continue
+            perspectives[doc.stem] = ReviewPerspective(
+                name=doc.stem,
+                when=str(meta["when"]),
+                description=str(meta["description"]),
+                content=content,
+                path=doc,
+            )
+    return sorted(perspectives.values(), key=itemgetter("name")), broken
 
 
 # ---------------------------------------------------------------------------
@@ -376,12 +559,16 @@ def create_feature(
     Create a new feature directory from template.
 
     Directory: workstreams/<year>/<month>/<name>/ — path encodes creation date, never moves.
+    Uses ``<features>/TEMPLATE.md`` when present, else the built-in template.
     Returns the path to the created FEATURE.md.
     Raises FileExistsError if the feature already exists (anywhere under workstreams/).
     """
     features_dir = Path(features_dir)
     workstreams_dir = features_dir / "workstreams"
     workstreams_dir.mkdir(parents=True, exist_ok=True)
+
+    if template_path is None:
+        template_path = features_dir / TEMPLATE_FILENAME
 
     # Check for duplicate name anywhere in the tree
     if _find_feature_dir(workstreams_dir, name) is not None:
@@ -463,11 +650,11 @@ def find_stubs_dir() -> Optional[Path]:
     """
     # 1. Packaged alongside this module — most reliable
     p = Path(__file__).resolve().parent / "_features_stubs"
-    if (p / "README.md").is_file():
+    if (p / README_FILENAME).is_file():
         return p
     # 2. Source checkout: repo/.ai_partners/features/
     p = _PKG_ROOT.parents[2] / ".ai_partners" / "features"
-    if (p / "README.md").is_file():
+    if (p / README_FILENAME).is_file():
         return p
     return None
 
@@ -486,7 +673,7 @@ def init_features(features_dir: str | Path | None = None) -> Path:
     """
     import shutil
 
-    features_dir = Path(features_dir) if features_dir is not None else Path.cwd() / "features"
+    features_dir = Path(features_dir) if features_dir is not None else _default_features_dir()
     features_dir.mkdir(parents=True, exist_ok=True)
 
     stubs_dir = find_stubs_dir()
@@ -499,7 +686,7 @@ def init_features(features_dir: str | Path | None = None) -> Path:
             else:
                 shutil.copy2(str(item), str(dst))
     else:
-        (features_dir / "TEMPLATE.md").write_text(
+        (features_dir / TEMPLATE_FILENAME).write_text(
             DEFAULT_TEMPLATE.format(
                 feature_id="$FEATURE_ID",
                 feature_title="$FEATURE_TITLE",
