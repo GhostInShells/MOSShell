@@ -76,6 +76,7 @@ async def test_every_generation_reruns_the_hook(branch) -> None:
 @pytest.mark.asyncio
 async def test_commit_view_carries_its_directory_rendering(branch) -> None:
     anchor = branch.commit(message="anchor")
+    branch.ensure_memento(1)  # the node is what gives the slot a directory to render
     _mount(
         branch.path,
         "commit_view",

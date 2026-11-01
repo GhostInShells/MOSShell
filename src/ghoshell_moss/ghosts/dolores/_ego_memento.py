@@ -531,8 +531,9 @@ class EgoMementoManager:
             raise self._read_failure(view, ref, exc) from exc
         events = [SessionEvent.from_dict(event) for event in (raw or {}).get("events", [])]
         text = render_transcript(events)
-        # 这个 commit 目录自己的说明由 commit_view 槽位生成, 是 read 的一部分 ——
-        # 不是 channel 在正文后面拼上去的尾巴.
+        # What this commit's directory says about itself comes from the commit_view slot and is
+        # part of the read — not a tail the channel appends after the transcript. A commit with
+        # no node has nothing to render, so the slot does not run and nothing is created.
         ground = await self._commit_ground(view)
         return f"{text}\n\n{ground}" if ground else text
 
@@ -761,7 +762,11 @@ class EgoMementoManager:
         (``read`` / ``history``), which is why it is safe not to ship it.
         """
         recent = view.history[-_DIGEST_TITLES:]
-        body = "\n".join(f"{cv.coord}  {cv.title}" for cv in recent)
+        body = "\n".join(
+            f"{cv.coord}  {cv.title}" + ("  [node]" if cv.memento is not None else "")
+            for cv in recent
+        )
+        nodes = sum(1 for cv in view.history if cv.memento is not None)
         return Message.new(
             tag="earlier",
             attributes={
@@ -769,6 +774,7 @@ class EgoMementoManager:
                 "first": view.history[0].coord,
                 "last": view.history[-1].coord,
                 "titles": str(len(recent)),
+                "nodes": str(nodes),
             },
         ).with_content(body)
 
@@ -836,10 +842,6 @@ class EgoMementoManager:
             if view is None:
                 return
             root = self.memento_root
-            commit_dir = self._commit_dir_of(view.coord)
-            if commit_dir is not None:
-                # 协议承诺: hook 拿得到一个已经存在的目标目录, 它只管往里搬东西.
-                commit_dir.mkdir(parents=True, exist_ok=True)
             await run_slot(
                 slot,
                 self.hook_roots(),

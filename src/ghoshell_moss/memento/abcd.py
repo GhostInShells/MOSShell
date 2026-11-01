@@ -183,9 +183,11 @@ class CommitView(BaseModel):
     truncation for rendering is the consumer's job — this model only does deterministic
     derivation.
 
-    ``memento`` is the absolute path of this commit's node index file (``MEMENTO.md``)
-    **when that file exists**, and None otherwise. It is the only observation surface of
-    the node space: memento reports that a node is there, never what is inside it.
+    ``memento`` is the absolute path of this commit's node index file (``MEMENTO.md``) when
+    that file exists, and None otherwise. Every read fills it — a branch view collects the
+    node space in one walk, a single commit read stats one path — so a node is observable
+    wherever it sits, not only inside the detail window. It is the only observation surface
+    of the node space: memento reports that a node is there, never what is inside it.
     """
 
     branch_index: int = Field(description="First half of the coordinate: branch ordinal within the owner (1-based).")
@@ -193,7 +195,7 @@ class CommitView(BaseModel):
     note: Note | None = Field(default=None, description="The home of the commit's message; None when no Note exists.")
     memento: Path | None = Field(
         default=None,
-        description="Absolute path of the node index file (MEMENTO.md) when it exists; None = this commit has no node yet.",
+        description="Absolute path of the node index file (MEMENTO.md) when it exists; None = this commit has no node.",
     )
     ground: str = Field(
         default="",

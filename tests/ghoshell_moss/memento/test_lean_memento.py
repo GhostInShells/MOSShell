@@ -368,15 +368,48 @@ def test_ensure_unknown_seq_raises(memento):
         b.ensure_memento(0)
 
 
-def test_node_surface_covers_detail_window_only(memento):
+def test_node_surface_covers_the_whole_view(memento):
     b = memento.create_branch("main")
     for i in range(3):
         b.commit(message=f"c{i}")
-    b.ensure_memento(1)  # 老 commit 有节点
-    b.ensure_memento(3)  # 新 commit 有节点
+    b.ensure_memento(1)  # an older commit has a node
+    b.ensure_memento(3)  # the tip has a node
 
     view = b.view(n=1)
 
-    # 折叠区不观测节点 (detail 窗口才探) —— 省掉每窗口一次全量 stat
-    assert [cv.memento for cv in view.history] == [None, None]
+    # A node is reported wherever it sits, history included: the probe is one walk over the
+    # node space rather than one stat per commit, so the detail window no longer decides what
+    # is observable.
+    assert [cv.memento is not None for cv in view.history] == [True, False]
     assert view.latest[0].memento is not None
+
+
+def test_reading_never_creates_a_node_directory(memento):
+    """A read reports a node; it never makes one.
+
+    The regression this pins: a hook slot used to be handed a guaranteed existing directory, so
+    every commit and every read materialised one — 166 shells against 571 anchors, and a walk
+    over the node space paid for all of them.
+    """
+
+    def node_dirs() -> list[Path]:
+        root = memento.root / "commits"
+        return list(root.rglob("cmt_*")) if root.exists() else []
+
+    b = memento.create_branch("main")
+    for i in range(3):
+        b.commit(message=f"c{i}")
+
+    for seq in (1, 2, 3):
+        b.get_commit(seq)
+    assert node_dirs() == [], "a single read must not materialise the node space"
+
+    async def read_with_hooks() -> None:
+        for seq in (1, 2, 3):
+            await b.aget_commit_with_hooks(seq)
+
+    asyncio.run(read_with_hooks())
+    assert node_dirs() == [], "a hook slot without a directory must not create one"
+
+    b.ensure_memento(1)  # first use is the only creator
+    assert len(node_dirs()) == 1
