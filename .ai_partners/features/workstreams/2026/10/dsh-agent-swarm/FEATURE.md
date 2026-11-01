@@ -13,8 +13,14 @@ status_note: >-
   converged but nothing is implemented: bus on top and runtime below, matter as identity,
   facts as the only truth, ticket as fence. Next step -- thirdgerb writes a blueprint, moss
   builds the prototype on top of deepseek harness against it.
+
+  D30-D31 and D02 ran rounds three to five; three and four left no cards, five is recorded in
+  discuss/r5-notes.md with fourteen cards. Round five collapsed the seven domain questions
+  into three domains plus one form and one mechanism; made case the life of a memento branch;
+  dropped the cursor from team entirely; and decoupled case / team / agent into three
+  directory trees whose only meeting point is kickoff(--wd, prompt). Still no implementation.
 title: DSH Agent Swarm
-updated: '2026-10-29'
+updated: '2026-11-02'
 ---
 
 # DSH Agent Swarm

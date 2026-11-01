@@ -4,7 +4,7 @@ status: draft
 # priority: importance within the current stage (iteration cycle) — not development urgency
 priority: P2
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-02
 depends: []
 milestone:
 description: >-
@@ -18,6 +18,10 @@ description: >-
 
 状态: **draft** — 动机与形状已收敛, 边界仍有未决项, 实现为零。
 本文件是 D31 夜 (2026-10-31 18:30 – D01 00:2x) 讨论的沉淀, 尚未有 `design/` 与 `discuss/` 目录。
+
+D02 01:0x 补入一段: **启动器与发现链** (KD13–KD15)。结论是产物零样板、入口收归 workspace
+顶层启动器; 附带一份同进程探针实测 (见 Measured Facts), 它把"0.5s 重在哪"重新定位到了
+import + bootstrap, 而不是总线入网。
 
 ## Motivation
 
@@ -80,6 +84,19 @@ dsh (TS 版本). 见关联 workstream `dsh-agent-swarm`.
   memento agent 由文件 stem 推 owner (`calc/main`)。
 - **KD12 调用方看不到实现。** plate 由 ghost / 人类写; 调用方连"有个 Matrix"都不该知道。
   函数体不是"没必要暴露", 是必须抹掉。
+- **KD13 启动器是基础设施, 不是过渡件。** 发现链是
+  `launcher → import ghoshell_moss → Environment.discover() → workspace → gateway / 总线`。
+  第一环一断, 产物就只能写死 gateway 地址 (thirdgerb 的反例: 用任意 python 跑一支纯代码
+  产物, 除了硬编码地址没有别的发现途径)。所以 workspace 必须自带一个启动器,
+  "用哪个 python、环境在哪" 这份知识**只存在它一处**。
+- **KD14 产物零样板: 不含 shebang, 不含发现逻辑。** 产物是语义本身 —
+  `Project.discover().bootstrap().container.force_fetch(Gateway).rpc_call(api, body)`;
+  入口统一走 workspace 根上的顶层启动器 `./moss bin <name>`。依据: 把布局约定
+  (向上找 `.moss` 之类) 写进每个产物 = N 份独立演化的约定副本; 约定一改全部**静默**作废 —
+  它们报的是"找不到文件", 不是"约定变了"。
+- **KD15 判据: 产物的字节数应与它做的事成正比, 与它所在的环境无关。** 样板每复制一份,
+  就是把一份知识从库里搬进产物; 搬 N 份之后改一次要追 N 处。这是"信息无法有效压缩"的
+  实际账单, 也是 KD14 的量化形式。
 
 ## Measured Facts
 
@@ -112,6 +129,35 @@ dsh (TS 版本). 见关联 workstream `dsh-agent-swarm`.
   连续高频调用会打满发布通道… 限频应在 Mindflow 的 signal ingestion 层实现, 而非 transport
   层"。**传输层被明确设计成不治理** — 这是"单向通道必须在存在前定边界"的代码级依据。
 
+### D02 00:48 探针 — 440ms 到底在哪 (实测)
+
+同进程, 单位 ms: `Project.discover() → bootstrap() → Matrix.new → async with →
+service_operator() → get_services_by_kind('webview')`
+
+| 环节 | 耗时 |
+|---|---|
+| import ghoshell_moss | 238.4 |
+| Project.discover | 9.1 |
+| bootstrap | 139.0 |
+| Matrix.new | 63.0 |
+| `matrix.__aenter__` | **9.1** |
+| service_operator | 0.3 |
+| get_services_by_kind | 1.3 |
+| http 往返 (本地节点页) | **0.4–0.6** (首次 0.9–15.5) |
+
+- 四个节点被同一个 `kind=webview` 发现: terminal / artifacts / file_editor /
+  **host 自己 (dsh)** —— 发现面统一, host 也是节点。
+- **与上表 0.521s 的 enter 冲突 (差 57 倍)。** 两个都是实测, 互不覆盖, 标为**待复现**;
+  它决定 gateway 是"必需"还是"锦上添花"。
+- **"重"不在总线上**: 238 + 139 + 63 = 440ms 全是 python 侧准备; 真正入网 9ms、
+  找一个服务 1.3ms、一次往返 0.5ms。
+- dsh web: query token + 裸 GET → **401**。token 登录后 query 被抹掉, 凭证只能走 header。
+- 环境值 (实测): `MOSS_PROJECT_DIR` = 仓库根; `MOSS_WORKSPACE` = `.moss` 目录 ——
+  要拼解释器只能拼前者。
+- shebang 实测: 相对路径 → `bad interpreter`; 本机无 `/bin/python3` (只有 `/usr/bin/python3`);
+  `#!/usr/bin/env python3` 可用; `#!/bin/sh` + 多行 polyglot (`""":" … ":"""`) 可用,
+  且参数原样透传 (实测 `argv = ['./q.py', 'a', 'b']`)。
+
 ## Exploration paths
 
 死路与教训, 按代价从大到小:
@@ -125,6 +171,14 @@ dsh (TS 版本). 见关联 workstream `dsh-agent-swarm`.
   运行时校验其存在; env 只能当最后兜底且要校验一致。
 - **把运输工具名写进信封 — 错。** 见 KD11。
 - **我最初把 `__all__` 说成"提示不是边界" — 错。** 它是边界; 它只是不是监狱。
+- **"用 `$MOSS_PROJECT_DIR` 拼解释器" — 错。** 变量在普通 shell / cron / 另一个 agent
+  直接 exec 时不在, 而那恰恰是最需要桥的时刻。`${VAR:?}` 会大声失败, `${VAR:-default}`
+  会在变量为空时悄悄用默认值 —— env 型解析的专有失败模式: 它不报错, 它指到错的地方。
+- **"产物自定位, 向上找 `.moss`" — 错 (技术可行, 但会腐烂)。** 实测跑通: 没有任何 MOSS
+  环境变量、cwd 也不在 workspace 里, 它仍靠 `$0` 找到了解释器。但它把一份布局副本写进了
+  每个产物, 约定一改全部静默作废。剪于 KD14。
+- **"产物写死绝对路径的 shebang" — 半错。** 它能跑, 但让"workspace 搬家"直接变成
+  "所有产物全废"; 而且它把 KD2 的焊死从 scene 扩大到了布局。
 
 历史旁证 (值得读): `143633b5` 删掉的 memento agent —
 `agents/memento_agents/calc.agent.py` 的文件即声明 (docstring = instruction, imports = 范围),
@@ -214,3 +268,15 @@ Binary 校验 scene hash (不一致 → 拒绝, 报两边的 hash)
    谁启动、谁看管、死了谁收尸。所以回执只适合"这条命令等一条答复", 不适合"一直在线"。
 6. **瞬时节点能否不写 cell runtime info** (thirdgerb 记得可以, 未核实)。
 7. **`--help` 的头注释语言与方言说明的措辞** — 尚未写。
+8. **顶层启动器由谁生成、何时刷新。** 候选: `moss init` 时生成一次 / 每次 `moss` 启动时重写 /
+   由 workspace bootstrap 维护。它自己怎么找到解释器 (生成时写死绝对路径? 相对 `.venv`?) —
+   它是唯一允许持有这份知识的地方 (KD13), 所以这个问题只能在这一个文件里回答。
+9. **`moss bin` 的参数与 stdio 约定。** 实参怎么传 (argv / env / 一个 json 文件)、结果怎么回
+   (stdout 文本 / 结构化 json / 退出码语义)。回执与错误也要在这里一次定死, 否则每支产物
+   自己发明一套。
+10. **`/moss/runtime/bin/python` 这层桥还需不需要。** 如果采用顶层启动器 (KD14), 产物不再
+    直接引用解释器, 这层中间人可能多余; 反过来, 若有人直接 exec 产物 (绕过 `moss bin`),
+    它又是唯一能让产物跑起来的兜底。
+11. **plate 在顶层启动器下还要不要沙箱。** KD5 的 `__all__` 边界与 `async def main()` 约定,
+    原本是靠"编译 + 反射"实现的; 若改成"由 `moss bin` 在已 bootstrap 的进程里 aexec",
+    边界的技术手段会变, 但**反射面与执行面同源**这条不能变。
