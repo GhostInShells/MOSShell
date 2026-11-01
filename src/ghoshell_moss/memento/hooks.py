@@ -3,16 +3,25 @@
 
 Three slots are agreed by name, and the name is the whole contract:
 
-- ``on_commit``    right after an anchor lands; side effects only.
-- ``commit_view``  one commit is read in detail; stdout is appended under the note.
+- ``on_commit``    right after an anchor lands. It moves finished work into the anchor and
+                   speaks about it; it writes no receipt, because the message is the receipt.
+- ``commit_view``  one commit is read in detail. It runs only for a commit whose directory
+                   already exists — a node index, or a file a slot moved in. No directory,
+                   no run: the read path never creates one to find out.
 - ``branch_view``  a branch view is generated; stdout is appended under the description.
 
 A slot is a file: ``<root>/hooks/<slot>.py``. A branch's own ``hooks/`` sits beside the
 ego-root one, and both are looked up — branch first. No file, no run; deleting the file is
-turning the slot off.
+turning the slot off. A hook runs as a subprocess, so it speaks through env vars and stdout
+rather than by returning a value.
 
 A ``.py`` file is executed by the interpreter the memento process already runs on, so
 writing the file is the whole of turning it on: no shebang, no ``chmod``, no manifest.
+
+What a slot must not do: create a directory in the node space it was not handed. The node
+space stays walkable because only first use materialises it — ``ensure_memento``, or a file
+moved in. A slot that writes a bookkeeping file into every anchor buys one directory per
+commit, and a recursive walk then pays for all of them.
 
 Hooks are a bypass, not a step: they run beside the commit, never in front of it. A
 failure is recorded and left alone — no retry, no rollback, and it never blocks the main

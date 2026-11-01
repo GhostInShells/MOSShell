@@ -1,24 +1,26 @@
-"""memento 的极简 filesystem 实现 — 实现 ``abcd.py`` 的 Branch / Memento 契约.
+"""Memento's minimal filesystem implementation — the Branch / Memento contract in ``abcd.py``.
 
-存储只绑定一个本地 path (owner 根目录):
+Storage binds to one local path (the owner root):
 
     {owner}/
-      branches.jsonl                        # 历史 branch 名单 (append-only)
-      {branch_name}.ref.json                # 当前指针 (BranchRef)
+      branches.jsonl                        # branch roster, append-only
+      {branch_name}.ref.json                # the current pointer (BranchRef)
       branches/{branch_id}/
         meta.json                           # BranchMeta
-        commits.jsonl                       # 正序 append-only CommitRef (权威)
-        commit_notes.jsonl                  # 旁路 Note (last-wins, 可丢可重建)
-        .lock                               # FileLocker 写门控锁文件
-      commits/{YYYY}/{MM}/cmt_{coord}/       # commit 节点空间 (约定, 懒创建)
-        MEMENTO.md                          # 节点的索引文件, 自解释入口
+        commits.jsonl                       # append-only CommitRef, in order (authoritative)
+        commit_notes.jsonl                  # bypass Notes (last-wins, droppable, rebuildable)
+        .lock                               # FileLocker write gate
+      commits/{YYYY}/{MM}/cmt_{coord}/       # the commit's node space (a convention, lazy)
+        MEMENTO.md                          # the node's index file, self-explaining entry
 
 Discipline:
-- 只写正序 append / 原子写, 读侧跳过撕裂尾行 (append-crash 残留).
-- 同步读 = 缓存快路径; ``a<name>`` = aiofiles 重读磁盘 (IO-costly).
-- 写门控 = ``async with branch:`` (FileLocker, fast-fail) + 进程内 asyncio.Lock 互锁.
-- 节点空间是**非受管资产区**: memento 只 stat ``MEMENTO.md`` 是否在 (view 的 detail 窗口
-  各查一次), 不读内容、不清理; 目录与模板只由 ``ensure_memento`` 显式创建, 读路径永不创建.
+- Writes are ordered appends and atomic replaces; a reader skips a torn trailing line.
+- A sync read is the cached fast path; an ``a``-prefixed method re-reads through aiofiles (IO-costly).
+- Write gating is ``async with branch:`` (FileLocker, fail fast) plus a process-local asyncio.Lock.
+- The node space is an **unmanaged asset area**: memento only reports whether ``MEMENTO.md``
+  exists — one walk per branch view, one stat per single read — and never reads or cleans it.
+  A directory appears only when something is put there: ``ensure_memento``, or a hook moving a
+  finished file in. The read path never creates one.
 """
 
 from __future__ import annotations
@@ -77,7 +79,7 @@ def _ensure_aware(t: datetime) -> datetime:
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """读 jsonl, 跳过撕裂尾行 (append-crash 残留). 非尾行解析失败则抛错."""
+    """Read jsonl, skipping a torn trailing line (append-crash debris). A non-tail parse failure raises."""
     if not path.exists():
         return []
     raw = path.read_text(encoding="utf-8")
@@ -99,7 +101,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 async def _aread_jsonl(path: Path) -> list[dict[str, Any]]:
-    """aiofiles 版 jsonl 读 (IO-costly). 语义同 _read_jsonl."""
+    """The aiofiles jsonl read (IO-costly). Same semantics as _read_jsonl."""
     if not path.exists():
         return []
     async with aiofiles.open(path, "r", encoding="utf-8") as f:
@@ -122,7 +124,7 @@ async def _aread_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    """O_APPEND 追加单行 JSON rows. POSIX O_APPEND 保证 <PIPE_BUF 行原子."""
+    """Append single-line JSON rows with O_APPEND; POSIX keeps a sub-PIPE_BUF line atomic."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         for row in rows:
@@ -133,7 +135,7 @@ def _append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _write_text(path: Path, text: str) -> None:
-    """tmp + fsync + 原子 rename 写单个文本文件 (父目录自动建)."""
+    """Write one text file through tmp + fsync + atomic rename (the parent directory is created)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
@@ -145,7 +147,7 @@ def _write_text(path: Path, text: str) -> None:
 
 
 def _write_json(path: Path, obj: dict[str, Any]) -> None:
-    """tmp + fsync + 原子 rename 写单个 JSON 文件."""
+    """Write one JSON file through tmp + fsync + atomic rename."""
     _write_text(path, json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -159,9 +161,10 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _collapse_broken_commits(views: list[CommitView]) -> list[CommitView]:
-    """连续坏 commit (``Note.error`` 非空) 只保留第一个; 非坏条目不受影响.
+    """A run of consecutive broken commits (non-empty ``Note.error``) keeps only the first.
 
-    坏 commit 仍要进 view (模型须感知), 但成段坏占位不刷屏. 折叠按坐标顺序单趟完成.
+    A broken commit still enters the view — the model must perceive it — but a run of broken
+    placeholders must not flood it. The fold is one pass in coordinate order.
     """
     collapsed: list[CommitView] = []
     previous_broken = False
@@ -178,7 +181,7 @@ def _collapse_broken_commits(views: list[CommitView]) -> list[CommitView]:
 
 
 class FsBranch(Branch):
-    """一个指向目录的 branch 对象."""
+    """A branch object pointing at one directory."""
 
     def __init__(self, memento: "FsMemento", branch_id: str, name: str, description: str, created: datetime):
         self._memento = memento
@@ -190,7 +193,7 @@ class FsBranch(Branch):
         self._commits_cache: list[CommitRef] | None = None
         self._notes_cache: dict[str, Note] | None = None
 
-    # ── 路径 ──
+    # ── paths ──
     def _dir(self) -> Path:
         return self._memento.root / "branches" / self._branch_id
 
@@ -206,7 +209,7 @@ class FsBranch(Branch):
     def _lock_path(self) -> Path:
         return self._dir() / ".lock"
 
-    # ── 构造期事实 ──
+    # ── construction-time facts ──
     @property
     def ref(self) -> BranchRef:
         return BranchRef(name=self._name, description=self._description, branch_id=self._branch_id,
@@ -226,7 +229,7 @@ class FsBranch(Branch):
     def index(self) -> int:
         return self.meta().index
 
-    # ── 读 (缓存快路径) ──
+    # ── reads (cached fast path) ──
     def commits(self) -> list[CommitRef]:
         if self._commits_cache is None:
             self._commits_cache = [CommitRef(**row) for row in _read_jsonl(self._commits_path())]
@@ -241,7 +244,7 @@ class FsBranch(Branch):
             self._notes_cache = result
         return dict(self._notes_cache)
 
-    # ── 读 (aiofiles, IO-costly) ──
+    # ── reads (aiofiles, IO-costly) ──
     async def acommits(self) -> list[CommitRef]:
         rows = await _aread_jsonl(self._commits_path())
         self._commits_cache = [CommitRef(**row) for row in rows]
@@ -255,7 +258,7 @@ class FsBranch(Branch):
         self._notes_cache = result
         return dict(result)
 
-    # ── 写 ──
+    # ── writes ──
     def commit(
             self,
             *,
@@ -307,18 +310,33 @@ class FsBranch(Branch):
         if view is None:
             raise KeyError(f"branch '{self._name}' has no commit at seq {seq}")
         path = view.memento_path(self._memento.root)
-        if not path.exists():  # 已在则绝不覆盖 —— 那是写入者的内容
+        if not path.exists():  # never overwrite an existing file — that content is the writer's
             _write_text(path, _MEMENTO_TEMPLATE.format(coord=view.coord, created=view.created.isoformat()))
         return path
 
-    # ── 读侧投影 ──
+    # ── read-side projection ──
     def _commit_view(self, commit: CommitRef, notes: dict[str, Note], branch_index: int) -> CommitView:
         return CommitView(branch_index=branch_index, ref=commit, note=notes.get(commit.id))
 
-    def _probe_memento(self, view: CommitView) -> CommitView:
-        """探一次节点索引在不在 —— 一次 stat, 只填 view 字段, 不碰任何内容."""
+    def _node_index(self) -> set[Path]:
+        """Every node index file that exists, collected in one walk.
+
+        The cost is the number of directories in the node space, not the number of commits:
+        a branch that never wrote a node walks almost nothing, and an anchor that took
+        nothing in never leaves a directory to walk into.
+        """
+        root = self._memento.root / "commits"
+        if not root.is_dir():
+            return set()
+        return set(root.rglob(COMMIT_MEMENTO_FILE))
+
+    def _probe_memento(self, view: CommitView, nodes: set[Path] | None = None) -> CommitView:
+        """Fill the node field: one stat for a single read, one collected set for a whole view."""
         path = view.memento_path(self._memento.root)
-        view.memento = path if path.is_file() else None
+        if nodes is None:
+            view.memento = path if path.is_file() else None
+        else:
+            view.memento = path if path in nodes else None
         return view
 
     def _parent(self, meta: BranchMeta) -> "FsBranch | None":
@@ -338,7 +356,10 @@ class FsBranch(Branch):
     def _build_view(self, commits: list[CommitRef], notes: dict[str, Note], n: int) -> BranchView:
         meta = self.meta()
         views = _collapse_broken_commits([self._commit_view(c, notes, meta.index) for c in commits])
-        latest = [self._probe_memento(v) for v in views[-n:]]  # 只探 detail 窗口: 一次一条 stat
+        nodes = self._node_index()
+        for cv in views:
+            self._probe_memento(cv, nodes)
+        latest = views[-n:]
         history = views[:-n]
         parent = self._parent(meta)
         previous = parent.view(n=n) if parent is not None else None
@@ -373,7 +394,7 @@ class FsBranch(Branch):
         notes = await self.anotes()
         return self._probe_memento(self._commit_view(commits[seq - 1], notes, self.index))
 
-    # ── 带 hook 的生成 ──
+    # ── generation with hooks ──
     async def _render_slot(self, slot: str, *, coord: str = "", commit_dir: Path | None = None) -> str:
         """Run this branch's mounted view slot and return what it contributes to the page.
 
@@ -395,7 +416,7 @@ class FsBranch(Branch):
         )
         try:
             results = await run_slot(slot, roots, env_base=env, log_root=self._memento.root)
-        except Exception:  # noqa: BLE001 — 读面不许因为 hook 而挂
+        except Exception:  # noqa: BLE001 — the read surface must not die because a hook did
             return ""
         return render_view_text(results)
 
@@ -411,17 +432,22 @@ class FsBranch(Branch):
         return view
 
     async def aget_commit_with_hooks(self, seq: int) -> CommitView | None:
-        """A commit read with its directory's own rendering — same contract as the branch view."""
+        """A commit read with its directory's own rendering — same contract as the branch view.
+
+        The slot runs only for a commit whose directory exists — a node index, or a file a hook
+        moved in. Nothing there means nothing to render, and the read path never creates the
+        directory to find out.
+        """
         view = await self.aget_commit(seq)
         if view is None:
-            return None
+            return view
         commit_dir = view.memento_path(self._memento.root).parent
-        # 协议承诺: hook 拿得到一个已经存在的目标目录, 它只管往里搬东西.
-        commit_dir.mkdir(parents=True, exist_ok=True)
+        if not commit_dir.is_dir():
+            return view
         view.ground = await self._render_slot("commit_view", coord=view.coord, commit_dir=commit_dir)
         return view
 
-    # ── 查询 ──
+    # ── queries ──
     def query_commits(
             self,
             *,
@@ -452,10 +478,10 @@ class FsBranch(Branch):
             result = [c for c in result if c.created <= hi]
         return result
 
-    # ── 写门控 ──
+    # ── write gating ──
     async def __aenter__(self) -> "FsBranch":
         locker = FileLocker(self._lock_path())
-        if not locker.acquire():  # fast-fail, flock 提供进程内+跨进程互斥
+        if not locker.acquire():  # fast fail; flock is the in-process and cross-process mutex
             raise BlockingIOError(f"branch '{self._name}' write lock busy")
         self._locker = locker
         return self
@@ -470,7 +496,7 @@ class FsBranch(Branch):
 
 
 class FsMemento(Memento):
-    """owner 级 filesystem memento. root = owner 目录."""
+    """The owner-level filesystem memento. ``root`` is the owner directory."""
 
     def __init__(self, root: Path):
         self._root = root
@@ -509,7 +535,7 @@ class FsMemento(Memento):
             metadata: dict[str, Any] | None,
             fork_from: ForkRef | None,
     ) -> FsBranch:
-        """public-internal: create_branch 与 Branch.fork 共享的单一创建路径."""
+        """public-internal: the single creation path shared by create_branch and Branch.fork."""
         branch_id = str(ulid.ULID())
         index = len(_read_jsonl(self._branches_jsonl())) + 1
         created = _now_utc()
@@ -583,5 +609,5 @@ class FsMemento(Memento):
 
 
 def new_local_memento(root: Path) -> FsMemento:
-    """构建一个 owner 级 filesystem memento."""
+    """Build an owner-level filesystem memento."""
     return FsMemento(root)
