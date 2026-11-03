@@ -245,6 +245,33 @@ async def test_wait_first_truth_blocks_until_truth():
 
 
 @pytest.mark.asyncio
+async def test_pure_require_never_becomes_truth():
+    """纯 require 不采纳: 只读者的本地默认值不能变成 host 真值, 也不占版本号.
+
+    曾经的开采路径是 epoch 分支: worker 声明带空 epoch, 而"跨 epoch 视为首包"
+    排在 version 判定之前, 于是 require (-1) 被铸成 v1 真值, 真正的写者首次
+    声明 (首包 0) 被拒, 值被静默替换成读者的默认值.
+    """
+    bus = MemoryBus()
+    host = make_host(bus)
+    reader = make_worker("reader", bus)
+    writer = make_worker("writer", bus)
+    async with host, reader, writer:
+        sub = await reader.subscribe(GhostPersona)  # 默认 name="Echo"
+        waiter = asyncio.create_task(sub.wait_first_truth())
+        await settle()
+        # 无真值可回 — require 只能等, 不能自封真值.
+        assert not waiter.done()
+
+        decl = await writer.declare(GhostPersona(name="Real"))
+        await settle()
+        assert decl.value.name == "Real"                       # 写者的首次声明没有消失
+        truth = await asyncio.wait_for(waiter, timeout=1.0)
+        assert truth.name == "Real"
+        assert sub.get_truth_data().version == 1               # 版本从 1 起, 没被 require 占位
+
+
+@pytest.mark.asyncio
 async def test_wait_first_truth_raises_on_close():
     bus = MemoryBus()
     reader = make_worker("reader", bus)  # 无 host, 永远等不到真值
