@@ -187,8 +187,8 @@ class BaseParameterSubscriber(ParameterSubscriber[T_PARAM]):
         """
         阻塞等到第一条真值.
 
-        host 不存在则遥遥无期 — 调用方以 ``asyncio.wait_for`` 负超时.
-        若在拿到真值前被 ``close()`` (close 会 set 事件以防死锁), 醒来即抛 RuntimeError.
+        host 不存在、或 host 尚无该 key 的真值, 则遥遥无期 — 调用方以 ``asyncio.wait_for``
+        负超时. 若在拿到真值前被 ``close()`` (close 会 set 事件以防死锁), 醒来即抛 RuntimeError.
         """
         await self._has_any_truth_event.wait()
         if self._closed:
@@ -556,12 +556,18 @@ class TruthHostParameters(AbsParameters, ABC):
         """
         采纳裁决. 返回应广播的版本; None = 不采纳 (调用方仍须回播一次当前真值).
 
-        版本按 epoch 作用域: 跨 epoch (含空 epoch) 的声明, 其版本不可比 — 视为
-        首包, 从头铸版 (本 epoch 已有真值则拒绝); 同 epoch 才做单调比较.
+        判定顺序本身是契约, 不可互换:
+          1. require (-1) 先出局 — 它带的是订阅者的本地默认值, 不是提议; 且 worker
+             声明通常 epoch 为空, 若排在 epoch 判定之后就会被铸成真值.
+          2. 跨 epoch (含空 epoch): 版本不可比 — 视为首包, 从头铸版 (本 epoch 已有
+             真值则拒绝).
+          3. 同 epoch 才做单调比较.
         version 三值见模块 docstring.
         """
         key = data.key
         current = self._versions.get(key, 0)
+        if data.version < FIRST_PACKET:
+            return None
         if data.epoch != self._epoch:
             if current > 0:
                 return None
@@ -571,11 +577,9 @@ class TruthHostParameters(AbsParameters, ABC):
                 return None
             self._versions[key] = data.version
             return data.version
-        if data.version == FIRST_PACKET:
-            if current > 0:
-                return None
-            return self._mint_version(key)
-        return None  # REQUIRE_ONLY — 纯 require, 不采纳.
+        if current > 0:
+            return None
+        return self._mint_version(key)
 
     # -- 真相 ------------------------------------------------------------
 
@@ -593,7 +597,11 @@ class TruthHostParameters(AbsParameters, ABC):
         await self._broadcaster.publish_host_truth(data)
 
     async def _on_declaration(self, data: ParameterData) -> None:
-        """declaration 进 → truth 必出. 采纳则广播它, 不采纳则广播当前真值一次."""
+        """declaration 进 → truth 必出. 采纳则广播它, 不采纳则广播当前真值一次.
+
+        例外: 本 epoch 尚无该 key 的真值时无可回播 — require 得不到回答, 只会继续等
+        (订阅者的本地默认值仍可读, 但它不是真值, 不能因此铸版).
+        """
         version = self._absorb_version(data)
         if version is None:
             current = self._truth.get(data.key)
