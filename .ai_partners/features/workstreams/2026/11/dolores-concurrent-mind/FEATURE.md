@@ -1,15 +1,16 @@
 ---
-title: Dolores Concurrent Mind — one ghost, several attentions at once
-status: draft
-priority: P0
 created: 2026-11-03
-updated: 2026-11-04
 depends: []
-milestone:
-description: >-
-  Give the ghost a mind that holds several attentions at the same time — each with its
-  own context and clock, over one body and one memory. The proposition MOSShell exists
-  to carry; agent-swarm is a neighbour, not the parent.
+description: Give the ghost a mind that holds several attentions at the same time
+  — each with its own context and clock, over one body and one memory. The proposition
+  MOSShell exists to carry; agent-swarm is a neighbour, not the parent.
+milestone: null
+priority: P0
+status: in-progress
+status_note: clone implementation plan complete; dependency graph has no undetermined
+  nodes
+title: Dolores Concurrent Mind — one ghost, several attentions at once
+updated: '2026-11-04'
 ---
 
 # Dolores Concurrent Mind
