@@ -127,7 +127,7 @@ build-backend = "setuptools.build_meta"
 # never ship inside it. src/ stays what ships with this distribution, so nothing here needs
 # an exclusion.
 [tool.uv.workspace]
-members = ["packages/ghoshell-agent-swarm"]
+members = ["packages/ghoshell-agent-swarm", "packages/ghoshell-processes"]
 
 
 [dependency-groups]
