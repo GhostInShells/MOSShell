@@ -169,8 +169,6 @@ cython_debug/
 **/.memento/**/__pycache__/
 
 
-# pre-commit 的缓存 (沙箱里默认的 ~/.cache 写不了, 指到仓库内)
-.pre-commit-cache/
 # scratch area for live experiments (never committed)
 .playground/
 # 第三方 clone / 外部假仓库：源码忽略，结论入库

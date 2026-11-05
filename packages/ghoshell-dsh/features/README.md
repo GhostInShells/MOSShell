@@ -237,8 +237,10 @@ Cut scope must be recorded scope — an unrecorded cut makes the index lie.
 **Execution order**: `set-status completed` first (modifies FEATURE.md), then `git commit` with workstream modifications
 included.
 
-`moss features check` lists unfinished workstreams as a non-blocking pre-commit reminder (parked workstreams
-never appear). It is a reminder, not an enforcer — the human reviews for it.
+`moss features check` lists unfinished workstreams (parked workstreams never appear). It is a reminder, not
+an enforcer — run it yourself before committing; the human reviews for it. It used to run as a pre-commit
+hook; that was removed on 2026-11-05: a hook that cannot block still cost a stash/restore of unstaged work
+per commit, and its 45-line output was noise rather than signal.
 
 ### How to Review
 
