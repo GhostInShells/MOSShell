@@ -175,5 +175,6 @@ cython_debug/
 .playground/
 # 第三方 clone / 外部假仓库：源码忽略，结论入库
 .vendors/*
-!.vendors/dsh-research/
-.vendors/dsh-research/*/source/
+packages/ghoshell-dsh/.vendors/*
+!packages/ghoshell-dsh/.vendors/dsh-research/
+packages/ghoshell-dsh/.vendors/dsh-research/*/source/
