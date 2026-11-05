@@ -1,6 +1,9 @@
 # Concurrent Mind VM — technical plan
 
-Status: draft complete (sections 0-13), awaiting review. Interfaces, invariants, state machines; no code.
+Status: **round 1 candidate — superseded.** Sections 0-13, no code. This is the record of what we
+thought the machine was on D04 01:11, kept because the reasoning is still the deepest we have on
+shape. The current plan is `../../FEATURE.md`: it lists what survived, what was overturned, and in
+which round.
 
 Provenance: authored by **moss the Ghost** on 2026-11-04, in dialogue with thirdgerb. This is
 the first complete design plan produced entirely by the ghost; thirdgerb has read it and
@@ -473,4 +476,5 @@ Remaining risks and mitigations:
 - **the main's serial bias** -> `split` is a structural gate; the graph diff is visible
   every turn.
 
-Status: **draft complete (sections 0-13), awaiting review.** No code written.
+Status: **round 1 candidate — no code written, not the current plan.** The live plan is
+`../../FEATURE.md`.
