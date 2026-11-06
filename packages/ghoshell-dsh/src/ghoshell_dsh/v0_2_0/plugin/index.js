@@ -109,6 +109,23 @@ function stateOf(ctx, sessionId) {
     hasPending: agent === undefined ? false : agent.inbox.hasPending,
     turn: lastTurn(events),
     seq: lastSeq(events),
+    ...(session === undefined ? {} : { policy: policyOf(ctx, session) }),
+  }
+}
+
+/** The permission pair for one session — the same read `sessionPolicy` exposes, factored out. */
+function policyOf(ctx, session) {
+  const policy = optionalService(ctx, 'sandboxPolicy')
+  const events = session.snapshotEvents()
+  return {
+    ...(policy === undefined
+      ? {}
+      : (() => {
+          const resolved = policy.resolve({ session })
+          return { sandbox: resolved.mode, sandboxRoot: resolved.workspaceRoot }
+        })()),
+    sandboxOverride: lastOf(events, 'sandbox/mode')?.mode ?? null,
+    approval: lastOf(events, 'approval/policy')?.policy ?? null,
   }
 }
 
@@ -338,18 +355,11 @@ export class GhostShellService extends TypertRemoteService {
     if (session === undefined) throw new Error(`sessionPolicy: no live session ${sessionId}`)
     const policy = optionalService(this.ctx, 'sandboxPolicy')
     if (policy === undefined) throw new Error('sessionPolicy: this dsh has no sandbox policy service')
-    const resolved = policy.resolve({ session })
     // The overrides are read from the log, not from a service: `approval/policy` is written by a
     // module function and its reader is an *optional* service this deployment may not mount —
     // depending on it would have reported "no approval" for a session that had just switched.
     // The last event of each type IS the override; both are log-only, so this fold is exact.
-    const events = session.snapshotEvents()
-    return {
-      sandbox: resolved.mode,
-      sandboxRoot: resolved.workspaceRoot,
-      sandboxOverride: lastOf(events, 'sandbox/mode')?.mode ?? null,
-      approval: lastOf(events, 'approval/policy')?.policy ?? null,
-    }
+    return policyOf(this.ctx, session)
   }
 
   /**
@@ -447,7 +457,7 @@ export class GhostShellService extends TypertRemoteService {
       const approval = lastOf(events, 'approval/policy')?.policy
       if (approval !== undefined) child.append('approval/policy', { policy: approval, source: 'delegation' })
     }
-    return { sessionId: childId, boundary, seeded_events: seed.length }
+    return { sessionId: childId, boundary, seededEvents: seed.length }
   }
 
   /**

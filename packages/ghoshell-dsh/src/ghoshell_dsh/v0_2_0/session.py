@@ -54,9 +54,10 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, TypeVar
 
-from ghoshell_dsh.blueprint.agent import ChatReply, InjectResult
+from ghoshell_dsh.blueprint.agent import ChatReply, ForkResult, InjectResult
 from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 from ghoshell_dsh.blueprint.models.llm import LlmConfigPatch
+from ghoshell_dsh.blueprint.models.session_state import SessionPolicy
 from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.client import DshClient
 from ghoshell_dsh.v0_2_0.types import sessions
@@ -90,6 +91,7 @@ _GHOSHELL_WAIT_STATE = "ghoshell/waitState"
 _GHOSHELL_INJECT = "ghoshell/inject"
 _GHOSHELL_SESSION_POLICY = "ghoshell/sessionPolicy"
 _GHOSHELL_SET_SESSION_POLICY = "ghoshell/setSessionPolicy"
+_GHOSHELL_FORK_SESSION = "ghoshell/forkSession"
 
 # on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
 E = TypeVar("E", bound=SessionEventModel)
@@ -474,6 +476,33 @@ class DshSession:
         )
         return InjectResult.model_validate(value)
 
+    async def fork_into(
+        self,
+        cwd: str,
+        *,
+        at_seq: int | None = None,
+        agent_preset: str | None = None,
+        inherit_policy: bool = True,
+    ) -> ForkResult:
+        """把这个会话 fork 到**另一个工作目录**去 —— dsh 自己的 fork 不肯做的那一步.
+
+        ``session/fork`` 把 seed 拼得好好的, 然后把子会话的 cwd 硬写成源的 cwd; 而 sandbox 的
+        可写根**就是**会话 cwd. 所以这一个字段就是"副本能在哪动手"的全部答案. 这里用同一批公开
+        零件, 只是这个字段是选的, 不是抄的.
+
+        ``at_seq`` 指定切点; 不给就切在最后一个完整 turn (和 dsh 同一条规则).
+        ``inherit_policy`` 把父会话的权限以 ``source: 'delegation'`` 种进子会话 —— 只复制 override,
+        父会话没切过就没话说.
+        """
+        payload: dict[str, Any] = {"sessionId": self._session_id, "cwd": cwd}
+        if at_seq is not None:
+            payload["atSeq"] = at_seq
+        if agent_preset is not None:
+            payload["agentPreset"] = agent_preset
+        payload["inheritPolicy"] = inherit_policy
+        value = await self._client.remote(_GHOSHELL_FORK_SESSION, payload, timeout=60.0)
+        return ForkResult.model_validate(value)
+
     async def chat_off_record(
         self,
         message: str,
@@ -688,20 +717,21 @@ class DshSession:
                 self._cwd = item.cwd
                 return
 
-    async def policy(self) -> dict[str, Any]:
+    async def policy(self) -> SessionPolicy:
         """读这个会话的权限: 能在哪动手 (sandbox), 要不要人点头 (approval).
 
         两个旋钮是 dsh 的原语, 存在会话日志里 (durable, 重启靠 replay 回放), 而且都**不是**
         表面事件 —— 所以切权限不进 transcript, 也不动模型前缀. 这一点和改 tools 正好相反.
         """
-        return await self._client.remote(_GHOSHELL_SESSION_POLICY, {"sessionId": self._session_id})
+        value = await self._client.remote(_GHOSHELL_SESSION_POLICY, {"sessionId": self._session_id})
+        return SessionPolicy.model_validate(value)
 
     async def set_policy(
         self,
         *,
         sandbox: str | None = None,
         approval: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> SessionPolicy:
         """切这个会话的权限 —— 只在 ghost 能自己切的范围之内.
 
         ``sandbox`` 只接受 ``read-only`` / ``workspace-write``. ``danger-full-access`` 会被拒绝,
@@ -715,7 +745,8 @@ class DshSession:
             payload["sandbox"] = sandbox
         if approval is not None:
             payload["approval"] = approval
-        return await self._client.remote(_GHOSHELL_SET_SESSION_POLICY, payload)
+        value = await self._client.remote(_GHOSHELL_SET_SESSION_POLICY, payload)
+        return SessionPolicy.model_validate(value)
 
     async def session_state(self) -> sessions.SessionState:
         """读一次内核的权威状态: 在不在跑、队列里还有没有东西.

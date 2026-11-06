@@ -37,7 +37,15 @@ from .models.session_events import ContentBlock, TokenUsage
 from .models.sessions import SessionSummary
 from .session import DshAgentSession
 
-__all__ = ["AgentSession", "ChatReply", "ChatToolCall", "InjectResult", "RunResult", "SessionSource"]
+__all__ = [
+    "AgentSession",
+    "ChatReply",
+    "ChatToolCall",
+    "ForkResult",
+    "InjectResult",
+    "RunResult",
+    "SessionSource",
+]
 
 
 class RunResult(BaseModel):
@@ -106,6 +114,16 @@ class InjectResult(BaseModel):
     woke: bool = Field(default=False, description="the agent was running when it was injected.")
 
 
+class ForkResult(BaseModel):
+    """One `fork_into()` — a new session that continues this one somewhere else."""
+
+    model_config = ConfigDict(extra="allow")
+
+    sessionId: str = Field(default="", description="the child session's id.")
+    boundary: int = Field(default=0, description="the source seq the child inherits up to.")
+    seededEvents: int = Field(default=0, description="how many events the seed carried.")
+
+
 class AgentSession(DshAgentSession, ABC):
     """A dsh session with the driver layer on top of it."""
 
@@ -145,6 +163,32 @@ class AgentSession(DshAgentSession, ABC):
         """
 
     # ---- the bypass call ------------------------------------------------ #
+
+    @abstractmethod
+    async def fork_into(
+        self,
+        cwd: str,
+        *,
+        at_seq: int | None = None,
+        agent_preset: str | None = None,
+        inherit_policy: bool = True,
+    ) -> ForkResult:
+        """Fork this session into a **different** working directory.
+
+        dsh's own `session/fork` builds the seed correctly and then hard-codes the child's cwd to
+        the source's; since the sandbox's writable root *is* the session cwd, that one field is
+        what decides where a clone may act. This verb composes the same public pieces with that
+        field chosen instead of copied.
+
+        - `at_seq` cuts at a specific event; omitted, it cuts at the last completed turn (extended
+          over trailing standalone events) — the same boundary dsh uses.
+        - `inherit_policy` carries the parent's permission over via a `sandbox/mode` /
+          `approval/policy` event marked `source: 'delegation'`. Only overrides are copied; a
+          parent that never switched has nothing to say.
+        - The child is **not** the same session: same history prefix, new environment. Measured on
+          a live dsh, that prefix was 61 messages on both sides and the provider's cache read was
+          identical — forking into a sibling directory and into `/tmp` alike.
+        """
 
     @abstractmethod
     async def inject(

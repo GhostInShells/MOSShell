@@ -46,6 +46,7 @@ __all__ = [
     "SessionRenameParams",
     "SessionRenameValue",
     "SessionSelectModelParams",
+    "SessionPolicy",
     "SessionSelectModelValue",
     "SessionState",
     "SessionSummary",
@@ -59,6 +60,29 @@ class SessionListMetadata(BaseModel):
 
     blank: bool = Field(default=False)
     lastPromptAt: int | None = Field(default=None)
+
+
+class SessionPolicy(BaseModel):
+    """What one session may do, and where.
+
+    Two knobs, because one bit cannot say the useful thing. dsh keeps both as log events on the
+    session — durable, replayed on restart, and deliberately **not** surface events, so switching
+    permission never enters the transcript and never disturbs the model prefix.
+
+    `sandbox` is where tools may act: `read-only` or `workspace-write`. `danger-full-access` is
+    absent by design — full access is the human's to grant, never a ghost's to take, and the
+    absence here is the boundary rather than a missing capability.
+
+    `sandboxRoot` is the session's cwd, and that is the whole story of "where": the writable
+    boundary is not a workspace property but a session property, fixed when the session was made.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    sandbox: str | None = Field(default=None, description="`read-only` or `workspace-write`.")
+    sandboxRoot: str | None = Field(default=None, description="the directory `workspace-write` may write under.")
+    sandboxOverride: str | None = Field(default=None, description="the mode this session itself switched to.")
+    approval: str | None = Field(default=None, description="`ask` or `never`.")
 
 
 class SessionState(BaseModel):
@@ -77,6 +101,9 @@ class SessionState(BaseModel):
     turn: int | None = Field(default=None, description="日志里最后一个 turn/start 的 turn; 没有则 None.")
     seq: int | None = Field(default=None, description="日志最后一条事件的 seq; 空日志为 None.")
     attached: bool = Field(default=False, description="内核里是否有这个 session 的 agent.")
+    policy: SessionPolicy | None = Field(
+        default=None, description="能在哪动手 (sandbox) / 要不要人点头 (approval); None = 没问."
+    )
 
 
 class SessionSummary(BaseModel):

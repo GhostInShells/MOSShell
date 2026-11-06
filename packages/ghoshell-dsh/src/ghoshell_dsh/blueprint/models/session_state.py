@@ -21,9 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .nouns import WorkspaceView
 from .session_events import TokenUsage
-from .sessions import ModelSelection
+from .sessions import ModelSelection, SessionPolicy
 
-__all__ = ["SessionState"]
+__all__ = ["SessionPolicy", "SessionState"]
 
 
 class SessionState(BaseModel):
@@ -37,18 +37,9 @@ class SessionState(BaseModel):
     running: bool = Field(default=False, description="the conversation still exists.")
     busy: bool = Field(default=False, description="a turn is in flight right now.")
 
-    # ---- permissions: two knobs, because one bit cannot say the useful thing ---- #
-    sandbox: str | None = Field(
-        default=None,
-        description="where this session's tools may act: `read-only` or `workspace-write`. "
-                    "`danger-full-access` is deliberately not reachable from us — a ghost may not "
-                    "grant itself or its children what only the human can grant.",
-    )
-    sandbox_override: str | None = Field(
-        default=None, description="the mode this session itself switched to; None = inherited default."
-    )
-    approval: str | None = Field(
-        default=None, description="`ask` or `never`: whether a tool call needs a human nod."
+    # ---- permissions ---- #
+    policy: SessionPolicy | None = Field(
+        default=None, description="what this session may do and where; None when not asked."
     )
 
     # ---- where ---- #
