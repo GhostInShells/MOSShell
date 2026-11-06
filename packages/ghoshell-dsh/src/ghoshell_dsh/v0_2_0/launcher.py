@@ -207,6 +207,10 @@ class DshLauncherConfig(DshConnectionConfig):
     home: Path | None = Field(default=None, description="DSH_HOME; None → 在 cwd 启动, 让 dsh 自发现 profile/config.")
     profile: str = Field(default="web", description="进程层 profile 选择, 不是 dsh 配置.")
     args: list[str] = Field(default_factory=list, description="启动器 flag 之后的 verbatim 参数.")
+    plugin_patch: Path | None = Field(
+        default=None,
+        description="本代际插件的 patch 文件; 由 install() 放到 dsh home 后传入, 启动时以 --patch 叠加.",
+    )
     readiness_path: str = Field(default="/plugin-api/ping", description="就绪探针: 轮询到它返回即视为 dsh+plugin 起来.")
     readiness_timeout: float = Field(default=30.0, description="等待就绪的时限 (秒).")
     shutdown_timeout: float = Field(default=5.0, description="拆除进程的时限 (秒).")
@@ -572,6 +576,55 @@ class DshConnection:
     async def _on_start_failed(self) -> None:
         pass
 
+    @classmethod
+    def install(
+            cls,
+            *,
+            home: str | Path,
+            profile: str = "web",
+            binary: str | Path | None = None,
+            init: bool = False,
+    ) -> Path:
+        """把本代际的插件装进某个 dsh home, 返回它的 patch 路径.
+
+        `init=False`(默认) 只放插件, 不动这台 home 的其它东西; `init=True` 先让 dsh 把
+        home 和 profile 建出来(`--dump-config` 即可, 不启动), 再放插件. `binary` 给了就顺带
+        用 `--dump-config` 证明 dsh 认这条补丁层.
+        """
+        from .install import install_plugin
+
+        return install_plugin(home=home, profile=profile, binary=binary, init=init)
+
+    @classmethod
+    def at(
+            cls,
+            home: str | Path,
+            *,
+            profile: str = "web",
+            binary: str | Path | None = None,
+            install: bool = True,
+            **config_kwargs: Any,
+    ) -> Self:
+        """给一个目录, 交出配好的 launcher: home / profile / 插件 patch 一次定好.
+
+        这是"从指定目录启动"的入口 —— 调用方只需要知道目录, 不需要知道插件放哪、patch 叫什么.
+        `install=False` 时只认已有的安装.
+        """
+        from .install import installed_patch
+
+        home_path = Path(home)
+        patch = installed_patch(home_path)
+        if install and not patch.is_file():
+            patch = cls.install(home=home_path, profile=profile, binary=binary)
+        return cls(
+            DshLauncherConfig(
+                home=home_path,
+                profile=profile,
+                plugin_patch=patch if patch.is_file() else None,
+                **config_kwargs,
+            )
+        )
+
     async def __aenter__(self) -> Self:
         if self._started:
             return self
@@ -838,8 +891,11 @@ class DshLauncher(DshConnection):
         args = [
             self._resolve_binary(),
             "--profile", self.config.profile,
-            "--port", str(self.config.port),
         ]
+        # `--patch` 是 launcher 级 flag: 必须在 profile 之后、任何 app 参数(`--port` / `--no-open`)之前.
+        if self.config.plugin_patch is not None:
+            args.extend(["--patch", str(self.config.plugin_patch)])
+        args.extend(["--port", str(self.config.port)])
         # 是否自动开浏览器由 ghost home 的 .env 决定 (DSH_WEB_NO_OPEN 真值 → --no-open), 默认开.
         # 带 token 的 URL 由 dsh 自己拼, 这里只决定要不要加 flag.
         if _env_flag(DSH_WEB_NO_OPEN_ENV):

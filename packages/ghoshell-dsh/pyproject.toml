@@ -26,7 +26,11 @@ include = ["ghoshell_dsh*"]
 # samples, so a consumer that installed the wheel gets them too. Data lives inside the
 # package because a root-level directory reaches the sdist but not the wheel.
 [tool.setuptools.package-data]
-ghoshell_dsh = ["skills/*/*.md", "skills/*/*.py"]
+ghoshell_dsh = [
+    "skills/*/*.md",
+    "skills/*/*.py",
+    "v0_2_0/plugin/*",
+]
 
 # Test and lint tooling. The same three the monorepo root uses, kept separate so this package
 # can be worked on without the root's heavier extras (mcp, fastapi, docs tooling).

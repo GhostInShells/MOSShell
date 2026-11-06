@@ -32,6 +32,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from .connection import Connection
@@ -61,6 +62,43 @@ class Launcher(ABC):
     environment, port, readiness probe — is inside the implementation, because a consumer that
     had to supply it would no longer be transport-agnostic.
     """
+
+    @classmethod
+    @abstractmethod
+    def install(
+        cls,
+        *,
+        home: str | Path,
+        profile: str = "web",
+        binary: str | Path | None = None,
+        init: bool = False,
+    ) -> None:
+        """Make this launcher's own plugin available inside a dsh home.
+
+        Part of what this package offers does not live in dsh — it lives in a plugin we ship.
+        Installing it is the launcher's job rather than a documented side quest, because the
+        launcher is the only thing that already knows which dsh version it is talking to.
+
+        A classmethod, and not part of `start()`, because it must be possible to prepare a home
+        before anything is running: a caller wires this into its own initialisation (a ghost's
+        stub setup, say) and then treats starting as the ordinary path.
+
+        Four parameters, and the last two are the ones that bite:
+
+        - `home` — the dsh home to prepare; `profile` — what to compose against.
+        - `binary` — the dsh executable to verify with. Omitted, install places the files and
+          says nothing about whether dsh agrees with them.
+        - `init` — how much of somebody else's directory to touch. `False` puts the plugin in
+          and nothing else (the home is already in service). `True` also lets dsh provision the
+          home and profile first (the directory may be empty, e.g. from a caller's own
+          initialisation). The difference matters: one is an addition, the other is a beginning,
+          and a caller must be able to say which it means.
+
+        How the plugin is delivered is deliberately not part of this contract. It ships inside
+        this package and is copied into place; there is no registry, no build step and no
+        accepted-install protocol, because a Python package should not depend on a JavaScript
+        toolchain to deliver its own capability.
+        """
 
     @abstractmethod
     async def start(self) -> None:
