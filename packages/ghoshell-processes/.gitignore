@@ -1,0 +1,12 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local tooling state — the monorepo's .venv is the working one; this one belongs to an IDE
+.venv/
+.idea/
