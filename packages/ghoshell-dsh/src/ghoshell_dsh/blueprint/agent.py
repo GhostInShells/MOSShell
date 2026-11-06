@@ -28,7 +28,7 @@ one. "Off record" is the property a caller must not be able to miss: if you want
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,7 +37,7 @@ from .models.session_events import ContentBlock, TokenUsage
 from .models.sessions import SessionSummary
 from .session import DshAgentSession
 
-__all__ = ["AgentSession", "ChatReply", "RunResult", "SessionSource"]
+__all__ = ["AgentSession", "ChatReply", "InjectResult", "RunResult", "SessionSource"]
 
 
 class RunResult(BaseModel):
@@ -69,6 +69,23 @@ class ChatReply(BaseModel):
     text: str = Field(default="", description="what the model answered.")
     usage: TokenUsage = Field(default_factory=TokenUsage, description="what the call cost.")
     finish_reason: str = Field(default="", description="why the answer stopped.")
+
+
+class InjectResult(BaseModel):
+    """One `inject()` — what went in, and whether a step actually took it.
+
+    `woke` is the fact a caller cannot infer from the outcome: was the agent already running when
+    the message was handed over? `inject` never wakes the driver, so on an idle session the
+    message is *held* — `claimed=True` may be a long time coming, and asking for it is a decision
+    about how long to wait, not about whether it worked.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    messageId: str = Field(default="", description="the message's id, as dsh minted it.")
+    claimed: bool = Field(default=False, description="a step took it (only possible with wait='claimed').")
+    turn: int | None = Field(default=None, description="which turn claimed it, when known.")
+    woke: bool = Field(default=False, description="the agent was running when it was injected.")
 
 
 class AgentSession(DshAgentSession, ABC):
@@ -110,6 +127,28 @@ class AgentSession(DshAgentSession, ABC):
         """
 
     # ---- the bypass call ------------------------------------------------ #
+
+    @abstractmethod
+    async def inject(
+        self,
+        message: str,
+        *,
+        wait: Literal["accepted", "claimed"] = "claimed",
+        timeout: float = 30.0,
+    ) -> InjectResult:
+        """Put one message into the conversation **without waking it** — dsh's own `inject`.
+
+        Three facts a caller must hold on to:
+
+        - it lands in the inbox's next-step slot and is claimed at the next **step boundary**,
+          which is the next model call — it never takes effect immediately;
+        - it does not wake the driver, so on an idle session the message waits until something
+          else starts a turn. `steer` lands in the same slot and does wake — that is the whole
+          difference between the two verbs;
+        - when a step claims it, it enters the log as a `user/message` with the same id. That is
+          what `wait="claimed"` waits for; leaving the inbox without appearing there means it was
+          cancelled, and raises.
+        """
 
     @abstractmethod
     async def chat_off_record(

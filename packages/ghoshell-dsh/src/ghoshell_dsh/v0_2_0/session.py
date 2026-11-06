@@ -54,7 +54,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, TypeVar
 
-from ghoshell_dsh.blueprint.agent import ChatReply
+from ghoshell_dsh.blueprint.agent import ChatReply, InjectResult
 from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.client import DshClient
@@ -86,6 +86,7 @@ _GHOSHELL_ANCHOR = "ghoshell/anchor"
 _GHOSHELL_CHAT_OFF_RECORD = "ghoshell/chatOffRecord"
 _GHOSHELL_SESSION_STATE = "ghoshell/sessionState"
 _GHOSHELL_WAIT_STATE = "ghoshell/waitState"
+_GHOSHELL_INJECT = "ghoshell/inject"
 
 # on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
 E = TypeVar("E", bound=SessionEventModel)
@@ -440,6 +441,36 @@ class DshSession:
         )
         return DshSessionAnchor.model_validate(value)
 
+    async def inject(
+        self,
+        message: str,
+        *,
+        wait: str = "claimed",
+        timeout: float = 30.0,
+    ) -> InjectResult:
+        """把一条消息放进对话里, 但**不唤醒它** —— 官方 `agent.inject`.
+
+        三条要记住的事实:
+
+        - 它落在 inbox 的 next-step 格, 在**下一个 step 边界**被取走 (也就是下一次模型调用),
+          永远不会立刻生效;
+        - 它不唤醒 driver: 会话闲着的时候, 它会一直等, 直到别的东西开了一个 turn.
+          `steer` 落同一格但会唤醒 —— 两个动词的差别就这一条;
+        - 被取走时它会以 `user/message` 事件进日志, id 相同. ``wait="claimed"`` 等的就是这个;
+          没进日志就离开了 inbox, 说明被取消了, 这里会报错, 不报成功.
+        """
+        value = await self._client.remote(
+            _GHOSHELL_INJECT,
+            {
+                "sessionId": self._session_id,
+                "text": message,
+                "wait": wait,
+                "timeoutMs": int(timeout * 1000),
+            },
+            timeout=timeout + 10.0,
+        )
+        return InjectResult.model_validate(value)
+
     async def chat_off_record(
         self,
         message: str,
@@ -675,6 +706,7 @@ class DshSession:
         value = await self._client.remote(
             _GHOSHELL_WAIT_STATE,
             {"sessionId": self._session_id, "condition": condition, "timeoutMs": int(timeout * 1000)},
+            timeout=timeout + 10.0,  # 插件等 timeout, 这里再宽裕一点: 先到点的应该是插件
         )
         state = sessions.SessionState.model_validate({**value, "sessionId": self._session_id})
         self._dsh_running = state.running

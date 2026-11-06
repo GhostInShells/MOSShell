@@ -23,7 +23,7 @@
  * crosses the wire once, unchanged. A null `seq` is not "unknown" — it is "the session's
  * start", which is why an empty log answers null rather than 0.
  */
-import { BlockAssembler } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 
 function markRemote(instance, method) {
@@ -108,6 +108,7 @@ export class GhostShellService extends TypertRemoteService {
     markRemote(this, 'chatOffRecord')
     markRemote(this, 'sessionState')
     markRemote(this, 'waitState')
+    markRemote(this, 'inject')
   }
 
   async ping() {
@@ -192,6 +193,60 @@ export class GhostShellService extends TypertRemoteService {
           `waitState: ${condition} not reached within ${timeoutMs}ms ` +
             `(running=${state.running}, pending=${state.hasPending})`,
         )
+      }
+      await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS))
+    }
+  }
+
+  /**
+   * Hand one message into the running conversation — `agent.inject`, the official verb.
+   *
+   * What dsh's `inject` does, and what a caller has to know before using it: the message lands in
+   * the inbox's `next-step` slot and is claimed at the **next step boundary** (`preStep`), which
+   * is also the next model call. It never takes effect immediately, and it never wakes the
+   * driver — on an idle agent the message is held until something else starts a turn. That is
+   * the difference between `inject` and `steer`; both land in the same slot, only `steer` wakes.
+   *
+   * `wait: "claimed"` answers the question "did a step actually take it". The witness is the
+   * log, not an event: a claimed message appears as a `user/message` event carrying the same id,
+   * inside a turn. If it leaves the inbox without appearing in the log it was cancelled, and
+   * that is reported as an error rather than as success.
+   */
+  async inject(request) {
+    const sessionId = requireSessionId(request, 'inject')
+    const text = typeof request?.text === 'string' ? request.text : ''
+    if (text === '') throw new Error('inject: text must be a non-empty string')
+
+    const agent = this.ctx.agents.get(sessionId)
+    if (agent === undefined) throw new Error(`inject: no live agent ${sessionId}`)
+    const session = this.ctx.sessions.get(sessionId)
+    if (session === undefined) throw new Error(`inject: no live session ${sessionId}`)
+
+    // Hold the official pieces: the message is dsh's, the inbox is dsh's, the claim is dsh's.
+    const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+    const woke = agent.status === 'running'
+    const fromSeq = lastSeq(session.snapshotEvents())
+    agent.inject(message)
+    const messageId = message.id
+
+    if (request?.wait !== 'claimed') {
+      return { messageId, claimed: false, turn: null, woke }
+    }
+
+    const timeoutMs = typeof request?.timeoutMs === 'number' ? request.timeoutMs : 30000
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      for (const event of session.snapshotEvents(fromSeq === null ? 0 : fromSeq + 1)) {
+        if (event.type === 'user/message' && event.data?.id === messageId) {
+          return { messageId, claimed: true, turn: turnAt(session.snapshotEvents(), event.seq), woke }
+        }
+      }
+      const stillQueued = agent.inbox.nextStep.some((queued) => queued.id === messageId)
+      if (!stillQueued) {
+        throw new Error(`inject: message ${messageId} left the inbox without being claimed (cancelled?)`)
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`inject: message ${messageId} was not claimed within ${timeoutMs}ms (woke=${woke})`)
       }
       await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS))
     }

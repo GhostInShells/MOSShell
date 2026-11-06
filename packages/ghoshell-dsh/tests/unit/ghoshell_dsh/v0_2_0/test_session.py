@@ -42,9 +42,11 @@ class _StateClient:
     def __init__(self, states):
         self._states = list(states)
         self.remote_calls: list[tuple[str, dict]] = []
+        self.timeouts: list[float | None] = []
 
-    async def remote(self, method, request):
+    async def remote(self, method, request, **kwargs):
         self.remote_calls.append((method, request))
+        self.timeouts.append(kwargs.get("timeout"))
         return self._states.pop(0)
 
 
@@ -179,6 +181,32 @@ async def test_when_idle_asks_the_plugin():
         ]
         assert state.turn == 7 and state.hasPending is False
         assert session.running is False
+
+
+@pytest.mark.asyncio
+async def test_inject_defaults_to_waiting_for_the_claim():
+    """inject 默认等"被取走": 默认参数是 claimed, 等待时长由调用方给, 走这次调用的读超时."""
+    client = _StateClient(
+        [{"messageId": "m-1", "claimed": True, "turn": 7, "woke": True}]
+    )
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        result = await session.inject("hello", timeout=12.0)
+        method, payload = client.remote_calls[0]
+        assert method == "ghoshell/inject"
+        assert payload == {"sessionId": "s1", "text": "hello", "wait": "claimed", "timeoutMs": 12000}
+        assert client.timeouts[0] == pytest.approx(22.0)  # 插件等 12s, 客户端多给 10s
+        assert result.claimed is True and result.turn == 7 and result.woke is True
+
+
+@pytest.mark.asyncio
+async def test_inject_accepted_does_not_claim_to_have_landed():
+    client = _StateClient([{"messageId": "m-2", "claimed": False, "turn": None, "woke": False}])
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        result = await session.inject("held", wait="accepted")
+        assert client.remote_calls[0][1]["wait"] == "accepted"
+        assert result.claimed is False and result.woke is False
 
 
 @pytest.mark.asyncio

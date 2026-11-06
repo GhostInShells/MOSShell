@@ -54,7 +54,7 @@ class DshClient:
         self._rpc_counter = 0
 
 
-    async def _invoke(self, method: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _invoke(self, method: str, args: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         """信封 + POST + ok/失败分支 —— call / remote 共用的那一半."""
         self._rpc_counter += 1
         envelope = {
@@ -67,6 +67,7 @@ class DshClient:
         resp = await self._http_client.post(
             f"{self._base_url}/api/{method}",
             json=envelope,
+            timeout=timeout if timeout is not None else self._http_client.timeout,
         )
         resp.raise_for_status()
         result = resp.json()["result"]
@@ -124,13 +125,22 @@ class DshClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def remote(self, method: str, request: dict[str, Any]) -> dict[str, Any]:
+    async def remote(
+        self,
+        method: str,
+        request: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         """Unary Remote 动词的裸口子: 入参是一个原样的 request 对象, 返回值不校验.
 
         给"还没有自己模型的动词"留的门 —— 插件新增的动词 (如 ``ghoshell/anchor``) 先通到这,
         等形状稳定了再决定要不要为它建 pydantic 模型. 校验前移给调用方: 它知道自己要什么形状.
+
+        ``timeout`` 是**这次调用**的读超时: 阻塞式动词 (waitState / inject 等被消费) 的等待时长
+        由调用方给, 不能用连接超时代替 —— 否则等待还没到, 客户端先生气了.
         """
-        return await self._invoke(method, {"request": request})
+        return await self._invoke(method, {"request": request}, timeout)
 
     def set_cookies(self, cookies: dict[str, str]) -> None:
         """注入 dsh web 鉴权 cookie 到后续 /api 调用 (requestRejection 要求)."""
