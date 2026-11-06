@@ -16,7 +16,8 @@ from ghoshell_moss.core.codex.features import (
     count_statuses,
     is_terminal,
     discover_perspectives,
-    resolve_features_dir,
+    require_features_dir,
+    FeaturesDirNotFoundError,
     create_feature,
     init_features,
     update_feature_status,
@@ -76,6 +77,27 @@ def _ordered_statuses(*count_sets: dict[str, int]) -> list[str]:
     return [s for s in RESERVED_STATUS_ORDER if s in seen] + sorted(seen - set(RESERVED_STATUS_ORDER))
 
 
+def _features_root(features_dir: Optional[Path]) -> Path:
+    """Ask the core layer for the features root, or exit saying why there is none.
+
+    All the discovery lives in `core.codex.features`; this only turns its refusal
+    into a message. Nothing here re-derives a path — a CLI that guesses is a second
+    implementation of the convention.
+
+    Every reading command names the tree it read, on one line, before its own
+    output: `--dir` or discovery can land somewhere other than what the caller
+    assumed, and the difference is invisible until the path is printed.
+    """
+    try:
+        fd = require_features_dir(features_dir)
+    except FeaturesDirNotFoundError as exc:
+        print_error(str(exc))
+        print_info("Run 'moss features init' here to create one, or pass --dir <features-dir>.")
+        raise typer.Exit(code=1)
+    echo(f"features: {fd.resolve()}")
+    return fd
+
+
 def _print_parse_errors(parse_errors: list[ParseError]) -> None:
     """Print FEATURE.md frontmatter parse errors — called at end of list/status output."""
     echo("")
@@ -100,7 +122,7 @@ def _print_parse_errors(parse_errors: list[ParseError]) -> None:
 def specification(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """
@@ -109,7 +131,7 @@ def specification(
     Reads from the local features/ copy first.
     Falls back to the bundled canonical copy shipped with the package.
     """
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
     readme = fd / README_FILENAME
 
     if not readme.is_file():
@@ -135,7 +157,7 @@ def specification(
 def issues_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """
@@ -150,7 +172,7 @@ def issues_cmd(
     A project without the file is not an error: it simply has not stated a
     convention yet, and the message says how to write one.
     """
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
     path = fd / ISSUES_CONVENTION
 
     if not path.is_file():
@@ -189,7 +211,7 @@ def list_cmd(
     ),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """
@@ -199,7 +221,7 @@ def list_cmd(
     time window. Parked workstreams stay hidden either way — ask for them
     explicitly with --status parked.
     """
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
     features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
     # All-time (status-filtered) view — feeds the stats table and the empty-window hint.
     total_features, _ = list_features(str(fd), status_filter=status, all_months=True)
@@ -280,7 +302,7 @@ def status_cmd(
     feature_name: Optional[str] = typer.Argument(None, help="Feature name to show. Omit to show all."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """
@@ -289,7 +311,7 @@ def status_cmd(
     With a name: shows full detail panel for that workstream.
     Without a name: shows a compact summary of all workstreams.
     """
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
 
     if feature_name:
         meta, parse_err = get_feature(str(fd), feature_name)
@@ -393,13 +415,13 @@ def create_cmd(
     name: str = typer.Argument(..., help="Feature name in kebab-case."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """
     Create a new development workstream from the TEMPLATE.md.
     """
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
 
     try:
         fm_path = create_feature(str(fd), name)
@@ -421,7 +443,7 @@ def set_status_cmd(
     status: str = typer.Argument(..., help=f"New status. Reserved: {', '.join(sorted(RESERVED_STATUSES))}; free-form allowed."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
     message: Optional[str] = typer.Option(
         None, "--message", "-m",
@@ -436,7 +458,7 @@ def set_status_cmd(
 
     Faster than manually editing FEATURE.md — one shell call vs Read+Edit.
     """
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
 
     if status not in RESERVED_STATUSES:
         print_warning(f"'{status}' is not a reserved status ({', '.join(sorted(RESERVED_STATUSES))}). "
@@ -487,12 +509,13 @@ def set_status_cmd(
 def init_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Target features directory. Defaults to $CWD/features.",
+        help="Target features directory — taken as given. Defaults to $CWD/.features.",
     ),
 ):
     """
-    Initialize the features/ skeleton: copy the bundled stubs (full overwrite)
-    and create the workstreams/ directory. Defaults to $CWD/features.
+    Initialize the features skeleton: copy the bundled stubs (full overwrite)
+    and create the workstreams/ directory. Defaults to $CWD/.features — creation
+    does not discover, so this works in a directory that is not a git repository yet.
     """
     fd = init_features(features_dir)
     print_success(f"Features skeleton synced to: {fd}")
@@ -507,7 +530,7 @@ def init_cmd(
 def check_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """
@@ -523,7 +546,7 @@ def check_cmd(
 
     before committing.
     """
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
     features, parse_errors = list_features(str(fd))
 
     if parse_errors:
@@ -580,7 +603,7 @@ def review_cmd(
     feature: str = typer.Argument(..., help="Feature name or FEATURE.md path. Optional '<name>@<perspective>'."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """
@@ -613,6 +636,7 @@ def review_cmd(
         raise typer.Exit(code=1)
 
     meta, fm_path = source["meta"], source["fm_path"]
+    echo(f"features: {Path(source['features_dir']).resolve()}")
     perspectives, broken = discover_perspectives(source["features_dir"], meta["_feature_path"])
 
     if perspective is None:
@@ -692,11 +716,11 @@ def review_cmd(
 def stages_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """List stages from stages/*/STAGE.md with status, period, and delivery."""
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
     stages = list_stages(str(fd))
     if not stages:
         print_info("No stages found under stages/.")
@@ -722,11 +746,11 @@ def stages_cmd(
 def regressions_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """List regression sets from regressions/*/REGRESSION.md."""
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
     regs = list_regressions(str(fd))
     if not regs:
         print_info("No regression sets found under regressions/.")
@@ -753,11 +777,11 @@ def regressions_cmd(
 def surface_cmd(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
-        help="Path to the features/ directory. Defaults to $CWD/features (or $CWD/.ai_partners/features).",
+        help="Features dir (as given). Default: nearest .features or .ai_partners/features, $CWD to .git root.",
     ),
 ):
     """Render SURFACE.md — the project's L3 deliverables checklist."""
-    fd = resolve_features_dir(features_dir)
+    fd = _features_root(features_dir)
     surface = fd / SURFACE_FILENAME
     if not surface.is_file():
         print_error(f"SURFACE.md not found at {surface}")

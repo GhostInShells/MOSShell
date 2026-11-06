@@ -165,26 +165,110 @@ SURFACE_FILENAME = "SURFACE.md"
 ISSUES_CONVENTION = Path("issues") / "SKILL.md"
 
 
-def resolve_features_dir(features_dir: str | Path | None = None) -> Path:
-    """Resolve the features root for reading: explicit path, else ``$CWD/features``,
-    else the legacy ``$CWD/.ai_partners/features``."""
+#: The features tree's directory name, relative to whichever directory holds it.
+#: Canonical name first, legacy name second — the order *is* the precedence when
+#: one directory carries both.
+FEATURES_DIRNAME = Path(".features")
+LEGACY_FEATURES_DIRNAME = Path(".ai_partners") / "features"
+FEATURES_DIRNAMES: tuple[Path, ...] = (FEATURES_DIRNAME, LEGACY_FEATURES_DIRNAME)
+
+#: A project is the directory tree anchored by this marker: a directory in a
+#: plain checkout, a *file* (``gitdir: …``) inside a worktree or submodule — so
+#: the test is ``exists()``, never ``is_dir()``.
+PROJECT_MARKER = ".git"
+
+#: What makes a directory a features root rather than merely a directory.
+FEATURES_ANCHOR = "workstreams"
+
+
+class FeaturesDirNotFoundError(LookupError):
+    """No features tree exists between the working directory and the project home."""
+
+
+def find_project_home(start: str | Path | None = None) -> Optional[Path]:
+    """Walk up from ``start`` to the nearest directory holding ``.git``.
+
+    Nearest wins, so a nested repository resolves to itself rather than to
+    whatever contains it. ``None`` when nothing above carries a marker.
+    """
+    here = (Path(start) if start is not None else Path.cwd()).resolve()
+    for path in (here, *here.parents):
+        if (path / PROJECT_MARKER).exists():
+            return path
+    return None
+
+
+def find_features_dir(start: str | Path | None = None) -> Optional[Path]:
+    """Discover the features tree between ``start`` and the project home.
+
+    Two stages, in this order:
+
+    1. find the project home — the nearest ``.git`` above ``start``; without one
+       there is no project, so discovery fails;
+    2. walk from ``start`` up to that home (inclusive), nearest directory first,
+       trying :data:`FEATURES_DIRNAMES` in order at each level.
+
+    A directory counts only when it carries :data:`FEATURES_ANCHOR`. ``None`` is
+    returned rather than inventing a path: "not a features project" is a fact the
+    caller has to report, not paper over.
+    """
+    here = (Path(start) if start is not None else Path.cwd()).resolve()
+    home = find_project_home(here)
+    if home is None:
+        return None
+    for path in (here, *here.parents):
+        for name in FEATURES_DIRNAMES:
+            candidate = path / name
+            if (candidate / FEATURES_ANCHOR).is_dir():
+                return candidate
+        if path == home:
+            break
+    return None
+
+
+def resolve_features_dir(features_dir: str | Path | None = None) -> Optional[Path]:
+    """Resolve the features root for reading.
+
+    An explicit path is taken as-is: it points *at* the features directory and is
+    never redirected, never fallen back from. Without one, discovery runs — see
+    :func:`find_features_dir`. ``None`` means the working directory is not inside
+    a features project.
+    """
     if features_dir is not None:
         return Path(features_dir)
+    return find_features_dir()
+
+
+def require_features_dir(features_dir: str | Path | None = None) -> Path:
+    """Resolve the features root, or raise :class:`FeaturesDirNotFoundError`.
+
+    The raise is the point: a command that reads features has nothing to say when
+    there are no features, and "no workstreams found" in a directory that is not a
+    project hides the difference from one that is merely empty.
+    """
+    fd = resolve_features_dir(features_dir)
+    if fd is not None:
+        return fd
     cwd = Path.cwd()
-    generic = cwd / "features"
-    if generic.is_dir():
-        return generic
-    return cwd / ".ai_partners" / "features"
+    home = find_project_home(cwd)
+    names = " or ".join(str(name) for name in FEATURES_DIRNAMES)
+    if home is None:
+        raise FeaturesDirNotFoundError(
+            f"Not inside a project: no {PROJECT_MARKER} in {cwd} or any parent directory."
+        )
+    raise FeaturesDirNotFoundError(
+        f"No features tree between {cwd} and the project home {home} "
+        f"(looked for {names}, each holding a {FEATURES_ANCHOR}/ directory)."
+    )
 
 
 def _default_features_dir() -> Path:
     """Where ``features init`` creates a tree when none is named.
 
-    Deliberately not :func:`resolve_features_dir`: creation has no legacy
-    fallback — a new project always gets ``$CWD/features``; only reads fall
-    back to an existing ``.ai_partners/features``.
+    Creation never discovers: a new project gets ``$CWD/.features`` — including
+    one that is not a git repository yet.
     """
-    return Path.cwd() / "features"
+    return Path.cwd() / FEATURES_DIRNAME
 
 
 def resolve_feature_path(raw: str | Path) -> Optional[Path]:
@@ -198,9 +282,14 @@ def resolve_feature_path(raw: str | Path) -> Optional[Path]:
 
 
 def find_features_root(fm_path: str | Path) -> Optional[Path]:
-    """Walk up from a FEATURE.md to the features root (the dir holding ``workstreams/``)."""
+    """Walk up from a FEATURE.md to the features root (the dir holding ``workstreams/``).
+
+    Matched by :data:`FEATURES_DIRNAMES`, so both the canonical and the legacy
+    directory name are recognized.
+    """
+    basenames = {name.name for name in FEATURES_DIRNAMES}
     for parent in Path(fm_path).parents:
-        if parent.name == "features" and (parent / "workstreams").is_dir():
+        if parent.name in basenames and (parent / FEATURES_ANCHOR).is_dir():
             return parent
     return None
 
@@ -380,17 +469,20 @@ def locate_feature(
 
     Returns (source, parse_error). A name that does not resolve is retried as a
     filesystem path, and the features root is recovered from the path itself.
+    Outside a features project the name lookup is skipped — the path retry still
+    works, so an absolute FEATURE.md is reachable from anywhere.
     """
     fd = resolve_features_dir(features_dir)
-    meta, err = get_feature(str(fd), feature_part)
-    if err is not None:
-        return None, err
-    if meta is not None:
-        return FeatureSource(
-            features_dir=fd,
-            meta=meta,
-            fm_path=fd / "workstreams" / meta["_feature_path"] / "FEATURE.md",
-        ), None
+    if fd is not None:
+        meta, err = get_feature(str(fd), feature_part)
+        if err is not None:
+            return None, err
+        if meta is not None:
+            return FeatureSource(
+                features_dir=fd,
+                meta=meta,
+                fm_path=fd / "workstreams" / meta["_feature_path"] / "FEATURE.md",
+            ), None
 
     fm_path = resolve_feature_path(feature_part)
     if fm_path is None:
@@ -665,7 +757,11 @@ def find_stubs_dir() -> Optional[Path]:
 
 def init_features(features_dir: str | Path | None = None) -> Path:
     """
-    Create the features/ skeleton at the given directory (default `$CWD/features`).
+    Create the features skeleton at the given directory (default ``$CWD/.features``).
+
+    Creation is not discovery: an explicit path is used as given, and with none
+    the tree lands in ``$FEATURES_DIRNAME`` under the working directory, git
+    repository or not.
 
     Copies the bundled stubs (full overwrite) and ensures workstreams/ exists.
 
