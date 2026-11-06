@@ -191,6 +191,14 @@ class AgentSession(DshAgentSession, ABC):
         """
 
     @abstractmethod
+    async def attach_workspace(self, path: str | None = None) -> str:
+        """Register this session under the workspace that owns its directory (or `path`).
+
+        A workspace groups sessions by directory; it is not a permission boundary — the writable
+        root is the session's cwd. Returns the workspace id, which the caller may want to show.
+        """
+
+    @abstractmethod
     async def inject(
         self,
         message: str,

@@ -92,6 +92,7 @@ _GHOSHELL_INJECT = "ghoshell/inject"
 _GHOSHELL_SESSION_POLICY = "ghoshell/sessionPolicy"
 _GHOSHELL_SET_SESSION_POLICY = "ghoshell/setSessionPolicy"
 _GHOSHELL_FORK_SESSION = "ghoshell/forkSession"
+_GHOSHELL_ATTACH_WORKSPACE = "ghoshell/attachWorkspace"
 
 # on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
 E = TypeVar("E", bound=SessionEventModel)
@@ -475,6 +476,17 @@ class DshSession:
             timeout=timeout + 10.0,
         )
         return InjectResult.model_validate(value)
+
+    async def attach_workspace(self, path: str | None = None) -> str:
+        """把这个会话登记进它目录所属的 workspace (或指定 ``path``), 返回 workspace id.
+
+        workspace 是按目录聚合 session 的登记表, 不是权限边界 —— 可写根是会话自己的 cwd.
+        """
+        payload: dict[str, Any] = {"sessionId": self._session_id}
+        if path is not None:
+            payload["path"] = path
+        value = await self._client.remote(_GHOSHELL_ATTACH_WORKSPACE, payload, timeout=30.0)
+        return str(value.get("workspaceId") or "")
 
     async def fork_into(
         self,

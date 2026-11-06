@@ -198,6 +198,7 @@ export class GhostShellService extends TypertRemoteService {
     markRemote(this, 'sessionPolicy')
     markRemote(this, 'setSessionPolicy')
     markRemote(this, 'forkSession')
+    markRemote(this, 'attachWorkspace')
   }
 
   async ping() {
@@ -457,7 +458,36 @@ export class GhostShellService extends TypertRemoteService {
       const approval = lastOf(events, 'approval/policy')?.policy
       if (approval !== undefined) child.append('approval/policy', { policy: approval, source: 'delegation' })
     }
+    // Same closing step dsh's own fork takes: put the child in the workspace that owns its
+    // directory. Skipped only when asked to, or when this deployment has no registry.
+    if (child !== undefined && request?.attach !== false && optionalService(this.ctx, 'workspaceRegistry') !== undefined) {
+      const workspace = await optionalService(this.ctx, 'workspaceRegistry').create(cwd)
+      await workspace.attachSession(childId)
+    }
     return { sessionId: childId, boundary, seededEvents: seed.length }
+  }
+
+  /**
+   * Register a session under the workspace that owns its directory.
+   *
+   * A workspace is a *registry of directories*, not a permission boundary: attaching changes
+   * which list a session shows up in, not where its tools may act (that is the sandbox root, and
+   * that is the session's cwd). dsh does this for its own forks; a session created any other way
+   * — ours included — has to say so.
+   */
+  async attachWorkspace(request) {
+    const sessionId = requireSessionId(request, 'attachWorkspace')
+    const session = this.ctx.sessions.get(sessionId)
+    if (session === undefined) throw new Error(`attachWorkspace: no live session ${sessionId}`)
+    const registry = optionalService(this.ctx, 'workspaceRegistry')
+    if (registry === undefined) throw new Error('attachWorkspace: this dsh has no workspace registry')
+
+    const path = typeof request?.path === 'string' && request.path !== '' ? request.path : session.header?.cwd
+    if (path === undefined || path === '') throw new Error('attachWorkspace: neither path nor session cwd is known')
+
+    const workspace = await registry.create(path)
+    await workspace.attachSession(sessionId)
+    return { workspaceId: String(workspace.id), path }
   }
 
   /**
@@ -526,6 +556,9 @@ export class GhostShellService extends TypertRemoteService {
     // emit its tool-call syntax (DSML) as plain text, because the tools it knows were gone.
     // Removing is therefore the expensive direction — which is also the opposite of what the
     // "tools are top-level, so any change kills the prefix" reasoning predicted.
+    // Extra tools are added on top of the session's own declarations. Removal is deliberately not
+    // offered: it was measured to cost the cache (9088 -> 1024) and to make the model lose its
+    // footing, and a knob whose only effect is that is not a knob worth shipping.
     const tools = [...(header.tools ?? []), ...(Array.isArray(request?.tools) ? request.tools : [])]
     // A patch, not a config: the base is the session's own header, so a call stays inside the
     // conversation it borrowed and only states what is different about this one answer.
