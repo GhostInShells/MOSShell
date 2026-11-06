@@ -22,6 +22,12 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["ghoshell_dsh*"]
 
+# Skills ship with the package: they are the usage documentation *and* the verification
+# samples, so a consumer that installed the wheel gets them too. Data lives inside the
+# package because a root-level directory reaches the sdist but not the wheel.
+[tool.setuptools.package-data]
+ghoshell_dsh = ["skills/*/*.md", "skills/*/*.py"]
+
 # Test and lint tooling. The same three the monorepo root uses, kept separate so this package
 # can be worked on without the root's heavier extras (mcp, fastapi, docs tooling).
 [dependency-groups]
@@ -31,6 +37,8 @@ dev = [
     "ruff>=0.15.0",
 ]
 
+# Unit tests only: they need nothing outside this package. Verification against a real dsh
+# lives in `skills/` — runnable samples that double as documentation, not in the test suite.
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/unit"]
 asyncio_mode = "strict"
