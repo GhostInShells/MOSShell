@@ -64,6 +64,7 @@ from .connection import Connection
 from .controller import DshController, ForkSpec, SessionSpec
 from .launcher import Exit, Launcher
 from .session import WILDCARD_EVENT, DshAgentSession
+from .transcript import TranscriptView
 
 __all__ = [
     "WILDCARD_EVENT",
@@ -81,4 +82,5 @@ __all__ = [
     "RunResult",
     "SessionSource",
     "SessionSpec",
+    "TranscriptView",
 ]

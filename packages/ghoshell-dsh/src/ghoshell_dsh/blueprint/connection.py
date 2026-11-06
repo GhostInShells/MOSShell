@@ -27,6 +27,7 @@ from typing import Any
 
 from .agent import SessionSource
 from .client import Client, DshRpcError
+from .models.llm import LlmProvider
 from .models.nouns import WorkspaceView
 from .session import Disposer
 
@@ -54,6 +55,16 @@ class Connection(SessionSource, ABC):
     @abstractmethod
     async def workspace_for_path(self, path: str) -> WorkspaceView | None:
         """The workspace a host path belongs to — `None` when it belongs to none."""
+
+    # ---- models: what this dsh can be asked as ---- #
+
+    @abstractmethod
+    async def llm_providers(self) -> list[LlmProvider]:
+        """Every model route this dsh can reach — live ones and merely-declared ones.
+
+        The resource half of the LLM protocol: a caller that is about to name a provider and a
+        model asks here first. `live` is what a call will actually succeed on today.
+        """
 
     # ---- events: one stream, fanned out ---- #
 

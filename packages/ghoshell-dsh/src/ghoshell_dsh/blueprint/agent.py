@@ -37,7 +37,7 @@ from .models.session_events import ContentBlock, TokenUsage
 from .models.sessions import SessionSummary
 from .session import DshAgentSession
 
-__all__ = ["AgentSession", "ChatReply", "InjectResult", "RunResult", "SessionSource"]
+__all__ = ["AgentSession", "ChatReply", "ChatToolCall", "InjectResult", "RunResult", "SessionSource"]
 
 
 class RunResult(BaseModel):
@@ -56,6 +56,21 @@ class RunResult(BaseModel):
     events: list[Any] = Field(default_factory=list, description="the turn's events, in order.")
 
 
+class ChatToolCall(BaseModel):
+    """One tool call the model asked for, as it asked for it.
+
+    A reply that carries these has not answered in prose — it has asked to run something. The
+    caller decides what that means: an off-record caller usually just wants the arguments (that
+    is how a schema-shaped answer arrives), a driver would go on to execute the call.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(default="", description="the provider's call id, for pairing with a result.")
+    name: str = Field(default="", description="which tool.")
+    arguments: str = Field(default="", description="the raw arguments string, as sent — not parsed.")
+
+
 class ChatReply(BaseModel):
     """One answer from `chat_off_record()`.
 
@@ -66,7 +81,10 @@ class ChatReply(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    text: str = Field(default="", description="what the model answered.")
+    text: str = Field(default="", description="what the model answered in prose; empty when it answered with a tool call.")
+    tool_calls: list[ChatToolCall] = Field(
+        default_factory=list, description="what it asked to run instead of answering."
+    )
     usage: TokenUsage = Field(default_factory=TokenUsage, description="what the call cost.")
     finish_reason: str = Field(default="", description="why the answer stopped.")
 

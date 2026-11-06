@@ -109,6 +109,7 @@ export class GhostShellService extends TypertRemoteService {
     markRemote(this, 'sessionState')
     markRemote(this, 'waitState')
     markRemote(this, 'inject')
+    markRemote(this, 'llmProviders')
   }
 
   async ping() {
@@ -253,6 +254,30 @@ export class GhostShellService extends TypertRemoteService {
   }
 
   /**
+   * Which model routes this dsh can actually reach, live or merely declared.
+   *
+   * A caller choosing a model without asking first is a caller about to be corrected by an
+   * error; this is the cheap question to ask first. `live` separates "the adapter registered
+   * this route" from "somebody shipped the knowledge that it exists".
+   */
+  async llmProviders() {
+    const live = this.ctx.llm.listProviders().map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      live: true,
+    }))
+    const declared = (this.ctx.llm.listConfigurableProviders?.() ?? []).map((provider) => ({
+      id: provider.provider,
+      name: provider.displayName,
+      live: false,
+      declared: provider.declared ?? null,
+      error: provider.error ?? null,
+    }))
+    const seen = new Set(live.map((provider) => provider.id))
+    return { providers: [...live, ...declared.filter((provider) => !seen.has(provider.id))] }
+  }
+
+  /**
    * One model turn against this session's live context, with nothing written back.
    *
    * The prefix is `deriveMessages()` — the same call the main path uses to assemble its own
@@ -285,11 +310,24 @@ export class GhostShellService extends TypertRemoteService {
     }
 
     const inherited = session.deriveMessages()
+    // Tools ride *on top of* the session's own declarations, never in place of them: they are a
+    // top-level request field, so a call that changes them starts a new prefix and loses the
+    // cache the conversation had built.
+    // Extra tools ride *on top of* the session's own declarations, never in place of them.
+    // Measured, both ways, on a live session: appending one left `cacheReadTokens` at 9728 and
+    // the model answering normally; replacing the list dropped it to 1024 *and* made the model
+    // emit its tool-call syntax (DSML) as plain text, because the tools it knows were gone.
+    // Removing is therefore the expensive direction — which is also the opposite of what the
+    // "tools are top-level, so any change kills the prefix" reasoning predicted.
+    const tools = [...(header.tools ?? []), ...(Array.isArray(request?.tools) ? request.tools : [])]
+    // A patch, not a config: the base is the session's own header, so a call stays inside the
+    // conversation it borrowed and only states what is different about this one answer.
+    const config = { ...header.config, ...(request?.llm ?? {}) }
     const outcome = await oneShot(this.ctx, {
-      ...header.config,
+      ...config,
       messages: [...inherited, { role: 'user', content: [{ type: 'text', text: message }] }],
       toolHistory: session.toolHistory(),
-      ...(header.tools === undefined ? {} : { tools: header.tools }),
+      ...(tools.length === 0 ? {} : { tools }),
       sessionId: session.id,
       ...(typeof request?.maxTokens === 'number' ? { maxTokens: request.maxTokens } : {}),
     })
@@ -314,6 +352,16 @@ async function oneShot(ctx, options) {
       .filter((block) => block.type === 'text')
       .map((block) => block.text)
       .join(''),
+    // A response can be a tool call instead of prose. Dropping these here would make the two
+    // kinds of answer indistinguishable at the caller — "no text" and "asked for a tool" would
+    // look the same, and only one of them means the call is unfinished.
+    tool_calls: blocks
+      .filter((block) => block.type === 'tool-call')
+      .map((block) => ({
+        id: block.id ?? '',
+        name: block.name ?? '',
+        arguments: block.arguments ?? '',
+      })),
     usage: assembler.usage ?? null,
     finish_reason: typeof assembler.finish === 'string' ? assembler.finish : '',
   }

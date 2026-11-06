@@ -27,8 +27,12 @@ seq, 均可缺省.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 
 __all__ = ["DshSessionRef"]
 
@@ -67,3 +71,33 @@ class DshSessionRef(BaseModel):
     title: str | None = Field(default=None, description="自解释: session title, 供参考.")
     cwd: str | None = Field(default=None, description="自解释: session cwd, 供参考.")
     created: datetime = Field(default_factory=_utc_now, description="ref 生成时间.")
+
+    def to_anchor(
+        self,
+        *,
+        at: Literal["start", "end"] = "end",
+        note: str | None = None,
+    ) -> DshSessionAnchor:
+        """把这段区间折成一个锚点 —— 取它的某一端.
+
+        为什么需要这个转换: ref 记的是**区间** (memento 的"这一段时间发生了什么"),
+        anchor 记的是**一个点** (交给另一个进程"从这里往后看"). 两者是同一坐标的两种粒度,
+        不是两个概念, 所以转换必须显式、且必须承认它是**有损的**:
+
+        - 一个区间折成一个点, **左端就没了** —— 想再读回同一段, 得重新拿 ref, 不能从 anchor 反推;
+        - ``seq`` 是主坐标: ref 只记了 turn 而 ``end_seq`` 为空时, 折出来的 anchor 会带着
+          ``seq=None``, 而 None 在 anchor 里意为"会话起点" —— 那是另一个意思. 所以本方法
+          **要求那一端有 seq**, 缺了就报错, 不替你猜.
+
+        实现在 anchor 侧 (``from_ref``), 这里只是让"我有一段, 给我一个点"有地方可写.
+        延迟导入是为了不把 models 反向绑到 blueprint 的上一层.
+        """
+        from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
+
+        seq = self.end_seq if at == "end" else self.start_seq
+        if seq is None:
+            raise ValueError(
+                f"ref has no {at}_seq: a turn-only ref cannot become an anchor without guessing "
+                f"(resolve the seq first, or keep the ref)"
+            )
+        return DshSessionAnchor.from_ref(self, at=at, note=note)

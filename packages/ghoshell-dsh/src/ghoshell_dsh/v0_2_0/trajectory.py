@@ -19,6 +19,7 @@ seed 的契约 (dsh 源码锚点, 见 dsh-fusion research):
 
 from __future__ import annotations
 
+from ghoshell_dsh.blueprint.transcript import TranscriptView
 from ghoshell_dsh.v0_2_0.types.refs import DshSessionRef
 from ghoshell_dsh.v0_2_0.types.session_events import SessionEvent
 
@@ -99,48 +100,15 @@ def _line_for(event: SessionEvent) -> tuple[str, str] | None:
     return None
 
 
-def _fold_line(marker: str, text: str, indent: str) -> str:
-    """标记 + 正文 → 一行; 正文换行时续行补空格, 与首行正文左对齐."""
-    head = f"{indent}{marker} "
-    return head + text.replace("\n", "\n" + " " * len(head))
-
-
 def render_transcript(
     events: list[SessionEvent],
     *,
     limit_turns: int | None = None,
     indent: str = "  ",
 ) -> str:
-    """事件流 → 模型可读纯文本.
+    """事件流 → 模型可读纯文本 (规则在 ``blueprint.transcript``, 这里只做投影).
 
-    - ``>`` 用户输入 (``user/message``, 仅 ``source.kind == "user"``, 非 injection).
-    - ``~`` 模型输出 (``assistant/message`` 的 text 块; 空 content 的 usage 帧跳过).
-    - ``@`` 工具调用 (``tool/call`` 的 name + arguments; ``tool/result`` 不渲染).
-    - 其余 (turn/start·end, chunk, request/*, todo, injection) 跳过.
-    - 正文自带换行时, 续行补 ``len(indent) + 2`` 个空格 —— 与首行正文左对齐,
-      多行消息不会被读成独立行.
-    - ``limit_turns`` 非 None 时只保留最近 N 个 turn (按 ``turn/start`` 分组).
+    留着这个签名是因为它是 0.2.0 的公开面; 规则本身**不再在这里** —— 两代各写一份渲染,
+    模型读到的"历史"就会漂.
     """
-    turns: list[list[tuple[str, str]]] = []
-    current: list[tuple[str, str]] = []
-
-    def flush() -> None:
-        if current:
-            turns.append(current)
-
-    for event in events:
-        if event.meta.type == _TURN_START:
-            flush()
-            current = []
-            continue
-        line = _line_for(event)
-        if line is not None:
-            current.append(line)
-    flush()
-
-    if limit_turns is not None:
-        turns = turns[-limit_turns:] if limit_turns > 0 else []
-
-    return "\n".join(
-        _fold_line(marker, text, indent) for group in turns for marker, text in group
-    )
+    return TranscriptView(limit_turns=limit_turns, indent=indent).render(events).text

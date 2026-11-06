@@ -128,7 +128,7 @@ class DshClient:
     async def remote(
         self,
         method: str,
-        request: dict[str, Any],
+        request: dict[str, Any] | None,
         *,
         timeout: float | None = None,
     ) -> dict[str, Any]:
@@ -140,7 +140,9 @@ class DshClient:
         ``timeout`` 是**这次调用**的读超时: 阻塞式动词 (waitState / inject 等被消费) 的等待时长
         由调用方给, 不能用连接超时代替 —— 否则等待还没到, 客户端先生气了.
         """
-        return await self._invoke(method, {"request": request}, timeout)
+        # A verb that takes no parameter has an empty args object, not a null request.
+        args: dict[str, Any] = {} if request is None else {"request": request}
+        return await self._invoke(method, args, timeout)
 
     def set_cookies(self, cookies: dict[str, str]) -> None:
         """注入 dsh web 鉴权 cookie 到后续 /api 调用 (requestRejection 要求)."""

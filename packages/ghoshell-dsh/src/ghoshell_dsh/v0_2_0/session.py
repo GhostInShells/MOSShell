@@ -55,6 +55,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal, TypeVar
 
 from ghoshell_dsh.blueprint.agent import ChatReply, InjectResult
+from ghoshell_dsh.blueprint.models.llm import LlmConfigPatch
 from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.client import DshClient
@@ -476,6 +477,8 @@ class DshSession:
         message: str,
         *,
         anchor: DshSessionAnchor | None = None,
+        llm: LlmConfigPatch | None = None,
+        tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
     ) -> ChatReply:
         """站在这个会话的上下文上问一句, 不留痕迹.
@@ -491,11 +494,18 @@ class DshSession:
         ``anchor`` 目前只接受这个会话的**当前末端**: 组一个更早的前缀要先从日志切片造一个未发布的
         session, 那是下一步; 现在给别的 seq 会显式报错, 不会静默从错的位置回答.
         """
+        # ``max_tokens`` is the one-field shorthand; anything else about the model goes in the
+        # patch, which merges over the session's own header instead of restating it.
+        patch = llm.model_copy() if llm is not None else LlmConfigPatch()
+        if max_tokens is not None:
+            patch.maxTokens = max_tokens
         payload: dict[str, Any] = {"sessionId": self._session_id, "message": message}
         if anchor is not None:
             payload["anchor"] = {"seq": anchor.seq}
-        if max_tokens is not None:
-            payload["maxTokens"] = max_tokens
+        if patch.model_dump(exclude_none=True):
+            payload["llm"] = patch.model_dump(exclude_none=True)
+        if tools:
+            payload["tools"] = tools
         value = await self._client.remote(_GHOSHELL_CHAT_OFF_RECORD, payload)
         return ChatReply.model_validate(value)
 

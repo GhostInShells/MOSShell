@@ -185,3 +185,25 @@ def test_transcript_limit_turns_keeps_tail():
 
 def test_transcript_empty():
     assert render_transcript([]) == ""
+
+def test_ref_folds_into_an_anchor_at_either_end():
+    """ref → anchor: 端点可选, 自解释字段跟着走, 缺 seq 就拒绝 (不拿 None 冒充"会话起点")."""
+    import pytest
+
+    from ghoshell_dsh.blueprint.models.refs import DshSessionRef
+
+    ref = DshSessionRef(
+        session_id="s", start_turn=0, end_turn=2, start_seq=5, end_seq=11,
+        preset="web", cwd="/tmp", title="t",
+    )
+    end = ref.to_anchor(note="done")
+    assert end.session_id == "s" and end.seq == 11 and end.turn == 2
+    assert end.agent_preset == "web" and end.cwd == "/tmp" and end.title == "t"
+    assert end.note == "done"
+
+    start = ref.to_anchor(at="start")
+    assert start.seq == 5 and start.turn == 0
+
+    turn_only = DshSessionRef(session_id="s", start_turn=0, end_turn=1)
+    with pytest.raises(ValueError, match="cannot become an anchor"):
+        turn_only.to_anchor()

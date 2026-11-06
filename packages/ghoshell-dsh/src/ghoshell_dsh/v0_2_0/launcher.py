@@ -87,6 +87,7 @@ from typing import Any
 
 import httpx
 import websockets
+from ghoshell_dsh.blueprint.models.llm import LlmProvider
 from ghoshell_processes import (
     ManagedProcess,
     ProcessMeta,
@@ -721,6 +722,11 @@ class DshConnection:
             self._waterfall_handlers.remove(handler)
 
         return _remove
+
+    async def llm_providers(self) -> list[LlmProvider]:
+        """模型资源面: 这个 dsh 现在到底能跟谁说话 (live) 以及知道谁存在 (declared)."""
+        value = await self.client.remote("ghoshell/llmProviders", None)
+        return [LlmProvider.model_validate(item) for item in value.get("providers") or []]
 
     async def workspaces(self) -> list[WorkspaceView]:
         """host 级 workspace 列表 — 0.1.5 走 workspace/follow 流的 baseline (带缓存).
