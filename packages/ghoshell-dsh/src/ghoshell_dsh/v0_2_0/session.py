@@ -527,7 +527,11 @@ class DshSession:
         """
         # ``max_tokens`` is the one-field shorthand; anything else about the model goes in the
         # patch, which merges over the session's own header instead of restating it.
-        patch = llm.model_copy() if llm is not None else LlmConfigPatch()
+        # A dict is accepted as well as the model: a patch is a small thing to type inline, and
+        # making the caller import a class to say "less thinking, please" buys nothing.
+        patch = LlmConfigPatch.model_validate(llm) if isinstance(llm, dict) else (
+            llm.model_copy() if llm is not None else LlmConfigPatch()
+        )
         if max_tokens is not None:
             patch.maxTokens = max_tokens
         payload: dict[str, Any] = {"sessionId": self._session_id, "message": message}
