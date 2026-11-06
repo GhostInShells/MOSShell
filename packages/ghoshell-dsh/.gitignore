@@ -1,1 +1,16 @@
-.idea
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local tooling state — the monorepo's .venv is the working one; this one belongs to an IDE
+.venv/
+.idea/
+
+# Vendored dsh source: conclusions are committed, the source tree is not.
+# (The root .gitignore also carries this rule; kept here so the directory is self-explaining.)
+.vendors/dsh-research/*/source/

@@ -33,11 +33,13 @@ running dsh without touching dsh's own source.
   is aligned to, a declaration rather than a runtime gate).
 - **What we know about dsh** → `.vendors/dsh-research/` — conclusions in, source ignored,
   one tree per `v<ver>+<sha>`; what a conclusion owes a reader is stated in its `README.md`.
-- **Proof the protocol holds** → `tests/ghoshell_dsh/` — launcher, session, channel and
-  message-mapper tests; the last two still cover code that belongs to the consumer and has
-  not been separated out yet.
-- **Installable distribution** → (promise, not yet present) a `pyproject.toml` at the package
-  root, so this is one versioned package rather than a directory of modules.
+- **Proof the protocol holds** → `tests/ghoshell_dsh/` — launcher, session and trajectory
+  tests. The channel and message-mapper tests left with their modules: an adapter into MOSS
+  belongs to MOSS, not here.
+- **Distribution metadata** → `pyproject.toml` — `ghoshell-dsh 0.1.0.dev0`, a workspace
+  member with no dependencies declared: what it needs from MOSShell is being cut, not
+  depended on. Built and verified locally; not published until MOSShell verifies the
+  integration.
 - **Plugin patch (v0.2.0)** → (promise) `plugin/` inside the generation: one JS bundle that
   adds capability to a running dsh without patching it, exposing — **anchor call**: a
   zero-side-effect LLM call on a session anchor, assembled from the live session, no turn

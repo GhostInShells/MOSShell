@@ -1,0 +1,32 @@
+[project]
+name = "ghoshell-dsh"
+version = "0.1.0.dev0"
+description = "Multi-version dsh compatibility layer — launch and manage several dsh versions from Python"
+authors = [{ name = "thirdgerb" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+# Deliberately empty for now: the package still imports ghoshell-moss, and that dependency is
+# being cut rather than declared. Nothing here waits on a package that will not be a dependency.
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ghoshell_dsh*"]
+
+# Test and lint tooling. The same three the monorepo root uses, kept separate so this package
+# can be worked on without the root's heavier extras (mcp, fastapi, docs tooling).
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.1.0",
+    "ruff>=0.15.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
