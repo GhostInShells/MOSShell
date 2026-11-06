@@ -21,17 +21,20 @@ What does **not** belong here, on purpose:
 ### How the pieces relate
 
 ```
-Launcher              owns a lifetime; start() hands back a SessionSource
-  SessionSource       the minimum: list, create, attach conversations
-    Connection        dsh's own surface: workspaces, event fan-out, close
-      Client          the protocol layer underneath: typed calls, plugin routes, rpc errors
-    DshController     the reinforced surface: governed listing, create/fork with a spec,
+Launcher              owns a lifetime; start() brings dsh up, and then it exposes
+  ├─ Connection       dsh's own surface: workspaces, event fan-out, close
+  │    Client         the protocol layer underneath: typed calls, plugin routes, rpc errors
+  └─ DshController    the reinforced surface: governed listing, create/fork with a spec,
                       rename/archive, workspace governance
-      AgentSession            our verbs: run, anchor, chat_off_record
-        DshAgentSession       dsh's verbs: prompt, cancel, history, events, state
+       AgentSession            our verbs: run, anchor, chat_off_record
+         DshAgentSession       dsh's verbs: prompt, cancel, history, events, state
 ```
 
-Two relationships are worth stating because they are easy to get wrong:
+`SessionSource` is the smallest thing a conversation can come from: list, create, attach. Both
+`Connection` and `DshController` offer it, so a caller that only wanted conversations never sees
+the rest.
+
+Three relationships are worth stating because they are easy to get wrong:
 
 - **`Connection` and `DshController` are parallel faces, not a stack.** Neither inherits the
   other, and a controller does not promise to hold a connection. A concrete generation (v0.2.0
@@ -40,6 +43,10 @@ Two relationships are worth stating because they are easy to get wrong:
 - **`AgentSession` sits on `DshAgentSession`.** The lower one speaks dsh's verbs as dsh states
   them; the upper one adds ours. Mixing them in a single contract is how a protocol turns into a
   framework.
+- **A launcher exposes; it does not hand back.** `start()` returns nothing, and the running thing
+  is taken from the launcher afterwards. The independence that forces this is real: a `Connection`
+  must be usable with no launcher at all — pointing at a dsh somebody else started needs a URL,
+  not a process.
 
 `Client` is a contract rather than an implementation detail because our plugin patches call it:
 the anchor call and the session read are plugin routes, and a route is not a domain verb.
