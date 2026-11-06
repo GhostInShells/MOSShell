@@ -23,7 +23,14 @@
  * crosses the wire once, unchanged. A null `seq` is not "unknown" — it is "the session's
  * start", which is why an empty log answers null rather than 0.
  */
+import { randomUUID } from 'node:crypto'
+
+import { brandString } from '@deepseek-ai/dsh-brand'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
+import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 
 function markRemote(instance, method) {
@@ -57,8 +64,31 @@ function turnAt(events, seq) {
   return turn
 }
 
+/**
+ * A service that may be absent in a given deployment.
+ *
+ * Required services are declared in `inject` — their absence should stop the plugin, loudly.
+ * Permission services are the opposite case: they are optional in dsh's composition, and a
+ * plugin that refuses to load because a deployment has no approval UI would be worse than one
+ * that reports the capability missing when asked.
+ */
+function optionalService(ctx, key) {
+  try {
+    return ctx.get(key)
+  } catch {
+    return undefined
+  }
+}
+
 /** Milliseconds between two reads of the kernel's own state. Cheap: same process, no I/O. */
 const WAIT_POLL_MS = 100
+
+/**
+ * The sandbox modes a ghost may switch itself into. `danger-full-access` is absent by design:
+ * full access is the human's to grant, never a ghost's — not to itself, not to a clone, not to
+ * an agent it spawns.
+ */
+const REACHABLE_SANDBOX_MODES = ['read-only', 'workspace-write']
 
 /** The id every verb needs, refused in the same words wherever it is missing. */
 function requireSessionId(request, verb) {
@@ -80,6 +110,44 @@ function stateOf(ctx, sessionId) {
     turn: lastTurn(events),
     seq: lastSeq(events),
   }
+}
+
+/**
+ * The cut point official fork uses: the last completed turn, extended over trailing standalone
+ * events, stopping before anything that belongs to the next one.
+ */
+function completedBoundary(events) {
+  const ends = events.map((event, index) => (event.type === 'turn/end' ? index : -1)).filter((i) => i >= 0)
+  if (ends.length === 0) return undefined
+  let boundary = ends[ends.length - 1]
+  for (const next of events.slice(boundary + 1)) {
+    if (next.type === 'turn/start' || next.type === 'agent/inbox/spliced') break
+    if (next.type === 'user/message' && next.surfaceOp === 'append') break
+    boundary = next.seq
+  }
+  return boundary
+}
+
+/** Agent composition for one preset — the same two steps dsh's own factory takes. */
+async function compose(ctx, presetId) {
+  const presets = optionalService(ctx, 'agentPresets')
+  if (presets === undefined) return { setup: () => {} }
+  const resolved = await presets.resolve(presetId)
+  return {
+    agentPreset: resolved.id,
+    setup: async (agentCtx) => {
+      await presets.mount(agentCtx, resolved.id)
+    },
+  }
+}
+
+/** The payload of the newest event of one type, or null — the fold for log-only state. */
+function lastOf(events, type) {
+  let found = null
+  for (const event of events) {
+    if (event.type === type) found = event.data ?? null
+  }
+  return found
 }
 
 /** The newest turn the log has opened, or null. */
@@ -110,6 +178,9 @@ export class GhostShellService extends TypertRemoteService {
     markRemote(this, 'waitState')
     markRemote(this, 'inject')
     markRemote(this, 'llmProviders')
+    markRemote(this, 'sessionPolicy')
+    markRemote(this, 'setSessionPolicy')
+    markRemote(this, 'forkSession')
   }
 
   async ping() {
@@ -251,6 +322,118 @@ export class GhostShellService extends TypertRemoteService {
       }
       await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS))
     }
+  }
+
+  /**
+   * What this session is allowed to do, and where.
+   *
+   * Two knobs, not one bit: `sandbox` says where its tools may act, `approval` says whether a
+   * tool call needs a human nod. dsh stores both as log events on the session (durable, replayed
+   * on restart) and — this is why switching is cheap — neither is a surface event, so changing
+   * permission does not enter the transcript and does not disturb the model prefix.
+   */
+  async sessionPolicy(request) {
+    const sessionId = requireSessionId(request, 'sessionPolicy')
+    const session = this.ctx.sessions.get(sessionId)
+    if (session === undefined) throw new Error(`sessionPolicy: no live session ${sessionId}`)
+    const policy = optionalService(this.ctx, 'sandboxPolicy')
+    if (policy === undefined) throw new Error('sessionPolicy: this dsh has no sandbox policy service')
+    const resolved = policy.resolve({ session })
+    // The overrides are read from the log, not from a service: `approval/policy` is written by a
+    // module function and its reader is an *optional* service this deployment may not mount —
+    // depending on it would have reported "no approval" for a session that had just switched.
+    // The last event of each type IS the override; both are log-only, so this fold is exact.
+    const events = session.snapshotEvents()
+    return {
+      sandbox: resolved.mode,
+      sandboxRoot: resolved.workspaceRoot,
+      sandboxOverride: lastOf(events, 'sandbox/mode')?.mode ?? null,
+      approval: lastOf(events, 'approval/policy')?.policy ?? null,
+    }
+  }
+
+  /**
+   * Switch this session's permission — and only within what a ghost may switch itself.
+   *
+   * `danger-full-access` is refused here on purpose. That is not a capability we lack; it is a
+   * boundary: full access is something the human grants to a ghost, never something a ghost
+   * grants to itself, a clone, or an agent it spawned. The refusal states that, so the boundary
+   * survives whoever reads this code next.
+   */
+  async setSessionPolicy(request) {
+    const sessionId = requireSessionId(request, 'setSessionPolicy')
+    const session = this.ctx.sessions.get(sessionId)
+    if (session === undefined) throw new Error(`setSessionPolicy: no live session ${sessionId}`)
+
+    const sandbox = request?.sandbox
+    if (sandbox !== undefined && sandbox !== null) {
+      if (!REACHABLE_SANDBOX_MODES.includes(sandbox)) {
+        throw new Error(
+          `setSessionPolicy: ${JSON.stringify(sandbox)} is not reachable from a ghost ` +
+            `(allowed: ${REACHABLE_SANDBOX_MODES.join(', ')}); full access is granted by the human only`,
+        )
+      }
+      setSandboxMode(session, sandbox)
+    }
+
+    const approval = request?.approval
+    if (approval !== undefined && approval !== null) {
+      if (approval !== 'ask' && approval !== 'never') {
+        throw new Error(`setSessionPolicy: approval must be "ask" or "never", got ${JSON.stringify(approval)}`)
+      }
+      setApprovalPolicy(session, approval)
+    }
+
+    return this.sessionPolicy({ sessionId })
+  }
+
+  /**
+   * Fork a session into a **different** working directory — the one thing dsh's own fork refuses.
+   *
+   * Official `session/fork` builds the seed correctly and then hard-codes the child's cwd to the
+   * source's. Everything it uses is public, so this route composes the same pieces with one
+   * field changed: `buildForkSeed` for a contiguous, balanced prefix, `agents.create` with the
+   * new `meta.cwd`. The child is then a session whose writable boundary is the new directory —
+   * because that boundary is the cwd, and nothing else.
+   *
+   * What it costs is the prefix: the workspace instruction files discovered from the new cwd are
+   * different, and anything the system prompt says about the environment changes with them. The
+   * cut is the same rule official fork uses — the last completed turn, extended over trailing
+   * standalone events, stopping before anything that belongs to the next turn.
+   */
+  async forkSession(request) {
+    const sessionId = requireSessionId(request, 'forkSession')
+    const cwd = typeof request?.cwd === 'string' ? request.cwd : ''
+    if (cwd === '') throw new Error('forkSession: cwd is required — it is the one thing this differs in')
+
+    const source = this.ctx.sessions.get(sessionId)
+    if (source === undefined) throw new Error(`forkSession: no live session ${sessionId}`)
+
+    const events = source.snapshotEvents()
+    const boundary = typeof request?.atSeq === 'number' ? request.atSeq : completedBoundary(events)
+    if (boundary === undefined || events[boundary]?.seq !== boundary) {
+      throw new Error(`forkSession: no completed turn to cut at (atSeq ${String(request?.atSeq)})`)
+    }
+    const seed = buildForkSeed(events, boundary)
+
+    const preset = typeof request?.agentPreset === 'string' ? request.agentPreset : source.header?.agentPreset
+    const composition = await compose(this.ctx, preset)
+    const childId = brandString(`session-${randomUUID()}`)
+    const config = source.requestHeader()?.config
+    await this.ctx.agents.create({
+      sessionId: childId,
+      seed,
+      inheritedEventCount: SessionLogOffset(boundary + 1),
+      meta: {
+        cwd,
+        parentSession: sessionId,
+        isSeeded: true,
+        ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
+      },
+      ...(config === undefined ? {} : { agentOptions: { provider: config.provider, model: config.model } }),
+      setup: composition.setup,
+    })
+    return { sessionId: childId, boundary, seeded_events: seed.length }
   }
 
   /**

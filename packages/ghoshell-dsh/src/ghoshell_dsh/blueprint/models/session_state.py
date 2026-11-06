@@ -37,11 +37,18 @@ class SessionState(BaseModel):
     running: bool = Field(default=False, description="the conversation still exists.")
     busy: bool = Field(default=False, description="a turn is in flight right now.")
 
-    # ---- permissions: the one bit a driver must be able to rely on ---- #
-    readonly: bool = Field(
-        default=False,
-        description="whether this session may change anything. dsh's own permission model is "
-                    "dynamic; this is the part we refuse to guess at.",
+    # ---- permissions: two knobs, because one bit cannot say the useful thing ---- #
+    sandbox: str | None = Field(
+        default=None,
+        description="where this session's tools may act: `read-only` or `workspace-write`. "
+                    "`danger-full-access` is deliberately not reachable from us — a ghost may not "
+                    "grant itself or its children what only the human can grant.",
+    )
+    sandbox_override: str | None = Field(
+        default=None, description="the mode this session itself switched to; None = inherited default."
+    )
+    approval: str | None = Field(
+        default=None, description="`ask` or `never`: whether a tool call needs a human nod."
     )
 
     # ---- where ---- #
