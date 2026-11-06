@@ -54,6 +54,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, TypeVar
 
+from ghoshell_dsh.blueprint.agent import ChatReply
 from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.client import DshClient
@@ -79,8 +80,12 @@ _YIELD_EVERY = 64
 _DOLORES_SESSION_INSTRUCTION = "/moss-api/ghost/dolores/session/instruction"
 _DOLORES_SESSION_SURFACE = "/moss-api/ghost/dolores/session/surface"
 
-# 插件动词 (本包自己的): ``ghoshell/anchor`` — 写下一个坐标, 纯读, 不在 dsh 里留任何东西.
+# 插件动词 (本包自己的): ``ghoshell/anchor`` 写下一个坐标 (纯读); ``ghoshell/chatOffRecord``
+# 在这个会话的上下文上问一句, 什么也不写回 —— 两者都不在 dsh 里留下任何东西.
 _GHOSHELL_ANCHOR = "ghoshell/anchor"
+_GHOSHELL_CHAT_OFF_RECORD = "ghoshell/chatOffRecord"
+_GHOSHELL_SESSION_STATE = "ghoshell/sessionState"
+_GHOSHELL_WAIT_STATE = "ghoshell/waitState"
 
 # on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
 E = TypeVar("E", bound=SessionEventModel)
@@ -149,7 +154,6 @@ class DshSession:
         # 初始假设新建 session 的 agent 处于 idle (host/session-status 首帧到来前不拉基线).
         self._running_event = asyncio.Event()
         self._idle_event = asyncio.Event()
-        self._idle_event.set()
         # 会话累计 token 用量 (assistant/message usage 累加, 纯记账 — 消费方经 on_session_event* 订阅).
         self._token_usage = TokenUsage()
         # 会话级事件治理: 事件名 → 分派闭包集合 (on_session_event* 注册时由 model_cls+callback 包成).
@@ -436,6 +440,34 @@ class DshSession:
         )
         return DshSessionAnchor.model_validate(value)
 
+    async def chat_off_record(
+        self,
+        message: str,
+        *,
+        anchor: DshSessionAnchor | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatReply:
+        """站在这个会话的上下文上问一句, 不留痕迹.
+
+        前缀是 ``deriveMessages()`` —— 主路每轮组装请求用的是同一段代码, 所以它继承的是这个会话
+        真正看到的东西 (system prompt 是历史里的一条 ``system/message``, 也在里面). 因此**不传
+        system**: 另传一份会被适配器拼在历史前面, 前缀缓存直接作废.
+
+        与 ``run()`` 的分工: run 是"让它成为对话的一部分" (写进日志, 推进 seq); 这个是"它没发生过"
+        (不 append、不建 session、不落盘). 代价照样发生 —— 所以 ``usage`` 原样交回给调用方,
+        因为账本只有一个入口 (日志), 而这条调用不会出现在任何日志里.
+
+        ``anchor`` 目前只接受这个会话的**当前末端**: 组一个更早的前缀要先从日志切片造一个未发布的
+        session, 那是下一步; 现在给别的 seq 会显式报错, 不会静默从错的位置回答.
+        """
+        payload: dict[str, Any] = {"sessionId": self._session_id, "message": message}
+        if anchor is not None:
+            payload["anchor"] = {"seq": anchor.seq}
+        if max_tokens is not None:
+            payload["maxTokens"] = max_tokens
+        value = await self._client.remote(_GHOSHELL_CHAT_OFF_RECORD, payload)
+        return ChatReply.model_validate(value)
+
     async def fork(self, *, at_seq: int | None = None) -> sessions.SessionForkValue:
         params = sessions.SessionForkParams(sessionId=self._session_id, atSeq=at_seq)
         return await self._client.call("session/fork", params, sessions.SessionForkValue)
@@ -613,13 +645,40 @@ class DshSession:
                 self._cwd = item.cwd
                 return
 
-    async def when_running(self) -> None:
-        """等到 agent 处于 running. 已在 running 则立即返回 (状态镜像, 非边沿触发)."""
-        await self._running_event.wait()
+    async def session_state(self) -> sessions.SessionState:
+        """读一次内核的权威状态: 在不在跑、队列里还有没有东西.
 
-    async def when_idle(self) -> None:
-        """等到 agent 处于 idle. 已在 idle 则立即返回 (状态镜像, 非边沿触发)."""
-        await self._idle_event.wait()
+        与 ``running`` 属性的分工: 那个是事件流缓存下来的"最后一次听说", 可能从来没听说;
+        这个每次问插件, 插件直接读 ``agent.status`` / ``agent.inbox.hasPending`` —— 同一台机器,
+        同一个时钟, 没有传输, 所以它回答的是"现在", 不是"我上次收到的是什么".
+        """
+        value = await self._client.remote(
+            _GHOSHELL_SESSION_STATE, {"sessionId": self._session_id}
+        )
+        state = sessions.SessionState.model_validate({**value, "sessionId": self._session_id})
+        self._dsh_running = state.running
+        return state
+
+    async def when_running(self, *, timeout: float = 300.0) -> sessions.SessionState:
+        """阻塞到 agent 真的开始跑 —— 判定在插件侧, 这里只是等它的答复."""
+        return await self._wait_state("running", timeout)
+
+    async def when_idle(self, *, timeout: float = 300.0) -> sessions.SessionState:
+        """阻塞到 agent 停下 **且** 队列空.
+
+        两个条件缺一不可: 只等"不在跑", 会在还有排队输入时就被叫醒 —— 那正是它要开始的时候.
+        判据由插件在进程内轮询内核真值给出, 不依赖事件流送没送到 (事件会漏, 内存字段不会).
+        """
+        return await self._wait_state("idle", timeout)
+
+    async def _wait_state(self, condition: str, timeout: float) -> sessions.SessionState:
+        value = await self._client.remote(
+            _GHOSHELL_WAIT_STATE,
+            {"sessionId": self._session_id, "condition": condition, "timeoutMs": int(timeout * 1000)},
+        )
+        state = sessions.SessionState.model_validate({**value, "sessionId": self._session_id})
+        self._dsh_running = state.running
+        return state
 
     def on_session_event(
         self,

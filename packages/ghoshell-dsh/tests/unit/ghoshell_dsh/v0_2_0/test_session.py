@@ -1,8 +1,8 @@
 """DshSession 状态面行为证据 — 运行态镜像事件 + on_session_event* 事件分派.
 
 覆盖:
-- 初始态: 新建 session 假设 idle, when_idle 立即返回, when_running 阻塞.
-- api-session/status 事件翻转 running ⇄ idle 镜像事件.
+- running 属性: 未启动/未听说时是 False; api-session/status 只更新这个缓存, 不参与判定.
+- when_idle / when_running: 一律问插件 (waitState), 不在本地拿事件当真相.
 - on_session_event_model(AssistantMessageEvent) 收每步事件, token_usage 属性累计会话量.
 - on_session_event (raw) 收原始 SessionEvent 信封, 与强类型回调并存.
 - disposer 解绑后不再收到后续事件.
@@ -34,6 +34,18 @@ class _DummyClient:
     """帧消费路径不触碰 client — 用哑元即可构造."""
 
     pass
+
+
+class _StateClient:
+    """answers the plugin's state verbs with a scripted sequence."""
+
+    def __init__(self, states):
+        self._states = list(states)
+        self.remote_calls: list[tuple[str, dict]] = []
+
+    async def remote(self, method, request):
+        self.remote_calls.append((method, request))
+        return self._states.pop(0)
 
 
 class _RpcClient:
@@ -129,28 +141,56 @@ async def _drain(session: DshSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_initial_state_is_idle():
+@pytest.mark.asyncio
+async def test_running_is_false_until_something_is_known():
+    """未听说任何状态时 running 是 False —— 它只够用来显示, 不够用来判定."""
     session = DshSession(session_id="s1", client=_DummyClient())
     async with session:
         assert session.running is False
-        # idle 镜像事件初始置位 → when_idle 立即返回.
-        await session.when_idle()
-        # running 事件未置位 → when_running 阻塞直到超时.
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(session.when_running(), 0.05)
 
 
 @pytest.mark.asyncio
-async def test_status_frames_flip_running_idle():
+async def test_status_frames_update_the_cache_only():
+    """api-session/status 更新 running 缓存; 它不再决定 when_idle 等什么."""
     session = DshSession(session_id="s1", client=_DummyClient())
     async with session:
         session.accept_host_event("api-session/status", ["s1", True])
-        await asyncio.wait_for(session.when_running(), 1)
+        await asyncio.sleep(0)
         assert session.running is True
 
         session.accept_host_event("api-session/status", ["s1", False])
-        await asyncio.wait_for(session.when_idle(), 1)
+        await asyncio.sleep(0)
         assert session.running is False
+
+
+@pytest.mark.asyncio
+async def test_when_idle_asks_the_plugin():
+    """判定在插件侧: when_idle 发的是 waitState(condition=idle), 并采用它的答复."""
+    client = _StateClient(
+        [
+            {"sessionId": "s1", "running": False, "hasPending": False, "turn": 7, "seq": 42, "attached": True},
+        ]
+    )
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        state = await session.when_idle(timeout=5)
+        assert client.remote_calls == [
+            ("ghoshell/waitState", {"sessionId": "s1", "condition": "idle", "timeoutMs": 5000})
+        ]
+        assert state.turn == 7 and state.hasPending is False
+        assert session.running is False
+
+
+@pytest.mark.asyncio
+async def test_when_running_uses_the_running_condition():
+    client = _StateClient(
+        [{"sessionId": "s1", "running": True, "hasPending": True, "attached": True}],
+    )
+    session = DshSession(session_id="s1", client=client)
+    async with session:
+        state = await session.when_running(timeout=2)
+        assert client.remote_calls[0][1]["condition"] == "running"
+        assert state.running is True and session.running is True
 
 
 @pytest.mark.asyncio

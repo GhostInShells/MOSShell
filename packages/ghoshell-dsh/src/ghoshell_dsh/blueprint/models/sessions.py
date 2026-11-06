@@ -47,6 +47,7 @@ __all__ = [
     "SessionRenameValue",
     "SessionSelectModelParams",
     "SessionSelectModelValue",
+    "SessionState",
     "SessionSummary",
     "SessionUpdateQueueParams",
     "SessionUpdateQueueValue",
@@ -58,6 +59,24 @@ class SessionListMetadata(BaseModel):
 
     blank: bool = Field(default=False)
     lastPromptAt: int | None = Field(default=None)
+
+
+class SessionState(BaseModel):
+    """一个 session 此刻在内核里的状态 — 由插件在进程内直接读, 不是事件stream推过来的镜像.
+
+    这是「权威判定」用的类型: `running` / `hasPending` 都来自 `agent.status` 与
+    `agent.inbox.hasPending`, 同一台机器、同一个时钟、没有传输 —— 所以它回答的是
+    "现在能不能确定", 而不是"我最后一次收到的事件说了什么".
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    sessionId: str = Field(default="")
+    running: bool = Field(default=False, description="agent 是否正在跑一个 turn.")
+    hasPending: bool = Field(default=False, description="队列里还有没有未开始的输入.")
+    turn: int | None = Field(default=None, description="日志里最后一个 turn/start 的 turn; 没有则 None.")
+    seq: int | None = Field(default=None, description="日志最后一条事件的 seq; 空日志为 None.")
+    attached: bool = Field(default=False, description="内核里是否有这个 session 的 agent.")
 
 
 class SessionSummary(BaseModel):
