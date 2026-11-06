@@ -54,6 +54,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, TypeVar
 
+from ghoshell_dsh.blueprint.anchor import DshSessionAnchor
 from ghoshell_dsh.v0_2_0 import wire
 from ghoshell_dsh.v0_2_0.client import DshClient
 from ghoshell_dsh.v0_2_0.types import sessions
@@ -77,6 +78,9 @@ _YIELD_EVERY = 64
 # plugin 观测面路由 (与 moss-dolores-ghost-plugin.ts 的 DOLORES_SESSION_* 常量对齐, 跨语言契约).
 _DOLORES_SESSION_INSTRUCTION = "/moss-api/ghost/dolores/session/instruction"
 _DOLORES_SESSION_SURFACE = "/moss-api/ghost/dolores/session/surface"
+
+# 插件动词 (本包自己的): ``ghoshell/anchor`` — 写下一个坐标, 纯读, 不在 dsh 里留任何东西.
+_GHOSHELL_ANCHOR = "ghoshell/anchor"
 
 # on_session_event 泛型参数: E 绑定具体模型类, 回调收该类强类型实例.
 E = TypeVar("E", bound=SessionEventModel)
@@ -416,6 +420,21 @@ class DshSession:
         )
         value = await self._client.call("session/page", params, sessions.SessionPageValue)
         return [wire.event_from_dict(record.event) for record in value.records]
+
+    async def anchor(self, *, seq: int | None = None, note: str | None = None) -> DshSessionAnchor:
+        """写下一个坐标: 这个会话此刻在哪 —— 或它曾经在哪.
+
+        ``seq=None`` 是"此刻"; 给了 seq 就是那个位置, 越界由插件显式报错, 不悄悄夹取.
+        ``note`` 是锚点自己的记忆: 这里定了什么、为什么记这一点 —— 不写, 锚点只定位、不表态.
+
+        与 ``fork()`` 的分工: fork 问 dsh 要一个新会话 (有副作用), anchor 只是把已有的事实抄下来
+        (纯读). 所以它能随手调, 也能离开进程活下来 (``DshSessionAnchor.dump``).
+        """
+        value = await self._client.remote(
+            _GHOSHELL_ANCHOR,
+            {"sessionId": self._session_id, "seq": seq, "note": note},
+        )
+        return DshSessionAnchor.model_validate(value)
 
     async def fork(self, *, at_seq: int | None = None) -> sessions.SessionForkValue:
         params = sessions.SessionForkParams(sessionId=self._session_id, atSeq=at_seq)

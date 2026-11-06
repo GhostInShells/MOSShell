@@ -53,21 +53,9 @@ class DshClient:
         self._http_client = httpx.AsyncClient(timeout=timeout)
         self._rpc_counter = 0
 
-    async def call(
-        self,
-        method: str,
-        params: BaseModel | None,
-        value_cls: type[_ValueT],
-        *,
-        args_key: str | None = "request",
-    ) -> _ValueT:
-        """引擎: params 序列化 → args 包络 → 信封 POST → ok 则 value_cls.model_validate, 否则 raise.
 
-        ``method`` 是 Remote 端点 (namespace/method, 斜杠). ``args_key`` 是参数名;
-        None 表示无参动词 (args={}).
-        """
-        payload = params.model_dump(exclude_none=True, by_alias=True) if params is not None else {}
-        args: dict[str, Any] = {} if args_key is None else {args_key: payload}
+    async def _invoke(self, method: str, args: dict[str, Any]) -> dict[str, Any]:
+        """信封 + POST + ok/失败分支 —— call / remote 共用的那一半."""
         self._rpc_counter += 1
         envelope = {
             "type": "client-request",
@@ -87,7 +75,24 @@ class DshClient:
             if error is None:
                 error = {"code": "internal", "message": "no error", "details": {}}
             raise DshRpcException(method, error)
-        return value_cls.model_validate(result.get("value"))
+        return result.get("value") or {}
+
+    async def call(
+        self,
+        method: str,
+        params: BaseModel | None,
+        value_cls: type[_ValueT],
+        *,
+        args_key: str | None = "request",
+    ) -> _ValueT:
+        """引擎: params 序列化 → args 包络 → 信封 POST → ok 则 value_cls.model_validate, 否则 raise.
+
+        ``method`` 是 Remote 端点 (namespace/method, 斜杠). ``args_key`` 是参数名;
+        None 表示无参动词 (args={}).
+        """
+        payload = params.model_dump(exclude_none=True, by_alias=True) if params is not None else {}
+        args: dict[str, Any] = {} if args_key is None else {args_key: payload}
+        return value_cls.model_validate(await self._invoke(method, args))
 
     async def rpc(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         """裸 RPC: POST client-request 信封, 返回 result dict (不校验 value).
@@ -118,6 +123,14 @@ class DshClient:
         resp = await self._http_client.post(f"{self._base_url}{path}", json=payload or {})
         resp.raise_for_status()
         return resp.json()
+
+    async def remote(self, method: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Unary Remote 动词的裸口子: 入参是一个原样的 request 对象, 返回值不校验.
+
+        给"还没有自己模型的动词"留的门 —— 插件新增的动词 (如 ``ghoshell/anchor``) 先通到这,
+        等形状稳定了再决定要不要为它建 pydantic 模型. 校验前移给调用方: 它知道自己要什么形状.
+        """
+        return await self._invoke(method, {"request": request})
 
     def set_cookies(self, cookies: dict[str, str]) -> None:
         """注入 dsh web 鉴权 cookie 到后续 /api 调用 (requestRejection 要求)."""

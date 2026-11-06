@@ -288,7 +288,9 @@ class DshConnection:
 
     def _check_running(self) -> None:
         if not self.is_running():
-            raise RuntimeError("DshLauncher not running (dsh subprocess not alive)")
+            # True for both layers: the launcher's process may be gone, or a bare connection's
+            # mux may never have come up. Naming the launcher only would be a lie here.
+            raise RuntimeError(f"dsh connection not running ({self.config.base_url})")
 
     # ---- 生命周期 ---- #
 
@@ -339,7 +341,7 @@ class DshConnection:
             self._connect_attempts += 1
             await asyncio.sleep(1.0)
 
-    def _log_connect_retry(self, what: str, exc: BaseException) -> None:
+    def _log_connect_retry(self, what: str, detail: object) -> None:
         """Report a failed mux attempt at the level it deserves.
 
         Before the first successful connection, a refused socket is the ordinary startup
@@ -348,11 +350,11 @@ class DshConnection:
         connection has worked, the same failure means the connection *broke*, which is news.
         """
         if self._dsh_started.is_set():
-            self._logger.warning("%s: %s", what, exc)
+            self._logger.warning("%s: %s", what, detail)
         elif self._connect_attempts <= 1:
-            self._logger.info("%s — retrying until dsh is up: %s", what, exc)
+            self._logger.info("%s — retrying until dsh is up: %s", what, detail)
         else:
-            self._logger.debug("%s — retrying: %s", what, exc)
+            self._logger.debug("%s — retrying: %s", what, detail)
 
     async def _authorize(self) -> None:
         """token → cookie 交换, 注入 http client 与 DshClient (后续 /api 调用需鉴权).
@@ -370,12 +372,12 @@ class DshConnection:
                 f"{self.config.base_url}/?token={token}", follow_redirects=False,
             )
         except Exception as exc:
-            self._logger.warning("%sweb auth exchange failed: %s", self._log_prefix, exc)
+            self._log_connect_retry("web auth exchange failed", exc)
             return
         self._cookies = dict(self._http_client.cookies.items())
         if not self._cookies:
-            self._logger.warning(
-                "%sweb auth exchange produced no cookie (status %s)", self._log_prefix, resp.status_code
+            self._log_connect_retry(
+                "web auth exchange produced no cookie", f"status {resp.status_code} — wrong token?"
             )
             return
         self._cookie_header = "; ".join(f"{k}={v}" for k, v in self._cookies.items())
@@ -571,10 +573,32 @@ class DshConnection:
         await stack.enter_async_context(self._ws_loop_ctx())
 
     async def _wait_started(self) -> None:
-        pass
+        """Wait until this connection is actually usable — mux up, auth cookie held.
+
+        The base class owns a transport, not a process, so the clock is `connect_timeout`:
+        the dsh is somebody else's, and either it is there or the token is wrong. Waiting
+        here (rather than letting the first `/api` call discover it) is the difference
+        between "attached" and "attached, and the cookie exchange has not happened yet" —
+        the latter answers 401 on the very first verb.
+
+        A subclass that spawns its own process (DshLauncher) overrides this with its own
+        readiness clock; the condition being waited for is the same one.
+        """
+        try:
+            await asyncio.wait_for(self._dsh_started.wait(), self.config.connect_timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"no mux connection to {self.config.base_url} within "
+                f"{self.config.connect_timeout}s — is that dsh running, and is the token right?"
+            ) from None
 
     async def _on_start_failed(self) -> None:
-        pass
+        """Unwind what the failed start had already opened — no half-alive connection left.
+
+        Called from `__aenter__`'s except branch, so it must tolerate a stack that was only
+        partly populated. Closing is idempotent, and `__aexit__` is a no-op once `_stopped`.
+        """
+        await self.__aexit__(None, None, None)
 
     @classmethod
     def install(
@@ -635,8 +659,10 @@ class DshConnection:
             await self._enter_async_context(self._aexit_stack)
             await self._wait_started()
         except BaseException:
-            # 启动失败: 手动关掉已 spawn 的 subprocess (句柄在 _wait_started 之前已拿到).
+            # 启动失败: 手动关掉已 spawn 的 subprocess (句柄在 _wait_started 之前已拿到),
+            # 并把这个对象标记为已停止 —— 否则下一次 is_running() 会说它活着.
             await self._on_start_failed()
+            self._stopped = True
             raise
         return self
 
@@ -828,6 +854,8 @@ class DshLauncher(DshConnection):
             ) from None
 
     async def _on_start_failed(self) -> None:
+        # Transport first (the ws loop belongs to the base), then the process it was talking to.
+        await super()._on_start_failed()
         await self._stop_proc()
 
     async def _enter_async_context(self, stack: AsyncExitStack) -> None:
