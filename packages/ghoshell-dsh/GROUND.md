@@ -1,12 +1,15 @@
 ---
 name: ghoshell-dsh
-description: dsh 多版本兼容层 — 用 python 启动并管理多个不同的 dsh 版本
+description: Multi-version dsh compatibility layer — launch and manage several dsh versions from Python
 ---
 
 # ghoshell-dsh
 
-dsh 版本兼容包。dsh 上游在破坏性迭代（破坏到 patch 位），本包用**一个发行版 + 多个代际目录**
-（`vX_Y_Z`）让多个 dsh 版本可以被 python 启动、共存，并让历史数据仍然可读。
+A compatibility package for dsh. Upstream dsh iterates destructively — breaking down
+to the patch digit — so this package keeps **one distribution with one directory per
+generation** (`vX_Y_Z`): several dsh versions can be launched from Python, coexist,
+and keep their historical data readable.
 
-依赖方向单向：本包不依赖 `ghoshell-moss`，只依赖机制层（如 `ghoshell-processes`）。
-迭代方式见 [AGENTS.md](AGENTS.md)，vendor 源码见 `.vendors/`。
+Dependency direction is one-way: this package does not depend on `ghoshell-moss`,
+only on mechanism layers such as `ghoshell-processes`. Iteration conventions live in
+[AGENTS.md](AGENTS.md); vendored sources in `.vendors/`.

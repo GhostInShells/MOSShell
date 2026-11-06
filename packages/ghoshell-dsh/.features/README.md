@@ -237,10 +237,8 @@ Cut scope must be recorded scope — an unrecorded cut makes the index lie.
 **Execution order**: `set-status completed` first (modifies FEATURE.md), then `git commit` with workstream modifications
 included.
 
-`moss features check` lists unfinished workstreams (parked workstreams never appear). It is a reminder, not
-an enforcer — run it yourself before committing; the human reviews for it. It used to run as a pre-commit
-hook; that was removed on 2026-11-05: a hook that cannot block still cost a stash/restore of unstaged work
-per commit, and its 45-line output was noise rather than signal.
+`moss features check` lists unfinished workstreams as a non-blocking pre-commit reminder (parked workstreams
+never appear). It is a reminder, not an enforcer — the human reviews for it.
 
 ### How to Review
 
@@ -312,7 +310,7 @@ See [regressions/README.md](regressions/README.md).
 
 Issues are the outside world knocking; features track how work evolves. They are deliberately **not** part
 of the features data model: an issue's lifecycle is driven by people outside the project, and its source of
-truth is whatever tracker the project uses (GitHub, in MOSShell's case) — never a file in this directory.
+truth is whatever tracker the project uses — never a file in this directory.
 
 What the features system provides is a **slot and an entry point**. If a project states its convention in
 `issues/SKILL.md`, `moss features issues` prints it; if not, the command says so and explains what such a
