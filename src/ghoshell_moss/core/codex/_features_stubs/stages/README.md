@@ -1,94 +1,79 @@
-# MOSS Stage Tracking
+# Stages
 
 ## What
 
-A **stage** is a declared development period with an explicit start, direction,
-and delivery target. Each stage is a directory under `features/stages/`,
-anchored by a `STAGE.md` file that carries:
+A **stage** is a declared development period with an explicit start, direction, and delivery
+target. Each stage is a directory under `stages/`, anchored by a `STAGE.md` that carries:
 
 - **Background** — where this stage comes from, prior context
 - **Motivation** — why this stage, why now
 - **Goals** — what the stage intends to achieve (declarative, few)
 - **Plan** — the path: key workstreams and their ordering
 - **Acceptance** — what "done" means, the gate conditions
-- **Associated Workstreams** — names of features / debates / regressions involved
+- **Associated Workstreams** — names of workstreams / regressions involved
 - **Retrospective** — what actually happened (written at close, empty before)
 
-A stage's lifecycle lives entirely inside its own STAGE.md:
-**planning → active → completed**. The file travels from intent to record.
-The closed STAGE.md *is* the milestone of the stage — no separate closing
-artifact is created.
+A stage's lifecycle lives entirely inside its own `STAGE.md`: **planning → active →
+completed**. The file travels from intent to record — the closed `STAGE.md` *is* the stage's
+milestone, no separate closing artifact is created.
 
 ## Why
 
-Every other artifact in `.ai_partners/` is anchored to **what has already
-happened**: features are reverse indexes from code to context, milestones
-record moments that occurred, debates and regressions bind to existing
-designs or executable reality. The epistemic ground of the whole system
-is fidelity to the past.
+Every other artifact in the features tree is anchored to **what has already happened**:
+workstreams are reverse indexes from code to context, regressions bind to an executable
+reality. Their ground is fidelity to the past.
 
-Stages are the one artifact that **faces forward**. They exist because
-intent is not derivable from code:
+Stages are the one artifact that **faces forward**, because intent is not derivable from
+code:
 
-1. A model surveying the codebase can only infer intent from current state —
-   and that inference always reads as "be cautious, harden the foundations."
-   When the project is actually in an exploratory sprint, this inference is
-   exactly wrong, and models end up pressuring the human toward defensive
-   engineering.
-2. The human engineer drifts too. A declared stage is an anchor against drift.
-3. External observers (contributors, users) cannot tell whether iteration
-   is directed or random without a visible plan.
+1. A model surveying the codebase can only infer intent from current state — and that
+   inference always reads as "be cautious, harden the foundations." In an exploratory
+   sprint it is exactly wrong.
+2. A human engineer drifts too; a declared stage is an anchor against that drift.
+3. An outside observer cannot tell whether iteration is directed or random without a
+   visible plan.
 
-The design resolves the tension between forward-facing intent and the
-system's fidelity principle with one rule: **a stage carries trajectory,
-not truth.** Goals, motivation, and retrospective are authored intent and
-memory. Progress and status are *observed* from the associated features at
-read time — never copied into the stage file, where they would rot.
+One rule resolves the tension between forward-facing intent and fidelity: **a stage carries
+trajectory, not truth.** Goals, motivation and retrospective are authored intent and memory;
+progress and status are *observed* from the associated artifacts at read time — never copied
+into the stage file, where they would rot.
 
 ## How
 
-### Create a stage
+### Create
 
 ```bash
-cp -r features/stages/_template features/stages/YYYY-MM-identifier
-# edit STAGE.md: frontmatter + all sections except Retrospective
+cp -r stages/_template stages/YYYY-MM-identifier
+# edit STAGE.md: frontmatter + every section except Retrospective
 # add an entry to ROADMAP.md under Planned
 ```
 
-### Activate a stage
+### Activate
 
-Set frontmatter `status: active`, move its ROADMAP.md entry to Active.
+Set frontmatter `status: active`; move its ROADMAP entry to Active.
 
-### During a stage
+### During
 
-- Link workstreams in **Associated Workstreams** as they start — by name
-  only, never by path. Names resolve through `moss features list`; a
-  renamed workstream is still traceable through git history, while a
-  hard path is just a broken link.
-- Record milestones — planned or emergent — as files under `milestones/`.
-  An emergent milestone that changes the plan should say so (see the
-  template's Stage Impact section).
-- If direction is redrawn mid-stage, append a dated note to STAGE.md.
-  A single dated section is enough; only promote to a subdirectory when
-  a second file of the same kind appears.
+- Link workstreams in **Associated Workstreams** as they start — **by name only, never by
+  path.** Names resolve through each mechanism's own index; a hard path is only a broken link
+  waiting for a rename.
+- Record milestones — planned or emergent — as files under `milestones/`. An emergent
+  milestone that changes the plan says so (see the template's Stage Impact section).
+- If direction is redrawn mid-stage, append a dated note to `STAGE.md`. One dated section is
+  enough; promote to a subdirectory only when a second file of the same kind appears.
 
-### Close a stage
+### Close
 
-1. Write the **Retrospective** section: actual delivery, lessons, redirections.
+1. Write the **Retrospective**: actual delivery, lessons, redirections.
 2. Set frontmatter `status: completed`.
-3. Move the ROADMAP.md entry to Completed.
-4. Optionally promote defining moments to the global
-   `.ai_partners/milestones/` (curated highlights, hand-written by model
-   collaborators — distinct from the stage's operational `milestones/` log).
+3. Move the ROADMAP entry to Completed.
 
 ## Conventions
 
 ### Naming
 
-Stage directories: `YYYY-MM-{identifier}/` — start year-month plus a short
-identifier (`2026-07-beta1`, `2026-08-v0.1.0`).
-
-Milestone files: `YYYY-MM-DD-{identifier}.md` — dated, self-explaining.
+- Stage directories: `YYYY-MM-{identifier}/` — start year-month plus a short identifier.
+- Milestone files: `YYYY-MM-DD-{identifier}.md` — dated, self-explaining.
 
 ### Status
 
@@ -97,43 +82,32 @@ Milestone files: `YYYY-MM-DD-{identifier}.md` — dated, self-explaining.
 | `planning` | Declared, not started |
 | `active` | In progress |
 | `completed` | Closed with retrospective written |
-| `cancelled` | Abandoned (rare; say why in Retrospective) |
+| `cancelled` | Abandoned (rare; say why in the Retrospective) |
 
 ### Content principles
 
-1. **Trajectory, not truth.** Never copy feature status into a stage.
-   Status is observed from the associated artifacts at read time.
-2. **Names, not paths.** Associations are by artifact name, resolved
-   through each mechanism's own index (`moss features list`, the
-   regressions directory, ...). No relative-path coupling.
-3. **Retrospective is not a task log.** Record key decisions, surprises,
-   and redirections — not a checklist replay.
-4. **Goals are few and declarative.** Three to five. If a goal needs a
-   progress bar, it belongs in a feature, not here.
-5. **Historical stages are optional.** Pre-mechanism history lives as
-   background in the feature that produced this convention
-   (`stage-tracking-convention`); back-filling stage files is not required.
+1. **Trajectory, not truth.** Never copy workstream status into a stage; status is observed
+   from the associated artifacts at read time.
+2. **Names, not paths.** Associations are by artifact name, resolved through each
+   mechanism's own index. No relative-path coupling.
+3. **Retrospective is not a task log.** Key decisions, surprises, redirections — not a
+   checklist replay.
+4. **Goals are few and declarative.** Three to five; a goal that needs a progress bar
+   belongs in a workstream.
+5. **Historical stages are optional.** Back-filling stage files from before this convention
+   existed is not required.
 
-## Relationship to other mechanisms
+## Relationship to the other mechanisms
 
 | Mechanism | Granularity | Temporality | Carries |
 |-----------|-------------|-------------|---------|
-| **features** | one workstream | persistent, backward-indexing | design context, decisions, dead ends |
+| **workstreams** | one workstream | persistent, backward-indexing | design context, decisions, dead ends |
 | **stages** | one development period | weeks/months, forward-facing | direction, goals, retrospective |
-| **milestones** (global) | one moment | historical, curated | highlights hand-written by collaborators |
-| **debates** | one design discussion | L3 | colliding positions on architecture |
 | **regressions** | one executable suite | repeatable present | model-runnable verification flows |
 
-Stages say *what a period is for*. Features say *how a specific thing is
-built*. Milestones say *what moment was reached*.
+Stages say *what a period is for*; workstreams say *how a specific thing is built*.
 
 ## Observability
 
-Stages are governed by `moss ground`, not by a dedicated CLI. The intended
-observation surface: `@` this README plus `ls` of the stage directories,
-at most a glob over `*/STAGE.md` frontmatter. If ground lacks an observation
-verb this needs, extend ground — see the `stage-tracking-convention` feature
-for the gap list.
-
-This mechanism is deliberately not wired into `moss start`. It must prove
-itself in use; if it doesn't earn its keep, delete the whole directory.
+Intended surface: this file, a listing of `stages/*/`, and at most a glob over
+`*/STAGE.md` frontmatter. Anything more belongs in a tool, not in a document.

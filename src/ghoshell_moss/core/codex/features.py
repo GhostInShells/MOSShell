@@ -728,24 +728,17 @@ def update_feature_status(
 # Template resolution
 # ---------------------------------------------------------------------------
 
-# This module lives at ghoshell_moss/core/codex/features.py.
-# Use package root as anchor — more robust than counting from a deep file.
-_PKG_ROOT = Path(__file__).resolve().parents[2]  # ghoshell_moss/
-
-
 def find_stubs_dir() -> Optional[Path]:
-    """Find the bundled feature stubs (scaffolding files).
+    """Find the bundled feature stubs — the scaffolding files ``init`` copies out.
 
-    Priority:
-    1. Packaged sibling dir — always available (source or installed).
-    2. Source checkout .ai_partners/features/ — additional fallback for MOSShell dev.
+    Only the packaged sibling directory qualifies. It used to also fall back to a
+    source checkout's ``.ai_partners/features/``; that fallback is gone, because it
+    copies an *instance* — some project's filled-in workstreams, surface and issue
+    convention — as if it were a template, which is exactly the bug the stubs
+    themselves had. ``None`` means no scaffolding is available and the caller
+    degrades (``init`` writes its built-in workstream template and nothing else).
     """
-    # 1. Packaged alongside this module — most reliable
     p = Path(__file__).resolve().parent / "_features_stubs"
-    if (p / README_FILENAME).is_file():
-        return p
-    # 2. Source checkout: repo/.ai_partners/features/
-    p = _PKG_ROOT.parents[2] / ".ai_partners" / "features"
     if (p / README_FILENAME).is_file():
         return p
     return None

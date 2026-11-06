@@ -1,10 +1,12 @@
 # Features Directory Topology
 
-The features system is the project's human–model collaboration layer (pillar 2).
-Three axes plus one surface index live under `features/`.
+The features system is the project's human–model collaboration layer. Three axes plus one
+surface index live inside one features tree — `.features/` in a fresh project,
+`.ai_partners/features/` where the tree predates the rename. Everything below is written
+relative to that root.
 
 ```
-features/
+.features/
   README.md              # Convention specification — "why" and "how"
   TOPOLOGY.md            # This file — "where"
   TEMPLATE.md            # Template for new workstreams (source of `moss features create`)

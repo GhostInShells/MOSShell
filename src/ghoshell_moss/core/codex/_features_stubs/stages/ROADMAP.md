@@ -1,18 +1,19 @@
-# MOSS Development Roadmap
+# Development Roadmap
 
-Index of development stages. Each stage is a directory anchored by a
-`STAGE.md` that carries its full lifecycle — from plan to retrospective.
-See [README.md](README.md) for the mechanism.
+<!-- Index of stages — one line each: the link, then what that period is about.
+     Lifecycle and conventions: README.md. A stage moves between sections when its status moves. -->
+
+## Planned
+
+(none)
 
 ## Active
 
-- [2026-08-v0.1.0](2026-08-v0.1.0/STAGE.md) — applications, dogfooding,
-  full-featured Dolores ghost; the project formalizes as v0.1.0
+(none)
 
 ## Completed
 
-- [2026-07-beta1](2026-07-beta1/STAGE.md) — all core concepts took concrete
-  form; matrix cell governance as the hub; beta1 shipped (2026-07-28)
+(none)
 
 ## Cancelled
 
