@@ -19,6 +19,7 @@ launcher 的 ``workspace/follow`` 流, 见 launcher.py).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, TypeVar
 
 import httpx
@@ -26,7 +27,6 @@ from pydantic import BaseModel
 
 from ghoshell_dsh.v0_2_0.types import sessions
 from ghoshell_dsh.v0_2_0.types.rpc import RpcError
-from ghoshell_moss.contracts.logger import LoggerItf
 
 __all__ = [
     "DshClient",
@@ -48,7 +48,7 @@ class DshRpcException(Exception):
 class DshClient:
     """强类型 unary Remote 动词 facade: 每个方法 = 一个 dsh Remote 动词, 不背业务逻辑."""
 
-    def __init__(self, base_url: str, logger: LoggerItf, *, timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str, logger: logging.Logger, *, timeout: float = 10.0) -> None:
         self._base_url = base_url
         self._logger = logger
         self._http_client = httpx.AsyncClient(timeout=timeout)

@@ -73,6 +73,7 @@ spawn 时惰性解析). 可用它把单个 ghost 钉到特定 dsh 安装 (如本
 from __future__ import annotations
 
 import asyncio
+import logging
 import contextlib
 import json
 import os
@@ -88,14 +89,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
 from contextlib import AsyncExitStack
 
-from ghoshell_moss.contracts.subprocesses import (
+from ghoshell_processes import (
     ManagedProcess,
     ProcessMeta,
     Subprocesses,
+    SubprocessesImpl,
 )
-from ghoshell_moss.core.subprocesses import SubprocessesImpl
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from .types.nouns import WorkspaceView
 from .types.session_events import SessionEvent, SessionEventMeta
 from .client import DshClient
@@ -131,6 +130,14 @@ RemoteWaterfallHandler = Callable[
 ]
 # 解绑函数: on_remote_emit / on_remote_waterfall 返回, 调用即注销对应 handler.
 Disposer = Callable[[], None]
+
+
+async def _wait_event(event: asyncio.Event, timeout: float | None) -> None:
+    """Wait for a readiness event; a non-positive or absent timeout means wait forever."""
+    if timeout is None or timeout <= 0:
+        await event.wait()
+    else:
+        await asyncio.wait_for(event.wait(), timeout)
 
 
 def _env_flag(name: str) -> bool:
@@ -224,7 +231,7 @@ class DshConnection:
     def __init__(
             self,
             config: DshConnectionConfig,
-            logger: LoggerItf | None = None,
+            logger: logging.Logger | None = None,
     ) -> None:
         self._config = config
         self._token: str | None = config.token or os.environ.get(DSH_WEB_TOKEN_ENV) or None
@@ -246,10 +253,10 @@ class DshConnection:
         self._follow_sessions: dict[str, DshSession] = {}
         self._stream_to_session: dict[str, str] = {}  # streamId → sessionId (dispatch 用).
         self._follow_turn_step: dict[str, tuple[int, int]] = {}  # sessionId → (turn, step), 供 chunk 帧补帧.
-        self._logger: LoggerItf = logger or get_moss_logger()
+        self._logger: logging.Logger = logger or logging.getLogger(__name__)
         self.client = DshClient(self.config.base_url, self._logger, timeout=self.config.connect_timeout)
         self._aexit_stack = AsyncExitStack()
-        self._dsh_started = ThreadSafeEvent()
+        self._dsh_started = asyncio.Event()
         # 标记 dsh 是否已经运行.
 
         self._started = False
@@ -632,7 +639,7 @@ class DshConnection:
                 return workspace
         return None
 
-    def create_session(self, session_id: str, logger: LoggerItf | None = None) -> DshSession:
+    def create_session(self, session_id: str, logger: logging.Logger | None = None) -> DshSession:
         """创建并接线一个 session facade: 挂 $events (host 运行态) + session/follow (session 事件) 两流.
 
         $events 流收 host 级运行态 (api-session/status·added·…), 经 accept_host_event.
@@ -686,7 +693,7 @@ class DshLauncher(DshConnection):
             self,
             config: DshLauncherConfig,
             subprocesses: Subprocesses | None = None,
-            logger: LoggerItf | None = None,
+            logger: logging.Logger | None = None,
     ) -> None:
         super().__init__(config=config, logger=logger)
         self._external_sp = subprocesses is not None
@@ -703,7 +710,7 @@ class DshLauncher(DshConnection):
         self._stderr_lines: list[str] = []
         self._discovered_token: str | None = None
         self._web_url: str | None = None
-        self._token_ready = ThreadSafeEvent()
+        self._token_ready = asyncio.Event()
         self._log_prefix: str = f"[DSHLauncher] "
         # dsh 可执行的解析结果 — 惰性 (spawn 时才解), 构造不该依赖 PATH 上有 dsh.
         self._resolved_binary: str | None = None
@@ -727,7 +734,7 @@ class DshLauncher(DshConnection):
         """等待 dsh web token + mux WS 连上 (push 式就绪), 超时则失败而非永久阻塞."""
         await self._wait_token()
         try:
-            await self._dsh_started.wait_for(self.config.readiness_timeout)
+            await _wait_event(self._dsh_started, self.config.readiness_timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(
                 f"dsh 未在 {self.config.readiness_timeout}s 内就绪 (mux WS 未连接)"
@@ -741,7 +748,7 @@ class DshLauncher(DshConnection):
         if self.token() is not None:
             return
         try:
-            await self._token_ready.wait_for(self.config.readiness_timeout)
+            await _wait_event(self._token_ready, self.config.readiness_timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(
                 f"dsh 未在 {self.config.readiness_timeout}s 内输出 web token (无法鉴权)"

@@ -47,6 +47,7 @@ sessionId, 把身份与原始 rpc 入参对象屏蔽掉。
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import contextlib
 from collections import deque
@@ -56,7 +57,6 @@ from typing import Any, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Self
 
-from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_dsh.v0_2_0.client import DshClient
 from ghoshell_dsh.v0_2_0.types import sessions
 from ghoshell_dsh.v0_2_0.types.session_events import (
@@ -134,11 +134,11 @@ class DshSession:
         *,
         session_id: str,
         client: DshClient,
-        logger: LoggerItf | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._session_id = session_id
         self._client = client
-        self._logger = logger or get_moss_logger()
+        self._logger = logger or logging.getLogger(__name__)
         # dsh 运行态 (host/session-status{running} 由 session 自己消费、持有).
         self._dsh_running = False
         # 运行态镜像事件: running ⇄ idle 翻转时同步 set/clear, 对外经 when_running/when_idle 等待.

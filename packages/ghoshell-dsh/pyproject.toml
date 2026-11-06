@@ -6,9 +6,13 @@ authors = [{ name = "thirdgerb" }]
 license = { text = "MIT" }
 requires-python = ">=3.10"
 
-# Deliberately empty for now: the package still imports ghoshell-moss, and that dependency is
-# being cut rather than declared. Nothing here waits on a package that will not be a dependency.
-dependencies = []
+# One dependency, and it is a mechanism layer, not MOSShell: child-process governance comes
+# from `ghoshell-processes` in this workspace. Nothing here imports `ghoshell-moss` — the
+# MOSS-facing pieces (channel, message mapper, runtime) live there, not here.
+dependencies = ["ghoshell-processes"]
+
+[tool.uv.sources]
+ghoshell-processes = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=61", "wheel"]
