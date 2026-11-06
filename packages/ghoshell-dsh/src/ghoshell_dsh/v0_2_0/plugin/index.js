@@ -433,6 +433,20 @@ export class GhostShellService extends TypertRemoteService {
       ...(config === undefined ? {} : { agentOptions: { provider: config.provider, model: config.model } }),
       setup: composition.setup,
     })
+
+    // Delegation carries permission with it. dsh marks exactly this case on the event
+    // (`source: 'delegation'`), and the alternative is worse than it looks: a child that inherits
+    // a conversation but not what the conversation was allowed to do is a clone with a different
+    // temperament, and the difference shows up as a refused write rather than as a decision.
+    // Only overrides are copied — a parent that never switched has nothing to say, and the child
+    // falls to the same deployment default it would have anyway.
+    const child = this.ctx.sessions.get(childId)
+    if (child !== undefined && request?.inheritPolicy !== false) {
+      const mode = lastOf(events, 'sandbox/mode')?.mode
+      if (mode !== undefined) child.append('sandbox/mode', { mode, source: 'delegation' })
+      const approval = lastOf(events, 'approval/policy')?.policy
+      if (approval !== undefined) child.append('approval/policy', { policy: approval, source: 'delegation' })
+    }
     return { sessionId: childId, boundary, seeded_events: seed.length }
   }
 
